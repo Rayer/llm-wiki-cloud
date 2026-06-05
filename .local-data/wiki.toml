@@ -1,0 +1,24 @@
+[models]
+fast = "gemini-2.5-flash"
+heavy = "gemini-2.5-flash"
+
+[provider]
+name = "custom"
+url = "https://generativelanguage.googleapis.com/v1beta/openai"
+timeout = 120
+fast_ctx = 8192
+heavy_ctx = 32768
+
+[pipeline]
+auto_approve = false
+auto_commit = false
+auto_maintain = true
+watch_debounce = 3.0
+max_concepts_per_source = 8
+ingest_parallel = false
+article_max_tokens = 16384
+concept_draft_soft_cap = 4096
+inline_source_citations = false
+source_citation_style = "legend-only"
+draft_media = "reference"
+graph_quality_checks = true

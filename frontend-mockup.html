@@ -1,0 +1,581 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>LLM Wiki Cloud</title>
+<style>
+  :root {
+    --bg: #0d1117; --surface: #161b22; --border: #30363d;
+    --text: #c9d1d9; --muted: #8b949e; --accent: #58a6ff;
+    --green: #3fb950; --yellow: #d2991d; --purple: #a371f7;
+    --radius: 8px;
+  }
+  * { margin:0; padding:0; box-sizing:border-box; }
+  body { font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', sans-serif;
+    background: var(--bg); color: var(--text); display: flex; height: 100vh; }
+
+  /* ── Sidebar ── */
+  aside {
+    width: 280px; min-width: 280px; background: var(--surface);
+    border-right: 1px solid var(--border); display: flex; flex-direction: column;
+    overflow: hidden;
+  }
+  .sidebar-header { padding: 20px; border-bottom: 1px solid var(--border); }
+  .sidebar-header h1 { font-size: 16px; margin-bottom: 4px; }
+  .sidebar-header .project { font-size: 12px; color: var(--muted); }
+  .sidebar-nav { flex:1; overflow-y: auto; padding: 12px; }
+  .sidebar-nav .section { margin-bottom: 20px; }
+  .sidebar-nav .section-title {
+    font-size: 11px; text-transform: uppercase; letter-spacing: .5px;
+    color: var(--muted); margin-bottom: 8px; padding: 0 8px;
+  }
+  .sidebar-nav .entry, .sidebar-nav .concept {
+    display: block; padding: 6px 8px; border-radius: 4px; font-size: 13px;
+    cursor: pointer; color: var(--text); text-decoration: none;
+    transition: background .1s; white-space: nowrap; overflow: hidden;
+    text-overflow: ellipsis;
+  }
+  .sidebar-nav .entry:hover, .sidebar-nav .concept:hover { background: var(--border); }
+  .sidebar-nav .entry.active, .sidebar-nav .concept.active { background: #1b3a3f; color: var(--accent); }
+  .sidebar-nav .entry .count { color: var(--muted); font-size: 11px; }
+  .sidebar-nav .concept { color: var(--purple); }
+  .sidebar-nav .concept .status-tag { font-size: 10px; padding: 1px 6px; border-radius: 8px;
+    background: #2b2410; color: var(--yellow); margin-left: 4px; }
+
+  /* ── Main ── */
+  main { flex:1; display: flex; flex-direction: column; overflow: hidden; }
+
+  /* Query bar */
+  .query-bar {
+    padding: 16px 24px; border-bottom: 1px solid var(--border);
+    background: var(--surface); display: flex; gap: 8px; align-items: center;
+  }
+  .query-bar input {
+    flex:1; padding: 10px 16px; background: var(--bg);
+    border: 1px solid var(--border); border-radius: var(--radius);
+    color: var(--text); font-size: 14px;
+  }
+  .query-bar input:focus { outline: none; border-color: var(--accent); }
+  .query-bar input::placeholder { color: var(--muted); }
+  .mode-group {
+    display: flex; border-radius: 6px; overflow: hidden; border: 1px solid var(--border);
+  }
+  .mode-group button {
+    padding: 8px 12px; border: none; background: var(--bg); color: var(--muted);
+    cursor: pointer; font-size: 12px; border-right: 1px solid var(--border);
+  }
+  .mode-group button:last-child { border-right: none; }
+  .mode-group button.active { background: #1b3a3f; color: var(--accent); }
+  .btn {
+    padding: 8px 16px; border-radius: 6px; border: 1px solid var(--border);
+    background: var(--surface); color: var(--text); cursor: pointer; font-size: 13px;
+    white-space: nowrap;
+  }
+  .btn:hover { background: var(--border); }
+  .btn.primary { background: #1f6feb; border-color: #1f6feb; color: #fff; }
+  .btn.primary:hover { background: #388bfd; }
+
+  /* Content area */
+  .content { flex:1; overflow-y: auto; padding: 24px; }
+
+  /* Wiki render */
+  .wiki-render { max-width: 780px; line-height: 1.8; font-size: 15px; }
+  .wiki-render h1 { font-size: 22px; margin-bottom: 8px; border-bottom: 1px solid var(--border); padding-bottom: 8px; }
+  .wiki-render h2 { font-size: 17px; margin: 24px 0 8px; }
+  .wiki-render h3 { font-size: 15px; margin: 16px 0 6px; }
+  .wiki-render p { margin-bottom: 12px; }
+  .wiki-render table { border-collapse: collapse; width: 100%; margin: 12px 0; }
+  .wiki-render th, .wiki-render td { border: 1px solid var(--border); padding: 8px 12px; font-size: 13px; text-align: left; }
+  .wiki-render th { background: var(--surface); }
+  .wiki-render .wikilink { color: var(--purple); cursor: pointer; text-decoration: none; }
+  .wiki-render .wikilink:hover { text-decoration: underline; }
+  .wiki-render .wikilink.broken { color: var(--red); }
+  .wiki-render .frontmatter-block {
+    background: var(--surface); border: 1px solid var(--border); border-radius: 6px;
+    padding: 12px 16px; margin-bottom: 16px; font-size: 13px;
+  }
+  .wiki-render .frontmatter-block .kv { display: flex; gap: 8px; }
+  .wiki-render .frontmatter-block .key { color: var(--muted); min-width: 70px; }
+  .wiki-render .frontmatter-block .val { color: var(--text); }
+  .wiki-render .frontmatter-block .tag {
+    display: inline-block; padding: 1px 8px; border-radius: 10px;
+    background: #1b3a1b; color: var(--green); font-size: 11px; margin: 0 2px 2px 0;
+  }
+  .wiki-render .blockquote {
+    border-left: 3px solid var(--accent); padding: 8px 16px; margin: 12px 0;
+    background: var(--surface); border-radius: 0 6px 6px 0; font-size: 14px;
+  }
+  .wiki-render .draft-badge {
+    display: inline-block; padding: 2px 10px; border-radius: 10px;
+    background: #2b2410; color: var(--yellow); font-size: 12px; margin-bottom: 12px;
+  }
+
+  /* Query results */
+  .query-results { max-width: 780px; }
+  .query-results .result-item {
+    background: var(--surface); border: 1px solid var(--border); border-radius: var(--radius);
+    padding: 16px; margin-bottom: 12px;
+  }
+  .query-results .result-item .source {
+    font-size: 12px; margin-top: 8px; color: var(--muted);
+  }
+  .query-results .result-item .source a {
+    color: var(--purple); cursor: pointer; text-decoration: none;
+  }
+  .query-results .result-item .source a:hover { text-decoration: underline; }
+  .query-results .result-item .ai-label {
+    display: inline-block; padding: 2px 8px; border-radius: 8px;
+    background: #1b3a3f; color: var(--accent); font-size: 11px; margin-bottom: 8px;
+  }
+
+  /* Welcome / empty state */
+  .welcome { text-align: center; padding: 60px 20px; color: var(--muted); }
+  .welcome .big-icon { font-size: 48px; margin-bottom: 16px; }
+  .welcome h2 { color: var(--text); margin-bottom: 8px; }
+  .welcome p { font-size: 14px; }
+
+  /* Bookmark import placeholder */
+  .placeholder-card {
+    background: var(--surface); border: 1px dashed var(--border); border-radius: var(--radius);
+    padding: 20px; text-align: center; color: var(--muted); margin-bottom: 16px;
+  }
+  .placeholder-card .icon { font-size: 24px; margin-bottom: 8px; }
+  .placeholder-card p { font-size: 13px; }
+
+  @media (max-width: 768px) {
+    body { flex-direction: column; }
+    aside { width: 100%; min-width: 0; max-height: 40vh; }
+  }
+</style>
+</head>
+<body>
+
+<!-- ═══════════════ SIDEBAR ═══════════════ -->
+<aside>
+  <div class="sidebar-header">
+    <h1>🧠 LLM Wiki</h1>
+    <div class="project">test-user / test-project</div>
+  </div>
+  <div class="sidebar-nav" id="sidebar">
+    <!-- Compiled sources -->
+    <div class="section">
+      <div class="section-title">📚 Compiled Sources <span style="color:var(--green)">(3)</span></div>
+      <a class="entry active" data-src="sources/PwC Agent Harness Reshapes Retrieval" onclick="showWiki(event, 'agent-harness')">PwC Agent Harness Reshapes Retrieval</a>
+      <a class="entry" data-src="sources/SQLite Durable Workflows" onclick="showWiki(event, 'sqlite-dw')">SQLite Durable Workflows</a>
+      <a class="entry" data-src="sources/LLM Wiki vs RAG" onclick="showWiki(event, 'llm-wiki')">LLM Wiki vs RAG</a>
+    </div>
+    <!-- Wiki concepts -->
+    <div class="section">
+      <div class="section-title">🏷️ Wiki Concepts <span style="color:var(--yellow)">(2 drafts)</span></div>
+      <a class="concept" data-src="concepts/Durable Workflows" onclick="showWiki(event, 'durable-wf')">
+        Durable Workflows <span class="status-tag">draft</span>
+      </a>
+      <a class="concept" data-src="concepts/End-to-end brittleness" onclick="showWiki(event, 'e2e')">
+        End-to-end brittleness <span class="status-tag">draft</span>
+      </a>
+      <div style="font-size:12px; color:var(--muted); padding:4px 8px; margin-top:4px;">
+        +8 pending (rate limited)
+      </div>
+    </div>
+    <!-- Bookmark import -->
+    <div class="section">
+      <div class="section-title">📥 Import</div>
+      <a class="entry" onclick="showImport(event)" style="color:var(--accent)">+ Import Bookmarks</a>
+    </div>
+  </div>
+</aside>
+
+<!-- ═══════════════ MAIN ═══════════════ -->
+<main>
+  <div class="query-bar">
+    <input id="query-input" type="text" placeholder="Ask your wiki..." onkeydown="if(event.key==='Enter')doQuery()">
+    <div class="mode-group" id="mode-group">
+      <button class="active" onclick="setMode(event,'wiki')">wiki only</button>
+      <button onclick="setMode(event,'full')">wiki + LLM</button>
+    </div>
+    <button class="btn primary" onclick="doQuery()">Ask</button>
+  </div>
+
+  <div class="content" id="main-content">
+    <!-- Default: welcome -->
+    <div class="welcome" id="welcome-view">
+      <div class="big-icon">🧠</div>
+      <h2>LLM Wiki Cloud</h2>
+      <p>Select a compiled source from the sidebar, or ask a question above.</p>
+      <p style="margin-top: 8px;">3 sources compiled · 2 concept drafts · ingest-time compile, not RAG</p>
+    </div>
+
+    <!-- Wiki content view -->
+    <div id="wiki-view" style="display:none;" class="wiki-render"></div>
+
+    <!-- Query results view -->
+    <div id="query-view" style="display:none;" class="query-results"></div>
+
+    <!-- Import view -->
+    <div id="import-view" style="display:none;">
+      <h2 style="margin-bottom:16px;">📥 Import Bookmarks</h2>
+      <div class="placeholder-card">
+        <div class="icon">🔖</div>
+        <p><strong>Bookmark import — POC placeholder</strong></p>
+        <p style="margin-top:4px;">Paste URLs (one per line) to import as raw sources for LLM Wiki compilation.</p>
+        <p style="margin-top:8px; color:var(--yellow);">Coming in Phase 2</p>
+      </div>
+      <div style="background:var(--surface);border:1px solid var(--border);border-radius:var(--radius);padding:16px;">
+        <textarea style="width:100%;height:120px;background:var(--bg);border:1px solid var(--border);
+          border-radius:6px;color:var(--muted);font-size:13px;padding:10px;resize:vertical;"
+          placeholder="https://example.com/article-1&#10;https://example.com/article-2&#10;..." disabled></textarea>
+        <button class="btn primary" style="margin-top:8px;opacity:0.5;cursor:not-allowed;" disabled>Import & Compile</button>
+        <span style="font-size:12px;color:var(--muted);margin-left:12px;">Available in Phase 2</span>
+      </div>
+    </div>
+  </div>
+</main>
+
+<script>
+// ═══ State ═══
+let queryMode = 'wiki';
+let currentView = null;
+
+// ═══ Mock Wiki Content ═══
+const wikiPages = {
+  'agent-harness': {
+    title: 'PwC Agent Harness Reshapes Retrieval',
+    quality: 'high', status: 'published',
+    source: 'raw/2026-05-26-pwc-agent-harness.md',
+    source_url: 'https://arxiv.org/abs/2605.15184',
+    concepts: ['Literal witnesses', 'Retrieval-plus-orchestration', 'End-to-end brittleness', 'Inline vs Programmatic delivery'],
+    body: `
+<p>PwC 於 2026 年 5 月發表論文，比較了 grep 與 vector retrieval 在 LongMemEval 上的表現，並搭配四種 Agent Harness。研究發現：</p>
+
+<blockquote class="blockquote">
+grep 在處理依賴字面證據（literal evidence）的任務上全面優於 vector RAG，且 Agent Harness 的設計差異對最終效能的影響甚至超過檢索方法本身。
+</blockquote>
+
+<h2>核心發現</h2>
+<p>論文點出，<a class="wikilink" onclick="showWiki(event,'e2e')">[[End-to-end brittleness]]</a> 是程式化交付（programmatic delivery）的主要風險：inline grep 搭配 Codex + GPT-5.4 準確率高達 <strong>93.1%</strong>，但 programmatic delivery（將檢索結果寫入檔案讓模型自行讀取）驟降至 <strong>55.2%</strong>，跌幅 37.9 個百分點。</p>
+
+<h2>關鍵概念</h2>
+<p>研究引入 <a class="wikilink" onclick="showWiki(event,'retrieval-orch')">[[Retrieval-plus-orchestration]]</a> 框架 — 在 LLM agent 時代，評估檢索系統時必須將 Agent Harness 視為一級變因（first-class variable）。<a class="wikilink broken" onclick="alert('Not yet compiled')">[[Literal witnesses]]</a> 和 <a class="wikilink broken" onclick="alert('Not yet compiled')">[[Inline vs Programmatic delivery]]</a> 的 concept 頁面尚未生成。</p>
+
+<h2>對 Hermes 的啟發</h2>
+<p>tool result delivery 方式和 prompt structure 對最終效能的影響，可能遠大於更換底層 LLM。這直接驗證了 <a class="wikilink" onclick="showWiki(event,'e2e')">[[End-to-end brittleness]]</a> 在 agent harness 設計中的關鍵性。</p>
+`,
+  },
+
+  'sqlite-dw': {
+    title: 'SQLite Durable Workflows',
+    quality: 'high', status: 'published',
+    source: 'raw/2026-05-29-sqlite-durable-workflows.md',
+    source_url: 'https://blog.stackademic.com/...',
+    concepts: ['Durable Workflows', 'SQLite', 'Postgres', 'Operation Log'],
+    body: `
+<p>持久化工作流的核心在於 <strong>工作流狀態的持久化</strong>，而非計算本身。執行工作流的 Worker 可以隨時重啟、重放或重試，因為工作流進度（記錄在 operation log）是持久存儲的。</p>
+
+<h2>SQLite 作為 Durable Backend</h2>
+<p><a class="wikilink" onclick="showWiki(event,'durable-wf')">[[Durable Workflows]]</a> 概念中，SQLite 因其以下特性成為有力選擇：</p>
+<ul style="margin:8px 0;padding-left:24px;">
+<li><strong>事務性持久狀態</strong> — SQLite 提供本地、事務性的持久化存儲，確保資料一致性</li>
+<li><strong>零額外基礎設施</strong> — 與 <a class="wikilink broken" onclick="alert('Not yet compiled')">[[Postgres]]</a> 不同，SQLite 資料庫是一個檔案，無需網路跳轉</li>
+<li><strong>Per-agent 隔離</strong> — 每個 agent 分配獨立 SQLite 檔案，故障影響範圍極小</li>
+<li><strong>Litestream 備份</strong> — 可異步流式傳輸到 S3 等雲存儲</li>
+</ul>
+
+<h2>SQLite vs Postgres</h2>
+<table>
+<tr><th>特性</th><th>SQLite</th><th>Postgres</th></tr>
+<tr><td>基礎設施</td><td>零額外，本地檔案</td><td>需獨立 DB server</td></tr>
+<tr><td>隔離性</td><td>Per-agent，故障範圍小</td><td>共享，需管理連線</td></tr>
+<tr><td>延遲</td><td>本地磁盤，超低</td><td>網路跳轉</td></tr>
+<tr><td>備份</td><td>Litestream → S3</td><td>原生 replication</td></tr>
+</table>
+
+<p style="margin-top:12px;">對於爆發性（bursty）、實驗性的 AI agent workloads，SQLite 提供了一個簡單、高效、低成本的替代方案。對於需要高可用和共享擴展的場景，<a class="wikilink broken" onclick="alert('Not yet compiled')">[[Postgres]]</a> 仍是優選。</p>
+`,
+  },
+
+  'llm-wiki': {
+    title: 'LLM Wiki vs RAG',
+    quality: 'high', status: 'published',
+    source: 'raw/2026-06-01-llm-wiki-vs-rag.md',
+    source_url: '',
+    concepts: ['LLM Wiki', 'RAG', 'Ingest-time compile'],
+    body: `
+<p>比較兩種知識管理範式：RAG（query-time retrieval）vs LLM Wiki（ingest-time compile）。</p>
+
+<h2>RAG 的問題</h2>
+<ul style="margin:8px 0;padding-left:24px;">
+<li>Query time 做 chunking + embedding + retrieval — 高延遲、高成本</li>
+<li>Chunking 破壞文件結構和上下文連續性</li>
+<li>Retrieval 精準度直接決定回答品質，但 retrieval 本身就是 hard problem</li>
+<li>Embedding model 和 retrieval strategy 需要持續調優</li>
+</ul>
+
+<h2>LLM Wiki 的做法</h2>
+<ul style="margin:8px 0;padding-left:24px;">
+<li><strong>Ingest-time compile</strong> — 素材進入系統時就被 LLM 理解、重組、交錯參照</li>
+<li><strong>Query time 整篇塞 context</strong> — 不需要 chunking/embedding/retrieval pipeline</li>
+<li><strong>Wiki 就是 source of truth</strong> — 可讀、可編輯、可瀏覽、可版本控制</li>
+<li><strong>Concept linking</strong> — 文章間的 internal links 提供結構化脈絡</li>
+</ul>
+
+<h2>核心差異</h2>
+<table>
+<tr><th></th><th>RAG</th><th>LLM Wiki</th></tr>
+<tr><td>Compile 時機</td><td>Query time</td><td>Ingest time</td></tr>
+<tr><td>Storage</td><td>Vector DB + raw</td><td>Markdown files</td></tr>
+<tr><td>Query 延遲</td><td>高（retrieval + rerank + LLM）</td><td>低（FTS + LLM）</td></tr>
+<tr><td>可解釋性</td><td>低（chunk matching）</td><td>高（整篇文章 + 來源連結）</td></tr>
+<tr><td>維護成本</td><td>Embedding model + retrieval tuning</td><td>LLM compile cost only</td></tr>
+</table>
+`,
+  },
+
+  'durable-wf': {
+    title: 'Durable Workflows',
+    quality: null, status: 'draft',
+    confidence: '0.5',
+    concepts: ['SQLite', 'Postgres', 'Operation Log', 'SQLite Durable Workflows'],
+    body: `
+<div class="draft-badge">⚠️ Draft — not yet reviewed</div>
+
+<p>持久化工作流（Durable Workflows）旨在確保即使在計算節點故障或重啟的情況下，工作流的進度也能得到保存和恢復。傳統上依賴 <a class="wikilink broken" onclick="alert('Not yet compiled')">[[Postgres]]</a> 等分佈式數據庫，但 <a class="wikilink broken" onclick="alert('Not yet compiled')">[[SQLite]]</a> 可能已足夠滿足許多場景的需求。</p>
+
+<h2>核心邏輯</h2>
+<p>持久化工作流的關鍵在於 <strong>工作流狀態</strong>的持久化，而非計算本身。Worker 可隨時重啟、重放或重試，因為工作流進度（記錄在 <a class="wikilink broken" onclick="alert('Not yet compiled')">[[Operation Log]]</a>）是持久存儲的。</p>
+
+<h2>SQLite 的優勢</h2>
+<ul style="margin:8px 0;padding-left:24px;">
+<li>事務性持久狀態 — 本地、事務性的持久化</li>
+<li>零額外基礎設施 — 無需獨立 DB server</li>
+<li>Per-agent 隔離 — 每個 agent 獨立 SQLite 檔案</li>
+<li>Litestream — 異步流式備份至 S3</li>
+</ul>
+
+<p style="margin-top:12px; padding:10px; background:var(--surface); border-radius:6px; font-size:14px;">
+📎 See also: <a class="wikilink" onclick="showWiki(event,'sqlite-dw')">[[SQLite Durable Workflows]]</a>
+</p>
+`,
+  },
+
+  'e2e': {
+    title: 'End-to-end brittleness',
+    quality: null, status: 'draft',
+    confidence: '0.75',
+    concepts: ['Agent Harness', 'Programmatic delivery', 'Inline grep', 'Retrieval-plus-orchestration'],
+    body: `
+<div class="draft-badge">⚠️ Draft — not yet reviewed</div>
+
+<h2>定義</h2>
+<p>端到端脆弱性（End-to-end brittleness）：單個組件在獨立測試時表現出色，但整合到整個系統後效能顯著下降甚至崩潰。</p>
+
+<h2>案例：PwC Agent Harness 論文</h2>
+<p>PwC 2026 年研究發現，<a class="wikilink broken" onclick="alert('Not yet compiled')">[[Inline vs Programmatic delivery]]</a> 是導致 E2E brittleness 的典型陷阱：</p>
+<ul style="margin:8px 0;padding-left:24px;">
+<li>Inline grep（檢索結果直接插入對話）→ <strong>93.1%</strong> accuracy</li>
+<li>Programmatic delivery（寫入檔案讓模型自行讀取）→ <strong>55.2%</strong> accuracy</li>
+<li>跌幅：<strong style="color:var(--red)">37.9 個百分點</strong></li>
+</ul>
+
+<h2>對 Agent Harness 設計的啟發</h2>
+<p>這證明了 <a class="wikilink broken" onclick="alert('Not yet compiled')">[[Retrieval-plus-orchestration]]</a> 框架的正確性：組件的獨立效能不再是唯一指標，其在整個系統上下文中的表現才是決定性的。對 Hermes 而言，tool result delivery 方式和 prompt structure 的設計比單純更換 LLM 更重要。</p>
+
+<p style="margin-top:12px; padding:10px; background:var(--surface); border-radius:6px; font-size:14px;">
+📎 See also: <a class="wikilink" onclick="showWiki(event,'agent-harness')">[[PwC Agent Harness Reshapes Retrieval]]</a>
+</p>
+`,
+  },
+};
+
+// Missing concept stubs for query results
+const missingConcepts = ['Literal witnesses', 'Retrieval-plus-orchestration', 'Inline vs Programmatic delivery',
+  'SQLite', 'Postgres', 'Operation Log', 'Retrieval-Augmented Generation', 'LLM Wiki', 'RAG'];
+
+// ═══ Query Engine ═══
+const queryIndex = {
+  'durable workflow': ['sqlite-dw', 'durable-wf'],
+  'sqlite': ['sqlite-dw', 'durable-wf'],
+  'postgres': ['sqlite-dw', 'durable-wf'],
+  'end to end': ['e2e', 'agent-harness'],
+  'brittle': ['e2e'],
+  'agent harness': ['agent-harness', 'e2e'],
+  'pwc': ['agent-harness'],
+  'grep': ['agent-harness', 'e2e'],
+  'retrieval': ['agent-harness', 'llm-wiki'],
+  'rag': ['llm-wiki'],
+  'llm wiki': ['llm-wiki'],
+  'compile': ['llm-wiki'],
+  'ingest': ['llm-wiki'],
+  'programmatic delivery': ['e2e', 'agent-harness'],
+  'inline': ['e2e', 'agent-harness'],
+  'literal': ['agent-harness'],
+};
+
+function searchWiki(query) {
+  const q = query.toLowerCase().trim();
+  const matches = new Set();
+  for (const [keyword, pages] of Object.entries(queryIndex)) {
+    if (q.includes(keyword)) pages.forEach(p => matches.add(p));
+  }
+  if (matches.size === 0) {
+    // fuzzy: check titles
+    for (const [id, page] of Object.entries(wikiPages)) {
+      if (page.title.toLowerCase().includes(q)) matches.add(id);
+      if (page.body.toLowerCase().includes(q)) matches.add(id);
+    }
+  }
+  return [...matches];
+}
+
+function doQuery() {
+  const input = document.getElementById('query-input');
+  const query = input.value.trim();
+  if (!query) return;
+
+  const results = searchWiki(query);
+  const container = document.getElementById('query-view');
+  const wikiView = document.getElementById('wiki-view');
+  const welcomeView = document.getElementById('welcome-view');
+  const importView = document.getElementById('import-view');
+
+  wikiView.style.display = 'none';
+  welcomeView.style.display = 'none';
+  importView.style.display = 'none';
+  container.style.display = 'block';
+
+  if (results.length === 0) {
+    container.innerHTML = `
+      <div style="text-align:center;padding:40px;color:var(--muted);">
+        <p>No wiki matches for "<strong>${escapeHtml(query)}</strong>"${queryMode === 'full' ? ' — but LLM can still answer' : ''}.</p>
+        ${queryMode === 'full' ? `
+          <div class="result-item" style="margin-top:16px;text-align:left;">
+            <div class="ai-label">🤖 LLM Answer (wiki + external knowledge)</div>
+            <p>Based on general knowledge, "${escapeHtml(query)}" relates to...</p>
+            <p style="color:var(--muted);margin-top:8px;">⚠️ No wiki sources found for citation.</p>
+          </div>
+        ` : ''}
+      </div>`;
+    return;
+  }
+
+  let html = `<h2 style="margin-bottom:16px;">Results for "${escapeHtml(query)}" <span style="font-size:13px;color:var(--muted);">(${queryMode} mode · ${results.length} matches)</span></h2>`;
+
+  if (queryMode === 'full') {
+    html += `
+      <div class="result-item">
+        <div class="ai-label">🤖 Synthesized Answer</div>
+        <p>Based on your wiki knowledge, here's what I found about "<strong>${escapeHtml(query)}</strong>"...</p>
+        <p style="margin-top:8px;">${getAiAnswer(query, results)}</p>
+      </div>`;
+  }
+
+  for (const id of results) {
+    const page = wikiPages[id];
+    html += `
+      <div class="result-item">
+        <strong onclick="showWiki(event,'${id}')" style="cursor:pointer;color:var(--accent);">${page.title}</strong>
+        ${page.status === 'draft' ? '<span style="font-size:11px;color:var(--yellow);margin-left:6px;">draft</span>' : ''}
+        <p style="margin-top:6px;font-size:14px;">${getSnippet(page.body, query)}</p>
+        <div class="source">
+          📎 Wiki source: <a onclick="showWiki(event,'${id}')">[[${page.title}]]</a>
+          ${page.source_url ? ` · <a href="${page.source_url}" target="_blank" style="color:var(--accent);">original source ↗</a>` : ''}
+        </div>
+      </div>`;
+  }
+
+  container.innerHTML = html;
+}
+
+function getSnippet(body, query) {
+  const words = query.toLowerCase().split(/\s+/);
+  const text = body.replace(/<[^>]+>/g, '');
+  let best = text.substring(0, 200);
+  for (const w of words) {
+    const idx = text.toLowerCase().indexOf(w);
+    if (idx > 30) {
+      const start = Math.max(0, idx - 40);
+      best = (start > 0 ? '...' : '') + text.substring(start, start + 200) + '...';
+      break;
+    }
+  }
+  return best;
+}
+
+function getAiAnswer(query, resultIds) {
+  const titles = resultIds.map(id => wikiPages[id].title).join(', ');
+  return `Based on your compiled wiki sources (${titles}), the key insight is that LLM Wiki separates compile from query time — raw materials are understood and restructured by LLM at ingest, so query time only needs full-text search + whole-article context injection, without chunking or embedding pipelines.`;
+}
+
+// ═══ Wiki Render ═══
+function showWiki(event, pageId) {
+  if (event) event.preventDefault();
+  const page = wikiPages[pageId];
+  if (!page) return;
+
+  // Update sidebar active
+  document.querySelectorAll('.entry, .concept').forEach(e => e.classList.remove('active'));
+  const sidebarLink = document.querySelector(`[onclick*="'${pageId}'"]`);
+  if (sidebarLink) sidebarLink.classList.add('active');
+
+  const container = document.getElementById('wiki-view');
+  const queryView = document.getElementById('query-view');
+  const welcomeView = document.getElementById('welcome-view');
+  const importView = document.getElementById('import-view');
+  queryView.style.display = 'none';
+  welcomeView.style.display = 'none';
+  importView.style.display = 'none';
+  container.style.display = 'block';
+
+  let fm = '';
+  if (page.status === 'published') {
+    fm = `
+      <div class="kv"><span class="key">Quality</span><span class="val" style="color:var(--green)">● ${page.quality}</span></div>
+      <div class="kv"><span class="key">Status</span><span class="val" style="color:var(--green)">published</span></div>
+      <div class="kv"><span class="key">Source</span><span class="val">${page.source}${page.source_url ? ` · <a href="${page.source_url}" target="_blank" style="color:var(--accent);">view original ↗</a>` : ''}</span></div>`;
+  } else {
+    fm = `
+      <div class="kv"><span class="key">Status</span><span class="val" style="color:var(--yellow)">⚠️ draft</span></div>
+      <div class="kv"><span class="key">Confidence</span><span class="val">${page.confidence}</span></div>`;
+  }
+  if (page.concepts && page.concepts.length) {
+    fm += `<div class="kv"><span class="key">Concepts</span><span class="val">${page.concepts.map(c => {
+      const exists = !!wikiPages[Object.keys(wikiPages).find(k => wikiPages[k].title === c)];
+      return exists
+        ? `<span class="tag" style="cursor:pointer;background:#1b1a3a;color:var(--purple);" onclick="showWiki(event,'${Object.keys(wikiPages).find(k=>wikiPages[k].title===c)}')">${c}</span>`
+        : `<span class="tag" style="opacity:0.5;">${c} (pending)</span>`;
+    }).join(' ')}</span></div>`;
+  }
+
+  container.innerHTML = `
+    <div class="frontmatter-block">${fm}</div>
+    <h1>${page.title}</h1>
+    ${page.body}
+  `;
+
+  document.getElementById('main-content').scrollTop = 0;
+}
+
+// ═══ Import View ═══
+function showImport(event) {
+  if (event) event.preventDefault();
+  document.getElementById('wiki-view').style.display = 'none';
+  document.getElementById('query-view').style.display = 'none';
+  document.getElementById('welcome-view').style.display = 'none';
+  document.getElementById('import-view').style.display = 'block';
+}
+
+// ═══ Helpers ═══
+function setMode(event, mode) {
+  queryMode = mode;
+  document.querySelectorAll('#mode-group button').forEach(b => b.classList.remove('active'));
+  event.target.classList.add('active');
+}
+
+function escapeHtml(s) {
+  const d = document.createElement('div');
+  d.textContent = s;
+  return d.innerHTML;
+}
+</script>
+</body>
+</html>
