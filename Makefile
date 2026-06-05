@@ -5,7 +5,7 @@ JOB      := olw-worker
 WDOG_JOB := lock-watchdog
 BUCKET   := llm-wiki-data
 USER_ID  := test-user
-PROJ_ID  := test-project
+PROJ_ID  := demo
 
 .PHONY: build deploy watchdog-deploy run logs status clean all
 

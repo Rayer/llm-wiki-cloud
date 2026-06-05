@@ -60,7 +60,7 @@ Default project settings in the Makefile:
 - Worker job: `olw-worker`
 - Watchdog job: `lock-watchdog`
 - Bucket: `llm-wiki-data`
-- Default test user/project: `test-user` / `test-project`
+- Default test user/project: `test-user` / `demo`
 
 ## Frontend Mockup
 
