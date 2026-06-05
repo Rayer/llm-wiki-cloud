@@ -1,6 +1,28 @@
 import Link from 'next/link';
 import type { WikiEntry } from '@/lib/api';
 
+function StatusBadge({ status }: { status?: string }) {
+  if (status === 'published') {
+    return (
+      <span className="inline-flex items-center gap-1 rounded bg-emerald-500/15 px-2 py-1 text-xs font-medium text-emerald-300 ring-1 ring-emerald-400/20">
+        <span aria-hidden="true">✓</span>
+        Published
+      </span>
+    );
+  }
+
+  if (status === 'draft') {
+    return (
+      <span className="inline-flex items-center gap-1 rounded bg-amber-500/15 px-2 py-1 text-xs font-medium text-amber-300 ring-1 ring-amber-400/20">
+        <span aria-hidden="true">✎</span>
+        Draft
+      </span>
+    );
+  }
+
+  return null;
+}
+
 export function EntryCard({ entry, href }: { entry: WikiEntry; href: string }) {
   return (
     <Link
@@ -9,6 +31,7 @@ export function EntryCard({ entry, href }: { entry: WikiEntry; href: string }) {
     >
       <div className="flex flex-wrap items-center gap-3">
         <h2 className="text-lg font-semibold text-white">{entry.title}</h2>
+        <StatusBadge status={entry.status} />
         {entry.date ? (
           <span className="rounded bg-white/10 px-2 py-1 text-xs text-zinc-300">
             {entry.date}

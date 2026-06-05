@@ -9,6 +9,7 @@ export type ApiStatus = {
 export type WikiEntry = {
   slug: string;
   title: string;
+  status?: string;
   description?: string;
   date?: string;
   frontmatter?: Record<string, unknown>;
@@ -96,6 +97,8 @@ export function normalizeEntry(item: unknown): WikiEntry {
   return {
     slug,
     title,
+    status: firstString(record, ['status']) ??
+      firstString(frontmatter ?? {}, ['status']),
     description: firstString(record, ['description', 'summary', 'excerpt']) ??
       firstString(frontmatter ?? {}, ['description', 'summary']),
     date: firstString(record, ['date', 'createdAt', 'updatedAt']) ??
