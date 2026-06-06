@@ -2,7 +2,7 @@
 """
 OLW Cloud Run Worker — Firestore lock → GCS sync → OLW pipeline → GCS sync.
 
-Uses Gemini API via Google's OpenAI-compatible endpoint.
+Uses an OpenAI-compatible LLM provider endpoint.
 API key is read from GCP Secret Manager at runtime.
 Lock is managed via Firestore (native mode, free tier).
 """
@@ -132,9 +132,35 @@ def release_lock(token: str):
 
 # ── OLW Pipeline ─────────────────────────────────────────────────────
 
-GEMINI_URL = "https://generativelanguage.googleapis.com/v1beta/openai"
-FAST_MODEL = "gemini-2.5-flash"
-HEAVY_MODEL = "gemini-2.5-flash"
+LLM_PROVIDER = os.environ.get("LLM_PROVIDER", "deepseek").lower()
+
+PROVIDERS = {
+    "deepseek": {
+        "secret": "deepseek-apikey",
+        "url": "https://api.deepseek.com/v1",
+        "fast_model": "deepseek-chat",
+        "heavy_model": "deepseek-reasoner",
+    },
+    "gemini": {
+        "secret": "gemini-api-key",
+        "url": "https://generativelanguage.googleapis.com/v1beta/openai",
+        "fast_model": "gemini-2.5-flash",
+        "heavy_model": "gemini-2.5-flash",
+    },
+}
+
+if LLM_PROVIDER not in PROVIDERS:
+    print(
+        f"ERROR: Unsupported LLM_PROVIDER={LLM_PROVIDER!r}. "
+        f"Supported providers: {', '.join(sorted(PROVIDERS))}",
+        file=sys.stderr,
+    )
+    sys.exit(1)
+
+PROVIDER_CONFIG = PROVIDERS[LLM_PROVIDER]
+PROVIDER_URL = PROVIDER_CONFIG["url"]
+FAST_MODEL = PROVIDER_CONFIG["fast_model"]
+HEAVY_MODEL = PROVIDER_CONFIG["heavy_model"]
 
 WIKI_TOML = f"""[models]
 fast = "{FAST_MODEL}"
@@ -142,7 +168,7 @@ heavy = "{HEAVY_MODEL}"
 
 [provider]
 name = "custom"
-url = "{GEMINI_URL}"
+url = "{PROVIDER_URL}"
 timeout = 120
 fast_ctx = 8192
 heavy_ctx = 32768
@@ -165,13 +191,15 @@ graph_quality_checks = true
 
 def patch_olw_healthcheck():
     """Monkey-patch OLW's healthcheck — Gemini /models returns 404."""
+    if LLM_PROVIDER != "gemini":
+        return
     import obsidian_llm_wiki.openai_compat_client as occ
     occ.OpenAICompatClient.healthcheck = lambda self: True
     occ.OpenAICompatClient.require_healthy = lambda self: None
-    print("Health check patched.")
+    print(f"Health check patched for {LLM_PROVIDER}.")
 
 
-def setup_olw_config(gemini_key: str):
+def setup_olw_config(api_key: str, provider_url: str):
     """Write OLW global + vault config files."""
     # Global config
     global_config = Path.home() / ".config" / "olw"
@@ -181,8 +209,8 @@ def setup_olw_config(gemini_key: str):
         f'fast_model = "{FAST_MODEL}"\n'
         f'heavy_model = "{HEAVY_MODEL}"\n'
         f'provider_name = "custom"\n'
-        f'provider_url = "{GEMINI_URL}"\n'
-        f'api_key = "{gemini_key}"\n'
+        f'provider_url = "{provider_url}"\n'
+        f'api_key = "{api_key}"\n'
     )
 
     # Vault directories
@@ -195,7 +223,16 @@ def setup_olw_config(gemini_key: str):
         wiki_toml.write_text(WIKI_TOML)
         print("wiki.toml created (fresh run).")
     else:
-        print("wiki.toml exists (restored from GCS).")
+        current_wiki_toml = wiki_toml.read_text()
+        if (
+            f'fast = "{FAST_MODEL}"' not in current_wiki_toml
+            or f'heavy = "{HEAVY_MODEL}"' not in current_wiki_toml
+            or f'url = "{provider_url}"' not in current_wiki_toml
+        ):
+            wiki_toml.write_text(WIKI_TOML)
+            print(f"wiki.toml updated for {LLM_PROVIDER}.")
+        else:
+            print("wiki.toml exists (restored from GCS).")
 
 
 def run_olw():
@@ -231,6 +268,7 @@ def main():
     print(f"User:    {USER_ID}")
     print(f"Project: {PROJECT_ID}")
     print(f"Bucket:  {BUCKET}")
+    print(f"LLM provider: {LLM_PROVIDER}")
 
     # 1. Acquire lock
     lock_token = acquire_lock()
@@ -266,17 +304,18 @@ def main():
         raw_files = list((DATA_DIR / "raw").glob("*.md"))
         print(f"Raw files: {len(raw_files)}")
 
-        # 3. Read Gemini key from Secret Manager
-        print("Reading Gemini API key from Secret Manager...")
-        gemini_key = read_secret("gemini-api-key")
-        print(f"Gemini API key: {'acquired' if gemini_key else 'MISSING'}")
+        # 3. Read provider key from Secret Manager
+        secret_name = PROVIDER_CONFIG["secret"]
+        print(f"Reading {LLM_PROVIDER} API key from Secret Manager ({secret_name})...")
+        api_key = read_secret(secret_name)
+        print(f"{LLM_PROVIDER} API key: {'acquired' if api_key else 'MISSING'}")
 
         # 4. Setup OLW
-        setup_olw_config(gemini_key)
+        setup_olw_config(api_key, PROVIDER_URL)
         patch_olw_healthcheck()
 
-        print(f"Provider: custom ({GEMINI_URL})")
-        print(f"Gemini key: {'set' if gemini_key else 'MISSING'}")
+        print(f"Provider: custom/{LLM_PROVIDER} ({PROVIDER_URL})")
+        print(f"{LLM_PROVIDER} key: {'set' if api_key else 'MISSING'}")
 
         # 5. Run OLW
         print("Running OLW pipeline...")
