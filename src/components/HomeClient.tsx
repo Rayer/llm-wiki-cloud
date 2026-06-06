@@ -169,7 +169,7 @@ function renderCitations(text: string, citations: Citation[]): ReactNode[] {
     return (
       <Link
         key={`${citation.type}-${citation.slug}-${index}`}
-        href={`/${collection}/${citation.slug}`}
+        href={citation.path || `/${collection}/${citation.slug}`}
         className="font-medium text-emerald-300 underline decoration-emerald-300/60 underline-offset-4 hover:text-emerald-200"
       >
         {match[1]}

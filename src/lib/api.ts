@@ -27,6 +27,7 @@ export type Citation = {
   text: string;
   slug: string;
   type: 'concept' | 'source';
+  path?: string;
 };
 
 export type SearchResponse = {
@@ -148,6 +149,7 @@ export function normalizeCitation(item: unknown): Citation | null {
     text,
     slug,
     type: normalizedType,
+    path: firstString(record, ['path', 'href', 'url']),
   };
 }
 
