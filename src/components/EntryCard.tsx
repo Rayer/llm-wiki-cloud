@@ -43,7 +43,6 @@ export function EntryCard({ entry, href }: { entry: WikiEntry; href: string }) {
           {entry.description}
         </p>
       ) : null}
-      <div className="mt-4 text-xs font-medium text-emerald-300">{entry.slug}</div>
     </Link>
   );
 }
