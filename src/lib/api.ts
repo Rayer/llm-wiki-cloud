@@ -38,7 +38,7 @@ export type SearchResponse = {
 
 const API_URL =
   process.env.NEXT_PUBLIC_API_URL ??
-  'https://llm-wiki-bff-580854833715.asia-east1.run.app';
+  'http://localhost:8080';
 
 async function requestJson<T>(path: string): Promise<T> {
   const response = await fetch(`${API_URL}${path}`);

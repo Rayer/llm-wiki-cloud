@@ -166,10 +166,13 @@ function renderCitations(text: string, citations: Citation[]): ReactNode[] {
     if (!citation) return part;
 
     const collection = citation.type === 'concept' ? 'concepts' : 'sources';
+    // Use raw slug — Next.js Link handles encoding. Pre-encoded citation.path
+    // or encodeURIComponent gets double-encoded by Next.js (% → %25), causing 404s.
+    const href = `/${collection}/${citation.slug}`;
     return (
       <Link
         key={`${citation.type}-${citation.slug}-${index}`}
-        href={citation.path || `/${collection}/${citation.slug}`}
+        href={href}
         className="font-medium text-emerald-300 underline decoration-emerald-300/60 underline-offset-4 hover:text-emerald-200"
       >
         {match[1]}
