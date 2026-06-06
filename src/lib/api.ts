@@ -23,6 +23,18 @@ export type SearchResult = WikiEntry & {
   type?: string;
 };
 
+export type Citation = {
+  text: string;
+  slug: string;
+  type: 'concept' | 'source';
+};
+
+export type SearchResponse = {
+  results: SearchResult[];
+  aiAnswer: string;
+  citations: Citation[];
+};
+
 const API_URL =
   process.env.NEXT_PUBLIC_API_URL ??
   'https://llm-wiki-bff-580854833715.asia-east1.run.app';
@@ -121,6 +133,37 @@ export function normalizeSearchResult(item: unknown): SearchResult {
   };
 }
 
+export function normalizeCitation(item: unknown): Citation | null {
+  const record = isRecord(item) ? item : {};
+  const text = firstString(record, ['text', 'title', 'name']);
+  const slug = firstString(record, ['slug', 'id', 'path']);
+  const rawType = firstString(record, ['type', 'kind', 'collection']);
+
+  if (!text || !slug) return null;
+
+  const normalizedType = rawType?.replace(/s$/, '');
+  if (normalizedType !== 'concept' && normalizedType !== 'source') return null;
+
+  return {
+    text,
+    slug,
+    type: normalizedType,
+  };
+}
+
+export function normalizeSearchResponse(payload: unknown): SearchResponse {
+  const record = isRecord(payload) ? payload : {};
+  const citationItems = Array.isArray(record.citations) ? record.citations : [];
+
+  return {
+    results: extractArray(payload).map(normalizeSearchResult),
+    aiAnswer: firstString(record, ['ai_synth', 'ai_answer', 'aiAnswer', 'answer']) ?? '',
+    citations: citationItems
+      .map(normalizeCitation)
+      .filter((citation): citation is Citation => citation !== null),
+  };
+}
+
 export function normalizeStatus(payload: unknown): ApiStatus {
   const record = isRecord(payload) ? payload : {};
   const sourcesCount =
@@ -159,7 +202,5 @@ export async function getConcept(slug: string) {
 
 export async function searchWiki(query: string, mode: 'wiki' | 'full') {
   const params = new URLSearchParams({ q: query, mode });
-  return extractArray(await requestJson<unknown>(`/api/query?${params}`)).map(
-    normalizeSearchResult,
-  );
+  return normalizeSearchResponse(await requestJson<unknown>(`/api/query?${params}`));
 }

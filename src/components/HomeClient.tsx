@@ -1,8 +1,14 @@
 'use client';
 
 import Link from 'next/link';
-import { FormEvent, useEffect, useState } from 'react';
-import { getStatus, searchWiki, type ApiStatus, type SearchResult } from '@/lib/api';
+import { FormEvent, ReactNode, useEffect, useState } from 'react';
+import {
+  getStatus,
+  searchWiki,
+  type ApiStatus,
+  type Citation,
+  type SearchResult,
+} from '@/lib/api';
 import { EmptyState, ErrorState, LoadingState } from './States';
 
 export function HomeClient() {
@@ -11,6 +17,8 @@ export function HomeClient() {
   const [status, setStatus] = useState<ApiStatus | null>(null);
   const [statusError, setStatusError] = useState('');
   const [results, setResults] = useState<SearchResult[]>([]);
+  const [aiAnswer, setAiAnswer] = useState('');
+  const [citations, setCitations] = useState<Citation[]>([]);
   const [searched, setSearched] = useState(false);
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState('');
@@ -28,13 +36,20 @@ export function HomeClient() {
 
     setLoading(true);
     setError('');
+    setAiAnswer('');
+    setCitations([]);
     setSearched(true);
 
     try {
-      setResults(await searchWiki(trimmed, mode));
+      const response = await searchWiki(trimmed, mode);
+      setResults(response.results);
+      setAiAnswer(response.aiAnswer);
+      setCitations(response.citations);
     } catch (err) {
       setError(err instanceof Error ? err.message : 'Search failed');
       setResults([]);
+      setAiAnswer('');
+      setCitations([]);
     } finally {
       setLoading(false);
     }
@@ -99,6 +114,16 @@ export function HomeClient() {
         </div>
         {loading ? <LoadingState label="Searching" /> : null}
         {error ? <ErrorState message={error} /> : null}
+        {!loading && !error && aiAnswer ? (
+          <article className="rounded-lg border border-emerald-300/20 bg-emerald-300/[0.06] p-5">
+            <h3 className="text-sm font-semibold uppercase tracking-[0.2em] text-emerald-300">
+              AI answer
+            </h3>
+            <p className="mt-3 text-base leading-7 text-zinc-200">
+              {renderCitations(aiAnswer, citations)}
+            </p>
+          </article>
+        ) : null}
         {!loading && !error && searched && results.length === 0 ? (
           <EmptyState message="No results matched that query." />
         ) : null}
@@ -108,7 +133,7 @@ export function HomeClient() {
             return (
               <Link
                 key={`${collection}-${result.slug}`}
-                href={`/${collection}/${result.slug}`}
+                href={`/${collection}/${encodeURIComponent(result.slug)}`}
                 className="rounded-lg border border-white/10 bg-[#1a1a1a] p-5 transition hover:border-emerald-300/50 hover:bg-[#202020]"
               >
                 <div className="flex items-center justify-between gap-4">
@@ -120,9 +145,6 @@ export function HomeClient() {
                 <p className="mt-3 line-clamp-4 text-sm leading-6 text-zinc-400">
                   {result.excerpt ?? result.description ?? 'Open this wiki entry.'}
                 </p>
-                <div className="mt-4 text-xs font-medium text-emerald-300">
-                  {collection}/{result.slug}
-                </div>
               </Link>
             );
           })}
@@ -130,6 +152,30 @@ export function HomeClient() {
       </section>
     </div>
   );
+}
+
+function renderCitations(text: string, citations: Citation[]): ReactNode[] {
+  const citationMap = new Map(citations.map((citation) => [citation.text, citation]));
+  const parts = text.split(/(\[[^\]]+\])/g);
+
+  return parts.map((part, index) => {
+    const match = /^\[([^\]]+)\]$/.exec(part);
+    if (!match) return part;
+
+    const citation = citationMap.get(match[1]);
+    if (!citation) return part;
+
+    const collection = citation.type === 'concept' ? 'concepts' : 'sources';
+    return (
+      <Link
+        key={`${citation.type}-${citation.slug}-${index}`}
+        href={`/${collection}/${encodeURIComponent(citation.slug)}`}
+        className="font-medium text-emerald-300 underline decoration-emerald-300/60 underline-offset-4 hover:text-emerald-200"
+      >
+        {match[1]}
+      </Link>
+    );
+  });
 }
 
 function StatCard({
