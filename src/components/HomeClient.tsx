@@ -133,7 +133,7 @@ export function HomeClient() {
             return (
               <Link
                 key={`${collection}-${result.slug}`}
-                href={`/${collection}/${encodeURIComponent(result.slug)}`}
+                href={`/${collection}/${result.slug}`}
                 className="rounded-lg border border-white/10 bg-[#1a1a1a] p-5 transition hover:border-emerald-300/50 hover:bg-[#202020]"
               >
                 <div className="flex items-center justify-between gap-4">
@@ -169,7 +169,7 @@ function renderCitations(text: string, citations: Citation[]): ReactNode[] {
     return (
       <Link
         key={`${citation.type}-${citation.slug}-${index}`}
-        href={`/${collection}/${encodeURIComponent(citation.slug)}`}
+        href={`/${collection}/${citation.slug}`}
         className="font-medium text-emerald-300 underline decoration-emerald-300/60 underline-offset-4 hover:text-emerald-200"
       >
         {match[1]}
