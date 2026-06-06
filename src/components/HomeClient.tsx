@@ -1,15 +1,40 @@
 'use client';
 
 import Link from 'next/link';
-import { FormEvent, ReactNode, useEffect, useState } from 'react';
+import { FormEvent, ReactNode, useCallback, useEffect, useState } from 'react';
 import {
+  getConcept,
+  getSource,
   getStatus,
   searchWiki,
   type ApiStatus,
   type Citation,
   type SearchResult,
+  type WikiEntry,
 } from '@/lib/api';
 import { EmptyState, ErrorState, LoadingState } from './States';
+
+function readSearchParams(): { q: string; mode: 'wiki' | 'full' } {
+  if (typeof window === 'undefined') return { q: '', mode: 'wiki' };
+  const params = new URLSearchParams(window.location.search);
+  const modeParam = params.get('mode');
+  return {
+    q: params.get('q') ?? '',
+    mode: modeParam === 'full' ? 'full' : 'wiki',
+  };
+}
+
+function syncUrl(q: string, mode: 'wiki' | 'full') {
+  if (typeof window === 'undefined') return;
+  const params = new URLSearchParams();
+  if (q) params.set('q', q);
+  if (mode !== 'wiki') params.set('mode', mode);
+  const search = params.toString();
+  const url = window.location.pathname + (search ? `?${search}` : '');
+  window.history.replaceState(null, '', url);
+}
+
+type ModalEntry = { title: string; content: string; type: string; slug: string };
 
 export function HomeClient() {
   const [query, setQuery] = useState('');
@@ -22,6 +47,32 @@ export function HomeClient() {
   const [searched, setSearched] = useState(false);
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState('');
+  const [modal, setModal] = useState<ModalEntry | null>(null);
+  const [modalLoading, setModalLoading] = useState(false);
+
+  // Restore search from URL on mount (back-button support)
+  useEffect(() => {
+    const { q, mode: urlMode } = readSearchParams();
+    if (q) {
+      setQuery(q);
+      setMode(urlMode);
+      setLoading(true);
+      setSearched(true);
+      searchWiki(q, urlMode)
+        .then((response) => {
+          setResults(response.results);
+          setAiAnswer(response.aiAnswer);
+          setCitations(response.citations);
+        })
+        .catch((err: Error) => {
+          setError(err instanceof Error ? err.message : 'Search failed');
+          setResults([]);
+          setAiAnswer('');
+          setCitations([]);
+        })
+        .finally(() => setLoading(false));
+    }
+  }, []); // run once on mount
 
   useEffect(() => {
     getStatus()
@@ -29,10 +80,12 @@ export function HomeClient() {
       .catch((err: Error) => setStatusError(err.message));
   }, []);
 
-  async function onSubmit(event: FormEvent<HTMLFormElement>) {
+  const onSubmit = useCallback(async (event: FormEvent<HTMLFormElement>) => {
     event.preventDefault();
     const trimmed = query.trim();
     if (!trimmed) return;
+
+    syncUrl(trimmed, mode);
 
     setLoading(true);
     setError('');
@@ -53,7 +106,34 @@ export function HomeClient() {
     } finally {
       setLoading(false);
     }
-  }
+  }, [query, mode]);
+
+  const openCitation = useCallback(async (citation: Citation) => {
+    setModalLoading(true);
+    setModal({ title: citation.text, content: '', type: citation.type, slug: citation.slug });
+    try {
+      const fetch = citation.type === 'concept' ? getConcept : getSource;
+      const entry: WikiEntry = await fetch(citation.slug);
+      setModal({
+        title: entry.title,
+        content: entry.content ?? entry.raw as string ?? '',
+        type: citation.type,
+        slug: citation.slug,
+      });
+    } catch {
+      setModal(null);
+    } finally {
+      setModalLoading(false);
+    }
+  }, []);
+
+  // Close modal on Escape
+  useEffect(() => {
+    if (!modal) return;
+    const handler = (e: KeyboardEvent) => { if (e.key === 'Escape') setModal(null); };
+    window.addEventListener('keydown', handler);
+    return () => window.removeEventListener('keydown', handler);
+  }, [modal]);
 
   return (
     <div className="space-y-10">
@@ -120,7 +200,7 @@ export function HomeClient() {
               AI answer
             </h3>
             <p className="mt-3 text-base leading-7 text-zinc-200">
-              {renderCitations(aiAnswer, citations)}
+              {renderCitations(aiAnswer, citations, openCitation)}
             </p>
           </article>
         ) : null}
@@ -128,14 +208,13 @@ export function HomeClient() {
           <EmptyState message="No results matched that query." />
         ) : null}
         <div className="grid gap-4 md:grid-cols-2">
-          {results.map((result) => {
-            const collection = result.type === 'concept' ? 'concepts' : 'sources';
-            return (
-              <Link
-                key={`${collection}-${result.slug}`}
-                href={`/${collection}/${result.slug}`}
-                className="rounded-lg border border-white/10 bg-[#1a1a1a] p-5 transition hover:border-emerald-300/50 hover:bg-[#202020]"
-              >
+          {results.map((result) => (
+            <button
+              key={`${result.type}-${result.slug}`}
+              type="button"
+              onClick={() => openCitation({ text: result.title, slug: result.slug, type: (result.type === 'source' ? 'source' as const : 'concept' as const), path: '' })}
+              className="rounded-lg border border-white/10 bg-[#1a1a1a] p-5 text-left transition hover:border-emerald-300/50 hover:bg-[#202020]"
+            >
                 <div className="flex items-center justify-between gap-4">
                   <h3 className="text-lg font-semibold text-white">{result.title}</h3>
                   {result.score !== undefined ? (
@@ -145,16 +224,92 @@ export function HomeClient() {
                 <p className="mt-3 line-clamp-4 text-sm leading-6 text-zinc-400">
                   {result.excerpt ?? result.description ?? 'Open this wiki entry.'}
                 </p>
-              </Link>
-            );
-          })}
+              </button>
+          ))}
         </div>
       </section>
+
+      {/* Citation Preview Modal */}
+      {modal ? (
+        <div
+          className="fixed inset-0 z-50 flex items-center justify-center bg-black/70 p-4 backdrop-blur-sm"
+          onClick={() => setModal(null)}
+        >
+          <div
+            className="relative max-h-[85vh] w-full max-w-2xl overflow-y-auto rounded-xl border border-white/10 bg-[#151515] p-6 shadow-2xl"
+            onClick={(e) => e.stopPropagation()}
+          >
+            <button
+              onClick={() => setModal(null)}
+              className="absolute right-4 top-4 rounded-md p-1 text-zinc-400 transition hover:bg-white/10 hover:text-white"
+              aria-label="Close"
+            >
+              <svg xmlns="http://www.w3.org/2000/svg" width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
+                <line x1="18" y1="6" x2="6" y2="18"/><line x1="6" y1="6" x2="18" y2="18"/>
+              </svg>
+            </button>
+
+            {modalLoading ? (
+              <LoadingState label="Loading..." />
+            ) : (
+              <>
+                <div className="mb-1 text-xs font-semibold uppercase tracking-[0.2em] text-zinc-500">
+                  {modal.type === 'concept' ? 'Concept' : 'Source'}
+                </div>
+                <h2 className="text-2xl font-semibold text-white">{modal.title}</h2>
+                <div className="mt-4 border-t border-white/10 pt-4">
+                  <MarkdownBody content={modal.content} />
+                </div>
+                <div className="mt-6 border-t border-white/10 pt-4">
+                  <Link
+                    href={`/${modal.type === 'concept' ? 'concepts' : 'sources'}/${modal.slug}`}
+                    className="text-sm font-medium text-emerald-300 hover:text-emerald-200"
+                    onClick={() => setModal(null)}
+                  >
+                    Open full page →
+                  </Link>
+                </div>
+              </>
+            )}
+          </div>
+        </div>
+      ) : null}
     </div>
   );
 }
 
-function renderCitations(text: string, citations: Citation[]): ReactNode[] {
+function MarkdownBody({ content }: { content: string }) {
+  if (!content) return <p className="text-zinc-400 italic">No content available.</p>;
+  // Simple markdown rendering: split on double newlines, handle headers
+  const paragraphs = content.split(/\n\n+/);
+  return (
+    <div className="prose prose-invert prose-sm max-w-none text-zinc-300 leading-7">
+      {paragraphs.map((block, i) => {
+        if (block.startsWith('## ')) {
+          return <h3 key={i} className="mt-4 mb-2 text-lg font-semibold text-white">{block.slice(3)}</h3>;
+        }
+        if (block.startsWith('# ')) {
+          return <h2 key={i} className="mt-4 mb-2 text-xl font-semibold text-white">{block.slice(2)}</h2>;
+        }
+        if (block.startsWith('- ')) {
+          const items = block.split('\n').filter(l => l.startsWith('- '));
+          return (
+            <ul key={i} className="list-disc pl-5 space-y-1">
+              {items.map((item, j) => <li key={j}>{item.slice(2)}</li>)}
+            </ul>
+          );
+        }
+        return <p key={i} className="mb-3">{block}</p>;
+      })}
+    </div>
+  );
+}
+
+function renderCitations(
+  text: string,
+  citations: Citation[],
+  onCitationClick: (citation: Citation) => void,
+): ReactNode[] {
   const citationMap = new Map(citations.map((citation) => [citation.text, citation]));
   const parts = text.split(/(\[[^\]]+\])/g);
 
@@ -165,18 +320,15 @@ function renderCitations(text: string, citations: Citation[]): ReactNode[] {
     const citation = citationMap.get(match[1]);
     if (!citation) return part;
 
-    const collection = citation.type === 'concept' ? 'concepts' : 'sources';
-    // Use raw slug — Next.js Link handles encoding. Pre-encoded citation.path
-    // or encodeURIComponent gets double-encoded by Next.js (% → %25), causing 404s.
-    const href = `/${collection}/${citation.slug}`;
     return (
-      <Link
+      <button
         key={`${citation.type}-${citation.slug}-${index}`}
-        href={href}
-        className="font-medium text-emerald-300 underline decoration-emerald-300/60 underline-offset-4 hover:text-emerald-200"
+        type="button"
+        onClick={() => onCitationClick(citation)}
+        className="font-medium text-emerald-300 underline decoration-emerald-300/60 underline-offset-4 hover:text-emerald-200 cursor-pointer"
       >
         {match[1]}
-      </Link>
+      </button>
     );
   });
 }
