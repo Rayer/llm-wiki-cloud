@@ -2,6 +2,7 @@
 
 import Link from 'next/link';
 import { FormEvent, ReactNode, useCallback, useEffect, useState } from 'react';
+import ReactMarkdown from 'react-markdown';
 import {
   getConcept,
   getSource,
@@ -199,9 +200,16 @@ export function HomeClient() {
             <h3 className="text-sm font-semibold uppercase tracking-[0.2em] text-emerald-300">
               AI answer
             </h3>
-            <p className="mt-3 text-base leading-7 text-zinc-200">
+            <div className="mt-3 text-base leading-7 text-zinc-200
+              [&_strong]:text-white [&_strong]:font-semibold
+              [&_h3]:text-base [&_h3]:font-semibold [&_h3]:text-white [&_h3]:mt-4 [&_h3]:mb-1
+              [&_ul]:list-disc [&_ul]:pl-5 [&_ul]:space-y-1 [&_ul]:mb-3
+              [&_ol]:list-decimal [&_ol]:pl-5 [&_ol]:space-y-1 [&_ol]:mb-3
+              [&_li]:leading-7
+              [&_p]:mb-3
+            ">
               {renderCitations(aiAnswer, citations, openCitation)}
-            </p>
+            </div>
           </article>
         ) : null}
         {!loading && !error && searched && results.length === 0 ? (
@@ -258,7 +266,7 @@ export function HomeClient() {
                 </div>
                 <h2 className="text-2xl font-semibold text-white">{modal.title}</h2>
                 <div className="mt-4 border-t border-white/10 pt-4">
-                  <MarkdownBody content={modal.content} />
+                  <MarkdownBody content={stripLeadingHeading(modal.content)} />
                 </div>
                 <div className="mt-6 border-t border-white/10 pt-4">
                   <Link
@@ -278,29 +286,54 @@ export function HomeClient() {
   );
 }
 
+// Strip leading "# Title" or "Title\n===" from markdown to avoid
+// double title when the page already shows it as <h1>/<h2>.
+function stripLeadingHeading(md: string): string {
+  const h1 = /^# .+\n\n?/;
+  const h1u = /^.+\n=+\n\n?/;
+  return md.replace(h1, '').replace(h1u, '').trimStart();
+}
+
+// Convert [[wikilinks]] with section context:
+// Under "## Sources" → /sources/ | Under "## Concepts" → /concepts/
+function resolveWikilinks(md: string): string {
+  const lines = md.split('\n');
+  let section = 'concepts'; // default
+  const out: string[] = [];
+  for (const line of lines) {
+    const secMatch = /^## (Sources|Concepts)/i.exec(line);
+    if (secMatch) {
+      section = secMatch[1].toLowerCase();
+    }
+    out.push(line.replace(/\[\[([^\]]+)\]\]/g, (_, name: string) =>
+      `[${name}](/${section}/${encodeURIComponent(name)})`
+    ));
+  }
+  return out.join('\n');
+}
+
 function MarkdownBody({ content }: { content: string }) {
   if (!content) return <p className="text-zinc-400 italic">No content available.</p>;
-  // Simple markdown rendering: split on double newlines, handle headers
-  const paragraphs = content.split(/\n\n+/);
+  // Convert [[wikilinks]] with context-aware routing:
+  // Under ## Sources → /sources/ | Under ## Concepts → /concepts/ | else → /concepts/
+  const withLinks = resolveWikilinks(content);
   return (
-    <div className="prose prose-invert prose-sm max-w-none text-zinc-300 leading-7">
-      {paragraphs.map((block, i) => {
-        if (block.startsWith('## ')) {
-          return <h3 key={i} className="mt-4 mb-2 text-lg font-semibold text-white">{block.slice(3)}</h3>;
-        }
-        if (block.startsWith('# ')) {
-          return <h2 key={i} className="mt-4 mb-2 text-xl font-semibold text-white">{block.slice(2)}</h2>;
-        }
-        if (block.startsWith('- ')) {
-          const items = block.split('\n').filter(l => l.startsWith('- '));
-          return (
-            <ul key={i} className="list-disc pl-5 space-y-1">
-              {items.map((item, j) => <li key={j}>{item.slice(2)}</li>)}
-            </ul>
-          );
-        }
-        return <p key={i} className="mb-3">{block}</p>;
-      })}
+    <div className="prose prose-invert prose-sm max-w-none text-zinc-300 leading-7
+      [&_h1]:text-xl [&_h1]:font-semibold [&_h1]:text-white [&_h1]:mt-4 [&_h1]:mb-2
+      [&_h2]:text-lg [&_h2]:font-semibold [&_h2]:text-white [&_h2]:mt-4 [&_h2]:mb-2
+      [&_h3]:text-base [&_h3]:font-semibold [&_h3]:text-white [&_h3]:mt-3 [&_h3]:mb-1
+      [&_p]:mb-3 [&_p]:leading-7
+      [&_strong]:text-white [&_strong]:font-semibold
+      [&_em]:italic [&_em]:text-zinc-200
+      [&_ul]:list-disc [&_ul]:pl-5 [&_ul]:space-y-1 [&_ul]:mb-3
+      [&_ol]:list-decimal [&_ol]:pl-5 [&_ol]:space-y-1 [&_ol]:mb-3
+      [&_li]:leading-7
+      [&_code]:bg-white/10 [&_code]:px-1 [&_code]:py-0.5 [&_code]:rounded [&_code]:text-sm
+      [&_blockquote]:border-l-2 [&_blockquote]:border-emerald-300/50 [&_blockquote]:pl-4 [&_blockquote]:italic [&_blockquote]:text-zinc-400
+      [&_a]:text-emerald-300 [&_a]:underline [&_a]:hover:text-emerald-200
+      [&_hr]:border-white/10 [&_hr]:my-4
+    ">
+      <ReactMarkdown>{withLinks}</ReactMarkdown>
     </div>
   );
 }
@@ -315,10 +348,13 @@ function renderCitations(
 
   return parts.map((part, index) => {
     const match = /^\[([^\]]+)\]$/.exec(part);
-    if (!match) return part;
+    if (!match) {
+      // Render non-citation text with inline markdown
+      return <span key={index}>{renderInlineMarkdown(part)}</span>;
+    }
 
     const citation = citationMap.get(match[1]);
-    if (!citation) return part;
+    if (!citation) return <span key={index}>{renderInlineMarkdown(part)}</span>;
 
     return (
       <button
@@ -330,6 +366,32 @@ function renderCitations(
         {match[1]}
       </button>
     );
+  });
+}
+
+// Lightweight inline markdown: **bold**, *italic*, `code`
+function renderInlineMarkdown(text: string): ReactNode[] {
+  const tokens = text.split(/(\*\*[^*]+\*\*|\*[^*]+\*|`[^`]+`)/g);
+  return tokens.map((token, i) => {
+    if (token.startsWith('**') && token.endsWith('**')) {
+      return <strong key={i} className="text-white font-semibold">{token.slice(2, -2)}</strong>;
+    }
+    if (token.startsWith('*') && token.endsWith('*') && !token.startsWith('**')) {
+      return <em key={i} className="italic text-zinc-200">{token.slice(1, -1)}</em>;
+    }
+    if (token.startsWith('`') && token.endsWith('`')) {
+      return <code key={i} className="bg-white/10 px-1 py-0.5 rounded text-sm">{token.slice(1, -1)}</code>;
+    }
+    // Convert double newlines to paragraph breaks
+    if (token.includes('\n\n')) {
+      return token.split('\n\n').map((para, j) => (
+        <span key={`${i}-${j}`}>
+          {j > 0 && <span className="block h-3" />}
+          {para}
+        </span>
+      ));
+    }
+    return token;
   });
 }
 

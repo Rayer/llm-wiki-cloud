@@ -2,6 +2,9 @@
 
 import type { ReactNode } from 'react';
 
+// Track current markdown section for wikilink routing
+let currentWikilinkSection: 'sources' | 'concepts' = 'concepts';
+
 export function MarkdownView({ content }: { content?: string }) {
   if (!content) {
     return (
@@ -11,9 +14,12 @@ export function MarkdownView({ content }: { content?: string }) {
     );
   }
 
+  // Strip leading "# Title" to avoid double title with page header
+  const clean = content.replace(/^# .+\n\n?/, '').replace(/^.+\n=+\n\n?/, '').trimStart();
+
   return (
     <article className="markdown-body">
-      {renderMarkdown(content)}
+      {renderMarkdown(clean)}
     </article>
   );
 }
@@ -53,7 +59,14 @@ function renderMarkdown(content: string) {
     const heading = /^(#{1,4})\s+(.+)$/.exec(line);
     if (heading) {
       const level = heading[1].length;
-      const children = renderInline(heading[2]);
+      const headingText = heading[2];
+      // Track section for wikilink routing
+      if (level === 2) {
+        const lc = headingText.toLowerCase();
+        if (lc === 'sources') currentWikilinkSection = 'sources';
+        else if (lc === 'concepts') currentWikilinkSection = 'concepts';
+      }
+      const children = renderInline(headingText);
       const key = nodes.length;
       if (level === 1) nodes.push(<h1 key={key}>{children}</h1>);
       if (level === 2) nodes.push(<h2 key={key}>{children}</h2>);
@@ -135,7 +148,7 @@ function renderMarkdown(content: string) {
 }
 
 function renderInline(text: string): ReactNode[] {
-  const parts = text.split(/(`[^`]+`|\*\*[^*]+\*\*|\[[^\]]+\]\([^)]+\))/g);
+  const parts = text.split(/(`[^`]+`|\*\*[^*]+\*\*|\[\[[^\]]+\]\]|\[[^\]]+\]\([^)]+\))/g);
 
   return parts.map((part, index) => {
     if (part.startsWith('`') && part.endsWith('`')) {
@@ -143,6 +156,16 @@ function renderInline(text: string): ReactNode[] {
     }
     if (part.startsWith('**') && part.endsWith('**')) {
       return <strong key={index}>{part.slice(2, -2)}</strong>;
+    }
+    // Obsidian-style wikilink: [[Page Name]] — route based on section context
+    const wikilink = /^\[\[([^\]]+)\]\]$/.exec(part);
+    if (wikilink) {
+      const collection = currentWikilinkSection === 'sources' ? 'sources' : 'concepts';
+      return (
+        <a key={index} href={`/${collection}/${encodeURIComponent(wikilink[1])}`} className="text-emerald-300 underline hover:text-emerald-200">
+          {wikilink[1]}
+        </a>
+      );
     }
     const link = /^\[([^\]]+)\]\(([^)]+)\)$/.exec(part);
     if (link) {
