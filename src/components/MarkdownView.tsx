@@ -148,7 +148,7 @@ function renderMarkdown(content: string) {
 }
 
 function renderInline(text: string): ReactNode[] {
-  const parts = text.split(/(`[^`]+`|\*\*[^*]+\*\*|\[\[[^\]]+\]\]|\[[^\]]+\]\([^)]+\))/g);
+  const parts = text.split(/(`[^`]+`|\*\*[^*]+\*\*|!\[[^\]]*\]\([^)]+\)|\[\[[^\]]+\]\]|\[[^\]]+\]\([^)]+\))/g);
 
   return parts.map((part, index) => {
     if (part.startsWith('`') && part.endsWith('`')) {
@@ -156,6 +156,19 @@ function renderInline(text: string): ReactNode[] {
     }
     if (part.startsWith('**') && part.endsWith('**')) {
       return <strong key={index}>{part.slice(2, -2)}</strong>;
+    }
+    // Image: ![alt](url) — must be checked before regular link
+    const image = /^!\[([^\]]*)\]\(([^)]+)\)$/.exec(part);
+    if (image) {
+      return (
+        <img
+          key={index}
+          src={image[2]}
+          alt={image[1] || 'Image'}
+          className="rounded-lg"
+          loading="lazy"
+        />
+      );
     }
     // Obsidian-style wikilink: [[Page Name]] — route based on section context
     const wikilink = /^\[\[([^\]]+)\]\]$/.exec(part);
