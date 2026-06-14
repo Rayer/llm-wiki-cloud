@@ -206,3 +206,77 @@ export async function searchWiki(query: string, mode: 'wiki' | 'full') {
   const params = new URLSearchParams({ q: query, mode });
   return normalizeSearchResponse(await requestJson<unknown>(`/api/query?${params}`));
 }
+
+// ── Raw content management ──
+
+export type RawUploadResult = {
+  message: string;
+  filename: string;
+  path: string;
+  digest: string;
+  bytes: number;
+};
+
+export type ScrapeResult = {
+  message: string;
+  filename: string;
+  path: string;
+  title: string;
+  digest: string;
+  bytes: number;
+};
+
+export type PipelineResult = {
+  message: string;
+  rawFiles: number;
+  scheduled: boolean;
+};
+
+export async function uploadRawFile(file: File): Promise<RawUploadResult> {
+  const formData = new FormData();
+  formData.append('file', file);
+  const response = await fetch(`${API_URL}/api/raw/upload`, {
+    method: 'POST',
+    body: formData,
+  });
+  if (!response.ok) {
+    const error = await response.json().catch(() => ({ error: 'Upload failed' }));
+    throw new Error((error as { error: string }).error);
+  }
+  return response.json();
+}
+
+export async function scrapeUrl(url: string, filename?: string): Promise<ScrapeResult> {
+  const response = await fetch(`${API_URL}/api/raw/scrape`, {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ url, filename }),
+  });
+  if (!response.ok) {
+    const error = await response.json().catch(() => ({ error: 'Scrape failed' }));
+    throw new Error((error as { error: string }).error);
+  }
+  return response.json();
+}
+
+export async function triggerPipeline(): Promise<PipelineResult> {
+  const response = await fetch(`${API_URL}/api/pipeline/run`, {
+    method: 'POST',
+  });
+  if (!response.ok) {
+    const error = await response.json().catch(() => ({ error: 'Pipeline trigger failed' }));
+    throw new Error((error as { error: string }).error);
+  }
+  return response.json();
+}
+
+export async function generateTitle(content: string): Promise<string> {
+  const response = await fetch(`${API_URL}/api/raw/generate-title`, {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ content }),
+  });
+  if (!response.ok) return 'Untitled';
+  const data = await response.json() as { title: string };
+  return data.title ?? 'Untitled';
+}
