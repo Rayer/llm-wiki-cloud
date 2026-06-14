@@ -68,9 +68,20 @@ function Frontmatter({ data }: { data: Record<string, unknown> }) {
           <div key={key}>
             <dt className="text-xs uppercase tracking-[0.16em] text-zinc-500">{key}</dt>
             <dd className="mt-1 break-words text-sm text-zinc-200">
-              {typeof value === 'string' || typeof value === 'number'
-                ? value
-                : JSON.stringify(value)}
+              {typeof value === 'string' && /^https?:\/\//.test(value) ? (
+                <a
+                  href={value}
+                  target="_blank"
+                  rel="noreferrer"
+                  className="text-emerald-300 underline hover:text-emerald-200"
+                >
+                  {value}
+                </a>
+              ) : typeof value === 'string' || typeof value === 'number' ? (
+                value
+              ) : (
+                JSON.stringify(value)
+              )}
             </dd>
           </div>
         ))}
