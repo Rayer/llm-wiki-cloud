@@ -50,6 +50,21 @@ async function requestJson<T>(path: string): Promise<T> {
   return response.json() as Promise<T>;
 }
 
+async function postJson<T>(path: string, body: unknown): Promise<T> {
+  const response = await fetch(`${API_URL}${path}`, {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify(body),
+  });
+
+  if (!response.ok) {
+    const error = await response.json().catch(() => ({ error: `API request failed (${response.status})` }));
+    throw new Error((error as { error: string }).error);
+  }
+
+  return response.json() as Promise<T>;
+}
+
 function isRecord(value: unknown): value is Record<string, unknown> {
   return Boolean(value) && typeof value === 'object' && !Array.isArray(value);
 }
@@ -203,8 +218,9 @@ export async function getConcept(slug: string) {
 }
 
 export async function searchWiki(query: string, mode: 'wiki' | 'full') {
-  const params = new URLSearchParams({ q: query, mode });
-  return normalizeSearchResponse(await requestJson<unknown>(`/api/query?${params}`));
+  return normalizeSearchResponse(
+    await postJson<unknown>('/api/query', { q: query, mode }),
+  );
 }
 
 // ── Raw content management ──
