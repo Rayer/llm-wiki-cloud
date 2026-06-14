@@ -1,0 +1,119 @@
+{
+  "dashboard": {
+    "title": "LLM Wiki Cloud",
+    "uid": "lwc-pipeline",
+    "timezone": "browser",
+    "refresh": "1m",
+    "panels": [
+      {
+        "id": 1, "title": "Pipeline Duration P99",
+        "type": "stat", "gridPos": {"x": 0, "y": 0, "w": 6, "h": 4},
+        "fieldConfig": {
+          "defaults": {
+            "unit": "s", "decimals": 1,
+            "color": {"mode": "thresholds"},
+            "thresholds": {"mode": "absolute", "steps": [
+              {"color": "green", "value": null},
+              {"color": "orange", "value": 300},
+              {"color": "red", "value": 600}
+            ]}
+          }
+        },
+        "targets": [{
+          "refId": "A", "datasource": {"type": "prometheus", "uid": "grafanacloud-prom"},
+          "expr": "histogram_quantile(0.99, lwc_pipeline_duration_seconds)",
+          "legendFormat": "P99"
+        }]
+      },
+      {
+        "id": 2, "title": "Pipeline Duration (last 7 days)",
+        "type": "timeseries", "gridPos": {"x": 6, "y": 0, "w": 12, "h": 4},
+        "fieldConfig": {
+          "defaults": {"unit": "s", "custom": {"drawStyle": "bars", "fillOpacity": 50, "lineWidth": 0}}
+        },
+        "targets": [{
+          "refId": "A", "datasource": {"type": "prometheus", "uid": "grafanacloud-prom"},
+          "expr": "lwc_pipeline_duration_seconds",
+          "legendFormat": "{{status}}"
+        }]
+      },
+      {
+        "id": 3, "title": "Pipeline Status",
+        "type": "stat", "gridPos": {"x": 18, "y": 0, "w": 6, "h": 4},
+        "fieldConfig": {
+          "defaults": {
+            "unit": "s", "decimals": 0,
+            "color": {"mode": "thresholds"},
+            "thresholds": {"mode": "absolute", "steps": [
+              {"color": "red", "value": null},
+              {"color": "green", "value": 1}
+            ]},
+            "mappings": [
+              {"type": "value", "value": "null", "text": "No data"},
+              {"type": "range", "from": "0", "to": "86400", "text": "OK"},
+              {"type": "range", "from": "86400", "to": "999999999", "text": "STALE"}
+            ]
+          }
+        },
+        "targets": [{
+          "refId": "A", "datasource": {"type": "prometheus", "uid": "grafanacloud-prom"},
+          "expr": "time() - lwc_pipeline_last_success_timestamp",
+          "legendFormat": "Since last run"
+        }]
+      },
+      {
+        "id": 4, "title": "Pipeline Runs (7d)",
+        "type": "timeseries", "gridPos": {"x": 0, "y": 4, "w": 12, "h": 4},
+        "fieldConfig": {"defaults": {"custom": {"drawStyle": "bars", "fillOpacity": 60, "stacking": {"mode": "normal"}}}},
+        "targets": [{
+          "refId": "A", "datasource": {"type": "prometheus", "uid": "grafanacloud-prom"},
+          "expr": "sum by (status) (rate(lwc_pipeline_runs_total[1h]) * 3600)",
+          "legendFormat": "{{status}}"
+        }]
+      },
+      {
+        "id": 5, "title": "Wiki Data",
+        "type": "stat", "gridPos": {"x": 12, "y": 4, "w": 4, "h": 4},
+        "fieldConfig": {"defaults": {"color": {"mode": "palette-classic"}}},
+        "targets": [{
+          "refId": "A", "datasource": {"type": "yesoreyeram-infinity-datasource", "uid": "infinity"},
+          "url": "https://llm-wiki-bff-580854833715.asia-east1.run.app/api/status",
+          "method": "GET", "root_selector": "$.sources_count",
+          "format": "table", "columns": [{"selector": "", "text": "Sources", "type": "number"}]
+        }]
+      },
+      {
+        "id": 6, "title": "Wiki Concepts",
+        "type": "stat", "gridPos": {"x": 16, "y": 4, "w": 4, "h": 4},
+        "fieldConfig": {"defaults": {"color": {"mode": "palette-classic"}}},
+        "targets": [{
+          "refId": "A", "datasource": {"type": "yesoreyeram-infinity-datasource", "uid": "infinity"},
+          "url": "https://llm-wiki-bff-580854833715.asia-east1.run.app/api/status",
+          "method": "GET", "root_selector": "$.concepts_count",
+          "format": "table", "columns": [{"selector": "", "text": "Concepts", "type": "number"}]
+        }]
+      },
+      {
+        "id": 7, "title": "Running Pipelines",
+        "type": "stat", "gridPos": {"x": 20, "y": 4, "w": 4, "h": 4},
+        "fieldConfig": {
+          "defaults": {
+            "thresholds": {"mode": "absolute", "steps": [
+              {"color": "green", "value": null},
+              {"color": "orange", "value": 1},
+              {"color": "red", "value": 3}
+            ]}
+          }
+        },
+        "targets": [{
+          "refId": "A", "datasource": {"type": "yesoreyeram-infinity-datasource", "uid": "infinity"},
+          "url": "https://llm-wiki-bff-580854833715.asia-east1.run.app/api/status",
+          "method": "GET", "root_selector": "$.running_pipelines",
+          "format": "table", "columns": [{"selector": "", "text": "Running", "type": "number"}]
+        }]
+      }
+    ],
+    "schemaVersion": 39,
+    "tags": ["llm-wiki", "gcp", "pipeline"]
+  }
+}

@@ -7,6 +7,7 @@ API key is read from GCP Secret Manager at runtime.
 Lock is managed via Firestore (native mode, free tier).
 """
 
+import base64
 import json
 import os
 import subprocess
@@ -261,6 +262,88 @@ def run_olw():
     print(f"Wiki files generated: {len(wiki_sources)}")
 
 
+# ── Execution tracking ────────────────────────────────────────────────
+
+def record_execution_start(token: str) -> str:
+    """Write an execution start record to Firestore. Returns doc ID."""
+    now = datetime.now(timezone.utc)
+    body = {
+        "fields": {
+            "user_id": {"stringValue": USER_ID},
+            "project_id": {"stringValue": PROJECT_ID},
+            "started_at": {"timestampValue": now.strftime("%Y-%m-%dT%H:%M:%SZ")},
+            "status": {"stringValue": "running"},
+        }
+    }
+    # Firestore auto-generates document ID when POSTing to collection
+    url = f"{FIRESTORE_BASE}/executions"
+    resp = firestore_request("POST", url, token, body)
+    # Extract document ID from response path
+    doc_id = resp.get("name", "").split("/")[-1] if resp else ""
+    print(f"Execution started: {doc_id}")
+    return doc_id
+
+
+def record_execution_end(token: str, doc_id: str, success: bool):
+    """Update execution record with completion data."""
+    if not doc_id:
+        return
+    now = datetime.now(timezone.utc)
+    body = {
+        "fields": {
+            "finished_at": {"timestampValue": now.strftime("%Y-%m-%dT%H:%M:%SZ")},
+            "status": {"stringValue": "completed" if success else "failed"},
+        }
+    }
+    url = f"{FIRESTORE_BASE}/executions/{doc_id}?updateMask.fieldPaths=finished_at&updateMask.fieldPaths=status"
+    try:
+        firestore_request("PATCH", url, token, body)
+        print(f"Execution ended: {doc_id} ({'completed' if success else 'failed'})")
+    except Exception as e:
+        print(f"Warning: execution end record failed: {e}", file=sys.stderr)
+
+
+def push_pipeline_metrics(started_at: datetime, success: bool):
+    """Push pipeline execution metrics to Grafana Cloud Prometheus."""
+    prom_user = os.environ.get("GRAFANA_PROM_USER", "3301522")
+    prom_key = os.environ.get("GRAFANA_PROM_API_KEY", "")
+    if not prom_key:
+        print("GRAFANA_PROM_API_KEY not set — skipping Prometheus push")
+        return
+
+    duration = (datetime.now(timezone.utc) - started_at).total_seconds()
+    status = "completed" if success else "failed"
+
+    # Prometheus text exposition format
+    body = (
+        "# HELP lwc_pipeline_duration_seconds Duration of pipeline execution\n"
+        "# TYPE lwc_pipeline_duration_seconds gauge\n"
+        f'lwc_pipeline_duration_seconds{{user_id="{USER_ID}",project_id="{PROJECT_ID}",status="{status}"}} {duration}\n'
+        "# HELP lwc_pipeline_runs_total Total pipeline runs\n"
+        "# TYPE lwc_pipeline_runs_total counter\n"
+        f'lwc_pipeline_runs_total{{user_id="{USER_ID}",project_id="{PROJECT_ID}",status="{status}"}} 1\n'
+        "# HELP lwc_pipeline_last_success_timestamp Last successful run timestamp\n"
+        "# TYPE lwc_pipeline_last_success_timestamp gauge\n"
+        f'lwc_pipeline_last_success_timestamp{{user_id="{USER_ID}",project_id="{PROJECT_ID}"}} {started_at.timestamp()}\n'
+    )
+
+    prom_url = "https://prometheus-prod-49-prod-ap-northeast-0.grafana.net/api/prom/push"
+    try:
+        credentials = prom_user + ":" + prom_key
+        auth = base64.b64encode(credentials.encode()).decode()
+        req = request.Request(
+            prom_url, data=body.encode(), method="POST",
+            headers={
+                "Authorization": f"Basic {auth}",
+                "Content-Type": "text/plain",
+            }
+        )
+        with request.urlopen(req, timeout=10) as resp:
+            print(f"Prometheus push: {resp.status} ({status}, duration={duration:.1f}s)")
+    except Exception as e:
+        print(f"Warning: Prometheus push failed: {e}", file=sys.stderr)
+
+
 # ── Main ─────────────────────────────────────────────────────────────
 
 def main():
@@ -272,6 +355,9 @@ def main():
 
     # 1. Acquire lock
     lock_token = acquire_lock()
+    execution_id = record_execution_start(lock_token)
+    pipeline_started_at = datetime.now(timezone.utc)
+    success = False
     try:
         # 2. Sync from GCS
         print("Syncing data from GCS...")
@@ -343,9 +429,12 @@ def main():
         )
 
         print("=== Done ===")
+        success = True
 
     finally:
         release_lock(lock_token)
+        record_execution_end(lock_token, execution_id, success)
+        push_pipeline_metrics(pipeline_started_at, success)
 
 
 if __name__ == "__main__":
