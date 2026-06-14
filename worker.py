@@ -12,7 +12,6 @@ import json
 import os
 import subprocess
 import sys
-import time
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
 from urllib import request, error as urllib_error
@@ -347,7 +346,7 @@ def push_pipeline_metrics(started_at: datetime, success: bool):
 # ── Main ─────────────────────────────────────────────────────────────
 
 def main():
-    print(f"=== OLW Cloud Run Worker ===")
+    print("=== OLW Cloud Run Worker ===")
     print(f"User:    {USER_ID}")
     print(f"Project: {PROJECT_ID}")
     print(f"Bucket:  {BUCKET}")
