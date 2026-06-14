@@ -51,10 +51,13 @@ export function HomeClient() {
   const [modal, setModal] = useState<ModalEntry | null>(null);
   const [modalLoading, setModalLoading] = useState(false);
 
-  // Restore search from URL on mount (back-button support)
+  // Restore search from URL on mount (back-button support).
+  // React 19 batches all state updates in effects — multiple setStates here
+  // is safe and intentional (one render with all new values).
   useEffect(() => {
     const { q, mode: urlMode } = readSearchParams();
     if (q) {
+      // eslint-disable-next-line react-hooks/set-state-in-effect -- batched in React 19
       setQuery(q);
       setMode(urlMode);
       setLoading(true);
