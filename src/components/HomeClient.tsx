@@ -170,7 +170,7 @@ export function HomeClient() {
               <input
                 value={query}
                 onChange={(event) => setQuery(event.target.value)}
-                placeholder="Search topics, model behavior, evaluations..."
+                placeholder="新北適合帶小孩放電的地方"
                 className="min-h-12 flex-1 rounded-md border border-white/10 bg-black/40 px-4 text-white outline-none transition placeholder:text-zinc-600 focus:border-emerald-300"
               />
               <div className="grid grid-cols-2 rounded-md border border-white/10 bg-black/30 p-1 text-sm">
