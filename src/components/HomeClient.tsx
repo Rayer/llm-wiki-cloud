@@ -146,7 +146,7 @@ export function HomeClient() {
           <div className="text-sm font-semibold uppercase tracking-[0.28em] text-emerald-300">
             LLM Wiki (Demo)
           </div>
-          <h1 className="mt-5 max-w-3xl text-5xl font-semibold leading-tight text-white sm:text-6xl">
+          <h1 className="mt-5 max-w-3xl text-3xl font-bold leading-tight text-white sm:text-4xl">
             Your past knowledge, embedded in every conversation.
           </h1>
           <p className="mt-5 max-w-2xl text-lg leading-8 text-zinc-400">
