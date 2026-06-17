@@ -2,9 +2,7 @@
 
 import { FormEvent, useCallback, useRef, useState } from 'react';
 import {
-  scrapeUrl,
   triggerPipeline,
-  uploadRawFile,
   type PipelineResult,
 } from '@/lib/api';
 
@@ -22,6 +20,7 @@ export function PipelineClient() {
   const [pipelineResult, setPipelineResult] = useState<PipelineResult | null>(null);
   const [loading, setLoading] = useState<string | null>(null); // 'upload' | 'scrape' | 'pipeline'
   const [toasts, setToasts] = useState<Toast[]>([]);
+  const [wipModal, setWipModal] = useState(false);
   const fileRef = useRef<HTMLInputElement>(null);
 
   const addToast = useCallback((message: string, type: Toast['type']) => {
@@ -36,46 +35,13 @@ export function PipelineClient() {
   }, []);
 
   const handleUpload = useCallback(async () => {
-    const file = fileRef.current?.files?.[0];
-    if (!file) {
-      addToast('Please select a .md file first.', 'error');
-      return;
-    }
-    setLoading('upload');
-    try {
-      const result = await uploadRawFile(file);
-      addToast(`Uploaded: ${result.filename} (${result.bytes} bytes)`, 'success');
-      setFileLabel('Choose .md file');
-      if (fileRef.current) fileRef.current.value = '';
-    } catch (err) {
-      addToast(err instanceof Error ? err.message : 'Upload failed', 'error');
-    } finally {
-      setLoading(null);
-    }
-  }, [addToast]);
+    setWipModal(true);
+  }, []);
 
   const handleScrape = useCallback(async (event: FormEvent) => {
     event.preventDefault();
-    const url = scrapeUrlText.trim();
-    if (!url) {
-      addToast('Please enter a URL.', 'error');
-      return;
-    }
-    if (!url.startsWith('http://') && !url.startsWith('https://')) {
-      addToast('URL must start with http:// or https://', 'error');
-      return;
-    }
-    setLoading('scrape');
-    try {
-      const result = await scrapeUrl(url);
-      addToast(`Scraped: ${result.title} → ${result.filename}`, 'success');
-      setScrapeUrlText('');
-    } catch (err) {
-      addToast(err instanceof Error ? err.message : 'Scrape failed', 'error');
-    } finally {
-      setLoading(null);
-    }
-  }, [scrapeUrlText, addToast]);
+    setWipModal(true);
+  }, []);
 
   const handleRunPipeline = useCallback(async () => {
     setLoading('pipeline');
@@ -203,6 +169,34 @@ export function PipelineClient() {
           </div>
         ))}
       </div>
+
+      {/* WIP Modal */}
+      {wipModal ? (
+        <div
+          className="fixed inset-0 z-50 flex items-center justify-center bg-black/70 p-4 backdrop-blur-sm"
+          onClick={() => setWipModal(false)}
+        >
+          <div
+            className="relative rounded-xl border border-white/10 bg-[#151515] p-8 shadow-2xl max-w-sm w-full text-center"
+            onClick={(e) => e.stopPropagation()}
+          >
+            <button
+              onClick={() => setWipModal(false)}
+              className="absolute right-4 top-4 rounded-md p-1 text-zinc-400 transition hover:bg-white/10 hover:text-white"
+              aria-label="Close"
+            >
+              <svg xmlns="http://www.w3.org/2000/svg" width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
+                <line x1="18" y1="6" x2="6" y2="18"/><line x1="6" y1="6" x2="18" y2="18"/>
+              </svg>
+            </button>
+            <div className="text-4xl mb-4">🚧</div>
+            <h2 className="text-xl font-semibold text-white mb-2">功能實作中</h2>
+            <p className="text-sm text-zinc-400">
+              This feature is under development and will be available soon.
+            </p>
+          </div>
+        </div>
+      ) : null}
     </>
   );
 }

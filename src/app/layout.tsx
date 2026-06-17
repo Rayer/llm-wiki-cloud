@@ -3,7 +3,7 @@ import { Shell } from "@/components/Shell";
 import "./globals.css";
 
 export const metadata: Metadata = {
-  title: "LLM Wiki",
+  title: "LLM Wiki (Demo)",
   description: "A searchable frontend for the LLM Wiki knowledge base.",
 };
 

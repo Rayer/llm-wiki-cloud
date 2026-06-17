@@ -144,14 +144,26 @@ export function HomeClient() {
       <section className="grid gap-8 pt-6 lg:grid-cols-[1fr_320px] lg:items-end">
         <div>
           <div className="text-sm font-semibold uppercase tracking-[0.28em] text-emerald-300">
-            LLM Wiki
+            LLM Wiki (Demo)
           </div>
           <h1 className="mt-5 max-w-3xl text-5xl font-semibold leading-tight text-white sm:text-6xl">
-            Search the AI knowledge base.
+            Your past knowledge, embedded in every conversation.
           </h1>
           <p className="mt-5 max-w-2xl text-lg leading-8 text-zinc-400">
             Browse source documents, distilled concepts, and pipeline state from the
             LLM Wiki backend.
+          </p>
+          <p className="mt-3 max-w-2xl text-sm leading-6 text-zinc-500">
+            Inspired by{" "}
+            <a
+              href="https://rayer.idv.tw/blog/?p=1351"
+              target="_blank"
+              rel="noopener noreferrer"
+              className="text-emerald-300 underline hover:text-emerald-200"
+            >
+              Andrej Karpathy&apos;s LLM Wiki concept
+            </a>
+            , remixed with LLM superpowers.
           </p>
           <form onSubmit={onSubmit} className="mt-8 rounded-lg border border-white/10 bg-[#151515] p-3">
             <div className="flex flex-col gap-3 sm:flex-row">

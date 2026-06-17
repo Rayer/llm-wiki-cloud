@@ -13,7 +13,7 @@ export function Shell({ children }: { children: React.ReactNode }) {
       <aside className="fixed inset-y-0 left-0 hidden w-64 border-r border-white/10 bg-[#111111]/95 px-5 py-6 lg:block">
         <Link href="/" className="block">
           <div className="text-sm font-semibold uppercase tracking-[0.28em] text-emerald-300">
-            LLM Wiki
+            LLM Wiki (Demo)
           </div>
           <div className="mt-3 text-2xl font-semibold text-white">Knowledge Portal</div>
         </Link>
@@ -33,7 +33,7 @@ export function Shell({ children }: { children: React.ReactNode }) {
       <header className="sticky top-0 z-20 border-b border-white/10 bg-[#0a0a0a]/90 px-4 py-3 backdrop-blur lg:hidden">
         <div className="flex items-center justify-between">
           <Link href="/" className="font-semibold text-white">
-            LLM Wiki
+            LLM Wiki (Demo)
           </Link>
           <nav className="flex gap-2 text-sm text-zinc-300">
             {navItems.slice(1).map((item) => (
