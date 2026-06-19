@@ -320,9 +320,12 @@ function resolveWikilinks(md: string): string {
     if (secMatch) {
       section = secMatch[1].toLowerCase();
     }
-    out.push(line.replace(/\[\[([^\]]+)\]\]/g, (_, name: string) =>
-      `[${name}](/${section}/${encodeURIComponent(name)})`
-    ));
+    out.push(line.replace(/\[\[([^\]]+)\]\]/g, (_, name: string) => {
+      const parts = name.split('|');
+      const slug = parts[0].trim();
+      const display = (parts[1] || parts[0]).trim();
+      return `[${display}](/${section}/${encodeURIComponent(slug)})`;
+    }));
   }
   return out.join('\n');
 }
