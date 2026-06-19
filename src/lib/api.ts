@@ -38,7 +38,7 @@ export type SearchResponse = {
 
 const API_URL =
   process.env.NEXT_PUBLIC_API_URL ??
-  'https://llm-wiki-cloud-bff.rayer.idv.tw';
+  'https://llm-wiki-bff-dev.rayer.idv.tw';
 
 async function requestJson<T>(path: string): Promise<T> {
   const response = await fetch(`${API_URL}${path}`);
