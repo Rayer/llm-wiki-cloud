@@ -1,6 +1,6 @@
 PROJECT  := llm-wiki-cloud
 REGION   := asia-east1
-IMAGE    := us-docker.pkg.dev/$(PROJECT)/gcr.io/olw-worker
+IMAGE    := gcr.io/$(PROJECT)/olw-worker-fuse
 JOB      := olw-pipeline
 BUCKET   := llm-wiki-data
 USER_ID  := test-user
@@ -20,8 +20,9 @@ deploy:
 		--task-timeout 1800
 
 deploy-fresh:
-	gcloud run jobs delete $(JOB) --region $(REGION) --quiet 2>/dev/null || true
+	gcloud run jobs delete $(JOB) --region $(REGION) --project $(PROJECT) --quiet 2>/dev/null || true
 	gcloud run jobs create $(JOB) \
+		--project $(PROJECT) \
 		--image $(IMAGE) \
 		--region $(REGION) \
 		--memory 2Gi \
@@ -32,6 +33,7 @@ deploy-fresh:
 # ── Run ──────────────────────────────────────────────
 run:
 	gcloud run jobs execute $(JOB) \
+		--project $(PROJECT) \
 		--region $(REGION) \
 		--args run \
 		--update-env-vars "USER_ID=$(USER_ID),PROJECT_ID=$(PROJ_ID)" \
@@ -39,6 +41,7 @@ run:
 
 run-cmd:
 	gcloud run jobs execute $(JOB) \
+		--project $(PROJECT) \
 		--region $(REGION) \
 		--args "$(CMD)" \
 		--update-env-vars "USER_ID=$(USER_ID),PROJECT_ID=$(PROJ_ID)" \
