@@ -1,19 +1,14 @@
-FROM python:3.13-slim
+FROM gcr.io/google.com/cloudsdktool/google-cloud-cli:alpine
 
-WORKDIR /app
+# Install Python + pip
+RUN apk add --no-cache python3 py3-pip
 
-# System deps for google-cloud-sdk and chromadb
-RUN apt-get update && apt-get install -y --no-install-recommends \
-    curl gcc g++ \
-    && rm -rf /var/lib/apt/lists/*
+# Install OLW
+RUN pip3 install --no-cache-dir obsidian-llm-wiki
 
-# Install gcloud (for gsutil, gcloud auth)
-RUN curl -sSL https://sdk.cloud.google.com | bash -s -- --disable-prompts --install-dir=/usr/local
+# Copy entrypoint
+COPY entrypoint.sh /entrypoint.sh
+RUN chmod +x /entrypoint.sh
 
-# Python deps
-COPY requirements.txt .
-RUN pip install --no-cache-dir -r requirements.txt
-
-COPY worker.py watchdog.py ./
-
-ENTRYPOINT ["python3", "worker.py"]
+# GCS FUSE needs /dev/fuse — privileged or --device at runtime
+ENTRYPOINT ["/entrypoint.sh"]
