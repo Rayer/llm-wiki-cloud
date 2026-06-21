@@ -1,6 +1,6 @@
 PROJECT  := llm-wiki-cloud
 REGION   := asia-east1
-IMAGE    := gcr.io/$(PROJECT)/olw-worker
+IMAGE    := us-docker.pkg.dev/$(PROJECT)/gcr.io/olw-worker
 JOB      := olw-pipeline
 BUCKET   := llm-wiki-data
 USER_ID  := test-user
