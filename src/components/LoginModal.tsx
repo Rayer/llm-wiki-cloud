@@ -1,6 +1,7 @@
 'use client';
 
 import { FormEvent, useState } from 'react';
+import { ComingSoonModal } from './ComingSoonModal';
 import { useWorkspace } from './WorkspaceProvider';
 
 export function LoginModal() {
@@ -9,6 +10,7 @@ export function LoginModal() {
   const [password, setPassword] = useState('');
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState('');
+  const [comingSoonOpen, setComingSoonOpen] = useState(false);
 
   if (!loginOpen) return null;
 
@@ -86,8 +88,16 @@ export function LoginModal() {
           >
             Try Demo
           </button>
+          <button
+            type="button"
+            onClick={() => setComingSoonOpen(true)}
+            className="w-full rounded-lg border border-white/10 bg-transparent px-4 py-3 text-sm font-medium text-zinc-300 transition hover:bg-white/10"
+          >
+            Sign Up
+          </button>
         </form>
       </div>
+      <ComingSoonModal open={comingSoonOpen} onClose={() => setComingSoonOpen(false)} />
     </div>
   );
 }
