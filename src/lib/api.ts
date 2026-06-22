@@ -60,11 +60,24 @@ export function buildProjectHeaders(
   };
 }
 
+const DEMO_TOKEN = 'demo-token';
+
 function projectHeaders(json = false): Record<string, string> {
   const token = window.localStorage.getItem(AUTH_TOKEN_KEY);
   const projectId = window.localStorage.getItem(LAST_PROJECT_KEY);
-  if (!token) throw new Error('Please log in to continue.');
   if (!projectId) throw new Error('Please select a project.');
+  
+  // Demo mode: use header-based auth (BFF dev mode)
+  if (token === DEMO_TOKEN) {
+    return {
+      ...(json ? { 'Content-Type': 'application/json' } : {}),
+      'X-User-ID': 'test-user',
+      'X-Project-ID': projectId,
+    };
+  }
+  
+  // Normal mode: JWT Bearer
+  if (!token) throw new Error('Please log in to continue.');
   return buildProjectHeaders(token, projectId, json);
 }
 

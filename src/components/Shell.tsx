@@ -37,84 +37,93 @@ function ShellContent({ children }: { children: React.ReactNode }) {
   } = useWorkspace();
 
   return (
-    <div className="min-h-screen bg-[#0a0a0a] text-zinc-100">
-      <header className="sticky top-0 z-30 border-b border-white/10 bg-[#0a0a0a]/90 backdrop-blur">
-        <div className="mx-auto flex max-w-7xl flex-wrap items-center gap-3 px-4 py-3 sm:px-6">
-          <Link href="/" className="mr-2 shrink-0">
+    <div className="flex min-h-screen bg-[#0a0a0a] text-zinc-100">
+      {/* Sidebar */}
+      {token ? (
+        <aside className="flex w-64 shrink-0 flex-col border-r border-white/10 bg-[#0d0d0d]">
+          <Link href="/" className="block px-5 py-4">
             <div className="text-xs font-semibold uppercase tracking-[0.24em] text-emerald-300">
               LLM Wiki Cloud
             </div>
           </Link>
 
-          <nav className="order-3 flex w-full items-center gap-1 overflow-x-auto text-sm text-zinc-300 md:order-none md:w-auto">
-          {navItems.map((item) => (
-            <Link
-              key={item.href}
-              href={item.href}
-                className="whitespace-nowrap rounded-md px-3 py-2 font-medium transition hover:bg-white/10 hover:text-white"
-            >
-              {item.label}
-            </Link>
-          ))}
+          <nav className="flex flex-col gap-1 px-3 pb-3">
+            {navItems.map((item) => (
+              <Link
+                key={item.href}
+                href={item.href}
+                className="rounded-lg px-3 py-2 text-sm font-medium text-zinc-300 transition hover:bg-white/10 hover:text-white"
+              >
+                {item.label}
+              </Link>
+            ))}
           </nav>
 
-          {token ? (
-            <div className="ml-auto flex items-center gap-2">
-              <label className="sr-only" htmlFor="project-selector">
-                Current project
-              </label>
-              <select
-                id="project-selector"
-                value={currentProject?.id ?? ''}
-                onChange={(event) => selectProject(event.target.value)}
-                disabled={projectsLoading || projects.length === 0}
-                className="max-w-48 rounded-lg border border-white/10 bg-[#171717] px-3 py-2 text-sm font-medium text-white outline-none transition focus:border-emerald-300 disabled:text-zinc-500"
-              >
-                {projects.length === 0 ? <option value="">No projects</option> : null}
-                {projects.map((project) => (
-                  <option key={project.id} value={project.id}>
-                    {project.name}
-                  </option>
-                ))}
-              </select>
+          <div className="mx-3 my-2 border-t border-white/10" />
 
-              <details className="group relative">
-                <summary className="flex size-9 cursor-pointer list-none items-center justify-center rounded-full bg-emerald-300 font-semibold text-black transition hover:bg-emerald-200">
-                  {user?.email.slice(0, 1).toUpperCase() ?? 'U'}
-                  <span className="sr-only">Open user menu</span>
-                </summary>
-                <div className="absolute right-0 mt-2 w-52 rounded-xl border border-white/10 bg-[#171717] p-2 shadow-2xl">
-                  <div className="truncate border-b border-white/10 px-3 py-2 text-xs text-zinc-500">
-                    {user?.email}
-                  </div>
-                  <button
-                    type="button"
-                    onClick={openNewProject}
-                    className="mt-1 block w-full rounded-lg px-3 py-2 text-left text-sm text-zinc-200 transition hover:bg-white/10"
-                  >
-                    New Project
-                  </button>
-                  <button
-                    type="button"
-                    onClick={signOut}
-                    className="block w-full rounded-lg px-3 py-2 text-left text-sm text-zinc-200 transition hover:bg-white/10"
-                  >
-                    Logout
-                  </button>
-                </div>
-              </details>
+          <div className="px-3 pb-2">
+            <p className="px-1 pb-1 text-[10px] font-semibold uppercase tracking-wider text-zinc-600">
+              Projects
+            </p>
+            {projectsLoading ? (
+              <p className="px-3 py-2 text-xs text-zinc-500">Loading…</p>
+            ) : projects.length === 0 ? (
+              <p className="px-3 py-2 text-xs text-zinc-500">No projects</p>
+            ) : (
+              projects.map((project) => (
+                <button
+                  key={project.id}
+                  type="button"
+                  onClick={() => selectProject(project.id)}
+                  className={`w-full rounded-lg px-3 py-2 text-left text-sm transition ${
+                    currentProject?.id === project.id
+                      ? 'bg-emerald-300/10 text-emerald-300 font-medium'
+                      : 'text-zinc-400 hover:bg-white/5 hover:text-white'
+                  }`}
+                >
+                  {project.name}
+                </button>
+              ))
+            )}
+            <button
+              type="button"
+              onClick={openNewProject}
+              className="mt-1 w-full rounded-lg px-3 py-2 text-left text-sm text-zinc-500 transition hover:bg-white/10 hover:text-zinc-300"
+            >
+              + New Project
+            </button>
+          </div>
+
+          <div className="mt-auto border-t border-white/10 px-3 py-3">
+            <div className="flex items-center gap-3">
+              <div className="flex size-8 shrink-0 items-center justify-center rounded-full bg-emerald-300 text-xs font-semibold text-black">
+                {user?.email.slice(0, 1).toUpperCase() ?? 'U'}
+              </div>
+              <div className="min-w-0">
+                <p className="truncate text-sm font-medium text-white">
+                  {user?.email ?? 'User'}
+                </p>
+                <button
+                  type="button"
+                  onClick={signOut}
+                  className="text-xs text-zinc-500 hover:text-zinc-300"
+                >
+                  Logout
+                </button>
+              </div>
             </div>
-          ) : null}
-        </div>
-      </header>
+          </div>
+        </aside>
+      ) : null}
 
-      <main className="mx-auto min-h-[calc(100vh-65px)] max-w-6xl px-4 py-8 sm:px-6 lg:px-10">
+      {/* Main content */}
+      <main className="flex-1 min-w-0">
         {!hydrated ? (
-          <div className="flex min-h-[60vh] items-center justify-center text-sm text-zinc-500">
+          <div className="flex min-h-screen items-center justify-center text-sm text-zinc-500">
             Loading workspace…
           </div>
         ) : token && projectsLoading ? (
-          <div className="flex min-h-[60vh] items-center justify-center text-sm text-zinc-500">
+          <div className="flex min-h-screen items-center justify-center text-sm text-zinc-500">
             Loading projects…
           </div>
         ) : token && projectsError && projects.length === 0 ? (
@@ -132,7 +141,9 @@ function ShellContent({ children }: { children: React.ReactNode }) {
         ) : token && projects.length === 0 ? (
           <ProjectEmptyState />
         ) : token && currentProject ? (
-          children
+          <div className="px-4 py-8 sm:px-6 lg:px-10 max-w-6xl mx-auto">
+            {children}
+          </div>
         ) : null}
       </main>
 
