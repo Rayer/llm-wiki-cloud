@@ -30,6 +30,7 @@ function ShellContent({ children }: { children: React.ReactNode }) {
     currentProject,
     projectsLoading,
     projectsError,
+    isDemo,
     selectProject,
     refreshProjects,
     openNewProject,
@@ -85,13 +86,19 @@ function ShellContent({ children }: { children: React.ReactNode }) {
                 </button>
               ))
             )}
-            <button
-              type="button"
-              onClick={openNewProject}
-              className="mt-1 w-full rounded-lg px-3 py-2 text-left text-sm text-zinc-500 transition hover:bg-white/10 hover:text-zinc-300"
-            >
-              + New Project
-            </button>
+            {isDemo ? (
+              <p className="mt-1 rounded-lg px-3 py-2 text-xs text-zinc-600">
+                Demo mode — new projects disabled
+              </p>
+            ) : (
+              <button
+                type="button"
+                onClick={openNewProject}
+                className="mt-1 w-full rounded-lg px-3 py-2 text-left text-sm text-zinc-500 transition hover:bg-white/10 hover:text-zinc-300"
+              >
+                + New Project
+              </button>
+            )}
           </div>
 
           <div className="mt-auto border-t border-white/10 px-3 py-3">

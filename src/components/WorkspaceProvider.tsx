@@ -37,6 +37,7 @@ type WorkspaceContextValue = {
   projectsError: string;
   loginOpen: boolean;
   newProjectOpen: boolean;
+  isDemo: boolean;
   signIn: (email: string, password: string) => Promise<void>;
   demoSignIn: () => void;
   signOut: () => void;
@@ -161,6 +162,7 @@ export function WorkspaceProvider({ children }: { children: ReactNode }) {
     projectsError,
     loginOpen: hydrated && !token,
     newProjectOpen,
+    isDemo: token === 'demo-token',
     signIn,
     demoSignIn,
     signOut,
