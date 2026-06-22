@@ -14,6 +14,8 @@ import {
   getStoredUser,
   login,
   logout,
+  AUTH_TOKEN_KEY,
+  AUTH_USER_KEY,
   type AuthUser,
   type LoginResponse,
 } from '@/lib/auth';
@@ -36,6 +38,7 @@ type WorkspaceContextValue = {
   loginOpen: boolean;
   newProjectOpen: boolean;
   signIn: (email: string, password: string) => Promise<void>;
+  demoSignIn: () => void;
   signOut: () => void;
   selectProject: (projectId: string) => void;
   addProject: (name: string) => Promise<Project>;
@@ -109,6 +112,20 @@ export function WorkspaceProvider({ children }: { children: ReactNode }) {
     setNewProjectOpen(false);
   }, []);
 
+  const demoSignIn = useCallback(() => {
+    const demoToken = 'demo-token';
+    const demoUser: AuthUser = { id: 'test-user', email: 'demo@llm.wiki' };
+    window.localStorage.setItem(AUTH_TOKEN_KEY, demoToken);
+    window.localStorage.setItem(AUTH_USER_KEY, JSON.stringify(demoUser));
+    const demoProject: Project = { id: 'demo', name: 'Demo (Lifestyle Wiki)' };
+    setToken(demoToken);
+    setUser(demoUser);
+    setProjects([demoProject]);
+    setCurrentProject(demoProject);
+    window.localStorage.setItem(LAST_PROJECT_KEY, demoProject.id);
+    setProjectsError('');
+  }, []);
+
   const selectProject = useCallback((projectId: string) => {
     const selected = projects.find((project) => project.id === projectId);
     if (!selected) return;
@@ -145,6 +162,7 @@ export function WorkspaceProvider({ children }: { children: ReactNode }) {
     loginOpen: hydrated && !token,
     newProjectOpen,
     signIn,
+    demoSignIn,
     signOut,
     selectProject,
     addProject,
@@ -162,6 +180,7 @@ export function WorkspaceProvider({ children }: { children: ReactNode }) {
     refreshProjects,
     selectProject,
     signIn,
+    demoSignIn,
     signOut,
     token,
     user,

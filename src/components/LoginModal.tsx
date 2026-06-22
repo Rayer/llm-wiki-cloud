@@ -4,7 +4,7 @@ import { FormEvent, useState } from 'react';
 import { useWorkspace } from './WorkspaceProvider';
 
 export function LoginModal() {
-  const { loginOpen, signIn } = useWorkspace();
+  const { loginOpen, signIn, demoSignIn } = useWorkspace();
   const [email, setEmail] = useState('');
   const [password, setPassword] = useState('');
   const [loading, setLoading] = useState(false);
@@ -78,6 +78,13 @@ export function LoginModal() {
             className="w-full rounded-lg bg-emerald-300 px-4 py-3 font-semibold text-black transition hover:bg-emerald-200 disabled:cursor-not-allowed disabled:opacity-60"
           >
             {loading ? 'Signing in…' : 'Sign in'}
+          </button>
+          <button
+            type="button"
+            onClick={demoSignIn}
+            className="w-full rounded-lg border border-white/10 bg-transparent px-4 py-3 text-sm font-medium text-zinc-300 transition hover:bg-white/10"
+          >
+            Try Demo
           </button>
         </form>
       </div>
