@@ -38,10 +38,40 @@ export type SearchResponse = {
 
 const API_URL =
   process.env.NEXT_PUBLIC_API_URL ??
-  'https://llm-wiki-bff-dev-580854833715.asia-east1.run.app';
+  'https://llm-wiki-bff-dev.rayer.idv.tw';
+
+const AUTH_TOKEN_KEY = 'llm-wiki-auth-token';
+const LAST_PROJECT_KEY = 'llm-wiki-last-project';
+
+export function toV1Path(path: string): string {
+  if (path.startsWith('/api/v1/')) return path;
+  return path.startsWith('/api/') ? `/api/v1/${path.slice('/api/'.length)}` : path;
+}
+
+export function buildProjectHeaders(
+  token: string,
+  projectId: string,
+  json = false,
+): Record<string, string> {
+  return {
+    Authorization: `Bearer ${token}`,
+    ...(json ? { 'Content-Type': 'application/json' } : {}),
+    'X-Project-ID': projectId,
+  };
+}
+
+function projectHeaders(json = false): Record<string, string> {
+  const token = window.localStorage.getItem(AUTH_TOKEN_KEY);
+  const projectId = window.localStorage.getItem(LAST_PROJECT_KEY);
+  if (!token) throw new Error('Please log in to continue.');
+  if (!projectId) throw new Error('Please select a project.');
+  return buildProjectHeaders(token, projectId, json);
+}
 
 async function requestJson<T>(path: string): Promise<T> {
-  const response = await fetch(`${API_URL}${path}`);
+  const response = await fetch(`${API_URL}${toV1Path(path)}`, {
+    headers: projectHeaders(),
+  });
 
   if (!response.ok) {
     throw new Error(`API request failed (${response.status})`);
@@ -51,9 +81,9 @@ async function requestJson<T>(path: string): Promise<T> {
 }
 
 async function postJson<T>(path: string, body: unknown): Promise<T> {
-  const response = await fetch(`${API_URL}${path}`, {
+  const response = await fetch(`${API_URL}${toV1Path(path)}`, {
     method: 'POST',
-    headers: { 'Content-Type': 'application/json' },
+    headers: projectHeaders(true),
     body: JSON.stringify(body),
   });
 
@@ -251,8 +281,9 @@ export type PipelineResult = {
 export async function uploadRawFile(file: File): Promise<RawUploadResult> {
   const formData = new FormData();
   formData.append('file', file);
-  const response = await fetch(`${API_URL}/api/raw/upload`, {
+  const response = await fetch(`${API_URL}/api/v1/raw/upload`, {
     method: 'POST',
+    headers: projectHeaders(),
     body: formData,
   });
   if (!response.ok) {
@@ -263,9 +294,9 @@ export async function uploadRawFile(file: File): Promise<RawUploadResult> {
 }
 
 export async function scrapeUrl(url: string, filename?: string): Promise<ScrapeResult> {
-  const response = await fetch(`${API_URL}/api/raw/scrape`, {
+  const response = await fetch(`${API_URL}/api/v1/raw/scrape`, {
     method: 'POST',
-    headers: { 'Content-Type': 'application/json' },
+    headers: projectHeaders(true),
     body: JSON.stringify({ url, filename }),
   });
   if (!response.ok) {
@@ -276,8 +307,9 @@ export async function scrapeUrl(url: string, filename?: string): Promise<ScrapeR
 }
 
 export async function triggerPipeline(): Promise<PipelineResult> {
-  const response = await fetch(`${API_URL}/api/pipeline/run`, {
+  const response = await fetch(`${API_URL}/api/v1/pipeline/run`, {
     method: 'POST',
+    headers: projectHeaders(true),
   });
   if (!response.ok) {
     const error = await response.json().catch(() => ({ error: 'Pipeline trigger failed' }));
@@ -287,9 +319,9 @@ export async function triggerPipeline(): Promise<PipelineResult> {
 }
 
 export async function generateTitle(content: string): Promise<string> {
-  const response = await fetch(`${API_URL}/api/raw/generate-title`, {
+  const response = await fetch(`${API_URL}/api/v1/raw/generate-title`, {
     method: 'POST',
-    headers: { 'Content-Type': 'application/json' },
+    headers: projectHeaders(true),
     body: JSON.stringify({ content }),
   });
   if (!response.ok) return 'Untitled';
