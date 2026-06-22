@@ -1,11 +1,7 @@
 FROM alpine:latest
 
-# Install gcsfuse + Python + pip (all in one layer)
-RUN apk add --no-cache \
-    gcsfuse \
-    python3 \
-    py3-pip \
-    && rm -rf /var/cache/apk/*
+# Install Python + pip (no gcsfuse needed — CSI mount handles it)
+RUN apk add --no-cache python3 py3-pip && rm -rf /var/cache/apk/*
 
 # Install OLW
 RUN pip3 install --break-system-packages --no-cache-dir obsidian-llm-wiki

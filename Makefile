@@ -6,18 +6,22 @@ BUCKET   := llm-wiki-data
 USER_ID  := test-user
 PROJ_ID  := demo
 
-.PHONY: build deploy deploy-fresh run logs status clean all
+.PHONY: build deploy run logs status deploy-fresh
 
-# ── Build & Push ────────────────────────────────────
 build:
-	gcloud builds submit --tag $(IMAGE) --timeout=600 .
+	gcloud builds submit --tag $(IMAGE) --project $(PROJECT) --quiet
 
-# ── Deploy ──────────────────────────────────────────
 deploy:
 	gcloud run jobs update $(JOB) \
-		--region $(REGION) \
+		--project $(PROJECT) \
 		--image $(IMAGE) \
-		--task-timeout 1800
+		--region $(REGION) \
+		--memory 2Gi \
+		--task-timeout 1800 \
+		--max-retries 1 \
+		--add-volume name=wiki-data,type=cloud-storage,bucket=$(BUCKET) \
+		--add-volume-mount volume=wiki-data,mount-path=/data \
+		--quiet
 
 deploy-fresh:
 	gcloud run jobs delete $(JOB) --region $(REGION) --project $(PROJECT) --quiet 2>/dev/null || true
@@ -28,9 +32,10 @@ deploy-fresh:
 		--memory 2Gi \
 		--task-timeout 1800 \
 		--max-retries 1 \
-		--set-env-vars "BUCKET=$(BUCKET)"
+		--add-volume name=wiki-data,type=cloud-storage,bucket=$(BUCKET) \
+		--add-volume-mount volume=wiki-data,mount-path=/data \
+		--quiet
 
-# ── Run ──────────────────────────────────────────────
 run:
 	gcloud run jobs execute $(JOB) \
 		--project $(PROJECT) \
@@ -39,39 +44,9 @@ run:
 		--update-env-vars "USER_ID=$(USER_ID),PROJECT_ID=$(PROJ_ID)" \
 		--wait
 
-run-cmd:
-	gcloud run jobs execute $(JOB) \
-		--project $(PROJECT) \
-		--region $(REGION) \
-		--args "$(CMD)" \
-		--update-env-vars "USER_ID=$(USER_ID),PROJECT_ID=$(PROJ_ID)" \
-		--wait
-
-# ── Logs ─────────────────────────────────────────────
 logs:
-	@gcloud run jobs executions list --job=$(JOB) --region=$(REGION) --limit=5 2>&1; \
-	echo; \
-	echo "Usage: make logs-id ID=<execution-id>"
+	gcloud logging read "resource.type=cloud_run_job AND resource.labels.job_name=$(JOB)" \
+		--project $(PROJECT) --freshness=1h --limit=20 --format "value(textPayload)"
 
-logs-id:
-	gcloud logging read \
-		"resource.type=cloud_run_job AND labels.\"run.googleapis.com/execution_name\"=$(ID)" \
-		--limit=40 --format="table(textPayload)"
-
-# ── Clean ────────────────────────────────────────────
-clean:
-	gcloud run jobs delete $(JOB) --region $(REGION) --quiet
-
-# ── Status ───────────────────────────────────────────
 status:
-	@echo "=== GCS ==="
-	@gsutil ls -r gs://$(BUCKET)/users/$(USER_ID)/projects/$(PROJ_ID)/wiki/ 2>&1 | tail -10
-	@echo
-	@echo "=== Cloud Run Job ==="
-	@gcloud run jobs describe $(JOB) --region $(REGION) --format="table(name,status.conditions)" 2>&1 | head -4
-	@echo
-	@echo "=== Recent executions ==="
-	@gcloud run jobs executions list --job=$(JOB) --region=$(REGION) --limit=3 2>&1
-
-# ── Full cycle ───────────────────────────────────────
-all: build deploy run
+	gcloud run jobs executions list --job $(JOB) --region $(REGION) --project $(PROJECT) --limit=5
