@@ -1,0 +1,43 @@
+{
+  "Login": {
+    "title": "Sign In",
+    "subtitle": "Access your projects and knowledge workspace.",
+    "email": "Email",
+    "password": "Password",
+    "signIn": "Sign in",
+    "tryDemo": "Try Demo",
+    "signUp": "Sign Up",
+    "signingIn": "Signing in…",
+    "error": "Login failed"
+  },
+  "ComingSoon": {
+    "title": "Coming Soon",
+    "body": "Registration will be available in a future update.",
+    "ok": "OK"
+  },
+  "Shell": {
+    "search": "Search",
+    "sources": "Sources",
+    "concepts": "Concepts",
+    "status": "Status",
+    "projects": "Projects",
+    "newProject": "+ New Project",
+    "logout": "Logout",
+    "demoDisabled": "Demo mode — new projects disabled",
+    "loading": "Loading…",
+    "noProjects": "No projects"
+  },
+  "Demo": {
+    "heading": "Your past knowledge, embedded in every conversation.",
+    "searchPlaceholder": "Places to take kids in New Taipei",
+    "wiki": "Wiki",
+    "full": "Full",
+    "search": "Search",
+    "addContent": "Add Content",
+    "uploadFile": "Upload File",
+    "scrapeUrl": "Scrape URL",
+    "pipeline": "Pipeline",
+    "sources": "Sources",
+    "concepts": "Concepts"
+  }
+}
