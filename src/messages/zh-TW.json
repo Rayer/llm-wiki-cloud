@@ -11,10 +11,12 @@
     "signingIn": "登入中…",
     "error": "登入失敗"
   },
-  "ComingSoon": {
-    "title": "敬請期待",
-    "body": "註冊功能將在未來版本中推出。",
-    "ok": "確定"
+  "Register": {
+    "title": "註冊",
+    "subtitle": "建立帳號以開始使用",
+    "signUp": "建立帳號",
+    "registering": "註冊中…",
+    "backToLogin": "← 返回登入"
   },
   "Shell": {
     "search": "搜尋",

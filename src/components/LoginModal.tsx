@@ -2,17 +2,17 @@
 
 import { FormEvent, useState } from 'react';
 import { useLocale } from '@/lib/i18n';
-import { ComingSoonModal } from './ComingSoonModal';
+import { RegisterModal } from './RegisterModal';
 import { useWorkspace } from './WorkspaceProvider';
 
 export function LoginModal() {
-  const { loginOpen, signIn, demoSignIn } = useWorkspace();
+  const { loginOpen, signIn, demoSignIn, registerUser } = useWorkspace();
   const { t } = useLocale();
   const [email, setEmail] = useState('');
   const [password, setPassword] = useState('');
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState('');
-  const [comingSoonOpen, setComingSoonOpen] = useState(false);
+  const [registerOpen, setRegisterOpen] = useState(false);
 
   if (!loginOpen) return null;
 
@@ -27,6 +27,11 @@ export function LoginModal() {
     } finally {
       setLoading(false);
     }
+  }
+
+  function handleRegisterSuccess(token: string, user: { id: string; email: string }) {
+    registerUser(token, user);
+    setRegisterOpen(false);
   }
 
   return (
@@ -51,9 +56,7 @@ export function LoginModal() {
           <label className="block text-sm font-medium text-zinc-300">
             {t('Login.email')}
             <input
-              type="email"
-              autoComplete="email"
-              required
+              type="email" autoComplete="email" required
               value={email}
               onChange={(event) => setEmail(event.target.value)}
               className="mt-2 w-full rounded-lg border border-white/10 bg-black/30 px-4 py-3 text-white outline-none transition placeholder:text-zinc-600 focus:border-emerald-300"
@@ -63,9 +66,7 @@ export function LoginModal() {
           <label className="block text-sm font-medium text-zinc-300">
             {t('Login.password')}
             <input
-              type="password"
-              autoComplete="current-password"
-              required
+              type="password" autoComplete="current-password" required
               value={password}
               onChange={(event) => setPassword(event.target.value)}
               className="mt-2 w-full rounded-lg border border-white/10 bg-black/30 px-4 py-3 text-white outline-none transition focus:border-emerald-300"
@@ -77,29 +78,32 @@ export function LoginModal() {
             </p>
           ) : null}
           <button
-            type="submit"
-            disabled={loading}
+            type="submit" disabled={loading}
             className="w-full rounded-lg bg-emerald-300 px-4 py-3 font-semibold text-black transition hover:bg-emerald-200 disabled:cursor-not-allowed disabled:opacity-60"
           >
             {loading ? t('Login.signingIn') : t('Login.signIn')}
           </button>
           <button
-            type="button"
-            onClick={demoSignIn}
+            type="button" onClick={demoSignIn}
             className="w-full rounded-lg border border-white/10 bg-transparent px-4 py-3 text-sm font-medium text-zinc-300 transition hover:bg-white/10"
           >
             {t('Login.tryDemo')}
           </button>
           <button
-            type="button"
-            onClick={() => setComingSoonOpen(true)}
+            type="button" onClick={() => setRegisterOpen(true)}
             className="w-full rounded-lg border border-white/10 bg-transparent px-4 py-3 text-sm font-medium text-zinc-300 transition hover:bg-white/10"
           >
             {t('Login.signUp')}
           </button>
         </form>
       </div>
-      <ComingSoonModal open={comingSoonOpen} onClose={() => setComingSoonOpen(false)} />
+      {registerOpen && (
+        <RegisterModal
+          t={t}
+          onClose={() => setRegisterOpen(false)}
+          onSuccess={handleRegisterSuccess}
+        />
+      )}
     </div>
   );
 }

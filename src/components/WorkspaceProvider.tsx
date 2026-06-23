@@ -39,6 +39,7 @@ type WorkspaceContextValue = {
   newProjectOpen: boolean;
   isDemo: boolean;
   signIn: (email: string, password: string) => Promise<void>;
+  registerUser: (token: string, user: AuthUser) => void;
   demoSignIn: () => void;
   signOut: () => void;
   selectProject: (projectId: string) => void;
@@ -113,6 +114,13 @@ export function WorkspaceProvider({ children }: { children: ReactNode }) {
     setNewProjectOpen(false);
   }, []);
 
+  const registerUser = useCallback((token: string, u: AuthUser) => {
+    window.localStorage.setItem(AUTH_TOKEN_KEY, token);
+    window.localStorage.setItem(AUTH_USER_KEY, JSON.stringify(u));
+    setToken(token);
+    setUser(u);
+  }, []);
+
   const demoSignIn = useCallback(() => {
     const demoToken = 'demo-token';
     const demoUser: AuthUser = { id: 'test-user', email: 'demo@llm.wiki' };
@@ -164,6 +172,7 @@ export function WorkspaceProvider({ children }: { children: ReactNode }) {
     newProjectOpen,
     isDemo: token === 'demo-token',
     signIn,
+    registerUser,
     demoSignIn,
     signOut,
     selectProject,
@@ -174,10 +183,12 @@ export function WorkspaceProvider({ children }: { children: ReactNode }) {
   }), [
     addProject,
     currentProject,
+    demoSignIn,
     hydrated,
     newProjectOpen,
     projects,
-    projectsError,
+    registerUser,
+    signIn,
     projectsLoading,
     refreshProjects,
     selectProject,

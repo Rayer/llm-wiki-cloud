@@ -11,10 +11,12 @@
     "signingIn": "Signing in…",
     "error": "Login failed"
   },
-  "ComingSoon": {
-    "title": "Coming Soon",
-    "body": "Registration will be available in a future update.",
-    "ok": "OK"
+  "Register": {
+    "title": "Create Account",
+    "subtitle": "Sign up to get started.",
+    "signUp": "Create Account",
+    "registering": "Creating account…",
+    "backToLogin": "← Back to login"
   },
   "Shell": {
     "search": "Search",
@@ -35,9 +37,9 @@
     "full": "Full",
     "search": "Search",
     "addContent": "Add Content",
-    "uploadFile": "Upload File",
-    "scrapeUrl": "Scrape URL",
-    "pipeline": "Pipeline",
+    "uploadFile": "📄 Upload File",
+    "scrapeUrl": "🔗 Scrape URL",
+    "pipeline": "⚙️ Pipeline",
     "sources": "Sources",
     "concepts": "Concepts"
   }
