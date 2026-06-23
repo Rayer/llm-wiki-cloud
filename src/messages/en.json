@@ -1,5 +1,6 @@
 {
   "Login": {
+    "brand": "LLM Wiki Cloud",
     "title": "Sign In",
     "subtitle": "Access your projects and knowledge workspace.",
     "email": "Email",

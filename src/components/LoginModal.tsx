@@ -1,11 +1,13 @@
 'use client';
 
 import { FormEvent, useState } from 'react';
+import { useT } from '@/lib/i18n';
 import { ComingSoonModal } from './ComingSoonModal';
 import { useWorkspace } from './WorkspaceProvider';
 
 export function LoginModal() {
   const { loginOpen, signIn, demoSignIn } = useWorkspace();
+  const { t } = useT();
   const [email, setEmail] = useState('');
   const [password, setPassword] = useState('');
   const [loading, setLoading] = useState(false);
@@ -21,7 +23,7 @@ export function LoginModal() {
     try {
       await signIn(email.trim(), password);
     } catch (submitError) {
-      setError(submitError instanceof Error ? submitError.message : 'Login failed.');
+      setError(submitError instanceof Error ? submitError.message : t('Login.error'));
     } finally {
       setLoading(false);
     }
@@ -36,18 +38,18 @@ export function LoginModal() {
         aria-labelledby="login-title"
       >
         <div className="text-sm font-semibold uppercase tracking-[0.24em] text-emerald-300">
-          LLM Wiki Cloud
+          {t('Login.brand')}
         </div>
         <h1 id="login-title" className="mt-3 text-3xl font-semibold text-white">
-          Sign in
+          {t('Login.title')}
         </h1>
         <p className="mt-2 text-sm leading-6 text-zinc-400">
-          Access your projects and knowledge workspace.
+          {t('Login.subtitle')}
         </p>
 
         <form onSubmit={handleSubmit} className="mt-6 space-y-4">
           <label className="block text-sm font-medium text-zinc-300">
-            Email
+            {t('Login.email')}
             <input
               type="email"
               autoComplete="email"
@@ -59,7 +61,7 @@ export function LoginModal() {
             />
           </label>
           <label className="block text-sm font-medium text-zinc-300">
-            Password
+            {t('Login.password')}
             <input
               type="password"
               autoComplete="current-password"
@@ -79,21 +81,21 @@ export function LoginModal() {
             disabled={loading}
             className="w-full rounded-lg bg-emerald-300 px-4 py-3 font-semibold text-black transition hover:bg-emerald-200 disabled:cursor-not-allowed disabled:opacity-60"
           >
-            {loading ? 'Signing in…' : 'Sign in'}
+            {loading ? t('Login.signingIn') : t('Login.signIn')}
           </button>
           <button
             type="button"
             onClick={demoSignIn}
             className="w-full rounded-lg border border-white/10 bg-transparent px-4 py-3 text-sm font-medium text-zinc-300 transition hover:bg-white/10"
           >
-            Try Demo
+            {t('Login.tryDemo')}
           </button>
           <button
             type="button"
             onClick={() => setComingSoonOpen(true)}
             className="w-full rounded-lg border border-white/10 bg-transparent px-4 py-3 text-sm font-medium text-zinc-300 transition hover:bg-white/10"
           >
-            Sign Up
+            {t('Login.signUp')}
           </button>
         </form>
       </div>

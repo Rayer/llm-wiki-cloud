@@ -1,17 +1,11 @@
 'use client';
 
 import Link from 'next/link';
+import { useT } from '@/lib/i18n';
 import { LoginModal } from './LoginModal';
 import { NewProjectModal } from './NewProjectModal';
 import { ProjectEmptyState } from './ProjectEmptyState';
 import { WorkspaceProvider, useWorkspace } from './WorkspaceProvider';
-
-const navItems = [
-  { href: '/', label: 'Search' },
-  { href: '/sources', label: 'Sources' },
-  { href: '/concepts', label: 'Concepts' },
-  { href: '/status', label: 'Status' },
-];
 
 export function Shell({ children }: { children: React.ReactNode }) {
   return (
@@ -22,6 +16,13 @@ export function Shell({ children }: { children: React.ReactNode }) {
 }
 
 function ShellContent({ children }: { children: React.ReactNode }) {
+  const { t } = useT();
+  const navItems = [
+    { href: '/', label: t('Shell.search') },
+    { href: '/sources', label: t('Shell.sources') },
+    { href: '/concepts', label: t('Shell.concepts') },
+    { href: '/status', label: t('Shell.status') },
+  ];
   const {
     hydrated,
     token,
@@ -64,12 +65,12 @@ function ShellContent({ children }: { children: React.ReactNode }) {
 
           <div className="px-3 pb-2">
             <p className="px-1 pb-1 text-[10px] font-semibold uppercase tracking-wider text-zinc-600">
-              Projects
+              {t('Shell.projects')}
             </p>
             {projectsLoading ? (
-              <p className="px-3 py-2 text-xs text-zinc-500">Loading…</p>
+              <p className="px-3 py-2 text-xs text-zinc-500">{t('Shell.loading')}</p>
             ) : projects.length === 0 ? (
-              <p className="px-3 py-2 text-xs text-zinc-500">No projects</p>
+              <p className="px-3 py-2 text-xs text-zinc-500">{t('Shell.noProjects')}</p>
             ) : (
               projects.map((project) => (
                 <button
@@ -88,7 +89,7 @@ function ShellContent({ children }: { children: React.ReactNode }) {
             )}
             {isDemo ? (
               <p className="mt-1 rounded-lg px-3 py-2 text-xs text-zinc-600">
-                Demo mode — new projects disabled
+                {t('Shell.demoDisabled')}
               </p>
             ) : (
               <button
@@ -96,7 +97,7 @@ function ShellContent({ children }: { children: React.ReactNode }) {
                 onClick={openNewProject}
                 className="mt-1 w-full rounded-lg px-3 py-2 text-left text-sm text-zinc-500 transition hover:bg-white/10 hover:text-zinc-300"
               >
-                + New Project
+                {t('Shell.newProject')}
               </button>
             )}
           </div>
@@ -115,7 +116,7 @@ function ShellContent({ children }: { children: React.ReactNode }) {
                   onClick={signOut}
                   className="text-xs text-zinc-500 hover:text-zinc-300"
                 >
-                  Logout
+                  {t('Shell.logout')}
                 </button>
               </div>
             </div>
@@ -127,11 +128,11 @@ function ShellContent({ children }: { children: React.ReactNode }) {
       <main className="flex-1 min-w-0">
         {!hydrated ? (
           <div className="flex min-h-screen items-center justify-center text-sm text-zinc-500">
-            Loading workspace…
+            {t('Shell.loading')}
           </div>
         ) : token && projectsLoading ? (
           <div className="flex min-h-screen items-center justify-center text-sm text-zinc-500">
-            Loading projects…
+            {t('Shell.loading')}
           </div>
         ) : token && projectsError && projects.length === 0 ? (
           <div className="mx-auto mt-20 max-w-lg rounded-xl border border-red-400/20 bg-red-400/10 p-6 text-center">

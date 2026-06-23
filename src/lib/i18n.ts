@@ -1,22 +1,36 @@
 'use client';
 
-import { useState, useEffect } from 'react';
+import { useSyncExternalStore } from 'react';
 import zhTW from '@/messages/zh-TW.json';
 import en from '@/messages/en.json';
 
 type Locale = 'zh-TW' | 'en';
 
-export function useT() {
-  const [locale, setLocaleState] = useState<Locale>('zh-TW');
+const defaultLocale: Locale = 'zh-TW';
+const localeStorageKey = 'locale';
+const localeChangeEvent = 'locale-change';
 
-  useEffect(() => {
-    const stored = localStorage.getItem('locale') as Locale;
-    if (stored === 'zh-TW' || stored === 'en') setLocaleState(stored);
-  }, []);
+function getLocale(): Locale {
+  const stored = localStorage.getItem(localeStorageKey);
+  return stored === 'en' || stored === 'zh-TW' ? stored : defaultLocale;
+}
+
+function subscribe(onStoreChange: () => void) {
+  window.addEventListener('storage', onStoreChange);
+  window.addEventListener(localeChangeEvent, onStoreChange);
+
+  return () => {
+    window.removeEventListener('storage', onStoreChange);
+    window.removeEventListener(localeChangeEvent, onStoreChange);
+  };
+}
+
+export function useT() {
+  const locale = useSyncExternalStore(subscribe, getLocale, () => defaultLocale);
 
   const setLocale = (l: Locale) => {
-    localStorage.setItem('locale', l);
-    setLocaleState(l);
+    localStorage.setItem(localeStorageKey, l);
+    window.dispatchEvent(new Event(localeChangeEvent));
   };
 
   const t = (key: string): string => {

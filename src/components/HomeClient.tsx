@@ -13,6 +13,7 @@ import {
   type SearchResult,
   type WikiEntry,
 } from '@/lib/api';
+import { useT } from '@/lib/i18n';
 import { EmptyState, ErrorState, LoadingState } from './States';
 
 function readSearchParams(): { q: string; mode: 'wiki' | 'full' } {
@@ -38,6 +39,7 @@ function syncUrl(q: string, mode: 'wiki' | 'full') {
 type ModalEntry = { title: string; content: string; type: string; slug: string };
 
 export function HomeClient() {
+  const { t } = useT();
   const [query, setQuery] = useState('');
   const [mode, setMode] = useState<'wiki' | 'full'>('wiki');
   const [status, setStatus] = useState<ApiStatus | null>(null);
@@ -147,7 +149,7 @@ export function HomeClient() {
             LLM Wiki (Demo)
           </div>
           <h1 className="mt-5 max-w-3xl text-3xl font-bold leading-tight text-white sm:text-4xl">
-            Your past knowledge, embedded in every conversation.
+            {t('Demo.heading')}
           </h1>
           <p className="mt-5 max-w-2xl text-lg leading-8 text-zinc-400">
             Browse source documents, distilled concepts, and pipeline state from the
@@ -170,7 +172,7 @@ export function HomeClient() {
               <input
                 value={query}
                 onChange={(event) => setQuery(event.target.value)}
-                placeholder="新北適合帶小孩放電的地方"
+                placeholder={t('Demo.searchPlaceholder')}
                 className="min-h-12 flex-1 rounded-md border border-white/10 bg-black/40 px-4 text-white outline-none transition placeholder:text-zinc-600 focus:border-emerald-300"
               />
               <div className="grid grid-cols-2 rounded-md border border-white/10 bg-black/30 p-1 text-sm">
@@ -183,7 +185,7 @@ export function HomeClient() {
                       mode === item ? 'bg-emerald-300 text-black' : 'text-zinc-300 hover:text-white'
                     }`}
                   >
-                    {item}
+                    {t(`Demo.${item}`)}
                   </button>
                 ))}
               </div>
@@ -191,7 +193,7 @@ export function HomeClient() {
                 type="submit"
                 className="min-h-12 rounded-md bg-white px-6 font-semibold text-black transition hover:bg-emerald-200"
               >
-                Search
+                {t('Demo.search')}
               </button>
             </div>
           </form>
