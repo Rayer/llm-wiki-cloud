@@ -5,6 +5,10 @@ import { EntryCard } from './EntryCard';
 import { EmptyState, ErrorState, LoadingState } from './States';
 import type { WikiEntry } from '@/lib/api';
 
+// Client-side cache: avoids re-fetching on every navigation.
+// Cleared on page refresh; BFF remains stateless.
+const clientCache = new Map<string, WikiEntry[]>();
+
 export function ListClient({
   title,
   description,
@@ -16,17 +20,21 @@ export function ListClient({
   load: () => Promise<WikiEntry[]>;
   basePath: string;
 }) {
-  const [entries, setEntries] = useState<WikiEntry[]>([]);
-  const [loading, setLoading] = useState(true);
+  const [entries, setEntries] = useState<WikiEntry[]>(clientCache.get(basePath) ?? []);
+  const [loading, setLoading] = useState(!clientCache.has(basePath));
   const [error, setError] = useState('');
   const [search, setSearch] = useState('');
 
   useEffect(() => {
+    if (clientCache.has(basePath)) return;
     load()
-      .then(setEntries)
+      .then((data) => {
+        clientCache.set(basePath, data);
+        setEntries(data);
+      })
       .catch((err: Error) => setError(err.message))
       .finally(() => setLoading(false));
-  }, [load]);
+  }, [load, basePath]);
 
   const filtered = useMemo(() => {
     const q = search.trim().toLowerCase();

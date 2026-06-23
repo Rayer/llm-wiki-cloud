@@ -1,6 +1,6 @@
 'use client';
 
-import { useT } from '@/lib/i18n';
+import { useLocale } from '@/lib/i18n';
 
 interface Props {
   open: boolean;
@@ -8,7 +8,7 @@ interface Props {
 }
 
 export function ComingSoonModal({ open, onClose }: Props) {
-  const { t } = useT();
+  const { t } = useLocale();
 
   if (!open) return null;
 

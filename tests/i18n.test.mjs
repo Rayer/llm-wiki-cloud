@@ -20,7 +20,7 @@ test('English and Traditional Chinese catalogs expose the same translation keys'
   }
 });
 
-test('requested frontend components read their copy from the useT hook', async () => {
+test('requested frontend components read their copy from the locale hook', async () => {
   const [loginModal, comingSoonModal, shell, homeClient, i18n] = await Promise.all([
     readFile(new URL('../src/components/LoginModal.tsx', import.meta.url), 'utf8'),
     readFile(new URL('../src/components/ComingSoonModal.tsx', import.meta.url), 'utf8'),
@@ -30,10 +30,11 @@ test('requested frontend components read their copy from the useT hook', async (
   ]);
 
   assert.match(i18n, /export function useT/);
-  assert.match(loginModal, /useT\(\)/);
+  assert.match(i18n, /export const useLocale = useT/);
+  assert.match(loginModal, /useLocale\(\)/);
   assert.match(loginModal, /t\('Login\.brand'\)/);
   assert.match(loginModal, /t\('Login\.signUp'\)/);
-  assert.match(comingSoonModal, /useT\(\)/);
+  assert.match(comingSoonModal, /useLocale\(\)/);
   assert.match(comingSoonModal, /t\('ComingSoon\.title'\)/);
   assert.match(shell, /useT\(\)/);
   assert.match(shell, /t\('Shell\.search'\)/);

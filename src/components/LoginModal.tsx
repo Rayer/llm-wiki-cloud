@@ -1,13 +1,13 @@
 'use client';
 
 import { FormEvent, useState } from 'react';
-import { useT } from '@/lib/i18n';
+import { useLocale } from '@/lib/i18n';
 import { ComingSoonModal } from './ComingSoonModal';
 import { useWorkspace } from './WorkspaceProvider';
 
 export function LoginModal() {
   const { loginOpen, signIn, demoSignIn } = useWorkspace();
-  const { t } = useT();
+  const { t } = useLocale();
   const [email, setEmail] = useState('');
   const [password, setPassword] = useState('');
   const [loading, setLoading] = useState(false);

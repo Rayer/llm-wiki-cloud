@@ -42,3 +42,5 @@ export function useT() {
 
   return { locale, t, setLocale };
 }
+
+export const useLocale = useT;
