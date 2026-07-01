@@ -18,10 +18,10 @@ from urllib import request, error as urllib_error
 
 
 # ── Config ──────────────────────────────────────────────────────────
-PROJECT = os.environ["GCP_PROJECT"]  # llm-wiki-cloud
-BUCKET = os.environ["BUCKET"]
-USER_ID = os.environ["USER_ID"]
-PROJECT_ID = os.environ["PROJECT_ID"]
+PROJECT = os.environ.get("GCP_PROJECT", "llm-wiki-cloud")
+BUCKET = os.environ.get("BUCKET", "llm-wiki-data")
+USER_ID = os.environ.get("USER_ID", "test-user")
+PROJECT_ID = os.environ.get("PROJECT_ID", "demo")
 LOCK_TTL_MIN = 15
 
 FIRESTORE_BASE = (
@@ -45,12 +45,13 @@ def run(cmd: list[str], **kwargs) -> subprocess.CompletedProcess:
 
 
 def get_access_token() -> str:
-    """Get GCP access token from the default service account."""
-    result = run(
-        ["gcloud", "auth", "print-access-token"],
-        capture_output=True,
+    """Get GCP access token from Cloud Run metadata server."""
+    req = request.Request(
+        "http://metadata.google.internal/computeMetadata/v1/instance/service-accounts/default/token",
+        headers={"Metadata-Flavor": "Google"},
     )
-    return result.stdout.strip()
+    with request.urlopen(req) as resp:
+        return json.loads(resp.read())["access_token"]
 
 
 def firestore_request(method: str, url: str, token: str, body: dict | None = None) -> dict:
@@ -71,16 +72,14 @@ def firestore_request(method: str, url: str, token: str, body: dict | None = Non
 
 
 def read_secret(name: str) -> str:
-    """Read a secret from GCP Secret Manager."""
-    result = run(
-        [
-            "gcloud", "secrets", "versions", "access", "latest",
-            "--secret", name,
-            "--project", PROJECT,
-        ],
-        capture_output=True,
-    )
-    return result.stdout.strip()
+    """Read a secret from GCP Secret Manager using REST API."""
+    token = get_access_token()
+    url = f"https://secretmanager.googleapis.com/v1/projects/{PROJECT}/secrets/{name}/versions/latest:access"
+    req = request.Request(url)
+    req.add_header("Authorization", f"Bearer {token}")
+    with request.urlopen(req) as resp:
+        payload = json.loads(resp.read()).get("payload", {})
+        return base64.b64decode(payload.get("data", "")).decode()
 
 
 # ── Lock ─────────────────────────────────────────────────────────────
@@ -261,6 +260,26 @@ def run_olw():
     print(f"Wiki files generated: {len(wiki_sources)}")
 
 
+def rebuild_index():
+    """Best-effort: call BFF API to rebuild id_map.json index after pipeline."""
+    print("Rebuilding index via BFF...")
+    try:
+        token = get_access_token()
+        rebuild_url = "https://llm-wiki-bff-dev-580854833715.asia-east1.run.app/api/v1/pipeline/rebuild-index"
+        req = request.Request(rebuild_url, method="POST")
+        req.add_header("Content-Type", "application/json")
+        req.add_header("Authorization", f"Bearer {token}")
+        req.add_header("X-User-ID", USER_ID)
+        req.add_header("X-Project-ID", PROJECT_ID)
+        resp = request.urlopen(req, timeout=30)
+        if resp.status == 200:
+            print("Index rebuilt.")
+        else:
+            print(f"Warning: rebuild-index returned {resp.status}")
+    except Exception as e:
+        print(f"Warning: rebuild-index failed (non-fatal): {e}")
+
+
 # ── Execution tracking ────────────────────────────────────────────────
 
 def record_execution_start(token: str) -> str:
@@ -358,33 +377,57 @@ def main():
     pipeline_started_at = datetime.now(timezone.utc)
     success = False
     try:
-        # 2. Sync from GCS
-        print("Syncing data from GCS...")
+        # 2. Set up data dirs via symlinks (GCS is already mounted at /data/)
+        #    .olw uses local tmpfs because gcsfuse doesn't support SQLite random writes
+        print("Setting up data dirs from GCS mount...")
         DATA_DIR.mkdir(parents=True, exist_ok=True)
-        for d in ["raw", "wiki", ".olw"]:
-            (DATA_DIR / d).mkdir(parents=True, exist_ok=True)
+        import shutil
 
-        subprocess.run(
-            ["gsutil", "-m", "rsync", "-r",
-             f"gs://{BUCKET}/{RAW_PATH}/", str(DATA_DIR / "raw/")],
-            check=True, capture_output=True,
-        )
-        subprocess.run(
-            ["gsutil", "-m", "rsync", "-r",
-             f"gs://{BUCKET}/{WIKI_PATH}/", str(DATA_DIR / "wiki/")],
-            check=True, capture_output=True,
-        )
-        # Restore OLW state
-        result = subprocess.run(
-            ["gsutil", "-m", "rsync", "-r",
-             f"gs://{BUCKET}/users/{USER_ID}/projects/{PROJECT_ID}/.olw/",
-             str(DATA_DIR / ".olw/")],
-            capture_output=True,
-        )
-        if result.returncode == 0:
-            print("State restored.")
+        RAW_PATH_FULL = f"users/{USER_ID}/projects/{PROJECT_ID}/raw"
+        WIKI_PATH_FULL = f"users/{USER_ID}/projects/{PROJECT_ID}/wiki"
+        OLW_STATE_GCS = f"users/{USER_ID}/projects/{PROJECT_ID}/.olw"
+        LOCAL_OLW = Path("/tmp/.olw")
+
+        real_raw = DATA_DIR / RAW_PATH_FULL
+        real_wiki = DATA_DIR / WIKI_PATH_FULL
+
+        symlink_raw = DATA_DIR / "raw"
+        symlink_wiki = DATA_DIR / "wiki"
+
+        # Clean up old symlinks
+        for s in [str(symlink_raw), str(symlink_wiki)]:
+            try:
+                os.unlink(s)
+            except (FileNotFoundError, OSError):
+                pass
+
+        real_raw.mkdir(parents=True, exist_ok=True)
+        real_wiki.mkdir(parents=True, exist_ok=True)
+
+        symlink_raw.symlink_to(real_raw, target_is_directory=True)
+        symlink_wiki.symlink_to(real_wiki, target_is_directory=True)
+
+        # .olw: copy from GCS to local tmpfs, try symlink (may fail if gcsfuse race)
+        if LOCAL_OLW.exists():
+            shutil.rmtree(LOCAL_OLW)
+        gcs_olw = DATA_DIR / OLW_STATE_GCS
+        if gcs_olw.is_dir():
+            print("Copying .olw state from GCS to local tmpfs...")
+            shutil.copytree(str(gcs_olw), str(LOCAL_OLW), symlinks=False,
+                            dirs_exist_ok=True)
         else:
-            print("No prior state (fresh run).")
+            LOCAL_OLW.mkdir(parents=True, exist_ok=True)
+        try:
+            DATA_DIR.joinpath(".olw").symlink_to(LOCAL_OLW, target_is_directory=True)
+        except FileExistsError:
+            # Previous run may have left a directory or stale symlink
+            p = DATA_DIR.joinpath(".olw")
+            if p.is_symlink() or p.is_file():
+                os.unlink(str(p))
+            else:
+                shutil.rmtree(str(p), ignore_errors=True)
+            DATA_DIR.joinpath(".olw").symlink_to(LOCAL_OLW, target_is_directory=True)
+        print("Data dirs ready.")
 
         raw_files = list((DATA_DIR / "raw").glob("*.md"))
         print(f"Raw files: {len(raw_files)}")
@@ -406,29 +449,17 @@ def main():
         print("Running OLW pipeline...")
         run_olw()
 
-        # 6. Sync results back
-        print("Syncing results back to GCS...")
-        subprocess.run(
-            ["gsutil", "-m", "rsync", "-r",
-             str(DATA_DIR / "wiki/"), f"gs://{BUCKET}/{WIKI_PATH}/"],
-            check=True, capture_output=True,
-        )
-        subprocess.run(
-            ["gsutil", "-m", "rsync", "-r",
-             str(DATA_DIR / ".olw/"),
-             f"gs://{BUCKET}/users/{USER_ID}/projects/{PROJECT_ID}/.olw/"],
-            check=True, capture_output=True,
-        )
-        # Fix Content-Type charset for GCS web console
-        subprocess.run(
-            ["gsutil", "-m", "setmeta", "-r",
-             "-h", "Content-Type:text/markdown; charset=utf-8",
-             f"gs://{BUCKET}/{WIKI_PATH}/**/*.md"],
-            capture_output=True,
-        )
+        # 6. Persist .olw state back to GCS, flush gcsfuse cache
+        print("Persisting .olw state back to GCS...")
+        if LOCAL_OLW.is_dir():
+            shutil.copytree(str(LOCAL_OLW), str(gcs_olw), symlinks=True,
+                            dirs_exist_ok=True)
+        import os as _os
+        _os.sync()  # flush gcsfuse cache
 
-        print("=== Done ===")
+        print("=== Done ===")      
         success = True
+        rebuild_index()
 
     finally:
         release_lock(lock_token)
