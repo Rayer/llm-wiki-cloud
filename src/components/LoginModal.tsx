@@ -1,18 +1,30 @@
 'use client';
 
-import { FormEvent, useState } from 'react';
+import { FormEvent, useCallback, useState } from 'react';
 import { useLocale } from '@/lib/i18n';
 import { RegisterModal } from './RegisterModal';
 import { useWorkspace } from './WorkspaceProvider';
 
 export function LoginModal() {
-  const { loginOpen, signIn, demoSignIn, registerUser } = useWorkspace();
+  const { loginOpen, signIn } = useWorkspace();
   const { t } = useLocale();
   const [email, setEmail] = useState('');
   const [password, setPassword] = useState('');
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState('');
   const [registerOpen, setRegisterOpen] = useState(false);
+
+  const handleDemo = useCallback(async () => {
+    setLoading(true);
+    setError('');
+    try {
+      await signIn('test@example.com', 'test123');
+    } catch {
+      setError(t('Login.demoError'));
+    } finally {
+      setLoading(false);
+    }
+  }, [signIn, t]);
 
   if (!loginOpen) return null;
 
@@ -27,11 +39,6 @@ export function LoginModal() {
     } finally {
       setLoading(false);
     }
-  }
-
-  function handleRegisterSuccess(token: string, user: { id: string; email: string }) {
-    registerUser(token, user);
-    setRegisterOpen(false);
   }
 
   return (
@@ -84,8 +91,8 @@ export function LoginModal() {
             {loading ? t('Login.signingIn') : t('Login.signIn')}
           </button>
           <button
-            type="button" onClick={demoSignIn}
-            className="w-full rounded-lg border border-white/10 bg-transparent px-4 py-3 text-sm font-medium text-zinc-300 transition hover:bg-white/10"
+            type="button" onClick={handleDemo}
+            className="w-full rounded-lg border border-emerald-400/20 bg-emerald-400/10 px-4 py-3 text-sm font-medium text-emerald-200 transition hover:bg-emerald-400/20"
           >
             {t('Login.tryDemo')}
           </button>
@@ -101,7 +108,7 @@ export function LoginModal() {
         <RegisterModal
           t={t}
           onClose={() => setRegisterOpen(false)}
-          onSuccess={handleRegisterSuccess}
+          onSuccess={() => setRegisterOpen(false)}
         />
       )}
     </div>

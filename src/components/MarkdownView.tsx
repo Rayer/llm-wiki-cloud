@@ -182,8 +182,10 @@ function renderInline(text: string): ReactNode[] {
     }
     const link = /^\[([^\]]+)\]\(([^)]+)\)$/.exec(part);
     if (link) {
+      const href = link[2];
+      const isExternal = /^https?:/.test(href);
       return (
-        <a key={index} href={link[2]} target="_blank" rel="noreferrer">
+        <a key={index} href={href} {...(isExternal ? { target: '_blank', rel: 'noreferrer' } : {})}>
           {link[1]}
         </a>
       );

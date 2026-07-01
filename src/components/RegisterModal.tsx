@@ -1,16 +1,16 @@
 'use client';
 
 import { FormEvent, useState } from 'react';
+import { useWorkspace } from './WorkspaceProvider';
 
 interface Props {
   onClose: () => void;
-  onSuccess: (token: string, user: { id: string; email: string }) => void;
+  onSuccess: () => void;
   t: (key: string) => string;
 }
 
-const API = process.env.NEXT_PUBLIC_API_URL ?? 'https://llm-wiki-bff-dev.rayer.idv.tw';
-
 export function RegisterModal({ onClose, onSuccess, t }: Props) {
+  const { register } = useWorkspace();
   const [email, setEmail] = useState('');
   const [password, setPassword] = useState('');
   const [loading, setLoading] = useState(false);
@@ -21,14 +21,8 @@ export function RegisterModal({ onClose, onSuccess, t }: Props) {
     setLoading(true);
     setError('');
     try {
-      const resp = await fetch(`${API}/api/v1/auth/register`, {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ email: email.trim(), password }),
-      });
-      const data = await resp.json();
-      if (!resp.ok) throw new Error(data.error ?? 'Registration failed');
-      onSuccess(data.token, { id: data.user_id, email: data.email });
+      await register(email.trim(), password);
+      onSuccess();
     } catch (err) {
       setError(err instanceof Error ? err.message : 'Registration failed');
     } finally {

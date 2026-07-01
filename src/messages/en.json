@@ -8,15 +8,29 @@
     "signIn": "Sign in",
     "tryDemo": "Try Demo",
     "signUp": "Sign Up",
+    "switchToRegister": "No account? Sign up",
+    "switchToLogin": "Already have an account? Sign in",
+    "registering": "Registering…",
     "signingIn": "Signing in…",
-    "error": "Login failed"
+    "registerError": "Registration failed",
+    "error": "Login failed",
+    "demoError": "Demo is temporarily unavailable",
+    "name": "Name",
+    "confirmPassword": "Confirm password",
+    "passwordMismatch": "Passwords do not match"
   },
   "Register": {
-    "title": "Create Account",
-    "subtitle": "Sign up to get started.",
-    "signUp": "Create Account",
-    "registering": "Creating account…",
-    "backToLogin": "← Back to login"
+    "title": "Sign Up",
+    "subtitle": "Create your LLM Wiki account",
+    "name": "Name",
+    "email": "Email",
+    "password": "Password",
+    "confirmPassword": "Confirm password",
+    "passwordMismatch": "Passwords do not match",
+    "signUp": "Create account",
+    "registering": "Registering…",
+    "error": "Registration failed",
+    "switchToLogin": "Already have an account? Sign in"
   },
   "Shell": {
     "search": "Search",
@@ -24,23 +38,38 @@
     "concepts": "Concepts",
     "status": "Status",
     "projects": "Projects",
-    "newProject": "+ New Project",
-    "logout": "Logout",
-    "demoDisabled": "Demo mode — new projects disabled",
     "loading": "Loading…",
-    "noProjects": "No projects"
+    "noProjects": "No projects yet",
+    "newProject": "+ New Project",
+    "signOut": "Sign Out",
+    "demoDisabled": "Demo mode — new projects disabled",
+    "ok": "OK",
+    "cancel": "Cancel"
   },
   "Demo": {
-    "heading": "Your past knowledge, embedded in every conversation.",
-    "searchPlaceholder": "Places to take kids in New Taipei",
+    "heading": "Your past knowledge, woven into every conversation",
+    "subtitle": "Browse source documents, distilled concepts, and pipeline state from the LLM Wiki backend.",
+    "byline": "Inspired by",
+    "karpathy": "Andrej Karpathy's LLM Wiki concept",
+    "remix": ", remixed with LLM superpowers.",
+    "searchPlaceholder": "Search your wiki…",
     "wiki": "Wiki",
     "full": "Full",
     "search": "Search",
     "addContent": "Add Content",
-    "uploadFile": "📄 Upload File",
-    "scrapeUrl": "🔗 Scrape URL",
-    "pipeline": "⚙️ Pipeline",
-    "sources": "Sources",
-    "concepts": "Concepts"
+    "uploadFile": "Upload File",
+    "upload": "Upload",
+    "scrapeUrl": "Scrape URL",
+    "scrape": "Scrape",
+    "pipeline": "Pipeline",
+    "runPipeline": "Run Pipeline",
+    "pipelineDesc": "The pipeline runs:"
+  },
+  "Status": {
+    "title": "Pipeline Status",
+    "noStatus": "No pipeline status available."
+  },
+  "ComingSoon": {
+    "title": "Coming Soon"
   }
 }

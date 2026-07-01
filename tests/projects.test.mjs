@@ -5,7 +5,7 @@ import {
   normalizeProject,
   normalizeProjects,
   selectDefaultProject,
-} from '../src/lib/projects.ts';
+} from '../src/lib/project-core.ts';
 
 test('normalizeProjects accepts array and wrapped API responses', () => {
   assert.deepEqual(

@@ -1,9 +1,12 @@
 'use client';
 
-import { FormEvent, useCallback, useRef, useState } from 'react';
+import { FormEvent, useCallback, useEffect, useRef, useState } from 'react';
 import {
+  getPipelineStatus,
   triggerPipeline,
+  uploadRawFile,
   type PipelineResult,
+  type PipelineStatus,
 } from '@/lib/api';
 
 type Toast = {
@@ -14,14 +17,27 @@ type Toast = {
 
 let toastId = 0;
 
+function pipelineStatusBadge(status: PipelineStatus | null): string | null {
+  const executionStatus = status?.last_execution?.status;
+  const duration = status?.last_execution?.duration ?? 'pending';
+
+  if (executionStatus === 'running') return '⏳ Pipeline running...';
+  if (executionStatus === 'SUCCEEDED') return `✅ Pipeline complete (${duration})`;
+  if (executionStatus === 'FAILED') return `❌ Pipeline failed (${duration})`;
+
+  return null;
+}
+
 export function PipelineClient() {
   const [fileLabel, setFileLabel] = useState('Choose .md file');
   const [scrapeUrlText, setScrapeUrlText] = useState('');
   const [pipelineResult, setPipelineResult] = useState<PipelineResult | null>(null);
+  const [pipelineStatus, setPipelineStatus] = useState<PipelineStatus | null>(null);
   const [loading, setLoading] = useState<string | null>(null); // 'upload' | 'scrape' | 'pipeline'
   const [toasts, setToasts] = useState<Toast[]>([]);
   const [wipModal, setWipModal] = useState(false);
   const fileRef = useRef<HTMLInputElement>(null);
+  const pipelinePollRef = useRef<ReturnType<typeof setInterval> | null>(null);
 
   const addToast = useCallback((message: string, type: Toast['type']) => {
     const id = ++toastId;
@@ -29,14 +45,48 @@ export function PipelineClient() {
     setTimeout(() => setToasts((prev) => prev.filter((t) => t.id !== id)), 4000);
   }, []);
 
+  const stopPipelinePolling = useCallback(() => {
+    if (pipelinePollRef.current) {
+      clearInterval(pipelinePollRef.current);
+      pipelinePollRef.current = null;
+    }
+  }, []);
+
+  const pollPipelineStatus = useCallback(async () => {
+    try {
+      const status = await getPipelineStatus();
+      setPipelineStatus(status);
+
+      const executionStatus = status.last_execution?.status;
+      if (executionStatus === 'SUCCEEDED' || executionStatus === 'FAILED') {
+        stopPipelinePolling();
+      }
+    } catch (err) {
+      stopPipelinePolling();
+      addToast(err instanceof Error ? err.message : 'Pipeline status failed', 'error');
+    }
+  }, [addToast, stopPipelinePolling]);
+
+  useEffect(() => stopPipelinePolling, [stopPipelinePolling]);
+
   const handleFileChange = useCallback(() => {
     const file = fileRef.current?.files?.[0];
     setFileLabel(file ? file.name : 'Choose .md file');
   }, []);
 
   const handleUpload = useCallback(async () => {
-    setWipModal(true);
-  }, []);
+    const file = fileRef.current?.files?.[0];
+    if (!file) { addToast('Please select a file', 'error'); return; }
+    setLoading('upload');
+    try {
+      const result = await uploadRawFile(file);
+      addToast(`Uploaded: ${result.filename} (${result.bytes} bytes)`, 'success');
+    } catch (err) {
+      addToast(err instanceof Error ? err.message : 'Upload failed', 'error');
+    } finally {
+      setLoading(null);
+    }
+  }, [addToast]);
 
   const handleScrape = useCallback(async (event: FormEvent) => {
     event.preventDefault();
@@ -44,17 +94,29 @@ export function PipelineClient() {
   }, []);
 
   const handleRunPipeline = useCallback(async () => {
+    if (!window.localStorage.getItem('llm-wiki-last-project')) {
+      addToast('Please select a project before running pipeline', 'error');
+      return;
+    }
+
     setLoading('pipeline');
     try {
       const result = await triggerPipeline();
       setPipelineResult(result);
       addToast(result.message, 'info');
+      if (result.status === 'accepted') {
+        stopPipelinePolling();
+        setPipelineStatus({ last_execution: { status: 'running' } });
+        pipelinePollRef.current = setInterval(pollPipelineStatus, 5000);
+      }
     } catch (err) {
       addToast(err instanceof Error ? err.message : 'Pipeline trigger failed', 'error');
     } finally {
       setLoading(null);
     }
-  }, [addToast]);
+  }, [addToast, pollPipelineStatus, stopPipelinePolling]);
+
+  const pipelineStatusText = pipelineStatusBadge(pipelineStatus);
 
   return (
     <>
@@ -144,10 +206,19 @@ export function PipelineClient() {
         {/* Pipeline Info */}
         <div className="mt-3 rounded-md border border-white/5 bg-[#111] p-3">
           <p className="text-xs text-zinc-500">
-            The pipeline runs: <strong className="text-zinc-300">ingest</strong> (analyze raw notes) →{' '}
-            <strong className="text-zinc-300">compile</strong> (synthesize wiki articles) →{' '}
-            <strong className="text-zinc-300">lint</strong> (check quality) →{' '}
-            <strong className="text-zinc-300">publish</strong> (auto-approve).
+            The pipeline runs:{' '}
+            {pipelineStatusText ? (
+              <span className="inline-flex rounded-full border border-white/10 bg-black/30 px-2 py-0.5 font-medium text-zinc-200">
+                {pipelineStatusText}
+              </span>
+            ) : (
+              <>
+                <strong className="text-zinc-300">ingest</strong> (analyze raw notes) →{' '}
+                <strong className="text-zinc-300">compile</strong> (synthesize wiki articles) →{' '}
+                <strong className="text-zinc-300">lint</strong> (check quality) →{' '}
+                <strong className="text-zinc-300">publish</strong> (auto-approve).
+              </>
+            )}
           </p>
         </div>
       </section>

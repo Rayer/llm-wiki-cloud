@@ -3,6 +3,7 @@
 import { useEffect, useMemo, useState } from 'react';
 import { EntryCard } from './EntryCard';
 import { EmptyState, ErrorState, LoadingState } from './States';
+import { useWorkspace } from './WorkspaceProvider';
 import type { WikiEntry } from '@/lib/api';
 
 // Client-side cache: avoids re-fetching on every navigation.
@@ -20,21 +21,47 @@ export function ListClient({
   load: () => Promise<WikiEntry[]>;
   basePath: string;
 }) {
-  const [entries, setEntries] = useState<WikiEntry[]>(clientCache.get(basePath) ?? []);
-  const [loading, setLoading] = useState(!clientCache.has(basePath));
+  const { currentProject } = useWorkspace();
+  const cacheKey = `${currentProject?.id ?? 'no-project'}:${basePath}`;
+  const [entries, setEntries] = useState<WikiEntry[]>(clientCache.get(cacheKey) ?? []);
+  const [loading, setLoading] = useState(!clientCache.has(cacheKey));
   const [error, setError] = useState('');
   const [search, setSearch] = useState('');
 
   useEffect(() => {
-    if (clientCache.has(basePath)) return;
+    let ignore = false;
+    const cachedEntries = clientCache.get(cacheKey);
+    if (cachedEntries) {
+      setEntries(cachedEntries);
+      setLoading(false);
+      setError('');
+      return;
+    }
+
+    setEntries([]);
+    setLoading(true);
+    setError('');
     load()
       .then((data) => {
-        clientCache.set(basePath, data);
+        if (ignore) return;
+        console.log(`[ListClient] loaded ${basePath}: ${data.length} items`, data.slice(0,1));
+        if (data.length === 0) clientCache.delete(cacheKey);  // don't cache empty
+        else clientCache.set(cacheKey, data);
         setEntries(data);
       })
-      .catch((err: Error) => setError(err.message))
-      .finally(() => setLoading(false));
-  }, [load, basePath]);
+      .catch((err: Error) => {
+        console.error(`[ListClient] ${basePath} failed:`, err);
+        clientCache.delete(cacheKey);  // clear on error
+        if (!ignore) setError(err.message);
+      })
+      .finally(() => {
+        if (!ignore) setLoading(false);
+      });
+
+    return () => {
+      ignore = true;
+    };
+  }, [load, basePath, cacheKey, currentProject]);
 
   const filtered = useMemo(() => {
     const q = search.trim().toLowerCase();
@@ -86,7 +113,7 @@ export function ListClient({
 
       <div className="grid gap-4 md:grid-cols-2">
         {filtered.map((entry) => (
-          <EntryCard key={entry.slug} entry={entry} href={`${basePath}/${entry.slug}`} />
+          <EntryCard key={entry.slug} entry={entry} href={entry.id ? `${basePath}/${entry.id}` : `${basePath}/${encodeURIComponent(entry.slug)}`} />
         ))}
       </div>
     </div>

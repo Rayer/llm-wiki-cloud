@@ -9,6 +9,7 @@ export type ApiStatus = {
 export type WikiEntry = {
   slug: string;
   title: string;
+  id?: string;
   status?: string;
   description?: string;
   date?: string;
@@ -28,6 +29,7 @@ export type Citation = {
   slug: string;
   type: 'concept' | 'source';
   path?: string;
+  id?: string;
 };
 
 export type SearchResponse = {
@@ -38,10 +40,25 @@ export type SearchResponse = {
 
 const API_URL =
   process.env.NEXT_PUBLIC_API_URL ??
-  'https://llm-wiki-bff-dev.rayer.idv.tw';
+  'https://llm-wiki-bff-dev-580854833715.asia-east1.run.app';
 
-const AUTH_TOKEN_KEY = 'llm-wiki-auth-token';
 const LAST_PROJECT_KEY = 'llm-wiki-last-project';
+
+type ApiAuthConfig = {
+  getAccessToken: () => string | null;
+  refreshAccessToken: () => Promise<string | null>;
+  onUnauthorized: () => void;
+};
+
+let apiAuthConfig: ApiAuthConfig = {
+  getAccessToken: () => null,
+  refreshAccessToken: async () => null,
+  onUnauthorized: () => undefined,
+};
+
+export function configureApiAuth(config: ApiAuthConfig): void {
+  apiAuthConfig = config;
+}
 
 export function toV1Path(path: string): string {
   if (path.startsWith('/api/v1/')) return path;
@@ -49,42 +66,100 @@ export function toV1Path(path: string): string {
 }
 
 export function buildProjectHeaders(
-  token: string,
   projectId: string,
+  accessToken: string,
   json = false,
 ): Record<string, string> {
   return {
-    Authorization: `Bearer ${token}`,
+    Authorization: `Bearer ${accessToken}`,
     ...(json ? { 'Content-Type': 'application/json' } : {}),
     'X-Project-ID': projectId,
   };
 }
 
-const DEMO_TOKEN = 'demo-token';
+type BuildRequestInitOptions = {
+  method?: string;
+  projectId?: string;
+  accessToken?: string | null;
+  json?: boolean;
+  body?: BodyInit;
+};
 
-function projectHeaders(json = false): Record<string, string> {
-  const token = window.localStorage.getItem(AUTH_TOKEN_KEY);
-  const projectId = window.localStorage.getItem(LAST_PROJECT_KEY);
-  if (!projectId) throw new Error('Please select a project.');
-  
-  // Demo mode: use header-based auth (BFF dev mode)
-  if (token === DEMO_TOKEN) {
-    return {
-      ...(json ? { 'Content-Type': 'application/json' } : {}),
-      'X-User-ID': 'test-user',
-      'X-Project-ID': projectId,
-    };
+export function buildRequestInit({
+  method,
+  projectId,
+  accessToken,
+  json = false,
+  body,
+}: BuildRequestInitOptions): RequestInit {
+  const headers: Record<string, string> = {
+    ...(json ? { 'Content-Type': 'application/json' } : {}),
+  };
+
+  if (accessToken) {
+    headers.Authorization = `Bearer ${accessToken}`;
   }
-  
-  // Normal mode: JWT Bearer
-  if (!token) throw new Error('Please log in to continue.');
-  return buildProjectHeaders(token, projectId, json);
+
+  if (projectId) {
+    headers['X-Project-ID'] = projectId;
+  }
+
+  return {
+    ...(method ? { method } : {}),
+    credentials: 'include',
+    redirect: 'manual',
+    headers,
+    ...(body === undefined ? {} : { body }),
+  };
+}
+
+function selectedProjectId(): string {
+  const projectId = window.localStorage.getItem(LAST_PROJECT_KEY);
+  if (!projectId) throw new Error('Please select a project first');
+  return projectId;
+}
+
+async function accessTokenOrRefresh(): Promise<string> {
+  const current = apiAuthConfig.getAccessToken();
+  if (current) return current;
+
+  const refreshed = await apiAuthConfig.refreshAccessToken();
+  if (refreshed) return refreshed;
+
+  apiAuthConfig.onUnauthorized();
+  throw new Error('Please log in to continue.');
+}
+
+type ApiFetchOptions = {
+  method?: string;
+  projectId?: string;
+  json?: boolean;
+  body?: BodyInit;
+  requireProject?: boolean;
+};
+
+export async function apiFetch(path: string, options: ApiFetchOptions = {}): Promise<Response> {
+  const projectId = options.requireProject === false
+    ? options.projectId
+    : options.projectId ?? selectedProjectId();
+  const accessToken = await accessTokenOrRefresh();
+  const url = `${API_URL}${toV1Path(path)}`;
+  const init = buildRequestInit({ ...options, projectId, accessToken });
+  const response = await fetch(url, init);
+
+  if (response.status !== 401) return response;
+
+  const refreshed = await apiAuthConfig.refreshAccessToken();
+  if (!refreshed) {
+    apiAuthConfig.onUnauthorized();
+    return response;
+  }
+
+  return fetch(url, buildRequestInit({ ...options, projectId, accessToken: refreshed }));
 }
 
 async function requestJson<T>(path: string): Promise<T> {
-  const response = await fetch(`${API_URL}${toV1Path(path)}`, {
-    headers: projectHeaders(),
-  });
+  const response = await apiFetch(path);
 
   if (!response.ok) {
     throw new Error(`API request failed (${response.status})`);
@@ -94,9 +169,9 @@ async function requestJson<T>(path: string): Promise<T> {
 }
 
 async function postJson<T>(path: string, body: unknown): Promise<T> {
-  const response = await fetch(`${API_URL}${toV1Path(path)}`, {
+  const response = await apiFetch(path, {
     method: 'POST',
-    headers: projectHeaders(true),
+    json: true,
     body: JSON.stringify(body),
   });
 
@@ -168,6 +243,7 @@ export function normalizeEntry(item: unknown): WikiEntry {
   return {
     slug,
     title,
+    id: firstString(record, ['id']) ?? firstString(frontmatter ?? {}, ['id']),
     status: firstString(record, ['status']) ??
       firstString(frontmatter ?? {}, ['status']),
     description: firstString(record, ['description', 'summary', 'excerpt']) ??
@@ -237,26 +313,26 @@ export function normalizeStatus(payload: unknown): ApiStatus {
 }
 
 export async function getStatus() {
-  return normalizeStatus(await requestJson<unknown>('/api/status'));
+  return normalizeStatus(await requestJson<unknown>('/api/v1/status'));
 }
 
 export async function getSources() {
-  return extractArray(await requestJson<unknown>('/api/sources')).map(normalizeEntry);
+  return extractArray(await requestJson<unknown>('/api/v1/sources')).map(normalizeEntry);
 }
 
 export async function getSource(slug: string) {
   return normalizeEntry(
-    await requestJson<unknown>(`/api/sources/${encodeURIComponent(slug)}`),
+    await requestJson<unknown>(`/api/v1/sources/${encodeURIComponent(slug)}`),
   );
 }
 
 export async function getConcepts() {
-  return extractArray(await requestJson<unknown>('/api/concepts')).map(normalizeEntry);
+  return extractArray(await requestJson<unknown>('/api/v1/concepts')).map(normalizeEntry);
 }
 
 export async function getConcept(slug: string) {
   return normalizeEntry(
-    await requestJson<unknown>(`/api/concepts/${encodeURIComponent(slug)}`),
+    await requestJson<unknown>(`/api/v1/concepts/${encodeURIComponent(slug)}`),
   );
 }
 
@@ -289,14 +365,25 @@ export type PipelineResult = {
   message: string;
   rawFiles: number;
   scheduled: boolean;
+  status?: 'accepted' | string;
+};
+
+export type PipelineStatus = {
+  last_execution?: {
+    status?: 'running' | 'SUCCEEDED' | 'FAILED' | string;
+    duration?: string | number | null;
+    started_at?: string | null;
+    finished_at?: string | null;
+    [key: string]: unknown;
+  } | null;
+  [key: string]: unknown;
 };
 
 export async function uploadRawFile(file: File): Promise<RawUploadResult> {
   const formData = new FormData();
   formData.append('file', file);
-  const response = await fetch(`${API_URL}/api/v1/raw/upload`, {
+  const response = await apiFetch('/api/v1/raw/upload', {
     method: 'POST',
-    headers: projectHeaders(),
     body: formData,
   });
   if (!response.ok) {
@@ -307,9 +394,9 @@ export async function uploadRawFile(file: File): Promise<RawUploadResult> {
 }
 
 export async function scrapeUrl(url: string, filename?: string): Promise<ScrapeResult> {
-  const response = await fetch(`${API_URL}/api/v1/raw/scrape`, {
+  const response = await apiFetch('/api/v1/raw/scrape', {
     method: 'POST',
-    headers: projectHeaders(true),
+    json: true,
     body: JSON.stringify({ url, filename }),
   });
   if (!response.ok) {
@@ -320,9 +407,10 @@ export async function scrapeUrl(url: string, filename?: string): Promise<ScrapeR
 }
 
 export async function triggerPipeline(): Promise<PipelineResult> {
-  const response = await fetch(`${API_URL}/api/v1/pipeline/run`, {
+  const response = await apiFetch('/api/v1/pipeline/run', {
     method: 'POST',
-    headers: projectHeaders(true),
+    json: true,
+    requireProject: true,
   });
   if (!response.ok) {
     const error = await response.json().catch(() => ({ error: 'Pipeline trigger failed' }));
@@ -331,10 +419,14 @@ export async function triggerPipeline(): Promise<PipelineResult> {
   return response.json();
 }
 
+export async function getPipelineStatus(): Promise<PipelineStatus> {
+  return requestJson<PipelineStatus>('/api/v1/pipeline/status');
+}
+
 export async function generateTitle(content: string): Promise<string> {
-  const response = await fetch(`${API_URL}/api/v1/raw/generate-title`, {
+  const response = await apiFetch('/api/v1/raw/generate-title', {
     method: 'POST',
-    headers: projectHeaders(true),
+    json: true,
     body: JSON.stringify({ content }),
   });
   if (!response.ok) return 'Untitled';

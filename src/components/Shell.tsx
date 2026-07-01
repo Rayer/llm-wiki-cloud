@@ -1,5 +1,6 @@
 'use client';
 
+import { useEffect, useState } from 'react';
 import Link from 'next/link';
 import { useT } from '@/lib/i18n';
 import { LoginModal } from './LoginModal';
@@ -17,6 +18,7 @@ export function Shell({ children }: { children: React.ReactNode }) {
 
 function ShellContent({ children }: { children: React.ReactNode }) {
   const { t } = useT();
+  const [demoMessage, setDemoMessage] = useState('');
   const navItems = [
     { href: '/', label: t('Shell.search') },
     { href: '/sources', label: t('Shell.sources') },
@@ -31,12 +33,26 @@ function ShellContent({ children }: { children: React.ReactNode }) {
     currentProject,
     projectsLoading,
     projectsError,
-    isDemo,
+    isDemoUser,
     selectProject,
     refreshProjects,
     openNewProject,
     signOut,
   } = useWorkspace();
+
+  useEffect(() => {
+    if (!demoMessage) return;
+    const timeout = window.setTimeout(() => setDemoMessage(''), 3000);
+    return () => window.clearTimeout(timeout);
+  }, [demoMessage]);
+
+  const handleNewProjectClick = () => {
+    if (isDemoUser) {
+      setDemoMessage(t('Shell.demoDisabled'));
+      return;
+    }
+    openNewProject();
+  };
 
   return (
     <div className="flex min-h-screen bg-[#0a0a0a] text-zinc-100">
@@ -72,34 +88,25 @@ function ShellContent({ children }: { children: React.ReactNode }) {
             ) : projects.length === 0 ? (
               <p className="px-3 py-2 text-xs text-zinc-500">{t('Shell.noProjects')}</p>
             ) : (
-              projects.map((project) => (
-                <button
-                  key={project.id}
-                  type="button"
-                  onClick={() => selectProject(project.id)}
-                  className={`w-full rounded-lg px-3 py-2 text-left text-sm transition ${
-                    currentProject?.id === project.id
-                      ? 'bg-emerald-300/10 text-emerald-300 font-medium'
-                      : 'text-zinc-400 hover:bg-white/5 hover:text-white'
-                  }`}
-                >
-                  {project.name}
-                </button>
-              ))
-            )}
-            {isDemo ? (
-              <p className="mt-1 rounded-lg px-3 py-2 text-xs text-zinc-600">
-                {t('Shell.demoDisabled')}
-              </p>
-            ) : (
-              <button
-                type="button"
-                onClick={openNewProject}
-                className="mt-1 w-full rounded-lg px-3 py-2 text-left text-sm text-zinc-500 transition hover:bg-white/10 hover:text-zinc-300"
+              <select
+                value={currentProject?.id ?? ''}
+                onChange={(event) => selectProject(event.target.value)}
+                className="w-full rounded-lg border border-white/10 bg-[#151515] px-3 py-2 text-sm font-medium text-zinc-100 outline-none transition hover:bg-white/5 focus:border-emerald-300"
               >
-                {t('Shell.newProject')}
-              </button>
+                {projects.map((project) => (
+                  <option key={project.id} value={project.id} className="bg-zinc-900 text-zinc-100">
+                    {project.name}
+                  </option>
+                ))}
+              </select>
             )}
+            <button
+              type="button"
+              onClick={handleNewProjectClick}
+              className="mt-1 w-full rounded-lg px-3 py-2 text-left text-sm text-zinc-500 transition hover:bg-white/10 hover:text-zinc-300"
+            >
+              {t('Shell.newProject')}
+            </button>
           </div>
 
           <div className="mt-auto border-t border-white/10 px-3 py-3">
@@ -113,7 +120,7 @@ function ShellContent({ children }: { children: React.ReactNode }) {
                 </p>
                 <button
                   type="button"
-                  onClick={signOut}
+                  onClick={() => void signOut()}
                   className="text-xs text-zinc-500 hover:text-zinc-300"
                 >
                   {t('Shell.logout')}
@@ -157,6 +164,14 @@ function ShellContent({ children }: { children: React.ReactNode }) {
 
       <LoginModal />
       <NewProjectModal />
+      {demoMessage ? (
+        <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/50 backdrop-blur-sm" onClick={() => setDemoMessage('')}>
+          <div className="rounded-xl border border-zinc-300/20 bg-zinc-900 px-6 py-5 shadow-2xl w-80 text-center" onClick={(e) => e.stopPropagation()}>
+            <p className="text-sm text-zinc-200 mb-3">{demoMessage}</p>
+            <button onClick={() => setDemoMessage('')} className="rounded-lg bg-white px-4 py-2 text-xs font-medium text-black hover:bg-emerald-200 transition">{t('Shell.ok')}</button>
+          </div>
+        </div>
+      ) : null}
     </div>
   );
 }

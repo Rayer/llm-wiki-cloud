@@ -15,6 +15,7 @@ import {
 } from '@/lib/api';
 import { useT } from '@/lib/i18n';
 import { EmptyState, ErrorState, LoadingState } from './States';
+import { useWorkspace } from './WorkspaceProvider';
 
 function readSearchParams(): { q: string; mode: 'wiki' | 'full' } {
   if (typeof window === 'undefined') return { q: '', mode: 'wiki' };
@@ -36,12 +37,14 @@ function syncUrl(q: string, mode: 'wiki' | 'full') {
   window.history.replaceState(null, '', url);
 }
 
-type ModalEntry = { title: string; content: string; type: string; slug: string };
+type ModalEntry = { title: string; content: string; type: string; slug: string; id?: string };
+type SearchMode = 'wiki' | 'full';
 
 export function HomeClient() {
   const { t } = useT();
+  const { currentProject } = useWorkspace();
   const [query, setQuery] = useState('');
-  const [mode, setMode] = useState<'wiki' | 'full'>('wiki');
+  const [mode, setMode] = useState<SearchMode>('wiki');
   const [status, setStatus] = useState<ApiStatus | null>(null);
   const [statusError, setStatusError] = useState('');
   const [results, setResults] = useState<SearchResult[]>([]);
@@ -84,14 +87,13 @@ export function HomeClient() {
     getStatus()
       .then(setStatus)
       .catch((err: Error) => setStatusError(err.message));
-  }, []);
+  }, [currentProject]);
 
-  const onSubmit = useCallback(async (event: FormEvent<HTMLFormElement>) => {
-    event.preventDefault();
+  const handleSearch = useCallback(async (searchMode: SearchMode) => {
     const trimmed = query.trim();
     if (!trimmed) return;
 
-    syncUrl(trimmed, mode);
+    syncUrl(trimmed, searchMode);
 
     setLoading(true);
     setError('');
@@ -100,7 +102,7 @@ export function HomeClient() {
     setSearched(true);
 
     try {
-      const response = await searchWiki(trimmed, mode);
+      const response = await searchWiki(trimmed, searchMode);
       setResults(response.results);
       setAiAnswer(response.aiAnswer);
       setCitations(response.citations);
@@ -112,11 +114,16 @@ export function HomeClient() {
     } finally {
       setLoading(false);
     }
-  }, [query, mode]);
+  }, [query]);
+
+  const onSubmit = useCallback(async (event: FormEvent<HTMLFormElement>) => {
+    event.preventDefault();
+    await handleSearch(mode);
+  }, [handleSearch, mode]);
 
   const openCitation = useCallback(async (citation: Citation) => {
     setModalLoading(true);
-    setModal({ title: citation.text, content: '', type: citation.type, slug: citation.slug });
+    setModal({ title: citation.text, content: '', type: citation.type, slug: citation.slug, id: citation.id });
     try {
       const fetch = citation.type === 'concept' ? getConcept : getSource;
       const entry: WikiEntry = await fetch(citation.slug);
@@ -125,6 +132,7 @@ export function HomeClient() {
         content: entry.content ?? entry.raw as string ?? '',
         type: citation.type,
         slug: citation.slug,
+        id: entry.id,
       });
     } catch {
       setModal(null);
@@ -180,7 +188,7 @@ export function HomeClient() {
                   <button
                     key={item}
                     type="button"
-                    onClick={() => setMode(item)}
+                    onClick={() => { setMode(item); if (query.trim()) handleSearch(item); }}
                     className={`rounded px-4 py-2 font-medium capitalize transition ${
                       mode === item ? 'bg-emerald-300 text-black' : 'text-zinc-300 hover:text-white'
                     }`}
@@ -287,7 +295,7 @@ export function HomeClient() {
                 </div>
                 <div className="mt-6 border-t border-white/10 pt-4">
                   <Link
-                    href={`/${modal.type === 'concept' ? 'concepts' : 'sources'}/${modal.slug}`}
+                    href={`/${modal.type === 'concept' ? 'concepts' : 'sources'}/${modal.id || modal.slug}`}
                     className="text-sm font-medium text-emerald-300 hover:text-emerald-200"
                     onClick={() => setModal(null)}
                   >

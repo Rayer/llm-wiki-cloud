@@ -38,7 +38,7 @@ test('requested frontend components read their copy from the locale hook', async
   assert.match(comingSoonModal, /t\('ComingSoon\.title'\)/);
   assert.match(shell, /useT\(\)/);
   assert.match(shell, /t\('Shell\.search'\)/);
-  assert.match(shell, /t\('Shell\.demoDisabled'\)/);
+  assert.match(shell, /t\('Shell\.newProject'\)/);
   assert.match(homeClient, /useT\(\)/);
   assert.match(homeClient, /t\('Demo\.heading'\)/);
   assert.match(homeClient, /t\('Demo\.searchPlaceholder'\)/);

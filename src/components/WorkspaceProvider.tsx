@@ -10,14 +10,8 @@ import {
   useState,
 } from 'react';
 import {
-  getStoredToken,
-  getStoredUser,
-  login,
-  logout,
-  AUTH_TOKEN_KEY,
-  AUTH_USER_KEY,
+  useAuth,
   type AuthUser,
-  type LoginResponse,
 } from '@/lib/auth';
 import {
   createProject,
@@ -35,13 +29,12 @@ type WorkspaceContextValue = {
   currentProject: Project | null;
   projectsLoading: boolean;
   projectsError: string;
+  isDemoUser: boolean;
   loginOpen: boolean;
   newProjectOpen: boolean;
-  isDemo: boolean;
   signIn: (email: string, password: string) => Promise<void>;
-  registerUser: (token: string, user: AuthUser) => void;
-  demoSignIn: () => void;
-  signOut: () => void;
+  register: (email: string, password: string) => Promise<void>;
+  signOut: () => Promise<void>;
   selectProject: (projectId: string) => void;
   addProject: (name: string) => Promise<Project>;
   refreshProjects: () => Promise<void>;
@@ -52,20 +45,26 @@ type WorkspaceContextValue = {
 const WorkspaceContext = createContext<WorkspaceContextValue | null>(null);
 
 export function WorkspaceProvider({ children }: { children: ReactNode }) {
-  const [hydrated, setHydrated] = useState(false);
-  const [token, setToken] = useState<string | null>(null);
-  const [user, setUser] = useState<AuthUser | null>(null);
+  const {
+    accessToken: token,
+    hydrated,
+    user,
+    login,
+    register,
+    logout,
+  } = useAuth();
   const [projects, setProjects] = useState<Project[]>([]);
   const [currentProject, setCurrentProject] = useState<Project | null>(null);
   const [projectsLoading, setProjectsLoading] = useState(false);
   const [projectsError, setProjectsError] = useState('');
   const [newProjectOpen, setNewProjectOpen] = useState(false);
+  const isDemoUser = user?.email === 'test@example.com' || user?.id === 'test-user';
 
-  const loadProjects = useCallback(async (authToken: string) => {
+  const loadProjects = useCallback(async () => {
     setProjectsLoading(true);
     setProjectsError('');
     try {
-      const nextProjects = await getProjects(authToken);
+      const nextProjects = await getProjects();
       const selected = selectDefaultProject(
         nextProjects,
         window.localStorage.getItem(LAST_PROJECT_KEY),
@@ -86,54 +85,18 @@ export function WorkspaceProvider({ children }: { children: ReactNode }) {
     }
   }, []);
 
-  useEffect(() => {
-    const storedToken = getStoredToken();
-    const storedUser = getStoredUser();
-    // eslint-disable-next-line react-hooks/set-state-in-effect -- hydrate browser-only storage after SSR
-    setToken(storedToken);
-    setUser(storedUser);
-    setHydrated(true);
-    if (storedToken) void loadProjects(storedToken);
-  }, [loadProjects]);
-
   const signIn = useCallback(async (email: string, password: string) => {
-    const result: LoginResponse = await login(email, password);
-    setToken(result.token);
-    setUser(result.user);
-    await loadProjects(result.token);
-  }, [loadProjects]);
+    await login(email, password);
+  }, [login]);
 
-  const signOut = useCallback(() => {
-    logout();
+  const signOut = useCallback(async () => {
+    await logout();
     window.localStorage.removeItem(LAST_PROJECT_KEY);
-    setToken(null);
-    setUser(null);
     setProjects([]);
     setCurrentProject(null);
     setProjectsError('');
     setNewProjectOpen(false);
-  }, []);
-
-  const registerUser = useCallback((token: string, u: AuthUser) => {
-    window.localStorage.setItem(AUTH_TOKEN_KEY, token);
-    window.localStorage.setItem(AUTH_USER_KEY, JSON.stringify(u));
-    setToken(token);
-    setUser(u);
-  }, []);
-
-  const demoSignIn = useCallback(() => {
-    const demoToken = 'demo-token';
-    const demoUser: AuthUser = { id: 'test-user', email: 'demo@llm.wiki' };
-    window.localStorage.setItem(AUTH_TOKEN_KEY, demoToken);
-    window.localStorage.setItem(AUTH_USER_KEY, JSON.stringify(demoUser));
-    const demoProject: Project = { id: 'demo', name: 'Demo (Lifestyle Wiki)' };
-    setToken(demoToken);
-    setUser(demoUser);
-    setProjects([demoProject]);
-    setCurrentProject(demoProject);
-    window.localStorage.setItem(LAST_PROJECT_KEY, demoProject.id);
-    setProjectsError('');
-  }, []);
+  }, [logout]);
 
   const selectProject = useCallback((projectId: string) => {
     const selected = projects.find((project) => project.id === projectId);
@@ -144,7 +107,8 @@ export function WorkspaceProvider({ children }: { children: ReactNode }) {
 
   const addProject = useCallback(async (name: string) => {
     if (!token) throw new Error('Please log in to create a project.');
-    const project = await createProject(name, token);
+    if (isDemoUser) throw new Error('Demo mode cannot create projects.');
+    const project = await createProject(name);
     setProjects((current) => {
       const withoutDuplicate = current.filter((item) => item.id !== project.id);
       return [...withoutDuplicate, project];
@@ -154,11 +118,24 @@ export function WorkspaceProvider({ children }: { children: ReactNode }) {
     setProjectsError('');
     setNewProjectOpen(false);
     return project;
-  }, [token]);
+  }, [isDemoUser, token]);
 
   const refreshProjects = useCallback(async () => {
-    if (token) await loadProjects(token);
+    if (token) await loadProjects();
   }, [loadProjects, token]);
+
+  useEffect(() => {
+    if (!hydrated) return;
+    if (token) {
+      // eslint-disable-next-line react-hooks/set-state-in-effect -- synchronize project state after auth hydration/token changes
+      void loadProjects();
+      return;
+    }
+
+    setProjects([]);
+    setCurrentProject(null);
+    setProjectsError('');
+  }, [hydrated, loadProjects, token]);
 
   const value = useMemo<WorkspaceContextValue>(() => ({
     hydrated,
@@ -168,32 +145,33 @@ export function WorkspaceProvider({ children }: { children: ReactNode }) {
     currentProject,
     projectsLoading,
     projectsError,
+    isDemoUser,
     loginOpen: hydrated && !token,
     newProjectOpen,
-    isDemo: token === 'demo-token',
     signIn,
-    registerUser,
-    demoSignIn,
+    register,
     signOut,
     selectProject,
     addProject,
     refreshProjects,
-    openNewProject: () => setNewProjectOpen(true),
+    openNewProject: () => {
+      if (isDemoUser) return;
+      setNewProjectOpen(true);
+    },
     closeNewProject: () => setNewProjectOpen(false),
   }), [
     addProject,
     currentProject,
-    demoSignIn,
     hydrated,
+    isDemoUser,
     newProjectOpen,
     projects,
-    registerUser,
+    projectsError,
+    register,
     signIn,
     projectsLoading,
     refreshProjects,
     selectProject,
-    signIn,
-    demoSignIn,
     signOut,
     token,
     user,
