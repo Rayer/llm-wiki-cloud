@@ -3,6 +3,7 @@
 import { useEffect, useState } from 'react';
 import Link from 'next/link';
 import { useT } from '@/lib/i18n';
+import { useAuth } from '@/lib/auth';
 import { LoginModal } from './LoginModal';
 import { NewProjectModal } from './NewProjectModal';
 import { ProjectEmptyState } from './ProjectEmptyState';
@@ -19,6 +20,7 @@ export function Shell({ children }: { children: React.ReactNode }) {
 function ShellContent({ children }: { children: React.ReactNode }) {
   const { t } = useT();
   const [demoMessage, setDemoMessage] = useState('');
+  const { user } = useAuth();
   const navItems = [
     { href: '/', label: t('Shell.search') },
     { href: '/sources', label: t('Shell.sources') },
@@ -28,7 +30,6 @@ function ShellContent({ children }: { children: React.ReactNode }) {
   const {
     hydrated,
     token,
-    user,
     projects,
     currentProject,
     projectsLoading,
@@ -110,6 +111,10 @@ function ShellContent({ children }: { children: React.ReactNode }) {
           </div>
 
           <div className="mt-auto border-t border-white/10 px-3 py-3">
+            <div className="mt-2 border-t border-white/10 pt-2">
+              <p className="font-mono text-[10px] text-zinc-600 truncate">User: {user?.id ?? '—'}</p>
+              <p className="font-mono text-[10px] text-zinc-600 truncate">Project: {currentProject?.id ?? '—'}</p>
+            </div>
             <div className="flex items-center gap-3">
               <div className="flex size-8 shrink-0 items-center justify-center rounded-full bg-emerald-300 text-xs font-semibold text-black">
                 {user?.email.slice(0, 1).toUpperCase() ?? 'U'}

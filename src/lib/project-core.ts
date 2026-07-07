@@ -17,7 +17,7 @@ function firstString(record: Record<string, unknown>, keys: string[]): string | 
 }
 
 function projectFromRecord(record: Record<string, unknown>): Project | null {
-  const id = firstString(record, ['id', 'project_id', 'projectId', 'slug', 'name']);
+  const id = firstString(record, ['id', 'project_id', 'projectId', 'slug']);
   const name = firstString(record, ['name', 'project_name', 'projectName', 'title', 'id']);
   return id && name ? { id, name } : null;
 }
@@ -66,4 +66,3 @@ export function selectDefaultProject(
     a.name.localeCompare(b.name, undefined, { sensitivity: 'base' }),
   )[0];
 }
-

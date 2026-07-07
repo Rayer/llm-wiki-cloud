@@ -22,6 +22,20 @@ function isRecord(value: unknown): value is Record<string, unknown> {
   return Boolean(value) && typeof value === 'object' && !Array.isArray(value);
 }
 
+function firstString(record: Record<string, unknown>, keys: string[]): string | undefined {
+  for (const key of keys) {
+    const value = record[key];
+    if (typeof value === 'string' && value.trim()) return value.trim();
+  }
+}
+
+function normalizeUser(value: unknown): AuthUser | null {
+  if (!isRecord(value)) return null;
+  const id = firstString(value, ['id', 'user_id', 'userId']);
+  const email = firstString(value, ['email']);
+  return id && email ? { id, email } : null;
+}
+
 export function responseError(payload: unknown, fallback: string): string {
   if (!isRecord(payload)) return fallback;
   const message = payload.error ?? payload.message ?? payload.detail;
@@ -37,19 +51,14 @@ export function normalizeAuthResponse(payload: unknown): AuthResponse {
     throw new Error('Auth response did not include an access token.');
   }
 
-  const user = isRecord(payload.user) ? payload.user : {};
-  if (
-    typeof user.id !== 'string' ||
-    !user.id.trim() ||
-    typeof user.email !== 'string' ||
-    !user.email.trim()
-  ) {
+  const user = normalizeUser(payload.user);
+  if (!user) {
     throw new Error('Auth response did not include a valid user.');
   }
 
   return {
     access_token: payload.access_token,
-    user: { id: user.id, email: user.email },
+    user,
   };
 }
 
@@ -62,6 +71,6 @@ export function normalizeRefreshResponse(payload: unknown): RefreshResponse {
     throw new Error('Refresh response did not include an access token.');
   }
 
-  return { access_token: payload.access_token, user: isRecord(payload.user) ? { id: String((payload.user as Record<string,unknown>).id ?? ''), email: String((payload.user as Record<string,unknown>).email ?? '') } : undefined };
+  const user = normalizeUser(payload.user);
+  return user ? { access_token: payload.access_token, user } : { access_token: payload.access_token };
 }
-

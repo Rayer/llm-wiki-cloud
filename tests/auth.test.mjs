@@ -16,6 +16,19 @@ test('normalizeAuthResponse accepts access_token and nested user', () => {
   );
 });
 
+test('normalizeAuthResponse accepts user_id without using email as the user id', () => {
+  assert.deepEqual(
+    normalizeAuthResponse({
+      access_token: 'jwt-token',
+      user: { user_id: 'uid-123', username: 'person', email: 'person@example.com' },
+    }),
+    {
+      access_token: 'jwt-token',
+      user: { id: 'uid-123', email: 'person@example.com' },
+    },
+  );
+});
+
 test('normalizeAuthResponse rejects a response without an access_token', () => {
   assert.throws(
     () => normalizeAuthResponse({ user: { id: 'user-1', email: 'person@example.com' } }),

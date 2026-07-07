@@ -29,6 +29,14 @@ test('normalizeProject accepts a project returned from init-project', () => {
   );
 });
 
+test('normalizeProject does not use the project name as the project id', () => {
+  assert.equal(normalizeProject({ name: 'Human Project Name' }), null);
+  assert.deepEqual(
+    normalizeProject({ project_id: 'project-123', name: 'Human Project Name' }),
+    { id: 'project-123', name: 'Human Project Name' },
+  );
+});
+
 test('selectDefaultProject restores the last used project when available', () => {
   const projects = [
     { id: 'alpha', name: 'Alpha' },
