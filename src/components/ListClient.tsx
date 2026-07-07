@@ -15,11 +15,13 @@ export function ListClient({
   description,
   load,
   basePath,
+  entryType,
 }: {
   title: string;
   description: string;
   load: () => Promise<WikiEntry[]>;
   basePath: string;
+  entryType?: 'source' | 'concept';
 }) {
   const { currentProject } = useWorkspace();
   const cacheKey = `${currentProject?.id ?? 'no-project'}:${basePath}`;
@@ -32,6 +34,7 @@ export function ListClient({
     let ignore = false;
     const cachedEntries = clientCache.get(cacheKey);
     if (cachedEntries) {
+      // eslint-disable-next-line react-hooks/set-state-in-effect -- hydrate cached list on project/path change
       setEntries(cachedEntries);
       setLoading(false);
       setError('');
@@ -76,8 +79,8 @@ export function ListClient({
   return (
     <div className="space-y-6">
       <header>
-        <h1 className="text-4xl font-semibold text-white">{title}</h1>
-        <p className="mt-3 max-w-2xl text-zinc-400">{description}</p>
+        <h1 className="text-3xl font-semibold tracking-tight text-white sm:text-4xl">{title}</h1>
+        <p className="mt-2 max-w-2xl text-zinc-400">{description}</p>
       </header>
 
       <div className="flex items-center gap-3">
@@ -86,7 +89,7 @@ export function ListClient({
           value={search}
           onChange={(e) => setSearch(e.target.value)}
           placeholder={`Search ${title.toLowerCase()}...`}
-          className="flex-1 rounded-lg border border-white/10 bg-[#151515] px-4 py-2.5 text-sm text-white outline-none transition placeholder:text-zinc-600 focus:border-emerald-300"
+          className="flex-1 rounded-[var(--radius-lg)] border border-white/10 bg-zinc-900/50 px-4 py-2.5 text-sm text-white outline-none transition placeholder:text-zinc-600 focus:border-emerald-400/50 focus:ring-1 focus:ring-emerald-400/20"
         />
         {search.trim() ? (
           <span className="text-sm text-zinc-500 tabular-nums whitespace-nowrap">
@@ -113,7 +116,12 @@ export function ListClient({
 
       <div className="grid gap-4 md:grid-cols-2">
         {filtered.map((entry) => (
-          <EntryCard key={entry.slug} entry={entry} href={entry.id ? `${basePath}/${entry.id}-${encodeURIComponent(entry.slug)}` : `${basePath}/${encodeURIComponent(entry.slug)}`} />
+          <EntryCard
+            key={entry.slug}
+            entry={entry}
+            entryType={entryType}
+            href={entry.id ? `${basePath}/${entry.id}-${encodeURIComponent(entry.slug)}` : `${basePath}/${encodeURIComponent(entry.slug)}`}
+          />
         ))}
       </div>
     </div>

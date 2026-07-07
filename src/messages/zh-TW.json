@@ -33,6 +33,7 @@
     "switchToLogin": "已有帳號？登入"
   },
   "Shell": {
+    "brand": "LLM Wiki Cloud",
     "search": "搜尋",
     "sources": "來源",
     "concepts": "概念",
@@ -42,12 +43,20 @@
     "noProjects": "尚無專案",
     "newProject": "+ 新專案",
     "signOut": "登出",
+    "logout": "登出",
     "demoDisabled": "Demo 模式 — 無法新增專案",
     "ok": "確定",
     "cancel": "取消"
   },
+  "Command": {
+    "placeholder": "搜尋或跳轉…",
+    "navigate": "導航"
+  },
   "Demo": {
+    "heroSubtitle": "探索你的知識庫",
     "heading": "你的過往知識，嵌入每一段對話",
+    "answer": "回答",
+    "results": "搜尋結果",
     "subtitle": "Browse source documents, distilled concepts, and pipeline state from the LLM Wiki backend.",
     "byline": "Inspired by",
     "karpathy": "Andrej Karpathy's LLM Wiki concept",

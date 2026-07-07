@@ -1,48 +1,49 @@
 import Link from 'next/link';
 import type { WikiEntry } from '@/lib/api';
+import { Badge } from './ui/Badge';
+import { Surface } from './ui/Surface';
 
 function StatusBadge({ status }: { status?: string }) {
   if (status === 'published') {
-    return (
-      <span className="inline-flex items-center gap-1 rounded bg-emerald-500/15 px-2 py-1 text-xs font-medium text-emerald-300 ring-1 ring-emerald-400/20">
-        <span aria-hidden="true">✓</span>
-        Published
-      </span>
-    );
+    return <Badge variant="published">Published</Badge>;
   }
-
   if (status === 'draft') {
-    return (
-      <span className="inline-flex items-center gap-1 rounded bg-amber-500/15 px-2 py-1 text-xs font-medium text-amber-300 ring-1 ring-amber-400/20">
-        <span aria-hidden="true">✎</span>
-        Draft
-      </span>
-    );
+    return <Badge variant="draft">Draft</Badge>;
   }
-
   return null;
 }
 
-export function EntryCard({ entry, href }: { entry: WikiEntry; href: string }) {
+export function EntryCard({
+  entry,
+  href,
+  entryType,
+}: {
+  entry: WikiEntry;
+  href: string;
+  entryType?: 'source' | 'concept';
+}) {
   return (
-    <Link
-      href={href}
-      className="block rounded-lg border border-white/10 bg-[#1a1a1a] p-5 transition hover:border-emerald-300/50 hover:bg-[#202020]"
-    >
-      <div className="flex flex-wrap items-center gap-3">
-        <h2 className="text-lg font-semibold text-white">{entry.title}</h2>
-        <StatusBadge status={entry.status} />
-        {entry.date ? (
-          <span className="rounded bg-white/10 px-2 py-1 text-xs text-zinc-300">
-            {entry.date}
-          </span>
+    <Link href={href} className="group block">
+      <Surface
+        variant="glass"
+        className="p-5 transition duration-200 hover:-translate-y-0.5 hover:border-emerald-400/30 hover:shadow-lg hover:shadow-emerald-500/5"
+      >
+        <div className="flex flex-wrap items-center gap-2">
+          {entryType ? (
+            <Badge variant={entryType}>{entryType === 'source' ? 'Source' : 'Concept'}</Badge>
+          ) : null}
+          <h2 className="text-lg font-semibold text-white group-hover:text-emerald-50">
+            {entry.title}
+          </h2>
+          <StatusBadge status={entry.status} />
+          {entry.date ? <Badge variant="muted">{entry.date}</Badge> : null}
+        </div>
+        {entry.description ? (
+          <p className="mt-3 line-clamp-3 text-sm leading-6 text-zinc-400">
+            {entry.description}
+          </p>
         ) : null}
-      </div>
-      {entry.description ? (
-        <p className="mt-3 line-clamp-3 text-sm leading-6 text-zinc-400">
-          {entry.description}
-        </p>
-      ) : null}
+      </Surface>
     </Link>
   );
 }

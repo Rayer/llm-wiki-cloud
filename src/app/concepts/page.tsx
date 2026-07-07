@@ -10,6 +10,7 @@ export default function ConceptsPage() {
       description="Distilled concept pages generated from the LLM Wiki corpus."
       load={getConcepts}
       basePath="/concepts"
+      entryType="concept"
     />
   );
 }

@@ -1,6 +1,9 @@
 'use client';
 
 import { FormEvent, useCallback, useEffect, useRef, useState } from 'react';
+import { FileUp, Link2, Cog, Loader2, Construction } from 'lucide-react';
+import { Surface } from './ui/Surface';
+import { Badge } from './ui/Badge';
 import {
   getPipelineStatus,
   triggerPipeline,
@@ -21,9 +24,9 @@ function pipelineStatusBadge(status: PipelineStatus | null): string | null {
   const executionStatus = status?.last_execution?.status;
   const duration = status?.last_execution?.duration ?? 'pending';
 
-  if (executionStatus === 'running') return '⏳ Pipeline running...';
-  if (executionStatus === 'SUCCEEDED') return `✅ Pipeline complete (${duration})`;
-  if (executionStatus === 'FAILED') return `❌ Pipeline failed (${duration})`;
+  if (executionStatus === 'running') return 'Pipeline running...';
+  if (executionStatus === 'SUCCEEDED') return `Pipeline complete (${duration})`;
+  if (executionStatus === 'FAILED') return `Pipeline failed (${duration})`;
 
   return null;
 }
@@ -120,7 +123,7 @@ export function PipelineClient() {
 
   return (
     <>
-      <section className="rounded-lg border border-white/10 bg-[#1a1a1a] p-5">
+      <Surface variant="glass" as="section" className="p-5">
         <h2 className="text-lg font-semibold text-white">Add Content</h2>
         <p className="mt-1 text-sm text-zinc-400">
           Upload markdown files or scrape URLs to feed the wiki pipeline.
@@ -128,8 +131,10 @@ export function PipelineClient() {
 
         <div className="mt-4 grid gap-4 sm:grid-cols-2">
           {/* File Upload */}
-          <div className="rounded-md border border-white/10 bg-[#111] p-4">
-            <h3 className="text-sm font-semibold text-zinc-300">📄 Upload File</h3>
+          <div className="rounded-[var(--radius-md)] border border-white/10 bg-zinc-950/50 p-4">
+            <h3 className="flex items-center gap-2 text-sm font-semibold text-zinc-300">
+              <FileUp className="size-4 text-emerald-400" /> Upload File
+            </h3>
             <p className="mt-1 text-xs text-zinc-500">Upload a .md file to the raw/ directory.</p>
             <div className="mt-3 flex gap-2">
               <input
@@ -150,16 +155,18 @@ export function PipelineClient() {
                 type="button"
                 onClick={handleUpload}
                 disabled={loading === 'upload'}
-                className="rounded-md bg-emerald-600 px-4 py-2 text-sm font-semibold text-white transition hover:bg-emerald-500 disabled:opacity-50"
+                className="inline-flex items-center justify-center rounded-md bg-emerald-600 px-4 py-2 text-sm font-semibold text-white transition hover:bg-emerald-500 disabled:opacity-50"
               >
-                {loading === 'upload' ? '⏳' : 'Upload'}
+                {loading === 'upload' ? <Loader2 className="size-4 animate-spin" /> : 'Upload'}
               </button>
             </div>
           </div>
 
           {/* URL Scrape */}
-          <div className="rounded-md border border-white/10 bg-[#111] p-4">
-            <h3 className="text-sm font-semibold text-zinc-300">🔗 Scrape URL</h3>
+          <div className="rounded-[var(--radius-md)] border border-white/10 bg-zinc-950/50 p-4">
+            <h3 className="flex items-center gap-2 text-sm font-semibold text-zinc-300">
+              <Link2 className="size-4 text-blue-400" /> Scrape URL
+            </h3>
             <p className="mt-1 text-xs text-zinc-500">Fetch a web page and save as raw content.</p>
             <form onSubmit={handleScrape} className="mt-3 flex gap-2">
               <input
@@ -172,19 +179,21 @@ export function PipelineClient() {
               <button
                 type="submit"
                 disabled={loading === 'scrape'}
-                className="rounded-md bg-emerald-600 px-4 py-2 text-sm font-semibold text-white transition hover:bg-emerald-500 disabled:opacity-50"
+                className="inline-flex items-center justify-center rounded-md bg-emerald-600 px-4 py-2 text-sm font-semibold text-white transition hover:bg-emerald-500 disabled:opacity-50"
               >
-                {loading === 'scrape' ? '⏳' : 'Scrape'}
+                {loading === 'scrape' ? <Loader2 className="size-4 animate-spin" /> : 'Scrape'}
               </button>
             </form>
           </div>
         </div>
 
         {/* Pipeline Trigger */}
-        <div className="mt-4 rounded-md border border-emerald-300/20 bg-emerald-300/[0.04] p-4">
+        <div className="mt-4 rounded-[var(--radius-md)] border border-emerald-400/20 bg-emerald-400/[0.04] p-4">
           <div className="flex items-center justify-between gap-4">
             <div>
-              <h3 className="text-sm font-semibold text-emerald-300">⚙️ Pipeline</h3>
+              <h3 className="flex items-center gap-2 text-sm font-semibold text-emerald-300">
+                <Cog className="size-4" /> Pipeline
+              </h3>
               <p className="mt-1 text-xs text-zinc-400">
                 Trigger the OLW pipeline to ingest, compile, and publish.
               </p>
@@ -204,13 +213,11 @@ export function PipelineClient() {
         </div>
 
         {/* Pipeline Info */}
-        <div className="mt-3 rounded-md border border-white/5 bg-[#111] p-3">
-          <p className="text-xs text-zinc-500">
-            The pipeline runs:{' '}
+        <div className="mt-3 rounded-[var(--radius-md)] border border-white/5 bg-zinc-950/40 p-3">
+          <p className="flex flex-wrap items-center gap-2 text-xs text-zinc-500">
+            <span>The pipeline runs:</span>
             {pipelineStatusText ? (
-              <span className="inline-flex rounded-full border border-white/10 bg-black/30 px-2 py-0.5 font-medium text-zinc-200">
-                {pipelineStatusText}
-              </span>
+              <Badge variant="accent">{pipelineStatusText}</Badge>
             ) : (
               <>
                 <strong className="text-zinc-300">ingest</strong> (analyze raw notes) →{' '}
@@ -221,7 +228,7 @@ export function PipelineClient() {
             )}
           </p>
         </div>
-      </section>
+      </Surface>
 
       {/* Toast notifications */}
       <div className="fixed bottom-4 right-4 z-50 flex flex-col gap-2">
@@ -260,7 +267,7 @@ export function PipelineClient() {
                 <line x1="18" y1="6" x2="6" y2="18"/><line x1="6" y1="6" x2="18" y2="18"/>
               </svg>
             </button>
-            <div className="text-4xl mb-4">🚧</div>
+            <Construction className="mx-auto mb-4 size-10 text-amber-400" />
             <h2 className="text-xl font-semibold text-white mb-2">功能實作中</h2>
             <p className="text-sm text-zinc-400">
               This feature is under development and will be available soon.

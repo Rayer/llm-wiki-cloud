@@ -17,6 +17,7 @@ export default function ConceptDetailPage({
       label="Concepts"
       backHref="/concepts"
       load={getConcept}
+      entryType="concept"
     />
   );
 }

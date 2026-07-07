@@ -10,6 +10,7 @@ export default function SourcesPage() {
       description="Original wiki source documents available from the LLM Wiki BFF."
       load={getSources}
       basePath="/sources"
+      entryType="source"
     />
   );
 }

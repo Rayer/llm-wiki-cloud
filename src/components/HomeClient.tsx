@@ -16,6 +16,8 @@ import {
 import { useT } from '@/lib/i18n';
 import { EmptyState, ErrorState, LoadingState } from './States';
 import { useWorkspace } from './WorkspaceProvider';
+import { Badge } from './ui/Badge';
+import { Surface } from './ui/Surface';
 
 function readSearchParams(): { q: string; mode: 'wiki' | 'full' } {
   if (typeof window === 'undefined') return { q: '', mode: 'wiki' };
@@ -149,91 +151,87 @@ export function HomeClient() {
     return () => window.removeEventListener('keydown', handler);
   }, [modal]);
 
+  const resultType = (type?: string): 'source' | 'concept' =>
+    type === 'source' ? 'source' : 'concept';
+
   return (
     <div className="space-y-10">
-      <section className="grid gap-8 pt-6 lg:grid-cols-[1fr_320px] lg:items-end">
-        <div>
-          <div className="text-sm font-semibold uppercase tracking-[0.28em] text-emerald-300">
-            LLM Wiki (Demo)
-          </div>
-          <h1 className="mt-5 max-w-3xl text-3xl font-bold leading-tight text-white sm:text-4xl">
-            {t('Demo.heading')}
-          </h1>
-          <p className="mt-5 max-w-2xl text-lg leading-8 text-zinc-400">
-            Browse source documents, distilled concepts, and pipeline state from the
-            LLM Wiki backend.
-          </p>
-          <p className="mt-3 max-w-2xl text-sm leading-6 text-zinc-500">
-            Inspired by{" "}
-            <a
-              href="https://rayer.idv.tw/blog/?p=1351"
-              target="_blank"
-              rel="noopener noreferrer"
-              className="text-emerald-300 underline hover:text-emerald-200"
-            >
-              Andrej Karpathy&apos;s LLM Wiki concept
-            </a>
-            , remixed with LLM superpowers.
-          </p>
-          <form onSubmit={onSubmit} className="mt-8 rounded-lg border border-white/10 bg-[#151515] p-3">
-            <div className="flex flex-col gap-3 sm:flex-row">
+      <section className="flex flex-col items-center pt-8 text-center">
+        <p className="text-sm text-zinc-500">{t('Demo.heroSubtitle')}</p>
+        <h1 className="mt-2 max-w-2xl text-2xl font-semibold tracking-tight text-white sm:text-3xl">
+          {t('Demo.heading')}
+        </h1>
+
+        <form onSubmit={onSubmit} className="mt-8 w-full max-w-2xl">
+          <Surface variant="glass" className="p-2">
+            <div className="flex flex-col gap-2 sm:flex-row sm:items-center">
               <input
                 value={query}
                 onChange={(event) => setQuery(event.target.value)}
                 placeholder={t('Demo.searchPlaceholder')}
-                className="min-h-12 flex-1 rounded-md border border-white/10 bg-black/40 px-4 text-white outline-none transition placeholder:text-zinc-600 focus:border-emerald-300"
+                className="min-h-12 flex-1 rounded-[var(--radius-md)] bg-transparent px-4 text-white outline-none transition placeholder:text-zinc-600 focus:ring-1 focus:ring-emerald-400/30"
               />
-              <div className="grid grid-cols-2 rounded-md border border-white/10 bg-black/30 p-1 text-sm">
-                {(['wiki', 'full'] as const).map((item) => (
-                  <button
-                    key={item}
-                    type="button"
-                    onClick={() => { setMode(item); if (query.trim()) handleSearch(item); }}
-                    className={`rounded px-4 py-2 font-medium capitalize transition ${
-                      mode === item ? 'bg-emerald-300 text-black' : 'text-zinc-300 hover:text-white'
-                    }`}
-                  >
-                    {t(`Demo.${item}`)}
-                  </button>
-                ))}
+              <div className="flex items-center gap-2 px-1 sm:pr-1">
+                <div className="grid grid-cols-2 rounded-[var(--radius-md)] border border-white/10 bg-black/30 p-0.5 text-sm">
+                  {(['wiki', 'full'] as const).map((item) => (
+                    <button
+                      key={item}
+                      type="button"
+                      onClick={() => { setMode(item); if (query.trim()) handleSearch(item); }}
+                      className={`rounded-md px-3 py-1.5 font-medium capitalize transition ${
+                        mode === item ? 'bg-emerald-400/20 text-emerald-200' : 'text-zinc-400 hover:text-white'
+                      }`}
+                    >
+                      {t(`Demo.${item}`)}
+                    </button>
+                  ))}
+                </div>
+                <button
+                  type="submit"
+                  className="min-h-10 rounded-[var(--radius-md)] bg-emerald-400 px-5 text-sm font-semibold text-zinc-900 transition hover:bg-emerald-300"
+                >
+                  {t('Demo.search')}
+                </button>
               </div>
-              <button
-                type="submit"
-                className="min-h-12 rounded-md bg-white px-6 font-semibold text-black transition hover:bg-emerald-200"
-              >
-                {t('Demo.search')}
-              </button>
             </div>
-          </form>
-        </div>
-
-        <div className="grid gap-3 sm:grid-cols-2 lg:grid-cols-1">
-          <StatCard label="Sources" value={status?.sourcesCount} error={statusError} />
-          <StatCard label="Concepts" value={status?.conceptsCount} error={statusError} />
-        </div>
+          </Surface>
+          <div className="mt-3 flex flex-wrap items-center justify-center gap-2">
+            <StatPill label="Sources" value={status?.sourcesCount} error={statusError} />
+            <StatPill label="Concepts" value={status?.conceptsCount} error={statusError} />
+            <Badge variant="muted" className="hidden sm:inline-flex">⌘K</Badge>
+          </div>
+        </form>
       </section>
 
       <section className="space-y-4">
-        <div className="flex items-center justify-between gap-4">
-          <h2 className="text-2xl font-semibold text-white">Search results</h2>
-          {searched ? <span className="text-sm text-zinc-500">{mode} mode</span> : null}
-        </div>
+        {searched ? (
+          <div className="flex items-center justify-between gap-4">
+            <h2 className="text-lg font-semibold text-white">{t('Demo.results')}</h2>
+            <Badge variant="muted">{mode} mode</Badge>
+          </div>
+        ) : null}
         {loading ? <LoadingState label="Searching" /> : null}
         {error ? <ErrorState message={error} /> : null}
         {!loading && !error && aiAnswer ? (
-          <article className="rounded-lg border border-emerald-300/20 bg-emerald-300/[0.06] p-5">
-            <h3 className="text-sm font-semibold uppercase tracking-[0.2em] text-emerald-300">
-              AI answer
-            </h3>
-            <div className="mt-3 text-base leading-7 text-zinc-200
-              [&_strong]:text-white [&_strong]:font-semibold
-              [&_h3]:text-base [&_h3]:font-semibold [&_h3]:text-white [&_h3]:mt-4 [&_h3]:mb-1
-              [&_ul]:list-disc [&_ul]:pl-5 [&_ul]:space-y-1 [&_ul]:mb-3
-              [&_ol]:list-decimal [&_ol]:pl-5 [&_ol]:space-y-1 [&_ol]:mb-3
-              [&_li]:leading-7
-              [&_p]:mb-3
-            ">
-              {renderCitations(aiAnswer, citations, openCitation)}
+          <article className="relative overflow-hidden rounded-[var(--radius-lg)] border border-emerald-400/20 bg-emerald-400/[0.06] p-5 backdrop-blur-sm">
+            <div className="absolute inset-y-0 left-0 w-1 bg-gradient-to-b from-emerald-300 to-teal-500" />
+            <div className="pl-3">
+              <div className="flex flex-wrap items-center gap-2">
+                <h3 className="text-sm font-semibold text-emerald-200">{t('Demo.answer')}</h3>
+                {citations.length > 0 ? (
+                  <Badge variant="accent">{citations.length} sources</Badge>
+                ) : null}
+              </div>
+              <div className="mt-3 text-base leading-7 text-zinc-200
+                [&_strong]:text-white [&_strong]:font-semibold
+                [&_h3]:text-base [&_h3]:font-semibold [&_h3]:text-white [&_h3]:mt-4 [&_h3]:mb-1
+                [&_ul]:list-disc [&_ul]:pl-5 [&_ul]:space-y-1 [&_ul]:mb-3
+                [&_ol]:list-decimal [&_ol]:pl-5 [&_ol]:space-y-1 [&_ol]:mb-3
+                [&_li]:leading-7
+                [&_p]:mb-3
+              ">
+                {renderCitations(aiAnswer, citations, openCitation)}
+              </div>
             </div>
           </article>
         ) : null}
@@ -241,35 +239,47 @@ export function HomeClient() {
           <EmptyState message="No results matched that query." />
         ) : null}
         <div className="grid gap-4 md:grid-cols-2">
-          {results.map((result) => (
-            <button
-              key={`${result.type}-${result.slug}`}
-              type="button"
-              onClick={() => openCitation({ text: result.title, slug: result.slug, type: (result.type === 'source' ? 'source' as const : 'concept' as const), path: '' })}
-              className="rounded-lg border border-white/10 bg-[#1a1a1a] p-5 text-left transition hover:border-emerald-300/50 hover:bg-[#202020]"
-            >
-                <div className="flex items-center justify-between gap-4">
-                  <h3 className="text-lg font-semibold text-white">{result.title}</h3>
+          {results.map((result) => {
+            const type = resultType(result.type);
+            return (
+              <button
+                key={`${result.type}-${result.slug}`}
+                type="button"
+                onClick={() => openCitation({
+                  text: result.title,
+                  slug: result.slug,
+                  type: type,
+                  path: '',
+                })}
+                className="rounded-[var(--radius-lg)] border border-white/10 bg-zinc-900/40 p-5 text-left backdrop-blur-sm transition duration-200 hover:-translate-y-0.5 hover:border-emerald-400/30 hover:shadow-lg hover:shadow-emerald-500/5"
+              >
+                <div className="flex items-start justify-between gap-3">
+                  <div className="flex flex-wrap items-center gap-2">
+                    <Badge variant={type}>{type === 'source' ? 'Source' : 'Concept'}</Badge>
+                    <h3 className="text-lg font-semibold text-white">{result.title}</h3>
+                  </div>
                   {result.score !== undefined ? (
-                    <span className="text-xs text-zinc-500">{result.score.toFixed(2)}</span>
+                    <Badge variant="muted">{result.score.toFixed(2)}</Badge>
                   ) : null}
                 </div>
                 <p className="mt-3 line-clamp-4 text-sm leading-6 text-zinc-400">
                   {result.excerpt ?? result.description ?? 'Open this wiki entry.'}
                 </p>
               </button>
-          ))}
+            );
+          })}
         </div>
       </section>
 
       {/* Citation Preview Modal */}
       {modal ? (
         <div
-          className="fixed inset-0 z-50 flex items-center justify-center bg-black/70 p-4 backdrop-blur-sm"
+          className="fixed inset-0 z-50 flex items-center justify-center bg-black/70 p-4 backdrop-blur-sm animate-fade-in"
           onClick={() => setModal(null)}
         >
-          <div
-            className="relative max-h-[85vh] w-full max-w-2xl overflow-y-auto rounded-xl border border-white/10 bg-[#151515] p-6 shadow-2xl"
+          <Surface
+            variant="elevated"
+            className="relative max-h-[85vh] w-full max-w-2xl overflow-y-auto p-6 animate-scale-in"
             onClick={(e) => e.stopPropagation()}
           >
             <button
@@ -286,9 +296,9 @@ export function HomeClient() {
               <LoadingState label="Loading..." />
             ) : (
               <>
-                <div className="mb-1 text-xs font-semibold uppercase tracking-[0.2em] text-zinc-500">
+                <Badge variant={modal.type === 'concept' ? 'concept' : 'source'}>
                   {modal.type === 'concept' ? 'Concept' : 'Source'}
-                </div>
+                </Badge>
                 <h2 className="text-2xl font-semibold text-white">{modal.title}</h2>
                 <div className="mt-4 border-t border-white/10 pt-4">
                   <MarkdownBody content={stripLeadingHeading(modal.content)} />
@@ -304,7 +314,7 @@ export function HomeClient() {
                 </div>
               </>
             )}
-          </div>
+          </Surface>
         </div>
       ) : null}
     </div>
@@ -423,7 +433,7 @@ function renderInlineMarkdown(text: string): ReactNode[] {
   });
 }
 
-function StatCard({
+function StatPill({
   label,
   value,
   error,
@@ -433,12 +443,11 @@ function StatCard({
   error?: string;
 }) {
   return (
-    <div className="rounded-lg border border-white/10 bg-[#1a1a1a] p-5">
-      <div className="text-sm text-zinc-500">{label}</div>
-      <div className="mt-2 text-4xl font-semibold text-white">
-        {error ? '-' : value ?? '...'}
-      </div>
-      {error ? <div className="mt-2 text-xs text-red-300">{error}</div> : null}
-    </div>
+    <span className="inline-flex items-center gap-2 rounded-full border border-white/10 bg-zinc-900/50 px-3 py-1 text-xs text-zinc-400">
+      <span>{label}</span>
+      <span className="font-semibold tabular-nums text-white">
+        {error ? '—' : value ?? '…'}
+      </span>
+    </span>
   );
 }

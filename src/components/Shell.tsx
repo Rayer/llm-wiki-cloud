@@ -2,12 +2,16 @@
 
 import { useEffect, useState } from 'react';
 import Link from 'next/link';
+import { usePathname } from 'next/navigation';
+import { Search, FileText, Brain, Activity } from 'lucide-react';
 import { useT } from '@/lib/i18n';
 import { useAuth } from '@/lib/auth';
 import { LoginModal } from './LoginModal';
 import { NewProjectModal } from './NewProjectModal';
 import { ProjectEmptyState } from './ProjectEmptyState';
 import { WorkspaceProvider, useWorkspace } from './WorkspaceProvider';
+import { ProjectSelect } from './ui/ProjectSelect';
+import { CommandPalette, useCommandPalette } from './ui/CommandPalette';
 
 export function Shell({ children }: { children: React.ReactNode }) {
   return (
@@ -19,14 +23,18 @@ export function Shell({ children }: { children: React.ReactNode }) {
 
 function ShellContent({ children }: { children: React.ReactNode }) {
   const { t } = useT();
+  const pathname = usePathname();
   const [demoMessage, setDemoMessage] = useState('');
   const { user } = useAuth();
+  const { open: paletteOpen, setOpen: setPaletteOpen } = useCommandPalette();
+
   const navItems = [
-    { href: '/', label: t('Shell.search') },
-    { href: '/sources', label: t('Shell.sources') },
-    { href: '/concepts', label: t('Shell.concepts') },
-    { href: '/status', label: t('Shell.status') },
+    { href: '/', label: t('Shell.search'), icon: Search, exact: true },
+    { href: '/sources', label: t('Shell.sources'), icon: FileText },
+    { href: '/concepts', label: t('Shell.concepts'), icon: Brain },
+    { href: '/status', label: t('Shell.status'), icon: Activity },
   ];
+
   const {
     hydrated,
     token,
@@ -55,89 +63,108 @@ function ShellContent({ children }: { children: React.ReactNode }) {
     openNewProject();
   };
 
+  const isActive = (href: string, exact?: boolean) => {
+    if (exact) return pathname === href;
+    return pathname === href || pathname.startsWith(`${href}/`);
+  };
+
   return (
-    <div className="flex min-h-screen bg-[#0a0a0a] text-zinc-100">
-      {/* Sidebar */}
+    <div className="flex min-h-screen text-zinc-100">
       {token ? (
-        <aside className="flex w-64 shrink-0 flex-col border-r border-white/10 bg-[#0d0d0d]">
-          <Link href="/" className="block px-5 py-4">
-            <div className="text-xs font-semibold uppercase tracking-[0.24em] text-emerald-300">
-              LLM Wiki Cloud
+        <aside className="glass-sidebar flex w-64 shrink-0 flex-col">
+          <Link href="/" className="block px-5 py-5">
+            <div className="text-sm font-semibold tracking-tight text-white">
+              {t('Shell.brand')}
             </div>
+            <div className="mt-0.5 text-xs text-zinc-500">Knowledge workspace</div>
           </Link>
 
-          <nav className="flex flex-col gap-1 px-3 pb-3">
-            {navItems.map((item) => (
-              <Link
-                key={item.href}
-                href={item.href}
-                className="rounded-lg px-3 py-2 text-sm font-medium text-zinc-300 transition hover:bg-white/10 hover:text-white"
-              >
-                {item.label}
-              </Link>
-            ))}
+          <nav className="flex flex-col gap-0.5 px-3 pb-3">
+            {navItems.map((item) => {
+              const active = isActive(item.href, item.exact);
+              const Icon = item.icon;
+              return (
+                <Link
+                  key={item.href}
+                  href={item.href}
+                  className={`relative flex items-center gap-3 rounded-lg px-3 py-2 text-sm font-medium transition ${
+                    active
+                      ? 'bg-white/8 text-white'
+                      : 'text-zinc-400 hover:bg-white/5 hover:text-zinc-200'
+                  }`}
+                >
+                  {active ? (
+                    <span className="absolute left-0 top-1/2 h-5 w-0.5 -translate-y-1/2 rounded-full bg-emerald-400" />
+                  ) : null}
+                  <Icon className={`size-4 shrink-0 ${active ? 'text-emerald-400' : 'text-zinc-500'}`} />
+                  {item.label}
+                </Link>
+              );
+            })}
           </nav>
 
-          <div className="mx-3 my-2 border-t border-white/10" />
+          <div className="mx-3 my-2 border-t border-white/8" />
 
           <div className="px-3 pb-2">
-            <p className="px-1 pb-1 text-[10px] font-semibold uppercase tracking-wider text-zinc-600">
+            <p className="px-1 pb-2 text-[10px] font-semibold uppercase tracking-wider text-zinc-600">
               {t('Shell.projects')}
             </p>
             {projectsLoading ? (
-              <p className="px-3 py-2 text-xs text-zinc-500">{t('Shell.loading')}</p>
+              <p className="px-1 py-2 text-xs text-zinc-500">{t('Shell.loading')}</p>
             ) : projects.length === 0 ? (
-              <p className="px-3 py-2 text-xs text-zinc-500">{t('Shell.noProjects')}</p>
+              <p className="px-1 py-2 text-xs text-zinc-500">{t('Shell.noProjects')}</p>
             ) : (
-              <select
+              <ProjectSelect
+                projects={projects}
                 value={currentProject?.id ?? ''}
-                onChange={(event) => selectProject(event.target.value)}
-                className="w-full rounded-lg border border-white/10 bg-[#151515] px-3 py-2 text-sm font-medium text-zinc-100 outline-none transition hover:bg-white/5 focus:border-emerald-300"
-              >
-                {projects.map((project) => (
-                  <option key={project.id} value={project.id} className="bg-zinc-900 text-zinc-100">
-                    {project.name}
-                  </option>
-                ))}
-              </select>
+                onChange={(projectId) => selectProject(projectId)}
+                placeholder={t('Shell.noProjects')}
+              />
             )}
             <button
               type="button"
               onClick={handleNewProjectClick}
-              className="mt-1 w-full rounded-lg px-3 py-2 text-left text-sm text-zinc-500 transition hover:bg-white/10 hover:text-zinc-300"
+              className="mt-1.5 w-full rounded-lg px-3 py-2 text-left text-sm text-zinc-500 transition hover:bg-white/5 hover:text-zinc-300"
             >
               {t('Shell.newProject')}
             </button>
           </div>
 
-          <div className="mt-auto border-t border-white/10 px-3 py-3">
+          <div className="mt-auto border-t border-white/8 px-3 py-3">
             <div className="mt-2 border-t border-white/10 pt-2">
               <p className="font-mono text-[10px] text-zinc-600 truncate">User: {user?.id ?? '—'}</p>
               <p className="font-mono text-[10px] text-zinc-600 truncate">Project: {currentProject?.id ?? '—'}</p>
             </div>
-            <div className="flex items-center gap-3">
-              <div className="flex size-8 shrink-0 items-center justify-center rounded-full bg-emerald-300 text-xs font-semibold text-black">
+            <div className="mt-3 flex items-center gap-3">
+              <div className="flex size-8 shrink-0 items-center justify-center rounded-full bg-gradient-to-br from-emerald-300 to-teal-400 text-xs font-semibold text-zinc-900">
                 {user?.email.slice(0, 1).toUpperCase() ?? 'U'}
               </div>
-              <div className="min-w-0">
+              <div className="min-w-0 flex-1">
                 <p className="truncate text-sm font-medium text-white">
                   {user?.email ?? 'User'}
                 </p>
                 <button
                   type="button"
                   onClick={() => void signOut()}
-                  className="text-xs text-zinc-500 hover:text-zinc-300"
+                  className="text-xs text-zinc-500 transition hover:text-zinc-300"
                 >
                   {t('Shell.logout')}
                 </button>
               </div>
+              <button
+                type="button"
+                onClick={() => setPaletteOpen(true)}
+                className="hidden rounded-md border border-white/10 bg-white/5 px-1.5 py-0.5 text-[10px] text-zinc-500 transition hover:bg-white/10 hover:text-zinc-300 sm:block"
+                title="Command palette"
+              >
+                ⌘K
+              </button>
             </div>
           </div>
         </aside>
       ) : null}
 
-      {/* Main content */}
-      <main className="flex-1 min-w-0">
+      <main className="min-w-0 flex-1">
         {!hydrated ? (
           <div className="flex min-h-screen items-center justify-center text-sm text-zinc-500">
             {t('Shell.loading')}
@@ -147,13 +174,13 @@ function ShellContent({ children }: { children: React.ReactNode }) {
             {t('Shell.loading')}
           </div>
         ) : token && projectsError && projects.length === 0 ? (
-          <div className="mx-auto mt-20 max-w-lg rounded-xl border border-red-400/20 bg-red-400/10 p-6 text-center">
+          <div className="mx-auto mt-20 max-w-lg rounded-xl border border-red-400/20 bg-red-400/10 p-6 text-center animate-scale-in">
             <h1 className="text-xl font-semibold text-white">Projects unavailable</h1>
             <p className="mt-2 text-sm text-red-100">{projectsError}</p>
             <button
               type="button"
               onClick={() => void refreshProjects()}
-              className="mt-5 rounded-lg bg-white px-4 py-2 text-sm font-semibold text-black"
+              className="mt-5 rounded-lg bg-white px-4 py-2 text-sm font-semibold text-black transition hover:bg-emerald-200"
             >
               Try again
             </button>
@@ -161,7 +188,7 @@ function ShellContent({ children }: { children: React.ReactNode }) {
         ) : token && projects.length === 0 ? (
           <ProjectEmptyState />
         ) : token && currentProject ? (
-          <div className="px-4 py-8 sm:px-6 lg:px-10 max-w-6xl mx-auto">
+          <div className="mx-auto max-w-6xl px-4 py-8 sm:px-6 lg:px-10">
             {children}
           </div>
         ) : null}
@@ -169,11 +196,37 @@ function ShellContent({ children }: { children: React.ReactNode }) {
 
       <LoginModal />
       <NewProjectModal />
+      {paletteOpen ? (
+        <CommandPalette
+          open
+          onClose={() => setPaletteOpen(false)}
+          projects={projects}
+          onSelectProject={selectProject}
+          labels={{
+            placeholder: t('Command.placeholder'),
+            navigate: t('Command.navigate'),
+            projects: t('Shell.projects'),
+            search: t('Shell.search'),
+          }}
+        />
+      ) : null}
+
       {demoMessage ? (
-        <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/50 backdrop-blur-sm" onClick={() => setDemoMessage('')}>
-          <div className="rounded-xl border border-zinc-300/20 bg-zinc-900 px-6 py-5 shadow-2xl w-80 text-center" onClick={(e) => e.stopPropagation()}>
-            <p className="text-sm text-zinc-200 mb-3">{demoMessage}</p>
-            <button onClick={() => setDemoMessage('')} className="rounded-lg bg-white px-4 py-2 text-xs font-medium text-black hover:bg-emerald-200 transition">{t('Shell.ok')}</button>
+        <div
+          className="fixed inset-0 z-50 flex items-center justify-center bg-black/50 backdrop-blur-sm animate-fade-in"
+          onClick={() => setDemoMessage('')}
+        >
+          <div
+            className="w-80 rounded-xl border border-zinc-300/20 bg-zinc-900 px-6 py-5 text-center shadow-2xl animate-scale-in"
+            onClick={(e) => e.stopPropagation()}
+          >
+            <p className="mb-3 text-sm text-zinc-200">{demoMessage}</p>
+            <button
+              onClick={() => setDemoMessage('')}
+              className="rounded-lg bg-white px-4 py-2 text-xs font-medium text-black transition hover:bg-emerald-200"
+            >
+              {t('Shell.ok')}
+            </button>
           </div>
         </div>
       ) : null}

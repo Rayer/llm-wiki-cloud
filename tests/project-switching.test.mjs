@@ -16,15 +16,19 @@ test('home status reloads when the current project changes', async () => {
   );
 });
 
-test('shell renders projects with a dropdown selector', async () => {
+test('shell renders projects with a custom project selector', async () => {
   const shell = await readFile(
     new URL('../src/components/Shell.tsx', import.meta.url),
     'utf8',
   );
 
-  assert.match(shell, /<select[\s\S]*value=\{currentProject\?\.id \?\? ''\}[\s\S]*onChange=\{\(event\) => selectProject\(event\.target\.value\)\}/);
-  assert.match(shell, /projects\.map\(\(project\) => \(\s*<option[\s\S]*key=\{project\.id\}[\s\S]*value=\{project\.id\}[\s\S]*>\s*\{project\.name\}\s*<\/option>/);
-  assert.doesNotMatch(shell, /projects\.map\(\(project\) => \(\s*<button/);
+  assert.match(shell, /import \{ ProjectSelect \} from '\.\/ui\/ProjectSelect';/);
+  assert.match(
+    shell,
+    /<ProjectSelect[\s\S]*value=\{currentProject\?\.id \?\? ''\}[\s\S]*onChange=\{\(projectId\) => selectProject\(projectId\)\}/,
+  );
+  assert.match(shell, /projects=\{projects\}/);
+  assert.doesNotMatch(shell, /<select[\s\S]*value=\{currentProject\?\.id/);
 });
 
 test('shell footer shows user and project ids above the user account block', async () => {
@@ -37,7 +41,7 @@ test('shell footer shows user and project ids above the user account block', asy
   assert.match(shell, /const \{\s*user\s*\} = useAuth\(\);/);
   assert.match(
     shell,
-    /<div className="mt-2 border-t border-white\/10 pt-2">[\s\S]*?<div className="flex items-center gap-3">/,
+    /<div className="mt-2 border-t border-white\/10 pt-2">[\s\S]*?<div className="mt-3 flex items-center gap-3">/,
   );
   assert.match(
     shell,
