@@ -373,6 +373,7 @@ export type PipelineStatus = {
     duration?: string | number | null;
     started_at?: string | null;
     finished_at?: string | null;
+    log_url?: string | null;
     [key: string]: unknown;
   } | null;
   [key: string]: unknown;
@@ -420,6 +421,14 @@ export async function triggerPipeline(): Promise<PipelineResult> {
 
 export async function getPipelineStatus(): Promise<PipelineStatus> {
   return requestJson<PipelineStatus>('/api/v1/pipeline/status');
+}
+
+export async function getPipelineLog(logUrl: string): Promise<string> {
+  const response = await apiFetch(logUrl);
+  if (!response.ok) {
+    throw new Error(`Pipeline log request failed (${response.status})`);
+  }
+  return response.text();
 }
 
 export async function generateTitle(content: string): Promise<string> {

@@ -2,28 +2,66 @@
 
 import { useEffect, useState } from 'react';
 import { CheckCircle2, Circle, Loader2, XCircle } from 'lucide-react';
-import { getPipelineStatus, getStatus, type ApiStatus, type PipelineStatus } from '@/lib/api';
+import {
+  getPipelineLog,
+  getPipelineStatus,
+  getStatus,
+  type ApiStatus,
+  type PipelineStatus,
+} from '@/lib/api';
 import { ErrorState, LoadingState } from './States';
 import { Badge } from './ui/Badge';
 import { Surface } from './ui/Surface';
 
 const PIPELINE_STEPS = ['ingest', 'compile', 'lint', 'publish'] as const;
+const LOG_PREVIEW_BYTES = 10 * 1024;
+const LOG_PREVIEW_LINES = 50;
 
 export function StatusClient() {
   const [status, setStatus] = useState<ApiStatus | null>(null);
   const [pipeline, setPipeline] = useState<PipelineStatus | null>(null);
+  const [pipelineLog, setPipelineLog] = useState('');
+  const [logLoading, setLogLoading] = useState(false);
+  const [logError, setLogError] = useState('');
+  const [showFullLog, setShowFullLog] = useState(false);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState('');
   const [showRaw, setShowRaw] = useState(false);
 
   useEffect(() => {
+    let cancelled = false;
+
     Promise.all([getStatus(), getPipelineStatus()])
       .then(([apiStatus, pipelineStatus]) => {
+        if (cancelled) return;
         setStatus(apiStatus);
         setPipeline(pipelineStatus);
+
+        const logUrl = pipelineStatus.last_execution?.log_url;
+        if (!logUrl) return;
+
+        setLogLoading(true);
+        getPipelineLog(logUrl)
+          .then((logText) => {
+            if (!cancelled) setPipelineLog(logText);
+          })
+          .catch((err: Error) => {
+            if (!cancelled) setLogError(err.message);
+          })
+          .finally(() => {
+            if (!cancelled) setLogLoading(false);
+          });
       })
-      .catch((err: Error) => setError(err.message))
-      .finally(() => setLoading(false));
+      .catch((err: Error) => {
+        if (!cancelled) setError(err.message);
+      })
+      .finally(() => {
+        if (!cancelled) setLoading(false);
+      });
+
+    return () => {
+      cancelled = true;
+    };
   }, []);
 
   return (
@@ -48,6 +86,13 @@ export function StatusClient() {
           </div>
 
           <PipelineTimeline pipeline={pipeline} />
+          <PipelineLogPanel
+            logText={pipelineLog}
+            loading={logLoading}
+            error={logError}
+            showFullLog={showFullLog}
+            onToggleFull={() => setShowFullLog((prev) => !prev)}
+          />
 
           <Surface variant="glass" className="p-5">
             <button
@@ -66,6 +111,53 @@ export function StatusClient() {
         </>
       ) : null}
     </div>
+  );
+}
+
+function PipelineLogPanel({
+  logText,
+  loading,
+  error,
+  showFullLog,
+  onToggleFull,
+}: {
+  logText: string;
+  loading: boolean;
+  error: string;
+  showFullLog: boolean;
+  onToggleFull: () => void;
+}) {
+  const isLarge = logText.length > LOG_PREVIEW_BYTES;
+  const visibleLog = isLarge && !showFullLog
+    ? logText.split(/\r?\n/).slice(-LOG_PREVIEW_LINES).join('\n')
+    : logText;
+
+  return (
+    <Surface variant="glass" className="p-5">
+      <div className="flex flex-wrap items-center justify-between gap-3">
+        <h2 className="text-sm font-semibold text-white">Pipeline log</h2>
+        {isLarge ? (
+          <button
+            type="button"
+            onClick={onToggleFull}
+            className="text-sm font-medium text-zinc-400 transition hover:text-white"
+          >
+            {showFullLog ? 'Show latest lines' : 'Show full log'}
+          </button>
+        ) : null}
+      </div>
+
+      {loading ? <p className="mt-4 text-sm text-zinc-500">Loading log...</p> : null}
+      {error ? <p className="mt-4 text-sm text-amber-300">{error}</p> : null}
+      {!loading && !error && !logText ? (
+        <p className="mt-4 text-sm text-zinc-500">No pipeline log available.</p>
+      ) : null}
+      {logText ? (
+        <pre className="mt-4 max-h-96 overflow-x-auto overflow-y-auto rounded-md border border-white/10 bg-black/60 p-4 font-mono text-xs leading-5 text-zinc-300">
+          {visibleLog}
+        </pre>
+      ) : null}
+    </Surface>
   );
 }
 
