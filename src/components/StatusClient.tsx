@@ -4,10 +4,9 @@ import { useEffect, useState } from 'react';
 import { CheckCircle2, Circle, Loader2, XCircle } from 'lucide-react';
 import {
   getPipelineLog,
-  getPipelineStatus,
   getStatus,
   type ApiStatus,
-  type PipelineStatus,
+  type PipelineExecution,
 } from '@/lib/api';
 import { ErrorState, LoadingState } from './States';
 import { Badge } from './ui/Badge';
@@ -19,7 +18,6 @@ const LOG_PREVIEW_LINES = 50;
 
 export function StatusClient() {
   const [status, setStatus] = useState<ApiStatus | null>(null);
-  const [pipeline, setPipeline] = useState<PipelineStatus | null>(null);
   const [pipelineLog, setPipelineLog] = useState('');
   const [logLoading, setLogLoading] = useState(false);
   const [logError, setLogError] = useState('');
@@ -31,13 +29,12 @@ export function StatusClient() {
   useEffect(() => {
     let cancelled = false;
 
-    Promise.all([getStatus(), getPipelineStatus()])
-      .then(([apiStatus, pipelineStatus]) => {
+    getStatus()
+      .then((apiStatus) => {
         if (cancelled) return;
         setStatus(apiStatus);
-        setPipeline(pipelineStatus);
 
-        const logUrl = pipelineStatus.last_execution?.log_url;
+        const logUrl = apiStatus.lastExecution?.log_url;
         if (!logUrl) return;
 
         setLogLoading(true);
@@ -85,7 +82,7 @@ export function StatusClient() {
             <Metric label="Concepts" value={status.conceptsCount} />
           </div>
 
-          <PipelineTimeline pipeline={pipeline} />
+          <PipelineTimeline execution={status.lastExecution} />
           <PipelineLogPanel
             logText={pipelineLog}
             loading={logLoading}
@@ -104,7 +101,7 @@ export function StatusClient() {
             </button>
             {showRaw ? (
               <pre className="mt-4 overflow-x-auto rounded-md bg-black/50 p-4 text-xs text-zinc-400">
-                {JSON.stringify({ api: status.raw, pipeline }, null, 2)}
+                {JSON.stringify({ api: status.raw }, null, 2)}
               </pre>
             ) : null}
           </Surface>
@@ -170,8 +167,7 @@ function Metric({ label, value }: { label: string; value: number }) {
   );
 }
 
-function PipelineTimeline({ pipeline }: { pipeline: PipelineStatus | null }) {
-  const execution = pipeline?.last_execution;
+function PipelineTimeline({ execution }: { execution?: PipelineExecution | null }) {
   const execStatus = execution?.status;
   const isRunning = execStatus === 'running';
   const isSuccess = execStatus === 'SUCCEEDED';

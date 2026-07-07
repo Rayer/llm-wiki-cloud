@@ -1,8 +1,18 @@
 'use client';
 
+export type PipelineExecution = {
+  status?: 'running' | 'SUCCEEDED' | 'FAILED' | string;
+  duration?: string | number | null;
+  started_at?: string | null;
+  finished_at?: string | null;
+  log_url?: string | null;
+  [key: string]: unknown;
+};
+
 export type ApiStatus = {
   sourcesCount: number;
   conceptsCount: number;
+  lastExecution?: PipelineExecution | null;
   raw: Record<string, unknown>;
 };
 
@@ -308,7 +318,11 @@ export function normalizeStatus(payload: unknown): ApiStatus {
     firstNumber(record, ['conceptsCount', 'conceptCount', 'concepts_count']) ??
     (Array.isArray(record.concepts) ? record.concepts.length : 0);
 
-  return { sourcesCount, conceptsCount, raw: record };
+  const lastExecution = isRecord(record.last_execution)
+    ? record.last_execution as PipelineExecution
+    : null;
+
+  return { sourcesCount, conceptsCount, lastExecution, raw: record };
 }
 
 export async function getStatus() {
@@ -368,14 +382,7 @@ export type PipelineResult = {
 };
 
 export type PipelineStatus = {
-  last_execution?: {
-    status?: 'running' | 'SUCCEEDED' | 'FAILED' | string;
-    duration?: string | number | null;
-    started_at?: string | null;
-    finished_at?: string | null;
-    log_url?: string | null;
-    [key: string]: unknown;
-  } | null;
+  last_execution?: PipelineExecution | null;
   [key: string]: unknown;
 };
 
