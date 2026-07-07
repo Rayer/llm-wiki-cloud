@@ -1,9 +1,13 @@
 'use client';
 
+import Link from 'next/link';
 import type { ReactNode } from 'react';
 
+import { parseMarkdownImage } from '../lib/markdown-images';
+import { resolveWikilink, type WikilinkSection } from '../lib/wikilinks';
+
 // Track current markdown section for wikilink routing
-let currentWikilinkSection: 'sources' | 'concepts' = 'concepts';
+let currentWikilinkSection: WikilinkSection = 'concepts';
 
 export function MarkdownView({ content }: { content?: string }) {
   if (!content) {
@@ -148,7 +152,7 @@ function renderMarkdown(content: string) {
 }
 
 function renderInline(text: string): ReactNode[] {
-  const parts = text.split(/(`[^`]+`|\*\*[^*]+\*\*|!\[[^\]]*\]\([^)]+\)|\[\[[^\]]+\]\]|\[[^\]]+\]\([^)]+\))/g);
+  const parts = text.split(/(`[^`]+`|\*\*[^*]+\*\*|!\[[^\]]*\]\(.+\)|\[\[[^\]]+\]\]|\[[^\]]+\]\([^)]+\))/g);
 
   return parts.map((part, index) => {
     if (part.startsWith('`') && part.endsWith('`')) {
@@ -158,13 +162,13 @@ function renderInline(text: string): ReactNode[] {
       return <strong key={index}>{part.slice(2, -2)}</strong>;
     }
     // Image: ![alt](url) — must be checked before regular link
-    const image = /^!\[([^\]]*)\]\(([^)]+)\)$/.exec(part);
+    const image = parseMarkdownImage(part);
     if (image) {
       return (
         <img
           key={index}
-          src={image[2]}
-          alt={image[1] || 'Image'}
+          src={image.src}
+          alt={image.alt}
           className="rounded-lg"
           loading="lazy"
         />
@@ -173,11 +177,11 @@ function renderInline(text: string): ReactNode[] {
     // Obsidian-style wikilink: [[Page Name]] — route based on section context
     const wikilink = /^\[\[([^\]]+)\]\]$/.exec(part);
     if (wikilink) {
-      const collection = currentWikilinkSection === 'sources' ? 'sources' : 'concepts';
+      const resolved = resolveWikilink(wikilink[1], currentWikilinkSection);
       return (
-        <a key={index} href={`/${collection}/${encodeURIComponent(wikilink[1])}`} className="text-emerald-300 underline hover:text-emerald-200">
-          {wikilink[1]}
-        </a>
+        <Link key={index} href={resolved.href} className="text-emerald-300 underline hover:text-emerald-200">
+          {resolved.label}
+        </Link>
       );
     }
     const link = /^\[([^\]]+)\]\(([^)]+)\)$/.exec(part);

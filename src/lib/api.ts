@@ -107,7 +107,6 @@ export function buildRequestInit({
   return {
     ...(method ? { method } : {}),
     credentials: 'include',
-    redirect: 'manual',
     headers,
     ...(body === undefined ? {} : { body }),
   };
