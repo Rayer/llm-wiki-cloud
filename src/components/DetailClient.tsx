@@ -7,7 +7,7 @@ import { MarkdownView } from './MarkdownView';
 import { ErrorState, LoadingState } from './States';
 import { Badge } from './ui/Badge';
 import { Surface } from './ui/Surface';
-import type { WikiEntry } from '@/lib/api';
+import { getConcepts, type WikiEntry } from '@/lib/api';
 
 export function DetailClient({
   slug,
@@ -23,15 +23,36 @@ export function DetailClient({
   entryType?: 'source' | 'concept';
 }) {
   const [entry, setEntry] = useState<WikiEntry | null>(null);
+  const [existingConceptSlugs, setExistingConceptSlugs] = useState<Set<string> | undefined>();
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState('');
 
   useEffect(() => {
-    load(slug)
-      .then(setEntry)
-      .catch((err: Error) => setError(err.message))
-      .finally(() => setLoading(false));
-  }, [load, slug]);
+    let cancelled = false;
+
+    const entryPromise = load(slug);
+    const conceptsPromise =
+      entryType === 'source'
+        ? getConcepts().then((concepts) => new Set(concepts.map((concept) => concept.slug)))
+        : Promise.resolve(undefined);
+
+    Promise.all([entryPromise, conceptsPromise])
+      .then(([loadedEntry, conceptSlugs]) => {
+        if (cancelled) return;
+        setEntry(loadedEntry);
+        setExistingConceptSlugs(conceptSlugs);
+      })
+      .catch((err: Error) => {
+        if (!cancelled) setError(err.message);
+      })
+      .finally(() => {
+        if (!cancelled) setLoading(false);
+      });
+
+    return () => {
+      cancelled = true;
+    };
+  }, [entryType, load, slug]);
 
   if (loading) return <LoadingState label={`Loading ${label}`} />;
   if (error) return <ErrorState message={error} />;
@@ -66,7 +87,7 @@ export function DetailClient({
       </header>
 
       {entry.frontmatter ? <Frontmatter data={entry.frontmatter} /> : null}
-      <MarkdownView content={entry.content} />
+      <MarkdownView content={entry.content} existingConceptSlugs={existingConceptSlugs} />
     </div>
   );
 }

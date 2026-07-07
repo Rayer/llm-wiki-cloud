@@ -23,3 +23,35 @@ test('resolveWikilink falls back to section routing for plain slug links', () =>
     label: '新聞來源',
   });
 });
+
+test('resolveWikilink matches canonical id-slug concept targets against plain slugs', () => {
+  const existing = new Set(['local-development']);
+  const live = resolveWikilink(
+    'concepts/a1b2c3d4e5f6-local-development|local-development',
+    'concepts',
+    existing,
+  );
+  assert.equal(live.dead, false);
+  assert.match(live.href, /^\/concepts\//);
+});
+
+test('resolveWikilink marks missing concept slugs as dead when existingSlugs is provided', () => {
+  const existing = new Set(['Mo-Mo-Paradise']);
+
+  const live = resolveWikilink('Mo-Mo-Paradise', 'concepts', existing);
+  assert.equal(live.href, '/concepts/Mo-Mo-Paradise');
+  assert.equal(live.label, 'Mo-Mo-Paradise');
+  assert.notEqual(live.dead, true);
+  assert.deepEqual(resolveWikilink('有余 YoYu bakery&kitchen', 'concepts', existing), {
+    href: null,
+    label: '有余 YoYu bakery&kitchen',
+    dead: true,
+  });
+});
+
+test('resolveWikilink keeps links live when existingSlugs is omitted', () => {
+  assert.deepEqual(resolveWikilink('missing-concept', 'concepts'), {
+    href: '/concepts/missing-concept',
+    label: 'missing-concept',
+  });
+});

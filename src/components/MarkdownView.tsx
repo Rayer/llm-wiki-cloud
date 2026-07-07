@@ -1,15 +1,33 @@
 'use client';
 
 import Link from 'next/link';
-import type { ReactNode } from 'react';
+import { useEffect, useState, type ReactNode } from 'react';
 
 import { parseMarkdownImage } from '../lib/markdown-images';
 import { resolveWikilink, type WikilinkSection } from '../lib/wikilinks';
+import { Surface } from './ui/Surface';
 
 // Track current markdown section for wikilink routing
 let currentWikilinkSection: WikilinkSection = 'concepts';
 
-export function MarkdownView({ content }: { content?: string }) {
+export function MarkdownView({
+  content,
+  existingConceptSlugs,
+}: {
+  content?: string;
+  existingConceptSlugs?: Set<string>;
+}) {
+  const [deadLinkSlug, setDeadLinkSlug] = useState<string | null>(null);
+
+  useEffect(() => {
+    if (!deadLinkSlug) return;
+    const handler = (event: KeyboardEvent) => {
+      if (event.key === 'Escape') setDeadLinkSlug(null);
+    };
+    window.addEventListener('keydown', handler);
+    return () => window.removeEventListener('keydown', handler);
+  }, [deadLinkSlug]);
+
   if (!content) {
     return (
       <div className="rounded-md border border-white/10 bg-[#111111] p-6 text-zinc-400">
@@ -22,13 +40,43 @@ export function MarkdownView({ content }: { content?: string }) {
   const clean = content.replace(/^# .+\n\n?/, '').replace(/^.+\n=+\n\n?/, '').trimStart();
 
   return (
-    <article className="markdown-body">
-      {renderMarkdown(clean)}
-    </article>
+    <>
+      <article className="markdown-body">
+        {renderMarkdown(clean, existingConceptSlugs, setDeadLinkSlug)}
+      </article>
+      {deadLinkSlug ? (
+        <div
+          className="fixed inset-0 z-50 flex items-center justify-center bg-black/70 p-4 backdrop-blur-sm"
+          onClick={() => setDeadLinkSlug(null)}
+        >
+          <Surface
+            variant="elevated"
+            className="relative w-full max-w-md p-6"
+            onClick={(event) => event.stopPropagation()}
+          >
+            <button
+              type="button"
+              onClick={() => setDeadLinkSlug(null)}
+              className="absolute right-4 top-4 rounded-md p-1 text-zinc-400 transition hover:bg-white/10 hover:text-white"
+              aria-label="Close"
+            >
+              <svg xmlns="http://www.w3.org/2000/svg" width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
+                <line x1="18" y1="6" x2="6" y2="18" /><line x1="6" y1="6" x2="18" y2="18" />
+              </svg>
+            </button>
+            <p className="pr-8 text-lg text-white">此 concept 尚不存在：{deadLinkSlug}</p>
+          </Surface>
+        </div>
+      ) : null}
+    </>
   );
 }
 
-function renderMarkdown(content: string) {
+function renderMarkdown(
+  content: string,
+  existingConceptSlugs: Set<string> | undefined,
+  onDeadLink: (slug: string) => void,
+) {
   const lines = content.split(/\r?\n/);
   const nodes: ReactNode[] = [];
   let index = 0;
@@ -70,7 +118,7 @@ function renderMarkdown(content: string) {
         if (lc === 'sources') currentWikilinkSection = 'sources';
         else if (lc === 'concepts') currentWikilinkSection = 'concepts';
       }
-      const children = renderInline(headingText);
+      const children = renderInline(headingText, existingConceptSlugs, onDeadLink);
       const key = nodes.length;
       if (level === 1) nodes.push(<h1 key={key}>{children}</h1>);
       if (level === 2) nodes.push(<h2 key={key}>{children}</h2>);
@@ -86,7 +134,11 @@ function renderMarkdown(content: string) {
         quote.push(lines[index].replace(/^>\s?/, ''));
         index += 1;
       }
-      nodes.push(<blockquote key={nodes.length}>{quote.map(renderInline)}</blockquote>);
+      nodes.push(
+        <blockquote key={nodes.length}>
+          {quote.map((item) => renderInline(item, existingConceptSlugs, onDeadLink))}
+        </blockquote>,
+      );
       continue;
     }
 
@@ -96,7 +148,7 @@ function renderMarkdown(content: string) {
         tableLines.push(lines[index]);
         index += 1;
       }
-      nodes.push(renderTable(tableLines, nodes.length));
+      nodes.push(renderTable(tableLines, nodes.length, existingConceptSlugs, onDeadLink));
       continue;
     }
 
@@ -109,7 +161,7 @@ function renderMarkdown(content: string) {
       nodes.push(
         <ul key={nodes.length}>
           {items.map((item, itemIndex) => (
-            <li key={itemIndex}>{renderInline(item)}</li>
+            <li key={itemIndex}>{renderInline(item, existingConceptSlugs, onDeadLink)}</li>
           ))}
         </ul>,
       );
@@ -125,7 +177,7 @@ function renderMarkdown(content: string) {
       nodes.push(
         <ol key={nodes.length}>
           {items.map((item, itemIndex) => (
-            <li key={itemIndex}>{renderInline(item)}</li>
+            <li key={itemIndex}>{renderInline(item, existingConceptSlugs, onDeadLink)}</li>
           ))}
         </ol>,
       );
@@ -145,13 +197,19 @@ function renderMarkdown(content: string) {
       paragraph.push(lines[index].trim());
       index += 1;
     }
-    nodes.push(<p key={nodes.length}>{renderInline(paragraph.join(' '))}</p>);
+    nodes.push(
+      <p key={nodes.length}>{renderInline(paragraph.join(' '), existingConceptSlugs, onDeadLink)}</p>,
+    );
   }
 
   return nodes;
 }
 
-function renderInline(text: string): ReactNode[] {
+function renderInline(
+  text: string,
+  existingConceptSlugs: Set<string> | undefined,
+  onDeadLink: (slug: string) => void,
+): ReactNode[] {
   const parts = text.split(/(`[^`]+`|\*\*[^*]+\*\*|!\[[^\]]*\]\(.+\)|\[\[[^\]]+\]\]|\[[^\]]+\]\([^)]+\))/g);
 
   return parts.map((part, index) => {
@@ -177,9 +235,28 @@ function renderInline(text: string): ReactNode[] {
     // Obsidian-style wikilink: [[Page Name]] — route based on section context
     const wikilink = /^\[\[([^\]]+)\]\]$/.exec(part);
     if (wikilink) {
-      const resolved = resolveWikilink(wikilink[1], currentWikilinkSection);
+      const resolved = resolveWikilink(wikilink[1], currentWikilinkSection, existingConceptSlugs);
+      if (resolved.dead) {
+        return (
+          <span
+            key={index}
+            role="button"
+            tabIndex={0}
+            className="text-red-400 cursor-pointer underline"
+            onClick={() => onDeadLink(resolved.label)}
+            onKeyDown={(event) => {
+              if (event.key === 'Enter' || event.key === ' ') {
+                event.preventDefault();
+                onDeadLink(resolved.label);
+              }
+            }}
+          >
+            {resolved.label}
+          </span>
+        );
+      }
       return (
-        <Link key={index} href={resolved.href} className="text-emerald-300 underline hover:text-emerald-200">
+        <Link key={index} href={resolved.href!} className="text-emerald-300 underline hover:text-emerald-200">
           {resolved.label}
         </Link>
       );
@@ -206,7 +283,12 @@ function isTableStart(lines: string[], index: number) {
   );
 }
 
-function renderTable(lines: string[], key: number) {
+function renderTable(
+  lines: string[],
+  key: number,
+  existingConceptSlugs: Set<string> | undefined,
+  onDeadLink: (slug: string) => void,
+) {
   const [headerLine, , ...bodyLines] = lines;
   const headers = splitTableRow(headerLine);
 
@@ -215,7 +297,7 @@ function renderTable(lines: string[], key: number) {
       <thead>
         <tr>
           {headers.map((header, index) => (
-            <th key={index}>{renderInline(header)}</th>
+            <th key={index}>{renderInline(header, existingConceptSlugs, onDeadLink)}</th>
           ))}
         </tr>
       </thead>
@@ -223,7 +305,7 @@ function renderTable(lines: string[], key: number) {
         {bodyLines.map((row, rowIndex) => (
           <tr key={rowIndex}>
             {splitTableRow(row).map((cell, cellIndex) => (
-              <td key={cellIndex}>{renderInline(cell)}</td>
+              <td key={cellIndex}>{renderInline(cell, existingConceptSlugs, onDeadLink)}</td>
             ))}
           </tr>
         ))}

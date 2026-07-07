@@ -9,5 +9,7 @@ test('MarkdownView renders internal wikilinks with Next Link navigation', async 
   );
 
   assert.match(markdownView, /import Link from 'next\/link';/);
-  assert.match(markdownView, /<Link key=\{index\} href=\{resolved\.href\}/);
+  assert.match(markdownView, /<Link key=\{index\} href=\{resolved\.href!\}/);
+  assert.match(markdownView, /text-red-400 cursor-pointer underline/);
+  assert.match(markdownView, /此 concept 尚不存在/);
 });
