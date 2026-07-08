@@ -184,7 +184,7 @@ export function HomeClient() {
                       key={item}
                       type="button"
                       onClick={() => { setMode(item); if (query.trim()) handleSearch(item); }}
-                      className={`rounded-md px-3 py-1.5 font-medium capitalize transition ${
+                      className={`min-h-11 rounded-md px-3 py-2 font-medium capitalize transition ${
                         mode === item ? 'bg-emerald-400/20 text-emerald-200' : 'text-zinc-400 hover:text-white'
                       }`}
                     >
@@ -194,7 +194,7 @@ export function HomeClient() {
                 </div>
                 <button
                   type="submit"
-                  className="min-h-10 rounded-[var(--radius-md)] bg-emerald-400 px-5 text-sm font-semibold text-zinc-900 transition hover:bg-emerald-300"
+                  className="min-h-12 rounded-[var(--radius-md)] bg-emerald-400 px-5 text-sm font-semibold text-zinc-900 transition hover:bg-emerald-300"
                 >
                   {t('Demo.search')}
                 </button>

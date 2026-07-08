@@ -3,7 +3,7 @@
 import { useEffect, useState } from 'react';
 import Link from 'next/link';
 import { usePathname } from 'next/navigation';
-import { Search, FileText, Brain, Activity } from 'lucide-react';
+import { Search, FileText, Brain, Activity, Menu, X } from 'lucide-react';
 import { useT } from '@/lib/i18n';
 import { useAuth } from '@/lib/auth';
 import { LoginModal } from './LoginModal';
@@ -25,6 +25,7 @@ function ShellContent({ children }: { children: React.ReactNode }) {
   const { t } = useT();
   const pathname = usePathname();
   const [demoMessage, setDemoMessage] = useState('');
+  const [mobileNavOpen, setMobileNavOpen] = useState(false);
   const { user } = useAuth();
   const { open: paletteOpen, setOpen: setPaletteOpen } = useCommandPalette();
 
@@ -55,6 +56,22 @@ function ShellContent({ children }: { children: React.ReactNode }) {
     return () => window.clearTimeout(timeout);
   }, [demoMessage]);
 
+  useEffect(() => {
+    const timeout = window.setTimeout(() => {
+      setMobileNavOpen(false);
+    }, 0);
+    return () => window.clearTimeout(timeout);
+  }, [pathname]);
+
+  useEffect(() => {
+    if (!mobileNavOpen) return;
+    const handleKeyDown = (event: KeyboardEvent) => {
+      if (event.key === 'Escape') setMobileNavOpen(false);
+    };
+    window.addEventListener('keydown', handleKeyDown);
+    return () => window.removeEventListener('keydown', handleKeyDown);
+  }, [mobileNavOpen]);
+
   const handleNewProjectClick = () => {
     if (isDemoUser) {
       setDemoMessage(t('Shell.demoDisabled'));
@@ -69,9 +86,47 @@ function ShellContent({ children }: { children: React.ReactNode }) {
   };
 
   return (
-    <div className="flex min-h-screen text-zinc-100">
+    <div className="min-h-dvh text-zinc-100 lg:flex">
       {token ? (
-        <aside className="glass-sidebar flex w-64 shrink-0 flex-col">
+        <header className="sticky top-0 z-50 flex min-h-14 items-center justify-between border-b border-white/8 bg-zinc-950/85 px-4 backdrop-blur lg:hidden">
+          <Link href="/" className="min-w-0 text-sm font-semibold tracking-tight text-white">
+            {t('Shell.brand')}
+          </Link>
+          <button
+            type="button"
+            aria-controls="mobile-navigation"
+            aria-expanded={mobileNavOpen}
+            aria-label={mobileNavOpen ? t('Shell.closeNavigation') : t('Shell.openNavigation')}
+            onClick={() => setMobileNavOpen((open) => !open)}
+            className="inline-flex min-h-11 min-w-11 items-center justify-center rounded-lg border border-white/10 bg-white/5 text-zinc-200 transition hover:bg-white/10 focus-visible:outline focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-emerald-400"
+          >
+            {mobileNavOpen ? (
+              <X className="size-5" aria-hidden="true" />
+            ) : (
+              <Menu className="size-5" aria-hidden="true" />
+            )}
+          </button>
+        </header>
+      ) : null}
+
+      {token ? (
+        <button
+          type="button"
+          aria-label={t('Shell.closeNavigation')}
+          onClick={() => setMobileNavOpen(false)}
+          className={`fixed inset-0 z-30 bg-black/60 transition-opacity lg:hidden ${
+            mobileNavOpen ? 'opacity-100' : 'pointer-events-none opacity-0'
+          }`}
+        />
+      ) : null}
+
+      {token ? (
+        <aside
+          id="mobile-navigation"
+          className={`glass-sidebar fixed inset-y-0 left-0 z-40 flex w-64 shrink-0 flex-col overflow-y-auto pt-14 transition-transform duration-200 lg:static lg:translate-x-0 lg:pt-0 ${
+            mobileNavOpen ? 'translate-x-0' : '-translate-x-full'
+          }`}
+        >
           <Link href="/" className="block px-5 py-5">
             <div className="text-sm font-semibold tracking-tight text-white">
               {t('Shell.brand')}
@@ -79,7 +134,7 @@ function ShellContent({ children }: { children: React.ReactNode }) {
             <div className="mt-0.5 text-xs text-zinc-500">Knowledge workspace</div>
           </Link>
 
-          <nav className="flex flex-col gap-0.5 px-3 pb-3">
+          <nav aria-label={t('Shell.navigation')} className="flex flex-col gap-0.5 px-3 pb-3">
             {navItems.map((item) => {
               const active = isActive(item.href, item.exact);
               const Icon = item.icon;
@@ -87,7 +142,7 @@ function ShellContent({ children }: { children: React.ReactNode }) {
                 <Link
                   key={item.href}
                   href={item.href}
-                  className={`relative flex items-center gap-3 rounded-lg px-3 py-2 text-sm font-medium transition ${
+                  className={`relative flex min-h-11 items-center gap-3 rounded-lg px-3 py-2.5 text-sm font-medium transition ${
                     active
                       ? 'bg-white/8 text-white'
                       : 'text-zinc-400 hover:bg-white/5 hover:text-zinc-200'
@@ -124,7 +179,7 @@ function ShellContent({ children }: { children: React.ReactNode }) {
             <button
               type="button"
               onClick={handleNewProjectClick}
-              className="mt-1.5 w-full rounded-lg px-3 py-2 text-left text-sm text-zinc-500 transition hover:bg-white/5 hover:text-zinc-300"
+              className="mt-1.5 min-h-11 w-full rounded-lg px-3 py-2.5 text-left text-sm text-zinc-500 transition hover:bg-white/5 hover:text-zinc-300"
             >
               {t('Shell.newProject')}
             </button>
@@ -146,7 +201,7 @@ function ShellContent({ children }: { children: React.ReactNode }) {
                 <button
                   type="button"
                   onClick={() => void signOut()}
-                  className="text-xs text-zinc-500 transition hover:text-zinc-300"
+                  className="inline-flex min-h-11 items-center text-xs text-zinc-500 transition hover:text-zinc-300"
                 >
                   {t('Shell.logout')}
                 </button>
@@ -154,7 +209,7 @@ function ShellContent({ children }: { children: React.ReactNode }) {
               <button
                 type="button"
                 onClick={() => setPaletteOpen(true)}
-                className="hidden rounded-md border border-white/10 bg-white/5 px-1.5 py-0.5 text-[10px] text-zinc-500 transition hover:bg-white/10 hover:text-zinc-300 sm:block"
+                className="hidden min-h-11 min-w-11 items-center justify-center rounded-md border border-white/10 bg-white/5 px-2 text-[10px] text-zinc-500 transition hover:bg-white/10 hover:text-zinc-300 lg:inline-flex"
                 title="Command palette"
               >
                 ⌘K
