@@ -169,7 +169,7 @@ function Metric({ label, value }: { label: string; value: number }) {
 
 function PipelineTimeline({ execution }: { execution?: PipelineExecution | null }) {
   const execStatus = execution?.status;
-  const isRunning = execStatus === 'running';
+  const isRunning = execStatus === 'RUNNING';
   const isSuccess = execStatus === 'SUCCEEDED';
   const isFailed = execStatus === 'FAILED';
 

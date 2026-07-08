@@ -1,7 +1,7 @@
 'use client';
 
 export type PipelineExecution = {
-  status?: 'running' | 'SUCCEEDED' | 'FAILED' | string;
+  status?: 'RUNNING' | 'SUCCEEDED' | 'FAILED' | string;
   duration?: string | number | null;
   started_at?: string | null;
   finished_at?: string | null;

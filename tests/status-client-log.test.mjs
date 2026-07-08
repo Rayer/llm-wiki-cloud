@@ -18,3 +18,12 @@ test('status client renders pipeline log in a scrollable expandable pre block', 
   assert.match(statusClient, /<pre/);
   assert.match(statusClient, /showFullLog/);
 });
+
+test('status client recognizes Cloud Run uppercase running status', async () => {
+  const statusClient = await readFile(
+    new URL('../src/components/StatusClient.tsx', import.meta.url),
+    'utf8',
+  );
+
+  assert.match(statusClient, /execStatus === 'RUNNING'/);
+});

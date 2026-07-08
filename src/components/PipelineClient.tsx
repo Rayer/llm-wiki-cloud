@@ -24,7 +24,7 @@ function pipelineStatusBadge(status: PipelineStatus | null): string | null {
   const executionStatus = status?.last_execution?.status;
   const duration = status?.last_execution?.duration ?? 'pending';
 
-  if (executionStatus === 'running') return 'Pipeline running...';
+  if (executionStatus === 'RUNNING') return 'Pipeline running...';
   if (executionStatus === 'SUCCEEDED') return `Pipeline complete (${duration})`;
   if (executionStatus === 'FAILED') return `Pipeline failed (${duration})`;
 
@@ -109,7 +109,7 @@ export function PipelineClient() {
       addToast(result.message, 'info');
       if (result.status === 'accepted') {
         stopPipelinePolling();
-        setPipelineStatus({ last_execution: { status: 'running' } });
+        setPipelineStatus({ last_execution: { status: 'RUNNING' } });
         pipelinePollRef.current = setInterval(pollPipelineStatus, 5000);
       }
     } catch (err) {

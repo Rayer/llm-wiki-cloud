@@ -17,3 +17,13 @@ test('pipeline client polls status after an accepted pipeline run', async () => 
   assert.match(pipelineClient, /duration/);
   assert.match(pipelineClient, /clearInterval/);
 });
+
+test('pipeline client uses Cloud Run uppercase running status', async () => {
+  const pipelineClient = await readFile(
+    new URL('../src/components/PipelineClient.tsx', import.meta.url),
+    'utf8',
+  );
+
+  assert.match(pipelineClient, /executionStatus === 'RUNNING'/);
+  assert.match(pipelineClient, /status: 'RUNNING'/);
+});
