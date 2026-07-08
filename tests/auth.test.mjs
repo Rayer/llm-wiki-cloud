@@ -16,6 +16,19 @@ test('normalizeAuthResponse accepts access_token and nested user', () => {
   );
 });
 
+test('normalizeAuthResponse preserves user role', () => {
+  assert.deepEqual(
+    normalizeAuthResponse({
+      access_token: 'jwt-token',
+      user: { id: 'admin-1', email: 'admin@example.com', role: 'admin' },
+    }),
+    {
+      access_token: 'jwt-token',
+      user: { id: 'admin-1', email: 'admin@example.com', role: 'admin' },
+    },
+  );
+});
+
 test('normalizeAuthResponse accepts user_id without using email as the user id', () => {
   assert.deepEqual(
     normalizeAuthResponse({
@@ -40,5 +53,18 @@ test('normalizeRefreshResponse accepts access_token without user', () => {
   assert.deepEqual(
     normalizeRefreshResponse({ access_token: 'fresh-token' }),
     { access_token: 'fresh-token' },
+  );
+});
+
+test('normalizeRefreshResponse preserves user role when present', () => {
+  assert.deepEqual(
+    normalizeRefreshResponse({
+      access_token: 'fresh-token',
+      user: { id: 'admin-1', email: 'admin@example.com', role: 'admin' },
+    }),
+    {
+      access_token: 'fresh-token',
+      user: { id: 'admin-1', email: 'admin@example.com', role: 'admin' },
+    },
   );
 });

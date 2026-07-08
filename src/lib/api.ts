@@ -53,6 +53,31 @@ export type SearchResponse = {
   expand?: QueryExpansion;
 };
 
+export type AdminProject = {
+  id: string;
+  name: string;
+  userId: string;
+  conceptCount: number;
+  sourceCount: number;
+};
+
+export type AdminUser = {
+  id: string;
+  email: string;
+  role: string;
+  projectCount: number;
+};
+
+export class ApiError extends Error {
+  status: number;
+
+  constructor(message: string, status: number) {
+    super(message);
+    this.name = 'ApiError';
+    this.status = status;
+  }
+}
+
 const API_URL =
   process.env.NEXT_PUBLIC_API_URL ??
   'https://llm-wiki-bff-dev-580854833715.asia-east1.run.app';
@@ -176,7 +201,7 @@ async function requestJson<T>(path: string): Promise<T> {
   const response = await apiFetch(path);
 
   if (!response.ok) {
-    throw new Error(`API request failed (${response.status})`);
+    throw new ApiError(`API request failed (${response.status})`, response.status);
   }
 
   return response.json() as Promise<T>;
@@ -239,6 +264,44 @@ function extractArray(payload: unknown): unknown[] {
   }
 
   return [];
+}
+
+function extractNamedArray(payload: unknown, keys: string[]): unknown[] {
+  if (Array.isArray(payload)) return payload;
+  if (!isRecord(payload)) return [];
+  for (const key of keys) {
+    const value = payload[key];
+    if (Array.isArray(value)) return value;
+  }
+  return [];
+}
+
+function normalizeAdminProject(item: unknown): AdminProject | null {
+  const record = isRecord(item) ? item : {};
+  const id = firstString(record, ['id', 'project_id', 'projectId']);
+  const name = firstString(record, ['name', 'project_name', 'projectName']) ?? id;
+  const userId = firstString(record, ['user_id', 'userId', 'uid']) ?? '';
+  if (!id || !name) return null;
+  return {
+    id,
+    name,
+    userId,
+    conceptCount: firstNumber(record, ['concept_count', 'conceptCount', 'concepts_count', 'conceptsCount']) ?? 0,
+    sourceCount: firstNumber(record, ['source_count', 'sourceCount', 'sources_count', 'sourcesCount']) ?? 0,
+  };
+}
+
+function normalizeAdminUser(item: unknown): AdminUser | null {
+  const record = isRecord(item) ? item : {};
+  const id = firstString(record, ['id', 'user_id', 'userId']);
+  const email = firstString(record, ['email']) ?? '';
+  if (!id) return null;
+  return {
+    id,
+    email,
+    role: firstString(record, ['role']) ?? 'user',
+    projectCount: firstNumber(record, ['project_count', 'projectCount', 'projects_count', 'projectsCount']) ?? 0,
+  };
 }
 
 export function normalizeEntry(item: unknown): WikiEntry {
@@ -465,4 +528,62 @@ export async function generateTitle(content: string): Promise<string> {
   if (!response.ok) return 'Untitled';
   const data = await response.json() as { title: string };
   return data.title ?? 'Untitled';
+}
+
+async function adminJson(path: string, options: Omit<ApiFetchOptions, 'requireProject'> = {}): Promise<unknown> {
+  const response = await apiFetch(path, { ...options, requireProject: false });
+  if (!response.ok) {
+    const error = await response.json().catch(() => ({ error: `API request failed (${response.status})` }));
+    throw new ApiError(
+      (error as { error?: string }).error ?? `API request failed (${response.status})`,
+      response.status,
+    );
+  }
+  return response.json().catch(() => ({}));
+}
+
+export async function getAdminProjects(): Promise<AdminProject[]> {
+  const payload = await adminJson('/api/v1/admin/projects');
+  return extractNamedArray(payload, ['projects', 'items', 'results', 'data'])
+    .map(normalizeAdminProject)
+    .filter((project): project is AdminProject => project !== null);
+}
+
+export async function renameAdminProject(id: string, name: string): Promise<void> {
+  await adminJson(`/api/v1/admin/projects/${encodeURIComponent(id)}`, {
+    method: 'PATCH',
+    json: true,
+    body: JSON.stringify({ name }),
+  });
+}
+
+export async function deleteAdminProject(id: string): Promise<void> {
+  await adminJson(`/api/v1/admin/projects/${encodeURIComponent(id)}`, { method: 'DELETE' });
+}
+
+export async function rebuildAdminProjectIndex(id: string): Promise<void> {
+  await adminJson(`/api/v1/admin/projects/${encodeURIComponent(id)}/rebuild-index`, { method: 'POST' });
+}
+
+export async function triggerAdminProjectPipeline(id: string): Promise<void> {
+  await adminJson(`/api/v1/admin/projects/${encodeURIComponent(id)}/pipeline`, { method: 'POST' });
+}
+
+export async function getAdminUsers(): Promise<AdminUser[]> {
+  const payload = await adminJson('/api/v1/admin/users');
+  return extractNamedArray(payload, ['users', 'items', 'results', 'data'])
+    .map(normalizeAdminUser)
+    .filter((user): user is AdminUser => user !== null);
+}
+
+export async function updateAdminUserRole(id: string, role: string): Promise<void> {
+  await adminJson(`/api/v1/admin/users/${encodeURIComponent(id)}`, {
+    method: 'PATCH',
+    json: true,
+    body: JSON.stringify({ role }),
+  });
+}
+
+export async function deleteAdminUser(id: string): Promise<void> {
+  await adminJson(`/api/v1/admin/users/${encodeURIComponent(id)}`, { method: 'DELETE' });
 }

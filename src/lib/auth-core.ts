@@ -3,6 +3,7 @@
 export type AuthUser = {
   id: string;
   email: string;
+  role?: string;
 };
 
 export type AuthResponse = {
@@ -33,7 +34,9 @@ function normalizeUser(value: unknown): AuthUser | null {
   if (!isRecord(value)) return null;
   const id = firstString(value, ['id', 'user_id', 'userId']);
   const email = firstString(value, ['email']);
-  return id && email ? { id, email } : null;
+  const role = firstString(value, ['role']);
+  if (!id || !email) return null;
+  return role ? { id, email, role } : { id, email };
 }
 
 export function responseError(payload: unknown, fallback: string): string {

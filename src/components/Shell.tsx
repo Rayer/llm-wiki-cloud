@@ -3,7 +3,7 @@
 import { useEffect, useState } from 'react';
 import Link from 'next/link';
 import { usePathname } from 'next/navigation';
-import { Search, FileText, Brain, Activity, Menu, X, ChevronUp } from 'lucide-react';
+import { Search, FileText, Brain, Activity, Menu, X, ChevronUp, Shield } from 'lucide-react';
 import { useT } from '@/lib/i18n';
 import { useAuth } from '@/lib/auth';
 import { LoginModal } from './LoginModal';
@@ -34,6 +34,9 @@ function ShellContent({ children }: { children: React.ReactNode }) {
     { href: '/sources', label: t('Shell.sources'), icon: FileText },
     { href: '/concepts', label: t('Shell.concepts'), icon: Brain },
     { href: '/status', label: t('Shell.status'), icon: Activity },
+    ...(user?.role === 'admin'
+      ? [{ href: '/admin', label: 'Admin', icon: Shield }]
+      : []),
   ];
 
   const {
@@ -84,6 +87,7 @@ function ShellContent({ children }: { children: React.ReactNode }) {
     if (exact) return pathname === href;
     return pathname === href || pathname.startsWith(`${href}/`);
   };
+  const isAdminRoute = pathname === '/admin' || pathname.startsWith('/admin/');
 
   return (
     <div className="min-h-dvh text-zinc-100 lg:flex">
@@ -223,6 +227,10 @@ function ShellContent({ children }: { children: React.ReactNode }) {
         {!hydrated ? (
           <div className="flex min-h-screen items-center justify-center text-sm text-zinc-500">
             {t('Shell.loading')}
+          </div>
+        ) : token && isAdminRoute ? (
+          <div className="mx-auto max-w-6xl px-4 py-8 sm:px-6 lg:px-10">
+            {children}
           </div>
         ) : token && projectsLoading ? (
           <div className="flex min-h-screen items-center justify-center text-sm text-zinc-500">
