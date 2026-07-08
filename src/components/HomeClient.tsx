@@ -52,6 +52,7 @@ export function HomeClient() {
   const [results, setResults] = useState<SearchResult[]>([]);
   const [aiAnswer, setAiAnswer] = useState('');
   const [citations, setCitations] = useState<Citation[]>([]);
+  const [expandKeywords, setExpandKeywords] = useState<string[]>([]);
   const [searched, setSearched] = useState(false);
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState('');
@@ -74,12 +75,14 @@ export function HomeClient() {
           setResults(response.results);
           setAiAnswer(response.aiAnswer);
           setCitations(response.citations);
+          setExpandKeywords(response.expand?.keywords ?? []);
         })
         .catch((err: Error) => {
           setError(err instanceof Error ? err.message : 'Search failed');
           setResults([]);
           setAiAnswer('');
           setCitations([]);
+          setExpandKeywords([]);
         })
         .finally(() => setLoading(false));
     }
@@ -101,6 +104,7 @@ export function HomeClient() {
     setError('');
     setAiAnswer('');
     setCitations([]);
+    setExpandKeywords([]);
     setSearched(true);
 
     try {
@@ -108,11 +112,13 @@ export function HomeClient() {
       setResults(response.results);
       setAiAnswer(response.aiAnswer);
       setCitations(response.citations);
+      setExpandKeywords(response.expand?.keywords ?? []);
     } catch (err) {
       setError(err instanceof Error ? err.message : 'Search failed');
       setResults([]);
       setAiAnswer('');
       setCitations([]);
+      setExpandKeywords([]);
     } finally {
       setLoading(false);
     }
@@ -269,6 +275,11 @@ export function HomeClient() {
             );
           })}
         </div>
+        {!loading && !error && searched && expandKeywords.length > 0 ? (
+          <div className="mt-1 text-xs text-zinc-500">
+            搜尋關鍵字：{expandKeywords.join('、')}
+          </div>
+        ) : null}
       </section>
 
       {/* Citation Preview Modal */}

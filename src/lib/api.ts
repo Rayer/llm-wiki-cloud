@@ -42,10 +42,15 @@ export type Citation = {
   id?: string;
 };
 
+export type QueryExpansion = {
+  keywords: string[];
+};
+
 export type SearchResponse = {
   results: SearchResult[];
   aiAnswer: string;
   citations: Citation[];
+  expand?: QueryExpansion;
 };
 
 const API_URL =
@@ -218,6 +223,12 @@ function firstNumber(record: Record<string, unknown>, keys: string[]) {
   }
 }
 
+function stringArray(value: unknown): string[] {
+  return Array.isArray(value)
+    ? value.filter((item): item is string => typeof item === 'string' && item.trim().length > 0)
+    : [];
+}
+
 function extractArray(payload: unknown): unknown[] {
   if (Array.isArray(payload)) return payload;
   if (!isRecord(payload)) return [];
@@ -296,6 +307,12 @@ export function normalizeCitation(item: unknown): Citation | null {
   };
 }
 
+function normalizeQueryExpansion(value: unknown): QueryExpansion | undefined {
+  const record = isRecord(value) ? value : {};
+  const keywords = stringArray(record.keywords);
+  return keywords.length > 0 ? { keywords } : undefined;
+}
+
 export function normalizeSearchResponse(payload: unknown): SearchResponse {
   const record = isRecord(payload) ? payload : {};
   const citationItems = Array.isArray(record.citations) ? record.citations : [];
@@ -306,6 +323,7 @@ export function normalizeSearchResponse(payload: unknown): SearchResponse {
     citations: citationItems
       .map(normalizeCitation)
       .filter((citation): citation is Citation => citation !== null),
+    expand: normalizeQueryExpansion(record.expand),
   };
 }
 

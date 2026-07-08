@@ -8,6 +8,7 @@ import {
   getPipelineLog,
   getPipelineStatus,
   getStatus,
+  normalizeSearchResponse,
   toV1Path,
   triggerPipeline,
 } from '../src/lib/api.ts';
@@ -83,6 +84,18 @@ test('buildRequestInit includes cookies for refresh-token auth', () => {
 test('toV1Path upgrades existing API paths without changing callers', () => {
   assert.equal(toV1Path('/api/query'), '/api/v1/query');
   assert.equal(toV1Path('/api/v1/projects'), '/api/v1/projects');
+});
+
+test('normalizeSearchResponse preserves query expansion keywords', () => {
+  const response = normalizeSearchResponse({
+    results: [{ slug: 'park', title: 'Park', type: 'concept' }],
+    expand: {
+      keywords: ['台北', '親子', '公園'],
+      suggestions: ['週末早上去'],
+    },
+  });
+
+  assert.deepEqual(response.expand?.keywords, ['台北', '親子', '公園']);
 });
 
 test('triggerPipeline requires a selected project before calling the API', async () => {
