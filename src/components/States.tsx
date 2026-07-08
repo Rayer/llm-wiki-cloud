@@ -1,12 +1,21 @@
 import { Inbox } from 'lucide-react';
-import { SkeletonLines } from './ui/Skeleton';
+import { Skeleton, SkeletonLines } from './ui/Skeleton';
 import { Surface } from './ui/Surface';
 
 export function LoadingState({ label = 'Loading wiki data' }: { label?: string }) {
   return (
-    <Surface className="p-6" variant="glass">
+    <Surface className="p-6" variant="glass" aria-live="polite">
       <p className="mb-4 text-sm text-zinc-500">{label}...</p>
-      <SkeletonLines lines={4} />
+      <div className="space-y-5">
+        <div className="flex items-center gap-3">
+          <Skeleton className="size-9 rounded-full" />
+          <div className="flex-1 space-y-2">
+            <Skeleton className="h-4 w-40" />
+            <Skeleton className="h-3 w-24" />
+          </div>
+        </div>
+        <SkeletonLines lines={4} />
+      </div>
     </Surface>
   );
 }

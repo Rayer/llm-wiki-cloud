@@ -43,8 +43,6 @@ function syncUrl(q: string, mode: 'wiki' | 'full') {
 type ModalEntry = { title: string; content: string; type: string; slug: string; id?: string };
 type SearchMode = 'wiki' | 'full';
 
-const suggestedQueries = ['機器學習', '親子景點', '知識整理', '概念關聯'];
-
 function conceptHref(concept: WikiEntry): string {
   const target = concept.id
     ? `${concept.id}-${encodeURIComponent(concept.slug)}`
@@ -232,18 +230,6 @@ export function HomeClient() {
             <StatPill label="Concepts" value={status?.conceptsCount} error={statusError} />
             <Badge variant="muted" className="hidden sm:inline-flex">⌘K</Badge>
           </div>
-          <div className="mt-4 flex flex-wrap items-center justify-center gap-2">
-            {suggestedQueries.map((suggestion) => (
-              <button
-                key={suggestion}
-                type="button"
-                onClick={() => setQuery(suggestion)}
-                className="min-h-11 rounded-full border border-white/10 bg-white/[0.04] px-4 text-sm font-medium text-zinc-300 transition hover:border-emerald-400/30 hover:bg-emerald-400/10 hover:text-emerald-100 focus-visible:outline focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-emerald-400"
-              >
-                {suggestion}
-              </button>
-            ))}
-          </div>
         </form>
       </section>
 
@@ -256,11 +242,12 @@ export function HomeClient() {
             <Badge variant="muted">{latestConcepts.length}</Badge>
           </div>
           <div className="grid gap-4 md:grid-cols-2">
-            {latestConcepts.map((concept) => (
+            {latestConcepts.map((concept, index) => (
               <Link key={concept.slug} href={conceptHref(concept)} className="group block">
                 <Surface
                   variant="glass"
-                  className="p-5 transition duration-200 hover:-translate-y-0.5 hover:border-emerald-400/30 hover:shadow-lg hover:shadow-emerald-500/5"
+                  className="animate-fade-in border-l-[3px] border-l-emerald-400 p-5 transition duration-200 [animation-fill-mode:backwards] hover:-translate-y-0.5 hover:border-emerald-400/30 hover:shadow-lg hover:shadow-emerald-500/5"
+                  style={{ animationDelay: `${index * 50}ms` }}
                 >
                   <div className="flex flex-wrap items-center gap-2">
                     <Badge variant="concept">Concept</Badge>
@@ -314,8 +301,13 @@ export function HomeClient() {
           <EmptyState message="No results matched that query." />
         ) : null}
         <div className="grid gap-4 md:grid-cols-2">
-          {results.map((result) => {
+          {results.map((result, index) => {
             const type = resultType(result.type);
+            const typeBorderClass = type === 'source'
+              ? 'border-l-blue-400'
+              : type === 'concept'
+                ? 'border-l-emerald-400'
+                : '';
             return (
               <button
                 key={`${result.type}-${result.slug}`}
@@ -326,7 +318,8 @@ export function HomeClient() {
                   type: type,
                   path: '',
                 })}
-                className="rounded-[var(--radius-lg)] border border-white/10 bg-zinc-900/40 p-5 text-left backdrop-blur-sm transition duration-200 hover:-translate-y-0.5 hover:border-emerald-400/30 hover:shadow-lg hover:shadow-emerald-500/5"
+                className={`animate-fade-in rounded-[var(--radius-lg)] border border-l-[3px] border-white/10 bg-zinc-900/40 p-5 text-left backdrop-blur-sm transition duration-200 [animation-fill-mode:backwards] hover:-translate-y-0.5 hover:border-emerald-400/30 hover:shadow-lg hover:shadow-emerald-500/5 ${typeBorderClass}`}
+                style={{ animationDelay: `${index * 50}ms` }}
               >
                 <div className="flex items-start justify-between gap-3">
                   <div className="flex flex-wrap items-center gap-2">

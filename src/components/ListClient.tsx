@@ -119,11 +119,12 @@ export function ListClient({
       ) : null}
 
       <div className="grid gap-4 md:grid-cols-2">
-        {filtered.map((entry) => (
+        {filtered.map((entry, index) => (
           <EntryCard
             key={entry.slug}
             entry={entry}
             entryType={entryType}
+            index={index}
             href={entry.id ? `${basePath}/${entry.id}-${encodeURIComponent(entry.slug)}` : `${basePath}/${encodeURIComponent(entry.slug)}`}
           />
         ))}

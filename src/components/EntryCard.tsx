@@ -17,16 +17,25 @@ export function EntryCard({
   entry,
   href,
   entryType,
+  index = 0,
 }: {
   entry: WikiEntry;
   href: string;
   entryType?: 'source' | 'concept';
+  index?: number;
 }) {
+  const typeBorderClass = entryType === 'source'
+    ? 'border-l-[3px] border-l-blue-400'
+    : entryType === 'concept'
+      ? 'border-l-[3px] border-l-emerald-400'
+      : '';
+
   return (
     <Link href={href} className="group block">
       <Surface
         variant="glass"
-        className="p-5 transition duration-200 hover:-translate-y-0.5 hover:border-emerald-400/30 hover:shadow-lg hover:shadow-emerald-500/5"
+        className={`animate-fade-in p-5 transition duration-200 [animation-fill-mode:backwards] hover:-translate-y-0.5 hover:border-emerald-400/30 hover:shadow-lg hover:shadow-emerald-500/5 ${typeBorderClass}`}
+        style={{ animationDelay: `${index * 50}ms` }}
       >
         <div className="flex flex-wrap items-center gap-2">
           {entryType ? (

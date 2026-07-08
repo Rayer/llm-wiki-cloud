@@ -3,7 +3,7 @@
 import { useEffect, useState } from 'react';
 import Link from 'next/link';
 import { usePathname } from 'next/navigation';
-import { Search, FileText, Brain, Activity, Menu, X } from 'lucide-react';
+import { Search, FileText, Brain, Activity, Menu, X, ChevronUp } from 'lucide-react';
 import { useT } from '@/lib/i18n';
 import { useAuth } from '@/lib/auth';
 import { LoginModal } from './LoginModal';
@@ -251,6 +251,7 @@ function ShellContent({ children }: { children: React.ReactNode }) {
 
       <LoginModal />
       <NewProjectModal />
+      {token ? <ScrollToTopButton /> : null}
       {paletteOpen ? (
         <CommandPalette
           open
@@ -286,5 +287,29 @@ function ShellContent({ children }: { children: React.ReactNode }) {
         </div>
       ) : null}
     </div>
+  );
+}
+
+function ScrollToTopButton() {
+  const [visible, setVisible] = useState(false);
+
+  useEffect(() => {
+    const updateVisibility = () => setVisible(window.scrollY > 320);
+    updateVisibility();
+    window.addEventListener('scroll', updateVisibility, { passive: true });
+    return () => window.removeEventListener('scroll', updateVisibility);
+  }, []);
+
+  if (!visible) return null;
+
+  return (
+    <button
+      type="button"
+      aria-label="Scroll to top"
+      onClick={() => window.scrollTo({ top: 0, behavior: 'smooth' })}
+      className="fixed bottom-5 right-5 z-20 inline-flex size-12 items-center justify-center rounded-full bg-emerald-400 text-zinc-950 shadow-lg shadow-emerald-500/20 transition hover:-translate-y-0.5 hover:bg-emerald-300 focus-visible:outline focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-emerald-200"
+    >
+      <ChevronUp className="size-5" aria-hidden="true" />
+    </button>
   );
 }
