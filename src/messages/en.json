@@ -68,6 +68,7 @@
     "wiki": "Wiki",
     "full": "Full",
     "search": "Search",
+    "latestConcepts": "Latest concepts",
     "addContent": "Add Content",
     "uploadFile": "Upload File",
     "upload": "Upload",
@@ -76,6 +77,11 @@
     "pipeline": "Pipeline",
     "runPipeline": "Run Pipeline",
     "pipelineDesc": "The pipeline runs:"
+  },
+  "List": {
+    "noConcepts": "No concepts yet. Run the pipeline first.",
+    "noSources": "No sources yet. Upload content and run the pipeline first.",
+    "noEntries": "No entries yet. Add content and run the pipeline first."
   },
   "Status": {
     "title": "Pipeline Status",

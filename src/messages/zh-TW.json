@@ -68,6 +68,7 @@
     "wiki": "Wiki",
     "full": "完整",
     "search": "搜尋",
+    "latestConcepts": "最新概念",
     "addContent": "Add Content",
     "uploadFile": "Upload File",
     "upload": "Upload",
@@ -76,6 +77,11 @@
     "pipeline": "Pipeline",
     "runPipeline": "Run Pipeline",
     "pipelineDesc": "The pipeline runs:"
+  },
+  "List": {
+    "noConcepts": "尚無概念。請先執行 pipeline。",
+    "noSources": "尚無來源。請先上傳內容並執行 pipeline。",
+    "noEntries": "尚無項目。請先新增內容並執行 pipeline。"
   },
   "Status": {
     "title": "Pipeline Status",

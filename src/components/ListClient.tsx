@@ -5,6 +5,7 @@ import { EntryCard } from './EntryCard';
 import { EmptyState, ErrorState, LoadingState } from './States';
 import { useWorkspace } from './WorkspaceProvider';
 import type { WikiEntry } from '@/lib/api';
+import { useT } from '@/lib/i18n';
 
 // Client-side cache: avoids re-fetching on every navigation.
 // Cleared on page refresh; BFF remains stateless.
@@ -23,6 +24,7 @@ export function ListClient({
   basePath: string;
   entryType?: 'source' | 'concept';
 }) {
+  const { t } = useT();
   const { currentProject } = useWorkspace();
   const cacheKey = `${currentProject?.id ?? 'no-project'}:${basePath}`;
   const [entries, setEntries] = useState<WikiEntry[]>(clientCache.get(cacheKey) ?? []);
@@ -76,6 +78,14 @@ export function ListClient({
     );
   }, [entries, search]);
 
+  const emptyMessage = search.trim()
+    ? `No ${title.toLowerCase()} match "${search.trim()}".`
+    : entryType === 'concept'
+      ? t('List.noConcepts')
+      : entryType === 'source'
+        ? t('List.noSources')
+        : t('List.noEntries');
+
   return (
     <div className="space-y-6">
       <header>
@@ -105,13 +115,7 @@ export function ListClient({
       {loading ? <LoadingState /> : null}
       {error ? <ErrorState message={error} /> : null}
       {!loading && !error && filtered.length === 0 ? (
-        <EmptyState
-          message={
-            search.trim()
-              ? `No ${title.toLowerCase()} match "${search.trim()}".`
-              : `No ${title.toLowerCase()} were returned by the API.`
-          }
-        />
+        <EmptyState message={emptyMessage} />
       ) : null}
 
       <div className="grid gap-4 md:grid-cols-2">

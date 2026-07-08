@@ -5,6 +5,7 @@ import { FormEvent, ReactNode, useCallback, useEffect, useState } from 'react';
 import ReactMarkdown from 'react-markdown';
 import {
   getConcept,
+  getConcepts,
   getSource,
   getStatus,
   searchWiki,
@@ -42,6 +43,15 @@ function syncUrl(q: string, mode: 'wiki' | 'full') {
 type ModalEntry = { title: string; content: string; type: string; slug: string; id?: string };
 type SearchMode = 'wiki' | 'full';
 
+const suggestedQueries = ['機器學習', '親子景點', '知識整理', '概念關聯'];
+
+function conceptHref(concept: WikiEntry): string {
+  const target = concept.id
+    ? `${concept.id}-${encodeURIComponent(concept.slug)}`
+    : encodeURIComponent(concept.slug);
+  return `/concepts/${target}`;
+}
+
 export function HomeClient() {
   const { t } = useT();
   const { currentProject } = useWorkspace();
@@ -58,6 +68,7 @@ export function HomeClient() {
   const [error, setError] = useState('');
   const [modal, setModal] = useState<ModalEntry | null>(null);
   const [modalLoading, setModalLoading] = useState(false);
+  const [latestConcepts, setLatestConcepts] = useState<WikiEntry[]>([]);
 
   // Restore search from URL on mount (back-button support).
   // React 19 batches all state updates in effects — multiple setStates here
@@ -92,6 +103,21 @@ export function HomeClient() {
     getStatus()
       .then(setStatus)
       .catch((err: Error) => setStatusError(err.message));
+  }, [currentProject]);
+
+  useEffect(() => {
+    let ignore = false;
+    getConcepts()
+      .then((data) => {
+        if (!ignore) setLatestConcepts(data.slice(0, 4));
+      })
+      .catch(() => {
+        if (!ignore) setLatestConcepts([]);
+      });
+
+    return () => {
+      ignore = true;
+    };
   }, [currentProject]);
 
   const handleSearch = useCallback(async (searchMode: SearchMode) => {
@@ -206,8 +232,51 @@ export function HomeClient() {
             <StatPill label="Concepts" value={status?.conceptsCount} error={statusError} />
             <Badge variant="muted" className="hidden sm:inline-flex">⌘K</Badge>
           </div>
+          <div className="mt-4 flex flex-wrap items-center justify-center gap-2">
+            {suggestedQueries.map((suggestion) => (
+              <button
+                key={suggestion}
+                type="button"
+                onClick={() => setQuery(suggestion)}
+                className="min-h-11 rounded-full border border-white/10 bg-white/[0.04] px-4 text-sm font-medium text-zinc-300 transition hover:border-emerald-400/30 hover:bg-emerald-400/10 hover:text-emerald-100 focus-visible:outline focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-emerald-400"
+              >
+                {suggestion}
+              </button>
+            ))}
+          </div>
         </form>
       </section>
+
+      {!searched && latestConcepts.length > 0 ? (
+        <section className="space-y-4" aria-labelledby="latest-concepts-heading">
+          <div className="flex items-center justify-between gap-4">
+            <h2 id="latest-concepts-heading" className="text-lg font-semibold text-white">
+              {t('Demo.latestConcepts')}
+            </h2>
+            <Badge variant="muted">{latestConcepts.length}</Badge>
+          </div>
+          <div className="grid gap-4 md:grid-cols-2">
+            {latestConcepts.map((concept) => (
+              <Link key={concept.slug} href={conceptHref(concept)} className="group block">
+                <Surface
+                  variant="glass"
+                  className="p-5 transition duration-200 hover:-translate-y-0.5 hover:border-emerald-400/30 hover:shadow-lg hover:shadow-emerald-500/5"
+                >
+                  <div className="flex flex-wrap items-center gap-2">
+                    <Badge variant="concept">Concept</Badge>
+                    <h3 className="text-base font-semibold text-white group-hover:text-emerald-50">
+                      {concept.title}
+                    </h3>
+                  </div>
+                  <p className="mt-3 line-clamp-3 text-sm leading-6 text-zinc-400">
+                    {concept.description ?? 'Open this concept to start exploring the knowledge base.'}
+                  </p>
+                </Surface>
+              </Link>
+            ))}
+          </div>
+        </section>
+      ) : null}
 
       <section className="space-y-4">
         {searched ? (
