@@ -217,7 +217,12 @@ function renderInline(
       return <code key={index}>{part.slice(1, -1)}</code>;
     }
     if (part.startsWith('**') && part.endsWith('**')) {
-      return <strong key={index}>{part.slice(2, -2)}</strong>;
+      // Recurse so nested wikilinks/links/code inside **bold** still parse (LWC-107)
+      return (
+        <strong key={index}>
+          {renderInline(part.slice(2, -2), existingConceptSlugs, onDeadLink)}
+        </strong>
+      );
     }
     // Image: ![alt](url) — must be checked before regular link
     const image = parseMarkdownImage(part);
