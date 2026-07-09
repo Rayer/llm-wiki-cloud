@@ -129,27 +129,26 @@ test('auth provider refresh catch path does not always clearSession', () => {
   // The refresh implementation must not clearSession() inside a bare catch
   // that handles all errors. Auth failure must be gated by isAuthFailureStatus.
   const refreshFn = authSource.match(
-    /const refreshAccessToken = useCallback\(async \(\) => \{[\s\S]*?\}, \[clearSession\]\);/,
+    /const refreshAccessToken = useCallback\(async \(options\?: RefreshAccessTokenOptions\) => \{[\s\S]*?\}, \[clearSession\]\);/,
   );
   assert.ok(refreshFn, 'refreshAccessToken callback not found');
   const body = refreshFn[0];
   assert.match(body, /isAuthFailureStatus/);
+  assert.match(body, /clearOnAuthFailure/);
   // Bare catch that only clearSession is forbidden
   assert.doesNotMatch(body, /catch\s*\{\s*clearSession\(\);\s*return null;\s*\}/);
 });
 
-test('auth provider hydrate skips refresh when a stored access token exists', () => {
+test('auth provider hydrate restores stored token then soft-rotates without clearing on failure', () => {
   const hydrateFn = authSource.match(
     /async function hydrateFromRefreshCookie\(\) \{[\s\S]*?\n    \}/,
   );
   assert.ok(hydrateFn, 'hydrateFromRefreshCookie not found');
   const body = hydrateFn[0];
-  // Stored token path must hydrate and return before calling refresh
   assert.match(body, /if \(stored/);
   assert.match(body, /setHydrated\(true\)/);
-  assert.match(body, /return;/);
-  // Must not always call refresh after reading storage (stored path returns early)
-  const storedBlock = body.match(/if \(stored[\s\S]*?return;/);
-  assert.ok(storedBlock, 'stored-token early return missing');
-  assert.doesNotMatch(storedBlock[0], /refreshAccessToken\(/);
+  // Stored path: hydrate immediately, soft-refresh must not clear session
+  assert.match(body, /refreshAccessToken\(\{\s*clearOnAuthFailure:\s*false\s*\}\)/);
+  // Soft-rotate is fire-and-forget (void), not blocking hydrate on cookie success
+  assert.match(body, /void refreshAccessToken\(\{\s*clearOnAuthFailure:\s*false\s*\}\)/);
 });

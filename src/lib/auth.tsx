@@ -24,6 +24,11 @@ import {
 } from './auth-core';
 import { configureApiAuth } from './api';
 
+type RefreshAccessTokenOptions = {
+  /** When false, HTTP 401 does not clear session (used by hydrate soft-rotate). Default true. */
+  clearOnAuthFailure?: boolean;
+};
+
 type AuthContextValue = {
   accessToken: string | null;
   access_token: string | null;
@@ -33,7 +38,7 @@ type AuthContextValue = {
   login: (email: string, password: string) => Promise<void>;
   register: (email: string, password: string) => Promise<void>;
   logout: () => Promise<void>;
-  refreshAccessToken: () => Promise<string | null>;
+  refreshAccessToken: (options?: RefreshAccessTokenOptions) => Promise<string | null>;
 };
 
 const AuthContext = createContext<AuthContextValue | null>(null);
@@ -81,7 +86,9 @@ export function AuthProvider({ children }: { children: ReactNode }) {
     );
   }, []);
 
-  const refreshAccessToken = useCallback(async () => {
+  const refreshAccessToken = useCallback(async (options?: RefreshAccessTokenOptions) => {
+    const clearOnAuthFailure = options?.clearOnAuthFailure !== false;
+
     try {
       const response = await fetch(`${API_URL}/api/v1/auth/refresh`, {
         method: 'POST',
@@ -90,7 +97,7 @@ export function AuthProvider({ children }: { children: ReactNode }) {
       const payload: unknown = await response.json().catch(() => null);
 
       if (!response.ok) {
-        if (isAuthFailureStatus(response.status)) {
+        if (isAuthFailureStatus(response.status) && clearOnAuthFailure) {
           clearSession();
         }
         return null;
@@ -116,7 +123,8 @@ export function AuthProvider({ children }: { children: ReactNode }) {
   useEffect(() => {
     configureApiAuth({
       getAccessToken: () => accessTokenRef.current,
-      refreshAccessToken,
+      // apiFetch 401 path: default clearOnAuthFailure true
+      refreshAccessToken: () => refreshAccessToken(),
       onUnauthorized: clearSession,
     });
 
@@ -136,20 +144,22 @@ export function AuthProvider({ children }: { children: ReactNode }) {
       const stored = readStoredAccessToken(
         typeof window !== 'undefined' ? window.localStorage : null,
       );
-      // Prefer a stored access token on reload. Forcing refresh here clears a still-valid
-      // token when the refresh cookie is missing/expired (LWC-116). apiFetch retries 401s.
+
+      // Approach B (LWC-116): restore stored token immediately so reload never depends on
+      // refresh cookie success. Soft-rotate in background without clearSession on 401 —
+      // apiFetch still handles real unauthorized after business 401.
       if (stored) {
         if (!cancelled) {
           setAccessToken(stored);
           accessTokenRef.current = stored;
           setHydrated(true);
         }
+        void refreshAccessToken({ clearOnAuthFailure: false });
         return;
       }
 
       const refreshed = await refreshAccessToken();
       if (!cancelled) {
-        // refreshAccessToken already cleared on auth failure
         void refreshed;
         setHydrated(true);
       }
