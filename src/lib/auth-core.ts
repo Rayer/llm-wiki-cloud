@@ -151,5 +151,10 @@ export function writeStoredDemoSession(
 export function clearStoredDemoSession(
   storage: Pick<Storage, 'removeItem'> | null | undefined,
 ): void {
-  writeStoredDemoSession(storage, false);
+  if (!storage) return;
+  try {
+    storage.removeItem(DEMO_SESSION_STORAGE_KEY);
+  } catch {
+    // ignore
+  }
 }

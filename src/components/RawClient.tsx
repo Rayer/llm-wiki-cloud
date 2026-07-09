@@ -1,11 +1,21 @@
 'use client';
 
 import { useEffect, useMemo, useState } from 'react';
-import { getRawFiles, type RawFile } from '@/lib/api';
+import { Download, X } from 'lucide-react';
+import { getRawFilePreview, getRawFiles, type RawFile } from '@/lib/api';
 import { Badge } from './ui/Badge';
+import { MarkdownView } from './MarkdownView';
 import { Surface } from './ui/Surface';
 import { EmptyState, ErrorState, LoadingState } from './States';
 import { useWorkspace } from './WorkspaceProvider';
+
+type RawPreviewKind = 'markdown' | 'html' | 'download';
+
+type RawPreview = {
+  file: RawFile;
+  kind: RawPreviewKind;
+  content: string;
+};
 
 function formatBytes(bytes: number) {
   if (!Number.isFinite(bytes) || bytes <= 0) return '0 B';
@@ -32,11 +42,25 @@ function formatUpdated(value: string) {
   }).format(date);
 }
 
+function rawPreviewKind(filename: string): RawPreviewKind {
+  const lower = filename.toLowerCase();
+  if (lower.endsWith('.md')) return 'markdown';
+  if (lower.endsWith('.html') || lower.endsWith('.htm')) return 'html';
+  return 'download';
+}
+
+function sanitizeRawHtml(html: string) {
+  return html.replace(/<script\b[\s\S]*?<\/script>/gi, '');
+}
+
 export function RawClient() {
   const { currentProject } = useWorkspace();
   const [files, setFiles] = useState<RawFile[]>([]);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState('');
+  const [preview, setPreview] = useState<RawPreview | null>(null);
+  const [previewLoading, setPreviewLoading] = useState(false);
+  const [previewError, setPreviewError] = useState('');
 
   useEffect(() => {
     let cancelled = false;
@@ -58,10 +82,61 @@ export function RawClient() {
     };
   }, [currentProject]);
 
+  useEffect(() => {
+    if (!preview) return;
+    const handler = (event: KeyboardEvent) => {
+      if (event.key === 'Escape') setPreview(null);
+    };
+    window.addEventListener('keydown', handler);
+    return () => window.removeEventListener('keydown', handler);
+  }, [preview]);
+
   const sortedFiles = useMemo(
     () => [...files].sort((a, b) => a.name.localeCompare(b.name)),
     [files],
   );
+
+  async function openRawPreview(file: RawFile) {
+    const kind = rawPreviewKind(file.name);
+    setPreview({ file, kind, content: '' });
+    setPreviewError('');
+
+    if (kind === 'download') {
+      setPreviewLoading(false);
+      return;
+    }
+
+    setPreviewLoading(true);
+    try {
+      const content = await getRawFilePreview(file.name);
+      setPreview((current) => (
+        current?.file.name === file.name ? { ...current, content } : current
+      ));
+    } catch (err) {
+      setPreviewError(err instanceof Error ? err.message : 'Failed to load raw preview');
+    } finally {
+      setPreviewLoading(false);
+    }
+  }
+
+  async function downloadRawFile() {
+    if (!preview) return;
+    setPreviewError('');
+
+    try {
+      const content = preview.content || await getRawFilePreview(preview.file.name);
+      const url = window.URL.createObjectURL(new Blob([content], { type: 'text/plain;charset=utf-8' }));
+      const link = document.createElement('a');
+      link.href = url;
+      link.download = preview.file.name;
+      document.body.appendChild(link);
+      link.click();
+      link.remove();
+      window.URL.revokeObjectURL(url);
+    } catch (err) {
+      setPreviewError(err instanceof Error ? err.message : 'Failed to download raw file');
+    }
+  }
 
   return (
     <div className="space-y-6">
@@ -94,38 +169,112 @@ export function RawClient() {
                 </tr>
               </thead>
               <tbody className="divide-y divide-white/8">
-                {sortedFiles.map((file) => (
-                  <tr key={file.name} className="transition hover:bg-white/[0.03]">
-                    <td className="max-w-xs px-4 py-3 font-medium text-white">
-                      <span className="block truncate" title={file.name}>
-                        {file.name}
-                      </span>
-                    </td>
-                    <td className="whitespace-nowrap px-4 py-3 tabular-nums text-zinc-300">
-                      {formatBytes(file.size)}
-                    </td>
-                    <td className="whitespace-nowrap px-4 py-3 text-zinc-400">
-                      {formatUpdated(file.updated)}
-                    </td>
-                    <td className="px-4 py-3">
-                      <code
-                        className="block max-w-[18rem] truncate rounded-md border border-white/10 bg-black/30 px-2 py-1 font-mono text-xs text-zinc-300"
-                        title={file.sha256 || undefined}
-                      >
-                        {file.sha256 || '—'}
-                      </code>
-                    </td>
-                    <td className="whitespace-nowrap px-4 py-3">
-                      <Badge variant={file.ingested ? 'published' : 'muted'}>
-                        {file.ingested ? 'Ingested' : 'Pending'}
-                      </Badge>
-                    </td>
-                  </tr>
-                ))}
+                {sortedFiles.map((file) => {
+                  const kind = rawPreviewKind(file.name);
+                  return (
+                    <tr key={file.name} className="transition hover:bg-white/[0.03]">
+                      <td className="max-w-xs px-4 py-3 font-medium">
+                        <button
+                          type="button"
+                          onClick={() => openRawPreview(file)}
+                          className="block max-w-xs truncate text-left text-white underline decoration-white/20 underline-offset-4 transition hover:text-emerald-200 hover:decoration-emerald-300"
+                          title={file.name}
+                          aria-label={kind === 'download' ? `Download ${file.name}` : `Preview ${file.name}`}
+                        >
+                          {file.name}
+                        </button>
+                      </td>
+                      <td className="whitespace-nowrap px-4 py-3 tabular-nums text-zinc-300">
+                        {formatBytes(file.size)}
+                      </td>
+                      <td className="whitespace-nowrap px-4 py-3 text-zinc-400">
+                        {formatUpdated(file.updated)}
+                      </td>
+                      <td className="px-4 py-3">
+                        <code
+                          className="block max-w-[18rem] truncate rounded-md border border-white/10 bg-black/30 px-2 py-1 font-mono text-xs text-zinc-300"
+                          title={file.sha256 || undefined}
+                        >
+                          {file.sha256 || '—'}
+                        </code>
+                      </td>
+                      <td className="whitespace-nowrap px-4 py-3">
+                        <Badge variant={file.ingested ? 'published' : 'muted'}>
+                          {file.ingested ? 'Ingested' : 'Pending'}
+                        </Badge>
+                      </td>
+                    </tr>
+                  );
+                })}
               </tbody>
             </table>
           </div>
         </Surface>
+      ) : null}
+
+      {preview ? (
+        <div
+          className="fixed inset-0 z-50 flex items-center justify-center bg-black/70 p-4 backdrop-blur-sm"
+          onClick={() => setPreview(null)}
+        >
+          <Surface
+            variant="elevated"
+            className="flex max-h-[86vh] w-full max-w-4xl flex-col overflow-hidden"
+            onClick={(event) => event.stopPropagation()}
+          >
+            <div className="flex items-start justify-between gap-4 border-b border-white/10 p-4">
+              <div className="min-w-0">
+                <h2 className="truncate text-lg font-semibold text-white">{preview.file.name}</h2>
+                <p className="mt-1 text-sm text-zinc-400">
+                  {preview.kind === 'download' ? 'Preview unavailable for this format.' : 'Raw file preview'}
+                </p>
+              </div>
+              <button
+                type="button"
+                onClick={() => setPreview(null)}
+                className="rounded-md p-2 text-zinc-400 transition hover:bg-white/10 hover:text-white"
+                aria-label="Close"
+                title="Close"
+              >
+                <X size={18} aria-hidden="true" />
+              </button>
+            </div>
+
+            <div className="min-h-0 flex-1 overflow-auto p-4">
+              {previewLoading ? <LoadingState label="Loading preview" /> : null}
+              {previewError ? <ErrorState message={previewError} /> : null}
+              {!previewLoading && !previewError && preview.kind === 'markdown' ? (
+                <div className="rounded-md border border-white/10 bg-black/20 p-4">
+                  <MarkdownView content={preview.content} />
+                </div>
+              ) : null}
+              {!previewLoading && !previewError && preview.kind === 'html' ? (
+                <iframe
+                  title={`Preview ${preview.file.name}`}
+                  srcDoc={sanitizeRawHtml(preview.content)}
+                  sandbox=""
+                  className="h-[60vh] w-full rounded-md border border-white/10 bg-white"
+                />
+              ) : null}
+              {!previewLoading && !previewError && preview.kind === 'download' ? (
+                <div className="rounded-md border border-white/10 bg-black/20 p-6 text-sm text-zinc-300">
+                  This file format is not previewable inline.
+                </div>
+              ) : null}
+            </div>
+
+            <div className="flex justify-end border-t border-white/10 p-4">
+              <button
+                type="button"
+                onClick={downloadRawFile}
+                className="inline-flex items-center gap-2 rounded-md border border-emerald-400/40 bg-emerald-500/10 px-3 py-2 text-sm font-medium text-emerald-100 transition hover:bg-emerald-500/20"
+              >
+                <Download size={16} aria-hidden="true" />
+                Download
+              </button>
+            </div>
+          </Surface>
+        </div>
       ) : null}
     </div>
   );

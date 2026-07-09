@@ -13,6 +13,7 @@ import {
   getPipelineStatus,
   getAdminProjects,
   getAdminUsers,
+  getRawFilePreview,
   getRawFiles,
   getStatus,
   rebuildAdminProjectIndex,
@@ -266,6 +267,44 @@ test('getRawFiles reads project scoped raw metadata and normalizes file fields',
         ingested: false,
       },
     ]);
+  } finally {
+    globalThis.fetch = originalFetch;
+  }
+});
+
+test('getRawFilePreview reads project scoped raw text with encoded filename', async () => {
+  configureApiAuth({
+    getAccessToken: () => 'jwt-token',
+    refreshAccessToken: async () => null,
+    onUnauthorized: () => undefined,
+  });
+  globalThis.window = {
+    localStorage: {
+      getItem: () => 'project-1',
+    },
+  };
+
+  const originalFetch = globalThis.fetch;
+  let requestedUrl = '';
+  let requestedInit;
+  globalThis.fetch = async (url, init) => {
+    requestedUrl = String(url);
+    requestedInit = init;
+    return new Response('# Raw\n', {
+      headers: { 'Content-Type': 'text/markdown; charset=utf-8' },
+    });
+  };
+
+  try {
+    const content = await getRawFilePreview('記事 sample.md');
+
+    assert.equal(
+      requestedUrl,
+      'https://llm-wiki-bff-dev-580854833715.asia-east1.run.app/api/v1/raw/%E8%A8%98%E4%BA%8B%20sample.md?preview=true',
+    );
+    assert.equal(requestedInit.headers.Authorization, 'Bearer jwt-token');
+    assert.equal(requestedInit.headers['X-Project-ID'], 'project-1');
+    assert.equal(content, '# Raw\n');
   } finally {
     globalThis.fetch = originalFetch;
   }

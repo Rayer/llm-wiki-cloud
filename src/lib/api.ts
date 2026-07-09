@@ -444,6 +444,16 @@ export async function getRawFiles() {
     .map(normalizeRawFile);
 }
 
+export async function getRawFilePreview(filename: string): Promise<string> {
+  const response = await apiFetch(`/api/v1/raw/${encodeURIComponent(filename)}?preview=true`);
+
+  if (!response.ok) {
+    throw new ApiError(`Raw preview request failed (${response.status})`, response.status);
+  }
+
+  return response.text();
+}
+
 export async function getSources() {
   return extractArray(await requestJson<unknown>('/api/v1/sources')).map(normalizeEntry);
 }
