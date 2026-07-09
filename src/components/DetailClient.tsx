@@ -31,8 +31,9 @@ export function DetailClient({
     let cancelled = false;
 
     const entryPromise = load(slug);
+    // LWC-119: concept pages need the slug set too (LWC-101 only wired sources)
     const conceptsPromise =
-      entryType === 'source'
+      entryType === 'source' || entryType === 'concept'
         ? getConcepts().then((concepts) => new Set(concepts.map((concept) => concept.slug)))
         : Promise.resolve(undefined);
 
