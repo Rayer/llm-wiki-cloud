@@ -228,6 +228,7 @@ export function HomeClient() {
           <div className="mt-3 flex flex-wrap items-center justify-center gap-2">
             <StatPill label="Sources" value={status?.sourcesCount} error={statusError} />
             <StatPill label="Concepts" value={status?.conceptsCount} error={statusError} />
+            <StatPill label="Raw" value={status?.rawCount} error={statusError} />
             <Badge variant="muted" className="hidden sm:inline-flex">⌘K</Badge>
           </div>
         </form>

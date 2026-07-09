@@ -12,6 +12,7 @@ export type PipelineExecution = {
 export type ApiStatus = {
   sourcesCount: number;
   conceptsCount: number;
+  rawCount: number;
   lastExecution?: PipelineExecution | null;
   raw: Record<string, unknown>;
 };
@@ -411,12 +412,14 @@ export function normalizeStatus(payload: unknown): ApiStatus {
   const conceptsCount =
     firstNumber(record, ['conceptsCount', 'conceptCount', 'concepts_count']) ??
     (Array.isArray(record.concepts) ? record.concepts.length : 0);
+  const rawCount =
+    firstNumber(record, ['rawCount', 'raw_count', 'filesCount', 'files_count']) ?? 0;
 
   const lastExecution = isRecord(record.last_execution)
     ? record.last_execution as PipelineExecution
     : null;
 
-  return { sourcesCount, conceptsCount, lastExecution, raw: record };
+  return { sourcesCount, conceptsCount, rawCount, lastExecution, raw: record };
 }
 
 export function normalizeRawFile(item: unknown): RawFile {

@@ -80,6 +80,7 @@ export function StatusClient() {
           <div className="grid gap-4 sm:grid-cols-2">
             <Metric label="Sources" value={status.sourcesCount} />
             <Metric label="Concepts" value={status.conceptsCount} />
+            <Metric label="Raw" value={status.rawCount} />
           </div>
 
           <PipelineTimeline execution={status.lastExecution} />

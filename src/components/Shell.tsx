@@ -4,12 +4,14 @@ import { useEffect, useState } from 'react';
 import Link from 'next/link';
 import { usePathname } from 'next/navigation';
 import { Search, FileText, Brain, Database, Activity, Menu, X, ChevronUp, Shield } from 'lucide-react';
+import { getStatus } from '@/lib/api';
 import { useT } from '@/lib/i18n';
 import { useAuth } from '@/lib/auth';
 import { LoginModal } from './LoginModal';
 import { NewProjectModal } from './NewProjectModal';
 import { ProjectEmptyState } from './ProjectEmptyState';
 import { WorkspaceProvider, useWorkspace } from './WorkspaceProvider';
+import { Badge } from './ui/Badge';
 import { ProjectSelect } from './ui/ProjectSelect';
 import { CommandPalette, useCommandPalette } from './ui/CommandPalette';
 
@@ -21,24 +23,26 @@ export function Shell({ children }: { children: React.ReactNode }) {
   );
 }
 
+type NavCountKey = 'sources' | 'concepts' | 'raw';
+
+type NavCounts = {
+  sources: number | null;
+  concepts: number | null;
+  raw: number | null;
+};
+
 function ShellContent({ children }: { children: React.ReactNode }) {
   const { t } = useT();
   const pathname = usePathname();
   const [demoMessage, setDemoMessage] = useState('');
   const [mobileNavOpen, setMobileNavOpen] = useState(false);
+  const [navCounts, setNavCounts] = useState<NavCounts>({
+    sources: null,
+    concepts: null,
+    raw: null,
+  });
   const { user } = useAuth();
   const { open: paletteOpen, setOpen: setPaletteOpen } = useCommandPalette();
-
-  const navItems = [
-    { href: '/', label: t('Shell.search'), icon: Search, exact: true },
-    { href: '/sources', label: t('Shell.sources'), icon: FileText },
-    { href: '/concepts', label: t('Shell.concepts'), icon: Brain },
-    { href: '/raw', label: t('Shell.raw'), icon: Database },
-    { href: '/status', label: t('Shell.status'), icon: Activity },
-    ...(user?.role === 'admin'
-      ? [{ href: '/admin', label: 'Admin', icon: Shield }]
-      : []),
-  ];
 
   const {
     hydrated,
@@ -53,6 +57,49 @@ function ShellContent({ children }: { children: React.ReactNode }) {
     openNewProject,
     signOut,
   } = useWorkspace();
+
+  const navItems: {
+    href: string;
+    label: string;
+    icon: typeof Search;
+    exact?: boolean;
+    countKey?: NavCountKey;
+  }[] = [
+    { href: '/', label: t('Shell.search'), icon: Search, exact: true },
+    { href: '/sources', label: t('Shell.sources'), icon: FileText, countKey: 'sources' },
+    { href: '/concepts', label: t('Shell.concepts'), icon: Brain, countKey: 'concepts' },
+    { href: '/raw', label: t('Shell.raw'), icon: Database, countKey: 'raw' },
+    { href: '/status', label: t('Shell.status'), icon: Activity },
+    ...(user?.role === 'admin'
+      ? [{ href: '/admin', label: 'Admin', icon: Shield }]
+      : []),
+  ];
+
+  useEffect(() => {
+    if (!token || !currentProject) {
+      setNavCounts({ sources: null, concepts: null, raw: null });
+      return;
+    }
+
+    let ignore = false;
+    getStatus()
+      .then((status) => {
+        if (ignore) return;
+        setNavCounts({
+          sources: status.sourcesCount,
+          concepts: status.conceptsCount,
+          raw: status.rawCount,
+        });
+      })
+      .catch(() => {
+        if (ignore) return;
+        setNavCounts({ sources: null, concepts: null, raw: null });
+      });
+
+    return () => {
+      ignore = true;
+    };
+  }, [token, currentProject]);
 
   useEffect(() => {
     if (!demoMessage) return;
@@ -143,6 +190,7 @@ function ShellContent({ children }: { children: React.ReactNode }) {
             {navItems.map((item) => {
               const active = isActive(item.href, item.exact);
               const Icon = item.icon;
+              const count = item.countKey ? navCounts[item.countKey] : null;
               return (
                 <Link
                   key={item.href}
@@ -157,7 +205,12 @@ function ShellContent({ children }: { children: React.ReactNode }) {
                     <span className="absolute left-0 top-1/2 h-5 w-0.5 -translate-y-1/2 rounded-full bg-emerald-400" />
                   ) : null}
                   <Icon className={`size-4 shrink-0 ${active ? 'text-emerald-400' : 'text-zinc-500'}`} />
-                  {item.label}
+                  <span className="min-w-0 flex-1 truncate">{item.label}</span>
+                  {count !== null ? (
+                    <Badge variant="muted" className="ml-auto shrink-0 tabular-nums">
+                      {count}
+                    </Badge>
+                  ) : null}
                 </Link>
               );
             })}
