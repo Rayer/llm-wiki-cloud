@@ -136,15 +136,20 @@ export function AuthProvider({ children }: { children: ReactNode }) {
       const stored = readStoredAccessToken(
         typeof window !== 'undefined' ? window.localStorage : null,
       );
-      if (stored && !cancelled) {
-        setAccessToken(stored);
-        accessTokenRef.current = stored;
+      // Prefer a stored access token on reload. Forcing refresh here clears a still-valid
+      // token when the refresh cookie is missing/expired (LWC-116). apiFetch retries 401s.
+      if (stored) {
+        if (!cancelled) {
+          setAccessToken(stored);
+          accessTokenRef.current = stored;
+          setHydrated(true);
+        }
+        return;
       }
 
       const refreshed = await refreshAccessToken();
       if (!cancelled) {
         // refreshAccessToken already cleared on auth failure
-        // transient failure keeps stored/in-memory token
         void refreshed;
         setHydrated(true);
       }

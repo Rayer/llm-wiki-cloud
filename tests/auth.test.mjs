@@ -137,3 +137,19 @@ test('auth provider refresh catch path does not always clearSession', () => {
   // Bare catch that only clearSession is forbidden
   assert.doesNotMatch(body, /catch\s*\{\s*clearSession\(\);\s*return null;\s*\}/);
 });
+
+test('auth provider hydrate skips refresh when a stored access token exists', () => {
+  const hydrateFn = authSource.match(
+    /async function hydrateFromRefreshCookie\(\) \{[\s\S]*?\n    \}/,
+  );
+  assert.ok(hydrateFn, 'hydrateFromRefreshCookie not found');
+  const body = hydrateFn[0];
+  // Stored token path must hydrate and return before calling refresh
+  assert.match(body, /if \(stored/);
+  assert.match(body, /setHydrated\(true\)/);
+  assert.match(body, /return;/);
+  // Must not always call refresh after reading storage (stored path returns early)
+  const storedBlock = body.match(/if \(stored[\s\S]*?return;/);
+  assert.ok(storedBlock, 'stored-token early return missing');
+  assert.doesNotMatch(storedBlock[0], /refreshAccessToken\(/);
+});
