@@ -5,6 +5,7 @@ import { getRawFiles, type RawFile } from '@/lib/api';
 import { Badge } from './ui/Badge';
 import { Surface } from './ui/Surface';
 import { EmptyState, ErrorState, LoadingState } from './States';
+import { useWorkspace } from './WorkspaceProvider';
 
 function formatBytes(bytes: number) {
   if (!Number.isFinite(bytes) || bytes <= 0) return '0 B';
@@ -32,6 +33,7 @@ function formatUpdated(value: string) {
 }
 
 export function RawClient() {
+  const { currentProject } = useWorkspace();
   const [files, setFiles] = useState<RawFile[]>([]);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState('');
@@ -54,7 +56,7 @@ export function RawClient() {
     return () => {
       cancelled = true;
     };
-  }, []);
+  }, [currentProject]);
 
   const sortedFiles = useMemo(
     () => [...files].sort((a, b) => a.name.localeCompare(b.name)),

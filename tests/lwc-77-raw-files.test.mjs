@@ -9,7 +9,10 @@ test('shell places Raw navigation between Concepts and Status', async () => {
   );
 
   assert.match(shell, /import \{[^}]*Database[^}]*\} from 'lucide-react';/s);
-  assert.match(shell, /\{ href: '\/raw', label: t\('Shell\.raw'\), icon: Database \}/);
+  assert.match(
+    shell,
+    /\{ href: '\/raw', label: t\('Shell\.raw'\), icon: Database(?:, countKey: 'raw')? \}/,
+  );
 
   const conceptsIndex = shell.indexOf("href: '/concepts'");
   const rawIndex = shell.indexOf("href: '/raw'");
@@ -48,4 +51,18 @@ test('raw client renders metadata table without download or preview actions', as
   assert.match(client, /variant=\{file\.ingested \? 'published' : 'muted'\}/);
   assert.doesNotMatch(client, /download/i);
   assert.doesNotMatch(client, /preview/i);
+});
+
+test('raw client reloads files when the current project changes', async () => {
+  const client = await readFile(
+    new URL('../src/components/RawClient.tsx', import.meta.url),
+    'utf8',
+  );
+
+  assert.match(client, /import \{ useWorkspace \} from '\.\/WorkspaceProvider';/);
+  assert.match(client, /const \{\s*currentProject\s*\} = useWorkspace\(\);/s);
+  assert.match(
+    client,
+    /useEffect\(\(\) => \{[\s\S]*?getRawFiles\(\)[\s\S]*?\}, \[currentProject\]\);/,
+  );
 });
