@@ -3,6 +3,11 @@
 import Link from 'next/link';
 import { useEffect, useState, type ReactNode } from 'react';
 
+import {
+  INLINE_TOKEN_REGEX,
+  normalizeWikilinkAnnotations,
+  parseWikilinkToken,
+} from '../lib/markdown-inline';
 import { parseMarkdownImage } from '../lib/markdown-images';
 import { resolveWikilink, type WikilinkSection } from '../lib/wikilinks';
 import { Surface } from './ui/Surface';
@@ -210,7 +215,7 @@ function renderInline(
   existingConceptSlugs: Set<string> | undefined,
   onDeadLink: (slug: string) => void,
 ): ReactNode[] {
-  const parts = text.split(/(`[^`]+`|\*\*[^*]+\*\*|!\[[^\]]*\]\(.+\)|\[\[[^\]]+\]\]|\[[^\]]+\]\([^)]+\))/g);
+  const parts = normalizeWikilinkAnnotations(text).split(INLINE_TOKEN_REGEX);
 
   return parts.map((part, index) => {
     if (part.startsWith('`') && part.endsWith('`')) {
@@ -238,9 +243,9 @@ function renderInline(
       );
     }
     // Obsidian-style wikilink: [[Page Name]] — route based on section context
-    const wikilink = /^\[\[([^\]]+)\]\]$/.exec(part);
-    if (wikilink) {
-      const resolved = resolveWikilink(wikilink[1], currentWikilinkSection, existingConceptSlugs);
+    const wikilinkLabel = parseWikilinkToken(part);
+    if (wikilinkLabel) {
+      const resolved = resolveWikilink(wikilinkLabel, currentWikilinkSection, existingConceptSlugs);
       if (resolved.dead) {
         return (
           <span

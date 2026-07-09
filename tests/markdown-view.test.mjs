@@ -32,3 +32,15 @@ test('MarkdownView re-parses inline markup inside bold markers', async () => {
     /<strong key=\{index\}>\{part\.slice\(2, -2\)\}<\/strong>/,
   );
 });
+
+// LWC-134: wikilink + parenthetical annotation must not absorb trailing ) into label
+test('MarkdownView normalizes wikilink annotations before inline split', async () => {
+  const markdownView = await readFile(
+    new URL('../src/components/MarkdownView.tsx', import.meta.url),
+    'utf8',
+  );
+
+  assert.match(markdownView, /normalizeWikilinkAnnotations/);
+  assert.match(markdownView, /parseWikilinkToken/);
+  assert.match(markdownView, /INLINE_TOKEN_REGEX/);
+});

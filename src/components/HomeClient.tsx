@@ -15,6 +15,7 @@ import {
   type WikiEntry,
 } from '@/lib/api';
 import { useT } from '@/lib/i18n';
+import { resolveWikilinksInMarkdown } from '@/lib/markdown-inline';
 import { EmptyState, ErrorState, LoadingState } from './States';
 import { useWorkspace } from './WorkspaceProvider';
 import { Badge } from './ui/Badge';
@@ -403,32 +404,11 @@ function stripLeadingHeading(md: string): string {
   return md.replace(h1, '').replace(h1u, '').trimStart();
 }
 
-// Convert [[wikilinks]] with section context:
-// Under "## Sources" → /sources/ | Under "## Concepts" → /concepts/
-function resolveWikilinks(md: string): string {
-  const lines = md.split('\n');
-  let section = 'concepts'; // default
-  const out: string[] = [];
-  for (const line of lines) {
-    const secMatch = /^## (Sources|Concepts)/i.exec(line);
-    if (secMatch) {
-      section = secMatch[1].toLowerCase();
-    }
-    out.push(line.replace(/\[\[([^\]]+)\]\]/g, (_, name: string) => {
-      const parts = name.split('|');
-      const slug = parts[0].trim();
-      const display = (parts[1] || parts[0]).trim();
-      return `[${display}](/${section}/${encodeURIComponent(slug)})`;
-    }));
-  }
-  return out.join('\n');
-}
-
 function MarkdownBody({ content }: { content: string }) {
   if (!content) return <p className="text-zinc-400 italic">No content available.</p>;
   // Convert [[wikilinks]] with context-aware routing:
   // Under ## Sources → /sources/ | Under ## Concepts → /concepts/ | else → /concepts/
-  const withLinks = resolveWikilinks(content);
+  const withLinks = resolveWikilinksInMarkdown(content);
   return (
     <div className="prose prose-invert prose-sm max-w-none text-zinc-300 leading-7
       [&_h1]:text-xl [&_h1]:font-semibold [&_h1]:text-white [&_h1]:mt-4 [&_h1]:mb-2
