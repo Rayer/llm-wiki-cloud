@@ -3,6 +3,7 @@ import test from 'node:test';
 
 import {
   ApiError,
+  apiFetch,
   buildProjectHeaders,
   buildRequestInit,
   configureApiAuth,
@@ -441,6 +442,101 @@ test('getAdminUsers and user mutations use admin endpoints without project heade
       ],
     );
     assert.equal(calls[1].init.body, JSON.stringify({ role: 'user' }));
+  } finally {
+    globalThis.fetch = originalFetch;
+  }
+});
+
+test('apiFetch does not logout when access token missing and refresh returns null', async () => {
+  let unauthorizedCalls = 0;
+  configureApiAuth({
+    getAccessToken: () => null,
+    refreshAccessToken: async () => null,
+    onUnauthorized: () => { unauthorizedCalls += 1; },
+  });
+  globalThis.window = {
+    localStorage: { getItem: () => 'project-1' },
+  };
+
+  await assert.rejects(
+    () => apiFetch('/api/v1/status'),
+    /Authentication required|log in/i,
+  );
+  assert.equal(unauthorizedCalls, 0);
+});
+
+test('apiFetch does not logout on non-401 responses', async () => {
+  let unauthorizedCalls = 0;
+  configureApiAuth({
+    getAccessToken: () => 'jwt-token',
+    refreshAccessToken: async () => null,
+    onUnauthorized: () => { unauthorizedCalls += 1; },
+  });
+  globalThis.window = {
+    localStorage: { getItem: () => 'project-1' },
+  };
+
+  const originalFetch = globalThis.fetch;
+  globalThis.fetch = async () => new Response('missing', { status: 404 });
+
+  try {
+    const response = await apiFetch('/api/v1/concepts/missing');
+    assert.equal(response.status, 404);
+    assert.equal(unauthorizedCalls, 0);
+  } finally {
+    globalThis.fetch = originalFetch;
+  }
+});
+
+test('apiFetch logs out when response is 401 and refresh returns null', async () => {
+  let unauthorizedCalls = 0;
+  configureApiAuth({
+    getAccessToken: () => 'stale-token',
+    refreshAccessToken: async () => null,
+    onUnauthorized: () => { unauthorizedCalls += 1; },
+  });
+  globalThis.window = {
+    localStorage: { getItem: () => 'project-1' },
+  };
+
+  const originalFetch = globalThis.fetch;
+  globalThis.fetch = async () => new Response('unauthorized', { status: 401 });
+
+  try {
+    const response = await apiFetch('/api/v1/status');
+    assert.equal(response.status, 401);
+    assert.equal(unauthorizedCalls, 1);
+  } finally {
+    globalThis.fetch = originalFetch;
+  }
+});
+
+test('apiFetch retries once after 401 when refresh succeeds', async () => {
+  let unauthorizedCalls = 0;
+  let fetchCount = 0;
+  configureApiAuth({
+    getAccessToken: () => 'stale-token',
+    refreshAccessToken: async () => 'fresh-token',
+    onUnauthorized: () => { unauthorizedCalls += 1; },
+  });
+  globalThis.window = {
+    localStorage: { getItem: () => 'project-1' },
+  };
+
+  const originalFetch = globalThis.fetch;
+  globalThis.fetch = async (_url, init) => {
+    fetchCount += 1;
+    if (fetchCount === 1) return new Response('unauthorized', { status: 401 });
+    const auth = init?.headers?.Authorization ?? init?.headers?.authorization;
+    assert.match(String(auth), /Bearer fresh-token/);
+    return Response.json({ ok: true });
+  };
+
+  try {
+    const response = await apiFetch('/api/v1/status');
+    assert.equal(response.status, 200);
+    assert.equal(fetchCount, 2);
+    assert.equal(unauthorizedCalls, 0);
   } finally {
     globalThis.fetch = originalFetch;
   }

@@ -12,9 +12,13 @@ import {
 } from 'react';
 import {
   API_URL,
+  clearStoredAccessToken,
+  isAuthFailureStatus,
   normalizeAuthResponse,
   normalizeRefreshResponse,
+  readStoredAccessToken,
   responseError,
+  writeStoredAccessToken,
   type AuthResponse,
   type AuthUser,
 } from './auth-core';
@@ -64,28 +68,47 @@ export function AuthProvider({ children }: { children: ReactNode }) {
     setAccessToken(null);
     accessTokenRef.current = null;
     setUser(null);
+    clearStoredAccessToken(typeof window !== 'undefined' ? window.localStorage : null);
   }, []);
 
   const applyAuthResponse = useCallback((result: AuthResponse) => {
     setAccessToken(result.access_token);
     accessTokenRef.current = result.access_token;
     setUser(result.user);
+    writeStoredAccessToken(
+      typeof window !== 'undefined' ? window.localStorage : null,
+      result.access_token,
+    );
   }, []);
 
   const refreshAccessToken = useCallback(async () => {
     try {
-      const payload = await postAuth('/api/v1/auth/refresh');
-      const result = normalizeRefreshResponse(payload);
-      if (!result.user) {
-        clearSession();
+      const response = await fetch(`${API_URL}/api/v1/auth/refresh`, {
+        method: 'POST',
+        credentials: 'include',
+      });
+      const payload: unknown = await response.json().catch(() => null);
+
+      if (!response.ok) {
+        if (isAuthFailureStatus(response.status)) {
+          clearSession();
+        }
         return null;
       }
+
+      const result = normalizeRefreshResponse(payload);
       setAccessToken(result.access_token);
       accessTokenRef.current = result.access_token;
-      setUser(result.user);
+      writeStoredAccessToken(
+        typeof window !== 'undefined' ? window.localStorage : null,
+        result.access_token,
+      );
+      if (result.user) {
+        setUser(result.user);
+      }
       return result.access_token;
     } catch {
-      clearSession();
+      // Network / parse failures: keep session
       return null;
     }
   }, [clearSession]);
@@ -110,9 +133,19 @@ export function AuthProvider({ children }: { children: ReactNode }) {
     let cancelled = false;
 
     async function hydrateFromRefreshCookie() {
+      const stored = readStoredAccessToken(
+        typeof window !== 'undefined' ? window.localStorage : null,
+      );
+      if (stored && !cancelled) {
+        setAccessToken(stored);
+        accessTokenRef.current = stored;
+      }
+
       const refreshed = await refreshAccessToken();
       if (!cancelled) {
-        if (!refreshed) clearSession();
+        // refreshAccessToken already cleared on auth failure
+        // transient failure keeps stored/in-memory token
+        void refreshed;
         setHydrated(true);
       }
     }
@@ -122,7 +155,7 @@ export function AuthProvider({ children }: { children: ReactNode }) {
     return () => {
       cancelled = true;
     };
-  }, [clearSession, refreshAccessToken]);
+  }, [refreshAccessToken]);
 
   const login = useCallback(async (email: string, password: string) => {
     const payload = await postAuth('/api/v1/auth/login', { email, password });
@@ -165,4 +198,3 @@ export function useAuth(): AuthContextValue {
 
 export type { AuthUser };
 export { normalizeAuthResponse, normalizeRefreshResponse };
-

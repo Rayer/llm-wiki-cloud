@@ -77,3 +77,44 @@ export function normalizeRefreshResponse(payload: unknown): RefreshResponse {
   const user = normalizeUser(payload.user);
   return user ? { access_token: payload.access_token, user } : { access_token: payload.access_token };
 }
+
+export const ACCESS_TOKEN_STORAGE_KEY = 'llm-wiki-access-token';
+
+export function isAuthFailureStatus(status: number): boolean {
+  return status === 401;
+}
+
+export function readStoredAccessToken(
+  storage: Pick<Storage, 'getItem'> | null | undefined,
+): string | null {
+  if (!storage) return null;
+  try {
+    const value = storage.getItem(ACCESS_TOKEN_STORAGE_KEY);
+    return value && value.trim() ? value.trim() : null;
+  } catch {
+    return null;
+  }
+}
+
+export function writeStoredAccessToken(
+  storage: Pick<Storage, 'setItem'> | null | undefined,
+  token: string,
+): void {
+  if (!storage || !token.trim()) return;
+  try {
+    storage.setItem(ACCESS_TOKEN_STORAGE_KEY, token.trim());
+  } catch {
+    // ignore quota / private mode
+  }
+}
+
+export function clearStoredAccessToken(
+  storage: Pick<Storage, 'removeItem'> | null | undefined,
+): void {
+  if (!storage) return;
+  try {
+    storage.removeItem(ACCESS_TOKEN_STORAGE_KEY);
+  } catch {
+    // ignore
+  }
+}

@@ -175,8 +175,7 @@ async function accessTokenOrRefresh(): Promise<string> {
   const refreshed = await apiAuthConfig.refreshAccessToken();
   if (refreshed) return refreshed;
 
-  apiAuthConfig.onUnauthorized();
-  throw new Error('Please log in to continue.');
+  throw new Error('Authentication required');
 }
 
 type ApiFetchOptions = {
