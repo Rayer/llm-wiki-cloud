@@ -12,6 +12,7 @@ import {
   getPipelineStatus,
   getAdminProjects,
   getAdminUsers,
+  getRawFiles,
   getStatus,
   rebuildAdminProjectIndex,
   renameAdminProject,
@@ -194,6 +195,74 @@ test('getPipelineLog reads text from the project scoped log URL', async () => {
     assert.equal(requestedInit.headers.Authorization, 'Bearer jwt-token');
     assert.equal(requestedInit.headers['X-Project-ID'], 'project-1');
     assert.equal(log, 'line 1\nline 2\n');
+  } finally {
+    globalThis.fetch = originalFetch;
+  }
+});
+
+test('getRawFiles reads project scoped raw metadata and normalizes file fields', async () => {
+  configureApiAuth({
+    getAccessToken: () => 'jwt-token',
+    refreshAccessToken: async () => null,
+    onUnauthorized: () => undefined,
+  });
+  globalThis.window = {
+    localStorage: {
+      getItem: () => 'project-1',
+    },
+  };
+
+  const originalFetch = globalThis.fetch;
+  let requestedUrl = '';
+  let requestedInit;
+  globalThis.fetch = async (url, init) => {
+    requestedUrl = String(url);
+    requestedInit = init;
+    return Response.json({
+      files: [
+        {
+          name: 'article.md',
+          size: 12345,
+          updated: '2026-07-09T10:00:00Z',
+          sha256: 'abc123',
+          ingested: true,
+        },
+        {
+          name: 'missing-size.md',
+          ingested: false,
+        },
+      ],
+    });
+  };
+
+  try {
+    const files = await getRawFiles();
+
+    assert.equal(requestedUrl, 'https://llm-wiki-bff-dev-580854833715.asia-east1.run.app/api/v1/raw');
+    assert.equal(requestedInit.headers.Authorization, 'Bearer jwt-token');
+    assert.equal(requestedInit.headers['X-Project-ID'], 'project-1');
+    assert.deepEqual(files.map(({ name, size, updated, sha256, ingested }) => ({
+      name,
+      size,
+      updated,
+      sha256,
+      ingested,
+    })), [
+      {
+        name: 'article.md',
+        size: 12345,
+        updated: '2026-07-09T10:00:00Z',
+        sha256: 'abc123',
+        ingested: true,
+      },
+      {
+        name: 'missing-size.md',
+        size: 0,
+        updated: '',
+        sha256: '',
+        ingested: false,
+      },
+    ]);
   } finally {
     globalThis.fetch = originalFetch;
   }

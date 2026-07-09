@@ -28,6 +28,15 @@ export type WikiEntry = {
   raw: unknown;
 };
 
+export type RawFile = {
+  name: string;
+  size: number;
+  updated: string;
+  sha256: string;
+  ingested: boolean;
+  raw: unknown;
+};
+
 export type SearchResult = WikiEntry & {
   excerpt?: string;
   score?: number;
@@ -234,6 +243,10 @@ function asNumber(value: unknown): number | undefined {
   return typeof value === 'number' && Number.isFinite(value) ? value : undefined;
 }
 
+function asBoolean(value: unknown): boolean | undefined {
+  return typeof value === 'boolean' ? value : undefined;
+}
+
 function firstString(record: Record<string, unknown>, keys: string[]) {
   for (const key of keys) {
     const value = asString(record[key]);
@@ -406,8 +419,27 @@ export function normalizeStatus(payload: unknown): ApiStatus {
   return { sourcesCount, conceptsCount, lastExecution, raw: record };
 }
 
+export function normalizeRawFile(item: unknown): RawFile {
+  const record = isRecord(item) ? item : {};
+  const name = firstString(record, ['name', 'filename', 'path']) ?? 'unnamed';
+
+  return {
+    name,
+    size: firstNumber(record, ['size', 'bytes']) ?? 0,
+    updated: firstString(record, ['updated', 'updated_at', 'updatedAt']) ?? '',
+    sha256: firstString(record, ['sha256', 'digest']) ?? '',
+    ingested: asBoolean(record.ingested) ?? false,
+    raw: item,
+  };
+}
+
 export async function getStatus() {
   return normalizeStatus(await requestJson<unknown>('/api/v1/status'));
+}
+
+export async function getRawFiles() {
+  return extractNamedArray(await requestJson<unknown>('/api/v1/raw'), ['files', 'items', 'results', 'data'])
+    .map(normalizeRawFile);
 }
 
 export async function getSources() {

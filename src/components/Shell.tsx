@@ -3,7 +3,7 @@
 import { useEffect, useState } from 'react';
 import Link from 'next/link';
 import { usePathname } from 'next/navigation';
-import { Search, FileText, Brain, Activity, Menu, X, ChevronUp, Shield } from 'lucide-react';
+import { Search, FileText, Brain, Database, Activity, Menu, X, ChevronUp, Shield } from 'lucide-react';
 import { useT } from '@/lib/i18n';
 import { useAuth } from '@/lib/auth';
 import { LoginModal } from './LoginModal';
@@ -33,6 +33,7 @@ function ShellContent({ children }: { children: React.ReactNode }) {
     { href: '/', label: t('Shell.search'), icon: Search, exact: true },
     { href: '/sources', label: t('Shell.sources'), icon: FileText },
     { href: '/concepts', label: t('Shell.concepts'), icon: Brain },
+    { href: '/raw', label: t('Shell.raw'), icon: Database },
     { href: '/status', label: t('Shell.status'), icon: Activity },
     ...(user?.role === 'admin'
       ? [{ href: '/admin', label: 'Admin', icon: Shield }]
