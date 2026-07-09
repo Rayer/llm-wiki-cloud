@@ -1,7 +1,7 @@
 'use client';
 
-import { FormEvent, useCallback, useEffect, useRef, useState } from 'react';
-import { FileUp, Link2, Cog, Loader2, Construction } from 'lucide-react';
+import { FormEvent, useCallback, useEffect, useMemo, useRef, useState } from 'react';
+import { FileUp, Link2, Cog, Loader2, Construction, RotateCcw } from 'lucide-react';
 import { Surface } from './ui/Surface';
 import { Badge } from './ui/Badge';
 import {
@@ -10,6 +10,7 @@ import {
   uploadRawFile,
   type PipelineResult,
   type PipelineStatus,
+  type RawUploadResult,
 } from '@/lib/api';
 
 type Toast = {
@@ -18,7 +19,22 @@ type Toast = {
   type: 'success' | 'error' | 'info';
 };
 
+type UploadItemStatus = 'queued' | 'uploading' | 'created' | 'already_exists' | 'failed';
+
+type UploadItem = {
+  id: string;
+  file: File;
+  status: UploadItemStatus;
+  error?: string;
+  result?: RawUploadResult;
+};
+
+const UPLOAD_CONCURRENCY = 3;
+const RAW_ACCEPT =
+  '.md,.txt,.html,.htm,.csv,.json,.xml,.yaml,.yml,.toml,.ini,.cfg,.log,.rst,.org,.tex';
+
 let toastId = 0;
+let uploadItemId = 0;
 
 function pipelineStatusBadge(status: PipelineStatus | null): string | null {
   const executionStatus = status?.last_execution?.status;
@@ -31,16 +47,49 @@ function pipelineStatusBadge(status: PipelineStatus | null): string | null {
   return null;
 }
 
+function uploadStatusLabel(status: UploadItemStatus): string {
+  switch (status) {
+    case 'queued':
+      return 'Queued';
+    case 'uploading':
+      return 'Uploading';
+    case 'created':
+      return 'Created';
+    case 'already_exists':
+      return 'Already exists';
+    case 'failed':
+      return 'Failed';
+  }
+}
+
+function summarizeUploads(items: UploadItem[]): string {
+  const created = items.filter((i) => i.status === 'created').length;
+  const existing = items.filter((i) => i.status === 'already_exists').length;
+  const failed = items.filter((i) => i.status === 'failed').length;
+  const pending = items.filter((i) => i.status === 'queued' || i.status === 'uploading').length;
+  const parts = [
+    `${created} created`,
+    `${existing} already exists`,
+    `${failed} failed`,
+  ];
+  if (pending > 0) parts.push(`${pending} in progress`);
+  return parts.join(', ');
+}
+
 export function PipelineClient() {
-  const [fileLabel, setFileLabel] = useState('Choose .md file');
+  const [fileLabel, setFileLabel] = useState('Choose files');
+  const [uploadItems, setUploadItems] = useState<UploadItem[]>([]);
   const [scrapeUrlText, setScrapeUrlText] = useState('');
   const [pipelineResult, setPipelineResult] = useState<PipelineResult | null>(null);
   const [pipelineStatus, setPipelineStatus] = useState<PipelineStatus | null>(null);
-  const [loading, setLoading] = useState<string | null>(null); // 'upload' | 'scrape' | 'pipeline'
+  const [loading, setLoading] = useState<string | null>(null); // 'pipeline'
   const [toasts, setToasts] = useState<Toast[]>([]);
   const [wipModal, setWipModal] = useState(false);
   const fileRef = useRef<HTMLInputElement>(null);
   const pipelinePollRef = useRef<ReturnType<typeof setInterval> | null>(null);
+  const activeUploadsRef = useRef(0);
+  // Source of truth for the in-flight queue (state is a mirror for render).
+  const uploadItemsRef = useRef<UploadItem[]>([]);
 
   const addToast = useCallback((message: string, type: Toast['type']) => {
     const id = ++toastId;
@@ -72,24 +121,114 @@ export function PipelineClient() {
 
   useEffect(() => stopPipelinePolling, [stopPipelinePolling]);
 
-  const handleFileChange = useCallback(() => {
-    const file = fileRef.current?.files?.[0];
-    setFileLabel(file ? file.name : 'Choose .md file');
+  const pumpUploadQueue = useCallback(() => {
+    const pump = () => {
+      while (activeUploadsRef.current < UPLOAD_CONCURRENCY) {
+        const next = uploadItemsRef.current.find((item) => item.status === 'queued');
+        if (!next) break;
+
+        // Claim immediately on the ref so the same item is not double-started
+        // before React state flushes.
+        activeUploadsRef.current += 1;
+        uploadItemsRef.current = uploadItemsRef.current.map((item) =>
+          item.id === next.id ? { ...item, status: 'uploading', error: undefined } : item,
+        );
+        setUploadItems(uploadItemsRef.current);
+
+        void (async () => {
+          try {
+            const result = await uploadRawFile(next.file);
+            uploadItemsRef.current = uploadItemsRef.current.map((item) =>
+              item.id === next.id
+                ? { ...item, status: result.status, result, error: undefined }
+                : item,
+            );
+            setUploadItems(uploadItemsRef.current);
+          } catch (err) {
+            uploadItemsRef.current = uploadItemsRef.current.map((item) =>
+              item.id === next.id
+                ? {
+                    ...item,
+                    status: 'failed',
+                    error: err instanceof Error ? err.message : 'Upload failed',
+                  }
+                : item,
+            );
+            setUploadItems(uploadItemsRef.current);
+          } finally {
+            activeUploadsRef.current = Math.max(0, activeUploadsRef.current - 1);
+            queueMicrotask(pump);
+          }
+        })();
+      }
+    };
+
+    queueMicrotask(pump);
   }, []);
 
-  const handleUpload = useCallback(async () => {
-    const file = fileRef.current?.files?.[0];
-    if (!file) { addToast('Please select a file', 'error'); return; }
-    setLoading('upload');
-    try {
-      const result = await uploadRawFile(file);
-      addToast(`Uploaded: ${result.filename} (${result.bytes} bytes)`, 'success');
-    } catch (err) {
-      addToast(err instanceof Error ? err.message : 'Upload failed', 'error');
-    } finally {
-      setLoading(null);
+  const enqueueFiles = useCallback(
+    (fileList: FileList | File[]) => {
+      const files = Array.from(fileList);
+      if (files.length === 0) return;
+
+      const knownNames = new Set(uploadItemsRef.current.map((item) => item.file.name));
+      const next: UploadItem[] = [...uploadItemsRef.current];
+
+      for (const file of files) {
+        if (knownNames.has(file.name)) {
+          next.push({
+            id: `upload-${++uploadItemId}`,
+            file,
+            status: 'failed',
+            error: 'duplicate filename in batch (first file wins)',
+          });
+          continue;
+        }
+        knownNames.add(file.name);
+        next.push({
+          id: `upload-${++uploadItemId}`,
+          file,
+          status: 'queued',
+        });
+      }
+
+      uploadItemsRef.current = next;
+      setUploadItems(next);
+      setFileLabel(files.length === 1 ? files[0].name : `${files.length} files selected`);
+      pumpUploadQueue();
+    },
+    [pumpUploadQueue],
+  );
+
+  // When items transition to queued (retry or enqueue), ensure workers run.
+  useEffect(() => {
+    if (uploadItems.some((item) => item.status === 'queued')) {
+      pumpUploadQueue();
     }
-  }, [addToast]);
+  }, [uploadItems, pumpUploadQueue]);
+
+  const handleFileChange = useCallback(() => {
+    const files = fileRef.current?.files;
+    if (!files?.length) {
+      setFileLabel('Choose files');
+      return;
+    }
+    enqueueFiles(files);
+    if (fileRef.current) fileRef.current.value = '';
+  }, [enqueueFiles]);
+
+  const handleRetry = useCallback(
+    (id: string) => {
+      uploadItemsRef.current = uploadItemsRef.current.map((item) =>
+        item.id === id && item.status === 'failed'
+          ? { ...item, status: 'queued', error: undefined }
+          : item,
+      );
+      setUploadItems(uploadItemsRef.current);
+      pumpUploadQueue();
+    },
+    [pumpUploadQueue],
+  );
 
   const handleScrape = useCallback(async (event: FormEvent) => {
     event.preventDefault();
@@ -120,6 +259,10 @@ export function PipelineClient() {
   }, [addToast, pollPipelineStatus, stopPipelinePolling]);
 
   const pipelineStatusText = pipelineStatusBadge(pipelineStatus);
+  const uploadSummary = useMemo(() => summarizeUploads(uploadItems), [uploadItems]);
+  const uploading = uploadItems.some(
+    (item) => item.status === 'queued' || item.status === 'uploading',
+  );
 
   return (
     <>
@@ -133,14 +276,17 @@ export function PipelineClient() {
           {/* File Upload */}
           <div className="rounded-[var(--radius-md)] border border-white/10 bg-zinc-950/50 p-4">
             <h3 className="flex items-center gap-2 text-sm font-semibold text-zinc-300">
-              <FileUp className="size-4 text-emerald-400" /> Upload File
+              <FileUp className="size-4 text-emerald-400" /> Upload Files
             </h3>
-            <p className="mt-1 text-xs text-zinc-500">Upload a .md file to the raw/ directory.</p>
+            <p className="mt-1 text-xs text-zinc-500">
+              Upload one or more files to the raw/ directory (max 3 concurrent).
+            </p>
             <div className="mt-3 flex gap-2">
               <input
                 ref={fileRef}
                 type="file"
-                accept=".md"
+                accept={RAW_ACCEPT}
+                multiple
                 onChange={handleFileChange}
                 className="hidden"
                 id="raw-file-upload"
@@ -151,15 +297,71 @@ export function PipelineClient() {
               >
                 {fileLabel}
               </label>
-              <button
-                type="button"
-                onClick={handleUpload}
-                disabled={loading === 'upload'}
-                className="inline-flex items-center justify-center rounded-md bg-emerald-600 px-4 py-2 text-sm font-semibold text-white transition hover:bg-emerald-500 disabled:opacity-50"
+              <label
+                htmlFor="raw-file-upload"
+                className={`inline-flex cursor-pointer items-center justify-center rounded-md bg-emerald-600 px-4 py-2 text-sm font-semibold text-white transition hover:bg-emerald-500 ${
+                  uploading ? 'opacity-50' : ''
+                }`}
               >
-                {loading === 'upload' ? <Loader2 className="size-4 animate-spin" /> : 'Upload'}
-              </button>
+                {uploading ? <Loader2 className="size-4 animate-spin" /> : 'Select'}
+              </label>
             </div>
+
+            {uploadItems.length > 0 ? (
+              <div className="mt-3 space-y-2">
+                <p className="text-xs text-zinc-500" data-testid="upload-summary">
+                  {uploadSummary}
+                </p>
+                <ul className="max-h-48 space-y-1.5 overflow-y-auto">
+                  {uploadItems.map((item) => (
+                    <li
+                      key={item.id}
+                      className="flex items-start justify-between gap-2 rounded-md border border-white/5 bg-black/20 px-2.5 py-1.5 text-xs"
+                    >
+                      <div className="min-w-0 flex-1">
+                        <p className="truncate font-medium text-zinc-200" title={item.file.name}>
+                          {item.file.name}
+                        </p>
+                        {item.error ? (
+                          <p className="mt-0.5 text-red-300/90">{item.error}</p>
+                        ) : null}
+                      </div>
+                      <div className="flex shrink-0 items-center gap-1.5">
+                        <Badge
+                          variant={
+                            item.status === 'failed'
+                              ? 'draft'
+                              : item.status === 'created' || item.status === 'already_exists'
+                                ? 'accent'
+                                : 'muted'
+                          }
+                        >
+                          {item.status === 'uploading' ? (
+                            <span className="inline-flex items-center gap-1">
+                              <Loader2 className="size-3 animate-spin" />
+                              {uploadStatusLabel(item.status)}
+                            </span>
+                          ) : (
+                            uploadStatusLabel(item.status)
+                          )}
+                        </Badge>
+                        {item.status === 'failed' ? (
+                          <button
+                            type="button"
+                            onClick={() => handleRetry(item.id)}
+                            className="rounded p-1 text-zinc-400 transition hover:bg-white/10 hover:text-white"
+                            aria-label={`Retry ${item.file.name}`}
+                            title="Retry"
+                          >
+                            <RotateCcw className="size-3.5" />
+                          </button>
+                        ) : null}
+                      </div>
+                    </li>
+                  ))}
+                </ul>
+              </div>
+            ) : null}
           </div>
 
           {/* URL Scrape */}
@@ -264,7 +466,8 @@ export function PipelineClient() {
               aria-label="Close"
             >
               <svg xmlns="http://www.w3.org/2000/svg" width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
-                <line x1="18" y1="6" x2="6" y2="18"/><line x1="6" y1="6" x2="18" y2="18"/>
+                <line x1="18" y1="6" x2="6" y2="18"/>
+                <line x1="6" y1="6" x2="18" y2="18"/>
               </svg>
             </button>
             <Construction className="mx-auto mb-4 size-10 text-amber-400" />

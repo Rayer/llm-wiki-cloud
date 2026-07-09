@@ -472,13 +472,17 @@ export async function searchWiki(query: string, mode: 'wiki' | 'full') {
 
 // ── Raw content management ──
 
+export type RawUploadStatus = 'created' | 'already_exists';
+
 export type RawUploadResult = {
-  message: string;
   filename: string;
   path: string;
-  digest: string;
   bytes: number;
+  sha256: string;
+  status: RawUploadStatus;
 };
+
+export const RAW_UPLOAD_MAX_BYTES = 5 << 20;
 
 export type ScrapeResult = {
   message: string;
@@ -502,6 +506,13 @@ export type PipelineStatus = {
 };
 
 export async function uploadRawFile(file: File): Promise<RawUploadResult> {
+  if (file.size > RAW_UPLOAD_MAX_BYTES) {
+    throw new Error('file too large (max 5 MiB)');
+  }
+  if (file.size === 0) {
+    throw new Error('empty file');
+  }
+
   const formData = new FormData();
   formData.append('file', file);
   const response = await apiFetch('/api/v1/raw/upload', {
@@ -510,9 +521,19 @@ export async function uploadRawFile(file: File): Promise<RawUploadResult> {
   });
   if (!response.ok) {
     const error = await response.json().catch(() => ({ error: 'Upload failed' }));
-    throw new Error((error as { error: string }).error);
+    const message = (error as { error?: string }).error || 'Upload failed';
+    throw new ApiError(message, response.status);
   }
-  return response.json();
+
+  const body = (await response.json()) as Partial<RawUploadResult> & Record<string, unknown>;
+  const status = body.status === 'already_exists' ? 'already_exists' : 'created';
+  return {
+    filename: typeof body.filename === 'string' ? body.filename : file.name,
+    path: typeof body.path === 'string' ? body.path : '',
+    bytes: typeof body.bytes === 'number' ? body.bytes : file.size,
+    sha256: typeof body.sha256 === 'string' ? body.sha256 : '',
+    status: response.status === 200 ? 'already_exists' : status,
+  };
 }
 
 export async function scrapeUrl(url: string, filename?: string): Promise<ScrapeResult> {

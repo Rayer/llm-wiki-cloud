@@ -18,10 +18,12 @@ import {
   rebuildAdminProjectIndex,
   renameAdminProject,
   normalizeSearchResponse,
+  RAW_UPLOAD_MAX_BYTES,
   triggerAdminProjectPipeline,
   toV1Path,
   triggerPipeline,
   updateAdminUserRole,
+  uploadRawFile,
 } from '../src/lib/api.ts';
 
 test('buildProjectHeaders scopes authenticated requests to the selected project', () => {
@@ -267,6 +269,97 @@ test('getRawFiles reads project scoped raw metadata and normalizes file fields',
   } finally {
     globalThis.fetch = originalFetch;
   }
+});
+
+test('uploadRawFile accepts created and already_exists responses', async () => {
+  configureApiAuth({
+    getAccessToken: () => 'jwt-token',
+    refreshAccessToken: async () => null,
+    onUnauthorized: () => undefined,
+  });
+  globalThis.window = {
+    localStorage: {
+      getItem: () => 'project-1',
+    },
+  };
+
+  const originalFetch = globalThis.fetch;
+  const file = new File(['# hi\n'], 'note.md', { type: 'text/markdown' });
+
+  try {
+    globalThis.fetch = async () =>
+      new Response(
+        JSON.stringify({
+          filename: 'note.md',
+          path: 'users/u/projects/p/raw/note.md',
+          bytes: 5,
+          sha256: 'abc',
+          status: 'created',
+        }),
+        { status: 201 },
+      );
+
+    const created = await uploadRawFile(file);
+    assert.equal(created.status, 'created');
+    assert.equal(created.filename, 'note.md');
+    assert.equal(created.sha256, 'abc');
+
+    globalThis.fetch = async () =>
+      new Response(
+        JSON.stringify({
+          filename: 'note.md',
+          path: 'users/u/projects/p/raw/note.md',
+          bytes: 5,
+          sha256: 'abc',
+          status: 'already_exists',
+        }),
+        { status: 200 },
+      );
+
+    const existing = await uploadRawFile(file);
+    assert.equal(existing.status, 'already_exists');
+  } finally {
+    globalThis.fetch = originalFetch;
+  }
+});
+
+test('uploadRawFile maps 409 conflict to ApiError', async () => {
+  configureApiAuth({
+    getAccessToken: () => 'jwt-token',
+    refreshAccessToken: async () => null,
+    onUnauthorized: () => undefined,
+  });
+  globalThis.window = {
+    localStorage: {
+      getItem: () => 'project-1',
+    },
+  };
+
+  const originalFetch = globalThis.fetch;
+  globalThis.fetch = async () =>
+    new Response(
+      JSON.stringify({ error: 'filename already exists with different content' }),
+      { status: 409 },
+    );
+
+  try {
+    await assert.rejects(
+      () => uploadRawFile(new File(['# other\n'], 'note.md', { type: 'text/markdown' })),
+      (err) => {
+        assert.equal(err instanceof ApiError, true);
+        assert.equal(err.status, 409);
+        assert.match(err.message, /already exists with different content/);
+        return true;
+      },
+    );
+  } finally {
+    globalThis.fetch = originalFetch;
+  }
+});
+
+test('uploadRawFile rejects oversized files before fetch', async () => {
+  const big = new File([new Uint8Array(RAW_UPLOAD_MAX_BYTES + 1)], 'big.md');
+  await assert.rejects(() => uploadRawFile(big), /file too large/);
 });
 
 test('getAdminProjects reads admin projects without project header', async () => {
