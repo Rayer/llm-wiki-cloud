@@ -6,7 +6,7 @@ import { RegisterModal } from './RegisterModal';
 import { useWorkspace } from './WorkspaceProvider';
 
 export function LoginModal() {
-  const { loginOpen, signIn } = useWorkspace();
+  const { loginOpen, signIn, signInAsDemo } = useWorkspace();
   const { t } = useLocale();
   const [email, setEmail] = useState('');
   const [password, setPassword] = useState('');
@@ -18,13 +18,13 @@ export function LoginModal() {
     setLoading(true);
     setError('');
     try {
-      await signIn('demo@llm-wiki.dev', 'demo123456');
+      await signInAsDemo('demo@llm-wiki.dev', 'demo123456');
     } catch {
       setError(t('Login.demoError'));
     } finally {
       setLoading(false);
     }
-  }, [signIn, t]);
+  }, [signInAsDemo, t]);
 
   if (!loginOpen) return null;
 

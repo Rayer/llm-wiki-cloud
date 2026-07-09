@@ -118,3 +118,38 @@ export function clearStoredAccessToken(
     // ignore
   }
 }
+
+export const DEMO_SESSION_STORAGE_KEY = 'llm-wiki-demo-session';
+
+export function readStoredDemoSession(
+  storage: Pick<Storage, 'getItem'> | null | undefined,
+): boolean {
+  if (!storage) return false;
+  try {
+    return storage.getItem(DEMO_SESSION_STORAGE_KEY) === '1';
+  } catch {
+    return false;
+  }
+}
+
+export function writeStoredDemoSession(
+  storage: Pick<Storage, 'setItem' | 'removeItem'> | null | undefined,
+  active: boolean,
+): void {
+  if (!storage) return;
+  try {
+    if (active) {
+      storage.setItem(DEMO_SESSION_STORAGE_KEY, '1');
+    } else {
+      storage.removeItem(DEMO_SESSION_STORAGE_KEY);
+    }
+  } catch {
+    // ignore quota / private mode
+  }
+}
+
+export function clearStoredDemoSession(
+  storage: Pick<Storage, 'removeItem'> | null | undefined,
+): void {
+  writeStoredDemoSession(storage, false);
+}

@@ -51,7 +51,7 @@ function ShellContent({ children }: { children: React.ReactNode }) {
     currentProject,
     projectsLoading,
     projectsError,
-    isDemoUser,
+    isDemoSession,
     selectProject,
     refreshProjects,
     openNewProject,
@@ -124,8 +124,8 @@ function ShellContent({ children }: { children: React.ReactNode }) {
   }, [mobileNavOpen]);
 
   const handleNewProjectClick = () => {
-    if (isDemoUser) {
-      setDemoMessage(t('Shell.demoDisabled'));
+    if (isDemoSession) {
+      setDemoMessage(t('Demo.restricted'));
       return;
     }
     openNewProject();

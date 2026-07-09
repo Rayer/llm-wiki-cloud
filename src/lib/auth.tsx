@@ -13,12 +13,15 @@ import {
 import {
   API_URL,
   clearStoredAccessToken,
+  clearStoredDemoSession,
   isAuthFailureStatus,
   normalizeAuthResponse,
   normalizeRefreshResponse,
   readStoredAccessToken,
+  readStoredDemoSession,
   responseError,
   writeStoredAccessToken,
+  writeStoredDemoSession,
   type AuthResponse,
   type AuthUser,
 } from './auth-core';
@@ -35,7 +38,9 @@ type AuthContextValue = {
   user: AuthUser | null;
   hydrated: boolean;
   isAuthenticated: boolean;
+  isDemoSession: boolean;
   login: (email: string, password: string) => Promise<void>;
+  loginAsDemo: (email: string, password: string) => Promise<void>;
   register: (email: string, password: string) => Promise<void>;
   logout: () => Promise<void>;
   refreshAccessToken: (options?: RefreshAccessTokenOptions) => Promise<string | null>;
@@ -62,6 +67,7 @@ async function postAuth(path: string, body?: unknown): Promise<unknown> {
 export function AuthProvider({ children }: { children: ReactNode }) {
   const [accessToken, setAccessToken] = useState<string | null>(null);
   const [user, setUser] = useState<AuthUser | null>(null);
+  const [isDemoSession, setIsDemoSession] = useState(false);
   const [hydrated, setHydrated] = useState(false);
   const accessTokenRef = useRef<string | null>(null);
 
@@ -73,16 +79,24 @@ export function AuthProvider({ children }: { children: ReactNode }) {
     setAccessToken(null);
     accessTokenRef.current = null;
     setUser(null);
+    setIsDemoSession(false);
     clearStoredAccessToken(typeof window !== 'undefined' ? window.localStorage : null);
+    clearStoredDemoSession(typeof window !== 'undefined' ? window.sessionStorage : null);
   }, []);
 
-  const applyAuthResponse = useCallback((result: AuthResponse) => {
+  const applyAuthResponse = useCallback((result: AuthResponse, options?: { demo?: boolean }) => {
+    const demo = options?.demo === true;
     setAccessToken(result.access_token);
     accessTokenRef.current = result.access_token;
     setUser(result.user);
+    setIsDemoSession(demo);
     writeStoredAccessToken(
       typeof window !== 'undefined' ? window.localStorage : null,
       result.access_token,
+    );
+    writeStoredDemoSession(
+      typeof window !== 'undefined' ? window.sessionStorage : null,
+      demo,
     );
   }, []);
 
@@ -152,6 +166,11 @@ export function AuthProvider({ children }: { children: ReactNode }) {
         if (!cancelled) {
           setAccessToken(stored);
           accessTokenRef.current = stored;
+          setIsDemoSession(
+            readStoredDemoSession(
+              typeof window !== 'undefined' ? window.sessionStorage : null,
+            ),
+          );
           setHydrated(true);
         }
         void refreshAccessToken({ clearOnAuthFailure: false });
@@ -174,12 +193,17 @@ export function AuthProvider({ children }: { children: ReactNode }) {
 
   const login = useCallback(async (email: string, password: string) => {
     const payload = await postAuth('/api/v1/auth/login', { email, password });
-    applyAuthResponse(normalizeAuthResponse(payload));
+    applyAuthResponse(normalizeAuthResponse(payload), { demo: false });
+  }, [applyAuthResponse]);
+
+  const loginAsDemo = useCallback(async (email: string, password: string) => {
+    const payload = await postAuth('/api/v1/auth/login', { email, password });
+    applyAuthResponse(normalizeAuthResponse(payload), { demo: true });
   }, [applyAuthResponse]);
 
   const register = useCallback(async (email: string, password: string) => {
     const payload = await postAuth('/api/v1/auth/register', { email, password });
-    applyAuthResponse(normalizeAuthResponse(payload));
+    applyAuthResponse(normalizeAuthResponse(payload), { demo: false });
   }, [applyAuthResponse]);
 
   const logout = useCallback(async () => {
@@ -196,11 +220,13 @@ export function AuthProvider({ children }: { children: ReactNode }) {
     user,
     hydrated,
     isAuthenticated: Boolean(accessToken),
+    isDemoSession,
     login,
+    loginAsDemo,
     register,
     logout,
     refreshAccessToken,
-  }), [accessToken, hydrated, login, logout, refreshAccessToken, register, user]);
+  }), [accessToken, hydrated, isDemoSession, login, loginAsDemo, logout, refreshAccessToken, register, user]);
 
   return <AuthContext.Provider value={value}>{children}</AuthContext.Provider>;
 }

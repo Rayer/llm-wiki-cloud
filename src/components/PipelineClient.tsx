@@ -12,6 +12,8 @@ import {
   type PipelineStatus,
   type RawUploadResult,
 } from '@/lib/api';
+import { useT } from '@/lib/i18n';
+import { useWorkspace } from './WorkspaceProvider';
 
 type Toast = {
   id: number;
@@ -77,6 +79,8 @@ function summarizeUploads(items: UploadItem[]): string {
 }
 
 export function PipelineClient() {
+  const { t } = useT();
+  const { isDemoSession } = useWorkspace();
   const [fileLabel, setFileLabel] = useState('Choose files');
   const [uploadItems, setUploadItems] = useState<UploadItem[]>([]);
   const [scrapeUrlText, setScrapeUrlText] = useState('');
@@ -168,6 +172,11 @@ export function PipelineClient() {
 
   const enqueueFiles = useCallback(
     (fileList: FileList | File[]) => {
+      if (isDemoSession) {
+        addToast(t('Demo.restricted'), 'info');
+        return;
+      }
+
       const files = Array.from(fileList);
       if (files.length === 0) return;
 
@@ -197,7 +206,7 @@ export function PipelineClient() {
       setFileLabel(files.length === 1 ? files[0].name : `${files.length} files selected`);
       pumpUploadQueue();
     },
-    [pumpUploadQueue],
+    [addToast, isDemoSession, pumpUploadQueue, t],
   );
 
   // When items transition to queued (retry or enqueue), ensure workers run.
@@ -236,6 +245,11 @@ export function PipelineClient() {
   }, []);
 
   const handleRunPipeline = useCallback(async () => {
+    if (isDemoSession) {
+      addToast(t('Demo.restricted'), 'info');
+      return;
+    }
+
     if (!window.localStorage.getItem('llm-wiki-last-project')) {
       addToast('Please select a project before running pipeline', 'error');
       return;
@@ -256,7 +270,7 @@ export function PipelineClient() {
     } finally {
       setLoading(null);
     }
-  }, [addToast, pollPipelineStatus, stopPipelinePolling]);
+  }, [addToast, isDemoSession, pollPipelineStatus, stopPipelinePolling, t]);
 
   const pipelineStatusText = pipelineStatusBadge(pipelineStatus);
   const uploadSummary = useMemo(() => summarizeUploads(uploadItems), [uploadItems]);

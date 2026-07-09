@@ -77,7 +77,8 @@
     "scrape": "Scrape",
     "pipeline": "Pipeline",
     "runPipeline": "Run Pipeline",
-    "pipelineDesc": "The pipeline runs:"
+    "pipelineDesc": "The pipeline runs:",
+    "restricted": "This feature is not available in demo mode"
   },
   "List": {
     "noConcepts": "No concepts yet. Run the pipeline first.",

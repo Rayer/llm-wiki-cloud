@@ -29,10 +29,11 @@ type WorkspaceContextValue = {
   currentProject: Project | null;
   projectsLoading: boolean;
   projectsError: string;
-  isDemoUser: boolean;
+  isDemoSession: boolean;
   loginOpen: boolean;
   newProjectOpen: boolean;
   signIn: (email: string, password: string) => Promise<void>;
+  signInAsDemo: (email: string, password: string) => Promise<void>;
   register: (email: string, password: string) => Promise<void>;
   signOut: () => Promise<void>;
   selectProject: (projectId: string) => void;
@@ -50,16 +51,16 @@ export function WorkspaceProvider({ children }: { children: ReactNode }) {
     hydrated,
     user,
     login,
+    loginAsDemo,
     register,
     logout,
+    isDemoSession,
   } = useAuth();
   const [projects, setProjects] = useState<Project[]>([]);
   const [currentProject, setCurrentProject] = useState<Project | null>(null);
   const [projectsLoading, setProjectsLoading] = useState(false);
   const [projectsError, setProjectsError] = useState('');
   const [newProjectOpen, setNewProjectOpen] = useState(false);
-  const isDemoUser = user?.email === 'test@example.com' || user?.id === 'test-user';
-
   const loadProjects = useCallback(async () => {
     setProjectsLoading(true);
     setProjectsError('');
@@ -89,6 +90,10 @@ export function WorkspaceProvider({ children }: { children: ReactNode }) {
     await login(email, password);
   }, [login]);
 
+  const signInAsDemo = useCallback(async (email: string, password: string) => {
+    await loginAsDemo(email, password);
+  }, [loginAsDemo]);
+
   const signOut = useCallback(async () => {
     await logout();
     window.localStorage.removeItem(LAST_PROJECT_KEY);
@@ -107,7 +112,7 @@ export function WorkspaceProvider({ children }: { children: ReactNode }) {
 
   const addProject = useCallback(async (name: string) => {
     if (!token) throw new Error('Please log in to create a project.');
-    if (isDemoUser) throw new Error('Demo mode cannot create projects.');
+    if (isDemoSession) throw new Error('Demo mode cannot create projects.');
     const project = await createProject(name);
     setProjects((current) => {
       const withoutDuplicate = current.filter((item) => item.id !== project.id);
@@ -118,7 +123,7 @@ export function WorkspaceProvider({ children }: { children: ReactNode }) {
     setProjectsError('');
     setNewProjectOpen(false);
     return project;
-  }, [isDemoUser, token]);
+  }, [isDemoSession, token]);
 
   const refreshProjects = useCallback(async () => {
     if (token) await loadProjects();
@@ -145,17 +150,18 @@ export function WorkspaceProvider({ children }: { children: ReactNode }) {
     currentProject,
     projectsLoading,
     projectsError,
-    isDemoUser,
+    isDemoSession,
     loginOpen: hydrated && !token,
     newProjectOpen,
     signIn,
+    signInAsDemo,
     register,
     signOut,
     selectProject,
     addProject,
     refreshProjects,
     openNewProject: () => {
-      if (isDemoUser) return;
+      if (isDemoSession) return;
       setNewProjectOpen(true);
     },
     closeNewProject: () => setNewProjectOpen(false),
@@ -163,12 +169,13 @@ export function WorkspaceProvider({ children }: { children: ReactNode }) {
     addProject,
     currentProject,
     hydrated,
-    isDemoUser,
+    isDemoSession,
     newProjectOpen,
     projects,
     projectsError,
     register,
     signIn,
+    signInAsDemo,
     projectsLoading,
     refreshProjects,
     selectProject,
