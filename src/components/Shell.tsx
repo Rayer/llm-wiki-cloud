@@ -101,7 +101,7 @@ function ShellContent({ children }: { children: React.ReactNode }) {
   const isAdminRoute = pathname === '/admin' || pathname.startsWith('/admin/');
 
   return (
-    <div className="min-h-dvh text-zinc-100 lg:flex">
+    <div className="min-h-dvh text-zinc-100 lg:flex lg:items-stretch">
       {token ? (
         <header className="sticky top-0 z-50 flex min-h-14 items-center justify-between border-b border-white/8 bg-zinc-950/85 px-4 backdrop-blur lg:hidden">
           <Link href="/" className="min-w-0 text-sm font-semibold tracking-tight text-white">
@@ -138,7 +138,7 @@ function ShellContent({ children }: { children: React.ReactNode }) {
       {token ? (
         <aside
           id="mobile-navigation"
-          className={`glass-sidebar fixed inset-y-0 left-0 z-40 flex h-full w-64 shrink-0 flex-col pt-14 transition-transform duration-200 lg:static lg:translate-x-0 lg:pt-0 ${
+          className={`glass-sidebar fixed inset-y-0 left-0 z-40 flex h-dvh w-64 shrink-0 flex-col pt-14 transition-transform duration-200 lg:sticky lg:top-0 lg:translate-x-0 lg:pt-0 ${
             mobileNavOpen ? 'translate-x-0' : '-translate-x-full'
           }`}
         >

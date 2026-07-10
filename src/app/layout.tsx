@@ -26,7 +26,7 @@ export default function RootLayout({
 }>) {
   return (
     <html lang="zh-Hant" className={`${geistSans.variable} ${geistMono.variable} h-full antialiased`}>
-      <body className="min-h-full font-sans">
+      <body className="min-h-dvh font-sans">
         <AuthProvider>
           <Shell>{children}</Shell>
         </AuthProvider>
