@@ -503,16 +503,35 @@ export type ScrapeResult = {
   bytes: number;
 };
 
+export type PipelineQuota = {
+  enforced: boolean;
+  allowed: boolean;
+  reason?: string;
+  message?: string;
+  runs_today: number;
+  daily_limit: number;
+  cooldown_until?: string | null;
+  next_reset?: string | null;
+  new_raw_files: number;
+  min_new_raw: number;
+  already_running: boolean;
+};
+
 export type PipelineResult = {
-  message: string;
-  rawFiles: number;
-  scheduled: boolean;
   status?: 'accepted' | string;
+  execution_id?: string;
+  project_id?: string;
+  message?: string;
+  command?: string;
+  quota?: PipelineQuota | null;
+  rawFiles?: number;
+  scheduled?: boolean;
 };
 
 export type PipelineStatus = {
   last_execution?: PipelineExecution | null;
-  [key: string]: unknown;
+  project_id?: string;
+  quota?: PipelineQuota | null;
 };
 
 export async function uploadRawFile(file: File): Promise<RawUploadResult> {

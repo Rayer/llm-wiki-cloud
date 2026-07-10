@@ -8,10 +8,16 @@ import {
   getPipelineStatus,
   triggerPipeline,
   uploadRawFile,
+  type PipelineQuota,
   type PipelineResult,
   type PipelineStatus,
   type RawUploadResult,
 } from '@/lib/api';
+import {
+  blockReasonMessage,
+  formatQuotaLine,
+  isRunBlocked,
+} from '@/lib/pipeline-quota';
 import { useT } from '@/lib/i18n';
 import { useWorkspace } from './WorkspaceProvider';
 
@@ -78,9 +84,26 @@ function summarizeUploads(items: UploadItem[]): string {
   return parts.join(', ');
 }
 
+function isCooldownClear(quota: PipelineQuota | null | undefined, now = new Date()): boolean {
+  if (!quota?.enforced) return true;
+  if (!quota.cooldown_until) return true;
+  const ms = new Date(quota.cooldown_until).getTime() - now.getTime();
+  return Number.isNaN(ms) || ms <= 0;
+}
+
+function isUnderDailyLimit(quota: PipelineQuota | null | undefined): boolean {
+  if (!quota?.enforced) return true;
+  return quota.runs_today < quota.daily_limit;
+}
+
+function hasNewRaw(quota: PipelineQuota | null | undefined): boolean {
+  if (!quota?.enforced) return true;
+  return quota.new_raw_files >= quota.min_new_raw;
+}
+
 export function PipelineClient() {
   const { t } = useT();
-  const { isDemoSession, refreshNavCounts } = useWorkspace();
+  const { isDemoSession, refreshNavCounts, currentProject } = useWorkspace();
   const [fileLabel, setFileLabel] = useState('Choose files');
   const [uploadItems, setUploadItems] = useState<UploadItem[]>([]);
   const [scrapeUrlText, setScrapeUrlText] = useState('');
@@ -89,6 +112,7 @@ export function PipelineClient() {
   const [loading, setLoading] = useState<string | null>(null); // 'pipeline'
   const [toasts, setToasts] = useState<Toast[]>([]);
   const [wipModal, setWipModal] = useState(false);
+  const [showPrereq, setShowPrereq] = useState(false);
   const fileRef = useRef<HTMLInputElement>(null);
   const pipelinePollRef = useRef<ReturnType<typeof setInterval> | null>(null);
   const activeUploadsRef = useRef(0);
@@ -125,6 +149,28 @@ export function PipelineClient() {
   }, [addToast, stopPipelinePolling]);
 
   useEffect(() => stopPipelinePolling, [stopPipelinePolling]);
+
+  // Load quota + execution status on mount and when workspace project changes.
+  useEffect(() => {
+    if (!currentProject) {
+      setPipelineStatus(null);
+      return;
+    }
+
+    let cancelled = false;
+    void (async () => {
+      try {
+        const status = await getPipelineStatus();
+        if (!cancelled) setPipelineStatus(status);
+      } catch {
+        // Initial status is best-effort; Run still surfaces trigger errors via toast.
+      }
+    })();
+
+    return () => {
+      cancelled = true;
+    };
+  }, [currentProject]);
 
   const pumpUploadQueue = useCallback(() => {
     const pump = () => {
@@ -171,6 +217,12 @@ export function PipelineClient() {
             if (!stillBusy && needsCountRefreshRef.current) {
               needsCountRefreshRef.current = false;
               void refreshNavCounts();
+              // New raw files may change quota eligibility.
+              void getPipelineStatus()
+                .then((status) => setPipelineStatus(status))
+                .catch(() => {
+                  // Keep prior status on refresh failure after upload.
+                });
             }
             queueMicrotask(pump);
           }
@@ -256,13 +308,14 @@ export function PipelineClient() {
   }, []);
 
   const handleRunPipeline = useCallback(async () => {
+    // Belt-and-suspenders: button is disabled for known blocks; toast only if click races through.
     if (isDemoSession) {
       addToast(t('Demo.restricted'), 'info');
       return;
     }
 
     if (!window.localStorage.getItem('llm-wiki-last-project')) {
-      addToast('Please select a project before running pipeline', 'error');
+      addToast(t('Pipeline.noProject'), 'error');
       return;
     }
 
@@ -270,13 +323,20 @@ export function PipelineClient() {
     try {
       const result = await triggerPipeline();
       setPipelineResult(result);
-      addToast(result.message, 'info');
+      if (result.message) addToast(result.message, 'info');
       if (result.status === 'accepted') {
         stopPipelinePolling();
-        setPipelineStatus({ last_execution: { status: 'RUNNING' } });
+        setPipelineStatus((prev) => ({
+          ...prev,
+          last_execution: { status: 'RUNNING' },
+          quota: prev?.quota
+            ? { ...prev.quota, already_running: true, allowed: false }
+            : prev?.quota,
+        }));
         pipelinePollRef.current = setInterval(pollPipelineStatus, 5000);
       }
     } catch (err) {
+      // Network / 5xx / stale UI race: show server message.
       addToast(err instanceof Error ? err.message : 'Pipeline trigger failed', 'error');
     } finally {
       setLoading(null);
@@ -287,6 +347,38 @@ export function PipelineClient() {
   const uploadSummary = useMemo(() => summarizeUploads(uploadItems), [uploadItems]);
   const uploading = uploadItems.some(
     (item) => item.status === 'queued' || item.status === 'uploading',
+  );
+
+  const executionRunning =
+    pipelineStatus?.last_execution?.status === 'RUNNING' ||
+    pipelineStatus?.quota?.already_running === true;
+  const hasProject = Boolean(currentProject);
+  const quota = pipelineStatus?.quota;
+  const blocked = isRunBlocked({
+    isDemoSession,
+    loading: loading === 'pipeline',
+    hasProject,
+    executionRunning,
+    quota,
+  });
+  const helper = blockReasonMessage({
+    isDemoSession,
+    hasProject,
+    executionRunning,
+    quota,
+    demoMessage: t('Demo.restricted'),
+    noProjectMessage: t('Pipeline.noProject'),
+  });
+  const quotaLine = formatQuotaLine(quota);
+  const prereqRows = useMemo(
+    () => [
+      { ok: !isDemoSession, label: t('Pipeline.prereqDemo') },
+      { ok: isUnderDailyLimit(quota), label: t('Pipeline.prereqDaily') },
+      { ok: isCooldownClear(quota), label: t('Pipeline.prereqCooldown') },
+      { ok: !executionRunning, label: t('Pipeline.prereqRunning') },
+      { ok: hasNewRaw(quota), label: t('Pipeline.prereqRaw') },
+    ],
+    [executionRunning, isDemoSession, quota, t],
   );
 
   return (
@@ -428,13 +520,49 @@ export function PipelineClient() {
             <button
               type="button"
               onClick={handleRunPipeline}
-              disabled={loading === 'pipeline'}
-              className="rounded-md bg-white px-4 py-2 text-sm font-semibold text-black transition hover:bg-emerald-200 disabled:opacity-50"
+              disabled={blocked}
+              title={helper || undefined}
+              aria-disabled={blocked}
+              className="rounded-md bg-white px-4 py-2 text-sm font-semibold text-black transition hover:bg-emerald-200 disabled:cursor-not-allowed disabled:opacity-50"
             >
               {loading === 'pipeline' ? 'Running...' : 'Run Pipeline'}
             </button>
           </div>
-          {pipelineResult ? (
+          <p className="mt-2 text-xs text-zinc-500" data-testid="pipeline-quota-line">
+            {quotaLine}
+          </p>
+          {blocked && helper ? (
+            <p className="mt-1 text-xs text-amber-200/90" data-testid="pipeline-block-reason">
+              {helper}
+            </p>
+          ) : null}
+          <div className="mt-2">
+            <button
+              type="button"
+              onClick={() => setShowPrereq((open) => !open)}
+              className="text-xs font-medium text-zinc-400 transition hover:text-zinc-200"
+              aria-expanded={showPrereq}
+              data-testid="pipeline-prereq-toggle"
+            >
+              {showPrereq ? '▾' : '▸'} {t('Pipeline.prerequisites')}
+            </button>
+            {showPrereq ? (
+              <ul className="mt-1.5 space-y-1" data-testid="pipeline-prereq-list">
+                {prereqRows.map((row) => (
+                  <li
+                    key={row.label}
+                    className="flex items-center gap-2 text-xs text-zinc-400"
+                  >
+                    <span aria-hidden="true">{row.ok ? '✓' : '✗'}</span>
+                    <span className={row.ok ? 'text-zinc-400' : 'text-amber-200/90'}>
+                      {row.label}
+                    </span>
+                  </li>
+                ))}
+              </ul>
+            ) : null}
+          </div>
+          {pipelineResult?.message ? (
             <p className="mt-2 text-xs text-zinc-500">{pipelineResult.message}</p>
           ) : null}
         </div>

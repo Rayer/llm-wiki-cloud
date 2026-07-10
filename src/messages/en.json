@@ -92,6 +92,19 @@
     "title": "Pipeline Status",
     "noStatus": "No pipeline status available."
   },
+  "Pipeline": {
+    "quotaLine": "Runs today: {runs}/{limit} · Cooldown: {cooldown} · New files: {newFiles}",
+    "quotaNotEnforced": "Quota not enforced",
+    "cooldownClear": "clear",
+    "noProject": "Please select a project before running pipeline",
+    "running": "Pipeline is running",
+    "prerequisites": "Prerequisites",
+    "prereqDemo": "Not a demo session",
+    "prereqDaily": "Under daily limit",
+    "prereqCooldown": "Cooldown clear",
+    "prereqRunning": "No pipeline running",
+    "prereqRaw": "New or modified raw files"
+  },
   "ComingSoon": {
     "title": "Coming Soon"
   }

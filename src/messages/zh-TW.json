@@ -92,6 +92,19 @@
     "title": "Pipeline Status",
     "noStatus": "No pipeline status available."
   },
+  "Pipeline": {
+    "quotaLine": "今日執行：{runs}/{limit} · 冷卻：{cooldown} · 新檔案：{newFiles}",
+    "quotaNotEnforced": "未啟用配額限制",
+    "cooldownClear": "無",
+    "noProject": "請先選擇專案再執行 pipeline",
+    "running": "Pipeline 執行中",
+    "prerequisites": "執行條件",
+    "prereqDemo": "非 Demo 工作階段",
+    "prereqDaily": "未達每日上限",
+    "prereqCooldown": "冷卻已結束",
+    "prereqRunning": "目前沒有執行中的 pipeline",
+    "prereqRaw": "有新增或變更的 raw 檔案"
+  },
   "ComingSoon": {
     "title": "Coming Soon"
   }
