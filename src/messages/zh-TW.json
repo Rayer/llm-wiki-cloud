@@ -32,6 +32,9 @@
     "error": "註冊失敗",
     "switchToLogin": "已有帳號？登入"
   },
+  "Detail": {
+    "rawFile": "原始檔案"
+  },
   "Shell": {
     "brand": "LLM Wiki Cloud",
     "navigation": "主要導覽",

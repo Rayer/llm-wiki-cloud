@@ -32,6 +32,9 @@
     "error": "Registration failed",
     "switchToLogin": "Already have an account? Sign in"
   },
+  "Detail": {
+    "rawFile": "Raw file"
+  },
   "Shell": {
     "brand": "LLM Wiki Cloud",
     "navigation": "Primary navigation",

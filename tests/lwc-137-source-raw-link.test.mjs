@@ -9,7 +9,8 @@ test('DetailClient renders frontmatter.sources as raw file links', async () => {
     'utf8',
   );
 
-  assert.match(detailClient, /function rawFileNameFromSource\(source: string\)/);
+  assert.match(detailClient, /rawFileNameFromSource/);
+  assert.match(detailClient, /from '@\/lib\/raw-file-name'/);
   assert.match(detailClient, /function renderFrontmatterValue\(/);
   assert.match(detailClient, /key === 'sources' && Array\.isArray\(value\)/);
   assert.match(detailClient, /href=\{`\/raw\?file=\$\{encodeURIComponent\(rawFileNameFromSource\(source\)\)\}`\}/);

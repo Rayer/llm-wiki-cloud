@@ -2,12 +2,14 @@
 
 import Link from 'next/link';
 import { useEffect, useState } from 'react';
-import { ChevronLeft } from 'lucide-react';
+import { ChevronLeft, FileText } from 'lucide-react';
 import { MarkdownView } from './MarkdownView';
 import { ErrorState, LoadingState } from './States';
 import { Badge } from './ui/Badge';
 import { Surface } from './ui/Surface';
 import { getConcepts, type WikiEntry } from '@/lib/api';
+import { useT } from '@/lib/i18n';
+import { primaryRawFileName, rawFileNameFromSource } from '@/lib/raw-file-name';
 
 export function DetailClient({
   slug,
@@ -22,6 +24,7 @@ export function DetailClient({
   load: (slug: string) => Promise<WikiEntry>;
   entryType?: 'source' | 'concept';
 }) {
+  const { t } = useT();
   const [entry, setEntry] = useState<WikiEntry | null>(null);
   const [existingConceptSlugs, setExistingConceptSlugs] = useState<Set<string> | undefined>();
   const [loading, setLoading] = useState(true);
@@ -59,6 +62,10 @@ export function DetailClient({
   if (error) return <ErrorState message={error} />;
   if (!entry) return <ErrorState message="Entry not found." />;
 
+  // LWC-139: prominent raw link only on source pages with frontmatter.sources[0]
+  const primaryRawFile =
+    entryType === 'source' ? primaryRawFileName(entry.frontmatter) : null;
+
   return (
     <div className="space-y-8">
       <Link
@@ -84,6 +91,17 @@ export function DetailClient({
         </h1>
         {entry.description ? (
           <p className="mt-4 max-w-3xl text-lg leading-8 text-zinc-400">{entry.description}</p>
+        ) : null}
+        {primaryRawFile ? (
+          <Link
+            href={`/raw?file=${encodeURIComponent(primaryRawFile)}`}
+            className="mt-4 inline-flex items-center gap-1.5 text-sm font-medium text-emerald-300 underline decoration-emerald-300/40 underline-offset-4 transition hover:text-emerald-200 hover:decoration-emerald-200"
+            data-testid="source-raw-file-link"
+          >
+            <FileText className="size-4 shrink-0" aria-hidden="true" />
+            {t('Detail.rawFile')}
+            <span className="font-normal text-zinc-500 no-underline">({primaryRawFile})</span>
+          </Link>
         ) : null}
       </header>
 
@@ -157,6 +175,4 @@ function renderFrontmatterValue(key: string, value: unknown) {
   return JSON.stringify(value);
 }
 
-function rawFileNameFromSource(source: string) {
-  return source.replace(/^raw\//, '');
-}
+
