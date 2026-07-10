@@ -13,6 +13,7 @@ import {
   useAuth,
   type AuthUser,
 } from '@/lib/auth';
+import { getStatus } from '@/lib/api';
 import {
   createProject,
   getProjects,
@@ -20,6 +21,18 @@ import {
   selectDefaultProject,
   type Project,
 } from '@/lib/projects';
+
+export type NavCounts = {
+  sources: number | null;
+  concepts: number | null;
+  raw: number | null;
+};
+
+const emptyNavCounts: NavCounts = {
+  sources: null,
+  concepts: null,
+  raw: null,
+};
 
 type WorkspaceContextValue = {
   hydrated: boolean;
@@ -32,6 +45,9 @@ type WorkspaceContextValue = {
   isDemoSession: boolean;
   loginOpen: boolean;
   newProjectOpen: boolean;
+  /** Live status counts for sidebar badges; null fields mean unavailable / no project. */
+  navCounts: NavCounts;
+  refreshNavCounts: () => Promise<void>;
   signIn: (email: string, password: string) => Promise<void>;
   signInAsDemo: (email: string, password: string) => Promise<void>;
   register: (email: string, password: string) => Promise<void>;
@@ -61,6 +77,22 @@ export function WorkspaceProvider({ children }: { children: ReactNode }) {
   const [projectsLoading, setProjectsLoading] = useState(false);
   const [projectsError, setProjectsError] = useState('');
   const [newProjectOpen, setNewProjectOpen] = useState(false);
+  const [navCounts, setNavCounts] = useState<NavCounts>(emptyNavCounts);
+
+  const refreshNavCounts = useCallback(async () => {
+    if (!token || !currentProject) return;
+    try {
+      const status = await getStatus();
+      setNavCounts({
+        sources: status.sourcesCount,
+        concepts: status.conceptsCount,
+        raw: status.rawCount,
+      });
+    } catch {
+      // Keep previous badge values on refresh failure (LWC-129).
+    }
+  }, [token, currentProject]);
+
   const loadProjects = useCallback(async () => {
     setProjectsLoading(true);
     setProjectsError('');
@@ -101,6 +133,7 @@ export function WorkspaceProvider({ children }: { children: ReactNode }) {
     setCurrentProject(null);
     setProjectsError('');
     setNewProjectOpen(false);
+    setNavCounts(emptyNavCounts);
   }, [logout]);
 
   const selectProject = useCallback((projectId: string) => {
@@ -140,7 +173,38 @@ export function WorkspaceProvider({ children }: { children: ReactNode }) {
     setProjects([]);
     setCurrentProject(null);
     setProjectsError('');
+    setNavCounts(emptyNavCounts);
   }, [hydrated, loadProjects, token]);
+
+  // Load / reload sidebar counts when auth or project changes (LWC-129).
+  useEffect(() => {
+    if (!token || !currentProject) {
+      return;
+    }
+
+    let ignore = false;
+    void getStatus()
+      .then((status) => {
+        if (ignore) return;
+        setNavCounts({
+          sources: status.sourcesCount,
+          concepts: status.conceptsCount,
+          raw: status.rawCount,
+        });
+      })
+      .catch(() => {
+        // Leave previous values; display layer derives null when no project.
+      });
+
+    return () => {
+      ignore = true;
+    };
+  }, [token, currentProject]);
+
+  // Derive displayed counts so logout / no-project never shows stale badges
+  // without a synchronous setState in the load effect (LWC-133-friendly).
+  const displayedNavCounts =
+    token && currentProject ? navCounts : emptyNavCounts;
 
   const value = useMemo<WorkspaceContextValue>(() => ({
     hydrated,
@@ -153,6 +217,8 @@ export function WorkspaceProvider({ children }: { children: ReactNode }) {
     isDemoSession,
     loginOpen: hydrated && !token,
     newProjectOpen,
+    navCounts: displayedNavCounts,
+    refreshNavCounts,
     signIn,
     signInAsDemo,
     register,
@@ -168,11 +234,13 @@ export function WorkspaceProvider({ children }: { children: ReactNode }) {
   }), [
     addProject,
     currentProject,
+    displayedNavCounts,
     hydrated,
     isDemoSession,
     newProjectOpen,
     projects,
     projectsError,
+    refreshNavCounts,
     register,
     signIn,
     signInAsDemo,

@@ -4,13 +4,12 @@ import { useEffect, useState } from 'react';
 import Link from 'next/link';
 import { usePathname } from 'next/navigation';
 import { Search, FileText, Brain, Database, Activity, Menu, X, ChevronUp, Shield } from 'lucide-react';
-import { getStatus } from '@/lib/api';
 import { useT } from '@/lib/i18n';
 import { useAuth } from '@/lib/auth';
 import { LoginModal } from './LoginModal';
 import { NewProjectModal } from './NewProjectModal';
 import { ProjectEmptyState } from './ProjectEmptyState';
-import { WorkspaceProvider, useWorkspace } from './WorkspaceProvider';
+import { WorkspaceProvider, useWorkspace, type NavCounts } from './WorkspaceProvider';
 import { Badge } from './ui/Badge';
 import { ProjectSelect } from './ui/ProjectSelect';
 import { CommandPalette, useCommandPalette } from './ui/CommandPalette';
@@ -23,24 +22,13 @@ export function Shell({ children }: { children: React.ReactNode }) {
   );
 }
 
-type NavCountKey = 'sources' | 'concepts' | 'raw';
-
-type NavCounts = {
-  sources: number | null;
-  concepts: number | null;
-  raw: number | null;
-};
+type NavCountKey = keyof NavCounts;
 
 function ShellContent({ children }: { children: React.ReactNode }) {
   const { t } = useT();
   const pathname = usePathname();
   const [demoMessage, setDemoMessage] = useState('');
   const [mobileNavOpen, setMobileNavOpen] = useState(false);
-  const [navCounts, setNavCounts] = useState<NavCounts>({
-    sources: null,
-    concepts: null,
-    raw: null,
-  });
   const { user } = useAuth();
   const { open: paletteOpen, setOpen: setPaletteOpen } = useCommandPalette();
 
@@ -52,6 +40,7 @@ function ShellContent({ children }: { children: React.ReactNode }) {
     projectsLoading,
     projectsError,
     isDemoSession,
+    navCounts,
     selectProject,
     refreshProjects,
     openNewProject,
@@ -74,32 +63,6 @@ function ShellContent({ children }: { children: React.ReactNode }) {
       ? [{ href: '/admin', label: 'Admin', icon: Shield }]
       : []),
   ];
-
-  useEffect(() => {
-    if (!token || !currentProject) {
-      setNavCounts({ sources: null, concepts: null, raw: null });
-      return;
-    }
-
-    let ignore = false;
-    getStatus()
-      .then((status) => {
-        if (ignore) return;
-        setNavCounts({
-          sources: status.sourcesCount,
-          concepts: status.conceptsCount,
-          raw: status.rawCount,
-        });
-      })
-      .catch(() => {
-        if (ignore) return;
-        setNavCounts({ sources: null, concepts: null, raw: null });
-      });
-
-    return () => {
-      ignore = true;
-    };
-  }, [token, currentProject]);
 
   useEffect(() => {
     if (!demoMessage) return;

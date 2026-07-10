@@ -80,7 +80,7 @@ function summarizeUploads(items: UploadItem[]): string {
 
 export function PipelineClient() {
   const { t } = useT();
-  const { isDemoSession } = useWorkspace();
+  const { isDemoSession, refreshNavCounts } = useWorkspace();
   const [fileLabel, setFileLabel] = useState('Choose files');
   const [uploadItems, setUploadItems] = useState<UploadItem[]>([]);
   const [scrapeUrlText, setScrapeUrlText] = useState('');
@@ -94,6 +94,7 @@ export function PipelineClient() {
   const activeUploadsRef = useRef(0);
   // Source of truth for the in-flight queue (state is a mirror for render).
   const uploadItemsRef = useRef<UploadItem[]>([]);
+  const needsCountRefreshRef = useRef(false);
 
   const addToast = useCallback((message: string, type: Toast['type']) => {
     const id = ++toastId;
@@ -142,6 +143,9 @@ export function PipelineClient() {
         void (async () => {
           try {
             const result = await uploadRawFile(next.file);
+            if (result.status === 'created') {
+              needsCountRefreshRef.current = true;
+            }
             uploadItemsRef.current = uploadItemsRef.current.map((item) =>
               item.id === next.id
                 ? { ...item, status: result.status, result, error: undefined }
@@ -161,6 +165,13 @@ export function PipelineClient() {
             setUploadItems(uploadItemsRef.current);
           } finally {
             activeUploadsRef.current = Math.max(0, activeUploadsRef.current - 1);
+            const stillBusy = uploadItemsRef.current.some(
+              (item) => item.status === 'queued' || item.status === 'uploading',
+            );
+            if (!stillBusy && needsCountRefreshRef.current) {
+              needsCountRefreshRef.current = false;
+              void refreshNavCounts();
+            }
             queueMicrotask(pump);
           }
         })();
@@ -168,7 +179,7 @@ export function PipelineClient() {
     };
 
     queueMicrotask(pump);
-  }, []);
+  }, [refreshNavCounts]);
 
   const enqueueFiles = useCallback(
     (fileList: FileList | File[]) => {
