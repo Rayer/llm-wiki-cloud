@@ -1,55 +1,46 @@
-# LWC-139 — Source page prominent raw file link
+# LWC-139 — Source page prominent raw file link (revised)
 
 ## Goal
 
-On source detail pages, show a prominent **原始檔案** link near the title that opens the originating raw file (`/raw?file=…`), without requiring users to scroll into Metadata.
+On source detail pages, show a prominent **原始檔案** link near the title that opens the originating raw file (`/raw?file=…`).
+
+## Why PR #25 was incomplete
+
+Production OLW source frontmatter uses:
+
+```yaml
+source_file: raw/some-article.md
+```
+
+**not** `sources: [...]`.
+
+PR #25 only resolved `frontmatter.sources[0]`, so the header link almost never appeared on real data. HermesPartner noted empty/missing `sources` in the API response; the underlying contract mismatch is the field name.
+
+BFF `parseFrontmatter` already returns all YAML keys (including `source_file`) via `adrg/frontmatter`. No BFF change required for the common path.
 
 ## Acceptance criteria
 
-1. **Given** a source entry with `frontmatter.sources[0]` present  
-   **When** the user opens `/sources/{slug}`  
-   **Then** a visible **原始檔案** (en: **Raw file**) link appears in the header (near title/metadata), linking to `/raw?file={filename}` where filename is `sources[0]` with optional `raw/` prefix stripped.
+1. Source with `source_file: raw/foo.md` → header **原始檔案** → `/raw?file=foo.md`
+2. Source with `sources: [raw/a.md]` → same, using first entry
+3. Source with neither, but with slug → fallback `/raw?file={slug}.md` (ticket)
+4. Concept pages → no prominent raw link
+5. Metadata `source_file` value is also a clickable raw link (same deep-link as list)
+6. Tests cover `source_file` priority and slug fallback
 
-2. **Given** a source entry with no usable `sources` list  
-   **Then** the prominent link is **hidden** (no slug guessing).
+## Resolution order
 
-3. **Given** a concept detail page  
-   **Then** the prominent raw link is **not** shown.
+`primaryRawFileName(frontmatter, { slugFallback })`:
 
-4. Existing Metadata `sources` list links (LWC-137) remain unchanged.
+1. `sources[0]` (array)
+2. `source_file` (OLW production)
+3. `source` (singular string, if present)
+4. `{slug}.md` when `slugFallback` provided
 
-5. Automated file tests cover presence of the header link path and source-only gating.
+## UI
 
-## Design
+Unchanged from PR #25: header under title, i18n `Detail.rawFile`, filename in parentheses.
 
-### Approach
+## Out of scope
 
-Frontend-only. Extend `DetailClient` header when `entryType === 'source'`.
-
-### Resolve raw filename
-
-```ts
-function primaryRawFileName(frontmatter?: Record<string, unknown>): string | null {
-  const sources = frontmatter?.sources;
-  if (!Array.isArray(sources)) return null;
-  const first = sources.find((s): s is string => typeof s === 'string' && s.trim().length > 0);
-  if (!first) return null;
-  return rawFileNameFromSource(first); // strip leading raw/
-}
-```
-
-### UI
-
-- Placement: under the title (and description if any), still inside `<header>`.
-- Style: text link with `FileText` or similar icon; emerald underline consistent with frontmatter source links.
-- Label via i18n: `Detail.rawFile` → zh-TW `原始檔案`, en `Raw file`.
-
-### Out of scope
-
-- Multiple primary chips for all sources (Metadata list already shows all)
-- Slug-based fallback when `sources` is empty
-- BFF changes
-
-## Complexity
-
-~0.5h frontend.
+- Changing OLW to emit `sources[]`
+- Guaranteeing slug fallback matches GCS object when punctuation differs from `source_file`

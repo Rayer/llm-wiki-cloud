@@ -62,9 +62,11 @@ export function DetailClient({
   if (error) return <ErrorState message={error} />;
   if (!entry) return <ErrorState message="Entry not found." />;
 
-  // LWC-139: prominent raw link only on source pages with frontmatter.sources[0]
+  // LWC-139: prominent raw link on source pages (source_file / sources[0] / slug fallback)
   const primaryRawFile =
-    entryType === 'source' ? primaryRawFileName(entry.frontmatter) : null;
+    entryType === 'source'
+      ? primaryRawFileName(entry.frontmatter, { slugFallback: entry.slug })
+      : null;
 
   return (
     <div className="space-y-8">
@@ -153,6 +155,19 @@ function renderFrontmatterValue(key: string, value: unknown) {
         </ul>
       );
     }
+  }
+
+  // OLW sources use source_file: raw/….md — link like the sources list (LWC-139).
+  if ((key === 'source_file' || key === 'source') && typeof value === 'string' && value.trim()) {
+    const fileName = rawFileNameFromSource(value);
+    return (
+      <Link
+        href={`/raw?file=${encodeURIComponent(fileName)}`}
+        className="text-emerald-300 underline hover:text-emerald-200"
+      >
+        {value}
+      </Link>
+    );
   }
 
   if (typeof value === 'string' && /^https?:\/\//.test(value)) {
