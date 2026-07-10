@@ -107,24 +107,56 @@ function Frontmatter({ data }: { data: Record<string, unknown> }) {
           <div key={key}>
             <dt className="text-xs uppercase tracking-wider text-zinc-600">{key}</dt>
             <dd className="mt-1 break-words text-sm text-zinc-200">
-              {typeof value === 'string' && /^https?:\/\//.test(value) ? (
-                <a
-                  href={value}
-                  target="_blank"
-                  rel="noreferrer"
-                  className="text-emerald-300 underline hover:text-emerald-200"
-                >
-                  {value}
-                </a>
-              ) : typeof value === 'string' || typeof value === 'number' ? (
-                String(value)
-              ) : (
-                JSON.stringify(value)
-              )}
+              {renderFrontmatterValue(key, value)}
             </dd>
           </div>
         ))}
       </dl>
     </Surface>
   );
+}
+
+function renderFrontmatterValue(key: string, value: unknown) {
+  if (key === 'sources' && Array.isArray(value)) {
+    const sources = value.filter((item): item is string => typeof item === 'string' && item.trim().length > 0);
+    if (sources.length > 0) {
+      return (
+        <ul className="space-y-1">
+          {sources.map((source) => (
+            <li key={source}>
+              <Link
+                href={`/raw?file=${encodeURIComponent(rawFileNameFromSource(source))}`}
+                className="text-emerald-300 underline hover:text-emerald-200"
+              >
+                {source}
+              </Link>
+            </li>
+          ))}
+        </ul>
+      );
+    }
+  }
+
+  if (typeof value === 'string' && /^https?:\/\//.test(value)) {
+    return (
+      <a
+        href={value}
+        target="_blank"
+        rel="noreferrer"
+        className="text-emerald-300 underline hover:text-emerald-200"
+      >
+        {value}
+      </a>
+    );
+  }
+
+  if (typeof value === 'string' || typeof value === 'number') {
+    return String(value);
+  }
+
+  return JSON.stringify(value);
+}
+
+function rawFileNameFromSource(source: string) {
+  return source.replace(/^raw\//, '');
 }

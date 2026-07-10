@@ -31,7 +31,7 @@ export function resolveWikilinksInMarkdown(md: string): string {
     }
 
     out.push(
-      line.replace(/\[\[([^\]]+)\]\]/g, (_, name: string) => {
+      line.replace(/\[\[([^\]]+?)\]\]/g, (_, name: string) => {
         const parts = name.split('|');
         const slug = parts[0].trim();
         const display = (parts[1] || parts[0]).trim();

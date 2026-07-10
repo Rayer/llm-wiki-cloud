@@ -1,7 +1,8 @@
 'use client';
 
-import { useEffect, useMemo, useState } from 'react';
+import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import { Download, X } from 'lucide-react';
+import { useSearchParams } from 'next/navigation';
 import { getRawFilePreview, getRawFiles, type RawFile } from '@/lib/api';
 import { Badge } from './ui/Badge';
 import { MarkdownView } from './MarkdownView';
@@ -55,15 +56,18 @@ function sanitizeRawHtml(html: string) {
 
 export function RawClient() {
   const { currentProject } = useWorkspace();
+  const searchParams = useSearchParams();
   const [files, setFiles] = useState<RawFile[]>([]);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState('');
   const [preview, setPreview] = useState<RawPreview | null>(null);
   const [previewLoading, setPreviewLoading] = useState(false);
   const [previewError, setPreviewError] = useState('');
+  const openedQueryFileRef = useRef('');
 
   useEffect(() => {
     let cancelled = false;
+    openedQueryFileRef.current = '';
 
     getRawFiles()
       .then((data) => {
@@ -82,21 +86,14 @@ export function RawClient() {
     };
   }, [currentProject]);
 
-  useEffect(() => {
-    if (!preview) return;
-    const handler = (event: KeyboardEvent) => {
-      if (event.key === 'Escape') setPreview(null);
-    };
-    window.addEventListener('keydown', handler);
-    return () => window.removeEventListener('keydown', handler);
-  }, [preview]);
-
   const sortedFiles = useMemo(
     () => [...files].sort((a, b) => a.name.localeCompare(b.name)),
     [files],
   );
 
-  async function openRawPreview(file: RawFile) {
+  const highlightedFile = searchParams.get('file') ?? '';
+
+  const openRawPreview = useCallback(async (file: RawFile) => {
     const kind = rawPreviewKind(file.name);
     setPreview({ file, kind, content: '' });
     setPreviewError('');
@@ -117,7 +114,31 @@ export function RawClient() {
     } finally {
       setPreviewLoading(false);
     }
-  }
+  }, []);
+
+  useEffect(() => {
+    if (!highlightedFile || loading || error || openedQueryFileRef.current === highlightedFile) {
+      return;
+    }
+
+    const requestedFile = files.find((file) => file.name === highlightedFile);
+    if (!requestedFile) return;
+
+    openedQueryFileRef.current = highlightedFile;
+    const timer = window.setTimeout(() => {
+      void openRawPreview(requestedFile);
+    }, 0);
+    return () => window.clearTimeout(timer);
+  }, [error, files, highlightedFile, loading, openRawPreview]);
+
+  useEffect(() => {
+    if (!preview) return;
+    const handler = (event: KeyboardEvent) => {
+      if (event.key === 'Escape') setPreview(null);
+    };
+    window.addEventListener('keydown', handler);
+    return () => window.removeEventListener('keydown', handler);
+  }, [preview]);
 
   async function downloadRawFile() {
     if (!preview) return;
@@ -171,8 +192,12 @@ export function RawClient() {
               <tbody className="divide-y divide-white/8">
                 {sortedFiles.map((file) => {
                   const kind = rawPreviewKind(file.name);
+                  const highlighted = file.name === highlightedFile;
                   return (
-                    <tr key={file.name} className="transition hover:bg-white/[0.03]">
+                    <tr
+                      key={file.name}
+                      className={`transition hover:bg-white/[0.03] ${highlighted ? 'bg-emerald-500/10' : ''}`}
+                    >
                       <td className="max-w-xs px-4 py-3 font-medium">
                         <button
                           type="button"
