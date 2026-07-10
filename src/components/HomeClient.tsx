@@ -227,9 +227,9 @@ export function HomeClient() {
             </div>
           </Surface>
           <div className="mt-3 flex flex-wrap items-center justify-center gap-2">
-            <StatPill label="Sources" value={status?.sourcesCount} error={statusError} />
-            <StatPill label="Concepts" value={status?.conceptsCount} error={statusError} />
-            <StatPill label="Raw" value={status?.rawCount} error={statusError} />
+            <StatPill label={t('Shell.sources')} value={status?.sourcesCount} error={statusError} />
+            <StatPill label={t('Shell.concepts')} value={status?.conceptsCount} error={statusError} />
+            <StatPill label={t('Shell.raw')} value={status?.rawCount} error={statusError} />
             <Badge variant="muted" className="hidden sm:inline-flex">⌘K</Badge>
           </div>
         </form>
@@ -252,14 +252,16 @@ export function HomeClient() {
                   style={{ animationDelay: `${index * 50}ms` }}
                 >
                   <div className="flex flex-wrap items-center gap-2">
-                    <Badge variant="concept">Concept</Badge>
+                    <Badge variant="concept">{t('Entry.singular')}</Badge>
                     <h3 className="text-base font-semibold text-white group-hover:text-emerald-50">
                       {concept.title}
                     </h3>
                   </div>
-                  <p className="mt-3 line-clamp-3 text-sm leading-6 text-zinc-400">
-                    {concept.description ?? 'Open this concept to start exploring the knowledge base.'}
-                  </p>
+                  {concept.description ? (
+                    <p className="mt-3 line-clamp-3 text-sm leading-6 text-zinc-400">
+                      {concept.description}
+                    </p>
+                  ) : null}
                 </Surface>
               </Link>
             ))}
@@ -283,7 +285,9 @@ export function HomeClient() {
               <div className="flex flex-wrap items-center gap-2">
                 <h3 className="text-sm font-semibold text-emerald-200">{t('Demo.answer')}</h3>
                 {citations.length > 0 ? (
-                  <Badge variant="accent">{citations.length} sources</Badge>
+                  <Badge variant="accent">
+                    {t('Demo.sourcesCount', { count: citations.length })}
+                  </Badge>
                 ) : null}
               </div>
               <div className="mt-3 text-base leading-7 text-zinc-200
@@ -300,7 +304,7 @@ export function HomeClient() {
           </article>
         ) : null}
         {!loading && !error && searched && results.length === 0 ? (
-          <EmptyState message="No results matched that query." />
+          <EmptyState message={t('Demo.noResults')} />
         ) : null}
         <div className="grid gap-4 md:grid-cols-2">
           {results.map((result, index) => {
@@ -325,7 +329,9 @@ export function HomeClient() {
               >
                 <div className="flex items-start justify-between gap-3">
                   <div className="flex flex-wrap items-center gap-2">
-                    <Badge variant={type}>{type === 'source' ? 'Source' : 'Concept'}</Badge>
+                    <Badge variant={type}>
+                      {type === 'source' ? t('Source.singular') : t('Entry.singular')}
+                    </Badge>
                     <h3 className="text-lg font-semibold text-white">{result.title}</h3>
                   </div>
                   {result.score !== undefined ? (
@@ -372,7 +378,7 @@ export function HomeClient() {
             ) : (
               <>
                 <Badge variant={modal.type === 'concept' ? 'concept' : 'source'}>
-                  {modal.type === 'concept' ? 'Concept' : 'Source'}
+                  {modal.type === 'concept' ? t('Entry.singular') : t('Source.singular')}
                 </Badge>
                 <h2 className="text-2xl font-semibold text-white">{modal.title}</h2>
                 <div className="mt-4 border-t border-white/10 pt-4">
@@ -384,7 +390,7 @@ export function HomeClient() {
                     className="text-sm font-medium text-emerald-300 hover:text-emerald-200"
                     onClick={() => setModal(null)}
                   >
-                    Open full page →
+                    {t('Detail.openFullPage')}
                   </Link>
                 </div>
               </>

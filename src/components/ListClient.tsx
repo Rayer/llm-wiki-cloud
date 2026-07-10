@@ -79,7 +79,7 @@ export function ListClient({
   }, [entries, search]);
 
   const emptyMessage = search.trim()
-    ? `No ${title.toLowerCase()} match "${search.trim()}".`
+    ? t('List.noSearchMatches', { title: title.toLowerCase(), query: search.trim() })
     : entryType === 'concept'
       ? t('List.noConcepts')
       : entryType === 'source'
@@ -98,7 +98,7 @@ export function ListClient({
           type="text"
           value={search}
           onChange={(e) => setSearch(e.target.value)}
-          placeholder={`Search ${title.toLowerCase()}...`}
+          placeholder={t('List.searchPlaceholder', { title: title.toLowerCase() })}
           className="flex-1 rounded-[var(--radius-lg)] border border-white/10 bg-zinc-900/50 px-4 py-2.5 text-sm text-white outline-none transition placeholder:text-zinc-600 focus:border-emerald-400/50 focus:ring-1 focus:ring-emerald-400/20"
         />
         {search.trim() ? (

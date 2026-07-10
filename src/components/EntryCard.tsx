@@ -1,14 +1,17 @@
 import Link from 'next/link';
 import type { WikiEntry } from '@/lib/api';
+import { useT } from '@/lib/i18n';
 import { Badge } from './ui/Badge';
 import { Surface } from './ui/Surface';
 
 function StatusBadge({ status }: { status?: string }) {
+  const { t } = useT();
+
   if (status === 'published') {
-    return <Badge variant="published">Published</Badge>;
+    return <Badge variant="published">{t('Entry.published')}</Badge>;
   }
   if (status === 'draft') {
-    return <Badge variant="draft">Draft</Badge>;
+    return <Badge variant="draft">{t('Entry.draft')}</Badge>;
   }
   return null;
 }
@@ -24,6 +27,7 @@ export function EntryCard({
   entryType?: 'source' | 'concept';
   index?: number;
 }) {
+  const { t } = useT();
   const typeBorderClass = entryType === 'source'
     ? 'border-l-[3px] border-l-blue-400'
     : entryType === 'concept'
@@ -39,7 +43,9 @@ export function EntryCard({
       >
         <div className="flex flex-wrap items-center gap-2">
           {entryType ? (
-            <Badge variant={entryType}>{entryType === 'source' ? 'Source' : 'Concept'}</Badge>
+            <Badge variant={entryType}>
+              {entryType === 'source' ? t('Source.singular') : t('Entry.singular')}
+            </Badge>
           ) : null}
           <h2 className="text-lg font-semibold text-white group-hover:text-emerald-50">
             {entry.title}

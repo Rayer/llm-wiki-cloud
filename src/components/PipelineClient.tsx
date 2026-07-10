@@ -349,42 +349,55 @@ export function PipelineClient() {
     (item) => item.status === 'queued' || item.status === 'uploading',
   );
 
-  const executionRunning =
-    pipelineStatus?.last_execution?.status === 'RUNNING' ||
-    pipelineStatus?.quota?.already_running === true;
+  const lastExecutionStatus = pipelineStatus?.last_execution?.status;
+  const executionRunning = lastExecutionStatus === 'RUNNING';
+  const staleAlreadyRunning =
+    pipelineStatus?.quota?.already_running === true && lastExecutionStatus !== 'RUNNING';
   const hasProject = Boolean(currentProject);
   const quota = pipelineStatus?.quota;
+  const effectiveQuota = useMemo(
+    () => (
+      staleAlreadyRunning && quota
+        ? { ...quota, allowed: true, already_running: false }
+        : quota
+    ),
+    [quota, staleAlreadyRunning],
+  );
   const blocked = isRunBlocked({
     isDemoSession,
     loading: loading === 'pipeline',
     hasProject,
     executionRunning,
-    quota,
+    quota: effectiveQuota,
   });
   const helper = blockReasonMessage({
     isDemoSession,
     hasProject,
     executionRunning,
-    quota,
+    quota: effectiveQuota,
     demoMessage: t('Demo.restricted'),
     noProjectMessage: t('Pipeline.noProject'),
   });
-  const quotaLine = formatQuotaLine(quota);
+  const quotaLine = formatQuotaLine(effectiveQuota, new Date(), {
+    quotaLine: t('Pipeline.quotaLine'),
+    quotaNotEnforced: t('Pipeline.quotaNotEnforced'),
+    cooldownClear: t('Pipeline.cooldownClear'),
+  });
   const prereqRows = useMemo(
     () => [
       { ok: !isDemoSession, label: t('Pipeline.prereqDemo') },
-      { ok: isUnderDailyLimit(quota), label: t('Pipeline.prereqDaily') },
-      { ok: isCooldownClear(quota), label: t('Pipeline.prereqCooldown') },
+      { ok: isUnderDailyLimit(effectiveQuota), label: t('Pipeline.prereqDaily') },
+      { ok: isCooldownClear(effectiveQuota), label: t('Pipeline.prereqCooldown') },
       { ok: !executionRunning, label: t('Pipeline.prereqRunning') },
-      { ok: hasNewRaw(quota), label: t('Pipeline.prereqRaw') },
+      { ok: hasNewRaw(effectiveQuota), label: t('Pipeline.prereqRaw') },
     ],
-    [executionRunning, isDemoSession, quota, t],
+    [effectiveQuota, executionRunning, isDemoSession, t],
   );
 
   return (
     <>
       <Surface variant="glass" as="section" className="p-5">
-        <h2 className="text-lg font-semibold text-white">Add Content</h2>
+        <h2 className="text-lg font-semibold text-white">{t('Pipeline.addContent')}</h2>
         <p className="mt-1 text-sm text-zinc-400">
           Upload markdown files or scrape URLs to feed the wiki pipeline.
         </p>
@@ -393,7 +406,7 @@ export function PipelineClient() {
           {/* File Upload */}
           <div className="rounded-[var(--radius-md)] border border-white/10 bg-zinc-950/50 p-4">
             <h3 className="flex items-center gap-2 text-sm font-semibold text-zinc-300">
-              <FileUp className="size-4 text-emerald-400" /> Upload Files
+              <FileUp className="size-4 text-emerald-400" /> {t('Pipeline.uploadFiles')}
             </h3>
             <p className="mt-1 text-xs text-zinc-500">
               Upload one or more files to the raw/ directory (max 3 concurrent).
@@ -484,7 +497,7 @@ export function PipelineClient() {
           {/* URL Scrape */}
           <div className="rounded-[var(--radius-md)] border border-white/10 bg-zinc-950/50 p-4">
             <h3 className="flex items-center gap-2 text-sm font-semibold text-zinc-300">
-              <Link2 className="size-4 text-blue-400" /> Scrape URL
+              <Link2 className="size-4 text-blue-400" /> {t('Pipeline.scrapeUrl')}
             </h3>
             <p className="mt-1 text-xs text-zinc-500">Fetch a web page and save as raw content.</p>
             <form onSubmit={handleScrape} className="mt-3 flex gap-2">
@@ -500,7 +513,7 @@ export function PipelineClient() {
                 disabled={loading === 'scrape'}
                 className="inline-flex items-center justify-center rounded-md bg-emerald-600 px-4 py-2 text-sm font-semibold text-white transition hover:bg-emerald-500 disabled:opacity-50"
               >
-                {loading === 'scrape' ? <Loader2 className="size-4 animate-spin" /> : 'Scrape'}
+                {loading === 'scrape' ? <Loader2 className="size-4 animate-spin" /> : t('Pipeline.scrape')}
               </button>
             </form>
           </div>
@@ -511,7 +524,7 @@ export function PipelineClient() {
           <div className="flex items-center justify-between gap-4">
             <div>
               <h3 className="flex items-center gap-2 text-sm font-semibold text-emerald-300">
-                <Cog className="size-4" /> Pipeline
+                <Cog className="size-4" /> {t('Pipeline.pipeline')}
               </h3>
               <p className="mt-1 text-xs text-zinc-400">
                 Trigger the OLW pipeline to ingest, compile, and publish.
@@ -525,7 +538,7 @@ export function PipelineClient() {
               aria-disabled={blocked}
               className="rounded-md bg-white px-4 py-2 text-sm font-semibold text-black transition hover:bg-emerald-200 disabled:cursor-not-allowed disabled:opacity-50"
             >
-              {loading === 'pipeline' ? 'Running...' : 'Run Pipeline'}
+              {loading === 'pipeline' ? t('Pipeline.running') : t('Pipeline.runPipeline')}
             </button>
           </div>
           <p className="mt-2 text-xs text-zinc-500" data-testid="pipeline-quota-line">
@@ -570,7 +583,7 @@ export function PipelineClient() {
         {/* Pipeline Info */}
         <div className="mt-3 rounded-[var(--radius-md)] border border-white/5 bg-zinc-950/40 p-3">
           <p className="flex flex-wrap items-center gap-2 text-xs text-zinc-500">
-            <span>The pipeline runs:</span>
+            <span>{t('Pipeline.pipelineDesc')}</span>
             {pipelineStatusText ? (
               <Badge variant="accent">{pipelineStatusText}</Badge>
             ) : (

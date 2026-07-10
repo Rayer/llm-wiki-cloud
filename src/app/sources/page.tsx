@@ -2,12 +2,15 @@
 
 import { ListClient } from "@/components/ListClient";
 import { getSources } from "@/lib/api";
+import { useT } from "@/lib/i18n";
 
 export default function SourcesPage() {
+  const { t } = useT();
+
   return (
     <ListClient
-      title="Sources"
-      description="Original wiki source documents available from the LLM Wiki BFF."
+      title={t('List.sourcesTitle')}
+      description={t('List.sourcesDescription')}
       load={getSources}
       basePath="/sources"
       entryType="source"

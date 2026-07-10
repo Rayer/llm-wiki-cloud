@@ -2,12 +2,15 @@
 
 import { ListClient } from "@/components/ListClient";
 import { getConcepts } from "@/lib/api";
+import { useT } from "@/lib/i18n";
 
 export default function ConceptsPage() {
+  const { t } = useT();
+
   return (
     <ListClient
-      title="Concepts"
-      description="Distilled concept pages generated from the LLM Wiki corpus."
+      title={t('List.entriesTitle')}
+      description={t('List.entriesDescription')}
       load={getConcepts}
       basePath="/concepts"
       entryType="concept"

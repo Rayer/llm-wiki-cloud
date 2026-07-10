@@ -1,15 +1,34 @@
 import type { PipelineQuota } from './api';
 
-export function formatQuotaLine(q: PipelineQuota | null | undefined, now = new Date()): string {
+type QuotaLineMessages = {
+  quotaLine: string;
+  quotaNotEnforced: string;
+  cooldownClear: string;
+};
+
+const defaultQuotaLineMessages: QuotaLineMessages = {
+  quotaLine: 'Runs today: {runs}/{limit} · Cooldown: {cooldown} · New files: {newFiles}',
+  quotaNotEnforced: 'Quota not enforced',
+  cooldownClear: 'clear',
+};
+
+export function formatQuotaLine(
+  q: PipelineQuota | null | undefined,
+  now = new Date(),
+  messages: QuotaLineMessages = defaultQuotaLineMessages,
+): string {
   if (!q) return '';
-  if (!q.enforced) return 'Quota not enforced';
-  const cooldown = formatCooldownRemaining(q.cooldown_until, now);
-  const parts = [
-    `Runs today: ${q.runs_today}/${q.daily_limit}`,
-    cooldown ? `Cooldown: ${cooldown}` : 'Cooldown: clear',
-    `New files: ${q.new_raw_files}`,
-  ];
-  return parts.join(' · ');
+  if (!q.enforced) return messages.quotaNotEnforced;
+  const cooldown = formatCooldownRemaining(q.cooldown_until, now) ?? messages.cooldownClear;
+  return messages.quotaLine.replace(/\{(\w+)\}/g, (match, name: string) => {
+    const params: Record<string, string | number> = {
+      runs: q.runs_today,
+      limit: q.daily_limit,
+      cooldown,
+      newFiles: q.new_raw_files,
+    };
+    return params[name] === undefined ? match : String(params[name]);
+  });
 }
 
 export function formatCooldownRemaining(
@@ -39,7 +58,13 @@ export function isRunBlocked(opts: {
   if (opts.loading) return true;
   if (!opts.hasProject) return true;
   if (opts.executionRunning) return true;
-  if (opts.quota && opts.quota.enforced && opts.quota.allowed === false) return true;
+  if (opts.quota?.enforced) {
+    if (opts.quota.runs_today >= opts.quota.daily_limit) return true;
+    if (formatCooldownRemaining(opts.quota.cooldown_until)) return true;
+    if (opts.quota.new_raw_files < opts.quota.min_new_raw) return true;
+    const staleAlreadyRunning = opts.quota.already_running === true && !opts.executionRunning;
+    if (opts.quota.allowed === false && !staleAlreadyRunning) return true;
+  }
   return false;
 }
 
@@ -54,6 +79,7 @@ export function blockReasonMessage(opts: {
   if (opts.isDemoSession) return opts.demoMessage;
   if (!opts.hasProject) return opts.noProjectMessage;
   if (opts.executionRunning) return opts.quota?.message || 'Pipeline is running';
+  if (opts.quota?.already_running === true && opts.quota.allowed === false) return '';
   if (opts.quota?.message) return opts.quota.message;
   return '';
 }

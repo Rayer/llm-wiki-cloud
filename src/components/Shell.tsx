@@ -146,7 +146,7 @@ function ShellContent({ children }: { children: React.ReactNode }) {
             <div className="text-sm font-semibold tracking-tight text-white">
               {t('Shell.brand')}
             </div>
-            <div className="mt-0.5 text-xs text-zinc-500">Knowledge workspace</div>
+            <div className="mt-0.5 text-xs text-zinc-500">{t('Shell.subtitle')}</div>
           </Link>
 
           <div className="flex-1 overflow-y-auto">
@@ -290,6 +290,10 @@ function ShellContent({ children }: { children: React.ReactNode }) {
             navigate: t('Command.navigate'),
             projects: t('Shell.projects'),
             search: t('Shell.search'),
+            sources: t('Shell.sources'),
+            concepts: t('Shell.concepts'),
+            raw: t('Shell.raw'),
+            status: t('Shell.status'),
           }}
         />
       ) : null}

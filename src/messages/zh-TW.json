@@ -33,7 +33,18 @@
     "switchToLogin": "已有帳號？登入"
   },
   "Detail": {
+    "backTo": "返回 {label}",
     "rawFile": "原始檔案"
+  },
+  "Entry": {
+    "singular": "條目",
+    "plural": "條目",
+    "draft": "草稿",
+    "published": "已發布"
+  },
+  "Source": {
+    "singular": "來源",
+    "plural": "來源"
   },
   "Shell": {
     "brand": "LLM Wiki Cloud",
@@ -42,8 +53,8 @@
     "closeNavigation": "關閉導覽",
     "search": "搜尋",
     "sources": "來源",
-    "concepts": "概念",
-    "raw": "Raw",
+    "concepts": "條目",
+    "raw": "原文",
     "status": "狀態",
     "projects": "專案",
     "loading": "載入中…",
@@ -64,7 +75,7 @@
     "heading": "你的過往知識，嵌入每一段對話",
     "answer": "回答",
     "results": "搜尋結果",
-    "subtitle": "Browse source documents, distilled concepts, and pipeline state from the LLM Wiki backend.",
+    "subtitle": "瀏覽來源文件、萃取後的條目，以及 LLM Wiki 後端的 Pipeline 狀態。",
     "byline": "Inspired by",
     "karpathy": "Andrej Karpathy's LLM Wiki concept",
     "remix": ", remixed with LLM superpowers.",
@@ -72,27 +83,40 @@
     "wiki": "Wiki",
     "full": "完整",
     "search": "搜尋",
-    "latestConcepts": "最新概念",
-    "addContent": "Add Content",
-    "uploadFile": "Upload File",
-    "upload": "Upload",
-    "scrapeUrl": "Scrape URL",
-    "scrape": "Scrape",
+    "latestConcepts": "最新條目",
+    "addContent": "新增內容",
+    "uploadFile": "上傳檔案",
+    "upload": "上傳",
+    "scrapeUrl": "擷取 URL",
+    "scrape": "擷取",
     "pipeline": "Pipeline",
-    "runPipeline": "Run Pipeline",
-    "pipelineDesc": "The pipeline runs:",
+    "runPipeline": "執行 Pipeline",
+    "pipelineDesc": "Pipeline 會執行：",
     "restricted": "Demo 模式不提供此功能"
   },
   "List": {
-    "noConcepts": "尚無概念。請先執行 pipeline。",
-    "noSources": "尚無來源。請先上傳內容並執行 pipeline。",
-    "noEntries": "尚無項目。請先新增內容並執行 pipeline。"
+    "entriesTitle": "條目",
+    "entriesDescription": "從來源內容萃取出的知識條目。",
+    "sourcesTitle": "來源",
+    "sourcesDescription": "已匯入並可追溯的來源文件。",
+    "searchPlaceholder": "搜尋 {title}…",
+    "noSearchMatches": "找不到符合「{query}」的 {title}。",
+    "noConcepts": "尚無條目。請先執行 Pipeline。",
+    "noSources": "尚無來源。請先上傳內容並執行 Pipeline。",
+    "noEntries": "尚無條目。請先新增內容並執行 Pipeline。"
   },
   "Status": {
     "title": "Pipeline Status",
     "noStatus": "No pipeline status available."
   },
   "Pipeline": {
+    "addContent": "新增內容",
+    "uploadFiles": "上傳檔案",
+    "scrapeUrl": "擷取 URL",
+    "scrape": "擷取",
+    "pipeline": "Pipeline",
+    "runPipeline": "執行 Pipeline",
+    "pipelineDesc": "上傳或擷取內容後，執行 Pipeline 產生來源與條目。",
     "quotaLine": "今日執行：{runs}/{limit} · 冷卻：{cooldown} · 新檔案：{newFiles}",
     "quotaNotEnforced": "未啟用配額限制",
     "cooldownClear": "無",
@@ -103,7 +127,30 @@
     "prereqDaily": "未達每日上限",
     "prereqCooldown": "冷卻已結束",
     "prereqRunning": "目前沒有執行中的 pipeline",
-    "prereqRaw": "有新增或變更的 raw 檔案"
+    "prereqRaw": "有新增或變更的原文檔案"
+  },
+  "Raw": {
+    "title": "原文檔案",
+    "description": "等待 Pipeline 處理或已處理的專案來源檔案。",
+    "loading": "正在載入原文檔案",
+    "empty": "尚無原文檔案。請先上傳內容再執行 Pipeline。",
+    "name": "名稱",
+    "size": "大小",
+    "updated": "更新時間",
+    "sha256": "SHA256",
+    "ingested": "已匯入",
+    "ingestedYes": "已匯入",
+    "ingestedNo": "待處理",
+    "download": "下載",
+    "downloadAria": "下載 {file}",
+    "previewAria": "預覽 {file}",
+    "previewUnavailable": "此格式無法預覽。",
+    "previewTitle": "原文檔案預覽",
+    "loadingPreview": "正在載入預覽",
+    "notPreviewable": "此檔案格式無法內嵌預覽。",
+    "close": "關閉",
+    "loadPreviewFailed": "無法載入原文預覽",
+    "downloadFailed": "無法下載原文檔案"
   },
   "ComingSoon": {
     "title": "Coming Soon"

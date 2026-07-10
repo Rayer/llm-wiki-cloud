@@ -75,18 +75,20 @@ export function DetailClient({
         className="inline-flex items-center gap-1.5 text-sm font-medium text-zinc-400 transition hover:text-emerald-300"
       >
         <ChevronLeft className="size-4" />
-        Back to {label}
+        {t('Detail.backTo', { label })}
       </Link>
 
       <header className="border-b border-white/10 pb-6">
         <div className="flex flex-wrap items-center gap-2">
           {entryType ? (
-            <Badge variant={entryType}>{entryType === 'source' ? 'Source' : 'Concept'}</Badge>
+            <Badge variant={entryType}>
+              {entryType === 'source' ? t('Source.singular') : t('Entry.singular')}
+            </Badge>
           ) : (
             <span className="text-xs font-medium uppercase tracking-wider text-zinc-500">{label}</span>
           )}
-          {entry.status === 'draft' ? <Badge variant="draft">Draft</Badge> : null}
-          {entry.status === 'published' ? <Badge variant="published">Published</Badge> : null}
+          {entry.status === 'draft' ? <Badge variant="draft">{t('Entry.draft')}</Badge> : null}
+          {entry.status === 'published' ? <Badge variant="published">{t('Entry.published')}</Badge> : null}
         </div>
         <h1 className="mt-3 text-3xl font-semibold tracking-tight text-white sm:text-4xl">
           {entry.title}
@@ -189,5 +191,4 @@ function renderFrontmatterValue(key: string, value: unknown) {
 
   return JSON.stringify(value);
 }
-
 

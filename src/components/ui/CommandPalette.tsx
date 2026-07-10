@@ -37,6 +37,10 @@ export function CommandPalette({
     navigate: string;
     projects: string;
     search: string;
+    sources: string;
+    concepts: string;
+    raw: string;
+    status: string;
   };
 }) {
   const router = useRouter();
@@ -67,7 +71,7 @@ export function CommandPalette({
       },
       {
         id: 'nav-sources',
-        label: 'Sources',
+        label: labels.sources,
         group: labels.navigate,
         icon: <FileText className="size-4" />,
         action: () => router.push('/sources'),
@@ -75,7 +79,7 @@ export function CommandPalette({
       },
       {
         id: 'nav-concepts',
-        label: 'Concepts',
+        label: labels.concepts,
         group: labels.navigate,
         icon: <Brain className="size-4" />,
         action: () => router.push('/concepts'),
@@ -83,7 +87,7 @@ export function CommandPalette({
       },
       {
         id: 'nav-status',
-        label: 'Status',
+        label: labels.status,
         group: labels.navigate,
         icon: <Activity className="size-4" />,
         action: () => router.push('/status'),

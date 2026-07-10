@@ -33,7 +33,18 @@
     "switchToLogin": "Already have an account? Sign in"
   },
   "Detail": {
+    "backTo": "Back to {label}",
     "rawFile": "Raw file"
+  },
+  "Entry": {
+    "singular": "Entry",
+    "plural": "Entries",
+    "draft": "Draft",
+    "published": "Published"
+  },
+  "Source": {
+    "singular": "Source",
+    "plural": "Sources"
   },
   "Shell": {
     "brand": "LLM Wiki Cloud",
@@ -42,7 +53,7 @@
     "closeNavigation": "Close navigation",
     "search": "Search",
     "sources": "Sources",
-    "concepts": "Concepts",
+    "concepts": "Entries",
     "raw": "Raw",
     "status": "Status",
     "projects": "Projects",
@@ -64,7 +75,7 @@
     "heading": "Your past knowledge, woven into every conversation",
     "answer": "Answer",
     "results": "Search results",
-    "subtitle": "Browse source documents, distilled concepts, and pipeline state from the LLM Wiki backend.",
+    "subtitle": "Browse source documents, distilled entries, and pipeline state from the LLM Wiki backend.",
     "byline": "Inspired by",
     "karpathy": "Andrej Karpathy's LLM Wiki concept",
     "remix": ", remixed with LLM superpowers.",
@@ -72,7 +83,7 @@
     "wiki": "Wiki",
     "full": "Full",
     "search": "Search",
-    "latestConcepts": "Latest concepts",
+    "latestConcepts": "Latest entries",
     "addContent": "Add Content",
     "uploadFile": "Upload File",
     "upload": "Upload",
@@ -84,7 +95,13 @@
     "restricted": "This feature is not available in demo mode"
   },
   "List": {
-    "noConcepts": "No concepts yet. Run the pipeline first.",
+    "entriesTitle": "Entries",
+    "entriesDescription": "Knowledge entries distilled from source content.",
+    "sourcesTitle": "Sources",
+    "sourcesDescription": "Imported source documents available for traceability.",
+    "searchPlaceholder": "Search {title}…",
+    "noSearchMatches": "No {title} matching “{query}”.",
+    "noConcepts": "No entries yet. Run the pipeline first.",
     "noSources": "No sources yet. Upload content and run the pipeline first.",
     "noEntries": "No entries yet. Add content and run the pipeline first."
   },
@@ -93,6 +110,13 @@
     "noStatus": "No pipeline status available."
   },
   "Pipeline": {
+    "addContent": "Add Content",
+    "uploadFiles": "Upload Files",
+    "scrapeUrl": "Scrape URL",
+    "scrape": "Scrape",
+    "pipeline": "Pipeline",
+    "runPipeline": "Run Pipeline",
+    "pipelineDesc": "Upload or scrape content, then run the pipeline to generate sources and entries.",
     "quotaLine": "Runs today: {runs}/{limit} · Cooldown: {cooldown} · New files: {newFiles}",
     "quotaNotEnforced": "Quota not enforced",
     "cooldownClear": "clear",
@@ -104,6 +128,29 @@
     "prereqCooldown": "Cooldown clear",
     "prereqRunning": "No pipeline running",
     "prereqRaw": "New or modified raw files"
+  },
+  "Raw": {
+    "title": "Raw files",
+    "description": "Project source files waiting for or already processed by the pipeline.",
+    "loading": "Loading raw files",
+    "empty": "No raw files yet. Upload content before running the pipeline.",
+    "name": "Name",
+    "size": "Size",
+    "updated": "Updated",
+    "sha256": "SHA256",
+    "ingested": "Ingested",
+    "ingestedYes": "Ingested",
+    "ingestedNo": "Pending",
+    "download": "Download",
+    "downloadAria": "Download {file}",
+    "previewAria": "Preview {file}",
+    "previewUnavailable": "Preview unavailable for this format.",
+    "previewTitle": "Raw file preview",
+    "loadingPreview": "Loading preview",
+    "notPreviewable": "This file format is not previewable inline.",
+    "close": "Close",
+    "loadPreviewFailed": "Failed to load raw preview",
+    "downloadFailed": "Failed to download raw file"
   },
   "ComingSoon": {
     "title": "Coming Soon"

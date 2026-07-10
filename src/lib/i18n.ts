@@ -5,6 +5,7 @@ import zhTW from '@/messages/zh-TW.json';
 import en from '@/messages/en.json';
 
 type Locale = 'zh-TW' | 'en';
+type TranslationParams = Record<string, string | number>;
 
 const defaultLocale: Locale = 'zh-TW';
 const localeStorageKey = 'locale';
@@ -33,11 +34,15 @@ export function useT() {
     window.dispatchEvent(new Event(localeChangeEvent));
   };
 
-  const t = (key: string): string => {
+  const t = (key: string, params?: TranslationParams): string => {
     const parts = key.split('.');
     let obj: Record<string, unknown> = locale === 'zh-TW' ? zhTW : en;
     for (const part of parts) obj = (obj?.[part] ?? {}) as Record<string, unknown>;
-    return typeof obj === 'string' ? obj : key;
+    if (typeof obj !== 'string') return key;
+    if (!params) return obj;
+    return obj.replace(/\{(\w+)\}/g, (match, name: string) =>
+      params[name] === undefined ? match : String(params[name]),
+    );
   };
 
   return { locale, t, setLocale };
