@@ -138,7 +138,7 @@ function ShellContent({ children }: { children: React.ReactNode }) {
       {token ? (
         <aside
           id="mobile-navigation"
-          className={`glass-sidebar fixed inset-y-0 left-0 z-40 flex w-64 shrink-0 flex-col overflow-y-auto pt-14 transition-transform duration-200 lg:static lg:translate-x-0 lg:pt-0 ${
+          className={`glass-sidebar fixed inset-y-0 left-0 z-40 flex h-full w-64 shrink-0 flex-col pt-14 transition-transform duration-200 lg:static lg:translate-x-0 lg:pt-0 ${
             mobileNavOpen ? 'translate-x-0' : '-translate-x-full'
           }`}
         >
@@ -149,64 +149,66 @@ function ShellContent({ children }: { children: React.ReactNode }) {
             <div className="mt-0.5 text-xs text-zinc-500">Knowledge workspace</div>
           </Link>
 
-          <nav aria-label={t('Shell.navigation')} className="flex flex-col gap-0.5 px-3 pb-3">
-            {navItems.map((item) => {
-              const active = isActive(item.href, item.exact);
-              const Icon = item.icon;
-              const count = item.countKey ? navCounts[item.countKey] : null;
-              return (
-                <Link
-                  key={item.href}
-                  href={item.href}
-                  className={`relative flex min-h-11 items-center gap-3 rounded-lg px-3 py-2.5 text-sm font-medium transition ${
-                    active
-                      ? 'bg-white/8 text-white'
-                      : 'text-zinc-400 hover:bg-white/5 hover:text-zinc-200'
-                  }`}
-                >
-                  {active ? (
-                    <span className="absolute left-0 top-1/2 h-5 w-0.5 -translate-y-1/2 rounded-full bg-emerald-400" />
-                  ) : null}
-                  <Icon className={`size-4 shrink-0 ${active ? 'text-emerald-400' : 'text-zinc-500'}`} />
-                  <span className="min-w-0 flex-1 truncate">{item.label}</span>
-                  {count !== null ? (
-                    <Badge variant="muted" className="ml-auto shrink-0 tabular-nums">
-                      {count}
-                    </Badge>
-                  ) : null}
-                </Link>
-              );
-            })}
-          </nav>
+          <div className="flex-1 overflow-y-auto">
+            <nav aria-label={t('Shell.navigation')} className="flex flex-col gap-0.5 px-3 pb-3">
+              {navItems.map((item) => {
+                const active = isActive(item.href, item.exact);
+                const Icon = item.icon;
+                const count = item.countKey ? navCounts[item.countKey] : null;
+                return (
+                  <Link
+                    key={item.href}
+                    href={item.href}
+                    className={`relative flex min-h-11 items-center gap-3 rounded-lg px-3 py-2.5 text-sm font-medium transition ${
+                      active
+                        ? 'bg-white/8 text-white'
+                        : 'text-zinc-400 hover:bg-white/5 hover:text-zinc-200'
+                    }`}
+                  >
+                    {active ? (
+                      <span className="absolute left-0 top-1/2 h-5 w-0.5 -translate-y-1/2 rounded-full bg-emerald-400" />
+                    ) : null}
+                    <Icon className={`size-4 shrink-0 ${active ? 'text-emerald-400' : 'text-zinc-500'}`} />
+                    <span className="min-w-0 flex-1 truncate">{item.label}</span>
+                    {count !== null ? (
+                      <Badge variant="muted" className="ml-auto shrink-0 tabular-nums">
+                        {count}
+                      </Badge>
+                    ) : null}
+                  </Link>
+                );
+              })}
+            </nav>
 
-          <div className="mx-3 my-2 border-t border-white/8" />
+            <div className="mx-3 my-2 border-t border-white/8" />
 
-          <div className="px-3 pb-2">
-            <p className="px-1 pb-2 text-[10px] font-semibold uppercase tracking-wider text-zinc-600">
-              {t('Shell.projects')}
-            </p>
-            {projectsLoading ? (
-              <p className="px-1 py-2 text-xs text-zinc-500">{t('Shell.loading')}</p>
-            ) : projects.length === 0 ? (
-              <p className="px-1 py-2 text-xs text-zinc-500">{t('Shell.noProjects')}</p>
-            ) : (
-              <ProjectSelect
-                projects={projects}
-                value={currentProject?.id ?? ''}
-                onChange={(projectId) => selectProject(projectId)}
-                placeholder={t('Shell.noProjects')}
-              />
-            )}
-            <button
-              type="button"
-              onClick={handleNewProjectClick}
-              className="mt-1.5 min-h-11 w-full rounded-lg px-3 py-2.5 text-left text-sm text-zinc-500 transition hover:bg-white/5 hover:text-zinc-300"
-            >
-              {t('Shell.newProject')}
-            </button>
+            <div className="px-3 pb-2">
+              <p className="px-1 pb-2 text-[10px] font-semibold uppercase tracking-wider text-zinc-600">
+                {t('Shell.projects')}
+              </p>
+              {projectsLoading ? (
+                <p className="px-1 py-2 text-xs text-zinc-500">{t('Shell.loading')}</p>
+              ) : projects.length === 0 ? (
+                <p className="px-1 py-2 text-xs text-zinc-500">{t('Shell.noProjects')}</p>
+              ) : (
+                <ProjectSelect
+                  projects={projects}
+                  value={currentProject?.id ?? ''}
+                  onChange={(projectId) => selectProject(projectId)}
+                  placeholder={t('Shell.noProjects')}
+                />
+              )}
+              <button
+                type="button"
+                onClick={handleNewProjectClick}
+                className="mt-1.5 min-h-11 w-full rounded-lg px-3 py-2.5 text-left text-sm text-zinc-500 transition hover:bg-white/5 hover:text-zinc-300"
+              >
+                {t('Shell.newProject')}
+              </button>
+            </div>
           </div>
 
-          <div className="mt-auto border-t border-white/8 px-3 py-3">
+          <div className="shrink-0 border-t border-white/8 px-3 py-3">
             <div className="mt-2 border-t border-white/10 pt-2">
               <p className="font-mono text-[10px] text-zinc-600 truncate">User: {user?.id ?? '—'}</p>
               <p className="font-mono text-[10px] text-zinc-600 truncate">Project: {currentProject?.id ?? '—'}</p>
