@@ -88,3 +88,15 @@ test('LWC-135: locales expose Demo.restricted copy', async () => {
   assert.equal(english.Demo.restricted, 'This feature is not available in demo mode');
   assert.equal(traditionalChinese.Demo.restricted, 'Demo 模式不提供此功能');
 });
+
+test('LWC-135: demo upload UI is disabled and localStorage backs demo flag', async () => {
+  const [pipelineClient, auth] = await Promise.all([
+    readFile(new URL('../src/components/PipelineClient.tsx', import.meta.url), 'utf8'),
+    readFile(new URL('../src/lib/auth.tsx', import.meta.url), 'utf8'),
+  ]);
+
+  assert.match(pipelineClient, /disabled=\{isDemoSession \|\| uploading\}/);
+  assert.match(pipelineClient, /htmlFor=\{isDemoSession \? undefined : 'raw-file-upload'\}/);
+  assert.match(auth, /writeStoredDemoSession\(\s*typeof window !== 'undefined' \? window\.localStorage/);
+  assert.match(auth, /demo@llm-wiki\.dev/);
+});

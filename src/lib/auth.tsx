@@ -85,7 +85,7 @@ export function AuthProvider({ children }: { children: ReactNode }) {
     setIsDemoSession(false);
     clearStoredAccessToken(typeof window !== 'undefined' ? window.localStorage : null);
     clearStoredAuthUser(typeof window !== 'undefined' ? window.localStorage : null);
-    clearStoredDemoSession(typeof window !== 'undefined' ? window.sessionStorage : null);
+    clearStoredDemoSession(typeof window !== 'undefined' ? window.localStorage : null);
   }, []);
 
   const applyAuthResponse = useCallback((result: AuthResponse, options?: { demo?: boolean }) => {
@@ -103,7 +103,7 @@ export function AuthProvider({ children }: { children: ReactNode }) {
       result.user,
     );
     writeStoredDemoSession(
-      typeof window !== 'undefined' ? window.sessionStorage : null,
+      typeof window !== 'undefined' ? window.localStorage : null,
       demo,
     );
   }, []);
@@ -180,9 +180,8 @@ export function AuthProvider({ children }: { children: ReactNode }) {
           accessTokenRef.current = stored;
           setUser(readStoredAuthUser(storage));
           setIsDemoSession(
-            readStoredDemoSession(
-              typeof window !== 'undefined' ? window.sessionStorage : null,
-            ),
+            readStoredDemoSession(storage) ||
+              readStoredAuthUser(storage)?.email === 'demo@llm-wiki.dev',
           );
           setHydrated(true);
         }

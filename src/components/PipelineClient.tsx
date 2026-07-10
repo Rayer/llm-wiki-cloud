@@ -291,6 +291,10 @@ export function PipelineClient() {
 
   const handleRetry = useCallback(
     (id: string) => {
+      if (isDemoSession) {
+        addToast(t('Demo.restricted'), 'info');
+        return;
+      }
       uploadItemsRef.current = uploadItemsRef.current.map((item) =>
         item.id === id && item.status === 'failed'
           ? { ...item, status: 'queued', error: undefined }
@@ -299,7 +303,7 @@ export function PipelineClient() {
       setUploadItems(uploadItemsRef.current);
       pumpUploadQueue();
     },
-    [pumpUploadQueue],
+    [addToast, isDemoSession, pumpUploadQueue, t],
   );
 
   const handleScrape = useCallback(async (event: FormEvent) => {
@@ -420,17 +424,44 @@ export function PipelineClient() {
                 onChange={handleFileChange}
                 className="hidden"
                 id="raw-file-upload"
+                disabled={isDemoSession || uploading}
               />
               <label
-                htmlFor="raw-file-upload"
-                className="flex-1 cursor-pointer rounded-md border border-white/10 bg-black/30 px-3 py-2 text-sm text-zinc-400 transition hover:border-zinc-500 hover:text-zinc-200 truncate"
+                htmlFor={isDemoSession ? undefined : 'raw-file-upload'}
+                aria-disabled={isDemoSession || undefined}
+                title={isDemoSession ? t('Demo.restricted') : undefined}
+                onClick={
+                  isDemoSession
+                    ? (e) => {
+                        e.preventDefault();
+                        addToast(t('Demo.restricted'), 'info');
+                      }
+                    : undefined
+                }
+                className={`flex-1 rounded-md border border-white/10 bg-black/30 px-3 py-2 text-sm text-zinc-400 truncate ${
+                  isDemoSession
+                    ? 'cursor-not-allowed opacity-50'
+                    : 'cursor-pointer transition hover:border-zinc-500 hover:text-zinc-200'
+                }`}
               >
-                {fileLabel}
+                {isDemoSession ? t('Demo.restricted') : fileLabel}
               </label>
               <label
-                htmlFor="raw-file-upload"
-                className={`inline-flex cursor-pointer items-center justify-center rounded-md bg-emerald-600 px-4 py-2 text-sm font-semibold text-white transition hover:bg-emerald-500 ${
-                  uploading ? 'opacity-50' : ''
+                htmlFor={isDemoSession ? undefined : 'raw-file-upload'}
+                aria-disabled={isDemoSession || undefined}
+                title={isDemoSession ? t('Demo.restricted') : undefined}
+                onClick={
+                  isDemoSession
+                    ? (e) => {
+                        e.preventDefault();
+                        addToast(t('Demo.restricted'), 'info');
+                      }
+                    : undefined
+                }
+                className={`inline-flex items-center justify-center rounded-md bg-emerald-600 px-4 py-2 text-sm font-semibold text-white ${
+                  isDemoSession || uploading
+                    ? 'cursor-not-allowed opacity-50'
+                    : 'cursor-pointer transition hover:bg-emerald-500'
                 }`}
               >
                 {uploading ? <Loader2 className="size-4 animate-spin" /> : 'Select'}
