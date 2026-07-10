@@ -158,3 +158,42 @@ export function clearStoredDemoSession(
     // ignore
   }
 }
+
+export const AUTH_USER_STORAGE_KEY = 'llm-wiki-auth-user';
+
+export function readStoredAuthUser(
+  storage: Pick<Storage, 'getItem'> | null | undefined,
+): AuthUser | null {
+  if (!storage) return null;
+  try {
+    const raw = storage.getItem(AUTH_USER_STORAGE_KEY);
+    if (!raw?.trim()) return null;
+    return normalizeUser(JSON.parse(raw) as unknown);
+  } catch {
+    return null;
+  }
+}
+
+export function writeStoredAuthUser(
+  storage: Pick<Storage, 'setItem'> | null | undefined,
+  user: AuthUser,
+): void {
+  if (!storage || !user.id || !user.email) return;
+  try {
+    storage.setItem(AUTH_USER_STORAGE_KEY, JSON.stringify(user));
+  } catch {
+    // ignore quota / private mode
+  }
+}
+
+export function clearStoredAuthUser(
+  storage: Pick<Storage, 'removeItem'> | null | undefined,
+): void {
+  if (!storage) return;
+  try {
+    storage.removeItem(AUTH_USER_STORAGE_KEY);
+  } catch {
+    // ignore
+  }
+}
+

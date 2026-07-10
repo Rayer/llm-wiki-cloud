@@ -13,14 +13,17 @@ import {
 import {
   API_URL,
   clearStoredAccessToken,
+  clearStoredAuthUser,
   clearStoredDemoSession,
   isAuthFailureStatus,
   normalizeAuthResponse,
   normalizeRefreshResponse,
   readStoredAccessToken,
+  readStoredAuthUser,
   readStoredDemoSession,
   responseError,
   writeStoredAccessToken,
+  writeStoredAuthUser,
   writeStoredDemoSession,
   type AuthResponse,
   type AuthUser,
@@ -81,6 +84,7 @@ export function AuthProvider({ children }: { children: ReactNode }) {
     setUser(null);
     setIsDemoSession(false);
     clearStoredAccessToken(typeof window !== 'undefined' ? window.localStorage : null);
+    clearStoredAuthUser(typeof window !== 'undefined' ? window.localStorage : null);
     clearStoredDemoSession(typeof window !== 'undefined' ? window.sessionStorage : null);
   }, []);
 
@@ -93,6 +97,10 @@ export function AuthProvider({ children }: { children: ReactNode }) {
     writeStoredAccessToken(
       typeof window !== 'undefined' ? window.localStorage : null,
       result.access_token,
+    );
+    writeStoredAuthUser(
+      typeof window !== 'undefined' ? window.localStorage : null,
+      result.user,
     );
     writeStoredDemoSession(
       typeof window !== 'undefined' ? window.sessionStorage : null,
@@ -126,6 +134,10 @@ export function AuthProvider({ children }: { children: ReactNode }) {
       );
       if (result.user) {
         setUser(result.user);
+        writeStoredAuthUser(
+          typeof window !== 'undefined' ? window.localStorage : null,
+          result.user,
+        );
       }
       return result.access_token;
     } catch {
@@ -155,17 +167,18 @@ export function AuthProvider({ children }: { children: ReactNode }) {
     let cancelled = false;
 
     async function hydrateFromRefreshCookie() {
-      const stored = readStoredAccessToken(
-        typeof window !== 'undefined' ? window.localStorage : null,
-      );
+      const storage = typeof window !== 'undefined' ? window.localStorage : null;
+      const stored = readStoredAccessToken(storage);
 
       // Approach B (LWC-116): restore stored token immediately so reload never depends on
       // refresh cookie success. Soft-rotate in background without clearSession on 401 —
       // apiFetch still handles real unauthorized after business 401.
+      // Also restore cached user: JWT has only sub; refresh often omits user / fails for demo.
       if (stored) {
         if (!cancelled) {
           setAccessToken(stored);
           accessTokenRef.current = stored;
+          setUser(readStoredAuthUser(storage));
           setIsDemoSession(
             readStoredDemoSession(
               typeof window !== 'undefined' ? window.sessionStorage : null,

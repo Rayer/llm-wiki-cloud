@@ -6,12 +6,16 @@ import { dirname, join } from 'node:path';
 
 import {
   ACCESS_TOKEN_STORAGE_KEY,
+  AUTH_USER_STORAGE_KEY,
   clearStoredAccessToken,
+  clearStoredAuthUser,
   isAuthFailureStatus,
   normalizeAuthResponse,
   normalizeRefreshResponse,
   readStoredAccessToken,
+  readStoredAuthUser,
   writeStoredAccessToken,
+  writeStoredAuthUser,
 } from '../src/lib/auth-core.ts';
 
 const authSource = readFileSync(
@@ -151,4 +155,29 @@ test('auth provider hydrate restores stored token then soft-rotates without clea
   assert.match(body, /refreshAccessToken\(\{\s*clearOnAuthFailure:\s*false\s*\}\)/);
   // Soft-rotate is fire-and-forget (void), not blocking hydrate on cookie success
   assert.match(body, /void refreshAccessToken\(\{\s*clearOnAuthFailure:\s*false\s*\}\)/);
+});
+
+test('auth user storage helpers read write and clear', () => {
+  const store = new Map();
+  const storage = {
+    getItem: (key) => (store.has(key) ? store.get(key) : null),
+    setItem: (key, value) => { store.set(key, String(value)); },
+    removeItem: (key) => { store.delete(key); },
+  };
+
+  assert.equal(AUTH_USER_STORAGE_KEY, 'llm-wiki-auth-user');
+  assert.equal(readStoredAuthUser(storage), null);
+
+  writeStoredAuthUser(storage, { id: 'u1', email: 'demo@llm-wiki.dev' });
+  assert.deepEqual(readStoredAuthUser(storage), { id: 'u1', email: 'demo@llm-wiki.dev' });
+
+  clearStoredAuthUser(storage);
+  assert.equal(readStoredAuthUser(storage), null);
+});
+
+test('auth provider hydrates stored user with token', () => {
+  assert.match(authSource, /readStoredAuthUser/);
+  assert.match(authSource, /writeStoredAuthUser/);
+  assert.match(authSource, /clearStoredAuthUser/);
+  assert.match(authSource, /setUser\(readStoredAuthUser\(storage\)\)/);
 });
