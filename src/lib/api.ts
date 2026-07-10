@@ -13,6 +13,7 @@ export type ApiStatus = {
   sourcesCount: number;
   conceptsCount: number;
   rawCount: number;
+  suggestedQueries: string[];
   lastExecution?: PipelineExecution | null;
   raw: Record<string, unknown>;
 };
@@ -417,8 +418,9 @@ export function normalizeStatus(payload: unknown): ApiStatus {
   const lastExecution = isRecord(record.last_execution)
     ? record.last_execution as PipelineExecution
     : null;
+  const suggestedQueries = stringArray(record.suggested_queries ?? record.suggestedQueries);
 
-  return { sourcesCount, conceptsCount, rawCount, lastExecution, raw: record };
+  return { sourcesCount, conceptsCount, rawCount, suggestedQueries, lastExecution, raw: record };
 }
 
 export function normalizeRawFile(item: unknown): RawFile {
@@ -532,6 +534,7 @@ export type PipelineStatus = {
   last_execution?: PipelineExecution | null;
   project_id?: string;
   quota?: PipelineQuota | null;
+  suggested_queries?: string[];
 };
 
 export async function uploadRawFile(file: File): Promise<RawUploadResult> {

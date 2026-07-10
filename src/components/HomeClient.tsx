@@ -119,8 +119,8 @@ export function HomeClient() {
     };
   }, [currentProject]);
 
-  const handleSearch = useCallback(async (searchMode: SearchMode) => {
-    const trimmed = query.trim();
+  const handleSearch = useCallback(async (searchMode: SearchMode, rawQuery = query) => {
+    const trimmed = rawQuery.trim();
     if (!trimmed) return;
 
     syncUrl(trimmed, searchMode);
@@ -154,6 +154,11 @@ export function HomeClient() {
     await handleSearch(mode);
   }, [handleSearch, mode]);
 
+  const handleSuggestedQuery = useCallback(async (suggestion: string) => {
+    setQuery(suggestion);
+    await handleSearch(mode, suggestion);
+  }, [handleSearch, mode]);
+
   const openCitation = useCallback(async (citation: Citation) => {
     setModalLoading(true);
     setModal({ title: citation.text, content: '', type: citation.type, slug: citation.slug, id: citation.id });
@@ -184,6 +189,8 @@ export function HomeClient() {
 
   const resultType = (type?: string): 'source' | 'concept' =>
     type === 'source' ? 'source' : 'concept';
+  const suggestedQueries = status?.suggestedQueries ?? [];
+  const suggestedQueryChips = suggestedQueries.slice(1);
 
   return (
     <div className="space-y-10">
@@ -199,7 +206,7 @@ export function HomeClient() {
               <input
                 value={query}
                 onChange={(event) => setQuery(event.target.value)}
-                placeholder={t('Demo.searchPlaceholder')}
+                placeholder={suggestedQueries[0] ?? t('Demo.searchPlaceholder')}
                 className="min-h-12 flex-1 rounded-[var(--radius-md)] bg-transparent px-4 text-white outline-none transition placeholder:text-zinc-600 focus:ring-1 focus:ring-emerald-400/30"
               />
               <div className="flex items-center gap-2 px-1 sm:pr-1">
@@ -226,6 +233,20 @@ export function HomeClient() {
               </div>
             </div>
           </Surface>
+          {suggestedQueryChips.length > 0 ? (
+            <div className="mt-3 flex flex-wrap items-center justify-center gap-2">
+              {suggestedQueryChips.map((suggestion) => (
+                <button
+                  key={suggestion}
+                  type="button"
+                  onClick={() => void handleSuggestedQuery(suggestion)}
+                  className="max-w-full rounded-md border border-emerald-300/20 bg-emerald-300/10 px-3 py-1.5 text-left text-sm text-emerald-100 transition hover:border-emerald-300/40 hover:bg-emerald-300/15"
+                >
+                  <span className="block truncate">{suggestion}</span>
+                </button>
+              ))}
+            </div>
+          ) : null}
           <div className="mt-3 flex flex-wrap items-center justify-center gap-2">
             <StatPill label={t('Shell.sources')} value={status?.sourcesCount} error={statusError} />
             <StatPill label={t('Shell.concepts')} value={status?.conceptsCount} error={statusError} />

@@ -9,7 +9,6 @@ test('home first-run UX avoids generic examples and exposes latest concept previ
   );
 
   assert.match(homeClient, /getConcepts/);
-  assert.doesNotMatch(homeClient, /suggestedQueries/);
   assert.doesNotMatch(homeClient, /onClick=\{\(\) => setQuery\(suggestion\)\}/);
   assert.doesNotMatch(homeClient, /'機器學習'|親子景點|知識整理|概念關聯/);
   assert.doesNotMatch(homeClient, /'RAG'/);
