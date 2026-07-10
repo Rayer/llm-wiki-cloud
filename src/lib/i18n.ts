@@ -36,11 +36,18 @@ export function useT() {
 
   const t = (key: string, params?: TranslationParams): string => {
     const parts = key.split('.');
-    let obj: Record<string, unknown> = locale === 'zh-TW' ? zhTW : en;
-    for (const part of parts) obj = (obj?.[part] ?? {}) as Record<string, unknown>;
-    if (typeof obj !== 'string') return key;
-    if (!params) return obj;
-    return obj.replace(/\{(\w+)\}/g, (match, name: string) =>
+    let node: unknown = locale === 'zh-TW' ? zhTW : en;
+    for (const part of parts) {
+      if (node && typeof node === 'object' && part in (node as Record<string, unknown>)) {
+        node = (node as Record<string, unknown>)[part];
+      } else {
+        return key;
+      }
+    }
+    if (typeof node !== 'string') return key;
+    const template: string = node;
+    if (!params) return template;
+    return template.replace(/\{(\w+)\}/g, (match, name: string) =>
       params[name] === undefined ? match : String(params[name]),
     );
   };
