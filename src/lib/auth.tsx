@@ -18,6 +18,7 @@ import {
   isAuthFailureStatus,
   normalizeAuthResponse,
   normalizeRefreshResponse,
+  RegistrationDisabledError,
   readStoredAccessToken,
   readStoredAuthUser,
   readStoredDemoSession,
@@ -61,6 +62,9 @@ async function postAuth(path: string, body?: unknown): Promise<unknown> {
   const payload: unknown = await response.json().catch(() => null);
 
   if (!response.ok) {
+    if (response.status === 403 && path.includes('/register')) {
+      throw new RegistrationDisabledError();
+    }
     throw new Error(responseError(payload, `Auth request failed (${response.status})`));
   }
 

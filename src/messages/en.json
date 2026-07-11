@@ -30,7 +30,11 @@
     "signUp": "Create account",
     "registering": "Registering…",
     "error": "Registration failed",
+    "disabled": "New user registration is currently disabled.",
     "switchToLogin": "Already have an account? Sign in"
+  },
+  "Admin": {
+    "registrationEnabled": "Allow new user registration"
   },
   "Detail": {
     "backTo": "Back to {label}",

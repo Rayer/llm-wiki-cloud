@@ -39,6 +39,13 @@ function normalizeUser(value: unknown): AuthUser | null {
   return role ? { id, email, role } : { id, email };
 }
 
+export class RegistrationDisabledError extends Error {
+  constructor() {
+    super('registration disabled');
+    this.name = 'RegistrationDisabledError';
+  }
+}
+
 export function responseError(payload: unknown, fallback: string): string {
   if (!isRecord(payload)) return fallback;
   const message = payload.error ?? payload.message ?? payload.detail;

@@ -1,6 +1,7 @@
 'use client';
 
 import { FormEvent, useState } from 'react';
+import { RegistrationDisabledError } from '@/lib/auth-core';
 import { useWorkspace } from './WorkspaceProvider';
 
 interface Props {
@@ -24,7 +25,11 @@ export function RegisterModal({ onClose, onSuccess, t }: Props) {
       await register(email.trim(), password);
       onSuccess();
     } catch (err) {
-      setError(err instanceof Error ? err.message : 'Registration failed');
+      if (err instanceof RegistrationDisabledError) {
+        setError(t('Register.disabled'));
+      } else {
+        setError(err instanceof Error ? err.message : t('Register.error'));
+      }
     } finally {
       setLoading(false);
     }

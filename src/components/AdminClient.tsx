@@ -4,22 +4,26 @@ import { type ComponentType, type ReactNode, useCallback, useEffect, useState } 
 import { Pencil, Play, RefreshCw, RotateCcw, ShieldAlert, Trash2 } from 'lucide-react';
 import {
   ApiError,
+  clearPublicConfigCache,
   deleteAdminProject,
   deleteAdminUser,
   getAdminProjects,
+  getAdminSettings,
   getAdminUsers,
   rebuildAdminProjectIndex,
   renameAdminProject,
   triggerAdminProjectPipeline,
+  updateAdminSettings,
   updateAdminUserRole,
   type AdminProject,
   type AdminUser,
 } from '@/lib/api';
 import { useAuth } from '@/lib/auth';
+import { useLocale } from '@/lib/i18n';
 import { Badge } from './ui/Badge';
 import { Surface } from './ui/Surface';
 
-type Tab = 'projects' | 'users';
+type Tab = 'projects' | 'users' | 'settings';
 type Notice = { tone: 'success' | 'error'; message: string } | null;
 type Action =
   | { kind: 'rename-project'; project: AdminProject }
@@ -31,6 +35,7 @@ type Action =
 
 export function AdminClient() {
   const { hydrated, user } = useAuth();
+  const { t } = useLocale();
   const [tab, setTab] = useState<Tab>('projects');
   const [projects, setProjects] = useState<AdminProject[]>([]);
   const [users, setUsers] = useState<AdminUser[]>([]);
@@ -43,6 +48,10 @@ export function AdminClient() {
   const [action, setAction] = useState<Action | null>(null);
   const [actionError, setActionError] = useState('');
   const [actionPending, setActionPending] = useState(false);
+  const [registrationEnabled, setRegistrationEnabled] = useState(true);
+  const [settingsLoading, setSettingsLoading] = useState(false);
+  const [settingsError, setSettingsError] = useState('');
+  const [settingsPending, setSettingsPending] = useState(false);
   const isAdmin = user?.role === 'admin';
   const accessDenied = user?.role !== 'admin';
 
@@ -78,9 +87,44 @@ export function AdminClient() {
     }
   }, []);
 
+  const loadSettings = useCallback(async () => {
+    setSettingsLoading(true);
+    setSettingsError('');
+    try {
+      const settings = await getAdminSettings();
+      setRegistrationEnabled(settings.registration_enabled);
+    } catch (error) {
+      setSettingsError(error instanceof Error ? error.message : 'Unable to load settings.');
+    } finally {
+      setSettingsLoading(false);
+    }
+  }, []);
+
+  const handleRegistrationToggle = async () => {
+    const previous = registrationEnabled;
+    setRegistrationEnabled(!registrationEnabled);
+    setSettingsError('');
+    setSettingsPending(true);
+    try {
+      await updateAdminSettings({ registration_enabled: !previous });
+      clearPublicConfigCache();
+      setNotice({
+        tone: 'success',
+        message: !previous ? 'Registration enabled.' : 'Registration disabled.',
+      });
+    } catch (error) {
+      setRegistrationEnabled(previous);
+      setSettingsError(error instanceof Error ? error.message : 'Settings update failed.');
+    } finally {
+      setSettingsPending(false);
+    }
+  };
+
   const refreshActive = useCallback(() => {
-    return tab === 'projects' ? loadProjects() : loadUsers();
-  }, [loadProjects, loadUsers, tab]);
+    if (tab === 'projects') return loadProjects();
+    if (tab === 'users') return loadUsers();
+    return loadSettings();
+  }, [loadProjects, loadSettings, loadUsers, tab]);
 
   const closeAction = () => {
     if (actionPending) return;
@@ -155,7 +199,8 @@ export function AdminClient() {
     // eslint-disable-next-line react-hooks/set-state-in-effect -- kick off initial admin reads after auth hydration
     void loadProjects();
     void loadUsers();
-  }, [hydrated, isAdmin, loadProjects, loadUsers]);
+    void loadSettings();
+  }, [hydrated, isAdmin, loadProjects, loadSettings, loadUsers]);
 
   if (!hydrated) {
     return <div className="py-20 text-center text-sm text-zinc-500">Loading...</div>;
@@ -200,6 +245,9 @@ export function AdminClient() {
           <TabButton active={tab === 'users'} onClick={() => setTab('users')}>
             Users
           </TabButton>
+          <TabButton active={tab === 'settings'} onClick={() => setTab('settings')}>
+            Settings
+          </TabButton>
         </div>
       </Surface>
 
@@ -220,13 +268,23 @@ export function AdminClient() {
           onRetry={loadProjects}
           onAction={setAction}
         />
-      ) : (
+      ) : tab === 'users' ? (
         <UsersTable
           users={users}
           loading={usersLoading}
           error={usersError}
           onRetry={loadUsers}
           onAction={setAction}
+        />
+      ) : (
+        <SettingsPanel
+          registrationEnabled={registrationEnabled}
+          loading={settingsLoading}
+          pending={settingsPending}
+          error={settingsError}
+          label={t('Admin.registrationEnabled')}
+          onRetry={loadSettings}
+          onToggle={() => void handleRegistrationToggle()}
         />
       )}
 
@@ -299,6 +357,54 @@ export function AdminClient() {
         />
       ) : null}
     </div>
+  );
+}
+
+function SettingsPanel({
+  registrationEnabled,
+  loading,
+  pending,
+  error,
+  label,
+  onRetry,
+  onToggle,
+}: {
+  registrationEnabled: boolean;
+  loading: boolean;
+  pending: boolean;
+  error: string;
+  label: string;
+  onRetry: () => void;
+  onToggle: () => void;
+}) {
+  return (
+    <Surface variant="glass" className="p-5">
+      {loading ? (
+        <p className="text-sm text-zinc-500">Loading...</p>
+      ) : error ? (
+        <div className="flex flex-wrap items-center justify-between gap-3">
+          <p className="text-sm text-amber-300">{error}</p>
+          <button
+            type="button"
+            onClick={onRetry}
+            className="text-sm font-medium text-zinc-300 transition hover:text-white"
+          >
+            Retry
+          </button>
+        </div>
+      ) : (
+        <label className="flex items-center justify-between gap-4">
+          <span className="text-sm font-medium text-white">{label}</span>
+          <input
+            type="checkbox"
+            checked={registrationEnabled}
+            disabled={pending}
+            onChange={onToggle}
+            className="size-5 rounded border-white/20 bg-black/30 text-emerald-400 focus:ring-emerald-400"
+          />
+        </label>
+      )}
+    </Surface>
   );
 }
 

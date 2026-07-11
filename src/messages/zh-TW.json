@@ -30,7 +30,11 @@
     "signUp": "建立帳號",
     "registering": "註冊中…",
     "error": "註冊失敗",
+    "disabled": "目前不開放新使用者註冊。",
     "switchToLogin": "已有帳號？登入"
+  },
+  "Admin": {
+    "registrationEnabled": "允許新使用者註冊"
   },
   "Detail": {
     "backTo": "返回 {label}",

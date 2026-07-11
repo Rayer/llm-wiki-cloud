@@ -674,3 +674,74 @@ export async function updateAdminUserRole(id: string, role: string): Promise<voi
 export async function deleteAdminUser(id: string): Promise<void> {
   await adminJson(`/api/v1/admin/users/${encodeURIComponent(id)}`, { method: 'DELETE' });
 }
+
+export type PublicConfig = {
+  registration_enabled: boolean;
+};
+
+export type AdminSettings = {
+  registration_enabled: boolean;
+};
+
+let publicConfigCache: PublicConfig | null = null;
+
+export function clearPublicConfigCache(): void {
+  publicConfigCache = null;
+}
+
+/**
+ * Public config — no auth.
+ * Fail-closed: network/invalid/error → registration_enabled false (safer for 1.0).
+ */
+export async function getPublicConfig(options?: { refresh?: boolean }): Promise<PublicConfig> {
+  if (!options?.refresh && publicConfigCache) return publicConfigCache;
+
+  try {
+    const response = await fetch(`${API_URL}/api/v1/public/config`, {
+      method: 'GET',
+      credentials: 'omit',
+    });
+    if (!response.ok) {
+      const closed = { registration_enabled: false };
+      publicConfigCache = closed;
+      return closed;
+    }
+    const payload = (await response.json().catch(() => null)) as unknown;
+    const record = isRecord(payload) ? payload : {};
+    const enabled = asBoolean(record.registration_enabled);
+    const config = { registration_enabled: enabled === true };
+    publicConfigCache = config;
+    return config;
+  } catch {
+    const closed = { registration_enabled: false };
+    publicConfigCache = closed;
+    return closed;
+  }
+}
+
+export async function getAdminSettings(): Promise<AdminSettings> {
+  const payload = await adminJson('/api/v1/admin/settings');
+  const record = isRecord(payload) ? payload : {};
+  const enabled = asBoolean(record.registration_enabled);
+  if (enabled === undefined) {
+    throw new ApiError('Invalid admin settings response', 500);
+  }
+  return { registration_enabled: enabled };
+}
+
+export async function updateAdminSettings(
+  settings: Partial<AdminSettings>,
+): Promise<AdminSettings> {
+  const payload = await adminJson('/api/v1/admin/settings', {
+    method: 'PATCH',
+    json: true,
+    body: JSON.stringify(settings),
+  });
+  const record = isRecord(payload) ? payload : {};
+  const enabled = asBoolean(record.registration_enabled);
+  if (enabled === undefined) {
+    throw new ApiError('Invalid admin settings response', 500);
+  }
+  clearPublicConfigCache();
+  return { registration_enabled: enabled };
+}
