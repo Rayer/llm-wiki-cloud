@@ -15,7 +15,7 @@ test('shell exposes a mobile navigation drawer while preserving desktop sidebar 
   assert.match(shell, /aria-label=\{mobileNavOpen \? t\('Shell.closeNavigation'\) : t\('Shell.openNavigation'\)\}/);
   assert.match(shell, /id="mobile-navigation"/);
   assert.match(shell, /translate-x-0[\s\S]*-translate-x-full/);
-  assert.match(shell, /lg:static[\s\S]*lg:translate-x-0/);
+  assert.match(shell, /lg:sticky[\s\S]*lg:translate-x-0/);
   assert.match(shell, /event\.key === 'Escape'/);
   assert.match(shell, /setMobileNavOpen\(false\);[\s\S]*pathname/);
   assert.match(shell, /<nav[\s\S]*aria-label=\{t\('Shell.navigation'\)\}/);
