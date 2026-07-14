@@ -52,6 +52,7 @@
   },
   "Shell": {
     "brand": "LLM Wiki Cloud",
+    "subtitle": "探索你的知識庫",
     "navigation": "主要導覽",
     "openNavigation": "開啟導覽",
     "closeNavigation": "關閉導覽",

@@ -52,6 +52,7 @@
   },
   "Shell": {
     "brand": "LLM Wiki Cloud",
+    "subtitle": "Explore your knowledge base",
     "navigation": "Primary navigation",
     "openNavigation": "Open navigation",
     "closeNavigation": "Close navigation",
