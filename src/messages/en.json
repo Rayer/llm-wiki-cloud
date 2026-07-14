@@ -112,7 +112,9 @@
   },
   "Status": {
     "title": "Pipeline Status",
-    "noStatus": "No pipeline status available."
+    "noStatus": "No pipeline status available.",
+    "userId": "User ID",
+    "projectId": "Project ID"
   },
   "Pipeline": {
     "addContent": "Add Content",

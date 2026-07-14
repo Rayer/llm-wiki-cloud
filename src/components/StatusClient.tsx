@@ -8,7 +8,10 @@ import {
   type ApiStatus,
   type PipelineExecution,
 } from '@/lib/api';
+import { useAuth } from '@/lib/auth';
+import { useT } from '@/lib/i18n';
 import { ErrorState, LoadingState } from './States';
+import { useWorkspace } from './WorkspaceProvider';
 import { Badge } from './ui/Badge';
 import { Surface } from './ui/Surface';
 
@@ -17,6 +20,9 @@ const LOG_PREVIEW_BYTES = 10 * 1024;
 const LOG_PREVIEW_LINES = 50;
 
 export function StatusClient() {
+  const { t } = useT();
+  const { user } = useAuth();
+  const { currentProject } = useWorkspace();
   const [status, setStatus] = useState<ApiStatus | null>(null);
   const [pipelineLog, setPipelineLog] = useState('');
   const [logLoading, setLogLoading] = useState(false);
@@ -101,9 +107,21 @@ export function StatusClient() {
               {showRaw ? 'Hide' : 'Show'} developer details
             </button>
             {showRaw ? (
-              <pre className="mt-4 overflow-x-auto rounded-md bg-black/50 p-4 text-xs text-zinc-400">
-                {JSON.stringify({ api: status.raw }, null, 2)}
-              </pre>
+              <div className="mt-4 space-y-4">
+                <dl className="grid gap-2 text-xs sm:grid-cols-2">
+                  <div>
+                    <dt className="text-zinc-500">{t('Status.userId')}</dt>
+                    <dd className="mt-1 font-mono text-zinc-300">{user?.id ?? '—'}</dd>
+                  </div>
+                  <div>
+                    <dt className="text-zinc-500">{t('Status.projectId')}</dt>
+                    <dd className="mt-1 font-mono text-zinc-300">{currentProject?.id ?? '—'}</dd>
+                  </div>
+                </dl>
+                <pre className="overflow-x-auto rounded-md bg-black/50 p-4 text-xs text-zinc-400">
+                  {JSON.stringify({ api: status.raw }, null, 2)}
+                </pre>
+              </div>
             ) : null}
           </Surface>
         </>

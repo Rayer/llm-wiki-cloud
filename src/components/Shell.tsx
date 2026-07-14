@@ -209,10 +209,6 @@ function ShellContent({ children }: { children: React.ReactNode }) {
           </div>
 
           <div className="shrink-0 border-t border-white/8 px-3 py-3">
-            <div className="mt-2 border-t border-white/10 pt-2">
-              <p className="font-mono text-[10px] text-zinc-600 truncate">User: {user?.id ?? '—'}</p>
-              <p className="font-mono text-[10px] text-zinc-600 truncate">Project: {currentProject?.id ?? '—'}</p>
-            </div>
             <div className="mt-3 flex items-center gap-3">
               <div className="flex size-8 shrink-0 items-center justify-center rounded-full bg-gradient-to-br from-emerald-300 to-teal-400 text-xs font-semibold text-zinc-900">
                 {user?.email.slice(0, 1).toUpperCase() ?? 'U'}

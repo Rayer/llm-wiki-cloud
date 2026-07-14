@@ -31,7 +31,7 @@ test('shell renders projects with a custom project selector', async () => {
   assert.doesNotMatch(shell, /<select[\s\S]*value=\{currentProject\?\.id/);
 });
 
-test('shell footer shows user and project ids above the user account block', async () => {
+test('shell footer keeps the user account block without raw user or project ids', async () => {
   const shell = await readFile(
     new URL('../src/components/Shell.tsx', import.meta.url),
     'utf8',
@@ -39,16 +39,9 @@ test('shell footer shows user and project ids above the user account block', asy
 
   assert.match(shell, /import \{ useAuth \} from '@\/lib\/auth';/);
   assert.match(shell, /const \{\s*user\s*\} = useAuth\(\);/);
-  assert.match(
-    shell,
-    /<div className="mt-2 border-t border-white\/10 pt-2">[\s\S]*?<div className="mt-3 flex items-center gap-3">/,
-  );
-  assert.match(
-    shell,
-    /<p className="font-mono text-\[10px\] text-zinc-600 truncate">User: \{user\?\.id \?\? '—'\}<\/p>/,
-  );
-  assert.match(
-    shell,
-    /<p className="font-mono text-\[10px\] text-zinc-600 truncate">Project: \{currentProject\?\.id \?\? '—'\}<\/p>/,
-  );
+  assert.match(shell, /<div className="shrink-0 border-t border-white\/8 px-3 py-3">[\s\S]*?<div className="mt-3 flex items-center gap-3">/);
+  assert.match(shell, /\{user\?\.email \?\? 'User'\}/);
+  assert.match(shell, /onClick=\{\(\) => void signOut\(\)\}/);
+  assert.doesNotMatch(shell, /User:\s*\{user\?\.id \?\? '—'\}/);
+  assert.doesNotMatch(shell, /Project:\s*\{currentProject\?\.id \?\? '—'\}/);
 });

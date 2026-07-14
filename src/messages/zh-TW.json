@@ -112,7 +112,9 @@
   },
   "Status": {
     "title": "Pipeline Status",
-    "noStatus": "No pipeline status available."
+    "noStatus": "No pipeline status available.",
+    "userId": "使用者 ID",
+    "projectId": "專案 ID"
   },
   "Pipeline": {
     "addContent": "新增內容",
