@@ -17,8 +17,8 @@ test('LWC-141: developer IDs are hidden in expanded status details instead of th
   assert.match(statusClient, /import \{ useWorkspace \} from '\.\/WorkspaceProvider';/);
   assert.match(statusClient, /const \{ user \} = useAuth\(\);/);
   assert.match(statusClient, /const \{ currentProject \} = useWorkspace\(\);/);
-  assert.match(statusClient, /\{showRaw \? \([\s\S]*?t\('Status\.userId'\)[\s\S]*?user\?\.id \?\? '—'[\s\S]*?t\('Status\.projectId'\)[\s\S]*?currentProject\?\.id \?\? '—'/);
-  assert.match(statusClient, /JSON\.stringify\(\{ api: status\.raw \}, null, 2\)/);
+  assert.match(statusClient, /\{showRaw \? \([\s\S]*?t\('Status\.userId'\)[\s\S]*?userId \?\? '—'[\s\S]*?t\('Status\.projectId'\)[\s\S]*?projectId \?\? '—'/);
+  assert.match(statusClient, /JSON\.stringify\(\{ api: status\?\.raw \?\? null, build: buildInfo \}, null, 2\)/);
   assert.match(statusClient, /const \[showRaw, setShowRaw\] = useState\(false\);/);
 
   assert.equal(english.Status.userId, 'User ID');

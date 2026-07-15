@@ -114,7 +114,15 @@
     "title": "Pipeline Status",
     "noStatus": "No pipeline status available.",
     "userId": "User ID",
-    "projectId": "Project ID"
+    "projectId": "Project ID",
+    "productVersion": "BFF product version",
+    "commit": "Commit",
+    "branch": "Branch",
+    "gitTag": "Git tag",
+    "imageTag": "Image tag",
+    "cloudRunService": "Cloud Run service",
+    "cloudRunRevision": "Cloud Run revision",
+    "buildInfoUnavailable": "Build information is unavailable."
   },
   "Pipeline": {
     "addContent": "Add Content",

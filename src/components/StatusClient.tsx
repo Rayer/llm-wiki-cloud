@@ -3,9 +3,11 @@
 import { useEffect, useState } from 'react';
 import { CheckCircle2, Circle, Loader2, XCircle } from 'lucide-react';
 import {
+  getBuildInfo,
   getPipelineLog,
   getStatus,
   type ApiStatus,
+  type BuildInfo,
   type PipelineExecution,
 } from '@/lib/api';
 import { useAuth } from '@/lib/auth';
@@ -31,6 +33,24 @@ export function StatusClient() {
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState('');
   const [showRaw, setShowRaw] = useState(false);
+  const [buildInfo, setBuildInfo] = useState<BuildInfo | null>(null);
+  const [buildInfoError, setBuildInfoError] = useState('');
+
+  useEffect(() => {
+    let cancelled = false;
+
+    getBuildInfo()
+      .then((info) => {
+        if (!cancelled) setBuildInfo(info);
+      })
+      .catch((err: Error) => {
+        if (!cancelled) setBuildInfoError(err.message);
+      });
+
+    return () => {
+      cancelled = true;
+    };
+  }, []);
 
   useEffect(() => {
     let cancelled = false;
@@ -98,35 +118,104 @@ export function StatusClient() {
             onToggleFull={() => setShowFullLog((prev) => !prev)}
           />
 
-          <Surface variant="glass" className="p-5">
-            <button
-              type="button"
-              onClick={() => setShowRaw((prev) => !prev)}
-              className="text-sm font-medium text-zinc-400 transition hover:text-white"
-            >
-              {showRaw ? 'Hide' : 'Show'} developer details
-            </button>
-            {showRaw ? (
-              <div className="mt-4 space-y-4">
-                <dl className="grid gap-2 text-xs sm:grid-cols-2">
-                  <div>
-                    <dt className="text-zinc-500">{t('Status.userId')}</dt>
-                    <dd className="mt-1 font-mono text-zinc-300">{user?.id ?? '—'}</dd>
-                  </div>
-                  <div>
-                    <dt className="text-zinc-500">{t('Status.projectId')}</dt>
-                    <dd className="mt-1 font-mono text-zinc-300">{currentProject?.id ?? '—'}</dd>
-                  </div>
-                </dl>
-                <pre className="overflow-x-auto rounded-md bg-black/50 p-4 text-xs text-zinc-400">
-                  {JSON.stringify({ api: status.raw }, null, 2)}
-                </pre>
-              </div>
-            ) : null}
-          </Surface>
         </>
       ) : null}
+
+      <DeveloperDetails
+        showRaw={showRaw}
+        onToggle={() => setShowRaw((prev) => !prev)}
+        userId={user?.id}
+        projectId={currentProject?.id}
+        status={status}
+        buildInfo={buildInfo}
+        buildInfoError={buildInfoError}
+        t={t}
+      />
     </div>
+  );
+}
+
+function DeveloperDetails({
+  showRaw,
+  onToggle,
+  userId,
+  projectId,
+  status,
+  buildInfo,
+  buildInfoError,
+  t,
+}: {
+  showRaw: boolean;
+  onToggle: () => void;
+  userId?: string;
+  projectId?: string;
+  status: ApiStatus | null;
+  buildInfo: BuildInfo | null;
+  buildInfoError: string;
+  t: (key: string) => string;
+}) {
+  return (
+    <Surface variant="glass" className="p-5">
+      <button
+        type="button"
+        onClick={onToggle}
+        className="text-sm font-medium text-zinc-400 transition hover:text-white"
+      >
+        {showRaw ? 'Hide' : 'Show'} developer details
+      </button>
+      {showRaw ? (
+        <div className="mt-4 space-y-4">
+          <dl className="grid gap-2 text-xs sm:grid-cols-2">
+            <div>
+              <dt className="text-zinc-500">{t('Status.userId')}</dt>
+              <dd className="mt-1 font-mono text-zinc-300">{userId ?? '—'}</dd>
+            </div>
+            <div>
+              <dt className="text-zinc-500">{t('Status.projectId')}</dt>
+              <dd className="mt-1 font-mono text-zinc-300">{projectId ?? '—'}</dd>
+            </div>
+            {buildInfo ? (
+              <>
+                <div>
+                  <dt className="text-zinc-500">{t('Status.productVersion')}</dt>
+                  <dd className="mt-1 font-mono text-zinc-300">{buildInfo.product_version}</dd>
+                </div>
+                <div>
+                  <dt className="text-zinc-500">{t('Status.commit')}</dt>
+                  <dd className="mt-1 font-mono text-zinc-300">{buildInfo.commit}</dd>
+                </div>
+                <div>
+                  <dt className="text-zinc-500">{t('Status.branch')}</dt>
+                  <dd className="mt-1 font-mono text-zinc-300">{buildInfo.branch}</dd>
+                </div>
+                <div>
+                  <dt className="text-zinc-500">{t('Status.gitTag')}</dt>
+                  <dd className="mt-1 font-mono text-zinc-300">{buildInfo.tag || '—'}</dd>
+                </div>
+                <div>
+                  <dt className="text-zinc-500">{t('Status.imageTag')}</dt>
+                  <dd className="mt-1 font-mono text-zinc-300">{buildInfo.image_tag}</dd>
+                </div>
+                <div>
+                  <dt className="text-zinc-500">{t('Status.cloudRunService')}</dt>
+                  <dd className="mt-1 font-mono text-zinc-300">{buildInfo.service}</dd>
+                </div>
+                <div>
+                  <dt className="text-zinc-500">{t('Status.cloudRunRevision')}</dt>
+                  <dd className="mt-1 font-mono text-zinc-300">{buildInfo.revision}</dd>
+                </div>
+              </>
+            ) : null}
+          </dl>
+          {buildInfoError ? (
+            <p className="text-sm text-amber-300">{t('Status.buildInfoUnavailable')}</p>
+          ) : null}
+          <pre className="overflow-x-auto rounded-md bg-black/50 p-4 text-xs text-zinc-400">
+            {JSON.stringify({ api: status?.raw ?? null, build: buildInfo }, null, 2)}
+          </pre>
+        </div>
+      ) : null}
+    </Surface>
   );
 }
 
