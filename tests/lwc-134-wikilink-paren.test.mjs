@@ -53,6 +53,27 @@ test('LWC-134: modal wikilink resolver keeps annotation parens out of link text'
   assert.ok(result.includes('(Concept)。'));
 });
 
+test('LWC-163: modal wikilink resolver follows canonical wikilink routing', () => {
+  const result = resolveWikilinksInMarkdown(`## Sources
+[[sources/4964eea0ce81-title|Title]]
+[[legacy source & title#片段|來源別名]]
+[[concepts/a3f7b2c01d9d-鋼鐵機甲戰隊|機甲]]
+## Concepts
+[[legacy concept#fragment]]`);
+
+  assert.match(result, /\[Title\]\(\/sources\/4964eea0ce81-title\)/);
+  assert.doesNotMatch(result, /sources%2F/);
+  assert.match(
+    result,
+    /\[來源別名\]\(\/sources\/legacy%20source%20%26%20title#%E7%89%87%E6%AE%B5\)/,
+  );
+  assert.match(
+    result,
+    /\[機甲\]\(\/concepts\/a3f7b2c01d9d-%E9%8B%BC%E9%90%B5%E6%A9%9F%E7%94%B2%E6%88%B0%E9%9A%8A\)/,
+  );
+  assert.match(result, /\[legacy concept\]\(\/concepts\/legacy%20concept#fragment\)/);
+});
+
 test('LWC-134: HomeClient uses shared wikilink resolver with annotation normalization', async () => {
   const homeClient = await readFile(
     new URL('../src/components/HomeClient.tsx', import.meta.url),
