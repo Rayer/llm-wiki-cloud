@@ -114,7 +114,15 @@
     "title": "Pipeline Status",
     "noStatus": "No pipeline status available.",
     "userId": "使用者 ID",
-    "projectId": "專案 ID"
+    "projectId": "專案 ID",
+    "productVersion": "BFF 產品版本",
+    "commit": "提交版本",
+    "branch": "分支",
+    "gitTag": "Git 標籤",
+    "imageTag": "映像標籤",
+    "cloudRunService": "Cloud Run 服務",
+    "cloudRunRevision": "Cloud Run 修訂版本",
+    "buildInfoUnavailable": "無法取得建置資訊。"
   },
   "Pipeline": {
     "addContent": "新增內容",

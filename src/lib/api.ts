@@ -79,6 +79,16 @@ export type AdminUser = {
   projectCount: number;
 };
 
+export type BuildInfo = {
+  product_version: string;
+  commit: string;
+  branch: string;
+  tag: string;
+  image_tag: string;
+  service: string;
+  revision: string;
+};
+
 export class ApiError extends Error {
   status: number;
 
@@ -717,6 +727,54 @@ export async function getPublicConfig(options?: { refresh?: boolean }): Promise<
     publicConfigCache = closed;
     return closed;
   }
+}
+
+export async function getBuildInfo(): Promise<BuildInfo> {
+  let response: Response;
+
+  try {
+    response = await fetch(`${API_URL}/api/v1/public/version`, {
+      method: 'GET',
+      credentials: 'omit',
+      cache: 'no-store',
+    });
+  } catch (error) {
+    const message = error instanceof Error ? error.message : 'unknown network error';
+    throw new Error(`Build info request failed: ${message}`);
+  }
+
+  if (!response.ok) {
+    throw new ApiError(`Build info request failed (${response.status})`, response.status);
+  }
+
+  let payload: unknown;
+  try {
+    payload = await response.json();
+  } catch {
+    throw new Error('Invalid build info response JSON');
+  }
+
+  if (!isRecord(payload)) {
+    throw new Error('Invalid build info response: expected an object');
+  }
+
+  const field = (key: keyof BuildInfo): string => {
+    const value = payload[key];
+    if (typeof value !== 'string') {
+      throw new Error(`Invalid build info response: ${key} must be a string`);
+    }
+    return value;
+  };
+
+  return {
+    product_version: field('product_version'),
+    commit: field('commit'),
+    branch: field('branch'),
+    tag: field('tag'),
+    image_tag: field('image_tag'),
+    service: field('service'),
+    revision: field('revision'),
+  };
 }
 
 export async function getAdminSettings(): Promise<AdminSettings> {

@@ -13,6 +13,7 @@ import {
   getPipelineStatus,
   getAdminProjects,
   getAdminUsers,
+  getBuildInfo,
   getRawFilePreview,
   getRawFiles,
   getStatus,
@@ -26,6 +27,107 @@ import {
   updateAdminUserRole,
   uploadRawFile,
 } from '../src/lib/api.ts';
+
+const buildInfoPayload = {
+  product_version: '1.2.3',
+  commit: 'abc1234',
+  branch: 'main',
+  tag: '',
+  image_tag: '2026.07.15',
+  service: 'llm-wiki-bff',
+  revision: 'llm-wiki-bff-00042-abc',
+};
+
+test('getBuildInfo reads the unauthenticated no-store public version endpoint', async () => {
+  const originalFetch = globalThis.fetch;
+  let requestedUrl = '';
+  let requestedInit;
+  globalThis.fetch = async (url, init) => {
+    requestedUrl = String(url);
+    requestedInit = init;
+    return Response.json(buildInfoPayload);
+  };
+
+  try {
+    const buildInfo = await getBuildInfo();
+
+    assert.equal(requestedUrl, 'https://llm-wiki-bff-dev-580854833715.asia-east1.run.app/api/v1/public/version');
+    assert.deepEqual(requestedInit, {
+      method: 'GET',
+      credentials: 'omit',
+      cache: 'no-store',
+    });
+    assert.equal(requestedInit.headers?.Authorization, undefined);
+    assert.equal(requestedInit.headers?.['X-Project-ID'], undefined);
+    assert.deepEqual(buildInfo, buildInfoPayload);
+  } finally {
+    globalThis.fetch = originalFetch;
+  }
+});
+
+test('getBuildInfo rejects an unsuccessful public version response', async () => {
+  const originalFetch = globalThis.fetch;
+  globalThis.fetch = async () => new Response(null, { status: 503 });
+
+  try {
+    await assert.rejects(
+      () => getBuildInfo(),
+      (error) => error instanceof ApiError && error.status === 503 && /Build info request failed \(503\)/.test(error.message),
+    );
+  } finally {
+    globalThis.fetch = originalFetch;
+  }
+});
+
+test('getBuildInfo rejects invalid JSON from the public version endpoint', async () => {
+  const originalFetch = globalThis.fetch;
+  globalThis.fetch = async () => new Response('{not json', {
+    headers: { 'Content-Type': 'application/json' },
+  });
+
+  try {
+    await assert.rejects(() => getBuildInfo(), /Invalid build info response JSON/);
+  } finally {
+    globalThis.fetch = originalFetch;
+  }
+});
+
+test('getBuildInfo rejects build metadata with a missing field', async () => {
+  const originalFetch = globalThis.fetch;
+  const missingRevision = { ...buildInfoPayload };
+  delete missingRevision.revision;
+  globalThis.fetch = async () => Response.json(missingRevision);
+
+  try {
+    await assert.rejects(() => getBuildInfo(), /Invalid build info response: revision must be a string/);
+  } finally {
+    globalThis.fetch = originalFetch;
+  }
+});
+
+test('getBuildInfo rejects build metadata with a non-string field', async () => {
+  const originalFetch = globalThis.fetch;
+  globalThis.fetch = async () => Response.json({ ...buildInfoPayload, tag: null });
+
+  try {
+    await assert.rejects(() => getBuildInfo(), /Invalid build info response: tag must be a string/);
+  } finally {
+    globalThis.fetch = originalFetch;
+  }
+});
+
+test('getBuildInfo rejects a public version network failure', async () => {
+  const originalFetch = globalThis.fetch;
+  globalThis.fetch = async () => {
+    throw new Error('network unavailable');
+  };
+
+  try {
+    await assert.rejects(() => getBuildInfo(), /Build info request failed: network unavailable/);
+  } finally {
+    globalThis.fetch = originalFetch;
+  }
+});
 
 test('buildProjectHeaders scopes authenticated requests to the selected project', () => {
   assert.deepEqual(buildProjectHeaders('project-1', 'jwt-token', true), {
