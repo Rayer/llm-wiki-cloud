@@ -1,3 +1,5 @@
+import { resolveWikilink } from './wikilinks.ts';
+
 // Inline markdown token regex — wikilink uses non-greedy match (LWC-134)
 export const INLINE_TOKEN_REGEX =
   /(`[^`]+`|\*\*[^*]+\*\*|!\[[^\]]*\]\(.+\)|\[\[[^\]]+?\]\]|\[[^\]]+\]\([^)]+\))/g;
@@ -32,10 +34,8 @@ export function resolveWikilinksInMarkdown(md: string): string {
 
     out.push(
       line.replace(/\[\[([^\]]+?)\]\]/g, (_, name: string) => {
-        const parts = name.split('|');
-        const slug = parts[0].trim();
-        const display = (parts[1] || parts[0]).trim();
-        return `[${display}](/${section}/${encodeURIComponent(slug)})`;
+        const { href, label } = resolveWikilink(name, section);
+        return `[${label}](${href})`;
       }),
     );
   }
