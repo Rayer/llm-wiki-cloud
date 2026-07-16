@@ -17,6 +17,7 @@ export default function SourceDetailPage({
       label="Sources"
       backHref="/sources"
       load={getSource}
+      entryType="source"
     />
   );
 }

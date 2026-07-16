@@ -23,6 +23,9 @@
 # misc
 .DS_Store
 *.pem
+.claude/
+.codex/
+.superpowers/
 
 # debug
 npm-debug.log*
@@ -39,3 +42,6 @@ yarn-error.log*
 # typescript
 *.tsbuildinfo
 next-env.d.ts
+
+# git worktrees (local isolation)
+.worktrees/

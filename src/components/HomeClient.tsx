@@ -5,6 +5,7 @@ import { FormEvent, ReactNode, useCallback, useEffect, useState } from 'react';
 import ReactMarkdown from 'react-markdown';
 import {
   getConcept,
+  getConcepts,
   getSource,
   getStatus,
   searchWiki,
@@ -13,7 +14,12 @@ import {
   type SearchResult,
   type WikiEntry,
 } from '@/lib/api';
+import { useT } from '@/lib/i18n';
+import { resolveWikilinksInMarkdown } from '@/lib/markdown-inline';
 import { EmptyState, ErrorState, LoadingState } from './States';
+import { useWorkspace } from './WorkspaceProvider';
+import { Badge } from './ui/Badge';
+import { Surface } from './ui/Surface';
 
 function readSearchParams(): { q: string; mode: 'wiki' | 'full' } {
   if (typeof window === 'undefined') return { q: '', mode: 'wiki' };
@@ -35,21 +41,33 @@ function syncUrl(q: string, mode: 'wiki' | 'full') {
   window.history.replaceState(null, '', url);
 }
 
-type ModalEntry = { title: string; content: string; type: string; slug: string };
+type ModalEntry = { title: string; content: string; type: string; slug: string; id?: string };
+type SearchMode = 'wiki' | 'full';
+
+function conceptHref(concept: WikiEntry): string {
+  const target = concept.id
+    ? `${concept.id}-${encodeURIComponent(concept.slug)}`
+    : encodeURIComponent(concept.slug);
+  return `/concepts/${target}`;
+}
 
 export function HomeClient() {
+  const { t } = useT();
+  const { currentProject } = useWorkspace();
   const [query, setQuery] = useState('');
-  const [mode, setMode] = useState<'wiki' | 'full'>('wiki');
+  const [mode, setMode] = useState<SearchMode>('wiki');
   const [status, setStatus] = useState<ApiStatus | null>(null);
   const [statusError, setStatusError] = useState('');
   const [results, setResults] = useState<SearchResult[]>([]);
   const [aiAnswer, setAiAnswer] = useState('');
   const [citations, setCitations] = useState<Citation[]>([]);
+  const [expandKeywords, setExpandKeywords] = useState<string[]>([]);
   const [searched, setSearched] = useState(false);
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState('');
   const [modal, setModal] = useState<ModalEntry | null>(null);
   const [modalLoading, setModalLoading] = useState(false);
+  const [latestConcepts, setLatestConcepts] = useState<WikiEntry[]>([]);
 
   // Restore search from URL on mount (back-button support).
   // React 19 batches all state updates in effects — multiple setStates here
@@ -67,12 +85,14 @@ export function HomeClient() {
           setResults(response.results);
           setAiAnswer(response.aiAnswer);
           setCitations(response.citations);
+          setExpandKeywords(response.expand?.keywords ?? []);
         })
         .catch((err: Error) => {
           setError(err instanceof Error ? err.message : 'Search failed');
           setResults([]);
           setAiAnswer('');
           setCitations([]);
+          setExpandKeywords([]);
         })
         .finally(() => setLoading(false));
     }
@@ -82,39 +102,66 @@ export function HomeClient() {
     getStatus()
       .then(setStatus)
       .catch((err: Error) => setStatusError(err.message));
-  }, []);
+  }, [currentProject]);
 
-  const onSubmit = useCallback(async (event: FormEvent<HTMLFormElement>) => {
-    event.preventDefault();
-    const trimmed = query.trim();
+  useEffect(() => {
+    let ignore = false;
+    getConcepts()
+      .then((data) => {
+        if (!ignore) setLatestConcepts(data.slice(0, 4));
+      })
+      .catch(() => {
+        if (!ignore) setLatestConcepts([]);
+      });
+
+    return () => {
+      ignore = true;
+    };
+  }, [currentProject]);
+
+  const handleSearch = useCallback(async (searchMode: SearchMode, rawQuery = query) => {
+    const trimmed = rawQuery.trim();
     if (!trimmed) return;
 
-    syncUrl(trimmed, mode);
+    syncUrl(trimmed, searchMode);
 
     setLoading(true);
     setError('');
     setAiAnswer('');
     setCitations([]);
+    setExpandKeywords([]);
     setSearched(true);
 
     try {
-      const response = await searchWiki(trimmed, mode);
+      const response = await searchWiki(trimmed, searchMode);
       setResults(response.results);
       setAiAnswer(response.aiAnswer);
       setCitations(response.citations);
+      setExpandKeywords(response.expand?.keywords ?? []);
     } catch (err) {
       setError(err instanceof Error ? err.message : 'Search failed');
       setResults([]);
       setAiAnswer('');
       setCitations([]);
+      setExpandKeywords([]);
     } finally {
       setLoading(false);
     }
-  }, [query, mode]);
+  }, [query]);
+
+  const onSubmit = useCallback(async (event: FormEvent<HTMLFormElement>) => {
+    event.preventDefault();
+    await handleSearch(mode);
+  }, [handleSearch, mode]);
+
+  const handleSuggestedQuery = useCallback(async (suggestion: string) => {
+    setQuery(suggestion);
+    await handleSearch(mode, suggestion);
+  }, [handleSearch, mode]);
 
   const openCitation = useCallback(async (citation: Citation) => {
     setModalLoading(true);
-    setModal({ title: citation.text, content: '', type: citation.type, slug: citation.slug });
+    setModal({ title: citation.text, content: '', type: citation.type, slug: citation.slug, id: citation.id });
     try {
       const fetch = citation.type === 'concept' ? getConcept : getSource;
       const entry: WikiEntry = await fetch(citation.slug);
@@ -123,6 +170,7 @@ export function HomeClient() {
         content: entry.content ?? entry.raw as string ?? '',
         type: citation.type,
         slug: citation.slug,
+        id: entry.id,
       });
     } catch {
       setModal(null);
@@ -139,127 +187,201 @@ export function HomeClient() {
     return () => window.removeEventListener('keydown', handler);
   }, [modal]);
 
+  const resultType = (type?: string): 'source' | 'concept' =>
+    type === 'source' ? 'source' : 'concept';
+  const suggestedQueries = status?.suggestedQueries ?? [];
+  const suggestedQueryChips = suggestedQueries.slice(1);
+
   return (
     <div className="space-y-10">
-      <section className="grid gap-8 pt-6 lg:grid-cols-[1fr_320px] lg:items-end">
-        <div>
-          <div className="text-sm font-semibold uppercase tracking-[0.28em] text-emerald-300">
-            LLM Wiki (Demo)
-          </div>
-          <h1 className="mt-5 max-w-3xl text-3xl font-bold leading-tight text-white sm:text-4xl">
-            Your past knowledge, embedded in every conversation.
-          </h1>
-          <p className="mt-5 max-w-2xl text-lg leading-8 text-zinc-400">
-            Browse source documents, distilled concepts, and pipeline state from the
-            LLM Wiki backend.
-          </p>
-          <p className="mt-3 max-w-2xl text-sm leading-6 text-zinc-500">
-            Inspired by{" "}
-            <a
-              href="https://rayer.idv.tw/blog/?p=1351"
-              target="_blank"
-              rel="noopener noreferrer"
-              className="text-emerald-300 underline hover:text-emerald-200"
-            >
-              Andrej Karpathy&apos;s LLM Wiki concept
-            </a>
-            , remixed with LLM superpowers.
-          </p>
-          <form onSubmit={onSubmit} className="mt-8 rounded-lg border border-white/10 bg-[#151515] p-3">
-            <div className="flex flex-col gap-3 sm:flex-row">
+      <section className="flex flex-col items-center pt-8 text-center">
+        <p className="text-sm text-zinc-500">{t('Demo.heroSubtitle')}</p>
+        <h1 className="mt-2 max-w-2xl text-2xl font-semibold tracking-tight text-white sm:text-3xl">
+          {t('Demo.heading')}
+        </h1>
+
+        <form onSubmit={onSubmit} className="mt-8 w-full max-w-2xl">
+          <Surface variant="glass" className="p-2">
+            <div className="flex flex-col gap-2 sm:flex-row sm:items-center">
               <input
                 value={query}
                 onChange={(event) => setQuery(event.target.value)}
-                placeholder="新北適合帶小孩放電的地方"
-                className="min-h-12 flex-1 rounded-md border border-white/10 bg-black/40 px-4 text-white outline-none transition placeholder:text-zinc-600 focus:border-emerald-300"
+                placeholder={suggestedQueries[0] ?? t('Demo.searchPlaceholder')}
+                className="min-h-12 flex-1 rounded-[var(--radius-md)] bg-transparent px-4 text-white outline-none transition placeholder:text-zinc-600 focus:ring-1 focus:ring-emerald-400/30"
               />
-              <div className="grid grid-cols-2 rounded-md border border-white/10 bg-black/30 p-1 text-sm">
-                {(['wiki', 'full'] as const).map((item) => (
-                  <button
-                    key={item}
-                    type="button"
-                    onClick={() => setMode(item)}
-                    className={`rounded px-4 py-2 font-medium capitalize transition ${
-                      mode === item ? 'bg-emerald-300 text-black' : 'text-zinc-300 hover:text-white'
-                    }`}
-                  >
-                    {item}
-                  </button>
-                ))}
+              <div className="flex items-center gap-2 px-1 sm:pr-1">
+                <div className="grid grid-cols-2 rounded-[var(--radius-md)] border border-white/10 bg-black/30 p-0.5 text-sm">
+                  {(['wiki', 'full'] as const).map((item) => (
+                    <button
+                      key={item}
+                      type="button"
+                      onClick={() => { setMode(item); if (query.trim()) handleSearch(item); }}
+                      className={`min-h-11 rounded-md px-3 py-2 font-medium capitalize transition ${
+                        mode === item ? 'bg-emerald-400/20 text-emerald-200' : 'text-zinc-400 hover:text-white'
+                      }`}
+                    >
+                      {t(`Demo.${item}`)}
+                    </button>
+                  ))}
+                </div>
+                <button
+                  type="submit"
+                  className="min-h-12 rounded-[var(--radius-md)] bg-emerald-400 px-5 text-sm font-semibold text-zinc-900 transition hover:bg-emerald-300"
+                >
+                  {t('Demo.search')}
+                </button>
               </div>
-              <button
-                type="submit"
-                className="min-h-12 rounded-md bg-white px-6 font-semibold text-black transition hover:bg-emerald-200"
-              >
-                Search
-              </button>
             </div>
-          </form>
-        </div>
-
-        <div className="grid gap-3 sm:grid-cols-2 lg:grid-cols-1">
-          <StatCard label="Sources" value={status?.sourcesCount} error={statusError} />
-          <StatCard label="Concepts" value={status?.conceptsCount} error={statusError} />
-        </div>
+          </Surface>
+          {suggestedQueryChips.length > 0 ? (
+            <div className="mt-3 flex flex-wrap items-center justify-center gap-2">
+              {suggestedQueryChips.map((suggestion) => (
+                <button
+                  key={suggestion}
+                  type="button"
+                  onClick={() => void handleSuggestedQuery(suggestion)}
+                  className="max-w-full rounded-md border border-emerald-300/20 bg-emerald-300/10 px-3 py-1.5 text-left text-sm text-emerald-100 transition hover:border-emerald-300/40 hover:bg-emerald-300/15"
+                >
+                  <span className="block truncate">{suggestion}</span>
+                </button>
+              ))}
+            </div>
+          ) : null}
+          <div className="mt-3 flex flex-wrap items-center justify-center gap-2">
+            <StatPill label={t('Shell.sources')} value={status?.sourcesCount} error={statusError} />
+            <StatPill label={t('Shell.concepts')} value={status?.conceptsCount} error={statusError} />
+            <StatPill label={t('Shell.raw')} value={status?.rawCount} error={statusError} />
+            <Badge variant="muted" className="hidden sm:inline-flex">⌘K</Badge>
+          </div>
+        </form>
       </section>
 
+      {!searched && latestConcepts.length > 0 ? (
+        <section className="space-y-4" aria-labelledby="latest-concepts-heading">
+          <div className="flex items-center justify-between gap-4">
+            <h2 id="latest-concepts-heading" className="text-lg font-semibold text-white">
+              {t('Demo.latestConcepts')}
+            </h2>
+            <Badge variant="muted">{latestConcepts.length}</Badge>
+          </div>
+          <div className="grid gap-4 md:grid-cols-2">
+            {latestConcepts.map((concept, index) => (
+              <Link key={concept.slug} href={conceptHref(concept)} className="group block">
+                <Surface
+                  variant="glass"
+                  className="animate-fade-in border-l-[3px] border-l-emerald-400 p-5 transition duration-200 [animation-fill-mode:backwards] hover:-translate-y-0.5 hover:border-emerald-400/30 hover:shadow-lg hover:shadow-emerald-500/5"
+                  style={{ animationDelay: `${index * 50}ms` }}
+                >
+                  <div className="flex flex-wrap items-center gap-2">
+                    <Badge variant="concept">{t('Entry.singular')}</Badge>
+                    <h3 className="text-base font-semibold text-white group-hover:text-emerald-50">
+                      {concept.title}
+                    </h3>
+                  </div>
+                  {concept.description ? (
+                    <p className="mt-3 line-clamp-3 text-sm leading-6 text-zinc-400">
+                      {concept.description}
+                    </p>
+                  ) : null}
+                </Surface>
+              </Link>
+            ))}
+          </div>
+        </section>
+      ) : null}
+
       <section className="space-y-4">
-        <div className="flex items-center justify-between gap-4">
-          <h2 className="text-2xl font-semibold text-white">Search results</h2>
-          {searched ? <span className="text-sm text-zinc-500">{mode} mode</span> : null}
-        </div>
+        {searched ? (
+          <div className="flex items-center justify-between gap-4">
+            <h2 className="text-lg font-semibold text-white">{t('Demo.results')}</h2>
+            <Badge variant="muted">{mode} mode</Badge>
+          </div>
+        ) : null}
         {loading ? <LoadingState label="Searching" /> : null}
         {error ? <ErrorState message={error} /> : null}
         {!loading && !error && aiAnswer ? (
-          <article className="rounded-lg border border-emerald-300/20 bg-emerald-300/[0.06] p-5">
-            <h3 className="text-sm font-semibold uppercase tracking-[0.2em] text-emerald-300">
-              AI answer
-            </h3>
-            <div className="mt-3 text-base leading-7 text-zinc-200
-              [&_strong]:text-white [&_strong]:font-semibold
-              [&_h3]:text-base [&_h3]:font-semibold [&_h3]:text-white [&_h3]:mt-4 [&_h3]:mb-1
-              [&_ul]:list-disc [&_ul]:pl-5 [&_ul]:space-y-1 [&_ul]:mb-3
-              [&_ol]:list-decimal [&_ol]:pl-5 [&_ol]:space-y-1 [&_ol]:mb-3
-              [&_li]:leading-7
-              [&_p]:mb-3
-            ">
-              {renderCitations(aiAnswer, citations, openCitation)}
+          <article className="relative overflow-hidden rounded-[var(--radius-lg)] border border-emerald-400/20 bg-emerald-400/[0.06] p-5 backdrop-blur-sm">
+            <div className="absolute inset-y-0 left-0 w-1 bg-gradient-to-b from-emerald-300 to-teal-500" />
+            <div className="pl-3">
+              <div className="flex flex-wrap items-center gap-2">
+                <h3 className="text-sm font-semibold text-emerald-200">{t('Demo.answer')}</h3>
+                {citations.length > 0 ? (
+                  <Badge variant="accent">
+                    {t('Demo.sourcesCount', { count: citations.length })}
+                  </Badge>
+                ) : null}
+              </div>
+              <div className="mt-3 text-base leading-7 text-zinc-200
+                [&_strong]:text-white [&_strong]:font-semibold
+                [&_h3]:text-base [&_h3]:font-semibold [&_h3]:text-white [&_h3]:mt-4 [&_h3]:mb-1
+                [&_ul]:list-disc [&_ul]:pl-5 [&_ul]:space-y-1 [&_ul]:mb-3
+                [&_ol]:list-decimal [&_ol]:pl-5 [&_ol]:space-y-1 [&_ol]:mb-3
+                [&_li]:leading-7
+                [&_p]:mb-3
+              ">
+                {renderCitations(aiAnswer, citations, openCitation)}
+              </div>
             </div>
           </article>
         ) : null}
         {!loading && !error && searched && results.length === 0 ? (
-          <EmptyState message="No results matched that query." />
+          <EmptyState message={t('Demo.noResults')} />
         ) : null}
         <div className="grid gap-4 md:grid-cols-2">
-          {results.map((result) => (
-            <button
-              key={`${result.type}-${result.slug}`}
-              type="button"
-              onClick={() => openCitation({ text: result.title, slug: result.slug, type: (result.type === 'source' ? 'source' as const : 'concept' as const), path: '' })}
-              className="rounded-lg border border-white/10 bg-[#1a1a1a] p-5 text-left transition hover:border-emerald-300/50 hover:bg-[#202020]"
-            >
-                <div className="flex items-center justify-between gap-4">
-                  <h3 className="text-lg font-semibold text-white">{result.title}</h3>
+          {results.map((result, index) => {
+            const type = resultType(result.type);
+            const typeBorderClass = type === 'source'
+              ? 'border-l-blue-400'
+              : type === 'concept'
+                ? 'border-l-emerald-400'
+                : '';
+            return (
+              <button
+                key={`${result.type}-${result.slug}`}
+                type="button"
+                onClick={() => openCitation({
+                  text: result.title,
+                  slug: result.slug,
+                  type: type,
+                  path: '',
+                })}
+                className={`animate-fade-in rounded-[var(--radius-lg)] border border-l-[3px] border-white/10 bg-zinc-900/40 p-5 text-left backdrop-blur-sm transition duration-200 [animation-fill-mode:backwards] hover:-translate-y-0.5 hover:border-emerald-400/30 hover:shadow-lg hover:shadow-emerald-500/5 ${typeBorderClass}`}
+                style={{ animationDelay: `${index * 50}ms` }}
+              >
+                <div className="flex items-start justify-between gap-3">
+                  <div className="flex flex-wrap items-center gap-2">
+                    <Badge variant={type}>
+                      {type === 'source' ? t('Source.singular') : t('Entry.singular')}
+                    </Badge>
+                    <h3 className="text-lg font-semibold text-white">{result.title}</h3>
+                  </div>
                   {result.score !== undefined ? (
-                    <span className="text-xs text-zinc-500">{result.score.toFixed(2)}</span>
+                    <Badge variant="muted">{result.score.toFixed(2)}</Badge>
                   ) : null}
                 </div>
                 <p className="mt-3 line-clamp-4 text-sm leading-6 text-zinc-400">
                   {result.excerpt ?? result.description ?? 'Open this wiki entry.'}
                 </p>
               </button>
-          ))}
+            );
+          })}
         </div>
+        {!loading && !error && searched && expandKeywords.length > 0 ? (
+          <div className="mt-1 text-xs text-zinc-500">
+            搜尋關鍵字：{expandKeywords.join('、')}
+          </div>
+        ) : null}
       </section>
 
       {/* Citation Preview Modal */}
       {modal ? (
         <div
-          className="fixed inset-0 z-50 flex items-center justify-center bg-black/70 p-4 backdrop-blur-sm"
+          className="fixed inset-0 z-50 flex items-center justify-center bg-black/70 p-4 backdrop-blur-sm animate-fade-in"
           onClick={() => setModal(null)}
         >
-          <div
-            className="relative max-h-[85vh] w-full max-w-2xl overflow-y-auto rounded-xl border border-white/10 bg-[#151515] p-6 shadow-2xl"
+          <Surface
+            variant="elevated"
+            className="relative max-h-[85vh] w-full max-w-2xl overflow-y-auto p-6 animate-scale-in"
             onClick={(e) => e.stopPropagation()}
           >
             <button
@@ -276,25 +398,25 @@ export function HomeClient() {
               <LoadingState label="Loading..." />
             ) : (
               <>
-                <div className="mb-1 text-xs font-semibold uppercase tracking-[0.2em] text-zinc-500">
-                  {modal.type === 'concept' ? 'Concept' : 'Source'}
-                </div>
+                <Badge variant={modal.type === 'concept' ? 'concept' : 'source'}>
+                  {modal.type === 'concept' ? t('Entry.singular') : t('Source.singular')}
+                </Badge>
                 <h2 className="text-2xl font-semibold text-white">{modal.title}</h2>
                 <div className="mt-4 border-t border-white/10 pt-4">
                   <MarkdownBody content={stripLeadingHeading(modal.content)} />
                 </div>
                 <div className="mt-6 border-t border-white/10 pt-4">
                   <Link
-                    href={`/${modal.type === 'concept' ? 'concepts' : 'sources'}/${modal.slug}`}
+                    href={`/${modal.type === 'concept' ? 'concepts' : 'sources'}/${modal.id || modal.slug}`}
                     className="text-sm font-medium text-emerald-300 hover:text-emerald-200"
                     onClick={() => setModal(null)}
                   >
-                    Open full page →
+                    {t('Detail.openFullPage')}
                   </Link>
                 </div>
               </>
             )}
-          </div>
+          </Surface>
         </div>
       ) : null}
     </div>
@@ -309,29 +431,11 @@ function stripLeadingHeading(md: string): string {
   return md.replace(h1, '').replace(h1u, '').trimStart();
 }
 
-// Convert [[wikilinks]] with section context:
-// Under "## Sources" → /sources/ | Under "## Concepts" → /concepts/
-function resolveWikilinks(md: string): string {
-  const lines = md.split('\n');
-  let section = 'concepts'; // default
-  const out: string[] = [];
-  for (const line of lines) {
-    const secMatch = /^## (Sources|Concepts)/i.exec(line);
-    if (secMatch) {
-      section = secMatch[1].toLowerCase();
-    }
-    out.push(line.replace(/\[\[([^\]]+)\]\]/g, (_, name: string) =>
-      `[${name}](/${section}/${encodeURIComponent(name)})`
-    ));
-  }
-  return out.join('\n');
-}
-
 function MarkdownBody({ content }: { content: string }) {
   if (!content) return <p className="text-zinc-400 italic">No content available.</p>;
   // Convert [[wikilinks]] with context-aware routing:
   // Under ## Sources → /sources/ | Under ## Concepts → /concepts/ | else → /concepts/
-  const withLinks = resolveWikilinks(content);
+  const withLinks = resolveWikilinksInMarkdown(content);
   return (
     <div className="prose prose-invert prose-sm max-w-none text-zinc-300 leading-7
       [&_h1]:text-xl [&_h1]:font-semibold [&_h1]:text-white [&_h1]:mt-4 [&_h1]:mb-2
@@ -410,7 +514,7 @@ function renderInlineMarkdown(text: string): ReactNode[] {
   });
 }
 
-function StatCard({
+function StatPill({
   label,
   value,
   error,
@@ -420,12 +524,11 @@ function StatCard({
   error?: string;
 }) {
   return (
-    <div className="rounded-lg border border-white/10 bg-[#1a1a1a] p-5">
-      <div className="text-sm text-zinc-500">{label}</div>
-      <div className="mt-2 text-4xl font-semibold text-white">
-        {error ? '-' : value ?? '...'}
-      </div>
-      {error ? <div className="mt-2 text-xs text-red-300">{error}</div> : null}
-    </div>
+    <span className="inline-flex items-center gap-2 rounded-full border border-white/10 bg-zinc-900/50 px-3 py-1 text-xs text-zinc-400">
+      <span>{label}</span>
+      <span className="font-semibold tabular-nums text-white">
+        {error ? '—' : value ?? '…'}
+      </span>
+    </span>
   );
 }
