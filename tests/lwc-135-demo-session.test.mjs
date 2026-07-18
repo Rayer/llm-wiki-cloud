@@ -36,7 +36,7 @@ test('LWC-135: auth provider exposes demo session state and login paths', async 
   assert.match(auth, /isDemoSession/);
   assert.match(auth, /loginAsDemo/);
   assert.match(auth, /readStoredDemoSession/);
-  assert.match(auth, /writeStoredDemoSession/);
+  assert.match(auth, /persistAuthSession/);
   assert.match(auth, /clearStoredDemoSession/);
   assert.match(auth, /demo:\s*false/);
   assert.match(auth, /demo:\s*true/);
@@ -97,6 +97,6 @@ test('LWC-135: demo upload UI is disabled and localStorage backs demo flag', asy
 
   assert.match(pipelineClient, /disabled=\{isDemoSession \|\| uploading\}/);
   assert.match(pipelineClient, /htmlFor=\{isDemoSession \? undefined : 'raw-file-upload'\}/);
-  assert.match(auth, /writeStoredDemoSession\(\s*typeof window !== 'undefined' \? window\.localStorage/);
+  assert.match(auth, /persistAuthSession\(\s*typeof window !== 'undefined' \? window\.localStorage/);
   assert.match(auth, /demo@llm-wiki\.dev/);
 });
