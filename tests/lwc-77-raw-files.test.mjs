@@ -2,25 +2,15 @@ import assert from 'node:assert/strict';
 import { readFile } from 'node:fs/promises';
 import test from 'node:test';
 
-test('shell places Raw navigation between Concepts and Status', async () => {
+test('shell keeps Raw Files off primary navigation while retaining the compatibility route', async () => {
   const shell = await readFile(
     new URL('../src/components/Shell.tsx', import.meta.url),
     'utf8',
   );
 
-  assert.match(shell, /import \{[^}]*Database[^}]*\} from 'lucide-react';/s);
-  assert.match(
-    shell,
-    /\{ href: '\/raw', label: t\('Shell\.raw'\), icon: Database(?:, countKey: 'raw')? \}/,
-  );
-
-  const conceptsIndex = shell.indexOf("href: '/concepts'");
-  const rawIndex = shell.indexOf("href: '/raw'");
-  const statusIndex = shell.indexOf("href: '/status'");
-
-  assert.ok(conceptsIndex >= 0, 'concepts nav item missing');
-  assert.ok(rawIndex > conceptsIndex, 'raw nav item should appear after concepts');
-  assert.ok(statusIndex > rawIndex, 'status nav item should appear after raw');
+  assert.doesNotMatch(shell, /Database/);
+  assert.doesNotMatch(shell, /href: '\/raw'/);
+  assert.doesNotMatch(shell, /raw: t\('Shell\.raw'\)/);
 });
 
 test('raw page renders the RawClient route component', async () => {

@@ -1,9 +1,8 @@
 'use client';
 
 import { useEffect, useState } from 'react';
-import Link from 'next/link';
 import { usePathname } from 'next/navigation';
-import { Search, FileText, Brain, Database, Activity, Menu, X, ChevronUp, Shield } from 'lucide-react';
+import { Search, FileText, Brain, Activity, Menu, X, ChevronUp, Shield } from 'lucide-react';
 import { useT } from '@/lib/i18n';
 import { useAuth } from '@/lib/auth';
 import { LoginModal } from './LoginModal';
@@ -13,12 +12,15 @@ import { WorkspaceProvider, useWorkspace, type NavCounts } from './WorkspaceProv
 import { Badge } from './ui/Badge';
 import { ProjectSelect } from './ui/ProjectSelect';
 import { CommandPalette, useCommandPalette } from './ui/CommandPalette';
+import { NavigationBlockerProvider, NavigationLink } from './NavigationBlocker';
 
 export function Shell({ children }: { children: React.ReactNode }) {
   return (
-    <WorkspaceProvider>
-      <ShellContent>{children}</ShellContent>
-    </WorkspaceProvider>
+    <NavigationBlockerProvider>
+      <WorkspaceProvider>
+        <ShellContent>{children}</ShellContent>
+      </WorkspaceProvider>
+    </NavigationBlockerProvider>
   );
 }
 
@@ -57,7 +59,6 @@ function ShellContent({ children }: { children: React.ReactNode }) {
     { href: '/', label: t('Shell.search'), icon: Search, exact: true },
     { href: '/sources', label: t('Shell.sources'), icon: FileText, countKey: 'sources' },
     { href: '/concepts', label: t('Shell.concepts'), icon: Brain, countKey: 'concepts' },
-    { href: '/raw', label: t('Shell.raw'), icon: Database, countKey: 'raw' },
     { href: '/status', label: t('Shell.status'), icon: Activity },
     ...(user?.role === 'admin'
       ? [{ href: '/admin', label: 'Admin', icon: Shield }]
@@ -104,9 +105,9 @@ function ShellContent({ children }: { children: React.ReactNode }) {
     <div className="min-h-dvh text-zinc-100 lg:flex lg:items-stretch">
       {token ? (
         <header className="sticky top-0 z-50 flex min-h-14 items-center justify-between border-b border-white/8 bg-zinc-950/85 px-4 backdrop-blur lg:hidden">
-          <Link href="/" className="min-w-0 text-sm font-semibold tracking-tight text-white">
+          <NavigationLink href="/" className="min-w-0 text-sm font-semibold tracking-tight text-white">
             {t('Shell.brand')}
-          </Link>
+          </NavigationLink>
           <button
             type="button"
             aria-controls="mobile-navigation"
@@ -142,12 +143,12 @@ function ShellContent({ children }: { children: React.ReactNode }) {
             mobileNavOpen ? 'translate-x-0' : '-translate-x-full'
           }`}
         >
-          <Link href="/" className="block px-5 py-5">
+          <NavigationLink href="/" className="block px-5 py-5">
             <div className="text-sm font-semibold tracking-tight text-white">
               {t('Shell.brand')}
             </div>
             <div className="mt-0.5 text-xs text-zinc-500">{t('Shell.subtitle')}</div>
-          </Link>
+          </NavigationLink>
 
           <div className="flex-1 overflow-y-auto">
             <nav aria-label={t('Shell.navigation')} className="flex flex-col gap-0.5 px-3 pb-3">
@@ -156,7 +157,7 @@ function ShellContent({ children }: { children: React.ReactNode }) {
                 const Icon = item.icon;
                 const count = item.countKey ? navCounts[item.countKey] : null;
                 return (
-                  <Link
+                  <NavigationLink
                     key={item.href}
                     href={item.href}
                     className={`relative flex min-h-11 items-center gap-3 rounded-lg px-3 py-2.5 text-sm font-medium transition ${
@@ -175,7 +176,7 @@ function ShellContent({ children }: { children: React.ReactNode }) {
                         {count}
                       </Badge>
                     ) : null}
-                  </Link>
+                  </NavigationLink>
                 );
               })}
             </nav>
@@ -288,7 +289,6 @@ function ShellContent({ children }: { children: React.ReactNode }) {
             search: t('Shell.search'),
             sources: t('Shell.sources'),
             concepts: t('Shell.concepts'),
-            raw: t('Shell.raw'),
             status: t('Shell.status'),
           }}
         />

@@ -1,6 +1,5 @@
 'use client';
 
-import Link from 'next/link';
 import { FormEvent, ReactNode, useCallback, useEffect, useState } from 'react';
 import ReactMarkdown from 'react-markdown';
 import {
@@ -20,6 +19,7 @@ import { EmptyState, ErrorState, LoadingState } from './States';
 import { useWorkspace } from './WorkspaceProvider';
 import { Badge } from './ui/Badge';
 import { Surface } from './ui/Surface';
+import { NavigationLink } from './NavigationBlocker';
 
 function readSearchParams(): { q: string; mode: 'wiki' | 'full' } {
   if (typeof window === 'undefined') return { q: '', mode: 'wiki' };
@@ -266,7 +266,7 @@ export function HomeClient() {
           </div>
           <div className="grid gap-4 md:grid-cols-2">
             {latestConcepts.map((concept, index) => (
-              <Link key={concept.slug} href={conceptHref(concept)} className="group block">
+              <NavigationLink key={concept.slug} href={conceptHref(concept)} className="group block">
                 <Surface
                   variant="glass"
                   className="animate-fade-in border-l-[3px] border-l-emerald-400 p-5 transition duration-200 [animation-fill-mode:backwards] hover:-translate-y-0.5 hover:border-emerald-400/30 hover:shadow-lg hover:shadow-emerald-500/5"
@@ -284,7 +284,7 @@ export function HomeClient() {
                     </p>
                   ) : null}
                 </Surface>
-              </Link>
+              </NavigationLink>
             ))}
           </div>
         </section>
@@ -406,13 +406,13 @@ export function HomeClient() {
                   <MarkdownBody content={stripLeadingHeading(modal.content)} />
                 </div>
                 <div className="mt-6 border-t border-white/10 pt-4">
-                  <Link
+                  <NavigationLink
                     href={`/${modal.type === 'concept' ? 'concepts' : 'sources'}/${modal.id || modal.slug}`}
                     className="text-sm font-medium text-emerald-300 hover:text-emerald-200"
                     onClick={() => setModal(null)}
                   >
                     {t('Detail.openFullPage')}
-                  </Link>
+                  </NavigationLink>
                 </div>
               </>
             )}
