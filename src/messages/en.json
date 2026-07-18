@@ -31,6 +31,7 @@
     "registering": "Registering…",
     "error": "Registration failed",
     "disabled": "New user registration is currently disabled.",
+    "backToLogin": "Back to sign in",
     "switchToLogin": "Already have an account? Sign in"
   },
   "Admin": {

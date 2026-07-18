@@ -17,7 +17,9 @@ import {
   clearStoredDemoSession,
   isAuthFailureStatus,
   normalizeAuthResponse,
+  normalizeRegistrationResponse,
   normalizeRefreshResponse,
+  persistAuthSession,
   RegistrationDisabledError,
   readStoredAccessToken,
   readStoredAuthUser,
@@ -25,7 +27,6 @@ import {
   responseError,
   writeStoredAccessToken,
   writeStoredAuthUser,
-  writeStoredDemoSession,
   type AuthResponse,
   type AuthUser,
 } from './auth-core';
@@ -98,16 +99,9 @@ export function AuthProvider({ children }: { children: ReactNode }) {
     accessTokenRef.current = result.access_token;
     setUser(result.user);
     setIsDemoSession(demo);
-    writeStoredAccessToken(
+    persistAuthSession(
       typeof window !== 'undefined' ? window.localStorage : null,
-      result.access_token,
-    );
-    writeStoredAuthUser(
-      typeof window !== 'undefined' ? window.localStorage : null,
-      result.user,
-    );
-    writeStoredDemoSession(
-      typeof window !== 'undefined' ? window.localStorage : null,
+      result,
       demo,
     );
   }, []);
@@ -219,7 +213,7 @@ export function AuthProvider({ children }: { children: ReactNode }) {
 
   const register = useCallback(async (email: string, password: string) => {
     const payload = await postAuth('/api/v1/auth/register', { email, password });
-    applyAuthResponse(normalizeAuthResponse(payload), { demo: false });
+    applyAuthResponse(normalizeRegistrationResponse(payload), { demo: false });
   }, [applyAuthResponse]);
 
   const logout = useCallback(async () => {
