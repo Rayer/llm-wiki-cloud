@@ -21,17 +21,16 @@ import {
   selectDefaultProject,
   type Project,
 } from '@/lib/projects';
+import { useNavigationBlocker } from './NavigationBlocker';
 
 export type NavCounts = {
   sources: number | null;
   concepts: number | null;
-  raw: number | null;
 };
 
 const emptyNavCounts: NavCounts = {
   sources: null,
   concepts: null,
-  raw: null,
 };
 
 type WorkspaceContextValue = {
@@ -62,6 +61,7 @@ type WorkspaceContextValue = {
 const WorkspaceContext = createContext<WorkspaceContextValue | null>(null);
 
 export function WorkspaceProvider({ children }: { children: ReactNode }) {
+  const { confirmNavigation } = useNavigationBlocker();
   const {
     accessToken: token,
     hydrated,
@@ -86,7 +86,6 @@ export function WorkspaceProvider({ children }: { children: ReactNode }) {
       setNavCounts({
         sources: status.sourcesCount,
         concepts: status.conceptsCount,
-        raw: status.rawCount,
       });
     } catch {
       // Keep previous badge values on refresh failure (LWC-129).
@@ -127,6 +126,7 @@ export function WorkspaceProvider({ children }: { children: ReactNode }) {
   }, [loginAsDemo]);
 
   const signOut = useCallback(async () => {
+    if (!confirmNavigation()) return;
     await logout();
     window.localStorage.removeItem(LAST_PROJECT_KEY);
     setProjects([]);
@@ -134,14 +134,15 @@ export function WorkspaceProvider({ children }: { children: ReactNode }) {
     setProjectsError('');
     setNewProjectOpen(false);
     setNavCounts(emptyNavCounts);
-  }, [logout]);
+  }, [confirmNavigation, logout]);
 
   const selectProject = useCallback((projectId: string) => {
     const selected = projects.find((project) => project.id === projectId);
     if (!selected) return;
+    if (selected.id !== currentProject?.id && !confirmNavigation()) return;
     window.localStorage.setItem(LAST_PROJECT_KEY, selected.id);
     setCurrentProject(selected);
-  }, [projects]);
+  }, [confirmNavigation, currentProject?.id, projects]);
 
   const addProject = useCallback(async (name: string) => {
     if (!token) throw new Error('Please log in to create a project.');
@@ -189,7 +190,6 @@ export function WorkspaceProvider({ children }: { children: ReactNode }) {
         setNavCounts({
           sources: status.sourcesCount,
           concepts: status.conceptsCount,
-          raw: status.rawCount,
         });
       })
       .catch(() => {

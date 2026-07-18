@@ -1,6 +1,5 @@
 'use client';
 
-import Link from 'next/link';
 import { useEffect, useState, type ReactNode } from 'react';
 
 import {
@@ -11,6 +10,7 @@ import {
 import { parseMarkdownImage } from '../lib/markdown-images';
 import { resolveWikilink, type WikilinkSection } from '../lib/wikilinks';
 import { Surface } from './ui/Surface';
+import { NavigationLink } from './NavigationBlocker';
 
 // Track current markdown section for wikilink routing
 let currentWikilinkSection: WikilinkSection = 'concepts';
@@ -266,9 +266,9 @@ function renderInline(
         );
       }
       return (
-        <Link key={index} href={resolved.href!} className="text-emerald-300 underline hover:text-emerald-200">
+        <NavigationLink key={index} href={resolved.href!} className="text-emerald-300 underline hover:text-emerald-200">
           {resolved.label}
-        </Link>
+        </NavigationLink>
       );
     }
     const link = /^\[([^\]]+)\]\(([^)]+)\)$/.exec(part);

@@ -1,8 +1,8 @@
-import Link from 'next/link';
 import type { WikiEntry } from '@/lib/api';
 import { useT } from '@/lib/i18n';
 import { Badge } from './ui/Badge';
 import { Surface } from './ui/Surface';
+import { NavigationLink } from './NavigationBlocker';
 
 function StatusBadge({ status }: { status?: string }) {
   const { t } = useT();
@@ -35,7 +35,7 @@ export function EntryCard({
       : '';
 
   return (
-    <Link href={href} className="group block">
+    <NavigationLink href={href} className="group block">
       <Surface
         variant="glass"
         className={`animate-fade-in p-5 transition duration-200 [animation-fill-mode:backwards] hover:-translate-y-0.5 hover:border-emerald-400/30 hover:shadow-lg hover:shadow-emerald-500/5 ${typeBorderClass}`}
@@ -59,6 +59,6 @@ export function EntryCard({
           </p>
         ) : null}
       </Surface>
-    </Link>
+    </NavigationLink>
   );
 }

@@ -1,6 +1,7 @@
 /** Strip leading `raw/` from a frontmatter source path. */
 export function rawFileNameFromSource(source: string): string {
-  return source.replace(/^raw\//, '').trim();
+  const path = source.replace(/^raw\//, '').trim().replace(/\\/g, '/');
+  return path.split('/').filter(Boolean).at(-1) ?? '';
 }
 
 function asNonEmptyString(value: unknown): string | null {
