@@ -72,6 +72,22 @@ export function normalizeAuthResponse(payload: unknown): AuthResponse {
   };
 }
 
+export function normalizeRegistrationResponse(payload: unknown): AuthResponse {
+  if (!isRecord(payload) || typeof payload.token !== 'string' || !payload.token.trim()) {
+    throw new Error('Registration response did not include an access token.');
+  }
+
+  const user = normalizeUser({ id: payload.user_id, email: payload.email });
+  if (!user) {
+    throw new Error('Registration response did not include a valid user.');
+  }
+
+  return {
+    access_token: payload.token,
+    user,
+  };
+}
+
 export function normalizeRefreshResponse(payload: unknown): RefreshResponse {
   if (
     !isRecord(payload) ||
@@ -193,6 +209,16 @@ export function writeStoredAuthUser(
   }
 }
 
+export function persistAuthSession(
+  storage: Pick<Storage, 'setItem' | 'removeItem'> | null | undefined,
+  response: AuthResponse,
+  demo: boolean,
+): void {
+  writeStoredAccessToken(storage, response.access_token);
+  writeStoredAuthUser(storage, response.user);
+  writeStoredDemoSession(storage, demo);
+}
+
 export function clearStoredAuthUser(
   storage: Pick<Storage, 'removeItem'> | null | undefined,
 ): void {
@@ -203,4 +229,3 @@ export function clearStoredAuthUser(
     // ignore
   }
 }
-

@@ -1,5 +1,8 @@
 'use client';
 
+import { rawFileNameFromSource } from './raw-file-name.ts';
+import { normalizeAnnotationBody, normalizeAnnotationGeneration } from './source-annotation.ts';
+
 export type PipelineExecution = {
   status?: 'RUNNING' | 'SUCCEEDED' | 'FAILED' | string;
   duration?: string | number | null;
@@ -27,7 +30,35 @@ export type WikiEntry = {
   date?: string;
   frontmatter?: Record<string, unknown>;
   content?: string;
+  annotationAllowed?: boolean;
   raw: unknown;
+};
+
+export type SourceLifecycle = 'new' | 'synced' | 'notes_pending' | 'content_pending' | 'error';
+
+export type SourceListItem = {
+  id?: string;
+  slug: string;
+  title: string;
+  rawPath: string;
+  lifecycle: SourceLifecycle;
+  annotationPresent: boolean;
+  annotationAllowed: boolean;
+  error?: string;
+  raw: unknown;
+};
+
+export type SourceAnnotation = {
+  body: string;
+  expectedGeneration: string;
+  hasAnnotation: boolean;
+  annSha256?: string;
+  annotationDirty: boolean;
+  rawDirty: boolean;
+  dirty: boolean;
+  lifecycleStatus?: string;
+  updatedAt?: string;
+  updatedBy?: string;
 };
 
 export type RawFile = {
@@ -359,9 +390,65 @@ export function normalizeEntry(item: unknown): WikiEntry {
       firstString(frontmatter ?? {}, ['date', 'createdAt', 'updatedAt']),
     frontmatter,
     content: firstString(record, ['content', 'markdown', 'body', 'text']),
+    annotationAllowed: asBoolean(record.annotation_allowed) ?? asBoolean(record.annotationAllowed),
     raw: item,
   };
 }
+
+function normalizeSourceLifecycle(value: unknown): SourceLifecycle {
+  switch (value) {
+    case 'new':
+    case 'synced':
+    case 'notes_pending':
+    case 'content_pending':
+    case 'error':
+      return value;
+    default:
+      return 'synced';
+  }
+}
+
+export function normalizeSourceListItem(item: unknown): SourceListItem {
+  const entry = normalizeEntry(item);
+  const record = isRecord(item) ? item : {};
+  const rawPath = firstString(record, ['raw_path', 'rawPath', 'raw_file_path', 'rawFilePath', 'source_file', 'path']) ?? entry.slug;
+
+  return {
+    id: firstString(record, ['id', 'source_id', 'sourceId']),
+    slug: entry.slug,
+    title: firstString(record, ['title', 'name']) ?? rawPath,
+    rawPath,
+    lifecycle: normalizeSourceLifecycle(firstString(record, ['lifecycle_status', 'lifecycleStatus', 'lifecycle', 'lifecycle_state', 'lifecycleState', 'state', 'status'])),
+    annotationPresent: asBoolean(record.annotation_present) ?? asBoolean(record.annotationPresent) ?? asBoolean(record.has_annotation) ?? false,
+    annotationAllowed: asBoolean(record.annotation_allowed) ?? asBoolean(record.annotationAllowed) ?? false,
+    error: firstString(record, ['error', 'error_message', 'errorMessage']),
+    raw: item,
+  };
+}
+
+function normalizeAnnotation(payload: unknown): SourceAnnotation {
+  const record = isRecord(payload) ? payload : {};
+  const generation = normalizeAnnotationGeneration(
+    record.expected_generation ?? record.expectedGeneration ?? record.generation,
+  );
+  if (!generation) {
+    throw new ApiError('Invalid annotation response: expected_generation is required', 500);
+  }
+  return {
+    body: firstString(record, ['body', 'annotation']) ?? '',
+    expectedGeneration: generation,
+    hasAnnotation: asBoolean(record.has_annotation) ?? asBoolean(record.hasAnnotation) ?? false,
+    annSha256: firstString(record, ['ann_sha256', 'annSha256']),
+    annotationDirty: asBoolean(record.annotation_dirty) ?? asBoolean(record.annotationDirty) ?? false,
+    rawDirty: asBoolean(record.raw_dirty) ?? asBoolean(record.rawDirty) ?? false,
+    dirty: asBoolean(record.dirty) ?? false,
+    lifecycleStatus: firstString(record, ['lifecycle_status', 'lifecycleStatus']),
+    updatedAt: firstString(record, ['updated_at', 'updatedAt']),
+    updatedBy: firstString(record, ['updated_by', 'updatedBy']),
+  };
+}
+
+export { normalizeAnnotationBody };
 
 export function normalizeSearchResult(item: unknown): SearchResult {
   const entry = normalizeEntry(item);
@@ -457,7 +544,8 @@ export async function getRawFiles() {
 }
 
 export async function getRawFilePreview(filename: string): Promise<string> {
-  const response = await apiFetch(`/api/v1/raw/${encodeURIComponent(filename)}?preview=true`);
+  const rawFileName = rawFileNameFromSource(filename);
+  const response = await apiFetch(`/api/v1/raw/${encodeURIComponent(rawFileName)}?preview=true`);
 
   if (!response.ok) {
     throw new ApiError(`Raw preview request failed (${response.status})`, response.status);
@@ -467,13 +555,37 @@ export async function getRawFilePreview(filename: string): Promise<string> {
 }
 
 export async function getSources() {
-  return extractArray(await requestJson<unknown>('/api/v1/sources')).map(normalizeEntry);
+  return extractArray(await requestJson<unknown>('/api/v1/sources')).map(normalizeSourceListItem);
 }
 
 export async function getSource(slug: string) {
   return normalizeEntry(
     await requestJson<unknown>(`/api/v1/sources/${encodeURIComponent(slug)}`),
   );
+}
+
+export async function getSourceAnnotation(sourceId: string): Promise<SourceAnnotation> {
+  const response = await apiFetch(`/api/v1/sources/${encodeURIComponent(sourceId)}/annotation`);
+  if (!response.ok) {
+    throw new ApiError(`Annotation request failed (${response.status})`, response.status);
+  }
+  return normalizeAnnotation(await response.json());
+}
+
+export async function updateSourceAnnotation(
+  sourceId: string,
+  body: string,
+  expectedGeneration: string,
+): Promise<SourceAnnotation> {
+  const response = await apiFetch(`/api/v1/sources/${encodeURIComponent(sourceId)}/annotation`, {
+    method: 'PUT',
+    json: true,
+    body: JSON.stringify({ body: normalizeAnnotationBody(body), expected_generation: String(expectedGeneration) }),
+  });
+  if (!response.ok) {
+    throw new ApiError(`Annotation update failed (${response.status})`, response.status);
+  }
+  return normalizeAnnotation(await response.json());
 }
 
 export async function getConcepts() {

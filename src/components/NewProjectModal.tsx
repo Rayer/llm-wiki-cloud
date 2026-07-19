@@ -3,10 +3,12 @@
 import { FormEvent, useEffect, useState } from 'react';
 import { useRouter } from 'next/navigation';
 import { useWorkspace } from './WorkspaceProvider';
+import { useNavigationBlocker } from './NavigationBlocker';
 
 export function NewProjectModal() {
   const router = useRouter();
   const { newProjectOpen, closeNewProject, addProject } = useWorkspace();
+  const { confirmNavigation } = useNavigationBlocker();
   const [name, setName] = useState('');
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState('');
@@ -25,7 +27,7 @@ export function NewProjectModal() {
   async function handleSubmit(event: FormEvent<HTMLFormElement>) {
     event.preventDefault();
     const trimmedName = name.trim();
-    if (!trimmedName) return;
+    if (!trimmedName || !confirmNavigation()) return;
     setLoading(true);
     setError('');
     try {

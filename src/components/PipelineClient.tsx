@@ -150,6 +150,14 @@ export function PipelineClient() {
 
   useEffect(() => stopPipelinePolling, [stopPipelinePolling]);
 
+  useEffect(() => {
+    const refreshAfterAnnotationSave = () => {
+      void getPipelineStatus().then(setPipelineStatus).catch(() => undefined);
+    };
+    window.addEventListener('source-annotation-saved', refreshAfterAnnotationSave);
+    return () => window.removeEventListener('source-annotation-saved', refreshAfterAnnotationSave);
+  }, []);
+
   // Load quota + execution status on mount and when workspace project changes.
   useEffect(() => {
     if (!currentProject) {

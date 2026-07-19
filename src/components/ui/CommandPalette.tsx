@@ -11,6 +11,7 @@ import {
   ArrowRight,
 } from 'lucide-react';
 import type { ProjectOption } from './ProjectSelect';
+import { useNavigationBlocker } from '../NavigationBlocker';
 
 type CommandItem = {
   id: string;
@@ -39,11 +40,11 @@ export function CommandPalette({
     search: string;
     sources: string;
     concepts: string;
-    raw: string;
     status: string;
   };
 }) {
   const router = useRouter();
+  const { confirmNavigation } = useNavigationBlocker();
   const inputRef = useRef<HTMLInputElement>(null);
   const [query, setQuery] = useState('');
   const [activeIndex, setActiveIndex] = useState(0);
@@ -66,7 +67,7 @@ export function CommandPalette({
         label: labels.search,
         group: labels.navigate,
         icon: <Search className="size-4" />,
-        action: () => router.push('/'),
+        action: () => { if (confirmNavigation()) router.push('/'); },
         keywords: ['home', 'search'],
       },
       {
@@ -74,7 +75,7 @@ export function CommandPalette({
         label: labels.sources,
         group: labels.navigate,
         icon: <FileText className="size-4" />,
-        action: () => router.push('/sources'),
+        action: () => { if (confirmNavigation()) router.push('/sources'); },
         keywords: ['source', 'documents'],
       },
       {
@@ -82,7 +83,7 @@ export function CommandPalette({
         label: labels.concepts,
         group: labels.navigate,
         icon: <Brain className="size-4" />,
-        action: () => router.push('/concepts'),
+        action: () => { if (confirmNavigation()) router.push('/concepts'); },
         keywords: ['concept', 'wiki'],
       },
       {
@@ -90,7 +91,7 @@ export function CommandPalette({
         label: labels.status,
         group: labels.navigate,
         icon: <Activity className="size-4" />,
-        action: () => router.push('/status'),
+        action: () => { if (confirmNavigation()) router.push('/status'); },
         keywords: ['pipeline', 'status'],
       },
     ];
@@ -111,13 +112,13 @@ export function CommandPalette({
           label: `Search "${q}"`,
           group: 'Search',
           icon: <ArrowRight className="size-4" />,
-          action: () => router.push(`/?q=${encodeURIComponent(q)}`),
+          action: () => { if (confirmNavigation()) router.push(`/?q=${encodeURIComponent(q)}`); },
           keywords: [q],
         }]
       : [];
 
     return [...searchItem, ...nav, ...projectItems];
-  }, [labels, onSelectProject, projects, query, router]);
+  }, [confirmNavigation, labels, onSelectProject, projects, query, router]);
 
   const filtered = useMemo(() => {
     const q = query.trim().toLowerCase();

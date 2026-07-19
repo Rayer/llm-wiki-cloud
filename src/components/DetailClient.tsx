@@ -1,7 +1,6 @@
 'use client';
 
-import Link from 'next/link';
-import { useEffect, useState } from 'react';
+import { useCallback, useEffect, useState } from 'react';
 import { ChevronLeft, FileText } from 'lucide-react';
 import { MarkdownView } from './MarkdownView';
 import { ErrorState, LoadingState } from './States';
@@ -10,6 +9,9 @@ import { Surface } from './ui/Surface';
 import { getConcepts, type WikiEntry } from '@/lib/api';
 import { useT } from '@/lib/i18n';
 import { primaryRawFileName, rawFileNameFromSource } from '@/lib/raw-file-name';
+import { NavigationLink } from './NavigationBlocker';
+import { SourceAnnotationEditor } from './SourceAnnotationEditor';
+import { nextSourceDetailReloadVersion } from '@/lib/source-detail';
 
 export function DetailClient({
   slug,
@@ -29,6 +31,8 @@ export function DetailClient({
   const [existingConceptSlugs, setExistingConceptSlugs] = useState<Set<string> | undefined>();
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState('');
+  const [reloadVersion, setReloadVersion] = useState(0);
+  const reloadEntry = useCallback(() => setReloadVersion(nextSourceDetailReloadVersion), []);
 
   useEffect(() => {
     let cancelled = false;
@@ -56,7 +60,7 @@ export function DetailClient({
     return () => {
       cancelled = true;
     };
-  }, [entryType, load, slug]);
+  }, [entryType, load, reloadVersion, slug]);
 
   if (loading) return <LoadingState label={`Loading ${label}`} />;
   if (error) return <ErrorState message={error} />;
@@ -70,13 +74,13 @@ export function DetailClient({
 
   return (
     <div className="space-y-8">
-      <Link
+      <NavigationLink
         href={backHref}
         className="inline-flex items-center gap-1.5 text-sm font-medium text-zinc-400 transition hover:text-emerald-300"
       >
         <ChevronLeft className="size-4" />
         {t('Detail.backTo', { label })}
-      </Link>
+      </NavigationLink>
 
       <header className="border-b border-white/10 pb-6">
         <div className="flex flex-wrap items-center gap-2">
@@ -97,7 +101,7 @@ export function DetailClient({
           <p className="mt-4 max-w-3xl text-lg leading-8 text-zinc-400">{entry.description}</p>
         ) : null}
         {primaryRawFile ? (
-          <Link
+          <NavigationLink
             href={`/raw?file=${encodeURIComponent(primaryRawFile)}`}
             className="mt-4 inline-flex items-center gap-1.5 text-sm font-medium text-emerald-300 underline decoration-emerald-300/40 underline-offset-4 transition hover:text-emerald-200 hover:decoration-emerald-200"
             data-testid="source-raw-file-link"
@@ -105,12 +109,15 @@ export function DetailClient({
             <FileText className="size-4 shrink-0" aria-hidden="true" />
             {t('Detail.rawFile')}
             <span className="font-normal text-zinc-500 no-underline">({primaryRawFile})</span>
-          </Link>
+          </NavigationLink>
         ) : null}
       </header>
 
       {entry.frontmatter ? <Frontmatter data={entry.frontmatter} /> : null}
       <MarkdownView content={entry.content} existingConceptSlugs={existingConceptSlugs} />
+      {entryType === 'source' && entry.annotationAllowed && entry.id ? (
+        <SourceAnnotationEditor sourceId={entry.id} onSaved={reloadEntry} />
+      ) : null}
     </div>
   );
 }
@@ -146,12 +153,12 @@ function renderFrontmatterValue(key: string, value: unknown) {
         <ul className="space-y-1">
           {sources.map((source) => (
             <li key={source}>
-              <Link
+              <NavigationLink
                 href={`/raw?file=${encodeURIComponent(rawFileNameFromSource(source))}`}
                 className="text-emerald-300 underline hover:text-emerald-200"
               >
                 {source}
-              </Link>
+              </NavigationLink>
             </li>
           ))}
         </ul>
@@ -163,12 +170,12 @@ function renderFrontmatterValue(key: string, value: unknown) {
   if ((key === 'source_file' || key === 'source') && typeof value === 'string' && value.trim()) {
     const fileName = rawFileNameFromSource(value);
     return (
-      <Link
+      <NavigationLink
         href={`/raw?file=${encodeURIComponent(fileName)}`}
         className="text-emerald-300 underline hover:text-emerald-200"
       >
         {value}
-      </Link>
+      </NavigationLink>
     );
   }
 
@@ -191,4 +198,3 @@ function renderFrontmatterValue(key: string, value: unknown) {
 
   return JSON.stringify(value);
 }
-

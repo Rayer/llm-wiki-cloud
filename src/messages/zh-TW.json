@@ -31,6 +31,7 @@
     "registering": "註冊中…",
     "error": "註冊失敗",
     "disabled": "目前不開放新使用者註冊。",
+    "backToLogin": "返回登入",
     "switchToLogin": "已有帳號？登入"
   },
   "Admin": {
@@ -48,7 +49,50 @@
   },
   "Source": {
     "singular": "來源",
-    "plural": "來源"
+    "plural": "來源",
+    "loading": "正在載入來源",
+    "annotationPresent": "已有註解",
+    "annotationEmpty": "尚無註解",
+    "previewRaw": "預覽原文檔案",
+    "previewRawAria": "預覽原文檔案 {path}",
+    "rawPreviewTitle": "原文檔案預覽",
+    "lifecycleError": "此來源無法同步。",
+    "lifecycle": {
+      "new": "新增",
+      "synced": "已同步",
+      "notes_pending": "註解待處理",
+      "content_pending": "內容待處理",
+      "error": "錯誤"
+    }
+  },
+  "Annotation": {
+    "title": "註解",
+    "label": "專案註解",
+    "loading": "正在載入註解…",
+    "saved": "已儲存",
+    "dirty": "有未儲存的變更",
+    "save": "儲存",
+    "saving": "儲存中…",
+    "clear": "清除",
+    "updated": "更新時間：{date}",
+    "lifecycle": "生命週期",
+    "lifecycleUnknown": "未知",
+    "dirtyMetadata": "待處理變更",
+    "dirtyOverall": "註解待處理",
+    "dirtyAnnotation": "註解已變更",
+    "dirtyRaw": "原文檔案已變更",
+    "updatedAt": "更新時間",
+    "loadFailed": "無法載入註解，請再試一次。",
+    "saveFailed": "無法儲存註解，請再試一次。",
+    "readOnly": "此註解為唯讀。",
+    "unavailable": "此來源沒有可用的註解。",
+    "locked": "此來源的註解目前無法使用。",
+    "conflict": "註解已在其他地方變更，請重新載入後再儲存。",
+    "reload": "重新載入",
+    "retry": "重試",
+    "clearConfirm": "要清除此註解嗎？",
+    "unsavedConfirm": "註解尚有未儲存的變更，要離開嗎？",
+    "demoDisabled": "Demo 模式無法編輯註解。"
   },
   "Shell": {
     "brand": "LLM Wiki Cloud",
