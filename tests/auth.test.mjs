@@ -7,15 +7,19 @@ import { dirname, join } from 'node:path';
 import {
   ACCESS_TOKEN_STORAGE_KEY,
   AUTH_USER_STORAGE_KEY,
+  DEMO_SESSION_STORAGE_KEY,
   clearStoredAccessToken,
   clearStoredAuthUser,
   isAuthFailureStatus,
   normalizeAuthResponse,
+  normalizeRegistrationResponse,
   normalizeRefreshResponse,
+  persistAuthSession,
   readStoredAccessToken,
   readStoredAuthUser,
   writeStoredAccessToken,
   writeStoredAuthUser,
+  writeStoredDemoSession,
 } from '../src/lib/auth-core.ts';
 
 const authSource = readFileSync(
@@ -59,6 +63,53 @@ test('normalizeAuthResponse accepts user_id without using email as the user id',
       access_token: 'jwt-token',
       user: { id: 'uid-123', email: 'person@example.com' },
     },
+  );
+});
+
+test('normalizeRegistrationResponse accepts the BFF 201 registration contract', () => {
+  assert.deepEqual(
+    normalizeRegistrationResponse({
+      token: 'jwt-token',
+      user_id: 'user-1',
+      email: 'person@example.com',
+      default_project_id: 'project-1',
+    }),
+    {
+      access_token: 'jwt-token',
+      user: { id: 'user-1', email: 'person@example.com' },
+    },
+  );
+});
+
+test('BFF 201 registration persists a non-demo auth session', () => {
+  const store = new Map();
+  const storage = {
+    getItem: (key) => (store.has(key) ? store.get(key) : null),
+    setItem: (key, value) => { store.set(key, String(value)); },
+    removeItem: (key) => { store.delete(key); },
+  };
+  writeStoredDemoSession(storage, true);
+
+  persistAuthSession(
+    storage,
+    normalizeRegistrationResponse({
+      token: 'jwt-token',
+      user_id: 'user-1',
+      email: 'person@example.com',
+      default_project_id: 'project-1',
+    }),
+    false,
+  );
+
+  assert.equal(readStoredAccessToken(storage), 'jwt-token');
+  assert.deepEqual(readStoredAuthUser(storage), { id: 'user-1', email: 'person@example.com' });
+  assert.equal(storage.getItem(DEMO_SESSION_STORAGE_KEY), null);
+});
+
+test('normalizeRegistrationResponse fails closed for malformed registration payloads', () => {
+  assert.throws(
+    () => normalizeRegistrationResponse({ token: 'jwt-token', user_id: 'user-1', email: '' }),
+    /valid user/i,
   );
 });
 
@@ -180,4 +231,17 @@ test('auth provider hydrates stored user with token', () => {
   assert.match(authSource, /writeStoredAuthUser/);
   assert.match(authSource, /clearStoredAuthUser/);
   assert.match(authSource, /setUser\(readStoredAuthUser\(storage\)\)/);
+});
+
+test('auth provider normalizes registration responses into non-demo sessions', () => {
+  const registerFn = authSource.match(
+    /const register = useCallback\(async \(email: string, password: string\) => \{[\s\S]*?\}, \[applyAuthResponse\]\);/,
+  );
+  assert.ok(registerFn, 'register callback not found');
+  assert.match(registerFn[0], /normalizeRegistrationResponse\(payload\)/);
+  assert.match(registerFn[0], /\{ demo: false \}/);
+});
+
+test('auth provider delegates auth persistence to the session helper', () => {
+  assert.match(authSource, /persistAuthSession\(/);
 });

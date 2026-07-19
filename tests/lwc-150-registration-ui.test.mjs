@@ -149,11 +149,15 @@ test('AdminClient wires registration toggle through admin settings API', async (
 });
 
 test('registration i18n keys exist in English and Traditional Chinese catalogs', async () => {
-  const [english, traditionalChinese] = await Promise.all([
+  const [registerModal, english, traditionalChinese] = await Promise.all([
+    readFile(new URL('../src/components/RegisterModal.tsx', import.meta.url), 'utf8'),
     readJson(new URL('../src/messages/en.json', import.meta.url)),
     readJson(new URL('../src/messages/zh-TW.json', import.meta.url)),
   ]);
 
+  assert.match(registerModal, /t\('Register\.backToLogin'\)/);
+  assert.equal(english.Register.backToLogin, 'Back to sign in');
+  assert.equal(traditionalChinese.Register.backToLogin, '返回登入');
   assert.equal(english.Register.disabled, 'New user registration is currently disabled.');
   assert.equal(traditionalChinese.Register.disabled, '目前不開放新使用者註冊。');
   assert.equal(english.Admin.registrationEnabled, 'Allow new user registration');
