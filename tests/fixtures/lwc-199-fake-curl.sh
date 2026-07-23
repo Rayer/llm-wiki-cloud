@@ -13,6 +13,9 @@ if [[ "$url" == *"/actions/workflows/ci.yml/runs?"* ]]; then
   exit 0
 fi
 if [[ "$url" == *"/v13/deployments/"* ]]; then
+  if [[ "$scenario" == deployment-read-failure ]]; then
+    exit 7
+  fi
   if [[ -f "$root/mutated" && "$scenario" == post-unreadable ]]; then
     exit 7
   fi
@@ -38,7 +41,11 @@ fi
 if [[ "$url" == *"/v4/aliases?"* ]]; then
   domain="${url##*domain=}"
   domain="${domain%%&*}"
-  if [[ "$scenario" == alias-changed-before-mutation && "$domain" == wiki.rayer.idv.tw ]]; then
+  if [[ "$scenario" == alias-read-failure && "$domain" == wiki.rayer.idv.tw ]]; then
+    exit 7
+  elif [[ "$scenario" == partial-readback && -f "$root/mutated" && "$domain" == llm-wiki-frontend.vercel.app ]]; then
+    exit 7
+  elif [[ "$scenario" == alias-changed-before-mutation && "$domain" == wiki.rayer.idv.tw ]]; then
     read_count="$(grep -c "domain=$domain" "$root/curl-calls" || true)"
     if [[ "$read_count" -ge 2 ]]; then
       printf '%s' '{"aliases":[{"alias":"wiki.rayer.idv.tw","deploymentId":"dpl_changed"}]}'

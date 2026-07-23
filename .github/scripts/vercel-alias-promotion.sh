@@ -29,9 +29,9 @@ VERCEL_SCOPE="${VERCEL_SCOPE:-}"
 STATUS="FAILED"
 REASON="unexpected failure"
 NEXT_ACTION="Inspect the evidence and provider read-back before retrying."
-FROZEN_ALIASES="[]"
-POST_ALIASES="[]"
-HEALTH="[]"
+FROZEN_ALIASES='[{"alias":"wiki.rayer.idv.tw","deploymentId":null},{"alias":"llm-wiki-frontend.vercel.app","deploymentId":null}]'
+POST_ALIASES='[{"alias":"wiki.rayer.idv.tw","deploymentId":null},{"alias":"llm-wiki-frontend.vercel.app","deploymentId":null}]'
+HEALTH='[{"alias":"wiki.rayer.idv.tw","status_code":null,"effective_host":null},{"alias":"llm-wiki-frontend.vercel.app","status_code":null,"effective_host":null}]'
 PROVIDER_CHECKS="[]"
 CI_RUN_ID=""
 CI_RUN_URL=""
@@ -269,7 +269,7 @@ read_alias() {
 }
 
 read_post_aliases() {
-  POST_ALIASES="[]"
+  POST_ALIASES='[{"alias":"wiki.rayer.idv.tw","deploymentId":null},{"alias":"llm-wiki-frontend.vercel.app","deploymentId":null}]'
   local alias response deployment_id
   for alias in "${ALIASES[@]}"; do
     if ! response="$(read_alias "$alias")"; then
@@ -280,12 +280,12 @@ read_post_aliases() {
     fi
     deployment_id="$(jq -r --arg alias "$alias" '.aliases[] | select(.alias == $alias) | .deploymentId' <<< "$response")"
     POST_ALIASES="$(jq -c --arg alias "$alias" --arg deploymentId "$deployment_id" \
-      '. + [{alias: $alias, deploymentId: $deploymentId}]' <<< "$POST_ALIASES")"
+      'map(if .alias == $alias then .deploymentId = $deploymentId else . end)' <<< "$POST_ALIASES")"
   done
 }
 
 read_observed_aliases() {
-  POST_ALIASES="[]"
+  POST_ALIASES='[{"alias":"wiki.rayer.idv.tw","deploymentId":null},{"alias":"llm-wiki-frontend.vercel.app","deploymentId":null}]'
   local alias response deployment_id
   for alias in "${ALIASES[@]}"; do
     if ! response="$(read_alias "$alias")"; then
@@ -296,7 +296,7 @@ read_observed_aliases() {
     fi
     deployment_id="$(jq -r --arg alias "$alias" '.aliases[] | select(.alias == $alias) | .deploymentId' <<< "$response")"
     POST_ALIASES="$(jq -c --arg alias "$alias" --arg deploymentId "$deployment_id" \
-      '. + [{alias: $alias, deploymentId: $deploymentId}]' <<< "$POST_ALIASES")"
+      'map(if .alias == $alias then .deploymentId = $deploymentId else . end)' <<< "$POST_ALIASES")"
   done
 }
 
@@ -373,14 +373,14 @@ fi
 if [[ -z "$GITHUB_REPOSITORY" || -z "$GITHUB_TOKEN" || -z "$VERCEL_TOKEN" || -z "$VERCEL_PROJECT_ID" ]]; then
   fail_preflight "required read-only provider configuration is missing"
 fi
+if [[ "$GITHUB_REPOSITORY" != "$EXPECTED_REPOSITORY" ]]; then
+  fail_preflight "GITHUB_REPOSITORY must equal the exact repository identity $EXPECTED_REPOSITORY"
+fi
 if [[ ! "$VERCEL_PROJECT_ID" =~ ^prj_[A-Za-z0-9]+$ ]]; then
   fail_preflight "VERCEL_PROJECT_ID is not a bounded project ID"
 fi
 if [[ -n "$VERCEL_TEAM_ID" && ! "$VERCEL_TEAM_ID" =~ ^team_[A-Za-z0-9]+$ ]]; then
   fail_preflight "VERCEL_TEAM_ID is not a bounded team ID"
-fi
-if [[ ! "$GITHUB_REPOSITORY" =~ ^[A-Za-z0-9_.-]+/[A-Za-z0-9_.-]+$ ]]; then
-  fail_preflight "GITHUB_REPOSITORY must contain an exact org/repo identity"
 fi
 if [[ ! "$ALIAS_SET_TIMEOUT_SECONDS" =~ ^[1-9][0-9]*$ || "$ALIAS_SET_TIMEOUT_SECONDS" -gt 300 ]]; then
   fail_preflight "VERCEL_ALIAS_TIMEOUT_SECONDS must be a bounded positive number of seconds"
@@ -445,7 +445,7 @@ for alias in "${ALIASES[@]}"; do
     fail_preflight "canonical alias rollback handle is not an immutable deployment ID for $alias"
   fi
   FROZEN_ALIASES="$(jq -c --arg alias "$alias" --arg deploymentId "$prior_deployment_id" \
-    '. + [{alias: $alias, deploymentId: $deploymentId}]' <<< "$FROZEN_ALIASES")"
+    'map(if .alias == $alias then .deploymentId = $deploymentId else . end)' <<< "$FROZEN_ALIASES")"
 done
 
 if ! verify_frozen_aliases; then
@@ -491,6 +491,8 @@ if [[ -z "$OBSERVED_DEPLOYMENT_URL" ]]; then
 fi
 PROVIDER_CHECKS="$(jq -c 'if index("deployment_ready") then . else . + ["deployment_ready"] end | if index("deployment_target_production") then . else . + ["deployment_target_production"] end' <<< "$PROVIDER_CHECKS")"
 
+health_failed=0
+health_failure_reason=""
 for alias in "${ALIASES[@]}"; do
   health_path="$(mktemp)"
   health_result=""
@@ -516,14 +518,21 @@ for alias in "${ALIASES[@]}"; do
   fi
   HEALTH="$(jq -c --arg alias "$alias" --arg statusCode "$http_code" \
     --arg effectiveHost "$effective_host" \
-    '. + [{alias: $alias, status_code: $statusCode, effective_host: ($effectiveHost | if . == "" then null else . end)}]' <<< "$HEALTH")"
+    'map(if .alias == $alias then .status_code = $statusCode | .effective_host = ($effectiveHost | if . == "" then null else . end) else . end)' <<< "$HEALTH")"
   if [[ "$effective_host" != "$alias" ]]; then
-    fail_postcheck "canonical HTTP health redirected to a different host for $alias"
+    health_failed=1
+    health_failure_reason="canonical HTTP health redirected to a different host for $alias"
+    continue
   fi
   if [[ "$http_code" != "200" ]]; then
-    fail_postcheck "canonical HTTP health failed for $alias"
+    health_failed=1
+    health_failure_reason="canonical HTTP health failed for $alias"
   fi
 done
+
+if [[ "$health_failed" -eq 1 ]]; then
+  fail_postcheck "$health_failure_reason"
+fi
 
 PROVIDER_CHECKS="$(jq -c '. + ["http_health_exact"]' <<< "$PROVIDER_CHECKS")"
 CHECKED_AT="$(date -u '+%Y-%m-%dT%H:%M:%SZ')"

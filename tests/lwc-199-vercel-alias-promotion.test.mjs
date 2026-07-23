@@ -93,6 +93,33 @@ async function runCase(scenario = 'success', overrides = {}) {
   return { ...fixture, result, evidence, calls, curlCalls };
 }
 
+function assertCompleteEvidenceSlots(evidence, expected = {}) {
+  assert.deepEqual(evidence.provider.rollback.aliases.map(({ alias }) => alias), aliases);
+  assert.deepEqual(evidence.provider.rollback.aliases.map((entry) => Object.keys(entry)), [
+    ['alias', 'deployment_id'],
+    ['alias', 'deployment_id'],
+  ]);
+  assert.deepEqual(evidence.observed.alias_routing.map(({ alias }) => alias), aliases);
+  assert.deepEqual(evidence.observed.alias_routing.map((entry) => Object.keys(entry)), [
+    ['alias', 'deployment_id'],
+    ['alias', 'deployment_id'],
+  ]);
+  assert.deepEqual(evidence.health.map(({ alias }) => alias), aliases);
+  assert.deepEqual(evidence.health.map((entry) => Object.keys(entry)), [
+    ['alias', 'status_code', 'effective_host'],
+    ['alias', 'status_code', 'effective_host'],
+  ]);
+  if (expected.rollback) {
+    assert.deepEqual(evidence.provider.rollback.aliases.map(({ deployment_id }) => deployment_id), expected.rollback);
+  }
+  if (expected.observed) {
+    assert.deepEqual(evidence.observed.alias_routing.map(({ deployment_id }) => deployment_id), expected.observed);
+  }
+  if (expected.health) {
+    assert.deepEqual(evidence.health.map(({ status_code, effective_host }) => ({ status_code, effective_host })), expected.health);
+  }
+}
+
 test('promotes exactly both canonical aliases to one deployment and writes normalized evidence', async () => {
   const run = await runCase();
   assert.equal(run.result.error, undefined, run.result.stderr);
@@ -205,6 +232,16 @@ test('fails closed before mutation when Vercel repository metadata is not exact'
   assert.equal(run.calls.length, 0);
 });
 
+test('fails closed before any provider call when GitHub repository identity is not exact', async () => {
+  const run = await runCase('success', { GITHUB_REPOSITORY: 'rayer/llm-wiki-frontend' });
+  assert.notEqual(run.result.code, 0);
+  assert.equal(run.evidence.status, 'PREFLIGHT_FAILED');
+  assert.match(run.evidence.reason, /GITHUB_REPOSITORY/);
+  assert.equal(run.calls.length, 0);
+  assert.equal(run.curlCalls.length, 0);
+  assertCompleteEvidenceSlots(run.evidence);
+});
+
 test('re-reads both aliases immediately before mutation and aborts on snapshot drift', async () => {
   const run = await runCase('alias-changed-before-mutation');
   assert.notEqual(run.result.code, 0);
@@ -255,6 +292,7 @@ test('fails closed when health follows a redirect to a different host', async ()
   assert.equal(run.evidence.status, 'POSTCHECK_FAILED');
   assert.deepEqual(run.evidence.health, [
     { alias: aliases[0], status_code: '200', effective_host: null },
+    { alias: aliases[1], status_code: '200', effective_host: aliases[1] },
   ]);
   assert.equal(JSON.stringify(run.evidence).includes('effective_url'), false);
 });
@@ -358,4 +396,39 @@ test('fails closed when either canonical health check is not HTTP 200', async ()
   assert.equal(run.calls.length, 2);
   assert.equal(run.evidence.provider_verification.checked_at, null);
   assert.ok(run.evidence.health.some(({ status_code }) => status_code === '503'));
+  assertCompleteEvidenceSlots(run.evidence);
+  assert.ok(run.curlCalls.includes('https://' + aliases[1] + '/'));
 });
+
+for (const scenario of [
+  ['preflight failure', 'success', { COMMIT_SHA: 'not-a-sha' }, [null, null], [null, null], [
+    { status_code: null, effective_host: null },
+    { status_code: null, effective_host: null },
+  ]],
+  ['provider read failure', 'deployment-read-failure', {}, [null, null], [null, null], [
+    { status_code: null, effective_host: null },
+    { status_code: null, effective_host: null },
+  ]],
+  ['first alias read failure', 'alias-read-failure', {}, [null, null], [null, null], [
+    { status_code: null, effective_host: null },
+    { status_code: null, effective_host: null },
+  ]],
+  ['partial post read-back', 'partial-readback', {}, ['dpl_oldcustom', 'dpl_oldvercel'], [deploymentId, null], [
+    { status_code: null, effective_host: null },
+    { status_code: null, effective_host: null },
+  ]],
+  ['first health failure', 'health-failure', {}, ['dpl_oldcustom', 'dpl_oldvercel'], [deploymentId, deploymentId], [
+    { status_code: '503', effective_host: aliases[0] },
+    { status_code: '200', effective_host: aliases[1] },
+  ]],
+]) {
+  test('normalizes both canonical evidence slots for ' + scenario[0], async () => {
+    const run = await runCase(scenario[1], scenario[2]);
+    assert.notEqual(run.result.code, 0);
+    assertCompleteEvidenceSlots(run.evidence, {
+      rollback: scenario[3],
+      observed: scenario[4],
+      health: scenario[5],
+    });
+  });
+}
