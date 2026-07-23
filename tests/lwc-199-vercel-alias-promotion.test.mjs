@@ -79,10 +79,14 @@ function buildEnv(fixture, overrides = {}) {
     ORIGINATING_WORKFLOW: 'vercel-alias-promotion.yml',
     ORIGINATING_WORKFLOW_RUN_ID: '123456789',
     ORIGINATING_WORKFLOW_RUN_ATTEMPT: '3',
+    LWC199_TEST_MODE: '1',
     GITHUB_API_URL: 'https://github.test/api/v3',
     GITHUB_TOKEN: 'github-sentinel-token-7f31',
     VERCEL_API_BASE_URL: 'https://vercel.test',
     VERCEL_TOKEN: 'vercel-sentinel-token-a2c9',
+    ROLLBACK_ARTIFACT_ID: '123456789',
+    ROLLBACK_ARTIFACT_URL: 'https://github.com/Rayer/llm-wiki-frontend/actions/runs/123456789/artifacts/123456789',
+    ROLLBACK_ARTIFACT_DIGEST: 'sha256:0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef',
     VERCEL_PROJECT_ID: projectId,
     VERCEL_TEAM_ID: 'team_test123',
     VERCEL_SCOPE: 'rayer-team',
@@ -111,10 +115,7 @@ async function runCase(scenario = 'success', overrides = {}, mode = 'promote') {
   const preflight = await runScript('preflight', env);
   let result = preflight;
   if (mode === 'promote' && preflight.code === undefined) {
-    result = await runScript('promote', {
-      ...env,
-      ROLLBACK_ARTIFACT_UPLOADED: 'true',
-    });
+    result = await runScript('promote', env);
   }
   const evidence = JSON.parse(await readFile(join(fixture.evidenceDir, 'vercel-alias-promotion.json'), 'utf8'));
   const rollbackContract = await readOptionalJson(join(fixture.evidenceDir, 'rollback-contract.json'));
@@ -259,6 +260,10 @@ test('promotes exactly both canonical aliases to one deployment and writes norma
   ]);
   assert.equal(run.evidence.provider.evidence_artifact_name, `vercel-alias-promotion-evidence-${commitSha}`);
   assert.equal(run.evidence.provider.rollback.artifact_name, `vercel-alias-rollback-${commitSha}`);
+  assert.equal(run.evidence.provider.rollback.artifact_id, 123456789);
+  assert.equal(run.evidence.provider.rollback.artifact_url, run.env.ROLLBACK_ARTIFACT_URL);
+  assert.equal(run.evidence.provider.rollback.artifact_digest, run.env.ROLLBACK_ARTIFACT_DIGEST);
+  assert.match(run.evidence.provider.rollback.contract_sha256, /^[0-9a-f]{64}$/);
   assert.deepEqual(run.evidence.observed, {
     deployment_id: deploymentId,
     deployment_url: 'https://dpl_test123.vercel.app',
@@ -300,7 +305,7 @@ test('promotes exactly both canonical aliases to one deployment and writes norma
   assert.equal(run.curlCalls.filter((url) => url.includes('/v13/deployments/')).length, 2);
   assert.equal(run.curlCalls.filter((url) => url.includes('/actions/workflows/ci.yml/runs?')).length, 1);
   assert.equal(run.curlCalls.some((url) => url.includes('/repos/Rayer/llm-wiki-frontend/actions/runs?')), false);
-  assert.equal(run.curlCalls.filter((url) => url.includes('/v4/aliases?')).length, 8);
+  assert.equal(run.curlCalls.filter((url) => url.includes('/v4/aliases?')).length, 14);
   assert.ok(run.curlCalls.includes('https://' + aliases[0] + '/'));
   assert.ok(run.curlCalls.includes('https://' + aliases[1] + '/'));
   assert.ok(run.rollbackContract);
@@ -417,12 +422,12 @@ test('preflight freezes both aliases without mutating or fabricating final succe
   assert.equal(JSON.stringify(run.evidence).includes('SUCCESS'), false);
 });
 
-test('promote refuses to run without durable rollback upload confirmation', async () => {
+test('promote refuses to run without durable rollback artifact outputs', async () => {
   const run = await runCase('success', {}, 'preflight');
-  const result = await runScript('promote', run.env);
+  const result = await runScript('promote', { ...run.env, ROLLBACK_ARTIFACT_ID: '' });
   assert.notEqual(result.code, 0);
   assert.equal(run.calls.length, 0);
-  assert.match(JSON.parse(await readFile(join(run.evidenceDir, 'vercel-alias-promotion.json'), 'utf8')).reason, /durable rollback artifact/);
+  assert.match(JSON.parse(await readFile(join(run.evidenceDir, 'vercel-alias-promotion.json'), 'utf8')).reason, /artifact/);
 });
 
 test('promote re-reads both aliases immediately before mutation and aborts on snapshot drift', async () => {
@@ -442,7 +447,6 @@ test('rejects a tampered resume context before any provider mutation', async () 
   const result = await runScript('promote', {
     ...run.env,
     PROMOTION_CONTEXT_PATH: contextPath,
-    ROLLBACK_ARTIFACT_UPLOADED: 'true',
   });
   assert.notEqual(result.code, 0);
   assert.equal(run.calls.length, 0);
@@ -496,6 +500,69 @@ test('fails closed when health follows a redirect to a different host', async ()
   assert.equal(JSON.stringify(run.evidence).includes('effective_url'), false);
 });
 
+test('fails closed with a transport reason when health has no effective host', async () => {
+  const run = await runCase('health-transport-failure');
+  assert.notEqual(run.result.code, 0);
+  assert.equal(run.evidence.status, 'POSTCHECK_FAILED');
+  assert.match(run.evidence.reason, /transport|effective host/);
+  assert.doesNotMatch(run.evidence.reason, /redirected/);
+  assert.equal(run.evidence.health[0].status_code, '000');
+  assert.equal(run.evidence.health[0].effective_host, null);
+});
+
+test('promotion uses Vercel-only credentials after preflight', async () => {
+  const run = await runCase('success', {}, 'preflight');
+  const result = await runScript('promote', { ...run.env, GITHUB_TOKEN: '' });
+  assert.equal(result.error, undefined, result?.stderr);
+  assert.equal(JSON.parse(await readFile(join(run.evidenceDir, 'vercel-alias-promotion.json'), 'utf8')).status, 'SUCCESS');
+});
+
+for (const [field, value] of [
+  ['ROLLBACK_ARTIFACT_ID', '0'],
+  ['ROLLBACK_ARTIFACT_URL', 'https://github.com/Rayer/other-repo/actions/runs/123456789/artifacts/123456789'],
+  ['ROLLBACK_ARTIFACT_DIGEST', 'sha256:not-a-digest'],
+]) {
+  test('rejects invalid durable artifact ' + field + ' before mutation', async () => {
+    const run = await runCase('success', {}, 'preflight');
+    const result = await runScript('promote', { ...run.env, [field]: value });
+    assert.notEqual(result.code, 0);
+    const evidence = JSON.parse(await readFile(join(run.evidenceDir, 'vercel-alias-promotion.json'), 'utf8'));
+    assert.equal(evidence.status, 'PREFLIGHT_FAILED');
+    assert.match(evidence.reason, /artifact/);
+    assert.equal(run.calls.length, 0);
+  });
+}
+
+test('rejects API origin overrides without explicit test mode and in GitHub Actions', async () => {
+  for (const overrides of [
+    { LWC199_TEST_MODE: '' },
+    { GITHUB_ACTIONS: 'true', LWC199_TEST_MODE: '1' },
+    { GITHUB_ACTIONS: 'true', LWC199_TEST_MODE: '', VERCEL_API_BASE_URL: 'https://vercel.test', GITHUB_API_URL: 'https://github.test/api/v3' },
+  ]) {
+    const run = await runCase('success', overrides);
+    assert.notEqual(run.result.code, 0);
+    assert.equal(run.evidence.status, 'PREFLIGHT_FAILED');
+    assert.match(run.evidence.reason, /origin|test mode|Actions/);
+    assert.equal(run.curlCalls.length, 0);
+    assert.equal(run.calls.length, 0);
+    assertNoCredentialLeak(run);
+  }
+});
+
+for (const [scenario, expected] of [
+  ['drift-before-first-write', [ 'dpl_drift_before_first', 'dpl_oldvercel' ]],
+  ['drift-before-second-write', [ deploymentId, 'dpl_drift_before_second' ]],
+  ['drift-after-first-write', [ deploymentId, 'dpl_drift_after_first' ]],
+]) {
+  test('fails closed and records causal mixed state for ' + scenario, async () => {
+    const run = await runCase(scenario);
+    assert.notEqual(run.result.code, 0);
+    assert.equal(run.evidence.status, 'PARTIAL_MUTATION');
+    assert.deepEqual(run.evidence.observed.alias_routing.map(({ deployment_id }) => deployment_id), expected);
+    assert.match(run.evidence.next_action, /Read \/v4\/aliases/);
+  });
+}
+
 test('workflow contract parses as YAML and scopes provider secrets to the helper step', async () => {
   const workflowSource = await readFile(workflowPath, 'utf8');
   const workflow = parseYaml(workflowSource);
@@ -530,8 +597,9 @@ test('workflow contract parses as YAML and scopes provider secrets to the helper
     VERCEL_SCOPE: '${{ secrets.VERCEL_SCOPE }}',
   });
   assert.deepEqual(helper.env, {
-    ROLLBACK_ARTIFACT_UPLOADED: true,
-    GITHUB_TOKEN: '${{ github.token }}',
+    ROLLBACK_ARTIFACT_ID: '${{ steps.rollback_upload.outputs.artifact-id }}',
+    ROLLBACK_ARTIFACT_URL: '${{ steps.rollback_upload.outputs.artifact-url }}',
+    ROLLBACK_ARTIFACT_DIGEST: '${{ steps.rollback_upload.outputs.artifact-digest }}',
     VERCEL_TOKEN: '${{ secrets.VERCEL_TOKEN }}',
     VERCEL_PROJECT_ID: '${{ secrets.VERCEL_PROJECT_ID }}',
     VERCEL_TEAM_ID: '${{ secrets.VERCEL_TEAM_ID }}',
@@ -544,6 +612,7 @@ test('workflow contract parses as YAML and scopes provider secrets to the helper
   assert.equal(runs.some((run) => /vercel\s+(deploy|build)|next\s+build/.test(run)), false);
   const steps = workflow.jobs.promote.steps;
   const rollbackUpload = steps.find(({ name }) => name === 'Upload durable alias rollback contract');
+  assert.equal(rollbackUpload.id, 'rollback_upload');
   assert.equal(rollbackUpload.uses, 'actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02');
   assert.equal(rollbackUpload.with.name, 'vercel-alias-rollback-${{ inputs.commit_sha }}');
   assert.equal(rollbackUpload.with.path, '${{ runner.temp }}/vercel-alias-promotion/rollback-contract.json');
@@ -603,6 +672,10 @@ test('marks a partial alias mutation and requires read-back before retry', async
   assert.equal(run.evidence.status, 'PARTIAL_MUTATION');
   assert.match(run.evidence.next_action, /Read \/v4\/aliases before retry/);
   assert.equal(run.calls.length, 2);
+  assert.deepEqual(run.evidence.observed.alias_routing, [
+    { alias: aliases[0], deployment_id: deploymentId },
+    { alias: aliases[1], deployment_id: 'dpl_oldvercel' },
+  ]);
   assert.ok(run.curlCalls.filter((url) => url.includes('/v4/aliases?')).length >= 4);
   assert.equal(run.curlCalls.some((url) => url.startsWith('https://wiki.rayer.idv.tw/')), false);
 });

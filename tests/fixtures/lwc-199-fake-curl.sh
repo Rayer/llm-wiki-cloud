@@ -102,15 +102,23 @@ if [[ "$url" == *"/v4/aliases?"* ]]; then
   elif [[ "$scenario" == divergent-alias && "$domain" == wiki.rayer.idv.tw ]]; then
     printf '%s' '{"aliases":[{"alias":"unexpected.example","deploymentId":"dpl_wrong"}]}'
   elif [[ "$scenario" == post-readback-mismatch && -f "$root/mutated" && "$domain" == llm-wiki-frontend.vercel.app ]]; then
-    printf '%s' '{"aliases":[{"alias":"llm-wiki-frontend.vercel.app","deploymentId":"dpl_other"}]}'
+    read_count="$(grep -c "domain=$domain" "$root/curl-calls" || true)"
+    if [[ "$read_count" -ge 7 ]]; then
+      printf '%s' '{"aliases":[{"alias":"llm-wiki-frontend.vercel.app","deploymentId":"dpl_other"}]}'
+    else
+      deployment="$(jq -r --arg domain "$domain" '.[$domain]' "$root/aliases.json")"
+      printf '{"aliases":[{"alias":"%s","deploymentId":"%s"}]}' "$domain" "$deployment"
+    fi
   else
     deployment="$(jq -r --arg domain "$domain" '.[$domain]' "$root/aliases.json")"
-    if [[ -f "$root/mutated" ]]; then deployment="dpl_test123"; fi
     printf '{"aliases":[{"alias":"%s","deploymentId":"%s"}]}' "$domain" "$deployment"
   fi
   exit 0
 fi
 if [[ "$url" == https://wiki.rayer.idv.tw/* || "$url" == https://llm-wiki-frontend.vercel.app/* ]]; then
+  if [[ "$scenario" == health-transport-failure && "$url" == https://wiki.rayer.idv.tw/* ]]; then
+    exit 7
+  fi
   if [[ "$scenario" == redirect-host-mismatch && "$url" == https://wiki.rayer.idv.tw/* ]]; then
     printf '200\thttps://attacker.example/'
   elif [[ "$scenario" == health-failure && "$url" == https://wiki.rayer.idv.tw/* ]]; then

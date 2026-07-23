@@ -64,6 +64,7 @@ jobs:
           VERCEL_SCOPE: ${{ secrets.VERCEL_SCOPE }}
 
       - name: Upload durable alias rollback contract
+        id: rollback_upload
         uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
         with:
           name: vercel-alias-rollback-${{ inputs.commit_sha }}
@@ -75,8 +76,9 @@ jobs:
         shell: bash
         run: bash .github/scripts/vercel-alias-promotion.sh promote
         env:
-          ROLLBACK_ARTIFACT_UPLOADED: true
-          GITHUB_TOKEN: ${{ github.token }}
+          ROLLBACK_ARTIFACT_ID: ${{ steps.rollback_upload.outputs.artifact-id }}
+          ROLLBACK_ARTIFACT_URL: ${{ steps.rollback_upload.outputs.artifact-url }}
+          ROLLBACK_ARTIFACT_DIGEST: ${{ steps.rollback_upload.outputs.artifact-digest }}
           VERCEL_TOKEN: ${{ secrets.VERCEL_TOKEN }}
           VERCEL_PROJECT_ID: ${{ secrets.VERCEL_PROJECT_ID }}
           VERCEL_TEAM_ID: ${{ secrets.VERCEL_TEAM_ID }}

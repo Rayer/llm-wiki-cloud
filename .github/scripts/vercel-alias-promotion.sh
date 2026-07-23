@@ -53,6 +53,9 @@ OBSERVED_READY_STATE=""
 OBSERVED_TARGET=""
 CHECKED_AT=""
 ROLLBACK_CONTRACT_SHA256=""
+ROLLBACK_ARTIFACT_ID="${ROLLBACK_ARTIFACT_ID:-}"
+ROLLBACK_ARTIFACT_URL="${ROLLBACK_ARTIFACT_URL:-}"
+ROLLBACK_ARTIFACT_DIGEST="${ROLLBACK_ARTIFACT_DIGEST:-}"
 EVIDENCE_WRITTEN=0
 
 write_evidence() {
@@ -81,6 +84,9 @@ write_evidence() {
     --arg observedTarget "$OBSERVED_TARGET" \
     --arg checkedAt "$CHECKED_AT" \
     --arg rollbackArtifactName "$ROLLBACK_ARTIFACT_NAME" \
+    --arg rollbackArtifactId "$ROLLBACK_ARTIFACT_ID" \
+    --arg rollbackArtifactUrl "$ROLLBACK_ARTIFACT_URL" \
+    --arg rollbackArtifactDigest "$ROLLBACK_ARTIFACT_DIGEST" \
     --arg rollbackContractSha256 "$ROLLBACK_CONTRACT_SHA256" \
     --arg evidenceArtifactName "$EVIDENCE_ARTIFACT_NAME" \
     --arg status "$STATUS" \
@@ -121,10 +127,17 @@ write_evidence() {
          },
          rollback: {
            artifact_name: $rollbackArtifactName,
+           artifact_id: ($rollbackArtifactId | numeric_or_null),
+           artifact_url: ($rollbackArtifactUrl | string_or_null),
+           artifact_digest: ($rollbackArtifactDigest | string_or_null),
+           contract_sha256: ($rollbackContractSha256 | string_or_null),
            artifact_sha256: ($rollbackContractSha256 | string_or_null),
            aliases: $rollbackAliases
          },
          rollback_artifact_name: $rollbackArtifactName,
+         rollback_artifact_id: ($rollbackArtifactId | numeric_or_null),
+         rollback_artifact_url: ($rollbackArtifactUrl | string_or_null),
+         rollback_artifact_digest: ($rollbackArtifactDigest | string_or_null),
          rollback_artifact_sha256: ($rollbackContractSha256 | string_or_null),
          evidence_artifact_name: $evidenceArtifactName
        },
@@ -140,6 +153,8 @@ write_evidence() {
        health: $health,
        provider_verification: {
          result: (if $checkedAt == "" then "not_verified" else "verified" end),
+         consistency: "point_in_time",
+         note: "Reads verify provider state at points in time; later external updates are drift for independent Agent readback.",
          checks: $providerChecks,
          checked_at: ($checkedAt | string_or_null)
        },
@@ -178,6 +193,16 @@ fail_resume() {
   STATUS="PREFLIGHT_FAILED"
   REASON="$1"
   NEXT_ACTION="Regenerate the validated preflight context; no alias mutation was attempted."
+  printf '%s: %s\n' "$STATUS" "$REASON" >&2
+  exit 1
+}
+
+fail_partial_mutation() {
+  local message="$1"
+  read_observed_aliases || true
+  STATUS="PARTIAL_MUTATION"
+  REASON="$message"
+  NEXT_ACTION="Read /v4/aliases before retry; do not blindly replay either alias mutation."
   printf '%s: %s\n' "$STATUS" "$REASON" >&2
   exit 1
 }
@@ -262,9 +287,6 @@ write_promotion_context() {
 }
 
 load_and_validate_resume() {
-  if [[ "${ROLLBACK_ARTIFACT_UPLOADED:-}" != "true" ]]; then
-    fail_resume "durable rollback artifact upload was not confirmed before promote"
-  fi
   if [[ ! -f "$PROMOTION_CONTEXT_PATH" || ! -f "$ROLLBACK_CONTRACT_PATH" ]]; then
     fail_resume "validated preflight context or rollback contract is missing"
   fi
@@ -334,6 +356,22 @@ load_and_validate_resume() {
   CI_RUN_ID="$(jq -r '.ci.run_id' "$PROMOTION_CONTEXT_PATH")"
   CI_RUN_URL="$(jq -r '.ci.run_url' "$PROMOTION_CONTEXT_PATH")"
   PROVIDER_CHECKS='["deployment_ready","deployment_target_production"]'
+}
+
+validate_artifact_handoff() {
+  if [[ ! "$ROLLBACK_ARTIFACT_ID" =~ ^[1-9][0-9]*$ ]]; then
+    fail_resume "durable rollback artifact id must be a positive integer"
+  fi
+  if [[ ! "$ORIGINATING_WORKFLOW_RUN_ID" =~ ^[1-9][0-9]*$ ]]; then
+    fail_resume "originating workflow run id must be a positive integer for artifact validation"
+  fi
+  local expected_artifact_url="https://github.com/$EXPECTED_REPOSITORY/actions/runs/$ORIGINATING_WORKFLOW_RUN_ID/artifacts/$ROLLBACK_ARTIFACT_ID"
+  if [[ "$ROLLBACK_ARTIFACT_URL" != "$expected_artifact_url" ]]; then
+    fail_resume "durable rollback artifact URL was not the canonical URL for this repository and run"
+  fi
+  if [[ ! "$ROLLBACK_ARTIFACT_DIGEST" =~ ^sha256:[0-9a-f]{64}$ ]]; then
+    fail_resume "durable rollback artifact digest must use sha256:<64 lowercase hex characters>"
+  fi
 }
 
 api_query() {
@@ -503,8 +541,9 @@ validate_deployment() {
     ' <<< "$response" >/dev/null
 }
 
-verify_frozen_aliases() {
-  local alias response current_deployment_id frozen_deployment_id matches=1
+verify_expected_aliases() {
+  local first_mutated_index="$1"
+  local alias response current_deployment_id expected_deployment_id matches=1 alias_index=0
   for alias in "${ALIASES[@]}"; do
     if ! response="$(read_alias "$alias")"; then
       matches=0
@@ -515,12 +554,21 @@ verify_frozen_aliases() {
       continue
     fi
     current_deployment_id="$(jq -r --arg alias "$alias" '.aliases[] | select(.alias == $alias) | .deploymentId' <<< "$response")"
-    frozen_deployment_id="$(jq -r --arg alias "$alias" '.[] | select(.alias == $alias) | .deploymentId' <<< "$FROZEN_ALIASES")"
-    if [[ "$current_deployment_id" != "$frozen_deployment_id" ]]; then
+    if (( first_mutated_index >= 0 && alias_index < first_mutated_index )); then
+      expected_deployment_id="$DEPLOYMENT_ID"
+    else
+      expected_deployment_id="$(jq -r --arg alias "$alias" '.[] | select(.alias == $alias) | .deploymentId' <<< "$FROZEN_ALIASES")"
+    fi
+    if [[ "$current_deployment_id" != "$expected_deployment_id" ]]; then
       matches=0
     fi
+    alias_index=$((alias_index + 1))
   done
   [[ "$matches" -eq 1 ]]
+}
+
+verify_frozen_aliases() {
+  verify_expected_aliases -1
 }
 
 alias_set() {
@@ -532,7 +580,7 @@ alias_set() {
     command_args+=(--scope "$VERCEL_SCOPE")
   fi
   if timeout --signal=TERM --kill-after=5s "${ALIAS_SET_TIMEOUT_SECONDS}s" \
-    vercel "${command_args[@]}" >/dev/null 2>"$error_path"; then
+    env -u GITHUB_TOKEN vercel "${command_args[@]}" >/dev/null 2>"$error_path"; then
     rm -f "$error_path"
     return 0
   fi
@@ -549,8 +597,24 @@ fi
 if [[ -n "$TICKET_REF" && ! "$TICKET_REF" =~ ^[A-Za-z0-9._/-]+$ ]]; then
   fail_preflight "ticket_ref contains unsupported characters"
 fi
-if [[ -z "$GITHUB_REPOSITORY" || -z "$GITHUB_TOKEN" || -z "$VERCEL_TOKEN" || -z "$VERCEL_PROJECT_ID" ]]; then
-  fail_preflight "required read-only provider configuration is missing"
+if [[ "${LWC199_TEST_MODE:-}" != "" && "${LWC199_TEST_MODE:-}" != "1" ]]; then
+  fail_preflight "LWC199_TEST_MODE must be exactly 1 when enabled"
+fi
+if [[ "${GITHUB_ACTIONS:-}" == "true" && "${LWC199_TEST_MODE:-}" == "1" ]]; then
+  fail_preflight "LWC199_TEST_MODE is forbidden in GitHub Actions"
+fi
+if [[ "${GITHUB_ACTIONS:-}" == "true" ]]; then
+  if [[ "$API_BASE_URL" != "https://api.vercel.com" || "$GITHUB_BASE_URL" != "https://api.github.com" ]]; then
+    fail_preflight "GitHub Actions requires the canonical Vercel and GitHub API origins"
+  fi
+elif [[ "${LWC199_TEST_MODE:-}" != "1" && ( "$API_BASE_URL" != "https://api.vercel.com" || "$GITHUB_BASE_URL" != "https://api.github.com" ) ]]; then
+  fail_preflight "API origin overrides require LWC199_TEST_MODE=1 outside GitHub Actions"
+fi
+if [[ -z "$GITHUB_REPOSITORY" || -z "$VERCEL_TOKEN" || -z "$VERCEL_PROJECT_ID" ]]; then
+  fail_preflight "required Vercel configuration is missing"
+fi
+if [[ "$MODE" == "preflight" && -z "$GITHUB_TOKEN" ]]; then
+  fail_preflight "GITHUB_TOKEN is required only for preflight GitHub read-back"
 fi
 if [[ "$GITHUB_REPOSITORY" != "$EXPECTED_REPOSITORY" ]]; then
   fail_preflight "GITHUB_REPOSITORY must equal the exact repository identity $EXPECTED_REPOSITORY"
@@ -642,30 +706,25 @@ if [[ "$MODE" == "preflight" ]]; then
 fi
 
 load_and_validate_resume
-if ! verify_frozen_aliases; then
-  fail_preflight "canonical alias changed from the frozen rollback snapshot before mutation"
-fi
+validate_artifact_handoff
 
-mutation_failed=0
-failed_alias=""
-if ! alias_set "${ALIASES[0]}"; then
-  mutation_failed=1
-  failed_alias="${ALIASES[0]}"
-else
-  if ! alias_set "${ALIASES[1]}"; then
-    mutation_failed=1
-    failed_alias="${ALIASES[1]}"
+# Vercel alias set has no CAS/If-Match transaction. These reads are point-in-time
+# reconciliation gates: later external updates are drift for independent Agent readback.
+for alias_index in "${!ALIASES[@]}"; do
+  alias="${ALIASES[$alias_index]}"
+  if ! verify_expected_aliases "$alias_index"; then
+    if (( alias_index == 0 )); then
+      fail_preflight "canonical alias mixed state changed before mutation for $alias"
+    fi
+    fail_partial_mutation "canonical alias mixed state changed before mutation for $alias"
   fi
-fi
-
-if [[ "$mutation_failed" -eq 1 ]]; then
-  read_observed_aliases || true
-  STATUS="PARTIAL_MUTATION"
-  REASON="bounded alias command failed or became uncertain for $failed_alias"
-  NEXT_ACTION="Read /v4/aliases before retry; do not blindly replay either alias mutation."
-  printf '%s: %s\n' "$STATUS" "$REASON" >&2
-  exit 1
-fi
+  if ! alias_set "$alias"; then
+    fail_partial_mutation "bounded alias command failed or became uncertain for $alias"
+  fi
+  if ! verify_expected_aliases "$((alias_index + 1))"; then
+    fail_partial_mutation "authoritative alias read-back after setting $alias did not match the expected mixed state"
+  fi
+done
 
 if ! read_post_aliases; then
   fail_postcheck "authoritative /v4/aliases post-state did not map both aliases to the exact deployment"
@@ -715,7 +774,11 @@ for alias in "${ALIASES[@]}"; do
     'map(if .alias == $alias then .status_code = $statusCode | .effective_host = ($effectiveHost | if . == "" then null else . end) else . end)' <<< "$HEALTH")"
   if [[ "$effective_host" != "$alias" ]]; then
     health_failed=1
-    health_failure_reason="canonical HTTP health redirected to a different host for $alias"
+    if [[ "$http_code" == "000" || -z "$effective_url" ]]; then
+      health_failure_reason="canonical HTTP health transport failed or had no effective host for $alias"
+    else
+      health_failure_reason="canonical HTTP health redirected to a different host for $alias"
+    fi
     continue
   fi
   if [[ "$http_code" != "200" ]]; then
