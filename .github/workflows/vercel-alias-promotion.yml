@@ -53,10 +53,29 @@ jobs:
         shell: bash
         run: npm install --global vercel@52.0.0 --ignore-scripts
 
-      - name: Validate and promote exact deployment
+      - name: Preflight exact deployment and rollback contract
         shell: bash
-        run: bash .github/scripts/vercel-alias-promotion.sh
+        run: bash .github/scripts/vercel-alias-promotion.sh preflight
         env:
+          GITHUB_TOKEN: ${{ github.token }}
+          VERCEL_TOKEN: ${{ secrets.VERCEL_TOKEN }}
+          VERCEL_PROJECT_ID: ${{ secrets.VERCEL_PROJECT_ID }}
+          VERCEL_TEAM_ID: ${{ secrets.VERCEL_TEAM_ID }}
+          VERCEL_SCOPE: ${{ secrets.VERCEL_SCOPE }}
+
+      - name: Upload durable alias rollback contract
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
+        with:
+          name: vercel-alias-rollback-${{ inputs.commit_sha }}
+          path: ${{ runner.temp }}/vercel-alias-promotion/rollback-contract.json
+          retention-days: 90
+          if-no-files-found: error
+
+      - name: Promote exact deployment
+        shell: bash
+        run: bash .github/scripts/vercel-alias-promotion.sh promote
+        env:
+          ROLLBACK_ARTIFACT_UPLOADED: true
           GITHUB_TOKEN: ${{ github.token }}
           VERCEL_TOKEN: ${{ secrets.VERCEL_TOKEN }}
           VERCEL_PROJECT_ID: ${{ secrets.VERCEL_PROJECT_ID }}
@@ -67,6 +86,7 @@ jobs:
         if: always()
         uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
         with:
-          name: vercel-alias-promotion-evidence
+          name: vercel-alias-promotion-evidence-${{ inputs.commit_sha }}
           path: ${{ runner.temp }}/vercel-alias-promotion/vercel-alias-promotion.json
+          retention-days: 90
           if-no-files-found: error

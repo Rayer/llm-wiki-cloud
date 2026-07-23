@@ -45,9 +45,9 @@ if [[ "$url" == *"/v4/aliases?"* ]]; then
     exit 7
   elif [[ "$scenario" == partial-readback && -f "$root/mutated" && "$domain" == llm-wiki-frontend.vercel.app ]]; then
     exit 7
-  elif [[ "$scenario" == alias-changed-before-mutation && "$domain" == wiki.rayer.idv.tw ]]; then
+  elif [[ "$scenario" == alias-changed-before-promote && "$domain" == wiki.rayer.idv.tw ]]; then
     read_count="$(grep -c "domain=$domain" "$root/curl-calls" || true)"
-    if [[ "$read_count" -ge 2 ]]; then
+    if [[ "$read_count" -ge 3 ]]; then
       printf '%s' '{"aliases":[{"alias":"wiki.rayer.idv.tw","deploymentId":"dpl_changed"}]}'
     else
       printf '%s' '{"aliases":[{"alias":"wiki.rayer.idv.tw","deploymentId":"dpl_oldcustom"}]}'

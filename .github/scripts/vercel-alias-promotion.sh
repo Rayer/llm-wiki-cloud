@@ -1,6 +1,12 @@
 #!/usr/bin/env bash
 set -Eeuo pipefail
 
+MODE="${1:-}"
+if [[ "$MODE" != "preflight" && "$MODE" != "promote" ]]; then
+  printf 'usage: %s {preflight|promote}\n' "$0" >&2
+  exit 2
+fi
+
 readonly ALIASES=("wiki.rayer.idv.tw" "llm-wiki-frontend.vercel.app")
 readonly EXPECTED_REPOSITORY="Rayer/llm-wiki-frontend"
 readonly API_BASE_URL="${VERCEL_API_BASE_URL:-https://api.vercel.com}"
@@ -11,7 +17,6 @@ readonly PROJECT="llm-wiki-cloud"
 readonly COMPONENT="frontend"
 readonly ENVIRONMENT="production"
 readonly ACTION="promote"
-readonly EVIDENCE_ARTIFACT_NAME="vercel-alias-promotion-evidence"
 readonly CURL_CONNECT_TIMEOUT_SECONDS=10
 readonly CURL_MAX_TIME_SECONDS=30
 readonly ALIAS_SET_TIMEOUT_SECONDS="${VERCEL_ALIAS_TIMEOUT_SECONDS:-15}"
@@ -25,6 +30,10 @@ VERCEL_TOKEN="${VERCEL_TOKEN:-}"
 VERCEL_PROJECT_ID="${VERCEL_PROJECT_ID:-}"
 VERCEL_TEAM_ID="${VERCEL_TEAM_ID:-}"
 VERCEL_SCOPE="${VERCEL_SCOPE:-}"
+PROMOTION_CONTEXT_PATH="${PROMOTION_CONTEXT_PATH:-$EVIDENCE_DIR/vercel-alias-promotion-context.json}"
+ROLLBACK_CONTRACT_PATH="$EVIDENCE_DIR/rollback-contract.json"
+ROLLBACK_ARTIFACT_NAME="vercel-alias-rollback-${COMMIT_SHA}"
+EVIDENCE_ARTIFACT_NAME="vercel-alias-promotion-evidence-${COMMIT_SHA}"
 
 STATUS="FAILED"
 REASON="unexpected failure"
@@ -43,6 +52,7 @@ OBSERVED_REF=""
 OBSERVED_READY_STATE=""
 OBSERVED_TARGET=""
 CHECKED_AT=""
+ROLLBACK_CONTRACT_SHA256=""
 EVIDENCE_WRITTEN=0
 
 write_evidence() {
@@ -70,6 +80,9 @@ write_evidence() {
     --arg observedReadyState "$OBSERVED_READY_STATE" \
     --arg observedTarget "$OBSERVED_TARGET" \
     --arg checkedAt "$CHECKED_AT" \
+    --arg rollbackArtifactName "$ROLLBACK_ARTIFACT_NAME" \
+    --arg rollbackContractSha256 "$ROLLBACK_CONTRACT_SHA256" \
+    --arg evidenceArtifactName "$EVIDENCE_ARTIFACT_NAME" \
     --arg status "$STATUS" \
     --arg reason "$REASON" \
     --arg nextAction "$NEXT_ACTION" \
@@ -107,9 +120,13 @@ write_evidence() {
            deployment_url: ($currentDeploymentUrl | string_or_null)
          },
          rollback: {
+           artifact_name: $rollbackArtifactName,
+           artifact_sha256: ($rollbackContractSha256 | string_or_null),
            aliases: $rollbackAliases
          },
-         evidence_artifact_name: "vercel-alias-promotion-evidence"
+         rollback_artifact_name: $rollbackArtifactName,
+         rollback_artifact_sha256: ($rollbackContractSha256 | string_or_null),
+         evidence_artifact_name: $evidenceArtifactName
        },
        observed: {
          deployment_id: ($observedDeploymentId | string_or_null),
@@ -155,6 +172,168 @@ fail_postcheck() {
   NEXT_ACTION="Inspect authoritative /v4/aliases, deployment read-back, and health evidence before retrying."
   printf '%s: %s\n' "$STATUS" "$REASON" >&2
   exit 1
+}
+
+fail_resume() {
+  STATUS="PREFLIGHT_FAILED"
+  REASON="$1"
+  NEXT_ACTION="Regenerate the validated preflight context; no alias mutation was attempted."
+  printf '%s: %s\n' "$STATUS" "$REASON" >&2
+  exit 1
+}
+
+write_rollback_contract() {
+  mkdir -p "$EVIDENCE_DIR"
+  local temporary_path="$ROLLBACK_CONTRACT_PATH.tmp"
+  jq -n \
+    --arg commitSha "$COMMIT_SHA" \
+    --arg deploymentId "$DEPLOYMENT_ID" \
+    --arg projectId "$VERCEL_PROJECT_ID" \
+    --arg deploymentUrl "$CURRENT_DEPLOYMENT_URL" \
+    --arg ciRunId "$CI_RUN_ID" \
+    --arg ciRunUrl "$CI_RUN_URL" \
+    --arg repository "$EXPECTED_REPOSITORY" \
+    --arg rollbackArtifactName "$ROLLBACK_ARTIFACT_NAME" \
+    --argjson aliases "$(jq -c 'map({alias, deployment_id: .deploymentId})' <<< "$FROZEN_ALIASES")" \
+    ' {
+       schema_version: 1,
+       kind: "vercel-alias-rollback-contract",
+       repository: $repository,
+       commit_sha: $commitSha,
+       ref: "refs/heads/main",
+       deployment: {
+         id: $deploymentId,
+         project_id: $projectId,
+         source: "github",
+         repository: $repository,
+         ref: "refs/heads/main",
+         commit_sha: $commitSha,
+         ready_state: "READY",
+         target: "production",
+         url: $deploymentUrl
+       },
+       ci: {
+         workflow: "ci.yml",
+         event: "push",
+         run_id: ($ciRunId | tonumber),
+         run_url: $ciRunUrl
+       },
+       rollback_artifact_name: $rollbackArtifactName,
+       aliases: $aliases
+     }' > "$temporary_path"
+  mv -f "$temporary_path" "$ROLLBACK_CONTRACT_PATH"
+  ROLLBACK_CONTRACT_SHA256="$(sha256sum "$ROLLBACK_CONTRACT_PATH" | awk '{print $1}')"
+}
+
+write_promotion_context() {
+  mkdir -p "$(dirname "$PROMOTION_CONTEXT_PATH")"
+  local temporary_path="$PROMOTION_CONTEXT_PATH.tmp"
+  jq -n \
+    --arg commitSha "$COMMIT_SHA" \
+    --arg deploymentId "$DEPLOYMENT_ID" \
+    --arg projectId "$VERCEL_PROJECT_ID" \
+    --arg deploymentUrl "$CURRENT_DEPLOYMENT_URL" \
+    --arg ciRunId "$CI_RUN_ID" \
+    --arg ciRunUrl "$CI_RUN_URL" \
+    --arg repository "$EXPECTED_REPOSITORY" \
+    --arg rollbackArtifactName "$ROLLBACK_ARTIFACT_NAME" \
+    --arg rollbackContractPath "$ROLLBACK_CONTRACT_PATH" \
+    --arg rollbackContractSha256 "$ROLLBACK_CONTRACT_SHA256" \
+    --argjson aliases "$(jq -c 'map({alias, deployment_id: .deploymentId})' <<< "$FROZEN_ALIASES")" \
+    ' {
+       schema_version: 1,
+       kind: "vercel-alias-promotion-resume",
+       phase: "preflight-complete",
+       repository: $repository,
+       commit_sha: $commitSha,
+       ref: "refs/heads/main",
+       deployment_id: $deploymentId,
+       project_id: $projectId,
+       source: "github",
+       target: "production",
+       deployment_url: $deploymentUrl,
+       ci: { workflow: "ci.yml", event: "push", run_id: ($ciRunId | tonumber), run_url: $ciRunUrl },
+       rollback_artifact_name: $rollbackArtifactName,
+       rollback_contract_path: $rollbackContractPath,
+       rollback_contract_sha256: $rollbackContractSha256,
+       aliases: $aliases
+     }' > "$temporary_path"
+  mv -f "$temporary_path" "$PROMOTION_CONTEXT_PATH"
+}
+
+load_and_validate_resume() {
+  if [[ "${ROLLBACK_ARTIFACT_UPLOADED:-}" != "true" ]]; then
+    fail_resume "durable rollback artifact upload was not confirmed before promote"
+  fi
+  if [[ ! -f "$PROMOTION_CONTEXT_PATH" || ! -f "$ROLLBACK_CONTRACT_PATH" ]]; then
+    fail_resume "validated preflight context or rollback contract is missing"
+  fi
+
+  local canonical_aliases='["wiki.rayer.idv.tw","llm-wiki-frontend.vercel.app"]'
+  if ! jq -e \
+    --arg commitSha "$COMMIT_SHA" \
+    --arg deploymentId "$DEPLOYMENT_ID" \
+    --arg projectId "$VERCEL_PROJECT_ID" \
+    --arg repository "$EXPECTED_REPOSITORY" \
+    --arg rollbackArtifactName "$ROLLBACK_ARTIFACT_NAME" \
+    --arg rollbackContractPath "$ROLLBACK_CONTRACT_PATH" \
+    --argjson canonicalAliases "$canonical_aliases" \
+    'type == "object" and
+     .schema_version == 1 and .kind == "vercel-alias-promotion-resume" and
+     .phase == "preflight-complete" and .repository == $repository and
+     .commit_sha == $commitSha and .ref == "refs/heads/main" and
+     .deployment_id == $deploymentId and .project_id == $projectId and
+     .source == "github" and .target == "production" and
+     (.deployment_url | type) == "string" and
+     (.ci.workflow == "ci.yml" and .ci.event == "push" and
+       (.ci.run_id | type) == "number" and (.ci.run_url | type) == "string") and
+     .rollback_artifact_name == $rollbackArtifactName and
+     .rollback_contract_path == $rollbackContractPath and
+     (.rollback_contract_sha256 | test("^[0-9a-f]{64}$")) and
+     (.aliases | type == "array" and length == 2 and map(.alias) == $canonicalAliases and
+       map(.deployment_id | test("^dpl_[A-Za-z0-9]+$")) == [true, true] and
+       (map(.alias) | unique | length) == 2)' \
+    "$PROMOTION_CONTEXT_PATH" >/dev/null; then
+    fail_resume "resume context identity, target deployment, source, repository, or exact aliases did not match"
+  fi
+
+  ROLLBACK_CONTRACT_SHA256="$(jq -r '.rollback_contract_sha256' "$PROMOTION_CONTEXT_PATH")"
+  local actual_contract_sha256
+  actual_contract_sha256="$(sha256sum "$ROLLBACK_CONTRACT_PATH" | awk '{print $1}')"
+  if [[ "$actual_contract_sha256" != "$ROLLBACK_CONTRACT_SHA256" ]]; then
+    fail_resume "rollback contract identity did not match the validated resume context"
+  fi
+  if ! jq -e \
+    --arg commitSha "$COMMIT_SHA" \
+    --arg deploymentId "$DEPLOYMENT_ID" \
+    --arg projectId "$VERCEL_PROJECT_ID" \
+    --arg repository "$EXPECTED_REPOSITORY" \
+    --arg deploymentUrl "$(jq -r '.deployment_url' "$PROMOTION_CONTEXT_PATH")" \
+    --arg ciRunId "$(jq -r '.ci.run_id | tostring' "$PROMOTION_CONTEXT_PATH")" \
+    --arg ciRunUrl "$(jq -r '.ci.run_url' "$PROMOTION_CONTEXT_PATH")" \
+    --arg rollbackArtifactName "$ROLLBACK_ARTIFACT_NAME" \
+    --argjson contextAliases "$(jq -c '.aliases' "$PROMOTION_CONTEXT_PATH")" \
+    'type == "object" and .schema_version == 1 and
+     .kind == "vercel-alias-rollback-contract" and .repository == $repository and
+     .commit_sha == $commitSha and .ref == "refs/heads/main" and
+     .rollback_artifact_name == $rollbackArtifactName and
+     .deployment.id == $deploymentId and .deployment.project_id == $projectId and
+     .deployment.source == "github" and .deployment.repository == $repository and
+     .deployment.ref == "refs/heads/main" and .deployment.commit_sha == $commitSha and
+     .deployment.ready_state == "READY" and .deployment.target == "production" and
+     .deployment.url == $deploymentUrl and
+     (.ci.workflow == "ci.yml" and .ci.event == "push" and
+       (.ci.run_id | tostring) == $ciRunId and .ci.run_url == $ciRunUrl) and
+     .aliases == $contextAliases' \
+    "$ROLLBACK_CONTRACT_PATH" >/dev/null; then
+    fail_resume "rollback contract target or alias identity did not match the validated resume context"
+  fi
+
+  FROZEN_ALIASES="$(jq -c '.aliases | map({alias, deploymentId: .deployment_id})' "$PROMOTION_CONTEXT_PATH")"
+  CURRENT_DEPLOYMENT_URL="$(jq -r '.deployment_url' "$PROMOTION_CONTEXT_PATH")"
+  CI_RUN_ID="$(jq -r '.ci.run_id' "$PROMOTION_CONTEXT_PATH")"
+  CI_RUN_URL="$(jq -r '.ci.run_url' "$PROMOTION_CONTEXT_PATH")"
+  PROVIDER_CHECKS='["deployment_ready","deployment_target_production"]'
 }
 
 api_query() {
@@ -385,71 +564,86 @@ fi
 if [[ ! "$ALIAS_SET_TIMEOUT_SECONDS" =~ ^[1-9][0-9]*$ || "$ALIAS_SET_TIMEOUT_SECONDS" -gt 300 ]]; then
   fail_preflight "VERCEL_ALIAS_TIMEOUT_SECONDS must be a bounded positive number of seconds"
 fi
-for command in curl jq timeout vercel; do
+for command in curl jq sha256sum timeout vercel; do
   if ! command -v "$command" >/dev/null 2>&1; then
     fail_preflight "required command is unavailable: $command"
   fi
 done
 
-github_runs=""
-if ! github_runs="$(github_query "/repos/$GITHUB_REPOSITORY/actions/workflows/ci.yml/runs?head_sha=$COMMIT_SHA&branch=main&event=push&per_page=100")"; then
-  fail_preflight "GitHub CI read failed"
-fi
-ci_run="$(jq -c --arg commitSha "$COMMIT_SHA" '
-  first(.workflow_runs[]? | select(
-    .path == ".github/workflows/ci.yml" and
-    .head_branch == "main" and
-    .head_sha == $commitSha and
-    .event == "push" and
-    .status == "completed" and
-    .conclusion == "success" and
-    (.id | type) == "number" and
-    (.html_url | type) == "string"
-  )) // empty
-' <<< "$github_runs")"
-if [[ -z "$ci_run" ]]; then
-  fail_preflight "exact main CI success was not found for commit_sha"
-fi
-CI_RUN_ID="$(jq -r '.id' <<< "$ci_run")"
-CI_RUN_URL="$(jq -r '.html_url' <<< "$ci_run")"
-
-deployment_response=""
 deployment_endpoint="/v13/deployments/$DEPLOYMENT_ID"
 if [[ -n "$VERCEL_TEAM_ID" ]]; then
   deployment_endpoint+="?teamId=$VERCEL_TEAM_ID"
 fi
-if ! deployment_response="$(api_query "$deployment_endpoint")"; then
-  fail_preflight "Vercel deployment read failed"
-fi
-if ! validate_deployment "$deployment_response"; then
-  fail_preflight "deployment project, repository, Git source, commit, READY state, or production target did not match"
-fi
-observe_deployment "$deployment_response"
-CURRENT_DEPLOYMENT_URL="$OBSERVED_DEPLOYMENT_URL"
-if [[ -z "$CURRENT_DEPLOYMENT_URL" ]]; then
-  fail_preflight "deployment URL was not present in the provider read-back"
-fi
-PROVIDER_CHECKS='["deployment_ready","deployment_target_production"]'
 
-for alias in "${ALIASES[@]}"; do
-  alias_response=""
-  if ! alias_response="$(read_alias "$alias")"; then
-    fail_preflight "canonical alias read failed for $alias"
+if [[ "$MODE" == "preflight" ]]; then
+  github_runs=""
+  if ! github_runs="$(github_query "/repos/$GITHUB_REPOSITORY/actions/workflows/ci.yml/runs?head_sha=$COMMIT_SHA&branch=main&event=push&per_page=100")"; then
+    fail_preflight "GitHub CI read failed"
   fi
-  if ! validate_alias_response "$alias_response" "$alias"; then
-    fail_preflight "canonical alias is missing or divergent for $alias"
+  ci_run="$(jq -c --arg commitSha "$COMMIT_SHA" '
+    first(.workflow_runs[]? | select(
+      .path == ".github/workflows/ci.yml" and
+      .head_branch == "main" and
+      .head_sha == $commitSha and
+      .event == "push" and
+      .status == "completed" and
+      .conclusion == "success" and
+      (.id | type) == "number" and
+      (.html_url | type) == "string"
+    )) // empty
+  ' <<< "$github_runs")"
+  if [[ -z "$ci_run" ]]; then
+    fail_preflight "exact main CI success was not found for commit_sha"
   fi
-  prior_deployment_id="$(jq -r --arg alias "$alias" \
-    '.aliases[] | select(.alias == $alias) | .deploymentId' <<< "$alias_response")"
-  if [[ ! "$prior_deployment_id" =~ ^dpl_[A-Za-z0-9]+$ ]]; then
-    fail_preflight "canonical alias rollback handle is not an immutable deployment ID for $alias"
-  fi
-  FROZEN_ALIASES="$(jq -c --arg alias "$alias" --arg deploymentId "$prior_deployment_id" \
-    'map(if .alias == $alias then .deploymentId = $deploymentId else . end)' <<< "$FROZEN_ALIASES")"
-done
+  CI_RUN_ID="$(jq -r '.id' <<< "$ci_run")"
+  CI_RUN_URL="$(jq -r '.html_url' <<< "$ci_run")"
 
+  deployment_response=""
+  if ! deployment_response="$(api_query "$deployment_endpoint")"; then
+    fail_preflight "Vercel deployment read failed"
+  fi
+  if ! validate_deployment "$deployment_response"; then
+    fail_preflight "deployment project, repository, Git source, commit, READY state, or production target did not match"
+  fi
+  observe_deployment "$deployment_response"
+  CURRENT_DEPLOYMENT_URL="$OBSERVED_DEPLOYMENT_URL"
+  if [[ -z "$CURRENT_DEPLOYMENT_URL" ]]; then
+    fail_preflight "deployment URL was not present in the provider read-back"
+  fi
+  PROVIDER_CHECKS='["deployment_ready","deployment_target_production"]'
+
+  for alias in "${ALIASES[@]}"; do
+    alias_response=""
+    if ! alias_response="$(read_alias "$alias")"; then
+      fail_preflight "canonical alias read failed for $alias"
+    fi
+    if ! validate_alias_response "$alias_response" "$alias"; then
+      fail_preflight "canonical alias is missing or divergent for $alias"
+    fi
+    prior_deployment_id="$(jq -r --arg alias "$alias" \
+      '.aliases[] | select(.alias == $alias) | .deploymentId' <<< "$alias_response")"
+    if [[ ! "$prior_deployment_id" =~ ^dpl_[A-Za-z0-9]+$ ]]; then
+      fail_preflight "canonical alias rollback handle is not an immutable deployment ID for $alias"
+    fi
+    FROZEN_ALIASES="$(jq -c --arg alias "$alias" --arg deploymentId "$prior_deployment_id" \
+      'map(if .alias == $alias then .deploymentId = $deploymentId else . end)' <<< "$FROZEN_ALIASES")"
+  done
+
+  if ! verify_frozen_aliases; then
+    fail_preflight "canonical alias changed from the frozen rollback snapshot"
+  fi
+  write_rollback_contract
+  write_promotion_context
+  STATUS="PREFLIGHT_READY"
+  REASON="exact main CI, READY production deployment, and both canonical alias rollback handles were validated"
+  NEXT_ACTION="Upload the immutable rollback contract before starting promote."
+  printf '%s\n' "$STATUS"
+  exit 0
+fi
+
+load_and_validate_resume
 if ! verify_frozen_aliases; then
-  fail_preflight "canonical alias changed from the frozen rollback snapshot"
+  fail_preflight "canonical alias changed from the frozen rollback snapshot before mutation"
 fi
 
 mutation_failed=0
