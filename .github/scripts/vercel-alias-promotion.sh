@@ -6,6 +6,14 @@ readonly API_BASE_URL="${VERCEL_API_BASE_URL:-https://api.vercel.com}"
 readonly GITHUB_BASE_URL="${GITHUB_API_URL:-https://api.github.com}"
 readonly EVIDENCE_DIR="${EVIDENCE_DIR:-artifacts/vercel-alias-promotion}"
 readonly EVIDENCE_PATH="$EVIDENCE_DIR/vercel-alias-promotion.json"
+readonly PROJECT="llm-wiki-cloud"
+readonly COMPONENT="frontend"
+readonly ENVIRONMENT="production"
+readonly ACTION="promote"
+readonly EVIDENCE_ARTIFACT_NAME="vercel-alias-promotion-evidence"
+readonly CURL_CONNECT_TIMEOUT_SECONDS=10
+readonly CURL_MAX_TIME_SECONDS=30
+readonly ALIAS_SET_TIMEOUT_SECONDS="${VERCEL_ALIAS_TIMEOUT_SECONDS:-15}"
 
 COMMIT_SHA="${COMMIT_SHA:-}"
 DEPLOYMENT_ID="${DEPLOYMENT_ID:-}"
@@ -23,6 +31,15 @@ NEXT_ACTION="Inspect the evidence and provider read-back before retrying."
 FROZEN_ALIASES="[]"
 POST_ALIASES="[]"
 HEALTH="[]"
+PROVIDER_CHECKS="[]"
+CI_RUN_ID=""
+CI_RUN_URL=""
+DEPLOYMENT_URL=""
+DEPLOYMENT_SOURCE=""
+DEPLOYMENT_REF=""
+DEPLOYMENT_READY_STATE=""
+DEPLOYMENT_TARGET=""
+CHECKED_AT=""
 EVIDENCE_WRITTEN=0
 
 write_evidence() {
@@ -33,30 +50,87 @@ write_evidence() {
   mkdir -p "$EVIDENCE_DIR"
   local temporary_path="$EVIDENCE_PATH.tmp"
   jq -n \
-    --arg schemaVersion "1" \
     --arg ticketRef "$TICKET_REF" \
     --arg commitSha "$COMMIT_SHA" \
     --arg deploymentId "$DEPLOYMENT_ID" \
-    --arg projectId "$VERCEL_PROJECT_ID" \
+    --arg deploymentUrl "$DEPLOYMENT_URL" \
+    --arg ciRunId "$CI_RUN_ID" \
+    --arg ciRunUrl "$CI_RUN_URL" \
+    --arg originatingRepository "$GITHUB_REPOSITORY" \
+    --arg originatingWorkflow "${ORIGINATING_WORKFLOW:-}" \
+    --arg originatingRunId "${ORIGINATING_WORKFLOW_RUN_ID:-}" \
+    --arg originatingRunAttempt "${ORIGINATING_WORKFLOW_RUN_ATTEMPT:-}" \
+    --arg observedSource "$DEPLOYMENT_SOURCE" \
+    --arg observedRef "$DEPLOYMENT_REF" \
+    --arg observedReadyState "$DEPLOYMENT_READY_STATE" \
+    --arg observedTarget "$DEPLOYMENT_TARGET" \
+    --arg checkedAt "$CHECKED_AT" \
     --arg status "$STATUS" \
     --arg reason "$REASON" \
     --arg nextAction "$NEXT_ACTION" \
-    --argjson aliases "$FROZEN_ALIASES" \
-    --argjson postAliases "$POST_ALIASES" \
+    --argjson rollbackAliases "$(jq -c 'map({alias, deployment_id: .deploymentId})' <<< "$FROZEN_ALIASES")" \
+    --argjson aliasRouting "$(jq -c 'map({alias, deployment_id: .deploymentId})' <<< "$POST_ALIASES")" \
     --argjson health "$HEALTH" \
-    '{
-      schemaVersion: ($schemaVersion | tonumber),
-      ticketRef: $ticketRef,
-      commitSha: $commitSha,
-      deploymentId: $deploymentId,
-      projectId: $projectId,
-      aliases: $aliases,
-      postAliases: $postAliases,
-      health: $health,
-      status: $status,
-      reason: $reason,
-      nextAction: $nextAction
-    }' > "$temporary_path"
+    --argjson providerChecks "$PROVIDER_CHECKS" \
+    'def numeric_or_null:
+       if test("^[0-9]+$") then tonumber else null end;
+     def string_or_null:
+       if . == "" then null else . end;
+     {
+       schema_version: 1,
+       project: "llm-wiki-cloud",
+       component: "frontend",
+       environment: "production",
+       action: "promote",
+       ticket_ref: $ticketRef,
+       source: {
+         commit_sha: $commitSha,
+         ref: "refs/heads/main"
+       },
+       dev_provenance: {
+         workflow: "ci.yml",
+         event: "push",
+         head_branch: "main",
+         head_sha: $commitSha,
+         conclusion: (if $ciRunId == "" then null else "success" end),
+         run_id: ($ciRunId | numeric_or_null),
+         run_url: ($ciRunUrl | string_or_null)
+       },
+       provider: {
+         current: {
+           deployment_id: ($deploymentId | string_or_null),
+           deployment_url: ($deploymentUrl | string_or_null)
+         },
+         rollback: {
+           aliases: $rollbackAliases
+         },
+         evidence_artifact_name: "vercel-alias-promotion-evidence"
+       },
+       observed: {
+         deployment_id: ($deploymentId | string_or_null),
+         deployment_url: ($deploymentUrl | string_or_null),
+         source: ($observedSource | string_or_null),
+         ref: ($observedRef | string_or_null),
+         ready_state: ($observedReadyState | string_or_null),
+         target: ($observedTarget | string_or_null),
+         alias_routing: $aliasRouting
+       },
+       health: $health,
+       provider_verification: {
+         result: (if $checkedAt == "" then "not_verified" else "verified" end),
+         checks: $providerChecks,
+         checked_at: ($checkedAt | string_or_null)
+       },
+       originating_workflow: {
+         repository: ($originatingRepository | string_or_null),
+         workflow: ($originatingWorkflow | string_or_null),
+         run_id: ($originatingRunId | numeric_or_null),
+         run_attempt: ($originatingRunAttempt | numeric_or_null)
+       },
+       status: $status,
+       reason: $reason,
+       next_action: $nextAction
+     }' > "$temporary_path"
   mv "$temporary_path" "$EVIDENCE_PATH"
 }
 
@@ -81,6 +155,7 @@ fail_postcheck() {
 api_query() {
   local endpoint="$1"
   curl --fail-with-body --silent --show-error --location \
+    --connect-timeout "$CURL_CONNECT_TIMEOUT_SECONDS" --max-time "$CURL_MAX_TIME_SECONDS" \
     --header "Accept: application/json" \
     --header "Authorization: Bearer $VERCEL_TOKEN" \
     "$API_BASE_URL$endpoint"
@@ -89,6 +164,7 @@ api_query() {
 github_query() {
   local endpoint="$1"
   curl --fail-with-body --silent --show-error --location \
+    --connect-timeout "$CURL_CONNECT_TIMEOUT_SECONDS" --max-time "$CURL_MAX_TIME_SECONDS" \
     --header "Accept: application/vnd.github+json" \
     --header "Authorization: Bearer $GITHUB_TOKEN" \
     --header "X-GitHub-Api-Version: 2022-11-28" \
@@ -144,6 +220,22 @@ read_post_aliases() {
   done
 }
 
+read_observed_aliases() {
+  POST_ALIASES="[]"
+  local alias response deployment_id
+  for alias in "${ALIASES[@]}"; do
+    if ! response="$(read_alias "$alias")"; then
+      return 1
+    fi
+    if ! validate_alias_response "$response" "$alias"; then
+      return 1
+    fi
+    deployment_id="$(jq -r --arg alias "$alias" '.aliases[] | select(.alias == $alias) | .deploymentId' <<< "$response")"
+    POST_ALIASES="$(jq -c --arg alias "$alias" --arg deploymentId "$deployment_id" \
+      '. + [{alias: $alias, deploymentId: $deploymentId}]' <<< "$POST_ALIASES")"
+  done
+}
+
 validate_deployment() {
   local response="$1"
   jq -e \
@@ -155,10 +247,12 @@ validate_deployment() {
       .id == $deploymentId and
       .projectId == $projectId and
       .readyState == "READY" and
+      .target == "production" and
       (
         (.gitSource.type // (if .meta.githubDeployment == "1" then "github" else null end)) == "github"
       ) and
-      (.gitSource.ref // .meta.githubCommitRef) == "main" and
+      ((.gitSource.ref // .meta.githubCommitRef) == "main" or
+       (.gitSource.ref // .meta.githubCommitRef) == "refs/heads/main") and
       (.gitSource.sha // .meta.githubCommitSha) == $commitSha and
       (
         (.meta.githubOrg and .meta.githubRepo) as $hasRepository |
@@ -175,7 +269,8 @@ alias_set() {
   if [[ -n "$VERCEL_SCOPE" ]]; then
     command_args+=(--scope "$VERCEL_SCOPE")
   fi
-  if vercel "${command_args[@]}" >/dev/null 2>"$error_path"; then
+  if timeout --signal=TERM --kill-after=5s "${ALIAS_SET_TIMEOUT_SECONDS}s" \
+    vercel "${command_args[@]}" >/dev/null 2>"$error_path"; then
     rm -f "$error_path"
     return 0
   fi
@@ -201,28 +296,39 @@ fi
 if [[ -n "$VERCEL_TEAM_ID" && ! "$VERCEL_TEAM_ID" =~ ^team_[A-Za-z0-9]+$ ]]; then
   fail_preflight "VERCEL_TEAM_ID is not a bounded team ID"
 fi
-for command in curl jq vercel; do
+if [[ ! "$GITHUB_REPOSITORY" =~ ^[A-Za-z0-9_.-]+/[A-Za-z0-9_.-]+$ ]]; then
+  fail_preflight "GITHUB_REPOSITORY must contain an exact org/repo identity"
+fi
+if [[ ! "$ALIAS_SET_TIMEOUT_SECONDS" =~ ^[1-9][0-9]*$ || "$ALIAS_SET_TIMEOUT_SECONDS" -gt 300 ]]; then
+  fail_preflight "VERCEL_ALIAS_TIMEOUT_SECONDS must be a bounded positive number of seconds"
+fi
+for command in curl jq timeout vercel; do
   if ! command -v "$command" >/dev/null 2>&1; then
     fail_preflight "required command is unavailable: $command"
   fi
 done
 
 github_runs=""
-if ! github_runs="$(github_query "/repos/$GITHUB_REPOSITORY/actions/runs?head_sha=$COMMIT_SHA&branch=main&event=push&per_page=100")"; then
+if ! github_runs="$(github_query "/repos/$GITHUB_REPOSITORY/actions/workflows/ci.yml/runs?head_sha=$COMMIT_SHA&branch=main&event=push&per_page=100")"; then
   fail_preflight "GitHub CI read failed"
 fi
-if ! jq -e --arg commitSha "$COMMIT_SHA" '
-  any(.workflow_runs[]?;
-    .name == "CI" and
+ci_run="$(jq -c --arg commitSha "$COMMIT_SHA" '
+  first(.workflow_runs[]? | select(
+    .path == ".github/workflows/ci.yml" and
     .head_branch == "main" and
     .head_sha == $commitSha and
     .event == "push" and
     .status == "completed" and
-    .conclusion == "success"
-  )
-' <<< "$github_runs" >/dev/null; then
+    .conclusion == "success" and
+    (.id | type) == "number" and
+    (.html_url | type) == "string"
+  )) // empty
+' <<< "$github_runs")"
+if [[ -z "$ci_run" ]]; then
   fail_preflight "exact main CI success was not found for commit_sha"
 fi
+CI_RUN_ID="$(jq -r '.id' <<< "$ci_run")"
+CI_RUN_URL="$(jq -r '.html_url' <<< "$ci_run")"
 
 deployment_response=""
 deployment_endpoint="/v13/deployments/$DEPLOYMENT_ID"
@@ -233,8 +339,20 @@ if ! deployment_response="$(api_query "$deployment_endpoint")"; then
   fail_preflight "Vercel deployment read failed"
 fi
 if ! validate_deployment "$deployment_response"; then
-  fail_preflight "deployment project, Git source, commit, or READY state did not match"
+  fail_preflight "deployment project, Git source, commit, READY state, or production target did not match"
 fi
+DEPLOYMENT_URL="$(jq -r '.url // empty' <<< "$deployment_response")"
+if [[ -z "$DEPLOYMENT_URL" ]]; then
+  fail_preflight "deployment URL was not present in the provider read-back"
+fi
+if [[ "$DEPLOYMENT_URL" != http://* && "$DEPLOYMENT_URL" != https://* ]]; then
+  DEPLOYMENT_URL="https://$DEPLOYMENT_URL"
+fi
+DEPLOYMENT_SOURCE="github"
+DEPLOYMENT_REF="refs/heads/main"
+DEPLOYMENT_READY_STATE="READY"
+DEPLOYMENT_TARGET="production"
+PROVIDER_CHECKS='["deployment_ready","deployment_target_production"]'
 
 for alias in "${ALIASES[@]}"; do
   alias_response=""
@@ -266,7 +384,7 @@ else
 fi
 
 if [[ "$mutation_failed" -eq 1 ]]; then
-  read_post_aliases || true
+  read_observed_aliases || true
   STATUS="PARTIAL_MUTATION"
   REASON="bounded alias command failed or became uncertain for $failed_alias"
   NEXT_ACTION="Read /v4/aliases before retry; do not blindly replay either alias mutation."
@@ -277,29 +395,54 @@ fi
 if ! read_post_aliases; then
   fail_postcheck "authoritative /v4/aliases post-state did not map both aliases to the exact deployment"
 fi
+PROVIDER_CHECKS="$(jq -c '. + ["alias_routing_exact"]' <<< "$PROVIDER_CHECKS")"
 
 if ! deployment_response="$(api_query "$deployment_endpoint")"; then
   fail_postcheck "post-mutation deployment read failed"
 fi
 if ! validate_deployment "$deployment_response"; then
-  fail_postcheck "post-mutation deployment inspect no longer matched the exact READY source"
+  fail_postcheck "post-mutation deployment inspect no longer matched the exact READY production source"
 fi
+DEPLOYMENT_URL="$(jq -r '.url // empty' <<< "$deployment_response")"
+if [[ -z "$DEPLOYMENT_URL" ]]; then
+  fail_postcheck "post-mutation deployment read did not include a deployment URL"
+fi
+if [[ "$DEPLOYMENT_URL" != http://* && "$DEPLOYMENT_URL" != https://* ]]; then
+  DEPLOYMENT_URL="https://$DEPLOYMENT_URL"
+fi
+DEPLOYMENT_SOURCE="github"
+DEPLOYMENT_REF="refs/heads/main"
+DEPLOYMENT_READY_STATE="READY"
+DEPLOYMENT_TARGET="production"
+PROVIDER_CHECKS="$(jq -c 'if index("deployment_ready") then . else . + ["deployment_ready"] end | if index("deployment_target_production") then . else . + ["deployment_target_production"] end' <<< "$PROVIDER_CHECKS")"
 
 for alias in "${ALIASES[@]}"; do
   health_path="$(mktemp)"
-  http_code=""
-  if ! http_code="$(curl --silent --show-error --location --max-time 20 --max-redirs 3 \
-    --output "$health_path" --write-out '%{http_code}' "https://$alias/")"; then
-    http_code="000"
+  health_result=""
+  if ! health_result="$(curl --silent --show-error --location \
+    --connect-timeout "$CURL_CONNECT_TIMEOUT_SECONDS" --max-time 20 --max-redirs 3 \
+    --output "$health_path" --write-out '%{http_code}\t%{url_effective}' "https://$alias/")"; then
+    health_result=$'000\t'
   fi
   rm -f "$health_path"
+  http_code="${health_result%%$'\t'*}"
+  effective_url=""
+  if [[ "$health_result" == *$'\t'* ]]; then
+    effective_url="${health_result#*$'\t'}"
+  fi
+  effective_host="${effective_url#*://}"
+  effective_host="${effective_host%%/*}"
+  effective_host="${effective_host%%:*}"
   HEALTH="$(jq -c --arg alias "$alias" --arg statusCode "$http_code" \
-    '. + [{alias: $alias, statusCode: $statusCode}]' <<< "$HEALTH")"
+    --arg effectiveUrl "$effective_url" --arg effectiveHost "$effective_host" \
+    '. + [{alias: $alias, status_code: $statusCode, effective_url: $effectiveUrl, effective_host: $effectiveHost}]' <<< "$HEALTH")"
   if [[ "$http_code" != "200" ]]; then
     fail_postcheck "canonical HTTP health failed for $alias"
   fi
 done
 
+PROVIDER_CHECKS="$(jq -c '. + ["http_health_exact"]' <<< "$PROVIDER_CHECKS")"
+CHECKED_AT="$(date -u '+%Y-%m-%dT%H:%M:%SZ')"
 STATUS="SUCCESS"
 REASON="both canonical aliases mapped to the exact READY deployment and passed read-back and HTTP gates"
 NEXT_ACTION="No retry is required."

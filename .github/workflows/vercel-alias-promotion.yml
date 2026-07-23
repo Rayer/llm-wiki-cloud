@@ -28,7 +28,9 @@ concurrency:
 jobs:
   promote:
     name: Validate and promote bounded production aliases
+    if: github.ref == 'refs/heads/main'
     runs-on: ubuntu-latest
+    timeout-minutes: 30
     environment:
       name: Production
     env:
@@ -37,6 +39,9 @@ jobs:
       TICKET_REF: ${{ inputs.ticket_ref }}
       GITHUB_REPOSITORY: ${{ github.repository }}
       GITHUB_TOKEN: ${{ github.token }}
+      ORIGINATING_WORKFLOW: vercel-alias-promotion.yml
+      ORIGINATING_WORKFLOW_RUN_ID: ${{ github.run_id }}
+      ORIGINATING_WORKFLOW_RUN_ATTEMPT: ${{ github.run_attempt }}
       VERCEL_TOKEN: ${{ secrets.VERCEL_TOKEN }}
       VERCEL_PROJECT_ID: ${{ secrets.VERCEL_PROJECT_ID }}
       VERCEL_TEAM_ID: ${{ secrets.VERCEL_TEAM_ID }}
@@ -45,6 +50,8 @@ jobs:
     steps:
       - name: Check out workflow-owned helper
         uses: actions/checkout@v4
+        with:
+          ref: refs/heads/main
 
       - name: Install pinned Vercel CLI
         shell: bash

@@ -4,11 +4,11 @@ root="$FIXTURE_ROOT"
 scenario="$(<"$root/scenario")"
 url="${@: -1}"
 printf '%s\n' "$url" >> "$root/curl-calls"
-if [[ "$url" == *"/actions/runs?"* ]]; then
+if [[ "$url" == *"/actions/workflows/ci.yml/runs?"* ]]; then
   if [[ "$scenario" == ci-failure ]]; then
-    printf '%s' '{"workflow_runs":[{"name":"CI","head_branch":"main","head_sha":"0123456789abcdef0123456789abcdef01234567","event":"push","status":"completed","conclusion":"failure"}]}'
+    printf '%s' '{"workflow_runs":[{"path":".github/workflows/ci.yml","head_branch":"main","head_sha":"0123456789abcdef0123456789abcdef01234567","event":"push","status":"completed","conclusion":"failure","id":987654321,"html_url":"https://github.test/Rayer/llm-wiki-frontend/actions/runs/987654321","run_attempt":2}]}'
   else
-    printf '%s' '{"workflow_runs":[{"name":"CI","head_branch":"main","head_sha":"0123456789abcdef0123456789abcdef01234567","event":"push","status":"completed","conclusion":"success"}]}'
+    printf '%s' '{"workflow_runs":[{"path":".github/workflows/ci.yml","head_branch":"main","head_sha":"0123456789abcdef0123456789abcdef01234567","event":"push","status":"completed","conclusion":"success","id":987654321,"html_url":"https://github.test/Rayer/llm-wiki-frontend/actions/runs/987654321","run_attempt":2}]}'
   fi
   exit 0
 fi
@@ -19,6 +19,10 @@ if [[ "$url" == *"/v13/deployments/"* ]]; then
     source-ref-mismatch) jq '.meta.githubCommitRef = "release"' "$root/deployment.json" ;;
     source-sha-mismatch) jq '.meta.githubCommitSha = "fedcba9876543210fedcba9876543210fedcba98"' "$root/deployment.json" ;;
     not-ready) jq '.readyState = "BUILDING"' "$root/deployment.json" ;;
+    target-mismatch) jq '.target = "preview"' "$root/deployment.json" ;;
+    post-target-mismatch)
+      if [[ -f "$root/mutated" ]]; then jq '.target = "preview"' "$root/deployment.json"; else cat "$root/deployment.json"; fi
+      ;;
     *) cat "$root/deployment.json" ;;
   esac
   exit 0
@@ -41,9 +45,9 @@ if [[ "$url" == *"/v4/aliases?"* ]]; then
 fi
 if [[ "$url" == https://wiki.rayer.idv.tw/* || "$url" == https://llm-wiki-frontend.vercel.app/* ]]; then
   if [[ "$scenario" == health-failure && "$url" == https://wiki.rayer.idv.tw/* ]]; then
-    printf '503'
+    printf '503\thttps://%s/' "${url#https://}"
   else
-    printf '200'
+    printf '200\thttps://%s/' "${url#https://}"
   fi
   exit 0
 fi

@@ -5,6 +5,7 @@ import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { execFile } from 'node:child_process';
 import { promisify } from 'node:util';
+import { load as parseYaml } from 'js-yaml';
 
 const execFileAsync = promisify(execFile);
 const repoRoot = new URL('..', import.meta.url).pathname;
@@ -12,6 +13,7 @@ const commitSha = '0123456789abcdef0123456789abcdef01234567';
 const deploymentId = 'dpl_test123';
 const projectId = 'prj_test123';
 const aliases = ['wiki.rayer.idv.tw', 'llm-wiki-frontend.vercel.app'];
+const workflowPath = join(repoRoot, '.github/workflows/vercel-alias-promotion.yml');
 
 async function setupCase(scenario = 'success') {
   const root = await mkdtemp(join(tmpdir(), 'lwc-199-'));
@@ -20,8 +22,10 @@ async function setupCase(scenario = 'success') {
   await writeFile(join(root, 'scenario'), scenario);
   await writeFile(join(root, 'deployment.json'), JSON.stringify({
     id: deploymentId,
+    url: 'https://dpl_test123.vercel.app',
     projectId,
     readyState: 'READY',
+    target: 'production',
     meta: {
       githubDeployment: '1',
       githubOrg: 'Rayer',
@@ -60,6 +64,9 @@ async function runCase(scenario = 'success', overrides = {}) {
     DEPLOYMENT_ID: deploymentId,
     TICKET_REF: 'LWC-199',
     GITHUB_REPOSITORY: 'Rayer/llm-wiki-frontend',
+    ORIGINATING_WORKFLOW: 'vercel-alias-promotion.yml',
+    ORIGINATING_WORKFLOW_RUN_ID: '123456789',
+    ORIGINATING_WORKFLOW_RUN_ATTEMPT: '3',
     GITHUB_API_URL: 'https://github.test/api/v3',
     GITHUB_TOKEN: 'github-test-token',
     VERCEL_API_BASE_URL: 'https://vercel.test',
@@ -90,18 +97,116 @@ test('promotes exactly both canonical aliases to one deployment and writes norma
   const run = await runCase();
   assert.equal(run.result.error, undefined, run.result.stderr);
   assert.equal(run.evidence.status, 'SUCCESS');
-  assert.deepEqual(run.evidence.aliases.map(({ alias }) => alias), aliases);
-  assert.deepEqual(run.evidence.aliases.map(({ deploymentId: id }) => id), ['dpl_oldcustom', 'dpl_oldvercel']);
-  assert.deepEqual(run.evidence.postAliases.map(({ deploymentId: id }) => id), [deploymentId, deploymentId]);
+  assert.equal(run.evidence.schema_version, 1);
+  assert.equal(run.evidence.project, 'llm-wiki-cloud');
+  assert.equal(run.evidence.component, 'frontend');
+  assert.equal(run.evidence.environment, 'production');
+  assert.equal(run.evidence.action, 'promote');
+  assert.deepEqual(run.evidence.source, {
+    commit_sha: commitSha,
+    ref: 'refs/heads/main',
+  });
+  assert.deepEqual(run.evidence.dev_provenance, {
+    workflow: 'ci.yml',
+    event: 'push',
+    head_branch: 'main',
+    head_sha: commitSha,
+    conclusion: 'success',
+    run_id: 987654321,
+    run_url: 'https://github.test/Rayer/llm-wiki-frontend/actions/runs/987654321',
+  });
+  assert.deepEqual(run.evidence.provider.current, {
+    deployment_id: deploymentId,
+    deployment_url: 'https://dpl_test123.vercel.app',
+  });
+  assert.deepEqual(run.evidence.provider.rollback.aliases, [
+    { alias: aliases[0], deployment_id: 'dpl_oldcustom' },
+    { alias: aliases[1], deployment_id: 'dpl_oldvercel' },
+  ]);
+  assert.equal(run.evidence.provider.evidence_artifact_name, 'vercel-alias-promotion-evidence');
+  assert.deepEqual(run.evidence.observed, {
+    deployment_id: deploymentId,
+    deployment_url: 'https://dpl_test123.vercel.app',
+    source: 'github',
+    ref: 'refs/heads/main',
+    ready_state: 'READY',
+    target: 'production',
+    alias_routing: [
+      { alias: aliases[0], deployment_id: deploymentId },
+      { alias: aliases[1], deployment_id: deploymentId },
+    ],
+  });
+  assert.equal(run.evidence.provider_verification.result, 'verified');
+  assert.deepEqual(run.evidence.provider_verification.checks, [
+    'deployment_ready',
+    'deployment_target_production',
+    'alias_routing_exact',
+    'http_health_exact',
+  ]);
+  assert.match(run.evidence.provider_verification.checked_at, /^20[0-9]{2}-[0-9]{2}-[0-9]{2}T/);
+  assert.deepEqual(run.evidence.originating_workflow, {
+    repository: 'Rayer/llm-wiki-frontend',
+    workflow: 'vercel-alias-promotion.yml',
+    run_id: 123456789,
+    run_attempt: 3,
+  });
+  assert.deepEqual(run.evidence.provider.rollback.aliases.map(({ alias }) => alias), aliases);
+  assert.deepEqual(run.evidence.provider.rollback.aliases.map(({ deployment_id: id }) => id), ['dpl_oldcustom', 'dpl_oldvercel']);
+  assert.deepEqual(run.evidence.observed.alias_routing.map(({ deployment_id: id }) => id), [deploymentId, deploymentId]);
   assert.deepEqual(run.calls.map((call) => call.split(' ').slice(0, 4)), [
     ['alias', 'set', deploymentId, aliases[0]],
     ['alias', 'set', deploymentId, aliases[1]],
   ]);
   assert.equal(run.curlCalls.filter((url) => url.includes('/v13/deployments/')).length, 2);
+  assert.equal(run.curlCalls.filter((url) => url.includes('/actions/workflows/ci.yml/runs?')).length, 1);
+  assert.equal(run.curlCalls.some((url) => url.includes('/repos/Rayer/llm-wiki-frontend/actions/runs?')), false);
   assert.equal(run.curlCalls.filter((url) => url.includes('/v4/aliases?')).length, 4);
   assert.ok(run.curlCalls.includes('https://' + aliases[0] + '/'));
   assert.ok(run.curlCalls.includes('https://' + aliases[1] + '/'));
   assert.doesNotMatch(JSON.stringify(run.evidence), /vercel-test-token|github-test-token/);
+});
+
+test('fails closed before mutation when deployment target is not production', async () => {
+  const run = await runCase('target-mismatch');
+  assert.notEqual(run.result.code, 0);
+  assert.equal(run.evidence.status, 'PREFLIGHT_FAILED');
+  assert.match(run.evidence.reason, /target/);
+  assert.equal(run.calls.length, 0);
+});
+
+test('fails closed after mutation when deployment target is no longer production', async () => {
+  const run = await runCase('post-target-mismatch');
+  assert.notEqual(run.result.code, 0);
+  assert.equal(run.evidence.status, 'POSTCHECK_FAILED');
+  assert.equal(run.evidence.provider_verification.result, 'not_verified');
+  assert.equal(run.evidence.provider_verification.checked_at, null);
+  assert.equal(run.calls.length, 2);
+});
+
+test('workflow contract parses as YAML and uses the bounded helper without deployment creation', async () => {
+  const workflowSource = await readFile(workflowPath, 'utf8');
+  const workflow = parseYaml(workflowSource);
+  assert.deepEqual(Object.keys(workflow.on.workflow_dispatch.inputs), ['commit_sha', 'deployment_id', 'ticket_ref']);
+  assert.equal(workflow.on.workflow_dispatch.inputs.commit_sha.required, true);
+  assert.equal(workflow.on.workflow_dispatch.inputs.commit_sha.type, 'string');
+  assert.equal(workflow.on.workflow_dispatch.inputs.deployment_id.required, true);
+  assert.equal(workflow.on.workflow_dispatch.inputs.deployment_id.type, 'string');
+  assert.equal(workflow.on.workflow_dispatch.inputs.ticket_ref.required, false);
+  assert.equal(workflow.on.workflow_dispatch.inputs.ticket_ref.default, '');
+  assert.equal(workflow.permissions.contents, 'read');
+  assert.equal(workflow.permissions.actions, 'read');
+  assert.equal(workflow.concurrency['cancel-in-progress'], false);
+  assert.equal(workflow.jobs.promote.environment.name, 'Production');
+  assert.equal(workflow.jobs.promote['timeout-minutes'], 30);
+  const runs = workflow.jobs.promote.steps.filter(({ run }) => typeof run === 'string').map(({ run }) => run);
+  assert.ok(runs.some((run) => run.includes('npm install --global vercel@52.0.0 --ignore-scripts')));
+  assert.ok(runs.some((run) => run.trim() === 'bash .github/scripts/vercel-alias-promotion.sh'));
+  assert.equal(runs.some((run) => /vercel\s+(deploy|build)|next\s+build/.test(run)), false);
+  const upload = workflow.jobs.promote.steps.find(({ uses }) => uses === 'actions/upload-artifact@v4');
+  assert.equal(upload.with.name, 'vercel-alias-promotion-evidence');
+  assert.equal(upload.with.path, '${{ runner.temp }}/vercel-alias-promotion/vercel-alias-promotion.json');
+  await execFileAsync('bash', ['-n', '.github/scripts/vercel-alias-promotion.sh']);
+  await execFileAsync('bash', ['-n', '-c', runs.join('\n')]);
 });
 
 for (const scenario of [
@@ -142,7 +247,7 @@ test('marks a partial alias mutation and requires read-back before retry', async
   const run = await runCase('partial-mutation');
   assert.notEqual(run.result.code, 0);
   assert.equal(run.evidence.status, 'PARTIAL_MUTATION');
-  assert.match(run.evidence.nextAction, /Read \/v4\/aliases before retry/);
+  assert.match(run.evidence.next_action, /Read \/v4\/aliases before retry/);
   assert.equal(run.calls.length, 2);
   assert.ok(run.curlCalls.filter((url) => url.includes('/v4/aliases?')).length >= 4);
   assert.equal(run.curlCalls.some((url) => url.startsWith('https://wiki.rayer.idv.tw/')), false);
@@ -160,5 +265,6 @@ test('fails closed when either canonical health check is not HTTP 200', async ()
   assert.notEqual(run.result.code, 0);
   assert.equal(run.evidence.status, 'POSTCHECK_FAILED');
   assert.equal(run.calls.length, 2);
-  assert.ok(run.evidence.health.some(({ statusCode }) => statusCode === '503'));
+  assert.equal(run.evidence.provider_verification.checked_at, null);
+  assert.ok(run.evidence.health.some(({ status_code }) => status_code === '503'));
 });
