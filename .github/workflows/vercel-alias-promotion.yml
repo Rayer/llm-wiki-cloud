@@ -1,0 +1,63 @@
+name: Vercel Production Alias Promotion
+
+on:
+  workflow_dispatch:
+    inputs:
+      commit_sha:
+        description: Exact 40-character lowercase SHA already deployed by Vercel
+        required: true
+        type: string
+      deployment_id:
+        description: Immutable READY Vercel deployment ID to receive both aliases
+        required: true
+        type: string
+      ticket_ref:
+        description: Optional ticket reference retained as evidence metadata
+        required: false
+        default: ''
+        type: string
+
+permissions:
+  contents: read
+  actions: read
+
+concurrency:
+  group: vercel-production-alias-promotion
+  cancel-in-progress: false
+
+jobs:
+  promote:
+    name: Validate and promote bounded production aliases
+    runs-on: ubuntu-latest
+    environment:
+      name: Production
+    env:
+      COMMIT_SHA: ${{ inputs.commit_sha }}
+      DEPLOYMENT_ID: ${{ inputs.deployment_id }}
+      TICKET_REF: ${{ inputs.ticket_ref }}
+      GITHUB_REPOSITORY: ${{ github.repository }}
+      GITHUB_TOKEN: ${{ github.token }}
+      VERCEL_TOKEN: ${{ secrets.VERCEL_TOKEN }}
+      VERCEL_PROJECT_ID: ${{ secrets.VERCEL_PROJECT_ID }}
+      VERCEL_TEAM_ID: ${{ secrets.VERCEL_TEAM_ID }}
+      VERCEL_SCOPE: ${{ secrets.VERCEL_SCOPE }}
+      EVIDENCE_DIR: ${{ runner.temp }}/vercel-alias-promotion
+    steps:
+      - name: Check out workflow-owned helper
+        uses: actions/checkout@v4
+
+      - name: Install pinned Vercel CLI
+        shell: bash
+        run: npm install --global vercel@52.0.0 --ignore-scripts
+
+      - name: Validate and promote exact deployment
+        shell: bash
+        run: bash .github/scripts/vercel-alias-promotion.sh
+
+      - name: Upload normalized deployment and rollback evidence
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: vercel-alias-promotion-evidence
+          path: ${{ runner.temp }}/vercel-alias-promotion/vercel-alias-promotion.json
+          if-no-files-found: error
