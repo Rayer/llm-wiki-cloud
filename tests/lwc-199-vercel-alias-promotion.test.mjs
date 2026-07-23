@@ -40,6 +40,7 @@ async function setupCase(scenario = 'success') {
   }));
   await writeFile(join(root, 'vercel-calls'), '');
   await writeFile(join(root, 'curl-calls'), '');
+  await writeFile(join(root, 'auth-events'), '');
   await execFileAsync('cp', [
     join(repoRoot, 'tests/fixtures/lwc-199-fake-curl.sh'),
     join(bin, 'curl'),
@@ -54,9 +55,9 @@ async function setupCase(scenario = 'success') {
   return { root, bin, evidenceDir };
 }
 
-async function runScript(mode, env) {
+async function runScript(mode, env, scriptPath = '.github/scripts/vercel-alias-promotion.sh') {
   try {
-    return await execFileAsync('bash', ['.github/scripts/vercel-alias-promotion.sh', mode], {
+    return await execFileAsync('bash', [scriptPath, mode], {
       cwd: repoRoot,
       env,
       maxBuffer: 1024 * 1024,
@@ -66,9 +67,8 @@ async function runScript(mode, env) {
   }
 }
 
-async function runCase(scenario = 'success', overrides = {}, mode = 'promote') {
-  const fixture = await setupCase(scenario);
-  const env = {
+function buildEnv(fixture, overrides = {}) {
+  return {
     ...process.env,
     PATH: fixture.bin + ':' + process.env.PATH,
     FIXTURE_ROOT: fixture.root,
@@ -80,9 +80,9 @@ async function runCase(scenario = 'success', overrides = {}, mode = 'promote') {
     ORIGINATING_WORKFLOW_RUN_ID: '123456789',
     ORIGINATING_WORKFLOW_RUN_ATTEMPT: '3',
     GITHUB_API_URL: 'https://github.test/api/v3',
-    GITHUB_TOKEN: 'github-test-token',
+    GITHUB_TOKEN: 'github-sentinel-token-7f31',
     VERCEL_API_BASE_URL: 'https://vercel.test',
-    VERCEL_TOKEN: 'vercel-test-token',
+    VERCEL_TOKEN: 'vercel-sentinel-token-a2c9',
     VERCEL_PROJECT_ID: projectId,
     VERCEL_TEAM_ID: 'team_test123',
     VERCEL_SCOPE: 'rayer-team',
@@ -90,6 +90,24 @@ async function runCase(scenario = 'success', overrides = {}, mode = 'promote') {
     PROMOTION_CONTEXT_PATH: join(fixture.evidenceDir, 'vercel-alias-promotion-context.json'),
     ...overrides,
   };
+}
+
+async function readOptionalJson(path) {
+  try {
+    return JSON.parse(await readFile(path, 'utf8'));
+  } catch (error) {
+    if (error.code === 'ENOENT') return null;
+    throw error;
+  }
+}
+
+function capturedOutput(...results) {
+  return results.flatMap((result) => [result?.stdout ?? '', result?.stderr ?? '']).join('\n');
+}
+
+async function runCase(scenario = 'success', overrides = {}, mode = 'promote') {
+  const fixture = await setupCase(scenario);
+  const env = buildEnv(fixture, overrides);
   const preflight = await runScript('preflight', env);
   let result = preflight;
   if (mode === 'promote' && preflight.code === undefined) {
@@ -99,9 +117,87 @@ async function runCase(scenario = 'success', overrides = {}, mode = 'promote') {
     });
   }
   const evidence = JSON.parse(await readFile(join(fixture.evidenceDir, 'vercel-alias-promotion.json'), 'utf8'));
+  const rollbackContract = await readOptionalJson(join(fixture.evidenceDir, 'rollback-contract.json'));
+  const resumeContext = await readOptionalJson(join(fixture.evidenceDir, 'vercel-alias-promotion-context.json'));
   const calls = (await readFile(join(fixture.root, 'vercel-calls'), 'utf8')).trim().split('\n').filter(Boolean);
   const curlCalls = (await readFile(join(fixture.root, 'curl-calls'), 'utf8')).trim().split('\n').filter(Boolean);
-  return { ...fixture, env, result, preflight, evidence, calls, curlCalls };
+  const authEvents = (await readFile(join(fixture.root, 'auth-events'), 'utf8')).trim().split('\n').filter(Boolean);
+  return {
+    ...fixture,
+    env,
+    result,
+    preflight,
+    evidence,
+    rollbackContract,
+    resumeContext,
+    calls,
+    curlCalls,
+    authEvents,
+    stdout: capturedOutput(preflight, result),
+    stderr: [preflight?.stderr ?? '', result?.stderr ?? ''].join('\n'),
+  };
+}
+
+async function runAuthVariantCase(variant) {
+  const fixture = await setupCase();
+  const source = await readFile(join(repoRoot, '.github/scripts/vercel-alias-promotion.sh'), 'utf8');
+  const vercelAuthLine = '--header "Authorization: Bearer $VERCEL_TOKEN"';
+  const githubAuthLine = '--header "Authorization: Bearer $GITHUB_TOKEN"';
+  let variantSource = source;
+  if (variant === 'wrong') {
+    variantSource = source.replace(vercelAuthLine, '--header "Authorization: Bearer wrong-header"');
+  } else if (variant === 'swapped') {
+    const marker = '--header "Authorization: Bearer __SWAPPED_AUTH__"';
+    variantSource = source
+      .replace(vercelAuthLine, marker)
+      .replace(githubAuthLine, vercelAuthLine)
+      .replace(marker, githubAuthLine);
+  } else if (variant === 'literal') {
+    const placeholderLine = ['--header "Authorization: ', 'Bearer ', '***"'].join('');
+    variantSource = source.replace(vercelAuthLine, placeholderLine);
+  }
+  const scriptPath = join(fixture.root, `vercel-alias-promotion-${variant}.sh`);
+  await writeFile(scriptPath, variantSource);
+  await execFileAsync('chmod', ['+x', scriptPath]);
+  const env = buildEnv(fixture);
+  const result = await runScript('preflight', env, scriptPath);
+  const evidence = JSON.parse(await readFile(join(fixture.evidenceDir, 'vercel-alias-promotion.json'), 'utf8'));
+  const rollbackContract = await readOptionalJson(join(fixture.evidenceDir, 'rollback-contract.json'));
+  const resumeContext = await readOptionalJson(join(fixture.evidenceDir, 'vercel-alias-promotion-context.json'));
+  const calls = (await readFile(join(fixture.root, 'vercel-calls'), 'utf8')).trim().split('\n').filter(Boolean);
+  const curlCalls = (await readFile(join(fixture.root, 'curl-calls'), 'utf8')).trim().split('\n').filter(Boolean);
+  const authEvents = (await readFile(join(fixture.root, 'auth-events'), 'utf8')).trim().split('\n').filter(Boolean);
+  return {
+    ...fixture,
+    env,
+    result,
+    evidence,
+    rollbackContract,
+    resumeContext,
+    calls,
+    curlCalls,
+    authEvents,
+    stdout: capturedOutput(result),
+    stderr: result?.stderr ?? '',
+  };
+}
+
+function assertNoCredentialLeak(run) {
+  const protectedText = [
+    JSON.stringify(run.evidence),
+    JSON.stringify(run.rollbackContract),
+    JSON.stringify(run.resumeContext),
+    run.stdout,
+    run.stderr,
+    run.curlCalls?.join('\n'),
+    run.authEvents?.join('\n'),
+    run.calls?.join('\n'),
+  ].join('\n');
+  for (const token of [run.env.GITHUB_TOKEN, run.env.VERCEL_TOKEN]) {
+    assert.equal(protectedText.includes(token), false, `credential leaked: ${token}`);
+    assert.equal(protectedText.includes(`Bearer ${token}`), false);
+  }
+  assert.doesNotMatch(protectedText, /Bearer\s+\S+/);
 }
 
 function assertCompleteEvidenceSlots(evidence, expected = {}) {
@@ -201,14 +297,38 @@ test('promotes exactly both canonical aliases to one deployment and writes norma
     { alias: aliases[1], status_code: '200', effective_host: aliases[1] },
   ]);
   assert.equal(JSON.stringify(run.evidence).includes('effective_url'), false);
-  assert.doesNotMatch(run.calls.join('\n'), /(^| )(?:--token|vercel-test-token)( |$)/);
   assert.equal(run.curlCalls.filter((url) => url.includes('/v13/deployments/')).length, 2);
   assert.equal(run.curlCalls.filter((url) => url.includes('/actions/workflows/ci.yml/runs?')).length, 1);
   assert.equal(run.curlCalls.some((url) => url.includes('/repos/Rayer/llm-wiki-frontend/actions/runs?')), false);
   assert.equal(run.curlCalls.filter((url) => url.includes('/v4/aliases?')).length, 8);
   assert.ok(run.curlCalls.includes('https://' + aliases[0] + '/'));
   assert.ok(run.curlCalls.includes('https://' + aliases[1] + '/'));
-  assert.doesNotMatch(JSON.stringify(run.evidence), /vercel-test-token|github-test-token/);
+  assert.ok(run.rollbackContract);
+  assert.equal(run.resumeContext.phase, 'preflight-complete');
+  assert.ok(run.authEvents.every((event) => /^AUTH_VALID provider=(github|vercel) endpoint=/.test(event)));
+  assertNoCredentialLeak(run);
+});
+
+test('provider-specific auth propagation rejects wrong, swapped, and placeholder headers before mutation', async () => {
+  const scriptSource = await readFile(join(repoRoot, '.github/scripts/vercel-alias-promotion.sh'), 'utf8');
+  assert.match(scriptSource, /--header "Authorization: Bearer \$VERCEL_TOKEN"/);
+  assert.match(scriptSource, /--header "Authorization: Bearer \$GITHUB_TOKEN"/);
+  assert.doesNotMatch(scriptSource, /Bearer \*\*\*/);
+  const correct = await runCase();
+  assert.equal(correct.result.error, undefined, correct.result.stderr);
+  assert.equal(correct.calls.length, 2);
+  assert.ok(correct.authEvents.some((event) => event.startsWith('AUTH_VALID provider=github endpoint=')));
+  assert.ok(correct.authEvents.some((event) => event.startsWith('AUTH_VALID provider=vercel endpoint=')));
+  assertNoCredentialLeak(correct);
+
+  for (const variant of ['wrong', 'swapped', 'literal']) {
+    const run = await runAuthVariantCase(variant);
+    assert.notEqual(run.result.code, 0, `${variant} auth unexpectedly passed`);
+    assert.equal(run.evidence.status, 'PREFLIGHT_FAILED');
+    assert.equal(run.calls.length, 0, `${variant} auth reached mutation`);
+    assert.ok(run.authEvents.some((event) => event.startsWith('AUTH_INVALID provider=')), `${variant} auth was not checked`);
+    assertNoCredentialLeak(run);
+  }
 });
 
 test('fails closed before mutation when deployment target is not production', async () => {

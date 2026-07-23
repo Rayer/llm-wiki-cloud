@@ -2,8 +2,53 @@
 set -eu
 root="$FIXTURE_ROOT"
 scenario="$(<"$root/scenario")"
-url="${@: -1}"
+vercel_base="${VERCEL_API_BASE_URL:-https://api.vercel.com}"
+github_base="${GITHUB_API_URL:-https://api.github.com}"
+url=""
+auth_header=""
+while [[ "$#" -gt 0 ]]; do
+  case "$1" in
+    --header)
+      header="${2:-}"
+      if [[ "$header" == Authorization:* ]]; then
+        auth_header="$header"
+      fi
+      shift 2
+      ;;
+    http://*|https://*)
+      url="$1"
+      shift
+      ;;
+    *)
+      shift
+      ;;
+  esac
+done
+if [[ -z "$url" ]]; then
+  printf 'fake curl did not receive an endpoint\n' >&2
+  exit 1
+fi
 printf '%s\n' "$url" >> "$root/curl-calls"
+
+check_provider_auth() {
+  local provider="$1"
+  local base_url="$2"
+  local expected_header="$3"
+  local endpoint="${url#"$base_url"}"
+  if [[ "$auth_header" != "$expected_header" ]]; then
+    printf 'AUTH_INVALID provider=%s endpoint=%s\n' "$provider" "$endpoint" >> "$root/auth-events"
+    printf 'fake curl authentication rejected for provider=%s endpoint=%s\n' "$provider" "$endpoint" >&2
+    exit 97
+  fi
+  printf 'AUTH_VALID provider=%s endpoint=%s\n' "$provider" "$endpoint" >> "$root/auth-events"
+}
+
+if [[ "$url" == "$vercel_base"/* ]]; then
+  check_provider_auth vercel "$vercel_base" "Authorization: Bearer ${VERCEL_TOKEN:-}"
+elif [[ "$url" == "$github_base"/* ]]; then
+  check_provider_auth github "$github_base" "Authorization: Bearer ${GITHUB_TOKEN:-}"
+fi
+
 if [[ "$url" == *"/actions/workflows/ci.yml/runs?"* ]]; then
   if [[ "$scenario" == ci-failure ]]; then
     printf '%s' '{"workflow_runs":[{"path":".github/workflows/ci.yml","head_branch":"main","head_sha":"0123456789abcdef0123456789abcdef01234567","event":"push","status":"completed","conclusion":"failure","id":987654321,"html_url":"https://github.test/Rayer/llm-wiki-frontend/actions/runs/987654321","run_attempt":2}]}'
