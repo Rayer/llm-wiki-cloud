@@ -319,6 +319,7 @@ test('workflow contract parses as YAML and scopes provider secrets to the helper
   assert.equal(workflow.jobs.promote.env.GITHUB_TOKEN, undefined);
   const checkout = workflow.jobs.promote.steps.find(({ name }) => name === 'Check out workflow-owned helper');
   assert.equal(checkout.uses, 'actions/checkout@11d5960a326750d5838078e36cf38b85af677262');
+  assert.equal(checkout.with.ref, '${{ github.sha }}');
   assert.equal(checkout.with['persist-credentials'], false);
   const helper = workflow.jobs.promote.steps.find(({ name }) => name === 'Validate and promote exact deployment');
   assert.deepEqual(helper.env, {
