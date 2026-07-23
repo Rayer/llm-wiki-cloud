@@ -38,7 +38,6 @@ jobs:
       DEPLOYMENT_ID: ${{ inputs.deployment_id }}
       TICKET_REF: ${{ inputs.ticket_ref }}
       GITHUB_REPOSITORY: ${{ github.repository }}
-      GITHUB_TOKEN: ${{ github.token }}
       ORIGINATING_WORKFLOW: vercel-alias-promotion.yml
       ORIGINATING_WORKFLOW_RUN_ID: ${{ github.run_id }}
       ORIGINATING_WORKFLOW_RUN_ATTEMPT: ${{ github.run_attempt }}
@@ -58,6 +57,7 @@ jobs:
         shell: bash
         run: bash .github/scripts/vercel-alias-promotion.sh
         env:
+          GITHUB_TOKEN: ${{ github.token }}
           VERCEL_TOKEN: ${{ secrets.VERCEL_TOKEN }}
           VERCEL_PROJECT_ID: ${{ secrets.VERCEL_PROJECT_ID }}
           VERCEL_TEAM_ID: ${{ secrets.VERCEL_TEAM_ID }}
