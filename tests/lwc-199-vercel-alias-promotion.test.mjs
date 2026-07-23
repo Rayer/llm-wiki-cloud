@@ -157,10 +157,16 @@ test('promotes exactly both canonical aliases to one deployment and writes norma
     ['alias', 'set', deploymentId, aliases[0]],
     ['alias', 'set', deploymentId, aliases[1]],
   ]);
+  assert.deepEqual(run.evidence.health, [
+    { alias: aliases[0], status_code: '200', effective_host: aliases[0] },
+    { alias: aliases[1], status_code: '200', effective_host: aliases[1] },
+  ]);
+  assert.equal(JSON.stringify(run.evidence).includes('effective_url'), false);
+  assert.doesNotMatch(run.calls.join('\n'), /(^| )(?:--token|vercel-test-token)( |$)/);
   assert.equal(run.curlCalls.filter((url) => url.includes('/v13/deployments/')).length, 2);
   assert.equal(run.curlCalls.filter((url) => url.includes('/actions/workflows/ci.yml/runs?')).length, 1);
   assert.equal(run.curlCalls.some((url) => url.includes('/repos/Rayer/llm-wiki-frontend/actions/runs?')), false);
-  assert.equal(run.curlCalls.filter((url) => url.includes('/v4/aliases?')).length, 4);
+  assert.equal(run.curlCalls.filter((url) => url.includes('/v4/aliases?')).length, 6);
   assert.ok(run.curlCalls.includes('https://' + aliases[0] + '/'));
   assert.ok(run.curlCalls.includes('https://' + aliases[1] + '/'));
   assert.doesNotMatch(JSON.stringify(run.evidence), /vercel-test-token|github-test-token/);
@@ -183,7 +189,77 @@ test('fails closed after mutation when deployment target is no longer production
   assert.equal(run.calls.length, 2);
 });
 
-test('workflow contract parses as YAML and uses the bounded helper without deployment creation', async () => {
+test('fails closed before mutation when Vercel repository metadata is missing', async () => {
+  const run = await runCase('missing-repository');
+  assert.notEqual(run.result.code, 0);
+  assert.equal(run.evidence.status, 'PREFLIGHT_FAILED');
+  assert.match(run.evidence.reason, /repository/);
+  assert.equal(run.calls.length, 0);
+});
+
+test('fails closed before mutation when Vercel repository metadata is not exact', async () => {
+  const run = await runCase('mismatched-repository');
+  assert.notEqual(run.result.code, 0);
+  assert.equal(run.evidence.status, 'PREFLIGHT_FAILED');
+  assert.match(run.evidence.reason, /repository/);
+  assert.equal(run.calls.length, 0);
+});
+
+test('re-reads both aliases immediately before mutation and aborts on snapshot drift', async () => {
+  const run = await runCase('alias-changed-before-mutation');
+  assert.notEqual(run.result.code, 0);
+  assert.equal(run.evidence.status, 'PREFLIGHT_FAILED');
+  assert.match(run.evidence.reason, /rollback snapshot|changed/);
+  assert.equal(run.calls.length, 0);
+});
+
+test('records actual parseable post-readback values instead of stale preflight claims', async () => {
+  const run = await runCase('post-malformed');
+  assert.notEqual(run.result.code, 0);
+  assert.equal(run.evidence.status, 'POSTCHECK_FAILED');
+  assert.deepEqual(run.evidence.observed, {
+    deployment_id: deploymentId,
+    deployment_url: 'https://dpl_test123.vercel.app',
+    source: null,
+    ref: null,
+    ready_state: null,
+    target: null,
+    alias_routing: [
+      { alias: aliases[0], deployment_id: deploymentId },
+      { alias: aliases[1], deployment_id: deploymentId },
+    ],
+  });
+});
+
+test('records unknown observed deployment values when post-readback is unreadable', async () => {
+  const run = await runCase('post-unreadable');
+  assert.notEqual(run.result.code, 0);
+  assert.equal(run.evidence.status, 'POSTCHECK_FAILED');
+  assert.deepEqual(run.evidence.observed, {
+    deployment_id: null,
+    deployment_url: null,
+    source: null,
+    ref: null,
+    ready_state: null,
+    target: null,
+    alias_routing: [
+      { alias: aliases[0], deployment_id: deploymentId },
+      { alias: aliases[1], deployment_id: deploymentId },
+    ],
+  });
+});
+
+test('fails closed when health follows a redirect to a different host', async () => {
+  const run = await runCase('redirect-host-mismatch');
+  assert.notEqual(run.result.code, 0);
+  assert.equal(run.evidence.status, 'POSTCHECK_FAILED');
+  assert.deepEqual(run.evidence.health, [
+    { alias: aliases[0], status_code: '200', effective_host: null },
+  ]);
+  assert.equal(JSON.stringify(run.evidence).includes('effective_url'), false);
+});
+
+test('workflow contract parses as YAML and scopes provider secrets to the helper step', async () => {
   const workflowSource = await readFile(workflowPath, 'utf8');
   const workflow = parseYaml(workflowSource);
   assert.deepEqual(Object.keys(workflow.on.workflow_dispatch.inputs), ['commit_sha', 'deployment_id', 'ticket_ref']);
@@ -198,11 +274,26 @@ test('workflow contract parses as YAML and uses the bounded helper without deplo
   assert.equal(workflow.concurrency['cancel-in-progress'], false);
   assert.equal(workflow.jobs.promote.environment.name, 'Production');
   assert.equal(workflow.jobs.promote['timeout-minutes'], 30);
+  assert.equal(workflow.jobs.promote.env.VERCEL_TOKEN, undefined);
+  assert.equal(workflow.jobs.promote.env.VERCEL_PROJECT_ID, undefined);
+  assert.equal(workflow.jobs.promote.env.VERCEL_TEAM_ID, undefined);
+  assert.equal(workflow.jobs.promote.env.VERCEL_SCOPE, undefined);
+  const checkout = workflow.jobs.promote.steps.find(({ name }) => name === 'Check out workflow-owned helper');
+  assert.equal(checkout.uses, 'actions/checkout@11d5960a326750d5838078e36cf38b85af677262');
+  assert.equal(checkout.with['persist-credentials'], false);
+  const helper = workflow.jobs.promote.steps.find(({ name }) => name === 'Validate and promote exact deployment');
+  assert.deepEqual(helper.env, {
+    VERCEL_TOKEN: '${{ secrets.VERCEL_TOKEN }}',
+    VERCEL_PROJECT_ID: '${{ secrets.VERCEL_PROJECT_ID }}',
+    VERCEL_TEAM_ID: '${{ secrets.VERCEL_TEAM_ID }}',
+    VERCEL_SCOPE: '${{ secrets.VERCEL_SCOPE }}',
+  });
   const runs = workflow.jobs.promote.steps.filter(({ run }) => typeof run === 'string').map(({ run }) => run);
   assert.ok(runs.some((run) => run.includes('npm install --global vercel@52.0.0 --ignore-scripts')));
   assert.ok(runs.some((run) => run.trim() === 'bash .github/scripts/vercel-alias-promotion.sh'));
   assert.equal(runs.some((run) => /vercel\s+(deploy|build)|next\s+build/.test(run)), false);
-  const upload = workflow.jobs.promote.steps.find(({ uses }) => uses === 'actions/upload-artifact@v4');
+  const upload = workflow.jobs.promote.steps.find(({ name }) => name === 'Upload normalized deployment and rollback evidence');
+  assert.equal(upload.uses, 'actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02');
   assert.equal(upload.with.name, 'vercel-alias-promotion-evidence');
   assert.equal(upload.with.path, '${{ runner.temp }}/vercel-alias-promotion/vercel-alias-promotion.json');
   await execFileAsync('bash', ['-n', '.github/scripts/vercel-alias-promotion.sh']);

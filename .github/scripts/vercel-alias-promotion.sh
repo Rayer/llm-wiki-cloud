@@ -2,6 +2,7 @@
 set -Eeuo pipefail
 
 readonly ALIASES=("wiki.rayer.idv.tw" "llm-wiki-frontend.vercel.app")
+readonly EXPECTED_REPOSITORY="Rayer/llm-wiki-frontend"
 readonly API_BASE_URL="${VERCEL_API_BASE_URL:-https://api.vercel.com}"
 readonly GITHUB_BASE_URL="${GITHUB_API_URL:-https://api.github.com}"
 readonly EVIDENCE_DIR="${EVIDENCE_DIR:-artifacts/vercel-alias-promotion}"
@@ -34,11 +35,13 @@ HEALTH="[]"
 PROVIDER_CHECKS="[]"
 CI_RUN_ID=""
 CI_RUN_URL=""
-DEPLOYMENT_URL=""
-DEPLOYMENT_SOURCE=""
-DEPLOYMENT_REF=""
-DEPLOYMENT_READY_STATE=""
-DEPLOYMENT_TARGET=""
+CURRENT_DEPLOYMENT_URL=""
+OBSERVED_DEPLOYMENT_ID=""
+OBSERVED_DEPLOYMENT_URL=""
+OBSERVED_SOURCE=""
+OBSERVED_REF=""
+OBSERVED_READY_STATE=""
+OBSERVED_TARGET=""
 CHECKED_AT=""
 EVIDENCE_WRITTEN=0
 
@@ -53,17 +56,19 @@ write_evidence() {
     --arg ticketRef "$TICKET_REF" \
     --arg commitSha "$COMMIT_SHA" \
     --arg deploymentId "$DEPLOYMENT_ID" \
-    --arg deploymentUrl "$DEPLOYMENT_URL" \
+    --arg currentDeploymentUrl "$CURRENT_DEPLOYMENT_URL" \
     --arg ciRunId "$CI_RUN_ID" \
     --arg ciRunUrl "$CI_RUN_URL" \
     --arg originatingRepository "$GITHUB_REPOSITORY" \
     --arg originatingWorkflow "${ORIGINATING_WORKFLOW:-}" \
     --arg originatingRunId "${ORIGINATING_WORKFLOW_RUN_ID:-}" \
     --arg originatingRunAttempt "${ORIGINATING_WORKFLOW_RUN_ATTEMPT:-}" \
-    --arg observedSource "$DEPLOYMENT_SOURCE" \
-    --arg observedRef "$DEPLOYMENT_REF" \
-    --arg observedReadyState "$DEPLOYMENT_READY_STATE" \
-    --arg observedTarget "$DEPLOYMENT_TARGET" \
+    --arg observedDeploymentId "$OBSERVED_DEPLOYMENT_ID" \
+    --arg observedDeploymentUrl "$OBSERVED_DEPLOYMENT_URL" \
+    --arg observedSource "$OBSERVED_SOURCE" \
+    --arg observedRef "$OBSERVED_REF" \
+    --arg observedReadyState "$OBSERVED_READY_STATE" \
+    --arg observedTarget "$OBSERVED_TARGET" \
     --arg checkedAt "$CHECKED_AT" \
     --arg status "$STATUS" \
     --arg reason "$REASON" \
@@ -99,7 +104,7 @@ write_evidence() {
        provider: {
          current: {
            deployment_id: ($deploymentId | string_or_null),
-           deployment_url: ($deploymentUrl | string_or_null)
+           deployment_url: ($currentDeploymentUrl | string_or_null)
          },
          rollback: {
            aliases: $rollbackAliases
@@ -107,8 +112,8 @@ write_evidence() {
          evidence_artifact_name: "vercel-alias-promotion-evidence"
        },
        observed: {
-         deployment_id: ($deploymentId | string_or_null),
-         deployment_url: ($deploymentUrl | string_or_null),
+         deployment_id: ($observedDeploymentId | string_or_null),
+         deployment_url: ($observedDeploymentUrl | string_or_null),
          source: ($observedSource | string_or_null),
          ref: ($observedRef | string_or_null),
          ready_state: ($observedReadyState | string_or_null),
@@ -169,6 +174,65 @@ github_query() {
     --header "Authorization: Bearer $GITHUB_TOKEN" \
     --header "X-GitHub-Api-Version: 2022-11-28" \
     "$GITHUB_BASE_URL$endpoint"
+}
+
+normalize_deployment_url() {
+  local value="$1"
+  if [[ "$value" =~ ^https?://[[:alnum:]_.-]+$ ]]; then
+    printf '%s' "$value"
+  elif [[ "$value" =~ ^[[:alnum:]_.-]+$ ]]; then
+    printf 'https://%s' "$value"
+  fi
+}
+
+clear_observed_deployment() {
+  OBSERVED_DEPLOYMENT_ID=""
+  OBSERVED_DEPLOYMENT_URL=""
+  OBSERVED_SOURCE=""
+  OBSERVED_REF=""
+  OBSERVED_READY_STATE=""
+  OBSERVED_TARGET=""
+}
+
+observe_deployment() {
+  local response="$1"
+  clear_observed_deployment
+  if ! jq -e 'type == "object"' <<< "$response" >/dev/null 2>&1; then
+    return 0
+  fi
+
+  local value
+  value="$(jq -r 'if (.id | type) == "string" then .id else "" end' <<< "$response")"
+  if [[ "$value" =~ ^dpl_[A-Za-z0-9]+$ ]]; then
+    OBSERVED_DEPLOYMENT_ID="$value"
+  fi
+
+  value="$(jq -r 'if (.url | type) == "string" then .url else "" end' <<< "$response")"
+  OBSERVED_DEPLOYMENT_URL="$(normalize_deployment_url "$value")"
+
+  value="$(jq -r 'if (.gitSource.type | type) == "string" then .gitSource.type elif .meta.githubDeployment == "1" then "github" else "" end' <<< "$response")"
+  case "$value" in
+    github|gitlab|bitbucket) OBSERVED_SOURCE="$value" ;;
+  esac
+
+  value="$(jq -r 'if (.gitSource.ref | type) == "string" then .gitSource.ref elif (.meta.githubCommitRef | type) == "string" then .meta.githubCommitRef else "" end' <<< "$response")"
+  if [[ "$value" == "main" ]]; then
+    OBSERVED_REF="refs/heads/main"
+  elif [[ "$value" =~ ^refs/heads/[A-Za-z0-9._/-]+$ ]]; then
+    OBSERVED_REF="$value"
+  fi
+
+  value="$(jq -r 'if (.readyState | type) == "string" then .readyState else "" end' <<< "$response")"
+  case "$value" in
+    BUILDING|CANCELED|DELETED|ERROR|INITIALIZING|QUEUED|READY|SKIPPED)
+      OBSERVED_READY_STATE="$value"
+      ;;
+  esac
+
+  value="$(jq -r 'if (.target | type) == "string" then .target else "" end' <<< "$response")"
+  case "$value" in
+    development|preview|production) OBSERVED_TARGET="$value" ;;
+  esac
 }
 
 validate_alias_response() {
@@ -242,7 +306,7 @@ validate_deployment() {
     --arg deploymentId "$DEPLOYMENT_ID" \
     --arg projectId "$VERCEL_PROJECT_ID" \
     --arg commitSha "$COMMIT_SHA" \
-    --arg repository "$GITHUB_REPOSITORY" \
+    --arg repository "$EXPECTED_REPOSITORY" \
     '
       .id == $deploymentId and
       .projectId == $projectId and
@@ -254,18 +318,37 @@ validate_deployment() {
       ((.gitSource.ref // .meta.githubCommitRef) == "main" or
        (.gitSource.ref // .meta.githubCommitRef) == "refs/heads/main") and
       (.gitSource.sha // .meta.githubCommitSha) == $commitSha and
-      (
-        (.meta.githubOrg and .meta.githubRepo) as $hasRepository |
-        if $hasRepository then (.meta.githubOrg + "/" + .meta.githubRepo) == $repository else true end
-      )
+      (.meta.githubOrg | type) == "string" and
+      (.meta.githubRepo | type) == "string" and
+      (.meta.githubOrg + "/" + .meta.githubRepo) == $repository
     ' <<< "$response" >/dev/null
+}
+
+verify_frozen_aliases() {
+  local alias response current_deployment_id frozen_deployment_id matches=1
+  for alias in "${ALIASES[@]}"; do
+    if ! response="$(read_alias "$alias")"; then
+      matches=0
+      continue
+    fi
+    if ! validate_alias_response "$response" "$alias"; then
+      matches=0
+      continue
+    fi
+    current_deployment_id="$(jq -r --arg alias "$alias" '.aliases[] | select(.alias == $alias) | .deploymentId' <<< "$response")"
+    frozen_deployment_id="$(jq -r --arg alias "$alias" '.[] | select(.alias == $alias) | .deploymentId' <<< "$FROZEN_ALIASES")"
+    if [[ "$current_deployment_id" != "$frozen_deployment_id" ]]; then
+      matches=0
+    fi
+  done
+  [[ "$matches" -eq 1 ]]
 }
 
 alias_set() {
   local alias="$1"
   local error_path
   error_path="$(mktemp)"
-  local -a command_args=(alias set "$DEPLOYMENT_ID" "$alias" --token "$VERCEL_TOKEN")
+  local -a command_args=(alias set "$DEPLOYMENT_ID" "$alias")
   if [[ -n "$VERCEL_SCOPE" ]]; then
     command_args+=(--scope "$VERCEL_SCOPE")
   fi
@@ -339,19 +422,13 @@ if ! deployment_response="$(api_query "$deployment_endpoint")"; then
   fail_preflight "Vercel deployment read failed"
 fi
 if ! validate_deployment "$deployment_response"; then
-  fail_preflight "deployment project, Git source, commit, READY state, or production target did not match"
+  fail_preflight "deployment project, repository, Git source, commit, READY state, or production target did not match"
 fi
-DEPLOYMENT_URL="$(jq -r '.url // empty' <<< "$deployment_response")"
-if [[ -z "$DEPLOYMENT_URL" ]]; then
+observe_deployment "$deployment_response"
+CURRENT_DEPLOYMENT_URL="$OBSERVED_DEPLOYMENT_URL"
+if [[ -z "$CURRENT_DEPLOYMENT_URL" ]]; then
   fail_preflight "deployment URL was not present in the provider read-back"
 fi
-if [[ "$DEPLOYMENT_URL" != http://* && "$DEPLOYMENT_URL" != https://* ]]; then
-  DEPLOYMENT_URL="https://$DEPLOYMENT_URL"
-fi
-DEPLOYMENT_SOURCE="github"
-DEPLOYMENT_REF="refs/heads/main"
-DEPLOYMENT_READY_STATE="READY"
-DEPLOYMENT_TARGET="production"
 PROVIDER_CHECKS='["deployment_ready","deployment_target_production"]'
 
 for alias in "${ALIASES[@]}"; do
@@ -370,6 +447,10 @@ for alias in "${ALIASES[@]}"; do
   FROZEN_ALIASES="$(jq -c --arg alias "$alias" --arg deploymentId "$prior_deployment_id" \
     '. + [{alias: $alias, deploymentId: $deploymentId}]' <<< "$FROZEN_ALIASES")"
 done
+
+if ! verify_frozen_aliases; then
+  fail_preflight "canonical alias changed from the frozen rollback snapshot"
+fi
 
 mutation_failed=0
 failed_alias=""
@@ -397,23 +478,17 @@ if ! read_post_aliases; then
 fi
 PROVIDER_CHECKS="$(jq -c '. + ["alias_routing_exact"]' <<< "$PROVIDER_CHECKS")"
 
+clear_observed_deployment
 if ! deployment_response="$(api_query "$deployment_endpoint")"; then
   fail_postcheck "post-mutation deployment read failed"
 fi
+observe_deployment "$deployment_response"
 if ! validate_deployment "$deployment_response"; then
   fail_postcheck "post-mutation deployment inspect no longer matched the exact READY production source"
 fi
-DEPLOYMENT_URL="$(jq -r '.url // empty' <<< "$deployment_response")"
-if [[ -z "$DEPLOYMENT_URL" ]]; then
+if [[ -z "$OBSERVED_DEPLOYMENT_URL" ]]; then
   fail_postcheck "post-mutation deployment read did not include a deployment URL"
 fi
-if [[ "$DEPLOYMENT_URL" != http://* && "$DEPLOYMENT_URL" != https://* ]]; then
-  DEPLOYMENT_URL="https://$DEPLOYMENT_URL"
-fi
-DEPLOYMENT_SOURCE="github"
-DEPLOYMENT_REF="refs/heads/main"
-DEPLOYMENT_READY_STATE="READY"
-DEPLOYMENT_TARGET="production"
 PROVIDER_CHECKS="$(jq -c 'if index("deployment_ready") then . else . + ["deployment_ready"] end | if index("deployment_target_production") then . else . + ["deployment_target_production"] end' <<< "$PROVIDER_CHECKS")"
 
 for alias in "${ALIASES[@]}"; do
@@ -430,12 +505,21 @@ for alias in "${ALIASES[@]}"; do
   if [[ "$health_result" == *$'\t'* ]]; then
     effective_url="${health_result#*$'\t'}"
   fi
-  effective_host="${effective_url#*://}"
-  effective_host="${effective_host%%/*}"
-  effective_host="${effective_host%%:*}"
+  effective_host=""
+  if [[ "$effective_url" =~ ^https?://([[:alnum:]_.-]+)(:[0-9]+)?(/|$) ]]; then
+    if [[ "${BASH_REMATCH[1]}" == "$alias" ]]; then
+      effective_host="$alias"
+    fi
+  fi
+  if [[ ! "$http_code" =~ ^[0-9]{3}$ ]]; then
+    http_code="000"
+  fi
   HEALTH="$(jq -c --arg alias "$alias" --arg statusCode "$http_code" \
-    --arg effectiveUrl "$effective_url" --arg effectiveHost "$effective_host" \
-    '. + [{alias: $alias, status_code: $statusCode, effective_url: $effectiveUrl, effective_host: $effectiveHost}]' <<< "$HEALTH")"
+    --arg effectiveHost "$effective_host" \
+    '. + [{alias: $alias, status_code: $statusCode, effective_host: ($effectiveHost | if . == "" then null else . end)}]' <<< "$HEALTH")"
+  if [[ "$effective_host" != "$alias" ]]; then
+    fail_postcheck "canonical HTTP health redirected to a different host for $alias"
+  fi
   if [[ "$http_code" != "200" ]]; then
     fail_postcheck "canonical HTTP health failed for $alias"
   fi

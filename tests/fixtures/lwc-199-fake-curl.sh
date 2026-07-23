@@ -13,8 +13,13 @@ if [[ "$url" == *"/actions/workflows/ci.yml/runs?"* ]]; then
   exit 0
 fi
 if [[ "$url" == *"/v13/deployments/"* ]]; then
+  if [[ -f "$root/mutated" && "$scenario" == post-unreadable ]]; then
+    exit 7
+  fi
   case "$scenario" in
     deployment-mismatch) jq '.projectId = "prj_other"' "$root/deployment.json" ;;
+    missing-repository) jq 'del(.meta.githubOrg, .meta.githubRepo)' "$root/deployment.json" ;;
+    mismatched-repository) jq '.meta.githubOrg = "Other" | .meta.githubRepo = "other-repo"' "$root/deployment.json" ;;
     source-provider-mismatch) jq '.meta.githubDeployment = "0"' "$root/deployment.json" ;;
     source-ref-mismatch) jq '.meta.githubCommitRef = "release"' "$root/deployment.json" ;;
     source-sha-mismatch) jq '.meta.githubCommitSha = "fedcba9876543210fedcba9876543210fedcba98"' "$root/deployment.json" ;;
@@ -23,6 +28,9 @@ if [[ "$url" == *"/v13/deployments/"* ]]; then
     post-target-mismatch)
       if [[ -f "$root/mutated" ]]; then jq '.target = "preview"' "$root/deployment.json"; else cat "$root/deployment.json"; fi
       ;;
+    post-malformed)
+      if [[ -f "$root/mutated" ]]; then jq '{id, url}' "$root/deployment.json"; else cat "$root/deployment.json"; fi
+      ;;
     *) cat "$root/deployment.json" ;;
   esac
   exit 0
@@ -30,7 +38,14 @@ fi
 if [[ "$url" == *"/v4/aliases?"* ]]; then
   domain="${url##*domain=}"
   domain="${domain%%&*}"
-  if [[ "$scenario" == missing-alias && "$domain" == wiki.rayer.idv.tw ]]; then
+  if [[ "$scenario" == alias-changed-before-mutation && "$domain" == wiki.rayer.idv.tw ]]; then
+    read_count="$(grep -c "domain=$domain" "$root/curl-calls" || true)"
+    if [[ "$read_count" -ge 2 ]]; then
+      printf '%s' '{"aliases":[{"alias":"wiki.rayer.idv.tw","deploymentId":"dpl_changed"}]}'
+    else
+      printf '%s' '{"aliases":[{"alias":"wiki.rayer.idv.tw","deploymentId":"dpl_oldcustom"}]}'
+    fi
+  elif [[ "$scenario" == missing-alias && "$domain" == wiki.rayer.idv.tw ]]; then
     printf '%s' '{"aliases":[]}'
   elif [[ "$scenario" == divergent-alias && "$domain" == wiki.rayer.idv.tw ]]; then
     printf '%s' '{"aliases":[{"alias":"unexpected.example","deploymentId":"dpl_wrong"}]}'
@@ -44,7 +59,9 @@ if [[ "$url" == *"/v4/aliases?"* ]]; then
   exit 0
 fi
 if [[ "$url" == https://wiki.rayer.idv.tw/* || "$url" == https://llm-wiki-frontend.vercel.app/* ]]; then
-  if [[ "$scenario" == health-failure && "$url" == https://wiki.rayer.idv.tw/* ]]; then
+  if [[ "$scenario" == redirect-host-mismatch && "$url" == https://wiki.rayer.idv.tw/* ]]; then
+    printf '200\thttps://attacker.example/'
+  elif [[ "$scenario" == health-failure && "$url" == https://wiki.rayer.idv.tw/* ]]; then
     printf '503\thttps://%s/' "${url#https://}"
   else
     printf '200\thttps://%s/' "${url#https://}"
