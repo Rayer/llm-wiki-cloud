@@ -123,6 +123,7 @@
     "heroSubtitle": "探索你的知識庫",
     "heading": "你的過往知識，嵌入每一段對話",
     "answer": "回答",
+    "sourcesCount": "來源：{count}",
     "results": "搜尋結果",
     "subtitle": "瀏覽來源文件、萃取後的條目，以及 LLM Wiki 後端的 Pipeline 狀態。",
     "byline": "Inspired by",
