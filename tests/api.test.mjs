@@ -20,6 +20,7 @@ import {
   rebuildAdminProjectIndex,
   renameAdminProject,
   normalizeSearchResponse,
+  normalizeStatus,
   RAW_UPLOAD_MAX_BYTES,
   triggerAdminProjectPipeline,
   toV1Path,
@@ -37,6 +38,43 @@ const buildInfoPayload = {
   service: 'llm-wiki-bff',
   revision: 'llm-wiki-bff-00042-abc',
 };
+
+test('normalizeStatus drops malformed diagnostic fields and accepts only BFF exit codes', () => {
+  const status = normalizeStatus({
+    last_execution: {
+      diagnostic: {
+        stage: { invalid: true },
+        error_class: ['child_exit'],
+        detail_code: 42,
+        child_command: null,
+        exit_code: 1.5,
+      },
+    },
+  });
+
+  assert.deepEqual(status.lastExecution?.diagnostic, {
+    stage: null,
+    error_class: null,
+    detail_code: null,
+    child_command: null,
+    exit_code: null,
+  });
+
+  assert.equal(normalizeStatus({
+    last_execution: {
+      diagnostic: { stage: 'future_stage', exit_code: 255 },
+    },
+  }).lastExecution?.diagnostic?.stage, 'future_stage');
+  assert.equal(normalizeStatus({
+    last_execution: { diagnostic: { exit_code: 0 } },
+  }).lastExecution?.diagnostic?.exit_code, 0);
+  assert.equal(normalizeStatus({
+    last_execution: { diagnostic: { exit_code: 256 } },
+  }).lastExecution?.diagnostic?.exit_code, null);
+  assert.equal(normalizeStatus({
+    last_execution: { diagnostic: ['not-an-object'] },
+  }).lastExecution?.diagnostic, null);
+});
 
 test('getBuildInfo reads the unauthenticated no-store public version endpoint', async () => {
   const originalFetch = globalThis.fetch;
@@ -279,7 +317,7 @@ test('getPipelineLog reads text from the project scoped log URL', async () => {
   });
   globalThis.window = {
     localStorage: {
-      getItem: () => 'project-1',
+      getItem: () => 'project-2',
     },
   };
 
@@ -295,7 +333,7 @@ test('getPipelineLog reads text from the project scoped log URL', async () => {
   };
 
   try {
-    const log = await getPipelineLog('/api/v1/pipeline/log?execution_id=olw-pipeline-abc123');
+    const log = await getPipelineLog('/api/v1/pipeline/log?execution_id=olw-pipeline-abc123', 'project-1');
 
     assert.equal(requestedUrl, 'https://llm-wiki-bff-dev-580854833715.asia-east1.run.app/api/v1/pipeline/log?execution_id=olw-pipeline-abc123');
     assert.equal(requestedInit.headers.Authorization, 'Bearer jwt-token');

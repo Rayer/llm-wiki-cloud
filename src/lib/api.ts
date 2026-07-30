@@ -3,12 +3,24 @@
 import { rawFileNameFromSource } from './raw-file-name.ts';
 import { normalizeAnnotationBody, normalizeAnnotationGeneration } from './source-annotation.ts';
 
+export type PipelineDiagnostic = {
+  stage?: string | null;
+  error_class?: string | null;
+  detail_code?: string | null;
+  child_command?: string | null;
+  exit_code?: number | null;
+};
+
 export type PipelineExecution = {
+  name?: string | null;
   status?: 'RUNNING' | 'SUCCEEDED' | 'FAILED' | string;
   duration?: string | number | null;
   started_at?: string | null;
   finished_at?: string | null;
   log_url?: string | null;
+  log_state?: 'pending' | 'available' | 'unavailable' | 'missing' | string | null;
+  log_state_reason?: string | null;
+  diagnostic?: PipelineDiagnostic | null;
   [key: string]: unknown;
 };
 
@@ -248,8 +260,8 @@ export async function apiFetch(path: string, options: ApiFetchOptions = {}): Pro
   return fetch(url, buildRequestInit({ ...options, projectId, accessToken: refreshed }));
 }
 
-async function requestJson<T>(path: string): Promise<T> {
-  const response = await apiFetch(path);
+async function requestJson<T>(path: string, options: Pick<ApiFetchOptions, 'projectId'> = {}): Promise<T> {
+  const response = await apiFetch(path, options);
 
   if (!response.ok) {
     throw new ApiError(`API request failed (${response.status})`, response.status);
@@ -283,6 +295,36 @@ function asString(value: unknown): string | undefined {
 
 function asNumber(value: unknown): number | undefined {
   return typeof value === 'number' && Number.isFinite(value) ? value : undefined;
+}
+
+function asExitCode(value: unknown): number | null {
+  return typeof value === 'number' && Number.isInteger(value) && value >= 0 && value <= 255
+    ? value
+    : null;
+}
+
+function normalizePipelineDiagnostic(value: unknown): PipelineDiagnostic | null {
+  if (!isRecord(value)) return null;
+  return {
+    stage: asString(value.stage) ?? null,
+    error_class: asString(value.error_class) ?? null,
+    detail_code: asString(value.detail_code) ?? null,
+    child_command: asString(value.child_command) ?? null,
+    exit_code: asExitCode(value.exit_code),
+  };
+}
+
+function normalizePipelineExecution(value: unknown): PipelineExecution | null {
+  if (!isRecord(value)) return null;
+  return {
+    ...value,
+    name: asString(value.name) ?? null,
+    status: asString(value.status),
+    log_url: asString(value.log_url) ?? null,
+    log_state: typeof value.log_state === 'string' ? value.log_state : null,
+    log_state_reason: asString(value.log_state_reason) ?? null,
+    diagnostic: normalizePipelineDiagnostic(value.diagnostic),
+  };
 }
 
 function asBoolean(value: unknown): boolean | undefined {
@@ -512,9 +554,7 @@ export function normalizeStatus(payload: unknown): ApiStatus {
   const rawCount =
     firstNumber(record, ['rawCount', 'raw_count', 'filesCount', 'files_count']) ?? 0;
 
-  const lastExecution = isRecord(record.last_execution)
-    ? record.last_execution as PipelineExecution
-    : null;
+  const lastExecution = normalizePipelineExecution(record.last_execution);
   const suggestedQueries = stringArray(record.suggested_queries ?? record.suggestedQueries);
 
   return { sourcesCount, conceptsCount, rawCount, suggestedQueries, lastExecution, raw: record };
@@ -534,8 +574,8 @@ export function normalizeRawFile(item: unknown): RawFile {
   };
 }
 
-export async function getStatus() {
-  return normalizeStatus(await requestJson<unknown>('/api/v1/status'));
+export async function getStatus(projectId?: string) {
+  return normalizeStatus(await requestJson<unknown>('/api/v1/status', { projectId }));
 }
 
 export async function getRawFiles() {
@@ -720,8 +760,8 @@ export async function getPipelineStatus(): Promise<PipelineStatus> {
   return requestJson<PipelineStatus>('/api/v1/pipeline/status');
 }
 
-export async function getPipelineLog(logUrl: string): Promise<string> {
-  const response = await apiFetch(logUrl);
+export async function getPipelineLog(logUrl: string, projectId?: string): Promise<string> {
+  const response = await apiFetch(logUrl, { projectId });
   if (!response.ok) {
     throw new Error(`Pipeline log request failed (${response.status})`);
   }

@@ -1,6 +1,6 @@
 'use client';
 
-import { useEffect, useState } from 'react';
+import { useEffect, useRef, useState } from 'react';
 import { CheckCircle2, Circle, Loader2, XCircle } from 'lucide-react';
 import {
   getBuildInfo,
@@ -16,25 +16,50 @@ import { ErrorState, LoadingState } from './States';
 import { useWorkspace } from './WorkspaceProvider';
 import { Badge } from './ui/Badge';
 import { Surface } from './ui/Surface';
+import { getPipelineTimelineState, PIPELINE_STEPS } from '@/lib/pipeline-timeline';
+import {
+  beginPipelineLogRequest,
+  completePipelineLogRequest,
+  failPipelineLogRequest,
+  getPipelineLogAvailability,
+  initialPipelineLogState,
+  type PipelineLogPanelState,
+  type PipelineLogRequestIdentity,
+} from '@/lib/status-log';
 
-const PIPELINE_STEPS = ['ingest', 'compile', 'lint', 'publish'] as const;
 const LOG_PREVIEW_BYTES = 10 * 1024;
 const LOG_PREVIEW_LINES = 50;
+
+type StatusScope = {
+  projectId: string | null;
+  status: ApiStatus | null;
+  loading: boolean;
+  error: string;
+};
 
 export function StatusClient() {
   const { t } = useT();
   const { user } = useAuth();
   const { currentProject } = useWorkspace();
-  const [status, setStatus] = useState<ApiStatus | null>(null);
-  const [pipelineLog, setPipelineLog] = useState('');
-  const [logLoading, setLogLoading] = useState(false);
-  const [logError, setLogError] = useState('');
+  const projectId = currentProject?.id ?? null;
+  const [statusScope, setStatusScope] = useState<StatusScope>(() => ({
+    projectId,
+    status: null,
+    loading: Boolean(projectId),
+    error: '',
+  }));
+  const [logState, setLogState] = useState<PipelineLogPanelState>(() => initialPipelineLogState(null));
   const [showFullLog, setShowFullLog] = useState(false);
-  const [loading, setLoading] = useState(true);
-  const [error, setError] = useState('');
   const [showRaw, setShowRaw] = useState(false);
   const [buildInfo, setBuildInfo] = useState<BuildInfo | null>(null);
   const [buildInfoError, setBuildInfoError] = useState('');
+  const statusRequestNonce = useRef(0);
+  const logRequestNonce = useRef(0);
+  const activeLogRequest = useRef<PipelineLogRequestIdentity | null>(null);
+  const currentProjectId = useRef(projectId);
+  const status = statusScope.projectId === projectId ? statusScope.status : null;
+  const loading = statusScope.projectId === projectId ? statusScope.loading : Boolean(projectId);
+  const error = statusScope.projectId === projectId ? statusScope.error : '';
 
   useEffect(() => {
     let cancelled = false;
@@ -53,39 +78,77 @@ export function StatusClient() {
   }, []);
 
   useEffect(() => {
+    const requestNonce = ++statusRequestNonce.current;
     let cancelled = false;
+    currentProjectId.current = projectId;
+    // eslint-disable-next-line react-hooks/set-state-in-effect -- reset project-scoped status when the selected project changes
+    setStatusScope({ projectId, status: null, loading: Boolean(projectId), error: '' });
+    setLogState(initialPipelineLogState(projectId));
+    setShowFullLog(false);
+    activeLogRequest.current = null;
+    logRequestNonce.current += 1;
 
-    getStatus()
+    if (!projectId) {
+      return () => {
+        cancelled = true;
+      };
+    }
+
+    getStatus(projectId)
       .then((apiStatus) => {
-        if (cancelled) return;
-        setStatus(apiStatus);
-
-        const logUrl = apiStatus.lastExecution?.log_url;
-        if (!logUrl) return;
-
-        setLogLoading(true);
-        getPipelineLog(logUrl)
-          .then((logText) => {
-            if (!cancelled) setPipelineLog(logText);
-          })
-          .catch((err: Error) => {
-            if (!cancelled) setLogError(err.message);
-          })
-          .finally(() => {
-            if (!cancelled) setLogLoading(false);
-          });
+        if (cancelled || requestNonce !== statusRequestNonce.current || currentProjectId.current !== projectId) return;
+        setStatusScope((current) => current.projectId === projectId
+          ? { ...current, status: apiStatus }
+          : current);
       })
       .catch((err: Error) => {
-        if (!cancelled) setError(err.message);
+        if (!cancelled && requestNonce === statusRequestNonce.current && currentProjectId.current === projectId) {
+          setStatusScope((current) => current.projectId === projectId
+            ? { ...current, error: err.message }
+            : current);
+        }
       })
       .finally(() => {
-        if (!cancelled) setLoading(false);
+        if (!cancelled && requestNonce === statusRequestNonce.current && currentProjectId.current === projectId) {
+          setStatusScope((current) => current.projectId === projectId
+            ? { ...current, loading: false }
+            : current);
+        }
       });
 
     return () => {
       cancelled = true;
+      if (currentProjectId.current === projectId) currentProjectId.current = null;
     };
-  }, []);
+  }, [projectId]);
+
+  const onOpenLog = () => {
+    const execution = status?.lastExecution;
+    const availability = getPipelineLogAvailability(execution);
+    const logUrl = execution?.log_url;
+    if (!projectId || !availability.canOpen || !logUrl || activeLogRequest.current) return;
+
+    const identity: PipelineLogRequestIdentity = {
+      projectId,
+      executionId: execution?.name ?? '',
+      logUrl,
+      nonce: ++logRequestNonce.current,
+    };
+    activeLogRequest.current = identity;
+    setLogState((current) => beginPipelineLogRequest(current, identity));
+    getPipelineLog(logUrl, projectId)
+      .then((text) => {
+        if (currentProjectId.current !== projectId) return;
+        setLogState((current) => completePipelineLogRequest(current, identity, text));
+      })
+      .catch((err: Error) => {
+        if (currentProjectId.current !== projectId) return;
+        setLogState((current) => failPipelineLogRequest(current, identity, err.message));
+      })
+      .finally(() => {
+        if (activeLogRequest.current?.nonce === identity.nonce) activeLogRequest.current = null;
+      });
+  };
 
   return (
     <div className="space-y-6">
@@ -111,9 +174,9 @@ export function StatusClient() {
 
           <PipelineTimeline execution={status.lastExecution} />
           <PipelineLogPanel
-            logText={pipelineLog}
-            loading={logLoading}
-            error={logError}
+            logState={logState}
+            execution={status.lastExecution}
+            onOpenLog={onOpenLog}
             showFullLog={showFullLog}
             onToggleFull={() => setShowFullLog((prev) => !prev)}
           />
@@ -220,28 +283,41 @@ function DeveloperDetails({
 }
 
 function PipelineLogPanel({
-  logText,
-  loading,
-  error,
+  logState,
+  execution,
+  onOpenLog,
   showFullLog,
   onToggleFull,
 }: {
-  logText: string;
-  loading: boolean;
-  error: string;
+  logState: PipelineLogPanelState;
+  execution?: PipelineExecution | null;
+  onOpenLog: () => void;
   showFullLog: boolean;
   onToggleFull: () => void;
 }) {
-  const isLarge = logText.length > LOG_PREVIEW_BYTES;
+  const availability = getPipelineLogAvailability(execution);
+  const isLoading = logState.phase === 'loading';
+  const isLarge = logState.text.length > LOG_PREVIEW_BYTES;
   const visibleLog = isLarge && !showFullLog
-    ? logText.split(/\r?\n/).slice(-LOG_PREVIEW_LINES).join('\n')
-    : logText;
+    ? logState.text.split(/\r?\n/).slice(-LOG_PREVIEW_LINES).join('\n')
+    : logState.text;
+  const canOpen = availability.canOpen && ['never-opened', 'loading', 'error'].includes(logState.phase);
 
   return (
     <Surface variant="glass" className="p-5">
       <div className="flex flex-wrap items-center justify-between gap-3">
         <h2 className="text-sm font-semibold text-white">Pipeline log</h2>
-        {isLarge ? (
+        {canOpen ? (
+          <button
+            type="button"
+            onClick={onOpenLog}
+            disabled={isLoading}
+            aria-busy={isLoading}
+            className="text-sm font-medium text-emerald-200 transition hover:text-white"
+          >
+            {isLoading ? 'Loading pipeline log...' : 'Open pipeline log'}
+          </button>
+        ) : isLarge ? (
           <button
             type="button"
             onClick={onToggleFull}
@@ -252,12 +328,15 @@ function PipelineLogPanel({
         ) : null}
       </div>
 
-      {loading ? <p className="mt-4 text-sm text-zinc-500">Loading log...</p> : null}
-      {error ? <p className="mt-4 text-sm text-amber-300">{error}</p> : null}
-      {!loading && !error && !logText ? (
-        <p className="mt-4 text-sm text-zinc-500">No pipeline log available.</p>
+      {isLoading ? <p className="mt-4 text-sm text-zinc-500" role="status" aria-live="polite">Loading log...</p> : null}
+      {logState.phase === 'error' ? <p className="mt-4 text-sm text-amber-300" role="alert">{logState.error}</p> : null}
+      {!isLoading && logState.phase !== 'error' && !availability.canOpen && availability.message ? (
+        <p className="mt-4 text-sm text-zinc-500">{availability.message}</p>
       ) : null}
-      {logText ? (
+      {!isLoading && logState.phase === 'loaded-empty' ? (
+        <p className="mt-4 text-sm text-zinc-500" role="status" aria-live="polite">Pipeline log is empty.</p>
+      ) : null}
+      {logState.text ? (
         <pre className="mt-4 max-h-96 overflow-x-auto overflow-y-auto rounded-md border border-white/10 bg-black/60 p-4 font-mono text-xs leading-5 text-zinc-300">
           {visibleLog}
         </pre>
@@ -281,13 +360,7 @@ function PipelineTimeline({ execution }: { execution?: PipelineExecution | null 
   const isSuccess = execStatus === 'SUCCEEDED';
   const isFailed = execStatus === 'FAILED';
 
-  const completedSteps = isSuccess
-    ? PIPELINE_STEPS.length
-    : isFailed
-      ? 2
-      : isRunning
-        ? 1
-        : 0;
+  const { completedSteps, failedStep, stageLabel } = getPipelineTimelineState(execution);
 
   return (
     <Surface variant="glass" className="p-6">
@@ -325,7 +398,7 @@ function PipelineTimeline({ execution }: { execution?: PipelineExecution | null 
                     <CheckCircle2 className="size-4 shrink-0 text-emerald-400" />
                   ) : active ? (
                     <Loader2 className="size-4 shrink-0 animate-spin text-emerald-400" />
-                  ) : isFailed && index === completedSteps ? (
+                  ) : isFailed && failedStep === step ? (
                     <XCircle className="size-4 shrink-0 text-amber-400" />
                   ) : (
                     <Circle className="size-4 shrink-0" />
@@ -335,6 +408,41 @@ function PipelineTimeline({ execution }: { execution?: PipelineExecution | null 
               );
             })}
           </ol>
+
+          {isFailed ? (
+            <dl className="mt-5 grid gap-3 text-xs text-zinc-500 sm:grid-cols-2">
+              <div>
+                <dt className="uppercase tracking-wider">Failed stage</dt>
+                <dd className="mt-1 text-zinc-300">
+                  {stageLabel === 'stage unavailable' ? 'Failed — stage unavailable' : stageLabel}
+                </dd>
+              </div>
+              {execution.diagnostic?.error_class ? (
+                <div>
+                  <dt className="uppercase tracking-wider">Error class</dt>
+                  <dd className="mt-1 text-zinc-300">{execution.diagnostic.error_class}</dd>
+                </div>
+              ) : null}
+              {execution.diagnostic?.detail_code ? (
+                <div>
+                  <dt className="uppercase tracking-wider">Detail code</dt>
+                  <dd className="mt-1 text-zinc-300">{execution.diagnostic.detail_code}</dd>
+                </div>
+              ) : null}
+              {execution.diagnostic?.child_command ? (
+                <div>
+                  <dt className="uppercase tracking-wider">Child command</dt>
+                  <dd className="mt-1 break-words font-mono text-zinc-300">{execution.diagnostic.child_command}</dd>
+                </div>
+              ) : null}
+              {execution.diagnostic?.exit_code != null ? (
+                <div>
+                  <dt className="uppercase tracking-wider">Exit code</dt>
+                  <dd className="mt-1 text-zinc-300">{String(execution.diagnostic.exit_code)}</dd>
+                </div>
+              ) : null}
+            </dl>
+          ) : null}
 
           <dl className="mt-5 grid gap-3 text-xs text-zinc-500 sm:grid-cols-3">
             {execution.started_at ? (
