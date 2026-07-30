@@ -39,7 +39,11 @@
   },
   "Detail": {
     "backTo": "返回 {label}",
-    "rawFile": "原始檔案"
+    "rawFile": "原始檔案",
+    "citationLoading": "正在載入引用內容…",
+    "citationLoadFailed": "無法載入引用內容，請再試一次。",
+    "retryCitation": "重試載入引用",
+    "openFullPage": "開啟完整頁面"
   },
   "Entry": {
     "singular": "條目",

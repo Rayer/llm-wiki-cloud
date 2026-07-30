@@ -1,12 +1,14 @@
 'use client';
 
-import { FormEvent, ReactNode, useCallback, useEffect, useState } from 'react';
+import { FormEvent, ReactNode, useCallback, useEffect, useRef, useState } from 'react';
 import ReactMarkdown from 'react-markdown';
 import {
+  citationPathSegment,
   getConcept,
   getConcepts,
   getSource,
   getStatus,
+  safeWikiRouteSegment,
   searchWiki,
   type ApiStatus,
   type Citation,
@@ -41,46 +43,73 @@ function syncUrl(q: string, mode: 'wiki' | 'full') {
   window.history.replaceState(null, '', url);
 }
 
-type ModalEntry = { title: string; content: string; type: string; slug: string; id?: string };
+type ModalEntry = {
+  title: string;
+  content: string;
+  type: 'concept' | 'source';
+  slug: string;
+  id?: string;
+  path?: string;
+  lookup: string;
+  label: string;
+  error: string;
+};
 type SearchMode = 'wiki' | 'full';
 
-function conceptHref(concept: WikiEntry): string {
-  const target = concept.id
-    ? `${concept.id}-${encodeURIComponent(concept.slug)}`
-    : encodeURIComponent(concept.slug);
-  return `/concepts/${target}`;
+function conceptHref(concept: WikiEntry): string | null {
+  const id = safeWikiRouteSegment(concept.id);
+  const slug = safeWikiRouteSegment(concept.slug);
+  if (id && slug) return `/concepts/${encodeURIComponent(id)}-${encodeURIComponent(slug)}`;
+  const target = id ?? slug;
+  return target ? `/concepts/${encodeURIComponent(target)}` : null;
+}
+
+
+function entryDetailHref(entry: ModalEntry): string | null {
+  const collection = entry.type === 'concept' ? 'concepts' : 'sources';
+  const id = safeWikiRouteSegment(entry.id);
+  const slug = safeWikiRouteSegment(entry.slug);
+
+  if (id && slug) {
+    return `/${collection}/${encodeURIComponent(id)}-${encodeURIComponent(slug)}`;
+  }
+
+  if (id) return `/${collection}/${encodeURIComponent(id)}`;
+
+  if (entry.path) {
+    const pathSegment = citationPathSegment(entry.type, entry.path);
+    if (pathSegment) {
+      return `/${collection}/${encodeURIComponent(pathSegment)}`;
+    }
+  }
+
+  return slug ? `/${collection}/${encodeURIComponent(slug)}` : null;
 }
 
 export function HomeClient() {
   const { t } = useT();
   const { currentProject } = useWorkspace();
-  const [query, setQuery] = useState('');
-  const [mode, setMode] = useState<SearchMode>('wiki');
+  const [initialSearch] = useState(() => readSearchParams());
+  const [query, setQuery] = useState(initialSearch.q);
+  const [mode, setMode] = useState<SearchMode>(initialSearch.mode);
   const [status, setStatus] = useState<ApiStatus | null>(null);
   const [statusError, setStatusError] = useState('');
   const [results, setResults] = useState<SearchResult[]>([]);
   const [aiAnswer, setAiAnswer] = useState('');
   const [citations, setCitations] = useState<Citation[]>([]);
   const [expandKeywords, setExpandKeywords] = useState<string[]>([]);
-  const [searched, setSearched] = useState(false);
-  const [loading, setLoading] = useState(false);
+  const [searched, setSearched] = useState(Boolean(initialSearch.q));
+  const [loading, setLoading] = useState(Boolean(initialSearch.q));
   const [error, setError] = useState('');
   const [modal, setModal] = useState<ModalEntry | null>(null);
   const [modalLoading, setModalLoading] = useState(false);
+  const citationRequestId = useRef(0);
   const [latestConcepts, setLatestConcepts] = useState<WikiEntry[]>([]);
 
   // Restore search from URL on mount (back-button support).
-  // React 19 batches all state updates in effects — multiple setStates here
-  // is safe and intentional (one render with all new values).
   useEffect(() => {
-    const { q, mode: urlMode } = readSearchParams();
-    if (q) {
-      // eslint-disable-next-line react-hooks/set-state-in-effect -- batched in React 19
-      setQuery(q);
-      setMode(urlMode);
-      setLoading(true);
-      setSearched(true);
-      searchWiki(q, urlMode)
+    if (initialSearch.q) {
+      searchWiki(initialSearch.q, initialSearch.mode)
         .then((response) => {
           setResults(response.results);
           setAiAnswer(response.aiAnswer);
@@ -96,7 +125,7 @@ export function HomeClient() {
         })
         .finally(() => setLoading(false));
     }
-  }, []); // run once on mount
+  }, [initialSearch.q, initialSearch.mode]);
 
   useEffect(() => {
     getStatus()
@@ -159,33 +188,90 @@ export function HomeClient() {
     await handleSearch(mode, suggestion);
   }, [handleSearch, mode]);
 
+  const closeCitationModal = useCallback(() => {
+    citationRequestId.current += 1;
+    setModalLoading(false);
+    setModal(null);
+  }, []);
+
   const openCitation = useCallback(async (citation: Citation) => {
-    setModalLoading(true);
-    setModal({ title: citation.text, content: '', type: citation.type, slug: citation.slug, id: citation.id });
+    const requestId = ++citationRequestId.current;
+    const safeId = safeWikiRouteSegment(citation.id);
+    const safeSlug = safeWikiRouteSegment(citation.slug);
+    const pathSlug = citationPathSegment(citation.type, citation.path);
+    const lookup = safeId ?? safeSlug ?? pathSlug;
+
+    setModalLoading(Boolean(lookup));
+    setModal({
+      title: citation.text,
+      content: '',
+      type: citation.type,
+      slug: safeSlug ?? pathSlug ?? '',
+      id: safeId ?? undefined,
+      path: citation.path,
+      lookup: lookup ?? '',
+      label: citation.text,
+      error: lookup ? '' : t('Detail.citationLoadFailed'),
+    });
+
+    if (!lookup) return;
+
     try {
       const fetch = citation.type === 'concept' ? getConcept : getSource;
-      const entry: WikiEntry = await fetch(citation.slug);
+      const entry: WikiEntry = await fetch(lookup);
+      if (requestId !== citationRequestId.current) return;
+      const entrySlug = safeWikiRouteSegment(entry.slug) ?? safeSlug ?? pathSlug ?? '';
+      const entryId = safeWikiRouteSegment(entry.id) ?? safeId ?? undefined;
       setModal({
         title: entry.title,
-        content: entry.content ?? entry.raw as string ?? '',
+        content: typeof entry.content === 'string'
+          ? entry.content
+          : typeof entry.raw === 'string'
+            ? entry.raw
+            : '',
         type: citation.type,
-        slug: citation.slug,
-        id: entry.id,
+        slug: entrySlug,
+        id: entryId,
+        path: citation.path,
+        lookup,
+        label: citation.text,
+        error: '',
       });
-    } catch {
-      setModal(null);
+    } catch (err) {
+      if (requestId !== citationRequestId.current) return;
+      const message = err instanceof Error && err.message.trim()
+        ? err.message
+        : t('Detail.citationLoadFailed');
+      setModal((current) => (current ? { ...current, error: message } : null));
     } finally {
-      setModalLoading(false);
+      if (requestId === citationRequestId.current) {
+        setModalLoading(false);
+      }
     }
-  }, []);
+  }, [t]);
 
   // Close modal on Escape
   useEffect(() => {
     if (!modal) return;
-    const handler = (e: KeyboardEvent) => { if (e.key === 'Escape') setModal(null); };
+    const handler = (e: KeyboardEvent) => {
+      if (e.key === 'Escape') {
+        closeCitationModal();
+      }
+    };
     window.addEventListener('keydown', handler);
     return () => window.removeEventListener('keydown', handler);
-  }, [modal]);
+  }, [closeCitationModal, modal]);
+
+  const retryCitation = useCallback(() => {
+    if (!modal) return;
+    openCitation({
+      text: modal.label,
+      slug: modal.slug,
+      type: modal.type,
+      id: modal.id,
+      path: modal.path,
+    });
+  }, [modal, openCitation]);
 
   const resultType = (type?: string): 'source' | 'concept' =>
     type === 'source' ? 'source' : 'concept';
@@ -265,8 +351,11 @@ export function HomeClient() {
             <Badge variant="muted">{latestConcepts.length}</Badge>
           </div>
           <div className="grid gap-4 md:grid-cols-2">
-            {latestConcepts.map((concept, index) => (
-              <NavigationLink key={concept.slug} href={conceptHref(concept)} className="group block">
+            {latestConcepts.map((concept, index) => {
+              const href = conceptHref(concept);
+              if (!href) return null;
+              return (
+                <NavigationLink key={concept.slug} href={href} className="group block">
                 <Surface
                   variant="glass"
                   className="animate-fade-in border-l-[3px] border-l-emerald-400 p-5 transition duration-200 [animation-fill-mode:backwards] hover:-translate-y-0.5 hover:border-emerald-400/30 hover:shadow-lg hover:shadow-emerald-500/5"
@@ -284,8 +373,9 @@ export function HomeClient() {
                     </p>
                   ) : null}
                 </Surface>
-              </NavigationLink>
-            ))}
+                </NavigationLink>
+              );
+            })}
           </div>
         </section>
       ) : null}
@@ -319,6 +409,7 @@ export function HomeClient() {
                 [&_li]:leading-7
                 [&_p]:mb-3
               ">
+                {/* eslint-disable-next-line react-hooks/refs */}
                 {renderCitations(aiAnswer, citations, openCitation)}
               </div>
             </div>
@@ -343,6 +434,7 @@ export function HomeClient() {
                   text: result.title,
                   slug: result.slug,
                   type: type,
+                  id: result.id,
                   path: '',
                 })}
                 className={`animate-fade-in rounded-[var(--radius-lg)] border border-l-[3px] border-white/10 bg-zinc-900/40 p-5 text-left backdrop-blur-sm transition duration-200 [animation-fill-mode:backwards] hover:-translate-y-0.5 hover:border-emerald-400/30 hover:shadow-lg hover:shadow-emerald-500/5 ${typeBorderClass}`}
@@ -376,8 +468,11 @@ export function HomeClient() {
       {/* Citation Preview Modal */}
       {modal ? (
         <div
+          aria-labelledby="citation-modal-title"
+          role="dialog"
+          aria-modal="true"
           className="fixed inset-0 z-50 flex items-center justify-center bg-black/70 p-4 backdrop-blur-sm animate-fade-in"
-          onClick={() => setModal(null)}
+          onClick={closeCitationModal}
         >
           <Surface
             variant="elevated"
@@ -385,7 +480,8 @@ export function HomeClient() {
             onClick={(e) => e.stopPropagation()}
           >
             <button
-              onClick={() => setModal(null)}
+              onClick={closeCitationModal}
+              autoFocus
               className="absolute right-4 top-4 rounded-md p-1 text-zinc-400 transition hover:bg-white/10 hover:text-white"
               aria-label="Close"
             >
@@ -394,26 +490,46 @@ export function HomeClient() {
               </svg>
             </button>
 
+            <Badge variant={modal.type === 'concept' ? 'concept' : 'source'}>
+              {modal.type === 'concept' ? t('Entry.singular') : t('Source.singular')}
+            </Badge>
+            <h2 id="citation-modal-title" className="text-2xl font-semibold text-white">
+              {modal.title}
+            </h2>
+
             {modalLoading ? (
-              <LoadingState label="Loading..." />
+              <LoadingState label={t('Detail.citationLoading')} />
+            ) : modal?.error ? (
+              <div className="rounded-md border border-amber-300/30 bg-amber-500/10 p-4">
+                <p role="alert" className="text-sm text-amber-100">{modal.error}</p>
+                <button
+                  type="button"
+                  className="mt-3 rounded-md border border-amber-300/40 px-3 py-2 text-sm text-amber-100"
+                  onClick={retryCitation}
+                  aria-label={t('Detail.retryCitation')}
+                >
+                  {t('Detail.retryCitation')}
+                </button>
+              </div>
             ) : (
               <>
-                <Badge variant={modal.type === 'concept' ? 'concept' : 'source'}>
-                  {modal.type === 'concept' ? t('Entry.singular') : t('Source.singular')}
-                </Badge>
-                <h2 className="text-2xl font-semibold text-white">{modal.title}</h2>
                 <div className="mt-4 border-t border-white/10 pt-4">
                   <MarkdownBody content={stripLeadingHeading(modal.content)} />
                 </div>
-                <div className="mt-6 border-t border-white/10 pt-4">
-                  <NavigationLink
-                    href={`/${modal.type === 'concept' ? 'concepts' : 'sources'}/${modal.id || modal.slug}`}
-                    className="text-sm font-medium text-emerald-300 hover:text-emerald-200"
-                    onClick={() => setModal(null)}
-                  >
-                    {t('Detail.openFullPage')}
-                  </NavigationLink>
-                </div>
+                {(() => {
+                  const href = entryDetailHref(modal);
+                  return href ? (
+                    <div className="mt-6 border-t border-white/10 pt-4">
+                      <NavigationLink
+                        href={href}
+                        className="text-sm font-medium text-emerald-300 hover:text-emerald-200"
+                        onClick={closeCitationModal}
+                      >
+                        {t('Detail.openFullPage')}
+                      </NavigationLink>
+                    </div>
+                  ) : null;
+                })()}
               </>
             )}
           </Surface>

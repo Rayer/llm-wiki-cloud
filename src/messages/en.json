@@ -39,7 +39,11 @@
   },
   "Detail": {
     "backTo": "Back to {label}",
-    "rawFile": "Raw file"
+    "rawFile": "Raw file",
+    "citationLoading": "Loading citation…",
+    "citationLoadFailed": "Unable to load this citation. Try again.",
+    "retryCitation": "Retry citation",
+    "openFullPage": "Open full page"
   },
   "Entry": {
     "singular": "Entry",
