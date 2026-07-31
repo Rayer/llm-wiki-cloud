@@ -110,13 +110,18 @@ export type SearchResponse = {
 export type AdminProject = {
   id: string;
   name: string;
+  /** Storage-scoped project id (not the Firestore compound doc id). */
+  projectId: string;
   userId: string;
+  userName: string;
+  userEmail: string;
   conceptCount: number;
   sourceCount: number;
 };
 
 export type AdminUser = {
   id: string;
+  name: string;
   email: string;
   role: string;
   projectCount: number;
@@ -413,14 +418,21 @@ function extractNamedArray(payload: unknown, keys: string[]): unknown[] {
 
 function normalizeAdminProject(item: unknown): AdminProject | null {
   const record = isRecord(item) ? item : {};
-  const id = firstString(record, ['id', 'project_id', 'projectId']);
+  // Prefer Firestore compound doc id; fall back only when legacy payloads omit it.
+  const projectId = firstString(record, ['project_id', 'projectId']) ?? '';
+  const id = firstString(record, ['id']) ?? projectId;
   const name = firstString(record, ['name', 'project_name', 'projectName']) ?? id;
   const userId = firstString(record, ['user_id', 'userId', 'uid']) ?? '';
+  const userName = firstString(record, ['user_name', 'userName']) ?? '';
+  const userEmail = firstString(record, ['user_email', 'userEmail']) ?? '';
   if (!id || !name) return null;
   return {
     id,
     name,
+    projectId,
     userId,
+    userName,
+    userEmail,
     conceptCount: firstNumber(record, ['concept_count', 'conceptCount', 'concepts_count', 'conceptsCount']) ?? 0,
     sourceCount: firstNumber(record, ['source_count', 'sourceCount', 'sources_count', 'sourcesCount']) ?? 0,
   };
@@ -430,9 +442,11 @@ function normalizeAdminUser(item: unknown): AdminUser | null {
   const record = isRecord(item) ? item : {};
   const id = firstString(record, ['id', 'user_id', 'userId']);
   const email = firstString(record, ['email']) ?? '';
+  const name = firstString(record, ['name', 'user_name', 'userName']) ?? '';
   if (!id) return null;
   return {
     id,
+    name,
     email,
     role: firstString(record, ['role']) ?? 'user',
     projectCount: firstNumber(record, ['project_count', 'projectCount', 'projects_count', 'projectsCount']) ?? 0,

@@ -430,6 +430,38 @@ function TabButton({
   );
 }
 
+function adminOwnerPrimary(project: AdminProject): string {
+  return project.userName || project.userEmail || project.userId || '—';
+}
+
+function adminOwnerSecondary(project: AdminProject, primary: string): string | undefined {
+  const parts: string[] = [];
+  if (project.userId && project.userId !== primary) {
+    parts.push(project.userId);
+  }
+  if (project.userEmail && project.userEmail !== primary && !parts.includes(project.userEmail)) {
+    parts.push(project.userEmail);
+  }
+  return parts.length > 0 ? parts.join(' · ') : undefined;
+}
+
+function adminUserPrimary(user: AdminUser): string {
+  return user.name || user.email || user.id || '—';
+}
+
+function IdentityCell({ primary, secondary }: { primary: string; secondary?: string }) {
+  return (
+    <div className="min-w-0">
+      <div className="truncate font-medium text-white">{primary}</div>
+      {secondary ? (
+        <div className="mt-0.5 truncate font-mono text-xs text-zinc-500" title={secondary}>
+          {secondary}
+        </div>
+      ) : null}
+    </div>
+  );
+}
+
 function ProjectsTable({
   projects,
   loading,
@@ -453,52 +485,64 @@ function ProjectsTable({
         onRetry={onRetry}
       />
       <div className="overflow-x-auto">
-        <table className="w-full min-w-[760px] text-left text-sm">
+        <table className="w-full min-w-[900px] text-left text-sm">
           <thead className="border-b border-white/10 text-xs uppercase text-zinc-500">
             <tr>
-              <th className="px-4 py-3 font-medium">Project name</th>
-              <th className="px-4 py-3 font-medium">User ID</th>
+              <th className="px-4 py-3 font-medium">Project</th>
+              <th className="px-4 py-3 font-medium">Project ID</th>
+              <th className="px-4 py-3 font-medium">Owner</th>
               <th className="px-4 py-3 font-medium">Concept count</th>
               <th className="px-4 py-3 font-medium">Source count</th>
               <th className="px-4 py-3 text-right font-medium">Actions</th>
             </tr>
           </thead>
           <tbody className="divide-y divide-white/8">
-            {projects.map((project) => (
-              <tr key={project.id}>
-                <td className="px-4 py-3 font-medium text-white">{project.name}</td>
-                <td className="px-4 py-3 font-mono text-xs text-zinc-500">
-                  {project.userId || '—'}
-                </td>
-                <td className="px-4 py-3 tabular-nums text-zinc-300">{project.conceptCount}</td>
-                <td className="px-4 py-3 tabular-nums text-zinc-300">{project.sourceCount}</td>
-                <td className="px-4 py-3">
-                  <div className="flex justify-end gap-1">
-                    <IconAction
-                      label="Rename"
-                      icon={Pencil}
-                      onClick={() => onAction({ kind: 'rename-project', project })}
+            {projects.map((project) => {
+              const ownerPrimary = adminOwnerPrimary(project);
+              return (
+                <tr key={project.id}>
+                  <td className="px-4 py-3">
+                    <IdentityCell primary={project.name} />
+                  </td>
+                  <td className="px-4 py-3 font-mono text-xs text-zinc-400" title={project.projectId || project.id}>
+                    {project.projectId || '—'}
+                  </td>
+                  <td className="px-4 py-3">
+                    <IdentityCell
+                      primary={ownerPrimary}
+                      secondary={adminOwnerSecondary(project, ownerPrimary)}
                     />
-                    <IconAction
-                      label="Rebuild index"
-                      icon={RotateCcw}
-                      onClick={() => onAction({ kind: 'rebuild-project', project })}
-                    />
-                    <IconAction
-                      label="Trigger pipeline"
-                      icon={Play}
-                      onClick={() => onAction({ kind: 'trigger-project', project })}
-                    />
-                    <IconAction
-                      label="Delete"
-                      icon={Trash2}
-                      danger
-                      onClick={() => onAction({ kind: 'delete-project', project })}
-                    />
-                  </div>
-                </td>
-              </tr>
-            ))}
+                  </td>
+                  <td className="px-4 py-3 tabular-nums text-zinc-300">{project.conceptCount}</td>
+                  <td className="px-4 py-3 tabular-nums text-zinc-300">{project.sourceCount}</td>
+                  <td className="px-4 py-3">
+                    <div className="flex justify-end gap-1">
+                      <IconAction
+                        label="Rename"
+                        icon={Pencil}
+                        onClick={() => onAction({ kind: 'rename-project', project })}
+                      />
+                      <IconAction
+                        label="Rebuild index"
+                        icon={RotateCcw}
+                        onClick={() => onAction({ kind: 'rebuild-project', project })}
+                      />
+                      <IconAction
+                        label="Trigger pipeline"
+                        icon={Play}
+                        onClick={() => onAction({ kind: 'trigger-project', project })}
+                      />
+                      <IconAction
+                        label="Delete"
+                        icon={Trash2}
+                        danger
+                        onClick={() => onAction({ kind: 'delete-project', project })}
+                      />
+                    </div>
+                  </td>
+                </tr>
+              );
+            })}
           </tbody>
         </table>
       </div>
@@ -529,40 +573,51 @@ function UsersTable({
         onRetry={onRetry}
       />
       <div className="overflow-x-auto">
-        <table className="w-full min-w-[760px] text-left text-sm">
+        <table className="w-full min-w-[900px] text-left text-sm">
           <thead className="border-b border-white/10 text-xs uppercase text-zinc-500">
             <tr>
-              <th className="px-4 py-3 font-medium">Email</th>
+              <th className="px-4 py-3 font-medium">User</th>
+              <th className="px-4 py-3 font-medium">User ID</th>
               <th className="px-4 py-3 font-medium">Role</th>
               <th className="px-4 py-3 font-medium">Project count</th>
               <th className="px-4 py-3 text-right font-medium">Actions</th>
             </tr>
           </thead>
           <tbody className="divide-y divide-white/8">
-            {users.map((user) => (
-              <tr key={user.id}>
-                <td className="px-4 py-3 font-medium text-white">{user.email}</td>
-                <td className="px-4 py-3">
-                  <Badge variant={user.role === 'admin' ? 'accent' : 'muted'}>{user.role}</Badge>
-                </td>
-                <td className="px-4 py-3 tabular-nums text-zinc-300">{user.projectCount}</td>
-                <td className="px-4 py-3">
-                  <div className="flex justify-end gap-1">
-                    <IconAction
-                      label="Change role"
-                      icon={Pencil}
-                      onClick={() => onAction({ kind: 'change-role', user })}
-                    />
-                    <IconAction
-                      label="Delete user"
-                      icon={Trash2}
-                      danger
-                      onClick={() => onAction({ kind: 'delete-user', user })}
-                    />
-                  </div>
-                </td>
-              </tr>
-            ))}
+            {users.map((user) => {
+              const primary = adminUserPrimary(user);
+              const secondary =
+                user.email && primary !== user.email ? user.email : undefined;
+              return (
+                <tr key={user.id}>
+                  <td className="px-4 py-3">
+                    <IdentityCell primary={primary} secondary={secondary} />
+                  </td>
+                  <td className="px-4 py-3 font-mono text-xs text-zinc-400" title={user.id}>
+                    {user.id || '—'}
+                  </td>
+                  <td className="px-4 py-3">
+                    <Badge variant={user.role === 'admin' ? 'accent' : 'muted'}>{user.role}</Badge>
+                  </td>
+                  <td className="px-4 py-3 tabular-nums text-zinc-300">{user.projectCount}</td>
+                  <td className="px-4 py-3">
+                    <div className="flex justify-end gap-1">
+                      <IconAction
+                        label="Change role"
+                        icon={Pencil}
+                        onClick={() => onAction({ kind: 'change-role', user })}
+                      />
+                      <IconAction
+                        label="Delete user"
+                        icon={Trash2}
+                        danger
+                        onClick={() => onAction({ kind: 'delete-user', user })}
+                      />
+                    </div>
+                  </td>
+                </tr>
+              );
+            })}
           </tbody>
         </table>
       </div>
