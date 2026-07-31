@@ -9,6 +9,7 @@ import {
   useMemo,
   useState,
 } from 'react';
+import { useRouter } from 'next/navigation';
 import {
   useAuth,
   type AuthUser,
@@ -61,6 +62,7 @@ type WorkspaceContextValue = {
 const WorkspaceContext = createContext<WorkspaceContextValue | null>(null);
 
 export function WorkspaceProvider({ children }: { children: ReactNode }) {
+  const router = useRouter();
   const { confirmNavigation } = useNavigationBlocker();
   const {
     accessToken: token,
@@ -139,10 +141,15 @@ export function WorkspaceProvider({ children }: { children: ReactNode }) {
   const selectProject = useCallback((projectId: string) => {
     const selected = projects.find((project) => project.id === projectId);
     if (!selected) return;
-    if (selected.id !== currentProject?.id && !confirmNavigation()) return;
+    // Same project: keep current route/query as-is.
+    if (selected.id === currentProject?.id) return;
+    if (!confirmNavigation()) return;
     window.localStorage.setItem(LAST_PROJECT_KEY, selected.id);
     setCurrentProject(selected);
-  }, [confirmNavigation, currentProject?.id, projects]);
+    // Concept/source/detail routes and home search query belong to the previous
+    // project — always land on a clean home after switching.
+    router.replace('/');
+  }, [confirmNavigation, currentProject?.id, projects, router]);
 
   const addProject = useCallback(async (name: string) => {
     if (!token) throw new Error('Please log in to create a project.');

@@ -104,6 +104,7 @@ export function HomeClient() {
   const [modal, setModal] = useState<ModalEntry | null>(null);
   const [modalLoading, setModalLoading] = useState(false);
   const citationRequestId = useRef(0);
+  const previousProjectIdRef = useRef<string | undefined>(currentProject?.id);
   const [latestConcepts, setLatestConcepts] = useState<WikiEntry[]>([]);
 
   // Restore search from URL on mount (back-button support).
@@ -126,6 +127,29 @@ export function HomeClient() {
         .finally(() => setLoading(false));
     }
   }, [initialSearch.q, initialSearch.mode]);
+
+  // Drop previous project's query/results when the active project changes.
+  // Skip initial hydrate (null → first project) so deep-linked /?q= is preserved.
+  useEffect(() => {
+    const previous = previousProjectIdRef.current;
+    const next = currentProject?.id;
+    previousProjectIdRef.current = next;
+    if (!previous || !next || previous === next) return;
+
+    citationRequestId.current += 1;
+    setQuery('');
+    setMode('wiki');
+    setResults([]);
+    setAiAnswer('');
+    setCitations([]);
+    setExpandKeywords([]);
+    setSearched(false);
+    setLoading(false);
+    setError('');
+    setModal(null);
+    setModalLoading(false);
+    syncUrl('', 'wiki');
+  }, [currentProject?.id]);
 
   useEffect(() => {
     getStatus()
