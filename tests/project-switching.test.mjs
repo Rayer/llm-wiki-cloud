@@ -16,6 +16,36 @@ test('home status reloads when the current project changes', async () => {
   );
 });
 
+test('selecting a different project navigates to clean home without query', async () => {
+  const workspace = await readFile(
+    new URL('../src/components/WorkspaceProvider.tsx', import.meta.url),
+    'utf8',
+  );
+
+  assert.match(workspace, /import \{ useRouter \} from 'next\/navigation';/);
+  assert.match(workspace, /const router = useRouter\(\);/);
+  assert.match(
+    workspace,
+    /if \(selected\.id === currentProject\?\.id\) return;/,
+  );
+  assert.match(workspace, /router\.replace\('\/'\)/);
+});
+
+test('home clears query state when switching between projects', async () => {
+  const homeClient = await readFile(
+    new URL('../src/components/HomeClient.tsx', import.meta.url),
+    'utf8',
+  );
+
+  assert.match(homeClient, /previousProjectIdRef/);
+  assert.match(
+    homeClient,
+    /if \(!previous \|\| !next \|\| previous === next\) return;/,
+  );
+  assert.match(homeClient, /syncUrl\('', 'wiki'\)/);
+  assert.match(homeClient, /\[currentProject\?\.id\]/);
+});
+
 test('shell renders projects with a custom project selector', async () => {
   const shell = await readFile(
     new URL('../src/components/Shell.tsx', import.meta.url),
