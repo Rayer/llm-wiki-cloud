@@ -877,8 +877,16 @@ export async function rebuildAdminProjectIndex(id: string): Promise<void> {
   await adminJson(`/api/v1/admin/projects/${encodeURIComponent(id)}/rebuild-index`, { method: 'POST' });
 }
 
-export async function triggerAdminProjectPipeline(id: string): Promise<void> {
-  await adminJson(`/api/v1/admin/projects/${encodeURIComponent(id)}/pipeline`, { method: 'POST' });
+export async function triggerAdminProjectPipeline(
+  id: string,
+  options: { cleanRebuild?: boolean } = {},
+): Promise<void> {
+  const cleanRebuild = options.cleanRebuild === true;
+  await adminJson(`/api/v1/admin/projects/${encodeURIComponent(id)}/pipeline`, {
+    method: 'POST',
+    json: true,
+    body: JSON.stringify({ clean_rebuild: cleanRebuild }),
+  });
 }
 
 export async function getAdminUsers(): Promise<AdminUser[]> {
