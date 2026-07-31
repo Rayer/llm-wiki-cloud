@@ -688,6 +688,9 @@ test('getAdminProjects reads admin projects without project header', async () =>
           id: 'user-1_proj-1',
           name: 'Demo',
           user_id: 'user-1',
+          user_name: 'Demo Owner',
+          user_email: 'owner@example.com',
+          project_id: 'proj-1',
           concept_count: 2,
           source_count: 3,
         },
@@ -705,7 +708,10 @@ test('getAdminProjects reads admin projects without project header', async () =>
       {
         id: 'user-1_proj-1',
         name: 'Demo',
+        projectId: 'proj-1',
         userId: 'user-1',
+        userName: 'Demo Owner',
+        userEmail: 'owner@example.com',
         conceptCount: 2,
         sourceCount: 3,
       },
@@ -811,7 +817,13 @@ test('getAdminUsers and user mutations use admin endpoints without project heade
     if (String(url).endsWith('/api/v1/admin/users')) {
       return Response.json({
         users: [
-          { id: 'user-1', email: 'admin@example.com', role: 'admin', project_count: 4 },
+          {
+            id: 'user-1',
+            name: 'Admin Person',
+            email: 'admin@example.com',
+            role: 'admin',
+            project_count: 4,
+          },
         ],
       });
     }
@@ -824,7 +836,13 @@ test('getAdminUsers and user mutations use admin endpoints without project heade
     await deleteAdminUser('user-1');
 
     assert.deepEqual(users, [
-      { id: 'user-1', email: 'admin@example.com', role: 'admin', projectCount: 4 },
+      {
+        id: 'user-1',
+        name: 'Admin Person',
+        email: 'admin@example.com',
+        role: 'admin',
+        projectCount: 4,
+      },
     ]);
     assert.deepEqual(
       calls.map((call) => [call.url, call.init.method, call.init.headers['X-Project-ID']]),

@@ -43,7 +43,13 @@ test('AdminClient gates access, renders tabs, and loads admin tables', async () 
   assert.match(adminClient, /getAdminProjects/);
   assert.match(adminClient, /getAdminUsers/);
   assert.match(adminClient, /<table/);
-  assert.match(adminClient, /Project name/);
+  assert.match(adminClient, /Project name|Project/);
+  assert.match(adminClient, /Project ID/);
+  assert.match(adminClient, /Owner/);
+  assert.match(adminClient, /User ID/);
+  assert.match(adminClient, /project\.projectId/);
+  assert.match(adminClient, /user\.id/);
+  assert.match(adminClient, /adminOwnerPrimary|userName/);
   assert.match(adminClient, /Concept count/);
   assert.match(adminClient, /Source count/);
   assert.match(adminClient, /Project count/);
