@@ -48,6 +48,7 @@ export function AdminClient() {
   const [action, setAction] = useState<Action | null>(null);
   const [actionError, setActionError] = useState('');
   const [actionPending, setActionPending] = useState(false);
+  const [cleanRebuild, setCleanRebuild] = useState(false);
   const [registrationEnabled, setRegistrationEnabled] = useState(true);
   const [settingsLoading, setSettingsLoading] = useState(false);
   const [settingsError, setSettingsError] = useState('');
@@ -130,6 +131,7 @@ export function AdminClient() {
     if (actionPending) return;
     setAction(null);
     setActionError('');
+    setCleanRebuild(false);
   };
 
   const submitRenameProject = async (name: string) => {
@@ -178,9 +180,12 @@ export function AdminClient() {
         await loadProjects();
         setNotice({ tone: 'success', message: 'Index rebuild started.' });
       } else if (action.kind === 'trigger-project') {
-        await triggerAdminProjectPipeline(action.project.id);
+        await triggerAdminProjectPipeline(action.project.id, { cleanRebuild });
         await loadProjects();
-        setNotice({ tone: 'success', message: 'Pipeline triggered.' });
+        setNotice({
+          tone: 'success',
+          message: cleanRebuild ? 'Pipeline triggered (clean rebuild).' : 'Pipeline triggered.',
+        });
       } else if (action.kind === 'delete-user') {
         await deleteAdminUser(action.user.id);
         await loadUsers();
@@ -339,8 +344,14 @@ export function AdminClient() {
           pendingLabel="Triggering..."
           pending={actionPending}
           error={actionError}
+          checkboxLabel="Clean rebuild (discard current wiki/Synto state; keep raw). Full LLM recompile."
+          checkboxChecked={cleanRebuild}
+          onCheckboxChange={setCleanRebuild}
           onSubmit={() => void submitConfirmAction()}
-          onClose={closeAction}
+          onClose={() => {
+            setCleanRebuild(false);
+            closeAction();
+          }}
         />
       ) : null}
       {action?.kind === 'delete-user' ? (
@@ -801,6 +812,9 @@ function ConfirmActionModal({
   pending,
   error,
   danger = false,
+  checkboxLabel,
+  checkboxChecked = false,
+  onCheckboxChange,
   onSubmit,
   onClose,
 }: {
@@ -811,12 +825,27 @@ function ConfirmActionModal({
   pending: boolean;
   error: string;
   danger?: boolean;
+  checkboxLabel?: string;
+  checkboxChecked?: boolean;
+  onCheckboxChange?: (checked: boolean) => void;
   onSubmit: () => void;
   onClose: () => void;
 }) {
   return (
     <ModalFrame title={title} onClose={onClose}>
       <p className="mt-3 text-sm leading-6 text-zinc-400">{description}</p>
+      {checkboxLabel && onCheckboxChange ? (
+        <label className="mt-4 flex cursor-pointer items-start gap-3 rounded-lg border border-white/10 bg-white/[0.03] p-3 text-sm text-zinc-300">
+          <input
+            type="checkbox"
+            className="mt-0.5 size-4 shrink-0 rounded border-white/20 bg-transparent"
+            checked={checkboxChecked}
+            disabled={pending}
+            onChange={(event) => onCheckboxChange(event.target.checked)}
+          />
+          <span className="leading-5">{checkboxLabel}</span>
+        </label>
+      ) : null}
       {error ? <p className="mt-3 text-sm text-amber-300">{error}</p> : null}
       <ModalActions
         pending={pending}
