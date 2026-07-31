@@ -879,13 +879,18 @@ export async function rebuildAdminProjectIndex(id: string): Promise<void> {
 
 export async function triggerAdminProjectPipeline(
   id: string,
-  options: { cleanRebuild?: boolean } = {},
+  options: { cleanRebuild?: boolean; stage?: 'full' | 'suggested-queries' } = {},
 ): Promise<void> {
   const cleanRebuild = options.cleanRebuild === true;
+  const stage = options.stage === 'suggested-queries' ? 'suggested-queries' : 'full';
+  const body: Record<string, unknown> = { stage };
+  if (stage === 'full') {
+    body.clean_rebuild = cleanRebuild;
+  }
   await adminJson(`/api/v1/admin/projects/${encodeURIComponent(id)}/pipeline`, {
     method: 'POST',
     json: true,
-    body: JSON.stringify({ clean_rebuild: cleanRebuild }),
+    body: JSON.stringify(body),
   });
 }
 

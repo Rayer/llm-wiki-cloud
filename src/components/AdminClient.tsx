@@ -1,7 +1,7 @@
 'use client';
 
 import { type ComponentType, type ReactNode, useCallback, useEffect, useState } from 'react';
-import { Pencil, Play, RefreshCw, RotateCcw, ShieldAlert, Trash2 } from 'lucide-react';
+import { MessageSquareText, Pencil, Play, RefreshCw, RotateCcw, ShieldAlert, Trash2 } from 'lucide-react';
 import {
   ApiError,
   clearPublicConfigCache,
@@ -30,6 +30,7 @@ type Action =
   | { kind: 'delete-project'; project: AdminProject }
   | { kind: 'rebuild-project'; project: AdminProject }
   | { kind: 'trigger-project'; project: AdminProject }
+  | { kind: 'suggest-queries-project'; project: AdminProject }
   | { kind: 'change-role'; user: AdminUser }
   | { kind: 'delete-user'; user: AdminUser };
 
@@ -185,6 +186,13 @@ export function AdminClient() {
         setNotice({
           tone: 'success',
           message: cleanRebuild ? 'Pipeline triggered (clean rebuild).' : 'Pipeline triggered.',
+        });
+      } else if (action.kind === 'suggest-queries-project') {
+        await triggerAdminProjectPipeline(action.project.id, { stage: 'suggested-queries' });
+        await loadProjects();
+        setNotice({
+          tone: 'success',
+          message: 'Query chips regeneration triggered (suggested-queries stage).',
         });
       } else if (action.kind === 'delete-user') {
         await deleteAdminUser(action.user.id);
@@ -352,6 +360,18 @@ export function AdminClient() {
             setCleanRebuild(false);
             closeAction();
           }}
+        />
+      ) : null}
+      {action?.kind === 'suggest-queries-project' ? (
+        <ConfirmActionModal
+          title="Regenerate query chips"
+          description={`Regenerate suggested query chips only for ${action.project.name} (${action.project.id}). Does not re-run Synto or rebuild the index.`}
+          submitLabel="Regenerate chips"
+          pendingLabel="Triggering..."
+          pending={actionPending}
+          error={actionError}
+          onSubmit={() => void submitConfirmAction()}
+          onClose={closeAction}
         />
       ) : null}
       {action?.kind === 'delete-user' ? (
@@ -542,6 +562,11 @@ function ProjectsTable({
                         label="Trigger pipeline"
                         icon={Play}
                         onClick={() => onAction({ kind: 'trigger-project', project })}
+                      />
+                      <IconAction
+                        label="Regenerate query chips"
+                        icon={MessageSquareText}
+                        onClick={() => onAction({ kind: 'suggest-queries-project', project })}
                       />
                       <IconAction
                         label="Delete"
