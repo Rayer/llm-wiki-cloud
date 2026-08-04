@@ -68,8 +68,14 @@ async function runScript(mode, env, scriptPath = '.github/scripts/vercel-alias-p
 }
 
 function buildEnv(fixture, overrides = {}) {
+  const fixtureEnv = { ...process.env };
+  // Fixture subprocesses simulate the promotion helper outside GitHub Actions.
+  // Runner control variables must be opt-in per test, not inherited implicitly.
+  delete fixtureEnv.GITHUB_ACTIONS;
+  delete fixtureEnv.CI;
+
   return {
-    ...process.env,
+    ...fixtureEnv,
     PATH: fixture.bin + ':' + process.env.PATH,
     FIXTURE_ROOT: fixture.root,
     COMMIT_SHA: commitSha,
