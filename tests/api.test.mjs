@@ -6,6 +6,7 @@ import {
   apiFetch,
   buildProjectHeaders,
   buildRequestInit,
+  citationPathSegment,
   configureApiAuth,
   deleteAdminProject,
   deleteAdminUser,
@@ -14,13 +15,18 @@ import {
   getAdminProjects,
   getAdminUsers,
   getBuildInfo,
+  getConcept,
+  getSource,
+  normalizeCitation,
   getRawFilePreview,
   getRawFiles,
   getStatus,
   rebuildAdminProjectIndex,
   renameAdminProject,
   normalizeSearchResponse,
+  normalizeStatus,
   RAW_UPLOAD_MAX_BYTES,
+  safeWikiRouteSegment,
   triggerAdminProjectPipeline,
   toV1Path,
   triggerPipeline,
@@ -37,6 +43,43 @@ const buildInfoPayload = {
   service: 'llm-wiki-bff',
   revision: 'llm-wiki-bff-00042-abc',
 };
+
+test('normalizeStatus drops malformed diagnostic fields and accepts only BFF exit codes', () => {
+  const status = normalizeStatus({
+    last_execution: {
+      diagnostic: {
+        stage: { invalid: true },
+        error_class: ['child_exit'],
+        detail_code: 42,
+        child_command: null,
+        exit_code: 1.5,
+      },
+    },
+  });
+
+  assert.deepEqual(status.lastExecution?.diagnostic, {
+    stage: null,
+    error_class: null,
+    detail_code: null,
+    child_command: null,
+    exit_code: null,
+  });
+
+  assert.equal(normalizeStatus({
+    last_execution: {
+      diagnostic: { stage: 'future_stage', exit_code: 255 },
+    },
+  }).lastExecution?.diagnostic?.stage, 'future_stage');
+  assert.equal(normalizeStatus({
+    last_execution: { diagnostic: { exit_code: 0 } },
+  }).lastExecution?.diagnostic?.exit_code, 0);
+  assert.equal(normalizeStatus({
+    last_execution: { diagnostic: { exit_code: 256 } },
+  }).lastExecution?.diagnostic?.exit_code, null);
+  assert.equal(normalizeStatus({
+    last_execution: { diagnostic: ['not-an-object'] },
+  }).lastExecution?.diagnostic, null);
+});
 
 test('getBuildInfo reads the unauthenticated no-store public version endpoint', async () => {
   const originalFetch = globalThis.fetch;
@@ -214,6 +257,122 @@ test('normalizeSearchResponse preserves query expansion keywords', () => {
   assert.deepEqual(response.expand?.keywords, ['台北', '親子', '公園']);
 });
 
+test('normalizeCitation preserves canonical id and ignores invalid path lookup sources', () => {
+  const citation = normalizeCitation({
+    text: 'My Concept',
+    slug: 'concept-from-title',
+    id: 'concept-id',
+    type: 'concept',
+    path: 'https://evil.example.com/concepts/concept-id-concept-from-title',
+    href: '/concepts/concept-id-concept-from-title',
+  });
+
+  assert.equal(citation?.text, 'My Concept');
+  assert.equal(citation?.slug, 'concept-from-title');
+  assert.equal(citation?.type, 'concept');
+  assert.equal(citation?.id, 'concept-id');
+  assert.equal(citation?.path, undefined);
+});
+
+test('normalizeCitation preserves a safe canonical id without requiring a safe slug', () => {
+  assert.deepEqual(normalizeCitation({ text: 'ID only', id: 'canonical-id', type: 'concept' }), {
+    text: 'ID only',
+    slug: undefined,
+    type: 'concept',
+    id: 'canonical-id',
+    path: undefined,
+  });
+  assert.deepEqual(
+    normalizeCitation({ text: 'Unsafe slug', id: 'canonical-id', slug: '..', type: 'source' }),
+    {
+      text: 'Unsafe slug',
+      slug: undefined,
+      type: 'source',
+      id: 'canonical-id',
+      path: undefined,
+    },
+  );
+});
+
+test('normalizeCitation derives slug from a valid same-collection citation path', () => {
+  const citation = normalizeCitation({
+    text: 'Path source',
+    type: 'source',
+    path: '/sources/s-id-source-slug',
+  });
+
+  assert.deepEqual(citation, {
+    text: 'Path source',
+    slug: 's-id-source-slug',
+    type: 'source',
+    id: undefined,
+    path: '/sources/s-id-source-slug',
+  });
+});
+
+test('normalizeCitation rejects malformed citation paths as lookup sources', () => {
+  assert.equal(
+    normalizeCitation({
+      text: 'Bad source',
+      type: 'source',
+      path: 'https://evil.example.com/sources/source-slug',
+      slug: '',
+    }),
+    null,
+  );
+});
+
+test('citation paths reject traversal, encoded separators, controls, and extra segments', () => {
+  for (const path of [
+    '/concepts/../sources/secret',
+    '/concepts/%2e%2e',
+    '/concepts/%2Fetc',
+    '/concepts/%5c..%5csources%5csecret',
+    '/concepts/name/extra',
+    '/concepts/%00name',
+  ]) {
+    assert.equal(citationPathSegment('concept', path), null, path);
+    assert.equal(
+      normalizeCitation({ text: 'Unsafe', type: 'concept', path }),
+      null,
+      path,
+    );
+  }
+});
+
+test('citation paths accept one decoded same-collection segment with query or hash', () => {
+  assert.equal(citationPathSegment('concept', '/concepts/caf%C3%A9?view=preview'), 'café');
+  assert.equal(citationPathSegment('source', '/sources/source-name#excerpt'), 'source-name');
+  assert.equal(citationPathSegment('concept', '/sources/source-name'), null);
+});
+
+test('citation route segments reject explicit traversal and API clients fail before fetch', async () => {
+  for (const segment of ['.', '..', '/etc', '\\..\\sources', ' leading', 'trailing ', 'bad\u0000id']) {
+    assert.equal(safeWikiRouteSegment(segment), null, segment);
+  }
+  assert.equal(safeWikiRouteSegment('%2e%2e'), '%2e%2e');
+
+  assert.equal(normalizeCitation({ text: 'Unsafe', type: 'concept', id: '..', slug: '..' }), null);
+  assert.deepEqual(
+    normalizeCitation({ text: 'Fallback', type: 'source', id: '..', slug: 'safe-source' }),
+    { text: 'Fallback', type: 'source', id: undefined, slug: 'safe-source', path: undefined },
+  );
+
+  const originalFetch = globalThis.fetch;
+  let fetchCount = 0;
+  globalThis.fetch = async () => {
+    fetchCount += 1;
+    throw new Error('unsafe lookup reached fetch');
+  };
+  try {
+    await assert.rejects(() => getConcept('..'), (error) => error instanceof ApiError && error.status === 400);
+    await assert.rejects(() => getSource('\\..\\concepts'), (error) => error instanceof ApiError && error.status === 400);
+    assert.equal(fetchCount, 0);
+  } finally {
+    globalThis.fetch = originalFetch;
+  }
+});
+
 test('triggerPipeline requires a selected project before calling the API', async () => {
   configureApiAuth({
     getAccessToken: () => 'jwt-token',
@@ -279,7 +438,7 @@ test('getPipelineLog reads text from the project scoped log URL', async () => {
   });
   globalThis.window = {
     localStorage: {
-      getItem: () => 'project-1',
+      getItem: () => 'project-2',
     },
   };
 
@@ -295,7 +454,7 @@ test('getPipelineLog reads text from the project scoped log URL', async () => {
   };
 
   try {
-    const log = await getPipelineLog('/api/v1/pipeline/log?execution_id=olw-pipeline-abc123');
+    const log = await getPipelineLog('/api/v1/pipeline/log?execution_id=olw-pipeline-abc123', 'project-1');
 
     assert.equal(requestedUrl, 'https://llm-wiki-bff-dev-580854833715.asia-east1.run.app/api/v1/pipeline/log?execution_id=olw-pipeline-abc123');
     assert.equal(requestedInit.headers.Authorization, 'Bearer jwt-token');
@@ -529,6 +688,9 @@ test('getAdminProjects reads admin projects without project header', async () =>
           id: 'user-1_proj-1',
           name: 'Demo',
           user_id: 'user-1',
+          user_name: 'Demo Owner',
+          user_email: 'owner@example.com',
+          project_id: 'proj-1',
           concept_count: 2,
           source_count: 3,
         },
@@ -546,7 +708,10 @@ test('getAdminProjects reads admin projects without project header', async () =>
       {
         id: 'user-1_proj-1',
         name: 'Demo',
+        projectId: 'proj-1',
         userId: 'user-1',
+        userName: 'Demo Owner',
+        userEmail: 'owner@example.com',
         conceptCount: 2,
         sourceCount: 3,
       },
@@ -652,7 +817,13 @@ test('getAdminUsers and user mutations use admin endpoints without project heade
     if (String(url).endsWith('/api/v1/admin/users')) {
       return Response.json({
         users: [
-          { id: 'user-1', email: 'admin@example.com', role: 'admin', project_count: 4 },
+          {
+            id: 'user-1',
+            name: 'Admin Person',
+            email: 'admin@example.com',
+            role: 'admin',
+            project_count: 4,
+          },
         ],
       });
     }
@@ -665,7 +836,13 @@ test('getAdminUsers and user mutations use admin endpoints without project heade
     await deleteAdminUser('user-1');
 
     assert.deepEqual(users, [
-      { id: 'user-1', email: 'admin@example.com', role: 'admin', projectCount: 4 },
+      {
+        id: 'user-1',
+        name: 'Admin Person',
+        email: 'admin@example.com',
+        role: 'admin',
+        projectCount: 4,
+      },
     ]);
     assert.deepEqual(
       calls.map((call) => [call.url, call.init.method, call.init.headers['X-Project-ID']]),

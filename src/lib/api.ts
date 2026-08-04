@@ -3,12 +3,24 @@
 import { rawFileNameFromSource } from './raw-file-name.ts';
 import { normalizeAnnotationBody, normalizeAnnotationGeneration } from './source-annotation.ts';
 
+export type PipelineDiagnostic = {
+  stage?: string | null;
+  error_class?: string | null;
+  detail_code?: string | null;
+  child_command?: string | null;
+  exit_code?: number | null;
+};
+
 export type PipelineExecution = {
+  name?: string | null;
   status?: 'RUNNING' | 'SUCCEEDED' | 'FAILED' | string;
   duration?: string | number | null;
   started_at?: string | null;
   finished_at?: string | null;
   log_url?: string | null;
+  log_state?: 'pending' | 'available' | 'unavailable' | 'missing' | string | null;
+  log_state_reason?: string | null;
+  diagnostic?: PipelineDiagnostic | null;
   [key: string]: unknown;
 };
 
@@ -78,7 +90,7 @@ export type SearchResult = WikiEntry & {
 
 export type Citation = {
   text: string;
-  slug: string;
+  slug?: string;
   type: 'concept' | 'source';
   path?: string;
   id?: string;
@@ -98,13 +110,18 @@ export type SearchResponse = {
 export type AdminProject = {
   id: string;
   name: string;
+  /** Storage-scoped project id (not the Firestore compound doc id). */
+  projectId: string;
   userId: string;
+  userName: string;
+  userEmail: string;
   conceptCount: number;
   sourceCount: number;
 };
 
 export type AdminUser = {
   id: string;
+  name: string;
   email: string;
   role: string;
   projectCount: number;
@@ -248,8 +265,8 @@ export async function apiFetch(path: string, options: ApiFetchOptions = {}): Pro
   return fetch(url, buildRequestInit({ ...options, projectId, accessToken: refreshed }));
 }
 
-async function requestJson<T>(path: string): Promise<T> {
-  const response = await apiFetch(path);
+async function requestJson<T>(path: string, options: Pick<ApiFetchOptions, 'projectId'> = {}): Promise<T> {
+  const response = await apiFetch(path, options);
 
   if (!response.ok) {
     throw new ApiError(`API request failed (${response.status})`, response.status);
@@ -283,6 +300,74 @@ function asString(value: unknown): string | undefined {
 
 function asNumber(value: unknown): number | undefined {
   return typeof value === 'number' && Number.isFinite(value) ? value : undefined;
+}
+
+export function citationPathSegment(type: 'concept' | 'source', path: unknown): string | null {
+  if (typeof path !== 'string') return null;
+
+  const match = path.match(/^\/(concepts|sources)\/([^/?#]+)(?:[?#].*)?$/);
+  if (!match) return null;
+
+  if (
+    (type === 'concept' && match[1] !== 'concepts')
+    || (type === 'source' && match[1] !== 'sources')
+  ) {
+    return null;
+  }
+
+  const segment = match[2];
+  if (!segment) return null;
+
+  try {
+    const decoded = decodeURIComponent(segment);
+    return safeWikiRouteSegment(decoded);
+  } catch {
+    return null;
+  }
+}
+
+export function safeWikiRouteSegment(value: unknown): string | null {
+  if (typeof value !== 'string' || !value || value !== value.trim()) return null;
+  if (
+    value === '.'
+    || value === '..'
+    || value.includes('/')
+    || value.includes('\\')
+    || /[\u0000-\u001f\u007f]/.test(value)
+  ) {
+    return null;
+  }
+  return value;
+}
+
+function asExitCode(value: unknown): number | null {
+  return typeof value === 'number' && Number.isInteger(value) && value >= 0 && value <= 255
+    ? value
+    : null;
+}
+
+function normalizePipelineDiagnostic(value: unknown): PipelineDiagnostic | null {
+  if (!isRecord(value)) return null;
+  return {
+    stage: asString(value.stage) ?? null,
+    error_class: asString(value.error_class) ?? null,
+    detail_code: asString(value.detail_code) ?? null,
+    child_command: asString(value.child_command) ?? null,
+    exit_code: asExitCode(value.exit_code),
+  };
+}
+
+function normalizePipelineExecution(value: unknown): PipelineExecution | null {
+  if (!isRecord(value)) return null;
+  return {
+    ...value,
+    name: asString(value.name) ?? null,
+    status: asString(value.status),
+    log_url: asString(value.log_url) ?? null,
+    log_state: typeof value.log_state === 'string' ? value.log_state : null,
+    log_state_reason: asString(value.log_state_reason) ?? null,
+    diagnostic: normalizePipelineDiagnostic(value.diagnostic),
+  };
 }
 
 function asBoolean(value: unknown): boolean | undefined {
@@ -333,14 +418,21 @@ function extractNamedArray(payload: unknown, keys: string[]): unknown[] {
 
 function normalizeAdminProject(item: unknown): AdminProject | null {
   const record = isRecord(item) ? item : {};
-  const id = firstString(record, ['id', 'project_id', 'projectId']);
+  // Prefer Firestore compound doc id; fall back only when legacy payloads omit it.
+  const projectId = firstString(record, ['project_id', 'projectId']) ?? '';
+  const id = firstString(record, ['id']) ?? projectId;
   const name = firstString(record, ['name', 'project_name', 'projectName']) ?? id;
   const userId = firstString(record, ['user_id', 'userId', 'uid']) ?? '';
+  const userName = firstString(record, ['user_name', 'userName']) ?? '';
+  const userEmail = firstString(record, ['user_email', 'userEmail']) ?? '';
   if (!id || !name) return null;
   return {
     id,
     name,
+    projectId,
     userId,
+    userName,
+    userEmail,
     conceptCount: firstNumber(record, ['concept_count', 'conceptCount', 'concepts_count', 'conceptsCount']) ?? 0,
     sourceCount: firstNumber(record, ['source_count', 'sourceCount', 'sources_count', 'sourcesCount']) ?? 0,
   };
@@ -350,9 +442,11 @@ function normalizeAdminUser(item: unknown): AdminUser | null {
   const record = isRecord(item) ? item : {};
   const id = firstString(record, ['id', 'user_id', 'userId']);
   const email = firstString(record, ['email']) ?? '';
+  const name = firstString(record, ['name', 'user_name', 'userName']) ?? '';
   if (!id) return null;
   return {
     id,
+    name,
     email,
     role: firstString(record, ['role']) ?? 'user',
     projectCount: firstNumber(record, ['project_count', 'projectCount', 'projects_count', 'projectsCount']) ?? 0,
@@ -465,19 +559,26 @@ export function normalizeSearchResult(item: unknown): SearchResult {
 export function normalizeCitation(item: unknown): Citation | null {
   const record = isRecord(item) ? item : {};
   const text = firstString(record, ['text', 'title', 'name']);
-  const slug = firstString(record, ['slug', 'id', 'path']);
   const rawType = firstString(record, ['type', 'kind', 'collection']);
-
-  if (!text || !slug) return null;
+  const path = firstString(record, ['path', 'href', 'url']);
+  const explicitSlug = safeWikiRouteSegment(firstString(record, ['slug']));
+  const explicitId = safeWikiRouteSegment(firstString(record, ['id', 'concept_id', 'source_id', 'sourceId', 'conceptId']));
 
   const normalizedType = rawType?.replace(/s$/, '');
   if (normalizedType !== 'concept' && normalizedType !== 'source') return null;
 
+  const pathSlug = citationPathSegment(normalizedType, path);
+  const slug = explicitSlug || pathSlug;
+  if (!text || (!explicitId && !slug)) return null;
+
+  const safePath = pathSlug ? path : undefined;
+
   return {
     text,
-    slug,
+    slug: slug ?? undefined,
     type: normalizedType,
-    path: firstString(record, ['path', 'href', 'url']),
+    id: explicitId ?? undefined,
+    path: safePath,
   };
 }
 
@@ -512,9 +613,7 @@ export function normalizeStatus(payload: unknown): ApiStatus {
   const rawCount =
     firstNumber(record, ['rawCount', 'raw_count', 'filesCount', 'files_count']) ?? 0;
 
-  const lastExecution = isRecord(record.last_execution)
-    ? record.last_execution as PipelineExecution
-    : null;
+  const lastExecution = normalizePipelineExecution(record.last_execution);
   const suggestedQueries = stringArray(record.suggested_queries ?? record.suggestedQueries);
 
   return { sourcesCount, conceptsCount, rawCount, suggestedQueries, lastExecution, raw: record };
@@ -534,8 +633,8 @@ export function normalizeRawFile(item: unknown): RawFile {
   };
 }
 
-export async function getStatus() {
-  return normalizeStatus(await requestJson<unknown>('/api/v1/status'));
+export async function getStatus(projectId?: string) {
+  return normalizeStatus(await requestJson<unknown>('/api/v1/status', { projectId }));
 }
 
 export async function getRawFiles() {
@@ -559,8 +658,10 @@ export async function getSources() {
 }
 
 export async function getSource(slug: string) {
+	const safeSlug = safeWikiRouteSegment(slug);
+	if (!safeSlug) throw new ApiError('Invalid source lookup segment', 400);
   return normalizeEntry(
-    await requestJson<unknown>(`/api/v1/sources/${encodeURIComponent(slug)}`),
+    await requestJson<unknown>(`/api/v1/sources/${encodeURIComponent(safeSlug)}`),
   );
 }
 
@@ -593,8 +694,10 @@ export async function getConcepts() {
 }
 
 export async function getConcept(slug: string) {
+	const safeSlug = safeWikiRouteSegment(slug);
+	if (!safeSlug) throw new ApiError('Invalid concept lookup segment', 400);
   return normalizeEntry(
-    await requestJson<unknown>(`/api/v1/concepts/${encodeURIComponent(slug)}`),
+    await requestJson<unknown>(`/api/v1/concepts/${encodeURIComponent(safeSlug)}`),
   );
 }
 
@@ -720,8 +823,8 @@ export async function getPipelineStatus(): Promise<PipelineStatus> {
   return requestJson<PipelineStatus>('/api/v1/pipeline/status');
 }
 
-export async function getPipelineLog(logUrl: string): Promise<string> {
-  const response = await apiFetch(logUrl);
+export async function getPipelineLog(logUrl: string, projectId?: string): Promise<string> {
+  const response = await apiFetch(logUrl, { projectId });
   if (!response.ok) {
     throw new Error(`Pipeline log request failed (${response.status})`);
   }
@@ -774,8 +877,21 @@ export async function rebuildAdminProjectIndex(id: string): Promise<void> {
   await adminJson(`/api/v1/admin/projects/${encodeURIComponent(id)}/rebuild-index`, { method: 'POST' });
 }
 
-export async function triggerAdminProjectPipeline(id: string): Promise<void> {
-  await adminJson(`/api/v1/admin/projects/${encodeURIComponent(id)}/pipeline`, { method: 'POST' });
+export async function triggerAdminProjectPipeline(
+  id: string,
+  options: { cleanRebuild?: boolean; stage?: 'full' | 'suggested-queries' } = {},
+): Promise<void> {
+  const cleanRebuild = options.cleanRebuild === true;
+  const stage = options.stage === 'suggested-queries' ? 'suggested-queries' : 'full';
+  const body: Record<string, unknown> = { stage };
+  if (stage === 'full') {
+    body.clean_rebuild = cleanRebuild;
+  }
+  await adminJson(`/api/v1/admin/projects/${encodeURIComponent(id)}/pipeline`, {
+    method: 'POST',
+    json: true,
+    body: JSON.stringify(body),
+  });
 }
 
 export async function getAdminUsers(): Promise<AdminUser[]> {

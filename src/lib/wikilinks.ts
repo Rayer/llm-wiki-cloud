@@ -6,6 +6,12 @@ type ResolvedWikilink = {
   dead?: boolean;
 };
 
+const canonicalIdSlugPattern = /^(?:[a-f0-9]{12}|[0-7][0-9A-HJKMNP-TV-Z]{25})-(.+)$/;
+
+function canonicalSlug(path: string): string {
+  return canonicalIdSlugPattern.exec(path)?.[1] ?? path;
+}
+
 export function resolveWikilink(
   raw: string,
   section: WikilinkSection,
@@ -57,8 +63,7 @@ function conceptSlugForLookup(target: string): string {
   const collectionTarget = /^(?:concepts|sources)\/(.+)$/.exec(target);
   const path = collectionTarget ? collectionTarget[1] : target;
   const [pathWithoutHash] = path.split('#', 1);
-  const idSlug = /^[a-f0-9]{12}-(.+)$/.exec(pathWithoutHash);
-  return idSlug ? idSlug[1] : pathWithoutHash;
+  return canonicalSlug(pathWithoutHash);
 }
 
 function wikilinkHref(target: string, section: WikilinkSection): string {
@@ -74,8 +79,7 @@ function displayLabel(target: string): string {
   const collectionTarget = /^(?:concepts|sources)\/(.+)$/.exec(target);
   const path = collectionTarget ? collectionTarget[1] : target;
   const [pathWithoutHash] = path.split('#', 1);
-  const idSlug = /^[a-f0-9]{12}-(.+)$/.exec(pathWithoutHash);
-  return idSlug ? idSlug[1] : pathWithoutHash;
+  return canonicalSlug(pathWithoutHash);
 }
 
 function encodePathWithHash(path: string): string {

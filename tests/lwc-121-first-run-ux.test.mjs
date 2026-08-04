@@ -17,7 +17,9 @@ test('home first-run UX avoids generic examples and exposes latest concept previ
   assert.match(homeClient, /getConcepts\(\)[\s\S]*setLatestConcepts\(data\.slice\(0, 4\)\)/);
   assert.match(homeClient, /!searched && latestConcepts\.length > 0/);
   assert.match(homeClient, /t\('Demo\.latestConcepts'\)/);
-  assert.match(homeClient, /href=\{conceptHref\(concept\)\}/);
+  assert.match(homeClient, /const href = conceptHref\(concept\);/);
+  assert.match(homeClient, /if \(!href\) return null;/);
+  assert.match(homeClient, /href=\{href\}/);
 });
 
 test('list empty states guide first-run users by entry type', async () => {

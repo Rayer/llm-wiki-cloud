@@ -20,6 +20,18 @@ test('English and Traditional Chinese catalogs expose the same translation keys'
   }
 });
 
+test('source-count answer badge is translated with a count in every locale', async () => {
+  const [english, traditionalChinese] = await Promise.all([
+    readJson(new URL('../src/messages/en.json', import.meta.url)),
+    readJson(new URL('../src/messages/zh-TW.json', import.meta.url)),
+  ]);
+
+  assert.equal(typeof english.Demo.sourcesCount, 'string');
+  assert.match(english.Demo.sourcesCount, /\{count\}/);
+  assert.equal(typeof traditionalChinese.Demo.sourcesCount, 'string');
+  assert.match(traditionalChinese.Demo.sourcesCount, /\{count\}/);
+});
+
 test('requested frontend components read their copy from the locale hook', async () => {
   const [loginModal, comingSoonModal, shell, homeClient, i18n] = await Promise.all([
     readFile(new URL('../src/components/LoginModal.tsx', import.meta.url), 'utf8'),
