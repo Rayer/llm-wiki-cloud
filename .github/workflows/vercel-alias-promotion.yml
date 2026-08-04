@@ -41,7 +41,6 @@ jobs:
       ORIGINATING_WORKFLOW: vercel-alias-promotion.yml
       ORIGINATING_WORKFLOW_RUN_ID: ${{ github.run_id }}
       ORIGINATING_WORKFLOW_RUN_ATTEMPT: ${{ github.run_attempt }}
-      EVIDENCE_DIR: ${{ runner.temp }}/vercel-alias-promotion
     steps:
       - name: Check out workflow-owned helper
         uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
@@ -57,6 +56,7 @@ jobs:
         shell: bash
         run: bash .github/scripts/vercel-alias-promotion.sh preflight
         env:
+          EVIDENCE_DIR: ${{ runner.temp }}/vercel-alias-promotion
           GITHUB_TOKEN: ${{ github.token }}
           VERCEL_TOKEN: ${{ secrets.VERCEL_TOKEN }}
           VERCEL_PROJECT_ID: ${{ secrets.VERCEL_PROJECT_ID }}
@@ -76,6 +76,7 @@ jobs:
         shell: bash
         run: bash .github/scripts/vercel-alias-promotion.sh promote
         env:
+          EVIDENCE_DIR: ${{ runner.temp }}/vercel-alias-promotion
           ROLLBACK_ARTIFACT_ID: ${{ steps.rollback_upload.outputs.artifact-id }}
           ROLLBACK_ARTIFACT_URL: ${{ steps.rollback_upload.outputs.artifact-url }}
           ROLLBACK_ARTIFACT_DIGEST: ${{ steps.rollback_upload.outputs.artifact-digest }}

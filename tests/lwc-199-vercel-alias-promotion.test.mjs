@@ -584,6 +584,7 @@ test('workflow contract parses as YAML and scopes provider secrets to the helper
   assert.equal(workflow.concurrency['cancel-in-progress'], false);
   assert.equal(workflow.jobs.promote.environment.name, 'Production');
   assert.equal(workflow.jobs.promote['timeout-minutes'], 30);
+  assert.equal(workflow.jobs.promote.env.EVIDENCE_DIR, undefined);
   assert.equal(workflow.jobs.promote.env.VERCEL_TOKEN, undefined);
   assert.equal(workflow.jobs.promote.env.VERCEL_PROJECT_ID, undefined);
   assert.equal(workflow.jobs.promote.env.VERCEL_TEAM_ID, undefined);
@@ -596,6 +597,7 @@ test('workflow contract parses as YAML and scopes provider secrets to the helper
   const preflight = workflow.jobs.promote.steps.find(({ name }) => name === 'Preflight exact deployment and rollback contract');
   const helper = workflow.jobs.promote.steps.find(({ name }) => name === 'Promote exact deployment');
   assert.deepEqual(preflight.env, {
+    EVIDENCE_DIR: '${{ runner.temp }}/vercel-alias-promotion',
     GITHUB_TOKEN: '${{ github.token }}',
     VERCEL_TOKEN: '${{ secrets.VERCEL_TOKEN }}',
     VERCEL_PROJECT_ID: '${{ secrets.VERCEL_PROJECT_ID }}',
@@ -603,6 +605,7 @@ test('workflow contract parses as YAML and scopes provider secrets to the helper
     VERCEL_SCOPE: '${{ secrets.VERCEL_SCOPE }}',
   });
   assert.deepEqual(helper.env, {
+    EVIDENCE_DIR: '${{ runner.temp }}/vercel-alias-promotion',
     ROLLBACK_ARTIFACT_ID: '${{ steps.rollback_upload.outputs.artifact-id }}',
     ROLLBACK_ARTIFACT_URL: '${{ steps.rollback_upload.outputs.artifact-url }}',
     ROLLBACK_ARTIFACT_DIGEST: '${{ steps.rollback_upload.outputs.artifact-digest }}',
