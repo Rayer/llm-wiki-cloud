@@ -83,35 +83,79 @@ if [[ "$url" == *"/v13/deployments/"* ]]; then
   esac
   exit 0
 fi
+if [[ "$url" == *"/v4/aliases/"* ]]; then
+  alias_path="${url##*/v4/aliases/}"
+  alias_path="${alias_path%%\?*}"
+
+  if [[ "$scenario" == alias-read-failure && "$alias_path" == "wiki.rayer.idv.tw" ]]; then
+    exit 7
+  elif [[ "$scenario" == partial-readback && -f "$root/mutated" && "$alias_path" == "llm-wiki-frontend.vercel.app" ]]; then
+    exit 7
+  elif [[ "$scenario" == alias-changed-before-promote && "$alias_path" == "wiki.rayer.idv.tw" ]]; then
+    read_count="$(grep -Fc "v4/aliases/$alias_path" "$root/curl-calls" || true)"
+    if [[ "$read_count" -ge 3 ]]; then
+      printf '{"alias":"wiki.rayer.idv.tw","projectId":"prj_test123","deploymentId":"dpl_changed"}'
+    else
+      deployment="$(jq -r --arg alias "$alias_path" '.[$alias]' "$root/aliases.json")"
+      printf '{"alias":"wiki.rayer.idv.tw","projectId":"prj_test123","deploymentId":"%s"}' "$deployment"
+    fi
+  elif [[ "$scenario" == missing-alias && "$alias_path" == "wiki.rayer.idv.tw" ]]; then
+    printf '{"alias":"wiki.rayer.idv.tw","projectId":"prj_test123","deploymentId":""}'
+  elif [[ "$scenario" == divergent-alias && "$alias_path" == "wiki.rayer.idv.tw" ]]; then
+    printf '{"alias":"unexpected.example","projectId":"prj_test123","deploymentId":"dpl_wrong"}'
+  elif [[ "$scenario" == alias-project-mismatch ]]; then
+    deployment="$(jq -r --arg alias "$alias_path" '.[$alias]' "$root/aliases.json")"
+    printf '{"alias":"%s","projectId":"prj_other","deploymentId":"%s"}' "$alias_path" "$deployment"
+  elif [[ "$scenario" == post-readback-mismatch && -f "$root/mutated" && "$alias_path" == "llm-wiki-frontend.vercel.app" ]]; then
+    read_count="$(grep -Fc "v4/aliases/$alias_path" "$root/curl-calls" || true)"
+    if [[ "$read_count" -ge 7 ]]; then
+      printf '{"alias":"llm-wiki-frontend.vercel.app","projectId":"prj_test123","deploymentId":"dpl_other"}'
+    else
+      deployment="$(jq -r --arg alias "$alias_path" '.[$alias]' "$root/aliases.json")"
+      printf '{"alias":"llm-wiki-frontend.vercel.app","projectId":"prj_test123","deploymentId":"%s"}' "$deployment"
+    fi
+  else
+    deployment="$(jq -r --arg alias "$alias_path" '.[$alias]' "$root/aliases.json")"
+    printf '{"alias":"%s","projectId":"prj_test123","deploymentId":"%s"}' "$alias_path" "$deployment"
+  fi
+  exit 0
+fi
+
 if [[ "$url" == *"/v4/aliases?"* ]]; then
+  if [[ "$scenario" == "single-alias-only" ]]; then
+    exit 7
+  fi
+
   domain="${url##*domain=}"
   domain="${domain%%&*}"
-  if [[ "$scenario" == alias-read-failure && "$domain" == wiki.rayer.idv.tw ]]; then
+  if [[ "$scenario" == "alias-read-failure" && "$domain" == wiki.rayer.idv.tw ]]; then
     exit 7
-  elif [[ "$scenario" == partial-readback && -f "$root/mutated" && "$domain" == llm-wiki-frontend.vercel.app ]]; then
+  elif [[ "$scenario" == "partial-readback" && -f "$root/mutated" && "$domain" == llm-wiki-frontend.vercel.app ]]; then
     exit 7
-  elif [[ "$scenario" == alias-changed-before-promote && "$domain" == wiki.rayer.idv.tw ]]; then
+  elif [[ "$scenario" == "alias-changed-before-promote" && "$domain" == wiki.rayer.idv.tw ]]; then
     read_count="$(grep -c "domain=$domain" "$root/curl-calls" || true)"
     if [[ "$read_count" -ge 3 ]]; then
-      printf '%s' '{"aliases":[{"alias":"wiki.rayer.idv.tw","deploymentId":"dpl_changed"}]}'
+      printf '{"alias":"wiki.rayer.idv.tw","projectId":"prj_test123","deploymentId":"dpl_changed"}'
     else
-      printf '%s' '{"aliases":[{"alias":"wiki.rayer.idv.tw","deploymentId":"dpl_oldcustom"}]}'
+      printf '{"alias":"wiki.rayer.idv.tw","projectId":"prj_test123","deploymentId":"dpl_oldcustom"}'
     fi
-  elif [[ "$scenario" == missing-alias && "$domain" == wiki.rayer.idv.tw ]]; then
-    printf '%s' '{"aliases":[]}'
-  elif [[ "$scenario" == divergent-alias && "$domain" == wiki.rayer.idv.tw ]]; then
-    printf '%s' '{"aliases":[{"alias":"unexpected.example","deploymentId":"dpl_wrong"}]}'
-  elif [[ "$scenario" == post-readback-mismatch && -f "$root/mutated" && "$domain" == llm-wiki-frontend.vercel.app ]]; then
+  elif [[ "$scenario" == "missing-alias" && "$domain" == wiki.rayer.idv.tw ]]; then
+    printf '{"alias":"wiki.rayer.idv.tw","projectId":"prj_test123","deploymentId":""}'
+  elif [[ "$scenario" == "divergent-alias" && "$domain" == wiki.rayer.idv.tw ]]; then
+    printf '{"alias":"unexpected.example","projectId":"prj_test123","deploymentId":"dpl_wrong"}'
+  elif [[ "$scenario" == "alias-project-mismatch" ]]; then
+    printf '{"alias":"%s","projectId":"prj_other","deploymentId":"dpl_oldcustom"}' "$domain"
+  elif [[ "$scenario" == "post-readback-mismatch" && -f "$root/mutated" && "$domain" == llm-wiki-frontend.vercel.app ]]; then
     read_count="$(grep -c "domain=$domain" "$root/curl-calls" || true)"
     if [[ "$read_count" -ge 7 ]]; then
-      printf '%s' '{"aliases":[{"alias":"llm-wiki-frontend.vercel.app","deploymentId":"dpl_other"}]}'
+      printf '{"alias":"llm-wiki-frontend.vercel.app","projectId":"prj_test123","deploymentId":"dpl_other"}'
     else
       deployment="$(jq -r --arg domain "$domain" '.[$domain]' "$root/aliases.json")"
-      printf '{"aliases":[{"alias":"%s","deploymentId":"%s"}]}' "$domain" "$deployment"
+      printf '{"alias":"%s","projectId":"prj_test123","deploymentId":"%s"}' "$domain" "$deployment"
     fi
   else
     deployment="$(jq -r --arg domain "$domain" '.[$domain]' "$root/aliases.json")"
-    printf '{"aliases":[{"alias":"%s","deploymentId":"%s"}]}' "$domain" "$deployment"
+    printf '{"alias":"%s","projectId":"prj_test123","deploymentId":"%s"}' "$domain" "$deployment"
   fi
   exit 0
 fi

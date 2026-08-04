@@ -455,34 +455,45 @@ observe_deployment() {
 validate_alias_response() {
   local response="$1"
   local alias="$2"
-  jq -e --arg alias "$alias" '
-    (.aliases // []) as $all |
-    ($all | map(select(.alias == $alias))) as $matches |
-    ($all | length) == 1 and
-    ($matches | length) == 1 and
-    ($matches[0].deploymentId | type) == "string"
+  jq -e --arg alias "$alias" --arg projectId "$VERCEL_PROJECT_ID" '
+    type == "object" and
+    .alias == $alias and
+    .projectId == $projectId and
+    (.deploymentId | test("^dpl_[A-Za-z0-9]+$"))
+  ' <<< "$response" >/dev/null
+}
+
+validate_observed_alias_response() {
+  local response="$1"
+  local alias="$2"
+  jq -e --arg alias "$alias" --arg projectId "$VERCEL_PROJECT_ID" '
+    type == "object" and
+    .alias == $alias and
+    .projectId == $projectId and
+    (.deploymentId | type) == "string"
   ' <<< "$response" >/dev/null
 }
 
 validate_post_alias_response() {
   local response="$1"
   local alias="$2"
-  jq -e --arg alias "$alias" --arg deploymentId "$DEPLOYMENT_ID" '
-    (.aliases // []) as $all |
-    ($all | map(select(.alias == $alias))) as $matches |
-    ($all | length) == 1 and
-    ($matches | length) == 1 and
-    ($matches[0].deploymentId == $deploymentId)
+  jq -e --arg alias "$alias" --arg projectId "$VERCEL_PROJECT_ID" --arg deploymentId "$DEPLOYMENT_ID" '
+    type == "object" and
+    .alias == $alias and
+    .projectId == $projectId and
+    .deploymentId == $deploymentId
   ' <<< "$response" >/dev/null
 }
 
 read_alias() {
   local alias="$1"
+  local encoded_alias
+  encoded_alias="$(printf '%s' "$alias" | jq -R -r @uri)"
   local team_query=""
   if [[ -n "$VERCEL_TEAM_ID" ]]; then
-    team_query="&teamId=$VERCEL_TEAM_ID"
+    team_query="?teamId=$VERCEL_TEAM_ID"
   fi
-  api_query "/v4/aliases?projectId=$VERCEL_PROJECT_ID&domain=$alias$team_query"
+  api_query "/v4/aliases/$encoded_alias$team_query"
 }
 
 read_post_aliases() {
@@ -495,7 +506,7 @@ read_post_aliases() {
     if ! validate_post_alias_response "$response" "$alias"; then
       return 1
     fi
-    deployment_id="$(jq -r --arg alias "$alias" '.aliases[] | select(.alias == $alias) | .deploymentId' <<< "$response")"
+    deployment_id="$(jq -r '.deploymentId' <<< "$response")"
     POST_ALIASES="$(jq -c --arg alias "$alias" --arg deploymentId "$deployment_id" \
       'map(if .alias == $alias then .deploymentId = $deploymentId else . end)' <<< "$POST_ALIASES")"
   done
@@ -508,10 +519,10 @@ read_observed_aliases() {
     if ! response="$(read_alias "$alias")"; then
       return 1
     fi
-    if ! validate_alias_response "$response" "$alias"; then
+    if ! validate_observed_alias_response "$response" "$alias"; then
       return 1
     fi
-    deployment_id="$(jq -r --arg alias "$alias" '.aliases[] | select(.alias == $alias) | .deploymentId' <<< "$response")"
+    deployment_id="$(jq -r '.deploymentId' <<< "$response")"
     POST_ALIASES="$(jq -c --arg alias "$alias" --arg deploymentId "$deployment_id" \
       'map(if .alias == $alias then .deploymentId = $deploymentId else . end)' <<< "$POST_ALIASES")"
   done
@@ -553,7 +564,7 @@ verify_expected_aliases() {
       matches=0
       continue
     fi
-    current_deployment_id="$(jq -r --arg alias "$alias" '.aliases[] | select(.alias == $alias) | .deploymentId' <<< "$response")"
+    current_deployment_id="$(jq -r '.deploymentId' <<< "$response")"
     if (( first_mutated_index >= 0 && alias_index < first_mutated_index )); then
       expected_deployment_id="$DEPLOYMENT_ID"
     else
@@ -684,8 +695,7 @@ if [[ "$MODE" == "preflight" ]]; then
     if ! validate_alias_response "$alias_response" "$alias"; then
       fail_preflight "canonical alias is missing or divergent for $alias"
     fi
-    prior_deployment_id="$(jq -r --arg alias "$alias" \
-      '.aliases[] | select(.alias == $alias) | .deploymentId' <<< "$alias_response")"
+    prior_deployment_id="$(jq -r '.deploymentId' <<< "$alias_response")"
     if [[ ! "$prior_deployment_id" =~ ^dpl_[A-Za-z0-9]+$ ]]; then
       fail_preflight "canonical alias rollback handle is not an immutable deployment ID for $alias"
     fi

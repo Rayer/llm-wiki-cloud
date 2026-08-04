@@ -311,13 +311,22 @@ test('promotes exactly both canonical aliases to one deployment and writes norma
   assert.equal(run.curlCalls.filter((url) => url.includes('/v13/deployments/')).length, 2);
   assert.equal(run.curlCalls.filter((url) => url.includes('/actions/workflows/ci.yml/runs?')).length, 1);
   assert.equal(run.curlCalls.some((url) => url.includes('/repos/Rayer/llm-wiki-frontend/actions/runs?')), false);
-  assert.equal(run.curlCalls.filter((url) => url.includes('/v4/aliases?')).length, 14);
+  assert.equal(run.curlCalls.filter((url) => url.includes('/v4/aliases/')).length, 14);
   assert.ok(run.curlCalls.includes('https://' + aliases[0] + '/'));
   assert.ok(run.curlCalls.includes('https://' + aliases[1] + '/'));
+  assert.equal(run.curlCalls.filter((url) => url.includes('/v4/aliases?')).length, 0);
   assert.ok(run.rollbackContract);
   assert.equal(run.resumeContext.phase, 'preflight-complete');
   assert.ok(run.authEvents.every((event) => /^AUTH_VALID provider=(github|vercel) endpoint=/.test(event)));
   assertNoCredentialLeak(run);
+});
+
+test('uses exact single-alias endpoint and succeeds on single-endpoint-only provider contract', async () => {
+  const run = await runCase('single-alias-only');
+  assert.equal(run.result.error, undefined, run.result.stderr);
+  assert.equal(run.evidence.status, 'SUCCESS');
+  assert.equal(run.curlCalls.filter((url) => url.includes('/v4/aliases/')).length, 14);
+  assert.equal(run.curlCalls.filter((url) => url.includes('/v4/aliases?')).length, 0);
 });
 
 test('provider-specific auth propagation rejects wrong, swapped, and placeholder headers before mutation', async () => {
@@ -650,6 +659,7 @@ for (const scenario of [
   'not-ready',
   'missing-alias',
   'divergent-alias',
+  'alias-project-mismatch',
 ]) {
   test('fails closed before mutation for ' + scenario, async () => {
     const run = await runCase(scenario);
@@ -685,7 +695,7 @@ test('marks a partial alias mutation and requires read-back before retry', async
     { alias: aliases[0], deployment_id: deploymentId },
     { alias: aliases[1], deployment_id: 'dpl_oldvercel' },
   ]);
-  assert.ok(run.curlCalls.filter((url) => url.includes('/v4/aliases?')).length >= 4);
+  assert.ok(run.curlCalls.filter((url) => url.includes('/v4/aliases/')).length >= 4);
   assert.equal(run.curlCalls.some((url) => url.startsWith('https://wiki.rayer.idv.tw/')), false);
 });
 
