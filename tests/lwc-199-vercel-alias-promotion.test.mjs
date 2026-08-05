@@ -13,6 +13,7 @@ const commitSha = '0123456789abcdef0123456789abcdef01234567';
 const deploymentId = 'dpl_test123';
 const projectId = 'prj_test123';
 const aliases = ['wiki.rayer.idv.tw', 'llm-wiki-frontend.vercel.app'];
+const rollbackArtifactDigestBare = '0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef';
 const workflowPath = join(repoRoot, '.github/workflows/vercel-alias-promotion.yml');
 
 async function setupCase(scenario = 'success') {
@@ -92,7 +93,7 @@ function buildEnv(fixture, overrides = {}) {
     VERCEL_TOKEN: 'vercel-sentinel-token-a2c9',
     ROLLBACK_ARTIFACT_ID: '123456789',
     ROLLBACK_ARTIFACT_URL: 'https://github.com/Rayer/llm-wiki-frontend/actions/runs/123456789/artifacts/123456789',
-    ROLLBACK_ARTIFACT_DIGEST: 'sha256:0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef',
+    ROLLBACK_ARTIFACT_DIGEST: rollbackArtifactDigestBare,
     VERCEL_PROJECT_ID: projectId,
     VERCEL_TEAM_ID: 'team_test123',
     VERCEL_SCOPE: 'rayer-team',
@@ -268,7 +269,7 @@ test('promotes exactly both canonical aliases to one deployment and writes norma
   assert.equal(run.evidence.provider.rollback.artifact_name, `vercel-alias-rollback-${commitSha}`);
   assert.equal(run.evidence.provider.rollback.artifact_id, 123456789);
   assert.equal(run.evidence.provider.rollback.artifact_url, run.env.ROLLBACK_ARTIFACT_URL);
-  assert.equal(run.evidence.provider.rollback.artifact_digest, run.env.ROLLBACK_ARTIFACT_DIGEST);
+  assert.equal(run.evidence.provider.rollback.artifact_digest, `sha256:${rollbackArtifactDigestBare}`);
   assert.match(run.evidence.provider.rollback.contract_sha256, /^[0-9a-f]{64}$/);
   assert.deepEqual(run.evidence.observed, {
     deployment_id: deploymentId,
@@ -536,6 +537,10 @@ for (const [field, value] of [
   ['ROLLBACK_ARTIFACT_ID', '0'],
   ['ROLLBACK_ARTIFACT_URL', 'https://github.com/Rayer/other-repo/actions/runs/123456789/artifacts/123456789'],
   ['ROLLBACK_ARTIFACT_DIGEST', 'sha256:not-a-digest'],
+  ['ROLLBACK_ARTIFACT_DIGEST', `md5:${rollbackArtifactDigestBare}`],
+  ['ROLLBACK_ARTIFACT_DIGEST', `sha256:${rollbackArtifactDigestBare}01`],
+  ['ROLLBACK_ARTIFACT_DIGEST', `sha256:${rollbackArtifactDigestBare.toUpperCase()}`],
+  ['ROLLBACK_ARTIFACT_DIGEST', `${rollbackArtifactDigestBare.substring(0, 63)}`],
 ]) {
   test('rejects invalid durable artifact ' + field + ' before mutation', async () => {
     const run = await runCase('success', {}, 'preflight');
