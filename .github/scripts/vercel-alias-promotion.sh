@@ -359,6 +359,9 @@ load_and_validate_resume() {
 }
 
 validate_artifact_handoff() {
+  if [[ "$ROLLBACK_ARTIFACT_DIGEST" =~ ^[0-9a-f]{64}$ ]]; then
+    ROLLBACK_ARTIFACT_DIGEST="sha256:$ROLLBACK_ARTIFACT_DIGEST"
+  fi
   if [[ ! "$ROLLBACK_ARTIFACT_ID" =~ ^[1-9][0-9]*$ ]]; then
     fail_resume "durable rollback artifact id must be a positive integer"
   fi
