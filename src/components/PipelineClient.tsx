@@ -33,6 +33,7 @@ type UploadItem = {
   id: string;
   file: File;
   status: UploadItemStatus;
+  progress: number;
   error?: string;
   result?: RawUploadResult;
 };
@@ -190,19 +191,28 @@ export function PipelineClient() {
         // before React state flushes.
         activeUploadsRef.current += 1;
         uploadItemsRef.current = uploadItemsRef.current.map((item) =>
-          item.id === next.id ? { ...item, status: 'uploading', error: undefined } : item,
+          item.id === next.id
+            ? { ...item, status: 'uploading', progress: 0, error: undefined }
+            : item,
         );
         setUploadItems(uploadItemsRef.current);
 
         void (async () => {
           try {
-            const result = await uploadRawFile(next.file);
+            const result = await uploadRawFile(next.file, (progress) => {
+              const current = uploadItemsRef.current.find((item) => item.id === next.id);
+              if (!current || current.status !== 'uploading' || current.progress === progress) return;
+              uploadItemsRef.current = uploadItemsRef.current.map((item) =>
+                item.id === next.id ? { ...item, progress } : item,
+              );
+              setUploadItems(uploadItemsRef.current);
+            });
             if (result.status === 'created') {
               needsCountRefreshRef.current = true;
             }
             uploadItemsRef.current = uploadItemsRef.current.map((item) =>
               item.id === next.id
-                ? { ...item, status: result.status, result, error: undefined }
+                ? { ...item, status: result.status, progress: 100, result, error: undefined }
                 : item,
             );
             setUploadItems(uploadItemsRef.current);
@@ -260,6 +270,7 @@ export function PipelineClient() {
             id: `upload-${++uploadItemId}`,
             file,
             status: 'failed',
+            progress: 0,
             error: 'duplicate filename in batch (first file wins)',
           });
           continue;
@@ -269,6 +280,7 @@ export function PipelineClient() {
           id: `upload-${++uploadItemId}`,
           file,
           status: 'queued',
+          progress: 0,
         });
       }
 
@@ -305,7 +317,7 @@ export function PipelineClient() {
       }
       uploadItemsRef.current = uploadItemsRef.current.map((item) =>
         item.id === id && item.status === 'failed'
-          ? { ...item, status: 'queued', error: undefined }
+          ? { ...item, status: 'queued', progress: 0, error: undefined }
           : item,
       );
       setUploadItems(uploadItemsRef.current);
@@ -490,6 +502,22 @@ export function PipelineClient() {
                       <div className="min-w-0 flex-1">
                         <p className="truncate font-medium text-zinc-200" title={item.file.name}>
                           {item.file.name}
+                        </p>
+                        <div
+                          className="mt-1 h-1.5 overflow-hidden rounded-full bg-white/10"
+                          role="progressbar"
+                          aria-label={`${item.file.name}: ${uploadStatusLabel(item.status)} ${item.progress}%`}
+                          aria-valuemin={0}
+                          aria-valuemax={100}
+                          aria-valuenow={item.progress}
+                        >
+                          <div
+                            className="h-full rounded-full bg-emerald-400 transition-[width]"
+                            style={{ width: `${item.progress}%` }}
+                          />
+                        </div>
+                        <p className="mt-0.5 text-zinc-500">
+                          {uploadStatusLabel(item.status)} · {item.progress}%
                         </p>
                         {item.error ? (
                           <p className="mt-0.5 text-red-300/90">{item.error}</p>

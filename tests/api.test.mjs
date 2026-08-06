@@ -583,43 +583,255 @@ test('uploadRawFile accepts created and already_exists responses', async () => {
     },
   };
 
-  const originalFetch = globalThis.fetch;
+  const originalXHR = globalThis.XMLHttpRequest;
   const file = new File(['# hi\n'], 'note.md', { type: 'text/markdown' });
+  const requests = [];
+
+  class FakeXMLHttpRequest {
+    static scenarios = [];
+
+    constructor() {
+      this.headers = {};
+      this.upload = {};
+      requests.push(this);
+    }
+
+    open(method, url) {
+      this.method = method;
+      this.url = url;
+    }
+
+    setRequestHeader(name, value) {
+      this.headers[name] = value;
+    }
+
+    send(body) {
+      this.body = body;
+      FakeXMLHttpRequest.scenarios.shift()(this);
+    }
+
+    respond(status, body) {
+      this.status = status;
+      this.responseText = JSON.stringify(body);
+      this.onload();
+    }
+  }
 
   try {
-    globalThis.fetch = async () =>
-      new Response(
-        JSON.stringify({
-          filename: 'note.md',
-          path: 'users/u/projects/p/raw/note.md',
-          bytes: 5,
-          sha256: 'abc',
-          status: 'created',
-        }),
-        { status: 201 },
-      );
+    globalThis.XMLHttpRequest = FakeXMLHttpRequest;
+    FakeXMLHttpRequest.scenarios.push((xhr) => xhr.respond(201, {
+      filename: 'note.md',
+      path: 'users/u/projects/p/raw/note.md',
+      bytes: 5,
+      sha256: 'abc',
+      status: 'created',
+    }));
 
     const created = await uploadRawFile(file);
     assert.equal(created.status, 'created');
     assert.equal(created.filename, 'note.md');
     assert.equal(created.sha256, 'abc');
 
-    globalThis.fetch = async () =>
-      new Response(
-        JSON.stringify({
-          filename: 'note.md',
-          path: 'users/u/projects/p/raw/note.md',
-          bytes: 5,
-          sha256: 'abc',
-          status: 'already_exists',
-        }),
-        { status: 200 },
-      );
+    FakeXMLHttpRequest.scenarios.push((xhr) => xhr.respond(200, {
+      filename: 'note.md',
+      path: 'users/u/projects/p/raw/note.md',
+      bytes: 5,
+      sha256: 'abc',
+      status: 'already_exists',
+    }));
 
     const existing = await uploadRawFile(file);
     assert.equal(existing.status, 'already_exists');
   } finally {
-    globalThis.fetch = originalFetch;
+    globalThis.XMLHttpRequest = originalXHR;
+  }
+});
+
+test('uploadRawFile uses credentialed XHR, preserves headers/FormData, and emits bounded progress', async () => {
+  configureApiAuth({
+    getAccessToken: () => 'jwt-token',
+    refreshAccessToken: async () => null,
+    onUnauthorized: () => undefined,
+  });
+  globalThis.window = {
+    localStorage: {
+      getItem: () => 'project-1',
+    },
+  };
+
+  const originalXHR = globalThis.XMLHttpRequest;
+  const file = new File(['# hi\n'], 'note.md', { type: 'text/markdown' });
+  const progress = [];
+
+  class FakeXMLHttpRequest {
+    static request;
+
+    constructor() {
+      this.headers = {};
+      this.upload = {};
+      FakeXMLHttpRequest.request = this;
+    }
+
+    open(method, url) {
+      this.method = method;
+      this.url = url;
+    }
+
+    setRequestHeader(name, value) {
+      this.headers[name] = value;
+    }
+
+    send(body) {
+      this.body = body;
+      this.upload.onprogress({ lengthComputable: true, loaded: 1, total: 4 });
+      this.upload.onprogress({ lengthComputable: true, loaded: 2, total: 4 });
+      this.upload.onprogress({ lengthComputable: true, loaded: 2, total: 4 });
+      this.status = 201;
+      this.responseText = JSON.stringify({ filename: 'note.md', bytes: 5, status: 'created' });
+      this.onload();
+    }
+  }
+
+  try {
+    globalThis.XMLHttpRequest = FakeXMLHttpRequest;
+    const result = await uploadRawFile(file, (value) => progress.push(value));
+    const request = FakeXMLHttpRequest.request;
+    assert.equal(request.method, 'POST');
+    assert.match(request.url, /\/api\/v1\/raw\/upload$/);
+    assert.equal(request.withCredentials, true);
+    assert.equal(request.headers.Authorization, 'Bearer jwt-token');
+    assert.equal(request.headers['X-Project-ID'], 'project-1');
+    assert.equal(request.body instanceof FormData, true);
+    assert.equal(request.body.get('file'), file);
+    assert.deepEqual(progress, [25, 50, 100]);
+    assert.equal(result.status, 'created');
+  } finally {
+    globalThis.XMLHttpRequest = originalXHR;
+  }
+});
+
+test('uploadRawFile normalizes network and error responses as ApiError', async () => {
+  configureApiAuth({
+    getAccessToken: () => 'jwt-token',
+    refreshAccessToken: async () => null,
+    onUnauthorized: () => undefined,
+  });
+  globalThis.window = { localStorage: { getItem: () => 'project-1' } };
+  const originalXHR = globalThis.XMLHttpRequest;
+  const scenarios = [
+    (xhr) => xhr.onerror(),
+    (xhr) => {
+      xhr.status = 409;
+      xhr.responseText = JSON.stringify({ error: 'filename already exists with different content' });
+      xhr.onload();
+    },
+  ];
+
+  class FakeXMLHttpRequest {
+    constructor() {
+      this.headers = {};
+      this.upload = {};
+    }
+    open() {}
+    setRequestHeader() {}
+    send() { scenarios.shift()(this); }
+  }
+
+  try {
+    globalThis.XMLHttpRequest = FakeXMLHttpRequest;
+    await assert.rejects(
+      () => uploadRawFile(new File(['x'], 'network.md')),
+      (err) => err instanceof ApiError && err.status === 0 && err.message === 'Upload failed',
+    );
+    await assert.rejects(
+      () => uploadRawFile(new File(['x'], 'conflict.md')),
+      (err) => err instanceof ApiError
+        && err.status === 409
+        && err.message === 'filename already exists with different content',
+    );
+  } finally {
+    globalThis.XMLHttpRequest = originalXHR;
+  }
+});
+
+test('uploadRawFile refreshes once after 401 and never retries indefinitely', async () => {
+  let token = 'stale-token';
+  let refreshCount = 0;
+  let unauthorizedCount = 0;
+  configureApiAuth({
+    getAccessToken: () => token,
+    refreshAccessToken: async () => {
+      refreshCount += 1;
+      token = 'fresh-token';
+      return token;
+    },
+    onUnauthorized: () => { unauthorizedCount += 1; },
+  });
+  globalThis.window = { localStorage: { getItem: () => 'project-1' } };
+  const originalXHR = globalThis.XMLHttpRequest;
+  const requests = [];
+  class FakeXMLHttpRequest {
+    constructor() {
+      this.headers = {};
+      this.upload = {};
+      requests.push(this);
+    }
+    open(method, url) { this.method = method; this.url = url; }
+    setRequestHeader(name, value) { this.headers[name] = value; }
+    send() {
+      if (requests.length === 1) {
+        this.status = 401;
+        this.responseText = JSON.stringify({ error: 'expired' });
+      } else {
+        this.status = 201;
+        this.responseText = JSON.stringify({ filename: 'retry.md', status: 'created' });
+      }
+      this.onload();
+    }
+  }
+
+  try {
+    globalThis.XMLHttpRequest = FakeXMLHttpRequest;
+    const result = await uploadRawFile(new File(['x'], 'retry.md'));
+    assert.equal(result.status, 'created');
+    assert.equal(refreshCount, 1);
+    assert.equal(requests.length, 2);
+    assert.equal(requests[0].headers.Authorization, 'Bearer stale-token');
+    assert.equal(requests[1].headers.Authorization, 'Bearer fresh-token');
+    assert.equal(unauthorizedCount, 0);
+  } finally {
+    globalThis.XMLHttpRequest = originalXHR;
+  }
+
+  let finalUnauthorizedCount = 0;
+  configureApiAuth({
+    getAccessToken: () => 'stale-token',
+    refreshAccessToken: async () => 'fresh-token',
+    onUnauthorized: () => { finalUnauthorizedCount += 1; },
+  });
+  const retryRequests = [];
+  class AlwaysUnauthorizedXHR extends FakeXMLHttpRequest {
+    constructor() {
+      super();
+      retryRequests.push(this);
+    }
+    send() {
+      this.status = 401;
+      this.responseText = JSON.stringify({ error: 'still expired' });
+      this.onload();
+    }
+  }
+
+  try {
+    globalThis.XMLHttpRequest = AlwaysUnauthorizedXHR;
+    await assert.rejects(
+      () => uploadRawFile(new File(['x'], 'still-retry.md')),
+      (err) => err instanceof ApiError && err.status === 401 && err.message === 'still expired',
+    );
+    assert.equal(retryRequests.length, 2);
+    assert.equal(finalUnauthorizedCount, 0);
+  } finally {
+    globalThis.XMLHttpRequest = originalXHR;
   }
 });
 
@@ -635,14 +847,22 @@ test('uploadRawFile maps 409 conflict to ApiError', async () => {
     },
   };
 
-  const originalFetch = globalThis.fetch;
-  globalThis.fetch = async () =>
-    new Response(
-      JSON.stringify({ error: 'filename already exists with different content' }),
-      { status: 409 },
-    );
+  const originalXHR = globalThis.XMLHttpRequest;
+  class FakeXMLHttpRequest {
+    constructor() {
+      this.upload = {};
+    }
+    open() {}
+    setRequestHeader() {}
+    send() {
+      this.status = 409;
+      this.responseText = JSON.stringify({ error: 'filename already exists with different content' });
+      this.onload();
+    }
+  }
 
   try {
+    globalThis.XMLHttpRequest = FakeXMLHttpRequest;
     await assert.rejects(
       () => uploadRawFile(new File(['# other\n'], 'note.md', { type: 'text/markdown' })),
       (err) => {
@@ -653,11 +873,11 @@ test('uploadRawFile maps 409 conflict to ApiError', async () => {
       },
     );
   } finally {
-    globalThis.fetch = originalFetch;
+    globalThis.XMLHttpRequest = originalXHR;
   }
 });
 
-test('uploadRawFile rejects oversized files before fetch', async () => {
+test('uploadRawFile rejects oversized files before transport', async () => {
   const big = new File([new Uint8Array(RAW_UPLOAD_MAX_BYTES + 1)], 'big.md');
   await assert.rejects(() => uploadRawFile(big), /file too large/);
 });

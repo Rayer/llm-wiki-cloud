@@ -719,6 +719,8 @@ export type RawUploadResult = {
   status: RawUploadStatus;
 };
 
+export type RawUploadProgressCallback = (progress: number) => void;
+
 export const RAW_UPLOAD_MAX_BYTES = 5 << 20;
 
 export type ScrapeResult = {
@@ -762,7 +764,59 @@ export type PipelineStatus = {
   suggested_queries?: string[];
 };
 
-export async function uploadRawFile(file: File): Promise<RawUploadResult> {
+type XhrResponse = {
+  status: number;
+  ok: boolean;
+  text: () => Promise<string>;
+  json: () => Promise<unknown>;
+};
+
+function xhrResponse(xhr: XMLHttpRequest): XhrResponse {
+  const body = xhr.responseText ?? '';
+  return {
+    status: xhr.status,
+    ok: xhr.status >= 200 && xhr.status < 300,
+    text: async () => body,
+    json: async () => JSON.parse(body),
+  };
+}
+
+function uploadErrorMessage(body: unknown): string {
+  if (!isRecord(body)) return 'Upload failed';
+  return asString(body.error) ?? asString(body.detail) ?? asString(body.message) ?? 'Upload failed';
+}
+
+function sendRawUploadRequest(
+  formData: FormData,
+  projectId: string,
+  accessToken: string,
+  reportProgress: (progress: number) => void,
+): Promise<XhrResponse> {
+  return new Promise((resolve, reject) => {
+    const xhr = new XMLHttpRequest();
+    xhr.open('POST', `${API_URL}${toV1Path('/api/v1/raw/upload')}`);
+    xhr.withCredentials = true;
+
+    for (const [name, value] of Object.entries(buildProjectHeaders(projectId, accessToken))) {
+      xhr.setRequestHeader(name, value);
+    }
+
+    xhr.upload.onprogress = (event) => {
+      if (!event.lengthComputable || event.total <= 0) return;
+      reportProgress(Math.round((event.loaded / event.total) * 100));
+    };
+    xhr.onload = () => resolve(xhrResponse(xhr));
+    xhr.onerror = () => reject(new ApiError('Upload failed', 0));
+    xhr.ontimeout = () => reject(new ApiError('Upload failed', 0));
+    xhr.onabort = () => reject(new ApiError('Upload failed', 0));
+    xhr.send(formData);
+  });
+}
+
+export async function uploadRawFile(
+  file: File,
+  onProgress?: RawUploadProgressCallback,
+): Promise<RawUploadResult> {
   if (file.size > RAW_UPLOAD_MAX_BYTES) {
     throw new Error('file too large (max 5 MiB)');
   }
@@ -770,18 +824,44 @@ export async function uploadRawFile(file: File): Promise<RawUploadResult> {
     throw new Error('empty file');
   }
 
+  const projectId = selectedProjectId();
+  const accessToken = await accessTokenOrRefresh();
   const formData = new FormData();
   formData.append('file', file);
-  const response = await apiFetch('/api/v1/raw/upload', {
-    method: 'POST',
-    body: formData,
-  });
-  if (!response.ok) {
-    const error = await response.json().catch(() => ({ error: 'Upload failed' }));
-    const message = (error as { error?: string }).error || 'Upload failed';
-    throw new ApiError(message, response.status);
+  let lastProgress = -1;
+  const reportProgress = (progress: number) => {
+    const bounded = Math.max(0, Math.min(100, Math.round(progress)));
+    if (bounded === lastProgress) return;
+    lastProgress = bounded;
+    onProgress?.(bounded);
+  };
+
+  let response = await sendRawUploadRequest(
+    formData,
+    projectId,
+    accessToken,
+    reportProgress,
+  );
+  if (response.status === 401) {
+    const refreshed = await apiAuthConfig.refreshAccessToken();
+    if (!refreshed) {
+      apiAuthConfig.onUnauthorized();
+    } else {
+      response = await sendRawUploadRequest(
+        formData,
+        projectId,
+        refreshed,
+        reportProgress,
+      );
+    }
   }
 
+  if (!response.ok) {
+    const body = await response.json().catch(() => undefined);
+    throw new ApiError(uploadErrorMessage(body), response.status);
+  }
+
+  reportProgress(100);
   const body = (await response.json()) as Partial<RawUploadResult> & Record<string, unknown>;
   const status = body.status === 'already_exists' ? 'already_exists' : 'created';
   return {
