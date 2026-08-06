@@ -3,7 +3,7 @@
 import { useWorkspace } from './WorkspaceProvider';
 
 export function ProjectEmptyState() {
-  const { openNewProject } = useWorkspace();
+  const { isDemoSession, openNewProject } = useWorkspace();
 
   return (
     <section className="mx-auto flex min-h-[65vh] max-w-2xl items-center justify-center">
@@ -17,13 +17,15 @@ export function ProjectEmptyState() {
         <p className="mx-auto mt-3 max-w-md leading-7 text-zinc-400">
           Create your first project to start building a searchable knowledge workspace.
         </p>
-        <button
-          type="button"
-          onClick={openNewProject}
-          className="mt-7 rounded-lg bg-emerald-300 px-5 py-3 font-semibold text-black transition hover:bg-emerald-200"
-        >
-          + Create Project
-        </button>
+        {!isDemoSession ? (
+          <button
+            type="button"
+            onClick={openNewProject}
+            className="mt-7 rounded-lg bg-emerald-300 px-5 py-3 font-semibold text-black transition hover:bg-emerald-200"
+          >
+            + Create Project
+          </button>
+        ) : null}
       </div>
     </section>
   );

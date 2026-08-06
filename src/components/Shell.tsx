@@ -29,7 +29,6 @@ type NavCountKey = keyof NavCounts;
 function ShellContent({ children }: { children: React.ReactNode }) {
   const { t } = useT();
   const pathname = usePathname();
-  const [demoMessage, setDemoMessage] = useState('');
   const [mobileNavOpen, setMobileNavOpen] = useState(false);
   const { user } = useAuth();
   const { open: paletteOpen, setOpen: setPaletteOpen } = useCommandPalette();
@@ -66,12 +65,6 @@ function ShellContent({ children }: { children: React.ReactNode }) {
   ];
 
   useEffect(() => {
-    if (!demoMessage) return;
-    const timeout = window.setTimeout(() => setDemoMessage(''), 3000);
-    return () => window.clearTimeout(timeout);
-  }, [demoMessage]);
-
-  useEffect(() => {
     const timeout = window.setTimeout(() => {
       setMobileNavOpen(false);
     }, 0);
@@ -86,14 +79,6 @@ function ShellContent({ children }: { children: React.ReactNode }) {
     window.addEventListener('keydown', handleKeyDown);
     return () => window.removeEventListener('keydown', handleKeyDown);
   }, [mobileNavOpen]);
-
-  const handleNewProjectClick = () => {
-    if (isDemoSession) {
-      setDemoMessage(t('Demo.restricted'));
-      return;
-    }
-    openNewProject();
-  };
 
   const isActive = (href: string, exact?: boolean) => {
     if (exact) return pathname === href;
@@ -199,13 +184,15 @@ function ShellContent({ children }: { children: React.ReactNode }) {
                   placeholder={t('Shell.noProjects')}
                 />
               )}
-              <button
-                type="button"
-                onClick={handleNewProjectClick}
-                className="mt-1.5 min-h-11 w-full rounded-lg px-3 py-2.5 text-left text-sm text-zinc-500 transition hover:bg-white/5 hover:text-zinc-300"
-              >
-                {t('Shell.newProject')}
-              </button>
+              {!isDemoSession ? (
+                <button
+                  type="button"
+                  onClick={openNewProject}
+                  className="mt-1.5 min-h-11 w-full rounded-lg px-3 py-2.5 text-left text-sm text-zinc-500 transition hover:bg-white/5 hover:text-zinc-300"
+                >
+                  {t('Shell.newProject')}
+                </button>
+              ) : null}
             </div>
           </div>
 
@@ -294,25 +281,6 @@ function ShellContent({ children }: { children: React.ReactNode }) {
         />
       ) : null}
 
-      {demoMessage ? (
-        <div
-          className="fixed inset-0 z-50 flex items-center justify-center bg-black/50 backdrop-blur-sm animate-fade-in"
-          onClick={() => setDemoMessage('')}
-        >
-          <div
-            className="w-80 rounded-xl border border-zinc-300/20 bg-zinc-900 px-6 py-5 text-center shadow-2xl animate-scale-in"
-            onClick={(e) => e.stopPropagation()}
-          >
-            <p className="mb-3 text-sm text-zinc-200">{demoMessage}</p>
-            <button
-              onClick={() => setDemoMessage('')}
-              className="rounded-lg bg-white px-4 py-2 text-xs font-medium text-black transition hover:bg-emerald-200"
-            >
-              {t('Shell.ok')}
-            </button>
-          </div>
-        </div>
-      ) : null}
     </div>
   );
 }

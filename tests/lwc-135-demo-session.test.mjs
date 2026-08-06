@@ -63,8 +63,9 @@ test('LWC-135: workspace and shell block create project for demo sessions', asyn
 
   assert.match(workspaceProvider, /if \(isDemoSession\) throw new Error/);
   assert.match(workspaceProvider, /if \(isDemoSession\) return/);
-  assert.match(shell, /isDemoSession/);
-  assert.match(shell, /t\('Demo\.restricted'\)/);
+  assert.match(shell, /!isDemoSession/);
+  assert.match(shell, /onClick=\{openNewProject\}/);
+  assert.match(shell, /\) : null/);
 });
 
 test('LWC-135: pipeline client blocks upload and pipeline trigger in demo sessions', async () => {
