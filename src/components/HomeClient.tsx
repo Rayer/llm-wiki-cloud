@@ -56,6 +56,19 @@ type ModalEntry = {
 };
 type SearchMode = 'wiki' | 'full';
 
+function sampleSuggestedQueries(suggestedQueries: string[]): string[] {
+  const available = [...new Set(suggestedQueries.slice(1))];
+  const sampleSize = Math.min(4, available.length);
+
+  for (let index = 0; index < sampleSize; index += 1) {
+    const offset = Math.floor(Math.random() * (available.length - index));
+    const swapIndex = index + offset;
+    [available[index], available[swapIndex]] = [available[swapIndex], available[index]];
+  }
+
+  return available.slice(0, sampleSize);
+}
+
 function conceptHref(concept: WikiEntry): string | null {
   const id = safeWikiRouteSegment(concept.id);
   const slug = safeWikiRouteSegment(concept.slug);
@@ -107,6 +120,9 @@ export function HomeClient() {
   const citationRequestId = useRef(0);
   const searchRequestId = useRef(0);
   const previousProjectIdRef = useRef<string | undefined>(currentProject?.id);
+  const sampledProjectIdRef = useRef<string | undefined>(undefined);
+  const hasSampledQueriesRef = useRef(false);
+  const [suggestedQueryChips, setSuggestedQueryChips] = useState<string[]>([]);
   const [latestConcepts, setLatestConcepts] = useState<WikiEntry[]>([]);
   const [searchButtonCue, setSearchButtonCue] = useState<0 | 1 | 2>(0);
 
@@ -145,6 +161,10 @@ export function HomeClient() {
     previousProjectIdRef.current = next;
     if (!previous || !next || previous === next) return;
 
+    sampledProjectIdRef.current = undefined;
+    hasSampledQueriesRef.current = false;
+    setSuggestedQueryChips([]);
+    setStatus(null);
     citationRequestId.current += 1;
     searchRequestId.current += 1;
     setQuery('');
@@ -164,8 +184,22 @@ export function HomeClient() {
 
   useEffect(() => {
     getStatus()
-      .then(setStatus)
-      .catch((err: Error) => setStatusError(err.message));
+      .then((data) => {
+        if (ignore) return;
+        setStatus(data);
+        if (!hasSampledQueriesRef.current || sampledProjectIdRef.current !== currentProject?.id) {
+          sampledProjectIdRef.current = currentProject?.id;
+          hasSampledQueriesRef.current = true;
+          setSuggestedQueryChips(sampleSuggestedQueries(data.suggestedQueries));
+        }
+      })
+      .catch((err: Error) => {
+        if (!ignore) setStatusError(err.message);
+      });
+    let ignore = false;
+    return () => {
+      ignore = true;
+    };
   }, [currentProject]);
 
   useEffect(() => {
@@ -323,7 +357,6 @@ export function HomeClient() {
   const resultType = (type?: string): 'source' | 'concept' =>
     type === 'source' ? 'source' : 'concept';
   const suggestedQueries = status?.suggestedQueries ?? [];
-  const suggestedQueryChips = suggestedQueries.slice(1);
   const searchButtonCueState = searchButtonCue > 0 ? searchButtonCue.toString() : undefined;
 
   return (
