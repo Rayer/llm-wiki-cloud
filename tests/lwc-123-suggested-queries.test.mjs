@@ -34,9 +34,11 @@ test('home renders suggested query chips that fill the query from status suggest
     'utf8',
   );
 
-  assert.match(homeClient, /const suggestedQueryChips = suggestedQueries\.slice\(1\);/);
+  assert.doesNotMatch(homeClient, /\/\/ const suggestedQueryChips = suggestedQueries\.slice\(1\);/);
+  assert.match(homeClient, /setSuggestedQueryChips\(sampleSuggestedQueries\(data\.suggestedQueries\)\);/);
   assert.match(homeClient, /suggestedQueryChips\.map\(\(suggestion\) => \(/);
   assert.match(homeClient, /onClick=\{\(\) => void handleSuggestedQuery\(suggestion\)\}/);
+  assert.match(homeClient, /const handleSuggestedQuery = useCallback\(\(suggestion: string\) => \{\s+setQuery\(suggestion\);/s);
   assert.match(homeClient, /setQuery\(suggestion\)/);
 });
 
