@@ -2,7 +2,7 @@
 set -Eeuo pipefail
 
 MODE="${1:-}"
-if [[ "$MODE" != "validate" && "$MODE" != "preflight" && "$MODE" != "promote" ]]; then
+if [[ "${VERCEL_DEV_DEPLOYMENT_LIBRARY:-}" != 1 && "$MODE" != "validate" && "$MODE" != "preflight" && "$MODE" != "promote" ]]; then
   printf 'usage: %s {validate|preflight|promote}\n' "$0" >&2
   exit 2
 fi
@@ -15,7 +15,7 @@ readonly EXPECTED_REF="develop"
 readonly API_BASE_URL="${VERCEL_API_BASE_URL:-https://api.vercel.com}"
 readonly GITHUB_BASE_URL="${GITHUB_API_URL:-https://api.github.com}"
 readonly EVIDENCE_DIR="${EVIDENCE_DIR:-artifacts/vercel-dev-deployment}"
-readonly EVIDENCE_PATH="$EVIDENCE_DIR/vercel-dev-deployment.json"
+readonly EVIDENCE_PATH="$EVIDENCE_DIR/${EVIDENCE_FILENAME:-vercel-dev-deployment.json}"
 readonly VALIDATION_PATH="$EVIDENCE_DIR/validation.json"
 readonly ROLLBACK_PATH="$EVIDENCE_DIR/rollback-contract.json"
 readonly CONTEXT_PATH="${DEV_DEPLOYMENT_CONTEXT_PATH:-$EVIDENCE_DIR/vercel-dev-deployment-context.json}"
@@ -176,7 +176,9 @@ write_evidence() {
   mv "$EVIDENCE_PATH.tmp" "$EVIDENCE_PATH"
 }
 
-trap 'exit_code=$?; write_evidence; exit "$exit_code"' EXIT
+if [[ "${VERCEL_DEV_DEPLOYMENT_LIBRARY:-}" != 1 ]]; then
+  trap 'exit_code=$?; write_evidence; exit "$exit_code"' EXIT
+fi
 
 fail() {
   STATUS="$1"
@@ -652,7 +654,9 @@ run_promote() {
   printf '%s\n' "$STATUS"
 }
 
-if [[ "$MODE" == validate ]]; then
+if [[ "${VERCEL_DEV_DEPLOYMENT_LIBRARY:-}" == 1 ]]; then
+  :
+elif [[ "$MODE" == validate ]]; then
   validate_exact_sha
   STATUS="VALIDATED"
   REASON_CODE="VALIDATED"
