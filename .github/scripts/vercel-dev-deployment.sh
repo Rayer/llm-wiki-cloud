@@ -359,7 +359,7 @@ normalize_deployment() {
   OBSERVED_REF="$(jq -r '(.gitSource.ref // .meta.githubCommitRef // empty) | if . == "develop" then "refs/heads/develop" else . end' <<< "$response" 2>/dev/null || true)"
   OBSERVED_SHA="$(jq -r '(.gitSource.sha // .meta.githubCommitSha // empty)' <<< "$response" 2>/dev/null || true)"
   OBSERVED_READY_STATE="$(jq -r '.readyState // empty' <<< "$response" 2>/dev/null || true)"
-  OBSERVED_TARGET="$(jq -r '.target // empty' <<< "$response" 2>/dev/null || true)"
+  OBSERVED_TARGET="$(jq -r '(.target // "preview") | tostring' <<< "$response" 2>/dev/null || true)"
   OBSERVED_PROJECT_ID="$(jq -r '.projectId // empty' <<< "$response" 2>/dev/null || true)"
   OBSERVED_TEAM_ID="$(jq -r '(.teamId // .accountId // .ownerId // empty)' <<< "$response" 2>/dev/null || true)"
   DEPLOYMENT_URL="$OBSERVED_DEPLOYMENT_URL"
@@ -369,7 +369,7 @@ deployment_matches() {
   local response="$1"
   jq -e --arg id "$DEPLOYMENT_ID" --arg project "$VERCEL_PROJECT_ID" --arg team "$VERCEL_TEAM_ID" --arg sha "$COMMIT_SHA" --arg repo "$EXPECTED_REPOSITORY" '
     type == "object" and .id == $id and .projectId == $project and ((.teamId // .accountId // .ownerId) == $team) and
-    .readyState == "READY" and .target == "preview" and
+    .readyState == "READY" and ((.target == null) or .target == "preview") and
     (.gitSource.type // (if .meta.githubDeployment == "1" then "github" else null end)) == "github" and
     ((.gitSource.ref // .meta.githubCommitRef) == "develop" or (.gitSource.ref // .meta.githubCommitRef) == "refs/heads/develop") and
     (.gitSource.sha // .meta.githubCommitSha) == $sha and
@@ -412,7 +412,7 @@ find_exact_deployment() {
       ((.teamId // "") == "" or .teamId == $team) and
       ((.accountId // "") == "" or .accountId == $team) and
       ((.ownerId // "") == "" or .ownerId == $team) and
-      .readyState == "READY" and .target == "preview" and
+      .readyState == "READY" and (.target == null or .target == "preview") and
       (.gitSource.type // (if .meta.githubDeployment == "1" then "github" else null end)) == "github" and
       ((.gitSource.ref // .meta.githubCommitRef // "") == "develop" or (.gitSource.ref // .meta.githubCommitRef // "") == "refs/heads/develop") and
       (.gitSource.sha // .meta.githubCommitSha // "") == $sha and
@@ -447,7 +447,7 @@ create_deployment() {
   fi
   [[ "$repo_id" =~ ^[0-9]+$ ]] || preflight_fail DEPLOYMENT_CREATE_FAILED "exact GitHub repository provenance could not be resolved before DEV deployment creation"
   payload="$(jq -cn --arg project "$VERCEL_PROJECT_ID" --arg repoId "$repo_id" --arg sha "$COMMIT_SHA" \
-    '{name: "llm-wiki-frontend-dev", project: $project, target: "preview", gitSource: {type: "github", repoId: ($repoId | tonumber), ref: "develop", sha: $sha}}')"
+    '{name: "llm-wiki-frontend-dev", project: $project, gitSource: {type: "github", repoId: ($repoId | tonumber), ref: "develop", sha: $sha}}')"
   MUTATION_COUNT=$((MUTATION_COUNT + 1))
   PROVIDER_CHECKS="$(jq -c '. + ["deployment_create_attempted"]' <<< "$PROVIDER_CHECKS")"
   if ! created="$(api_post "/v13/deployments?teamId=$VERCEL_TEAM_ID" "$payload")"; then

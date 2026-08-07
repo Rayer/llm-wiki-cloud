@@ -33,7 +33,7 @@ async function setupCase(scenario = 'authority-conflict') {
     teamId,
     ownerId: teamId,
     readyState: 'READY',
-    target: 'preview',
+    target: null,
     meta: {
       githubDeployment: '1',
       githubOrg: 'Rayer',
@@ -230,6 +230,9 @@ test('read-only preflight records a typed create-needed decision without provide
   assert.equal(run.evidence.provider_verification.mutation_count, 2);
   assert.equal(run.deploymentPostLog.length, 1);
   assert.equal(run.mutationLog.length, 1);
+  const deploymentPayload = JSON.parse(run.deploymentPostLog.find((entry) => entry.startsWith('{')));
+  assert.equal(deploymentPayload.target, undefined);
+  assert.equal(run.evidence.deployment.target, 'preview');
   assert.ok(run.evidence.provider_verification.checks.includes('deployment_create_attempted'));
   assert.ok(run.evidence.provider_verification.checks.includes('alias_mutation_attempted'));
   assert.match(run.mutationLog[0], /^alias set dpl_devready llm-wiki-frontend-dev\.vercel\.app/);

@@ -442,7 +442,7 @@ find_canonical_candidate() {
       ((.teamId // "") == "" or .teamId == $team) and
       ((.accountId // "") == "" or .accountId == $team) and
       ((.ownerId // "") == "" or .ownerId == $team) and
-      .readyState == "READY" and .target == "preview" and
+      .readyState == "READY" and (.target == null or .target == "preview") and
       (.gitSource.type // (if .meta.githubDeployment == "1" then "github" else null end)) == "github" and
       ((.gitSource.ref // .meta.githubCommitRef // "") == "develop" or (.gitSource.ref // .meta.githubCommitRef // "") == "refs/heads/develop") and
       (.gitSource.sha // .meta.githubCommitSha // "") == $sha and
@@ -622,7 +622,7 @@ resolve_canonical_deployment() {
 
 deployment_response_matches() {
   jq -e --arg id "$DEPLOYMENT_ID" --arg project "$VERCEL_PROJECT_ID" --arg team "$VERCEL_TEAM_ID" --arg sha "$COMMIT_SHA" --arg repo "$EXPECTED_REPOSITORY" --arg url "$DEPLOYMENT_URL" '
-    type == "object" and .id == $id and .projectId == $project and ((.teamId // .accountId // .ownerId) == $team) and .readyState == "READY" and .target == "preview" and (.gitSource.type // (if .meta.githubDeployment == "1" then "github" else null end)) == "github" and ((.gitSource.ref // .meta.githubCommitRef // "") == "develop" or (.gitSource.ref // .meta.githubCommitRef // "") == "refs/heads/develop") and (.gitSource.sha // .meta.githubCommitSha) == $sha and (if (.meta.githubOrg and .meta.githubRepo) then (.meta.githubOrg + "/" + .meta.githubRepo) else ((.gitSource.org // "") + "/" + (.gitSource.repo // "")) end) == $repo and (.url | type == "string" and test("^[A-Za-z0-9._-]+\\.[A-Za-z0-9._-]+$")) and .url == $url' <<< "$1" >/dev/null
+    type == "object" and .id == $id and .projectId == $project and ((.teamId // .accountId // .ownerId) == $team) and .readyState == "READY" and ((.target == null) or .target == "preview") and (.gitSource.type // (if .meta.githubDeployment == "1" then "github" else null end)) == "github" and ((.gitSource.ref // .meta.githubCommitRef // "") == "develop" or (.gitSource.ref // .meta.githubCommitRef // "") == "refs/heads/develop") and (.gitSource.sha // .meta.githubCommitSha) == $sha and (if (.meta.githubOrg and .meta.githubRepo) then (.meta.githubOrg + "/" + .meta.githubRepo) else ((.gitSource.org // "") + "/" + (.gitSource.repo // "")) end) == $repo and (.url | type == "string" and test("^[A-Za-z0-9._-]+\\.[A-Za-z0-9._-]+$")) and .url == $url' <<< "$1" >/dev/null
 }
 
 poll_canonical_deployment() {
@@ -647,7 +647,7 @@ poll_canonical_deployment() {
 
 create_canonical_deployment() {
   local payload created
-  payload="$(jq -cn --arg project "$VERCEL_PROJECT_ID" --arg repoId "$PROJECT_REPOSITORY_ID" --arg sha "$COMMIT_SHA" '{name: "llm-wiki-frontend-dev", project: $project, target: "preview", gitSource: {type: "github", repoId: ($repoId | tonumber), ref: "develop", sha: $sha}}')"
+  payload="$(jq -cn --arg project "$VERCEL_PROJECT_ID" --arg repoId "$PROJECT_REPOSITORY_ID" --arg sha "$COMMIT_SHA" '{name: "llm-wiki-frontend-dev", project: $project, gitSource: {type: "github", repoId: ($repoId | tonumber), ref: "develop", sha: $sha}}')"
   MUTATION_COUNT=$((MUTATION_COUNT + 1))
   PROVIDER_CHECKS="$(jq -c '. + ["deployment_create_attempted"]' <<< "$PROVIDER_CHECKS")"
   created="$(api_post "/v13/deployments?teamId=$VERCEL_TEAM_ID" "$payload" 2>/dev/null)" || partial_fail DEPLOYMENT_CREATE_UNCERTAIN "canonical deployment-create POST failed or became uncertain"
