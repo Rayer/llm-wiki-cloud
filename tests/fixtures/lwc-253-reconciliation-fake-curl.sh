@@ -82,7 +82,7 @@ elif [[ "$url" == *"/v6/deployments?"* ]]; then
   elif [[ "$scenario" == deployment-page-2-exact && "$url" == *"until=1700000000101"* ]]; then
     jq '{deployments:[.], pagination:{count:1,prev:1700000000101,next:null}}' "$root/candidate.json"
   elif [[ "$scenario" == deployment-cursor-loop ]]; then
-    printf '%s' '{"deployments":[],"pagination":{"count":1,"prev":null,"next":1700000000202}}'
+    printf '%s' '{"deployments":[],"pagination":{"count":0,"prev":null,"next":1700000000202}}'
   elif [[ "$scenario" == deployment-malformed ]]; then
     printf '%s' '{"deployments":[{"id":7}]}'
   elif [[ "$scenario" == deployment-pagination-string ]]; then
@@ -136,9 +136,9 @@ elif [[ "$url" == *"/v4/aliases?"* ]]; then
   if [[ "$url" =~ projectId=([^\&]+) ]]; then project="${BASH_REMATCH[1]}"; fi
   inventory_reads="$(increment_counter inventory-reads)"
   if [[ "$scenario" == alias-cursor-loop && "$url" != *"until=1700000000111"* ]]; then
-    printf '%s' '{"aliases":[],"pagination":{"count":1,"prev":null,"next":1700000000111}}'
+    printf '%s' '{"aliases":[],"pagination":{"count":0,"prev":null,"next":1700000000111}}'
   elif [[ "$scenario" == alias-cursor-loop && "$url" == *"until=1700000000111"* ]]; then
-    printf '%s' '{"aliases":[],"pagination":{"count":1,"prev":1700000000111,"next":1700000000111}}'
+    printf '%s' '{"aliases":[],"pagination":{"count":0,"prev":1700000000111,"next":1700000000111}}'
   elif [[ "$scenario" == alias-page-2 && "$url" != *"until=1700000000102"* ]]; then
     printf '%s' '{"aliases":[{"alias":"other.example","projectId":"prj_other","deploymentId":"dpl_other"}],"pagination":{"count":1,"prev":null,"next":1700000000102}}'
   elif [[ "$scenario" == alias-page-2 && "$url" == *"until=1700000000102"* ]]; then
@@ -168,7 +168,7 @@ elif [[ "$url" == *"/v4/aliases?"* ]]; then
   elif [[ "$scenario" == alias-pagination-malformed ]]; then
     printf '%s' '{"aliases":[{"alias":"other.example","projectId":"prj_other","deploymentId":"dpl_other"}],"pagination":{}}'
   elif [[ "$scenario" == inventory-page-max ]]; then
-    printf '%s' '{"aliases":[],"pagination":{"count":0,"prev":null,"next":%s}}' "$((1700000000600 + inventory_reads))"
+    printf '{"aliases":[],"pagination":{"count":0,"prev":null,"next":%s}}' "$((1700000000600 + inventory_reads))"
   else
     if [[ "$project" == "$EXPECTED_CURRENT_ALIAS_PROJECT_ID" ]]; then
       if [[ "$scenario" == inventory-order-drift && "$inventory_reads" -ge 5 ]]; then jq '{aliases:(.legacyAliases | reverse), pagination:{count:(.legacyAliases | length), prev:null, next:null}}' "$root/state.json"; else jq '{aliases:.legacyAliases, pagination:{count:(.legacyAliases | length), prev:null, next:null}}' "$root/state.json"; fi

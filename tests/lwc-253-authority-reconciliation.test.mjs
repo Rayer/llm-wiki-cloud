@@ -462,6 +462,21 @@ for (const [scenario, reason] of [
       assert.deepEqual(output.provider_verification.checks, []);
       assert.equal((await lines(join(fixture.root, 'deployment-post-log'))).length, 0);
       assert.equal((await lines(join(fixture.root, 'mutation-log'))).length, 0);
+      const calls = (await readFile(join(fixture.root, 'curl-calls'), 'utf8')).trim().split('\n').filter(Boolean);
+      const deploymentCalls = calls.filter((url) => url.includes('/v6/deployments?'));
+      if (scenario === 'deployment-cursor-loop') {
+        assert.equal(deploymentCalls.length, 2);
+        assert.ok(!deploymentCalls[0].includes('until='));
+        assert.equal(deploymentCalls[1].includes('until=1700000000202'), true);
+      } else if (scenario === 'deployment-page-max') {
+        assert.equal(deploymentCalls.length, 10);
+        assert.ok(!deploymentCalls[0].includes('until='));
+        const cursors = deploymentCalls.slice(1).map((url) => Number(new URL(url).searchParams.get('until')));
+        for (let i = 0; i < cursors.length; i += 1) {
+          assert.ok(Number.isInteger(cursors[i]) && cursors[i] >= 0);
+          if (i > 0) assert.ok(cursors[i] > cursors[i - 1]);
+        }
+      }
       return;
     }
     if (scenario === 'deployment-page-2-exact') {
@@ -498,6 +513,22 @@ for (const [scenario, reason] of [
     assert.deepEqual(output.provider_verification.checks, []);
     assert.equal((await lines(join(fixture.root, 'deployment-post-log'))).length, 0);
     assert.equal((await lines(join(fixture.root, 'mutation-log'))).length, 0);
+  const calls = (await readFile(join(fixture.root, 'curl-calls'), 'utf8')).trim().split('\n').filter(Boolean);
+    const aliasCalls = calls.filter((url) => url.includes('/v4/aliases?') && url.includes('projectId='));
+    if (scenario === 'inventory-page-max') {
+      assert.equal(aliasCalls.length, 20);
+      const batches = [aliasCalls.slice(0, 10), aliasCalls.slice(10, 20)];
+      for (const aliasBatch of batches) {
+        assert.equal(aliasBatch.length, 10);
+        assert.ok(!aliasBatch[0].includes('until='));
+        const cursors = aliasBatch.slice(1).map((url) => Number(new URL(url).searchParams.get('until')));
+        assert.equal(cursors.length, 9);
+      for (let i = 0; i < cursors.length; i += 1) {
+        assert.ok(Number.isInteger(cursors[i]) && cursors[i] >= 0);
+        if (i > 0) assert.ok(cursors[i] > cursors[i - 1]);
+      }
+      }
+    }
   });
 }
 
@@ -515,7 +546,7 @@ test('alias pagination next mutated from number to string fails pagination parsi
   assert.ok(!inventoryCalls[0].includes('until='));
 });
 
-for (const [scenario, reason] of [
+  for (const [scenario, reason] of [
   ['alias-cursor-loop', 'AUTHORITY_PREFLIGHT_MISMATCH'],
   ['alias-malformed', 'AUTHORITY_PREFLIGHT_MISMATCH'],
   ['canonical-alias-present', 'AUTHORITY_DRIFT'],
@@ -530,6 +561,17 @@ for (const [scenario, reason] of [
     assert.equal(output.provider_verification.mutation_count, 0);
     assert.equal((await lines(join(fixture.root, 'mutation-log'))).length, 0);
     assert.equal((await lines(join(fixture.root, 'deployment-post-log'))).length, 0);
+    const calls = (await readFile(join(fixture.root, 'curl-calls'), 'utf8')).trim().split('\n').filter(Boolean);
+    if (scenario === 'alias-cursor-loop') {
+      const aliasCalls = calls.filter((url) => url.includes('/v4/aliases?') && url.includes('projectId='));
+      assert.equal(aliasCalls.length, 4);
+      const batches = [aliasCalls.slice(0, 2), aliasCalls.slice(2, 4)];
+      for (const aliasBatch of batches) {
+        assert.equal(aliasBatch.length, 2);
+        assert.ok(!aliasBatch[0].includes('until='));
+        assert.equal(aliasBatch[1].includes('until=1700000000111'), true);
+      }
+    }
   });
 }
 
