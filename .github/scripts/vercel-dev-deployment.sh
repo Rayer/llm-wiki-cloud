@@ -352,7 +352,7 @@ read_authority() {
 
 normalize_deployment() {
   local response="$1"
-  OBSERVED_DEPLOYMENT_ID="$(jq -r '(.id // .uid // empty)' <<< "$response" 2>/dev/null || true)"
+  OBSERVED_DEPLOYMENT_ID="$(jq -r '.id // empty' <<< "$response" 2>/dev/null || true)"
   OBSERVED_DEPLOYMENT_URL="$(jq -r '.url // empty' <<< "$response" 2>/dev/null || true)"
   OBSERVED_SOURCE="$(jq -r '(.gitSource.type // (if .meta.githubDeployment == "1" then "github" else empty end))' <<< "$response" 2>/dev/null || true)"
   OBSERVED_REPOSITORY="$(jq -r 'if (.meta.githubOrg and .meta.githubRepo) then (.meta.githubOrg + "/" + .meta.githubRepo) elif (.gitSource.org and .gitSource.repo) then (.gitSource.org + "/" + .gitSource.repo) else empty end' <<< "$response" 2>/dev/null || true)"
@@ -361,20 +361,20 @@ normalize_deployment() {
   OBSERVED_READY_STATE="$(jq -r '.readyState // empty' <<< "$response" 2>/dev/null || true)"
   OBSERVED_TARGET="$(jq -r '.target // empty' <<< "$response" 2>/dev/null || true)"
   OBSERVED_PROJECT_ID="$(jq -r '.projectId // empty' <<< "$response" 2>/dev/null || true)"
-  OBSERVED_TEAM_ID="$(jq -r '(.teamId // .accountId // empty)' <<< "$response" 2>/dev/null || true)"
+  OBSERVED_TEAM_ID="$(jq -r '(.teamId // .accountId // .ownerId // empty)' <<< "$response" 2>/dev/null || true)"
   DEPLOYMENT_URL="$OBSERVED_DEPLOYMENT_URL"
 }
 
 deployment_matches() {
   local response="$1"
   jq -e --arg id "$DEPLOYMENT_ID" --arg project "$VERCEL_PROJECT_ID" --arg team "$VERCEL_TEAM_ID" --arg sha "$COMMIT_SHA" --arg repo "$EXPECTED_REPOSITORY" '
-    type == "object" and .id == $id and .projectId == $project and ((.teamId // .accountId) == $team) and
+    type == "object" and .id == $id and .projectId == $project and ((.teamId // .accountId // .ownerId) == $team) and
     .readyState == "READY" and .target == "preview" and
     (.gitSource.type // (if .meta.githubDeployment == "1" then "github" else null end)) == "github" and
     ((.gitSource.ref // .meta.githubCommitRef) == "develop" or (.gitSource.ref // .meta.githubCommitRef) == "refs/heads/develop") and
     (.gitSource.sha // .meta.githubCommitSha) == $sha and
     (if (.meta.githubOrg and .meta.githubRepo) then (.meta.githubOrg + "/" + .meta.githubRepo) else (.gitSource.org + "/" + .gitSource.repo) end) == $repo and
-    (.url | type == "string" and test("^https://"))' <<< "$response" >/dev/null
+    (.url | type == "string" and test("^[A-Za-z0-9._-]+\\.[A-Za-z0-9._-]+$"))' <<< "$response" >/dev/null
 }
 
 inspect_deployment() {

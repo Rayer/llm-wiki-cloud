@@ -4,7 +4,11 @@ set -eu
 root="$FIXTURE_ROOT"
 printf '%s\n' "$*" >> "$root/mutation-log"
 if [[ "${1:-}" == inspect ]]; then
-  if [[ "$(<"$root/scenario")" == cli-mismatch ]]; then jq '.projectId = "prj_other"' "$root/candidate.json"; else cat "$root/candidate.json"; fi
+  response="$(jq -c '.url = (.url | sub("^https?://"; "")) | .ownerId = (.ownerId // .teamId) | del(.teamId)' "$root/candidate.json")"
+  if [[ "$(<"$root/scenario")" == cli-mismatch ]]; then
+    response="$(jq '.projectId = "prj_other"' <<< "$response")"
+  fi
+  printf '%s' "$response"
   exit 0
 fi
 [[ "${1:-}" == alias && "${2:-}" == set ]] || exit 90

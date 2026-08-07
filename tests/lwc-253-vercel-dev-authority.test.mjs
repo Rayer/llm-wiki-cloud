@@ -31,6 +31,7 @@ async function setupCase(scenario = 'authority-conflict') {
     url: 'https://dpl_dev_ready.vercel.app',
     projectId,
     teamId,
+    ownerId: teamId,
     readyState: 'READY',
     target: 'preview',
     meta: {

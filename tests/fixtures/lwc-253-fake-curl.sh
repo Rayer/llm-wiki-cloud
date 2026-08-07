@@ -51,17 +51,17 @@ elif [[ "$url" == *"/v9/projects/$VERCEL_PROJECT_ID"* ]]; then
   fi
 elif [[ "$url" == *"/v13/deployments/dpl_"* && "$url" != *"/v13/deployments?"* ]]; then
   if [[ "$scenario" == create-read-failure ]]; then exit 7; fi
+  response="$(jq -c --arg team "$VERCEL_TEAM_ID" '.ownerId = $team | del(.teamId) | .url = (.url | sub("^https?://"; ""))' "$root/deployment.json")"
   if [[ "$scenario" == create-poll-timeout ]]; then
-    jq '.readyState = "BUILDING"' "$root/deployment.json"
+    response="$(jq '.readyState = "BUILDING"' <<< "$response")"
   elif [[ "$scenario" == create-source-mismatch ]]; then
-    jq '.meta.githubCommitRef = "release"' "$root/deployment.json"
+    response="$(jq '.meta.githubCommitRef = "release"' <<< "$response")"
   elif [[ "$scenario" == existing-source-mismatch ]]; then
-    jq '.meta.githubCommitRef = "release"' "$root/deployment.json"
+    response="$(jq '.meta.githubCommitRef = "release"' <<< "$response")"
   elif [[ "$scenario" == post-read-mismatch && -f "$root/mutated" ]]; then
-    jq '.projectId = "prj_other"' "$root/deployment.json"
-  else
-    cat "$root/deployment.json"
+    response="$(jq '.projectId = "prj_other"' <<< "$response")"
   fi
+  printf '%s' "$response"
 elif [[ "$url" == *"/v6/deployments?"* ]]; then
   case "$scenario" in
     deployment-missing|create-failure|create-uncertain|create-poll-timeout|create-source-mismatch|create-read-failure)

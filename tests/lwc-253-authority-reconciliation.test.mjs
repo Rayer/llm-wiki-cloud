@@ -37,8 +37,8 @@ async function setup(scenario = 'existing-candidate') {
   await writeFile(join(root, 'legacy-project.json'), JSON.stringify({ id: legacyProject, name: 'llm-wiki-frontend', accountId: team }));
   await writeFile(join(root, 'domains.json'), JSON.stringify({ domains: [{ name: domain }] }));
   await writeFile(join(root, 'ci.json'), JSON.stringify({ workflow_runs: [{ path: '.github/workflows/ci.yml', head_branch: 'develop', head_sha: sha, event: 'push', status: 'completed', conclusion: 'success', id: 123, html_url: 'https://github.com/Rayer/llm-wiki-frontend/actions/runs/123' }] }));
-  await writeFile(join(root, 'old-deployment.json'), JSON.stringify({ id: oldDeployment, url: 'https://old.vercel.app', projectId: legacyProject, teamId: team, readyState: 'READY', target: null, meta: { githubDeployment: '1', githubOrg: 'Rayer', githubRepo: 'llm-wiki-frontend', githubCommitRef: 'develop', githubCommitSha: oldSha } }));
-  await writeFile(join(root, 'candidate.json'), JSON.stringify({ id: newDeployment, url: 'https://new.vercel.app', projectId: canonicalProject, teamId: team, readyState: 'READY', target: 'preview', meta: { githubDeployment: '1', githubOrg: 'Rayer', githubRepo: 'llm-wiki-frontend', githubCommitRef: 'develop', githubCommitSha: sha } }));
+  await writeFile(join(root, 'old-deployment.json'), JSON.stringify({ id: oldDeployment, url: 'https://old.vercel.app', projectId: legacyProject, teamId: team, ownerId: team, readyState: 'READY', target: null, meta: { githubDeployment: '1', githubOrg: 'Rayer', githubRepo: 'llm-wiki-frontend', githubCommitRef: 'develop', githubCommitSha: oldSha } }));
+  await writeFile(join(root, 'candidate.json'), JSON.stringify({ id: newDeployment, url: 'https://new.vercel.app', projectId: canonicalProject, teamId: team, ownerId: team, readyState: 'READY', target: 'preview', meta: { githubDeployment: '1', githubOrg: 'Rayer', githubRepo: 'llm-wiki-frontend', githubCommitRef: 'develop', githubCommitSha: sha } }));
   const initialState = { global: { alias: domain, projectId: legacyProject, deploymentId: oldDeployment }, legacyAliases: [{ alias: domain, projectId: legacyProject, deploymentId: oldDeployment }], canonicalAliases: [], production: {
     'wiki.rayer.idv.tw': { alias: 'wiki.rayer.idv.tw', projectId: legacyProject, deploymentId: oldDeployment, metadata: 'prod-one' },
     'llm-wiki-frontend.vercel.app': { alias: 'llm-wiki-frontend.vercel.app', projectId: legacyProject, deploymentId: oldDeployment, metadata: 'prod-two' },
@@ -190,8 +190,8 @@ test('GREEN create-needed performs one create after handoff and one alias mutati
   assert.equal((await lines(join(fixture.root, 'mutation-log'))).filter((line) => line.startsWith('alias set')).length, 1);
 });
 
-test('legacy inspect can use uid as immutable deployment identifier in preflight', async () => {
-  const fixture = await setup('legacy-uid');
+test('legacy inspect rejects ownerId-only legacy payloads in old code and validates exact id in patched code', async () => {
+  const fixture = await setup('legacy-ownerid');
   const preflight = await run(fixture, 'preflight');
   assert.equal(preflight.code, undefined, preflight.stderr);
   const output = await evidence(fixture);
