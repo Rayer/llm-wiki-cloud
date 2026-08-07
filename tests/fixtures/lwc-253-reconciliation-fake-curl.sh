@@ -58,7 +58,17 @@ elif [[ "$url" == *"/v9/projects/$VERCEL_PROJECT_ID/domains"* ]]; then
   if [[ "$scenario" == domain-missing ]]; then printf '%s' '{"domains":[]}'; elif [[ "$scenario" == domain-duplicate ]]; then jq '.domains += [{name:"llm-wiki-frontend-dev.vercel.app"}]' "$root/domains.json"; else cat "$root/domains.json"; fi
 elif [[ "$url" == *"/v9/projects/$VERCEL_PROJECT_ID"* ]]; then
   canonical_reads="$(increment_counter canonical-project-reads)"
-  if [[ "$scenario" == final-reread-authority-failure && "$canonical_reads" -ge 3 ]]; then exit 7; elif [[ "$scenario" == project-mismatch ]]; then jq '.name = "wrong-project"' "$root/canonical-project.json"; elif [[ "$scenario" == team-mismatch ]]; then jq '.accountId = "team_other"' "$root/canonical-project.json"; else cat "$root/canonical-project.json"; fi
+  if [[ "$scenario" == final-reread-authority-failure && "$canonical_reads" -ge 3 ]]; then
+    exit 7
+  elif [[ "$scenario" == post-create-canonical-identity-drift && -f "$root/created" ]]; then
+    jq '.id = "prj_other" | .name = "tampered-project" | .accountId = "team_other"' "$root/canonical-project.json"
+  elif [[ "$scenario" == project-mismatch ]]; then
+    jq '.name = "wrong-project"' "$root/canonical-project.json"
+  elif [[ "$scenario" == team-mismatch ]]; then
+    jq '.accountId = "team_other"' "$root/canonical-project.json"
+  else
+    cat "$root/canonical-project.json"
+  fi
 elif [[ "$url" == *"/v9/projects/$EXPECTED_CURRENT_ALIAS_PROJECT_ID"* ]]; then
   if [[ "$scenario" == legacy-project-mismatch ]]; then jq '.name = "wrong-project"' "$root/legacy-project.json"; elif [[ "$scenario" == legacy-team-mismatch ]]; then jq '.accountId = "team_other"' "$root/legacy-project.json"; else cat "$root/legacy-project.json"; fi
 elif [[ "$url" == *"/v13/deployments/dpl_old"* ]]; then
@@ -120,7 +130,7 @@ elif [[ "$url" == *"/v6/deployments?"* ]]; then
   elif [[ "$scenario" == deployment-page-max ]]; then
     deployment_reads="$(increment_counter deployment-page-reads)"
     printf '{"deployments":[],"pagination":{"count":0,"prev":null,"next":%s}}' "$((1700000000400 + deployment_reads))"
-  elif [[ ( "$scenario" == create-needed || "$scenario" == production-before-create-drift || "$scenario" == post-create-authority-drift ) && ! -f "$root/created" ]]; then
+  elif [[ ( "$scenario" == create-needed || "$scenario" == create-needed-alias-failure || "$scenario" == production-before-create-drift || "$scenario" == post-create-authority-drift || "$scenario" == post-create-canonical-identity-drift ) && ! -f "$root/created" ]]; then
     printf '%s' '{"deployments":[],"pagination":{"count":0,"prev":null,"next":null}}'
   else
     if [[ "$scenario" == duplicate-candidates ]]; then
@@ -141,7 +151,12 @@ elif [[ "$url" == *"/v13/deployments?"* ]]; then
     create-failure) exit 8 ;;
     create-response-missing-id) touch "$root/created"; printf '%s' '{"url":"https://dpl_new.vercel.app"}' ;;
     create-response-invalid-id) touch "$root/created"; printf '%s' '{"id":"not-a-deployment","url":"https://dpl_new.vercel.app"}' ;;
-    *) touch "$root/created"; printf '%s' '{"id":"dpl_new","url":"https://dpl_new.vercel.app"}' ;;
+    *)
+      touch "$root/created"
+      updated="$(date +%s)"
+      jq --arg updated "$updated" '.updatedAt = $updated | .latestDeployments = (if (.latestDeployments | type == "array") then .latestDeployments + ["dpl_new"] else ["dpl_new"] end)' "$root/canonical-project.json" > "$root/canonical-project.json.tmp"
+      mv "$root/canonical-project.json.tmp" "$root/canonical-project.json"
+      printf '%s' '{"id":"dpl_new","url":"https://dpl_new.vercel.app"}' ;;
   esac
 elif [[ "$url" == *"/v4/aliases/wiki.rayer.idv.tw"* ]]; then
   prod_reads=0; [[ -f "$root/production-reads" ]] && prod_reads="$(<"$root/production-reads")"; prod_reads=$((prod_reads + 1)); printf '%s' "$prod_reads" > "$root/production-reads"

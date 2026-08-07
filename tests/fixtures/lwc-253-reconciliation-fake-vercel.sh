@@ -28,4 +28,4 @@ case "$(<"$root/scenario")" in
 esac
 mv "$root/state.tmp" "$root/state.json"
 touch "$root/mutated"
-if [[ "$(<"$root/scenario")" == alias-failure ]]; then exit 92; fi
+if [[ "$(<"$root/scenario")" == alias-failure || "$(<"$root/scenario")" == create-needed-alias-failure ]]; then exit 92; fi
