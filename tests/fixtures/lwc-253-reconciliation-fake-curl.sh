@@ -58,25 +58,29 @@ elif [[ "$url" == *"/v9/projects/$VERCEL_PROJECT_ID"* ]]; then
 elif [[ "$url" == *"/v9/projects/$EXPECTED_CURRENT_ALIAS_PROJECT_ID"* ]]; then
   if [[ "$scenario" == legacy-project-mismatch ]]; then jq '.name = "wrong-project"' "$root/legacy-project.json"; elif [[ "$scenario" == legacy-team-mismatch ]]; then jq '.accountId = "team_other"' "$root/legacy-project.json"; else cat "$root/legacy-project.json"; fi
 elif [[ "$url" == *"/v13/deployments/dpl_old"* ]]; then
+  response="$(jq -c '.ownerId = .teamId | del(.teamId) | .url = "old.vercel.app"' "$root/old-deployment.json")"
   case "$scenario" in
-    legacy-uid) jq 'del(.id) | .uid = "dpl_old"' "$root/old-deployment.json" ;;
-    old-source-mismatch) jq '.meta.githubCommitSha = "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"' "$root/old-deployment.json" ;;
-    old-ref-mismatch) jq '.meta.githubCommitRef = "feature"' "$root/old-deployment.json" ;;
-    old-repo-mismatch) jq '.meta.githubRepo = "other-repo"' "$root/old-deployment.json" ;;
-    old-state-mismatch) jq '.readyState = "ERROR"' "$root/old-deployment.json" ;;
-    old-target-mismatch) jq '.target = "production"' "$root/old-deployment.json" ;;
-    *) cat "$root/old-deployment.json" ;;
+    old-source-mismatch) response="$(jq '.meta.githubCommitSha = "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"' <<< "$response")" ;;
+    old-ref-mismatch) response="$(jq '.meta.githubCommitRef = "feature"' <<< "$response")" ;;
+    old-repo-mismatch) response="$(jq '.meta.githubRepo = "other-repo"' <<< "$response")" ;;
+    old-state-mismatch) response="$(jq '.readyState = "ERROR"' <<< "$response")" ;;
+    old-target-mismatch) response="$(jq '.target = "production"' <<< "$response")" ;;
+    legacy-ownerid) : ;;
+    *) : ;;
   esac
+  printf '%s' "$response"
 elif [[ "$url" == *"/v13/deployments/dpl_new"* ]]; then
+  response="$(jq -c '.ownerId = .teamId | del(.teamId) | .url = "new.vercel.app"' "$root/candidate.json")"
   case "$scenario" in
     create-read-failure) exit 9 ;;
-    create-poll-timeout) jq '.readyState = "BUILDING"' "$root/candidate.json" ;;
-    create-terminal-failed) jq '.readyState = "ERROR"' "$root/candidate.json" ;;
-    create-source-mismatch) jq '.meta.githubCommitSha = "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"' "$root/candidate.json" ;;
-    post-api-mismatch) if [[ -f "$root/mutated" ]]; then jq '.projectId = "prj_other"' "$root/candidate.json"; else cat "$root/candidate.json"; fi ;;
-    candidate-source-mismatch) jq '.meta.githubCommitSha = "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"' "$root/candidate.json" ;;
-    *) cat "$root/candidate.json" ;;
+    create-poll-timeout) response="$(jq '.readyState = "BUILDING"' <<< "$response")" ;;
+    create-terminal-failed) response="$(jq '.readyState = "ERROR"' <<< "$response")" ;;
+    create-source-mismatch) response="$(jq '.meta.githubCommitSha = "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"' <<< "$response")" ;;
+    post-api-mismatch) [[ -f "$root/mutated" ]] && response="$(jq '.projectId = "prj_other"' <<< "$response")" ;;
+    candidate-source-mismatch) response="$(jq '.meta.githubCommitSha = "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"' <<< "$response")" ;;
+    *) : ;;
   esac
+  printf '%s' "$response"
 elif [[ "$url" == *"/v6/deployments?"* ]]; then
   if [[ "$scenario" == deployment-page-2-exact && "$url" != *"until=1700000000101"* ]]; then
     jq '{deployments: [{id:"dpl_other", projectId:"prj_other", teamId:"team_test", readyState:"READY", target:"preview", url:"https://other.vercel.app"}], pagination:{count:1,prev:null,next:1700000000101}}' "$root/candidate.json"
