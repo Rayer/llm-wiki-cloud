@@ -281,7 +281,7 @@ for (const [label, digest] of [
   });
 }
 
-test('page-two exact READY candidate is reused without deployment creation', async () => {
+test('page-one and page-two uid deployments are normalized and reused without deployment creation', async () => {
   const run = await runCase('page-2-exact');
   assert.equal(run.result.code, undefined, run.result?.stderr);
   assert.equal(run.deploymentPostLog.length, 0);
@@ -289,6 +289,10 @@ test('page-two exact READY candidate is reused without deployment creation', asy
   assert.equal(run.evidence.deployment.id, deploymentId);
   assert.equal(run.evidence.provider_verification.mutation_count, 1);
   assert.ok(run.curlCalls.some((url) => url.includes('/v6/deployments?') && url.includes('until=cursor-2')));
+  const deploymentCalls = run.curlCalls.filter((url) => url.includes('/v6/deployments?'));
+  assert.equal(deploymentCalls.length, 2);
+  assert.ok(!deploymentCalls[0].includes('until='));
+  assert.ok(deploymentCalls[1].includes('until=cursor-2'));
 });
 
 test('existing candidate source failure remains zero-mutation blocked', async () => {

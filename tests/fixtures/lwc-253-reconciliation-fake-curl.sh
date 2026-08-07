@@ -6,6 +6,10 @@ scenario="$(<"$root/scenario")"
 url=""
 data=""
 
+normalize_v6_deployment() {
+  jq -c '. + {uid: (.uid // .id)} | del(.id,.teamId,.accountId,.ownerId) | .url = (.url | sub("^https?://"; ""))'
+}
+
 increment_counter() {
   local path="$root/$1" count=0
   [[ -f "$path" ]] && count="$(<"$path")"
@@ -83,42 +87,52 @@ elif [[ "$url" == *"/v13/deployments/dpl_new"* ]]; then
   printf '%s' "$response"
 elif [[ "$url" == *"/v6/deployments?"* ]]; then
   if [[ "$scenario" == deployment-page-2-exact && "$url" != *"until=1700000000101"* ]]; then
-    jq '{deployments: [{id:"dpl_other", projectId:"prj_other", teamId:"team_test", readyState:"READY", target:"preview", url:"https://other.vercel.app"}], pagination:{count:1,prev:null,next:1700000000101}}' "$root/candidate.json"
+    normalize_v6_deployment <<< "$(jq '.projectId = "prj_other"' "$root/candidate.json")" | jq '{deployments:[.], pagination:{count:1,prev:null,next:1700000000101}}'
   elif [[ "$scenario" == deployment-page-2-exact && "$url" == *"until=1700000000101"* ]]; then
-    jq '{deployments:[.], pagination:{count:1,prev:1700000000101,next:null}}' "$root/candidate.json"
+    normalize_v6_deployment <<< "$(cat "$root/candidate.json")" | jq '{deployments:[.], pagination:{count:1,prev:1700000000101,next:null}}'
   elif [[ "$scenario" == deployment-cursor-loop ]]; then
     printf '%s' '{"deployments":[],"pagination":{"count":0,"prev":null,"next":1700000000202}}'
   elif [[ "$scenario" == deployment-malformed ]]; then
     printf '%s' '{"deployments":[{"id":7}]}'
   elif [[ "$scenario" == deployment-pagination-string ]]; then
-    printf '%s' '{"deployments":[{"id":"dpl_other","projectId":"prj_other","teamId":"team_test","readyState":"READY","target":"preview","url":"https://other.vercel.app"}],"pagination":{"count":1,"prev":null,"next":"1700000000303"}}'
+    printf '%s' '{"deployments":[{"uid":"dpl_other","projectId":"prj_other","teamId":"team_test","readyState":"READY","target":"preview","url":"https://other.vercel.app"}],"pagination":{"count":1,"prev":null,"next":"1700000000303"}}'
   elif [[ "$scenario" == deployment-pagination-bool ]]; then
-    printf '%s' '{"deployments":[{"id":"dpl_other","projectId":"prj_other","teamId":"team_test","readyState":"READY","target":"preview","url":"https://other.vercel.app"}],"pagination":{"count":1,"prev":null,"next":true}}'
+    printf '%s' '{"deployments":[{"uid":"dpl_other","projectId":"prj_other","teamId":"team_test","readyState":"READY","target":"preview","url":"https://other.vercel.app"}],"pagination":{"count":1,"prev":null,"next":true}}'
   elif [[ "$scenario" == deployment-pagination-object ]]; then
-    printf '%s' '{"deployments":[{"id":"dpl_other","projectId":"prj_other","teamId":"team_test","readyState":"READY","target":"preview","url":"https://other.vercel.app"}],"pagination":{"count":1,"prev":null,"next":{}}}'
+    printf '%s' '{"deployments":[{"uid":"dpl_other","projectId":"prj_other","teamId":"team_test","readyState":"READY","target":"preview","url":"https://other.vercel.app"}],"pagination":{"count":1,"prev":null,"next":{}}}'
   elif [[ "$scenario" == deployment-pagination-float ]]; then
-    printf '%s' '{"deployments":[{"id":"dpl_other","projectId":"prj_other","teamId":"team_test","readyState":"READY","target":"preview","url":"https://other.vercel.app"}],"pagination":{"count":1,"prev":null,"next":1700000000.5}}'
+    printf '%s' '{"deployments":[{"uid":"dpl_other","projectId":"prj_other","teamId":"team_test","readyState":"READY","target":"preview","url":"https://other.vercel.app"}],"pagination":{"count":1,"prev":null,"next":1700000000.5}}'
   elif [[ "$scenario" == deployment-pagination-count-bool ]]; then
-    printf '%s' '{"deployments":[{"id":"dpl_other","projectId":"prj_other","teamId":"team_test","readyState":"READY","target":"preview","url":"https://other.vercel.app"}],"pagination":{"count":true,"prev":null,"next":1700000000304}}'
+    printf '%s' '{"deployments":[{"uid":"dpl_other","projectId":"prj_other","teamId":"team_test","readyState":"READY","target":"preview","url":"https://other.vercel.app"}],"pagination":{"count":true,"prev":null,"next":1700000000304}}'
   elif [[ "$scenario" == deployment-pagination-count-float ]]; then
-    printf '%s' '{"deployments":[{"id":"dpl_other","projectId":"prj_other","teamId":"team_test","readyState":"READY","target":"preview","url":"https://other.vercel.app"}],"pagination":{"count":1.5,"prev":null,"next":1700000000305}}'
+    printf '%s' '{"deployments":[{"uid":"dpl_other","projectId":"prj_other","teamId":"team_test","readyState":"READY","target":"preview","url":"https://other.vercel.app"}],"pagination":{"count":1.5,"prev":null,"next":1700000000305}}'
   elif [[ "$scenario" == deployment-pagination-prev-bool ]]; then
-    printf '%s' '{"deployments":[{"id":"dpl_other","projectId":"prj_other","teamId":"team_test","readyState":"READY","target":"preview","url":"https://other.vercel.app"}],"pagination":{"count":1,"prev":true,"next":1700000000404}}'
+    printf '%s' '{"deployments":[{"uid":"dpl_other","projectId":"prj_other","teamId":"team_test","readyState":"READY","target":"preview","url":"https://other.vercel.app"}],"pagination":{"count":1,"prev":true,"next":1700000000404}}'
   elif [[ "$scenario" == deployment-pagination-prev-object ]]; then
-    printf '%s' '{"deployments":[{"id":"dpl_other","projectId":"prj_other","teamId":"team_test","readyState":"READY","target":"preview","url":"https://other.vercel.app"}],"pagination":{"count":1,"prev":{},"next":1700000000405}}'
+    printf '%s' '{"deployments":[{"uid":"dpl_other","projectId":"prj_other","teamId":"team_test","readyState":"READY","target":"preview","url":"https://other.vercel.app"}],"pagination":{"count":1,"prev":{},"next":1700000000405}}'
   elif [[ "$scenario" == deployment-pagination-negative ]]; then
-    printf '%s' '{"deployments":[{"id":"dpl_other","projectId":"prj_other","teamId":"team_test","readyState":"READY","target":"preview","url":"https://other.vercel.app"}],"pagination":{"count":1,"prev":null,"next":-1}}'
+    printf '%s' '{"deployments":[{"uid":"dpl_other","projectId":"prj_other","teamId":"team_test","readyState":"READY","target":"preview","url":"https://other.vercel.app"}],"pagination":{"count":1,"prev":null,"next":-1}}'
   elif [[ "$scenario" == deployment-pagination-missing ]]; then
-    printf '%s' '{"deployments":[{"id":"dpl_other","projectId":"prj_other","teamId":"team_test","readyState":"READY","target":"preview","url":"https://other.vercel.app"}],"pagination":{"count":1,"prev":null}}'
+    printf '%s' '{"deployments":[{"uid":"dpl_other","projectId":"prj_other","teamId":"team_test","readyState":"READY","target":"preview","url":"https://other.vercel.app"}],"pagination":{"count":1,"prev":null}}'
   elif [[ "$scenario" == deployment-pagination-malformed ]]; then
-    printf '%s' '{"deployments":[{"id":"dpl_other","projectId":"prj_other","teamId":"team_test","readyState":"READY","target":"preview","url":"https://other.vercel.app"}],"pagination":{}}'
+    printf '%s' '{"deployments":[{"uid":"dpl_other","projectId":"prj_other","teamId":"team_test","readyState":"READY","target":"preview","url":"https://other.vercel.app"}],"pagination":{}}'
   elif [[ "$scenario" == deployment-page-max ]]; then
     deployment_reads="$(increment_counter deployment-page-reads)"
     printf '{"deployments":[],"pagination":{"count":0,"prev":null,"next":%s}}' "$((1700000000400 + deployment_reads))"
   elif [[ ( "$scenario" == create-needed || "$scenario" == production-before-create-drift || "$scenario" == post-create-authority-drift ) && ! -f "$root/created" ]]; then
     printf '%s' '{"deployments":[],"pagination":{"count":0,"prev":null,"next":null}}'
   else
-    if [[ "$scenario" == duplicate-candidates ]]; then jq '{deployments:[.,.], pagination:{count:2,prev:null,next:null}}' "$root/candidate.json"; elif [[ "$scenario" == foreign-project-candidate && ! -f "$root/created" ]]; then jq '{deployments:[. | .projectId = "prj_foreign"], pagination:{count:1,prev:null,next:null}}' "$root/candidate.json"; elif [[ -f "$root/created" || "$scenario" != create-needed && "$scenario" != create-* ]]; then jq '{deployments:[.], pagination:{count:1,prev:null,next:null}}' "$root/candidate.json"; else printf '%s' '{"deployments":[],"pagination":{"count":0,"prev":null,"next":null}}'; fi
+    if [[ "$scenario" == duplicate-candidates ]]; then
+      candidate_one="$(normalize_v6_deployment <<< "$(cat "$root/candidate.json")")"
+      candidate="$(jq -c --argjson candidate "$candidate_one" '{deployments: [$candidate, $candidate], pagination:{count:2,prev:null,next:null}}' <<< '{}')"
+      printf '%s' "$candidate"
+    elif [[ "$scenario" == foreign-project-candidate && ! -f "$root/created" ]]; then
+      normalize_v6_deployment <<< "$(jq '.projectId = "prj_foreign"' "$root/candidate.json")" | jq '{deployments:[.], pagination:{count:1,prev:null,next:null}}'
+    elif [[ -f "$root/created" || "$scenario" != create-needed && "$scenario" != create-* ]]; then
+      normalize_v6_deployment <<< "$(cat "$root/candidate.json")" | jq '{deployments:[.], pagination:{count:1,prev:null,next:null}}'
+    else
+      printf '%s' '{"deployments":[],"pagination":{"count":0,"prev":null,"next":null}}'
+    fi
   fi
 elif [[ "$url" == *"/v13/deployments?"* ]]; then
   printf '%s\n' "$data" >> "$root/deployment-post-log"

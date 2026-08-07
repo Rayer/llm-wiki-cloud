@@ -392,6 +392,8 @@ read_deployment_inventory() {
     response="$(api_query "$query")" || return 1
     page="$(jq -c '.deployments // .' <<< "$response")" || return 1
     jq -e 'type == "array"' <<< "$page" >/dev/null || return 1
+    jq -e 'all(.[]; type == "object" and (((.id | type == "string") and ((.uid | type) != "string")) or ((.uid | type == "string") and ((.id | type) != "string"))))' <<< "$page" >/dev/null || return 1
+    page="$(jq -c 'map(. + {id: (.id // .uid)} | del(.uid))' <<< "$page")"
     inventory="$(jq -cn --argjson current "$(jq -c '.deployments // .' <<< "$inventory")" --argjson page "$page" '{deployments: ($current + $page)}')"
     next="$(jq -r '.pagination.next // empty' <<< "$response")"
     [[ -n "$next" ]] || { printf '%s' "$inventory"; return 0; }
@@ -407,13 +409,15 @@ find_exact_deployment() {
     first((.deployments // .)[]? | select(
       (.id | type == "string" and test("^dpl_[A-Za-z0-9]+$")) and
       (.projectId // "") == $project and
-      ((.teamId // .accountId // "") == $team) and
+      ((.teamId // "") == "" or .teamId == $team) and
+      ((.accountId // "") == "" or .accountId == $team) and
+      ((.ownerId // "") == "" or .ownerId == $team) and
       .readyState == "READY" and .target == "preview" and
       (.gitSource.type // (if .meta.githubDeployment == "1" then "github" else null end)) == "github" and
       ((.gitSource.ref // .meta.githubCommitRef // "") == "develop" or (.gitSource.ref // .meta.githubCommitRef // "") == "refs/heads/develop") and
       (.gitSource.sha // .meta.githubCommitSha // "") == $sha and
       (if (.meta.githubOrg and .meta.githubRepo) then (.meta.githubOrg + "/" + .meta.githubRepo) else ((.gitSource.org // "") + "/" + (.gitSource.repo // "")) end) == $repo and
-      (.url | type == "string" and test("^https://"))
+      (.url | type == "string" and test("^[A-Za-z0-9._-]+\\.[A-Za-z0-9._-]+$"))
     )) // empty' <<< "$inventory"
 }
 

@@ -6,6 +6,11 @@ vercel_base="${VERCEL_API_BASE_URL:-https://api.vercel.com}"
 github_base="${GITHUB_API_URL:-https://api.github.com}"
 url=""
 data=""
+
+normalize_v6_deployment() {
+  jq -c '. + {uid: (.uid // .id)} | del(.id,.teamId,.accountId,.ownerId) | .url = (.url | sub("^https?://"; ""))'
+}
+
 while [[ "$#" -gt 0 ]]; do
   case "$1" in
     --header|--connect-timeout|--max-time|--max-redirs|--output|--write-out|--request|--data)
@@ -68,17 +73,17 @@ elif [[ "$url" == *"/v6/deployments?"* ]]; then
       printf '%s' '{"deployments":[]}'
       ;;
     historical-deployment)
-      jq '.meta.githubCommitSha = "fedcba9876543210fedcba9876543210fedcba98" | {deployments: [.]}' "$root/deployment.json"
+      normalize_v6_deployment <<< "$(jq '.meta.githubCommitSha = "fedcba9876543210fedcba9876543210fedcba98"' "$root/deployment.json")" | jq '{deployments: [.] }'
       ;;
     page-2-exact)
       if [[ "$url" == *"until=cursor-2"* ]]; then
-        jq '{deployments: [. ]}' "$root/deployment.json"
+        normalize_v6_deployment <<< "$(cat "$root/deployment.json")" | jq '{deployments: [.] }'
       else
-        jq '.meta.githubCommitSha = "fedcba9876543210fedcba9876543210fedcba98" | {deployments: [.], pagination: {next: "cursor-2"}}' "$root/deployment.json"
+        normalize_v6_deployment <<< "$(jq '.meta.githubCommitSha = "fedcba9876543210fedcba9876543210fedcba98"' "$root/deployment.json")" | jq '{deployments: [.], pagination: {next: "cursor-2"}}'
       fi
       ;;
     *)
-      jq '{deployments: [. ]}' "$root/deployment.json"
+      normalize_v6_deployment <<< "$(cat "$root/deployment.json")" | jq '{deployments: [.] }'
       ;;
   esac
 elif [[ "$url" == *"/v13/deployments?"* ]]; then
