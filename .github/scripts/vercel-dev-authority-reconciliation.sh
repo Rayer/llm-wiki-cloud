@@ -464,6 +464,14 @@ canonical_alias_inventory() {
   jq -S -c 'if type == "object" and (.aliases | type == "array") then {aliases: (.aliases | sort_by(tojson))} else error("invalid alias inventory") end' <<< "$1"
 }
 
+canonical_project_identity() {
+  jq -S -c 'if type == "object" and (.id | type == "string") and (.name | type == "string") and ((.accountId // .teamId // empty) | type == "string") then
+    {id: .id, name: .name, accountId: (.accountId // .teamId)}
+  else
+    error("invalid project snapshot for authority identity")
+  end' <<< "$1"
+}
+
 freeze_context() {
   local candidate_json
   candidate_json="${CANONICAL_CANDIDATE_JSON:-null}"
@@ -542,9 +550,9 @@ assert_frozen_authority() {
   local key current frozen
   for key in canonical_project canonical_domains legacy_project legacy_deployment global_alias legacy_alias_inventory canonical_alias_inventory; do
     case "$key" in
-      canonical_project) current="$(canonical_json "$CANONICAL_PROJECT_JSON" 2>/dev/null || true)" ;;
+      canonical_project) current="$(canonical_project_identity "$CANONICAL_PROJECT_JSON" 2>/dev/null || true)" ;;
       canonical_domains) current="$(canonical_json "$CANONICAL_DOMAINS_JSON" 2>/dev/null || true)" ;;
-      legacy_project) current="$(canonical_json "$LEGACY_PROJECT_JSON" 2>/dev/null || true)" ;;
+      legacy_project) current="$(canonical_project_identity "$LEGACY_PROJECT_JSON" 2>/dev/null || true)" ;;
       legacy_deployment) current="$(canonical_json "$CURRENT_DEPLOYMENT_JSON" 2>/dev/null || true)" ;;
       global_alias) current="$(canonical_json "$GLOBAL_ALIAS_JSON" 2>/dev/null || true)" ;;
       legacy_alias_inventory) current="$(canonical_alias_inventory "$LEGACY_ALIAS_INVENTORY_JSON" 2>/dev/null || true)" ;;
@@ -552,6 +560,8 @@ assert_frozen_authority() {
     esac
     if [[ "$key" == legacy_alias_inventory || "$key" == canonical_alias_inventory ]]; then
       frozen="$(canonical_alias_inventory "$(jq -c ".frozen_authority.$key" <<< "$context" 2>/dev/null || true)" 2>/dev/null || true)"
+    elif [[ "$key" == canonical_project || "$key" == legacy_project ]]; then
+      frozen="$(canonical_project_identity "$(jq -c ".frozen_authority.$key" <<< "$context" 2>/dev/null || true)" 2>/dev/null || true)"
     else
       frozen="$(jq -S -c ".frozen_authority.$key" <<< "$context" 2>/dev/null || true)"
     fi
@@ -785,6 +795,11 @@ run_promote() {
     post_create_candidate="$(find_canonical_candidate "$post_create_inventory")" || partial_fail DEPLOYMENT_CANDIDATE_AMBIGUOUS "canonical deployment inventory became ambiguous after deployment creation"
     [[ "$post_create_candidate" != null && "$(jq -r '.id' <<< "$post_create_candidate")" == "$DEPLOYMENT_ID" ]] || partial_fail DEPLOYMENT_INVENTORY_DRIFT "canonical deployment inventory did not retain the exact created deployment"
   fi
+  local resolved_deployment
+  resolved_deployment="$(api_query "/v13/deployments/$DEPLOYMENT_ID?teamId=$VERCEL_TEAM_ID" 2>/dev/null)" || partial_fail DEPLOYMENT_INSPECT_FAILED "resolved canonical deployment inspection failed before alias mutation"
+  normalize_deployment "$resolved_deployment"
+  deployment_response_matches "$resolved_deployment" || partial_fail DEPLOYMENT_SOURCE_MISMATCH "resolved canonical deployment provenance drifted before alias mutation"
+  PROVIDER_CHECKS="$(jq -c '. + ["canonical_deployment_reinspected"]' <<< "$PROVIDER_CHECKS")"
   if ! alias_set_once; then
     partial_fail MUTATION_UNCERTAIN "stable DEV alias mutation failed or became uncertain"
   fi

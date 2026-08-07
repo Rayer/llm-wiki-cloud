@@ -193,6 +193,20 @@ test('GREEN create-needed performs one create after handoff and one alias mutati
   assert.equal(createRequest.target, undefined);
 });
 
+test('post-create canonical identity drift blocks alias and remains partial', async () => {
+  const fixture = await setup('post-create-canonical-identity-drift');
+  const preflight = await run(fixture, 'preflight');
+  assert.equal(preflight.code, undefined, preflight.stderr);
+  const result = await run(fixture, 'promote');
+  assert.equal(result.code, 1);
+  const output = await evidence(fixture);
+  assert.equal(output.status, 'PARTIAL_MUTATION');
+  assert.equal(output.reason_code, 'AUTHORITY_DRIFT');
+  assert.equal(output.provider_verification.mutation_count, 1);
+  assert.equal((await lines(join(fixture.root, 'deployment-post-log'))).length, 1);
+  assert.equal((await lines(join(fixture.root, 'mutation-log'))).length, 0);
+});
+
 test('create-needed fails closed when provider returns a non-preview target after creation', async () => {
   const fixture = await setup('create-target-production');
   const preflight = await run(fixture, 'preflight');
@@ -659,6 +673,25 @@ test('create uncertainty is PARTIAL_MUTATION and never retries alias', async () 
   assert.equal(output.provider_verification.mutation_count, 1);
   assert.equal((await lines(join(fixture.root, 'mutation-log'))).length, 0);
   assert.equal((await lines(join(fixture.root, 'deployment-post-log'))).length, 1);
+});
+
+test('create-needed alias failure keeps exact created-deployment evidence', async () => {
+  const fixture = await setup('create-needed-alias-failure');
+  const preflight = await run(fixture, 'preflight');
+  assert.equal(preflight.code, undefined, preflight.stderr);
+  const result = await run(fixture, 'promote');
+  assert.equal(result.code, 1);
+  const output = await evidence(fixture);
+  assert.equal(output.status, 'PARTIAL_MUTATION');
+  assert.equal(output.reason_code, 'MUTATION_UNCERTAIN');
+  assert.equal(output.provider_verification.mutation_count, 2);
+  assert.ok((await lines(join(fixture.root, 'mutation-log'))).filter((line) => line.startsWith('alias set')).length >= 1);
+  assert.equal((await lines(join(fixture.root, 'deployment-post-log'))).length, 1);
+  assert.equal(output.deployment.id, newDeployment);
+  assert.equal(output.deployment.target, 'preview');
+  assert.equal(output.deployment.project_id, canonicalProject);
+  assert.equal(output.deployment.team_id, team);
+  assert.equal(output.deployment.source, 'github');
 });
 
 for (const [scenario, reason] of [
