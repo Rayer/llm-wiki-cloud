@@ -5,6 +5,14 @@ root="$FIXTURE_ROOT"
 scenario="$(<"$root/scenario")"
 url=""
 data=""
+
+increment_counter() {
+  local path="$root/$1" count=0
+  [[ -f "$path" ]] && count="$(<"$path")"
+  count=$((count + 1))
+  printf '%s' "$count" > "$path"
+  printf '%s' "$count"
+}
 while [[ "$#" -gt 0 ]]; do
   case "$1" in
     --header|--connect-timeout|--max-time|--max-redirs|--output|--write-out|--request|--data)
@@ -45,7 +53,8 @@ elif [[ "$url" == *"/repos/$GITHUB_REPOSITORY"* ]]; then
 elif [[ "$url" == *"/v9/projects/$VERCEL_PROJECT_ID/domains"* ]]; then
   if [[ "$scenario" == domain-missing ]]; then printf '%s' '{"domains":[]}'; elif [[ "$scenario" == domain-duplicate ]]; then jq '.domains += [{name:"llm-wiki-frontend-dev.vercel.app"}]' "$root/domains.json"; else cat "$root/domains.json"; fi
 elif [[ "$url" == *"/v9/projects/$VERCEL_PROJECT_ID"* ]]; then
-  if [[ "$scenario" == project-mismatch ]]; then jq '.name = "wrong-project"' "$root/canonical-project.json"; elif [[ "$scenario" == team-mismatch ]]; then jq '.accountId = "team_other"' "$root/canonical-project.json"; else cat "$root/canonical-project.json"; fi
+  canonical_reads="$(increment_counter canonical-project-reads)"
+  if [[ "$scenario" == final-reread-authority-failure && "$canonical_reads" -ge 3 ]]; then exit 7; elif [[ "$scenario" == project-mismatch ]]; then jq '.name = "wrong-project"' "$root/canonical-project.json"; elif [[ "$scenario" == team-mismatch ]]; then jq '.accountId = "team_other"' "$root/canonical-project.json"; else cat "$root/canonical-project.json"; fi
 elif [[ "$url" == *"/v9/projects/$EXPECTED_CURRENT_ALIAS_PROJECT_ID"* ]]; then
   if [[ "$scenario" == legacy-project-mismatch ]]; then jq '.name = "wrong-project"' "$root/legacy-project.json"; elif [[ "$scenario" == legacy-team-mismatch ]]; then jq '.accountId = "team_other"' "$root/legacy-project.json"; else cat "$root/legacy-project.json"; fi
 elif [[ "$url" == *"/v13/deployments/dpl_old"* ]]; then
@@ -58,22 +67,40 @@ elif [[ "$url" == *"/v13/deployments/dpl_old"* ]]; then
     *) cat "$root/old-deployment.json" ;;
   esac
 elif [[ "$url" == *"/v13/deployments/dpl_new"* ]]; then
-  if [[ "$scenario" == post-api-mismatch && -f "$root/mutated" ]]; then jq '.projectId = "prj_other"' "$root/candidate.json"; elif [[ "$scenario" == candidate-source-mismatch ]]; then jq '.meta.githubCommitSha = "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"' "$root/candidate.json"; else cat "$root/candidate.json"; fi
+  case "$scenario" in
+    create-read-failure) exit 9 ;;
+    create-poll-timeout) jq '.readyState = "BUILDING"' "$root/candidate.json" ;;
+    create-terminal-failed) jq '.readyState = "ERROR"' "$root/candidate.json" ;;
+    create-source-mismatch) jq '.meta.githubCommitSha = "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"' "$root/candidate.json" ;;
+    post-api-mismatch) if [[ -f "$root/mutated" ]]; then jq '.projectId = "prj_other"' "$root/candidate.json"; else cat "$root/candidate.json"; fi ;;
+    candidate-source-mismatch) jq '.meta.githubCommitSha = "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"' "$root/candidate.json" ;;
+    *) cat "$root/candidate.json" ;;
+  esac
 elif [[ "$url" == *"/v6/deployments?"* ]]; then
-  if [[ "$scenario" == deployment-page-2 && "$url" != *"until=deploy-cursor-2"* ]]; then
+  if [[ "$scenario" == deployment-page-2-exact && "$url" != *"until=deploy-cursor-2"* ]]; then
     jq '{deployments: [{id:"dpl_other", projectId:"prj_other", teamId:"team_test", readyState:"READY", target:"preview", url:"https://other.vercel.app"}], pagination:{next:"deploy-cursor-2"}}' "$root/candidate.json"
-  elif [[ "$scenario" == deployment-page-2 && "$url" == *"until=deploy-cursor-2"* ]]; then
+  elif [[ "$scenario" == deployment-page-2-exact && "$url" == *"until=deploy-cursor-2"* ]]; then
     jq '{deployments:[.]}' "$root/candidate.json"
-  elif [[ "$scenario" == create-needed && ! -f "$root/created" ]]; then
+  elif [[ "$scenario" == deployment-cursor-loop ]]; then
+    printf '%s' '{"deployments":[],"pagination":{"next":"deploy-loop"}}'
+  elif [[ "$scenario" == deployment-malformed ]]; then
+    printf '%s' '{"deployments":[{"id":7}]}'
+  elif [[ "$scenario" == deployment-page-max ]]; then
+    deployment_reads="$(increment_counter deployment-page-reads)"
+    printf '{"deployments":[],"pagination":{"next":"deploy-max-%s"}}' "$deployment_reads"
+  elif [[ ( "$scenario" == create-needed || "$scenario" == production-before-create-drift || "$scenario" == post-create-authority-drift ) && ! -f "$root/created" ]]; then
     printf '%s' '{"deployments":[]}'
   else
-    if [[ "$scenario" == duplicate-candidates ]]; then jq '{deployments:[.,.]}' "$root/candidate.json"; elif [[ -f "$root/created" || "$scenario" == existing-candidate || "$scenario" == production-drift || "$scenario" == post-inventory-mismatch || "$scenario" == deployment-page-2 || "$scenario" == already-converged || "$scenario" == normal-lane-conflict ]]; then jq '{deployments:[.]}' "$root/candidate.json"; else printf '%s' '{"deployments":[]}'; fi
+    if [[ "$scenario" == duplicate-candidates ]]; then jq '{deployments:[.,.]}' "$root/candidate.json"; elif [[ "$scenario" == foreign-project-candidate && ! -f "$root/created" ]]; then jq '{deployments:[. | .projectId = "prj_foreign"]}' "$root/candidate.json"; elif [[ -f "$root/created" || "$scenario" != create-needed && "$scenario" != create-* ]]; then jq '{deployments:[.]}' "$root/candidate.json"; else printf '%s' '{"deployments":[]}'; fi
   fi
 elif [[ "$url" == *"/v13/deployments?"* ]]; then
   printf '%s\n' "$data" >> "$root/deployment-post-log"
-  [[ "$scenario" != create-failure ]] || exit 8
-  touch "$root/created"
-  printf '%s' '{"id":"dpl_new","url":"https://dpl_new.vercel.app"}'
+  case "$scenario" in
+    create-failure) exit 8 ;;
+    create-response-missing-id) touch "$root/created"; printf '%s' '{"url":"https://dpl_new.vercel.app"}' ;;
+    create-response-invalid-id) touch "$root/created"; printf '%s' '{"id":"not-a-deployment","url":"https://dpl_new.vercel.app"}' ;;
+    *) touch "$root/created"; printf '%s' '{"id":"dpl_new","url":"https://dpl_new.vercel.app"}' ;;
+  esac
 elif [[ "$url" == *"/v4/aliases/wiki.rayer.idv.tw"* ]]; then
   prod_reads=0; [[ -f "$root/production-reads" ]] && prod_reads="$(<"$root/production-reads")"; prod_reads=$((prod_reads + 1)); printf '%s' "$prod_reads" > "$root/production-reads"
   if [[ "$scenario" == production-missing ]]; then printf '%s' '{}'; elif [[ "$scenario" == production-before-create-drift && "$prod_reads" -ge 5 ]]; then jq '.production["wiki.rayer.idv.tw"] | .deploymentId = "dpl_production_drift"' "$root/state.json"; elif [[ "$scenario" == production-drift && -f "$root/mutated" ]]; then jq '.production["wiki.rayer.idv.tw"] | .deploymentId = "dpl_production_drift"' "$root/state.json"; else jq '.production["wiki.rayer.idv.tw"]' "$root/state.json"; fi
@@ -85,6 +112,7 @@ elif [[ "$url" == *"/v4/aliases/$STABLE_DOMAIN"* ]]; then
 elif [[ "$url" == *"/v4/aliases?"* ]]; then
   project=""
   if [[ "$url" =~ projectId=([^\&]+) ]]; then project="${BASH_REMATCH[1]}"; fi
+  inventory_reads="$(increment_counter inventory-reads)"
   if [[ "$scenario" == alias-cursor-loop && "$url" != *"until=alias-loop"* ]]; then
     printf '%s' '{"aliases":[],"pagination":{"next":"alias-loop"}}'
   elif [[ "$scenario" == alias-cursor-loop && "$url" == *"until=alias-loop"* ]]; then
@@ -98,7 +126,11 @@ elif [[ "$url" == *"/v4/aliases?"* ]]; then
   elif [[ "$scenario" == inventory-page-max ]]; then
     printf '%s' '{"aliases":[],"pagination":{"next":"alias-max"}}'
   else
-    if [[ "$project" == "$EXPECTED_CURRENT_ALIAS_PROJECT_ID" ]]; then jq '{aliases:.legacyAliases}' "$root/state.json"; else jq '{aliases:.canonicalAliases}' "$root/state.json"; fi
+    if [[ "$project" == "$EXPECTED_CURRENT_ALIAS_PROJECT_ID" ]]; then
+      if [[ "$scenario" == inventory-order-drift && "$inventory_reads" -ge 5 ]]; then jq '{aliases:(.legacyAliases | reverse)}' "$root/state.json"; else jq '{aliases:.legacyAliases}' "$root/state.json"; fi
+    else
+      if [[ "$scenario" == inventory-order-drift && "$inventory_reads" -ge 5 ]]; then jq '{aliases:(.canonicalAliases | reverse)}' "$root/state.json"; else jq '{aliases:.canonicalAliases}' "$root/state.json"; fi
+    fi
   fi
 else
   exit 1

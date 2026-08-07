@@ -57,6 +57,10 @@ async function setup(scenario = 'existing-candidate') {
   }
   if (scenario === 'legacy-missing') initialState.legacyAliases = [];
   if (scenario === 'canonical-inventory-unexpected') initialState.canonicalAliases = [{ alias: domain, projectId: canonicalProject, deploymentId: 'dpl_other' }];
+  if (['inventory-order-drift', 'post-inventory-remove', 'post-inventory-change'].includes(scenario)) {
+    initialState.legacyAliases.push({ alias: 'legacy.example', projectId: legacyProject, deploymentId: 'dpl_legacy_extra', metadata: 'legacy' });
+    initialState.canonicalAliases.push({ alias: 'canonical.example', projectId: canonicalProject, deploymentId: 'dpl_canonical_extra', metadata: 'canonical' });
+  }
   await writeFile(join(root, 'state.json'), JSON.stringify(initialState));
   for (const fixture of ['lwc-253-reconciliation-fake-curl.sh', 'lwc-253-reconciliation-fake-vercel.sh']) {
     const destination = join(bin, fixture === 'lwc-253-reconciliation-fake-curl.sh' ? 'curl' : 'vercel');
@@ -140,6 +144,32 @@ test('GREEN reuses exact canonical candidate and performs exactly one alias muta
   assert.equal((await lines(join(fixture.root, 'mutation-log'))).filter((line) => line.startsWith('alias set')).length, 1);
   assert.equal(finalEvidence.rollback.project_id, legacyProject);
   assert.equal(finalEvidence.rollback.deployment_id, oldDeployment);
+});
+
+test('reused candidate final authority reread failure is PREFLIGHT_FAILED with zero writes', async () => {
+  const fixture = await setup('final-reread-authority-failure');
+  assert.equal((await run(fixture, 'preflight')).code, undefined);
+  const result = await run(fixture, 'promote');
+  assert.equal(result.code, 1);
+  const output = await evidence(fixture);
+  assert.equal(output.status, 'PREFLIGHT_FAILED');
+  assert.equal(output.reason_code, 'AUTHORITY_DRIFT');
+  assert.equal(output.provider_verification.mutation_count, 0);
+  assert.equal((await lines(join(fixture.root, 'deployment-post-log'))).length, 0);
+  assert.equal((await lines(join(fixture.root, 'mutation-log'))).length, 0);
+  assert.ok((await lines(join(fixture.root, 'curl-calls'))).filter((url) => url.includes('/v9/projects/prj_canonical?')).length >= 3);
+});
+
+test('complete alias inventories compare equal across provider order changes', async () => {
+  const fixture = await setup('inventory-order-drift');
+  assert.equal((await run(fixture, 'preflight')).code, undefined);
+  const result = await run(fixture, 'promote');
+  assert.equal(result.code, undefined, result.stderr);
+  const output = await evidence(fixture);
+  assert.equal(output.status, 'SUCCESS');
+  assert.equal(output.provider_verification.mutation_count, 1);
+  assert.equal((await lines(join(fixture.root, 'deployment-post-log'))).length, 0);
+  assert.equal((await lines(join(fixture.root, 'mutation-log'))).filter((line) => line.startsWith('alias set')).length, 1);
 });
 
 test('GREEN create-needed performs one create after handoff and one alias mutation', async () => {
@@ -301,6 +331,46 @@ test('post-mutation unrelated inventory drift is not hidden by the DEV alias set
   assert.equal(output.provider_verification.mutation_count, 1);
 });
 
+for (const scenario of ['post-inventory-add', 'post-inventory-remove', 'post-inventory-change']) {
+  test(`${scenario} is PARTIAL_MUTATION after the alias attempt`, async () => {
+    const fixture = await setup(scenario);
+    assert.equal((await run(fixture, 'preflight')).code, undefined);
+    const result = await run(fixture, 'promote');
+    assert.equal(result.code, 1);
+    const output = await evidence(fixture);
+    assert.equal(output.status, 'PARTIAL_MUTATION');
+    assert.equal(output.reason_code, 'POSTCHECK_MISMATCH');
+    assert.equal(output.provider_verification.mutation_count, 1);
+    assert.equal((await lines(join(fixture.root, 'mutation-log'))).filter((line) => line.startsWith('alias set')).length, 1);
+  });
+}
+
+test('alias CLI failure after provider acceptance is partial and never retried', async () => {
+  const fixture = await setup('alias-failure');
+  assert.equal((await run(fixture, 'preflight')).code, undefined);
+  const result = await run(fixture, 'promote');
+  assert.equal(result.code, 1);
+  const output = await evidence(fixture);
+  assert.equal(output.status, 'PARTIAL_MUTATION');
+  assert.equal(output.reason_code, 'MUTATION_UNCERTAIN');
+  assert.equal(output.provider_verification.mutation_count, 1);
+  assert.equal((await lines(join(fixture.root, 'mutation-log'))).filter((line) => line.startsWith('alias set')).length, 1);
+});
+
+for (const scenario of ['post-api-mismatch', 'cli-mismatch']) {
+  test(`${scenario} is PARTIAL_MUTATION after alias mutation`, async () => {
+    const fixture = await setup(scenario);
+    assert.equal((await run(fixture, 'preflight')).code, undefined);
+    const result = await run(fixture, 'promote');
+    assert.equal(result.code, 1);
+    const output = await evidence(fixture);
+    assert.equal(output.status, 'PARTIAL_MUTATION');
+    assert.equal(output.reason_code, 'POSTCHECK_MISMATCH');
+    assert.equal(output.provider_verification.mutation_count, 1);
+    assert.equal((await lines(join(fixture.root, 'mutation-log'))).filter((line) => line.startsWith('alias set')).length, 1);
+  });
+}
+
 test('bad artifact handoff blocks create and alias writes', async () => {
   const fixture = await setup('create-needed');
   assert.equal((await run(fixture, 'preflight')).code, undefined);
@@ -312,6 +382,29 @@ test('bad artifact handoff blocks create and alias writes', async () => {
   assert.equal((await lines(join(fixture.root, 'deployment-post-log'))).length, 0);
   assert.equal((await lines(join(fixture.root, 'mutation-log'))).length, 0);
 });
+
+for (const [label, overrides] of [
+  ['invalid ID', { ROLLBACK_ARTIFACT_ID: 'artifact-456' }],
+  ['invalid URL', { ROLLBACK_ARTIFACT_URL: 'https://github.com/Rayer/other/actions/runs/123/artifacts/456' }],
+  ['invalid name', { RECONCILIATION_ARTIFACT_NAME: `other-${sha}` }],
+  ['uppercase digest', { ROLLBACK_ARTIFACT_DIGEST: artifactDigest.toUpperCase() }],
+  ['63-character digest', { ROLLBACK_ARTIFACT_DIGEST: artifactDigest.slice(0, 63) }],
+  ['65-character digest', { ROLLBACK_ARTIFACT_DIGEST: `${artifactDigest}0` }],
+  ['empty digest', { ROLLBACK_ARTIFACT_DIGEST: '' }],
+]) {
+  test(`reconciliation rejects ${label} artifact handoff before every provider write`, async () => {
+    const fixture = await setup('create-needed');
+    assert.equal((await run(fixture, 'preflight')).code, undefined);
+    const result = await run(fixture, 'promote', overrides);
+    assert.equal(result.code, 1);
+    const output = await evidence(fixture);
+    assert.equal(output.status, 'PREFLIGHT_FAILED');
+    assert.equal(output.reason_code, 'ROLLBACK_ARTIFACT_INVALID');
+    assert.equal(output.provider_verification.mutation_count, 0);
+    assert.equal((await lines(join(fixture.root, 'deployment-post-log'))).length, 0);
+    assert.equal((await lines(join(fixture.root, 'mutation-log'))).length, 0);
+  });
+}
 
 test('authority drift after preflight is zero-mutation fail-closed', async () => {
   const fixture = await setup('existing-candidate');
@@ -333,6 +426,32 @@ test('complete paginated inventories include required page-two authority records
   assert.equal(output.status, 'PREFLIGHT_READY');
   assert.ok((await readFile(join(fixture.root, 'curl-calls'), 'utf8')).includes('until=alias-cursor-2'));
 });
+
+for (const scenario of ['deployment-page-2-exact', 'deployment-cursor-loop', 'deployment-malformed', 'deployment-page-max', 'duplicate-candidates']) {
+  test(`reconciliation deployment inventory scenario ${scenario} is bounded before writes`, async () => {
+    const fixture = await setup(scenario);
+    const result = await run(fixture, 'preflight');
+    if (scenario === 'deployment-page-2-exact') {
+      assert.equal(result.code, undefined, result.stderr);
+      const output = await evidence(fixture);
+      assert.equal(output.status, 'PREFLIGHT_READY');
+    } else {
+      assert.equal(result.code, 1);
+      const output = await evidence(fixture);
+      assert.equal(output.status, 'PREFLIGHT_FAILED');
+    }
+    const output = await evidence(fixture);
+    assert.equal(output.provider_verification.mutation_count, 0);
+    assert.equal((await lines(join(fixture.root, 'deployment-post-log'))).length, 0);
+    assert.equal((await lines(join(fixture.root, 'mutation-log'))).length, 0);
+    if (scenario === 'deployment-page-2-exact') {
+      const promote = await run(fixture, 'promote');
+      assert.equal(promote.code, undefined, promote.stderr);
+      assert.equal((await lines(join(fixture.root, 'deployment-post-log'))).length, 0);
+      assert.equal((await lines(join(fixture.root, 'mutation-log'))).filter((line) => line.startsWith('alias set')).length, 1);
+    }
+  });
+}
 
 for (const [scenario, reason] of [
   ['alias-cursor-loop', 'AUTHORITY_PREFLIGHT_MISMATCH'],
@@ -389,6 +508,65 @@ test('create uncertainty is PARTIAL_MUTATION and never retries alias', async () 
   assert.equal((await lines(join(fixture.root, 'deployment-post-log'))).length, 1);
 });
 
+for (const [scenario, reason] of [
+  ['create-response-missing-id', 'DEPLOYMENT_CREATE_UNCERTAIN'],
+  ['create-response-invalid-id', 'DEPLOYMENT_CREATE_UNCERTAIN'],
+  ['create-poll-timeout', 'DEPLOYMENT_POLL_TIMEOUT'],
+  ['create-terminal-failed', 'DEPLOYMENT_NOT_READY'],
+  ['create-source-mismatch', 'DEPLOYMENT_SOURCE_MISMATCH'],
+  ['create-read-failure', 'DEPLOYMENT_INSPECT_FAILED'],
+]) {
+  test(`${scenario} is partial after one create attempt and before alias`, async () => {
+    const fixture = await setup('create-needed');
+    await writeFile(join(fixture.root, 'scenario'), scenario);
+    assert.equal((await run(fixture, 'preflight')).code, undefined);
+    const result = await run(fixture, 'promote');
+    assert.equal(result.code, 1);
+    const output = await evidence(fixture);
+    assert.equal(output.status, 'PARTIAL_MUTATION');
+    assert.equal(output.reason_code, reason);
+    assert.equal(output.provider_verification.mutation_count, 1);
+    assert.equal((await lines(join(fixture.root, 'deployment-post-log'))).length, 1);
+    assert.equal((await lines(join(fixture.root, 'mutation-log'))).filter((line) => line.startsWith('alias set')).length, 0);
+  });
+}
+
+for (const createIfMissing of ['false', 'TRUE', '1', 'yes', '', '0']) {
+  test(`create_if_missing=${JSON.stringify(createIfMissing)} is rejected by reconciliation before writes`, async () => {
+    const fixture = await setup('create-needed');
+    const result = await run(fixture, 'preflight', { CREATE_IF_MISSING: createIfMissing, RECONCILIATION_ACK: acknowledgement(legacyProject, oldDeployment, sha, createIfMissing) });
+    assert.equal(result.code, 1);
+    const output = await evidence(fixture);
+    assert.equal(output.reason_code, createIfMissing === 'false' ? 'CREATE_NOT_ALLOWED' : 'CREATE_IF_MISSING_INVALID');
+    assert.equal(output.provider_verification.mutation_count, 0);
+    assert.equal((await lines(join(fixture.root, 'deployment-post-log'))).length, 0);
+    assert.equal((await lines(join(fixture.root, 'mutation-log'))).length, 0);
+  });
+}
+
+test('foreign-project exact-SHA candidate does not suppress canonical create', async () => {
+  const fixture = await setup('foreign-project-candidate');
+  assert.equal((await run(fixture, 'preflight')).code, undefined);
+  const result = await run(fixture, 'promote');
+  assert.equal(result.code, undefined, result.stderr);
+  const output = await evidence(fixture);
+  assert.equal(output.status, 'SUCCESS');
+  assert.equal(output.provider_verification.mutation_count, 2);
+  assert.equal((await lines(join(fixture.root, 'deployment-post-log'))).length, 1);
+  assert.equal((await lines(join(fixture.root, 'mutation-log'))).filter((line) => line.startsWith('alias set')).length, 1);
+});
+
+test('foreign-project exact-SHA candidate cannot suppress CREATE_NOT_ALLOWED', async () => {
+  const fixture = await setup('foreign-project-candidate');
+  const result = await run(fixture, 'preflight', { CREATE_IF_MISSING: 'false', RECONCILIATION_ACK: acknowledgement(legacyProject, oldDeployment, sha, 'false') });
+  assert.equal(result.code, 1);
+  const output = await evidence(fixture);
+  assert.equal(output.reason_code, 'CREATE_NOT_ALLOWED');
+  assert.equal(output.provider_verification.mutation_count, 0);
+  assert.equal((await lines(join(fixture.root, 'deployment-post-log'))).length, 0);
+  assert.equal((await lines(join(fixture.root, 'mutation-log'))).length, 0);
+});
+
 test('workflow is manual, develop-gated, pinned, and shares normal concurrency', async () => {
   const normal = parseYaml(await readFile(join(repoRoot, '.github/workflows/vercel-dev-deployment.yml'), 'utf8'));
   const reconciliation = parseYaml(await readFile(join(repoRoot, '.github/workflows/vercel-dev-authority-reconciliation.yml'), 'utf8'));
@@ -397,12 +575,14 @@ test('workflow is manual, develop-gated, pinned, and shares normal concurrency',
   assert.equal(reconciliation.jobs.reconcile.if, "github.ref == 'refs/heads/develop'");
   assert.equal(reconciliation.jobs.reconcile.environment.name, 'Development');
   const inputs = reconciliation.on.workflow_dispatch.inputs;
-  for (const name of ['commit_sha', 'ci_run_id', 'expected_new_project_id', 'expected_team_id', 'expected_current_alias_project_id', 'expected_current_alias_deployment_id', 'expected_current_alias_source_sha', 'ticket_ref', 'reconciliation_ack']) {
+  for (const name of ['commit_sha', 'ci_run_id', 'expected_new_project_id', 'expected_team_id', 'expected_current_alias_project_id', 'expected_current_alias_deployment_id', 'expected_current_alias_source_sha', 'ticket_ref', 'reconciliation_ack', 'create_if_missing']) {
     assert.equal(inputs[name].required, true);
-    assert.equal(inputs[name].type, name === 'ci_run_id' ? 'number' : 'string');
+    assert.equal(inputs[name].type, name === 'ci_run_id' ? 'number' : name === 'create_if_missing' ? 'boolean' : 'string');
   }
-  assert.equal(inputs.create_if_missing.required, true);
-  assert.equal(inputs.create_if_missing.type, 'boolean');
+  const jobEnv = reconciliation.jobs.reconcile.env;
+  for (const name of ['COMMIT_SHA', 'CI_RUN_ID', 'EXPECTED_NEW_PROJECT_ID', 'EXPECTED_TEAM_ID', 'CREATE_IF_MISSING', 'EXPECTED_CURRENT_ALIAS_PROJECT_ID', 'EXPECTED_CURRENT_ALIAS_DEPLOYMENT_ID', 'EXPECTED_CURRENT_ALIAS_SOURCE_SHA', 'TICKET_REF', 'RECONCILIATION_ACK']) {
+    assert.ok(name in jobEnv, `missing immutable workflow wiring: ${name}`);
+  }
   assert.match(await readFile(join(repoRoot, '.github/scripts/vercel-dev-authority-reconciliation.sh'), 'utf8'), /actions\/runs\/\$CI_RUN_ID/);
   assert.doesNotMatch(await readFile(join(repoRoot, '.github/scripts/vercel-dev-authority-reconciliation.sh'), 'utf8'), /actions\/workflows\/ci\.yml\/runs\?/);
   const steps = reconciliation.jobs.reconcile.steps;
@@ -418,6 +598,8 @@ test('workflow is manual, develop-gated, pinned, and shares normal concurrency',
   await execFileAsync('bash', ['-n', '.github/scripts/vercel-dev-authority-reconciliation.sh']);
   await execFileAsync('bash', ['-n', '-c', runBlocks.join('\n')]);
   assert.match(await readFile(join(repoRoot, '.github/scripts/vercel-dev-authority-reconciliation.sh'), 'utf8'), /api_post/);
+  const reconciliationSource = await readFile(join(repoRoot, '.github/scripts/vercel-dev-authority-reconciliation.sh'), 'utf8');
+  assert.doesNotMatch(reconciliationSource, /vercel alias set[^\n]*(wiki\.rayer\.idv\.tw|llm-wiki-frontend\.vercel\.app)/);
 });
 
 test('sourcing the normal helper is library-only and preserves direct evidence naming', async () => {

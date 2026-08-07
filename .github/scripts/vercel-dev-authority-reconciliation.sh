@@ -194,6 +194,13 @@ fail() {
 preflight_fail() { fail "PREFLIGHT_FAILED" "$1" "$2" "Correct the explicit reconciliation request or read-only provider state; zero provider mutation was attempted."; }
 partial_fail() { fail "PARTIAL_MUTATION" "$1" "$2" "Reconcile the exact DEV alias and deployment state before any retry or rollback; do not blindly replay the mutation."; }
 
+mutation_state_fail() {
+  if (( MUTATION_COUNT == 0 && DEPLOYMENT_CREATED == 0 )); then
+    preflight_fail "$1" "$2"
+  fi
+  partial_fail "$1" "$2"
+}
+
 validate_exact_sha() {
   validate_inputs
   if [[ "${LWC253_TEST_MODE:-}" == 1 ]]; then
@@ -422,13 +429,17 @@ read_repo_id() {
 
 canonical_json() { jq -S -c . <<< "$1"; }
 
+canonical_alias_inventory() {
+  jq -S -c 'if type == "object" and (.aliases | type == "array") then {aliases: (.aliases | sort_by(tojson))} else error("invalid alias inventory") end' <<< "$1"
+}
+
 freeze_context() {
   local candidate_json
   candidate_json="${CANONICAL_CANDIDATE_JSON:-null}"
   jq -n \
     --arg sha "$COMMIT_SHA" --arg ticket "$TICKET_REF" --arg ack "$RECONCILIATION_ACK" --arg repo "$EXPECTED_REPOSITORY" --arg ref "refs/heads/$EXPECTED_REF" --arg oldRef "$FROZEN_OLD_SOURCE_REF" --arg oldRepo "$FROZEN_OLD_REPOSITORY" --arg oldReady "$FROZEN_OLD_READY_STATE" --arg oldTarget "$FROZEN_OLD_TARGET" \
     --arg canonical "$VERCEL_PROJECT_ID" --arg expectedCanonical "$EXPECTED_NEW_PROJECT_ID" --arg team "$VERCEL_TEAM_ID" --arg expectedTeam "$EXPECTED_TEAM_ID" --arg scope "$VERCEL_SCOPE" --arg domain "$STABLE_DOMAIN" --arg oldProject "$EXPECTED_CURRENT_ALIAS_PROJECT_ID" --arg oldDeployment "$EXPECTED_CURRENT_ALIAS_DEPLOYMENT_ID" --arg oldSha "$EXPECTED_CURRENT_ALIAS_SOURCE_SHA" --arg ciId "$CI_RUN_ID" --arg ciUrl "$CI_RUN_URL" --arg create "$CREATE_IF_MISSING" --arg repoId "$PROJECT_REPOSITORY_ID" --arg decision "$DEPLOYMENT_DECISION" --arg deployment "$DEPLOYMENT_ID" --arg deploymentUrl "$DEPLOYMENT_URL" --arg count "$MUTATION_COUNT" --argjson candidate "$candidate_json" \
-    --argjson canonicalProject "$CANONICAL_PROJECT_JSON" --argjson canonicalDomains "$CANONICAL_DOMAINS_JSON" --argjson legacyProject "$LEGACY_PROJECT_JSON" --argjson oldDeploymentResponse "$CURRENT_DEPLOYMENT_JSON" --argjson globalAlias "$GLOBAL_ALIAS_JSON" --argjson legacyAliases "$LEGACY_ALIAS_INVENTORY_JSON" --argjson canonicalAliases "$CANONICAL_ALIAS_INVENTORY_JSON" --argjson productionOne "$PRODUCTION_ALIAS_ONE_JSON" --argjson productionTwo "$PRODUCTION_ALIAS_TWO_JSON" --argjson checks "$PROVIDER_CHECKS" \
+    --argjson canonicalProject "$CANONICAL_PROJECT_JSON" --argjson canonicalDomains "$CANONICAL_DOMAINS_JSON" --argjson legacyProject "$LEGACY_PROJECT_JSON" --argjson oldDeploymentResponse "$CURRENT_DEPLOYMENT_JSON" --argjson globalAlias "$GLOBAL_ALIAS_JSON" --argjson legacyAliases "$(canonical_alias_inventory "$LEGACY_ALIAS_INVENTORY_JSON")" --argjson canonicalAliases "$(canonical_alias_inventory "$CANONICAL_ALIAS_INVENTORY_JSON")" --argjson productionOne "$PRODUCTION_ALIAS_ONE_JSON" --argjson productionTwo "$PRODUCTION_ALIAS_TWO_JSON" --argjson checks "$PROVIDER_CHECKS" \
     '{schema_version: 2, mode: "authority_reconciliation", phase: "preflight-complete", status: "ready_for_durable_rollback", ticket_ref: $ticket, acknowledgement: $ack, source: {repository: $repo, commit_sha: $sha, ref: $ref, canonical_ci: {workflow: "ci.yml", run_id: ($ciId | tonumber), run_url: $ciUrl}}, target: {project_id: $canonical, expected_new_project_id: $expectedCanonical, project_name: "llm-wiki-frontend-dev", team_id: $team, expected_team_id: $expectedTeam, scope: $scope, stable_domain: $domain, decision: $decision, create_if_missing: ($create == "true"), deployment_id: ($deployment | if . == "" then null else . end), deployment_url: ($deploymentUrl | if . == "" then null else . end), candidate: $candidate}, repository_id: ($repoId | tonumber), frozen_authority: {alias: $domain, canonical_project_id: $canonical, legacy_project_id: $oldProject, legacy_deployment_id: $oldDeployment, legacy_source_sha: $oldSha, legacy_source: {repository: $oldRepo, ref: $oldRef, ready_state: $oldReady, target: ($oldTarget | if . == "" then null else . end)}, canonical_project: $canonicalProject, canonical_domains: $canonicalDomains, legacy_project: $legacyProject, legacy_deployment: $oldDeploymentResponse, global_alias: $globalAlias, legacy_alias_inventory: $legacyAliases, canonical_alias_inventory: $canonicalAliases, production_aliases: {"wiki.rayer.idv.tw": $productionOne, "llm-wiki-frontend.vercel.app": $productionTwo}}, mutation_count: ($count | tonumber), provider_checks: $checks}' > "$RECONCILIATION_CONTEXT_PATH.tmp"
   mv "$RECONCILIATION_CONTEXT_PATH.tmp" "$RECONCILIATION_CONTEXT_PATH"
 }
@@ -452,8 +463,8 @@ read_authority_state() {
   local first_alias
   first_alias="$(read_alias)" || return 1
   jq -e --arg alias "$STABLE_DOMAIN" 'type == "object" and .alias == $alias and (.projectId | type == "string") and (.deploymentId | type == "string" and test("^dpl_[A-Za-z0-9]+$"))' <<< "$first_alias" >/dev/null || return 1
-  LEGACY_ALIAS_INVENTORY_JSON="$(read_alias_inventory_strict "$EXPECTED_CURRENT_ALIAS_PROJECT_ID")" || return 1
-  CANONICAL_ALIAS_INVENTORY_JSON="$(read_alias_inventory_strict "$VERCEL_PROJECT_ID")" || return 1
+  LEGACY_ALIAS_INVENTORY_JSON="$(canonical_alias_inventory "$(read_alias_inventory_strict "$EXPECTED_CURRENT_ALIAS_PROJECT_ID")")" || return 1
+  CANONICAL_ALIAS_INVENTORY_JSON="$(canonical_alias_inventory "$(read_alias_inventory_strict "$VERCEL_PROJECT_ID")")" || return 1
   read_production_authority || return 1
   local second_alias
   second_alias="$(read_alias)" || return 1
@@ -505,10 +516,14 @@ assert_frozen_authority() {
       legacy_project) current="$(canonical_json "$LEGACY_PROJECT_JSON" 2>/dev/null || true)" ;;
       legacy_deployment) current="$(canonical_json "$CURRENT_DEPLOYMENT_JSON" 2>/dev/null || true)" ;;
       global_alias) current="$(canonical_json "$GLOBAL_ALIAS_JSON" 2>/dev/null || true)" ;;
-      legacy_alias_inventory) current="$(canonical_json "$LEGACY_ALIAS_INVENTORY_JSON" 2>/dev/null || true)" ;;
-      canonical_alias_inventory) current="$(canonical_json "$CANONICAL_ALIAS_INVENTORY_JSON" 2>/dev/null || true)" ;;
+      legacy_alias_inventory) current="$(canonical_alias_inventory "$LEGACY_ALIAS_INVENTORY_JSON" 2>/dev/null || true)" ;;
+      canonical_alias_inventory) current="$(canonical_alias_inventory "$CANONICAL_ALIAS_INVENTORY_JSON" 2>/dev/null || true)" ;;
     esac
-    frozen="$(jq -S -c ".frozen_authority.$key" <<< "$context" 2>/dev/null || true)"
+    if [[ "$key" == legacy_alias_inventory || "$key" == canonical_alias_inventory ]]; then
+      frozen="$(canonical_alias_inventory "$(jq -c ".frozen_authority.$key" <<< "$context" 2>/dev/null || true)" 2>/dev/null || true)"
+    else
+      frozen="$(jq -S -c ".frozen_authority.$key" <<< "$context" 2>/dev/null || true)"
+    fi
     [[ -n "$current" && "$current" == "$frozen" ]] || return 1
   done
   assert_frozen_production "$context"
@@ -623,17 +638,17 @@ alias_set_once() {
 postcheck() {
   local alias_response canonical_inventory legacy_inventory deployment_response cli_response context expected_legacy expected_canonical
   alias_response="$(read_alias 2>/dev/null)" || partial_fail POSTCHECK_MISMATCH "post-mutation global alias read failed"
-  canonical_inventory="$(read_alias_inventory_strict "$VERCEL_PROJECT_ID" 2>/dev/null)" || partial_fail POSTCHECK_MISMATCH "post-mutation canonical alias inventory read failed"
-  legacy_inventory="$(read_alias_inventory_strict "$EXPECTED_CURRENT_ALIAS_PROJECT_ID" 2>/dev/null)" || partial_fail POSTCHECK_MISMATCH "post-mutation legacy alias inventory read failed"
+  canonical_inventory="$(canonical_alias_inventory "$(read_alias_inventory_strict "$VERCEL_PROJECT_ID" 2>/dev/null)")" || partial_fail POSTCHECK_MISMATCH "post-mutation canonical alias inventory read failed"
+  legacy_inventory="$(canonical_alias_inventory "$(read_alias_inventory_strict "$EXPECTED_CURRENT_ALIAS_PROJECT_ID" 2>/dev/null)")" || partial_fail POSTCHECK_MISMATCH "post-mutation legacy alias inventory read failed"
   PRODUCTION_ALIAS_ONE_JSON="$(read_alias_exact "$PRODUCTION_ALIAS_ONE" 2>/dev/null)" || partial_fail POSTCHECK_MISMATCH "post-mutation production alias wiki.rayer.idv.tw read failed"
   PRODUCTION_ALIAS_TWO_JSON="$(read_alias_exact "$PRODUCTION_ALIAS_TWO" 2>/dev/null)" || partial_fail POSTCHECK_MISMATCH "post-mutation production alias llm-wiki-frontend.vercel.app read failed"
   context="$(cat "$RECONCILIATION_CONTEXT_PATH")"
   assert_frozen_production "$context" || partial_fail POSTCHECK_MISMATCH "post-mutation production alias record changed"
   validate_global_alias "$VERCEL_PROJECT_ID" "$DEPLOYMENT_ID" "$alias_response" || partial_fail POSTCHECK_MISMATCH "post-mutation global alias did not identify canonical deployment"
-  expected_legacy="$(jq -S -c --arg alias "$STABLE_DOMAIN" '.frozen_authority.legacy_alias_inventory.aliases | map(select(.alias != $alias)) | {aliases: .}' <<< "$context")"
-  expected_canonical="$(jq -S -c --arg alias "$STABLE_DOMAIN" --arg project "$VERCEL_PROJECT_ID" --arg deployment "$DEPLOYMENT_ID" '.frozen_authority.canonical_alias_inventory.aliases + [{alias:$alias, projectId:$project, deploymentId:$deployment}] | {aliases: (sort_by(tojson))}' <<< "$context")"
-  [[ "$(jq -S -c '.aliases | sort_by(tojson) | {aliases:.}' <<< "$legacy_inventory")" == "$expected_legacy" ]] || partial_fail POSTCHECK_MISMATCH "post-mutation legacy inventory did not equal the frozen inventory minus only the fixed DEV alias"
-  [[ "$(jq -S -c '.aliases | sort_by(tojson) | {aliases:.}' <<< "$canonical_inventory")" == "$expected_canonical" ]] || partial_fail POSTCHECK_MISMATCH "post-mutation canonical inventory did not preserve frozen state plus exactly the fixed DEV alias"
+  expected_legacy="$(canonical_alias_inventory "$(jq -c --arg alias "$STABLE_DOMAIN" '.frozen_authority.legacy_alias_inventory.aliases | map(select(.alias != $alias)) | {aliases: .}' <<< "$context")")"
+  expected_canonical="$(canonical_alias_inventory "$(jq -c --arg alias "$STABLE_DOMAIN" --arg project "$VERCEL_PROJECT_ID" --arg deployment "$DEPLOYMENT_ID" '.frozen_authority.canonical_alias_inventory.aliases + [{alias:$alias, projectId:$project, deploymentId:$deployment}] | {aliases: .}' <<< "$context")")"
+  [[ "$legacy_inventory" == "$expected_legacy" ]] || partial_fail POSTCHECK_MISMATCH "post-mutation legacy inventory did not equal the frozen inventory minus only the fixed DEV alias"
+  [[ "$canonical_inventory" == "$expected_canonical" ]] || partial_fail POSTCHECK_MISMATCH "post-mutation canonical inventory did not preserve frozen state plus exactly the fixed DEV alias"
   deployment_response="$(api_query "/v13/deployments/$DEPLOYMENT_ID?teamId=$VERCEL_TEAM_ID" 2>/dev/null)" || partial_fail POSTCHECK_MISMATCH "post-mutation canonical deployment read failed"
   normalize_deployment "$deployment_response"
   deployment_response_matches "$deployment_response" || partial_fail POSTCHECK_MISMATCH "post-mutation canonical deployment provenance did not converge"
@@ -705,7 +720,7 @@ run_promote() {
     printf '%s\n' "$STATUS"
     exit 0
   fi
-  [[ "$authority_code" == 0 ]] || preflight_fail AUTHORITY_RECHECK_FAILED "the old authority tuple changed before the first mutation"
+  [[ "$authority_code" == 0 ]] || mutation_state_fail AUTHORITY_RECHECK_FAILED "the old authority tuple changed before the first mutation"
   if [[ "$candidate" != null ]]; then
     DEPLOYMENT_ID="$(jq -r '.id' <<< "$candidate")"
     DEPLOYMENT_URL="$(jq -r '.url' <<< "$candidate")"
@@ -718,15 +733,15 @@ run_promote() {
   else
     read_production_authority || preflight_fail PRODUCTION_ALIAS_READ_FAILED "production alias read failed immediately before deployment creation"
     assert_frozen_production "$context" || preflight_fail PRODUCTION_ALIAS_DRIFT "production alias records changed before deployment creation"
-    LEGACY_ALIAS_INVENTORY_JSON="$(read_alias_inventory_strict "$EXPECTED_CURRENT_ALIAS_PROJECT_ID")" || preflight_fail LEGACY_INVENTORY_READ_FAILED "legacy alias inventory read failed immediately before deployment creation"
-    CANONICAL_ALIAS_INVENTORY_JSON="$(read_alias_inventory_strict "$VERCEL_PROJECT_ID")" || preflight_fail CANONICAL_INVENTORY_READ_FAILED "canonical alias inventory read failed immediately before deployment creation"
+    LEGACY_ALIAS_INVENTORY_JSON="$(canonical_alias_inventory "$(read_alias_inventory_strict "$EXPECTED_CURRENT_ALIAS_PROJECT_ID")")" || preflight_fail LEGACY_INVENTORY_READ_FAILED "legacy alias inventory read failed immediately before deployment creation"
+    CANONICAL_ALIAS_INVENTORY_JSON="$(canonical_alias_inventory "$(read_alias_inventory_strict "$VERCEL_PROJECT_ID")")" || preflight_fail CANONICAL_INVENTORY_READ_FAILED "canonical alias inventory read failed immediately before deployment creation"
     assert_frozen_authority "$context" || preflight_fail AUTHORITY_DRIFT "alias inventories changed immediately before deployment creation"
     create_canonical_deployment
   fi
   # Candidate creation is allowed to change only the deployment inventory. Re-freeze the
   # authority-bearing project, deployment, global alias, and both alias inventories first.
-  read_authority_state || partial_fail AUTHORITY_DRIFT "authority read failed after candidate resolution"
-  assert_frozen_authority "$context" || partial_fail AUTHORITY_DRIFT "authority changed after candidate resolution and before alias mutation"
+  read_authority_state || mutation_state_fail AUTHORITY_DRIFT "authority read failed after candidate resolution"
+  assert_frozen_authority "$context" || mutation_state_fail AUTHORITY_DRIFT "authority changed after candidate resolution and before alias mutation"
   if (( DEPLOYMENT_CREATED )); then
     local post_create_inventory post_create_candidate
     post_create_inventory="$(read_deployment_inventory_strict 2>/dev/null)" || partial_fail DEPLOYMENT_LIST_FAILED "canonical deployment inventory read failed after deployment creation"
