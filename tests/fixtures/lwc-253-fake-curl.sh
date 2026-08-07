@@ -89,10 +89,10 @@ elif [[ "$url" == *"/v6/deployments?"* ]]; then
 elif [[ "$url" == *"/v13/deployments?"* ]]; then
   if [[ "$scenario" == create-failure ]]; then exit 8; fi
   if [[ "$scenario" == create-uncertain ]]; then
-    printf '%s\n' 'deployment-create' >> "$root/deployment-post-log"
+    printf '%s\n' "$data" >> "$root/deployment-post-log"
     exit 8
   fi
-  printf '%s\n' 'deployment-create' >> "$root/deployment-post-log"
+  printf '%s\n' "$data" >> "$root/deployment-post-log"
   printf '%s' '{"id":"dpl_devready"}'
 elif [[ "$url" == *"/v4/aliases/$STABLE_DOMAIN"* ]]; then
   if [[ "$scenario" == authority-conflict ]]; then

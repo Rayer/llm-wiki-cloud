@@ -79,6 +79,7 @@ elif [[ "$url" == *"/v13/deployments/dpl_new"* ]]; then
     create-read-failure) exit 9 ;;
     create-poll-timeout) response="$(jq '.readyState = "BUILDING"' <<< "$response")" ;;
     create-terminal-failed) response="$(jq '.readyState = "ERROR"' <<< "$response")" ;;
+    create-target-production) response="$(jq '.target = "production"' <<< "$response")" ;;
     create-source-mismatch) response="$(jq '.meta.githubCommitSha = "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"' <<< "$response")" ;;
     post-api-mismatch) [[ -f "$root/mutated" ]] && response="$(jq '.projectId = "prj_other"' <<< "$response")" ;;
     candidate-source-mismatch) response="$(jq '.meta.githubCommitSha = "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"' <<< "$response")" ;;
