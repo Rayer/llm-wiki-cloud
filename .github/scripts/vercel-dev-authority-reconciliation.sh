@@ -19,6 +19,7 @@ readonly PRODUCTION_ALIAS_ONE="wiki.rayer.idv.tw"
 readonly PRODUCTION_ALIAS_TWO="llm-wiki-frontend.vercel.app"
 readonly MAX_ALIAS_PAGES=10
 readonly MAX_DEPLOYMENT_PAGES=10
+readonly MAX_SAFE_INTEGER=9007199254740991
 readonly ALIAS_PAGE_LIMIT=100
 readonly RECONCILIATION_EVIDENCE_FILENAME="vercel-authority-reconciliation.json"
 
@@ -374,18 +375,17 @@ read_alias_inventory_strict() {
     fi
     response="$(api_query "$query")" || return 1
     jq -e 'type == "object" and (.aliases | type == "array") and all(.aliases[]; type == "object" and (.alias | type == "string") and (.projectId | type == "string") and (.deploymentId | type == "string"))' <<< "$response" >/dev/null || return 1
-    if jq -e '. | has("pagination")' <<< "$response" >/dev/null; then
-      jq -e '.pagination | type == "object" and (has("count") and has("prev") and has("next"))' <<< "$response" >/dev/null || return 1
-      count="$(jq -r '.pagination.count' <<< "$response")"
-      [[ "$count" =~ ^[0-9]+$ ]] || return 1
-      prev="$(jq -r '.pagination.prev' <<< "$response")"
-      [[ "$prev" == null || "$prev" =~ ^[0-9]+$ ]] || return 1
-      next="$(jq -r '.pagination.next' <<< "$response")"
-      [[ "$next" == null || "$next" =~ ^[0-9]+$ ]] || return 1
-    fi
+    jq -e --argjson max "$MAX_SAFE_INTEGER" '
+      . as $response |
+      $response.pagination |
+      type == "object" and has("count") and has("prev") and has("next") and
+      (.count | type == "number" and isfinite and floor == . and . >= 0 and . <= $max) and
+      (.prev == null or (.prev | type == "number" and isfinite and floor == . and . >= 0 and . <= $max)) and
+      (.next == null or (.next | type == "number" and isfinite and floor == . and . >= 0 and . <= $max)) and
+      (.count == ($response.aliases | length))' <<< "$response" >/dev/null || return 1
+    next="$(jq -r '.pagination.next // empty' <<< "$response")"
     page="$(jq -c '.aliases' <<< "$response")"
     inventory="$(jq -cn --argjson current "$(jq -c '.aliases' <<< "$inventory")" --argjson page "$page" '{aliases: ($current + $page)}')"
-    next="$(jq -r '.pagination.next // empty' <<< "$response")"
     pages=$((pages + 1))
     [[ -n "$next" ]] || { printf '%s' "$inventory"; return 0; }
     [[ "$next" != "$cursor" && ":$seen:" != *":$next:"* ]] || return 1
@@ -412,18 +412,17 @@ read_deployment_inventory_strict() {
     fi
     response="$(api_query "$query")" || return 1
     jq -e 'type == "object" and (.deployments | type == "array") and all(.deployments[]; type == "object" and (.id | type == "string"))' <<< "$response" >/dev/null || return 1
-    if jq -e '. | has("pagination")' <<< "$response" >/dev/null; then
-      jq -e '.pagination | type == "object" and (has("count") and has("prev") and has("next"))' <<< "$response" >/dev/null || return 1
-      count="$(jq -r '.pagination.count' <<< "$response")"
-      [[ "$count" =~ ^[0-9]+$ ]] || return 1
-      prev="$(jq -r '.pagination.prev' <<< "$response")"
-      [[ "$prev" == null || "$prev" =~ ^[0-9]+$ ]] || return 1
-      next="$(jq -r '.pagination.next' <<< "$response")"
-      [[ "$next" == null || "$next" =~ ^[0-9]+$ ]] || return 1
-    fi
+    jq -e --argjson max "$MAX_SAFE_INTEGER" '
+      . as $response |
+      $response.pagination |
+      type == "object" and has("count") and has("prev") and has("next") and
+      (.count | type == "number" and isfinite and floor == . and . >= 0 and . <= $max) and
+      (.prev == null or (.prev | type == "number" and isfinite and floor == . and . >= 0 and . <= $max)) and
+      (.next == null or (.next | type == "number" and isfinite and floor == . and . >= 0 and . <= $max)) and
+      (.count == ($response.deployments | length))' <<< "$response" >/dev/null || return 1
+    next="$(jq -r '.pagination.next // empty' <<< "$response")"
     page="$(jq -c '.deployments' <<< "$response")"
     inventory="$(jq -cn --argjson current "$(jq -c '.deployments' <<< "$inventory")" --argjson page "$page" '{deployments: ($current + $page)}')"
-    next="$(jq -r '.pagination.next // empty' <<< "$response")"
     pages=$((pages + 1))
     [[ -n "$next" ]] || { printf '%s' "$inventory"; return 0; }
     [[ "$next" != "$cursor" && ":$seen:" != *":$next:"* ]] || return 1

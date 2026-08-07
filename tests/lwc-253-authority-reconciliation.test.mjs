@@ -427,7 +427,24 @@ test('complete paginated inventories include required page-two authority records
   assert.ok((await readFile(join(fixture.root, 'curl-calls'), 'utf8')).includes('until=1700000000102'));
 });
 
-for (const scenario of ['deployment-page-2-exact', 'deployment-cursor-loop', 'deployment-malformed', 'deployment-page-max', 'deployment-pagination-string', 'deployment-pagination-float', 'deployment-pagination-negative', 'deployment-pagination-missing', 'deployment-pagination-malformed', 'duplicate-candidates']) {
+for (const [scenario, reason] of [
+  ['deployment-page-2-exact', ''],
+  ['deployment-cursor-loop', 'DEPLOYMENT_LIST_FAILED'],
+  ['deployment-malformed', 'DEPLOYMENT_LIST_FAILED'],
+  ['deployment-page-max', 'DEPLOYMENT_LIST_FAILED'],
+  ['deployment-pagination-string', 'DEPLOYMENT_LIST_FAILED'],
+  ['deployment-pagination-bool', 'DEPLOYMENT_LIST_FAILED'],
+  ['deployment-pagination-object', 'DEPLOYMENT_LIST_FAILED'],
+  ['deployment-pagination-float', 'DEPLOYMENT_LIST_FAILED'],
+  ['deployment-pagination-count-bool', 'DEPLOYMENT_LIST_FAILED'],
+  ['deployment-pagination-count-float', 'DEPLOYMENT_LIST_FAILED'],
+  ['deployment-pagination-prev-bool', 'DEPLOYMENT_LIST_FAILED'],
+  ['deployment-pagination-prev-object', 'DEPLOYMENT_LIST_FAILED'],
+  ['deployment-pagination-negative', 'DEPLOYMENT_LIST_FAILED'],
+  ['deployment-pagination-missing', 'DEPLOYMENT_LIST_FAILED'],
+  ['deployment-pagination-malformed', 'DEPLOYMENT_LIST_FAILED'],
+  ['duplicate-candidates', 'DEPLOYMENT_CANDIDATE_AMBIGUOUS'],
+]) {
   test(`reconciliation deployment inventory scenario ${scenario} is bounded before writes`, async () => {
     const fixture = await setup(scenario);
     const result = await run(fixture, 'preflight');
@@ -440,7 +457,9 @@ for (const scenario of ['deployment-page-2-exact', 'deployment-cursor-loop', 'de
       assert.equal(result.code, 1);
       const output = await evidence(fixture);
       assert.equal(output.status, 'PREFLIGHT_FAILED');
+      assert.equal(output.reason_code, reason);
       assert.equal(output.provider_verification.mutation_count, 0);
+      assert.deepEqual(output.provider_verification.checks, []);
       assert.equal((await lines(join(fixture.root, 'deployment-post-log'))).length, 0);
       assert.equal((await lines(join(fixture.root, 'mutation-log'))).length, 0);
       return;
@@ -454,13 +473,19 @@ for (const scenario of ['deployment-page-2-exact', 'deployment-cursor-loop', 'de
   });
 }
 
-for (const scenario of [
-  'alias-pagination-string',
-  'alias-pagination-float',
-  'alias-pagination-negative',
-  'alias-pagination-missing',
-  'alias-pagination-malformed',
-  'inventory-page-max',
+for (const [scenario, reason] of [
+  ['alias-pagination-string', 'AUTHORITY_PREFLIGHT_MISMATCH'],
+  ['alias-pagination-bool', 'AUTHORITY_PREFLIGHT_MISMATCH'],
+  ['alias-pagination-object', 'AUTHORITY_PREFLIGHT_MISMATCH'],
+  ['alias-pagination-float', 'AUTHORITY_PREFLIGHT_MISMATCH'],
+  ['alias-pagination-count-bool', 'AUTHORITY_PREFLIGHT_MISMATCH'],
+  ['alias-pagination-count-float', 'AUTHORITY_PREFLIGHT_MISMATCH'],
+  ['alias-pagination-prev-bool', 'AUTHORITY_PREFLIGHT_MISMATCH'],
+  ['alias-pagination-prev-object', 'AUTHORITY_PREFLIGHT_MISMATCH'],
+  ['alias-pagination-negative', 'AUTHORITY_PREFLIGHT_MISMATCH'],
+  ['alias-pagination-missing', 'AUTHORITY_PREFLIGHT_MISMATCH'],
+  ['alias-pagination-malformed', 'AUTHORITY_PREFLIGHT_MISMATCH'],
+  ['inventory-page-max', 'AUTHORITY_PREFLIGHT_MISMATCH'],
 ]) {
   test(`alias pagination scenario ${scenario} is bounded before writes`, async () => {
     const fixture = await setup(scenario);
@@ -468,11 +493,27 @@ for (const scenario of [
     assert.equal(result.code, 1, result.stderr);
     const output = await evidence(fixture);
     assert.equal(output.status, 'PREFLIGHT_FAILED');
+    assert.equal(output.reason_code, reason);
     assert.equal(output.provider_verification.mutation_count, 0);
+    assert.deepEqual(output.provider_verification.checks, []);
     assert.equal((await lines(join(fixture.root, 'deployment-post-log'))).length, 0);
     assert.equal((await lines(join(fixture.root, 'mutation-log'))).length, 0);
   });
 }
+
+test('alias pagination next mutated from number to string fails pagination parsing', async () => {
+  const fixture = await setup('alias-pagination-string');
+  const result = await run(fixture, 'preflight');
+  assert.equal(result.code, 1, result.stderr);
+  const output = await evidence(fixture);
+  assert.equal(output.status, 'PREFLIGHT_FAILED');
+  assert.equal(output.reason_code, 'AUTHORITY_PREFLIGHT_MISMATCH');
+  assert.equal(output.provider_verification.mutation_count, 0);
+  const calls = (await readFile(join(fixture.root, 'curl-calls'), 'utf8')).trim().split('\n').filter(Boolean);
+  const inventoryCalls = calls.filter((url) => url.includes('/v4/aliases?'));
+  assert.equal(inventoryCalls.length, 2);
+  assert.ok(!inventoryCalls[0].includes('until='));
+});
 
 for (const [scenario, reason] of [
   ['alias-cursor-loop', 'AUTHORITY_PREFLIGHT_MISMATCH'],
