@@ -2,7 +2,7 @@
 set -Eeuo pipefail
 
 MODE="${1:-}"
-if [[ "$MODE" != "validate" && "$MODE" != "preflight" && "$MODE" != "promote" ]]; then
+if [[ "${VERCEL_DEV_DEPLOYMENT_LIBRARY:-}" != 1 && "$MODE" != "validate" && "$MODE" != "preflight" && "$MODE" != "promote" ]]; then
   printf 'usage: %s {validate|preflight|promote}\n' "$0" >&2
   exit 2
 fi
@@ -176,7 +176,9 @@ write_evidence() {
   mv "$EVIDENCE_PATH.tmp" "$EVIDENCE_PATH"
 }
 
-trap 'exit_code=$?; write_evidence; exit "$exit_code"' EXIT
+if [[ "${VERCEL_DEV_DEPLOYMENT_LIBRARY:-}" != 1 ]]; then
+  trap 'exit_code=$?; write_evidence; exit "$exit_code"' EXIT
+fi
 
 fail() {
   STATUS="$1"
@@ -652,7 +654,9 @@ run_promote() {
   printf '%s\n' "$STATUS"
 }
 
-if [[ "$MODE" == validate ]]; then
+if [[ "${VERCEL_DEV_DEPLOYMENT_LIBRARY:-}" == 1 ]]; then
+  :
+elif [[ "$MODE" == validate ]]; then
   validate_exact_sha
   STATUS="VALIDATED"
   REASON_CODE="VALIDATED"
