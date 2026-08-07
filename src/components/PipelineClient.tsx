@@ -423,7 +423,7 @@ export function PipelineClient() {
       <Surface variant="glass" as="section" className="p-5">
         <h2 className="text-lg font-semibold text-white">{t('Pipeline.addContent')}</h2>
         <p className="mt-1 text-sm text-zinc-400">
-          Upload markdown files or scrape URLs to feed the wiki pipeline.
+          {t('Pipeline.addContentDescription')}
         </p>
 
         <div className="mt-4 grid gap-4 sm:grid-cols-2">
@@ -433,7 +433,7 @@ export function PipelineClient() {
               <FileUp className="size-4 text-emerald-400" /> {t('Pipeline.uploadFiles')}
             </h3>
             <p className="mt-1 text-xs text-zinc-500">
-              Upload one or more files to the raw/ directory (max 3 concurrent).
+              {t('Pipeline.uploadHint')}
             </p>
             <div className="mt-3 flex gap-2">
               <input
@@ -484,7 +484,7 @@ export function PipelineClient() {
                     : 'cursor-pointer transition hover:bg-emerald-500'
                 }`}
               >
-                {uploading ? <Loader2 className="size-4 animate-spin" /> : 'Select'}
+                {uploading ? <Loader2 className="size-4 animate-spin" /> : t('Pipeline.select')}
               </label>
             </div>
 
@@ -566,7 +566,7 @@ export function PipelineClient() {
             <h3 className="flex items-center gap-2 text-sm font-semibold text-zinc-300">
               <Link2 className="size-4 text-blue-400" /> {t('Pipeline.scrapeUrl')}
             </h3>
-            <p className="mt-1 text-xs text-zinc-500">Fetch a web page and save as raw content.</p>
+            <p className="mt-1 text-xs text-zinc-500">{t('Pipeline.scrapeHint')}</p>
             <form onSubmit={handleScrape} className="mt-3 flex gap-2">
               <input
                 type="url"
@@ -593,9 +593,7 @@ export function PipelineClient() {
               <h3 className="flex items-center gap-2 text-sm font-semibold text-emerald-300">
                 <Cog className="size-4" /> {t('Pipeline.pipeline')}
               </h3>
-              <p className="mt-1 text-xs text-zinc-400">
-                Trigger the OLW pipeline to ingest, compile, and publish.
-              </p>
+              <p className="mt-1 text-xs text-zinc-400">{t('Pipeline.runDescription')}</p>
             </div>
             <button
               type="button"
@@ -654,12 +652,7 @@ export function PipelineClient() {
             {pipelineStatusText ? (
               <Badge variant="accent">{pipelineStatusText}</Badge>
             ) : (
-              <>
-                <strong className="text-zinc-300">ingest</strong> (analyze raw notes) →{' '}
-                <strong className="text-zinc-300">compile</strong> (synthesize wiki articles) →{' '}
-                <strong className="text-zinc-300">lint</strong> (check quality) →{' '}
-                <strong className="text-zinc-300">publish</strong> (auto-approve).
-              </>
+              <span>{t('Pipeline.pipelineStages')}</span>
             )}
           </p>
         </div>

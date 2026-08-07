@@ -59,15 +59,14 @@ test('concept route remains but user-facing concept copy becomes entries', async
 });
 
 test('main-path chrome strings are i18n-backed in zh-TW', async () => {
-  const [homeClient, pipelineClient, rawClient, listClient, commandPalette, zhTW] =
-    await Promise.all([
-      readFile(new URL('../src/components/HomeClient.tsx', import.meta.url), 'utf8'),
-      readFile(new URL('../src/components/PipelineClient.tsx', import.meta.url), 'utf8'),
-      readFile(new URL('../src/components/RawClient.tsx', import.meta.url), 'utf8'),
-      readFile(new URL('../src/components/ListClient.tsx', import.meta.url), 'utf8'),
-      readFile(new URL('../src/components/ui/CommandPalette.tsx', import.meta.url), 'utf8'),
-      readFile(new URL('../src/messages/zh-TW.json', import.meta.url), 'utf8').then(JSON.parse),
-    ]);
+  const [homeClient, pipelineClient, rawClient, listClient, commandPalette, zhTW] = await Promise.all([
+    readFile(new URL('../src/components/HomeClient.tsx', import.meta.url), 'utf8'),
+    readFile(new URL('../src/components/PipelineClient.tsx', import.meta.url), 'utf8'),
+    readFile(new URL('../src/components/RawClient.tsx', import.meta.url), 'utf8'),
+    readFile(new URL('../src/components/ListClient.tsx', import.meta.url), 'utf8'),
+    readFile(new URL('../src/components/ui/CommandPalette.tsx', import.meta.url), 'utf8'),
+    readFile(new URL('../src/messages/zh-TW.json', import.meta.url), 'utf8').then(JSON.parse),
+  ]);
 
   assert.match(homeClient, /label=\{t\('Shell\.sources'\)\}/);
   assert.match(homeClient, /label=\{t\('Shell\.concepts'\)\}/);
@@ -76,13 +75,38 @@ test('main-path chrome strings are i18n-backed in zh-TW', async () => {
   assert.match(pipelineClient, /t\('Pipeline\.uploadFiles'\)/);
   assert.match(pipelineClient, /t\('Pipeline\.scrapeUrl'\)/);
   assert.match(pipelineClient, /t\('Pipeline\.runPipeline'\)/);
+  assert.match(pipelineClient, /t\('Pipeline\.addContentDescription'\)/);
+  assert.match(pipelineClient, /t\('Pipeline\.uploadHint'\)/);
+  assert.match(pipelineClient, /t\('Pipeline\.scrapeHint'\)/);
+  assert.match(pipelineClient, /t\('Pipeline\.runDescription'\)/);
+  assert.match(pipelineClient, /t\('Pipeline\.pipelineStages'\)/);
+  assert.match(pipelineClient, /t\('Pipeline\.select'\)/);
+  assert.match(pipelineClient, /t\('Pipeline\.quotaLine'\)/);
   assert.match(rawClient, /useT\(\)/);
   assert.match(listClient, /placeholder=\{t\('List\.searchPlaceholder'/);
   assert.match(commandPalette, /labels\.sources/);
   assert.match(commandPalette, /labels\.concepts/);
   assert.equal(zhTW.Shell.raw, '原文');
   assert.equal(zhTW.Pipeline.addContent, '新增內容');
+  assert.equal(zhTW.Pipeline.uploadFiles, '上傳檔案');
+  assert.equal(zhTW.Pipeline.scrapeUrl, '擷取 URL');
   assert.equal(zhTW.Pipeline.runPipeline, '執行 Pipeline');
+  assert.equal(
+    zhTW.Pipeline.addContentDescription,
+    '上傳 markdown 檔案或擷取網址，以建立知識資料來源。',
+  );
+  assert.equal(
+    zhTW.Pipeline.uploadHint,
+    '可同時上傳多個檔案到 raw/ 目錄（最多 3 檔同時上傳）。',
+  );
+  assert.equal(zhTW.Pipeline.scrapeHint, '抓取網頁內容並存為原文資料。');
+  assert.equal(zhTW.Pipeline.runDescription, '啟動 OLW pipeline 以整理、編譯並上架知識條目。');
+  assert.equal(
+    zhTW.Pipeline.pipelineStages,
+    'ingest（分析原始筆記）→ compile（綜合 wiki 條目）→ lint（品質檢查）→ publish（自動核准）。',
+  );
+  assert.equal(zhTW.Pipeline.quotaLine, '今日執行：{runs}/{limit} · 冷卻：{cooldown} · 新檔案：{newFiles}');
+  assert.equal(zhTW.Pipeline.select, '選擇');
 });
 
 test('quota line can be formatted with i18n templates', () => {
