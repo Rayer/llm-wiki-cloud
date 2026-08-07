@@ -330,7 +330,7 @@ validate_legacy_deployment() {
   local response="$1"
   normalize_deployment "$response"
   if ! jq -e --arg id "$EXPECTED_CURRENT_ALIAS_DEPLOYMENT_ID" --arg project "$EXPECTED_CURRENT_ALIAS_PROJECT_ID" --arg team "$VERCEL_TEAM_ID" --arg sha "$EXPECTED_CURRENT_ALIAS_SOURCE_SHA" --arg repo "$EXPECTED_REPOSITORY" '
-    type == "object" and .id == $id and .projectId == $project and ((.teamId // .accountId) == $team) and .readyState == "READY" and (.target == null or .target == "preview") and
+    type == "object" and (.id // .uid) == $id and .projectId == $project and ((.teamId // .accountId) == $team) and .readyState == "READY" and (.target == null or .target == "preview") and
     (.gitSource.type // (if .meta.githubDeployment == "1" then "github" else null end)) == "github" and
     (if (.meta.githubOrg and .meta.githubRepo) then (.meta.githubOrg + "/" + .meta.githubRepo) else ((.gitSource.org // "") + "/" + (.gitSource.repo // "")) end) == $repo and
     ((.gitSource.ref // .meta.githubCommitRef // "") == "develop" or (.gitSource.ref // .meta.githubCommitRef // "") == "refs/heads/develop") and
@@ -614,7 +614,7 @@ resolve_canonical_deployment() {
 
 deployment_response_matches() {
   jq -e --arg id "$DEPLOYMENT_ID" --arg project "$VERCEL_PROJECT_ID" --arg team "$VERCEL_TEAM_ID" --arg sha "$COMMIT_SHA" --arg repo "$EXPECTED_REPOSITORY" --arg url "$DEPLOYMENT_URL" '
-    type == "object" and .id == $id and .projectId == $project and ((.teamId // .accountId) == $team) and .readyState == "READY" and .target == "preview" and (.gitSource.type // (if .meta.githubDeployment == "1" then "github" else null end)) == "github" and ((.gitSource.ref // .meta.githubCommitRef // "") == "develop" or (.gitSource.ref // .meta.githubCommitRef // "") == "refs/heads/develop") and (.gitSource.sha // .meta.githubCommitSha) == $sha and (if (.meta.githubOrg and .meta.githubRepo) then (.meta.githubOrg + "/" + .meta.githubRepo) else ((.gitSource.org // "") + "/" + (.gitSource.repo // "")) end) == $repo and .url == $url' <<< "$1" >/dev/null
+    type == "object" and (.id // .uid) == $id and .projectId == $project and ((.teamId // .accountId) == $team) and .readyState == "READY" and .target == "preview" and (.gitSource.type // (if .meta.githubDeployment == "1" then "github" else null end)) == "github" and ((.gitSource.ref // .meta.githubCommitRef // "") == "develop" or (.gitSource.ref // .meta.githubCommitRef // "") == "refs/heads/develop") and (.gitSource.sha // .meta.githubCommitSha) == $sha and (if (.meta.githubOrg and .meta.githubRepo) then (.meta.githubOrg + "/" + .meta.githubRepo) else ((.gitSource.org // "") + "/" + (.gitSource.repo // "")) end) == $repo and .url == $url' <<< "$1" >/dev/null
 }
 
 poll_canonical_deployment() {

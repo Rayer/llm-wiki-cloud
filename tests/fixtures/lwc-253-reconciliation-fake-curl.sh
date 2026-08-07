@@ -59,6 +59,7 @@ elif [[ "$url" == *"/v9/projects/$EXPECTED_CURRENT_ALIAS_PROJECT_ID"* ]]; then
   if [[ "$scenario" == legacy-project-mismatch ]]; then jq '.name = "wrong-project"' "$root/legacy-project.json"; elif [[ "$scenario" == legacy-team-mismatch ]]; then jq '.accountId = "team_other"' "$root/legacy-project.json"; else cat "$root/legacy-project.json"; fi
 elif [[ "$url" == *"/v13/deployments/dpl_old"* ]]; then
   case "$scenario" in
+    legacy-uid) jq 'del(.id) | .uid = "dpl_old"' "$root/old-deployment.json" ;;
     old-source-mismatch) jq '.meta.githubCommitSha = "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"' "$root/old-deployment.json" ;;
     old-ref-mismatch) jq '.meta.githubCommitRef = "feature"' "$root/old-deployment.json" ;;
     old-repo-mismatch) jq '.meta.githubRepo = "other-repo"' "$root/old-deployment.json" ;;

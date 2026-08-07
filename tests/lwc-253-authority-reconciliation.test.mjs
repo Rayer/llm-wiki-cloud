@@ -190,6 +190,16 @@ test('GREEN create-needed performs one create after handoff and one alias mutati
   assert.equal((await lines(join(fixture.root, 'mutation-log'))).filter((line) => line.startsWith('alias set')).length, 1);
 });
 
+test('legacy inspect can use uid as immutable deployment identifier in preflight', async () => {
+  const fixture = await setup('legacy-uid');
+  const preflight = await run(fixture, 'preflight');
+  assert.equal(preflight.code, undefined, preflight.stderr);
+  const output = await evidence(fixture);
+  assert.equal(output.status, 'PREFLIGHT_READY');
+  assert.equal(output.provider_verification.mutation_count, 0);
+  assert.equal((await lines(join(fixture.root, 'mutation-log'))).length, 0);
+});
+
 for (const [label, overrides, reason] of [
   ['wrong ticket', { TICKET_REF: 'LWC-252' }, 'TICKET_REF_INVALID'],
   ['wrong acknowledgement', { RECONCILIATION_ACK: 'approve' }, 'ACKNOWLEDGEMENT_INVALID'],
