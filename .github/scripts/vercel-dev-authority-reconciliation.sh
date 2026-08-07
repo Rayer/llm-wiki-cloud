@@ -368,9 +368,21 @@ read_alias_inventory_strict() {
   local project_id="$1" cursor="" next response page inventory='{"aliases":[]}' pages=0 seen=''
   while (( pages < MAX_ALIAS_PAGES )); do
     local query="/v4/aliases?projectId=$project_id&teamId=$VERCEL_TEAM_ID&limit=$ALIAS_PAGE_LIMIT"
-    if [[ -n "$cursor" ]]; then query+="&until=$(printf '%s' "$cursor" | jq -Rr @uri)"; fi
+    if [[ -n "$cursor" ]]; then
+      [[ "$cursor" =~ ^[0-9]+$ ]] || return 1
+      query+="&until=$cursor"
+    fi
     response="$(api_query "$query")" || return 1
-    jq -e 'type == "object" and (.aliases | type == "array") and all(.aliases[]; type == "object" and (.alias | type == "string") and (.projectId | type == "string") and (.deploymentId | type == "string")) and ((has("pagination") | not) or (.pagination | type == "object" and ((has("next") | not) or .next == null or (.next | type == "string" and length > 0))))' <<< "$response" >/dev/null || return 1
+    jq -e 'type == "object" and (.aliases | type == "array") and all(.aliases[]; type == "object" and (.alias | type == "string") and (.projectId | type == "string") and (.deploymentId | type == "string"))' <<< "$response" >/dev/null || return 1
+    if jq -e '. | has("pagination")' <<< "$response" >/dev/null; then
+      jq -e '.pagination | type == "object" and (has("count") and has("prev") and has("next"))' <<< "$response" >/dev/null || return 1
+      count="$(jq -r '.pagination.count' <<< "$response")"
+      [[ "$count" =~ ^[0-9]+$ ]] || return 1
+      prev="$(jq -r '.pagination.prev' <<< "$response")"
+      [[ "$prev" == null || "$prev" =~ ^[0-9]+$ ]] || return 1
+      next="$(jq -r '.pagination.next' <<< "$response")"
+      [[ "$next" == null || "$next" =~ ^[0-9]+$ ]] || return 1
+    fi
     page="$(jq -c '.aliases' <<< "$response")"
     inventory="$(jq -cn --argjson current "$(jq -c '.aliases' <<< "$inventory")" --argjson page "$page" '{aliases: ($current + $page)}')"
     next="$(jq -r '.pagination.next // empty' <<< "$response")"
@@ -394,9 +406,21 @@ read_deployment_inventory_strict() {
   local cursor="" next response page inventory='{"deployments":[]}' pages=0 seen=''
   while (( pages < MAX_DEPLOYMENT_PAGES )); do
     local query="/v6/deployments?projectId=$VERCEL_PROJECT_ID&teamId=$VERCEL_TEAM_ID&limit=$DEPLOYMENT_PAGE_LIMIT"
-    if [[ -n "$cursor" ]]; then query+="&until=$(printf '%s' "$cursor" | jq -Rr @uri)"; fi
+    if [[ -n "$cursor" ]]; then
+      [[ "$cursor" =~ ^[0-9]+$ ]] || return 1
+      query+="&until=$cursor"
+    fi
     response="$(api_query "$query")" || return 1
-    jq -e 'type == "object" and (.deployments | type == "array") and all(.deployments[]; type == "object" and (.id | type == "string")) and ((has("pagination") | not) or (.pagination | type == "object" and ((has("next") | not) or .next == null or (.next | type == "string" and length > 0))))' <<< "$response" >/dev/null || return 1
+    jq -e 'type == "object" and (.deployments | type == "array") and all(.deployments[]; type == "object" and (.id | type == "string"))' <<< "$response" >/dev/null || return 1
+    if jq -e '. | has("pagination")' <<< "$response" >/dev/null; then
+      jq -e '.pagination | type == "object" and (has("count") and has("prev") and has("next"))' <<< "$response" >/dev/null || return 1
+      count="$(jq -r '.pagination.count' <<< "$response")"
+      [[ "$count" =~ ^[0-9]+$ ]] || return 1
+      prev="$(jq -r '.pagination.prev' <<< "$response")"
+      [[ "$prev" == null || "$prev" =~ ^[0-9]+$ ]] || return 1
+      next="$(jq -r '.pagination.next' <<< "$response")"
+      [[ "$next" == null || "$next" =~ ^[0-9]+$ ]] || return 1
+    fi
     page="$(jq -c '.deployments' <<< "$response")"
     inventory="$(jq -cn --argjson current "$(jq -c '.deployments' <<< "$inventory")" --argjson page "$page" '{deployments: ($current + $page)}')"
     next="$(jq -r '.pagination.next // empty' <<< "$response")"
@@ -437,10 +461,10 @@ freeze_context() {
   local candidate_json
   candidate_json="${CANONICAL_CANDIDATE_JSON:-null}"
   jq -n \
-    --arg sha "$COMMIT_SHA" --arg ticket "$TICKET_REF" --arg ack "$RECONCILIATION_ACK" --arg repo "$EXPECTED_REPOSITORY" --arg ref "refs/heads/$EXPECTED_REF" --arg oldRef "$FROZEN_OLD_SOURCE_REF" --arg oldRepo "$FROZEN_OLD_REPOSITORY" --arg oldReady "$FROZEN_OLD_READY_STATE" --arg oldTarget "$FROZEN_OLD_TARGET" \
+    --arg sha "$COMMIT_SHA" --arg ticket "$TICKET_REF" --arg ack "$RECONCILIATION_ACK" --arg repo "$EXPECTED_REPOSITORY" --arg ref "refs/heads/$EXPECTED_REF" --arg oldRef "$FROZEN_OLD_SOURCE_REF" --arg oldRepo "$FROZEN_OLD_REPOSITORY" --arg oldReady "$FROZEN_OLD_READY_STATE" --arg oldTarget "$FROZEN_OLD_TARGET" --arg checkedOut "$CURRENT_HEAD_SHA" --arg currentRemote "$CURRENT_REMOTE_DEVELOP_SHA" \
     --arg canonical "$VERCEL_PROJECT_ID" --arg expectedCanonical "$EXPECTED_NEW_PROJECT_ID" --arg team "$VERCEL_TEAM_ID" --arg expectedTeam "$EXPECTED_TEAM_ID" --arg scope "$VERCEL_SCOPE" --arg domain "$STABLE_DOMAIN" --arg oldProject "$EXPECTED_CURRENT_ALIAS_PROJECT_ID" --arg oldDeployment "$EXPECTED_CURRENT_ALIAS_DEPLOYMENT_ID" --arg oldSha "$EXPECTED_CURRENT_ALIAS_SOURCE_SHA" --arg ciId "$CI_RUN_ID" --arg ciUrl "$CI_RUN_URL" --arg create "$CREATE_IF_MISSING" --arg repoId "$PROJECT_REPOSITORY_ID" --arg decision "$DEPLOYMENT_DECISION" --arg deployment "$DEPLOYMENT_ID" --arg deploymentUrl "$DEPLOYMENT_URL" --arg count "$MUTATION_COUNT" --argjson candidate "$candidate_json" \
     --argjson canonicalProject "$CANONICAL_PROJECT_JSON" --argjson canonicalDomains "$CANONICAL_DOMAINS_JSON" --argjson legacyProject "$LEGACY_PROJECT_JSON" --argjson oldDeploymentResponse "$CURRENT_DEPLOYMENT_JSON" --argjson globalAlias "$GLOBAL_ALIAS_JSON" --argjson legacyAliases "$(canonical_alias_inventory "$LEGACY_ALIAS_INVENTORY_JSON")" --argjson canonicalAliases "$(canonical_alias_inventory "$CANONICAL_ALIAS_INVENTORY_JSON")" --argjson productionOne "$PRODUCTION_ALIAS_ONE_JSON" --argjson productionTwo "$PRODUCTION_ALIAS_TWO_JSON" --argjson checks "$PROVIDER_CHECKS" \
-    '{schema_version: 2, mode: "authority_reconciliation", phase: "preflight-complete", status: "ready_for_durable_rollback", ticket_ref: $ticket, acknowledgement: $ack, source: {repository: $repo, commit_sha: $sha, ref: $ref, canonical_ci: {workflow: "ci.yml", run_id: ($ciId | tonumber), run_url: $ciUrl}}, target: {project_id: $canonical, expected_new_project_id: $expectedCanonical, project_name: "llm-wiki-frontend-dev", team_id: $team, expected_team_id: $expectedTeam, scope: $scope, stable_domain: $domain, decision: $decision, create_if_missing: ($create == "true"), deployment_id: ($deployment | if . == "" then null else . end), deployment_url: ($deploymentUrl | if . == "" then null else . end), candidate: $candidate}, repository_id: ($repoId | tonumber), frozen_authority: {alias: $domain, canonical_project_id: $canonical, legacy_project_id: $oldProject, legacy_deployment_id: $oldDeployment, legacy_source_sha: $oldSha, legacy_source: {repository: $oldRepo, ref: $oldRef, ready_state: $oldReady, target: ($oldTarget | if . == "" then null else . end)}, canonical_project: $canonicalProject, canonical_domains: $canonicalDomains, legacy_project: $legacyProject, legacy_deployment: $oldDeploymentResponse, global_alias: $globalAlias, legacy_alias_inventory: $legacyAliases, canonical_alias_inventory: $canonicalAliases, production_aliases: {"wiki.rayer.idv.tw": $productionOne, "llm-wiki-frontend.vercel.app": $productionTwo}}, mutation_count: ($count | tonumber), provider_checks: $checks}' > "$RECONCILIATION_CONTEXT_PATH.tmp"
+    '{schema_version: 2, mode: "authority_reconciliation", phase: "preflight-complete", status: "ready_for_durable_rollback", ticket_ref: $ticket, acknowledgement: $ack, source: {repository: $repo, commit_sha: $sha, ref: $ref, checked_out_sha: $checkedOut, current_remote_develop_sha: $currentRemote, canonical_ci: {workflow: "ci.yml", run_id: ($ciId | tonumber), run_url: $ciUrl}}, target: {project_id: $canonical, expected_new_project_id: $expectedCanonical, project_name: "llm-wiki-frontend-dev", team_id: $team, expected_team_id: $expectedTeam, scope: $scope, stable_domain: $domain, decision: $decision, create_if_missing: ($create == "true"), deployment_id: ($deployment | if . == "" then null else . end), deployment_url: ($deploymentUrl | if . == "" then null else . end), candidate: $candidate}, repository_id: ($repoId | tonumber), frozen_authority: {alias: $domain, canonical_project_id: $canonical, legacy_project_id: $oldProject, legacy_deployment_id: $oldDeployment, legacy_source_sha: $oldSha, legacy_source: {repository: $oldRepo, ref: $oldRef, ready_state: $oldReady, target: ($oldTarget | if . == "" then null else . end)}, canonical_project: $canonicalProject, canonical_domains: $canonicalDomains, legacy_project: $legacyProject, legacy_deployment: $oldDeploymentResponse, global_alias: $globalAlias, legacy_alias_inventory: $legacyAliases, canonical_alias_inventory: $canonicalAliases, production_aliases: {"wiki.rayer.idv.tw": $productionOne, "llm-wiki-frontend.vercel.app": $productionTwo}}, mutation_count: ($count | tonumber), provider_checks: $checks}' > "$RECONCILIATION_CONTEXT_PATH.tmp"
   mv "$RECONCILIATION_CONTEXT_PATH.tmp" "$RECONCILIATION_CONTEXT_PATH"
 }
 
@@ -533,8 +557,14 @@ load_context() {
   [[ -f "$RECONCILIATION_CONTEXT_PATH" && -f "$RECONCILIATION_ROLLBACK_PATH" ]] || preflight_fail ROLLBACK_ARTIFACT_MISSING "reconciliation context and rollback contract are missing"
   jq -e --arg sha "$COMMIT_SHA" --arg ticket "$TICKET_REF" --arg ack "$RECONCILIATION_ACK" --arg project "$VERCEL_PROJECT_ID" --arg team "$VERCEL_TEAM_ID" --arg scope "$VERCEL_SCOPE" --arg domain "$STABLE_DOMAIN" --arg oldProject "$EXPECTED_CURRENT_ALIAS_PROJECT_ID" --arg oldDeployment "$EXPECTED_CURRENT_ALIAS_DEPLOYMENT_ID" --arg oldSha "$EXPECTED_CURRENT_ALIAS_SOURCE_SHA" --arg expectedProject "$EXPECTED_NEW_PROJECT_ID" --arg expectedTeam "$EXPECTED_TEAM_ID" --arg ciId "$CI_RUN_ID" --arg create "$CREATE_IF_MISSING" '
     .schema_version == 2 and .mode == "authority_reconciliation" and .phase == "preflight-complete" and .status == "ready_for_durable_rollback" and .ticket_ref == $ticket and .acknowledgement == $ack and .source.commit_sha == $sha and (.source.canonical_ci.run_id | tostring) == $ciId and .target.project_id == $project and .target.expected_new_project_id == $expectedProject and .target.team_id == $team and .target.expected_team_id == $expectedTeam and .target.scope == $scope and .target.stable_domain == $domain and (.target.create_if_missing == ($create == "true")) and .frozen_authority.legacy_project_id == $oldProject and .frozen_authority.legacy_deployment_id == $oldDeployment and .frozen_authority.legacy_source_sha == $oldSha and .mutation_count == 0 and (.target.decision == "existing" or .target.decision == "deployment_needed" or .target.decision == "already_converged") and (.target.deployment_id == null or (.target.deployment_id | type == "string" and test("^dpl_[A-Za-z0-9]+$")))' "$RECONCILIATION_CONTEXT_PATH" >/dev/null || preflight_fail ROLLBACK_CONTEXT_INVALID "reconciliation context did not match the explicit validated request"
-  jq -e --arg sha "$COMMIT_SHA" --arg project "$EXPECTED_CURRENT_ALIAS_PROJECT_ID" --arg deployment "$EXPECTED_CURRENT_ALIAS_DEPLOYMENT_ID" --arg team "$VERCEL_TEAM_ID" --arg expectedProject "$EXPECTED_NEW_PROJECT_ID" --arg expectedTeam "$EXPECTED_TEAM_ID" --arg domain "$STABLE_DOMAIN" --arg oldSha "$EXPECTED_CURRENT_ALIAS_SOURCE_SHA" --arg ciId "$CI_RUN_ID" --arg create "$CREATE_IF_MISSING" '
+  jq -e --arg sha "$COMMIT_SHA" --arg project "$EXPECTED_CURRENT_ALIAS_PROJECT_ID" --arg deployment "$EXPECTED_CURRENT_ALIAS_DEPLOYMENT_ID" --arg team "$VERCEL_TEAM_ID" --arg expectedProject "$EXPECTED_NEW_PROJECT_ID" --arg expectedTeam "$EXPECTED_TEAM_ID" --arg domain "$STABLE_DOMAIN" --arg oldSha "$EXPECTED_CURRENT_ALIAS_SOURCE_SHA" --arg ciId "$CI_RUN_ID" --arg ciUrl "$CI_RUN_URL" --arg create "$CREATE_IF_MISSING" '
     .schema_version == 2 and .kind == "vercel-authority-reconciliation-rollback-contract" and .mode == "authority_reconciliation" and .source.commit_sha == $sha and (.source.canonical_ci.run_id | tostring) == $ciId and .request.expected_new_project_id == $expectedProject and .request.expected_team_id == $expectedTeam and .request.create_if_missing == ($create == "true") and .rollback.alias == $domain and .rollback.project_id == $project and .rollback.team_id == $team and .rollback.deployment_id == $deployment and .rollback.source.commit_sha == $oldSha' "$RECONCILIATION_ROLLBACK_PATH" >/dev/null || preflight_fail ROLLBACK_ARTIFACT_INVALID "rollback contract did not match the frozen old authority"
+  CURRENT_HEAD_SHA="$(jq -r '.source.checked_out_sha // empty' "$RECONCILIATION_CONTEXT_PATH")"
+  CURRENT_REMOTE_DEVELOP_SHA="$(jq -r '.source.current_remote_develop_sha // empty' "$RECONCILIATION_CONTEXT_PATH")"
+  CI_RUN_URL="$(jq -r '.source.canonical_ci.run_url // empty' "$RECONCILIATION_CONTEXT_PATH")"
+  [[ "$CURRENT_HEAD_SHA" == "$COMMIT_SHA" && "$CURRENT_HEAD_SHA" =~ ^[0-9a-f]{40}$ ]] || preflight_fail ROLLBACK_CONTEXT_INVALID "reconciliation context did not store exact checked-out SHA"
+  [[ "$CURRENT_REMOTE_DEVELOP_SHA" == "$COMMIT_SHA" && "$CURRENT_REMOTE_DEVELOP_SHA" =~ ^[0-9a-f]{40}$ ]] || preflight_fail ROLLBACK_CONTEXT_INVALID "reconciliation context did not store exact remote develop SHA"
+  [[ -n "$CI_RUN_URL" ]] || preflight_fail ROLLBACK_CONTEXT_INVALID "reconciliation context did not store exact canonical CI URL"
   DEPLOYMENT_DECISION="$(jq -r '.target.decision' "$RECONCILIATION_CONTEXT_PATH")"
   DEPLOYMENT_ID="$(jq -r '.target.deployment_id // empty' "$RECONCILIATION_CONTEXT_PATH")"
   DEPLOYMENT_URL="$(jq -r '.target.deployment_url // empty' "$RECONCILIATION_CONTEXT_PATH")"

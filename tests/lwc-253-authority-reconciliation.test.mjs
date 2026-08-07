@@ -424,10 +424,10 @@ test('complete paginated inventories include required page-two authority records
   assert.equal(result.code, undefined, result.stderr);
   const output = await evidence(fixture);
   assert.equal(output.status, 'PREFLIGHT_READY');
-  assert.ok((await readFile(join(fixture.root, 'curl-calls'), 'utf8')).includes('until=alias-cursor-2'));
+  assert.ok((await readFile(join(fixture.root, 'curl-calls'), 'utf8')).includes('until=1700000000102'));
 });
 
-for (const scenario of ['deployment-page-2-exact', 'deployment-cursor-loop', 'deployment-malformed', 'deployment-page-max', 'duplicate-candidates']) {
+for (const scenario of ['deployment-page-2-exact', 'deployment-cursor-loop', 'deployment-malformed', 'deployment-page-max', 'deployment-pagination-string', 'deployment-pagination-float', 'deployment-pagination-negative', 'deployment-pagination-missing', 'deployment-pagination-malformed', 'duplicate-candidates']) {
   test(`reconciliation deployment inventory scenario ${scenario} is bounded before writes`, async () => {
     const fixture = await setup(scenario);
     const result = await run(fixture, 'preflight');
@@ -435,21 +435,42 @@ for (const scenario of ['deployment-page-2-exact', 'deployment-cursor-loop', 'de
       assert.equal(result.code, undefined, result.stderr);
       const output = await evidence(fixture);
       assert.equal(output.status, 'PREFLIGHT_READY');
+      assert.ok((await readFile(join(fixture.root, 'curl-calls'), 'utf8')).includes('until=1700000000101'));
     } else {
       assert.equal(result.code, 1);
       const output = await evidence(fixture);
       assert.equal(output.status, 'PREFLIGHT_FAILED');
+      assert.equal(output.provider_verification.mutation_count, 0);
+      assert.equal((await lines(join(fixture.root, 'deployment-post-log'))).length, 0);
+      assert.equal((await lines(join(fixture.root, 'mutation-log'))).length, 0);
+      return;
     }
-    const output = await evidence(fixture);
-    assert.equal(output.provider_verification.mutation_count, 0);
-    assert.equal((await lines(join(fixture.root, 'deployment-post-log'))).length, 0);
-    assert.equal((await lines(join(fixture.root, 'mutation-log'))).length, 0);
     if (scenario === 'deployment-page-2-exact') {
       const promote = await run(fixture, 'promote');
       assert.equal(promote.code, undefined, promote.stderr);
       assert.equal((await lines(join(fixture.root, 'deployment-post-log'))).length, 0);
       assert.equal((await lines(join(fixture.root, 'mutation-log'))).filter((line) => line.startsWith('alias set')).length, 1);
     }
+  });
+}
+
+for (const scenario of [
+  'alias-pagination-string',
+  'alias-pagination-float',
+  'alias-pagination-negative',
+  'alias-pagination-missing',
+  'alias-pagination-malformed',
+  'inventory-page-max',
+]) {
+  test(`alias pagination scenario ${scenario} is bounded before writes`, async () => {
+    const fixture = await setup(scenario);
+    const result = await run(fixture, 'preflight');
+    assert.equal(result.code, 1, result.stderr);
+    const output = await evidence(fixture);
+    assert.equal(output.status, 'PREFLIGHT_FAILED');
+    assert.equal(output.provider_verification.mutation_count, 0);
+    assert.equal((await lines(join(fixture.root, 'deployment-post-log'))).length, 0);
+    assert.equal((await lines(join(fixture.root, 'mutation-log'))).length, 0);
   });
 }
 
@@ -483,6 +504,22 @@ test('already-converged is a successful zero-write terminal state', async () => 
   assert.equal(output.provider_verification.mutation_count, 0);
   assert.equal((await lines(join(fixture.root, 'deployment-post-log'))).length, 0);
   assert.equal((await lines(join(fixture.root, 'mutation-log'))).length, 0);
+});
+
+test('successful promote evidence carries restored checked-out and remote-develop SHA provenance', async () => {
+  const fixture = await setup('existing-candidate');
+  assert.equal((await run(fixture, 'preflight')).code, undefined);
+  const result = await run(fixture, 'promote', {
+    CURRENT_HEAD_SHA: '',
+    CURRENT_REMOTE_DEVELOP_SHA: '',
+  });
+  assert.equal(result.code, undefined, result.stderr);
+  const output = await evidence(fixture);
+  assert.equal(output.status, 'SUCCESS');
+  assert.equal(output.source.checked_out_sha, sha);
+  assert.equal(output.source.current_remote_develop_sha, sha);
+  assert.equal(output.source.canonical_ci.run_url, 'https://github.com/Rayer/llm-wiki-frontend/actions/runs/123');
+  assert.equal(output.provider_verification.mutation_count, 1);
 });
 
 test('canonical project with a different deployment is delegated to the normal DEV lane', async () => {

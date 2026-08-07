@@ -77,17 +77,27 @@ elif [[ "$url" == *"/v13/deployments/dpl_new"* ]]; then
     *) cat "$root/candidate.json" ;;
   esac
 elif [[ "$url" == *"/v6/deployments?"* ]]; then
-  if [[ "$scenario" == deployment-page-2-exact && "$url" != *"until=deploy-cursor-2"* ]]; then
-    jq '{deployments: [{id:"dpl_other", projectId:"prj_other", teamId:"team_test", readyState:"READY", target:"preview", url:"https://other.vercel.app"}], pagination:{next:"deploy-cursor-2"}}' "$root/candidate.json"
-  elif [[ "$scenario" == deployment-page-2-exact && "$url" == *"until=deploy-cursor-2"* ]]; then
+  if [[ "$scenario" == deployment-page-2-exact && "$url" != *"until=1700000000101"* ]]; then
+    jq '{deployments: [{id:"dpl_other", projectId:"prj_other", teamId:"team_test", readyState:"READY", target:"preview", url:"https://other.vercel.app"}], pagination:{count:1,prev:null,next:1700000000101}}' "$root/candidate.json"
+  elif [[ "$scenario" == deployment-page-2-exact && "$url" == *"until=1700000000101"* ]]; then
     jq '{deployments:[.]}' "$root/candidate.json"
   elif [[ "$scenario" == deployment-cursor-loop ]]; then
-    printf '%s' '{"deployments":[],"pagination":{"next":"deploy-loop"}}'
+    printf '%s' '{"deployments":[],"pagination":{"count":1,"prev":null,"next":1700000000202}}'
   elif [[ "$scenario" == deployment-malformed ]]; then
     printf '%s' '{"deployments":[{"id":7}]}'
+  elif [[ "$scenario" == deployment-pagination-string ]]; then
+    printf '%s' '{"deployments":[{"id":"dpl_other","projectId":"prj_other","teamId":"team_test","readyState":"READY","target":"preview","url":"https://other.vercel.app"}],"pagination":{"count":1,"prev":null,"next":"1700000000303"}}'
+  elif [[ "$scenario" == deployment-pagination-float ]]; then
+    printf '%s' '{"deployments":[{"id":"dpl_other","projectId":"prj_other","teamId":"team_test","readyState":"READY","target":"preview","url":"https://other.vercel.app"}],"pagination":{"count":1,"prev":null,"next":1700000000.5}}'
+  elif [[ "$scenario" == deployment-pagination-negative ]]; then
+    printf '%s' '{"deployments":[{"id":"dpl_other","projectId":"prj_other","teamId":"team_test","readyState":"READY","target":"preview","url":"https://other.vercel.app"}],"pagination":{"count":1,"prev":null,"next":-1}}'
+  elif [[ "$scenario" == deployment-pagination-missing ]]; then
+    printf '%s' '{"deployments":[{"id":"dpl_other","projectId":"prj_other","teamId":"team_test","readyState":"READY","target":"preview","url":"https://other.vercel.app"}],"pagination":{"count":1,"prev":null}}'
+  elif [[ "$scenario" == deployment-pagination-malformed ]]; then
+    printf '%s' '{"deployments":[{"id":"dpl_other","projectId":"prj_other","teamId":"team_test","readyState":"READY","target":"preview","url":"https://other.vercel.app"}],"pagination":{}}'
   elif [[ "$scenario" == deployment-page-max ]]; then
     deployment_reads="$(increment_counter deployment-page-reads)"
-    printf '{"deployments":[],"pagination":{"next":"deploy-max-%s"}}' "$deployment_reads"
+    printf '{"deployments":[],"pagination":{"count":0,"prev":null,"next":%s}}' "$((1700000000400 + deployment_reads))"
   elif [[ ( "$scenario" == create-needed || "$scenario" == production-before-create-drift || "$scenario" == post-create-authority-drift ) && ! -f "$root/created" ]]; then
     printf '%s' '{"deployments":[]}'
   else
@@ -113,18 +123,28 @@ elif [[ "$url" == *"/v4/aliases?"* ]]; then
   project=""
   if [[ "$url" =~ projectId=([^\&]+) ]]; then project="${BASH_REMATCH[1]}"; fi
   inventory_reads="$(increment_counter inventory-reads)"
-  if [[ "$scenario" == alias-cursor-loop && "$url" != *"until=alias-loop"* ]]; then
-    printf '%s' '{"aliases":[],"pagination":{"next":"alias-loop"}}'
-  elif [[ "$scenario" == alias-cursor-loop && "$url" == *"until=alias-loop"* ]]; then
-    printf '%s' '{"aliases":[],"pagination":{"next":"alias-loop"}}'
-  elif [[ "$scenario" == alias-page-2 && "$url" != *"until=alias-cursor-2"* ]]; then
-    printf '%s' '{"aliases":[{"alias":"other.example","projectId":"prj_other","deploymentId":"dpl_other"}],"pagination":{"next":"alias-cursor-2"}}'
-  elif [[ "$scenario" == alias-page-2 && "$url" == *"until=alias-cursor-2"* ]]; then
+  if [[ "$scenario" == alias-cursor-loop && "$url" != *"until=1700000000111"* ]]; then
+    printf '%s' '{"aliases":[],"pagination":{"count":1,"prev":null,"next":1700000000111}}'
+  elif [[ "$scenario" == alias-cursor-loop && "$url" == *"until=1700000000111"* ]]; then
+    printf '%s' '{"aliases":[],"pagination":{"count":1,"prev":1700000000111,"next":1700000000111}}'
+  elif [[ "$scenario" == alias-page-2 && "$url" != *"until=1700000000102"* ]]; then
+    printf '%s' '{"aliases":[{"alias":"other.example","projectId":"prj_other","deploymentId":"dpl_other"}],"pagination":{"count":1,"prev":null,"next":1700000000102}}'
+  elif [[ "$scenario" == alias-page-2 && "$url" == *"until=1700000000102"* ]]; then
     if [[ "$project" == "$EXPECTED_CURRENT_ALIAS_PROJECT_ID" ]]; then jq '{aliases:.legacyAliases}' "$root/state.json"; else jq '{aliases:.canonicalAliases}' "$root/state.json"; fi
   elif [[ "$scenario" == alias-malformed ]]; then
     printf '%s' '{"aliases":[{"alias":"llm-wiki-frontend-dev.vercel.app"}]}'
+  elif [[ "$scenario" == alias-pagination-string ]]; then
+    printf '%s' '{"aliases":[{"alias":"other.example","projectId":"prj_other","deploymentId":"dpl_other"}],"pagination":{"count":1,"prev":null,"next":"1700000000303"}}'
+  elif [[ "$scenario" == alias-pagination-float ]]; then
+    printf '%s' '{"aliases":[{"alias":"other.example","projectId":"prj_other","deploymentId":"dpl_other"}],"pagination":{"count":1,"prev":null,"next":1700000000.5}}'
+  elif [[ "$scenario" == alias-pagination-negative ]]; then
+    printf '%s' '{"aliases":[{"alias":"other.example","projectId":"prj_other","deploymentId":"dpl_other"}],"pagination":{"count":1,"prev":null,"next":-1}}'
+  elif [[ "$scenario" == alias-pagination-missing ]]; then
+    printf '%s' '{"aliases":[{"alias":"other.example","projectId":"prj_other","deploymentId":"dpl_other"}],"pagination":{"count":1,"prev":null}}'
+  elif [[ "$scenario" == alias-pagination-malformed ]]; then
+    printf '%s' '{"aliases":[{"alias":"other.example","projectId":"prj_other","deploymentId":"dpl_other"}],"pagination":{}}'
   elif [[ "$scenario" == inventory-page-max ]]; then
-    printf '%s' '{"aliases":[],"pagination":{"next":"alias-max"}}'
+    printf '%s' '{"aliases":[],"pagination":{"count":0,"prev":null,"next":%s}}' "$((1700000000600 + inventory_reads))"
   else
     if [[ "$project" == "$EXPECTED_CURRENT_ALIAS_PROJECT_ID" ]]; then
       if [[ "$scenario" == inventory-order-drift && "$inventory_reads" -ge 5 ]]; then jq '{aliases:(.legacyAliases | reverse)}' "$root/state.json"; else jq '{aliases:.legacyAliases}' "$root/state.json"; fi
