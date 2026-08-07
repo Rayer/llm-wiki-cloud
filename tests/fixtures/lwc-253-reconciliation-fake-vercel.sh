@@ -10,7 +10,8 @@ fi
 [[ "${1:-}" == alias && "${2:-}" == set ]] || exit 90
 [[ "${4:-}" == "$STABLE_DOMAIN" ]] || exit 90
 jq --arg alias "$4" --arg project "$VERCEL_PROJECT_ID" --arg deployment "$3" \
-  '.global = {alias:$alias, projectId:$project, deploymentId:$deployment} | .canonicalAliases = [{alias:$alias, projectId:$project, deploymentId:$deployment}] | .legacyAliases = []' "$root/state.json" > "$root/state.tmp"
+  '.global = {alias:$alias, projectId:$project, deploymentId:$deployment} | .canonicalAliases = ([.canonicalAliases[] | select(.alias != $alias)] + [{alias:$alias, projectId:$project, deploymentId:$deployment}]) | .legacyAliases = [.legacyAliases[] | select(.alias != $alias)]' "$root/state.json" > "$root/state.tmp"
+if [[ "$(<"$root/scenario")" == post-inventory-mismatch ]]; then jq '.canonicalAliases += [{alias:"unrelated.example", projectId:"prj_canonical", deploymentId:"dpl_other"}]' "$root/state.tmp" > "$root/state.tmp2" && mv "$root/state.tmp2" "$root/state.tmp"; fi
 mv "$root/state.tmp" "$root/state.json"
 touch "$root/mutated"
 if [[ "$(<"$root/scenario")" == alias-failure ]]; then exit 92; fi

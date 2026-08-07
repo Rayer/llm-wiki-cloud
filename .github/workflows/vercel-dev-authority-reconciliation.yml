@@ -10,6 +10,18 @@ on:
         description: Exact 40-character lowercase canonical develop SHA with successful CI
         required: true
         type: string
+      ci_run_id:
+        description: Exact successful push CI run ID for this SHA on develop
+        required: true
+        type: number
+      expected_new_project_id:
+        description: Exact canonical DEV project ID approved for this reconciliation
+        required: true
+        type: string
+      expected_team_id:
+        description: Exact Vercel team ID approved for this reconciliation
+        required: true
+        type: string
       expected_current_alias_project_id:
         description: Exact owner project ID currently holding the fixed DEV alias
         required: true
@@ -27,9 +39,13 @@ on:
         required: true
         type: string
       reconciliation_ack:
-        description: Exact approval phrase binding ticket, alias, old authority, and desired SHA
+        description: Exact approval phrase binding ticket, fixed alias, old authority, new project/team, desired SHA, CI run, and create flag
         required: true
         type: string
+      create_if_missing:
+        description: Whether one canonical deployment may be created when no exact candidate exists
+        required: true
+        type: boolean
 
 permissions:
   contents: read
@@ -49,6 +65,10 @@ jobs:
       name: Development
     env:
       COMMIT_SHA: ${{ inputs.commit_sha }}
+      CI_RUN_ID: ${{ inputs.ci_run_id }}
+      EXPECTED_NEW_PROJECT_ID: ${{ inputs.expected_new_project_id }}
+      EXPECTED_TEAM_ID: ${{ inputs.expected_team_id }}
+      CREATE_IF_MISSING: ${{ inputs.create_if_missing }}
       EXPECTED_CURRENT_ALIAS_PROJECT_ID: ${{ inputs.expected_current_alias_project_id }}
       EXPECTED_CURRENT_ALIAS_DEPLOYMENT_ID: ${{ inputs.expected_current_alias_deployment_id }}
       EXPECTED_CURRENT_ALIAS_SOURCE_SHA: ${{ inputs.expected_current_alias_source_sha }}
@@ -77,6 +97,7 @@ jobs:
         run: npm install --global vercel@52.0.0 --ignore-scripts
 
       - name: Read-only reconciliation preflight
+        id: reconciliation_preflight
         shell: bash
         run: bash .github/scripts/vercel-dev-authority-reconciliation.sh preflight
         env:
@@ -89,14 +110,16 @@ jobs:
 
       - name: Upload durable reconciliation rollback contract
         id: reconciliation_rollback_upload
+        if: always()
         uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
         with:
           name: vercel-authority-reconciliation-rollback-${{ inputs.commit_sha }}
           path: ${{ runner.temp }}/vercel-dev-authority-reconciliation/reconciliation-rollback-contract.json
           retention-days: 90
-          if-no-files-found: error
+          if-no-files-found: ignore
 
       - name: Reconciliation promote (first mutation-capable step)
+        if: steps.reconciliation_preflight.outcome == 'success' && steps.reconciliation_rollback_upload.outcome == 'success'
         shell: bash
         run: bash .github/scripts/vercel-dev-authority-reconciliation.sh promote
         env:

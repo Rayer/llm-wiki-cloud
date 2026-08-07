@@ -9,11 +9,14 @@ fi
 
 # Reuse the normal lane's bounded provider transport and deployment normalization.
 # The normal script is deliberately a library here; its default CLI modes remain unchanged.
+RECONCILIATION_CI_RUN_ID="${CI_RUN_ID:-}"
 VERCEL_DEV_DEPLOYMENT_LIBRARY=1 source "$(dirname "$0")/vercel-dev-deployment.sh"
 
 readonly RECONCILIATION_MODE="authority_reconciliation"
 readonly LEGACY_PROJECT_NAME="llm-wiki-frontend"
 readonly RECONCILIATION_ACK_PREFIX="I acknowledge LWC-253 authority reconciliation"
+readonly PRODUCTION_ALIAS_ONE="wiki.rayer.idv.tw"
+readonly PRODUCTION_ALIAS_TWO="llm-wiki-frontend.vercel.app"
 readonly MAX_ALIAS_PAGES=10
 readonly MAX_DEPLOYMENT_PAGES=10
 readonly ALIAS_PAGE_LIMIT=100
@@ -24,7 +27,10 @@ EXPECTED_CURRENT_ALIAS_DEPLOYMENT_ID="${EXPECTED_CURRENT_ALIAS_DEPLOYMENT_ID:-}"
 EXPECTED_CURRENT_ALIAS_SOURCE_SHA="${EXPECTED_CURRENT_ALIAS_SOURCE_SHA:-}"
 RECONCILIATION_ACK="${RECONCILIATION_ACK:-}"
 RECONCILIATION_ARTIFACT_NAME="${RECONCILIATION_ARTIFACT_NAME:-}"
-GITHUB_RUN_ID="${GITHUB_RUN_ID:-}"
+CI_RUN_ID="$RECONCILIATION_CI_RUN_ID"
+EXPECTED_NEW_PROJECT_ID="${EXPECTED_NEW_PROJECT_ID:-}"
+EXPECTED_TEAM_ID="${EXPECTED_TEAM_ID:-}"
+CREATE_IF_MISSING="${CREATE_IF_MISSING:-}"
 
 readonly RECONCILIATION_EVIDENCE_PATH="$EVIDENCE_DIR/$RECONCILIATION_EVIDENCE_FILENAME"
 readonly RECONCILIATION_CONTEXT_PATH="$EVIDENCE_DIR/reconciliation-context.json"
@@ -46,6 +52,8 @@ GLOBAL_ALIAS_JSON='{}'
 LEGACY_ALIAS_INVENTORY_JSON='{"aliases":[]}'
 CANONICAL_ALIAS_INVENTORY_JSON='{"aliases":[]}'
 CANONICAL_DEPLOYMENT_INVENTORY_JSON='{"deployments":[]}'
+PRODUCTION_ALIAS_ONE_JSON='{}'
+PRODUCTION_ALIAS_TWO_JSON='{}'
 CANONICAL_CANDIDATE_JSON=""
 CANONICAL_CANDIDATE_URL=""
 FROZEN_OLD_PROJECT_ID=""
@@ -59,7 +67,6 @@ DEPLOYMENT_ID=""
 DEPLOYMENT_URL=""
 DEPLOYMENT_DECISION="deployment_needed"
 PROJECT_REPOSITORY_ID=""
-CI_RUN_ID="${CI_RUN_ID:-}"
 CI_RUN_URL="${CI_RUN_URL:-}"
 OBSERVED_ALIAS_PROJECT_ID=""
 OBSERVED_ALIAS_DEPLOYMENT_ID=""
@@ -77,12 +84,23 @@ ROLLBACK_ARTIFACT_ID="${ROLLBACK_ARTIFACT_ID:-}"
 ROLLBACK_ARTIFACT_URL="${ROLLBACK_ARTIFACT_URL:-}"
 ROLLBACK_ARTIFACT_DIGEST="${ROLLBACK_ARTIFACT_DIGEST:-}"
 ROLLBACK_CONTRACT_SHA256=""
+STATE_FAILURE_CODE="AUTHORITY_PREFLIGHT_MISMATCH"
+STATE_FAILURE_REASON="read-only authority state did not satisfy the exact old/canonical contract"
 
 mkdir -p "$EVIDENCE_DIR"
 
 write_evidence() {
   [[ "$EVIDENCE_WRITTEN" -eq 1 ]] && return
   EVIDENCE_WRITTEN=1
+  local evidenceLegacyInventory="$LEGACY_ALIAS_INVENTORY_JSON"
+  local evidenceCanonicalInventory="$CANONICAL_ALIAS_INVENTORY_JSON"
+  local legacyInventoryHash canonicalInventoryHash productionAliasOneHash productionAliasTwoHash
+  [[ -n "$evidenceLegacyInventory" ]] || evidenceLegacyInventory='{"aliases":[]}'
+  [[ -n "$evidenceCanonicalInventory" ]] || evidenceCanonicalInventory='{"aliases":[]}'
+  legacyInventoryHash="$(printf '%s' "$evidenceLegacyInventory" | jq -S -c . | sha256sum | awk '{print $1}')"
+  canonicalInventoryHash="$(printf '%s' "$evidenceCanonicalInventory" | jq -S -c . | sha256sum | awk '{print $1}')"
+  productionAliasOneHash="$(printf '%s' "$PRODUCTION_ALIAS_ONE_JSON" | jq -S -c . | sha256sum | awk '{print $1}')"
+  productionAliasTwoHash="$(printf '%s' "$PRODUCTION_ALIAS_TWO_JSON" | jq -S -c . | sha256sum | awk '{print $1}')"
   jq -n \
     --arg ticket "$TICKET_REF" \
     --arg sha "$COMMIT_SHA" \
@@ -93,6 +111,9 @@ write_evidence() {
     --arg ciUrl "$CI_RUN_URL" \
     --arg project "$VERCEL_PROJECT_ID" \
     --arg team "$VERCEL_TEAM_ID" \
+    --arg expectedProject "$EXPECTED_NEW_PROJECT_ID" \
+    --arg expectedTeam "$EXPECTED_TEAM_ID" \
+    --arg createIfMissing "$CREATE_IF_MISSING" \
     --arg scope "$VERCEL_SCOPE" \
     --arg domain "$STABLE_DOMAIN" \
     --arg deployment "$DEPLOYMENT_ID" \
@@ -127,21 +148,30 @@ write_evidence() {
     --arg count "$MUTATION_COUNT" \
     --arg observedAliasProjectId "$OBSERVED_ALIAS_PROJECT_ID" \
     --arg observedAliasDeploymentId "$OBSERVED_ALIAS_DEPLOYMENT_ID" \
+    --argjson productionAliasOne "$PRODUCTION_ALIAS_ONE_JSON" \
+    --argjson productionAliasTwo "$PRODUCTION_ALIAS_TWO_JSON" \
+    --argjson legacyInventory "$evidenceLegacyInventory" \
+    --argjson canonicalInventory "$evidenceCanonicalInventory" \
+    --arg legacyInventoryHash "$legacyInventoryHash" \
+    --arg canonicalInventoryHash "$canonicalInventoryHash" \
+    --arg productionAliasOneHash "$productionAliasOneHash" \
+    --arg productionAliasTwoHash "$productionAliasTwoHash" \
     'def str_or_null: if . == "" then null else . end;
      def num_or_null: if test("^[0-9]+$") then tonumber else null end;
      {
-       schema_version: 1,
+       schema_version: 2,
        mode: "authority_reconciliation",
        ticket_ref: ($ticket | str_or_null),
        environment: "development",
        action: "reconcile_dev_authority",
        source: {repository: "Rayer/llm-wiki-frontend", commit_sha: ($sha | str_or_null), ref: $ref,
          checked_out_sha: ($currentHead | str_or_null), current_remote_develop_sha: ($currentRemote | str_or_null),
-         canonical_ci: {workflow: "ci.yml", head_branch: "develop", head_sha: ($sha | str_or_null),
+         canonical_ci: {workflow: "ci.yml", workflow_path: ".github/workflows/ci.yml", event: "push", head_branch: "develop", head_sha: ($sha | str_or_null), status: (if $ciId == "" then null else "completed" end),
            conclusion: (if $ciId == "" then null else "success" end), run_id: ($ciId | num_or_null), run_url: ($ciUrl | str_or_null)}},
-       target: {project_name: "llm-wiki-frontend-dev", project_id: ($project | str_or_null), team_id: ($team | str_or_null), scope: ($scope | str_or_null), stable_domain: $domain},
+       target: {project_name: "llm-wiki-frontend-dev", project_id: ($project | str_or_null), expected_new_project_id: ($expectedProject | str_or_null), team_id: ($team | str_or_null), expected_team_id: ($expectedTeam | str_or_null), scope: ($scope | str_or_null), stable_domain: $domain, create_if_missing: ($createIfMissing == "true")},
        deployment: {id: ($deployment | str_or_null), url: ($deploymentUrl | str_or_null), source: ($observedSource | str_or_null), repository: ($observedRepo | str_or_null), ref: ($observedRef | str_or_null), commit_sha: ($observedSha | str_or_null), ready_state: ($observedReady | str_or_null), target: ($observedTarget | str_or_null), project_id: ($observedProject | str_or_null), team_id: ($observedTeam | str_or_null)},
        rollback: {alias: $domain, project_id: ($oldProject | str_or_null), team_id: ($team | str_or_null), deployment_id: ($oldDeployment | str_or_null), source: {repository: ($oldRepo | str_or_null), ref: ($oldRef | str_or_null), commit_sha: ($oldSha | str_or_null), ready_state: ($oldReady | str_or_null), target: ($oldTarget | str_or_null)}, artifact: {name: ($artifactName | str_or_null), id: ($artifactId | num_or_null), url: ($artifactUrl | str_or_null), digest: ($artifactDigest | str_or_null), contract_sha256: ($contractSha | str_or_null)}},
+       frozen_authority: {production_aliases: {"wiki.rayer.idv.tw": $productionAliasOne, "llm-wiki-frontend.vercel.app": $productionAliasTwo}, legacy_alias_inventory: $legacyInventory, canonical_alias_inventory: $canonicalInventory, hashes: {production_alias_one: $productionAliasOneHash, production_alias_two: $productionAliasTwoHash, legacy_alias_inventory: $legacyInventoryHash, canonical_alias_inventory: $canonicalInventoryHash}},
        observed_alias: {alias: $domain, project_id: ($observedAliasProjectId | str_or_null), deployment_id: ($observedAliasDeploymentId | str_or_null)},
        provider_verification: {checks: $checks, mutation_count: ($count | num_or_null)},
        status: $status, reason_code: $reasonCode, reason: $reason, next_action: $nextAction
@@ -164,9 +194,48 @@ fail() {
 preflight_fail() { fail "PREFLIGHT_FAILED" "$1" "$2" "Correct the explicit reconciliation request or read-only provider state; zero provider mutation was attempted."; }
 partial_fail() { fail "PARTIAL_MUTATION" "$1" "$2" "Reconcile the exact DEV alias and deployment state before any retry or rollback; do not blindly replay the mutation."; }
 
+validate_exact_sha() {
+  validate_inputs
+  if [[ "${LWC253_TEST_MODE:-}" == 1 ]]; then
+    CURRENT_HEAD_SHA="${CURRENT_HEAD_SHA:-$COMMIT_SHA}"
+    CURRENT_REMOTE_DEVELOP_SHA="${CURRENT_REMOTE_DEVELOP_SHA:-$COMMIT_SHA}"
+  else
+    CURRENT_HEAD_SHA="$(git rev-parse HEAD 2>/dev/null)" || preflight_fail CHECKED_OUT_SHA_UNAVAILABLE "checked-out HEAD could not be read"
+    CURRENT_REMOTE_DEVELOP_SHA="$(git ls-remote origin refs/heads/develop 2>/dev/null | awk 'NR == 1 { print $1 }')"
+  fi
+  [[ "$COMMIT_SHA" == "$CURRENT_HEAD_SHA" ]] || preflight_fail CHECKED_OUT_SHA_MISMATCH "requested SHA did not match checked-out HEAD"
+  [[ "$COMMIT_SHA" == "$CURRENT_REMOTE_DEVELOP_SHA" ]] || preflight_fail REMOTE_DEVELOP_SHA_MISMATCH "requested SHA did not match current origin/develop HEAD"
+  [[ -n "$GITHUB_TOKEN" ]] || preflight_fail GITHUB_TOKEN_MISSING "GITHUB_TOKEN is required for exact canonical CI read-back"
+  local ci_run
+  ci_run="$(github_query "/repos/$GITHUB_REPOSITORY/actions/runs/$CI_RUN_ID")" || preflight_fail CI_READ_FAILED "exact canonical CI run read failed"
+  jq -e --arg id "$CI_RUN_ID" --arg sha "$COMMIT_SHA" --arg repo "$GITHUB_REPOSITORY" '
+    type == "object" and (.id | tostring) == $id and
+    .path == ".github/workflows/ci.yml" and .head_branch == "develop" and
+    .head_sha == $sha and .event == "push" and .status == "completed" and
+    .conclusion == "success" and .html_url == ("https://github.com/" + $repo + "/actions/runs/" + $id)' <<< "$ci_run" >/dev/null ||
+    preflight_fail CI_NOT_GREEN "the exact requested CI run was not a successful develop push for commit_sha"
+  CI_RUN_URL="$(jq -r '.html_url' <<< "$ci_run")"
+  mkdir -p "$EVIDENCE_DIR"
+  jq -n --arg sha "$COMMIT_SHA" --arg head "$CURRENT_HEAD_SHA" --arg remote "$CURRENT_REMOTE_DEVELOP_SHA" --arg runId "$CI_RUN_ID" --arg runUrl "$CI_RUN_URL" \
+    '{schema_version: 2, status: "VALIDATED", commit_sha: $sha, checked_out_sha: $head, current_remote_develop_sha: $remote, ci_run_id: ($runId | tonumber), ci_run_url: $runUrl}' > "$VALIDATION_PATH.tmp"
+  mv "$VALIDATION_PATH.tmp" "$VALIDATION_PATH"
+}
+
 validate_inputs() {
   if [[ ! "$COMMIT_SHA" =~ ^[0-9a-f]{40}$ ]]; then
     preflight_fail INPUT_SHA_INVALID "commit_sha must be exactly 40 lowercase hexadecimal characters"
+  fi
+  if [[ ! "$CI_RUN_ID" =~ ^[1-9][0-9]*$ ]]; then
+    preflight_fail CI_RUN_ID_INVALID "ci_run_id must be an exact positive integer"
+  fi
+  if [[ ! "$EXPECTED_NEW_PROJECT_ID" =~ ^prj_[A-Za-z0-9]+$ ]]; then
+    preflight_fail EXPECTED_NEW_PROJECT_ID_INVALID "expected_new_project_id must be an immutable canonical project ID"
+  fi
+  if [[ ! "$EXPECTED_TEAM_ID" =~ ^team_[A-Za-z0-9]+$ ]]; then
+    preflight_fail EXPECTED_TEAM_ID_INVALID "expected_team_id must be an immutable team ID"
+  fi
+  if [[ "$CREATE_IF_MISSING" != true && "$CREATE_IF_MISSING" != false ]]; then
+    preflight_fail CREATE_IF_MISSING_INVALID "create_if_missing must be exactly true or false"
   fi
   if [[ "$GITHUB_REPOSITORY" != "$EXPECTED_REPOSITORY" ]]; then
     preflight_fail REPOSITORY_NOT_ALLOWLISTED "GITHUB_REPOSITORY must equal the exact repository identity"
@@ -187,8 +256,8 @@ validate_inputs() {
     preflight_fail OLD_PROJECT_EQUALS_CANONICAL "old alias owner must differ from canonical DEV project"
   fi
   local expected_ack
-  expected_ack="$RECONCILIATION_ACK_PREFIX: alias=$STABLE_DOMAIN old_project=$EXPECTED_CURRENT_ALIAS_PROJECT_ID old_deployment=$EXPECTED_CURRENT_ALIAS_DEPLOYMENT_ID desired_sha=$COMMIT_SHA"
-  [[ "$RECONCILIATION_ACK" == "$expected_ack" ]] || preflight_fail ACKNOWLEDGEMENT_INVALID "acknowledgement must exactly bind LWC-253, the fixed alias, old owner, old deployment, and desired SHA"
+  expected_ack="$RECONCILIATION_ACK_PREFIX: alias=$STABLE_DOMAIN old_project=$EXPECTED_CURRENT_ALIAS_PROJECT_ID old_deployment=$EXPECTED_CURRENT_ALIAS_DEPLOYMENT_ID old_source_sha=$EXPECTED_CURRENT_ALIAS_SOURCE_SHA new_project=$EXPECTED_NEW_PROJECT_ID new_team=$EXPECTED_TEAM_ID desired_sha=$COMMIT_SHA ci_run_id=$CI_RUN_ID create_if_missing=$CREATE_IF_MISSING"
+  [[ "$RECONCILIATION_ACK" == "$expected_ack" ]] || preflight_fail ACKNOWLEDGEMENT_INVALID "acknowledgement must exactly bind ticket, fixed alias, old authority, new project/team, desired SHA, CI run, and create_if_missing"
   if [[ "${GITHUB_ACTIONS:-}" == true && "${LWC253_TEST_MODE:-}" == 1 ]]; then
     preflight_fail TEST_MODE_FORBIDDEN "LWC253_TEST_MODE is forbidden in GitHub Actions"
   fi
@@ -201,6 +270,8 @@ validate_inputs() {
   if [[ "$MODE" != validate ]]; then
     [[ -n "$VERCEL_TOKEN" && -n "$VERCEL_PROJECT_ID" && -n "$VERCEL_TEAM_ID" && -n "$VERCEL_SCOPE" ]] || preflight_fail CONFIG_MISSING "Development Vercel configuration is missing"
     [[ "$VERCEL_PROJECT_ID" =~ ^prj_[A-Za-z0-9]+$ && "$VERCEL_TEAM_ID" =~ ^team_[A-Za-z0-9]+$ ]] || preflight_fail CONFIG_ID_INVALID "canonical project or team is not a bounded Vercel ID"
+    [[ "$EXPECTED_NEW_PROJECT_ID" == "$VERCEL_PROJECT_ID" ]] || preflight_fail EXPECTED_NEW_PROJECT_MISMATCH "expected_new_project_id must equal the VERCEL_PROJECT_ID secret"
+    [[ "$EXPECTED_TEAM_ID" == "$VERCEL_TEAM_ID" ]] || preflight_fail EXPECTED_TEAM_MISMATCH "expected_team_id must equal the VERCEL_TEAM_ID secret"
     [[ "$VERCEL_SCOPE" == "$EXPECTED_SCOPE" ]] || preflight_fail TEAM_NOT_ALLOWLISTED "Development Vercel scope is not the allowlisted team scope"
     [[ "$POLL_ATTEMPTS" =~ ^[1-9][0-9]*$ && "$POLL_ATTEMPTS" -le 60 && "$POLL_INTERVAL" =~ ^[0-9]+$ && "$POLL_INTERVAL" -le 60 ]] || preflight_fail POLL_BOUNDS_INVALID "deployment polling bounds are invalid"
     [[ "$ALIAS_TIMEOUT" =~ ^[1-9][0-9]*$ && "$ALIAS_TIMEOUT" -le 300 ]] || preflight_fail ALIAS_TIMEOUT_INVALID "alias mutation timeout is not bounded"
@@ -216,20 +287,29 @@ validate_inputs() {
 
 validate_canonical_project() {
   local project="$1"
-  jq -e --arg id "$VERCEL_PROJECT_ID" --arg name "$EXPECTED_PROJECT_NAME" --arg team "$VERCEL_TEAM_ID" '
-    type == "object" and .id == $id and .name == $name and ((.accountId // .teamId) == $team)' <<< "$project" >/dev/null ||
-    preflight_fail PROJECT_METADATA_MISMATCH "canonical project metadata did not identify the exact Development project and team"
+  if ! jq -e --arg id "$VERCEL_PROJECT_ID" --arg name "$EXPECTED_PROJECT_NAME" --arg team "$VERCEL_TEAM_ID" '
+    type == "object" and .id == $id and .name == $name and ((.accountId // .teamId) == $team)' <<< "$project" >/dev/null; then
+    STATE_FAILURE_CODE="PROJECT_METADATA_MISMATCH"
+    STATE_FAILURE_REASON="canonical project metadata did not identify the exact Development project and team"
+    return 1
+  fi
 }
 
 validate_canonical_domains() {
-  jq -e --arg domain "$STABLE_DOMAIN" 'type == "object" and (.domains | type == "array" and length == 1 and .[0].name == $domain)' <<< "$1" >/dev/null ||
-    preflight_fail DOMAIN_NOT_ALLOWLISTED "canonical project must register the fixed stable DEV domain exactly once"
+  if ! jq -e --arg domain "$STABLE_DOMAIN" 'type == "object" and (.domains | type == "array" and length == 1 and .[0].name == $domain)' <<< "$1" >/dev/null; then
+    STATE_FAILURE_CODE="DOMAIN_NOT_ALLOWLISTED"
+    STATE_FAILURE_REASON="canonical project must register the fixed stable DEV domain exactly once"
+    return 1
+  fi
 }
 
 validate_legacy_project() {
-  jq -e --arg id "$EXPECTED_CURRENT_ALIAS_PROJECT_ID" --arg name "$LEGACY_PROJECT_NAME" --arg team "$VERCEL_TEAM_ID" --arg canonical "$VERCEL_PROJECT_ID" '
-    type == "object" and .id == $id and .name == $name and .id != $canonical and ((.accountId // .teamId) == $team)' <<< "$1" >/dev/null ||
-    preflight_fail LEGACY_PROJECT_MISMATCH "current alias owner was not the exact allowlisted legacy project in the same team"
+  if ! jq -e --arg id "$EXPECTED_CURRENT_ALIAS_PROJECT_ID" --arg name "$LEGACY_PROJECT_NAME" --arg team "$VERCEL_TEAM_ID" --arg canonical "$VERCEL_PROJECT_ID" '
+    type == "object" and .id == $id and .name == $name and .id != $canonical and ((.accountId // .teamId) == $team)' <<< "$1" >/dev/null; then
+    STATE_FAILURE_CODE="LEGACY_PROJECT_MISMATCH"
+    STATE_FAILURE_REASON="current alias owner was not the exact allowlisted legacy project in the same team"
+    return 1
+  fi
 }
 
 validate_global_alias() {
@@ -241,17 +321,40 @@ validate_global_alias() {
 validate_legacy_deployment() {
   local response="$1"
   normalize_deployment "$response"
-  jq -e --arg id "$EXPECTED_CURRENT_ALIAS_DEPLOYMENT_ID" --arg project "$EXPECTED_CURRENT_ALIAS_PROJECT_ID" --arg team "$VERCEL_TEAM_ID" --arg sha "$EXPECTED_CURRENT_ALIAS_SOURCE_SHA" --arg repo "$EXPECTED_REPOSITORY" '
+  if ! jq -e --arg id "$EXPECTED_CURRENT_ALIAS_DEPLOYMENT_ID" --arg project "$EXPECTED_CURRENT_ALIAS_PROJECT_ID" --arg team "$VERCEL_TEAM_ID" --arg sha "$EXPECTED_CURRENT_ALIAS_SOURCE_SHA" --arg repo "$EXPECTED_REPOSITORY" '
     type == "object" and .id == $id and .projectId == $project and ((.teamId // .accountId) == $team) and .readyState == "READY" and (.target == null or .target == "preview") and
     (.gitSource.type // (if .meta.githubDeployment == "1" then "github" else null end)) == "github" and
     (if (.meta.githubOrg and .meta.githubRepo) then (.meta.githubOrg + "/" + .meta.githubRepo) else ((.gitSource.org // "") + "/" + (.gitSource.repo // "")) end) == $repo and
     ((.gitSource.ref // .meta.githubCommitRef // "") == "develop" or (.gitSource.ref // .meta.githubCommitRef // "") == "refs/heads/develop") and
-    (.gitSource.sha // .meta.githubCommitSha) == $sha and (.url | type == "string" and test("^https://"))' <<< "$response" >/dev/null ||
-    preflight_fail LEGACY_DEPLOYMENT_MISMATCH "current alias deployment did not match exact READY GitHub develop provenance"
+    (.gitSource.sha // .meta.githubCommitSha) == $sha and (.url | type == "string" and test("^https://"))' <<< "$response" >/dev/null; then
+    STATE_FAILURE_CODE="LEGACY_DEPLOYMENT_MISMATCH"
+    STATE_FAILURE_REASON="current alias deployment did not match exact READY GitHub develop provenance"
+    return 1
+  fi
   FROZEN_OLD_SOURCE_REF="$OBSERVED_REF"
   FROZEN_OLD_REPOSITORY="$OBSERVED_REPOSITORY"
   FROZEN_OLD_READY_STATE="$OBSERVED_READY_STATE"
   FROZEN_OLD_TARGET="$OBSERVED_TARGET"
+}
+
+read_alias_exact() {
+  local alias="$1" encoded
+  encoded="$(printf '%s' "$alias" | jq -Rr @uri)"
+  api_query "/v4/aliases/$encoded?teamId=$VERCEL_TEAM_ID"
+}
+
+validate_production_alias() {
+  local alias="$1" response="$2"
+  jq -e --arg alias "$alias" --arg project "$EXPECTED_CURRENT_ALIAS_PROJECT_ID" '
+    type == "object" and .alias == $alias and .projectId == $project and
+    (.deploymentId | type == "string" and test("^dpl_[A-Za-z0-9]+$"))' <<< "$response" >/dev/null
+}
+
+read_production_authority() {
+  PRODUCTION_ALIAS_ONE_JSON="$(read_alias_exact "$PRODUCTION_ALIAS_ONE")" || return 1
+  PRODUCTION_ALIAS_TWO_JSON="$(read_alias_exact "$PRODUCTION_ALIAS_TWO")" || return 1
+  validate_production_alias "$PRODUCTION_ALIAS_ONE" "$PRODUCTION_ALIAS_ONE_JSON" || return 1
+  validate_production_alias "$PRODUCTION_ALIAS_TWO" "$PRODUCTION_ALIAS_TWO_JSON" || return 1
 }
 
 read_alias_inventory_strict() {
@@ -324,43 +427,72 @@ freeze_context() {
   candidate_json="${CANONICAL_CANDIDATE_JSON:-null}"
   jq -n \
     --arg sha "$COMMIT_SHA" --arg ticket "$TICKET_REF" --arg ack "$RECONCILIATION_ACK" --arg repo "$EXPECTED_REPOSITORY" --arg ref "refs/heads/$EXPECTED_REF" --arg oldRef "$FROZEN_OLD_SOURCE_REF" --arg oldRepo "$FROZEN_OLD_REPOSITORY" --arg oldReady "$FROZEN_OLD_READY_STATE" --arg oldTarget "$FROZEN_OLD_TARGET" \
-    --arg canonical "$VERCEL_PROJECT_ID" --arg team "$VERCEL_TEAM_ID" --arg scope "$VERCEL_SCOPE" --arg domain "$STABLE_DOMAIN" --arg oldProject "$EXPECTED_CURRENT_ALIAS_PROJECT_ID" --arg oldDeployment "$EXPECTED_CURRENT_ALIAS_DEPLOYMENT_ID" --arg oldSha "$EXPECTED_CURRENT_ALIAS_SOURCE_SHA" --arg repoId "$PROJECT_REPOSITORY_ID" --arg decision "$DEPLOYMENT_DECISION" --arg deployment "$DEPLOYMENT_ID" --arg deploymentUrl "$DEPLOYMENT_URL" --arg count "$MUTATION_COUNT" --argjson candidate "$candidate_json" \
-    --argjson canonicalProject "$CANONICAL_PROJECT_JSON" --argjson canonicalDomains "$CANONICAL_DOMAINS_JSON" --argjson legacyProject "$LEGACY_PROJECT_JSON" --argjson oldDeploymentResponse "$CURRENT_DEPLOYMENT_JSON" --argjson globalAlias "$GLOBAL_ALIAS_JSON" --argjson legacyAliases "$LEGACY_ALIAS_INVENTORY_JSON" --argjson canonicalAliases "$CANONICAL_ALIAS_INVENTORY_JSON" --argjson checks "$PROVIDER_CHECKS" \
-    '{schema_version: 1, mode: "authority_reconciliation", phase: "preflight-complete", status: "ready_for_durable_rollback", ticket_ref: $ticket, acknowledgement: $ack, source: {repository: $repo, commit_sha: $sha, ref: $ref}, target: {project_id: $canonical, project_name: "llm-wiki-frontend-dev", team_id: $team, scope: $scope, stable_domain: $domain, decision: $decision, deployment_id: ($deployment | if . == "" then null else . end), deployment_url: ($deploymentUrl | if . == "" then null else . end), candidate: $candidate}, repository_id: ($repoId | tonumber), frozen_authority: {alias: $domain, canonical_project_id: $canonical, legacy_project_id: $oldProject, legacy_deployment_id: $oldDeployment, legacy_source_sha: $oldSha, legacy_source: {repository: $oldRepo, ref: $oldRef, ready_state: $oldReady, target: ($oldTarget | if . == "" then null else . end)}, canonical_project: $canonicalProject, canonical_domains: $canonicalDomains, legacy_project: $legacyProject, legacy_deployment: $oldDeploymentResponse, global_alias: $globalAlias, legacy_alias_inventory: $legacyAliases, canonical_alias_inventory: $canonicalAliases}, mutation_count: ($count | tonumber), provider_checks: $checks}' > "$RECONCILIATION_CONTEXT_PATH.tmp"
+    --arg canonical "$VERCEL_PROJECT_ID" --arg expectedCanonical "$EXPECTED_NEW_PROJECT_ID" --arg team "$VERCEL_TEAM_ID" --arg expectedTeam "$EXPECTED_TEAM_ID" --arg scope "$VERCEL_SCOPE" --arg domain "$STABLE_DOMAIN" --arg oldProject "$EXPECTED_CURRENT_ALIAS_PROJECT_ID" --arg oldDeployment "$EXPECTED_CURRENT_ALIAS_DEPLOYMENT_ID" --arg oldSha "$EXPECTED_CURRENT_ALIAS_SOURCE_SHA" --arg ciId "$CI_RUN_ID" --arg ciUrl "$CI_RUN_URL" --arg create "$CREATE_IF_MISSING" --arg repoId "$PROJECT_REPOSITORY_ID" --arg decision "$DEPLOYMENT_DECISION" --arg deployment "$DEPLOYMENT_ID" --arg deploymentUrl "$DEPLOYMENT_URL" --arg count "$MUTATION_COUNT" --argjson candidate "$candidate_json" \
+    --argjson canonicalProject "$CANONICAL_PROJECT_JSON" --argjson canonicalDomains "$CANONICAL_DOMAINS_JSON" --argjson legacyProject "$LEGACY_PROJECT_JSON" --argjson oldDeploymentResponse "$CURRENT_DEPLOYMENT_JSON" --argjson globalAlias "$GLOBAL_ALIAS_JSON" --argjson legacyAliases "$LEGACY_ALIAS_INVENTORY_JSON" --argjson canonicalAliases "$CANONICAL_ALIAS_INVENTORY_JSON" --argjson productionOne "$PRODUCTION_ALIAS_ONE_JSON" --argjson productionTwo "$PRODUCTION_ALIAS_TWO_JSON" --argjson checks "$PROVIDER_CHECKS" \
+    '{schema_version: 2, mode: "authority_reconciliation", phase: "preflight-complete", status: "ready_for_durable_rollback", ticket_ref: $ticket, acknowledgement: $ack, source: {repository: $repo, commit_sha: $sha, ref: $ref, canonical_ci: {workflow: "ci.yml", run_id: ($ciId | tonumber), run_url: $ciUrl}}, target: {project_id: $canonical, expected_new_project_id: $expectedCanonical, project_name: "llm-wiki-frontend-dev", team_id: $team, expected_team_id: $expectedTeam, scope: $scope, stable_domain: $domain, decision: $decision, create_if_missing: ($create == "true"), deployment_id: ($deployment | if . == "" then null else . end), deployment_url: ($deploymentUrl | if . == "" then null else . end), candidate: $candidate}, repository_id: ($repoId | tonumber), frozen_authority: {alias: $domain, canonical_project_id: $canonical, legacy_project_id: $oldProject, legacy_deployment_id: $oldDeployment, legacy_source_sha: $oldSha, legacy_source: {repository: $oldRepo, ref: $oldRef, ready_state: $oldReady, target: ($oldTarget | if . == "" then null else . end)}, canonical_project: $canonicalProject, canonical_domains: $canonicalDomains, legacy_project: $legacyProject, legacy_deployment: $oldDeploymentResponse, global_alias: $globalAlias, legacy_alias_inventory: $legacyAliases, canonical_alias_inventory: $canonicalAliases, production_aliases: {"wiki.rayer.idv.tw": $productionOne, "llm-wiki-frontend.vercel.app": $productionTwo}}, mutation_count: ($count | tonumber), provider_checks: $checks}' > "$RECONCILIATION_CONTEXT_PATH.tmp"
   mv "$RECONCILIATION_CONTEXT_PATH.tmp" "$RECONCILIATION_CONTEXT_PATH"
 }
 
 write_rollback_contract() {
-  jq -n --arg sha "$COMMIT_SHA" --arg repo "$EXPECTED_REPOSITORY" --arg domain "$STABLE_DOMAIN" --arg oldProject "$EXPECTED_CURRENT_ALIAS_PROJECT_ID" --arg oldDeployment "$EXPECTED_CURRENT_ALIAS_DEPLOYMENT_ID" --arg team "$VERCEL_TEAM_ID" --arg oldSha "$EXPECTED_CURRENT_ALIAS_SOURCE_SHA" --arg oldRef "$FROZEN_OLD_SOURCE_REF" --arg oldRepo "$FROZEN_OLD_REPOSITORY" --arg oldReady "$FROZEN_OLD_READY_STATE" --arg oldTarget "$FROZEN_OLD_TARGET" --arg decision "$DEPLOYMENT_DECISION" --arg target "$DEPLOYMENT_ID" --arg targetUrl "$DEPLOYMENT_URL" \
-    '{schema_version: 1, kind: "vercel-authority-reconciliation-rollback-contract", mode: "authority_reconciliation", source: {repository: $repo, commit_sha: $sha, ref: "refs/heads/develop"}, target: {decision: $decision, deployment_id: ($target | if . == "" then null else . end), url: ($targetUrl | if . == "" then null else . end)}, rollback: {alias: $domain, project_id: $oldProject, team_id: $team, deployment_id: $oldDeployment, source: {repository: $oldRepo, ref: $oldRef, commit_sha: $oldSha, ready_state: $oldReady, target: ($oldTarget | if . == "" then null else . end)}}}' > "$RECONCILIATION_ROLLBACK_PATH.tmp"
+  jq -n --arg sha "$COMMIT_SHA" --arg repo "$EXPECTED_REPOSITORY" --arg domain "$STABLE_DOMAIN" --arg oldProject "$EXPECTED_CURRENT_ALIAS_PROJECT_ID" --arg oldDeployment "$EXPECTED_CURRENT_ALIAS_DEPLOYMENT_ID" --arg team "$VERCEL_TEAM_ID" --arg expectedProject "$EXPECTED_NEW_PROJECT_ID" --arg expectedTeam "$EXPECTED_TEAM_ID" --arg oldSha "$EXPECTED_CURRENT_ALIAS_SOURCE_SHA" --arg oldRef "$FROZEN_OLD_SOURCE_REF" --arg oldRepo "$FROZEN_OLD_REPOSITORY" --arg oldReady "$FROZEN_OLD_READY_STATE" --arg oldTarget "$FROZEN_OLD_TARGET" --arg ciId "$CI_RUN_ID" --arg ciUrl "$CI_RUN_URL" --arg create "$CREATE_IF_MISSING" --arg decision "$DEPLOYMENT_DECISION" --arg target "$DEPLOYMENT_ID" --arg targetUrl "$DEPLOYMENT_URL" --argjson productionOne "$PRODUCTION_ALIAS_ONE_JSON" --argjson productionTwo "$PRODUCTION_ALIAS_TWO_JSON" --argjson legacyAliases "$LEGACY_ALIAS_INVENTORY_JSON" --argjson canonicalAliases "$CANONICAL_ALIAS_INVENTORY_JSON" --argjson globalAlias "$GLOBAL_ALIAS_JSON" \
+    '{schema_version: 2, kind: "vercel-authority-reconciliation-rollback-contract", mode: "authority_reconciliation", source: {repository: $repo, commit_sha: $sha, ref: "refs/heads/develop", canonical_ci: {workflow: "ci.yml", workflow_path: ".github/workflows/ci.yml", event: "push", head_branch: "develop", head_sha: $sha, status: "completed", conclusion: "success", run_id: ($ciId | tonumber), run_url: $ciUrl}}, request: {expected_new_project_id: $expectedProject, expected_team_id: $expectedTeam, create_if_missing: ($create == "true")}, mutation_budget: {deployment_create_max: 1, fixed_dev_alias_set_max: 1, delete: 0, project_domain_dns_iam_secret_mutations: 0, maximum_provider_writes: 2}, target: {decision: $decision, deployment_id: ($target | if . == "" then null else . end), url: ($targetUrl | if . == "" then null else . end)}, rollback: {alias: $domain, project_id: $oldProject, team_id: $team, deployment_id: $oldDeployment, source: {repository: $oldRepo, ref: $oldRef, commit_sha: $oldSha, ready_state: $oldReady, target: ($oldTarget | if . == "" then null else . end)}}, frozen_authority: {global_alias: $globalAlias, production_aliases: {"wiki.rayer.idv.tw": $productionOne, "llm-wiki-frontend.vercel.app": $productionTwo}, legacy_alias_inventory: $legacyAliases, canonical_alias_inventory: $canonicalAliases}}' > "$RECONCILIATION_ROLLBACK_PATH.tmp"
   mv "$RECONCILIATION_ROLLBACK_PATH.tmp" "$RECONCILIATION_ROLLBACK_PATH"
   ROLLBACK_CONTRACT_SHA256="$(sha256sum "$RECONCILIATION_ROLLBACK_PATH" | awk '{print $1}')"
 }
 
 read_authority_state() {
   CANONICAL_PROJECT_JSON="$(api_query "/v9/projects/$VERCEL_PROJECT_ID?teamId=$VERCEL_TEAM_ID")" || return 1
-  validate_canonical_project "$CANONICAL_PROJECT_JSON"
+  validate_canonical_project "$CANONICAL_PROJECT_JSON" || return 1
   CANONICAL_DOMAINS_JSON="$(api_query "/v9/projects/$VERCEL_PROJECT_ID/domains?teamId=$VERCEL_TEAM_ID")" || return 1
-  validate_canonical_domains "$CANONICAL_DOMAINS_JSON"
+  validate_canonical_domains "$CANONICAL_DOMAINS_JSON" || return 1
   LEGACY_PROJECT_JSON="$(api_query "/v9/projects/$EXPECTED_CURRENT_ALIAS_PROJECT_ID?teamId=$VERCEL_TEAM_ID")" || return 1
-  validate_legacy_project "$LEGACY_PROJECT_JSON"
+  validate_legacy_project "$LEGACY_PROJECT_JSON" || return 1
   CURRENT_DEPLOYMENT_JSON="$(api_query "/v13/deployments/$EXPECTED_CURRENT_ALIAS_DEPLOYMENT_ID?teamId=$VERCEL_TEAM_ID")" || return 1
-  validate_legacy_deployment "$CURRENT_DEPLOYMENT_JSON"
+  validate_legacy_deployment "$CURRENT_DEPLOYMENT_JSON" || return 1
   local first_alias
   first_alias="$(read_alias)" || return 1
-  validate_global_alias "$EXPECTED_CURRENT_ALIAS_PROJECT_ID" "$EXPECTED_CURRENT_ALIAS_DEPLOYMENT_ID" "$first_alias" || return 1
+  jq -e --arg alias "$STABLE_DOMAIN" 'type == "object" and .alias == $alias and (.projectId | type == "string") and (.deploymentId | type == "string" and test("^dpl_[A-Za-z0-9]+$"))' <<< "$first_alias" >/dev/null || return 1
   LEGACY_ALIAS_INVENTORY_JSON="$(read_alias_inventory_strict "$EXPECTED_CURRENT_ALIAS_PROJECT_ID")" || return 1
   CANONICAL_ALIAS_INVENTORY_JSON="$(read_alias_inventory_strict "$VERCEL_PROJECT_ID")" || return 1
+  read_production_authority || return 1
   local second_alias
   second_alias="$(read_alias)" || return 1
-  validate_global_alias "$EXPECTED_CURRENT_ALIAS_PROJECT_ID" "$EXPECTED_CURRENT_ALIAS_DEPLOYMENT_ID" "$second_alias" || return 1
+  jq -e --arg alias "$STABLE_DOMAIN" 'type == "object" and .alias == $alias and (.projectId | type == "string") and (.deploymentId | type == "string" and test("^dpl_[A-Za-z0-9]+$"))' <<< "$second_alias" >/dev/null || return 1
   [[ "$(canonical_json "$first_alias")" == "$(canonical_json "$second_alias")" ]] || return 1
-  validate_alias_inventory "$LEGACY_ALIAS_INVENTORY_JSON" "$EXPECTED_CURRENT_ALIAS_PROJECT_ID" 1 "$EXPECTED_CURRENT_ALIAS_DEPLOYMENT_ID" || return 1
-  validate_alias_inventory "$CANONICAL_ALIAS_INVENTORY_JSON" "$VERCEL_PROJECT_ID" 0 || return 1
+  jq -e 'type == "object" and (.aliases | type == "array")' <<< "$LEGACY_ALIAS_INVENTORY_JSON" >/dev/null || return 1
+  jq -e 'type == "object" and (.aliases | type == "array")' <<< "$CANONICAL_ALIAS_INVENTORY_JSON" >/dev/null || return 1
   GLOBAL_ALIAS_JSON="$second_alias"
-  OBSERVED_ALIAS_PROJECT_ID="$EXPECTED_CURRENT_ALIAS_PROJECT_ID"
-  OBSERVED_ALIAS_DEPLOYMENT_ID="$EXPECTED_CURRENT_ALIAS_DEPLOYMENT_ID"
+  OBSERVED_ALIAS_PROJECT_ID="$(jq -r '.projectId' <<< "$second_alias")"
+  OBSERVED_ALIAS_DEPLOYMENT_ID="$(jq -r '.deploymentId' <<< "$second_alias")"
   return 0
+}
+
+stable_alias_count() {
+  jq --arg alias "$STABLE_DOMAIN" '[.aliases[] | select(.alias == $alias)] | length' <<< "$1"
+}
+
+authority_state_kind() {
+  local global_project global_deployment legacy_count canonical_count
+  global_project="$(jq -r '.projectId' <<< "$GLOBAL_ALIAS_JSON")"
+  global_deployment="$(jq -r '.deploymentId' <<< "$GLOBAL_ALIAS_JSON")"
+  legacy_count="$(stable_alias_count "$LEGACY_ALIAS_INVENTORY_JSON")"
+  canonical_count="$(stable_alias_count "$CANONICAL_ALIAS_INVENTORY_JSON")"
+  if [[ "$global_project" == "$EXPECTED_CURRENT_ALIAS_PROJECT_ID" && "$global_deployment" == "$EXPECTED_CURRENT_ALIAS_DEPLOYMENT_ID" && "$legacy_count" == 1 && "$canonical_count" == 0 ]]; then
+    return 0
+  fi
+  if [[ "$global_project" == "$VERCEL_PROJECT_ID" && "$canonical_count" == 1 && "$legacy_count" == 0 ]]; then
+    return 2
+  fi
+  if [[ "$global_project" == "$VERCEL_PROJECT_ID" ]]; then
+    return 3
+  fi
+  return 1
+}
+
+assert_frozen_production() {
+  local context="$1"
+  [[ "$(canonical_json "$PRODUCTION_ALIAS_ONE_JSON")" == "$(jq -S -c '.frozen_authority.production_aliases["wiki.rayer.idv.tw"]' <<< "$context")" ]] || return 1
+  [[ "$(canonical_json "$PRODUCTION_ALIAS_TWO_JSON")" == "$(jq -S -c '.frozen_authority.production_aliases["llm-wiki-frontend.vercel.app"]' <<< "$context")" ]] || return 1
 }
 
 assert_frozen_authority() {
@@ -379,14 +511,15 @@ assert_frozen_authority() {
     frozen="$(jq -S -c ".frozen_authority.$key" <<< "$context" 2>/dev/null || true)"
     [[ -n "$current" && "$current" == "$frozen" ]] || return 1
   done
+  assert_frozen_production "$context"
 }
 
 load_context() {
   [[ -f "$RECONCILIATION_CONTEXT_PATH" && -f "$RECONCILIATION_ROLLBACK_PATH" ]] || preflight_fail ROLLBACK_ARTIFACT_MISSING "reconciliation context and rollback contract are missing"
-  jq -e --arg sha "$COMMIT_SHA" --arg ticket "$TICKET_REF" --arg ack "$RECONCILIATION_ACK" --arg project "$VERCEL_PROJECT_ID" --arg team "$VERCEL_TEAM_ID" --arg scope "$VERCEL_SCOPE" --arg domain "$STABLE_DOMAIN" --arg oldProject "$EXPECTED_CURRENT_ALIAS_PROJECT_ID" --arg oldDeployment "$EXPECTED_CURRENT_ALIAS_DEPLOYMENT_ID" --arg oldSha "$EXPECTED_CURRENT_ALIAS_SOURCE_SHA" --arg expectedAckPrefix "$RECONCILIATION_ACK_PREFIX" '
-    .schema_version == 1 and .mode == "authority_reconciliation" and .phase == "preflight-complete" and .status == "ready_for_durable_rollback" and .ticket_ref == $ticket and .acknowledgement == $ack and (.acknowledgement | startswith($expectedAckPrefix)) and .source.commit_sha == $sha and .target.project_id == $project and .target.team_id == $team and .target.scope == $scope and .target.stable_domain == $domain and .frozen_authority.legacy_project_id == $oldProject and .frozen_authority.legacy_deployment_id == $oldDeployment and .frozen_authority.legacy_source_sha == $oldSha and .mutation_count == 0 and (.target.decision == "existing" or .target.decision == "deployment_needed") and (.target.deployment_id == null or (.target.deployment_id | type == "string" and test("^dpl_[A-Za-z0-9]+$")))' "$RECONCILIATION_CONTEXT_PATH" >/dev/null || preflight_fail ROLLBACK_CONTEXT_INVALID "reconciliation context did not match the explicit validated request"
-  jq -e --arg sha "$COMMIT_SHA" --arg project "$EXPECTED_CURRENT_ALIAS_PROJECT_ID" --arg deployment "$EXPECTED_CURRENT_ALIAS_DEPLOYMENT_ID" --arg team "$VERCEL_TEAM_ID" --arg domain "$STABLE_DOMAIN" --arg oldSha "$EXPECTED_CURRENT_ALIAS_SOURCE_SHA" '
-    .schema_version == 1 and .kind == "vercel-authority-reconciliation-rollback-contract" and .mode == "authority_reconciliation" and .source.commit_sha == $sha and .rollback.alias == $domain and .rollback.project_id == $project and .rollback.team_id == $team and .rollback.deployment_id == $deployment and .rollback.source.commit_sha == $oldSha' "$RECONCILIATION_ROLLBACK_PATH" >/dev/null || preflight_fail ROLLBACK_ARTIFACT_INVALID "rollback contract did not match the frozen old authority"
+  jq -e --arg sha "$COMMIT_SHA" --arg ticket "$TICKET_REF" --arg ack "$RECONCILIATION_ACK" --arg project "$VERCEL_PROJECT_ID" --arg team "$VERCEL_TEAM_ID" --arg scope "$VERCEL_SCOPE" --arg domain "$STABLE_DOMAIN" --arg oldProject "$EXPECTED_CURRENT_ALIAS_PROJECT_ID" --arg oldDeployment "$EXPECTED_CURRENT_ALIAS_DEPLOYMENT_ID" --arg oldSha "$EXPECTED_CURRENT_ALIAS_SOURCE_SHA" --arg expectedProject "$EXPECTED_NEW_PROJECT_ID" --arg expectedTeam "$EXPECTED_TEAM_ID" --arg ciId "$CI_RUN_ID" --arg create "$CREATE_IF_MISSING" '
+    .schema_version == 2 and .mode == "authority_reconciliation" and .phase == "preflight-complete" and .status == "ready_for_durable_rollback" and .ticket_ref == $ticket and .acknowledgement == $ack and .source.commit_sha == $sha and (.source.canonical_ci.run_id | tostring) == $ciId and .target.project_id == $project and .target.expected_new_project_id == $expectedProject and .target.team_id == $team and .target.expected_team_id == $expectedTeam and .target.scope == $scope and .target.stable_domain == $domain and (.target.create_if_missing == ($create == "true")) and .frozen_authority.legacy_project_id == $oldProject and .frozen_authority.legacy_deployment_id == $oldDeployment and .frozen_authority.legacy_source_sha == $oldSha and .mutation_count == 0 and (.target.decision == "existing" or .target.decision == "deployment_needed" or .target.decision == "already_converged") and (.target.deployment_id == null or (.target.deployment_id | type == "string" and test("^dpl_[A-Za-z0-9]+$")))' "$RECONCILIATION_CONTEXT_PATH" >/dev/null || preflight_fail ROLLBACK_CONTEXT_INVALID "reconciliation context did not match the explicit validated request"
+  jq -e --arg sha "$COMMIT_SHA" --arg project "$EXPECTED_CURRENT_ALIAS_PROJECT_ID" --arg deployment "$EXPECTED_CURRENT_ALIAS_DEPLOYMENT_ID" --arg team "$VERCEL_TEAM_ID" --arg expectedProject "$EXPECTED_NEW_PROJECT_ID" --arg expectedTeam "$EXPECTED_TEAM_ID" --arg domain "$STABLE_DOMAIN" --arg oldSha "$EXPECTED_CURRENT_ALIAS_SOURCE_SHA" --arg ciId "$CI_RUN_ID" --arg create "$CREATE_IF_MISSING" '
+    .schema_version == 2 and .kind == "vercel-authority-reconciliation-rollback-contract" and .mode == "authority_reconciliation" and .source.commit_sha == $sha and (.source.canonical_ci.run_id | tostring) == $ciId and .request.expected_new_project_id == $expectedProject and .request.expected_team_id == $expectedTeam and .request.create_if_missing == ($create == "true") and .rollback.alias == $domain and .rollback.project_id == $project and .rollback.team_id == $team and .rollback.deployment_id == $deployment and .rollback.source.commit_sha == $oldSha' "$RECONCILIATION_ROLLBACK_PATH" >/dev/null || preflight_fail ROLLBACK_ARTIFACT_INVALID "rollback contract did not match the frozen old authority"
   DEPLOYMENT_DECISION="$(jq -r '.target.decision' "$RECONCILIATION_CONTEXT_PATH")"
   DEPLOYMENT_ID="$(jq -r '.target.deployment_id // empty' "$RECONCILIATION_CONTEXT_PATH")"
   DEPLOYMENT_URL="$(jq -r '.target.deployment_url // empty' "$RECONCILIATION_CONTEXT_PATH")"
@@ -396,6 +529,8 @@ load_context() {
   FROZEN_OLD_REPOSITORY="$(jq -r '.frozen_authority.legacy_source.repository' "$RECONCILIATION_CONTEXT_PATH")"
   FROZEN_OLD_READY_STATE="$(jq -r '.frozen_authority.legacy_source.ready_state' "$RECONCILIATION_CONTEXT_PATH")"
   FROZEN_OLD_TARGET="$(jq -r '.frozen_authority.legacy_source.target // empty' "$RECONCILIATION_CONTEXT_PATH")"
+  PRODUCTION_ALIAS_ONE_JSON="$(jq -c '.frozen_authority.production_aliases["wiki.rayer.idv.tw"]' "$RECONCILIATION_CONTEXT_PATH")"
+  PRODUCTION_ALIAS_TWO_JSON="$(jq -c '.frozen_authority.production_aliases["llm-wiki-frontend.vercel.app"]' "$RECONCILIATION_CONTEXT_PATH")"
 }
 
 validate_artifact_handoff() {
@@ -403,7 +538,7 @@ validate_artifact_handoff() {
   [[ "$ROLLBACK_ARTIFACT_URL" == "https://github.com/$EXPECTED_REPOSITORY/actions/runs/$GITHUB_RUN_ID/artifacts/$ROLLBACK_ARTIFACT_ID" ]] || preflight_fail ROLLBACK_ARTIFACT_INVALID "durable reconciliation artifact URL is not bound to this repository, run, and artifact ID"
   [[ "$ROLLBACK_ARTIFACT_DIGEST" =~ ^[0-9a-f]{64}$ ]] || preflight_fail ROLLBACK_ARTIFACT_INVALID "durable reconciliation artifact digest must be bare lowercase 64-hex"
   [[ "$RECONCILIATION_ARTIFACT_NAME" == "vercel-authority-reconciliation-rollback-$COMMIT_SHA" ]] || preflight_fail ROLLBACK_ARTIFACT_INVALID "durable reconciliation artifact name is not bound to the requested SHA"
-  [[ "$(jq -r '.schema_version' "$RECONCILIATION_ROLLBACK_PATH" 2>/dev/null || true)" == 1 ]] || preflight_fail ROLLBACK_ARTIFACT_INVALID "durable rollback contract is not readable"
+  [[ "$(jq -r '.schema_version' "$RECONCILIATION_ROLLBACK_PATH" 2>/dev/null || true)" == 2 ]] || preflight_fail ROLLBACK_ARTIFACT_INVALID "durable rollback contract is not readable"
 }
 
 resolve_canonical_deployment() {
@@ -467,6 +602,7 @@ create_canonical_deployment() {
   DEPLOYMENT_ID="$(jq -r '.id // empty' <<< "$created" 2>/dev/null || true)"
   DEPLOYMENT_URL="$(jq -r '.url // empty' <<< "$created" 2>/dev/null || true)"
   [[ "$DEPLOYMENT_ID" =~ ^dpl_[A-Za-z0-9]+$ ]] || partial_fail DEPLOYMENT_CREATE_UNCERTAIN "canonical deployment-create response did not return an immutable ID"
+  DEPLOYMENT_CREATED=1
   PROVIDER_CHECKS="$(jq -c '. + ["deployment_created"]' <<< "$PROVIDER_CHECKS")"
   poll_canonical_deployment
 }
@@ -485,13 +621,19 @@ alias_set_once() {
 }
 
 postcheck() {
-  local alias_response canonical_inventory legacy_inventory deployment_response cli_response
+  local alias_response canonical_inventory legacy_inventory deployment_response cli_response context expected_legacy expected_canonical
   alias_response="$(read_alias 2>/dev/null)" || partial_fail POSTCHECK_MISMATCH "post-mutation global alias read failed"
   canonical_inventory="$(read_alias_inventory_strict "$VERCEL_PROJECT_ID" 2>/dev/null)" || partial_fail POSTCHECK_MISMATCH "post-mutation canonical alias inventory read failed"
   legacy_inventory="$(read_alias_inventory_strict "$EXPECTED_CURRENT_ALIAS_PROJECT_ID" 2>/dev/null)" || partial_fail POSTCHECK_MISMATCH "post-mutation legacy alias inventory read failed"
+  PRODUCTION_ALIAS_ONE_JSON="$(read_alias_exact "$PRODUCTION_ALIAS_ONE" 2>/dev/null)" || partial_fail POSTCHECK_MISMATCH "post-mutation production alias wiki.rayer.idv.tw read failed"
+  PRODUCTION_ALIAS_TWO_JSON="$(read_alias_exact "$PRODUCTION_ALIAS_TWO" 2>/dev/null)" || partial_fail POSTCHECK_MISMATCH "post-mutation production alias llm-wiki-frontend.vercel.app read failed"
+  context="$(cat "$RECONCILIATION_CONTEXT_PATH")"
+  assert_frozen_production "$context" || partial_fail POSTCHECK_MISMATCH "post-mutation production alias record changed"
   validate_global_alias "$VERCEL_PROJECT_ID" "$DEPLOYMENT_ID" "$alias_response" || partial_fail POSTCHECK_MISMATCH "post-mutation global alias did not identify canonical deployment"
-  validate_alias_inventory "$canonical_inventory" "$VERCEL_PROJECT_ID" 1 "$DEPLOYMENT_ID" || partial_fail POSTCHECK_MISMATCH "post-mutation canonical stable alias inventory did not converge"
-  validate_alias_inventory "$legacy_inventory" "$EXPECTED_CURRENT_ALIAS_PROJECT_ID" 0 || partial_fail POSTCHECK_MISMATCH "post-mutation legacy inventory retained the stable alias"
+  expected_legacy="$(jq -S -c --arg alias "$STABLE_DOMAIN" '.frozen_authority.legacy_alias_inventory.aliases | map(select(.alias != $alias)) | {aliases: .}' <<< "$context")"
+  expected_canonical="$(jq -S -c --arg alias "$STABLE_DOMAIN" --arg project "$VERCEL_PROJECT_ID" --arg deployment "$DEPLOYMENT_ID" '.frozen_authority.canonical_alias_inventory.aliases + [{alias:$alias, projectId:$project, deploymentId:$deployment}] | {aliases: (sort_by(tojson))}' <<< "$context")"
+  [[ "$(jq -S -c '.aliases | sort_by(tojson) | {aliases:.}' <<< "$legacy_inventory")" == "$expected_legacy" ]] || partial_fail POSTCHECK_MISMATCH "post-mutation legacy inventory did not equal the frozen inventory minus only the fixed DEV alias"
+  [[ "$(jq -S -c '.aliases | sort_by(tojson) | {aliases:.}' <<< "$canonical_inventory")" == "$expected_canonical" ]] || partial_fail POSTCHECK_MISMATCH "post-mutation canonical inventory did not preserve frozen state plus exactly the fixed DEV alias"
   deployment_response="$(api_query "/v13/deployments/$DEPLOYMENT_ID?teamId=$VERCEL_TEAM_ID" 2>/dev/null)" || partial_fail POSTCHECK_MISMATCH "post-mutation canonical deployment read failed"
   normalize_deployment "$deployment_response"
   deployment_response_matches "$deployment_response" || partial_fail POSTCHECK_MISMATCH "post-mutation canonical deployment provenance did not converge"
@@ -504,15 +646,39 @@ postcheck() {
 
 run_preflight() {
   validate_exact_sha
-  read_authority_state || preflight_fail AUTHORITY_PREFLIGHT_MISMATCH "read-only authority state did not satisfy the exact old/canonical contract"
+  if ! read_authority_state; then
+    preflight_fail "$STATE_FAILURE_CODE" "$STATE_FAILURE_REASON"
+  fi
+  local authority_code=0
+  authority_state_kind || authority_code=$?
+  [[ "$authority_code" == 0 || "$authority_code" == 2 ]] || preflight_fail AUTHORITY_DRIFT "global DEV alias and complete inventories did not identify the exact old authority tuple"
   read_repo_id
   resolve_canonical_deployment
+  if [[ "$authority_code" == 0 ]]; then
+    validate_alias_inventory "$LEGACY_ALIAS_INVENTORY_JSON" "$EXPECTED_CURRENT_ALIAS_PROJECT_ID" 1 "$EXPECTED_CURRENT_ALIAS_DEPLOYMENT_ID" || preflight_fail AUTHORITY_DRIFT "legacy DEV inventory did not contain exactly the approved old alias record"
+    validate_alias_inventory "$CANONICAL_ALIAS_INVENTORY_JSON" "$VERCEL_PROJECT_ID" 0 || preflight_fail AUTHORITY_DRIFT "canonical DEV inventory contained the stable alias before reconciliation"
+    if [[ "$DEPLOYMENT_DECISION" == deployment_needed && "$CREATE_IF_MISSING" == false ]]; then
+      preflight_fail CREATE_NOT_ALLOWED "no exact canonical deployment candidate exists and create_if_missing is false"
+    fi
+  else
+    [[ "$DEPLOYMENT_DECISION" == existing ]] || preflight_fail NORMAL_DEV_LANE_REQUIRED "canonical project owns the DEV alias but no exact desired deployment is live; use the normal DEV lane"
+    validate_alias_inventory "$CANONICAL_ALIAS_INVENTORY_JSON" "$VERCEL_PROJECT_ID" 1 "$DEPLOYMENT_ID" || preflight_fail NORMAL_DEV_LANE_REQUIRED "canonical project owns a different DEV deployment; use the normal DEV lane"
+    [[ "$(jq -r '.deploymentId' <<< "$GLOBAL_ALIAS_JSON")" == "$DEPLOYMENT_ID" ]] || preflight_fail NORMAL_DEV_LANE_REQUIRED "canonical project owns a different DEV deployment; use the normal DEV lane"
+    DEPLOYMENT_DECISION="already_converged"
+  fi
   write_rollback_contract
   freeze_context
-  STATUS="PREFLIGHT_READY"
-  REASON_CODE="PREFLIGHT_READY"
-  REASON="exact inputs, canonical CI, legacy authority, canonical project/domain, complete inventories, and canonical candidate state were validated read-only"
-  NEXT_ACTION="Upload reconciliation-rollback-contract.json before the first mutation-capable step."
+  if [[ "$DEPLOYMENT_DECISION" == already_converged ]]; then
+    STATUS="ALREADY_CONVERGED"
+    REASON_CODE="ALREADY_CONVERGED"
+    REASON="the fixed DEV alias, exact canonical READY deployment, canonical inventory, legacy inventory, and production aliases already matched the desired state"
+    NEXT_ACTION="No provider mutation is required."
+  else
+    STATUS="PREFLIGHT_READY"
+    REASON_CODE="PREFLIGHT_READY"
+    REASON="exact inputs, canonical CI, legacy authority, canonical project/domain, complete inventories, production aliases, and canonical candidate state were validated read-only"
+    NEXT_ACTION="Upload reconciliation-rollback-contract.json before the first mutation-capable step."
+  fi
   PROVIDER_CHECKS="$(jq -c '. + ["reconciliation_preflight_read_only","rollback_ready"]' <<< "$PROVIDER_CHECKS")"
   printf '%s\n' "$STATUS"
 }
@@ -525,9 +691,21 @@ run_promote() {
   local context
   context="$(cat "$RECONCILIATION_CONTEXT_PATH")"
   assert_frozen_authority "$context" || preflight_fail AUTHORITY_DRIFT "live authority differed from the frozen preflight state"
+  local authority_code=0
+  authority_state_kind || authority_code=$?
   local inventory candidate
   inventory="$(read_deployment_inventory_strict)" || preflight_fail DEPLOYMENT_LIST_FAILED "canonical deployment inventory read failed before mutation"
   candidate="$(find_canonical_candidate "$inventory")" || preflight_fail DEPLOYMENT_CANDIDATE_AMBIGUOUS "canonical deployment inventory contained duplicate exact candidates"
+  if [[ "$DEPLOYMENT_DECISION" == already_converged ]]; then
+    [[ "$authority_code" == 2 && "$candidate" != null && "$(jq -r '.deploymentId' <<< "$GLOBAL_ALIAS_JSON")" == "$(jq -r '.id' <<< "$candidate")" ]] || preflight_fail AUTHORITY_DRIFT "the already-converged authority changed before promote"
+    STATUS="ALREADY_CONVERGED"
+    REASON_CODE="ALREADY_CONVERGED"
+    REASON="the exact desired DEV authority remained live after the promote re-read"
+    NEXT_ACTION="No provider mutation was required."
+    printf '%s\n' "$STATUS"
+    exit 0
+  fi
+  [[ "$authority_code" == 0 ]] || preflight_fail AUTHORITY_RECHECK_FAILED "the old authority tuple changed before the first mutation"
   if [[ "$candidate" != null ]]; then
     DEPLOYMENT_ID="$(jq -r '.id' <<< "$candidate")"
     DEPLOYMENT_URL="$(jq -r '.url' <<< "$candidate")"
@@ -538,12 +716,23 @@ run_promote() {
     normalize_deployment "$response"
     deployment_response_matches "$response" || preflight_fail DEPLOYMENT_SOURCE_MISMATCH "canonical existing candidate provenance did not match"
   else
+    read_production_authority || preflight_fail PRODUCTION_ALIAS_READ_FAILED "production alias read failed immediately before deployment creation"
+    assert_frozen_production "$context" || preflight_fail PRODUCTION_ALIAS_DRIFT "production alias records changed before deployment creation"
+    LEGACY_ALIAS_INVENTORY_JSON="$(read_alias_inventory_strict "$EXPECTED_CURRENT_ALIAS_PROJECT_ID")" || preflight_fail LEGACY_INVENTORY_READ_FAILED "legacy alias inventory read failed immediately before deployment creation"
+    CANONICAL_ALIAS_INVENTORY_JSON="$(read_alias_inventory_strict "$VERCEL_PROJECT_ID")" || preflight_fail CANONICAL_INVENTORY_READ_FAILED "canonical alias inventory read failed immediately before deployment creation"
+    assert_frozen_authority "$context" || preflight_fail AUTHORITY_DRIFT "alias inventories changed immediately before deployment creation"
     create_canonical_deployment
   fi
   # Candidate creation is allowed to change only the deployment inventory. Re-freeze the
   # authority-bearing project, deployment, global alias, and both alias inventories first.
   read_authority_state || partial_fail AUTHORITY_DRIFT "authority read failed after candidate resolution"
   assert_frozen_authority "$context" || partial_fail AUTHORITY_DRIFT "authority changed after candidate resolution and before alias mutation"
+  if (( DEPLOYMENT_CREATED )); then
+    local post_create_inventory post_create_candidate
+    post_create_inventory="$(read_deployment_inventory_strict 2>/dev/null)" || partial_fail DEPLOYMENT_LIST_FAILED "canonical deployment inventory read failed after deployment creation"
+    post_create_candidate="$(find_canonical_candidate "$post_create_inventory")" || partial_fail DEPLOYMENT_CANDIDATE_AMBIGUOUS "canonical deployment inventory became ambiguous after deployment creation"
+    [[ "$post_create_candidate" != null && "$(jq -r '.id' <<< "$post_create_candidate")" == "$DEPLOYMENT_ID" ]] || partial_fail DEPLOYMENT_INVENTORY_DRIFT "canonical deployment inventory did not retain the exact created deployment"
+  fi
   if ! alias_set_once; then
     partial_fail MUTATION_UNCERTAIN "stable DEV alias mutation failed or became uncertain"
   fi
