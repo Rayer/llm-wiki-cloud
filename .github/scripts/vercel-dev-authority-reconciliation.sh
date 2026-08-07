@@ -411,7 +411,7 @@ read_deployment_inventory_strict() {
       query+="&until=$cursor"
     fi
     response="$(api_query "$query")" || return 1
-    jq -e 'type == "object" and (.deployments | type == "array") and all(.deployments[]; type == "object" and (.id | type == "string"))' <<< "$response" >/dev/null || return 1
+    jq -e 'type == "object" and (.deployments | type == "array") and all(.deployments[]; type == "object" and (((.id | type == "string") and ((.uid | type) != "string")) or ((.uid | type == "string") and ((.id | type) != "string"))))' <<< "$response" >/dev/null || return 1
     jq -e --argjson max "$MAX_SAFE_INTEGER" '
       . as $response |
       $response.pagination |
@@ -422,6 +422,8 @@ read_deployment_inventory_strict() {
       (.count == ($response.deployments | length))' <<< "$response" >/dev/null || return 1
     next="$(jq -r '.pagination.next // empty' <<< "$response")"
     page="$(jq -c '.deployments' <<< "$response")"
+    jq -e 'all(.[]; type == "object" and (((.id | type == "string") and ((.uid | type) != "string")) or ((.uid | type == "string") and ((.id | type) != "string"))))' <<< "$page" >/dev/null || return 1
+    page="$(jq -c 'map(. + {id: (.id // .uid)} | del(.uid))' <<< "$page")"
     inventory="$(jq -cn --argjson current "$(jq -c '.deployments' <<< "$inventory")" --argjson page "$page" '{deployments: ($current + $page)}')"
     pages=$((pages + 1))
     [[ -n "$next" ]] || { printf '%s' "$inventory"; return 0; }
@@ -435,11 +437,17 @@ read_deployment_inventory_strict() {
 find_canonical_candidate() {
   jq -c --arg sha "$COMMIT_SHA" --arg repo "$EXPECTED_REPOSITORY" --arg project "$VERCEL_PROJECT_ID" --arg team "$VERCEL_TEAM_ID" '
     [.deployments[] | select(
-      (.id | test("^dpl_[A-Za-z0-9]+$")) and .projectId == $project and ((.teamId // .accountId) == $team) and .readyState == "READY" and .target == "preview" and
+      (.id | test("^dpl_[A-Za-z0-9]+$")) and
+      .projectId == $project and
+      ((.teamId // "") == "" or .teamId == $team) and
+      ((.accountId // "") == "" or .accountId == $team) and
+      ((.ownerId // "") == "" or .ownerId == $team) and
+      .readyState == "READY" and .target == "preview" and
       (.gitSource.type // (if .meta.githubDeployment == "1" then "github" else null end)) == "github" and
       ((.gitSource.ref // .meta.githubCommitRef // "") == "develop" or (.gitSource.ref // .meta.githubCommitRef // "") == "refs/heads/develop") and
       (.gitSource.sha // .meta.githubCommitSha // "") == $sha and
-      (if (.meta.githubOrg and .meta.githubRepo) then (.meta.githubOrg + "/" + .meta.githubRepo) else ((.gitSource.org // "") + "/" + (.gitSource.repo // "")) end) == $repo and (.url | type == "string" and test("^https://"))
+      (if (.meta.githubOrg and .meta.githubRepo) then (.meta.githubOrg + "/" + .meta.githubRepo) else ((.gitSource.org // "") + "/" + (.gitSource.repo // "")) end) == $repo and
+      (.url | type == "string" and test("^[A-Za-z0-9._-]+\\.[A-Za-z0-9._-]+$"))
     )] | if length > 1 then error("duplicate exact canonical candidates") elif length == 1 then .[0] else null end' <<< "$1"
 }
 
