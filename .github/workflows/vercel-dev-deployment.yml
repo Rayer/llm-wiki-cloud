@@ -76,6 +76,51 @@ jobs:
           retention-days: 90
           if-no-files-found: error
 
+      - name: Prepare durable DEV Auth env mutation guard
+        id: auth_env_prepare
+        shell: bash
+        run: bash .github/scripts/vercel-dev-deployment.sh prepare
+        env:
+          EVIDENCE_DIR: ${{ runner.temp }}/vercel-dev-deployment
+          GITHUB_TOKEN: ${{ github.token }}
+          ROLLBACK_ARTIFACT_ID: ${{ steps.rollback_upload.outputs.artifact-id }}
+          ROLLBACK_ARTIFACT_URL: ${{ steps.rollback_upload.outputs.artifact-url }}
+          ROLLBACK_ARTIFACT_DIGEST: ${{ steps.rollback_upload.outputs.artifact-digest }}
+          VERCEL_TOKEN: ${{ secrets.VERCEL_TOKEN }}
+          VERCEL_PROJECT_ID: ${{ secrets.VERCEL_PROJECT_ID }}
+          VERCEL_TEAM_ID: ${{ secrets.VERCEL_TEAM_ID }}
+          VERCEL_SCOPE: ${{ secrets.VERCEL_SCOPE }}
+
+      - name: Upload durable DEV Auth env mutation guard
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
+        with:
+          name: vercel-dev-auth-state-${{ steps.auth_env_prepare.outputs.state_key }}-${{ github.run_id }}-${{ steps.auth_env_prepare.outputs.state_suffix }}
+          path: ${{ runner.temp }}/vercel-dev-deployment/auth-env-state.json
+          retention-days: 90
+          if-no-files-found: error
+
+      - name: Ensure exact DEV Auth URL project env
+        shell: bash
+        run: bash .github/scripts/vercel-dev-deployment.sh configure
+        env:
+          EVIDENCE_DIR: ${{ runner.temp }}/vercel-dev-deployment
+          ROLLBACK_ARTIFACT_ID: ${{ steps.rollback_upload.outputs.artifact-id }}
+          ROLLBACK_ARTIFACT_URL: ${{ steps.rollback_upload.outputs.artifact-url }}
+          ROLLBACK_ARTIFACT_DIGEST: ${{ steps.rollback_upload.outputs.artifact-digest }}
+          VERCEL_TOKEN: ${{ secrets.VERCEL_TOKEN }}
+          VERCEL_PROJECT_ID: ${{ secrets.VERCEL_PROJECT_ID }}
+          VERCEL_TEAM_ID: ${{ secrets.VERCEL_TEAM_ID }}
+          VERCEL_SCOPE: ${{ secrets.VERCEL_SCOPE }}
+
+      - name: Upload terminal DEV Auth env state
+        if: success()
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
+        with:
+          name: vercel-dev-auth-state-${{ steps.auth_env_prepare.outputs.state_key }}-${{ github.run_id }}-terminal_exact
+          path: ${{ runner.temp }}/vercel-dev-deployment/auth-env-state.json
+          retention-days: 90
+          if-no-files-found: error
+
       - name: Promote exactly the stable DEV alias
         shell: bash
         run: bash .github/scripts/vercel-dev-deployment.sh promote
