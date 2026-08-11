@@ -16,7 +16,7 @@ const legacyProject = 'prj_legacy';
 const team = 'team_test';
 const oldDeployment = 'dpl_old';
 const newDeployment = 'dpl_new';
-const domain = 'llm-wiki-frontend-dev.vercel.app';
+const domain = 'wiki.dev.rayer.idv.tw';
 const artifactDigest = '0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef';
 
 function acknowledgement(project = legacyProject, deployment = oldDeployment, desired = sha, createIfMissing = 'true', runId = '123', newProject = canonicalProject, newTeam = team) {
