@@ -376,7 +376,8 @@ test('keeps the DEV workflow manual, exact-SHA gated, and secret-scoped', async 
   assert.ok(steps.indexOf(rollbackUpload) < steps.indexOf(promote));
   assert.deepEqual(Object.keys(validate.env), ['EVIDENCE_DIR', 'GITHUB_TOKEN']);
   assert.deepEqual(Object.keys(preflight.env).sort(), ['EVIDENCE_DIR', 'GITHUB_TOKEN', 'VERCEL_PROJECT_ID', 'VERCEL_SCOPE', 'VERCEL_TEAM_ID', 'VERCEL_TOKEN'].sort());
-  assert.deepEqual(Object.keys(promote.env).sort(), ['EVIDENCE_DIR', 'ROLLBACK_ARTIFACT_DIGEST', 'ROLLBACK_ARTIFACT_ID', 'ROLLBACK_ARTIFACT_URL', 'VERCEL_PROJECT_ID', 'VERCEL_SCOPE', 'VERCEL_TEAM_ID', 'VERCEL_TOKEN'].sort());
+  assert.deepEqual(Object.keys(promote.env).sort(), ['EVIDENCE_DIR', 'GITHUB_TOKEN', 'ROLLBACK_ARTIFACT_DIGEST', 'ROLLBACK_ARTIFACT_ID', 'ROLLBACK_ARTIFACT_URL', 'VERCEL_PROJECT_ID', 'VERCEL_SCOPE', 'VERCEL_TEAM_ID', 'VERCEL_TOKEN'].sort());
+  assert.match(promote.env.GITHUB_TOKEN, /^\$\{\{ github\.token \}\}$/);
   assert.match(preflight.env.VERCEL_PROJECT_ID, /^\$\{\{ secrets\.VERCEL_PROJECT_ID \}\}$/);
   assert.match(promote.env.VERCEL_TOKEN, /^\$\{\{ secrets\.VERCEL_TOKEN \}\}$/);
   assert.doesNotMatch(workflowSource, /vercel\s+(build|deploy)|next\s+build/);
