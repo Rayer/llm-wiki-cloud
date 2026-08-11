@@ -26,6 +26,14 @@ const authSource = readFileSync(
   join(dirname(fileURLToPath(import.meta.url)), '../src/lib/auth.tsx'),
   'utf8',
 );
+const authCoreSource = readFileSync(
+  join(dirname(fileURLToPath(import.meta.url)), '../src/lib/auth-core.ts'),
+  'utf8',
+);
+const apiSource = readFileSync(
+  join(dirname(fileURLToPath(import.meta.url)), '../src/lib/api.ts'),
+  'utf8',
+);
 
 test('normalizeAuthResponse accepts access_token and nested user', () => {
   assert.deepEqual(
@@ -244,4 +252,20 @@ test('auth provider normalizes registration responses into non-demo sessions', (
 
 test('auth provider delegates auth persistence to the session helper', () => {
   assert.match(authSource, /persistAuthSession\(/);
+});
+
+test('auth endpoints use NEXT_PUBLIC_AUTH_URL while product APIs keep NEXT_PUBLIC_API_URL', () => {
+  assert.ok(
+    authCoreSource.includes(
+      "export const AUTH_URL = process.env.NEXT_PUBLIC_AUTH_URL ?? 'https://auth-dev.rayer.idv.tw';",
+    ),
+  );
+  assert.ok(authSource.includes('${AUTH_URL}${path}'));
+  assert.match(authSource, /\$\{AUTH_URL\}\/api\/v1\/auth\/refresh/);
+  assert.ok(authSource.includes("postAuth('/api/v1/auth/login', { email, password })"));
+  assert.ok(authSource.includes("postAuth('/api/v1/auth/register', { email, password })"));
+  assert.ok(authSource.includes("postAuth('/api/v1/auth/logout')"));
+  assert.ok(!authSource.includes('${API_URL}/api/v1/auth/'));
+  assert.ok(apiSource.includes('const API_URL ='));
+  assert.ok(!apiSource.includes('AUTH_URL'));
 });

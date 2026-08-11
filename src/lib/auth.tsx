@@ -11,7 +11,7 @@ import {
   useState,
 } from 'react';
 import {
-  API_URL,
+  AUTH_URL,
   clearStoredAccessToken,
   clearStoredAuthUser,
   clearStoredDemoSession,
@@ -54,7 +54,7 @@ type AuthContextValue = {
 const AuthContext = createContext<AuthContextValue | null>(null);
 
 async function postAuth(path: string, body?: unknown): Promise<unknown> {
-  const response = await fetch(`${API_URL}${path}`, {
+  const response = await fetch(`${AUTH_URL}${path}`, {
     method: 'POST',
     credentials: 'include',
     headers: body === undefined ? undefined : { 'Content-Type': 'application/json' },
@@ -110,7 +110,7 @@ export function AuthProvider({ children }: { children: ReactNode }) {
     const clearOnAuthFailure = options?.clearOnAuthFailure !== false;
 
     try {
-      const response = await fetch(`${API_URL}/api/v1/auth/refresh`, {
+      const response = await fetch(`${AUTH_URL}/api/v1/auth/refresh`, {
         method: 'POST',
         credentials: 'include',
       });
