@@ -14,7 +14,7 @@ const deploymentId = 'dpl_devready';
 const projectId = 'prj_dev123';
 const teamId = 'team_dev123';
 const rollbackArtifactDigestBare = '0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef';
-const stableDomain = 'llm-wiki-frontend-dev.vercel.app';
+const stableDomain = 'wiki.dev.rayer.idv.tw';
 
 async function setupCase(scenario = 'authority-conflict') {
   const root = await mkdtemp(join(tmpdir(), 'lwc-253-'));
@@ -173,7 +173,7 @@ test('uses bounded project-scoped alias inventory without the unsupported domain
   assert.equal(run.result.code, undefined, run.result?.stderr);
   const aliasRead = run.curlCalls.find((url) => url.includes('/v4/aliases/'));
   const inventoryReads = run.curlCalls.filter((url) => url.includes('/v4/aliases?'));
-  assert.match(aliasRead, /\/v4\/aliases\/llm-wiki-frontend-dev\.vercel\.app\?teamId=team_dev123$/);
+  assert.match(aliasRead, /\/v4\/aliases\/wiki\.dev\.rayer\.idv\.tw\?teamId=team_dev123$/);
   assert.equal(inventoryReads.length, 3);
   for (const url of inventoryReads) {
     assert.match(url, /\/v4\/aliases\?projectId=prj_dev123&teamId=team_dev123&limit=100$/);
@@ -235,7 +235,7 @@ test('read-only preflight records a typed create-needed decision without provide
   assert.equal(run.evidence.deployment.target, 'preview');
   assert.ok(run.evidence.provider_verification.checks.includes('deployment_create_attempted'));
   assert.ok(run.evidence.provider_verification.checks.includes('alias_mutation_attempted'));
-  assert.match(run.mutationLog[0], /^alias set dpl_devready llm-wiki-frontend-dev\.vercel\.app/);
+  assert.match(run.mutationLog[0], /^alias set dpl_devready wiki\.dev\.rayer\.idv\.tw/);
 });
 
 test('creates through historical deployments and counts deployment plus alias mutations', async () => {

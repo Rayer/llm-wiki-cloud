@@ -10,7 +10,7 @@ fi
 readonly EXPECTED_REPOSITORY="Rayer/llm-wiki-frontend"
 readonly EXPECTED_PROJECT_NAME="llm-wiki-frontend-dev"
 readonly EXPECTED_SCOPE="rayer-tung-s-projects"
-readonly STABLE_DOMAIN="llm-wiki-frontend-dev.vercel.app"
+readonly STABLE_DOMAIN="wiki.dev.rayer.idv.tw"
 readonly EXPECTED_REF="develop"
 readonly API_BASE_URL="${VERCEL_API_BASE_URL:-https://api.vercel.com}"
 readonly GITHUB_BASE_URL="${GITHUB_API_URL:-https://api.github.com}"
