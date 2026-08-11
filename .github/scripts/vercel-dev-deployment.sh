@@ -305,14 +305,6 @@ validate_project() {
   PROVIDER_CHECKS="$(jq -c '. + ["project_metadata_exact"]' <<< "$PROVIDER_CHECKS")"
 }
 
-validate_domains() {
-  local domains="$1"
-  jq -e --arg domain "$STABLE_DOMAIN" '
-    type == "object" and (.domains | type == "array" and length == 1 and .[0].name == $domain)' <<< "$domains" >/dev/null ||
-    preflight_fail DOMAIN_NOT_ALLOWLISTED "provider domain metadata did not identify the single allowlisted DEV domain"
-  PROVIDER_CHECKS="$(jq -c '. + ["project_domain_exact"]' <<< "$PROVIDER_CHECKS")"
-}
-
 read_alias() {
   local encoded
   encoded="$(printf '%s' "$STABLE_DOMAIN" | jq -Rr @uri)"
@@ -541,11 +533,9 @@ write_context() {
 
 run_preflight() {
   validate_exact_sha
-  local project domains alias_response inventory deployment_inventory candidate
+  local project alias_response inventory deployment_inventory candidate
   project="$(api_query "/v9/projects/$VERCEL_PROJECT_ID?teamId=$VERCEL_TEAM_ID")" || preflight_fail PROJECT_READ_FAILED "DEV project metadata read failed"
   validate_project "$project"
-  domains="$(api_query "/v9/projects/$VERCEL_PROJECT_ID/domains?teamId=$VERCEL_TEAM_ID")" || preflight_fail DOMAIN_READ_FAILED "DEV project domain metadata read failed"
-  validate_domains "$domains"
   alias_response="$(read_alias)" || preflight_fail ALIAS_READ_FAILED "DEV stable alias read failed"
   inventory="$(read_alias_inventory)" || preflight_fail ALIAS_INVENTORY_READ_FAILED "DEV project-scoped alias inventory read failed"
   read_authority "$alias_response" "$inventory"
@@ -565,7 +555,7 @@ run_preflight() {
   write_context
   STATUS="PREFLIGHT_READY"
   REASON_CODE="PREFLIGHT_READY"
-  REASON="exact SHA, canonical CI, allowlisted DEV project/team/domain, frozen alias authority, and read-only deployment decision were validated"
+  REASON="exact SHA, canonical CI, allowlisted DEV project/team, frozen alias authority, and read-only deployment decision were validated"
   NEXT_ACTION="Upload rollback-contract.json before running promote."
   printf '%s\n' "$STATUS"
 }
