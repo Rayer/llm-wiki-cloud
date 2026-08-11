@@ -40,12 +40,6 @@ if [[ "$url" == *"/actions/workflows/ci.yml/runs?"* ]]; then
   fi
 elif [[ "$url" == *"/repos/$GITHUB_REPOSITORY"* ]]; then
   printf '%s' '{"id":12345}'
-elif [[ "$url" == *"/v9/projects/$VERCEL_PROJECT_ID/domains"* ]]; then
-  if [[ "$scenario" == domain-mismatch ]]; then
-    printf '%s' '{"domains":[{"name":"llm-wiki-frontend.vercel.app"}]}'
-  else
-    cat "$root/domains.json"
-  fi
 elif [[ "$url" == *"/v9/projects/$VERCEL_PROJECT_ID"* ]]; then
   if [[ "$scenario" == project-mismatch ]]; then
     jq '.name = "llm-wiki-frontend"' "$root/project.json"

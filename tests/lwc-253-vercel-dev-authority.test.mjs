@@ -50,9 +50,6 @@ async function setupCase(scenario = 'authority-conflict') {
     name: 'llm-wiki-frontend-dev',
     accountId: teamId,
   }));
-  await writeFile(join(root, 'domains.json'), JSON.stringify({
-    domains: [{ name: stableDomain }],
-  }));
   await writeFile(join(root, 'ci.json'), JSON.stringify({
     workflow_runs: [{
       path: '.github/workflows/ci.yml',
@@ -171,6 +168,7 @@ test('rejects the retired Vercel scope slug', async () => {
 test('uses bounded project-scoped alias inventory without the unsupported domain filter', async () => {
   const run = await runCase('success');
   assert.equal(run.result.code, undefined, run.result?.stderr);
+  assert.equal(run.curlCalls.filter((url) => url.includes('/domains')).length, 0);
   const aliasRead = run.curlCalls.find((url) => url.includes('/v4/aliases/'));
   const inventoryReads = run.curlCalls.filter((url) => url.includes('/v4/aliases?'));
   assert.match(aliasRead, /\/v4\/aliases\/wiki\.dev\.rayer\.idv\.tw\?teamId=team_dev123$/);
@@ -189,7 +187,6 @@ for (const [scenario, overrides, reasonCode] of [
   ['success', { CURRENT_REMOTE_DEVELOP_SHA: 'fedcba9876543210fedcba9876543210fedcba98' }, 'REMOTE_DEVELOP_SHA_MISMATCH'],
   ['project-mismatch', {}, 'PROJECT_METADATA_MISMATCH'],
   ['team-mismatch', {}, 'PROJECT_METADATA_MISMATCH'],
-  ['domain-mismatch', {}, 'DOMAIN_NOT_ALLOWLISTED'],
   ['alias-absent', {}, 'ALIAS_AUTHORITY_CONFLICT'],
   ['alias-divergent', {}, 'ALIAS_AUTHORITY_CONFLICT'],
   ['alias-project-mismatch', {}, 'ALIAS_AUTHORITY_CONFLICT'],
