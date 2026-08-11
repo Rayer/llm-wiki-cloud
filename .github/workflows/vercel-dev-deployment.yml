@@ -81,6 +81,7 @@ jobs:
         run: bash .github/scripts/vercel-dev-deployment.sh promote
         env:
           EVIDENCE_DIR: ${{ runner.temp }}/vercel-dev-deployment
+          GITHUB_TOKEN: ${{ github.token }}
           ROLLBACK_ARTIFACT_ID: ${{ steps.rollback_upload.outputs.artifact-id }}
           ROLLBACK_ARTIFACT_URL: ${{ steps.rollback_upload.outputs.artifact-url }}
           ROLLBACK_ARTIFACT_DIGEST: ${{ steps.rollback_upload.outputs.artifact-digest }}
