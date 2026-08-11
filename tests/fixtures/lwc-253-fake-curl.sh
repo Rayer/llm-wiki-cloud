@@ -96,7 +96,7 @@ elif [[ "$url" == *"/v13/deployments?"* ]]; then
   printf '%s' '{"id":"dpl_devready"}'
 elif [[ "$url" == *"/v4/aliases/$STABLE_DOMAIN"* ]]; then
   if [[ "$scenario" == authority-conflict ]]; then
-    printf '%s' '{"alias":"llm-wiki-frontend-dev.vercel.app","projectId":"prj_main123","deploymentId":"dpl_mainready"}'
+    printf '%s' '{"alias":"wiki.dev.rayer.idv.tw","projectId":"prj_main123","deploymentId":"dpl_mainready"}'
   elif [[ "$scenario" == alias-absent ]]; then
     printf '{"alias":"%s","projectId":"%s","deploymentId":""}' "$STABLE_DOMAIN" "$VERCEL_PROJECT_ID"
   elif [[ "$scenario" == alias-divergent ]]; then
