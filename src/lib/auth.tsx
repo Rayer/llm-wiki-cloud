@@ -27,6 +27,8 @@ import {
   responseError,
   writeStoredAccessToken,
   writeStoredAuthUser,
+  setForceHomeRedirect,
+  clearForceHomeRedirect,
   type AuthResponse,
   type AuthUser,
 } from './auth-core';
@@ -49,6 +51,7 @@ type AuthContextValue = {
   register: (email: string, password: string) => Promise<void>;
   logout: () => Promise<void>;
   refreshAccessToken: (options?: RefreshAccessTokenOptions) => Promise<string | null>;
+  sessionEpoch: number;
 };
 
 const AuthContext = createContext<AuthContextValue | null>(null);
@@ -77,13 +80,18 @@ export function AuthProvider({ children }: { children: ReactNode }) {
   const [user, setUser] = useState<AuthUser | null>(null);
   const [isDemoSession, setIsDemoSession] = useState(false);
   const [hydrated, setHydrated] = useState(false);
+  const [sessionEpoch, setSessionEpoch] = useState(0);
   const accessTokenRef = useRef<string | null>(null);
+  const sessionEpochRef = useRef(0);
+  const providerGenerationRef = useRef(0);
 
   useEffect(() => {
     accessTokenRef.current = accessToken;
   }, [accessToken]);
 
   const clearSession = useCallback(() => {
+    sessionEpochRef.current += 1;
+    setSessionEpoch(sessionEpochRef.current);
     setAccessToken(null);
     accessTokenRef.current = null;
     setUser(null);
@@ -93,8 +101,16 @@ export function AuthProvider({ children }: { children: ReactNode }) {
     clearStoredDemoSession(typeof window !== 'undefined' ? window.localStorage : null);
   }, []);
 
+  const clearSessionForUnauthorized = useCallback((failedToken: string, failedEpoch: number) => {
+    if (accessTokenRef.current !== failedToken || sessionEpochRef.current !== failedEpoch) return;
+    setForceHomeRedirect(typeof window !== 'undefined' ? window.localStorage : null);
+    clearSession();
+  }, [clearSession]);
+
   const applyAuthResponse = useCallback((result: AuthResponse, options?: { demo?: boolean }) => {
     const demo = options?.demo === true;
+    sessionEpochRef.current += 1;
+    setSessionEpoch(sessionEpochRef.current);
     setAccessToken(result.access_token);
     accessTokenRef.current = result.access_token;
     setUser(result.user);
@@ -108,6 +124,9 @@ export function AuthProvider({ children }: { children: ReactNode }) {
 
   const refreshAccessToken = useCallback(async (options?: RefreshAccessTokenOptions) => {
     const clearOnAuthFailure = options?.clearOnAuthFailure !== false;
+    const startedProviderGeneration = providerGenerationRef.current;
+    const startedToken = accessTokenRef.current;
+    const startedEpoch = sessionEpochRef.current;
 
     try {
       const response = await fetch(`${AUTH_URL}/api/v1/auth/refresh`, {
@@ -115,15 +134,24 @@ export function AuthProvider({ children }: { children: ReactNode }) {
         credentials: 'include',
       });
       const payload: unknown = await response.json().catch(() => null);
+      if (providerGenerationRef.current !== startedProviderGeneration) return null;
 
       if (!response.ok) {
-        if (isAuthFailureStatus(response.status) && clearOnAuthFailure) {
+        if (
+          isAuthFailureStatus(response.status)
+          && clearOnAuthFailure
+          && accessTokenRef.current === startedToken
+          && sessionEpochRef.current === startedEpoch
+        ) {
           clearSession();
         }
         return null;
       }
 
       const result = normalizeRefreshResponse(payload);
+      if (accessTokenRef.current !== startedToken || sessionEpochRef.current !== startedEpoch) return null;
+      sessionEpochRef.current += 1;
+      setSessionEpoch(sessionEpochRef.current);
       setAccessToken(result.access_token);
       accessTokenRef.current = result.access_token;
       writeStoredAccessToken(
@@ -137,29 +165,35 @@ export function AuthProvider({ children }: { children: ReactNode }) {
           result.user,
         );
       }
-      return result.access_token;
+      return { accessToken: result.access_token, epoch: sessionEpochRef.current };
     } catch {
       // Network / parse failures: keep session
       return null;
     }
   }, [clearSession]);
 
+  const refreshAccessTokenForContext = useCallback(async (options?: RefreshAccessTokenOptions) => (
+    (await refreshAccessToken(options))?.accessToken ?? null
+  ), [refreshAccessToken]);
+
   useEffect(() => {
     configureApiAuth({
       getAccessToken: () => accessTokenRef.current,
-      // apiFetch 401 path: default clearOnAuthFailure true
-      refreshAccessToken: () => refreshAccessToken(),
-      onUnauthorized: clearSession,
+      getSessionEpoch: () => sessionEpochRef.current,
+      // API owns final unauthorized handling after its token-identity check.
+      refreshAccessToken: () => refreshAccessToken({ clearOnAuthFailure: false }),
+      onUnauthorized: clearSessionForUnauthorized,
     });
 
     return () => {
+      providerGenerationRef.current += 1;
       configureApiAuth({
         getAccessToken: () => null,
         refreshAccessToken: async () => null,
         onUnauthorized: () => undefined,
       });
     };
-  }, [clearSession, refreshAccessToken]);
+  }, [clearSession, clearSessionForUnauthorized, refreshAccessToken]);
 
   useEffect(() => {
     let cancelled = false;
@@ -174,6 +208,8 @@ export function AuthProvider({ children }: { children: ReactNode }) {
       // Also restore cached user: JWT has only sub; refresh often omits user / fails for demo.
       if (stored) {
         if (!cancelled) {
+          sessionEpochRef.current += 1;
+          setSessionEpoch(sessionEpochRef.current);
           setAccessToken(stored);
           accessTokenRef.current = stored;
           setUser(readStoredAuthUser(storage));
@@ -220,6 +256,7 @@ export function AuthProvider({ children }: { children: ReactNode }) {
     try {
       await postAuth('/api/v1/auth/logout');
     } finally {
+      clearForceHomeRedirect(typeof window !== 'undefined' ? window.localStorage : null);
       clearSession();
     }
   }, [clearSession]);
@@ -235,8 +272,9 @@ export function AuthProvider({ children }: { children: ReactNode }) {
     loginAsDemo,
     register,
     logout,
-    refreshAccessToken,
-  }), [accessToken, hydrated, isDemoSession, login, loginAsDemo, logout, refreshAccessToken, register, user]);
+    refreshAccessToken: refreshAccessTokenForContext,
+    sessionEpoch,
+  }), [accessToken, hydrated, isDemoSession, login, loginAsDemo, logout, refreshAccessTokenForContext, register, sessionEpoch, user]);
 
   return <AuthContext.Provider value={value}>{children}</AuthContext.Provider>;
 }

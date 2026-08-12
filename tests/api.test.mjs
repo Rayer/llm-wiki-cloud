@@ -763,7 +763,7 @@ test('uploadRawFile refreshes once after 401 and never retries indefinitely', as
     refreshAccessToken: async () => {
       refreshCount += 1;
       token = 'fresh-token';
-      return token;
+      return { accessToken: token, epoch: 0 };
     },
     onUnauthorized: () => { unauthorizedCount += 1; },
   });
@@ -804,10 +804,18 @@ test('uploadRawFile refreshes once after 401 and never retries indefinitely', as
   }
 
   let finalUnauthorizedCount = 0;
+  let finalUnauthorizedToken = null;
+  let finalRefreshCount = 0;
   configureApiAuth({
     getAccessToken: () => 'stale-token',
-    refreshAccessToken: async () => 'fresh-token',
-    onUnauthorized: () => { finalUnauthorizedCount += 1; },
+    refreshAccessToken: async () => {
+      finalRefreshCount += 1;
+      return { accessToken: 'fresh-token', epoch: 0 };
+    },
+    onUnauthorized: (failedToken) => {
+      finalUnauthorizedCount += 1;
+      finalUnauthorizedToken = failedToken;
+    },
   });
   const retryRequests = [];
   class AlwaysUnauthorizedXHR extends FakeXMLHttpRequest {
@@ -829,7 +837,40 @@ test('uploadRawFile refreshes once after 401 and never retries indefinitely', as
       (err) => err instanceof ApiError && err.status === 401 && err.message === 'still expired',
     );
     assert.equal(retryRequests.length, 2);
-    assert.equal(finalUnauthorizedCount, 0);
+    assert.equal(finalRefreshCount, 1);
+    assert.equal(finalUnauthorizedCount, 1);
+    assert.equal(finalUnauthorizedToken, 'fresh-token');
+  } finally {
+    globalThis.XMLHttpRequest = originalXHR;
+  }
+
+  let forbiddenUnauthorizedCount = 0;
+  configureApiAuth({
+    getAccessToken: () => 'stale-token',
+    refreshAccessToken: async () => ({ accessToken: 'fresh-token', epoch: 0 }),
+    onUnauthorized: () => { forbiddenUnauthorizedCount += 1; },
+  });
+  const forbiddenRequests = [];
+  class ForbiddenAfterRefreshXHR extends FakeXMLHttpRequest {
+    constructor() {
+      super();
+      forbiddenRequests.push(this);
+    }
+    send() {
+      this.status = forbiddenRequests.length === 1 ? 401 : 403;
+      this.responseText = JSON.stringify({ error: this.status === 401 ? 'expired' : 'forbidden' });
+      this.onload();
+    }
+  }
+
+  try {
+    globalThis.XMLHttpRequest = ForbiddenAfterRefreshXHR;
+    await assert.rejects(
+      () => uploadRawFile(new File(['x'], 'forbidden-retry.md')),
+      (err) => err instanceof ApiError && err.status === 403 && err.message === 'forbidden',
+    );
+    assert.equal(forbiddenRequests.length, 2);
+    assert.equal(forbiddenUnauthorizedCount, 0);
   } finally {
     globalThis.XMLHttpRequest = originalXHR;
   }
@@ -1078,6 +1119,72 @@ test('getAdminUsers and user mutations use admin endpoints without project heade
   }
 });
 
+test('apiFetch snapshots epoch before token access can schedule a same-token session transition', async () => {
+  let epoch = 1;
+  let refreshCalls = 0;
+  let unauthorizedCalls = 0;
+  configureApiAuth({
+    getSessionEpoch: () => epoch,
+    getAccessToken: () => {
+      queueMicrotask(() => { epoch = 2; });
+      return 'same-token';
+    },
+    refreshAccessToken: async () => {
+      refreshCalls += 1;
+      return null;
+    },
+    onUnauthorized: () => { unauthorizedCalls += 1; },
+  });
+  globalThis.window = { localStorage: { getItem: () => 'project-1' } };
+  const originalFetch = globalThis.fetch;
+  globalThis.fetch = async () => {
+    return new Response('expired', { status: 401 });
+  };
+  try {
+    const response = await apiFetch('/api/v1/status');
+    assert.equal(response.status, 401);
+    assert.equal(epoch, 2);
+    assert.equal(refreshCalls, 0);
+    assert.equal(unauthorizedCalls, 0);
+  } finally {
+    globalThis.fetch = originalFetch;
+  }
+});
+
+test('apiFetch never switches auth providers while an initial response is pending', async () => {
+  let resolveInitial;
+  const initial = new Promise((resolve) => { resolveInitial = resolve; });
+  let aRefresh = 0;
+  let bRefresh = 0;
+  let bUnauthorized = 0;
+  configureApiAuth({
+    getSessionEpoch: () => 1,
+    getAccessToken: () => 'same-token',
+    refreshAccessToken: async () => { aRefresh += 1; return null; },
+    onUnauthorized: () => undefined,
+  });
+  globalThis.window = { localStorage: { getItem: () => 'project-1' } };
+  const originalFetch = globalThis.fetch;
+  globalThis.fetch = async () => initial;
+  try {
+    const request = apiFetch('/api/v1/status');
+    configureApiAuth({
+      getSessionEpoch: () => 1,
+      getAccessToken: () => 'same-token',
+      refreshAccessToken: async () => { bRefresh += 1; return { accessToken: 'same-token', epoch: 0 }; },
+      onUnauthorized: () => { bUnauthorized += 1; },
+    });
+    resolveInitial(new Response('expired', { status: 401 }));
+    const response = await request;
+    assert.equal(response.status, 401);
+    assert.equal(aRefresh, 0);
+    assert.equal(bRefresh, 0);
+    assert.equal(bUnauthorized, 0);
+  } finally {
+    globalThis.fetch = originalFetch;
+  }
+});
+
 test('apiFetch does not logout when access token missing and refresh returns null', async () => {
   let unauthorizedCalls = 0;
   configureApiAuth({
@@ -1094,6 +1201,33 @@ test('apiFetch does not logout when access token missing and refresh returns nul
     /Authentication required|log in/i,
   );
   assert.equal(unauthorizedCalls, 0);
+});
+
+test('apiFetch rejects legacy refresh during pre-request when no session epoch getter exists', async () => {
+  let unauthorizedCalls = 0;
+  let fetchCalls = 0;
+  configureApiAuth({
+    getAccessToken: () => null,
+    refreshAccessToken: async () => 'legacy-token',
+    onUnauthorized: () => { unauthorizedCalls += 1; },
+  });
+  globalThis.window = { localStorage: { getItem: () => 'project-1' } };
+
+  const originalFetch = globalThis.fetch;
+  globalThis.fetch = async () => {
+    fetchCalls += 1;
+    return new Response('unexpected', { status: 200 });
+  };
+  try {
+    await assert.rejects(
+      () => apiFetch('/api/v1/status'),
+      /Authentication required|log in/i,
+    );
+    assert.equal(fetchCalls, 0);
+    assert.equal(unauthorizedCalls, 0);
+  } finally {
+    globalThis.fetch = originalFetch;
+  }
 });
 
 test('apiFetch does not logout on non-401 responses', async () => {
@@ -1121,10 +1255,14 @@ test('apiFetch does not logout on non-401 responses', async () => {
 
 test('apiFetch logs out when response is 401 and refresh returns null', async () => {
   let unauthorizedCalls = 0;
+  let unauthorizedToken = null;
   configureApiAuth({
     getAccessToken: () => 'stale-token',
     refreshAccessToken: async () => null,
-    onUnauthorized: () => { unauthorizedCalls += 1; },
+    onUnauthorized: (failedToken) => {
+      unauthorizedCalls += 1;
+      unauthorizedToken = failedToken;
+    },
   });
   globalThis.window = {
     localStorage: { getItem: () => 'project-1' },
@@ -1137,6 +1275,7 @@ test('apiFetch logs out when response is 401 and refresh returns null', async ()
     const response = await apiFetch('/api/v1/status');
     assert.equal(response.status, 401);
     assert.equal(unauthorizedCalls, 1);
+    assert.equal(unauthorizedToken, 'stale-token');
   } finally {
     globalThis.fetch = originalFetch;
   }
@@ -1145,9 +1284,13 @@ test('apiFetch logs out when response is 401 and refresh returns null', async ()
 test('apiFetch retries once after 401 when refresh succeeds', async () => {
   let unauthorizedCalls = 0;
   let fetchCount = 0;
+  let refreshCount = 0;
   configureApiAuth({
     getAccessToken: () => 'stale-token',
-    refreshAccessToken: async () => 'fresh-token',
+    refreshAccessToken: async () => {
+      refreshCount += 1;
+      return { accessToken: 'fresh-token', epoch: 0 };
+    },
     onUnauthorized: () => { unauthorizedCalls += 1; },
   });
   globalThis.window = {
@@ -1167,8 +1310,435 @@ test('apiFetch retries once after 401 when refresh succeeds', async () => {
     const response = await apiFetch('/api/v1/status');
     assert.equal(response.status, 200);
     assert.equal(fetchCount, 2);
+    assert.equal(refreshCount, 1);
     assert.equal(unauthorizedCalls, 0);
   } finally {
     globalThis.fetch = originalFetch;
+  }
+});
+
+test('apiFetch performs zero unauthorized callback when epoch changes during refresh', async () => {
+  let epoch = 1;
+  let resolveRefresh;
+  const refresh = new Promise((resolve) => { resolveRefresh = resolve; });
+  let unauthorizedCalls = 0;
+  configureApiAuth({
+    getSessionEpoch: () => epoch,
+    getAccessToken: () => 'same-token',
+    refreshAccessToken: async () => refresh,
+    onUnauthorized: () => { unauthorizedCalls += 1; },
+  });
+  globalThis.window = { localStorage: { getItem: () => 'project-1' } };
+  const originalFetch = globalThis.fetch;
+  globalThis.fetch = async () => {
+    return new Response('expired', { status: 401 });
+  };
+  try {
+    const request = apiFetch('/api/v1/status');
+    await new Promise((resolve) => setTimeout(resolve, 0));
+    epoch = 2;
+    resolveRefresh(null);
+    assert.equal((await request).status, 401);
+    assert.equal(unauthorizedCalls, 0);
+  } finally {
+    globalThis.fetch = originalFetch;
+  }
+});
+
+test('apiFetch performs zero unauthorized callback when epoch changes during retry', async () => {
+  let epoch = 1;
+  let resolveRetry;
+  const retry = new Promise((resolve) => { resolveRetry = resolve; });
+  let fetchCount = 0;
+  let unauthorizedCalls = 0;
+  configureApiAuth({
+    getSessionEpoch: () => epoch,
+    getAccessToken: () => 'old-token',
+    refreshAccessToken: async () => { epoch = 2; return { accessToken: 'fresh-token', epoch: 2 }; },
+    onUnauthorized: () => { unauthorizedCalls += 1; },
+  });
+  globalThis.window = { localStorage: { getItem: () => 'project-1' } };
+  const originalFetch = globalThis.fetch;
+  globalThis.fetch = async () => {
+    fetchCount += 1;
+    return fetchCount === 1 ? new Response('expired', { status: 401 }) : retry;
+  };
+  try {
+    const request = apiFetch('/api/v1/status');
+    await new Promise((resolve) => setTimeout(resolve, 0));
+    epoch = 3;
+    resolveRetry(new Response('expired again', { status: 401 }));
+    assert.equal((await request).status, 401);
+    assert.equal(unauthorizedCalls, 0);
+  } finally {
+    globalThis.fetch = originalFetch;
+  }
+});
+
+test('uploadRawFile performs zero unauthorized callback when epoch changes during refresh', async () => {
+  let epoch = 1;
+  let resolveRefresh;
+  const refresh = new Promise((resolve) => { resolveRefresh = resolve; });
+  let unauthorizedCalls = 0;
+  configureApiAuth({
+    getSessionEpoch: () => epoch,
+    getAccessToken: () => 'same-token',
+    refreshAccessToken: async () => refresh,
+    onUnauthorized: () => { unauthorizedCalls += 1; },
+  });
+  globalThis.window = { localStorage: { getItem: () => 'project-1' } };
+  const originalXHR = globalThis.XMLHttpRequest;
+  class EpochXHR {
+    constructor() { this.upload = {}; }
+    open() {}
+    setRequestHeader() {}
+    send() { this.status = 401; this.responseText = '{}'; this.onload(); }
+  }
+  globalThis.XMLHttpRequest = EpochXHR;
+  try {
+    const upload = uploadRawFile(new File(['x'], 'epoch.md')).catch((error) => error);
+    await new Promise((resolve) => setTimeout(resolve, 0));
+    epoch = 2;
+    resolveRefresh(null);
+    const error = await upload;
+    assert.equal(error.status, 401);
+    assert.equal(unauthorizedCalls, 0);
+  } finally {
+    globalThis.XMLHttpRequest = originalXHR;
+  }
+});
+
+test('uploadRawFile performs zero unauthorized callback when epoch changes during retry', async () => {
+  let epoch = 1;
+  let unauthorizedCalls = 0;
+  let requestCount = 0;
+  let respondToRetry;
+  configureApiAuth({
+    getSessionEpoch: () => epoch,
+    getAccessToken: () => 'old-token',
+    refreshAccessToken: async () => { epoch = 2; return { accessToken: 'fresh-token', epoch: 2 }; },
+    onUnauthorized: () => { unauthorizedCalls += 1; },
+  });
+  globalThis.window = { localStorage: { getItem: () => 'project-1' } };
+  const originalXHR = globalThis.XMLHttpRequest;
+  class EpochXHR {
+    constructor() { this.upload = {}; }
+    open() {}
+    setRequestHeader() {}
+    send() {
+      requestCount += 1;
+      if (requestCount === 1) {
+        this.status = 401; this.responseText = '{}'; this.onload();
+      } else respondToRetry = () => this.respond();
+    }
+    respond() { this.status = 401; this.responseText = '{}'; this.onload(); }
+  }
+  globalThis.XMLHttpRequest = EpochXHR;
+  try {
+    const upload = uploadRawFile(new File(['x'], 'epoch.md')).catch((error) => error);
+    await new Promise((resolve) => setTimeout(resolve, 0));
+    epoch = 3;
+    respondToRetry();
+    const error = await upload;
+    assert.equal(error.status, 401);
+    assert.equal(unauthorizedCalls, 0);
+  } finally {
+    globalThis.XMLHttpRequest = originalXHR;
+  }
+});
+
+test('apiFetch calls unauthorized once when a refreshed retry is still 401', async () => {
+  let unauthorizedCalls = 0;
+  let unauthorizedToken = null;
+  let fetchCount = 0;
+  let refreshCount = 0;
+  configureApiAuth({
+    getAccessToken: () => 'stale-token',
+    refreshAccessToken: async () => {
+      refreshCount += 1;
+      return { accessToken: 'fresh-token', epoch: 0 };
+    },
+    onUnauthorized: (failedToken) => {
+      unauthorizedCalls += 1;
+      unauthorizedToken = failedToken;
+    },
+  });
+  globalThis.window = {
+    localStorage: { getItem: () => 'project-1' },
+  };
+
+  const originalFetch = globalThis.fetch;
+  globalThis.fetch = async (_url, init) => {
+    fetchCount += 1;
+    if (fetchCount === 1) return new Response('expired', { status: 401 });
+    const auth = init?.headers?.Authorization ?? init?.headers?.authorization;
+    assert.match(String(auth), /Bearer fresh-token/);
+    return new Response('still expired', { status: 401 });
+  };
+
+  try {
+    const response = await apiFetch('/api/v1/status');
+    assert.equal(response.status, 401);
+    assert.equal(fetchCount, 2);
+    assert.equal(refreshCount, 1);
+    assert.equal(unauthorizedCalls, 1);
+    assert.equal(unauthorizedToken, 'fresh-token');
+  } finally {
+    globalThis.fetch = originalFetch;
+  }
+});
+
+test('apiFetch rejects a refresh result owned by an older same-token epoch', async () => {
+  let epoch = 1;
+  let refreshCalls = 0;
+  let unauthorizedCalls = 0;
+  configureApiAuth({
+    getSessionEpoch: () => epoch,
+    getAccessToken: () => 'same-token',
+    refreshAccessToken: async () => {
+      refreshCalls += 1;
+      epoch = 3;
+      return { accessToken: 'same-token', epoch: 2 };
+    },
+    onUnauthorized: () => { unauthorizedCalls += 1; },
+  });
+  globalThis.window = { localStorage: { getItem: () => 'project-1' } };
+  const originalFetch = globalThis.fetch;
+  let fetchCalls = 0;
+  globalThis.fetch = async () => {
+    fetchCalls += 1;
+    return new Response('expired', { status: 401 });
+  };
+  try {
+    const response = await apiFetch('/api/v1/status');
+    assert.equal(response.status, 401);
+    assert.equal(refreshCalls, 1);
+    assert.equal(fetchCalls, 1);
+    assert.equal(unauthorizedCalls, 0);
+  } finally {
+    globalThis.fetch = originalFetch;
+  }
+});
+
+test('uploadRawFile preserves the business 401 for an older same-token refresh result', async () => {
+  let epoch = 1;
+  let refreshCalls = 0;
+  let unauthorizedCalls = 0;
+  configureApiAuth({
+    getSessionEpoch: () => epoch,
+    getAccessToken: () => 'same-token',
+    refreshAccessToken: async () => {
+      refreshCalls += 1;
+      epoch = 3;
+      return { accessToken: 'same-token', epoch: 2 };
+    },
+    onUnauthorized: () => { unauthorizedCalls += 1; },
+  });
+  globalThis.window = { localStorage: { getItem: () => 'project-1' } };
+  const originalXHR = globalThis.XMLHttpRequest;
+  class SameTokenXHR {
+    status = 401;
+    responseText = JSON.stringify({ error: 'expired' });
+    upload = {};
+    onload = () => undefined;
+    open() {}
+    setRequestHeader() {}
+    send() { this.onload(); }
+  }
+  globalThis.XMLHttpRequest = SameTokenXHR;
+  try {
+    await assert.rejects(
+      () => uploadRawFile(new File(['x'], 'same-token.md')),
+      (error) => error instanceof ApiError && error.status === 401 && error.message === 'expired',
+    );
+    assert.equal(refreshCalls, 1);
+    assert.equal(unauthorizedCalls, 0);
+  } finally {
+    globalThis.XMLHttpRequest = originalXHR;
+  }
+});
+
+test('apiFetch does not bind a pre-request refresh to a newer same-token epoch', async () => {
+  let epoch = 1;
+  let refreshCalls = 0;
+  let unauthorizedCalls = 0;
+  configureApiAuth({
+    getSessionEpoch: () => epoch,
+    getAccessToken: () => null,
+    refreshAccessToken: async () => {
+      refreshCalls += 1;
+      epoch = 3;
+      return { accessToken: 'same-token', epoch: 2 };
+    },
+    onUnauthorized: () => { unauthorizedCalls += 1; },
+  });
+  globalThis.window = { localStorage: { getItem: () => 'project-1' } };
+  const originalFetch = globalThis.fetch;
+  let fetchCalls = 0;
+  globalThis.fetch = async () => {
+    fetchCalls += 1;
+    return new Response('expired', { status: 401 });
+  };
+  try {
+    await assert.rejects(() => apiFetch('/api/v1/status'), /Authentication required/);
+    assert.equal(refreshCalls, 1);
+    assert.equal(fetchCalls, 0);
+    assert.equal(unauthorizedCalls, 0);
+  } finally {
+    globalThis.fetch = originalFetch;
+  }
+});
+
+test('apiFetch does not call unauthorized when a refreshed retry returns 403', async () => {
+  let unauthorizedCalls = 0;
+  let fetchCount = 0;
+  configureApiAuth({
+    getAccessToken: () => 'stale-token',
+    refreshAccessToken: async () => ({ accessToken: 'fresh-token', epoch: 0 }),
+    onUnauthorized: () => { unauthorizedCalls += 1; },
+  });
+  globalThis.window = {
+    localStorage: { getItem: () => 'project-1' },
+  };
+
+  const originalFetch = globalThis.fetch;
+  globalThis.fetch = async () => {
+    fetchCount += 1;
+    return new Response(fetchCount === 1 ? 'expired' : 'forbidden', {
+      status: fetchCount === 1 ? 401 : 403,
+    });
+  };
+
+  try {
+    const response = await apiFetch('/api/v1/status');
+    assert.equal(response.status, 403);
+    assert.equal(fetchCount, 2);
+    assert.equal(unauthorizedCalls, 0);
+  } finally {
+    globalThis.fetch = originalFetch;
+  }
+});
+
+test('apiFetch rejects a legacy string refresh after same-token epochs advance twice', async () => {
+  let epoch = 1;
+  let unauthorizedCalls = 0;
+  let fetchCalls = 0;
+  configureApiAuth({
+    getSessionEpoch: () => epoch,
+    getAccessToken: () => 'same-token',
+    refreshAccessToken: async () => {
+      epoch = 2;
+      queueMicrotask(() => { epoch = 3; });
+      return 'same-token';
+    },
+    onUnauthorized: () => { unauthorizedCalls += 1; },
+  });
+  globalThis.window = { localStorage: { getItem: () => 'project-1' } };
+  const originalFetch = globalThis.fetch;
+  globalThis.fetch = async () => {
+    fetchCalls += 1;
+    return new Response('expired', { status: 401 });
+  };
+  try {
+    const response = await apiFetch('/api/v1/status');
+    assert.equal(response.status, 401);
+    assert.equal(fetchCalls, 1);
+    assert.equal(unauthorizedCalls, 0);
+  } finally {
+    globalThis.fetch = originalFetch;
+  }
+});
+
+test('apiFetch preserves business 401 when malformed refresh result appears after 401 and no epoch getter', async () => {
+  let unauthorizedCalls = 0;
+  let fetchCalls = 0;
+  configureApiAuth({
+    getAccessToken: () => 'stale-token',
+    refreshAccessToken: async () => 'legacy-token',
+    onUnauthorized: () => { unauthorizedCalls += 1; },
+  });
+  globalThis.window = { localStorage: { getItem: () => 'project-1' } };
+  const originalFetch = globalThis.fetch;
+  globalThis.fetch = async () => {
+    fetchCalls += 1;
+    return new Response('expired', { status: 401 });
+  };
+  try {
+    const response = await apiFetch('/api/v1/status');
+    assert.equal(response.status, 401);
+    assert.equal(fetchCalls, 1);
+    assert.equal(unauthorizedCalls, 0);
+  } finally {
+    globalThis.fetch = originalFetch;
+  }
+});
+
+test('uploadRawFile preserves business 401 when a legacy string refresh crosses same-token epochs', async () => {
+  let epoch = 1;
+  let unauthorizedCalls = 0;
+  let requestCalls = 0;
+  configureApiAuth({
+    getSessionEpoch: () => epoch,
+    getAccessToken: () => 'same-token',
+    refreshAccessToken: async () => {
+      epoch = 2;
+      queueMicrotask(() => { epoch = 3; });
+      return 'same-token';
+    },
+    onUnauthorized: () => { unauthorizedCalls += 1; },
+  });
+  globalThis.window = { localStorage: { getItem: () => 'project-1' } };
+  const originalXHR = globalThis.XMLHttpRequest;
+  class SameTokenXHR {
+    status = 401;
+    responseText = JSON.stringify({ error: 'expired' });
+    upload = {};
+    onload = () => undefined;
+    open() {}
+    setRequestHeader() {}
+    send() { requestCalls += 1; this.onload(); }
+  }
+  globalThis.XMLHttpRequest = SameTokenXHR;
+  try {
+    await assert.rejects(
+      () => uploadRawFile(new File(['x'], 'same-token-aba.md')),
+      (error) => error instanceof ApiError && error.status === 401 && error.message === 'expired',
+    );
+    assert.equal(requestCalls, 1);
+    assert.equal(unauthorizedCalls, 0);
+  } finally {
+    globalThis.XMLHttpRequest = originalXHR;
+  }
+});
+
+test('uploadRawFile preserves business 401 for malformed refresh result after 401 and no epoch getter', async () => {
+  let unauthorizedCalls = 0;
+  let requestCalls = 0;
+  configureApiAuth({
+    getAccessToken: () => 'stale-token',
+    refreshAccessToken: async () => 'legacy-token',
+    onUnauthorized: () => { unauthorizedCalls += 1; },
+  });
+  globalThis.window = { localStorage: { getItem: () => 'project-1' } };
+  const originalXHR = globalThis.XMLHttpRequest;
+  class LegacyXHR {
+    status = 401;
+    responseText = JSON.stringify({ error: 'expired' });
+    upload = {};
+    onload = () => undefined;
+    open() {}
+    setRequestHeader() {}
+    send() { requestCalls += 1; this.onload(); }
+  }
+  globalThis.XMLHttpRequest = LegacyXHR;
+  try {
+    await assert.rejects(
+      () => uploadRawFile(new File(['x'], 'legacy.md')),
+      (error) => error instanceof ApiError && error.status === 401 && error.message === 'expired',
+    );
+    assert.equal(requestCalls, 1);
+    assert.equal(unauthorizedCalls, 0);
+  } finally {
+    globalThis.XMLHttpRequest = originalXHR;
   }
 });

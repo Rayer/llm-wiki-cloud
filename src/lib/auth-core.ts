@@ -184,6 +184,42 @@ export function clearStoredDemoSession(
   }
 }
 
+export const AUTH_FORCE_HOME_REDIRECT_KEY = 'llm-wiki-force-home-login';
+
+export function setForceHomeRedirect(storage: Pick<Storage, 'getItem' | 'setItem'> | null | undefined): void {
+  if (!storage) return;
+  try {
+    if (storage.getItem(AUTH_FORCE_HOME_REDIRECT_KEY) !== '1') {
+      storage.setItem(AUTH_FORCE_HOME_REDIRECT_KEY, '1');
+    }
+  } catch {
+    // ignore quota / private mode
+  }
+}
+
+export function consumeForceHomeRedirect(
+  storage: Pick<Storage, 'getItem' | 'removeItem'> | null | undefined,
+): boolean {
+  if (!storage) return false;
+  try {
+    const value = storage.getItem(AUTH_FORCE_HOME_REDIRECT_KEY);
+    if (value !== '1') return false;
+    storage.removeItem(AUTH_FORCE_HOME_REDIRECT_KEY);
+    return true;
+  } catch {
+    return false;
+  }
+}
+
+export function clearForceHomeRedirect(storage: Pick<Storage, 'removeItem'> | null | undefined): void {
+  if (!storage) return;
+  try {
+    storage.removeItem(AUTH_FORCE_HOME_REDIRECT_KEY);
+  } catch {
+    // ignore
+  }
+}
+
 export const AUTH_USER_STORAGE_KEY = 'llm-wiki-auth-user';
 
 export function readStoredAuthUser(

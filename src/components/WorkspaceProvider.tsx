@@ -15,6 +15,10 @@ import {
   useAuth,
   type AuthUser,
 } from '@/lib/auth';
+import {
+  clearForceHomeRedirect,
+  consumeForceHomeRedirect,
+} from '@/lib/auth-core';
 import { getStatus } from '@/lib/api';
 import {
   createProject,
@@ -35,6 +39,17 @@ const emptyNavCounts: NavCounts = {
   sources: null,
   concepts: null,
 };
+
+function consumeExpiredLoginRedirect(router: { replace: (href: string) => void }): void {
+  if (typeof window === 'undefined' || !consumeForceHomeRedirect(window.localStorage)) return;
+  if (
+    window.location.pathname !== '/'
+    || window.location.search !== ''
+    || window.location.hash !== ''
+  ) {
+    router.replace('/');
+  }
+}
 
 type WorkspaceContextValue = {
   hydrated: boolean;
@@ -76,6 +91,7 @@ export function WorkspaceProvider({ children }: { children: ReactNode }) {
     register,
     logout,
     isDemoSession,
+    sessionEpoch,
   } = useAuth();
   const [projects, setProjects] = useState<Project[]>([]);
   const [currentProject, setCurrentProject] = useState<Project | null>(null);
@@ -95,7 +111,7 @@ export function WorkspaceProvider({ children }: { children: ReactNode }) {
       projectListGenerationRef.current += 1;
       renameGenerations.clear();
     };
-  }, [token]);
+  }, [sessionEpoch, token]);
 
   const refreshNavCounts = useCallback(async () => {
     if (!token || !currentProject) return;
@@ -112,14 +128,19 @@ export function WorkspaceProvider({ children }: { children: ReactNode }) {
 
   const loadProjects = useCallback(async () => {
     const startedGeneration = ++projectListGenerationRef.current;
+    const operationEpoch = sessionEpoch;
+    const operationToken = token;
+    const ownsState = () => (
+      projectStateActiveRef.current
+      && projectListGenerationRef.current === startedGeneration
+      && sessionEpoch === operationEpoch
+      && token === operationToken
+    );
     setProjectsLoading(true);
     setProjectsError('');
     try {
       const nextProjects = await getProjects();
-      if (
-        !projectStateActiveRef.current
-        || projectListGenerationRef.current !== startedGeneration
-      ) return;
+      if (!ownsState()) return;
       const selected = selectDefaultProject(
         nextProjects,
         window.localStorage.getItem(LAST_PROJECT_KEY),
@@ -132,32 +153,29 @@ export function WorkspaceProvider({ children }: { children: ReactNode }) {
         window.localStorage.removeItem(LAST_PROJECT_KEY);
       }
     } catch (error) {
-      if (
-        !projectStateActiveRef.current
-        || projectListGenerationRef.current !== startedGeneration
-      ) return;
+      if (!ownsState()) return;
       setProjects([]);
       setCurrentProject(null);
       setProjectsError(error instanceof Error ? error.message : 'Unable to load projects.');
     } finally {
-      if (
-        projectStateActiveRef.current
-        && projectListGenerationRef.current === startedGeneration
-      ) setProjectsLoading(false);
+      if (ownsState()) setProjectsLoading(false);
     }
-  }, []);
+  }, [sessionEpoch, token]);
 
   const signIn = useCallback(async (email: string, password: string) => {
     await login(email, password);
-  }, [login]);
+    consumeExpiredLoginRedirect(router);
+  }, [login, router]);
 
   const signInAsDemo = useCallback(async (email: string, password: string) => {
     await loginAsDemo(email, password);
-  }, [loginAsDemo]);
+    consumeExpiredLoginRedirect(router);
+  }, [loginAsDemo, router]);
 
   const signOut = useCallback(async () => {
     if (!confirmNavigation()) return;
     await logout();
+    clearForceHomeRedirect(typeof window !== 'undefined' ? window.localStorage : null);
     window.localStorage.removeItem(LAST_PROJECT_KEY);
     setProjects([]);
     setCurrentProject(null);
@@ -184,10 +202,14 @@ export function WorkspaceProvider({ children }: { children: ReactNode }) {
     if (!token) throw new Error('Please log in to create a project.');
     if (isDemoSession) throw new Error('Demo mode cannot create projects.');
     const startedListGeneration = projectListGenerationRef.current;
+    const operationEpoch = sessionEpoch;
+    const operationToken = token;
     const project = await createProject(name);
     if (
       !projectStateActiveRef.current
       || projectListGenerationRef.current !== startedListGeneration
+      || sessionEpoch !== operationEpoch
+      || token !== operationToken
     ) return project;
     projectListGenerationRef.current += 1;
     setProjectsLoading(false);
@@ -200,7 +222,7 @@ export function WorkspaceProvider({ children }: { children: ReactNode }) {
     setProjectsError('');
     setNewProjectOpen(false);
     return project;
-  }, [isDemoSession, token]);
+  }, [isDemoSession, sessionEpoch, token]);
 
   const renameProject = useCallback(async (projectId: string, name: string) => {
     if (!token) throw new Error('Please log in to rename projects.');
@@ -208,12 +230,16 @@ export function WorkspaceProvider({ children }: { children: ReactNode }) {
     if (!selected) throw new Error('Please select a project before renaming.');
     const startedListGeneration = projectListGenerationRef.current;
     const startedRenameGeneration = (renameGenerationByProjectRef.current.get(projectId) ?? 0) + 1;
+    const operationEpoch = sessionEpoch;
+    const operationToken = token;
     renameGenerationByProjectRef.current.set(projectId, startedRenameGeneration);
     const nextName = await renameProjectRequest(projectId, name);
     if (
       !projectStateActiveRef.current
       || projectListGenerationRef.current !== startedListGeneration
       || renameGenerationByProjectRef.current.get(projectId) !== startedRenameGeneration
+      || sessionEpoch !== operationEpoch
+      || token !== operationToken
     ) return nextName;
     setProjects((currentProjects) => (
       currentProjects.map((project) => (
@@ -224,7 +250,7 @@ export function WorkspaceProvider({ children }: { children: ReactNode }) {
       current?.id === projectId ? { ...current, name: nextName } : current
     ));
     return nextName;
-  }, [projects, token]);
+  }, [projects, sessionEpoch, token]);
 
   const refreshProjects = useCallback(async () => {
     if (token) await loadProjects();
@@ -238,12 +264,13 @@ export function WorkspaceProvider({ children }: { children: ReactNode }) {
       return;
     }
 
+    projectListGenerationRef.current += 1;
+    setProjectsLoading(false);
     setProjects([]);
     setCurrentProject(null);
-    setProjectsLoading(false);
     setProjectsError('');
     setNavCounts(emptyNavCounts);
-  }, [hydrated, loadProjects, token]);
+  }, [hydrated, loadProjects, sessionEpoch, token]);
 
   // Load / reload sidebar counts when auth or project changes (LWC-129).
   useEffect(() => {

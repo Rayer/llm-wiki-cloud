@@ -155,8 +155,14 @@ const LAST_PROJECT_KEY = 'llm-wiki-last-project';
 
 type ApiAuthConfig = {
   getAccessToken: () => string | null;
-  refreshAccessToken: () => Promise<string | null>;
-  onUnauthorized: () => void;
+  getSessionEpoch?: () => number;
+  refreshAccessToken: () => Promise<ApiRefreshResult | null>;
+  onUnauthorized: (failedToken: string, failedEpoch: number) => void;
+};
+
+export type ApiRefreshResult = {
+  accessToken: string;
+  epoch: number;
 };
 
 let apiAuthConfig: ApiAuthConfig = {
@@ -227,12 +233,30 @@ function selectedProjectId(): string {
   return projectId;
 }
 
-async function accessTokenOrRefresh(): Promise<string> {
-  const current = apiAuthConfig.getAccessToken();
-  if (current) return current;
+type ApiAuthOperation = {
+  auth: ApiAuthConfig;
+  accessToken: string;
+  epoch: number;
+};
 
-  const refreshed = await apiAuthConfig.refreshAccessToken();
-  if (refreshed) return refreshed;
+async function accessTokenOrRefresh(): Promise<ApiAuthOperation> {
+  const auth = apiAuthConfig;
+  const epoch = auth.getSessionEpoch?.() ?? 0;
+  const current = auth.getAccessToken();
+  if (current) return { auth, accessToken: current, epoch };
+
+  const refreshed = asRefreshResult(await auth.refreshAccessToken());
+  if (
+    refreshed
+    && apiAuthConfig === auth
+    && (auth.getSessionEpoch?.() ?? refreshed.epoch) === refreshed.epoch
+  ) {
+    return {
+      auth,
+      accessToken: refreshed.accessToken,
+      epoch: refreshed.epoch,
+    };
+  }
 
   throw new Error('Authentication required');
 }
@@ -249,20 +273,38 @@ export async function apiFetch(path: string, options: ApiFetchOptions = {}): Pro
   const projectId = options.requireProject === false
     ? options.projectId
     : options.projectId ?? selectedProjectId();
-  const accessToken = await accessTokenOrRefresh();
+  const { auth, accessToken, epoch: requestEpoch } = await accessTokenOrRefresh();
   const url = `${API_URL}${toV1Path(path)}`;
   const init = buildRequestInit({ ...options, projectId, accessToken });
   const response = await fetch(url, init);
 
   if (response.status !== 401) return response;
+  if (apiAuthConfig !== auth || (auth.getSessionEpoch?.() ?? 0) !== requestEpoch) return response;
 
-  const refreshed = await apiAuthConfig.refreshAccessToken();
-  if (!refreshed) {
-    apiAuthConfig.onUnauthorized();
+  const refreshed = await auth.refreshAccessToken();
+  const refreshedOperation = asRefreshResult(refreshed);
+  if (apiAuthConfig !== auth) return response;
+  if (refreshed === null) {
+    if ((auth.getSessionEpoch?.() ?? 0) !== requestEpoch) return response;
+    auth.onUnauthorized(accessToken, requestEpoch);
     return response;
   }
+  if (refreshedOperation === null) return response;
+  if ((auth.getSessionEpoch?.() ?? 0) !== refreshedOperation.epoch) return response;
 
-  return fetch(url, buildRequestInit({ ...options, projectId, accessToken: refreshed }));
+  const retriedResponse = await fetch(url, buildRequestInit({
+    ...options,
+    projectId,
+    accessToken: refreshedOperation.accessToken,
+  }));
+  if (
+    retriedResponse.status === 401
+    && apiAuthConfig === auth
+    && (auth.getSessionEpoch?.() ?? 0) === refreshedOperation.epoch
+  ) {
+    auth.onUnauthorized(refreshedOperation.accessToken, refreshedOperation.epoch);
+  }
+  return retriedResponse;
 }
 
 async function requestJson<T>(path: string, options: Pick<ApiFetchOptions, 'projectId'> = {}): Promise<T> {
@@ -300,6 +342,17 @@ function asString(value: unknown): string | undefined {
 
 function asNumber(value: unknown): number | undefined {
   return typeof value === 'number' && Number.isFinite(value) ? value : undefined;
+}
+
+function asRefreshResult(value: unknown): ApiRefreshResult | null {
+  const record = isRecord(value) ? value : null;
+  if (!record) return null;
+
+  const accessToken = asString(record.accessToken);
+  const epoch = asNumber(record.epoch);
+  if (!accessToken || epoch === undefined) return null;
+
+  return { accessToken, epoch };
 }
 
 export function citationPathSegment(type: 'concept' | 'source', path: unknown): string | null {
@@ -825,7 +878,7 @@ export async function uploadRawFile(
   }
 
   const projectId = selectedProjectId();
-  const accessToken = await accessTokenOrRefresh();
+  const { auth, accessToken, epoch: requestEpoch } = await accessTokenOrRefresh();
   const formData = new FormData();
   formData.append('file', file);
   let lastProgress = -1;
@@ -842,17 +895,46 @@ export async function uploadRawFile(
     accessToken,
     reportProgress,
   );
-  if (response.status === 401) {
-    const refreshed = await apiAuthConfig.refreshAccessToken();
-    if (!refreshed) {
-      apiAuthConfig.onUnauthorized();
-    } else {
+  if (
+    response.status === 401
+    && apiAuthConfig === auth
+    && (auth.getSessionEpoch?.() ?? 0) === requestEpoch
+  ) {
+    const refreshed = await auth.refreshAccessToken();
+    const refreshedOperation = asRefreshResult(refreshed);
+    if (apiAuthConfig !== auth) return Promise.reject(
+      new ApiError(uploadErrorMessage(await response.json().catch(() => undefined)), response.status),
+    );
+    if (refreshed === null) {
+      if ((auth.getSessionEpoch?.() ?? 0) !== requestEpoch) {
+        return Promise.reject(
+          new ApiError(uploadErrorMessage(await response.json().catch(() => undefined)), response.status),
+        );
+      }
+      auth.onUnauthorized(accessToken, requestEpoch);
+    } else if (refreshedOperation === null) {
+      return Promise.reject(
+        new ApiError(uploadErrorMessage(await response.json().catch(() => undefined)), response.status),
+      );
+    } else if ((auth.getSessionEpoch?.() ?? 0) !== refreshedOperation.epoch) {
+      return Promise.reject(
+        new ApiError(uploadErrorMessage(await response.json().catch(() => undefined)), response.status),
+      );
+    }
+    if (refreshedOperation) {
       response = await sendRawUploadRequest(
         formData,
         projectId,
-        refreshed,
+        refreshedOperation.accessToken,
         reportProgress,
       );
+      if (
+        response.status === 401
+        && apiAuthConfig === auth
+        && (auth.getSessionEpoch?.() ?? 0) === refreshedOperation.epoch
+      ) {
+        auth.onUnauthorized(refreshedOperation.accessToken, refreshedOperation.epoch);
+      }
     }
   }
 
