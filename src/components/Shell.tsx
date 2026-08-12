@@ -2,11 +2,12 @@
 
 import { useEffect, useState } from 'react';
 import { usePathname } from 'next/navigation';
-import { Search, FileText, Brain, Activity, Menu, X, ChevronUp, Shield } from 'lucide-react';
+import { Search, FileText, Brain, Activity, Menu, X, ChevronUp, Shield, Pencil } from 'lucide-react';
 import { useT } from '@/lib/i18n';
 import { useAuth } from '@/lib/auth';
 import { LoginModal } from './LoginModal';
 import { NewProjectModal } from './NewProjectModal';
+import { ProjectRenameModal } from './ProjectRenameModal';
 import { ProjectEmptyState } from './ProjectEmptyState';
 import { WorkspaceProvider, useWorkspace, type NavCounts } from './WorkspaceProvider';
 import { Badge } from './ui/Badge';
@@ -43,10 +44,12 @@ function ShellContent({ children }: { children: React.ReactNode }) {
     isDemoSession,
     navCounts,
     selectProject,
+    renameProject,
     refreshProjects,
     openNewProject,
     signOut,
   } = useWorkspace();
+  const [renameTarget, setRenameTarget] = useState<{ id: string; name: string } | null>(null);
 
   const navItems: {
     href: string;
@@ -70,6 +73,13 @@ function ShellContent({ children }: { children: React.ReactNode }) {
     }, 0);
     return () => window.clearTimeout(timeout);
   }, [pathname]);
+
+  useEffect(() => {
+    if (renameTarget && renameTarget.id !== currentProject?.id) {
+      // eslint-disable-next-line react-hooks/set-state-in-effect -- close a rename target when selection changes
+      setRenameTarget(null);
+    }
+  }, [currentProject?.id, renameTarget]);
 
   useEffect(() => {
     if (!mobileNavOpen) return;
@@ -184,6 +194,23 @@ function ShellContent({ children }: { children: React.ReactNode }) {
                   placeholder={t('Shell.noProjects')}
                 />
               )}
+              {isAdminRoute ? null : (
+                <button
+                  type="button"
+                  onClick={() => {
+                    if (currentProject) {
+                      setRenameTarget({ id: currentProject.id, name: currentProject.name });
+                    }
+                  }}
+                  disabled={isDemoSession || !currentProject}
+                  className="mt-1.5 min-h-11 w-full rounded-lg px-3 py-2.5 text-left text-sm text-zinc-500 transition hover:bg-white/5 hover:text-zinc-300 disabled:cursor-not-allowed disabled:opacity-60"
+                >
+                  <span className="inline-flex items-center gap-2">
+                    <Pencil className="size-4" />
+                    Rename project
+                  </span>
+                </button>
+              )}
               {!isDemoSession ? (
                 <button
                   type="button"
@@ -262,6 +289,15 @@ function ShellContent({ children }: { children: React.ReactNode }) {
 
       <LoginModal />
       <NewProjectModal />
+      {renameTarget ? (
+        <ProjectRenameModal
+          project={renameTarget}
+          onSubmit={async (name) => {
+            await renameProject(renameTarget.id, name);
+          }}
+          onClose={() => setRenameTarget(null)}
+        />
+      ) : null}
       {token ? <ScrollToTopButton /> : null}
       {paletteOpen ? (
         <CommandPalette

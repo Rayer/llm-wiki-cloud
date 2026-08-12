@@ -7,6 +7,7 @@ import {
   useContext,
   useEffect,
   useMemo,
+  useRef,
   useState,
 } from 'react';
 import { useRouter } from 'next/navigation';
@@ -17,6 +18,7 @@ import {
 import { getStatus } from '@/lib/api';
 import {
   createProject,
+  renameProject as renameProjectRequest,
   getProjects,
   LAST_PROJECT_KEY,
   selectDefaultProject,
@@ -54,6 +56,7 @@ type WorkspaceContextValue = {
   signOut: () => Promise<void>;
   selectProject: (projectId: string) => void;
   addProject: (name: string) => Promise<Project>;
+  renameProject: (projectId: string, name: string) => Promise<string>;
   refreshProjects: () => Promise<void>;
   openNewProject: () => void;
   closeNewProject: () => void;
@@ -80,6 +83,19 @@ export function WorkspaceProvider({ children }: { children: ReactNode }) {
   const [projectsError, setProjectsError] = useState('');
   const [newProjectOpen, setNewProjectOpen] = useState(false);
   const [navCounts, setNavCounts] = useState<NavCounts>(emptyNavCounts);
+  const projectStateActiveRef = useRef(false);
+  const projectListGenerationRef = useRef(0);
+  const renameGenerationByProjectRef = useRef(new Map<string, number>());
+
+  useEffect(() => {
+    const renameGenerations = renameGenerationByProjectRef.current;
+    projectStateActiveRef.current = true;
+    return () => {
+      projectStateActiveRef.current = false;
+      projectListGenerationRef.current += 1;
+      renameGenerations.clear();
+    };
+  }, [token]);
 
   const refreshNavCounts = useCallback(async () => {
     if (!token || !currentProject) return;
@@ -95,10 +111,15 @@ export function WorkspaceProvider({ children }: { children: ReactNode }) {
   }, [token, currentProject]);
 
   const loadProjects = useCallback(async () => {
+    const startedGeneration = ++projectListGenerationRef.current;
     setProjectsLoading(true);
     setProjectsError('');
     try {
       const nextProjects = await getProjects();
+      if (
+        !projectStateActiveRef.current
+        || projectListGenerationRef.current !== startedGeneration
+      ) return;
       const selected = selectDefaultProject(
         nextProjects,
         window.localStorage.getItem(LAST_PROJECT_KEY),
@@ -111,11 +132,18 @@ export function WorkspaceProvider({ children }: { children: ReactNode }) {
         window.localStorage.removeItem(LAST_PROJECT_KEY);
       }
     } catch (error) {
+      if (
+        !projectStateActiveRef.current
+        || projectListGenerationRef.current !== startedGeneration
+      ) return;
       setProjects([]);
       setCurrentProject(null);
       setProjectsError(error instanceof Error ? error.message : 'Unable to load projects.');
     } finally {
-      setProjectsLoading(false);
+      if (
+        projectStateActiveRef.current
+        && projectListGenerationRef.current === startedGeneration
+      ) setProjectsLoading(false);
     }
   }, []);
 
@@ -133,6 +161,7 @@ export function WorkspaceProvider({ children }: { children: ReactNode }) {
     window.localStorage.removeItem(LAST_PROJECT_KEY);
     setProjects([]);
     setCurrentProject(null);
+    setProjectsLoading(false);
     setProjectsError('');
     setNewProjectOpen(false);
     setNavCounts(emptyNavCounts);
@@ -154,7 +183,14 @@ export function WorkspaceProvider({ children }: { children: ReactNode }) {
   const addProject = useCallback(async (name: string) => {
     if (!token) throw new Error('Please log in to create a project.');
     if (isDemoSession) throw new Error('Demo mode cannot create projects.');
+    const startedListGeneration = projectListGenerationRef.current;
     const project = await createProject(name);
+    if (
+      !projectStateActiveRef.current
+      || projectListGenerationRef.current !== startedListGeneration
+    ) return project;
+    projectListGenerationRef.current += 1;
+    setProjectsLoading(false);
     setProjects((current) => {
       const withoutDuplicate = current.filter((item) => item.id !== project.id);
       return [...withoutDuplicate, project];
@@ -165,6 +201,30 @@ export function WorkspaceProvider({ children }: { children: ReactNode }) {
     setNewProjectOpen(false);
     return project;
   }, [isDemoSession, token]);
+
+  const renameProject = useCallback(async (projectId: string, name: string) => {
+    if (!token) throw new Error('Please log in to rename projects.');
+    const selected = projects.find((project) => project.id === projectId);
+    if (!selected) throw new Error('Please select a project before renaming.');
+    const startedListGeneration = projectListGenerationRef.current;
+    const startedRenameGeneration = (renameGenerationByProjectRef.current.get(projectId) ?? 0) + 1;
+    renameGenerationByProjectRef.current.set(projectId, startedRenameGeneration);
+    const nextName = await renameProjectRequest(projectId, name);
+    if (
+      !projectStateActiveRef.current
+      || projectListGenerationRef.current !== startedListGeneration
+      || renameGenerationByProjectRef.current.get(projectId) !== startedRenameGeneration
+    ) return nextName;
+    setProjects((currentProjects) => (
+      currentProjects.map((project) => (
+        project.id === projectId ? { ...project, name: nextName } : project
+      ))
+    ));
+    setCurrentProject((current) => (
+      current?.id === projectId ? { ...current, name: nextName } : current
+    ));
+    return nextName;
+  }, [projects, token]);
 
   const refreshProjects = useCallback(async () => {
     if (token) await loadProjects();
@@ -180,6 +240,7 @@ export function WorkspaceProvider({ children }: { children: ReactNode }) {
 
     setProjects([]);
     setCurrentProject(null);
+    setProjectsLoading(false);
     setProjectsError('');
     setNavCounts(emptyNavCounts);
   }, [hydrated, loadProjects, token]);
@@ -232,6 +293,7 @@ export function WorkspaceProvider({ children }: { children: ReactNode }) {
     signOut,
     selectProject,
     addProject,
+    renameProject,
     refreshProjects,
     openNewProject: () => {
       if (isDemoSession) return;
@@ -240,6 +302,7 @@ export function WorkspaceProvider({ children }: { children: ReactNode }) {
     closeNewProject: () => setNewProjectOpen(false),
   }), [
     addProject,
+    renameProject,
     currentProject,
     displayedNavCounts,
     hydrated,
