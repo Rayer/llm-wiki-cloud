@@ -233,6 +233,7 @@ function renderInline(
     const image = parseMarkdownImage(part);
     if (image) {
       return (
+        // eslint-disable-next-line @next/next/no-img-element -- preserve native markdown <img> behavior for external image URLs
         <img
           key={index}
           src={image.src}
