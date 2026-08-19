@@ -500,6 +500,32 @@ export function HomeClient() {
                 [&_p]:mb-3
               ">
                 <AiAnswerMarkdown content={aiAnswer} citations={citations} onCitationClick={openCitation} />
+                {citations.length > 0 ? (
+                  <section className="mt-5 border-t border-white/10 pt-4" aria-labelledby="answer-sources-heading">
+                    <h4 id="answer-sources-heading" className="text-sm font-semibold text-emerald-200">
+                      {t('Demo.sources')}
+                    </h4>
+                    <ul aria-labelledby="answer-sources-heading" className="mt-2 space-y-1">
+                      {citations.map((citation, index) => (
+                        <li
+                          key={[citation.type, citation.id ?? '', citation.slug ?? '', citation.path ?? '', index]
+                            .map(String)
+                            .map(encodeURIComponent)
+                            .join(':')}
+                        >
+                          <button
+                            type="button"
+                            aria-label={t('Demo.openCitation', { citation: citation.text })}
+                            onClick={() => openCitation(citation)}
+                            className="font-medium text-emerald-300 underline decoration-emerald-300/60 underline-offset-4 hover:text-emerald-200 cursor-pointer"
+                          >
+                            {citation.text}
+                          </button>
+                        </li>
+                      ))}
+                    </ul>
+                  </section>
+                ) : null}
               </div>
             </div>
           </article>
@@ -796,7 +822,17 @@ function AiAnswerMarkdown({
   citations: Citation[];
   onCitationClick: (citation: Citation) => void;
 }) {
-  const citationMap = new Map(citations.map((citation, index) => [citation.text, index]));
+  const citationMap = new Map<string, number>();
+  const ambiguousCitationLabels = new Set<string>();
+  citations.forEach((citation, index) => {
+    if (ambiguousCitationLabels.has(citation.text)) return;
+    if (citationMap.has(citation.text)) {
+      citationMap.delete(citation.text);
+      ambiguousCitationLabels.add(citation.text);
+      return;
+    }
+    citationMap.set(citation.text, index);
+  });
   const citationByIndex = citations;
 
   return (

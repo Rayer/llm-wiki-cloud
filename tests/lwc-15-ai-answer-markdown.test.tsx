@@ -59,8 +59,8 @@ describe('LWC-15 AI-answer Markdown rendering', () => {
 
     expect(await screen.findByText('Demo.answer')).toBeTruthy();
     expect(await screen.findByRole('heading', { name: 'Key points', level: 2 })).toBeTruthy();
-    expect(screen.getAllByRole('list')).toHaveLength(2);
-    expect(screen.getAllByRole('listitem')).toHaveLength(5);
+    expect(screen.getAllByRole('list')).toHaveLength(3);
+    expect(screen.getAllByRole('listitem')).toHaveLength(6);
     expect(screen.getByText('Italic').tagName).toBe('EM');
     expect(screen.getByText('Bold').tagName).toBe('STRONG');
     expect(screen.getByText('code').tagName).toBe('CODE');
