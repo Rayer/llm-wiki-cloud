@@ -1,7 +1,9 @@
 'use client';
 
-import { FormEvent, ReactNode, useCallback, useEffect, useRef, useState } from 'react';
+import { FormEvent, useCallback, useEffect, useRef, useState } from 'react';
 import ReactMarkdown from 'react-markdown';
+import remarkGfm from 'remark-gfm';
+import type { Content, PhrasingContent, Root, Text } from 'mdast';
 import {
   citationPathSegment,
   getConcept,
@@ -16,6 +18,7 @@ import {
   type WikiEntry,
 } from '@/lib/api';
 import { useT } from '@/lib/i18n';
+import { getExactRawCitationRange } from '@/lib/markdown-citations';
 import { resolveWikilinksInMarkdown } from '@/lib/markdown-inline';
 import { EmptyState, ErrorState, LoadingState } from './States';
 import { useWorkspace } from './WorkspaceProvider';
@@ -489,14 +492,40 @@ export function HomeClient() {
               </div>
               <div className="mt-3 text-base leading-7 text-zinc-200
                 [&_strong]:text-white [&_strong]:font-semibold
+                [&_h2]:text-lg [&_h2]:font-semibold [&_h2]:text-white [&_h2]:mt-4 [&_h2]:mb-2
                 [&_h3]:text-base [&_h3]:font-semibold [&_h3]:text-white [&_h3]:mt-4 [&_h3]:mb-1
                 [&_ul]:list-disc [&_ul]:pl-5 [&_ul]:space-y-1 [&_ul]:mb-3
                 [&_ol]:list-decimal [&_ol]:pl-5 [&_ol]:space-y-1 [&_ol]:mb-3
                 [&_li]:leading-7
                 [&_p]:mb-3
               ">
-                {/* eslint-disable-next-line react-hooks/refs */}
-                {renderCitations(aiAnswer, citations, openCitation)}
+                <AiAnswerMarkdown content={aiAnswer} citations={citations} onCitationClick={openCitation} />
+                {citations.length > 0 ? (
+                  <section className="mt-5 border-t border-white/10 pt-4" aria-labelledby="answer-sources-heading">
+                    <h4 id="answer-sources-heading" className="text-sm font-semibold text-emerald-200">
+                      {t('Demo.sources')}
+                    </h4>
+                    <ul aria-labelledby="answer-sources-heading" className="mt-2 space-y-1">
+                      {citations.map((citation, index) => (
+                        <li
+                          key={[citation.type, citation.id ?? '', citation.slug ?? '', citation.path ?? '', index]
+                            .map(String)
+                            .map(encodeURIComponent)
+                            .join(':')}
+                        >
+                          <button
+                            type="button"
+                            aria-label={t('Demo.openCitation', { citation: citation.text })}
+                            onClick={() => openCitation(citation)}
+                            className="font-medium text-emerald-300 underline decoration-emerald-300/60 underline-offset-4 hover:text-emerald-200 cursor-pointer"
+                          >
+                            {citation.text}
+                          </button>
+                        </li>
+                      ))}
+                    </ul>
+                  </section>
+                ) : null}
               </div>
             </div>
           </article>
@@ -659,61 +688,191 @@ function MarkdownBody({ content }: { content: string }) {
   );
 }
 
-function renderCitations(
-  text: string,
-  citations: Citation[],
-  onCitationClick: (citation: Citation) => void,
-): ReactNode[] {
-  const citationMap = new Map(citations.map((citation) => [citation.text, citation]));
-  const parts = text.split(/(\[[^\]]+\])/g);
+type CitationText = Text & { value: string };
 
-  return parts.map((part, index) => {
-    const match = /^\[([^\]]+)\]$/.exec(part);
-    if (!match) {
-      // Render non-citation text with inline markdown
-      return <span key={index}>{renderInlineMarkdown(part)}</span>;
-    }
-
-    const citation = citationMap.get(match[1]);
-    if (!citation) return <span key={index}>{renderInlineMarkdown(part)}</span>;
-
-    return (
-      <button
-        key={`${citation.type}-${citation.slug}-${index}`}
-        type="button"
-        onClick={() => onCitationClick(citation)}
-        className="font-medium text-emerald-300 underline decoration-emerald-300/60 underline-offset-4 hover:text-emerald-200 cursor-pointer"
-      >
-        {match[1]}
-      </button>
-    );
-  });
+function isStandaloneCitation(source: string, start: number, end: number) {
+  return source[start - 1] !== '!' && !/^[\s]*[(:]/.test(source.slice(end));
 }
 
-// Lightweight inline markdown: **bold**, *italic*, `code`
-function renderInlineMarkdown(text: string): ReactNode[] {
-  const tokens = text.split(/(\*\*[^*]+\*\*|\*[^*]+\*|`[^`]+`)/g);
-  return tokens.map((token, i) => {
-    if (token.startsWith('**') && token.endsWith('**')) {
-      return <strong key={i} className="text-white font-semibold">{token.slice(2, -2)}</strong>;
+function transformCitationText(
+  node: CitationText,
+  citationMap: Map<string, number>,
+  content: string,
+): PhrasingContent[] {
+  const result: PhrasingContent[] = [];
+  const citationToken = /\[([^\]\n]+)\]/g;
+  let lastIndex = 0;
+  let match: RegExpExecArray | null;
+
+  while ((match = citationToken.exec(node.value))) {
+    const label = match[1];
+    const index = citationMap.get(label);
+    const rawRange = getExactRawCitationRange(node, content, match.index, citationToken.lastIndex);
+    if (index === undefined || rawRange === null || !isStandaloneCitation(node.value, match.index, citationToken.lastIndex)) continue;
+    if (match.index > lastIndex) result.push({ type: 'text', value: node.value.slice(lastIndex, match.index) });
+    result.push({
+      type: 'link',
+      url: `#citation-${index}`,
+      children: [{ type: 'text', value: label }],
+      data: { hProperties: { 'data-citation-index': index } },
+    });
+    lastIndex = citationToken.lastIndex;
+  }
+
+  if (lastIndex === 0) return [node];
+  if (lastIndex < node.value.length) result.push({ type: 'text', value: node.value.slice(lastIndex) });
+  return result;
+}
+
+function remarkCitations(citationMap: Map<string, number>, content: string) {
+  const VOID_HTML_TAGS = new Set([
+    'area',
+    'base',
+    'br',
+    'col',
+    'embed',
+    'hr',
+    'img',
+    'input',
+    'link',
+    'meta',
+    'param',
+    'source',
+    'track',
+    'wbr',
+  ]);
+  const INVALID_HTML_CONTEXT = '?' as const;
+
+  return () => (tree: Root) => {
+    function updateRawHtmlContext(value: string, openTags: string[]) {
+      const nextOpenTags = [...openTags];
+      for (const tag of value.match(/<!--[\s\S]*?-->|<[^>]*>/g) ?? []) {
+        if (tag.startsWith('<!--')) continue;
+
+        const closeMatch = /^<\s*\/\s*([a-z][\w:-]*)\s*>$/i.exec(tag);
+        if (closeMatch) {
+          const tagName = closeMatch[1].toLowerCase();
+          if (VOID_HTML_TAGS.has(tagName) && nextOpenTags.at(-1) !== tagName) {
+            if (nextOpenTags.at(-1) !== INVALID_HTML_CONTEXT) {
+              nextOpenTags.push(INVALID_HTML_CONTEXT);
+            }
+            continue;
+          }
+          if (VOID_HTML_TAGS.has(tagName)) continue;
+          if (nextOpenTags.at(-1) === tagName) nextOpenTags.pop();
+          else if (nextOpenTags.at(-1) !== INVALID_HTML_CONTEXT) {
+            nextOpenTags.push(INVALID_HTML_CONTEXT);
+          }
+          continue;
+        }
+
+        const selfClosingMatch = /^<\s*([a-z][\w:-]*)(?:\s+[^>]*?)?\/\s*>$/i.exec(tag);
+        if (selfClosingMatch) continue;
+
+        const openMatch = /^<\s*([a-z][\w:-]*)(?:\s+[^>]*?)?>$/i.exec(tag);
+        if (!openMatch) {
+          if (nextOpenTags.at(-1) !== INVALID_HTML_CONTEXT) {
+            nextOpenTags.push(INVALID_HTML_CONTEXT);
+          }
+          continue;
+        }
+
+        const tagName = openMatch[1].toLowerCase();
+        if (VOID_HTML_TAGS.has(tagName)) continue;
+        nextOpenTags.push(tagName);
+      }
+      return nextOpenTags;
     }
-    if (token.startsWith('*') && token.endsWith('*') && !token.startsWith('**')) {
-      return <em key={i} className="italic text-zinc-200">{token.slice(1, -1)}</em>;
+
+    function visit(
+      node: Root | { type: string; children: Array<Content | PhrasingContent> },
+      rawHtmlTags: string[] = [],
+    ): string[] {
+      if (!('children' in node) || node.type === 'link' || node.type === 'image' || node.type === 'inlineCode' || node.type === 'code' || node.type === 'html') return rawHtmlTags;
+      const children: Array<Content | PhrasingContent> = [];
+      let nextTags = rawHtmlTags;
+      for (const child of node.children) {
+        if (child.type === 'html') {
+          nextTags = updateRawHtmlContext(child.value, nextTags);
+          children.push(child);
+          continue;
+        }
+        if (child.type === 'text') {
+          if (nextTags.length > 0) children.push(child);
+          else children.push(...transformCitationText(child, citationMap, content));
+        }
+        else {
+          if ('children' in child) nextTags = visit(child, nextTags);
+          children.push(child);
+        }
+      }
+      node.children = children;
+      return nextTags;
     }
-    if (token.startsWith('`') && token.endsWith('`')) {
-      return <code key={i} className="bg-white/10 px-1 py-0.5 rounded text-sm">{token.slice(1, -1)}</code>;
+    visit(tree);
+  };
+}
+
+function AiAnswerMarkdown({
+  content,
+  citations,
+  onCitationClick,
+}: {
+  content: string;
+  citations: Citation[];
+  onCitationClick: (citation: Citation) => void;
+}) {
+  const citationMap = new Map<string, number>();
+  const ambiguousCitationLabels = new Set<string>();
+  citations.forEach((citation, index) => {
+    if (ambiguousCitationLabels.has(citation.text)) return;
+    if (citationMap.has(citation.text)) {
+      citationMap.delete(citation.text);
+      ambiguousCitationLabels.add(citation.text);
+      return;
     }
-    // Convert double newlines to paragraph breaks
-    if (token.includes('\n\n')) {
-      return token.split('\n\n').map((para, j) => (
-        <span key={`${i}-${j}`}>
-          {j > 0 && <span className="block h-3" />}
-          {para}
-        </span>
-      ));
-    }
-    return token;
+    citationMap.set(citation.text, index);
   });
+  const citationByIndex = citations;
+
+  return (
+    <ReactMarkdown
+      remarkPlugins={[remarkGfm, remarkCitations(citationMap, content)]}
+      components={{
+        img: ({ alt }) => {
+          const label = alt?.trim();
+          const safeLabel = label ? `Image: ${label}` : 'Image placeholder';
+
+          return (
+            <span
+              role="img"
+              aria-label={safeLabel}
+              className="inline-block rounded border border-dashed border-zinc-700 bg-zinc-900/40 px-2 py-1 text-xs text-zinc-300"
+            >
+              {`[${safeLabel}]`}
+            </span>
+          );
+        },
+        a: ({ node, href, children }) => {
+          const properties = node?.properties;
+          const citationIndex = properties?.['data-citation-index'];
+          const citation = typeof citationIndex === 'number' ? citationByIndex[citationIndex] : undefined;
+          if (!citation) return <a href={href} rel="noopener noreferrer">{children}</a>;
+          return (
+            <button
+              type="button"
+              onClick={() => onCitationClick(citation)}
+              className="font-medium text-emerald-300 underline decoration-emerald-300/60 underline-offset-4 hover:text-emerald-200 cursor-pointer"
+            >
+              {children}
+            </button>
+          );
+        },
+      }}
+    >
+      {content}
+    </ReactMarkdown>
+  );
 }
 
 function StatPill({
