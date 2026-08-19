@@ -128,6 +128,8 @@
     "heading": "Your past knowledge, woven into every conversation",
     "answer": "Answer",
     "sourcesCount": "Sources: {count}",
+    "sources": "Sources",
+    "openCitation": "Open citation: {citation}",
     "results": "Search results",
     "subtitle": "Browse source documents, distilled entries, and pipeline state from the LLM Wiki backend.",
     "byline": "Inspired by",
