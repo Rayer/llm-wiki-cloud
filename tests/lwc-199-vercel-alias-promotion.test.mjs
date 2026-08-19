@@ -1,9 +1,9 @@
 import assert from 'node:assert/strict';
 import { test } from 'node:test';
-import { mkdtemp, mkdir, readFile, writeFile } from 'node:fs/promises';
+import { mkdtemp, mkdir, readFile, readdir, writeFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
-import { execFile } from 'node:child_process';
+import { execFile, spawn } from 'node:child_process';
 import { promisify } from 'node:util';
 import { load as parseYaml } from 'js-yaml';
 
@@ -20,6 +20,7 @@ async function setupCase(scenario = 'success') {
   const root = await mkdtemp(join(tmpdir(), 'lwc-199-'));
   const bin = join(root, 'bin');
   await mkdir(bin);
+  await mkdir(join(root, 'tmp'));
   await writeFile(join(root, 'scenario'), scenario);
   await writeFile(join(root, 'deployment.json'), JSON.stringify({
     id: deploymentId,
@@ -40,17 +41,14 @@ async function setupCase(scenario = 'success') {
     [aliases[1]]: 'dpl_oldvercel',
   }));
   await writeFile(join(root, 'vercel-calls'), '');
+  await writeFile(join(root, 'alias-post-calls'), '');
   await writeFile(join(root, 'curl-calls'), '');
   await writeFile(join(root, 'auth-events'), '');
   await execFileAsync('cp', [
     join(repoRoot, 'tests/fixtures/lwc-199-fake-curl.sh'),
     join(bin, 'curl'),
   ]);
-  await execFileAsync('cp', [
-    join(repoRoot, 'tests/fixtures/lwc-199-fake-vercel.sh'),
-    join(bin, 'vercel'),
-  ]);
-  await execFileAsync('chmod', ['+x', join(bin, 'curl'), join(bin, 'vercel')]);
+  await execFileAsync('chmod', ['+x', join(bin, 'curl')]);
   const evidenceDir = join(root, 'evidence');
   await mkdir(evidenceDir);
   return { root, bin, evidenceDir };
@@ -96,8 +94,8 @@ function buildEnv(fixture, overrides = {}) {
     ROLLBACK_ARTIFACT_DIGEST: rollbackArtifactDigestBare,
     VERCEL_PROJECT_ID: projectId,
     VERCEL_TEAM_ID: 'team_test123',
-    VERCEL_SCOPE: 'rayer-team',
     EVIDENCE_DIR: fixture.evidenceDir,
+    TMPDIR: join(fixture.root, 'tmp'),
     PROMOTION_CONTEXT_PATH: join(fixture.evidenceDir, 'vercel-alias-promotion-context.json'),
     ...overrides,
   };
@@ -112,8 +110,27 @@ async function readOptionalJson(path) {
   }
 }
 
+test('captures mutation transport status without toggling strict shell error handling', async () => {
+  const source = await readFile(join(repoRoot, '.github/scripts/vercel-alias-promotion.sh'), 'utf8');
+  assert.doesNotMatch(source, /\n\s*set \+e\n/);
+});
+
 function capturedOutput(...results) {
   return results.flatMap((result) => [result?.stdout ?? '', result?.stderr ?? '']).join('\n');
+}
+
+function fixtureFailureDiagnostic(scenario, result, evidence, stderr, env) {
+  const safeStderr = stderr
+    .replaceAll(env.GITHUB_TOKEN, '[github-token-redacted]')
+    .replaceAll(env.VERCEL_TOKEN, '[vercel-token-redacted]')
+    .replaceAll('raw provider body must stay private', '[provider-detail-redacted]');
+  return `fixture scenario ${scenario} produced FAILED evidence: ${JSON.stringify({
+    exit_code: result?.code ?? 0,
+    stderr: safeStderr.trim() || null,
+    reason: evidence.reason,
+    next_action: evidence.next_action,
+    observed_alias_routing: evidence.observed?.alias_routing,
+  })}`;
 }
 
 async function runCase(scenario = 'success', overrides = {}, mode = 'promote') {
@@ -127,9 +144,14 @@ async function runCase(scenario = 'success', overrides = {}, mode = 'promote') {
   const evidence = JSON.parse(await readFile(join(fixture.evidenceDir, 'vercel-alias-promotion.json'), 'utf8'));
   const rollbackContract = await readOptionalJson(join(fixture.evidenceDir, 'rollback-contract.json'));
   const resumeContext = await readOptionalJson(join(fixture.evidenceDir, 'vercel-alias-promotion-context.json'));
-  const calls = (await readFile(join(fixture.root, 'vercel-calls'), 'utf8')).trim().split('\n').filter(Boolean);
+  const calls = (await readFile(join(fixture.root, 'alias-post-calls'), 'utf8')).trim().split('\n').filter(Boolean);
   const curlCalls = (await readFile(join(fixture.root, 'curl-calls'), 'utf8')).trim().split('\n').filter(Boolean);
   const authEvents = (await readFile(join(fixture.root, 'auth-events'), 'utf8')).trim().split('\n').filter(Boolean);
+  const stdout = capturedOutput(preflight, result);
+  const stderr = [preflight?.stderr ?? '', result?.stderr ?? ''].join('\n');
+  const diagnostic = evidence.status === 'FAILED'
+    ? fixtureFailureDiagnostic(scenario, result, evidence, stderr, env)
+    : undefined;
   return {
     ...fixture,
     env,
@@ -141,8 +163,9 @@ async function runCase(scenario = 'success', overrides = {}, mode = 'promote') {
     calls,
     curlCalls,
     authEvents,
-    stdout: capturedOutput(preflight, result),
-    stderr: [preflight?.stderr ?? '', result?.stderr ?? ''].join('\n'),
+    stdout,
+    stderr,
+    diagnostic,
   };
 }
 
@@ -172,7 +195,7 @@ async function runAuthVariantCase(variant) {
   const evidence = JSON.parse(await readFile(join(fixture.evidenceDir, 'vercel-alias-promotion.json'), 'utf8'));
   const rollbackContract = await readOptionalJson(join(fixture.evidenceDir, 'rollback-contract.json'));
   const resumeContext = await readOptionalJson(join(fixture.evidenceDir, 'vercel-alias-promotion-context.json'));
-  const calls = (await readFile(join(fixture.root, 'vercel-calls'), 'utf8')).trim().split('\n').filter(Boolean);
+  const calls = (await readFile(join(fixture.root, 'alias-post-calls'), 'utf8')).trim().split('\n').filter(Boolean);
   const curlCalls = (await readFile(join(fixture.root, 'curl-calls'), 'utf8')).trim().split('\n').filter(Boolean);
   const authEvents = (await readFile(join(fixture.root, 'auth-events'), 'utf8')).trim().split('\n').filter(Boolean);
   return {
@@ -199,7 +222,6 @@ function assertNoCredentialLeak(run) {
     run.stderr,
     run.curlCalls?.join('\n'),
     run.authEvents?.join('\n'),
-    run.calls?.join('\n'),
   ].join('\n');
   for (const token of [run.env.GITHUB_TOKEN, run.env.VERCEL_TOKEN]) {
     assert.equal(protectedText.includes(token), false, `credential leaked: ${token}`);
@@ -300,10 +322,14 @@ test('promotes exactly both canonical aliases to one deployment and writes norma
   assert.deepEqual(run.evidence.provider.rollback.aliases.map(({ alias }) => alias), aliases);
   assert.deepEqual(run.evidence.provider.rollback.aliases.map(({ deployment_id: id }) => id), ['dpl_oldcustom', 'dpl_oldvercel']);
   assert.deepEqual(run.evidence.observed.alias_routing.map(({ deployment_id: id }) => id), [deploymentId, deploymentId]);
-  assert.deepEqual(run.calls.map((call) => call.split(' ').slice(0, 4)), [
-    ['alias', 'set', deploymentId, aliases[0]],
-    ['alias', 'set', deploymentId, aliases[1]],
-  ]);
+  assert.equal(run.calls.length, 2);
+  for (const [index, call] of run.calls.entries()) {
+    const [method, url, authorization, body] = call.split('\t');
+    assert.equal(method, 'POST');
+    assert.equal(url, `https://vercel.test/v2/deployments/${deploymentId}/aliases?teamId=team_test123`);
+    assert.equal(authorization, `Bearer ${run.env.VERCEL_TOKEN}`);
+    assert.deepEqual(JSON.parse(body), { alias: aliases[index] });
+  }
   assert.deepEqual(run.evidence.health, [
     { alias: aliases[0], status_code: '200', effective_host: aliases[0] },
     { alias: aliases[1], status_code: '200', effective_host: aliases[1] },
@@ -319,6 +345,130 @@ test('promotes exactly both canonical aliases to one deployment and writes norma
   assert.ok(run.rollbackContract);
   assert.equal(run.resumeContext.phase, 'preflight-complete');
   assert.ok(run.authEvents.every((event) => /^AUTH_VALID provider=(github|vercel) endpoint=/.test(event)));
+  assertNoCredentialLeak(run);
+});
+
+for (const [scenario, expectedStatus] of [
+  ['timeout-target', 'SUCCESS'],
+  ['conflict-target', 'SUCCESS'],
+]) {
+  test(`accepts ${scenario} when authoritative read-back finds the target`, async () => {
+    const run = await runCase(scenario);
+    assert.equal(run.result.error, undefined, run.result.stderr);
+    assert.equal(run.evidence.status, expectedStatus, run.diagnostic);
+    assert.equal(run.calls.length, 2);
+    assertNoCredentialLeak(run);
+  });
+}
+
+test('fails partial mutation when a timeout reads back the old target', async () => {
+  const run = await runCase('timeout-old');
+  assert.notEqual(run.result.code, 0);
+  assert.equal(run.evidence.status, 'PARTIAL_MUTATION', run.diagnostic);
+  assert.match(run.evidence.reason, /status=transport/);
+  assertNoCredentialLeak(run);
+});
+
+test('fails with sanitized provider status and error code for forbidden wrong-target mutation', async () => {
+  const run = await runCase('forbidden-wrong-target');
+  assert.notEqual(run.result.code, 0);
+  assert.equal(run.evidence.status, 'PARTIAL_MUTATION', run.diagnostic);
+  assert.match(run.evidence.reason, /status=403; error_code=forbidden/);
+  assert.doesNotMatch(JSON.stringify(run.evidence), /raw provider body must stay private/);
+  assert.doesNotMatch(run.stdout, /raw provider body must stay private/);
+  assert.doesNotMatch(run.stderr, /raw provider body must stay private/);
+  assertNoCredentialLeak(run);
+});
+
+test('rejects a malformed 2xx mutation response even when it does not claim the alias', async () => {
+  const run = await runCase('malformed-success');
+  assert.notEqual(run.result.code, 0);
+  assert.equal(run.evidence.status, 'PARTIAL_MUTATION', run.diagnostic);
+  assert.match(run.evidence.reason, /malformed_response/);
+  assertNoCredentialLeak(run);
+});
+
+for (const scenario of [
+  'empty-uid',
+  'malformed-uid',
+  'unbounded-uid',
+  'empty-created',
+  'non-iso-created',
+  'malformed-old-deployment-id',
+  'impossible-created-date',
+  'impossible-created-time',
+]) {
+  test(`rejects ${scenario} mutation response`, async () => {
+    const run = await runCase(scenario);
+    assert.notEqual(run.result.code, 0);
+    assert.equal(run.evidence.status, 'PARTIAL_MUTATION', run.diagnostic);
+    assert.match(run.evidence.reason, /malformed_response/);
+    assertNoCredentialLeak(run);
+  });
+}
+
+test('rejects an unset originating workflow run id with normalized preflight evidence', async () => {
+  const run = await runCase('success', { ORIGINATING_WORKFLOW_RUN_ID: undefined }, 'preflight');
+  const result = await runScript('promote', { ...run.env, ORIGINATING_WORKFLOW_RUN_ID: undefined });
+  const evidence = JSON.parse(await readFile(join(run.evidenceDir, 'vercel-alias-promotion.json'), 'utf8'));
+  assert.notEqual(result.code, 0);
+  assert.equal(evidence.status, 'PREFLIGHT_FAILED');
+  assert.match(evidence.reason, /originating workflow run id.*positive integer/i);
+  assert.doesNotMatch(result.stderr, /unbound variable/);
+});
+
+test('removes the provider mutation response temp file when interrupted in flight', async () => {
+  const run = await runCase('success', {}, 'preflight');
+  await writeFile(join(run.root, 'scenario'), 'interrupt-in-flight');
+  const child = spawn('bash', ['.github/scripts/vercel-alias-promotion.sh', 'promote'], {
+    cwd: repoRoot,
+    env: { ...run.env },
+    stdio: ['ignore', 'pipe', 'pipe'],
+    detached: true,
+  });
+  const output = [];
+  child.stdout.on('data', (chunk) => output.push(chunk));
+  child.stderr.on('data', (chunk) => output.push(chunk));
+  for (let attempt = 0; attempt < 100; attempt += 1) {
+    try {
+      await readFile(join(run.root, 'mutation-in-flight'));
+      break;
+    } catch {
+      await new Promise((resolve) => setTimeout(resolve, 10));
+    }
+  }
+  await readFile(join(run.root, 'mutation-in-flight'));
+  process.kill(-child.pid, 'SIGTERM');
+  await new Promise((resolve) => child.once('close', resolve));
+  assert.deepEqual(await readdir(run.env.TMPDIR), []);
+  assert.doesNotMatch(Buffer.concat(output).toString(), /raw provider body/);
+});
+
+for (const scenario of ['valid-fractional-created', 'valid-whole-second-created']) {
+  test(`accepts ${scenario} mutation response`, async () => {
+    const run = await runCase(scenario);
+    assert.equal(run.result.error, undefined, run.result.stderr);
+    assert.equal(run.evidence.status, 'SUCCESS');
+    assertNoCredentialLeak(run);
+  });
+}
+
+test('does not follow a mutation redirect and classifies it from exact alias read-back', async () => {
+  const run = await runCase('mutation-redirect');
+  assert.notEqual(run.result.code, 0);
+  assert.equal(run.evidence.status, 'PARTIAL_MUTATION', run.diagnostic);
+  assert.match(run.evidence.reason, /status=307/);
+  assert.equal(run.evidence.observed.alias_routing[0].deployment_id, 'dpl_oldcustom');
+  assert.equal(run.curlCalls.some((call) => call === 'LOCATION_OPTION'), false);
+  assert.equal(run.curlCalls.some((call) => call.includes('attacker.example')), false);
+  assertNoCredentialLeak(run);
+});
+
+test('records a mixed state when the first alias succeeds and the second mutation fails', async () => {
+  const run = await runCase('second-failure');
+  assert.notEqual(run.result.code, 0);
+  assert.equal(run.evidence.status, 'PARTIAL_MUTATION', run.diagnostic);
+  assert.deepEqual(run.evidence.observed.alias_routing.map(({ deployment_id }) => deployment_id), [deploymentId, 'dpl_oldvercel']);
   assertNoCredentialLeak(run);
 });
 
@@ -355,7 +505,7 @@ test('provider-specific auth propagation rejects wrong, swapped, and placeholder
 test('fails closed before mutation when deployment target is not production', async () => {
   const run = await runCase('target-mismatch');
   assert.notEqual(run.result.code, 0);
-  assert.equal(run.evidence.status, 'PREFLIGHT_FAILED');
+  assert.equal(run.evidence.status, 'PREFLIGHT_FAILED', run.diagnostic);
   assert.match(run.evidence.reason, /target/);
   assert.equal(run.calls.length, 0);
 });
@@ -363,7 +513,7 @@ test('fails closed before mutation when deployment target is not production', as
 test('fails closed after mutation when deployment target is no longer production', async () => {
   const run = await runCase('post-target-mismatch');
   assert.notEqual(run.result.code, 0);
-  assert.equal(run.evidence.status, 'POSTCHECK_FAILED');
+  assert.equal(run.evidence.status, 'POSTCHECK_FAILED', run.diagnostic);
   assert.equal(run.evidence.provider_verification.result, 'not_verified');
   assert.equal(run.evidence.provider_verification.checked_at, null);
   assert.equal(run.calls.length, 2);
@@ -372,7 +522,7 @@ test('fails closed after mutation when deployment target is no longer production
 test('fails closed before mutation when Vercel repository metadata is missing', async () => {
   const run = await runCase('missing-repository');
   assert.notEqual(run.result.code, 0);
-  assert.equal(run.evidence.status, 'PREFLIGHT_FAILED');
+  assert.equal(run.evidence.status, 'PREFLIGHT_FAILED', run.diagnostic);
   assert.match(run.evidence.reason, /repository/);
   assert.equal(run.calls.length, 0);
 });
@@ -380,7 +530,7 @@ test('fails closed before mutation when Vercel repository metadata is missing', 
 test('fails closed before mutation when Vercel repository metadata is not exact', async () => {
   const run = await runCase('mismatched-repository');
   assert.notEqual(run.result.code, 0);
-  assert.equal(run.evidence.status, 'PREFLIGHT_FAILED');
+  assert.equal(run.evidence.status, 'PREFLIGHT_FAILED', run.diagnostic);
   assert.match(run.evidence.reason, /repository/);
   assert.equal(run.calls.length, 0);
 });
@@ -388,7 +538,7 @@ test('fails closed before mutation when Vercel repository metadata is not exact'
 test('fails closed before any provider call when GitHub repository identity is not exact', async () => {
   const run = await runCase('success', { GITHUB_REPOSITORY: 'rayer/llm-wiki-frontend' });
   assert.notEqual(run.result.code, 0);
-  assert.equal(run.evidence.status, 'PREFLIGHT_FAILED');
+  assert.equal(run.evidence.status, 'PREFLIGHT_FAILED', run.diagnostic);
   assert.match(run.evidence.reason, /GITHUB_REPOSITORY/);
   assert.equal(run.calls.length, 0);
   assert.equal(run.curlCalls.length, 0);
@@ -449,7 +599,7 @@ test('promote refuses to run without durable rollback artifact outputs', async (
 test('promote re-reads both aliases immediately before mutation and aborts on snapshot drift', async () => {
   const run = await runCase('alias-changed-before-promote');
   assert.notEqual(run.result.code, 0);
-  assert.equal(run.evidence.status, 'PREFLIGHT_FAILED');
+  assert.equal(run.evidence.status, 'PREFLIGHT_FAILED', run.diagnostic);
   assert.match(run.evidence.reason, /rollback snapshot|changed/);
   assert.equal(run.calls.length, 0);
 });
@@ -472,7 +622,7 @@ test('rejects a tampered resume context before any provider mutation', async () 
 test('records actual parseable post-readback values instead of stale preflight claims', async () => {
   const run = await runCase('post-malformed');
   assert.notEqual(run.result.code, 0);
-  assert.equal(run.evidence.status, 'POSTCHECK_FAILED');
+  assert.equal(run.evidence.status, 'POSTCHECK_FAILED', run.diagnostic);
   assert.deepEqual(run.evidence.observed, {
     deployment_id: deploymentId,
     deployment_url: 'https://dpl_test123.vercel.app',
@@ -490,7 +640,7 @@ test('records actual parseable post-readback values instead of stale preflight c
 test('records unknown observed deployment values when post-readback is unreadable', async () => {
   const run = await runCase('post-unreadable');
   assert.notEqual(run.result.code, 0);
-  assert.equal(run.evidence.status, 'POSTCHECK_FAILED');
+  assert.equal(run.evidence.status, 'POSTCHECK_FAILED', run.diagnostic);
   assert.deepEqual(run.evidence.observed, {
     deployment_id: null,
     deployment_url: null,
@@ -508,7 +658,7 @@ test('records unknown observed deployment values when post-readback is unreadabl
 test('fails closed when health follows a redirect to a different host', async () => {
   const run = await runCase('redirect-host-mismatch');
   assert.notEqual(run.result.code, 0);
-  assert.equal(run.evidence.status, 'POSTCHECK_FAILED');
+  assert.equal(run.evidence.status, 'POSTCHECK_FAILED', run.diagnostic);
   assert.deepEqual(run.evidence.health, [
     { alias: aliases[0], status_code: '200', effective_host: null },
     { alias: aliases[1], status_code: '200', effective_host: aliases[1] },
@@ -519,7 +669,7 @@ test('fails closed when health follows a redirect to a different host', async ()
 test('fails closed with a transport reason when health has no effective host', async () => {
   const run = await runCase('health-transport-failure');
   assert.notEqual(run.result.code, 0);
-  assert.equal(run.evidence.status, 'POSTCHECK_FAILED');
+  assert.equal(run.evidence.status, 'POSTCHECK_FAILED', run.diagnostic);
   assert.match(run.evidence.reason, /transport|effective host/);
   assert.doesNotMatch(run.evidence.reason, /redirected/);
   assert.equal(run.evidence.health[0].status_code, '000');
@@ -561,7 +711,7 @@ test('rejects API origin overrides without explicit test mode and in GitHub Acti
   ]) {
     const run = await runCase('success', overrides);
     assert.notEqual(run.result.code, 0);
-    assert.equal(run.evidence.status, 'PREFLIGHT_FAILED');
+    assert.equal(run.evidence.status, 'PREFLIGHT_FAILED', run.diagnostic);
     assert.match(run.evidence.reason, /origin|test mode|Actions/);
     assert.equal(run.curlCalls.length, 0);
     assert.equal(run.calls.length, 0);
@@ -577,7 +727,7 @@ for (const [scenario, expected] of [
   test('fails closed and records causal mixed state for ' + scenario, async () => {
     const run = await runCase(scenario);
     assert.notEqual(run.result.code, 0);
-    assert.equal(run.evidence.status, 'PARTIAL_MUTATION');
+    assert.equal(run.evidence.status, 'PARTIAL_MUTATION', run.diagnostic);
     assert.deepEqual(run.evidence.observed.alias_routing.map(({ deployment_id }) => deployment_id), expected);
     assert.match(run.evidence.next_action, /Read \/v4\/aliases/);
   });
@@ -616,7 +766,6 @@ test('workflow contract parses as YAML and scopes provider secrets to the helper
     VERCEL_TOKEN: '${{ secrets.VERCEL_TOKEN }}',
     VERCEL_PROJECT_ID: '${{ secrets.VERCEL_PROJECT_ID }}',
     VERCEL_TEAM_ID: '${{ secrets.VERCEL_TEAM_ID }}',
-    VERCEL_SCOPE: '${{ secrets.VERCEL_SCOPE }}',
   });
   assert.deepEqual(helper.env, {
     EVIDENCE_DIR: '${{ runner.temp }}/vercel-alias-promotion',
@@ -626,10 +775,9 @@ test('workflow contract parses as YAML and scopes provider secrets to the helper
     VERCEL_TOKEN: '${{ secrets.VERCEL_TOKEN }}',
     VERCEL_PROJECT_ID: '${{ secrets.VERCEL_PROJECT_ID }}',
     VERCEL_TEAM_ID: '${{ secrets.VERCEL_TEAM_ID }}',
-    VERCEL_SCOPE: '${{ secrets.VERCEL_SCOPE }}',
   });
   const runs = workflow.jobs.promote.steps.filter(({ run }) => typeof run === 'string').map(({ run }) => run);
-  assert.ok(runs.some((run) => run.includes('npm install --global vercel@52.0.0 --ignore-scripts')));
+  assert.equal(runs.some((run) => run.includes('npm install --global vercel@52.0.0 --ignore-scripts')), false);
   assert.ok(runs.some((run) => run.trim() === 'bash .github/scripts/vercel-alias-promotion.sh preflight'));
   assert.ok(runs.some((run) => run.trim() === 'bash .github/scripts/vercel-alias-promotion.sh promote'));
   assert.equal(runs.some((run) => /vercel\s+(deploy|build)|next\s+build/.test(run)), false);
@@ -669,7 +817,7 @@ for (const scenario of [
   test('fails closed before mutation for ' + scenario, async () => {
     const run = await runCase(scenario);
     assert.notEqual(run.result.code, 0);
-    assert.equal(run.evidence.status, 'PREFLIGHT_FAILED');
+    assert.equal(run.evidence.status, 'PREFLIGHT_FAILED', run.diagnostic);
     assert.equal(run.calls.length, 0);
   });
 }
@@ -677,7 +825,7 @@ for (const scenario of [
 test('fails closed for an invalid SHA before any provider call', async () => {
   const run = await runCase('success', { COMMIT_SHA: 'not-a-sha' });
   assert.notEqual(run.result.code, 0);
-  assert.equal(run.evidence.status, 'PREFLIGHT_FAILED');
+  assert.equal(run.evidence.status, 'PREFLIGHT_FAILED', run.diagnostic);
   assert.equal(run.calls.length, 0);
   assert.equal(run.curlCalls.length, 0);
 });
@@ -685,7 +833,7 @@ test('fails closed for an invalid SHA before any provider call', async () => {
 test('fails closed for an invalid immutable deployment ID before any provider call', async () => {
   const run = await runCase('success', { DEPLOYMENT_ID: 'https://evil.example/deployment' });
   assert.notEqual(run.result.code, 0);
-  assert.equal(run.evidence.status, 'PREFLIGHT_FAILED');
+  assert.equal(run.evidence.status, 'PREFLIGHT_FAILED', run.diagnostic);
   assert.equal(run.calls.length, 0);
   assert.equal(run.curlCalls.length, 0);
 });
@@ -693,7 +841,7 @@ test('fails closed for an invalid immutable deployment ID before any provider ca
 test('marks a partial alias mutation and requires read-back before retry', async () => {
   const run = await runCase('partial-mutation');
   assert.notEqual(run.result.code, 0);
-  assert.equal(run.evidence.status, 'PARTIAL_MUTATION');
+  assert.equal(run.evidence.status, 'PARTIAL_MUTATION', run.diagnostic);
   assert.match(run.evidence.next_action, /Read \/v4\/aliases before retry/);
   assert.equal(run.calls.length, 2);
   assert.deepEqual(run.evidence.observed.alias_routing, [
@@ -705,16 +853,16 @@ test('marks a partial alias mutation and requires read-back before retry', async
 });
 
 test('fails closed when authoritative post-state diverges', async () => {
-  const run = await runCase('post-readback-mismatch');
+  const run = await runCase('post-target-mismatch');
   assert.notEqual(run.result.code, 0);
-  assert.equal(run.evidence.status, 'POSTCHECK_FAILED');
+  assert.equal(run.evidence.status, 'POSTCHECK_FAILED', run.diagnostic);
   assert.equal(run.calls.length, 2);
 });
 
 test('fails closed when either canonical health check is not HTTP 200', async () => {
   const run = await runCase('health-failure');
   assert.notEqual(run.result.code, 0);
-  assert.equal(run.evidence.status, 'POSTCHECK_FAILED');
+  assert.equal(run.evidence.status, 'POSTCHECK_FAILED', run.diagnostic);
   assert.equal(run.calls.length, 2);
   assert.equal(run.evidence.provider_verification.checked_at, null);
   assert.ok(run.evidence.health.some(({ status_code }) => status_code === '503'));
