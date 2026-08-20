@@ -1082,8 +1082,7 @@ export type PublicConfig = {
 
 export type AdminSettings = {
   registration_enabled: boolean;
-  announcement_draft_markdown?: string | null;
-  announcement_published_markdown?: string | null;
+  announcement_markdown?: string | null;
 };
 
 let publicConfigCache: PublicConfig | null = null;
@@ -1184,8 +1183,7 @@ export async function getAdminSettings(): Promise<AdminSettings> {
   }
   return {
     registration_enabled: enabled,
-    ...(Object.hasOwn(record, 'announcement_draft_markdown') ? { announcement_draft_markdown: typeof record.announcement_draft_markdown === 'string' ? record.announcement_draft_markdown : null } : {}),
-    ...(Object.hasOwn(record, 'announcement_published_markdown') ? { announcement_published_markdown: typeof record.announcement_published_markdown === 'string' ? record.announcement_published_markdown : null } : {}),
+    ...(Object.hasOwn(record, 'announcement_markdown') ? { announcement_markdown: typeof record.announcement_markdown === 'string' ? record.announcement_markdown : null } : {}),
   } as AdminSettings;
 }
 
@@ -1205,20 +1203,22 @@ export async function updateAdminSettings(
   clearPublicConfigCache();
   return {
     registration_enabled: enabled,
-    ...(Object.hasOwn(record, 'announcement_draft_markdown') ? { announcement_draft_markdown: typeof record.announcement_draft_markdown === 'string' ? record.announcement_draft_markdown : null } : {}),
-    ...(Object.hasOwn(record, 'announcement_published_markdown') ? { announcement_published_markdown: typeof record.announcement_published_markdown === 'string' ? record.announcement_published_markdown : null } : {}),
   } as AdminSettings;
 }
 
-export async function publishAnnouncement(): Promise<AdminSettings> {
-  const payload = await adminJson('/api/v1/admin/settings/announcement/publish', { method: 'POST' });
+export async function publishAnnouncement(announcement_markdown: string): Promise<AdminSettings> {
+  const payload = await adminJson('/api/v1/admin/settings/announcement/publish', {
+    method: 'POST',
+    json: true,
+    body: JSON.stringify({ announcement_markdown }),
+  });
   const record = isRecord(payload) ? payload : {};
-  const published = typeof record.announcement_published_markdown === 'string'
-    ? record.announcement_published_markdown : null;
+  if (typeof record.registration_enabled !== 'boolean' || typeof record.announcement_markdown !== 'string') {
+    throw new ApiError('Invalid announcement publish response', 500);
+  }
+  clearPublicConfigCache();
   return {
-    registration_enabled: asBoolean(record.registration_enabled) === true,
-    announcement_draft_markdown: typeof record.announcement_draft_markdown === 'string'
-      ? record.announcement_draft_markdown : null,
-    announcement_published_markdown: published,
+    registration_enabled: record.registration_enabled,
+    announcement_markdown: record.announcement_markdown,
   };
 }
