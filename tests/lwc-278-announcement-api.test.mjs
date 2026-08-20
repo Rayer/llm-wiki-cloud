@@ -1,7 +1,7 @@
 import assert from 'node:assert/strict';
 import test from 'node:test';
 
-import { configureApiAuth, getAdminSettings, getPublicConfig, publishAnnouncement, updateAdminSettings } from '../src/lib/api.ts';
+import { configureApiAuth, getAdminSettings, getPublicConfig, publishAnnouncement } from '../src/lib/api.ts';
 
 const originalFetch = globalThis.fetch;
 
@@ -22,7 +22,7 @@ test('public config preserves announcement markdown and fails safe when unavaila
   });
 });
 
-test('admin settings and publish use the frozen announcement schema', async () => {
+test('admin settings and publish use the direct-publish announcement schema', async () => {
   configureApiAuth({
     getAccessToken: () => 'test-token',
     refreshAccessToken: async () => null,
@@ -31,23 +31,34 @@ test('admin settings and publish use the frozen announcement schema', async () =
   const calls = [];
   globalThis.fetch = async (url, init = {}) => {
     calls.push({ url: String(url), init });
-    if (init.method === 'POST') return Response.json({ announcement_published_markdown: '# Published' });
-    if (init.method === 'PATCH') return Response.json({ registration_enabled: true, announcement_draft_markdown: '# Draft' });
-    return Response.json({ registration_enabled: true, announcement_draft_markdown: '# Draft', announcement_published_markdown: '# Published' });
+    if (init.method === 'POST') return Response.json({ registration_enabled: true, announcement_markdown: '# Published' });
+    return Response.json({ registration_enabled: true, announcement_markdown: '# Published' });
   };
 
   assert.deepEqual(await getAdminSettings(), {
     registration_enabled: true,
-    announcement_draft_markdown: '# Draft',
-    announcement_published_markdown: '# Published',
+    announcement_markdown: '# Published',
   });
-  assert.deepEqual(await updateAdminSettings({ announcement_draft_markdown: '# New draft' }), {
-    registration_enabled: true,
-    announcement_draft_markdown: '# Draft',
-  });
-  await publishAnnouncement();
+  await publishAnnouncement('# New announcement');
 
-  assert.equal(calls[1].init.body, JSON.stringify({ announcement_draft_markdown: '# New draft' }));
-  assert.match(calls[2].url, /\/api\/v1\/admin\/settings\/announcement\/publish$/);
-  assert.equal(calls[2].init.method, 'POST');
+  assert.match(calls[1].url, /\/api\/v1\/admin\/settings\/announcement\/publish$/);
+  assert.equal(calls[1].init.method, 'POST');
+  assert.equal(calls[1].init.body, JSON.stringify({ announcement_markdown: '# New announcement' }));
+});
+
+test('publish rejects a successful response with missing or invalid fields', async () => {
+  configureApiAuth({
+    getAccessToken: () => 'test-token',
+    refreshAccessToken: async () => null,
+    onUnauthorized: () => {},
+  });
+  for (const payload of [
+    { announcement_markdown: '# Published' },
+    { registration_enabled: 'yes', announcement_markdown: '# Published' },
+    { registration_enabled: true },
+    { registration_enabled: true, announcement_markdown: 42 },
+  ]) {
+    globalThis.fetch = async () => Response.json(payload, { status: 200 });
+    await assert.rejects(() => publishAnnouncement('# New announcement'), /Invalid announcement publish response/);
+  }
 });
