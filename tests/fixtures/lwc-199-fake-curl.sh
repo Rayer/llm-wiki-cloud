@@ -6,13 +6,38 @@ vercel_base="${VERCEL_API_BASE_URL:-https://api.vercel.com}"
 github_base="${GITHUB_API_URL:-https://api.github.com}"
 url=""
 auth_header=""
+method="GET"
+request_body=""
+output_path=""
+write_out=""
+location_option=0
 while [[ "$#" -gt 0 ]]; do
   case "$1" in
+    --location)
+      location_option=1
+      shift
+      ;;
     --header)
       header="${2:-}"
       if [[ "$header" == Authorization:* ]]; then
         auth_header="$header"
       fi
+      shift 2
+      ;;
+    --request)
+      method="$2"
+      shift 2
+      ;;
+    --data)
+      request_body="$2"
+      shift 2
+      ;;
+    --output)
+      output_path="$2"
+      shift 2
+      ;;
+    --write-out)
+      write_out="$2"
       shift 2
       ;;
     http://*|https://*)
@@ -29,6 +54,9 @@ if [[ -z "$url" ]]; then
   exit 1
 fi
 printf '%s\n' "$url" >> "$root/curl-calls"
+if [[ "$location_option" -eq 1 && "$method" == POST && "$url" == *"/v2/deployments/"*/aliases* ]]; then
+  printf 'LOCATION_OPTION\n' >> "$root/curl-calls"
+fi
 
 check_provider_auth() {
   local provider="$1"
@@ -47,6 +75,138 @@ if [[ "$url" == "$vercel_base"/* ]]; then
   check_provider_auth vercel "$vercel_base" "Authorization: Bearer ${VERCEL_TOKEN:-}"
 elif [[ "$url" == "$github_base"/* ]]; then
   check_provider_auth github "$github_base" "Authorization: Bearer ${GITHUB_TOKEN:-}"
+fi
+
+if [[ "$method" == POST && "$url" == *"/v2/deployments/"*/aliases* ]]; then
+  printf '%s\t%s\t%s\t%s\n' "$method" "$url" "${auth_header#Authorization: }" "$request_body" >> "$root/alias-post-calls"
+  alias_post_call_number=$(( $(wc -l < "$root/alias-post-calls") ))
+  alias_post_alias="$(jq -r '.alias // empty' <<< "$request_body")"
+  if [[ "$alias_post_alias" != wiki.rayer.idv.tw && "$alias_post_alias" != llm-wiki-frontend.vercel.app ]]; then
+    exit 93
+  fi
+  case "$scenario:$alias_post_call_number" in
+    timeout:1|timeout-old:1)
+      exit 28
+      ;;
+    timeout-target:1)
+      jq --arg alias "$alias_post_alias" --arg deploymentId dpl_test123 '.[$alias] = $deploymentId' "$root/aliases.json" > "$root/aliases.json.tmp"
+      mv "$root/aliases.json.tmp" "$root/aliases.json"
+      touch "$root/mutated"
+      exit 28
+      ;;
+    conflict-target:1)
+      jq --arg alias "$alias_post_alias" --arg deploymentId dpl_test123 '.[$alias] = $deploymentId' "$root/aliases.json" > "$root/aliases.json.tmp"
+      mv "$root/aliases.json.tmp" "$root/aliases.json"
+      touch "$root/mutated"
+      response='{"error":{"code":"conflict"}}'
+      status=409
+      ;;
+    forbidden-wrong-target:1)
+      jq --arg alias "$alias_post_alias" '.[$alias] = "dpl_wrong"' "$root/aliases.json" > "$root/aliases.json.tmp"
+      mv "$root/aliases.json.tmp" "$root/aliases.json"
+      response='{"error":{"code":"forbidden"}}'
+      status=403
+      ;;
+    drift-before-first-write:1|drift-before-second-write:2)
+      if [[ "$scenario" == drift-before-first-write ]]; then drift_id=dpl_drift_before_first; else drift_id=dpl_drift_before_second; fi
+      jq --arg alias "$alias_post_alias" --arg deploymentId "$drift_id" '.[$alias] = $deploymentId' "$root/aliases.json" > "$root/aliases.json.tmp"
+      mv "$root/aliases.json.tmp" "$root/aliases.json"
+      response='{"error":{"code":"conflict"}}'
+      status=409
+      ;;
+    drift-after-first-write:1)
+      jq --arg alias "$alias_post_alias" --arg deploymentId dpl_test123 '.[$alias] = $deploymentId' "$root/aliases.json" > "$root/aliases.json.tmp"
+      mv "$root/aliases.json.tmp" "$root/aliases.json"
+      jq --arg alias "llm-wiki-frontend.vercel.app" '.[$alias] = "dpl_drift_after_first"' "$root/aliases.json" > "$root/aliases.json.tmp"
+      mv "$root/aliases.json.tmp" "$root/aliases.json"
+      response="{\"alias\":\"$alias_post_alias\",\"uid\":\"uid_$alias_post_call_number\",\"created\":\"2026-08-19T00:00:00.000Z\"}"
+      status=200
+      ;;
+    forbidden:1)
+      response='{"error":{"code":"forbidden","message":"raw provider body must stay private"}}'
+      status=403
+      ;;
+    malformed-success:1)
+      response='{"alias":"wrong.example","uid":123,"created":false}'
+      status=200
+      ;;
+    empty-uid:1)
+      response="{\"alias\":\"$alias_post_alias\",\"uid\":\"\",\"created\":\"2026-08-19T00:00:00Z\"}"
+      status=200
+      ;;
+    malformed-uid:1)
+      response="{\"alias\":\"$alias_post_alias\",\"uid\":\"uid/unsafe\",\"created\":\"2026-08-19T00:00:00Z\"}"
+      status=200
+      ;;
+    unbounded-uid:1)
+      unbounded_uid="$(printf 'u%.0s' $(seq 1 129))"
+      response="{\"alias\":\"$alias_post_alias\",\"uid\":\"$unbounded_uid\",\"created\":\"2026-08-19T00:00:00Z\"}"
+      status=200
+      ;;
+    empty-created:1)
+      response="{\"alias\":\"$alias_post_alias\",\"uid\":\"uid_valid\",\"created\":\"\"}"
+      status=200
+      ;;
+    non-iso-created:1)
+      response="{\"alias\":\"$alias_post_alias\",\"uid\":\"uid_valid\",\"created\":\"yesterday\"}"
+      status=200
+      ;;
+    malformed-old-deployment-id:1)
+      response="{\"alias\":\"$alias_post_alias\",\"uid\":\"uid_valid\",\"created\":\"2026-08-19T00:00:00Z\",\"oldDeploymentId\":\"old\"}"
+      status=200
+      ;;
+    valid-fractional-created:1)
+      response="{\"alias\":\"$alias_post_alias\",\"uid\":\"uid_valid-1\",\"created\":\"2026-08-19T00:00:00.123Z\"}"
+      status=200
+      ;;
+    valid-whole-second-created:1)
+      response="{\"alias\":\"$alias_post_alias\",\"uid\":\"uid_valid_1\",\"created\":\"2026-08-19T00:00:00Z\"}"
+      status=200
+      ;;
+    impossible-created-date:1)
+      response="{\"alias\":\"$alias_post_alias\",\"uid\":\"uid_valid\",\"created\":\"2026-99-99T00:00:00Z\"}"
+      status=200
+      ;;
+    impossible-created-time:1)
+      response="{\"alias\":\"$alias_post_alias\",\"uid\":\"uid_valid\",\"created\":\"2026-08-19T24:60:60Z\"}"
+      status=200
+      ;;
+    interrupt-in-flight:1)
+      touch "$root/mutation-in-flight"
+      sleep 30
+      response="{\"alias\":\"$alias_post_alias\",\"uid\":\"uid_interrupted\",\"created\":\"2026-08-19T00:00:00Z\"}"
+      status=200
+      ;;
+    mutation-redirect:1)
+      response=''
+      status=307
+      ;;
+    second-failure:2|partial-mutation:2)
+      response='{"error":{"code":"conflict","message":"raw provider body must stay private"}}'
+      status=409
+      ;;
+    *)
+      response="{\"alias\":\"$alias_post_alias\",\"uid\":\"uid_$alias_post_call_number\",\"created\":\"2026-08-19T00:00:00.000Z\",\"oldDeploymentId\":\"dpl_old\"}"
+      status=200
+      ;;
+  esac
+  if [[ "$scenario" == timeout-target && "$alias_post_call_number" == 1 || "$scenario" == timeout-old && "$alias_post_call_number" == 1 ]]; then
+    if [[ "$scenario" == timeout-target ]]; then
+      jq --arg alias "$alias_post_alias" --arg deploymentId dpl_test123 '.[$alias] = $deploymentId' "$root/aliases.json" > "$root/aliases.json.tmp"
+      mv "$root/aliases.json.tmp" "$root/aliases.json"
+    fi
+  elif [[ "$status" == 200 && "$scenario" != malformed-success ]]; then
+    jq --arg alias "$alias_post_alias" --arg deploymentId dpl_test123 '.[$alias] = $deploymentId' "$root/aliases.json" > "$root/aliases.json.tmp"
+    mv "$root/aliases.json.tmp" "$root/aliases.json"
+    touch "$root/mutated"
+  fi
+  if [[ "$scenario" == wrong-target && "$alias_post_call_number" == 1 ]]; then
+    jq --arg alias "$alias_post_alias" '.[$alias] = "dpl_wrong"' "$root/aliases.json" > "$root/aliases.json.tmp"
+    mv "$root/aliases.json.tmp" "$root/aliases.json"
+  fi
+  if [[ -n "$output_path" ]]; then printf '%s' "$response" > "$output_path"; fi
+  if [[ "$write_out" == '%{http_code}' ]]; then printf '%s' "$status"; fi
+  exit 0
 fi
 
 if [[ "$url" == *"/actions/workflows/ci.yml/runs?"* ]]; then
@@ -74,6 +234,9 @@ if [[ "$url" == *"/v13/deployments/"* ]]; then
     not-ready) jq '.readyState = "BUILDING"' "$root/deployment.json" ;;
     target-mismatch) jq '.target = "preview"' "$root/deployment.json" ;;
     post-target-mismatch)
+      if [[ -f "$root/mutated" ]]; then jq '.target = "preview"' "$root/deployment.json"; else cat "$root/deployment.json"; fi
+      ;;
+    post-readback-mismatch)
       if [[ -f "$root/mutated" ]]; then jq '.target = "preview"' "$root/deployment.json"; else cat "$root/deployment.json"; fi
       ;;
     post-malformed)
@@ -108,7 +271,7 @@ if [[ "$url" == *"/v4/aliases/"* ]]; then
     printf '{"alias":"%s","projectId":"prj_other","deploymentId":"%s"}' "$alias_path" "$deployment"
   elif [[ "$scenario" == post-readback-mismatch && -f "$root/mutated" && "$alias_path" == "llm-wiki-frontend.vercel.app" ]]; then
     read_count="$(grep -Fc "v4/aliases/$alias_path" "$root/curl-calls" || true)"
-    if [[ "$read_count" -ge 7 ]]; then
+    if [[ "$read_count" -ge 6 ]]; then
       printf '{"alias":"llm-wiki-frontend.vercel.app","projectId":"prj_test123","deploymentId":"dpl_other"}'
     else
       deployment="$(jq -r --arg alias "$alias_path" '.[$alias]' "$root/aliases.json")"
@@ -147,7 +310,7 @@ if [[ "$url" == *"/v4/aliases?"* ]]; then
     printf '{"alias":"%s","projectId":"prj_other","deploymentId":"dpl_oldcustom"}' "$domain"
   elif [[ "$scenario" == "post-readback-mismatch" && -f "$root/mutated" && "$domain" == llm-wiki-frontend.vercel.app ]]; then
     read_count="$(grep -c "domain=$domain" "$root/curl-calls" || true)"
-    if [[ "$read_count" -ge 7 ]]; then
+    if [[ "$read_count" -ge 6 ]]; then
       printf '{"alias":"llm-wiki-frontend.vercel.app","projectId":"prj_test123","deploymentId":"dpl_other"}'
     else
       deployment="$(jq -r --arg domain "$domain" '.[$domain]' "$root/aliases.json")"

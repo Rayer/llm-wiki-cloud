@@ -29,7 +29,6 @@ GITHUB_TOKEN="${GITHUB_TOKEN:-}"
 VERCEL_TOKEN="${VERCEL_TOKEN:-}"
 VERCEL_PROJECT_ID="${VERCEL_PROJECT_ID:-}"
 VERCEL_TEAM_ID="${VERCEL_TEAM_ID:-}"
-VERCEL_SCOPE="${VERCEL_SCOPE:-}"
 PROMOTION_CONTEXT_PATH="${PROMOTION_CONTEXT_PATH:-$EVIDENCE_DIR/vercel-alias-promotion-context.json}"
 ROLLBACK_CONTRACT_PATH="$EVIDENCE_DIR/rollback-contract.json"
 ROLLBACK_ARTIFACT_NAME="vercel-alias-rollback-${COMMIT_SHA}"
@@ -52,11 +51,13 @@ OBSERVED_REF=""
 OBSERVED_READY_STATE=""
 OBSERVED_TARGET=""
 CHECKED_AT=""
+MUTATION_FAILURE_REASON=""
 ROLLBACK_CONTRACT_SHA256=""
 ROLLBACK_ARTIFACT_ID="${ROLLBACK_ARTIFACT_ID:-}"
 ROLLBACK_ARTIFACT_URL="${ROLLBACK_ARTIFACT_URL:-}"
 ROLLBACK_ARTIFACT_DIGEST="${ROLLBACK_ARTIFACT_DIGEST:-}"
 EVIDENCE_WRITTEN=0
+MUTATION_RESPONSE_PATHS=()
 
 write_evidence() {
   if [[ "$EVIDENCE_WRITTEN" -eq 1 ]]; then
@@ -171,7 +172,16 @@ write_evidence() {
   mv "$temporary_path" "$EVIDENCE_PATH"
 }
 
-trap 'exit_code=$?; write_evidence; exit "$exit_code"' EXIT
+cleanup_mutation_response_paths() {
+  local response_path
+  for response_path in "${MUTATION_RESPONSE_PATHS[@]:-}"; do
+    if [[ -n "$response_path" ]]; then
+      rm -f -- "$response_path"
+    fi
+  done
+}
+
+trap 'exit_code=$?; cleanup_mutation_response_paths; write_evidence; exit "$exit_code"' EXIT
 
 fail_preflight() {
   STATUS="PREFLIGHT_FAILED"
@@ -365,10 +375,11 @@ validate_artifact_handoff() {
   if [[ ! "$ROLLBACK_ARTIFACT_ID" =~ ^[1-9][0-9]*$ ]]; then
     fail_resume "durable rollback artifact id must be a positive integer"
   fi
-  if [[ ! "$ORIGINATING_WORKFLOW_RUN_ID" =~ ^[1-9][0-9]*$ ]]; then
+  local originating_workflow_run_id="${ORIGINATING_WORKFLOW_RUN_ID:-}"
+  if [[ ! "$originating_workflow_run_id" =~ ^[1-9][0-9]*$ ]]; then
     fail_resume "originating workflow run id must be a positive integer for artifact validation"
   fi
-  local expected_artifact_url="https://github.com/$EXPECTED_REPOSITORY/actions/runs/$ORIGINATING_WORKFLOW_RUN_ID/artifacts/$ROLLBACK_ARTIFACT_ID"
+  local expected_artifact_url="https://github.com/$EXPECTED_REPOSITORY/actions/runs/$originating_workflow_run_id/artifacts/$ROLLBACK_ARTIFACT_ID"
   if [[ "$ROLLBACK_ARTIFACT_URL" != "$expected_artifact_url" ]]; then
     fail_resume "durable rollback artifact URL was not the canonical URL for this repository and run"
   fi
@@ -480,11 +491,23 @@ validate_observed_alias_response() {
 validate_post_alias_response() {
   local response="$1"
   local alias="$2"
-  jq -e --arg alias "$alias" --arg projectId "$VERCEL_PROJECT_ID" --arg deploymentId "$DEPLOYMENT_ID" '
+  jq -e --arg alias "$alias" '
+    def valid_utc_timestamp:
+      test("^[0-9]{4}-[0-9]{2}-[0-9]{2}T[0-9]{2}:[0-9]{2}:[0-9]{2}(\\.[0-9]+)?Z$") and
+      (try (
+        capture("^(?<whole>[0-9]{4}-[0-9]{2}-[0-9]{2}T[0-9]{2}:[0-9]{2}:[0-9]{2})(?<fraction>\\.[0-9]+)?Z$") as $timestamp |
+        (($timestamp.whole + "Z") | fromdateiso8601 | todateiso8601) == ($timestamp.whole + "Z")
+      ) catch false);
     type == "object" and
     .alias == $alias and
-    .projectId == $projectId and
-    .deploymentId == $deploymentId
+    (.uid | type) == "string" and
+    (.uid | test("^[A-Za-z0-9_-]{1,128}$")) and
+    (.created | type) == "string" and
+    (.created | valid_utc_timestamp) and
+    (if has("oldDeploymentId") then
+       (.oldDeploymentId | type) == "string" and
+       (.oldDeploymentId | test("^dpl_[A-Za-z0-9]+$"))
+     else true end)
   ' <<< "$response" >/dev/null
 }
 
@@ -506,7 +529,7 @@ read_post_aliases() {
     if ! response="$(read_alias "$alias")"; then
       return 1
     fi
-    if ! validate_post_alias_response "$response" "$alias"; then
+    if ! validate_alias_response "$response" "$alias"; then
       return 1
     fi
     deployment_id="$(jq -r '.deploymentId' <<< "$response")"
@@ -585,20 +608,66 @@ verify_frozen_aliases() {
   verify_expected_aliases -1
 }
 
+alias_readback_target() {
+  local alias="$1"
+  local response deployment_id
+  if ! response="$(read_alias "$alias")"; then
+    return 1
+  fi
+  if ! validate_alias_response "$response" "$alias"; then
+    return 1
+  fi
+  deployment_id="$(jq -r '.deploymentId' <<< "$response")"
+  [[ "$deployment_id" == "$DEPLOYMENT_ID" ]]
+}
+
 alias_set() {
   local alias="$1"
-  local error_path
-  error_path="$(mktemp)"
-  local -a command_args=(alias set "$DEPLOYMENT_ID" "$alias")
-  if [[ -n "$VERCEL_SCOPE" ]]; then
-    command_args+=(--scope "$VERCEL_SCOPE")
+  local response_path body status_code provider_error="" curl_status
+  response_path="$(mktemp)"
+  MUTATION_RESPONSE_PATHS+=("$response_path")
+  body="$(jq -cn --arg alias "$alias" '{alias: $alias}')"
+  local endpoint="/v2/deployments/$DEPLOYMENT_ID/aliases"
+  if [[ -n "$VERCEL_TEAM_ID" ]]; then
+    endpoint+="?teamId=$VERCEL_TEAM_ID"
   fi
-  if timeout --signal=TERM --kill-after=5s "${ALIAS_SET_TIMEOUT_SECONDS}s" \
-    env -u GITHUB_TOKEN vercel "${command_args[@]}" >/dev/null 2>"$error_path"; then
-    rm -f "$error_path"
+
+  if status_code="$(curl --silent --show-error \
+    --connect-timeout "$CURL_CONNECT_TIMEOUT_SECONDS" --max-time "$ALIAS_SET_TIMEOUT_SECONDS" \
+    --request POST \
+    --header "Accept: application/json" \
+    --header "Content-Type: application/json" \
+    --header "Authorization: Bearer $VERCEL_TOKEN" \
+    --data "$body" --output "$response_path" --write-out '%{http_code}' \
+    "$API_BASE_URL$endpoint" 2>/dev/null)"; then
+    curl_status=0
+  else
+    curl_status=$?
+  fi
+
+  if [[ "$curl_status" -eq 0 && "$status_code" =~ ^2[0-9]{2}$ ]]; then
+    if validate_post_alias_response "$(<"$response_path")" "$alias"; then
+      rm -f "$response_path"
+      return 0
+    fi
+    provider_error="malformed_response"
+  fi
+
+  if [[ "$provider_error" != "malformed_response" ]]; then
+    provider_error="unknown"
+  fi
+  if [[ "$provider_error" != "malformed_response" && -s "$response_path" ]]; then
+    provider_error="$(jq -r 'if (.error.code | type) == "string" and (.error.code | test("^[A-Za-z0-9_-]+$")) then .error.code else "unknown" end' "$response_path" 2>/dev/null || printf 'unknown')"
+  fi
+  if [[ ! "$status_code" =~ ^[0-9]{3}$ ]]; then
+    status_code="transport"
+  fi
+  rm -f "$response_path"
+
+  if [[ "$provider_error" != "malformed_response" ]] && alias_readback_target "$alias"; then
     return 0
   fi
-  rm -f "$error_path"
+  MUTATION_FAILURE_REASON="alias mutation failed for $alias (status=$status_code; error_code=$provider_error)"
   return 1
 }
 
@@ -642,7 +711,7 @@ fi
 if [[ ! "$ALIAS_SET_TIMEOUT_SECONDS" =~ ^[1-9][0-9]*$ || "$ALIAS_SET_TIMEOUT_SECONDS" -gt 300 ]]; then
   fail_preflight "VERCEL_ALIAS_TIMEOUT_SECONDS must be a bounded positive number of seconds"
 fi
-for command in curl jq sha256sum timeout vercel; do
+for command in curl jq sha256sum; do
   if ! command -v "$command" >/dev/null 2>&1; then
     fail_preflight "required command is unavailable: $command"
   fi
@@ -732,7 +801,7 @@ for alias_index in "${!ALIASES[@]}"; do
     fail_partial_mutation "canonical alias mixed state changed before mutation for $alias"
   fi
   if ! alias_set "$alias"; then
-    fail_partial_mutation "bounded alias command failed or became uncertain for $alias"
+    fail_partial_mutation "${MUTATION_FAILURE_REASON:-bounded alias mutation failed or became uncertain for $alias}"
   fi
   if ! verify_expected_aliases "$((alias_index + 1))"; then
     fail_partial_mutation "authoritative alias read-back after setting $alias did not match the expected mixed state"

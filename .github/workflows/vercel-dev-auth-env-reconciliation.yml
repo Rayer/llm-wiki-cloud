@@ -1,0 +1,84 @@
+name: Vercel Development Auth env Reconciliation
+
+on:
+  workflow_dispatch:
+    inputs:
+      execution_commit_sha:
+        description: Exact current origin/develop SHA with successful canonical CI; this SHA is checked out
+        required: true
+        type: string
+      attempt_commit_sha:
+        description: Exact 40-character lowercase head SHA of the prior standard DEV workflow attempt
+        required: true
+        type: string
+      attempt_run_id:
+        description: Exact decimal run ID of the prior standard DEV workflow create attempt
+        required: true
+        type: number
+      ticket_ref:
+        description: Optional ticket reference retained as normalized evidence metadata
+        required: false
+        default: ''
+        type: string
+
+permissions:
+  contents: read
+  actions: read
+
+concurrency:
+  group: vercel-development-deployment
+  cancel-in-progress: false
+
+jobs:
+  reconcile:
+    name: Read-only reconcile the DEV Auth env
+    if: github.ref == 'refs/heads/develop'
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    environment:
+      name: Development
+    env:
+      EXECUTION_COMMIT_SHA: ${{ inputs.execution_commit_sha }}
+      ATTEMPT_COMMIT_SHA: ${{ inputs.attempt_commit_sha }}
+      ATTEMPT_RUN_ID: ${{ inputs.attempt_run_id }}
+      TICKET_REF: ${{ inputs.ticket_ref }}
+      GITHUB_REPOSITORY: ${{ github.repository }}
+      GITHUB_RUN_ID: ${{ github.run_id }}
+
+    steps:
+      - name: Check out the exact requested SHA
+        uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+        with:
+          ref: ${{ inputs.execution_commit_sha }}
+          fetch-depth: 0
+          persist-credentials: false
+
+      - name: Reconcile Auth env read-only
+        id: reconcile_auth_env
+        shell: bash
+        run: bash .github/scripts/vercel-dev-deployment.sh reconcile-auth-env
+        env:
+          EVIDENCE_DIR: ${{ runner.temp }}/vercel-dev-auth-env-reconciliation
+          GITHUB_TOKEN: ${{ github.token }}
+          VERCEL_TOKEN: ${{ secrets.VERCEL_TOKEN }}
+          VERCEL_PROJECT_ID: ${{ secrets.VERCEL_PROJECT_ID }}
+          VERCEL_TEAM_ID: ${{ secrets.VERCEL_TEAM_ID }}
+          VERCEL_SCOPE: ${{ secrets.VERCEL_SCOPE }}
+
+      - name: Upload terminal Auth env state
+        if: success() && (steps.reconcile_auth_env.outputs.terminal_state == 'terminal_exact' || steps.reconcile_auth_env.outputs.terminal_state == 'terminal_absent')
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
+        with:
+          name: vercel-dev-auth-state-${{ steps.reconcile_auth_env.outputs.state_key }}-${{ inputs.attempt_run_id }}-${{ steps.reconcile_auth_env.outputs.terminal_state }}
+          path: ${{ runner.temp }}/vercel-dev-auth-env-reconciliation/auth-env-state.json
+          retention-days: 90
+          if-no-files-found: error
+
+      - name: Upload normalized Auth env reconciliation evidence
+        if: always()
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
+        with:
+          name: vercel-dev-auth-env-reconciliation-evidence-${{ inputs.execution_commit_sha }}-${{ inputs.attempt_commit_sha }}-${{ inputs.attempt_run_id }}
+          path: ${{ runner.temp }}/vercel-dev-auth-env-reconciliation/vercel-dev-deployment.json
+          retention-days: 90
+          if-no-files-found: error
