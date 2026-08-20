@@ -198,3 +198,33 @@ button[data-search-cue='2'] {
   background: rgba(255, 255, 255, 0.06);
   color: #ffffff;
 }
+
+.announcement-markdown {
+  font-size: 0.875rem;
+  line-height: 1.6;
+}
+
+.announcement-markdown h1,
+.announcement-markdown h2,
+.announcement-markdown h3,
+.announcement-markdown h4 {
+  margin: 0.75rem 0 0.5rem;
+}
+
+.announcement-markdown h1 { font-size: 1.35rem; }
+.announcement-markdown h2 { border-top: 0; font-size: 1.15rem; padding-top: 0; }
+.announcement-markdown h3,
+.announcement-markdown h4 { font-size: 1rem; }
+
+.announcement-markdown p,
+.announcement-markdown ul,
+.announcement-markdown ol,
+.announcement-markdown blockquote,
+.announcement-markdown pre { margin: 0.65rem 0; }
+
+.announcement-markdown img {
+  display: block;
+  max-height: 10rem;
+  max-width: 100%;
+  object-fit: contain;
+}

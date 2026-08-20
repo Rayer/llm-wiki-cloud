@@ -915,10 +915,12 @@ export async function deleteAdminUser(id: string): Promise<void> {
 
 export type PublicConfig = {
   registration_enabled: boolean;
+  announcement_markdown?: string | null;
 };
 
 export type AdminSettings = {
   registration_enabled: boolean;
+  announcement_markdown?: string | null;
 };
 
 let publicConfigCache: PublicConfig | null = null;
@@ -947,7 +949,12 @@ export async function getPublicConfig(options?: { refresh?: boolean }): Promise<
     const payload = (await response.json().catch(() => null)) as unknown;
     const record = isRecord(payload) ? payload : {};
     const enabled = asBoolean(record.registration_enabled);
-    const config = { registration_enabled: enabled === true };
+    const config = {
+      registration_enabled: enabled === true,
+      ...(Object.hasOwn(record, 'announcement_markdown')
+        ? { announcement_markdown: typeof record.announcement_markdown === 'string' ? record.announcement_markdown : null }
+        : {}),
+    } as PublicConfig;
     publicConfigCache = config;
     return config;
   } catch {
@@ -1012,7 +1019,10 @@ export async function getAdminSettings(): Promise<AdminSettings> {
   if (enabled === undefined) {
     throw new ApiError('Invalid admin settings response', 500);
   }
-  return { registration_enabled: enabled };
+  return {
+    registration_enabled: enabled,
+    ...(Object.hasOwn(record, 'announcement_markdown') ? { announcement_markdown: typeof record.announcement_markdown === 'string' ? record.announcement_markdown : null } : {}),
+  } as AdminSettings;
 }
 
 export async function updateAdminSettings(
@@ -1029,5 +1039,24 @@ export async function updateAdminSettings(
     throw new ApiError('Invalid admin settings response', 500);
   }
   clearPublicConfigCache();
-  return { registration_enabled: enabled };
+  return {
+    registration_enabled: enabled,
+  } as AdminSettings;
+}
+
+export async function publishAnnouncement(announcement_markdown: string): Promise<AdminSettings> {
+  const payload = await adminJson('/api/v1/admin/settings/announcement/publish', {
+    method: 'POST',
+    json: true,
+    body: JSON.stringify({ announcement_markdown }),
+  });
+  const record = isRecord(payload) ? payload : {};
+  if (typeof record.registration_enabled !== 'boolean' || typeof record.announcement_markdown !== 'string') {
+    throw new ApiError('Invalid announcement publish response', 500);
+  }
+  clearPublicConfigCache();
+  return {
+    registration_enabled: record.registration_enabled,
+    announcement_markdown: record.announcement_markdown,
+  };
 }

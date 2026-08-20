@@ -10,6 +10,7 @@ import {
   getAdminProjects,
   getAdminSettings,
   getAdminUsers,
+  publishAnnouncement,
   rebuildAdminProjectIndex,
   renameAdminProject,
   triggerAdminProjectPipeline,
@@ -22,6 +23,8 @@ import { useAuth } from '@/lib/auth';
 import { useLocale } from '@/lib/i18n';
 import { Badge } from './ui/Badge';
 import { Surface } from './ui/Surface';
+import { AnnouncementBoard } from './AnnouncementBoard';
+import { useNavigationBlocker } from './NavigationBlocker';
 
 type Tab = 'projects' | 'users' | 'settings';
 type Notice = { tone: 'success' | 'error'; message: string } | null;
@@ -54,6 +57,10 @@ export function AdminClient() {
   const [settingsLoading, setSettingsLoading] = useState(false);
   const [settingsError, setSettingsError] = useState('');
   const [settingsPending, setSettingsPending] = useState(false);
+  const [announcementMarkdown, setAnnouncementMarkdown] = useState('');
+  const [announcementBaseline, setAnnouncementBaseline] = useState('');
+  const { setBlocked } = useNavigationBlocker();
+  const announcementDirty = announcementMarkdown !== announcementBaseline;
   const isAdmin = user?.role === 'admin';
   const accessDenied = user?.role !== 'admin';
 
@@ -95,6 +102,9 @@ export function AdminClient() {
     try {
       const settings = await getAdminSettings();
       setRegistrationEnabled(settings.registration_enabled);
+      const markdown = settings.announcement_markdown ?? '';
+      setAnnouncementMarkdown(markdown);
+      setAnnouncementBaseline(markdown);
     } catch (error) {
       setSettingsError(error instanceof Error ? error.message : 'Unable to load settings.');
     } finally {
@@ -117,6 +127,26 @@ export function AdminClient() {
     } catch (error) {
       setRegistrationEnabled(previous);
       setSettingsError(error instanceof Error ? error.message : 'Settings update failed.');
+    } finally {
+      setSettingsPending(false);
+    }
+  };
+
+  const publishCurrentAnnouncement = async () => {
+    if (!announcementDirty || (announcementMarkdown.trim() === '' && !window.confirm('Clear the public announcement?'))) return;
+    setSettingsError('');
+    setSettingsPending(true);
+    try {
+      const settings = await publishAnnouncement(announcementMarkdown);
+      if (typeof settings.registration_enabled !== 'boolean' || typeof settings.announcement_markdown !== 'string') {
+        throw new Error('Invalid announcement publish response');
+      }
+      const markdown = settings.announcement_markdown;
+      setAnnouncementMarkdown(markdown);
+      setAnnouncementBaseline(markdown);
+      setNotice({ tone: 'success', message: 'Announcement published.' });
+    } catch (error) {
+      setSettingsError(error instanceof Error ? error.message : 'Announcement publish failed.');
     } finally {
       setSettingsPending(false);
     }
@@ -215,6 +245,11 @@ export function AdminClient() {
     void loadSettings();
   }, [hydrated, isAdmin, loadProjects, loadSettings, loadUsers]);
 
+  useEffect(() => {
+    setBlocked(announcementDirty);
+    return () => setBlocked(false);
+  }, [announcementDirty, setBlocked]);
+
   if (!hydrated) {
     return <div className="py-20 text-center text-sm text-zinc-500">Loading...</div>;
   }
@@ -298,6 +333,10 @@ export function AdminClient() {
           label={t('Admin.registrationEnabled')}
           onRetry={loadSettings}
           onToggle={() => void handleRegistrationToggle()}
+          announcementMarkdown={announcementMarkdown}
+          announcementDirty={announcementDirty}
+          onAnnouncementChange={setAnnouncementMarkdown}
+          onPublishAnnouncement={() => void publishCurrentAnnouncement()}
         />
       )}
 
@@ -399,6 +438,10 @@ function SettingsPanel({
   label,
   onRetry,
   onToggle,
+  announcementMarkdown,
+  announcementDirty,
+  onAnnouncementChange,
+  onPublishAnnouncement,
 }: {
   registrationEnabled: boolean;
   loading: boolean;
@@ -407,33 +450,51 @@ function SettingsPanel({
   label: string;
   onRetry: () => void;
   onToggle: () => void;
+  announcementMarkdown: string;
+  announcementDirty: boolean;
+  onAnnouncementChange: (value: string) => void;
+  onPublishAnnouncement: () => void;
 }) {
   return (
     <Surface variant="glass" className="p-5">
       {loading ? (
         <p className="text-sm text-zinc-500">Loading...</p>
-      ) : error ? (
-        <div className="flex flex-wrap items-center justify-between gap-3">
-          <p className="text-sm text-amber-300">{error}</p>
-          <button
-            type="button"
-            onClick={onRetry}
-            className="text-sm font-medium text-zinc-300 transition hover:text-white"
-          >
-            Retry
-          </button>
-        </div>
       ) : (
-        <label className="flex items-center justify-between gap-4">
-          <span className="text-sm font-medium text-white">{label}</span>
-          <input
-            type="checkbox"
-            checked={registrationEnabled}
-            disabled={pending}
-            onChange={onToggle}
-            className="size-5 rounded border-white/20 bg-black/30 text-emerald-400 focus:ring-emerald-400"
-          />
-        </label>
+        <div className="space-y-6">
+          {error ? (
+            <div className="flex flex-wrap items-center justify-between gap-3">
+              <p className="text-sm text-amber-300">{error}</p>
+              <button
+                type="button"
+                onClick={onRetry}
+                className="text-sm font-medium text-zinc-300 transition hover:text-white"
+              >
+                Retry
+              </button>
+            </div>
+          ) : null}
+          <label className="flex items-center justify-between gap-4">
+            <span className="text-sm font-medium text-white">{label}</span>
+            <input type="checkbox" checked={registrationEnabled} disabled={pending} onChange={onToggle} className="size-5 rounded border-white/20 bg-black/30 text-emerald-400 focus:ring-emerald-400" />
+          </label>
+          <div>
+            <h2 className="text-lg font-semibold text-white">Announcement</h2>
+            <p className="mt-1 text-sm text-zinc-400">Edit the published announcement and preview it live.</p>
+            <textarea
+              aria-label="Announcement Markdown"
+              value={announcementMarkdown}
+              onChange={(event) => onAnnouncementChange(event.target.value)}
+              disabled={pending}
+              rows={8}
+              className="mt-3 w-full rounded-lg border border-white/10 bg-black/30 p-3 font-mono text-sm text-zinc-100 outline-none focus:border-emerald-300"
+            />
+            <div className="mt-3 flex flex-wrap gap-3">
+              <button type="button" disabled={pending || !announcementDirty} onClick={onPublishAnnouncement} className="rounded-lg border border-emerald-300/30 px-4 py-2 text-sm font-semibold text-emerald-200 disabled:opacity-50">Publish</button>
+            </div>
+            <h3 className="mt-5 text-sm font-semibold uppercase tracking-wide text-zinc-400">Preview</h3>
+            <AnnouncementBoard markdown={announcementMarkdown} />
+          </div>
+        </div>
       )}
     </Surface>
   );

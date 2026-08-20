@@ -82,7 +82,7 @@ test('AdminClient wires project and user actions through confirmation modals', a
   assert.match(adminClient, /ConfirmActionModal/);
   assert.match(adminClient, /RoleActionModal/);
   assert.match(adminClient, /RenameProjectModal/);
-  assert.doesNotMatch(adminClient, /window\.confirm/);
+  assert.match(adminClient, /announcementMarkdown\.trim\(\) === '' && !window\.confirm/);
   assert.match(adminClient, /setNotice/);
   assert.match(adminClient, /await loadProjects\(\)/);
   assert.match(adminClient, /await loadUsers\(\)/);
