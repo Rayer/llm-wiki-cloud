@@ -23,9 +23,9 @@ export function AnnouncementBoard({ markdown }: { markdown?: string | null }) {
               <a href={href} target="_blank" rel="noopener noreferrer">{children}</a>
             ) : <span>{children}</span>,
             img: ({ src, alt }) => {
-              const label = alt?.trim();
+              const label = alt ?? '';
               const source = typeof src === 'string' ? src : '';
-              if (!label || !SAFE_IMAGE.test(source)) return null;
+              if (!SAFE_IMAGE.test(source)) return null;
               // eslint-disable-next-line @next/next/no-img-element -- direct external HTTPS images are part of the announcement contract
               return <img src={source} alt={label} loading="lazy" decoding="async" referrerPolicy="no-referrer" />;
             },
