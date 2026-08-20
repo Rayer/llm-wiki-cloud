@@ -48,10 +48,6 @@ jobs:
           ref: ${{ github.sha }}
           persist-credentials: false
 
-      - name: Install pinned Vercel CLI
-        shell: bash
-        run: npm install --global vercel@52.0.0 --ignore-scripts
-
       - name: Preflight exact deployment and rollback contract
         shell: bash
         run: bash .github/scripts/vercel-alias-promotion.sh preflight
@@ -61,7 +57,6 @@ jobs:
           VERCEL_TOKEN: ${{ secrets.VERCEL_TOKEN }}
           VERCEL_PROJECT_ID: ${{ secrets.VERCEL_PROJECT_ID }}
           VERCEL_TEAM_ID: ${{ secrets.VERCEL_TEAM_ID }}
-          VERCEL_SCOPE: ${{ secrets.VERCEL_SCOPE }}
 
       - name: Upload durable alias rollback contract
         id: rollback_upload
@@ -83,7 +78,6 @@ jobs:
           VERCEL_TOKEN: ${{ secrets.VERCEL_TOKEN }}
           VERCEL_PROJECT_ID: ${{ secrets.VERCEL_PROJECT_ID }}
           VERCEL_TEAM_ID: ${{ secrets.VERCEL_TEAM_ID }}
-          VERCEL_SCOPE: ${{ secrets.VERCEL_SCOPE }}
 
       - name: Upload normalized deployment and rollback evidence
         if: always()
