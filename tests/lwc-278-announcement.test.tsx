@@ -65,6 +65,14 @@ describe('LWC-278 announcement board', () => {
     expect(document.querySelector('img[src^="data:"]')).toBeNull();
   });
 
+  it('renders an HTTPS image with an empty alt attribute', () => {
+    render(<AnnouncementBoard markdown={'![](https://www.rayer.idv.tw/blog/wp-content/uploads/2026/01/截圖-2026-01-01-下午3.06.38.png)\n\n測試一下圖片是否正常'} />);
+    const image = document.querySelector('img');
+    expect(image).not.toBeNull();
+    expect(image?.getAttribute('alt')).toBe('');
+    expect(decodeURIComponent(image?.getAttribute('src') ?? '')).toBe('https://www.rayer.idv.tw/blog/wp-content/uploads/2026/01/截圖-2026-01-01-下午3.06.38.png');
+  });
+
   it('keeps long content bounded and hides empty content', () => {
     const { rerender } = render(<AnnouncementBoard markdown="" />);
     expect(screen.queryByRole('region')).toBeNull();
