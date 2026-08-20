@@ -2,6 +2,7 @@
 
 import { FormEvent, useCallback, useEffect, useState } from 'react';
 import { getPublicConfig } from '@/lib/api';
+import { AnnouncementBoard } from './AnnouncementBoard';
 import { useLocale } from '@/lib/i18n';
 import { RegisterModal } from './RegisterModal';
 import { useWorkspace } from './WorkspaceProvider';
@@ -16,6 +17,7 @@ export function LoginModal() {
   const [registerOpen, setRegisterOpen] = useState(false);
   // Fail-closed until public config says open.
   const [registrationEnabled, setRegistrationEnabled] = useState(false);
+  const [announcementMarkdown, setAnnouncementMarkdown] = useState<string | null>(null);
 
   useEffect(() => {
     if (!loginOpen) return;
@@ -24,11 +26,13 @@ export function LoginModal() {
       .then((config) => {
         if (!cancelled) {
           setRegistrationEnabled(config.registration_enabled);
+          setAnnouncementMarkdown(config.announcement_markdown ?? null);
         }
       })
       .catch(() => {
         if (!cancelled) {
           setRegistrationEnabled(false);
+          setAnnouncementMarkdown(null);
         }
       });
     return () => {
@@ -66,7 +70,7 @@ export function LoginModal() {
   return (
     <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/80 p-4 backdrop-blur-sm">
       <div
-        className="w-full max-w-md rounded-2xl border border-white/10 bg-[#151515] p-6 shadow-2xl sm:p-8"
+        className="max-h-[calc(100dvh-2rem)] w-full max-w-md overflow-y-auto rounded-2xl border border-white/10 bg-[#151515] p-6 shadow-2xl sm:p-8"
         role="dialog"
         aria-modal="true"
         aria-labelledby="login-title"
@@ -80,6 +84,8 @@ export function LoginModal() {
         <p className="mt-2 text-sm leading-6 text-zinc-400">
           {t('Login.subtitle')}
         </p>
+
+        <AnnouncementBoard markdown={announcementMarkdown} />
 
         <form onSubmit={handleSubmit} className="mt-6 space-y-4">
           <label className="block text-sm font-medium text-zinc-300">

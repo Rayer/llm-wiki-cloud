@@ -1077,10 +1077,13 @@ export async function deleteAdminUser(id: string): Promise<void> {
 
 export type PublicConfig = {
   registration_enabled: boolean;
+  announcement_markdown?: string | null;
 };
 
 export type AdminSettings = {
   registration_enabled: boolean;
+  announcement_draft_markdown?: string | null;
+  announcement_published_markdown?: string | null;
 };
 
 let publicConfigCache: PublicConfig | null = null;
@@ -1109,7 +1112,12 @@ export async function getPublicConfig(options?: { refresh?: boolean }): Promise<
     const payload = (await response.json().catch(() => null)) as unknown;
     const record = isRecord(payload) ? payload : {};
     const enabled = asBoolean(record.registration_enabled);
-    const config = { registration_enabled: enabled === true };
+    const config = {
+      registration_enabled: enabled === true,
+      ...(Object.hasOwn(record, 'announcement_markdown')
+        ? { announcement_markdown: typeof record.announcement_markdown === 'string' ? record.announcement_markdown : null }
+        : {}),
+    } as PublicConfig;
     publicConfigCache = config;
     return config;
   } catch {
@@ -1174,7 +1182,11 @@ export async function getAdminSettings(): Promise<AdminSettings> {
   if (enabled === undefined) {
     throw new ApiError('Invalid admin settings response', 500);
   }
-  return { registration_enabled: enabled };
+  return {
+    registration_enabled: enabled,
+    ...(Object.hasOwn(record, 'announcement_draft_markdown') ? { announcement_draft_markdown: typeof record.announcement_draft_markdown === 'string' ? record.announcement_draft_markdown : null } : {}),
+    ...(Object.hasOwn(record, 'announcement_published_markdown') ? { announcement_published_markdown: typeof record.announcement_published_markdown === 'string' ? record.announcement_published_markdown : null } : {}),
+  } as AdminSettings;
 }
 
 export async function updateAdminSettings(
@@ -1191,5 +1203,22 @@ export async function updateAdminSettings(
     throw new ApiError('Invalid admin settings response', 500);
   }
   clearPublicConfigCache();
-  return { registration_enabled: enabled };
+  return {
+    registration_enabled: enabled,
+    ...(Object.hasOwn(record, 'announcement_draft_markdown') ? { announcement_draft_markdown: typeof record.announcement_draft_markdown === 'string' ? record.announcement_draft_markdown : null } : {}),
+    ...(Object.hasOwn(record, 'announcement_published_markdown') ? { announcement_published_markdown: typeof record.announcement_published_markdown === 'string' ? record.announcement_published_markdown : null } : {}),
+  } as AdminSettings;
+}
+
+export async function publishAnnouncement(): Promise<AdminSettings> {
+  const payload = await adminJson('/api/v1/admin/settings/announcement/publish', { method: 'POST' });
+  const record = isRecord(payload) ? payload : {};
+  const published = typeof record.announcement_published_markdown === 'string'
+    ? record.announcement_published_markdown : null;
+  return {
+    registration_enabled: asBoolean(record.registration_enabled) === true,
+    announcement_draft_markdown: typeof record.announcement_draft_markdown === 'string'
+      ? record.announcement_draft_markdown : null,
+    announcement_published_markdown: published,
+  };
 }

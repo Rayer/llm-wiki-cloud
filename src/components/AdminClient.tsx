@@ -10,6 +10,7 @@ import {
   getAdminProjects,
   getAdminSettings,
   getAdminUsers,
+  publishAnnouncement,
   rebuildAdminProjectIndex,
   renameAdminProject,
   triggerAdminProjectPipeline,
@@ -22,6 +23,7 @@ import { useAuth } from '@/lib/auth';
 import { useLocale } from '@/lib/i18n';
 import { Badge } from './ui/Badge';
 import { Surface } from './ui/Surface';
+import { AnnouncementBoard } from './AnnouncementBoard';
 
 type Tab = 'projects' | 'users' | 'settings';
 type Notice = { tone: 'success' | 'error'; message: string } | null;
@@ -54,6 +56,8 @@ export function AdminClient() {
   const [settingsLoading, setSettingsLoading] = useState(false);
   const [settingsError, setSettingsError] = useState('');
   const [settingsPending, setSettingsPending] = useState(false);
+  const [announcementDraft, setAnnouncementDraft] = useState('');
+  const [announcementPublished, setAnnouncementPublished] = useState<string | null>(null);
   const isAdmin = user?.role === 'admin';
   const accessDenied = user?.role !== 'admin';
 
@@ -95,6 +99,8 @@ export function AdminClient() {
     try {
       const settings = await getAdminSettings();
       setRegistrationEnabled(settings.registration_enabled);
+      setAnnouncementDraft(settings.announcement_draft_markdown ?? '');
+      setAnnouncementPublished(settings.announcement_published_markdown ?? null);
     } catch (error) {
       setSettingsError(error instanceof Error ? error.message : 'Unable to load settings.');
     } finally {
@@ -117,6 +123,34 @@ export function AdminClient() {
     } catch (error) {
       setRegistrationEnabled(previous);
       setSettingsError(error instanceof Error ? error.message : 'Settings update failed.');
+    } finally {
+      setSettingsPending(false);
+    }
+  };
+
+  const saveAnnouncementDraft = async () => {
+    setSettingsError('');
+    setSettingsPending(true);
+    try {
+      const settings = await updateAdminSettings({ announcement_draft_markdown: announcementDraft });
+      setAnnouncementDraft(settings.announcement_draft_markdown ?? announcementDraft);
+      setNotice({ tone: 'success', message: 'Announcement draft saved.' });
+    } catch (error) {
+      setSettingsError(error instanceof Error ? error.message : 'Announcement draft save failed.');
+    } finally {
+      setSettingsPending(false);
+    }
+  };
+
+  const publishAnnouncementDraft = async () => {
+    setSettingsError('');
+    setSettingsPending(true);
+    try {
+      const settings = await publishAnnouncement();
+      setAnnouncementPublished(settings.announcement_published_markdown ?? null);
+      setNotice({ tone: 'success', message: 'Announcement published.' });
+    } catch (error) {
+      setSettingsError(error instanceof Error ? error.message : 'Announcement publish failed.');
     } finally {
       setSettingsPending(false);
     }
@@ -298,6 +332,11 @@ export function AdminClient() {
           label={t('Admin.registrationEnabled')}
           onRetry={loadSettings}
           onToggle={() => void handleRegistrationToggle()}
+          announcementDraft={announcementDraft}
+          announcementPublished={announcementPublished}
+          onAnnouncementDraftChange={setAnnouncementDraft}
+          onSaveAnnouncement={() => void saveAnnouncementDraft()}
+          onPublishAnnouncement={() => void publishAnnouncementDraft()}
         />
       )}
 
@@ -399,6 +438,11 @@ function SettingsPanel({
   label,
   onRetry,
   onToggle,
+  announcementDraft,
+  announcementPublished,
+  onAnnouncementDraftChange,
+  onSaveAnnouncement,
+  onPublishAnnouncement,
 }: {
   registrationEnabled: boolean;
   loading: boolean;
@@ -407,6 +451,11 @@ function SettingsPanel({
   label: string;
   onRetry: () => void;
   onToggle: () => void;
+  announcementDraft: string;
+  announcementPublished: string | null;
+  onAnnouncementDraftChange: (value: string) => void;
+  onSaveAnnouncement: () => void;
+  onPublishAnnouncement: () => void;
 }) {
   return (
     <Surface variant="glass" className="p-5">
@@ -424,16 +473,32 @@ function SettingsPanel({
           </button>
         </div>
       ) : (
-        <label className="flex items-center justify-between gap-4">
-          <span className="text-sm font-medium text-white">{label}</span>
-          <input
-            type="checkbox"
-            checked={registrationEnabled}
-            disabled={pending}
-            onChange={onToggle}
-            className="size-5 rounded border-white/20 bg-black/30 text-emerald-400 focus:ring-emerald-400"
-          />
-        </label>
+        <div className="space-y-6">
+          <label className="flex items-center justify-between gap-4">
+            <span className="text-sm font-medium text-white">{label}</span>
+            <input type="checkbox" checked={registrationEnabled} disabled={pending} onChange={onToggle} className="size-5 rounded border-white/20 bg-black/30 text-emerald-400 focus:ring-emerald-400" />
+          </label>
+          <div>
+            <h2 className="text-lg font-semibold text-white">Announcement</h2>
+            <p className="mt-1 text-sm text-zinc-400">Edit one draft, preview it, save it, then publish explicitly.</p>
+            <textarea
+              aria-label="Announcement draft Markdown"
+              value={announcementDraft}
+              onChange={(event) => onAnnouncementDraftChange(event.target.value)}
+              disabled={pending}
+              rows={8}
+              className="mt-3 w-full rounded-lg border border-white/10 bg-black/30 p-3 font-mono text-sm text-zinc-100 outline-none focus:border-emerald-300"
+            />
+            <div className="mt-3 flex flex-wrap gap-3">
+              <button type="button" disabled={pending} onClick={onSaveAnnouncement} className="rounded-lg bg-emerald-300 px-4 py-2 text-sm font-semibold text-black disabled:opacity-50">Save draft</button>
+              <button type="button" disabled={pending} onClick={onPublishAnnouncement} className="rounded-lg border border-emerald-300/30 px-4 py-2 text-sm font-semibold text-emerald-200 disabled:opacity-50">Publish</button>
+            </div>
+            <h3 className="mt-5 text-sm font-semibold uppercase tracking-wide text-zinc-400">Public preview</h3>
+            <AnnouncementBoard markdown={announcementDraft} />
+            <p className="mt-3 text-xs text-zinc-500">Currently published content</p>
+            <AnnouncementBoard markdown={announcementPublished} />
+          </div>
+        </div>
       )}
     </Surface>
   );
