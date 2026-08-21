@@ -113,6 +113,8 @@ export function LoginModal() {
         className="max-h-[calc(100dvh-2rem)] w-full max-w-md overflow-y-auto rounded-2xl border border-white/10 bg-[#151515] p-6 shadow-2xl sm:p-8"
         role="dialog"
         aria-modal="true"
+        inert={announcementOpen || undefined}
+        aria-hidden={announcementOpen ? 'true' : undefined}
         aria-labelledby="login-title"
       >
         <div className="text-sm font-semibold uppercase tracking-[0.24em] text-emerald-300">

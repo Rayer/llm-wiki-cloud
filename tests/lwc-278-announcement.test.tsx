@@ -236,6 +236,32 @@ describe('LWC-291 announcement modal', () => {
     fireEvent.click(screen.getByRole('button', { name: 'Announcement.close' }));
     await waitFor(() => expect(document.activeElement).toBe(trigger));
   });
+
+  it('makes the login dialog inert while announcement is active and restores it after X and Escape', async () => {
+    await setup();
+    const loginDialog = document.querySelector('[role="dialog"][aria-labelledby="login-title"]');
+    expect(loginDialog).not.toBeNull();
+    const announcementDialog = await screen.findByRole('dialog', { name: 'Announcement.title' });
+    expect(screen.getAllByRole('dialog')).toHaveLength(1);
+    expect(announcementDialog).toBeDefined();
+    expect(loginDialog?.hasAttribute('inert')).toBe(true);
+    expect(loginDialog?.getAttribute('aria-hidden')).toBe('true');
+
+    fireEvent.click(screen.getByRole('button', { name: 'Announcement.close' }));
+    await waitFor(() => expect(document.activeElement).toBe(screen.getByRole('textbox', { name: 'Login.email' })));
+    expect(loginDialog?.hasAttribute('inert')).toBe(false);
+    expect(loginDialog?.hasAttribute('aria-hidden')).toBe(false);
+
+    const trigger = screen.getByRole('button', { name: 'Announcement.open' });
+    fireEvent.click(trigger);
+    await screen.findByRole('dialog', { name: 'Announcement.title' });
+    expect(loginDialog?.hasAttribute('inert')).toBe(true);
+    expect(loginDialog?.getAttribute('aria-hidden')).toBe('true');
+    fireEvent.keyDown(document, { key: 'Escape' });
+    await waitFor(() => expect(document.activeElement).toBe(trigger));
+    expect(loginDialog?.hasAttribute('inert')).toBe(false);
+    expect(loginDialog?.hasAttribute('aria-hidden')).toBe(false);
+  });
 });
 
 describe('LWC-278 direct publish admin flow', () => {
