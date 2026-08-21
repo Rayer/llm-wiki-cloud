@@ -203,6 +203,51 @@ describe('LWC-291 announcement modal', () => {
     expect(screen.queryByRole('button', { name: 'Announcement.open' })).toBeNull();
   });
 
+  it('resets announcement state across a mounted login close and fail-safe refresh', async () => {
+    const digestA = `sha256:${'a'.repeat(64)}`;
+    const digestB = `sha256:${'b'.repeat(64)}`;
+    const responses: Array<{ resolve: (value: unknown) => void; reject: (error: Error) => void }> = [];
+    mockGetPublicConfig.mockImplementation(() => new Promise((resolve, reject) => responses.push({ resolve, reject })));
+    mockUseWorkspace.mockReturnValue({ loginOpen: true, signIn: vi.fn(), signInAsDemo: vi.fn() });
+    const { LoginModal } = await import('@/components/LoginModal');
+    let result!: ReturnType<typeof render>;
+    await act(async () => {
+      result = render(<LoginModal />);
+    });
+    await waitFor(() => expect(responses).toHaveLength(1));
+    await act(async () => { responses.shift()?.resolve({ registration_enabled: false, announcement_markdown: '# Old', announcement_digest: digestA }); });
+    expect(await screen.findByRole('dialog', { name: 'Announcement.title' })).toBeDefined();
+
+    mockUseWorkspace.mockReturnValue({ loginOpen: false, signIn: vi.fn(), signInAsDemo: vi.fn() });
+    await act(async () => { result.rerender(<LoginModal />); await Promise.resolve(); });
+    expect(screen.queryByRole('dialog', { name: 'Announcement.title' })).toBeNull();
+
+    mockUseWorkspace.mockReturnValue({ loginOpen: true, signIn: vi.fn(), signInAsDemo: vi.fn() });
+    await act(async () => { result.rerender(<LoginModal />); await Promise.resolve(); });
+    expect(screen.queryByRole('dialog', { name: 'Announcement.title' })).toBeNull();
+    await waitFor(() => expect(responses).toHaveLength(1));
+    await act(async () => { responses.shift()?.resolve({ registration_enabled: false, announcement_markdown: '# Fresh', announcement_digest: 'malformed' }); });
+    expect(screen.queryByRole('dialog', { name: 'Announcement.title' })).toBeNull();
+    expect(await screen.findByRole('button', { name: 'Announcement.open' })).toBeDefined();
+
+    mockUseWorkspace.mockReturnValue({ loginOpen: false, signIn: vi.fn(), signInAsDemo: vi.fn() });
+    await act(async () => { result.rerender(<LoginModal />); await Promise.resolve(); });
+    mockUseWorkspace.mockReturnValue({ loginOpen: true, signIn: vi.fn(), signInAsDemo: vi.fn() });
+    await act(async () => { result.rerender(<LoginModal />); await Promise.resolve(); });
+    await waitFor(() => expect(responses).toHaveLength(1));
+    await act(async () => { responses.shift()?.reject(new Error('offline')); });
+    expect(screen.queryByRole('dialog', { name: 'Announcement.title' })).toBeNull();
+    expect(screen.queryByRole('button', { name: 'Announcement.open' })).toBeNull();
+
+    mockUseWorkspace.mockReturnValue({ loginOpen: false, signIn: vi.fn(), signInAsDemo: vi.fn() });
+    await act(async () => { result.rerender(<LoginModal />); await Promise.resolve(); });
+    mockUseWorkspace.mockReturnValue({ loginOpen: true, signIn: vi.fn(), signInAsDemo: vi.fn() });
+    await act(async () => { result.rerender(<LoginModal />); await Promise.resolve(); });
+    await waitFor(() => expect(responses).toHaveLength(1));
+    await act(async () => { responses.shift()?.resolve({ registration_enabled: false, announcement_markdown: '# New', announcement_digest: digestB }); });
+    expect(await screen.findByRole('dialog', { name: 'Announcement.title' })).toBeDefined();
+  });
+
   it('does not block login or overwrite storage on API and storage failures', async () => {
     const digest = `sha256:${'a'.repeat(64)}`;
     localStorage.setItem('llm-wiki:announcement-dismissed-digest', digest);

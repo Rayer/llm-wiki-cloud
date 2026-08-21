@@ -30,6 +30,13 @@ export function LoginModal() {
   useEffect(() => {
     if (!loginOpen) {
       autoOpenedDigest.current = null;
+      /* eslint-disable react-hooks/set-state-in-effect -- reset hidden modal state at the login lifecycle boundary. */
+      setAnnouncementOpen(false);
+      setAnnouncementMarkdown(null);
+      setAnnouncementDigest(null);
+      setAnnouncementAuto(false);
+      setAnnouncementDismiss(false);
+      /* eslint-enable react-hooks/set-state-in-effect */
       return;
     }
     let cancelled = false;
