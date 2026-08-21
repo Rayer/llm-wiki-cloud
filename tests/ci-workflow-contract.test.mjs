@@ -65,11 +65,6 @@ test('CI main fast-forward eligibility is an ordered fail-closed exact-head stat
   const source = await readFile(workflowPath, 'utf8');
   const workflow = parseYaml(source);
   const job = workflow.jobs['main-fast-forward-eligible'];
-  const [pending, checkout, verify, success] = job.steps;
-  const pendingRun = pending.run;
-  const verifyRun = verify.run;
-  const successRun = success.run;
-
   assert.deepEqual(workflow.on.push.branches, ['main', 'develop']);
   assert.deepEqual(workflow.permissions, { contents: 'read' });
   assert.equal(job.name, 'main-fast-forward-eligible');
@@ -77,11 +72,18 @@ test('CI main fast-forward eligibility is an ordered fail-closed exact-head stat
   assert.equal(job.needs, 'build');
   assert.deepEqual(job.permissions, { contents: 'read', statuses: 'write' });
   assert.equal(Object.values(workflow.jobs).filter((candidate) => candidate.permissions?.statuses === 'write').length, 1);
+  const [pending, checkout, verify, success, failure] = job.steps;
+  const pendingRun = pending.run;
+  const verifyRun = verify.run;
+  const successRun = success.run;
+  const failureRun = failure.run;
+
   assert.deepEqual(job.steps.map((step) => step.name), [
     'Revoke stale main fast-forward eligibility status',
     'Check out exact candidate',
     'Verify develop contains main',
     'Publish main fast-forward eligibility status',
+    'Publish main fast-forward ineligible status after failure',
   ]);
 
   assert.equal(pending.if, 'always()');
@@ -134,13 +136,23 @@ test('CI main fast-forward eligibility is an ordered fail-closed exact-head stat
   for (const check of ['git fetch', 'git rev-parse HEAD', 'git rev-parse refs/remotes/origin/develop', 'git merge-base --is-ancestor']) {
     assert.ok(commandIndex(successRun, check) < finalPost, `${check} must precede final POST`);
   }
-  assert.equal(job.steps.at(-1), success);
+  assert.equal(failure.if, '${{ failure() || cancelled() }}');
+  assert.deepEqual(failure.env, {
+    CANDIDATE_SHA: '${{ github.sha }}',
+    GH_TOKEN: '${{ github.token }}',
+  });
+  assert.match(failureRun, /^\s*set -euo pipefail/m);
+  assert.match(failureRun, /\[\[ "\$CANDIDATE_SHA" =~ \^\[0-9a-f\]\{40\}\$ \]\]/);
+  assert.match(failureRun, /^\s*gh api --method POST "repos\/\$\{GITHUB_REPOSITORY\}\/statuses\/\$\{CANDIDATE_SHA\}" --field state=failure --field context=main-fast-forward-eligible --field description='Develop head is not eligible for main fast-forward'$/m);
+  assert.doesNotMatch(failureRun, /needs\.build|steps\.|git |checkout|GITHUB_OUTPUT|curl|jq|\|/);
+  assert.ok(source.indexOf('if: ${{ failure() || cancelled() }}') > source.indexOf('Publish main fast-forward eligibility status'));
+  assert.equal(job.steps.at(-1), failure);
   assert.doesNotMatch(source, /curl|jq|GITHUB_OUTPUT|steps\.verify\.outputs|git (push|update-ref)|x-access-token|secrets\.(?:PAT|TOKEN)|personal access/i);
 });
 
 test('CI status bridge shell gates reject stale, malformed, non-ancestral, and failed API cases', async () => {
   const workflow = parseYaml(await readFile(workflowPath, 'utf8'));
-  const [pending, , verify, success] = workflow.jobs['main-fast-forward-eligible'].steps;
+  const [pending, , verify, success, failure] = workflow.jobs['main-fast-forward-eligible'].steps;
 
   assert.equal((await runShell(pending.run)).status, 0);
   assert.match((await runShell(pending.run)).ghLog, /state=pending/);
@@ -173,4 +185,27 @@ test('CI status bridge shell gates reject stale, malformed, non-ancestral, and f
   const successResult = await runShell(success.run);
   assert.equal(successResult.status, 0);
   assert.match(successResult.ghLog, /state=success/);
+
+  const successfulSequence = await runShell(`${pending.run}\n${success.run}`);
+  assert.equal(successfulSequence.status, 0);
+  assert.deepEqual(successfulSequence.ghLog.trim().split('\n').map((line) => line.match(/state=(\w+)/)?.[1]), ['pending', 'success']);
+
+  const failedBuildSequence = await runShell(`${pending.run}\n${failure.run}`, { buildResult: 'failure' });
+  assert.deepEqual(failedBuildSequence.ghLog.trim().split('\n').map((line) => line.match(/state=(\w+)/)?.[1]), ['pending', 'failure']);
+
+  const failedValidationSequence = await runShell(`${pending.run}\n${failure.run}`, { head: 'b'.repeat(40) });
+  assert.deepEqual(failedValidationSequence.ghLog.trim().split('\n').map((line) => line.match(/state=(\w+)/)?.[1]), ['pending', 'failure']);
+
+  const failedSuccessSequence = await runShell(`${pending.run}\n${failure.run}`, { ghExit: 0 });
+  assert.deepEqual(failedSuccessSequence.ghLog.trim().split('\n').map((line) => line.match(/state=(\w+)/)?.[1]), ['pending', 'failure']);
+
+  const cleanupResult = await runShell(failure.run);
+  assert.equal(cleanupResult.status, 0);
+  assert.match(cleanupResult.ghLog, /state=failure/);
+  const failedCleanup = await runShell(failure.run, { ghExit: 1 });
+  assert.notEqual(failedCleanup.status, 0);
+  assert.match(failedCleanup.ghLog, /state=failure/);
+
+  const cleanupOnlyAfterSuccess = await runShell(`${pending.run}\n${success.run}`);
+  assert.doesNotMatch(cleanupOnlyAfterSuccess.ghLog, /state=failure/);
 });
