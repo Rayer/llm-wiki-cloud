@@ -1078,6 +1078,7 @@ export async function deleteAdminUser(id: string): Promise<void> {
 export type PublicConfig = {
   registration_enabled: boolean;
   announcement_markdown?: string | null;
+  announcement_digest?: string | null;
 };
 
 export type AdminSettings = {
@@ -1115,6 +1116,9 @@ export async function getPublicConfig(options?: { refresh?: boolean }): Promise<
       registration_enabled: enabled === true,
       ...(Object.hasOwn(record, 'announcement_markdown')
         ? { announcement_markdown: typeof record.announcement_markdown === 'string' ? record.announcement_markdown : null }
+        : {}),
+      ...(Object.hasOwn(record, 'announcement_digest')
+        ? { announcement_digest: typeof record.announcement_digest === 'string' && /^sha256:[0-9a-f]{64}$/.test(record.announcement_digest) ? record.announcement_digest : null }
         : {}),
     } as PublicConfig;
     publicConfigCache = config;

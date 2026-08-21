@@ -82,14 +82,121 @@ describe('LWC-278 announcement board', () => {
 });
 
 describe('LWC-278 login placement', () => {
-  it('places the announcement before the existing login form', async () => {
+  it('keeps the login card primary and exposes the announcement trigger separately', async () => {
     mockGetPublicConfig.mockResolvedValue({ registration_enabled: false, announcement_markdown: '# Live' });
     mockUseWorkspace.mockReturnValue({ loginOpen: true, signIn: vi.fn(), signInAsDemo: vi.fn() });
     const { LoginModal } = await import('@/components/LoginModal');
     render(<LoginModal />);
-    await waitFor(() => expect(screen.getByRole('region')).toBeDefined());
-    const dialog = screen.getByRole('dialog');
-    expect(dialog.textContent?.indexOf('Live')).toBeLessThan(dialog.textContent?.indexOf('Login.email') ?? -1);
+    expect(await screen.findByRole('button', { name: 'Announcement.open' })).toBeDefined();
+    expect(screen.queryByRole('region')).toBeNull();
+  });
+});
+
+describe('LWC-291 announcement modal', () => {
+  afterEach(() => {
+    cleanup();
+    localStorage.clear();
+    vi.clearAllMocks();
+  });
+
+  function setup(config: Record<string, unknown> = {
+    registration_enabled: false,
+    announcement_markdown: '# Live',
+    announcement_digest: `sha256:${'a'.repeat(64)}`,
+  }) {
+    mockGetPublicConfig.mockResolvedValue(config);
+    mockUseWorkspace.mockReturnValue({ loginOpen: true, signIn: vi.fn(), signInAsDemo: vi.fn() });
+    return import('@/components/LoginModal').then(({ LoginModal }) => render(<LoginModal />));
+  }
+
+  it('auto-opens once, suppresses the same dismissed digest, and reopens a changed digest', async () => {
+    await setup();
+    const modal = await screen.findByRole('dialog', { name: 'Announcement.title' });
+    expect(modal).toBeDefined();
+    fireEvent.click(screen.getByRole('button', { name: 'Announcement.close' }));
+    expect(screen.queryByRole('dialog', { name: 'Announcement.title' })).toBeNull();
+    await waitFor(() => expect(document.activeElement?.getAttribute('autocomplete')).toBe('email'));
+    expect(localStorage.length).toBe(0);
+
+    cleanup();
+    await setup();
+    expect(screen.queryByRole('dialog', { name: 'Announcement.title' })).toBeNull();
+
+    cleanup();
+    mockGetPublicConfig.mockResolvedValue({
+      registration_enabled: false,
+      announcement_markdown: '# New',
+      announcement_digest: `sha256:${'b'.repeat(64)}`,
+    });
+    await setup({
+      registration_enabled: false,
+      announcement_markdown: '# New',
+      announcement_digest: `sha256:${'b'.repeat(64)}`,
+    });
+    expect(await screen.findByRole('dialog', { name: 'Announcement.title' })).toBeDefined();
+  });
+
+  it('writes only for checked X or Escape, never backdrop, and manual open is reusable', async () => {
+    await setup();
+    const checkbox = await screen.findByRole('checkbox', { name: 'Announcement.dismiss' });
+    fireEvent.click(checkbox);
+    fireEvent.click(screen.getByRole('button', { name: 'Announcement.close' }));
+    expect(localStorage.getItem('llm-wiki:announcement-dismissed-digest')).toMatch(/^sha256:a/);
+
+    fireEvent.click(screen.getByRole('button', { name: 'Announcement.open' }));
+    expect((screen.getByRole('checkbox', { name: 'Announcement.dismiss' }) as HTMLInputElement).checked).toBe(false);
+    fireEvent.keyDown(document, { key: 'Escape' });
+    expect(localStorage.getItem('llm-wiki:announcement-dismissed-digest')).toMatch(/^sha256:a/);
+
+    fireEvent.click(screen.getByRole('button', { name: 'Announcement.open' }));
+    const dialog = screen.getByRole('dialog', { name: 'Announcement.title' });
+    fireEvent.click(dialog.parentElement as HTMLElement);
+    expect(screen.getByRole('dialog', { name: 'Announcement.title' })).toBeDefined();
+  });
+
+  it('keeps manual trigger for missing or malformed digests and empty content hidden', async () => {
+    await setup({ registration_enabled: false, announcement_markdown: '# Live', announcement_digest: null });
+    expect(screen.queryByRole('dialog', { name: 'Announcement.title' })).toBeNull();
+    expect(await screen.findByRole('button', { name: 'Announcement.open' })).toBeDefined();
+    cleanup();
+    await setup({ registration_enabled: false, announcement_markdown: '# Live', announcement_digest: 'sha256:not-valid' });
+    expect(screen.queryByRole('dialog', { name: 'Announcement.title' })).toBeNull();
+    cleanup();
+    await setup({ registration_enabled: false, announcement_markdown: '', announcement_digest: `sha256:${'a'.repeat(64)}` });
+    expect(screen.queryByRole('button', { name: 'Announcement.open' })).toBeNull();
+  });
+
+  it('does not block login or overwrite storage on API and storage failures', async () => {
+    const digest = `sha256:${'a'.repeat(64)}`;
+    localStorage.setItem('llm-wiki:announcement-dismissed-digest', digest);
+    mockGetPublicConfig.mockRejectedValue(new Error('offline'));
+    mockUseWorkspace.mockReturnValue({ loginOpen: true, signIn: vi.fn(), signInAsDemo: vi.fn() });
+    const { LoginModal } = await import('@/components/LoginModal');
+    render(<LoginModal />);
+    expect(await screen.findByRole('textbox', { name: 'Login.email' })).toBeDefined();
+
+    cleanup();
+    localStorage.setItem('llm-wiki:announcement-dismissed-digest', 'sha256:old');
+    mockGetPublicConfig.mockResolvedValue({ registration_enabled: false, announcement_markdown: '# Live', announcement_digest: digest });
+    const setItem = vi.spyOn(Storage.prototype, 'setItem').mockImplementation(() => { throw new Error('blocked'); });
+    await import('@/components/LoginModal').then(({ LoginModal: FreshLoginModal }) => {
+      mockUseWorkspace.mockReturnValue({ loginOpen: true, signIn: vi.fn(), signInAsDemo: vi.fn() });
+      render(<FreshLoginModal />);
+    });
+    await screen.findByRole('dialog', { name: 'Announcement.title' });
+    fireEvent.click(screen.getByRole('checkbox', { name: 'Announcement.dismiss' }));
+    fireEvent.click(screen.getByRole('button', { name: 'Announcement.close' }));
+    expect(localStorage.getItem('llm-wiki:announcement-dismissed-digest')).toBe('sha256:old');
+    setItem.mockRestore();
+  });
+
+  it('focuses the close control on open and restores the manual trigger after manual close', async () => {
+    await setup({ registration_enabled: false, announcement_markdown: '# Live', announcement_digest: null });
+    const trigger = await screen.findByRole('button', { name: 'Announcement.open' });
+    fireEvent.click(trigger);
+    await waitFor(() => expect(document.activeElement).toBe(screen.getByRole('button', { name: 'Announcement.close' })));
+    fireEvent.click(screen.getByRole('button', { name: 'Announcement.close' }));
+    await waitFor(() => expect(document.activeElement).toBe(trigger));
   });
 });
 
