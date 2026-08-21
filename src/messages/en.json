@@ -19,6 +19,12 @@
     "confirmPassword": "Confirm password",
     "passwordMismatch": "Passwords do not match"
   },
+  "Announcement": {
+    "title": "Announcement",
+    "open": "Read the latest announcement",
+    "close": "Close announcement",
+    "dismiss": "Do not show this announcement automatically again"
+  },
   "Register": {
     "title": "Sign Up",
     "subtitle": "Create your LLM Wiki account",

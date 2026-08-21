@@ -1,8 +1,8 @@
 'use client';
 
-import { FormEvent, useCallback, useEffect, useState } from 'react';
+import { FormEvent, useCallback, useEffect, useRef, useState } from 'react';
 import { getPublicConfig } from '@/lib/api';
-import { AnnouncementBoard } from './AnnouncementBoard';
+import { AnnouncementModal } from './AnnouncementModal';
 import { useLocale } from '@/lib/i18n';
 import { RegisterModal } from './RegisterModal';
 import { useWorkspace } from './WorkspaceProvider';
@@ -18,27 +18,74 @@ export function LoginModal() {
   // Fail-closed until public config says open.
   const [registrationEnabled, setRegistrationEnabled] = useState(false);
   const [announcementMarkdown, setAnnouncementMarkdown] = useState<string | null>(null);
+  const [announcementDigest, setAnnouncementDigest] = useState<string | null>(null);
+  const [announcementOpen, setAnnouncementOpen] = useState(false);
+  const [announcementDismiss, setAnnouncementDismiss] = useState(false);
+  const [announcementAuto, setAnnouncementAuto] = useState(false);
+  const autoOpenedDigest = useRef<string | null>(null);
+  const announcementTriggerRef = useRef<HTMLButtonElement>(null);
+  const emailRef = useRef<HTMLInputElement>(null);
+  const dismissKey = 'llm-wiki:announcement-dismissed-digest';
 
   useEffect(() => {
-    if (!loginOpen) return;
+    if (!loginOpen) {
+      autoOpenedDigest.current = null;
+      /* eslint-disable react-hooks/set-state-in-effect -- reset hidden modal state at the login lifecycle boundary. */
+      setAnnouncementOpen(false);
+      setAnnouncementMarkdown(null);
+      setAnnouncementDigest(null);
+      setAnnouncementAuto(false);
+      setAnnouncementDismiss(false);
+      /* eslint-enable react-hooks/set-state-in-effect */
+      return;
+    }
     let cancelled = false;
-    void getPublicConfig()
+    void getPublicConfig({ refresh: true })
       .then((config) => {
         if (!cancelled) {
           setRegistrationEnabled(config.registration_enabled);
           setAnnouncementMarkdown(config.announcement_markdown ?? null);
+          const digest = typeof config.announcement_digest === 'string' && /^sha256:[0-9a-f]{64}$/.test(config.announcement_digest) ? config.announcement_digest : null;
+          setAnnouncementDigest(digest);
+          if (config.announcement_markdown?.trim() && digest && autoOpenedDigest.current !== digest) {
+            let dismissed = false;
+            try { dismissed = localStorage.getItem(dismissKey) === digest; } catch { /* storage is optional */ }
+            autoOpenedDigest.current = digest;
+            if (!dismissed) {
+              setAnnouncementDismiss(false);
+              setAnnouncementAuto(true);
+              setAnnouncementOpen(true);
+            }
+          }
         }
       })
       .catch(() => {
         if (!cancelled) {
           setRegistrationEnabled(false);
           setAnnouncementMarkdown(null);
+          setAnnouncementDigest(null);
         }
       });
     return () => {
       cancelled = true;
     };
   }, [loginOpen]);
+
+  const openAnnouncement = useCallback(() => {
+    setAnnouncementDismiss(false);
+    setAnnouncementAuto(false);
+    setAnnouncementOpen(true);
+  }, []);
+
+  const closeAnnouncement = useCallback(() => {
+    if (announcementDismiss && announcementDigest) {
+      try { localStorage.setItem(dismissKey, announcementDigest); } catch { /* storage is optional */ }
+    }
+    const wasAuto = announcementAuto;
+    setAnnouncementOpen(false);
+    setAnnouncementAuto(false);
+    queueMicrotask(() => (wasAuto ? emailRef.current : announcementTriggerRef.current)?.focus());
+  }, [announcementAuto, announcementDigest, announcementDismiss]);
 
   const handleDemo = useCallback(async () => {
     setLoading(true);
@@ -73,6 +120,8 @@ export function LoginModal() {
         className="max-h-[calc(100dvh-2rem)] w-full max-w-md overflow-y-auto rounded-2xl border border-white/10 bg-[#151515] p-6 shadow-2xl sm:p-8"
         role="dialog"
         aria-modal="true"
+        inert={announcementOpen || undefined}
+        aria-hidden={announcementOpen ? 'true' : undefined}
         aria-labelledby="login-title"
       >
         <div className="text-sm font-semibold uppercase tracking-[0.24em] text-emerald-300">
@@ -85,13 +134,17 @@ export function LoginModal() {
           {t('Login.subtitle')}
         </p>
 
-        <AnnouncementBoard markdown={announcementMarkdown} />
+        {announcementMarkdown?.trim() ? (
+          <button ref={announcementTriggerRef} type="button" onClick={openAnnouncement} className="mt-5 w-full rounded-lg border border-emerald-300/20 bg-emerald-300/5 px-4 py-3 text-left text-sm font-medium text-emerald-200 hover:bg-emerald-300/10 focus-visible:outline focus-visible:outline-2 focus-visible:outline-emerald-400">
+            {t('Announcement.open')}
+          </button>
+        ) : null}
 
         <form onSubmit={handleSubmit} className="mt-6 space-y-4">
           <label className="block text-sm font-medium text-zinc-300">
             {t('Login.email')}
             <input
-              type="email" autoComplete="email" required
+              ref={emailRef} type="email" autoComplete="email" required
               value={email}
               onChange={(event) => setEmail(event.target.value)}
               className="mt-2 w-full rounded-lg border border-white/10 bg-black/30 px-4 py-3 text-white outline-none transition placeholder:text-zinc-600 focus:border-emerald-300"
@@ -141,6 +194,17 @@ export function LoginModal() {
           onSuccess={() => setRegisterOpen(false)}
         />
       )}
+      {announcementOpen && announcementMarkdown?.trim() ? (
+        <AnnouncementModal
+          markdown={announcementMarkdown}
+          title={t('Announcement.title')}
+          closeLabel={t('Announcement.close')}
+          dismissLabel={t('Announcement.dismiss')}
+          checked={announcementDismiss}
+          onCheckedChange={setAnnouncementDismiss}
+          onClose={closeAnnouncement}
+        />
+      ) : null}
     </div>
   );
 }

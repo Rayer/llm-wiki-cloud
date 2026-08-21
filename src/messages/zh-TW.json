@@ -19,6 +19,12 @@
     "confirmPassword": "確認密碼",
     "passwordMismatch": "密碼不一致"
   },
+  "Announcement": {
+    "title": "公告",
+    "open": "閱讀最新公告",
+    "close": "關閉公告",
+    "dismiss": "這則公告不再自動顯示"
+  },
   "Register": {
     "title": "註冊",
     "subtitle": "建立你的 LLM Wiki 帳號",
