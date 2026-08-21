@@ -30,9 +30,12 @@ test('CI main fast-forward eligibility publishes a fail-closed exact-head status
   assert.match(verify, /test "\$candidate_sha" = "\$remote_develop_sha"/);
   assert.match(verify, /git merge-base --is-ancestor refs\/remotes\/origin\/main "\$candidate_sha"/);
   assert.match(publish, /\[\[ "\$CANDIDATE_SHA" =~ \^\[0-9a-f\]\{40\}\$ \]\]/);
+  assert.match(publish, /set -euo pipefail/);
   assert.match(publish, /git fetch --no-tags origin refs\/heads\/main refs\/heads\/develop/);
   assert.match(publish, /git rev-parse HEAD/);
   assert.match(publish, /git rev-parse refs\/remotes\/origin\/develop/);
+  assert.match(publish, /test "\$head_sha" = "\$CANDIDATE_SHA"/);
+  assert.match(publish, /test "\$CANDIDATE_SHA" = "\$remote_develop_sha"/);
   assert.match(publish, /git merge-base --is-ancestor refs\/remotes\/origin\/main "\$CANDIDATE_SHA"/);
   assert.match(publish, /--fail(?:-with-body)?/);
   assert.match(publish, /"context":"main-fast-forward-eligible"/);
