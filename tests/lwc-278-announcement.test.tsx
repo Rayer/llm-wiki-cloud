@@ -206,20 +206,21 @@ describe('LWC-291 announcement modal', () => {
   it('does not block login or overwrite storage on API and storage failures', async () => {
     const digest = `sha256:${'a'.repeat(64)}`;
     localStorage.setItem('llm-wiki:announcement-dismissed-digest', digest);
-    mockGetPublicConfig.mockRejectedValue(new Error('offline'));
+    let rejectPublicConfig!: (error: Error) => void;
+    mockGetPublicConfig.mockReturnValue(new Promise((_, reject) => { rejectPublicConfig = reject; }));
     mockUseWorkspace.mockReturnValue({ loginOpen: true, signIn: vi.fn(), signInAsDemo: vi.fn() });
     const { LoginModal } = await import('@/components/LoginModal');
-    render(<LoginModal />);
+    await act(async () => {
+      render(<LoginModal />);
+      rejectPublicConfig(new Error('offline'));
+      await Promise.resolve();
+    });
     expect(await screen.findByRole('textbox', { name: 'Login.email' })).toBeDefined();
 
     cleanup();
     localStorage.setItem('llm-wiki:announcement-dismissed-digest', 'sha256:old');
-    mockGetPublicConfig.mockResolvedValue({ registration_enabled: false, announcement_markdown: '# Live', announcement_digest: digest });
     const setItem = vi.spyOn(Storage.prototype, 'setItem').mockImplementation(() => { throw new Error('blocked'); });
-    await import('@/components/LoginModal').then(({ LoginModal: FreshLoginModal }) => {
-      mockUseWorkspace.mockReturnValue({ loginOpen: true, signIn: vi.fn(), signInAsDemo: vi.fn() });
-      render(<FreshLoginModal />);
-    });
+    await setup({ registration_enabled: false, announcement_markdown: '# Live', announcement_digest: digest });
     await screen.findByRole('dialog', { name: 'Announcement.title' });
     fireEvent.click(screen.getByRole('checkbox', { name: 'Announcement.dismiss' }));
     fireEvent.click(screen.getByRole('button', { name: 'Announcement.close' }));
