@@ -13,7 +13,7 @@ function commandIndex(source, command) {
   return source.indexOf(command);
 }
 
-async function runShell(run, { candidate = candidateSha, head = candidateSha, remoteDevelop = candidateSha, ancestor = 0, ghExit = 0 } = {}) {
+async function runShell(run, { candidate = candidateSha, head = candidateSha, remoteDevelop = candidateSha, ancestor = 0, ghExit = 0, buildResult = 'success' } = {}) {
   const directory = await mkdtemp(join(tmpdir(), 'lwc-292-ci-'));
   try {
     await writeFile(join(directory, 'gh'), `#!/bin/sh
@@ -21,6 +21,7 @@ printf '%s\n' "$*" >> "$FAKE_GH_LOG"
 exit "$FAKE_GH_EXIT"
 `);
     await writeFile(join(directory, 'git'), `#!/bin/sh
+printf '%s\n' "$*" >> "$FAKE_GIT_LOG"
 case "$*" in
   "rev-parse HEAD") printf '%s\\n' "$FAKE_HEAD_SHA" ;;
   "rev-parse refs/remotes/origin/develop") printf '%s\\n' "$FAKE_REMOTE_DEVELOP_SHA" ;;
@@ -38,6 +39,7 @@ esac
         PATH: `${directory}:${process.env.PATH}`,
         CANDIDATE_SHA: candidate,
         GITHUB_SHA: candidate,
+        BUILD_RESULT: buildResult,
         GITHUB_REPOSITORY: 'example/repo',
         GH_TOKEN: 'workflow-token',
         FAKE_HEAD_SHA: head,
@@ -45,10 +47,15 @@ esac
         FAKE_ANCESTOR_EXIT: String(ancestor),
         FAKE_GH_EXIT: String(ghExit),
         FAKE_GH_LOG: logPath,
+        FAKE_GIT_LOG: join(directory, 'git.log'),
       },
       encoding: 'utf8',
     });
-    return { ...result, ghLog: await readFile(logPath, 'utf8').catch(() => '') };
+    return {
+      ...result,
+      ghLog: await readFile(logPath, 'utf8').catch(() => ''),
+      gitLog: await readFile(join(directory, 'git.log'), 'utf8').catch(() => ''),
+    };
   } finally {
     await rm(directory, { recursive: true, force: true });
   }
@@ -90,7 +97,11 @@ test('CI main fast-forward eligibility is an ordered fail-closed exact-head stat
   assert.equal(checkout.uses, 'actions/checkout@11d5960a326750d5838078e36cf38b85af677262');
   assert.deepEqual(checkout.with, { 'fetch-depth': 0, 'persist-credentials': false });
 
-  assert.equal(verify.if, "needs.build.result == 'success'");
+  assert.equal(verify.if, undefined);
+  assert.deepEqual(verify.env, {
+    BUILD_RESULT: '${{ needs.build.result }}',
+  });
+  assert.match(verifyRun, /^\s*test "\$BUILD_RESULT" = "success"/m);
   assert.match(verifyRun, /candidate_sha="\$GITHUB_SHA"/);
   assert.match(verifyRun, /\[\[ "\$candidate_sha" =~ \^\[0-9a-f\]\{40\}\$ \]\]/);
   assert.match(verifyRun, /head_sha="\$\(git rev-parse HEAD\)"/);
@@ -101,7 +112,7 @@ test('CI main fast-forward eligibility is an ordered fail-closed exact-head stat
   assert.match(verifyRun, /git merge-base --is-ancestor refs\/remotes\/origin\/main "\$candidate_sha"/);
   assert.doesNotMatch(verifyRun, /gh api|statuses|curl|jq|GITHUB_OUTPUT|\|/);
 
-  assert.equal(success.if, "needs.build.result == 'success'");
+  assert.equal(success.if, undefined);
   assert.deepEqual(success.env, {
     CANDIDATE_SHA: '${{ github.sha }}',
     GH_TOKEN: '${{ github.token }}',
@@ -129,11 +140,19 @@ test('CI main fast-forward eligibility is an ordered fail-closed exact-head stat
 
 test('CI status bridge shell gates reject stale, malformed, non-ancestral, and failed API cases', async () => {
   const workflow = parseYaml(await readFile(workflowPath, 'utf8'));
-  const [pending, , , success] = workflow.jobs['main-fast-forward-eligible'].steps;
+  const [pending, , verify, success] = workflow.jobs['main-fast-forward-eligible'].steps;
 
   assert.equal((await runShell(pending.run)).status, 0);
   assert.match((await runShell(pending.run)).ghLog, /state=pending/);
   assert.notEqual((await runShell(pending.run, { ghExit: 1 })).status, 0);
+
+  const failedBuildVerify = await runShell(verify.run, { buildResult: 'failure' });
+  assert.notEqual(failedBuildVerify.status, 0);
+  assert.equal(failedBuildVerify.gitLog, '');
+  assert.equal(failedBuildVerify.ghLog, '');
+
+  const successfulBuildVerify = await runShell(verify.run, { buildResult: 'success' });
+  assert.equal(successfulBuildVerify.status, 0);
 
   for (const scenario of [
     { candidate: 'A'.repeat(40) },

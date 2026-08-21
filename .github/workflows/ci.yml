@@ -79,9 +79,11 @@ jobs:
           fetch-depth: 0
           persist-credentials: false
       - name: Verify develop contains main
-        if: needs.build.result == 'success'
+        env:
+          BUILD_RESULT: ${{ needs.build.result }}
         run: |
           set -euo pipefail
+          test "$BUILD_RESULT" = "success"
           candidate_sha="$GITHUB_SHA"
           [[ "$candidate_sha" =~ ^[0-9a-f]{40}$ ]]
           head_sha="$(git rev-parse HEAD)"
@@ -91,7 +93,6 @@ jobs:
           test "$candidate_sha" = "$remote_develop_sha"
           git merge-base --is-ancestor refs/remotes/origin/main "$candidate_sha"
       - name: Publish main fast-forward eligibility status
-        if: needs.build.result == 'success'
         env:
           CANDIDATE_SHA: ${{ github.sha }}
           GH_TOKEN: ${{ github.token }}
