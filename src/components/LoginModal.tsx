@@ -71,7 +71,7 @@ export function LoginModal() {
   }, []);
 
   const closeAnnouncement = useCallback(() => {
-    if (announcementDismiss && announcementAuto && announcementDigest) {
+    if (announcementDismiss && announcementDigest) {
       try { localStorage.setItem(dismissKey, announcementDigest); } catch { /* storage is optional */ }
     }
     const wasAuto = announcementAuto;

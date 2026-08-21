@@ -106,20 +106,32 @@ describe('LWC-291 announcement modal', () => {
   }) {
     mockGetPublicConfig.mockResolvedValue(config);
     mockUseWorkspace.mockReturnValue({ loginOpen: true, signIn: vi.fn(), signInAsDemo: vi.fn() });
-    return import('@/components/LoginModal').then(({ LoginModal }) => render(<LoginModal />));
+    return import('@/components/LoginModal').then(async ({ LoginModal }) => {
+      let result!: ReturnType<typeof render>;
+      await act(async () => {
+        result = render(<LoginModal />);
+      });
+      return result;
+    });
   }
 
   it('auto-opens once, suppresses the same dismissed digest, and reopens a changed digest', async () => {
     await setup();
     const modal = await screen.findByRole('dialog', { name: 'Announcement.title' });
     expect(modal).toBeDefined();
+    await waitFor(() => expect(document.activeElement).toBe(screen.getByRole('button', { name: 'Announcement.close' })));
+    const checkbox = screen.getByRole('checkbox', { name: 'Announcement.dismiss' });
+    checkbox.focus();
+    fireEvent.click(checkbox);
+    await waitFor(() => expect(document.activeElement).toBe(checkbox));
     fireEvent.click(screen.getByRole('button', { name: 'Announcement.close' }));
-    expect(screen.queryByRole('dialog', { name: 'Announcement.title' })).toBeNull();
+    await waitFor(() => expect(screen.queryByRole('dialog', { name: 'Announcement.title' })).toBeNull());
     await waitFor(() => expect(document.activeElement?.getAttribute('autocomplete')).toBe('email'));
-    expect(localStorage.length).toBe(0);
+    expect(localStorage.getItem('llm-wiki:announcement-dismissed-digest')).toBe(`sha256:${'a'.repeat(64)}`);
 
     cleanup();
     await setup();
+    await screen.findByRole('button', { name: 'Announcement.open' });
     expect(screen.queryByRole('dialog', { name: 'Announcement.title' })).toBeNull();
 
     cleanup();
@@ -136,22 +148,47 @@ describe('LWC-291 announcement modal', () => {
     expect(await screen.findByRole('dialog', { name: 'Announcement.title' })).toBeDefined();
   });
 
-  it('writes only for checked X or Escape, never backdrop, and manual open is reusable', async () => {
+  it('writes for checked Escape and manual checked close, never backdrop, and resets manual checkbox', async () => {
     await setup();
     const checkbox = await screen.findByRole('checkbox', { name: 'Announcement.dismiss' });
+    await waitFor(() => expect(document.activeElement).toBe(screen.getByRole('button', { name: 'Announcement.close' })));
+    checkbox.focus();
     fireEvent.click(checkbox);
+    await waitFor(() => expect(document.activeElement).toBe(checkbox));
     fireEvent.click(screen.getByRole('button', { name: 'Announcement.close' }));
     expect(localStorage.getItem('llm-wiki:announcement-dismissed-digest')).toMatch(/^sha256:a/);
 
     fireEvent.click(screen.getByRole('button', { name: 'Announcement.open' }));
     expect((screen.getByRole('checkbox', { name: 'Announcement.dismiss' }) as HTMLInputElement).checked).toBe(false);
+    localStorage.removeItem('llm-wiki:announcement-dismissed-digest');
+    const manualCheckbox = screen.getByRole('checkbox', { name: 'Announcement.dismiss' });
+    manualCheckbox.focus();
+    fireEvent.click(manualCheckbox);
+    await waitFor(() => expect(document.activeElement).toBe(manualCheckbox));
     fireEvent.keyDown(document, { key: 'Escape' });
-    expect(localStorage.getItem('llm-wiki:announcement-dismissed-digest')).toMatch(/^sha256:a/);
+    expect(localStorage.getItem('llm-wiki:announcement-dismissed-digest')).toBe(`sha256:${'a'.repeat(64)}`);
 
     fireEvent.click(screen.getByRole('button', { name: 'Announcement.open' }));
+    expect((screen.getByRole('checkbox', { name: 'Announcement.dismiss' }) as HTMLInputElement).checked).toBe(false);
     const dialog = screen.getByRole('dialog', { name: 'Announcement.title' });
     fireEvent.click(dialog.parentElement as HTMLElement);
     expect(screen.getByRole('dialog', { name: 'Announcement.title' })).toBeDefined();
+  });
+
+  it('stores a valid digest when a manually opened announcement is checked and closed', async () => {
+    await setup();
+    await screen.findByRole('dialog', { name: 'Announcement.title' });
+    await waitFor(() => expect(document.activeElement).toBe(screen.getByRole('button', { name: 'Announcement.close' })));
+    fireEvent.click(screen.getByRole('button', { name: 'Announcement.close' }));
+    await waitFor(() => expect(screen.queryByRole('dialog', { name: 'Announcement.title' })).toBeNull());
+    fireEvent.click(screen.getByRole('button', { name: 'Announcement.open' }));
+    const checkbox = screen.getByRole('checkbox', { name: 'Announcement.dismiss' });
+    await waitFor(() => expect(document.activeElement).toBe(screen.getByRole('button', { name: 'Announcement.close' })));
+    checkbox.focus();
+    fireEvent.click(checkbox);
+    await waitFor(() => expect(document.activeElement).toBe(checkbox));
+    fireEvent.click(screen.getByRole('button', { name: 'Announcement.close' }));
+    expect(localStorage.getItem('llm-wiki:announcement-dismissed-digest')).toBe(`sha256:${'a'.repeat(64)}`);
   });
 
   it('keeps manual trigger for missing or malformed digests and empty content hidden', async () => {
