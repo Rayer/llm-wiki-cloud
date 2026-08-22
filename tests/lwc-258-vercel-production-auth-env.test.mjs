@@ -56,7 +56,7 @@ function providerEnv(fixture, scenario, overrides = {}) {
     VERCEL_API_BASE_URL: 'https://api.vercel.com', VERCEL_TOKEN: 'vercel-sentinel-token', VERCEL_PROJECT_ID: projectId, VERCEL_TEAM_ID: teamId,
     VERCEL_SCOPE: 'rayer-tung-s-projects', COMMIT_SHA: commitSha, TICKET_REF: 'LWC-258', EVIDENCE_DIR: fixture.evidenceDir,
     ROLLBACK_ARTIFACT_NAME: 'vercel-production-auth-env-rollback-' + commitSha, ROLLBACK_ARTIFACT_ID: '123456789',
-    ROLLBACK_ARTIFACT_URL: 'https://github.com/Rayer/llm-wiki-frontend/actions/runs/123/artifacts/123456789', ROLLBACK_ARTIFACT_DIGEST: 'sha256:' + 'a'.repeat(64),
+    ROLLBACK_ARTIFACT_URL: 'https://github.com/Rayer/llm-wiki-frontend/actions/runs/123/artifacts/123456789', ROLLBACK_ARTIFACT_DIGEST: 'a'.repeat(64),
     DEPLOYMENT_POLL_ATTEMPTS: '2', DEPLOYMENT_POLL_INTERVAL_SECONDS: '0', ...overrides,
   };
 }
@@ -190,6 +190,23 @@ test('freeze read failure and invalid artifact block all provider writes', async
   const fixture = await setupProviderCase('old'); const preflight = await runProvider(fixture, 'old', 'preflight'); assert.equal(preflight.code, undefined);
   const rejected = await runProvider(fixture, 'old', 'mutate', { ROLLBACK_ARTIFACT_ID: '' }); assert.notEqual(rejected.code, undefined);
   assert.deepEqual((await readFile(join(fixture.root, 'mutation-log'), 'utf8')).trim(), '');
+});
+
+test('accepts raw artifact digest and normalizes evidence to sha256 type', async () => {
+  const run = await providerCase('exact');
+  assert.equal(run.mutate.code, undefined, run.mutate?.stderr);
+  assert.equal(run.evidence.rollback.artifact_digest, `sha256:${'a'.repeat(64)}`);
+});
+
+test('rejects non-raw-lowercase-64-hex artifact digests before provider writes', async () => {
+  for (const digest of [`sha256:${'a'.repeat(64)}`, 'A'.repeat(64), 'a'.repeat(63), 'a'.repeat(65), '']) {
+    const fixture = await setupProviderCase('old');
+    const preflight = await runProvider(fixture, 'old', 'preflight');
+    assert.equal(preflight.code, undefined, digest);
+    const mutate = await runProvider(fixture, 'old', 'mutate', { ROLLBACK_ARTIFACT_DIGEST: digest });
+    assert.notEqual(mutate.code, undefined, digest);
+    assert.deepEqual((await readFile(join(fixture.root, 'mutation-log'), 'utf8')).trim(), '', digest);
+  }
 });
 
 test('mutate rereads the durable freeze and fails closed on pre-mutation drift', async () => {
