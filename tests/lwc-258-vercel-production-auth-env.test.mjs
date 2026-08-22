@@ -120,7 +120,15 @@ test('workflow is exact-develop gated and rollback upload precedes mutation', as
   assert.equal(steps[3].uses, 'actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02');
   assert.equal(steps[5].if, 'always()');
   assert.ok(steps.indexOf(steps[3]) < steps.indexOf(steps[4]));
-  for (const step of [steps[2], steps[3], steps[4], steps[5]]) {
+  const evidenceConsumers = [steps[1], steps[2], steps[3], steps[4], steps[5]];
+  assert.deepEqual(evidenceConsumers.map((step) => step.name), [
+    'Validate exact develop SHA and canonical CI',
+    'Preflight production auth environment and capture rollback',
+    'Upload durable production auth rollback contract',
+    'Apply and verify production auth environment',
+    'Upload normalized production auth evidence',
+  ]);
+  for (const step of evidenceConsumers) {
     assert.equal(step.env.EVIDENCE_DIR, '${{ runner.temp }}/vercel-production-auth-env');
   }
 });
