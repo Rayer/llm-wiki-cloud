@@ -53,6 +53,7 @@ jobs:
         shell: bash
         run: bash .github/scripts/vercel-production-auth-env.sh validate
         env:
+          EVIDENCE_DIR: ${{ runner.temp }}/vercel-production-auth-env
           GITHUB_TOKEN: ${{ github.token }}
 
       - name: Preflight production auth environment and capture rollback
