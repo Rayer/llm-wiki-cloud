@@ -4,7 +4,7 @@ on:
   workflow_dispatch:
     inputs:
       commit_sha:
-        description: Exact 40-character lowercase SHA on canonical develop with successful CI
+        description: Exact 40-character lowercase SHA on canonical main with successful CI
         required: true
         type: string
       ticket_ref:
@@ -23,14 +23,14 @@ concurrency:
 jobs:
   configure:
     name: Configure the production auth origin
-    if: github.ref == 'refs/heads/develop'
+    if: github.ref == 'refs/heads/main'
     permissions:
       contents: read
       actions: read
     runs-on: ubuntu-latest
     timeout-minutes: 30
     environment:
-      name: Development
+      name: Production
     env:
       COMMIT_SHA: ${{ inputs.commit_sha }}
       TICKET_REF: ${{ inputs.ticket_ref }}
@@ -49,7 +49,7 @@ jobs:
           fetch-depth: 0
           persist-credentials: false
 
-      - name: Validate exact develop SHA and canonical CI
+      - name: Validate exact main SHA and canonical CI
         shell: bash
         run: bash .github/scripts/vercel-production-auth-env.sh validate
         env:
@@ -79,7 +79,7 @@ jobs:
           retention-days: 90
           if-no-files-found: error
 
-      - name: Apply and verify production auth environment
+      - name: Apply and verify production auth environment and create exact deployment
         if: steps.rollback_upload.outcome == 'success'
         shell: bash
         run: bash .github/scripts/vercel-production-auth-env.sh mutate
