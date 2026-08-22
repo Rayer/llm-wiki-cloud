@@ -3,7 +3,7 @@ set -Eeo pipefail
 
 MODE="$1"
 readonly EXPECTED_REPOSITORY="Rayer/llm-wiki-frontend"
-readonly EXPECTED_PROJECT_NAME="llm-wiki-cloud"
+readonly EXPECTED_PROJECT_NAME="llm-wiki-frontend"
 readonly EXPECTED_SCOPE="rayer-tung-s-projects"
 readonly ENV_KEY="NEXT_PUBLIC_AUTH_URL"
 readonly DESIRED_VALUE="https://auth.rayer.idv.tw"
@@ -45,7 +45,7 @@ write_evidence() {
       source: {repository: $repository, ref: "refs/heads/develop", commit_sha: ($sha|n), checked_out_sha: ($checked|n),
         current_remote_develop_sha: ($remote|n), canonical_ci: {workflow:"ci.yml", event:"push", head_branch:"develop", head_sha:($sha|n),
           run_id:($ci_id|if test("^[0-9]+$") then tonumber else null end), run_url:($ci_url|n), conclusion:(if $ci_id=="" then null else "success" end)}},
-      target: {project_name:"llm-wiki-cloud", project_id:($project|n), team_id:($team|n)},
+      target: {project_name:"llm-wiki-frontend", project_id:($project|n), team_id:($team|n)},
       variable: {key:$key, desired_value:$desired, type:"plain", targets:["production"], branch_scope:null},
       prior_state: {kind:$prior_kind, env_id:($prior_id|n), artifact_contract_sha256:($prior_digest|n)},
       rollback: {artifact_name:($artifact_name|n), artifact_id:($artifact_id|if test("^[0-9]+$") then tonumber else null end),
@@ -141,7 +141,7 @@ capture_rollback() {
   fi
   mkdir -p "$EVIDENCE_DIR"
   jq -n --arg sha "$COMMIT_SHA" --arg ticket "$TICKET_REF" --arg project "$VERCEL_PROJECT_ID" --arg team "$VERCEL_TEAM_ID" --arg key "$ENV_KEY" --arg decision "$DECISION" --argjson previous "$APPLICABLE_JSON" \
-    '{schema_version:1,kind:"vercel-production-auth-env-rollback-contract",source:{repository:"Rayer/llm-wiki-frontend",ref:"refs/heads/develop",commit_sha:$sha,ticket_ref:$ticket},target:{project_id:$project,team_id:$team,key:$key,project_name:"llm-wiki-cloud"},decision:$decision,prior_state:(if ($previous|length)==0 then {kind:"absent"} else {kind:"present",env:$previous[0]} end)}' > "$ROLLBACK_PATH.tmp"
+    '{schema_version:1,kind:"vercel-production-auth-env-rollback-contract",source:{repository:"Rayer/llm-wiki-frontend",ref:"refs/heads/develop",commit_sha:$sha,ticket_ref:$ticket},target:{project_id:$project,team_id:$team,key:$key,project_name:"llm-wiki-frontend"},decision:$decision,prior_state:(if ($previous|length)==0 then {kind:"absent"} else {kind:"present",env:$previous[0]} end)}' > "$ROLLBACK_PATH.tmp"
   mv "$ROLLBACK_PATH.tmp" "$ROLLBACK_PATH"; CONTRACT_SHA256=$(sha256sum "$ROLLBACK_PATH" | awk '{print $1}')
   add_check filtered_production_env_read; add_check rollback_snapshot_captured
 }
