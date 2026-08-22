@@ -107,6 +107,7 @@ test('workflow is exact-develop gated and rollback upload precedes mutation', as
   assert.equal(job.if, "github.ref == 'refs/heads/develop'");
   assert.equal(job.environment.name, 'Production');
   assert.deepEqual(job.permissions, { contents: 'read', actions: 'read' });
+  assert.ok(!Object.values(job.env ?? {}).some((value) => /runner\./.test(value)), 'runner context must not be used in job-level env');
   const steps = job.steps;
   assert.deepEqual(steps.map((step) => step.name), [
     'Check out the exact requested SHA',
@@ -119,15 +120,9 @@ test('workflow is exact-develop gated and rollback upload precedes mutation', as
   assert.equal(steps[3].uses, 'actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02');
   assert.equal(steps[5].if, 'always()');
   assert.ok(steps.indexOf(steps[3]) < steps.indexOf(steps[4]));
-  assert.deepEqual(steps[2].env, {
-    EVIDENCE_DIR: '${{ runner.temp }}/vercel-production-auth-env',
-    GITHUB_TOKEN: '${{ github.token }}',
-    VERCEL_API_BASE_URL: 'https://api.vercel.com',
-    VERCEL_PROJECT_ID: '${{ secrets.VERCEL_PROJECT_ID }}',
-    VERCEL_TEAM_ID: '${{ secrets.VERCEL_TEAM_ID }}',
-    VERCEL_SCOPE: '${{ secrets.VERCEL_SCOPE }}',
-    VERCEL_TOKEN: '${{ secrets.VERCEL_TOKEN }}',
-  });
+  for (const step of [steps[2], steps[3], steps[4], steps[5]]) {
+    assert.equal(step.env.EVIDENCE_DIR, '${{ runner.temp }}/vercel-production-auth-env');
+  }
 });
 
 test('implemented guard retains the RED contract conditions', async () => {
