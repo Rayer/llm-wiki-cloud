@@ -203,7 +203,8 @@ capture_rollback() {
 load_rollback_contract() {
   [[ -f "$ROLLBACK_PATH" ]] || preflight_fail ROLLBACK_CONTRACT_MISSING "rollback contract is missing"
   [[ "${ROLLBACK_ARTIFACT_ID:-}" =~ ^[0-9]+$ ]] || preflight_fail ROLLBACK_ARTIFACT_INVALID "durable rollback artifact ID is missing or malformed"
-  [[ "${ROLLBACK_ARTIFACT_DIGEST:-}" =~ ^sha256:[0-9a-f]{64}$ ]] || preflight_fail ROLLBACK_ARTIFACT_INVALID "durable rollback artifact digest is missing or malformed"
+  [[ "${ROLLBACK_ARTIFACT_DIGEST:-}" =~ ^[0-9a-f]{64}$ ]] || preflight_fail ROLLBACK_ARTIFACT_INVALID "durable rollback artifact digest is missing or malformed"
+  ROLLBACK_ARTIFACT_DIGEST="sha256:$ROLLBACK_ARTIFACT_DIGEST"
   [[ "${ROLLBACK_ARTIFACT_NAME:-}" == vercel-production-auth-env-rollback-$COMMIT_SHA ]] || preflight_fail ROLLBACK_ARTIFACT_INVALID "durable rollback artifact name is not exact"
   [[ "${ROLLBACK_ARTIFACT_URL:-}" == https://github.com/$GITHUB_REPOSITORY/actions/runs/*/artifacts/${ROLLBACK_ARTIFACT_ID:-} ]] || preflight_fail ROLLBACK_ARTIFACT_INVALID "durable rollback artifact URL is not exact"
   local contract; contract=$(cat "$ROLLBACK_PATH") || preflight_fail ROLLBACK_CONTRACT_READ_FAILED "rollback contract could not be read"
