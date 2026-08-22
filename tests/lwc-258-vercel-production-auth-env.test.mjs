@@ -40,7 +40,7 @@ async function setupProviderCase(scenario) {
   await writeFile(join(root, 'mutations'), '0');
   await writeFile(join(root, 'mutation-log'), '');
   await writeFile(join(root, 'curl-calls'), '');
-  await writeFile(join(root, 'state.json'), JSON.stringify({ project: { id: projectId, name: 'llm-wiki-cloud', accountId: teamId }, envs }));
+  await writeFile(join(root, 'state.json'), JSON.stringify({ project: { id: projectId, name: scenario === 'wrong-project-name' ? 'llm-wiki-cloud' : 'llm-wiki-frontend', accountId: teamId }, envs }));
   return { root, bin, evidenceDir };
 }
 
@@ -216,6 +216,15 @@ test('duplicate and branch-scoped entries fail closed before mutation', async ()
     assert.equal(run.evidence.provider_verification.mutation_count, 0);
     assert.deepEqual(run.mutationLog, []);
   }
+});
+
+test('wrong project name fails preflight without mutation', async () => {
+  const run = await providerCase('wrong-project-name');
+  assert.notEqual(run.preflight.code, undefined);
+  assert.equal(run.evidence.reason_code, 'PROJECT_METADATA_MISMATCH');
+  assert.equal(run.evidence.provider_verification.mutation_count, 0);
+  assert.deepEqual(run.mutationLog, []);
+  assert.equal(run.rollback, null);
 });
 
 test('read-back mismatch restores the previous object and independently reads it back', async () => {
