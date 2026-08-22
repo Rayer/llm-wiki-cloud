@@ -30,7 +30,7 @@ jobs:
     runs-on: ubuntu-latest
     timeout-minutes: 30
     environment:
-      name: Production
+      name: Development
     env:
       COMMIT_SHA: ${{ inputs.commit_sha }}
       TICKET_REF: ${{ inputs.ticket_ref }}

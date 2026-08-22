@@ -105,7 +105,7 @@ test('workflow is exact-develop gated and rollback upload precedes mutation', as
   assert.equal(workflow.on.workflow_dispatch.inputs.ticket_ref.required, true);
   const job = workflow.jobs.configure;
   assert.equal(job.if, "github.ref == 'refs/heads/develop'");
-  assert.equal(job.environment.name, 'Production');
+  assert.equal(job.environment.name, 'Development');
   assert.deepEqual(job.permissions, { contents: 'read', actions: 'read' });
   assert.ok(!Object.values(job.env ?? {}).some((value) => /runner\./.test(value)), 'runner context must not be used in job-level env');
   const steps = job.steps;
@@ -134,7 +134,9 @@ test('implemented guard retains the RED contract conditions', async () => {
 });
 
 test('sensitivity guard fixes the production target and auth origin', async () => {
+  const workflow = parseYaml(await readFile(workflowPath, 'utf8'));
   const source = await readFile(scriptPath, 'utf8');
+  assert.equal(workflow.jobs.configure.environment.name, 'Development');
   assert.match(source, /DESIRED_VALUE="https:\/\/auth\.rayer\.idv\.tw"/);
   assert.match(source, /target:\["production"\]/);
   assert.doesNotMatch(source, /target:\["preview"\]|auth-dev\.rayer\.idv\.tw/);
