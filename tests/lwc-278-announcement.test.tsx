@@ -1,6 +1,6 @@
 import { act, cleanup, fireEvent, render, screen, waitFor } from '@testing-library/react';
 import { afterEach, describe, expect, it, vi } from 'vitest';
-import { AnnouncementBoard } from '@/components/AnnouncementBoard';
+import { AnnouncementBoard, AnnouncementContent } from '@/components/AnnouncementBoard';
 
 Object.assign(globalThis, { IS_REACT_ACT_ENVIRONMENT: true });
 
@@ -71,6 +71,25 @@ describe('LWC-278 announcement board', () => {
     expect(image).not.toBeNull();
     expect(image?.getAttribute('alt')).toBe('');
     expect(decodeURIComponent(image?.getAttribute('src') ?? '')).toBe('https://www.rayer.idv.tw/blog/wp-content/uploads/2026/01/截圖-2026-01-01-下午3.06.38.png');
+  });
+
+  it('does not render raw HTML img tags', () => {
+    render(<AnnouncementBoard markdown={'<img src="https://img.example/chart.png" width="100%" />'} />);
+    expect(document.querySelector('img')).toBeNull();
+  });
+
+  it('keeps compact preview images inside the announcement-board wrapper', () => {
+    render(<AnnouncementBoard markdown={'![A chart](https://img.example/chart.png)'} />);
+    const image = screen.getByRole('img', { name: 'A chart' });
+    expect(image.closest('.announcement-board')).not.toBeNull();
+    expect(image.closest('.announcement-markdown')).not.toBeNull();
+  });
+
+  it('renders homepage announcement images without the compact board wrapper', () => {
+    render(<AnnouncementContent markdown={'![A chart](https://img.example/chart.png)'} />);
+    const image = screen.getByRole('img', { name: 'A chart' });
+    expect(image.closest('.announcement-board')).toBeNull();
+    expect(image.closest('.announcement-markdown')).not.toBeNull();
   });
 
   it('keeps long content bounded and hides empty content', () => {

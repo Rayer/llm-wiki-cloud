@@ -224,7 +224,13 @@ button[data-search-cue='2'] {
 
 .announcement-markdown img {
   display: block;
-  max-height: 10rem;
+  width: 100%;
   max-width: 100%;
+  height: auto;
+}
+
+.announcement-board .announcement-markdown img {
+  width: auto;
+  max-height: 10rem;
   object-fit: contain;
 }
