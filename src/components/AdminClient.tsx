@@ -1,6 +1,6 @@
 'use client';
 
-import { type ComponentType, type ReactNode, useCallback, useEffect, useState } from 'react';
+import { type ComponentType, type ReactNode, useCallback, useEffect, useRef, useState } from 'react';
 import { MessageSquareText, Pencil, Play, RefreshCw, RotateCcw, ShieldAlert, Trash2 } from 'lucide-react';
 import {
   ApiError,
@@ -8,6 +8,7 @@ import {
   deleteAdminProject,
   deleteAdminUser,
   getAdminProjects,
+  getAdminPipelineStatus,
   getAdminSettings,
   getAdminUsers,
   publishAnnouncement,
@@ -27,7 +28,7 @@ import { AnnouncementBoard } from './AnnouncementBoard';
 import { useNavigationBlocker } from './NavigationBlocker';
 
 type Tab = 'projects' | 'users' | 'settings';
-type Notice = { tone: 'success' | 'error'; message: string } | null;
+type Notice = { tone: 'success' | 'error' | 'pending'; message: string } | null;
 type Action =
   | { kind: 'rename-project'; project: AdminProject }
   | { kind: 'delete-project'; project: AdminProject }
@@ -59,6 +60,10 @@ export function AdminClient() {
   const [settingsPending, setSettingsPending] = useState(false);
   const [announcementMarkdown, setAnnouncementMarkdown] = useState('');
   const [announcementBaseline, setAnnouncementBaseline] = useState('');
+  const pollTimer = useRef<ReturnType<typeof setTimeout> | null>(null);
+  const pollResolver = useRef<(() => void) | null>(null);
+  const pollAbortController = useRef<AbortController | null>(null);
+  const mounted = useRef(true);
   const { setBlocked } = useNavigationBlocker();
   const announcementDirty = announcementMarkdown !== announcementBaseline;
   const isAdmin = user?.role === 'admin';
@@ -218,12 +223,54 @@ export function AdminClient() {
           message: cleanRebuild ? 'Pipeline triggered (clean rebuild).' : 'Pipeline triggered.',
         });
       } else if (action.kind === 'suggest-queries-project') {
-        await triggerAdminProjectPipeline(action.project.id, { stage: 'suggested-queries' });
-        await loadProjects();
-        setNotice({
-          tone: 'success',
-          message: 'Query chips regeneration triggered (suggested-queries stage).',
-        });
+        const accepted = await triggerAdminProjectPipeline(action.project.id, { stage: 'suggested-queries' });
+        if (!mounted.current) return;
+        const executionId = accepted.execution_id;
+        if (!executionId) throw new Error('Regeneration accepted without an execution ID.');
+        setAction(null);
+        setNotice({ tone: 'pending', message: 'Query chips regeneration started; waiting for completion.' });
+        for (let attempt = 0; attempt < 30; attempt += 1) {
+          if (attempt > 0) {
+            await new Promise<void>((resolve) => {
+              let done = false;
+              const finish = () => {
+                if (done) return;
+                done = true;
+                if (pollTimer.current) {
+                  clearTimeout(pollTimer.current);
+                  pollTimer.current = null;
+                }
+                pollResolver.current = null;
+                resolve();
+              };
+              pollResolver.current = finish;
+              pollTimer.current = setTimeout(finish, 1000);
+            });
+          }
+          if (!mounted.current) return;
+          const controller = new AbortController();
+          pollAbortController.current = controller;
+          const timeout = setTimeout(() => controller.abort(), 5000);
+          let status: Awaited<ReturnType<typeof getAdminPipelineStatus>>;
+          try {
+            status = await getAdminPipelineStatus(action.project.id, executionId, controller.signal);
+          } finally {
+            clearTimeout(timeout);
+            if (pollAbortController.current === controller) pollAbortController.current = null;
+          }
+          if (!mounted.current) return;
+          const execution = status.last_execution;
+          if (execution?.status === 'SUCCEEDED') {
+            setNotice({ tone: 'success', message: 'Query chips regeneration completed.' });
+            break;
+          }
+          if (execution?.status === 'FAILED' || execution?.status === 'CANCELLED') {
+            const diagnostic = execution.diagnostic?.detail_code || execution.diagnostic?.error_class || 'generation failed';
+            setNotice({ tone: 'error', message: `Query chips regeneration failed: ${diagnostic.slice(0, 120)}.` });
+            break;
+          }
+          if (attempt === 29) setNotice({ tone: 'error', message: 'Query chips regeneration is still pending.' });
+        }
       } else if (action.kind === 'delete-user') {
         await deleteAdminUser(action.user.id);
         await loadUsers();
@@ -231,11 +278,39 @@ export function AdminClient() {
       }
       setAction(null);
     } catch (error) {
-      setActionError(error instanceof Error ? error.message : 'Action failed.');
+      if (mounted.current) {
+        if (action?.kind === 'suggest-queries-project') {
+          setNotice({
+            tone: 'error',
+            message: `Query chips regeneration failed: ${error instanceof Error ? error.message : 'status unavailable'}.`,
+          });
+        } else {
+          setActionError(error instanceof Error ? error.message : 'Action failed.');
+        }
+      }
     } finally {
-      setActionPending(false);
+      if (mounted.current) {
+        setActionPending(false);
+      }
     }
   };
+
+  useEffect(() => {
+    mounted.current = true;
+    return () => {
+      mounted.current = false;
+      if (pollTimer.current) {
+        clearTimeout(pollTimer.current);
+        pollTimer.current = null;
+      }
+      pollAbortController.current?.abort();
+      pollAbortController.current = null;
+      if (pollResolver.current) {
+        pollResolver.current();
+        pollResolver.current = null;
+      }
+    };
+  }, []);
 
   useEffect(() => {
     if (!hydrated || !isAdmin) return;
@@ -302,7 +377,7 @@ export function AdminClient() {
       {notice ? (
         <Surface
           variant="default"
-          className={`px-4 py-3 text-sm ${notice.tone === 'error' ? 'text-amber-200' : 'text-emerald-200'}`}
+          className={`px-4 py-3 text-sm ${notice.tone === 'error' ? 'text-amber-200' : notice.tone === 'pending' ? 'text-amber-200' : 'text-emerald-200'}`}
         >
           {notice.message}
         </Surface>
@@ -313,6 +388,7 @@ export function AdminClient() {
           projects={projects}
           loading={projectsLoading}
           error={projectsError}
+          pending={actionPending}
           onRetry={loadProjects}
           onAction={setAction}
         />
@@ -321,6 +397,7 @@ export function AdminClient() {
           users={users}
           loading={usersLoading}
           error={usersError}
+          pending={actionPending}
           onRetry={loadUsers}
           onAction={setAction}
         />
@@ -558,12 +635,14 @@ function ProjectsTable({
   projects,
   loading,
   error,
+  pending,
   onRetry,
   onAction,
 }: {
   projects: AdminProject[];
   loading: boolean;
   error: string;
+  pending: boolean;
   onRetry: () => void;
   onAction: (action: Action) => void;
 }) {
@@ -612,27 +691,32 @@ function ProjectsTable({
                       <IconAction
                         label="Rename"
                         icon={Pencil}
+                        disabled={pending}
                         onClick={() => onAction({ kind: 'rename-project', project })}
                       />
                       <IconAction
                         label="Rebuild index"
                         icon={RotateCcw}
+                        disabled={pending}
                         onClick={() => onAction({ kind: 'rebuild-project', project })}
                       />
                       <IconAction
                         label="Trigger pipeline"
                         icon={Play}
+                        disabled={pending}
                         onClick={() => onAction({ kind: 'trigger-project', project })}
                       />
                       <IconAction
                         label="Regenerate query chips"
                         icon={MessageSquareText}
+                        disabled={pending}
                         onClick={() => onAction({ kind: 'suggest-queries-project', project })}
                       />
                       <IconAction
                         label="Delete"
                         icon={Trash2}
                         danger
+                        disabled={pending}
                         onClick={() => onAction({ kind: 'delete-project', project })}
                       />
                     </div>
@@ -651,12 +735,14 @@ function UsersTable({
   users,
   loading,
   error,
+  pending,
   onRetry,
   onAction,
 }: {
   users: AdminUser[];
   loading: boolean;
   error: string;
+  pending: boolean;
   onRetry: () => void;
   onAction: (action: Action) => void;
 }) {
@@ -702,12 +788,14 @@ function UsersTable({
                       <IconAction
                         label="Change role"
                         icon={Pencil}
+                        disabled={pending}
                         onClick={() => onAction({ kind: 'change-role', user })}
                       />
                       <IconAction
                         label="Delete user"
                         icon={Trash2}
                         danger
+                        disabled={pending}
                         onClick={() => onAction({ kind: 'delete-user', user })}
                       />
                     </div>
@@ -765,11 +853,13 @@ function IconAction({
   label,
   icon: Icon,
   danger = false,
+  disabled = false,
   onClick,
 }: {
   label: string;
   icon: ComponentType<{ className?: string; 'aria-hidden'?: boolean }>;
   danger?: boolean;
+  disabled?: boolean;
   onClick: () => void;
 }) {
   return (
@@ -778,6 +868,7 @@ function IconAction({
       title={label}
       aria-label={label}
       onClick={onClick}
+      disabled={disabled}
       className={`inline-flex min-h-10 min-w-10 items-center justify-center rounded-md border transition ${
         danger
           ? 'border-red-400/20 text-red-300 hover:bg-red-400/10'

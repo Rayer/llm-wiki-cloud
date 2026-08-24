@@ -198,6 +198,7 @@ type BuildRequestInitOptions = {
   accessToken?: string | null;
   json?: boolean;
   body?: BodyInit;
+  signal?: AbortSignal;
 };
 
 export function buildRequestInit({
@@ -206,6 +207,7 @@ export function buildRequestInit({
   accessToken,
   json = false,
   body,
+  signal,
 }: BuildRequestInitOptions): RequestInit {
   const headers: Record<string, string> = {
     ...(json ? { 'Content-Type': 'application/json' } : {}),
@@ -223,6 +225,7 @@ export function buildRequestInit({
     ...(method ? { method } : {}),
     credentials: 'include',
     headers,
+    ...(signal === undefined ? {} : { signal }),
     ...(body === undefined ? {} : { body }),
   };
 }
@@ -267,6 +270,7 @@ type ApiFetchOptions = {
   json?: boolean;
   body?: BodyInit;
   requireProject?: boolean;
+  signal?: AbortSignal;
 };
 
 export async function apiFetch(path: string, options: ApiFetchOptions = {}): Promise<Response> {
@@ -810,6 +814,8 @@ export type PipelineResult = {
   scheduled?: boolean;
 };
 
+export type AdminPipelineResult = PipelineResult & { stage?: string };
+
 export type PipelineStatus = {
   last_execution?: PipelineExecution | null;
   project_id?: string;
@@ -1042,18 +1048,25 @@ export async function rebuildAdminProjectIndex(id: string): Promise<void> {
 export async function triggerAdminProjectPipeline(
   id: string,
   options: { cleanRebuild?: boolean; stage?: 'full' | 'suggested-queries' } = {},
-): Promise<void> {
+): Promise<AdminPipelineResult> {
   const cleanRebuild = options.cleanRebuild === true;
   const stage = options.stage === 'suggested-queries' ? 'suggested-queries' : 'full';
   const body: Record<string, unknown> = { stage };
   if (stage === 'full') {
     body.clean_rebuild = cleanRebuild;
   }
-  await adminJson(`/api/v1/admin/projects/${encodeURIComponent(id)}/pipeline`, {
+  return adminJson(`/api/v1/admin/projects/${encodeURIComponent(id)}/pipeline`, {
     method: 'POST',
     json: true,
     body: JSON.stringify(body),
-  });
+  }) as Promise<AdminPipelineResult>;
+}
+
+export async function getAdminPipelineStatus(id: string, executionId: string, signal?: AbortSignal): Promise<PipelineStatus> {
+  return adminJson(
+    `/api/v1/admin/projects/${encodeURIComponent(id)}/pipeline/status?execution_id=${encodeURIComponent(executionId)}`,
+    signal === undefined ? {} : { signal },
+  ) as Promise<PipelineStatus>;
 }
 
 export async function getAdminUsers(): Promise<AdminUser[]> {
