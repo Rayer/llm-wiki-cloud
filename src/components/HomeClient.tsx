@@ -1,6 +1,7 @@
 'use client';
 
 import { FormEvent, useCallback, useEffect, useRef, useState } from 'react';
+import { ChevronDown } from 'lucide-react';
 import ReactMarkdown from 'react-markdown';
 import remarkGfm from 'remark-gfm';
 import type { Content, PhrasingContent, Root, Text } from 'mdast';
@@ -58,6 +59,13 @@ type ModalEntry = {
   error: string;
 };
 type SearchMode = 'wiki' | 'full';
+
+const SUGGESTED_QUERIES_OPEN_KEY = 'llm-wiki:suggested-queries-open';
+
+function readSuggestedQueriesOpen(): boolean {
+  if (typeof window === 'undefined') return true;
+  return localStorage.getItem(SUGGESTED_QUERIES_OPEN_KEY) !== '0';
+}
 
 function sampleSuggestedQueries(suggestedQueries: string[]): string[] {
   const available = [...new Set(suggestedQueries.slice(1))];
@@ -126,8 +134,21 @@ export function HomeClient() {
   const sampledProjectIdRef = useRef<string | undefined>(undefined);
   const hasSampledQueriesRef = useRef(false);
   const [suggestedQueryChips, setSuggestedQueryChips] = useState<string[]>([]);
+  const [suggestedQueriesOpen, setSuggestedQueriesOpen] = useState(true);
   const [latestConcepts, setLatestConcepts] = useState<WikiEntry[]>([]);
   const [searchButtonCue, setSearchButtonCue] = useState<0 | 1 | 2>(0);
+
+  useEffect(() => {
+    setSuggestedQueriesOpen(readSuggestedQueriesOpen());
+  }, []);
+
+  const toggleSuggestedQueries = useCallback(() => {
+    setSuggestedQueriesOpen((open) => {
+      const next = !open;
+      localStorage.setItem(SUGGESTED_QUERIES_OPEN_KEY, next ? '1' : '0');
+      return next;
+    });
+  }, []);
 
   // Restore search from URL on mount (back-button support).
   useEffect(() => {
@@ -407,18 +428,33 @@ export function HomeClient() {
             </div>
           </div>
           {suggestedQueryChips.length > 0 ? (
-            <div className="mt-4 flex flex-wrap items-center gap-x-4 gap-y-2">
-              {suggestedQueryChips.map((suggestion) => (
-                <button
-                  key={suggestion}
-                  type="button"
-                  onMouseDown={(event) => event.preventDefault()}
-                  onClick={() => void handleSuggestedQuery(suggestion)}
-                  className="max-w-full min-h-11 border-b border-white/20 px-0 text-left text-sm text-zinc-300 hover:border-emerald-300 hover:text-white"
-                >
-                  <span className="block truncate">{suggestion}</span>
-                </button>
-              ))}
+            <div className="mt-4">
+              <button
+                type="button"
+                aria-expanded={suggestedQueriesOpen}
+                aria-controls="suggested-queries"
+                aria-label={suggestedQueriesOpen ? t('Demo.hideSuggestedQueries') : t('Demo.showSuggestedQueries')}
+                onClick={toggleSuggestedQueries}
+                className="inline-flex min-h-11 items-center gap-1.5 text-left text-xs font-medium tracking-wide text-zinc-400 hover:text-zinc-200"
+              >
+                <ChevronDown className={`size-4 shrink-0 transition-transform ${suggestedQueriesOpen ? '' : '-rotate-90'}`} aria-hidden="true" />
+                {t('Demo.suggestedQueries')}
+              </button>
+              {suggestedQueriesOpen ? (
+                <div id="suggested-queries" className="mt-2 flex flex-wrap items-center gap-x-4 gap-y-2">
+                  {suggestedQueryChips.map((suggestion) => (
+                    <button
+                      key={suggestion}
+                      type="button"
+                      onMouseDown={(event) => event.preventDefault()}
+                      onClick={() => void handleSuggestedQuery(suggestion)}
+                      className="max-w-full min-h-11 border-b border-white/20 px-0 text-left text-sm text-zinc-300 hover:border-emerald-300 hover:text-white"
+                    >
+                      <span className="block truncate">{suggestion}</span>
+                    </button>
+                  ))}
+                </div>
+              ) : null}
             </div>
           ) : null}
           <p className="mt-5 font-mono text-xs tracking-wide text-zinc-400">
