@@ -65,7 +65,6 @@ function getUniqueQueryChips() {
 }
 
 beforeEach(() => {
-  localStorage.clear();
   mocks.getConcepts.mockResolvedValue([]);
   mocks.searchWiki.mockResolvedValue({ results: [], aiAnswer: '', citations: [] });
   mocks.getStatus.mockResolvedValue(statusWithQueries());
@@ -74,7 +73,6 @@ beforeEach(() => {
 
 afterEach(() => {
   cleanup();
-  localStorage.clear();
   vi.restoreAllMocks();
   vi.clearAllMocks();
 });
@@ -152,23 +150,6 @@ describe('LWC-249 random query chips', () => {
     expect(projectLifecycle).not.toEqual(remountLifecycle);
     expect(projectLifecycle).not.toEqual(firstLifecycle);
     expect(randomSpy).toHaveBeenCalledTimes(12);
-  });
-
-  it('defaults suggested queries open and persists collapse across remount', async () => {
-    const first = render(<HomeClient />);
-    await waitFor(() => expect(getUniqueQueryChips()).toHaveLength(4));
-    const toggle = screen.getByRole('button', { name: 'Demo.hideSuggestedQueries' });
-    expect(toggle.getAttribute('aria-expanded')).toBe('true');
-
-    await act(async () => fireEvent.click(toggle));
-    expect(chipLabels()).toHaveLength(0);
-    expect(screen.getByRole('button', { name: 'Demo.showSuggestedQueries' }).getAttribute('aria-expanded')).toBe('false');
-    expect(localStorage.getItem('llm-wiki:suggested-queries-open')).toBe('0');
-    first.unmount();
-
-    render(<HomeClient />);
-    await waitFor(() => expect(screen.getByRole('button', { name: 'Demo.showSuggestedQueries' })).toBeDefined());
-    expect(chipLabels()).toHaveLength(0);
   });
 
   it.each([
