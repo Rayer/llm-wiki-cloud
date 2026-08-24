@@ -118,17 +118,17 @@ export function LoginModal() {
   return (
     <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/80 p-4 backdrop-blur-sm">
       <div
-        className="max-h-[calc(100dvh-2rem)] w-full max-w-md overflow-y-auto rounded-2xl border border-white/10 bg-[#151515] p-6 shadow-2xl sm:p-8"
+        className="max-h-[calc(100dvh-2rem)] w-full max-w-md overflow-y-auto rounded-sm border border-white/12 bg-[#121212] p-6 sm:p-8"
         role="dialog"
         aria-modal="true"
         inert={announcementOpen || undefined}
         aria-hidden={announcementOpen ? 'true' : undefined}
         aria-labelledby="login-title"
       >
-        <div className="text-sm font-semibold uppercase tracking-[0.24em] text-emerald-300">
+        <div className="font-mono text-[11px] uppercase tracking-[0.22em] text-emerald-300/90">
           {t('Login.brand')}
         </div>
-        <h1 id="login-title" className="mt-3 text-3xl font-semibold text-white">
+        <h1 id="login-title" className="font-serif mt-3 text-3xl font-medium tracking-tight text-[#eeeae4]">
           {t('Login.title')}
         </h1>
         <p className="mt-2 text-sm leading-6 text-zinc-400">

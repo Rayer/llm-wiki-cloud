@@ -178,7 +178,7 @@ describe('LWC-248 home search submission contract', () => {
       fireEvent.change(queryInput, { target: { value: 'topic beta' } });
       fireEvent.click(fullMode);
     });
-    expect(fullMode.className).toContain('bg-emerald-400/20');
+    expect(fullMode.className).toContain('underline');
     await act(async () => {
       fireEvent.click(searchButton);
     });

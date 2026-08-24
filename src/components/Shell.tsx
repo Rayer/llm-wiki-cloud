@@ -107,7 +107,7 @@ function ShellContent({ children }: { children: React.ReactNode }) {
       {token ? (
         <header className="sticky top-0 z-50 flex min-h-14 items-center justify-between border-b border-white/8 bg-zinc-950/85 px-4 backdrop-blur lg:hidden">
           <NavigationLink href="/" className="min-w-0 text-sm font-semibold tracking-tight text-white">
-            {t('Shell.brand')}
+            <span className="font-serif">{t('Shell.brand')}</span>
           </NavigationLink>
           <button
             type="button"
@@ -145,7 +145,7 @@ function ShellContent({ children }: { children: React.ReactNode }) {
           }`}
         >
           <NavigationLink href="/" className="block px-5 py-5">
-            <div className="text-sm font-semibold tracking-tight text-white">
+            <div className="font-serif text-base font-medium tracking-tight text-[#eeeae4]">
               {t('Shell.brand')}
             </div>
             <div className="mt-0.5 text-xs text-zinc-400">{t('Shell.subtitle')}</div>

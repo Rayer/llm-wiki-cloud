@@ -364,78 +364,78 @@ export function HomeClient() {
 
   return (
     <div className="space-y-10">
-      <section className="flex flex-col items-center pt-8 text-center">
-        <p className="text-sm text-zinc-400">{t('Demo.heroSubtitle')}</p>
-        <h1 className="mt-2 max-w-2xl text-2xl font-semibold tracking-tight text-white sm:text-3xl">
+      <section className="pt-10 sm:pt-14">
+        <p className="font-mono text-[11px] uppercase tracking-[0.22em] text-emerald-300/90">{t('Demo.heroSubtitle')}</p>
+        <h1 className="font-serif mt-4 max-w-3xl text-[1.85rem] font-medium leading-[1.28] tracking-tight text-[#eeeae4] sm:text-[2.35rem]">
           {t('Demo.heading')}
         </h1>
 
-        <form onSubmit={onSubmit} className="mt-8 w-full max-w-2xl">
-          <Surface variant="glass" className="p-2">
-            <div className="flex flex-col gap-2 sm:flex-row sm:items-center">
-              <input
-                value={query}
-                onChange={(event) => setQuery(event.target.value)}
-                aria-label={t('Demo.search')}
-                placeholder={suggestedQueries[0] ?? t('Demo.searchPlaceholder')}
-                className="min-h-12 flex-1 rounded-[var(--radius-md)] bg-transparent px-4 text-white outline-none transition placeholder:text-zinc-400 focus:ring-1 focus:ring-emerald-400/30 focus-visible:outline focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-emerald-400"
-              />
-              <div className="flex items-center gap-2 px-1 sm:pr-1">
-                <div className="grid grid-cols-2 rounded-[var(--radius-md)] border border-white/10 bg-black/30 p-0.5 text-sm">
-                  {(['wiki', 'full'] as const).map((item) => (
-                    <button
-                      key={item}
-                      type="button"
-                      onClick={() => setMode(item)}
-                      aria-pressed={mode === item}
-                      className={`min-h-11 rounded-md px-3 py-2 font-medium capitalize transition ${
-                        mode === item ? 'bg-emerald-400/20 text-emerald-200' : 'text-zinc-400 hover:text-white'
-                      }`}
-                    >
-                      {t(`Demo.${item}`)}
-                    </button>
-                  ))}
-                </div>
-                <button
-                  type="submit"
-                  disabled={loading}
-                  aria-busy={loading}
-                  data-search-cue={searchButtonCueState}
-                  className="min-h-12 rounded-[var(--radius-md)] bg-emerald-400 px-5 text-sm font-semibold text-zinc-900 transition hover:bg-emerald-300 disabled:cursor-not-allowed disabled:opacity-60"
-                >
-                  {t('Demo.search')}
-                </button>
+        <form onSubmit={onSubmit} className="mt-10 w-full max-w-3xl">
+          <div className="flex flex-col gap-3 border-b border-white/18 pb-3 focus-within:border-emerald-400 sm:flex-row sm:items-end">
+            <input
+              value={query}
+              onChange={(event) => setQuery(event.target.value)}
+              aria-label={t('Demo.search')}
+              placeholder={suggestedQueries[0] ?? t('Demo.searchPlaceholder')}
+              className="min-h-12 flex-1 bg-transparent px-0 text-lg text-white outline-none placeholder:text-zinc-500 focus-visible:outline focus-visible:outline-2 focus-visible:outline-offset-4 focus-visible:outline-emerald-400"
+            />
+            <div className="flex items-center gap-2 pb-1">
+              <div className="grid grid-cols-2 text-sm">
+                {(['wiki', 'full'] as const).map((item) => (
+                  <button
+                    key={item}
+                    type="button"
+                    onClick={() => setMode(item)}
+                    aria-pressed={mode === item}
+                    className={`min-h-11 px-3 font-medium ${
+                      mode === item ? 'text-emerald-200 underline decoration-emerald-400/80 decoration-1 underline-offset-8' : 'text-zinc-500 hover:text-zinc-200'
+                    }`}
+                  >
+                    {t(`Demo.${item}`)}
+                  </button>
+                ))}
               </div>
+              <button
+                type="submit"
+                disabled={loading}
+                aria-busy={loading}
+                data-search-cue={searchButtonCueState}
+                className="min-h-12 rounded-sm bg-emerald-400 px-5 text-sm font-semibold text-zinc-950 hover:bg-emerald-300 disabled:cursor-not-allowed disabled:opacity-60"
+              >
+                {t('Demo.search')}
+              </button>
             </div>
-          </Surface>
+          </div>
           {suggestedQueryChips.length > 0 ? (
-            <div className="mt-3 flex flex-wrap items-center justify-center gap-2">
+            <div className="mt-4 flex flex-wrap items-center gap-x-4 gap-y-2">
               {suggestedQueryChips.map((suggestion) => (
                 <button
                   key={suggestion}
                   type="button"
                   onMouseDown={(event) => event.preventDefault()}
                   onClick={() => void handleSuggestedQuery(suggestion)}
-                  className="max-w-full min-h-11 rounded-md border border-emerald-300/20 bg-emerald-300/10 px-3 py-1.5 text-left text-sm text-emerald-100 transition hover:border-emerald-300/40 hover:bg-emerald-300/15"
+                  className="max-w-full min-h-11 border-b border-white/20 px-0 text-left text-sm text-zinc-300 hover:border-emerald-300 hover:text-white"
                 >
                   <span className="block truncate">{suggestion}</span>
                 </button>
               ))}
             </div>
           ) : null}
-          <div className="mt-3 flex flex-wrap items-center justify-center gap-2">
+          <p className="mt-5 font-mono text-xs tracking-wide text-zinc-400">
             <StatPill label={t('Shell.sources')} value={status?.sourcesCount} error={statusError} />
+            <span className="mx-2 text-white/20" aria-hidden="true">·</span>
             <StatPill label={t('Shell.concepts')} value={status?.conceptsCount} error={statusError} />
+            <span className="mx-2 text-white/20" aria-hidden="true">·</span>
             <StatPill label={t('Shell.raw')} value={status?.rawCount} error={statusError} />
-            <Badge variant="muted" className="hidden sm:inline-flex">⌘K</Badge>
-          </div>
+            <span className="ml-3 hidden text-zinc-500 sm:inline">⌘&nbsp;K</span>
+          </p>
         </form>
       </section>
 
       {!searched && latestConcepts.length > 0 ? (
         <section className="space-y-4" aria-labelledby="latest-concepts-heading">
           <div className="flex items-center justify-between gap-4">
-            <h2 id="latest-concepts-heading" className="text-lg font-semibold text-white">
+            <h2 id="latest-concepts-heading" className="font-serif text-xl font-medium text-[#eeeae4]">
               {t('Demo.latestConcepts')}
             </h2>
             <Badge variant="muted">{latestConcepts.length}</Badge>
@@ -447,13 +447,13 @@ export function HomeClient() {
               return (
                 <NavigationLink key={concept.slug} href={href} className="group block">
                 <Surface
-                  variant="glass"
-                  className="animate-fade-in border-l-[3px] border-l-emerald-400 p-5 transition duration-200 [animation-fill-mode:backwards] hover:-translate-y-0.5 hover:border-emerald-400/30 hover:shadow-lg hover:shadow-emerald-500/5"
+                  variant="default"
+                  className="animate-fade-in rounded-sm border-l-2 border-l-emerald-400/80 p-5 [animation-fill-mode:backwards] hover:border-white/20"
                   style={{ animationDelay: `${index * 50}ms` }}
                 >
                   <div className="flex flex-wrap items-center gap-2">
                     <Badge variant="concept">{t('Entry.singular')}</Badge>
-                    <h3 className="text-base font-semibold text-white group-hover:text-emerald-50">
+                    <h3 className="font-serif text-lg font-medium text-[#eeeae4] group-hover:text-white">
                       {concept.title}
                     </h3>
                   </div>
@@ -886,11 +886,9 @@ function StatPill({
   error?: string;
 }) {
   return (
-    <span className="inline-flex items-center gap-2 rounded-full border border-white/10 bg-zinc-900/50 px-3 py-1 text-xs text-zinc-400">
+    <span className="inline-flex items-center gap-1.5 text-zinc-400">
+      <span className="tabular-nums text-[#eeeae4]">{error ? '—' : value ?? '…'}</span>
       <span>{label}</span>
-      <span className="font-semibold tabular-nums text-white">
-        {error ? '—' : value ?? '…'}
-      </span>
     </span>
   );
 }
