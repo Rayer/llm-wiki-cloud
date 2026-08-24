@@ -160,7 +160,7 @@ test('wrong project, wrong team, alias/deployment identity, scope, and failed CI
 });
 
 test('deployment create is attempted at most once and all uncertain/failed readbacks are partial', async () => {
-  for (const scenario of ['create-failure', 'invalid-create-response', 'malformed-create-response', 'create-invalid-url-scheme', 'create-invalid-url-path', 'create-invalid-url-whitespace', 'deployment-read-failure', 'deployment-timeout', 'deployment-failed', 'deployment-source-mismatch', 'post-create-alias-drift', 'post-create-alias-read-failure', 'post-create-alias-assigned', 'post-create-canonical-alias-array', 'post-create-alias-missing', 'post-create-alias-null', 'post-create-alias-malformed']) {
+  for (const scenario of ['create-failure', 'invalid-create-response', 'malformed-create-response', 'create-invalid-url-scheme', 'create-invalid-url-path', 'create-invalid-url-whitespace', 'deployment-read-failure', 'deployment-timeout', 'deployment-failed', 'deployment-source-mismatch', 'post-create-alias-drift', 'post-create-alias-read-failure', 'post-create-canonical-alias', 'post-create-canonical-user-alias', 'post-create-canonical-alias-array', 'post-create-canonical-alias-final', 'post-create-alias-null', 'post-create-alias-malformed', 'post-create-alias-host-malformed', 'post-create-alias-duplicate', 'post-create-user-alias-malformed', 'post-create-automatic-alias-malformed', 'post-create-alias-assigned-malformed', 'post-create-alias-error', 'post-create-alias-warning', 'post-create-alias-final-malformed']) {
     const run = await providerCase(scenario); assert.notEqual(run.mutate.code, undefined, scenario); assert.equal(run.evidence.status, 'PARTIAL_MUTATION', scenario); assert.equal(run.evidence.phase.startsWith('deployment_'), true, scenario); assert.equal(run.evidence.partial_uncertainty, true, scenario);
     assert.equal(run.evidence.deployment_create_count, 1, scenario); assert.equal(run.mutationLog.filter((entry) => entry === 'DEPLOY_POST').length, 1, scenario);
   }
@@ -170,6 +170,20 @@ test('bounded polling accepts ANALYZING and DEPLOYING before READY', async () =>
   for (const scenario of ['deployment-analyzing', 'deployment-deploying']) {
     const run = await providerCase(scenario); assert.equal(run.preflight.code, undefined, scenario); assert.equal(run.mutate.code, undefined, run.mutate?.stderr);
     assert.equal(run.evidence.status, 'SUCCESS', scenario); assert.equal(run.evidence.provider_verification.deployment.ready_state, 'READY', scenario);
+  }
+});
+
+test('READY readback accepts bounded generated routing metadata without canonical routing', async () => {
+  for (const scenario of ['post-create-ready-routing', 'post-create-alias-assigned', 'post-create-alias-user-alias-overlap', 'post-create-alias-final-overlap']) {
+    const run = await providerCase(scenario);
+    assert.equal(run.preflight.code, undefined, scenario);
+    assert.equal(run.mutate.code, undefined, run.mutate?.stderr);
+    assert.equal(run.evidence.status, 'SUCCESS', scenario);
+    assert.ok(run.evidence.provider_verification.deployment.checks.includes('canonical_aliases_and_deployments_unchanged'), scenario);
+    assert.deepEqual(run.evidence.freeze.aliases.map(({ alias, deployment_id }) => [alias, deployment_id]), [
+      ['wiki.rayer.idv.tw', 'dpl_existing123'],
+      ['llm-wiki-frontend.vercel.app', 'dpl_existing123'],
+    ], scenario);
   }
 });
 

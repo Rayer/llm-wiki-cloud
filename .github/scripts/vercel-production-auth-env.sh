@@ -264,10 +264,29 @@ deployment_is_exact() {
 }
 deployment_ready_routing_is_exact() {
   jq -e --arg custom "${ALIASES[0]}" --arg vercel "${ALIASES[1]}" \
-    'def clean_aliases: type=="array" and all(.[]; type=="string" and .!=$custom and .!=$vercel);
-     type=="object" and has("alias") and (.alias|clean_aliases) and (.aliasAssigned != true) and
-     (. as $deployment | all(["userAliases", "automaticAliases"][];
-       . as $key | if ($deployment|has($key)) then ($deployment[$key]|clean_aliases) else true end))' <<< "$1" >/dev/null
+    'def valid_host:
+       if type == "string" then test("^[A-Za-z0-9](?:[A-Za-z0-9-]{0,61}[A-Za-z0-9])?(?:\\.[A-Za-z0-9](?:[A-Za-z0-9-]{0,61}[A-Za-z0-9])?)+$") else false end;
+     def clean_aliases:
+       if type != "array" then false
+       elif any(.[]; (valid_host|not)) then false
+       else map(ascii_downcase) as $hosts |
+         ($hosts|length) == ($hosts|unique|length) and
+         all($hosts[]; . != ($custom|ascii_downcase) and . != ($vercel|ascii_downcase))
+       end;
+     type=="object" and
+     (if has("alias") then .alias|clean_aliases else true end) and
+     (if has("userAliases") then .userAliases|clean_aliases else true end) and
+     (if has("automaticAliases") then .automaticAliases|clean_aliases else true end) and
+     (if has("aliasAssigned") then .aliasAssigned|type=="boolean" else true end) and
+     (if has("aliasError") then .aliasError==null else true end) and
+     (if has("aliasWarning") then .aliasWarning==null else true end) and
+     (if has("aliasFinal") then
+       if .aliasFinal==null then true
+       elif (.aliasFinal|valid_host) then
+         (.aliasFinal|ascii_downcase) as $final |
+         $final != ($custom|ascii_downcase) and $final != ($vercel|ascii_downcase)
+       else false end
+      else true end)' <<< "$1" >/dev/null
 }
 create_and_verify_deployment() {
   local body response parsed attempt curl_exit
