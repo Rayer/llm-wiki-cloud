@@ -400,7 +400,7 @@ export function HomeClient() {
                 disabled={loading}
                 aria-busy={loading}
                 data-search-cue={searchButtonCueState}
-                className="min-h-11 rounded-sm bg-emerald-400 px-5 text-sm font-semibold text-zinc-950 hover:bg-emerald-300 disabled:cursor-not-allowed disabled:opacity-60"
+                className="min-h-12 rounded-sm bg-emerald-400 px-5 text-sm font-semibold text-zinc-950 hover:bg-emerald-300 disabled:cursor-not-allowed disabled:opacity-60"
               >
                 {t('Demo.search')}
               </button>
