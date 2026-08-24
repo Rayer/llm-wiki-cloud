@@ -130,7 +130,7 @@ export function SourceAnnotationEditor({ sourceId, onSaved }: { sourceId: string
             value={state.draft}
             disabled={saving}
             onChange={(event) => setState((current) => current ? { ...current, draft: event.target.value } : current)}
-            className="mt-2 min-h-40 w-full rounded-md border border-white/10 bg-black/20 p-3 text-sm text-white outline-none focus:border-emerald-400/50 focus:ring-1 focus:ring-emerald-400/20 disabled:opacity-60"
+            className="mt-2 min-h-40 w-full rounded-md border border-white/10 bg-black/20 p-3 text-sm text-white outline-none focus:border-emerald-400/50 focus:ring-1 focus:ring-emerald-400/20 focus-visible:outline focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-emerald-400 disabled:opacity-60"
           />
           <AnnotationMetadata annotation={state} />
           <div className="mt-4 flex flex-wrap gap-3">

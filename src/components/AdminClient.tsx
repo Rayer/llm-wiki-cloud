@@ -486,7 +486,7 @@ function SettingsPanel({
               onChange={(event) => onAnnouncementChange(event.target.value)}
               disabled={pending}
               rows={8}
-              className="mt-3 w-full rounded-lg border border-white/10 bg-black/30 p-3 font-mono text-sm text-zinc-100 outline-none focus:border-emerald-300"
+              className="mt-3 w-full rounded-lg border border-white/10 bg-black/30 p-3 font-mono text-sm text-zinc-100 outline-none focus-visible:outline focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-emerald-400 focus:border-emerald-300"
             />
             <div className="mt-3 flex flex-wrap gap-3">
               <button type="button" disabled={pending || !announcementDirty} onClick={onPublishAnnouncement} className="rounded-lg border border-emerald-300/30 px-4 py-2 text-sm font-semibold text-emerald-200 disabled:opacity-50">Publish</button>
@@ -837,7 +837,7 @@ function RenameProjectModal({
         <input
           value={name}
           onChange={(event) => setName(event.target.value)}
-          className="mt-2 min-h-11 w-full rounded-lg border border-white/10 bg-black/30 px-3 text-sm text-white outline-none focus:border-emerald-400"
+          className="mt-2 min-h-11 w-full rounded-lg border border-white/10 bg-black/30 px-3 text-sm text-white outline-none focus-visible:outline focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-emerald-400 focus:border-emerald-400"
         />
       </label>
       {error ? <p className="mt-3 text-sm text-amber-300">{error}</p> : null}
@@ -873,7 +873,7 @@ function RoleActionModal({
       <select
         value={role}
         onChange={(event) => setRole(event.target.value)}
-        className="mt-4 min-h-11 w-full rounded-lg border border-white/10 bg-black/30 px-3 text-sm text-white outline-none focus:border-emerald-400"
+        className="mt-4 min-h-11 w-full rounded-lg border border-white/10 bg-black/30 px-3 text-sm text-white outline-none focus-visible:outline focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-emerald-400 focus:border-emerald-400"
       >
         <option value="user">User</option>
         <option value="admin">Admin</option>

@@ -48,8 +48,8 @@ export function AnnouncementModal({ markdown, title, closeLabel, dismissLabel, c
   }, []);
 
   return (
-    <div className="fixed inset-0 z-[60] flex items-center justify-center bg-black/80 p-3 backdrop-blur-sm sm:p-6" onClick={(event) => event.stopPropagation()}>
-      <div ref={dialogRef} role="dialog" aria-modal="true" aria-labelledby="announcement-title" className="flex max-h-[calc(100dvh-1.5rem)] w-full max-w-5xl flex-col overflow-hidden rounded-2xl border border-emerald-300/20 bg-[#151515] shadow-2xl sm:max-h-[calc(100dvh-3rem)]">
+    <div className="fixed inset-0 z-[70] flex items-center justify-center bg-black/80 p-3 backdrop-blur-sm sm:p-6" onClick={onClose}>
+      <div ref={dialogRef} role="dialog" aria-modal="true" aria-labelledby="announcement-title" className="flex max-h-[calc(100dvh-1.5rem)] w-full max-w-5xl flex-col overflow-hidden rounded-2xl border border-emerald-300/20 bg-[#151515] shadow-2xl sm:max-h-[calc(100dvh-3rem)]" onClick={(event) => event.stopPropagation()}>
         <div className="flex items-start justify-between gap-4 border-b border-white/10 px-5 py-4 sm:px-8">
           <h2 id="announcement-title" className="text-2xl font-semibold text-white">{title}</h2>
           <button ref={closeRef} type="button" aria-label={closeLabel} onClick={onClose} className="inline-flex min-h-11 min-w-11 items-center justify-center rounded-lg border border-white/10 text-2xl leading-none text-zinc-300 hover:bg-white/10 focus-visible:outline focus-visible:outline-2 focus-visible:outline-emerald-400">×</button>

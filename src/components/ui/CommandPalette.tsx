@@ -167,7 +167,7 @@ export function CommandPalette({
 
   return (
     <div
-      className="fixed inset-0 z-[60] flex items-start justify-center bg-black/60 p-4 pt-[15vh] backdrop-blur-sm animate-fade-in"
+      className="fixed inset-0 z-50 flex items-start justify-center bg-black/60 p-4 pt-[15vh] backdrop-blur-sm animate-fade-in"
       onClick={handleClose}
     >
       <div
@@ -186,8 +186,9 @@ export function CommandPalette({
               setQuery(e.target.value);
               setActiveIndex(0);
             }}
+            aria-label={labels.placeholder}
             placeholder={labels.placeholder}
-            className="flex-1 bg-transparent py-4 text-sm text-white outline-none placeholder:text-zinc-600"
+            className="flex-1 bg-transparent py-4 text-sm text-white outline-none placeholder:text-zinc-400 focus-visible:outline focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-emerald-400"
           />
           <kbd className="hidden rounded border border-white/10 bg-white/5 px-1.5 py-0.5 text-[10px] text-zinc-500 sm:inline">
             ESC

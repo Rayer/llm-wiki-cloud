@@ -365,7 +365,7 @@ export function HomeClient() {
   return (
     <div className="space-y-10">
       <section className="flex flex-col items-center pt-8 text-center">
-        <p className="text-sm text-zinc-500">{t('Demo.heroSubtitle')}</p>
+        <p className="text-sm text-zinc-400">{t('Demo.heroSubtitle')}</p>
         <h1 className="mt-2 max-w-2xl text-2xl font-semibold tracking-tight text-white sm:text-3xl">
           {t('Demo.heading')}
         </h1>
@@ -376,8 +376,9 @@ export function HomeClient() {
               <input
                 value={query}
                 onChange={(event) => setQuery(event.target.value)}
+                aria-label={t('Demo.search')}
                 placeholder={suggestedQueries[0] ?? t('Demo.searchPlaceholder')}
-                className="min-h-12 flex-1 rounded-[var(--radius-md)] bg-transparent px-4 text-white outline-none transition placeholder:text-zinc-600 focus:ring-1 focus:ring-emerald-400/30"
+                className="min-h-12 flex-1 rounded-[var(--radius-md)] bg-transparent px-4 text-white outline-none transition placeholder:text-zinc-400 focus:ring-1 focus:ring-emerald-400/30 focus-visible:outline focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-emerald-400"
               />
               <div className="flex items-center gap-2 px-1 sm:pr-1">
                 <div className="grid grid-cols-2 rounded-[var(--radius-md)] border border-white/10 bg-black/30 p-0.5 text-sm">
@@ -415,7 +416,7 @@ export function HomeClient() {
                   type="button"
                   onMouseDown={(event) => event.preventDefault()}
                   onClick={() => void handleSuggestedQuery(suggestion)}
-                  className="max-w-full rounded-md border border-emerald-300/20 bg-emerald-300/10 px-3 py-1.5 text-left text-sm text-emerald-100 transition hover:border-emerald-300/40 hover:bg-emerald-300/15"
+                  className="max-w-full min-h-11 rounded-md border border-emerald-300/20 bg-emerald-300/10 px-3 py-1.5 text-left text-sm text-emerald-100 transition hover:border-emerald-300/40 hover:bg-emerald-300/15"
                 >
                   <span className="block truncate">{suggestion}</span>
                 </button>

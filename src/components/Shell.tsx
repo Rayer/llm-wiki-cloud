@@ -98,6 +98,12 @@ function ShellContent({ children }: { children: React.ReactNode }) {
 
   return (
     <div className="min-h-dvh text-zinc-100 lg:flex lg:items-stretch">
+      <a
+        href="#main-content"
+        className="sr-only focus:not-sr-only focus:fixed focus:left-4 focus:top-4 focus:z-[80] focus:rounded-lg focus:bg-emerald-300 focus:px-4 focus:py-2 focus:text-sm focus:font-semibold focus:text-black"
+      >
+        {t('Shell.skipToContent')}
+      </a>
       {token ? (
         <header className="sticky top-0 z-50 flex min-h-14 items-center justify-between border-b border-white/8 bg-zinc-950/85 px-4 backdrop-blur lg:hidden">
           <NavigationLink href="/" className="min-w-0 text-sm font-semibold tracking-tight text-white">
@@ -142,7 +148,7 @@ function ShellContent({ children }: { children: React.ReactNode }) {
             <div className="text-sm font-semibold tracking-tight text-white">
               {t('Shell.brand')}
             </div>
-            <div className="mt-0.5 text-xs text-zinc-500">{t('Shell.subtitle')}</div>
+            <div className="mt-0.5 text-xs text-zinc-400">{t('Shell.subtitle')}</div>
           </NavigationLink>
 
           <div className="flex-1 overflow-y-auto">
@@ -179,7 +185,7 @@ function ShellContent({ children }: { children: React.ReactNode }) {
             <div className="mx-3 my-2 border-t border-white/8" />
 
             <div className="px-3 pb-2">
-              <p className="px-1 pb-2 text-[10px] font-semibold uppercase tracking-wider text-zinc-600">
+              <p className="px-1 pb-2 text-xs font-semibold uppercase tracking-wider text-zinc-400">
                 {t('Shell.projects')}
               </p>
               {projectsLoading ? (
@@ -253,7 +259,7 @@ function ShellContent({ children }: { children: React.ReactNode }) {
         </aside>
       ) : null}
 
-      <main className="min-w-0 flex-1">
+      <main id="main-content" className="min-w-0 flex-1">
         {!hydrated ? (
           <div className="flex min-h-screen items-center justify-center text-sm text-zinc-500">
             {t('Shell.loading')}

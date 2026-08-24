@@ -84,7 +84,7 @@ export function ProjectRenameModal({ project, onSubmit, onClose }: ProjectRename
                 if (hasServerError) setError('');
               }}
               placeholder="Project name"
-              className="mt-2 w-full rounded-lg border border-white/10 bg-black/30 px-4 py-3 text-white outline-none transition placeholder:text-zinc-600 focus:border-emerald-300"
+              className="mt-2 w-full rounded-lg border border-white/10 bg-black/30 px-4 py-3 text-white outline-none transition placeholder:text-zinc-400 focus:border-emerald-300 focus-visible:outline focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-emerald-400"
             />
           </label>
           {validationError || hasServerError ? (

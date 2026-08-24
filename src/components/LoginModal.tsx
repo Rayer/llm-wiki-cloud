@@ -12,6 +12,7 @@ export function LoginModal() {
   const { t } = useLocale();
   const [email, setEmail] = useState('');
   const [password, setPassword] = useState('');
+  const [showPassword, setShowPassword] = useState(false);
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState('');
   const [registerOpen, setRegisterOpen] = useState(false);
@@ -147,21 +148,32 @@ export function LoginModal() {
               ref={emailRef} type="email" autoComplete="email" required
               value={email}
               onChange={(event) => setEmail(event.target.value)}
-              className="mt-2 w-full rounded-lg border border-white/10 bg-black/30 px-4 py-3 text-white outline-none transition placeholder:text-zinc-600 focus:border-emerald-300"
+              className="mt-2 w-full rounded-lg border border-white/10 bg-black/30 px-4 py-3 text-white outline-none transition placeholder:text-zinc-400 focus:border-emerald-300 focus-visible:outline focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-emerald-400"
               placeholder="you@example.com"
             />
           </label>
           <label className="block text-sm font-medium text-zinc-300">
             {t('Login.password')}
-            <input
-              type="password" autoComplete="current-password" required
-              value={password}
-              onChange={(event) => setPassword(event.target.value)}
-              className="mt-2 w-full rounded-lg border border-white/10 bg-black/30 px-4 py-3 text-white outline-none transition focus:border-emerald-300"
-            />
+            <span className="relative mt-2 block">
+              <input
+                type={showPassword ? 'text' : 'password'} autoComplete="current-password" required
+                value={password}
+                onChange={(event) => setPassword(event.target.value)}
+                className="w-full rounded-lg border border-white/10 bg-black/30 px-4 py-3 pr-24 text-white outline-none transition focus:border-emerald-300 focus-visible:outline focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-emerald-400"
+              />
+              <button
+                type="button"
+                aria-pressed={showPassword}
+                aria-label={showPassword ? t('Login.hidePassword') : t('Login.showPassword')}
+                onClick={() => setShowPassword((visible) => !visible)}
+                className="absolute inset-y-0 right-1 my-1 inline-flex min-h-11 min-w-11 items-center justify-center rounded-md px-2 text-xs font-medium text-zinc-300 transition hover:bg-white/10 focus-visible:outline focus-visible:outline-2 focus-visible:outline-emerald-400"
+              >
+                {showPassword ? t('Login.hidePassword') : t('Login.showPassword')}
+              </button>
+            </span>
           </label>
           {error ? (
-            <p className="rounded-lg border border-red-400/20 bg-red-400/10 px-3 py-2 text-sm text-red-200">
+            <p role="alert" className="rounded-lg border border-red-400/20 bg-red-400/10 px-3 py-2 text-sm text-red-200">
               {error}
             </p>
           ) : null}

@@ -98,6 +98,13 @@ afterEach(() => {
 });
 
 describe('LWC-174 production Shell rename behavior', () => {
+  it('exposes a skip link to main content', async () => {
+    renderShell();
+    const skip = await screen.findByRole('link', { name: '跳到主要內容' });
+    expect(skip.getAttribute('href')).toBe('#main-content');
+    expect(document.getElementById('main-content')).not.toBeNull();
+  });
+
   it('hides rename on the admin route', async () => {
     mocks.pathname = '/admin';
     mocks.user = { id: 'admin-1', email: 'admin@example.com', role: 'admin' };
