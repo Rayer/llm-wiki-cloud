@@ -573,7 +573,7 @@ export function PipelineClient() {
                 value={scrapeUrlText}
                 onChange={(e) => setScrapeUrlText(e.target.value)}
                 placeholder="https://example.com/article"
-                className="flex-1 rounded-md border border-white/10 bg-black/30 px-3 py-2 text-sm text-white outline-none transition placeholder:text-zinc-600 focus:border-emerald-300"
+                className="flex-1 rounded-md border border-white/10 bg-black/30 px-3 py-2 text-sm text-white outline-none transition placeholder:text-zinc-400 focus:border-emerald-300 focus-visible:outline focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-emerald-400"
               />
               <button
                 type="submit"

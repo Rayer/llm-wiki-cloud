@@ -13,6 +13,9 @@
   --accent-concept: #a78bfa;
   --radius-lg: 14px;
   --radius-md: 10px;
+  --z-modal: 50;
+  --z-palette: 50;
+  --z-announcement: 70;
 }
 
 @theme inline {
@@ -75,7 +78,25 @@ button[data-search-cue='2'] {
   animation: home-search-button-cue-gentle-alt 220ms ease;
 }
 
+button:not(:disabled),
+[role="button"]:not([aria-disabled="true"]),
+a[href] {
+  cursor: pointer;
+}
+
+button:disabled {
+  cursor: not-allowed;
+}
+
 @media (prefers-reduced-motion: reduce) {
+  *,
+  *::before,
+  *::after {
+    animation-duration: 0.01ms !important;
+    animation-iteration-count: 1 !important;
+    transition-duration: 0.01ms !important;
+  }
+
   button[data-search-cue='1'],
   button[data-search-cue='2'] {
     animation: none;

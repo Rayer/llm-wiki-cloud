@@ -167,7 +167,7 @@ describe('LWC-291 announcement modal', () => {
     expect(await screen.findByRole('dialog', { name: 'Announcement.title' })).toBeDefined();
   });
 
-  it('writes for checked Escape and manual checked close, never backdrop, and resets manual checkbox', async () => {
+  it('writes for checked Escape and manual checked close, and resets manual checkbox', async () => {
     await setup();
     const checkbox = await screen.findByRole('checkbox', { name: 'Announcement.dismiss' });
     await waitFor(() => expect(document.activeElement).toBe(screen.getByRole('button', { name: 'Announcement.close' })));
@@ -191,7 +191,8 @@ describe('LWC-291 announcement modal', () => {
     expect((screen.getByRole('checkbox', { name: 'Announcement.dismiss' }) as HTMLInputElement).checked).toBe(false);
     const dialog = screen.getByRole('dialog', { name: 'Announcement.title' });
     fireEvent.click(dialog.parentElement as HTMLElement);
-    expect(screen.getByRole('dialog', { name: 'Announcement.title' })).toBeDefined();
+    await waitFor(() => expect(screen.queryByRole('dialog', { name: 'Announcement.title' })).toBeNull());
+    expect(localStorage.getItem('llm-wiki:announcement-dismissed-digest')).toBe(`sha256:${'a'.repeat(64)}`);
   });
 
   it('stores a valid digest when a manually opened announcement is checked and closed', async () => {
@@ -325,6 +326,13 @@ describe('LWC-291 announcement modal', () => {
     await waitFor(() => expect(document.activeElement).toBe(trigger));
     expect(loginDialog?.hasAttribute('inert')).toBe(false);
     expect(loginDialog?.hasAttribute('aria-hidden')).toBe(false);
+  });
+
+  it('closes the announcement when the backdrop is clicked', async () => {
+    await setup();
+    const announcementDialog = await screen.findByRole('dialog', { name: 'Announcement.title' });
+    fireEvent.click(announcementDialog.parentElement as HTMLElement);
+    await waitFor(() => expect(screen.queryByRole('dialog', { name: 'Announcement.title' })).toBeNull());
   });
 });
 
