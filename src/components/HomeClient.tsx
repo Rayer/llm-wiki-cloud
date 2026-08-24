@@ -1,6 +1,6 @@
 'use client';
 
-import { FormEvent, useCallback, useEffect, useRef, useState } from 'react';
+import { FormEvent, useCallback, useEffect, useRef, useState, useSyncExternalStore } from 'react';
 import { ChevronDown } from 'lucide-react';
 import ReactMarkdown from 'react-markdown';
 import remarkGfm from 'remark-gfm';
@@ -62,8 +62,16 @@ type SearchMode = 'wiki' | 'full';
 
 const SUGGESTED_QUERIES_OPEN_KEY = 'llm-wiki:suggested-queries-open';
 
-function readSuggestedQueriesOpen(): boolean {
-  if (typeof window === 'undefined') return true;
+function subscribeSuggestedQueriesOpen(onStoreChange: () => void) {
+  window.addEventListener('storage', onStoreChange);
+  window.addEventListener('llm-wiki:suggested-queries-open', onStoreChange);
+  return () => {
+    window.removeEventListener('storage', onStoreChange);
+    window.removeEventListener('llm-wiki:suggested-queries-open', onStoreChange);
+  };
+}
+
+function getSuggestedQueriesOpen(): boolean {
   return localStorage.getItem(SUGGESTED_QUERIES_OPEN_KEY) !== '0';
 }
 
@@ -134,20 +142,18 @@ export function HomeClient() {
   const sampledProjectIdRef = useRef<string | undefined>(undefined);
   const hasSampledQueriesRef = useRef(false);
   const [suggestedQueryChips, setSuggestedQueryChips] = useState<string[]>([]);
-  const [suggestedQueriesOpen, setSuggestedQueriesOpen] = useState(true);
+  const suggestedQueriesOpen = useSyncExternalStore(
+    subscribeSuggestedQueriesOpen,
+    getSuggestedQueriesOpen,
+    () => true,
+  );
   const [latestConcepts, setLatestConcepts] = useState<WikiEntry[]>([]);
   const [searchButtonCue, setSearchButtonCue] = useState<0 | 1 | 2>(0);
 
-  useEffect(() => {
-    setSuggestedQueriesOpen(readSuggestedQueriesOpen());
-  }, []);
-
   const toggleSuggestedQueries = useCallback(() => {
-    setSuggestedQueriesOpen((open) => {
-      const next = !open;
-      localStorage.setItem(SUGGESTED_QUERIES_OPEN_KEY, next ? '1' : '0');
-      return next;
-    });
+    const next = localStorage.getItem(SUGGESTED_QUERIES_OPEN_KEY) === '0';
+    localStorage.setItem(SUGGESTED_QUERIES_OPEN_KEY, next ? '1' : '0');
+    window.dispatchEvent(new Event('llm-wiki:suggested-queries-open'));
   }, []);
 
   // Restore search from URL on mount (back-button support).
