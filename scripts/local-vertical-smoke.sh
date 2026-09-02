@@ -101,13 +101,26 @@ cp -R "$BFF_DIR/demo" "$tmp_dir/local-data"
 unset GOOGLE_APPLICATION_CREDENTIALS GOOGLE_CLOUD_PROJECT GOOGLE_CLOUD_QUOTA_PROJECT GCP_PROJECT \
   DEEPSEEK_API_KEY LLM_API_KEY OPENAI_API_KEY ANTHROPIC_API_KEY VERCEL_TOKEN 2>/dev/null || true
 
+(
+  cd "$BFF_DIR"
+  go build -o "$tmp_dir/bff" ./cmd/bff
+) &
+bff_build_pid="$!"
+(
+  cd "$BFF_DIR"
+  go build -o "$tmp_dir/auth" ./cmd/auth
+) &
+auth_build_pid="$!"
+wait "$bff_build_pid"
+wait "$auth_build_pid"
+
 (cd "$BFF_DIR" && \
   PORT="$BFF_PORT" LOCAL_DATA_DIR="$tmp_dir/local-data" DEV_JWT=true JWT_SECRET=dev-secret \
-  go run ./cmd/bff --local "$tmp_dir/local-data") > "$tmp_dir/bff.log" 2>&1 &
+  "$tmp_dir/bff" --local "$tmp_dir/local-data") > "$tmp_dir/bff.log" 2>&1 &
 pids+=("$!")
 (cd "$BFF_DIR" && \
   PORT="$AUTH_PORT" LOCAL_DATA_DIR="$tmp_dir/local-data" DEV_JWT=true JWT_SECRET=dev-secret \
-  go run ./cmd/auth --local "$tmp_dir/local-data") > "$tmp_dir/auth.log" 2>&1 &
+  "$tmp_dir/auth" --local "$tmp_dir/local-data") > "$tmp_dir/auth.log" 2>&1 &
 pids+=("$!")
 (cd "$FRONTEND_DIR" && NODE_ENV=development NEXT_TELEMETRY_DISABLED=1 \
   npm run dev -- --hostname 127.0.0.1 --port "$FRONTEND_PORT") > "$tmp_dir/frontend.log" 2>&1 &
