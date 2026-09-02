@@ -86,11 +86,11 @@ class WorkerDeploymentEvidenceTest(unittest.TestCase):
                 "head_sha": "c" * 40,
                 "conclusion": "success",
                 "run_id": 123,
-                "run_url": "https://github.com/Rayer/llm-wiki-bff/actions/runs/123",
+                "run_url": "https://github.com/Rayer/llm-wiki-cloud/actions/runs/123",
             },
             "image": {"digest": "sha256:" + "b" * 64, "reference": IMAGE},
             "originating_workflow": {
-                "repository": "Rayer/llm-wiki-bff",
+                "repository": "Rayer/llm-wiki-cloud",
                 "workflow": "Promote OLW worker to Cloud Run (production)",
                 "run_id": 456,
                 "run_attempt": 2,

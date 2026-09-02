@@ -9,6 +9,7 @@ import { load as parseYaml } from 'js-yaml';
 
 const execFileAsync = promisify(execFile);
 const repoRoot = new URL('..', import.meta.url).pathname;
+const monorepoRoot = new URL('../../../', import.meta.url).pathname;
 const commitSha = '0123456789abcdef0123456789abcdef01234567';
 const deploymentId = 'dpl_devready';
 const projectId = 'prj_dev123';
@@ -37,7 +38,7 @@ async function setupCase(scenario = 'authority-conflict') {
     meta: {
       githubDeployment: '1',
       githubOrg: 'Rayer',
-      githubRepo: 'llm-wiki-frontend',
+      githubRepo: 'llm-wiki-cloud',
       githubCommitRef: 'develop',
       githubCommitSha: commitSha,
     },
@@ -59,7 +60,7 @@ async function setupCase(scenario = 'authority-conflict') {
       status: 'completed',
       conclusion: 'success',
       id: 987654321,
-      html_url: 'https://github.test/Rayer/llm-wiki-frontend/actions/runs/987654321',
+      html_url: 'https://github.test/Rayer/llm-wiki-cloud/actions/runs/987654321',
     }],
   }));
   await execFileAsync('cp', [
@@ -94,7 +95,7 @@ function buildEnv(fixture, overrides = {}) {
     ...env,
     PATH: fixture.bin + ':' + process.env.PATH,
     FIXTURE_ROOT: fixture.root,
-    GITHUB_REPOSITORY: 'Rayer/llm-wiki-frontend',
+    GITHUB_REPOSITORY: 'Rayer/llm-wiki-cloud',
     GITHUB_TOKEN: 'github-sentinel-token',
     VERCEL_TOKEN: 'vercel-sentinel-token',
     VERCEL_API_BASE_URL: 'https://vercel.test',
@@ -112,7 +113,7 @@ function buildEnv(fixture, overrides = {}) {
     VERCEL_POLL_ATTEMPTS: '2',
     VERCEL_POLL_INTERVAL_SECONDS: '0',
     ROLLBACK_ARTIFACT_ID: '123456789',
-    ROLLBACK_ARTIFACT_URL: 'https://github.com/Rayer/llm-wiki-frontend/actions/runs/123456789/artifacts/123456789',
+    ROLLBACK_ARTIFACT_URL: 'https://github.com/Rayer/llm-wiki-cloud/actions/runs/123456789/artifacts/123456789',
     ROLLBACK_ARTIFACT_DIGEST: rollbackArtifactDigestBare,
     ...overrides,
   };
@@ -210,7 +211,7 @@ test('read-only preflight records a typed create-needed decision without provide
   assert.equal(context.target.deployment_id, null);
   assert.equal(context.source.commit_sha, commitSha);
   assert.equal(context.source.ref, 'refs/heads/develop');
-  assert.equal(context.source.repository, 'Rayer/llm-wiki-frontend');
+  assert.equal(context.source.repository, 'Rayer/llm-wiki-cloud');
   assert.equal(context.frozen_authority.deployment_id, 'dpl_devold');
   assert.equal(context.mutation_count, 0);
   assert.equal(contract.rollback.project_id, projectId);
@@ -350,7 +351,7 @@ for (const [scenario, reasonCode] of [
 }
 
 test('keeps the DEV workflow manual, exact-SHA gated, and secret-scoped', async () => {
-  const workflowSource = await readFile(join(repoRoot, '.github/workflows/vercel-dev-deployment.yml'), 'utf8');
+  const workflowSource = await readFile(join(monorepoRoot, '.github/workflows/vercel-dev-deployment.yml'), 'utf8');
   const workflow = parseYaml(workflowSource);
   assert.deepEqual(Object.keys(workflow.on.workflow_dispatch.inputs), ['commit_sha', 'ticket_ref']);
   assert.equal(workflow.on.workflow_dispatch.inputs.commit_sha.required, true);

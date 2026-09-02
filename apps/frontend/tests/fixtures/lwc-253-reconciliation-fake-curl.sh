@@ -53,7 +53,7 @@ elif [[ "$url" == *"/actions/workflows/ci.yml/runs?"* ]]; then
 elif [[ "$url" == *"/repos/$GITHUB_REPOSITORY/actions"* ]]; then
   cat "$root/ci.json"
 elif [[ "$url" == *"/repos/$GITHUB_REPOSITORY"* ]]; then
-  printf '%s' '{"id":98765,"full_name":"Rayer/llm-wiki-frontend"}'
+  printf '%s' '{"id":98765,"full_name":"Rayer/llm-wiki-cloud"}'
 elif [[ "$url" == *"/v9/projects/$VERCEL_PROJECT_ID/domains"* ]]; then
   if [[ "$scenario" == domain-missing ]]; then printf '%s' '{"domains":[]}'; elif [[ "$scenario" == domain-duplicate ]]; then jq '.domains += [{name:"llm-wiki-frontend-dev.vercel.app"}]' "$root/domains.json"; else cat "$root/domains.json"; fi
 elif [[ "$url" == *"/v9/projects/$VERCEL_PROJECT_ID"* ]]; then

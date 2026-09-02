@@ -7,7 +7,7 @@ if [[ "${VERCEL_DEV_DEPLOYMENT_LIBRARY:-}" != 1 && "$MODE" != "validate" && "$MO
   exit 2
 fi
 
-readonly EXPECTED_REPOSITORY="Rayer/llm-wiki-frontend"
+readonly EXPECTED_REPOSITORY="Rayer/llm-wiki-cloud"
 readonly EXPECTED_PROJECT_NAME="llm-wiki-frontend-dev"
 readonly EXPECTED_SCOPE="rayer-tung-s-projects"
 readonly STABLE_DOMAIN="wiki.dev.rayer.idv.tw"

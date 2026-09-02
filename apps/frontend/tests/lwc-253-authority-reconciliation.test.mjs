@@ -9,6 +9,7 @@ import { load as parseYaml } from 'js-yaml';
 
 const execFileAsync = promisify(execFile);
 const repoRoot = new URL('..', import.meta.url).pathname;
+const monorepoRoot = new URL('../../../', import.meta.url).pathname;
 const sha = '0123456789abcdef0123456789abcdef01234567';
 const oldSha = 'fedcba9876543210fedcba9876543210fedcba98';
 const canonicalProject = 'prj_canonical';
@@ -36,9 +37,9 @@ async function setup(scenario = 'existing-candidate') {
   await writeFile(join(root, 'canonical-project.json'), JSON.stringify({ id: canonicalProject, name: 'llm-wiki-frontend-dev', accountId: team }));
   await writeFile(join(root, 'legacy-project.json'), JSON.stringify({ id: legacyProject, name: 'llm-wiki-frontend', accountId: team }));
   await writeFile(join(root, 'domains.json'), JSON.stringify({ domains: [{ name: domain }] }));
-  await writeFile(join(root, 'ci.json'), JSON.stringify({ workflow_runs: [{ path: '.github/workflows/ci.yml', head_branch: 'develop', head_sha: sha, event: 'push', status: 'completed', conclusion: 'success', id: 123, html_url: 'https://github.com/Rayer/llm-wiki-frontend/actions/runs/123' }] }));
-  await writeFile(join(root, 'old-deployment.json'), JSON.stringify({ id: oldDeployment, url: 'https://old.vercel.app', projectId: legacyProject, teamId: team, ownerId: team, readyState: 'READY', target: null, meta: { githubDeployment: '1', githubOrg: 'Rayer', githubRepo: 'llm-wiki-frontend', githubCommitRef: 'develop', githubCommitSha: oldSha } }));
-  await writeFile(join(root, 'candidate.json'), JSON.stringify({ id: newDeployment, url: 'https://new.vercel.app', projectId: canonicalProject, teamId: team, ownerId: team, readyState: 'READY', target: null, meta: { githubDeployment: '1', githubOrg: 'Rayer', githubRepo: 'llm-wiki-frontend', githubCommitRef: 'develop', githubCommitSha: sha } }));
+  await writeFile(join(root, 'ci.json'), JSON.stringify({ workflow_runs: [{ path: '.github/workflows/ci.yml', head_branch: 'develop', head_sha: sha, event: 'push', status: 'completed', conclusion: 'success', id: 123, html_url: 'https://github.com/Rayer/llm-wiki-cloud/actions/runs/123' }] }));
+  await writeFile(join(root, 'old-deployment.json'), JSON.stringify({ id: oldDeployment, url: 'https://old.vercel.app', projectId: legacyProject, teamId: team, ownerId: team, readyState: 'READY', target: null, meta: { githubDeployment: '1', githubOrg: 'Rayer', githubRepo: 'llm-wiki-cloud', githubCommitRef: 'develop', githubCommitSha: oldSha } }));
+  await writeFile(join(root, 'candidate.json'), JSON.stringify({ id: newDeployment, url: 'https://new.vercel.app', projectId: canonicalProject, teamId: team, ownerId: team, readyState: 'READY', target: null, meta: { githubDeployment: '1', githubOrg: 'Rayer', githubRepo: 'llm-wiki-cloud', githubCommitRef: 'develop', githubCommitSha: sha } }));
   const initialState = { global: { alias: domain, projectId: legacyProject, deploymentId: oldDeployment }, legacyAliases: [{ alias: domain, projectId: legacyProject, deploymentId: oldDeployment }], canonicalAliases: [], production: {
     'wiki.rayer.idv.tw': { alias: 'wiki.rayer.idv.tw', projectId: legacyProject, deploymentId: oldDeployment, metadata: 'prod-one' },
     'llm-wiki-frontend.vercel.app': { alias: 'llm-wiki-frontend.vercel.app', projectId: legacyProject, deploymentId: oldDeployment, metadata: 'prod-two' },
@@ -78,7 +79,7 @@ function envFor(fixture, overrides = {}) {
     ...environment,
     PATH: `${fixture.bin}:${process.env.PATH}`,
     FIXTURE_ROOT: fixture.root,
-    GITHUB_REPOSITORY: 'Rayer/llm-wiki-frontend',
+    GITHUB_REPOSITORY: 'Rayer/llm-wiki-cloud',
     GITHUB_TOKEN: 'github-sentinel-token',
     VERCEL_TOKEN: 'vercel-sentinel-token',
     VERCEL_API_BASE_URL: 'https://vercel.test',
@@ -101,7 +102,7 @@ function envFor(fixture, overrides = {}) {
     GITHUB_RUN_ID: '123',
     RECONCILIATION_ARTIFACT_NAME: `vercel-authority-reconciliation-rollback-${sha}`,
     ROLLBACK_ARTIFACT_ID: '456',
-    ROLLBACK_ARTIFACT_URL: `https://github.com/Rayer/llm-wiki-frontend/actions/runs/123/artifacts/456`,
+    ROLLBACK_ARTIFACT_URL: `https://github.com/Rayer/llm-wiki-cloud/actions/runs/123/artifacts/456`,
     ROLLBACK_ARTIFACT_DIGEST: artifactDigest,
     EVIDENCE_DIR: fixture.evidenceDir,
     STABLE_DOMAIN: domain,
@@ -648,7 +649,7 @@ test('successful promote evidence carries restored checked-out and remote-develo
   assert.equal(output.status, 'SUCCESS');
   assert.equal(output.source.checked_out_sha, sha);
   assert.equal(output.source.current_remote_develop_sha, sha);
-  assert.equal(output.source.canonical_ci.run_url, 'https://github.com/Rayer/llm-wiki-frontend/actions/runs/123');
+  assert.equal(output.source.canonical_ci.run_url, 'https://github.com/Rayer/llm-wiki-cloud/actions/runs/123');
   assert.equal(output.provider_verification.mutation_count, 1);
 });
 
@@ -754,8 +755,8 @@ test('foreign-project exact-SHA candidate cannot suppress CREATE_NOT_ALLOWED', a
 });
 
 test('workflow is manual, develop-gated, pinned, and shares normal concurrency', async () => {
-  const normal = parseYaml(await readFile(join(repoRoot, '.github/workflows/vercel-dev-deployment.yml'), 'utf8'));
-  const reconciliation = parseYaml(await readFile(join(repoRoot, '.github/workflows/vercel-dev-authority-reconciliation.yml'), 'utf8'));
+  const normal = parseYaml(await readFile(join(monorepoRoot, '.github/workflows/vercel-dev-deployment.yml'), 'utf8'));
+  const reconciliation = parseYaml(await readFile(join(monorepoRoot, '.github/workflows/vercel-dev-authority-reconciliation.yml'), 'utf8'));
   assert.equal(reconciliation.concurrency.group, normal.concurrency.group);
   assert.deepEqual(Object.keys(reconciliation.on), ['workflow_dispatch']);
   assert.equal(reconciliation.jobs.reconcile.if, "github.ref == 'refs/heads/develop'");

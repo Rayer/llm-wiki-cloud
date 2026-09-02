@@ -8,7 +8,7 @@ if [[ "$MODE" != "preflight" && "$MODE" != "promote" ]]; then
 fi
 
 readonly ALIASES=("wiki.rayer.idv.tw" "llm-wiki-frontend.vercel.app")
-readonly EXPECTED_REPOSITORY="Rayer/llm-wiki-frontend"
+readonly EXPECTED_REPOSITORY="Rayer/llm-wiki-cloud"
 readonly API_BASE_URL="${VERCEL_API_BASE_URL:-https://api.vercel.com}"
 readonly GITHUB_BASE_URL="${GITHUB_API_URL:-https://api.github.com}"
 readonly EVIDENCE_DIR="${EVIDENCE_DIR:-artifacts/vercel-alias-promotion}"

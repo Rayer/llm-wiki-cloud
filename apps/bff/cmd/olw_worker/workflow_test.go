@@ -15,7 +15,7 @@ import (
 // This keeps the deployment boundary deterministic without requiring cloud
 // credentials: the checked-in workflow must retain the fail-closed contract.
 func TestDeployWorkerWorkflowContract(t *testing.T) {
-	data, err := os.ReadFile("../../.github/workflows/deploy-worker.yml")
+	data, err := os.ReadFile("../../../../.github/workflows/deploy-worker.yml")
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -122,8 +122,8 @@ func TestDeployWorkerWorkflowContract(t *testing.T) {
 }
 
 func TestWorkerPromotionWorkflowsContract(t *testing.T) {
-	deploy := readWorkflow(t, "../../.github/workflows/deploy-worker.yml")
-	release := readWorkflow(t, "../../.github/workflows/release-worker.yml")
+	deploy := readWorkflow(t, ".github/workflows/deploy-worker.yml")
+	release := readWorkflow(t, ".github/workflows/release-worker.yml")
 
 	for _, workflow := range map[string]string{"deploy": deploy, "release": release} {
 		var document any
@@ -364,7 +364,7 @@ func TestWorkerPromotionWorkflowsContract(t *testing.T) {
 }
 
 func TestWorkerReleaseEmitsOneNormalizedEvidenceArtifactAfterReadback(t *testing.T) {
-	release := readWorkflow(t, "../../.github/workflows/release-worker.yml")
+	release := readWorkflow(t, ".github/workflows/release-worker.yml")
 
 	readbackAt := strings.Index(release, "      - name: Render normalized deployment evidence after strict read-back")
 	if readbackAt < 0 {
@@ -396,7 +396,7 @@ func TestWorkerReleaseEmitsOneNormalizedEvidenceArtifactAfterReadback(t *testing
 }
 
 func TestWorkerReleaseRollbackUploadFailureOutcomesBlockEvidenceFinalization(t *testing.T) {
-	release := readWorkflow(t, "../../.github/workflows/release-worker.yml")
+	release := readWorkflow(t, ".github/workflows/release-worker.yml")
 	finalizer := workflowSection(t, release, "      - name: Finalize partial evidence when provider verification is unknown", "      - name: Upload normalized deployment evidence")
 	match := regexp.MustCompile(`(?m)^        run: \|\n((?:          .+\n?)+)`).FindStringSubmatch(finalizer)
 	if len(match) != 2 {
@@ -572,6 +572,9 @@ func runJQFixtureE(name, filter string) (string, error) {
 
 func readWorkflow(t *testing.T, path string) string {
 	t.Helper()
+	if strings.HasPrefix(path, ".github/workflows/") {
+		path = filepath.Join("..", "..", "..", "..", path)
+	}
 	data, err := os.ReadFile(path)
 	if err != nil {
 		t.Fatal(err)

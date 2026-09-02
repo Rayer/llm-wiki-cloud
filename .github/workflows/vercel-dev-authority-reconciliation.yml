@@ -63,6 +63,9 @@ jobs:
     timeout-minutes: 30
     environment:
       name: Development
+    defaults:
+      run:
+        working-directory: apps/frontend
     env:
       COMMIT_SHA: ${{ inputs.commit_sha }}
       CI_RUN_ID: ${{ inputs.ci_run_id }}
@@ -87,7 +90,7 @@ jobs:
 
       - name: Validate requested SHA, remote develop, and canonical CI
         shell: bash
-        run: bash .github/scripts/vercel-dev-authority-reconciliation.sh validate
+        run: bash "$GITHUB_WORKSPACE/apps/frontend/.github/scripts/vercel-dev-authority-reconciliation.sh" validate
         env:
           EVIDENCE_DIR: ${{ runner.temp }}/vercel-dev-authority-reconciliation
           GITHUB_TOKEN: ${{ github.token }}
@@ -99,7 +102,7 @@ jobs:
       - name: Read-only reconciliation preflight
         id: reconciliation_preflight
         shell: bash
-        run: bash .github/scripts/vercel-dev-authority-reconciliation.sh preflight
+        run: bash "$GITHUB_WORKSPACE/apps/frontend/.github/scripts/vercel-dev-authority-reconciliation.sh" preflight
         env:
           EVIDENCE_DIR: ${{ runner.temp }}/vercel-dev-authority-reconciliation
           GITHUB_TOKEN: ${{ github.token }}
@@ -121,7 +124,7 @@ jobs:
       - name: Reconciliation promote (first mutation-capable step)
         if: steps.reconciliation_preflight.outcome == 'success' && steps.reconciliation_rollback_upload.outcome == 'success'
         shell: bash
-        run: bash .github/scripts/vercel-dev-authority-reconciliation.sh promote
+        run: bash "$GITHUB_WORKSPACE/apps/frontend/.github/scripts/vercel-dev-authority-reconciliation.sh" promote
         env:
           EVIDENCE_DIR: ${{ runner.temp }}/vercel-dev-authority-reconciliation
           GITHUB_RUN_ID: ${{ github.run_id }}

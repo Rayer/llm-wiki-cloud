@@ -9,12 +9,13 @@ import { load as parseYaml } from 'js-yaml';
 
 const execFileAsync = promisify(execFile);
 const repoRoot = new URL('..', import.meta.url).pathname;
+const monorepoRoot = new URL('../../../', import.meta.url).pathname;
 const commitSha = '0123456789abcdef0123456789abcdef01234567';
 const deploymentId = 'dpl_test123';
 const projectId = 'prj_test123';
 const aliases = ['wiki.rayer.idv.tw', 'llm-wiki-frontend.vercel.app'];
 const rollbackArtifactDigestBare = '0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef';
-const workflowPath = join(repoRoot, '.github/workflows/vercel-alias-promotion.yml');
+const workflowPath = join(monorepoRoot, '.github/workflows/vercel-alias-promotion.yml');
 
 async function setupCase(scenario = 'success') {
   const root = await mkdtemp(join(tmpdir(), 'lwc-199-'));
@@ -31,7 +32,7 @@ async function setupCase(scenario = 'success') {
     meta: {
       githubDeployment: '1',
       githubOrg: 'Rayer',
-      githubRepo: 'llm-wiki-frontend',
+      githubRepo: 'llm-wiki-cloud',
       githubCommitRef: 'main',
       githubCommitSha: commitSha,
     },
@@ -80,7 +81,7 @@ function buildEnv(fixture, overrides = {}) {
     COMMIT_SHA: commitSha,
     DEPLOYMENT_ID: deploymentId,
     TICKET_REF: 'LWC-199',
-    GITHUB_REPOSITORY: 'Rayer/llm-wiki-frontend',
+    GITHUB_REPOSITORY: 'Rayer/llm-wiki-cloud',
     ORIGINATING_WORKFLOW: 'vercel-alias-promotion.yml',
     ORIGINATING_WORKFLOW_RUN_ID: '123456789',
     ORIGINATING_WORKFLOW_RUN_ATTEMPT: '3',
@@ -90,7 +91,7 @@ function buildEnv(fixture, overrides = {}) {
     VERCEL_API_BASE_URL: 'https://vercel.test',
     VERCEL_TOKEN: 'vercel-sentinel-token-a2c9',
     ROLLBACK_ARTIFACT_ID: '123456789',
-    ROLLBACK_ARTIFACT_URL: 'https://github.com/Rayer/llm-wiki-frontend/actions/runs/123456789/artifacts/123456789',
+    ROLLBACK_ARTIFACT_URL: 'https://github.com/Rayer/llm-wiki-cloud/actions/runs/123456789/artifacts/123456789',
     ROLLBACK_ARTIFACT_DIGEST: rollbackArtifactDigestBare,
     VERCEL_PROJECT_ID: projectId,
     VERCEL_TEAM_ID: 'team_test123',
@@ -277,7 +278,7 @@ test('promotes exactly both canonical aliases to one deployment and writes norma
     head_sha: commitSha,
     conclusion: 'success',
     run_id: 987654321,
-    run_url: 'https://github.test/Rayer/llm-wiki-frontend/actions/runs/987654321',
+    run_url: 'https://github.test/Rayer/llm-wiki-cloud/actions/runs/987654321',
   });
   assert.deepEqual(run.evidence.provider.current, {
     deployment_id: deploymentId,
@@ -314,7 +315,7 @@ test('promotes exactly both canonical aliases to one deployment and writes norma
   ]);
   assert.match(run.evidence.provider_verification.checked_at, /^20[0-9]{2}-[0-9]{2}-[0-9]{2}T/);
   assert.deepEqual(run.evidence.originating_workflow, {
-    repository: 'Rayer/llm-wiki-frontend',
+    repository: 'Rayer/llm-wiki-cloud',
     workflow: 'vercel-alias-promotion.yml',
     run_id: 123456789,
     run_attempt: 3,
@@ -337,7 +338,7 @@ test('promotes exactly both canonical aliases to one deployment and writes norma
   assert.equal(JSON.stringify(run.evidence).includes('effective_url'), false);
   assert.equal(run.curlCalls.filter((url) => url.includes('/v13/deployments/')).length, 2);
   assert.equal(run.curlCalls.filter((url) => url.includes('/actions/workflows/ci.yml/runs?')).length, 1);
-  assert.equal(run.curlCalls.some((url) => url.includes('/repos/Rayer/llm-wiki-frontend/actions/runs?')), false);
+  assert.equal(run.curlCalls.some((url) => url.includes('/repos/Rayer/llm-wiki-cloud/actions/runs?')), false);
   assert.equal(run.curlCalls.filter((url) => url.includes('/v4/aliases/')).length, 14);
   assert.ok(run.curlCalls.includes('https://' + aliases[0] + '/'));
   assert.ok(run.curlCalls.includes('https://' + aliases[1] + '/'));
@@ -554,14 +555,14 @@ test('preflight freezes both aliases without mutating or fabricating final succe
   assert.deepEqual(contract, {
     schema_version: 1,
     kind: 'vercel-alias-rollback-contract',
-    repository: 'Rayer/llm-wiki-frontend',
+    repository: 'Rayer/llm-wiki-cloud',
     commit_sha: commitSha,
     ref: 'refs/heads/main',
     deployment: {
       id: deploymentId,
       project_id: projectId,
       source: 'github',
-      repository: 'Rayer/llm-wiki-frontend',
+      repository: 'Rayer/llm-wiki-cloud',
       ref: 'refs/heads/main',
       commit_sha: commitSha,
       ready_state: 'READY',
@@ -572,7 +573,7 @@ test('preflight freezes both aliases without mutating or fabricating final succe
       workflow: 'ci.yml',
       event: 'push',
       run_id: 987654321,
-      run_url: 'https://github.test/Rayer/llm-wiki-frontend/actions/runs/987654321',
+      run_url: 'https://github.test/Rayer/llm-wiki-cloud/actions/runs/987654321',
     },
     rollback_artifact_name: `vercel-alias-rollback-${commitSha}`,
     aliases: [
@@ -778,8 +779,8 @@ test('workflow contract parses as YAML and scopes provider secrets to the helper
   });
   const runs = workflow.jobs.promote.steps.filter(({ run }) => typeof run === 'string').map(({ run }) => run);
   assert.equal(runs.some((run) => run.includes('npm install --global vercel@52.0.0 --ignore-scripts')), false);
-  assert.ok(runs.some((run) => run.trim() === 'bash .github/scripts/vercel-alias-promotion.sh preflight'));
-  assert.ok(runs.some((run) => run.trim() === 'bash .github/scripts/vercel-alias-promotion.sh promote'));
+  assert.ok(runs.some((run) => run.trim() === 'bash "$GITHUB_WORKSPACE/apps/frontend/.github/scripts/vercel-alias-promotion.sh" preflight'));
+  assert.ok(runs.some((run) => run.trim() === 'bash "$GITHUB_WORKSPACE/apps/frontend/.github/scripts/vercel-alias-promotion.sh" promote'));
   assert.equal(runs.some((run) => /vercel\s+(deploy|build)|next\s+build/.test(run)), false);
   const steps = workflow.jobs.promote.steps;
   const rollbackUpload = steps.find(({ name }) => name === 'Upload durable alias rollback contract');

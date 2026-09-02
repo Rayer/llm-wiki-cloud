@@ -1,5 +1,5 @@
 import assert from 'node:assert/strict';
-import { chmod, mkdtemp, readFile, rm, writeFile } from 'node:fs/promises';
+import { chmod, mkdtemp, readFile, readdir, rm, writeFile } from 'node:fs/promises';
 import { join } from 'node:path';
 import { tmpdir } from 'node:os';
 import { spawnSync } from 'node:child_process';
@@ -7,10 +7,23 @@ import { test } from 'node:test';
 import { load as parseYaml } from 'js-yaml';
 
 const workflowPath = join(new URL('../../..', import.meta.url).pathname, '.github/workflows/ci.yml');
+const repoRoot = new URL('../../..', import.meta.url).pathname;
+const workflowDirectory = join(repoRoot, '.github/workflows');
 const candidateSha = 'a'.repeat(40);
 
 function commandIndex(source, command) {
   return source.indexOf(command);
+}
+
+function collectRunBlocks(value, blocks = []) {
+  if (Array.isArray(value)) value.forEach((item) => collectRunBlocks(item, blocks));
+  else if (value && typeof value === 'object') {
+    Object.entries(value).forEach(([key, item]) => {
+      if (key === 'run' && typeof item === 'string') blocks.push(item);
+      else collectRunBlocks(item, blocks);
+    });
+  }
+  return blocks;
 }
 
 async function runShell(run, { candidate = candidateSha, head = candidateSha, remoteDevelop = candidateSha, ancestor = 0, ghExit = 0, buildResult = 'success' } = {}) {
@@ -246,4 +259,54 @@ test('CI status bridge shell gates reject stale, malformed, non-ancestral, and f
 
   const cleanupOnlyAfterSuccess = await runShell(`${pending.run}\n${success.run}`);
   assert.doesNotMatch(cleanupOnlyAfterSuccess.ghLog, /state=failure/);
+});
+
+test('active root deployment workflows are monorepo-rooted, shell-valid, and manual-only', async () => {
+  const files = (await readdir(workflowDirectory)).filter((file) => file.endsWith('.yml')).sort();
+  assert.ok(files.length >= 11, `expected root CI plus deployment workflows, found ${files.length}`);
+  const deploymentFiles = [
+    'deploy-auth.yml', 'deploy-bff.yml', 'deploy-worker.yml',
+    'release-auth.yml', 'release-bff.yml', 'release-worker.yml', 'rollback-auth.yml',
+    'vercel-alias-promotion.yml', 'vercel-dev-authority-reconciliation.yml',
+    'vercel-dev-deployment.yml', 'vercel-production-auth-env.yml',
+  ];
+  const rootSources = new Map();
+  let runCount = 0;
+  for (const file of files) {
+    const source = await readFile(join(workflowDirectory, file), 'utf8');
+    const workflow = parseYaml(source);
+    assert.ok(workflow && workflow.jobs, `${file} must parse as a workflow`);
+    rootSources.set(file, { source, workflow });
+    for (const run of collectRunBlocks(workflow)) {
+      runCount += 1;
+      const checked = run.replace(/\$\{\{[\s\S]*?\}\}/g, 'workflow-expression');
+      const result = spawnSync('bash', ['-n'], { input: checked, encoding: 'utf8' });
+      assert.equal(result.status, 0, `${file} run block has invalid shell syntax: ${result.stderr}\n${checked}`);
+    }
+  }
+  assert.ok(runCount > 0, 'active workflows must contain executable run blocks');
+
+  for (const file of deploymentFiles) {
+    const entry = rootSources.get(file);
+    assert.ok(entry, `${file} must be active at the root`);
+    assert.deepEqual(Object.keys(entry.workflow.on ?? {}).sort(), ['workflow_dispatch'], `${file} must remain manual-only`);
+    assert.doesNotMatch(entry.source, /(?:Rayer\/llm-wiki-(?:bff|frontend)|apps\/(?:bff|frontend)\/\.github\/workflows)/);
+  }
+
+  const bff = rootSources.get('deploy-bff.yml').source;
+  const auth = rootSources.get('deploy-auth.yml').source;
+  const worker = rootSources.get('deploy-worker.yml').source;
+  assert.match(bff, /gcloud builds submit apps\/bff[\s\\\n]+--config apps\/bff\/cloudbuild-bff\.yaml/);
+  assert.match(auth, /gcloud builds submit apps\/bff[\s\\\n]+--config apps\/bff\/cloudbuild-auth\.yaml/);
+  assert.match(worker, /docker build[\s\S]*-f apps\/bff\/cmd\/olw_worker\/Dockerfile[\s\S]* apps\/bff/);
+  assert.match(bff, /bff-image-digest-\$\{\{ steps\.image_digest\.outputs\.commit_sha \}\}/);
+  assert.match(auth, /auth-image-digest-\$\{\{ steps\.image_digest\.outputs\.commit_sha \}\}/);
+  assert.match(worker, /worker-image-digest-\$\{\{ steps\.source\.outputs\.candidate_sha \}\}/);
+
+  for (const file of deploymentFiles.filter((name) => name.startsWith('vercel-'))) {
+    const { source, workflow } = rootSources.get(file);
+    assert.match(source, /apps\/frontend\/\.github\/scripts\//);
+    assert.match(source, /working-directory: apps\/frontend/);
+    assert.ok(workflow.jobs, `${file} must retain its job definition`);
+  }
 });

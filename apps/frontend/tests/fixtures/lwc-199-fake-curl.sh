@@ -211,9 +211,9 @@ fi
 
 if [[ "$url" == *"/actions/workflows/ci.yml/runs?"* ]]; then
   if [[ "$scenario" == ci-failure ]]; then
-    printf '%s' '{"workflow_runs":[{"path":".github/workflows/ci.yml","head_branch":"main","head_sha":"0123456789abcdef0123456789abcdef01234567","event":"push","status":"completed","conclusion":"failure","id":987654321,"html_url":"https://github.test/Rayer/llm-wiki-frontend/actions/runs/987654321","run_attempt":2}]}'
+    printf '%s' '{"workflow_runs":[{"path":".github/workflows/ci.yml","head_branch":"main","head_sha":"0123456789abcdef0123456789abcdef01234567","event":"push","status":"completed","conclusion":"failure","id":987654321,"html_url":"https://github.test/Rayer/llm-wiki-cloud/actions/runs/987654321","run_attempt":2}]}'
   else
-    printf '%s' '{"workflow_runs":[{"path":".github/workflows/ci.yml","head_branch":"main","head_sha":"0123456789abcdef0123456789abcdef01234567","event":"push","status":"completed","conclusion":"success","id":987654321,"html_url":"https://github.test/Rayer/llm-wiki-frontend/actions/runs/987654321","run_attempt":2}]}'
+    printf '%s' '{"workflow_runs":[{"path":".github/workflows/ci.yml","head_branch":"main","head_sha":"0123456789abcdef0123456789abcdef01234567","event":"push","status":"completed","conclusion":"success","id":987654321,"html_url":"https://github.test/Rayer/llm-wiki-cloud/actions/runs/987654321","run_attempt":2}]}'
   fi
   exit 0
 fi

@@ -122,7 +122,7 @@ jobs:
             echo "DEV Auth receipt artifact must contain exactly auth-image-digest-$COMMIT_SHA.txt"
             exit 1
           fi
-          python3 scripts/validate_auth_promotion_contract.py \
+          python3 apps/bff/scripts/validate_auth_promotion_contract.py \
             --receipt "${RECEIPT_FILES[0]}" \
             --run-json "$DEV_RUN_JSON" \
             --expected-sha "$COMMIT_SHA" \
@@ -175,7 +175,7 @@ jobs:
           SERVICE_ERROR="$EVIDENCE_DIR/service-error.txt"
           if gcloud run services describe "$SERVICE_NAME" --region "$REGION" --project "$PROJECT_ID" --format=json --quiet > "$SERVICE_BEFORE" 2> "$SERVICE_ERROR"; then
             BOOTSTRAP_EXISTING=true
-          elif python3 scripts/classify_cloud_run_service.py --service-name "$SERVICE_NAME" --stderr-file "$SERVICE_ERROR"; then
+          elif python3 apps/bff/scripts/classify_cloud_run_service.py --service-name "$SERVICE_NAME" --stderr-file "$SERVICE_ERROR"; then
             BOOTSTRAP_EXISTING=false
             : > "$SERVICE_BEFORE"
           else

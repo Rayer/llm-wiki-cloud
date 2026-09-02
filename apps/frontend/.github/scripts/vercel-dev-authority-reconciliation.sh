@@ -165,7 +165,7 @@ write_evidence() {
        ticket_ref: ($ticket | str_or_null),
        environment: "development",
        action: "reconcile_dev_authority",
-       source: {repository: "Rayer/llm-wiki-frontend", commit_sha: ($sha | str_or_null), ref: $ref,
+       source: {repository: "Rayer/llm-wiki-cloud", commit_sha: ($sha | str_or_null), ref: $ref,
          checked_out_sha: ($currentHead | str_or_null), current_remote_develop_sha: ($currentRemote | str_or_null),
          canonical_ci: {workflow: "ci.yml", workflow_path: ".github/workflows/ci.yml", event: "push", head_branch: "develop", head_sha: ($sha | str_or_null), status: (if $ciId == "" then null else "completed" end),
            conclusion: (if $ciId == "" then null else "success" end), run_id: ($ciId | num_or_null), run_url: ($ciUrl | str_or_null)}},

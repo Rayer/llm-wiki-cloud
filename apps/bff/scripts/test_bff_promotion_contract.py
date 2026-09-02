@@ -47,7 +47,7 @@ class BFFPromotionContractTest(unittest.TestCase):
             "head_sha": SHA,
             "status": "in_progress",
             "conclusion": None,
-            "html_url": "https://github.com/Rayer/llm-wiki-bff/actions/runs/123",
+            "html_url": "https://github.com/Rayer/llm-wiki-cloud/actions/runs/123",
         }))
 
     def tearDown(self):
@@ -65,7 +65,7 @@ class BFFPromotionContractTest(unittest.TestCase):
             "--lifecycle", lifecycle,
             "--producer-result", "success",
             "--component", "lwc-bff",
-            "--repository", "Rayer/llm-wiki-bff",
+            "--repository", "Rayer/llm-wiki-cloud",
             "--ar-repo", AR_REPO,
             "--query-config-revision", "query-dev-2026-08-21.1",
             "--query-config-digest", CONFIG_DIGEST,
@@ -112,7 +112,7 @@ class BFFPromotionContractTest(unittest.TestCase):
             "dev_run_id": RUN_ID,
             "ci_run_id": RUN_ID,
             "ci_run_attempt": 1,
-            "dev_run_url": "https://github.com/Rayer/llm-wiki-bff/actions/runs/123",
+            "dev_run_url": "https://github.com/Rayer/llm-wiki-cloud/actions/runs/123",
             "image_digest": DIGEST,
             "image_reference": f"{AR_REPO}/llm-wiki-bff@{DIGEST}",
         })
@@ -131,7 +131,7 @@ class BFFPromotionContractTest(unittest.TestCase):
         github_output = self.root / "github-output"
         result = self.invoke_receipt(github_output=github_output)
         self.assertEqual(result.returncode, 0, result.stderr)
-        self.assertIn("dev_run_url=https://github.com/Rayer/llm-wiki-bff/actions/runs/123\n", github_output.read_text())
+        self.assertIn("dev_run_url=https://github.com/Rayer/llm-wiki-cloud/actions/runs/123\n", github_output.read_text())
         self.assertEqual(self.output.read_text().count("\n"), 1)
 
     def test_production_readiness_must_be_the_exact_normalized_develop_receipt(self):
@@ -140,7 +140,7 @@ class BFFPromotionContractTest(unittest.TestCase):
             "python3", str(SCRIPT), "validate-production-readiness",
             "--readiness", str(self.output), "--expected-sha", SHA,
             "--expected-run-id", str(RUN_ID), "--expected-branch", "develop",
-            "--component", "lwc-bff", "--repository", "Rayer/llm-wiki-bff",
+            "--component", "lwc-bff", "--repository", "Rayer/llm-wiki-cloud",
             "--ar-repo", AR_REPO, "--receipt", str(self.receipt_path),
         ]
         self.assertEqual(subprocess.run(command, capture_output=True, text=True).returncode, 0)
@@ -198,8 +198,8 @@ class BFFPromotionContractTest(unittest.TestCase):
     def test_receipt_rejects_noncanonical_run_url_without_writing_output(self):
         original = json.loads(self.run_path.read_text())
         for url in (
-            "https://github.com/Rayer/llm-wiki-bff/actions/runs/123?x=1",
-            "https://github.com/Rayer/llm-wiki-bff/actions/runs/123\r\nX-Injected: yes",
+            "https://github.com/Rayer/llm-wiki-cloud/actions/runs/123?x=1",
+            "https://github.com/Rayer/llm-wiki-cloud/actions/runs/123\r\nX-Injected: yes",
         ):
             with self.subTest(url=url):
                 self.run_path.write_text(json.dumps({**original, "html_url": url}))

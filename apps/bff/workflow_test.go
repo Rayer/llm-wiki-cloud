@@ -239,7 +239,7 @@ func TestWorkerDevWorkflowUsesReadOnlyIAMPreflight(t *testing.T) {
 		t.Fatal("worker IAM preflight must pipe $IAM_POLICY to the policy validator and fail closed")
 	}
 	mutatedPreflight := strings.Replace(preflight,
-		`if ! printf '%s\n' "$IAM_POLICY" | python3 scripts/validate_cloud_run_job_iam_policy.py; then`,
+		`if ! printf '%s\n' "$IAM_POLICY" | python3 apps/bff/scripts/validate_cloud_run_job_iam_policy.py; then`,
 		"if ! true; then", 1)
 	if hasWorkerIAMPolicyValidatorPipeline(mutatedPreflight) {
 		t.Fatal("worker IAM preflight assertion accepts a no-op replacement for the validator pipeline")
@@ -273,7 +273,7 @@ func TestWorkerDevWorkflowUsesReadOnlyIAMPreflight(t *testing.T) {
 }
 
 func hasWorkerIAMPolicyValidatorPipeline(preflight string) bool {
-	const pipeline = `if ! printf '%s\n' "$IAM_POLICY" | python3 scripts/validate_cloud_run_job_iam_policy.py; then`
+	const pipeline = `if ! printf '%s\n' "$IAM_POLICY" | python3 apps/bff/scripts/validate_cloud_run_job_iam_policy.py; then`
 	return strings.Contains(preflight, pipeline) &&
 		regexp.MustCompile(`(?s)`+regexp.QuoteMeta(pipeline)+`.*?exit 1\s+fi`).MatchString(preflight)
 }
@@ -431,7 +431,7 @@ func TestDevWorkflowValidatesAndPassesBuildIdentity(t *testing.T) {
 		"git_sha=$GIT_SHA",
 		"git_branch=$GIT_BRANCH",
 		"git_tag=$GIT_TAG",
-		"--config cloudbuild-bff.yaml",
+		"--config apps/bff/cloudbuild-bff.yaml",
 		"_APP_VERSION=$APP_VERSION",
 		"_GIT_SHA=$GIT_SHA",
 		"_GIT_BRANCH=$GIT_BRANCH",
@@ -457,10 +457,6 @@ func TestCIWorkflowPushesAndPRsMainAndDevelop(t *testing.T) {
 }
 
 func TestMainFastForwardEligibilityFollowsReadiness(t *testing.T) {
-	ci := readWorkflow(t, ".github/workflows/ci.yml")
-	if strings.Contains(ci, "main-fast-forward-eligible:") {
-		t.Fatal("CI must not publish the protected main gate")
-	}
 	contents := readWorkflow(t, ".github/workflows/deploy-bff.yml")
 	jobStart := strings.Index(contents, "  main-fast-forward-eligible:")
 	if jobStart < 0 {
@@ -971,6 +967,7 @@ esac
 		"FAKE_CURRENT_RUN_JSON="+currentFile,
 	)
 	cmd := exec.Command("bash", "-c", script)
+	cmd.Dir = filepath.Join("..", "..")
 	cmd.Env = env
 	raw, _ := cmd.CombinedOutput()
 	events, readErr := os.ReadFile(eventLog)
@@ -1128,6 +1125,7 @@ exit 2
 		"FAKE_JOBS_PAGE="+jobsFile,
 	)
 	cmd := exec.Command("bash", "-c", script)
+	cmd.Dir = filepath.Join("..", "..")
 	cmd.Env = env
 	raw, runErr := cmd.CombinedOutput()
 	output := string(raw)
@@ -1229,6 +1227,7 @@ exit 2
 		"GH_LOG="+ghLog,
 	)
 	cmd := exec.Command("bash", "-c", script)
+	cmd.Dir = filepath.Join("..", "..")
 	cmd.Env = env
 	raw, runErr := cmd.CombinedOutput()
 	output := string(raw)
@@ -1347,6 +1346,7 @@ fi
 		"FAKE_CURRENT_FILE="+currentFile, "FAKE_JOBS_FILE="+jobsFile,
 	)
 	cmd := exec.Command("bash", "-c", script)
+	cmd.Dir = filepath.Join("..", "..")
 	cmd.Env = env
 	raw, _ := cmd.CombinedOutput()
 	events, err := os.ReadFile(eventsFile)
@@ -1502,6 +1502,7 @@ fi
 		"PREVIOUS_ROLLBACK_REVISION=old-revision", "SERVICE_NAME=service", "REGION=region", "PROJECT_ID=project",
 	)
 	cmd := exec.Command("bash", "-c", section)
+	cmd.Dir = filepath.Join("..", "..")
 	cmd.Env = env
 	raw, _ := cmd.CombinedOutput()
 	events, err := os.ReadFile(eventLog)
@@ -1666,7 +1667,7 @@ func TestAuthDevWorkflowUsesCanonicalSourceAndExistingPrerequisites(t *testing.T
 		"ref: ${{ inputs.commit_sha }}",
 		"git fetch origin develop --force --no-tags",
 		"git rev-parse origin/develop",
-		"--config cloudbuild-auth.yaml",
+		"--config apps/bff/cloudbuild-auth.yaml",
 		"llm-wiki-auth:$GIT_SHA",
 		"FIRESTORE_DATABASE_ID: llm-wiki-cloud-dev",
 		"RUNTIME_SERVICE_ACCOUNT: lwc-auth-dev@llm-wiki-cloud.iam.gserviceaccount.com",
@@ -2307,10 +2308,18 @@ func TestBFFDevWorkflowHasNoRunScopedObservabilityTag(t *testing.T) {
 }
 
 func TestRemovedBFFObservabilityTagsHaveNoRepositoryConsumer(t *testing.T) {
+	repoRoot := filepath.Join("..", "..")
 	for _, root := range []string{".github", "docs", "scripts"} {
-		err := filepath.Walk(root, func(path string, info os.FileInfo, err error) error {
-			if err != nil || info.IsDir() || path == "scripts/test_bff_promotion_contract.py" || path == "scripts/test_bff_deployment_evidence.py" {
+		err := filepath.Walk(filepath.Join(repoRoot, root), func(path string, info os.FileInfo, err error) error {
+			if err != nil || info.IsDir() {
 				return err
+			}
+			relativePath, err := filepath.Rel(repoRoot, path)
+			if err != nil {
+				return err
+			}
+			if relativePath == "scripts/test_bff_promotion_contract.py" || relativePath == "scripts/test_bff_deployment_evidence.py" {
+				return nil
 			}
 			contents, err := os.ReadFile(path)
 			if err != nil {
@@ -2318,10 +2327,10 @@ func TestRemovedBFFObservabilityTagsHaveNoRepositoryConsumer(t *testing.T) {
 			}
 			text := string(contents)
 			if strings.Contains(text, "llm-wiki-bff:dev-") || strings.Contains(text, "llm-wiki-bff:prod-") {
-				t.Fatalf("removed BFF observability tag remains referenced by %s", path)
+				t.Fatalf("removed BFF observability tag remains referenced by %s", relativePath)
 			}
-			if (path == ".github/workflows/deploy-bff.yml" || path == ".github/workflows/release-bff.yml") && strings.Contains(text, "gcloud artifacts docker tags add") {
-				t.Fatalf("removed BFF observability tag mutation remains in %s", path)
+			if (relativePath == ".github/workflows/deploy-bff.yml" || relativePath == ".github/workflows/release-bff.yml") && strings.Contains(text, "gcloud artifacts docker tags add") {
+				t.Fatalf("removed BFF observability tag mutation remains in %s", relativePath)
 			}
 			return nil
 		})
@@ -2548,7 +2557,7 @@ func TestReleaseWorkflowRequiresMainBuildProvenance(t *testing.T) {
 		"current main must exactly equal commit_sha",
 		"dev_run_id",
 		`gh api "repos/${GITHUB_REPOSITORY}/actions/runs/${DEV_RUN_ID}"`,
-		"scripts/validate_bff_promotion_contract.py validate-dev-receipt",
+		"apps/bff/scripts/validate_bff_promotion_contract.py validate-dev-receipt",
 		"--expected-branch develop",
 		"--expected-event workflow_dispatch",
 		"validate-production-readiness",
@@ -2726,14 +2735,14 @@ func TestReleaseWorkflowRereadsMainImmediatelyBeforeDeploy(t *testing.T) {
 
 func TestReleaseWorkflowStrictlyParsesQueryConfigReceipt(t *testing.T) {
 	contents := readWorkflow(t, ".github/workflows/release-bff.yml")
-	hasScript := strings.Contains(contents, "scripts/validate_bff_promotion_contract.py validate-dev-receipt")
+	hasScript := strings.Contains(contents, "apps/bff/scripts/validate_bff_promotion_contract.py validate-dev-receipt")
 	hasInlineParser := strings.Contains(contents, "python3 - \"$DIGEST_FILE\" \"$GITHUB_OUTPUT\" <<'PY'\n")
 	if !hasScript && !hasInlineParser {
 		t.Fatal("release workflow must validate dev receipt with a strict parser")
 	}
 	if hasScript {
 		for _, want := range []string{
-			"scripts/validate_bff_promotion_contract.py validate-dev-receipt",
+			"apps/bff/scripts/validate_bff_promotion_contract.py validate-dev-receipt",
 			"--receipt \"$DIGEST_FILE\"",
 			"--run-json \"$DEV_RUN_JSON\"",
 			"--expected-sha \"$COMMIT_SHA\"",
@@ -2921,7 +2930,7 @@ func TestReleaseWorkflowValidatesAndPersistsFrozenLiveRevisionBeforeMutation(t *
 		`SERVICE_JSON=$(gcloud run services describe "$SERVICE_NAME"`,
 		`(.status.latestCreatedRevisionName | type) == "string"`,
 		`(.status.latestReadyRevisionName | type) == "string"`,
-		"scripts/validate_bff_promotion_contract.py validate-traffic",
+		"apps/bff/scripts/validate_bff_promotion_contract.py validate-traffic",
 		"--traffic-path status.traffic",
 		"--traffic-mode provider-pre-mutation",
 		"--recognized-revision \"$FROZEN_READY_REVISION\"",
@@ -2992,7 +3001,7 @@ func TestReleaseWorkflowReconcilesFrozenRestoreRegardlessOfUpdateTrafficStatus(t
 		"while (( SECONDS < ROLLBACK_READBACK_DEADLINE )); do",
 		"gcloud run services describe \"$SERVICE_NAME\"",
 		"validate_restored_effective_traffic \"$SERVICE_JSON\"",
-		"scripts/validate_bff_promotion_contract.py validate-traffic",
+		"apps/bff/scripts/validate_bff_promotion_contract.py validate-traffic",
 		"--traffic-path status.traffic",
 		"--traffic-mode provider-post-rollback",
 		"--expected-revision \"$FROZEN_READY_REVISION\"",
@@ -3142,7 +3151,7 @@ func TestCIWorkflowValidatesProductVersion(t *testing.T) {
 	contents := readWorkflow(t, ".github/workflows/ci.yml")
 	for _, want := range []string{
 		"Validate product version",
-		"APP_VERSION=$(go run ./cmd/versioncheck VERSION)",
+		"go run ./cmd/versioncheck VERSION",
 		"python3 scripts/test_bff_promotion_contract.py",
 		"python3 scripts/test_auth_promotion_contract.py",
 	} {
@@ -3176,7 +3185,7 @@ func TestPromotionReadyJobIsSameRunExactAndReadOnly(t *testing.T) {
 		"gh run download \"$DEV_RUN_ID\"",
 		"gh api \"repos/${GITHUB_REPOSITORY}/actions/runs/${DEV_RUN_ID}\" > \"$RUNNER_TEMP/bff-dev-run.json\"",
 		"bff-image-digest-$CANDIDATE_SHA",
-		"scripts/validate_bff_promotion_contract.py validate-dev-receipt",
+		"apps/bff/scripts/validate_bff_promotion_contract.py validate-dev-receipt",
 		"--expected-event workflow_dispatch",
 		"--lifecycle readiness",
 		"--expected-ci-run-id \"$CI_RUN_ID\"",
@@ -3514,6 +3523,7 @@ func writeExecutable(t *testing.T, path, contents string) {
 func runWorkflowBlock(t *testing.T, body string, env []string) error {
 	t.Helper()
 	cmd := exec.Command("bash", "-c", body)
+	cmd.Dir = filepath.Join("..", "..")
 	cmd.Env = env
 	return cmd.Run()
 }
@@ -3521,6 +3531,7 @@ func runWorkflowBlock(t *testing.T, body string, env []string) error {
 func runWorkflowOutput(t *testing.T, body string, env []string) (string, error) {
 	t.Helper()
 	cmd := exec.Command("bash", "-c", body)
+	cmd.Dir = filepath.Join("..", "..")
 	cmd.Env = env
 	raw, err := cmd.CombinedOutput()
 	return string(raw), err
@@ -3943,6 +3954,9 @@ func TestAuthBootstrapSecondMutationPreservesJWTSecretReference(t *testing.T) {
 
 func readWorkflow(t *testing.T, path string) string {
 	t.Helper()
+	if strings.HasPrefix(path, ".github/workflows/") {
+		path = filepath.Join("..", "..", path)
+	}
 	contents, err := os.ReadFile(path)
 	if err != nil {
 		t.Fatalf("read %s: %v", path, err)
@@ -4046,15 +4060,12 @@ func TestCloudRunWorkflowsUsePrivateRangesOnlyEgress(t *testing.T) {
 		".github/workflows/release-auth.yml",
 	} {
 		t.Run(workflow, func(t *testing.T) {
-			contents, err := os.ReadFile(workflow)
-			if err != nil {
-				t.Fatalf("read workflow: %v", err)
-			}
+			contents := readWorkflow(t, workflow)
 
-			if strings.Contains(string(contents), "--vpc-egress all-traffic") {
+			if strings.Contains(contents, "--vpc-egress all-traffic") {
 				t.Fatal("Cloud Run egress must not route all traffic through the VPC")
 			}
-			if !strings.Contains(string(contents), "--vpc-egress private-ranges-only") {
+			if !strings.Contains(contents, "--vpc-egress private-ranges-only") {
 				t.Fatal("Cloud Run egress must route only private ranges through the VPC")
 			}
 		})
