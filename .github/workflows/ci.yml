@@ -154,16 +154,15 @@ jobs:
           test "${{ needs.local-smoke.result }}" = success
           test "${{ needs.workflow-source.result }}" = success
 
-  main-fast-forward-eligible:
-    name: main-fast-forward-eligible
-    if: ${{ always() && github.event_name == 'push' && github.ref == 'refs/heads/develop' }}
+  main-fast-forward-eligible-pending:
+    name: main-fast-forward-eligible-pending
+    if: ${{ github.event_name == 'push' && github.ref == 'refs/heads/develop' }}
     runs-on: ubuntu-latest
-    needs: build
     permissions:
       contents: read
       statuses: write
     steps:
-      - name: Revoke stale main fast-forward eligibility status
+      - name: Publish pending main fast-forward eligibility status
         if: always()
         env:
           CANDIDATE_SHA: ${{ github.sha }}
@@ -172,17 +171,30 @@ jobs:
           set -euo pipefail
           [[ "$CANDIDATE_SHA" =~ ^[0-9a-f]{40}$ ]]
           gh api --method POST "repos/${GITHUB_REPOSITORY}/statuses/${CANDIDATE_SHA}" --field state=pending --field context=main-fast-forward-eligible --field description='Validating exact develop head for main fast-forward eligibility'
+
+  main-fast-forward-eligible:
+    name: main-fast-forward-eligible
+    if: ${{ always() && github.event_name == 'push' && github.ref == 'refs/heads/develop' }}
+    runs-on: ubuntu-latest
+    needs: [build, main-fast-forward-eligible-pending]
+    permissions:
+      contents: read
+      statuses: write
+    steps:
       - name: Check out exact candidate
         uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
         with:
+          ref: ${{ github.sha }}
           fetch-depth: 0
           persist-credentials: false
       - name: Verify develop contains main
         env:
           BUILD_RESULT: ${{ needs.build.result }}
+          PENDING_RESULT: ${{ needs.main-fast-forward-eligible-pending.result }}
         run: |
           set -euo pipefail
           test "$BUILD_RESULT" = "success"
+          test "$PENDING_RESULT" = "success"
           candidate_sha="$GITHUB_SHA"
           [[ "$candidate_sha" =~ ^[0-9a-f]{40}$ ]]
           head_sha="$(git rev-parse HEAD)"
