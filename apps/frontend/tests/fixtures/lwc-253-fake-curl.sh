@@ -41,10 +41,17 @@ if [[ "$url" == *"/actions/workflows/ci.yml/runs?"* ]]; then
 elif [[ "$url" == *"/repos/$GITHUB_REPOSITORY"* ]]; then
   printf '%s' '{"id":12345}'
 elif [[ "$url" == *"/v9/projects/$VERCEL_PROJECT_ID"* ]]; then
+  project_reads="$(<"$root/project-reads")"
+  project_reads=$((project_reads + 1))
+  printf '%s' "$project_reads" > "$root/project-reads"
   if [[ "$scenario" == project-mismatch ]]; then
     jq '.name = "llm-wiki-frontend"' "$root/project.json"
   elif [[ "$scenario" == team-mismatch ]]; then
     jq '.accountId = "team_main123"' "$root/project.json"
+  elif [[ "$project_reads" -gt 1 && "$scenario" == root-drift ]]; then
+    jq '.rootDirectory = "apps/bff"' "$root/project.json"
+  elif [[ "$project_reads" -gt 1 && "$scenario" == link-drift ]]; then
+    jq '.link = {repoId: 99999}' "$root/project.json"
   else
     cat "$root/project.json"
   fi

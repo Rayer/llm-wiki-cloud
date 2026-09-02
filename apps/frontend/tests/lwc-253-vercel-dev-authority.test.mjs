@@ -24,6 +24,7 @@ async function setupCase(scenario = 'authority-conflict') {
   await mkdir(bin);
   await mkdir(evidenceDir);
   await writeFile(join(root, 'scenario'), scenario);
+  await writeFile(join(root, 'project-reads'), '0');
   await writeFile(join(root, 'mutation-log'), '');
   await writeFile(join(root, 'deployment-post-log'), '');
   await writeFile(join(root, 'curl-calls'), '');
@@ -224,6 +225,13 @@ test('read-only preflight records a typed create-needed decision without provide
   assert.equal(context.source.ref, 'refs/heads/develop');
   assert.equal(context.source.repository, 'Rayer/llm-wiki-cloud');
   assert.equal(context.frozen_authority.deployment_id, 'dpl_devold');
+  assert.deepEqual(context.frozen_authority.project, {
+    id: projectId,
+    name: 'llm-wiki-frontend-dev',
+    team_id: teamId,
+    root_directory: 'apps/frontend',
+    git_link: { state: 'unlinked', repo_id: null },
+  });
   assert.equal(context.mutation_count, 0);
   assert.equal(contract.rollback.project_id, projectId);
   assert.equal(contract.rollback.team_id, teamId);
@@ -240,12 +248,25 @@ test('read-only preflight records a typed create-needed decision without provide
   assert.equal(run.deploymentPostLog.length, 1);
   assert.equal(run.mutationLog.length, 1);
   const deploymentPayload = JSON.parse(run.deploymentPostLog.find((entry) => entry.startsWith('{')));
+  assert.equal(deploymentPayload.gitSource.repoId, 12345);
   assert.equal(deploymentPayload.target, undefined);
   assert.equal(run.evidence.deployment.target, 'preview');
   assert.ok(run.evidence.provider_verification.checks.includes('deployment_create_attempted'));
   assert.ok(run.evidence.provider_verification.checks.includes('alias_mutation_attempted'));
   assert.match(run.mutationLog[0], /^alias set dpl_devready wiki\.dev\.rayer\.idv\.tw/);
 });
+
+for (const scenario of ['root-drift', 'link-drift']) {
+  test(`rechecks project authority before mutation for ${scenario}`, async () => {
+    const run = await runCase(scenario);
+    assert.equal(run.preflight.code, undefined, run.preflight.stderr);
+    assert.equal(run.result.code, 1);
+    assert.equal(run.evidence.status, 'PREFLIGHT_FAILED');
+    assert.equal(run.evidence.reason_code, 'PROJECT_AUTHORITY_DRIFT');
+    assert.equal(run.deploymentPostLog.length, 0);
+    assert.equal(run.mutationLog.length, 0);
+  });
+}
 
 test('creates through historical deployments and counts deployment plus alias mutations', async () => {
   const run = await runCase('historical-deployment');
