@@ -1,0 +1,89 @@
+name: Vercel Production Alias Promotion
+
+on:
+  workflow_dispatch:
+    inputs:
+      commit_sha:
+        description: Exact 40-character lowercase SHA already deployed by Vercel
+        required: true
+        type: string
+      deployment_id:
+        description: Immutable READY Vercel deployment ID to receive both aliases
+        required: true
+        type: string
+      ticket_ref:
+        description: Optional ticket reference retained as evidence metadata
+        required: false
+        default: ''
+        type: string
+
+permissions:
+  contents: read
+  actions: read
+
+concurrency:
+  group: vercel-production-alias-promotion
+  cancel-in-progress: false
+
+jobs:
+  promote:
+    name: Validate and promote bounded production aliases
+    if: github.ref == 'refs/heads/main'
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    environment:
+      name: Production
+    env:
+      COMMIT_SHA: ${{ inputs.commit_sha }}
+      DEPLOYMENT_ID: ${{ inputs.deployment_id }}
+      TICKET_REF: ${{ inputs.ticket_ref }}
+      GITHUB_REPOSITORY: ${{ github.repository }}
+      ORIGINATING_WORKFLOW: vercel-alias-promotion.yml
+      ORIGINATING_WORKFLOW_RUN_ID: ${{ github.run_id }}
+      ORIGINATING_WORKFLOW_RUN_ATTEMPT: ${{ github.run_attempt }}
+    steps:
+      - name: Check out workflow-owned helper
+        uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+        with:
+          ref: ${{ github.sha }}
+          persist-credentials: false
+
+      - name: Preflight exact deployment and rollback contract
+        shell: bash
+        run: bash .github/scripts/vercel-alias-promotion.sh preflight
+        env:
+          EVIDENCE_DIR: ${{ runner.temp }}/vercel-alias-promotion
+          GITHUB_TOKEN: ${{ github.token }}
+          VERCEL_TOKEN: ${{ secrets.VERCEL_TOKEN }}
+          VERCEL_PROJECT_ID: ${{ secrets.VERCEL_PROJECT_ID }}
+          VERCEL_TEAM_ID: ${{ secrets.VERCEL_TEAM_ID }}
+
+      - name: Upload durable alias rollback contract
+        id: rollback_upload
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
+        with:
+          name: vercel-alias-rollback-${{ inputs.commit_sha }}
+          path: ${{ runner.temp }}/vercel-alias-promotion/rollback-contract.json
+          retention-days: 90
+          if-no-files-found: error
+
+      - name: Promote exact deployment
+        shell: bash
+        run: bash .github/scripts/vercel-alias-promotion.sh promote
+        env:
+          EVIDENCE_DIR: ${{ runner.temp }}/vercel-alias-promotion
+          ROLLBACK_ARTIFACT_ID: ${{ steps.rollback_upload.outputs.artifact-id }}
+          ROLLBACK_ARTIFACT_URL: ${{ steps.rollback_upload.outputs.artifact-url }}
+          ROLLBACK_ARTIFACT_DIGEST: ${{ steps.rollback_upload.outputs.artifact-digest }}
+          VERCEL_TOKEN: ${{ secrets.VERCEL_TOKEN }}
+          VERCEL_PROJECT_ID: ${{ secrets.VERCEL_PROJECT_ID }}
+          VERCEL_TEAM_ID: ${{ secrets.VERCEL_TEAM_ID }}
+
+      - name: Upload normalized deployment and rollback evidence
+        if: always()
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
+        with:
+          name: vercel-alias-promotion-evidence-${{ inputs.commit_sha }}
+          path: ${{ runner.temp }}/vercel-alias-promotion/vercel-alias-promotion.json
+          retention-days: 90
+          if-no-files-found: error

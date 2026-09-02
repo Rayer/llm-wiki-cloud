@@ -1,0 +1,100 @@
+name: Vercel Development Deployment
+
+on:
+  workflow_dispatch:
+    inputs:
+      commit_sha:
+        description: Exact 40-character lowercase SHA on develop with successful canonical CI
+        required: true
+        type: string
+      ticket_ref:
+        description: Optional ticket reference retained as normalized evidence metadata
+        required: false
+        default: ''
+        type: string
+
+permissions:
+  contents: read
+  actions: read
+
+concurrency:
+  group: vercel-development-deployment
+  cancel-in-progress: false
+
+jobs:
+  promote:
+    name: Deploy and promote the bounded DEV alias
+    if: github.ref == 'refs/heads/develop'
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    environment:
+      name: Development
+    env:
+      COMMIT_SHA: ${{ inputs.commit_sha }}
+      TICKET_REF: ${{ inputs.ticket_ref }}
+      GITHUB_REPOSITORY: ${{ github.repository }}
+      ORIGINATING_WORKFLOW: vercel-dev-deployment.yml
+      ORIGINATING_WORKFLOW_RUN_ID: ${{ github.run_id }}
+      ORIGINATING_WORKFLOW_RUN_ATTEMPT: ${{ github.run_attempt }}
+
+    steps:
+      - name: Check out the exact requested SHA
+        uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+        with:
+          ref: ${{ inputs.commit_sha }}
+          fetch-depth: 0
+          persist-credentials: false
+
+      - name: Validate requested SHA, remote develop, and canonical CI
+        shell: bash
+        run: bash .github/scripts/vercel-dev-deployment.sh validate
+        env:
+          EVIDENCE_DIR: ${{ runner.temp }}/vercel-dev-deployment
+          GITHUB_TOKEN: ${{ github.token }}
+
+      - name: Install pinned Vercel CLI
+        shell: bash
+        run: npm install --global vercel@52.0.0 --ignore-scripts
+
+      - name: Preflight exact DEV deployment and rollback contract
+        shell: bash
+        run: bash .github/scripts/vercel-dev-deployment.sh preflight
+        env:
+          EVIDENCE_DIR: ${{ runner.temp }}/vercel-dev-deployment
+          GITHUB_TOKEN: ${{ github.token }}
+          VERCEL_TOKEN: ${{ secrets.VERCEL_TOKEN }}
+          VERCEL_PROJECT_ID: ${{ secrets.VERCEL_PROJECT_ID }}
+          VERCEL_TEAM_ID: ${{ secrets.VERCEL_TEAM_ID }}
+          VERCEL_SCOPE: ${{ secrets.VERCEL_SCOPE }}
+
+      - name: Upload durable DEV rollback contract
+        id: rollback_upload
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
+        with:
+          name: vercel-dev-rollback-${{ inputs.commit_sha }}
+          path: ${{ runner.temp }}/vercel-dev-deployment/rollback-contract.json
+          retention-days: 90
+          if-no-files-found: error
+
+      - name: Promote exactly the stable DEV alias
+        shell: bash
+        run: bash .github/scripts/vercel-dev-deployment.sh promote
+        env:
+          EVIDENCE_DIR: ${{ runner.temp }}/vercel-dev-deployment
+          GITHUB_TOKEN: ${{ github.token }}
+          ROLLBACK_ARTIFACT_ID: ${{ steps.rollback_upload.outputs.artifact-id }}
+          ROLLBACK_ARTIFACT_URL: ${{ steps.rollback_upload.outputs.artifact-url }}
+          ROLLBACK_ARTIFACT_DIGEST: ${{ steps.rollback_upload.outputs.artifact-digest }}
+          VERCEL_TOKEN: ${{ secrets.VERCEL_TOKEN }}
+          VERCEL_PROJECT_ID: ${{ secrets.VERCEL_PROJECT_ID }}
+          VERCEL_TEAM_ID: ${{ secrets.VERCEL_TEAM_ID }}
+          VERCEL_SCOPE: ${{ secrets.VERCEL_SCOPE }}
+
+      - name: Upload normalized DEV deployment evidence
+        if: always()
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
+        with:
+          name: vercel-dev-deployment-evidence-${{ inputs.commit_sha }}
+          path: ${{ runner.temp }}/vercel-dev-deployment/vercel-dev-deployment.json
+          retention-days: 90
+          if-no-files-found: error

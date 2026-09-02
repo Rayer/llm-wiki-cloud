@@ -1,0 +1,37 @@
+{
+  "name": "llm-wiki-frontend",
+  "version": "0.1.0",
+  "private": true,
+  "type": "module",
+  "scripts": {
+    "dev": "next dev",
+    "build": "next build --webpack",
+    "start": "next start",
+    "lint": "eslint",
+    "test": "npm run test:node && npm run test:component",
+    "test:node": "node --experimental-strip-types --test tests/*.test.mjs",
+    "test:component": "NODE_ENV=test vitest run"
+  },
+  "dependencies": {
+    "lucide-react": "^1.23.0",
+    "next": "16.2.7",
+    "react": "19.2.4",
+    "react-dom": "19.2.4",
+    "react-markdown": "^10.1.0",
+    "remark-gfm": "^4.0.1"
+  },
+  "devDependencies": {
+    "@tailwindcss/postcss": "^4",
+    "@testing-library/react": "^16.3.2",
+    "@types/node": "^20",
+    "@types/react": "^19",
+    "@types/react-dom": "^19",
+    "eslint": "^9",
+    "eslint-config-next": "16.2.7",
+    "jsdom": "^30.0.1",
+    "js-yaml": "^4.2.0",
+    "tailwindcss": "^4",
+    "typescript": "^5",
+    "vitest": "^4.1.10"
+  }
+}
