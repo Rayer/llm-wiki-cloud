@@ -78,7 +78,19 @@ elif [[ "$url" == "$github_base"/* ]]; then
 fi
 
 if [[ "$url" == *"/v9/projects/"* ]]; then
-  cat "$root/project.json"
+  project_response="$root/project.json"
+  if [[ "$scenario" == project-root-drift || "$scenario" == project-link-drift ]]; then
+    project_read_count="$(grep -Fc '/v9/projects/' "$root/curl-calls" || true)"
+    if [[ "$project_read_count" -ge 2 ]]; then
+      if [[ "$scenario" == project-root-drift ]]; then
+        jq '.rootDirectory = null' "$root/project.json"
+      else
+        jq '.link.repo = "other-repo"' "$root/project.json"
+      fi
+      exit 0
+    fi
+  fi
+  cat "$project_response"
   exit 0
 fi
 

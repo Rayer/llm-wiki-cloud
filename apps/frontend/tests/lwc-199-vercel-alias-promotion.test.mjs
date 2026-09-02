@@ -583,6 +583,11 @@ test('preflight freezes both aliases without mutating or fabricating final succe
       target: 'production',
       url: 'https://dpl_test123.vercel.app',
     },
+    project_authority: {
+      id: projectId,
+      rootDirectory: 'apps/frontend',
+      link: { type: 'github', org: 'Rayer', repo: 'llm-wiki-cloud', productionBranch: 'main' },
+    },
     ci: {
       workflow: 'ci.yml',
       event: 'push',
@@ -602,6 +607,17 @@ test('preflight freezes both aliases without mutating or fabricating final succe
   assert.equal(JSON.parse(await readFile(join(run.evidenceDir, 'vercel-alias-promotion-context.json'), 'utf8')).phase, 'preflight-complete');
   assert.equal(JSON.stringify(run.evidence).includes('SUCCESS'), false);
 });
+
+for (const scenario of ['project-root-drift', 'project-link-drift']) {
+  test(`promote fails closed on preflight-then-${scenario} before alias mutation`, async () => {
+    const run = await runCase(scenario);
+    assert.notEqual(run.result.code, 0);
+    assert.equal(run.evidence.status, 'PREFLIGHT_FAILED', run.diagnostic);
+    assert.match(run.evidence.reason, /project authority|drifted/i);
+    assert.equal(run.calls.length, 0);
+    assert.equal(run.curlCalls.filter((url) => url.includes('/v2/deployments/')).length, 0);
+  });
+}
 
 test('promote refuses to run without durable rollback artifact outputs', async () => {
   const run = await runCase('success', {}, 'preflight');
