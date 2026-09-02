@@ -209,7 +209,7 @@ jobs:
             --jobs-json "$CI_JOBS_JSON" \
             --expected-run-id "$CI_RUN_ID" \
             --expected-run-attempt "$CI_RUN_ATTEMPT" \
-            --required-job test
+            --required-job canonical-ci
           echo "ci_run_id=$CI_RUN_ID" >> "$GITHUB_OUTPUT"
           echo "ci_run_attempt=$CI_RUN_ATTEMPT" >> "$GITHUB_OUTPUT"
 
@@ -662,7 +662,7 @@ jobs:
             --jobs-json "$CI_JOBS_JSON" \
             --expected-run-id "$CI_RUN_ID" \
             --expected-run-attempt "$CI_RUN_ATTEMPT" \
-            --required-job test
+            --required-job canonical-ci
           validate_current_canonical_develop "$RUNNER_TEMP/canonical-ci-current-run-pre-deploy.json"
           # end pinned canonical CI revalidation
 
