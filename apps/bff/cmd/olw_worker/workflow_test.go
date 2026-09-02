@@ -26,6 +26,16 @@ func TestDeployWorkerWorkflowContract(t *testing.T) {
 	if !strings.Contains(workflow, "workflow_dispatch:") {
 		t.Fatal("worker dev workflow is missing workflow_dispatch")
 	}
+	setupGo := workflowSection(t, workflow, "      - name: Set up Go", "      - name: Verify worker source")
+	if !strings.Contains(setupGo, "go-version-file: apps/bff/go.mod") {
+		t.Fatal("worker setup-go must resolve the monorepo module from apps/bff/go.mod")
+	}
+	if !strings.Contains(setupGo, "cache-dependency-path: apps/bff/go.sum") {
+		t.Fatal("worker setup-go cache must use apps/bff/go.sum")
+	}
+	if strings.Contains(setupGo, "go-version-file: go.mod") || strings.Contains(setupGo, "cache-dependency-path: go.sum") {
+		t.Fatal("worker setup-go must not resolve or cache dependencies from the repository root")
+	}
 	for _, want := range []string{
 		"group: deploy-olw-pipeline-dev",
 		"cancel-in-progress: true",
