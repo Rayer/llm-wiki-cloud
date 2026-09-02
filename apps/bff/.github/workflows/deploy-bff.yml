@@ -1,0 +1,1229 @@
+name: Deploy BFF to Cloud Run (dev)
+
+on:
+  workflow_dispatch:
+    inputs:
+      commit_sha:
+        description: Full lowercase commit SHA to deploy from canonical develop
+        required: true
+        type: string
+
+env:
+  PROJECT_ID: llm-wiki-cloud
+  SERVICE_NAME: llm-wiki-bff-dev
+  REGION: asia-east1
+  AR_REPO: asia-east1-docker.pkg.dev/llm-wiki-cloud/cloud-run-images
+  QUERY_STAGE_CONFIG_PATH: /app/configs/query/dev/query-dev-2026-08-31.1.json
+  QUERY_STAGE_CONFIG_REVISION: query-dev-2026-08-31.1
+  QUERY_STAGE_CONFIG_DIGEST: sha256:2ee1a7303c60e810c3240c966a784c4d6cc76419a37b6e0e13e2d9e80f344305
+
+concurrency:
+  group: deploy-bff-dev
+  cancel-in-progress: false
+
+jobs:
+  test-and-deploy:
+    name: Test & Deploy
+    runs-on: ubuntu-latest
+    timeout-minutes: 120
+
+    permissions:
+      contents: read
+      actions: read
+      id-token: write
+
+    outputs:
+      candidate_sha: ${{ steps.source.outputs.candidate_sha }}
+      ci_run_id: ${{ steps.canonical_ci.outputs.ci_run_id }}
+      ci_run_attempt: ${{ steps.canonical_ci.outputs.ci_run_attempt }}
+
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+        with:
+          ref: ${{ github.event_name == 'workflow_dispatch' && inputs.commit_sha || github.sha }}
+          fetch-depth: 0
+          persist-credentials: false
+
+      - name: Validate deployment source
+        id: source
+        env:
+          EVENT_NAME: ${{ github.event_name }}
+          REF: ${{ github.ref }}
+          REF_NAME: ${{ github.ref_name }}
+          COMMIT_SHA: ${{ inputs.commit_sha }}
+          GITHUB_SHA: ${{ github.sha }}
+        run: |
+          set -euo pipefail
+          if [[ "$EVENT_NAME" == "workflow_dispatch" ]]; then
+            if [[ "$REF" != "refs/heads/develop" || "$REF_NAME" != "develop" ]]; then
+              echo "manual deployment must use the canonical develop branch"
+              exit 1
+            fi
+            if [[ ! "$COMMIT_SHA" =~ ^[0-9a-f]{40}$ ]]; then
+              echo "commit_sha must be a 40-character lowercase commit SHA"
+              exit 1
+            fi
+            CANDIDATE_SHA="$COMMIT_SHA"
+            git fetch origin develop --force --no-tags
+            REMOTE_DEVELOP_SHA=$(git rev-parse origin/develop)
+            if [[ "$CANDIDATE_SHA" != "$REMOTE_DEVELOP_SHA" ]]; then
+              echo "input commit SHA does not match current origin/develop"
+              exit 1
+            fi
+          else
+            echo "unsupported deployment event: $EVENT_NAME"
+            exit 1
+          fi
+          CHECKED_OUT_SHA=$(git rev-parse HEAD)
+          if [[ "$CANDIDATE_SHA" != "$CHECKED_OUT_SHA" ]]; then
+            echo "input commit SHA does not match checked-out HEAD"
+            exit 1
+          fi
+          echo "candidate_sha=$CANDIDATE_SHA" >> "$GITHUB_OUTPUT"
+
+      - name: Require exact canonical CI evidence
+        id: canonical_ci
+        env:
+          CANDIDATE_SHA: ${{ steps.source.outputs.candidate_sha }}
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          set -euo pipefail
+          if [[ ! "$CANDIDATE_SHA" =~ ^[0-9a-f]{40}$ ]]; then
+            echo "candidate SHA must be a 40-character lowercase commit SHA"
+            exit 1
+          fi
+          CI_RUNS_JSON="$RUNNER_TEMP/canonical-ci-runs.json"
+          CI_RUN_ID_FILE="$RUNNER_TEMP/canonical-ci-run-id.txt"
+          CI_JOBS_JSON="$RUNNER_TEMP/canonical-ci-jobs.json"
+          PAGES_FILE="$CI_RUNS_JSON.pages"
+          rm -f "$PAGES_FILE" "$CI_RUNS_JSON" "$CI_RUN_ID_FILE" "$CI_JOBS_JSON"
+          TOTAL=""
+          COLLECTED=0
+          PAGE=1
+          while :; do
+            PAGE_JSON="$RUNNER_TEMP/canonical-ci-runs-page.json"
+            PAGE_ITEMS="$RUNNER_TEMP/canonical-ci-runs-page-items.json"
+            PAGE_META="$RUNNER_TEMP/canonical-ci-runs-page-meta.txt"
+            rm -f "$PAGE_JSON" "$PAGE_ITEMS" "$PAGE_META"
+            gh api "repos/${GITHUB_REPOSITORY}/actions/workflows/ci.yml/runs?head_sha=${CANDIDATE_SHA}&event=push&per_page=100&page=${PAGE}" > "$PAGE_JSON"
+            python3 scripts/validate_bff_promotion_contract.py normalize-actions-page \
+              --page-json "$PAGE_JSON" \
+              --items-key workflow_runs \
+              --items-output "$PAGE_ITEMS" \
+              --metadata-output "$PAGE_META"
+            PAGE_TOTAL=$(sed -n 's/^total_count=//p' "$PAGE_META")
+            PAGE_COUNT=$(sed -n 's/^item_count=//p' "$PAGE_META")
+            if [[ ! "$PAGE_TOTAL" =~ ^(0|[1-9][0-9]*)$ || ! "$PAGE_COUNT" =~ ^(0|[1-9][0-9]*)$ ]]; then
+              echo "canonical CI page metadata is invalid"
+              exit 1
+            fi
+            if [[ -z "$TOTAL" ]]; then
+              TOTAL="$PAGE_TOTAL"
+            elif [[ "$TOTAL" != "$PAGE_TOTAL" ]]; then
+              echo "canonical CI run count changed while fetching evidence"
+              exit 1
+            fi
+            cat "$PAGE_ITEMS" >> "$PAGES_FILE"
+            COLLECTED=$((COLLECTED + PAGE_COUNT))
+            if (( COLLECTED == TOTAL )); then
+              jq -s 'add' "$PAGES_FILE" > "$CI_RUNS_JSON"
+              rm -f "$PAGES_FILE"
+              break
+            fi
+            if (( COLLECTED > TOTAL || PAGE_COUNT == 0 )); then
+              echo "canonical CI runs listing was incomplete or malformed"
+              exit 1
+            fi
+            PAGE=$((PAGE + 1))
+          done
+          python3 scripts/validate_bff_promotion_contract.py validate-canonical-ci-run \
+            --runs-json "$CI_RUNS_JSON" \
+            --expected-sha "$CANDIDATE_SHA" \
+            --expected-path ".github/workflows/ci.yml" \
+            --expected-event push \
+            --expected-ref develop \
+            --output "$CI_RUN_ID_FILE"
+          CI_RUN_ID=""
+          CI_RUN_ATTEMPT=""
+          while IFS= read -r line; do
+            case "$line" in
+              run_id=*)
+                CI_RUN_ID="${line#run_id=}"
+                ;;
+              run_attempt=*)
+                CI_RUN_ATTEMPT="${line#run_attempt=}"
+                ;;
+              *)
+                echo "canonical CI run identity is malformed"
+                exit 1
+                ;;
+            esac
+          done < "$CI_RUN_ID_FILE"
+          if [[ ! "$CI_RUN_ID" =~ ^[1-9][0-9]*$ || ! "$CI_RUN_ATTEMPT" =~ ^[1-9][0-9]*$ ]]; then
+            echo "canonical CI run identity is invalid"
+            exit 1
+          fi
+          PAGES_FILE="$CI_JOBS_JSON.pages"
+          rm -f "$PAGES_FILE"
+          TOTAL=""
+          COLLECTED=0
+          PAGE=1
+          while :; do
+            PAGE_JSON="$RUNNER_TEMP/canonical-ci-jobs-page.json"
+            PAGE_ITEMS="$RUNNER_TEMP/canonical-ci-jobs-page-items.json"
+            PAGE_META="$RUNNER_TEMP/canonical-ci-jobs-page-meta.txt"
+            rm -f "$PAGE_JSON" "$PAGE_ITEMS" "$PAGE_META"
+            gh api "repos/${GITHUB_REPOSITORY}/actions/runs/${CI_RUN_ID}/attempts/${CI_RUN_ATTEMPT}/jobs?per_page=100&page=${PAGE}" > "$PAGE_JSON"
+            python3 scripts/validate_bff_promotion_contract.py normalize-actions-page \
+              --page-json "$PAGE_JSON" \
+              --items-key jobs \
+              --items-output "$PAGE_ITEMS" \
+              --metadata-output "$PAGE_META"
+            PAGE_TOTAL=$(sed -n 's/^total_count=//p' "$PAGE_META")
+            PAGE_COUNT=$(sed -n 's/^item_count=//p' "$PAGE_META")
+            if [[ ! "$PAGE_TOTAL" =~ ^(0|[1-9][0-9]*)$ || ! "$PAGE_COUNT" =~ ^(0|[1-9][0-9]*)$ ]]; then
+              echo "canonical CI page metadata is invalid"
+              exit 1
+            fi
+            if [[ -z "$TOTAL" ]]; then
+              TOTAL="$PAGE_TOTAL"
+            elif [[ "$TOTAL" != "$PAGE_TOTAL" ]]; then
+              echo "canonical CI job count changed while fetching evidence"
+              exit 1
+            fi
+            cat "$PAGE_ITEMS" >> "$PAGES_FILE"
+            COLLECTED=$((COLLECTED + PAGE_COUNT))
+            if (( COLLECTED == TOTAL )); then
+              jq -s 'add' "$PAGES_FILE" > "$CI_JOBS_JSON"
+              rm -f "$PAGES_FILE"
+              break
+            fi
+            if (( COLLECTED > TOTAL || PAGE_COUNT == 0 )); then
+              echo "canonical CI jobs listing was incomplete or malformed"
+              exit 1
+            fi
+            PAGE=$((PAGE + 1))
+          done
+          python3 scripts/validate_bff_promotion_contract.py validate-canonical-ci-jobs \
+            --jobs-json "$CI_JOBS_JSON" \
+            --expected-run-id "$CI_RUN_ID" \
+            --expected-run-attempt "$CI_RUN_ATTEMPT" \
+            --required-job test
+          echo "ci_run_id=$CI_RUN_ID" >> "$GITHUB_OUTPUT"
+          echo "ci_run_attempt=$CI_RUN_ATTEMPT" >> "$GITHUB_OUTPUT"
+
+      - name: Setup Go
+        uses: actions/setup-go@v5
+        with:
+          go-version: '1.26'
+          cache: true
+
+      - name: Verify immutable DEV query stage artifact
+        run: |
+          set -euo pipefail
+          ARTIFACT_PATH="${QUERY_STAGE_CONFIG_PATH#/app/}"
+          go run ./cmd/query_config_check \
+            --path "$ARTIFACT_PATH" \
+            --revision "$QUERY_STAGE_CONFIG_REVISION" \
+            --digest "$QUERY_STAGE_CONFIG_DIGEST"
+
+      - name: Authenticate to Google Cloud
+        uses: google-github-actions/auth@v3
+        with:
+          project_id: ${{ env.PROJECT_ID }}
+          workload_identity_provider: ${{ secrets.WIF_PROVIDER }}
+          service_account: ${{ secrets.WIF_SERVICE_ACCOUNT }}
+
+      - name: Set up Cloud SDK
+        uses: google-github-actions/setup-gcloud@v2
+        with:
+          project_id: ${{ env.PROJECT_ID }}
+
+      - name: Verify existing dev IAM prerequisites
+        run: |
+          set -euo pipefail
+          if ! JOB_IAM_POLICY=$(gcloud run jobs get-iam-policy "olw-pipeline-dev" \
+            --region "${{ env.REGION }}" \
+            --project "${{ env.PROJECT_ID }}" \
+            --format=json \
+            --quiet); then
+            echo "unable to read IAM policy for olw-pipeline-dev; refusing to deploy"
+            exit 1
+          fi
+          if ! jq -e --arg member "serviceAccount:lwc-bff-dev@llm-wiki-cloud.iam.gserviceaccount.com" \
+            'any(.bindings[]?; .role == "roles/run.jobsExecutorWithOverrides" and any(.members[]?; . == $member))' \
+            <<<"$JOB_IAM_POLICY" >/dev/null; then
+            echo "pipeline Job IAM policy does not grant the required executor role; refusing to deploy"
+            exit 1
+          fi
+
+          if ! SERVICE_IAM_POLICY=$(gcloud run services get-iam-policy "${{ env.SERVICE_NAME }}" \
+            --region "${{ env.REGION }}" \
+            --project "${{ env.PROJECT_ID }}" \
+            --format=json \
+            --quiet); then
+            echo "unable to read IAM policy for ${{ env.SERVICE_NAME }}; refusing to deploy"
+            exit 1
+          fi
+          if ! jq -e \
+            'any(.bindings[]?; .role == "roles/run.invoker" and any(.members[]?; . == "allUsers"))' \
+            <<<"$SERVICE_IAM_POLICY" >/dev/null; then
+            echo "BFF service IAM policy does not grant the required public invoker role; refusing to deploy"
+            exit 1
+          fi
+
+      - name: Resolve build identity
+        id: identity
+        run: |
+          set -euo pipefail
+          APP_VERSION=$(go run ./cmd/versioncheck VERSION)
+          GIT_SHA=$(git rev-parse HEAD)
+          if [[ ! "$GIT_SHA" =~ ^[0-9a-f]{40}$ ]]; then
+            echo "GIT_SHA must be a 40-character lowercase commit SHA"
+            exit 1
+          fi
+          GIT_BRANCH="${GITHUB_REF_NAME}"
+          if [[ ! "$GIT_BRANCH" =~ ^[0-9A-Za-z][0-9A-Za-z._/-]*$ ]]; then
+            echo "GIT_BRANCH is invalid: $GIT_BRANCH"
+            exit 1
+          fi
+          mapfile -t exact_tags < <(git tag --points-at HEAD --format='%(refname:strip=2)')
+          if (( ${#exact_tags[@]} > 1 )); then
+            echo "multiple exact git tags point at HEAD"
+            exit 1
+          fi
+          GIT_TAG="${exact_tags[0]:-}"
+          if [[ -n "$GIT_TAG" && ! "$GIT_TAG" =~ ^[0-9A-Za-z][0-9A-Za-z._/-]*$ ]]; then
+            echo "GIT_TAG is invalid: $GIT_TAG"
+            exit 1
+          fi
+          echo "app_version=$APP_VERSION" >> "$GITHUB_OUTPUT"
+          echo "git_sha=$GIT_SHA" >> "$GITHUB_OUTPUT"
+          echo "git_branch=$GIT_BRANCH" >> "$GITHUB_OUTPUT"
+          echo "git_tag=$GIT_TAG" >> "$GITHUB_OUTPUT"
+
+      - name: Build and deploy to Cloud Run
+        id: build
+        env:
+          BUCKET: llm-wiki-data-dev
+          FIRESTORE_DATABASE_ID: llm-wiki-cloud-dev
+          PIPELINE_JOB_NAME: olw-pipeline-dev
+          RUNTIME_SERVICE_ACCOUNT: lwc-bff-dev@llm-wiki-cloud.iam.gserviceaccount.com
+          JWT_SECRET_NAME: jwt-secret-dev
+          ALLOWED_ORIGINS: https://wiki.dev.rayer.idv.tw,https://llm-wiki-frontend-dev.vercel.app,http://localhost:3000,http://127.0.0.1:3000
+          APP_VERSION: ${{ steps.identity.outputs.app_version }}
+          GIT_SHA: ${{ steps.identity.outputs.git_sha }}
+          GIT_BRANCH: ${{ steps.identity.outputs.git_branch }}
+          GIT_TAG: ${{ steps.identity.outputs.git_tag }}
+          GH_TOKEN: ${{ github.token }}
+          CANDIDATE_SHA: ${{ steps.source.outputs.candidate_sha }}
+          CI_RUN_ID: ${{ steps.canonical_ci.outputs.ci_run_id }}
+          CI_RUN_ATTEMPT: ${{ steps.canonical_ci.outputs.ci_run_attempt }}
+        run: |
+          set -euo pipefail
+          echo "previous_revision=" >> "$GITHUB_OUTPUT"
+          echo "new_revision=" >> "$GITHUB_OUTPUT"
+          echo "traffic_mutated=false" >> "$GITHUB_OUTPUT"
+
+          # DEV uses a stronger status/spec convergence contract than the
+          # production rollback read-back contract; keep that distinction
+          # explicit while centralizing the traffic parsing in Python.
+          validate_dev_service_traffic() {
+            local revision="$1"
+            local service_json="$2"
+            printf '%s\n' "$service_json" | python3 scripts/validate_bff_promotion_contract.py validate-traffic \
+              --traffic-file - \
+              --traffic-path status.traffic \
+              --compare-path spec.traffic \
+              --traffic-mode provider-dev-convergence \
+              --recognized-revision "$revision"
+          }
+
+          verify_revision() {
+            local revision="$1"
+            local image_reference="$2"
+            local revision_json="${3:-}"
+            if [[ -z "$revision_json" ]]; then
+              if ! revision_json=$(gcloud run revisions describe "$revision" \
+                --region "${{ env.REGION }}" \
+                --project "${{ env.PROJECT_ID }}" \
+                --format=json \
+                --quiet); then
+                echo "Unable to read revision $revision; refusing to deploy."
+                return 1
+              fi
+            fi
+            if ! jq -e --arg image "$image_reference" '
+              (.status.imageDigest // "") == $image and
+              (.status.conditions | type) == "array" and
+              any(.status.conditions[]?; .type == "Ready" and .status == "True") and
+              any(.status.conditions[]?; .type == "ContainerReady" and .status == "True")
+            ' <<<"$revision_json"; then
+              echo "Revision $revision is not running immutable image $image_reference with ready container state."
+              return 1
+            fi
+          }
+
+          rollback_traffic() {
+            local target_revision="$1"
+            local deadline=$((SECONDS + 240))
+            set +e
+            gcloud run services update-traffic "${{ env.SERVICE_NAME }}" \
+              --to-revisions "${target_revision}=100" \
+              --region "${{ env.REGION }}" \
+              --project "${{ env.PROJECT_ID }}" \
+              --quiet
+            ROLLBACK_EXIT=$?
+            set -e
+
+            while (( SECONDS < deadline )); do
+              if SERVICE_JSON=$(gcloud run services describe "${{ env.SERVICE_NAME }}" \
+                --region "${{ env.REGION }}" \
+                --project "${{ env.PROJECT_ID }}" \
+                --format=json \
+                --quiet) && validate_dev_service_traffic "$target_revision" "$SERVICE_JSON"; then
+                return 0
+              fi
+              sleep 5
+            done
+            echo "Traffic restore to $target_revision did not become authoritative within timeout (update exit $ROLLBACK_EXIT)."
+            return 1
+          }
+
+          # begin current canonical CI run validator
+          validate_current_canonical_ci_run() {
+            local dest="$1"
+            if [[ ! "$CI_RUN_ID" =~ ^[1-9][0-9]*$ || ! "$CI_RUN_ATTEMPT" =~ ^[1-9][0-9]*$ ]]; then
+              echo "pinned canonical CI identity is invalid"
+              return 1
+            fi
+            if [[ ! "$CANDIDATE_SHA" =~ ^[0-9a-f]{40}$ ]]; then
+              echo "candidate SHA must be a 40-character lowercase commit SHA"
+              return 1
+            fi
+            rm -f "$dest"
+            gh api "repos/${GITHUB_REPOSITORY}/actions/runs/${CI_RUN_ID}" > "$dest"
+            python3 scripts/validate_bff_promotion_contract.py validate-canonical-ci-attempt \
+              --run-json "$dest" \
+              --expected-sha "$CANDIDATE_SHA" \
+              --expected-path ".github/workflows/ci.yml" \
+              --expected-event push \
+              --expected-ref develop \
+              --expected-run-id "$CI_RUN_ID" \
+              --expected-run-attempt "$CI_RUN_ATTEMPT"
+          }
+          # end current canonical CI run validator
+
+          # begin canonical develop freshness guard
+          validate_canonical_develop_candidate() {
+            if [[ ! "$CI_RUN_ID" =~ ^[1-9][0-9]*$ || ! "$CI_RUN_ATTEMPT" =~ ^[1-9][0-9]*$ ]]; then
+              echo "pinned canonical CI identity is invalid"
+              return 1
+            fi
+            if [[ ! "$CANDIDATE_SHA" =~ ^[0-9a-f]{40}$ ]]; then
+              echo "candidate SHA must be a 40-character lowercase commit SHA"
+              return 1
+            fi
+            local ref_json="$1"
+            local sha_file="$2"
+            rm -f "$ref_json" "$sha_file"
+            gh api "repos/${GITHUB_REPOSITORY}/git/ref/heads/develop" > "$ref_json"
+            python3 scripts/validate_bff_promotion_contract.py extract-git-ref-sha \
+              --ref-json "$ref_json" \
+              --output "$sha_file"
+            local develop_sha
+            develop_sha=$(tr -d '[:space:]' < "$sha_file")
+            if [[ ! "$develop_sha" =~ ^[0-9a-f]{40}$ || "$develop_sha" != "$CANDIDATE_SHA" ]]; then
+              echo "canonical develop no longer matches the pinned candidate SHA"
+              return 1
+            fi
+          }
+
+          validate_current_canonical_develop() {
+            validate_canonical_develop_candidate "$RUNNER_TEMP/canonical-develop-ref.json" "$RUNNER_TEMP/canonical-develop-ref.sha"
+            validate_current_canonical_ci_run "$1"
+          }
+          # end canonical develop freshness guard
+
+          # begin pre-build current CI check
+          validate_current_canonical_develop "$RUNNER_TEMP/canonical-ci-current-run-pre-build.json"
+          # end pre-build current CI check
+
+          IMAGE="${{ env.AR_REPO }}/llm-wiki-bff:$GIT_SHA"
+          echo "Building ${IMAGE}…"
+          BUILD_ID=$(gcloud builds submit \
+            --config cloudbuild-bff.yaml \
+            --substitutions="_IMAGE=$IMAGE,_APP_VERSION=$APP_VERSION,_GIT_SHA=$GIT_SHA,_GIT_BRANCH=$GIT_BRANCH,_GIT_TAG=$GIT_TAG" \
+            --timeout=600s \
+            --async \
+            --suppress-logs \
+            --format='value(id)' \
+            --quiet)
+          if [[ ! "$BUILD_ID" =~ ^[a-f0-9]{8}-[a-f0-9]{4}-[a-f0-9]{4}-[a-f0-9]{4}-[a-f0-9]{12}$ ]]; then
+            echo "Cloud Build submission returned an invalid build ID: $BUILD_ID"
+            exit 1
+          fi
+          echo "Submitted Cloud Build $BUILD_ID; waiting for completion…"
+
+          STATUS=""
+          # Cloud Build's default queue TTL is 3600s; add the 600s build
+          # timeout and a 120s polling buffer so valid queued builds can finish.
+          POLL_DEADLINE=$((SECONDS + 4320))
+          while (( SECONDS < POLL_DEADLINE )); do
+            if ! STATUS=$(gcloud builds describe "$BUILD_ID" \
+              --project="${{ env.PROJECT_ID }}" \
+              --format='value(status)' \
+              --quiet); then
+              echo "Unable to read Cloud Build $BUILD_ID status; failing closed."
+              exit 1
+            fi
+            case "$STATUS" in
+              SUCCESS)
+                echo "Cloud Build $BUILD_ID completed successfully."
+                break
+                ;;
+              PENDING|QUEUED|WORKING)
+                sleep 15
+                ;;
+              FAILURE|INTERNAL_ERROR|TIMEOUT|CANCELLED|EXPIRED|STATUS_UNKNOWN|UNKNOWN|"")
+                echo "Cloud Build $BUILD_ID ended with status '${STATUS:-empty}'; refusing to deploy."
+                exit 1
+                ;;
+              *)
+                echo "Cloud Build $BUILD_ID returned unknown status '$STATUS'; refusing to deploy."
+                exit 1
+                ;;
+            esac
+          done
+          if [[ "$STATUS" != SUCCESS ]]; then
+            echo "Timed out waiting for Cloud Build $BUILD_ID after 4320 seconds; refusing to deploy."
+            exit 1
+          fi
+
+          if ! BUILD_RESULT=$(gcloud builds describe "$BUILD_ID" \
+            --project="${{ env.PROJECT_ID }}" \
+            --format=json \
+            --quiet); then
+            echo "Unable to read successful Cloud Build $BUILD_ID result; failing closed."
+            exit 1
+          fi
+          if ! RESULT_IMAGES=$(jq -cer --arg image "$IMAGE" \
+            '[.results.images[]? | select(.name == $image)]' <<<"$BUILD_RESULT"); then
+            echo "Cloud Build $BUILD_ID returned an unreadable image result; failing closed."
+            exit 1
+          fi
+          RESULT_IMAGE_COUNT=$(jq -er 'length' <<<"$RESULT_IMAGES")
+          if [[ "$RESULT_IMAGE_COUNT" != "1" ]]; then
+            echo "Cloud Build $BUILD_ID returned $RESULT_IMAGE_COUNT image results for $IMAGE; refusing to deploy."
+            exit 1
+          fi
+          DIGEST=$(jq -er '.[0].digest' <<<"$RESULT_IMAGES")
+          if [[ ! "$DIGEST" =~ ^sha256:[0-9a-f]{64}$ ]]; then
+            echo "Cloud Build $BUILD_ID returned an invalid image digest; refusing to deploy."
+            exit 1
+          fi
+          IMMUTABLE_IMAGE="${{ env.AR_REPO }}/llm-wiki-bff@$DIGEST"
+
+          if ! SERVICE_JSON=$(gcloud run services describe "${{ env.SERVICE_NAME }}" \
+            --region "${{ env.REGION }}" \
+            --project "${{ env.PROJECT_ID }}" \
+            --format=json \
+            --quiet); then
+            echo "Unable to read ${{ env.SERVICE_NAME }} before mutation; refusing to deploy."
+            exit 1
+          fi
+
+          if ! PREVIOUS_ROLLBACK_REVISION=$(jq -er '.status.traffic[0].revisionName // empty' <<<"$SERVICE_JSON"); then
+            echo "Cloud Run service did not have a rollback revision in status traffic."
+            exit 1
+          fi
+          if ! validate_dev_service_traffic "$PREVIOUS_ROLLBACK_REVISION" "$SERVICE_JSON"; then
+            echo "Cloud Run service did not have exactly one explicit non-tagged 100% serving revision in both spec and status before deploy."
+            exit 1
+          fi
+          if ! PREVIOUS_ROLLBACK_REVISION_JSON=$(gcloud run revisions describe "$PREVIOUS_ROLLBACK_REVISION" \
+            --region "${{ env.REGION }}" \
+            --project "${{ env.PROJECT_ID }}" \
+            --format=json \
+            --quiet); then
+            echo "Unable to read previous rollback revision $PREVIOUS_ROLLBACK_REVISION."
+            exit 1
+          fi
+          if ! PREVIOUS_ROLLBACK_IMAGE=$(jq -er '.status.imageDigest // empty' <<<"$PREVIOUS_ROLLBACK_REVISION_JSON"); then
+            echo "Unable to read image digest for previous rollback revision $PREVIOUS_ROLLBACK_REVISION."
+            exit 1
+          fi
+          EXPECTED_IMAGE_PREFIX="${{ env.AR_REPO }}/llm-wiki-bff@"
+          if [[ "$PREVIOUS_ROLLBACK_IMAGE" != "$EXPECTED_IMAGE_PREFIX"* ]]; then
+            echo "Previous rollback revision $PREVIOUS_ROLLBACK_REVISION is not immutable."
+            exit 1
+          fi
+          PREVIOUS_ROLLBACK_DIGEST="${PREVIOUS_ROLLBACK_IMAGE#"$EXPECTED_IMAGE_PREFIX"}"
+          if [[ ! "$PREVIOUS_ROLLBACK_DIGEST" =~ ^sha256:[0-9a-f]{64}$ ]]; then
+            echo "Previous rollback revision $PREVIOUS_ROLLBACK_REVISION is not immutable."
+            exit 1
+          fi
+          if ! verify_revision "$PREVIOUS_ROLLBACK_REVISION" "$PREVIOUS_ROLLBACK_IMAGE" "$PREVIOUS_ROLLBACK_REVISION_JSON"; then
+            echo "Previous rollback revision $PREVIOUS_ROLLBACK_REVISION was not ready."
+            exit 1
+          fi
+
+          if ! PREVIOUS_CREATED_REVISION=$(jq -r '.status.latestCreatedRevisionName // empty' <<<"$SERVICE_JSON"); then
+            echo "Cloud Run did not return latest created revision information; refusing to deploy."
+            exit 1
+          fi
+
+          REMOTE_REF_JSON="$RUNNER_TEMP/canonical-remote-ref.json"
+          REMOTE_REF_SHA="$RUNNER_TEMP/canonical-remote-ref.sha"
+          rm -f "$REMOTE_REF_JSON" "$REMOTE_REF_SHA"
+          if ! gh api "repos/${GITHUB_REPOSITORY}/git/ref/heads/${GITHUB_REF_NAME}" > "$REMOTE_REF_JSON"; then
+            echo "Unable to read remote ${GITHUB_REF_NAME}; refusing to deploy."
+            exit 1
+          fi
+          python3 scripts/validate_bff_promotion_contract.py extract-git-ref-sha \
+            --ref-json "$REMOTE_REF_JSON" \
+            --output "$REMOTE_REF_SHA"
+          REMOTE_SHA=$(tr -d '[:space:]' < "$REMOTE_REF_SHA")
+          if [[ ! "$REMOTE_SHA" =~ ^[0-9a-f]{40}$ ]]; then
+            echo "Remote ${GITHUB_REF_NAME} returned an invalid commit SHA; refusing to deploy."
+            exit 1
+          fi
+          if [[ "$REMOTE_SHA" != "$GIT_SHA" ]]; then
+            echo "Remote ${GITHUB_REF_NAME} no longer matches the deployment commit; refusing to deploy."
+            exit 1
+          fi
+
+          # begin pinned canonical CI revalidation
+          if [[ ! "$CI_RUN_ID" =~ ^[1-9][0-9]*$ || ! "$CI_RUN_ATTEMPT" =~ ^[1-9][0-9]*$ ]]; then
+            echo "pinned canonical CI identity is invalid"
+            exit 1
+          fi
+          if [[ ! "$CANDIDATE_SHA" =~ ^[0-9a-f]{40}$ || "$CANDIDATE_SHA" != "$GIT_SHA" ]]; then
+            echo "pinned candidate SHA does not match the built commit"
+            exit 1
+          fi
+          ATTEMPT_JSON="$RUNNER_TEMP/canonical-ci-attempt.json"
+          rm -f "$ATTEMPT_JSON"
+          gh api "repos/${GITHUB_REPOSITORY}/actions/runs/${CI_RUN_ID}/attempts/${CI_RUN_ATTEMPT}" > "$ATTEMPT_JSON"
+          python3 scripts/validate_bff_promotion_contract.py validate-canonical-ci-attempt \
+            --run-json "$ATTEMPT_JSON" \
+            --expected-sha "$CANDIDATE_SHA" \
+            --expected-path ".github/workflows/ci.yml" \
+            --expected-event push \
+            --expected-ref develop \
+            --expected-run-id "$CI_RUN_ID" \
+            --expected-run-attempt "$CI_RUN_ATTEMPT"
+          CI_JOBS_JSON="$RUNNER_TEMP/canonical-ci-pre-mutation-jobs.json"
+          PAGES_FILE="$CI_JOBS_JSON.pages"
+          rm -f "$PAGES_FILE" "$CI_JOBS_JSON"
+          TOTAL=""
+          COLLECTED=0
+          PAGE=1
+          while :; do
+            PAGE_JSON="$RUNNER_TEMP/canonical-ci-pre-mutation-jobs-page.json"
+            PAGE_ITEMS="$RUNNER_TEMP/canonical-ci-pre-mutation-jobs-page-items.json"
+            PAGE_META="$RUNNER_TEMP/canonical-ci-pre-mutation-jobs-page-meta.txt"
+            rm -f "$PAGE_JSON" "$PAGE_ITEMS" "$PAGE_META"
+            gh api "repos/${GITHUB_REPOSITORY}/actions/runs/${CI_RUN_ID}/attempts/${CI_RUN_ATTEMPT}/jobs?per_page=100&page=${PAGE}" > "$PAGE_JSON"
+            python3 scripts/validate_bff_promotion_contract.py normalize-actions-page \
+              --page-json "$PAGE_JSON" \
+              --items-key jobs \
+              --items-output "$PAGE_ITEMS" \
+              --metadata-output "$PAGE_META"
+            PAGE_TOTAL=$(sed -n 's/^total_count=//p' "$PAGE_META")
+            PAGE_COUNT=$(sed -n 's/^item_count=//p' "$PAGE_META")
+            if [[ ! "$PAGE_TOTAL" =~ ^(0|[1-9][0-9]*)$ || ! "$PAGE_COUNT" =~ ^(0|[1-9][0-9]*)$ ]]; then
+              echo "canonical CI page metadata is invalid"
+              exit 1
+            fi
+            if [[ -z "$TOTAL" ]]; then
+              TOTAL="$PAGE_TOTAL"
+            elif [[ "$TOTAL" != "$PAGE_TOTAL" ]]; then
+              echo "canonical CI job count changed while fetching evidence"
+              exit 1
+            fi
+            cat "$PAGE_ITEMS" >> "$PAGES_FILE"
+            COLLECTED=$((COLLECTED + PAGE_COUNT))
+            if (( COLLECTED == TOTAL )); then
+              jq -s 'add' "$PAGES_FILE" > "$CI_JOBS_JSON"
+              rm -f "$PAGES_FILE"
+              break
+            fi
+            if (( COLLECTED > TOTAL || PAGE_COUNT == 0 )); then
+              echo "canonical CI jobs listing was incomplete or malformed"
+              exit 1
+            fi
+            PAGE=$((PAGE + 1))
+          done
+          python3 scripts/validate_bff_promotion_contract.py validate-canonical-ci-jobs \
+            --jobs-json "$CI_JOBS_JSON" \
+            --expected-run-id "$CI_RUN_ID" \
+            --expected-run-attempt "$CI_RUN_ATTEMPT" \
+            --required-job test
+          validate_current_canonical_develop "$RUNNER_TEMP/canonical-ci-current-run-pre-deploy.json"
+          # end pinned canonical CI revalidation
+
+          echo "Deploying ${IMMUTABLE_IMAGE}…"
+          gcloud run deploy "${{ env.SERVICE_NAME }}" \
+            --image "$IMMUTABLE_IMAGE" \
+            --no-traffic \
+            --region "${{ env.REGION }}" \
+            --service-account "${{ env.RUNTIME_SERVICE_ACCOUNT }}" \
+            --network default --subnet default \
+            --vpc-egress private-ranges-only \
+            --max-instances 1 \
+            --update-secrets "JWT_SECRET=${{ env.JWT_SECRET_NAME }}:latest,DEEPSEEK_API_KEY=deepseek-apikey:latest" \
+            --remove-env-vars "QUERY_EXPANSION_MODEL,QUERY_EXPANSION_REASONING,ANSWER_SYNTHESIS_MODEL,ANSWER_SYNTHESIS_REASONING,QUERY_SELECTION_LIMIT,QUERY_SELECTION_EXPLORATION_SLOTS,QUERY_SELECTION_EVIDENCE_THRESHOLD,QUERY_EXPANSION_KEYWORDS_PER_ATTEMPT,QUERY_EXPANSION_ATTEMPTS,QUERY_MATCHING_RARE_KEYWORD_MAX_DOCUMENT_FREQUENCY" \
+            --update-env-vars "^@^GCP_PROJECT=${{ env.PROJECT_ID }}@BUCKET=${{ env.BUCKET }}@FIRESTORE_DATABASE_ID=${{ env.FIRESTORE_DATABASE_ID }}@PIPELINE_JOB_URL=https://run.googleapis.com/v2/projects/${{ env.PROJECT_ID }}/locations/${{ env.REGION }}/jobs/${{ env.PIPELINE_JOB_NAME }}:run@ALLOWED_ORIGINS=${{ env.ALLOWED_ORIGINS }}@AUTH_SERVICE_URL=https://auth.dev.rayer.idv.tw@QUERY_STAGE_CONFIG_PATH=${{ env.QUERY_STAGE_CONFIG_PATH }}@DEV_JWT=false" \
+            --quiet
+
+          CREATED_REVISION=""
+          CREATED_REVISION_DEADLINE=$((SECONDS + 600))
+          while ((SECONDS < CREATED_REVISION_DEADLINE)); do
+            if ! SERVICE_JSON=$(gcloud run services describe "${{ env.SERVICE_NAME }}" \
+              --region "${{ env.REGION }}" \
+              --project "${{ env.PROJECT_ID }}" \
+              --format=json \
+              --quiet); then
+              echo "Unable to read service after deploy."
+              exit 1
+            fi
+            CREATED_REVISION=$(jq -r '.status.latestCreatedRevisionName // empty' <<<"$SERVICE_JSON")
+            if [[ -n "$CREATED_REVISION" && "$CREATED_REVISION" != "$PREVIOUS_CREATED_REVISION" ]]; then
+              break
+            fi
+            sleep 10
+          done
+          if [[ -z "$CREATED_REVISION" || "$CREATED_REVISION" == "$PREVIOUS_CREATED_REVISION" ]]; then
+            echo "Cloud Run did not report a new latest created revision; refusing to deploy."
+            exit 1
+          fi
+          if ! verify_revision "$CREATED_REVISION" "$IMMUTABLE_IMAGE"; then
+            echo "Cloud Run did not create a ready revision with the expected immutable image."
+            exit 1
+          fi
+
+          if ! SERVICE_JSON=$(gcloud run services describe "${{ env.SERVICE_NAME }}" \
+            --region "${{ env.REGION }}" \
+            --project "${{ env.PROJECT_ID }}" \
+            --format=json \
+            --quiet); then
+            echo "Unable to re-read ${{ env.SERVICE_NAME }} before cutover; refusing to deploy."
+            exit 1
+          fi
+          if ! validate_dev_service_traffic "$PREVIOUS_ROLLBACK_REVISION" "$SERVICE_JSON"; then
+            echo "Cloud Run traffic changed before cutover; refusing to mutate traffic."
+            exit 1
+          fi
+
+          validate_current_canonical_develop "$RUNNER_TEMP/canonical-ci-current-run-pre-cutover.json"
+
+          echo "previous_revision=$PREVIOUS_ROLLBACK_REVISION" >> "$GITHUB_OUTPUT"
+          echo "new_revision=$CREATED_REVISION" >> "$GITHUB_OUTPUT"
+          echo "traffic_mutated=true" >> "$GITHUB_OUTPUT"
+
+          CUTOVER_VERIFIED=0
+          set +e
+          gcloud run services update-traffic "${{ env.SERVICE_NAME }}" \
+            --to-revisions "${CREATED_REVISION}=100" \
+            --region "${{ env.REGION }}" \
+            --project "${{ env.PROJECT_ID }}" \
+            --quiet
+          CUTOVER_EXIT=$?
+          if (( CUTOVER_EXIT == 0 )); then
+            VERIFY_DEADLINE=$((SECONDS + 600))
+            while ((SECONDS < VERIFY_DEADLINE)); do
+              if SERVICE_JSON=$(gcloud run services describe "${{ env.SERVICE_NAME }}" \
+                --region "${{ env.REGION }}" \
+                --project "${{ env.PROJECT_ID }}" \
+                --format=json \
+                --quiet) \
+                && validate_dev_service_traffic "$CREATED_REVISION" "$SERVICE_JSON" \
+                && jq -e --arg revision "$CREATED_REVISION" \
+                  '(.status.latestReadyRevisionName // "") == $revision' \
+                  <<<"$SERVICE_JSON" \
+                && verify_revision "$CREATED_REVISION" "$IMMUTABLE_IMAGE"; then
+                CUTOVER_VERIFIED=1
+                break
+              fi
+              sleep 10
+            done
+          fi
+          set -e
+
+          if (( CUTOVER_EXIT != 0 || CUTOVER_VERIFIED != 1 )); then
+            echo "Cutover failed; attempting bounded rollback to $PREVIOUS_ROLLBACK_REVISION."
+            if ! rollback_traffic "$PREVIOUS_ROLLBACK_REVISION"; then
+              echo "Rollback to $PREVIOUS_ROLLBACK_REVISION failed; refusing to continue."
+              exit 1
+            else
+              echo "traffic_mutated=false" >> "$GITHUB_OUTPUT"
+              echo "Rollback to $PREVIOUS_ROLLBACK_REVISION succeeded."
+            fi
+            exit 1
+          fi
+
+          echo "digest=$DIGEST" >> "$GITHUB_OUTPUT"
+          echo "immutable_image=$IMMUTABLE_IMAGE" >> "$GITHUB_OUTPUT"
+          echo "✅ Deployed ${{ env.SERVICE_NAME }} ($GIT_SHA) to $CREATED_REVISION"
+
+      - name: Verify deployed query config readback
+        id: query_config_readback
+        env:
+          EXPECTED_COMMIT: ${{ steps.identity.outputs.git_sha }}
+          EXPECTED_REVISION: ${{ steps.build.outputs.new_revision }}
+        run: |
+          set -euo pipefail
+          SERVICE_URL=$(gcloud run services describe "${{ env.SERVICE_NAME }}" \
+            --region "${{ env.REGION }}" \
+            --project "${{ env.PROJECT_ID }}" \
+            --format='value(status.url)' \
+            --quiet)
+          if [[ ! "$SERVICE_URL" =~ ^https://llm-wiki-bff-dev-[a-z0-9-]+\.a\.run\.app$ ]]; then
+            echo "Cloud Run returned an invalid public service URL or host; refusing to verify readback."
+            exit 1
+          fi
+          BODY_FILE=$(mktemp)
+          HEADER_FILE=$(mktemp)
+          trap 'rm -f "$BODY_FILE" "$HEADER_FILE"' EXIT
+          HTTP_STATUS=""
+          READBACK_VALID=0
+          READBACK_DEADLINE=$((SECONDS + 300))
+          while (( SECONDS < READBACK_DEADLINE )); do
+            : > "$BODY_FILE"
+            : > "$HEADER_FILE"
+            HTTP_STATUS=$(curl --silent --show-error --proto '=https' \
+              --connect-timeout 5 --max-time 10 \
+              --dump-header "$HEADER_FILE" --output "$BODY_FILE" \
+              --write-out '%{http_code}' \
+              "$SERVICE_URL/api/v1/query/config" || true)
+            if [[ "$HTTP_STATUS" == "200" ]] \
+              && grep -Eiq '^cache-control:[[:space:]]*no-store([[:space:]]*;.*)?[[:space:]]*$' "$HEADER_FILE" \
+              && jq -e --arg revision "$QUERY_STAGE_CONFIG_REVISION" \
+                --arg digest "$QUERY_STAGE_CONFIG_DIGEST" \
+                --arg commit "$EXPECTED_COMMIT" \
+                --arg cloud_revision "$EXPECTED_REVISION" \
+                --arg service "${{ env.SERVICE_NAME }}" '
+                  ((. | keys | sort) == ["build", "query_config"])
+                  and ((.build | keys | sort) == ["commit", "revision", "service"])
+                  and ((.query_config | keys | sort) == ["config_digest", "config_revision", "default_profile_digest", "default_profile_id", "default_prompt_digest", "default_prompt_id", "expansion_model", "expansion_provider", "expansion_reasoning", "expansion_temperature", "no_evidence_policy", "options", "query_service_implementation", "schema_version", "synthesis_model", "synthesis_provider", "synthesis_reasoning", "synthesis_temperature"])
+                  and ((.query_config.options | keys | sort) == ["evidence_threshold", "expansion_attempts", "exploration_slots", "keywords_per_attempt", "rare_document_frequency", "selection_limit"])
+                  and .query_config.schema_version == 2
+                  and .query_config.config_revision == $revision
+                  and .query_config.config_digest == $digest
+                  and .query_config.query_service_implementation == "query-retrieval-pipeline-v2"
+                  and .query_config.expansion_provider == "deepseek"
+                  and .query_config.expansion_model == "deepseek-v4-flash"
+                  and .query_config.expansion_reasoning == "none"
+                  and .query_config.expansion_temperature == 0
+                  and .query_config.synthesis_provider == "deepseek"
+                  and .query_config.synthesis_model == "deepseek-v4-pro"
+                  and .query_config.synthesis_reasoning == "none"
+                  and .query_config.synthesis_temperature == 0
+                  and .query_config.no_evidence_policy == "full-model-prior-fallback-v1"
+                  and .query_config.options.selection_limit == 10
+                  and .query_config.options.exploration_slots == 1
+                  and .query_config.options.evidence_threshold == 2
+                  and .query_config.options.keywords_per_attempt == 24
+                  and .query_config.options.expansion_attempts == 3
+                  and .query_config.options.rare_document_frequency == 1
+                  and .build.commit == $commit
+                  and .build.revision == $cloud_revision
+                  and .build.service == $service
+                ' "$BODY_FILE" \
+              && ! grep -Eiq 'project_id|generation_id|concepts_digest|binding_count|distinct_service_composition_count|system_template|user_template|api[_-]?key|credential' "$BODY_FILE"; then
+              READBACK_VALID=1
+              break
+            fi
+            sleep 10
+          done
+          if [[ "$HTTP_STATUS" != "200" || "$READBACK_VALID" != "1" ]]; then
+            echo "public query config readback identity/schema is invalid or did not return HTTP 200 (last status: ${HTTP_STATUS:-empty})"
+            exit 1
+          fi
+          if ! grep -Eiq '^cache-control:[[:space:]]*no-store([[:space:]]*;.*)?[[:space:]]*$' "$HEADER_FILE"; then
+            echo "public query config readback did not return Cache-Control: no-store"
+            exit 1
+          fi
+          if ! jq -e --arg revision "$QUERY_STAGE_CONFIG_REVISION" --arg digest "$QUERY_STAGE_CONFIG_DIGEST" \
+            '.query_config.config_revision == $revision and .query_config.config_digest == $digest' "$BODY_FILE" >/dev/null; then
+            echo "public query config readback did not match the immutable artifact"
+            exit 1
+          fi
+          if grep -Eiq 'project_id|generation_id|concepts_digest|binding_count|distinct_service_composition_count|system_template|user_template|api[_-]?key|credential' "$BODY_FILE"; then
+            echo "public query config readback contained private fields"
+            exit 1
+          fi
+          jq -er '.query_config.config_revision' "$BODY_FILE" | { read value; echo "config_revision=$value" >> "$GITHUB_OUTPUT"; }
+          jq -er '.query_config.config_digest' "$BODY_FILE" | { read value; echo "config_digest=$value" >> "$GITHUB_OUTPUT"; }
+
+      - name: Persist build image digest
+        id: image_digest
+        env:
+          DIGEST: ${{ steps.build.outputs.digest }}
+          READBACK_REVISION: ${{ steps.query_config_readback.outputs.config_revision }}
+          READBACK_DIGEST: ${{ steps.query_config_readback.outputs.config_digest }}
+          CI_RUN_ID: ${{ steps.canonical_ci.outputs.ci_run_id }}
+          CI_RUN_ATTEMPT: ${{ steps.canonical_ci.outputs.ci_run_attempt }}
+        run: |
+          set -euo pipefail
+          COMMIT_SHA="${{ steps.identity.outputs.git_sha }}"
+          if [[ ! "$COMMIT_SHA" =~ ^[0-9a-f]{40}$ ]]; then
+            echo "built commit SHA must be a 40-character lowercase commit SHA"
+            exit 1
+          fi
+          if [[ ! "$DIGEST" =~ ^sha256:[0-9a-f]{64}$ ]]; then
+            echo "Cloud Build image digest is missing or invalid"
+            exit 1
+          fi
+          if [[ ! "$CI_RUN_ID" =~ ^[1-9][0-9]*$ || ! "$CI_RUN_ATTEMPT" =~ ^[1-9][0-9]*$ ]]; then
+            echo "pinned canonical CI identity is invalid"
+            exit 1
+          fi
+          if [[ "$READBACK_REVISION" != "$QUERY_STAGE_CONFIG_REVISION" || "$READBACK_DIGEST" != "$QUERY_STAGE_CONFIG_DIGEST" ]]; then
+            echo "deployed query config readback identity is not the expected immutable artifact"
+            exit 1
+          fi
+          DIGEST_FILE="bff-image-digest-$COMMIT_SHA.txt"
+          {
+            printf 'receipt_schema_version=3\n'
+            printf 'component=lwc-bff\n'
+            printf 'build_ref=develop\n'
+            printf 'source_sha=%s\n' "$COMMIT_SHA"
+            printf 'dev_run_id=%s\n' "$GITHUB_RUN_ID"
+            printf 'ci_run_id=%s\n' "$CI_RUN_ID"
+            printf 'ci_run_attempt=%s\n' "$CI_RUN_ATTEMPT"
+            printf 'image_digest=%s\n' "$DIGEST"
+            printf 'image_reference=%s\n' "${{ env.AR_REPO }}/llm-wiki-bff@$DIGEST"
+            printf 'query_config_revision=%s\n' "$READBACK_REVISION"
+            printf 'query_config_digest=%s\n' "$READBACK_DIGEST"
+          } > "$DIGEST_FILE"
+          echo "commit_sha=$COMMIT_SHA" >> "$GITHUB_OUTPUT"
+          echo "digest=$DIGEST" >> "$GITHUB_OUTPUT"
+          echo "digest_file=$DIGEST_FILE" >> "$GITHUB_OUTPUT"
+          echo "query_config_revision=$READBACK_REVISION" >> "$GITHUB_OUTPUT"
+          echo "query_config_digest=$READBACK_DIGEST" >> "$GITHUB_OUTPUT"
+          echo "Persisted Cloud Build image digest $DIGEST"
+
+      - name: Upload image digest artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: bff-image-digest-${{ steps.image_digest.outputs.commit_sha }}
+          path: ${{ steps.image_digest.outputs.digest_file }}
+          if-no-files-found: error
+
+      - name: Show deployment info
+        run: |
+          gcloud run services describe ${{ env.SERVICE_NAME }} \
+            --region ${{ env.REGION }} \
+            --format="value(status.url)"
+
+      - name: Restore BFF traffic on post-cutover failure
+        if: ${{ always() && (failure() || cancelled()) && steps.build.outputs.traffic_mutated == 'true' }}
+        run: |
+          set -euo pipefail
+          PREVIOUS_REVISION="${{ steps.build.outputs.previous_revision }}"
+          NEW_REVISION="${{ steps.build.outputs.new_revision }}"
+          if [[ -z "$PREVIOUS_REVISION" || -z "$NEW_REVISION" ]]; then
+            echo "Cannot restore BFF traffic without validated rollback context."
+            exit 1
+          fi
+          echo "Rolling back traffic from $NEW_REVISION to $PREVIOUS_REVISION."
+
+          # DEV cleanup retains the stronger status/spec convergence check;
+          # production rollback uses the shared provider post-rollback mode.
+          validate_dev_service_traffic() {
+            local revision="$1"
+            local service_json="$2"
+            printf '%s\n' "$service_json" | python3 scripts/validate_bff_promotion_contract.py validate-traffic \
+              --traffic-file - \
+              --traffic-path status.traffic \
+              --compare-path spec.traffic \
+              --traffic-mode provider-dev-convergence \
+              --recognized-revision "$revision"
+          }
+
+          if ! SERVICE_JSON=$(gcloud run services describe "${{ env.SERVICE_NAME }}" \
+            --region "${{ env.REGION }}" \
+            --project "${{ env.PROJECT_ID }}" \
+            --format=json \
+            --quiet); then
+            echo "Unable to read service before cleanup; refusing to mutate traffic."
+            exit 1
+          fi
+          if validate_dev_service_traffic "$PREVIOUS_REVISION" "$SERVICE_JSON"; then
+            echo "BFF traffic is already on $PREVIOUS_REVISION; cleanup is a no-op."
+            exit 0
+          fi
+          if ! validate_dev_service_traffic "$NEW_REVISION" "$SERVICE_JSON"; then
+            echo "BFF traffic is neither on $PREVIOUS_REVISION nor $NEW_REVISION; refusing to mutate traffic."
+            exit 1
+          fi
+
+          set +e
+          gcloud run services update-traffic "${{ env.SERVICE_NAME }}" \
+            --to-revisions "${PREVIOUS_REVISION}=100" \
+            --region "${{ env.REGION }}" \
+            --project "${{ env.PROJECT_ID }}" \
+            --quiet
+          ROLLBACK_EXIT=$?
+          set -e
+
+          DEADLINE=$((SECONDS + 240))
+          while ((SECONDS < DEADLINE)); do
+            if SERVICE_JSON=$(gcloud run services describe "${{ env.SERVICE_NAME }}" \
+              --region "${{ env.REGION }}" \
+              --project "${{ env.PROJECT_ID }}" \
+              --format=json \
+              --quiet) && validate_dev_service_traffic "$PREVIOUS_REVISION" "$SERVICE_JSON"; then
+              echo "Rolled back BFF traffic to $PREVIOUS_REVISION with exact serving traffic."
+              exit 0
+            fi
+            sleep 5
+          done
+          echo "Traffic rollback to $PREVIOUS_REVISION did not become authoritative within timeout (update exit $ROLLBACK_EXIT)."
+          exit 1
+
+  production-promotion-ready:
+    name: production-promotion-ready
+    if: github.event_name == 'workflow_dispatch' && github.ref == 'refs/heads/develop' && needs.test-and-deploy.result == 'success'
+    needs: test-and-deploy
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    permissions:
+      contents: read
+      actions: read
+    env:
+      CANDIDATE_SHA: ${{ needs.test-and-deploy.outputs.candidate_sha }}
+      DEV_RUN_ID: ${{ github.run_id }}
+      CI_RUN_ID: ${{ needs.test-and-deploy.outputs.ci_run_id }}
+      CI_RUN_ATTEMPT: ${{ needs.test-and-deploy.outputs.ci_run_attempt }}
+      AR_REPO: asia-east1-docker.pkg.dev/llm-wiki-cloud/cloud-run-images
+    steps:
+      - name: Checkout exact candidate
+        uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+        with:
+          ref: ${{ needs.test-and-deploy.outputs.candidate_sha }}
+          fetch-depth: 1
+          persist-credentials: false
+
+      - name: Verify exact canonical develop head
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          set -euo pipefail
+          if [[ ! "$CANDIDATE_SHA" =~ ^[0-9a-f]{40}$ ]]; then
+            echo "candidate SHA must be a 40-character lowercase commit SHA"
+            exit 1
+          fi
+          if [[ "$GITHUB_REF" != "refs/heads/develop" ]]; then
+            echo "readiness requires the canonical develop branch"
+            exit 1
+          fi
+          test "$(git rev-parse HEAD)" = "$CANDIDATE_SHA"
+          DEVELOP_REF_JSON="$RUNNER_TEMP/canonical-develop-ref.json"
+          DEVELOP_REF_SHA="$RUNNER_TEMP/canonical-develop-ref.sha"
+          rm -f "$DEVELOP_REF_JSON" "$DEVELOP_REF_SHA"
+          gh api "repos/${GITHUB_REPOSITORY}/git/ref/heads/develop" > "$DEVELOP_REF_JSON"
+          python3 scripts/validate_bff_promotion_contract.py extract-git-ref-sha \
+            --ref-json "$DEVELOP_REF_JSON" \
+            --output "$DEVELOP_REF_SHA"
+          DEVELOP_SHA=$(tr -d '[:space:]' < "$DEVELOP_REF_SHA")
+          if [[ ! "$DEVELOP_SHA" =~ ^[0-9a-f]{40}$ || "$DEVELOP_SHA" != "$CANDIDATE_SHA" ]]; then
+            echo "develop advanced before readiness; refusing to certify an older SHA"
+            exit 1
+          fi
+
+      - name: Download exact same-run DEV receipt
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          set -euo pipefail
+          ARTIFACT_DIR="$RUNNER_TEMP/bff-image-digest"
+          mkdir -p "$ARTIFACT_DIR"
+          DIGEST_FILE="$ARTIFACT_DIR/bff-image-digest-$CANDIDATE_SHA.txt"
+          gh run download "$DEV_RUN_ID" \
+            --repo "$GITHUB_REPOSITORY" \
+            --name "bff-image-digest-$CANDIDATE_SHA" \
+            --dir "$ARTIFACT_DIR"
+          if [[ ! -f "$DIGEST_FILE" ]] || [[ $(find "$ARTIFACT_DIR" -type f | wc -l) -ne 1 ]]; then
+            echo "same-run DEV receipt contents are missing or unexpected"
+            exit 1
+          fi
+          gh api "repos/${GITHUB_REPOSITORY}/actions/runs/${DEV_RUN_ID}" > "$RUNNER_TEMP/bff-dev-run.json"
+          printf 'RUN_JSON=%s\nDIGEST_FILE=%s\n' "$RUNNER_TEMP/bff-dev-run.json" "$DIGEST_FILE" >> "$GITHUB_ENV"
+
+      - name: Validate exact same-run DEV provenance receipt
+        run: |
+          set -euo pipefail
+          python3 scripts/validate_bff_promotion_contract.py validate-dev-receipt \
+            --receipt "$DIGEST_FILE" \
+            --run-json "$RUN_JSON" \
+            --expected-sha "$CANDIDATE_SHA" \
+            --expected-run-id "$DEV_RUN_ID" \
+            --expected-branch develop \
+            --expected-event workflow_dispatch \
+            --lifecycle readiness \
+            --producer-result "${{ needs.test-and-deploy.result }}" \
+            --component lwc-bff \
+            --repository "$GITHUB_REPOSITORY" \
+            --ar-repo "$AR_REPO" \
+            --query-config-revision "$QUERY_STAGE_CONFIG_REVISION" \
+            --query-config-digest "$QUERY_STAGE_CONFIG_DIGEST" \
+            --expected-ci-run-id "$CI_RUN_ID" \
+            --expected-ci-run-attempt "$CI_RUN_ATTEMPT" \
+            --output "$RUNNER_TEMP/bff-production-promotion-ready.json"
+
+      - name: Validate canonical rollback artifact
+        run: |
+          set -euo pipefail
+          python3 scripts/validate_bff_promotion_contract.py validate-traffic \
+            --traffic-file scripts/fixtures/bff-traffic-explicit.json \
+            --traffic-path traffic \
+            --traffic-mode artifact \
+            --recognized-revision llm-wiki-bff-00001-old
+
+      - name: Upload normalized readiness receipt
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
+        with:
+          name: bff-production-promotion-ready-${{ env.CANDIDATE_SHA }}
+          path: ${{ runner.temp }}/bff-production-promotion-ready.json
+          if-no-files-found: error
+          retention-days: 90
+
+  main-fast-forward-eligible:
+    name: main-fast-forward-eligible
+    if: ${{ always() && github.event_name == 'workflow_dispatch' && github.ref == 'refs/heads/develop' }}
+    needs: [test-and-deploy, production-promotion-ready]
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      statuses: write
+    steps:
+      - name: Publish pending main fast-forward eligibility status
+        env:
+          EVENT_SHA: ${{ github.sha }}
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          set -euo pipefail
+          if [[ ! "$EVENT_SHA" =~ ^[0-9a-f]{40}$ ]]; then
+            echo "event SHA must be a 40-character lowercase commit SHA"
+            exit 1
+          fi
+          gh api --method POST "repos/${GITHUB_REPOSITORY}/statuses/$EVENT_SHA" \
+            -f state=pending \
+            -f context=main-fast-forward-eligible \
+            -f description="validating exact candidate for a main fast-forward"
+
+      - name: Checkout exact event SHA
+        uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+        with:
+          ref: ${{ github.sha }}
+          fetch-depth: 1
+          persist-credentials: false
+
+      - name: Verify exact candidate and main fast-forward eligibility
+        env:
+          EVENT_SHA: ${{ github.sha }}
+          CANDIDATE_SHA: ${{ needs.test-and-deploy.outputs.candidate_sha }}
+          TEST_DEPLOY_RESULT: ${{ needs.test-and-deploy.result }}
+          READINESS_RESULT: ${{ needs.production-promotion-ready.result }}
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          set -euo pipefail
+          if [[ "$TEST_DEPLOY_RESULT" != "success" || "$READINESS_RESULT" != "success" ]]; then
+            echo "upstream jobs did not both succeed"
+            exit 1
+          fi
+          if [[ ! "$EVENT_SHA" =~ ^[0-9a-f]{40}$ ]]; then
+            echo "event SHA must be a 40-character lowercase commit SHA"
+            exit 1
+          fi
+          if [[ ! "$CANDIDATE_SHA" =~ ^[0-9a-f]{40}$ ]]; then
+            echo "candidate SHA must be a 40-character lowercase commit SHA"
+            exit 1
+          fi
+          if [[ "$CANDIDATE_SHA" != "$EVENT_SHA" ]]; then
+            echo "candidate SHA does not match the event SHA"
+            exit 1
+          fi
+          if [[ "$(git rev-parse HEAD)" != "$EVENT_SHA" ]]; then
+            echo "checked-out HEAD does not match the event SHA"
+            exit 1
+          fi
+          DEVELOP_REF_JSON="$RUNNER_TEMP/canonical-develop-ref.json"
+          DEVELOP_REF_SHA="$RUNNER_TEMP/canonical-develop-ref.sha"
+          rm -f "$DEVELOP_REF_JSON" "$DEVELOP_REF_SHA"
+          gh api "repos/${GITHUB_REPOSITORY}/git/ref/heads/develop" > "$DEVELOP_REF_JSON"
+          python3 scripts/validate_bff_promotion_contract.py extract-git-ref-sha \
+            --ref-json "$DEVELOP_REF_JSON" \
+            --output "$DEVELOP_REF_SHA"
+          DEVELOP_SHA=$(tr -d '[:space:]' < "$DEVELOP_REF_SHA")
+          if [[ ! "$DEVELOP_SHA" =~ ^[0-9a-f]{40}$ ]]; then
+            echo "canonical develop returned an invalid commit SHA"
+            exit 1
+          fi
+          if [[ "$DEVELOP_SHA" != "$EVENT_SHA" ]]; then
+            echo "develop advanced before fresh eligibility verification"
+            exit 1
+          fi
+          COMPARE_FILE="$RUNNER_TEMP/bff-fast-forward-compare.json"
+          gh api "repos/${GITHUB_REPOSITORY}/compare/main...${EVENT_SHA}?per_page=1" > "$COMPARE_FILE"
+          python3 scripts/validate_bff_promotion_contract.py validate-fast-forward-compare \
+            --compare-json "$COMPARE_FILE"
+
+      - name: Publish successful main fast-forward eligibility status
+        env:
+          EVENT_SHA: ${{ github.sha }}
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          set -euo pipefail
+          if [[ ! "$EVENT_SHA" =~ ^[0-9a-f]{40}$ ]]; then
+            echo "event SHA must be a 40-character lowercase commit SHA"
+            exit 1
+          fi
+          if [[ "$(git rev-parse HEAD)" != "$EVENT_SHA" ]]; then
+            echo "checked-out HEAD changed before success publication"
+            exit 1
+          fi
+          DEVELOP_REF_JSON="$RUNNER_TEMP/canonical-develop-ref.json"
+          DEVELOP_REF_SHA="$RUNNER_TEMP/canonical-develop-ref.sha"
+          rm -f "$DEVELOP_REF_JSON" "$DEVELOP_REF_SHA"
+          gh api "repos/${GITHUB_REPOSITORY}/git/ref/heads/develop" > "$DEVELOP_REF_JSON"
+          python3 scripts/validate_bff_promotion_contract.py extract-git-ref-sha \
+            --ref-json "$DEVELOP_REF_JSON" \
+            --output "$DEVELOP_REF_SHA"
+          DEVELOP_SHA=$(tr -d '[:space:]' < "$DEVELOP_REF_SHA")
+          if [[ ! "$DEVELOP_SHA" =~ ^[0-9a-f]{40}$ ]]; then
+            echo "canonical develop returned an invalid commit SHA"
+            exit 1
+          fi
+          if [[ "$DEVELOP_SHA" != "$EVENT_SHA" ]]; then
+            echo "develop advanced before success publication"
+            exit 1
+          fi
+          COMPARE_FILE="$RUNNER_TEMP/bff-fast-forward-compare-final.json"
+          gh api "repos/${GITHUB_REPOSITORY}/compare/main...${EVENT_SHA}?per_page=1" > "$COMPARE_FILE"
+          python3 scripts/validate_bff_promotion_contract.py validate-fast-forward-compare \
+            --compare-json "$COMPARE_FILE"
+          gh api --method POST "repos/${GITHUB_REPOSITORY}/statuses/$EVENT_SHA" \
+            -f state=success \
+            -f context=main-fast-forward-eligible \
+            -f description="exact candidate is eligible for a main fast-forward"
+
+      - name: Publish failure cleanup for main fast-forward eligibility
+        if: ${{ failure() || cancelled() }}
+        env:
+          EVENT_SHA: ${{ github.sha }}
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          set -euo pipefail
+          if [[ ! "$EVENT_SHA" =~ ^[0-9a-f]{40}$ ]]; then
+            echo "event SHA must be a 40-character lowercase commit SHA"
+            exit 1
+          fi
+          gh api --method POST "repos/${GITHUB_REPOSITORY}/statuses/$EVENT_SHA" \
+            -f state=failure \
+            -f context=main-fast-forward-eligible \
+            -f description="validation failed or was cancelled"

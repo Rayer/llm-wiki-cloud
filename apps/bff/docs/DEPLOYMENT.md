@@ -1,0 +1,156 @@
+# Deployment
+
+The 1.0 stack is split by environment. The BFF reads the environment-specific values below at startup; an empty `FIRESTORE_DATABASE_ID` keeps the legacy default Firestore database behavior for older local deployments.
+
+| Environment | Cloud Run service | GCS bucket | Firestore database | Pipeline job |
+| --- | --- | --- | --- | --- |
+| Production | `llm-wiki-bff` | `llm-wiki-data` | `llm-wiki-cloud-prod` | `olw-pipeline` |
+| Development | `llm-wiki-bff-dev` | `llm-wiki-data-dev` | `llm-wiki-cloud-dev` | `olw-pipeline-dev` |
+
+The BFF configuration variables are:
+
+| Variable | Purpose |
+| --- | --- |
+| `GCP_PROJECT` | Google Cloud project containing the BFF resources |
+| `BUCKET` | Environment-specific GCS bucket |
+| `FIRESTORE_DATABASE_ID` | Named Firestore database; empty selects the default database |
+| `PIPELINE_JOB_URL` | HTTPS `run.googleapis.com` Cloud Run Jobs API `:run` URL with the exact project/location/job path |
+| `ALLOWED_ORIGINS` | Comma-separated CORS origins; whitespace is trimmed, duplicates removed, and `*` is ignored because credentials are enabled |
+| `ALLOWED_HOSTS` | Auth-only comma-separated exact Host allowlist; wildcards are rejected, and local mode adds `localhost` and `127.0.0.1` |
+
+The dev worker is API-only: deploy it with the environment's `BUCKET` and no
+GCSFuse volumes or `/data` mount. Before promotion, verify the job image digest,
+its `BUCKET` value, and that both `volumes` and `volumeMounts` are empty.
+
+## GitHub Actions
+
+- `CI` integrates changes on `main` and `develop` and pull requests targeting either branch. It has no legacy k3s deployment step.
+- Development feature releases are manually dispatched from canonical `develop` for the BFF and worker. The BFF build receipt records the immutable digest, exact source SHA, successful DEV run, and `build_ref=develop`. Worker DEV is the same: `deploy-worker.yml` is `workflow_dispatch` only and must not run on `push: main`.
+- `Promote BFF to Cloud Run (production)` is manually dispatched from protected `main` with a full commit SHA and its exact successful canonical-`develop` DEV run ID. Before any production authentication or mutation, it requires live `main` to equal that SHA, then validates the same-run versioned digest receipt and `bff-production-promotion-ready-<SHA>` normalized readiness artifact before deploying that digest without rebuilding or resolving an environment tag. Production evidence separately records `production_source_ref=main`; public build identity remains `develop`.
+- `Promote OLW worker to Cloud Run (production)` requires live `main` to equal the candidate SHA, then locates that SHA's successful canonical-`develop` `workflow_dispatch` run and consumes `worker-image-digest-<SHA>` without rebuilding.
+- The successful canonical `develop` DEV deployment feeds the read-only downstream job named exactly `production-promotion-ready`; it uses actual in-progress workflow metadata and fails closed unless the candidate remains the exact current `develop` head. Before an ordinary non-force `develop` to `main` fast-forward, the required `main-fast-forward-eligible` check runs only after readiness and rechecks exact head and ancestry. No branch protection is mutated by this change.
+
+A commit-SHA image tag is a convenient build identifier, but remains mutable and non-authoritative. Only the validated `repository@sha256:...` digest plus the Cloud Run revision, GitHub run, and deployment evidence form immutable authority for the image promoted to production. No run-scoped DEV or production observability tags are used; the rollback contract remains authoritative.
+
+No credential values belong in workflow files, Makefiles, documentation, or command output. Workload Identity secrets remain GitHub environment secrets.
+
+For a local/manual development deploy, use the Makefile with its mutable, non-authoritative commit tag and development-only defaults:
+
+```sh
+make docker-build docker-push deploy-dev
+```
+
+The Makefile `deploy-dev` target hardcodes the dev service, data resources, runtime service account, Secret Manager references, and `DEV_JWT=false`; command-line environment overrides cannot redirect it to production. `deploy` is only an alias for `deploy-dev`. `make deploy-prod` fails closed; production must use the `Promote BFF to Cloud Run (production)` GitHub workflow with a verified full commit SHA.
+
+## Publish lease liveness (LWC-222)
+
+Cloud publish uses create-only `.lwc/publish/lease.json` with payload
+`{"execution":"<cloud-run-execution-id>","started_at":"..."}`.
+
+**Acceptance (unit, not live orphan pipeline):** focused tests
+`TestLWC222AcceptanceHappyPathOrphanHistoryReclaim` and
+`TestLWC222AcceptanceGateWhileHistoryWouldBeRunning` cover the product gate —
+orphan lease held by a finished Cloud Run history execution is reclaimed;
+a still-RUNNING holder continues to block. Deliberately failing a long pipeline
+solely to manufacture an orphan lease is not required to close this ticket.
+
+On acquire conflict the **worker** (not age/TTL) decides reclaim from Cloud Run
+Jobs execution status of the holder id:
+
+| Holder execution state | Action |
+| --- | --- |
+| `RUNNING` (or live equivalent) | refuse; fail closed |
+| `SUCCEEDED` / `FAILED` / `CANCELLED` | CAS delete + one create-only retry |
+| Not found (well-formed id under the job) | allow CAS reclaim |
+| Permission / 5xx / timeout / parse failure | refuse (`lookup_failed`) |
+| Malformed / empty / foreign job prefix | refuse (manual break-glass) |
+
+### IAM
+
+The pipeline worker runtime service account must be able to
+`run.jobs.executions.get` on the environment's job (dev: `olw-pipeline-dev`,
+prod: `olw-pipeline`). Granting `roles/run.viewer` on the job is sufficient and
+least-privilege relative to executor roles.
+
+```sh
+# DEV example — pipeline worker SA may probe holder liveness
+gcloud run jobs add-iam-policy-binding olw-pipeline-dev \
+  --region=asia-east1 --project=llm-wiki-cloud \
+  --member="serviceAccount:lwc-pipeline-dev@llm-wiki-cloud.iam.gserviceaccount.com" \
+  --role="roles/run.viewer"
+```
+
+BFF already uses `roles/run.viewer` for status listing; worker reclaim needs the
+same class of read on the job.
+
+Optional env for scope (defaults work on Cloud Run Jobs in-region):
+
+| Variable | Purpose |
+| --- | --- |
+| `CLOUD_RUN_JOB` / `PIPELINE_JOB_NAME` | Expected job name (holder prefix check) |
+| `PIPELINE_JOB_URL` | Same BFF HTTPS `:run` URL; project/location parsed when set |
+| `PIPELINE_JOB_LOCATION` / `CLOUD_RUN_LOCATION` | Region override (default `asia-east1`) |
+| `GOOGLE_CLOUD_PROJECT` / `GCP_PROJECT` | Project override (else metadata) |
+
+## Stuck dev publish lease (manual break-glass)
+
+Use this break-glass procedure only when automatic liveness reclaim cannot run:
+malformed holder payload, foreign job id, or `lookup_failed` (IAM / API). It
+does not expire, steal, or automatically take over a lease by age.
+
+1. Confirm that no Cloud Run execution owned by the development publisher is
+   `RUNNING`. Stop and investigate if any such execution exists; do not delete
+   its lease.
+
+   ```sh
+   gcloud run jobs executions list \
+     --job="<dev-pipeline-job>" --region="<region>" --project="<gcp-project>" \
+     --filter='status==RUNNING' --format='value(name)'
+   ```
+
+   Continue only when the result is empty.
+
+2. Inspect the exact `.lwc/publish/lease.json` object and record its exact object generation
+   and `execution` holder. The payload is JSON like
+   `{"execution":"<cloud-run-execution-id>","started_at":"..."}` — use that id when
+   confirming step 1. Replace every placeholder with the development values;
+   do not put real tenant IDs in a runbook or script.
+
+   ```sh
+   BUCKET="<dev-bucket>"
+   LEASE_OBJECT="users/<user>/projects/<project>/.lwc/publish/lease.json"
+   TOKEN="$(gcloud auth print-access-token)"
+   ENCODED_OBJECT="$(printf '%s' "$LEASE_OBJECT" | jq -sRr @uri)"
+   curl --fail-with-body \
+     -H "Authorization: Bearer ${TOKEN}" \
+     "https://storage.googleapis.com/storage/v1/b/${BUCKET}/o/${ENCODED_OBJECT}?fields=name,generation,metadata"
+   # Also fetch object media to read {"execution","started_at"}:
+   curl --fail-with-body \
+     -H "Authorization: Bearer ${TOKEN}" \
+     "https://storage.googleapis.com/storage/v1/b/${BUCKET}/o/${ENCODED_OBJECT}?alt=media"
+   LEASE_GENERATION="<exact-object-generation-from-the-inspection>"
+   ```
+
+3. Delete only that exact generation with the GCS JSON API conditional request.
+   The `ifGenerationMatch` precondition is mandatory. If the generation
+   changed, the request must fail; abort if the generation changed. Never retry
+   with a newly observed generation without repeating step 1.
+
+   ```sh
+   curl --fail-with-body --request DELETE \
+     -H "Authorization: Bearer ${TOKEN}" \
+     "https://storage.googleapis.com/storage/v1/b/${BUCKET}/o/${ENCODED_OBJECT}?ifGenerationMatch=${LEASE_GENERATION}"
+   ```
+
+   Unconditional deletion can allow concurrent publishers and is prohibited.
+
+4. Verify absence by reading the same object and confirming HTTP 404 before
+   rerunning the development publisher. If the object is still present, abort
+   and investigate rather than rerunning.
+
+   ```sh
+   curl --silent --show-error --output /dev/null --write-out '%{http_code}\n' \
+     -H "Authorization: Bearer ${TOKEN}" \
+     "https://storage.googleapis.com/storage/v1/b/${BUCKET}/o/${ENCODED_OBJECT}"
+   # Expected output: 404
+   ```
