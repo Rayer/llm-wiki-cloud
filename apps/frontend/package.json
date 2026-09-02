@@ -8,6 +8,7 @@
     "build": "next build --webpack",
     "start": "next start",
     "lint": "eslint",
+    "typecheck": "tsc --noEmit",
     "test": "npm run test:node && npm run test:component",
     "test:node": "node --experimental-strip-types --test tests/*.test.mjs",
     "test:component": "NODE_ENV=test vitest run"

@@ -6,7 +6,7 @@ import { spawnSync } from 'node:child_process';
 import { test } from 'node:test';
 import { load as parseYaml } from 'js-yaml';
 
-const workflowPath = join(new URL('..', import.meta.url).pathname, '.github/workflows/ci.yml');
+const workflowPath = join(new URL('../../..', import.meta.url).pathname, '.github/workflows/ci.yml');
 const candidateSha = 'a'.repeat(40);
 
 function commandIndex(source, command) {
@@ -40,6 +40,7 @@ esac
         CANDIDATE_SHA: candidate,
         GITHUB_SHA: candidate,
         BUILD_RESULT: buildResult,
+        PENDING_RESULT: 'success',
         GITHUB_REPOSITORY: 'example/repo',
         GH_TOKEN: 'workflow-token',
         FAKE_HEAD_SHA: head,
@@ -64,22 +65,30 @@ esac
 test('CI main fast-forward eligibility is an ordered fail-closed exact-head status bridge', async () => {
   const source = await readFile(workflowPath, 'utf8');
   const workflow = parseYaml(source);
+  const pendingJob = workflow.jobs['main-fast-forward-eligible-pending'];
   const job = workflow.jobs['main-fast-forward-eligible'];
   assert.deepEqual(workflow.on.push.branches, ['main', 'develop']);
   assert.deepEqual(workflow.permissions, { contents: 'read' });
+  assert.equal(pendingJob.name, 'main-fast-forward-eligible-pending');
+  assert.equal(pendingJob.if, "${{ github.event_name == 'push' && github.ref == 'refs/heads/develop' }}");
+  assert.equal(pendingJob.needs, undefined);
+  assert.deepEqual(pendingJob.permissions, { contents: 'read', statuses: 'write' });
   assert.equal(job.name, 'main-fast-forward-eligible');
   assert.equal(job.if, "${{ always() && github.event_name == 'push' && github.ref == 'refs/heads/develop' }}");
-  assert.equal(job.needs, 'build');
+  assert.deepEqual(job.needs, ['build', 'main-fast-forward-eligible-pending']);
   assert.deepEqual(job.permissions, { contents: 'read', statuses: 'write' });
-  assert.equal(Object.values(workflow.jobs).filter((candidate) => candidate.permissions?.statuses === 'write').length, 1);
-  const [pending, checkout, verify, success, failure] = job.steps;
+  assert.equal(Object.values(workflow.jobs).filter((candidate) => candidate.permissions?.statuses === 'write').length, 2);
+  const [pending] = pendingJob.steps;
+  const [checkout, verify, success, failure] = job.steps;
   const pendingRun = pending.run;
   const verifyRun = verify.run;
   const successRun = success.run;
   const failureRun = failure.run;
 
+  assert.deepEqual(pendingJob.steps.map((step) => step.name), [
+    'Publish pending main fast-forward eligibility status',
+  ]);
   assert.deepEqual(job.steps.map((step) => step.name), [
-    'Revoke stale main fast-forward eligibility status',
     'Check out exact candidate',
     'Verify develop contains main',
     'Publish main fast-forward eligibility status',
@@ -97,12 +106,14 @@ test('CI main fast-forward eligibility is an ordered fail-closed exact-head stat
   assert.doesNotMatch(pendingRun, /needs\.build|steps\.|git |checkout|GITHUB_OUTPUT|curl|jq|\|/);
 
   assert.equal(checkout.uses, 'actions/checkout@11d5960a326750d5838078e36cf38b85af677262');
-  assert.deepEqual(checkout.with, { 'fetch-depth': 0, 'persist-credentials': false });
+  assert.deepEqual(checkout.with, { ref: '${{ github.sha }}', 'fetch-depth': 0, 'persist-credentials': false });
 
   assert.equal(verify.if, undefined);
   assert.deepEqual(verify.env, {
     BUILD_RESULT: '${{ needs.build.result }}',
+    PENDING_RESULT: '${{ needs.main-fast-forward-eligible-pending.result }}',
   });
+  assert.match(verifyRun, /^\s*test "\$PENDING_RESULT" = "success"/m);
   assert.match(verifyRun, /^\s*test "\$BUILD_RESULT" = "success"/m);
   assert.match(verifyRun, /candidate_sha="\$GITHUB_SHA"/);
   assert.match(verifyRun, /\[\[ "\$candidate_sha" =~ \^\[0-9a-f\]\{40\}\$ \]\]/);
@@ -150,9 +161,36 @@ test('CI main fast-forward eligibility is an ordered fail-closed exact-head stat
   assert.doesNotMatch(source, /curl|jq|GITHUB_OUTPUT|steps\.verify\.outputs|git (push|update-ref)|x-access-token|secrets\.(?:PAT|TOKEN)|personal access/i);
 });
 
+test('CI eligibility status mutation is limited to canonical develop pushes', async () => {
+  const workflow = parseYaml(await readFile(workflowPath, 'utf8'));
+  const statusJobs = Object.values(workflow.jobs).filter((job) => job.permissions?.statuses === 'write');
+  assert.equal(statusJobs.length, 2);
+  assert.equal(workflow.jobs['main-fast-forward-eligible-pending'].if, "${{ github.event_name == 'push' && github.ref == 'refs/heads/develop' }}");
+  assert.equal(workflow.jobs['main-fast-forward-eligible'].if, "${{ always() && github.event_name == 'push' && github.ref == 'refs/heads/develop' }}");
+  assert.ok(workflow.jobs['main-fast-forward-eligible-pending'].steps[0].run.includes('state=pending'));
+  assert.ok(workflow.jobs['main-fast-forward-eligible'].steps.some((step) => step.run?.includes('state=success')));
+  assert.ok(workflow.jobs['main-fast-forward-eligible'].needs.includes('build'));
+});
+
+test('canonical CI keeps component working directories and aggregate gate dependencies explicit', async () => {
+  const workflow = parseYaml(await readFile(workflowPath, 'utf8'));
+  assert.deepEqual(workflow.jobs.bff.defaults.run, { 'working-directory': 'apps/bff' });
+  for (const jobName of ['lint', 'typecheck', 'test', 'frontend-build']) {
+    assert.deepEqual(workflow.jobs[jobName].defaults.run, { 'working-directory': 'apps/frontend' });
+  }
+  const aggregate = workflow.jobs.build;
+  assert.equal(aggregate.name, 'canonical-ci');
+  assert.equal(aggregate.if, '${{ always() }}');
+  assert.deepEqual(aggregate.needs, ['bff', 'frontend-build', 'local-smoke', 'workflow-source']);
+  for (const jobName of aggregate.needs) {
+    assert.match(aggregate.steps[0].run, new RegExp(`needs\\.${jobName}\\.result`));
+  }
+});
+
 test('CI status bridge shell gates reject stale, malformed, non-ancestral, and failed API cases', async () => {
   const workflow = parseYaml(await readFile(workflowPath, 'utf8'));
-  const [pending, , verify, success, failure] = workflow.jobs['main-fast-forward-eligible'].steps;
+  const [pending] = workflow.jobs['main-fast-forward-eligible-pending'].steps;
+  const [, verify, success, failure] = workflow.jobs['main-fast-forward-eligible'].steps;
 
   assert.equal((await runShell(pending.run)).status, 0);
   assert.match((await runShell(pending.run)).ghLog, /state=pending/);

@@ -29,7 +29,7 @@ services:
 
   frontend:
     build:
-      context: ${FRONTEND_CONTEXT:-../llm-wiki-frontend}
+      context: ${FRONTEND_CONTEXT:-../frontend}
       dockerfile: Dockerfile
     ports:
       - "3000:3000"

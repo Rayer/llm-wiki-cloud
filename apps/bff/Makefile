@@ -2,14 +2,14 @@ REGION ?= asia-east1
 IMAGE_REPO ?= asia-east1-docker.pkg.dev/llm-wiki-cloud/cloud-run-images/llm-wiki-bff
 IMAGE_TAG ?= $(shell git rev-parse HEAD)
 IMAGE := $(IMAGE_REPO):$(IMAGE_TAG)
-FRONTEND_DIR ?= ../llm-wiki-frontend
+FRONTEND_DIR ?= ../frontend
 BFF_PORT ?= 8080
 AUTH_PORT ?= 8081
 FRONTEND_PORT ?= 3000
 LOCAL_LOGIN_EMAIL ?= demo@llm-wiki.dev
 LOCAL_LOGIN_PASSWORD ?= demo123456
 
-.PHONY: docker-build docker-push deploy deploy-dev deploy-prod all build-sync setup local-config seed ensure-local-data dev support-bff support-frontend support-pipeline bff-local auth-local frontend-local local-token pipeline-test pipeline-run kill-local clean-local
+.PHONY: docker-build docker-push deploy deploy-dev deploy-prod all build-sync setup local-config seed ensure-local-data dev support-bff support-frontend support-pipeline bff-local auth-local frontend-local local-token pipeline-test pipeline-run kill-local clean-local vet test build
 
 docker-build:
 	docker build -t $(IMAGE) .
@@ -34,6 +34,18 @@ build-sync:
 setup: local-config seed
 	go mod download
 	cd "$(FRONTEND_DIR)" && NODE_ENV=development npm ci --include=dev
+
+vet:
+	go vet ./...
+
+test:
+	python3 scripts/test_bff_promotion_contract.py
+	python3 scripts/test_bff_explicit_cutover.py
+	python3 scripts/test_auth_promotion_contract.py
+	go test ./... -v -count=1 -race
+
+build:
+	go build ./...
 
 local-config:
 	@test -d "$(FRONTEND_DIR)" || { echo "Frontend repo not found: $(FRONTEND_DIR)" >&2; exit 1; }
