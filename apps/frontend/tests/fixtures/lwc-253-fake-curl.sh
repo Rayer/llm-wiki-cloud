@@ -39,7 +39,7 @@ if [[ "$url" == *"/actions/workflows/ci.yml/runs?"* ]]; then
     cat "$root/ci.json"
   fi
 elif [[ "$url" == *"/repos/$GITHUB_REPOSITORY"* ]]; then
-  printf '%s' '{"id":12345}'
+  printf '%s' '{"id":12345,"full_name":"Rayer/llm-wiki-cloud"}'
 elif [[ "$url" == *"/v9/projects/$VERCEL_PROJECT_ID"* ]]; then
   project_reads="$(<"$root/project-reads")"
   project_reads=$((project_reads + 1))
@@ -48,6 +48,8 @@ elif [[ "$url" == *"/v9/projects/$VERCEL_PROJECT_ID"* ]]; then
     jq '.name = "llm-wiki-frontend"' "$root/project.json"
   elif [[ "$scenario" == team-mismatch ]]; then
     jq '.accountId = "team_main123"' "$root/project.json"
+  elif [[ "$scenario" == wrong-linked-repo ]]; then
+    jq '.link = {repoId: 99999}' "$root/project.json"
   elif [[ "$project_reads" -gt 1 && "$scenario" == root-drift ]]; then
     jq '.rootDirectory = "apps/bff"' "$root/project.json"
   elif [[ "$project_reads" -gt 1 && "$scenario" == link-drift ]]; then
@@ -70,7 +72,7 @@ elif [[ "$url" == *"/v13/deployments/dpl_"* && "$url" != *"/v13/deployments?"* ]
   printf '%s' "$response"
 elif [[ "$url" == *"/v6/deployments?"* ]]; then
   case "$scenario" in
-    deployment-missing|create-failure|create-uncertain|create-poll-timeout|create-source-mismatch|create-read-failure)
+    deployment-missing|linked-deployment-missing|create-failure|create-uncertain|create-poll-timeout|create-source-mismatch|create-read-failure)
       printf '%s' '{"deployments":[]}'
       ;;
     historical-deployment)

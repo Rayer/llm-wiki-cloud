@@ -52,6 +52,7 @@ async function setupCase(scenario = 'authority-conflict') {
     name: 'llm-wiki-frontend-dev',
     accountId: teamId,
     rootDirectory: ['root-null', 'root-dot'].includes(scenario) ? (scenario === 'root-null' ? null : '.') : (scenario === 'root-wrong' ? 'apps/bff' : 'apps/frontend'),
+    ...(scenario === 'linked-deployment-missing' ? { link: { repoId: 12345 } } : {}),
   }));
   await writeFile(join(root, 'ci.json'), JSON.stringify({
     workflow_runs: [{
@@ -224,12 +225,14 @@ test('read-only preflight records a typed create-needed decision without provide
   assert.equal(context.source.commit_sha, commitSha);
   assert.equal(context.source.ref, 'refs/heads/develop');
   assert.equal(context.source.repository, 'Rayer/llm-wiki-cloud');
+  assert.equal(context.frozen_authority.repository_id, 12345);
   assert.equal(context.frozen_authority.deployment_id, 'dpl_devold');
   assert.deepEqual(context.frozen_authority.project, {
     id: projectId,
     name: 'llm-wiki-frontend-dev',
     team_id: teamId,
     root_directory: 'apps/frontend',
+    repository_id: 12345,
     git_link: { state: 'unlinked', repo_id: null },
   });
   assert.equal(context.mutation_count, 0);
@@ -243,6 +246,7 @@ test('read-only preflight records a typed create-needed decision without provide
   assert.equal(run.preflightDeploymentPostLog.length, 0);
   assert.equal(run.preflightEvidence.status, 'PREFLIGHT_READY');
   assert.equal(run.preflightEvidence.provider_verification.mutation_count, 0);
+  assert.equal(run.curlCalls.filter((url) => url === 'https://github.test/repos/Rayer/llm-wiki-cloud').length, 1);
   assert.equal(run.evidence.status, 'SUCCESS');
   assert.equal(run.evidence.provider_verification.mutation_count, 2);
   assert.equal(run.deploymentPostLog.length, 1);
@@ -254,6 +258,23 @@ test('read-only preflight records a typed create-needed decision without provide
   assert.ok(run.evidence.provider_verification.checks.includes('deployment_create_attempted'));
   assert.ok(run.evidence.provider_verification.checks.includes('alias_mutation_attempted'));
   assert.match(run.mutationLog[0], /^alias set dpl_devready wiki\.dev\.rayer\.idv\.tw/);
+});
+
+test('rejects a wrong-linked repository before any mutation', async () => {
+  const run = await runCase('wrong-linked-repo');
+  assert.equal(run.result.code, 1, run.result.stderr);
+  assert.equal(run.evidence.reason_code, 'PROJECT_METADATA_MISMATCH');
+  assert.equal(run.mutationLog.length, 0);
+  assert.equal(run.deploymentPostLog.length, 0);
+});
+
+test('uses the frozen exact repository ID for a linked project deployment', async () => {
+  const run = await runCase('linked-deployment-missing');
+  assert.equal(run.result.code, undefined, run.result?.stderr);
+  const context = await readContext(run.fixture);
+  assert.deepEqual(context.frozen_authority.project.git_link, { state: 'linked', repo_id: '12345' });
+  assert.equal(context.frozen_authority.project.repository_id, 12345);
+  assert.equal(JSON.parse(run.deploymentPostLog[0]).gitSource.repoId, 12345);
 });
 
 for (const scenario of ['root-drift', 'link-drift']) {
