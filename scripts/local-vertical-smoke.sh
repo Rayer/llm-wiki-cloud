@@ -35,11 +35,11 @@ force_tree() {
 }
 
 cleanup() {
-  local pid port remaining attempt alive cleanup_failed=false
+  local exit_status=$? pid port remaining attempt alive cleanup_failed=false
   trap - EXIT INT TERM
   if [ "$cleanup_active" != true ]; then
     rm -rf "$tmp_dir"
-    return 0
+    exit "$exit_status"
   fi
   for pid in "${pids[@]}"; do
     stop_tree "$pid"
@@ -75,7 +75,10 @@ cleanup() {
     rm -f "$env_file"
   fi
   rm -rf "$tmp_dir"
-  [ "$cleanup_failed" = false ]
+  if [ "$cleanup_failed" = true ] && [ "$exit_status" -eq 0 ]; then
+    exit_status=1
+  fi
+  exit "$exit_status"
 }
 trap cleanup EXIT INT TERM
 
@@ -106,13 +109,16 @@ unset GOOGLE_APPLICATION_CREDENTIALS GOOGLE_CLOUD_PROJECT GOOGLE_CLOUD_QUOTA_PRO
   go build -o "$tmp_dir/bff" ./cmd/bff
 ) &
 bff_build_pid="$!"
+pids+=("$bff_build_pid")
 (
   cd "$BFF_DIR"
   go build -o "$tmp_dir/auth" ./cmd/auth
 ) &
 auth_build_pid="$!"
+pids+=("$auth_build_pid")
 wait "$bff_build_pid"
 wait "$auth_build_pid"
+pids=()
 
 (cd "$BFF_DIR" && \
   PORT="$BFF_PORT" LOCAL_DATA_DIR="$tmp_dir/local-data" DEV_JWT=true JWT_SECRET=dev-secret \
