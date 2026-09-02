@@ -34,8 +34,8 @@ async function setup(scenario = 'existing-candidate') {
   await writeFile(join(root, 'mutation-log'), '');
   await writeFile(join(root, 'deployment-post-log'), '');
   await writeFile(join(root, 'curl-calls'), '');
-  await writeFile(join(root, 'canonical-project.json'), JSON.stringify({ id: canonicalProject, name: 'llm-wiki-frontend-dev', accountId: team }));
-  await writeFile(join(root, 'legacy-project.json'), JSON.stringify({ id: legacyProject, name: 'llm-wiki-frontend', accountId: team }));
+  await writeFile(join(root, 'canonical-project.json'), JSON.stringify({ id: canonicalProject, name: 'llm-wiki-frontend-dev', accountId: team, rootDirectory: ['root-null', 'root-dot'].includes(scenario) ? (scenario === 'root-null' ? null : '.') : (scenario === 'root-wrong' ? 'apps/bff' : 'apps/frontend') }));
+  await writeFile(join(root, 'legacy-project.json'), JSON.stringify({ id: legacyProject, name: 'llm-wiki-frontend', accountId: team, rootDirectory: 'apps/frontend' }));
   await writeFile(join(root, 'domains.json'), JSON.stringify({ domains: [{ name: domain }] }));
   await writeFile(join(root, 'ci.json'), JSON.stringify({ workflow_runs: [{ path: '.github/workflows/ci.yml', head_branch: 'develop', head_sha: sha, event: 'push', status: 'completed', conclusion: 'success', id: 123, html_url: 'https://github.com/Rayer/llm-wiki-cloud/actions/runs/123' }] }));
   await writeFile(join(root, 'old-deployment.json'), JSON.stringify({ id: oldDeployment, url: 'https://old.vercel.app', projectId: legacyProject, teamId: team, ownerId: team, readyState: 'READY', target: null, meta: { githubDeployment: '1', githubOrg: 'Rayer', githubRepo: 'llm-wiki-cloud', githubCommitRef: 'develop', githubCommitSha: oldSha } }));
@@ -145,6 +145,16 @@ test('GREEN reuses exact canonical candidate and performs exactly one alias muta
   assert.equal((await lines(join(fixture.root, 'mutation-log'))).filter((line) => line.startsWith('alias set')).length, 1);
   assert.equal(finalEvidence.rollback.project_id, legacyProject);
   assert.equal(finalEvidence.rollback.deployment_id, oldDeployment);
+});
+
+test('root directory contract fails closed before provider mutation', async () => {
+  for (const scenario of ['root-null', 'root-dot', 'root-wrong']) {
+    const fixture = await setup(scenario);
+    const result = await run(fixture, 'preflight');
+    assert.equal(result.code, 1, result.stderr);
+    assert.match(result.stderr, /rootDirectory|root directory/i);
+    assert.deepEqual(await lines(join(fixture.root, 'mutation-log')), []);
+  }
 });
 
 test('reused candidate final authority reread failure is PREFLIGHT_FAILED with zero writes', async () => {

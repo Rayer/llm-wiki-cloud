@@ -9,6 +9,7 @@ fi
 
 readonly EXPECTED_REPOSITORY="Rayer/llm-wiki-cloud"
 readonly EXPECTED_PROJECT_NAME="llm-wiki-frontend-dev"
+readonly EXPECTED_ROOT_DIRECTORY="apps/frontend"
 readonly EXPECTED_SCOPE="rayer-tung-s-projects"
 readonly STABLE_DOMAIN="wiki.dev.rayer.idv.tw"
 readonly EXPECTED_REF="develop"
@@ -298,9 +299,9 @@ validate_exact_sha() {
 
 validate_project() {
   local project="$1"
-  jq -e --arg id "$VERCEL_PROJECT_ID" --arg name "$EXPECTED_PROJECT_NAME" --arg team "$VERCEL_TEAM_ID" '
-    type == "object" and .id == $id and .name == $name and ((.accountId // .teamId) == $team)' <<< "$project" >/dev/null ||
-    preflight_fail PROJECT_METADATA_MISMATCH "provider project metadata did not identify the allowlisted DEV project and team"
+  jq -e --arg id "$VERCEL_PROJECT_ID" --arg name "$EXPECTED_PROJECT_NAME" --arg team "$VERCEL_TEAM_ID" --arg root "$EXPECTED_ROOT_DIRECTORY" '
+    type == "object" and .id == $id and .name == $name and ((.accountId // .teamId) == $team) and .rootDirectory == $root' <<< "$project" >/dev/null ||
+    preflight_fail PROJECT_METADATA_MISMATCH "provider project metadata did not identify the allowlisted DEV project, team, and rootDirectory apps/frontend"
   PROJECT_REPOSITORY_ID="$(jq -r '.link.repoId // empty' <<< "$project")"
   PROVIDER_CHECKS="$(jq -c '. + ["project_metadata_exact"]' <<< "$PROVIDER_CHECKS")"
 }

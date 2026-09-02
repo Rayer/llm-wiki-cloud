@@ -6,6 +6,7 @@ case "$MODE" in validate|preflight|mutate) ;; *) printf 'usage: %s {validate|pre
 
 readonly EXPECTED_REPOSITORY="Rayer/llm-wiki-cloud"
 readonly EXPECTED_PROJECT_NAME="llm-wiki-frontend"
+readonly EXPECTED_ROOT_DIRECTORY="apps/frontend"
 readonly EXPECTED_SCOPE="rayer-tung-s-projects"
 readonly ENV_KEY="NEXT_PUBLIC_AUTH_URL"
 readonly DESIRED_VALUE="https://auth.rayer.idv.tw"
@@ -132,7 +133,7 @@ validate_exact_source() {
 read_project() {
   local response
   response=$(vercel_get "/v9/projects/$VERCEL_PROJECT_ID?teamId=$VERCEL_TEAM_ID") || return 1
-  jq -e --arg id "$VERCEL_PROJECT_ID" --arg team "$VERCEL_TEAM_ID" --arg name "$EXPECTED_PROJECT_NAME" 'type=="object" and .id==$id and .name==$name and .accountId==$team' <<< "$response" >/dev/null || return 1
+  jq -e --arg id "$VERCEL_PROJECT_ID" --arg team "$VERCEL_TEAM_ID" --arg name "$EXPECTED_PROJECT_NAME" --arg root "$EXPECTED_ROOT_DIRECTORY" 'type=="object" and .id==$id and .name==$name and .accountId==$team and .rootDirectory==$root and .link.type=="github" and .link.org=="Rayer" and .link.repo=="llm-wiki-cloud" and .link.productionBranch=="main"' <<< "$response" >/dev/null || return 1
   # The public /v13/deployments schema has no autoAssignCustomDomains request field.
   # Require the authoritative project setting to prove production creation is staged.
   jq -e 'has("autoAssignCustomDomains") and .autoAssignCustomDomains==false' <<< "$response" >/dev/null || return 2

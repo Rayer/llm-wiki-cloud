@@ -296,9 +296,9 @@ validate_inputs() {
 validate_canonical_project() {
   local project="$1"
   if ! jq -e --arg id "$VERCEL_PROJECT_ID" --arg name "$EXPECTED_PROJECT_NAME" --arg team "$VERCEL_TEAM_ID" '
-    type == "object" and .id == $id and .name == $name and ((.accountId // .teamId) == $team)' <<< "$project" >/dev/null; then
+    type == "object" and .id == $id and .name == $name and ((.accountId // .teamId) == $team) and .rootDirectory == "apps/frontend"' <<< "$project" >/dev/null; then
     STATE_FAILURE_CODE="PROJECT_METADATA_MISMATCH"
-    STATE_FAILURE_REASON="canonical project metadata did not identify the exact Development project and team"
+    STATE_FAILURE_REASON="canonical project metadata did not identify the exact Development project, team, and rootDirectory apps/frontend"
     return 1
   fi
 }
@@ -313,9 +313,9 @@ validate_canonical_domains() {
 
 validate_legacy_project() {
   if ! jq -e --arg id "$EXPECTED_CURRENT_ALIAS_PROJECT_ID" --arg name "$LEGACY_PROJECT_NAME" --arg team "$VERCEL_TEAM_ID" --arg canonical "$VERCEL_PROJECT_ID" '
-    type == "object" and .id == $id and .name == $name and .id != $canonical and ((.accountId // .teamId) == $team)' <<< "$1" >/dev/null; then
+    type == "object" and .id == $id and .name == $name and .id != $canonical and ((.accountId // .teamId) == $team) and .rootDirectory == "apps/frontend"' <<< "$1" >/dev/null; then
     STATE_FAILURE_CODE="LEGACY_PROJECT_MISMATCH"
-    STATE_FAILURE_REASON="current alias owner was not the exact allowlisted legacy project in the same team"
+    STATE_FAILURE_REASON="current alias owner was not the exact allowlisted legacy project in the same team with rootDirectory apps/frontend"
     return 1
   fi
 }

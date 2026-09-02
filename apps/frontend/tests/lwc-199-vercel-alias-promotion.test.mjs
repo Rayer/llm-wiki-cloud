@@ -37,6 +37,11 @@ async function setupCase(scenario = 'success') {
       githubCommitSha: commitSha,
     },
   }));
+  await writeFile(join(root, 'project.json'), JSON.stringify({
+    id: projectId,
+    rootDirectory: ['root-null', 'root-dot'].includes(scenario) ? (scenario === 'root-null' ? null : '.') : (scenario === 'root-wrong' ? 'apps/bff' : 'apps/frontend'),
+    link: { type: 'github', org: 'Rayer', repo: 'llm-wiki-cloud', productionBranch: 'main' },
+  }));
   await writeFile(join(root, 'aliases.json'), JSON.stringify({
     [aliases[0]]: 'dpl_oldcustom',
     [aliases[1]]: 'dpl_oldvercel',
@@ -114,6 +119,15 @@ async function readOptionalJson(path) {
 test('captures mutation transport status without toggling strict shell error handling', async () => {
   const source = await readFile(join(repoRoot, '.github/scripts/vercel-alias-promotion.sh'), 'utf8');
   assert.doesNotMatch(source, /\n\s*set \+e\n/);
+});
+
+test('root directory contract fails closed before alias mutation', async () => {
+  for (const scenario of ['root-null', 'root-dot', 'root-wrong']) {
+    const run = await runCase(scenario, {}, 'preflight');
+    assert.notEqual(run.result.code, undefined);
+    assert.match(run.result.stderr, /rootDirectory|root directory/i);
+    assert.deepEqual(run.calls, []);
+  }
 });
 
 function capturedOutput(...results) {

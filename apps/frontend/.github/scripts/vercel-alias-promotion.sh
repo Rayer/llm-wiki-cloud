@@ -9,6 +9,7 @@ fi
 
 readonly ALIASES=("wiki.rayer.idv.tw" "llm-wiki-frontend.vercel.app")
 readonly EXPECTED_REPOSITORY="Rayer/llm-wiki-cloud"
+readonly EXPECTED_ROOT_DIRECTORY="apps/frontend"
 readonly API_BASE_URL="${VERCEL_API_BASE_URL:-https://api.vercel.com}"
 readonly GITHUB_BASE_URL="${GITHUB_API_URL:-https://api.github.com}"
 readonly EVIDENCE_DIR="${EVIDENCE_DIR:-artifacts/vercel-alias-promotion}"
@@ -397,6 +398,12 @@ api_query() {
     "$API_BASE_URL$endpoint"
 }
 
+validate_project_metadata() {
+  local response
+  response="$(api_query "/v9/projects/$VERCEL_PROJECT_ID?teamId=$VERCEL_TEAM_ID")" || return 1
+  jq -e --arg id "$VERCEL_PROJECT_ID" --arg root "$EXPECTED_ROOT_DIRECTORY" 'type=="object" and .id==$id and .rootDirectory==$root and .link.type=="github" and .link.org=="Rayer" and .link.repo=="llm-wiki-cloud" and .link.productionBranch=="main"' <<< "$response" >/dev/null
+}
+
 github_query() {
   local endpoint="$1"
   curl --fail-with-body --silent --show-error --location \
@@ -723,6 +730,9 @@ if [[ -n "$VERCEL_TEAM_ID" ]]; then
 fi
 
 if [[ "$MODE" == "preflight" ]]; then
+  if ! validate_project_metadata; then
+    fail_preflight "Vercel project rootDirectory or GitHub link/production branch did not match the exact production contract"
+  fi
   github_runs=""
   if ! github_runs="$(github_query "/repos/$GITHUB_REPOSITORY/actions/workflows/ci.yml/runs?head_sha=$COMMIT_SHA&branch=main&event=push&per_page=100")"; then
     fail_preflight "GitHub CI read failed"

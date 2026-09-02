@@ -41,7 +41,7 @@ async function setupProviderCase(scenario) {
   await writeFile(join(root, 'env-reads'), '0'); await writeFile(join(root, 'env-mutations'), '0'); await writeFile(join(root, 'deployment-creates'), '0'); await writeFile(join(root, 'deployment-reads'), '0');
   await writeFile(join(root, 'mutation-log'), ''); await writeFile(join(root, 'curl-calls'), ''); await writeFile(join(root, 'deployment-body.json'), '{}');
   await writeFile(join(root, 'state.json'), JSON.stringify({
-    project: { id: projectId, name: scenario === 'wrong-project-name' ? 'llm-wiki-cloud' : 'llm-wiki-frontend', accountId: scenario === 'wrong-team' ? 'team_other' : teamId, autoAssignCustomDomains: scenario === 'auto-alias-enabled' ? true : false },
+    project: { id: projectId, name: scenario === 'wrong-project-name' ? 'llm-wiki-cloud' : 'llm-wiki-frontend', accountId: scenario === 'wrong-team' ? 'team_other' : teamId, rootDirectory: ['root-null', 'root-dot'].includes(scenario) ? (scenario === 'root-null' ? null : '.') : (scenario === 'root-wrong' ? 'apps/bff' : 'apps/frontend'), link: { type: 'github', org: 'Rayer', repo: scenario === 'link-wrong' ? 'llm-wiki-frontend' : 'llm-wiki-cloud', productionBranch: scenario === 'link-wrong-branch' ? 'develop' : 'main' }, autoAssignCustomDomains: scenario === 'auto-alias-enabled' ? true : false },
     envs,
     aliases: { 'wiki.rayer.idv.tw': { alias: 'wiki.rayer.idv.tw', projectId: scenario === 'alias-wrong-project' ? 'prj_other' : projectId, deploymentId: 'dpl_existing123' }, 'llm-wiki-frontend.vercel.app': { alias: 'llm-wiki-frontend.vercel.app', projectId, deploymentId: 'dpl_existing123' } },
     deployments: { dpl_existing123: { ...existingDeployment, projectId: scenario === 'deployment-wrong-project' ? 'prj_other' : projectId }, dpl_new123: newDeployment },
@@ -155,7 +155,7 @@ test('env mutation converges before deployment and rollback remains exact', asyn
 });
 
 test('wrong project, wrong team, alias/deployment identity, scope, and failed CI are preflight failures with zero writes', async () => {
-  for (const scenario of ['wrong-project-name', 'wrong-team', 'alias-wrong-project', 'deployment-wrong-project', 'auto-alias-enabled', 'production-preview', 'branch', 'duplicate', 'ci-failure', 'ci-wrong-ref']) {
+  for (const scenario of ['wrong-project-name', 'wrong-team', 'root-null', 'root-dot', 'root-wrong', 'link-wrong', 'link-wrong-branch', 'alias-wrong-project', 'deployment-wrong-project', 'auto-alias-enabled', 'production-preview', 'branch', 'duplicate', 'ci-failure', 'ci-wrong-ref']) {
     const run = await providerCase(scenario); assert.notEqual(run.preflight.code, undefined, scenario); assert.deepEqual(run.mutationLog, [], scenario); assert.equal(run.evidence.deployment_create_count, 0, scenario);
   }
 });

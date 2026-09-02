@@ -50,6 +50,7 @@ async function setupCase(scenario = 'authority-conflict') {
     id: projectId,
     name: 'llm-wiki-frontend-dev',
     accountId: teamId,
+    rootDirectory: ['root-null', 'root-dot'].includes(scenario) ? (scenario === 'root-null' ? null : '.') : (scenario === 'root-wrong' ? 'apps/bff' : 'apps/frontend'),
   }));
   await writeFile(join(root, 'ci.json'), JSON.stringify({
     workflow_runs: [{
@@ -153,6 +154,16 @@ test('fails closed on contradictory DEV alias authority before mutation', async 
   const evidence = JSON.parse(await readFile(join(fixture.evidenceDir, 'vercel-dev-deployment.json'), 'utf8'));
   assert.equal(evidence.status, 'PREFLIGHT_FAILED');
   assert.equal(evidence.reason_code, 'ALIAS_AUTHORITY_CONFLICT');
+});
+
+test('root directory contract fails closed before provider mutation', async () => {
+  for (const scenario of ['root-null', 'root-dot', 'root-wrong']) {
+    const fixture = await setupCase(scenario);
+    const result = await runScript('preflight', buildEnv(fixture));
+    assert.equal(result.code, 1, result.stderr);
+    assert.match(result.stderr, /rootDirectory|root directory/i);
+    assert.equal((await readFile(join(fixture.root, 'deployment-post-log'), 'utf8')).trim(), '');
+  }
 });
 
 test('rejects the retired Vercel scope slug', async () => {

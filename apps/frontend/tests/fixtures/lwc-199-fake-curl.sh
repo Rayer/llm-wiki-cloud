@@ -77,6 +77,11 @@ elif [[ "$url" == "$github_base"/* ]]; then
   check_provider_auth github "$github_base" "Authorization: Bearer ${GITHUB_TOKEN:-}"
 fi
 
+if [[ "$url" == *"/v9/projects/"* ]]; then
+  cat "$root/project.json"
+  exit 0
+fi
+
 if [[ "$method" == POST && "$url" == *"/v2/deployments/"*/aliases* ]]; then
   printf '%s\t%s\t%s\t%s\n' "$method" "$url" "${auth_header#Authorization: }" "$request_body" >> "$root/alias-post-calls"
   alias_post_call_number=$(( $(wc -l < "$root/alias-post-calls") ))
