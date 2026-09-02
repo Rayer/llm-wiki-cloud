@@ -362,7 +362,7 @@ class BFFPromotionContractTest(unittest.TestCase):
             "--jobs-json", str(path),
             "--expected-run-id", str(extra.get("expected_run_id", RUN_ID)),
             "--expected-run-attempt", str(extra.get("expected_run_attempt", 1)),
-            "--required-job", extra.get("required_job", "test"),
+            "--required-job", extra.get("required_job", "canonical-ci"),
         ], capture_output=True, text=True)
 
     def invoke_fast_forward_compare(self, document):
@@ -441,8 +441,8 @@ class BFFPromotionContractTest(unittest.TestCase):
         self.assertNotEqual(result.returncode, 0)
         self.assertFalse(output.exists())
 
-    def test_canonical_ci_jobs_require_unique_successful_test_job(self):
-        jobs = [{"name": "test", "run_id": RUN_ID, "run_attempt": 1, "status": "completed", "conclusion": "success"}]
+    def test_canonical_ci_jobs_require_unique_successful_aggregate_job(self):
+        jobs = [{"name": "canonical-ci", "run_id": RUN_ID, "run_attempt": 1, "status": "completed", "conclusion": "success"}]
         self.assertEqual(self.invoke_canonical_ci_jobs(jobs).returncode, 0)
         cases = {
             "missing": [],
@@ -456,6 +456,27 @@ class BFFPromotionContractTest(unittest.TestCase):
         for name, value in cases.items():
             with self.subTest(name=name):
                 self.assertNotEqual(self.invoke_canonical_ci_jobs(value).returncode, 0)
+
+    def test_canonical_ci_jobs_accepts_real_monorepo_aggregate_contract(self):
+        jobs = [
+            {"name": name, "run_id": RUN_ID, "run_attempt": 1, "status": "completed", "conclusion": "success"}
+            for name in (
+                "bff", "frontend-lint", "frontend-typecheck", "frontend-test",
+                "frontend-build", "local-vertical-smoke", "workflow-source-guards", "canonical-ci",
+            )
+        ]
+        self.assertEqual(self.invoke_canonical_ci_jobs(jobs, required_job="canonical-ci").returncode, 0)
+        aggregate = jobs[-1]
+        for name, evidence in {
+            "missing": jobs[:-1],
+            "failed": [*jobs[:-1], {**aggregate, "conclusion": "failure"}],
+            "skipped": [*jobs[:-1], {**aggregate, "conclusion": "skipped"}],
+            "duplicate": [*jobs, aggregate],
+            "wrong run": [*jobs[:-1], {**aggregate, "run_id": RUN_ID + 1}],
+            "wrong attempt": [*jobs[:-1], {**aggregate, "run_attempt": 2}],
+        }.items():
+            with self.subTest(name=name):
+                self.assertNotEqual(self.invoke_canonical_ci_jobs(evidence, required_job="canonical-ci").returncode, 0)
 
     def test_canonical_ci_run_rejects_missing_invalid_run_attempt(self):
         missing = self.canonical_ci_run()
@@ -474,7 +495,7 @@ class BFFPromotionContractTest(unittest.TestCase):
                 self.assertFalse(output.exists())
 
     def test_canonical_ci_jobs_reject_mismatched_missing_invalid_run_attempt(self):
-        base = {"name": "test", "run_id": RUN_ID, "status": "completed", "conclusion": "success"}
+        base = {"name": "canonical-ci", "run_id": RUN_ID, "status": "completed", "conclusion": "success"}
         cases = {
             "missing": [base],
             "zero": [{**base, "run_attempt": 0}],
@@ -516,7 +537,7 @@ class BFFPromotionContractTest(unittest.TestCase):
             "top-level": '{"total_count":1,"workflow_runs":[{"id":1}],"total_count":1}',
             "page items": '{"total_count":1,"workflow_runs":[],"workflow_runs":[{"id":1}]}',
             "run": '{"total_count":1,"workflow_runs":[{"id":1,"conclusion":"failure","conclusion":"success"}]}',
-            "job": '{"total_count":1,"jobs":[{"name":"test","conclusion":"failure","conclusion":"success"}]}',
+            "job": '{"total_count":1,"jobs":[{"name":"canonical-ci","conclusion":"failure","conclusion":"success"}]}',
         }
         keys = {
             "top-level": "workflow_runs",

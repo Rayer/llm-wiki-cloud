@@ -582,7 +582,7 @@ func TestDeployBFFWorkflowRequiresExactCanonicalCIAndDoesNotRerunTests(t *testin
 		"actions/runs/${CI_RUN_ID}/attempts/${CI_RUN_ATTEMPT}/jobs",
 		"validate-canonical-ci-jobs",
 		"--expected-run-attempt \"$CI_RUN_ATTEMPT\"",
-		"--required-job test",
+		"--required-job canonical-ci",
 	} {
 		if !strings.Contains(ciBlock, want) {
 			t.Errorf("canonical CI evidence is missing %q", want)
@@ -616,7 +616,7 @@ func TestCanonicalCIEvidenceRejectsDuplicateKeyRawPages(t *testing.T) {
 	const sha = "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
 	validRun := `{"id":123,"run_attempt":1,"path":".github/workflows/ci.yml","event":"push","head_branch":"develop","head_sha":"` + sha + `","status":"completed","conclusion":"success"}`
 	validRunsPage := `{"total_count":1,"workflow_runs":[` + validRun + `]}`
-	validJobsPage := `{"total_count":1,"jobs":[{"name":"test","run_id":123,"run_attempt":1,"status":"completed","conclusion":"success"}]}`
+	validJobsPage := `{"total_count":1,"jobs":[{"name":"canonical-ci","run_id":123,"run_attempt":1,"status":"completed","conclusion":"success"}]}`
 
 	tests := []struct {
 		name           string
@@ -645,7 +645,7 @@ func TestCanonicalCIEvidenceRejectsDuplicateKeyRawPages(t *testing.T) {
 		{
 			name:           "job duplicate conclusion",
 			runsPage:       validRunsPage,
-			jobsPage:       `{"total_count":1,"jobs":[{"name":"test","run_id":123,"run_attempt":1,"status":"completed","conclusion":"failure","conclusion":"success"}]}`,
+			jobsPage:       `{"total_count":1,"jobs":[{"name":"canonical-ci","run_id":123,"run_attempt":1,"status":"completed","conclusion":"failure","conclusion":"success"}]}`,
 			forbiddenFiles: []string{"canonical-ci-jobs.json"},
 		},
 	}
@@ -743,7 +743,7 @@ func TestPreMutationPinnedCanonicalCIRerunCannotDeploy(t *testing.T) {
 
 	const sha = "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
 	validAttempt := `{"id":123,"run_attempt":1,"path":".github/workflows/ci.yml","event":"push","head_branch":"develop","head_sha":"` + sha + `","status":"completed","conclusion":"success"}`
-	validJobs := `{"total_count":1,"jobs":[{"name":"test","run_id":123,"run_attempt":1,"status":"completed","conclusion":"success"}]}`
+	validJobs := `{"total_count":1,"jobs":[{"name":"canonical-ci","run_id":123,"run_attempt":1,"status":"completed","conclusion":"success"}]}`
 	currentInProgress := `{"id":123,"run_attempt":2,"path":".github/workflows/ci.yml","event":"push","head_branch":"develop","head_sha":"` + sha + `","status":"in_progress","conclusion":null}`
 	currentFailed := `{"id":123,"run_attempt":2,"path":".github/workflows/ci.yml","event":"push","head_branch":"develop","head_sha":"` + sha + `","status":"completed","conclusion":"failure"}`
 	tests := []struct {
@@ -811,12 +811,12 @@ func TestPreMutationPinnedCanonicalCIRerunCannotDeploy(t *testing.T) {
 			wantGH:      []string{"attempt", "jobs", "develop"},
 		},
 		{
-			name:        "failed test job",
+			name:        "failed aggregate job",
 			develop:     sha,
 			attemptJSON: validAttempt,
 			currentJSON: validAttempt,
-			jobsJSON:    `{"total_count":1,"jobs":[{"name":"test","run_id":123,"run_attempt":1,"status":"completed","conclusion":"failure"}]}`,
-			wantErr:     "test job did not conclude successfully",
+			jobsJSON:    `{"total_count":1,"jobs":[{"name":"canonical-ci","run_id":123,"run_attempt":1,"status":"completed","conclusion":"failure"}]}`,
+			wantErr:     "canonical-ci job did not conclude successfully",
 			wantGH:      []string{"attempt", "jobs"},
 		},
 		{
@@ -1065,7 +1065,7 @@ func TestCurrentCanonicalCIRerunAfterJobsCannotDeploy(t *testing.T) {
 
 	const sha = "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
 	validAttempt := `{"id":123,"run_attempt":1,"path":".github/workflows/ci.yml","event":"push","head_branch":"develop","head_sha":"` + sha + `","status":"completed","conclusion":"success"}`
-	validJobs := `{"total_count":1,"jobs":[{"name":"test","run_id":123,"run_attempt":1,"status":"completed","conclusion":"success"}]}`
+	validJobs := `{"total_count":1,"jobs":[{"name":"canonical-ci","run_id":123,"run_attempt":1,"status":"completed","conclusion":"success"}]}`
 	currentLater := `{"id":123,"run_attempt":2,"path":".github/workflows/ci.yml","event":"push","head_branch":"develop","head_sha":"` + sha + `","status":"in_progress","conclusion":null}`
 	gcloudLog := filepath.Join(t.TempDir(), "gcloud.log")
 	ghLog := filepath.Join(t.TempDir(), "gh.log")
@@ -1169,7 +1169,7 @@ func TestCanonicalDevelopAdvanceAfterJobsCannotDeploy(t *testing.T) {
 
 	const sha = "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
 	validAttempt := `{"id":123,"run_attempt":1,"path":".github/workflows/ci.yml","event":"push","head_branch":"develop","head_sha":"` + sha + `","status":"completed","conclusion":"success"}`
-	validJobs := `{"total_count":1,"jobs":[{"name":"test","run_id":123,"run_attempt":1,"status":"completed","conclusion":"success"}]}`
+	validJobs := `{"total_count":1,"jobs":[{"name":"canonical-ci","run_id":123,"run_attempt":1,"status":"completed","conclusion":"success"}]}`
 	develop := "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb"
 	log := filepath.Join(t.TempDir(), "provider.log")
 	ghLog := filepath.Join(t.TempDir(), "gh.log")
@@ -1306,7 +1306,7 @@ func runPostJobsBlock(t *testing.T, fn, freshness, block, developSHA, currentJSO
 	attemptFile := filepath.Join(t.TempDir(), "attempt.json")
 	currentFile := filepath.Join(t.TempDir(), "current.json")
 	jobsFile := filepath.Join(t.TempDir(), "jobs.json")
-	validJobs := `{"total_count":1,"jobs":[{"name":"test","run_id":123,"run_attempt":1,"status":"completed","conclusion":"success"}]}`
+	validJobs := `{"total_count":1,"jobs":[{"name":"canonical-ci","run_id":123,"run_attempt":1,"status":"completed","conclusion":"success"}]}`
 	if err := os.WriteFile(attemptFile, []byte(`{"id":123,"run_attempt":1,"path":".github/workflows/ci.yml","event":"push","head_branch":"develop","head_sha":"`+sha+`","status":"completed","conclusion":"success"}`), 0o600); err != nil {
 		t.Fatal(err)
 	}

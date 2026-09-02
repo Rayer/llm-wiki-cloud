@@ -22,7 +22,7 @@ REQUIRED_RUN_JOBS = (
 CANONICAL_CI_PATH = ".github/workflows/ci.yml"
 CANONICAL_CI_EVENT = "push"
 CANONICAL_CI_REF = "develop"
-CANONICAL_CI_JOB = "test"
+CANONICAL_CI_JOB = "canonical-ci"
 ACTIONS_PAGE_ITEM_KEYS = ("workflow_runs", "jobs")
 RECEIPT_KEYS = (
     "receipt_schema_version",
