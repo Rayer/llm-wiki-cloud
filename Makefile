@@ -39,7 +39,7 @@ smoke:
 	bash scripts/local-vertical-smoke.sh
 
 workflow-yaml:
-	node -e 'const fs=require("fs"); const yaml=require("./$(FRONTEND_DIR)/node_modules/js-yaml"); const workflow=yaml.load(fs.readFileSync(".github/workflows/ci.yml", "utf8")); if (!workflow || !workflow.jobs || !workflow.jobs.build || !workflow.jobs["main-fast-forward-eligible"]) process.exit(1); console.log(".github/workflows/ci.yml: valid YAML");'
+	node -e 'const fs=require("fs"); const yaml=require("./$(FRONTEND_DIR)/node_modules/js-yaml"); const workflow=yaml.load(fs.readFileSync(".github/workflows/ci.yml", "utf8")); if (!workflow || !workflow.jobs || !workflow.jobs.build || Object.values(workflow.jobs).some((job) => job.permissions?.statuses === "write")) process.exit(1); console.log(".github/workflows/ci.yml: valid YAML");'
 
 verify: bootstrap workflow-yaml lint typecheck vet test build smoke
 	git diff --check
