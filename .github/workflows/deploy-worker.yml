@@ -70,6 +70,7 @@ jobs:
           cache: true
 
       - name: Verify worker source
+        working-directory: apps/bff
         run: |
           set -euo pipefail
           go test ./... -count=1
@@ -104,7 +105,7 @@ jobs:
             echo "unable to read IAM policy for Cloud Run Job olw-pipeline-dev"
             exit 1
           fi
-          if ! printf '%s\n' "$IAM_POLICY" | python3 scripts/validate_cloud_run_job_iam_policy.py; then
+          if ! printf '%s\n' "$IAM_POLICY" | python3 apps/bff/scripts/validate_cloud_run_job_iam_policy.py; then
             echo "Cloud Run Job olw-pipeline-dev IAM policy is missing the required read-only worker binding"
             exit 1
           fi
@@ -139,7 +140,7 @@ jobs:
           fi
           TAG="${SHA}-${GITHUB_RUN_ID}-${GITHUB_RUN_ATTEMPT}"
           IMAGE="${AR_REPO}/olw-pipeline:${TAG}"
-          docker build --build-arg BUILD_NONCE="$BUILD_NONCE" --target worker -f cmd/olw_worker/Dockerfile -t "$IMAGE" .
+          docker build --build-arg BUILD_NONCE="$BUILD_NONCE" --target worker -f apps/bff/cmd/olw_worker/Dockerfile -t "$IMAGE" apps/bff
           docker push "$IMAGE"
           DIGEST=$(gcloud artifacts docker images describe "$IMAGE" --format='value(image_summary.digest)' --quiet)
           if [[ ! "$DIGEST" =~ ^sha256:[0-9a-f]{64}$ ]]; then

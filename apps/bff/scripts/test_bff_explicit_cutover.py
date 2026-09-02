@@ -14,7 +14,8 @@ import yaml
 
 
 ROOT = Path(__file__).resolve().parents[1]
-WORKFLOW = ROOT / ".github/workflows/release-bff.yml"
+REPO_ROOT = ROOT.parent.parent
+WORKFLOW = REPO_ROOT / ".github/workflows/release-bff.yml"
 SHA = "a" * 40
 IMAGE = "asia-east1-docker.pkg.dev/llm-wiki-cloud/cloud-run-images/llm-wiki-bff@sha256:" + "d" * 64
 FROZEN_CREATED = "llm-wiki-bff-00071-zgk"
@@ -212,7 +213,7 @@ class ExplicitCutoverHarnessTest(unittest.TestCase):
             "IMMUTABLE_IMAGE": IMAGE,
             "COMMIT_SHA": SHA,
             "EXPECTED_COMMIT": SHA,
-            "GITHUB_REPOSITORY": "Rayer/llm-wiki-bff",
+            "GITHUB_REPOSITORY": "Rayer/llm-wiki-cloud",
             "GITHUB_OUTPUT": str(self.output),
             "GITHUB_ENV": str(self.github_env),
             "ROLLBACK_CONTRACT": str(self.rollback),
@@ -236,13 +237,13 @@ class ExplicitCutoverHarnessTest(unittest.TestCase):
             scripts.append(self._workflow_step("Deploy existing immutable image to Cloud Run"))
         scripts.append(self._workflow_step("Identify, validate, and explicitly cut over exact BFF candidate"))
         script = "\n".join(scripts).replace("sleep 5", "SECONDS=$((SECONDS + 1))").replace("sleep 10", "SECONDS=$CUTOVER_VERIFY_DEADLINE")
-        return subprocess.run(["bash", "-c", script], cwd=ROOT, env=env, capture_output=True, text=True)
+        return subprocess.run(["bash", "-c", script], cwd=REPO_ROOT, env=env, capture_output=True, text=True)
 
     def _run_rollback(self, mode):
         env = self._env(mode)
         script = self._workflow_step("Restore frozen production traffic after query-config readback failure")
         script = script.replace("sleep 5", "SECONDS=$ROLLBACK_READBACK_DEADLINE").replace("sleep 10", "SECONDS=$ROLLBACK_READBACK_DEADLINE")
-        return subprocess.run(["bash", "-c", script], cwd=ROOT, env=env, capture_output=True, text=True)
+        return subprocess.run(["bash", "-c", script], cwd=REPO_ROOT, env=env, capture_output=True, text=True)
 
     def test_pinned_traffic_promotes_the_new_retired_candidate(self):
         result = self._run()

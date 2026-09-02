@@ -107,7 +107,7 @@ jobs:
             PAGE_META="$RUNNER_TEMP/canonical-ci-runs-page-meta.txt"
             rm -f "$PAGE_JSON" "$PAGE_ITEMS" "$PAGE_META"
             gh api "repos/${GITHUB_REPOSITORY}/actions/workflows/ci.yml/runs?head_sha=${CANDIDATE_SHA}&event=push&per_page=100&page=${PAGE}" > "$PAGE_JSON"
-            python3 scripts/validate_bff_promotion_contract.py normalize-actions-page \
+            python3 apps/bff/scripts/validate_bff_promotion_contract.py normalize-actions-page \
               --page-json "$PAGE_JSON" \
               --items-key workflow_runs \
               --items-output "$PAGE_ITEMS" \
@@ -137,7 +137,7 @@ jobs:
             fi
             PAGE=$((PAGE + 1))
           done
-          python3 scripts/validate_bff_promotion_contract.py validate-canonical-ci-run \
+          python3 apps/bff/scripts/validate_bff_promotion_contract.py validate-canonical-ci-run \
             --runs-json "$CI_RUNS_JSON" \
             --expected-sha "$CANDIDATE_SHA" \
             --expected-path ".github/workflows/ci.yml" \
@@ -175,7 +175,7 @@ jobs:
             PAGE_META="$RUNNER_TEMP/canonical-ci-jobs-page-meta.txt"
             rm -f "$PAGE_JSON" "$PAGE_ITEMS" "$PAGE_META"
             gh api "repos/${GITHUB_REPOSITORY}/actions/runs/${CI_RUN_ID}/attempts/${CI_RUN_ATTEMPT}/jobs?per_page=100&page=${PAGE}" > "$PAGE_JSON"
-            python3 scripts/validate_bff_promotion_contract.py normalize-actions-page \
+            python3 apps/bff/scripts/validate_bff_promotion_contract.py normalize-actions-page \
               --page-json "$PAGE_JSON" \
               --items-key jobs \
               --items-output "$PAGE_ITEMS" \
@@ -205,7 +205,7 @@ jobs:
             fi
             PAGE=$((PAGE + 1))
           done
-          python3 scripts/validate_bff_promotion_contract.py validate-canonical-ci-jobs \
+          python3 apps/bff/scripts/validate_bff_promotion_contract.py validate-canonical-ci-jobs \
             --jobs-json "$CI_JOBS_JSON" \
             --expected-run-id "$CI_RUN_ID" \
             --expected-run-attempt "$CI_RUN_ATTEMPT" \
@@ -220,6 +220,7 @@ jobs:
           cache: true
 
       - name: Verify immutable DEV query stage artifact
+        working-directory: apps/bff
         run: |
           set -euo pipefail
           ARTIFACT_PATH="${QUERY_STAGE_CONFIG_PATH#/app/}"
@@ -275,6 +276,7 @@ jobs:
 
       - name: Resolve build identity
         id: identity
+        working-directory: apps/bff
         run: |
           set -euo pipefail
           APP_VERSION=$(go run ./cmd/versioncheck VERSION)
@@ -332,7 +334,7 @@ jobs:
           validate_dev_service_traffic() {
             local revision="$1"
             local service_json="$2"
-            printf '%s\n' "$service_json" | python3 scripts/validate_bff_promotion_contract.py validate-traffic \
+            printf '%s\n' "$service_json" | python3 apps/bff/scripts/validate_bff_promotion_contract.py validate-traffic \
               --traffic-file - \
               --traffic-path status.traffic \
               --compare-path spec.traffic \
@@ -404,7 +406,7 @@ jobs:
             fi
             rm -f "$dest"
             gh api "repos/${GITHUB_REPOSITORY}/actions/runs/${CI_RUN_ID}" > "$dest"
-            python3 scripts/validate_bff_promotion_contract.py validate-canonical-ci-attempt \
+            python3 apps/bff/scripts/validate_bff_promotion_contract.py validate-canonical-ci-attempt \
               --run-json "$dest" \
               --expected-sha "$CANDIDATE_SHA" \
               --expected-path ".github/workflows/ci.yml" \
@@ -429,7 +431,7 @@ jobs:
             local sha_file="$2"
             rm -f "$ref_json" "$sha_file"
             gh api "repos/${GITHUB_REPOSITORY}/git/ref/heads/develop" > "$ref_json"
-            python3 scripts/validate_bff_promotion_contract.py extract-git-ref-sha \
+            python3 apps/bff/scripts/validate_bff_promotion_contract.py extract-git-ref-sha \
               --ref-json "$ref_json" \
               --output "$sha_file"
             local develop_sha
@@ -452,8 +454,8 @@ jobs:
 
           IMAGE="${{ env.AR_REPO }}/llm-wiki-bff:$GIT_SHA"
           echo "Building ${IMAGE}…"
-          BUILD_ID=$(gcloud builds submit \
-            --config cloudbuild-bff.yaml \
+          BUILD_ID=$(gcloud builds submit apps/bff \
+            --config apps/bff/cloudbuild-bff.yaml \
             --substitutions="_IMAGE=$IMAGE,_APP_VERSION=$APP_VERSION,_GIT_SHA=$GIT_SHA,_GIT_BRANCH=$GIT_BRANCH,_GIT_TAG=$GIT_TAG" \
             --timeout=600s \
             --async \
@@ -581,7 +583,7 @@ jobs:
             echo "Unable to read remote ${GITHUB_REF_NAME}; refusing to deploy."
             exit 1
           fi
-          python3 scripts/validate_bff_promotion_contract.py extract-git-ref-sha \
+            python3 apps/bff/scripts/validate_bff_promotion_contract.py extract-git-ref-sha \
             --ref-json "$REMOTE_REF_JSON" \
             --output "$REMOTE_REF_SHA"
           REMOTE_SHA=$(tr -d '[:space:]' < "$REMOTE_REF_SHA")
@@ -606,7 +608,7 @@ jobs:
           ATTEMPT_JSON="$RUNNER_TEMP/canonical-ci-attempt.json"
           rm -f "$ATTEMPT_JSON"
           gh api "repos/${GITHUB_REPOSITORY}/actions/runs/${CI_RUN_ID}/attempts/${CI_RUN_ATTEMPT}" > "$ATTEMPT_JSON"
-          python3 scripts/validate_bff_promotion_contract.py validate-canonical-ci-attempt \
+            python3 apps/bff/scripts/validate_bff_promotion_contract.py validate-canonical-ci-attempt \
             --run-json "$ATTEMPT_JSON" \
             --expected-sha "$CANDIDATE_SHA" \
             --expected-path ".github/workflows/ci.yml" \
@@ -626,7 +628,7 @@ jobs:
             PAGE_META="$RUNNER_TEMP/canonical-ci-pre-mutation-jobs-page-meta.txt"
             rm -f "$PAGE_JSON" "$PAGE_ITEMS" "$PAGE_META"
             gh api "repos/${GITHUB_REPOSITORY}/actions/runs/${CI_RUN_ID}/attempts/${CI_RUN_ATTEMPT}/jobs?per_page=100&page=${PAGE}" > "$PAGE_JSON"
-            python3 scripts/validate_bff_promotion_contract.py normalize-actions-page \
+            python3 apps/bff/scripts/validate_bff_promotion_contract.py normalize-actions-page \
               --page-json "$PAGE_JSON" \
               --items-key jobs \
               --items-output "$PAGE_ITEMS" \
@@ -656,7 +658,7 @@ jobs:
             fi
             PAGE=$((PAGE + 1))
           done
-          python3 scripts/validate_bff_promotion_contract.py validate-canonical-ci-jobs \
+          python3 apps/bff/scripts/validate_bff_promotion_contract.py validate-canonical-ci-jobs \
             --jobs-json "$CI_JOBS_JSON" \
             --expected-run-id "$CI_RUN_ID" \
             --expected-run-attempt "$CI_RUN_ATTEMPT" \
@@ -936,7 +938,7 @@ jobs:
           validate_dev_service_traffic() {
             local revision="$1"
             local service_json="$2"
-            printf '%s\n' "$service_json" | python3 scripts/validate_bff_promotion_contract.py validate-traffic \
+            printf '%s\n' "$service_json" | python3 apps/bff/scripts/validate_bff_promotion_contract.py validate-traffic \
               --traffic-file - \
               --traffic-path status.traffic \
               --compare-path spec.traffic \
@@ -1026,7 +1028,7 @@ jobs:
           DEVELOP_REF_SHA="$RUNNER_TEMP/canonical-develop-ref.sha"
           rm -f "$DEVELOP_REF_JSON" "$DEVELOP_REF_SHA"
           gh api "repos/${GITHUB_REPOSITORY}/git/ref/heads/develop" > "$DEVELOP_REF_JSON"
-          python3 scripts/validate_bff_promotion_contract.py extract-git-ref-sha \
+            python3 apps/bff/scripts/validate_bff_promotion_contract.py extract-git-ref-sha \
             --ref-json "$DEVELOP_REF_JSON" \
             --output "$DEVELOP_REF_SHA"
           DEVELOP_SHA=$(tr -d '[:space:]' < "$DEVELOP_REF_SHA")
@@ -1057,7 +1059,7 @@ jobs:
       - name: Validate exact same-run DEV provenance receipt
         run: |
           set -euo pipefail
-          python3 scripts/validate_bff_promotion_contract.py validate-dev-receipt \
+          python3 apps/bff/scripts/validate_bff_promotion_contract.py validate-dev-receipt \
             --receipt "$DIGEST_FILE" \
             --run-json "$RUN_JSON" \
             --expected-sha "$CANDIDATE_SHA" \
@@ -1078,8 +1080,8 @@ jobs:
       - name: Validate canonical rollback artifact
         run: |
           set -euo pipefail
-          python3 scripts/validate_bff_promotion_contract.py validate-traffic \
-            --traffic-file scripts/fixtures/bff-traffic-explicit.json \
+          python3 apps/bff/scripts/validate_bff_promotion_contract.py validate-traffic \
+            --traffic-file apps/bff/scripts/fixtures/bff-traffic-explicit.json \
             --traffic-path traffic \
             --traffic-mode artifact \
             --recognized-revision llm-wiki-bff-00001-old
@@ -1156,7 +1158,7 @@ jobs:
           DEVELOP_REF_SHA="$RUNNER_TEMP/canonical-develop-ref.sha"
           rm -f "$DEVELOP_REF_JSON" "$DEVELOP_REF_SHA"
           gh api "repos/${GITHUB_REPOSITORY}/git/ref/heads/develop" > "$DEVELOP_REF_JSON"
-          python3 scripts/validate_bff_promotion_contract.py extract-git-ref-sha \
+            python3 apps/bff/scripts/validate_bff_promotion_contract.py extract-git-ref-sha \
             --ref-json "$DEVELOP_REF_JSON" \
             --output "$DEVELOP_REF_SHA"
           DEVELOP_SHA=$(tr -d '[:space:]' < "$DEVELOP_REF_SHA")
@@ -1170,7 +1172,7 @@ jobs:
           fi
           COMPARE_FILE="$RUNNER_TEMP/bff-fast-forward-compare.json"
           gh api "repos/${GITHUB_REPOSITORY}/compare/main...${EVENT_SHA}?per_page=1" > "$COMPARE_FILE"
-          python3 scripts/validate_bff_promotion_contract.py validate-fast-forward-compare \
+          python3 apps/bff/scripts/validate_bff_promotion_contract.py validate-fast-forward-compare \
             --compare-json "$COMPARE_FILE"
 
       - name: Publish successful main fast-forward eligibility status
@@ -1191,7 +1193,7 @@ jobs:
           DEVELOP_REF_SHA="$RUNNER_TEMP/canonical-develop-ref.sha"
           rm -f "$DEVELOP_REF_JSON" "$DEVELOP_REF_SHA"
           gh api "repos/${GITHUB_REPOSITORY}/git/ref/heads/develop" > "$DEVELOP_REF_JSON"
-          python3 scripts/validate_bff_promotion_contract.py extract-git-ref-sha \
+            python3 apps/bff/scripts/validate_bff_promotion_contract.py extract-git-ref-sha \
             --ref-json "$DEVELOP_REF_JSON" \
             --output "$DEVELOP_REF_SHA"
           DEVELOP_SHA=$(tr -d '[:space:]' < "$DEVELOP_REF_SHA")
@@ -1205,7 +1207,7 @@ jobs:
           fi
           COMPARE_FILE="$RUNNER_TEMP/bff-fast-forward-compare-final.json"
           gh api "repos/${GITHUB_REPOSITORY}/compare/main...${EVENT_SHA}?per_page=1" > "$COMPARE_FILE"
-          python3 scripts/validate_bff_promotion_contract.py validate-fast-forward-compare \
+          python3 apps/bff/scripts/validate_bff_promotion_contract.py validate-fast-forward-compare \
             --compare-json "$COMPARE_FILE"
           gh api --method POST "repos/${GITHUB_REPOSITORY}/statuses/$EVENT_SHA" \
             -f state=success \

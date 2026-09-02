@@ -9,6 +9,7 @@ import { load as parseYaml } from 'js-yaml';
 
 const execFileAsync = promisify(execFile);
 const repoRoot = new URL('..', import.meta.url).pathname;
+const monorepoRoot = new URL('../../../', import.meta.url).pathname;
 const commitSha = '0123456789abcdef0123456789abcdef01234567';
 const deploymentId = 'dpl_devready';
 const projectId = 'prj_dev123';
@@ -23,6 +24,7 @@ async function setupCase(scenario = 'authority-conflict') {
   await mkdir(bin);
   await mkdir(evidenceDir);
   await writeFile(join(root, 'scenario'), scenario);
+  await writeFile(join(root, 'project-reads'), '0');
   await writeFile(join(root, 'mutation-log'), '');
   await writeFile(join(root, 'deployment-post-log'), '');
   await writeFile(join(root, 'curl-calls'), '');
@@ -37,7 +39,7 @@ async function setupCase(scenario = 'authority-conflict') {
     meta: {
       githubDeployment: '1',
       githubOrg: 'Rayer',
-      githubRepo: 'llm-wiki-frontend',
+      githubRepo: 'llm-wiki-cloud',
       githubCommitRef: 'develop',
       githubCommitSha: commitSha,
     },
@@ -49,6 +51,8 @@ async function setupCase(scenario = 'authority-conflict') {
     id: projectId,
     name: 'llm-wiki-frontend-dev',
     accountId: teamId,
+    rootDirectory: ['root-null', 'root-dot'].includes(scenario) ? (scenario === 'root-null' ? null : '.') : (scenario === 'root-wrong' ? 'apps/bff' : 'apps/frontend'),
+    ...(scenario === 'linked-deployment-missing' ? { link: { repoId: 12345 } } : {}),
   }));
   await writeFile(join(root, 'ci.json'), JSON.stringify({
     workflow_runs: [{
@@ -59,7 +63,7 @@ async function setupCase(scenario = 'authority-conflict') {
       status: 'completed',
       conclusion: 'success',
       id: 987654321,
-      html_url: 'https://github.test/Rayer/llm-wiki-frontend/actions/runs/987654321',
+      html_url: 'https://github.test/Rayer/llm-wiki-cloud/actions/runs/987654321',
     }],
   }));
   await execFileAsync('cp', [
@@ -94,7 +98,7 @@ function buildEnv(fixture, overrides = {}) {
     ...env,
     PATH: fixture.bin + ':' + process.env.PATH,
     FIXTURE_ROOT: fixture.root,
-    GITHUB_REPOSITORY: 'Rayer/llm-wiki-frontend',
+    GITHUB_REPOSITORY: 'Rayer/llm-wiki-cloud',
     GITHUB_TOKEN: 'github-sentinel-token',
     VERCEL_TOKEN: 'vercel-sentinel-token',
     VERCEL_API_BASE_URL: 'https://vercel.test',
@@ -112,7 +116,7 @@ function buildEnv(fixture, overrides = {}) {
     VERCEL_POLL_ATTEMPTS: '2',
     VERCEL_POLL_INTERVAL_SECONDS: '0',
     ROLLBACK_ARTIFACT_ID: '123456789',
-    ROLLBACK_ARTIFACT_URL: 'https://github.com/Rayer/llm-wiki-frontend/actions/runs/123456789/artifacts/123456789',
+    ROLLBACK_ARTIFACT_URL: 'https://github.com/Rayer/llm-wiki-cloud/actions/runs/123456789/artifacts/123456789',
     ROLLBACK_ARTIFACT_DIGEST: rollbackArtifactDigestBare,
     ...overrides,
   };
@@ -152,6 +156,16 @@ test('fails closed on contradictory DEV alias authority before mutation', async 
   const evidence = JSON.parse(await readFile(join(fixture.evidenceDir, 'vercel-dev-deployment.json'), 'utf8'));
   assert.equal(evidence.status, 'PREFLIGHT_FAILED');
   assert.equal(evidence.reason_code, 'ALIAS_AUTHORITY_CONFLICT');
+});
+
+test('root directory contract fails closed before provider mutation', async () => {
+  for (const scenario of ['root-null', 'root-dot', 'root-wrong']) {
+    const fixture = await setupCase(scenario);
+    const result = await runScript('preflight', buildEnv(fixture));
+    assert.equal(result.code, 1, result.stderr);
+    assert.match(result.stderr, /rootDirectory|root directory/i);
+    assert.equal((await readFile(join(fixture.root, 'deployment-post-log'), 'utf8')).trim(), '');
+  }
 });
 
 test('rejects the retired Vercel scope slug', async () => {
@@ -210,8 +224,17 @@ test('read-only preflight records a typed create-needed decision without provide
   assert.equal(context.target.deployment_id, null);
   assert.equal(context.source.commit_sha, commitSha);
   assert.equal(context.source.ref, 'refs/heads/develop');
-  assert.equal(context.source.repository, 'Rayer/llm-wiki-frontend');
+  assert.equal(context.source.repository, 'Rayer/llm-wiki-cloud');
+  assert.equal(context.frozen_authority.repository_id, 12345);
   assert.equal(context.frozen_authority.deployment_id, 'dpl_devold');
+  assert.deepEqual(context.frozen_authority.project, {
+    id: projectId,
+    name: 'llm-wiki-frontend-dev',
+    team_id: teamId,
+    root_directory: 'apps/frontend',
+    repository_id: 12345,
+    git_link: { state: 'unlinked', repo_id: null },
+  });
   assert.equal(context.mutation_count, 0);
   assert.equal(contract.rollback.project_id, projectId);
   assert.equal(contract.rollback.team_id, teamId);
@@ -223,17 +246,48 @@ test('read-only preflight records a typed create-needed decision without provide
   assert.equal(run.preflightDeploymentPostLog.length, 0);
   assert.equal(run.preflightEvidence.status, 'PREFLIGHT_READY');
   assert.equal(run.preflightEvidence.provider_verification.mutation_count, 0);
+  assert.equal(run.curlCalls.filter((url) => url === 'https://github.test/repos/Rayer/llm-wiki-cloud').length, 1);
   assert.equal(run.evidence.status, 'SUCCESS');
   assert.equal(run.evidence.provider_verification.mutation_count, 2);
   assert.equal(run.deploymentPostLog.length, 1);
   assert.equal(run.mutationLog.length, 1);
   const deploymentPayload = JSON.parse(run.deploymentPostLog.find((entry) => entry.startsWith('{')));
+  assert.equal(deploymentPayload.gitSource.repoId, 12345);
   assert.equal(deploymentPayload.target, undefined);
   assert.equal(run.evidence.deployment.target, 'preview');
   assert.ok(run.evidence.provider_verification.checks.includes('deployment_create_attempted'));
   assert.ok(run.evidence.provider_verification.checks.includes('alias_mutation_attempted'));
   assert.match(run.mutationLog[0], /^alias set dpl_devready wiki\.dev\.rayer\.idv\.tw/);
 });
+
+test('rejects a wrong-linked repository before any mutation', async () => {
+  const run = await runCase('wrong-linked-repo');
+  assert.equal(run.result.code, 1, run.result.stderr);
+  assert.equal(run.evidence.reason_code, 'PROJECT_METADATA_MISMATCH');
+  assert.equal(run.mutationLog.length, 0);
+  assert.equal(run.deploymentPostLog.length, 0);
+});
+
+test('uses the frozen exact repository ID for a linked project deployment', async () => {
+  const run = await runCase('linked-deployment-missing');
+  assert.equal(run.result.code, undefined, run.result?.stderr);
+  const context = await readContext(run.fixture);
+  assert.deepEqual(context.frozen_authority.project.git_link, { state: 'linked', repo_id: '12345' });
+  assert.equal(context.frozen_authority.project.repository_id, 12345);
+  assert.equal(JSON.parse(run.deploymentPostLog[0]).gitSource.repoId, 12345);
+});
+
+for (const scenario of ['root-drift', 'link-drift']) {
+  test(`rechecks project authority before mutation for ${scenario}`, async () => {
+    const run = await runCase(scenario);
+    assert.equal(run.preflight.code, undefined, run.preflight.stderr);
+    assert.equal(run.result.code, 1);
+    assert.equal(run.evidence.status, 'PREFLIGHT_FAILED');
+    assert.equal(run.evidence.reason_code, 'PROJECT_AUTHORITY_DRIFT');
+    assert.equal(run.deploymentPostLog.length, 0);
+    assert.equal(run.mutationLog.length, 0);
+  });
+}
 
 test('creates through historical deployments and counts deployment plus alias mutations', async () => {
   const run = await runCase('historical-deployment');
@@ -350,7 +404,7 @@ for (const [scenario, reasonCode] of [
 }
 
 test('keeps the DEV workflow manual, exact-SHA gated, and secret-scoped', async () => {
-  const workflowSource = await readFile(join(repoRoot, '.github/workflows/vercel-dev-deployment.yml'), 'utf8');
+  const workflowSource = await readFile(join(monorepoRoot, '.github/workflows/vercel-dev-deployment.yml'), 'utf8');
   const workflow = parseYaml(workflowSource);
   assert.deepEqual(Object.keys(workflow.on.workflow_dispatch.inputs), ['commit_sha', 'ticket_ref']);
   assert.equal(workflow.on.workflow_dispatch.inputs.commit_sha.required, true);

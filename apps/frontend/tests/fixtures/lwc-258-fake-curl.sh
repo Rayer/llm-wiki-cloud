@@ -12,11 +12,11 @@ done
 printf '%s %s %s\n' "$method" "$url" "$body" >> "$root/curl-calls"
 state="$root/state.json"
 
-if [[ "$url" == https://api.github.com/repos/Rayer/llm-wiki-frontend/actions/workflows/ci.yml/runs* ]]; then
+if [[ "$url" == https://api.github.com/repos/Rayer/llm-wiki-cloud/actions/workflows/ci.yml/runs* ]]; then
   if [[ "$FIXTURE_SCENARIO" == ci-failure || "$FIXTURE_SCENARIO" == ci-wrong-ref ]]; then
-    printf '%s' '{"workflow_runs":[{"path":".github/workflows/ci.yml","head_branch":"develop","head_sha":"0123456789abcdef0123456789abcdef01234567","event":"push","status":"completed","conclusion":"failure","id":987654321,"html_url":"https://github.com/Rayer/llm-wiki-frontend/actions/runs/987654321"}]}'
+    printf '%s' '{"workflow_runs":[{"path":".github/workflows/ci.yml","head_branch":"develop","head_sha":"0123456789abcdef0123456789abcdef01234567","event":"push","status":"completed","conclusion":"failure","id":987654321,"html_url":"https://github.com/Rayer/llm-wiki-cloud/actions/runs/987654321"}]}'
   else
-    printf '%s' '{"workflow_runs":[{"path":".github/workflows/ci.yml","head_branch":"main","head_sha":"0123456789abcdef0123456789abcdef01234567","event":"push","status":"completed","conclusion":"success","id":987654321,"html_url":"https://github.com/Rayer/llm-wiki-frontend/actions/runs/987654321"}]}'
+    printf '%s' '{"workflow_runs":[{"path":".github/workflows/ci.yml","head_branch":"main","head_sha":"0123456789abcdef0123456789abcdef01234567","event":"push","status":"completed","conclusion":"success","id":987654321,"html_url":"https://github.com/Rayer/llm-wiki-cloud/actions/runs/987654321"}]}'
   fi
 elif [[ "$method" == POST && "$url" == https://api.vercel.com/v13/deployments\?* ]]; then
   printf '%s\n' DEPLOY_POST >> "$root/mutation-log"

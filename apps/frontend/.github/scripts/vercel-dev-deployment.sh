@@ -7,8 +7,9 @@ if [[ "${VERCEL_DEV_DEPLOYMENT_LIBRARY:-}" != 1 && "$MODE" != "validate" && "$MO
   exit 2
 fi
 
-readonly EXPECTED_REPOSITORY="Rayer/llm-wiki-frontend"
+readonly EXPECTED_REPOSITORY="Rayer/llm-wiki-cloud"
 readonly EXPECTED_PROJECT_NAME="llm-wiki-frontend-dev"
+readonly EXPECTED_ROOT_DIRECTORY="apps/frontend"
 readonly EXPECTED_SCOPE="rayer-tung-s-projects"
 readonly STABLE_DOMAIN="wiki.dev.rayer.idv.tw"
 readonly EXPECTED_REF="develop"
@@ -37,6 +38,8 @@ DEPLOYMENT_ID="${DEPLOYMENT_ID:-}"
 DEPLOYMENT_DECISION="deployment_needed"
 DEPLOYMENT_CREATED=0
 PROJECT_REPOSITORY_ID=""
+EXPECTED_REPOSITORY_ID=""
+PROJECT_AUTHORITY_JSON=""
 CI_RUN_ID=""
 CI_RUN_URL=""
 CURRENT_HEAD_SHA="${CURRENT_HEAD_SHA:-}"
@@ -298,11 +301,25 @@ validate_exact_sha() {
 
 validate_project() {
   local project="$1"
-  jq -e --arg id "$VERCEL_PROJECT_ID" --arg name "$EXPECTED_PROJECT_NAME" --arg team "$VERCEL_TEAM_ID" '
-    type == "object" and .id == $id and .name == $name and ((.accountId // .teamId) == $team)' <<< "$project" >/dev/null ||
-    preflight_fail PROJECT_METADATA_MISMATCH "provider project metadata did not identify the allowlisted DEV project and team"
-  PROJECT_REPOSITORY_ID="$(jq -r '.link.repoId // empty' <<< "$project")"
+  jq -e --arg id "$VERCEL_PROJECT_ID" --arg name "$EXPECTED_PROJECT_NAME" --arg team "$VERCEL_TEAM_ID" --arg root "$EXPECTED_ROOT_DIRECTORY" '
+    type == "object" and .id == $id and .name == $name and ((.accountId // .teamId) == $team) and .rootDirectory == $root and ((.link? // null) == null or (.link | type == "object" and (.repoId | type == "number" and floor == . and . > 0)))' <<< "$project" >/dev/null ||
+    preflight_fail PROJECT_METADATA_MISMATCH "provider project metadata did not identify the allowlisted DEV project, team, and rootDirectory apps/frontend"
+  jq -e --argjson repoId "$EXPECTED_REPOSITORY_ID" '((.link? // null) == null or .link.repoId == $repoId)' <<< "$project" >/dev/null ||
+    preflight_fail PROJECT_METADATA_MISMATCH "DEV project is linked to a different GitHub repository"
+  PROJECT_REPOSITORY_ID="$EXPECTED_REPOSITORY_ID"
+  PROJECT_AUTHORITY_JSON="$(jq -c --argjson repoId "$EXPECTED_REPOSITORY_ID" '{id: .id, name: .name, team_id: (.accountId // .teamId), root_directory: .rootDirectory, repository_id: $repoId, git_link: (if (.link? // null) == null then {state: "unlinked", repo_id: null} else {state: "linked", repo_id: (.link.repoId | tostring)} end)}' <<< "$project")"
   PROVIDER_CHECKS="$(jq -c '. + ["project_metadata_exact"]' <<< "$PROVIDER_CHECKS")"
+}
+
+assert_project_authority() {
+  local project current expected_repo_id
+  expected_repo_id="$(jq -r '.repository_id' <<< "$1")"
+  project="$(api_query "/v9/projects/$VERCEL_PROJECT_ID?teamId=$VERCEL_TEAM_ID")" || return 1
+  current="$(jq -c --arg id "$VERCEL_PROJECT_ID" --arg name "$EXPECTED_PROJECT_NAME" --arg team "$VERCEL_TEAM_ID" --arg root "$EXPECTED_ROOT_DIRECTORY" --arg expectedRepoId "$expected_repo_id" '
+    if type == "object" and .id == $id and .name == $name and ((.accountId // .teamId) == $team) and .rootDirectory == $root and ((.link? // null) == null or (.link | type == "object" and (.repoId | type == "number" and floor == . and . > 0))) and ((.link? // null) == null or .link.repoId == ($expectedRepoId | tonumber)) then
+      {id: .id, name: .name, team_id: (.accountId // .teamId), root_directory: .rootDirectory, repository_id: ($expectedRepoId | tonumber), git_link: (if (.link? // null) == null then {state: "unlinked", repo_id: null} else {state: "linked", repo_id: (.link.repoId | tostring)} end)}
+    else error("invalid DEV project authority") end' <<< "$project")" || return 1
+  [[ "$current" == "$1" ]]
 }
 
 read_alias() {
@@ -433,10 +450,8 @@ deployment_partial_fail() {
 
 create_deployment() {
   local repo_id payload created
+  assert_project_authority "$PROJECT_AUTHORITY_JSON" || preflight_fail PROJECT_AUTHORITY_DRIFT "DEV project authority changed before deployment creation"
   repo_id="$PROJECT_REPOSITORY_ID"
-  if [[ -z "$repo_id" ]]; then
-    repo_id="$(jq -r '.id // empty' <<< "$(github_query "/repos/$GITHUB_REPOSITORY")" 2>/dev/null || true)"
-  fi
   [[ "$repo_id" =~ ^[0-9]+$ ]] || preflight_fail DEPLOYMENT_CREATE_FAILED "exact GitHub repository provenance could not be resolved before DEV deployment creation"
   payload="$(jq -cn --arg project "$VERCEL_PROJECT_ID" --arg repoId "$repo_id" --arg sha "$COMMIT_SHA" \
     '{name: "llm-wiki-frontend-dev", project: $project, gitSource: {type: "github", repoId: ($repoId | tonumber), ref: "develop", sha: $sha}}')"
@@ -518,22 +533,26 @@ poll_deployment() {
 
 write_rollback_contract() {
   local contract
-  contract="$(jq -n --arg sha "$COMMIT_SHA" --arg repo "$EXPECTED_REPOSITORY" --arg project "$VERCEL_PROJECT_ID" --arg team "$VERCEL_TEAM_ID" --arg domain "$STABLE_DOMAIN" --arg target "$DEPLOYMENT_ID" --arg targetUrl "$DEPLOYMENT_URL" --arg decision "$DEPLOYMENT_DECISION" --arg prior "$FROZEN_ALIAS_DEPLOYMENT_ID" \
-    '{schema_version: 2, kind: "vercel-dev-rollback-contract", source: {repository: $repo, commit_sha: $sha, ref: "refs/heads/develop"}, target: {decision: $decision, deployment_id: ($target | if . == "" then null else . end), url: ($targetUrl | if . == "" then null else . end)}, rollback: {alias: $domain, stable_domain: $domain, deployment_id: $prior, project_id: $project, team_id: $team}}')"
+  contract="$(jq -n --arg sha "$COMMIT_SHA" --arg repo "$EXPECTED_REPOSITORY" --arg project "$VERCEL_PROJECT_ID" --arg team "$VERCEL_TEAM_ID" --arg domain "$STABLE_DOMAIN" --arg target "$DEPLOYMENT_ID" --arg targetUrl "$DEPLOYMENT_URL" --arg decision "$DEPLOYMENT_DECISION" --arg prior "$FROZEN_ALIAS_DEPLOYMENT_ID" --argjson authority "$PROJECT_AUTHORITY_JSON" \
+    '{schema_version: 2, kind: "vercel-dev-rollback-contract", source: {repository: $repo, commit_sha: $sha, ref: "refs/heads/develop"}, target: {decision: $decision, deployment_id: ($target | if . == "" then null else . end), url: ($targetUrl | if . == "" then null else . end)}, rollback: {alias: $domain, stable_domain: $domain, deployment_id: $prior, project_id: $project, team_id: $team, repository_id: $authority.repository_id}, project_authority: $authority}')"
   printf '%s' "$contract" > "$ROLLBACK_PATH.tmp"
   mv "$ROLLBACK_PATH.tmp" "$ROLLBACK_PATH"
   ROLLBACK_CONTRACT_SHA256="$(sha256sum "$ROLLBACK_PATH" | awk '{print $1}')"
 }
 
 write_context() {
-  jq -n --arg sha "$COMMIT_SHA" --arg repo "$EXPECTED_REPOSITORY" --arg ref "refs/heads/$EXPECTED_REF" --arg project "$VERCEL_PROJECT_ID" --arg team "$VERCEL_TEAM_ID" --arg domain "$STABLE_DOMAIN" --arg target "$DEPLOYMENT_ID" --arg decision "$DEPLOYMENT_DECISION" --arg prior "$FROZEN_ALIAS_DEPLOYMENT_ID" --arg mutationCount "$MUTATION_COUNT" --argjson providerChecks "$PROVIDER_CHECKS" \
-    '{schema_version: 2, phase: "preflight-complete", source: {repository: $repo, commit_sha: $sha, ref: $ref}, target: {decision: $decision, deployment_id: ($target | if . == "" then null else . end)}, frozen_authority: {alias: $domain, stable_domain: $domain, deployment_id: $prior, project_id: $project, team_id: $team}, mutation_count: ($mutationCount | tonumber), provider_checks: $providerChecks}' > "$CONTEXT_PATH.tmp"
+  jq -n --arg sha "$COMMIT_SHA" --arg repo "$EXPECTED_REPOSITORY" --arg ref "refs/heads/$EXPECTED_REF" --arg project "$VERCEL_PROJECT_ID" --arg team "$VERCEL_TEAM_ID" --arg domain "$STABLE_DOMAIN" --arg target "$DEPLOYMENT_ID" --arg decision "$DEPLOYMENT_DECISION" --arg prior "$FROZEN_ALIAS_DEPLOYMENT_ID" --arg mutationCount "$MUTATION_COUNT" --argjson providerChecks "$PROVIDER_CHECKS" --argjson projectAuthority "$PROJECT_AUTHORITY_JSON" \
+    '{schema_version: 2, phase: "preflight-complete", source: {repository: $repo, commit_sha: $sha, ref: $ref}, target: {decision: $decision, deployment_id: ($target | if . == "" then null else . end)}, frozen_authority: {alias: $domain, stable_domain: $domain, deployment_id: $prior, project_id: $project, team_id: $team, repository_id: $projectAuthority.repository_id, project: $projectAuthority}, mutation_count: ($mutationCount | tonumber), provider_checks: $providerChecks}' > "$CONTEXT_PATH.tmp"
   mv "$CONTEXT_PATH.tmp" "$CONTEXT_PATH"
 }
 
 run_preflight() {
   validate_exact_sha
-  local project alias_response inventory deployment_inventory candidate
+  local project alias_response inventory deployment_inventory candidate repository
+  repository="$(github_query "/repos/$EXPECTED_REPOSITORY")" || preflight_fail REPOSITORY_READ_FAILED "expected GitHub repository identity read failed"
+  jq -e --arg expected "$EXPECTED_REPOSITORY" 'type == "object" and .full_name == $expected and (.id | type == "number" and floor == . and . > 0)' <<< "$repository" >/dev/null ||
+    preflight_fail REPOSITORY_ID_INVALID "expected GitHub repository identity was not exact"
+  EXPECTED_REPOSITORY_ID="$(jq -r '.id' <<< "$repository")"
   project="$(api_query "/v9/projects/$VERCEL_PROJECT_ID?teamId=$VERCEL_TEAM_ID")" || preflight_fail PROJECT_READ_FAILED "DEV project metadata read failed"
   validate_project "$project"
   alias_response="$(read_alias)" || preflight_fail ALIAS_READ_FAILED "DEV stable alias read failed"
@@ -570,19 +589,24 @@ load_context() {
     .frozen_authority.alias == $domain and .frozen_authority.stable_domain == $domain and
     .frozen_authority.project_id == $project and .frozen_authority.team_id == $team and
     (.frozen_authority.deployment_id | type == "string" and test("^dpl_[A-Za-z0-9]+$")) and
+    (.frozen_authority.project | type == "object" and .id == $project and .name == "llm-wiki-frontend-dev" and .team_id == $team and .root_directory == "apps/frontend" and (.repository_id | type == "number" and floor == . and . > 0) and (.git_link.state == "linked" or .git_link.state == "unlinked") and (.git_link.state == "unlinked" or .git_link.repo_id == (.repository_id | tostring))) and
     (.mutation_count | type == "number" and . == 0) and (.provider_checks | type == "array")' "$CONTEXT_PATH" >/dev/null ||
     preflight_fail ROLLBACK_CONTEXT_INVALID "DEV rollback context identity did not match the validated request"
   DEPLOYMENT_DECISION="$(jq -r '.target.decision' "$CONTEXT_PATH")"
   DEPLOYMENT_ID="$(jq -r '.target.deployment_id // empty' "$CONTEXT_PATH")"
   FROZEN_ALIAS_DEPLOYMENT_ID="$(jq -r '.frozen_authority.deployment_id' "$CONTEXT_PATH")"
+  PROJECT_AUTHORITY_JSON="$(jq -c '.frozen_authority.project' "$CONTEXT_PATH")"
+  PROJECT_REPOSITORY_ID="$(jq -r '.repository_id' <<< "$PROJECT_AUTHORITY_JSON")"
   MUTATION_COUNT="$(jq -r '.mutation_count' "$CONTEXT_PATH")"
   PROVIDER_CHECKS="$(jq -c '.provider_checks' "$CONTEXT_PATH")"
   jq -e --arg sha "$COMMIT_SHA" --arg repo "$EXPECTED_REPOSITORY" --arg ref "refs/heads/$EXPECTED_REF" --arg project "$VERCEL_PROJECT_ID" --arg team "$VERCEL_TEAM_ID" --arg domain "$STABLE_DOMAIN" --arg decision "$DEPLOYMENT_DECISION" --arg target "$DEPLOYMENT_ID" --arg prior "$FROZEN_ALIAS_DEPLOYMENT_ID" '
     .schema_version == 2 and .kind == "vercel-dev-rollback-contract" and
     .source.repository == $repo and .source.commit_sha == $sha and .source.ref == $ref and
     .target.decision == $decision and (.target.deployment_id == null or .target.deployment_id == $target) and
-    .rollback.alias == $domain and .rollback.stable_domain == $domain and .rollback.project_id == $project and .rollback.team_id == $team and .rollback.deployment_id == $prior' "$ROLLBACK_PATH" >/dev/null ||
+    .rollback.alias == $domain and .rollback.stable_domain == $domain and .rollback.project_id == $project and .rollback.team_id == $team and .rollback.repository_id == .project_authority.repository_id and .rollback.deployment_id == $prior' "$ROLLBACK_PATH" >/dev/null ||
     preflight_fail ROLLBACK_ARTIFACT_INVALID "DEV rollback contract identity did not match the validated request"
+  jq -e --argjson authority "$PROJECT_AUTHORITY_JSON" '.project_authority == $authority' "$ROLLBACK_PATH" >/dev/null ||
+    preflight_fail ROLLBACK_ARTIFACT_INVALID "DEV rollback contract did not preserve the frozen project authority"
   ROLLBACK_CONTRACT_SHA256="$(sha256sum "$ROLLBACK_PATH" | awk '{print $1}')"
 }
 
@@ -626,6 +650,7 @@ run_promote() {
   fi
   resolve_deployment
   poll_deployment
+  assert_project_authority "$PROJECT_AUTHORITY_JSON" || preflight_fail PROJECT_AUTHORITY_DRIFT "DEV project authority changed before alias mutation"
   if ! alias_set; then
     reconcile_authority || true
     partial_fail MUTATION_UNCERTAIN "DEV alias mutation failed or became uncertain"

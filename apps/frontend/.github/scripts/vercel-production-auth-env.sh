@@ -4,8 +4,9 @@ set -Eeo pipefail
 MODE="${1:-}"
 case "$MODE" in validate|preflight|mutate) ;; *) printf 'usage: %s {validate|preflight|mutate}\n' "$0" >&2; exit 2 ;; esac
 
-readonly EXPECTED_REPOSITORY="Rayer/llm-wiki-frontend"
+readonly EXPECTED_REPOSITORY="Rayer/llm-wiki-cloud"
 readonly EXPECTED_PROJECT_NAME="llm-wiki-frontend"
+readonly EXPECTED_ROOT_DIRECTORY="apps/frontend"
 readonly EXPECTED_SCOPE="rayer-tung-s-projects"
 readonly ENV_KEY="NEXT_PUBLIC_AUTH_URL"
 readonly DESIRED_VALUE="https://auth.rayer.idv.tw"
@@ -132,7 +133,7 @@ validate_exact_source() {
 read_project() {
   local response
   response=$(vercel_get "/v9/projects/$VERCEL_PROJECT_ID?teamId=$VERCEL_TEAM_ID") || return 1
-  jq -e --arg id "$VERCEL_PROJECT_ID" --arg team "$VERCEL_TEAM_ID" --arg name "$EXPECTED_PROJECT_NAME" 'type=="object" and .id==$id and .name==$name and .accountId==$team' <<< "$response" >/dev/null || return 1
+  jq -e --arg id "$VERCEL_PROJECT_ID" --arg team "$VERCEL_TEAM_ID" --arg name "$EXPECTED_PROJECT_NAME" --arg root "$EXPECTED_ROOT_DIRECTORY" 'type=="object" and .id==$id and .name==$name and .accountId==$team and .rootDirectory==$root and .link.type=="github" and .link.org=="Rayer" and .link.repo=="llm-wiki-cloud" and .link.productionBranch=="main"' <<< "$response" >/dev/null || return 1
   # The public /v13/deployments schema has no autoAssignCustomDomains request field.
   # Require the authoritative project setting to prove production creation is staged.
   jq -e 'has("autoAssignCustomDomains") and .autoAssignCustomDomains==false' <<< "$response" >/dev/null || return 2
@@ -196,7 +197,7 @@ capture_rollback() {
   fi
   mkdir -p "$EVIDENCE_DIR"
   jq -n --arg sha "$COMMIT_SHA" --arg ticket "$TICKET_REF" --arg project "$VERCEL_PROJECT_ID" --arg team "$VERCEL_TEAM_ID" --arg key "$ENV_KEY" --arg decision "$DECISION" --argjson previous "$APPLICABLE_JSON" --argjson aliases "$FREEZE_ALIASES" --argjson deployments "$FREEZE_DEPLOYMENTS" \
-    '{schema_version:2,kind:"vercel-production-auth-env-rollback-contract",source:{repository:"Rayer/llm-wiki-frontend",ref:"refs/heads/main",commit_sha:$sha,ticket_ref:$ticket,canonical_ci:{workflow:"ci.yml",head_branch:"main",head_sha:$sha}},target:{project_id:$project,team_id:$team,key:$key,project_name:"llm-wiki-frontend"},decision:$decision,prior_state:(if ($previous|length)==0 then {kind:"absent"} else {kind:"present",env:$previous[0]} end),freeze:{aliases:$aliases,deployments:$deployments}}' > "$ROLLBACK_PATH.tmp"
+    '{schema_version:2,kind:"vercel-production-auth-env-rollback-contract",source:{repository:"Rayer/llm-wiki-cloud",ref:"refs/heads/main",commit_sha:$sha,ticket_ref:$ticket,canonical_ci:{workflow:"ci.yml",head_branch:"main",head_sha:$sha}},target:{project_id:$project,team_id:$team,key:$key,project_name:"llm-wiki-frontend"},decision:$decision,prior_state:(if ($previous|length)==0 then {kind:"absent"} else {kind:"present",env:$previous[0]} end),freeze:{aliases:$aliases,deployments:$deployments}}' > "$ROLLBACK_PATH.tmp"
   mv "$ROLLBACK_PATH.tmp" "$ROLLBACK_PATH"; CONTRACT_SHA256=$(sha256sum "$ROLLBACK_PATH" | awk '{print $1}')
   add_check filtered_production_env_read; add_check rollback_snapshot_captured
 }
@@ -291,7 +292,7 @@ deployment_ready_routing_is_exact() {
 create_and_verify_deployment() {
   local body response parsed attempt curl_exit
   body=$(jq -cn --arg name "$EXPECTED_PROJECT_NAME" --arg project "$VERCEL_PROJECT_ID" --arg sha "$COMMIT_SHA" \
-    '{name:$name,project:$project,target:"production",gitSource:{type:"github",org:"Rayer",repo:"llm-wiki-frontend",ref:"main",sha:$sha}}')
+    '{name:$name,project:$project,target:"production",gitSource:{type:"github",org:"Rayer",repo:"llm-wiki-cloud",ref:"main",sha:$sha}}')
   DEPLOYMENT_CREATE_COUNT=1; PHASE="deployment_create_attempted"
   response=""; curl_exit=0; response=$(vercel_mutate POST "/v13/deployments?forceNew=1&teamId=$VERCEL_TEAM_ID" "$body") || curl_exit=$?
   ((curl_exit == 0)) || partial_fail DEPLOYMENT_CREATE_UNCERTAIN "deployment create response was uncertain; no retry attempted"

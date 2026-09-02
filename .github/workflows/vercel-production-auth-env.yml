@@ -31,6 +31,9 @@ jobs:
     timeout-minutes: 30
     environment:
       name: Production
+    defaults:
+      run:
+        working-directory: apps/frontend
     env:
       COMMIT_SHA: ${{ inputs.commit_sha }}
       TICKET_REF: ${{ inputs.ticket_ref }}
@@ -51,14 +54,14 @@ jobs:
 
       - name: Validate exact main SHA and canonical CI
         shell: bash
-        run: bash .github/scripts/vercel-production-auth-env.sh validate
+        run: bash "$GITHUB_WORKSPACE/apps/frontend/.github/scripts/vercel-production-auth-env.sh" validate
         env:
           EVIDENCE_DIR: ${{ runner.temp }}/vercel-production-auth-env
           GITHUB_TOKEN: ${{ github.token }}
 
       - name: Preflight production auth environment and capture rollback
         shell: bash
-        run: bash .github/scripts/vercel-production-auth-env.sh preflight
+        run: bash "$GITHUB_WORKSPACE/apps/frontend/.github/scripts/vercel-production-auth-env.sh" preflight
         env:
           EVIDENCE_DIR: ${{ runner.temp }}/vercel-production-auth-env
           GITHUB_TOKEN: ${{ github.token }}
@@ -82,7 +85,7 @@ jobs:
       - name: Apply and verify production auth environment and create exact deployment
         if: steps.rollback_upload.outcome == 'success'
         shell: bash
-        run: bash .github/scripts/vercel-production-auth-env.sh mutate
+        run: bash "$GITHUB_WORKSPACE/apps/frontend/.github/scripts/vercel-production-auth-env.sh" mutate
         env:
           EVIDENCE_DIR: ${{ runner.temp }}/vercel-production-auth-env
           GITHUB_TOKEN: ${{ github.token }}

@@ -41,7 +41,7 @@ class AuthPromotionContractTest(unittest.TestCase):
             "head_sha": SHA,
             "status": "completed",
             "conclusion": "success",
-            "html_url": "https://github.com/Rayer/llm-wiki-bff/actions/runs/123",
+            "html_url": "https://github.com/Rayer/llm-wiki-cloud/actions/runs/123",
         }))
 
     def tearDown(self):
@@ -54,7 +54,7 @@ class AuthPromotionContractTest(unittest.TestCase):
             "--run-json", str(self.run_path),
             "--expected-sha", SHA,
             "--expected-run-id", str(RUN_ID),
-            "--repository", "Rayer/llm-wiki-bff",
+            "--repository", "Rayer/llm-wiki-cloud",
             "--ar-repo", AR_REPO,
             "--output", str(self.output),
         ]
@@ -76,7 +76,7 @@ class AuthPromotionContractTest(unittest.TestCase):
             [
                 f"source_sha={SHA}",
                 f"dev_run_id={RUN_ID}",
-                "dev_run_url=https://github.com/Rayer/llm-wiki-bff/actions/runs/123",
+                "dev_run_url=https://github.com/Rayer/llm-wiki-cloud/actions/runs/123",
                 "dev_workflow=.github/workflows/deploy-auth.yml",
                 "dev_event=workflow_dispatch",
                 "dev_head_branch=develop",

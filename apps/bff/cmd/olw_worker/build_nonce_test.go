@@ -114,7 +114,11 @@ func captureBuildNonceOutput(t *testing.T) string {
 
 func readRepoFile(t *testing.T, name string) string {
 	t.Helper()
-	path := filepath.Join("..", "..", name)
+	base := filepath.Join("..", "..")
+	if strings.HasPrefix(name, ".github/workflows/") {
+		base = filepath.Join("..", "..", "..", "..")
+	}
+	path := filepath.Join(base, name)
 	data, err := os.ReadFile(path)
 	if err != nil {
 		t.Fatal(err)

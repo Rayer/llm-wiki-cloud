@@ -81,9 +81,11 @@ jobs:
           cache: true
 
       - name: Run Go tests
+        working-directory: apps/bff
         run: go test ./... -count=1
 
       - name: Run Go vet
+        working-directory: apps/bff
         run: go vet ./...
 
       - name: Authenticate to Google Cloud
@@ -200,6 +202,7 @@ jobs:
 
       - name: Resolve build identity
         id: identity
+        working-directory: apps/bff
         run: |
           set -euo pipefail
           APP_VERSION=$(go run ./cmd/versioncheck VERSION)
@@ -243,8 +246,8 @@ jobs:
           set -euo pipefail
           IMAGE="${{ env.AR_REPO }}/llm-wiki-auth:$GIT_SHA"
           echo "Building ${IMAGE}…"
-          BUILD_ID=$(gcloud builds submit \
-            --config cloudbuild-auth.yaml \
+          BUILD_ID=$(gcloud builds submit apps/bff \
+            --config apps/bff/cloudbuild-auth.yaml \
             --substitutions="_IMAGE=$IMAGE,_APP_VERSION=$APP_VERSION,_GIT_SHA=$GIT_SHA,_GIT_BRANCH=$GIT_BRANCH,_GIT_TAG=$GIT_TAG" \
             --timeout=600s \
             --async \

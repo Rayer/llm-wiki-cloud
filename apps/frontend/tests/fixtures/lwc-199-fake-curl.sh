@@ -77,6 +77,23 @@ elif [[ "$url" == "$github_base"/* ]]; then
   check_provider_auth github "$github_base" "Authorization: Bearer ${GITHUB_TOKEN:-}"
 fi
 
+if [[ "$url" == *"/v9/projects/"* ]]; then
+  project_response="$root/project.json"
+  if [[ "$scenario" == project-root-drift || "$scenario" == project-link-drift ]]; then
+    project_read_count="$(grep -Fc '/v9/projects/' "$root/curl-calls" || true)"
+    if [[ "$project_read_count" -ge 2 ]]; then
+      if [[ "$scenario" == project-root-drift ]]; then
+        jq '.rootDirectory = null' "$root/project.json"
+      else
+        jq '.link.repo = "other-repo"' "$root/project.json"
+      fi
+      exit 0
+    fi
+  fi
+  cat "$project_response"
+  exit 0
+fi
+
 if [[ "$method" == POST && "$url" == *"/v2/deployments/"*/aliases* ]]; then
   printf '%s\t%s\t%s\t%s\n' "$method" "$url" "${auth_header#Authorization: }" "$request_body" >> "$root/alias-post-calls"
   alias_post_call_number=$(( $(wc -l < "$root/alias-post-calls") ))
@@ -211,9 +228,9 @@ fi
 
 if [[ "$url" == *"/actions/workflows/ci.yml/runs?"* ]]; then
   if [[ "$scenario" == ci-failure ]]; then
-    printf '%s' '{"workflow_runs":[{"path":".github/workflows/ci.yml","head_branch":"main","head_sha":"0123456789abcdef0123456789abcdef01234567","event":"push","status":"completed","conclusion":"failure","id":987654321,"html_url":"https://github.test/Rayer/llm-wiki-frontend/actions/runs/987654321","run_attempt":2}]}'
+    printf '%s' '{"workflow_runs":[{"path":".github/workflows/ci.yml","head_branch":"main","head_sha":"0123456789abcdef0123456789abcdef01234567","event":"push","status":"completed","conclusion":"failure","id":987654321,"html_url":"https://github.test/Rayer/llm-wiki-cloud/actions/runs/987654321","run_attempt":2}]}'
   else
-    printf '%s' '{"workflow_runs":[{"path":".github/workflows/ci.yml","head_branch":"main","head_sha":"0123456789abcdef0123456789abcdef01234567","event":"push","status":"completed","conclusion":"success","id":987654321,"html_url":"https://github.test/Rayer/llm-wiki-frontend/actions/runs/987654321","run_attempt":2}]}'
+    printf '%s' '{"workflow_runs":[{"path":".github/workflows/ci.yml","head_branch":"main","head_sha":"0123456789abcdef0123456789abcdef01234567","event":"push","status":"completed","conclusion":"success","id":987654321,"html_url":"https://github.test/Rayer/llm-wiki-cloud/actions/runs/987654321","run_attempt":2}]}'
   fi
   exit 0
 fi

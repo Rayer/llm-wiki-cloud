@@ -8,7 +8,8 @@ if [[ "$MODE" != "preflight" && "$MODE" != "promote" ]]; then
 fi
 
 readonly ALIASES=("wiki.rayer.idv.tw" "llm-wiki-frontend.vercel.app")
-readonly EXPECTED_REPOSITORY="Rayer/llm-wiki-frontend"
+readonly EXPECTED_REPOSITORY="Rayer/llm-wiki-cloud"
+readonly EXPECTED_ROOT_DIRECTORY="apps/frontend"
 readonly API_BASE_URL="${VERCEL_API_BASE_URL:-https://api.vercel.com}"
 readonly GITHUB_BASE_URL="${GITHUB_API_URL:-https://api.github.com}"
 readonly EVIDENCE_DIR="${EVIDENCE_DIR:-artifacts/vercel-alias-promotion}"
@@ -58,6 +59,7 @@ ROLLBACK_ARTIFACT_URL="${ROLLBACK_ARTIFACT_URL:-}"
 ROLLBACK_ARTIFACT_DIGEST="${ROLLBACK_ARTIFACT_DIGEST:-}"
 EVIDENCE_WRITTEN=0
 MUTATION_RESPONSE_PATHS=()
+PROJECT_AUTHORITY_JSON='{}'
 
 write_evidence() {
   if [[ "$EVIDENCE_WRITTEN" -eq 1 ]]; then
@@ -229,6 +231,7 @@ write_rollback_contract() {
     --arg ciRunUrl "$CI_RUN_URL" \
     --arg repository "$EXPECTED_REPOSITORY" \
     --arg rollbackArtifactName "$ROLLBACK_ARTIFACT_NAME" \
+    --argjson projectAuthority "$PROJECT_AUTHORITY_JSON" \
     --argjson aliases "$(jq -c 'map({alias, deployment_id: .deploymentId})' <<< "$FROZEN_ALIASES")" \
     ' {
        schema_version: 1,
@@ -247,6 +250,7 @@ write_rollback_contract() {
          target: "production",
          url: $deploymentUrl
        },
+       project_authority: $projectAuthority,
        ci: {
          workflow: "ci.yml",
          event: "push",
@@ -272,6 +276,7 @@ write_promotion_context() {
     --arg ciRunUrl "$CI_RUN_URL" \
     --arg repository "$EXPECTED_REPOSITORY" \
     --arg rollbackArtifactName "$ROLLBACK_ARTIFACT_NAME" \
+    --argjson projectAuthority "$PROJECT_AUTHORITY_JSON" \
     --arg rollbackContractPath "$ROLLBACK_CONTRACT_PATH" \
     --arg rollbackContractSha256 "$ROLLBACK_CONTRACT_SHA256" \
     --argjson aliases "$(jq -c 'map({alias, deployment_id: .deploymentId})' <<< "$FROZEN_ALIASES")" \
@@ -291,6 +296,7 @@ write_promotion_context() {
        rollback_artifact_name: $rollbackArtifactName,
        rollback_contract_path: $rollbackContractPath,
        rollback_contract_sha256: $rollbackContractSha256,
+       project_authority: $projectAuthority,
        aliases: $aliases
      }' > "$temporary_path"
   mv -f "$temporary_path" "$PROMOTION_CONTEXT_PATH"
@@ -315,6 +321,9 @@ load_and_validate_resume() {
      .phase == "preflight-complete" and .repository == $repository and
      .commit_sha == $commitSha and .ref == "refs/heads/main" and
      .deployment_id == $deploymentId and .project_id == $projectId and
+     (.project_authority | type) == "object" and
+     .project_authority.id == $projectId and .project_authority.rootDirectory == "apps/frontend" and
+     .project_authority.link == {type:"github",org:"Rayer",repo:"llm-wiki-cloud",productionBranch:"main"} and
      .source == "github" and .target == "production" and
      (.deployment_url | type) == "string" and
      (.ci.workflow == "ci.yml" and .ci.event == "push" and
@@ -344,6 +353,7 @@ load_and_validate_resume() {
     --arg ciRunId "$(jq -r '.ci.run_id | tostring' "$PROMOTION_CONTEXT_PATH")" \
     --arg ciRunUrl "$(jq -r '.ci.run_url' "$PROMOTION_CONTEXT_PATH")" \
     --arg rollbackArtifactName "$ROLLBACK_ARTIFACT_NAME" \
+    --argjson contextProjectAuthority "$(jq -c '.project_authority' "$PROMOTION_CONTEXT_PATH")" \
     --argjson contextAliases "$(jq -c '.aliases' "$PROMOTION_CONTEXT_PATH")" \
     'type == "object" and .schema_version == 1 and
      .kind == "vercel-alias-rollback-contract" and .repository == $repository and
@@ -354,6 +364,7 @@ load_and_validate_resume() {
      .deployment.ref == "refs/heads/main" and .deployment.commit_sha == $commitSha and
      .deployment.ready_state == "READY" and .deployment.target == "production" and
      .deployment.url == $deploymentUrl and
+     .project_authority == $contextProjectAuthority and
      (.ci.workflow == "ci.yml" and .ci.event == "push" and
        (.ci.run_id | tostring) == $ciRunId and .ci.run_url == $ciRunUrl) and
      .aliases == $contextAliases' \
@@ -361,6 +372,7 @@ load_and_validate_resume() {
     fail_resume "rollback contract target or alias identity did not match the validated resume context"
   fi
 
+  PROJECT_AUTHORITY_JSON="$(jq -c '.project_authority' "$PROMOTION_CONTEXT_PATH")"
   FROZEN_ALIASES="$(jq -c '.aliases | map({alias, deploymentId: .deployment_id})' "$PROMOTION_CONTEXT_PATH")"
   CURRENT_DEPLOYMENT_URL="$(jq -r '.deployment_url' "$PROMOTION_CONTEXT_PATH")"
   CI_RUN_ID="$(jq -r '.ci.run_id' "$PROMOTION_CONTEXT_PATH")"
@@ -395,6 +407,21 @@ api_query() {
     --header "Accept: application/json" \
     --header "Authorization: Bearer $VERCEL_TOKEN" \
     "$API_BASE_URL$endpoint"
+}
+
+validate_project_metadata() {
+  local response
+  response="$(api_query "/v9/projects/$VERCEL_PROJECT_ID?teamId=$VERCEL_TEAM_ID")" || return 1
+  jq -e --arg id "$VERCEL_PROJECT_ID" --arg root "$EXPECTED_ROOT_DIRECTORY" 'type=="object" and .id==$id and .rootDirectory==$root and .link.type=="github" and .link.org=="Rayer" and .link.repo=="llm-wiki-cloud" and .link.productionBranch=="main"' <<< "$response" >/dev/null || return 1
+  PROJECT_AUTHORITY_JSON="$(jq -c '{id,rootDirectory,link:{type:.link.type,org:.link.org,repo:.link.repo,productionBranch:.link.productionBranch}}' <<< "$response")"
+}
+
+validate_project_metadata_against_frozen() {
+  local response current
+  response="$(api_query "/v9/projects/$VERCEL_PROJECT_ID?teamId=$VERCEL_TEAM_ID")" || return 1
+  jq -e --arg id "$VERCEL_PROJECT_ID" --arg root "$EXPECTED_ROOT_DIRECTORY" 'type=="object" and .id==$id and .rootDirectory==$root and .link.type=="github" and .link.org=="Rayer" and .link.repo=="llm-wiki-cloud" and .link.productionBranch=="main"' <<< "$response" >/dev/null || return 2
+  current="$(jq -c '{id,rootDirectory,link:{type:.link.type,org:.link.org,repo:.link.repo,productionBranch:.link.productionBranch}}' <<< "$response")"
+  [[ "$current" == "$PROJECT_AUTHORITY_JSON" ]] || return 2
 }
 
 github_query() {
@@ -723,6 +750,9 @@ if [[ -n "$VERCEL_TEAM_ID" ]]; then
 fi
 
 if [[ "$MODE" == "preflight" ]]; then
+  if ! validate_project_metadata; then
+    fail_preflight "Vercel project rootDirectory or GitHub link/production branch did not match the exact production contract"
+  fi
   github_runs=""
   if ! github_runs="$(github_query "/repos/$GITHUB_REPOSITORY/actions/workflows/ci.yml/runs?head_sha=$COMMIT_SHA&branch=main&event=push&per_page=100")"; then
     fail_preflight "GitHub CI read failed"
@@ -789,6 +819,16 @@ fi
 
 load_and_validate_resume
 validate_artifact_handoff
+
+if validate_project_metadata_against_frozen; then
+  :
+else
+  project_validation_status=$?
+  if [[ "$project_validation_status" -eq 1 ]]; then
+    fail_preflight "Vercel project authority re-read failed immediately before alias mutation"
+  fi
+  fail_preflight "Vercel project authority drifted from the frozen exact production contract immediately before alias mutation"
+fi
 
 # Vercel alias set has no CAS/If-Match transaction. These reads are point-in-time
 # reconciliation gates: later external updates are drift for independent Agent readback.

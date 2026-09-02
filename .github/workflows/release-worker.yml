@@ -161,7 +161,7 @@ jobs:
           mkdir -p "$EVIDENCE_DIR"
           ROLLBACK_ARTIFACT_NAME="worker-rollback-contract-${COMMIT_SHA}"
           EVIDENCE_ARTIFACT_NAME="worker-deployment-evidence-${COMMIT_SHA}"
-          python3 scripts/render_worker_deployment_evidence.py prepare-rollback \
+          python3 apps/bff/scripts/render_worker_deployment_evidence.py prepare-rollback \
             --project "${PROJECT_ID}" \
             --region "${REGION}" \
             --job-name "${JOB_NAME}" \
@@ -212,7 +212,7 @@ jobs:
             --argjson workflow_run_attempt "$GITHUB_RUN_ATTEMPT" \
             '{schema_version: $schema_version, project: $project, component: $component, environment: $environment, action: $action, rollback_artifact_name: $rollback_artifact_name, source: {commit_sha: $commit_sha, ref: $source_ref}, dev_provenance: {workflow: $dev_workflow, event: $dev_event, head_branch: $dev_head_branch, head_sha: $dev_head_sha, conclusion: $dev_conclusion, run_id: $dev_run_id, run_url: $dev_run_url}, image: {digest: $digest, reference: $image}, originating_workflow: {repository: $repository, workflow: $workflow, run_id: $workflow_run_id, run_attempt: $workflow_run_attempt}}' \
             > "$METADATA"
-          python3 scripts/render_worker_deployment_evidence.py validate-metadata \
+          python3 apps/bff/scripts/render_worker_deployment_evidence.py validate-metadata \
             --project "$PROJECT_ID" \
             --ar-repo "$AR_REPO" \
             --metadata "$METADATA"
@@ -306,7 +306,7 @@ jobs:
           EXPECTED_RUNTIME_SERVICE_ACCOUNT: lwc-pipeline-prod@llm-wiki-cloud.iam.gserviceaccount.com
         run: |
           set -euo pipefail
-          python3 scripts/render_worker_deployment_evidence.py render-evidence \
+          python3 apps/bff/scripts/render_worker_deployment_evidence.py render-evidence \
             --project "$PROJECT_ID" \
             --region "$REGION" \
             --job-name "$JOB_NAME" \
@@ -332,7 +332,7 @@ jobs:
           if [[ -e "$EVIDENCE" ]]; then
             echo "verified evidence already exists; preserving it"
           elif [[ -f "$ROLLBACK_CONTRACT" && -f "$METADATA" ]]; then
-            python3 scripts/render_worker_deployment_evidence.py render-partial \
+            python3 apps/bff/scripts/render_worker_deployment_evidence.py render-partial \
               --project "$PROJECT_ID" \
               --region "$REGION" \
               --job-name "$JOB_NAME" \

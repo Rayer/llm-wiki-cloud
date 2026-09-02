@@ -9,7 +9,7 @@ import (
 )
 
 func TestDeployBFFWorkflowUsesOnlyImmutableStageConfig(t *testing.T) {
-	data, err := os.ReadFile("../../.github/workflows/deploy-bff.yml")
+	data, err := os.ReadFile("../../../../.github/workflows/deploy-bff.yml")
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -90,7 +90,7 @@ func TestDeployBFFWorkflowUsesOnlyImmutableStageConfig(t *testing.T) {
 }
 
 func TestReleaseBFFWorkflowPromotesImmutableStageConfig(t *testing.T) {
-	data, err := os.ReadFile("../../.github/workflows/release-bff.yml")
+	data, err := os.ReadFile("../../../../.github/workflows/release-bff.yml")
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -164,7 +164,7 @@ func TestReleaseBFFWorkflowPromotesImmutableStageConfig(t *testing.T) {
 }
 
 func TestReleaseBFFWorkflowCutsOverExactCreatedRevisionAndRollsBackFailure(t *testing.T) {
-	data, err := os.ReadFile("../../.github/workflows/release-bff.yml")
+	data, err := os.ReadFile("../../../../.github/workflows/release-bff.yml")
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -229,7 +229,7 @@ func TestReleaseBFFWorkflowCutsOverExactCreatedRevisionAndRollsBackFailure(t *te
 	for _, required := range []string{
 		`FROZEN_READY_REVISION=$(jq -er '.ready_revision | select(type == "string" and length > 0)' "$ROLLBACK_CONTRACT")`,
 		"validate_frozen_rollback_traffic()",
-		"scripts/validate_bff_promotion_contract.py validate-traffic",
+		"apps/bff/scripts/validate_bff_promotion_contract.py validate-traffic",
 		"--traffic-path status.traffic",
 		"--recognized-revision \"$FROZEN_READY_REVISION\"",
 		"if: ${{ always() && steps.deploy.outputs.deploy_started == 'true' && (steps.deploy.outcome == 'failure' || steps.cutover.outcome == 'failure' || steps.query_config_readback.outcome == 'failure' || steps.evidence.outcome == 'failure') }}",
@@ -284,7 +284,7 @@ func TestReleaseBFFWorkflowCutsOverExactCreatedRevisionAndRollsBackFailure(t *te
 }
 
 func TestReleaseBFFPreMutationTrafficGuard(t *testing.T) {
-	data, err := os.ReadFile("../../.github/workflows/release-bff.yml")
+	data, err := os.ReadFile("../../../../.github/workflows/release-bff.yml")
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -296,7 +296,7 @@ func TestReleaseBFFPreMutationTrafficGuard(t *testing.T) {
 	}
 	preflight := workflow[start : start+end]
 	for _, want := range []string{
-		"scripts/validate_bff_promotion_contract.py validate-traffic",
+		"apps/bff/scripts/validate_bff_promotion_contract.py validate-traffic",
 		"--traffic-path status.traffic",
 		"--recognized-revision \"$FROZEN_READY_REVISION\"",
 	} {
@@ -315,7 +315,7 @@ func TestReleaseBFFPreMutationTrafficGuard(t *testing.T) {
 		}
 	}
 	for _, want := range []string{
-		"scripts/validate_bff_promotion_contract.py validate-traffic",
+		"apps/bff/scripts/validate_bff_promotion_contract.py validate-traffic",
 		"--traffic-path status.traffic",
 		"--recognized-revision \"$FROZEN_READY_REVISION\"",
 	} {

@@ -29,6 +29,9 @@ jobs:
     timeout-minutes: 30
     environment:
       name: Development
+    defaults:
+      run:
+        working-directory: apps/frontend
     env:
       COMMIT_SHA: ${{ inputs.commit_sha }}
       TICKET_REF: ${{ inputs.ticket_ref }}
@@ -47,7 +50,7 @@ jobs:
 
       - name: Validate requested SHA, remote develop, and canonical CI
         shell: bash
-        run: bash .github/scripts/vercel-dev-deployment.sh validate
+        run: bash "$GITHUB_WORKSPACE/apps/frontend/.github/scripts/vercel-dev-deployment.sh" validate
         env:
           EVIDENCE_DIR: ${{ runner.temp }}/vercel-dev-deployment
           GITHUB_TOKEN: ${{ github.token }}
@@ -58,7 +61,7 @@ jobs:
 
       - name: Preflight exact DEV deployment and rollback contract
         shell: bash
-        run: bash .github/scripts/vercel-dev-deployment.sh preflight
+        run: bash "$GITHUB_WORKSPACE/apps/frontend/.github/scripts/vercel-dev-deployment.sh" preflight
         env:
           EVIDENCE_DIR: ${{ runner.temp }}/vercel-dev-deployment
           GITHUB_TOKEN: ${{ github.token }}
@@ -78,7 +81,7 @@ jobs:
 
       - name: Promote exactly the stable DEV alias
         shell: bash
-        run: bash .github/scripts/vercel-dev-deployment.sh promote
+        run: bash "$GITHUB_WORKSPACE/apps/frontend/.github/scripts/vercel-dev-deployment.sh" promote
         env:
           EVIDENCE_DIR: ${{ runner.temp }}/vercel-dev-deployment
           GITHUB_TOKEN: ${{ github.token }}
