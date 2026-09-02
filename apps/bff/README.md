@@ -5,9 +5,8 @@ Backend-for-frontend API for LLM Wiki. It serves project-scoped wiki sources, co
 ## Requirements
 
 - Go 1.26
-- Docker for the Compose local integration flow
+- Docker for the optional Compose local integration flow
 - `gcloud` and Docker registry access for deploys
-- A sibling `llm-wiki-frontend` checkout for the default Compose frontend path
 
 ## Test
 
@@ -39,11 +38,15 @@ Start BFF only for a fast backend loop:
 make bff-local
 ```
 
-Start BFF + frontend through Docker Compose:
+Start BFF + Auth + frontend with the native local commands:
 
 ```sh
 make dev
 ```
+
+From the monorepo root, use `make bootstrap` once and then `make local-start`.
+The frontend is at `../frontend` relative to this directory; no sibling checkout
+is required.
 
 BFF listens on `http://localhost:8080`, Auth listens on `http://localhost:8081`, and Frontend listens on `http://localhost:3000`.
 

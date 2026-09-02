@@ -2,12 +2,14 @@
 
 ## First-time setup
 
-Keep both repositories under `~/Develop`, then run:
+From the monorepo root, install both app dependencies and seed the local demo:
 
 ```bash
-cd ~/Develop/llm-wiki-bff
-make setup
+make bootstrap
 ```
+
+This creates the ignored `apps/frontend/.env.local` and `apps/bff/local-data/`
+paths.
 
 ## Choose the component you are developing
 
@@ -16,13 +18,13 @@ make setup
 Start everything except the BFF:
 
 ```bash
-make support-bff
+make -C apps/bff support-bff
 ```
 
 This starts the Frontend and prepares seeded pipeline data. Run the BFF separately from your terminal, IDE, or debugger:
 
 ```bash
-make bff-local
+make -C apps/bff bff-local
 ```
 
 ### Frontend
@@ -30,13 +32,13 @@ make bff-local
 Start everything except the Frontend:
 
 ```bash
-make support-frontend
+make -C apps/bff support-frontend
 ```
 
 This starts the BFF and prepares seeded pipeline data. Run the Frontend separately from your terminal or debugger:
 
 ```bash
-make frontend-local
+make -C apps/bff frontend-local
 ```
 
 ### Pipeline
@@ -44,19 +46,19 @@ make frontend-local
 Start everything except the Pipeline:
 
 ```bash
-make support-pipeline
+make -C apps/bff support-pipeline
 ```
 
 This starts the BFF and Frontend. Run Pipeline tests separately:
 
 ```bash
-make pipeline-test
+make -C apps/bff pipeline-test
 ```
 
 Run the full Synto pipeline only when provider-backed execution is needed:
 
 ```bash
-LLM_API_KEY=... make pipeline-run
+LLM_API_KEY=... make -C apps/bff pipeline-run
 ```
 
 ## Run the normal app
@@ -64,7 +66,7 @@ LLM_API_KEY=... make pipeline-run
 If you are not isolating one component:
 
 ```bash
-make dev
+make local-start
 ```
 
 ## Ports
@@ -80,7 +82,7 @@ FRONTEND_PORT=3000
 Override them on any Make target:
 
 ```bash
-make dev BFF_PORT=18080 FRONTEND_PORT=13000
+make local-start BFF_PORT=18080 FRONTEND_PORT=13000
 ```
 
 The generated Frontend `.env.local` automatically uses `BFF_PORT`.
@@ -107,7 +109,7 @@ role:     admin
 Get a fresh 15-minute JWT from the running Auth service:
 
 ```bash
-TOKEN="$(make local-token)"
+TOKEN="$(make -C apps/bff local-token)"
 ```
 
 Use it for normal or admin APIs:
@@ -121,7 +123,7 @@ curl -fsS \
 When overriding the Auth port:
 
 ```bash
-TOKEN="$(make local-token AUTH_PORT=18081)"
+TOKEN="$(make -C apps/bff local-token AUTH_PORT=18081)"
 ```
 
 The credential and `JWT_SECRET=dev-secret` are local-only. Do not use them for deployed environments, and do not commit a generated JWT.
@@ -131,18 +133,18 @@ Press `Ctrl-C` to stop the support processes.
 If local processes were orphaned, stop every listener on the configured local ports:
 
 ```bash
-make kill-local
+make local-stop
 ```
 
 For overridden ports:
 
 ```bash
-make kill-local BFF_PORT=18080 AUTH_PORT=18081 FRONTEND_PORT=13000
+make local-stop BFF_PORT=18080 AUTH_PORT=18081 FRONTEND_PORT=13000
 ```
 
 ## Generated local config
 
-`make setup` creates `~/Develop/llm-wiki-frontend/.env.local`:
+`make bootstrap` creates `apps/frontend/.env.local`:
 
 ```dotenv
 NEXT_PUBLIC_API_URL=http://localhost:8080

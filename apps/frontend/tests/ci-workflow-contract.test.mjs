@@ -6,7 +6,7 @@ import { spawnSync } from 'node:child_process';
 import { test } from 'node:test';
 import { load as parseYaml } from 'js-yaml';
 
-const workflowPath = join(new URL('..', import.meta.url).pathname, '.github/workflows/ci.yml');
+const workflowPath = join(new URL('../../..', import.meta.url).pathname, '.github/workflows/ci.yml');
 const candidateSha = 'a'.repeat(40);
 
 function commandIndex(source, command) {
@@ -148,6 +148,21 @@ test('CI main fast-forward eligibility is an ordered fail-closed exact-head stat
   assert.ok(source.indexOf('if: ${{ failure() || cancelled() }}') > source.indexOf('Publish main fast-forward eligibility status'));
   assert.equal(job.steps.at(-1), failure);
   assert.doesNotMatch(source, /curl|jq|GITHUB_OUTPUT|steps\.verify\.outputs|git (push|update-ref)|x-access-token|secrets\.(?:PAT|TOKEN)|personal access/i);
+});
+
+test('canonical CI keeps component working directories and aggregate gate dependencies explicit', async () => {
+  const workflow = parseYaml(await readFile(workflowPath, 'utf8'));
+  assert.deepEqual(workflow.jobs.bff.defaults.run, { 'working-directory': 'apps/bff' });
+  for (const jobName of ['lint', 'typecheck', 'test', 'frontend-build']) {
+    assert.deepEqual(workflow.jobs[jobName].defaults.run, { 'working-directory': 'apps/frontend' });
+  }
+  const aggregate = workflow.jobs.build;
+  assert.equal(aggregate.name, 'canonical-ci');
+  assert.equal(aggregate.if, '${{ always() }}');
+  assert.deepEqual(aggregate.needs, ['bff', 'frontend-build', 'local-smoke', 'workflow-source']);
+  for (const jobName of aggregate.needs) {
+    assert.match(aggregate.steps[0].run, new RegExp(`needs\\.${jobName}\\.result`));
+  }
 });
 
 test('CI status bridge shell gates reject stale, malformed, non-ancestral, and failed API cases', async () => {
