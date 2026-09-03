@@ -192,6 +192,7 @@ jobs:
         with:
           name: cd-rollback-${{ inputs.config_environment }}-${{ inputs.source_sha }}
           path: ${{ github.workspace }}/.cd/rollback.json
+          include-hidden-files: true
           if-no-files-found: error
           retention-days: 90
 
@@ -237,6 +238,7 @@ jobs:
         with:
           name: cd-images-${{ inputs.source_sha }}
           path: ${{ github.workspace }}/.cd/images
+          include-hidden-files: true
           if-no-files-found: error
           retention-days: 90
 
@@ -284,6 +286,7 @@ jobs:
         with:
           name: cd-mutation-journal-${{ inputs.config_environment }}-${{ inputs.source_sha }}
           path: ${{ github.workspace }}/.cd/journal.json
+          include-hidden-files: true
           if-no-files-found: error
           retention-days: 90
 
@@ -293,6 +296,7 @@ jobs:
         with:
           name: cd-rollback-result-${{ inputs.config_environment }}-${{ inputs.source_sha }}
           path: ${{ github.workspace }}/.cd/rollback-result.json
+          include-hidden-files: true
           if-no-files-found: error
           retention-days: 90
 
@@ -306,5 +310,6 @@ jobs:
         with:
           name: cd-evidence-${{ inputs.config_environment }}-${{ inputs.source_sha }}
           path: ${{ github.workspace }}/.cd/evidence.json
+          include-hidden-files: true
           if-no-files-found: error
           retention-days: 90

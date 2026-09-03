@@ -66,6 +66,26 @@ test('shared CD validates before protected environment mutation and uploads roll
   assert.doesNotMatch(text, /run jobs execute/);
 });
 
+test('hidden CD artifacts explicitly opt into hidden files', async () => {
+  const files = (await readdir(workflowDirectory)).filter((file) => file.endsWith('.yml')).sort();
+  const uploads = [];
+  const missing = [];
+  for (const name of files) {
+    const parsed = parseYaml(await workflow(name));
+    for (const [jobName, job] of Object.entries(parsed.jobs ?? {})) {
+      for (const [stepIndex, step] of (job.steps ?? []).entries()) {
+        if (step?.uses?.startsWith('actions/upload-artifact@') && step.with?.path?.includes('/.cd/')) {
+          const location = `${name}:${jobName}:${step.name ?? `step ${stepIndex + 1}`}`;
+          uploads.push(location);
+          if (step.with['include-hidden-files'] !== true) missing.push(location);
+        }
+      }
+    }
+  }
+  assert.ok(uploads.length > 0, 'expected at least one hidden CD artifact upload');
+  assert.deepEqual(missing, [], `${missing.length} hidden CD artifact upload(s) lack include-hidden-files: true`);
+});
+
 test('all shared run blocks are shell-valid and production consumes, not rebuilds, cloud images', async () => {
   const text = await workflow('cd.yml');
   const parsed = parseYaml(text);
