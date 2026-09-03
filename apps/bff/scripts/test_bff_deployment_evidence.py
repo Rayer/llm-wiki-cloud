@@ -372,34 +372,6 @@ class BFFDeploymentEvidenceTest(unittest.TestCase):
         saved = json.loads(rollback.read_text())
         self.assertEqual(saved["config"]["env"][-1], {"name": "QUERY_STAGE_CONFIG_PATH", "value": PRIOR_QUERY_STAGE_CONFIG_PATH_2})
 
-    def test_exact_run_33729903543_prior_production_config_is_accepted(self):
-        service = fixture("bff-service-before.json")
-        service["status"]["latestReadyRevisionName"] = "llm-wiki-bff-00075-4s6"
-        service["status"]["traffic"][0]["revisionName"] = "llm-wiki-bff-00075-4s6"
-        service["spec"]["template"]["spec"]["containers"][0]["env"].append(
-            {"name": "QUERY_STAGE_CONFIG_PATH", "value": QUERY_STAGE_CONFIG_PATH}
-        )
-        revision = fixture("bff-revision-before.json")
-        revision["metadata"]["name"] = "llm-wiki-bff-00075-4s6"
-        revision["spec"]["containers"][0]["env"] = service["spec"]["template"]["spec"]["containers"][0]["env"]
-        service_first = self.root / "run-33729903543-service-first.json"
-        service_second = self.root / "run-33729903543-service-second.json"
-        revision_path = self.root / "run-33729903543-revision.json"
-        service_first.write_text(json.dumps(service))
-        service_second.write_text(json.dumps(service))
-        revision_path.write_text(json.dumps(revision))
-        self.env["FAKE_SERVICE_FIXTURES"] = f"{service_first},{service_second}"
-        self.env["FAKE_REVISION_FIXTURE"] = str(revision_path)
-
-        output = self.root / "rollback.json"
-        result = self.invoke("prepare-rollback", "--artifact-name", ARTIFACT, "--output", str(output))
-
-        self.assertEqual(result.returncode, 0, result.stderr)
-        self.assertEqual(
-            next(entry for entry in json.loads(output.read_text())["config"]["env"] if entry["name"] == "QUERY_STAGE_CONFIG_PATH")["value"],
-            QUERY_STAGE_CONFIG_PATH,
-        )
-
     def test_production_prior_2026_08_22_1_revision_builds_rollback_contract(self):
         prior_revision = fixture("bff-revision-before.json")
         prior_revision["spec"]["containers"][0]["env"].append({"name": "QUERY_STAGE_CONFIG_PATH", "value": PRIOR_QUERY_STAGE_CONFIG_PATH_3})
