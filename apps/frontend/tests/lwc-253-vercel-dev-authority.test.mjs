@@ -5,7 +5,6 @@ import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { execFile } from 'node:child_process';
 import { promisify } from 'node:util';
-import { load as parseYaml } from 'js-yaml';
 
 const execFileAsync = promisify(execFile);
 const repoRoot = new URL('..', import.meta.url).pathname;
@@ -403,44 +402,15 @@ for (const [scenario, reasonCode] of [
   });
 }
 
-test('keeps the DEV workflow manual, exact-SHA gated, and secret-scoped', async () => {
-  const workflowSource = await readFile(join(monorepoRoot, '.github/workflows/vercel-dev-deployment.yml'), 'utf8');
-  const workflow = parseYaml(workflowSource);
-  assert.deepEqual(Object.keys(workflow.on.workflow_dispatch.inputs), ['commit_sha', 'ticket_ref']);
-  assert.equal(workflow.on.workflow_dispatch.inputs.commit_sha.required, true);
-  assert.equal(workflow.on.workflow_dispatch.inputs.commit_sha.type, 'string');
-  assert.equal(workflow.on.push, undefined);
-  assert.equal(workflow.concurrency['cancel-in-progress'], false);
-  assert.equal(workflow.jobs.promote.environment.name, 'Development');
-  assert.equal(workflow.jobs.promote.if, "github.ref == 'refs/heads/develop'");
-
-  const steps = workflow.jobs.promote.steps;
-  const checkout = steps.find(({ name }) => name === 'Check out the exact requested SHA');
-  assert.equal(checkout.with.ref, '${{ inputs.commit_sha }}');
-  assert.equal(checkout.with['persist-credentials'], false);
-  const validate = steps.find(({ name }) => name === 'Validate requested SHA, remote develop, and canonical CI');
-  const install = steps.find(({ name }) => name === 'Install pinned Vercel CLI');
-  const preflight = steps.find(({ name }) => name === 'Preflight exact DEV deployment and rollback contract');
-  const rollbackUpload = steps.find(({ name }) => name === 'Upload durable DEV rollback contract');
-  const promote = steps.find(({ name }) => name === 'Promote exactly the stable DEV alias');
-  assert.ok(steps.indexOf(validate) < steps.indexOf(install));
-  assert.ok(steps.indexOf(install) < steps.indexOf(preflight));
-  assert.ok(steps.indexOf(preflight) < steps.indexOf(promote));
-  assert.ok(steps.indexOf(preflight) < steps.indexOf(rollbackUpload));
-  assert.ok(steps.indexOf(rollbackUpload) < steps.indexOf(promote));
-  assert.deepEqual(Object.keys(validate.env), ['EVIDENCE_DIR', 'GITHUB_TOKEN']);
-  assert.deepEqual(Object.keys(preflight.env).sort(), ['EVIDENCE_DIR', 'GITHUB_TOKEN', 'VERCEL_PROJECT_ID', 'VERCEL_SCOPE', 'VERCEL_TEAM_ID', 'VERCEL_TOKEN'].sort());
-  assert.deepEqual(Object.keys(promote.env).sort(), ['EVIDENCE_DIR', 'GITHUB_TOKEN', 'ROLLBACK_ARTIFACT_DIGEST', 'ROLLBACK_ARTIFACT_ID', 'ROLLBACK_ARTIFACT_URL', 'VERCEL_PROJECT_ID', 'VERCEL_SCOPE', 'VERCEL_TEAM_ID', 'VERCEL_TOKEN'].sort());
-  assert.match(promote.env.GITHUB_TOKEN, /^\$\{\{ github\.token \}\}$/);
-  assert.match(preflight.env.VERCEL_PROJECT_ID, /^\$\{\{ secrets\.VERCEL_PROJECT_ID \}\}$/);
-  assert.match(promote.env.VERCEL_TOKEN, /^\$\{\{ secrets\.VERCEL_TOKEN \}\}$/);
-  assert.doesNotMatch(workflowSource, /vercel\s+(build|deploy)|next\s+build/);
-
-  const scriptSource = await readFile(join(repoRoot, '.github/scripts/vercel-dev-deployment.sh'), 'utf8');
-  const preflightBody = scriptSource.slice(scriptSource.indexOf('run_preflight()'), scriptSource.indexOf('load_context()'));
-  assert.doesNotMatch(preflightBody, /api_post|alias_set/);
-
-  const runBlocks = steps.filter(({ run }) => typeof run === 'string').map(({ run }) => run.replace(/\$\{\{[\s\S]*?\}\}/g, 'VALUE'));
-  await execFileAsync('bash', ['-n', '.github/scripts/vercel-dev-deployment.sh']);
-  await execFileAsync('bash', ['-n', '-c', runBlocks.join('\n')]);
+test('DEV workflow invokes the shared CD with fixed authority', async () => {
+  const workflow = (await readFile(join(monorepoRoot, '.github/workflows/deploy-dev.yml'), 'utf8'));
+  const source = workflow.replace(/\$\{\{[\s\S]*?\}\}/g, 'VALUE');
+  assert.doesNotMatch(source, /\n  push:/);
+  assert.match(source, /workflow_dispatch:/);
+  assert.match(source, /uses: \.\/\.github\/workflows\/cd\.yml/);
+  assert.match(source, /environment: Development/);
+  assert.match(source, /config_environment: development/);
+  assert.match(source, /source_ref: develop/);
+  assert.match(source, /config_path: deploy\/environments\/development\.yaml/);
+  assert.deepEqual(Object.keys((await import('js-yaml')).load(workflow).on.workflow_dispatch.inputs), ['components']);
 });

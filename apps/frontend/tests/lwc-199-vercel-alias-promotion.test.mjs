@@ -5,7 +5,6 @@ import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { execFile, spawn } from 'node:child_process';
 import { promisify } from 'node:util';
-import { load as parseYaml } from 'js-yaml';
 
 const execFileAsync = promisify(execFile);
 const repoRoot = new URL('..', import.meta.url).pathname;
@@ -15,7 +14,6 @@ const deploymentId = 'dpl_test123';
 const projectId = 'prj_test123';
 const aliases = ['wiki.rayer.idv.tw', 'llm-wiki-frontend.vercel.app'];
 const rollbackArtifactDigestBare = '0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef';
-const workflowPath = join(monorepoRoot, '.github/workflows/vercel-alias-promotion.yml');
 
 async function setupCase(scenario = 'success') {
   const root = await mkdtemp(join(tmpdir(), 'lwc-199-'));
@@ -764,74 +762,14 @@ for (const [scenario, expected] of [
   });
 }
 
-test('workflow contract parses as YAML and scopes provider secrets to the helper step', async () => {
-  const workflowSource = await readFile(workflowPath, 'utf8');
-  const workflow = parseYaml(workflowSource);
-  assert.deepEqual(Object.keys(workflow.on.workflow_dispatch.inputs), ['commit_sha', 'deployment_id', 'ticket_ref']);
-  assert.equal(workflow.on.workflow_dispatch.inputs.commit_sha.required, true);
-  assert.equal(workflow.on.workflow_dispatch.inputs.commit_sha.type, 'string');
-  assert.equal(workflow.on.workflow_dispatch.inputs.deployment_id.required, true);
-  assert.equal(workflow.on.workflow_dispatch.inputs.deployment_id.type, 'string');
-  assert.equal(workflow.on.workflow_dispatch.inputs.ticket_ref.required, false);
-  assert.equal(workflow.on.workflow_dispatch.inputs.ticket_ref.default, '');
-  assert.equal(workflow.permissions.contents, 'read');
-  assert.equal(workflow.permissions.actions, 'read');
-  assert.equal(workflow.concurrency['cancel-in-progress'], false);
-  assert.equal(workflow.jobs.promote.environment.name, 'Production');
-  assert.equal(workflow.jobs.promote['timeout-minutes'], 30);
-  assert.equal(workflow.jobs.promote.env.EVIDENCE_DIR, undefined);
-  assert.equal(workflow.jobs.promote.env.VERCEL_TOKEN, undefined);
-  assert.equal(workflow.jobs.promote.env.VERCEL_PROJECT_ID, undefined);
-  assert.equal(workflow.jobs.promote.env.VERCEL_TEAM_ID, undefined);
-  assert.equal(workflow.jobs.promote.env.VERCEL_SCOPE, undefined);
-  assert.equal(workflow.jobs.promote.env.GITHUB_TOKEN, undefined);
-  const checkout = workflow.jobs.promote.steps.find(({ name }) => name === 'Check out workflow-owned helper');
-  assert.equal(checkout.uses, 'actions/checkout@11d5960a326750d5838078e36cf38b85af677262');
-  assert.equal(checkout.with.ref, '${{ github.sha }}');
-  assert.equal(checkout.with['persist-credentials'], false);
-  const preflight = workflow.jobs.promote.steps.find(({ name }) => name === 'Preflight exact deployment and rollback contract');
-  const helper = workflow.jobs.promote.steps.find(({ name }) => name === 'Promote exact deployment');
-  assert.deepEqual(preflight.env, {
-    EVIDENCE_DIR: '${{ runner.temp }}/vercel-alias-promotion',
-    GITHUB_TOKEN: '${{ github.token }}',
-    VERCEL_TOKEN: '${{ secrets.VERCEL_TOKEN }}',
-    VERCEL_PROJECT_ID: '${{ secrets.VERCEL_PROJECT_ID }}',
-    VERCEL_TEAM_ID: '${{ secrets.VERCEL_TEAM_ID }}',
-  });
-  assert.deepEqual(helper.env, {
-    EVIDENCE_DIR: '${{ runner.temp }}/vercel-alias-promotion',
-    ROLLBACK_ARTIFACT_ID: '${{ steps.rollback_upload.outputs.artifact-id }}',
-    ROLLBACK_ARTIFACT_URL: '${{ steps.rollback_upload.outputs.artifact-url }}',
-    ROLLBACK_ARTIFACT_DIGEST: '${{ steps.rollback_upload.outputs.artifact-digest }}',
-    VERCEL_TOKEN: '${{ secrets.VERCEL_TOKEN }}',
-    VERCEL_PROJECT_ID: '${{ secrets.VERCEL_PROJECT_ID }}',
-    VERCEL_TEAM_ID: '${{ secrets.VERCEL_TEAM_ID }}',
-  });
-  const runs = workflow.jobs.promote.steps.filter(({ run }) => typeof run === 'string').map(({ run }) => run);
-  assert.equal(runs.some((run) => run.includes('npm install --global vercel@52.0.0 --ignore-scripts')), false);
-  assert.ok(runs.some((run) => run.trim() === 'bash "$GITHUB_WORKSPACE/apps/frontend/.github/scripts/vercel-alias-promotion.sh" preflight'));
-  assert.ok(runs.some((run) => run.trim() === 'bash "$GITHUB_WORKSPACE/apps/frontend/.github/scripts/vercel-alias-promotion.sh" promote'));
-  assert.equal(runs.some((run) => /vercel\s+(deploy|build)|next\s+build/.test(run)), false);
-  const steps = workflow.jobs.promote.steps;
-  const rollbackUpload = steps.find(({ name }) => name === 'Upload durable alias rollback contract');
-  assert.equal(rollbackUpload.id, 'rollback_upload');
-  assert.equal(rollbackUpload.uses, 'actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02');
-  assert.equal(rollbackUpload.with.name, 'vercel-alias-rollback-${{ inputs.commit_sha }}');
-  assert.equal(rollbackUpload.with.path, '${{ runner.temp }}/vercel-alias-promotion/rollback-contract.json');
-  assert.equal(rollbackUpload.with['if-no-files-found'], 'error');
-  assert.equal(rollbackUpload.with['retention-days'], 90);
-  assert.equal(rollbackUpload.if, undefined);
-  const upload = steps.find(({ name }) => name === 'Upload normalized deployment and rollback evidence');
-  assert.equal(upload.uses, 'actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02');
-  assert.equal(upload.with.name, 'vercel-alias-promotion-evidence-${{ inputs.commit_sha }}');
-  assert.equal(upload.with.path, '${{ runner.temp }}/vercel-alias-promotion/vercel-alias-promotion.json');
-  assert.equal(upload.if, 'always()');
-  assert.equal(upload.with['if-no-files-found'], 'error');
-  assert.equal(upload.with['retention-days'], 90);
-  assert.ok(steps.indexOf(rollbackUpload) < steps.indexOf(helper));
-  assert.ok(steps.indexOf(helper) < steps.indexOf(upload));
-  await execFileAsync('bash', ['-n', '.github/scripts/vercel-alias-promotion.sh']);
-  await execFileAsync('bash', ['-n', '-c', runs.join('\n')]);
+test('frontend aliases use the shared CD mutation and read-back path', async () => {
+  const workflow = await readFile(join(monorepoRoot, '.github/workflows/cd.yml'), 'utf8');
+  const script = await readFile(join(monorepoRoot, 'deploy/cd.sh'), 'utf8');
+  assert.match(script, /promote_frontend/);
+  assert.match(workflow, /Upload durable rollback artifact/);
+  assert.match(workflow, /Reconcile every selected component by authoritative read-back/);
+  assert.doesNotMatch(script, /vercel alias set/);
+  await execFileAsync('bash', ['-n', join(monorepoRoot, 'deploy/cd.sh')]);
 });
 
 for (const scenario of [

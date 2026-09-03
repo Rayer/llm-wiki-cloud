@@ -24,12 +24,8 @@ jobs:
           go-version: "1.26"
       - name: Validate product version
         run: go run ./cmd/versioncheck VERSION
-      - name: Validate BFF promotion contract
-        run: python3 scripts/test_bff_promotion_contract.py
-      - name: Execute BFF production cutover harness
-        run: python3 scripts/test_bff_explicit_cutover.py
-      - name: Validate Auth promotion contract
-        run: python3 scripts/test_auth_promotion_contract.py
+      - name: Validate monorepo CD contract
+        run: python3 ../../scripts/test_cd_contract.py
       - name: Go vet
         run: go vet ./...
       - name: Go tests

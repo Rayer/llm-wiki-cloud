@@ -1,0 +1,32 @@
+name: Deploy Development
+
+on:
+  workflow_dispatch:
+    inputs:
+      components:
+        description: Explicit components to deploy (comma-separated allowlist)
+        required: false
+        default: auth,bff,worker,frontend
+        type: string
+
+permissions:
+  contents: read
+  actions: read
+
+jobs:
+  deploy:
+    if: github.ref == 'refs/heads/develop'
+    uses: ./.github/workflows/cd.yml
+    with:
+      environment: Development
+      config_environment: development
+      source_ref: develop
+      source_sha: ${{ github.sha }}
+      config_path: deploy/environments/development.yaml
+      components: ${{ inputs.components || 'auth,bff,worker,frontend' }}
+    secrets:
+      VERCEL_TOKEN: ${{ secrets.VERCEL_TOKEN }}
+      VERCEL_PROJECT_ID: ${{ secrets.VERCEL_PROJECT_ID }}
+      VERCEL_TEAM_ID: ${{ secrets.VERCEL_TEAM_ID }}
+      WIF_PROVIDER: ${{ secrets.WIF_PROVIDER }}
+      WIF_SERVICE_ACCOUNT: ${{ secrets.WIF_SERVICE_ACCOUNT }}

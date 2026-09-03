@@ -1,0 +1,215 @@
+name: Shared CD orchestrator
+
+on:
+  workflow_call:
+    inputs:
+      environment:
+        required: true
+        type: string
+      config_environment:
+        required: true
+        type: string
+      source_ref:
+        required: true
+        type: string
+      source_sha:
+        required: true
+        type: string
+      config_path:
+        required: true
+        type: string
+      components:
+        required: true
+        type: string
+    secrets:
+      VERCEL_TOKEN:
+        required: false
+      VERCEL_PROJECT_ID:
+        required: false
+      VERCEL_TEAM_ID:
+        required: false
+      WIF_PROVIDER:
+        required: true
+      WIF_SERVICE_ACCOUNT:
+        required: true
+
+permissions:
+  contents: read
+
+jobs:
+  plan:
+    name: Validate source, config, and component intent
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    permissions:
+      contents: read
+      actions: read
+    steps:
+      - name: Checkout exact source SHA
+        uses: actions/checkout@v4
+        with:
+          ref: ${{ inputs.source_sha }}
+          fetch-depth: 0
+          persist-credentials: false
+
+      - name: Set up Go for the config loader
+        uses: actions/setup-go@v5
+        with:
+          go-version-file: apps/bff/go.mod
+          cache-dependency-path: apps/bff/go.sum
+
+      - name: Validate source, config, CI, and explicit components
+        env:
+          ENVIRONMENT: ${{ inputs.config_environment }}
+          SOURCE_REF: ${{ inputs.source_ref }}
+          SOURCE_SHA: ${{ inputs.source_sha }}
+          CONFIG_PATH: ${{ inputs.config_path }}
+          COMPONENTS: ${{ inputs.components }}
+          PLAN_PATH: ${{ runner.temp }}/cd/plan.json
+          GITHUB_REF_NAME: ${{ github.ref_name }}
+          GITHUB_REF: ${{ github.ref }}
+          GITHUB_REPOSITORY: ${{ github.repository }}
+          GH_TOKEN: ${{ github.token }}
+        run: bash deploy/cd.sh plan
+
+      - name: Upload validated plan
+        uses: actions/upload-artifact@v4
+        with:
+          name: cd-plan-${{ inputs.source_sha }}
+          path: ${{ runner.temp }}/cd/plan.json
+          if-no-files-found: error
+          retention-days: 90
+
+  mutate:
+    name: Freeze, mutate, and reconcile selected components
+    needs: plan
+    if: needs.plan.result == 'success'
+    runs-on: ubuntu-latest
+    timeout-minutes: 90
+    environment: ${{ inputs.environment }}
+    permissions:
+      contents: read
+      actions: read
+      id-token: write
+    env:
+      ENVIRONMENT: ${{ inputs.config_environment }}
+      SOURCE_REF: ${{ inputs.source_ref }}
+      SOURCE_SHA: ${{ inputs.source_sha }}
+      CONFIG_PATH: ${{ inputs.config_path }}
+      COMPONENTS: ${{ inputs.components }}
+      GITHUB_REPOSITORY: ${{ github.repository }}
+      GH_TOKEN: ${{ github.token }}
+      GITHUB_TOKEN: ${{ github.token }}
+      PLAN_PATH: ${{ runner.temp }}/cd/plan.json
+      ROLLBACK_PATH: ${{ runner.temp }}/cd/rollback.json
+      JOURNAL_PATH: ${{ runner.temp }}/cd/journal.json
+      EVIDENCE_PATH: ${{ runner.temp }}/cd/readback.json
+      ROLLBACK_RESULT_PATH: ${{ runner.temp }}/cd/rollback-result.json
+      FINAL_EVIDENCE_PATH: ${{ runner.temp }}/cd/evidence.json
+      ARTIFACT_DIR: ${{ runner.temp }}/cd
+      VERCEL_API_BASE_URL: https://api.vercel.com
+    steps:
+      - name: Checkout exact source SHA
+        uses: actions/checkout@v4
+        with:
+          ref: ${{ inputs.source_sha }}
+          fetch-depth: 0
+          persist-credentials: false
+
+      - name: Download validated plan
+        uses: actions/download-artifact@v4
+        with:
+          name: cd-plan-${{ inputs.source_sha }}
+          path: ${{ runner.temp }}/cd
+
+      - name: Read validated project target
+        id: target
+        run: echo "project_id=$(jq -er '.normalized.gcp.project_id' "$PLAN_PATH")" >> "$GITHUB_OUTPUT"
+
+      - name: Authenticate to Google Cloud
+        uses: google-github-actions/auth@v3
+        with:
+          project_id: ${{ steps.target.outputs.project_id }}
+          workload_identity_provider: ${{ secrets.WIF_PROVIDER }}
+          service_account: ${{ secrets.WIF_SERVICE_ACCOUNT }}
+
+      - name: Set up Cloud SDK
+        uses: google-github-actions/setup-gcloud@v2
+
+      - name: Verify read-only provider prerequisites
+        run: bash deploy/cd.sh preflight
+
+      - name: Initialize journal and artifact paths
+        run: |
+          set -euo pipefail
+          mkdir -p "$ARTIFACT_DIR/images"
+          printf '[]\n' > "$JOURNAL_PATH"
+
+      - name: Install pinned Vercel CLI
+        if: ${{ contains(inputs.components, 'frontend') }}
+        run: npm install --global vercel@52.0.0 --ignore-scripts
+
+      - name: Freeze rollback handles before mutation
+        env:
+          VERCEL_TOKEN: ${{ secrets.VERCEL_TOKEN }}
+          VERCEL_PROJECT_ID: ${{ secrets.VERCEL_PROJECT_ID }}
+          VERCEL_TEAM_ID: ${{ secrets.VERCEL_TEAM_ID }}
+        run: bash deploy/cd.sh freeze
+
+      - name: Upload durable rollback artifact
+        id: rollback_upload
+        uses: actions/upload-artifact@v4
+        with:
+          name: cd-rollback-${{ inputs.config_environment }}-${{ inputs.source_sha }}
+          path: ${{ runner.temp }}/cd/rollback.json
+          if-no-files-found: error
+          retention-days: 90
+
+      - name: Mutate selected components through shared bounded actions
+        id: mutate
+        if: steps.rollback_upload.outcome == 'success'
+        env:
+          VERCEL_TOKEN: ${{ secrets.VERCEL_TOKEN }}
+          VERCEL_PROJECT_ID: ${{ secrets.VERCEL_PROJECT_ID }}
+          VERCEL_TEAM_ID: ${{ secrets.VERCEL_TEAM_ID }}
+        run: bash deploy/cd.sh mutate
+
+      - name: Upload DEV immutable image receipts
+        if: ${{ inputs.config_environment == 'development' && steps.mutate.outcome == 'success' }}
+        uses: actions/upload-artifact@v4
+        with:
+          name: cd-images-${{ inputs.source_sha }}
+          path: ${{ runner.temp }}/cd/images
+          if-no-files-found: error
+          retention-days: 90
+
+      - name: Reconcile every selected component by authoritative read-back
+        id: reconcile
+        if: ${{ always() && steps.mutate.outcome != 'skipped' }}
+        env:
+          VERCEL_TOKEN: ${{ secrets.VERCEL_TOKEN }}
+          VERCEL_PROJECT_ID: ${{ secrets.VERCEL_PROJECT_ID }}
+          VERCEL_TEAM_ID: ${{ secrets.VERCEL_TEAM_ID }}
+        run: bash deploy/cd.sh reconcile
+
+      - name: Run inverse journal for production mutations
+        id: rollback
+        if: ${{ always() && inputs.config_environment == 'production' && steps.mutate.outcome != 'skipped' && (steps.mutate.outcome == 'failure' || steps.reconcile.outcome == 'failure') }}
+        env:
+          VERCEL_TOKEN: ${{ secrets.VERCEL_TOKEN }}
+          VERCEL_PROJECT_ID: ${{ secrets.VERCEL_PROJECT_ID }}
+          VERCEL_TEAM_ID: ${{ secrets.VERCEL_TEAM_ID }}
+        run: bash deploy/cd.sh rollback
+
+      - name: Render normalized redacted evidence
+        if: always()
+        run: bash deploy/cd.sh evidence
+
+      - name: Upload normalized CD evidence
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: cd-evidence-${{ inputs.config_environment }}-${{ inputs.source_sha }}
+          path: ${{ runner.temp }}/cd/evidence.json
+          if-no-files-found: error
+          retention-days: 90

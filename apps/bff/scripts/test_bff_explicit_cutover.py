@@ -1,334 +1,195 @@
 #!/usr/bin/env python3
-"""Execute the production BFF revision transaction against a fake provider."""
+"""BFF readback and cutover safety tests against the shared CD contract."""
 
 import json
 import os
-from pathlib import Path
-import stat
+import shutil
 import subprocess
 import tempfile
 import textwrap
 import unittest
+from pathlib import Path
 
 import yaml
 
 
-ROOT = Path(__file__).resolve().parents[1]
-REPO_ROOT = ROOT.parent.parent
-WORKFLOW = REPO_ROOT / ".github/workflows/release-bff.yml"
-SHA = "a" * 40
+REPO_ROOT = Path(__file__).resolve().parents[3]
+SOURCE_SHA = "a" * 40
 IMAGE = "asia-east1-docker.pkg.dev/llm-wiki-cloud/cloud-run-images/llm-wiki-bff@sha256:" + "d" * 64
-FROZEN_CREATED = "llm-wiki-bff-00071-zgk"
-FROZEN_REVISION = "llm-wiki-bff-00070-f5c"
-CANDIDATE = "llm-wiki-bff-00072-7qf"
 
 
-class ExplicitCutoverHarnessTest(unittest.TestCase):
-    def setUp(self):
-        self.tempdir = tempfile.TemporaryDirectory()
-        self.root = Path(self.tempdir.name)
-        self.bin = self.root / "bin"
-        self.bin.mkdir()
-        self.state = self.root / "provider-state.json"
-        self.log = self.root / "provider.log"
-        self.gh_count = self.root / "gh-count"
-        self.output = self.root / "github-output"
-        self.github_env = self.root / "github-env"
-        self.rollback = self.root / "rollback-contract.json"
-        self.rollback.write_text(json.dumps({
-            "ready_revision": FROZEN_REVISION,
-            "traffic": [{"revision_name": FROZEN_REVISION, "percent": 100}],
-        }))
-        self.state.write_text(json.dumps({"traffic": FROZEN_REVISION, "deployed": False}))
-        self._write_fake_provider()
+class SharedCDContractTest(unittest.TestCase):
+    def normalized(self):
+        result = subprocess.run(
+            [
+                "go",
+                "run",
+                "./cmd/deploy_config",
+                "--environment",
+                "development",
+                "--config",
+                "../../deploy/environments/development.yaml",
+                "--components",
+                "bff",
+            ],
+            cwd=REPO_ROOT / "apps/bff",
+            capture_output=True,
+            text=True,
+            check=True,
+        )
+        return json.loads(result.stdout)
 
-    def tearDown(self):
-        self.tempdir.cleanup()
-
-    def _write_fake_provider(self):
-        gcloud = self.bin / "gcloud"
-        gcloud.write_text(textwrap.dedent(r'''
-            #!/usr/bin/env python3
-            import json, os, sys
-            from pathlib import Path
-
-            args = sys.argv[1:]
-            log = Path(os.environ["FAKE_LOG"])
-            with log.open("a") as output:
-                output.write("gcloud " + " ".join(args) + "\n")
-            state_path = Path(os.environ["FAKE_STATE"])
-            state = json.loads(state_path.read_text())
-            mode = os.environ.get("FAKE_MODE", "success")
-
-            def save():
-                state_path.write_text(json.dumps(state))
-
-            def service():
-                traffic = state["traffic"]
-                if mode == "pretraffic-drift" and not state.get("updated"):
-                    traffic = "llm-wiki-bff-00069-drift"
-                if mode == "pretraffic-split" and not state.get("updated"):
-                    traffic = [{"revisionName": FROZEN_REVISION, "percent": 50}, {"revisionName": CANDIDATE, "percent": 50}]
-                if mode == "pretraffic-tag" and not state.get("updated"):
-                    traffic = [{"revisionName": FROZEN_REVISION, "percent": 100, "tag": "stable"}]
-                if mode == "pretraffic-latest" and not state.get("updated"):
-                    traffic = [{"revisionName": FROZEN_REVISION, "percent": 100, "latestRevision": True}]
-                if isinstance(traffic, list):
-                    provider_traffic = traffic
-                else:
-                    provider_traffic = [{"revisionName": traffic, "percent": 100}]
-                latest_created = CANDIDATE if state.get("deployed") else FROZEN_CREATED
-                if mode == "unchanged-created":
-                    latest_created = FROZEN_CREATED
-                return {
-                    "status": {
-                        "latestCreatedRevisionName": latest_created,
-                        "latestReadyRevisionName": FROZEN_CREATED,
-                        "traffic": provider_traffic,
-                        "url": "https://llm-wiki-bff-abc.a.run.app",
-                    }
-                }
-
-            if args[:3] == ["run", "deploy", "llm-wiki-bff"]:
-                state["deployed"] = True
-                save()
-            elif args[:3] == ["run", "services", "describe"]:
-                if mode == "rollback-unavailable" and state.get("updated"):
-                    raise SystemExit(9)
-                if "value(status.url)" in args:
-                    print("https://llm-wiki-bff-abc.a.run.app")
-                else:
-                    print(json.dumps(service()))
-            elif args[:3] == ["run", "revisions", "describe"]:
-                image = IMAGE
-                ready = True
-                container_ready = True
-                container_healthy = False
-                if mode == "image-mismatch":
-                    image = IMAGE.replace("d" * 64, "e" * 64)
-                elif mode == "not-ready":
-                    ready = False
-                elif mode == "not-container-ready":
-                    container_ready = False
-                elif mode == "container-healthy-only":
-                    container_ready = False
-                    container_healthy = True
-                elif mode == "transient-not-ready" and state.get("revision_describes", 0) == 0:
-                    ready = False
-                state["revision_describes"] = state.get("revision_describes", 0) + 1
-                save()
-                active = state.get("updated", False) or mode == "active-true-zero-traffic"
-                active_reason = "Active" if active else ("Deploying" if mode == "active-false-other" else "Retired")
-                conditions = [
-                    {"type": "Ready", "status": "True" if ready else "False", "reason": "Retired" if ready else "ContainerFailed"},
-                    *([] if mode == "container-healthy-only" else [{"type": "ContainerReady", "status": "True" if container_ready else "False", "reason": "Retired" if container_ready else "ContainerFailed"}]),
-                    *([{"type": "ContainerHealthy", "status": "True", "reason": "Retired"}] if container_healthy else []),
-                    {"type": "Active", "status": "True" if active else "False", "reason": active_reason},
-                ]
-                print(json.dumps({
-                    "metadata": {"name": CANDIDATE},
-                    "spec": {"containers": [{"image": image}]},
-                    "status": {"imageDigest": image, "conditions": conditions},
-                }))
-            elif args[:3] == ["run", "services", "update-traffic"]:
-                state["updated"] = True
-                target = args[args.index("--to-revisions") + 1]
-                if target.startswith(FROZEN_REVISION + "="):
-                    state["traffic"] = FROZEN_REVISION
-                    save()
-                    raise SystemExit(0)
-                if mode == "update-nonzero-wins":
-                    state["traffic"] = CANDIDATE
-                    save()
-                    raise SystemExit(7)
-                if mode == "update-success-old":
-                    state["traffic"] = FROZEN_REVISION
-                elif mode == "update-success-split":
-                    state["traffic"] = [{"revisionName": FROZEN_REVISION, "percent": 50}, {"revisionName": CANDIDATE, "percent": 50}]
-                elif mode == "update-success-tag":
-                    state["traffic"] = [{"revisionName": CANDIDATE, "percent": 100, "tag": "candidate"}]
-                elif mode == "update-success-latest":
-                    state["traffic"] = [{"revisionName": CANDIDATE, "percent": 100, "latestRevision": True}]
-                elif mode == "update-success-other":
-                    state["traffic"] = "llm-wiki-bff-00069-drift"
-                elif mode == "update-success-unknown":
-                    state["traffic"] = [{"revisionName": CANDIDATE, "percent": 100, "unknown": True}]
-                elif mode == "update-success-wrong-types":
-                    state["traffic"] = [{"revisionName": CANDIDATE, "percent": "100"}]
-                elif mode == "update-success-invalid-percent":
-                    state["traffic"] = [{"revisionName": CANDIDATE, "percent": 101}]
-                elif mode == "update-success-invalid-sum":
-                    state["traffic"] = [{"revisionName": CANDIDATE, "percent": 60}, {"revisionName": FROZEN_REVISION, "percent": 30}]
-                elif mode == "update-success-empty":
-                    state["traffic"] = []
-                else:
-                    state["traffic"] = CANDIDATE
-                save()
-            else:
-                raise SystemExit("unexpected gcloud invocation: " + " ".join(args))
-        ''').replace("FROZEN_REVISION", repr(FROZEN_REVISION)).replace("FROZEN_CREATED", repr(FROZEN_CREATED)).replace("CANDIDATE", repr(CANDIDATE)).replace("IMAGE", repr(IMAGE)).lstrip())
-        gcloud.chmod(gcloud.stat().st_mode | stat.S_IXUSR)
-
-        gh = self.bin / "gh"
-        gh.write_text(textwrap.dedent(f'''\
-            #!/usr/bin/env bash
-            set -euo pipefail
-            if [[ "${{FAKE_MODE:-}}" == "main-changed" ]]; then
-              count=0
-              if [[ -f "$FAKE_GH_COUNT" ]]; then count=$(<"$FAKE_GH_COUNT"); fi
-              count=$((count + 1))
-              printf '%s\\n' "$count" > "$FAKE_GH_COUNT"
-              if (( count >= 2 )); then
-                printf '%s\\n' '{"b" * 40}'
-              else
-                printf '%s\\n' '{SHA}'
-              fi
-            elif [[ "${{FAKE_MODE:-}}" == "initial-main-mismatch" ]]; then
-              printf '%s\\n' '{"b" * 40}'
-            else
-              printf '%s\\n' '{SHA}'
-            fi
-        '''))
-        gh.chmod(gh.stat().st_mode | stat.S_IXUSR)
-
-    def _workflow_step(self, name):
-        workflow = yaml.safe_load(WORKFLOW.read_text())
-        for step in workflow["jobs"]["promote"]["steps"]:
-            if step.get("name") == name:
-                return step["run"]
-        raise AssertionError(f"workflow step {name!r} is missing")
-
-    def _env(self, mode):
-        return {
-            **os.environ,
-            "PATH": f"{self.bin}:{os.environ['PATH']}",
-            "FAKE_LOG": str(self.log),
-            "FAKE_STATE": str(self.state),
-            "FAKE_MODE": mode,
-            "FAKE_GH_COUNT": str(self.gh_count),
-            "SERVICE_NAME": "llm-wiki-bff",
-            "PROJECT_ID": "llm-wiki-cloud",
-            "REGION": "asia-east1",
-            "RUNTIME_SERVICE_ACCOUNT": "lwc-bff-prod@llm-wiki-cloud.iam.gserviceaccount.com",
-            "IMMUTABLE_IMAGE": IMAGE,
-            "COMMIT_SHA": SHA,
-            "EXPECTED_COMMIT": SHA,
-            "GITHUB_REPOSITORY": "Rayer/llm-wiki-cloud",
-            "GITHUB_OUTPUT": str(self.output),
-            "GITHUB_ENV": str(self.github_env),
-            "ROLLBACK_CONTRACT": str(self.rollback),
-            "FROZEN_CREATED_REVISION": FROZEN_CREATED,
-            "JWT_SECRET_NAME": "jwt-secret-prod",
-            "DEEPSEEK_SECRET_NAME": "deepseek-apikey",
-            "BUCKET": "llm-wiki-data",
-            "FIRESTORE_DATABASE_ID": "llm-wiki-cloud-prod",
-            "PIPELINE_JOB_NAME": "olw-pipeline",
-            "ALLOWED_ORIGINS": "https://wiki.rayer.idv.tw,https://llm-wiki-frontend.vercel.app",
-            "QUERY_STAGE_CONFIG_PATH": "/app/configs/query/dev/query-dev-2026-08-31.1.json",
-            "CANDIDATE_DISCOVERY_TIMEOUT_SECONDS": "1",
-            "CANDIDATE_READINESS_TIMEOUT_SECONDS": "5",
-            "CUTOVER_VERIFY_TIMEOUT_SECONDS": "1",
+    def fake_provider(self, directory, normalized, image, account):
+        bff = normalized["bff"]
+        env = [
+            {"name": "GCP_PROJECT", "value": normalized["gcp"]["project_id"]},
+            {"name": "BUCKET", "value": bff["bucket"]},
+            {"name": "FIRESTORE_DATABASE_ID", "value": bff["firestore_database_id"]},
+            {"name": "PIPELINE_JOB_URL", "value": bff["pipeline_job_url"]},
+            {"name": "ALLOWED_ORIGINS", "value": ",".join(bff["allowed_origins"])},
+            {"name": "AUTH_SERVICE_URL", "value": bff["auth_service_url"]},
+            {"name": "QUERY_STAGE_CONFIG_PATH", "value": normalized["query_config"]["runtime_path"]},
+            {"name": "DEV_JWT", "value": "false"},
+            {"name": "LWC_SOURCE_COMMIT", "value": SOURCE_SHA},
+            {
+                "name": "JWT_SECRET",
+                "value": "super-secret-value",
+                "valueSource": {"secretKeyRef": {"secret": bff["secret_references"]["jwt"], "version": "latest"}},
+            },
+            {
+                "name": "DEEPSEEK_API_KEY",
+                "value": "another-secret-value",
+                "valueSource": {"secretKeyRef": {"secret": bff["secret_references"]["deepseek_api_key"], "version": "latest"}},
+            },
+        ]
+        annotations = {
+            "run.googleapis.com/network-interfaces": json.dumps([{"network": bff["network"], "subnetwork": bff["subnet"]}]),
+            "run.googleapis.com/vpc-access-egress": bff["vpc_egress"],
+            "autoscaling.knative.dev/maxScale": str(bff["max_instances"]),
         }
+        revision = {
+            "metadata": {"annotations": annotations},
+            "spec": {"serviceAccountName": account, "containers": [{"image": image, "env": env}]},
+            "status": {"imageDigest": image, "conditions": [{"type": "Ready", "status": "True"}]},
+        }
+        service = {
+            "metadata": {"annotations": {"run.googleapis.com/ingress": bff["ingress"]}},
+            "spec": {"template": {"metadata": {"annotations": annotations}, "spec": {"serviceAccountName": account, "containers": [{"env": env}]}}},
+            "status": {"traffic": [{"revisionName": "llm-wiki-bff-new", "percent": 100}]},
+        }
+        fake = textwrap.dedent(
+            """
+            #!/usr/bin/env python3
+            import os
+            import sys
+            args = sys.argv[1:]
+            if args[:3] == ["run", "services", "describe"]:
+                if any(arg.startswith("value(") for arg in args):
+                    print("llm-wiki-bff-new")
+                else:
+                    print(os.environ["FAKE_SERVICE_JSON"])
+            elif args[:3] == ["run", "revisions", "describe"]:
+                print(os.environ["FAKE_REVISION_JSON"])
+            else:
+                raise SystemExit(2)
+            """
+        ).lstrip()
+        path = directory / "gcloud"
+        path.write_text(fake)
+        path.chmod(0o755)
+        return service, revision
 
-    def _run(self, mode="success", include_deploy=True):
-        env = self._env(mode)
-        scripts = []
-        if include_deploy:
-            scripts.append(self._workflow_step("Deploy existing immutable image to Cloud Run"))
-        scripts.append(self._workflow_step("Identify, validate, and explicitly cut over exact BFF candidate"))
-        script = "\n".join(scripts).replace("sleep 5", "SECONDS=$((SECONDS + 1))").replace("sleep 10", "SECONDS=$CUTOVER_VERIFY_DEADLINE")
-        return subprocess.run(["bash", "-c", script], cwd=REPO_ROOT, env=env, capture_output=True, text=True)
+    def fixture(self, journal):
+        directory = Path(tempfile.mkdtemp(prefix="lwc-306-bff-"))
+        normalized = self.normalized()
+        image_dir = directory / "artifacts" / "images"
+        image_dir.mkdir(parents=True)
+        (image_dir / f"bff-image-{SOURCE_SHA}.txt").write_text(IMAGE)
+        (directory / "plan.json").write_text(json.dumps({"normalized": normalized}))
+        (directory / "artifacts" / "journal.json").write_text(json.dumps(journal))
+        service, revision = self.fake_provider(
+            directory,
+            normalized,
+            IMAGE,
+            "wrong@llm-wiki-cloud.iam.gserviceaccount.com",
+        )
+        env = {
+            **os.environ,
+            "PATH": f"{directory}:{os.environ['PATH']}",
+            "ENVIRONMENT": "development",
+            "SOURCE_REF": "develop",
+            "SOURCE_SHA": SOURCE_SHA,
+            "CONFIG_PATH": "deploy/environments/development.yaml",
+            "COMPONENTS": "bff",
+            "GITHUB_REF": "refs/heads/develop",
+            "GITHUB_REF_NAME": "develop",
+            "PLAN_PATH": str(directory / "plan.json"),
+            "JOURNAL_PATH": str(directory / "artifacts" / "journal.json"),
+            "ARTIFACT_DIR": str(directory / "artifacts"),
+            "EVIDENCE_PATH": str(directory / "artifacts" / "readback.json"),
+            "FINAL_EVIDENCE_PATH": str(directory / "artifacts" / "evidence.json"),
+            "FAKE_SERVICE_JSON": json.dumps(service),
+            "FAKE_REVISION_JSON": json.dumps(revision),
+        }
+        return directory, env
 
-    def _run_rollback(self, mode):
-        env = self._env(mode)
-        script = self._workflow_step("Restore frozen production traffic after query-config readback failure")
-        script = script.replace("sleep 5", "SECONDS=$ROLLBACK_READBACK_DEADLINE").replace("sleep 10", "SECONDS=$ROLLBACK_READBACK_DEADLINE")
-        return subprocess.run(["bash", "-c", script], cwd=REPO_ROOT, env=env, capture_output=True, text=True)
+    def test_bff_readback_rejects_runtime_mismatch_and_redacts_secrets(self):
+        directory, env = self.fixture([])
+        try:
+            result = subprocess.run(["bash", str(REPO_ROOT / "deploy/cd.sh"), "reconcile"], env=env, capture_output=True, text=True)
+            self.assertNotEqual(result.returncode, 0)
+            readback = json.loads((directory / "artifacts" / "readback.json").read_text())
+            self.assertEqual(readback["result"], "failed")
+            self.assertEqual(readback["mutation_count"], 0)
+            self.assertFalse(readback["provider_readback"])
+            result = subprocess.run(["bash", str(REPO_ROOT / "deploy/cd.sh"), "evidence"], env=env, capture_output=True, text=True)
+            self.assertEqual(result.returncode, 0, result.stderr)
+            evidence = (directory / "artifacts" / "evidence.json").read_text()
+            self.assertNotIn("super-secret-value", evidence)
+            self.assertNotIn("another-secret-value", evidence)
+            self.assertIn("no automatic provider retry", evidence)
+        finally:
+            shutil.rmtree(directory, ignore_errors=True)
 
-    def test_pinned_traffic_promotes_the_new_retired_candidate(self):
-        result = self._run()
-        self.assertEqual(result.returncode, 0, result.stderr)
-        log = self.log.read_text()
-        self.assertIn("--no-traffic", log)
-        self.assertIn(f"--to-revisions {CANDIDATE}=100", log)
-        self.assertEqual(log.count("run services update-traffic"), 1)
-        self.assertIn(f"candidate_revision={CANDIDATE}", self.output.read_text().splitlines())
+    def test_bff_partial_result_requires_an_accepted_mutation(self):
+        directory, env = self.fixture(["bff"])
+        try:
+            result = subprocess.run(["bash", str(REPO_ROOT / "deploy/cd.sh"), "reconcile"], env=env, capture_output=True, text=True)
+            self.assertNotEqual(result.returncode, 0)
+            readback = json.loads((directory / "artifacts" / "readback.json").read_text())
+            self.assertEqual(readback["result"], "partial")
+            self.assertEqual(readback["mutation_count"], 1)
+            self.assertEqual(readback["mutation_components"], ["bff"])
+            self.assertFalse(readback["provider_readback"])
+        finally:
+            shutil.rmtree(directory, ignore_errors=True)
 
-    def test_candidate_discovery_and_readiness_fail_closed(self):
-        for mode in ("unchanged-created", "image-mismatch", "not-ready", "not-container-ready", "active-false-other", "initial-main-mismatch", "pretraffic-drift", "pretraffic-split", "pretraffic-tag", "pretraffic-latest"):
-            with self.subTest(mode=mode):
-                result = self._run(mode)
-                self.assertNotEqual(result.returncode, 0)
-                self.assertNotIn("run services update-traffic", self.log.read_text())
+    def test_shared_bff_path_preserves_cutover_safety_boundaries(self):
+        source = (REPO_ROOT / "deploy" / "cd.sh").read_text()
+        shared = (REPO_ROOT / ".github" / "workflows" / "cd.yml").read_text()
+        for path in ("deploy-dev.yml", "promote-production.yml"):
+            workflow = yaml.safe_load((REPO_ROOT / ".github" / "workflows" / path).read_text())
+            triggers = workflow.get("on", workflow.get(True, {}))
+            self.assertIn("workflow_dispatch", triggers)
+            self.assertIn("./.github/workflows/cd.yml", (REPO_ROOT / ".github" / "workflows" / path).read_text())
+        self.assertLess(shared.index("Upload durable rollback artifact"), shared.index("Mutate selected components"))
+        self.assertIn("if: steps.rollback_upload.outcome == 'success'", shared)
+        self.assertIn("event=push", source)
+        self.assertIn("event=workflow_dispatch", source)
+        self.assertIn("gcloud run services update-traffic", source)
+        self.assertNotIn("run jobs execute", source)
+        self.assertNotIn("vercel alias set", source)
 
-    def test_container_healthy_only_and_active_true_zero_traffic_are_accepted(self):
-        for mode in ("container-healthy-only", "active-true-zero-traffic"):
-            with self.subTest(mode=mode):
-                self.state.write_text(json.dumps({"traffic": FROZEN_REVISION, "deployed": False}))
-                self.log.unlink(missing_ok=True)
-                self.output.unlink(missing_ok=True)
-                self.gh_count.unlink(missing_ok=True)
-                result = self._run(mode)
-                self.assertEqual(result.returncode, 0, result.stderr)
-                self.assertEqual(self.log.read_text().count("run services update-traffic"), 1)
-
-    def test_main_change_is_only_seen_on_second_just_before_cutover_read(self):
-        result = self._run("main-changed")
-        self.assertNotEqual(result.returncode, 0)
-        self.assertEqual(self.gh_count.read_text().strip(), "2")
-        log = self.log.read_text()
-        self.assertIn(f"run revisions describe {CANDIDATE}", log)
-        self.assertNotIn("run services update-traffic", log)
-
-    def test_update_error_that_wins_is_reconciled_without_retry(self):
-        result = self._run("update-nonzero-wins")
-        self.assertEqual(result.returncode, 0, result.stderr)
-        log = self.log.read_text()
-        self.assertEqual(log.count("run services update-traffic"), 1)
-        self.assertIn("update-traffic returned 7", result.stdout)
-
-    def test_failed_readback_invokes_frozen_rollback(self):
-        for mode, want_rollback_write in (("update-success-old", False), ("update-success-split", True), ("update-success-tag", True), ("update-success-latest", True), ("update-success-other", True)):
-            with self.subTest(mode=mode):
-                self.state.write_text(json.dumps({"traffic": FROZEN_REVISION, "deployed": False}))
-                self.log.unlink(missing_ok=True)
-                self.output.unlink(missing_ok=True)
-                result = self._run(mode)
-                self.assertNotEqual(result.returncode, 0)
-                rollback = self._run_rollback(mode)
-                self.assertNotEqual(rollback.returncode, 0)
-                log = self.log.read_text()
-                expected_updates = 2 if want_rollback_write else 1
-                self.assertEqual(log.count("run services update-traffic"), expected_updates)
-                if want_rollback_write:
-                    self.assertIn(f"--to-revisions {FROZEN_REVISION}=100", log)
-                    self.assertIn("restored effective routing", rollback.stdout)
-
-    def test_unavailable_rollback_readback_does_not_mutate(self):
-        result = self._run("rollback-unavailable")
-        self.assertNotEqual(result.returncode, 0)
-        rollback = self._run_rollback("rollback-unavailable")
-        self.assertNotEqual(rollback.returncode, 0)
-        self.assertEqual(self.log.read_text().count("run services update-traffic"), 1)
-
-    def test_unreadable_rollback_traffic_does_not_mutate(self):
-        for mode in ("update-success-unknown", "update-success-wrong-types", "update-success-invalid-percent", "update-success-invalid-sum", "update-success-empty"):
-            with self.subTest(mode=mode):
-                self.state.write_text(json.dumps({"traffic": FROZEN_REVISION, "deployed": False}))
-                self.log.unlink(missing_ok=True)
-                result = self._run(mode)
-                self.assertNotEqual(result.returncode, 0)
-                rollback = self._run_rollback(mode)
-                self.assertNotEqual(rollback.returncode, 0)
-                self.assertEqual(self.log.read_text().count("run services update-traffic"), 1)
-
-    def test_transient_exact_candidate_readiness_is_polled(self):
-        result = self._run("transient-not-ready")
-        self.assertEqual(result.returncode, 0, result.stderr)
-        log = self.log.read_text()
-        self.assertGreaterEqual(log.count("run revisions describe"), 3)
-        self.assertEqual(log.count("run services update-traffic"), 1)
-        self.assertIn(f"--to-revisions {CANDIDATE}=100", log)
+    def test_production_consumes_immutable_dev_receipt_without_rebuilding_bff(self):
+        source = (REPO_ROOT / "deploy" / "cd.sh").read_text()
+        consume = source[source.index("consume_dev_images()") : source.index("image_for()")]
+        self.assertIn("event=workflow_dispatch", consume)
+        self.assertIn("head_sha=$\u007bSOURCE_SHA}", consume)
+        self.assertIn("gh run download", consume)
+        self.assertNotIn("docker build", consume)
+        self.assertNotIn("gcloud builds", consume)
+        image_for = source[source.index("image_for()") : source.index("service_env_args()")]
+        self.assertNotIn(":latest", image_for)
 
 
 if __name__ == "__main__":

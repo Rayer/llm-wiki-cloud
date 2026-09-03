@@ -764,39 +764,14 @@ test('foreign-project exact-SHA candidate cannot suppress CREATE_NOT_ALLOWED', a
   assert.equal((await lines(join(fixture.root, 'mutation-log'))).length, 0);
 });
 
-test('workflow is manual, develop-gated, pinned, and shares normal concurrency', async () => {
-  const normal = parseYaml(await readFile(join(monorepoRoot, '.github/workflows/vercel-dev-deployment.yml'), 'utf8'));
-  const reconciliation = parseYaml(await readFile(join(monorepoRoot, '.github/workflows/vercel-dev-authority-reconciliation.yml'), 'utf8'));
-  assert.equal(reconciliation.concurrency.group, normal.concurrency.group);
-  assert.deepEqual(Object.keys(reconciliation.on), ['workflow_dispatch']);
-  assert.equal(reconciliation.jobs.reconcile.if, "github.ref == 'refs/heads/develop'");
-  assert.equal(reconciliation.jobs.reconcile.environment.name, 'Development');
-  const inputs = reconciliation.on.workflow_dispatch.inputs;
-  for (const name of ['commit_sha', 'ci_run_id', 'expected_new_project_id', 'expected_team_id', 'expected_current_alias_project_id', 'expected_current_alias_deployment_id', 'expected_current_alias_source_sha', 'ticket_ref', 'reconciliation_ack', 'create_if_missing']) {
-    assert.equal(inputs[name].required, true);
-    assert.equal(inputs[name].type, name === 'ci_run_id' ? 'number' : name === 'create_if_missing' ? 'boolean' : 'string');
-  }
-  const jobEnv = reconciliation.jobs.reconcile.env;
-  for (const name of ['COMMIT_SHA', 'CI_RUN_ID', 'EXPECTED_NEW_PROJECT_ID', 'EXPECTED_TEAM_ID', 'CREATE_IF_MISSING', 'EXPECTED_CURRENT_ALIAS_PROJECT_ID', 'EXPECTED_CURRENT_ALIAS_DEPLOYMENT_ID', 'EXPECTED_CURRENT_ALIAS_SOURCE_SHA', 'TICKET_REF', 'RECONCILIATION_ACK']) {
-    assert.ok(name in jobEnv, `missing immutable workflow wiring: ${name}`);
-  }
-  assert.match(await readFile(join(repoRoot, '.github/scripts/vercel-dev-authority-reconciliation.sh'), 'utf8'), /actions\/runs\/\$CI_RUN_ID/);
-  assert.doesNotMatch(await readFile(join(repoRoot, '.github/scripts/vercel-dev-authority-reconciliation.sh'), 'utf8'), /actions\/workflows\/ci\.yml\/runs\?/);
-  const steps = reconciliation.jobs.reconcile.steps;
-  const names = steps.map(({ name }) => name);
-  assert.ok(names.indexOf('Validate requested SHA, remote develop, and canonical CI') < names.indexOf('Install pinned Vercel CLI'));
-  assert.ok(names.indexOf('Install pinned Vercel CLI') < names.indexOf('Read-only reconciliation preflight'));
-  assert.ok(names.indexOf('Read-only reconciliation preflight') < names.indexOf('Upload durable reconciliation rollback contract'));
-  assert.ok(names.indexOf('Upload durable reconciliation rollback contract') < names.indexOf('Reconciliation promote (first mutation-capable step)'));
-  assert.ok(steps.every(({ uses }) => !uses || /@[0-9a-f]{40}/.test(uses)));
-  assert.ok(normal.jobs.promote.steps.filter(({ uses }) => uses).every(({ uses }) => /@[0-9a-f]{40}/.test(uses)));
-  assert.match(normal.jobs.promote.steps.find(({ name }) => name === 'Install pinned Vercel CLI').run, /vercel@52\.0\.0/);
-  const runBlocks = steps.filter(({ run }) => typeof run === 'string').map(({ run }) => run.replace(/\$\{\{[\s\S]*?\}\}/g, 'VALUE'));
-  await execFileAsync('bash', ['-n', '.github/scripts/vercel-dev-authority-reconciliation.sh']);
-  await execFileAsync('bash', ['-n', '-c', runBlocks.join('\n')]);
-  assert.match(await readFile(join(repoRoot, '.github/scripts/vercel-dev-authority-reconciliation.sh'), 'utf8'), /api_post/);
-  const reconciliationSource = await readFile(join(repoRoot, '.github/scripts/vercel-dev-authority-reconciliation.sh'), 'utf8');
-  assert.doesNotMatch(reconciliationSource, /vercel alias set[^\n]*(wiki\.rayer\.idv\.tw|llm-wiki-frontend\.vercel\.app)/);
+test('DEV authority uses the fixed shared CD entry', async () => {
+  const source = parseYaml(await readFile(join(monorepoRoot, '.github/workflows/deploy-dev.yml'), 'utf8'));
+  assert.equal(source.on.push, undefined);
+  assert.deepEqual(Object.keys(source.on.workflow_dispatch.inputs), ['components']);
+  assert.equal(source.jobs.deploy.with.environment, 'Development');
+  assert.equal(source.jobs.deploy.with.config_path, 'deploy/environments/development.yaml');
+  assert.equal(source.jobs.deploy.with.source_ref, 'develop');
+  assert.match(await readFile(join(monorepoRoot, 'deploy/cd.sh'), 'utf8'), /promote_frontend/);
 });
 
 test('sourcing the normal helper is library-only and preserves direct evidence naming', async () => {

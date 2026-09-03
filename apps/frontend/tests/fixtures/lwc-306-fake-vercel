@@ -1,0 +1,28 @@
+#!/usr/bin/env bash
+set -eu
+root="$FIXTURE_ROOT"
+scenario="$(<"$root/scenario")"
+args="$*"
+args="${args//vercel-fixture-token/[REDACTED]}"
+printf 'vercel %s\n' "$args" >> "$root/cli-calls"
+case "${1:-}" in
+  pull)
+    [[ -f "$root/npm-ci" ]] || exit 91
+    [[ "$*" == *"--environment=preview"* || "$*" == *"--environment=production"* ]] || exit 92
+    touch "$root/vercel-pull"
+    ;;
+  build)
+    [[ -f "$root/vercel-pull" ]] || exit 93
+    touch "$root/vercel-build"
+    ;;
+  deploy)
+    [[ -f "$root/vercel-build" && "$*" == *"--prebuilt"* ]] || exit 94
+    [[ "$scenario" != deploy-timeout ]] || exit 28
+    touch "$root/vercel-deployed"
+    printf '%s\n' '{"id":"dpl_frontendnew","url":"frontend-hash.vercel.app"}'
+    ;;
+  *)
+    printf 'unexpected Vercel command\n' >&2
+    exit 90
+    ;;
+esac

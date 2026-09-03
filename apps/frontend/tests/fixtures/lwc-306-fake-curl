@@ -1,0 +1,88 @@
+#!/usr/bin/env bash
+set -eu
+root="$FIXTURE_ROOT"
+scenario="$(<"$root/scenario")"
+base="${VERCEL_API_BASE_URL:-https://api.vercel.com}"
+url=''; method=GET; body=''; output=''; write_out=''; auth=''
+while [[ "$#" -gt 0 ]]; do
+  case "$1" in
+    -X|--request) method="$2"; shift 2 ;;
+    -H|--header)
+      [[ "${2:-}" == Authorization:* ]] && auth="$2"
+      shift 2 ;;
+    --data) body="$2"; shift 2 ;;
+    -o|--output) output="$2"; shift 2 ;;
+    -w|--write-out) write_out="$2"; shift 2 ;;
+    http://*|https://*) url="$1"; shift ;;
+    *) shift ;;
+  esac
+done
+[[ -n "$url" ]] || exit 1
+printf '%s\n' "$url" >> "$root/curl-calls"
+[[ -n "$auth" ]] && printf 'AUTH=present\n' >> "$root/auth-events" || printf 'AUTH=missing\n' >> "$root/auth-events"
+
+write_response() {
+  local response="$1" status="$2"
+  [[ -z "$output" ]] || printf '%s' "$response" > "$output"
+  [[ "$write_out" != '%{http_code}' ]] || printf '%s' "$status"
+}
+
+if [[ "$url" == "$base"/* && "$auth" != "Authorization: Bearer ${VERCEL_TOKEN:-}" ]]; then
+  exit 97
+fi
+
+if [[ "$url" == *'/v9/projects/'* ]]; then
+  if [[ "$scenario" == project-mismatch ]]; then
+    jq '.id = "prj_other"' "$root/project.json"
+  else
+    cat "$root/project.json"
+  fi
+  exit 0
+fi
+
+if [[ "$method" == POST && "$url" == *'/v2/deployments/'*'/aliases'* ]]; then
+  printf '%s\t%s\t%s\n' "$method" "$url" "$body" >> "$root/alias-post-calls"
+  call_number=$(( $(wc -l < "$root/alias-post-calls") ))
+  alias=$(jq -er '.alias' <<<"$body")
+  deployment=${url#*'/v2/deployments/'}
+  deployment=${deployment%%'/aliases'*}
+  if [[ "$scenario" == timeout-target && "$call_number" == 1 ]]; then
+    jq --arg alias "$alias" --arg deployment "$deployment" '.[$alias] = $deployment' "$root/aliases.json" > "$root/aliases.json.tmp"
+    mv "$root/aliases.json.tmp" "$root/aliases.json"
+    exit 28
+  fi
+  if [[ "$scenario" == second-timeout-old && "$call_number" == 2 ]]; then
+    exit 28
+  fi
+  jq --arg alias "$alias" --arg deployment "$deployment" '.[$alias] = $deployment' "$root/aliases.json" > "$root/aliases.json.tmp"
+  mv "$root/aliases.json.tmp" "$root/aliases.json"
+  write_response "{\"alias\":\"$alias\",\"uid\":\"uid_$call_number\",\"created\":\"2026-09-04T00:00:00Z\"}" 200
+  exit 0
+fi
+
+if [[ "$url" == *'/v4/aliases/'* ]]; then
+  alias_path=${url#*'/v4/aliases/'}
+  alias_path=${alias_path%%\?*}
+  deployment=$(jq -er --arg alias "$alias_path" '.[$alias]' "$root/aliases.json")
+  if [[ "$scenario" == alias-project-mismatch ]]; then
+    printf '{"alias":"%s","projectId":"prj_other","deploymentId":"%s"}' "$alias_path" "$deployment"
+  elif [[ "$scenario" == wrong-readback && -f "$root/vercel-deployed" && "$alias_path" == wiki.dev.rayer.idv.tw ]]; then
+    printf '{"alias":"%s","projectId":"prj_frontendtest","deploymentId":"dpl_wrong"}' "$alias_path"
+  else
+    printf '{"alias":"%s","projectId":"prj_frontendtest","deploymentId":"%s"}' "$alias_path" "$deployment"
+  fi
+  exit 0
+fi
+
+if [[ "$url" == *'/v4/aliases?'* ]]; then
+  jq '{aliases: [to_entries[] | {alias:.key,projectId:"prj_frontendtest",teamId:"team_frontendtest",deploymentId:.value}]}' "$root/aliases.json"
+  exit 0
+fi
+
+if [[ "$url" == *'/v13/deployments/'* ]]; then
+  cat "$root/deployment.json"
+  exit 0
+fi
+
+printf 'unexpected fake REST URL\n' >&2
+exit 1
