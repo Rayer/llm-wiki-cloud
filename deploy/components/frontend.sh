@@ -44,6 +44,7 @@ vercel_get_deployment_inventory() {
     strict_json <<<"$response" || return 1
     page=$(jq -ce 'if type != "object" or (.deployments|type) != "array" then error("deployment inventory is not an array") else .deployments end' <<<"$response") || return 1
     inventory=$(jq -cn --argjson current "$inventory" --argjson page "$page" '$current + $page')
+    if [[ "$(jq -er 'length' <<<"$page")" == 100 ]]; then jq -e '.pagination|type == "object" and has("next")' <<<"$response" >/dev/null || return 1; fi
     next=$(jq -r 'if (.pagination|type) != "object" or .pagination.next == null then "" elif (.pagination.next|type) == "string" and length > 0 then .pagination.next elif (.pagination.next|type) == "number" and isfinite and floor == . and . >= 0 then (.pagination.next|tostring) else "__invalid__" end' <<<"$response")
     [[ "$next" != __invalid__ ]] || return 1
     if [[ -z "$next" ]]; then jq -cn --argjson deployments "$inventory" '{deployments:$deployments}'; return 0; fi
@@ -63,6 +64,7 @@ vercel_get_alias_inventory() {
     jq -e 'all(.[]; type == "object" and (.alias|type) == "string" and (.projectId|type) == "string" and ((.deploymentId // .deployment_id)|type) == "string" and ((.deploymentId // .deployment_id)|startswith("dpl_")))' <<<"$page" >/dev/null || return 1
     page=$(jq -c 'map({alias,project_id:.projectId,team_id:(.teamId // .accountId // .ownerId // null),deployment_id:(.deploymentId // .deployment_id)})' <<<"$page")
     inventory=$(jq -cn --argjson current "$inventory" --argjson page "$page" '$current + $page')
+    if [[ "$(jq -er 'length' <<<"$page")" == 100 ]]; then jq -e '.pagination|type == "object" and has("next")' <<<"$response" >/dev/null || return 1; fi
     next=$(jq -r 'if (has("pagination")|not) or .pagination.next == null then "" elif (.pagination.next|type) == "number" and isfinite and floor == . and . >= 0 then (.pagination.next|tostring) else "__invalid__" end' <<<"$response")
     [[ "$next" != __invalid__ ]] || return 1
     if [[ -z "$next" ]]; then jq -cn --argjson aliases "$inventory" '{aliases:$aliases}'; return 0; fi
@@ -103,8 +105,22 @@ frontend_vercel_environment() { [[ "$ENVIRONMENT" == production ]] && printf 'pr
 frontend_deploy_target() { [[ "$ENVIRONMENT" == production ]] && printf 'production\n' || printf 'preview\n'; }
 frontend_deployment_path() { printf '%s/frontend-deployment.json\n' "$ARTIFACT_DIR"; }
 
+vercel_canonical_deployment_url() {
+  local value="$1" host
+  case "$value" in
+    https://*) host="${value#https://}" ;;
+    http://*) return 1 ;;
+    *) host="$value" ;;
+  esac
+  [[ "$host" =~ ^[A-Za-z0-9][A-Za-z0-9.-]*\.vercel\.app$ ]] || return 1
+  printf 'https://%s\n' "$host"
+}
+
 vercel_validate_deployment() {
-  local response="$1" deployment_id="$2" deployment_url="$3"
+  local response="$1" deployment_id="$2" deployment_url="$3" response_url canonical_url
+  response_url=$(jq -er '.url // .deployment_url | select(type == "string" and length > 0)' <<<"$response") || return 1
+  canonical_url=$(vercel_canonical_deployment_url "$response_url") || return 1
+  [[ "$canonical_url" == "$deployment_url" ]] || return 1
   jq -e --arg id "$deployment_id" --arg url "$deployment_url" --arg project "$VERCEL_PROJECT_ID" --arg team "$VERCEL_TEAM_ID" --arg repository "$(plan_json '.frontend.repository')" --arg source_sha "$SOURCE_SHA" --arg source_ref "$SOURCE_REF" --arg target "$(frontend_deploy_target)" '
     def nonempty_string($value): ($value|type) == "string" and ($value|length) > 0;
     def ref_ok($value): nonempty_string($value) and ($value == $source_ref or $value == ("refs/heads/" + $source_ref));
@@ -114,7 +130,7 @@ vercel_validate_deployment() {
     .meta as $meta | .gitSource as $git |
     type == "object" and .id == $id and .projectId == $project and nonempty_string($actual_team) and $actual_team == $team and
     .readyState == "READY" and .target == $target and nonempty_string(.url) and
-    ((.url | if startswith("https://") then . elif startswith("http://") then . else "https://" + . end) == $url) and
+    nonempty_string(.url) and
     ((($git.sha == null) or sha_ok($git.sha)) and (($meta.githubCommitSha == null) or sha_ok($meta.githubCommitSha)) and (sha_ok($git.sha) or sha_ok($meta.githubCommitSha))) and
     ((($git.ref == null) or ref_ok($git.ref)) and (($meta.githubCommitRef == null) or ref_ok($meta.githubCommitRef)) and (ref_ok($git.ref) or ref_ok($meta.githubCommitRef))) and
     ((($meta.githubOrg == null and $meta.githubRepo == null) or repo_ok($meta.githubOrg; $meta.githubRepo)) and (($git.org == null and $git.repo == null) or repo_ok($git.org; $git.repo)) and (repo_ok($meta.githubOrg; $meta.githubRepo) or repo_ok($git.org; $git.repo)))
@@ -143,8 +159,8 @@ vercel_poll_deployment() {
   local deployment_id="$1" attempt response url
   for attempt in 1 2 3; do
     response=$(vercel_get_deployment "$deployment_id") || return 1
-    url=$(jq -er '.url | select(type == "string" and length > 0) | if startswith("https://") then . elif startswith("http://") then "https://" + .[7:] else "https://" + . end' <<<"$response") || url=''
-    if [[ -n "$url" ]] && vercel_validate_deployment "$response" "$deployment_id" "$url"; then
+    url=$(jq -er '.url | select(type == "string" and length > 0)' <<<"$response") || url=''
+    if [[ -n "$url" ]] && url=$(vercel_canonical_deployment_url "$url") && vercel_validate_deployment "$response" "$deployment_id" "$url"; then
       FRONTEND_DEPLOYMENT_JSON="$response"; FRONTEND_DEPLOYMENT_URL="$url"; return 0
     fi
     (( attempt < 3 )) && sleep 1
@@ -214,8 +230,7 @@ frontend_mutate() {
   else
     deployment_id=$(jq -er '.id // .deploymentId | select(type == "string" and startswith("dpl_"))' <<<"$deployment_json") || { journal_transition frontend unknown; die "frontend deployment ID is not immutable"; }
     deployment_url=$(jq -er '.url // .deployment_url | select(type == "string")' <<<"$deployment_json") || { journal_transition frontend unknown; die "frontend deployment URL is missing"; }
-    case "$deployment_url" in http://*) die "frontend deployment URL must use HTTPS";; https://*) ;; *) deployment_url="https://$deployment_url";; esac
-    [[ "$deployment_url" =~ ^https://[A-Za-z0-9][A-Za-z0-9.-]*\.vercel\.app$ ]] || { journal_transition frontend unknown; die "frontend deployment URL is not an immutable Vercel URL"; }
+    deployment_url=$(vercel_canonical_deployment_url "$deployment_url") || { journal_transition frontend unknown; die "frontend deployment URL is not an immutable Vercel URL"; }
     vercel_validate_deployment "$(vercel_get_deployment "$deployment_id")" "$deployment_id" "$deployment_url" || { journal_transition frontend unknown; die "frontend deployment read-back did not match exact source and authority"; }
   fi
   mutation_accepted frontend

@@ -99,7 +99,7 @@ revalidate_ci() {
   ci_validate_run "$current_attempt" "$SOURCE_SHA" "$SOURCE_REF" "$attempt_id" || die "pinned canonical CI attempt is not successful"
   current_jobs=$(gh_paginated_array "repos/${GITHUB_REPOSITORY}/actions/runs/${run_id}/attempts/${attempt_id}/jobs" jobs) || die "pinned canonical CI jobs are unreadable or partial"
   ci_validate_jobs "$current_jobs" "$run_id" "$attempt_id" || die "pinned canonical CI job set is incomplete or ambiguous"
-  jq -e --argjson expected "$(jq -c '.ci.jobs' "$PLAN_PATH")" --argjson actual "$(jq -c 'map({id,name,status,conclusion,run_id,run_attempt})|sort_by(.name)' <<<"$current_jobs")" '$expected == $actual' >/dev/null || die "pinned canonical CI job set changed"
+  jq -n -e --argjson expected "$(jq -c '.ci.jobs' "$PLAN_PATH")" --argjson actual "$(jq -c 'map({id,name,status,conclusion,run_id,run_attempt})|sort_by(.name)' <<<"$current_jobs")" '$expected == $actual' >/dev/null || die "pinned canonical CI job set changed"
 }
 
 revalidate_before_provider() {
@@ -255,6 +255,7 @@ journal_possible_components() {
   jq -r '. as $journal | ($journal.order | reverse[]) as $component | select($journal.components[$component].state == "accepted" or $journal.components[$component].state == "pending" or $journal.components[$component].state == "unknown") | $component' "$JOURNAL_PATH"
 }
 journal_possible_count() { jq -er '[.order[] as $component | select(.components[$component].state == "accepted" or .components[$component].state == "pending" or .components[$component].state == "unknown")] | length' "$JOURNAL_PATH"; }
+journal_mutation_components() { jq -c '[.order[] as $component | select(any(.components[$component].history[]?; . == "accepted" or . == "pending" or . == "unknown")) | $component]' "$JOURNAL_PATH"; }
 journal_has_rollback_terminal() { jq -e '[. as $journal | $journal.order[] as $component | select($journal.components[$component].state == "rollback_accepted" or $journal.components[$component].state == "rollback_failed" or $journal.components[$component].state == "rollback_unknown")] | length > 0' "$JOURNAL_PATH" >/dev/null; }
 
 freeze_store() {
@@ -418,6 +419,21 @@ normalize_service_readback() {
     (if $component == "auth" then {JWT_SECRET:($secrets.JWT_SECRET // {secret:null,version:null,plaintext:false})} else {JWT_SECRET:($secrets.JWT_SECRET // {secret:null,version:null,plaintext:false}),DEEPSEEK_API_KEY:($secrets.DEEPSEEK_API_KEY // {secret:null,version:null,plaintext:false})} end) as $secret_refs |
     (interfaces[0]) as $interface |
     ({component:$component,service_name:$service_name,revision:$revision,revision_name:$revision_name,image:($revision_json.status.imageDigest // ($revision_container.image // null)),service_account:$account,runtime_service_account:$account,env:$env,secret_references:$secret_refs,container:{command:$revision_shape.command,args:$revision_shape.args,resources:$revision_shape.resources,volume_mounts:$revision_shape.volume_mounts,working_dir:$revision_shape.working_dir,ports:$revision_shape.ports,execution_controls:{container_concurrency:($service.spec.template.containerConcurrency // $service.spec.containerConcurrency // null),timeout_seconds:(revision_spec.timeoutSeconds // revision_spec.template.spec.timeoutSeconds // null),execution_environment:(annotations["run.googleapis.com/execution-environment"] // null),cpu_boost:(annotations["run.googleapis.com/startup-cpu-boost"] // null)}},network:{network:$interface.network,subnet:($interface.subnetwork // $interface.subnet // null),vpc_egress:(annotations["run.googleapis.com/vpc-access-egress"] // $service.spec.template.vpcAccess.egress // null),ingress:($service.metadata.annotations["run.googleapis.com/ingress"] // $service.spec.ingress // "all"),max_instances:max_instances},traffic:traffic,component_config:(if $component == "auth" then {firestore_database_id:$values.FIRESTORE_DATABASE_ID,allowed_origins:($values.ALLOWED_ORIGINS|if . == null then null else split(",") end),allowed_hosts:($values.ALLOWED_HOSTS|if . == null then null else split(",") end)} else {bucket:$values.BUCKET,firestore_database_id:$values.FIRESTORE_DATABASE_ID,pipeline_job_url:$values.PIPELINE_JOB_URL,allowed_origins:($values.ALLOWED_ORIGINS|if . == null then null else split(",") end),auth_service_url:$values.AUTH_SERVICE_URL,query_config:{runtime_path:$values.QUERY_STAGE_CONFIG_PATH}} end)} + (if ($legacy_names|length) > 0 then {legacy_preserved:($service_shape.env.legacy|to_entries|map({name:.key,value:.value})|sort_by(.name))} else {} end))'
+}
+
+service_frozen_readback() {
+  local component="$1" allow_legacy="${2:-0}" project region service service_json traffic revision revision_json image observed expected
+  [[ "$component" == auth || "$component" == bff ]] || return 1
+  project=$(plan_json '.gcp.project_id'); region=$(plan_json '.gcp.region'); service=$(plan_json ".${component}.service_name")
+  service_json=$(gcloud run services describe "$service" --project "$project" --region "$region" --format=json --quiet) || return 1
+  traffic=$(jq -ce 'if (.status.traffic|type) != "array" or (.status.traffic|length) != 1 or .status.traffic[0].percent != 100 or (.status.traffic[0].revisionName|type) != "string" or (.status.traffic[0].tag? != null) then error("service traffic is not one untagged 100-percent revision") else .status.traffic[0] end' <<<"$service_json") || return 1
+  revision=$(jq -er '.revisionName' <<<"$traffic") || return 1
+  revision_json=$(gcloud run revisions describe "$revision" --project "$project" --region "$region" --format=json --quiet) || return 1
+  image=$(jq -er '.status.imageDigest | select(type == "string" and test("@sha256:"))' <<<"$revision_json") || return 1
+  observed=$(normalize_service_readback "$component" "$service_json" "$revision_json" "$revision" "$image" "$allow_legacy") || return 1
+  expected=$(jq -ce --arg component "$component" '.handles[$component].readback' "$ROLLBACK_PATH") || return 1
+  jq -n -e --argjson expected "$expected" --argjson observed "$observed" '$expected == $observed' >/dev/null || return 1
+  printf '%s\n' "$observed"
 }
 
 normalize_worker_definition() {

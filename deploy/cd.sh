@@ -80,7 +80,7 @@ aggregate_reconcile() {
   need JOURNAL_PATH
   need ARTIFACT_DIR
   journal_init
-  local selected component result='success' verified=true rows='[]' file
+  local selected component result='success' verified=true rows='[]' file mutation_components mutation_count
   selected=$(plan_json '.selected_components')
   while IFS= read -r component; do
     file=$(component_result_path "$component")
@@ -92,7 +92,9 @@ aggregate_reconcile() {
     rows=$(jq --argjson item "$(cat "$file")" '. + [$item + {verified:($item.result == "success")}]' <<<"$rows")
     if [[ "$(jq -r '.result' "$file")" != success ]]; then result=unknown; verified=false; fi
   done < <(jq -r '.[]' <<<"$selected")
-  jq -n --arg result "$result" --argjson verified "$verified" --argjson provider_readback "$verified" --argjson components "$rows" '{schema:"lwc-306-readback-v1",result:$result,verified:$verified,provider_readback:$provider_readback,components:$components}' > "$EVIDENCE_PATH"
+  mutation_components=$(journal_mutation_components); mutation_count=$(jq -er 'length' <<<"$mutation_components")
+  [[ "$result" == success || "$mutation_count" -eq 0 ]] || result=partial
+  jq -n --arg result "$result" --argjson verified "$verified" --argjson provider_readback "$verified" --argjson components "$rows" --argjson mutation_count "$mutation_count" --argjson mutation_components "$mutation_components" '{schema:"lwc-306-readback-v1",result:$result,verified:$verified,provider_readback:$provider_readback,mutation_count:$mutation_count,mutation_components:$mutation_components,components:$components}' > "$EVIDENCE_PATH"
   [[ "$result" == success ]]
 }
 
@@ -161,7 +163,7 @@ evidence() {
     render_failed=1; possible_count=1; mutation_components='[]'; mutation_count=1
   else
     possible_count=$(journal_possible_count)
-    mutation_components=$(jq -c '[.order[] as $component | select(.components[$component].state == "accepted" or .components[$component].state == "pending" or .components[$component].state == "unknown") | $component]' <<<"$journal")
+    mutation_components=$(journal_mutation_components)
     mutation_count=$(jq -er 'length' <<<"$mutation_components")
   fi
   aggregate=$(cat "$EVIDENCE_PATH" 2>/dev/null || printf '{}')

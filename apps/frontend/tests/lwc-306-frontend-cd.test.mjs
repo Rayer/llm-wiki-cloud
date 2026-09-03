@@ -129,6 +129,13 @@ test('freezes exact project and alias authority before any REST mutation', async
   }
 });
 
+test('rejects a full alias page without authoritative pagination metadata', async () => {
+  const fixture = await setup('development', 'alias-full-missing-pagination');
+  const result = await run(fixture, 'freeze');
+  assert.notEqual(result.code, undefined);
+  assert.equal((await lines(join(fixture.root, 'alias-post-calls'))).length, 0);
+});
+
 test('exact wrong-target read-back fails closed without retrying the alias mutation', async () => {
   const fixture = await setup('development', 'wrong-readback');
   assert.equal((await run(fixture, 'freeze')).code, undefined);
@@ -157,6 +164,37 @@ test('reconciles a deployment timeout through one exact project inventory candid
   assert.equal(calls.filter((line) => line.startsWith('vercel deploy ')).length, 1);
   assert.equal((await json(join(fixture.artifactDir, 'journal.json'))).components.frontend.state, 'accepted');
   assert.ok((await lines(join(fixture.root, 'curl-calls'))).some((line) => line.includes('/v6/deployments?')));
+});
+
+test('rejects a full deployment page without authoritative pagination metadata', async () => {
+  const fixture = await setup('development', 'deploy-timeout-full-missing-pagination');
+  assert.equal((await run(fixture, 'freeze')).code, undefined);
+  const result = await run(fixture, 'mutate');
+  assert.notEqual(result.code, undefined);
+  assert.equal((await json(join(fixture.artifactDir, 'journal.json'))).components.frontend.state, 'unknown');
+  assert.equal((await lines(join(fixture.root, 'cli-calls'))).filter((line) => line.startsWith('vercel deploy ')).length, 1);
+});
+
+test('rejects an arbitrary deployment host after timeout reconciliation', async () => {
+  const fixture = await setup('development', 'deploy-timeout-arbitrary-host');
+  assert.equal((await run(fixture, 'freeze')).code, undefined);
+  const result = await run(fixture, 'mutate');
+  assert.notEqual(result.code, undefined);
+  assert.equal((await json(join(fixture.artifactDir, 'journal.json'))).components.frontend.state, 'unknown');
+});
+
+test('accepts the canonical deployment host after timeout reconciliation', async () => {
+  const fixture = await setup('development', 'deploy-timeout-canonical-host');
+  assert.equal((await run(fixture, 'freeze')).code, undefined);
+  const result = await run(fixture, 'mutate');
+  assert.equal(result.code, undefined, result.stderr);
+  assert.equal((await json(join(fixture.artifactDir, 'frontend-deployment.json'))).deployment_url, 'https://frontend-hash.vercel.app');
+});
+
+test('accepts a short terminal alias page without pagination metadata', async () => {
+  const fixture = await setup('development', 'alias-terminal-short-missing-pagination');
+  const result = await run(fixture, 'freeze');
+  assert.equal(result.code, undefined, result.stderr);
 });
 
 for (const scenario of ['deploy-timeout-absent', 'deploy-timeout-duplicate', 'deploy-timeout-conflicting']) {

@@ -75,7 +75,11 @@ if [[ "$url" == *'/v4/aliases/'* ]]; then
 fi
 
 if [[ "$url" == *'/v4/aliases?'* ]]; then
-  jq '{aliases: [to_entries[] | {alias:.key,projectId:"prj_frontendtest",teamId:"team_frontendtest",deploymentId:.value}]}' "$root/aliases.json"
+  if [[ "$scenario" == alias-full-missing-pagination ]]; then
+    jq -n '[{alias:"wiki.dev.rayer.idv.tw",projectId:"prj_frontendtest",teamId:"team_frontendtest",deploymentId:"dpl_old0"}] + [range(0;99) | {alias:("filler-" + tostring + ".vercel.app"),projectId:"prj_frontendtest",teamId:"team_frontendtest",deploymentId:("dpl_filler" + tostring)}] | {aliases:.}'
+  else
+    jq '{aliases: [to_entries[] | {alias:.key,projectId:"prj_frontendtest",teamId:"team_frontendtest",deploymentId:.value}]}' "$root/aliases.json"
+  fi
   exit 0
 fi
 
@@ -85,13 +89,16 @@ if [[ "$url" == *'/v6/deployments?'* ]]; then
     deploy-timeout-absent) printf '{"deployments":[],"pagination":{"next":null}}' ;;
     deploy-timeout-duplicate) printf '{"deployments":[%s,%s],"pagination":{"next":null}}' "$deployment" "$deployment" ;;
     deploy-timeout-conflicting) deployment=$(jq '.target="production"' <<<"$deployment"); printf '{"deployments":[%s],"pagination":{"next":null}}' "$deployment" ;;
+    deploy-timeout-full-missing-pagination) jq -n --argjson deployment "$deployment" '{deployments:([$deployment] + [range(0;99) | {id:("dpl_filler" + tostring),projectId:"prj_frontendtest",accountId:"team_frontendtest",readyState:"READY",target:"preview",url:("filler-" + tostring + ".vercel.app")}])}' ;;
+    deploy-timeout-arbitrary-host) deployment=$(jq '.url="evil.example"' <<<"$deployment"); printf '{"deployments":[%s],"pagination":{"next":null}}' "$deployment" ;;
+    deploy-timeout-canonical-host) deployment=$(jq '.url="https://frontend-hash.vercel.app"' <<<"$deployment"); printf '{"deployments":[%s],"pagination":{"next":null}}' "$deployment" ;;
     *) printf '{"deployments":[%s],"pagination":{"next":null}}' "$deployment" ;;
   esac
   exit 0
 fi
 
 if [[ "$url" == *'/v13/deployments/'* ]]; then
-  cat "$root/deployment.json"
+  if [[ "$scenario" == deploy-timeout-arbitrary-host ]]; then jq '.url="evil.example"' "$root/deployment.json"; elif [[ "$scenario" == deploy-timeout-canonical-host ]]; then jq '.url="https://frontend-hash.vercel.app"' "$root/deployment.json"; else cat "$root/deployment.json"; fi
   exit 0
 fi
 

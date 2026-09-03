@@ -50,16 +50,18 @@ bff_mutate() {
   fi
   if [[ "$ENVIRONMENT" == development ]]; then
     revalidate_before_provider
+    journal_pending bff
     if ! image=$(bff_build_image); then
-      journal_rejected bff
+      journal_transition bff unknown
       write_component_result bff failed '{}' image_build_failed
       return 1
     fi
+    mutation_accepted bff
     mkdir -p "$ARTIFACT_DIR/images"
     printf '%s\n' "$image" > "$ARTIFACT_DIR/images/bff-image-$SOURCE_SHA.txt"
   fi
   revalidate_before_provider
-  journal_pending bff
+  if ! jq -e '.components.bff? != null' "$JOURNAL_PATH" >/dev/null; then journal_pending bff; fi
   service=$(plan_json '.bff.service_name'); account=$(plan_json '.bff.runtime_service_account'); project=$(plan_json '.gcp.project_id'); region=$(plan_json '.gcp.region')
   origins=$(join_config_list '.bff.allowed_origins')
   secrets="JWT_SECRET=$(plan_json '.bff.secret_references.jwt'):latest,DEEPSEEK_API_KEY=$(plan_json '.bff.secret_references.deepseek_api_key'):latest"
@@ -84,7 +86,7 @@ bff_mutate() {
       die "bff provider command failed and exact desired definition was not read back"
     fi
   fi
-  mutation_accepted bff
+  [[ "$ENVIRONMENT" == production ]] && mutation_accepted bff
   if [[ "$ENVIRONMENT" == production ]]; then
     revalidate_before_provider
     if ! timeout --signal=TERM --kill-after=5s 240s gcloud run services update-traffic "$service" --to-revisions "$revision=100" --project "$project" --region "$region" --quiet >/dev/null; then
@@ -124,6 +126,10 @@ bff_rollback() {
   image=$(jq -er '.handles.bff.image' "$ROLLBACK_PATH") || { write_rollback_result bff failed '{}'; return 1; }
   expected=$(jq -cer '.handles.bff.readback' "$ROLLBACK_PATH") || { write_rollback_result bff failed '{}'; return 1; }
   project=$(plan_json '.gcp.project_id'); region=$(plan_json '.gcp.region'); service=$(plan_json '.bff.service_name')
+  if observed=$(service_frozen_readback bff 1); then
+    write_rollback_result bff success "$observed" verified_noop
+    return 0
+  fi
   timeout --signal=TERM --kill-after=5s 240s gcloud run services update-traffic "$service" --to-revisions "$revision=100" --project "$project" --region "$region" --quiet >/dev/null || :
   json=$(gcloud run services describe "$service" --project "$project" --region "$region" --format=json --quiet) || { write_rollback_result bff unknown '{}'; return 2; }
   revision_json=$(gcloud run revisions describe "$revision" --project "$project" --region "$region" --format=json --quiet) || { write_rollback_result bff unknown '{}'; return 2; }

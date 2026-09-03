@@ -49,16 +49,18 @@ auth_mutate() {
   fi
   if [[ "$ENVIRONMENT" == development ]]; then
     revalidate_before_provider
+    journal_pending auth
     if ! image=$(auth_build_image); then
-      journal_rejected auth
+      journal_transition auth unknown
       write_component_result auth failed '{}' image_build_failed
       return 1
     fi
+    mutation_accepted auth
     mkdir -p "$ARTIFACT_DIR/images"
     printf '%s\n' "$image" > "$ARTIFACT_DIR/images/auth-image-$SOURCE_SHA.txt"
   fi
   revalidate_before_provider
-  journal_pending auth
+  if ! jq -e '.components.auth? != null' "$JOURNAL_PATH" >/dev/null; then journal_pending auth; fi
   service=$(plan_json '.auth.service_name'); account=$(plan_json '.auth.runtime_service_account'); project=$(plan_json '.gcp.project_id'); region=$(plan_json '.gcp.region')
   origins=$(join_config_list '.auth.allowed_origins')
   secrets="JWT_SECRET=$(plan_json '.auth.secret_references.jwt'):latest"
@@ -82,7 +84,7 @@ auth_mutate() {
       die "auth provider command failed and exact desired definition was not read back"
     fi
   fi
-  mutation_accepted auth
+  [[ "$ENVIRONMENT" == production ]] && mutation_accepted auth
   auth_verify "$image" "$revision" || die "auth post-mutation read-back did not converge"
 }
 
@@ -119,6 +121,10 @@ auth_rollback() {
   image=$(jq -er '.handles.auth.image' "$ROLLBACK_PATH") || { write_rollback_result auth failed '{}'; return 1; }
   expected=$(jq -cer '.handles.auth.readback' "$ROLLBACK_PATH") || { write_rollback_result auth failed '{}'; return 1; }
   project=$(plan_json '.gcp.project_id'); region=$(plan_json '.gcp.region'); service=$(plan_json '.auth.service_name')
+  if observed=$(service_frozen_readback auth); then
+    write_rollback_result auth success "$observed" verified_noop
+    return 0
+  fi
   timeout --signal=TERM --kill-after=5s 240s gcloud run services update-traffic "$service" --to-revisions "$revision=100" --project "$project" --region "$region" --quiet >/dev/null || :
   json=$(gcloud run services describe "$service" --project "$project" --region "$region" --format=json --quiet) || { write_rollback_result auth unknown '{}'; return 2; }
   revision_json=$(gcloud run revisions describe "$revision" --project "$project" --region "$region" --format=json --quiet) || { write_rollback_result auth unknown '{}'; return 2; }

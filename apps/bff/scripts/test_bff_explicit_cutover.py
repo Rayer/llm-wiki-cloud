@@ -163,8 +163,9 @@ class SharedCDContractTest(unittest.TestCase):
             result = subprocess.run(["bash", str(REPO_ROOT / "deploy/cd.sh"), "reconcile"], env=env, capture_output=True, text=True)
             self.assertNotEqual(result.returncode, 0)
             readback = json.loads((directory / "artifacts" / "readback.json").read_text())
-            self.assertEqual(readback["result"], "unknown")
-            self.assertEqual(readback["components"][0]["component"], "bff")
+            self.assertEqual(readback["result"], "partial")
+            self.assertEqual(readback["mutation_count"], 1)
+            self.assertEqual(readback["mutation_components"], ["bff"])
             self.assertFalse(readback["provider_readback"])
         finally:
             shutil.rmtree(directory, ignore_errors=True)

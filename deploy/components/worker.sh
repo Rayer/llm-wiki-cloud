@@ -59,18 +59,20 @@ worker_mutate() {
   fi
   if [[ "$ENVIRONMENT" == development ]]; then
     revalidate_before_provider
+    journal_pending worker
     if ! image=$(worker_build_image); then
-      journal_rejected worker
+      journal_transition worker unknown
       write_component_result worker failed '{}' image_build_failed
       return 1
     fi
+    mutation_accepted worker
     mkdir -p "$ARTIFACT_DIR/images"
     printf '%s\n' "$image" > "$ARTIFACT_DIR/images/worker-image-$SOURCE_SHA.txt"
   fi
   job=$(plan_json '.worker.job_name'); bucket=$(plan_json '.worker.bucket'); args=$(plan_json '.worker.args | join("@")'); secret=$(plan_json '.worker.secret_references.deepseek_api_key'); account=$(plan_json '.worker.runtime_service_account')
-  revalidate_before_provider
   if [[ -n "${ROLLBACK_PATH:-}" && -s "$ROLLBACK_PATH" ]]; then worker_concurrency_guard; fi
-  journal_pending worker
+  revalidate_before_provider
+  if ! jq -e '.components.worker? != null' "$JOURNAL_PATH" >/dev/null; then journal_pending worker; fi
   if timeout --signal=TERM --kill-after=5s 600s gcloud run jobs update "$job" --project "$(plan_json '.gcp.project_id')" --region "$(plan_json '.worker.location')" --service-account "$account" --image "$image" --update-secrets "DEEPSEEK_API_KEY=$secret:latest" --update-env-vars "BUCKET=$bucket,PIPELINE_JOB_NAME=$job,PIPELINE_JOB_LOCATION=$(plan_json '.worker.location')" --remove-env-vars "DATA_DIR,WORKSPACE,VAULT_PATH,WORKSPACE_DIR" --args "^@^$args" --clear-volume-mounts --clear-volumes --quiet >/dev/null; then :; else update_status=$?; fi
   if [[ "$update_status" -ne 0 ]]; then
     if ! worker_verify "$image"; then
@@ -78,7 +80,7 @@ worker_mutate() {
       die "Worker provider command failed and exact desired definition was not read back (status=$update_status)"
     fi
   fi
-  mutation_accepted worker
+  [[ "$ENVIRONMENT" == production ]] && mutation_accepted worker
   worker_verify "$image" || die "worker post-mutation read-back did not converge"
 }
 
@@ -106,6 +108,10 @@ worker_rollback() {
   definition=$(jq -cer '.handles.worker.definition' "$ROLLBACK_PATH") || { write_rollback_result worker failed '{}'; return 1; }
   expected=$(jq -cer '.handles.worker.readback' "$ROLLBACK_PATH") || { write_rollback_result worker failed '{}'; return 1; }
   project=$(plan_json '.gcp.project_id'); region=$(jq -er '.handles.worker.location' "$ROLLBACK_PATH"); job=$(plan_json '.worker.job_name')
+  if observed=$(worker_frozen_readback); then
+    write_rollback_result worker success "$observed" verified_noop
+    return 0
+  fi
   mkdir -p "$ARTIFACT_DIR"
   path=$(mktemp "$ARTIFACT_DIR/worker-rollback-definition.XXXXXX")
   printf '%s\n' "$definition" > "$path"
@@ -119,6 +125,20 @@ worker_rollback() {
   else
     write_rollback_result worker failed "$(jq -n --argjson behavior "$observed" --argjson provider_state "$provider_state" '{behavior:$behavior,provider_state:$provider_state}')"; return 1
   fi
+}
+
+worker_frozen_readback() {
+  local project region job expected expected_state job_json definition behavior provider_state current
+  expected=$(jq -cer '.handles.worker.readback' "$ROLLBACK_PATH") || return 1
+  expected_state=$(jq -cer '.handles.worker.provider_state' "$ROLLBACK_PATH") || return 1
+  project=$(plan_json '.gcp.project_id'); region=$(jq -er '.handles.worker.location' "$ROLLBACK_PATH"); job=$(plan_json '.worker.job_name')
+  job_json=$(gcloud run jobs describe "$job" --project "$project" --region "$region" --format=json --quiet) || return 1
+  definition=$(normalize_worker_definition <<<"$job_json") || return 1
+  behavior=$(normalize_worker_readback "$definition") || return 1
+  provider_state=$(worker_provider_state "$job_json") || return 1
+  current=$(jq -n --argjson behavior "$behavior" --argjson provider_state "$provider_state" '{behavior:$behavior,provider_state:$provider_state}')
+  jq -n -e --argjson expected "$expected" --argjson expected_state "$expected_state" --argjson current "$current" '$current == {behavior:$expected,provider_state:$expected_state}' >/dev/null || return 1
+  printf '%s\n' "$current"
 }
 
 case "${1:-}" in

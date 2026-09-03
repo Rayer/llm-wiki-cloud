@@ -202,6 +202,191 @@ class CDContractTests(unittest.TestCase):
             self.assertFalse(provider_log.exists())
             self.assertEqual(json.loads((artifact_dir / "rollback-result.json").read_text())["result"], "not_needed")
 
+    def test_backend_image_acceptance_is_journaled_before_runtime_revalidation(self):
+        source_sha = "0123456789abcdef0123456789abcdef01234567"
+        image = "asia-east1-docker.pkg.dev/llm-wiki-cloud/cloud-run-images/olw-pipeline@sha256:" + "b" * 64
+        old_image = "asia-east1-docker.pkg.dev/llm-wiki-cloud/cloud-run-images/olw-pipeline@sha256:" + "a" * 64
+        definition = {
+            "apiVersion": "run.googleapis.com/v1",
+            "kind": "Job",
+            "metadata": {"name": "olw-pipeline", "generation": 9, "etag": "etag-9"},
+            "spec": {"template": {"spec": {"template": {"spec": {
+                "serviceAccountName": "worker@llm-wiki-cloud.iam.gserviceaccount.com",
+                "containers": [{"image": old_image, "env": [
+                    {"name": "BUCKET", "value": "bucket"},
+                    {"name": "PIPELINE_JOB_NAME", "value": "olw-pipeline"},
+                    {"name": "PIPELINE_JOB_LOCATION", "value": "asia-east1"},
+                    {"name": "DEEPSEEK_API_KEY", "valueFrom": {"secretKeyRef": {"name": "deepseek-apikey", "key": "latest"}}},
+                ], "args": ["run", "--auto-approve"]}],
+            }}}}},
+        }
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            bin_dir = root / "bin"
+            bin_dir.mkdir()
+            state = root / "job.json"
+            state.write_text(json.dumps(definition))
+            revparse_count = root / "revparse-count"
+            plan = root / "plan.json"
+            ci_jobs = [
+                {"id": index + 1, "name": name, "run_id": 1, "run_attempt": 1, "status": "completed", "conclusion": "success"}
+                for index, name in enumerate(sorted(["bff", "frontend-build", "local-vertical-smoke", "workflow-source", "canonical-ci"]))
+            ]
+            plan.write_text(json.dumps({
+                "ci": {"run_id": 1, "run_attempt": 1, "workflow_path": ".github/workflows/ci.yml", "event": "push", "head_branch": "develop", "head_sha": source_sha, "conclusion": "success", "jobs": ci_jobs},
+                "normalized": {
+                    "selected_components": ["worker"],
+                    "gcp": {"project_id": "llm-wiki-cloud", "artifact_registry": "asia-east1-docker.pkg.dev/llm-wiki-cloud/cloud-run-images"},
+                    "worker": {"job_name": "olw-pipeline", "location": "asia-east1", "runtime_service_account": "worker@llm-wiki-cloud.iam.gserviceaccount.com", "bucket": "bucket", "args": ["run", "--auto-approve"], "secret_references": {"deepseek_api_key": "deepseek-apikey"}},
+                    "evidence": {"config_fingerprint": "sha256:fixture"},
+                },
+            }))
+            provider_log = root / "gcloud.log"
+            docker_log = root / "docker.log"
+            (bin_dir / "git").write_text(textwrap.dedent(f"""
+                #!/usr/bin/env bash
+                if [[ $1 == fetch ]]; then exit 0; fi
+                if [[ $1 == rev-parse ]]; then
+                  count=0; [[ -f {str(revparse_count)!r} ]] && count=$(<{str(revparse_count)!r})
+                  count=$((count + 1)); printf '%s' "$count" > {str(revparse_count)!r}
+                  (( count >= 3 )) && printf '%s\\n' {'f' * 40} || printf '%s\\n' {source_sha}
+                  exit 0
+                fi
+                exit 2
+            """).lstrip())
+            (bin_dir / "git").chmod(0o755)
+            (bin_dir / "gh").write_text(textwrap.dedent(f"""
+                #!/usr/bin/env python3
+                import json, os, sys
+                endpoint = sys.argv[-1]
+                run = {{"id": 1, "run_attempt": 1, "path": ".github/workflows/ci.yml", "event": "push", "head_branch": "develop", "head_sha": {source_sha!r}, "status": "completed", "conclusion": "success"}}
+                jobs = json.dumps({{"jobs": json.load(open(os.environ["FAKE_PLAN"]))["ci"]["jobs"]}})
+                if endpoint.endswith("/runs/1") or endpoint.endswith("/attempts/1"):
+                    print(json.dumps(run))
+                elif "/attempts/1/jobs" in endpoint:
+                    print(jobs)
+                else:
+                    raise SystemExit(2)
+            """).lstrip())
+            (bin_dir / "gh").chmod(0o755)
+            (bin_dir / "docker").write_text(textwrap.dedent(f"""
+                #!/usr/bin/env bash
+                printf '%s\\n' "$*" >> {str(docker_log)!r}
+                exit 0
+            """).lstrip())
+            (bin_dir / "docker").chmod(0o755)
+            (bin_dir / "gcloud").write_text(textwrap.dedent(f"""
+                #!/usr/bin/env python3
+                import json, os, sys
+                from pathlib import Path
+                args = sys.argv[1:]
+                Path(os.environ["FAKE_GCLOUD_LOG"]).open("a").write(" ".join(args) + "\\n")
+                if args[:4] == ["artifacts", "docker", "images", "describe"]:
+                    print("sha256:" + "b" * 64)
+                elif args[:3] == ["run", "jobs", "describe"]:
+                    print(Path(os.environ["FAKE_JOB_STATE"]).read_text())
+                elif args[:3] in (["run", "jobs", "update"], ["run", "jobs", "replace"]):
+                    raise SystemExit(91)
+                else:
+                    raise SystemExit(2)
+            """).lstrip())
+            (bin_dir / "gcloud").chmod(0o755)
+            env = {
+                **os.environ,
+                "PATH": f"{bin_dir}:{os.environ['PATH']}", "ROOT": str(ROOT), "ENVIRONMENT": "development", "SOURCE_REF": "develop", "SOURCE_SHA": source_sha,
+                "CONFIG_PATH": "deploy/environments/development.yaml", "COMPONENTS": "worker", "GITHUB_REF": "refs/heads/develop", "GITHUB_REF_NAME": "develop",
+                "GITHUB_REPOSITORY": "Rayer/llm-wiki-cloud", "GH_TOKEN": "fixture", "ROLLBACK_UPLOADED": "1", "GITHUB_RUN_ID": "7", "GITHUB_RUN_ATTEMPT": "1",
+                "PLAN_PATH": str(plan), "ROLLBACK_PATH": str(root / "rollback.json"), "JOURNAL_PATH": str(root / "journal.json"), "ARTIFACT_DIR": str(root / "artifacts"),
+                "EVIDENCE_PATH": str(root / "artifacts" / "readback.json"), "ROLLBACK_RESULT_PATH": str(root / "artifacts" / "rollback-result.json"), "FINAL_EVIDENCE_PATH": str(root / "artifacts" / "evidence.json"),
+                "FAKE_GCLOUD_LOG": str(provider_log), "FAKE_JOB_STATE": str(state), "FAKE_PLAN": str(plan),
+            }
+            frozen = subprocess.run(["bash", str(ROOT / "deploy/cd.sh"), "freeze"], env=env, text=True, capture_output=True)
+            self.assertEqual(frozen.returncode, 0, frozen.stdout + frozen.stderr)
+            mutated = subprocess.run(["bash", str(ROOT / "deploy/components/worker.sh"), "mutate"], env=env, text=True, capture_output=True)
+            self.assertNotEqual(mutated.returncode, 0, mutated.stdout + mutated.stderr)
+            journal = json.loads((root / "journal.json").read_text())
+            self.assertIn("worker", journal["components"], mutated.stdout + mutated.stderr)
+            self.assertEqual(journal["order"], ["worker"])
+            self.assertEqual(journal["components"]["worker"]["state"], "accepted")
+            self.assertEqual(journal["components"]["worker"]["history"], ["pending", "accepted"])
+            self.assertIn("push", docker_log.read_text())
+            provider_calls = provider_log.read_text()
+            self.assertNotIn("run jobs update", provider_calls)
+            rollback = subprocess.run(["bash", str(ROOT / "deploy/cd.sh"), "rollback"], env=env, text=True, capture_output=True)
+            self.assertEqual(rollback.returncode, 0, rollback.stdout + rollback.stderr)
+            rollback_result = json.loads((root / "artifacts" / "rollback" / "worker.json").read_text())
+            self.assertEqual(rollback_result["result"], "success")
+            self.assertEqual(rollback_result.get("reason"), "verified_noop", json.dumps(rollback_result) + rollback.stdout + rollback.stderr)
+            rollback_journal = json.loads((root / "journal.json").read_text())
+            self.assertEqual(rollback_journal["order"], ["worker"])
+            self.assertEqual(set(rollback_journal["components"]), {"worker"})
+            self.assertEqual(rollback_journal["components"]["worker"]["history"], ["pending", "accepted", "rollback_pending", "rollback_accepted"])
+            self.assertNotIn("run jobs replace", provider_log.read_text())
+            (root / "artifacts" / "readback.json").write_text(json.dumps({"schema": "lwc-306-readback-v1", "result": "unknown", "verified": False, "components": []}))
+            evidence = subprocess.run(["bash", str(ROOT / "deploy/cd.sh"), "evidence"], env=env, text=True, capture_output=True)
+            self.assertEqual(evidence.returncode, 0, evidence.stdout + evidence.stderr)
+            rendered = json.loads((root / "artifacts" / "evidence.json").read_text())
+            self.assertEqual(rendered["mutation_count"], 1)
+            self.assertEqual(rendered["mutation_components"], ["worker"])
+
+
+    def test_backend_artifact_and_runtime_success_share_one_journal_entry(self):
+        source_sha = "0123456789abcdef0123456789abcdef01234567"
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            bin_dir = root / "bin"
+            bin_dir.mkdir()
+            provider_log = root / "provider.log"
+            (bin_dir / "docker").write_text(textwrap.dedent(f"""
+                #!/usr/bin/env bash
+                printf 'docker %s\\n' "$*" >> {str(provider_log)!r}
+            """).lstrip())
+            (bin_dir / "docker").chmod(0o755)
+            (bin_dir / "gcloud").write_text(textwrap.dedent(f"""
+                #!/usr/bin/env bash
+                printf 'gcloud %s\\n' "$*" >> {str(provider_log)!r}
+                if [[ "$1 $2 $3 $4" == "artifacts docker images describe" ]]; then
+                  printf '%s\\n' sha256:{'b' * 64}
+                fi
+            """).lstrip())
+            (bin_dir / "gcloud").chmod(0o755)
+            plan = root / "plan.json"
+            plan.write_text(json.dumps({
+                "normalized": {
+                    "selected_components": ["worker"],
+                    "gcp": {"project_id": "llm-wiki-cloud", "artifact_registry": "asia-east1-docker.pkg.dev/llm-wiki-cloud/cloud-run-images"},
+                    "worker": {"job_name": "olw-pipeline", "location": "asia-east1", "runtime_service_account": "worker@llm-wiki-cloud.iam.gserviceaccount.com", "bucket": "bucket", "args": ["run", "--auto-approve"], "secret_references": {"deepseek_api_key": "deepseek-apikey"}},
+                },
+            }))
+            env = {
+                **os.environ,
+                "PATH": f"{bin_dir}:{os.environ['PATH']}", "ROOT": str(ROOT), "ENVIRONMENT": "development", "SOURCE_REF": "develop", "SOURCE_SHA": source_sha,
+                "GITHUB_REF": "refs/heads/develop", "GITHUB_REF_NAME": "develop", "GITHUB_RUN_ID": "7", "GITHUB_RUN_ATTEMPT": "1",
+                "PLAN_PATH": str(plan), "JOURNAL_PATH": str(root / "journal.json"), "ARTIFACT_DIR": str(root / "artifacts"),
+            }
+            script = textwrap.dedent(f"""
+                source {str(ROOT / 'deploy/components/worker.sh')!r} help
+                revalidate_before_provider() {{ :; }}
+                worker_verify() {{ return 0; }}
+                worker_mutate
+            """)
+            result = subprocess.run(["bash", "-c", script], env=env, text=True, capture_output=True)
+            self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
+            journal = json.loads((root / "journal.json").read_text())
+            self.assertEqual(journal["order"], ["worker"])
+            self.assertEqual(set(journal["components"]), {"worker"})
+            self.assertEqual(journal["components"]["worker"]["state"], "accepted")
+            self.assertEqual(journal["components"]["worker"]["history"], ["pending", "accepted"])
+            commands = provider_log.read_text().splitlines()
+            build = next(index for index, line in enumerate(commands) if line.startswith("docker build "))
+            push = next(index for index, line in enumerate(commands) if line.startswith("docker push "))
+            runtime = next(index for index, line in enumerate(commands) if line.startswith("gcloud run jobs update "))
+            self.assertLess(build, push)
+            self.assertLess(push, runtime)
+            self.assertEqual(sum(line.startswith("docker build ") for line in commands), 1)
+            self.assertEqual(sum(line.startswith("docker push ") for line in commands), 1)
+            self.assertEqual(sum(line.startswith("gcloud run jobs update ") for line in commands), 1)
+
     def test_ci_revalidation_rejects_paginated_duplicate_or_omitted_jobs(self):
         source_sha = "0123456789abcdef0123456789abcdef01234567"
         run = {
@@ -589,17 +774,6 @@ class CDContractTests(unittest.TestCase):
         self.assertIn("/v2/deployments/", source)
         self.assertNotIn("vercel alias set", source)
 
-    def test_mutation_journal_records_only_accepted_provider_mutations(self):
-        source = source_bundle("auth", "bff", "worker", "frontend")
-        mutate = source[source.index("mutate() {"):source.index("reconcile() {")]
-        self.assertNotIn("component_mark", source)
-        self.assertNotIn("mutation_accepted", mutate)
-        self.assertEqual(source.count("mutation_accepted "), 4)
-        for component, command in (("auth", "gcloud run deploy"), ("bff", "gcloud run deploy"), ("worker", "gcloud run jobs update"), ("frontend", "vercel deploy --prebuilt")):
-            body = (ROOT / f"deploy/components/{component}.sh").read_text()
-            self.assertLess(body.index(command), body.index("mutation_accepted"))
-        self.assertIn("mutation_accepted", source)
-
     def test_mutation_accepted_is_exact_once_and_deterministic(self):
         helper = common_source()
         with tempfile.TemporaryDirectory() as directory:
@@ -694,17 +868,6 @@ class CDContractTests(unittest.TestCase):
         self.assertIn("<redacted>", source)
         final = (ROOT / "deploy/cd.sh").read_text()[(ROOT / "deploy/cd.sh").read_text().index("\nevidence() {") :]
         self.assertNotIn(".value", final)
-
-    def test_mutation_journal_is_written_after_accepted_provider_commands(self):
-        source = source_bundle("auth", "bff", "worker", "frontend")
-        for function, command in (
-            ("auth_mutate()", "gcloud run deploy"),
-            ("bff_mutate()", "gcloud run deploy"),
-            ("worker_mutate()", "gcloud run jobs update"),
-            ("frontend_mutate()", "vercel deploy --prebuilt"),
-        ):
-            body = source[source.index(function) :]
-            self.assertLess(body.index(command), body.index("mutation_accepted"))
 
     def test_fake_service_readback_rejects_runtime_mismatch_and_redacts_secret_values(self):
         config = self.load_config("development")
