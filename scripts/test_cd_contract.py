@@ -111,6 +111,10 @@ class CDContractTests(unittest.TestCase):
         ):
             self.assertNotIn(literal, all_source)
 
+    def test_default_ci_runs_retained_legacy_python_suites(self):
+        source = (ROOT / ".github/workflows/ci.yml").read_text()
+        self.assertIn("python3 -m unittest discover -s scripts -p 'test_*.py'", source)
+
     def test_entry_workflows_are_dispatch_only_and_production_consumes_dispatch_receipt(self):
         development = (ROOT / ".github/workflows/deploy-dev.yml").read_text()
         production = (ROOT / ".github/workflows/promote-production.yml").read_text()
@@ -125,6 +129,78 @@ class CDContractTests(unittest.TestCase):
         self.assertIn("branch=develop", consume)
         self.assertIn('gh run download "$id"', consume)
         self.assertIn("cd-images-$SOURCE_SHA", consume)
+
+    def test_protected_mutation_maps_environment_scoped_vercel_credentials(self):
+        source = (ROOT / ".github/workflows/cd.yml").read_text()
+        mutation = source[source.index("  mutate:"):]
+        for mapping in (
+            "VERCEL_TOKEN: ${{ secrets.VERCEL_TOKEN }}",
+            "VERCEL_PROJECT_ID: ${{ secrets.VERCEL_PROJECT_ID }}",
+            "VERCEL_TEAM_ID: ${{ secrets.VERCEL_TEAM_ID }}",
+        ):
+            self.assertIn(mapping, mutation)
+            self.assertNotIn(mapping, source[:source.index("  mutate:")])
+
+    def test_revalidation_rejection_leaves_zero_mutation_and_skips_rollback(self):
+        source_sha = "0123456789abcdef0123456789abcdef01234567"
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            bin_dir = root / "bin"
+            bin_dir.mkdir()
+            (bin_dir / "git").write_text(
+                "#!/usr/bin/env bash\n"
+                "if [[ $1 == fetch ]]; then exit 0; fi\n"
+                f"if [[ $1 == rev-parse ]]; then printf '%s\\n' {source_sha}; exit 0; fi\n"
+                "exit 2\n"
+            )
+            (bin_dir / "git").chmod(0o755)
+            (bin_dir / "gh").write_text("#!/usr/bin/env bash\nexit 42\n")
+            (bin_dir / "gh").chmod(0o755)
+            provider_log = root / "provider.log"
+            (bin_dir / "gcloud").write_text(
+                "#!/usr/bin/env bash\n"
+                f"printf '%s\\n' \"$*\" >> {provider_log}\n"
+                "exit 99\n"
+            )
+            (bin_dir / "gcloud").chmod(0o755)
+            artifact_dir = root / "artifacts"
+            (artifact_dir / "dev-images").mkdir(parents=True)
+            image = "asia-east1-docker.pkg.dev/llm-wiki-cloud/cloud-run-images/olw-pipeline@sha256:" + "b" * 64
+            (artifact_dir / "dev-images" / f"worker-image-{source_sha}.txt").write_text(image + "\n")
+            (artifact_dir / "dev-images" / "dev-receipt.json").write_text(json.dumps({
+                "schema": "lwc-306-dev-image-receipt-v1",
+                "source": {"sha": source_sha, "ref": "develop", "workflow_path": ".github/workflows/deploy-dev.yml", "event": "workflow_dispatch"},
+                "config": {"environment": "development", "path": "deploy/environments/development.yaml", "fingerprint": "sha256:fixture"},
+                "components": ["worker"], "images": {"worker": image},
+            }))
+            plan = {
+                "ci": {"run_id": 1, "run_attempt": 1, "jobs": []},
+                "normalized": {
+                    "selected_components": ["worker"],
+                    "gcp": {"project_id": "llm-wiki-cloud", "artifact_registry": "asia-east1-docker.pkg.dev/llm-wiki-cloud/cloud-run-images"},
+                    "worker": {"job_name": "olw-pipeline", "location": "asia-east1", "runtime_service_account": "worker@llm-wiki-cloud.iam.gserviceaccount.com", "bucket": "bucket", "args": ["run", "--auto-approve"], "secret_references": {"deepseek_api_key": "deepseek-apikey"}},
+                    "evidence": {"config_fingerprint": "sha256:fixture"},
+                },
+            }
+            plan_path = root / "plan.json"
+            plan_path.write_text(json.dumps(plan))
+            journal_path = artifact_dir / "journal.json"
+            env = {
+                **os.environ,
+                "PATH": f"{bin_dir}:{os.environ['PATH']}",
+                "ENVIRONMENT": "production", "SOURCE_REF": "main", "SOURCE_SHA": source_sha,
+                "CONFIG_PATH": "deploy/environments/production.yaml", "COMPONENTS": "worker",
+                "PLAN_PATH": str(plan_path), "JOURNAL_PATH": str(journal_path), "ARTIFACT_DIR": str(artifact_dir),
+                "ROLLBACK_PATH": str(artifact_dir / "rollback.json"), "ROLLBACK_RESULT_PATH": str(artifact_dir / "rollback-result.json"),
+                "ROLLBACK_UPLOADED": "1", "GITHUB_REPOSITORY": "Rayer/llm-wiki-cloud", "GH_TOKEN": "fixture",
+            }
+            rejected = subprocess.run(["bash", str(ROOT / "deploy/components/worker.sh"), "mutate"], env=env, text=True, capture_output=True)
+            self.assertNotEqual(rejected.returncode, 0, rejected.stdout + rejected.stderr)
+            self.assertEqual(json.loads(journal_path.read_text())["components"], {}, rejected.stdout + rejected.stderr)
+            rolled_back = subprocess.run(["bash", str(ROOT / "deploy/cd.sh"), "rollback"], env=env, text=True, capture_output=True)
+            self.assertEqual(rolled_back.returncode, 0, rolled_back.stdout + rolled_back.stderr)
+            self.assertFalse(provider_log.exists())
+            self.assertEqual(json.loads((artifact_dir / "rollback-result.json").read_text())["result"], "not_needed")
 
     def test_ci_revalidation_rejects_paginated_duplicate_or_omitted_jobs(self):
         source_sha = "0123456789abcdef0123456789abcdef01234567"
@@ -300,6 +376,38 @@ class CDContractTests(unittest.TestCase):
     def test_provider_timeout_with_unknown_readback_records_unknown_state(self):
         self._run_worker_timeout_fixture(readback="unknown", expect_state="unknown", expect_code=None)
 
+    def test_vercel_deployment_readback_requires_each_authoritative_field(self):
+        response = {
+            "id": "dpl_frontendnew", "url": "frontend-hash.vercel.app", "projectId": "prj_frontendtest",
+            "accountId": "team_frontendtest", "readyState": "READY", "target": "preview",
+            "meta": {"githubCommitSha": "0123456789abcdef0123456789abcdef01234567", "githubCommitRef": "develop", "githubOrg": "Rayer", "githubRepo": "llm-wiki-cloud"},
+        }
+        cases = {
+            "readyState": lambda value: value.pop("readyState"),
+            "target": lambda value: value.pop("target"),
+            "source SHA": lambda value: value["meta"].pop("githubCommitSha"),
+            "source ref": lambda value: value["meta"].pop("githubCommitRef"),
+            "repository": lambda value: (value["meta"].pop("githubOrg"), value["meta"].pop("githubRepo")),
+            "project": lambda value: value.pop("projectId"),
+            "team": lambda value: value.pop("accountId"),
+            "URL": lambda value: value.pop("url"),
+        }
+        plan = {"normalized": {"frontend": {"repository": "Rayer/llm-wiki-cloud"}}}
+        with tempfile.TemporaryDirectory() as directory:
+            plan_path = Path(directory) / "plan.json"
+            plan_path.write_text(json.dumps(plan))
+            for name, remove in cases.items():
+                with self.subTest(name=name):
+                    value = json.loads(json.dumps(response))
+                    remove(value)
+                    result = subprocess.run(
+                        ["bash", "-c", common_source() + "\nsource \"$ROOT/deploy/components/frontend.sh\"\nvercel_validate_deployment \"$RESPONSE\" dpl_frontendnew https://frontend-hash.vercel.app"],
+                        env={**os.environ, "ROOT": str(ROOT), "PLAN_PATH": str(plan_path), "RESPONSE": json.dumps(value), "VERCEL_PROJECT_ID": "prj_frontendtest", "VERCEL_TEAM_ID": "team_frontendtest", "SOURCE_SHA": response["meta"]["githubCommitSha"], "SOURCE_REF": "develop", "ENVIRONMENT": "development"},
+                        text=True,
+                        capture_output=True,
+                    )
+                    self.assertNotEqual(result.returncode, 0, name)
+
     def _run_worker_timeout_fixture(self, readback, expect_state, expect_code):
         with tempfile.TemporaryDirectory() as directory:
             root = Path(directory)
@@ -408,6 +516,41 @@ class CDContractTests(unittest.TestCase):
             self.assertIn(evidence["result"], {"rollback_unknown", "rollback_failed"})
             self.assertNotEqual(evidence["rollback"]["result"], "success")
 
+    def test_malformed_nonempty_journal_is_never_treated_as_not_needed(self):
+        timestamp = "2026-09-04T00:00:00Z"
+        valid = {
+            "schema": "lwc-306-mutation-journal-v1", "order": ["worker"],
+            "components": {"worker": {"state": "accepted", "history": ["pending", "accepted"], "timestamp": timestamp, "attempt": 1}},
+        }
+        variants = {
+            "unknown key": lambda value: value["components"].update({"rogue": value["components"]["worker"]}),
+            "invalid state": lambda value: value["components"]["worker"].update(state="bogus"),
+            "invalid history": lambda value: value["components"]["worker"].update(history=["accepted"]),
+            "missing timestamp": lambda value: value["components"]["worker"].pop("timestamp"),
+            "inconsistent state": lambda value: value["components"]["worker"].update(state="pending"),
+        }
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            artifact_dir = root / "artifacts"
+            artifact_dir.mkdir()
+            plan = root / "plan.json"
+            plan.write_text(json.dumps({"normalized": {"selected_components": ["worker"]}}))
+            for name, mutate in variants.items():
+                with self.subTest(name=name):
+                    journal = json.loads(json.dumps(valid))
+                    mutate(journal)
+                    journal_path = artifact_dir / "journal.json"
+                    journal_path.write_text(json.dumps(journal))
+                    rollback_result = artifact_dir / "rollback-result.json"
+                    result = subprocess.run(
+                        ["bash", str(ROOT / "deploy/cd.sh"), "rollback"],
+                        env={**os.environ, "PLAN_PATH": str(plan), "ROLLBACK_PATH": str(artifact_dir / "rollback.json"), "JOURNAL_PATH": str(journal_path), "ROLLBACK_RESULT_PATH": str(rollback_result), "ARTIFACT_DIR": str(artifact_dir)},
+                        text=True,
+                        capture_output=True,
+                    )
+                    self.assertNotEqual(result.returncode, 0, result.stdout + result.stderr)
+                    self.assertIn(json.loads(rollback_result.read_text())["result"], {"unknown", "failed"})
+
     def test_rollback_runs_accepted_pending_unknown_components_once_in_reverse_order(self):
         with tempfile.TemporaryDirectory() as directory:
             root = Path(directory)
@@ -415,7 +558,7 @@ class CDContractTests(unittest.TestCase):
             artifact_dir.mkdir()
             plan = root / "plan.json"
             plan.write_text(json.dumps({"normalized": {"selected_components": ["worker", "frontend"]}}))
-            journal = {"schema": "lwc-306-mutation-journal-v1", "order": ["worker", "frontend"], "components": {"worker": {"state": "accepted", "history": ["accepted"]}, "frontend": {"state": "unknown", "history": ["pending", "unknown"]}}}
+            journal = {"schema": "lwc-306-mutation-journal-v1", "order": ["worker", "frontend"], "components": {"worker": {"state": "accepted", "history": ["pending", "accepted"], "timestamp": "2026-09-04T00:00:00Z", "attempt": 1}, "frontend": {"state": "unknown", "history": ["pending", "unknown"], "timestamp": "2026-09-04T00:00:00Z", "attempt": 1}}}
             (artifact_dir / "journal.json").write_text(json.dumps(journal))
             (artifact_dir / "rollback.json").write_text("{}")
             log = root / "rollback.log"
@@ -759,6 +902,26 @@ class CDContractTests(unittest.TestCase):
         )
         self.assertEqual(public.returncode, 0, public.stdout + public.stderr)
 
+    def test_iam_rejection_is_scoped_to_controlled_principal_and_dangerous_public_grants(self):
+        positive_policy = {"bindings": [
+            {"role": "roles/run.viewer", "members": ["serviceAccount:worker@example.com"]},
+            {"role": "roles/viewer", "members": ["group:domain-auth@example.com", "allAuthenticatedUsers"]},
+        ]}
+        positive = subprocess.run(
+            ["bash", "-c", common_source() + '\niam_binding_is_exact "$POLICY" roles/run.viewer serviceAccount:worker@example.com'],
+            env={**os.environ, "ROOT": str(ROOT), "POLICY": json.dumps(positive_policy)}, text=True, capture_output=True,
+        )
+        self.assertEqual(positive.returncode, 0, positive.stdout + positive.stderr)
+        for policy in (
+            {"bindings": [{"role": "roles/run.viewer", "members": ["serviceAccount:worker@example.com"]}, {"role": "roles/editor", "members": ["serviceAccount:unrelated@example.com"]}, {"role": "roles/owner", "members": ["allUsers"]}]},
+            {"bindings": [{"role": "roles/run.viewer", "members": ["serviceAccount:worker@example.com"]}, {"role": "roles/run.admin", "members": ["serviceAccount:worker@example.com"]}]},
+        ):
+            negative = subprocess.run(
+                ["bash", "-c", common_source() + '\niam_binding_is_exact "$POLICY" roles/run.viewer serviceAccount:worker@example.com'],
+                env={**os.environ, "ROOT": str(ROOT), "POLICY": json.dumps(policy)}, text=True, capture_output=True,
+            )
+            self.assertNotEqual(negative.returncode, 0)
+
 
 class ArchitectureAuthorityTests(unittest.TestCase):
     COMPONENTS = ("auth", "bff", "worker", "frontend")
@@ -925,7 +1088,7 @@ class ArchitectureAuthorityTests(unittest.TestCase):
             self.assertEqual(len(frozen["spec"]["template"]["spec"]["template"]["spec"]["volumes"]), 1)
             self.assertIn("valueSource", json.dumps(frozen))
             state.write_text(json.dumps({**definition, "spec": {"template": {"spec": {"template": {"spec": {**definition["spec"]["template"]["spec"]["template"]["spec"], "containers": [{**definition["spec"]["template"]["spec"]["template"]["spec"]["containers"][0], "args":["changed"]}]}}}}}}))
-            (root / "journal.json").write_text(json.dumps({"schema": "lwc-306-mutation-journal-v1", "order": ["worker"], "components": {"worker": {"state": "accepted", "history": ["accepted"]}}}))
+            (root / "journal.json").write_text(json.dumps({"schema": "lwc-306-mutation-journal-v1", "order": ["worker"], "components": {"worker": {"state": "accepted", "history": ["pending", "accepted"], "timestamp": "2026-09-04T00:00:00Z", "attempt": 1}}}))
             result = subprocess.run(["bash", str(ROOT / "deploy/cd.sh"), "rollback"], env=env, text=True, capture_output=True)
             rollback = json.loads((root / "rollback-result.json").read_text())
             self.assertEqual(result.returncode, 0, result.stdout + result.stderr)

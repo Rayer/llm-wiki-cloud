@@ -39,6 +39,7 @@ auth_build_image() {
 
 auth_mutate() {
   local image service account project region origins secrets deploy_status=0 revision
+  journal_init
   if [[ "$ENVIRONMENT" == production ]]; then
     if ! image=$(image_for auth); then
       journal_rejected auth
@@ -46,9 +47,8 @@ auth_mutate() {
       return 1
     fi
   fi
-  journal_pending auth
-  revalidate_before_provider
   if [[ "$ENVIRONMENT" == development ]]; then
+    revalidate_before_provider
     if ! image=$(auth_build_image); then
       journal_rejected auth
       write_component_result auth failed '{}' image_build_failed
@@ -57,6 +57,8 @@ auth_mutate() {
     mkdir -p "$ARTIFACT_DIR/images"
     printf '%s\n' "$image" > "$ARTIFACT_DIR/images/auth-image-$SOURCE_SHA.txt"
   fi
+  revalidate_before_provider
+  journal_pending auth
   service=$(plan_json '.auth.service_name'); account=$(plan_json '.auth.runtime_service_account'); project=$(plan_json '.gcp.project_id'); region=$(plan_json '.gcp.region')
   origins=$(join_config_list '.auth.allowed_origins')
   secrets="JWT_SECRET=$(plan_json '.auth.secret_references.jwt'):latest"
@@ -65,7 +67,6 @@ auth_mutate() {
     --update-env-vars "^@^GCP_PROJECT=$project@FIRESTORE_DATABASE_ID=$(plan_json '.auth.firestore_database_id')@ALLOWED_ORIGINS=$origins@ALLOWED_HOSTS=$(join_config_list '.auth.allowed_hosts')@DEV_JWT=false@LWC_SOURCE_COMMIT=$SOURCE_SHA"
     --remove-env-vars "QUERY_EXPANSION_MODEL,QUERY_EXPANSION_REASONING,ANSWER_SYNTHESIS_MODEL,ANSWER_SYNTHESIS_REASONING,QUERY_SELECTION_LIMIT,QUERY_SELECTION_EXPLORATION_SLOTS,QUERY_SELECTION_EVIDENCE_THRESHOLD,QUERY_EXPANSION_KEYWORDS_PER_ATTEMPT,QUERY_EXPANSION_ATTEMPTS,QUERY_MATCHING_RARE_KEYWORD_MAX_DOCUMENT_FREQUENCY"
     --update-secrets "$secrets" --allow-unauthenticated --quiet)
-  revalidate_before_provider
   if timeout --signal=TERM --kill-after=5s 600s gcloud run deploy "$service" "${flags[@]}" >/dev/null; then :; else deploy_status=$?; fi
   if ! revision=$(gcloud run services describe "$service" --project "$project" --region "$region" --format='value(status.latestCreatedRevisionName)' --quiet); then
     journal_transition auth unknown

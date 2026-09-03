@@ -26,6 +26,8 @@ jobs:
         run: go run ./cmd/versioncheck VERSION
       - name: Validate monorepo CD contract
         run: python3 ../../scripts/test_cd_contract.py
+      - name: Run retained legacy CD safety suites
+        run: python3 -m unittest discover -s scripts -p 'test_*.py'
       - name: Go vet
         run: go vet ./...
       - name: Go tests

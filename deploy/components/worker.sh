@@ -49,6 +49,7 @@ worker_build_image() {
 
 worker_mutate() {
   local image job bucket args secret account update_status=0
+  journal_init
   if [[ "$ENVIRONMENT" == production ]]; then
     if ! image=$(image_for worker); then
       journal_rejected worker
@@ -56,9 +57,8 @@ worker_mutate() {
       return 1
     fi
   fi
-  journal_pending worker
-  revalidate_before_provider
   if [[ "$ENVIRONMENT" == development ]]; then
+    revalidate_before_provider
     if ! image=$(worker_build_image); then
       journal_rejected worker
       write_component_result worker failed '{}' image_build_failed
@@ -70,6 +70,7 @@ worker_mutate() {
   job=$(plan_json '.worker.job_name'); bucket=$(plan_json '.worker.bucket'); args=$(plan_json '.worker.args | join("@")'); secret=$(plan_json '.worker.secret_references.deepseek_api_key'); account=$(plan_json '.worker.runtime_service_account')
   revalidate_before_provider
   if [[ -n "${ROLLBACK_PATH:-}" && -s "$ROLLBACK_PATH" ]]; then worker_concurrency_guard; fi
+  journal_pending worker
   if timeout --signal=TERM --kill-after=5s 600s gcloud run jobs update "$job" --project "$(plan_json '.gcp.project_id')" --region "$(plan_json '.worker.location')" --service-account "$account" --image "$image" --update-secrets "DEEPSEEK_API_KEY=$secret:latest" --update-env-vars "BUCKET=$bucket,PIPELINE_JOB_NAME=$job,PIPELINE_JOB_LOCATION=$(plan_json '.worker.location')" --remove-env-vars "DATA_DIR,WORKSPACE,VAULT_PATH,WORKSPACE_DIR" --args "^@^$args" --clear-volume-mounts --clear-volumes --quiet >/dev/null; then :; else update_status=$?; fi
   if [[ "$update_status" -ne 0 ]]; then
     if ! worker_verify "$image"; then

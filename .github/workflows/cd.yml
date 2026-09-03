@@ -99,6 +99,9 @@ jobs:
       FINAL_EVIDENCE_PATH: ${{ runner.temp }}/cd/evidence.json
       ARTIFACT_DIR: ${{ runner.temp }}/cd
       VERCEL_API_BASE_URL: https://api.vercel.com
+      VERCEL_TOKEN: ${{ secrets.VERCEL_TOKEN }}
+      VERCEL_PROJECT_ID: ${{ secrets.VERCEL_PROJECT_ID }}
+      VERCEL_TEAM_ID: ${{ secrets.VERCEL_TEAM_ID }}
     steps:
       - name: Checkout exact source SHA
         uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4

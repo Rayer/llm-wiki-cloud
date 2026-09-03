@@ -101,6 +101,11 @@ rollback() {
   need ROLLBACK_PATH
   need JOURNAL_PATH
   need ROLLBACK_RESULT_PATH
+  if [[ -s "$JOURNAL_PATH" ]] && ! journal_validate; then
+    mkdir -p "$(dirname "$ROLLBACK_RESULT_PATH")"
+    jq -n '{schema:"lwc-306-rollback-result-v1",result:"unknown",verified:false,attempted:[],components:[],reason:"mutation journal is malformed"}' > "$ROLLBACK_RESULT_PATH"
+    return 1
+  fi
   journal_init
   local possible component rollback_result='success' verified=true attempted='[]' rows='[]' current rollback_file
   possible=$(journal_possible_components)
@@ -152,7 +157,7 @@ evidence() {
   need FINAL_EVIDENCE_PATH
   local possible_count journal rollback_result aggregate render_failed=0 final_result final_verified mutation_components mutation_count rollback_attempted rollback_result_value rollback_verified partial unknown next_action provider_readback
   journal=$(cat "$JOURNAL_PATH" 2>/dev/null || printf '{}')
-  if ! strict_json <<<"$journal" || ! jq -e '.schema == "lwc-306-mutation-journal-v1" and (.order|type) == "array" and (.components|type) == "object"' <<<"$journal" >/dev/null; then
+  if ! strict_json <<<"$journal" || ! journal_validate; then
     render_failed=1; possible_count=1; mutation_components='[]'; mutation_count=1
   else
     possible_count=$(journal_possible_count)

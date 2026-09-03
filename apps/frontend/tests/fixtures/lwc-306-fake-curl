@@ -79,6 +79,17 @@ if [[ "$url" == *'/v4/aliases?'* ]]; then
   exit 0
 fi
 
+if [[ "$url" == *'/v6/deployments?'* ]]; then
+  deployment=$(cat "$root/deployment.json")
+  case "$scenario" in
+    deploy-timeout-absent) printf '{"deployments":[],"pagination":{"next":null}}' ;;
+    deploy-timeout-duplicate) printf '{"deployments":[%s,%s],"pagination":{"next":null}}' "$deployment" "$deployment" ;;
+    deploy-timeout-conflicting) deployment=$(jq '.target="production"' <<<"$deployment"); printf '{"deployments":[%s],"pagination":{"next":null}}' "$deployment" ;;
+    *) printf '{"deployments":[%s],"pagination":{"next":null}}' "$deployment" ;;
+  esac
+  exit 0
+fi
+
 if [[ "$url" == *'/v13/deployments/'* ]]; then
   cat "$root/deployment.json"
   exit 0

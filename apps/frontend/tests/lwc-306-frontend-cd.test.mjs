@@ -148,6 +148,30 @@ test('accepts an ambiguous timeout only when exact alias and project inventory r
   await assertNoToken(fixture);
 });
 
+test('reconciles a deployment timeout through one exact project inventory candidate without retrying create', async () => {
+  const fixture = await setup('development', 'deploy-timeout-after-acceptance');
+  assert.equal((await run(fixture, 'freeze')).code, undefined);
+  const result = await run(fixture, 'mutate');
+  assert.equal(result.code, undefined, result.stderr);
+  const calls = await lines(join(fixture.root, 'cli-calls'));
+  assert.equal(calls.filter((line) => line.startsWith('vercel deploy ')).length, 1);
+  assert.equal((await json(join(fixture.artifactDir, 'journal.json'))).components.frontend.state, 'accepted');
+  assert.ok((await lines(join(fixture.root, 'curl-calls'))).some((line) => line.includes('/v6/deployments?')));
+});
+
+for (const scenario of ['deploy-timeout-absent', 'deploy-timeout-duplicate', 'deploy-timeout-conflicting']) {
+  test(`keeps ${scenario} unknown after one deployment inventory lookup`, async () => {
+    const fixture = await setup('development', scenario);
+    assert.equal((await run(fixture, 'freeze')).code, undefined);
+    const result = await run(fixture, 'mutate');
+    assert.notEqual(result.code, undefined);
+    const calls = await lines(join(fixture.root, 'cli-calls'));
+    assert.equal(calls.filter((line) => line.startsWith('vercel deploy ')).length, 1);
+    assert.equal((await json(join(fixture.artifactDir, 'journal.json'))).components.frontend.state, 'unknown');
+    assert.ok((await lines(join(fixture.root, 'curl-calls'))).some((line) => line.includes('/v6/deployments?')));
+  });
+}
+
 test('production rollback restores every frozen alias through REST and verifies exact read-back', async () => {
   const fixture = await setup('production', 'second-timeout-old');
   assert.equal((await run(fixture, 'freeze')).code, undefined);

@@ -169,18 +169,48 @@ write_rollback_result() {
     '{component:$component,result:$result,verified:($result == "success"),readback:$readback} + (if $reason == "" then {} else {reason:$reason} end)' > "$(rollback_result_path "$component")"
 }
 
+journal_validate() {
+  local selected
+  selected=$(plan_json '.selected_components') || return 1
+  jq -e --argjson selected "$selected" --argjson known '["auth","bff","worker","frontend"]' '
+    def allowed_state:
+      . == "pending" or . == "accepted" or . == "unknown" or . == "rejected_or_no_mutation" or
+      . == "rollback_pending" or . == "rollback_accepted" or . == "rollback_failed" or . == "rollback_unknown";
+    def allowed_transition($from; $to):
+      ($from == "pending" and ($to == "accepted" or $to == "unknown" or $to == "rejected_or_no_mutation" or $to == "rollback_pending")) or
+      ($from == "accepted" and ($to == "unknown" or $to == "rollback_pending")) or
+      ($from == "unknown" and $to == "rollback_pending") or
+      ($from == "rollback_pending" and ($to == "rollback_accepted" or $to == "rollback_failed" or $to == "rollback_unknown"));
+    type == "object" and .schema == "lwc-306-mutation-journal-v1" and
+    (.order | type) == "array" and .order == $selected and
+    ((.order | unique | length) == (.order | length)) and ((.order - $known) | length) == 0 and
+    (.components | type) == "object" and (((.components | keys) - $selected) | length) == 0 and
+    all(.components | to_entries[];
+      .value as $entry |
+      (($entry | keys | sort) == ["attempt","history","state","timestamp"]) and
+      ($entry.state | allowed_state) and
+      ($entry.attempt | type == "number" and floor == . and . > 0) and
+      ($entry.timestamp | type == "string" and test("^[0-9]{4}-[0-9]{2}-[0-9]{2}T[0-9]{2}:[0-9]{2}:[0-9]{2}Z$")) and
+      ($entry.history | type == "array" and length > 0 and all(.[]; allowed_state)) and
+      ($entry.history[-1] == $entry.state) and
+      (($entry.history[0] == "pending") or ($entry.history[0] == "rejected_or_no_mutation")) and
+      (all(range(1; ($entry.history | length)); allowed_transition($entry.history[.-1]; $entry.history[.])))
+    )
+  ' "$JOURNAL_PATH" >/dev/null
+}
+
 journal_init() {
   need JOURNAL_PATH; need PLAN_PATH
   mkdir -p "$(dirname "$JOURNAL_PATH")"
   if [[ -s "$JOURNAL_PATH" ]]; then
-    jq -e --argjson selected "$(plan_json '.selected_components')" '.schema == "lwc-306-mutation-journal-v1" and (.order|type) == "array" and (.order|unique|length == length) and .order == $selected and (.components|type) == "object"' "$JOURNAL_PATH" >/dev/null || die "mutation journal is malformed"
+    journal_validate || die "mutation journal is malformed"
     return 0
   fi
   jq -n --argjson order "$(plan_json '.selected_components')" '{schema:"lwc-306-mutation-journal-v1",order:$order,components:{}}' > "$JOURNAL_PATH"
 }
 
 journal_transition() {
-  local component="$1" next="$2" current tmp
+  local component="$1" next="$2" current tmp timestamp attempt
   journal_init
   current=$(jq -er --arg component "$component" '.components[$component].state // empty' "$JOURNAL_PATH" 2>/dev/null || true)
   if [[ "$next" == pending ]]; then
@@ -190,7 +220,7 @@ journal_transition() {
   elif [[ "$next" == accepted ]]; then
     [[ "$current" == pending ]] || die "mutation acceptance for $component is not after pending"
   elif [[ "$next" == unknown ]]; then
-    [[ "$current" == pending ]] || die "unknown mutation state for $component is not after pending"
+    [[ "$current" == pending || "$current" == accepted ]] || die "unknown mutation state for $component is not after pending or accepted"
   elif [[ "$next" == rollback_pending ]]; then
     [[ "$current" == accepted || "$current" == pending || "$current" == unknown ]] || die "rollback transition for $component is not eligible"
   elif [[ "$next" == rollback_accepted || "$next" == rollback_failed || "$next" == rollback_unknown ]]; then
@@ -198,12 +228,15 @@ journal_transition() {
   else
     die "unknown mutation journal state $next"
   fi
+  timestamp=$(date -u +%Y-%m-%dT%H:%M:%SZ)
+  attempt="${GITHUB_RUN_ATTEMPT:-1}"
+  [[ "$attempt" =~ ^[1-9][0-9]*$ ]] || die "mutation journal attempt is invalid"
   tmp="$JOURNAL_PATH.tmp"
   jq -e --arg component "$component" '
     ((.order | map(select(. == $component)) | length) == 1) and
     (if .components[$component]? then (.components[$component].history|type) == "array" and (.components[$component].history[-1] == .components[$component].state) else true end)
   ' "$JOURNAL_PATH" >/dev/null || die "mutation journal component is not selected or is malformed"
-  jq --arg component "$component" --arg next "$next" '.components[$component] = {state:$next,history:((.components[$component].history // []) + [$next])}' "$JOURNAL_PATH" > "$tmp" || die "mutation journal write failed"
+  jq --arg component "$component" --arg next "$next" --arg timestamp "$timestamp" --argjson attempt "$attempt" '.components[$component] = {state:$next,history:((.components[$component].history // []) + [$next]),timestamp:$timestamp,attempt:$attempt}' "$JOURNAL_PATH" > "$tmp" || die "mutation journal write failed"
   mv "$tmp" "$JOURNAL_PATH"
 }
 
@@ -292,15 +325,14 @@ iam_binding_is_exact() {
       ((type == "string") and (startswith("domain:") or startswith("principalSet://goog/public:")));
     def forbidden_role:
       . == "roles/owner" or . == "roles/editor" or . == "roles/run.admin" or . == "roles/run.developer" or . == "roles/run.jobsAdmin" or
-      . == "roles/secretmanager.admin" or ((type == "string") and test("^roles/.*(admin|developer)$"));
+      . == "roles/secretmanager.admin" or . == "roles/secretmanager.secretAccessor" or ((type == "string") and test("^roles/.*(admin|developer)$"));
     (.bindings | type) == "array" and
     all(.bindings[]; type == "object" and (.role|type) == "string" and (.members|type) == "array" and all(.members[]; type == "string")) and
     ([.bindings[] | select(.role == $role and (has("condition")|not) and (.members|sort) == [$member])] | length) == 1 and
     all(.bindings[];
       ([.members[] | select(broad_member)] | length) as $broad |
-      if ($broad > 0) then
-        ($role == "roles/run.invoker" and $member == "allUsers" and .role == $role and (has("condition")|not) and (.members|sort) == ["allUsers"])
-      elif ((.members | index($member)) != null and (.role | forbidden_role)) then false
+      if ((.members | index($member)) != null and (.role | forbidden_role)) then false
+      elif ($broad > 0 and (.role | forbidden_role)) then false
       else true end
     )' <<<"$policy" >/dev/null
 }
@@ -323,16 +355,17 @@ service_expected() {
 }
 
 normalize_service_readback() {
-  local component="$1" service_json="$2" revision_json="$3" revision="$4" image="$5"
+  local component="$1" service_json="$2" revision_json="$3" revision="$4" image="$5" allow_legacy="${6:-0}"
   strict_json <<<"$service_json" || return 1
   strict_json <<<"$revision_json" || return 1
-  local allowed secret_names
+  local allowed secret_names legacy_names='[]'
   case "$component" in
     auth) allowed='["GCP_PROJECT","FIRESTORE_DATABASE_ID","ALLOWED_ORIGINS","ALLOWED_HOSTS","DEV_JWT","LWC_SOURCE_COMMIT"]'; secret_names='["JWT_SECRET"]' ;;
     bff) allowed='["GCP_PROJECT","BUCKET","FIRESTORE_DATABASE_ID","PIPELINE_JOB_URL","ALLOWED_ORIGINS","AUTH_SERVICE_URL","QUERY_STAGE_CONFIG_PATH","DEV_JWT","LWC_SOURCE_COMMIT"]'; secret_names='["JWT_SECRET","DEEPSEEK_API_KEY"]' ;;
     *) return 1 ;;
   esac
-  jq -nce --arg component "$component" --arg revision "$revision" --arg image "$image" --argjson service "$service_json" --argjson revision_json "$revision_json" --argjson allowed "$allowed" --argjson secret_names "$secret_names" '
+  [[ "$allow_legacy" == 1 && "$component" == bff ]] && legacy_names='["USER_ID","PROJECT_ID"]'
+  jq -nce --arg component "$component" --arg revision "$revision" --arg image "$image" --argjson service "$service_json" --argjson revision_json "$revision_json" --argjson allowed "$allowed" --argjson secret_names "$secret_names" --argjson legacy_names "$legacy_names" '
     def template: ($service.spec.template // {});
     def template_spec: (template.spec // {});
     def revision_spec: ($revision_json.spec // {});
@@ -351,10 +384,10 @@ normalize_service_readback() {
       if ($entries|type) != "array" then error("environment must be an array")
       elif any($entries[]; (type != "object") or (.name|type) != "string") then error("environment entry is malformed")
       elif ([ $entries[].name ] | length) != ([ $entries[].name ] | unique | length) then error("environment contains duplicate names")
-      elif ([ $entries[] | .name as $name | select((($allowed + $secret_names)|index($name)) == null) | $name ] | if length > 0 then error("environment contains unknown name(s): " + join(",")) else false end) then error("environment contains an unknown name")
+      elif ([ $entries[] | .name as $name | select((($allowed + $secret_names + $legacy_names)|index($name)) == null) | $name ] | if length > 0 then error("environment contains unknown name(s): " + join(",")) else false end) then error("environment contains an unknown name")
       else
-        ($entries | map(. as $entry | if ($secret_names|index($entry.name)) != null then {name:$entry.name,secret:secret_ref($entry)} elif (($entry|keys|sort) != ["name","value"] or ($entry.value|type) != "string") then error("plain environment entry is malformed") else {name:$entry.name,value:$entry.value} end)) as $normalized |
-        {values:($normalized|map(select(has("value"))|{key:.name,value:.value})|from_entries),secrets:($normalized|map(select(has("secret"))|{key:.name,value:.secret})|from_entries)}
+        ($entries | map(. as $entry | if ($secret_names|index($entry.name)) != null then {name:$entry.name,secret:secret_ref($entry)} elif (($legacy_names|index($entry.name)) != null) then (if (($entry|keys|sort) != ["name","value"] or ($entry.value|type) != "string") then error("legacy environment entry is malformed") else {name:$entry.name,value:$entry.value} end) elif (($entry|keys|sort) != ["name","value"] or ($entry.value|type) != "string") then error("plain environment entry is malformed") else {name:$entry.name,value:$entry.value} end)) as $normalized |
+        {values:($normalized|map(select(has("value"))|{key:.name,value:.value})|from_entries),secrets:($normalized|map(select(has("secret"))|{key:.name,value:.secret})|from_entries),legacy:($normalized|map(. as $entry | select(($legacy_names|index($entry.name)) != null)|{key:.name,value:.value})|from_entries)}
       end;
     def container_shape($container):
       require_object($container;["image","env","command","args","resources","volumeMounts","workingDir","ports"];"service container") as $checked |
@@ -380,10 +413,11 @@ normalize_service_readback() {
     (if ($service_name|type) != "string" or $service_name == "" or ($revision_name|type) != "string" or $revision_name == "" or $revision_name != $revision then error("service or revision identity is malformed") else . end) |
     (if ($account|type) != "string" or $account == "" then error("runtime service account is missing") else . end) |
     ($service_shape.env.values) as $values | ($service_shape.env.secrets) as $secrets |
+    (if ($legacy_names|length) > 0 and (($service_shape.env.legacy|keys|sort) != ($legacy_names|sort)) then error("legacy environment is incomplete") else . end) |
     (if $component == "auth" then {GCP_PROJECT:$values.GCP_PROJECT,FIRESTORE_DATABASE_ID:$values.FIRESTORE_DATABASE_ID,ALLOWED_ORIGINS:$values.ALLOWED_ORIGINS,ALLOWED_HOSTS:$values.ALLOWED_HOSTS,DEV_JWT:$values.DEV_JWT,LWC_SOURCE_COMMIT:$values.LWC_SOURCE_COMMIT} else {GCP_PROJECT:$values.GCP_PROJECT,BUCKET:$values.BUCKET,FIRESTORE_DATABASE_ID:$values.FIRESTORE_DATABASE_ID,PIPELINE_JOB_URL:$values.PIPELINE_JOB_URL,ALLOWED_ORIGINS:$values.ALLOWED_ORIGINS,AUTH_SERVICE_URL:$values.AUTH_SERVICE_URL,QUERY_STAGE_CONFIG_PATH:$values.QUERY_STAGE_CONFIG_PATH,DEV_JWT:$values.DEV_JWT,LWC_SOURCE_COMMIT:$values.LWC_SOURCE_COMMIT} end) as $env |
     (if $component == "auth" then {JWT_SECRET:($secrets.JWT_SECRET // {secret:null,version:null,plaintext:false})} else {JWT_SECRET:($secrets.JWT_SECRET // {secret:null,version:null,plaintext:false}),DEEPSEEK_API_KEY:($secrets.DEEPSEEK_API_KEY // {secret:null,version:null,plaintext:false})} end) as $secret_refs |
     (interfaces[0]) as $interface |
-    {component:$component,service_name:$service_name,revision:$revision,revision_name:$revision_name,image:($revision_json.status.imageDigest // ($revision_container.image // null)),service_account:$account,runtime_service_account:$account,env:$env,secret_references:$secret_refs,container:{command:$revision_shape.command,args:$revision_shape.args,resources:$revision_shape.resources,volume_mounts:$revision_shape.volume_mounts,working_dir:$revision_shape.working_dir,ports:$revision_shape.ports,execution_controls:{container_concurrency:($service.spec.template.containerConcurrency // $service.spec.containerConcurrency // null),timeout_seconds:(revision_spec.timeoutSeconds // revision_spec.template.spec.timeoutSeconds // null),execution_environment:(annotations["run.googleapis.com/execution-environment"] // null),cpu_boost:(annotations["run.googleapis.com/startup-cpu-boost"] // null)}},network:{network:$interface.network,subnet:($interface.subnetwork // $interface.subnet // null),vpc_egress:(annotations["run.googleapis.com/vpc-access-egress"] // $service.spec.template.vpcAccess.egress // null),ingress:($service.metadata.annotations["run.googleapis.com/ingress"] // $service.spec.ingress // "all"),max_instances:max_instances},traffic:traffic,component_config:(if $component == "auth" then {firestore_database_id:$values.FIRESTORE_DATABASE_ID,allowed_origins:($values.ALLOWED_ORIGINS|if . == null then null else split(",") end),allowed_hosts:($values.ALLOWED_HOSTS|if . == null then null else split(",") end)} else {bucket:$values.BUCKET,firestore_database_id:$values.FIRESTORE_DATABASE_ID,pipeline_job_url:$values.PIPELINE_JOB_URL,allowed_origins:($values.ALLOWED_ORIGINS|if . == null then null else split(",") end),auth_service_url:$values.AUTH_SERVICE_URL,query_config:{runtime_path:$values.QUERY_STAGE_CONFIG_PATH}} end)}'
+    ({component:$component,service_name:$service_name,revision:$revision,revision_name:$revision_name,image:($revision_json.status.imageDigest // ($revision_container.image // null)),service_account:$account,runtime_service_account:$account,env:$env,secret_references:$secret_refs,container:{command:$revision_shape.command,args:$revision_shape.args,resources:$revision_shape.resources,volume_mounts:$revision_shape.volume_mounts,working_dir:$revision_shape.working_dir,ports:$revision_shape.ports,execution_controls:{container_concurrency:($service.spec.template.containerConcurrency // $service.spec.containerConcurrency // null),timeout_seconds:(revision_spec.timeoutSeconds // revision_spec.template.spec.timeoutSeconds // null),execution_environment:(annotations["run.googleapis.com/execution-environment"] // null),cpu_boost:(annotations["run.googleapis.com/startup-cpu-boost"] // null)}},network:{network:$interface.network,subnet:($interface.subnetwork // $interface.subnet // null),vpc_egress:(annotations["run.googleapis.com/vpc-access-egress"] // $service.spec.template.vpcAccess.egress // null),ingress:($service.metadata.annotations["run.googleapis.com/ingress"] // $service.spec.ingress // "all"),max_instances:max_instances},traffic:traffic,component_config:(if $component == "auth" then {firestore_database_id:$values.FIRESTORE_DATABASE_ID,allowed_origins:($values.ALLOWED_ORIGINS|if . == null then null else split(",") end),allowed_hosts:($values.ALLOWED_HOSTS|if . == null then null else split(",") end)} else {bucket:$values.BUCKET,firestore_database_id:$values.FIRESTORE_DATABASE_ID,pipeline_job_url:$values.PIPELINE_JOB_URL,allowed_origins:($values.ALLOWED_ORIGINS|if . == null then null else split(",") end),auth_service_url:$values.AUTH_SERVICE_URL,query_config:{runtime_path:$values.QUERY_STAGE_CONFIG_PATH}} end)} + (if ($legacy_names|length) > 0 then {legacy_preserved:($service_shape.env.legacy|to_entries|map({name:.key,value:.value})|sort_by(.name))} else {} end))'
 }
 
 normalize_worker_definition() {

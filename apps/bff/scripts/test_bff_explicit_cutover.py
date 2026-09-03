@@ -106,7 +106,11 @@ class SharedCDContractTest(unittest.TestCase):
         image_dir.mkdir(parents=True)
         (image_dir / f"bff-image-{SOURCE_SHA}.txt").write_text(IMAGE)
         (directory / "plan.json").write_text(json.dumps({"normalized": normalized}))
-        (directory / "artifacts" / "journal.json").write_text(json.dumps(journal))
+        journal_data = {
+            "schema": "lwc-306-mutation-journal-v1", "order": ["bff"],
+            "components": {} if not journal else {"bff": {"state": "accepted", "history": ["pending", "accepted"], "timestamp": "2026-09-04T00:00:00Z", "attempt": 1}},
+        }
+        (directory / "artifacts" / "journal.json").write_text(json.dumps(journal_data))
         service, revision = self.fake_provider(
             directory,
             normalized,
@@ -128,6 +132,7 @@ class SharedCDContractTest(unittest.TestCase):
             "ARTIFACT_DIR": str(directory / "artifacts"),
             "EVIDENCE_PATH": str(directory / "artifacts" / "readback.json"),
             "FINAL_EVIDENCE_PATH": str(directory / "artifacts" / "evidence.json"),
+            "ROLLBACK_RESULT_PATH": str(directory / "artifacts" / "rollback-result.json"),
             "FAKE_SERVICE_JSON": json.dumps(service),
             "FAKE_REVISION_JSON": json.dumps(revision),
         }
@@ -139,8 +144,9 @@ class SharedCDContractTest(unittest.TestCase):
             result = subprocess.run(["bash", str(REPO_ROOT / "deploy/cd.sh"), "reconcile"], env=env, capture_output=True, text=True)
             self.assertNotEqual(result.returncode, 0)
             readback = json.loads((directory / "artifacts" / "readback.json").read_text())
-            self.assertEqual(readback["result"], "failed")
-            self.assertEqual(readback["mutation_count"], 0)
+            self.assertEqual(readback["result"], "unknown")
+            self.assertEqual(readback["components"][0]["component"], "bff")
+            self.assertEqual(readback["components"][0]["result"], "failed")
             self.assertFalse(readback["provider_readback"])
             result = subprocess.run(["bash", str(REPO_ROOT / "deploy/cd.sh"), "evidence"], env=env, capture_output=True, text=True)
             self.assertEqual(result.returncode, 0, result.stderr)
@@ -157,39 +163,93 @@ class SharedCDContractTest(unittest.TestCase):
             result = subprocess.run(["bash", str(REPO_ROOT / "deploy/cd.sh"), "reconcile"], env=env, capture_output=True, text=True)
             self.assertNotEqual(result.returncode, 0)
             readback = json.loads((directory / "artifacts" / "readback.json").read_text())
-            self.assertEqual(readback["result"], "partial")
-            self.assertEqual(readback["mutation_count"], 1)
-            self.assertEqual(readback["mutation_components"], ["bff"])
+            self.assertEqual(readback["result"], "unknown")
+            self.assertEqual(readback["components"][0]["component"], "bff")
             self.assertFalse(readback["provider_readback"])
         finally:
             shutil.rmtree(directory, ignore_errors=True)
 
     def test_shared_bff_path_preserves_cutover_safety_boundaries(self):
         source = (REPO_ROOT / "deploy" / "cd.sh").read_text()
+        bff_source = (REPO_ROOT / "deploy" / "components" / "bff.sh").read_text()
         shared = (REPO_ROOT / ".github" / "workflows" / "cd.yml").read_text()
         for path in ("deploy-dev.yml", "promote-production.yml"):
             workflow = yaml.safe_load((REPO_ROOT / ".github" / "workflows" / path).read_text())
             triggers = workflow.get("on", workflow.get(True, {}))
             self.assertIn("workflow_dispatch", triggers)
             self.assertIn("./.github/workflows/cd.yml", (REPO_ROOT / ".github" / "workflows" / path).read_text())
-        self.assertLess(shared.index("Upload durable rollback artifact"), shared.index("Mutate selected components"))
+        self.assertLess(shared.index("Upload durable rollback artifact"), shared.index("Mutate Auth"))
         self.assertIn("if: steps.rollback_upload.outcome == 'success'", shared)
-        self.assertIn("event=push", source)
         self.assertIn("event=workflow_dispatch", source)
-        self.assertIn("gcloud run services update-traffic", source)
+        self.assertIn("gcloud run services update-traffic", bff_source)
         self.assertNotIn("run jobs execute", source)
         self.assertNotIn("vercel alias set", source)
 
+    def test_bff_freezes_and_rolls_back_legacy_invocation_env_without_desiring_it_forward(self):
+        directory = Path(tempfile.mkdtemp(prefix="lwc-306-bff-legacy-"))
+        try:
+            artifacts = directory / "artifacts"
+            artifacts.mkdir()
+            normalized = self.normalized()
+            plan = directory / "plan.json"
+            plan.write_text(json.dumps({"normalized": normalized}))
+            service_before = REPO_ROOT / "apps/bff/scripts/fixtures/bff-service-before.json"
+            revision_before = REPO_ROOT / "apps/bff/scripts/fixtures/bff-revision-before.json"
+            fake = textwrap.dedent(
+                f"""
+                #!/usr/bin/env python3
+                import pathlib, sys
+                args = sys.argv[1:]
+                if args[:3] == ["run", "services", "describe"]:
+                    if any(arg.startswith("--format=value(") for arg in args): print("llm-wiki-bff-00001-old")
+                    else: print(pathlib.Path({str(service_before)!r}).read_text())
+                elif args[:3] == ["run", "revisions", "describe"]:
+                    print(pathlib.Path({str(revision_before)!r}).read_text())
+                elif args[:3] == ["run", "services", "update-traffic"]:
+                    pass
+                else: raise SystemExit(2)
+                """
+            ).lstrip()
+            provider = directory / "gcloud"
+            provider.write_text(fake)
+            provider.chmod(0o755)
+            rollback = artifacts / "rollback.json"
+            journal = artifacts / "journal.json"
+            env = {
+                **os.environ,
+                "PATH": f"{directory}:{os.environ['PATH']}", "ENVIRONMENT": "production", "SOURCE_REF": "main",
+                "SOURCE_SHA": "a" * 40, "CONFIG_PATH": "deploy/environments/production.yaml", "COMPONENTS": "bff",
+                "PLAN_PATH": str(plan), "ROLLBACK_PATH": str(rollback), "JOURNAL_PATH": str(journal),
+                "ROLLBACK_RESULT_PATH": str(artifacts / "rollback-result.json"), "ARTIFACT_DIR": str(artifacts),
+            }
+            frozen = subprocess.run(["bash", str(REPO_ROOT / "deploy/cd.sh"), "freeze"], env=env, text=True, capture_output=True)
+            self.assertEqual(frozen.returncode, 0, frozen.stdout + frozen.stderr)
+            handle = json.loads(rollback.read_text())["handles"]["bff"]
+            self.assertEqual(handle["readback"]["legacy_preserved"], [
+                {"name": "PROJECT_ID", "value": "demo"}, {"name": "USER_ID", "value": "test-user"},
+            ])
+            journal.write_text(json.dumps({
+                "schema": "lwc-306-mutation-journal-v1", "order": ["bff"],
+                "components": {"bff": {"state": "accepted", "history": ["pending", "accepted"], "timestamp": "2026-09-04T00:00:00Z", "attempt": 1}},
+            }))
+            restored = subprocess.run(["bash", str(REPO_ROOT / "deploy/cd.sh"), "rollback"], env=env, text=True, capture_output=True)
+            self.assertEqual(restored.returncode, 0, restored.stdout + restored.stderr)
+            self.assertEqual(json.loads((artifacts / "rollback" / "bff.json").read_text())["result"], "success")
+            source = (REPO_ROOT / "deploy/components/bff.sh").read_text()
+            self.assertIn("USER_ID,PROJECT_ID", source)
+            self.assertNotIn("USER_ID", json.dumps(normalized["bff"]))
+        finally:
+            shutil.rmtree(directory, ignore_errors=True)
+
     def test_production_consumes_immutable_dev_receipt_without_rebuilding_bff(self):
         source = (REPO_ROOT / "deploy" / "cd.sh").read_text()
-        consume = source[source.index("consume_dev_images()") : source.index("image_for()")]
+        consume = source[source.index("consume_dev_images()") : source.index("preflight_shared()")]
         self.assertIn("event=workflow_dispatch", consume)
         self.assertIn("head_sha=$\u007bSOURCE_SHA}", consume)
         self.assertIn("gh run download", consume)
         self.assertNotIn("docker build", consume)
         self.assertNotIn("gcloud builds", consume)
-        image_for = source[source.index("image_for()") : source.index("service_env_args()")]
-        self.assertNotIn(":latest", image_for)
+        self.assertNotIn(":latest", consume)
 
 
 if __name__ == "__main__":
