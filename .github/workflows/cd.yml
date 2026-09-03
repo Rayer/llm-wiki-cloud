@@ -91,13 +91,13 @@ jobs:
       GITHUB_REPOSITORY: ${{ github.repository }}
       GH_TOKEN: ${{ github.token }}
       GITHUB_TOKEN: ${{ github.token }}
-      PLAN_PATH: ${{ runner.temp }}/cd/plan.json
-      ROLLBACK_PATH: ${{ runner.temp }}/cd/rollback.json
-      JOURNAL_PATH: ${{ runner.temp }}/cd/journal.json
-      EVIDENCE_PATH: ${{ runner.temp }}/cd/readback.json
-      ROLLBACK_RESULT_PATH: ${{ runner.temp }}/cd/rollback-result.json
-      FINAL_EVIDENCE_PATH: ${{ runner.temp }}/cd/evidence.json
-      ARTIFACT_DIR: ${{ runner.temp }}/cd
+      PLAN_PATH: ${{ github.workspace }}/.cd/plan.json
+      ROLLBACK_PATH: ${{ github.workspace }}/.cd/rollback.json
+      JOURNAL_PATH: ${{ github.workspace }}/.cd/journal.json
+      EVIDENCE_PATH: ${{ github.workspace }}/.cd/readback.json
+      ROLLBACK_RESULT_PATH: ${{ github.workspace }}/.cd/rollback-result.json
+      FINAL_EVIDENCE_PATH: ${{ github.workspace }}/.cd/evidence.json
+      ARTIFACT_DIR: ${{ github.workspace }}/.cd
       VERCEL_API_BASE_URL: https://api.vercel.com
       VERCEL_TOKEN: ${{ secrets.VERCEL_TOKEN }}
       VERCEL_PROJECT_ID: ${{ secrets.VERCEL_PROJECT_ID }}
@@ -114,7 +114,7 @@ jobs:
         uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4.3.0
         with:
           name: cd-plan-${{ inputs.source_sha }}
-          path: ${{ runner.temp }}/cd
+          path: ${{ github.workspace }}/.cd
 
       - name: Read validated project target
         id: target
@@ -191,7 +191,8 @@ jobs:
         uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
         with:
           name: cd-rollback-${{ inputs.config_environment }}-${{ inputs.source_sha }}
-          path: ${{ runner.temp }}/cd/rollback.json
+          path: ${{ github.workspace }}/.cd/rollback.json
+          include-hidden-files: true
           if-no-files-found: error
           retention-days: 90
 
@@ -236,7 +237,8 @@ jobs:
         uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
         with:
           name: cd-images-${{ inputs.source_sha }}
-          path: ${{ runner.temp }}/cd/images
+          path: ${{ github.workspace }}/.cd/images
+          include-hidden-files: true
           if-no-files-found: error
           retention-days: 90
 
@@ -283,7 +285,8 @@ jobs:
         uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
         with:
           name: cd-mutation-journal-${{ inputs.config_environment }}-${{ inputs.source_sha }}
-          path: ${{ runner.temp }}/cd/journal.json
+          path: ${{ github.workspace }}/.cd/journal.json
+          include-hidden-files: true
           if-no-files-found: error
           retention-days: 90
 
@@ -292,7 +295,8 @@ jobs:
         uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
         with:
           name: cd-rollback-result-${{ inputs.config_environment }}-${{ inputs.source_sha }}
-          path: ${{ runner.temp }}/cd/rollback-result.json
+          path: ${{ github.workspace }}/.cd/rollback-result.json
+          include-hidden-files: true
           if-no-files-found: error
           retention-days: 90
 
@@ -305,6 +309,7 @@ jobs:
         uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
         with:
           name: cd-evidence-${{ inputs.config_environment }}-${{ inputs.source_sha }}
-          path: ${{ runner.temp }}/cd/evidence.json
+          path: ${{ github.workspace }}/.cd/evidence.json
+          include-hidden-files: true
           if-no-files-found: error
           retention-days: 90

@@ -138,10 +138,22 @@ jobs:
         run: node --experimental-strip-types --test tests/ci-workflow-contract.test.mjs
         working-directory: apps/frontend
 
+  actionlint:
+    name: actionlint/schema
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+      - uses: actions/setup-go@d35c59abb061a4a6fb18e82ac0862c26744d6ab5 # v5.5.0
+        with:
+          go-version: "1.26"
+          cache: false
+      - name: Validate GitHub Actions workflow schema and expressions
+        run: go run github.com/rhysd/actionlint/cmd/actionlint@v1.7.12
+
   build:
     name: canonical-ci
     if: ${{ always() }}
-    needs: [bff, frontend-build, local-smoke, workflow-source]
+    needs: [bff, frontend-build, local-smoke, workflow-source, actionlint]
     runs-on: ubuntu-latest
     steps:
       - name: Require every canonical job
@@ -151,3 +163,4 @@ jobs:
           test "${{ needs.frontend-build.result }}" = success
           test "${{ needs.local-smoke.result }}" = success
           test "${{ needs.workflow-source.result }}" = success
+          test "${{ needs.actionlint.result }}" = success
