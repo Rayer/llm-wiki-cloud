@@ -118,18 +118,19 @@ func TestSharedCDOrchestratorOrdersValidationRollbackAndMutation(t *testing.T) {
 	}
 	for _, marker := range []string{
 		"Checkout exact source SHA", "ref: ${{ inputs.source_sha }}",
-		"Freeze rollback handles before mutation", "id: rollback_upload", "Upload durable rollback artifact",
-		"Mutate selected components through shared bounded actions", "if: steps.rollback_upload.outcome == 'success'",
-		"Reconcile every selected component by authoritative read-back", "Upload normalized CD evidence",
+		"Freeze Auth rollback handle", "id: rollback_upload", "Upload durable rollback artifact",
+		"Mutate Auth", "steps.rollback_upload.outcome == 'success'",
+		"Reconcile Auth", "Upload normalized CD evidence",
 	} {
 		if !strings.Contains(source, marker) {
 			t.Fatalf("shared workflow missing %q", marker)
 		}
 	}
-	if !strings.Contains(script, "go run ./cmd/deploy_config") {
+	common := readCDFile(t, "deploy/components/common.sh")
+	if !strings.Contains(script+common, "go run ./cmd/deploy_config") {
 		t.Fatal("shared CD script must invoke the canonical config loader")
 	}
-	if !(strings.Index(source, "Upload durable rollback artifact") < strings.Index(source, "run: bash deploy/cd.sh mutate")) {
+	if !(strings.Index(source, "Upload durable rollback artifact") < strings.Index(source, "      - name: Mutate Auth")) {
 		t.Fatal("durable rollback upload must precede every mutation")
 	}
 	for _, forbidden := range []string{"run jobs execute", "add-iam-policy-binding", "remove-iam-policy-binding", "set-iam-policy"} {
@@ -161,10 +162,10 @@ func TestSharedCDRunBlocksAreShellValid(t *testing.T) {
 func TestCDPreflightIsReadOnlyAndPrecedesRollbackFreeze(t *testing.T) {
 	workflow := readCDFile(t, ".github/workflows/cd.yml")
 	script := readCDFile(t, "deploy/cd.sh")
-	if !strings.Contains(workflow, "run: bash deploy/cd.sh preflight") || !strings.Contains(script, "preflight()") {
+	if !strings.Contains(workflow, "run: bash deploy/cd.sh preflight-shared") || !strings.Contains(script, "preflight()") {
 		t.Fatal("shared CD must run the common read-only preflight")
 	}
-	preflight := script[strings.Index(script, "iam_binding_is_exact()"):strings.Index(script, "freeze_service()")]
+	preflight := script + readCDFile(t, "deploy/components/common.sh") + readCDFile(t, "deploy/components/auth.sh") + readCDFile(t, "deploy/components/bff.sh") + readCDFile(t, "deploy/components/worker.sh")
 	for _, marker := range []string{
 		"gcloud iam service-accounts describe", "gcloud artifacts repositories describe", "gcloud firestore databases describe",
 		"secrets get-iam-policy", "run services get-iam-policy", "run jobs get-iam-policy",
@@ -179,14 +180,14 @@ func TestCDPreflightIsReadOnlyAndPrecedesRollbackFreeze(t *testing.T) {
 			t.Fatalf("read-only preflight contains mutation %q", forbidden)
 		}
 	}
-	if !(strings.Index(workflow, "run: bash deploy/cd.sh preflight") < strings.Index(workflow, "Freeze rollback handles before mutation")) {
+	if !(strings.Index(workflow, "run: bash deploy/cd.sh preflight-shared") < strings.Index(workflow, "Freeze Auth rollback handle")) {
 		t.Fatal("preflight must precede rollback freeze")
 	}
 }
 
 func TestCDPlanBindsExactSourceCIAndQueryAuthority(t *testing.T) {
-	script := readCDFile(t, "deploy/cd.sh")
-	plan := script[strings.Index(script, "validate_inputs()"):strings.Index(script, "iam_binding_is_exact()")]
+	common := readCDFile(t, "deploy/components/common.sh")
+	plan := common[strings.Index(common, "validate_inputs()"):strings.Index(common, "iam_binding_is_exact()")]
 	for _, marker := range []string{
 		"[[ \"$SOURCE_SHA\" =~ ^[0-9a-f]{40}$ ]]", "git fetch origin \"$SOURCE_REF\"",
 		"git rev-parse HEAD", "git rev-parse \"origin/$SOURCE_REF\"",
@@ -199,24 +200,24 @@ func TestCDPlanBindsExactSourceCIAndQueryAuthority(t *testing.T) {
 			t.Fatalf("exact source/CI/query plan is missing %q", marker)
 		}
 	}
-	planBody := script[strings.Index(script, "plan() {"):strings.Index(script, "iam_binding_is_exact()")]
+	planBody := common[strings.Index(common, "plan() {"):strings.Index(common, "iam_binding_is_exact()")]
 	if strings.Contains(planBody, "gcloud run ") || strings.Contains(planBody, "docker ") || strings.Contains(planBody, "curl ") {
 		t.Fatal("plan must be provider-mutation-free")
 	}
 }
 
 func TestCDPreflightRevalidatesPinnedCIAttemptAndCanonicalSource(t *testing.T) {
-	script := readCDFile(t, "deploy/cd.sh")
-	start := strings.Index(script, "strict_json()")
-	end := strings.Index(script, "freeze_service()")
+	common := readCDFile(t, "deploy/components/common.sh")
+	start := strings.Index(common, "strict_json()")
+	end := strings.Index(common, "iam_binding_is_exact()")
 	if start < 0 || end < start {
 		t.Fatal("shared preflight is missing")
 	}
-	preflight := script[start:end]
+	preflight := common[start:end]
 	for _, marker := range []string{
 		"revalidate_ci", "git fetch origin", "git rev-parse \"origin/$SOURCE_REF\"",
-		"actions/runs/${CI_RUN_ID}", "attempts/${CI_RUN_ATTEMPT}",
-		"actions/runs/${CI_RUN_ID}/attempts/${CI_RUN_ATTEMPT}/jobs",
+		"actions/runs/${run_id}", "attempts/${attempt_id}",
+		"actions/runs/${run_id}/attempts/${attempt_id}/jobs",
 		"run_attempt", "conclusion == \"success\"", "strict_json", "object_pairs_hook",
 	} {
 		if !strings.Contains(preflight, marker) {
@@ -231,7 +232,10 @@ func TestCDPreflightRevalidatesPinnedCIAttemptAndCanonicalSource(t *testing.T) {
 func TestProductionConsumesExactDEVReceiptsWithoutRebuild(t *testing.T) {
 	script := readCDFile(t, "deploy/cd.sh")
 	consumeStart := strings.Index(script, "consume_dev_images()")
-	consumeEnd := strings.Index(script, "image_for()")
+	consumeEnd := -1
+	if consumeStart >= 0 {
+		consumeEnd = consumeStart + strings.Index(script[consumeStart:], "\n}\n\npreflight_shared")
+	}
 	if consumeStart < 0 || consumeEnd < consumeStart {
 		t.Fatal("production receipt consumer is missing")
 	}
@@ -248,7 +252,13 @@ func TestProductionConsumesExactDEVReceiptsWithoutRebuild(t *testing.T) {
 	if strings.Contains(consume, "gcloud builds") || strings.Contains(consume, "docker build") {
 		t.Fatal("production must not rebuild DEV-built images")
 	}
-	image := script[strings.Index(script, "image_for()"):strings.Index(script, "service_env_args()")]
+	common := readCDFile(t, "deploy/components/common.sh")
+	imageStart := strings.Index(common, "image_for()")
+	imageEnd := strings.Index(common, "\nredact_evidence()")
+	if imageStart < 0 || imageEnd < imageStart {
+		t.Fatal("component image identity helper is missing")
+	}
+	image := common[imageStart:imageEnd]
 	if strings.Contains(image, ":latest") || !strings.Contains(image, "@sha256:") {
 		t.Fatal("component image identity must be immutable")
 	}
@@ -256,29 +266,31 @@ func TestProductionConsumesExactDEVReceiptsWithoutRebuild(t *testing.T) {
 
 func TestCDBuildIdentityWorkerNonceAndNoExecution(t *testing.T) {
 	script := readCDFile(t, "deploy/cd.sh")
+	components := readCDFile(t, "deploy/components/common.sh") + readCDFile(t, "deploy/components/auth.sh") + readCDFile(t, "deploy/components/bff.sh") + readCDFile(t, "deploy/components/worker.sh")
 	for _, marker := range []string{
 		"_GIT_SHA=$SOURCE_SHA", "_GIT_BRANCH=$SOURCE_REF", "_GIT_TAG=",
 		"nonce=$(printf '%032x' \"$(date -u +%s%N)\")", "--build-arg BUILD_NONCE=\"$nonce\"",
 		"--target worker", "gcloud artifacts docker images describe", "@sha256:",
 	} {
-		if !strings.Contains(script, marker) {
+		if !strings.Contains(script+components, marker) {
 			t.Fatalf("CD build identity contract missing %q", marker)
 		}
 	}
-	if strings.Contains(script, "run jobs execute") || strings.Contains(script, "gcloud artifacts docker tags add") {
+	if strings.Contains(script+components, "run jobs execute") || strings.Contains(script+components, "gcloud artifacts docker tags add") {
 		t.Fatal("CD must not execute Worker Jobs or create mutable observability tags")
 	}
 }
 
 func TestCDReadbackRollbackAndEvidenceContractsRemainTruthful(t *testing.T) {
 	script := readCDFile(t, "deploy/cd.sh")
+	components := readCDFile(t, "deploy/components/common.sh") + readCDFile(t, "deploy/components/auth.sh") + readCDFile(t, "deploy/components/bff.sh") + readCDFile(t, "deploy/components/worker.sh") + readCDFile(t, "deploy/components/frontend.sh")
 	for _, marker := range []string{
 		"normalize_service_readback", "runtime_service_account", "secret_references", "allowed_origins",
 		"vpc_egress", "max_instances", "component_config", "normalize_worker_definition",
 		"handles.worker.definition", "gcloud run jobs replace", "mutation_count", "mutation_components",
 		"rollback_attempted", "rollback_result", "rollback_verified", "next_action", "redact_evidence", "<redacted>",
 	} {
-		if !strings.Contains(script, marker) {
+		if !strings.Contains(script+components, marker) {
 			t.Fatalf("CD safety contract missing %q", marker)
 		}
 	}

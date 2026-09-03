@@ -771,7 +771,9 @@ test('DEV authority uses the fixed shared CD entry', async () => {
   assert.equal(source.jobs.deploy.with.environment, 'Development');
   assert.equal(source.jobs.deploy.with.config_path, 'deploy/environments/development.yaml');
   assert.equal(source.jobs.deploy.with.source_ref, 'develop');
-  assert.match(await readFile(join(monorepoRoot, 'deploy/cd.sh'), 'utf8'), /promote_frontend/);
+  const component = await readFile(join(monorepoRoot, 'deploy/components/frontend.sh'), 'utf8');
+  assert.match(component, /frontend_mutate/);
+  assert.match(component, /vercel_alias_apply/);
 });
 
 test('sourcing the normal helper is library-only and preserves direct evidence naming', async () => {

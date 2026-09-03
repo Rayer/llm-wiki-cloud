@@ -16,6 +16,7 @@ func TestDeployWorkerWorkflowContract(t *testing.T) {
 	workflow := readWorkflow(t, ".github/workflows/deploy-dev.yml")
 	script := readWorkflow(t, "deploy/cd.sh")
 	shared := readWorkflow(t, ".github/workflows/cd.yml")
+	components := readWorkflow(t, "deploy/components/common.sh") + readWorkflow(t, "deploy/components/worker.sh")
 
 	if strings.Contains(workflow, "push:") || !strings.Contains(workflow, "workflow_dispatch:") {
 		t.Fatal("DEV entry workflow must be dispatch-only")
@@ -45,14 +46,19 @@ func TestDeployWorkerWorkflowContract(t *testing.T) {
 		"--args",
 		"gcloud run jobs replace",
 	} {
-		if !strings.Contains(script+shared, want) {
+		if !strings.Contains(script+shared+components, want) {
 			t.Fatalf("shared CD contract missing %q", want)
 		}
 	}
 	if strings.Contains(script, "run jobs execute") || strings.Contains(shared, "run jobs execute") {
 		t.Fatal("deployment contract must never execute the Worker Job")
 	}
-	imagePath := script[strings.Index(script, "image_for()"):strings.Index(script, "service_env_args()")]
+	imagePathStart := strings.Index(components, "image_for()")
+	imagePathEnd := strings.Index(components, "\nredact_evidence()")
+	if imagePathStart < 0 || imagePathEnd < imagePathStart {
+		t.Fatal("shared image receipt helper is missing")
+	}
+	imagePath := components[imagePathStart:imagePathEnd]
 	if strings.Contains(imagePath, ":latest") {
 		t.Fatal("Worker image identity must be digest-pinned, not latest")
 	}
@@ -62,6 +68,7 @@ func TestWorkerPromotionWorkflowsContract(t *testing.T) {
 	production := readWorkflow(t, ".github/workflows/promote-production.yml")
 	shared := readWorkflow(t, ".github/workflows/cd.yml")
 	script := readWorkflow(t, "deploy/cd.sh")
+	components := readWorkflow(t, "deploy/components/common.sh") + readWorkflow(t, "deploy/components/worker.sh")
 	for name, source := range map[string]string{"production": production, "shared": shared} {
 		var document any
 		if err := yaml.Unmarshal([]byte(source), &document); err != nil {
@@ -90,7 +97,15 @@ func TestWorkerPromotionWorkflowsContract(t *testing.T) {
 			t.Fatalf("Production entry workflow missing %q", want)
 		}
 	}
-	consume := script[strings.Index(script, "consume_dev_images()"):strings.Index(script, "image_for()")]
+	consumeStart := strings.Index(script, "consume_dev_images()")
+	consumeEnd := -1
+	if consumeStart >= 0 {
+		consumeEnd = consumeStart + strings.Index(script[consumeStart:], "\n}\n\npreflight_shared")
+	}
+	if consumeStart < 0 || consumeEnd < consumeStart {
+		t.Fatal("Production image receipt consumer is missing")
+	}
+	consume := script[consumeStart:consumeEnd]
 	for _, want := range []string{"event=workflow_dispatch", "head_sha=${SOURCE_SHA}", "branch=develop", "gh run download", "cd-images-$SOURCE_SHA"} {
 		if !strings.Contains(consume, want) {
 			t.Fatalf("Production image receipt contract missing %q", want)
@@ -104,13 +119,13 @@ func TestWorkerPromotionWorkflowsContract(t *testing.T) {
 			t.Fatalf("CD contract must not contain broad IAM or Worker execution %q", forbidden)
 		}
 	}
-	freeze := strings.Index(shared, "      - name: Freeze rollback handles before mutation")
+	freeze := strings.Index(shared, "      - name: Freeze Auth rollback handle")
 	upload := strings.Index(shared, "      - name: Upload durable rollback artifact")
-	mutation := strings.Index(shared, "      - name: Mutate selected components through shared bounded actions")
+	mutation := strings.Index(shared, "      - name: Mutate Auth")
 	if !(freeze >= 0 && freeze < upload && upload < mutation) {
 		t.Fatal("durable rollback upload must precede all mutations")
 	}
-	if !strings.Contains(script, "gcloud run jobs replace") || !strings.Contains(script, "handles.worker.definition") {
+	if !strings.Contains(components, "gcloud run jobs replace") || !strings.Contains(components, "handles.worker.definition") {
 		t.Fatal("Worker rollback must restore the frozen complete definition")
 	}
 }
@@ -118,8 +133,12 @@ func TestWorkerPromotionWorkflowsContract(t *testing.T) {
 func TestWorkerReleaseEmitsOneNormalizedEvidenceArtifactAfterReadback(t *testing.T) {
 	shared := readWorkflow(t, ".github/workflows/cd.yml")
 	script := readWorkflow(t, "deploy/cd.sh")
+	common := readWorkflow(t, "deploy/components/common.sh")
 	for _, want := range []string{
-		"Reconcile every selected component by authoritative read-back",
+		"Reconcile Auth",
+		"Reconcile BFF",
+		"Reconcile Worker",
+		"Reconcile Frontend",
 		"Render normalized redacted evidence",
 		"Upload normalized CD evidence",
 		"mutation_count",
@@ -136,19 +155,19 @@ func TestWorkerReleaseEmitsOneNormalizedEvidenceArtifactAfterReadback(t *testing
 	if strings.Contains(script, "provider_readback:true") || strings.Contains(script, "verified:true") {
 		t.Fatal("evidence must not fabricate provider or rollback success")
 	}
-	if !strings.Contains(script, "redact_evidence") || !strings.Contains(script, "<redacted>") {
+	if !strings.Contains(script+common, "redact_evidence") || !strings.Contains(script+common, "<redacted>") {
 		t.Fatal("evidence must redact credential-like fields")
 	}
 }
 
 func TestWorkerReleaseRollbackUploadFailureOutcomesBlockEvidenceFinalization(t *testing.T) {
 	shared := readWorkflow(t, ".github/workflows/cd.yml")
-	mutation := strings.Index(shared, "      - name: Mutate selected components through shared bounded actions")
+	mutation := strings.Index(shared, "      - name: Mutate Auth")
 	upload := strings.Index(shared, "      - name: Upload durable rollback artifact")
 	if upload < 0 || mutation < 0 || upload > mutation {
 		t.Fatal("rollback upload outcome must gate mutation")
 	}
-	if !strings.Contains(shared[mutation:], "if: steps.rollback_upload.outcome == 'success'") {
+	if !strings.Contains(shared[mutation:], "steps.rollback_upload.outcome == 'success'") {
 		t.Fatal("mutation must be conditional on a successful rollback upload")
 	}
 	if !strings.Contains(shared, "if: always()") || !strings.Contains(shared, "cd-evidence-") {
@@ -290,7 +309,7 @@ func runJQFixtureE(name, filter string) (string, error) {
 
 func readWorkflow(t *testing.T, path string) string {
 	t.Helper()
-	if strings.HasPrefix(path, ".github/workflows/") || path == "deploy/cd.sh" {
+	if strings.HasPrefix(path, ".github/workflows/") || path == "deploy/cd.sh" || strings.HasPrefix(path, "deploy/components/") {
 		path = filepath.Join("..", "..", "..", "..", path)
 	}
 	data, err := os.ReadFile(path)

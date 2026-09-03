@@ -764,12 +764,14 @@ for (const [scenario, expected] of [
 
 test('frontend aliases use the shared CD mutation and read-back path', async () => {
   const workflow = await readFile(join(monorepoRoot, '.github/workflows/cd.yml'), 'utf8');
-  const script = await readFile(join(monorepoRoot, 'deploy/cd.sh'), 'utf8');
-  assert.match(script, /promote_frontend/);
+  const script = await readFile(join(monorepoRoot, 'deploy/components/frontend.sh'), 'utf8');
+  assert.match(script, /frontend_mutate/);
+  assert.match(script, /vercel_alias_apply/);
+  assert.match(script, /vercel_verify_alias_target/);
   assert.match(workflow, /Upload durable rollback artifact/);
-  assert.match(workflow, /Reconcile every selected component by authoritative read-back/);
+  assert.match(workflow, /Reconcile Frontend/);
   assert.doesNotMatch(script, /vercel alias set/);
-  await execFileAsync('bash', ['-n', join(monorepoRoot, 'deploy/cd.sh')]);
+  await execFileAsync('bash', ['-n', join(monorepoRoot, 'deploy/components/frontend.sh')]);
 });
 
 for (const scenario of [

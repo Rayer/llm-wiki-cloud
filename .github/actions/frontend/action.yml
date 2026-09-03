@@ -1,0 +1,14 @@
+name: Frontend CD component
+description: Runs the Frontend component's bounded CD operation.
+inputs:
+  operation:
+    required: true
+    description: preflight, freeze, mutate, reconcile, or rollback
+runs:
+  using: composite
+  steps:
+    - name: Run Frontend component
+      shell: bash
+      env:
+        OPERATION: ${{ inputs.operation }}
+      run: bash deploy/components/frontend.sh "$OPERATION"

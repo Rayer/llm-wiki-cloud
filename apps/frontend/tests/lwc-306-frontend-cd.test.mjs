@@ -9,6 +9,7 @@ import { test } from 'node:test';
 const execFileAsync = promisify(execFile);
 const repoRoot = new URL('../../..', import.meta.url).pathname;
 const scriptPath = join(repoRoot, 'deploy/cd.sh');
+const componentScriptPath = join(repoRoot, 'deploy/components/frontend.sh');
 const fixtureDir = join(new URL('.', import.meta.url).pathname, 'fixtures');
 const sourceSha = '0123456789abcdef0123456789abcdef01234567';
 
@@ -112,10 +113,10 @@ test('builds once with Vercel prebuilt ordering and keeps immutable ID separate 
   assert.equal(deployment.deployment_id, 'dpl_frontendnew');
   assert.equal(deployment.deployment_url, 'https://frontend-hash.vercel.app');
   assert.notEqual(deployment.deployment_id, deployment.deployment_url.split('/').pop());
-  assert.deepEqual(await json(join(fixture.artifactDir, 'journal.json')), ['frontend']);
+  assert.equal((await json(join(fixture.artifactDir, 'journal.json'))).components.frontend.state, 'accepted');
   const reconcile = await run(fixture, 'reconcile');
   assert.equal(reconcile.code, undefined, reconcile.stderr);
-  assert.equal((await json(join(fixture.artifactDir, 'readback.json'))).provider_readback, true);
+  assert.equal((await json(join(fixture.artifactDir, 'components/frontend.json'))).result, 'success');
   await assertNoToken(fixture);
 });
 
@@ -134,7 +135,7 @@ test('exact wrong-target read-back fails closed without retrying the alias mutat
   const result = await run(fixture, 'mutate');
   assert.notEqual(result.code, undefined);
   assert.equal((await lines(join(fixture.root, 'alias-post-calls'))).length, 1);
-  assert.deepEqual(await json(join(fixture.artifactDir, 'journal.json')), ['frontend']);
+  assert.equal((await json(join(fixture.artifactDir, 'journal.json'))).components.frontend.state, 'unknown');
   await assertNoToken(fixture);
 });
 
@@ -143,7 +144,7 @@ test('accepts an ambiguous timeout only when exact alias and project inventory r
   assert.equal((await run(fixture, 'freeze')).code, undefined);
   const result = await run(fixture, 'mutate');
   assert.equal(result.code, undefined, result.stderr);
-  assert.equal((await json(join(fixture.artifactDir, 'journal.json')))[0], 'frontend');
+  assert.equal((await json(join(fixture.artifactDir, 'journal.json'))).components.frontend.state, 'accepted');
   await assertNoToken(fixture);
 });
 
@@ -157,10 +158,10 @@ test('production rollback restores every frozen alias through REST and verifies 
   assert.deepEqual(await json(join(fixture.root, 'aliases.json')), {
     'wiki.rayer.idv.tw': 'dpl_old0', 'llm-wiki-frontend.vercel.app': 'dpl_old1',
   });
-  const result = await json(join(fixture.artifactDir, 'rollback-result.json'));
+  const result = await json(join(fixture.artifactDir, 'rollback/frontend.json'));
   assert.equal(result.result, 'success');
-  assert.equal(result.rollback_verified, true);
-  assert.deepEqual(result.frontend.aliases.map(({ alias, deployment_id, converged }) => ({ alias, deployment_id, converged })), [
+  assert.equal(result.verified, true);
+  assert.deepEqual(result.readback.aliases.map(({ alias, deployment_id, converged }) => ({ alias, deployment_id, converged })), [
     { alias: 'wiki.rayer.idv.tw', deployment_id: 'dpl_old0', converged: true },
     { alias: 'llm-wiki-frontend.vercel.app', deployment_id: 'dpl_old1', converged: true },
   ]);
@@ -169,7 +170,7 @@ test('production rollback restores every frozen alias through REST and verifies 
 });
 
 test('shared frontend path is REST-only and does not use the invalid npm build shortcut', async () => {
-  const source = await readFile(scriptPath, 'utf8');
+  const source = `${await readFile(scriptPath, 'utf8')}\n${await readFile(componentScriptPath, 'utf8')}`;
   assert.match(source, /vercel pull/);
   assert.match(source, /vercel build/);
   assert.match(source, /vercel deploy --prebuilt/);

@@ -61,7 +61,7 @@ test('shared CD validates before protected environment mutation and uploads roll
   const plan = text.indexOf('  plan:');
   const environment = text.indexOf('    environment:', text.indexOf('  mutate:'));
   assert.ok(plan < environment);
-  assert.ok(text.indexOf('id: rollback_upload') < text.indexOf('run: bash deploy/cd.sh mutate'));
+  assert.ok(text.indexOf('id: rollback_upload') < text.indexOf('operation: mutate'));
   assert.match(text, /if: steps\.rollback_upload\.outcome == 'success'/);
   assert.doesNotMatch(text, /run jobs execute/);
 });
@@ -77,5 +77,5 @@ test('all shared run blocks are shell-valid and production consumes, not rebuild
     assert.equal(result.status, 0, result.stderr);
   }
   assert.match(await readFile(join(repoRoot, 'deploy/cd.sh'), 'utf8'), /consume_dev_images/);
-  assert.match(await readFile(join(repoRoot, 'deploy/cd.sh'), 'utf8'), /if \[\[ "\$ENVIRONMENT" == production \]\]; then/);
+  assert.match(await readFile(join(repoRoot, 'deploy/cd.sh'), 'utf8'), /if \[\[ "\$ENVIRONMENT" == production \]\] &&/);
 });

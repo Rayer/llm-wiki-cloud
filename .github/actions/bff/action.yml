@@ -1,0 +1,14 @@
+name: BFF CD component
+description: Runs the BFF component's bounded CD operation.
+inputs:
+  operation:
+    required: true
+    description: preflight, freeze, mutate, reconcile, or rollback
+runs:
+  using: composite
+  steps:
+    - name: Run BFF component
+      shell: bash
+      env:
+        OPERATION: ${{ inputs.operation }}
+      run: bash deploy/components/bff.sh "$OPERATION"

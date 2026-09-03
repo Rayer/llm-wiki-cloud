@@ -59,7 +59,7 @@ func TestWorkerDockerfileBuildNonceContract(t *testing.T) {
 }
 
 func TestDeployWorkflowBuildNonceContract(t *testing.T) {
-	data, err := os.ReadFile(filepath.Join("..", "..", "..", "..", "deploy/cd.sh"))
+	data, err := os.ReadFile(filepath.Join("..", "..", "..", "..", "deploy/components/worker.sh"))
 	if err != nil {
 		t.Fatal(err)
 	}

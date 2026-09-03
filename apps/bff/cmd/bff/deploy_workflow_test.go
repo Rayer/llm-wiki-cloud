@@ -29,6 +29,9 @@ func readBFFCDFile(t *testing.T, name string) string {
 
 func TestBFFServiceCDContractUsesImmutableQueryAndRuntimeConfig(t *testing.T) {
 	script := readBFFCDFile(t, "deploy/cd.sh")
+	common := readBFFCDFile(t, "deploy/components/common.sh")
+	bff := readBFFCDFile(t, "deploy/components/bff.sh")
+	contract := script + common + bff
 	for _, marker := range []string{
 		"QUERY_STAGE_CONFIG_PATH=$(plan_json '.query_config.runtime_path')",
 		"--remove-env-vars",
@@ -36,13 +39,13 @@ func TestBFFServiceCDContractUsesImmutableQueryAndRuntimeConfig(t *testing.T) {
 		"--service-account", "--network", "--subnet", "--vpc-egress", "--ingress", "--max",
 		"gcloud run deploy", "gcloud run services update-traffic", "normalize_service_readback",
 	} {
-		if !strings.Contains(script, marker) {
+		if !strings.Contains(contract, marker) {
 			t.Fatalf("shared BFF service path missing %q", marker)
 		}
 	}
-	imageStart := strings.Index(script, "image_for()")
-	imageEnd := strings.Index(script, "service_env_args()")
-	if imageStart < 0 || imageEnd < imageStart || strings.Contains(script[imageStart:imageEnd], ":latest") || !strings.Contains(script[imageStart:imageEnd], "@sha256:") {
+	imageStart := strings.Index(common, "image_for()")
+	imageEnd := strings.Index(common, "\nredact_evidence()")
+	if !strings.Contains(bff, "image=$(image_for bff)") || imageStart < 0 || imageEnd < imageStart || strings.Contains(common[imageStart:imageEnd], ":latest") || !strings.Contains(common[imageStart:imageEnd], "@sha256:") {
 		t.Fatal("BFF deployment image identity must be digest-pinned")
 	}
 }
@@ -53,7 +56,11 @@ func TestProductionBFFUsesDEVReceiptAndNoRebuild(t *testing.T) {
 	if !strings.Contains(production, "source_ref: main") || !strings.Contains(production, "config_environment: production") || !strings.Contains(production, "environment: Production") {
 		t.Fatal("production wrapper is not fixed to main/Production")
 	}
-	start, end := strings.Index(script, "consume_dev_images()"), strings.Index(script, "image_for()")
+	start := strings.Index(script, "consume_dev_images()")
+	end := -1
+	if start >= 0 {
+		end = start + strings.Index(script[start:], "\n}\n\npreflight_shared")
+	}
 	if start < 0 || end < start {
 		t.Fatal("production receipt consumer is missing")
 	}
