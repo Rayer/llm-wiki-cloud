@@ -1,0 +1,70 @@
+gcp:
+  project_id: llm-wiki-cloud
+  region: asia-east1
+  artifact_registry: asia-east1-docker.pkg.dev/llm-wiki-cloud/cloud-run-images
+
+auth:
+  service_name: llm-wiki-auth-dev
+  runtime_service_account: lwc-auth-dev@llm-wiki-cloud.iam.gserviceaccount.com
+  network: default
+  subnet: default
+  vpc_egress: private-ranges-only
+  ingress: all
+  max_instances: 1
+  firestore_database_id: llm-wiki-cloud-dev
+  public_domain: auth.dev.rayer.idv.tw
+  allowed_hosts:
+    - auth.dev.rayer.idv.tw
+    - auth-dev.rayer.idv.tw
+  allowed_origins:
+    - https://wiki.dev.rayer.idv.tw
+    - https://llm-wiki-frontend-dev.vercel.app
+    - http://localhost:3000
+  secret_references:
+    jwt: jwt-secret-dev
+
+bff:
+  service_name: llm-wiki-bff-dev
+  runtime_service_account: lwc-bff-dev@llm-wiki-cloud.iam.gserviceaccount.com
+  network: default
+  subnet: default
+  vpc_egress: private-ranges-only
+  ingress: all
+  max_instances: 1
+  bucket: llm-wiki-data-dev
+  firestore_database_id: llm-wiki-cloud-dev
+  pipeline_job_name: olw-pipeline-dev
+  pipeline_job_location: asia-east1
+  pipeline_job_url: https://run.googleapis.com/v2/projects/llm-wiki-cloud/locations/asia-east1/jobs/olw-pipeline-dev:run
+  auth_service_url: https://auth.dev.rayer.idv.tw
+  allowed_origins:
+    - https://wiki.dev.rayer.idv.tw
+    - https://llm-wiki-frontend-dev.vercel.app
+    - http://localhost:3000
+    - http://127.0.0.1:3000
+  dev_jwt: false
+  query_config: apps/bff/configs/query/dev/query-dev-2026-08-31.1.json
+  secret_references:
+    jwt: jwt-secret-dev
+    deepseek_api_key: deepseek-apikey
+
+worker:
+  job_name: olw-pipeline-dev
+  runtime_service_account: lwc-pipeline-dev@llm-wiki-cloud.iam.gserviceaccount.com
+  bucket: llm-wiki-data-dev
+  location: asia-east1
+  args:
+    - run
+    - '[["run","--auto-approve"]]'
+  secret_references:
+    deepseek_api_key: deepseek-apikey
+
+frontend:
+  project_name: llm-wiki-frontend-dev
+  team_slug: rayer-tung-s-projects
+  repository: Rayer/llm-wiki-cloud
+  root_directory: apps/frontend
+  stable_aliases:
+    - wiki.dev.rayer.idv.tw
+  api_url: https://llm-wiki-bff-dev-580854833715.asia-east1.run.app
+  auth_url: https://auth.dev.rayer.idv.tw

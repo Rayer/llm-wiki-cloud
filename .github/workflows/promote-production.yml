@@ -1,0 +1,29 @@
+name: Promote Production
+
+on:
+  workflow_dispatch:
+    inputs:
+      components:
+        description: Explicit components to promote (comma-separated allowlist)
+        required: true
+        type: string
+
+concurrency:
+  group: lwc-production-cd
+  cancel-in-progress: false
+
+permissions:
+  contents: read
+  actions: read
+
+jobs:
+  promote:
+    if: github.ref == 'refs/heads/main'
+    uses: ./.github/workflows/cd.yml
+    with:
+      environment: Production
+      config_environment: production
+      source_ref: main
+      source_sha: ${{ github.sha }}
+      config_path: deploy/environments/production.yaml
+      components: ${{ inputs.components }}

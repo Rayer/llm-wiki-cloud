@@ -1,0 +1,14 @@
+name: Worker CD component
+description: Runs the Worker component's bounded CD operation.
+inputs:
+  operation:
+    required: true
+    description: preflight, freeze, mutate, reconcile, or rollback
+runs:
+  using: composite
+  steps:
+    - name: Run Worker component
+      shell: bash
+      env:
+        OPERATION: ${{ inputs.operation }}
+      run: bash deploy/components/worker.sh "$OPERATION"

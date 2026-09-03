@@ -10,7 +10,7 @@ import { load as parseYaml } from 'js-yaml';
 const execFileAsync = promisify(execFile);
 const repoRoot = new URL('..', import.meta.url).pathname;
 const monorepoRoot = new URL('../../../', import.meta.url).pathname;
-const workflowPath = join(monorepoRoot, '.github/workflows/vercel-production-auth-env.yml');
+const workflowPath = join(monorepoRoot, '.github/workflows/promote-production.yml');
 const scriptPath = join(repoRoot, '.github/scripts/vercel-production-auth-env.sh');
 const commitSha = '0123456789abcdef0123456789abcdef01234567';
 const projectId = 'prj_prod123';
@@ -79,14 +79,16 @@ async function providerCase(scenario, overrides = {}) {
   return { fixture, preflight, mutate, evidence, rollback, state, mutationLog, body };
 }
 
-test('workflow is main/Production authority and uploads freeze before the only mutation step', async () => {
+test('production workflow invokes the shared CD with fixed authority', async () => {
   const workflow = parseYaml(await readFile(workflowPath, 'utf8'));
-  const job = workflow.jobs.configure; const steps = job.steps;
-  assert.equal(job.if, "github.ref == 'refs/heads/main'"); assert.equal(job.environment.name, 'Production');
-  assert.equal(workflow.on.workflow_dispatch.inputs.commit_sha.required, true);
-  assert.deepEqual(steps.map((step) => step.name), ['Check out the exact requested SHA', 'Validate exact main SHA and canonical CI', 'Preflight production auth environment and capture rollback', 'Upload durable production auth rollback contract', 'Apply and verify production auth environment and create exact deployment', 'Upload normalized production auth evidence']);
-  assert.ok(steps.indexOf(steps[3]) < steps.indexOf(steps[4])); assert.equal(steps[4].if, "steps.rollback_upload.outcome == 'success'");
-  for (const step of [steps[1], steps[2], steps[3], steps[4], steps[5]]) assert.equal(step.env.EVIDENCE_DIR, '${{ runner.temp }}/vercel-production-auth-env');
+  const job = workflow.jobs.promote;
+  assert.equal(workflow.on.push, undefined);
+  assert.deepEqual(Object.keys(workflow.on.workflow_dispatch.inputs), ['components']);
+  assert.equal(job.uses, './.github/workflows/cd.yml');
+  assert.equal(job.with.environment, 'Production');
+  assert.equal(job.with.config_environment, 'production');
+  assert.equal(job.with.source_ref, 'main');
+  assert.equal(job.with.config_path, 'deploy/environments/production.yaml');
 });
 
 test('source and safety contract is main-only, production-only, and API-based', async () => {
@@ -98,7 +100,7 @@ test('source and safety contract is main-only, production-only, and API-based', 
 });
 
 test('YAML and shell contracts parse', async () => {
-  assert.equal(parseYaml(await readFile(workflowPath, 'utf8')).name, 'Vercel Production Auth Environment Configuration');
+  assert.equal(parseYaml(await readFile(workflowPath, 'utf8')).name, 'Promote Production');
   const result = await execFileAsync('bash', ['-n', scriptPath]).catch((error) => error); assert.equal(result.code ?? 0, 0, result.stderr);
 });
 

@@ -1,0 +1,14 @@
+name: Auth CD component
+description: Runs the Auth component's bounded CD operation.
+inputs:
+  operation:
+    required: true
+    description: preflight, freeze, mutate, reconcile, or rollback
+runs:
+  using: composite
+  steps:
+    - name: Run Auth component
+      shell: bash
+      env:
+        OPERATION: ${{ inputs.operation }}
+      run: bash deploy/components/auth.sh "$OPERATION"

@@ -12,439 +12,166 @@ import (
 	"gopkg.in/yaml.v3"
 )
 
-// This keeps the deployment boundary deterministic without requiring cloud
-// credentials: the checked-in workflow must retain the fail-closed contract.
 func TestDeployWorkerWorkflowContract(t *testing.T) {
-	data, err := os.ReadFile("../../../../.github/workflows/deploy-worker.yml")
-	if err != nil {
-		t.Fatal(err)
-	}
-	workflow := string(data)
-	if strings.Contains(workflow, "push:\n    branches: [main]") || strings.Contains(workflow, "branches: [main]") {
-		t.Fatal("worker dev workflow must not trigger on push to main")
-	}
-	if !strings.Contains(workflow, "workflow_dispatch:") {
-		t.Fatal("worker dev workflow is missing workflow_dispatch")
-	}
-	setupGo := workflowSection(t, workflow, "      - name: Set up Go", "      - name: Verify worker source")
-	if !strings.Contains(setupGo, "go-version-file: apps/bff/go.mod") {
-		t.Fatal("worker setup-go must resolve the monorepo module from apps/bff/go.mod")
-	}
-	if !strings.Contains(setupGo, "cache-dependency-path: apps/bff/go.sum") {
-		t.Fatal("worker setup-go cache must use apps/bff/go.sum")
-	}
-	if strings.Contains(setupGo, "go-version-file: go.mod") || strings.Contains(setupGo, "cache-dependency-path: go.sum") {
-		t.Fatal("worker setup-go must not resolve or cache dependencies from the repository root")
+	workflow := readWorkflow(t, ".github/workflows/deploy-dev.yml")
+	script := readWorkflow(t, "deploy/cd.sh")
+	shared := readWorkflow(t, ".github/workflows/cd.yml")
+	components := readWorkflow(t, "deploy/components/common.sh") + readWorkflow(t, "deploy/components/worker.sh")
+
+	if strings.Contains(workflow, "push:") || !strings.Contains(workflow, "workflow_dispatch:") {
+		t.Fatal("DEV entry workflow must be dispatch-only")
 	}
 	for _, want := range []string{
-		"group: deploy-olw-pipeline-dev",
-		"cancel-in-progress: true",
-		"actions/setup-go@v5",
-		"go test ./... -count=1",
-		"go vet ./...",
-		"go build ./...",
-		"${SHA}-${GITHUB_RUN_ID}-${GITHUB_RUN_ATTEMPT}",
-		"git rev-parse \"origin/${SOURCE_BRANCH}\"",
-		"--image \"$IMMUTABLE_IMAGE\"",
-		"gcloud run jobs describe \"${JOB_NAME}\"",
-		"BUCKET: llm-wiki-data-dev",
-		"--update-env-vars \"BUCKET=${BUCKET},PIPELINE_JOB_NAME=${JOB_NAME},PIPELINE_JOB_LOCATION=${REGION}\"",
-		"--remove-env-vars \"DATA_DIR,WORKSPACE,VAULT_PATH,WORKSPACE_DIR\"",
-		"--args \"^@^run@[[\\\"run\\\",\\\"--auto-approve\\\"]]\"",
-		"--clear-volume-mounts",
-		"--clear-volumes",
-		"--update-secrets \"DEEPSEEK_API_KEY=deepseek-apikey:latest\"",
-		"DEEPSEEK_API_KEY",
-		"deepseek-apikey",
-		// LWC-222: lease owner-liveness reclaim requires executions.get on the job.
-		"roles/run.viewer",
-		"lwc-pipeline-dev@llm-wiki-cloud.iam.gserviceaccount.com",
-		"worker must not retain GCSFuse volumes",
-		"worker args do not match the cloud worker contract",
-		"${DEPLOYED}\" != \"${IMMUTABLE_IMAGE}",
+		"if: github.ref == 'refs/heads/develop'",
+		"source_ref: develop",
+		"source_sha: ${{ github.sha }}",
+		"config_path: deploy/environments/development.yaml",
+		"uses: ./.github/workflows/cd.yml",
 	} {
 		if !strings.Contains(workflow, want) {
-			t.Fatalf("workflow missing %q", want)
+			t.Fatalf("DEV entry workflow missing %q", want)
 		}
 	}
-	if !strings.Contains(workflow, `select(.name == "DATA_DIR" or .name == "WORKSPACE" or .name == "VAULT_PATH" or .name == "WORKSPACE_DIR")`) {
-		t.Fatal("workflow does not read back removed legacy env")
-	}
-	if strings.Index(workflow, "go test ./... -count=1") > strings.Index(workflow, "Authenticate to Google Cloud") {
-		t.Fatal("source verification must run before cloud authentication")
-	}
-	if strings.Count(workflow, "git rev-parse \"origin/${SOURCE_BRANCH}\"") != 2 {
-		t.Fatal("workflow must recheck the selected source branch before and after the job update")
-	}
-	if !strings.Contains(workflow, `--update-secrets "DEEPSEEK_API_KEY=deepseek-apikey:latest"`) {
-		t.Fatal("dev workflow must declaratively bind DEEPSEEK_API_KEY to deepseek-apikey:latest")
-	}
-	if !strings.Contains(workflow, "secretKeyRef") || !strings.Contains(workflow, "valueSource") || !strings.Contains(workflow, "projects/llm-wiki-cloud/secrets/deepseek-apikey") {
-		t.Fatal("dev workflow must read back the exact secret-backed DEEPSEEK_API_KEY contract")
-	}
-	if !strings.Contains(workflow, `case "${GITHUB_REF_NAME}" in
-            develop) SOURCE_BRANCH="develop" ;;`) {
-		t.Fatal("worker workflow must allow only canonical develop as the runtime source")
-	}
-	if strings.Contains(workflow, "feature|develop|main)") || strings.Contains(workflow, "*) SOURCE_BRANCH") {
-		t.Fatal("worker workflow must fail closed for arbitrary source refs")
-	}
-	if !strings.Contains(workflow, "newer serialized workflow must supersede") {
-		t.Fatal("workflow must explain that a newer serialized workflow supersedes an out-of-order deployment")
-	}
-	if strings.Contains(workflow, "olw-pipeline-prod") {
-		t.Fatal("dev worker workflow must not update production")
-	}
-
-	for _, line := range strings.Split(workflow, "\n") {
-		if line == "env:" {
-			t.Fatal("application runtime/deploy env must not be workflow-global and contaminate source verification")
+	for _, want := range []string{
+		"go run ./cmd/deploy_config",
+		"event=push",
+		"head_sha=${SOURCE_SHA}",
+		"git rev-parse \"origin/$SOURCE_REF\"",
+		"cd-images-$SOURCE_SHA",
+		"nonce=$(printf '%032x' \"$(date -u +%s%N)\")",
+		"--build-arg BUILD_NONCE=\"$nonce\"",
+		"--target worker",
+		"gcloud run jobs update",
+		"--update-secrets",
+		"--args",
+		"gcloud run jobs replace",
+	} {
+		if !strings.Contains(script+shared+components, want) {
+			t.Fatalf("shared CD contract missing %q", want)
 		}
 	}
-	verifyStep := workflowSection(t, workflow, "      - name: Verify worker source", "      - name: Authenticate to Google Cloud")
-	for _, forbidden := range []string{"PROJECT_ID:", "REGION:", "JOB_NAME:", "BUCKET:", "AR_REPO:"} {
-		if strings.Contains(verifyStep, forbidden) {
-			t.Fatalf("source verification inherited application env %q", forbidden)
-		}
+	if strings.Contains(script, "run jobs execute") || strings.Contains(shared, "run jobs execute") {
+		t.Fatal("deployment contract must never execute the Worker Job")
 	}
-	authStep := workflowSection(t, workflow, "      - name: Authenticate to Google Cloud", "      - name: Set up Cloud SDK")
-	setupStep := workflowSection(t, workflow, "      - name: Set up Cloud SDK", "      - name: Configure Artifact Registry Docker auth")
-	for name, section := range map[string]string{"auth": authStep, "setup": setupStep} {
-		if !strings.Contains(section, "PROJECT_ID: llm-wiki-cloud") {
-			t.Fatalf("%s step missing scoped PROJECT_ID", name)
-		}
+	imagePathStart := strings.Index(components, "image_for()")
+	imagePathEnd := strings.Index(components, "\nredact_evidence()")
+	if imagePathStart < 0 || imagePathEnd < imagePathStart {
+		t.Fatal("shared image receipt helper is missing")
 	}
-	buildStep := workflowSection(t, workflow, "      - name: Build and push immutable worker image", "      - name: Update dev worker without GCSFuse")
-	if !strings.Contains(buildStep, "AR_REPO: asia-east1-docker.pkg.dev/llm-wiki-cloud/cloud-run-images") {
-		t.Fatal("image build step must receive its explicit Artifact Registry repository")
-	}
-	updateStep := workflow[strings.Index(workflow, "      - name: Update dev worker without GCSFuse"):]
-	clearMountsAt := strings.Index(updateStep, "--clear-volume-mounts")
-	clearVolumesAt := strings.Index(updateStep, "--clear-volumes")
-	if clearMountsAt < 0 || clearVolumesAt <= clearMountsAt {
-		t.Fatal("worker update must clear volume mounts before clearing their referenced volumes")
-	}
-	for _, want := range []string{"REGION: asia-east1", "JOB_NAME: olw-pipeline-dev", "BUCKET: llm-wiki-data-dev"} {
-		if !strings.Contains(updateStep, want) {
-			t.Fatalf("worker update step missing scoped env %q", want)
-		}
+	imagePath := components[imagePathStart:imagePathEnd]
+	if strings.Contains(imagePath, ":latest") {
+		t.Fatal("Worker image identity must be digest-pinned, not latest")
 	}
 }
 
 func TestWorkerPromotionWorkflowsContract(t *testing.T) {
-	deploy := readWorkflow(t, ".github/workflows/deploy-worker.yml")
-	release := readWorkflow(t, ".github/workflows/release-worker.yml")
-
-	for _, workflow := range map[string]string{"deploy": deploy, "release": release} {
+	production := readWorkflow(t, ".github/workflows/promote-production.yml")
+	shared := readWorkflow(t, ".github/workflows/cd.yml")
+	script := readWorkflow(t, "deploy/cd.sh")
+	components := readWorkflow(t, "deploy/components/common.sh") + readWorkflow(t, "deploy/components/worker.sh")
+	for name, source := range map[string]string{"production": production, "shared": shared} {
 		var document any
-		if err := yaml.Unmarshal([]byte(workflow), &document); err != nil {
-			t.Fatalf("%s workflow is not valid YAML: %v", workflow, err)
+		if err := yaml.Unmarshal([]byte(source), &document); err != nil {
+			t.Fatalf("%s workflow is not valid YAML: %v", name, err)
 		}
-		for _, run := range regexp.MustCompile(`(?m)^\s+run: \|\n((?:\s{10,}.+\n?)+)`).FindAllStringSubmatch(workflow, -1) {
+		for _, run := range regexp.MustCompile(`(?m)^\s+run: \|\n((?:\s{10,}.+\n?)+)`).FindAllStringSubmatch(source, -1) {
 			body := strings.TrimSpace(run[1])
 			body = regexp.MustCompile(`(?m)^ {10}`).ReplaceAllString(body, "")
 			body = regexp.MustCompile(`\$\{\{[^}]*\}\}`).ReplaceAllString(body, "workflow-expression")
 			cmd := exec.Command("bash", "-n")
 			cmd.Stdin = strings.NewReader(body)
 			if output, err := cmd.CombinedOutput(); err != nil {
-				t.Fatalf("%s workflow run block has invalid shell syntax: %v\n%s", workflow, err, output)
+				t.Fatalf("%s workflow run block has invalid shell syntax: %v\n%s", name, err, output)
 			}
 		}
 	}
-
 	for _, want := range []string{
-		"SOURCE_BRANCH=",
-		"case \"${GITHUB_REF_NAME}\" in",
-		"develop) SOURCE_BRANCH=\"develop\"",
-		"worker-image-digest-${SHA}.txt",
-		"sha256:[0-9a-f]{64}",
-		"immutable_image=${AR_REPO}/olw-pipeline@${DIGEST}",
-		"actions/upload-artifact@v4",
-		"path: worker-image-digest-${{ steps.source.outputs.candidate_sha }}.txt",
-	} {
-		if !strings.Contains(deploy, want) {
-			t.Fatalf("dev workflow missing %q", want)
-		}
-	}
-	if strings.Count(deploy, "actions/upload-artifact@v4") != 1 || strings.Count(deploy, "worker-image-digest-${SHA}.txt") != 1 || strings.Count(deploy, "path: worker-image-digest-${{ steps.source.outputs.candidate_sha }}.txt") != 1 {
-		t.Fatal("dev workflow must persist and upload exactly one full-SHA digest artifact")
-	}
-	if strings.Contains(deploy, "origin/develop/1.0") {
-		t.Fatal("dev workflow must not hardcode develop ordering for main runs")
-	}
-	if strings.Contains(release, "git fetch") {
-		t.Fatal("manual promotion must validate source ancestry locally without a post-checkout fetch")
-	}
-	if strings.Contains(release, "event=push") || strings.Contains(release, ".head_branch == \"main\"") {
-		t.Fatal("release workflow must not locate a main-push DEV worker run")
-	}
-
-	for _, want := range []string{
-		"commit_sha:",
-		"environment: production",
-		"contents: read",
-		"actions: read",
-		"id-token: write",
 		"if: github.ref == 'refs/heads/main'",
-		"uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262",
-		"ref: ${{ github.sha }}",
-		"fetch-depth: 0",
-		"persist-credentials: false",
-		"uses: google-github-actions/auth@7c6bc770dae815cd3e89ee6cdf493a5fab2cc093",
-		"uses: google-github-actions/setup-gcloud@e427ad8a34f8676edf47cf7d7925499adf3eb74f",
-		"current main must exactly equal commit_sha",
-		"event=workflow_dispatch&status=completed&head_sha=${COMMIT_SHA}",
-		".head_branch == \"develop\"",
-		"worker-image-digest-$COMMIT_SHA",
-		"sha256:[0-9a-f]{64}",
-		"olw-pipeline@${DIGEST}",
-		"BUCKET: llm-wiki-data",
-		"--remove-env-vars \"DATA_DIR,WORKSPACE,VAULT_PATH,WORKSPACE_DIR\"",
-		"--clear-volume-mounts",
-		"--clear-volumes",
-		"scripts/render_worker_deployment_evidence.py",
-		"prod-${COMMIT_SHA}",
+		"source_ref: main",
+		"source_sha: ${{ github.sha }}",
+		"config_environment: production",
+		"config_path: deploy/environments/production.yaml",
+		"uses: ./.github/workflows/cd.yml",
 	} {
-		if !strings.Contains(release, want) {
-			t.Fatalf("release workflow missing %q", want)
+		if !strings.Contains(production, want) {
+			t.Fatalf("Production entry workflow missing %q", want)
 		}
 	}
-	for _, forbidden := range []string{"docker build", "docker push", "gcloud builds", "gcloud run jobs replace"} {
-		if strings.Contains(release, forbidden) {
-			t.Fatalf("release workflow must not rebuild or replace images: found %q", forbidden)
+	consumeStart := strings.Index(script, "consume_dev_images()")
+	consumeEnd := -1
+	if consumeStart >= 0 {
+		consumeEnd = consumeStart + strings.Index(script[consumeStart:], "\n}\n\npreflight_shared")
+	}
+	if consumeStart < 0 || consumeEnd < consumeStart {
+		t.Fatal("Production image receipt consumer is missing")
+	}
+	consume := script[consumeStart:consumeEnd]
+	for _, want := range []string{"event=workflow_dispatch", "head_sha=${SOURCE_SHA}", "branch=develop", "gh run download", "cd-images-$SOURCE_SHA"} {
+		if !strings.Contains(consume, want) {
+			t.Fatalf("Production image receipt contract missing %q", want)
 		}
 	}
-	// LWC-222: lease liveness must be preserved by a read-only preflight.
-	if !strings.Contains(release, "gcloud run jobs get-iam-policy") ||
-		!strings.Contains(release, "roles/run.viewer") ||
-		!strings.Contains(release, "lwc-pipeline-prod@llm-wiki-cloud.iam.gserviceaccount.com") {
-		t.Fatal("release workflow must preflight the existing pipeline SA viewer binding for lease reclaim")
+	if strings.Contains(consume, "event=push") || strings.Contains(consume, "docker build") || strings.Contains(consume, "gcloud builds") {
+		t.Fatal("Production must consume exact DEV receipts without rebuilding")
 	}
-	for _, forbidden := range []string{
-		"roles/editor",
-		"roles/owner",
-		"roles/run.admin",
-		"roles/run.developer",
-		"roles/run.jobsExecutorWithOverrides",
-		"gcloud projects add-iam-policy-binding",
-	} {
-		if strings.Contains(release, forbidden) {
-			t.Fatalf("release workflow must not expand broad IAM %q", forbidden)
+	for _, forbidden := range []string{"roles/editor", "roles/owner", "roles/run.admin", "gcloud projects add-iam-policy-binding", "run jobs execute"} {
+		if strings.Contains(script+shared, forbidden) {
+			t.Fatalf("CD contract must not contain broad IAM or Worker execution %q", forbidden)
 		}
 	}
-	if strings.Contains(release, "--allow-unauthenticated") {
-		t.Fatal("production worker job must remain private")
+	freeze := strings.Index(shared, "      - name: Freeze Auth rollback handle")
+	upload := strings.Index(shared, "      - name: Upload durable rollback artifact")
+	mutation := strings.Index(shared, "      - name: Mutate Auth")
+	if !(freeze >= 0 && freeze < upload && upload < mutation) {
+		t.Fatal("durable rollback upload must precede all mutations")
 	}
-	if !strings.Contains(release, `--update-secrets "DEEPSEEK_API_KEY=deepseek-apikey:latest"`) {
-		t.Fatal("release workflow must declaratively bind DEEPSEEK_API_KEY to deepseek-apikey:latest")
-	}
-	if !strings.Contains(release, "secretKeyRef") || !strings.Contains(release, "valueSource") || !strings.Contains(release, "projects/llm-wiki-cloud/secrets/deepseek-apikey") {
-		t.Fatal("release workflow must read back the exact secret-backed DEEPSEEK_API_KEY contract")
-	}
-	rollback := workflowSection(t, release, "      - name: Freeze production rollback contract", "      - name: Update production worker")
-	if !strings.Contains(rollback, "scripts/render_worker_deployment_evidence.py prepare-rollback") {
-		t.Fatal("rollback freeze must use the checked-in deterministic validator")
-	}
-	for _, want := range []string{
-		"id: rollback",
-		"ROLLBACK_ARTIFACT_NAME=\"worker-rollback-contract-${COMMIT_SHA}\"",
-		"EVIDENCE_ARTIFACT_NAME=\"worker-deployment-evidence-${COMMIT_SHA}\"",
-		"--artifact-name \"$ROLLBACK_ARTIFACT_NAME\"",
-		"echo \"rollback_artifact_name=$ROLLBACK_ARTIFACT_NAME\" >> \"$GITHUB_OUTPUT\"",
-		"echo \"evidence_artifact_name=$EVIDENCE_ARTIFACT_NAME\" >> \"$GITHUB_OUTPUT\"",
-		"--output \"$ROLLBACK_CONTRACT\"",
-	} {
-		if !strings.Contains(rollback, want) {
-			t.Fatalf("rollback freeze missing frozen artifact identity %q", want)
-		}
-	}
-	if strings.Contains(rollback, "production-job-contract.json") {
-		t.Fatal("rollback freeze must not identify an unuploaded transient file")
-	}
-	if strings.Contains(release, "runner.temp") {
-		t.Fatal("release workflow job-level env must not reference runner.temp")
-	}
-	initializer := workflowSection(t, release, "      - name: Initialize deployment evidence paths", "      - name: Validate promotion commit")
-	for _, want := range []string{
-		"EVIDENCE_DIR=\"$RUNNER_TEMP/worker-deployment-evidence\"",
-		"ROLLBACK_CONTRACT=\"$EVIDENCE_DIR/rollback-contract.json\"",
-		"METADATA=\"$EVIDENCE_DIR/metadata.json\"",
-		"EVIDENCE=\"$EVIDENCE_DIR/deployment-evidence.json\"",
-		"EVIDENCE_FAILURE=\"$EVIDENCE_DIR/deployment-evidence-failure.json\"",
-		">> \"$GITHUB_ENV\"",
-	} {
-		if !strings.Contains(initializer, want) {
-			t.Fatalf("evidence path initializer missing %q", want)
-		}
-	}
-	if strings.Index(release, "Initialize deployment evidence paths") > strings.Index(release, "Validate promotion commit") {
-		t.Fatal("evidence paths must be initialized before promotion validation")
-	}
-	if strings.Count(release, "ROLLBACK_ARTIFACT_NAME=\"worker-rollback-contract-${COMMIT_SHA}\"") != 1 || strings.Count(release, "EVIDENCE_ARTIFACT_NAME=\"worker-deployment-evidence-${COMMIT_SHA}\"") != 1 {
-		t.Fatal("release workflow must create exactly one frozen rollback and evidence artifact identity")
-	}
-	metadata := workflowSection(t, release, "      - name: Prepare validated deployment metadata before mutation", "      - name: Update production worker")
-	for _, want := range []string{
-		"> \"$METADATA\"",
-		"scripts/render_worker_deployment_evidence.py validate-metadata",
-		"--metadata \"$METADATA\"",
-		"ROLLBACK_ARTIFACT_NAME: ${{ steps.rollback.outputs.rollback_artifact_name }}",
-	} {
-		if !strings.Contains(metadata, want) {
-			t.Fatalf("pre-mutation metadata step missing %q", want)
-		}
-	}
-	update := workflowSection(t, release, "      - name: Update production worker", "      - name: Render normalized deployment evidence after strict read-back")
-	if strings.Index(update, "--clear-volume-mounts") > strings.Index(update, "--clear-volumes") {
-		t.Fatal("production update must clear mounts before volumes atomically")
-	}
-	readback := workflowSection(t, release, "      - name: Render normalized deployment evidence after strict read-back", "      - name: Upload normalized deployment evidence")
-	for _, want := range []string{"EXPECTED_RUNTIME_SERVICE_ACCOUNT: lwc-pipeline-prod@llm-wiki-cloud.iam.gserviceaccount.com", "scripts/render_worker_deployment_evidence.py render-evidence", "--bucket \"$BUCKET\"", "--expected-runtime-service-account \"$EXPECTED_RUNTIME_SERVICE_ACCOUNT\"", "--rollback-contract \"$ROLLBACK_CONTRACT\"", "--metadata \"$METADATA\"", "--output \"$EVIDENCE\"", "--failure-output \"$EVIDENCE_FAILURE\""} {
-		if !strings.Contains(readback, want) {
-			t.Fatalf("production read-back evidence step missing %q", want)
-		}
-	}
-	if strings.Contains(readback, "CHECKED_AT") || strings.Contains(readback, "checked_at") {
-		t.Fatal("provider verification timestamp must be generated by the renderer after read-back")
-	}
-	finalizer := workflowSection(t, release, "      - name: Finalize partial evidence when provider verification is unknown", "      - name: Upload normalized deployment evidence")
-	if !strings.Contains(finalizer, "if: always()") || !strings.Contains(finalizer, "scripts/render_worker_deployment_evidence.py render-partial") {
-		t.Fatal("release workflow must finalize truthful partial evidence after any failure")
-	}
-	for _, want := range []string{
-		"ROLLBACK_UPLOAD_OUTCOME: ${{ steps.rollback_upload.outcome }}",
-		`if [[ "$ROLLBACK_UPLOAD_OUTCOME" != "success" ]]; then`,
-		"no mutation could start because fail-closed upload precedes mutation",
-		"no evidence fabricated",
-	} {
-		if !strings.Contains(finalizer, want) {
-			t.Fatalf("partial finalizer missing rollback upload fail-closed guard %q", want)
-		}
-	}
-	if strings.Contains(finalizer[:strings.Index(finalizer, `if [[ "$ROLLBACK_UPLOAD_OUTCOME" != "success" ]]; then`)], "EVIDENCE_ARTIFACT_NAME") {
-		t.Fatal("rollback upload failure branch must not reference the intended evidence artifact")
-	}
-	if !strings.Contains(finalizer, "-f \"$ROLLBACK_CONTRACT\" && -f \"$METADATA\"") || !strings.Contains(finalizer, "[[ -e \"$EVIDENCE\" ]]") || !strings.Contains(finalizer, "--failure-output \"$EVIDENCE_FAILURE\"") {
-		t.Fatal("partial finalizer must require frozen inputs and preserve existing evidence")
-	}
-	upload := workflowSection(t, release, "      - name: Upload normalized deployment evidence", "      - name: Tag promoted production image")
-	if !strings.Contains(upload, "if: always()") || !strings.Contains(upload, "path: ${{ env.EVIDENCE }}") || !strings.Contains(upload, "if-no-files-found: ignore") {
-		t.Fatal("normalized evidence upload must run always against the canonical path")
-	}
-	if !strings.Contains(upload, "name: ${{ steps.rollback.outputs.evidence_artifact_name }}") {
-		t.Fatal("normalized evidence upload must use the distinct evidence artifact identity")
-	}
-	if strings.Count(upload, "path: ${{ env.EVIDENCE }}") != 1 {
-		t.Fatal("normalized evidence upload must retain exactly one canonical artifact path")
-	}
-	preUpload := workflowSection(t, release, "      - name: Upload validated rollback contract", "      - name: Update production worker")
-	if !strings.Contains(preUpload, "id: rollback_upload") {
-		t.Fatal("rollback contract upload must expose its outcome as rollback_upload")
-	}
-	if !strings.Contains(preUpload, "uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02") ||
-		!strings.Contains(preUpload, "name: ${{ steps.rollback.outputs.rollback_artifact_name }}") ||
-		!strings.Contains(preUpload, "path: ${{ env.ROLLBACK_CONTRACT }}") ||
-		!strings.Contains(preUpload, "if-no-files-found: error") ||
-		!strings.Contains(preUpload, "retention-days: 90") {
-		t.Fatal("rollback contract must be durably uploaded before mutation")
-	}
-	if strings.Contains(preUpload, "if: always()") || strings.Contains(preUpload, "continue-on-error") {
-		t.Fatal("rollback contract upload must fail closed before mutation")
-	}
-	if strings.Count(release, "uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02") != 2 {
-		t.Fatal("release workflow must have exactly two pinned artifact uploads")
-	}
-	freezeAt := strings.Index(release, "      - name: Freeze production rollback contract")
-	preUploadAt := strings.Index(release, "      - name: Upload validated rollback contract")
-	mutationAt := strings.Index(release, "      - name: Update production worker")
-	renderAt := strings.Index(release, "      - name: Render normalized deployment evidence after strict read-back")
-	evidenceUploadAt := strings.Index(release, "      - name: Upload normalized deployment evidence")
-	if !(freezeAt < preUploadAt && preUploadAt < mutationAt && mutationAt < renderAt && renderAt < evidenceUploadAt) {
-		t.Fatal("deployment contract must order freeze, durable rollback upload, mutation, evidence render, and evidence upload")
-	}
-	if strings.Contains(release[mutationAt:evidenceUploadAt], "actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02") {
-		t.Fatal("mutation must not occur before durable rollback upload")
-	}
-	if !strings.Contains(release, "group: promote-olw-pipeline-production") || !strings.Contains(release, "cancel-in-progress: false") {
-		t.Fatal("production promotions must be serialized without cancellation")
-	}
-	if !strings.Contains(release, "prod-${COMMIT_SHA}-${GITHUB_RUN_ID}-${GITHUB_RUN_ATTEMPT}") {
-		t.Fatal("production observability tag must be unique to the promotion run")
+	if !strings.Contains(components, "gcloud run jobs replace") || !strings.Contains(components, "handles.worker.definition") {
+		t.Fatal("Worker rollback must restore the frozen complete definition")
 	}
 }
 
 func TestWorkerReleaseEmitsOneNormalizedEvidenceArtifactAfterReadback(t *testing.T) {
-	release := readWorkflow(t, ".github/workflows/release-worker.yml")
-
-	readbackAt := strings.Index(release, "      - name: Render normalized deployment evidence after strict read-back")
-	if readbackAt < 0 {
-		t.Fatal("production release is missing the strict read-back step")
-	}
-	evidenceSection := release[readbackAt:]
+	shared := readWorkflow(t, ".github/workflows/cd.yml")
+	script := readWorkflow(t, "deploy/cd.sh")
+	common := readWorkflow(t, "deploy/components/common.sh")
 	for _, want := range []string{
-		"scripts/render_worker_deployment_evidence.py render-evidence",
-		"--rollback-contract",
-		"--metadata",
-		"--output \"$EVIDENCE\"",
-		"--failure-output \"$EVIDENCE_FAILURE\"",
-		"render-partial",
-		"name: ${{ steps.rollback.outputs.evidence_artifact_name }}",
+		"Reconcile Auth",
+		"Reconcile BFF",
+		"Reconcile Worker",
+		"Reconcile Frontend",
+		"Render normalized redacted evidence",
+		"Upload normalized CD evidence",
+		"mutation_count",
+		"mutation_components",
+		"rollback_attempted",
+		"rollback_result",
+		"rollback_verified",
+		"next_action",
 	} {
-		if !strings.Contains(evidenceSection, want) {
-			t.Fatalf("release workflow missing normalized evidence contract %q", want)
+		if !strings.Contains(shared+script, want) {
+			t.Fatalf("normalized evidence contract missing %q", want)
 		}
 	}
-	if strings.Count(evidenceSection, "uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02") != 1 {
-		t.Fatalf("release workflow must upload exactly one pinned post-read-back artifact")
+	if strings.Contains(script, "provider_readback:true") || strings.Contains(script, "verified:true") {
+		t.Fatal("evidence must not fabricate provider or rollback success")
 	}
-	if strings.Count(evidenceSection, "path: ${{ env.EVIDENCE }}") != 1 {
-		t.Fatalf("release workflow must upload exactly one canonical evidence path")
-	}
-	if strings.Contains(evidenceSection, "production-job-contract.json") {
-		t.Fatal("release workflow must not upload the legacy standalone rollback artifact")
+	if !strings.Contains(script+common, "redact_evidence") || !strings.Contains(script+common, "<redacted>") {
+		t.Fatal("evidence must redact credential-like fields")
 	}
 }
 
 func TestWorkerReleaseRollbackUploadFailureOutcomesBlockEvidenceFinalization(t *testing.T) {
-	release := readWorkflow(t, ".github/workflows/release-worker.yml")
-	finalizer := workflowSection(t, release, "      - name: Finalize partial evidence when provider verification is unknown", "      - name: Upload normalized deployment evidence")
-	match := regexp.MustCompile(`(?m)^        run: \|\n((?:          .+\n?)+)`).FindStringSubmatch(finalizer)
-	if len(match) != 2 {
-		t.Fatal("partial finalizer is missing a shell run block")
+	shared := readWorkflow(t, ".github/workflows/cd.yml")
+	mutation := strings.Index(shared, "      - name: Mutate Auth")
+	upload := strings.Index(shared, "      - name: Upload durable rollback artifact")
+	if upload < 0 || mutation < 0 || upload > mutation {
+		t.Fatal("rollback upload outcome must gate mutation")
 	}
-	lines := strings.Split(strings.TrimSpace(match[1]), "\n")
-	for index, line := range lines {
-		lines[index] = strings.TrimPrefix(line, "          ")
+	if !strings.Contains(shared[mutation:], "steps.rollback_upload.outcome == 'success'") {
+		t.Fatal("mutation must be conditional on a successful rollback upload")
 	}
-	body := strings.Join(lines, "\n") + "\n"
-
-	for _, outcome := range []string{"failed", "skipped"} {
-		t.Run(outcome, func(t *testing.T) {
-			root := t.TempDir()
-			evidence := filepath.Join(root, "deployment-evidence.json")
-			failure := filepath.Join(root, "deployment-evidence-failure.json")
-			cmd := exec.Command("bash", "-c", body)
-			cmd.Env = append(os.Environ(),
-				"ROLLBACK_UPLOAD_OUTCOME="+outcome,
-				"EVIDENCE="+evidence,
-				"EVIDENCE_FAILURE="+failure,
-				"ROLLBACK_CONTRACT="+filepath.Join(root, "rollback-contract.json"),
-				"METADATA="+filepath.Join(root, "metadata.json"),
-			)
-			output, err := cmd.CombinedOutput()
-			if err != nil {
-				t.Fatalf("finalizer outcome %s failed: %v\n%s", outcome, err, output)
-			}
-			if _, err := os.Stat(evidence); !os.IsNotExist(err) {
-				t.Fatalf("finalizer outcome %s created evidence file: %v", outcome, err)
-			}
-			if strings.Contains(string(output), "worker-deployment-evidence-") {
-				t.Fatalf("finalizer outcome %s referenced a non-durable evidence artifact: %s", outcome, output)
-			}
-			if !strings.Contains(string(output), "no evidence fabricated") {
-				t.Fatalf("finalizer outcome %s did not log fail-closed evidence behavior: %s", outcome, output)
-			}
-		})
+	if !strings.Contains(shared, "if: always()") || !strings.Contains(shared, "cd-evidence-") {
+		t.Fatal("evidence must be rendered/uploaded for failed outcomes")
 	}
 }
 
@@ -582,7 +309,7 @@ func runJQFixtureE(name, filter string) (string, error) {
 
 func readWorkflow(t *testing.T, path string) string {
 	t.Helper()
-	if strings.HasPrefix(path, ".github/workflows/") {
+	if strings.HasPrefix(path, ".github/workflows/") || path == "deploy/cd.sh" || strings.HasPrefix(path, "deploy/components/") {
 		path = filepath.Join("..", "..", "..", "..", path)
 	}
 	data, err := os.ReadFile(path)
@@ -590,14 +317,4 @@ func readWorkflow(t *testing.T, path string) string {
 		t.Fatal(err)
 	}
 	return string(data)
-}
-
-func workflowSection(t *testing.T, workflow, start, end string) string {
-	t.Helper()
-	startAt := strings.Index(workflow, start)
-	endAt := strings.Index(workflow, end)
-	if startAt < 0 || endAt <= startAt {
-		t.Fatalf("invalid workflow section %q .. %q", start, end)
-	}
-	return workflow[startAt:endAt]
 }

@@ -1,0 +1,310 @@
+name: Shared CD orchestrator
+
+on:
+  workflow_call:
+    inputs:
+      environment:
+        required: true
+        type: string
+      config_environment:
+        required: true
+        type: string
+      source_ref:
+        required: true
+        type: string
+      source_sha:
+        required: true
+        type: string
+      config_path:
+        required: true
+        type: string
+      components:
+        required: true
+        type: string
+
+permissions:
+  contents: read
+
+jobs:
+  plan:
+    name: Validate source, config, and component intent
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    permissions:
+      contents: read
+      actions: read
+    steps:
+      - name: Checkout exact source SHA
+        uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+        with:
+          ref: ${{ inputs.source_sha }}
+          fetch-depth: 0
+          persist-credentials: false
+
+      - name: Set up Go for the config loader
+        uses: actions/setup-go@d35c59abb061a4a6fb18e82ac0862c26744d6ab5 # v5.5.0
+        with:
+          go-version-file: apps/bff/go.mod
+          cache-dependency-path: apps/bff/go.sum
+
+      - name: Validate fixed tuple and explicit components
+        env:
+          DEPLOYMENT_ENVIRONMENT: ${{ inputs.environment }}
+          ENVIRONMENT: ${{ inputs.config_environment }}
+          SOURCE_REF: ${{ inputs.source_ref }}
+          SOURCE_SHA: ${{ inputs.source_sha }}
+          CONFIG_PATH: ${{ inputs.config_path }}
+          COMPONENTS: ${{ inputs.components }}
+          PLAN_PATH: ${{ runner.temp }}/cd/plan.json
+          GITHUB_REF_NAME: ${{ github.ref_name }}
+          GITHUB_REF: ${{ github.ref }}
+          GITHUB_REPOSITORY: ${{ github.repository }}
+          GH_TOKEN: ${{ github.token }}
+        run: bash deploy/cd.sh plan
+
+      - name: Upload validated plan
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
+        with:
+          name: cd-plan-${{ inputs.source_sha }}
+          path: ${{ runner.temp }}/cd/plan.json
+          if-no-files-found: error
+          retention-days: 90
+
+  mutate:
+    name: Freeze, mutate, and reconcile selected components
+    needs: plan
+    if: needs.plan.result == 'success'
+    runs-on: ubuntu-latest
+    timeout-minutes: 90
+    environment: ${{ inputs.environment }}
+    permissions:
+      contents: read
+      actions: read
+      id-token: write
+    env:
+      DEPLOYMENT_ENVIRONMENT: ${{ inputs.environment }}
+      ENVIRONMENT: ${{ inputs.config_environment }}
+      SOURCE_REF: ${{ inputs.source_ref }}
+      SOURCE_SHA: ${{ inputs.source_sha }}
+      CONFIG_PATH: ${{ inputs.config_path }}
+      COMPONENTS: ${{ inputs.components }}
+      GITHUB_REPOSITORY: ${{ github.repository }}
+      GH_TOKEN: ${{ github.token }}
+      GITHUB_TOKEN: ${{ github.token }}
+      PLAN_PATH: ${{ runner.temp }}/cd/plan.json
+      ROLLBACK_PATH: ${{ runner.temp }}/cd/rollback.json
+      JOURNAL_PATH: ${{ runner.temp }}/cd/journal.json
+      EVIDENCE_PATH: ${{ runner.temp }}/cd/readback.json
+      ROLLBACK_RESULT_PATH: ${{ runner.temp }}/cd/rollback-result.json
+      FINAL_EVIDENCE_PATH: ${{ runner.temp }}/cd/evidence.json
+      ARTIFACT_DIR: ${{ runner.temp }}/cd
+      VERCEL_API_BASE_URL: https://api.vercel.com
+      VERCEL_TOKEN: ${{ secrets.VERCEL_TOKEN }}
+      VERCEL_PROJECT_ID: ${{ secrets.VERCEL_PROJECT_ID }}
+      VERCEL_TEAM_ID: ${{ secrets.VERCEL_TEAM_ID }}
+    steps:
+      - name: Checkout exact source SHA
+        uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+        with:
+          ref: ${{ inputs.source_sha }}
+          fetch-depth: 0
+          persist-credentials: false
+
+      - name: Download validated plan
+        uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4.3.0
+        with:
+          name: cd-plan-${{ inputs.source_sha }}
+          path: ${{ runner.temp }}/cd
+
+      - name: Read validated project target
+        id: target
+        shell: bash
+        run: echo "project_id=$(jq -er '.normalized.gcp.project_id' "$PLAN_PATH")" >> "$GITHUB_OUTPUT"
+
+      - name: Authenticate to Google Cloud
+        uses: google-github-actions/auth@7c6bc770dae815cd3e89ee6cdf493a5fab2cc093 # v3
+        with:
+          project_id: ${{ steps.target.outputs.project_id }}
+          workload_identity_provider: ${{ secrets.WIF_PROVIDER }}
+          service_account: ${{ secrets.WIF_SERVICE_ACCOUNT }}
+
+      - name: Set up Cloud SDK
+        uses: google-github-actions/setup-gcloud@e427ad8a34f8676edf47cf7d7925499adf3eb74f # v2
+
+      - name: Initialize journal and artifact paths
+        run: |
+          set -euo pipefail
+          mkdir -p "$ARTIFACT_DIR/images"
+          bash deploy/cd.sh init
+
+      - name: Verify shared read-only prerequisites
+        run: bash deploy/cd.sh preflight-shared
+
+      - name: Install pinned Vercel CLI
+        if: contains(inputs.components, 'frontend')
+        run: npm install --global vercel@52.0.0 --ignore-scripts
+
+      - name: Preflight Auth
+        if: contains(inputs.components, 'auth')
+        uses: ./.github/actions/auth
+        with:
+          operation: preflight
+      - name: Preflight BFF
+        if: contains(inputs.components, 'bff')
+        uses: ./.github/actions/bff
+        with:
+          operation: preflight
+      - name: Preflight Worker
+        if: contains(inputs.components, 'worker')
+        uses: ./.github/actions/worker
+        with:
+          operation: preflight
+      - name: Preflight Frontend
+        if: contains(inputs.components, 'frontend')
+        uses: ./.github/actions/frontend
+        with:
+          operation: preflight
+
+      - name: Freeze Auth rollback handle
+        if: contains(inputs.components, 'auth')
+        uses: ./.github/actions/auth
+        with:
+          operation: freeze
+      - name: Freeze BFF rollback handle
+        if: contains(inputs.components, 'bff')
+        uses: ./.github/actions/bff
+        with:
+          operation: freeze
+      - name: Freeze Worker rollback handle
+        if: contains(inputs.components, 'worker')
+        uses: ./.github/actions/worker
+        with:
+          operation: freeze
+      - name: Freeze Frontend rollback handle
+        if: contains(inputs.components, 'frontend')
+        uses: ./.github/actions/frontend
+        with:
+          operation: freeze
+
+      - name: Upload durable rollback artifact
+        id: rollback_upload
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
+        with:
+          name: cd-rollback-${{ inputs.config_environment }}-${{ inputs.source_sha }}
+          path: ${{ runner.temp }}/cd/rollback.json
+          if-no-files-found: error
+          retention-days: 90
+
+      - name: Revalidate exact source and CI after rollback upload
+        id: revalidate_before_mutation
+        if: steps.rollback_upload.outcome == 'success'
+        env:
+          ROLLBACK_UPLOADED: '1'
+        run: bash deploy/cd.sh revalidate-before-provider
+
+      - name: Mark rollback artifact as durable
+        if: steps.revalidate_before_mutation.outcome == 'success'
+        run: echo 'ROLLBACK_UPLOADED=1' >> "$GITHUB_ENV"
+
+      - name: Mutate Auth
+        id: auth_mutate
+        if: contains(inputs.components, 'auth') && steps.rollback_upload.outcome == 'success' && steps.revalidate_before_mutation.outcome == 'success'
+        uses: ./.github/actions/auth
+        with:
+          operation: mutate
+      - name: Mutate BFF
+        id: bff_mutate
+        if: contains(inputs.components, 'bff') && steps.rollback_upload.outcome == 'success' && steps.revalidate_before_mutation.outcome == 'success'
+        uses: ./.github/actions/bff
+        with:
+          operation: mutate
+      - name: Mutate Worker
+        id: worker_mutate
+        if: contains(inputs.components, 'worker') && steps.rollback_upload.outcome == 'success' && steps.revalidate_before_mutation.outcome == 'success'
+        uses: ./.github/actions/worker
+        with:
+          operation: mutate
+      - name: Mutate Frontend
+        id: frontend_mutate
+        if: contains(inputs.components, 'frontend') && steps.rollback_upload.outcome == 'success' && steps.revalidate_before_mutation.outcome == 'success'
+        uses: ./.github/actions/frontend
+        with:
+          operation: mutate
+
+      - name: Upload DEV immutable image receipts
+        if: inputs.config_environment == 'development' && (contains(inputs.components, 'auth') || contains(inputs.components, 'bff') || contains(inputs.components, 'worker')) && (steps.auth_mutate.outcome == 'success' || steps.bff_mutate.outcome == 'success' || steps.worker_mutate.outcome == 'success')
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
+        with:
+          name: cd-images-${{ inputs.source_sha }}
+          path: ${{ runner.temp }}/cd/images
+          if-no-files-found: error
+          retention-days: 90
+
+      - name: Reconcile Auth
+        id: auth_reconcile
+        if: always() && contains(inputs.components, 'auth') && steps.rollback_upload.outcome == 'success'
+        continue-on-error: true
+        uses: ./.github/actions/auth
+        with:
+          operation: reconcile
+      - name: Reconcile BFF
+        id: bff_reconcile
+        if: always() && contains(inputs.components, 'bff') && steps.rollback_upload.outcome == 'success'
+        continue-on-error: true
+        uses: ./.github/actions/bff
+        with:
+          operation: reconcile
+      - name: Reconcile Worker
+        id: worker_reconcile
+        if: always() && contains(inputs.components, 'worker') && steps.rollback_upload.outcome == 'success'
+        continue-on-error: true
+        uses: ./.github/actions/worker
+        with:
+          operation: reconcile
+      - name: Reconcile Frontend
+        id: frontend_reconcile
+        if: always() && contains(inputs.components, 'frontend') && steps.rollback_upload.outcome == 'success'
+        continue-on-error: true
+        uses: ./.github/actions/frontend
+        with:
+          operation: reconcile
+
+      - name: Run inverse journal for Production
+        if: always() && inputs.config_environment == 'production' && (steps.auth_mutate.outcome == 'failure' || steps.bff_mutate.outcome == 'failure' || steps.worker_mutate.outcome == 'failure' || steps.frontend_mutate.outcome == 'failure' || steps.auth_reconcile.outcome == 'failure' || steps.bff_reconcile.outcome == 'failure' || steps.worker_reconcile.outcome == 'failure' || steps.frontend_reconcile.outcome == 'failure')
+        continue-on-error: true
+        run: bash deploy/cd.sh rollback
+
+      - name: Aggregate component read-back
+        if: always()
+        run: bash deploy/cd.sh aggregate-reconcile
+
+      - name: Upload raw mutation journal
+        if: always()
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
+        with:
+          name: cd-mutation-journal-${{ inputs.config_environment }}-${{ inputs.source_sha }}
+          path: ${{ runner.temp }}/cd/journal.json
+          if-no-files-found: error
+          retention-days: 90
+
+      - name: Upload raw rollback result
+        if: always()
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
+        with:
+          name: cd-rollback-result-${{ inputs.config_environment }}-${{ inputs.source_sha }}
+          path: ${{ runner.temp }}/cd/rollback-result.json
+          if-no-files-found: error
+          retention-days: 90
+
+      - name: Render normalized redacted evidence
+        if: always()
+        run: bash deploy/cd.sh evidence
+
+      - name: Upload normalized CD evidence
+        if: always()
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
+        with:
+          name: cd-evidence-${{ inputs.config_environment }}-${{ inputs.source_sha }}
+          path: ${{ runner.temp }}/cd/evidence.json
+          if-no-files-found: error
+          retention-days: 90

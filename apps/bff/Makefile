@@ -39,9 +39,7 @@ vet:
 	go vet ./...
 
 test:
-	python3 scripts/test_bff_promotion_contract.py
-	python3 scripts/test_bff_explicit_cutover.py
-	python3 scripts/test_auth_promotion_contract.py
+	python3 ../../scripts/test_cd_contract.py
 	go test ./... -v -count=1 -race
 
 build:

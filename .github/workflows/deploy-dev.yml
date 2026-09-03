@@ -1,0 +1,25 @@
+name: Deploy Development
+
+on:
+  workflow_dispatch:
+    inputs:
+      components:
+        description: Explicit components to deploy (comma-separated allowlist)
+        required: true
+        type: string
+
+permissions:
+  contents: read
+  actions: read
+
+jobs:
+  deploy:
+    if: github.ref == 'refs/heads/develop'
+    uses: ./.github/workflows/cd.yml
+    with:
+      environment: Development
+      config_environment: development
+      source_ref: develop
+      source_sha: ${{ github.sha }}
+      config_path: deploy/environments/development.yaml
+      components: ${{ inputs.components }}

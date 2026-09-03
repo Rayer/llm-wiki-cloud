@@ -1,0 +1,9 @@
+#!/usr/bin/env bash
+set -eu
+printf 'npm %s\n' "$*" >> "$FIXTURE_ROOT/cli-calls"
+if [[ "${1:-}" == ci ]]; then
+  touch "$FIXTURE_ROOT/npm-ci"
+  exit 0
+fi
+printf 'unexpected npm command\n' >&2
+exit 90
