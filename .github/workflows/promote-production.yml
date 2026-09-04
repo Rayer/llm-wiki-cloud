@@ -12,14 +12,14 @@ concurrency:
   group: lwc-production-cd
   cancel-in-progress: false
 
-permissions:
-  contents: read
-  actions: read
-
 jobs:
   promote:
     if: github.ref == 'refs/heads/main'
     uses: ./.github/workflows/cd.yml
+    permissions:
+      contents: read
+      actions: read
+      id-token: write
     with:
       environment: Production
       config_environment: production

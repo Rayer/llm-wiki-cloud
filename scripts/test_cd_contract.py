@@ -8,6 +8,7 @@ import subprocess
 import tempfile
 import textwrap
 import unittest
+from copy import deepcopy
 from pathlib import Path
 
 import yaml
@@ -83,6 +84,38 @@ class CDContractTests(unittest.TestCase):
             self.assertNotIn("inputs.source_sha", source)
             self.assertIn(f"if: github.ref == 'refs/heads/{branch}'", source)
             self.assertIn("source_sha: ${{ github.sha }}", source)
+
+    def test_reusable_callers_grant_mutation_permissions(self):
+        called = yaml.safe_load((ROOT / ".github/workflows/cd.yml").read_text())
+        required = called["jobs"]["mutate"]["permissions"]
+        self.assertEqual(required["id-token"], "write")
+
+        def assert_contract(workflow):
+            callers = [
+                (name, job)
+                for name, job in workflow["jobs"].items()
+                if job.get("uses") == "./.github/workflows/cd.yml"
+            ]
+            self.assertEqual(len(callers), 1)
+            self.assertEqual(callers[0][1].get("permissions"), required)
+
+        for filename in ("deploy-dev.yml", "promote-production.yml"):
+            with self.subTest(filename=filename):
+                workflow = yaml.safe_load((ROOT / ".github/workflows" / filename).read_text())
+                assert_contract(workflow)
+                caller_name = next(
+                    name
+                    for name, job in workflow["jobs"].items()
+                    if job.get("uses") == "./.github/workflows/cd.yml"
+                )
+                for degraded in (
+                    {key: value for key, value in required.items() if key != "id-token"},
+                    {**required, "id-token": "none"},
+                ):
+                    fixture = deepcopy(workflow)
+                    fixture["jobs"][caller_name]["permissions"] = degraded
+                    with self.assertRaises(AssertionError):
+                        assert_contract(fixture)
 
     def test_orchestrator_validates_before_environment_and_gates_mutation_on_rollback_upload(self):
         source = (ROOT / ".github/workflows/cd.yml").read_text()

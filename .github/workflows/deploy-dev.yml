@@ -8,14 +8,14 @@ on:
         required: true
         type: string
 
-permissions:
-  contents: read
-  actions: read
-
 jobs:
   deploy:
     if: github.ref == 'refs/heads/develop'
     uses: ./.github/workflows/cd.yml
+    permissions:
+      contents: read
+      actions: read
+      id-token: write
     with:
       environment: Development
       config_environment: development
