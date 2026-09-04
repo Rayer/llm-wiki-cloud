@@ -135,6 +135,137 @@ class CDContractTests(unittest.TestCase):
             self.assertIn(f"if: github.ref == 'refs/heads/{branch}'", source)
             self.assertIn("source_sha: ${{ github.sha }}", source)
 
+    def test_reusable_workflow_secret_forwarding_contract(self):
+        expected = {
+            "deploy-dev.yml": {
+                "job": "deploy",
+                "branch": "develop",
+                "environment": "Development",
+                "config_environment": "development",
+                "source_ref": "develop",
+                "config_path": "deploy/environments/development.yaml",
+            },
+            "promote-production.yml": {
+                "job": "promote",
+                "branch": "main",
+                "environment": "Production",
+                "config_environment": "production",
+                "source_ref": "main",
+                "config_path": "deploy/environments/production.yaml",
+            },
+        }
+        permissions = {"contents": "read", "actions": "read", "id-token": "write"}
+        shared_workflow = "./.github/workflows/cd.yml"
+        secret_allowlist = {
+            "WIF_PROVIDER",
+            "WIF_SERVICE_ACCOUNT",
+            "VERCEL_PROJECT_ID",
+            "VERCEL_SCOPE",
+            "VERCEL_TEAM_ID",
+            "VERCEL_TOKEN",
+        }
+
+        def workflow_trigger(workflow):
+            return workflow.get("on") if "on" in workflow else workflow.get(True)
+
+        def assert_wrappers(workflows):
+            callers = {
+                (filename, job_id)
+                for filename, workflow in all_workflows.items()
+                for job_id, job in workflow["jobs"].items()
+                if job.get("uses") == shared_workflow
+            }
+            self.assertEqual(
+                callers,
+                {(filename, details["job"]) for filename, details in expected.items()},
+            )
+            for filename, details in expected.items():
+                workflow = workflows[filename]
+                self.assertEqual(set(workflow_trigger(workflow)), {"workflow_dispatch"})
+                self.assertEqual(set(workflow["jobs"]), {details["job"]})
+                job = workflow["jobs"][details["job"]]
+                self.assertEqual(
+                    job.get("if"),
+                    f"github.ref == 'refs/heads/{details['branch']}'",
+                )
+                self.assertEqual(job.get("uses"), shared_workflow)
+                self.assertEqual(job.get("secrets"), "inherit")
+                self.assertEqual(job.get("permissions"), permissions)
+                self.assertEqual(
+                    job.get("with"),
+                    {
+                        "environment": details["environment"],
+                        "config_environment": details["config_environment"],
+                        "source_ref": details["source_ref"],
+                        "source_sha": "${{ github.sha }}",
+                        "config_path": details["config_path"],
+                        "components": "${{ inputs.components }}",
+                    },
+                )
+                self.assertNotRegex(json.dumps(workflow), r"\$\{\{\s*secrets\.")
+
+        workflows = {
+            filename: yaml.safe_load((ROOT / ".github/workflows" / filename).read_text())
+            for filename in expected
+        }
+        all_workflows = {
+            path.name: yaml.safe_load(path.read_text())
+            for path in (ROOT / ".github/workflows").glob("*.yml")
+        }
+        assert_wrappers(workflows)
+
+        missing_inherit = deepcopy(workflows)
+        del missing_inherit["deploy-dev.yml"]["jobs"]["deploy"]["secrets"]
+        with self.assertRaises(AssertionError):
+            assert_wrappers(missing_inherit)
+
+        explicit_map = deepcopy(workflows)
+        explicit_map["promote-production.yml"]["jobs"]["promote"]["secrets"] = {
+            "WIF_PROVIDER": "${{ secrets.WIF_PROVIDER }}"
+        }
+        with self.assertRaises(AssertionError):
+            assert_wrappers(explicit_map)
+
+        cd_path = ROOT / ".github/workflows/cd.yml"
+        cd_source = cd_path.read_text()
+        called = yaml.safe_load(cd_source)
+        self.assertEqual(
+            called["jobs"]["mutate"].get("environment"),
+            "${{ inputs.environment }}",
+        )
+        secret_ref_names = set(re.findall(r"secrets\.([A-Za-z_][A-Za-z0-9_]*)", cd_source))
+        self.assertTrue(secret_ref_names)
+        self.assertTrue(secret_ref_names <= secret_allowlist)
+        secret_consumers = [
+            value
+            for value in called["jobs"]["mutate"]["env"].values()
+            if isinstance(value, str) and "secrets." in value
+        ]
+        secret_consumers.extend(
+            step.get("with", {}).get("workload_identity_provider")
+            for step in called["jobs"]["mutate"]["steps"]
+            if step.get("name") == "Authenticate to Google Cloud"
+        )
+        secret_consumers.extend(
+            step.get("with", {}).get("service_account")
+            for step in called["jobs"]["mutate"]["steps"]
+            if step.get("name") == "Authenticate to Google Cloud"
+        )
+        self.assertEqual(
+            {
+                re.search(r"secrets\.([A-Za-z_][A-Za-z0-9_]*)", value).group(1)
+                for value in secret_consumers
+            },
+            secret_ref_names,
+        )
+        for value in secret_consumers:
+            self.assertRegex(value, r"^\$\{\{\s*secrets\.[A-Z_]+\s*\}\}$")
+        self.assertIn("${{ github.token }}", cd_source)
+        self.assertNotRegex(
+            cd_source,
+            r"\b(?:WIF_PROVIDER|WIF_SERVICE_ACCOUNT|VERCEL_PROJECT_ID|VERCEL_SCOPE|VERCEL_TEAM_ID|VERCEL_TOKEN):(?![ \t]*\$\{\{)[ \t]+",
+        )
+
     def test_reusable_callers_grant_mutation_permissions(self):
         called = yaml.safe_load((ROOT / ".github/workflows/cd.yml").read_text())
         required = called["jobs"]["mutate"]["permissions"]
@@ -1392,13 +1523,14 @@ class ArchitectureAuthorityTests(unittest.TestCase):
         self.assertNotIn("consume_dev_images", frontend)
         self.assertNotRegex(frontend, r"image_for (auth|bff|worker)")
 
-    def test_wrappers_require_explicit_components_and_do_not_forward_environment_secrets(self):
+    def test_wrappers_require_explicit_components_and_inherit_secrets(self):
         for filename in ("deploy-dev.yml", "promote-production.yml"):
             source = (ROOT / ".github/workflows" / filename).read_text()
             self.assertRegex(source, r"components:\n\s+description:.*\n\s+required: true")
             self.assertNotIn("default:", source)
             self.assertNotIn("inputs.components ||", source)
-            self.assertNotIn("\n    secrets:", source)
+            self.assertIn("\n    secrets: inherit", source)
+            self.assertNotRegex(source, r"\$\{\{\s*secrets\.")
 
     def test_reusable_workflow_validates_the_complete_fixed_tuple_before_protected_environment(self):
         source = (ROOT / ".github/workflows/cd.yml").read_text()
@@ -1408,8 +1540,6 @@ class ArchitectureAuthorityTests(unittest.TestCase):
         contract = source_bundle()
         self.assertIn("environment and config/ref tuple", contract)
         self.assertIn("DEPLOYMENT_ENVIRONMENT", contract)
-        self.assertNotIn("secrets:", (ROOT / ".github/workflows/deploy-dev.yml").read_text())
-        self.assertNotIn("secrets:", (ROOT / ".github/workflows/promote-production.yml").read_text())
 
     def test_production_is_serialized_without_a_shared_development_lock(self):
         production = (ROOT / ".github/workflows/promote-production.yml").read_text()

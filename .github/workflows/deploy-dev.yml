@@ -12,6 +12,7 @@ jobs:
   deploy:
     if: github.ref == 'refs/heads/develop'
     uses: ./.github/workflows/cd.yml
+    secrets: inherit
     permissions:
       contents: read
       actions: read

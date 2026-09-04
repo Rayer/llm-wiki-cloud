@@ -16,6 +16,7 @@ jobs:
   promote:
     if: github.ref == 'refs/heads/main'
     uses: ./.github/workflows/cd.yml
+    secrets: inherit
     permissions:
       contents: read
       actions: read
