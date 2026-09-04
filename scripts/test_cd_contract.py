@@ -1481,6 +1481,126 @@ class CDContractTests(unittest.TestCase):
             )
             self.assertNotEqual(negative.returncode, 0)
 
+    def test_secret_iam_preflight_accepts_shared_specific_binding_without_relaxing_safety(self):
+        cases = [
+            (
+                "live shared secret binding",
+                {"bindings": [{"role": "roles/secretmanager.secretAccessor", "members": [
+                    "serviceAccount:lwc-auth-dev@llm-wiki-cloud.iam.gserviceaccount.com",
+                    "serviceAccount:lwc-bff-dev@llm-wiki-cloud.iam.gserviceaccount.com",
+                ]}]},
+                "roles/secretmanager.secretAccessor",
+                "serviceAccount:lwc-auth-dev@llm-wiki-cloud.iam.gserviceaccount.com",
+                True,
+            ),
+            (
+                "worker duplicate requested member across exact bindings",
+                {"bindings": [
+                    {"role": "roles/run.viewer", "members": [
+                        "serviceAccount:worker@example.com",
+                    ]},
+                    {"role": "roles/run.viewer", "members": [
+                        "serviceAccount:worker@example.com", "serviceAccount:another-worker@example.com",
+                    ]},
+                ]},
+                "roles/run.viewer",
+                "serviceAccount:worker@example.com",
+                False,
+            ),
+            (
+                "conditioned same-role duplicate requested member",
+                {"bindings": [
+                    {"role": "roles/run.viewer", "members": [
+                        "serviceAccount:worker@example.com",
+                    ]},
+                    {"role": "roles/run.viewer", "condition": {"title": "temporary", "expression": "true"}, "members": [
+                        "serviceAccount:worker@example.com", "user:alice@example.com",
+                    ]},
+                ]},
+                "roles/run.viewer",
+                "serviceAccount:worker@example.com",
+                False,
+            ),
+            (
+                "worker shared specific binding",
+                {"bindings": [{"role": "roles/run.viewer", "members": [
+                    "serviceAccount:worker@example.com",
+                    "serviceAccount:another-worker@example.com",
+                ]}]},
+                "roles/run.viewer",
+                "serviceAccount:worker@example.com",
+                True,
+            ),
+            (
+                "conditioned requested binding",
+                {"bindings": [{"role": "roles/secretmanager.secretAccessor", "condition": {}, "members": [
+                    "serviceAccount:worker@example.com",
+                ]}]},
+                "roles/secretmanager.secretAccessor",
+                "serviceAccount:worker@example.com",
+                False,
+            ),
+            (
+                "missing requested member",
+                {"bindings": [{"role": "roles/secretmanager.secretAccessor", "members": [
+                    "serviceAccount:another@example.com",
+                ]}]},
+                "roles/secretmanager.secretAccessor",
+                "serviceAccount:worker@example.com",
+                False,
+            ),
+            (
+                "broad member in sensitive binding",
+                {"bindings": [{"role": "roles/secretmanager.secretAccessor", "members": [
+                    "serviceAccount:worker@example.com", "allUsers",
+                ]}]},
+                "roles/secretmanager.secretAccessor",
+                "serviceAccount:worker@example.com",
+                False,
+            ),
+            (
+                "requested member in different sensitive role",
+                {"bindings": [
+                    {"role": "roles/secretmanager.secretAccessor", "members": ["serviceAccount:worker@example.com"]},
+                    {"role": "roles/owner", "members": ["serviceAccount:worker@example.com"]},
+                ]},
+                "roles/secretmanager.secretAccessor",
+                "serviceAccount:worker@example.com",
+                False,
+            ),
+            (
+                "public invoker remains exact",
+                {"bindings": [{"role": "roles/run.invoker", "members": ["allUsers"]}]},
+                "roles/run.invoker",
+                "allUsers",
+                True,
+            ),
+            (
+                "malformed member shape",
+                {"bindings": [{"role": "roles/secretmanager.secretAccessor", "members": [
+                    {"member": "serviceAccount:worker@example.com"},
+                ]}]},
+                "roles/secretmanager.secretAccessor",
+                "serviceAccount:worker@example.com",
+                False,
+            ),
+        ]
+        for name, policy, role, member, valid in cases:
+            with self.subTest(case=name):
+                result = subprocess.run(
+                    ["bash", "-c", common_source() + "\niam_binding_is_exact \"$POLICY\" \"$ROLE\" \"$MEMBER\""],
+                    env={
+                        **os.environ,
+                        "ROOT": str(ROOT),
+                        "POLICY": json.dumps(policy),
+                        "ROLE": role,
+                        "MEMBER": member,
+                    },
+                    text=True,
+                    capture_output=True,
+                )
+                self.assertEqual(result.returncode == 0, valid, result.stdout + result.stderr)
+
 
 class ArchitectureAuthorityTests(unittest.TestCase):
     COMPONENTS = ("auth", "bff", "worker", "frontend")
