@@ -333,12 +333,17 @@ iam_binding_is_exact() {
     def forbidden_role:
       . == "roles/owner" or . == "roles/editor" or . == "roles/run.admin" or . == "roles/run.developer" or . == "roles/run.jobsAdmin" or
       . == "roles/secretmanager.admin" or . == "roles/secretmanager.secretAccessor" or ((type == "string") and test("^roles/.*(admin|developer)$"));
+    def requested_binding:
+      .role == $role and (has("condition")|not) and (.members|index($member)) != null and
+      ($member == "allUsers" and (.members|sort) == ["allUsers"] or
+       $member != "allUsers" and all(.members[]; startswith("serviceAccount:")));
     (.bindings | type) == "array" and
     all(.bindings[]; type == "object" and (.role|type) == "string" and (.members|type) == "array" and all(.members[]; type == "string")) and
-    ([.bindings[] | select(.role == $role and (has("condition")|not) and (.members|sort) == [$member])] | length) == 1 and
+    ([.bindings[] | select(requested_binding)] | length) == 1 and
     all(.bindings[];
       ([.members[] | select(broad_member)] | length) as $broad |
-      if ((.members | index($member)) != null and (.role | forbidden_role)) then false
+      if (.role == $role and (.members | index($member)) != null and has("condition")) then false
+      elif ((.members | index($member)) != null and .role != $role and (.role | forbidden_role)) then false
       elif ($broad > 0 and (.role | forbidden_role)) then false
       else true end
     )' <<<"$policy" >/dev/null
