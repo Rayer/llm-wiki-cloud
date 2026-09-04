@@ -1494,6 +1494,20 @@ class CDContractTests(unittest.TestCase):
                 True,
             ),
             (
+                "duplicate requested member with unexpected member class",
+                {"bindings": [
+                    {"role": "roles/secretmanager.secretAccessor", "members": [
+                        "serviceAccount:auth@example.com", "serviceAccount:bff@example.com",
+                    ]},
+                    {"role": "roles/secretmanager.secretAccessor", "members": [
+                        "serviceAccount:auth@example.com", "user:alice@example.com",
+                    ]},
+                ]},
+                "roles/secretmanager.secretAccessor",
+                "serviceAccount:auth@example.com",
+                False,
+            ),
+            (
                 "worker shared specific binding",
                 {"bindings": [{"role": "roles/run.viewer", "members": [
                     "serviceAccount:worker@example.com",
