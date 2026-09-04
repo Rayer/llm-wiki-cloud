@@ -42,9 +42,8 @@ func TestDeployWorkerWorkflowContract(t *testing.T) {
 		"--build-arg BUILD_NONCE=\"$nonce\"",
 		"--target worker",
 		"gcloud run jobs update",
-		"--update-secrets",
-		"--args",
-		"gcloud run jobs replace",
+		"--image \"$image\"",
+		"worker_image_readback",
 	} {
 		if !strings.Contains(script+shared+components, want) {
 			t.Fatalf("shared CD contract missing %q", want)
@@ -125,8 +124,13 @@ func TestWorkerPromotionWorkflowsContract(t *testing.T) {
 	if !(freeze >= 0 && freeze < upload && upload < mutation) {
 		t.Fatal("durable rollback upload must precede all mutations")
 	}
-	if !strings.Contains(components, "gcloud run jobs replace") || !strings.Contains(components, "handles.worker.definition") {
-		t.Fatal("Worker rollback must restore the frozen complete definition")
+	if !strings.Contains(components, "gcloud run jobs update") || !strings.Contains(components, "handles.worker.image") {
+		t.Fatal("Worker rollback must use the retained immutable image handle")
+	}
+	for _, forbidden := range []string{"gcloud run jobs replace", "handles.worker.definition", "--update-env-vars", "--update-secrets", "--service-account", "--args", "run jobs execute"} {
+		if strings.Contains(components, forbidden) {
+			t.Fatalf("Worker image-only contract contains forbidden marker %q", forbidden)
+		}
 	}
 }
 

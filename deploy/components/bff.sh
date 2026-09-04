@@ -17,15 +17,9 @@ bff_preflight() {
 }
 
 bff_freeze() {
-  local project region service service_json traffic revision revision_json image readback
-  project=$(plan_json '.gcp.project_id'); region=$(plan_json '.gcp.region'); service=$(plan_json '.bff.service_name')
-  service_json=$(gcloud run services describe "$service" --project "$project" --region "$region" --format=json --quiet)
-  traffic=$(jq -ce 'if (.status.traffic|type) != "array" or (.status.traffic|length) != 1 or .status.traffic[0].percent != 100 or (.status.traffic[0].revisionName|type) != "string" or (.status.traffic[0].tag? != null) then error("service traffic is not one untagged 100-percent revision") else .status.traffic[0] end' <<<"$service_json")
-  revision=$(jq -er '.revisionName' <<<"$traffic")
-  revision_json=$(gcloud run revisions describe "$revision" --project "$project" --region "$region" --format=json --quiet)
-  image=$(jq -er '.status.imageDigest | select(type == "string" and test("@sha256:"))' <<<"$revision_json")
-  readback=$(normalize_service_readback bff "$service_json" "$revision_json" "$revision" "$image" 1)
-  freeze_store bff "$(jq -n --arg revision "$revision" --arg image "$image" --argjson traffic "$traffic" --argjson readback "$readback" '{revision:$revision,image:$image,traffic:$traffic,service_account:$readback.service_account,readback:$readback}')"
+  local image
+  image=$(service_image_handle bff) || die "BFF effective image handle is unavailable or mutable"
+  freeze_store bff "$(jq -n --arg image "$image" '{image:$image}')"
 }
 
 bff_build_image() {
@@ -39,7 +33,7 @@ bff_build_image() {
 }
 
 bff_mutate() {
-  local image service account project region origins secrets deploy_status=0 revision
+  local image service project region deploy_status=0 traffic_status=0
   journal_init
   if [[ "$ENVIRONMENT" == production ]]; then
     if ! image=$(image_for bff); then
@@ -56,61 +50,40 @@ bff_mutate() {
       write_component_result bff failed '{}' image_build_failed
       return 1
     fi
+    validate_image_value bff "$image"
     mutation_accepted bff
     mkdir -p "$ARTIFACT_DIR/images"
     printf '%s\n' "$image" > "$ARTIFACT_DIR/images/bff-image-$SOURCE_SHA.txt"
   fi
   revalidate_before_provider
   if ! jq -e '.components.bff? != null' "$JOURNAL_PATH" >/dev/null; then journal_pending bff; fi
-  service=$(plan_json '.bff.service_name'); account=$(plan_json '.bff.runtime_service_account'); project=$(plan_json '.gcp.project_id'); region=$(plan_json '.gcp.region')
-  origins=$(join_config_list '.bff.allowed_origins')
-  secrets="JWT_SECRET=$(plan_json '.bff.secret_references.jwt'):latest,DEEPSEEK_API_KEY=$(plan_json '.bff.secret_references.deepseek_api_key'):latest"
-  local -a flags=(--project "$project" --region "$region" --platform managed --service-account "$account" --image "$image"
-    --network "$(plan_json '.bff.network')" --subnet "$(plan_json '.bff.subnet')" --vpc-egress "$(plan_json '.bff.vpc_egress')" --ingress "$(plan_json '.bff.ingress')" --max "$(plan_json '.bff.max_instances')"
-    --update-env-vars "^@^GCP_PROJECT=$project@BUCKET=$(plan_json '.bff.bucket')@FIRESTORE_DATABASE_ID=$(plan_json '.bff.firestore_database_id')@PIPELINE_JOB_URL=$(plan_json '.bff.pipeline_job_url')@ALLOWED_ORIGINS=$origins@AUTH_SERVICE_URL=$(plan_json '.bff.auth_service_url')@QUERY_STAGE_CONFIG_PATH=$(plan_json '.query_config.runtime_path')@DEV_JWT=false@LWC_SOURCE_COMMIT=$SOURCE_SHA"
-    --remove-env-vars "QUERY_EXPANSION_MODEL,QUERY_EXPANSION_REASONING,ANSWER_SYNTHESIS_MODEL,ANSWER_SYNTHESIS_REASONING,QUERY_SELECTION_LIMIT,QUERY_SELECTION_EXPLORATION_SLOTS,QUERY_SELECTION_EVIDENCE_THRESHOLD,QUERY_EXPANSION_KEYWORDS_PER_ATTEMPT,QUERY_EXPANSION_ATTEMPTS,QUERY_MATCHING_RARE_KEYWORD_MAX_DOCUMENT_FREQUENCY,USER_ID,PROJECT_ID"
-    --update-secrets "$secrets" --allow-unauthenticated --quiet)
-  [[ "$ENVIRONMENT" != production ]] || flags+=(--no-traffic)
-  if timeout --signal=TERM --kill-after=5s 600s gcloud run deploy "$service" "${flags[@]}" >/dev/null; then :; else deploy_status=$?; fi
-  if ! revision=$(gcloud run services describe "$service" --project "$project" --region "$region" --format='value(status.latestCreatedRevisionName)' --quiet); then
-    journal_transition bff unknown
-    die "bff created revision is unavailable after provider command status $deploy_status"
+  service=$(plan_json '.bff.service_name'); project=$(plan_json '.gcp.project_id'); region=$(plan_json '.gcp.region')
+  validate_image_value bff "$image"
+  if timeout --signal=TERM --kill-after=5s 600s gcloud run services update "$service" --project "$project" --region "$region" --image "$image" --quiet >/dev/null; then :; else deploy_status=$?; fi
+  if [[ "$deploy_status" -eq 0 ]]; then
+    if timeout --signal=TERM --kill-after=5s 240s gcloud run services update-traffic "$service" --to-latest --project "$project" --region "$region" --quiet >/dev/null; then :; else traffic_status=$?; fi
   fi
-  if [[ ! "$revision" =~ ^[a-z][a-z0-9-]{0,61}[a-z0-9]$ ]]; then
+  if ! bff_verify "$image"; then
     journal_transition bff unknown
-    die "bff created revision is invalid"
-  fi
-  if [[ "$deploy_status" -ne 0 ]]; then
-    if ! bff_verify "$image" "$revision"; then
-      journal_transition bff unknown
-      die "bff provider command failed and exact desired definition was not read back"
-    fi
+    die "bff image/traffic mutation did not converge (image_status=$deploy_status traffic_status=$traffic_status readback=$SERVICE_READBACK_RESULT)"
   fi
   [[ "$ENVIRONMENT" == production ]] && mutation_accepted bff
-  if [[ "$ENVIRONMENT" == production ]]; then
-    revalidate_before_provider
-    if ! timeout --signal=TERM --kill-after=5s 240s gcloud run services update-traffic "$service" --to-revisions "$revision=100" --project "$project" --region "$region" --quiet >/dev/null; then
-      if ! bff_verify "$image" "$revision"; then
-        journal_transition bff unknown
-        die "bff traffic mutation failed and authoritative read-back did not converge"
-      fi
-    fi
-  fi
-  bff_verify "$image" "$revision" || die "bff post-mutation read-back did not converge"
 }
 
 bff_verify() {
-  local image="$1" revision="$2" project region service json revision_json observed expected
-  SERVICE_READBACK_RESULT=unknown
-  project=$(plan_json '.gcp.project_id'); region=$(plan_json '.gcp.region'); service=$(plan_json '.bff.service_name')
-  if ! json=$(gcloud run services describe "$service" --project "$project" --region "$region" --format=json --quiet); then return 1; fi
-  if ! jq -e --arg revision "$revision" '(.status.traffic|type) == "array" and (.status.traffic|length) == 1 and .status.traffic[0].revisionName == $revision and .status.traffic[0].percent == 100 and (.status.traffic[0].tag? == null)' <<<"$json" >/dev/null; then SERVICE_READBACK_RESULT=failed; return 1; fi
-  if ! revision_json=$(gcloud run revisions describe "$revision" --project "$project" --region "$region" --format=json --quiet); then return 1; fi
-  if ! jq -e --arg image "$image" '(.status.imageDigest // "") == $image and (.spec.containers[0].image // "") == $image and any(.status.conditions[]?; .type == "Ready" and .status == "True")' <<<"$revision_json" >/dev/null; then SERVICE_READBACK_RESULT=failed; return 1; fi
-  if ! observed=$(normalize_service_readback bff "$json" "$revision_json" "$revision" "$image"); then SERVICE_READBACK_RESULT=failed; return 1; fi
-  expected=$(service_expected bff "$image" "$revision")
-  if ! jq -n -e --argjson expected "$expected" --argjson observed "$observed" '$expected == $observed' >/dev/null; then SERVICE_READBACK_RESULT=failed; return 1; fi
-  SERVICE_READBACK="$observed"; SERVICE_READBACK_RESULT=success
+  local image="$1" revision="${2:-}" observed readback_status
+  SERVICE_READBACK=''; SERVICE_READBACK_RESULT=unknown
+  if observed=$(service_image_readback bff "$image" "$revision"); then
+    SERVICE_READBACK="$observed"; SERVICE_READBACK_RESULT=success
+    return 0
+  else
+    readback_status=$?
+    case "$readback_status" in
+      1) SERVICE_READBACK_RESULT=failed ;;
+      *) SERVICE_READBACK_RESULT=unknown ;;
+    esac
+    return 1
+  fi
 }
 
 bff_reconcile() {
@@ -121,20 +94,27 @@ bff_reconcile() {
 }
 
 bff_rollback() {
-  local project region service revision image expected json revision_json observed
-  revision=$(jq -er '.handles.bff.revision' "$ROLLBACK_PATH") || { write_rollback_result bff failed '{}'; return 1; }
+  local project region service image observed update_status=0 readback_status=0
   image=$(jq -er '.handles.bff.image' "$ROLLBACK_PATH") || { write_rollback_result bff failed '{}'; return 1; }
-  expected=$(jq -cer '.handles.bff.readback' "$ROLLBACK_PATH") || { write_rollback_result bff failed '{}'; return 1; }
+  validate_image_value bff "$image" || { write_rollback_result bff failed '{}'; return 1; }
   project=$(plan_json '.gcp.project_id'); region=$(plan_json '.gcp.region'); service=$(plan_json '.bff.service_name')
-  if observed=$(service_frozen_readback bff 1); then
+  if observed=$(service_image_readback bff "$image"); then
     write_rollback_result bff success "$observed" verified_noop
     return 0
   fi
-  timeout --signal=TERM --kill-after=5s 240s gcloud run services update-traffic "$service" --to-revisions "$revision=100" --project "$project" --region "$region" --quiet >/dev/null || :
-  json=$(gcloud run services describe "$service" --project "$project" --region "$region" --format=json --quiet) || { write_rollback_result bff unknown '{}'; return 2; }
-  revision_json=$(gcloud run revisions describe "$revision" --project "$project" --region "$region" --format=json --quiet) || { write_rollback_result bff unknown '{}'; return 2; }
-  observed=$(normalize_service_readback bff "$json" "$revision_json" "$revision" "$image" 1) || { write_rollback_result bff failed '{}'; return 1; }
-  if jq -n -e --argjson expected "$expected" --argjson observed "$observed" '$expected == $observed' >/dev/null; then write_rollback_result bff success "$observed"; else write_rollback_result bff failed "$observed"; return 1; fi
+  if timeout --signal=TERM --kill-after=5s 240s gcloud run services update "$service" --project "$project" --region "$region" --image "$image" --quiet >/dev/null; then :; else update_status=$?; fi
+  if [[ "$update_status" -eq 0 ]]; then
+    timeout --signal=TERM --kill-after=5s 240s gcloud run services update-traffic "$service" --to-latest --project "$project" --region "$region" --quiet >/dev/null || :
+  fi
+  if observed=$(service_image_readback bff "$image"); then
+    write_rollback_result bff success "$observed"
+  else
+    readback_status=$?
+    if [[ "$update_status" -ne 0 || "$readback_status" -eq 2 ]]; then
+      write_rollback_result bff unknown '{}'; return 2
+    fi
+    write_rollback_result bff failed '{}'; return 1
+  fi
 }
 
 case "${1:-}" in

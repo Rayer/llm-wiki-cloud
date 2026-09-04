@@ -311,6 +311,113 @@ class CDContractTests(unittest.TestCase):
         self.assertIn("steps.rollback_upload.outcome == 'success'", source)
         self.assertNotIn("run jobs execute", source)
 
+    def test_receipt_boundaries_are_environment_gated_and_causally_ordered(self):
+        workflow = yaml.safe_load((ROOT / ".github/workflows/cd.yml").read_text())
+        steps = workflow["jobs"]["mutate"]["steps"]
+        by_id = {step["id"]: step for step in steps if "id" in step}
+        positions = {step["id"]: index for index, step in enumerate(steps) if "id" in step}
+        backend = ("auth", "bff", "worker")
+
+        consume = by_id["consume_dev_images"]
+        self.assertEqual(consume["run"], "bash deploy/cd.sh consume-dev-images")
+        self.assertEqual(
+            consume["if"],
+            "inputs.config_environment == 'production' && "
+            "(contains(inputs.components, 'auth') || contains(inputs.components, 'bff') || contains(inputs.components, 'worker')) && "
+            "steps.rollback_upload.outcome == 'success' && steps.revalidate_before_mutation.outcome == 'success'",
+        )
+        self.assertGreater(positions["consume_dev_images"], positions["revalidate_before_mutation"])
+        self.assertLess(
+            positions["consume_dev_images"],
+            min(positions[f"{component}_mutate"] for component in backend),
+        )
+
+        for component in (*backend, "frontend"):
+            condition = by_id[f"{component}_mutate"]["if"]
+            self.assertRegex(
+                condition,
+                r"\(inputs\.config_environment != 'production' \|\| steps\.consume_dev_images\.outcome == 'success'\)",
+            )
+        frontend_condition = by_id["frontend_mutate"]["if"]
+        for component in backend:
+            self.assertIn(f"!contains(inputs.components, '{component}')", frontend_condition)
+
+        record = by_id["record_dev_receipt"]
+        self.assertEqual(record["run"], "bash deploy/cd.sh record-dev-receipt")
+        self.assertEqual(record["if"].split(" && ")[0], "inputs.config_environment == 'development'")
+        self.assertGreater(
+            positions["record_dev_receipt"],
+            max(positions[f"{component}_mutate"] for component in backend),
+        )
+        self.assertLess(positions["record_dev_receipt"], positions["dev_receipt_upload"])
+        for component in backend:
+            self.assertIn(
+                f"!contains(inputs.components, '{component}') || steps.{component}_mutate.outcome == 'success'",
+                record["if"],
+            )
+
+        upload_condition = by_id["dev_receipt_upload"]["if"]
+        self.assertIn("steps.record_dev_receipt.outcome == 'success'", upload_condition)
+        for component in backend:
+            self.assertNotIn(f"steps.{component}_mutate.outcome == 'success'", upload_condition)
+        self.assertEqual(
+            sum(step.get("id") == "dev_receipt_upload" for step in steps),
+            1,
+        )
+        self.assertNotIn("run: bash deploy/cd.sh mutate", (ROOT / ".github/workflows/cd.yml").read_text())
+
+    def test_record_dev_receipt_cli_rejects_partial_backend_images_and_writes_complete_receipt(self):
+        source_sha = "0123456789abcdef0123456789abcdef01234567"
+        registry = "asia-east1-docker.pkg.dev/llm-wiki-cloud/cloud-run-images"
+        images = {
+            "auth": f"{registry}/llm-wiki-auth@sha256:{'a' * 64}",
+            "worker": f"{registry}/olw-pipeline@sha256:{'b' * 64}",
+        }
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            artifact_dir = root / "artifacts"
+            image_dir = artifact_dir / "images"
+            image_dir.mkdir(parents=True)
+            plan = root / "plan.json"
+            plan.write_text(json.dumps({
+                "normalized": {
+                    "selected_components": ["auth", "worker"],
+                    "gcp": {"artifact_registry": registry},
+                    "evidence": {"config_fingerprint": "sha256:" + "c" * 64},
+                }
+            }))
+            (image_dir / f"auth-image-{source_sha}.txt").write_text(images["auth"] + "\n")
+            env = {
+                **os.environ,
+                "ROOT": str(ROOT),
+                "ENVIRONMENT": "development",
+                "SOURCE_SHA": source_sha,
+                "PLAN_PATH": str(plan),
+                "ARTIFACT_DIR": str(artifact_dir),
+                "GITHUB_RUN_ID": "123",
+                "GITHUB_RUN_ATTEMPT": "2",
+            }
+            partial = subprocess.run(
+                ["bash", str(ROOT / "deploy/cd.sh"), "record-dev-receipt"],
+                env=env,
+                text=True,
+                capture_output=True,
+            )
+            self.assertNotEqual(partial.returncode, 0, partial.stdout + partial.stderr)
+            self.assertFalse((image_dir / "dev-receipt.json").exists())
+
+            (image_dir / f"worker-image-{source_sha}.txt").write_text(images["worker"] + "\n")
+            complete = subprocess.run(
+                ["bash", str(ROOT / "deploy/cd.sh"), "record-dev-receipt"],
+                env=env,
+                text=True,
+                capture_output=True,
+            )
+            self.assertEqual(complete.returncode, 0, complete.stdout + complete.stderr)
+            receipt = json.loads((image_dir / "dev-receipt.json").read_text())
+            self.assertEqual(receipt["components"], ["auth", "worker"])
+            self.assertEqual(receipt["images"], images)
+
     def test_no_legacy_workflow_owns_deployment_literals(self):
         workflows = sorted((ROOT / ".github/workflows").glob("*.yml"))
         self.assertEqual(
@@ -904,7 +1011,7 @@ class CDContractTests(unittest.TestCase):
             bin_dir.mkdir()
             fake = textwrap.dedent(f"""
                 #!/usr/bin/env python3
-                import json, sys
+                import json, os, sys
                 args = sys.argv[1:]
                 endpoint = args[-1] if args else ""
                 if "/actions/workflows/deploy-dev.yml/runs" in endpoint:
@@ -930,13 +1037,231 @@ class CDContractTests(unittest.TestCase):
                 "SOURCE_SHA": source_sha,
             }
             result = subprocess.run(
-                ["bash", "-c", "source deploy/cd.sh; consume_dev_images"],
+                ["bash", "deploy/cd.sh", "consume-dev-images"],
                 cwd=ROOT,
                 env=env,
                 text=True,
                 capture_output=True,
             )
             self.assertNotEqual(result.returncode, 0, result.stdout + result.stderr)
+
+    def test_production_receipt_does_not_compare_dev_and_production_config_fingerprints(self):
+        source_sha = "0123456789abcdef0123456789abcdef01234567"
+        image = "asia-east1-docker.pkg.dev/llm-wiki-cloud/cloud-run-images/olw-pipeline@sha256:" + "a" * 64
+        dev_fingerprint = "sha256:" + "d" * 64
+        production_fingerprint = "sha256:" + "p" * 64
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            bin_dir = root / "bin"
+            bin_dir.mkdir()
+            receipt = {
+                "schema": "lwc-306-dev-image-receipt-v1",
+                "source": {
+                    "sha": source_sha,
+                    "ref": "develop",
+                    "workflow_path": ".github/workflows/deploy-dev.yml",
+                    "event": "workflow_dispatch",
+                    "run_id": 101,
+                    "run_attempt": 2,
+                },
+                "config": {"environment": "development", "path": "deploy/environments/development.yaml", "fingerprint": dev_fingerprint},
+                "components": ["worker"],
+                "images": {"worker": image},
+            }
+            fake = textwrap.dedent(f"""
+                #!/usr/bin/env python3
+                import json, sys
+                from pathlib import Path
+                args = sys.argv[1:]
+                endpoint = args[-1] if args else ""
+                if args[:2] == ["run", "download"]:
+                    target = Path(args[args.index("--dir") + 1])
+                    target.mkdir(parents=True, exist_ok=True)
+                    (target / "dev-receipt.json").write_text(json.dumps({receipt!r}))
+                elif "/actions/workflows/deploy-dev.yml/runs" in endpoint:
+                    print(json.dumps({{"workflow_runs": [{{"id": 101, "run_attempt": 2, "path": ".github/workflows/deploy-dev.yml", "event": "workflow_dispatch", "head_branch": "develop", "head_sha": {source_sha!r}, "status": "completed", "conclusion": "success"}}]}}))
+                elif "/actions/runs/101/artifacts" in endpoint:
+                    print(json.dumps({{"artifacts": [{{"id": 202, "name": "cd-images-{source_sha}", "expired": False, "size_in_bytes": 1, "digest": "sha256:{'e' * 64}", "workflow_run": {{"id": 101}}}}]}}))
+                else:
+                    raise SystemExit(2)
+            """).lstrip()
+            gh = bin_dir / "gh"
+            gh.write_text(fake)
+            gh.chmod(0o755)
+            plan = root / "plan.json"
+            plan.write_text(json.dumps({
+                "normalized": {
+                    "selected_components": ["worker"],
+                    "gcp": {"artifact_registry": "asia-east1-docker.pkg.dev/llm-wiki-cloud/cloud-run-images"},
+                    "evidence": {"config_fingerprint": production_fingerprint},
+                }
+            }))
+            env = {
+                **os.environ,
+                "PATH": f"{bin_dir}:{os.environ['PATH']}",
+                "PLAN_PATH": str(plan),
+                "ARTIFACT_DIR": str(root / "artifacts"),
+                "GH_TOKEN": "fixture",
+                "GITHUB_REPOSITORY": "Rayer/llm-wiki-cloud",
+                "ENVIRONMENT": "production",
+                "SOURCE_SHA": source_sha,
+            }
+            result = subprocess.run(
+                ["bash", "deploy/cd.sh", "consume-dev-images"],
+                cwd=ROOT,
+                env=env,
+                text=True,
+                capture_output=True,
+            )
+            self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
+            self.assertEqual(json.loads((root / "artifacts/dev-images/dev-artifact.json").read_text())["digest"], "sha256:" + "e" * 64)
+
+    def test_auth_and_bff_mutation_and_rollback_converge_explicit_traffic(self):
+        registry = "asia-east1-docker.pkg.dev/llm-wiki-cloud/cloud-run-images"
+        for component, image_name in (("auth", "llm-wiki-auth"), ("bff", "llm-wiki-bff")):
+            with self.subTest(component=component), tempfile.TemporaryDirectory() as directory:
+                root = Path(directory)
+                bin_dir = root / "bin"
+                bin_dir.mkdir()
+                old_image = f"{registry}/{image_name}@sha256:" + "a" * 64
+                new_image = f"{registry}/{image_name}@sha256:" + "b" * 64
+                service_name = f"{component}-service"
+                old_revision = f"{component}-old"
+                state = {
+                    "service": {"status": {"traffic": [{"revisionName": old_revision, "percent": 100}], "latestCreatedRevisionName": old_revision}},
+                    "revisions": {old_revision: {"spec": {"containers": [{"image": old_image}]}, "status": {"imageDigest": old_image, "conditions": [{"type": "Ready", "status": "True"}]}}},
+                }
+                state_path = root / "state.json"
+                state_path.write_text(json.dumps(state))
+                log_path = root / "provider.log"
+                fake = textwrap.dedent(f"""
+                    #!/usr/bin/env python3
+                    import json, os, sys
+                    from pathlib import Path
+                    args = sys.argv[1:]
+                    Path(os.environ["FAKE_LOG"]).open("a").write(" ".join(args) + "\\n")
+                    state_path = Path(os.environ["FAKE_STATE"])
+                    state = json.loads(state_path.read_text())
+                    if args[:3] == ["run", "services", "describe"]:
+                        if any(arg.startswith("--format=value(") for arg in args):
+                            print(state["service"]["status"]["traffic"][0]["revisionName"])
+                        else:
+                            print(json.dumps(state["service"]))
+                    elif args[:3] == ["run", "revisions", "describe"]:
+                        print(json.dumps(state["revisions"][args[3]]))
+                    elif args[:3] == ["run", "services", "update"]:
+                        image = args[args.index("--image") + 1]
+                        revision = "{component}-revision-" + str(len(state["revisions"]))
+                        state["service"]["status"]["latestCreatedRevisionName"] = revision
+                        state["revisions"][revision] = {{"spec": {{"containers": [{{"image": image}}]}}, "status": {{"imageDigest": image, "conditions": [{{"type": "Ready", "status": "True"}}]}}}}
+                        state_path.write_text(json.dumps(state))
+                    elif args[:3] == ["run", "services", "update-traffic"]:
+                        if "--to-latest" not in args:
+                            raise SystemExit(2)
+                        revision = state["service"]["status"]["latestCreatedRevisionName"]
+                        state["service"]["status"]["traffic"] = [{{"revisionName": revision, "percent": 100}}]
+                        state_path.write_text(json.dumps(state))
+                    else:
+                        raise SystemExit(2)
+                """).lstrip()
+                provider = bin_dir / "gcloud"
+                provider.write_text(fake)
+                provider.chmod(0o755)
+                plan = root / "plan.json"
+                plan.write_text(json.dumps({
+                    "normalized": {
+                        "selected_components": [component],
+                        "gcp": {"project_id": "llm-wiki-cloud", "region": "asia-east1", "artifact_registry": registry},
+                        "evidence": {"config_fingerprint": "sha256:" + "p" * 64},
+                        component: {"service_name": service_name},
+                    }
+                }))
+                artifacts = root / "artifacts" / "dev-images"
+                artifacts.mkdir(parents=True)
+                (artifacts / f"{component}-image-{'a' * 40}.txt").write_text(new_image + "\n")
+                (artifacts / "dev-receipt.json").write_text(json.dumps({
+                    "schema": "lwc-306-dev-image-receipt-v1",
+                    "source": {"sha": "a" * 40, "ref": "develop", "workflow_path": ".github/workflows/deploy-dev.yml", "event": "workflow_dispatch"},
+                    "config": {"environment": "development", "path": "deploy/environments/development.yaml", "fingerprint": "sha256:" + "d" * 64},
+                    "components": [component], "images": {component: new_image},
+                }))
+                env = {
+                    **os.environ,
+                    "PATH": f"{bin_dir}:{os.environ['PATH']}", "ROOT": str(ROOT), "ENVIRONMENT": "production", "SOURCE_REF": "main", "SOURCE_SHA": "a" * 40,
+                    "CONFIG_PATH": "deploy/environments/production.yaml", "COMPONENTS": component, "PLAN_PATH": str(plan), "ROLLBACK_PATH": str(root / "artifacts" / "rollback.json"),
+                    "JOURNAL_PATH": str(root / "artifacts" / "journal.json"), "ARTIFACT_DIR": str(root / "artifacts"), "ROLLBACK_RESULT_PATH": str(root / "artifacts" / "rollback-result.json"),
+                    "FAKE_STATE": str(state_path), "FAKE_LOG": str(log_path),
+                }
+                frozen = subprocess.run(["bash", str(ROOT / "deploy/components" / f"{component}.sh"), "freeze"], env=env, capture_output=True, text=True)
+                self.assertEqual(frozen.returncode, 0, frozen.stdout + frozen.stderr)
+                mutated = subprocess.run(["bash", str(ROOT / "deploy/components" / f"{component}.sh"), "mutate"], env=env, capture_output=True, text=True)
+                self.assertEqual(mutated.returncode, 0, mutated.stdout + mutated.stderr)
+                current = json.loads(state_path.read_text())
+                current_revision = current["service"]["status"]["traffic"][0]["revisionName"]
+                self.assertEqual(current["revisions"][current_revision]["status"]["imageDigest"], new_image)
+                self.assertEqual(json.loads((root / "artifacts/journal.json").read_text())["components"][component]["state"], "accepted")
+                rolled_back = subprocess.run(["bash", str(ROOT / "deploy/cd.sh"), "rollback"], env=env, capture_output=True, text=True)
+                self.assertEqual(rolled_back.returncode, 0, rolled_back.stdout + rolled_back.stderr)
+                current = json.loads(state_path.read_text())
+                current_revision = current["service"]["status"]["traffic"][0]["revisionName"]
+                self.assertEqual(current["revisions"][current_revision]["status"]["imageDigest"], old_image)
+                self.assertEqual(json.loads((root / "artifacts/rollback" / f"{component}.json").read_text())["result"], "success")
+                calls = log_path.read_text().splitlines()
+                traffic_calls = [call for call in calls if "run services update-traffic" in call]
+                self.assertEqual(len(traffic_calls), 2)
+                self.assertTrue(all("--to-latest" in call for call in traffic_calls))
+                image_updates = [call for call in calls if "run services update " in call]
+                self.assertEqual(len(image_updates), 2)
+                self.assertIn(f"--image {new_image}", image_updates[0])
+                self.assertIn(f"--image {old_image}", image_updates[1])
+                for call in image_updates:
+                    self.assertNotRegex(call, r"--(update-env-vars|update-secrets|service-account|network|subnet|vpc-egress|ingress|max)")
+
+    def test_readback_classification_preserves_unknown_and_failed(self):
+        registry = "asia-east1-docker.pkg.dev/llm-wiki-cloud/cloud-run-images"
+        for component, image_name in (("auth", "llm-wiki-auth"), ("bff", "llm-wiki-bff"), ("worker", "olw-pipeline")):
+            with self.subTest(component=component), tempfile.TemporaryDirectory() as directory:
+                root = Path(directory)
+                bin_dir = root / "bin"
+                bin_dir.mkdir()
+                old_image = f"{registry}/{image_name}@sha256:" + "a" * 64
+                expected_image = f"{registry}/{image_name}@sha256:" + "b" * 64
+                old_revision = f"{component}-old"
+                plan_component = {"service_name": f"{component}-service"} if component != "worker" else {"job_name": "worker-job", "location": "asia-east1"}
+                plan = root / "plan.json"
+                plan.write_text(json.dumps({"normalized": {"selected_components": [component], "gcp": {"project_id": "llm-wiki-cloud", "region": "asia-east1", "artifact_registry": registry}, component: plan_component}}))
+                service = {"status": {"traffic": [{"revisionName": old_revision, "percent": 100}]}}
+                revision = {"spec": {"containers": [{"image": old_image}]}, "status": {"imageDigest": old_image, "conditions": [{"type": "Ready", "status": "True"}]}}
+                job = {"spec": {"template": {"spec": {"template": {"spec": {"containers": [{"image": old_image}]}}}}}}
+                fake = textwrap.dedent(f"""
+                    #!/usr/bin/env python3
+                    import json, os, sys
+                    args = sys.argv[1:]
+                    mode = os.environ["FAKE_MODE"]
+                    if mode == "transport":
+                        raise SystemExit(9)
+                    if mode == "unreadable":
+                        print("not-json")
+                    elif args[:3] == ["run", "services", "describe"]:
+                        print(json.dumps({service!r}))
+                    elif args[:3] == ["run", "revisions", "describe"]:
+                        print(json.dumps({revision!r}))
+                    elif args[:3] == ["run", "jobs", "describe"]:
+                        print(json.dumps({job!r}))
+                    else:
+                        raise SystemExit(2)
+                """).lstrip()
+                provider = bin_dir / "gcloud"
+                provider.write_text(fake)
+                provider.chmod(0o755)
+                verify = f"{component}_verify"
+                result_var = "SERVICE_READBACK_RESULT" if component != "worker" else "WORKER_READBACK_RESULT"
+                component_script = ROOT / "deploy/components" / f"{component}.sh"
+                command = f"source {str(component_script)!r} help >/dev/null; if {verify} \"$IMAGE\"; then printf 'success\\n'; else printf '%s\\n' \"${{{result_var}}}\"; fi"
+                for mode, expected in (("transport", "unknown"), ("unreadable", "unknown"), ("mismatch", "failed")):
+                    env = {**os.environ, "PATH": f"{bin_dir}:{os.environ['PATH']}", "ROOT": str(ROOT), "PLAN_PATH": str(plan), "IMAGE": expected_image, "FAKE_MODE": mode}
+                    result = subprocess.run(["bash", "-c", command], env=env, capture_output=True, text=True)
+                    self.assertEqual(result.stdout.strip(), expected, result.stderr)
 
     def test_image_receipt_must_use_exact_component_registry_repository(self):
         with tempfile.TemporaryDirectory() as directory:
@@ -1080,6 +1405,132 @@ class CDContractTests(unittest.TestCase):
             self.assertEqual(rollback["result"], "not_needed")
             self.assertFalse(rollback["verified"])
 
+    def test_evidence_prefers_verified_rollback_after_journal_is_exhausted(self):
+        source_sha = "0123456789abcdef0123456789abcdef01234567"
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            artifact_dir = root / "artifacts"
+            artifact_dir.mkdir()
+            plan = root / "plan.json"
+            plan.write_text(json.dumps({"normalized": {"selected_components": ["worker"]}}))
+            env = {
+                **os.environ,
+                "ROOT": str(ROOT),
+                "ENVIRONMENT": "production",
+                "SOURCE_SHA": source_sha,
+                "PLAN_PATH": str(plan),
+                "JOURNAL_PATH": str(artifact_dir / "journal.json"),
+                "EVIDENCE_PATH": str(artifact_dir / "readback.json"),
+                "ROLLBACK_RESULT_PATH": str(artifact_dir / "rollback-result.json"),
+                "FINAL_EVIDENCE_PATH": str(artifact_dir / "evidence.json"),
+                "GITHUB_RUN_ATTEMPT": "1",
+            }
+            journal = subprocess.run(
+                [
+                    "bash",
+                    "-c",
+                    f"source {str(ROOT / 'deploy/components/common.sh')!r}; "
+                    "journal_init; journal_pending worker; journal_accepted worker; "
+                    "journal_transition worker rollback_pending; journal_transition worker rollback_accepted",
+                ],
+                env=env,
+                text=True,
+                capture_output=True,
+            )
+            self.assertEqual(journal.returncode, 0, journal.stdout + journal.stderr)
+            self.assertEqual(
+                json.loads((artifact_dir / "journal.json").read_text())["components"]["worker"]["history"],
+                ["pending", "accepted", "rollback_pending", "rollback_accepted"],
+            )
+            rollback = {
+                "schema": "lwc-306-rollback-result-v1",
+                "result": "success",
+                "verified": True,
+                "attempted": ["worker"],
+                "components": [{"component": "worker", "result": "success", "verified": True}],
+            }
+            (artifact_dir / "rollback-result.json").write_text(json.dumps(rollback))
+            (artifact_dir / "readback.json").write_text(json.dumps({
+                "schema": "lwc-306-readback-v1",
+                "result": "partial",
+                "verified": False,
+                "provider_readback": False,
+                "mutation_count": 1,
+                "mutation_components": ["worker"],
+                "components": [{"component": "worker", "result": "failed", "verified": False}],
+            }))
+
+            evidence = subprocess.run(
+                ["bash", str(ROOT / "deploy/cd.sh"), "evidence"],
+                env=env,
+                text=True,
+                capture_output=True,
+            )
+            self.assertEqual(evidence.returncode, 0, evidence.stdout + evidence.stderr)
+            rendered = json.loads((artifact_dir / "evidence.json").read_text())
+            self.assertEqual(rendered["result"], "rolled_back")
+            self.assertTrue(rendered["verified"])
+            self.assertEqual(rendered["rollback_attempted"], ["worker"])
+            self.assertEqual(rendered["rollback_result"], "success")
+            self.assertTrue(rendered["rollback_verified"])
+            self.assertEqual(rendered["rollback"], rollback)
+            self.assertFalse(rendered["partial"])
+            self.assertFalse(rendered["unknown"])
+            self.assertEqual(rendered["next_action"], "none")
+
+    def test_evidence_preserves_exhausted_rollback_terminal_results(self):
+        source_sha = "0123456789abcdef0123456789abcdef01234567"
+        for rollback_result, expected in (("failed", "rollback_failed"), ("unknown", "rollback_unknown")):
+            with self.subTest(rollback_result=rollback_result), tempfile.TemporaryDirectory() as directory:
+                root = Path(directory)
+                artifact_dir = root / "artifacts"
+                artifact_dir.mkdir()
+                plan = root / "plan.json"
+                plan.write_text(json.dumps({"normalized": {"selected_components": ["worker"]}}))
+                (artifact_dir / "journal.json").write_text(json.dumps({
+                    "schema": "lwc-306-mutation-journal-v1",
+                    "order": ["worker"],
+                    "components": {"worker": {
+                        "state": "rollback_" + rollback_result,
+                        "history": ["pending", "accepted", "rollback_pending", "rollback_" + rollback_result],
+                        "timestamp": "2026-09-04T00:00:00Z",
+                        "attempt": 1,
+                    }},
+                }))
+                (artifact_dir / "readback.json").write_text(json.dumps({
+                    "schema": "lwc-306-readback-v1",
+                    "result": "success",
+                    "verified": True,
+                    "components": [],
+                }))
+                (artifact_dir / "rollback-result.json").write_text(json.dumps({
+                    "schema": "lwc-306-rollback-result-v1",
+                    "result": rollback_result,
+                    "verified": False,
+                    "attempted": ["worker"],
+                    "components": [{"component": "worker", "result": rollback_result, "verified": False}],
+                }))
+                env = {
+                    **os.environ,
+                    "ENVIRONMENT": "production",
+                    "SOURCE_SHA": source_sha,
+                    "PLAN_PATH": str(plan),
+                    "JOURNAL_PATH": str(artifact_dir / "journal.json"),
+                    "EVIDENCE_PATH": str(artifact_dir / "readback.json"),
+                    "ROLLBACK_RESULT_PATH": str(artifact_dir / "rollback-result.json"),
+                    "FINAL_EVIDENCE_PATH": str(artifact_dir / "evidence.json"),
+                }
+                evidence = subprocess.run(
+                    ["bash", str(ROOT / "deploy/cd.sh"), "evidence"],
+                    env=env,
+                    text=True,
+                    capture_output=True,
+                )
+                self.assertEqual(evidence.returncode, 0, evidence.stdout + evidence.stderr)
+                rendered = json.loads((artifact_dir / "evidence.json").read_text())
+                self.assertEqual(rendered["result"], expected)
+                self.assertFalse(rendered["verified"])
+
     def test_nonempty_journal_with_evidence_renderer_failure_is_rollback_unknown(self):
         with tempfile.TemporaryDirectory() as directory:
             root = Path(directory)
@@ -1197,49 +1648,155 @@ class CDContractTests(unittest.TestCase):
             self.assertNotEqual(duplicate.returncode, 0)
             self.assertEqual(json.loads(journal.read_text())["components"]["auth"]["state"], "accepted")
 
-    def test_readback_and_rollback_are_truthful_and_complete(self):
-        source = source_bundle("auth", "bff", "worker", "frontend")
-        self.assertNotIn("provider_readback:true", source)
-        self.assertNotIn("verified:true", source)
-        self.assertIn("service_account", source)
-        self.assertIn("secret_references", source)
-        worker = (ROOT / "deploy/components/worker.sh").read_text()
-        self.assertIn("gcloud run jobs replace", worker)
-        self.assertIn("handles.worker.definition", worker)
-        self.assertIn("rollback_result", source)
+    def test_freeze_extracts_only_immutable_backend_handles_from_live_provider_shapes(self):
+        source_sha = "0123456789abcdef0123456789abcdef01234567"
+        registry = "asia-east1-docker.pkg.dev/llm-wiki-cloud/cloud-run-images"
+        images = {
+            "auth": f"{registry}/llm-wiki-auth@sha256:{'a' * 64}",
+            "bff": f"{registry}/llm-wiki-bff@sha256:{'b' * 64}",
+            "worker": f"{registry}/olw-pipeline@sha256:{'c' * 64}",
+        }
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            bin_dir = root / "bin"
+            bin_dir.mkdir()
+            plan = root / "plan.json"
+            plan.write_text(json.dumps({
+                "normalized": {
+                    "selected_components": ["auth", "bff", "worker"],
+                    "gcp": {"project_id": "llm-wiki-cloud", "region": "asia-east1", "artifact_registry": registry},
+                    "auth": {"service_name": "auth-service"},
+                    "bff": {"service_name": "bff-service"},
+                    "worker": {"job_name": "worker-job", "location": "asia-east1"},
+                }
+            }))
+            fake = textwrap.dedent(f"""
+                #!/usr/bin/env python3
+                import json, os, sys
+                args = sys.argv[1:]
+                services = {{
+                    "auth-service": {{"metadata": {{"name": "auth-service", "annotations": {{"run.googleapis.com/launch-stage": "GA"}}}}, "status": {{"traffic": [{{"revisionName": "auth-old", "percent": 100}}]}}}},
+                    "bff-service": {{"metadata": {{"name": "bff-service", "annotations": {{"run.googleapis.com/launch-stage": "GA"}}}}, "status": {{"traffic": [{{"revisionName": "bff-old", "percent": 100}}]}}}},
+                }}
+                revisions = {{
+                    "auth-old": {{"metadata": {{"name": "auth-old"}}, "spec": {{"containers": [{{"name": "provider-generated", "image": {images['auth']!r}, "startupProbe": {{"tcpSocket": {{"port": 8080}}}}}}]}}, "status": {{"imageDigest": {images['auth']!r}}}}},
+                    "bff-old": {{"metadata": {{"name": "bff-old"}}, "spec": {{"containers": [{{"name": "provider-generated", "image": {images['bff']!r}, "startupProbe": {{"tcpSocket": {{"port": 8080}}}}}}]}}, "status": {{"imageDigest": {images['bff']!r}}}}},
+                }}
+                if args[:3] == ["run", "services", "describe"]:
+                    print(json.dumps(services[args[3]]))
+                elif args[:3] == ["run", "revisions", "describe"]:
+                    print(json.dumps(revisions[args[3]]))
+                elif args[:3] == ["run", "jobs", "describe"]:
+                    print(json.dumps({{
+                        "apiVersion": "run.googleapis.com/v1", "kind": "Job",
+                        "metadata": {{"name": "worker-job", "generation": 9, "etag": "live-etag", "uid": "provider-uid"}},
+                        "spec": {{"template": {{"spec": {{"template": {{"spec": {{"containers": [{{"name": "provider-generated", "image": {images['worker']!r}, "startupProbe": {{"tcpSocket": {{"port": 8080}}}}}}]}}}}}}}}}}
+                    }}))
+                else:
+                    raise SystemExit(2)
+            """).lstrip()
+            fake_path = bin_dir / "gcloud"
+            fake_path.write_text(fake)
+            fake_path.chmod(0o755)
+            rollback = root / "rollback.json"
+            env = {
+                **os.environ,
+                "PATH": f"{bin_dir}:{os.environ['PATH']}", "ROOT": str(ROOT),
+                "ENVIRONMENT": "development", "SOURCE_SHA": source_sha,
+                "PLAN_PATH": str(plan), "ROLLBACK_PATH": str(rollback),
+            }
+            result = subprocess.run(["bash", str(ROOT / "deploy/cd.sh"), "freeze"], env=env, text=True, capture_output=True)
+            self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
+            document = json.loads(rollback.read_text())
+            self.assertEqual(
+                document["handles"],
+                {component: {"image": image} for component, image in images.items()},
+            )
 
-    def test_service_readback_compares_the_allowlisted_runtime_definition(self):
-        verify = source_bundle("auth", "bff")
-        for marker in (
-            "normalize_service_readback",
-            "runtime_service_account",
-            "secret_references",
-            "allowed_origins",
-            "allowed_hosts",
-            "vpc_egress",
-            "network",
-            "subnet",
-            "max_instances",
-            "component_config",
+    def test_backend_mutation_paths_are_image_only_and_reject_mutable_refs(self):
+        forbidden = (
+            "gcloud run deploy", "--service-account", "--network", "--subnet", "--vpc-egress",
+            "--ingress", "--max", "--update-env-vars", "--update-secrets", "--remove-env-vars",
+            "--args", "--clear-volume-mounts", "--clear-volumes",
+        )
+        for component, next_function, command in (
+            ("auth", "auth_verify", "gcloud run services update"),
+            ("bff", "bff_verify", "gcloud run services update"),
+            ("worker", "worker_verify", "gcloud run jobs update"),
         ):
-            self.assertIn(marker, verify, f"service read-back is missing {marker}")
+            source = (ROOT / "deploy/components" / f"{component}.sh").read_text()
+            body = source[source.index(f"{component}_mutate() {{"):source.index(f"\n{next_function}() {{")]
+            self.assertIn(command, body)
+            self.assertIn('--image "$image"', body)
+            self.assertIn(f"validate_image_value {component} \"$image\"", body)
+            if component in ("auth", "bff"):
+                self.assertIn("gcloud run services update-traffic", body)
+            for marker in forbidden:
+                self.assertNotIn(marker, body, f"{component} mutation contains {marker}")
 
-    def test_worker_rollback_uses_the_frozen_definition_and_exact_readback(self):
+        plan = {"normalized": {"gcp": {"artifact_registry": "registry.example/images"}}}
+        with tempfile.TemporaryDirectory() as directory:
+            plan_path = Path(directory) / "plan.json"
+            plan_path.write_text(json.dumps(plan))
+            for component, image in (
+                ("auth", "registry.example/images/llm-wiki-auth:latest"),
+                ("bff", "registry.example/images/llm-wiki-bff:release"),
+                ("worker", "registry.example/images/olw-pipeline"),
+            ):
+                result = subprocess.run(
+                    ["bash", "-c", common_source() + f'\nvalidate_image_value {component} "$IMAGE"'],
+                    env={**os.environ, "ROOT": str(ROOT), "PLAN_PATH": str(plan_path), "IMAGE": image},
+                    text=True,
+                    capture_output=True,
+                )
+                self.assertNotEqual(result.returncode, 0, f"mutable {component} image was accepted")
+
+    def test_backend_rollbacks_use_only_retained_immutable_image_handles(self):
+        forbidden = (".revision", ".readback", ".definition", "normalize_service_readback", "normalize_worker", "gcloud run jobs replace")
+        for component, command in (
+            ("auth", "gcloud run services update"),
+            ("bff", "gcloud run services update"),
+            ("worker", "gcloud run jobs update"),
+        ):
+            source = (ROOT / "deploy/components" / f"{component}.sh").read_text()
+            start = source.index(f"{component}_rollback() {{")
+            end = source.index("\n}\n", start) + 3
+            body = source[start:end]
+            self.assertIn(f".handles.{component}.image", body)
+            self.assertIn(command, body)
+            self.assertIn('--image "$image"', body)
+            for marker in forbidden:
+                self.assertNotIn(marker, body, f"{component} rollback contains {marker}")
+
+        workflow = (ROOT / ".github/workflows/cd.yml").read_text()
+        mutation = workflow[workflow.index("      - name: Mutate Auth"):]
+        self.assertIn("steps.rollback_upload.outcome == 'success'", mutation)
+        self.assertNotIn("normalize_service_readback", mutation)
+        self.assertNotIn("normalize_worker_definition", mutation)
+
+
+    def test_readback_and_rollback_are_truthful_and_handle_based(self):
+        source = source_bundle("auth", "bff", "worker", "frontend")
+        for marker in ("service_image_handle", "service_image_readback", "worker_image_handle", "worker_image_readback", "rollback_result"):
+            self.assertIn(marker, source)
+        for forbidden in ("normalize_service_readback", "normalize_worker_definition", "gcloud run jobs replace", ".handles.worker.definition"):
+            self.assertNotIn(forbidden, source)
+
+    def test_service_readback_checks_only_effective_image_and_readiness(self):
+        source = source_bundle("auth", "bff")
+        self.assertIn("service_image_readback", source)
+        self.assertIn("Ready", source)
+        for forbidden in ("service_expected", "normalize_service_readback", "component_config"):
+            self.assertNotIn(forbidden, source)
+
+    def test_worker_rollback_uses_only_the_retained_image_handle(self):
         worker = (ROOT / "deploy/components/worker.sh").read_text()
         rollback = worker[worker.index("worker_rollback()"):worker.index("\n}\n\ncase", worker.index("worker_rollback()"))]
-        source = common_source() + worker
-        for marker in (
-            "worker.definition",
-            "normalize_worker_definition",
-            "verify_worker_definition",
-            "gcloud run jobs replace",
-            "write_rollback_result",
-            "secret_references",
-        ):
-            self.assertIn(marker, source, f"Worker rollback is missing {marker}")
-        self.assertNotIn("--clear-volume-mounts", rollback)
-        self.assertNotIn('update-env-vars \"BUCKET=$(jq', rollback)
-
+        self.assertIn(".handles.worker.image", rollback)
+        self.assertIn("worker_image_readback", rollback)
+        self.assertIn("gcloud run jobs update", rollback)
+        for forbidden in (".handles.worker.definition", "normalize_worker_definition", "worker_provider_state", "gcloud run jobs replace", "--update-env-vars", "--update-secrets", "--args"):
+            self.assertNotIn(forbidden, rollback)
     def test_evidence_reports_actual_mutation_and_rollback_state(self):
         source = source_bundle()
         evidence = source[source.index("reconcile()") :]
@@ -1256,372 +1813,95 @@ class CDContractTests(unittest.TestCase):
         self.assertNotIn("provider_readback:($result == \"success\")", source)
         self.assertNotIn("rollback_verified:$verified", source[source.index("\nevidence() {") :])
 
-    def test_evidence_redacts_secret_values_and_never_serializes_provider_env(self):
+
+    def test_evidence_contains_no_provider_config_snapshot(self):
         source = source_bundle("auth", "bff", "worker", "frontend")
-        self.assertIn("redact", source)
-        self.assertIn("secret_references", source)
-        self.assertIn("valueSource", source)
+        self.assertIn("redact_evidence", source)
         self.assertIn("<redacted>", source)
         final = (ROOT / "deploy/cd.sh").read_text()[(ROOT / "deploy/cd.sh").read_text().index("\nevidence() {") :]
         self.assertNotIn(".value", final)
 
-    def test_fake_service_readback_rejects_runtime_mismatch_and_redacts_secret_values(self):
-        config = self.load_config("development")
-        root = Path(tempfile.mkdtemp(prefix="lwc-306-service-"))
-        try:
-            bin_dir = root / "bin"
-            bin_dir.mkdir()
-            image = "asia-east1-docker.pkg.dev/llm-wiki-cloud/cloud-run-images/llm-wiki-auth@sha256:" + "a" * 64
-            plan = {
-                "normalized": {
-                    "selected_components": ["auth"],
-                    "gcp": config["gcp"],
-                    "auth": config["auth"],
-                    "query_config": {"runtime_path": "/app/configs/query/dev/query-dev-2026-08-31.1.json"},
-                    "evidence": {"config_fingerprint": "sha256:fixture"},
-                }
-            }
-            (root / "plan.json").write_text(json.dumps(plan))
-            (root / "artifacts/images").mkdir(parents=True)
-            (root / "artifacts/images" / "auth-image-0123456789abcdef0123456789abcdef01234567.txt").write_text(image)
-            # Keep the fake transport local and deterministic; it never contacts a provider.
-            fake = textwrap.dedent(
-                f"""
-                #!/usr/bin/env python3
-                import json, sys
-                args = sys.argv[1:]
-                image = {image!r}
-                env = [
-                    {{"name":"GCP_PROJECT","value":"llm-wiki-cloud"}},
-                    {{"name":"FIRESTORE_DATABASE_ID","value":"llm-wiki-cloud-dev"}},
-                    {{"name":"ALLOWED_ORIGINS","value":",".join({config['auth']['allowed_origins']!r})}},
-                    {{"name":"ALLOWED_HOSTS","value":",".join({config['auth']['allowed_hosts']!r})}},
-                    {{"name":"DEV_JWT","value":"false"}},
-                    {{"name":"LWC_SOURCE_COMMIT","value":"0123456789abcdef0123456789abcdef01234567"}},
-                    {{"name":"JWT_SECRET","value":"super-secret-value","valueSource":{{"secretKeyRef":{{"secret":"jwt-secret-dev","version":"latest"}}}}}},
-                ]
-                revision = {{"metadata":{{"annotations":{{"run.googleapis.com/network-interfaces":json.dumps([{{"network":"default","subnetwork":"default"}}]),"run.googleapis.com/vpc-access-egress":"private-ranges-only"}}}},"spec":{{"serviceAccountName":"wrong@llm-wiki-cloud.iam.gserviceaccount.com","containers":[{{"image":image,"env":env}}]}},"status":{{"imageDigest":image,"conditions":[{{"type":"Ready","status":"True"}}]}}}}
-                service = {{"metadata":{{"annotations":{{"run.googleapis.com/ingress":"all"}}}},"spec":{{"template":{{"metadata":{{"annotations":{{"run.googleapis.com/network-interfaces":json.dumps([{{"network":"default","subnetwork":"default"}}]),"run.googleapis.com/vpc-access-egress":"private-ranges-only"}}}},"spec":{{"serviceAccountName":"wrong@llm-wiki-cloud.iam.gserviceaccount.com","containers":[{{"env":env}}]}}}}}},"status":{{"traffic":[{{"revisionName":"auth-new","percent":100}}]}}}}
-                if args[:3] == ["run", "services", "describe"]:
-                    if any(arg.startswith("--format=value(") for arg in args): print("auth-new")
-                    else: print(json.dumps(service))
-                elif args[:3] == ["run", "revisions", "describe"]: print(json.dumps(revision))
-                else: raise SystemExit(2)
-                """
-            ).lstrip()
-            fake_path = bin_dir / "gcloud"
-            fake_path.write_text(fake)
-            fake_path.chmod(0o755)
-            env = {**os.environ, "PATH": f"{bin_dir}:{os.environ['PATH']}", "ENVIRONMENT":"development", "SOURCE_REF":"develop", "SOURCE_SHA":"0123456789abcdef0123456789abcdef01234567", "CONFIG_PATH":"deploy/environments/development.yaml", "COMPONENTS":"auth", "GITHUB_REF":"refs/heads/develop", "GITHUB_REF_NAME":"develop", "PLAN_PATH":str(root / "plan.json"), "JOURNAL_PATH":str(root / "artifacts/journal.json"), "ARTIFACT_DIR":str(root / "artifacts"), "EVIDENCE_PATH":str(root / "artifacts/readback.json"), "ROLLBACK_RESULT_PATH":str(root / "artifacts/rollback-result.json"), "FINAL_EVIDENCE_PATH":str(root / "artifacts/evidence.json")}
-            (root / "artifacts/journal.json").write_text(json.dumps({"schema": "lwc-306-mutation-journal-v1", "order": ["auth"], "components": {}}))
-            result = subprocess.run(["bash", str(ROOT / "deploy/cd.sh"), "reconcile"], env=env, text=True, capture_output=True)
-            self.assertNotEqual(result.returncode, 0)
-            evidence = json.loads((root / "artifacts/readback.json").read_text())
-            self.assertEqual(evidence["result"], "unknown")
-            self.assertFalse(evidence["provider_readback"])
-            final = subprocess.run(["bash", str(ROOT / "deploy/cd.sh"), "evidence"], env=env, text=True, capture_output=True)
-            self.assertEqual(final.returncode, 0, final.stderr)
-            document = (root / "artifacts/evidence.json").read_text()
-            self.assertNotIn("super-secret-value", document)
-            self.assertIn("no automatic provider retry", document)
-        finally:
-            import shutil
-            shutil.rmtree(root, ignore_errors=True)
-
-    def test_fake_service_readback_accepts_valid_shape_and_rejects_extra_behavior_env_entry(self):
-        config = self.load_config("development")
+    def test_service_image_readback_rejects_wrong_image_or_unready_revision(self):
+        image = "asia-east1-docker.pkg.dev/llm-wiki-cloud/cloud-run-images/llm-wiki-auth@sha256:" + "a" * 64
         with tempfile.TemporaryDirectory() as directory:
             root = Path(directory)
             bin_dir = root / "bin"
             bin_dir.mkdir()
-            sha = "0123456789abcdef0123456789abcdef01234567"
-            image = "asia-east1-docker.pkg.dev/llm-wiki-cloud/cloud-run-images/llm-wiki-auth@sha256:" + "a" * 64
-            artifact_dir = root / "artifacts"
-            (artifact_dir / "images").mkdir(parents=True)
-            (artifact_dir / "images" / f"auth-image-{sha}.txt").write_text(image + "\n")
-            expected_env = [
-                {"name": "GCP_PROJECT", "value": "llm-wiki-cloud"},
-                {"name": "FIRESTORE_DATABASE_ID", "value": "llm-wiki-cloud-dev"},
-                {"name": "ALLOWED_ORIGINS", "value": ",".join(config["auth"]["allowed_origins"])},
-                {"name": "ALLOWED_HOSTS", "value": ",".join(config["auth"]["allowed_hosts"])},
-                {"name": "DEV_JWT", "value": "false"},
-                {"name": "LWC_SOURCE_COMMIT", "value": sha},
-                {"name": "JWT_SECRET", "valueSource": {"secretKeyRef": {"secret": "jwt-secret-dev", "version": "latest"}}},
-            ]
-            service = {
-                "metadata": {"name": "llm-wiki-auth-dev", "annotations": {"run.googleapis.com/ingress": "all"}},
-                "spec": {"template": {"metadata": {"annotations": {
-                    "run.googleapis.com/network-interfaces": '[{"network":"default","subnetwork":"default"}]',
-                    "run.googleapis.com/vpc-access-egress": "private-ranges-only",
-                    "autoscaling.knative.dev/maxScale": "1",
-                }}, "spec": {"serviceAccountName": config["auth"]["runtime_service_account"], "containers": [{"env": expected_env}]}}},
-                "status": {"traffic": [{"revisionName": "auth-new", "percent": 100}]},
-            }
+            plan = root / "plan.json"
+            plan.write_text(json.dumps({
+                "normalized": {
+                    "selected_components": ["auth"],
+                    "gcp": {"project_id": "llm-wiki-cloud", "region": "asia-east1", "artifact_registry": "asia-east1-docker.pkg.dev/llm-wiki-cloud/cloud-run-images"},
+                    "auth": {"service_name": "auth-service"},
+                }
+            }))
             revision = {
-                "metadata": {"name": "auth-new"},
-                "spec": {"serviceAccountName": config["auth"]["runtime_service_account"], "containers": [{"image": image, "env": expected_env}]},
+                "metadata": {"name": "auth-new", "uid": "provider-uid"},
+                "spec": {"containers": [{"name": "provider-generated", "image": image, "startupProbe": {"provider": "default"}}]},
                 "status": {"imageDigest": image, "conditions": [{"type": "Ready", "status": "True"}]},
             }
+            service = {"metadata": {"name": "auth-service", "annotations": {"provider": "live"}}, "status": {"traffic": [{"revisionName": "auth-new", "percent": 100}]}}
             fake = textwrap.dedent(f"""
                 #!/usr/bin/env python3
                 import json, os, sys
                 args = sys.argv[1:]
-                print(" ".join(args), file=open(os.environ["FAKE_LOG"], "a"))
-                service = {service!r}
-                revision = {revision!r}
-                if os.environ.get("FAKE_EXTRA") == "1":
-                    extra = {{"name": "UNEXPECTED_BEHAVIOR", "value": "must-be-rejected"}}
-                    service["spec"]["template"]["spec"]["containers"][0]["env"].append(extra)
-                    revision["spec"]["containers"][0]["env"].append(extra)
                 if args[:3] == ["run", "services", "describe"]:
-                    if any(arg.startswith("--format=value(") for arg in args): print("auth-new")
-                    else: print(json.dumps(service))
+                    print(json.dumps({service!r}))
                 elif args[:3] == ["run", "revisions", "describe"]:
-                    print(json.dumps(revision))
+                    value = {revision!r}
+                    if os.environ.get("FAKE_UNREADY"):
+                        value["status"]["conditions"][0]["status"] = "False"
+                    print(json.dumps(value))
                 else:
                     raise SystemExit(2)
             """).lstrip()
             fake_path = bin_dir / "gcloud"
             fake_path.write_text(fake)
             fake_path.chmod(0o755)
-            plan = {
-                "normalized": {
-                    "selected_components": ["auth"], "gcp": config["gcp"], "auth": config["auth"],
-                    "query_config": {"runtime_path": "/app/configs/query/dev/query-dev-2026-08-31.1.json"},
-                    "evidence": {"config_fingerprint": "sha256:fixture"},
-                }
-            }
-            plan_path = root / "plan.json"
-            plan_path.write_text(json.dumps(plan))
-            env = {
-                **os.environ,
-                "PATH": f"{bin_dir}:{os.environ['PATH']}", "ENVIRONMENT": "development", "SOURCE_REF": "develop",
-                "SOURCE_SHA": sha, "CONFIG_PATH": "deploy/environments/development.yaml", "COMPONENTS": "auth",
-                "PLAN_PATH": str(plan_path), "ARTIFACT_DIR": str(artifact_dir), "JOURNAL_PATH": str(artifact_dir / "journal.json"),
-                "FAKE_LOG": str(root / "gcloud.log"),
-            }
-            valid = subprocess.run(["bash", str(ROOT / "deploy/components/auth.sh"), "reconcile"], env=env, text=True, capture_output=True)
+            env = {**os.environ, "PATH": f"{bin_dir}:{os.environ['PATH']}", "ROOT": str(ROOT), "PLAN_PATH": str(plan), "IMAGE": image}
+            command = ["bash", "-c", common_source() + '\nservice_image_readback auth "$IMAGE"']
+            valid = subprocess.run(command, env=env, text=True, capture_output=True)
             self.assertEqual(valid.returncode, 0, valid.stdout + valid.stderr)
-            extra = subprocess.run(["bash", str(ROOT / "deploy/components/auth.sh"), "reconcile"], env={**env, "FAKE_EXTRA": "1"}, text=True, capture_output=True)
-            self.assertNotEqual(extra.returncode, 0, extra.stdout + extra.stderr)
-            component = json.loads((artifact_dir / "components/auth.json").read_text())
-            self.assertNotEqual(component["result"], "success")
+            self.assertEqual(json.loads(valid.stdout)["image"], image)
 
-    def test_service_readback_allows_only_component_container_name_metadata(self):
-        config = self.load_config("development")
-        sha = "0123456789abcdef0123456789abcdef01234567"
-        probe = {"failureThreshold": 1, "periodSeconds": 240, "tcpSocket": {"port": 8080}, "timeoutSeconds": 240}
-        expected_names = {"auth": "llm-wiki-auth-1", "bff": "llm-wiki-bff-1"}
+            env["FAKE_UNREADY"] = "1"
+            unready = subprocess.run(command, env=env, text=True, capture_output=True)
+            self.assertNotEqual(unready.returncode, 0, unready.stdout + unready.stderr)
 
-        def fixture(component):
-            if component == "auth":
-                image = "asia-east1-docker.pkg.dev/llm-wiki-cloud/cloud-run-images/llm-wiki-auth@sha256:" + "a" * 64
-                env = [
-                    {"name": "GCP_PROJECT", "value": "llm-wiki-cloud"},
-                    {"name": "FIRESTORE_DATABASE_ID", "value": "llm-wiki-cloud-dev"},
-                    {"name": "ALLOWED_ORIGINS", "value": ",".join(config["auth"]["allowed_origins"])},
-                    {"name": "ALLOWED_HOSTS", "value": ",".join(config["auth"]["allowed_hosts"])},
-                    {"name": "DEV_JWT", "value": "false"},
-                    {"name": "LWC_SOURCE_COMMIT", "value": sha},
-                    {"name": "JWT_SECRET", "valueSource": {"secretKeyRef": {"secret": "jwt-secret-dev", "version": "latest"}}},
-                ]
-            else:
-                image = "asia-east1-docker.pkg.dev/llm-wiki-cloud/cloud-run-images/llm-wiki-bff@sha256:" + "b" * 64
-                env = [
-                    {"name": "GCP_PROJECT", "value": "llm-wiki-cloud"},
-                    {"name": "BUCKET", "value": "llm-wiki-data-dev"},
-                    {"name": "FIRESTORE_DATABASE_ID", "value": "llm-wiki-cloud-dev"},
-                    {"name": "PIPELINE_JOB_URL", "value": config["bff"]["pipeline_job_url"]},
-                    {"name": "ALLOWED_ORIGINS", "value": ",".join(config["bff"]["allowed_origins"])},
-                    {"name": "AUTH_SERVICE_URL", "value": config["bff"]["auth_service_url"]},
-                    {"name": "QUERY_STAGE_CONFIG_PATH", "value": "/app/configs/query/dev/query-dev-2026-08-31.1.json"},
-                    {"name": "DEV_JWT", "value": "false"},
-                    {"name": "LWC_SOURCE_COMMIT", "value": sha},
-                    {"name": "JWT_SECRET", "valueSource": {"secretKeyRef": {"secret": "jwt-secret-dev", "version": "latest"}}},
-                    {"name": "DEEPSEEK_API_KEY", "valueSource": {"secretKeyRef": {"secret": "deepseek-apikey", "version": "latest"}}},
-                ]
-            annotations = {
-                "run.googleapis.com/network-interfaces": '[{"network":"default","subnetwork":"default"}]',
-                "run.googleapis.com/vpc-access-egress": "private-ranges-only",
-            }
-            service = {
-                "metadata": {"name": config[component]["service_name"], "annotations": {"run.googleapis.com/ingress": "all"}},
-                "spec": {"template": {"metadata": {"annotations": annotations}, "spec": {
-                    "serviceAccountName": config[component]["runtime_service_account"],
-                    "containers": [{"env": deepcopy(env)}],
-                }}},
-                "status": {"traffic": [{"revisionName": f"{component}-new", "percent": 100}]},
-            }
-            revision = {
-                "metadata": {"name": f"{component}-new"},
-                "spec": {"serviceAccountName": config[component]["runtime_service_account"], "containers": [{"image": image, "env": deepcopy(env)}]},
-                "status": {"imageDigest": image, "conditions": [{"type": "Ready", "status": "True"}]},
-            }
-            return service, revision, image
 
-        def normalize(component, service_value, revision_value, image):
-            return subprocess.run(
-                ["bash", "-c", common_source() + f'\nnormalize_service_readback {component} "$SERVICE_JSON" "$REVISION_JSON" {component}-new "$IMAGE"'],
-                env={
-                    **os.environ,
-                    "ROOT": str(ROOT),
-                    "SERVICE_JSON": json.dumps(service_value),
-                    "REVISION_JSON": json.dumps(revision_value),
-                    "IMAGE": image,
-                },
-                text=True,
-                capture_output=True,
-            )
 
-        for component in ("auth", "bff"):
-            with self.subTest(component=component):
-                service, revision, image = fixture(component)
-                absent = normalize(component, service, revision, image)
-                self.assertEqual(absent.returncode, 0, absent.stdout + absent.stderr)
 
-                revision_named = deepcopy(revision)
-                revision_named["spec"]["containers"][0]["name"] = expected_names[component]
-                observed = normalize(component, service, revision_named, image)
-                self.assertEqual(observed.returncode, 0, observed.stdout + observed.stderr)
-                self.assertNotIn("name", json.loads(observed.stdout)["container"])
-
-                service_named = deepcopy(service)
-                service_named["spec"]["template"]["spec"]["containers"][0]["name"] = expected_names[component]
-                for service_value, revision_value in (
-                    (service_named, revision),
-                    (service_named, revision_named),
-                ):
-                    result = normalize(component, service_value, revision_value, image)
-                    self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
-
-                wrong_name = expected_names["bff" if component == "auth" else "auth"]
-                invalid_names = [wrong_name, "arbitrary", "", None, 1, True, {}, []]
-                for side in ("service", "revision"):
-                    for invalid_name in invalid_names:
-                        with self.subTest(side=side, invalid_name=repr(invalid_name)):
-                            invalid_service = deepcopy(service)
-                            invalid_revision = deepcopy(revision)
-                            target = invalid_service if side == "service" else invalid_revision
-                            container = target["spec"]["template"]["spec"]["containers"][0] if side == "service" else target["spec"]["containers"][0]
-                            container["name"] = invalid_name
-                            result = normalize(component, invalid_service, invalid_revision, image)
-                            self.assertNotEqual(result.returncode, 0, result.stdout + result.stderr)
-
-                    invalid_service = deepcopy(service)
-                    invalid_revision = deepcopy(revision)
-                    target = invalid_service if side == "service" else invalid_revision
-                    container = target["spec"]["template"]["spec"]["containers"][0] if side == "service" else target["spec"]["containers"][0]
-                    container["unexpected"] = "must-be-rejected"
-                    result = normalize(component, invalid_service, invalid_revision, image)
-                    self.assertNotEqual(result.returncode, 0, result.stdout + result.stderr)
-
-                altered = deepcopy(revision_named)
-                altered["spec"]["containers"][0]["startupProbe"] = {**probe, "timeoutSeconds": 239}
-                result = normalize(component, service, altered, image)
-                self.assertNotEqual(result.returncode, 0, result.stdout + result.stderr)
-
-    def test_service_readback_validates_provider_default_startup_probe(self):
-        config = self.load_config("development")
-        sha = "0123456789abcdef0123456789abcdef01234567"
-        image = "asia-east1-docker.pkg.dev/llm-wiki-cloud/cloud-run-images/llm-wiki-auth@sha256:" + "a" * 64
-        env = [
-            {"name": "GCP_PROJECT", "value": "llm-wiki-cloud"},
-            {"name": "FIRESTORE_DATABASE_ID", "value": "llm-wiki-cloud-dev"},
-            {"name": "ALLOWED_ORIGINS", "value": ",".join(config["auth"]["allowed_origins"])},
-            {"name": "ALLOWED_HOSTS", "value": ",".join(config["auth"]["allowed_hosts"])},
-            {"name": "DEV_JWT", "value": "false"},
-            {"name": "LWC_SOURCE_COMMIT", "value": sha},
-            {"name": "JWT_SECRET", "valueSource": {"secretKeyRef": {"secret": "jwt-secret-dev", "version": "latest"}}},
-        ]
-        service = {
-            "metadata": {"name": "llm-wiki-auth-dev", "annotations": {"run.googleapis.com/ingress": "all"}},
-            "spec": {"template": {"metadata": {"annotations": {
-                "run.googleapis.com/network-interfaces": '[{"network":"default","subnetwork":"default"}]',
-                "run.googleapis.com/vpc-access-egress": "private-ranges-only",
-            }}, "spec": {"serviceAccountName": config["auth"]["runtime_service_account"], "containers": [{"env": env}]}}},
-            "status": {"traffic": [{"revisionName": "auth-new", "percent": 100}]},
-        }
-        revision = {
-            "metadata": {"name": "auth-new"},
-            "spec": {"serviceAccountName": config["auth"]["runtime_service_account"], "containers": [{"image": image, "env": env}]},
-            "status": {"imageDigest": image, "conditions": [{"type": "Ready", "status": "True"}]},
-        }
-        probe = {"failureThreshold": 1, "periodSeconds": 240, "tcpSocket": {"port": 8080}, "timeoutSeconds": 240}
-
-        def normalize(service_value, revision_value):
-            return subprocess.run(
-                ["bash", "-c", common_source() + '\nnormalize_service_readback auth "$SERVICE_JSON" "$REVISION_JSON" auth-new "$IMAGE"'],
-                env={
-                    **os.environ,
-                    "ROOT": str(ROOT),
-                    "SERVICE_JSON": json.dumps(service_value),
-                    "REVISION_JSON": json.dumps(revision_value),
-                    "IMAGE": image,
-                },
-                text=True,
-                capture_output=True,
-            )
-
-        absent = normalize(service, revision)
-        self.assertEqual(absent.returncode, 0, absent.stdout + absent.stderr)
-
-        live_service = deepcopy(service)
-        live_revision = deepcopy(revision)
-        live_service["spec"]["template"]["spec"]["containers"][0]["startupProbe"] = probe
-        live_revision["spec"]["containers"][0]["startupProbe"] = probe
-        live = normalize(live_service, live_revision)
-        self.assertEqual(live.returncode, 0, live.stdout + live.stderr)
-
-        for label, invalid_probe in {
-            "timeout": {**probe, "timeoutSeconds": 239},
-            "period": {**probe, "periodSeconds": 239},
-            "port": {**probe, "tcpSocket": {"port": 9090}},
-            "extra": {**probe, "httpGet": {"path": "/healthz"}},
-            "http": {"failureThreshold": 1, "periodSeconds": 240, "httpGet": {"path": "/healthz"}, "timeoutSeconds": 240},
-            "malformed": "not-a-probe",
-        }.items():
-            with self.subTest(label=label):
-                invalid_service = deepcopy(service)
-                invalid_revision = deepcopy(revision)
-                invalid_service["spec"]["template"]["spec"]["containers"][0]["startupProbe"] = invalid_probe
-                invalid_revision["spec"]["containers"][0]["startupProbe"] = invalid_probe
-                result = normalize(invalid_service, invalid_revision)
-                self.assertNotEqual(result.returncode, 0, result.stdout + result.stderr)
-
-        mismatch = deepcopy(live_service)
-        mismatch_revision = deepcopy(revision)
-        mismatch_result = normalize(mismatch, mismatch_revision)
-        self.assertNotEqual(mismatch_result.returncode, 0, mismatch_result.stdout + mismatch_result.stderr)
-
-    def test_worker_readback_rejects_extra_behavior_env_entry(self):
+    def test_worker_image_readback_accepts_live_v1_shape_and_rejects_mismatch(self):
         image = "asia-east1-docker.pkg.dev/llm-wiki-cloud/cloud-run-images/olw-pipeline@sha256:" + "b" * 64
-        definition = {
-            "apiVersion": "run.googleapis.com/v1",
-            "kind": "Job",
-            "metadata": {"name": "olw-pipeline"},
-            "spec": {"template": {"spec": {"template": {"spec": {
-                "serviceAccountName": "worker@llm-wiki-cloud.iam.gserviceaccount.com",
-                "containers": [{
-                    "image": image,
-                    "env": [
-                        {"name": "BUCKET", "value": "bucket"},
-                        {"name": "PIPELINE_JOB_NAME", "value": "olw-pipeline"},
-                        {"name": "PIPELINE_JOB_LOCATION", "value": "asia-east1"},
-                        {"name": "DEEPSEEK_API_KEY", "valueSource": {"secretKeyRef": {"secret": "deepseek", "version": "latest"}}},
-                        {"name": "UNEXPECTED_BEHAVIOR", "value": "must-be-rejected"},
-                    ],
-                    "args": ["run", "--auto-approve"],
-                }],
-            }}}}},
-        }
-        result = subprocess.run(
-            ["bash", "-c", common_source() + '\nnormalize_worker_readback "$DEFINITION"'],
-            env={**os.environ, "ROOT": str(ROOT), "DEFINITION": json.dumps(definition)},
-            text=True,
-            capture_output=True,
-        )
-        self.assertNotEqual(result.returncode, 0, result.stdout + result.stderr)
-
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            bin_dir = root / "bin"
+            bin_dir.mkdir()
+            plan = root / "plan.json"
+            plan.write_text(json.dumps({
+                "normalized": {
+                    "selected_components": ["worker"],
+                    "gcp": {"project_id": "llm-wiki-cloud", "artifact_registry": "asia-east1-docker.pkg.dev/llm-wiki-cloud/cloud-run-images"},
+                    "worker": {"job_name": "worker-job", "location": "asia-east1"},
+                }
+            }))
+            job = {"apiVersion": "run.googleapis.com/v1", "kind": "Job", "metadata": {"name": "worker-job", "generation": 9, "etag": "live-etag"}, "spec": {"template": {"spec": {"template": {"spec": {"containers": [{"name": "provider-generated", "image": image, "startupProbe": {"provider": "default"}}]}}}}}}
+            fake = textwrap.dedent(f"""
+                #!/usr/bin/env python3
+                import json, sys
+                if sys.argv[1:4] == ["run", "jobs", "describe"]:
+                    print(json.dumps({job!r}))
+                else:
+                    raise SystemExit(2)
+            """).lstrip()
+            fake_path = bin_dir / "gcloud"
+            fake_path.write_text(fake)
+            fake_path.chmod(0o755)
+            env = {**os.environ, "PATH": f"{bin_dir}:{os.environ['PATH']}", "ROOT": str(ROOT), "PLAN_PATH": str(plan), "IMAGE": image}
+            valid = subprocess.run(["bash", "-c", common_source() + '\nworker_image_readback "$IMAGE"'], env=env, text=True, capture_output=True)
+            self.assertEqual(valid.returncode, 0, valid.stdout + valid.stderr)
+            wrong = subprocess.run(["bash", "-c", common_source() + '\nworker_image_readback "$IMAGE-wrong"'], env=env, text=True, capture_output=True)
+            self.assertNotEqual(wrong.returncode, 0, wrong.stdout + wrong.stderr)
     def test_worker_iam_preflight_rejects_broad_role_on_runtime_principal(self):
         policy = {"bindings": [
             {"role": "roles/run.viewer", "members": ["serviceAccount:worker@example.com"]},
@@ -1881,92 +2161,65 @@ class ArchitectureAuthorityTests(unittest.TestCase):
         reconcile = source[source.index("\nreconcile() {"):source.index("\naggregate_reconcile()")]
         self.assertNotIn("consume_dev_images", reconcile)
 
-    def test_fake_worker_rollback_restores_full_definition_and_rejects_mismatch(self):
-        root = Path(tempfile.mkdtemp(prefix="lwc-306-worker-"))
-        try:
+
+    def test_fake_worker_rollback_updates_only_the_retained_image(self):
+        old_image = "asia-east1-docker.pkg.dev/llm-wiki-cloud/cloud-run-images/olw-pipeline@sha256:" + "a" * 64
+        new_image = "asia-east1-docker.pkg.dev/llm-wiki-cloud/cloud-run-images/olw-pipeline@sha256:" + "b" * 64
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
             bin_dir = root / "bin"
             bin_dir.mkdir()
-            container = {
-                "image": "asia-east1-docker.pkg.dev/llm-wiki-cloud/cloud-run-images/olw-pipeline@sha256:" + "b" * 64,
-                "env": [
-                    {"name": "BUCKET", "value": "llm-wiki-data-dev"},
-                    {"name": "PIPELINE_JOB_NAME", "value": "olw-pipeline-dev"},
-                    {"name": "PIPELINE_JOB_LOCATION", "value": "asia-east1"},
-                    {"name": "DEEPSEEK_API_KEY", "valueFrom": {"secretKeyRef": {"name": "deepseek-apikey", "key": "latest"}}},
-                ],
-                "args": ["run", "--auto-approve"],
-                "volumeMounts": [{"name": "cache", "mountPath": "/cache"}],
-            }
-            definition = {
+            state = root / "job.json"
+            container = {"name": "provider-generated", "image": old_image, "startupProbe": {"provider": "default"}}
+            state_value = {
                 "apiVersion": "run.googleapis.com/v1",
                 "kind": "Job",
-                "metadata": {"name": "olw-pipeline", "generation": 9, "etag": "etag-9"},
-                "spec": {
-                    "template": {
-                        "spec": {
-                            "template": {
-                                "spec": {
-                                    "serviceAccountName": "lwc-pipeline-dev@llm-wiki-cloud.iam.gserviceaccount.com",
-                                    "containers": [container],
-                                    "volumes": [{"name": "cache", "emptyDir": {}}],
-                                }
-                            }
-                        }
-                    }
-                },
-                "status": {},
+                "metadata": {"name": "worker-job", "uid": "provider-uid", "generation": 9, "etag": "live-etag"},
+                "spec": {"template": {"spec": {"template": {"spec": {"containers": [container]}}}}},
             }
-            state = root / "job.json"
-            state.write_text(json.dumps(definition))
-            plan = {"normalized": {"selected_components":["worker"], "gcp":{"project_id":"llm-wiki-cloud","region":"asia-east1"}, "worker":{"job_name":"olw-pipeline-dev","location":"asia-east1"}, "evidence":{"config_fingerprint":"sha256:fixture"}}}
-            (root / "plan.json").write_text(json.dumps(plan))
-            fake = textwrap.dedent(
-                """
+            state.write_text(json.dumps(state_value))
+            plan = root / "plan.json"
+            plan.write_text(json.dumps({"normalized": {"selected_components": ["worker"], "gcp": {"project_id": "llm-wiki-cloud", "region": "asia-east1", "artifact_registry": "asia-east1-docker.pkg.dev/llm-wiki-cloud/cloud-run-images"}, "worker": {"job_name": "worker-job", "location": "asia-east1"}}}))
+            log = root / "provider.log"
+            fake = textwrap.dedent(f"""
                 #!/usr/bin/env python3
                 import json, os, sys
                 from pathlib import Path
                 args = sys.argv[1:]
-                state = Path(os.environ["FAKE_JOB_STATE"])
+                state = Path({str(state)!r})
+                Path({str(log)!r}).open("a").write(" ".join(args) + "\\n")
                 if args[:3] == ["run", "jobs", "describe"]:
                     print(state.read_text(), end="")
-                elif args[:3] == ["run", "jobs", "replace"]:
-                    source = Path(args[3])
-                    value = json.loads(source.read_text())
-                    if os.environ.get("FAKE_ROLLBACK_MISMATCH") == "1":
-                        value["spec"]["template"]["spec"]["template"]["spec"]["containers"][0]["args"] = ["wrong"]
+                elif args[:3] == ["run", "jobs", "update"]:
+                    forbidden = {["--update-env-vars", "--update-secrets", "--service-account", "--args", "--clear-volumes", "--clear-volume-mounts"]!r}
+                    if any(flag in args for flag in forbidden) or "execute" in args:
+                        raise SystemExit(91)
+                    value = json.loads(state.read_text())
+                    value["spec"]["template"]["spec"]["template"]["spec"]["containers"][0]["image"] = args[args.index("--image") + 1]
                     state.write_text(json.dumps(value))
-                else: raise SystemExit(2)
-                """
-            ).lstrip()
+                else:
+                    raise SystemExit(2)
+            """).lstrip()
             fake_path = bin_dir / "gcloud"
             fake_path.write_text(fake)
             fake_path.chmod(0o755)
-            env = {**os.environ, "PATH": f"{bin_dir}:{os.environ['PATH']}", "ENVIRONMENT":"development", "SOURCE_REF":"develop", "SOURCE_SHA":"0123456789abcdef0123456789abcdef01234567", "CONFIG_PATH":"deploy/environments/development.yaml", "COMPONENTS":"worker", "GITHUB_REF":"refs/heads/develop", "GITHUB_REF_NAME":"develop", "PLAN_PATH":str(root / "plan.json"), "ROLLBACK_PATH":str(root / "rollback.json"), "JOURNAL_PATH":str(root / "journal.json"), "ROLLBACK_RESULT_PATH":str(root / "rollback-result.json"), "ARTIFACT_DIR":str(root / "artifacts"), "FAKE_JOB_STATE":str(state)}
-            result = subprocess.run(["bash", str(ROOT / "deploy/cd.sh"), "freeze"], env=env, text=True, capture_output=True)
-            self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
-            frozen = json.loads((root / "rollback.json").read_text())["handles"]["worker"]["definition"]
-            frozen_handle = json.loads((root / "rollback.json").read_text())["handles"]["worker"]
-            self.assertEqual(frozen_handle["provider_state"]["generation"], 9)
-            self.assertEqual(frozen_handle["provider_state"]["etag"], "etag-9")
-            self.assertEqual(frozen["spec"]["template"]["spec"]["template"]["spec"]["containers"][0]["args"], definition["spec"]["template"]["spec"]["template"]["spec"]["containers"][0]["args"])
-            self.assertEqual(len(frozen["spec"]["template"]["spec"]["template"]["spec"]["volumes"]), 1)
-            self.assertIn("valueSource", json.dumps(frozen))
-            state.write_text(json.dumps({**definition, "spec": {"template": {"spec": {"template": {"spec": {**definition["spec"]["template"]["spec"]["template"]["spec"], "containers": [{**definition["spec"]["template"]["spec"]["template"]["spec"]["containers"][0], "args":["changed"]}]}}}}}}))
-            (root / "journal.json").write_text(json.dumps({"schema": "lwc-306-mutation-journal-v1", "order": ["worker"], "components": {"worker": {"state": "accepted", "history": ["pending", "accepted"], "timestamp": "2026-09-04T00:00:00Z", "attempt": 1}}}))
-            result = subprocess.run(["bash", str(ROOT / "deploy/cd.sh"), "rollback"], env=env, text=True, capture_output=True)
-            rollback = json.loads((root / "rollback-result.json").read_text())
-            self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
-            self.assertTrue(rollback["verified"])
-            self.assertEqual(json.loads(state.read_text()), frozen)
-            env["FAKE_ROLLBACK_MISMATCH"] = "1"
-            result = subprocess.run(["bash", str(ROOT / "deploy/cd.sh"), "rollback"], env=env, text=True, capture_output=True)
-            self.assertNotEqual(result.returncode, 0)
-            rollback = json.loads((root / "rollback-result.json").read_text())
-            self.assertEqual(rollback["result"], "failed")
-            self.assertFalse(rollback["verified"])
-        finally:
-            import shutil
-            shutil.rmtree(root, ignore_errors=True)
+            journal = root / "journal.json"
+            rollback = root / "rollback.json"
+            env = {**os.environ, "PATH": f"{bin_dir}:{os.environ['PATH']}", "ROOT": str(ROOT), "ENVIRONMENT": "development", "SOURCE_REF": "develop", "SOURCE_SHA": "0123456789abcdef0123456789abcdef01234567", "CONFIG_PATH": "deploy/environments/development.yaml", "COMPONENTS": "worker", "GITHUB_REF": "refs/heads/develop", "GITHUB_REF_NAME": "develop", "PLAN_PATH": str(plan), "ROLLBACK_PATH": str(rollback), "JOURNAL_PATH": str(journal), "ROLLBACK_RESULT_PATH": str(root / "rollback-result.json"), "ARTIFACT_DIR": str(root / "artifacts")}
+            frozen = subprocess.run(["bash", str(ROOT / "deploy/cd.sh"), "freeze"], env=env, text=True, capture_output=True)
+            self.assertEqual(frozen.returncode, 0, frozen.stdout + frozen.stderr)
+            self.assertEqual(json.loads(rollback.read_text())["handles"]["worker"], {"image": old_image})
+            current = json.loads(state.read_text())
+            current["spec"]["template"]["spec"]["template"]["spec"]["containers"][0]["image"] = new_image
+            state.write_text(json.dumps(current))
+            journal.write_text(json.dumps({"schema": "lwc-306-mutation-journal-v1", "order": ["worker"], "components": {"worker": {"state": "accepted", "history": ["pending", "accepted"], "timestamp": "2026-09-04T00:00:00Z", "attempt": 1}}}))
+            rolled_back = subprocess.run(["bash", str(ROOT / "deploy/cd.sh"), "rollback"], env=env, text=True, capture_output=True)
+            self.assertEqual(rolled_back.returncode, 0, rolled_back.stdout + rolled_back.stderr)
+            self.assertEqual(json.loads(state.read_text())["spec"]["template"]["spec"]["template"]["spec"]["containers"][0]["image"], old_image)
+            self.assertEqual(json.loads((root / "rollback-result.json").read_text())["result"], "success")
+            calls = log.read_text().splitlines()
+            self.assertEqual(sum("run jobs update" in call for call in calls), 1)
+            self.assertFalse(any("execute" in call for call in calls))
 
 
 if __name__ == "__main__":
