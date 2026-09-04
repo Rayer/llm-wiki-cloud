@@ -1407,6 +1407,79 @@ class CDContractTests(unittest.TestCase):
             component = json.loads((artifact_dir / "components/auth.json").read_text())
             self.assertNotEqual(component["result"], "success")
 
+    def test_service_readback_validates_provider_default_startup_probe(self):
+        config = self.load_config("development")
+        sha = "0123456789abcdef0123456789abcdef01234567"
+        image = "asia-east1-docker.pkg.dev/llm-wiki-cloud/cloud-run-images/llm-wiki-auth@sha256:" + "a" * 64
+        env = [
+            {"name": "GCP_PROJECT", "value": "llm-wiki-cloud"},
+            {"name": "FIRESTORE_DATABASE_ID", "value": "llm-wiki-cloud-dev"},
+            {"name": "ALLOWED_ORIGINS", "value": ",".join(config["auth"]["allowed_origins"])},
+            {"name": "ALLOWED_HOSTS", "value": ",".join(config["auth"]["allowed_hosts"])},
+            {"name": "DEV_JWT", "value": "false"},
+            {"name": "LWC_SOURCE_COMMIT", "value": sha},
+            {"name": "JWT_SECRET", "valueSource": {"secretKeyRef": {"secret": "jwt-secret-dev", "version": "latest"}}},
+        ]
+        service = {
+            "metadata": {"name": "llm-wiki-auth-dev", "annotations": {"run.googleapis.com/ingress": "all"}},
+            "spec": {"template": {"metadata": {"annotations": {
+                "run.googleapis.com/network-interfaces": '[{"network":"default","subnetwork":"default"}]',
+                "run.googleapis.com/vpc-access-egress": "private-ranges-only",
+            }}, "spec": {"serviceAccountName": config["auth"]["runtime_service_account"], "containers": [{"env": env}]}}},
+            "status": {"traffic": [{"revisionName": "auth-new", "percent": 100}]},
+        }
+        revision = {
+            "metadata": {"name": "auth-new"},
+            "spec": {"serviceAccountName": config["auth"]["runtime_service_account"], "containers": [{"image": image, "env": env}]},
+            "status": {"imageDigest": image, "conditions": [{"type": "Ready", "status": "True"}]},
+        }
+        probe = {"failureThreshold": 1, "periodSeconds": 240, "tcpSocket": {"port": 8080}, "timeoutSeconds": 240}
+
+        def normalize(service_value, revision_value):
+            return subprocess.run(
+                ["bash", "-c", common_source() + '\nnormalize_service_readback auth "$SERVICE_JSON" "$REVISION_JSON" auth-new "$IMAGE"'],
+                env={
+                    **os.environ,
+                    "ROOT": str(ROOT),
+                    "SERVICE_JSON": json.dumps(service_value),
+                    "REVISION_JSON": json.dumps(revision_value),
+                    "IMAGE": image,
+                },
+                text=True,
+                capture_output=True,
+            )
+
+        absent = normalize(service, revision)
+        self.assertEqual(absent.returncode, 0, absent.stdout + absent.stderr)
+
+        live_service = deepcopy(service)
+        live_revision = deepcopy(revision)
+        live_service["spec"]["template"]["spec"]["containers"][0]["startupProbe"] = probe
+        live_revision["spec"]["containers"][0]["startupProbe"] = probe
+        live = normalize(live_service, live_revision)
+        self.assertEqual(live.returncode, 0, live.stdout + live.stderr)
+
+        for label, invalid_probe in {
+            "timeout": {**probe, "timeoutSeconds": 239},
+            "period": {**probe, "periodSeconds": 239},
+            "port": {**probe, "tcpSocket": {"port": 9090}},
+            "extra": {**probe, "httpGet": {"path": "/healthz"}},
+            "http": {"failureThreshold": 1, "periodSeconds": 240, "httpGet": {"path": "/healthz"}, "timeoutSeconds": 240},
+            "malformed": "not-a-probe",
+        }.items():
+            with self.subTest(label=label):
+                invalid_service = deepcopy(service)
+                invalid_revision = deepcopy(revision)
+                invalid_service["spec"]["template"]["spec"]["containers"][0]["startupProbe"] = invalid_probe
+                invalid_revision["spec"]["containers"][0]["startupProbe"] = invalid_probe
+                result = normalize(invalid_service, invalid_revision)
+                self.assertNotEqual(result.returncode, 0, result.stdout + result.stderr)
+
+        mismatch = deepcopy(live_service)
+        mismatch_revision = deepcopy(revision)
+        mismatch_result = normalize(mismatch, mismatch_revision)
+        self.assertNotEqual(mismatch_result.returncode, 0, mismatch_result.stdout + mismatch_result.stderr)
+
     def test_worker_readback_rejects_extra_behavior_env_entry(self):
         image = "asia-east1-docker.pkg.dev/llm-wiki-cloud/cloud-run-images/olw-pipeline@sha256:" + "b" * 64
         definition = {

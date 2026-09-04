@@ -402,15 +402,25 @@ normalize_service_readback() {
         ($entries | map(. as $entry | if ($secret_names|index($entry.name)) != null then {name:$entry.name,secret:secret_ref($entry)} elif (($legacy_names|index($entry.name)) != null) then (if (($entry|keys|sort) != ["name","value"] or ($entry.value|type) != "string") then error("legacy environment entry is malformed") else {name:$entry.name,value:$entry.value} end) elif (($entry|keys|sort) != ["name","value"] or ($entry.value|type) != "string") then error("plain environment entry is malformed") else {name:$entry.name,value:$entry.value} end)) as $normalized |
         {values:($normalized|map(select(has("value"))|{key:.name,value:.value})|from_entries),secrets:($normalized|map(select(has("secret"))|{key:.name,value:.secret})|from_entries),legacy:($normalized|map(. as $entry | select(($legacy_names|index($entry.name)) != null)|{key:.name,value:.value})|from_entries)}
       end;
+    def startup_probe($container):
+      if ($container|has("startupProbe")|not) then null
+      elif ($container.startupProbe|type) != "object" then error("startup probe is malformed")
+      elif (($container.startupProbe|keys|sort) != ["failureThreshold","periodSeconds","tcpSocket","timeoutSeconds"]) then error("startup probe shape is not exact")
+      elif (($container.startupProbe.failureThreshold|type) != "number" or ($container.startupProbe.failureThreshold|floor) != $container.startupProbe.failureThreshold or $container.startupProbe.failureThreshold != 1) then error("startup probe failure threshold is invalid")
+      elif (($container.startupProbe.periodSeconds|type) != "number" or ($container.startupProbe.periodSeconds|floor) != $container.startupProbe.periodSeconds or $container.startupProbe.periodSeconds != 240) then error("startup probe period is invalid")
+      elif (($container.startupProbe.timeoutSeconds|type) != "number" or ($container.startupProbe.timeoutSeconds|floor) != $container.startupProbe.timeoutSeconds or $container.startupProbe.timeoutSeconds != 240) then error("startup probe timeout is invalid")
+      elif ($container.startupProbe.tcpSocket|type) != "object" or (($container.startupProbe.tcpSocket|keys|sort) != ["port"]) or (($container.startupProbe.tcpSocket.port|type) != "number") or (($container.startupProbe.tcpSocket.port|floor) != $container.startupProbe.tcpSocket.port) or ($container.startupProbe.tcpSocket.port != 8080) then error("startup probe socket is invalid")
+      else $container.startupProbe end;
     def container_shape($container):
-      require_object($container;["image","env","command","args","resources","volumeMounts","workingDir","ports"];"service container") as $checked |
+      require_object($container;["image","env","command","args","resources","volumeMounts","workingDir","ports","startupProbe"];"service container") as $checked |
       (env_shape($checked.env // [])) as $env |
       (strings_or_empty($checked.command // null;"container command")) as $command |
       (strings_or_empty($checked.args // null;"container args")) as $args |
       (if (($checked.resources // {})|type) != "object" then error("container resources are malformed") else ($checked.resources // {}) end) as $resources |
       (if (($checked.volumeMounts // [])|type) != "array" then error("container volume mounts are malformed") else ($checked.volumeMounts // []) end) as $volume_mounts |
       (if (($checked.ports // [])|type) != "array" then error("container ports are malformed") else ($checked.ports // []) end) as $ports |
-      {env:$env,command:$command,args:$args,resources:$resources,volume_mounts:$volume_mounts,working_dir:($checked.workingDir // null),ports:$ports};
+      (startup_probe($checked)) as $startup_probe |
+      {env:$env,command:$command,args:$args,resources:$resources,volume_mounts:$volume_mounts,working_dir:($checked.workingDir // null),ports:$ports} + (if $startup_probe == null then {} else {startup_probe:$startup_probe} end);
     def annotations: (($service.metadata.annotations // {}) + (template.metadata.annotations // {}) + (template_spec.metadata.annotations // {}) + ($revision_json.metadata.annotations // {}));
     def interfaces: (annotations["run.googleapis.com/network-interfaces"] // "[]") | fromjson | if type != "array" or length != 1 or ((.[0]|type) != "object") or ((.[0]|keys|sort) != ["network","subnetwork"]) or ((.[0].network|type) != "string") or ((.[0].subnetwork|type) != "string") then error("network interface shape is not exact") else . end;
     def max_instances: (annotations["autoscaling.knative.dev/maxScale"] // annotations["run.googleapis.com/maxScale"] // $service.spec.template.scaling.maxInstanceCount // $service.spec.template.spec.maxInstanceCount // null) | if . == null then null elif ((type == "number") and ((floor) == .)) then . elif (type == "string" and test("^[0-9]+$")) then tonumber else error("max instances is malformed") end;
