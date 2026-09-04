@@ -386,6 +386,7 @@ normalize_service_readback() {
     def revision_containers: (revision_spec.containers // revision_spec.template.spec.containers // []);
     def exact_container($containers): if ($containers|type) != "array" or ($containers|length) != 1 or ($containers[0]|type) != "object" then error("service and revision must each contain exactly one container") else $containers[0] end;
     def require_object($value;$allowed;$label): if ($value|type) != "object" then error($label + " must be an object") elif ((($value|keys) - $allowed)|length) != 0 then error($label + " contains an unallowlisted field") else $value end;
+    def container_name($container): if ($container|has("name")|not) then null elif ($container.name|type) != "string" then error("service container name is malformed") elif $container.name != ("llm-wiki-" + $component + "-1") then error("service container name is invalid") else $container.name end;
     def strings_or_empty($value;$label): if $value == null then [] elif ($value|type) != "array" or any($value[]; type != "string") then error($label + " must be an array of strings") else $value end;
     def secret_ref($entry):
       if ($entry|has("value")) then error("secret environment entry contains a plaintext value")
@@ -412,7 +413,8 @@ normalize_service_readback() {
       elif ($container.startupProbe.tcpSocket|type) != "object" or (($container.startupProbe.tcpSocket|keys|sort) != ["port"]) or (($container.startupProbe.tcpSocket.port|type) != "number") or (($container.startupProbe.tcpSocket.port|floor) != $container.startupProbe.tcpSocket.port) or ($container.startupProbe.tcpSocket.port != 8080) then error("startup probe socket is invalid")
       else $container.startupProbe end;
     def container_shape($container):
-      require_object($container;["image","env","command","args","resources","volumeMounts","workingDir","ports","startupProbe"];"service container") as $checked |
+      require_object($container;["name","image","env","command","args","resources","volumeMounts","workingDir","ports","startupProbe"];"service container") as $checked |
+      (container_name($checked)) as $name |
       (env_shape($checked.env // [])) as $env |
       (strings_or_empty($checked.command // null;"container command")) as $command |
       (strings_or_empty($checked.args // null;"container args")) as $args |
