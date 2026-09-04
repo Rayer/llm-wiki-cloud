@@ -201,10 +201,20 @@ class CDContractTests(unittest.TestCase):
     def test_canonical_ci_aggregates_every_current_leaf_job(self):
         workflow = yaml.safe_load((ROOT / ".github/workflows/ci.yml").read_text())
         jobs = workflow["jobs"]
-        aggregate_id, aggregate = next(
+        canonical_jobs = [
             (job_id, job) for job_id, job in jobs.items() if job.get("name") == "canonical-ci"
-        )
+        ]
+        self.assertEqual(len(canonical_jobs), 1)
+        aggregate_id, aggregate = canonical_jobs[0]
+        self.assertEqual(aggregate.get("if"), "${{ always() }}")
         self.assertIsInstance(aggregate.get("needs"), list)
+        aggregate_steps = [
+            step for step in aggregate.get("steps", []) if step.get("name") == "Require every canonical job"
+        ]
+        self.assertEqual(len(aggregate_steps), 1)
+        aggregate_script = aggregate_steps[0].get("run", "")
+        for job_id in aggregate["needs"]:
+            self.assertIn(f'test "${{{{ needs.{job_id}.result }}}}" = success', aggregate_script)
         dependencies = {
             job_id: set(job.get("needs", [])) if isinstance(job.get("needs", []), list) else {job.get("needs")}
             for job_id, job in jobs.items()
@@ -573,7 +583,7 @@ class CDContractTests(unittest.TestCase):
                 self.assertNotEqual(result.returncode, 0, result.stdout + result.stderr)
 
     def canonical_ci_inventory(self, run_id=33840184963, run_attempt=1):
-        names = [
+        names = sorted([
             "actionlint/schema",
             "bff",
             "frontend-lint",
@@ -583,7 +593,7 @@ class CDContractTests(unittest.TestCase):
             "local-vertical-smoke",
             "workflow-source-guards",
             "canonical-ci",
-        ]
+        ])
         return [
             {
                 "id": run_id * 10 + index,
@@ -620,17 +630,18 @@ class CDContractTests(unittest.TestCase):
 
     def test_ci_validator_rejects_invalid_aggregate_inventory(self):
         jobs = self.canonical_ci_inventory()
-        aggregate = jobs[-1]
+        aggregate = next(job for job in jobs if job["name"] == "canonical-ci")
+        non_aggregate = [job for job in jobs if job["name"] != "canonical-ci"]
         cases = {
-            "missing aggregate": jobs[:-1],
-            "failed aggregate": [*jobs[:-1], {**aggregate, "conclusion": "failure"}],
-            "skipped aggregate": [*jobs[:-1], {**aggregate, "conclusion": "skipped"}],
+            "missing aggregate": non_aggregate,
+            "failed aggregate": [*non_aggregate, {**aggregate, "conclusion": "failure"}],
+            "skipped aggregate": [*non_aggregate, {**aggregate, "conclusion": "skipped"}],
             "failed leaf": [{**jobs[0], "conclusion": "failure"}, *jobs[1:]],
             "skipped leaf": [{**jobs[0], "conclusion": "skipped"}, *jobs[1:]],
-            "duplicate name": [*jobs[:-1], {**aggregate, "name": jobs[0]["name"]}],
-            "duplicate id": [*jobs[:-1], {**aggregate, "id": jobs[0]["id"]}],
-            "wrong run": [*jobs[:-1], {**aggregate, "run_id": aggregate["run_id"] + 1}],
-            "wrong attempt": [*jobs[:-1], {**aggregate, "run_attempt": 2}],
+            "duplicate name": [*non_aggregate, {**aggregate, "name": jobs[0]["name"]}],
+            "duplicate id": [*non_aggregate, {**aggregate, "id": jobs[0]["id"]}],
+            "wrong run": [*non_aggregate, {**aggregate, "run_id": aggregate["run_id"] + 1}],
+            "wrong attempt": [*non_aggregate, {**aggregate, "run_attempt": 2}],
             "malformed records": [{"id": aggregate["id"], "name": aggregate["name"]}],
             "malformed shape": {"jobs": jobs},
         }
@@ -653,12 +664,14 @@ class CDContractTests(unittest.TestCase):
             "conclusion": "success",
         }
         planned_jobs = self.canonical_ci_inventory(run_id, run_attempt)
+        self.assertEqual([job["name"] for job in planned_jobs], sorted(job["name"] for job in planned_jobs))
         changed_jobs = deepcopy(planned_jobs)
-        changed_jobs[-1]["id"] += 1
         with tempfile.TemporaryDirectory() as directory:
             root = Path(directory)
             bin_dir = root / "bin"
             bin_dir.mkdir()
+            current_jobs = root / "current-jobs.json"
+            current_jobs.write_text(json.dumps(planned_jobs))
             (bin_dir / "git").write_text(textwrap.dedent(f"""
                 #!/usr/bin/env bash
                 if [[ $1 == fetch ]]; then exit 0; fi
@@ -668,14 +681,14 @@ class CDContractTests(unittest.TestCase):
             (bin_dir / "git").chmod(0o755)
             (bin_dir / "gh").write_text(textwrap.dedent(f"""
                 #!/usr/bin/env python3
-                import json, sys
+                import json, os, sys
                 endpoint = sys.argv[-1]
                 run = {json.dumps(run)!r}
-                changed_jobs = {json.dumps(changed_jobs)!r}
                 if endpoint.endswith("/runs/{run_id}") or endpoint.endswith("/attempts/{run_attempt}"):
                     print(run)
                 elif "/attempts/{run_attempt}/jobs" in endpoint:
-                    print(json.dumps({{"total_count": len(json.loads(changed_jobs)), "jobs": json.loads(changed_jobs)}}))
+                    jobs = json.loads(open(os.environ["CURRENT_JOBS_PATH"]).read())
+                    print(json.dumps({{"total_count": len(jobs), "jobs": jobs}}))
                 else:
                     raise SystemExit(2)
             """).lstrip())
@@ -700,7 +713,17 @@ class CDContractTests(unittest.TestCase):
                 "GITHUB_REPOSITORY": "Rayer/llm-wiki-cloud",
                 "SOURCE_REF": "develop",
                 "SOURCE_SHA": source_sha,
+                "CURRENT_JOBS_PATH": str(current_jobs),
             }
+            baseline = subprocess.run(
+                ["bash", "-c", common_source() + "\nrevalidate_ci"],
+                env=env,
+                text=True,
+                capture_output=True,
+            )
+            self.assertEqual(baseline.returncode, 0, baseline.stdout + baseline.stderr)
+            changed_jobs[-1]["id"] += 1
+            current_jobs.write_text(json.dumps(changed_jobs))
             result = subprocess.run(
                 ["bash", "-c", common_source() + "\nrevalidate_ci"],
                 env=env,
@@ -708,7 +731,7 @@ class CDContractTests(unittest.TestCase):
                 capture_output=True,
             )
             self.assertNotEqual(result.returncode, 0, result.stdout + result.stderr)
-            self.assertIn("pinned canonical CI job set changed", result.stderr)
+            self.assertEqual(result.stderr.strip(), "cd contract failed: pinned canonical CI job set changed")
 
     def test_branch_advance_after_rollback_upload_blocks_provider_boundary(self):
         source = (ROOT / "deploy/cd.sh").read_text()
