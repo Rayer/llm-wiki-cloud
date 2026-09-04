@@ -1407,6 +1407,119 @@ class CDContractTests(unittest.TestCase):
             component = json.loads((artifact_dir / "components/auth.json").read_text())
             self.assertNotEqual(component["result"], "success")
 
+    def test_service_readback_allows_only_component_container_name_metadata(self):
+        config = self.load_config("development")
+        sha = "0123456789abcdef0123456789abcdef01234567"
+        probe = {"failureThreshold": 1, "periodSeconds": 240, "tcpSocket": {"port": 8080}, "timeoutSeconds": 240}
+        expected_names = {"auth": "llm-wiki-auth-1", "bff": "llm-wiki-bff-1"}
+
+        def fixture(component):
+            if component == "auth":
+                image = "asia-east1-docker.pkg.dev/llm-wiki-cloud/cloud-run-images/llm-wiki-auth@sha256:" + "a" * 64
+                env = [
+                    {"name": "GCP_PROJECT", "value": "llm-wiki-cloud"},
+                    {"name": "FIRESTORE_DATABASE_ID", "value": "llm-wiki-cloud-dev"},
+                    {"name": "ALLOWED_ORIGINS", "value": ",".join(config["auth"]["allowed_origins"])},
+                    {"name": "ALLOWED_HOSTS", "value": ",".join(config["auth"]["allowed_hosts"])},
+                    {"name": "DEV_JWT", "value": "false"},
+                    {"name": "LWC_SOURCE_COMMIT", "value": sha},
+                    {"name": "JWT_SECRET", "valueSource": {"secretKeyRef": {"secret": "jwt-secret-dev", "version": "latest"}}},
+                ]
+            else:
+                image = "asia-east1-docker.pkg.dev/llm-wiki-cloud/cloud-run-images/llm-wiki-bff@sha256:" + "b" * 64
+                env = [
+                    {"name": "GCP_PROJECT", "value": "llm-wiki-cloud"},
+                    {"name": "BUCKET", "value": "llm-wiki-data-dev"},
+                    {"name": "FIRESTORE_DATABASE_ID", "value": "llm-wiki-cloud-dev"},
+                    {"name": "PIPELINE_JOB_URL", "value": config["bff"]["pipeline_job_url"]},
+                    {"name": "ALLOWED_ORIGINS", "value": ",".join(config["bff"]["allowed_origins"])},
+                    {"name": "AUTH_SERVICE_URL", "value": config["bff"]["auth_service_url"]},
+                    {"name": "QUERY_STAGE_CONFIG_PATH", "value": "/app/configs/query/dev/query-dev-2026-08-31.1.json"},
+                    {"name": "DEV_JWT", "value": "false"},
+                    {"name": "LWC_SOURCE_COMMIT", "value": sha},
+                    {"name": "JWT_SECRET", "valueSource": {"secretKeyRef": {"secret": "jwt-secret-dev", "version": "latest"}}},
+                    {"name": "DEEPSEEK_API_KEY", "valueSource": {"secretKeyRef": {"secret": "deepseek-apikey", "version": "latest"}}},
+                ]
+            annotations = {
+                "run.googleapis.com/network-interfaces": '[{"network":"default","subnetwork":"default"}]',
+                "run.googleapis.com/vpc-access-egress": "private-ranges-only",
+            }
+            service = {
+                "metadata": {"name": config[component]["service_name"], "annotations": {"run.googleapis.com/ingress": "all"}},
+                "spec": {"template": {"metadata": {"annotations": annotations}, "spec": {
+                    "serviceAccountName": config[component]["runtime_service_account"],
+                    "containers": [{"env": deepcopy(env)}],
+                }}},
+                "status": {"traffic": [{"revisionName": f"{component}-new", "percent": 100}]},
+            }
+            revision = {
+                "metadata": {"name": f"{component}-new"},
+                "spec": {"serviceAccountName": config[component]["runtime_service_account"], "containers": [{"image": image, "env": deepcopy(env)}]},
+                "status": {"imageDigest": image, "conditions": [{"type": "Ready", "status": "True"}]},
+            }
+            return service, revision, image
+
+        def normalize(component, service_value, revision_value, image):
+            return subprocess.run(
+                ["bash", "-c", common_source() + f'\nnormalize_service_readback {component} "$SERVICE_JSON" "$REVISION_JSON" {component}-new "$IMAGE"'],
+                env={
+                    **os.environ,
+                    "ROOT": str(ROOT),
+                    "SERVICE_JSON": json.dumps(service_value),
+                    "REVISION_JSON": json.dumps(revision_value),
+                    "IMAGE": image,
+                },
+                text=True,
+                capture_output=True,
+            )
+
+        for component in ("auth", "bff"):
+            with self.subTest(component=component):
+                service, revision, image = fixture(component)
+                absent = normalize(component, service, revision, image)
+                self.assertEqual(absent.returncode, 0, absent.stdout + absent.stderr)
+
+                revision_named = deepcopy(revision)
+                revision_named["spec"]["containers"][0]["name"] = expected_names[component]
+                observed = normalize(component, service, revision_named, image)
+                self.assertEqual(observed.returncode, 0, observed.stdout + observed.stderr)
+                self.assertNotIn("name", json.loads(observed.stdout)["container"])
+
+                service_named = deepcopy(service)
+                service_named["spec"]["template"]["spec"]["containers"][0]["name"] = expected_names[component]
+                for service_value, revision_value in (
+                    (service_named, revision),
+                    (service_named, revision_named),
+                ):
+                    result = normalize(component, service_value, revision_value, image)
+                    self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
+
+                wrong_name = expected_names["bff" if component == "auth" else "auth"]
+                invalid_names = [wrong_name, "arbitrary", "", None, 1, True, {}, []]
+                for side in ("service", "revision"):
+                    for invalid_name in invalid_names:
+                        with self.subTest(side=side, invalid_name=repr(invalid_name)):
+                            invalid_service = deepcopy(service)
+                            invalid_revision = deepcopy(revision)
+                            target = invalid_service if side == "service" else invalid_revision
+                            container = target["spec"]["template"]["spec"]["containers"][0] if side == "service" else target["spec"]["containers"][0]
+                            container["name"] = invalid_name
+                            result = normalize(component, invalid_service, invalid_revision, image)
+                            self.assertNotEqual(result.returncode, 0, result.stdout + result.stderr)
+
+                    invalid_service = deepcopy(service)
+                    invalid_revision = deepcopy(revision)
+                    target = invalid_service if side == "service" else invalid_revision
+                    container = target["spec"]["template"]["spec"]["containers"][0] if side == "service" else target["spec"]["containers"][0]
+                    container["unexpected"] = "must-be-rejected"
+                    result = normalize(component, invalid_service, invalid_revision, image)
+                    self.assertNotEqual(result.returncode, 0, result.stdout + result.stderr)
+
+                altered = deepcopy(revision_named)
+                altered["spec"]["containers"][0]["startupProbe"] = {**probe, "timeoutSeconds": 239}
+                result = normalize(component, service, altered, image)
+                self.assertNotEqual(result.returncode, 0, result.stdout + result.stderr)
+
     def test_service_readback_validates_provider_default_startup_probe(self):
         config = self.load_config("development")
         sha = "0123456789abcdef0123456789abcdef01234567"
