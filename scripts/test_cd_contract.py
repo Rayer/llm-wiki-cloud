@@ -29,6 +29,56 @@ def common_source():
 
 
 class CDContractTests(unittest.TestCase):
+    def test_validate_inputs_accepts_only_fixed_deployment_config_pairs(self):
+        source = ROOT / "deploy/components/common.sh"
+        cases = [
+            ("Development", "development", "develop", True, None),
+            ("Production", "production", "main", True, None),
+            ("Production", "development", "develop", False, "deployment and config environments do not match"),
+            ("Development", "production", "main", False, "deployment and config environments do not match"),
+            ("development", "development", "develop", False, "deployment and config environments do not match"),
+            ("production", "production", "main", False, "deployment and config environments do not match"),
+            (None, "development", "develop", False, "DEPLOYMENT_ENVIRONMENT is required"),
+        ]
+        with tempfile.TemporaryDirectory() as directory:
+            for index, (deployment, config, ref, valid, message) in enumerate(cases):
+                with self.subTest(deployment=deployment, config=config):
+                    seam = Path(directory) / str(index)
+                    env = {
+                        **os.environ,
+                        "ROOT": str(ROOT),
+                        "ENVIRONMENT": config,
+                        "SOURCE_REF": ref,
+                        "SOURCE_SHA": "0123456789abcdef0123456789abcdef01234567",
+                        "COMPONENTS": "auth,bff,worker,frontend",
+                        "CONFIG_PATH": f"deploy/environments/{config}.yaml",
+                        "GITHUB_REF": f"refs/heads/{ref}",
+                        "GITHUB_REF_NAME": ref,
+                        "GITHUB_REPOSITORY": "Rayer/llm-wiki-cloud",
+                        "PROVIDER_SEAM": str(seam),
+                    }
+                    if deployment is None:
+                        env.pop("DEPLOYMENT_ENVIRONMENT", None)
+                    else:
+                        env["DEPLOYMENT_ENVIRONMENT"] = deployment
+                    result = subprocess.run(
+                        [
+                            "bash",
+                            "-c",
+                            f"source {str(source)!r}; validate_inputs; touch \"$PROVIDER_SEAM\"",
+                        ],
+                        env=env,
+                        text=True,
+                        capture_output=True,
+                    )
+                    if valid:
+                        self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
+                        self.assertTrue(seam.is_file())
+                    else:
+                        self.assertNotEqual(result.returncode, 0, result.stdout + result.stderr)
+                        self.assertIn(message, result.stderr)
+                        self.assertFalse(seam.exists())
+
     def load_config(self, environment):
         path = CONFIG_DIR / f"{environment}.yaml"
         self.assertTrue(path.is_file(), f"missing {path}")

@@ -109,8 +109,11 @@ revalidate_before_provider() {
 
 validate_inputs() {
   # Validate the environment and config/ref tuple before protected environment access.
-  need ENVIRONMENT; need SOURCE_REF; need SOURCE_SHA; need COMPONENTS; need CONFIG_PATH; need GITHUB_REPOSITORY
-  [[ -z "${DEPLOYMENT_ENVIRONMENT:-}" || "$DEPLOYMENT_ENVIRONMENT" == "$ENVIRONMENT" ]] || die "deployment and config environments do not match"
+  need DEPLOYMENT_ENVIRONMENT; need ENVIRONMENT; need SOURCE_REF; need SOURCE_SHA; need COMPONENTS; need CONFIG_PATH; need GITHUB_REPOSITORY
+  case "$DEPLOYMENT_ENVIRONMENT:$ENVIRONMENT" in
+    Development:development|Production:production) ;;
+    *) die "deployment and config environments do not match" ;;
+  esac
   [[ "$ENVIRONMENT" == development || "$ENVIRONMENT" == production ]] || die "environment must be development or production"
   [[ "$SOURCE_REF" == develop || "$SOURCE_REF" == main ]] || die "source ref is not an approved branch"
   [[ "$SOURCE_SHA" =~ ^[0-9a-f]{40}$ ]] || die "source SHA is not a full lowercase commit SHA"
