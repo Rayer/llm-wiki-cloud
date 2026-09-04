@@ -1494,17 +1494,31 @@ class CDContractTests(unittest.TestCase):
                 True,
             ),
             (
-                "duplicate requested member with unexpected member class",
+                "worker duplicate requested member across exact bindings",
                 {"bindings": [
-                    {"role": "roles/secretmanager.secretAccessor", "members": [
-                        "serviceAccount:auth@example.com", "serviceAccount:bff@example.com",
+                    {"role": "roles/run.viewer", "members": [
+                        "serviceAccount:worker@example.com",
                     ]},
-                    {"role": "roles/secretmanager.secretAccessor", "members": [
-                        "serviceAccount:auth@example.com", "user:alice@example.com",
+                    {"role": "roles/run.viewer", "members": [
+                        "serviceAccount:worker@example.com", "serviceAccount:another-worker@example.com",
                     ]},
                 ]},
-                "roles/secretmanager.secretAccessor",
-                "serviceAccount:auth@example.com",
+                "roles/run.viewer",
+                "serviceAccount:worker@example.com",
+                False,
+            ),
+            (
+                "conditioned same-role duplicate requested member",
+                {"bindings": [
+                    {"role": "roles/run.viewer", "members": [
+                        "serviceAccount:worker@example.com",
+                    ]},
+                    {"role": "roles/run.viewer", "condition": {"title": "temporary", "expression": "true"}, "members": [
+                        "serviceAccount:worker@example.com", "user:alice@example.com",
+                    ]},
+                ]},
+                "roles/run.viewer",
+                "serviceAccount:worker@example.com",
                 False,
             ),
             (

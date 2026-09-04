@@ -334,7 +334,7 @@ iam_binding_is_exact() {
       . == "roles/owner" or . == "roles/editor" or . == "roles/run.admin" or . == "roles/run.developer" or . == "roles/run.jobsAdmin" or
       . == "roles/secretmanager.admin" or . == "roles/secretmanager.secretAccessor" or ((type == "string") and test("^roles/.*(admin|developer)$"));
     def requested_binding:
-      .role == $role and (has("condition")|not) and (.members|index($member)) != null;
+      .role == $role and (.members|index($member)) != null;
     def exact_requested_binding:
       ($member == "allUsers" and (.members|sort) == ["allUsers"] or
        $member != "allUsers" and all(.members[]; startswith("serviceAccount:")));
@@ -343,7 +343,7 @@ iam_binding_is_exact() {
     ([.bindings[] | select(requested_binding)] | length) == 1 and
     all(.bindings[];
       ([.members[] | select(broad_member)] | length) as $broad |
-      if (requested_binding and (exact_requested_binding|not)) then false
+      if (requested_binding and (has("condition") or (exact_requested_binding|not))) then false
       elif ((.members | index($member)) != null and .role != $role and (.role | forbidden_role)) then false
       elif ($broad > 0 and (.role | forbidden_role)) then false
       else true end
