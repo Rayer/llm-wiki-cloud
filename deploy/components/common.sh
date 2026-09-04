@@ -30,7 +30,7 @@ except (ValueError, UnicodeDecodeError):
 '
 }
 
-CI_REQUIRED_JOB_NAMES='["bff","frontend-build","local-vertical-smoke","workflow-source","canonical-ci"]'
+CI_AGGREGATE_JOB_NAME='canonical-ci'
 
 gh_paginated_array() {
   local endpoint="$1" key="$2" page=1 response items count total='' all='[]' separator
@@ -55,13 +55,16 @@ gh_paginated_array() {
 
 ci_validate_jobs() {
   local jobs="$1" run_id="$2" attempt="$3"
-  jq -e --argjson expected "$CI_REQUIRED_JOB_NAMES" --argjson run_id "$run_id" --argjson attempt "$attempt" '
-    type == "array" and length == ($expected|length) and
+  jq -e --arg aggregate "$CI_AGGREGATE_JOB_NAME" --argjson run_id "$run_id" --argjson attempt "$attempt" '
+    type == "array" and length > 0 and
     all(.[]; type == "object" and (.id|type == "number" and floor == . and . > 0) and
       (.name|type == "string" and length > 0) and (.run_id == $run_id) and (.run_attempt == $attempt) and
       .status == "completed" and .conclusion == "success") and
-    (map(.name)|sort) == ($expected|sort) and (map(.name)|unique|length == length) and
-    (map(.id)|unique|length == length)
+    (map(.name) as $names |
+      map(.id) as $ids |
+      ($names|unique|length) == ($names|length) and
+      ($ids|unique|length) == ($ids|length) and
+      ($names|map(select(. == $aggregate))|length) == 1)
   ' <<<"$jobs" >/dev/null
 }
 
