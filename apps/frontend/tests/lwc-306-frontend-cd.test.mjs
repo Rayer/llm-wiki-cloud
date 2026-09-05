@@ -22,6 +22,10 @@ async function lines(path) {
   }
 }
 
+async function resetEvents(fixture) {
+  await writeFile(join(fixture.root, 'provider-events'), '');
+}
+
 async function setup(environment = 'development', scenario = 'success') {
   const root = await mkdtemp(join(tmpdir(), 'lwc-306-frontend-'));
   const artifactDir = join(root, 'artifacts');
@@ -29,7 +33,7 @@ async function setup(environment = 'development', scenario = 'success') {
   const aliases = production ? ['wiki.rayer.idv.tw', 'llm-wiki-frontend.vercel.app'] : ['wiki.dev.rayer.idv.tw'];
   const projectName = production ? 'llm-wiki-frontend' : 'llm-wiki-frontend-dev';
   await writeFile(join(root, 'scenario'), scenario);
-  await writeFile(join(root, 'aliases.json'), JSON.stringify(Object.fromEntries(aliases.map((alias, index) => [alias, `dpl_old${index}`]))));
+  await writeFile(join(root, 'aliases.json'), JSON.stringify(Object.fromEntries(aliases.map((alias, index) => [alias, scenario === 'already-converged' ? 'dpl_frontendnew' : `dpl_old${index}`]))));
   await writeFile(join(root, 'project.json'), JSON.stringify({
     id: 'prj_frontendtest', name: projectName, accountId: 'team_frontendtest',
     rootDirectory: 'apps/frontend', link: { type: 'github', org: 'Rayer', repo: 'llm-wiki-cloud' },
@@ -119,6 +123,85 @@ test('builds once with Vercel prebuilt ordering and keeps immutable ID separate 
   assert.equal(reconcile.code, undefined, reconcile.stderr);
   assert.equal((await json(join(fixture.artifactDir, 'components/frontend.json'))).result, 'success');
   await assertNoToken(fixture);
+});
+
+test('reuses a live-shaped existing candidate before any build mutation', async () => {
+  const fixture = await setup('development', 'existing-live-candidate');
+  assert.equal((await run(fixture, 'freeze')).code, undefined);
+  await resetEvents(fixture);
+
+  const result = await run(fixture, 'mutate');
+  assert.equal(result.code, undefined, result.stderr);
+  assert.deepEqual(await lines(join(fixture.root, 'provider-events')), [
+    'project', 'deployment-inventory', 'inspect', 'alias', 'alias-inventory', 'alias-post', 'alias', 'alias-inventory',
+  ]);
+  const calls = await lines(join(fixture.root, 'cli-calls'));
+  assert.equal(calls.filter((line) => line.startsWith('npm ')).length, 0);
+  assert.equal(calls.filter((line) => line.startsWith('vercel pull ')).length, 0);
+  assert.equal(calls.filter((line) => line.startsWith('vercel build ')).length, 0);
+  assert.equal(calls.filter((line) => line.startsWith('vercel deploy ')).length, 0);
+  assert.equal((await lines(join(fixture.root, 'alias-post-calls'))).length, 1);
+  assert.equal((await json(join(fixture.artifactDir, 'frontend-deployment.json'))).deployment_id, 'dpl_frontendnew');
+  assert.equal((await json(join(fixture.artifactDir, 'journal.json'))).components.frontend.state, 'accepted');
+});
+
+test('production already-converged candidate performs no provider write', async () => {
+  const fixture = await setup('production', 'already-converged');
+  assert.equal((await run(fixture, 'freeze')).code, undefined);
+  await resetEvents(fixture);
+
+  const result = await run(fixture, 'mutate');
+  assert.equal(result.code, undefined, result.stderr);
+  assert.deepEqual(await lines(join(fixture.root, 'provider-events')), [
+    'project', 'deployment-inventory', 'inspect', 'alias', 'alias-inventory', 'alias', 'alias-inventory',
+  ]);
+  const calls = await lines(join(fixture.root, 'cli-calls'));
+  assert.equal(calls.length, 0);
+  assert.equal((await lines(join(fixture.root, 'alias-post-calls'))).length, 0);
+  assert.equal((await json(join(fixture.artifactDir, 'frontend-deployment.json'))).deployment_id, 'dpl_frontendnew');
+  assert.equal((await json(join(fixture.artifactDir, 'journal.json'))).components.frontend.state, 'rejected_or_no_mutation');
+});
+
+for (const scenario of ['duplicate-exact', 'foreign-candidate', 'malformed-candidate', 'missing-uid', 'wrong-authority', 'inventory-unreadable']) {
+  test(`${scenario} fails closed before provider mutation`, async () => {
+    const fixture = await setup('development', scenario);
+    assert.equal((await run(fixture, 'freeze')).code, undefined);
+    await resetEvents(fixture);
+
+    await run(fixture, 'mutate');
+    assert.equal((await lines(join(fixture.root, 'cli-calls'))).length, 0);
+    assert.equal((await lines(join(fixture.root, 'alias-post-calls'))).length, 0);
+    assert.equal((await json(join(fixture.artifactDir, 'journal.json'))).components.frontend.state, 'rejected_or_no_mutation');
+  });
+}
+
+test('zero candidate preserves the existing build and create path', async () => {
+  const fixture = await setup('development', 'zero-candidate');
+  assert.equal((await run(fixture, 'freeze')).code, undefined);
+  await resetEvents(fixture);
+
+  const result = await run(fixture, 'mutate');
+  assert.equal(result.code, undefined, result.stderr);
+  assert.deepEqual((await lines(join(fixture.root, 'provider-events'))).slice(0, 10), [
+    'project', 'deployment-inventory', 'npm-ci', 'pull', 'build', 'project', 'alias', 'alias-inventory', 'deploy', 'inspect',
+  ]);
+  const calls = await lines(join(fixture.root, 'cli-calls'));
+  assert.equal(calls.filter((line) => line.startsWith('npm ')).length, 1);
+  assert.equal(calls.filter((line) => line.startsWith('vercel pull ')).length, 1);
+  assert.equal(calls.filter((line) => line.startsWith('vercel build ')).length, 1);
+  assert.equal(calls.filter((line) => line.startsWith('vercel deploy ')).length, 1);
+  assert.equal((await lines(join(fixture.root, 'alias-post-calls'))).length, 1);
+});
+
+test('production inspect target null is rejected', async () => {
+  const fixture = await setup('production', 'production-null-target');
+  assert.equal((await run(fixture, 'freeze')).code, undefined);
+  await resetEvents(fixture);
+
+  await run(fixture, 'mutate');
+  const calls = await lines(join(fixture.root, 'cli-calls'));
+  assert.equal(calls.filter((line) => line.startsWith('vercel deploy ')).length, 1);
+  assert.equal((await lines(join(fixture.root, 'alias-post-calls'))).length, 0);
 });
 
 test('freezes exact project and alias authority before any REST mutation', async () => {

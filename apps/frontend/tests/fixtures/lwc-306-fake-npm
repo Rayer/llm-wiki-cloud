@@ -2,6 +2,7 @@
 set -eu
 printf 'npm %s\n' "$*" >> "$FIXTURE_ROOT/cli-calls"
 if [[ "${1:-}" == ci ]]; then
+  printf '%s\n' npm-ci >> "$FIXTURE_ROOT/provider-events"
   touch "$FIXTURE_ROOT/npm-ci"
   exit 0
 fi

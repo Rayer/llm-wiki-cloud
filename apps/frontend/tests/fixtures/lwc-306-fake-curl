@@ -19,6 +19,14 @@ while [[ "$#" -gt 0 ]]; do
 done
 [[ -n "$url" ]] || exit 1
 printf '%s\n' "$url" >> "$root/curl-calls"
+event() { printf '%s\n' "$1" >> "$root/provider-events"; }
+deployment_inventory_read() {
+  local path="$root/deployment-inventory-reads" count=0
+  [[ -f "$path" ]] && count="$(<"$path")"
+  count=$((count + 1))
+  printf '%s' "$count" > "$path"
+  printf '%s' "$count"
+}
 [[ -n "$auth" ]] && printf 'AUTH=present\n' >> "$root/auth-events" || printf 'AUTH=missing\n' >> "$root/auth-events"
 
 write_response() {
@@ -32,6 +40,7 @@ if [[ "$url" == "$base"/* && "$auth" != "Authorization: Bearer ${VERCEL_TOKEN:-}
 fi
 
 if [[ "$url" == *'/v9/projects/'* ]]; then
+  event project
   if [[ "$scenario" == project-mismatch ]]; then
     jq '.id = "prj_other"' "$root/project.json"
   else
@@ -41,7 +50,9 @@ if [[ "$url" == *'/v9/projects/'* ]]; then
 fi
 
 if [[ "$method" == POST && "$url" == *'/v2/deployments/'*'/aliases'* ]]; then
+  event alias-post
   printf '%s\t%s\t%s\n' "$method" "$url" "$body" >> "$root/alias-post-calls"
+  touch "$root/alias-posted"
   call_number=$(( $(wc -l < "$root/alias-post-calls") ))
   alias=$(jq -er '.alias' <<<"$body")
   deployment=${url#*'/v2/deployments/'}
@@ -61,12 +72,13 @@ if [[ "$method" == POST && "$url" == *'/v2/deployments/'*'/aliases'* ]]; then
 fi
 
 if [[ "$url" == *'/v4/aliases/'* ]]; then
+  event alias
   alias_path=${url#*'/v4/aliases/'}
   alias_path=${alias_path%%\?*}
   deployment=$(jq -er --arg alias "$alias_path" '.[$alias]' "$root/aliases.json")
   if [[ "$scenario" == alias-project-mismatch ]]; then
     printf '{"alias":"%s","projectId":"prj_other","deploymentId":"%s"}' "$alias_path" "$deployment"
-  elif [[ "$scenario" == wrong-readback && -f "$root/vercel-deployed" && "$alias_path" == wiki.dev.rayer.idv.tw ]]; then
+  elif [[ "$scenario" == wrong-readback && -f "$root/alias-posted" && "$alias_path" == wiki.dev.rayer.idv.tw ]]; then
     printf '{"alias":"%s","projectId":"prj_frontendtest","deploymentId":"dpl_wrong"}' "$alias_path"
   else
     printf '{"alias":"%s","projectId":"prj_frontendtest","deploymentId":"%s"}' "$alias_path" "$deployment"
@@ -75,6 +87,7 @@ if [[ "$url" == *'/v4/aliases/'* ]]; then
 fi
 
 if [[ "$url" == *'/v4/aliases?'* ]]; then
+  event alias-inventory
   if [[ "$scenario" == alias-full-missing-pagination ]]; then
     jq -n '[{alias:"wiki.dev.rayer.idv.tw",projectId:"prj_frontendtest",teamId:"team_frontendtest",deploymentId:"dpl_old0"}] + [range(0;99) | {alias:("filler-" + tostring + ".vercel.app"),projectId:"prj_frontendtest",teamId:"team_frontendtest",deploymentId:("dpl_filler" + tostring)}] | {aliases:.}'
   else
@@ -84,21 +97,38 @@ if [[ "$url" == *'/v4/aliases?'* ]]; then
 fi
 
 if [[ "$url" == *'/v6/deployments?'* ]]; then
+  event deployment-inventory
   deployment=$(cat "$root/deployment.json")
+  inventory_read="$(deployment_inventory_read)"
+  if [[ "$scenario" == inventory-unreadable ]]; then exit 7; fi
+  if [[ "$scenario" == deploy-timeout-* && "$inventory_read" == 1 ]]; then
+    printf '{"deployments":[],"pagination":{"next":null}}'
+    exit 0
+  fi
   case "$scenario" in
+    success|zero-candidate) printf '{"deployments":[],"pagination":{"next":null}}' ;;
+    existing-live-candidate) deployment=$(jq 'del(.id,.accountId,.teamId,.ownerId) | .uid = "dpl_frontendnew" | .target = null' <<<"$deployment"); printf '{"deployments":[%s],"pagination":{"next":null}}' "$deployment" ;;
+    already-converged) deployment=$(jq 'del(.id,.accountId,.teamId,.ownerId) | .uid = "dpl_frontendnew"' <<<"$deployment"); printf '{"deployments":[%s],"pagination":{"next":null}}' "$deployment" ;;
+    duplicate-exact) deployment=$(jq 'del(.id,.accountId,.teamId,.ownerId) | .uid = "dpl_frontendnew" | .target = null' <<<"$deployment"); printf '{"deployments":[%s,%s],"pagination":{"next":null}}' "$deployment" "$deployment" ;;
+    foreign-candidate) deployment=$(jq 'del(.id,.accountId,.teamId,.ownerId) | .uid = "dpl_frontendnew" | .projectId = "prj_foreign" | .target = null' <<<"$deployment"); printf '{"deployments":[%s],"pagination":{"next":null}}' "$deployment" ;;
+    malformed-candidate) printf '{"deployments":[{"uid":"dpl_frontendnew","projectId":"prj_frontendtest","readyState":"READY","target":null,"url":"frontend-hash.vercel.app","meta":{}}],"pagination":{"next":null}}' ;;
+    missing-uid) deployment=$(jq 'del(.id,.accountId,.teamId,.ownerId) | .target = null' <<<"$deployment"); printf '{"deployments":[%s],"pagination":{"next":null}}' "$deployment" ;;
+    wrong-authority) deployment=$(jq 'del(.id,.accountId,.teamId,.ownerId) | .uid = "dpl_frontendnew" | .accountId = "team_foreign" | .target = null' <<<"$deployment"); printf '{"deployments":[%s],"pagination":{"next":null}}' "$deployment" ;;
+    production-null-target) deployment=$(jq 'del(.id,.accountId,.teamId,.ownerId) | .uid = "dpl_frontendnew" | .target = null' <<<"$deployment"); printf '{"deployments":[%s],"pagination":{"next":null}}' "$deployment" ;;
     deploy-timeout-absent) printf '{"deployments":[],"pagination":{"next":null}}' ;;
     deploy-timeout-duplicate) printf '{"deployments":[%s,%s],"pagination":{"next":null}}' "$deployment" "$deployment" ;;
     deploy-timeout-conflicting) deployment=$(jq '.target="production"' <<<"$deployment"); printf '{"deployments":[%s],"pagination":{"next":null}}' "$deployment" ;;
     deploy-timeout-full-missing-pagination) jq -n --argjson deployment "$deployment" '{deployments:([$deployment] + [range(0;99) | {id:("dpl_filler" + tostring),projectId:"prj_frontendtest",accountId:"team_frontendtest",readyState:"READY",target:"preview",url:("filler-" + tostring + ".vercel.app")}])}' ;;
-    deploy-timeout-arbitrary-host) deployment=$(jq '.url="evil.example"' <<<"$deployment"); printf '{"deployments":[%s],"pagination":{"next":null}}' "$deployment" ;;
-    deploy-timeout-canonical-host) deployment=$(jq '.url="https://frontend-hash.vercel.app"' <<<"$deployment"); printf '{"deployments":[%s],"pagination":{"next":null}}' "$deployment" ;;
-    *) printf '{"deployments":[%s],"pagination":{"next":null}}' "$deployment" ;;
+    deploy-timeout-arbitrary-host) deployment=$(jq 'del(.id,.accountId,.teamId,.ownerId) | .uid = "dpl_frontendnew" | .url="evil.example" | .target = null' <<<"$deployment"); printf '{"deployments":[%s],"pagination":{"next":null}}' "$deployment" ;;
+    deploy-timeout-canonical-host) deployment=$(jq 'del(.id,.accountId,.teamId,.ownerId) | .uid = "dpl_frontendnew" | .url="https://frontend-hash.vercel.app" | .target = null' <<<"$deployment"); printf '{"deployments":[%s],"pagination":{"next":null}}' "$deployment" ;;
+    *) deployment=$(jq 'del(.id,.accountId,.teamId,.ownerId) | .uid = "dpl_frontendnew" | .target = (if .target == "production" then "production" else null end)' <<<"$deployment"); printf '{"deployments":[%s],"pagination":{"next":null}}' "$deployment" ;;
   esac
   exit 0
 fi
 
 if [[ "$url" == *'/v13/deployments/'* ]]; then
-  if [[ "$scenario" == deploy-timeout-arbitrary-host ]]; then jq '.url="evil.example"' "$root/deployment.json"; elif [[ "$scenario" == deploy-timeout-canonical-host ]]; then jq '.url="https://frontend-hash.vercel.app"' "$root/deployment.json"; else cat "$root/deployment.json"; fi
+  event inspect
+  if [[ "$scenario" == deploy-timeout-arbitrary-host ]]; then jq '.url="evil.example"' "$root/deployment.json"; elif [[ "$scenario" == deploy-timeout-canonical-host ]]; then jq '.url="https://frontend-hash.vercel.app"' "$root/deployment.json"; elif [[ "$scenario" == existing-live-candidate || "$scenario" == production-null-target ]]; then jq '.target = null' "$root/deployment.json"; else cat "$root/deployment.json"; fi
   exit 0
 fi
 

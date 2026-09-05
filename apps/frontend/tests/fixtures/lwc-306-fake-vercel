@@ -5,9 +5,11 @@ scenario="$(<"$root/scenario")"
 args="$*"
 args="${args//vercel-fixture-token/[REDACTED]}"
 printf 'vercel %s\n' "$args" >> "$root/cli-calls"
+event() { printf '%s\n' "$1" >> "$root/provider-events"; }
 assert_repo_root() { [[ "$PWD" == "${EXPECTED_REPO_ROOT:?}" ]] || exit 98; }
 case "${1:-}" in
   pull)
+    event pull
     assert_repo_root
     shift
     while (($#)); do
@@ -23,12 +25,14 @@ case "${1:-}" in
     touch "$root/vercel-pull"
     ;;
   build)
+    event build
     assert_repo_root
     [[ "${VERCEL_ORG_ID:-}" == "${VERCEL_TEAM_ID:-}" && -n "${VERCEL_ORG_ID:-}" ]] || exit 95
     [[ -f "$root/vercel-pull" ]] || exit 93
     touch "$root/vercel-build"
     ;;
   deploy)
+    event deploy
     assert_repo_root
     [[ "${VERCEL_ORG_ID:-}" == "${VERCEL_TEAM_ID:-}" && -n "${VERCEL_ORG_ID:-}" ]] || exit 95
     [[ -f "$root/vercel-build" && "$*" == *"--prebuilt"* ]] || exit 94
