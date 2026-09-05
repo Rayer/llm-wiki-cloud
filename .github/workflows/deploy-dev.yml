@@ -24,3 +24,96 @@ jobs:
       source_sha: ${{ github.sha }}
       config_path: deploy/environments/development.yaml
       components: ${{ inputs.components }}
+
+  main-fast-forward-eligible:
+    name: main-fast-forward-eligible
+    if: ${{ always() && github.event_name == 'workflow_dispatch' && github.ref == 'refs/heads/develop' }}
+    needs: deploy
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      statuses: write
+    steps:
+      - name: Publish pending eligibility status
+        id: publish_pending_eligibility
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          set -Eeuo pipefail
+          gh api --method POST "repos/${GITHUB_REPOSITORY}/statuses/${GITHUB_SHA}" \
+            -f state=pending \
+            -f context=main-fast-forward-eligible \
+            -f description='Waiting for exact develop head validation' >/dev/null
+
+      - name: Checkout exact candidate
+        id: checkout_exact_candidate
+        if: needs.deploy.result == 'success'
+        uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+        with:
+          ref: ${{ github.sha }}
+          fetch-depth: 0
+          persist-credentials: false
+
+      - name: Validate exact main fast-forward eligibility
+        if: always()
+        env:
+          GH_TOKEN: ${{ github.token }}
+          PENDING_OUTCOME: ${{ steps.publish_pending_eligibility.outcome }}
+          CHECKOUT_OUTCOME: ${{ steps.checkout_exact_candidate.outcome }}
+        run: |
+          set -Eeuo pipefail
+
+          candidate_sha='${{ github.sha }}'
+          deploy_result='${{ needs.deploy.result }}'
+          pending_outcome="$PENDING_OUTCOME"
+          checkout_outcome="$CHECKOUT_OUTCOME"
+          context='main-fast-forward-eligible'
+
+          publish_status() {
+            local state="$1" description="$2"
+            gh api --method POST "repos/${GITHUB_REPOSITORY}/statuses/${GITHUB_SHA}" \
+              -f "state=${state}" \
+              -f "context=${context}" \
+              -f "description=${description}" >/dev/null
+          }
+
+          [[ "$deploy_result" == success ]] || exit 1
+          [[ "$pending_outcome" == success ]] || exit 1
+          [[ "$checkout_outcome" == success ]] || exit 1
+          [[ "$candidate_sha" =~ ^[0-9a-f]{40}$ ]] || exit 1
+          checked_out_sha="$(git rev-parse --verify HEAD)"
+          [[ "$checked_out_sha" == "$candidate_sha" ]] || exit 1
+
+          remote_head() {
+            local ref="$1" head
+            head="$(git ls-remote --refs origin "$ref" | awk 'NF == 2 { print $1; exit }')"
+            [[ "$head" =~ ^[0-9a-f]{40}$ ]] || return 1
+            printf '%s\n' "$head"
+          }
+
+          current_develop="$(remote_head refs/heads/develop)"
+          [[ "$current_develop" == "$candidate_sha" ]] || exit 1
+          current_main="$(remote_head refs/heads/main)"
+          git fetch --no-tags origin +refs/heads/main:refs/remotes/origin/main
+          [[ "$(git rev-parse refs/remotes/origin/main)" == "$current_main" ]] || exit 1
+          git merge-base --is-ancestor "$current_main" "$candidate_sha" || exit 1
+
+          current_develop="$(remote_head refs/heads/develop)"
+          [[ "$current_develop" == "$candidate_sha" ]] || exit 1
+          current_main="$(remote_head refs/heads/main)"
+          git fetch --no-tags origin +refs/heads/main:refs/remotes/origin/main
+          [[ "$(git rev-parse refs/remotes/origin/main)" == "$current_main" ]] || exit 1
+          git merge-base --is-ancestor "$current_main" "$candidate_sha" || exit 1
+
+          publish_status success 'Exact develop head is eligible for main fast-forward'
+
+      - name: Publish eligibility failure status
+        if: ${{ failure() || cancelled() }}
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          set -Eeuo pipefail
+          gh api --method POST "repos/${GITHUB_REPOSITORY}/statuses/${GITHUB_SHA}" \
+            -f state=failure \
+            -f context=main-fast-forward-eligible \
+            -f description='Exact develop/main fast-forward validation failed' >/dev/null
