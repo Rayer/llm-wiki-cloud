@@ -1217,6 +1217,65 @@ class CDContractTests(unittest.TestCase):
                 for call in image_updates:
                     self.assertNotRegex(call, r"--(update-env-vars|update-secrets|service-account|network|subnet|vpc-egress|ingress|max)")
 
+    def test_post_mutation_readback_retries_without_a_second_mutation(self):
+        registry = "asia-east1-docker.pkg.dev/llm-wiki-cloud/cloud-run-images"
+        sha = "a" * 40
+        for component, image_name in (("auth", "llm-wiki-auth"), ("bff", "llm-wiki-bff"), ("worker", "olw-pipeline")):
+            with self.subTest(component=component), tempfile.TemporaryDirectory() as directory:
+                root = Path(directory)
+                bin_dir = root / "bin"
+                bin_dir.mkdir()
+                old_image = f"{registry}/{image_name}@sha256:" + "a" * 64
+                new_image = f"{registry}/{image_name}@sha256:" + "b" * 64
+                state_path = root / "state.json"
+                state_path.write_text(json.dumps({"readbacks": 0}))
+                log_path = root / "provider.log"
+                kind = "services" if component != "worker" else "jobs"
+                fake = textwrap.dedent(f"""
+                    #!/usr/bin/env python3
+                    import json, os, sys
+                    from pathlib import Path
+                    args = sys.argv[1:]
+                    Path(os.environ["FAKE_LOG"]).open("a").write(" ".join(args) + "\\n")
+                    state_path = Path(os.environ["FAKE_STATE"])
+                    state = json.loads(state_path.read_text())
+                    if args[:3] == ["run", "{kind}", "update"] or args[:3] == ["run", "services", "update-traffic"]:
+                        raise SystemExit(0)
+                    if args[:3] == ["run", "services", "describe"]:
+                        state["readbacks"] += 1
+                        state_path.write_text(json.dumps(state))
+                        revision = "{component}-new" if state["readbacks"] > 1 else "{component}-old"
+                        print(json.dumps({{"status": {{"traffic": [{{"revisionName": revision, "percent": 100}}]}}}}))
+                    elif args[:3] == ["run", "revisions", "describe"]:
+                        image = {new_image!r} if args[3] == "{component}-new" else {old_image!r}
+                        print(json.dumps({{"spec": {{"containers": [{{"image": image}}]}}, "status": {{"imageDigest": image, "conditions": [{{"type": "Ready", "status": "True"}}]}}}}))
+                    elif args[:3] == ["run", "jobs", "describe"]:
+                        state["readbacks"] += 1
+                        state_path.write_text(json.dumps(state))
+                        image = {new_image!r} if state["readbacks"] > 1 else {old_image!r}
+                        print(json.dumps(dict(spec=dict(template=dict(spec=dict(template=dict(spec=dict(containers=[dict(image=image)]))))))))
+                    else:
+                        raise SystemExit(2)
+                """).lstrip()
+                provider = bin_dir / "gcloud"
+                provider.write_text(fake)
+                provider.chmod(0o755)
+                plan_component = {"service_name": f"{component}-service"} if component != "worker" else {"job_name": "worker-job", "location": "asia-east1"}
+                plan = root / "plan.json"
+                plan.write_text(json.dumps({"normalized": {"selected_components": [component], "gcp": {"project_id": "llm-wiki-cloud", "region": "asia-east1", "artifact_registry": registry}, "evidence": {"config_fingerprint": "sha256:" + "d" * 64}, component: plan_component}}))
+                artifacts = root / "artifacts" / "dev-images"
+                artifacts.mkdir(parents=True)
+                (artifacts / f"{component}-image-{sha}.txt").write_text(new_image + "\n")
+                (artifacts / "dev-receipt.json").write_text(json.dumps({"schema": "lwc-306-dev-image-receipt-v1", "source": {"sha": sha, "ref": "develop", "workflow_path": ".github/workflows/deploy-dev.yml", "event": "workflow_dispatch"}, "config": {"environment": "development", "path": "deploy/environments/development.yaml", "fingerprint": "sha256:" + "d" * 64}, "components": [component], "images": {component: new_image}}))
+                env = {**os.environ, "PATH": f"{bin_dir}:{os.environ['PATH']}", "ROOT": str(ROOT), "ENVIRONMENT": "production", "SOURCE_REF": "main", "SOURCE_SHA": sha, "CONFIG_PATH": "deploy/environments/production.yaml", "COMPONENTS": component, "PLAN_PATH": str(plan), "JOURNAL_PATH": str(root / "artifacts/journal.json"), "ARTIFACT_DIR": str(root / "artifacts"), "ROLLBACK_PATH": str(root / "artifacts/rollback.json"), "FAKE_STATE": str(state_path), "FAKE_LOG": str(log_path)}
+                result = subprocess.run(["bash", str(ROOT / "deploy/components" / f"{component}.sh"), "mutate"], env=env, capture_output=True, text=True)
+                self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
+                calls = log_path.read_text().splitlines()
+                self.assertEqual(sum(f"run {kind} update " in call for call in calls), 1)
+                if component != "worker":
+                    self.assertEqual(sum("run services update-traffic" in call for call in calls), 1)
+                self.assertGreaterEqual(json.loads(state_path.read_text())["readbacks"], 2)
+
     def test_readback_classification_preserves_unknown_and_failed(self):
         registry = "asia-east1-docker.pkg.dev/llm-wiki-cloud/cloud-run-images"
         for component, image_name in (("auth", "llm-wiki-auth"), ("bff", "llm-wiki-bff"), ("worker", "olw-pipeline")):

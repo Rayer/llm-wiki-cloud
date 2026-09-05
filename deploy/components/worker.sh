@@ -64,7 +64,7 @@ worker_mutate() {
     fi
   fi
   [[ "$ENVIRONMENT" == production ]] && mutation_accepted worker
-  worker_verify "$image" || die "worker post-mutation read-back did not converge"
+  readback_retry worker_verify "$image" || die "worker post-mutation read-back did not converge"
 }
 
 worker_verify() {

@@ -62,7 +62,7 @@ auth_mutate() {
   if [[ "$deploy_status" -eq 0 ]]; then
     if timeout --signal=TERM --kill-after=5s 240s gcloud run services update-traffic "$service" --to-latest --project "$project" --region "$region" --quiet >/dev/null; then :; else traffic_status=$?; fi
   fi
-  if ! auth_verify "$image"; then
+  if ! readback_retry auth_verify "$image"; then
     journal_transition auth unknown
     die "auth image/traffic mutation did not converge (image_status=$deploy_status traffic_status=$traffic_status readback=$SERVICE_READBACK_RESULT)"
   fi
