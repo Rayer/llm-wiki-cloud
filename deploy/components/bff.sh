@@ -33,7 +33,7 @@ bff_build_image() {
 }
 
 bff_mutate() {
-  local image service project region deploy_status=0 traffic_status=0
+  local image service project region candidate_revision='' deploy_status=0 traffic_status=0
   journal_init
   if [[ "$ENVIRONMENT" == production ]]; then
     if ! image=$(image_for bff); then
@@ -59,17 +59,37 @@ bff_mutate() {
   if ! jq -e '.components.bff? != null' "$JOURNAL_PATH" >/dev/null; then journal_pending bff; fi
   service=$(plan_json '.bff.service_name'); project=$(plan_json '.gcp.project_id'); region=$(plan_json '.gcp.region')
   validate_image_value bff "$image"
-  if timeout --signal=TERM --kill-after=5s 600s gcloud run services update "$service" --project "$project" --region "$region" --image "$image" --quiet >/dev/null; then :; else deploy_status=$?; fi
+  if candidate_revision=$(timeout --signal=TERM --kill-after=5s 600s gcloud run services update "$service" --project "$project" --region "$region" --image "$image" --no-traffic --format='value(status.latestCreatedRevisionName)' --quiet); then :; else deploy_status=$?; fi
   if [[ "$deploy_status" -eq 0 ]]; then
-    if timeout --signal=TERM --kill-after=5s 240s gcloud run services update-traffic "$service" --to-latest --project "$project" --region "$region" --quiet >/dev/null; then :; else traffic_status=$?; fi
+    if [[ ! "$candidate_revision" =~ ^[a-z]([-a-z0-9]*[a-z0-9])?$ ]]; then
+      journal_transition bff unknown
+      die "bff candidate revision identity is invalid"
+    fi
+    if ! readback_retry bff_candidate_verify "$image" "$candidate_revision"; then
+      journal_transition bff unknown
+      die "bff candidate image did not become ready"
+    fi
+    revalidate_before_provider
+    if timeout --signal=TERM --kill-after=5s 240s gcloud run services update-traffic "$service" --to-revisions "$candidate_revision=100" --project "$project" --region "$region" --quiet >/dev/null; then :; else traffic_status=$?; fi
   fi
-  if ! readback_retry bff_verify "$image"; then
+  if ! readback_retry bff_verify "$image" "$candidate_revision"; then
     journal_transition bff unknown
     die "bff image/traffic mutation did not converge (image_status=$deploy_status traffic_status=$traffic_status readback=$SERVICE_READBACK_RESULT)"
   fi
   if [[ "$ENVIRONMENT" == production ]]; then
     mutation_accepted bff
   fi
+}
+
+bff_candidate_verify() {
+  local image="$1" revision="$2" project region revision_json
+  project=$(plan_json '.gcp.project_id'); region=$(plan_json '.gcp.region')
+  revision_json=$(gcloud run revisions describe "$revision" --project "$project" --region "$region" --format=json --quiet) || return 1
+  jq -n -e --arg image "$image" --argjson revision "$revision_json" '
+    def containers: ($revision.spec.containers // $revision.spec.template.spec.containers // []);
+    ($revision.status.imageDigest == $image) and (containers|type == "array" and length == 1 and .[0].image == $image) and
+    any($revision.status.conditions[]?; .type == "Ready" and .status == "True")
+  ' >/dev/null
 }
 
 bff_verify() {
