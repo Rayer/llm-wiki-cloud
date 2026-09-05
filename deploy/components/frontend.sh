@@ -95,7 +95,7 @@ vercel_get_alias_inventory() {
     page=$(jq -c 'map({alias,project_id:.projectId,team_id:(.teamId // .accountId // .ownerId // null),deployment_id:(.deploymentId // .deployment_id)})' <<<"$page")
     inventory=$(jq -cn --argjson current "$inventory" --argjson page "$page" '$current + $page')
     if [[ "$(jq -er 'length' <<<"$page")" == 100 ]]; then jq -e '.pagination|type == "object" and has("next")' <<<"$response" >/dev/null || return 1; fi
-    next=$(jq -r 'if (has("pagination")|not) or .pagination.next == null then "" elif (.pagination.next|type) == "number" and isfinite and floor == . and . >= 0 then (.pagination.next|tostring) else "__invalid__" end' <<<"$response")
+    next=$(jq -r 'if (has("pagination")|not) then "" else .pagination.next as $next | if $next == null then "" elif ($next|type) == "number" and ($next|isfinite) and (($next|floor) == $next) and $next >= 0 then ($next|tostring) else "__invalid__" end end' <<<"$response")
     [[ "$next" != __invalid__ ]] || return 1
     if [[ -z "$next" ]]; then jq -cn --argjson aliases "$inventory" '{aliases:$aliases}'; return 0; fi
     [[ "$next" != "$cursor" && ":$seen:" != *":$next:"* ]] || return 1

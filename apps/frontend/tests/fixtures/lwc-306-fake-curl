@@ -88,7 +88,11 @@ fi
 
 if [[ "$url" == *'/v4/aliases?'* ]]; then
   event alias-inventory
-  if [[ "$scenario" == alias-full-missing-pagination ]]; then
+  if [[ "$scenario" == alias-pagination && "$url" != *'until=1700000000000'* ]]; then
+    jq -n '[range(0;100) | {alias:("unrelated-" + tostring + ".vercel.app"),projectId:"prj_frontendtest",teamId:"team_frontendtest",deploymentId:("dpl_unrelated" + tostring)}] | {aliases:.,pagination:{next:1700000000000}}'
+  elif [[ "$scenario" == alias-pagination && "$url" == *'until=1700000000000'* ]]; then
+    jq -n '[{alias:"wiki.rayer.idv.tw",projectId:"prj_frontendtest",teamId:"team_frontendtest",deploymentId:"dpl_old0"},{alias:"llm-wiki-frontend.vercel.app",projectId:"prj_frontendtest",teamId:"team_frontendtest",deploymentId:"dpl_old1"}] + [range(0;46) | {alias:("unrelated-page-2-" + tostring + ".vercel.app"),projectId:"prj_frontendtest",teamId:"team_frontendtest",deploymentId:("dpl_unrelated-page-2-" + tostring)}] | {aliases:.,pagination:{next:null}}'
+  elif [[ "$scenario" == alias-full-missing-pagination ]]; then
     jq -n '[{alias:"wiki.dev.rayer.idv.tw",projectId:"prj_frontendtest",teamId:"team_frontendtest",deploymentId:"dpl_old0"}] + [range(0;99) | {alias:("filler-" + tostring + ".vercel.app"),projectId:"prj_frontendtest",teamId:"team_frontendtest",deploymentId:("dpl_filler" + tostring)}] | {aliases:.}'
   else
     jq '{aliases: [to_entries[] | {alias:.key,projectId:"prj_frontendtest",teamId:"team_frontendtest",deploymentId:.value}]}' "$root/aliases.json"

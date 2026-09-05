@@ -162,6 +162,20 @@ test('production already-converged candidate performs no provider write', async 
   assert.equal((await json(join(fixture.artifactDir, 'journal.json'))).components.frontend.state, 'rejected_or_no_mutation');
 });
 
+test('production freeze paginates the complete alias inventory before mutation', async () => {
+  const fixture = await setup('production', 'alias-pagination');
+  const result = await run(fixture, 'freeze');
+  assert.equal(result.code, undefined, result.stderr);
+  assert.deepEqual((await json(join(fixture.artifactDir, 'rollback.json'))).handles.frontend.aliases, [
+    { alias: 'wiki.rayer.idv.tw', project_id: 'prj_frontendtest', team_id: 'team_frontendtest', deployment_id: 'dpl_old0' },
+    { alias: 'llm-wiki-frontend.vercel.app', project_id: 'prj_frontendtest', team_id: 'team_frontendtest', deployment_id: 'dpl_old1' },
+  ]);
+  const inventoryCalls = (await lines(join(fixture.root, 'curl-calls'))).filter((line) => line.includes('/v4/aliases?'));
+  assert.equal(inventoryCalls.length, 4);
+  assert.equal(inventoryCalls.filter((line) => line.includes('&until=1700000000000')).length, 2);
+  assert.equal((await lines(join(fixture.root, 'alias-post-calls'))).length, 0);
+});
+
 for (const scenario of ['duplicate-exact', 'foreign-candidate', 'malformed-candidate', 'missing-uid', 'wrong-authority', 'inventory-unreadable']) {
   test(`${scenario} fails closed before provider mutation`, async () => {
     const fixture = await setup('development', scenario);
