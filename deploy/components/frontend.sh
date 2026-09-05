@@ -212,12 +212,13 @@ frontend_mutate() {
   fi
   revalidate_before_provider
   vercel_environment=$(frontend_vercel_environment); target=$(frontend_deploy_target)
-  (cd "$ROOT/apps/frontend" && npm ci --ignore-scripts >/dev/null && NEXT_PUBLIC_API_URL="$api_url" NEXT_PUBLIC_AUTH_URL="$auth_url" timeout --signal=TERM --kill-after=5s 120s vercel pull --yes --environment="$vercel_environment" --scope "$team" --token "${VERCEL_TOKEN:?}" >/dev/null && NEXT_PUBLIC_API_URL="$api_url" NEXT_PUBLIC_AUTH_URL="$auth_url" timeout --signal=TERM --kill-after=5s 300s vercel build --scope "$team" --token "${VERCEL_TOKEN:?}" $([[ "$target" == production ]] && printf '%s' '--prod') >/dev/null)
+  (cd "$ROOT/apps/frontend" && npm ci --ignore-scripts >/dev/null)
+  (cd "$ROOT" && NEXT_PUBLIC_API_URL="$api_url" NEXT_PUBLIC_AUTH_URL="$auth_url" timeout --signal=TERM --kill-after=5s 120s vercel pull --yes --environment="$vercel_environment" --scope "$team" --token "${VERCEL_TOKEN:?}" >/dev/null && NEXT_PUBLIC_API_URL="$api_url" NEXT_PUBLIC_AUTH_URL="$auth_url" timeout --signal=TERM --kill-after=5s 300s vercel build --scope "$team" --token "${VERCEL_TOKEN:?}" $([[ "$target" == production ]] && printf '%s' '--prod') >/dev/null)
   vercel_project_authority || { journal_rejected frontend; die "Vercel project authority changed before frontend deployment"; }
   vercel_verify_frozen_frontend || { journal_rejected frontend; die "frontend alias authority changed from the frozen rollback snapshot"; }
   revalidate_before_provider
   journal_pending frontend
-  if ! deployment_json=$(cd "$ROOT/apps/frontend" && timeout --signal=TERM --kill-after=5s 300s vercel deploy --prebuilt --yes --json --scope "$team" --token "${VERCEL_TOKEN:?}" --meta "githubCommitSha=$SOURCE_SHA" --meta "githubCommitRef=$SOURCE_REF" --meta "githubOrg=Rayer" --meta "githubRepo=llm-wiki-cloud" $([[ "$target" == production ]] && printf '%s' '--prod')); then
+  if ! deployment_json=$(cd "$ROOT" && timeout --signal=TERM --kill-after=5s 300s vercel deploy --prebuilt --yes --json --scope "$team" --token "${VERCEL_TOKEN:?}" --meta "githubCommitSha=$SOURCE_SHA" --meta "githubCommitRef=$SOURCE_REF" --meta "githubOrg=Rayer" --meta "githubRepo=llm-wiki-cloud" $([[ "$target" == production ]] && printf '%s' '--prod')); then
     if ! deployment_id=$(vercel_select_deployment_after_uncertain); then
       journal_transition frontend unknown
       set_mutation_status frontend unknown; die "frontend deployment result is unknown after the provider command"
