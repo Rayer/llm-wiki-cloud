@@ -66,7 +66,9 @@ auth_mutate() {
     journal_transition auth unknown
     die "auth image/traffic mutation did not converge (image_status=$deploy_status traffic_status=$traffic_status readback=$SERVICE_READBACK_RESULT)"
   fi
-  [[ "$ENVIRONMENT" == production ]] && mutation_accepted auth
+  if [[ "$ENVIRONMENT" == production ]]; then
+    mutation_accepted auth
+  fi
 }
 
 auth_verify() {

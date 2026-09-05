@@ -67,7 +67,9 @@ bff_mutate() {
     journal_transition bff unknown
     die "bff image/traffic mutation did not converge (image_status=$deploy_status traffic_status=$traffic_status readback=$SERVICE_READBACK_RESULT)"
   fi
-  [[ "$ENVIRONMENT" == production ]] && mutation_accepted bff
+  if [[ "$ENVIRONMENT" == production ]]; then
+    mutation_accepted bff
+  fi
 }
 
 bff_verify() {
