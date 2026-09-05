@@ -7,7 +7,7 @@ import { promisify } from 'node:util';
 import { test } from 'node:test';
 
 const execFileAsync = promisify(execFile);
-const repoRoot = new URL('../../..', import.meta.url).pathname;
+const repoRoot = new URL('../../..', import.meta.url).pathname.replace(/\/$/, '');
 const scriptPath = join(repoRoot, 'deploy/cd.sh');
 const componentScriptPath = join(repoRoot, 'deploy/components/frontend.sh');
 const fixtureDir = join(new URL('.', import.meta.url).pathname, 'fixtures');
@@ -63,6 +63,7 @@ async function setup(environment = 'development', scenario = 'success') {
     ...process.env,
     PATH: `${bin}:${process.env.PATH}`,
     FIXTURE_ROOT: root,
+    EXPECTED_REPO_ROOT: repoRoot,
     ENVIRONMENT: environment,
     SOURCE_REF: production ? 'main' : 'develop',
     SOURCE_SHA: sourceSha,
