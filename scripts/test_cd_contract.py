@@ -4,6 +4,7 @@
 import json
 import os
 import re
+import shlex
 import subprocess
 import tempfile
 import textwrap
@@ -182,7 +183,10 @@ class CDContractTests(unittest.TestCase):
             for filename, details in expected.items():
                 workflow = workflows[filename]
                 self.assertEqual(set(workflow_trigger(workflow)), {"workflow_dispatch"})
-                self.assertEqual(set(workflow["jobs"]), {details["job"]})
+                expected_jobs = {details["job"]}
+                if filename == "deploy-dev.yml":
+                    expected_jobs.add("main-fast-forward-eligible")
+                self.assertEqual(set(workflow["jobs"]), expected_jobs)
                 job = workflow["jobs"][details["job"]]
                 self.assertEqual(
                     job.get("if"),
@@ -365,6 +369,274 @@ class CDContractTests(unittest.TestCase):
             1,
         )
         self.assertNotIn("run: bash deploy/cd.sh mutate", (ROOT / ".github/workflows/cd.yml").read_text())
+
+    def _run_main_eligibility(self, source, *, candidate_sha, checked_out_sha=None,
+                              develop_heads=None, main_sha=None, ancestor=True,
+                              deploy_result="success", pending_outcome="success",
+                              checkout_outcome="success", with_gh=True):
+        workflow = yaml.safe_load(source)
+        job = workflow["jobs"].get("main-fast-forward-eligible")
+        self.assertIsNotNone(job, "missing main-fast-forward-eligible job")
+        scripts = [step["run"] for step in job["steps"] if "run" in step]
+        self.assertGreaterEqual(len(scripts), 3)
+        checked_out_sha = checked_out_sha or candidate_sha
+        main_sha = main_sha or "c" * 40
+        develop_heads = develop_heads or [candidate_sha, candidate_sha]
+
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            bin_dir = root / "bin"
+            bin_dir.mkdir()
+            status_log = root / "statuses.log"
+            git_log = root / "git.log"
+            provider_log = root / "provider.log"
+            develop_file = root / "develop-heads"
+            develop_file.write_text("\n".join(develop_heads) + "\n")
+            (bin_dir / "git").write_text(textwrap.dedent(f"""
+                #!/usr/bin/env bash
+                set -eu
+                printf '%s\\n' "$*" >> {shlex.quote(str(git_log))}
+                case "$1" in
+                  rev-parse)
+                    if [[ "${{!#}}" == refs/remotes/origin/main ]]; then
+                      printf '%s\\n' "$FAKE_MAIN_SHA"
+                    else
+                      printf '%s\\n' "$FAKE_CHECKED_OUT_SHA"
+                    fi
+                    ;;
+                  ls-remote)
+                    ref="${{!#}}"
+                    if [[ "$ref" == refs/heads/develop ]]; then
+                      count=0
+                      [[ -f "$FAKE_DEVELOP_COUNT" ]] && count=$(<"$FAKE_DEVELOP_COUNT")
+                      count=$((count + 1))
+                      printf '%s' "$count" > "$FAKE_DEVELOP_COUNT"
+                      printf '%s\\t%s\\n' "$(sed -n "${{count}}p" "$FAKE_DEVELOP_HEADS")" "$ref"
+                    elif [[ "$ref" == refs/heads/main ]]; then
+                      printf '%s\\t%s\\n' "$FAKE_MAIN_SHA" "$ref"
+                    else
+                      exit 91
+                    fi
+                    ;;
+                  fetch) ;;
+                  merge-base)
+                    [[ "$FAKE_ANCESTOR" == 1 ]]
+                    ;;
+                  *) exit 92 ;;
+                esac
+            """).lstrip())
+            (bin_dir / "git").chmod(0o755)
+            for provider in ("gcloud", "vercel", "curl", "docker"):
+                (bin_dir / provider).write_text(
+                    "#!/usr/bin/env bash\n"
+                    f"printf '%s\\n' \"$0 $*\" >> {shlex.quote(str(provider_log))}\n"
+                    "exit 99\n"
+                )
+                (bin_dir / provider).chmod(0o755)
+            if with_gh:
+                (bin_dir / "gh").write_text(textwrap.dedent(f"""
+                    #!/usr/bin/env bash
+                    set -eu
+                    [[ "${{1:-}}" == api ]]
+                    state=''
+                    context=''
+                    for argument in "$@"; do
+                      case "$argument" in
+                        state=*) state="${{argument#state=}}" ;;
+                        context=*) context="${{argument#context=}}" ;;
+                      esac
+                    done
+                    [[ "$context" == main-fast-forward-eligible ]]
+                    if [[ "$state" == pending && "${{FAKE_PENDING_FAILURE:-0}}" == 1 ]]; then
+                      exit 97
+                    fi
+                    printf '%s\\n' "$state" >> {shlex.quote(str(status_log))}
+                """).lstrip())
+                (bin_dir / "gh").chmod(0o755)
+
+            deployment_credentials = {
+                "WIF_PROVIDER", "WIF_SERVICE_ACCOUNT", "VERCEL_PROJECT_ID", "VERCEL_TEAM_ID",
+                "VERCEL_TOKEN", "VERCEL_ORG_ID", "VERCEL_SCOPE", "VERCEL_API_BASE_URL",
+                "GOOGLE_APPLICATION_CREDENTIALS", "GOOGLE_CLOUD_PROJECT", "GCP_PROJECT",
+            }
+            environment = {
+                **os.environ,
+                "PATH": f"{bin_dir}:/usr/bin:/bin",
+                "GITHUB_REPOSITORY": "Rayer/llm-wiki-cloud",
+                "GITHUB_SHA": candidate_sha,
+                "GH_TOKEN": "fixture-token",
+                "FAKE_CHECKED_OUT_SHA": checked_out_sha,
+                "FAKE_MAIN_SHA": main_sha,
+                "FAKE_ANCESTOR": "1" if ancestor else "0",
+                "FAKE_DEVELOP_HEADS": str(develop_file),
+                "FAKE_DEVELOP_COUNT": str(root / "develop-count"),
+                "FAKE_PENDING_FAILURE": "1" if pending_outcome == "failure" else "0",
+                "PENDING_OUTCOME": pending_outcome,
+                "CHECKOUT_OUTCOME": checkout_outcome,
+            }
+            for key in deployment_credentials:
+                environment.pop(key, None)
+            substitutions = {
+                "${{ github.sha }}": candidate_sha,
+                "${{ needs.deploy.result }}": deploy_result,
+                "${{ steps.publish_pending_eligibility.outcome }}": pending_outcome,
+                "${{ steps.checkout_exact_candidate.outcome }}": checkout_outcome,
+            }
+            rendered = [
+                script.replace("${{ github.sha }}", substitutions["${{ github.sha }}"])
+                .replace("${{ needs.deploy.result }}", substitutions["${{ needs.deploy.result }}"])
+                .replace("${{ steps.publish_pending_eligibility.outcome }}", substitutions["${{ steps.publish_pending_eligibility.outcome }}"])
+                .replace("${{ steps.checkout_exact_candidate.outcome }}", substitutions["${{ steps.checkout_exact_candidate.outcome }}"])
+                for script in scripts
+            ]
+            pending = subprocess.run(
+                ["bash", "-c", rendered[0]],
+                env=environment,
+                cwd=root,
+                text=True,
+                capture_output=True,
+            )
+            validation = subprocess.run(
+                ["bash", "-c", rendered[1]],
+                env=environment,
+                cwd=root,
+                text=True,
+                capture_output=True,
+            )
+            failure = subprocess.run(
+                ["bash", "-c", rendered[2]],
+                env=environment,
+                cwd=root,
+                text=True,
+                capture_output=True,
+            ) if (
+                pending.returncode != 0
+                or validation.returncode != 0
+                or checkout_outcome in {"cancelled", "failure"}
+            ) else subprocess.CompletedProcess([], 0, "", "")
+            statuses = status_log.read_text().splitlines() if status_log.exists() else []
+            self.assertFalse(provider_log.exists(), provider_log.read_text() if provider_log.exists() else "")
+            return pending, validation, failure, statuses, git_log.read_text() if git_log.exists() else ""
+
+    def test_main_eligibility_producer_contract_is_causal_and_read_only(self):
+        source = (ROOT / ".github/workflows/deploy-dev.yml").read_text()
+        workflow = yaml.safe_load(source)
+        job = workflow["jobs"].get("main-fast-forward-eligible")
+        self.assertIsNotNone(job)
+        self.assertEqual(job.get("needs"), "deploy")
+        self.assertEqual(
+            job.get("if"),
+            "${{ always() && github.event_name == 'workflow_dispatch' && github.ref == 'refs/heads/develop' }}",
+        )
+        self.assertEqual(job.get("permissions"), {"contents": "read", "statuses": "write"})
+        steps = job["steps"]
+        pending_step = next(step for step in steps if step.get("name") == "Publish pending eligibility status")
+        self.assertEqual(pending_step.get("id"), "publish_pending_eligibility")
+        checkout = next(step for step in job["steps"] if step.get("uses", "").startswith("actions/checkout@"))
+        self.assertEqual(checkout.get("id"), "checkout_exact_candidate")
+        self.assertEqual(checkout["with"], {
+            "ref": "${{ github.sha }}",
+            "fetch-depth": 0,
+            "persist-credentials": False,
+        })
+        validation = next(step for step in steps if step.get("name") == "Validate exact main fast-forward eligibility")
+        self.assertEqual(validation.get("if"), "always()")
+        self.assertEqual(validation["env"]["PENDING_OUTCOME"], "${{ steps.publish_pending_eligibility.outcome }}")
+        self.assertEqual(validation["env"]["CHECKOUT_OUTCOME"], "${{ steps.checkout_exact_candidate.outcome }}")
+        self.assertIn('[[ "$deploy_result" == success ]]', validation["run"])
+        self.assertIn('[[ "$pending_outcome" == success ]]', validation["run"])
+        self.assertIn('[[ "$checkout_outcome" == success ]]', validation["run"])
+        failure = steps[-1]
+        self.assertEqual(failure.get("if"), "${{ failure() || cancelled() }}")
+        self.assertNotIn("trap", validation["run"])
+        producer_source = "\n".join(step.get("run", "") for step in steps)
+        self.assertIn("main-fast-forward-eligible", producer_source)
+        self.assertIn("pending", producer_source)
+        self.assertIn("success", producer_source)
+        self.assertIn("failure", producer_source)
+        for forbidden in ("gcloud", "vercel", "docker", "curl", "secrets.", "WIF_", "id-token", "upload-artifact"):
+            self.assertNotIn(forbidden, producer_source)
+        self.assertNotIn("environment:", json.dumps(job))
+
+        source_sha = "a" * 40
+        pending, validation, failure, statuses, _ = self._run_main_eligibility(
+            source, candidate_sha=source_sha
+        )
+        self.assertEqual(pending.returncode, 0, pending.stdout + pending.stderr)
+        self.assertEqual(validation.returncode, 0, validation.stdout + validation.stderr)
+        self.assertEqual(failure.returncode, 0, failure.stdout + failure.stderr)
+        self.assertEqual(statuses, ["pending", "success"])
+
+        rejected_cases = [
+            {"deploy_result": "failure"},
+            {"candidate_sha": "A" * 40},
+            {"checked_out_sha": "b" * 40},
+            {"develop_heads": [source_sha, "b" * 40]},
+            {"ancestor": False},
+            {"deploy_result": "cancelled"},
+        ]
+        for case in rejected_cases:
+            with self.subTest(case=case):
+                options = {"candidate_sha": source_sha, **case}
+                _, result, failure, states, _ = self._run_main_eligibility(source, **options)
+                self.assertNotEqual(result.returncode, 0, result.stdout + result.stderr)
+                self.assertEqual(states[0], "pending")
+                self.assertEqual(states[-1], "failure")
+                self.assertNotIn("success", states)
+
+        for case in (
+            {"pending_outcome": "failure"},
+            {"checkout_outcome": "failure"},
+            {"checkout_outcome": "cancelled"},
+        ):
+            with self.subTest(case=case):
+                _, result, failure, states, _ = self._run_main_eligibility(
+                    source, candidate_sha=source_sha, **case
+                )
+                self.assertNotEqual(result.returncode, 0)
+                self.assertEqual(failure.returncode, 0)
+                self.assertEqual(states, ["failure"] if case.get("pending_outcome") == "failure" else ["pending", "failure"])
+
+    def test_main_eligibility_gate_mutations_are_caught(self):
+        source = (ROOT / ".github/workflows/deploy-dev.yml").read_text()
+        source_sha = "a" * 40
+        mutations = [
+            (
+                '[[ "$checked_out_sha" == "$candidate_sha" ]]',
+                "true",
+                {"checked_out_sha": "b" * 40},
+            ),
+            (
+                '[[ "$current_develop" == "$candidate_sha" ]]',
+                "true",
+                {"develop_heads": [source_sha, "b" * 40]},
+            ),
+            (
+                'git merge-base --is-ancestor "$current_main" "$candidate_sha"',
+                "true",
+                {"ancestor": False},
+            ),
+        ]
+        for needle, replacement, case in mutations:
+            with self.subTest(needle=needle):
+                self.assertIn(needle, source)
+                mutant = source.replace(needle, replacement)
+                with self.assertRaises(AssertionError):
+                    _, result, failure, states, _ = self._run_main_eligibility(
+                        mutant, **{"candidate_sha": source_sha, **case}
+                    )
+                    self.assertNotEqual(result.returncode, 0)
+                    self.assertEqual(states[-1], "failure")
+                    self.assertNotIn("success", states)
+
+    def test_main_eligibility_rejects_missing_github_cli(self):
+        source_sha = "a" * 40
+        source = (ROOT / ".github/workflows/deploy-dev.yml").read_text()
+        _, result, _, states, _ = self._run_main_eligibility(
+            source, candidate_sha=source_sha, with_gh=False
+        )
+        self.assertNotEqual(result.returncode, 0)
+        self.assertEqual(states, [])
 
     def test_record_dev_receipt_cli_rejects_partial_backend_images_and_writes_complete_receipt(self):
         source_sha = "0123456789abcdef0123456789abcdef01234567"
