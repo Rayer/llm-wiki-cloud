@@ -63,7 +63,7 @@ bff_mutate() {
   if [[ "$deploy_status" -eq 0 ]]; then
     if timeout --signal=TERM --kill-after=5s 240s gcloud run services update-traffic "$service" --to-latest --project "$project" --region "$region" --quiet >/dev/null; then :; else traffic_status=$?; fi
   fi
-  if ! bff_verify "$image"; then
+  if ! readback_retry bff_verify "$image"; then
     journal_transition bff unknown
     die "bff image/traffic mutation did not converge (image_status=$deploy_status traffic_status=$traffic_status readback=$SERVICE_READBACK_RESULT)"
   fi

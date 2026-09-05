@@ -403,3 +403,13 @@ worker_image_readback() {
   if [[ "$image" != "$expected_image" ]]; then return 1; fi
   jq -n --arg image "$image" '{image:$image}'
 }
+
+readback_retry() {
+  local verify="$1" attempt
+  shift
+  for attempt in 1 2 3 4; do
+    "$verify" "$@" && return 0
+    [[ "$attempt" -lt 4 ]] && sleep 1
+  done
+  return 1
+}
