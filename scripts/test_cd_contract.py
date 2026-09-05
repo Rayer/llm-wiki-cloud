@@ -739,6 +739,81 @@ class CDContractTests(unittest.TestCase):
             self.assertEqual(sum(line.startswith("docker push ") for line in commands), 1)
             self.assertEqual(sum(line.startswith("gcloud run jobs update ") for line in commands), 1)
 
+    def test_dev_worker_build_configures_docker_auth_for_registry_host(self):
+        source_sha = "0123456789abcdef0123456789abcdef01234567"
+        registry = "asia-east1-docker.pkg.dev/llm-wiki-cloud/cloud-run-images"
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            bin_dir = root / "bin"
+            bin_dir.mkdir()
+            event_log = root / "event.log"
+            plan = root / "plan.json"
+            plan.write_text(json.dumps({
+                "normalized": {
+                    "selected_components": ["worker"],
+                    "gcp": {
+                        "project_id": "llm-wiki-cloud",
+                        "artifact_registry": registry,
+                    },
+                    "worker": {"job_name": "olw-pipeline", "location": "asia-east1", "runtime_service_account": "worker@llm-wiki-cloud.iam.gserviceaccount.com"},
+                },
+            }))
+            (bin_dir / "docker").write_text(textwrap.dedent(f"""
+                #!/usr/bin/env bash
+                printf '%s\\n' "docker $*" >> {str(event_log)!r}
+                exit 0
+            """).lstrip())
+            (bin_dir / "docker").chmod(0o755)
+            (bin_dir / "gcloud").write_text(textwrap.dedent(f"""
+                #!/usr/bin/env bash
+                printf '%s\\n' "gcloud $*" >> {str(event_log)!r}
+                if [[ $* == artifacts\\ docker\\ images\\ describe\\ * ]]; then
+                  echo "sha256:{'b' * 64}"
+                  exit 0
+                fi
+                if [[ $* == run\\ jobs\\ update\\ * ]]; then
+                  exit 0
+                fi
+                if [[ $* == auth\\ configure-docker\\ * ]]; then
+                  exit 0
+                fi
+                exit 2
+            """).lstrip())
+            (bin_dir / "gcloud").chmod(0o755)
+            event_log.touch()
+            env = {
+                **os.environ,
+                "PATH": f"{bin_dir}:{os.environ['PATH']}",
+                "ROOT": str(ROOT),
+                "ENVIRONMENT": "development",
+                "SOURCE_REF": "develop",
+                "SOURCE_SHA": source_sha,
+                "GITHUB_RUN_ID": "7",
+                "GITHUB_RUN_ATTEMPT": "1",
+                "PLAN_PATH": str(plan),
+                "JOURNAL_PATH": str(root / "journal.json"),
+                "ARTIFACT_DIR": str(root / "artifacts"),
+            }
+            script = textwrap.dedent(f"""
+                source {str(ROOT / 'deploy/components/worker.sh')!r} help
+                revalidate_before_provider() {{ :; }}
+                worker_verify() {{ :; }}
+                worker_mutate
+            """)
+            result = subprocess.run(["bash", "-c", script], env=env, text=True, capture_output=True)
+            self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
+            commands = event_log.read_text().splitlines()
+            auth = [index for index, line in enumerate(commands) if line.startswith("gcloud auth configure-docker ")]
+            push = [index for index, line in enumerate(commands) if line.startswith("docker push ")]
+            runtime_updates = [index for index, line in enumerate(commands) if line.startswith("gcloud run jobs update ")]
+            self.assertEqual(len(auth), 1, commands)
+            self.assertEqual(len(push), 1, commands)
+            self.assertEqual(len(runtime_updates), 1, commands)
+            self.assertFalse(any(line.startswith("gcloud run jobs execute ") for line in commands), commands)
+            expected_host = registry.split("/", 1)[0]
+            self.assertIn(f"gcloud auth configure-docker {expected_host} --quiet", commands[auth[0]])
+            self.assertLess(auth[0], push[0])
+
     def test_ci_revalidation_rejects_paginated_duplicate_or_omitted_jobs(self):
         source_sha = "0123456789abcdef0123456789abcdef01234567"
         run = {

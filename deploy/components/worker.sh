@@ -19,9 +19,12 @@ worker_freeze() {
 }
 
 worker_build_image() {
-  local image digest nonce
+  local image digest nonce artifact_registry registry_host
   nonce=$(printf '%032x' "$(date -u +%s%N)")
-  image="$(plan_json '.gcp.artifact_registry')/olw-pipeline:$SOURCE_SHA-$GITHUB_RUN_ID-$GITHUB_RUN_ATTEMPT"
+  artifact_registry="$(plan_json '.gcp.artifact_registry')"
+  registry_host="${artifact_registry%%/*}"
+  gcloud auth configure-docker "$registry_host" --quiet
+  image="$artifact_registry/olw-pipeline:$SOURCE_SHA-$GITHUB_RUN_ID-$GITHUB_RUN_ATTEMPT"
   docker build --build-arg BUILD_NONCE="$nonce" --target worker -f "$ROOT/apps/bff/cmd/olw_worker/Dockerfile" -t "$image" "$ROOT/apps/bff" >/dev/null
   docker push "$image" >/dev/null
   digest=$(gcloud artifacts docker images describe "$image" --project "$(plan_json '.gcp.project_id')" --format='value(image_summary.digest)' --quiet)
