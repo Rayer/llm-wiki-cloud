@@ -200,10 +200,10 @@ frontend_freeze() {
 }
 
 frontend_mutate() {
-  local api_url auth_url project team vercel_environment target deployment_json deployment_id deployment_url alias
+  local api_url auth_url team vercel_environment target deployment_json deployment_id deployment_url alias
   journal_init
   set_mutation_status frontend unknown
-  project=$(plan_json '.frontend.project_name'); team=$(plan_json '.frontend.team_slug'); api_url=$(plan_json '.frontend.api_url'); auth_url=$(plan_json '.frontend.auth_url')
+  team=$(plan_json '.frontend.team_slug'); api_url=$(plan_json '.frontend.api_url'); auth_url=$(plan_json '.frontend.auth_url')
   export VERCEL_ORG_ID="$VERCEL_TEAM_ID"
   if ! validate_frontend_alias_config || ! vercel_project_authority; then
     journal_rejected frontend
@@ -212,7 +212,7 @@ frontend_mutate() {
   fi
   revalidate_before_provider
   vercel_environment=$(frontend_vercel_environment); target=$(frontend_deploy_target)
-  (cd "$ROOT/apps/frontend" && npm ci --ignore-scripts >/dev/null && NEXT_PUBLIC_API_URL="$api_url" NEXT_PUBLIC_AUTH_URL="$auth_url" timeout --signal=TERM --kill-after=5s 120s vercel pull "$project" --yes --environment="$vercel_environment" --scope "$team" --token "${VERCEL_TOKEN:?}" >/dev/null && NEXT_PUBLIC_API_URL="$api_url" NEXT_PUBLIC_AUTH_URL="$auth_url" timeout --signal=TERM --kill-after=5s 300s vercel build --scope "$team" --token "${VERCEL_TOKEN:?}" $([[ "$target" == production ]] && printf '%s' '--prod') >/dev/null)
+  (cd "$ROOT/apps/frontend" && npm ci --ignore-scripts >/dev/null && NEXT_PUBLIC_API_URL="$api_url" NEXT_PUBLIC_AUTH_URL="$auth_url" timeout --signal=TERM --kill-after=5s 120s vercel pull --yes --environment="$vercel_environment" --scope "$team" --token "${VERCEL_TOKEN:?}" >/dev/null && NEXT_PUBLIC_API_URL="$api_url" NEXT_PUBLIC_AUTH_URL="$auth_url" timeout --signal=TERM --kill-after=5s 300s vercel build --scope "$team" --token "${VERCEL_TOKEN:?}" $([[ "$target" == production ]] && printf '%s' '--prod') >/dev/null)
   vercel_project_authority || { journal_rejected frontend; die "Vercel project authority changed before frontend deployment"; }
   vercel_verify_frozen_frontend || { journal_rejected frontend; die "frontend alias authority changed from the frozen rollback snapshot"; }
   revalidate_before_provider

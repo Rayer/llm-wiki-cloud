@@ -7,9 +7,17 @@ args="${args//vercel-fixture-token/[REDACTED]}"
 printf 'vercel %s\n' "$args" >> "$root/cli-calls"
 case "${1:-}" in
   pull)
+    shift
+    while (($#)); do
+      case "$1" in
+        --yes|--environment=*) shift ;;
+        --scope|--token) shift 2 ;;
+        *) exit 96 ;;
+      esac
+    done
     [[ "${VERCEL_ORG_ID:-}" == "${VERCEL_TEAM_ID:-}" && -n "${VERCEL_ORG_ID:-}" ]] || exit 95
     [[ -f "$root/npm-ci" ]] || exit 91
-    [[ "$*" == *"--environment=preview"* || "$*" == *"--environment=production"* ]] || exit 92
+    [[ "$args" == *"--environment=preview"* || "$args" == *"--environment=production"* ]] || exit 92
     touch "$root/vercel-pull"
     ;;
   build)
