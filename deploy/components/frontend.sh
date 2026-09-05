@@ -35,14 +35,31 @@ vercel_api_get() {
 vercel_get_alias() { local encoded; encoded=$(jq -rn --arg alias "$1" '$alias|@uri'); vercel_api_get "/v4/aliases/${encoded}?teamId=${VERCEL_TEAM_ID:?}"; }
 vercel_get_project() { local encoded; encoded=$(jq -rn --arg project "$1" '$project|@uri'); vercel_api_get "/v9/projects/${encoded}?teamId=${VERCEL_TEAM_ID:?}"; }
 vercel_get_deployment() { local encoded; encoded=$(jq -rn --arg deployment "$1" '$deployment|@uri'); vercel_api_get "/v13/deployments/${encoded}?teamId=${VERCEL_TEAM_ID:?}"; }
+
+# Large Vercel list pages must not be passed to jq via argv (--argjson / here-strings of growing arrays).
+json_write() { printf '%s' "$2" > "$1"; }
+json_array_append_file() {
+  local dest="$1" page_file="$2" tmp="${1}.tmp"
+  jq -c --slurpfile page "$page_file" '. + $page[0]' "$dest" > "$tmp" && mv "$tmp" "$dest"
+}
+vercel_pagination_next_file() {
+  jq -r 'if (has("pagination")|not) then "" else .pagination.next as $next | if $next == null then "" elif ($next|type) == "number" and ($next|isfinite) and (($next|floor) == $next) and $next >= 0 then ($next|tostring) else "__invalid__" end end' "$1"
+}
+
 vercel_get_deployment_inventory() {
-  local cursor='' pages=0 endpoint response page next inventory='[]' seen=''
+  local cursor='' pages=0 endpoint response next seen='' workdir response_file page_file inventory_file
+  workdir=$(mktemp -d) || return 1
+  response_file="$workdir/response.json"
+  page_file="$workdir/page.json"
+  inventory_file="$workdir/inventory.json"
+  printf '%s' '[]' > "$inventory_file"
   while (( pages < 10 )); do
     endpoint="/v6/deployments?projectId=${VERCEL_PROJECT_ID:?}&teamId=${VERCEL_TEAM_ID:?}&limit=100"
     [[ -z "$cursor" ]] || endpoint+="&until=$(jq -rn --arg cursor "$cursor" '$cursor|@uri')"
-    response=$(vercel_api_get "$endpoint") || return 1
-    strict_json <<<"$response" || return 1
-    page=$(jq -ce 'if type != "object" or (.deployments|type) != "array" then error("deployment inventory is not an array") else .deployments end' <<<"$response") || return 1
+    response=$(vercel_api_get "$endpoint") || { rm -rf "$workdir"; return 1; }
+    json_write "$response_file" "$response"
+    strict_json < "$response_file" || { rm -rf "$workdir"; return 1; }
+    jq -ce 'if type != "object" or (.deployments|type) != "array" then error("deployment inventory is not an array") else .deployments end' "$response_file" > "$page_file" || { rm -rf "$workdir"; return 1; }
     jq -e --arg project "$VERCEL_PROJECT_ID" --arg team "$VERCEL_TEAM_ID" 'all(.[];
       type == "object" and
       (.uid|type) == "string" and (.uid|test("^dpl_[A-Za-z0-9]+$")) and (has("id")|not) and
@@ -52,22 +69,24 @@ vercel_get_deployment_inventory() {
       (.meta.githubOrg|type) == "string" and (.meta.githubRepo|type) == "string" and
       ((has("teamId")|not) or ((.teamId|type) == "string" and .teamId == $team)) and
       ((has("accountId")|not) or ((.accountId|type) == "string" and .accountId == $team)) and
-      ((has("ownerId")|not) or ((.ownerId|type) == "string" and .ownerId == $team)))' <<<"$page" >/dev/null || return 1
-    page=$(jq -c 'map(. + {id: (.id // .uid)} | del(.uid))' <<<"$page")
-    inventory=$(jq -cn --argjson current "$inventory" --argjson page "$page" '$current + $page')
-    if [[ "$(jq -er 'length' <<<"$page")" == 100 ]]; then jq -e '.pagination|type == "object" and has("next")' <<<"$response" >/dev/null || return 1; fi
-    next=$(jq -r 'if (.pagination|type) != "object" or .pagination.next == null then "" elif (.pagination.next|type) == "string" and length > 0 then .pagination.next elif (.pagination.next|type) == "number" and isfinite and floor == . and . >= 0 then (.pagination.next|tostring) else "__invalid__" end' <<<"$response")
-    [[ "$next" != __invalid__ ]] || return 1
-    if [[ -z "$next" ]]; then jq -cn --argjson deployments "$inventory" '{deployments:$deployments}'; return 0; fi
-    [[ "$next" != "$cursor" && ":$seen:" != *":$next:"* ]] || return 1
+      ((has("ownerId")|not) or ((.ownerId|type) == "string" and .ownerId == $team)))' "$page_file" >/dev/null || { rm -rf "$workdir"; return 1; }
+    jq -c 'map(. + {id: (.id // .uid)} | del(.uid))' "$page_file" > "$page_file.mapped" || { rm -rf "$workdir"; return 1; }
+    mv "$page_file.mapped" "$page_file"
+    json_array_append_file "$inventory_file" "$page_file" || { rm -rf "$workdir"; return 1; }
+    if [[ "$(jq -er 'length' "$page_file")" == 100 ]]; then jq -e '.pagination|type == "object" and has("next")' "$response_file" >/dev/null || { rm -rf "$workdir"; return 1; }; fi
+    next=$(vercel_pagination_next_file "$response_file")
+    [[ "$next" != __invalid__ ]] || { rm -rf "$workdir"; return 1; }
+    if [[ -z "$next" ]]; then jq -c '{deployments:.}' "$inventory_file"; rm -rf "$workdir"; return 0; fi
+    [[ "$next" != "$cursor" && ":$seen:" != *":$next:"* ]] || { rm -rf "$workdir"; return 1; }
     seen="${seen:+$seen:}$next"; cursor="$next"; pages=$((pages + 1))
   done
+  rm -rf "$workdir"
   return 1
 }
 
 vercel_exact_deployment_candidates() {
   local inventory="$1"
-  jq -ce --arg project "$VERCEL_PROJECT_ID" --arg team "$VERCEL_TEAM_ID" --arg source_sha "$SOURCE_SHA" --arg source_ref "$SOURCE_REF" --arg repository "$(plan_json '.frontend.repository')" --arg target "$(frontend_deploy_target)" '
+  printf '%s' "$inventory" | jq -ce --arg project "$VERCEL_PROJECT_ID" --arg team "$VERCEL_TEAM_ID" --arg source_sha "$SOURCE_SHA" --arg source_ref "$SOURCE_REF" --arg repository "$(plan_json '.frontend.repository')" --arg target "$(frontend_deploy_target)" '
     def nonempty_string($value): ($value|type) == "string" and ($value|length) > 0;
     def ref_ok($value): nonempty_string($value) and ($value == $source_ref or $value == ("refs/heads/" + $source_ref));
     def sha_ok($value): nonempty_string($value) and $value == $source_sha;
@@ -81,26 +100,34 @@ vercel_exact_deployment_candidates() {
       ((.meta.githubOrg == null and .meta.githubRepo == null) or repo_ok(.meta.githubOrg; .meta.githubRepo)) and ((.gitSource.org == null and .gitSource.repo == null) or repo_ok(.gitSource.org; .gitSource.repo)) and (repo_ok(.meta.githubOrg; .meta.githubRepo) or repo_ok(.gitSource.org; .gitSource.repo)) and
       ((has("teamId")|not) or .teamId == $team) and ((has("accountId")|not) or .accountId == $team) and ((has("ownerId")|not) or .ownerId == $team)
     )]
-  ' <<<"$inventory"
+  '
 }
 
 vercel_get_alias_inventory() {
-  local cursor='' pages=0 endpoint response page next inventory='[]' seen=''
+  local cursor='' pages=0 endpoint response next seen='' workdir response_file page_file inventory_file
+  workdir=$(mktemp -d) || return 1
+  response_file="$workdir/response.json"
+  page_file="$workdir/page.json"
+  inventory_file="$workdir/inventory.json"
+  printf '%s' '[]' > "$inventory_file"
   while (( pages < 10 )); do
     endpoint="/v4/aliases?projectId=${VERCEL_PROJECT_ID:?}&teamId=${VERCEL_TEAM_ID:?}&limit=100"
     [[ -z "$cursor" ]] || endpoint+="&until=$(jq -rn --arg cursor "$cursor" '$cursor|@uri')"
-    response=$(vercel_api_get "$endpoint") || return 1
-    page=$(jq -ce 'if type == "array" then . elif (.aliases|type) == "array" then .aliases else error("alias inventory is not an array") end' <<<"$response") || return 1
-    jq -e 'all(.[]; type == "object" and (.alias|type) == "string" and (.projectId|type) == "string" and ((.deploymentId // .deployment_id)|type) == "string" and ((.deploymentId // .deployment_id)|startswith("dpl_")))' <<<"$page" >/dev/null || return 1
-    page=$(jq -c 'map({alias,project_id:.projectId,team_id:(.teamId // .accountId // .ownerId // null),deployment_id:(.deploymentId // .deployment_id)})' <<<"$page")
-    inventory=$(jq -cn --argjson current "$inventory" --argjson page "$page" '$current + $page')
-    if [[ "$(jq -er 'length' <<<"$page")" == 100 ]]; then jq -e '.pagination|type == "object" and has("next")' <<<"$response" >/dev/null || return 1; fi
-    next=$(jq -r 'if (has("pagination")|not) then "" else .pagination.next as $next | if $next == null then "" elif ($next|type) == "number" and ($next|isfinite) and (($next|floor) == $next) and $next >= 0 then ($next|tostring) else "__invalid__" end end' <<<"$response")
-    [[ "$next" != __invalid__ ]] || return 1
-    if [[ -z "$next" ]]; then jq -cn --argjson aliases "$inventory" '{aliases:$aliases}'; return 0; fi
-    [[ "$next" != "$cursor" && ":$seen:" != *":$next:"* ]] || return 1
+    response=$(vercel_api_get "$endpoint") || { rm -rf "$workdir"; return 1; }
+    json_write "$response_file" "$response"
+    jq -ce 'if type == "array" then . elif (.aliases|type) == "array" then .aliases else error("alias inventory is not an array") end' "$response_file" > "$page_file" || { rm -rf "$workdir"; return 1; }
+    jq -e 'all(.[]; type == "object" and (.alias|type) == "string" and (.projectId|type) == "string" and ((.deploymentId // .deployment_id)|type) == "string" and ((.deploymentId // .deployment_id)|startswith("dpl_")))' "$page_file" >/dev/null || { rm -rf "$workdir"; return 1; }
+    jq -c 'map({alias,project_id:.projectId,team_id:(.teamId // .accountId // .ownerId // null),deployment_id:(.deploymentId // .deployment_id)})' "$page_file" > "$page_file.mapped" || { rm -rf "$workdir"; return 1; }
+    mv "$page_file.mapped" "$page_file"
+    json_array_append_file "$inventory_file" "$page_file" || { rm -rf "$workdir"; return 1; }
+    if [[ "$(jq -er 'length' "$page_file")" == 100 ]]; then jq -e '.pagination|type == "object" and has("next")' "$response_file" >/dev/null || { rm -rf "$workdir"; return 1; }; fi
+    next=$(vercel_pagination_next_file "$response_file")
+    [[ "$next" != __invalid__ ]] || { rm -rf "$workdir"; return 1; }
+    if [[ -z "$next" ]]; then jq -c '{aliases:.}' "$inventory_file"; rm -rf "$workdir"; return 0; fi
+    [[ "$next" != "$cursor" && ":$seen:" != *":$next:"* ]] || { rm -rf "$workdir"; return 1; }
     seen="${seen:+$seen:}$next"; cursor="$next"; pages=$((pages + 1))
   done
+  rm -rf "$workdir"
   return 1
 }
 

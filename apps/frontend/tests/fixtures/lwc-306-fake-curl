@@ -123,6 +123,15 @@ if [[ "$url" == *'/v6/deployments?'* ]]; then
     deploy-timeout-duplicate) printf '{"deployments":[%s,%s],"pagination":{"next":null}}' "$deployment" "$deployment" ;;
     deploy-timeout-conflicting) deployment=$(jq '.target="production"' <<<"$deployment"); printf '{"deployments":[%s],"pagination":{"next":null}}' "$deployment" ;;
     deploy-timeout-full-missing-pagination) jq -n --argjson deployment "$deployment" '{deployments:([$deployment] + [range(0;99) | {id:("dpl_filler" + tostring),projectId:"prj_frontendtest",accountId:"team_frontendtest",readyState:"READY",target:"preview",url:("filler-" + tostring + ".vercel.app")}])}' ;;
+    deployment-pagination)
+      pad=$(python3 -c 'print("x"*2048)')
+      if [[ "$url" != *'until=1700000000001'* ]]; then
+        jq -n --arg pad "$pad" '[range(0;100) | {uid:("dpl_unrelated" + tostring),projectId:"prj_frontendtest",readyState:"READY",target:"production",url:("unrelated-" + tostring + ".vercel.app"),meta:{githubCommitSha:"deadbeefdeadbeefdeadbeefdeadbeefdeadbeef",githubCommitRef:"main",githubOrg:"Rayer",githubRepo:"llm-wiki-cloud",pad:$pad}}] | {deployments:.,pagination:{next:1700000000001}}'
+      else
+        candidate=$(jq 'del(.id,.accountId,.teamId,.ownerId) | .uid = "dpl_frontendnew"' <<<"$deployment")
+        jq -n --arg pad "$pad" --argjson candidate "$candidate" '[range(0;47) | {uid:("dpl_unrelatedp2" + tostring),projectId:"prj_frontendtest",readyState:"READY",target:"production",url:("unrelated-page-2-" + tostring + ".vercel.app"),meta:{githubCommitSha:"deadbeefdeadbeefdeadbeefdeadbeefdeadbeef",githubCommitRef:"main",githubOrg:"Rayer",githubRepo:"llm-wiki-cloud",pad:$pad}}] | {deployments:(. + [$candidate]),pagination:{next:null}}'
+      fi
+      ;;
     deploy-timeout-arbitrary-host) deployment=$(jq 'del(.id,.accountId,.teamId,.ownerId) | .uid = "dpl_frontendnew" | .url="evil.example" | .target = null' <<<"$deployment"); printf '{"deployments":[%s],"pagination":{"next":null}}' "$deployment" ;;
     deploy-timeout-canonical-host) deployment=$(jq 'del(.id,.accountId,.teamId,.ownerId) | .uid = "dpl_frontendnew" | .url="https://frontend-hash.vercel.app" | .target = null' <<<"$deployment"); printf '{"deployments":[%s],"pagination":{"next":null}}' "$deployment" ;;
     *) deployment=$(jq 'del(.id,.accountId,.teamId,.ownerId) | .uid = "dpl_frontendnew" | .target = (if .target == "production" then "production" else null end)' <<<"$deployment"); printf '{"deployments":[%s],"pagination":{"next":null}}' "$deployment" ;;

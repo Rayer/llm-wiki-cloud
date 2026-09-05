@@ -2027,6 +2027,16 @@ class CDContractTests(unittest.TestCase):
         self.assertIn("/v2/deployments/", source)
         self.assertNotIn("vercel alias set", source)
 
+    def test_frontend_inventory_avoids_jq_argv_overflow_and_binds_pagination_cursor(self):
+        source = source_bundle("frontend")
+        self.assertNotIn('--argjson current "$inventory"', source)
+        self.assertNotIn('--argjson deployments "$inventory"', source)
+        self.assertNotIn('--argjson aliases "$inventory"', source)
+        self.assertNotIn("isfinite and floor == .", source)
+        self.assertGreaterEqual(source.count(".pagination.next as $next"), 1)
+        self.assertIn("json_array_append_file", source)
+        self.assertIn("vercel_pagination_next_file", source)
+
     def test_mutation_accepted_is_exact_once_and_deterministic(self):
         helper = common_source()
         with tempfile.TemporaryDirectory() as directory:

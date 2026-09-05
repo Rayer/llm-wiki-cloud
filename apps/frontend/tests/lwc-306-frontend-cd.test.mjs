@@ -176,6 +176,21 @@ test('production freeze paginates the complete alias inventory before mutation',
   assert.equal((await lines(join(fixture.root, 'alias-post-calls'))).length, 0);
 });
 
+test('production mutate paginates a live-shaped 100+48 deployment inventory without argv overflow', async () => {
+  const fixture = await setup('production', 'deployment-pagination');
+  assert.equal((await run(fixture, 'freeze')).code, undefined);
+  await resetEvents(fixture);
+
+  const result = await run(fixture, 'mutate');
+  assert.equal(result.code, undefined, result.stderr);
+  const inventoryCalls = (await lines(join(fixture.root, 'curl-calls'))).filter((line) => line.includes('/v6/deployments?'));
+  assert.equal(inventoryCalls.length, 2);
+  assert.equal(inventoryCalls.filter((line) => line.includes('&until=1700000000001')).length, 1);
+  assert.equal((await lines(join(fixture.root, 'cli-calls'))).filter((line) => line.startsWith('vercel deploy ')).length, 0);
+  assert.equal((await json(join(fixture.artifactDir, 'frontend-deployment.json'))).deployment_id, 'dpl_frontendnew');
+  assert.equal((await json(join(fixture.artifactDir, 'journal.json'))).components.frontend.state, 'accepted');
+});
+
 for (const scenario of ['duplicate-exact', 'foreign-candidate', 'malformed-candidate', 'missing-uid', 'wrong-authority', 'inventory-unreadable']) {
   test(`${scenario} fails closed before provider mutation`, async () => {
     const fixture = await setup('development', scenario);
