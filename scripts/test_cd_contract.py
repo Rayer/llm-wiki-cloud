@@ -1502,8 +1502,10 @@ class CDContractTests(unittest.TestCase):
                         state["service"]["status"]["latestCreatedRevisionName"] = revision
                         state["revisions"][revision] = {{"spec": {{"containers": [{{"image": image}}]}}, "status": {{"imageDigest": image, "conditions": [{{"type": "Ready", "status": "True"}}]}}}}
                         state_path.write_text(json.dumps(state))
+                        if "{component}" == "bff":
+                            print(revision)
                     elif args[:3] == ["run", "services", "update-traffic"]:
-                        if "--to-latest" not in args:
+                        if "--to-latest" not in args and ("--to-revisions" not in args or args[args.index("--to-revisions") + 1] != "bff-revision-1=100"):
                             raise SystemExit(2)
                         revision = state["service"]["status"]["latestCreatedRevisionName"]
                         state["service"]["status"]["traffic"] = [{{"revisionName": revision, "percent": 100}}]
@@ -1556,7 +1558,11 @@ class CDContractTests(unittest.TestCase):
                 calls = log_path.read_text().splitlines()
                 traffic_calls = [call for call in calls if "run services update-traffic" in call]
                 self.assertEqual(len(traffic_calls), 2)
-                self.assertTrue(all("--to-latest" in call for call in traffic_calls))
+                if component == "bff":
+                    self.assertIn("--to-revisions bff-revision-1=100", traffic_calls[0])
+                    self.assertIn("--to-latest", traffic_calls[1])
+                else:
+                    self.assertTrue(all("--to-latest" in call for call in traffic_calls))
                 image_updates = [call for call in calls if "run services update " in call]
                 self.assertEqual(len(image_updates), 2)
                 self.assertIn(f"--image {new_image}", image_updates[0])
@@ -1586,9 +1592,19 @@ class CDContractTests(unittest.TestCase):
                     Path(os.environ["FAKE_LOG"]).open("a").write(" ".join(args) + "\\n")
                     state_path = Path(os.environ["FAKE_STATE"])
                     state = json.loads(state_path.read_text())
+                    if args[:3] == ["run", "services", "update"] and "{component}" == "bff":
+                        state["candidate_created"] = True
+                        state_path.write_text(json.dumps(state))
+                        print("bff-new")
+                        raise SystemExit(0)
                     if args[:3] == ["run", "{kind}", "update"] or args[:3] == ["run", "services", "update-traffic"]:
                         raise SystemExit(0)
                     if args[:3] == ["run", "services", "describe"]:
+                        if "{component}" == "bff" and state.get("candidate_created") and not state.get("candidate_checked"):
+                            state["candidate_checked"] = True
+                            state_path.write_text(json.dumps(state))
+                            print(json.dumps({{"status": {{"traffic": [{{"revisionName": "bff-old", "percent": 100}}], "latestCreatedRevisionName": "bff-new"}}}}))
+                            raise SystemExit(0)
                         state["readbacks"] += 1
                         state_path.write_text(json.dumps(state))
                         revision = "{component}-new" if state["readbacks"] > 1 else "{component}-old"
@@ -2089,7 +2105,7 @@ class CDContractTests(unittest.TestCase):
                     "services": {
                         value["service"]: {
                             "metadata": {"name": value["service"]},
-                            "status": {"traffic": [{"revisionName": value["revision"], "percent": 100}]},
+                            "status": {"traffic": [{"revisionName": value["revision"], "percent": 100}], "latestCreatedRevisionName": value["revision"]},
                         },
                     },
                     "revisions": {
@@ -2117,6 +2133,8 @@ class CDContractTests(unittest.TestCase):
                         print(json.dumps(state['services']['{value["service"]}']))
                     elif args[:3] == ['run', 'revisions', 'describe']:
                         print(json.dumps(state['revisions'][args[3]]))
+                    elif args[:4] == ['run', 'services', 'update', '{value["service"]}'] and '{component}' == 'bff':
+                        print('{value["revision"]}')
                     elif args[:4] in (
                         ['run', 'services', 'update', '{value["service"]}'],
                         ['run', 'services', 'update-traffic', '{value["service"]}'],
