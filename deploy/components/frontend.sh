@@ -204,6 +204,7 @@ frontend_mutate() {
   journal_init
   set_mutation_status frontend unknown
   project=$(plan_json '.frontend.project_name'); team=$(plan_json '.frontend.team_slug'); api_url=$(plan_json '.frontend.api_url'); auth_url=$(plan_json '.frontend.auth_url')
+  export VERCEL_ORG_ID="$VERCEL_TEAM_ID"
   if ! validate_frontend_alias_config || ! vercel_project_authority; then
     journal_rejected frontend
     write_component_result frontend failed '{}' frontend_preflight_rejected
