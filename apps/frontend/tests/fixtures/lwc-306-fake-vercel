@@ -7,15 +7,18 @@ args="${args//vercel-fixture-token/[REDACTED]}"
 printf 'vercel %s\n' "$args" >> "$root/cli-calls"
 case "${1:-}" in
   pull)
+    [[ "${VERCEL_ORG_ID:-}" == "${VERCEL_TEAM_ID:-}" && -n "${VERCEL_ORG_ID:-}" ]] || exit 95
     [[ -f "$root/npm-ci" ]] || exit 91
     [[ "$*" == *"--environment=preview"* || "$*" == *"--environment=production"* ]] || exit 92
     touch "$root/vercel-pull"
     ;;
   build)
+    [[ "${VERCEL_ORG_ID:-}" == "${VERCEL_TEAM_ID:-}" && -n "${VERCEL_ORG_ID:-}" ]] || exit 95
     [[ -f "$root/vercel-pull" ]] || exit 93
     touch "$root/vercel-build"
     ;;
   deploy)
+    [[ "${VERCEL_ORG_ID:-}" == "${VERCEL_TEAM_ID:-}" && -n "${VERCEL_ORG_ID:-}" ]] || exit 95
     [[ -f "$root/vercel-build" && "$*" == *"--prebuilt"* ]] || exit 94
     [[ "$scenario" != deploy-timeout && "$scenario" != deploy-timeout-after-acceptance && "$scenario" != deploy-timeout-absent && "$scenario" != deploy-timeout-duplicate && "$scenario" != deploy-timeout-conflicting && "$scenario" != deploy-timeout-full-missing-pagination && "$scenario" != deploy-timeout-arbitrary-host && "$scenario" != deploy-timeout-canonical-host ]] || exit 28
     touch "$root/vercel-deployed"
