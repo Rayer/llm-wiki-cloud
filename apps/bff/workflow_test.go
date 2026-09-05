@@ -285,13 +285,17 @@ func TestCDReadbackRollbackAndEvidenceContractsRemainTruthful(t *testing.T) {
 	script := readCDFile(t, "deploy/cd.sh")
 	components := readCDFile(t, "deploy/components/common.sh") + readCDFile(t, "deploy/components/auth.sh") + readCDFile(t, "deploy/components/bff.sh") + readCDFile(t, "deploy/components/worker.sh") + readCDFile(t, "deploy/components/frontend.sh")
 	for _, marker := range []string{
-		"normalize_service_readback", "runtime_service_account", "secret_references", "allowed_origins",
-		"vpc_egress", "max_instances", "component_config", "normalize_worker_definition",
-		"handles.worker.definition", "gcloud run jobs replace", "mutation_count", "mutation_components",
+		"service_image_handle", "service_image_readback", "worker_image_handle", "worker_image_readback",
+		"handles.worker.image", "gcloud run jobs update", "mutation_count", "mutation_components",
 		"rollback_attempted", "rollback_result", "rollback_verified", "next_action", "redact_evidence", "<redacted>",
 	} {
 		if !strings.Contains(script+components, marker) {
 			t.Fatalf("CD safety contract missing %q", marker)
+		}
+	}
+	for _, forbidden := range []string{"normalize_service_readback", "normalize_worker_definition", "handles.worker.definition", "gcloud run jobs replace"} {
+		if strings.Contains(components, forbidden) {
+			t.Fatalf("full provider configuration rollback marker remains: %q", forbidden)
 		}
 	}
 	if strings.Contains(script, "provider_readback:true") || strings.Contains(script, "verified:true") {

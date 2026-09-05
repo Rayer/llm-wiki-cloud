@@ -27,20 +27,29 @@ func readBFFCDFile(t *testing.T, name string) string {
 	return string(contents)
 }
 
-func TestBFFServiceCDContractUsesImmutableQueryAndRuntimeConfig(t *testing.T) {
+func TestBFFServiceCDContractUsesImageOnlyMutation(t *testing.T) {
 	script := readBFFCDFile(t, "deploy/cd.sh")
 	common := readBFFCDFile(t, "deploy/components/common.sh")
 	bff := readBFFCDFile(t, "deploy/components/bff.sh")
 	contract := script + common + bff
 	for _, marker := range []string{
-		"QUERY_STAGE_CONFIG_PATH=$(plan_json '.query_config.runtime_path')",
-		"--remove-env-vars",
-		"QUERY_EXPANSION_MODEL", "QUERY_SELECTION_LIMIT", "--update-secrets",
-		"--service-account", "--network", "--subnet", "--vpc-egress", "--ingress", "--max",
-		"gcloud run deploy", "gcloud run services update-traffic", "normalize_service_readback",
+		"service_image_handle", "service_image_readback", "gcloud run services update", "--image \"$image\"", "@sha256:",
 	} {
 		if !strings.Contains(contract, marker) {
 			t.Fatalf("shared BFF service path missing %q", marker)
+		}
+	}
+	start := strings.Index(bff, "bff_mutate() {")
+	end := strings.Index(bff, "\nbff_verify() {")
+	if start < 0 || end < start {
+		t.Fatal("BFF image-only mutation function is missing")
+	}
+	if !strings.Contains(bff[start:end], "gcloud run services update-traffic") {
+		t.Fatal("BFF service mutation must explicitly converge traffic")
+	}
+	for _, forbidden := range []string{"gcloud run deploy", "--update-env-vars", "--update-secrets", "--service-account", "--network", "--subnet", "--vpc-egress", "--ingress", "--max"} {
+		if strings.Contains(bff[start:end], forbidden) {
+			t.Fatalf("BFF mutation must not contain runtime flag %q", forbidden)
 		}
 	}
 	imageStart := strings.Index(common, "image_for()")

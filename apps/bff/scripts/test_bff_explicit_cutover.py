@@ -186,7 +186,7 @@ class SharedCDContractTest(unittest.TestCase):
         self.assertNotIn("run jobs execute", source)
         self.assertNotIn("vercel alias set", source)
 
-    def test_bff_freezes_and_rolls_back_legacy_invocation_env_without_desiring_it_forward(self):
+    def test_bff_freezes_and_rolls_back_with_immutable_image_only_artifact(self):
         directory = Path(tempfile.mkdtemp(prefix="lwc-306-bff-legacy-"))
         try:
             artifacts = directory / "artifacts"
@@ -196,6 +196,10 @@ class SharedCDContractTest(unittest.TestCase):
             plan.write_text(json.dumps({"normalized": normalized}))
             service_before = REPO_ROOT / "apps/bff/scripts/fixtures/bff-service-before.json"
             revision_before = REPO_ROOT / "apps/bff/scripts/fixtures/bff-revision-before.json"
+            revision_data = json.loads(revision_before.read_text())
+            revision_data.setdefault("status", {})["conditions"] = [{"type": "Ready", "status": "True"}]
+            revision_ready = directory / "revision-ready.json"
+            revision_ready.write_text(json.dumps(revision_data))
             fake = textwrap.dedent(
                 f"""
                 #!/usr/bin/env python3
@@ -205,7 +209,7 @@ class SharedCDContractTest(unittest.TestCase):
                     if any(arg.startswith("--format=value(") for arg in args): print("llm-wiki-bff-00001-old")
                     else: print(pathlib.Path({str(service_before)!r}).read_text())
                 elif args[:3] == ["run", "revisions", "describe"]:
-                    print(pathlib.Path({str(revision_before)!r}).read_text())
+                    print(pathlib.Path({str(revision_ready)!r}).read_text())
                 elif args[:3] == ["run", "services", "update-traffic"]:
                     pass
                 else: raise SystemExit(2)
@@ -226,19 +230,18 @@ class SharedCDContractTest(unittest.TestCase):
             frozen = subprocess.run(["bash", str(REPO_ROOT / "deploy/cd.sh"), "freeze"], env=env, text=True, capture_output=True)
             self.assertEqual(frozen.returncode, 0, frozen.stdout + frozen.stderr)
             handle = json.loads(rollback.read_text())["handles"]["bff"]
-            self.assertEqual(handle["readback"]["legacy_preserved"], [
-                {"name": "PROJECT_ID", "value": "demo"}, {"name": "USER_ID", "value": "test-user"},
-            ])
+            self.assertEqual(set(handle.keys()), {"image"})
+            self.assertEqual(handle["image"], "asia-east1-docker.pkg.dev/llm-wiki-cloud/cloud-run-images/llm-wiki-bff@sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa")
             journal.write_text(json.dumps({
                 "schema": "lwc-306-mutation-journal-v1", "order": ["bff"],
                 "components": {"bff": {"state": "accepted", "history": ["pending", "accepted"], "timestamp": "2026-09-04T00:00:00Z", "attempt": 1}},
             }))
             restored = subprocess.run(["bash", str(REPO_ROOT / "deploy/cd.sh"), "rollback"], env=env, text=True, capture_output=True)
             self.assertEqual(restored.returncode, 0, restored.stdout + restored.stderr)
-            self.assertEqual(json.loads((artifacts / "rollback" / "bff.json").read_text())["result"], "success")
-            source = (REPO_ROOT / "deploy/components/bff.sh").read_text()
-            self.assertIn("USER_ID,PROJECT_ID", source)
-            self.assertNotIn("USER_ID", json.dumps(normalized["bff"]))
+            rollback_result = json.loads((artifacts / "rollback" / "bff.json").read_text())
+            self.assertEqual(rollback_result["result"], "success")
+            self.assertEqual(rollback_result["readback"]["image"], handle["image"])
+            self.assertEqual(rollback_result["readback"]["revision"], "llm-wiki-bff-00001-old")
         finally:
             shutil.rmtree(directory, ignore_errors=True)
 

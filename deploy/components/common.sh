@@ -290,8 +290,8 @@ image_for() {
   image=$(tr -d '[:space:]' < "$file"); validate_image_value "$component" "$image"
   if [[ "$ENVIRONMENT" == production ]]; then
     [[ -s "$ARTIFACT_DIR/dev-images/dev-receipt.json" ]] || die "DEV provenance receipt is missing"
-    jq -e --arg component "$component" --arg sha "$SOURCE_SHA" --arg fingerprint "$(plan_json '.evidence.config_fingerprint')" --arg image "$image" \
-      '.source.sha == $sha and .source.ref == "develop" and .source.workflow_path == ".github/workflows/deploy-dev.yml" and .source.event == "workflow_dispatch" and .config.environment == "development" and .config.path == "deploy/environments/development.yaml" and .config.fingerprint == $fingerprint and (.components | index($component) != null) and .images[$component] == $image' \
+    jq -e --arg component "$component" --arg sha "$SOURCE_SHA" --arg image "$image" \
+      '.source.sha == $sha and .source.ref == "develop" and .source.workflow_path == ".github/workflows/deploy-dev.yml" and .source.event == "workflow_dispatch" and .config.environment == "development" and .config.path == "deploy/environments/development.yaml" and (.components | index($component) != null) and .images[$component] == $image' \
       "$ARTIFACT_DIR/dev-images/dev-receipt.json" >/dev/null || die "DEV image provenance receipt does not match $component"
   fi
   printf '%s\n' "$image"
@@ -354,177 +354,52 @@ preflight_secret() { local secret="$1" account="$2" project="$3" policy; gcloud 
 preflight_public_service() { local service="$1" project="$2" region="$3" policy; policy=$(gcloud run services get-iam-policy "$service" --project "$project" --region "$region" --format=json --quiet) || die "service IAM policy is unreadable"; iam_binding_is_exact "$policy" roles/run.invoker allUsers || die "service IAM policy is not the reviewed public invoker binding"; }
 preflight_job_binding() { local job="$1" project="$2" region="$3" role="$4" account="$5" policy; policy=$(gcloud run jobs get-iam-policy "$job" --project "$project" --region "$region" --format=json --quiet) || die "Job IAM policy is unreadable"; iam_binding_is_exact "$policy" "$role" "serviceAccount:$account" || die "Job IAM policy is missing its reviewed runtime binding"; }
 
-service_expected() {
-  local component="$1" image="$2" revision="$3"
-  jq -n --arg component "$component" --arg image "$image" --arg revision "$revision" --arg source_sha "$SOURCE_SHA" --argjson normalized "$(jq '.normalized' "$PLAN_PATH")" '
-    $normalized as $n | ($n[$component]) as $cfg |
-    (if $component == "auth" then
-      {GCP_PROJECT:$n.gcp.project_id,FIRESTORE_DATABASE_ID:$cfg.firestore_database_id,ALLOWED_ORIGINS:($cfg.allowed_origins|join(",")),ALLOWED_HOSTS:($cfg.allowed_hosts|join(",")),DEV_JWT:"false",LWC_SOURCE_COMMIT:$source_sha}
-     else
-      {GCP_PROJECT:$n.gcp.project_id,BUCKET:$cfg.bucket,FIRESTORE_DATABASE_ID:$cfg.firestore_database_id,PIPELINE_JOB_URL:$cfg.pipeline_job_url,ALLOWED_ORIGINS:($cfg.allowed_origins|join(",")),AUTH_SERVICE_URL:$cfg.auth_service_url,QUERY_STAGE_CONFIG_PATH:$n.query_config.runtime_path,DEV_JWT:"false",LWC_SOURCE_COMMIT:$source_sha}
-     end) as $env |
-    (if $component == "auth" then {JWT_SECRET:{secret:$cfg.secret_references.jwt,version:"latest",plaintext:false}} else {JWT_SECRET:{secret:$cfg.secret_references.jwt,version:"latest",plaintext:false},DEEPSEEK_API_KEY:{secret:$cfg.secret_references.deepseek_api_key,version:"latest",plaintext:false}} end) as $secrets |
-    {component:$component,service_name:$cfg.service_name,revision:$revision,revision_name:$revision,image:$image,service_account:$cfg.runtime_service_account,runtime_service_account:$cfg.runtime_service_account,env:$env,secret_references:$secrets,container:{command:[],args:[],resources:{},volume_mounts:[],working_dir:null,ports:[],execution_controls:{container_concurrency:null,timeout_seconds:null,execution_environment:null,cpu_boost:null}},network:{network:$cfg.network,subnet:$cfg.subnet,vpc_egress:$cfg.vpc_egress,ingress:$cfg.ingress,max_instances:$cfg.max_instances},traffic:[{revision_name:$revision,percent:100,tag:null}],component_config:(if $component == "auth" then {firestore_database_id:$cfg.firestore_database_id,allowed_origins:$cfg.allowed_origins,allowed_hosts:$cfg.allowed_hosts} else {bucket:$cfg.bucket,firestore_database_id:$cfg.firestore_database_id,pipeline_job_url:$cfg.pipeline_job_url,allowed_origins:$cfg.allowed_origins,auth_service_url:$cfg.auth_service_url,query_config:{runtime_path:$n.query_config.runtime_path}} end)}'
-}
-
-normalize_service_readback() {
-  local component="$1" service_json="$2" revision_json="$3" revision="$4" image="$5" allow_legacy="${6:-0}"
-  strict_json <<<"$service_json" || return 1
-  strict_json <<<"$revision_json" || return 1
-  local allowed secret_names legacy_names='[]'
-  case "$component" in
-    auth) allowed='["GCP_PROJECT","FIRESTORE_DATABASE_ID","ALLOWED_ORIGINS","ALLOWED_HOSTS","DEV_JWT","LWC_SOURCE_COMMIT"]'; secret_names='["JWT_SECRET"]' ;;
-    bff) allowed='["GCP_PROJECT","BUCKET","FIRESTORE_DATABASE_ID","PIPELINE_JOB_URL","ALLOWED_ORIGINS","AUTH_SERVICE_URL","QUERY_STAGE_CONFIG_PATH","DEV_JWT","LWC_SOURCE_COMMIT"]'; secret_names='["JWT_SECRET","DEEPSEEK_API_KEY"]' ;;
-    *) return 1 ;;
-  esac
-  [[ "$allow_legacy" == 1 && "$component" == bff ]] && legacy_names='["USER_ID","PROJECT_ID"]'
-  jq -nce --arg component "$component" --arg revision "$revision" --arg image "$image" --argjson service "$service_json" --argjson revision_json "$revision_json" --argjson allowed "$allowed" --argjson secret_names "$secret_names" --argjson legacy_names "$legacy_names" '
-    def template: ($service.spec.template // {});
-    def template_spec: (template.spec // {});
-    def revision_spec: ($revision_json.spec // {});
-    def service_containers: (template_spec.containers // []);
-    def revision_containers: (revision_spec.containers // revision_spec.template.spec.containers // []);
-    def exact_container($containers): if ($containers|type) != "array" or ($containers|length) != 1 or ($containers[0]|type) != "object" then error("service and revision must each contain exactly one container") else $containers[0] end;
-    def require_object($value;$allowed;$label): if ($value|type) != "object" then error($label + " must be an object") elif ((($value|keys) - $allowed)|length) != 0 then error($label + " contains an unallowlisted field") else $value end;
-    def container_name($container): if ($container|has("name")|not) then null elif ($container.name|type) != "string" then error("service container name is malformed") elif $container.name != ("llm-wiki-" + $component + "-1") then error("service container name is invalid") else $container.name end;
-    def strings_or_empty($value;$label): if $value == null then [] elif ($value|type) != "array" or any($value[]; type != "string") then error($label + " must be an array of strings") else $value end;
-    def secret_ref($entry):
-      if ($entry|has("value")) then error("secret environment entry contains a plaintext value")
-      elif (($entry|has("valueSource")) and ($entry|has("valueFrom"))) then error("secret environment entry has duplicate sources")
-      else (($entry.valueSource.secretKeyRef // $entry.valueFrom.secretKeyRef // null) as $ref |
-        if ($ref|type) != "object" or ($ref.secret // $ref.name | type) != "string" or ($ref.version // $ref.key | type) != "string" then error("secret environment reference is malformed") else {secret:($ref.secret // $ref.name),version:($ref.version // $ref.key),plaintext:false} end)
-      end;
-    def env_shape($entries):
-      if ($entries|type) != "array" then error("environment must be an array")
-      elif any($entries[]; (type != "object") or (.name|type) != "string") then error("environment entry is malformed")
-      elif ([ $entries[].name ] | length) != ([ $entries[].name ] | unique | length) then error("environment contains duplicate names")
-      elif ([ $entries[] | .name as $name | select((($allowed + $secret_names + $legacy_names)|index($name)) == null) | $name ] | if length > 0 then error("environment contains unknown name(s): " + join(",")) else false end) then error("environment contains an unknown name")
-      else
-        ($entries | map(. as $entry | if ($secret_names|index($entry.name)) != null then {name:$entry.name,secret:secret_ref($entry)} elif (($legacy_names|index($entry.name)) != null) then (if (($entry|keys|sort) != ["name","value"] or ($entry.value|type) != "string") then error("legacy environment entry is malformed") else {name:$entry.name,value:$entry.value} end) elif (($entry|keys|sort) != ["name","value"] or ($entry.value|type) != "string") then error("plain environment entry is malformed") else {name:$entry.name,value:$entry.value} end)) as $normalized |
-        {values:($normalized|map(select(has("value"))|{key:.name,value:.value})|from_entries),secrets:($normalized|map(select(has("secret"))|{key:.name,value:.secret})|from_entries),legacy:($normalized|map(. as $entry | select(($legacy_names|index($entry.name)) != null)|{key:.name,value:.value})|from_entries)}
-      end;
-    def startup_probe($container):
-      if ($container|has("startupProbe")|not) then null
-      elif ($container.startupProbe|type) != "object" then error("startup probe is malformed")
-      elif (($container.startupProbe|keys|sort) != ["failureThreshold","periodSeconds","tcpSocket","timeoutSeconds"]) then error("startup probe shape is not exact")
-      elif (($container.startupProbe.failureThreshold|type) != "number" or ($container.startupProbe.failureThreshold|floor) != $container.startupProbe.failureThreshold or $container.startupProbe.failureThreshold != 1) then error("startup probe failure threshold is invalid")
-      elif (($container.startupProbe.periodSeconds|type) != "number" or ($container.startupProbe.periodSeconds|floor) != $container.startupProbe.periodSeconds or $container.startupProbe.periodSeconds != 240) then error("startup probe period is invalid")
-      elif (($container.startupProbe.timeoutSeconds|type) != "number" or ($container.startupProbe.timeoutSeconds|floor) != $container.startupProbe.timeoutSeconds or $container.startupProbe.timeoutSeconds != 240) then error("startup probe timeout is invalid")
-      elif ($container.startupProbe.tcpSocket|type) != "object" or (($container.startupProbe.tcpSocket|keys|sort) != ["port"]) or (($container.startupProbe.tcpSocket.port|type) != "number") or (($container.startupProbe.tcpSocket.port|floor) != $container.startupProbe.tcpSocket.port) or ($container.startupProbe.tcpSocket.port != 8080) then error("startup probe socket is invalid")
-      else $container.startupProbe end;
-    def container_shape($container):
-      require_object($container;["name","image","env","command","args","resources","volumeMounts","workingDir","ports","startupProbe"];"service container") as $checked |
-      (container_name($checked)) as $name |
-      (env_shape($checked.env // [])) as $env |
-      (strings_or_empty($checked.command // null;"container command")) as $command |
-      (strings_or_empty($checked.args // null;"container args")) as $args |
-      (if (($checked.resources // {})|type) != "object" then error("container resources are malformed") else ($checked.resources // {}) end) as $resources |
-      (if (($checked.volumeMounts // [])|type) != "array" then error("container volume mounts are malformed") else ($checked.volumeMounts // []) end) as $volume_mounts |
-      (if (($checked.ports // [])|type) != "array" then error("container ports are malformed") else ($checked.ports // []) end) as $ports |
-      (startup_probe($checked)) as $startup_probe |
-      {env:$env,command:$command,args:$args,resources:$resources,volume_mounts:$volume_mounts,working_dir:($checked.workingDir // null),ports:$ports} + (if $startup_probe == null then {} else {startup_probe:$startup_probe} end);
-    def annotations: (($service.metadata.annotations // {}) + (template.metadata.annotations // {}) + (template_spec.metadata.annotations // {}) + ($revision_json.metadata.annotations // {}));
-    def interfaces: (annotations["run.googleapis.com/network-interfaces"] // "[]") | fromjson | if type != "array" or length != 1 or ((.[0]|type) != "object") or ((.[0]|keys|sort) != ["network","subnetwork"]) or ((.[0].network|type) != "string") or ((.[0].subnetwork|type) != "string") then error("network interface shape is not exact") else . end;
-    def max_instances: (annotations["autoscaling.knative.dev/maxScale"] // annotations["run.googleapis.com/maxScale"] // $service.spec.template.scaling.maxInstanceCount // $service.spec.template.spec.maxInstanceCount // null) | if . == null then null elif ((type == "number") and ((floor) == .)) then . elif (type == "string" and test("^[0-9]+$")) then tonumber else error("max instances is malformed") end;
-    def traffic: ($service.status.traffic // error("service traffic is missing")) | if type != "array" or length != 1 then error("service traffic is not exact") else map(if type != "object" or (.revisionName|type) != "string" or (.percent|type) != "number" or ((.percent|floor) != .percent) or .percent < 0 or .percent > 100 or (.tag? != null and (.tag|type) != "string") then error("service traffic entry is malformed") else {revision_name:.revisionName,percent:.percent,tag:(.tag // null)} end) end;
-    (exact_container(service_containers)) as $service_container |
-    (exact_container(revision_containers)) as $revision_container |
-    (container_shape($service_container)) as $service_shape |
-    (container_shape($revision_container)) as $revision_shape |
-    if $service_shape != $revision_shape then error("service and revision container shapes differ") else . end |
-    (revision_spec.serviceAccountName // revision_spec.template.spec.serviceAccountName // template_spec.serviceAccountName // null) as $account |
-    ($revision_json.metadata.name // null) as $revision_name |
-    ($service.metadata.name // null) as $service_name |
-    (if ($service_name|type) != "string" or $service_name == "" or ($revision_name|type) != "string" or $revision_name == "" or $revision_name != $revision then error("service or revision identity is malformed") else . end) |
-    (if ($account|type) != "string" or $account == "" then error("runtime service account is missing") else . end) |
-    ($service_shape.env.values) as $values | ($service_shape.env.secrets) as $secrets |
-    (if ($legacy_names|length) > 0 and (($service_shape.env.legacy|keys|sort) != ($legacy_names|sort)) then error("legacy environment is incomplete") else . end) |
-    (if $component == "auth" then {GCP_PROJECT:$values.GCP_PROJECT,FIRESTORE_DATABASE_ID:$values.FIRESTORE_DATABASE_ID,ALLOWED_ORIGINS:$values.ALLOWED_ORIGINS,ALLOWED_HOSTS:$values.ALLOWED_HOSTS,DEV_JWT:$values.DEV_JWT,LWC_SOURCE_COMMIT:$values.LWC_SOURCE_COMMIT} else {GCP_PROJECT:$values.GCP_PROJECT,BUCKET:$values.BUCKET,FIRESTORE_DATABASE_ID:$values.FIRESTORE_DATABASE_ID,PIPELINE_JOB_URL:$values.PIPELINE_JOB_URL,ALLOWED_ORIGINS:$values.ALLOWED_ORIGINS,AUTH_SERVICE_URL:$values.AUTH_SERVICE_URL,QUERY_STAGE_CONFIG_PATH:$values.QUERY_STAGE_CONFIG_PATH,DEV_JWT:$values.DEV_JWT,LWC_SOURCE_COMMIT:$values.LWC_SOURCE_COMMIT} end) as $env |
-    (if $component == "auth" then {JWT_SECRET:($secrets.JWT_SECRET // {secret:null,version:null,plaintext:false})} else {JWT_SECRET:($secrets.JWT_SECRET // {secret:null,version:null,plaintext:false}),DEEPSEEK_API_KEY:($secrets.DEEPSEEK_API_KEY // {secret:null,version:null,plaintext:false})} end) as $secret_refs |
-    (interfaces[0]) as $interface |
-    ({component:$component,service_name:$service_name,revision:$revision,revision_name:$revision_name,image:($revision_json.status.imageDigest // ($revision_container.image // null)),service_account:$account,runtime_service_account:$account,env:$env,secret_references:$secret_refs,container:{command:$revision_shape.command,args:$revision_shape.args,resources:$revision_shape.resources,volume_mounts:$revision_shape.volume_mounts,working_dir:$revision_shape.working_dir,ports:$revision_shape.ports,execution_controls:{container_concurrency:($service.spec.template.containerConcurrency // $service.spec.containerConcurrency // null),timeout_seconds:(revision_spec.timeoutSeconds // revision_spec.template.spec.timeoutSeconds // null),execution_environment:(annotations["run.googleapis.com/execution-environment"] // null),cpu_boost:(annotations["run.googleapis.com/startup-cpu-boost"] // null)}},network:{network:$interface.network,subnet:($interface.subnetwork // $interface.subnet // null),vpc_egress:(annotations["run.googleapis.com/vpc-access-egress"] // $service.spec.template.vpcAccess.egress // null),ingress:($service.metadata.annotations["run.googleapis.com/ingress"] // $service.spec.ingress // "all"),max_instances:max_instances},traffic:traffic,component_config:(if $component == "auth" then {firestore_database_id:$values.FIRESTORE_DATABASE_ID,allowed_origins:($values.ALLOWED_ORIGINS|if . == null then null else split(",") end),allowed_hosts:($values.ALLOWED_HOSTS|if . == null then null else split(",") end)} else {bucket:$values.BUCKET,firestore_database_id:$values.FIRESTORE_DATABASE_ID,pipeline_job_url:$values.PIPELINE_JOB_URL,allowed_origins:($values.ALLOWED_ORIGINS|if . == null then null else split(",") end),auth_service_url:$values.AUTH_SERVICE_URL,query_config:{runtime_path:$values.QUERY_STAGE_CONFIG_PATH}} end)} + (if ($legacy_names|length) > 0 then {legacy_preserved:($service_shape.env.legacy|to_entries|map({name:.key,value:.value})|sort_by(.name))} else {} end))'
-}
-
-service_frozen_readback() {
-  local component="$1" allow_legacy="${2:-0}" project region service service_json traffic revision revision_json image observed expected
+service_image_handle() {
+  local component="$1" project region service service_json traffic revision revision_json image
   [[ "$component" == auth || "$component" == bff ]] || return 1
   project=$(plan_json '.gcp.project_id'); region=$(plan_json '.gcp.region'); service=$(plan_json ".${component}.service_name")
   service_json=$(gcloud run services describe "$service" --project "$project" --region "$region" --format=json --quiet) || return 1
   traffic=$(jq -ce 'if (.status.traffic|type) != "array" or (.status.traffic|length) != 1 or .status.traffic[0].percent != 100 or (.status.traffic[0].revisionName|type) != "string" or (.status.traffic[0].tag? != null) then error("service traffic is not one untagged 100-percent revision") else .status.traffic[0] end' <<<"$service_json") || return 1
   revision=$(jq -er '.revisionName' <<<"$traffic") || return 1
   revision_json=$(gcloud run revisions describe "$revision" --project "$project" --region "$region" --format=json --quiet) || return 1
-  image=$(jq -er '.status.imageDigest | select(type == "string" and test("@sha256:"))' <<<"$revision_json") || return 1
-  observed=$(normalize_service_readback "$component" "$service_json" "$revision_json" "$revision" "$image" "$allow_legacy") || return 1
-  expected=$(jq -ce --arg component "$component" '.handles[$component].readback' "$ROLLBACK_PATH") || return 1
-  jq -n -e --argjson expected "$expected" --argjson observed "$observed" '$expected == $observed' >/dev/null || return 1
-  printf '%s\n' "$observed"
+  image=$(jq -er '.status.imageDigest | select(type == "string" and test("@sha256:[0-9a-f]{64}$"))' <<<"$revision_json") || return 1
+  validate_image_value "$component" "$image" || return 1
+  printf '%s\n' "$image"
 }
 
-normalize_worker_definition() {
-  jq -ce '
-    def safe_env: map(if (.valueSource.secretKeyRef? // .valueFrom.secretKeyRef?) then (if has("value") or (has("valueSource") and has("valueFrom")) then error("malformed Job secret environment entry") else ((.valueSource.secretKeyRef // .valueFrom.secretKeyRef) as $ref | {name,valueSource:{secretKeyRef:{secret:($ref.secret // $ref.name),version:($ref.version // $ref.key // "latest")}}}) end) elif ((.name // "")|test("(?i)(secret|token|password|api[_-]?key)")) and has("value") then error("plaintext sensitive Job environment value") else . end);
-    # Provider output metadata is excluded from behavior comparison; generation and etag are captured separately.
-    del(.status,.metadata.uid,.metadata.resourceVersion,.metadata.generation,.metadata.etag,.metadata.creationTimestamp,.metadata.updateTime,.metadata.selfLink,.metadata.managedFields) |
-    .spec.template.spec.template.spec.containers |= map(.env |= safe_env) | {apiVersion,kind,metadata,spec}'
+service_image_readback() {
+  local component="$1" expected_image="$2" expected_revision="${3:-}" project region service service_json traffic revision revision_json
+  [[ "$component" == auth || "$component" == bff ]] || return 1
+  project=$(plan_json '.gcp.project_id'); region=$(plan_json '.gcp.region'); service=$(plan_json ".${component}.service_name")
+  service_json=$(gcloud run services describe "$service" --project "$project" --region "$region" --format=json --quiet) || return 2
+  jq -e 'type == "object" and (.status|type) == "object" and (.status.traffic|type) == "array" and (.status.traffic|length) > 0 and all(.status.traffic[]; type == "object" and (.percent|type) == "number" and (.revisionName|type) == "string" and (.tag? == null or (.tag|type) == "string"))' <<<"$service_json" >/dev/null || return 2
+  if ! traffic=$(jq -ce 'if (.status.traffic|length) != 1 or .status.traffic[0].percent != 100 or .status.traffic[0].tag? != null then error("service traffic is not one untagged 100-percent revision") else .status.traffic[0] end' <<<"$service_json"); then return 1; fi
+  revision=$(jq -er '.revisionName' <<<"$traffic") || return 2
+  if [[ -n "$expected_revision" && "$revision" != "$expected_revision" ]]; then return 1; fi
+  revision_json=$(gcloud run revisions describe "$revision" --project "$project" --region "$region" --format=json --quiet) || return 2
+  jq -e 'def containers: (.spec.containers // .spec.template.spec.containers // null); type == "object" and (.spec|type) == "object" and (.status|type) == "object" and (.status.imageDigest|type) == "string" and (containers|type) == "array" and (containers|length) == 1 and (containers[0].image|type) == "string" and (.status.conditions|type) == "array"' <<<"$revision_json" >/dev/null || return 2
+  if ! jq -n -e --arg image "$expected_image" --argjson revision "$revision_json" '
+    def containers: ($revision.spec.containers // $revision.spec.template.spec.containers // []);
+    ($revision.status.imageDigest == $image) and (containers|type == "array" and length == 1 and .[0].image == $image) and
+    any($revision.status.conditions[]?; .type == "Ready" and .status == "True")
+  ' >/dev/null; then return 1; fi
+  jq -n --arg image "$expected_image" --arg revision "$revision" '{image:$image,revision:$revision,ready:true}'
 }
 
-worker_provider_state() {
-  local job_json="$1"
-  strict_json <<<"$job_json" || return 1
-  jq -nce --argjson job "$job_json" '
-    ($job.metadata // {}) as $metadata |
-    ($metadata.generation // $job.generation // null) as $generation |
-    ($metadata.etag // $job.etag // null) as $etag |
-    if $generation != null and (($generation|type) != "number" or ($generation|floor) != $generation or $generation < 1) then error("Job generation is malformed")
-    elif $etag != null and (($etag|type) != "string" or $etag == "") then error("Job etag is malformed")
-    else {generation:$generation,etag:$etag} end'
+worker_image_handle() {
+  local project region job job_json image
+  project=$(plan_json '.gcp.project_id'); region=$(plan_json '.worker.location'); job=$(plan_json '.worker.job_name')
+  job_json=$(gcloud run jobs describe "$job" --project "$project" --region "$region" --format=json --quiet) || return 1
+  image=$(jq -er '(.spec.template.spec.template.spec.containers // .spec.template.spec.containers // []) | if type == "array" and length == 1 and (.[0].image|type) == "string" then .[0].image else error("Worker image is missing") end' <<<"$job_json") || return 1
+  validate_image_value worker "$image" || return 1
+  printf '%s\n' "$image"
 }
 
-worker_expected() {
-  local image="$1"
-  jq -n --arg image "$image" --argjson normalized "$(jq '.normalized' "$PLAN_PATH")" '$normalized as $n | {image:$image,service_account:$n.worker.runtime_service_account,env:{BUCKET:$n.worker.bucket,PIPELINE_JOB_NAME:$n.worker.job_name,PIPELINE_JOB_LOCATION:$n.worker.location},secret_references:{DEEPSEEK_API_KEY:{secret:$n.worker.secret_references.deepseek_api_key,version:"latest",plaintext:false}},command:[],args:$n.worker.args,resources:{},execution_controls:{task_count:null,parallelism:null,max_retries:null,timeout_seconds:null,execution_environment:null,vpc_access:null,node_selector:null,encryption_key:null},volumes:[],volume_mounts:[],working_dir:null,ports:[]}'
+worker_image_readback() {
+  local expected_image="$1" project region job job_json image
+  project=$(plan_json '.gcp.project_id'); region=$(plan_json '.worker.location'); job=$(plan_json '.worker.job_name')
+  job_json=$(gcloud run jobs describe "$job" --project "$project" --region "$region" --format=json --quiet) || return 2
+  if ! image=$(jq -er '(.spec.template.spec.template.spec.containers // .spec.template.spec.containers // []) | if type == "array" and length == 1 and (.[0].image|type) == "string" then .[0].image else error("Worker image is missing") end' <<<"$job_json"); then return 2; fi
+  if [[ "$image" != "$expected_image" ]]; then return 1; fi
+  jq -n --arg image "$image" '{image:$image}'
 }
-normalize_worker_readback() {
-  local definition="$1"
-  jq -nce --argjson definition "$definition" '
-    def require_object($value;$allowed;$label):
-      if ($value|type) != "object" then error($label + " must be an object")
-      elif ((($value|keys) - $allowed)|length) != 0 then error($label + " contains an unallowlisted field")
-      else $value end;
-    def strings_or_empty($value;$label):
-      if $value == null then [] elif ($value|type) != "array" or any($value[]; type != "string") then error($label + " must be an array of strings") else $value end;
-    def env_shape($entries):
-      if ($entries|type) != "array" then error("Job environment must be an array")
-      elif any($entries[]; type != "object" or (.name|type) != "string") then error("Job environment entry is malformed")
-      elif ([ $entries[].name ] | length) != ([ $entries[].name ] | unique | length) then error("Job environment contains duplicate names")
-      elif ([ $entries[] | select(. as $entry | (["BUCKET","PIPELINE_JOB_NAME","PIPELINE_JOB_LOCATION","DEEPSEEK_API_KEY"] | index($entry.name)) == null) ] | length) != 0 then error("Job environment contains an unknown name")
-      else
-        ($entries | map(. as $entry |
-          if $entry.name == "DEEPSEEK_API_KEY" then
-            if (($entry|keys|sort) != ["name","valueSource"] or ($entry.valueSource|type) != "object" or (($entry.valueSource|keys) != ["secretKeyRef"]) or ($entry.valueSource.secretKeyRef|type) != "object" or (($entry.valueSource.secretKeyRef|keys|sort) != ["secret","version"]) or ($entry.valueSource.secretKeyRef.secret|type) != "string" or ($entry.valueSource.secretKeyRef.version|type) != "string") then error("Job secret environment reference is malformed")
-            else {name:$entry.name,secret:{secret:$entry.valueSource.secretKeyRef.secret,version:$entry.valueSource.secretKeyRef.version,plaintext:false}} end
-          elif (($entry|keys|sort) != ["name","value"] or ($entry.value|type) != "string") then error("Job plain environment entry is malformed")
-          else {name:$entry.name,value:$entry.value} end)) as $normalized |
-        {values:($normalized|map(select(has("value"))|{key:.name,value:.value})|from_entries),secrets:($normalized|map(select(has("secret"))|{key:.name,value:.secret})|from_entries)}
-      end;
-    ($definition.spec // error("Job spec is missing")) as $job_spec |
-    ($job_spec.template // error("Job template is missing")) as $job_template |
-    ($job_template.spec // error("Job template spec is missing")) as $template_spec |
-    ($template_spec.template // error("Job container template is missing")) as $container_template |
-    ($container_template.spec // error("Job container spec is missing")) as $spec |
-    require_object($job_template;["spec","taskCount","parallelism"];"Job template") as $job_template_checked |
-    require_object($container_template;["spec","maxRetries","timeoutSeconds","executionEnvironment","vpcAccess","nodeSelector","encryptionKey"];"Job container template") as $container_template_checked |
-    require_object($spec;["serviceAccountName","containers","volumes"];"Job container spec") as $spec_checked |
-    ($spec_checked.containers // error("Job containers are missing")) as $containers |
-    (if ($containers|type) != "array" or ($containers|length) != 1 then error("Worker container shape is not exact") else $containers[0] end) as $container |
-    require_object($container;["image","env","command","args","resources","volumeMounts","workingDir","ports"];"Worker container") as $container_checked |
-    (env_shape($container_checked.env // [])) as $env |
-    (strings_or_empty($container_checked.command // null;"Job command")) as $command |
-    (strings_or_empty($container_checked.args // null;"Job args")) as $args |
-    (if (($container_checked.resources // {})|type) != "object" then error("Job resources must be an object") else ($container_checked.resources // {}) end) as $resources |
-    (if ($spec_checked.volumes // [])|type != "array" then error("Job volumes must be an array") else ($spec_checked.volumes // []) end) as $volumes |
-    (if ($container_checked.volumeMounts // [])|type != "array" then error("Job volume mounts must be an array") else ($container_checked.volumeMounts // []) end) as $volume_mounts |
-    (if ($container_checked.ports // [])|type != "array" then error("Job ports must be an array") else ($container_checked.ports // []) end) as $ports |
-    {image:($container_checked.image // null),service_account:($spec_checked.serviceAccountName // null),env:{BUCKET:$env.values.BUCKET,PIPELINE_JOB_NAME:$env.values.PIPELINE_JOB_NAME,PIPELINE_JOB_LOCATION:$env.values.PIPELINE_JOB_LOCATION},secret_references:{DEEPSEEK_API_KEY:($env.secrets.DEEPSEEK_API_KEY // {secret:null,version:null,plaintext:false})},command:$command,args:$args,resources:$resources,execution_controls:{task_count:($job_template_checked.taskCount // null),parallelism:($job_template_checked.parallelism // null),max_retries:($container_template_checked.maxRetries // null),timeout_seconds:($container_template_checked.timeoutSeconds // null),execution_environment:($container_template_checked.executionEnvironment // null),vpc_access:($container_template_checked.vpcAccess // null),node_selector:($container_template_checked.nodeSelector // null),encryption_key:($container_template_checked.encryptionKey // null)},volumes:$volumes,volume_mounts:$volume_mounts,working_dir:($container_checked.workingDir // null),ports:$ports}'
-}
-verify_worker_definition() { local observed="$1" expected="$2"; [[ "$(jq -n --argjson expected "$expected" --argjson observed "$observed" '$expected == $observed')" == true ]]; }

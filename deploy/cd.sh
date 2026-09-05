@@ -28,7 +28,7 @@ consume_dev_images() {
   mkdir -p "$ARTIFACT_DIR/dev-images"
   gh run download "$id" --repo "$GITHUB_REPOSITORY" --name "cd-images-$SOURCE_SHA" --dir "$ARTIFACT_DIR/dev-images" || die "DEV receipt artifact download failed"
   [[ -s "$ARTIFACT_DIR/dev-images/dev-receipt.json" ]] || die "DEV receipt content is missing"
-  jq -e --arg sha "$SOURCE_SHA" --arg fingerprint "$(plan_json '.evidence.config_fingerprint')" --argjson run_id "$id" --argjson run_attempt "$(jq -er '.run_attempt' <<<"$run")" --argjson selected "$(plan_json '.selected_components')" '.schema == "lwc-306-dev-image-receipt-v1" and .source.sha == $sha and .source.ref == "develop" and .source.workflow_path == ".github/workflows/deploy-dev.yml" and .source.event == "workflow_dispatch" and .source.run_id == $run_id and .source.run_attempt == $run_attempt and .config.environment == "development" and .config.path == "deploy/environments/development.yaml" and .config.fingerprint == $fingerprint and .components == $selected and (.images|type) == "object"' "$ARTIFACT_DIR/dev-images/dev-receipt.json" >/dev/null || die "DEV receipt provenance does not match the selected production bundle"
+  jq -e --arg sha "$SOURCE_SHA" --argjson run_id "$id" --argjson run_attempt "$(jq -er '.run_attempt' <<<"$run")" --argjson selected "$(plan_json '.selected_components')" '.schema == "lwc-306-dev-image-receipt-v1" and .source.sha == $sha and .source.ref == "develop" and .source.workflow_path == ".github/workflows/deploy-dev.yml" and .source.event == "workflow_dispatch" and .source.run_id == $run_id and .source.run_attempt == $run_attempt and .config.environment == "development" and .config.path == "deploy/environments/development.yaml" and .components == $selected and (.images|type) == "object"' "$ARTIFACT_DIR/dev-images/dev-receipt.json" >/dev/null || die "DEV receipt provenance does not match the selected production bundle"
   jq -n --argjson id "$(jq -er '.id' <<<"$artifact")" --arg digest "$(jq -er '.digest' <<<"$artifact")" '{schema:"lwc-306-dev-artifact-v1",id:$id,digest:$digest,run_id:'"$id"'}' > "$ARTIFACT_DIR/dev-images/dev-artifact.json"
 }
 
@@ -157,7 +157,7 @@ evidence() {
   need JOURNAL_PATH
   need EVIDENCE_PATH
   need FINAL_EVIDENCE_PATH
-  local possible_count journal rollback_result aggregate render_failed=0 final_result final_verified mutation_components mutation_count rollback_attempted rollback_result_value rollback_verified partial unknown next_action provider_readback
+  local possible_count journal rollback_result aggregate render_failed=0 final_result final_verified mutation_components mutation_count rollback_attempted rollback_result_value rollback_verified rollback_terminal partial unknown next_action provider_readback
   journal=$(cat "$JOURNAL_PATH" 2>/dev/null || printf '{}')
   if ! strict_json <<<"$journal" || ! journal_validate; then
     render_failed=1; possible_count=1; mutation_components='[]'; mutation_count=1
@@ -166,11 +166,12 @@ evidence() {
     mutation_components=$(journal_mutation_components)
     mutation_count=$(jq -er 'length' <<<"$mutation_components")
   fi
+  if [[ "$render_failed" -eq 0 ]] && journal_has_rollback_terminal; then rollback_terminal=true; else rollback_terminal=false; fi
   aggregate=$(cat "$EVIDENCE_PATH" 2>/dev/null || printf '{}')
   rollback_result=$(cat "$ROLLBACK_RESULT_PATH" 2>/dev/null || printf '{}')
   if ! strict_json <<<"$aggregate" || ! jq -e '(.schema == "lwc-306-readback-v1") and (.components|type) == "array"' <<<"$aggregate" >/dev/null; then render_failed=1; aggregate='{"schema":"lwc-306-readback-v1","result":"unknown","verified":false,"components":[]}' ; fi
   if ! strict_json <<<"$rollback_result" || ! jq -e '(.schema == "lwc-306-rollback-result-v1") and (.result|type) == "string" and (.verified|type) == "boolean" and (.components|type) == "array"' <<<"$rollback_result" >/dev/null; then
-    [[ "$possible_count" -gt 0 ]] && render_failed=1
+    [[ "$possible_count" -gt 0 || "$rollback_terminal" == true ]] && render_failed=1
     rollback_result='{"schema":"lwc-306-rollback-result-v1","result":"unknown","verified":false,"attempted":[],"components":[]}'
   fi
   final_result=$(jq -r '.result' <<<"$aggregate")
@@ -178,7 +179,18 @@ evidence() {
   rollback_result_value=$(jq -r '.result' <<<"$rollback_result")
   rollback_verified=$(jq -r '(.result == "success" and .verified == true)' <<<"$rollback_result")
   rollback_attempted=$(jq -c '.attempted // []' <<<"$rollback_result")
-  if [[ "$possible_count" -eq 0 ]]; then
+  if [[ "$render_failed" -eq 1 ]]; then
+    final_result=rollback_unknown
+    final_verified=false
+  elif [[ "$rollback_result_value" == success && "$rollback_verified" == true ]]; then
+    final_result=rolled_back
+    final_verified=true
+  elif [[ "$rollback_terminal" == true ]]; then
+    case "$rollback_result_value" in
+      failed) final_result=rollback_failed; final_verified=false ;;
+      *) final_result=rollback_unknown; final_verified=false ;;
+    esac
+  elif [[ "$possible_count" -eq 0 ]]; then
     if [[ "$final_result" == success && "$final_verified" == true ]]; then
       final_result=success
       final_verified=true
@@ -186,12 +198,6 @@ evidence() {
       final_result=failed
       final_verified=false
     fi
-  elif [[ "$render_failed" -eq 1 ]]; then
-    final_result=rollback_unknown
-    final_verified=false
-  elif [[ "$rollback_result_value" == success && "$rollback_verified" == true ]]; then
-    final_result=rolled_back
-    final_verified=true
   elif [[ "$rollback_result_value" == failed ]]; then
     final_result=rollback_failed
     final_verified=false
@@ -224,5 +230,6 @@ case "${1:-}" in
   rollback) rollback ;;
   evidence) evidence ;;
   consume-dev-images) consume_dev_images ;;
-  *) die "usage: cd.sh init|plan|preflight-shared|preflight|freeze|revalidate-before-provider|mutate|reconcile|aggregate-reconcile|rollback|evidence|consume-dev-images" ;;
+  record-dev-receipt) record_dev_receipt ;;
+  *) die "usage: cd.sh init|plan|preflight-shared|preflight|freeze|revalidate-before-provider|mutate|reconcile|aggregate-reconcile|rollback|evidence|consume-dev-images|record-dev-receipt" ;;
 esac
