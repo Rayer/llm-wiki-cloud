@@ -142,7 +142,7 @@ jobs:
 
       - name: Install pinned Vercel CLI
         if: contains(inputs.components, 'frontend')
-        run: npm install --global vercel@52.0.0 --ignore-scripts
+        run: npm install --global vercel@59.11.7 --ignore-scripts
 
       - name: Preflight Auth
         if: contains(inputs.components, 'auth')
