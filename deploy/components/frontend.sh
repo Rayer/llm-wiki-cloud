@@ -43,6 +43,17 @@ vercel_get_deployment_inventory() {
     response=$(vercel_api_get "$endpoint") || return 1
     strict_json <<<"$response" || return 1
     page=$(jq -ce 'if type != "object" or (.deployments|type) != "array" then error("deployment inventory is not an array") else .deployments end' <<<"$response") || return 1
+    jq -e --arg project "$VERCEL_PROJECT_ID" --arg team "$VERCEL_TEAM_ID" 'all(.[];
+      type == "object" and
+      (.uid|type) == "string" and (.uid|test("^dpl_[A-Za-z0-9]+$")) and (has("id")|not) and
+      .projectId == $project and (.readyState|type) == "string" and has("target") and
+      (.url|type) == "string" and (.meta|type) == "object" and
+      (.meta.githubCommitSha|type) == "string" and (.meta.githubCommitRef|type) == "string" and
+      (.meta.githubOrg|type) == "string" and (.meta.githubRepo|type) == "string" and
+      ((has("teamId")|not) or ((.teamId|type) == "string" and .teamId == $team)) and
+      ((has("accountId")|not) or ((.accountId|type) == "string" and .accountId == $team)) and
+      ((has("ownerId")|not) or ((.ownerId|type) == "string" and .ownerId == $team)))' <<<"$page" >/dev/null || return 1
+    page=$(jq -c 'map(. + {id: (.id // .uid)} | del(.uid))' <<<"$page")
     inventory=$(jq -cn --argjson current "$inventory" --argjson page "$page" '$current + $page')
     if [[ "$(jq -er 'length' <<<"$page")" == 100 ]]; then jq -e '.pagination|type == "object" and has("next")' <<<"$response" >/dev/null || return 1; fi
     next=$(jq -r 'if (.pagination|type) != "object" or .pagination.next == null then "" elif (.pagination.next|type) == "string" and length > 0 then .pagination.next elif (.pagination.next|type) == "number" and isfinite and floor == . and . >= 0 then (.pagination.next|tostring) else "__invalid__" end' <<<"$response")
@@ -52,6 +63,25 @@ vercel_get_deployment_inventory() {
     seen="${seen:+$seen:}$next"; cursor="$next"; pages=$((pages + 1))
   done
   return 1
+}
+
+vercel_exact_deployment_candidates() {
+  local inventory="$1"
+  jq -ce --arg project "$VERCEL_PROJECT_ID" --arg team "$VERCEL_TEAM_ID" --arg source_sha "$SOURCE_SHA" --arg source_ref "$SOURCE_REF" --arg repository "$(plan_json '.frontend.repository')" --arg target "$(frontend_deploy_target)" '
+    def nonempty_string($value): ($value|type) == "string" and ($value|length) > 0;
+    def ref_ok($value): nonempty_string($value) and ($value == $source_ref or $value == ("refs/heads/" + $source_ref));
+    def sha_ok($value): nonempty_string($value) and $value == $source_sha;
+    def repo_ok($org; $repo): nonempty_string($org) and nonempty_string($repo) and ($org + "/" + $repo) == $repository;
+    [.deployments[] | select(
+      (.id|nonempty_string(.)) and (.id|test("^dpl_[A-Za-z0-9]+$")) and .projectId == $project and
+      .readyState == "READY" and (if $target == "preview" then (.target == null or .target == "preview") else .target == $target end) and
+      (nonempty_string(.url) and (.url|test("^(https://)?[A-Za-z0-9][A-Za-z0-9.-]*\\.vercel\\.app$"))) and
+      ((.gitSource.sha == null) or sha_ok(.gitSource.sha)) and ((.meta.githubCommitSha == null) or sha_ok(.meta.githubCommitSha)) and (sha_ok(.gitSource.sha) or sha_ok(.meta.githubCommitSha)) and
+      ((.gitSource.ref == null) or ref_ok(.gitSource.ref)) and ((.meta.githubCommitRef == null) or ref_ok(.meta.githubCommitRef)) and (ref_ok(.gitSource.ref) or ref_ok(.meta.githubCommitRef)) and
+      ((.meta.githubOrg == null and .meta.githubRepo == null) or repo_ok(.meta.githubOrg; .meta.githubRepo)) and ((.gitSource.org == null and .gitSource.repo == null) or repo_ok(.gitSource.org; .gitSource.repo)) and (repo_ok(.meta.githubOrg; .meta.githubRepo) or repo_ok(.gitSource.org; .gitSource.repo)) and
+      ((has("teamId")|not) or .teamId == $team) and ((has("accountId")|not) or .accountId == $team) and ((has("ownerId")|not) or .ownerId == $team)
+    )]
+  ' <<<"$inventory"
 }
 
 vercel_get_alias_inventory() {
@@ -104,6 +134,12 @@ vercel_project_authority() {
 frontend_vercel_environment() { [[ "$ENVIRONMENT" == production ]] && printf 'production\n' || printf 'preview\n'; }
 frontend_deploy_target() { [[ "$ENVIRONMENT" == production ]] && printf 'production\n' || printf 'preview\n'; }
 frontend_deployment_path() { printf '%s/frontend-deployment.json\n' "$ARTIFACT_DIR"; }
+frontend_write_receipt() {
+  local deployment_id="$1" deployment_url="$2" target="$3"
+  mkdir -p "$ARTIFACT_DIR"
+  jq -n --arg deployment_id "$deployment_id" --arg deployment_url "$deployment_url" --arg source_sha "$SOURCE_SHA" --arg target "$target" \
+    '{deployment_id:$deployment_id,deployment_url:$deployment_url,source_sha:$source_sha,target:$target}' > "$(frontend_deployment_path)"
+}
 
 vercel_canonical_deployment_url() {
   local value="$1" host
@@ -129,7 +165,7 @@ vercel_validate_deployment() {
     (.teamId // .accountId // .ownerId) as $actual_team |
     .meta as $meta | .gitSource as $git |
     type == "object" and .id == $id and .projectId == $project and nonempty_string($actual_team) and $actual_team == $team and
-    .readyState == "READY" and .target == $target and nonempty_string(.url) and
+    .readyState == "READY" and (if $target == "preview" then (.target == null or .target == "preview") else .target == $target end) and nonempty_string(.url) and
     nonempty_string(.url) and
     ((($git.sha == null) or sha_ok($git.sha)) and (($meta.githubCommitSha == null) or sha_ok($meta.githubCommitSha)) and (sha_ok($git.sha) or sha_ok($meta.githubCommitSha))) and
     ((($git.ref == null) or ref_ok($git.ref)) and (($meta.githubCommitRef == null) or ref_ok($meta.githubCommitRef)) and (ref_ok($git.ref) or ref_ok($meta.githubCommitRef))) and
@@ -139,21 +175,9 @@ vercel_validate_deployment() {
 vercel_select_deployment_after_uncertain() {
   local inventory identities
   inventory=$(vercel_get_deployment_inventory) || return 1
-  identities=$(jq -ce --arg project "$VERCEL_PROJECT_ID" --arg team "$VERCEL_TEAM_ID" --arg source_sha "$SOURCE_SHA" --arg source_ref "$SOURCE_REF" --arg repository "$(plan_json '.frontend.repository')" '
-    def nonempty_string($value): ($value|type) == "string" and ($value|length) > 0;
-    def ref_ok($value): nonempty_string($value) and ($value == $source_ref or $value == ("refs/heads/" + $source_ref));
-    def sha_ok($value): nonempty_string($value) and $value == $source_sha;
-    def repo_ok($org; $repo): nonempty_string($org) and nonempty_string($repo) and ($org + "/" + $repo) == $repository;
-    [.deployments[] | select(type == "object") | select(
-      (.id|nonempty_string(.)) and (.id|startswith("dpl_")) and .projectId == $project and
-      ((.teamId // .accountId // .ownerId)|nonempty_string(.)) and ((.teamId // .accountId // .ownerId) == $team) and
-      ((.gitSource.sha == null) or sha_ok(.gitSource.sha)) and ((.meta.githubCommitSha == null) or sha_ok(.meta.githubCommitSha)) and (sha_ok(.gitSource.sha) or sha_ok(.meta.githubCommitSha)) and
-      ((.gitSource.ref == null) or ref_ok(.gitSource.ref)) and ((.meta.githubCommitRef == null) or ref_ok(.meta.githubCommitRef)) and (ref_ok(.gitSource.ref) or ref_ok(.meta.githubCommitRef)) and
-      ((.meta.githubOrg == null and .meta.githubRepo == null) or repo_ok(.meta.githubOrg; .meta.githubRepo)) and ((.gitSource.org == null and .gitSource.repo == null) or repo_ok(.gitSource.org; .gitSource.repo)) and (repo_ok(.meta.githubOrg; .meta.githubRepo) or repo_ok(.gitSource.org; .gitSource.repo))
-    )]
-  ' <<<"$inventory") || return 1
+  identities=$(vercel_exact_deployment_candidates "$inventory") || return 1
   [[ "$(jq -er 'length' <<<"$identities")" == 1 ]] || return 1
-  jq -er --arg target "$(frontend_deploy_target)" '.[0] | select(.target == $target) | .id' <<<"$identities"
+  jq -er '.[0].id' <<<"$identities"
 }
 vercel_poll_deployment() {
   local deployment_id="$1" attempt response url
@@ -200,7 +224,7 @@ frontend_freeze() {
 }
 
 frontend_mutate() {
-  local api_url auth_url team vercel_environment target deployment_json deployment_id deployment_url alias
+  local api_url auth_url team vercel_environment target deployment_json deployment_id deployment_url candidate_url alias inventory candidates candidate_count reused=0
   journal_init
   set_mutation_status frontend unknown
   team=$(plan_json '.frontend.team_slug'); api_url=$(plan_json '.frontend.api_url'); auth_url=$(plan_json '.frontend.auth_url')
@@ -212,31 +236,59 @@ frontend_mutate() {
   fi
   revalidate_before_provider
   vercel_environment=$(frontend_vercel_environment); target=$(frontend_deploy_target)
-  (cd "$ROOT/apps/frontend" && npm ci --ignore-scripts >/dev/null)
-  (cd "$ROOT" && NEXT_PUBLIC_API_URL="$api_url" NEXT_PUBLIC_AUTH_URL="$auth_url" timeout --signal=TERM --kill-after=5s 120s vercel pull --yes --environment="$vercel_environment" --scope "$team" --token "${VERCEL_TOKEN:?}" >/dev/null && NEXT_PUBLIC_API_URL="$api_url" NEXT_PUBLIC_AUTH_URL="$auth_url" timeout --signal=TERM --kill-after=5s 300s vercel build --scope "$team" --token "${VERCEL_TOKEN:?}" $([[ "$target" == production ]] && printf '%s' '--prod') >/dev/null)
-  vercel_project_authority || { journal_rejected frontend; die "Vercel project authority changed before frontend deployment"; }
-  vercel_verify_frozen_frontend || { journal_rejected frontend; die "frontend alias authority changed from the frozen rollback snapshot"; }
-  revalidate_before_provider
-  journal_pending frontend
-  if ! deployment_json=$(cd "$ROOT" && timeout --signal=TERM --kill-after=5s 300s vercel deploy --prebuilt --yes --json --scope "$team" --token "${VERCEL_TOKEN:?}" --meta "githubCommitSha=$SOURCE_SHA" --meta "githubCommitRef=$SOURCE_REF" --meta "githubOrg=Rayer" --meta "githubRepo=llm-wiki-cloud" $([[ "$target" == production ]] && printf '%s' '--prod')); then
-    if ! deployment_id=$(vercel_select_deployment_after_uncertain); then
-      journal_transition frontend unknown
-      set_mutation_status frontend unknown; die "frontend deployment result is unknown after the provider command"
-    fi
-    if ! vercel_poll_deployment "$deployment_id"; then
-      journal_transition frontend unknown
-      set_mutation_status frontend unknown; die "frontend deployment read-back is still unknown after the provider command"
-    fi
-    deployment_json="$FRONTEND_DEPLOYMENT_JSON"
-    deployment_url="$FRONTEND_DEPLOYMENT_URL"
+  inventory=$(vercel_get_deployment_inventory) || { journal_rejected frontend; set_mutation_status frontend failed; write_component_result frontend failed '{}' deployment_inventory_unreadable; return 1; }
+  candidates=$(vercel_exact_deployment_candidates "$inventory") || { journal_rejected frontend; set_mutation_status frontend failed; write_component_result frontend failed '{}' deployment_inventory_malformed; return 1; }
+  candidate_count=$(jq -er 'length' <<<"$candidates")
+  if (( candidate_count > 1 )); then
+    journal_rejected frontend; set_mutation_status frontend failed; write_component_result frontend failed '{}' deployment_candidate_ambiguous; return 1
+  elif (( candidate_count == 1 )); then
+    reused=1
+    deployment_id=$(jq -er '.[0].id' <<<"$candidates")
+    candidate_url=$(jq -er '.[0].url | select(type == "string")' <<<"$candidates")
+    candidate_url=$(vercel_canonical_deployment_url "$candidate_url") || { journal_rejected frontend; set_mutation_status frontend failed; write_component_result frontend failed '{}' deployment_url_invalid; return 1; }
+    deployment_json=$(vercel_get_deployment "$deployment_id") || { journal_rejected frontend; set_mutation_status frontend failed; write_component_result frontend failed '{}' deployment_inspect_unreadable; return 1; }
+    deployment_url=$(jq -er '.url | select(type == "string")' <<<"$deployment_json") || { journal_rejected frontend; set_mutation_status frontend failed; write_component_result frontend failed '{}' deployment_url_invalid; return 1; }
+    deployment_url=$(vercel_canonical_deployment_url "$deployment_url") || { journal_rejected frontend; set_mutation_status frontend failed; write_component_result frontend failed '{}' deployment_url_invalid; return 1; }
+    [[ "$deployment_url" == "$candidate_url" ]] || { journal_rejected frontend; set_mutation_status frontend failed; write_component_result frontend failed '{}' deployment_url_mismatch; return 1; }
+    vercel_validate_deployment "$deployment_json" "$deployment_id" "$deployment_url" || { journal_rejected frontend; set_mutation_status frontend failed; write_component_result frontend failed '{}' deployment_inspect_mismatch; return 1; }
   else
-    deployment_id=$(jq -er '.id // .deploymentId | select(type == "string" and startswith("dpl_"))' <<<"$deployment_json") || { journal_transition frontend unknown; die "frontend deployment ID is not immutable"; }
-    deployment_url=$(jq -er '.url // .deployment_url | select(type == "string")' <<<"$deployment_json") || { journal_transition frontend unknown; die "frontend deployment URL is missing"; }
-    deployment_url=$(vercel_canonical_deployment_url "$deployment_url") || { journal_transition frontend unknown; die "frontend deployment URL is not an immutable Vercel URL"; }
-    vercel_validate_deployment "$(vercel_get_deployment "$deployment_id")" "$deployment_id" "$deployment_url" || { journal_transition frontend unknown; die "frontend deployment read-back did not match exact source and authority"; }
+    (cd "$ROOT/apps/frontend" && npm ci --ignore-scripts >/dev/null)
+    (cd "$ROOT" && NEXT_PUBLIC_API_URL="$api_url" NEXT_PUBLIC_AUTH_URL="$auth_url" timeout --signal=TERM --kill-after=5s 120s vercel pull --yes --environment="$vercel_environment" --scope "$team" --token "${VERCEL_TOKEN:?}" >/dev/null && NEXT_PUBLIC_API_URL="$api_url" NEXT_PUBLIC_AUTH_URL="$auth_url" timeout --signal=TERM --kill-after=5s 300s vercel build --scope "$team" --token "${VERCEL_TOKEN:?}" $([[ "$target" == production ]] && printf '%s' '--prod') >/dev/null)
+    vercel_project_authority || { journal_rejected frontend; die "Vercel project authority changed before frontend deployment"; }
+    vercel_verify_frozen_frontend || { journal_rejected frontend; die "frontend alias authority changed from the frozen rollback snapshot"; }
+    revalidate_before_provider
+    journal_pending frontend
+    if ! deployment_json=$(cd "$ROOT" && timeout --signal=TERM --kill-after=5s 300s vercel deploy --prebuilt --yes --json --scope "$team" --token "${VERCEL_TOKEN:?}" --meta "githubCommitSha=$SOURCE_SHA" --meta "githubCommitRef=$SOURCE_REF" --meta "githubOrg=Rayer" --meta "githubRepo=llm-wiki-cloud" $([[ "$target" == production ]] && printf '%s' '--prod')); then
+      if ! deployment_id=$(vercel_select_deployment_after_uncertain); then
+        journal_transition frontend unknown
+        set_mutation_status frontend unknown; die "frontend deployment result is unknown after the provider command"
+      fi
+      if ! vercel_poll_deployment "$deployment_id"; then
+        journal_transition frontend unknown
+        set_mutation_status frontend unknown; die "frontend deployment read-back is still unknown after the provider command"
+      fi
+      deployment_json="$FRONTEND_DEPLOYMENT_JSON"
+      deployment_url="$FRONTEND_DEPLOYMENT_URL"
+    else
+      deployment_id=$(jq -er '.id // .deploymentId | select(type == "string" and startswith("dpl_"))' <<<"$deployment_json") || { journal_transition frontend unknown; die "frontend deployment ID is not immutable"; }
+      deployment_url=$(jq -er '.url // .deployment_url | select(type == "string")' <<<"$deployment_json") || { journal_transition frontend unknown; die "frontend deployment URL is missing"; }
+      deployment_url=$(vercel_canonical_deployment_url "$deployment_url") || { journal_transition frontend unknown; die "frontend deployment URL is not an immutable Vercel URL"; }
+      vercel_validate_deployment "$(vercel_get_deployment "$deployment_id")" "$deployment_id" "$deployment_url" || { journal_transition frontend unknown; die "frontend deployment read-back did not match exact source and authority"; }
+    fi
+    mutation_accepted frontend
   fi
-  mutation_accepted frontend
-  mkdir -p "$ARTIFACT_DIR"; jq -n --arg deployment_id "$deployment_id" --arg deployment_url "$deployment_url" --arg source_sha "$SOURCE_SHA" --arg target "$target" '{deployment_id:$deployment_id,deployment_url:$deployment_url,source_sha:$source_sha,target:$target}' > "$(frontend_deployment_path)"
+  frontend_write_receipt "$deployment_id" "$deployment_url" "$target"
+  if (( reused )); then
+    if jq -e --arg deployment "$deployment_id" '.handles.frontend.aliases | type == "array" and length > 0 and all(.[]; .deployment_id == $deployment)' "$ROLLBACK_PATH" >/dev/null; then
+      vercel_verify_frozen_frontend || { journal_rejected frontend; set_mutation_status frontend failed; write_component_result frontend failed '{}' alias_readback_mismatch; return 1; }
+      journal_rejected frontend
+      set_mutation_status frontend success
+      return 0
+    fi
+    vercel_verify_frozen_frontend || { journal_rejected frontend; set_mutation_status frontend failed; write_component_result frontend failed '{}' alias_authority_changed; return 1; }
+    revalidate_before_provider
+    journal_pending frontend
+  fi
   while IFS= read -r alias; do
     revalidate_before_provider
     if ! vercel_alias_apply "$deployment_id" "$alias"; then
@@ -244,6 +296,7 @@ frontend_mutate() {
       die "${FRONTEND_MUTATION_FAILURE:-frontend alias mutation failed}"
     fi
   done < <(frontend_expected_aliases)
+  if (( reused )); then mutation_accepted frontend; fi
   set_mutation_status frontend success
 }
 
