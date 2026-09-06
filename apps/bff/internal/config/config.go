@@ -80,6 +80,17 @@ type Config struct {
 	// Env: AUTH_SERVICE_URL. Default: https://auth.dev.rayer.idv.tw
 	AuthServiceURL string
 
+	// Google OIDC configuration (LWC-316). These values are required together
+	// when any Google setting is provided.
+	GoogleClientID         string
+	GoogleClientSecret     string
+	GoogleIssuer           string
+	GoogleJWKSURL          string
+	GoogleTokenURL         string
+	GoogleLoginRedirectURL string
+	GoogleLinkRedirectURL  string
+	GoogleCompletionURL    string
+
 	// QueryStageConfigPath selects the immutable external query composition.
 	QueryStageConfigPath string
 
@@ -135,6 +146,14 @@ func Load(path string) (Config, error) {
 	v.BindEnv("pipeline_demo_user_ids", "PIPELINE_DEMO_USER_IDS")
 	v.BindEnv("registration_enabled", "REGISTRATION_ENABLED")
 	v.BindEnv("auth_service_url", "AUTH_SERVICE_URL")
+	v.BindEnv("google_client_id", "GOOGLE_CLIENT_ID")
+	v.BindEnv("google_client_secret", "GOOGLE_CLIENT_SECRET")
+	v.BindEnv("google_issuer", "GOOGLE_ISSUER")
+	v.BindEnv("google_jwks_url", "GOOGLE_JWKS_URL")
+	v.BindEnv("google_token_url", "GOOGLE_TOKEN_URL")
+	v.BindEnv("google_login_redirect_url", "GOOGLE_LOGIN_REDIRECT_URL")
+	v.BindEnv("google_link_redirect_url", "GOOGLE_LINK_REDIRECT_URL")
+	v.BindEnv("google_completion_url", "GOOGLE_COMPLETION_URL")
 	v.BindEnv("query_stage_config_path", "QUERY_STAGE_CONFIG_PATH")
 	v.BindEnv("query_expansion_model", "QUERY_EXPANSION_MODEL")
 	v.BindEnv("query_expansion_reasoning", "QUERY_EXPANSION_REASONING")
@@ -195,6 +214,20 @@ func Load(path string) (Config, error) {
 	authServiceURL := strings.TrimSpace(v.GetString("auth_service_url"))
 	if authServiceURL == "" {
 		authServiceURL = DefaultAuthServiceURL
+	}
+	googleClientID := strings.TrimSpace(v.GetString("google_client_id"))
+	googleClientSecret := strings.TrimSpace(v.GetString("google_client_secret"))
+	googleIssuer := strings.TrimSpace(v.GetString("google_issuer"))
+	googleJWKSURL := strings.TrimSpace(v.GetString("google_jwks_url"))
+	googleTokenURL := strings.TrimSpace(v.GetString("google_token_url"))
+	googleLoginRedirectURL := strings.TrimSpace(v.GetString("google_login_redirect_url"))
+	googleLinkRedirectURL := strings.TrimSpace(v.GetString("google_link_redirect_url"))
+	googleCompletionURL := strings.TrimSpace(v.GetString("google_completion_url"))
+	allowedOrigins := parseAllowedOrigins(v.GetString("allowed_origins"))
+	if googleConfigSet(googleClientID, googleClientSecret, googleIssuer, googleJWKSURL, googleTokenURL, googleLoginRedirectURL, googleLinkRedirectURL, googleCompletionURL) {
+		if err := ValidateGoogleConfig(googleClientID, googleClientSecret, googleIssuer, googleJWKSURL, googleTokenURL, googleLoginRedirectURL, googleLinkRedirectURL, googleCompletionURL, GoogleRuntimeValidation{AuthServiceURL: authServiceURL, AllowedOrigins: allowedOrigins}); err != nil {
+			return Config{}, fmt.Errorf("invalid Google OAuth configuration: %w", err)
+		}
 	}
 	queryExpansionModel := strings.TrimSpace(v.GetString("query_expansion_model"))
 	if queryExpansionModel == "" {
@@ -259,7 +292,7 @@ func Load(path string) (Config, error) {
 		DevJWT:                           v.GetBool("dev_jwt"),
 		LocalDataDir:                     v.GetString("local_data_dir"),
 		PipelineJobURL:                   pipelineJobURL,
-		AllowedOrigins:                   parseAllowedOrigins(v.GetString("allowed_origins")),
+		AllowedOrigins:                   allowedOrigins,
 		AllowedHosts:                     allowedHosts,
 		PipelineDailyLimit:               dailyLimit,
 		PipelineCooldownSeconds:          cooldownSeconds,
@@ -267,6 +300,14 @@ func Load(path string) (Config, error) {
 		PipelineDemoUserIDs:              splitCommaList(v.GetString("pipeline_demo_user_ids")),
 		RegistrationEnabled:              registrationEnabled,
 		AuthServiceURL:                   authServiceURL,
+		GoogleClientID:                   googleClientID,
+		GoogleClientSecret:               googleClientSecret,
+		GoogleIssuer:                     googleIssuer,
+		GoogleJWKSURL:                    googleJWKSURL,
+		GoogleTokenURL:                   googleTokenURL,
+		GoogleLoginRedirectURL:           googleLoginRedirectURL,
+		GoogleLinkRedirectURL:            googleLinkRedirectURL,
+		GoogleCompletionURL:              googleCompletionURL,
 		QueryStageConfigPath:             queryStageConfigPath,
 		QuerySelectionLimit:              selectionLimit,
 		QuerySelectionExplorationSlots:   explorationSlots,

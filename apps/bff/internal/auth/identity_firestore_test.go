@@ -6,6 +6,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"net"
 	"net/http"
 	"net/http/httptest"
 	"net/url"
@@ -497,6 +498,11 @@ func newIdentityEmulatorRepository(t *testing.T) (*IdentityRepository, *firestor
 	if err != nil || parsed.Host == "" {
 		t.Fatalf("invalid FIRESTORE_EMULATOR_HOST")
 	}
+	probe, err := net.DialTimeout("tcp", parsed.Host, 2*time.Second)
+	if err != nil {
+		t.Fatalf("Firestore emulator at %s is unreachable: %v", parsed.Host, err)
+	}
+	_ = probe.Close()
 	ctx := context.Background()
 	client, err := firestore.NewClient(ctx, "lwc-315-test", option.WithEndpoint(endpoint), option.WithoutAuthentication())
 	if err != nil {

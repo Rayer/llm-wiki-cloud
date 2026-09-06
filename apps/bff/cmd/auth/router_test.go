@@ -5,11 +5,13 @@ import (
 	"encoding/json"
 	"net/http"
 	"net/http/httptest"
+	"os"
 	"strings"
 	"testing"
 
 	"github.com/gin-gonic/gin"
 	"github.com/rayer/llm-wiki-bff/internal/config"
+	firestoreclient "github.com/rayer/llm-wiki-bff/internal/firestore"
 	"github.com/rayer/llm-wiki-bff/internal/syssettings"
 )
 
@@ -41,6 +43,47 @@ func TestProductionRouterExposesOnlyAuthPublicSurface(t *testing.T) {
 	for route := range got {
 		if !want[route] {
 			t.Errorf("Auth production router exposed unapproved route %s", route)
+		}
+	}
+}
+
+func TestProductionRouterWiresGoogleAuthRoutesWhenConfigured(t *testing.T) {
+	if strings.TrimSpace(os.Getenv("FIRESTORE_EMULATOR_HOST")) == "" {
+		t.Skip("FIRESTORE_EMULATOR_HOST is not set")
+	}
+	client, err := firestoreclient.NewClientWithDatabase("lwc-315-test", "", "", "")
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer client.Close()
+	router := newProductionRouter(config.Config{
+		JWTSecret: "test-secret", AllowedHosts: []string{"auth.example.test"}, AllowedOrigins: []string{"https://frontend.example"}, AuthServiceURL: "https://auth.example.test",
+		GoogleClientID: "client", GoogleClientSecret: "secret", GoogleIssuer: "https://accounts.google.com",
+		GoogleJWKSURL: "https://www.googleapis.com/oauth2/v3/certs", GoogleTokenURL: "https://oauth2.googleapis.com/token",
+		GoogleLoginRedirectURL: "https://auth.example.test/api/v1/auth/google/login/callback",
+		GoogleLinkRedirectURL:  "https://auth.example.test/api/v1/auth/google/link/callback",
+		GoogleCompletionURL:    "https://frontend.example/login",
+	}, false, client, &syssettings.FakeStore{Enabled: true})
+	want := map[string]bool{
+		"POST /api/v1/auth/google/start": true, "GET /api/v1/auth/google/start": true,
+		"POST /api/v1/auth/google/login/start": true, "POST /api/v1/auth/google/link/start": true,
+		"GET /api/v1/auth/google/callback": true, "GET /api/v1/auth/google/login/callback": true,
+		"GET /api/v1/auth/google/link/callback": true, "POST /api/v1/auth/google/link/confirm": true,
+		"POST /api/v1/auth/google/link/cancel": true, "GET /api/v1/auth/google/link/complete": true,
+		"GET /api/v1/auth/google/complete": true,
+	}
+	got := make(map[string]bool)
+	for _, route := range router.Routes() {
+		if strings.Contains(route.Path, "/google/") || strings.HasSuffix(route.Path, "/google/start") {
+			got[route.Method+" "+route.Path] = true
+		}
+	}
+	if len(got) != len(want) {
+		t.Fatalf("Google auth routes=%#v want=%#v", got, want)
+	}
+	for route := range want {
+		if !got[route] {
+			t.Errorf("missing Google auth route %s", route)
 		}
 	}
 }
@@ -170,7 +213,7 @@ func TestAuthCORSAllowsOnlyBaselineMethodsAndHeaders(t *testing.T) {
 	request := httptest.NewRequest(http.MethodOptions, "http://auth.example.test/api/v1/auth/login", nil)
 	request.Header.Set("Origin", "https://frontend.example")
 	request.Header.Set("Access-Control-Request-Method", http.MethodPost)
-	request.Header.Set("Access-Control-Request-Headers", "Content-Type")
+	request.Header.Set("Access-Control-Request-Headers", "Content-Type, Authorization")
 	router.ServeHTTP(recorder, request)
 	if recorder.Code != http.StatusNoContent {
 		t.Fatalf("CORS preflight status = %d, want %d", recorder.Code, http.StatusNoContent)
@@ -178,8 +221,8 @@ func TestAuthCORSAllowsOnlyBaselineMethodsAndHeaders(t *testing.T) {
 	if got := recorder.Header().Get("Access-Control-Allow-Methods"); got != "GET,POST,OPTIONS" {
 		t.Fatalf("Access-Control-Allow-Methods = %q, want %q", got, "GET,POST,OPTIONS")
 	}
-	if got := recorder.Header().Get("Access-Control-Allow-Headers"); got != "Content-Type" {
-		t.Fatalf("Access-Control-Allow-Headers = %q, want %q", got, "Content-Type")
+	if got := recorder.Header().Get("Access-Control-Allow-Headers"); got != "Content-Type,Authorization" {
+		t.Fatalf("Access-Control-Allow-Headers = %q, want %q", got, "Content-Type,Authorization")
 	}
 	if got := recorder.Header().Get("Access-Control-Allow-Origin"); got != "https://frontend.example" {
 		t.Fatalf("Access-Control-Allow-Origin = %q, want configured origin", got)
