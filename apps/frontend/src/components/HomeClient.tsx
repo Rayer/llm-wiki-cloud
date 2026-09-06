@@ -390,71 +390,82 @@ export function HomeClient() {
   const searchButtonCueState = searchButtonCue > 0 ? searchButtonCue.toString() : undefined;
 
   return (
-    <div className="space-y-10">
-      <section className="pt-10 sm:pt-14">
+    <div className="space-y-12">
+      <section className="relative overflow-hidden border-b border-white/10 pb-10 pt-10 sm:pt-14">
+        <div aria-hidden="true" className="pointer-events-none absolute -right-32 -top-44 size-[34rem] rounded-full bg-emerald-400/10 blur-3xl" />
         <p className="font-mono text-[11px] uppercase tracking-[0.22em] text-emerald-300/90">{t('Demo.heroSubtitle')}</p>
-        <h1 className="font-serif mt-4 max-w-3xl text-[1.85rem] font-medium leading-[1.28] tracking-tight text-[#eeeae4] sm:text-[2.35rem]">
+        <h1 className="font-serif relative mt-4 max-w-3xl text-[1.95rem] font-medium leading-[1.2] tracking-tight text-[#eeeae4] text-pretty sm:text-[2.7rem]">
           {t('Demo.heading')}
         </h1>
 
-        <form onSubmit={onSubmit} className="mt-10 w-full max-w-3xl">
-          <div className="flex flex-col gap-3 border-b border-white/18 pb-3 focus-within:border-emerald-400 sm:flex-row sm:items-end">
+        <form onSubmit={onSubmit} className="relative mt-10 w-full max-w-4xl overflow-hidden rounded-[var(--radius-lg)] border border-white/15 bg-zinc-900/65 shadow-xl shadow-black/20 backdrop-blur-sm focus-within:border-emerald-300/70">
+          <div className="flex items-center gap-3 px-4 py-3 sm:px-5">
             <input
+              name="query"
+              autoComplete="off"
               value={query}
               onChange={(event) => setQuery(event.target.value)}
               aria-label={t('Demo.search')}
               placeholder={suggestedQueries[0] ?? t('Demo.searchPlaceholder')}
-              className="min-h-12 flex-1 bg-transparent px-0 text-lg text-white outline-none placeholder:text-zinc-500 focus-visible:outline focus-visible:outline-2 focus-visible:outline-offset-4 focus-visible:outline-emerald-400"
+              className="min-h-12 min-w-0 flex-1 bg-transparent px-0 text-base text-white outline-none placeholder:text-zinc-500 focus-visible:outline focus-visible:outline-2 focus-visible:outline-offset-4 focus-visible:outline-emerald-400"
             />
-            <div className="flex items-center gap-2 pb-1">
-              <div className="grid grid-cols-2 text-sm">
-                {(['wiki', 'full'] as const).map((item) => (
-                  <button
-                    key={item}
-                    type="button"
-                    onClick={() => setMode(item)}
-                    aria-pressed={mode === item}
-                    className={`min-h-11 px-3 font-medium ${
-                      mode === item ? 'text-emerald-200 underline decoration-emerald-400/80 decoration-1 underline-offset-8' : 'text-zinc-500 hover:text-zinc-200'
-                    }`}
-                  >
-                    {t(`Demo.${item}`)}
-                  </button>
-                ))}
-              </div>
-              <button
-                type="submit"
-                disabled={loading}
-                aria-busy={loading}
-                data-search-cue={searchButtonCueState}
-                className="min-h-12 rounded-sm bg-emerald-400 px-5 text-sm font-semibold text-zinc-950 hover:bg-emerald-300 disabled:cursor-not-allowed disabled:opacity-60"
-              >
-                {t('Demo.search')}
-              </button>
+            <button
+              type="submit"
+              disabled={loading}
+              aria-busy={loading}
+              data-search-cue={searchButtonCueState}
+              className="min-h-12 shrink-0 rounded-lg bg-emerald-400 px-5 text-sm font-semibold text-zinc-950 transition hover:bg-emerald-300 focus-visible:outline focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-emerald-200 disabled:cursor-not-allowed disabled:opacity-60"
+            >
+              {t('Demo.search')}
+            </button>
+          </div>
+          <div className="flex flex-col gap-3 border-t border-white/10 px-4 py-3 sm:flex-row sm:items-center sm:justify-between sm:px-5">
+            <div className="grid w-fit grid-cols-2 rounded-md bg-black/20 p-1 text-sm">
+              {(['wiki', 'full'] as const).map((item) => (
+                <button
+                  key={item}
+                  type="button"
+                  onClick={() => setMode(item)}
+                  aria-pressed={mode === item}
+                  className={`min-h-10 rounded px-3 font-medium transition focus-visible:outline focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-emerald-400 ${
+                    mode === item ? 'bg-emerald-400/15 text-emerald-200 underline decoration-emerald-400/80 decoration-1 underline-offset-4' : 'text-zinc-500 hover:text-zinc-200'
+                  }`}
+                >
+                  {t(`Demo.${item}`)}
+                </button>
+              ))}
             </div>
+            <p className="font-mono text-xs tracking-wide text-zinc-400">
+              <StatPill label={t('Shell.sources')} value={status?.sourcesCount} error={statusError} />
+              <span className="mx-2 text-white/20" aria-hidden="true">·</span>
+              <StatPill label={t('Shell.concepts')} value={status?.conceptsCount} error={statusError} />
+              <span className="mx-2 text-white/20" aria-hidden="true">·</span>
+              <StatPill label={t('Shell.raw')} value={status?.rawCount} error={statusError} />
+              <span className="ml-3 hidden text-zinc-500 sm:inline">⌘&nbsp;K</span>
+            </p>
           </div>
           {suggestedQueryChips.length > 0 ? (
-            <div className="mt-4">
+            <div className="border-t border-white/10 px-4 py-2 sm:px-5">
               <button
                 type="button"
                 aria-expanded={suggestedQueriesOpen}
                 aria-controls="suggested-queries"
                 aria-label={suggestedQueriesOpen ? t('Demo.hideSuggestedQueries') : t('Demo.showSuggestedQueries')}
                 onClick={toggleSuggestedQueries}
-                className="inline-flex min-h-11 items-center gap-1.5 text-left text-xs tracking-wide text-zinc-500 hover:text-zinc-200"
+                className="inline-flex min-h-11 items-center gap-1.5 text-left text-xs tracking-wide text-zinc-500 transition hover:text-zinc-200 focus-visible:outline focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-emerald-400"
               >
                 <ChevronDown className={`size-4 shrink-0 transition-transform ${suggestedQueriesOpen ? '' : '-rotate-90'}`} aria-hidden="true" />
                 {t('Demo.suggestedQueries')}
               </button>
               {suggestedQueriesOpen ? (
-                <div id="suggested-queries" className="mt-2 flex flex-wrap items-center gap-2">
+                <div id="suggested-queries" className="mb-2 flex flex-wrap items-center gap-2">
                   {suggestedQueryChips.map((suggestion) => (
                     <button
                       key={suggestion}
                       type="button"
                       onMouseDown={(event) => event.preventDefault()}
                       onClick={() => void handleSuggestedQuery(suggestion)}
-                      className="max-w-full min-h-11 rounded-md border border-emerald-300/20 bg-emerald-300/10 px-3 py-1.5 text-left text-sm text-emerald-100 transition hover:border-emerald-300/40 hover:bg-emerald-300/15"
+                      className="max-w-full min-h-11 rounded-full border border-emerald-300/20 bg-emerald-300/10 px-3 py-1.5 text-left text-sm text-emerald-100 transition hover:border-emerald-300/40 hover:bg-emerald-300/15 focus-visible:outline focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-emerald-400"
                     >
                       <span className="block truncate">{suggestion}</span>
                     </button>
@@ -463,14 +474,6 @@ export function HomeClient() {
               ) : null}
             </div>
           ) : null}
-          <p className="mt-5 font-mono text-xs tracking-wide text-zinc-400">
-            <StatPill label={t('Shell.sources')} value={status?.sourcesCount} error={statusError} />
-            <span className="mx-2 text-white/20" aria-hidden="true">·</span>
-            <StatPill label={t('Shell.concepts')} value={status?.conceptsCount} error={statusError} />
-            <span className="mx-2 text-white/20" aria-hidden="true">·</span>
-            <StatPill label={t('Shell.raw')} value={status?.rawCount} error={statusError} />
-            <span className="ml-3 hidden text-zinc-500 sm:inline">⌘&nbsp;K</span>
-          </p>
         </form>
       </section>
 
@@ -482,15 +485,15 @@ export function HomeClient() {
             </h2>
             <Badge variant="muted">{latestConcepts.length}</Badge>
           </div>
-          <div className="grid gap-4 md:grid-cols-2">
+          <div className="grid gap-3 md:grid-cols-2">
             {latestConcepts.map((concept, index) => {
               const href = conceptHref(concept);
               if (!href) return null;
               return (
-                <NavigationLink key={concept.slug} href={href} className="group block">
+                <NavigationLink key={concept.slug} href={href} className="group block focus-visible:outline focus-visible:outline-2 focus-visible:outline-offset-4 focus-visible:outline-emerald-400">
                 <Surface
                   variant="default"
-                  className="animate-fade-in rounded-sm border-l-2 border-l-emerald-400/80 p-5 [animation-fill-mode:backwards] hover:border-white/20"
+                  className="animate-fade-in rounded-lg border-l-2 border-l-emerald-400/80 p-5 [animation-fill-mode:backwards] transition hover:border-white/20 hover:bg-zinc-900/75"
                   style={{ animationDelay: `${index * 50}ms` }}
                 >
                   <div className="flex flex-wrap items-center gap-2">
@@ -560,7 +563,7 @@ export function HomeClient() {
                             type="button"
                             aria-label={t('Demo.openCitation', { citation: citation.text })}
                             onClick={() => openCitation(citation)}
-                            className="font-medium text-emerald-300 underline decoration-emerald-300/60 underline-offset-4 hover:text-emerald-200 cursor-pointer"
+                            className="cursor-pointer font-medium text-emerald-300 underline decoration-emerald-300/60 underline-offset-4 hover:text-emerald-200 focus-visible:outline focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-emerald-400"
                           >
                             {citation.text}
                           </button>
@@ -595,7 +598,7 @@ export function HomeClient() {
                   id: result.id,
                   path: '',
                 })}
-                className={`animate-fade-in rounded-[var(--radius-lg)] border border-l-[3px] border-white/10 bg-zinc-900/40 p-5 text-left backdrop-blur-sm transition duration-200 [animation-fill-mode:backwards] hover:-translate-y-0.5 hover:border-emerald-400/30 hover:shadow-lg hover:shadow-emerald-500/5 ${typeBorderClass}`}
+                className={`animate-fade-in rounded-[var(--radius-lg)] border border-l-[3px] border-white/10 bg-zinc-900/40 p-5 text-left backdrop-blur-sm transition duration-200 [animation-fill-mode:backwards] hover:-translate-y-0.5 hover:border-emerald-400/30 hover:shadow-lg hover:shadow-emerald-500/5 focus-visible:outline focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-emerald-400 ${typeBorderClass}`}
                 style={{ animationDelay: `${index * 50}ms` }}
               >
                 <div className="flex items-start justify-between gap-3">
@@ -905,7 +908,7 @@ function AiAnswerMarkdown({
             <button
               type="button"
               onClick={() => onCitationClick(citation)}
-              className="font-medium text-emerald-300 underline decoration-emerald-300/60 underline-offset-4 hover:text-emerald-200 cursor-pointer"
+              className="cursor-pointer font-medium text-emerald-300 underline decoration-emerald-300/60 underline-offset-4 hover:text-emerald-200 focus-visible:outline focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-emerald-400"
             >
               {children}
             </button>
