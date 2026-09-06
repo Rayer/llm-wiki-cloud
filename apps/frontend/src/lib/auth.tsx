@@ -39,6 +39,8 @@ type RefreshAccessTokenOptions = {
   clearOnAuthFailure?: boolean;
 };
 
+type HydratedSession = { accessToken: string; isCurrent: () => boolean };
+
 type AuthContextValue = {
   accessToken: string | null;
   access_token: string | null;
@@ -52,6 +54,8 @@ type AuthContextValue = {
   logout: () => Promise<void>;
   refreshAccessToken: (options?: RefreshAccessTokenOptions) => Promise<string | null>;
   sessionEpoch: number;
+  /** Await the initial cookie refresh, never the cached token; call after hydration. */
+  getHydratedSession: () => Promise<HydratedSession | null>;
 };
 
 const AuthContext = createContext<AuthContextValue | null>(null);
@@ -84,6 +88,7 @@ export function AuthProvider({ children }: { children: ReactNode }) {
   const accessTokenRef = useRef<string | null>(null);
   const sessionEpochRef = useRef(0);
   const providerGenerationRef = useRef(0);
+  const hydrationRefreshRef = useRef<Promise<{ accessToken: string; epoch: number } | null> | null>(null);
 
   useEffect(() => {
     accessTokenRef.current = accessToken;
@@ -195,6 +200,18 @@ export function AuthProvider({ children }: { children: ReactNode }) {
     };
   }, [clearSession, clearSessionForUnauthorized, refreshAccessToken]);
 
+  const getHydratedSession = useCallback(async (): Promise<HydratedSession | null> => {
+    const generation = providerGenerationRef.current;
+    const result = await hydrationRefreshRef.current;
+    if (!result) return null;
+    return {
+      accessToken: result.accessToken,
+      isCurrent: () => providerGenerationRef.current === generation
+        && sessionEpochRef.current === result.epoch
+        && accessTokenRef.current === result.accessToken,
+    };
+  }, []);
+
   useEffect(() => {
     let cancelled = false;
 
@@ -219,11 +236,15 @@ export function AuthProvider({ children }: { children: ReactNode }) {
           );
           setHydrated(true);
         }
-        void refreshAccessToken({ clearOnAuthFailure: false });
+        // StrictMode discards its first effect before rotating the single-use cookie.
+        hydrationRefreshRef.current = Promise.resolve().then(() => (
+          cancelled ? null : refreshAccessToken({ clearOnAuthFailure: false })
+        ));
         return;
       }
 
-      const refreshed = await refreshAccessToken();
+      hydrationRefreshRef.current = Promise.resolve().then(() => (cancelled ? null : refreshAccessToken()));
+      const refreshed = await hydrationRefreshRef.current;
       if (!cancelled) {
         void refreshed;
         setHydrated(true);
@@ -274,7 +295,8 @@ export function AuthProvider({ children }: { children: ReactNode }) {
     logout,
     refreshAccessToken: refreshAccessTokenForContext,
     sessionEpoch,
-  }), [accessToken, hydrated, isDemoSession, login, loginAsDemo, logout, refreshAccessTokenForContext, register, sessionEpoch, user]);
+    getHydratedSession,
+  }), [accessToken, getHydratedSession, hydrated, isDemoSession, login, loginAsDemo, logout, refreshAccessTokenForContext, register, sessionEpoch, user]);
 
   return <AuthContext.Provider value={value}>{children}</AuthContext.Provider>;
 }

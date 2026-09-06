@@ -29,7 +29,7 @@ function tokenUserId(token: string): string | undefined {
 
 export function GoogleCompletionClient() {
   const router = useRouter();
-  const { accessToken, hydrated, refreshAccessToken, sessionEpoch } = useAuth();
+  const { accessToken, hydrated, getHydratedSession, sessionEpoch } = useAuth();
   const { t } = useLocale();
   const currentEpochRef = useRef(sessionEpoch);
   const currentTokenRef = useRef(accessToken);
@@ -48,27 +48,24 @@ export function GoogleCompletionClient() {
     mountedRef.current = true;
     if (!hydrated || startedRef.current) return () => { mountedRef.current = false; };
     startedRef.current = true;
-    const startedEpoch = sessionEpoch;
     void (async () => {
       try {
-        const result = await readGoogleCompletionResult();
-        if (!mountedRef.current || currentEpochRef.current !== startedEpoch) return;
+        const [result, session] = await Promise.all([readGoogleCompletionResult(), getHydratedSession()]);
+        if (!mountedRef.current || (session && !session.isCurrent())) return;
         if (result.status === 'failure' || result.status === 'cancelled') {
           setError(new GoogleAuthError(result.error || 'Unable to continue with Google sign-in.', 200, result.support_ref));
           setState('failed');
           return;
         }
 
-        const token = accessToken ?? await refreshAccessToken();
-        if (!mountedRef.current || !token || (accessToken !== null && currentTokenRef.current !== token)) {
-          if (mountedRef.current && !token) {
-            setError(new GoogleAuthError('Unable to continue with Google sign-in.', 502, result.support_ref));
-            setState('failed');
-          }
+        if (!session) {
+          setError(new GoogleAuthError('Unable to continue with Google sign-in.', 502, result.support_ref));
+          setState('failed');
           return;
         }
+        const token = session.accessToken;
         if (result.status === 'success') {
-          if (result.jit_provisioned && currentTokenRef.current === token) {
+          if (result.jit_provisioned) {
             window.dispatchEvent(new CustomEvent('lwc-google-jit-completed', { detail: { userId: tokenUserId(token) } }));
           }
           router.replace('/');
@@ -76,7 +73,7 @@ export function GoogleCompletionClient() {
         }
 
         const completion = await readGoogleLinkCompletion(token);
-        if (!mountedRef.current || currentTokenRef.current !== token) return;
+        if (!mountedRef.current || !session.isCurrent()) return;
         setPending(completion);
         setState('confirming');
       } catch (completionError) {
@@ -89,9 +86,8 @@ export function GoogleCompletionClient() {
       }
     })();
     return () => { mountedRef.current = false; };
-  // Completion is one-time; auth changes are observed through refs to avoid React effect replay consuming it twice.
-  // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [hydrated, refreshAccessToken, router]);
+  // Completion is one-time; the provider checks session identity without waiting for a render.
+  }, [hydrated, getHydratedSession, router]);
 
   const decideLink = async (confirm: boolean) => {
     if (!pending || !accessToken || busy || currentTokenRef.current !== accessToken) return;

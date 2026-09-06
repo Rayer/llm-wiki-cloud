@@ -79,7 +79,7 @@ vi.mock('@/lib/auth', () => ({
     hydrated: true,
     isAuthenticated: Boolean(mocks.token),
     isDemoSession: false,
-    refreshAccessToken: mocks.refreshAccessToken,
+    getHydratedSession: async () => ({ accessToken: mocks.token ?? await mocks.refreshAccessToken(), isCurrent: () => true }),
     sessionEpoch: mocks.sessionEpoch,
   }),
 }));
