@@ -14,6 +14,7 @@ import { Badge } from './ui/Badge';
 import { ProjectSelect } from './ui/ProjectSelect';
 import { CommandPalette, useCommandPalette } from './ui/CommandPalette';
 import { NavigationBlockerProvider, NavigationLink } from './NavigationBlocker';
+import { AccountSettingsModal } from './AccountSettingsModal';
 
 export function Shell({ children }: { children: React.ReactNode }) {
   return (
@@ -50,6 +51,25 @@ function ShellContent({ children }: { children: React.ReactNode }) {
     signOut,
   } = useWorkspace();
   const [renameTarget, setRenameTarget] = useState<{ id: string; name: string } | null>(null);
+  const [accountSettingsOpen, setAccountSettingsOpen] = useState(false);
+  const [jitAccountId, setJitAccountId] = useState<string | null>(null);
+
+  useEffect(() => {
+    const onGoogleJITCompleted = (event: Event) => {
+      const userId = (event as CustomEvent<{ userId?: unknown }>).detail?.userId;
+      if (typeof userId === 'string' && userId) setJitAccountId(userId);
+      else if (user?.id) setJitAccountId(user.id);
+    };
+    window.addEventListener('lwc-google-jit-completed', onGoogleJITCompleted);
+    return () => window.removeEventListener('lwc-google-jit-completed', onGoogleJITCompleted);
+  }, [user?.id]);
+
+  useEffect(() => {
+    if (!token || !user || isDemoSession || jitAccountId !== user.id || !currentProject || currentProject.name !== 'Default Project' || renameTarget) return;
+    // eslint-disable-next-line react-hooks/set-state-in-effect -- consume server-owned JIT signal at the first project boundary.
+    setJitAccountId(null);
+    setRenameTarget({ id: currentProject.id, name: currentProject.name });
+  }, [currentProject, isDemoSession, jitAccountId, renameTarget, token, user]);
 
   const navItems: {
     href: string;
@@ -95,6 +115,7 @@ function ShellContent({ children }: { children: React.ReactNode }) {
     return pathname === href || pathname.startsWith(`${href}/`);
   };
   const isAdminRoute = pathname === '/admin' || pathname.startsWith('/admin/');
+  const isGoogleCompletionRoute = pathname === '/login';
 
   return (
     <div className="min-h-dvh text-zinc-100 lg:flex lg:items-stretch">
@@ -240,6 +261,13 @@ function ShellContent({ children }: { children: React.ReactNode }) {
                 </p>
                 <button
                   type="button"
+                  onClick={() => setAccountSettingsOpen(true)}
+                  className="inline-flex min-h-11 items-center text-xs text-zinc-500 transition hover:text-zinc-300"
+                >
+                  Account settings
+                </button>
+                <button
+                  type="button"
                   onClick={() => void signOut()}
                   className="inline-flex min-h-11 items-center text-xs text-zinc-500 transition hover:text-zinc-300"
                 >
@@ -264,6 +292,8 @@ function ShellContent({ children }: { children: React.ReactNode }) {
           <div className="flex min-h-screen items-center justify-center text-sm text-zinc-500">
             {t('Shell.loading')}
           </div>
+        ) : isGoogleCompletionRoute ? (
+          children
         ) : token && isAdminRoute ? (
           <div className="mx-auto max-w-6xl px-4 py-8 sm:px-6 lg:px-10">
             {children}
@@ -293,7 +323,7 @@ function ShellContent({ children }: { children: React.ReactNode }) {
         ) : null}
       </main>
 
-      <LoginModal />
+      {pathname === '/login' ? null : <LoginModal />}
       <NewProjectModal />
       {renameTarget ? (
         <ProjectRenameModal
@@ -301,9 +331,13 @@ function ShellContent({ children }: { children: React.ReactNode }) {
           onSubmit={async (name) => {
             await renameProject(renameTarget.id, name);
           }}
-          onClose={() => setRenameTarget(null)}
+          provisional={renameTarget.name === 'Default Project'}
+          onClose={() => {
+            setRenameTarget(null);
+          }}
         />
       ) : null}
+      {accountSettingsOpen && token ? <AccountSettingsModal onClose={() => setAccountSettingsOpen(false)} /> : null}
       {token ? <ScrollToTopButton /> : null}
       {paletteOpen ? (
         <CommandPalette

@@ -8,6 +8,7 @@
     "showPassword": "顯示密碼",
     "hidePassword": "隱藏密碼",
     "signIn": "登入",
+    "continueWithGoogle": "使用 Google 登入",
     "tryDemo": "試用 Demo",
     "signUp": "註冊",
     "switchToRegister": "尚未建立帳號？註冊",
@@ -41,6 +42,33 @@
     "disabled": "目前不開放新使用者註冊。",
     "backToLogin": "返回登入",
     "switchToLogin": "已有帳號？登入"
+  },
+  "AccountSettings": {
+    "title": "帳號設定",
+    "subtitle": "管理你的 LWC 登入方式。",
+    "primaryEmail": "主要 LWC Email",
+    "primaryHint": "密碼登入只接受這個 Email。",
+    "googleEmail": "Google 顯示 Email",
+    "googleNotLinked": "尚未連結",
+    "googleHint": "連結的 Google Email 不會取代主要 LWC Email。",
+    "linkGoogle": "連結 Google",
+    "reauthHint": "請重新輸入目前的 LWC 密碼，以開始新的 Google 帳號選擇。",
+    "currentPassword": "目前密碼",
+    "cancel": "取消",
+    "continue": "繼續",
+    "openingGoogle": "正在開啟 Google…"
+  },
+  "GoogleCompletion": {
+    "completing": "正在完成登入",
+    "completingHint": "請稍候，LWC 正在完成 Google 登入。",
+    "confirmTitle": "確認連結 Google",
+    "confirmHint": "要將這個 Google 帳號連結到你的 LWC 帳號嗎？",
+    "cancel": "取消",
+    "saving": "儲存中…",
+    "confirm": "確認連結",
+    "supportReference": "支援參考碼：",
+    "copyReference": "複製參考碼",
+    "return": "返回登入"
   },
   "Admin": {
     "registrationEnabled": "允許新使用者註冊"

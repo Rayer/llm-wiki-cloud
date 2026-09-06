@@ -212,8 +212,8 @@ test('auth provider hydrate restores stored token then soft-rotates without clea
   assert.match(body, /setHydrated\(true\)/);
   // Stored path: hydrate immediately, soft-refresh must not clear session
   assert.match(body, /refreshAccessToken\(\{\s*clearOnAuthFailure:\s*false\s*\}\)/);
-  // Soft-rotate is fire-and-forget (void), not blocking hydrate on cookie success
-  assert.match(body, /void refreshAccessToken\(\{\s*clearOnAuthFailure:\s*false\s*\}\)/);
+  // Retain the refresh promise for OAuth completion without blocking cached hydration
+  assert.match(body, /hydrationRefreshRef\.current = Promise\.resolve\(\)\.then\([\s\S]*?refreshAccessToken\(\{\s*clearOnAuthFailure:\s*false\s*\}\)[\s\S]*?return;/);
 });
 
 test('auth user storage helpers read write and clear', () => {

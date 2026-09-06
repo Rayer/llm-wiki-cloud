@@ -6,6 +6,7 @@ import { AnnouncementModal } from './AnnouncementModal';
 import { useLocale } from '@/lib/i18n';
 import { RegisterModal } from './RegisterModal';
 import { useWorkspace } from './WorkspaceProvider';
+import { startGoogleLogin } from '@/lib/google-auth';
 
 export function LoginModal() {
   const { loginOpen, signIn, signInAsDemo } = useWorkspace();
@@ -99,6 +100,18 @@ export function LoginModal() {
       setLoading(false);
     }
   }, [signInAsDemo, t]);
+
+  const handleGoogleLogin = useCallback(() => {
+    if (loading) return;
+    setLoading(true);
+    setError('');
+    try {
+      startGoogleLogin();
+    } catch (googleError) {
+      setLoading(false);
+      setError(googleError instanceof Error ? googleError.message : t('Login.error'));
+    }
+  }, [loading, t]);
 
   if (!loginOpen) return null;
 
@@ -194,6 +207,12 @@ export function LoginModal() {
               className="w-full rounded-lg bg-emerald-300 px-4 py-3 font-semibold text-black transition hover:bg-emerald-200 focus-visible:outline focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-emerald-300 disabled:cursor-not-allowed disabled:opacity-60"
             >
               {loading ? t('Login.signingIn') : t('Login.signIn')}
+            </button>
+            <button
+              type="button" onClick={handleGoogleLogin} disabled={loading}
+              className="w-full rounded-lg border border-white/10 bg-white/5 px-4 py-3 font-semibold text-white transition hover:bg-white/10 focus-visible:outline focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-emerald-300 disabled:cursor-not-allowed disabled:opacity-60"
+            >
+              {t('Login.continueWithGoogle')}
             </button>
             <button
               type="button" onClick={handleDemo}
