@@ -40,6 +40,7 @@ vet:
 
 test:
 	python3 ../../scripts/test_cd_contract.py
+	python3 ../../scripts/test_auth_config_contract.py
 	go test ./... -v -count=1 -race
 
 build:

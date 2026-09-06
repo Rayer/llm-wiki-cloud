@@ -40,6 +40,7 @@ type GCPConfig struct {
 }
 
 type AuthConfig struct {
+	Google                *GoogleConfig        `yaml:"google" json:"google,omitempty"`
 	ServiceName           string               `yaml:"service_name" json:"service_name"`
 	RuntimeServiceAccount string               `yaml:"runtime_service_account" json:"runtime_service_account"`
 	Network               string               `yaml:"network" json:"network"`
@@ -268,11 +269,11 @@ func validateConfigForEnvironment(environment string, config EnvironmentConfig) 
 		"gcp.project_id": config.GCP.ProjectID, "gcp.region": config.GCP.Region,
 		"gcp.artifact_registry": config.GCP.ArtifactRegistry,
 		"auth.service_name":     config.Auth.ServiceName, "auth.runtime_service_account": config.Auth.RuntimeServiceAccount,
-		"auth.network":          config.Auth.Network, "auth.subnet": config.Auth.Subnet, "auth.vpc_egress": config.Auth.VPCEgress, "auth.ingress": config.Auth.Ingress,
+		"auth.network": config.Auth.Network, "auth.subnet": config.Auth.Subnet, "auth.vpc_egress": config.Auth.VPCEgress, "auth.ingress": config.Auth.Ingress,
 		"auth.firestore_database_id": config.Auth.FirestoreDatabaseID, "auth.public_domain": config.Auth.PublicDomain,
 		"auth.secret_references.jwt": config.Auth.SecretReferences.JWT,
 		"bff.service_name":           config.BFF.ServiceName, "bff.runtime_service_account": config.BFF.RuntimeServiceAccount,
-		"bff.network":                config.BFF.Network, "bff.subnet": config.BFF.Subnet, "bff.vpc_egress": config.BFF.VPCEgress, "bff.ingress": config.BFF.Ingress,
+		"bff.network": config.BFF.Network, "bff.subnet": config.BFF.Subnet, "bff.vpc_egress": config.BFF.VPCEgress, "bff.ingress": config.BFF.Ingress,
 		"bff.bucket": config.BFF.Bucket, "bff.firestore_database_id": config.BFF.FirestoreDatabaseID,
 		"bff.pipeline_job_name": config.BFF.PipelineJobName, "bff.pipeline_job_location": config.BFF.PipelineJobLocation,
 		"bff.pipeline_job_url": config.BFF.PipelineJobURL, "bff.auth_service_url": config.BFF.AuthServiceURL,
@@ -357,7 +358,7 @@ func validateConfigForEnvironment(environment string, config EnvironmentConfig) 
 			return errors.New("secret references are not the reviewed environment bindings")
 		}
 	}
-	return nil
+	return validateGoogleDeployment(environment, config)
 }
 
 func validateStringList(name string, values []string) error {
@@ -414,6 +415,9 @@ func componentInputs(config EnvironmentConfig, query QueryConfigIdentity, select
 		switch name {
 		case "auth":
 			components[name] = map[string]any{"service_name": config.Auth.ServiceName, "runtime_service_account": config.Auth.RuntimeServiceAccount, "network": config.Auth.Network, "subnet": config.Auth.Subnet, "vpc_egress": config.Auth.VPCEgress, "ingress": config.Auth.Ingress, "max_instances": config.Auth.MaxInstances, "public_domain": config.Auth.PublicDomain, "firestore_database_id": config.Auth.FirestoreDatabaseID, "allowed_hosts": config.Auth.AllowedHosts, "allowed_origins": config.Auth.AllowedOrigins, "dev_jwt": false, "secret_references": map[string]any{"jwt": config.Auth.SecretReferences.JWT}}
+			if config.Auth.Google != nil {
+				components[name].(map[string]any)["google"] = config.Auth.Google
+			}
 		case "bff":
 			components[name] = map[string]any{"service_name": config.BFF.ServiceName, "runtime_service_account": config.BFF.RuntimeServiceAccount, "network": config.BFF.Network, "subnet": config.BFF.Subnet, "vpc_egress": config.BFF.VPCEgress, "ingress": config.BFF.Ingress, "max_instances": config.BFF.MaxInstances, "bucket": config.BFF.Bucket, "firestore_database_id": config.BFF.FirestoreDatabaseID, "pipeline_job_name": config.BFF.PipelineJobName, "pipeline_job_location": config.BFF.PipelineJobLocation, "pipeline_job_url": config.BFF.PipelineJobURL, "auth_service_url": config.BFF.AuthServiceURL, "allowed_origins": config.BFF.AllowedOrigins, "dev_jwt": false, "query_config": query, "secret_references": map[string]any{"jwt": config.BFF.SecretReferences.JWT, "deepseek_api_key": config.BFF.SecretReferences.DeepSeekAPIKey}}
 		case "worker":

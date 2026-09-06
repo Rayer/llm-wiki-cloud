@@ -4,6 +4,8 @@ gcp:
   artifact_registry: asia-east1-docker.pkg.dev/llm-wiki-cloud/cloud-run-images
 
 auth:
+  google:
+    enabled: false
   service_name: llm-wiki-auth-dev
   runtime_service_account: lwc-auth-dev@llm-wiki-cloud.iam.gserviceaccount.com
   network: default
