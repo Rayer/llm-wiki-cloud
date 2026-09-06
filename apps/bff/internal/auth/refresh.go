@@ -50,20 +50,24 @@ func RefreshHandlerWithSessionAuthority(authority *RefreshSessionAuthority, jwtS
 			return
 		}
 
+		claims, err := parseRefreshToken(cookie.Value, jwtSecret)
+		if err != nil {
+			c.JSON(http.StatusUnauthorized, gin.H{"error": "invalid refresh token"})
+			return
+		}
+		user, err := GetUser(c.Request.Context(), authority.fs, claims.Sub)
+		if err != nil || user == nil {
+			c.JSON(http.StatusUnauthorized, gin.H{"error": "invalid refresh token"})
+			return
+		}
+		accessToken, err := GenerateAccessToken(claims.Sub, user.Role, jwtSecret)
+		if err != nil {
+			c.JSON(http.StatusInternalServerError, gin.H{"error": "failed to generate token"})
+			return
+		}
 		rotation, err := authority.Rotate(c.Request.Context(), cookie.Value, jwtSecret)
 		if err != nil {
 			c.JSON(http.StatusUnauthorized, gin.H{"error": "invalid refresh token"})
-			return
-		}
-		user, err := GetUser(c.Request.Context(), authority.fs, rotation.UserID)
-		if err != nil || user == nil {
-			_ = authority.Revoke(c.Request.Context(), rotation.Token, jwtSecret)
-			c.JSON(http.StatusUnauthorized, gin.H{"error": "invalid refresh token"})
-			return
-		}
-		accessToken, err := GenerateAccessToken(rotation.UserID, user.Role, jwtSecret)
-		if err != nil {
-			c.JSON(http.StatusInternalServerError, gin.H{"error": "failed to generate token"})
 			return
 		}
 		setRefreshTokenCookieWithPolicy(c, rotation.Token, int(refreshTokenTTL.Seconds()), cookiePolicy)

@@ -3,6 +3,8 @@ package auth
 import (
 	"context"
 	"errors"
+	"net/http"
+	"net/http/httptest"
 	"os"
 	"strings"
 	"sync"
@@ -10,7 +12,10 @@ import (
 	"time"
 
 	"cloud.google.com/go/firestore"
+	"github.com/gin-gonic/gin"
 	"google.golang.org/api/option"
+	"google.golang.org/grpc/codes"
+	"google.golang.org/grpc/status"
 )
 
 func TestRefreshSessionAuthorityRotatesAtomicallyAndStoresOnlyHashes(t *testing.T) {
@@ -109,6 +114,124 @@ func TestRefreshSessionAuthorityPersistsAcrossInstancesAndRestart(t *testing.T) 
 	}
 	if _, err := NewRefreshSessionAuthority(client, "lwc-320-other").Rotate(ctx, rotation.Token, "restart-key-320"); !errors.Is(err, ErrRefreshSessionInvalid) {
 		t.Fatalf("cross-environment rotation error = %v, want invalid", err)
+	}
+}
+
+func TestRefreshSessionCleanupDoesNotDeleteConcurrentlyRenewedSession(t *testing.T) {
+	_, client := newIdentityEmulatorRepository(t)
+	defer client.Close()
+	ctx := context.Background()
+	const secret = "cleanup-key-320"
+	authority := NewRefreshSessionAuthority(client, "lwc-320-cleanup-race")
+	token, err := authority.Issue(ctx, "cleanup-race-user", "member", secret)
+	if err != nil {
+		t.Fatal(err)
+	}
+	renewed := make(chan error, 1)
+	authority.beforeCleanupDelete = func() {
+		_, rotateErr := authority.Rotate(ctx, token, secret)
+		renewed <- rotateErr
+	}
+	removed, err := authority.CleanupExpired(ctx, time.Now().UTC().Add(refreshTokenTTL+time.Hour), 10)
+	if err == nil || status.Code(err) != codes.FailedPrecondition {
+		t.Fatalf("cleanup error=%v, removed=%d; want update-time precondition failure", err, removed)
+	}
+	if rotateErr := <-renewed; rotateErr != nil {
+		t.Fatalf("concurrent renewal error=%v", rotateErr)
+	}
+	claims, err := parseRefreshToken(token, secret)
+	if err != nil {
+		t.Fatal(err)
+	}
+	snapshot, err := authority.sessionRef(claims.SessionID).Get(ctx)
+	if err != nil {
+		t.Fatalf("renewed session was deleted: %v", err)
+	}
+	var session refreshSessionDocument
+	if err := snapshot.DataTo(&session); err != nil || session.Status != refreshSessionStatusActive || session.TokenHash == hashRefreshToken(token) {
+		t.Fatalf("renewed session=%+v decode_error=%v", session, err)
+	}
+}
+
+func TestRefreshSessionCleanupCountsSessionsAndReplayMarkers(t *testing.T) {
+	_, client := newIdentityEmulatorRepository(t)
+	defer client.Close()
+	ctx := context.Background()
+	const secret = "cleanup-count-key-320"
+	authority := NewRefreshSessionAuthority(client, "lwc-320-cleanup-count")
+	token, err := authority.Issue(ctx, "cleanup-count-user", "member", secret)
+	if err != nil {
+		t.Fatal(err)
+	}
+	rotation, err := authority.Rotate(ctx, token, secret)
+	if err != nil {
+		t.Fatal(err)
+	}
+	claims, err := parseRefreshToken(rotation.Token, secret)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := authority.sessionRef(claims.SessionID).Update(ctx, []firestore.Update{{Path: "expires_at", Value: time.Now().UTC().Add(-time.Minute)}}); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := authority.replayRef(claims.SessionID, hashRefreshToken(token)).Update(ctx, []firestore.Update{{Path: "expires_at", Value: time.Now().UTC().Add(-time.Minute)}}); err != nil {
+		t.Fatal(err)
+	}
+	if removed, err := authority.CleanupExpired(ctx, time.Now().UTC(), 10); err != nil || removed != 2 {
+		t.Fatalf("session+replay cleanup removed=%d error=%v, want 2", removed, err)
+	}
+}
+
+func TestRefreshSessionCleanupCountsReplayOnly(t *testing.T) {
+	_, client := newIdentityEmulatorRepository(t)
+	defer client.Close()
+	ctx := context.Background()
+	const secret = "cleanup-replay-key-320"
+	authority := NewRefreshSessionAuthority(client, "lwc-320-cleanup-replay")
+	token, err := authority.Issue(ctx, "cleanup-replay-user", "member", secret)
+	if err != nil {
+		t.Fatal(err)
+	}
+	rotation, err := authority.Rotate(ctx, token, secret)
+	if err != nil {
+		t.Fatal(err)
+	}
+	claims, err := parseRefreshToken(rotation.Token, secret)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := authority.replayRef(claims.SessionID, hashRefreshToken(token)).Update(ctx, []firestore.Update{{Path: "expires_at", Value: time.Now().UTC().Add(-time.Minute)}}); err != nil {
+		t.Fatal(err)
+	}
+	if removed, err := authority.CleanupExpired(ctx, time.Now().UTC(), 10); err != nil || removed != 1 {
+		t.Fatalf("replay-only cleanup removed=%d error=%v, want 1", removed, err)
+	}
+	if _, err := authority.sessionRef(claims.SessionID).Get(ctx); err != nil {
+		t.Fatalf("replay-only cleanup removed active session: %v", err)
+	}
+}
+
+func TestDurableRefreshHandlerDoesNotConsumeSessionWhenUserLookupFails(t *testing.T) {
+	_, client := newIdentityEmulatorRepository(t)
+	defer client.Close()
+	ctx := context.Background()
+	const secret = "handler-lookup-key-320"
+	authority := NewRefreshSessionAuthority(client, "lwc-320-handler-lookup")
+	token, err := authority.Issue(ctx, "missing-handler-user", "member", secret)
+	if err != nil {
+		t.Fatal(err)
+	}
+	router := gin.New()
+	router.POST("/refresh", RefreshHandlerWithSessionAuthority(authority, secret, HostRefreshCookiePolicy()))
+	recorder := httptest.NewRecorder()
+	request := httptest.NewRequest(http.MethodPost, "/refresh", nil)
+	request.AddCookie(&http.Cookie{Name: HostRefreshCookiePolicy().Name, Value: token})
+	router.ServeHTTP(recorder, request)
+	if recorder.Code != http.StatusUnauthorized {
+		t.Fatalf("missing-user refresh status=%d body=%s", recorder.Code, recorder.Body.String())
+	}
+	if _, err := authority.Rotate(ctx, token, secret); err != nil {
+		t.Fatalf("refresh handler consumed token before user lookup completed: %v", err)
 	}
 }
 

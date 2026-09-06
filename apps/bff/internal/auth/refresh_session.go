@@ -74,6 +74,11 @@ type refreshSessionReplayDocument struct {
 	ExpiresAt   time.Time `firestore:"expires_at"`
 }
 
+type refreshSessionCleanupCandidate struct {
+	ref        *firestore.DocumentRef
+	updateTime time.Time
+}
+
 const (
 	refreshSessionStatusActive        = "active"
 	refreshSessionStatusRevoked       = "revoked"
@@ -86,10 +91,11 @@ const (
 // record and document identity, so a token from another environment cannot be
 // looked up even when signing secrets are accidentally equal.
 type RefreshSessionAuthority struct {
-	fs          *firestore.Client
-	environment string
-	migration   RefreshSessionMigrationMode
-	now         func() time.Time
+	fs                  *firestore.Client
+	environment         string
+	migration           RefreshSessionMigrationMode
+	now                 func() time.Time
+	beforeCleanupDelete func()
 }
 
 // NewRefreshSessionAuthority constructs an authority with migration disabled.
@@ -395,7 +401,7 @@ func (a *RefreshSessionAuthority) CleanupExpired(ctx context.Context, now time.T
 	}
 	iter := a.collection().Where("environment", "==", a.environment).Documents(ctx)
 	defer iter.Stop()
-	var refs []*firestore.DocumentRef
+	var refs []refreshSessionCleanupCandidate
 	for len(refs) < limit {
 		snapshot, err := iter.Next()
 		if errors.Is(err, iterator.Done) {
@@ -406,18 +412,21 @@ func (a *RefreshSessionAuthority) CleanupExpired(ctx context.Context, now time.T
 		}
 		var session refreshSessionDocument
 		if snapshot.DataTo(&session) == nil && !session.ExpiresAt.After(now) {
-			refs = append(refs, snapshot.Ref)
+			refs = append(refs, refreshSessionCleanupCandidate{ref: snapshot.Ref, updateTime: snapshot.UpdateTime})
 		}
 	}
 	removed := 0
+	if a.beforeCleanupDelete != nil && len(refs) > 0 {
+		a.beforeCleanupDelete()
+	}
 	for start := 0; start < len(refs); start += 500 {
 		end := start + 500
 		if end > len(refs) {
 			end = len(refs)
 		}
 		batch := a.fs.Batch()
-		for _, ref := range refs[start:end] {
-			batch.Delete(ref)
+		for _, candidate := range refs[start:end] {
+			batch.Delete(candidate.ref, firestore.LastUpdateTime(candidate.updateTime))
 		}
 		if _, err := batch.Commit(ctx); err != nil {
 			return removed, err
@@ -453,6 +462,7 @@ func (a *RefreshSessionAuthority) CleanupExpired(ctx context.Context, now time.T
 			if _, err := batch.Commit(ctx); err != nil {
 				return removed, err
 			}
+			removed += end - start
 		}
 	}
 	return removed, nil

@@ -37,8 +37,10 @@ const (
 	oauthTransactionsCollection = "oauth_transactions"
 	oauthBrowsersCollection     = "oauth_browsers"
 	oauthPendingLinksCollection = "oauth_pending_links"
+	oauthCompletionsCollection  = "oauth_completions"
 	oauthCookieName             = "__Host-lwc_oauth"
 	oauthPendingCookieName      = "__Host-lwc_oauth_pending"
+	oauthCompletionCookieName   = "__Host-lwc_oauth_completion"
 	oauthTransactionTTL         = 10 * time.Minute
 	oauthClockSkew              = 120 * time.Second
 	oauthHTTPTimeout            = 5 * time.Second
@@ -59,6 +61,9 @@ const (
 	oauthStatusCancelled           = "cancelled"
 	oauthStatusExpired             = "expired"
 	OAuthConfirmationRequired      = "confirmation_required"
+	oauthCompletionStateActive     = "active"
+	oauthCompletionStateConsumed   = "consumed"
+	oauthCompletionTTL             = 5 * time.Minute
 )
 
 // OAuthFlowKind identifies the server-owned purpose of a transaction.
@@ -144,6 +149,10 @@ type OAuthStartRequest struct {
 	Password        string        `json:"password,omitempty"`
 }
 
+type oauthStartResponse struct {
+	AuthorizationURL string `json:"authorization_url"`
+}
+
 // OAuthConfirmationRequest is the only client input accepted for explicit
 // account linking completion. Provider identity values are never client-owned.
 type OAuthConfirmationRequest struct {
@@ -157,6 +166,38 @@ type oauthCompletionResponse struct {
 	ProviderEmail         string `json:"provider_email,omitempty"`
 	ProviderEmailVerified bool   `json:"provider_email_verified,omitempty"`
 	CurrentEmail          string `json:"current_email,omitempty"`
+	Error                 string `json:"error,omitempty"`
+	SupportRef            string `json:"support_ref,omitempty"`
+}
+
+type oauthCompletionResult struct {
+	BrowserHash    string    `firestore:"browser_hash"`
+	FlowKind       string    `firestore:"flow_kind"`
+	Status         string    `firestore:"status"`
+	State          string    `firestore:"state"`
+	Outcome        string    `firestore:"outcome"`
+	SupportRef     string    `firestore:"support_ref,omitempty"`
+	JITProvisioned bool      `firestore:"jit_provisioned"`
+	CreatedAt      time.Time `firestore:"created_at"`
+	ExpiresAt      time.Time `firestore:"expires_at"`
+}
+
+type oauthCompletionResultResponse struct {
+	Status         string `json:"status"`
+	Error          string `json:"error,omitempty"`
+	SupportRef     string `json:"support_ref,omitempty"`
+	JITProvisioned bool   `json:"jit_provisioned"`
+}
+
+type ProviderIdentitySummary struct {
+	Provider              string `json:"provider"`
+	ProviderEmail         string `json:"provider_email,omitempty"`
+	ProviderEmailVerified bool   `json:"provider_email_verified"`
+}
+
+type IdentitySummaryResponse struct {
+	PrimaryEmail    string                    `json:"primary_email"`
+	LinkedProviders []ProviderIdentitySummary `json:"linked_providers"`
 }
 
 type oauthFailureResponse struct {
@@ -192,7 +233,19 @@ func writeOAuthFailure(w http.ResponseWriter, code int, outcome oauthOutcome, fl
 		flowKind = boundedFlowKind(flowKinds[0])
 	}
 	ref := opaqueSupportReference()
-	message := map[oauthOutcome]string{
+	message := oauthOutcomeMessage(outcome)
+	if message == "" {
+		message = "Unable to continue with Google sign-in."
+	}
+	log.Printf(`{"event":"auth_oauth","provider":"google","flow_kind":%q,"outcome":%q,"support_ref":%q,"timestamp":%q}`, flowKind, outcome, ref, time.Now().UTC().Format(time.RFC3339))
+	w.Header().Set("Content-Type", "application/json")
+	w.Header().Set("Cache-Control", "no-store")
+	w.WriteHeader(code)
+	_ = json.NewEncoder(w).Encode(oauthFailureResponse{Error: message, SupportRef: ref})
+}
+
+func oauthOutcomeMessage(outcome oauthOutcome) string {
+	return map[oauthOutcome]string{
 		oauthOutcomeInvalidRequest:       "Unable to continue with Google sign-in.",
 		oauthOutcomeCrossSiteStart:       "Unable to continue with Google sign-in.",
 		oauthOutcomeUnavailable:          "Unable to continue with Google sign-in.",
@@ -208,13 +261,6 @@ func writeOAuthFailure(w http.ResponseWriter, code int, outcome oauthOutcome, fl
 		oauthOutcomeCancelled:            "已取消使用 Google 登入。",
 		oauthOutcomePasswordProof:        "Unable to link this Google account.",
 	}[outcome]
-	if message == "" {
-		message = "Unable to continue with Google sign-in."
-	}
-	log.Printf(`{"event":"auth_oauth","provider":"google","flow_kind":%q,"outcome":%q,"support_ref":%q,"timestamp":%q}`, flowKind, outcome, ref, time.Now().UTC().Format(time.RFC3339))
-	w.Header().Set("Content-Type", "application/json")
-	w.WriteHeader(code)
-	_ = json.NewEncoder(w).Encode(oauthFailureResponse{Error: message, SupportRef: ref})
 }
 
 func boundedFlowKind(kind OAuthFlowKind) OAuthFlowKind {
@@ -262,111 +308,120 @@ func NewGoogleOAuthServiceWithSessionAuthority(cfg GoogleConfig, fs *firestore.C
 }
 
 // StartHandler creates a server-owned authorization transaction and redirects
-// to the fixed provider authorization endpoint.
+// to the fixed provider authorization endpoint. GET login is intentionally a
+// browser-navigation contract; link preparation uses PrepareStartHandler so a
+// bearer header and current-password proof stay in the JSON request.
 func (s *GoogleOAuthService) StartHandler(routeKind OAuthFlowKind) gin.HandlerFunc {
 	return func(c *gin.Context) {
-		if s == nil || !s.sameSiteOrigin(c.Request) {
-			writeOAuthFailure(c.Writer, http.StatusForbidden, oauthOutcomeCrossSiteStart)
-			return
-		}
-		if !s.configReady() {
-			writeOAuthFailure(c.Writer, http.StatusServiceUnavailable, oauthOutcomeUnavailable)
-			return
-		}
-		if s.fs == nil || s.repo == nil {
-			writeOAuthFailure(c.Writer, http.StatusServiceUnavailable, oauthOutcomeUnavailable)
-			return
-		}
-		kind := boundedFlowKind(routeKind)
-		var req OAuthStartRequest
-		if c.Request.ContentLength != 0 {
-			if err := c.ShouldBindJSON(&req); err != nil {
-				writeOAuthFailure(c.Writer, http.StatusBadRequest, oauthOutcomeInvalidRequest, OAuthFlowUnknown)
-				return
-			}
-		}
-		if kind == "" {
-			kind = req.FlowKind
-			if kind == "" && c.Request.Method == http.MethodGet {
-				kind = OAuthFlowLogin
-			}
-		}
-		if kind != OAuthFlowLogin && kind != OAuthFlowLink {
-			writeOAuthFailure(c.Writer, http.StatusBadRequest, oauthOutcomeInvalidRequest, OAuthFlowUnknown)
-			return
-		}
-
-		userID := ""
-		proofHash := ""
-		if kind == OAuthFlowLink {
-			userID = strings.TrimSpace(c.GetString("userID"))
-			currentPassword := req.CurrentPassword
-			if currentPassword == "" {
-				currentPassword = req.Password
-			}
-			if !ValidPathSegment(userID) || currentPassword == "" {
-				writeOAuthFailure(c.Writer, http.StatusUnauthorized, oauthOutcomePasswordProof, kind)
-				return
-			}
-			user, err := GetUser(c.Request.Context(), s.fs, userID)
-			if err != nil || user == nil || user.PasswordHash == "" || bcrypt.CompareHashAndPassword([]byte(user.PasswordHash), []byte(currentPassword)) != nil {
-				writeOAuthFailure(c.Writer, http.StatusUnauthorized, oauthOutcomePasswordProof, kind)
-				return
-			}
-			proofHash = passwordProofHash(user.PasswordHash)
-		}
-
-		browserCookie, err := c.Request.Cookie(oauthCookieName)
-		browserValue := ""
-		if err == nil {
-			browserValue = strings.TrimSpace(browserCookie.Value)
-		}
-		if browserValue == "" {
-			browserValue, err = randomOpaqueValue(32)
-			if err != nil {
-				writeOAuthFailure(c.Writer, http.StatusInternalServerError, oauthOutcomeUnavailable, kind)
-				return
-			}
-		}
-		state, err := randomOpaqueValue(32)
-		if err != nil {
-			writeOAuthFailure(c.Writer, http.StatusInternalServerError, oauthOutcomeUnavailable, kind)
-			return
-		}
-		nonce, err := randomOpaqueValue(32)
-		if err != nil {
-			writeOAuthFailure(c.Writer, http.StatusInternalServerError, oauthOutcomeUnavailable, kind)
-			return
-		}
-		verifier, err := randomOpaqueValue(32)
-		if err != nil {
-			writeOAuthFailure(c.Writer, http.StatusInternalServerError, oauthOutcomeUnavailable, kind)
-			return
-		}
-		transactionID, err := randomOpaqueValue(24)
-		if err != nil {
-			writeOAuthFailure(c.Writer, http.StatusInternalServerError, oauthOutcomeUnavailable, kind)
-			return
-		}
-		created := s.now().UTC()
-		transaction := oauthTransaction{
-			StateHash: hashOAuthValue(state), BrowserHash: hashOAuthValue(browserValue), FlowKind: string(kind),
-			Nonce: nonce, PKCEVerifier: verifier, RedirectURL: s.redirectURL(kind), UserID: userID,
-			PasswordProofHash: proofHash, Status: oauthStatusActive, CreatedAt: created, ExpiresAt: created.Add(oauthTransactionTTL),
-		}
-		if err := s.createTransaction(c.Request.Context(), transactionID, browserValue, transaction); err != nil {
-			writeOAuthFailure(c.Writer, http.StatusServiceUnavailable, oauthOutcomeUnavailable, kind)
-			return
-		}
-		setOAuthCookie(c, browserValue, int(oauthTransactionTTL.Seconds()))
-		challenge := pkceChallenge(verifier)
-		authorizationURL, err := s.authorizationURL(kind, state, nonce, challenge)
-		if err != nil {
-			writeOAuthFailure(c.Writer, http.StatusInternalServerError, oauthOutcomeUnavailable, kind)
+		authorizationURL, code, outcome, kind := s.prepareAuthorization(c, routeKind)
+		if code != 0 {
+			writeOAuthFailure(c.Writer, code, outcome, kind)
 			return
 		}
 		c.Redirect(http.StatusFound, authorizationURL)
 	}
+}
+
+// PrepareStartHandler returns only a server-generated provider URL. It is the
+// browser-compatible authenticated link-start contract: the password and
+// bearer authorization are sent in the JSON request, never in navigation URL
+// or browser storage.
+func (s *GoogleOAuthService) PrepareStartHandler(routeKind OAuthFlowKind) gin.HandlerFunc {
+	return func(c *gin.Context) {
+		authorizationURL, code, outcome, kind := s.prepareAuthorization(c, routeKind)
+		if code != 0 {
+			writeOAuthFailure(c.Writer, code, outcome, kind)
+			return
+		}
+		c.Header("Cache-Control", "no-store")
+		c.JSON(http.StatusOK, oauthStartResponse{AuthorizationURL: authorizationURL})
+	}
+}
+
+func (s *GoogleOAuthService) prepareAuthorization(c *gin.Context, routeKind OAuthFlowKind) (string, int, oauthOutcome, OAuthFlowKind) {
+	if s == nil || !s.sameSiteOrigin(c.Request) {
+		return "", http.StatusForbidden, oauthOutcomeCrossSiteStart, OAuthFlowUnknown
+	}
+	if !s.configReady() || s.fs == nil || s.repo == nil {
+		return "", http.StatusServiceUnavailable, oauthOutcomeUnavailable, boundedFlowKind(routeKind)
+	}
+	kind := boundedFlowKind(routeKind)
+	var req OAuthStartRequest
+	if c.Request.Method != http.MethodGet || c.Request.ContentLength > 0 {
+		if err := c.ShouldBindJSON(&req); err != nil {
+			return "", http.StatusBadRequest, oauthOutcomeInvalidRequest, OAuthFlowUnknown
+		}
+	}
+	if kind == OAuthFlowUnknown {
+		kind = req.FlowKind
+		if kind == "" && c.Request.Method == http.MethodGet {
+			kind = OAuthFlowLogin
+		}
+	}
+	if kind != OAuthFlowLogin && kind != OAuthFlowLink {
+		return "", http.StatusBadRequest, oauthOutcomeInvalidRequest, OAuthFlowUnknown
+	}
+
+	userID := ""
+	proofHash := ""
+	if kind == OAuthFlowLink {
+		userID = strings.TrimSpace(c.GetString("userID"))
+		currentPassword := req.CurrentPassword
+		if currentPassword == "" {
+			currentPassword = req.Password
+		}
+		if !ValidPathSegment(userID) || currentPassword == "" {
+			return "", http.StatusUnauthorized, oauthOutcomePasswordProof, kind
+		}
+		user, err := GetUser(c.Request.Context(), s.fs, userID)
+		if err != nil || user == nil || user.PasswordHash == "" || bcrypt.CompareHashAndPassword([]byte(user.PasswordHash), []byte(currentPassword)) != nil {
+			return "", http.StatusUnauthorized, oauthOutcomePasswordProof, kind
+		}
+		proofHash = passwordProofHash(user.PasswordHash)
+	}
+
+	browserCookie, err := c.Request.Cookie(oauthCookieName)
+	browserValue := ""
+	if err == nil {
+		browserValue = strings.TrimSpace(browserCookie.Value)
+	}
+	if browserValue == "" {
+		browserValue, err = randomOpaqueValue(32)
+		if err != nil {
+			return "", http.StatusInternalServerError, oauthOutcomeUnavailable, kind
+		}
+	}
+	state, err := randomOpaqueValue(32)
+	if err != nil {
+		return "", http.StatusInternalServerError, oauthOutcomeUnavailable, kind
+	}
+	nonce, err := randomOpaqueValue(32)
+	if err != nil {
+		return "", http.StatusInternalServerError, oauthOutcomeUnavailable, kind
+	}
+	verifier, err := randomOpaqueValue(32)
+	if err != nil {
+		return "", http.StatusInternalServerError, oauthOutcomeUnavailable, kind
+	}
+	transactionID, err := randomOpaqueValue(24)
+	if err != nil {
+		return "", http.StatusInternalServerError, oauthOutcomeUnavailable, kind
+	}
+	authorizationURL, err := s.authorizationURL(kind, state, nonce, pkceChallenge(verifier))
+	if err != nil {
+		return "", http.StatusInternalServerError, oauthOutcomeUnavailable, kind
+	}
+	created := s.now().UTC()
+	transaction := oauthTransaction{
+		StateHash: hashOAuthValue(state), BrowserHash: hashOAuthValue(browserValue), FlowKind: string(kind),
+		Nonce: nonce, PKCEVerifier: verifier, RedirectURL: s.redirectURL(kind), UserID: userID,
+		PasswordProofHash: proofHash, Status: oauthStatusActive, CreatedAt: created, ExpiresAt: created.Add(oauthTransactionTTL),
+	}
+	if err := s.createTransaction(c.Request.Context(), transactionID, browserValue, transaction); err != nil {
+		return "", http.StatusServiceUnavailable, oauthOutcomeUnavailable, kind
+	}
+	setOAuthCookie(c, browserValue, int(oauthTransactionTTL.Seconds()))
+	return authorizationURL, 0, "", kind
 }
 
 // CallbackHandler consumes the transaction before any provider exchange.
@@ -388,33 +443,39 @@ func (s *GoogleOAuthService) CallbackHandler(routeKind OAuthFlowKind) gin.Handle
 		}
 		transactionID, transaction, err := s.consumeTransaction(c.Request.Context(), state, browserCookie.Value, kind)
 		if err != nil {
+			if transactionID != "" && subtle.ConstantTimeCompare([]byte(transaction.BrowserHash), []byte(hashOAuthValue(browserCookie.Value))) == 1 {
+				s.redirectOAuthFailure(c, browserCookie.Value, kind, oauthConsumeOutcome(err))
+				return
+			}
+			// No exact state+browser transaction means no safe completion binding;
+			// fail closed without creating an attacker-controlled result.
 			writeOAuthFailure(c.Writer, oauthConsumeStatus(err), oauthConsumeOutcome(err), kind)
 			return
 		}
 		if providerError := strings.TrimSpace(c.Query("error")); providerError != "" {
-			writeOAuthFailure(c.Writer, http.StatusBadRequest, oauthOutcomeCancelled, kind)
+			s.redirectOAuthFailure(c, browserCookie.Value, kind, oauthOutcomeCancelled)
 			return
 		}
 		code := strings.TrimSpace(c.Query("code"))
 		if code == "" || len(code) > maxOAuthCodeBytes {
-			writeOAuthFailure(c.Writer, http.StatusBadRequest, oauthOutcomeInvalidRequest, kind)
+			s.redirectOAuthFailure(c, browserCookie.Value, kind, oauthOutcomeInvalidRequest)
 			return
 		}
 		idToken, err := s.exchangeCode(c.Request.Context(), transaction, code)
 		if err != nil || len(idToken) > maxOIDCTokenBytes {
-			writeOAuthFailure(c.Writer, http.StatusBadGateway, oauthOutcomeProvider, kind)
+			s.redirectOAuthFailure(c, browserCookie.Value, kind, oauthOutcomeProvider)
 			return
 		}
 		claims, err := s.verifier.Verify(c.Request.Context(), idToken, transaction.Nonce)
 		if err != nil {
-			writeOAuthFailure(c.Writer, http.StatusBadRequest, oauthOutcomeTokenInvalid, kind)
+			s.redirectOAuthFailure(c, browserCookie.Value, kind, oauthOutcomeTokenInvalid)
 			return
 		}
 		if kind == OAuthFlowLink {
-			s.completeLinkCallback(c, transactionID, transaction, claims)
+			s.completeLinkCallback(c, browserCookie.Value, transactionID, transaction, claims)
 			return
 		}
-		s.completeLoginCallback(c, transaction, claims)
+		s.completeLoginCallback(c, browserCookie.Value, transaction, claims)
 	}
 }
 
@@ -453,6 +514,12 @@ func (s *GoogleOAuthService) linkDecisionHandler(confirmed bool) gin.HandlerFunc
 			writeOAuthFailure(c.Writer, code, outcome, OAuthFlowLink)
 			return
 		}
+		if !confirmed {
+			result.Error = oauthOutcomeMessage(oauthOutcomeCancelled)
+			result.SupportRef = opaqueSupportReference()
+			log.Printf(`{"event":"auth_oauth","provider":"google","flow_kind":"link","outcome":%q,"support_ref":%q,"timestamp":%q}`, oauthOutcomeCancelled, result.SupportRef, time.Now().UTC().Format(time.RFC3339))
+		}
+		c.Header("Cache-Control", "no-store")
 		clearOAuthPendingCookie(c)
 		c.JSON(http.StatusOK, result)
 	}
@@ -490,6 +557,7 @@ func (s *GoogleOAuthService) CompletionReadHandler() gin.HandlerFunc {
 			writeOAuthFailure(c.Writer, http.StatusGone, oauthOutcomeExpired, OAuthFlowLink)
 			return
 		}
+		c.Header("Cache-Control", "no-store")
 		c.JSON(http.StatusOK, oauthCompletionResponse{
 			Status: OAuthConfirmationRequired, ConfirmationID: cookie.Value, Provider: pending.Provider,
 			ProviderEmail: pending.ProviderEmail, ProviderEmailVerified: pending.ProviderVerified, CurrentEmail: pending.CurrentEmail,
@@ -497,93 +565,211 @@ func (s *GoogleOAuthService) CompletionReadHandler() gin.HandlerFunc {
 	}
 }
 
-// CompletionHandler remains a named compatibility surface for callers that
-// bind the read operation directly; production routing uses GET explicitly.
-func (s *GoogleOAuthService) CompletionHandler() gin.HandlerFunc {
-	return s.CompletionReadHandler()
+// CompletionResultHandler consumes the short-lived, cookie-bound callback
+// result. It is intentionally unauthenticated: provider cancellation and
+// failed login have no LWC session to authenticate, while the opaque cookie and
+// stored browser hash still bind the read to the initiating browser.
+func (s *GoogleOAuthService) CompletionResultHandler() gin.HandlerFunc {
+	return func(c *gin.Context) {
+		if s == nil || s.fs == nil {
+			writeOAuthFailure(c.Writer, http.StatusServiceUnavailable, oauthOutcomeUnavailable)
+			return
+		}
+		cookie, err := c.Request.Cookie(oauthCompletionCookieName)
+		if err != nil || !ValidPathSegment(cookie.Value) || len(cookie.Value) < 20 {
+			writeOAuthFailure(c.Writer, http.StatusBadRequest, oauthOutcomeInvalidRequest)
+			return
+		}
+		var result oauthCompletionResult
+		var terminalErr error
+		err = s.fs.RunTransaction(c.Request.Context(), func(ctx context.Context, tx *firestore.Transaction) error {
+			resultRef := s.fs.Collection(oauthCompletionsCollection).Doc(cookie.Value)
+			snapshot, err := optionalTransactionGet(tx, resultRef)
+			if err != nil {
+				return err
+			}
+			if snapshot == nil {
+				return errOAuthCompletionNotFound
+			}
+			if err := snapshot.DataTo(&result); err != nil || result.BrowserHash == "" {
+				return errOAuthCompletionNotFound
+			}
+			browserCookie, err := c.Request.Cookie(oauthCookieName)
+			if err != nil || subtle.ConstantTimeCompare([]byte(result.BrowserHash), []byte(hashOAuthValue(browserCookie.Value))) != 1 {
+				return errOAuthCompletionWrongBrowser
+			}
+			if result.State != oauthCompletionStateActive {
+				return errOAuthCompletionReplay
+			}
+			if !s.now().UTC().Before(result.ExpiresAt) {
+				if err := tx.Update(resultRef, []firestore.Update{{Path: "state", Value: oauthCompletionStateConsumed}}); err != nil {
+					return err
+				}
+				terminalErr = errOAuthCompletionExpired
+				return nil
+			}
+			if err := tx.Update(resultRef, []firestore.Update{{Path: "state", Value: oauthCompletionStateConsumed}}); err != nil {
+				return err
+			}
+			return nil
+		})
+		if err == nil && terminalErr != nil {
+			err = terminalErr
+		}
+		clearOAuthCompletionCookie(c)
+		clearOAuthCookie(c)
+		if err != nil {
+			writeOAuthFailure(c.Writer, oauthCompletionStatus(err), oauthCompletionOutcome(err))
+			return
+		}
+		c.Header("Cache-Control", "no-store")
+		c.JSON(http.StatusOK, oauthCompletionResultResponse{
+			Status: result.Status, Error: resultErrorMessage(result), SupportRef: result.SupportRef,
+			JITProvisioned: result.JITProvisioned,
+		})
+	}
 }
 
-func (s *GoogleOAuthService) completeLoginCallback(c *gin.Context, transaction oauthTransaction, claims *googleClaims) {
+// CompletionHandler is the fixed callback-result read surface used by the
+// production router. Link display metadata remains behind JWTAuth at
+// CompletionReadHandler.
+func (s *GoogleOAuthService) CompletionHandler() gin.HandlerFunc {
+	return s.CompletionResultHandler()
+}
+
+// IdentitySummaryHandler is the authenticated Account Settings read. It
+// projects only primary email and provider display metadata; issuer, subject,
+// OAuth tokens, and other persistence fields never cross this boundary.
+func (s *GoogleOAuthService) IdentitySummaryHandler() gin.HandlerFunc {
+	return func(c *gin.Context) {
+		userID := strings.TrimSpace(c.GetString("userID"))
+		if s == nil || s.fs == nil || !ValidPathSegment(userID) {
+			writeOAuthFailure(c.Writer, http.StatusUnauthorized, oauthOutcomeInvalidRequest, OAuthFlowUnknown)
+			return
+		}
+		user, err := GetUser(c.Request.Context(), s.fs, userID)
+		if err != nil || user == nil {
+			writeOAuthFailure(c.Writer, http.StatusInternalServerError, oauthOutcomeUnavailable, OAuthFlowUnknown)
+			return
+		}
+		c.Header("Cache-Control", "no-store")
+		providers := make([]ProviderIdentitySummary, 0, 1)
+		iter := s.fs.Collection(ExternalIdentitiesCollection).Where("user_id", "==", userID).Documents(c.Request.Context())
+		defer iter.Stop()
+		for {
+			snapshot, err := iter.Next()
+			if errors.Is(err, iterator.Done) {
+				break
+			}
+			if err != nil {
+				writeOAuthFailure(c.Writer, http.StatusInternalServerError, oauthOutcomeUnavailable, OAuthFlowUnknown)
+				return
+			}
+			identity, err := decodeExternalIdentity(snapshot)
+			if err != nil || identity == nil || identity.UserID != userID {
+				writeOAuthFailure(c.Writer, http.StatusInternalServerError, oauthOutcomeUnavailable, OAuthFlowUnknown)
+				return
+			}
+			providers = append(providers, ProviderIdentitySummary{
+				Provider: identity.Provider, ProviderEmail: identity.ProviderEmail,
+				ProviderEmailVerified: identity.ProviderEmailVerified,
+			})
+		}
+		c.JSON(http.StatusOK, IdentitySummaryResponse{PrimaryEmail: user.Email, LinkedProviders: providers})
+	}
+}
+
+func (s *GoogleOAuthService) completeLoginCallback(c *gin.Context, browserValue string, transaction oauthTransaction, claims *googleClaims) {
 	identity, err := s.repo.GetExternalIdentity(c.Request.Context(), googleProvider, claims.Issuer, claims.Subject)
 	if err != nil {
-		writeOAuthFailure(c.Writer, http.StatusInternalServerError, oauthOutcomeUnavailable, OAuthFlowLogin)
+		s.redirectOAuthFailure(c, browserValue, OAuthFlowLogin, oauthOutcomeUnavailable)
 		return
 	}
 	if identity != nil {
 		user, err := GetUser(c.Request.Context(), s.fs, identity.UserID)
 		if err != nil || user == nil {
-			writeOAuthFailure(c.Writer, http.StatusUnauthorized, oauthOutcomeInvalidRequest, OAuthFlowLogin)
+			s.redirectOAuthFailure(c, browserValue, OAuthFlowLogin, oauthOutcomeInvalidRequest)
 			return
 		}
-		s.issueSession(c, identity.UserID, user)
+		if usableProviderEmail(claims.Email) {
+			if _, err := s.fs.Collection(ExternalIdentitiesCollection).Doc(externalIdentityDocumentID(googleProvider, claims.Issuer, claims.Subject)).Update(c.Request.Context(), []firestore.Update{
+				{Path: "provider_email", Value: strings.TrimSpace(claims.Email)},
+				{Path: "provider_email_verified", Value: claims.EmailVerified},
+			}); err != nil {
+				s.redirectOAuthFailure(c, browserValue, OAuthFlowLogin, oauthOutcomeUnavailable)
+				return
+			}
+		}
+		s.issueSession(c, browserValue, identity.UserID, user, false)
 		return
 	}
 	if s.gate != nil {
 		enabled, err := s.gate.IsRegistrationEnabled(c.Request.Context())
 		if err != nil {
-			writeOAuthFailure(c.Writer, http.StatusInternalServerError, oauthOutcomeUnavailable, OAuthFlowLogin)
+			s.redirectOAuthFailure(c, browserValue, OAuthFlowLogin, oauthOutcomeUnavailable)
 			return
 		}
 		if !enabled {
-			writeOAuthFailure(c.Writer, http.StatusForbidden, oauthOutcomeRegistrationDisabled, OAuthFlowLogin)
+			s.redirectOAuthFailure(c, browserValue, OAuthFlowLogin, oauthOutcomeRegistrationDisabled)
 			return
 		}
 	}
 	if !claims.EmailVerified || !usableProviderEmail(claims.Email) {
-		writeOAuthFailure(c.Writer, http.StatusForbidden, oauthOutcomeInvalidRequest, OAuthFlowLogin)
+		s.redirectOAuthFailure(c, browserValue, OAuthFlowLogin, oauthOutcomeInvalidRequest)
 		return
 	}
 	reservation, err := s.repo.GetCanonicalEmailReservation(c.Request.Context(), claims.Email)
 	if err != nil {
-		writeOAuthFailure(c.Writer, http.StatusInternalServerError, oauthOutcomeUnavailable, OAuthFlowLogin)
+		s.redirectOAuthFailure(c, browserValue, OAuthFlowLogin, oauthOutcomeUnavailable)
 		return
 	}
 	if reservation != nil {
-		writeOAuthFailure(c.Writer, http.StatusConflict, oauthOutcomeCanonicalConflict, OAuthFlowLogin)
+		s.redirectOAuthFailure(c, browserValue, OAuthFlowLogin, oauthOutcomeCanonicalConflict)
 		return
 	}
 	userID := generateUserID()
 	if err := s.repo.ProvisionExternalUser(c.Request.Context(), ExternalUserProvisioning{
 		UserID: userID, DisplayEmail: strings.TrimSpace(claims.Email), CanonicalEmail: CanonicalizeEmail(claims.Email),
-		EmailVerified: true, Provider: googleProvider, Issuer: claims.Issuer, Subject: claims.Subject, ProjectID: defaultProjectID,
+		EmailVerified: true, Provider: googleProvider, Issuer: claims.Issuer, Subject: claims.Subject,
+		ProviderEmail: strings.TrimSpace(claims.Email), ProviderEmailVerified: claims.EmailVerified, ProjectID: defaultProjectID,
 	}); err != nil {
 		if errors.Is(err, ErrCanonicalEmailConflict) {
-			writeOAuthFailure(c.Writer, http.StatusConflict, oauthOutcomeCanonicalConflict, OAuthFlowLogin)
+			s.redirectOAuthFailure(c, browserValue, OAuthFlowLogin, oauthOutcomeCanonicalConflict)
 			return
 		}
 		if errors.Is(err, ErrExternalIdentityConflict) {
-			writeOAuthFailure(c.Writer, http.StatusConflict, oauthOutcomeLinkConflict, OAuthFlowLogin)
+			s.redirectOAuthFailure(c, browserValue, OAuthFlowLogin, oauthOutcomeLinkConflict)
 			return
 		}
-		writeOAuthFailure(c.Writer, http.StatusInternalServerError, oauthOutcomeUnavailable, OAuthFlowLogin)
+		s.redirectOAuthFailure(c, browserValue, OAuthFlowLogin, oauthOutcomeUnavailable)
 		return
 	}
 	user, err := GetUser(c.Request.Context(), s.fs, userID)
 	if err != nil || user == nil {
-		writeOAuthFailure(c.Writer, http.StatusInternalServerError, oauthOutcomeUnavailable, OAuthFlowLogin)
+		s.redirectOAuthFailure(c, browserValue, OAuthFlowLogin, oauthOutcomeUnavailable)
 		return
 	}
-	s.issueSession(c, userID, user)
+	s.issueSession(c, browserValue, userID, user, true)
 }
 
-func (s *GoogleOAuthService) completeLinkCallback(c *gin.Context, transactionID string, transaction oauthTransaction, claims *googleClaims) {
+func (s *GoogleOAuthService) completeLinkCallback(c *gin.Context, browserValue, transactionID string, transaction oauthTransaction, claims *googleClaims) {
 	user, err := GetUser(c.Request.Context(), s.fs, transaction.UserID)
 	if err != nil || user == nil || user.PasswordHash == "" || passwordProofHash(user.PasswordHash) != transaction.PasswordProofHash {
-		writeOAuthFailure(c.Writer, http.StatusUnauthorized, oauthOutcomePasswordProof, OAuthFlowLink)
+		s.redirectOAuthFailure(c, browserValue, OAuthFlowLink, oauthOutcomePasswordProof)
 		return
 	}
 	identity, err := s.repo.GetExternalIdentity(c.Request.Context(), googleProvider, claims.Issuer, claims.Subject)
 	if err != nil {
-		writeOAuthFailure(c.Writer, http.StatusInternalServerError, oauthOutcomeUnavailable, OAuthFlowLink)
+		s.redirectOAuthFailure(c, browserValue, OAuthFlowLink, oauthOutcomeUnavailable)
 		return
 	}
 	if identity != nil {
-		writeOAuthFailure(c.Writer, http.StatusConflict, oauthOutcomeLinkConflict, OAuthFlowLink)
+		s.redirectOAuthFailure(c, browserValue, OAuthFlowLink, oauthOutcomeLinkConflict)
 		return
 	}
 	confirmationID, err := randomOpaqueValue(24)
 	if err != nil {
-		writeOAuthFailure(c.Writer, http.StatusInternalServerError, oauthOutcomeUnavailable, OAuthFlowLink)
+		s.redirectOAuthFailure(c, browserValue, OAuthFlowLink, oauthOutcomeUnavailable)
 		return
 	}
 	now := s.now().UTC()
@@ -608,32 +794,68 @@ func (s *GoogleOAuthService) completeLinkCallback(c *gin.Context, transactionID 
 		return tx.Create(s.fs.Collection(oauthPendingLinksCollection).Doc(confirmationID), pending)
 	}); err != nil {
 		if errors.Is(err, ErrExternalIdentityConflict) {
-			writeOAuthFailure(c.Writer, http.StatusConflict, oauthOutcomeLinkConflict, OAuthFlowLink)
+			s.redirectOAuthFailure(c, browserValue, OAuthFlowLink, oauthOutcomeLinkConflict)
 			return
 		}
-		writeOAuthFailure(c.Writer, http.StatusInternalServerError, oauthOutcomeUnavailable, OAuthFlowLink)
+		s.redirectOAuthFailure(c, browserValue, OAuthFlowLink, oauthOutcomeUnavailable)
 		return
 	}
 	_ = transactionID // retained in the durable transaction for forensic correlation, never returned.
 	setOAuthPendingCookie(c, confirmationID, int(oauthTransactionTTL.Seconds()))
-	s.redirectCompletion(c, OAuthFlowLink)
+	s.redirectOAuthResult(c, browserValue, OAuthFlowLink, "confirmation_required", "", false, "")
 }
 
-func (s *GoogleOAuthService) issueSession(c *gin.Context, userID string, user *UserRecord) {
+func (s *GoogleOAuthService) issueSession(c *gin.Context, browserValue, userID string, user *UserRecord, jitProvisioned bool) {
 	refreshToken, err := issueRefreshSession(c.Request.Context(), s.sessions, userID, user.Role, s.jwtSecret)
 	if err != nil {
-		writeOAuthFailure(c.Writer, http.StatusInternalServerError, oauthOutcomeUnavailable, OAuthFlowLogin)
+		s.redirectOAuthFailure(c, browserValue, OAuthFlowLogin, oauthOutcomeUnavailable)
 		return
 	}
-	setRefreshTokenCookieWithPolicy(c, refreshToken, int(refreshTokenTTL.Seconds()), HostRefreshCookiePolicy())
-	s.redirectCompletion(c, OAuthFlowLogin)
+	s.redirectOAuthResult(c, browserValue, OAuthFlowLogin, "success", "", jitProvisioned, refreshToken)
 }
 
-func (s *GoogleOAuthService) redirectCompletion(c *gin.Context, kind OAuthFlowKind) {
+func (s *GoogleOAuthService) redirectOAuthFailure(c *gin.Context, browserValue string, kind OAuthFlowKind, outcome oauthOutcome) {
+	status := "failure"
+	if outcome == oauthOutcomeCancelled {
+		status = "cancelled"
+	}
+	s.redirectOAuthResult(c, browserValue, kind, status, outcome, false, "")
+}
+
+func (s *GoogleOAuthService) redirectOAuthResult(c *gin.Context, browserValue string, kind OAuthFlowKind, status string, outcome oauthOutcome, jitProvisioned bool, refreshToken string) {
+	if s == nil || s.fs == nil || browserValue == "" {
+		writeOAuthFailure(c.Writer, http.StatusServiceUnavailable, oauthOutcomeUnavailable, kind)
+		return
+	}
 	completionURL, err := s.fixedCompletionURL()
 	if err != nil {
 		writeOAuthFailure(c.Writer, http.StatusServiceUnavailable, oauthOutcomeUnavailable, kind)
 		return
+	}
+	resultID, err := randomOpaqueValue(24)
+	if err != nil {
+		writeOAuthFailure(c.Writer, http.StatusInternalServerError, oauthOutcomeUnavailable, kind)
+		return
+	}
+	supportRef := ""
+	if outcome != "" {
+		supportRef = opaqueSupportReference()
+	}
+	now := s.now().UTC()
+	result := oauthCompletionResult{
+		BrowserHash: hashOAuthValue(browserValue), FlowKind: string(boundedFlowKind(kind)), Status: status,
+		State: oauthCompletionStateActive, Outcome: string(outcome), SupportRef: supportRef,
+		JITProvisioned: jitProvisioned, CreatedAt: now, ExpiresAt: now.Add(oauthCompletionTTL),
+	}
+	if _, err := s.fs.Collection(oauthCompletionsCollection).Doc(resultID).Create(c.Request.Context(), result); err != nil {
+		writeOAuthFailure(c.Writer, http.StatusServiceUnavailable, oauthOutcomeUnavailable, kind)
+		return
+	}
+	log.Printf(`{"event":"auth_oauth","provider":"google","flow_kind":%q,"outcome":%q,"support_ref":%q,"timestamp":%q}`, boundedFlowKind(kind), outcome, supportRef, time.Now().UTC().Format(time.RFC3339))
+	setOAuthCompletionCookie(c, resultID, int(oauthCompletionTTL.Seconds()))
+	c.Header("Cache-Control", "no-store")
+	if refreshToken != "" {
+		setRefreshTokenCookieWithPolicy(c, refreshToken, int(refreshTokenTTL.Seconds()), HostRefreshCookiePolicy())
 	}
 	c.Redirect(http.StatusFound, completionURL)
 }
@@ -707,6 +929,7 @@ func (s *GoogleOAuthService) consumeTransaction(ctx context.Context, state, brow
 		if err := snapshot.DataTo(&transaction); err != nil {
 			return errOAuthTransactionNotFound
 		}
+		transactionID, consumed = snapshot.Ref.ID, transaction
 		if subtle.ConstantTimeCompare([]byte(transaction.BrowserHash), []byte(hashOAuthValue(browserValue))) != 1 {
 			return errOAuthWrongBrowser
 		}
@@ -751,7 +974,6 @@ func (s *GoogleOAuthService) consumeTransaction(ctx context.Context, state, brow
 				}
 			}
 		}
-		transactionID, consumed = snapshot.Ref.ID, transaction
 		return nil
 	})
 	if err == nil && terminalErr != nil {
@@ -761,15 +983,19 @@ func (s *GoogleOAuthService) consumeTransaction(ctx context.Context, state, brow
 }
 
 var (
-	errOAuthTransactionNotFound = errors.New("oauth transaction not found")
-	errOAuthWrongBrowser        = errors.New("oauth transaction browser mismatch")
-	errOAuthWrongKind           = errors.New("oauth transaction flow mismatch")
-	errOAuthSuperseded          = errors.New("oauth transaction superseded")
-	errOAuthReplay              = errors.New("oauth transaction already consumed")
-	errOAuthExpired             = errors.New("oauth transaction expired")
-	errOAuthPendingNotFound     = errors.New("oauth confirmation not found")
-	errOAuthPendingExpired      = errors.New("oauth confirmation expired")
-	errOAuthPendingReplay       = errors.New("oauth confirmation already used")
+	errOAuthTransactionNotFound    = errors.New("oauth transaction not found")
+	errOAuthWrongBrowser           = errors.New("oauth transaction browser mismatch")
+	errOAuthWrongKind              = errors.New("oauth transaction flow mismatch")
+	errOAuthSuperseded             = errors.New("oauth transaction superseded")
+	errOAuthReplay                 = errors.New("oauth transaction already consumed")
+	errOAuthExpired                = errors.New("oauth transaction expired")
+	errOAuthPendingNotFound        = errors.New("oauth confirmation not found")
+	errOAuthPendingExpired         = errors.New("oauth confirmation expired")
+	errOAuthPendingReplay          = errors.New("oauth confirmation already used")
+	errOAuthCompletionNotFound     = errors.New("oauth completion not found")
+	errOAuthCompletionWrongBrowser = errors.New("oauth completion browser mismatch")
+	errOAuthCompletionReplay       = errors.New("oauth completion already used")
+	errOAuthCompletionExpired      = errors.New("oauth completion expired")
 )
 
 func (s *GoogleOAuthService) confirmLink(ctx context.Context, userID, confirmationID string) (oauthCompletionResponse, error) {
@@ -822,7 +1048,10 @@ func (s *GoogleOAuthService) confirmLink(ctx context.Context, userID, confirmati
 			terminalErr = ErrExternalIdentityConflict
 			return nil
 		}
-		identity := ExternalIdentity{Provider: pending.Provider, Issuer: pending.Issuer, Subject: pending.Subject, UserID: userID, CreatedAt: now}
+		identity := ExternalIdentity{
+			Provider: pending.Provider, Issuer: pending.Issuer, Subject: pending.Subject, UserID: userID,
+			ProviderEmail: pending.ProviderEmail, ProviderEmailVerified: pending.ProviderVerified, CreatedAt: now,
+		}
 		if err := tx.Create(identityRef, identity); err != nil {
 			return err
 		}
@@ -994,6 +1223,18 @@ func setOAuthCookie(c *gin.Context, value string, maxAge int) {
 	http.SetCookie(c.Writer, &http.Cookie{Name: oauthCookieName, Value: value, Path: "/", MaxAge: maxAge, Secure: true, HttpOnly: true, SameSite: http.SameSiteLaxMode})
 }
 
+func clearOAuthCookie(c *gin.Context) {
+	setOAuthCookie(c, "", -1)
+}
+
+func setOAuthCompletionCookie(c *gin.Context, value string, maxAge int) {
+	http.SetCookie(c.Writer, &http.Cookie{Name: oauthCompletionCookieName, Value: value, Path: "/", MaxAge: maxAge, Secure: true, HttpOnly: true, SameSite: http.SameSiteLaxMode})
+}
+
+func clearOAuthCompletionCookie(c *gin.Context) {
+	setOAuthCompletionCookie(c, "", -1)
+}
+
 func setOAuthPendingCookie(c *gin.Context, value string, maxAge int) {
 	http.SetCookie(c.Writer, &http.Cookie{Name: oauthPendingCookieName, Value: value, Path: "/", MaxAge: maxAge, Secure: true, HttpOnly: true, SameSite: http.SameSiteLaxMode})
 }
@@ -1063,6 +1304,41 @@ func oauthLinkStatus(err error) (int, oauthOutcome) {
 	default:
 		return http.StatusInternalServerError, oauthOutcomeUnavailable
 	}
+}
+
+func oauthCompletionStatus(err error) int {
+	switch {
+	case errors.Is(err, errOAuthCompletionExpired):
+		return http.StatusGone
+	case errors.Is(err, errOAuthCompletionReplay):
+		return http.StatusConflict
+	default:
+		return http.StatusBadRequest
+	}
+}
+
+func oauthCompletionOutcome(err error) oauthOutcome {
+	switch {
+	case errors.Is(err, errOAuthCompletionExpired):
+		return oauthOutcomeExpired
+	case errors.Is(err, errOAuthCompletionReplay):
+		return oauthOutcomeReplay
+	case errors.Is(err, errOAuthCompletionWrongBrowser):
+		return oauthOutcomeWrongBrowser
+	default:
+		return oauthOutcomeInvalidRequest
+	}
+}
+
+func resultErrorMessage(result oauthCompletionResult) string {
+	if result.Status != "failure" && result.Status != "cancelled" {
+		return ""
+	}
+	message := oauthOutcomeMessage(oauthOutcome(result.Outcome))
+	if message == "" {
+		return "Unable to continue with Google sign-in."
+	}
+	return message
 }
 
 // googleClaims contains only identity claims needed for completion.
