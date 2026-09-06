@@ -73,6 +73,13 @@ type PasswordLoginRepository interface {
 // LoginHandlerWithRepository returns a login handler using the supplied user
 // repository and immutable cookie policy.
 func LoginHandlerWithRepository(repo PasswordLoginRepository, jwtSecret string, cookiePolicy RefreshCookiePolicy) gin.HandlerFunc {
+	return LoginHandlerWithRepositoryAndSessionAuthority(repo, jwtSecret, cookiePolicy, nil)
+}
+
+// LoginHandlerWithRepositoryAndSessionAuthority issues refresh state through
+// the supplied durable authority. A nil authority is retained only for the
+// existing unit/local compatibility lane.
+func LoginHandlerWithRepositoryAndSessionAuthority(repo PasswordLoginRepository, jwtSecret string, cookiePolicy RefreshCookiePolicy, sessions *RefreshSessionAuthority) gin.HandlerFunc {
 	return func(c *gin.Context) {
 		var req LoginRequest
 		if err := c.ShouldBindJSON(&req); err != nil {
@@ -99,7 +106,7 @@ func LoginHandlerWithRepository(repo PasswordLoginRepository, jwtSecret string, 
 			c.JSON(http.StatusInternalServerError, gin.H{"error": "failed to generate token"})
 			return
 		}
-		refreshToken, err := GenerateRefreshToken(userID, user.Role, jwtSecret)
+		refreshToken, err := issueRefreshSession(c.Request.Context(), sessions, userID, user.Role, jwtSecret)
 		if err != nil {
 			c.JSON(http.StatusInternalServerError, gin.H{"error": "failed to generate token"})
 			return

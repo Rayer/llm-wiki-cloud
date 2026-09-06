@@ -3,13 +3,18 @@ package main
 import (
 	"bytes"
 	"encoding/json"
+	"fmt"
 	"net/http"
 	"net/http/httptest"
 	"os"
 	"strings"
 	"testing"
+	"time"
 
 	"github.com/gin-gonic/gin"
+	"golang.org/x/crypto/bcrypt"
+
+	"github.com/rayer/llm-wiki-bff/internal/auth"
 	"github.com/rayer/llm-wiki-bff/internal/config"
 	firestoreclient "github.com/rayer/llm-wiki-bff/internal/firestore"
 	"github.com/rayer/llm-wiki-bff/internal/syssettings"
@@ -139,6 +144,75 @@ func TestProductionRouterUsesHostOnlyRefreshCookiePolicy(t *testing.T) {
 	cookie := cookies[0]
 	if cookie.Name != "__Host-lwc_refresh" || cookie.Domain != "" || cookie.Path != "/" || !cookie.Secure || !cookie.HttpOnly || cookie.SameSite != http.SameSiteLaxMode || cookie.MaxAge != -1 {
 		t.Fatalf("deployed logout cookie attributes: name=%q domain=%q path=%q secure=%v httpOnly=%v sameSite=%v maxAge=%d", cookie.Name, cookie.Domain, cookie.Path, cookie.Secure, cookie.HttpOnly, cookie.SameSite, cookie.MaxAge)
+	}
+}
+
+func TestProductionRouterUsesDurableRefreshAuthorityAcrossRouterInstances(t *testing.T) {
+	gin.SetMode(gin.TestMode)
+	client, err := firestoreclient.NewClientWithDatabase("lwc-320-router", "", "", "")
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer client.Close()
+	repo := auth.NewIdentityRepository(client.Raw())
+	passwordHash, err := bcrypt.GenerateFromPassword([]byte("passphrase-320"), bcrypt.MinCost)
+	if err != nil {
+		t.Fatal(err)
+	}
+	suffix := time.Now().UnixNano()
+	userID := fmt.Sprintf("router-durable-user-320-%d", suffix)
+	email := fmt.Sprintf("router-durable-320-%d@example.test", suffix)
+	if err := repo.ProvisionPasswordUser(t.Context(), auth.PasswordUserProvisioning{
+		UserID: userID, DisplayEmail: email, CanonicalEmail: email,
+		PasswordHash: string(passwordHash), ProjectID: "default",
+	}); err != nil {
+		t.Fatal(err)
+	}
+	cfg := config.Config{JWTSecret: "router-key-320", FirestoreDatabaseID: "lwc-320-router", AllowedHosts: []string{"auth.example.test"}, AllowedOrigins: []string{"https://frontend.example"}}
+	first := newProductionRouter(cfg, false, client, &syssettings.FakeStore{Enabled: true})
+	loginRequest := httptest.NewRequest(http.MethodPost, "http://auth.example.test/api/v1/auth/login", strings.NewReader(fmt.Sprintf(`{"email":%q,"password":"passphrase-320"}`, email)))
+	loginRequest.Header.Set("Content-Type", "application/json")
+	login := httptest.NewRecorder()
+	first.ServeHTTP(login, loginRequest)
+	if login.Code != http.StatusOK {
+		t.Fatalf("durable login status=%d body=%s", login.Code, login.Body.String())
+	}
+	cookies := login.Result().Cookies()
+	if len(cookies) != 1 || cookies[0].Name != "__Host-lwc_refresh" || cookies[0].Value == "" {
+		t.Fatalf("durable login cookies=%#v", cookies)
+	}
+
+	second := newProductionRouter(cfg, false, client, &syssettings.FakeStore{Enabled: true})
+	refreshRequest := httptest.NewRequest(http.MethodPost, "http://auth.example.test/api/v1/auth/refresh", nil)
+	refreshRequest.AddCookie(cookies[0])
+	refresh := httptest.NewRecorder()
+	second.ServeHTTP(refresh, refreshRequest)
+	if refresh.Code != http.StatusOK {
+		t.Fatalf("durable refresh status=%d body=%s", refresh.Code, refresh.Body.String())
+	}
+	var rotated *http.Cookie
+	for _, cookie := range refresh.Result().Cookies() {
+		if cookie.Name == "__Host-lwc_refresh" {
+			rotated = cookie
+			break
+		}
+	}
+	if rotated == nil || rotated.Value == cookies[0].Value {
+		t.Fatalf("durable refresh cookie=%#v, want rotated cookie", rotated)
+	}
+	logoutRequest := httptest.NewRequest(http.MethodPost, "http://auth.example.test/api/v1/auth/logout", nil)
+	logoutRequest.AddCookie(rotated)
+	logout := httptest.NewRecorder()
+	second.ServeHTTP(logout, logoutRequest)
+	if logout.Code != http.StatusOK {
+		t.Fatalf("durable logout status=%d body=%s", logout.Code, logout.Body.String())
+	}
+	revokedRefresh := httptest.NewRecorder()
+	refreshRequest = httptest.NewRequest(http.MethodPost, "http://auth.example.test/api/v1/auth/refresh", nil)
+	refreshRequest.AddCookie(rotated)
+	second.ServeHTTP(revokedRefresh, refreshRequest)
+	if revokedRefresh.Code != http.StatusUnauthorized {
+		t.Fatalf("refresh after durable logout status=%d body=%s", revokedRefresh.Code, revokedRefresh.Body.String())
 	}
 }
 

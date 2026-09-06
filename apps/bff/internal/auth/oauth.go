@@ -239,6 +239,7 @@ type GoogleOAuthService struct {
 	repo      *IdentityRepository
 	gate      RegistrationGate
 	jwtSecret string
+	sessions  *RefreshSessionAuthority
 	client    *http.Client
 	verifier  *googleOIDCVerifier
 	now       func() time.Time
@@ -247,9 +248,15 @@ type GoogleOAuthService struct {
 // NewGoogleOAuthService constructs a bounded provider client. It does not
 // contact Google until a callback is exchanged.
 func NewGoogleOAuthService(cfg GoogleConfig, fs *firestore.Client, repo *IdentityRepository, gate RegistrationGate, jwtSecret string) *GoogleOAuthService {
+	return NewGoogleOAuthServiceWithSessionAuthority(cfg, fs, repo, gate, jwtSecret, nil)
+}
+
+// NewGoogleOAuthServiceWithSessionAuthority converges federated login on the
+// same durable refresh-session authority as password login.
+func NewGoogleOAuthServiceWithSessionAuthority(cfg GoogleConfig, fs *firestore.Client, repo *IdentityRepository, gate RegistrationGate, jwtSecret string, sessions *RefreshSessionAuthority) *GoogleOAuthService {
 	client := boundedOAuthHTTPClient()
 	return &GoogleOAuthService{
-		cfg: cfg, fs: fs, repo: repo, gate: gate, jwtSecret: jwtSecret,
+		cfg: cfg, fs: fs, repo: repo, gate: gate, jwtSecret: jwtSecret, sessions: sessions,
 		client: client, verifier: newGoogleOIDCVerifier(cfg, client), now: time.Now,
 	}
 }
@@ -613,7 +620,7 @@ func (s *GoogleOAuthService) completeLinkCallback(c *gin.Context, transactionID 
 }
 
 func (s *GoogleOAuthService) issueSession(c *gin.Context, userID string, user *UserRecord) {
-	refreshToken, err := GenerateRefreshToken(userID, user.Role, s.jwtSecret)
+	refreshToken, err := issueRefreshSession(c.Request.Context(), s.sessions, userID, user.Role, s.jwtSecret)
 	if err != nil {
 		writeOAuthFailure(c.Writer, http.StatusInternalServerError, oauthOutcomeUnavailable, OAuthFlowLogin)
 		return

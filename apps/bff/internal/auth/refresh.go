@@ -40,6 +40,40 @@ func RefreshHandlerWithCookiePolicy(fsClient *firestore.Client, jwtSecret string
 	return refreshHandlerWithCookiePolicy(fsClient, jwtSecret, GetUser, cookiePolicy)
 }
 
+// RefreshHandlerWithSessionAuthority uses the shared durable session owner.
+// The legacy handler remains available only to the local/compatibility lane.
+func RefreshHandlerWithSessionAuthority(authority *RefreshSessionAuthority, jwtSecret string, cookiePolicy RefreshCookiePolicy) gin.HandlerFunc {
+	return func(c *gin.Context) {
+		cookie, err := c.Request.Cookie(cookiePolicy.Name)
+		if err != nil || cookie.Value == "" || authority == nil {
+			c.JSON(http.StatusUnauthorized, gin.H{"error": "invalid refresh token"})
+			return
+		}
+
+		rotation, err := authority.Rotate(c.Request.Context(), cookie.Value, jwtSecret)
+		if err != nil {
+			c.JSON(http.StatusUnauthorized, gin.H{"error": "invalid refresh token"})
+			return
+		}
+		user, err := GetUser(c.Request.Context(), authority.fs, rotation.UserID)
+		if err != nil || user == nil {
+			_ = authority.Revoke(c.Request.Context(), rotation.Token, jwtSecret)
+			c.JSON(http.StatusUnauthorized, gin.H{"error": "invalid refresh token"})
+			return
+		}
+		accessToken, err := GenerateAccessToken(rotation.UserID, user.Role, jwtSecret)
+		if err != nil {
+			c.JSON(http.StatusInternalServerError, gin.H{"error": "failed to generate token"})
+			return
+		}
+		setRefreshTokenCookieWithPolicy(c, rotation.Token, int(refreshTokenTTL.Seconds()), cookiePolicy)
+		c.JSON(http.StatusOK, RefreshResponse{
+			AccessToken: accessToken,
+			User:        User{ID: rotation.UserID, Email: user.Email, Role: user.Role},
+		})
+	}
+}
+
 func refreshHandlerWithCookiePolicy(fsClient *firestore.Client, jwtSecret string, getUser userLookupFunc, cookiePolicy RefreshCookiePolicy) gin.HandlerFunc {
 	return func(c *gin.Context) {
 		cookie, err := c.Request.Cookie(cookiePolicy.Name)

@@ -106,17 +106,27 @@ func newProductionRouter(cfg config.Config, localMode bool, fsClient *firestorec
 		authRoutes.POST("/logout", auth.LogoutHandlerWithCookiePolicy(auth.HostRefreshCookiePolicy()))
 	} else {
 		identityRepository := auth.NewIdentityRepository(fsClient.Raw())
-		authRoutes.POST("/login", middleware.NewRateLimiter(10, time.Minute), auth.LoginHandlerWithRepository(identityRepository, cfg.JWTSecret, auth.HostRefreshCookiePolicy()))
+		sessionEnvironment := strings.TrimSpace(cfg.AuthSessionEnvironment)
+		if sessionEnvironment == "" {
+			sessionEnvironment = strings.TrimSpace(cfg.FirestoreDatabaseID)
+			if sessionEnvironment == "" {
+				sessionEnvironment = "default"
+			}
+		}
+		sessions := auth.NewRefreshSessionAuthorityWithConfig(fsClient.Raw(), auth.SessionAuthorityConfig{
+			Environment: sessionEnvironment, Migration: auth.RefreshSessionMigrationMode(cfg.AuthSessionMigration),
+		})
+		authRoutes.POST("/login", middleware.NewRateLimiter(10, time.Minute), auth.LoginHandlerWithRepositoryAndSessionAuthority(identityRepository, cfg.JWTSecret, auth.HostRefreshCookiePolicy(), sessions))
 		authRoutes.POST("/register", middleware.NewRateLimiter(5, time.Minute), auth.RegisterHandlerWithRepository(identityRepository, cfg.JWTSecret, settingsStore))
-		authRoutes.POST("/refresh", auth.RefreshHandlerWithCookiePolicy(fsClient.Raw(), cfg.JWTSecret, auth.HostRefreshCookiePolicy()))
-		authRoutes.POST("/logout", auth.LogoutHandlerWithCookiePolicy(auth.HostRefreshCookiePolicy()))
+		authRoutes.POST("/refresh", auth.RefreshHandlerWithSessionAuthority(sessions, cfg.JWTSecret, auth.HostRefreshCookiePolicy()))
+		authRoutes.POST("/logout", auth.LogoutHandlerWithSessionAuthority(sessions, cfg.JWTSecret, auth.HostRefreshCookiePolicy()))
 		if cfg.GoogleClientID != "" {
-			google := auth.NewGoogleOAuthService(auth.GoogleConfig{
+			google := auth.NewGoogleOAuthServiceWithSessionAuthority(auth.GoogleConfig{
 				ClientID: cfg.GoogleClientID, ClientSecret: cfg.GoogleClientSecret, Issuer: cfg.GoogleIssuer,
 				JWKSURL: cfg.GoogleJWKSURL, TokenURL: cfg.GoogleTokenURL,
 				LoginRedirectURL: cfg.GoogleLoginRedirectURL, LinkRedirectURL: cfg.GoogleLinkRedirectURL,
 				CompletionURL: cfg.GoogleCompletionURL, AuthServiceURL: cfg.AuthServiceURL, AllowedOrigins: cfg.AllowedOrigins,
-			}, fsClient.Raw(), identityRepository, settingsStore, cfg.JWTSecret)
+			}, fsClient.Raw(), identityRepository, settingsStore, cfg.JWTSecret, sessions)
 			authRoutes.POST("/google/start", google.StartHandler(""))
 			authRoutes.GET("/google/start", google.StartHandler(""))
 			authRoutes.POST("/google/login/start", google.StartHandler(auth.OAuthFlowLogin))

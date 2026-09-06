@@ -325,10 +325,20 @@ func newProductionRouter(
 		authRoutes.POST("/logout", auth.LogoutHandler())
 	} else {
 		identityRepository := auth.NewIdentityRepository(fsClient.Raw())
-		authRoutes.POST("/login", middleware.NewRateLimiter(10, time.Minute), auth.LoginHandlerWithRepository(identityRepository, cfg.JWTSecret, auth.LegacyRefreshCookiePolicy()))
+		sessionEnvironment := strings.TrimSpace(cfg.AuthSessionEnvironment)
+		if sessionEnvironment == "" {
+			sessionEnvironment = strings.TrimSpace(cfg.FirestoreDatabaseID)
+			if sessionEnvironment == "" {
+				sessionEnvironment = "default"
+			}
+		}
+		sessions := auth.NewRefreshSessionAuthorityWithConfig(fsClient.Raw(), auth.SessionAuthorityConfig{
+			Environment: sessionEnvironment, Migration: auth.RefreshSessionMigrationMode(cfg.AuthSessionMigration),
+		})
+		authRoutes.POST("/login", middleware.NewRateLimiter(10, time.Minute), auth.LoginHandlerWithRepositoryAndSessionAuthority(identityRepository, cfg.JWTSecret, auth.LegacyRefreshCookiePolicy(), sessions))
 		authRoutes.POST("/register", middleware.NewRateLimiter(5, time.Minute), auth.RegisterHandlerWithRepository(identityRepository, cfg.JWTSecret, settingsStore))
-		authRoutes.POST("/refresh", auth.RefreshHandler(fsClient.Raw(), cfg.JWTSecret))
-		authRoutes.POST("/logout", auth.LogoutHandler())
+		authRoutes.POST("/refresh", auth.RefreshHandlerWithSessionAuthority(sessions, cfg.JWTSecret, auth.LegacyRefreshCookiePolicy()))
+		authRoutes.POST("/logout", auth.LogoutHandlerWithSessionAuthority(sessions, cfg.JWTSecret, auth.LegacyRefreshCookiePolicy()))
 	}
 
 	// ── Swagger UI ──
