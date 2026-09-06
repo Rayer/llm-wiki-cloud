@@ -25,6 +25,15 @@ func TestCanonicalizeEmailUsesOnlyTrimAndLowercase(t *testing.T) {
 	}
 }
 
+func TestReservationDisplayMustMatchCanonicalEmail(t *testing.T) {
+	if err := validateReservationDisplay("alice@example.com", "Bob@example.com"); !errors.Is(err, ErrInvalidIdentityInput) {
+		t.Fatalf("mismatched display validation error = %v, want invalid input", err)
+	}
+	if err := validateReservationDisplay("alice@example.com", " Alice@Example.com "); err != nil {
+		t.Fatalf("matching display validation error = %v", err)
+	}
+}
+
 func TestIdentityDocumentIDsDoNotContainSensitiveTupleValues(t *testing.T) {
 	canonical := "alice@example.com"
 	emailID := emailReservationDocumentID(canonical)
@@ -112,6 +121,21 @@ func TestLoginHandlerResolvesCanonicalPrimaryEmail(t *testing.T) {
 	}
 	if store.canonicalEmail != "display@example.com" {
 		t.Fatalf("login canonical email = %q", store.canonicalEmail)
+	}
+}
+
+func TestLoginHandlerRejectsPasswordlessUser(t *testing.T) {
+	gin.SetMode(gin.TestMode)
+	store := &recordingLoginStore{userID: "external-user", user: &UserRecord{Email: "external@example.com"}}
+	router := gin.New()
+	router.POST("/login", LoginHandlerWithRepository(store, "test-secret", LegacyRefreshCookiePolicy()))
+
+	rec := httptest.NewRecorder()
+	req := httptest.NewRequest(http.MethodPost, "/login", strings.NewReader(`{"email":"external@example.com","password":"password123"}`))
+	req.Header.Set("Content-Type", "application/json")
+	router.ServeHTTP(rec, req)
+	if rec.Code != http.StatusUnauthorized {
+		t.Fatalf("passwordless login status = %d, want %d", rec.Code, http.StatusUnauthorized)
 	}
 }
 

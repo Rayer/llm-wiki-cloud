@@ -30,6 +30,7 @@ var (
 	ErrMalformedIdentityRecord       = errors.New("malformed identity record")
 	ErrIdentityRepositoryUnavailable = errors.New("identity repository unavailable")
 	ErrInvalidIdentityInput          = errors.New("invalid identity input")
+	errPasswordLoginUnavailable      = errors.New("password login unavailable")
 )
 
 // CanonicalizeEmail is intentionally limited to the accepted contract:
@@ -64,6 +65,19 @@ type PasswordUserProvisioning struct {
 	DisplayEmail   string
 	CanonicalEmail string
 	PasswordHash   string
+	ProjectID      string
+}
+
+// ExternalUserProvisioning contains the records required for a new
+// passwordless external user. It deliberately contains no provider HTTP or
+// token concerns; callers pass an already accepted identity tuple.
+type ExternalUserProvisioning struct {
+	UserID         string
+	DisplayEmail   string
+	CanonicalEmail string
+	Provider       string
+	Issuer         string
+	Subject        string
 	ProjectID      string
 }
 
@@ -161,6 +175,9 @@ func (r *IdentityRepository) GetPasswordUserByEmail(ctx context.Context, email s
 		if decodeErr != nil || CanonicalizeEmail(user.Email) != canonical || (user.EmailCanonical != "" && user.EmailCanonical != canonical) {
 			return "", nil, ErrMalformedIdentityRecord
 		}
+		if user.PasswordHash == "" {
+			return "", nil, errPasswordLoginUnavailable
+		}
 		return reservation.UserID, user, nil
 	}
 
@@ -187,6 +204,9 @@ func (r *IdentityRepository) GetPasswordUserByEmail(ctx context.Context, email s
 	}
 	if match == nil {
 		return "", nil, ErrMalformedIdentityRecord
+	}
+	if match.PasswordHash == "" {
+		return "", nil, errPasswordLoginUnavailable
 	}
 	return matchID, match, nil
 }
@@ -265,6 +285,9 @@ func (tx *IdentityTransaction) ReserveCanonicalEmail(userID, email, displayEmail
 	canonical, err := normalizedCanonicalEmail(email)
 	if err != nil || strings.TrimSpace(userID) == "" {
 		return ErrInvalidIdentityInput
+	}
+	if err := validateReservationDisplay(canonical, displayEmail); err != nil {
+		return err
 	}
 	key := emailReservationDocumentID(canonical)
 	if existing, ok := tx.emailReservations[key]; ok {
@@ -392,6 +415,128 @@ func (r *IdentityRepository) ProvisionPasswordUser(ctx context.Context, input Pa
 	})
 }
 
+// ProvisionExternalUser atomically creates a passwordless user, canonical
+// reservation, external identity mapping, and Default Project metadata.
+// Repeating the complete operation for the same owner and identity is safe;
+// partial or cross-owner state is rejected without repair or transfer.
+func (r *IdentityRepository) ProvisionExternalUser(ctx context.Context, input ExternalUserProvisioning) error {
+	return r.RunTransaction(ctx, func(tx *IdentityTransaction) error {
+		return tx.ProvisionExternalUser(input)
+	})
+}
+
+// ProvisionExternalUser queues a complete passwordless external-user
+// provisioning operation in an existing transaction.
+func (tx *IdentityTransaction) ProvisionExternalUser(input ExternalUserProvisioning) error {
+	if tx == nil || tx.tx == nil {
+		return ErrIdentityRepositoryUnavailable
+	}
+	input.DisplayEmail = strings.TrimSpace(input.DisplayEmail)
+	input.CanonicalEmail = CanonicalizeEmail(input.CanonicalEmail)
+	provider, issuer, subject, err := normalizedExternalIdentity(input.Provider, input.Issuer, input.Subject)
+	if err != nil {
+		return err
+	}
+	input.Provider, input.Issuer, input.Subject = provider, issuer, subject
+	if input.ProjectID == "" {
+		input.ProjectID = defaultProjectID
+	}
+	if strings.TrimSpace(input.UserID) == "" || input.DisplayEmail == "" || input.CanonicalEmail == "" || CanonicalizeEmail(input.DisplayEmail) != input.CanonicalEmail {
+		return ErrInvalidIdentityInput
+	}
+
+	userRef := tx.txClientCollection("users").Doc(input.UserID)
+	reservationRef := tx.txClientCollection(EmailReservationsCollection).Doc(emailReservationDocumentID(input.CanonicalEmail))
+	identityRef := tx.txClientCollection(ExternalIdentitiesCollection).Doc(externalIdentityDocumentID(input.Provider, input.Issuer, input.Subject))
+	projectRef := userRef.Collection("projects").Doc(input.ProjectID)
+	snapshots, err := tx.tx.GetAll([]*firestore.DocumentRef{userRef, reservationRef, identityRef, projectRef})
+	if err != nil {
+		return err
+	}
+	userSnapshot, reservationSnapshot, identitySnapshot, projectSnapshot := snapshots[0], snapshots[1], snapshots[2], snapshots[3]
+	allExist := userSnapshot.Exists() && reservationSnapshot.Exists() && identitySnapshot.Exists() && projectSnapshot.Exists()
+	anyExist := userSnapshot.Exists() || reservationSnapshot.Exists() || identitySnapshot.Exists() || projectSnapshot.Exists()
+
+	if reservationSnapshot.Exists() {
+		reservation, decodeErr := decodeEmailReservation(reservationSnapshot)
+		if decodeErr != nil {
+			return decodeErr
+		}
+		if reservation.CanonicalEmail != input.CanonicalEmail {
+			return ErrMalformedIdentityRecord
+		}
+		if reservation.UserID != input.UserID {
+			return ErrCanonicalEmailConflict
+		}
+	}
+	if identitySnapshot.Exists() {
+		identity, decodeErr := decodeExternalIdentity(identitySnapshot)
+		if decodeErr != nil {
+			return decodeErr
+		}
+		if identity.Provider != input.Provider || identity.Issuer != input.Issuer || identity.Subject != input.Subject {
+			return ErrMalformedIdentityRecord
+		}
+		if identity.UserID != input.UserID {
+			return ErrExternalIdentityConflict
+		}
+	}
+	if userSnapshot.Exists() {
+		user, decodeErr := decodeUserRecord(userSnapshot)
+		if decodeErr != nil {
+			return decodeErr
+		}
+		if CanonicalizeEmail(user.Email) != input.CanonicalEmail || (user.EmailCanonical != "" && user.EmailCanonical != input.CanonicalEmail) {
+			return ErrCanonicalEmailConflict
+		}
+		if user.PasswordHash != "" {
+			return ErrCanonicalEmailConflict
+		}
+	}
+
+	if allExist {
+		return nil
+	}
+	if anyExist {
+		return ErrMalformedIdentityRecord
+	}
+	if err := tx.rejectLegacyCanonicalCollision(input.CanonicalEmail, input.UserID); err != nil {
+		return err
+	}
+
+	user := UserRecord{
+		Email:          input.DisplayEmail,
+		EmailCanonical: input.CanonicalEmail,
+		EmailVerified:  false,
+		ProjectCount:   0,
+		DefaultProject: input.ProjectID,
+	}
+	reservation := EmailReservation{
+		CanonicalEmail: input.CanonicalEmail,
+		UserID:         input.UserID,
+		DisplayEmail:   input.DisplayEmail,
+		CreatedAt:      time.Now().UTC(),
+	}
+	identity := ExternalIdentity{
+		Provider:  input.Provider,
+		Issuer:    input.Issuer,
+		Subject:   input.Subject,
+		UserID:    input.UserID,
+		CreatedAt: time.Now().UTC(),
+	}
+	project := map[string]interface{}{
+		"name":       "My First Wiki",
+		"created_at": nil,
+	}
+	tx.writes = append(tx.writes,
+		func(transaction *firestore.Transaction) error { return transaction.Create(userRef, user) },
+		func(transaction *firestore.Transaction) error { return transaction.Create(reservationRef, reservation) },
+		func(transaction *firestore.Transaction) error { return transaction.Create(identityRef, identity) },
+		func(transaction *firestore.Transaction) error { return transaction.Create(projectRef, project) },
+	)
+	return nil
+}
+
 // ProvisionPasswordUser queues all password registration writes in an existing
 // transaction.
 func (tx *IdentityTransaction) ProvisionPasswordUser(input PasswordUserProvisioning) error {
@@ -516,7 +661,8 @@ func (tx *IdentityTransaction) txClientCollection(name string) *firestore.Collec
 // migration window, before every legacy user has a reservation. The audit
 // command remains the durable rollout path; this scan is intentionally a
 // temporary compatibility guard and should disappear once all users are
-// backfilled. ponytail: O(users) legacy scan; remove after complete backfill.
+// backfilled. TODO(LWC-315 rollout): remove this O(users) guard after complete
+// backfill; reservations then become the sole lookup path.
 func (tx *IdentityTransaction) rejectLegacyCanonicalCollision(canonical, userID string) error {
 	iter := tx.tx.Documents(tx.txClientCollection("users"))
 	defer iter.Stop()
@@ -552,6 +698,14 @@ func optionalTransactionGet(tx *firestore.Transaction, ref *firestore.DocumentRe
 	return snapshot, nil
 }
 
+func validateReservationDisplay(canonical, displayEmail string) error {
+	displayEmail = strings.TrimSpace(displayEmail)
+	if displayEmail != "" && CanonicalizeEmail(displayEmail) != canonical {
+		return ErrInvalidIdentityInput
+	}
+	return nil
+}
+
 func decodeEmailReservation(snapshot *firestore.DocumentSnapshot) (*EmailReservation, error) {
 	if snapshot == nil || !snapshot.Exists() {
 		return nil, nil
@@ -579,7 +733,7 @@ func decodeUserRecord(snapshot *firestore.DocumentSnapshot) (*UserRecord, error)
 		return nil, ErrMalformedIdentityRecord
 	}
 	var user UserRecord
-	if err := snapshot.DataTo(&user); err != nil || strings.TrimSpace(user.Email) == "" || user.PasswordHash == "" {
+	if err := snapshot.DataTo(&user); err != nil || strings.TrimSpace(user.Email) == "" {
 		return nil, ErrMalformedIdentityRecord
 	}
 	return &user, nil

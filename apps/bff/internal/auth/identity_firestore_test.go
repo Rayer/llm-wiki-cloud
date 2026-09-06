@@ -56,6 +56,197 @@ func TestRegistrationHandlerWithFirestoreCommitsIdentityBoundary(t *testing.T) {
 	}
 }
 
+func TestIdentityRepositoryProvisionExternalUserCreatesPasswordlessBoundary(t *testing.T) {
+	repo, client := newIdentityEmulatorRepository(t)
+	defer client.Close()
+	ctx := context.Background()
+	input := ExternalUserProvisioning{
+		UserID:         "external-success-user-315",
+		DisplayEmail:   "Display.External@example.test",
+		CanonicalEmail: "display.external@example.test",
+		Provider:       "test-provider",
+		Issuer:         "https://issuer.example.test",
+		Subject:        "external-success-subject-315",
+	}
+	cleanupExternalFixture(t, client, input)
+
+	if err := repo.ProvisionExternalUser(ctx, input); err != nil {
+		t.Fatalf("external provisioning: %v", err)
+	}
+	userSnapshot, err := client.Collection("users").Doc(input.UserID).Get(ctx)
+	if err != nil {
+		t.Fatalf("read external user: %v", err)
+	}
+	user, err := decodeUserRecord(userSnapshot)
+	if err != nil || user.Email != input.DisplayEmail || user.EmailCanonical != input.CanonicalEmail || user.PasswordHash != "" {
+		t.Fatalf("external user = %#v, error = %v", user, err)
+	}
+	reservation, err := repo.GetCanonicalEmailReservation(ctx, input.CanonicalEmail)
+	if err != nil || reservation == nil || reservation.UserID != input.UserID {
+		t.Fatalf("external reservation = %#v, error = %v", reservation, err)
+	}
+	identity, err := repo.GetExternalIdentity(ctx, input.Provider, input.Issuer, input.Subject)
+	if err != nil || identity == nil || identity.UserID != input.UserID {
+		t.Fatalf("external identity = %#v, error = %v", identity, err)
+	}
+	project, err := client.Collection("users").Doc(input.UserID).Collection("projects").Doc(defaultProjectID).Get(ctx)
+	if err != nil || !project.Exists() {
+		t.Fatalf("external default project exists=%v, error=%v", project.Exists(), err)
+	}
+	if _, _, err := repo.GetPasswordUserByEmail(ctx, input.CanonicalEmail); !errors.Is(err, errPasswordLoginUnavailable) {
+		t.Fatalf("password lookup for external user error = %v, want unavailable", err)
+	}
+}
+
+func TestIdentityRepositoryConcurrentExternalProvisioningConflictsEmailAndIdentity(t *testing.T) {
+	tests := []struct {
+		name         string
+		inputs       []ExternalUserProvisioning
+		wantConflict error
+	}{
+		{
+			name: "canonical email",
+			inputs: []ExternalUserProvisioning{
+				{UserID: "external-email-a-315", DisplayEmail: "same.external@example.test", CanonicalEmail: "same.external@example.test", Provider: "provider-a", Issuer: "https://issuer-a.example.test", Subject: "subject-a-315"},
+				{UserID: "external-email-b-315", DisplayEmail: "SAME.EXTERNAL@example.test", CanonicalEmail: "same.external@example.test", Provider: "provider-b", Issuer: "https://issuer-b.example.test", Subject: "subject-b-315"},
+			},
+			wantConflict: ErrCanonicalEmailConflict,
+		},
+		{
+			name: "external identity",
+			inputs: []ExternalUserProvisioning{
+				{UserID: "external-identity-a-315", DisplayEmail: "identity-a@example.test", CanonicalEmail: "identity-a@example.test", Provider: "provider-shared", Issuer: "https://issuer-shared.example.test", Subject: "subject-shared-315"},
+				{UserID: "external-identity-b-315", DisplayEmail: "identity-b@example.test", CanonicalEmail: "identity-b@example.test", Provider: "provider-shared", Issuer: "https://issuer-shared.example.test", Subject: "subject-shared-315"},
+			},
+			wantConflict: ErrExternalIdentityConflict,
+		},
+	}
+
+	for _, test := range tests {
+		t.Run(test.name, func(t *testing.T) {
+			repo, client := newIdentityEmulatorRepository(t)
+			defer client.Close()
+			ctx := context.Background()
+			for _, input := range test.inputs {
+				cleanupExternalFixture(t, client, input)
+			}
+
+			start := make(chan struct{})
+			errs := make(chan error, len(test.inputs))
+			var wait sync.WaitGroup
+			for _, input := range test.inputs {
+				input := input
+				wait.Add(1)
+				go func() {
+					defer wait.Done()
+					<-start
+					errs <- repo.ProvisionExternalUser(ctx, input)
+				}()
+			}
+			close(start)
+			wait.Wait()
+			close(errs)
+
+			got := make([]error, 0, len(test.inputs))
+			for err := range errs {
+				got = append(got, err)
+			}
+			if len(got) != len(test.inputs) {
+				t.Fatalf("concurrent result count = %d, want %d", len(got), len(test.inputs))
+			}
+			successes, conflicts := 0, 0
+			for _, err := range got {
+				if err == nil {
+					successes++
+				} else if errors.Is(err, test.wantConflict) {
+					conflicts++
+				} else {
+					t.Fatalf("concurrent external provisioning error = %v", err)
+				}
+			}
+			if successes != 1 || conflicts != 1 {
+				t.Fatalf("concurrent external provisioning successes=%d conflicts=%d, want one each", successes, conflicts)
+			}
+		})
+	}
+}
+
+func TestIdentityRepositoryExternalProvisioningRetryAndRollbackAreAtomic(t *testing.T) {
+	repo, client := newIdentityEmulatorRepository(t)
+	defer client.Close()
+	ctx := context.Background()
+	input := ExternalUserProvisioning{
+		UserID:         "external-retry-user-315",
+		DisplayEmail:   "retry.external@example.test",
+		CanonicalEmail: "retry.external@example.test",
+		Provider:       "retry-provider",
+		Issuer:         "https://retry-issuer.example.test",
+		Subject:        "retry-subject-315",
+	}
+	cleanupExternalFixture(t, client, input)
+	if err := repo.ProvisionExternalUser(ctx, input); err != nil {
+		t.Fatalf("first external provisioning: %v", err)
+	}
+	if err := repo.ProvisionExternalUser(ctx, input); err != nil {
+		t.Fatalf("exact external retry: %v", err)
+	}
+	if got := countExistingExternalBoundary(ctx, client, input); got != 4 {
+		t.Fatalf("external boundary records after retry = %d, want 4", got)
+	}
+
+	rollback := ExternalUserProvisioning{
+		UserID:         "external-rollback-user-315",
+		DisplayEmail:   "rollback.external@example.test",
+		CanonicalEmail: "rollback.external@example.test",
+		Provider:       "rollback-provider",
+		Issuer:         "https://rollback-issuer.example.test",
+		Subject:        "rollback-subject-315",
+	}
+	cleanupExternalFixture(t, client, rollback)
+	err := repo.RunTransaction(ctx, func(tx *IdentityTransaction) error {
+		if err := tx.ProvisionExternalUser(rollback); err != nil {
+			return err
+		}
+		return errors.New("abort external provisioning test transaction")
+	})
+	if err == nil {
+		t.Fatal("external rollback transaction succeeded, want abort")
+	}
+	if got := countExistingExternalBoundary(ctx, client, rollback); got != 0 {
+		t.Fatalf("external boundary records after rollback = %d, want zero", got)
+	}
+}
+
+func TestIdentityAuditAcceptsPasswordlessExternalUser(t *testing.T) {
+	repo, client := newIdentityEmulatorRepository(t)
+	defer client.Close()
+	ctx := context.Background()
+	input := ExternalUserProvisioning{
+		UserID:         "external-audit-user-315",
+		DisplayEmail:   "audit.external@example.test",
+		CanonicalEmail: "audit.external@example.test",
+		Provider:       "audit-provider",
+		Issuer:         "https://audit-issuer.example.test",
+		Subject:        "audit-subject-315",
+	}
+	cleanupExternalFixture(t, client, input)
+	cleanupIdentityFixtures(t, client, "collision-a-315", "collision-b-315", "collision@example.test")
+	t.Cleanup(func() {
+		cleanupExternalFixture(t, client, input)
+		cleanupIdentityFixtures(t, client, "collision-a-315", "collision-b-315", "collision@example.test")
+	})
+	if err := repo.ProvisionExternalUser(ctx, input); err != nil {
+		t.Fatalf("external audit fixture: %v", err)
+	}
+	report, err := repo.AuditAndBackfill(ctx, false)
+	if err != nil {
+		t.Fatalf("passwordless external audit: %v", err)
+	}
+	if report.UsersScanned < 1 || report.ReservationsPresent < 1 || report.MalformedRecordCount != 0 {
+		t.Fatalf("passwordless external audit report = %+v", report)
+	}
+}
+
 func TestIdentityRepositoryConcurrentProvisioningReservesOneCanonicalEmail(t *testing.T) {
 	repo, client := newIdentityEmulatorRepository(t)
 	defer client.Close()
@@ -247,6 +438,7 @@ func TestIdentityAuditDryRunApplyAndCollisionAreSafe(t *testing.T) {
 	collisionA, collisionB := "collision-a-315", "collision-b-315"
 	collisionEmail := "collision@example.test"
 	cleanupIdentityFixtures(t, client, collisionA, collisionB, collisionEmail)
+	t.Cleanup(func() { cleanupIdentityFixtures(t, client, collisionA, collisionB, collisionEmail) })
 	for _, id := range []string{collisionA, collisionB} {
 		if _, err := client.Collection("users").Doc(id).Set(ctx, UserRecord{Email: collisionEmail, PasswordHash: "hash"}); err != nil {
 			t.Fatalf("seed collision user: %v", err)
@@ -294,6 +486,29 @@ func cleanupIdentityFixtures(t *testing.T, client *firestore.Client, userA, user
 	if email != "" {
 		_, _ = client.Collection(EmailReservationsCollection).Doc(emailReservationDocumentID(CanonicalizeEmail(email))).Delete(ctx)
 	}
+}
+
+func cleanupExternalFixture(t *testing.T, client *firestore.Client, input ExternalUserProvisioning) {
+	t.Helper()
+	cleanupIdentityFixtures(t, client, input.UserID, "", input.CanonicalEmail)
+	ctx := context.Background()
+	_, _ = client.Collection(ExternalIdentitiesCollection).Doc(externalIdentityDocumentID(input.Provider, input.Issuer, input.Subject)).Delete(ctx)
+}
+
+func countExistingExternalBoundary(ctx context.Context, client *firestore.Client, input ExternalUserProvisioning) int {
+	count := 0
+	refs := []*firestore.DocumentRef{
+		client.Collection("users").Doc(input.UserID),
+		client.Collection(EmailReservationsCollection).Doc(emailReservationDocumentID(input.CanonicalEmail)),
+		client.Collection(ExternalIdentitiesCollection).Doc(externalIdentityDocumentID(input.Provider, input.Issuer, input.Subject)),
+		client.Collection("users").Doc(input.UserID).Collection("projects").Doc(defaultProjectID),
+	}
+	for _, ref := range refs {
+		if snapshot, err := ref.Get(ctx); err == nil && snapshot.Exists() {
+			count++
+		}
+	}
+	return count
 }
 
 func countExistingUsers(ctx context.Context, client *firestore.Client, inputs []PasswordUserProvisioning) int {
