@@ -1,16 +1,18 @@
 # LWC-318: DEV Google configuration delivery
 
-The repository deliberately ships `auth.google.enabled: false` in
-`deploy/environments/development.yaml`. No OAuth client has been provisioned.
-Changing only `enabled` to `true` fails loader validation. Absence of the optional
-block retains artifact-only delivery; Production rejects the block and its YAML
-is unchanged.
+The repository enables `auth.google` in `deploy/environments/development.yaml`
+with the operator-verified DEV Web client ID and `google-oauth-client-dev:1`
+Secret Manager reference. Provider metadata readback confirmed version 1 is
+ENABLED, the exact redirects/origin below and secret-level runtime IAM.
+This is source configuration, not deployment or real Google UAT acceptance.
+Absence of the optional block retains artifact-only delivery; Production rejects
+the block and its YAML is unchanged.
 
 ## Operator continuation
 
 Parent review, successful CI and a fresh exact-candidate DEV mission are required
 before any deployment. This source change does not authorize provider creation,
-IAM changes or deployment. In the separately authorized provisioning step obtain:
+IAM changes or deployment. Preserve these operator constraints:
 
 - The actual DEV **Web application** OAuth client ID, ending in
   `.apps.googleusercontent.com` (not the test fixture ID).
@@ -24,14 +26,14 @@ IAM changes or deployment. In the separately authorized provisioning step obtain
   frontend JavaScript origin `https://wiki.dev.rayer.idv.tw`, plus the appropriate
   consent/test-user setup for the separately approved disposable identities.
 
-Once these inputs are available, a reviewed source change can set:
+The configured nonsecret values are:
 
 | `auth.google` field | Required value |
 | --- | --- |
 | `enabled` | `true` |
-| `client_id` | Actual provisioned DEV client ID |
+| `client_id` | `580854833715-vo7fg6f7f15g1kkgchk1ulccllbc24qg.apps.googleusercontent.com` |
 | `client_secret_reference` | `google-oauth-client-dev` |
-| `client_secret_version` | Quoted positive numeric version; `latest` rejected |
+| `client_secret_version` | `"1"`; `latest` rejected |
 | `issuer` | `https://accounts.google.com` |
 | `jwks_url` | `https://www.googleapis.com/oauth2/v3/certs` |
 | `token_url` | `https://oauth2.googleapis.com/token` |

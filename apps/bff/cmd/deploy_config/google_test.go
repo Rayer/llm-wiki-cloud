@@ -3,6 +3,7 @@ package main
 import (
 	"os"
 	"path/filepath"
+	"regexp"
 	"strings"
 	"testing"
 )
@@ -25,8 +26,8 @@ func TestGoogleDeploymentContract(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	// Strip the shipped disabled block; each case supplies its own contract.
-	base := strings.Replace(string(raw), "  google:\n    enabled: false\n", "", 1)
+	// Strip the shipped Google block; each case supplies its own contract.
+	base := regexp.MustCompile(`(?m)^  google:\n(?:    .*\n)*`).ReplaceAllString(string(raw), "")
 	cases := map[string]struct {
 		block, old, replacement string
 		valid                   bool
@@ -86,8 +87,11 @@ func TestGoogleNormalizedPlanAndProductionIsolation(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if dev.Auth.Google == nil || dev.Auth.Google.Enabled == nil || *dev.Auth.Google.Enabled {
-		t.Fatal("DEV must ship explicitly disabled")
+	if dev.Auth.Google == nil || dev.Auth.Google.Enabled == nil || !*dev.Auth.Google.Enabled {
+		t.Fatal("DEV must ship explicitly enabled")
+	}
+	if dev.Auth.Google.ClientID != "580854833715-vo7fg6f7f15g1kkgchk1ulccllbc24qg.apps.googleusercontent.com" || dev.Auth.Google.ClientSecretReference != "google-oauth-client-dev" || dev.Auth.Google.ClientSecretVersion != "1" {
+		t.Fatal("DEV must use the provisioned client and pinned secret reference")
 	}
 	if dev.Components["auth"].(map[string]any)["google"] != dev.Auth.Google {
 		t.Fatal("component plan omitted Google config")
