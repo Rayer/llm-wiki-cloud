@@ -67,6 +67,7 @@ func TestIdentityRepositoryProvisionExternalUserCreatesPasswordlessBoundary(t *t
 		Provider:       "test-provider",
 		Issuer:         "https://issuer.example.test",
 		Subject:        "external-success-subject-315",
+		EmailVerified:  true,
 	}
 	cleanupExternalFixture(t, client, input)
 
@@ -78,7 +79,7 @@ func TestIdentityRepositoryProvisionExternalUserCreatesPasswordlessBoundary(t *t
 		t.Fatalf("read external user: %v", err)
 	}
 	user, err := decodeUserRecord(userSnapshot)
-	if err != nil || user.Email != input.DisplayEmail || user.EmailCanonical != input.CanonicalEmail || user.PasswordHash != "" {
+	if err != nil || user.Email != input.DisplayEmail || user.EmailCanonical != input.CanonicalEmail || user.PasswordHash != "" || !user.EmailVerified {
 		t.Fatalf("external user = %#v, error = %v", user, err)
 	}
 	reservation, err := repo.GetCanonicalEmailReservation(ctx, input.CanonicalEmail)
@@ -98,6 +99,28 @@ func TestIdentityRepositoryProvisionExternalUserCreatesPasswordlessBoundary(t *t
 	}
 }
 
+func TestIdentityRepositoryRejectsUnverifiedExternalProvisioningWithoutWrites(t *testing.T) {
+	repo, client := newIdentityEmulatorRepository(t)
+	defer client.Close()
+	ctx := context.Background()
+	input := ExternalUserProvisioning{
+		UserID:         "external-unverified-user-315",
+		DisplayEmail:   "unverified.external@example.test",
+		CanonicalEmail: "unverified.external@example.test",
+		Provider:       "unverified-provider",
+		Issuer:         "https://unverified-issuer.example.test",
+		Subject:        "unverified-subject-315",
+	}
+	cleanupExternalFixture(t, client, input)
+
+	if err := repo.ProvisionExternalUser(ctx, input); !errors.Is(err, ErrInvalidIdentityInput) {
+		t.Fatalf("unverified external provisioning error = %v, want invalid input", err)
+	}
+	if got := countExistingExternalBoundary(ctx, client, input); got != 0 {
+		t.Fatalf("unverified external boundary records = %d, want zero", got)
+	}
+}
+
 func TestIdentityRepositoryConcurrentExternalProvisioningConflictsEmailAndIdentity(t *testing.T) {
 	tests := []struct {
 		name         string
@@ -107,16 +130,16 @@ func TestIdentityRepositoryConcurrentExternalProvisioningConflictsEmailAndIdenti
 		{
 			name: "canonical email",
 			inputs: []ExternalUserProvisioning{
-				{UserID: "external-email-a-315", DisplayEmail: "same.external@example.test", CanonicalEmail: "same.external@example.test", Provider: "provider-a", Issuer: "https://issuer-a.example.test", Subject: "subject-a-315"},
-				{UserID: "external-email-b-315", DisplayEmail: "SAME.EXTERNAL@example.test", CanonicalEmail: "same.external@example.test", Provider: "provider-b", Issuer: "https://issuer-b.example.test", Subject: "subject-b-315"},
+				{UserID: "external-email-a-315", DisplayEmail: "same.external@example.test", CanonicalEmail: "same.external@example.test", Provider: "provider-a", Issuer: "https://issuer-a.example.test", Subject: "subject-a-315", EmailVerified: true},
+				{UserID: "external-email-b-315", DisplayEmail: "SAME.EXTERNAL@example.test", CanonicalEmail: "same.external@example.test", Provider: "provider-b", Issuer: "https://issuer-b.example.test", Subject: "subject-b-315", EmailVerified: true},
 			},
 			wantConflict: ErrCanonicalEmailConflict,
 		},
 		{
 			name: "external identity",
 			inputs: []ExternalUserProvisioning{
-				{UserID: "external-identity-a-315", DisplayEmail: "identity-a@example.test", CanonicalEmail: "identity-a@example.test", Provider: "provider-shared", Issuer: "https://issuer-shared.example.test", Subject: "subject-shared-315"},
-				{UserID: "external-identity-b-315", DisplayEmail: "identity-b@example.test", CanonicalEmail: "identity-b@example.test", Provider: "provider-shared", Issuer: "https://issuer-shared.example.test", Subject: "subject-shared-315"},
+				{UserID: "external-identity-a-315", DisplayEmail: "identity-a@example.test", CanonicalEmail: "identity-a@example.test", Provider: "provider-shared", Issuer: "https://issuer-shared.example.test", Subject: "subject-shared-315", EmailVerified: true},
+				{UserID: "external-identity-b-315", DisplayEmail: "identity-b@example.test", CanonicalEmail: "identity-b@example.test", Provider: "provider-shared", Issuer: "https://issuer-shared.example.test", Subject: "subject-shared-315", EmailVerified: true},
 			},
 			wantConflict: ErrExternalIdentityConflict,
 		},
@@ -182,6 +205,7 @@ func TestIdentityRepositoryExternalProvisioningRetryAndRollbackAreAtomic(t *test
 		Provider:       "retry-provider",
 		Issuer:         "https://retry-issuer.example.test",
 		Subject:        "retry-subject-315",
+		EmailVerified:  true,
 	}
 	cleanupExternalFixture(t, client, input)
 	if err := repo.ProvisionExternalUser(ctx, input); err != nil {
@@ -193,6 +217,12 @@ func TestIdentityRepositoryExternalProvisioningRetryAndRollbackAreAtomic(t *test
 	if got := countExistingExternalBoundary(ctx, client, input); got != 4 {
 		t.Fatalf("external boundary records after retry = %d, want 4", got)
 	}
+	if _, err := client.Collection("users").Doc(input.UserID).Update(ctx, []firestore.Update{{Path: "email_verified", Value: false}}); err != nil {
+		t.Fatalf("invalidate persisted email verification: %v", err)
+	}
+	if err := repo.ProvisionExternalUser(ctx, input); !errors.Is(err, ErrCanonicalEmailConflict) {
+		t.Fatalf("retry with unverified persisted user error = %v, want conflict", err)
+	}
 
 	rollback := ExternalUserProvisioning{
 		UserID:         "external-rollback-user-315",
@@ -201,6 +231,7 @@ func TestIdentityRepositoryExternalProvisioningRetryAndRollbackAreAtomic(t *test
 		Provider:       "rollback-provider",
 		Issuer:         "https://rollback-issuer.example.test",
 		Subject:        "rollback-subject-315",
+		EmailVerified:  true,
 	}
 	cleanupExternalFixture(t, client, rollback)
 	err := repo.RunTransaction(ctx, func(tx *IdentityTransaction) error {
@@ -228,6 +259,7 @@ func TestIdentityAuditAcceptsPasswordlessExternalUser(t *testing.T) {
 		Provider:       "audit-provider",
 		Issuer:         "https://audit-issuer.example.test",
 		Subject:        "audit-subject-315",
+		EmailVerified:  true,
 	}
 	cleanupExternalFixture(t, client, input)
 	cleanupIdentityFixtures(t, client, "collision-a-315", "collision-b-315", "collision@example.test")

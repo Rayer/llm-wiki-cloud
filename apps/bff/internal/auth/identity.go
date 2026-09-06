@@ -75,6 +75,7 @@ type ExternalUserProvisioning struct {
 	UserID         string
 	DisplayEmail   string
 	CanonicalEmail string
+	EmailVerified  bool
 	Provider       string
 	Issuer         string
 	Subject        string
@@ -441,7 +442,7 @@ func (tx *IdentityTransaction) ProvisionExternalUser(input ExternalUserProvision
 	if input.ProjectID == "" {
 		input.ProjectID = defaultProjectID
 	}
-	if strings.TrimSpace(input.UserID) == "" || input.DisplayEmail == "" || input.CanonicalEmail == "" || CanonicalizeEmail(input.DisplayEmail) != input.CanonicalEmail {
+	if strings.TrimSpace(input.UserID) == "" || input.DisplayEmail == "" || input.CanonicalEmail == "" || CanonicalizeEmail(input.DisplayEmail) != input.CanonicalEmail || !input.EmailVerified {
 		return ErrInvalidIdentityInput
 	}
 
@@ -486,7 +487,7 @@ func (tx *IdentityTransaction) ProvisionExternalUser(input ExternalUserProvision
 		if decodeErr != nil {
 			return decodeErr
 		}
-		if CanonicalizeEmail(user.Email) != input.CanonicalEmail || (user.EmailCanonical != "" && user.EmailCanonical != input.CanonicalEmail) {
+		if CanonicalizeEmail(user.Email) != input.CanonicalEmail || (user.EmailCanonical != "" && user.EmailCanonical != input.CanonicalEmail) || user.EmailVerified != input.EmailVerified {
 			return ErrCanonicalEmailConflict
 		}
 		if user.PasswordHash != "" {
@@ -507,7 +508,7 @@ func (tx *IdentityTransaction) ProvisionExternalUser(input ExternalUserProvision
 	user := UserRecord{
 		Email:          input.DisplayEmail,
 		EmailCanonical: input.CanonicalEmail,
-		EmailVerified:  false,
+		EmailVerified:  input.EmailVerified,
 		ProjectCount:   0,
 		DefaultProject: input.ProjectID,
 	}
