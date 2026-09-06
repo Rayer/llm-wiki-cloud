@@ -2,17 +2,33 @@
 
 import { FormEvent, useEffect, useRef, useState } from 'react';
 import { useAuth } from '@/lib/auth';
-import { beginGoogleLink } from '@/lib/google-auth';
+import { beginGoogleLink, readGoogleIdentitySummary } from '@/lib/google-auth';
 import { useLocale } from '@/lib/i18n';
 
-export function AccountSettingsModal({ onClose, linkedGoogleEmail = null }: { onClose: () => void; linkedGoogleEmail?: string | null }) {
-  const { user } = useAuth();
+export function AccountSettingsModal({ onClose }: { onClose: () => void }) {
+  const { accessToken, user } = useAuth();
   const { t } = useLocale();
   const [linkOpen, setLinkOpen] = useState(false);
   const [password, setPassword] = useState('');
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState('');
+  const [primaryEmail, setPrimaryEmail] = useState(user?.email ?? '');
+  const [linkedGoogleEmail, setLinkedGoogleEmail] = useState<string | null>(null);
   const passwordRef = useRef<HTMLInputElement>(null);
+
+  useEffect(() => {
+    if (!accessToken || !user) return;
+    let active = true;
+    const accountId = user.id;
+    void readGoogleIdentitySummary(accessToken).then((summary) => {
+      if (!active || accountId !== user.id) return;
+      setPrimaryEmail(summary.primary_email);
+      setLinkedGoogleEmail(summary.linked_providers.find((provider) => provider.provider === 'google')?.provider_email || null);
+    }).catch(() => {
+      // The authenticated session remains usable if this optional summary read fails.
+    });
+    return () => { active = false; };
+  }, [accessToken, user]);
 
   useEffect(() => {
     if (linkOpen) passwordRef.current?.focus();
@@ -30,11 +46,11 @@ export function AccountSettingsModal({ onClose, linkedGoogleEmail = null }: { on
 
   const handleLink = async (event: FormEvent<HTMLFormElement>) => {
     event.preventDefault();
-    if (loading || !password) return;
+    if (loading || !password || !accessToken) return;
     setLoading(true);
     setError('');
     try {
-      await beginGoogleLink(password);
+      await beginGoogleLink(password, accessToken);
     } catch (linkError) {
       setError(linkError instanceof Error ? linkError.message : 'Unable to link this Google account.');
       setPassword('');
@@ -62,7 +78,7 @@ export function AccountSettingsModal({ onClose, linkedGoogleEmail = null }: { on
         <dl className="mt-6 space-y-4 text-sm">
           <div className="rounded-lg border border-white/10 bg-black/20 p-4">
             <dt className="text-zinc-400">{t('AccountSettings.primaryEmail')}</dt>
-            <dd className="mt-1 break-all font-medium text-white">{user.email}</dd>
+            <dd className="mt-1 break-all font-medium text-white">{primaryEmail}</dd>
             <p className="mt-2 text-xs leading-5 text-zinc-500">{t('AccountSettings.primaryHint')}</p>
           </div>
           <div className="rounded-lg border border-white/10 bg-black/20 p-4">
@@ -86,7 +102,7 @@ export function AccountSettingsModal({ onClose, linkedGoogleEmail = null }: { on
             {error ? <p role="alert" className="text-sm text-red-300">{error}</p> : null}
             <div className="flex flex-col-reverse gap-3 sm:flex-row sm:justify-end">
               <button type="button" disabled={loading} onClick={() => { setLinkOpen(false); setPassword(''); setError(''); }} className="min-h-11 rounded-lg border border-white/10 px-4 py-2.5 text-sm text-zinc-300 hover:bg-white/10 disabled:opacity-60">{t('AccountSettings.cancel')}</button>
-              <button type="submit" disabled={loading || !password} className="min-h-11 rounded-lg bg-emerald-300 px-4 py-2.5 text-sm font-semibold text-black hover:bg-emerald-200 disabled:cursor-not-allowed disabled:opacity-60">{loading ? t('AccountSettings.openingGoogle') : t('AccountSettings.continue')}</button>
+              <button type="submit" disabled={loading || !password || !accessToken} className="min-h-11 rounded-lg bg-emerald-300 px-4 py-2.5 text-sm font-semibold text-black hover:bg-emerald-200 disabled:cursor-not-allowed disabled:opacity-60">{loading ? t('AccountSettings.openingGoogle') : t('AccountSettings.continue')}</button>
             </div>
           </form>
         )}

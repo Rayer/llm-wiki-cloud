@@ -1,6 +1,6 @@
 'use client';
 
-import { useEffect, useRef, useState } from 'react';
+import { useEffect, useState } from 'react';
 import { usePathname } from 'next/navigation';
 import { Search, FileText, Brain, Activity, Menu, X, ChevronUp, Shield, Pencil } from 'lucide-react';
 import { useT } from '@/lib/i18n';
@@ -52,41 +52,24 @@ function ShellContent({ children }: { children: React.ReactNode }) {
   } = useWorkspace();
   const [renameTarget, setRenameTarget] = useState<{ id: string; name: string } | null>(null);
   const [accountSettingsOpen, setAccountSettingsOpen] = useState(false);
-  const [linkedGoogleEmail, setLinkedGoogleEmail] = useState<string | null>(null);
-  const linkedGoogleAccountRef = useRef<string | null>(null);
-  const linkedGoogleAccount = token && user ? user.id : null;
-  const provisionalProjectKey = user && currentProject
-    ? `lwc-google-provisional-dismissed:${user.id}:${currentProject.id}`
-    : '';
+  const [jitAccountId, setJitAccountId] = useState<string | null>(null);
 
   useEffect(() => {
-    if (!token || !user || isDemoSession || !currentProject || currentProject.name !== 'Default Project' || renameTarget) return;
-    let dismissed = false;
-    try { dismissed = window.localStorage.getItem(provisionalProjectKey) === '1'; } catch { /* optional storage */ }
-    if (!dismissed) {
-      // eslint-disable-next-line react-hooks/set-state-in-effect -- open first-workspace onboarding prompt.
-      setRenameTarget({ id: currentProject.id, name: currentProject.name });
-    }
-  }, [currentProject, isDemoSession, provisionalProjectKey, renameTarget, token, user]);
-
-  useEffect(() => {
-    const onGoogleLinkConfirmed = (event: Event) => {
-      const email = (event as CustomEvent<{ email?: unknown }>).detail?.email;
-      if (typeof email === 'string' && email.trim()) setLinkedGoogleEmail(email.trim());
+    const onGoogleJITCompleted = (event: Event) => {
+      const userId = (event as CustomEvent<{ userId?: unknown }>).detail?.userId;
+      if (typeof userId === 'string' && userId) setJitAccountId(userId);
+      else if (user?.id) setJitAccountId(user.id);
     };
-    window.addEventListener('lwc-google-link-confirmed', onGoogleLinkConfirmed);
-    return () => window.removeEventListener('lwc-google-link-confirmed', onGoogleLinkConfirmed);
-  }, []);
+    window.addEventListener('lwc-google-jit-completed', onGoogleJITCompleted);
+    return () => window.removeEventListener('lwc-google-jit-completed', onGoogleJITCompleted);
+  }, [user?.id]);
 
   useEffect(() => {
-    if (linkedGoogleAccountRef.current !== linkedGoogleAccount) {
-      linkedGoogleAccountRef.current = linkedGoogleAccount;
-      /* eslint-disable react-hooks/set-state-in-effect -- clear account-scoped display metadata at account boundaries. */
-      setLinkedGoogleEmail(null);
-      if (!linkedGoogleAccount) setAccountSettingsOpen(false);
-      /* eslint-enable react-hooks/set-state-in-effect */
-    }
-  }, [linkedGoogleAccount]);
+    if (!token || !user || isDemoSession || jitAccountId !== user.id || !currentProject || currentProject.name !== 'Default Project' || renameTarget) return;
+    // eslint-disable-next-line react-hooks/set-state-in-effect -- consume server-owned JIT signal at the first project boundary.
+    setJitAccountId(null);
+    setRenameTarget({ id: currentProject.id, name: currentProject.name });
+  }, [currentProject, isDemoSession, jitAccountId, renameTarget, token, user]);
 
   const navItems: {
     href: string;
@@ -350,14 +333,11 @@ function ShellContent({ children }: { children: React.ReactNode }) {
           }}
           provisional={renameTarget.name === 'Default Project'}
           onClose={() => {
-            if (renameTarget.name === 'Default Project' && provisionalProjectKey) {
-              try { window.localStorage.setItem(provisionalProjectKey, '1'); } catch { /* optional storage */ }
-            }
             setRenameTarget(null);
           }}
         />
       ) : null}
-      {accountSettingsOpen ? <AccountSettingsModal linkedGoogleEmail={linkedGoogleEmail} onClose={() => setAccountSettingsOpen(false)} /> : null}
+      {accountSettingsOpen && token ? <AccountSettingsModal onClose={() => setAccountSettingsOpen(false)} /> : null}
       {token ? <ScrollToTopButton /> : null}
       {paletteOpen ? (
         <CommandPalette

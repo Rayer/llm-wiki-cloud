@@ -6,17 +6,26 @@ import { useAuth } from '@/lib/auth';
 import { useLocale } from '@/lib/i18n';
 import {
   cancelGoogleLink,
-  clearGoogleLinkIntent,
-  createGoogleSupportReference,
+  confirmGoogleLink,
   GOOGLE_CANCELLED_COPY,
   GoogleAuthError,
-  hasGoogleLinkIntent,
+  readGoogleCompletionResult,
   readGoogleLinkCompletion,
-  confirmGoogleLink,
   type GoogleLinkCompletion,
 } from '@/lib/google-auth';
 
 type CompletionState = 'completing' | 'confirming' | 'failed';
+
+function tokenUserId(token: string): string | undefined {
+  try {
+    const payload = token.split('.')[1];
+    if (!payload) return undefined;
+    const decoded = JSON.parse(atob(payload.replace(/-/g, '+').replace(/_/g, '/'))) as { sub?: unknown };
+    return typeof decoded.sub === 'string' && decoded.sub ? decoded.sub : undefined;
+  } catch {
+    return undefined;
+  }
+}
 
 export function GoogleCompletionClient() {
   const router = useRouter();
@@ -25,37 +34,53 @@ export function GoogleCompletionClient() {
   const currentEpochRef = useRef(sessionEpoch);
   const currentTokenRef = useRef(accessToken);
   const startedRef = useRef(false);
-  useEffect(() => { currentEpochRef.current = sessionEpoch; currentTokenRef.current = accessToken; }, [accessToken, sessionEpoch]);
+  const mountedRef = useRef(false);
+  useEffect(() => {
+    currentEpochRef.current = sessionEpoch;
+    currentTokenRef.current = accessToken;
+  }, [accessToken, sessionEpoch]);
   const [state, setState] = useState<CompletionState>('completing');
   const [pending, setPending] = useState<GoogleLinkCompletion | null>(null);
   const [error, setError] = useState<GoogleAuthError | null>(null);
   const [busy, setBusy] = useState(false);
 
   useEffect(() => {
-    if (!hydrated || startedRef.current) return;
+    mountedRef.current = true;
+    if (!hydrated || startedRef.current) return () => { mountedRef.current = false; };
     startedRef.current = true;
-    let active = true;
     const startedEpoch = sessionEpoch;
-    const linkIntent = hasGoogleLinkIntent();
     void (async () => {
       try {
-        // AuthProvider hydrates the callback refresh cookie before exposing
-        // `hydrated`; avoid rotating the same refresh session a second time.
-        const refreshedToken = accessToken ?? await refreshAccessToken();
-        if (!active || currentEpochRef.current !== startedEpoch) return;
-        const token = refreshedToken ?? (linkIntent ? accessToken : null);
-        if (!token) throw new GoogleAuthError('Unable to continue with Google sign-in.', 502);
-        if (linkIntent) {
-          const completion = await readGoogleLinkCompletion(token);
-          if (!active || currentEpochRef.current !== startedEpoch) return;
-          setPending(completion);
-          setState('confirming');
+        const result = await readGoogleCompletionResult();
+        if (!mountedRef.current || currentEpochRef.current !== startedEpoch) return;
+        if (result.status === 'failure' || result.status === 'cancelled') {
+          setError(new GoogleAuthError(result.error || 'Unable to continue with Google sign-in.', 200, result.support_ref));
+          setState('failed');
           return;
         }
-        clearGoogleLinkIntent();
-        router.replace('/');
+
+        const token = accessToken ?? await refreshAccessToken();
+        if (!mountedRef.current || !token || (accessToken !== null && currentTokenRef.current !== token)) {
+          if (mountedRef.current && !token) {
+            setError(new GoogleAuthError('Unable to continue with Google sign-in.', 502, result.support_ref));
+            setState('failed');
+          }
+          return;
+        }
+        if (result.status === 'success') {
+          if (result.jit_provisioned && currentTokenRef.current === token) {
+            window.dispatchEvent(new CustomEvent('lwc-google-jit-completed', { detail: { userId: tokenUserId(token) } }));
+          }
+          router.replace('/');
+          return;
+        }
+
+        const completion = await readGoogleLinkCompletion(token);
+        if (!mountedRef.current || currentTokenRef.current !== token) return;
+        setPending(completion);
+        setState('confirming');
       } catch (completionError) {
-        if (!active) return;
+        if (!mountedRef.current) return;
         const failure = completionError instanceof GoogleAuthError
           ? completionError
           : new GoogleAuthError('Unable to continue with Google sign-in.', 502);
@@ -63,8 +88,10 @@ export function GoogleCompletionClient() {
         setState('failed');
       }
     })();
-    return () => { active = false; };
-  }, [accessToken, hydrated, refreshAccessToken, router, sessionEpoch]);
+    return () => { mountedRef.current = false; };
+  // Completion is one-time; auth changes are observed through refs to avoid React effect replay consuming it twice.
+  // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [hydrated, refreshAccessToken, router]);
 
   const decideLink = async (confirm: boolean) => {
     if (!pending || !accessToken || busy || currentTokenRef.current !== accessToken) return;
@@ -78,16 +105,11 @@ export function GoogleCompletionClient() {
       if (currentEpochRef.current !== operationEpoch || currentTokenRef.current !== operationToken) return;
       if (result.status !== (confirm ? 'linked' : 'cancelled')) throw new Error('Invalid Google link response.');
       if (!confirm) {
-        clearGoogleLinkIntent();
-        setError(new GoogleAuthError(GOOGLE_CANCELLED_COPY, 200, createGoogleSupportReference()));
+        setError(new GoogleAuthError(result.error || GOOGLE_CANCELLED_COPY, 200, result.support_ref || 'unavailable'));
         setState('failed');
         setBusy(false);
         return;
       }
-      if (confirm) {
-        window.dispatchEvent(new CustomEvent('lwc-google-link-confirmed', { detail: { email: pending.provider_email } }));
-      }
-      clearGoogleLinkIntent();
       router.replace('/');
     } catch (decisionError) {
       setError(decisionError instanceof GoogleAuthError ? decisionError : new GoogleAuthError('Unable to link this Google account.', 502));
