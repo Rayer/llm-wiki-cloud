@@ -1,6 +1,7 @@
 package auth
 
 import (
+	"context"
 	"net/http"
 
 	"cloud.google.com/go/firestore"
@@ -55,19 +56,36 @@ type RateLimitErrorResponse struct {
 //	@Failure		429		{object}	RateLimitErrorResponse
 //	@Header			429		{integer}	Retry-After	"Seconds until the rate limit window resets"
 func LoginHandler(fsClient *firestore.Client, jwtSecret string) gin.HandlerFunc {
-	return LoginHandlerWithCookiePolicy(fsClient, jwtSecret, LegacyRefreshCookiePolicy())
+	return LoginHandlerWithRepository(NewIdentityRepository(fsClient), jwtSecret, LegacyRefreshCookiePolicy())
 }
 
 // LoginHandlerWithCookiePolicy returns a login handler using the supplied immutable cookie policy.
 func LoginHandlerWithCookiePolicy(fsClient *firestore.Client, jwtSecret string, cookiePolicy RefreshCookiePolicy) gin.HandlerFunc {
+	return LoginHandlerWithRepository(NewIdentityRepository(fsClient), jwtSecret, cookiePolicy)
+}
+
+// PasswordLoginRepository resolves a password user by the canonical primary
+// email. It must not infer ownership from a linked provider email.
+type PasswordLoginRepository interface {
+	GetPasswordUserByEmail(context.Context, string) (string, *UserRecord, error)
+}
+
+// LoginHandlerWithRepository returns a login handler using the supplied user
+// repository and immutable cookie policy.
+func LoginHandlerWithRepository(repo PasswordLoginRepository, jwtSecret string, cookiePolicy RefreshCookiePolicy) gin.HandlerFunc {
 	return func(c *gin.Context) {
 		var req LoginRequest
 		if err := c.ShouldBindJSON(&req); err != nil {
 			c.JSON(http.StatusBadRequest, gin.H{"error": "email and password are required"})
 			return
 		}
+		canonicalEmail := CanonicalizeEmail(req.Email)
+		if canonicalEmail == "" || repo == nil {
+			c.JSON(http.StatusUnauthorized, gin.H{"error": "invalid credentials"})
+			return
+		}
 		ctx := c.Request.Context()
-		userID, user, err := GetUserByEmail(ctx, fsClient, req.Email)
+		userID, user, err := repo.GetPasswordUserByEmail(ctx, canonicalEmail)
 		if err != nil || user == nil {
 			c.JSON(http.StatusUnauthorized, gin.H{"error": "invalid credentials"})
 			return

@@ -105,8 +105,9 @@ func newProductionRouter(cfg config.Config, localMode bool, fsClient *firestorec
 		authRoutes.POST("/refresh", unavailable)
 		authRoutes.POST("/logout", auth.LogoutHandlerWithCookiePolicy(auth.HostRefreshCookiePolicy()))
 	} else {
-		authRoutes.POST("/login", middleware.NewRateLimiter(10, time.Minute), auth.LoginHandlerWithCookiePolicy(fsClient.Raw(), cfg.JWTSecret, auth.HostRefreshCookiePolicy()))
-		authRoutes.POST("/register", middleware.NewRateLimiter(5, time.Minute), auth.RegisterHandler(fsClient.Raw(), cfg.JWTSecret, settingsStore))
+		identityRepository := auth.NewIdentityRepository(fsClient.Raw())
+		authRoutes.POST("/login", middleware.NewRateLimiter(10, time.Minute), auth.LoginHandlerWithRepository(identityRepository, cfg.JWTSecret, auth.HostRefreshCookiePolicy()))
+		authRoutes.POST("/register", middleware.NewRateLimiter(5, time.Minute), auth.RegisterHandlerWithRepository(identityRepository, cfg.JWTSecret, settingsStore))
 		authRoutes.POST("/refresh", auth.RefreshHandlerWithCookiePolicy(fsClient.Raw(), cfg.JWTSecret, auth.HostRefreshCookiePolicy()))
 		authRoutes.POST("/logout", auth.LogoutHandlerWithCookiePolicy(auth.HostRefreshCookiePolicy()))
 	}

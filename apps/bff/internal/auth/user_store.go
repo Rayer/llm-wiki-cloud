@@ -12,25 +12,12 @@ import (
 // UserRecord is a user document stored in Firestore.
 type UserRecord struct {
 	Email          string `firestore:"email"`
-	PasswordHash   string `firestore:"password_hash"`
+	EmailCanonical string `firestore:"email_canonical,omitempty"`
+	PasswordHash   string `firestore:"password_hash,omitempty"`
 	Role           string `firestore:"role,omitempty"`
 	EmailVerified  bool   `firestore:"email_verified"`
 	ProjectCount   int    `firestore:"project_count"`
 	DefaultProject string `firestore:"default_project"`
-}
-
-// CreateUser writes a user document to the Firestore users collection.
-func CreateUser(ctx context.Context, fs *firestore.Client, userID, email, passwordHash string) error {
-	_, err := fs.Collection("users").Doc(userID).Set(ctx, UserRecord{
-		Email:         email,
-		PasswordHash:  passwordHash,
-		EmailVerified: false,
-		ProjectCount:  0,
-	})
-	if err != nil {
-		return fmt.Errorf("create user %s: %w", userID, err)
-	}
-	return nil
 }
 
 // CountProjects returns the number of projects a user has in Firestore.
@@ -62,19 +49,4 @@ func GetUser(ctx context.Context, fs *firestore.Client, userID string) (*UserRec
 		return nil, err
 	}
 	return &u, nil
-}
-
-// GetUserByEmail iterates the users collection to find a user by email.
-func GetUserByEmail(ctx context.Context, fs *firestore.Client, email string) (string, *UserRecord, error) {
-	iter := fs.Collection("users").Where("email", "==", email).Limit(1).Documents(ctx)
-	defer iter.Stop()
-	doc, err := iter.Next()
-	if err != nil {
-		return "", nil, err
-	}
-	var u UserRecord
-	if err := doc.DataTo(&u); err != nil {
-		return "", nil, err
-	}
-	return doc.Ref.ID, &u, nil
 }
