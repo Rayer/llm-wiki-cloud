@@ -120,7 +120,8 @@ func newProductionRouter(cfg config.Config, localMode bool, fsClient *firestorec
 			authRoutes.POST("/google/start", google.StartHandler(""))
 			authRoutes.GET("/google/start", google.StartHandler(""))
 			authRoutes.POST("/google/login/start", google.StartHandler(auth.OAuthFlowLogin))
-			authRoutes.POST("/google/link/start", auth.JWTAuth(cfg), google.StartHandler(auth.OAuthFlowLink))
+			authRoutes.GET("/google/login/start", google.StartHandler(auth.OAuthFlowLogin))
+			authRoutes.POST("/google/link/start", auth.JWTAuth(cfg), google.PrepareStartHandler(auth.OAuthFlowLink))
 			authRoutes.GET("/google/callback", google.CallbackHandler(auth.OAuthFlowLogin))
 			authRoutes.GET("/google/login/callback", google.CallbackHandler(auth.OAuthFlowLogin))
 			authRoutes.GET("/google/link/callback", google.CallbackHandler(auth.OAuthFlowLink))
@@ -129,9 +130,8 @@ func newProductionRouter(cfg config.Config, localMode bool, fsClient *firestorec
 			linkRoutes.POST("/confirm", google.ConfirmLinkHandler())
 			linkRoutes.POST("/cancel", google.CancelLinkHandler())
 			linkRoutes.GET("/complete", google.CompletionReadHandler())
-			completeRoutes := authRoutes.Group("/google")
-			completeRoutes.Use(auth.JWTAuth(cfg))
-			completeRoutes.GET("/complete", google.CompletionReadHandler())
+			authRoutes.GET("/google/complete", google.CompletionHandler())
+			authRoutes.GET("/google/identity", auth.JWTAuth(cfg), google.IdentitySummaryHandler())
 		}
 	}
 

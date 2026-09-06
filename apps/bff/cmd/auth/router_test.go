@@ -66,11 +66,11 @@ func TestProductionRouterWiresGoogleAuthRoutesWhenConfigured(t *testing.T) {
 	}, false, client, &syssettings.FakeStore{Enabled: true})
 	want := map[string]bool{
 		"POST /api/v1/auth/google/start": true, "GET /api/v1/auth/google/start": true,
-		"POST /api/v1/auth/google/login/start": true, "POST /api/v1/auth/google/link/start": true,
+		"POST /api/v1/auth/google/login/start": true, "GET /api/v1/auth/google/login/start": true, "POST /api/v1/auth/google/link/start": true,
 		"GET /api/v1/auth/google/callback": true, "GET /api/v1/auth/google/login/callback": true,
 		"GET /api/v1/auth/google/link/callback": true, "POST /api/v1/auth/google/link/confirm": true,
 		"POST /api/v1/auth/google/link/cancel": true, "GET /api/v1/auth/google/link/complete": true,
-		"GET /api/v1/auth/google/complete": true,
+		"GET /api/v1/auth/google/complete": true, "GET /api/v1/auth/google/identity": true,
 	}
 	got := make(map[string]bool)
 	for _, route := range router.Routes() {
@@ -85,6 +85,15 @@ func TestProductionRouterWiresGoogleAuthRoutesWhenConfigured(t *testing.T) {
 		if !got[route] {
 			t.Errorf("missing Google auth route %s", route)
 		}
+	}
+	// This is the consumer shape of Continue with Google: a normal browser
+	// navigation uses GET and must reach the registered login-start handler.
+	recorder := httptest.NewRecorder()
+	request := httptest.NewRequest(http.MethodGet, "http://auth.example.test/api/v1/auth/google/login/start", nil)
+	request.Header.Set("Origin", "https://frontend.example")
+	router.ServeHTTP(recorder, request)
+	if recorder.Code != http.StatusFound || !strings.HasPrefix(recorder.Header().Get("Location"), "https://accounts.google.com/") {
+		t.Fatalf("browser login start status=%d location=%q body=%s", recorder.Code, recorder.Header().Get("Location"), recorder.Body.String())
 	}
 }
 

@@ -51,11 +51,13 @@ type EmailReservation struct {
 // ExternalIdentity is the provider-neutral ownership mapping used by future
 // OIDC providers. Provider subject values are never used as document IDs.
 type ExternalIdentity struct {
-	Provider  string    `firestore:"provider"`
-	Issuer    string    `firestore:"issuer"`
-	Subject   string    `firestore:"subject"`
-	UserID    string    `firestore:"user_id"`
-	CreatedAt time.Time `firestore:"created_at,omitempty"`
+	Provider              string    `firestore:"provider"`
+	Issuer                string    `firestore:"issuer"`
+	Subject               string    `firestore:"subject"`
+	UserID                string    `firestore:"user_id"`
+	ProviderEmail         string    `firestore:"provider_email,omitempty"`
+	ProviderEmailVerified bool      `firestore:"provider_email_verified"`
+	CreatedAt             time.Time `firestore:"created_at,omitempty"`
 }
 
 // PasswordUserProvisioning contains all records that must commit together for
@@ -72,14 +74,16 @@ type PasswordUserProvisioning struct {
 // passwordless external user. It deliberately contains no provider HTTP or
 // token concerns; callers pass an already accepted identity tuple.
 type ExternalUserProvisioning struct {
-	UserID         string
-	DisplayEmail   string
-	CanonicalEmail string
-	EmailVerified  bool
-	Provider       string
-	Issuer         string
-	Subject        string
-	ProjectID      string
+	UserID                string
+	DisplayEmail          string
+	CanonicalEmail        string
+	EmailVerified         bool
+	Provider              string
+	Issuer                string
+	Subject               string
+	ProviderEmail         string
+	ProviderEmailVerified bool
+	ProjectID             string
 }
 
 // IdentityRepository is the Firestore identity boundary shared by password
@@ -519,11 +523,13 @@ func (tx *IdentityTransaction) ProvisionExternalUser(input ExternalUserProvision
 		CreatedAt:      time.Now().UTC(),
 	}
 	identity := ExternalIdentity{
-		Provider:  input.Provider,
-		Issuer:    input.Issuer,
-		Subject:   input.Subject,
-		UserID:    input.UserID,
-		CreatedAt: time.Now().UTC(),
+		Provider:              input.Provider,
+		Issuer:                input.Issuer,
+		Subject:               input.Subject,
+		UserID:                input.UserID,
+		ProviderEmail:         strings.TrimSpace(input.ProviderEmail),
+		ProviderEmailVerified: input.ProviderEmailVerified,
+		CreatedAt:             time.Now().UTC(),
 	}
 	project := map[string]interface{}{
 		"name":       "My First Wiki",
