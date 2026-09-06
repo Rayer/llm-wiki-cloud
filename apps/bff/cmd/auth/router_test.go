@@ -157,6 +157,9 @@ func TestProductionRouterUsesHostOnlyRefreshCookiePolicy(t *testing.T) {
 }
 
 func TestProductionRouterUsesDurableRefreshAuthorityAcrossRouterInstances(t *testing.T) {
+	if strings.TrimSpace(os.Getenv("FIRESTORE_EMULATOR_HOST")) == "" {
+		t.Skip("FIRESTORE_EMULATOR_HOST is not set")
+	}
 	gin.SetMode(gin.TestMode)
 	client, err := firestoreclient.NewClientWithDatabase("lwc-320-router", "", "", "")
 	if err != nil {
