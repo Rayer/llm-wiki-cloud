@@ -83,7 +83,7 @@ func newProductionRouter(cfg config.Config, localMode bool, fsClient *firestorec
 	r.Use(cors.New(cors.Config{
 		AllowOrigins:     cfg.AllowedOriginsFor(localMode),
 		AllowMethods:     []string{http.MethodGet, http.MethodPost, http.MethodOptions},
-		AllowHeaders:     []string{"Content-Type"},
+		AllowHeaders:     []string{"Content-Type", "Authorization"},
 		AllowCredentials: true,
 	}))
 
@@ -110,6 +110,29 @@ func newProductionRouter(cfg config.Config, localMode bool, fsClient *firestorec
 		authRoutes.POST("/register", middleware.NewRateLimiter(5, time.Minute), auth.RegisterHandlerWithRepository(identityRepository, cfg.JWTSecret, settingsStore))
 		authRoutes.POST("/refresh", auth.RefreshHandlerWithCookiePolicy(fsClient.Raw(), cfg.JWTSecret, auth.HostRefreshCookiePolicy()))
 		authRoutes.POST("/logout", auth.LogoutHandlerWithCookiePolicy(auth.HostRefreshCookiePolicy()))
+		if cfg.GoogleClientID != "" {
+			google := auth.NewGoogleOAuthService(auth.GoogleConfig{
+				ClientID: cfg.GoogleClientID, ClientSecret: cfg.GoogleClientSecret, Issuer: cfg.GoogleIssuer,
+				JWKSURL: cfg.GoogleJWKSURL, TokenURL: cfg.GoogleTokenURL,
+				LoginRedirectURL: cfg.GoogleLoginRedirectURL, LinkRedirectURL: cfg.GoogleLinkRedirectURL,
+				CompletionURL: cfg.GoogleCompletionURL, AuthServiceURL: cfg.AuthServiceURL, AllowedOrigins: cfg.AllowedOrigins,
+			}, fsClient.Raw(), identityRepository, settingsStore, cfg.JWTSecret)
+			authRoutes.POST("/google/start", google.StartHandler(""))
+			authRoutes.GET("/google/start", google.StartHandler(""))
+			authRoutes.POST("/google/login/start", google.StartHandler(auth.OAuthFlowLogin))
+			authRoutes.POST("/google/link/start", auth.JWTAuth(cfg), google.StartHandler(auth.OAuthFlowLink))
+			authRoutes.GET("/google/callback", google.CallbackHandler(auth.OAuthFlowLogin))
+			authRoutes.GET("/google/login/callback", google.CallbackHandler(auth.OAuthFlowLogin))
+			authRoutes.GET("/google/link/callback", google.CallbackHandler(auth.OAuthFlowLink))
+			linkRoutes := authRoutes.Group("/google/link")
+			linkRoutes.Use(auth.JWTAuth(cfg))
+			linkRoutes.POST("/confirm", google.ConfirmLinkHandler())
+			linkRoutes.POST("/cancel", google.CancelLinkHandler())
+			linkRoutes.GET("/complete", google.CompletionReadHandler())
+			completeRoutes := authRoutes.Group("/google")
+			completeRoutes.Use(auth.JWTAuth(cfg))
+			completeRoutes.GET("/complete", google.CompletionReadHandler())
+		}
 	}
 
 	r.GET("/api/v1/public/healthz", func(c *gin.Context) {
