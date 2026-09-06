@@ -4,6 +4,7 @@ set -euo pipefail
 ROOT=${ROOT:-$(cd "$(dirname "${BASH_SOURCE[0]}")/../.." && pwd)}
 # shellcheck source=deploy/components/common.sh
 source "$ROOT/deploy/components/common.sh"
+source "$ROOT/deploy/components/auth_config.sh"
 
 auth_preflight() {
   local project region account secret
@@ -12,12 +13,23 @@ auth_preflight() {
   gcloud firestore databases describe --database "$(plan_json '.auth.firestore_database_id')" --project "$project" --format=json --quiet >/dev/null || die "Auth Firestore database is missing or unreadable"
   secret=$(plan_json '.auth.secret_references.jwt')
   preflight_secret "$secret" "$account" "$project"
+  if auth_config_managed && [[ "$(plan_json '.auth.google.enabled | tostring')" == true ]]; then
+    secret=$(plan_json '.auth.google.client_secret_reference')
+    preflight_secret "$secret" "$account" "$project"
+    [[ "$(gcloud secrets versions describe "$(plan_json '.auth.google.client_secret_version')" --secret "$secret" --project "$project" --format='value(state)' --quiet)" == ENABLED ]] || die "Google secret version is not enabled"
+  fi
   preflight_public_service "$(plan_json '.auth.service_name')" "$project" "$region"
 }
 
 auth_freeze() {
   local image
   image=$(service_image_handle auth) || die "Auth effective image handle is unavailable or mutable"
+  if auth_config_managed; then
+    local handle
+    handle=$(auth_config_freeze "$image") || die "Auth configuration rollback handle is unavailable"
+    freeze_store auth "$handle"
+    return
+  fi
   freeze_store auth "$(jq -n --arg image "$image" '{image:$image}')"
 }
 
@@ -58,6 +70,10 @@ auth_mutate() {
   if ! jq -e '.components.auth? != null' "$JOURNAL_PATH" >/dev/null; then journal_pending auth; fi
   service=$(plan_json '.auth.service_name'); project=$(plan_json '.gcp.project_id'); region=$(plan_json '.gcp.region')
   validate_image_value auth "$image"
+  if auth_config_managed; then
+    auth_config_mutate "$image"
+    return
+  fi
   if timeout --signal=TERM --kill-after=5s 600s gcloud run services update "$service" --project "$project" --region "$region" --image "$image" --quiet >/dev/null; then :; else deploy_status=$?; fi
   if [[ "$deploy_status" -eq 0 ]]; then
     if timeout --signal=TERM --kill-after=5s 240s gcloud run services update-traffic "$service" --to-latest --project "$project" --region "$region" --quiet >/dev/null; then :; else traffic_status=$?; fi
@@ -75,6 +91,14 @@ auth_verify() {
   local image="$1" revision="${2:-}" observed readback_status
   SERVICE_READBACK=''; SERVICE_READBACK_RESULT=unknown
   if observed=$(service_image_readback auth "$image" "$revision"); then
+    if auth_config_managed; then
+      revision=$(jq -er '.revision' <<<"$observed") || return 1
+      if observed=$(auth_config_readback verify "$revision" "$image"); then :; else
+        readback_status=$?
+        if [[ "$readback_status" -eq 1 ]]; then SERVICE_READBACK_RESULT=failed; else SERVICE_READBACK_RESULT=unknown; fi
+        return 1
+      fi
+    fi
     SERVICE_READBACK="$observed"; SERVICE_READBACK_RESULT=success
     return 0
   else
@@ -104,6 +128,10 @@ auth_rollback() {
   local project region service image observed update_status=0 readback_status=0
   image=$(jq -er '.handles.auth.image' "$ROLLBACK_PATH") || { write_rollback_result auth failed '{}'; return 1; }
   validate_image_value auth "$image" || { write_rollback_result auth failed '{}'; return 1; }
+  if auth_config_managed; then
+    auth_config_rollback "$image"
+    return
+  fi
   project=$(plan_json '.gcp.project_id'); region=$(plan_json '.gcp.region'); service=$(plan_json '.auth.service_name')
   if observed=$(service_image_readback auth "$image"); then
     write_rollback_result auth success "$observed" verified_noop
