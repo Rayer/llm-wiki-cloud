@@ -80,6 +80,14 @@ type Config struct {
 	// Env: AUTH_SERVICE_URL. Default: https://auth.dev.rayer.idv.tw
 	AuthServiceURL string
 
+	// AuthSessionEnvironment scopes durable refresh sessions. Env:
+	// AUTH_SESSION_ENVIRONMENT. When unset, routers derive it from the selected
+	// Firestore database (or "default" for the default database).
+	AuthSessionEnvironment string
+	// AuthSessionMigration controls legacy refresh-token import. Env:
+	// AUTH_REFRESH_SESSION_MIGRATION. Valid values: disabled, legacy_read_through.
+	AuthSessionMigration string
+
 	// Google OIDC configuration (LWC-316). These values are required together
 	// when any Google setting is provided.
 	GoogleClientID         string
@@ -146,6 +154,8 @@ func Load(path string) (Config, error) {
 	v.BindEnv("pipeline_demo_user_ids", "PIPELINE_DEMO_USER_IDS")
 	v.BindEnv("registration_enabled", "REGISTRATION_ENABLED")
 	v.BindEnv("auth_service_url", "AUTH_SERVICE_URL")
+	v.BindEnv("auth_session_environment", "AUTH_SESSION_ENVIRONMENT")
+	v.BindEnv("auth_session_migration", "AUTH_REFRESH_SESSION_MIGRATION")
 	v.BindEnv("google_client_id", "GOOGLE_CLIENT_ID")
 	v.BindEnv("google_client_secret", "GOOGLE_CLIENT_SECRET")
 	v.BindEnv("google_issuer", "GOOGLE_ISSUER")
@@ -214,6 +224,14 @@ func Load(path string) (Config, error) {
 	authServiceURL := strings.TrimSpace(v.GetString("auth_service_url"))
 	if authServiceURL == "" {
 		authServiceURL = DefaultAuthServiceURL
+	}
+	authSessionEnvironment := strings.TrimSpace(v.GetString("auth_session_environment"))
+	authSessionMigration := strings.TrimSpace(strings.ToLower(v.GetString("auth_session_migration")))
+	if authSessionMigration == "" {
+		authSessionMigration = "disabled"
+	}
+	if authSessionMigration != "disabled" && authSessionMigration != "legacy_read_through" {
+		return Config{}, fmt.Errorf("invalid auth_session_migration: must be disabled or legacy_read_through")
 	}
 	googleClientID := strings.TrimSpace(v.GetString("google_client_id"))
 	googleClientSecret := strings.TrimSpace(v.GetString("google_client_secret"))
@@ -300,6 +318,8 @@ func Load(path string) (Config, error) {
 		PipelineDemoUserIDs:              splitCommaList(v.GetString("pipeline_demo_user_ids")),
 		RegistrationEnabled:              registrationEnabled,
 		AuthServiceURL:                   authServiceURL,
+		AuthSessionEnvironment:           authSessionEnvironment,
+		AuthSessionMigration:             authSessionMigration,
 		GoogleClientID:                   googleClientID,
 		GoogleClientSecret:               googleClientSecret,
 		GoogleIssuer:                     googleIssuer,

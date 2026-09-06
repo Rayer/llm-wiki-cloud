@@ -30,3 +30,22 @@ func LogoutHandlerWithCookiePolicy(cookiePolicy RefreshCookiePolicy) gin.Handler
 		c.JSON(http.StatusOK, gin.H{"ok": true})
 	}
 }
+
+// LogoutHandlerWithSessionAuthority revokes the durable session represented
+// by the refresh cookie and always clears the existing cookie contract.
+func LogoutHandlerWithSessionAuthority(authority *RefreshSessionAuthority, jwtSecret string, cookiePolicy RefreshCookiePolicy) gin.HandlerFunc {
+	return func(c *gin.Context) {
+		var revokeErr error
+		if authority != nil {
+			if cookie, err := c.Request.Cookie(cookiePolicy.Name); err == nil && cookie.Value != "" {
+				revokeErr = authority.Revoke(c.Request.Context(), cookie.Value, jwtSecret)
+			}
+		}
+		setRefreshTokenCookieWithPolicy(c, "", -1, cookiePolicy)
+		if revokeErr != nil {
+			c.JSON(http.StatusServiceUnavailable, gin.H{"error": "auth persistence unavailable"})
+			return
+		}
+		c.JSON(http.StatusOK, gin.H{"ok": true})
+	}
+}
