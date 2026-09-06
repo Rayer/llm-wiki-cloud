@@ -4,6 +4,7 @@ import (
 	"context"
 	"crypto/rand"
 	"encoding/hex"
+	"errors"
 	"log"
 	"net/http"
 	"strings"
@@ -50,6 +51,19 @@ type RegistrationGate interface {
 //	@Failure		429		{object}	RateLimitErrorResponse
 //	@Header			429		{integer}	Retry-After	"Seconds until the rate limit window resets"
 func RegisterHandler(fs *firestore.Client, jwtSecret string, gate RegistrationGate) gin.HandlerFunc {
+	return RegisterHandlerWithRepository(NewIdentityRepository(fs), jwtSecret, gate)
+}
+
+// PasswordRegistrationRepository is the atomic persistence boundary for
+// password registration. Implementations must commit user metadata, email
+// reservation, and Default Project metadata together.
+type PasswordRegistrationRepository interface {
+	ProvisionPasswordUser(context.Context, PasswordUserProvisioning) error
+}
+
+// RegisterHandlerWithRepository creates a registration handler backed by the
+// supplied atomic identity repository.
+func RegisterHandlerWithRepository(repo PasswordRegistrationRepository, jwtSecret string, gate RegistrationGate) gin.HandlerFunc {
 	return func(c *gin.Context) {
 		if gate != nil {
 			enabled, err := gate.IsRegistrationEnabled(c.Request.Context())
@@ -69,8 +83,13 @@ func RegisterHandler(fs *firestore.Client, jwtSecret string, gate RegistrationGa
 			c.JSON(http.StatusBadRequest, gin.H{"error": "email and password required"})
 			return
 		}
-		email := strings.TrimSpace(req.Email)
+		displayEmail := strings.TrimSpace(req.Email)
+		canonicalEmail := CanonicalizeEmail(displayEmail)
 		password := req.Password
+		if canonicalEmail == "" {
+			c.JSON(http.StatusBadRequest, gin.H{"error": "email and password required"})
+			return
+		}
 
 		if len(password) < 8 {
 			c.JSON(http.StatusBadRequest, gin.H{"error": "password must be at least 8 characters"})
@@ -78,12 +97,6 @@ func RegisterHandler(fs *firestore.Client, jwtSecret string, gate RegistrationGa
 		}
 
 		ctx := c.Request.Context()
-
-		// Check if email already exists
-		if _, _, err := GetUserByEmail(ctx, fs, email); err == nil {
-			c.JSON(http.StatusConflict, gin.H{"error": "email already registered"})
-			return
-		}
 
 		// Generate user ID
 		userID := generateUserID()
@@ -96,18 +109,28 @@ func RegisterHandler(fs *firestore.Client, jwtSecret string, gate RegistrationGa
 			return
 		}
 
-		// Create user
-		if err := CreateUser(ctx, fs, userID, email, string(hash)); err != nil {
-			log.Printf("[register] create user failed: %v", err)
-			c.JSON(http.StatusInternalServerError, gin.H{"error": "internal error"})
+		if repo == nil {
+			c.JSON(http.StatusServiceUnavailable, gin.H{"error": "auth persistence unavailable"})
 			return
 		}
-
-		// Auto-create default project
-		defaultProjectID := "default"
-		if err := createDefaultProject(ctx, fs, userID, defaultProjectID); err != nil {
-			log.Printf("[register] auto-create project failed: %v", err)
-			// Non-fatal — user can create project later
+		if err := repo.ProvisionPasswordUser(ctx, PasswordUserProvisioning{
+			UserID:         userID,
+			DisplayEmail:   displayEmail,
+			CanonicalEmail: canonicalEmail,
+			PasswordHash:   string(hash),
+			ProjectID:      defaultProjectID,
+		}); err != nil {
+			if errors.Is(err, ErrCanonicalEmailConflict) {
+				c.JSON(http.StatusConflict, gin.H{"error": "email already registered"})
+				return
+			}
+			if errors.Is(err, ErrInvalidIdentityInput) {
+				c.JSON(http.StatusBadRequest, gin.H{"error": "email and password required"})
+				return
+			}
+			log.Printf("[register] atomic provisioning failed: %v", err)
+			c.JSON(http.StatusInternalServerError, gin.H{"error": "internal error"})
+			return
 		}
 
 		// Issue JWT
@@ -121,7 +144,7 @@ func RegisterHandler(fs *firestore.Client, jwtSecret string, gate RegistrationGa
 		c.JSON(http.StatusCreated, RegisterResponse{
 			Token:     token,
 			UserID:    userID,
-			Email:     email,
+			Email:     displayEmail,
 			ProjectID: defaultProjectID,
 		})
 	}

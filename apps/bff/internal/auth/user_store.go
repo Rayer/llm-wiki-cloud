@@ -12,6 +12,7 @@ import (
 // UserRecord is a user document stored in Firestore.
 type UserRecord struct {
 	Email          string `firestore:"email"`
+	EmailCanonical string `firestore:"email_canonical,omitempty"`
 	PasswordHash   string `firestore:"password_hash"`
 	Role           string `firestore:"role,omitempty"`
 	EmailVerified  bool   `firestore:"email_verified"`
@@ -22,10 +23,11 @@ type UserRecord struct {
 // CreateUser writes a user document to the Firestore users collection.
 func CreateUser(ctx context.Context, fs *firestore.Client, userID, email, passwordHash string) error {
 	_, err := fs.Collection("users").Doc(userID).Set(ctx, UserRecord{
-		Email:         email,
-		PasswordHash:  passwordHash,
-		EmailVerified: false,
-		ProjectCount:  0,
+		Email:          email,
+		EmailCanonical: CanonicalizeEmail(email),
+		PasswordHash:   passwordHash,
+		EmailVerified:  false,
+		ProjectCount:   0,
 	})
 	if err != nil {
 		return fmt.Errorf("create user %s: %w", userID, err)

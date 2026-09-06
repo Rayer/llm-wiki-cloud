@@ -138,6 +138,15 @@ go run ./cmd/bff --local ./local-data
 LOCAL_DATA_DIR=./local-data DEV_JWT=true JWT_SECRET=dev-secret go run ./cmd/auth --local ./local-data
 ```
 
+Audit existing Firestore users before enabling canonical-email reservations. The
+audit is dry-run by default; `--apply` is an explicit write gate and refuses to
+write when validation finds collisions or malformed records:
+
+```sh
+go run ./cmd/auth_identity_audit --dry-run
+go run ./cmd/auth_identity_audit --apply
+```
+
 ## Pipeline rate limits (LWC-138)
 
 User `POST /api/v1/pipeline/run` enforces per-project quotas before Cloud Run:

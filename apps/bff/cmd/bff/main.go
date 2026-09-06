@@ -324,8 +324,9 @@ func newProductionRouter(
 		authRoutes.POST("/refresh", unavailable)
 		authRoutes.POST("/logout", auth.LogoutHandler())
 	} else {
-		authRoutes.POST("/login", middleware.NewRateLimiter(10, time.Minute), auth.LoginHandler(fsClient.Raw(), cfg.JWTSecret))
-		authRoutes.POST("/register", middleware.NewRateLimiter(5, time.Minute), auth.RegisterHandler(fsClient.Raw(), cfg.JWTSecret, settingsStore))
+		identityRepository := auth.NewIdentityRepository(fsClient.Raw())
+		authRoutes.POST("/login", middleware.NewRateLimiter(10, time.Minute), auth.LoginHandlerWithRepository(identityRepository, cfg.JWTSecret, auth.LegacyRefreshCookiePolicy()))
+		authRoutes.POST("/register", middleware.NewRateLimiter(5, time.Minute), auth.RegisterHandlerWithRepository(identityRepository, cfg.JWTSecret, settingsStore))
 		authRoutes.POST("/refresh", auth.RefreshHandler(fsClient.Raw(), cfg.JWTSecret))
 		authRoutes.POST("/logout", auth.LogoutHandler())
 	}
