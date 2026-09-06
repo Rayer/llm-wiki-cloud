@@ -21,6 +21,8 @@ type Claims struct {
 	Sub       string `json:"sub"`
 	Role      string `json:"role,omitempty"`
 	TokenType string `json:"token_type,omitempty"`
+	SessionID string `json:"sid,omitempty"`
+	TokenID   string `json:"tid,omitempty"`
 	jwt.RegisteredClaims
 }
 
@@ -130,13 +132,15 @@ func GenerateAccessToken(userID, role, secret string) (string, error) {
 	return generateToken(userID, role, secret, accessTokenTTL, accessTokenType, "")
 }
 
-// GenerateRefreshToken creates and records a refresh token for cookie-based rotation.
+// GenerateRefreshToken is retained for the local/test compatibility lane. The
+// production routers use RefreshSessionAuthority.Issue, which persists only a
+// token hash in Firestore. Local mode has no durable Firestore authority.
 func GenerateRefreshToken(userID, role, secret string) (string, error) {
 	jti, err := randomTokenID()
 	if err != nil {
 		return "", err
 	}
-	token, err := generateToken(userID, role, secret, refreshTokenTTL, refreshTokenType, jti)
+	token, err := generateTokenAt(userID, role, secret, refreshTokenTTL, refreshTokenType, jti, "", "", time.Now())
 	if err != nil {
 		return "", err
 	}
@@ -165,18 +169,9 @@ func ValidateToken(tokenString, secret string) (*Claims, error) {
 }
 
 func validateRefreshToken(tokenString, secret string) (*Claims, error) {
-	claims := &Claims{}
-	token, err := jwt.ParseWithClaims(tokenString, claims, func(token *jwt.Token) (interface{}, error) {
-		if _, ok := token.Method.(*jwt.SigningMethodHMAC); !ok {
-			return nil, fmt.Errorf("unexpected signing method: %v", token.Header["alg"])
-		}
-		return []byte(secret), nil
-	}, jwt.WithValidMethods([]string{"HS256"}))
+	claims, err := parseRefreshToken(tokenString, secret)
 	if err != nil {
 		return nil, err
-	}
-	if !token.Valid || claims.TokenType != refreshTokenType || claims.ID == "" {
-		return nil, fmt.Errorf("invalid refresh token")
 	}
 	now := time.Now()
 	refreshTokenStore.Lock()
@@ -191,12 +186,37 @@ func validateRefreshToken(tokenString, secret string) (*Claims, error) {
 	return claims, nil
 }
 
+// parseRefreshToken validates only the signed wire token. Durable authority
+// state is checked separately by RefreshSessionAuthority.Rotate.
+func parseRefreshToken(tokenString, secret string) (*Claims, error) {
+	claims := &Claims{}
+	token, err := jwt.ParseWithClaims(tokenString, claims, func(token *jwt.Token) (interface{}, error) {
+		if _, ok := token.Method.(*jwt.SigningMethodHMAC); !ok {
+			return nil, fmt.Errorf("unexpected signing method: %v", token.Header["alg"])
+		}
+		return []byte(secret), nil
+	}, jwt.WithValidMethods([]string{"HS256"}))
+	if err != nil || !token.Valid || claims.TokenType != refreshTokenType || claims.ID == "" {
+		return nil, fmt.Errorf("invalid refresh token")
+	}
+	return claims, nil
+}
+
 func generateToken(userID, role, secret string, ttl time.Duration, tokenType, jti string) (string, error) {
-	now := time.Now()
+	return generateTokenAt(userID, role, secret, ttl, tokenType, jti, "", "", time.Now())
+}
+
+func generateRefreshTokenAt(userID, role, secret, sessionID string, now time.Time) (string, error) {
+	tokenID, err := randomTokenID()
+	if err != nil {
+		return "", err
+	}
+	return generateTokenAt(userID, role, secret, refreshTokenTTL, refreshTokenType, sessionID, sessionID, tokenID, now)
+}
+
+func generateTokenAt(userID, role, secret string, ttl time.Duration, tokenType, jti, sessionID, tokenID string, now time.Time) (string, error) {
 	claims := &Claims{
-		Sub:       userID,
-		Role:      role,
-		TokenType: tokenType,
+		Sub: userID, Role: role, TokenType: tokenType, SessionID: sessionID, TokenID: tokenID,
 		RegisteredClaims: jwt.RegisteredClaims{
 			IssuedAt:  jwt.NewNumericDate(now),
 			ExpiresAt: jwt.NewNumericDate(now.Add(ttl)),

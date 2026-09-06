@@ -205,6 +205,22 @@ func TestLoadAllowsEmptyJWTSecretInDevelopment(t *testing.T) {
 	}
 }
 
+func TestLoadAuthSessionConfigIsExplicitAndFailClosed(t *testing.T) {
+	t.Setenv("AUTH_SESSION_ENVIRONMENT", " dev ")
+	t.Setenv("AUTH_REFRESH_SESSION_MIGRATION", "legacy_read_through")
+	cfg, err := Load(writeConfig(t, "dev_jwt = true\n"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if cfg.AuthSessionEnvironment != "dev" || cfg.AuthSessionMigration != "legacy_read_through" {
+		t.Fatalf("auth session config = environment %q migration %q", cfg.AuthSessionEnvironment, cfg.AuthSessionMigration)
+	}
+	t.Setenv("AUTH_REFRESH_SESSION_MIGRATION", "accept-anything")
+	if _, err := Load(writeConfig(t, "dev_jwt = true\n")); err == nil {
+		t.Fatal("Load accepted unknown auth session migration mode")
+	}
+}
+
 func TestLoadPipelineQuotaDefaults(t *testing.T) {
 	// Clear env so defaults apply (t.Setenv restores after test).
 	t.Setenv("PIPELINE_DAILY_LIMIT", "")

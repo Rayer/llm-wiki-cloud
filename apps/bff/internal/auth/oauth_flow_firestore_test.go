@@ -109,7 +109,8 @@ func oauthEmulatorService(t *testing.T, client *firestore.Client, repo *Identity
 		LinkRedirectURL:  "https://auth.example.test/api/v1/auth/google/link/callback",
 		CompletionURL:    "https://wiki.example.test/login", AllowedOrigins: []string{"https://wiki.example.test"},
 	}
-	service := NewGoogleOAuthService(cfg, client, repo, gate, "g2-jwt-secret")
+	sessions := NewRefreshSessionAuthority(client, "lwc-320-oauth-flow")
+	service := NewGoogleOAuthServiceWithSessionAuthority(cfg, client, repo, gate, "g2-key-320", sessions)
 	service.client = provider.Client()
 	service.verifier = newGoogleOIDCVerifier(cfg, service.client)
 	return service
@@ -211,7 +212,7 @@ func TestGoogleOAuthLoginCallbackJITProvisionAndReplayWithFakeProvider(t *testin
 		t.Fatal("login callback did not set refresh cookie")
 	}
 	refreshRouter := gin.New()
-	refreshRouter.POST("/refresh", RefreshHandlerWithCookiePolicy(client, service.jwtSecret, HostRefreshCookiePolicy()))
+	refreshRouter.POST("/refresh", RefreshHandlerWithSessionAuthority(service.sessions, service.jwtSecret, HostRefreshCookiePolicy()))
 	refresh := httptest.NewRecorder()
 	refreshReq := httptest.NewRequest(http.MethodPost, "/refresh", nil)
 	refreshReq.AddCookie(refreshCookie)
