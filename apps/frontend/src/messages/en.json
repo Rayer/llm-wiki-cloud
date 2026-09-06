@@ -8,6 +8,7 @@
     "showPassword": "Show password",
     "hidePassword": "Hide password",
     "signIn": "Sign in",
+    "continueWithGoogle": "Continue with Google",
     "tryDemo": "Try Demo",
     "signUp": "Sign Up",
     "switchToRegister": "No account? Sign up",
@@ -41,6 +42,33 @@
     "disabled": "New user registration is currently disabled.",
     "backToLogin": "Back to sign in",
     "switchToLogin": "Already have an account? Sign in"
+  },
+  "AccountSettings": {
+    "title": "Account settings",
+    "subtitle": "Manage your LWC sign-in methods.",
+    "primaryEmail": "Primary LWC email",
+    "primaryHint": "This is the only email accepted by password sign-in.",
+    "googleEmail": "Google display email",
+    "googleNotLinked": "Not linked",
+    "googleHint": "A linked Google email does not replace your primary LWC email.",
+    "linkGoogle": "Link Google",
+    "reauthHint": "Re-enter your current LWC password to start a fresh Google account chooser.",
+    "currentPassword": "Current password",
+    "cancel": "Cancel",
+    "continue": "Continue",
+    "openingGoogle": "Opening Google…"
+  },
+  "GoogleCompletion": {
+    "completing": "Completing sign-in",
+    "completingHint": "Please wait while LWC completes your Google sign-in.",
+    "confirmTitle": "Confirm Google link",
+    "confirmHint": "Link this Google account to your LWC account?",
+    "cancel": "Cancel",
+    "saving": "Saving…",
+    "confirm": "Confirm link",
+    "supportReference": "Support reference:",
+    "copyReference": "Copy reference",
+    "return": "Return to sign in"
   },
   "Admin": {
     "registrationEnabled": "Allow new user registration"

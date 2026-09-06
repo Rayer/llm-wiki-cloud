@@ -1,12 +1,13 @@
 'use client';
 
-import { FormEvent, useState } from 'react';
+import { FormEvent, useEffect, useState } from 'react';
 import { MAX_PROJECT_NAME_LENGTH, type Project } from '@/lib/projects';
 
 type ProjectRenameModalProps = {
   project: Project;
   onSubmit: (name: string) => Promise<void>;
   onClose: () => void;
+  provisional?: boolean;
 };
 
 function validateProjectName(name: string): string {
@@ -18,10 +19,18 @@ function validateProjectName(name: string): string {
   return '';
 }
 
-export function ProjectRenameModal({ project, onSubmit, onClose }: ProjectRenameModalProps) {
+export function ProjectRenameModal({ project, onSubmit, onClose, provisional = false }: ProjectRenameModalProps) {
   const [name, setName] = useState(project.name);
   const [error, setError] = useState('');
   const [loading, setLoading] = useState(false);
+
+  useEffect(() => {
+    const onKeyDown = (event: KeyboardEvent) => {
+      if (event.key === 'Escape' && !loading) onClose();
+    };
+    document.addEventListener('keydown', onKeyDown);
+    return () => document.removeEventListener('keydown', onKeyDown);
+  }, [loading, onClose]);
 
   const validationError = validateProjectName(name);
   const isDuplicate = name.trim() === project.name.trim();
@@ -59,7 +68,7 @@ export function ProjectRenameModal({ project, onSubmit, onClose }: ProjectRename
       >
         <div className="flex items-start justify-between gap-4">
           <h2 id="rename-project-title" className="text-2xl font-semibold text-white">
-            Rename project
+            {provisional ? 'Name your project' : 'Rename project'}
           </h2>
           <button
             type="button"
@@ -73,6 +82,7 @@ export function ProjectRenameModal({ project, onSubmit, onClose }: ProjectRename
         </div>
 
         <form onSubmit={handleSubmit} className="mt-6 space-y-4">
+          {provisional ? <p className="text-sm leading-6 text-zinc-400">Choose a name for your new Default Project, or skip for now.</p> : null}
           <label className="block text-sm font-medium text-zinc-300">
             Project name
             <input
@@ -97,7 +107,7 @@ export function ProjectRenameModal({ project, onSubmit, onClose }: ProjectRename
               disabled={loading}
               className="rounded-lg px-4 py-2.5 text-sm font-medium text-zinc-300 transition hover:bg-white/10 hover:text-white"
             >
-              Cancel
+              {provisional ? 'Skip for now' : 'Cancel'}
             </button>
             <button
               type="submit"

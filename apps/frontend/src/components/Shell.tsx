@@ -1,6 +1,6 @@
 'use client';
 
-import { useEffect, useState } from 'react';
+import { useEffect, useRef, useState } from 'react';
 import { usePathname } from 'next/navigation';
 import { Search, FileText, Brain, Activity, Menu, X, ChevronUp, Shield, Pencil } from 'lucide-react';
 import { useT } from '@/lib/i18n';
@@ -14,6 +14,7 @@ import { Badge } from './ui/Badge';
 import { ProjectSelect } from './ui/ProjectSelect';
 import { CommandPalette, useCommandPalette } from './ui/CommandPalette';
 import { NavigationBlockerProvider, NavigationLink } from './NavigationBlocker';
+import { AccountSettingsModal } from './AccountSettingsModal';
 
 export function Shell({ children }: { children: React.ReactNode }) {
   return (
@@ -50,6 +51,42 @@ function ShellContent({ children }: { children: React.ReactNode }) {
     signOut,
   } = useWorkspace();
   const [renameTarget, setRenameTarget] = useState<{ id: string; name: string } | null>(null);
+  const [accountSettingsOpen, setAccountSettingsOpen] = useState(false);
+  const [linkedGoogleEmail, setLinkedGoogleEmail] = useState<string | null>(null);
+  const linkedGoogleAccountRef = useRef<string | null>(null);
+  const linkedGoogleAccount = token && user ? user.id : null;
+  const provisionalProjectKey = user && currentProject
+    ? `lwc-google-provisional-dismissed:${user.id}:${currentProject.id}`
+    : '';
+
+  useEffect(() => {
+    if (!token || !user || isDemoSession || !currentProject || currentProject.name !== 'Default Project' || renameTarget) return;
+    let dismissed = false;
+    try { dismissed = window.localStorage.getItem(provisionalProjectKey) === '1'; } catch { /* optional storage */ }
+    if (!dismissed) {
+      // eslint-disable-next-line react-hooks/set-state-in-effect -- open first-workspace onboarding prompt.
+      setRenameTarget({ id: currentProject.id, name: currentProject.name });
+    }
+  }, [currentProject, isDemoSession, provisionalProjectKey, renameTarget, token, user]);
+
+  useEffect(() => {
+    const onGoogleLinkConfirmed = (event: Event) => {
+      const email = (event as CustomEvent<{ email?: unknown }>).detail?.email;
+      if (typeof email === 'string' && email.trim()) setLinkedGoogleEmail(email.trim());
+    };
+    window.addEventListener('lwc-google-link-confirmed', onGoogleLinkConfirmed);
+    return () => window.removeEventListener('lwc-google-link-confirmed', onGoogleLinkConfirmed);
+  }, []);
+
+  useEffect(() => {
+    if (linkedGoogleAccountRef.current !== linkedGoogleAccount) {
+      linkedGoogleAccountRef.current = linkedGoogleAccount;
+      /* eslint-disable react-hooks/set-state-in-effect -- clear account-scoped display metadata at account boundaries. */
+      setLinkedGoogleEmail(null);
+      if (!linkedGoogleAccount) setAccountSettingsOpen(false);
+      /* eslint-enable react-hooks/set-state-in-effect */
+    }
+  }, [linkedGoogleAccount]);
 
   const navItems: {
     href: string;
@@ -95,6 +132,7 @@ function ShellContent({ children }: { children: React.ReactNode }) {
     return pathname === href || pathname.startsWith(`${href}/`);
   };
   const isAdminRoute = pathname === '/admin' || pathname.startsWith('/admin/');
+  const isGoogleCompletionRoute = pathname === '/login';
 
   return (
     <div className="min-h-dvh text-zinc-100 lg:flex lg:items-stretch">
@@ -240,6 +278,13 @@ function ShellContent({ children }: { children: React.ReactNode }) {
                 </p>
                 <button
                   type="button"
+                  onClick={() => setAccountSettingsOpen(true)}
+                  className="inline-flex min-h-11 items-center text-xs text-zinc-500 transition hover:text-zinc-300"
+                >
+                  Account settings
+                </button>
+                <button
+                  type="button"
                   onClick={() => void signOut()}
                   className="inline-flex min-h-11 items-center text-xs text-zinc-500 transition hover:text-zinc-300"
                 >
@@ -264,6 +309,8 @@ function ShellContent({ children }: { children: React.ReactNode }) {
           <div className="flex min-h-screen items-center justify-center text-sm text-zinc-500">
             {t('Shell.loading')}
           </div>
+        ) : isGoogleCompletionRoute ? (
+          children
         ) : token && isAdminRoute ? (
           <div className="mx-auto max-w-6xl px-4 py-8 sm:px-6 lg:px-10">
             {children}
@@ -293,7 +340,7 @@ function ShellContent({ children }: { children: React.ReactNode }) {
         ) : null}
       </main>
 
-      <LoginModal />
+      {pathname === '/login' ? null : <LoginModal />}
       <NewProjectModal />
       {renameTarget ? (
         <ProjectRenameModal
@@ -301,9 +348,16 @@ function ShellContent({ children }: { children: React.ReactNode }) {
           onSubmit={async (name) => {
             await renameProject(renameTarget.id, name);
           }}
-          onClose={() => setRenameTarget(null)}
+          provisional={renameTarget.name === 'Default Project'}
+          onClose={() => {
+            if (renameTarget.name === 'Default Project' && provisionalProjectKey) {
+              try { window.localStorage.setItem(provisionalProjectKey, '1'); } catch { /* optional storage */ }
+            }
+            setRenameTarget(null);
+          }}
         />
       ) : null}
+      {accountSettingsOpen ? <AccountSettingsModal linkedGoogleEmail={linkedGoogleEmail} onClose={() => setAccountSettingsOpen(false)} /> : null}
       {token ? <ScrollToTopButton /> : null}
       {paletteOpen ? (
         <CommandPalette
