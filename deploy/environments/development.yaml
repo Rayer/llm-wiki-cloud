@@ -5,7 +5,16 @@ gcp:
 
 auth:
   google:
-    enabled: false
+    enabled: true
+    client_id: 580854833715-vo7fg6f7f15g1kkgchk1ulccllbc24qg.apps.googleusercontent.com
+    client_secret_reference: google-oauth-client-dev
+    client_secret_version: "1"
+    issuer: https://accounts.google.com
+    jwks_url: https://www.googleapis.com/oauth2/v3/certs
+    token_url: https://oauth2.googleapis.com/token
+    login_redirect_url: https://auth.dev.rayer.idv.tw/api/v1/auth/google/callback
+    link_redirect_url: https://auth.dev.rayer.idv.tw/api/v1/auth/google/link/callback
+    completion_url: https://wiki.dev.rayer.idv.tw/login
   service_name: llm-wiki-auth-dev
   runtime_service_account: lwc-auth-dev@llm-wiki-cloud.iam.gserviceaccount.com
   network: default
