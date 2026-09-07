@@ -18,6 +18,15 @@ def envelope(body=DOCUMENT, boundary=b"provider-boundary", headers=b"Content-Typ
 
 
 class FrontendBuildConfigTests(unittest.TestCase):
+    def test_vercel_cache_headers_preserve_document_and_hash(self):
+        body = envelope(headers=b"vary: RSC, Next-Router-State-Tree, Next-Router-Prefetch\r\n"
+                        b"content-type: application/json\r\n"
+                        b"x-next-cache-tags: _N_T_/layout,_N_T_/build-config.json/route,_N_T_/build-config.json")
+        extracted = parser.document(body)
+        self.assertEqual(extracted, DOCUMENT)
+        self.assertEqual(hashlib.sha256(extracted).hexdigest(),
+                         "bcb67028cae0a0eadaef9da1b8cdfbb293f29679febf3022bfffbd5e72467a98")
+
     def test_observed_document_hash_ignores_envelope_and_surrounding_whitespace(self):
         for body in (DOCUMENT, DOCUMENT + b"\r\n", envelope(), envelope(boundary=b"another-random-boundary")):
             with self.subTest(body=body[:30]):
@@ -32,6 +41,9 @@ class FrontendBuildConfigTests(unittest.TestCase):
             envelope().replace(b"\r\n", b"\n"),
             envelope(headers=b"Content-Type: text/plain"),
             envelope(headers=b"Content-Type: application/json\r\nContent-Type: application/json"),
+            envelope(headers=b"Content-Type: application/json\r\nvary: RSC\r\nVary: RSC"),
+            envelope(headers=b"Content-Type: application/json\r\nx-next-cache-tags: tag\r\nX-Next-Cache-Tags: tag"),
+            envelope(headers=b"Content-Type: application/json\r\nx-unapproved-header: value"),
             envelope(headers=b"Content-Type: application/json\r\nmalformed header"),
             envelope(headers=b"Content-Type: application/json\r\nContent-Transfer-Encoding: base64"),
             envelope(headers=b'Content-Type: application/json\r\nContent-Disposition: attachment; filename="other.json"'),

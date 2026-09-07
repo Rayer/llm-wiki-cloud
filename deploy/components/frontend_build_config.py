@@ -30,7 +30,7 @@ def document(body):
         part = parts[0]
         headers = [key.lower() for key in part.keys()]
         if (part.defects or part.is_multipart() or len(headers) != len(set(headers))
-                or set(headers) - {"content-type", "content-disposition", "content-transfer-encoding"}
+                or set(headers) - {"content-type", "content-disposition", "content-transfer-encoding", "vary", "x-next-cache-tags"}
                 or headers.count("content-type") != 1
                 or part.get_content_type() != "application/json"
                 or part.get_content_charset() not in (None, "utf-8")
