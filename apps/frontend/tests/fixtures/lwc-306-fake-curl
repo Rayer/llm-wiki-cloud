@@ -39,6 +39,20 @@ if [[ "$url" == "$base"/* && "$auth" != "Authorization: Bearer ${VERCEL_TOKEN:-}
   exit 97
 fi
 
+if [[ "$url" == 'https://frontend-hash.vercel.app/build-config.json' ]]; then
+  [[ -z "$auth" ]] || exit 97
+  mode=correct
+  [[ ! -f "$root/proof-mode" ]] || mode=$(<"$root/proof-mode")
+  case "$mode" in
+    missing) write_response '{}' 404 ;;
+    protected) write_response '<html>Protected</html>' 302 ;;
+    wrong-auth) write_response "$(jq '.auth_url="https://auth-dev.rayer.idv.tw"' "$root/build-config.json")" 200 ;;
+    wrong-api) write_response "$(jq '.api_url="https://wrong.example"' "$root/build-config.json")" 200 ;;
+    *) write_response "$(cat "$root/build-config.json")" 200 ;;
+  esac
+  exit 0
+fi
+
 if [[ "$url" == *'/v9/projects/'* ]]; then
   event project
   if [[ "$scenario" == project-mismatch ]]; then

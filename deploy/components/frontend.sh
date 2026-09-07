@@ -13,6 +13,8 @@ VERCEL_READBACK_RESULT=unknown
 FRONTEND_ROLLBACK_READBACK='{}'
 FRONTEND_DEPLOYMENT_JSON=''
 FRONTEND_DEPLOYMENT_URL=''
+FRONTEND_BUILD_CONFIG='{}'
+FRONTEND_BUILD_CONFIG_SHA256=''
 
 cleanup_frontend_response() {
   if [[ -n "$FRONTEND_RESPONSE_PATH" ]]; then rm -f "$FRONTEND_RESPONSE_PATH"; FRONTEND_RESPONSE_PATH=""; fi
@@ -161,11 +163,33 @@ vercel_project_authority() {
 frontend_vercel_environment() { [[ "$ENVIRONMENT" == production ]] && printf 'production\n' || printf 'preview\n'; }
 frontend_deploy_target() { [[ "$ENVIRONMENT" == production ]] && printf 'production\n' || printf 'preview\n'; }
 frontend_deployment_path() { printf '%s/frontend-deployment.json\n' "$ARTIFACT_DIR"; }
+
+# Only immutable served bytes are evidence. Do not follow protection redirects,
+# send credentials, or substitute the normalized plan for missing build output.
+frontend_verify_build_config() {
+  local deployment_url="$1" body status
+  FRONTEND_BUILD_CONFIG='{}'; FRONTEND_BUILD_CONFIG_SHA256=''
+  [[ "$(vercel_canonical_deployment_url "$deployment_url")" == "$deployment_url" ]] || return 1
+  body=$(mktemp) || return 1
+  if ! status=$(curl --disable --silent --show-error --max-time 30 --connect-timeout 10 --max-filesize 4096 --proto '=https' \
+    --output "$body" --write-out '%{http_code}' "$deployment_url/build-config.json"); then rm -f "$body"; return 1; fi
+  if [[ "$status" != 200 ]] || ! strict_json < "$body" || ! jq -e \
+    --arg api "$(plan_json '.frontend.api_url')" --arg auth "$(plan_json '.frontend.auth_url')" \
+    'type == "object" and keys == ["api_url","auth_url","schema_version"] and .schema_version == 1 and .api_url == $api and .auth_url == $auth' "$body" >/dev/null; then
+    rm -f "$body"; return 1
+  fi
+  FRONTEND_BUILD_CONFIG=$(jq -c . "$body")
+  FRONTEND_BUILD_CONFIG_SHA256=$(shasum -a 256 "$body" | cut -d ' ' -f 1)
+  rm -f "$body"
+  [[ "$FRONTEND_BUILD_CONFIG_SHA256" =~ ^[a-f0-9]{64}$ ]]
+}
+
 frontend_write_receipt() {
   local deployment_id="$1" deployment_url="$2" target="$3"
   mkdir -p "$ARTIFACT_DIR"
   jq -n --arg deployment_id "$deployment_id" --arg deployment_url "$deployment_url" --arg source_sha "$SOURCE_SHA" --arg target "$target" \
-    '{deployment_id:$deployment_id,deployment_url:$deployment_url,source_sha:$source_sha,target:$target}' > "$(frontend_deployment_path)"
+    --argjson build_config "$FRONTEND_BUILD_CONFIG" --arg build_config_sha256 "$FRONTEND_BUILD_CONFIG_SHA256" \
+    '{deployment_id:$deployment_id,deployment_url:$deployment_url,source_sha:$source_sha,target:$target,build_config:$build_config,build_config_sha256:$build_config_sha256}' > "$(frontend_deployment_path)"
 }
 
 vercel_canonical_deployment_url() {
@@ -304,6 +328,10 @@ frontend_mutate() {
     fi
     mutation_accepted frontend
   fi
+  if ! frontend_verify_build_config "$deployment_url"; then
+    if (( reused )); then journal_rejected frontend; fi
+    set_mutation_status frontend failed; write_component_result frontend failed '{}' deployment_build_config_unverified; return 1
+  fi
   frontend_write_receipt "$deployment_id" "$deployment_url" "$target"
   if (( reused )); then
     if jq -e --arg deployment "$deployment_id" '.handles.frontend.aliases | type == "array" and length > 0 and all(.[]; .deployment_id == $deployment)' "$ROLLBACK_PATH" >/dev/null; then
@@ -335,8 +363,13 @@ frontend_reconcile() {
   deployment_url=$(jq -er '.deployment_url | select(type == "string" and startswith("https://"))' "$receipt") || { FRONTEND_READBACK_RESULT=failed; write_component_result frontend failed '{}' deployment_url_invalid; return 1; }
   observed=$(vercel_get_deployment "$deployment_id") || { write_component_result frontend unknown '{}' deployment_readback_unavailable; return 2; }
   vercel_validate_deployment "$observed" "$deployment_id" "$deployment_url" || { FRONTEND_READBACK_RESULT=failed; write_component_result frontend failed '{}' deployment_readback_mismatch; return 1; }
+  if ! frontend_verify_build_config "$deployment_url" || ! jq -e --arg sha "$SOURCE_SHA" --arg target "$(frontend_deploy_target)" \
+    --argjson config "$FRONTEND_BUILD_CONFIG" --arg hash "$FRONTEND_BUILD_CONFIG_SHA256" \
+    '.source_sha == $sha and .target == $target and .build_config == $config and .build_config_sha256 == $hash' "$receipt" >/dev/null; then
+    FRONTEND_READBACK_RESULT=failed; write_component_result frontend failed '{}' deployment_build_config_unverified; return 1
+  fi
   while IFS= read -r alias; do vercel_verify_alias_target "$alias" "$deployment_id" || { FRONTEND_READBACK_RESULT="$VERCEL_READBACK_RESULT"; write_component_result frontend "$FRONTEND_READBACK_RESULT" '{}' alias_readback_mismatch; return 1; }; aliases=$(jq --arg alias "$alias" '. + [{alias:$alias,converged:true}]' <<<"$aliases"); done < <(frontend_expected_aliases)
-  FRONTEND_READBACK=$(jq -n --arg deployment_id "$deployment_id" --arg deployment_url "$deployment_url" --argjson aliases "$aliases" '{deployment_id:$deployment_id,deployment_url:$deployment_url,aliases:$aliases}')
+  FRONTEND_READBACK=$(jq --argjson aliases "$aliases" '. + {aliases:$aliases}' "$receipt")
   FRONTEND_READBACK_RESULT=success; write_component_result frontend success "$FRONTEND_READBACK"
 }
 

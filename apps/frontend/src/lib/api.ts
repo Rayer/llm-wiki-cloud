@@ -1,6 +1,7 @@
 'use client';
 
 import { rawFileNameFromSource } from './raw-file-name.ts';
+import { API_URL } from './public-build-config.ts';
 import { normalizeAnnotationBody, normalizeAnnotationGeneration } from './source-annotation.ts';
 
 export type PipelineDiagnostic = {
@@ -146,10 +147,6 @@ export class ApiError extends Error {
     this.status = status;
   }
 }
-
-const API_URL =
-  process.env.NEXT_PUBLIC_API_URL ??
-  'https://llm-wiki-bff-dev-580854833715.asia-east1.run.app';
 
 const LAST_PROJECT_KEY = 'llm-wiki-last-project';
 
