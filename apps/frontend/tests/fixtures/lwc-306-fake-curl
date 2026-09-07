@@ -6,6 +6,7 @@ base="${VERCEL_API_BASE_URL:-https://api.vercel.com}"
 url=''; method=GET; body=''; output=''; write_out=''; auth=''
 while [[ "$#" -gt 0 ]]; do
   case "$1" in
+    -L|--location|--location-trusted) exit 97 ;;
     -X|--request) method="$2"; shift 2 ;;
     -H|--header)
       [[ "${2:-}" == Authorization:* ]] && auth="$2"
@@ -37,6 +38,50 @@ write_response() {
 
 if [[ "$url" == "$base"/* && "$auth" != "Authorization: Bearer ${VERCEL_TOKEN:-}" ]]; then
   exit 97
+fi
+
+if [[ "$url" == 'https://frontend-hash.vercel.app/build-config.json' ]]; then
+  [[ -z "$auth" ]] || exit 97
+  write_response '<html>Protected</html>' 302
+  exit 0
+fi
+
+if [[ "$url" == 'https://api.vercel.com/v6/deployments/dpl_frontendnew/files/outputs?file=build-config.json&teamId=team_frontendtest' ]]; then
+  [[ "$method" == GET && "$auth" == "Authorization: Bearer ${VERCEL_TOKEN:-}" ]] || exit 97
+  mode=correct
+  [[ ! -f "$root/proof-mode" ]] || mode=$(<"$root/proof-mode")
+  case "$mode" in
+    missing) write_response '{}' 404 ;;
+    unauthorized) write_response '{}' 401 ;;
+    forbidden) write_response '{}' 403 ;;
+    redirect) write_response '<html>Protected</html>' 302 ;;
+    wrong-status) write_response "$(cat "$root/build-config.json")" 201 ;;
+    transport-failure) exit 28 ;;
+    wrong-auth) write_response "$(jq '.auth_url="https://auth-dev.rayer.idv.tw"' "$root/build-config.json")" 200 ;;
+    wrong-api) write_response "$(jq '.api_url="https://wrong.example"' "$root/build-config.json")" 200 ;;
+    plain) write_response "$(cat "$root/build-config.json")" 200 ;;
+    *)
+      python3 - "$root/build-config.json" "$mode" > "$output" <<'PYFIXTURE'
+import pathlib, sys
+body = pathlib.Path(sys.argv[1]).read_bytes()
+mode = sys.argv[2]
+if mode == 'wrong-schema': body = body.replace(b'"schema_version":1', b'"schema_version":"1"')
+if mode == 'duplicate-json': body = body.replace(b'{', b'{"schema_version":1,', 1)
+if mode == 'extra-json': body += b'{}'
+part = b'Content-Type: application/json\r\n\r\n' + body + b'\r\n'
+if mode == 'nonjson': part = part.replace(body, b'<html>Protected</html>')
+if mode == 'wrong-mime': part = part.replace(b'application/json', b'text/html')
+if mode == 'oversize': part += b' ' * 8193
+boundary = b'fixture-provider-output'
+response = b'--' + boundary + b'\r\n' + part + b'\r\n--' + boundary + b'--\r\n'
+if mode == 'malformed': response = response[:-8]
+if mode == 'multiple': response = response.replace(b'--' + boundary + b'--', b'--' + boundary + b'\r\n' + part + b'\r\n--' + boundary + b'--')
+if mode == 'extra': response += b'unexpected'
+sys.stdout.buffer.write(response)
+PYFIXTURE
+      printf 200 ;;
+  esac
+  exit 0
 fi
 
 if [[ "$url" == *'/v9/projects/'* ]]; then

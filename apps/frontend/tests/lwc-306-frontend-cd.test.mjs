@@ -5,6 +5,7 @@ import { tmpdir } from 'node:os';
 import { execFile } from 'node:child_process';
 import { promisify } from 'node:util';
 import { test } from 'node:test';
+import { createHash } from 'node:crypto';
 
 const execFileAsync = promisify(execFile);
 const repoRoot = new URL('../../..', import.meta.url).pathname.replace(/\/$/, '');
@@ -33,6 +34,11 @@ async function setup(environment = 'development', scenario = 'success') {
   const aliases = production ? ['wiki.rayer.idv.tw', 'llm-wiki-frontend.vercel.app'] : ['wiki.dev.rayer.idv.tw'];
   const projectName = production ? 'llm-wiki-frontend' : 'llm-wiki-frontend-dev';
   await writeFile(join(root, 'scenario'), scenario);
+  await writeFile(join(root, 'build-config.json'), JSON.stringify({
+    schema_version: 1,
+    api_url: production ? 'https://bff.example' : 'https://bff.dev.example',
+    auth_url: production ? 'https://auth.example' : 'https://auth.dev.example',
+  }));
   await writeFile(join(root, 'aliases.json'), JSON.stringify(Object.fromEntries(aliases.map((alias, index) => [alias, scenario === 'already-converged' ? 'dpl_frontendnew' : `dpl_old${index}`]))));
   await writeFile(join(root, 'project.json'), JSON.stringify({
     id: 'prj_frontendtest', name: projectName, accountId: 'team_frontendtest',
@@ -144,6 +150,59 @@ test('reuses a live-shaped existing candidate before any build mutation', async 
   assert.equal((await json(join(fixture.artifactDir, 'frontend-deployment.json'))).deployment_id, 'dpl_frontendnew');
   assert.equal((await json(join(fixture.artifactDir, 'journal.json'))).components.frontend.state, 'accepted');
 });
+
+for (const proof of ['missing', 'wrong-auth', 'wrong-api', 'unauthorized', 'forbidden', 'redirect', 'malformed', 'multiple', 'nonjson', 'wrong-mime', 'extra', 'oversize', 'wrong-status', 'transport-failure', 'wrong-schema', 'duplicate-json', 'extra-json']) {
+  test(`LWC-318 exact-SHA reuse rejects ${proof} build proof before alias writes`, async () => {
+    const fixture = await setup('development', 'existing-live-candidate');
+    await writeFile(join(fixture.root, 'proof-mode'), proof);
+    assert.equal((await run(fixture, 'freeze')).code, undefined);
+    const result = await run(fixture, 'mutate');
+    assert.notEqual(result.code, undefined);
+    assert.equal((await lines(join(fixture.root, 'alias-post-calls'))).length, 0);
+    assert.equal((await lines(join(fixture.root, 'cli-calls'))).length, 0);
+  });
+}
+
+test('LWC-318 protected provider output verified reuse binds observed config and hash to receipt and rechecks it', async () => {
+  const fixture = await setup('development', 'existing-live-candidate');
+  assert.equal((await run(fixture, 'freeze')).code, undefined);
+  assert.equal((await run(fixture, 'mutate')).code, undefined);
+  const receipt = await json(join(fixture.artifactDir, 'frontend-deployment.json'));
+  assert.equal(receipt.source_sha, sourceSha);
+  assert.equal(receipt.target, 'preview');
+  assert.deepEqual(receipt.build_config, await json(join(fixture.root, 'build-config.json')));
+  assert.match(receipt.build_config_sha256, /^[a-f0-9]{64}$/);
+  assert.equal(receipt.build_config_sha256, createHash('sha256').update(await readFile(join(fixture.root, 'build-config.json'))).digest('hex'));
+  assert.equal(receipt.build_config_transport, 'vercel-deployment-output-v6');
+  const proofCalls = (await lines(join(fixture.root, 'curl-calls'))).filter((url) => url.includes('build-config.json'));
+  assert.deepEqual(proofCalls, ['https://api.vercel.com/v6/deployments/dpl_frontendnew/files/outputs?file=build-config.json&teamId=team_frontendtest']);
+  await writeFile(join(fixture.root, 'proof-mode'), 'plain');
+  assert.equal((await run(fixture, 'reconcile')).code, undefined);
+  await writeFile(join(fixture.root, 'proof-mode'), 'wrong-auth');
+  assert.notEqual((await run(fixture, 'reconcile')).code, undefined);
+});
+
+test('LWC-318 freshly created deployment with wrong effective Auth fails before alias writes', async () => {
+  const fixture = await setup();
+  await writeFile(join(fixture.root, 'proof-mode'), 'wrong-auth');
+  assert.equal((await run(fixture, 'freeze')).code, undefined);
+  assert.notEqual((await run(fixture, 'mutate')).code, undefined);
+  assert.equal((await lines(join(fixture.root, 'cli-calls'))).filter((line) => line.startsWith('vercel deploy ')).length, 1);
+  assert.equal((await lines(join(fixture.root, 'alias-post-calls'))).length, 0);
+});
+
+for (const field of ['source_sha', 'target', 'build_config_sha256', 'build_config_transport', 'deployment_id', 'deployment_url', 'build_config']) {
+  test(`LWC-318 reconciliation rejects changed receipt ${field}`, async () => {
+    const fixture = await setup('development', 'existing-live-candidate');
+    assert.equal((await run(fixture, 'freeze')).code, undefined);
+    assert.equal((await run(fixture, 'mutate')).code, undefined);
+    const path = join(fixture.artifactDir, 'frontend-deployment.json');
+    await writeFile(path, JSON.stringify({ ...await json(path), [field]: 'wrong' }));
+    await resetEvents(fixture);
+    assert.notEqual((await run(fixture, 'reconcile')).code, undefined);
+    assert.equal((await lines(join(fixture.root, 'provider-events'))).includes('alias'), false);
+  });
+}
 
 test('production already-converged candidate performs no provider write', async () => {
   const fixture = await setup('production', 'already-converged');
@@ -353,3 +412,18 @@ test('shared frontend path is REST-only and does not use the invalid npm build s
   assert.doesNotMatch(source, /npm run build/);
   assert.doesNotMatch(source, /vercel alias set/);
 });
+
+for (const [name, value] of [
+  ['PROOF_ID', 'dpl_bad/other?file=secret'],
+  ['VERCEL_TEAM_ID', 'team_bad&file=secret'],
+  ['VERCEL_PROJECT_ID', 'prj_bad/other'],
+]) {
+  test(`LWC-318 invalid ${name} rejects output request before HTTP`, async () => {
+    const fixture = await setup();
+    const result = await execFileAsync('bash', ['-c',
+      'source "$ROOT/deploy/components/frontend.sh" help >/dev/null; frontend_verify_build_config "$PROOF_ID"',
+    ], { env: { ...fixture.env, ROOT: repoRoot, PROOF_ID: 'dpl_frontendnew', [name]: value } }).catch((error) => error);
+    assert.notEqual(result.code, undefined);
+    assert.deepEqual(await lines(join(fixture.root, 'curl-calls')), []);
+  });
+}

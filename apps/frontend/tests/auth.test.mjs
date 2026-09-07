@@ -257,7 +257,7 @@ test('auth provider delegates auth persistence to the session helper', () => {
 test('auth endpoints use NEXT_PUBLIC_AUTH_URL while product APIs keep NEXT_PUBLIC_API_URL', () => {
   assert.ok(
     authCoreSource.includes(
-      "export const AUTH_URL = process.env.NEXT_PUBLIC_AUTH_URL ?? 'https://auth-dev.rayer.idv.tw';",
+      "export { AUTH_URL, API_URL } from './public-build-config.ts';",
     ),
   );
   assert.ok(authSource.includes('${AUTH_URL}${path}'));
@@ -266,6 +266,6 @@ test('auth endpoints use NEXT_PUBLIC_AUTH_URL while product APIs keep NEXT_PUBLI
   assert.ok(authSource.includes("postAuth('/api/v1/auth/register', { email, password })"));
   assert.ok(authSource.includes("postAuth('/api/v1/auth/logout')"));
   assert.ok(!authSource.includes('${API_URL}/api/v1/auth/'));
-  assert.ok(apiSource.includes('const API_URL ='));
+  assert.ok(apiSource.includes("import { API_URL } from './public-build-config.ts'"));
   assert.ok(!apiSource.includes('AUTH_URL'));
 });
