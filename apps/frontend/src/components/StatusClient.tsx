@@ -29,12 +29,15 @@ import {
 
 const LOG_PREVIEW_BYTES = 10 * 1024;
 const LOG_PREVIEW_LINES = 50;
+const STATUS_POLL_INTERVAL_MS = 5000;
+const MAX_STATUS_POLLS = 120;
 
 type StatusScope = {
   projectId: string | null;
   status: ApiStatus | null;
   loading: boolean;
   error: string;
+  pollingExhausted?: boolean;
 };
 
 export function StatusClient() {
@@ -54,12 +57,14 @@ export function StatusClient() {
   const [buildInfo, setBuildInfo] = useState<BuildInfo | null>(null);
   const [buildInfoError, setBuildInfoError] = useState('');
   const statusRequestNonce = useRef(0);
+  const retryStatusRefresh = useRef<(() => void) | null>(null);
   const logRequestNonce = useRef(0);
   const activeLogRequest = useRef<PipelineLogRequestIdentity | null>(null);
   const currentProjectId = useRef(projectId);
   const status = statusScope.projectId === projectId ? statusScope.status : null;
   const loading = statusScope.projectId === projectId ? statusScope.loading : Boolean(projectId);
   const error = statusScope.projectId === projectId ? statusScope.error : '';
+  const pollingExhausted = statusScope.projectId === projectId && statusScope.pollingExhausted;
 
   useEffect(() => {
     let cancelled = false;
@@ -80,6 +85,9 @@ export function StatusClient() {
   useEffect(() => {
     const requestNonce = ++statusRequestNonce.current;
     let cancelled = false;
+    let pollTimer: ReturnType<typeof setTimeout> | undefined;
+    let pollsRemaining = MAX_STATUS_POLLS;
+    let lastExecution: PipelineExecution | null | undefined;
     currentProjectId.current = projectId;
     // eslint-disable-next-line react-hooks/set-state-in-effect -- reset project-scoped status when the selected project changes
     setStatusScope({ projectId, status: null, loading: Boolean(projectId), error: '' });
@@ -94,30 +102,61 @@ export function StatusClient() {
       };
     }
 
-    getStatus(projectId)
-      .then((apiStatus) => {
-        if (cancelled || requestNonce !== statusRequestNonce.current || currentProjectId.current !== projectId) return;
-        setStatusScope((current) => current.projectId === projectId
-          ? { ...current, status: apiStatus }
-          : current);
-      })
-      .catch((err: Error) => {
-        if (!cancelled && requestNonce === statusRequestNonce.current && currentProjectId.current === projectId) {
+    const isCurrent = () => !cancelled && requestNonce === statusRequestNonce.current && currentProjectId.current === projectId;
+    const refreshStatus = () => {
+      // Retry transient failures too, including an initial request failure.
+      let shouldPoll = true;
+      getStatus(projectId)
+        .then((apiStatus) => {
+          if (!isCurrent()) return;
+          shouldPoll = apiStatus.lastExecution?.status === 'RUNNING';
+          if (lastExecution && (lastExecution.name !== apiStatus.lastExecution?.name || lastExecution.log_url !== apiStatus.lastExecution?.log_url)) {
+            setLogState(initialPipelineLogState(projectId));
+            setShowFullLog(false);
+            activeLogRequest.current = null;
+            logRequestNonce.current += 1;
+          }
+          lastExecution = apiStatus.lastExecution;
           setStatusScope((current) => current.projectId === projectId
-            ? { ...current, error: err.message }
+            ? { ...current, status: apiStatus, error: '' }
             : current);
-        }
-      })
-      .finally(() => {
-        if (!cancelled && requestNonce === statusRequestNonce.current && currentProjectId.current === projectId) {
-          setStatusScope((current) => current.projectId === projectId
-            ? { ...current, loading: false }
-            : current);
-        }
-      });
+        })
+        .catch((err: Error) => {
+          if (isCurrent()) {
+            setStatusScope((current) => current.projectId === projectId
+              ? { ...current, error: err.message }
+              : current);
+          }
+        })
+        .finally(() => {
+          if (isCurrent()) {
+            setStatusScope((current) => current.projectId === projectId
+              ? { ...current, loading: false }
+              : current);
+            // Schedule after settlement so slow requests cannot overlap or pile up.
+            if (shouldPoll && pollsRemaining > 0) {
+              pollsRemaining -= 1;
+              pollTimer = setTimeout(refreshStatus, STATUS_POLL_INTERVAL_MS);
+            } else if (shouldPoll) {
+              setStatusScope((current) => current.projectId === projectId
+                ? { ...current, pollingExhausted: true }
+                : current);
+              retryStatusRefresh.current = () => {
+                retryStatusRefresh.current = null;
+                pollsRemaining = MAX_STATUS_POLLS;
+                setStatusScope((current) => ({ ...current, pollingExhausted: false }));
+                refreshStatus();
+              };
+            }
+          }
+        });
+    };
+    refreshStatus();
 
     return () => {
       cancelled = true;
+      clearTimeout(pollTimer);
+      retryStatusRefresh.current = null;
       if (currentProjectId.current === projectId) currentProjectId.current = null;
     };
   }, [projectId]);
@@ -163,6 +202,14 @@ export function StatusClient() {
 
       {loading ? <LoadingState label="Loading status" /> : null}
       {error ? <ErrorState message={error} /> : null}
+      {pollingExhausted ? (
+        <div role="status" className="space-y-2 text-sm text-amber-300">
+          <p>Automatic status refresh paused after repeated checks. The displayed status may be out of date.</p>
+          <button type="button" className="font-medium underline" onClick={() => retryStatusRefresh.current?.()}>
+            Retry status refresh
+          </button>
+        </div>
+      ) : null}
 
       {status ? (
         <>

@@ -110,7 +110,223 @@ beforeEach(() => {
 
 afterEach(() => {
   cleanup();
-  vi.clearAllMocks();
+  vi.useRealTimers();
+  vi.resetAllMocks();
+});
+
+describe('StatusClient polling', () => {
+  beforeEach(() => {
+    vi.useFakeTimers();
+  });
+
+  it('refreshes RUNNING/pending to SUCCEEDED with terminal counts and lazy log availability without reload', async () => {
+    mocks.getStatus
+      .mockResolvedValueOnce(status({
+        lastExecution: execution({ name: 'olw-pipeline-dev-fj256', status: 'RUNNING', log_state: 'pending' }),
+      }))
+      .mockResolvedValue(status({
+        sourcesCount: 1,
+        conceptsCount: 4,
+        rawCount: 1,
+        lastExecution: execution({ name: 'olw-pipeline-dev-fj256', status: 'SUCCEEDED' }),
+      }));
+
+    await act(async () => { render(<StatusClient />); });
+    expect(screen.getByText('RUNNING')).not.toBeNull();
+    expect(screen.getByText('Pipeline log is still pending.')).not.toBeNull();
+    expect(screen.queryByRole('button', { name: 'Open pipeline log' })).toBeNull();
+    expect(mocks.getPipelineLog).not.toHaveBeenCalled();
+
+    await act(async () => { await vi.advanceTimersByTimeAsync(5000); });
+
+    expect(mocks.getStatus).toHaveBeenCalledTimes(2);
+    expect(screen.getByText('SUCCEEDED')).not.toBeNull();
+    for (const [label, count] of [['Sources', '1'], ['Concepts', '4'], ['Raw', '1']]) {
+      expect(screen.getByText(label).nextElementSibling?.textContent).toBe(count);
+    }
+    expect(screen.queryByText('Pipeline log is still pending.')).toBeNull();
+    expect(mocks.getPipelineLog).not.toHaveBeenCalled();
+    await act(async () => { fireEvent.click(screen.getByRole('button', { name: 'Open pipeline log' })); });
+    expect(screen.getByText('project-a log')).not.toBeNull();
+    expect(mocks.getPipelineLog).toHaveBeenCalledExactlyOnceWith('https://logs.example/project-a', 'project-a');
+
+    await act(async () => { await vi.advanceTimersByTimeAsync(60000); });
+    expect(mocks.getStatus).toHaveBeenCalledTimes(2);
+    expect(mocks.getPipelineLog).toHaveBeenCalledTimes(1);
+    expect(vi.getTimerCount()).toBe(0);
+  });
+
+  it('waits five seconds after each response and never overlaps slow status requests', async () => {
+    const initial = deferred<ReturnType<typeof status>>();
+    const poll = deferred<ReturnType<typeof status>>();
+    mocks.getStatus.mockReturnValueOnce(initial.promise).mockReturnValueOnce(poll.promise);
+    await act(async () => { render(<StatusClient />); });
+    await act(async () => { await vi.advanceTimersByTimeAsync(30000); });
+    expect(mocks.getStatus).toHaveBeenCalledTimes(1);
+
+    await act(async () => { initial.resolve(status({ lastExecution: execution({ status: 'RUNNING' }) })); });
+    await act(async () => { await vi.advanceTimersByTimeAsync(4999); });
+    expect(mocks.getStatus).toHaveBeenCalledTimes(1);
+    await act(async () => { await vi.advanceTimersByTimeAsync(1); });
+    expect(mocks.getStatus).toHaveBeenCalledTimes(2);
+    expect(screen.queryByText('Loading status...')).toBeNull();
+    await act(async () => { await vi.advanceTimersByTimeAsync(30000); });
+    expect(mocks.getStatus).toHaveBeenCalledTimes(2);
+
+    await act(async () => { poll.resolve(status({ lastExecution: execution({ status: 'RUNNING' }) })); });
+    await act(async () => { await vi.advanceTimersByTimeAsync(4999); });
+    expect(mocks.getStatus).toHaveBeenCalledTimes(2);
+    await act(async () => { await vi.advanceTimersByTimeAsync(1); });
+    expect(mocks.getStatus).toHaveBeenCalledTimes(3);
+    expect(mocks.getStatus.mock.calls).toEqual([['project-a'], ['project-a'], ['project-a']]);
+  });
+
+  it('recovers initial and active refresh errors, retaining counts and clearing the error on success', async () => {
+    mocks.getStatus
+      .mockRejectedValueOnce(new Error('Initial status failed (503)'))
+      .mockResolvedValueOnce(status({ lastExecution: execution({ status: 'RUNNING', log_state: 'pending' }) }))
+      .mockRejectedValueOnce(new Error('Status refresh failed (503)'))
+      .mockResolvedValueOnce(status({ sourcesCount: 44 }));
+    await act(async () => { render(<StatusClient />); });
+    expect(screen.getByText('Initial status failed (503)')).not.toBeNull();
+    expect(screen.queryByText('Loading status...')).toBeNull();
+
+    await act(async () => { await vi.advanceTimersByTimeAsync(5000); });
+    expect(screen.queryByText('Initial status failed (503)')).toBeNull();
+    expect(screen.getByText('RUNNING')).not.toBeNull();
+    await act(async () => { await vi.advanceTimersByTimeAsync(5000); });
+    expect(screen.getByText('Status refresh failed (503)')).not.toBeNull();
+    expect(screen.getByText('11')).not.toBeNull();
+    expect(screen.getByText('RUNNING')).not.toBeNull();
+    await act(async () => { await vi.advanceTimersByTimeAsync(5000); });
+    expect(screen.queryByText('Status refresh failed (503)')).toBeNull();
+    expect(screen.getByText('44')).not.toBeNull();
+    expect(screen.getByText('FAILED')).not.toBeNull();
+    expect(vi.getTimerCount()).toBe(0);
+    expect(mocks.getPipelineLog).not.toHaveBeenCalled();
+  });
+
+  it.each(['SUCCEEDED', 'FAILED', 'CANCELLED', 'UNKNOWN', null])('does not poll an initial terminal or idle response: %s', async (executionStatus) => {
+    mocks.getStatus.mockResolvedValue(status({
+      lastExecution: executionStatus ? execution({ status: executionStatus, log_state: 'pending' }) : null,
+    }));
+    await act(async () => { render(<StatusClient />); });
+    await act(async () => { await vi.advanceTimersByTimeAsync(60000); });
+    expect(mocks.getStatus).toHaveBeenCalledTimes(1);
+    expect(vi.getTimerCount()).toBe(0);
+    expect(mocks.getPipelineLog).not.toHaveBeenCalled();
+  });
+
+  it('cancels a queued poll when switching projects', async () => {
+    mocks.getStatus.mockResolvedValueOnce(status({ lastExecution: execution({ status: 'RUNNING' }) }));
+    const view = render(<StatusClient />);
+    await act(async () => {});
+    expect(vi.getTimerCount()).toBe(1);
+    mocks.currentProject = { id: 'project-b', name: 'Project B' };
+    await act(async () => { view.rerender(<StatusClient />); });
+    await act(async () => { await vi.advanceTimersByTimeAsync(60000); });
+    expect(mocks.getStatus.mock.calls).toEqual([['project-a'], ['project-b']]);
+    expect(vi.getTimerCount()).toBe(0);
+  });
+
+  it.each(['resolve', 'reject'] as const)('ignores a late polled response after A to B to A: %s', async (outcome) => {
+    const stale = deferred<ReturnType<typeof status>>();
+    mocks.getStatus
+      .mockResolvedValueOnce(status({ lastExecution: execution({ status: 'RUNNING' }) }))
+      .mockReturnValueOnce(stale.promise)
+      .mockResolvedValueOnce(status({ sourcesCount: 222 }))
+      .mockResolvedValueOnce(status({ sourcesCount: 333 }));
+    const view = render(<StatusClient />);
+    await act(async () => {});
+    await act(async () => { await vi.advanceTimersByTimeAsync(5000); });
+    mocks.currentProject = { id: 'project-b', name: 'Project B' };
+    await act(async () => { view.rerender(<StatusClient />); });
+    mocks.currentProject = { id: 'project-a', name: 'Project A' };
+    await act(async () => { view.rerender(<StatusClient />); });
+    await act(async () => {
+      if (outcome === 'resolve') stale.resolve(status({ sourcesCount: 999, lastExecution: execution({ status: 'RUNNING' }) }));
+      else stale.reject(new Error('STALE-STATUS-ERROR'));
+    });
+    expect(screen.getByText('333')).not.toBeNull();
+    expect(screen.queryByText('999')).toBeNull();
+    expect(screen.queryByText('STALE-STATUS-ERROR')).toBeNull();
+    await act(async () => { await vi.advanceTimersByTimeAsync(60000); });
+    expect(mocks.getStatus.mock.calls).toEqual([['project-a'], ['project-a'], ['project-b'], ['project-a']]);
+    expect(vi.getTimerCount()).toBe(0);
+  });
+
+  it.each(['queued', 'resolve', 'reject'] as const)('stops polling on unmount with a %s refresh', async (outcome) => {
+    const pending = deferred<ReturnType<typeof status>>();
+    mocks.getStatus
+      .mockResolvedValueOnce(status({ lastExecution: execution({ status: 'RUNNING' }) }))
+      .mockReturnValueOnce(pending.promise);
+    const view = render(<StatusClient />);
+    await act(async () => {});
+    if (outcome !== 'queued') {
+      await act(async () => { await vi.advanceTimersByTimeAsync(5000); });
+    }
+    view.unmount();
+    await act(async () => {
+      if (outcome === 'resolve') pending.resolve(status({ lastExecution: execution({ status: 'RUNNING' }) }));
+      if (outcome === 'reject') pending.reject(new Error('UNMOUNTED-STATUS-ERROR'));
+      await vi.advanceTimersByTimeAsync(60000);
+    });
+    expect(mocks.getStatus).toHaveBeenCalledTimes(outcome === 'queued' ? 1 : 2);
+    expect(vi.getTimerCount()).toBe(0);
+    expect(view.container.textContent).toBe('');
+  });
+
+  it.each(['running', 'error'])('exposes an honest pause and explicit bounded retry after exhausting the %s budget', async (outcome) => {
+    const running = status({ lastExecution: execution({ status: 'RUNNING' }) });
+    if (outcome === 'running') mocks.getStatus.mockResolvedValue(running);
+    else mocks.getStatus.mockRejectedValue(new Error('Status unavailable (503)'));
+    await act(async () => { render(<StatusClient />); });
+    if (outcome === 'running') {
+      await act(async () => { fireEvent.click(screen.getByRole('button', { name: 'Open pipeline log' })); });
+    }
+    await act(async () => { await vi.advanceTimersByTimeAsync(120 * 5000); });
+    expect(mocks.getStatus).toHaveBeenCalledTimes(121);
+    expect(vi.getTimerCount()).toBe(0);
+    expect(screen.getByText('Automatic status refresh paused after repeated checks. The displayed status may be out of date.')).not.toBeNull();
+    await act(async () => { await vi.advanceTimersByTimeAsync(60000); });
+    expect(mocks.getStatus).toHaveBeenCalledTimes(121);
+
+    const retry = deferred<ReturnType<typeof status>>();
+    mocks.getStatus.mockReturnValueOnce(retry.promise).mockResolvedValue(status());
+    const button = screen.getByRole('button', { name: 'Retry status refresh' });
+    act(() => { fireEvent.click(button); fireEvent.click(button); });
+    expect(mocks.getStatus).toHaveBeenCalledTimes(122);
+    await act(async () => { await vi.advanceTimersByTimeAsync(60000); });
+    expect(mocks.getStatus).toHaveBeenCalledTimes(122);
+    await act(async () => { retry.resolve(running); });
+    expect(screen.queryByText('Status unavailable (503)')).toBeNull();
+    expect(screen.queryByRole('button', { name: 'Retry status refresh' })).toBeNull();
+    await act(async () => { await vi.advanceTimersByTimeAsync(5000); });
+    expect(screen.getByText('FAILED')).not.toBeNull();
+    expect(mocks.getStatus).toHaveBeenCalledTimes(123);
+    expect(vi.getTimerCount()).toBe(0);
+    expect(mocks.getPipelineLog).toHaveBeenCalledTimes(outcome === 'running' ? 1 : 0);
+    if (outcome === 'running') expect(screen.getByText('project-a log')).not.toBeNull();
+  });
+
+  it('invalidates an in-flight log when polling discovers a different execution', async () => {
+    const oldLog = deferred<string>();
+    mocks.getPipelineLog.mockReturnValueOnce(oldLog.promise).mockResolvedValueOnce('NEW-EXECUTION-LOG');
+    mocks.getStatus
+      .mockResolvedValueOnce(status({ lastExecution: execution({ status: 'RUNNING' }) }))
+      .mockResolvedValueOnce(status({ lastExecution: execution({ name: 'new-execution', log_url: 'https://logs.example/new' }) }));
+    await act(async () => { render(<StatusClient />); });
+    fireEvent.click(screen.getByRole('button', { name: 'Open pipeline log' }));
+    await act(async () => { await vi.advanceTimersByTimeAsync(5000); });
+    await act(async () => { fireEvent.click(screen.getByRole('button', { name: 'Open pipeline log' })); });
+    await act(async () => { oldLog.resolve('STALE-EXECUTION-LOG'); });
+    expect(screen.queryByText('STALE-EXECUTION-LOG')).toBeNull();
+    expect(screen.getByText('NEW-EXECUTION-LOG')).not.toBeNull();
+    expect(mocks.getPipelineLog.mock.calls).toEqual([
+      ['https://logs.example/project-a', 'project-a'],
+      ['https://logs.example/new', 'project-a'],
+    ]);
+  });
 });
 
 describe('StatusClient behavior', () => {
