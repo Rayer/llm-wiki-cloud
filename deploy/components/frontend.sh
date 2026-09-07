@@ -164,23 +164,30 @@ frontend_vercel_environment() { [[ "$ENVIRONMENT" == production ]] && printf 'pr
 frontend_deploy_target() { [[ "$ENVIRONMENT" == production ]] && printf 'production\n' || printf 'preview\n'; }
 frontend_deployment_path() { printf '%s/frontend-deployment.json\n' "$ARTIFACT_DIR"; }
 
-# Only immutable served bytes are evidence. Do not follow protection redirects,
-# send credentials, or substitute the normalized plan for missing build output.
+# Read only the validated deployment's output through the existing provider token.
+# The output-specific v6 contract is live-proven, not a stable source-file API.
 frontend_verify_build_config() {
-  local deployment_url="$1" body status
+  local deployment_id="$1" body document status
   FRONTEND_BUILD_CONFIG='{}'; FRONTEND_BUILD_CONFIG_SHA256=''
-  [[ "$(vercel_canonical_deployment_url "$deployment_url")" == "$deployment_url" ]] || return 1
+  [[ "$deployment_id" =~ ^dpl_[A-Za-z0-9]+$ && "${VERCEL_TEAM_ID:-}" =~ ^team_[A-Za-z0-9]+$ && "${VERCEL_PROJECT_ID:-}" =~ ^prj_[A-Za-z0-9]+$ ]] || return 1
   body=$(mktemp) || return 1
-  if ! status=$(curl --disable --silent --show-error --max-time 30 --connect-timeout 10 --max-filesize 4096 --proto '=https' \
-    --output "$body" --write-out '%{http_code}' "$deployment_url/build-config.json"); then rm -f "$body"; return 1; fi
-  if [[ "$status" != 200 ]] || ! strict_json < "$body" || ! jq -e \
-    --arg api "$(plan_json '.frontend.api_url')" --arg auth "$(plan_json '.frontend.auth_url')" \
-    'type == "object" and keys == ["api_url","auth_url","schema_version"] and .schema_version == 1 and .api_url == $api and .auth_url == $auth' "$body" >/dev/null; then
-    rm -f "$body"; return 1
+  document=$(mktemp) || { rm -f "$body"; return 1; }
+  # --disable must be first: no curlrc redirects, credentials, or origin overrides.
+  if ! status=$(curl --disable --silent --show-error --max-time 30 --connect-timeout 10 --max-filesize 8192 --proto '=https' \
+    --request GET --header "Authorization: Bearer ${VERCEL_TOKEN:?}" \
+    --output "$body" --write-out '%{http_code}' \
+    "https://api.vercel.com/v6/deployments/${deployment_id}/files/outputs?file=build-config.json&teamId=${VERCEL_TEAM_ID}"); then
+    rm -f "$body" "$document"; return 1
   fi
-  FRONTEND_BUILD_CONFIG=$(jq -c . "$body")
-  FRONTEND_BUILD_CONFIG_SHA256=$(shasum -a 256 "$body" | cut -d ' ' -f 1)
-  rm -f "$body"
+  if [[ "$status" != 200 ]] || ! python3 "$ROOT/deploy/components/frontend_build_config.py" < "$body" > "$document" || \
+    ! strict_json < "$document" || ! jq -e \
+    --arg api "$(plan_json '.frontend.api_url')" --arg auth "$(plan_json '.frontend.auth_url')" \
+    'type == "object" and keys == ["api_url","auth_url","schema_version"] and .schema_version == 1 and (.api_url|type) == "string" and (.auth_url|type) == "string" and .api_url == $api and .auth_url == $auth' "$document" >/dev/null; then
+    rm -f "$body" "$document"; return 1
+  fi
+  FRONTEND_BUILD_CONFIG=$(jq -c . "$document")
+  FRONTEND_BUILD_CONFIG_SHA256=$(shasum -a 256 "$document" | cut -d ' ' -f 1)
+  rm -f "$body" "$document"
   [[ "$FRONTEND_BUILD_CONFIG_SHA256" =~ ^[a-f0-9]{64}$ ]]
 }
 
@@ -189,7 +196,7 @@ frontend_write_receipt() {
   mkdir -p "$ARTIFACT_DIR"
   jq -n --arg deployment_id "$deployment_id" --arg deployment_url "$deployment_url" --arg source_sha "$SOURCE_SHA" --arg target "$target" \
     --argjson build_config "$FRONTEND_BUILD_CONFIG" --arg build_config_sha256 "$FRONTEND_BUILD_CONFIG_SHA256" \
-    '{deployment_id:$deployment_id,deployment_url:$deployment_url,source_sha:$source_sha,target:$target,build_config:$build_config,build_config_sha256:$build_config_sha256}' > "$(frontend_deployment_path)"
+    '{deployment_id:$deployment_id,deployment_url:$deployment_url,source_sha:$source_sha,target:$target,build_config:$build_config,build_config_sha256:$build_config_sha256,build_config_transport:"vercel-deployment-output-v6"}' > "$(frontend_deployment_path)"
 }
 
 vercel_canonical_deployment_url() {
@@ -328,7 +335,7 @@ frontend_mutate() {
     fi
     mutation_accepted frontend
   fi
-  if ! frontend_verify_build_config "$deployment_url"; then
+  if ! frontend_verify_build_config "$deployment_id"; then
     if (( reused )); then journal_rejected frontend; fi
     set_mutation_status frontend failed; write_component_result frontend failed '{}' deployment_build_config_unverified; return 1
   fi
@@ -363,9 +370,9 @@ frontend_reconcile() {
   deployment_url=$(jq -er '.deployment_url | select(type == "string" and startswith("https://"))' "$receipt") || { FRONTEND_READBACK_RESULT=failed; write_component_result frontend failed '{}' deployment_url_invalid; return 1; }
   observed=$(vercel_get_deployment "$deployment_id") || { write_component_result frontend unknown '{}' deployment_readback_unavailable; return 2; }
   vercel_validate_deployment "$observed" "$deployment_id" "$deployment_url" || { FRONTEND_READBACK_RESULT=failed; write_component_result frontend failed '{}' deployment_readback_mismatch; return 1; }
-  if ! frontend_verify_build_config "$deployment_url" || ! jq -e --arg sha "$SOURCE_SHA" --arg target "$(frontend_deploy_target)" \
+  if ! frontend_verify_build_config "$deployment_id" || ! jq -e --arg sha "$SOURCE_SHA" --arg target "$(frontend_deploy_target)" \
     --argjson config "$FRONTEND_BUILD_CONFIG" --arg hash "$FRONTEND_BUILD_CONFIG_SHA256" \
-    '.source_sha == $sha and .target == $target and .build_config == $config and .build_config_sha256 == $hash' "$receipt" >/dev/null; then
+    '.build_config_transport == "vercel-deployment-output-v6" and .source_sha == $sha and .target == $target and .build_config == $config and .build_config_sha256 == $hash' "$receipt" >/dev/null; then
     FRONTEND_READBACK_RESULT=failed; write_component_result frontend failed '{}' deployment_build_config_unverified; return 1
   fi
   while IFS= read -r alias; do vercel_verify_alias_target "$alias" "$deployment_id" || { FRONTEND_READBACK_RESULT="$VERCEL_READBACK_RESULT"; write_component_result frontend "$FRONTEND_READBACK_RESULT" '{}' alias_readback_mismatch; return 1; }; aliases=$(jq --arg alias "$alias" '. + [{alias:$alias,converged:true}]' <<<"$aliases"); done < <(frontend_expected_aliases)

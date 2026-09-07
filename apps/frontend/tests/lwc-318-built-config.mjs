@@ -83,8 +83,8 @@ export default function Page() {
   writeFileSync(join(root, 'scenario'), 'success');
   const wrong = override === 'https://auth-dev.rayer.idv.tw';
   writeFileSync(join(root, 'plan.json'), JSON.stringify({ normalized: { frontend: { api_url: api, auth_url: wrong ? 'https://auth.dev.rayer.idv.tw' : manifest.auth_url } } }));
-  const verification = spawnSync('bash', ['-c', 'source "$ROOT/deploy/components/frontend.sh" help >/dev/null; frontend_verify_build_config https://frontend-hash.vercel.app'], {
-    env: { ...env, ROOT: join(frontend, '../..'), FIXTURE_ROOT: root, PLAN_PATH: join(root, 'plan.json'), PATH: `${root}/bin:${process.env.PATH}` }, encoding: 'utf8',
+  const verification = spawnSync('bash', ['-c', 'source "$ROOT/deploy/components/frontend.sh" help >/dev/null; frontend_verify_build_config dpl_frontendnew'], {
+    env: { ...env, VERCEL_TOKEN: 'fixture-token', VERCEL_TEAM_ID: 'team_frontendtest', VERCEL_PROJECT_ID: 'prj_frontendtest', ROOT: join(frontend, '../..'), FIXTURE_ROOT: root, PLAN_PATH: join(root, 'plan.json'), PATH: `${root}/bin:${process.env.PATH}` }, encoding: 'utf8',
   });
   assert.equal(verification.status, wrong ? 1 : 0, verification.stderr);
   console.log(JSON.stringify({ fixture: root, observed: manifest, browser_origins_verified: true, cd_verifier_exit: verification.status }));
