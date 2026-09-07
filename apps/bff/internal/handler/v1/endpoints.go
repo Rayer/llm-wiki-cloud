@@ -1917,7 +1917,7 @@ func (h *Handler) loadSuggestedQueries(ctx context.Context, c *gin.Context) ([]s
 	// bound from one that exceeds it without falling back to an unbounded read.
 	data, err := reader.ReadFileLimited(ctx, suggestedqueries.Path, suggestedqueries.MaxArtifactBytes+1)
 	if err != nil {
-		if errors.Is(err, storage.ErrObjectNotExist) {
+		if errors.Is(err, store.ErrObjectNotExist) || errors.Is(err, storage.ErrObjectNotExist) {
 			return []string{}, nil
 		} else {
 			return nil, err
