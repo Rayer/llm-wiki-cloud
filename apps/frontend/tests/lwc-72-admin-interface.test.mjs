@@ -21,7 +21,7 @@ test('shell explicitly allows admin route content without a selected project', a
 
 test('admin route renders AdminClient', async () => {
   const page = await readFile(
-    new URL('../src/app/admin/page.tsx', import.meta.url),
+    new URL('../src/app/(workspace)/admin/page.tsx', import.meta.url),
     'utf8',
   );
 

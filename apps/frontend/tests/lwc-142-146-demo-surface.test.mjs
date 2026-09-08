@@ -38,7 +38,7 @@ test('home latest entry cards omit the blurb when no description exists', async 
 
 test('concept route remains but user-facing concept copy becomes entries', async () => {
   const [conceptsPage, homeClient, entryCard, detailClient, zhTW, en] = await Promise.all([
-    readFile(new URL('../src/app/concepts/page.tsx', import.meta.url), 'utf8'),
+    readFile(new URL('../src/app/(workspace)/concepts/page.tsx', import.meta.url), 'utf8'),
     readFile(new URL('../src/components/HomeClient.tsx', import.meta.url), 'utf8'),
     readFile(new URL('../src/components/EntryCard.tsx', import.meta.url), 'utf8'),
     readFile(new URL('../src/components/DetailClient.tsx', import.meta.url), 'utf8'),

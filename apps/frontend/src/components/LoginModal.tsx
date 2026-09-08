@@ -7,6 +7,7 @@ import { useLocale } from '@/lib/i18n';
 import { RegisterModal } from './RegisterModal';
 import { useWorkspace } from './WorkspaceProvider';
 import { startGoogleLogin } from '@/lib/google-auth';
+import { LegalLinks } from './LegalLinks';
 
 export function LoginModal() {
   const { loginOpen, signIn, signInAsDemo } = useWorkspace();
@@ -231,6 +232,9 @@ export function LoginModal() {
               </button>
             ) : null}
           </form>
+          <div className="mt-6 border-t border-white/10 pt-4">
+            <LegalLinks />
+          </div>
         </div>
       </div>
       {registrationEnabled === true && registerOpen && (

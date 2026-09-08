@@ -76,6 +76,22 @@ afterEach(() => {
   vi.clearAllMocks();
 });
 
+it.each(['pending', 'failed'] as const)('keeps public legal links accessible when unauthenticated public config is %s', async (state) => {
+  mocks.getPublicConfig.mockImplementation(() => state === 'pending'
+    ? new Promise(() => {})
+    : Promise.reject(new Error('config unavailable')));
+  render(<LoginModal />);
+  await waitFor(() => expect(mocks.getPublicConfig).toHaveBeenCalled());
+  for (const [name, href] of [['隱私權政策', '/privacy'], ['服務條款', '/terms']]) {
+    const link = screen.getByRole('link', { name });
+    expect(link.getAttribute('href')).toBe(href);
+    expect(link.closest('[inert], [aria-hidden="true"]')).toBeNull();
+    link.focus();
+    expect(document.activeElement).toBe(link);
+  }
+  expect(mocks.signIn).not.toHaveBeenCalled();
+});
+
 describe('LWC-304 modern login and knowledge home', () => {
   it('renders the split editorial LoginModal and submits named credentials', async () => {
     render(<LoginModal />);
