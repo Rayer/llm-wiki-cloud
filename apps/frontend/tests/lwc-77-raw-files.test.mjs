@@ -15,7 +15,7 @@ test('shell keeps Raw Files off primary navigation while retaining the compatibi
 
 test('raw page renders the RawClient route component', async () => {
   const page = await readFile(
-    new URL('../src/app/raw/page.tsx', import.meta.url),
+    new URL('../src/app/(workspace)/raw/page.tsx', import.meta.url),
     'utf8',
   );
 

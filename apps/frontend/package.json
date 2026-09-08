@@ -11,7 +11,8 @@
     "typecheck": "tsc --noEmit",
     "test": "npm run test:node && npm run test:component",
     "test:node": "node --experimental-strip-types --test tests/*.test.mjs",
-    "test:component": "NODE_ENV=test vitest run"
+    "test:component": "NODE_ENV=test vitest run",
+    "test:public-built": "node tests/public-legal-built.mjs"
   },
   "dependencies": {
     "lucide-react": "^1.23.0",

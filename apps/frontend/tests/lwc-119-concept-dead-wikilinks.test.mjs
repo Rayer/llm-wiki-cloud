@@ -27,7 +27,7 @@ test('DetailClient fetches concept slugs for source and concept entry types', as
 
 test('concept detail page passes entryType concept into DetailClient', async () => {
   const conceptPage = await readFile(
-    new URL('../src/app/concepts/[slug]/page.tsx', import.meta.url),
+    new URL('../src/app/(workspace)/concepts/[slug]/page.tsx', import.meta.url),
     'utf8',
   );
 
