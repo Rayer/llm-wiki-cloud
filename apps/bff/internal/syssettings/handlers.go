@@ -15,7 +15,9 @@ import (
 )
 
 type patchSettingsRequest struct {
-	RegistrationEnabled *bool `json:"registration_enabled"`
+	RegistrationEnabled       *bool `json:"registration_enabled"`
+	EmailRegistrationEnabled  *bool `json:"email_registration_enabled"`
+	GoogleRegistrationEnabled *bool `json:"google_registration_enabled"`
 }
 
 type publishAnnouncementRequest struct {
@@ -32,6 +34,16 @@ func bindStrictJSONBody(c *gin.Context, req any) error {
 	}
 	if len(bytes.TrimSpace(body)) == 0 || bytes.TrimSpace(body)[0] != '{' {
 		return fmt.Errorf("request must be a JSON object")
+	}
+	// A supplied null is invalid, not an omitted setting in a partial update.
+	var fields map[string]json.RawMessage
+	if err := json.Unmarshal(body, &fields); err != nil {
+		return err
+	}
+	for _, value := range fields {
+		if bytes.Equal(bytes.TrimSpace(value), []byte("null")) {
+			return fmt.Errorf("null settings are not allowed")
+		}
 	}
 	decoder := json.NewDecoder(bytes.NewReader(body))
 	decoder.DisallowUnknownFields()
@@ -51,7 +63,7 @@ func bindStrictJSONBody(c *gin.Context, req any) error {
 // PublicConfigHandler serves GET /api/v1/public/config without auth.
 //
 //	@Summary		Public runtime config
-//	@Description	Returns the registration flag and currently published announcement Markdown.
+//	@Description	Returns method-specific new-account registration capabilities and currently published announcement Markdown.
 //	@Tags			public
 //	@Produce		json
 //	@Success		200	{object}	PublicSettings
@@ -64,9 +76,11 @@ func PublicConfigHandler(gate RegistrationGate) gin.HandlerFunc {
 			return
 		}
 		c.JSON(http.StatusOK, PublicSettings{
-			RegistrationEnabled:  settings.RegistrationEnabled,
-			AnnouncementMarkdown: settings.AnnouncementMarkdown,
-			AnnouncementDigest:   announcementDigest(settings.AnnouncementMarkdown),
+			RegistrationEnabled:       settings.RegistrationEnabled,
+			EmailRegistrationEnabled:  settings.EmailRegistrationEnabled,
+			GoogleRegistrationEnabled: settings.GoogleRegistrationEnabled,
+			AnnouncementMarkdown:      settings.AnnouncementMarkdown,
+			AnnouncementDigest:        announcementDigest(settings.AnnouncementMarkdown),
 		})
 	}
 }
@@ -117,7 +131,7 @@ func AdminGetSettingsHandler(gate RegistrationGate) gin.HandlerFunc {
 func AdminPatchSettingsHandler(gate RegistrationGate) gin.HandlerFunc {
 	return func(c *gin.Context) {
 		var req patchSettingsRequest
-		if err := bindStrictJSONBody(c, &req); err != nil || req.RegistrationEnabled == nil {
+		if err := bindStrictJSONBody(c, &req); err != nil || (req.RegistrationEnabled == nil && req.EmailRegistrationEnabled == nil && req.GoogleRegistrationEnabled == nil) || (req.RegistrationEnabled != nil && (req.EmailRegistrationEnabled != nil || req.GoogleRegistrationEnabled != nil)) {
 			c.JSON(http.StatusBadRequest, gin.H{"error": "valid settings are required"})
 			return
 		}
@@ -125,6 +139,8 @@ func AdminPatchSettingsHandler(gate RegistrationGate) gin.HandlerFunc {
 		var err error
 		if req.RegistrationEnabled != nil {
 			settings, err = gate.SetRegistrationEnabled(c.Request.Context(), *req.RegistrationEnabled)
+		} else {
+			settings, err = gate.SetRegistrationMethods(c.Request.Context(), req.EmailRegistrationEnabled, req.GoogleRegistrationEnabled)
 		}
 		if err != nil {
 			if strings.Contains(err.Error(), "exceeds") || strings.Contains(err.Error(), "valid UTF-8") {

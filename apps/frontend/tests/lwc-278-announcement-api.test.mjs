@@ -13,6 +13,8 @@ test('public config preserves announcement markdown and fails safe when unavaila
   globalThis.fetch = async () => Response.json({ registration_enabled: true, announcement_markdown: '# Live', announcement_digest: `sha256:${'a'.repeat(64)}` });
   assert.deepEqual(await getPublicConfig({ refresh: true }), {
     registration_enabled: true,
+    email_registration_enabled: true,
+    google_registration_enabled: true,
     announcement_markdown: '# Live',
     announcement_digest: `sha256:${'a'.repeat(64)}`,
   });
@@ -20,6 +22,8 @@ test('public config preserves announcement markdown and fails safe when unavaila
   globalThis.fetch = async () => Response.json({ registration_enabled: true, announcement_markdown: '# Live', announcement_digest: 'sha256:not-valid' });
   assert.deepEqual(await getPublicConfig({ refresh: true }), {
     registration_enabled: true,
+    email_registration_enabled: true,
+    google_registration_enabled: true,
     announcement_markdown: '# Live',
     announcement_digest: null,
   });
@@ -27,6 +31,8 @@ test('public config preserves announcement markdown and fails safe when unavaila
   globalThis.fetch = async () => new Response('unavailable', { status: 503 });
   assert.deepEqual(await getPublicConfig({ refresh: true }), {
     registration_enabled: false,
+    email_registration_enabled: false,
+    google_registration_enabled: false,
   });
 });
 
@@ -45,6 +51,8 @@ test('admin settings and publish use the direct-publish announcement schema', as
 
   assert.deepEqual(await getAdminSettings(), {
     registration_enabled: true,
+    email_registration_enabled: true,
+    google_registration_enabled: true,
     announcement_markdown: '# Published',
   });
   await publishAnnouncement('# New announcement');

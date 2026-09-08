@@ -1289,7 +1289,7 @@ const docTemplate = `{
         },
         "/api/v1/public/config": {
             "get": {
-                "description": "Returns the registration flag and currently published announcement Markdown.",
+                "description": "Returns method-specific new-account registration capabilities and currently published announcement Markdown.",
                 "produces": [
                     "application/json"
                 ],
@@ -2522,6 +2522,12 @@ const docTemplate = `{
                 "announcement_markdown": {
                     "type": "string"
                 },
+                "email_registration_enabled": {
+                    "type": "boolean"
+                },
+                "google_registration_enabled": {
+                    "type": "boolean"
+                },
                 "registration_enabled": {
                     "type": "boolean"
                 }
@@ -2533,6 +2539,12 @@ const docTemplate = `{
                 "announcement_markdown": {
                     "type": "string"
                 },
+                "email_registration_enabled": {
+                    "type": "boolean"
+                },
+                "google_registration_enabled": {
+                    "type": "boolean"
+                },
                 "registration_enabled": {
                     "type": "boolean"
                 }
@@ -2541,6 +2553,12 @@ const docTemplate = `{
         "syssettings.patchSettingsRequest": {
             "type": "object",
             "properties": {
+                "email_registration_enabled": {
+                    "type": "boolean"
+                },
+                "google_registration_enabled": {
+                    "type": "boolean"
+                },
                 "registration_enabled": {
                     "type": "boolean"
                 }

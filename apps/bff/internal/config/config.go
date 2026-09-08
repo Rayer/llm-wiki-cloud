@@ -216,9 +216,8 @@ func Load(path string) (Config, error) {
 
 	var registrationEnabled *bool
 	if raw := strings.TrimSpace(v.GetString("registration_enabled")); raw != "" {
-		if enabled, ok := parseBoolEnv(raw); ok {
-			registrationEnabled = &enabled
-		}
+		enabled, _ := parseBoolEnv(raw) // Invalid explicit configuration must not reopen signup.
+		registrationEnabled = &enabled
 	}
 
 	authServiceURL := strings.TrimSpace(v.GetString("auth_service_url"))

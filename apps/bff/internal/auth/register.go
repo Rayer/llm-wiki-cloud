@@ -31,7 +31,7 @@ type RegisterResponse struct {
 
 // RegistrationGate reports whether self-serve registration is currently allowed.
 type RegistrationGate interface {
-	IsRegistrationEnabled(ctx context.Context) (bool, error)
+	IsRegistrationEnabled(ctx context.Context, method string) (bool, error)
 }
 
 // RegisterHandler creates a user and its default project when registration is enabled.
@@ -66,7 +66,7 @@ type PasswordRegistrationRepository interface {
 func RegisterHandlerWithRepository(repo PasswordRegistrationRepository, jwtSecret string, gate RegistrationGate) gin.HandlerFunc {
 	return func(c *gin.Context) {
 		if gate != nil {
-			enabled, err := gate.IsRegistrationEnabled(c.Request.Context())
+			enabled, err := gate.IsRegistrationEnabled(c.Request.Context(), "email")
 			if err != nil {
 				log.Printf("[register] registration gate check failed: %v", err)
 				c.JSON(http.StatusInternalServerError, gin.H{"error": "internal error"})

@@ -8,6 +8,7 @@ import (
 	"encoding/base64"
 	"encoding/json"
 	"errors"
+	"fmt"
 	"io"
 	"net/http"
 	"net/http/httptest"
@@ -601,7 +602,8 @@ func TestGoogleOAuthLinkStartCallbackCancelAndConfirmWithFreshProof(t *testing.T
 		t.Fatal(err)
 	}
 	t.Cleanup(func() { cleanupIdentityFixtures(t, client, userID, "", email) })
-	service := oauthEmulatorService(t, client, repo, &fakeRegistrationGate{enabled: true}, server)
+	gate := &methodRegistrationGate{err: fmt.Errorf("settings unavailable")}
+	service := oauthEmulatorService(t, client, repo, gate, server)
 	service.now = func() time.Time { return time.Unix(1_700_000_000, 0).UTC() }
 
 	// Link starts are same-site, authenticated, password-protected, and chooser-forced.
@@ -714,6 +716,10 @@ func TestGoogleOAuthLinkStartCallbackCancelAndConfirmWithFreshProof(t *testing.T
 	confirmRouter.ServeHTTP(replay, replayReq)
 	if replay.Code != http.StatusConflict {
 		t.Fatalf("confirmation replay status=%d body=%s", replay.Code, replay.Body.String())
+	}
+
+	if len(gate.calls) != 0 {
+		t.Fatalf("explicit linking consulted signup settings: %v", gate.calls)
 	}
 }
 

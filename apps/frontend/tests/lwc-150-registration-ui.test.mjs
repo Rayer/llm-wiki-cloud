@@ -32,7 +32,7 @@ test('getPublicConfig fetches public config without auth or project header', asy
     );
     assert.equal(requestedInit?.headers?.Authorization, undefined);
     assert.equal(requestedInit?.headers?.['X-Project-ID'], undefined);
-    assert.deepEqual(config, { registration_enabled: false });
+    assert.deepEqual(config, { registration_enabled: false, email_registration_enabled: false, google_registration_enabled: false });
   } finally {
     globalThis.fetch = originalFetch;
     clearPublicConfigCache();
@@ -77,8 +77,8 @@ test('getAdminSettings and updateAdminSettings use admin settings endpoint witho
     const settings = await getAdminSettings();
     const updated = await updateAdminSettings({ registration_enabled: false });
 
-    assert.deepEqual(settings, { registration_enabled: true });
-    assert.deepEqual(updated, { registration_enabled: false });
+    assert.deepEqual(settings, { registration_enabled: true, email_registration_enabled: true, google_registration_enabled: true });
+    assert.deepEqual(updated, { registration_enabled: false, email_registration_enabled: false, google_registration_enabled: false });
     assert.deepEqual(
       calls.map((call) => [call.url, call.init?.method, call.init?.headers?.['X-Project-ID']]),
       [
@@ -144,7 +144,8 @@ test('AdminClient wires registration toggle through admin settings API', async (
   assert.match(adminClient, /registration_enabled/);
   assert.match(adminClient, /registrationEnabled/);
   assert.match(adminClient, /type="checkbox"/);
-  assert.match(adminClient, /setRegistrationEnabled\(!registrationEnabled\)/);
+  assert.match(adminClient, /email_registration_enabled/);
+  assert.match(adminClient, /google_registration_enabled/);
   assert.match(adminClient, /clearPublicConfigCache/);
 });
 

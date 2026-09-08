@@ -518,6 +518,10 @@ definitions:
         x-nullable: true
       announcement_markdown:
         type: string
+      email_registration_enabled:
+        type: boolean
+      google_registration_enabled:
+        type: boolean
       registration_enabled:
         type: boolean
     type: object
@@ -525,11 +529,19 @@ definitions:
     properties:
       announcement_markdown:
         type: string
+      email_registration_enabled:
+        type: boolean
+      google_registration_enabled:
+        type: boolean
       registration_enabled:
         type: boolean
     type: object
   syssettings.patchSettingsRequest:
     properties:
+      email_registration_enabled:
+        type: boolean
+      google_registration_enabled:
+        type: boolean
       registration_enabled:
         type: boolean
     type: object
@@ -1430,7 +1442,7 @@ paths:
       - projects
   /api/v1/public/config:
     get:
-      description: Returns the registration flag and currently published announcement
+      description: Returns method-specific new-account registration capabilities and currently published announcement
         Markdown.
       produces:
       - application/json

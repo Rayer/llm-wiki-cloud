@@ -71,7 +71,9 @@
     "return": "返回登入"
   },
   "Admin": {
-    "registrationEnabled": "允許新使用者註冊"
+    "registrationEnabled": "允許新使用者註冊",
+    "emailRegistrationEnabled": "允許以電子郵件註冊新帳號",
+    "googleRegistrationEnabled": "允許以 Google 註冊新帳號"
   },
   "Detail": {
     "backTo": "返回 {label}",

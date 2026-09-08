@@ -19,7 +19,7 @@ type fakeRegistrationGate struct {
 	called  bool
 }
 
-func (f *fakeRegistrationGate) IsRegistrationEnabled(context.Context) (bool, error) {
+func (f *fakeRegistrationGate) IsRegistrationEnabled(context.Context, string) (bool, error) {
 	f.called = true
 	return f.enabled, f.err
 }
