@@ -30,6 +30,7 @@ import { useNavigationBlocker } from './NavigationBlocker';
 
 type Tab = 'projects' | 'users' | 'settings';
 type Notice = { tone: 'success' | 'error' | 'pending'; message: string } | null;
+const userReadbackFailure: Notice = { tone: 'error', message: 'Update succeeded, but current user state is unknown. Retry loading users before making another change.' };
 type Action =
   | { kind: 'rename-project'; project: AdminProject }
   | { kind: 'delete-project'; project: AdminProject }
@@ -90,14 +91,17 @@ export function AdminClient() {
   const loadUsers = useCallback(async () => {
     setUsersLoading(true);
     setUsersError('');
+    setNotice(null);
     try {
       setUsers(await getAdminUsers());
+      return true;
     } catch (error) {
       if (error instanceof ApiError && error.status === 403) {
         setAdminDenied(true);
-        return;
+        return false;
       }
       setUsersError(error instanceof Error ? error.message : 'Unable to load users.');
+      return false;
     } finally {
       setUsersLoading(false);
     }
@@ -194,8 +198,8 @@ export function AdminClient() {
     setActionError('');
     try {
       await updateAdminUserRole(action.user.id, role);
-      await loadUsers();
-      setNotice({ tone: 'success', message: 'User role updated.' });
+      const refreshed = await loadUsers();
+      setNotice(refreshed ? { tone: 'success', message: 'User role updated.' } : userReadbackFailure);
       setAction(null);
     } catch (error) {
       setActionError(error instanceof Error ? error.message : 'Role update failed.');
@@ -275,12 +279,12 @@ export function AdminClient() {
         }
       } else if (action.kind === 'set-user-status') {
         await updateAdminUserStatus(action.user.id, action.status);
-        await loadUsers();
-        setNotice({ tone: 'success', message: action.status === 'suspended' ? 'User suspended.' : 'User restored. They must sign in again.' });
+        const refreshed = await loadUsers();
+        setNotice(refreshed ? { tone: 'success', message: action.status === 'suspended' ? 'User suspended.' : 'User restored. They must sign in again.' } : userReadbackFailure);
       } else if (action.kind === 'delete-user') {
         await deleteAdminUser(action.user.id);
-        await loadUsers();
-        setNotice({ tone: 'success', message: 'User deleted.' });
+        const refreshed = await loadUsers();
+        setNotice(refreshed ? { tone: 'success', message: 'User deleted.' } : userReadbackFailure);
       }
       setAction(null);
     } catch (error) {
@@ -770,6 +774,7 @@ function UsersTable({
   onRetry: () => void;
   onAction: (action: Action) => void;
 }) {
+  const unknown = loading || !!error;
   return (
     <Surface variant="glass" className="overflow-hidden">
       <TableStatus
@@ -805,29 +810,29 @@ function UsersTable({
                     {user.id || '—'}
                   </td>
                   <td className="px-4 py-3">
-                    <Badge variant={user.role === 'admin' ? 'accent' : 'muted'}>{user.role}</Badge>
+                    <Badge variant={user.role === 'admin' ? 'accent' : 'muted'}>{unknown ? 'Unknown' : user.role}</Badge>
                   </td>
-                  <td className="px-4 py-3"><Badge variant={user.status === 'active' ? 'muted' : 'accent'}>{user.status}</Badge></td>
+                  <td className="px-4 py-3"><Badge variant={user.status === 'active' ? 'muted' : 'accent'}>{unknown ? 'Unknown' : user.status}</Badge></td>
                   <td className="px-4 py-3 tabular-nums text-zinc-300">{user.projectCount}</td>
                   <td className="px-4 py-3">
                     <div className="flex justify-end gap-1">
                       <IconAction
                         label="Change role"
                         icon={Pencil}
-                        disabled={pending}
+                        disabled={pending || unknown}
                         onClick={() => onAction({ kind: 'change-role', user })}
                       />
                       <IconAction
                         label={user.status === 'suspended' ? 'Restore user' : 'Suspend user'}
                         icon={user.status === 'suspended' ? RotateCcw : ShieldAlert}
-                        disabled={pending || (user.id === currentUserId && user.status !== 'suspended')}
+                        disabled={pending || unknown || (user.id === currentUserId && user.status !== 'suspended')}
                         onClick={() => onAction({ kind: 'set-user-status', user, status: user.status === 'suspended' ? 'active' : 'suspended' })}
                       />
                       <IconAction
                         label="Delete user"
                         icon={Trash2}
                         danger
-                        disabled={pending}
+                        disabled={pending || unknown}
                         onClick={() => onAction({ kind: 'delete-user', user })}
                       />
                     </div>

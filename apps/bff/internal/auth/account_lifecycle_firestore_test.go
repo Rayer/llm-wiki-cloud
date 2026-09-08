@@ -343,3 +343,105 @@ func TestJITSessionCannotCrossProvisionThenSuspendRestore(t *testing.T) {
 		t.Fatal("old JIT callback created session", err)
 	}
 }
+
+// ServerTimestamp is request time at millisecond precision, not commit order.
+// Restore must preserve the suspended snapshot's exact commit boundary, including
+// any intervening writes, and repeated restore must not move that boundary.
+func TestRestorePersistsSuspendedCommitCutoff(t *testing.T) {
+	for _, interveningWrite := range []bool{false, true} {
+		t.Run(fmt.Sprint(interveningWrite), func(t *testing.T) {
+			fs := accountEmulator(t)
+			ctx := t.Context()
+			seedAccountTestUser(t, fs, "admin", "admin")
+			seedAccountTestUser(t, fs, "owner", "user")
+			if err := UpdateAccount(ctx, fs, "admin", "owner", nil, strptr(AccountSuspended)); err != nil {
+				t.Fatal(err)
+			}
+			initial, err := fs.Collection("users").Doc("owner").Get(ctx)
+			if err != nil {
+				t.Fatal(err)
+			}
+			if interveningWrite {
+				if err := UpdateAccount(ctx, fs, "admin", "owner", strptr("admin"), nil); err != nil {
+					t.Fatal(err)
+				}
+			}
+			suspended, err := fs.Collection("users").Doc("owner").Get(ctx)
+			if err != nil {
+				t.Fatal(err)
+			}
+			if interveningWrite && !suspended.UpdateTime.After(initial.UpdateTime) {
+				t.Fatal("intervening role change did not advance suspended commit")
+			}
+			for range 2 {
+				if err := UpdateAccount(ctx, fs, "admin", "owner", nil, strptr(AccountActive)); err != nil {
+					t.Fatal(err)
+				}
+				user := accountState(t, fs, "owner")
+				if !user.AuthInvalidBefore.Equal(suspended.UpdateTime) {
+					t.Fatalf("restored cutoff=%s; suspended commit=%s", user.AuthInvalidBefore, suspended.UpdateTime)
+				}
+			}
+		})
+	}
+}
+
+func TestConcurrentRestoreAndSuspendPreserveOAuthCutoff(t *testing.T) {
+	fs := accountEmulator(t)
+	ctx := t.Context()
+	seedAccountTestUser(t, fs, "admin", "admin")
+	seedAccountTestUser(t, fs, "owner", "user")
+	for attempt := 0; attempt < 10; attempt++ {
+		if err := UpdateAccount(ctx, fs, "admin", "owner", nil, strptr(AccountSuspended)); err != nil {
+			t.Fatal(err)
+		}
+		suspended, err := fs.Collection("users").Doc("owner").Get(ctx)
+		if err != nil {
+			t.Fatal(err)
+		}
+		start := make(chan struct{})
+		results := make(chan error, 2)
+		for _, state := range []string{AccountActive, AccountSuspended} {
+			go func(state string) {
+				<-start
+				results <- UpdateAccount(ctx, fs, "admin", "owner", nil, &state)
+			}(state)
+		}
+		close(start)
+		for range 2 {
+			if err := <-results; err != nil {
+				t.Fatal(err)
+			}
+		}
+		current, err := fs.Collection("users").Doc("owner").Get(ctx)
+		if err != nil {
+			t.Fatal(err)
+		}
+		var user UserRecord
+		if err := current.DataTo(&user); err != nil {
+			t.Fatal(err)
+		}
+		if user.Active() {
+			// Restore won last: it must retain at least the original suspension
+			// commit, including when a repeated suspend wrote before restore.
+			if user.AuthInvalidBefore.Before(suspended.UpdateTime) {
+				t.Fatal("concurrent restore lost suspension commit cutoff")
+			}
+		} else {
+			// Suspend won last: the next restore must retain THIS suspension.
+			if err := UpdateAccount(ctx, fs, "admin", "owner", nil, strptr(AccountActive)); err != nil {
+				t.Fatal(err)
+			}
+			user = *accountState(t, fs, "owner")
+			if !user.AuthInvalidBefore.Equal(current.UpdateTime) {
+				t.Fatal("restore lost latest suspended commit cutoff")
+			}
+		}
+		if err := UpdateAccount(ctx, fs, "admin", "owner", nil, strptr(AccountActive)); err != nil {
+			t.Fatal(err)
+		}
+		if !accountState(t, fs, "owner").AuthInvalidBefore.Equal(user.AuthInvalidBefore) {
+			t.Fatal("repeated restore changed cutoff")
+		}
+	}
+}

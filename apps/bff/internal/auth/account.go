@@ -115,6 +115,12 @@ func UpdateAccount(ctx context.Context, fs *firestore.Client, actorID, targetID 
 				}
 				updates = append(updates, firestore.Update{Path: "auth_version", Value: target.AuthVersion + 1}, firestore.Update{Path: "auth_invalid_before", Value: firestore.ServerTimestamp})
 			}
+			if *state == AccountActive && target.Status == AccountSuspended {
+				// ServerTimestamp is coarse request time. Before becoming active,
+				// retain the suspended snapshot's precise commit boundary so an
+				// OAuth start racing suspension cannot revive after restoration.
+				updates = append(updates, firestore.Update{Path: "auth_invalid_before", Value: targetDoc.UpdateTime})
+			}
 		}
 		return tx.Update(targetRef, updates)
 	})
