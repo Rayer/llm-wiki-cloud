@@ -19,16 +19,16 @@ IMAGE = "asia-east1-docker.pkg.dev/llm-wiki-cloud/cloud-run-images/llm-wiki-bff@
 
 
 class SharedCDContractTest(unittest.TestCase):
-    def normalized(self):
+    def normalized(self, environment="development"):
         result = subprocess.run(
             [
                 "go",
                 "run",
                 "./cmd/deploy_config",
                 "--environment",
-                "development",
+                environment,
                 "--config",
-                "../../deploy/environments/development.yaml",
+                f"../../deploy/environments/{environment}.yaml",
                 "--components",
                 "bff",
             ],
@@ -191,7 +191,9 @@ class SharedCDContractTest(unittest.TestCase):
         try:
             artifacts = directory / "artifacts"
             artifacts.mkdir()
-            normalized = self.normalized()
+            normalized = self.normalized("production")
+            # Retain coverage of the legacy image-only path without auth.google.
+            normalized["auth"].pop("google", None)
             plan = directory / "plan.json"
             plan.write_text(json.dumps({"normalized": normalized}))
             service_before = REPO_ROOT / "apps/bff/scripts/fixtures/bff-service-before.json"

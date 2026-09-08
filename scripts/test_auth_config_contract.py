@@ -45,8 +45,24 @@ def revision(enabled=True):
         'status': {'imageDigest': IMAGE, 'conditions': [{'type': 'Ready', 'status': 'True'}]}}
 
 
+def production(value):
+    # Model the expected Production revision independently of the shipped plan.
+    text = json.dumps(value)
+    for old, new in (
+        ('auth.dev.rayer.idv.tw,auth-dev.rayer.idv.tw', 'auth.rayer.idv.tw'),
+        (',http://localhost:3000', ''), ('auth.dev.rayer.idv.tw', 'auth.rayer.idv.tw'),
+        ('wiki.dev.rayer.idv.tw', 'wiki.rayer.idv.tw'), ('llm-wiki-frontend-dev', 'llm-wiki-frontend'),
+        ('llm-wiki-auth-dev', 'llm-wiki-auth'), ('lwc-auth-dev@', 'lwc-auth-prod@'),
+        ('llm-wiki-cloud-dev', 'llm-wiki-cloud-prod'), ('jwt-secret-dev', 'jwt-secret-prod'),
+        ('google-oauth-client-dev', 'google-oauth-client-prod'),
+        ('123456-test.apps.googleusercontent.com', '580854833715-1b37asap0uocbdcrighjaorflvj2n94m.apps.googleusercontent.com'),
+    ):
+        text = text.replace(old, new)
+    return json.loads(text)
+
+
 class AuthConfigContractTests(unittest.TestCase):
-    def run_shell(self, candidate, enabled=True, action='auth_mutate', final_bad=False, secret_state='ENABLED'):
+    def run_shell(self, candidate, enabled=True, action='auth_mutate', final_bad=False, secret_state='ENABLED', environment='development', component='auth'):
         with tempfile.TemporaryDirectory() as tmp:
             path = Path(tmp)
             plan = {'normalized': {'environment': 'development', 'gcp': {
@@ -56,9 +72,27 @@ class AuthConfigContractTests(unittest.TestCase):
                     'firestore_database_id': 'llm-wiki-cloud-dev', 'public_domain': 'auth.dev.rayer.idv.tw',
                     'allowed_hosts': ENV['ALLOWED_HOSTS'].split(','), 'allowed_origins': ENV['ALLOWED_ORIGINS'].split(','),
                     'secret_references': {'jwt': 'jwt-secret-dev'}, 'google': GOOGLE if enabled else {'enabled': False}}}}
+            if environment == 'production':
+                import yaml
+                config = yaml.safe_load((ROOT / 'deploy/environments/production.yaml').read_text())
+                config['environment'] = environment
+                if not enabled:
+                    config['auth']['google'] = {'enabled': False}
+                plan = {'normalized': config}
+            plan['normalized']['selected_components'] = [component]
+            service = plan['normalized'][component]['service_name']
+            image = IMAGE.replace('llm-wiki-auth@', 'llm-wiki-' + component + '@')
+            revision_name = service + '-00042-test'
             (path / 'plan.json').write_text(json.dumps(plan))
             (path / 'candidate.json').write_text(json.dumps(candidate))
             (path / 'journal.json').write_text('{"components":{"auth":{}}}')
+            receipts = path / 'artifacts/dev-images'
+            receipts.mkdir(parents=True)
+            (receipts / (component + '-image-' + 'b' * 40 + '.txt')).write_text(image)
+            (receipts / 'dev-receipt.json').write_text(json.dumps({
+                'source': {'sha': 'b' * 40, 'ref': 'develop', 'workflow_path': '.github/workflows/deploy-dev.yml', 'event': 'workflow_dispatch'},
+                'config': {'environment': 'development', 'path': 'deploy/environments/development.yaml'},
+                'components': [component], 'images': {component: image}}))
             provider = path / 'gcloud'
             provider.write_text('''#!/usr/bin/env python3
 import json, os, sys
@@ -69,7 +103,7 @@ with (p/'commands').open('a') as f: f.write(json.dumps(a)+'\\n')
 if a[:3] == ['secrets','versions','describe']:
  print(os.environ['SECRET_STATE'])
 elif a[:2] == ['secrets','get-iam-policy']:
- print(json.dumps({'bindings':[{'role':'roles/secretmanager.secretAccessor','members':['serviceAccount:lwc-auth-dev@llm-wiki-cloud.iam.gserviceaccount.com']}]}))
+ print(json.dumps({'bindings':[{'role':'roles/secretmanager.secretAccessor','members':['serviceAccount:' + os.environ['ACCOUNT']]}]}))
 elif a[:3] == ['run','services','get-iam-policy']:
  print(json.dumps({'bindings':[{'role':'roles/run.invoker','members':['allUsers']}]}))
 elif a[:2] == ['secrets','describe'] or a[:3] in (['iam','service-accounts','describe'], ['firestore','databases','describe']):
@@ -80,7 +114,7 @@ elif a[:3] == ['run','services','update-traffic']:
  (p/'traffic').touch()
 elif a[:3] == ['run','services','describe']:
  active = os.environ['REVISION']
- if (p/'switch-needed').exists() and not (p/'traffic').exists(): active = 'llm-wiki-auth-dev-00043-other'
+ if (p/'switch-needed').exists() and not (p/'traffic').exists(): active = os.environ['REVISION'].replace('00042-test', '00043-other')
  print(json.dumps({'status':{'traffic':[{'revisionName':active,'percent':100}]}}))
 elif a[:3] == ['run','revisions','describe']:
  r=json.loads((p/'candidate.json').read_text())
@@ -102,12 +136,17 @@ revalidate_before_provider() { printf 'revalidate\\n' >> "$FIXTURE/events"; }
 auth_build_image() { printf '%s\\n' "$IMAGE"; }
 sleep() { :; }
 '''
-            env = {**os.environ, 'ROOT': str(ROOT), 'AUTH_SOURCE': os.environ.get('LWC318_AUTH_SOURCE', str(ROOT / 'deploy/components/auth.sh')),
+            if environment == 'production':
+                (path / 'journal.json').unlink()
+                # Exercise the actual journal state machine on the new Production path.
+                script = '\n'.join(line for line in script.splitlines() if not line.startswith(
+                    ('journal_init()', 'journal_pending()', 'mutation_accepted()', 'journal_transition()')))
+            env = {**os.environ, 'ROOT': str(ROOT), 'AUTH_SOURCE': os.environ.get('LWC318_AUTH_SOURCE', str(ROOT / ('deploy/components/' + component + '.sh'))),
                    'PATH': str(path) + ':' + os.environ['PATH'], 'PLAN_PATH': str(path / 'plan.json'),
                    'JOURNAL_PATH': str(path / 'journal.json'), 'ARTIFACT_DIR': str(path / 'artifacts'),
-                   'ROLLBACK_PATH': str(path / 'rollback.json'), 'ENVIRONMENT': 'development',
-                   'SOURCE_SHA': 'b' * 40, 'SOURCE_REF': 'develop', 'IMAGE': IMAGE,
-                   'FIXTURE': str(path), 'REVISION': REVISION, 'FINAL_BAD': str(int(final_bad)), 'SECRET_STATE': secret_state}
+                   'ROLLBACK_PATH': str(path / 'rollback.json'), 'ENVIRONMENT': environment,
+                   'SOURCE_SHA': 'b' * 40, 'SOURCE_REF': 'main' if environment == 'production' else 'develop', 'IMAGE': image,
+                   'FIXTURE': str(path), 'REVISION': revision_name, 'ACCOUNT': plan['normalized'][component]['runtime_service_account'], 'FINAL_BAD': str(int(final_bad)), 'SECRET_STATE': secret_state}
             result = subprocess.run(['bash', '-c', script + '\n' + action], env=env, text=True, capture_output=True)
             commands = [json.loads(l) for l in (path / 'commands').read_text().splitlines()] if (path / 'commands').exists() else []
             artifacts = {str(p.relative_to(path)): p.read_text() for p in path.rglob('*.json') if p.name not in ('candidate.json', 'plan.json')}

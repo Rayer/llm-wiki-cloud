@@ -4,6 +4,7 @@ set -euo pipefail
 ROOT=${ROOT:-$(cd "$(dirname "${BASH_SOURCE[0]}")/../.." && pwd)}
 # shellcheck source=deploy/components/common.sh
 source "$ROOT/deploy/components/common.sh"
+source "$ROOT/deploy/components/auth_config.sh"
 
 bff_preflight() {
   local project region account
@@ -19,6 +20,12 @@ bff_preflight() {
 bff_freeze() {
   local image
   image=$(service_image_handle bff) || die "BFF effective image handle is unavailable or mutable"
+  if auth_config_managed bff; then
+    local handle
+    handle=$(auth_config_freeze "$image" bff) || die "BFF configuration rollback handle is unavailable"
+    freeze_store bff "$handle"
+    return
+  fi
   freeze_store bff "$(jq -n --arg image "$image" '{image:$image}')"
 }
 
@@ -59,6 +66,10 @@ bff_mutate() {
   if ! jq -e '.components.bff? != null' "$JOURNAL_PATH" >/dev/null; then journal_pending bff; fi
   service=$(plan_json '.bff.service_name'); project=$(plan_json '.gcp.project_id'); region=$(plan_json '.gcp.region')
   validate_image_value bff "$image"
+  if auth_config_managed bff; then
+    auth_config_mutate "$image" bff
+    return
+  fi
   if candidate_revision=$(timeout --signal=TERM --kill-after=5s 600s gcloud run services update "$service" --project "$project" --region "$region" --image "$image" --no-traffic --format='value(status.latestCreatedRevisionName)' --quiet); then :; else deploy_status=$?; fi
   if [[ "$deploy_status" -eq 0 ]]; then
     if [[ ! "$candidate_revision" =~ ^[a-z]([-a-z0-9]*[a-z0-9])?$ ]]; then
@@ -96,6 +107,14 @@ bff_verify() {
   local image="$1" revision="${2:-}" observed readback_status
   SERVICE_READBACK=''; SERVICE_READBACK_RESULT=unknown
   if observed=$(service_image_readback bff "$image" "$revision"); then
+    if auth_config_managed bff; then
+      revision=$(jq -er '.revision' <<<"$observed") || return 1
+      if observed=$(auth_config_readback verify "$revision" "$image" "" bff); then :; else
+        readback_status=$?
+        if [[ "$readback_status" -eq 1 ]]; then SERVICE_READBACK_RESULT=failed; else SERVICE_READBACK_RESULT=unknown; fi
+        return 1
+      fi
+    fi
     SERVICE_READBACK="$observed"; SERVICE_READBACK_RESULT=success
     return 0
   else
@@ -119,6 +138,10 @@ bff_rollback() {
   local project region service image observed update_status=0 readback_status=0
   image=$(jq -er '.handles.bff.image' "$ROLLBACK_PATH") || { write_rollback_result bff failed '{}'; return 1; }
   validate_image_value bff "$image" || { write_rollback_result bff failed '{}'; return 1; }
+  if auth_config_managed bff; then
+    auth_config_rollback "$image" bff
+    return
+  fi
   project=$(plan_json '.gcp.project_id'); region=$(plan_json '.gcp.region'); service=$(plan_json '.bff.service_name')
   if observed=$(service_image_readback bff "$image"); then
     write_rollback_result bff success "$observed" verified_noop

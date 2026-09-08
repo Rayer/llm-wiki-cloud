@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""DEV Auth contract: no credential payloads are emitted or persisted."""
+"""Auth and Production BFF configuration contract: no credential payloads are emitted or persisted."""
 import hashlib
 import json
 import sys
@@ -21,8 +21,18 @@ def require(condition):
         raise ValueError("contract mismatch")
 
 
-def desired(plan):
-    require(plan['environment'] == 'development')
+def desired(plan, component='auth'):
+    require(plan['environment'] in ('development', 'production'))
+    require(component in ('auth', 'bff'))
+    if component == 'bff':
+        require(plan['environment'] == 'production')
+        bff = plan['bff']
+        return {'env': {
+            'GCP_PROJECT': plan['gcp']['project_id'], 'FIRESTORE_DATABASE_ID': bff['firestore_database_id'],
+            'ALLOWED_ORIGINS': ','.join(bff['allowed_origins']), 'AUTH_SERVICE_URL': bff['auth_service_url'],
+            'DEV_JWT': 'false',
+        }, 'secrets': {'JWT_SECRET': {'name': bff['secret_references']['jwt'], 'key': 'latest'}},
+            'service_account': bff['runtime_service_account']}
     auth = plan['auth']
     google = auth['google']
     env = dict(zip(BASE, (
@@ -81,33 +91,33 @@ def fingerprint(config):
 
 
 def main():
-    mode, path = sys.argv[1:3]
+    mode, path, component = sys.argv[1:4]
     with open(path) as stream:
         plan = json.load(stream)['normalized']
-    expected = desired(plan)
+    expected = desired(plan, component)
     if mode == 'args':
         values = expected['env']
         require(all('\n' not in v and '|' not in v for v in values.values()))
         args = ['--update-env-vars', '^|^' + '|'.join(k + '=' + v for k, v in values.items()),
                 '--update-secrets', ','.join(k + '=' + v['name'] + ':' + v['key'] for k, v in expected['secrets'].items())]
-        if not plan['auth']['google']['enabled']:
+        if component == 'auth' and not plan['auth']['google']['enabled']:
             args += ['--remove-env-vars', ','.join(GOOGLE), '--remove-secrets', 'GOOGLE_CLIENT_SECRET']
         print('\n'.join(args))
         return
     revision = json.load(sys.stdin)
-    require(revision['metadata']['name'] == sys.argv[3])
-    require(revision['status']['imageDigest'] == sys.argv[4])
-    require(revision['spec']['containers'][0]['image'] == sys.argv[4])
+    require(revision['metadata']['name'] == sys.argv[4])
+    require(revision['status']['imageDigest'] == sys.argv[5])
+    require(revision['spec']['containers'][0]['image'] == sys.argv[5])
     require(any(c['type'] == 'Ready' and c['status'] == 'True' for c in revision['status']['conditions']))
     actual = effective(revision, plan['gcp']['project_id'])
     digest = fingerprint(actual)
     if mode == 'verify':
         require(actual == expected)
     elif mode == 'rollback':
-        require(digest == sys.argv[5])
+        require(digest == sys.argv[6])
     elif mode != 'freeze':
         raise ValueError('unknown mode')
-    print(json.dumps({'image': sys.argv[4], 'revision': sys.argv[3], 'config_fingerprint': digest, 'ready': True}))
+    print(json.dumps({'image': sys.argv[5], 'revision': sys.argv[4], 'config_fingerprint': digest, 'ready': True}))
 
 
 if __name__ == '__main__':
