@@ -17,6 +17,7 @@ import {
   triggerAdminProjectPipeline,
   updateAdminSettings,
   updateAdminUserRole,
+  updateAdminUserStatus,
   type AdminProject,
   type AdminUser,
 } from '@/lib/api';
@@ -29,6 +30,7 @@ import { useNavigationBlocker } from './NavigationBlocker';
 
 type Tab = 'projects' | 'users' | 'settings';
 type Notice = { tone: 'success' | 'error' | 'pending'; message: string } | null;
+const userReadbackFailure: Notice = { tone: 'error', message: 'Update succeeded, but current user state is unknown. Retry loading users before making another change.' };
 type Action =
   | { kind: 'rename-project'; project: AdminProject }
   | { kind: 'delete-project'; project: AdminProject }
@@ -36,7 +38,8 @@ type Action =
   | { kind: 'trigger-project'; project: AdminProject }
   | { kind: 'suggest-queries-project'; project: AdminProject }
   | { kind: 'change-role'; user: AdminUser }
-  | { kind: 'delete-user'; user: AdminUser };
+  | { kind: 'delete-user'; user: AdminUser }
+  | { kind: 'set-user-status'; user: AdminUser; status: 'active' | 'suspended' };
 
 export function AdminClient() {
   const { hydrated, user } = useAuth();
@@ -88,14 +91,17 @@ export function AdminClient() {
   const loadUsers = useCallback(async () => {
     setUsersLoading(true);
     setUsersError('');
+    setNotice(null);
     try {
       setUsers(await getAdminUsers());
+      return true;
     } catch (error) {
       if (error instanceof ApiError && error.status === 403) {
         setAdminDenied(true);
-        return;
+        return false;
       }
       setUsersError(error instanceof Error ? error.message : 'Unable to load users.');
+      return false;
     } finally {
       setUsersLoading(false);
     }
@@ -187,8 +193,8 @@ export function AdminClient() {
     setActionError('');
     try {
       await updateAdminUserRole(action.user.id, role);
-      await loadUsers();
-      setNotice({ tone: 'success', message: 'User role updated.' });
+      const refreshed = await loadUsers();
+      setNotice(refreshed ? { tone: 'success', message: 'User role updated.' } : userReadbackFailure);
       setAction(null);
     } catch (error) {
       setActionError(error instanceof Error ? error.message : 'Role update failed.');
@@ -266,10 +272,14 @@ export function AdminClient() {
           }
           if (attempt === 29) setNotice({ tone: 'error', message: 'Query chips regeneration is still pending.' });
         }
+      } else if (action.kind === 'set-user-status') {
+        await updateAdminUserStatus(action.user.id, action.status);
+        const refreshed = await loadUsers();
+        setNotice(refreshed ? { tone: 'success', message: action.status === 'suspended' ? 'User suspended.' : 'User restored. They must sign in again.' } : userReadbackFailure);
       } else if (action.kind === 'delete-user') {
         await deleteAdminUser(action.user.id);
-        await loadUsers();
-        setNotice({ tone: 'success', message: 'User deleted.' });
+        const refreshed = await loadUsers();
+        setNotice(refreshed ? { tone: 'success', message: 'User deleted.' } : userReadbackFailure);
       }
       setAction(null);
     } catch (error) {
@@ -390,6 +400,7 @@ export function AdminClient() {
       ) : tab === 'users' ? (
         <UsersTable
           users={users}
+          currentUserId={user?.id}
           loading={usersLoading}
           error={usersError}
           pending={actionPending}
@@ -481,6 +492,21 @@ export function AdminClient() {
           description={`Regenerate suggested query chips only for ${action.project.name} (${action.project.id}). Does not re-run Synto or rebuild the index.`}
           submitLabel="Regenerate chips"
           pendingLabel="Triggering..."
+          pending={actionPending}
+          error={actionError}
+          onSubmit={() => void submitConfirmAction()}
+          onClose={closeAction}
+        />
+      ) : null}
+      {action?.kind === 'set-user-status' ? (
+        <ConfirmActionModal
+          title={action.status === 'suspended' ? 'Suspend user' : 'Restore user'}
+          description={action.status === 'suspended'
+            ? `Suspend ${action.user.email || action.user.id}? Access ends immediately. Data is preserved and previously admitted Pipeline work will finish.`
+            : `Restore ${action.user.email || action.user.id}? Their role and data are preserved. They must sign in again; old sessions stay invalid.`}
+          submitLabel={action.status === 'suspended' ? 'Suspend' : 'Restore'}
+          pendingLabel="Updating..."
+          danger={action.status === 'suspended'}
           pending={actionPending}
           error={actionError}
           onSubmit={() => void submitConfirmAction()}
@@ -744,6 +770,7 @@ function ProjectsTable({
 
 function UsersTable({
   users,
+  currentUserId,
   loading,
   error,
   pending,
@@ -751,12 +778,14 @@ function UsersTable({
   onAction,
 }: {
   users: AdminUser[];
+  currentUserId?: string;
   loading: boolean;
   error: string;
   pending: boolean;
   onRetry: () => void;
   onAction: (action: Action) => void;
 }) {
+  const unknown = loading || !!error;
   return (
     <Surface variant="glass" className="overflow-hidden">
       <TableStatus
@@ -773,6 +802,7 @@ function UsersTable({
               <th className="px-4 py-3 font-medium">User</th>
               <th className="px-4 py-3 font-medium">User ID</th>
               <th className="px-4 py-3 font-medium">Role</th>
+              <th className="px-4 py-3 font-medium">Status</th>
               <th className="px-4 py-3 font-medium">Project count</th>
               <th className="px-4 py-3 text-right font-medium">Actions</th>
             </tr>
@@ -791,22 +821,29 @@ function UsersTable({
                     {user.id || '—'}
                   </td>
                   <td className="px-4 py-3">
-                    <Badge variant={user.role === 'admin' ? 'accent' : 'muted'}>{user.role}</Badge>
+                    <Badge variant={user.role === 'admin' ? 'accent' : 'muted'}>{unknown ? 'Unknown' : user.role}</Badge>
                   </td>
+                  <td className="px-4 py-3"><Badge variant={user.status === 'active' ? 'muted' : 'accent'}>{unknown ? 'Unknown' : user.status}</Badge></td>
                   <td className="px-4 py-3 tabular-nums text-zinc-300">{user.projectCount}</td>
                   <td className="px-4 py-3">
                     <div className="flex justify-end gap-1">
                       <IconAction
                         label="Change role"
                         icon={Pencil}
-                        disabled={pending}
+                        disabled={pending || unknown}
                         onClick={() => onAction({ kind: 'change-role', user })}
+                      />
+                      <IconAction
+                        label={user.status === 'suspended' ? 'Restore user' : 'Suspend user'}
+                        icon={user.status === 'suspended' ? RotateCcw : ShieldAlert}
+                        disabled={pending || unknown || (user.id === currentUserId && user.status !== 'suspended')}
+                        onClick={() => onAction({ kind: 'set-user-status', user, status: user.status === 'suspended' ? 'active' : 'suspended' })}
                       />
                       <IconAction
                         label="Delete user"
                         icon={Trash2}
                         danger
-                        disabled={pending}
+                        disabled={pending || unknown}
                         onClick={() => onAction({ kind: 'delete-user', user })}
                       />
                     </div>

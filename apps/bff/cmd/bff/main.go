@@ -350,7 +350,7 @@ func newProductionRouter(
 	// Internal: pipeline worker calls this directly (no user JWT)
 	v1.POST("/pipeline/rebuild-index", hV1.RebuildIndex)
 
-	v1.Use(auth.JWTAuth(cfg))
+	v1.Use(hV1.AccountAuth(cfg))
 	{
 		v1.GET("/health", hV1.Health)
 		v1.GET("/ready", hV1.Ready)
@@ -415,7 +415,7 @@ func observabilityServiceName(kService string) string {
 
 func registerAdminRoutes(r *gin.Engine, cfg config.Config, hV1 *handlerv1.Handler, settingsStore syssettings.RegistrationGate) {
 	admin := r.Group("/api/v1/admin")
-	admin.Use(auth.JWTAuth(cfg), auth.AdminOnly())
+	admin.Use(hV1.AccountAuth(cfg), auth.AdminOnly())
 	{
 		admin.GET("/settings", syssettings.AdminGetSettingsHandler(settingsStore))
 		admin.PATCH("/settings", syssettings.AdminPatchSettingsHandler(settingsStore))

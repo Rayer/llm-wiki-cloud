@@ -725,7 +725,7 @@
                         "BearerAuth": []
                     }
                 ],
-                "description": "Updates a user's role in Firestore.",
+                "description": "Updates a user's role or active/suspended status without deleting data.",
                 "consumes": [
                     "application/json"
                 ],
@@ -745,7 +745,7 @@
                         "required": true
                     },
                     {
-                        "description": "New role (e.g. admin)",
+                        "description": "Role and/or account status (active, suspended)",
                         "name": "body",
                         "in": "body",
                         "required": true,
@@ -753,6 +753,9 @@
                             "type": "object",
                             "properties": {
                                 "role": {
+                                    "type": "string"
+                                },
+                                "status": {
                                     "type": "string"
                                 }
                             }

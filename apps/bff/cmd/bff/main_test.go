@@ -781,6 +781,13 @@ func newAdminRouteTestRouter(t *testing.T) *gin.Engine {
 
 	router := gin.New()
 	handler := handlerv1.New(nil, nil, nil, nil, nil, nil)
+	handler.SetAccountLookup(func(_ context.Context, id string) (*auth.UserRecord, error) {
+		role := "user"
+		if id == "admin-user" {
+			role = "admin"
+		}
+		return &auth.UserRecord{Role: role}, nil
+	})
 	settingsStore := &syssettings.FakeStore{Enabled: true}
 	registerAdminRoutes(router, config.Config{JWTSecret: "test-secret"}, handler, settingsStore)
 	return router

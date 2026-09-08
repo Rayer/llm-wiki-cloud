@@ -18,11 +18,12 @@ import (
 // Sub is kept at the outer level for backward compatibility (claims.Sub).
 // RegisteredClaims is embedded for standard JWT fields (exp, iat, etc.).
 type Claims struct {
-	Sub       string `json:"sub"`
-	Role      string `json:"role,omitempty"`
-	TokenType string `json:"token_type,omitempty"`
-	SessionID string `json:"sid,omitempty"`
-	TokenID   string `json:"tid,omitempty"`
+	AuthVersion int64  `json:"av,omitempty"`
+	Sub         string `json:"sub"`
+	Role        string `json:"role,omitempty"`
+	TokenType   string `json:"token_type,omitempty"`
+	SessionID   string `json:"sid,omitempty"`
+	TokenID     string `json:"tid,omitempty"`
 	jwt.RegisteredClaims
 }
 
@@ -48,11 +49,20 @@ var refreshTokenStore = struct {
 // DEV mode: if cfg.DevJWT is set AND no Authorization header is present,
 // it injects cfg.DefaultUserID into the context.
 func JWTAuth(cfg config.Config) gin.HandlerFunc {
+	return jwtAuth(cfg, nil, false)
+}
+
+// JWTAuthWithAccountLookup validates current account access on every request.
+func JWTAuthWithAccountLookup(cfg config.Config, lookup AccountLookup) gin.HandlerFunc {
+	return jwtAuth(cfg, lookup, true)
+}
+
+func jwtAuth(cfg config.Config, lookup AccountLookup, enforce bool) gin.HandlerFunc {
 	return func(c *gin.Context) {
 		authHeader := c.GetHeader("Authorization")
 
 		// DEV mode: inject user from X-User-ID header when DevJWT is configured and no auth header
-		if cfg.DevJWT && authHeader == "" {
+		if cfg.DevJWT && !enforce && authHeader == "" {
 			userID := strings.TrimSpace(c.GetHeader("X-User-ID"))
 			if !ValidPathSegment(userID) {
 				c.AbortWithStatusJSON(http.StatusUnauthorized, gin.H{"error": "invalid user ID"})
@@ -91,6 +101,18 @@ func JWTAuth(cfg config.Config) gin.HandlerFunc {
 			return
 		}
 
+		if enforce {
+			if lookup == nil {
+				c.AbortWithStatusJSON(http.StatusServiceUnavailable, gin.H{"error": "account access unavailable"})
+				return
+			}
+			user, err := lookup(c.Request.Context(), claims.Sub)
+			if err != nil || !user.AllowsVersion(claims.AuthVersion) {
+				c.AbortWithStatusJSON(http.StatusUnauthorized, gin.H{"error": "invalid token"})
+				return
+			}
+			claims.Role = user.Role
+		}
 		c.Set("userID", claims.Sub)
 		c.Set("userRole", claims.Role)
 		c.Next()
@@ -128,19 +150,19 @@ func GenerateTokenWithRole(userID, role, secret string, ttl time.Duration) (stri
 }
 
 // GenerateAccessToken creates a short-lived HS256 JWT for API authorization.
-func GenerateAccessToken(userID, role, secret string) (string, error) {
-	return generateToken(userID, role, secret, accessTokenTTL, accessTokenType, "")
+func GenerateAccessToken(userID, role, secret string, version ...int64) (string, error) {
+	return generateTokenAt(userID, role, secret, accessTokenTTL, accessTokenType, "", "", "", time.Now(), version...)
 }
 
 // GenerateRefreshToken is retained for the local/test compatibility lane. The
 // production routers use RefreshSessionAuthority.Issue, which persists only a
 // token hash in Firestore. Local mode has no durable Firestore authority.
-func GenerateRefreshToken(userID, role, secret string) (string, error) {
+func GenerateRefreshToken(userID, role, secret string, version ...int64) (string, error) {
 	jti, err := randomTokenID()
 	if err != nil {
 		return "", err
 	}
-	token, err := generateTokenAt(userID, role, secret, refreshTokenTTL, refreshTokenType, jti, "", "", time.Now())
+	token, err := generateTokenAt(userID, role, secret, refreshTokenTTL, refreshTokenType, jti, "", "", time.Now(), version...)
 	if err != nil {
 		return "", err
 	}
@@ -206,15 +228,15 @@ func generateToken(userID, role, secret string, ttl time.Duration, tokenType, jt
 	return generateTokenAt(userID, role, secret, ttl, tokenType, jti, "", "", time.Now())
 }
 
-func generateRefreshTokenAt(userID, role, secret, sessionID string, now time.Time) (string, error) {
+func generateRefreshTokenAt(userID, role, secret, sessionID string, now time.Time, version ...int64) (string, error) {
 	tokenID, err := randomTokenID()
 	if err != nil {
 		return "", err
 	}
-	return generateTokenAt(userID, role, secret, refreshTokenTTL, refreshTokenType, sessionID, sessionID, tokenID, now)
+	return generateTokenAt(userID, role, secret, refreshTokenTTL, refreshTokenType, sessionID, sessionID, tokenID, now, version...)
 }
 
-func generateTokenAt(userID, role, secret string, ttl time.Duration, tokenType, jti, sessionID, tokenID string, now time.Time) (string, error) {
+func generateTokenAt(userID, role, secret string, ttl time.Duration, tokenType, jti, sessionID, tokenID string, now time.Time, version ...int64) (string, error) {
 	claims := &Claims{
 		Sub: userID, Role: role, TokenType: tokenType, SessionID: sessionID, TokenID: tokenID,
 		RegisteredClaims: jwt.RegisteredClaims{
@@ -224,6 +246,9 @@ func generateTokenAt(userID, role, secret string, ttl time.Duration, tokenType, 
 		},
 	}
 
+	if len(version) > 0 {
+		claims.AuthVersion = version[0]
+	}
 	token := jwt.NewWithClaims(jwt.SigningMethodHS256, claims)
 	return token.SignedString([]byte(secret))
 }

@@ -732,7 +732,7 @@ const docTemplate = `{
                         "BearerAuth": []
                     }
                 ],
-                "description": "Updates a user's role in Firestore.",
+                "description": "Updates a user's role or active/suspended status without deleting data.",
                 "consumes": [
                     "application/json"
                 ],
@@ -752,7 +752,7 @@ const docTemplate = `{
                         "required": true
                     },
                     {
-                        "description": "New role (e.g. admin)",
+                        "description": "Role and/or account status (active, suspended)",
                         "name": "body",
                         "in": "body",
                         "required": true,
@@ -760,6 +760,9 @@ const docTemplate = `{
                             "type": "object",
                             "properties": {
                                 "role": {
+                                    "type": "string"
+                                },
+                                "status": {
                                     "type": "string"
                                 }
                             }

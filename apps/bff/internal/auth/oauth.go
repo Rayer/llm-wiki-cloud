@@ -128,6 +128,7 @@ type oauthBrowserLock struct {
 }
 
 type oauthPendingLink struct {
+	AuthVersion       int64     `firestore:"auth_version,omitempty"`
 	UserID            string    `firestore:"user_id"`
 	Provider          string    `firestore:"provider"`
 	Issuer            string    `firestore:"issuer"`
@@ -374,7 +375,7 @@ func (s *GoogleOAuthService) prepareAuthorization(c *gin.Context, routeKind OAut
 			return "", http.StatusUnauthorized, oauthOutcomePasswordProof, kind
 		}
 		user, err := GetUser(c.Request.Context(), s.fs, userID)
-		if err != nil || user == nil || user.PasswordHash == "" || bcrypt.CompareHashAndPassword([]byte(user.PasswordHash), []byte(currentPassword)) != nil {
+		if err != nil || !user.Active() || user.PasswordHash == "" || bcrypt.CompareHashAndPassword([]byte(user.PasswordHash), []byte(currentPassword)) != nil {
 			return "", http.StatusUnauthorized, oauthOutcomePasswordProof, kind
 		}
 		proofHash = passwordProofHash(user.PasswordHash)
@@ -648,7 +649,7 @@ func (s *GoogleOAuthService) IdentitySummaryHandler() gin.HandlerFunc {
 			return
 		}
 		user, err := GetUser(c.Request.Context(), s.fs, userID)
-		if err != nil || user == nil {
+		if err != nil || !user.Active() {
 			writeOAuthFailure(c.Writer, http.StatusInternalServerError, oauthOutcomeUnavailable, OAuthFlowUnknown)
 			return
 		}
@@ -687,7 +688,7 @@ func (s *GoogleOAuthService) completeLoginCallback(c *gin.Context, browserValue 
 	}
 	if identity != nil {
 		user, err := GetUser(c.Request.Context(), s.fs, identity.UserID)
-		if err != nil || user == nil {
+		if err != nil || !user.Active() || !transaction.CreatedAt.After(user.AuthInvalidBefore) {
 			s.redirectOAuthFailure(c, browserValue, OAuthFlowLogin, oauthOutcomeInvalidRequest)
 			return
 		}
@@ -700,7 +701,7 @@ func (s *GoogleOAuthService) completeLoginCallback(c *gin.Context, browserValue 
 				return
 			}
 		}
-		s.issueSession(c, browserValue, identity.UserID, user, false)
+		s.issueSession(c, browserValue, identity.UserID, user, false, transaction.CreatedAt)
 		return
 	}
 	if s.gate != nil {
@@ -745,16 +746,16 @@ func (s *GoogleOAuthService) completeLoginCallback(c *gin.Context, browserValue 
 		return
 	}
 	user, err := GetUser(c.Request.Context(), s.fs, userID)
-	if err != nil || user == nil {
+	if err != nil || !user.Active() {
 		s.redirectOAuthFailure(c, browserValue, OAuthFlowLogin, oauthOutcomeUnavailable)
 		return
 	}
-	s.issueSession(c, browserValue, userID, user, true)
+	s.issueSession(c, browserValue, userID, user, true, transaction.CreatedAt)
 }
 
 func (s *GoogleOAuthService) completeLinkCallback(c *gin.Context, browserValue, transactionID string, transaction oauthTransaction, claims *googleClaims) {
 	user, err := GetUser(c.Request.Context(), s.fs, transaction.UserID)
-	if err != nil || user == nil || user.PasswordHash == "" || passwordProofHash(user.PasswordHash) != transaction.PasswordProofHash {
+	if err != nil || !user.Active() || !transaction.CreatedAt.After(user.AuthInvalidBefore) || user.PasswordHash == "" || passwordProofHash(user.PasswordHash) != transaction.PasswordProofHash {
 		s.redirectOAuthFailure(c, browserValue, OAuthFlowLink, oauthOutcomePasswordProof)
 		return
 	}
@@ -778,7 +779,8 @@ func (s *GoogleOAuthService) completeLinkCallback(c *gin.Context, browserValue, 
 		providerEmail = ""
 	}
 	pending := oauthPendingLink{
-		UserID: transaction.UserID, Provider: googleProvider, Issuer: claims.Issuer, Subject: claims.Subject,
+		AuthVersion: user.AuthVersion,
+		UserID:      transaction.UserID, Provider: googleProvider, Issuer: claims.Issuer, Subject: claims.Subject,
 		ProviderEmail: providerEmail, ProviderVerified: claims.EmailVerified, CurrentEmail: user.Email,
 		PasswordProofHash: transaction.PasswordProofHash, Status: oauthStatusActive, CreatedAt: now, ExpiresAt: now.Add(oauthTransactionTTL),
 	}
@@ -805,8 +807,12 @@ func (s *GoogleOAuthService) completeLinkCallback(c *gin.Context, browserValue, 
 	s.redirectOAuthResult(c, browserValue, OAuthFlowLink, "confirmation_required", "", false, "")
 }
 
-func (s *GoogleOAuthService) issueSession(c *gin.Context, browserValue, userID string, user *UserRecord, jitProvisioned bool) {
-	refreshToken, err := issueRefreshSession(c.Request.Context(), s.sessions, userID, user.Role, s.jwtSecret)
+func (s *GoogleOAuthService) issueSession(c *gin.Context, browserValue, userID string, user *UserRecord, jitProvisioned bool, startedAt time.Time) {
+	if !user.Active() || !startedAt.After(user.AuthInvalidBefore) {
+		s.redirectOAuthFailure(c, browserValue, OAuthFlowLogin, oauthOutcomeInvalidRequest)
+		return
+	}
+	refreshToken, err := issueRefreshSession(c.Request.Context(), s.sessions, userID, user.Role, s.jwtSecret, user.AuthVersion)
 	if err != nil {
 		s.redirectOAuthFailure(c, browserValue, OAuthFlowLogin, oauthOutcomeUnavailable)
 		return
@@ -930,6 +936,8 @@ func (s *GoogleOAuthService) consumeTransaction(ctx context.Context, state, brow
 			return errOAuthTransactionNotFound
 		}
 		transactionID, consumed = snapshot.Ref.ID, transaction
+		// Compare Firestore commit timestamps, not independent auth-server clocks.
+		consumed.CreatedAt = snapshot.CreateTime
 		if subtle.ConstantTimeCompare([]byte(transaction.BrowserHash), []byte(hashOAuthValue(browserValue))) != 1 {
 			return errOAuthWrongBrowser
 		}
@@ -1033,7 +1041,7 @@ func (s *GoogleOAuthService) confirmLink(ctx context.Context, userID, confirmati
 			return errOAuthPendingNotFound
 		}
 		var user UserRecord
-		if err := userSnapshot.DataTo(&user); err != nil || user.PasswordHash == "" || passwordProofHash(user.PasswordHash) != pending.PasswordProofHash {
+		if err := userSnapshot.DataTo(&user); err != nil || !user.AllowsVersion(pending.AuthVersion) || user.PasswordHash == "" || passwordProofHash(user.PasswordHash) != pending.PasswordProofHash {
 			return errOAuthPasswordChanged
 		}
 		identityRef := s.fs.Collection(ExternalIdentitiesCollection).Doc(externalIdentityDocumentID(pending.Provider, pending.Issuer, pending.Subject))

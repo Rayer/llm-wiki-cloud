@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"time"
 
 	"cloud.google.com/go/firestore"
 	"google.golang.org/api/iterator"
@@ -11,13 +12,16 @@ import (
 
 // UserRecord is a user document stored in Firestore.
 type UserRecord struct {
-	Email          string `firestore:"email"`
-	EmailCanonical string `firestore:"email_canonical,omitempty"`
-	PasswordHash   string `firestore:"password_hash,omitempty"`
-	Role           string `firestore:"role,omitempty"`
-	EmailVerified  bool   `firestore:"email_verified"`
-	ProjectCount   int    `firestore:"project_count"`
-	DefaultProject string `firestore:"default_project"`
+	AuthInvalidBefore time.Time `firestore:"auth_invalid_before,omitempty"`
+	Status            string    `firestore:"status,omitempty"`
+	AuthVersion       int64     `firestore:"auth_version,omitempty"`
+	Email             string    `firestore:"email"`
+	EmailCanonical    string    `firestore:"email_canonical,omitempty"`
+	PasswordHash      string    `firestore:"password_hash,omitempty"`
+	Role              string    `firestore:"role,omitempty"`
+	EmailVerified     bool      `firestore:"email_verified"`
+	ProjectCount      int       `firestore:"project_count"`
+	DefaultProject    string    `firestore:"default_project"`
 }
 
 // CountProjects returns the number of projects a user has in Firestore.

@@ -47,10 +47,11 @@ type SessionAuthorityConfig struct {
 // RefreshSessionRotation contains the new application refresh material. The
 // token is returned only to the caller and is never written to Firestore.
 type RefreshSessionRotation struct {
-	Token     string
-	UserID    string
-	Role      string
-	ExpiresAt time.Time
+	AuthVersion int64
+	Token       string
+	UserID      string
+	Role        string
+	ExpiresAt   time.Time
 }
 
 type refreshSessionDocument struct {
@@ -145,17 +146,17 @@ func hashRefreshToken(token string) string {
 	return hex.EncodeToString(digest[:])
 }
 
-func issueRefreshSession(ctx context.Context, authority *RefreshSessionAuthority, userID, role, secret string) (string, error) {
+func issueRefreshSession(ctx context.Context, authority *RefreshSessionAuthority, userID, role, secret string, version ...int64) (string, error) {
 	if authority != nil {
-		return authority.Issue(ctx, userID, role, secret)
+		return authority.Issue(ctx, userID, role, secret, version...)
 	}
-	return GenerateRefreshToken(userID, role, secret)
+	return GenerateRefreshToken(userID, role, secret, version...)
 }
 
 // Issue creates a durable session and returns a signed refresh JWT carrying
 // only a durable session identifier. The raw token exists only in memory long
 // enough to set the HttpOnly cookie.
-func (a *RefreshSessionAuthority) Issue(ctx context.Context, userID, role, secret string) (string, error) {
+func (a *RefreshSessionAuthority) Issue(ctx context.Context, userID, role, secret string, version ...int64) (string, error) {
 	if !a.ready() || strings.TrimSpace(secret) == "" || !ValidPathSegment(strings.TrimSpace(userID)) {
 		return "", ErrRefreshSessionUnavailable
 	}
@@ -165,7 +166,7 @@ func (a *RefreshSessionAuthority) Issue(ctx context.Context, userID, role, secre
 		return "", err
 	}
 	now := a.now().UTC()
-	token, err := generateRefreshTokenAt(userID, role, secret, sessionID, now)
+	token, err := generateRefreshTokenAt(userID, role, secret, sessionID, now, version...)
 	if err != nil {
 		return "", err
 	}
@@ -174,7 +175,21 @@ func (a *RefreshSessionAuthority) Issue(ctx context.Context, userID, role, secre
 		TokenHash: hashRefreshToken(token), Status: refreshSessionStatusActive,
 		IssuedAt: now, ExpiresAt: now.Add(refreshTokenTTL), CreatedAt: now, UpdatedAt: now,
 	}
-	if _, err := a.sessionRef(sessionID).Create(ctx, doc); err != nil {
+	if err := a.fs.RunTransaction(ctx, func(ctx context.Context, tx *firestore.Transaction) error {
+		snapshot, err := tx.Get(a.fs.Collection("users").Doc(userID))
+		if err != nil {
+			return ErrAccountUnavailable
+		}
+		var user UserRecord
+		expected := int64(0)
+		if len(version) > 0 {
+			expected = version[0]
+		}
+		if snapshot.DataTo(&user) != nil || !user.AllowsVersion(expected) {
+			return ErrAccountUnavailable
+		}
+		return tx.Create(a.sessionRef(sessionID), doc)
+	}); err != nil {
 		return "", err
 	}
 	return token, nil
@@ -206,6 +221,15 @@ func (a *RefreshSessionAuthority) Rotate(ctx context.Context, rawToken, secret s
 	var terminalErr error
 	err = a.fs.RunTransaction(ctx, func(ctx context.Context, tx *firestore.Transaction) error {
 		terminalErr = nil
+		account, err := tx.Get(a.fs.Collection("users").Doc(claims.Sub))
+		if err != nil {
+			return ErrAccountUnavailable
+		}
+		var user UserRecord
+		if account.DataTo(&user) != nil || !user.AllowsVersion(claims.AuthVersion) {
+			return ErrAccountUnavailable
+		}
+		claims.Role = user.Role
 		ref := a.sessionRef(sessionID)
 		tokenHash := hashRefreshToken(rawToken)
 		replayRef := a.replayRef(sessionID, tokenHash)
@@ -248,7 +272,8 @@ func (a *RefreshSessionAuthority) Rotate(ctx context.Context, rawToken, secret s
 		if session.TokenHash != tokenHash {
 			return ErrRefreshSessionReplay
 		}
-		return a.rotateExisting(tx, ref, replayRef, session, &result, now, secret)
+		session.Role = user.Role
+		return a.rotateExisting(tx, ref, replayRef, session, &result, now, secret, user.AuthVersion)
 	})
 	if err == nil && terminalErr != nil {
 		err = terminalErr
@@ -265,7 +290,7 @@ func (a *RefreshSessionAuthority) migrateAndRotate(tx *firestore.Transaction, re
 		return ErrRefreshSessionExpired
 	}
 	role := claims.Role
-	token, err := generateRefreshTokenAt(claims.Sub, role, secret, sessionID, now)
+	token, err := generateRefreshTokenAt(claims.Sub, role, secret, sessionID, now, claims.AuthVersion)
 	if err != nil {
 		return err
 	}
@@ -283,12 +308,12 @@ func (a *RefreshSessionAuthority) migrateAndRotate(tx *firestore.Transaction, re
 	if err := tx.Create(replayRef, refreshSessionReplayDocument{Environment: a.environment, SessionID: sessionID, TokenHash: tokenHash, ExpiresAt: doc.ExpiresAt}); err != nil {
 		return err
 	}
-	*result = RefreshSessionRotation{Token: token, UserID: claims.Sub, Role: role, ExpiresAt: doc.ExpiresAt}
+	*result = RefreshSessionRotation{AuthVersion: claims.AuthVersion, Token: token, UserID: claims.Sub, Role: role, ExpiresAt: doc.ExpiresAt}
 	return nil
 }
 
-func (a *RefreshSessionAuthority) rotateExisting(tx *firestore.Transaction, ref, replayRef *firestore.DocumentRef, session refreshSessionDocument, result *RefreshSessionRotation, now time.Time, secret string) error {
-	token, err := generateRefreshTokenAt(session.UserID, session.Role, secret, session.SessionID, now)
+func (a *RefreshSessionAuthority) rotateExisting(tx *firestore.Transaction, ref, replayRef *firestore.DocumentRef, session refreshSessionDocument, result *RefreshSessionRotation, now time.Time, secret string, version int64) error {
+	token, err := generateRefreshTokenAt(session.UserID, session.Role, secret, session.SessionID, now, version)
 	if err != nil {
 		return err
 	}
@@ -305,7 +330,7 @@ func (a *RefreshSessionAuthority) rotateExisting(tx *firestore.Transaction, ref,
 	}); err != nil {
 		return err
 	}
-	*result = RefreshSessionRotation{Token: token, UserID: session.UserID, Role: session.Role, ExpiresAt: expiresAt}
+	*result = RefreshSessionRotation{AuthVersion: version, Token: token, UserID: session.UserID, Role: session.Role, ExpiresAt: expiresAt}
 	return nil
 }
 

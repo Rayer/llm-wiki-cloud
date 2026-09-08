@@ -93,7 +93,7 @@ func LoginHandlerWithRepositoryAndSessionAuthority(repo PasswordLoginRepository,
 		}
 		ctx := c.Request.Context()
 		userID, user, err := repo.GetPasswordUserByEmail(ctx, canonicalEmail)
-		if err != nil || user == nil {
+		if err != nil || !user.Active() {
 			c.JSON(http.StatusUnauthorized, gin.H{"error": "invalid credentials"})
 			return
 		}
@@ -101,12 +101,12 @@ func LoginHandlerWithRepositoryAndSessionAuthority(repo PasswordLoginRepository,
 			c.JSON(http.StatusUnauthorized, gin.H{"error": "invalid credentials"})
 			return
 		}
-		accessToken, err := GenerateAccessToken(userID, user.Role, jwtSecret)
+		accessToken, err := GenerateAccessToken(userID, user.Role, jwtSecret, user.AuthVersion)
 		if err != nil {
 			c.JSON(http.StatusInternalServerError, gin.H{"error": "failed to generate token"})
 			return
 		}
-		refreshToken, err := issueRefreshSession(c.Request.Context(), sessions, userID, user.Role, jwtSecret)
+		refreshToken, err := issueRefreshSession(c.Request.Context(), sessions, userID, user.Role, jwtSecret, user.AuthVersion)
 		if err != nil {
 			c.JSON(http.StatusInternalServerError, gin.H{"error": "failed to generate token"})
 			return
