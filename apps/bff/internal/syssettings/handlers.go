@@ -77,8 +77,8 @@ func PublicConfigHandler(gate RegistrationGate) gin.HandlerFunc {
 		}
 		c.JSON(http.StatusOK, PublicSettings{
 			RegistrationEnabled:       settings.RegistrationEnabled,
-			EmailRegistrationEnabled:  settings.EmailRegistrationEnabled,
-			GoogleRegistrationEnabled: settings.GoogleRegistrationEnabled,
+			EmailRegistrationEnabled:  settings.RegistrationEnabled && settings.EmailRegistrationEnabled,
+			GoogleRegistrationEnabled: settings.RegistrationEnabled && settings.GoogleRegistrationEnabled,
 			AnnouncementMarkdown:      settings.AnnouncementMarkdown,
 			AnnouncementDigest:        announcementDigest(settings.AnnouncementMarkdown),
 		})
@@ -131,17 +131,11 @@ func AdminGetSettingsHandler(gate RegistrationGate) gin.HandlerFunc {
 func AdminPatchSettingsHandler(gate RegistrationGate) gin.HandlerFunc {
 	return func(c *gin.Context) {
 		var req patchSettingsRequest
-		if err := bindStrictJSONBody(c, &req); err != nil || (req.RegistrationEnabled == nil && req.EmailRegistrationEnabled == nil && req.GoogleRegistrationEnabled == nil) || (req.RegistrationEnabled != nil && (req.EmailRegistrationEnabled != nil || req.GoogleRegistrationEnabled != nil)) {
+		if err := bindStrictJSONBody(c, &req); err != nil || (req.RegistrationEnabled == nil && req.EmailRegistrationEnabled == nil && req.GoogleRegistrationEnabled == nil) {
 			c.JSON(http.StatusBadRequest, gin.H{"error": "valid settings are required"})
 			return
 		}
-		var settings Settings
-		var err error
-		if req.RegistrationEnabled != nil {
-			settings, err = gate.SetRegistrationEnabled(c.Request.Context(), *req.RegistrationEnabled)
-		} else {
-			settings, err = gate.SetRegistrationMethods(c.Request.Context(), req.EmailRegistrationEnabled, req.GoogleRegistrationEnabled)
-		}
+		settings, err := gate.SetRegistrationSettings(c.Request.Context(), req.RegistrationEnabled, req.EmailRegistrationEnabled, req.GoogleRegistrationEnabled)
 		if err != nil {
 			if strings.Contains(err.Error(), "exceeds") || strings.Contains(err.Error(), "valid UTF-8") {
 				c.JSON(http.StatusBadRequest, gin.H{"error": err.Error()})

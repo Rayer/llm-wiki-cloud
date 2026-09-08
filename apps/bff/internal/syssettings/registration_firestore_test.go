@@ -32,26 +32,42 @@ func TestRegistrationMethodsPersistAcrossStoreInstances(t *testing.T) {
 			if _, err := store.settingsRef().Set(ctx, map[string]interface{}{"registration_enabled": false, "announcement_published_markdown": "retain me"}); err != nil {
 				t.Fatal(err)
 			}
-			if _, err := store.SetRegistrationMethods(ctx, &email, nil); err != nil {
+			if _, err := store.SetRegistrationSettings(ctx, nil, &email, nil); err != nil {
 				t.Fatal(err)
 			}
 			partial, err := NewStore(client, &open).GetSettings(ctx)
-			if err != nil || partial.GoogleRegistrationEnabled {
-				t.Fatalf("partial migration reopened Google: %+v error=%v", partial, err)
+			if err != nil || partial.RegistrationEnabled || !partial.GoogleRegistrationEnabled {
+				t.Fatalf("partial migration changed master or missing preference: %+v error=%v", partial, err)
 			}
-			if _, err := store.SetRegistrationMethods(ctx, nil, &google); err != nil {
+			if _, err := store.SetRegistrationSettings(ctx, nil, nil, &google); err != nil {
 				t.Fatal(err)
 			}
 			got, err := NewStore(client, &open).GetSettings(ctx)
 			if err != nil || got.EmailRegistrationEnabled != email || got.GoogleRegistrationEnabled != google || got.AnnouncementMarkdown != "retain me" {
 				t.Fatalf("reload=%+v err=%v", got, err)
 			}
-			doc, err := store.settingsRef().Get(ctx)
-			if err != nil {
-				t.Fatal(err)
-			}
-			if doc.Data()["registration_enabled"] != (email && google) {
-				t.Fatal("legacy persisted flag is not conservative")
+			for _, master := range []bool{true, false, true} {
+				if _, err := store.SetRegistrationSettings(ctx, &master, nil, nil); err != nil {
+					t.Fatal(err)
+				}
+				reloaded := NewStore(client, &open)
+				got, err := reloaded.GetSettings(ctx)
+				if err != nil || got.RegistrationEnabled != master || got.EmailRegistrationEnabled != email || got.GoogleRegistrationEnabled != google {
+					t.Fatalf("master toggle lost preferences: %+v err=%v", got, err)
+				}
+				for method, want := range map[string]bool{"email": master && email, "google": master && google} {
+					got, err := reloaded.IsRegistrationEnabled(ctx, method)
+					if err != nil || got != want {
+						t.Fatalf("%s gate=%t want=%t err=%v", method, got, want, err)
+					}
+				}
+				doc, err := store.settingsRef().Get(ctx)
+				if err != nil {
+					t.Fatal(err)
+				}
+				if doc.Data()["registration_enabled"] != master || doc.Data()["email_registration_enabled"] != email || doc.Data()["google_registration_enabled"] != google {
+					t.Fatal("persisted master/preferences changed")
+				}
 			}
 		}
 	}

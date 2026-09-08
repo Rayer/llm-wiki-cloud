@@ -54,7 +54,7 @@ export function AdminClient() {
   const [actionError, setActionError] = useState('');
   const [actionPending, setActionPending] = useState(false);
   const [cleanRebuild, setCleanRebuild] = useState(false);
-  const [registrationEnabled, setRegistrationEnabled] = useState({ email_registration_enabled: false, google_registration_enabled: false });
+  const [registrationEnabled, setRegistrationEnabled] = useState({ registration_enabled: false, email_registration_enabled: false, google_registration_enabled: false });
   const [settingsLoading, setSettingsLoading] = useState(false);
   const [settingsError, setSettingsError] = useState('');
   const [settingsPending, setSettingsPending] = useState(false);
@@ -106,7 +106,7 @@ export function AdminClient() {
     setSettingsError('');
     try {
       const settings = await getAdminSettings();
-      setRegistrationEnabled({ email_registration_enabled: settings.email_registration_enabled === true, google_registration_enabled: settings.google_registration_enabled === true });
+      setRegistrationEnabled({ registration_enabled: settings.registration_enabled, email_registration_enabled: settings.email_registration_enabled === true, google_registration_enabled: settings.google_registration_enabled === true });
       const markdown = settings.announcement_markdown ?? '';
       setAnnouncementMarkdown(markdown);
       setAnnouncementBaseline(markdown);
@@ -117,12 +117,12 @@ export function AdminClient() {
     }
   }, []);
 
-  const handleRegistrationToggle = async (method: 'email_registration_enabled' | 'google_registration_enabled') => {
+  const handleRegistrationToggle = async (method: 'registration_enabled' | 'email_registration_enabled' | 'google_registration_enabled') => {
     setSettingsError('');
     setSettingsPending(true);
     try {
       const settings = await updateAdminSettings({ [method]: !registrationEnabled[method] });
-      setRegistrationEnabled({ email_registration_enabled: settings.email_registration_enabled === true, google_registration_enabled: settings.google_registration_enabled === true });
+      setRegistrationEnabled({ registration_enabled: settings.registration_enabled, email_registration_enabled: settings.email_registration_enabled === true, google_registration_enabled: settings.google_registration_enabled === true });
       clearPublicConfigCache();
       setNotice({ tone: 'success', message: 'Registration settings updated.' });
     } catch (error) {
@@ -402,6 +402,7 @@ export function AdminClient() {
           loading={settingsLoading}
           pending={settingsPending}
           error={settingsError}
+          masterLabel={t('Admin.registrationEnabled')}
           emailLabel={t('Admin.emailRegistrationEnabled')}
           googleLabel={t('Admin.googleRegistrationEnabled')}
           onRetry={loadSettings}
@@ -508,6 +509,7 @@ function SettingsPanel({
   loading,
   pending,
   error,
+  masterLabel,
   emailLabel,
   googleLabel,
   onRetry,
@@ -517,14 +519,15 @@ function SettingsPanel({
   onAnnouncementChange,
   onPublishAnnouncement,
 }: {
-  registrationEnabled: { email_registration_enabled: boolean; google_registration_enabled: boolean };
+  registrationEnabled: { registration_enabled: boolean; email_registration_enabled: boolean; google_registration_enabled: boolean };
   loading: boolean;
   pending: boolean;
   error: string;
+  masterLabel: string;
   emailLabel: string;
   googleLabel: string;
   onRetry: () => void;
-  onToggle: (method: 'email_registration_enabled' | 'google_registration_enabled') => void;
+  onToggle: (method: 'registration_enabled' | 'email_registration_enabled' | 'google_registration_enabled') => void;
   announcementMarkdown: string;
   announcementDirty: boolean;
   onAnnouncementChange: (value: string) => void;
@@ -548,12 +551,20 @@ function SettingsPanel({
               </button>
             </div>
           ) : null}
-          {(['email_registration_enabled', 'google_registration_enabled'] as const).map((method) => (
-            <label key={method} className="flex items-center justify-between gap-4">
-              <span className="text-sm font-medium text-white">{method === 'email_registration_enabled' ? emailLabel : googleLabel}</span>
-              <input type="checkbox" checked={registrationEnabled[method]} disabled={pending || Boolean(error)} onChange={() => onToggle(method)} className="size-5 rounded border-white/20 bg-black/30 text-emerald-400 focus:ring-emerald-400" />
+          <div className="space-y-4">
+            <label className="flex items-center justify-between gap-4">
+              <span className="text-sm font-medium text-white">{masterLabel}</span>
+              <input type="checkbox" checked={registrationEnabled.registration_enabled} disabled={pending || Boolean(error)} onChange={() => onToggle('registration_enabled')} className="size-5 rounded border-white/20 bg-black/30 text-emerald-400 focus:ring-emerald-400" />
             </label>
-          ))}
+            <div className={`space-y-4 border-l border-white/10 pl-5 ${registrationEnabled.registration_enabled ? '' : 'opacity-40'}`}>
+              {(['email_registration_enabled', 'google_registration_enabled'] as const).map((method) => (
+                <label key={method} className="flex items-center justify-between gap-4">
+                  <span className="text-sm font-medium text-white">{method === 'email_registration_enabled' ? emailLabel : googleLabel}</span>
+                  <input type="checkbox" checked={registrationEnabled[method]} disabled={!registrationEnabled.registration_enabled || pending || Boolean(error)} onChange={() => onToggle(method)} className="size-5 rounded border-white/20 bg-black/30 text-emerald-400 focus:ring-emerald-400" />
+                </label>
+              ))}
+            </div>
+          </div>
           <div>
             <h2 className="text-lg font-semibold text-white">Announcement</h2>
             <p className="mt-1 text-sm text-zinc-400">Edit the published announcement and preview it live.</p>

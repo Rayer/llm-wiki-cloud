@@ -17,17 +17,17 @@ const (
 	maxMarkdownBytes   = 32 << 10
 )
 
-// Settings is the public system settings payload.
+// Settings contains the registration master and saved method preferences.
 type Settings struct {
-	RegistrationEnabled       bool   `json:"registration_enabled"` // Legacy: both methods are open.
+	RegistrationEnabled       bool   `json:"registration_enabled"` // Master switch; method preferences are retained when off.
 	EmailRegistrationEnabled  bool   `json:"email_registration_enabled"`
 	GoogleRegistrationEnabled bool   `json:"google_registration_enabled"`
 	AnnouncementMarkdown      string `json:"announcement_markdown"`
 }
 
-// PublicSettings is the deliberately metadata-free anonymous response.
+// PublicSettings exposes effective method capabilities, not saved preferences.
 type PublicSettings struct {
-	RegistrationEnabled       bool   `json:"registration_enabled"` // Legacy: both methods are open.
+	RegistrationEnabled       bool   `json:"registration_enabled"` // Master switch; method preferences are retained when off.
 	EmailRegistrationEnabled  bool   `json:"email_registration_enabled"`
 	GoogleRegistrationEnabled bool   `json:"google_registration_enabled"`
 	AnnouncementMarkdown      string `json:"announcement_markdown"`
@@ -39,8 +39,7 @@ type PublicSettings struct {
 type RegistrationGate interface {
 	IsRegistrationEnabled(ctx context.Context, method string) (bool, error)
 	GetSettings(ctx context.Context) (Settings, error)
-	SetRegistrationEnabled(ctx context.Context, enabled bool) (Settings, error)
-	SetRegistrationMethods(ctx context.Context, email, google *bool) (Settings, error)
+	SetRegistrationSettings(ctx context.Context, master, email, google *bool) (Settings, error)
 	PublishAnnouncement(ctx context.Context, markdown string) (Settings, error)
 }
 
@@ -67,30 +66,31 @@ func (s *Store) IsRegistrationEnabled(ctx context.Context, method string) (bool,
 	}
 	switch method {
 	case "email":
-		return settings.EmailRegistrationEnabled, nil
+		return settings.RegistrationEnabled && settings.EmailRegistrationEnabled, nil
 	case "google":
-		return settings.GoogleRegistrationEnabled, nil
+		return settings.RegistrationEnabled && settings.GoogleRegistrationEnabled, nil
 	default:
 		return false, fmt.Errorf("unknown registration method")
 	}
 }
 
-// resolveSettings migrates missing method fields from the legacy posture.
-// Present but invalid values close that method; they never fall back to open.
+// resolveSettings preserves the legacy master. Missing method preferences are
+// selected so toggling a legacy master back on retains its all-method behavior.
+// Present but invalid preferences close that method; read errors never resolve here.
 func resolveSettings(data map[string]interface{}, envValue *bool) Settings {
 	legacy, _ := data["registration_enabled"].(bool)
-	fallback := Resolve(data != nil, legacy, envValue)
+	master := Resolve(data != nil, legacy, envValue)
 	method := func(key string) bool {
 		value, exists := data[key]
 		if !exists {
-			return fallback
+			return true
 		}
 		enabled, _ := value.(bool)
 		return enabled
 	}
 	email, google := method("email_registration_enabled"), method("google_registration_enabled")
 	markdown, _ := data["announcement_published_markdown"].(string)
-	return Settings{RegistrationEnabled: email && google, EmailRegistrationEnabled: email, GoogleRegistrationEnabled: google, AnnouncementMarkdown: markdown}
+	return Settings{RegistrationEnabled: master, EmailRegistrationEnabled: email, GoogleRegistrationEnabled: google, AnnouncementMarkdown: markdown}
 }
 
 func (s *Store) GetSettings(ctx context.Context) (Settings, error) {
@@ -133,14 +133,9 @@ func (s *Store) PublishAnnouncement(ctx context.Context, markdown string) (Setti
 	return s.GetSettings(ctx)
 }
 
-// SetRegistrationEnabled is the legacy API: explicitly set both methods.
-func (s *Store) SetRegistrationEnabled(ctx context.Context, enabled bool) (Settings, error) {
-	return s.SetRegistrationMethods(ctx, &enabled, &enabled)
-}
-
-// SetRegistrationMethods resolves and writes both methods atomically so a partial
-// update cannot reopen the other method during legacy migration.
-func (s *Store) SetRegistrationMethods(ctx context.Context, email, google *bool) (Settings, error) {
+// SetRegistrationSettings updates the master and preferences atomically.
+// Omitted values retain their resolved state, including while the master is off.
+func (s *Store) SetRegistrationSettings(ctx context.Context, master, email, google *bool) (Settings, error) {
 	if s.fs == nil {
 		return Settings{}, fmt.Errorf("Firestore client is not configured")
 	}
@@ -154,13 +149,15 @@ func (s *Store) SetRegistrationMethods(ctx context.Context, email, google *bool)
 			return err
 		}
 		settings = resolveSettings(data, s.envValue)
+		if master != nil {
+			settings.RegistrationEnabled = *master
+		}
 		if email != nil {
 			settings.EmailRegistrationEnabled = *email
 		}
 		if google != nil {
 			settings.GoogleRegistrationEnabled = *google
 		}
-		settings.RegistrationEnabled = settings.EmailRegistrationEnabled && settings.GoogleRegistrationEnabled
 		return tx.Set(s.settingsRef(), map[string]interface{}{
 			"email_registration_enabled":  settings.EmailRegistrationEnabled,
 			"google_registration_enabled": settings.GoogleRegistrationEnabled,
@@ -195,23 +192,23 @@ func (f *FakeStore) IsRegistrationEnabled(ctx context.Context, method string) (b
 	}
 	switch method {
 	case "email":
-		return settings.EmailRegistrationEnabled, nil
+		return settings.RegistrationEnabled && settings.EmailRegistrationEnabled, nil
 	case "google":
-		return settings.GoogleRegistrationEnabled, nil
+		return settings.RegistrationEnabled && settings.GoogleRegistrationEnabled, nil
 	default:
 		return false, fmt.Errorf("unknown registration method")
 	}
 }
 
 func (f *FakeStore) settings() Settings {
-	email, google := f.Enabled, f.Enabled
+	email, google := true, true
 	if f.EmailEnabled != nil {
 		email = *f.EmailEnabled
 	}
 	if f.GoogleEnabled != nil {
 		google = *f.GoogleEnabled
 	}
-	return Settings{RegistrationEnabled: email && google, EmailRegistrationEnabled: email, GoogleRegistrationEnabled: google, AnnouncementMarkdown: f.Published}
+	return Settings{RegistrationEnabled: f.Enabled, EmailRegistrationEnabled: email, GoogleRegistrationEnabled: google, AnnouncementMarkdown: f.Published}
 }
 
 func (f *FakeStore) GetSettings(ctx context.Context) (Settings, error) {
@@ -237,16 +234,15 @@ func (f *FakeStore) PublishAnnouncement(ctx context.Context, markdown string) (S
 	return f.settings(), nil
 }
 
-func (f *FakeStore) SetRegistrationEnabled(ctx context.Context, enabled bool) (Settings, error) {
-	return f.SetRegistrationMethods(ctx, &enabled, &enabled)
-}
-
-func (f *FakeStore) SetRegistrationMethods(ctx context.Context, email, google *bool) (Settings, error) {
+func (f *FakeStore) SetRegistrationSettings(ctx context.Context, master, email, google *bool) (Settings, error) {
 	f.mu.Lock()
 	defer f.mu.Unlock()
 	f.SetCalls++
 	if f.Err != nil {
 		return Settings{}, f.Err
+	}
+	if master != nil {
+		f.Enabled = *master
 	}
 	if email != nil {
 		value := *email

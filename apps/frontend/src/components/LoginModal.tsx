@@ -47,7 +47,7 @@ export function LoginModal() {
     void getPublicConfig({ refresh: true })
       .then((config) => {
         if (!cancelled) {
-          setRegistrationEnabled(config.email_registration_enabled === true);
+          setRegistrationEnabled(config.registration_enabled === true && config.email_registration_enabled === true);
           setAnnouncementMarkdown(config.announcement_markdown ?? null);
           const digest = typeof config.announcement_digest === 'string' && /^sha256:[0-9a-f]{64}$/.test(config.announcement_digest) ? config.announcement_digest : null;
           setAnnouncementDigest(digest);

@@ -47,25 +47,26 @@ func TestRegistrationMethodsFourCombinations(t *testing.T) {
 func TestRegistrationMethodResolutionPreservesLegacyClosedPosture(t *testing.T) {
 	envOpen, envClosed := true, false
 	tests := []struct {
-		name          string
-		data          map[string]interface{}
-		env           *bool
-		email, google bool
+		name                  string
+		data                  map[string]interface{}
+		env                   *bool
+		master, email, google bool
 	}{
-		{"legacy closed beats environment", map[string]interface{}{"registration_enabled": false}, &envOpen, false, false},
-		{"legacy open", map[string]interface{}{"registration_enabled": true}, &envClosed, true, true},
-		{"closed environment", nil, &envClosed, false, false},
-		{"open environment", nil, &envOpen, true, true},
-		{"document missing fields", map[string]interface{}{}, &envOpen, false, false},
-		{"malformed legacy", map[string]interface{}{"registration_enabled": "true"}, &envOpen, false, false},
-		{"partial migration closed sibling", map[string]interface{}{"registration_enabled": false, "email_registration_enabled": true}, &envOpen, true, false},
-		{"explicit methods override legacy", map[string]interface{}{"registration_enabled": false, "email_registration_enabled": true, "google_registration_enabled": true}, &envClosed, true, true},
-		{"invalid explicit fields do not inherit open", map[string]interface{}{"registration_enabled": true, "email_registration_enabled": nil, "google_registration_enabled": "true"}, &envOpen, false, false},
+		{"legacy closed beats environment", map[string]interface{}{"registration_enabled": false}, &envOpen, false, true, true},
+		{"legacy open", map[string]interface{}{"registration_enabled": true}, &envClosed, true, true, true},
+		{"closed environment", nil, &envClosed, false, true, true},
+		{"open environment", nil, &envOpen, true, true, true},
+		{"existing no-config default", nil, nil, true, true, true},
+		{"document missing fields", map[string]interface{}{}, &envOpen, false, true, true},
+		{"malformed master", map[string]interface{}{"registration_enabled": "true"}, &envOpen, false, true, true},
+		{"partial migration retains preferences", map[string]interface{}{"registration_enabled": false, "email_registration_enabled": false}, &envOpen, false, false, true},
+		{"preferences cannot override master", map[string]interface{}{"registration_enabled": false, "email_registration_enabled": true, "google_registration_enabled": true}, &envClosed, false, true, true},
+		{"invalid preferences stay closed", map[string]interface{}{"registration_enabled": true, "email_registration_enabled": nil, "google_registration_enabled": "true"}, &envOpen, true, false, false},
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
 			got := resolveSettings(tt.data, tt.env)
-			if got.EmailRegistrationEnabled != tt.email || got.GoogleRegistrationEnabled != tt.google || got.RegistrationEnabled != (tt.email && tt.google) {
+			if got.EmailRegistrationEnabled != tt.email || got.GoogleRegistrationEnabled != tt.google || got.RegistrationEnabled != tt.master {
 				t.Fatalf("resolved %+v", got)
 			}
 		})
@@ -77,23 +78,24 @@ func TestRegistrationMethodPartialUpdatesAndLegacyCompatibility(t *testing.T) {
 	router := gin.New()
 	router.PATCH("/settings", AdminPatchSettingsHandler(store))
 	for _, tt := range []struct {
-		body          string
-		email, google bool
+		body                  string
+		master, email, google bool
 	}{
-		{`{"email_registration_enabled":true}`, true, false},
-		{`{"google_registration_enabled":true}`, true, true},
-		{`{"email_registration_enabled":false}`, false, true},
-		{`{"registration_enabled":false}`, false, false},
-		{`{"registration_enabled":true}`, true, true},
+		{`{"email_registration_enabled":true}`, false, true, true},
+		{`{"google_registration_enabled":false}`, false, true, false},
+		{`{"registration_enabled":true}`, true, true, false},
+		{`{"email_registration_enabled":false}`, true, false, false},
+		{`{"registration_enabled":false,"email_registration_enabled":true}`, false, true, false},
+		{`{"registration_enabled":true}`, true, true, false},
 	} {
 		rec := httptest.NewRecorder()
 		router.ServeHTTP(rec, httptest.NewRequest(http.MethodPatch, "/settings", strings.NewReader(tt.body)))
 		got, err := store.GetSettings(t.Context())
-		if rec.Code != http.StatusOK || err != nil || got.EmailRegistrationEnabled != tt.email || got.GoogleRegistrationEnabled != tt.google {
+		if rec.Code != http.StatusOK || err != nil || got.RegistrationEnabled != tt.master || got.EmailRegistrationEnabled != tt.email || got.GoogleRegistrationEnabled != tt.google {
 			t.Fatalf("%s status=%d settings=%+v error=%v", tt.body, rec.Code, got, err)
 		}
 	}
-	for _, body := range []string{`{}`, `null`, `{"email_registration_enabled":"true"}`, `{"google_registration_enabled":null}`, `{"email_registration_enabled":null,"google_registration_enabled":true}`, `{"email_registration_enabled":true,"registration_enabled":true}`, `{"unknown":true}`, `{"email_registration_enabled":false}{}`} {
+	for _, body := range []string{`{}`, `null`, `{"registration_enabled":"true"}`, `{"email_registration_enabled":"true"}`, `{"google_registration_enabled":null}`, `{"email_registration_enabled":null,"google_registration_enabled":true}`, `{"unknown":true}`, `{"email_registration_enabled":false}{}`} {
 		before := store.SetCalls
 		rec := httptest.NewRecorder()
 		router.ServeHTTP(rec, httptest.NewRequest(http.MethodPatch, "/settings", strings.NewReader(body)))
@@ -134,5 +136,48 @@ func TestRegistrationMethodsAdminAuthorizationAndReadFailure(t *testing.T) {
 	router.ServeHTTP(rec, httptest.NewRequest(http.MethodGet, "/config", nil))
 	if rec.Code != http.StatusInternalServerError || strings.Contains(rec.Body.String(), "true") {
 		t.Fatalf("read failure exposed open capability: %s", rec.Body.String())
+	}
+}
+
+func TestRegistrationMasterRetainsPreferencesAndMasksCapabilities(t *testing.T) {
+	for _, email := range []bool{false, true} {
+		for _, google := range []bool{false, true} {
+			t.Run(fmt.Sprintf("email=%t/google=%t", email, google), func(t *testing.T) {
+				store := &FakeStore{Enabled: true}
+				router := gin.New()
+				router.PATCH("/settings", AdminPatchSettingsHandler(store))
+				router.GET("/config", PublicConfigHandler(store))
+				patch := func(body string) {
+					rec := httptest.NewRecorder()
+					router.ServeHTTP(rec, httptest.NewRequest(http.MethodPatch, "/settings", strings.NewReader(body)))
+					if rec.Code != http.StatusOK {
+						t.Fatalf("PATCH %s: %d %s", body, rec.Code, rec.Body.String())
+					}
+				}
+				patch(fmt.Sprintf(`{"email_registration_enabled":%t,"google_registration_enabled":%t}`, email, google))
+				for _, master := range []bool{false, true, false} {
+					patch(fmt.Sprintf(`{"registration_enabled":%t}`, master))
+					saved, err := store.GetSettings(t.Context())
+					if err != nil || saved.RegistrationEnabled != master || saved.EmailRegistrationEnabled != email || saved.GoogleRegistrationEnabled != google {
+						t.Fatalf("master toggle lost saved preferences: %+v err=%v", saved, err)
+					}
+					rec := httptest.NewRecorder()
+					router.ServeHTTP(rec, httptest.NewRequest(http.MethodGet, "/config", nil))
+					var public PublicSettings
+					if err := json.Unmarshal(rec.Body.Bytes(), &public); err != nil {
+						t.Fatal(err)
+					}
+					if public.RegistrationEnabled != master || public.EmailRegistrationEnabled != (master && email) || public.GoogleRegistrationEnabled != (master && google) {
+						t.Fatalf("wrong effective capabilities: %+v", public)
+					}
+					for method, want := range map[string]bool{"email": master && email, "google": master && google} {
+						got, err := store.IsRegistrationEnabled(t.Context(), method)
+						if err != nil || got != want {
+							t.Fatalf("%s gate=%t want=%t err=%v", method, got, want, err)
+						}
+					}
+				}
+			})
+		}
 	}
 }

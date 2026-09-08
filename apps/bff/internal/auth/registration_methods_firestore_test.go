@@ -10,11 +10,13 @@ import (
 )
 
 func TestGoogleRegistrationMethodsCallbackMatrix(t *testing.T) {
-	for _, email := range []bool{false, true} {
-		for _, google := range []bool{false, true} {
-			t.Run(fmt.Sprintf("email=%t/google=%t", email, google), func(t *testing.T) {
-				testGoogleRegistrationCallback(t, &methodRegistrationGate{email: email, google: google}, google)
-			})
+	for _, master := range []bool{false, true} {
+		for _, email := range []bool{false, true} {
+			for _, google := range []bool{false, true} {
+				t.Run(fmt.Sprintf("master=%t/email=%t/google=%t", master, email, google), func(t *testing.T) {
+					testGoogleRegistrationCallback(t, &methodRegistrationGate{master: &master, email: email, google: google}, master && google)
+				})
+			}
 		}
 	}
 	t.Run("settings read failure", func(t *testing.T) {

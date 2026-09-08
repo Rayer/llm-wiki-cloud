@@ -78,7 +78,7 @@ test('getAdminSettings and updateAdminSettings use admin settings endpoint witho
     const updated = await updateAdminSettings({ registration_enabled: false });
 
     assert.deepEqual(settings, { registration_enabled: true, email_registration_enabled: true, google_registration_enabled: true });
-    assert.deepEqual(updated, { registration_enabled: false, email_registration_enabled: false, google_registration_enabled: false });
+    assert.deepEqual(updated, { registration_enabled: false, email_registration_enabled: true, google_registration_enabled: true });
     assert.deepEqual(
       calls.map((call) => [call.url, call.init?.method, call.init?.headers?.['X-Project-ID']]),
       [
