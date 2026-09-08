@@ -21,7 +21,7 @@ vi.mock('@/lib/api', () => ({
   getAdminSettings: mocks.getAdminSettings, getAdminPipelineStatus: mocks.getAdminPipelineStatus,
   publishAnnouncement: vi.fn(), rebuildAdminProjectIndex: vi.fn(), renameAdminProject: vi.fn(),
   triggerAdminProjectPipeline: mocks.triggerAdminProjectPipeline,
-  updateAdminSettings: vi.fn(), updateAdminUserRole: vi.fn(),
+  updateAdminSettings: vi.fn(), updateAdminUserRole: vi.fn(), updateAdminUserStatus: vi.fn(),
 }));
 vi.mock('@/lib/auth', () => ({ useAuth: () => ({ hydrated: true, user: { role: 'admin' } }) }));
 vi.mock('@/lib/i18n', () => ({ useLocale: () => ({ t: (key: string) => key }) }));

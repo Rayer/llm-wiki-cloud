@@ -1077,20 +1077,23 @@ paths:
     patch:
       consumes:
       - application/json
-      description: Updates a user's role in Firestore.
+      description: Updates a user's role or active/suspended status without deleting
+        data.
       parameters:
       - description: User ID
         in: path
         name: id
         required: true
         type: string
-      - description: New role (e.g. admin)
+      - description: Role and/or account status (active, suspended)
         in: body
         name: body
         required: true
         schema:
           properties:
             role:
+              type: string
+            status:
               type: string
           type: object
       produces:

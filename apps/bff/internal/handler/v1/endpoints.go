@@ -908,6 +908,10 @@ func (h *Handler) PipelineRun(c *gin.Context) {
 				}
 			}
 		}
+		if errors.Is(err, auth.ErrAccountInactive) {
+			c.JSON(http.StatusForbidden, handler.ErrorResponse{Error: err.Error()})
+			return
+		}
 		c.JSON(http.StatusInternalServerError, handler.ErrorResponse{
 			Error: pipelineUnavailableMessage,
 		})
@@ -942,6 +946,17 @@ func (h *Handler) invokePipelineJob(ctx context.Context, userID, projectID strin
 }
 
 func (h *Handler) invokePipelineJobStage(ctx context.Context, userID, projectID string, cleanRebuild bool, stage string) (executionID string, err error) {
+	// This is the admission boundary, shared by user and admin triggers. A job
+	// admitted before suspension may finish; workers/publication remain unchanged.
+	if h.accountLookup != nil {
+		user, lookupErr := h.accountLookup(ctx, userID)
+		if lookupErr != nil {
+			return "", auth.ErrAccountUnavailable
+		}
+		if !user.Active() {
+			return "", auth.ErrAccountInactive
+		}
+	}
 	stage = strings.TrimSpace(stage)
 	if stage == "" {
 		stage = pipelineStageFull
@@ -2010,6 +2025,7 @@ type adminProjectEntry struct {
 }
 
 type adminUserEntry struct {
+	Status       string `json:"status"`
 	ID           string `json:"id"`
 	Name         string `json:"name"`
 	Email        string `json:"email"`
@@ -2836,6 +2852,10 @@ func (h *Handler) AdminPipelineTrigger(c *gin.Context) {
 
 	executionID, err := h.invokePipelineJobStage(ctx, uid, pid, req.CleanRebuild, stage)
 	if err != nil {
+		if errors.Is(err, auth.ErrAccountInactive) {
+			c.JSON(http.StatusForbidden, handler.ErrorResponse{Error: err.Error()})
+			return
+		}
 		c.JSON(http.StatusInternalServerError, handler.ErrorResponse{Error: pipelineUnavailableMessage})
 		return
 	}
@@ -2953,6 +2973,13 @@ func (h *Handler) AdminListUsers(c *gin.Context) {
 		name, _ := data["name"].(string)
 		email, _ := data["email"].(string)
 		role, _ := data["role"].(string)
+		accountStatus, validStatus := data["status"].(string)
+		if _, exists := data["status"]; exists && !validStatus {
+			accountStatus = "unknown"
+		}
+		if _, exists := data["status"]; !exists || accountStatus == "" {
+			accountStatus = auth.AccountActive
+		}
 		// Fallback: derive display name from email if name is empty
 		if name == "" && email != "" {
 			if at := strings.Index(email, "@"); at > 0 {
@@ -2962,6 +2989,7 @@ func (h *Handler) AdminListUsers(c *gin.Context) {
 			}
 		}
 		users = append(users, adminUserEntry{
+			Status:       accountStatus,
 			ID:           doc.Ref.ID,
 			Name:         name,
 			Email:        email,
@@ -2976,12 +3004,12 @@ func (h *Handler) AdminListUsers(c *gin.Context) {
 // AdminUpdateUser handles PATCH /admin/users/{id}.
 //
 //	@Summary		Update a user (admin)
-//	@Description	Updates a user's role in Firestore.
+//	@Description	Updates a user's role or active/suspended status without deleting data.
 //	@Tags			admin
 //	@Accept			json
 //	@Produce		json
 //	@Param			id		path		string	true	"User ID"
-//	@Param			body	body		object{role=string}	true	"New role (e.g. admin)"
+//	@Param			body	body		object{role=string,status=string}	true	"Role and/or account status (active, suspended)"
 //	@Success		200		{object}	map[string]any
 //	@Failure		400		{object}	handler.ErrorResponse
 //	@Failure		401		{object}	handler.ErrorResponse
@@ -2997,44 +3025,36 @@ func (h *Handler) AdminUpdateUser(c *gin.Context) {
 	}
 
 	userID := c.Param("id")
-
 	var body struct {
-		Role string `json:"role"`
+		Role   *string `json:"role"`
+		Status *string `json:"status"`
 	}
 	if err := c.ShouldBindJSON(&body); err != nil {
-		c.JSON(http.StatusBadRequest, handler.ErrorResponse{Error: "invalid JSON: " + err.Error()})
+		c.JSON(http.StatusBadRequest, handler.ErrorResponse{Error: "invalid JSON"})
 		return
 	}
-	if strings.TrimSpace(body.Role) == "" {
-		c.JSON(http.StatusBadRequest, handler.ErrorResponse{Error: "role is required"})
-		return
+	if body.Role != nil {
+		trimmed := strings.TrimSpace(*body.Role)
+		body.Role = &trimmed
 	}
-
-	fs := h.firestore.Raw()
-	ctx := c.Request.Context()
-
-	docRef := fs.Collection("users").Doc(userID)
-	_, err := docRef.Get(ctx)
+	err := auth.UpdateAccount(c.Request.Context(), h.firestore.Raw(), c.GetString("userID"), userID, body.Role, body.Status)
 	if err != nil {
-		if status.Code(err) == codes.NotFound {
-			c.JSON(http.StatusNotFound, handler.ErrorResponse{Error: "user not found: " + userID})
-			return
+		code := http.StatusInternalServerError
+		message := "account update unavailable"
+		switch {
+		case errors.Is(err, auth.ErrAccountUpdateInvalid):
+			code, message = http.StatusBadRequest, err.Error()
+		case errors.Is(err, auth.ErrAccountAdminRequired):
+			code, message = http.StatusForbidden, err.Error()
+		case errors.Is(err, auth.ErrAccountSelfSuspension), errors.Is(err, auth.ErrAccountLastAdmin):
+			code, message = http.StatusConflict, err.Error()
+		case status.Code(err) == codes.NotFound:
+			code, message = http.StatusNotFound, "user not found"
 		}
-		c.JSON(http.StatusInternalServerError, handler.ErrorResponse{Error: "read user: " + err.Error()})
+		c.JSON(code, handler.ErrorResponse{Error: message})
 		return
 	}
-
-	if _, err := docRef.Update(ctx, []firestore.Update{
-		{Path: "role", Value: body.Role},
-	}); err != nil {
-		c.JSON(http.StatusInternalServerError, handler.ErrorResponse{Error: "update user: " + err.Error()})
-		return
-	}
-
-	c.JSON(http.StatusOK, gin.H{
-		"status": "updated",
-		"id":     userID,
-	})
+	c.JSON(http.StatusOK, gin.H{"status": "updated", "id": userID})
 }
 
 // AdminDeleteUser handles DELETE /admin/users/{id}.

@@ -19,14 +19,14 @@ import (
 )
 
 func TestRefreshSessionAuthorityRotatesAtomicallyAndStoresOnlyHashes(t *testing.T) {
-	_, client := newIdentityEmulatorRepository(t)
+	client := accountEmulator(t)
 	defer client.Close()
 	ctx := context.Background()
 	authority := NewRefreshSessionAuthorityWithConfig(client, SessionAuthorityConfig{
 		Environment: "lwc-320-concurrency",
 		Migration:   RefreshSessionMigrationDisabled,
 	})
-	token, err := authority.Issue(ctx, "session-user", "member", "session-key-320")
+	token, err := issueAccountTestSession(t, authority, ctx, "session-user", "member", "session-key-320")
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -86,11 +86,11 @@ func TestRefreshSessionAuthorityRotatesAtomicallyAndStoresOnlyHashes(t *testing.
 }
 
 func TestRefreshSessionAuthorityPersistsAcrossInstancesAndRestart(t *testing.T) {
-	_, client := newIdentityEmulatorRepository(t)
+	client := accountEmulator(t)
 	defer client.Close()
 	ctx := context.Background()
 	first := NewRefreshSessionAuthority(client, "lwc-320-restart")
-	token, err := first.Issue(ctx, "restart-user", "admin", "restart-key-320")
+	token, err := issueAccountTestSession(t, first, ctx, "restart-user", "admin", "restart-key-320")
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -103,7 +103,7 @@ func TestRefreshSessionAuthorityPersistsAcrossInstancesAndRestart(t *testing.T) 
 	if !strings.Contains(endpoint, "://") {
 		endpoint = "http://" + endpoint
 	}
-	restartedClient, err := firestore.NewClient(ctx, "lwc-315-test", option.WithEndpoint(endpoint), option.WithoutAuthentication())
+	restartedClient, err := firestore.NewClient(ctx, strings.Split(client.Collection("users").Doc("probe").Path, "/")[1], option.WithEndpoint(endpoint), option.WithoutAuthentication())
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -118,12 +118,12 @@ func TestRefreshSessionAuthorityPersistsAcrossInstancesAndRestart(t *testing.T) 
 }
 
 func TestRefreshSessionCleanupDoesNotDeleteConcurrentlyRenewedSession(t *testing.T) {
-	_, client := newIdentityEmulatorRepository(t)
+	client := accountEmulator(t)
 	defer client.Close()
 	ctx := context.Background()
 	const secret = "cleanup-key-320"
 	authority := NewRefreshSessionAuthority(client, "lwc-320-cleanup-race")
-	token, err := authority.Issue(ctx, "cleanup-race-user", "member", secret)
+	token, err := issueAccountTestSession(t, authority, ctx, "cleanup-race-user", "member", secret)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -154,12 +154,12 @@ func TestRefreshSessionCleanupDoesNotDeleteConcurrentlyRenewedSession(t *testing
 }
 
 func TestRefreshSessionCleanupCountsSessionsAndReplayMarkers(t *testing.T) {
-	_, client := newIdentityEmulatorRepository(t)
+	client := accountEmulator(t)
 	defer client.Close()
 	ctx := context.Background()
 	const secret = "cleanup-count-key-320"
 	authority := NewRefreshSessionAuthority(client, "lwc-320-cleanup-count")
-	token, err := authority.Issue(ctx, "cleanup-count-user", "member", secret)
+	token, err := issueAccountTestSession(t, authority, ctx, "cleanup-count-user", "member", secret)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -183,12 +183,12 @@ func TestRefreshSessionCleanupCountsSessionsAndReplayMarkers(t *testing.T) {
 }
 
 func TestRefreshSessionCleanupCountsReplayOnly(t *testing.T) {
-	_, client := newIdentityEmulatorRepository(t)
+	client := accountEmulator(t)
 	defer client.Close()
 	ctx := context.Background()
 	const secret = "cleanup-replay-key-320"
 	authority := NewRefreshSessionAuthority(client, "lwc-320-cleanup-replay")
-	token, err := authority.Issue(ctx, "cleanup-replay-user", "member", secret)
+	token, err := issueAccountTestSession(t, authority, ctx, "cleanup-replay-user", "member", secret)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -212,13 +212,16 @@ func TestRefreshSessionCleanupCountsReplayOnly(t *testing.T) {
 }
 
 func TestDurableRefreshHandlerDoesNotConsumeSessionWhenUserLookupFails(t *testing.T) {
-	_, client := newIdentityEmulatorRepository(t)
+	client := accountEmulator(t)
 	defer client.Close()
 	ctx := context.Background()
 	const secret = "handler-lookup-key-320"
 	authority := NewRefreshSessionAuthority(client, "lwc-320-handler-lookup")
-	token, err := authority.Issue(ctx, "missing-handler-user", "member", secret)
+	token, err := issueAccountTestSession(t, authority, ctx, "missing-handler-user", "member", secret)
 	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := client.Collection("users").Doc("missing-handler-user").Delete(ctx); err != nil {
 		t.Fatal(err)
 	}
 	router := gin.New()
@@ -230,17 +233,18 @@ func TestDurableRefreshHandlerDoesNotConsumeSessionWhenUserLookupFails(t *testin
 	if recorder.Code != http.StatusUnauthorized {
 		t.Fatalf("missing-user refresh status=%d body=%s", recorder.Code, recorder.Body.String())
 	}
+	seedAccountTestUser(t, client, "missing-handler-user", "member")
 	if _, err := authority.Rotate(ctx, token, secret); err != nil {
 		t.Fatalf("refresh handler consumed token before user lookup completed: %v", err)
 	}
 }
 
 func TestRefreshSessionAuthorityRevocationCleanupAndAccountInvalidation(t *testing.T) {
-	_, client := newIdentityEmulatorRepository(t)
+	client := accountEmulator(t)
 	defer client.Close()
 	ctx := context.Background()
 	authority := NewRefreshSessionAuthority(client, "lwc-320-lifecycle")
-	logoutToken, err := authority.Issue(ctx, "logout-user", "member", "lifecycle-key-320")
+	logoutToken, err := issueAccountTestSession(t, authority, ctx, "logout-user", "member", "lifecycle-key-320")
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -251,7 +255,7 @@ func TestRefreshSessionAuthorityRevocationCleanupAndAccountInvalidation(t *testi
 		t.Fatalf("revoked rotation error = %v, want revoked", err)
 	}
 	for range 2 {
-		if _, err := authority.Issue(ctx, "invalidate-user", "member", "lifecycle-key-320"); err != nil {
+		if _, err := issueAccountTestSession(t, authority, ctx, "invalidate-user", "member", "lifecycle-key-320"); err != nil {
 			t.Fatal(err)
 		}
 	}
@@ -259,7 +263,7 @@ func TestRefreshSessionAuthorityRevocationCleanupAndAccountInvalidation(t *testi
 		t.Fatalf("account invalidation revoked=%d error=%v, want 2", revoked, err)
 	}
 
-	expired, err := authority.Issue(ctx, "cleanup-user", "member", "lifecycle-key-320")
+	expired, err := issueAccountTestSession(t, authority, ctx, "cleanup-user", "member", "lifecycle-key-320")
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -282,9 +286,10 @@ func TestRefreshSessionAuthorityRevocationCleanupAndAccountInvalidation(t *testi
 }
 
 func TestRefreshSessionAuthorityLegacyMigrationAndRollbackMode(t *testing.T) {
-	_, client := newIdentityEmulatorRepository(t)
+	client := accountEmulator(t)
 	defer client.Close()
 	ctx := context.Background()
+	seedAccountTestUser(t, client, "legacy-user", "member")
 	legacy, err := GenerateRefreshToken("legacy-user", "member", "migration-key-320")
 	if err != nil {
 		t.Fatal(err)
@@ -312,4 +317,17 @@ func TestRefreshSessionAuthorityLegacyMigrationAndRollbackMode(t *testing.T) {
 	if strings.Contains(data.Data()["token_hash"].(string), legacy) {
 		t.Fatal("durable migration record contains raw refresh token")
 	}
+}
+
+func seedAccountTestUser(t *testing.T, client *firestore.Client, id, role string) {
+	t.Helper()
+	if _, err := client.Collection("users").Doc(id).Set(context.Background(), UserRecord{Email: id + "@account.example.test", Role: role}); err != nil {
+		t.Fatal(err)
+	}
+}
+
+func issueAccountTestSession(t *testing.T, a *RefreshSessionAuthority, ctx context.Context, id, role, secret string) (string, error) {
+	t.Helper()
+	seedAccountTestUser(t, a.fs, id, role)
+	return a.Issue(ctx, id, role, secret)
 }

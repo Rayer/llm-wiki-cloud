@@ -1103,6 +1103,7 @@ test('getAdminUsers and user mutations use admin endpoints without project heade
         email: 'admin@example.com',
         role: 'admin',
         projectCount: 4,
+        status: 'active',
       },
     ]);
     assert.deepEqual(

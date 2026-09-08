@@ -56,11 +56,11 @@ func RefreshHandlerWithSessionAuthority(authority *RefreshSessionAuthority, jwtS
 			return
 		}
 		user, err := GetUser(c.Request.Context(), authority.fs, claims.Sub)
-		if err != nil || user == nil {
+		if err != nil || !user.AllowsVersion(claims.AuthVersion) {
 			c.JSON(http.StatusUnauthorized, gin.H{"error": "invalid refresh token"})
 			return
 		}
-		accessToken, err := GenerateAccessToken(claims.Sub, user.Role, jwtSecret)
+		accessToken, err := GenerateAccessToken(claims.Sub, user.Role, jwtSecret, user.AuthVersion)
 		if err != nil {
 			c.JSON(http.StatusInternalServerError, gin.H{"error": "failed to generate token"})
 			return
@@ -93,17 +93,17 @@ func refreshHandlerWithCookiePolicy(fsClient *firestore.Client, jwtSecret string
 		}
 
 		user, err := getUser(c.Request.Context(), fsClient, claims.Sub)
-		if err != nil || user == nil {
+		if err != nil || !user.AllowsVersion(claims.AuthVersion) {
 			c.JSON(http.StatusUnauthorized, gin.H{"error": "invalid refresh token"})
 			return
 		}
 
-		accessToken, err := GenerateAccessToken(claims.Sub, user.Role, jwtSecret)
+		accessToken, err := GenerateAccessToken(claims.Sub, user.Role, jwtSecret, user.AuthVersion)
 		if err != nil {
 			c.JSON(http.StatusInternalServerError, gin.H{"error": "failed to generate token"})
 			return
 		}
-		refreshToken, err := GenerateRefreshToken(claims.Sub, user.Role, jwtSecret)
+		refreshToken, err := GenerateRefreshToken(claims.Sub, user.Role, jwtSecret, user.AuthVersion)
 		if err != nil {
 			c.JSON(http.StatusInternalServerError, gin.H{"error": "failed to generate token"})
 			return

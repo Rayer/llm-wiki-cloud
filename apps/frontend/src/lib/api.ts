@@ -121,6 +121,7 @@ export type AdminProject = {
 };
 
 export type AdminUser = {
+  status: string;
   id: string;
   name: string;
   email: string;
@@ -503,6 +504,7 @@ function normalizeAdminUser(item: unknown): AdminUser | null {
     name,
     email,
     role: firstString(record, ['role']) ?? 'user',
+    status: firstString(record, ['status']) ?? 'active',
     projectCount: firstNumber(record, ['project_count', 'projectCount', 'projects_count', 'projectsCount']) ?? 0,
   };
 }
@@ -1078,6 +1080,14 @@ export async function updateAdminUserRole(id: string, role: string): Promise<voi
     method: 'PATCH',
     json: true,
     body: JSON.stringify({ role }),
+  });
+}
+
+export async function updateAdminUserStatus(id: string, status: 'active' | 'suspended'): Promise<void> {
+  await adminJson(`/api/v1/admin/users/${encodeURIComponent(id)}`, {
+    method: 'PATCH',
+    json: true,
+    body: JSON.stringify({ status }),
   });
 }
 

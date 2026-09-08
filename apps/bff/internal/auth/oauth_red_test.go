@@ -109,6 +109,7 @@ func TestGoogleOIDCVerifierRejectsAlgorithmIssuerAudienceAzpNonceAndTime(t *test
 				t.Fatal(err)
 			}
 			verifier := newGoogleOIDCVerifier(cfg, server.Client())
+			verifier.now = func() time.Time { return now }
 			if _, err := verifier.Verify(t.Context(), raw, "nonce"); err == nil {
 				t.Fatalf("Verify() accepted %s", test.name)
 			}

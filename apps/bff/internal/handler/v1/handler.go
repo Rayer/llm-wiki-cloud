@@ -9,7 +9,9 @@ import (
 	"time"
 
 	"github.com/gin-gonic/gin"
+	"github.com/rayer/llm-wiki-bff/internal/auth"
 	conceptcache "github.com/rayer/llm-wiki-bff/internal/cache"
+	"github.com/rayer/llm-wiki-bff/internal/config"
 	"github.com/rayer/llm-wiki-bff/internal/firestore"
 	"github.com/rayer/llm-wiki-bff/internal/llm"
 	"github.com/rayer/llm-wiki-bff/internal/query"
@@ -20,6 +22,7 @@ import (
 
 // Handler holds the dependencies for the V1 API.
 type Handler struct {
+	accountLookup auth.AccountLookup
 	store         store.RootStore
 	firestore     *firestore.Client
 	index         *search.Index
@@ -67,7 +70,7 @@ const requestPinnedStoreKey = "lwc.requestPinnedStore"
 
 // New creates a V1 Handler with the given dependencies.
 func New(wikiStore store.RootStore, fs *firestore.Client, idx *search.Index, cache *conceptcache.Cache, llmClient *llm.Client, expander *llm.QueryExpander) *Handler {
-	return &Handler{
+	h := &Handler{
 		store:         wikiStore,
 		firestore:     fs,
 		index:         idx,
@@ -80,6 +83,22 @@ func New(wikiStore store.RootStore, fs *firestore.Client, idx *search.Index, cac
 		listCacheKeys: make(map[string]map[string]struct{}),
 		httpClient:    &http.Client{Timeout: 30 * time.Second},
 	}
+	if fs != nil && fs.Raw() != nil {
+		h.accountLookup = auth.FirestoreAccountLookup(fs.Raw())
+	}
+	return h
+}
+
+// SetAccountLookup supplies the shared account authority (also used by local test adapters).
+func (h *Handler) SetAccountLookup(lookup auth.AccountLookup) { h.accountLookup = lookup }
+
+// AccountAuth preserves the explicit local developer lane; all normal API
+// requests require the live account authority, even when it is unavailable.
+func (h *Handler) AccountAuth(cfg config.Config) gin.HandlerFunc {
+	if cfg.DevJWT && h.accountLookup == nil {
+		return auth.JWTAuth(cfg)
+	}
+	return auth.JWTAuthWithAccountLookup(cfg, h.accountLookup)
 }
 
 func (h *Handler) SetQueryExecutor(executor query.Executor) {
