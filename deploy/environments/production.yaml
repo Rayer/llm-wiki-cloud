@@ -4,6 +4,18 @@ gcp:
   artifact_registry: asia-east1-docker.pkg.dev/llm-wiki-cloud/cloud-run-images
 
 auth:
+  # Verified nonsecret provisioning handles; rollout remains parent/deployer gated.
+  google:
+    enabled: true
+    client_id: 580854833715-1b37asap0uocbdcrighjaorflvj2n94m.apps.googleusercontent.com
+    client_secret_reference: google-oauth-client-prod
+    client_secret_version: "1"
+    issuer: https://accounts.google.com
+    jwks_url: https://www.googleapis.com/oauth2/v3/certs
+    token_url: https://oauth2.googleapis.com/token
+    login_redirect_url: https://auth.rayer.idv.tw/api/v1/auth/google/callback
+    link_redirect_url: https://auth.rayer.idv.tw/api/v1/auth/google/link/callback
+    completion_url: https://wiki.rayer.idv.tw/login
   service_name: llm-wiki-auth
   runtime_service_account: lwc-auth-prod@llm-wiki-cloud.iam.gserviceaccount.com
   network: default

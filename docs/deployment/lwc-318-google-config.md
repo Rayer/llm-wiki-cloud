@@ -5,8 +5,9 @@ with the operator-verified DEV Web client ID and `google-oauth-client-dev:1`
 Secret Manager reference. Provider metadata readback confirmed version 1 is
 ENABLED, the exact redirects/origin below and secret-level runtime IAM.
 This is source configuration, not deployment or real Google UAT acceptance.
-Absence of the optional block retains artifact-only delivery; Production rejects
-the block and its YAML is unchanged.
+Absence of the optional block retains artifact-only delivery. Production support
+and its integrated nonsecret provisioning handles are documented in
+[LWC-319](lwc-319-production-google-config.md).
 
 ## Operator continuation
 
@@ -80,8 +81,10 @@ unavailable baseline or readback must stop recovery for operator reconciliation.
 The existing JWT `latest` reference does not freeze secret payloads; do not
 rotate/delete referenced secrets during this mission.
 
-Production still uses the original artifact-only image update and image-handle
-rollback. No Production runtime configuration is carried over from DEV.
+Production without the optional block retains the original image-only path.
+With its own reviewed block it uses config-aware Auth/BFF delivery and retained
+revision rollback; see [LWC-319](lwc-319-production-google-config.md).
+No Production runtime configuration is carried over from DEV.
 
 ## Offline checks
 
