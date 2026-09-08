@@ -440,3 +440,14 @@ func writeConfig(t *testing.T, contents string) string {
 	}
 	return dir
 }
+
+func TestLoadInvalidRegistrationEnvironmentFailsClosed(t *testing.T) {
+	t.Setenv("REGISTRATION_ENABLED", "invalid")
+	cfg, err := Load(writeConfig(t, "dev_jwt = true\n"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if cfg.RegistrationEnabled == nil || *cfg.RegistrationEnabled {
+		t.Fatal("invalid registration environment reopened signup")
+	}
+}

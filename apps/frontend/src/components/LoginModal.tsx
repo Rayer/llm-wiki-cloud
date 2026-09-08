@@ -33,6 +33,8 @@ export function LoginModal() {
     if (!loginOpen) {
       autoOpenedDigest.current = null;
       /* eslint-disable react-hooks/set-state-in-effect -- reset hidden modal state at the login lifecycle boundary. */
+      setRegistrationEnabled(false);
+      setRegisterOpen(false);
       setAnnouncementOpen(false);
       setAnnouncementMarkdown(null);
       setAnnouncementDigest(null);
@@ -45,7 +47,7 @@ export function LoginModal() {
     void getPublicConfig({ refresh: true })
       .then((config) => {
         if (!cancelled) {
-          setRegistrationEnabled(config.registration_enabled);
+          setRegistrationEnabled(config.registration_enabled === true && config.email_registration_enabled === true);
           setAnnouncementMarkdown(config.announcement_markdown ?? null);
           const digest = typeof config.announcement_digest === 'string' && /^sha256:[0-9a-f]{64}$/.test(config.announcement_digest) ? config.announcement_digest : null;
           setAnnouncementDigest(digest);

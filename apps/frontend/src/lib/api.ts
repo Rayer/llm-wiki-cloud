@@ -1087,14 +1087,36 @@ export async function deleteAdminUser(id: string): Promise<void> {
 
 export type PublicConfig = {
   registration_enabled: boolean;
+  email_registration_enabled: boolean;
+  google_registration_enabled: boolean;
   announcement_markdown?: string | null;
   announcement_digest?: string | null;
 };
 
 export type AdminSettings = {
   registration_enabled: boolean;
+  email_registration_enabled: boolean;
+  google_registration_enabled: boolean;
   announcement_markdown?: string | null;
 };
+
+function registrationSettings(record: Record<string, unknown>) {
+  const preference = (key: string) => !Object.hasOwn(record, key) || record[key] === true;
+  return {
+    registration_enabled: record.registration_enabled === true,
+    email_registration_enabled: preference('email_registration_enabled'),
+    google_registration_enabled: preference('google_registration_enabled'),
+  };
+}
+
+function registrationCapabilities(record: Record<string, unknown>) {
+  const settings = registrationSettings(record);
+  return {
+    ...settings,
+    email_registration_enabled: settings.registration_enabled && settings.email_registration_enabled,
+    google_registration_enabled: settings.registration_enabled && settings.google_registration_enabled,
+  };
+}
 
 let publicConfigCache: PublicConfig | null = null;
 
@@ -1115,15 +1137,14 @@ export async function getPublicConfig(options?: { refresh?: boolean }): Promise<
       credentials: 'omit',
     });
     if (!response.ok) {
-      const closed = { registration_enabled: false };
+      const closed = registrationCapabilities({});
       publicConfigCache = closed;
       return closed;
     }
     const payload = (await response.json().catch(() => null)) as unknown;
     const record = isRecord(payload) ? payload : {};
-    const enabled = asBoolean(record.registration_enabled);
     const config = {
-      registration_enabled: enabled === true,
+      ...registrationCapabilities(record),
       ...(Object.hasOwn(record, 'announcement_markdown')
         ? { announcement_markdown: typeof record.announcement_markdown === 'string' ? record.announcement_markdown : null }
         : {}),
@@ -1134,7 +1155,7 @@ export async function getPublicConfig(options?: { refresh?: boolean }): Promise<
     publicConfigCache = config;
     return config;
   } catch {
-    const closed = { registration_enabled: false };
+    const closed = registrationCapabilities({});
     publicConfigCache = closed;
     return closed;
   }
@@ -1191,12 +1212,11 @@ export async function getBuildInfo(): Promise<BuildInfo> {
 export async function getAdminSettings(): Promise<AdminSettings> {
   const payload = await adminJson('/api/v1/admin/settings');
   const record = isRecord(payload) ? payload : {};
-  const enabled = asBoolean(record.registration_enabled);
-  if (enabled === undefined) {
+  if (typeof record.registration_enabled !== 'boolean') {
     throw new ApiError('Invalid admin settings response', 500);
   }
   return {
-    registration_enabled: enabled,
+    ...registrationSettings(record),
     ...(Object.hasOwn(record, 'announcement_markdown') ? { announcement_markdown: typeof record.announcement_markdown === 'string' ? record.announcement_markdown : null } : {}),
   } as AdminSettings;
 }
@@ -1210,13 +1230,12 @@ export async function updateAdminSettings(
     body: JSON.stringify(settings),
   });
   const record = isRecord(payload) ? payload : {};
-  const enabled = asBoolean(record.registration_enabled);
-  if (enabled === undefined) {
+  if (typeof record.registration_enabled !== 'boolean') {
     throw new ApiError('Invalid admin settings response', 500);
   }
   clearPublicConfigCache();
   return {
-    registration_enabled: enabled,
+    ...registrationSettings(record),
   } as AdminSettings;
 }
 
@@ -1232,7 +1251,7 @@ export async function publishAnnouncement(announcement_markdown: string): Promis
   }
   clearPublicConfigCache();
   return {
-    registration_enabled: record.registration_enabled,
+    ...registrationSettings(record),
     announcement_markdown: record.announcement_markdown,
   };
 }

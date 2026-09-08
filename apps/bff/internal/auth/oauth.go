@@ -704,7 +704,7 @@ func (s *GoogleOAuthService) completeLoginCallback(c *gin.Context, browserValue 
 		return
 	}
 	if s.gate != nil {
-		enabled, err := s.gate.IsRegistrationEnabled(c.Request.Context())
+		enabled, err := s.gate.IsRegistrationEnabled(c.Request.Context(), "google")
 		if err != nil {
 			s.redirectOAuthFailure(c, browserValue, OAuthFlowLogin, oauthOutcomeUnavailable)
 			return

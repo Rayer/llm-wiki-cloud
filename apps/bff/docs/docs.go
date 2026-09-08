@@ -1289,7 +1289,7 @@ const docTemplate = `{
         },
         "/api/v1/public/config": {
             "get": {
-                "description": "Returns the registration flag and currently published announcement Markdown.",
+                "description": "Returns method-specific new-account registration capabilities and currently published announcement Markdown.",
                 "produces": [
                     "application/json"
                 ],
@@ -2522,7 +2522,16 @@ const docTemplate = `{
                 "announcement_markdown": {
                     "type": "string"
                 },
+                "email_registration_enabled": {
+                    "description": "Effective email capability: master AND saved email preference.",
+                    "type": "boolean"
+                },
+                "google_registration_enabled": {
+                    "description": "Effective Google capability: master AND saved Google preference.",
+                    "type": "boolean"
+                },
                 "registration_enabled": {
+                    "description": "Master switch for new-account registration.",
                     "type": "boolean"
                 }
             }
@@ -2533,7 +2542,16 @@ const docTemplate = `{
                 "announcement_markdown": {
                     "type": "string"
                 },
+                "email_registration_enabled": {
+                    "description": "Saved email preference, retained while the master is off.",
+                    "type": "boolean"
+                },
+                "google_registration_enabled": {
+                    "description": "Saved Google preference, retained while the master is off.",
+                    "type": "boolean"
+                },
                 "registration_enabled": {
+                    "description": "Master switch for new-account registration.",
                     "type": "boolean"
                 }
             }
@@ -2541,7 +2559,16 @@ const docTemplate = `{
         "syssettings.patchSettingsRequest": {
             "type": "object",
             "properties": {
+                "email_registration_enabled": {
+                    "description": "Optional saved email preference. Omission retains its current value.",
+                    "type": "boolean"
+                },
+                "google_registration_enabled": {
+                    "description": "Optional saved Google preference. Omission retains its current value.",
+                    "type": "boolean"
+                },
                 "registration_enabled": {
+                    "description": "Optional master switch. Omission retains its current value.",
                     "type": "boolean"
                 }
             }

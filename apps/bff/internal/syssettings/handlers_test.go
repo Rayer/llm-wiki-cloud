@@ -271,7 +271,7 @@ func TestAdminSettingsRejectsDraftAndExposesOnlyPublishedMarkdown(t *testing.T) 
 	assert.Equal(t, http.StatusOK, rec.Code)
 	var body map[string]interface{}
 	assert.NoError(t, json.Unmarshal(rec.Body.Bytes(), &body))
-	assert.Equal(t, map[string]interface{}{"registration_enabled": true, "announcement_markdown": "visible"}, body)
+	assert.Equal(t, map[string]interface{}{"registration_enabled": true, "email_registration_enabled": true, "google_registration_enabled": true, "announcement_markdown": "visible"}, body)
 
 	rec = httptest.NewRecorder()
 	req = httptest.NewRequest(http.MethodPatch, "/api/v1/admin/settings", strings.NewReader(`{"announcement_markdown":"stale"}`))

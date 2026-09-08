@@ -71,7 +71,9 @@
     "return": "Return to sign in"
   },
   "Admin": {
-    "registrationEnabled": "Allow new user registration"
+    "registrationEnabled": "Allow new user registration",
+    "emailRegistrationEnabled": "Allow new accounts with email",
+    "googleRegistrationEnabled": "Allow new accounts with Google"
   },
   "Detail": {
     "backTo": "Back to {label}",
