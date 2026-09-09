@@ -2,6 +2,12 @@ import type { PipelineExecution } from './api';
 
 export const PIPELINE_STEPS = ['ingest', 'compile', 'lint', 'publish'] as const;
 
+export function formatPipelineDuration(duration: string | number, locale = 'zh-TW'): string {
+  const seconds = typeof duration === 'number' ? duration : /^\d+(?:\.\d+)?s$/.test(duration) ? Number(duration.slice(0, -1)) : NaN;
+  if (!Number.isFinite(seconds)) return String(duration);
+  return new Intl.NumberFormat(locale, { style: 'unit', unit: 'second', unitDisplay: 'short', maximumFractionDigits: seconds < 1 ? 2 : 0 }).format(seconds);
+}
+
 const PIPELINE_STAGE_LABELS: Record<string, string> = {
   input_materialization: 'Input materialization',
   synto_migration: 'Synto migration',

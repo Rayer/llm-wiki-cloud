@@ -66,6 +66,8 @@ function getUniqueQueryChips() {
 
 beforeEach(() => {
   localStorage.clear();
+  window.history.replaceState(null, '', '/');
+  mocks.currentProject = { id: 'project-a', name: 'Project A' };
   mocks.getConcepts.mockResolvedValue([]);
   mocks.searchWiki.mockResolvedValue({ results: [], aiAnswer: '', citations: [] });
   mocks.getStatus.mockResolvedValue(statusWithQueries());
@@ -93,7 +95,7 @@ describe('LWC-249 random query chips', () => {
     expect(chipButtons.every((button) => /^query-[1-9]$/.test(button.textContent ?? ''))).toBe(true);
   });
 
-  it('keeps the sample stable through same-project churn, edits, chip fill, loading, and completion', async () => {
+  it('keeps the sample stable before searching and hides suggestions for loading and results', async () => {
     let resolveSearch!: (response: { results: []; aiAnswer: string; citations: [] }) => void;
     const pendingSearch = new Promise<{ results: []; aiAnswer: string; citations: [] }>((resolve) => {
       resolveSearch = resolve;
@@ -114,11 +116,11 @@ describe('LWC-249 random query chips', () => {
     expect(chipLabels()).toEqual(initial);
 
     await act(async () => fireEvent.click(screen.getByRole('button', { name: 'Demo.search' })));
-    expect(chipLabels()).toEqual(initial);
+    expect(chipLabels()).toEqual([]);
     expect(screen.getByRole('button', { name: 'Demo.search' })).toHaveProperty('disabled', true);
     await act(async () => resolveSearch({ results: [], aiAnswer: '', citations: [] }));
     await waitFor(() => expect(screen.getByRole('button', { name: 'Demo.search' })).toHaveProperty('disabled', false));
-    expect(chipLabels()).toEqual(initial);
+    expect(chipLabels()).toEqual([]);
   });
 
   it('samples afresh on remount and active-project identity change', async () => {

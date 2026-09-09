@@ -1,5 +1,10 @@
 import { resolveWikilink } from './wikilinks.ts';
 
+/** Remove the leading document title, including whitespace from frontmatter removal. */
+export function stripLeadingHeading(content: string): string {
+  return content.trimStart().replace(/^# [^\r\n]+(?:\r?\n|$)/, '').replace(/^[^\r\n]+\r?\n=+[ \t]*(?:\r?\n|$)/, '').trimStart();
+}
+
 // Inline markdown token regex — wikilink uses non-greedy match (LWC-134)
 export const INLINE_TOKEN_REGEX =
   /(`[^`]+`|\*\*[^*]+\*\*|!\[[^\]]*\]\(.+\)|\[\[[^\]]+?\]\]|\[[^\]]+\]\([^)]+\))/g;

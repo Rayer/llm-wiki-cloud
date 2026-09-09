@@ -418,6 +418,12 @@ export function PipelineClient() {
     [effectiveQuota, executionRunning, isDemoSession, t],
   );
 
+  if (isDemoSession) {
+    return (
+      <p className="border-t border-white/10 pt-5 text-sm leading-6 text-zinc-400">{t('Demo.importHint')}</p>
+    );
+  }
+
   return (
     <>
       <Surface variant="glass" as="section" className="p-5">
@@ -570,6 +576,9 @@ export function PipelineClient() {
             <form onSubmit={handleScrape} className="mt-3 flex gap-2">
               <input
                 type="url"
+                aria-label={t('Pipeline.scrapeUrl')}
+                name="sourceUrl"
+                autoComplete="off"
                 value={scrapeUrlText}
                 onChange={(e) => setScrapeUrlText(e.target.value)}
                 placeholder="https://example.com/article"

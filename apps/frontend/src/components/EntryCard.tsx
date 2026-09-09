@@ -35,22 +35,18 @@ export function EntryCard({
       : '';
 
   return (
-    <NavigationLink href={href} className="group block">
+    <NavigationLink href={href} className="group block focus-visible:outline focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-emerald-400">
       <Surface
         variant="glass"
         className={`animate-fade-in p-5 transition duration-200 [animation-fill-mode:backwards] hover:-translate-y-0.5 hover:border-emerald-400/30 hover:shadow-lg hover:shadow-emerald-500/5 ${typeBorderClass}`}
         style={{ animationDelay: `${index * 50}ms` }}
       >
         <div className="flex flex-wrap items-center gap-2">
-          {entryType ? (
-            <Badge variant={entryType}>
-              {entryType === 'source' ? t('Source.singular') : t('Entry.singular')}
-            </Badge>
-          ) : null}
           <h2 className="text-lg font-semibold text-white group-hover:text-emerald-50">
             {entry.title}
           </h2>
-          <StatusBadge status={entry.status} />
+          {entry.status === 'draft' ? <StatusBadge status={entry.status} /> : null}
+          <span className="sr-only">{entryType === 'source' ? t('Source.singular') : t('Entry.singular')}</span>
           {entry.date ? <Badge variant="muted">{entry.date}</Badge> : null}
         </div>
         {entry.description ? (

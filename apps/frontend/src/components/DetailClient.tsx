@@ -5,7 +5,6 @@ import { ChevronLeft, FileText } from 'lucide-react';
 import { MarkdownView } from './MarkdownView';
 import { ErrorState, LoadingState } from './States';
 import { Badge } from './ui/Badge';
-import { Surface } from './ui/Surface';
 import { getConcepts, type WikiEntry } from '@/lib/api';
 import { useT } from '@/lib/i18n';
 import { primaryRawFileName, rawFileNameFromSource } from '@/lib/raw-file-name';
@@ -62,7 +61,7 @@ export function DetailClient({
     };
   }, [entryType, load, reloadVersion, slug]);
 
-  if (loading) return <LoadingState label={`Loading ${label}`} />;
+  if (loading) return <LoadingState label={t('Detail.loading')} />;
   if (error) return <ErrorState message={error} />;
   if (!entry) return <ErrorState message="Entry not found." />;
 
@@ -79,7 +78,7 @@ export function DetailClient({
         className="inline-flex items-center gap-1.5 text-sm font-medium text-zinc-400 transition hover:text-emerald-300"
       >
         <ChevronLeft className="size-4" />
-        {t('Detail.backTo', { label })}
+        {t('Detail.backTo', { label: entryType === 'source' ? t('Source.plural') : entryType === 'concept' ? t('Entry.plural') : label })}
       </NavigationLink>
 
       <header className="border-b border-white/10 pb-6">
@@ -113,8 +112,8 @@ export function DetailClient({
         ) : null}
       </header>
 
-      {entry.frontmatter ? <Frontmatter data={entry.frontmatter} /> : null}
       <MarkdownView content={entry.content} existingConceptSlugs={existingConceptSlugs} />
+      {entry.frontmatter ? <Frontmatter data={entry.frontmatter} /> : null}
       {entryType === 'source' && entry.annotationAllowed && entry.id ? (
         <SourceAnnotationEditor sourceId={entry.id} onSaved={reloadEntry} />
       ) : null}
@@ -123,25 +122,26 @@ export function DetailClient({
 }
 
 function Frontmatter({ data }: { data: Record<string, unknown> }) {
+  const { t } = useT();
   const entries = Object.entries(data).filter(([, value]) => value !== undefined && value !== null);
   if (entries.length === 0) return null;
 
   return (
-    <Surface variant="glass" className="p-5">
-      <h2 className="text-xs font-semibold uppercase tracking-wider text-zinc-500">
-        Metadata
-      </h2>
+    <details className="rounded-[var(--radius-lg)] border border-white/10 bg-zinc-900/40 p-5">
+      <summary className="cursor-pointer text-sm font-medium text-zinc-300 focus-visible:outline focus-visible:outline-2 focus-visible:outline-emerald-400">
+        {t('Detail.documentInfo')}
+      </summary>
       <dl className="mt-4 grid gap-4 sm:grid-cols-2">
         {entries.map(([key, value]) => (
           <div key={key}>
-            <dt className="text-xs uppercase tracking-wider text-zinc-600">{key}</dt>
+            <dt className="text-xs uppercase tracking-wider text-zinc-400">{key}</dt>
             <dd className="mt-1 break-words text-sm text-zinc-200">
               {renderFrontmatterValue(key, value)}
             </dd>
           </div>
         ))}
       </dl>
-    </Surface>
+    </details>
   );
 }
 
