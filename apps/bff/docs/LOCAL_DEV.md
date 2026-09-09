@@ -64,6 +64,13 @@ and local keyword retrieval require no provider key; generated answers and a
 full provider-backed pipeline require a configured LLM provider. Do not treat a
 local UI check as evidence that provider-backed generation was tested.
 
+During the LWC-326 local UI check (2026-09-10), `/api/v1/pipeline/status`
+returned HTTP 500 with `pipeline status unavailable`. Search, document reading,
+and `/api/v1/status` still worked; the status page showed no recorded runs.
+The cause of the pipeline-status failure was not diagnosed in this UI change.
+Treat pipeline execution, quota gating, and generated answers as unverified in
+this fixture-only demo.
+
 ## Isolated ports / multiple worktrees
 
 Override all three ports to avoid colliding with another checkout. Auth and BFF
