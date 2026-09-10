@@ -234,7 +234,7 @@ function ShellContent({ children }: { children: React.ReactNode }) {
                 >
                   <span className="inline-flex items-center gap-2">
                     <Pencil className="size-4" />
-                    Rename project
+                    {t('Shell.renameProject')}
                   </span>
                 </button>
               )}
@@ -259,20 +259,22 @@ function ShellContent({ children }: { children: React.ReactNode }) {
                 <p className="truncate text-sm font-medium text-white">
                   {user?.email ?? 'User'}
                 </p>
-                <button
-                  type="button"
-                  onClick={() => setAccountSettingsOpen(true)}
-                  className="inline-flex min-h-11 items-center text-xs text-zinc-500 transition hover:text-zinc-300"
-                >
-                  Account settings
-                </button>
-                <button
-                  type="button"
-                  onClick={() => void signOut()}
-                  className="inline-flex min-h-11 items-center text-xs text-zinc-500 transition hover:text-zinc-300"
-                >
-                  {t('Shell.logout')}
-                </button>
+                <div className="flex flex-wrap items-center gap-x-3">
+                  <button
+                    type="button"
+                    onClick={() => setAccountSettingsOpen(true)}
+                    className="inline-flex min-h-11 items-center text-xs text-zinc-500 transition hover:text-zinc-300"
+                  >
+                    {t('AccountSettings.title')}
+                  </button>
+                  <button
+                    type="button"
+                    onClick={() => void signOut()}
+                    className="inline-flex min-h-11 items-center text-xs text-zinc-500 transition hover:text-zinc-300"
+                  >
+                    {t('Shell.logout')}
+                  </button>
+                </div>
               </div>
               <button
                 type="button"
@@ -318,6 +320,12 @@ function ShellContent({ children }: { children: React.ReactNode }) {
           <ProjectEmptyState />
         ) : token && currentProject ? (
           <div className="mx-auto max-w-6xl px-4 py-8 sm:px-6 lg:px-10">
+            {isDemoSession ? (
+              <div className="mb-6 flex flex-wrap items-center gap-x-3 gap-y-1 rounded-lg border border-emerald-400/20 bg-emerald-400/5 px-4 py-3 text-sm">
+                <span className="font-semibold text-emerald-300">{t('Demo.mode')}</span>
+                <span className="text-zinc-300">{t('Demo.scope')}</span>
+              </div>
+            ) : null}
             {children}
           </div>
         ) : null}

@@ -295,7 +295,7 @@ describe('LWC-216 citation preview modal behavior', () => {
     await waitFor(() => expect(screen.getByRole('button', { name: 'Keep it pending' })).not.toBeNull());
     fireEvent.click(screen.getByRole('button', { name: 'Keep it pending' }));
     const dialog = await screen.findByRole('dialog');
-    fireEvent.click(within(dialog).getByRole('button', { name: 'Close' }));
+    fireEvent.click(within(dialog).getByRole('button', { name: 'Raw.close' }));
 
     detail.resolve(conceptEntry({ title: 'Late', content: 'late-content', id: 'c-id', slug: 'close-canonical' }));
     await waitFor(() => expect(screen.queryByRole('dialog')).toBeNull());

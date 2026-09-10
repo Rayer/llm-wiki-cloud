@@ -208,14 +208,14 @@ describe('LWC-248 home search submission contract', () => {
 
     expect(mocks.searchWiki).toHaveBeenCalledTimes(1);
     expect(mocks.searchWiki).toHaveBeenLastCalledWith('topic epsilon', 'wiki');
-    expect(screen.getByText('wiki mode')).toBeDefined();
+    expect(screen.getByText('Demo.wiki', { selector: 'span' })).toBeDefined();
     expect(replaceStateSpy).toHaveBeenCalledTimes(1);
 
     await act(async () => {
       fireEvent.click(fullMode);
     });
     expect(mocks.searchWiki).toHaveBeenCalledTimes(1);
-    expect(screen.getByText('wiki mode')).toBeDefined();
+    expect(screen.getByText('Demo.wiki', { selector: 'span' })).toBeDefined();
 
     await act(async () => {
       fireEvent.click(searchButton);
@@ -224,7 +224,7 @@ describe('LWC-248 home search submission contract', () => {
     expect(mocks.searchWiki).toHaveBeenCalledTimes(2);
     expect(mocks.searchWiki).toHaveBeenNthCalledWith(1, 'topic epsilon', 'wiki');
     expect(mocks.searchWiki).toHaveBeenNthCalledWith(2, 'topic epsilon', 'full');
-    expect(screen.getByText('full mode')).toBeDefined();
+    expect(screen.getByText('Demo.full', { selector: 'span' })).toBeDefined();
     expect(replaceStateSpy).toHaveBeenCalledTimes(2);
     expect(replaceStateSpy).toHaveBeenCalledWith(null, '', '/?q=topic+epsilon&mode=full');
   });

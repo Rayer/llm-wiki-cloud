@@ -421,6 +421,10 @@ export function PipelineClient() {
   return (
     <>
       <Surface variant="glass" as="section" className="p-5">
+        {isDemoSession ? (
+          <p className="text-sm leading-6 text-zinc-400">{t('Demo.importHint')}</p>
+        ) : (
+        <>
         <h2 className="text-lg font-semibold text-white">{t('Pipeline.addContent')}</h2>
         <p className="mt-1 text-sm text-zinc-400">
           {t('Pipeline.addContentDescription')}
@@ -570,6 +574,9 @@ export function PipelineClient() {
             <form onSubmit={handleScrape} className="mt-3 flex gap-2">
               <input
                 type="url"
+                aria-label={t('Pipeline.scrapeUrl')}
+                name="sourceUrl"
+                autoComplete="off"
                 value={scrapeUrlText}
                 onChange={(e) => setScrapeUrlText(e.target.value)}
                 placeholder="https://example.com/article"
@@ -586,9 +593,12 @@ export function PipelineClient() {
           </div>
         </div>
 
-        {/* Pipeline Trigger */}
+        </>
+        )}
+
+        {/* Pipeline Trigger stays visible in Demo so the manual workflow remains discoverable. */}
         <div className="mt-4 rounded-[var(--radius-md)] border border-emerald-400/20 bg-emerald-400/[0.04] p-4">
-          <div className="flex items-center justify-between gap-4">
+          <div className="flex flex-wrap items-center justify-between gap-4">
             <div>
               <h3 className="flex items-center gap-2 text-sm font-semibold text-emerald-300">
                 <Cog className="size-4" /> {t('Pipeline.pipeline')}
@@ -601,7 +611,7 @@ export function PipelineClient() {
               disabled={blocked}
               title={helper || undefined}
               aria-disabled={blocked}
-              className="rounded-md bg-white px-4 py-2 text-sm font-semibold text-black transition hover:bg-emerald-200 disabled:cursor-not-allowed disabled:opacity-50"
+              className="min-h-11 shrink-0 rounded-md bg-white px-4 py-2 text-sm font-semibold text-black transition hover:bg-emerald-200 disabled:cursor-not-allowed disabled:opacity-50"
             >
               {loading === 'pipeline' ? t('Pipeline.running') : t('Pipeline.runPipeline')}
             </button>

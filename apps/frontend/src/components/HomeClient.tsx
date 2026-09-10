@@ -20,7 +20,7 @@ import {
 } from '@/lib/api';
 import { useT } from '@/lib/i18n';
 import { getExactRawCitationRange } from '@/lib/markdown-citations';
-import { resolveWikilinksInMarkdown } from '@/lib/markdown-inline';
+import { resolveWikilinksInMarkdown, stripLeadingHeading } from '@/lib/markdown-inline';
 import { EmptyState, ErrorState, LoadingState } from './States';
 import { useWorkspace } from './WorkspaceProvider';
 import { Badge } from './ui/Badge';
@@ -387,18 +387,19 @@ export function HomeClient() {
   const resultType = (type?: string): 'source' | 'concept' =>
     type === 'source' ? 'source' : 'concept';
   const suggestedQueries = status?.suggestedQueries ?? [];
+  const modalHref = modal ? entryDetailHref(modal) : null;
   const searchButtonCueState = searchButtonCue > 0 ? searchButtonCue.toString() : undefined;
 
   return (
-    <div className="space-y-12">
-      <section className="relative overflow-hidden border-b border-white/10 pb-10 pt-10 sm:pt-14">
+    <div className={searched ? 'space-y-6' : 'space-y-12'}>
+      <section className={`relative overflow-hidden border-b border-white/10 ${searched ? 'pb-6' : 'pb-10 pt-10 sm:pt-14'}`}>
         <div aria-hidden="true" className="pointer-events-none absolute -right-32 -top-44 size-[34rem] rounded-full bg-emerald-400/10 blur-3xl" />
-        <p className="font-mono text-[11px] uppercase tracking-[0.22em] text-emerald-300/90">{t('Demo.heroSubtitle')}</p>
-        <h1 className="font-serif relative mt-4 max-w-3xl text-[1.95rem] font-medium leading-[1.2] tracking-tight text-[#eeeae4] text-pretty sm:text-[2.7rem]">
+        {!searched ? <p className="font-mono text-[11px] uppercase tracking-[0.22em] text-emerald-300/90">{t('Demo.heroSubtitle')}</p> : null}
+        <h1 className={searched ? 'sr-only' : 'font-serif relative mt-4 max-w-3xl text-[1.95rem] font-medium leading-[1.2] tracking-tight text-[#eeeae4] text-pretty sm:text-[2.7rem]'}>
           {t('Demo.heading')}
         </h1>
 
-        <form onSubmit={onSubmit} className="relative mt-10 w-full max-w-4xl overflow-hidden rounded-[var(--radius-lg)] border border-white/15 bg-zinc-900/65 shadow-xl shadow-black/20 backdrop-blur-sm focus-within:border-emerald-300/70">
+        <form onSubmit={onSubmit} className={`relative ${searched ? '' : 'mt-10'} w-full overflow-hidden rounded-[var(--radius-lg)] border border-white/15 bg-zinc-900/65 shadow-xl shadow-black/20 backdrop-blur-sm focus-within:border-emerald-300/70`}>
           <div className="flex items-center gap-3 px-4 py-3 sm:px-5">
             <input
               name="query"
@@ -427,6 +428,7 @@ export function HomeClient() {
                   type="button"
                   onClick={() => setMode(item)}
                   aria-pressed={mode === item}
+                  aria-describedby="search-mode-hint"
                   className={`min-h-10 rounded px-3 font-medium transition focus-visible:outline focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-emerald-400 ${
                     mode === item ? 'bg-emerald-400/15 text-emerald-200 underline decoration-emerald-400/80 decoration-1 underline-offset-4' : 'text-zinc-500 hover:text-zinc-200'
                   }`}
@@ -444,7 +446,8 @@ export function HomeClient() {
               <span className="ml-3 hidden text-zinc-500 sm:inline">⌘&nbsp;K</span>
             </p>
           </div>
-          {suggestedQueryChips.length > 0 ? (
+          <p id="search-mode-hint" className="px-5 pb-3 text-sm leading-6 text-zinc-400">{t(`Demo.${mode}Hint`)}</p>
+          {!searched && suggestedQueryChips.length > 0 ? (
             <div className="border-t border-white/10 px-4 py-2 sm:px-5">
               <button
                 type="button"
@@ -519,10 +522,10 @@ export function HomeClient() {
         {searched ? (
           <div className="flex items-center justify-between gap-4">
             <h2 className="text-lg font-semibold text-white">{t('Demo.results')}</h2>
-            <Badge variant="muted">{submittedMode} mode</Badge>
+            <Badge variant="muted">{t(`Demo.${submittedMode}`)}</Badge>
           </div>
         ) : null}
-        {loading ? <LoadingState label="Searching" /> : null}
+        {loading ? <LoadingState label={t('Demo.searching')} /> : null}
         {error ? <ErrorState message={error} /> : null}
         {!loading && !error && aiAnswer ? (
           <article className="relative overflow-hidden rounded-[var(--radius-lg)] border border-emerald-400/20 bg-emerald-400/[0.06] p-5 backdrop-blur-sm">
@@ -613,7 +616,7 @@ export function HomeClient() {
                   ) : null}
                 </div>
                 <p className="mt-3 line-clamp-4 text-sm leading-6 text-zinc-400">
-                  {result.excerpt ?? result.description ?? 'Open this wiki entry.'}
+                  {result.excerpt ?? result.description ?? t('Demo.openEntry')}
                 </p>
               </button>
             );
@@ -637,75 +640,58 @@ export function HomeClient() {
         >
           <Surface
             variant="elevated"
-            className="relative max-h-[85vh] w-full max-w-2xl overflow-y-auto p-6 animate-scale-in"
+            className="relative flex max-h-[85dvh] w-full max-w-2xl flex-col overflow-hidden animate-scale-in"
             onClick={(e) => e.stopPropagation()}
           >
-            <button
-              onClick={closeCitationModal}
-              autoFocus
-              className="absolute right-4 top-4 rounded-md p-1 text-zinc-400 transition hover:bg-white/10 hover:text-white"
-              aria-label="Close"
-            >
-              <svg xmlns="http://www.w3.org/2000/svg" width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
-                <line x1="18" y1="6" x2="6" y2="18"/><line x1="6" y1="6" x2="18" y2="18"/>
-              </svg>
-            </button>
+            <div className="shrink-0 border-b border-white/10 p-4 sm:p-6">
+              <button
+                onClick={closeCitationModal}
+                autoFocus
+                className="absolute right-3 top-3 inline-flex min-h-11 min-w-11 items-center justify-center rounded-md text-zinc-400 transition hover:bg-white/10 hover:text-white"
+                aria-label={t('Raw.close')}
+              >
+                <svg xmlns="http://www.w3.org/2000/svg" width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
+                  <line x1="18" y1="6" x2="6" y2="18"/><line x1="6" y1="6" x2="18" y2="18"/>
+                </svg>
+              </button>
 
-            <Badge variant={modal.type === 'concept' ? 'concept' : 'source'}>
-              {modal.type === 'concept' ? t('Entry.singular') : t('Source.singular')}
-            </Badge>
-            <h2 id="citation-modal-title" className="text-2xl font-semibold text-white">
-              {modal.title}
-            </h2>
+              <Badge variant={modal.type === 'concept' ? 'concept' : 'source'}>
+                {modal.type === 'concept' ? t('Entry.singular') : t('Source.singular')}
+              </Badge>
+              <h2 id="citation-modal-title" className="mt-2 break-words pr-10 text-2xl font-semibold text-white">
+                {modal.title}
+              </h2>
+              {modalHref ? (
+                <NavigationLink href={modalHref} onClick={closeCitationModal} className="mt-2 inline-flex min-h-11 items-center text-sm font-medium text-emerald-300 underline underline-offset-4 hover:text-emerald-200">
+                  {t('Detail.openFullPage')}
+                </NavigationLink>
+              ) : null}
+            </div>
 
-            {modalLoading ? (
-              <LoadingState label={t('Detail.citationLoading')} />
-            ) : modal?.error ? (
-              <div className="rounded-md border border-amber-300/30 bg-amber-500/10 p-4">
-                <p role="alert" className="text-sm text-amber-100">{modal.error}</p>
-                <button
-                  type="button"
-                  className="mt-3 rounded-md border border-amber-300/40 px-3 py-2 text-sm text-amber-100"
-                  onClick={retryCitation}
-                  aria-label={t('Detail.retryCitation')}
-                >
-                  {t('Detail.retryCitation')}
-                </button>
-              </div>
-            ) : (
-              <>
-                <div className="mt-4 border-t border-white/10 pt-4">
-                  <MarkdownBody content={stripLeadingHeading(modal.content)} />
+            <div className="min-h-0 overflow-y-auto overscroll-contain p-4 sm:p-6">
+              {modalLoading ? (
+                <LoadingState label={t('Detail.citationLoading')} />
+              ) : modal?.error ? (
+                <div className="rounded-md border border-amber-300/30 bg-amber-500/10 p-4">
+                  <p role="alert" className="text-sm text-amber-100">{modal.error}</p>
+                  <button
+                    type="button"
+                    className="mt-3 rounded-md border border-amber-300/40 px-3 py-2 text-sm text-amber-100"
+                    onClick={retryCitation}
+                    aria-label={t('Detail.retryCitation')}
+                  >
+                    {t('Detail.retryCitation')}
+                  </button>
                 </div>
-                {(() => {
-                  const href = entryDetailHref(modal);
-                  return href ? (
-                    <div className="mt-6 border-t border-white/10 pt-4">
-                      <NavigationLink
-                        href={href}
-                        className="text-sm font-medium text-emerald-300 hover:text-emerald-200"
-                        onClick={closeCitationModal}
-                      >
-                        {t('Detail.openFullPage')}
-                      </NavigationLink>
-                    </div>
-                  ) : null;
-                })()}
-              </>
-            )}
+              ) : (
+                <MarkdownBody content={stripLeadingHeading(modal.content)} />
+              )}
+            </div>
           </Surface>
         </div>
       ) : null}
     </div>
   );
-}
-
-// Strip leading "# Title" or "Title\n===" from markdown to avoid
-// double title when the page already shows it as <h1>/<h2>.
-function stripLeadingHeading(md: string): string {
-  const h1 = /^# .+\n\n?/;
-  const h1u = /^.+\n=+\n\n?/;
-  return md.replace(h1, '').replace(h1u, '').trimStart();
 }
 
 function MarkdownBody({ content }: { content: string }) {

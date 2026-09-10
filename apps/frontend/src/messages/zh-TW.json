@@ -81,7 +81,9 @@
     "citationLoading": "正在載入引用內容…",
     "citationLoadFailed": "無法載入引用內容，請再試一次。",
     "retryCitation": "重試載入引用",
-    "openFullPage": "開啟完整頁面"
+    "openFullPage": "開啟完整頁面",
+    "loading": "正在載入文件",
+    "documentInfo": "文件資訊"
   },
   "Entry": {
     "singular": "條目",
@@ -156,7 +158,8 @@
     "logout": "登出",
     "demoDisabled": "Demo 模式 — 無法新增專案",
     "ok": "確定",
-    "cancel": "取消"
+    "cancel": "取消",
+    "renameProject": "重新命名專案"
   },
   "Command": {
     "placeholder": "搜尋或跳轉…",
@@ -190,7 +193,15 @@
     "pipeline": "Pipeline",
     "runPipeline": "執行 Pipeline",
     "pipelineDesc": "Pipeline 會執行：",
-    "restricted": "Demo 模式不提供此功能"
+    "restricted": "Demo 模式不提供此功能",
+    "mode": "Demo 模式",
+    "scope": "可搜尋、閱讀條目與檢視引用；範例資料為唯讀。",
+    "importHint": "想建立自己的知識庫？登入個人帳號後，即可上傳文件、擷取網址並整理成條目。",
+    "wikiHint": "Wiki：根據此專案的知識庫內容回答，並提供引用。",
+    "fullHint": "完整：結合知識庫與模型的一般知識；回答可能包含未經來源驗證的內容。",
+    "searching": "正在搜尋",
+    "openEntry": "開啟條目以閱讀完整內容。",
+    "noResults": "找不到相關條目，請嘗試其他關鍵字。"
   },
   "List": {
     "entriesTitle": "條目",
@@ -201,11 +212,13 @@
     "noSearchMatches": "找不到符合「{query}」的 {title}。",
     "noConcepts": "尚無條目。請先執行 Pipeline。",
     "noSources": "尚無來源。請先上傳內容並執行 Pipeline。",
-    "noEntries": "尚無條目。請先新增內容並執行 Pipeline。"
+    "noEntries": "尚無條目。請先新增內容並執行 Pipeline。",
+    "clearSearch": "清除搜尋",
+    "matchCount": "{count} / {total}"
   },
   "Status": {
-    "title": "Pipeline Status",
-    "noStatus": "No pipeline status available.",
+    "title": "處理狀態",
+    "noStatus": "尚無處理狀態。",
     "userId": "使用者 ID",
     "projectId": "專案 ID",
     "productVersion": "BFF 產品版本",
@@ -215,7 +228,47 @@
     "imageTag": "映像標籤",
     "cloudRunService": "Cloud Run 服務",
     "cloudRunRevision": "Cloud Run 修訂版本",
-    "buildInfoUnavailable": "無法取得建置資訊。"
+    "buildInfoUnavailable": "無法取得建置資訊。",
+    "description": "知識庫內容數量與最近一次處理進度。",
+    "loading": "正在載入狀態",
+    "refreshPaused": "自動更新已暫停，顯示的狀態可能不是最新。",
+    "retryRefresh": "重新更新狀態",
+    "showDetails": "顯示開發者資訊",
+    "hideDetails": "收合開發者資訊",
+    "log": "處理紀錄",
+    "openLog": "開啟處理紀錄",
+    "loadingLog": "正在載入處理紀錄…",
+    "latestLines": "只看最新紀錄",
+    "fullLog": "顯示完整紀錄",
+    "emptyLog": "尚無處理紀錄內容。",
+    "timeline": "處理進度",
+    "idle": "尚未執行",
+    "noRuns": "尚無執行紀錄。",
+    "SUCCEEDED": "已完成",
+    "RUNNING": "執行中",
+    "FAILED": "失敗",
+    "ingest": "匯入",
+    "compile": "整理",
+    "lint": "檢查",
+    "publish": "發布",
+    "failedStage": "失敗階段",
+    "stageUnavailable": "失敗 — 未提供階段資訊",
+    "errorClass": "錯誤類型",
+    "detailCode": "診斷代碼",
+    "childCommand": "執行指令",
+    "exitCode": "結束代碼",
+    "started": "開始時間",
+    "finished": "完成時間",
+    "duration": "耗時",
+    "logAvailability": {
+      "pending": "處理紀錄仍在準備中。",
+      "missing": "尚無可用的處理紀錄。",
+      "unavailable": "目前無法取得處理紀錄。",
+      "unsupported_execution_status": "此執行狀態不提供處理紀錄。",
+      "storage_unavailable": "處理紀錄儲存服務目前無法使用。",
+      "log_unavailable": "目前無法取得處理紀錄。",
+      "log_too_large": "處理紀錄過大，無法顯示。"
+    }
   },
   "Pipeline": {
     "addContent": "新增內容",

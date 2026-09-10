@@ -110,7 +110,7 @@ describe('LWC-274 query citation links', () => {
     expect(mocks.getSource).toHaveBeenCalledWith('source-b');
     expect(mocks.getConcept).not.toHaveBeenCalledWith('source-b');
 
-    fireEvent.click(within(screen.getByRole('dialog')).getByRole('button', { name: 'Close' }));
+    fireEvent.click(within(screen.getByRole('dialog')).getByRole('button', { name: 'Raw.close' }));
     fireEvent.click(within(inventory).getAllByRole('button')[2]);
     expect(await screen.findByText('concept-c content')).toBeTruthy();
     expect(mocks.getConcept).toHaveBeenCalledWith('concept-c');
@@ -138,7 +138,7 @@ describe('LWC-274 query citation links', () => {
     expect(mocks.getSource).toHaveBeenCalledWith('source-b');
     expect(mocks.getConcept).not.toHaveBeenCalledWith('source-b');
 
-    fireEvent.click(within(screen.getByRole('dialog')).getByRole('button', { name: 'Close' }));
+    fireEvent.click(within(screen.getByRole('dialog')).getByRole('button', { name: 'Raw.close' }));
     fireEvent.click(inventoryItems[1]);
     expect(await screen.findByText('concept-c content')).toBeTruthy();
     expect(mocks.getConcept).toHaveBeenCalledWith('concept-c');

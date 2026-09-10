@@ -112,20 +112,20 @@ describe('LWC-174 production Shell rename behavior', () => {
     renderShell();
 
     await screen.findByRole('button', { name: 'Project Alpha' });
-    expect(screen.queryByRole('button', { name: 'Rename project' })).toBeNull();
+    expect(screen.queryByRole('button', { name: '重新命名專案' })).toBeNull();
   });
 
   it('disables rename for demo sessions and when there is no current project', async () => {
     mocks.isDemoSession = true;
     const demoView = renderShell();
-    const demoRename = await screen.findByRole('button', { name: 'Rename project' });
+    const demoRename = await screen.findByRole('button', { name: '重新命名專案' });
     expect((demoRename as HTMLButtonElement).disabled).toBe(true);
     demoView.unmount();
 
     mocks.getProjects.mockResolvedValue([]);
     mocks.isDemoSession = false;
     renderShell();
-    const noProjectRename = await screen.findByRole('button', { name: 'Rename project' });
+    const noProjectRename = await screen.findByRole('button', { name: '重新命名專案' });
     expect((noProjectRename as HTMLButtonElement).disabled).toBe(true);
   });
 
@@ -133,7 +133,7 @@ describe('LWC-174 production Shell rename behavior', () => {
     renderShell();
 
     await screen.findByRole('button', { name: 'Project Alpha' });
-    fireEvent.click(screen.getByRole('button', { name: 'Rename project' }));
+    fireEvent.click(screen.getByRole('button', { name: '重新命名專案' }));
     const input = await screen.findByRole('textbox', { name: 'Project name' });
     expect((input as HTMLInputElement).value).toBe('Project Alpha');
     fireEvent.change(input, {
@@ -147,7 +147,7 @@ describe('LWC-174 production Shell rename behavior', () => {
     await waitFor(() => expect(screen.queryByRole('dialog', { name: 'Rename project' })).toBeNull());
     expect(mocks.renameProject).not.toHaveBeenCalled();
 
-    fireEvent.click(screen.getByRole('button', { name: 'Rename project' }));
+    fireEvent.click(screen.getByRole('button', { name: '重新命名專案' }));
     const projectBInput = await screen.findByRole('textbox', { name: 'Project name' });
     expect((projectBInput as HTMLInputElement).value).toBe('Project Beta');
     fireEvent.change(projectBInput, {

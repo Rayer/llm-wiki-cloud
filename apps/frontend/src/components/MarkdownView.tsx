@@ -6,6 +6,7 @@ import {
   INLINE_TOKEN_REGEX,
   normalizeWikilinkAnnotations,
   parseWikilinkToken,
+  stripLeadingHeading,
 } from '../lib/markdown-inline';
 import { parseMarkdownImage } from '../lib/markdown-images';
 import { resolveWikilink, type WikilinkSection } from '../lib/wikilinks';
@@ -42,7 +43,7 @@ export function MarkdownView({
   }
 
   // Strip leading "# Title" to avoid double title with page header
-  const clean = content.replace(/^# .+\n\n?/, '').replace(/^.+\n=+\n\n?/, '').trimStart();
+  const clean = stripLeadingHeading(content);
 
   return (
     <>

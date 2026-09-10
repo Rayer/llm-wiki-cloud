@@ -1,160 +1,217 @@
 # Local Development
 
+LLM Wiki Cloud now uses one monorepo. Run the commands below from its root
+unless a component directory is specified. The root `Makefile` delegates to
+`apps/bff/Makefile`; the frontend is `apps/frontend`, not a sibling repository.
+
+```text
+llm-wiki-cloud/
+  Makefile
+  apps/bff/              # BFF, Auth, pipeline, local fixtures
+  apps/frontend/         # Next.js frontend
+```
+
 ## First-time setup
 
-From the monorepo root, install both app dependencies and seed the local demo:
+Prerequisites: Go 1.26 and Node.js 22 with npm (the canonical CI versions).
 
 ```bash
 make bootstrap
 ```
 
-This creates the ignored `apps/frontend/.env.local` and `apps/bff/local-data/`
-paths.
-
-## Choose the component you are developing
-
-### BFF
-
-Start everything except the BFF:
+This installs dependencies, writes `apps/frontend/.env.local`, and resets
+`apps/bff/local-data/` from the checked-in demo fixtures. **Do not run bootstrap
+or seed if you need to preserve modified local data.** For an existing checkout:
 
 ```bash
-make -C apps/bff support-bff
+cd apps/bff && go mod download
+cd ../frontend && npm ci --include=dev
 ```
 
-This starts the Frontend and prepares seeded pipeline data. Run the BFF separately from your terminal, IDE, or debugger:
+Return to the repository root before running the next commands.
 
-```bash
-make -C apps/bff bff-local
-```
-
-### Frontend
-
-Start everything except the Frontend:
-
-```bash
-make -C apps/bff support-frontend
-```
-
-This starts the BFF and prepares seeded pipeline data. Run the Frontend separately from your terminal or debugger:
-
-```bash
-make -C apps/bff frontend-local
-```
-
-### Pipeline
-
-Start everything except the Pipeline:
-
-```bash
-make -C apps/bff support-pipeline
-```
-
-This starts the BFF and Frontend. Run Pipeline tests separately:
-
-```bash
-make -C apps/bff pipeline-test
-```
-
-Run the full Synto pipeline only when provider-backed execution is needed:
-
-```bash
-LLM_API_KEY=... make -C apps/bff pipeline-run
-```
-
-## Run the normal app
-
-If you are not isolating one component:
+## Start the normal app
 
 ```bash
 make local-start
 ```
 
-## Ports
+This starts BFF, Auth, and frontend and creates local data only if it is absent.
+Use **http://localhost:3000** in the browser. The generated API/Auth URLs also
+use `localhost`; keep the same hostname when testing refresh cookies, rather
+than mixing `127.0.0.1` and `localhost`.
 
-Defaults:
+| Service | Default URL |
+| --- | --- |
+| Frontend | http://localhost:3000 |
+| BFF | http://localhost:8080 |
+| Auth | http://localhost:8081 |
+| Swagger | http://localhost:8080/swagger/index.html |
 
-```text
-BFF_PORT=8080
-AUTH_PORT=8081
-FRONTEND_PORT=3000
-```
-
-Override them on any Make target:
-
-```bash
-make local-start BFF_PORT=18080 FRONTEND_PORT=13000
-```
-
-The generated Frontend `.env.local` automatically uses `BFF_PORT`.
-
-## URLs
+Click **試用 Demo** for the read-only UI experience. The home page keeps the
+**執行 Pipeline** button and workflow explanation visible but disabled in Demo.
+For manual triggering, sign out of Demo and sign in normally with the local-only
+fixture credentials below; the home page then shows upload and Pipeline controls,
+subject to the existing quota and running-state checks:
 
 ```text
-Frontend: http://127.0.0.1:3000
-BFF:      http://127.0.0.1:8080
-Auth:     http://127.0.0.1:8081
-```
-
-## Local authentication
-
-Local mode provides one admin-capable demo account:
-
-```text
-email:    demo@llm-wiki.dev
+email: demo@llm-wiki.dev
 password: demo123456
-user ID:  local-user
-role:     admin
+user ID: local-user
+project ID: demo
+role: admin
 ```
 
-Get a fresh 15-minute JWT from the running Auth service:
+The local fixture corpus is smaller than the deployed demo. Normal UI browsing
+and local keyword retrieval require no provider key; generated answers and a
+full provider-backed pipeline require a configured LLM provider. Do not treat a
+local UI check as evidence that provider-backed generation was tested.
+
+During the LWC-326 local UI check (2026-09-10), `/api/v1/pipeline/status`
+returned HTTP 500 with `pipeline status unavailable`. Search, document reading,
+and `/api/v1/status` still worked; the status page showed no recorded runs.
+The cause of the pipeline-status failure was not diagnosed in this UI change.
+Treat pipeline execution, quota gating, and generated answers as unverified in
+this fixture-only demo.
+
+## Isolated ports / multiple worktrees
+
+Override all three ports to avoid colliding with another checkout. Auth and BFF
+CORS must also allow the actual frontend origin: `FRONTEND_PORT` alone does not
+update the allowlist.
 
 ```bash
-TOKEN="$(make -C apps/bff local-token)"
+ALLOWED_ORIGINS=http://localhost:13000,http://127.0.0.1:13000 \
+  make local-start BFF_PORT=18080 AUTH_PORT=18081 FRONTEND_PORT=13000
 ```
 
-Use it for normal or admin APIs:
+Open **http://localhost:13000**. BFF is on `18080`, Auth on `18081`.
+This is the isolated setup used for the LWC-326 UI demo.
 
-```bash
-curl -fsS \
-  -H "Authorization: Bearer $TOKEN" \
-  http://127.0.0.1:8080/api/v1/admin/settings
-```
-
-When overriding the Auth port:
-
-```bash
-TOKEN="$(make -C apps/bff local-token AUTH_PORT=18081)"
-```
-
-The credential and `JWT_SECRET=dev-secret` are local-only. Do not use them for deployed environments, and do not commit a generated JWT.
-
-Press `Ctrl-C` to stop the support processes.
-
-If local processes were orphaned, stop every listener on the configured local ports:
-
-```bash
-make local-stop
-```
-
-For overridden ports:
-
-```bash
-make local-stop BFF_PORT=18080 AUTH_PORT=18081 FRONTEND_PORT=13000
-```
-
-## Generated local config
-
-`make bootstrap` creates `apps/frontend/.env.local`:
+`make local-start` writes the matching public URLs into
+`apps/frontend/.env.local`. Restart the frontend after changing these values:
 
 ```dotenv
-NEXT_PUBLIC_API_URL=http://localhost:8080
-NEXT_PUBLIC_AUTH_URL=http://localhost:8081
+NEXT_PUBLIC_API_URL=http://localhost:18080
+NEXT_PUBLIC_AUTH_URL=http://localhost:18081
 NEXT_PUBLIC_DEV_USER_ID=local-user
 NEXT_PUBLIC_DEV_PROJECT_ID=demo
 ```
 
-The Makefile supplies the BFF and Auth local environments automatically. Reset demo data with:
+`403` on an Auth `OPTIONS` request usually means the browser's origin is missing
+from `ALLOWED_ORIGINS`. Set it on the support processes as well when splitting
+services across terminals.
+
+## Isolate a component
+
+Run these from the monorepo root, in separate terminals as indicated.
+
+| Work on | Support terminal | Component terminal |
+| --- | --- | --- |
+| BFF | `make -C apps/bff support-bff` (Auth + frontend) | `make -C apps/bff bff-local` |
+| Frontend | `make -C apps/bff support-frontend` (BFF + Auth) | `make -C apps/bff frontend-local` |
+| Pipeline | `make -C apps/bff support-pipeline` (BFF + Auth + frontend) | `make -C apps/bff pipeline-test` |
+
+Pass the same port overrides to both terminals. For custom frontend ports,
+export the `ALLOWED_ORIGINS` shown above in each terminal that launches BFF/Auth.
+The support/full targets generate local config and ensure fixtures exist;
+standalone `bff-local`/`auth-local` targets do not seed data.
+
+Only run a full provider-backed pipeline when needed:
 
 ```bash
-make seed
+LLM_API_KEY=... make -C apps/bff pipeline-run
 ```
+
+Provide the real key privately in your terminal environment, never in source
+control or a shared transcript.
+
+## BFF payload debugging without Auth
+
+For Swagger, curl, or IDE breakpoints, prepare fixtures if needed and start BFF:
+
+```bash
+make -C apps/bff ensure-local-data
+make -C apps/bff bff-local
+```
+
+The Makefile enables local-only `DEV_JWT=true`. Use `X-User-ID` without a token;
+project-scoped requests also need `X-Project-ID`:
+
+```bash
+curl -fsS -H 'X-User-ID: local-user' \
+  http://localhost:8080/api/v1/projects
+curl -fsS -H 'X-User-ID: local-user' -H 'X-Project-ID: demo' \
+  http://localhost:8080/api/v1/concepts
+curl -fsS -H 'X-User-ID: local-user' \
+  http://localhost:8080/api/v1/admin/settings
+```
+
+Local requests without an explicit role default to admin; use
+`X-User-Role: user` to exercise non-admin denial. Missing user identity returns
+401. If an Authorization header is present, Bearer validation takes precedence:
+an invalid token does not fall back to the local header. Storage/project/provider
+requirements still apply after authorization.
+
+In Swagger, authorize `DevUserAuth: local-user` and, for project-scoped requests,
+`ProjectHeader: demo`. If an operation's generated security declaration does not
+send these headers, use curl. Swagger parity/history is tracked in LWC-265.
+
+## Auth-flow testing
+
+Full and support targets include Auth. Start it independently only when needed:
+
+```bash
+make -C apps/bff auth-local
+```
+
+Get a fresh 15-minute token without displaying it:
+
+```bash
+TOKEN="$(make -s -C apps/bff local-token)"
+curl -fsS -H "Authorization: Bearer $TOKEN" \
+  http://localhost:8080/api/v1/admin/settings
+```
+
+For overridden ports, add `AUTH_PORT=18081` to `local-token` and call BFF on
+`18080`. The demo credentials and `JWT_SECRET=dev-secret` are local-only.
+
+Deployed DEV uses `DEV_JWT=false` and https://auth.dev.rayer.idv.tw. Local
+`X-User-ID` access is deliberately unavailable there. Follow the
+[LWC DEV QA Runbook](https://irisnode.youtrack.cloud/articles/LWC-A-12) for deployed
+identities, targets, and mutation boundaries.
+
+## Verify
+
+```bash
+make lint
+make typecheck
+npm --prefix apps/frontend test
+npm --prefix apps/frontend run build
+```
+
+The complete repository gate is `make verify`, which also bootstraps/resets
+fixtures and runs backend and smoke checks. `make smoke` starts its own services
+(default `13000/18080/18081`); stop your demo first or give smoke separate ports.
+Do not run fixture-resetting gates while preserving demo uploads.
+
+## Stop and reset
+
+Press Ctrl-C in the service terminal. For orphaned processes, stop listeners on
+the exact ports owned by this checkout:
+
+```bash
+make local-stop
+# Or, for the isolated example:
+make local-stop BFF_PORT=18080 AUTH_PORT=18081 FRONTEND_PORT=13000
+```
+
+This command stops **all** listeners on those ports, so verify they belong to
+your local run before using it. Reset fixture data only when intended:
+
+```bash
+make -C apps/bff seed
+```
+
+There is no root `make seed` target. `seed` deletes and recreates
+`apps/bff/local-data/`.

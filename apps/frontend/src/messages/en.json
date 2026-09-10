@@ -81,7 +81,9 @@
     "citationLoading": "Loading citation…",
     "citationLoadFailed": "Unable to load this citation. Try again.",
     "retryCitation": "Retry citation",
-    "openFullPage": "Open full page"
+    "openFullPage": "Open full page",
+    "loading": "Loading document",
+    "documentInfo": "Document information"
   },
   "Entry": {
     "singular": "Entry",
@@ -156,7 +158,8 @@
     "logout": "Sign out",
     "demoDisabled": "Demo mode — new projects disabled",
     "ok": "OK",
-    "cancel": "Cancel"
+    "cancel": "Cancel",
+    "renameProject": "Rename project"
   },
   "Command": {
     "placeholder": "Search or jump to…",
@@ -190,7 +193,15 @@
     "pipeline": "Pipeline",
     "runPipeline": "Run Pipeline",
     "pipelineDesc": "The pipeline runs:",
-    "restricted": "This feature is not available in demo mode"
+    "restricted": "This feature is not available in demo mode",
+    "mode": "Demo mode",
+    "scope": "Search, read entries, and explore citations. Sample data is read-only.",
+    "importHint": "Sign in to your own account to upload documents, import URLs, and build your knowledge base.",
+    "wikiHint": "Wiki: answer from this project’s knowledge base with citations.",
+    "fullHint": "Full: combine wiki evidence with general model knowledge; some content may not be verified by sources.",
+    "searching": "Searching",
+    "openEntry": "Open this entry to read more.",
+    "noResults": "No matching entries. Try different keywords."
   },
   "List": {
     "entriesTitle": "Entries",
@@ -201,10 +212,12 @@
     "noSearchMatches": "No {title} matching “{query}”.",
     "noConcepts": "No entries yet. Run the pipeline first.",
     "noSources": "No sources yet. Upload content and run the pipeline first.",
-    "noEntries": "No entries yet. Add content and run the pipeline first."
+    "noEntries": "No entries yet. Add content and run the pipeline first.",
+    "clearSearch": "Clear search",
+    "matchCount": "{count} of {total}"
   },
   "Status": {
-    "title": "Pipeline Status",
+    "title": "Pipeline status",
     "noStatus": "No pipeline status available.",
     "userId": "User ID",
     "projectId": "Project ID",
@@ -215,7 +228,47 @@
     "imageTag": "Image tag",
     "cloudRunService": "Cloud Run service",
     "cloudRunRevision": "Cloud Run revision",
-    "buildInfoUnavailable": "Build information is unavailable."
+    "buildInfoUnavailable": "Build information is unavailable.",
+    "description": "Current corpus counts and latest pipeline execution.",
+    "loading": "Loading status",
+    "refreshPaused": "Automatic status refresh paused after repeated checks. The displayed status may be out of date.",
+    "retryRefresh": "Retry status refresh",
+    "showDetails": "Show developer details",
+    "hideDetails": "Hide developer details",
+    "log": "Pipeline log",
+    "openLog": "Open pipeline log",
+    "loadingLog": "Loading pipeline log…",
+    "latestLines": "Show latest lines",
+    "fullLog": "Show full log",
+    "emptyLog": "Pipeline log is empty.",
+    "timeline": "Pipeline timeline",
+    "idle": "Idle",
+    "noRuns": "No pipeline runs recorded yet.",
+    "SUCCEEDED": "Succeeded",
+    "RUNNING": "Running",
+    "FAILED": "Failed",
+    "ingest": "Ingest",
+    "compile": "Compile",
+    "lint": "Lint",
+    "publish": "Publish",
+    "failedStage": "Failed stage",
+    "stageUnavailable": "Failed — stage unavailable",
+    "errorClass": "Error class",
+    "detailCode": "Detail code",
+    "childCommand": "Child command",
+    "exitCode": "Exit code",
+    "started": "Started",
+    "finished": "Finished",
+    "duration": "Duration",
+    "logAvailability": {
+      "pending": "Pipeline log is still pending.",
+      "missing": "No pipeline log is available.",
+      "unavailable": "Pipeline log is unavailable.",
+      "unsupported_execution_status": "Pipeline log is unavailable for this execution status.",
+      "storage_unavailable": "Pipeline log storage is unavailable.",
+      "log_unavailable": "Pipeline log is unavailable.",
+      "log_too_large": "Pipeline log is too large to display."
+    }
   },
   "Pipeline": {
     "addContent": "Add Content",

@@ -25,9 +25,10 @@ vi.mock('@/lib/auth', () => ({
   useAuth: () => ({ user: { id: 'user-a' } }),
 }));
 
-vi.mock('@/lib/i18n', () => ({
-  useT: () => ({ t: (key: string) => key }),
-}));
+vi.mock('@/lib/i18n', async () => {
+  const actual = await vi.importActual<typeof import('@/lib/i18n')>('@/lib/i18n');
+  return { ...actual, useT: () => ({ locale: 'en', t: (key: string) => actual.translate('en', key) }) };
+});
 
 vi.mock('@/components/WorkspaceProvider', () => ({
   useWorkspace: () => ({ currentProject: mocks.currentProject }),
@@ -132,7 +133,7 @@ describe('StatusClient polling', () => {
       }));
 
     await act(async () => { render(<StatusClient />); });
-    expect(screen.getByText('RUNNING')).not.toBeNull();
+    expect(screen.getByText('Running')).not.toBeNull();
     expect(screen.getByText('Pipeline log is still pending.')).not.toBeNull();
     expect(screen.queryByRole('button', { name: 'Open pipeline log' })).toBeNull();
     expect(mocks.getPipelineLog).not.toHaveBeenCalled();
@@ -140,8 +141,8 @@ describe('StatusClient polling', () => {
     await act(async () => { await vi.advanceTimersByTimeAsync(5000); });
 
     expect(mocks.getStatus).toHaveBeenCalledTimes(2);
-    expect(screen.getByText('SUCCEEDED')).not.toBeNull();
-    for (const [label, count] of [['Sources', '1'], ['Concepts', '4'], ['Raw', '1']]) {
+    expect(screen.getByText('Succeeded')).not.toBeNull();
+    for (const [label, count] of [['Sources', '1'], ['Entries', '4'], ['Raw', '1']]) {
       expect(screen.getByText(label).nextElementSibling?.textContent).toBe(count);
     }
     expect(screen.queryByText('Pipeline log is still pending.')).toBeNull();
@@ -169,7 +170,7 @@ describe('StatusClient polling', () => {
     expect(mocks.getStatus).toHaveBeenCalledTimes(1);
     await act(async () => { await vi.advanceTimersByTimeAsync(1); });
     expect(mocks.getStatus).toHaveBeenCalledTimes(2);
-    expect(screen.queryByText('Loading status...')).toBeNull();
+    expect(screen.queryByText('Loading status…')).toBeNull();
     await act(async () => { await vi.advanceTimersByTimeAsync(30000); });
     expect(mocks.getStatus).toHaveBeenCalledTimes(2);
 
@@ -189,19 +190,19 @@ describe('StatusClient polling', () => {
       .mockResolvedValueOnce(status({ sourcesCount: 44 }));
     await act(async () => { render(<StatusClient />); });
     expect(screen.getByText('Initial status failed (503)')).not.toBeNull();
-    expect(screen.queryByText('Loading status...')).toBeNull();
+    expect(screen.queryByText('Loading status…')).toBeNull();
 
     await act(async () => { await vi.advanceTimersByTimeAsync(5000); });
     expect(screen.queryByText('Initial status failed (503)')).toBeNull();
-    expect(screen.getByText('RUNNING')).not.toBeNull();
+    expect(screen.getByText('Running')).not.toBeNull();
     await act(async () => { await vi.advanceTimersByTimeAsync(5000); });
     expect(screen.getByText('Status refresh failed (503)')).not.toBeNull();
     expect(screen.getByText('11')).not.toBeNull();
-    expect(screen.getByText('RUNNING')).not.toBeNull();
+    expect(screen.getByText('Running')).not.toBeNull();
     await act(async () => { await vi.advanceTimersByTimeAsync(5000); });
     expect(screen.queryByText('Status refresh failed (503)')).toBeNull();
     expect(screen.getByText('44')).not.toBeNull();
-    expect(screen.getByText('FAILED')).not.toBeNull();
+    expect(screen.getByText('Failed')).not.toBeNull();
     expect(vi.getTimerCount()).toBe(0);
     expect(mocks.getPipelineLog).not.toHaveBeenCalled();
   });
@@ -302,7 +303,7 @@ describe('StatusClient polling', () => {
     expect(screen.queryByText('Status unavailable (503)')).toBeNull();
     expect(screen.queryByRole('button', { name: 'Retry status refresh' })).toBeNull();
     await act(async () => { await vi.advanceTimersByTimeAsync(5000); });
-    expect(screen.getByText('FAILED')).not.toBeNull();
+    expect(screen.getByText('Failed')).not.toBeNull();
     expect(mocks.getStatus).toHaveBeenCalledTimes(123);
     expect(vi.getTimerCount()).toBe(0);
     expect(mocks.getPipelineLog).toHaveBeenCalledTimes(outcome === 'running' ? 1 : 0);
@@ -382,9 +383,9 @@ describe('StatusClient behavior', () => {
     await screen.findByText('11');
 
     fireEvent.click(screen.getByRole('button', { name: 'Open pipeline log' }));
-    expect(screen.getByRole('button', { name: 'Loading pipeline log...' })).toHaveProperty('disabled', true);
-    expect(screen.getByRole('button', { name: 'Loading pipeline log...' }).getAttribute('aria-busy')).toBe('true');
-    expect(screen.getByRole('status').textContent).toContain('Loading log...');
+    expect(screen.getByRole('button', { name: 'Loading pipeline log…' })).toHaveProperty('disabled', true);
+    expect(screen.getByRole('button', { name: 'Loading pipeline log…' }).getAttribute('aria-busy')).toBe('true');
+    expect(screen.getByRole('status').textContent).toContain('Loading pipeline log…');
 
     log.resolve('');
     await waitFor(() => expect(screen.getByRole('status').textContent).toContain('Pipeline log is empty.'));

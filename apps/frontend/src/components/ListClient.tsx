@@ -104,7 +104,7 @@ export function ListClient({
         />
         {search.trim() ? (
           <span className="text-sm text-zinc-500 tabular-nums whitespace-nowrap">
-            {filtered.length} of {entries.length}
+            {t('List.matchCount', { count: filtered.length, total: entries.length })}
           </span>
         ) : (
           <span className="text-sm text-zinc-600 tabular-nums whitespace-nowrap">

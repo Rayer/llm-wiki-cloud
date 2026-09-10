@@ -1,11 +1,13 @@
 import { Inbox } from 'lucide-react';
 import { Skeleton, SkeletonLines } from './ui/Skeleton';
 import { Surface } from './ui/Surface';
+import { useT } from '@/lib/i18n';
 
-export function LoadingState({ label = 'Loading wiki data' }: { label?: string }) {
+export function LoadingState({ label }: { label?: string }) {
+  const { t } = useT();
   return (
     <Surface className="p-6" variant="glass" aria-live="polite">
-      <p className="mb-4 text-sm text-zinc-500">{label}...</p>
+      <p className="mb-4 text-sm text-zinc-400">{(label ?? t('Shell.loading')).replace(/[.…]+$/, '')}…</p>
       <div className="space-y-5">
         <div className="flex items-center gap-3">
           <Skeleton className="size-9 rounded-full" />

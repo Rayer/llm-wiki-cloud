@@ -30,6 +30,7 @@ export function SourceListClient() {
   const [previewLoading, setPreviewLoading] = useState(false);
   const [previewError, setPreviewError] = useState('');
   const previewTriggerRef = useRef<HTMLButtonElement | null>(null);
+  const searchRef = useRef<HTMLInputElement | null>(null);
   const closeButtonRef = useRef<HTMLButtonElement | null>(null);
 
   useEffect(() => {
@@ -95,42 +96,48 @@ export function SourceListClient() {
         <p className="mt-2 max-w-2xl text-zinc-400">{t('List.sourcesDescription')}</p>
       </header>
 
-      <input
-        type="search"
-        value={search}
-        onChange={(event) => setSearch(event.target.value)}
-        placeholder={t('List.searchPlaceholder', { title: t('List.sourcesTitle').toLowerCase() })}
-        aria-label={t('List.searchPlaceholder', { title: t('List.sourcesTitle').toLowerCase() })}
-        className="min-h-11 w-full rounded-[var(--radius-lg)] border border-white/10 bg-zinc-900/50 px-4 py-2.5 text-sm text-white outline-none transition placeholder:text-zinc-400 focus:border-emerald-400/50 focus:ring-1 focus:ring-emerald-400/20 focus-visible:outline focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-emerald-400"
-      />
+      <div className="flex items-center gap-3">
+        <input
+          ref={searchRef}
+          type="search"
+          value={search}
+          onChange={(event) => setSearch(event.target.value)}
+          placeholder={t('List.searchPlaceholder', { title: t('List.sourcesTitle').toLowerCase() })}
+          aria-label={t('List.searchPlaceholder', { title: t('List.sourcesTitle').toLowerCase() })}
+          className="min-h-11 min-w-0 flex-1 rounded-[var(--radius-lg)] border border-white/10 bg-zinc-900/50 px-4 py-2.5 text-sm text-white outline-none transition placeholder:text-zinc-400 focus:border-emerald-400/50 focus:ring-1 focus:ring-emerald-400/20 focus-visible:outline focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-emerald-400"
+        />
+        {!loading ? <span className="shrink-0 text-sm tabular-nums text-zinc-400" aria-live="polite">{filtered.length} / {sources.length}</span> : null}
+      </div>
 
       {loading ? <LoadingState label={t('Source.loading')} /> : null}
       {error ? <ErrorState message={error} /> : null}
-      {!loading && !error && filtered.length === 0 ? <EmptyState message={t('List.noSources')} /> : null}
+      {!loading && !error && filtered.length === 0 ? (
+        <div className="space-y-3">
+          <EmptyState message={search.trim() ? t('List.noSearchMatches', { title: t('Source.plural'), query: search.trim() }) : t('List.noSources')} />
+          {search.trim() ? <button type="button" className="min-h-11 rounded-md px-3 text-sm font-medium text-emerald-300 hover:bg-white/5" onClick={() => { setSearch(''); searchRef.current?.focus(); }}>{t('List.clearSearch')}</button> : null}
+        </div>
+      ) : null}
 
-      <div className="grid gap-4 md:grid-cols-2">
+      <div className="space-y-3">
         {filtered.map((source) => {
           const detailHref = source.id ? `/sources/${source.id}-${encodeURIComponent(source.slug)}` : null;
           const lifecycle = t(`Source.lifecycle.${source.lifecycle}`);
           return (
-            <Surface key={source.id ?? source.rawPath} variant="glass" className="h-full p-5 transition hover:border-emerald-400/30">
-              <div className="flex flex-wrap items-center gap-2">
-                <Badge variant="source">{t('Source.singular')}</Badge>
-                <Badge variant={lifecycleVariant[source.lifecycle]}>{lifecycle}</Badge>
-                <Badge variant="muted">
-                  {source.annotationPresent ? t('Source.annotationPresent') : t('Source.annotationEmpty')}
-                </Badge>
+            <Surface key={source.id ?? source.rawPath} variant="glass" className="flex flex-col gap-3 p-4 transition hover:border-emerald-400/30 sm:flex-row sm:items-center sm:gap-6">
+              <div className="min-w-0 flex-1">
+                {detailHref ? (
+                  <NavigationLink href={detailHref} className="block break-words text-base font-semibold text-white hover:text-emerald-100 focus-visible:outline focus-visible:outline-2 focus-visible:outline-emerald-400">
+                    {source.title}
+                  </NavigationLink>
+                ) : <h2 className="break-words text-base font-semibold text-white">{source.title}</h2>}
+                <p className="mt-2 break-all font-mono text-xs text-zinc-400">{source.rawPath}</p>
+                {source.lifecycle === 'error' ? (
+                  <p role="alert" className="mt-3 text-sm text-red-200">{source.error ?? t('Source.lifecycleError')}</p>
+                ) : null}
               </div>
-              {detailHref ? (
-                <NavigationLink href={detailHref} className="mt-3 block break-words text-lg font-semibold text-white hover:text-emerald-100 focus-visible:outline focus-visible:outline-2 focus-visible:outline-emerald-400">
-                  {source.title}
-                </NavigationLink>
-              ) : <h2 className="mt-3 break-words text-lg font-semibold text-white">{source.title}</h2>}
-              <p className="mt-2 break-all font-mono text-xs text-zinc-500">{source.rawPath}</p>
-              {source.lifecycle === 'error' ? (
-                <p role="alert" className="mt-3 text-sm text-red-200">{source.error ?? t('Source.lifecycleError')}</p>
-              ) : null}
-              <div className="mt-4 flex items-center gap-2">
+              <div className="flex shrink-0 flex-wrap items-center gap-3">
+                <Badge variant={lifecycleVariant[source.lifecycle]}>{lifecycle}</Badge>
+                {source.annotationPresent ? <Badge variant="muted">{t('Source.annotationPresent')}</Badge> : null}
                 <button
                   type="button"
                   onClick={(event) => {
