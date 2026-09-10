@@ -48,8 +48,11 @@ than mixing `127.0.0.1` and `localhost`.
 | Auth | http://localhost:8081 |
 | Swagger | http://localhost:8080/swagger/index.html |
 
-Click **試用 Demo** for the read-only UI experience. For normal local account
-flows, sign in with the local-only fixture credentials:
+Click **試用 Demo** for the read-only UI experience. The home page keeps the
+**執行 Pipeline** button and workflow explanation visible but disabled in Demo.
+For manual triggering, sign out of Demo and sign in normally with the local-only
+fixture credentials below; the home page then shows upload and Pipeline controls,
+subject to the existing quota and running-state checks:
 
 ```text
 email: demo@llm-wiki.dev
