@@ -8,6 +8,7 @@ import json
 
 import synto
 from synto.config import Config, ResolvedModel
+from synto.pipeline import ingest
 
 if synto.__version__ != "0.7.0":
     raise RuntimeError("LWC execution adapter requires pinned Synto 0.7.0")
@@ -61,6 +62,22 @@ Config.resolve_role = _resolve_flash
 # New compile/checkpoint provenance must name the same effective model as the
 # role endpoint; this does not rewrite old rows or force a pipeline execution.
 Config.model_name = lambda self, role: self.resolve_role(role).model
+
+# Resumable ingest chunks have a second, independent cache in this exact wheel.
+# Preserve its content/prompt/account identity and add only effective policy.
+_ingest_checkpoint_hash = ingest._checkpoint_hash
+
+
+def _flash_checkpoint_hash(content_hash, config, prompt_contexts, source_type="notes"):
+    digest = _ingest_checkpoint_hash(content_hash, config, prompt_contexts, source_type)
+    fast = config.resolve_role("fast")
+    if fast.provider_kind != "deepseek":
+        return digest
+    policy = json.dumps([fast.options["thinking"], fast.options.get("reasoning_effort")], sort_keys=True)
+    return hashlib.sha256((digest + "\0" + policy).encode()).hexdigest()
+
+
+ingest._checkpoint_hash = _flash_checkpoint_hash
 
 if __name__ == "__main__":
     from synto.cli import cli

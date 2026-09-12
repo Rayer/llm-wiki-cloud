@@ -87,7 +87,7 @@ socket.socket.connect = _loopback_only
 
 def exercise(config, expected, filename="synto.toml", migrate=False, model="deepseek-flash", preserved=None):
     with tempfile.TemporaryDirectory(prefix="lwc331-wire-") as temp:
-        vault = Path(temp)
+        vault = Path(temp).resolve()
         (vault / "raw").mkdir()
         (vault / "raw/source.md").write_text("# Alpha\n\nAlpha explains how a synthetic mechanism works. Alpha is the central concept.")
         path = vault / filename
@@ -160,7 +160,7 @@ for invalid in (
     modern.replace('[models.fast.options]', '[models.fast.options]\nreasoning_effort = "unknown"'),
 ):
     with tempfile.TemporaryDirectory(prefix="lwc331-invalid-") as temp:
-        vault = Path(temp)
+        vault = Path(temp).resolve()
         (vault / "synto.toml").write_text(invalid + policy)
         requests.clear()
         run(vault, "run", "--auto-approve", fail=True)
@@ -216,3 +216,33 @@ with tempfile.TemporaryDirectory(prefix="lwc331-cache-") as temp:
     assert [body["thinking"]["type"] for body in calls] == ["disabled", "enabled", "enabled", "enabled"]
     db.close()
 print("PASS pinned cache isolates thinking/effort while retaining same-policy hits")
+
+# Resume a real partial ingest checkpoint saved with chat, then switch to
+# reasoner. Both chunks must reach analysis rather than resume the old intent.
+from synto.pipeline import ingest
+with tempfile.TemporaryDirectory(prefix="lwc331-checkpoint-") as temp:
+    vault = Path(temp).resolve()
+    db = StateDB(vault / "state.db")
+    old_cfg = Config(vault=vault, providers=provider, models={"fast": "deepseek-chat"})
+    new_cfg = Config(vault=vault, providers=provider, models={"fast": "deepseek-reasoner"})
+    retained = {"summary": "old non-thinking analysis", "concepts": [], "suggested_topics": [], "quality": "high"}
+    units = [("Alpha first part", ["segment-a"]), ("Alpha second part", ["segment-b"])]
+    chunk_size = old_cfg.resolve_role("fast").ctx // 2
+    old_hash = ingest._checkpoint_hash("same-content", old_cfg, [])
+    db.upsert_ingest_chunk("raw/source.md", old_hash, 0, 2, chunk_size, json.dumps(retained))
+    router = build_router(new_cfg, cache=LLMCache(db))
+    ep = router.endpoint("fast")
+    calls = []
+    def analyze(request):
+        calls.append(json.loads(request.content))
+        fresh = dict(retained, summary="fresh thinking analysis")
+        return httpx.Response(200, json={"choices": [{"message": {"content": json.dumps(fresh)}}]})
+    ep.client._client.close()
+    ep.client._client = httpx.Client(transport=httpx.MockTransport(analyze))
+    result = ingest._analyze_body_with_checkpoints("Alpha first part Alpha second part", [], vault / "raw/source.md", "same-content", router, new_cfg, db, units=units)
+    assert len(calls) == 2, "resumed a completed chunk from a different thinking policy"
+    assert all(body["thinking"] == {"type": "enabled"} for body in calls)
+    assert "old non-thinking" not in result.summary
+    router.close()
+    db.close()
+print("PASS retained ingest checkpoint cannot resume another thinking policy")

@@ -39,7 +39,8 @@ Inspected wheel sources:
   chat/reasoner semantics. Existing `options.model` is also normalized.
 - `synto/cli.py:250-300`: native CLI overrides expose model/provider, not options.
   The wrapper uses the original CLI entry point, `Config.resolve_role`, and
-  `Config.model_name` for effective provenance. Version mismatch fails immediately;
+  `Config.model_name` for effective provenance, and the pinned ingest checkpoint
+  hash for policy-safe resume. Version mismatch fails immediately;
   no engine file is patched on disk.
 
 The wrapper rejects unknown DeepSeek models, thinking objects, effort values and
@@ -48,7 +49,9 @@ precedence; the adapter does not invent token budgets or remap effort. New `mode
 role endpoints and HTTP payloads. A DeepSeek-only resolved-model subclass includes
 effective thinking/effort in both client deduplication and cache namespace, so
 alias collapse cannot reuse a non-thinking answer for a thinking request. Existing
-cache rows stay untouched; same-policy cache hits remain available. Other native
+cache rows stay untouched; same-policy cache hits remain available. Resumable ingest chunk hashes also
+include thinking/effort, preserving their existing content/prompt/account identity
+and preventing a resumed chunk from bypassing the corrected LLM cache. Other native
 options keep the pinned engine's cache behavior. No forced pipeline run/rebuild
 is introduced; the engine evaluates checkpoints normally during an authorized run.
 

@@ -486,5 +486,7 @@ This applies to every CLI child, including migrated legacy vaults and existing
 Synto projects. New compile/checkpoint provenance reports the effective canonical model; retained
 history is untouched. DeepSeek client deduplication and cache namespace include
 thinking/effort, preserving separation lost when chat/reasoner aliases collapse.
-Same-policy hits remain cached. No forced rebuild or live execution is added.
+Same-policy hits remain cached. The pinned ingest checkpoint hash includes the
+same policy to prevent completed chunks from bypassing that separation during
+resume. No forced rebuild or live execution is added.
 The exact-wheel offline CLI gate is `make -C apps/bff test-flash-execution`.
