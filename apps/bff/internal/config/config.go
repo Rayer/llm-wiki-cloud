@@ -19,8 +19,8 @@ const (
 	DefaultPipelineMinNewRaw                                          = 1
 	DefaultPipelineJobURL                                             = "https://run.googleapis.com/v2/projects/llm-wiki-cloud/locations/asia-east1/jobs/olw-pipeline:run"
 	DefaultAuthServiceURL                                             = "https://auth.dev.rayer.idv.tw"
-	DefaultQueryExpansionModel                                        = "deepseek-v4-flash"
-	DefaultAnswerSynthesisModel                                       = "deepseek-v4-pro"
+	DefaultQueryExpansionModel                                        = "deepseek-flash"
+	DefaultAnswerSynthesisModel                                       = "deepseek-flash"
 	DefaultQueryExpansionReasoning                      llm.Reasoning = llm.ReasoningNone
 	DefaultAnswerSynthesisReasoning                     llm.Reasoning = llm.ReasoningNone
 	DefaultQuerySelectionLimit                                        = 10

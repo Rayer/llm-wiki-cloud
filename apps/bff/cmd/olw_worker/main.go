@@ -122,7 +122,7 @@ const (
 	maxWorkerArgBytes               = 4096
 	maxWorkerCommandBytes           = 1 << 20
 	maxWorkerCommandCumulativeBytes = 256 << 10
-	suggestedQueryModel             = "deepseek-chat"
+	suggestedQueryModel             = "deepseek-flash"
 )
 
 const pipelineLogTruncationMarker = pipelinediagnostic.PipelineLogTruncationMarker
@@ -827,8 +827,8 @@ name = "deepseek"
 url = "https://api.deepseek.com/v1"
 
 [models]
-fast = "deepseek-chat"
-heavy = "deepseek-reasoner"
+fast = "deepseek-flash"
+heavy = "deepseek-flash"
 
 [pipeline]
 auto_approve = true

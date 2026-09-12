@@ -181,12 +181,12 @@ api_key_env = "DEEPSEEK_API_KEY"
 
 [models.fast]
 provider = "default"
-model = "deepseek-chat"
+model = "deepseek-flash"
 ctx = 16384
 
 [models.heavy]
 provider = "default"
-model = "deepseek-reasoner"
+model = "deepseek-flash"
 ctx = 32768
 
 [pipeline]

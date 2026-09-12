@@ -148,7 +148,7 @@ type chatResponse struct {
 
 // NewClient creates a DeepSeek API client. If apiKey is empty, returns nil.
 func NewClient(apiKey string) *Client {
-	return NewClientWithOptions(apiKey, ClientOptions{Model: "deepseek-chat"})
+	return NewClientWithOptions(apiKey, ClientOptions{Model: "deepseek-flash"})
 }
 
 func NewClientWithOptions(apiKey string, options ClientOptions) *Client {
@@ -156,7 +156,7 @@ func NewClientWithOptions(apiKey string, options ClientOptions) *Client {
 		return nil
 	}
 	if options.Model == "" {
-		options.Model = "deepseek-chat"
+		options.Model = "deepseek-flash"
 	}
 	if options.Reasoning == "" {
 		options.Reasoning = ReasoningNone

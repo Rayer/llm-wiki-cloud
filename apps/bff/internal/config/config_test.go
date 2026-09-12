@@ -41,10 +41,10 @@ func TestLoadDefaultsQueryExpansionModel(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if cfg.QueryExpansionModel != "deepseek-v4-flash" || cfg.QueryExpansionReasoning != "none" {
+	if cfg.QueryExpansionModel != "deepseek-flash" || cfg.QueryExpansionReasoning != "none" {
 		t.Fatalf("expansion config = %#v, want flash/none", cfg)
 	}
-	if cfg.AnswerSynthesisModel != "deepseek-v4-pro" || cfg.AnswerSynthesisReasoning != "none" {
+	if cfg.AnswerSynthesisModel != "deepseek-flash" || cfg.AnswerSynthesisReasoning != "none" {
 		t.Fatalf("synthesis config = %#v, want pro/none", cfg)
 	}
 }

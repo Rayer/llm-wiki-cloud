@@ -127,8 +127,8 @@ func TestFlashExpansionAndSynthesisClientOptionsAreIsolated(t *testing.T) {
 	if gotExpansion.Model != "deepseek-v4-flash" || gotExpansion.Temperature == nil || *gotExpansion.Temperature != 0 {
 		t.Fatalf("expansion request = %#v, want deepseek-v4-flash and temperature 0", gotExpansion)
 	}
-	if gotSynthesis.Model != "deepseek-chat" || gotSynthesis.Temperature != nil {
-		t.Fatalf("synthesis request = %#v, want deepseek-chat without temperature", gotSynthesis)
+	if gotSynthesis.Model != "deepseek-flash" || gotSynthesis.Temperature != nil {
+		t.Fatalf("synthesis request = %#v, want deepseek-flash without temperature", gotSynthesis)
 	}
 }
 
