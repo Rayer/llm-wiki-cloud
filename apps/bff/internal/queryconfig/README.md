@@ -7,8 +7,8 @@ Schema v1 is explicitly unsupported and returns `ErrSchemaV1Unsupported`; it is
 not migrated because it has no query-service/provider identity. The v2 stage
 model identity is explicit for both model stages: `provider`, `model`,
 `reasoning`, and `temperature`. Current built-ins require provider `deepseek`,
-expansion `deepseek-v4-flash`/`none`/`0`, and synthesis
-`deepseek-v4-pro`/`none|low|high|max`/`0`. Credentials and base URLs are not
+expansion `deepseek-flash`/`none`/`0`, and synthesis
+`deepseek-flash`/`none|low|high|max`/`0`. Credentials and base URLs are not
 part of the artifact.
 
 `config_digest` is `sha256:` plus the lowercase full SHA-256 of the normalized
@@ -30,3 +30,10 @@ repository artifacts may remain owner-owned `0644`.
 `LoadFileCanonicalBytes` returns the validated config and a defensive copy of
 the exact bytes read through that same descriptor. Prebuild canonical checks
 must compare those bytes with `CanonicalJSON` instead of reopening the path.
+
+LWC-331 selects `query-dev-2026-09-12.1.json` explicitly in both environment
+YAMLs. Prior sealed files remain byte-for-byte historical evidence. Their known
+model aliases are accepted when decoding, but the effective resolver and LLM
+client normalize execution to Flash and retain explicit reasoning. Rolling back
+only a config file on this code does not restore Pro; rolling back code must
+recheck provider compatibility. Unknown stage models remain invalid.

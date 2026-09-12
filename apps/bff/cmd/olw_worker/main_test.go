@@ -240,8 +240,10 @@ func TestEnsureWikiTOMLCreatesButDoesNotOverwrite(t *testing.T) {
 	for _, want := range []string{
 		`name = "deepseek"`,
 		`url = "https://api.deepseek.com/v1"`,
-		`fast = "deepseek-flash"`,
-		`heavy = "deepseek-flash"`,
+		`[models.fast]`,
+		`thinking = { type = "disabled" }`,
+		`[models.heavy]`,
+		`thinking = { type = "enabled" }`,
 		`auto_approve = true`,
 		`article_max_tokens = 32768`,
 	} {

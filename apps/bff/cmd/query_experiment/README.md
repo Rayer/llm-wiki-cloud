@@ -209,7 +209,7 @@ must be interpreted as N/A, not as a measured zero rate.
 
 `--stage-config-output` is a query-retrieval fixture operation requiring
 `--config-revision` and exactly one selected profile, prompt, and model. The
-selected model must be the allowlisted `deepseek` / `deepseek-v4-flash` with
+selected model must be the allowlisted `deepseek` / `deepseek-flash` with
 `reasoning: "none"` and `temperature: 0`; the prompt must be a matching
 production-owned built-in template. The sealed canonical file contains no API
 key, base URL, prompt text, or snapshot path.

@@ -227,6 +227,7 @@ EXPECTED_VALUES = {
     "QUERY_STAGE_CONFIG_PATH": "/app/configs/query/dev/query-dev-2026-09-12.1.json",
 }
 PRIOR_STAGE_CONFIG_PATHS = {
+    "/app/configs/query/dev/query-dev-2026-08-31.1.json",
     "/app/configs/query/dev/query-dev-2026-08-21.1.json",
     "/app/configs/query/dev/query-dev-2026-08-21.2.json",
     "/app/configs/query/dev/query-dev-2026-08-22.1.json",

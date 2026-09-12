@@ -116,3 +116,7 @@ kill-local:
 
 clean-local:
 	rm -rf local-data
+
+.PHONY: test-flash-execution
+test-flash-execution:
+	sh scripts/test_flash_execution.sh

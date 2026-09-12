@@ -607,7 +607,7 @@ func buildRecordMetadata(cfg config.Config) recordMetadata {
 	metadata := recordMetadata{sourceRevision: info.Commit, apiKey: cfg.DeepSeekAPIKey}
 	if strings.TrimSpace(cfg.DeepSeekAPIKey) != "" {
 		metadata.provider = "deepseek"
-		metadata.model = "deepseek-chat"
+		metadata.model = "deepseek-flash"
 	}
 	return metadata
 }

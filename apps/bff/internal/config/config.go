@@ -250,7 +250,7 @@ func Load(path string) (Config, error) {
 	if queryExpansionModel == "" {
 		queryExpansionModel = DefaultQueryExpansionModel
 	}
-	if queryExpansionModel != DefaultQueryExpansionModel {
+	if queryExpansionModel != DefaultQueryExpansionModel && queryExpansionModel != "deepseek-v4-flash" {
 		return Config{}, fmt.Errorf("query_expansion_model must be %s", DefaultQueryExpansionModel)
 	}
 	queryExpansionReasoning := llm.Reasoning(strings.TrimSpace(v.GetString("query_expansion_reasoning")))
@@ -259,7 +259,7 @@ func Load(path string) (Config, error) {
 	if queryExpansionReasoning != DefaultQueryExpansionReasoning {
 		return Config{}, fmt.Errorf("query_expansion_reasoning must be none")
 	}
-	if answerSynthesisModel != DefaultAnswerSynthesisModel {
+	if answerSynthesisModel != DefaultAnswerSynthesisModel && answerSynthesisModel != "deepseek-v4-pro" {
 		return Config{}, fmt.Errorf("answer_synthesis_model must be %s", DefaultAnswerSynthesisModel)
 	}
 	if !answerSynthesisReasoning.Valid() {
@@ -301,9 +301,9 @@ func Load(path string) (Config, error) {
 		ProjectID:                        v.GetString("project_id"),
 		Port:                             v.GetString("port"),
 		DeepSeekAPIKey:                   v.GetString("deepseek_api_key"),
-		QueryExpansionModel:              queryExpansionModel,
+		QueryExpansionModel:              llm.CanonicalDeepSeekModel(queryExpansionModel),
 		QueryExpansionReasoning:          queryExpansionReasoning,
-		AnswerSynthesisModel:             answerSynthesisModel,
+		AnswerSynthesisModel:             llm.CanonicalDeepSeekModel(answerSynthesisModel),
 		AnswerSynthesisReasoning:         answerSynthesisReasoning,
 		JWTSecret:                        v.GetString("jwt_secret"),
 		DevJWT:                           v.GetBool("dev_jwt"),

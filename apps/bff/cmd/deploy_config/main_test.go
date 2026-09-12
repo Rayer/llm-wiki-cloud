@@ -23,7 +23,7 @@ func TestLoadReviewedEnvironmentsAndQueryIdentity(t *testing.T) {
 		if err != nil {
 			t.Fatalf("Load(%s): %v", environment, err)
 		}
-		if config.QueryConfig.RuntimePath != "/app/configs/query/dev/query-dev-2026-09-12.1.json" || config.QueryConfig.Revision != "query-dev-2026-09-12.1" || config.QueryConfig.Digest != "sha256:645404d90133ba8adabed71e83b22560093dabaf3e8136951392be7b33da0" || config.QueryConfig.SchemaVersion != 2 {
+		if config.QueryConfig.RuntimePath != "/app/configs/query/dev/query-dev-2026-09-12.1.json" || config.QueryConfig.Revision != "query-dev-2026-09-12.1" || config.QueryConfig.Digest != "sha256:645404d90133ba8adabed71e83b22560093dabaf3e8136953961392be7b33da0" || config.QueryConfig.SchemaVersion != 2 {
 			t.Fatalf("%s query identity = %#v", environment, config.QueryConfig)
 		}
 		if !config.Evidence.Validated || !config.Evidence.SecretFree || !strings.HasPrefix(config.Evidence.ConfigFingerprint, "sha256:") {

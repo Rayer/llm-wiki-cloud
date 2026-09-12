@@ -451,3 +451,22 @@ func TestLoadInvalidRegistrationEnvironmentFailsClosed(t *testing.T) {
 		t.Fatal("invalid registration environment reopened signup")
 	}
 }
+
+func TestLoadLegacyModelAliasesMigratesEffectiveConfiguration(t *testing.T) {
+	t.Setenv("DEV_JWT", "true")
+	t.Setenv("QUERY_STAGE_CONFIG_PATH", "")
+	t.Setenv("QUERY_EXPANSION_MODEL", "deepseek-v4-flash")
+	t.Setenv("ANSWER_SYNTHESIS_MODEL", "deepseek-v4-pro")
+	t.Setenv("ANSWER_SYNTHESIS_REASONING", "high")
+	cfg, err := Load(t.TempDir())
+	if err != nil {
+		t.Fatal(err)
+	}
+	if cfg.QueryExpansionModel != "deepseek-flash" || cfg.AnswerSynthesisModel != "deepseek-flash" || cfg.AnswerSynthesisReasoning != "high" {
+		t.Fatalf("effective models/reasoning = %s/%s/%s", cfg.QueryExpansionModel, cfg.AnswerSynthesisModel, cfg.AnswerSynthesisReasoning)
+	}
+	t.Setenv("ANSWER_SYNTHESIS_MODEL", "deepseek-unknown")
+	if _, err := Load(t.TempDir()); err == nil {
+		t.Fatal("unknown migration model accepted")
+	}
+}

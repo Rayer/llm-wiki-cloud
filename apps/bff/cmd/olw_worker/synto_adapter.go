@@ -183,11 +183,15 @@ api_key_env = "DEEPSEEK_API_KEY"
 provider = "default"
 model = "deepseek-flash"
 ctx = 16384
+[models.fast.options]
+thinking = { type = "disabled" }
 
 [models.heavy]
 provider = "default"
 model = "deepseek-flash"
 ctx = 32768
+[models.heavy.options]
+thinking = { type = "enabled" }
 
 [pipeline]
 auto_approve = true

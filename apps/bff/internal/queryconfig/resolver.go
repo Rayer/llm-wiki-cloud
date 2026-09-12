@@ -7,6 +7,7 @@ import (
 	"errors"
 	"fmt"
 
+	"github.com/rayer/llm-wiki-bff/internal/llm"
 	"github.com/rayer/llm-wiki-bff/internal/query"
 	"github.com/rayer/llm-wiki-bff/internal/queryquality"
 )
@@ -177,9 +178,9 @@ func (r *Resolver) makeEffective(identity GenerationIdentity, profile queryquali
 		SchemaVersion: r.config.SchemaVersion, ConfigRevision: r.config.ConfigRevision, ConfigDigest: r.config.ConfigDigest,
 		QueryServiceImplementation: r.config.QueryServiceImplementation, Profile: profile, ProfileDigest: profileDigest,
 		PromptID: promptID, PromptDigest: promptDigest, Options: options,
-		ExpansionImplementation: stages.QueryExpander.Implementation, ExpansionProvider: stages.QueryExpander.Provider, ExpansionModel: stages.QueryExpander.Model,
+		ExpansionImplementation: stages.QueryExpander.Implementation, ExpansionProvider: stages.QueryExpander.Provider, ExpansionModel: llm.CanonicalDeepSeekModel(stages.QueryExpander.Model),
 		ExpansionReasoning: stages.QueryExpander.Reasoning, ExpansionTemperature: stages.QueryExpander.Temperature,
-		SynthesisImplementation: stages.AnswerSynthesizer.Implementation, SynthesisProvider: stages.AnswerSynthesizer.Provider, SynthesisModel: stages.AnswerSynthesizer.Model,
+		SynthesisImplementation: stages.AnswerSynthesizer.Implementation, SynthesisProvider: stages.AnswerSynthesizer.Provider, SynthesisModel: llm.CanonicalDeepSeekModel(stages.AnswerSynthesizer.Model),
 		SynthesisReasoning: stages.AnswerSynthesizer.Reasoning, SynthesisTemperature: stages.AnswerSynthesizer.Temperature,
 		NoEvidencePolicy: stages.AnswerSynthesizer.NoEvidencePolicy,
 		BindingSource:    source, ExactBinding: exact, InputGenerationIdentity: identity,

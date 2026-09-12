@@ -51,7 +51,7 @@ func TestServicePublicSeam(t *testing.T) {
 func TestServiceDelegatesActualSynthesizerIdentity(t *testing.T) {
 	client := llm.NewClientWithOptions("secret-key", llm.ClientOptions{Model: "deepseek-v4-pro", Reasoning: llm.ReasoningHigh})
 	identity, ok := NewService(nil, nil, client).ModelIdentity()
-	if !ok || identity.Provider != "deepseek" || identity.Model != "deepseek-v4-pro" || identity.Reasoning != string(llm.ReasoningHigh) || identity.Temperature != 0 {
+	if !ok || identity.Provider != "deepseek" || identity.Model != "deepseek-flash" || identity.Reasoning != string(llm.ReasoningHigh) || identity.Temperature != 0 {
 		t.Fatalf("identity=%+v ok=%v", identity, ok)
 	}
 	if _, ok := NewService(nil, nil, nil).ModelIdentity(); ok {
