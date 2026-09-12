@@ -3,10 +3,11 @@
 Config.resolve_role is the shared seam after provider/profile/CLI precedence.
 OpenAICompatClient ignores think and merges options last into the wire payload.
 """
-from dataclasses import replace
+import hashlib
+import json
 
 import synto
-from synto.config import Config
+from synto.config import Config, ResolvedModel
 
 if synto.__version__ != "0.7.0":
     raise RuntimeError("LWC execution adapter requires pinned Synto 0.7.0")
@@ -19,6 +20,19 @@ _MODELS = {
     "deepseek-v4-pro": "enabled",
     "deepseek-flash": "enabled",
 }
+
+
+class _FlashResolvedModel(ResolvedModel):
+    @property
+    def connection_key(self):
+        # The pinned router shares clients by connection; each thinking policy
+        # needs its own client namespace before OpenAICompatClient's cache lookup.
+        return (*super().connection_key, self.options["thinking"]["type"], self.options.get("reasoning_effort"))
+
+    @property
+    def cache_namespace(self):
+        policy = json.dumps([self.options["thinking"], self.options.get("reasoning_effort")], sort_keys=True)
+        return hashlib.sha256((super().cache_namespace + "\0" + policy).encode()).hexdigest()
 
 
 def _resolve_flash(self, role, *, api_key_env=None):
@@ -40,10 +54,13 @@ def _resolve_flash(self, role, *, api_key_env=None):
     options["thinking"] = thinking
     if "model" in options:
         options["model"] = "deepseek-flash"
-    return replace(resolved, model="deepseek-flash", options=options)
+    return _FlashResolvedModel(**(vars(resolved) | {"model": "deepseek-flash", "options": options}))
 
 
 Config.resolve_role = _resolve_flash
+# New compile/checkpoint provenance must name the same effective model as the
+# role endpoint; this does not rewrite old rows or force a pipeline execution.
+Config.model_name = lambda self, role: self.resolve_role(role).model
 
 if __name__ == "__main__":
     from synto.cli import cli

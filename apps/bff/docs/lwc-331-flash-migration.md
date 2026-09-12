@@ -38,15 +38,19 @@ Inspected wheel sources:
   merged last into the actual request. A model-only CLI override cannot preserve
   chat/reasoner semantics. Existing `options.model` is also normalized.
 - `synto/cli.py:250-300`: native CLI overrides expose model/provider, not options.
-  The wrapper uses the original CLI entry point and one `Config.resolve_role`
-  seam. Version mismatch fails immediately; no engine file is patched on disk.
+  The wrapper uses the original CLI entry point, `Config.resolve_role`, and
+  `Config.model_name` for effective provenance. Version mismatch fails immediately;
+  no engine file is patched on disk.
 
 The wrapper rejects unknown DeepSeek models, thinking objects, effort values and
 embedding roles before inference. Other native options retain their original
-precedence; the adapter does not invent token budgets or remap effort. Synto's
-`model_name()` compile metadata still records the configured model. Its cache
-keys contain model/messages/account namespace, not all request options, as in
-the pinned engine. Actual role endpoints and HTTP payloads are execution truth.
+precedence; the adapter does not invent token budgets or remap effort. New `model_name()` compile/checkpoint metadata uses the resolved model, matching
+role endpoints and HTTP payloads. A DeepSeek-only resolved-model subclass includes
+effective thinking/effort in both client deduplication and cache namespace, so
+alias collapse cannot reuse a non-thinking answer for a thinking request. Existing
+cache rows stay untouched; same-policy cache hits remain available. Other native
+options keep the pinned engine's cache behavior. No forced pipeline run/rebuild
+is introduced; the engine evaluates checkpoints normally during an authorized run.
 
 [DeepSeek model documentation](https://api-docs.deepseek.com/quick_start/pricing/)
 and [thinking documentation](https://api-docs.deepseek.com/guides/thinking_mode)

@@ -473,7 +473,7 @@ Please review these points before merge:
 ### Flash execution compatibility (LWC-331)
 
 The worker embeds `synto_execution.py` and invokes it with the image's Python
-interpreter. It wraps only `Config.resolve_role` in the pinned Synto 0.7.0
+interpreter. It wraps `Config.resolve_role` and effective `model_name` in pinned Synto 0.7.0
 wheel, after normal provider/profile/CLI precedence. DeepSeek legacy aliases
 become `deepseek-flash`; existing `options.thinking` wins, otherwise chat
 means disabled and reasoner/V4/Flash mean enabled. The pinned OpenAI client
@@ -483,7 +483,8 @@ are preserved. Unknown DeepSeek models/thinking/effort and DeepSeek embeddings
 fail closed; non-DeepSeek roles are unchanged. Existing TOML bytes are untouched.
 
 This applies to every CLI child, including migrated legacy vaults and existing
-Synto projects. Synto's historical `model_name()` compile metadata still records
-the configured name; resolved endpoints and actual HTTP requests are canonical.
-Use wire/runtime evidence for deployment acceptance, not that metadata alone.
+Synto projects. New compile/checkpoint provenance reports the effective canonical model; retained
+history is untouched. DeepSeek client deduplication and cache namespace include
+thinking/effort, preserving separation lost when chat/reasoner aliases collapse.
+Same-policy hits remain cached. No forced rebuild or live execution is added.
 The exact-wheel offline CLI gate is `make -C apps/bff test-flash-execution`.

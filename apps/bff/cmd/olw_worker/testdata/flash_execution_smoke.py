@@ -8,6 +8,7 @@ import os
 from pathlib import Path
 import subprocess
 import sys
+import sqlite3
 import tempfile
 import threading
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
@@ -94,7 +95,6 @@ def exercise(config, expected, filename="synto.toml", migrate=False, model="deep
         before = path.read_bytes()
         if migrate:
             # Real pinned migration of a synthetic legacy state, no user data.
-            import sqlite3
             (vault / ".olw").mkdir()
             sqlite3.connect(vault / ".olw/state.db").close()
             run(vault, "migrate-olw")
@@ -103,8 +103,8 @@ def exercise(config, expected, filename="synto.toml", migrate=False, model="deep
         result = run(vault, "run", "--auto-approve")
         assert requests, result.stdout + result.stderr
         assert (vault / "wiki/Alpha.md").is_file(), "CLI failed to compile/publish synthetic article"
-        observed = {body.get("thinking", {}).get("type") for body in requests}
-        assert expected <= observed, (expected, observed, result.stdout, result.stderr)
+        observed = tuple(body.get("thinking", {}).get("type") for body in requests)
+        assert expected == observed, (expected, observed, result.stdout, result.stderr)
         for body in requests:
             assert body["model"] == model, body
             if model == "deepseek-flash":
@@ -113,14 +113,18 @@ def exercise(config, expected, filename="synto.toml", migrate=False, model="deep
                 assert "thinking" not in body, body
             for key, value in (preserved or {}).items():
                 assert body.get(key) == value, body
+        with sqlite3.connect(vault / ".synto/state.db") as db:
+            runs = db.execute("SELECT fast_model, heavy_model, pipeline_json FROM compile_runs").fetchall()
+        assert runs and all(fast == heavy == model for fast, heavy, _ in runs), runs
+        assert all(json.loads(pipeline)["fast_model"] == model and json.loads(pipeline)["heavy_model"] == model for _, _, pipeline in runs), runs
         assert path.read_bytes() == before
         assert all(p.read_bytes() == data for p, data in configs.items())
         print(f"PASS {filename} migrate={migrate}: {len(requests)} real HTTP requests, thinking={list(observed)}")
 
 
 legacy = f'[provider]\nname = "deepseek"\nurl = "{url}"\n[models]\nfast = "deepseek-chat"\nheavy = "deepseek-reasoner"\n'
-exercise(legacy, {"disabled", "enabled"})
-exercise(legacy, {"disabled", "enabled"}, "wiki.toml", migrate=True)
+exercise(legacy, ("disabled", "enabled"))
+exercise(legacy, ("disabled", "enabled"), "wiki.toml", migrate=True)
 # New template uses explicit thinking, despite the canonical model default.
 modern = f'''[providers.default]
 name = "deepseek"
@@ -138,18 +142,18 @@ ctx = 32768
 [models.heavy.options]
 thinking = {{ type = "enabled" }}
 '''
-exercise(modern, {"disabled", "enabled"})
+exercise(modern, ("disabled", "enabled"))
 # Explicit provider options and role options win over alias/default intent.
-precedence = modern.replace('[models.fast]', '[providers.default.options]\nthinking = { type = "enabled" }\nmax_tokens = 777\ntop_p = 0.6\n[models.fast]')
-precedence = precedence.replace('model = "deepseek-flash"', 'model = "deepseek-reasoner"').replace('thinking = { type = "enabled" }\n', 'thinking = { type = "disabled" }\n')
-exercise(precedence, {"disabled"}, preserved={"max_tokens": 777, "top_p": 0.6})
+precedence = modern.replace('thinking = { type = "enabled" }', 'thinking = { type = "disabled" }').replace('[models.fast]', '[providers.default.options]\nthinking = { type = "enabled" }\nmax_tokens = 777\ntop_p = 0.6\n[models.fast]')
+precedence = precedence.replace('model = "deepseek-flash"', 'model = "deepseek-reasoner"')
+exercise(precedence, ("disabled", "disabled"), preserved={"max_tokens": 777, "top_p": 0.6})
 # Role names do not dictate thinking: reasoner fast and chat heavy retain intent.
-exercise(legacy.replace('fast = "deepseek-chat"', 'fast = "deepseek-reasoner"').replace('heavy = "deepseek-reasoner"', 'heavy = "deepseek-chat"'), {"disabled", "enabled"})
+exercise(legacy.replace('fast = "deepseek-chat"', 'fast = "deepseek-reasoner"').replace('heavy = "deepseek-reasoner"', 'heavy = "deepseek-chat"'), ("enabled", "disabled"))
 # Aliased modern V4 models preserve their explicitly disabled/enabled policies.
-exercise(modern.replace('model = "deepseek-flash"', 'model = "deepseek-v4-pro"'), {"disabled", "enabled"})
+exercise(modern.replace('model = "deepseek-flash"', 'model = "deepseek-v4-pro"'), ("disabled", "enabled"))
 # Other OpenAI-compatible providers are byte-for-byte unaffected by this policy.
 foreign = legacy.replace('name = "deepseek"', 'name = "openai"').replace('deepseek-chat', 'foreign-model').replace('deepseek-reasoner', 'foreign-model')
-exercise(foreign, {None}, model="foreign-model")
+exercise(foreign, (None, None), model="foreign-model")
 for invalid in (
     modern.replace('model = "deepseek-flash"', 'model = "unknown-model"'),
     modern.replace('type = "disabled"', 'type = "automatic"'),
@@ -163,3 +167,52 @@ for invalid in (
         assert not requests, "invalid DeepSeek config reached inference"
 print("PASS fail-closed unknown model/thinking/effort before inference")
 server.shutdown()
+
+# The real pinned cache and router must separate migrated thinking intentions,
+# both within one router and across invocations using the same retained DB.
+import runpy
+import httpx
+from synto.cache import LLMCache
+from synto.client_factory import build_router
+from synto.config import Config
+from synto.state import StateDB
+
+runpy.run_path(str(wrapper), run_name="flash_cache_gate")
+os.environ["LWC331_TEST_API_KEY"] = "fake"
+with tempfile.TemporaryDirectory(prefix="lwc331-cache-") as temp:
+    db = StateDB(Path(temp) / "state.db")
+    cache = LLMCache(db)
+    calls = []
+
+    def capture(request):
+        body = json.loads(request.content)
+        calls.append(body)
+        return httpx.Response(200, json={"choices": [{"message": {"content": str(len(calls))}}]})
+
+    def invoke(ep):
+        return ep.client.generate("identical prompt", model=ep.model, options=ep.options)
+
+    provider = {"default": {"name": "deepseek", "url": url, "api_key_env": "LWC331_TEST_API_KEY"}}
+    cfg = Config(vault=temp, providers=provider, models={"fast": "deepseek-chat", "heavy": "deepseek-reasoner"})
+    router = build_router(cfg, cache=cache)
+    fast, heavy = router.endpoint("fast"), router.endpoint("heavy")
+    assert fast.client is not heavy.client, "different thinking policies share one client/cache namespace"
+    for ep in (fast, heavy):
+        ep.client._client.close()
+        ep.client._client = httpx.Client(transport=httpx.MockTransport(capture))
+    assert invoke(fast) == "1" and invoke(heavy) == "2"
+    assert invoke(fast) == "1" and invoke(heavy) == "2" and len(calls) == 2
+    router.close()
+    for effort in ("low", "high"):
+        cfg = Config(vault=temp, providers=provider, models={"heavy": {"model": "deepseek-reasoner", "options": {"reasoning_effort": effort}}})
+        router = build_router(cfg, cache=cache)
+        ep = router.endpoint("heavy")
+        ep.client._client.close()
+        ep.client._client = httpx.Client(transport=httpx.MockTransport(capture))
+        invoke(ep)
+        router.close()
+    assert len(calls) == 4, "retained cache collapsed distinct explicit effort policies"
+    assert all(body["model"] == "deepseek-flash" for body in calls)
+    assert [body["thinking"]["type"] for body in calls] == ["disabled", "enabled", "enabled", "enabled"]
+    db.close()
+print("PASS pinned cache isolates thinking/effort while retaining same-policy hits")
