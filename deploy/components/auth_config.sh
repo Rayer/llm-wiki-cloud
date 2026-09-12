@@ -1,11 +1,13 @@
 #!/usr/bin/env bash
-# Shared by Auth and Production BFF when the reviewed auth.google block is present.
+# Shared by Auth and BFF; Query selection is managed in both BFF environments.
 auth_config_managed() {
   local component="${1:-auth}"
-  jq -e '.normalized.auth.google != null' "$PLAN_PATH" >/dev/null || return 1
+  if [[ "$component" != bff ]]; then
+    jq -e '.normalized.auth.google != null' "$PLAN_PATH" >/dev/null || return 1
+  fi
   [[ "$ENVIRONMENT" == development || "$ENVIRONMENT" == production ]] &&
     [[ "$(plan_json '.environment')" == "$ENVIRONMENT" ]] || die "managed config environment mismatch"
-  [[ "$component" == auth || ( "$component" == bff && "$ENVIRONMENT" == production ) ]]
+  [[ "$component" == auth || "$component" == bff ]]
 }
 
 auth_config_readback() {
