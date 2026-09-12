@@ -334,7 +334,7 @@ func normalizeWithoutDigest(input Config) (Config, error) {
 
 func validateStages(stages Stages) error {
 	expander := stages.QueryExpander
-	if expander.Provider != ProviderDeepSeek || expander.Implementation != QueryExpanderImplementation || expander.Model != "deepseek-v4-flash" || expander.Reasoning != "none" || expander.Temperature != 0 {
+	if expander.Provider != ProviderDeepSeek || expander.Implementation != QueryExpanderImplementation || (expander.Model != "deepseek-flash" && expander.Model != "deepseek-v4-flash") || expander.Reasoning != "none" || expander.Temperature != 0 {
 		return errors.New("invalid query_expander provider/implementation/model/reasoning/temperature")
 	}
 	if expander.KeywordsPerAttempt < 1 || expander.KeywordsPerAttempt > 100 || expander.Attempts < 1 || expander.Attempts > 10 {
@@ -349,7 +349,7 @@ func validateStages(stages Stages) error {
 		return errors.New("invalid result_selector")
 	}
 	synthesizer := stages.AnswerSynthesizer
-	if synthesizer.Provider != ProviderDeepSeek || synthesizer.Implementation != AnswerSynthesizerImplementation || synthesizer.Model != "deepseek-v4-pro" || (synthesizer.Reasoning != "none" && synthesizer.Reasoning != "low" && synthesizer.Reasoning != "high" && synthesizer.Reasoning != "max") || synthesizer.Temperature != 0 || (synthesizer.NoEvidencePolicy != NoEvidencePolicy && synthesizer.NoEvidencePolicy != ModelPriorFallbackPolicy) {
+	if synthesizer.Provider != ProviderDeepSeek || synthesizer.Implementation != AnswerSynthesizerImplementation || (synthesizer.Model != "deepseek-flash" && synthesizer.Model != "deepseek-v4-pro") || (synthesizer.Reasoning != "none" && synthesizer.Reasoning != "low" && synthesizer.Reasoning != "high" && synthesizer.Reasoning != "max") || synthesizer.Temperature != 0 || (synthesizer.NoEvidencePolicy != NoEvidencePolicy && synthesizer.NoEvidencePolicy != ModelPriorFallbackPolicy) {
 		return errors.New("invalid answer_synthesizer provider/implementation/model/reasoning/temperature")
 	}
 	for name, value := range map[string]string{"default_profile_id": expander.DefaultProfileID, "default_prompt_id": expander.DefaultPromptID, "default_profile_digest": expander.DefaultProfileDigest, "default_prompt_digest": expander.DefaultPromptDigest} {

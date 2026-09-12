@@ -124,7 +124,7 @@ func TestNewExecutorRejectsEveryIdentityDimensionBeforeFactory(t *testing.T) {
 		})
 	}
 
-	synthesisBase := llm.ModelIdentity{Provider: queryconfig.ProviderDeepSeek, Model: "deepseek-v4-pro", Reasoning: "none", Temperature: 0}
+	synthesisBase := llm.ModelIdentity{Provider: queryconfig.ProviderDeepSeek, Model: "deepseek-flash", Reasoning: "none", Temperature: 0}
 	for _, test := range tests {
 		t.Run("synthesis_"+test.name, func(t *testing.T) {
 			identity := synthesisBase
@@ -159,11 +159,11 @@ func TestNewExecutorRejectsMissingIdentitiesBeforeFactory(t *testing.T) {
 }
 
 func expansionIdentity() llm.ModelIdentity {
-	return llm.ModelIdentity{Provider: queryconfig.ProviderDeepSeek, Model: "deepseek-v4-flash", Reasoning: "none", Temperature: 0}
+	return llm.ModelIdentity{Provider: queryconfig.ProviderDeepSeek, Model: "deepseek-flash", Reasoning: "none", Temperature: 0}
 }
 
 func expectedSynthesizer() *query.Service {
-	return query.NewService(cache.New(), nil, llm.NewClientWithOptions("test", llm.ClientOptions{Model: "deepseek-v4-pro", Reasoning: llm.ReasoningNone}))
+	return query.NewService(cache.New(), nil, llm.NewClientWithOptions("test", llm.ClientOptions{Model: "deepseek-flash", Reasoning: llm.ReasoningNone}))
 }
 
 func strictConfig(t *testing.T, bindings int) queryconfig.Config {
@@ -182,7 +182,7 @@ func strictConfig(t *testing.T, bindings int) queryconfig.Config {
 		projectBindings = append(projectBindings, queryconfig.ProjectBinding{ProjectID: "project", GenerationID: "generation-" + string(rune('1'+i)), ConceptsDigest: "sha256:" + strings.Repeat(string(rune('a'+i)), 64), ProfileID: profile.ID, ProfileDigest: profileDigest, PromptID: prompt.ID, PromptDigest: prompt.TemplateDigest, Source: queryconfig.SourceCorpusDerivedApproximation})
 	}
 	sealed, err := queryconfig.Seal(queryconfig.Config{SchemaVersion: queryconfig.SchemaVersion, ConfigRevision: "rev", QueryServiceImplementation: queryconfig.QueryServiceImplementation,
-		Stages:   queryconfig.Stages{QueryExpander: queryconfig.QueryExpanderStage{Provider: queryconfig.ProviderDeepSeek, Implementation: queryconfig.QueryExpanderImplementation, Model: "deepseek-v4-flash", Reasoning: "none", Temperature: 0, DefaultProfileID: profile.ID, DefaultProfileDigest: profileDigest, DefaultPromptID: prompt.ID, DefaultPromptDigest: prompt.TemplateDigest, KeywordsPerAttempt: 24, Attempts: 3}, CandidateMatcher: queryconfig.CandidateMatcherStage{Implementation: queryconfig.CandidateMatcherImplementation, EvidenceThreshold: 2, RareKeywordMaxDocumentFrequency: 1}, ResultSelector: queryconfig.ResultSelectorStage{Implementation: queryconfig.ResultSelectorImplementation, Limit: 10, ExplorationSlots: 1, SeedPolicy: queryconfig.SeedPolicy}, AnswerSynthesizer: queryconfig.AnswerSynthesizerStage{Provider: queryconfig.ProviderDeepSeek, Implementation: queryconfig.AnswerSynthesizerImplementation, Model: "deepseek-v4-pro", Reasoning: "none", Temperature: 0, NoEvidencePolicy: queryconfig.NoEvidencePolicy}},
+		Stages:   queryconfig.Stages{QueryExpander: queryconfig.QueryExpanderStage{Provider: queryconfig.ProviderDeepSeek, Implementation: queryconfig.QueryExpanderImplementation, Model: "deepseek-flash", Reasoning: "none", Temperature: 0, DefaultProfileID: profile.ID, DefaultProfileDigest: profileDigest, DefaultPromptID: prompt.ID, DefaultPromptDigest: prompt.TemplateDigest, KeywordsPerAttempt: 24, Attempts: 3}, CandidateMatcher: queryconfig.CandidateMatcherStage{Implementation: queryconfig.CandidateMatcherImplementation, EvidenceThreshold: 2, RareKeywordMaxDocumentFrequency: 1}, ResultSelector: queryconfig.ResultSelectorStage{Implementation: queryconfig.ResultSelectorImplementation, Limit: 10, ExplorationSlots: 1, SeedPolicy: queryconfig.SeedPolicy}, AnswerSynthesizer: queryconfig.AnswerSynthesizerStage{Provider: queryconfig.ProviderDeepSeek, Implementation: queryconfig.AnswerSynthesizerImplementation, Model: "deepseek-flash", Reasoning: "none", Temperature: 0, NoEvidencePolicy: queryconfig.NoEvidencePolicy}},
 		Profiles: []queryconfig.Profile{{ID: profile.ID, CriterionPolicy: profile.CriterionPolicy, ProfileDigest: profileDigest}}, ProjectBindings: projectBindings})
 	if err != nil {
 		t.Fatal(err)

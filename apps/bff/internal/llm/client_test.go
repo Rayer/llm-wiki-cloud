@@ -69,7 +69,7 @@ func TestClientModelIdentityIsSanitizedAndUnavailableWhenNil(t *testing.T) {
 	temperature := 0.0
 	client := NewClientWithOptions("secret-key", ClientOptions{Model: "deepseek-v4-flash", Temperature: &temperature, Reasoning: ReasoningNone})
 	identity, ok := client.ModelIdentity()
-	if !ok || identity.Provider != "deepseek" || identity.Model != "deepseek-v4-flash" || identity.Reasoning != string(ReasoningNone) || identity.Temperature != 0 {
+	if !ok || identity.Provider != "deepseek" || identity.Model != "deepseek-flash" || identity.Reasoning != string(ReasoningNone) || identity.Temperature != 0 {
 		t.Fatalf("identity=%+v ok=%v", identity, ok)
 	}
 	if _, ok := (*Client)(nil).ModelIdentity(); ok {
@@ -124,11 +124,11 @@ func TestFlashExpansionAndSynthesisClientOptionsAreIsolated(t *testing.T) {
 
 	gotExpansion := <-requests
 	gotSynthesis := <-requests
-	if gotExpansion.Model != "deepseek-v4-flash" || gotExpansion.Temperature == nil || *gotExpansion.Temperature != 0 {
+	if gotExpansion.Model != "deepseek-flash" || gotExpansion.Temperature == nil || *gotExpansion.Temperature != 0 {
 		t.Fatalf("expansion request = %#v, want deepseek-v4-flash and temperature 0", gotExpansion)
 	}
-	if gotSynthesis.Model != "deepseek-chat" || gotSynthesis.Temperature != nil {
-		t.Fatalf("synthesis request = %#v, want deepseek-chat without temperature", gotSynthesis)
+	if gotSynthesis.Model != "deepseek-flash" || gotSynthesis.Temperature != nil {
+		t.Fatalf("synthesis request = %#v, want deepseek-flash without temperature", gotSynthesis)
 	}
 }
 
@@ -152,7 +152,7 @@ func TestChatSendsExplicitThinkingPolicy(t *testing.T) {
 	if _, err := client.Chat(context.Background(), "system", "user"); err != nil {
 		t.Fatal(err)
 	}
-	if got.Model != "deepseek-v4-flash" || got.Temperature == nil || *got.Temperature != 0 || string(got.Thinking) != `{"type":"disabled"}` || got.ReasoningEffort != "" {
+	if got.Model != "deepseek-flash" || got.Temperature == nil || *got.Temperature != 0 || string(got.Thinking) != `{"type":"disabled"}` || got.ReasoningEffort != "" {
 		t.Fatalf("request = %#v, want flash/0/disabled/no effort", got)
 	}
 }

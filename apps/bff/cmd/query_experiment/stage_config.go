@@ -21,8 +21,8 @@ func buildStageConfig(options experimentOptions, variant fixtureVariant, prepare
 	if len(variant.Profile.ID) == 0 {
 		return queryconfig.Config{}, errors.New("selected profile is empty")
 	}
-	if variant.Model.Provider != "deepseek" || variant.Model.Model != "deepseek-v4-flash" {
-		return queryconfig.Config{}, errors.New("stage config requires allowlisted deepseek-v4-flash provider model")
+	if variant.Model.Provider != "deepseek" || (variant.Model.Model != "deepseek-flash" && variant.Model.Model != "deepseek-v4-flash") {
+		return queryconfig.Config{}, errors.New("stage config requires allowlisted deepseek-flash provider model")
 	}
 	if variant.Model.Temperature == nil || *variant.Model.Temperature != 0 || variant.Model.Reasoning != "none" {
 		return queryconfig.Config{}, errors.New("stage config requires reasoning none and temperature 0")
@@ -80,14 +80,14 @@ func buildStageConfig(options experimentOptions, variant fixtureVariant, prepare
 		QueryServiceImplementation: queryconfig.QueryServiceImplementation,
 		Stages: queryconfig.Stages{
 			QueryExpander: queryconfig.QueryExpanderStage{
-				Provider: queryconfig.ProviderDeepSeek, Implementation: queryconfig.QueryExpanderImplementation, Model: "deepseek-v4-flash", Reasoning: "none", Temperature: 0,
+				Provider: queryconfig.ProviderDeepSeek, Implementation: queryconfig.QueryExpanderImplementation, Model: "deepseek-flash", Reasoning: "none", Temperature: 0,
 				DefaultProfileID: defaultProfile.ID, DefaultProfileDigest: defaultProfileDigest,
 				DefaultPromptID: queryquality.StructuredPlanPromptID, DefaultPromptDigest: lifestylePrompt.TemplateDigest,
 				KeywordsPerAttempt: retrievalOptions.keywordsPerAttempt, Attempts: retrievalOptions.expansionAttempts,
 			},
 			CandidateMatcher:  queryconfig.CandidateMatcherStage{Implementation: queryconfig.CandidateMatcherImplementation, EvidenceThreshold: retrievalOptions.evidenceThreshold, RareKeywordMaxDocumentFrequency: retrievalOptions.rareDocumentFrequency},
 			ResultSelector:    queryconfig.ResultSelectorStage{Implementation: queryconfig.ResultSelectorImplementation, Limit: retrievalOptions.selectionLimit, ExplorationSlots: retrievalOptions.explorationSlots, SeedPolicy: queryconfig.SeedPolicy},
-			AnswerSynthesizer: queryconfig.AnswerSynthesizerStage{Provider: queryconfig.ProviderDeepSeek, Implementation: queryconfig.AnswerSynthesizerImplementation, Model: "deepseek-v4-pro", Reasoning: "none", Temperature: 0, NoEvidencePolicy: queryconfig.NoEvidencePolicy},
+			AnswerSynthesizer: queryconfig.AnswerSynthesizerStage{Provider: queryconfig.ProviderDeepSeek, Implementation: queryconfig.AnswerSynthesizerImplementation, Model: "deepseek-flash", Reasoning: "none", Temperature: 0, NoEvidencePolicy: queryconfig.NoEvidencePolicy},
 		},
 		Profiles:        []queryconfig.Profile{{ID: defaultProfile.ID, CriterionPolicy: defaultProfile.CriterionPolicy, ProfileDigest: defaultProfileDigest}},
 		ProjectBindings: []queryconfig.ProjectBinding{{ProjectID: options.projectID, GenerationID: prepared.generationID, ConceptsDigest: conceptsDigest, ProfileID: profile.ID, ProfileDigest: profileDigest, PromptID: prompt.ID, PromptDigest: prompt.TemplateDigest, Source: queryconfig.SourceCorpusDerivedApproximation}},

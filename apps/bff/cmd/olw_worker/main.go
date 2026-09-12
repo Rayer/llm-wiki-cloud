@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"context"
 	"crypto/sha256"
+	_ "embed"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -122,7 +123,7 @@ const (
 	maxWorkerArgBytes               = 4096
 	maxWorkerCommandBytes           = 1 << 20
 	maxWorkerCommandCumulativeBytes = 256 << 10
-	suggestedQueryModel             = "deepseek-chat"
+	suggestedQueryModel             = "deepseek-flash"
 )
 
 const pipelineLogTruncationMarker = pipelinediagnostic.PipelineLogTruncationMarker
@@ -826,9 +827,15 @@ func ensureWikiTOML(vault string, cfg workerConfig) error {
 name = "deepseek"
 url = "https://api.deepseek.com/v1"
 
-[models]
-fast = "deepseek-chat"
-heavy = "deepseek-reasoner"
+[models.fast]
+model = "deepseek-flash"
+[models.fast.options]
+thinking = { type = "disabled" }
+
+[models.heavy]
+model = "deepseek-flash"
+[models.heavy.options]
+thinking = { type = "enabled" }
 
 [pipeline]
 auto_approve = true
@@ -885,8 +892,11 @@ func runOLWBatch(ctx context.Context, vault string, commands [][]string, stopOnE
 	return batchErr
 }
 
+//go:embed synto_execution.py
+var syntoExecutionAdapter string
+
 func execOLWCommand(ctx context.Context, vault string, command []string, env []string, stdout, stderr io.Writer) error {
-	cmd := exec.CommandContext(ctx, "synto", command...)
+	cmd := exec.CommandContext(ctx, "python3", append([]string{"-c", syntoExecutionAdapter}, command...)...)
 	cmd.Dir = vault
 	cmd.Env = allowlistedSyntoEnvironment(env)
 	cmd.Stdout = stdout

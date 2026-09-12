@@ -54,7 +54,7 @@ bff:
     - http://localhost:3000
     - http://127.0.0.1:3000
   dev_jwt: false
-  query_config: apps/bff/configs/query/dev/query-dev-2026-08-31.1.json
+  query_config: apps/bff/configs/query/dev/query-dev-2026-09-12.1.json
   secret_references:
     jwt: jwt-secret-dev
     deepseek_api_key: deepseek-apikey
