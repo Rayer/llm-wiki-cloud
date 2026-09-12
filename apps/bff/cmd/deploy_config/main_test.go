@@ -23,7 +23,7 @@ func TestLoadReviewedEnvironmentsAndQueryIdentity(t *testing.T) {
 		if err != nil {
 			t.Fatalf("Load(%s): %v", environment, err)
 		}
-		if config.QueryConfig.RuntimePath != "/app/configs/query/dev/query-dev-2026-08-31.1.json" || config.QueryConfig.Revision != "query-dev-2026-08-31.1" || config.QueryConfig.Digest != "sha256:2ee1a7303c60e810c3240c966a784c4d6cc76419a37b6e0e13e2d9e80f344305" || config.QueryConfig.SchemaVersion != 2 {
+		if config.QueryConfig.RuntimePath != "/app/configs/query/dev/query-dev-2026-09-12.1.json" || config.QueryConfig.Revision != "query-dev-2026-09-12.1" || config.QueryConfig.Digest != "sha256:645404d90133ba8adabed71e83b22560093dabaf3e8136951392be7b33da0" || config.QueryConfig.SchemaVersion != 2 {
 			t.Fatalf("%s query identity = %#v", environment, config.QueryConfig)
 		}
 		if !config.Evidence.Validated || !config.Evidence.SecretFree || !strings.HasPrefix(config.Evidence.ConfigFingerprint, "sha256:") {
@@ -71,7 +71,7 @@ func TestDecodeAndQueryPathValidationFailClosed(t *testing.T) {
 			case "unknown key", "secret value key":
 				text = replacement + text
 			case "missing query":
-				text = strings.Replace(text, "query_config: apps/bff/configs/query/dev/query-dev-2026-08-31.1.json", replacement, 1)
+				text = strings.Replace(text, "query_config: apps/bff/configs/query/dev/query-dev-2026-09-12.1.json", replacement, 1)
 			case "wrong type":
 				text = strings.Replace(text, "dev_jwt: false", replacement, 1)
 			}

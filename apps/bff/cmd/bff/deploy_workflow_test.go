@@ -94,7 +94,7 @@ func TestBFFWorkflowAndConfigAreValidAndMutationSafe(t *testing.T) {
 	}
 	for _, environment := range []string{"development", "production"} {
 		contents := readBFFCDFile(t, "deploy/environments/"+environment+".yaml")
-		if !strings.Contains(contents, "query_config: apps/bff/configs/query/dev/query-dev-2026-08-31.1.json") {
+		if !strings.Contains(contents, "query_config: apps/bff/configs/query/dev/query-dev-2026-09-12.1.json") {
 			t.Fatalf("%s does not point to the sealed Query config", environment)
 		}
 	}

@@ -8,7 +8,7 @@ import (
 )
 
 func TestActiveArtifactUsesDefaultProfileAcrossGenerationRevisions(t *testing.T) {
-	config, err := queryconfig.LoadFile("../../configs/query/dev/query-dev-2026-08-31.1.json")
+	config, err := queryconfig.LoadFile("../../configs/query/dev/query-dev-2026-09-12.1.json")
 	if err != nil {
 		t.Fatal(err)
 	}

@@ -51,7 +51,7 @@ bff:
     - https://wiki.rayer.idv.tw
     - https://llm-wiki-frontend.vercel.app
   dev_jwt: false
-  query_config: apps/bff/configs/query/dev/query-dev-2026-08-31.1.json
+  query_config: apps/bff/configs/query/dev/query-dev-2026-09-12.1.json
   secret_references:
     jwt: jwt-secret-prod
     deepseek_api_key: deepseek-apikey
