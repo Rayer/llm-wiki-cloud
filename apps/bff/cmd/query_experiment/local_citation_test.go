@@ -38,7 +38,7 @@ func (f *frozenCitationTransport) RoundTrip(req *http.Request) (*http.Response, 
 	if err := json.Unmarshal(data, &input); err != nil {
 		f.t.Fatal(err)
 	}
-	if input.Model != "deepseek-v4-pro" {
+	if input.Model != "deepseek-flash" || !strings.Contains(input.Messages[len(input.Messages)-1].Content, "[CITATION_REF_") {
 		f.t.Fatal("downstream replay called expansion")
 	}
 	f.prompts = append(f.prompts, input.Messages[len(input.Messages)-1].Content)

@@ -148,7 +148,10 @@ func (p *platformTransport) RoundTrip(req *http.Request) (*http.Response, error)
 		p.t.Fatal(err)
 	}
 	answer := `{"raw_query":"Alice","preferred":[{"kind":"entity","value":"Alice","terms":["Alice"],"proof":"lexical"}],"required":[],"excluded":[],"goals":[],"supporting_dimensions":[],"acceptable_alternatives":[],"ambiguity":[],"fallback":false}`
-	if call.Model == "deepseek-v4-pro" {
+	if call.Model != "deepseek-flash" {
+		p.t.Fatalf("unexpected model %q", call.Model)
+	}
+	if strings.Contains(string(data), "[CITATION_REF_") {
 		p.synthesis.Add(1)
 		answer = ""
 		for _, m := range call.Messages {
