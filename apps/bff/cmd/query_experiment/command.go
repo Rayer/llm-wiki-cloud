@@ -349,6 +349,12 @@ func preflightSnapshot(ctx context.Context, root string) (preparedSnapshot, erro
 	}
 	digest := sha256.Sum256(corpus)
 	reader.freezeConcepts(corpus)
+	// Freeze citation identity with the corpus, including a missing-map failure.
+	reader.idMap, reader.idMapErr = reader.ReadFile(ctx, "cache/id_map.json")
+	reader.idMapFrozen = true
+	if reader.idMapErr != nil && !errors.Is(reader.idMapErr, errSnapshotPathNotFound) {
+		return preparedSnapshot{}, fmt.Errorf("snapshot ID map: %w", reader.idMapErr)
+	}
 	suggested, suggestedErr := reader.ReadFile(ctx, suggestedPath)
 	if suggestedErr == nil {
 		reader.freezeSuggested(suggested)

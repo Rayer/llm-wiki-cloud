@@ -71,7 +71,7 @@ vi.mock('@/components/NavigationBlocker', async () => {
 });
 
 import { HomeClient } from '@/components/HomeClient';
-import type { ApiStatus, WikiEntry } from '@/lib/api';
+import { normalizeSearchResponse, type ApiStatus, type WikiEntry } from '@/lib/api';
 
 function deferred<T>() {
   let resolve!: (value: T) => void;
@@ -138,6 +138,25 @@ afterEach(() => {
 });
 
 describe('LWC-216 citation preview modal behavior', () => {
+  it.each(['concept', 'source'] as const)('LWC-335 opens a Unicode/whitespace %s citation by canonical ID', async (type) => {
+    const id = type === 'concept' ? '01ARZ3NDEKTSV4RRFFQ69G5FAV' : 'abcdef123456';
+    const slug = '台北 café';
+    const path = `/${type}s/${id}-${encodeURIComponent(slug)}`;
+    mocks.searchWiki.mockResolvedValue(normalizeSearchResponse({
+      results: [], ai_synth: 'See [Display label].',
+      citations: [{ text: 'Display label', id, slug, type, path }],
+    }));
+    const fetchDetail = type === 'concept' ? mocks.getConcept : mocks.getSource;
+    fetchDetail.mockResolvedValue(conceptEntry({ id, slug, title: 'Article title', content: 'Intended article body' }));
+    await runSearch();
+    fireEvent.click(await screen.findByRole('button', { name: 'Display label' }));
+    expect(await screen.findByText('Intended article body')).toBeTruthy();
+    expect(fetchDetail).toHaveBeenCalledWith(id);
+    const link = screen.getByRole('link', { name: 'Detail.openFullPage' });
+    expect(link.getAttribute('href')).toBe(path);
+    fireEvent.click(link);
+    expect(screen.queryByRole('dialog')).toBeNull();
+  });
   it('prefers the canonical id when a completed-query result card opens the modal', async () => {
     mocks.searchWiki.mockResolvedValue({
       results: [{ id: 'result-canonical-id', slug: 'decorative-slug', title: 'Result Concept', type: 'concept' }],

@@ -15,6 +15,23 @@ import (
 )
 
 func main() {
+	if !stagedContainerCommand(os.Args[1:]) {
+		fmt.Fprintln(os.Stderr, "experiment image supports staged local execution only")
+		os.Exit(1)
+	}
+	if len(os.Args) > 1 && os.Args[1] == "staged" {
+		log.SetOutput(io.Discard)
+		os.Exit(stagedMain(os.Args[2:]))
+		return
+	}
+	if len(os.Args) > 1 && os.Args[1] == "local-platform" {
+		log.SetOutput(io.Discard)
+		if err := localPlatformMain(os.Stdin, os.Stdout); err != nil {
+			fmt.Fprintln(os.Stderr, err)
+			os.Exit(1)
+		}
+		return
+	}
 	var options experimentOptions
 	flag.StringVar(&options.snapshotPath, "snapshot", "", "frozen Project snapshot directory")
 	flag.StringVar(&options.gcsBucket, "gcs-bucket", "", "explicit GCS bucket")

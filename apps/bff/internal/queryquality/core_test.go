@@ -1040,8 +1040,13 @@ type jsonlReader struct {
 	readErr error
 }
 
-func (r *jsonlReader) Prefix() string                                             { return "users/test/projects/test" }
-func (r *jsonlReader) ReadFile(context.Context, string) ([]byte, error)           { return r.data, r.readErr }
+func (r *jsonlReader) Prefix() string { return "users/test/projects/test" }
+func (r *jsonlReader) ReadFile(_ context.Context, path string) ([]byte, error) {
+	if path == "cache/id_map.json" {
+		return []byte(`{"concept":{"abcdef123456":"coffee"}}`), nil
+	}
+	return r.data, r.readErr
+}
 func (r *jsonlReader) ListConcepts(context.Context, bool) ([]gcs.WikiPage, error) { return nil, nil }
 func (r *jsonlReader) GetPage(context.Context, string, string) (*gcs.WikiPage, []byte, error) {
 	return nil, nil, errors.New("unexpected page read")

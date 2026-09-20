@@ -5,6 +5,105 @@ operator tool for designing controlled runs and inspecting attempt-level
 results; it is not a quality verdict or an automated control/candidate
 comparison tool.
 
+## Container-first staged experiments
+
+### Documentation completion gate
+
+Keep this directory's README, `docs/local-staged-e2e.md`,
+`docs/local-staged-container-report.md`, and the
+[YouTrack experiment platform portal](https://irisnode.youtrack.cloud/articles/LWC-A-25)
+updated together after final verification. An issue comment alone is insufficient.
+Record actual source/image identity, commands, outcomes and remaining limitations;
+distinguish mock/replay, container/live, browser and deployed evidence.
+Post-fix fresh image, mounted/live DNS pipeline, single-stage replay and real
+browser citation acceptance now pass; see the dated evidence sections below.
+Historical runs retain their original limitations; the parent owns portal sync.
+
+Use one existing experiment directory, one bind-mounted OCI image, and the Go
+staged runner. Put raw Markdown (or a host-imported snapshot), sealed config and
+cases in the directory; pass a **new child**, such as `/experiment/run`, as output.
+The `experiment` target in `../olw_worker/Dockerfile` shares the production worker
+runtime and includes query_experiment, worker and public Synto. The default
+production target and `/worker` entrypoint are preserved.
+
+Follow the [exact Apple container build, inspect, smoke, live and fork commands](../../../../docs/local-staged-e2e.md#one-directory-one-container).
+The image requires external runtime-inspected image metadata, records build/source
+identity and actual public Synto version, and keeps inputs, results, checkpoints,
+private runtime directories and safe logs under the mount. Supply the key only
+through the launch environment. Prepare pinned DEV snapshots read-only with the
+native Go importer before launch; mount no host home or cloud credentials.
+
+The parent verified Apple Container client/server 1.4.1, the image build and
+mounted smoke under `/private/tmp/jevimpl-experiment.9Vw7HK`. Live DNS passed all
+stages in one uninterrupted run and passed the grounded-answer smoke. Imported
+DEV stages 60–100 succeeded mechanically but exited 2 on grounded quality
+(`citation_routes_rejected`, LWC-335); a cloud ONLY80 fork succeeded without a key.
+See the [container implementation report](../../../../docs/local-staged-container-report.md#parent-verified-build-mount-and-live-results)
+for exact image digest, versions, receipts and remaining limits. Native modes below remain useful for
+tests/debug and existing experiment matrices.
+
+## Unified local staged pipeline/query runner
+
+For raw → Synto → LWC index → production query/synthesis/citations, run
+`query_experiment staged --help` and use the
+[local staged experiment runner](../../../../docs/local-staged-e2e.md). It also
+imports one pinned published GCS generation read-only for local `FROM 60`
+execution, and supports `ONLY`, `TO`, `FROM` plus isolated checkpoint forks.
+An input snapshot locator identifies a Project, not a user Profile document.
+
+The Go runner directly calls this executable's existing local handler for strict
+config/case validation, pinned import and per-case production stage replay.
+Synto uses its public executable (`--synto-bin`, default `synto`); worker index
+and suggestions use `--worker-bin`. No Python interpreter or `--query-bin` is
+needed. Receipts use `lwc-local-go-v2`; old Python forks fail explicitly. Import
+an old corpus snapshot with `--input-snapshot ... --from 70` for fresh queries.
+It uses sealed `queryruntime` composition; the existing `--service
+production` path below keeps its legacy composition and CLI compatibility.
+Existing fixture matrices and eight-file receipts remain available. Their
+unbound artifacts are not interchangeable with the new runner's replay records.
+
+Offline verification covers public Synto initialization, orchestration and
+production execution with mock HTTP. Parent container/live verification is
+recorded above; public vendor internal completeness remains `not_proven`. See the [migration report](../../../../docs/local-staged-go-migration-report.md)
+for commands/exits and the sandbox listener limitation on the full query suite.
+
+Historically, the parent verified the Python raw-to-query mechanism across an explicit frozen
+lineage: `/private/tmp/lwc-live-dns-baseline` passed 10/20/50, its checkpoint 50 fed
+successful ONLY60 `/private/tmp/lwc-dns-suggested-diagnostic`, then FROM70 fork
+`/private/tmp/lwc-dns-query-gate2` passed the original two-case grounded smoke.
+This was not one uninterrupted successful all-stage invocation. The original
+stage60 failure cause is unrecoverable; the successful retry does not prove a fix.
+
+Those historical DNS answers have resolvable `.example` and/or `.test` inventory, but inline
+`[RFC 2606]` / `[Reserved Top Level DNS Names]` remain unresolved. The oracle is
+an answer-plus-inventory smoke, not per-claim or complete inline-citation validation.
+Parent reviewed the answers/evidence; production citation compatibility is not fixed.
+
+The real read-only DEV import and stages 60–100 at
+`/private/tmp/lwc-cloud-downstream` passed mechanically; its grounded oracle still
+failed because the sole `stable alpha` slug violates the existing whitespace
+route restriction. Causal tests match direct production synthesis. No identities
+were renamed or citations fabricated. Full cloud positive grounded acceptance
+remains open. Parent's pre-migration full worker, query_experiment, suggestedqueries,
+search, query, queryquality and llm suites all passed without query-test exclusions.
+
+The owner accepted the first-version local experiment mechanism with native
+Synto as one stage. Stage20 bundles ingest/compile/validation/approval; independent
+substage selection (the original separate 20/30/40 proposal) is outside that scope.
+The existing Query citation defect is a separate follow-up,
+[LWC-335](https://irisnode.youtrack.cloud/issue/LWC-335) (Bug, Open, Normal;
+parent created and read-back verified). Its repair is excluded from first-version
+mechanism acceptance, while platform failure diagnostics remain. This decision
+does not make the cloud positive grounded test pass or validate every inline
+citation. GCS current is pinned once; explicit historical-generation selectors
+remain unsupported. Prior tools are retained.
+The runner binds explicitly selected existing profiles to the exact generation,
+records safe failure categories, and separates completed no-evidence observations
+from the optional `--require-grounded` positive oracle. Native cloud downstream needs
+no Synto installation; query-only replay needs no worker executable.
+See the linked guide for tested build/test commands, model settings, stage
+semantics, forks, stop/reset and the parent verification command.
+
 ## Start here
 
 The basic production control uses operator-provided files. The repository does
@@ -257,3 +356,71 @@ does not create, rotate, or publish credentials.
 - [queryquality README](../../internal/queryquality/README.md)
 - [queryconfig README](../../internal/queryconfig/README.md)
 - [experiment report](EXPERIMENT_REPORT.md)
+
+## Real browser citation acceptance — 2026-09-20
+
+Fresh isolated evidence: `/private/tmp/lwc-platform-delivery.Wbhyab`.
+The real Next frontend and production BFF HTTP router passed inline concept and
+source citation clicks, modal article loading, and full-page navigation for mapped
+Unicode/space slugs `台北 café` and `來源 café`. Canonical IDs were
+`01JAZ5N7Y3K8M2Q4R6T9VWXABC` and `abcdef123456`; ID-only BFF requests redirected
+to the same percent-escaped paths emitted by synthesis and returned the intended
+nonempty article bodies. `browser-http-evidence.json`, `browser-*-article.json`
+and `browser-*-article.png` preserve HTTP responses, browser snapshots and screenshots.
+
+Reproduction from repository root (use a fresh local directory):
+
+```sh
+LWC_BROWSER_ROOT=/private/tmp/lwc-browser-new go -C apps/bff test ./cmd/bff \
+  -run '^TestLocalCitationBrowserServer$' -count=1 -timeout 22m
+NEXT_PUBLIC_API_URL=http://localhost:18081 NEXT_PUBLIC_AUTH_URL=http://localhost:18081 \
+  npm --prefix apps/frontend run dev -- --port 18080
+```
+
+Open `http://localhost:18080`, choose the existing local **試用 Demo** login,
+search `coffee`, click each inline citation, then its full-page link. The opt-in
+fixture harness creates only isolated local data and uses existing local login;
+it makes no authentication changes. **Retrieval selections and LLM transport are
+explicitly mocked**; production synthesis, identity mapping, HTTP query/detail
+routes, rendered frontend and navigation are real. This browser check is separate
+from live provider/container acceptance. Stop the harness by creating
+`$LWC_BROWSER_ROOT/stop`; without opt-in it skips normal test runs.
+
+The existing legacy cloud snapshot was rechecked read-only with the explicit
+`rejected` expectation: PASS for invalid-map rejection before inference, not
+positive cloud grounded acceptance (`legacy-negative.log`). Comprehensive
+current delivery evidence: `/tmp/lwc-platform-delivery-report.md`.
+
+## Fresh post-LWC-335 container acceptance — 2026-09-20
+
+Evidence root: `/private/tmp/lwc-platform-delivery.Wbhyab` (the earlier
+`jevimpl-experiment.9Vw7HK` directory was not modified). Apple Container client
+and server **1.4.1**, public Synto **0.7.0**, platform **linux/arm64**.
+Fresh image `jevimpl-experiment:1f3c19a0011501f7d4f6b76813b2f419` has inspected OCI
+index digest `sha256:dbdece09d93afb96b8fac7ef04f06c04c25dc6e7b538354a3dc4c056f8e7763a`.
+Source revision is `e8bf80491cfcc7f4c79f541ecc850d4e290f0b2d`, dirty; build ID
+`1f3c19a0011501f7d4f6b76813b2f419` is not a content hash. Runtime inspection,
+launcher metadata, starting diff/status and source-file SHA-256 manifest are
+retained alongside the image build log. The browser-only test harness and final
+documentation were added after the build; production source remained frozen.
+
+| Evidence | Observed result |
+| --- | --- |
+| `build.exit`, `build.log`, `image-inspect.json` | Fresh experiment target build exit 0; external image identity recorded. |
+| `prepared/run.json`, `prepared.exit` | Mounted, read-only-rootfs source stage10 exit 0; no inference. |
+| `live-dns/run.json`, `live-dns.exit` | Exit 0; fresh stages 10/20/50/60/70/80/90/100 succeeded; both grounded DNS cases passed. Coordinator injected the authorized key only into launch environment. |
+| `live-dns-citation-audit.json` | Four canonical mapped citations per case; all point to nonempty snapshot articles. Five inline labels in `dns-testing`, two in `example-domains`, zero unresolved labels. Inventories may include selected but unused references. |
+| `matching-only/run.json`, `matching-only-audit.json` | Key-free ONLY80 fork exit 0; only stage80 executed, artifact identical to live stage80. Quality not requested. |
+
+The fork used the same image, mount, launcher metadata, cases, config, profile and
+prompt as live, with `--fork /experiment/live-dns --only 80 --output
+/experiment/matching-only` and no provider environment injection. Exact build,
+live and replay commands, exits, browser evidence and changed files are recorded
+in `/tmp/lwc-platform-delivery-report.md` and the experiment `README.md`.
+
+Public Synto acceptance remains `public-exit-and-validated-agents-export`, with
+`internal_completeness: not_proven`. These checks establish local platform and
+citation routing behavior, not exhaustive vendor completion, factual/per-claim
+answer quality, deployed acceptance, or positive legacy-cloud acceptance. No
+commit, deployment, cloud write or credential-file access by this worker.
+The parent owns review and synchronization of portal LWC-A-25.

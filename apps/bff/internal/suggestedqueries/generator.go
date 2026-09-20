@@ -30,8 +30,19 @@ const (
 )
 
 var (
-	ErrInvalidCandidates = errors.New("invalid suggested-query candidates")
+	ErrInvalidCandidates    = errors.New("invalid suggested-query candidates")
+	ErrCandidateCardinality = errors.New("candidate cardinality invalid")
 )
+
+// GenerationError classifies the failing boundary without inspecting provider text.
+// Err preserves the existing errors.Is/Error contract; log Category, never Err.
+type GenerationError struct {
+	Category string
+	Err      error
+}
+
+func (e *GenerationError) Error() string { return e.Err.Error() }
+func (e *GenerationError) Unwrap() error { return e.Err }
 
 // ConceptEvidence is the bounded corpus evidence supplied to generation and
 // used to validate candidate anchor IDs.
@@ -70,17 +81,17 @@ type Provider interface {
 // Generate makes one bounded provider call for one postprocess operation.
 func Generate(ctx context.Context, provider Provider, description string, entries []conceptcache.Entry, mtimes map[string]time.Time, trustedGeneration GenerationMetadata, now time.Time) (Artifact, error) {
 	if provider == nil {
-		return Artifact{}, errors.New("suggested-query provider is not configured")
+		return Artifact{}, &GenerationError{"provider_not_configured", errors.New("suggested-query provider is not configured")}
 	}
 	if err := ctx.Err(); err != nil {
 		return Artifact{}, err
 	}
 	concepts := RepresentativeConcepts(entries, mtimes)
 	if len(concepts) == 0 {
-		return Artifact{}, fmt.Errorf("%w: no corpus concepts", ErrInvalidCandidates)
+		return Artifact{}, &GenerationError{"corpus_empty", fmt.Errorf("%w: no corpus concepts", ErrInvalidCandidates)}
 	}
 	if strings.TrimSpace(trustedGeneration.Model) == "" || strings.TrimSpace(trustedGeneration.PromptVersion) == "" {
-		return Artifact{}, fmt.Errorf("%w: trusted generation metadata is incomplete", ErrInvalidCandidates)
+		return Artifact{}, &GenerationError{"metadata_invalid", fmt.Errorf("%w: trusted generation metadata is incomplete", ErrInvalidCandidates)}
 	}
 	description = truncateBytes(strings.TrimSpace(description), 2048)
 	input := struct {
@@ -93,14 +104,29 @@ func Generate(ctx context.Context, provider Provider, description string, entrie
 	}
 	raw, err := provider.Chat(ctx, generationSystemPrompt, string(userData))
 	if err != nil {
-		return Artifact{}, fmt.Errorf("generate suggested queries: %w", err)
+		return Artifact{}, &GenerationError{"provider_failure", fmt.Errorf("generate suggested queries: %w", err)}
 	}
 	candidates, err := parseProviderCandidates(raw)
 	if err != nil {
-		return Artifact{}, err
+		category := "provider_schema_invalid"
+		if errors.Is(err, ErrCandidateCardinality) {
+			category = "candidate_cardinality_invalid"
+		}
+		if len(raw) > MaxProviderBytes {
+			category = "provider_output_oversized"
+		}
+		return Artifact{}, &GenerationError{category, err}
 	}
 	if err := validateGeneratedCandidates(candidates, concepts); err != nil {
-		return Artifact{}, err
+		var classified *GenerationError
+		if errors.As(err, &classified) {
+			return Artifact{}, err
+		}
+		category := "candidate_validation_failed"
+		if len(candidates) != RequiredQueries {
+			category = "candidate_cardinality_invalid"
+		}
+		return Artifact{}, &GenerationError{category, err}
 	}
 	for i := range candidates {
 		candidates[i].Generation = trustedGeneration
@@ -194,7 +220,7 @@ func parseProviderCandidates(raw string) ([]Candidate, error) {
 		return nil, fmt.Errorf("decode suggested-query provider output: %w", err)
 	}
 	if len(providerCandidates) > MaxQueries {
-		return nil, fmt.Errorf("%w: candidate count exceeds %d", ErrInvalidCandidates, MaxQueries)
+		return nil, fmt.Errorf("%w: %w: candidate count exceeds %d", ErrInvalidCandidates, ErrCandidateCardinality, MaxQueries)
 	}
 	candidates := make([]Candidate, len(providerCandidates))
 	for i, candidate := range providerCandidates {
@@ -259,7 +285,7 @@ func decodeProviderCandidateArray(dec *json.Decoder) ([]providerCandidate, error
 	candidates := make([]providerCandidate, 0, MinQueries)
 	for dec.More() {
 		if len(candidates) >= MaxQueries {
-			return nil, fmt.Errorf("%w: candidate count exceeds %d", ErrInvalidCandidates, MaxQueries)
+			return nil, fmt.Errorf("%w: %w: candidate count exceeds %d", ErrInvalidCandidates, ErrCandidateCardinality, MaxQueries)
 		}
 		candidate, err := decodeProviderCandidate(dec)
 		if err != nil {
@@ -463,41 +489,41 @@ func validateCandidates(candidates []Candidate, concepts []ConceptEvidence, chec
 	for i, candidate := range candidates {
 		question := strings.TrimSpace(candidate.Question)
 		if question == "" || len([]byte(question)) > MaxQuestionBytes {
-			return fmt.Errorf("%w: candidate %d question is empty or oversized", ErrInvalidCandidates, i)
+			return &GenerationError{"candidate_question_invalid", fmt.Errorf("%w: candidate %d question is empty or oversized", ErrInvalidCandidates, i)}
 		}
 		questionKey := normalize(question)
 		if questionKey == "" || strings.ContainsAny(question, "?？") == false {
-			return fmt.Errorf("%w: candidate %d is not a question", ErrInvalidCandidates, i)
+			return &GenerationError{"candidate_question_invalid", fmt.Errorf("%w: candidate %d is not a question", ErrInvalidCandidates, i)}
 		}
 		if _, exists := seen[questionKey]; exists {
-			return fmt.Errorf("%w: duplicate question", ErrInvalidCandidates)
+			return &GenerationError{"candidate_question_duplicate", fmt.Errorf("%w: duplicate question", ErrInvalidCandidates)}
 		}
 		seen[questionKey] = struct{}{}
 		if _, exactTitle := titles[questionKey]; exactTitle || isTitleWrapper(question, titles) {
-			return fmt.Errorf("%w: candidate %d is title-like", ErrInvalidCandidates, i)
+			return &GenerationError{"candidate_title_only", fmt.Errorf("%w: candidate %d is title-like", ErrInvalidCandidates, i)}
 		}
 		if strings.TrimSpace(candidate.Intent) == "" {
-			return fmt.Errorf("%w: candidate %d metadata is incomplete", ErrInvalidCandidates, i)
+			return &GenerationError{"candidate_metadata_invalid", fmt.Errorf("%w: candidate %d metadata is incomplete", ErrInvalidCandidates, i)}
 		}
 		if requireGeneration && (strings.TrimSpace(candidate.Generation.Model) == "" || strings.TrimSpace(candidate.Generation.PromptVersion) == "") {
-			return fmt.Errorf("%w: candidate %d generation metadata is incomplete", ErrInvalidCandidates, i)
+			return &GenerationError{"candidate_metadata_invalid", fmt.Errorf("%w: candidate %d generation metadata is incomplete", ErrInvalidCandidates, i)}
 		}
 		if len(candidate.CorpusAnchorConceptIDs) == 0 || len(candidate.CorpusAnchorConceptIDs) > MaxConcepts {
-			return fmt.Errorf("%w: candidate %d anchors are missing or oversized", ErrInvalidCandidates, i)
+			return &GenerationError{"candidate_anchors_invalid", fmt.Errorf("%w: candidate %d anchors are missing or oversized", ErrInvalidCandidates, i)}
 		}
 		anchorSeen := make(map[string]struct{}, len(candidate.CorpusAnchorConceptIDs))
 		for _, rawID := range candidate.CorpusAnchorConceptIDs {
 			id := strings.TrimSpace(rawID)
 			if id == "" {
-				return fmt.Errorf("%w: candidate %d has empty anchor", ErrInvalidCandidates, i)
+				return &GenerationError{"candidate_anchors_invalid", fmt.Errorf("%w: candidate %d has empty anchor", ErrInvalidCandidates, i)}
 			}
 			if _, duplicate := anchorSeen[id]; duplicate {
-				return fmt.Errorf("%w: candidate %d has duplicate anchor", ErrInvalidCandidates, i)
+				return &GenerationError{"candidate_anchor_duplicate", fmt.Errorf("%w: candidate %d has duplicate anchor", ErrInvalidCandidates, i)}
 			}
 			anchorSeen[id] = struct{}{}
 			if checkAnchors {
 				if _, known := knownIDs[id]; !known {
-					return fmt.Errorf("%w: candidate %d has unsupported anchor %q", ErrInvalidCandidates, i, id)
+					return &GenerationError{"candidate_anchor_unknown", fmt.Errorf("%w: candidate %d has unsupported anchor %q", ErrInvalidCandidates, i, id)}
 				}
 			}
 		}

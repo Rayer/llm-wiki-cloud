@@ -5,6 +5,7 @@ import (
 	"errors"
 	"fmt"
 	"net/http"
+	"net/url"
 	"regexp"
 	"strings"
 
@@ -149,7 +150,7 @@ func canonicalIDRoute(currentType, idSlug string, dual dualIDMap) (string, bool)
 	if !ok {
 		if targetID, redirected := dual.idRedirect[id]; redirected {
 			if target, targetExists := dual.byID[targetID]; targetExists {
-				return "/" + routePrefix(target.Type) + "/" + entryIDSlug(target), true
+				return "/" + routePrefix(target.Type) + "/" + url.PathEscape(entryIDSlug(target)), true
 			}
 		}
 		return "", false
@@ -157,7 +158,7 @@ func canonicalIDRoute(currentType, idSlug string, dual dualIDMap) (string, bool)
 	if entry.Type == currentType && slug == entry.Slug {
 		return "", false
 	}
-	return "/" + routePrefix(entry.Type) + "/" + entryIDSlug(entry), true
+	return "/" + routePrefix(entry.Type) + "/" + url.PathEscape(entryIDSlug(entry)), true
 }
 
 func routePrefix(entryType string) string {
@@ -228,7 +229,7 @@ func (h *Handler) handleIDRoutedPage(c *gin.Context, gcsClient store.Store, curr
 	if !ok {
 		if targetID, redirected := dual.idRedirect[id]; redirected {
 			if target, targetExists := dual.byID[targetID]; targetExists {
-				c.Redirect(idRouteRedirectStatus, requestRelativeIDRoute(c, "/"+routePrefix(target.Type)+"/"+entryIDSlug(target)))
+				c.Redirect(idRouteRedirectStatus, requestRelativeIDRoute(c, "/"+routePrefix(target.Type)+"/"+url.PathEscape(entryIDSlug(target))))
 				return true
 			}
 		}

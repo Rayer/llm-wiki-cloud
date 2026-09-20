@@ -299,10 +299,34 @@ func (s *Service) SynthesizeWithError(ctx context.Context, reader cache.Reader, 
 }
 
 func (s *Service) buildContexts(ctx context.Context, reader cache.Reader, results []search.Result, authority *search.CitationAuthority) ([]string, error) {
+	ids, err := LoadCitationIDMap(ctx, reader)
+	if err != nil {
+		return nil, err
+	}
+	resolver, err := newCitationIdentityResolver(ids)
+	if err != nil {
+		return nil, err
+	}
 	contexts := make([]string, 0, len(results))
 	for rank, result := range results {
 		if err := ctx.Err(); err != nil {
 			return nil, err
+		}
+		if result.Type == "source" {
+			resolved, err := resolver.resolve(result)
+			if err != nil {
+				return nil, err
+			}
+			_, body, err := reader.GetPage(ctx, result.Slug, "sources")
+			if err != nil {
+				if ctx.Err() != nil {
+					return nil, ctx.Err()
+				}
+				continue
+			}
+			results[rank].ID = resolved.ID
+			contexts = append(contexts, authority.AddContext(rank, resolved, string(body)))
+			continue
 		}
 		entry, ok := s.cache.Entry(reader, result.Slug)
 		if !ok {
@@ -321,6 +345,11 @@ func (s *Service) buildContexts(ctx context.Context, reader cache.Reader, result
 		if len(entry.Sources) > 0 {
 			sourceContext = "Sources: [" + strings.Join(entry.Sources, ", ") + "]"
 		}
+		result, err = resolver.resolve(result)
+		if err != nil {
+			return nil, err
+		}
+		results[rank].ID = result.ID
 		contexts = append(contexts, authority.AddContext(rank, result, sourceContext+"\n\n"+entry.Body))
 	}
 	return contexts, nil

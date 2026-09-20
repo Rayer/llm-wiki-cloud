@@ -59,6 +59,15 @@ Docker is optional for the BFF Compose integration flow. `gcloud` and access
 to the configured container registry are only needed for development or
 workflow-operated deployment work; they are not required for local mode.
 
+## Staged experiments
+
+For raw-input-to-query experiments, use the [single-container directory workflow](docs/local-staged-e2e.md).
+Build the worker Dockerfile's `experiment` target, prepare input/config in one
+directory, and bind-mount it with a new child output such as `run/`. The image
+contains the Go staged runner, worker, and pinned public Synto CLI; no application
+services are needed. The guide includes Apple container commands, external image
+digest metadata, host-only read-only DEV snapshot preparation, and parent checks.
+
 ## Run locally
 
 From the repository root, bootstrap dependencies and seeded demo data, then

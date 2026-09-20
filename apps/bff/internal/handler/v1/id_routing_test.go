@@ -4,10 +4,13 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
+	"github.com/rayer/llm-wiki-bff/internal/query"
+	"github.com/rayer/llm-wiki-bff/internal/wikiindex"
 	"net/http"
 	"net/http/httptest"
 	"os"
 	"path/filepath"
+	"strings"
 	"testing"
 
 	"cloud.google.com/go/storage"
@@ -270,4 +273,80 @@ func (missingIDMapStore) ListMarkdownFiles(context.Context, string) ([]gcs.Markd
 
 func (missingIDMapStore) ReadFile(context.Context, string) ([]byte, error) {
 	return nil, storage.ErrObjectNotExist
+}
+
+// Exercise the exact citation route and the ID-only lookup used by HomeClient.
+func TestResolvedCitationHTTPDetailContract(t *testing.T) {
+	for _, kind := range []string{"concept", "source"} {
+		t.Run(kind, func(t *testing.T) {
+			root := localfs.New(t.TempDir())
+			reader := root.Scope("user", "project")
+			const slug = "台北 café"
+			id := testSyntoConceptULID
+			if kind == "source" {
+				id = "abcdef123456"
+			}
+			ids := wikiindex.IDMap{Concept: map[string]string{}, Source: map[string]string{}, Redirects: map[string][]string{}}
+			collection := "concepts"
+			file := "wiki/" + slug + ".md"
+			if kind == "source" {
+				ids.Source[id] = slug
+				collection = "sources"
+				file = "wiki/sources/" + slug + ".md"
+			} else {
+				ids.Concept[id] = slug
+			}
+			data, _ := json.Marshal(ids)
+			if _, err := reader.WriteBytes(context.Background(), data, "cache/id_map.json"); err != nil {
+				t.Fatal(err)
+			}
+			if _, err := reader.WriteBytes(context.Background(), []byte("---\nstatus: published\n---\nIntended article body\n"), file); err != nil {
+				t.Fatal(err)
+			}
+			resolved, err := query.ResolveCitationIdentity(search.Result{Slug: slug, Title: "Display label", Type: kind}, ids)
+			if err != nil {
+				t.Fatal(err)
+			}
+			authority, err := search.NewCitationAuthority()
+			if err != nil {
+				t.Fatal(err)
+			}
+			authority.AddContext(0, resolved, "body")
+			citation := authority.IssuedCitations()[0]
+			h := New(root, nil, search.NewIndex(), nil, nil, nil)
+			invoke := func(path string) *httptest.ResponseRecorder {
+				recorder := httptest.NewRecorder()
+				c, _ := gin.CreateTestContext(recorder)
+				c.Request = httptest.NewRequest(http.MethodGet, path, nil)
+				c.Params = gin.Params{{Key: "id", Value: filepath.Base(c.Request.URL.Path)}}
+				c.Set("userID", "user")
+				c.Set("projectID", "project")
+				if kind == "concept" {
+					h.GetConcept(c)
+				} else {
+					h.GetSource(c)
+				}
+				return recorder
+			}
+			response := invoke("/api/v1/" + collection + "/" + citation.ID)
+			if response.Code != http.StatusFound {
+				t.Fatalf("ID lookup: %d %s", response.Code, response.Body.String())
+			}
+			target := response.Header().Get("Location")
+			if target != "/api/v1"+citation.Path {
+				t.Fatalf("redirect=%q citation=%q", target, citation.Path)
+			}
+			response = invoke(target)
+			if response.Code != http.StatusOK {
+				t.Fatalf("detail: %d %s", response.Code, response.Body.String())
+			}
+			var detail struct{ ID, Slug, Body string }
+			if err := json.Unmarshal(response.Body.Bytes(), &detail); err != nil {
+				t.Fatal(err)
+			}
+			if detail.ID != id || detail.Slug != slug || !strings.Contains(detail.Body, "Intended article body") {
+				t.Fatalf("wrong article: %+v", detail)
+			}
+		})
+	}
 }

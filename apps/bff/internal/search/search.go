@@ -24,6 +24,7 @@ type indexedPage struct {
 
 // Result is a single search hit.
 type Result struct {
+	ID      string `json:"id,omitempty"`
 	Slug    string `json:"slug"`
 	Title   string `json:"title"`
 	Type    string `json:"type"` // "source" or "concept"
@@ -32,6 +33,7 @@ type Result struct {
 
 // Citation links a mention in ai_synth back to a wiki page.
 type Citation struct {
+	ID   string `json:"id"`
 	Text string `json:"text"`
 	Slug string `json:"slug"`
 	Type string `json:"type"` // "source" or "concept"

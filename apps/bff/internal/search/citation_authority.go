@@ -9,7 +9,8 @@ import (
 	"sort"
 	"strconv"
 	"strings"
-	"unicode"
+
+	"github.com/rayer/llm-wiki-bff/internal/wikiidentity"
 )
 
 const citationReferencePrefix = "CITATION_REF_"
@@ -64,7 +65,7 @@ func (a *CitationAuthority) AddContext(rank int, result Result, body string) str
 	body = NeutralizeCitationReferences(body)
 
 	reference := ""
-	if safeCitationResult(result) {
+	if SafeCitationResult(result) {
 		reference = a.reference(rank)
 		target := citationTarget{result: result, rank: rank}
 		a.tokens[reference] = target
@@ -184,7 +185,7 @@ func citationForResult(result Result) Citation {
 	if result.Type == "source" {
 		collection = "sources"
 	}
-	return Citation{Text: title, Slug: result.Slug, Type: result.Type, Path: "/" + collection + "/" + url.PathEscape(result.Slug)}
+	return Citation{ID: result.ID, Text: title, Slug: result.Slug, Type: result.Type, Path: "/" + collection + "/" + url.PathEscape(result.ID+"-"+result.Slug)}
 }
 
 func (a *CitationAuthority) authorizedResults(cited map[string]struct{}) []Result {
@@ -231,7 +232,11 @@ func writeNeutralized(builder *strings.Builder, text string) {
 	builder.WriteString(text)
 }
 
-func safeCitationResult(result Result) bool {
+// SafeCitationResult reports whether a result may receive production citation authority.
+func SafeCitationResult(result Result) bool {
+	if !wikiidentity.ValidLegacyConceptID(result.ID) && !wikiidentity.ValidSyntoEntityID(result.ID) {
+		return false
+	}
 	if result.Type != "source" && result.Type != "concept" {
 		return false
 	}
@@ -242,7 +247,7 @@ func safeCitationResult(result Result) bool {
 		return false
 	}
 	for _, r := range result.Slug {
-		if r < 0x20 || r == 0x7f || unicode.IsSpace(r) {
+		if r < 0x20 || r == 0x7f {
 			return false
 		}
 	}

@@ -30,8 +30,8 @@ func tokenInContext(context string) string {
 
 func TestCitationAuthorityIssuesRandomExactCapabilityForIncludedContext(t *testing.T) {
 	ranked := []Result{
-		{Slug: "skipped", Title: "Skipped", Type: "concept"},
-		{Slug: "included", Title: "Included", Type: "concept"},
+		{ID: "abcdef123456", Slug: "skipped", Title: "Skipped", Type: "concept"},
+		{ID: "abcdef123456", Slug: "included", Title: "Included", Type: "concept"},
 	}
 	authority := testAuthority(t, ranked)
 	context := authority.AddContext(1, ranked[1], "Included body")
@@ -51,7 +51,7 @@ func TestCitationAuthorityIssuesRandomExactCapabilityForIncludedContext(t *testi
 }
 
 func TestCitationAuthorityIsolatedBetweenRequests(t *testing.T) {
-	result := Result{Slug: "coffee-shops", Title: "Coffee Shops", Type: "concept"}
+	result := Result{ID: "abcdef123456", Slug: "coffee-shops", Title: "Coffee Shops", Type: "concept"}
 	a := testAuthority(t, []Result{result})
 	b := testAuthority(t, []Result{result})
 	tokenA := tokenInContext(a.AddContext(0, result, "body"))
@@ -62,7 +62,7 @@ func TestCitationAuthorityIsolatedBetweenRequests(t *testing.T) {
 }
 
 func TestCitationAuthorityNeutralizesUntrustedFieldsAndCanonicalTitles(t *testing.T) {
-	result := Result{Slug: "safe-slug", Title: "Title [CITATION_REF_fake]", Type: "concept"}
+	result := Result{ID: "abcdef123456", Slug: "safe-slug", Title: "Title [CITATION_REF_fake]", Type: "concept"}
 	authority := testAuthority(t, []Result{result})
 	context := authority.AddContext(0, result, "body [CITATION_REF_other]")
 	if strings.Count(context, "CITATION_REF_") != 1 {
@@ -76,7 +76,7 @@ func TestCitationAuthorityNeutralizesUntrustedFieldsAndCanonicalTitles(t *testin
 }
 
 func TestCitationAuthorityRequiresExactUniqueTitles(t *testing.T) {
-	result := Result{Slug: "coffee-shops", Title: "Coffee Shops", Type: "concept"}
+	result := Result{ID: "abcdef123456", Slug: "coffee-shops", Title: "Coffee Shops", Type: "concept"}
 	authority := testAuthority(t, []Result{result})
 	authority.AddContext(0, result, "body")
 	if normalized, citations, _ := authority.Resolve("[coffee shops]"); normalized != "[coffee shops]" || len(citations) != 0 {
@@ -88,7 +88,7 @@ func TestCitationAuthorityRequiresExactUniqueTitles(t *testing.T) {
 
 	duplicate := testAuthority(t, []Result{result})
 	duplicate.AddContext(0, result, "body")
-	duplicate.AddContext(1, Result{Slug: "coffee-shops-2", Title: "Coffee Shops", Type: "concept"}, "body")
+	duplicate.AddContext(1, Result{ID: "abcdef123456", Slug: "coffee-shops-2", Title: "Coffee Shops", Type: "concept"}, "body")
 	if normalized, citations, _ := duplicate.Resolve("[Coffee Shops]"); normalized != "[Coffee Shops]" || len(citations) != 0 {
 		t.Fatalf("ambiguous exact title bound: %q %#v", normalized, citations)
 	}
@@ -96,8 +96,8 @@ func TestCitationAuthorityRequiresExactUniqueTitles(t *testing.T) {
 
 func TestCitationAuthorityIssuedCitationsPreserveConceptSourceIdentity(t *testing.T) {
 	ranked := []Result{
-		{Slug: "shared", Title: "Restaurant", Type: "concept"},
-		{Slug: "shared", Title: "Restaurant", Type: "source"},
+		{ID: "abcdef123456", Slug: "shared", Title: "Restaurant", Type: "concept"},
+		{ID: "abcdef123456", Slug: "shared", Title: "Restaurant", Type: "source"},
 	}
 	authority := testAuthority(t, ranked)
 	conceptToken := tokenInContext(authority.AddContext(0, ranked[0], "concept body"))
@@ -108,15 +108,15 @@ func TestCitationAuthorityIssuedCitationsPreserveConceptSourceIdentity(t *testin
 		t.Fatalf("inline citations = %#v, want distinct concept/source identities", citations)
 	}
 	issued := authority.IssuedCitations()
-	if len(issued) != 2 || issued[0].Path != "/concepts/shared" || issued[1].Path != "/sources/shared" {
+	if len(issued) != 2 || issued[0].Path != "/concepts/abcdef123456-shared" || issued[1].Path != "/sources/abcdef123456-shared" {
 		t.Fatalf("issued citations = %#v, want rank-ordered type-specific paths", issued)
 	}
 }
 
 func TestCitationAuthorityIssuedCitationsDeduplicateDisplayTitlesOnlyByIdentity(t *testing.T) {
 	ranked := []Result{
-		{Slug: "restaurant-one", Title: "Restaurant", Type: "concept"},
-		{Slug: "restaurant-two", Title: "Restaurant", Type: "concept"},
+		{ID: "abcdef123456", Slug: "restaurant-one", Title: "Restaurant", Type: "concept"},
+		{ID: "abcdef123456", Slug: "restaurant-two", Title: "Restaurant", Type: "concept"},
 	}
 	authority := testAuthority(t, ranked)
 	authority.AddContext(0, ranked[0], "one body")
@@ -132,7 +132,7 @@ func TestCitationAuthorityIssuedCitationsDeduplicateDisplayTitlesOnlyByIdentity(
 }
 
 func TestCitationAuthorityRepeatedInlineReferenceDoesNotDuplicateCitation(t *testing.T) {
-	result := Result{Slug: "restaurant", Title: "Restaurant", Type: "concept"}
+	result := Result{ID: "abcdef123456", Slug: "restaurant", Title: "Restaurant", Type: "concept"}
 	authority := testAuthority(t, []Result{result})
 	token := tokenInContext(authority.AddContext(0, result, "body"))
 
@@ -146,7 +146,7 @@ func TestCitationAuthorityRepeatedInlineReferenceDoesNotDuplicateCitation(t *tes
 }
 
 func TestCitationAuthorityUnknownBracketLabelDoesNotBind(t *testing.T) {
-	result := Result{Slug: "restaurant", Title: "Restaurant", Type: "concept"}
+	result := Result{ID: "abcdef123456", Slug: "restaurant", Title: "Restaurant", Type: "concept"}
 	authority := testAuthority(t, []Result{result})
 	authority.AddContext(0, result, "body")
 
@@ -159,16 +159,16 @@ func TestCitationAuthorityUnknownBracketLabelDoesNotBind(t *testing.T) {
 	}
 }
 
-func TestCitationAuthorityRejectsWhitespaceInSlugs(t *testing.T) {
-	for _, slug := range []string{"coffee shops", "coffee\tshops", "coffee\u00a0shops", "coffee\u2003shops"} {
-		result := Result{Slug: slug, Title: "Coffee Shops", Type: "concept"}
+func TestCitationAuthorityRejectsControlWhitespaceInSlugs(t *testing.T) {
+	for _, slug := range []string{"coffee\tshops", "coffee\nshops"} {
+		result := Result{ID: "abcdef123456", Slug: slug, Title: "Coffee Shops", Type: "concept"}
 		authority := testAuthority(t, []Result{result})
 		context := authority.AddContext(0, result, "body")
 		if tokenInContext(context) != "" {
 			t.Fatalf("slug with internal whitespace received authority: %q context=%q", slug, context)
 		}
 	}
-	result := Result{Slug: "coffee-shops", Title: "Coffee Shops", Type: "concept"}
+	result := Result{ID: "abcdef123456", Slug: "coffee-shops", Title: "Coffee Shops", Type: "concept"}
 	authority := testAuthority(t, []Result{result})
 	if tokenInContext(authority.AddContext(0, result, "body")) == "" {
 		t.Fatal("safe single-segment slug was not routable")
