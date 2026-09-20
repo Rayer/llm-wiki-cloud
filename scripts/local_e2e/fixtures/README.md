@@ -10,9 +10,9 @@ Use **both** `--query-profile corpus-derived-tech-document-v1` and
 `--query-prompt domain-neutral-technical-v1`. These select existing production
 support and create an exact generation/concepts binding in the run's effective
 config. The base config preserves the required lifestyle default; using it
-without the explicit binding is not the documented DNS baseline. Models remain
-independent: query expansion `deepseek-v4-flash`, synthesis `deepseek-v4-pro`,
-Synto `deepseek-flash`. `--require-grounded` is mandatory for the positive smoke.
+without the explicit binding is not the documented DNS baseline. The sealed fixture retains the historical query aliases
+`deepseek-v4-flash` and `deepseek-v4-pro`; the current production client resolves
+both to `deepseek-flash`. Synto also defaults to `deepseek-flash`. `--require-grounded` is mandatory for the positive smoke.
 The sealed base uses the existing typed no-evidence terminal policy.
 
 The original Alice source and cases below remain available as historical test
