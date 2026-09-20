@@ -84,7 +84,7 @@ func TestWriteStageConfigIsAtomicRegularJSONWithoutExperimentSecrets(t *testing.
 	}
 }
 
-func TestBuildStageConfigMatchesPromotedDEVArtifact(t *testing.T) {
+func TestBuildStageConfigMigratesHistoricalArtifactWithoutOtherChanges(t *testing.T) {
 	const (
 		artifactPath   = "../../configs/query/dev/query-dev-2026-08-21.1.json"
 		configDigest   = "sha256:a35955fe4a451c740e6252cae8087f114fbac6b4162245d3de7818c1ad37a5c6"
@@ -116,7 +116,7 @@ func TestBuildStageConfigMatchesPromotedDEVArtifact(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if config.ConfigDigest != configDigest || config.Profiles[0].ProfileDigest != profileDigest {
+	if config.ConfigDigest == configDigest || config.Profiles[0].ProfileDigest != profileDigest {
 		t.Fatalf("config digest/profile digest = %s/%s", config.ConfigDigest, config.Profiles[0].ProfileDigest)
 	}
 	canonical, err := queryconfig.CanonicalJSON(config)
@@ -124,6 +124,24 @@ func TestBuildStageConfigMatchesPromotedDEVArtifact(t *testing.T) {
 		t.Fatal(err)
 	}
 	artifact, err := os.ReadFile(artifactPath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	historical, err := queryconfig.LoadFile(artifactPath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if historical.ConfigDigest != configDigest {
+		t.Fatal("historical digest changed")
+	}
+	historical.ConfigDigest = ""
+	historical.Stages.QueryExpander.Model = "deepseek-flash"
+	historical.Stages.AnswerSynthesizer.Model = "deepseek-flash"
+	migrated, err := queryconfig.Seal(historical)
+	if err != nil {
+		t.Fatal(err)
+	}
+	artifact, err = queryconfig.CanonicalJSON(migrated)
 	if err != nil {
 		t.Fatal(err)
 	}

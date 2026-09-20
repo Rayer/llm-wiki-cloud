@@ -1,6 +1,7 @@
 #!/usr/bin/env python3
 """Offline provider fixtures execute the real Auth mutation and rollback shell."""
 import copy
+from functools import lru_cache
 import json
 import os
 from pathlib import Path
@@ -21,6 +22,8 @@ GOOGLE = {
     'link_redirect_url': 'https://auth.dev.rayer.idv.tw/api/v1/auth/google/link/callback',
     'completion_url': 'https://wiki.dev.rayer.idv.tw/login',
 }
+
+
 ENV = {
     'DEV_JWT': 'false', 'GCP_PROJECT': 'llm-wiki-cloud', 'FIRESTORE_DATABASE_ID': 'llm-wiki-cloud-dev',
     'ALLOWED_HOSTS': 'auth.dev.rayer.idv.tw,auth-dev.rayer.idv.tw',
@@ -32,6 +35,15 @@ ENV = {
     'GOOGLE_LOGIN_REDIRECT_URL': GOOGLE['login_redirect_url'],
     'GOOGLE_LINK_REDIRECT_URL': GOOGLE['link_redirect_url'], 'GOOGLE_COMPLETION_URL': GOOGLE['completion_url'],
 }
+
+
+@lru_cache(maxsize=2)
+def bff_plan(environment):
+    result = subprocess.run(['go', 'run', './cmd/deploy_config', '--environment', environment,
+                             '--config', '../../deploy/environments/' + environment + '.yaml',
+                             '--components', 'bff'], cwd=ROOT / 'apps/bff', text=True,
+                            capture_output=True, check=True)
+    return json.loads(result.stdout)
 
 
 def revision(enabled=True):
@@ -62,7 +74,7 @@ def production(value):
 
 
 class AuthConfigContractTests(unittest.TestCase):
-    def run_shell(self, candidate, enabled=True, action='auth_mutate', final_bad=False, secret_state='ENABLED', environment='development', component='auth'):
+    def run_shell(self, candidate, enabled=True, action='auth_mutate', final_bad=False, secret_state='ENABLED', environment='development', component='auth', plan_override=None):
         with tempfile.TemporaryDirectory() as tmp:
             path = Path(tmp)
             plan = {'normalized': {'environment': 'development', 'gcp': {
@@ -79,6 +91,12 @@ class AuthConfigContractTests(unittest.TestCase):
                 if not enabled:
                     config['auth']['google'] = {'enabled': False}
                 plan = {'normalized': config}
+            if component == 'bff':
+                plan = {'normalized': copy.deepcopy(bff_plan(environment))}
+                if not enabled:
+                    plan['normalized']['auth']['google'] = {'enabled': False}
+            if plan_override is not None:
+                plan = {'normalized': plan_override}
             plan['normalized']['selected_components'] = [component]
             service = plan['normalized'][component]['service_name']
             image = IMAGE.replace('llm-wiki-auth@', 'llm-wiki-' + component + '@')
@@ -134,11 +152,12 @@ mutation_accepted() { :; }
 journal_transition() { printf '%s\\n' "$*" >> "$FIXTURE/journal-events"; }
 revalidate_before_provider() { printf 'revalidate\\n' >> "$FIXTURE/events"; }
 auth_build_image() { printf '%s\\n' "$IMAGE"; }
+bff_build_image() { printf '%s\\n' "$IMAGE"; }
 sleep() { :; }
 '''
-            if environment == 'production':
+            if environment == 'production' or component == 'bff':
                 (path / 'journal.json').unlink()
-                # Exercise the actual journal state machine on the new Production path.
+                # Exercise the actual journal state machine for Production and BFF.
                 script = '\n'.join(line for line in script.splitlines() if not line.startswith(
                     ('journal_init()', 'journal_pending()', 'mutation_accepted()', 'journal_transition()')))
             env = {**os.environ, 'ROOT': str(ROOT), 'AUTH_SOURCE': os.environ.get('LWC318_AUTH_SOURCE', str(ROOT / ('deploy/components/' + component + '.sh'))),

@@ -1197,3 +1197,31 @@ func assertBoundedPathSegments(t *testing.T, value string) {
 		}
 	}
 }
+
+func TestFixtureDeepSeekMigrationWire(t *testing.T) {
+	for _, input := range []struct{ model, reasoning, thinking string }{
+		{"deepseek-chat", "", "disabled"}, {"deepseek-reasoner", "", "enabled"},
+		{"deepseek-v4-pro", "high", "enabled"}, {"deepseek-v4-flash", "none", "disabled"},
+	} {
+		t.Run(input.model, func(t *testing.T) {
+			server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+				var body map[string]any
+				if err := json.NewDecoder(r.Body).Decode(&body); err != nil {
+					t.Fatal(err)
+				}
+				if body["model"] != "deepseek-flash" || body["thinking"].(map[string]any)["type"] != input.thinking {
+					t.Errorf("wire=%v", body)
+				}
+				if input.reasoning == "none" && body["reasoning_effort"] != nil {
+					t.Error("sent unsupported reasoning_effort=none")
+				}
+				w.Write([]byte(`{"choices":[{"message":{"content":"ok"}}]}`))
+			}))
+			defer server.Close()
+			_, err := callFixtureModel(context.Background(), modelFixtureEntry{Provider: "deepseek", Model: input.model, Reasoning: input.reasoning, BaseURL: server.URL}, "system", "user")
+			if err != nil {
+				t.Fatal(err)
+			}
+		})
+	}
+}

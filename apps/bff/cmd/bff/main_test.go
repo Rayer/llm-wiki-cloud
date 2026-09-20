@@ -44,7 +44,7 @@ func TestDefaultProductionQueryCompositionUsesProductionExecutor(t *testing.T) {
 
 func TestConfiguredProductionQueryCompositionLoadsImmutableRuntime(t *testing.T) {
 	executor, err := newProductionQueryExecutor(config.Config{
-		QueryStageConfigPath: "../../configs/query/dev/query-dev-2026-08-31.1.json",
+		QueryStageConfigPath: "../../configs/query/dev/query-dev-2026-09-12.1.json",
 		DeepSeekAPIKey:       "test-key",
 	}, conceptcache.New())
 	if err != nil {
@@ -55,13 +55,13 @@ func TestConfiguredProductionQueryCompositionLoadsImmutableRuntime(t *testing.T)
 		t.Fatalf("configured executor=%T, want *queryruntime.Executor", executor)
 	}
 	readback := runtime.Readback()
-	if readback.SchemaVersion != 2 || readback.ConfigRevision != "query-dev-2026-08-31.1" || readback.ConfigDigest != "sha256:2ee1a7303c60e810c3240c966a784c4d6cc76419a37b6e0e13e2d9e80f344305" || readback.DefaultProfileID != "platform-owned-lifestyle-v1" || readback.DefaultPromptID != "minimal-v1" || readback.ExpansionModel != "deepseek-v4-flash" || readback.SynthesisModel != "deepseek-v4-pro" || readback.NoEvidencePolicy != "full-model-prior-fallback-v1" || readback.Options.SelectionLimit != 10 || readback.BindingCount != 0 || readback.DistinctServiceCompositionCount != 1 {
+	if readback.SchemaVersion != 2 || readback.ConfigRevision != "query-dev-2026-09-12.1" || readback.ConfigDigest != "sha256:645404d90133ba8adabed71e83b22560093dabaf3e8136953961392be7b33da0" || readback.DefaultProfileID != "platform-owned-lifestyle-v1" || readback.DefaultPromptID != "minimal-v1" || readback.ExpansionModel != "deepseek-flash" || readback.SynthesisModel != "deepseek-flash" || readback.NoEvidencePolicy != "full-model-prior-fallback-v1" || readback.Options.SelectionLimit != 10 || readback.BindingCount != 0 || readback.DistinctServiceCompositionCount != 1 {
 		t.Fatalf("readback=%+v", readback)
 	}
 }
 
 func TestInjectedStageConfigDoesNotReadArtifactAgain(t *testing.T) {
-	source := "../../configs/query/dev/query-dev-2026-08-31.1.json"
+	source := "../../configs/query/dev/query-dev-2026-09-12.1.json"
 	data, err := os.ReadFile(source)
 	if err != nil {
 		t.Fatal(err)
@@ -120,37 +120,42 @@ func TestDefaultProductionQueryCompositionRunsThroughV1QueryPath(t *testing.T) {
 }
 
 func TestProductionInvalidStructuredPlanUsesChatLegacyExpansion(t *testing.T) {
-	root := localfs.New(t.TempDir())
-	reader := root.Scope("user", "project")
-	if _, err := reader.WriteBytes(context.Background(), []byte(`{"slug":"coffee","title":"Coffee","body":"coffee"}`+"\n"), conceptcache.GCSPath); err != nil {
-		t.Fatal(err)
-	}
-	transport := &productionFallbackTransport{}
-	previousTransport := http.DefaultTransport
-	http.DefaultTransport = transport
-	t.Cleanup(func() { http.DefaultTransport = previousTransport })
-	executor, err := newProductionQueryExecutor(config.Config{DeepSeekAPIKey: "test-key"}, conceptcache.New())
-	if err != nil {
-		t.Fatal(err)
-	}
-	result, err := executor.Execute(context.Background(), reader, query.Request{Query: "coffee", Mode: "wiki"})
-	if err != nil {
-		t.Fatal(err)
-	}
-	if len(result.Results) != 1 || result.Results[0].Slug != "coffee" {
-		t.Fatalf("result = %#v", result.Results)
-	}
-	if len(transport.requests) != 4 {
-		t.Fatalf("HTTP calls = %d, want three parallel expansions plus synthesis", len(transport.requests))
-	}
-	if transport.requests[0].Model != "deepseek-v4-flash" || transport.requests[0].Temperature == nil || *transport.requests[0].Temperature != 0 {
-		t.Fatalf("structured request = %#v", transport.requests[0])
-	}
-	if transport.requests[3].Model != "deepseek-v4-pro" {
-		t.Fatalf("synthesis request = %#v", transport.requests[3])
-	}
-	if string(transport.requests[0].Thinking) != `{"type":"disabled"}` || transport.requests[0].ReasoningEffort != "" || string(transport.requests[3].Thinking) != `{"type":"disabled"}` || transport.requests[3].ReasoningEffort != "" {
-		t.Fatalf("thinking policies = %#v, want explicit disabled for both defaults", transport.requests)
+	for _, path := range []string{"", "../../configs/query/dev/query-dev-2026-08-31.1.json", "../../configs/query/dev/query-dev-2026-09-12.1.json"} {
+		t.Run(path, func(t *testing.T) {
+			root := localfs.New(t.TempDir())
+			reader := root.Scope("user", "project")
+			if _, err := reader.WriteBytes(context.Background(), []byte(`{"slug":"coffee","title":"Coffee","body":"coffee"}`+"\n"), conceptcache.GCSPath); err != nil {
+				t.Fatal(err)
+			}
+			transport := &productionFallbackTransport{}
+			previousTransport := http.DefaultTransport
+			http.DefaultTransport = transport
+			t.Cleanup(func() { http.DefaultTransport = previousTransport })
+			executor, err := newProductionQueryExecutor(config.Config{DeepSeekAPIKey: "test-key", QueryStageConfigPath: path}, conceptcache.New())
+			if err != nil {
+				t.Fatal(err)
+			}
+			result, err := executor.Execute(context.Background(), reader, query.Request{Query: "coffee", Mode: "wiki"})
+			if err != nil {
+				t.Fatal(err)
+			}
+			if len(result.Results) != 1 || result.Results[0].Slug != "coffee" {
+				t.Fatalf("result = %#v", result.Results)
+			}
+			if len(transport.requests) != 4 {
+				t.Fatalf("HTTP calls = %d, want three parallel expansions plus synthesis", len(transport.requests))
+			}
+			if transport.requests[0].Model != "deepseek-flash" || transport.requests[0].Temperature == nil || *transport.requests[0].Temperature != 0 {
+				t.Fatalf("structured request = %#v", transport.requests[0])
+			}
+			if transport.requests[3].Model != "deepseek-flash" {
+				t.Fatalf("synthesis request = %#v", transport.requests[3])
+			}
+			if string(transport.requests[0].Thinking) != `{"type":"disabled"}` || transport.requests[0].ReasoningEffort != "" || string(transport.requests[3].Thinking) != `{"type":"disabled"}` || transport.requests[3].ReasoningEffort != "" {
+				t.Fatalf("thinking policies = %#v, want explicit disabled for both defaults", transport.requests)
+			}
+
+		})
 	}
 }
 

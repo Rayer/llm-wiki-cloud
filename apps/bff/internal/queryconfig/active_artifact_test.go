@@ -8,7 +8,7 @@ import (
 )
 
 func TestActiveArtifactUsesDefaultProfileAcrossGenerationRevisions(t *testing.T) {
-	config, err := queryconfig.LoadFile("../../configs/query/dev/query-dev-2026-08-31.1.json")
+	config, err := queryconfig.LoadFile("../../configs/query/dev/query-dev-2026-09-12.1.json")
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -35,5 +35,27 @@ func TestActiveArtifactUsesDefaultProfileAcrossGenerationRevisions(t *testing.T)
 		if runtime.GenerationID != identity.GenerationID || runtime.ConceptsDigest != identity.ConceptsDigest {
 			t.Fatalf("identity=%+v runtime=%+v", identity, runtime)
 		}
+	}
+}
+
+func TestFlashArtifactChangesOnlyRevisionAndModels(t *testing.T) {
+	previous, err := queryconfig.LoadFile("../../configs/query/dev/query-dev-2026-08-31.1.json")
+	if err != nil {
+		t.Fatal(err)
+	}
+	current, err := queryconfig.LoadFile("../../configs/query/dev/query-dev-2026-09-12.1.json")
+	if err != nil {
+		t.Fatal(err)
+	}
+	previous.ConfigRevision = current.ConfigRevision
+	previous.ConfigDigest = ""
+	previous.Stages.QueryExpander.Model = "deepseek-flash"
+	previous.Stages.AnswerSynthesizer.Model = "deepseek-flash"
+	expected, err := queryconfig.Seal(previous)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if expected.ConfigDigest != current.ConfigDigest {
+		t.Fatalf("non-model settings changed: expected %s, got %s", expected.ConfigDigest, current.ConfigDigest)
 	}
 }

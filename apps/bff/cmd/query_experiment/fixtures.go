@@ -14,6 +14,7 @@ import (
 	"strings"
 	"time"
 
+	"github.com/rayer/llm-wiki-bff/internal/llm"
 	"github.com/rayer/llm-wiki-bff/internal/queryquality"
 )
 
@@ -123,7 +124,24 @@ func callFixtureModel(ctx context.Context, model modelFixtureEntry, system, user
 	if model.Temperature != nil {
 		body["temperature"] = *model.Temperature
 	}
-	if model.Reasoning != "" {
+	if model.Provider == "deepseek" {
+		canonical := llm.CanonicalDeepSeekModel(model.Model)
+		if canonical == "" {
+			return fixtureModelCall{}, errors.New("unsupported DeepSeek model")
+		}
+		body["model"] = canonical
+		thinking := "enabled"
+		if model.Reasoning == "none" || (model.Reasoning == "" && model.Model == "deepseek-chat") {
+			thinking = "disabled"
+		}
+		body["thinking"] = map[string]string{"type": thinking}
+		if model.Reasoning != "" && model.Reasoning != "none" {
+			if !llm.Reasoning(model.Reasoning).Valid() {
+				return fixtureModelCall{}, errors.New("unsupported DeepSeek reasoning")
+			}
+			body["reasoning_effort"] = model.Reasoning
+		}
+	} else if model.Reasoning != "" {
 		body["reasoning_effort"] = model.Reasoning
 	}
 	encoded, err := json.Marshal(body)
@@ -397,6 +415,18 @@ func decodeModel(raw json.RawMessage) (modelFixtureEntry, error) {
 	parsed, err := url.Parse(model.BaseURL)
 	if err != nil || (parsed.Scheme != "http" && parsed.Scheme != "https") || parsed.Host == "" {
 		return modelFixtureEntry{}, errors.New("base_url must be an http(s) URL")
+	}
+	if model.Provider == "deepseek" {
+		if model.Reasoning == "" && model.Model == "deepseek-chat" {
+			model.Reasoning = "none"
+		}
+		model.Model = llm.CanonicalDeepSeekModel(model.Model)
+		if model.Model == "" {
+			return modelFixtureEntry{}, errors.New("unsupported DeepSeek model")
+		}
+		if model.Reasoning != "" && !llm.Reasoning(model.Reasoning).Valid() {
+			return modelFixtureEntry{}, errors.New("unsupported DeepSeek reasoning")
+		}
 	}
 	model.BaseURL = strings.TrimRight(model.BaseURL, "/")
 	return model, nil

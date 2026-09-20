@@ -241,13 +241,17 @@ api_key_env = "DEEPSEEK_API_KEY"
 
 [models.fast]
 provider = "default"
-model = "deepseek-chat"
+model = "deepseek-flash"
 ctx = 16384
+[models.fast.options]
+thinking = { type = "disabled" }
 
 [models.heavy]
 provider = "default"
-model = "deepseek-reasoner"
+model = "deepseek-flash"
 ctx = 32768
+[models.heavy.options]
+thinking = { type = "enabled" }
 
 [pipeline]
 auto_approve = true
@@ -465,3 +469,24 @@ Please review these points before merge:
   rely on the worker's isolated `XDG_CONFIG_HOME`.
 - The legacy raw trigger-file path has been removed from code, but callers must
   use the v1 pipeline endpoints.
+
+### Flash execution compatibility (LWC-331)
+
+The worker embeds `synto_execution.py` and invokes it with the image's Python
+interpreter. It wraps `Config.resolve_role` and effective `model_name` in pinned Synto 0.7.0
+wheel, after normal provider/profile/CLI precedence. DeepSeek legacy aliases
+become `deepseek-flash`; existing `options.thinking` wins, otherwise chat
+means disabled and reasoner/V4/Flash mean enabled. The pinned OpenAI client
+ignores `think`, so that Ollama field never overrides effective DeepSeek intent.
+Provider and role options, temperature, token limits, prompts, URLs and timeouts
+are preserved. Unknown DeepSeek models/thinking/effort and DeepSeek embeddings
+fail closed; non-DeepSeek roles are unchanged. Existing TOML bytes are untouched.
+
+This applies to every CLI child, including migrated legacy vaults and existing
+Synto projects. New compile/checkpoint provenance reports the effective canonical model; retained
+history is untouched. DeepSeek client deduplication and cache namespace include
+thinking/effort, preserving separation lost when chat/reasoner aliases collapse.
+Same-policy hits remain cached. The pinned ingest checkpoint hash includes the
+same policy to prevent completed chunks from bypassing that separation during
+resume. No forced rebuild or live execution is added.
+The exact-wheel offline CLI gate is `make -C apps/bff test-flash-execution`.

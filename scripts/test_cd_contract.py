@@ -13,6 +13,8 @@ from copy import deepcopy
 from pathlib import Path
 
 import yaml
+from test_auth_config_contract import bff_plan
+from test_bff_auth_config_contract import candidate as bff_candidate
 
 
 ROOT = Path(__file__).resolve().parents[1]
@@ -1473,17 +1475,24 @@ class CDContractTests(unittest.TestCase):
                 old_image = f"{registry}/{image_name}@sha256:" + "a" * 64
                 new_image = f"{registry}/{image_name}@sha256:" + "b" * 64
                 service_name = f"{component}-service"
-                old_revision = f"{component}-old"
+                old_revision = f"{service_name}-old" if component == 'bff' else f"{component}-old"
                 state = {
                     "service": {"status": {"traffic": [{"revisionName": old_revision, "percent": 100}], "latestCreatedRevisionName": old_revision}},
                     "revisions": {old_revision: {"spec": {"containers": [{"image": old_image}]}, "status": {"imageDigest": old_image, "conditions": [{"type": "Ready", "status": "True"}]}}},
                 }
+                if component == 'bff':
+                    prior = bff_candidate('production')
+                    prior['metadata']['name'] = old_revision
+                    prior['status']['imageDigest'] = old_image
+                    prior['spec']['containers'][0]['image'] = old_image
+                    prior['spec']['containers'][0]['env'][0]['value'] = '/app/configs/query/prior-image-only.json'
+                    state['revisions'][old_revision] = prior
                 state_path = root / "state.json"
                 state_path.write_text(json.dumps(state))
                 log_path = root / "provider.log"
                 fake = textwrap.dedent(f"""
                     #!/usr/bin/env python3
-                    import json, os, sys
+                    import copy, json, os, sys
                     from pathlib import Path
                     args = sys.argv[1:]
                     Path(os.environ["FAKE_LOG"]).open("a").write(" ".join(args) + "\\n")
@@ -1498,16 +1507,28 @@ class CDContractTests(unittest.TestCase):
                         print(json.dumps(state["revisions"][args[3]]))
                     elif args[:3] == ["run", "services", "update"]:
                         image = args[args.index("--image") + 1]
-                        revision = "{component}-revision-" + str(len(state["revisions"]))
+                        revision = "{service_name}-revision-" + str(len(state["revisions"]))
                         state["service"]["status"]["latestCreatedRevisionName"] = revision
                         state["revisions"][revision] = {{"spec": {{"containers": [{{"image": image}}]}}, "status": {{"imageDigest": image, "conditions": [{{"type": "Ready", "status": "True"}}]}}}}
+                        if "{component}" == "bff":
+                            value = copy.deepcopy(state['revisions'][{old_revision!r}])
+                            value['metadata']['name'] = revision
+                            value['status']['imageDigest'] = image
+                            container = value['spec']['containers'][0]
+                            container['image'] = image
+                            updates = dict(item.split('=', 1) for item in args[args.index('--update-env-vars') + 1][3:].split('|'))
+                            container['env'] = [e for e in container['env'] if e['name'] not in updates]
+                            container['env'] += [{{'name': k, 'value': v}} for k, v in updates.items()]
+                            state['revisions'][revision] = value
                         state_path.write_text(json.dumps(state))
                         if "{component}" == "bff":
                             print(revision)
                     elif args[:3] == ["run", "services", "update-traffic"]:
-                        if "--to-latest" not in args and ("--to-revisions" not in args or args[args.index("--to-revisions") + 1] != "bff-revision-1=100"):
+                        if "--to-latest" not in args and "--to-revisions" not in args:
                             raise SystemExit(2)
                         revision = state["service"]["status"]["latestCreatedRevisionName"]
+                        if '--to-revisions' in args:
+                            revision = args[args.index('--to-revisions') + 1].removesuffix('=100')
                         state["service"]["status"]["traffic"] = [{{"revisionName": revision, "percent": 100}}]
                         state_path.write_text(json.dumps(state))
                     else:
@@ -1525,6 +1546,10 @@ class CDContractTests(unittest.TestCase):
                         component: {"service_name": service_name},
                     }
                 }))
+                if component == 'bff':
+                    normalized = deepcopy(bff_plan('production'))
+                    normalized['bff']['service_name'] = service_name
+                    plan.write_text(json.dumps({'normalized': normalized}))
                 artifacts = root / "artifacts" / "dev-images"
                 artifacts.mkdir(parents=True)
                 (artifacts / f"{component}-image-{'a' * 40}.txt").write_text(new_image + "\n")
@@ -1559,16 +1584,19 @@ class CDContractTests(unittest.TestCase):
                 traffic_calls = [call for call in calls if "run services update-traffic" in call]
                 self.assertEqual(len(traffic_calls), 2)
                 if component == "bff":
-                    self.assertIn("--to-revisions bff-revision-1=100", traffic_calls[0])
-                    self.assertIn("--to-latest", traffic_calls[1])
+                    self.assertIn("--to-revisions bff-service-revision-1=100", traffic_calls[0])
+                    self.assertIn(f"--to-revisions {old_revision}=100", traffic_calls[1])
+                    self.assertEqual(current_revision, old_revision)
+                    self.assertEqual(current['revisions'][current_revision], prior)
                 else:
                     self.assertTrue(all("--to-latest" in call for call in traffic_calls))
                 image_updates = [call for call in calls if "run services update " in call]
-                self.assertEqual(len(image_updates), 2)
+                self.assertEqual(len(image_updates), 1 if component == 'bff' else 2)
                 self.assertIn(f"--image {new_image}", image_updates[0])
-                self.assertIn(f"--image {old_image}", image_updates[1])
-                for call in image_updates:
-                    self.assertNotRegex(call, r"--(update-env-vars|update-secrets|service-account|network|subnet|vpc-egress|ingress|max)")
+                if component == 'auth':
+                    self.assertIn(f"--image {old_image}", image_updates[1])
+                    for call in image_updates:
+                        self.assertNotRegex(call, r"--(update-env-vars|update-secrets|service-account|network|subnet|vpc-egress|ingress|max)")
 
     def test_post_mutation_readback_retries_without_a_second_mutation(self):
         registry = "asia-east1-docker.pkg.dev/llm-wiki-cloud/cloud-run-images"
@@ -1584,6 +1612,7 @@ class CDContractTests(unittest.TestCase):
                 state_path.write_text(json.dumps({"readbacks": 0}))
                 log_path = root / "provider.log"
                 kind = "services" if component != "worker" else "jobs"
+                revision_template = bff_candidate('production') if component == 'bff' else {'spec': {'containers': [{}]}, 'status': {'conditions': [{'type': 'Ready', 'status': 'True'}]}}
                 fake = textwrap.dedent(f"""
                     #!/usr/bin/env python3
                     import json, os, sys
@@ -1611,7 +1640,11 @@ class CDContractTests(unittest.TestCase):
                         print(json.dumps({{"status": {{"traffic": [{{"revisionName": revision, "percent": 100}}]}}}}))
                     elif args[:3] == ["run", "revisions", "describe"]:
                         image = {new_image!r} if args[3] == "{component}-new" else {old_image!r}
-                        print(json.dumps({{"spec": {{"containers": [{{"image": image}}]}}, "status": {{"imageDigest": image, "conditions": [{{"type": "Ready", "status": "True"}}]}}}}))
+                        value = {revision_template!r}
+                        value['metadata'] = {{'name': args[3]}}
+                        value['spec']['containers'][0]['image'] = image
+                        value['status']['imageDigest'] = image
+                        print(json.dumps(value))
                     elif args[:3] == ["run", "jobs", "describe"]:
                         state["readbacks"] += 1
                         state_path.write_text(json.dumps(state))
@@ -1626,6 +1659,10 @@ class CDContractTests(unittest.TestCase):
                 plan_component = {"service_name": f"{component}-service"} if component != "worker" else {"job_name": "worker-job", "location": "asia-east1"}
                 plan = root / "plan.json"
                 plan.write_text(json.dumps({"normalized": {"selected_components": [component], "gcp": {"project_id": "llm-wiki-cloud", "region": "asia-east1", "artifact_registry": registry}, "evidence": {"config_fingerprint": "sha256:" + "d" * 64}, component: plan_component}}))
+                if component == 'bff':
+                    normalized = deepcopy(bff_plan('production'))
+                    normalized['bff']['service_name'] = 'bff'
+                    plan.write_text(json.dumps({'normalized': normalized}))
                 artifacts = root / "artifacts" / "dev-images"
                 artifacts.mkdir(parents=True)
                 (artifacts / f"{component}-image-{sha}.txt").write_text(new_image + "\n")
@@ -2092,7 +2129,7 @@ class CDContractTests(unittest.TestCase):
             "bff": {
                 "service": "bff-service",
                 "image": f"{registry}/llm-wiki-bff@sha256:{'b' * 64}",
-                "revision": "bff-revision",
+                "revision": "bff-service-revision",
             },
         }
         for component, value in cases.items():
@@ -2116,6 +2153,12 @@ class CDContractTests(unittest.TestCase):
                         },
                     },
                 }
+                if component == 'bff':
+                    configured = bff_candidate('development')
+                    configured['metadata']['name'] = value['revision']
+                    configured['spec']['containers'][0]['image'] = value['image']
+                    configured['status']['imageDigest'] = value['image']
+                    provider_state['revisions'][value['revision']] = configured
                 provider_script = textwrap.dedent(f"""
                     #!/usr/bin/env python3
                     import json, sys
@@ -2157,6 +2200,10 @@ class CDContractTests(unittest.TestCase):
                     },
                 }))
                 journal = root / "journal.json"
+                if component == 'bff':
+                    normalized = deepcopy(bff_plan('development'))
+                    normalized['bff']['service_name'] = value['service']
+                    plan.write_text(json.dumps({'normalized': normalized}))
                 env = {
                     **os.environ,
                     "PATH": f"{bin_dir}:{os.environ['PATH']}",
@@ -2202,6 +2249,15 @@ class CDContractTests(unittest.TestCase):
                     "worker": {"job_name": "worker-job", "location": "asia-east1"},
                 }
             }))
+            normalized = json.loads(plan.read_text())['normalized']
+            for key in ('environment', 'query_config', 'components', 'bff'):
+                normalized[key] = deepcopy(bff_plan('development')[key])
+            normalized['bff']['service_name'] = 'bff-service'
+            plan.write_text(json.dumps({'normalized': normalized}))
+            prior_bff = bff_candidate('development')
+            prior_bff['metadata']['name'] = 'bff-service-old'
+            prior_bff['spec']['containers'][0]['image'] = images['bff']
+            prior_bff['status']['imageDigest'] = images['bff']
             fake = textwrap.dedent(f"""
                 #!/usr/bin/env python3
                 import json, os, sys
@@ -2214,6 +2270,8 @@ class CDContractTests(unittest.TestCase):
                     "auth-old": {{"metadata": {{"name": "auth-old"}}, "spec": {{"containers": [{{"name": "provider-generated", "image": {images['auth']!r}, "startupProbe": {{"tcpSocket": {{"port": 8080}}}}}}]}}, "status": {{"imageDigest": {images['auth']!r}}}}},
                     "bff-old": {{"metadata": {{"name": "bff-old"}}, "spec": {{"containers": [{{"name": "provider-generated", "image": {images['bff']!r}, "startupProbe": {{"tcpSocket": {{"port": 8080}}}}}}]}}, "status": {{"imageDigest": {images['bff']!r}}}}},
                 }}
+                services['bff-service']['status']['traffic'][0]['revisionName'] = 'bff-service-old'
+                revisions['bff-service-old'] = {prior_bff!r}
                 if args[:3] == ["run", "services", "describe"]:
                     print(json.dumps(services[args[3]]))
                 elif args[:3] == ["run", "revisions", "describe"]:
@@ -2240,10 +2298,11 @@ class CDContractTests(unittest.TestCase):
             result = subprocess.run(["bash", str(ROOT / "deploy/cd.sh"), "freeze"], env=env, text=True, capture_output=True)
             self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
             document = json.loads(rollback.read_text())
-            self.assertEqual(
-                document["handles"],
-                {component: {"image": image} for component, image in images.items()},
-            )
+            for component, image in images.items():
+                self.assertEqual(document['handles'][component]['image'], image)
+            self.assertEqual(document['handles']['bff']['revision'], 'bff-service-old')
+            self.assertRegex(document['handles']['bff']['config_fingerprint'], r'^sha256:[0-9a-f]{64}$')
+            self.assertNotIn('env', document['handles']['bff'])
 
     def test_backend_mutation_paths_are_image_only_and_reject_mutable_refs(self):
         forbidden = (

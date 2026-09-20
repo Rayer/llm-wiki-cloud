@@ -51,7 +51,7 @@ func (failingProvider) Chat(context.Context, string, string) (string, error) {
 }
 
 func (failingProvider) ModelIdentity() (llm.ModelIdentity, bool) {
-	return llm.ModelIdentity{Provider: queryconfig.ProviderDeepSeek, Model: "deepseek-v4-flash", Reasoning: "none", Temperature: 0}, true
+	return llm.ModelIdentity{Provider: queryconfig.ProviderDeepSeek, Model: "deepseek-flash", Reasoning: "none", Temperature: 0}, true
 }
 
 func (p *countingProvider) Chat(_ context.Context, system, user string) (string, error) {
@@ -63,7 +63,7 @@ func (p *countingProvider) Chat(_ context.Context, system, user string) (string,
 }
 
 func (p *countingProvider) ModelIdentity() (llm.ModelIdentity, bool) {
-	return llm.ModelIdentity{Provider: queryconfig.ProviderDeepSeek, Model: "deepseek-v4-flash", Reasoning: "none", Temperature: 0}, true
+	return llm.ModelIdentity{Provider: queryconfig.ProviderDeepSeek, Model: "deepseek-flash", Reasoning: "none", Temperature: 0}, true
 }
 
 type countingLegacy struct {
@@ -221,7 +221,7 @@ func runtimeConfig(t *testing.T) queryconfig.Config {
 	lifestylePrompt, _ := queryquality.LookupPrompt(queryquality.StructuredPlanPromptID)
 	technicalPrompt, _ := queryquality.LookupPrompt(queryquality.DomainNeutralTechnicalPromptID)
 	sealed, err := queryconfig.Seal(queryconfig.Config{SchemaVersion: 2, ConfigRevision: "rev", QueryServiceImplementation: queryconfig.QueryServiceImplementation,
-		Stages:   queryconfig.Stages{QueryExpander: queryconfig.QueryExpanderStage{Provider: queryconfig.ProviderDeepSeek, Implementation: queryconfig.QueryExpanderImplementation, Model: "deepseek-v4-flash", Reasoning: "none", Temperature: 0, DefaultProfileID: base.ID, DefaultProfileDigest: defaultDigest, DefaultPromptID: lifestylePrompt.ID, DefaultPromptDigest: lifestylePrompt.TemplateDigest, KeywordsPerAttempt: 24, Attempts: 3}, CandidateMatcher: queryconfig.CandidateMatcherStage{Implementation: queryconfig.CandidateMatcherImplementation, EvidenceThreshold: 2, RareKeywordMaxDocumentFrequency: 1}, ResultSelector: queryconfig.ResultSelectorStage{Implementation: queryconfig.ResultSelectorImplementation, Limit: 10, ExplorationSlots: 1, SeedPolicy: queryconfig.SeedPolicy}, AnswerSynthesizer: queryconfig.AnswerSynthesizerStage{Provider: queryconfig.ProviderDeepSeek, Implementation: queryconfig.AnswerSynthesizerImplementation, Model: "deepseek-v4-pro", Reasoning: "none", Temperature: 0, NoEvidencePolicy: queryconfig.NoEvidencePolicy}},
+		Stages:   queryconfig.Stages{QueryExpander: queryconfig.QueryExpanderStage{Provider: queryconfig.ProviderDeepSeek, Implementation: queryconfig.QueryExpanderImplementation, Model: "deepseek-flash", Reasoning: "none", Temperature: 0, DefaultProfileID: base.ID, DefaultProfileDigest: defaultDigest, DefaultPromptID: lifestylePrompt.ID, DefaultPromptDigest: lifestylePrompt.TemplateDigest, KeywordsPerAttempt: 24, Attempts: 3}, CandidateMatcher: queryconfig.CandidateMatcherStage{Implementation: queryconfig.CandidateMatcherImplementation, EvidenceThreshold: 2, RareKeywordMaxDocumentFrequency: 1}, ResultSelector: queryconfig.ResultSelectorStage{Implementation: queryconfig.ResultSelectorImplementation, Limit: 10, ExplorationSlots: 1, SeedPolicy: queryconfig.SeedPolicy}, AnswerSynthesizer: queryconfig.AnswerSynthesizerStage{Provider: queryconfig.ProviderDeepSeek, Implementation: queryconfig.AnswerSynthesizerImplementation, Model: "deepseek-flash", Reasoning: "none", Temperature: 0, NoEvidencePolicy: queryconfig.NoEvidencePolicy}},
 		Profiles: []queryconfig.Profile{{ID: base.ID, CriterionPolicy: base.CriterionPolicy, ProfileDigest: defaultDigest}, {ID: technical.ID, CriterionPolicy: technical.CriterionPolicy, ProfileDigest: technicalDigest}}, ProjectBindings: []queryconfig.ProjectBinding{{ProjectID: "project-a", GenerationID: "generation-7", ConceptsDigest: "sha256:" + strings.Repeat("a", 64), ProfileID: technical.ID, ProfileDigest: technicalDigest, PromptID: technicalPrompt.ID, PromptDigest: technicalPrompt.TemplateDigest, Source: queryconfig.SourceCorpusDerivedApproximation}}})
 	if err != nil {
 		t.Fatal(err)
@@ -230,5 +230,5 @@ func runtimeConfig(t *testing.T) queryconfig.Config {
 }
 
 func runtimeSynthesizer() *query.Service {
-	return query.NewService(cache.New(), nil, llm.NewClientWithOptions("test", llm.ClientOptions{Model: "deepseek-v4-pro", Reasoning: llm.ReasoningNone}))
+	return query.NewService(cache.New(), nil, llm.NewClientWithOptions("test", llm.ClientOptions{Model: "deepseek-flash", Reasoning: llm.ReasoningNone}))
 }

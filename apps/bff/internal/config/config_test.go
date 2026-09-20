@@ -10,7 +10,7 @@ import (
 )
 
 func TestLoadStageConfigPathTracksAuthorityAndRejectsMixedLegacyFactors(t *testing.T) {
-	t.Setenv("QUERY_STAGE_CONFIG_PATH", "/app/configs/query/dev/query-dev-2026-08-31.1.json")
+	t.Setenv("QUERY_STAGE_CONFIG_PATH", "/app/configs/query/dev/query-dev-2026-09-12.1.json")
 	for _, name := range []string{
 		"QUERY_EXPANSION_MODEL", "QUERY_EXPANSION_REASONING", "ANSWER_SYNTHESIS_MODEL", "ANSWER_SYNTHESIS_REASONING",
 		"QUERY_SELECTION_LIMIT", "QUERY_SELECTION_EXPLORATION_SLOTS", "QUERY_SELECTION_EVIDENCE_THRESHOLD",
@@ -41,10 +41,10 @@ func TestLoadDefaultsQueryExpansionModel(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if cfg.QueryExpansionModel != "deepseek-v4-flash" || cfg.QueryExpansionReasoning != "none" {
+	if cfg.QueryExpansionModel != "deepseek-flash" || cfg.QueryExpansionReasoning != "none" {
 		t.Fatalf("expansion config = %#v, want flash/none", cfg)
 	}
-	if cfg.AnswerSynthesisModel != "deepseek-v4-pro" || cfg.AnswerSynthesisReasoning != "none" {
+	if cfg.AnswerSynthesisModel != "deepseek-flash" || cfg.AnswerSynthesisReasoning != "none" {
 		t.Fatalf("synthesis config = %#v, want pro/none", cfg)
 	}
 }
@@ -449,5 +449,24 @@ func TestLoadInvalidRegistrationEnvironmentFailsClosed(t *testing.T) {
 	}
 	if cfg.RegistrationEnabled == nil || *cfg.RegistrationEnabled {
 		t.Fatal("invalid registration environment reopened signup")
+	}
+}
+
+func TestLoadLegacyModelAliasesMigratesEffectiveConfiguration(t *testing.T) {
+	t.Setenv("DEV_JWT", "true")
+	t.Setenv("QUERY_STAGE_CONFIG_PATH", "")
+	t.Setenv("QUERY_EXPANSION_MODEL", "deepseek-v4-flash")
+	t.Setenv("ANSWER_SYNTHESIS_MODEL", "deepseek-v4-pro")
+	t.Setenv("ANSWER_SYNTHESIS_REASONING", "high")
+	cfg, err := Load(t.TempDir())
+	if err != nil {
+		t.Fatal(err)
+	}
+	if cfg.QueryExpansionModel != "deepseek-flash" || cfg.AnswerSynthesisModel != "deepseek-flash" || cfg.AnswerSynthesisReasoning != "high" {
+		t.Fatalf("effective models/reasoning = %s/%s/%s", cfg.QueryExpansionModel, cfg.AnswerSynthesisModel, cfg.AnswerSynthesisReasoning)
+	}
+	t.Setenv("ANSWER_SYNTHESIS_MODEL", "deepseek-unknown")
+	if _, err := Load(t.TempDir()); err == nil {
+		t.Fatal("unknown migration model accepted")
 	}
 }

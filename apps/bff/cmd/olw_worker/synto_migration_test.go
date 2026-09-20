@@ -2660,7 +2660,7 @@ func TestExecSyntoUsesAllowlistedEnvironment(t *testing.T) {
 	}
 	bin := t.TempDir()
 	record := filepath.Join(t.TempDir(), "env.txt")
-	script := filepath.Join(bin, "synto")
+	script := filepath.Join(bin, "python3")
 	if err := os.WriteFile(script, []byte("#!/bin/sh\nenv | sort > "+record+"\n"), 0o700); err != nil {
 		t.Fatal(err)
 	}

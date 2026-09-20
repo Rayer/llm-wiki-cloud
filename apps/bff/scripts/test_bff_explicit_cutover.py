@@ -186,13 +186,13 @@ class SharedCDContractTest(unittest.TestCase):
         self.assertNotIn("run jobs execute", source)
         self.assertNotIn("vercel alias set", source)
 
-    def test_bff_freezes_and_rolls_back_with_immutable_image_only_artifact(self):
+    def test_bff_freezes_and_rolls_back_exact_config_without_auth_google(self):
         directory = Path(tempfile.mkdtemp(prefix="lwc-306-bff-legacy-"))
         try:
             artifacts = directory / "artifacts"
             artifacts.mkdir()
             normalized = self.normalized("production")
-            # Retain coverage of the legacy image-only path without auth.google.
+            # Query config remains managed independently of the Auth migration.
             normalized["auth"].pop("google", None)
             plan = directory / "plan.json"
             plan.write_text(json.dumps({"normalized": normalized}))
@@ -232,7 +232,9 @@ class SharedCDContractTest(unittest.TestCase):
             frozen = subprocess.run(["bash", str(REPO_ROOT / "deploy/cd.sh"), "freeze"], env=env, text=True, capture_output=True)
             self.assertEqual(frozen.returncode, 0, frozen.stdout + frozen.stderr)
             handle = json.loads(rollback.read_text())["handles"]["bff"]
-            self.assertEqual(set(handle.keys()), {"image"})
+            self.assertEqual(set(handle.keys()), {"image", "revision", "config_fingerprint", "ready"})
+            self.assertEqual(handle['revision'], 'llm-wiki-bff-00001-old')
+            self.assertRegex(handle['config_fingerprint'], r'^sha256:[0-9a-f]{64}$')
             self.assertEqual(handle["image"], "asia-east1-docker.pkg.dev/llm-wiki-cloud/cloud-run-images/llm-wiki-bff@sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa")
             journal.write_text(json.dumps({
                 "schema": "lwc-306-mutation-journal-v1", "order": ["bff"],
@@ -261,6 +263,8 @@ class SharedCDContractTest(unittest.TestCase):
     def test_bff_candidate_cutover_revalidates_after_candidate_creation(self):
         """A candidate must stay dark and freshness failures must not cut it over."""
         registry = "asia-east1-docker.pkg.dev/llm-wiki-cloud/cloud-run-images"
+        normalized = self.normalized()
+        normalized['bff']['service_name'] = 'bff-service'
         ci_jobs = [{
             "id": 1,
             "name": "canonical-ci",
@@ -287,8 +291,8 @@ class SharedCDContractTest(unittest.TestCase):
                 phase.write_text("before-candidate")
                 events = root / "events"
                 state_path = root / "state.json"
-                old_revision = "bff-old"
-                candidate_revision = "bff-candidate"
+                old_revision = "bff-service-old"
+                candidate_revision = "bff-service-candidate"
                 old_image = f"{registry}/llm-wiki-bff@sha256:{'a' * 64}"
                 state_path.write_text(json.dumps({
                     "service": {"status": {
@@ -361,7 +365,12 @@ class SharedCDContractTest(unittest.TestCase):
                         image = args[args.index("--image") + 1]
                         state["service"]["status"]["latestCreatedRevisionName"] = "{candidate_revision}"
                         state["revisions"]["{candidate_revision}"] = {{
-                            "spec": {{"containers": [{{"image": image}}]}},
+                            "metadata": {{"name": "{candidate_revision}"}},
+                            "spec": {{"serviceAccountName": {normalized['bff']['runtime_service_account']!r},
+                                "containers": [{{"image": image, "env": [
+                                    {{'name': k, 'value': v}} for k, v in (item.split('=', 1)
+                                        for item in args[args.index('--update-env-vars') + 1][3:].split('|'))
+                                ]}}]}},
                             "status": {{"imageDigest": image, "conditions": [{{"type": "Ready", "status": "True"}}]}},
                         }}
                         if "--no-traffic" not in args:
@@ -396,11 +405,7 @@ class SharedCDContractTest(unittest.TestCase):
                         "conclusion": "success",
                         "jobs": ci_jobs,
                     },
-                    "normalized": {
-                        "selected_components": ["bff"],
-                        "gcp": {"project_id": "llm-wiki-cloud", "region": "asia-east1", "artifact_registry": registry},
-                        "bff": {"service_name": "bff-service"},
-                    },
+                    "normalized": normalized,
                 }))
                 env = {
                     **os.environ,

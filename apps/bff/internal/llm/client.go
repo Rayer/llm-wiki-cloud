@@ -146,17 +146,28 @@ type chatResponse struct {
 	Choices []chatChoice `json:"choices"`
 }
 
+// CanonicalDeepSeekModel accepts the migration aliases and rejects unknown models.
+func CanonicalDeepSeekModel(model string) string {
+	switch model {
+	case "", "deepseek-flash", "deepseek-v4-flash", "deepseek-v4-pro", "deepseek-chat", "deepseek-reasoner":
+		return "deepseek-flash"
+	default:
+		return ""
+	}
+}
+
 // NewClient creates a DeepSeek API client. If apiKey is empty, returns nil.
 func NewClient(apiKey string) *Client {
-	return NewClientWithOptions(apiKey, ClientOptions{Model: "deepseek-chat"})
+	return NewClientWithOptions(apiKey, ClientOptions{Model: "deepseek-flash"})
 }
 
 func NewClientWithOptions(apiKey string, options ClientOptions) *Client {
 	if apiKey == "" {
 		return nil
 	}
+	options.Model = CanonicalDeepSeekModel(options.Model)
 	if options.Model == "" {
-		options.Model = "deepseek-chat"
+		return nil
 	}
 	if options.Reasoning == "" {
 		options.Reasoning = ReasoningNone
