@@ -431,11 +431,12 @@ exportjob_runtime_matches() {
   account=$(plan_json '.export_job.runtime_service_account'); bucket=$(plan_json '.export_job.bucket')
   database=$(plan_json '.export_job.firestore_database_id'); project=$(plan_json '.gcp.project_id'); signer=$(plan_json '.export_job.signing_service_account')
   jq -e --arg account "$account" --arg bucket "$bucket" --arg database "$database" --arg project "$project" --arg signer "$signer" '
-    def template: (.template.template // .spec.template.spec.template // .spec.template // {});
+    def template: (.template.template // .spec.template.spec.template.spec // .spec.template.spec.template // .spec.template // {});
     def containers: (template.containers // []);
     def env: (containers[0].env // [] | map({key:.name,value:.value}) | from_entries);
+    def service_account: (template.serviceAccount // template.serviceAccountName);
     type == "object" and (containers|type == "array" and length == 1) and
-    template.serviceAccount == $account and env.GCP_PROJECT == $project and env.BUCKET == $bucket and
+    service_account == $account and env.GCP_PROJECT == $project and env.BUCKET == $bucket and
     env.FIRESTORE_DATABASE_ID == $database and env.EXPORT_SIGNING_SERVICE_ACCOUNT == $signer
   ' <<<"$job_json" >/dev/null
 }

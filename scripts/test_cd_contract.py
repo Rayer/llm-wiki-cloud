@@ -2728,7 +2728,7 @@ class ArchitectureAuthorityTests(unittest.TestCase):
             "signing_service_account": "export-signer@example.iam.gserviceaccount.com",
             "bucket": "example-dev-bucket", "firestore_database_id": "example-dev-db",
         }
-        runtime = {"template": {"template": {
+        runtime_v2 = {"template": {"template": {
             "serviceAccount": config["runtime_service_account"],
             "containers": [{"env": [
                 {"name": "GCP_PROJECT", "value": "example-project"},
@@ -2737,6 +2737,10 @@ class ArchitectureAuthorityTests(unittest.TestCase):
                 {"name": "EXPORT_SIGNING_SERVICE_ACCOUNT", "value": config["signing_service_account"]},
             ]}],
         }}}
+        runtime_v1 = {"spec": {"template": {"spec": {"template": {"spec": {
+            "serviceAccountName": config["runtime_service_account"],
+            "containers": runtime_v2["template"]["template"]["containers"],
+        }}}}}}
         with tempfile.TemporaryDirectory() as directory:
             plan = Path(directory) / "plan.json"
             plan.write_text(json.dumps({"normalized": {
@@ -2750,13 +2754,19 @@ class ArchitectureAuthorityTests(unittest.TestCase):
                     text=True, capture_output=True,
                 )
 
-            self.assertEqual(verify(runtime).returncode, 0)
-            wrong = deepcopy(runtime)
-            wrong["template"]["template"]["serviceAccount"] = "unexpected@example.iam.gserviceaccount.com"
-            self.assertNotEqual(verify(wrong).returncode, 0)
-            wrong = deepcopy(runtime)
-            wrong["template"]["template"]["containers"][0]["env"][1]["value"] = "other-bucket"
-            self.assertNotEqual(verify(wrong).returncode, 0)
+            for runtime, account_path in ((runtime_v2, ("template", "template", "serviceAccount")),
+                                          (runtime_v1, ("spec", "template", "spec", "template", "spec", "serviceAccountName"))):
+                with self.subTest(shape=account_path):
+                    self.assertEqual(verify(runtime).returncode, 0)
+                    wrong = deepcopy(runtime)
+                    node = wrong
+                    for key in account_path[:-1]: node = node[key]
+                    node[account_path[-1]] = "unexpected@example.iam.gserviceaccount.com"
+                    self.assertNotEqual(verify(wrong).returncode, 0)
+                    wrong = deepcopy(runtime)
+                    containers = wrong["template"]["template"]["containers"] if "template" in wrong else wrong["spec"]["template"]["spec"]["template"]["spec"]["containers"]
+                    containers[0]["env"][1]["value"] = "other-bucket"
+                    self.assertNotEqual(verify(wrong).returncode, 0)
 
     def test_wrappers_require_explicit_components_and_inherit_secrets(self):
         for filename in ("deploy-dev.yml", "promote-production.yml"):

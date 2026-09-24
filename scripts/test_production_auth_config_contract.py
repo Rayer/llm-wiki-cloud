@@ -22,6 +22,20 @@ class ProductionConfigContractTests(unittest.TestCase):
     def run_shell(self, value, component='auth', **kwargs):
         return fixtures.AuthConfigContractTests.run_shell(self, value, environment='production', component=component, **kwargs)
 
+    def test_disabled_export_does_not_remove_production_bff_settings(self):
+        value = candidate('bff')
+        retained = [
+            {'name': 'EXPORT_JOB_URL', 'value': 'https://legacy.example/jobs:run'},
+            {'name': 'EXPORT_SIGNING_SERVICE_ACCOUNT', 'value': 'legacy-signer@example.iam.gserviceaccount.com'},
+        ]
+        value['spec']['containers'][0]['env'].extend(retained)
+        result, commands, _ = self.run_shell(value, 'bff', action='bff_mutate')
+        self.assertEqual(result.returncode, 0, result.stderr)
+        update = next(c for c in commands if c[:3] == ['run', 'services', 'update'])
+        self.assertNotIn('--remove-env-vars', update)
+        self.assertNotIn('EXPORT_JOB_URL=', update[update.index('--update-env-vars') + 1])
+        self.assertNotIn('--remove-secrets', update)
+
     def test_enabled_and_disabled_exact_readback_before_traffic(self):
         for component in ('auth', 'bff'):
             for enabled in (True, False):

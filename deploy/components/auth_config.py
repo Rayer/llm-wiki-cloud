@@ -85,7 +85,7 @@ def desired(plan, component='auth'):
     return {'env': env, 'secrets': secrets, 'service_account': auth['runtime_service_account']}
 
 
-def effective(revision, project, component='auth', query_only=False, selective_bff=False):
+def effective(revision, project, component='auth', query_only=False, selective_bff=False, include_exports=False):
     containers = revision['spec']['containers']
     require(len(containers) == 1)
     result = {'env': {}, 'secrets': {}, 'service_account': revision['spec']['serviceAccountName']}
@@ -113,7 +113,7 @@ def effective(revision, project, component='auth', query_only=False, selective_b
                 require(parts[1] in (project, revision['metadata'].get('namespace')))
                 ref = {'name': parts[3], 'key': ref['key']}
             result['secrets'][name] = ref
-        elif component == 'bff' and name in EXPORT_BFF:
+        elif component == 'bff' and include_exports and name in EXPORT_BFF:
             require(not query_only and set(entry) == {'name', 'value'} and isinstance(entry['value'], str))
             result['env'][name] = entry['value']
         elif ((name in BASE or name in GOOGLE) and not query_only and not selective_bff) or (component == 'bff' and name == QUERY_PATH):
@@ -141,7 +141,7 @@ def main():
             args += ['--update-secrets', ','.join(k + '=' + v['name'] + ':' + v['key'] for k, v in expected['secrets'].items())]
         if component == 'auth' and not plan['auth']['google']['enabled']:
             args += ['--remove-env-vars', ','.join(GOOGLE), '--remove-secrets', 'GOOGLE_CLIENT_SECRET']
-        if component == 'bff' and not plan['export_job']['enabled']:
+        if component == 'bff' and plan['environment'] == 'development' and not plan['export_job']['enabled']:
             args += ['--remove-env-vars', ','.join(EXPORT_BFF)]
         print('\n'.join(args))
         return
@@ -154,6 +154,7 @@ def main():
     require(any(c['type'] == 'Ready' and c['status'] == 'True' for c in revision['status']['conditions']))
     actual = effective(revision, plan['gcp']['project_id'], component,
                        set(expected['env']) == {QUERY_PATH},
+                       component == 'bff' and plan['environment'] == 'development',
                        component == 'bff' and plan['environment'] == 'development')
     digest = fingerprint(actual)
     if component == 'bff':
