@@ -350,3 +350,80 @@ func TestResolvedCitationHTTPDetailContract(t *testing.T) {
 		})
 	}
 }
+
+func TestPercentCitationHTTPDetailContract(t *testing.T) {
+	for _, kind := range []string{"concept", "source"} {
+		for _, slug := range []string{
+			"CLAUDE.md這樣寫才對！12條規則一次整理，讓Claude Code錯誤率從41%降至3%",
+			"literal %2F and %2e%2e stay literal",
+		} {
+			t.Run(kind+"/"+slug, func(t *testing.T) {
+				root := localfs.New(t.TempDir())
+				reader := root.Scope("user", "project")
+				id := testSyntoConceptULID
+				if kind == "source" {
+					id = "abcdef123456"
+				}
+				ids := wikiindex.IDMap{Concept: map[string]string{}, Source: map[string]string{}, Redirects: map[string][]string{}}
+				collection, file := "concepts", "wiki/"+slug+".md"
+				if kind == "source" {
+					ids.Source[id] = slug
+					collection, file = "sources", "wiki/sources/"+slug+".md"
+				} else {
+					ids.Concept[id] = slug
+				}
+				data, _ := json.Marshal(ids)
+				if _, err := reader.WriteBytes(context.Background(), data, "cache/id_map.json"); err != nil {
+					t.Fatal(err)
+				}
+				if _, err := reader.WriteBytes(context.Background(), []byte("---\nstatus: published\n---\nIntended article body\n"), file); err != nil {
+					t.Fatal(err)
+				}
+				resolved, err := query.ResolveCitationIdentity(search.Result{Slug: slug, Title: "Display label", Type: kind}, ids)
+				if err != nil {
+					t.Fatal(err)
+				}
+				authority, err := search.NewCitationAuthority()
+				if err != nil {
+					t.Fatal(err)
+				}
+				authority.AddContext(0, resolved, "body")
+				citation := authority.IssuedCitations()[0]
+				h := New(root, nil, search.NewIndex(), nil, nil, nil)
+				invoke := func(path string) *httptest.ResponseRecorder {
+					recorder := httptest.NewRecorder()
+					c, _ := gin.CreateTestContext(recorder)
+					c.Request = httptest.NewRequest(http.MethodGet, path, nil)
+					c.Params = gin.Params{{Key: "id", Value: filepath.Base(c.Request.URL.Path)}}
+					c.Set("userID", "user")
+					c.Set("projectID", "project")
+					if kind == "concept" {
+						h.GetConcept(c)
+					} else {
+						h.GetSource(c)
+					}
+					return recorder
+				}
+				response := invoke("/api/v1/" + collection + "/" + citation.ID)
+				if response.Code != http.StatusFound {
+					t.Fatalf("ID lookup: %d %s", response.Code, response.Body.String())
+				}
+				target := response.Header().Get("Location")
+				if target != "/api/v1"+citation.Path {
+					t.Fatalf("redirect=%q citation=%q", target, citation.Path)
+				}
+				response = invoke(target)
+				if response.Code != http.StatusOK {
+					t.Fatalf("detail: %d %s", response.Code, response.Body.String())
+				}
+				var detail struct{ ID, Slug, Body string }
+				if err := json.Unmarshal(response.Body.Bytes(), &detail); err != nil {
+					t.Fatal(err)
+				}
+				if detail.ID != id || detail.Slug != slug || !strings.Contains(detail.Body, "Intended article body") {
+					t.Fatalf("wrong article: %+v", detail)
+				}
+			})
+		}
+	}
+}

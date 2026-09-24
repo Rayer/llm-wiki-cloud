@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"errors"
 	"net/http"
+	"net/url"
 	"os"
 	"strings"
 	"testing"
@@ -42,6 +43,71 @@ func TestCitationIdentityUsesRequestMap(t *testing.T) {
 	}
 }
 
+func TestUnselectedPercentSourceDoesNotPoisonQuery(t *testing.T) {
+	service, reader := serviceFixture(t, `{"slug":"coffee","title":"Coffee","body":"coffee body"}`+"\n")
+	ids, err := LoadCitationIDMap(context.Background(), reader)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if ids.Source == nil {
+		ids.Source = map[string]string{}
+	}
+	ids.Source["3b4e9275d077"] = "CLAUDE.md這樣寫才對！12條規則一次整理，讓Claude Code錯誤率從41%降至3%"
+	data, err := wikiindex.EncodeIDMap(ids)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := reader.WriteBytes(context.Background(), data, wikiindex.IDMapPath); err != nil {
+		t.Fatal(err)
+	}
+
+	transport := &queryLLMTransport{t: t}
+	old := http.DefaultTransport
+	http.DefaultTransport = transport
+	t.Cleanup(func() { http.DefaultTransport = old })
+	service.llm = llm.NewClient("explicit-mock")
+	result, err := service.Execute(context.Background(), reader, Request{Query: "coffee", Mode: "full"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if result.AISynth != "answer [Coffee]" || len(result.Citations) != 1 || result.Citations[0].Slug != "coffee" {
+		t.Fatalf("unselected percent source poisoned query or citation: %#v", result)
+	}
+}
+
+func TestSelectedPercentSourceIssuesEscapedCanonicalCitation(t *testing.T) {
+	const slug = "CLAUDE.md這樣寫才對！12條規則一次整理，讓Claude Code錯誤率從41%降至3%"
+	const id = "3b4e9275d077"
+	service, reader := serviceFixture(t, "")
+	ids := wikiindex.IDMap{Concept: map[string]string{}, Source: map[string]string{id: slug}, Redirects: map[string][]string{}}
+	data, err := wikiindex.EncodeIDMap(ids)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := reader.WriteBytes(context.Background(), data, wikiindex.IDMapPath); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := reader.WriteBytes(context.Background(), []byte("Source evidence"), "wiki/sources/"+slug+".md"); err != nil {
+		t.Fatal(err)
+	}
+
+	transport := &queryLLMTransport{t: t}
+	old := http.DefaultTransport
+	http.DefaultTransport = transport
+	t.Cleanup(func() { http.DefaultTransport = old })
+	service.llm = llm.NewClient("explicit-mock")
+	result, err := service.SynthesizeWithError(context.Background(), reader, Request{Query: "test", Mode: "wiki"}, Result{Results: []search.Result{{Slug: slug, Title: "Claude Code guide", Type: "source"}}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(result.Citations) != 1 || result.Citations[0].ID != id || result.Citations[0].Slug != slug || result.Citations[0].Path != "/sources/"+id+"-"+url.PathEscape(slug) {
+		t.Fatalf("citation = %#v, want canonical ID and escaped source route", result.Citations)
+	}
+	if !strings.Contains(result.Citations[0].Path, "41%25") || !strings.Contains(result.Citations[0].Path, "3%25") {
+		t.Fatalf("literal percent was not escaped as one URL path segment: %q", result.Citations[0].Path)
+	}
+}
+
 func TestCitationIdentityRejectsInvalidMapsAndRoutes(t *testing.T) {
 	for _, tc := range []struct{ name, data, slug, kind string }{
 		{"missing", `{}`, "café tea", "concept"},
@@ -69,13 +135,35 @@ func TestCitationIdentityRejectsInvalidMapsAndRoutes(t *testing.T) {
 			}
 		})
 	}
-	for _, slug := range []string{"../escape", "a/b", `a\b`, "%2e%2e", "a?b", "a#b", "https:evil", "a\nline", "a\tline", " leading", "trailing ", ".", "..", ""} {
+	for _, slug := range []string{"../escape", "a/b", `a\b`, "a\x00b", "a\nline", "a\tline", " leading", "trailing ", ".", "..", ""} {
 		t.Run("route "+slug, func(t *testing.T) {
 			ids := wikiindex.IDMap{Concept: map[string]string{"abcdef123456": slug}}
 			if _, err := ResolveCitationIdentity(search.Result{Slug: slug, Type: "concept"}, ids); err == nil {
 				t.Fatal("unsafe route accepted")
 			}
 		})
+	}
+}
+
+func TestLiteralPercentEscapeTextIsNotDecodedAsPathTraversal(t *testing.T) {
+	const slug = "guide-%2e%2e-%2F-stays-literal"
+	const id = "abcdef123456"
+	ids := wikiindex.IDMap{Concept: map[string]string{id: slug}}
+	resolved, err := ResolveCitationIdentity(search.Result{Slug: slug, Type: "concept"}, ids)
+	if err != nil {
+		t.Fatal(err)
+	}
+	authority, err := search.NewCitationAuthority([]search.Result{resolved})
+	if err != nil {
+		t.Fatal(err)
+	}
+	authority.AddContext(0, resolved, "body")
+	citation := authority.IssuedCitations()[0]
+	if citation.Path != "/concepts/"+id+"-guide-%252e%252e-%252F-stays-literal" {
+		t.Fatalf("literal percent escape was not encoded exactly once: %q", citation.Path)
+	}
+	if citation.Slug != slug {
+		t.Fatalf("canonical display slug changed: %q", citation.Slug)
 	}
 }
 
@@ -130,11 +218,37 @@ func TestCitationMissingMapFailsBeforeLLM(t *testing.T) {
 	}
 }
 
+func TestCitationIDMapGenerationMismatchFailsBeforeLLM(t *testing.T) {
+	service, reader := serviceFixture(t, `{"slug":"coffee","title":"Coffee","body":"Evidence"}`+"\n")
+	old := http.DefaultTransport
+	calls := 0
+	http.DefaultTransport = roundTripFunc(func(*http.Request) (*http.Response, error) {
+		calls++
+		return nil, errors.New("unexpected LLM call")
+	})
+	t.Cleanup(func() { http.DefaultTransport = old })
+	service.llm = llm.NewClient("explicit-mock")
+	readerWithMismatch := generationMismatchCitationMapReader{Store: reader}
+	_, err := service.SynthesizeWithError(context.Background(), readerWithMismatch, Request{Query: "coffee", Mode: "wiki"}, Result{Results: []search.Result{{ID: "000000000001", Slug: "coffee", Title: "Coffee", Type: "concept"}}})
+	if !errors.Is(err, storage.ErrGenerationMismatch) || calls != 0 {
+		t.Fatalf("err=%v calls=%d, want generation mismatch before LLM", err, calls)
+	}
+}
+
 type missingCitationMapReader struct{ storage.Store }
 
 func (r missingCitationMapReader) ReadFile(ctx context.Context, path string) ([]byte, error) {
 	if path == wikiindex.IDMapPath {
 		return nil, os.ErrNotExist
+	}
+	return r.Store.ReadFile(ctx, path)
+}
+
+type generationMismatchCitationMapReader struct{ storage.Store }
+
+func (r generationMismatchCitationMapReader) ReadFile(ctx context.Context, path string) ([]byte, error) {
+	if path == wikiindex.IDMapPath {
+		return nil, storage.ErrGenerationMismatch
 	}
 	return r.Store.ReadFile(ctx, path)
 }

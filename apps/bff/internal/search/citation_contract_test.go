@@ -175,6 +175,21 @@ func TestCitationAuthorityRejectsControlWhitespaceInSlugs(t *testing.T) {
 	}
 }
 
+func TestCitationAuthorityEscapesReservedCharactersInStoredName(t *testing.T) {
+	result := Result{ID: "abcdef123456", Slug: "https:evil?x#y %2F", Title: "Guide", Type: "source"}
+	if !SafeCitationSlug(result.Slug) {
+		t.Fatal("raw single-segment stored name was rejected")
+	}
+	authority := testAuthority(t, []Result{result})
+	if tokenInContext(authority.AddContext(0, result, "body")) == "" {
+		t.Fatal("safe stored name did not receive citation authority")
+	}
+	citation := authority.IssuedCitations()[0]
+	if citation.Path != "/sources/abcdef123456-https:evil%3Fx%23y%20%252F" {
+		t.Fatalf("stored-name delimiters were not escaped in route: %q", citation.Path)
+	}
+}
+
 func TestCitationAuthorityPreservesMalformedProseAndNeutralizesReservedText(t *testing.T) {
 	authority := testAuthority(t)
 	answer := "before [CITATION_REF_0 after ordinary prose CITATION_REF_"
