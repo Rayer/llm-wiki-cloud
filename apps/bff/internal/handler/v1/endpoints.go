@@ -705,10 +705,8 @@ func (h *Handler) GetSource(c *gin.Context) {
 		return
 	}
 
+	// net/http has decoded the request path once. Keep literal %xx text intact.
 	slug := c.Param("id")
-	if decoded, err := url.PathUnescape(slug); err == nil {
-		slug = decoded
-	}
 	if h.handleIDRoutedPage(c, gcsClient, "source", slug) {
 		return
 	}
@@ -799,10 +797,8 @@ func (h *Handler) GetConcept(c *gin.Context) {
 		return
 	}
 
+	// net/http has decoded the request path once. Keep literal %xx text intact.
 	slug := c.Param("id")
-	if decoded, err := url.PathUnescape(slug); err == nil {
-		slug = decoded
-	}
 	if h.handleIDRoutedPage(c, gcsClient, "concept", slug) {
 		return
 	}

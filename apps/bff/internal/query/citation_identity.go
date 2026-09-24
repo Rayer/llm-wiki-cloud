@@ -24,7 +24,8 @@ func newCitationIdentityResolver(ids wikiindex.IDMap) (citationIdentityResolver,
 	// Validate all active rows once, including rows not selected in this request.
 	for kind, entries := range map[string]map[string]string{"concept": ids.Concept, "source": ids.Source} {
 		for id, slug := range entries {
-			if !search.SafeCitationResult(search.Result{ID: id, Slug: slug, Type: kind}) {
+			validID := wikiindex.ValidLegacyConceptID(id) || wikiindex.ValidSyntoEntityID(id)
+			if !validID || !search.SafeCitationSlug(slug) {
 				return nil, fmt.Errorf("citation identity: invalid active map entry")
 			}
 			key := citationIdentityKey{kind, slug}

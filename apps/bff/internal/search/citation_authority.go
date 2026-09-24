@@ -240,22 +240,22 @@ func SafeCitationResult(result Result) bool {
 	if result.Type != "source" && result.Type != "concept" {
 		return false
 	}
-	if result.Slug == "" || strings.TrimSpace(result.Slug) != result.Slug || result.Slug == "." || result.Slug == ".." {
+	return SafeCitationSlug(result.Slug)
+}
+
+// SafeCitationSlug validates a raw stored name as one route path segment.
+// Percent text is ordinary name data; URL callers must escape it when serializing.
+func SafeCitationSlug(slug string) bool {
+	if slug == "" || strings.TrimSpace(slug) != slug || slug == "." || slug == ".." {
 		return false
 	}
-	if strings.ContainsAny(result.Slug, "/\\%?#") || strings.HasPrefix(result.Slug, "//") {
+	if strings.ContainsAny(slug, "/\\\x00") {
 		return false
 	}
-	for _, r := range result.Slug {
+	for _, r := range slug {
 		if r < 0x20 || r == 0x7f {
 			return false
 		}
 	}
-	parsed, err := url.Parse(result.Slug)
-	if err != nil || parsed.IsAbs() || parsed.Host != "" {
-		return false
-	}
-	escaped := url.PathEscape(result.Slug)
-	unescaped, err := url.PathUnescape(escaped)
-	return escaped != "" && escaped != "." && escaped != ".." && err == nil && unescaped == result.Slug && !strings.Contains(escaped, "/")
+	return true
 }
