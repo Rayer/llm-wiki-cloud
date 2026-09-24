@@ -718,7 +718,7 @@ class CDContractTests(unittest.TestCase):
         workflows = sorted((ROOT / ".github/workflows").glob("*.yml"))
         self.assertEqual(
             {path.name for path in workflows},
-            {"ci.yml", "cd.yml", "deploy-dev.yml", "promote-production.yml"},
+            {"ci.yml", "cd.yml", "deploy-dev.yml", "promote-production.yml", "provision-exportjob-dev.yml"},
         )
         all_source = "\n".join(path.read_text() for path in workflows)
         for literal in (
@@ -727,6 +727,15 @@ class CDContractTests(unittest.TestCase):
             "QUERY_STAGE_CONFIG_DIGEST:",
         ):
             self.assertNotIn(literal, all_source)
+
+    def test_export_prerequisite_workflow_isolated_to_develop_and_reuses_existing_auth(self):
+        source = (ROOT / ".github/workflows/provision-exportjob-dev.yml").read_text()
+        self.assertIn("workflow_dispatch:", source)
+        self.assertIn("if: github.ref == 'refs/heads/develop'", source)
+        self.assertIn("workload_identity_provider: ${{ secrets.WIF_PROVIDER }}", source)
+        self.assertIn("service_account: ${{ secrets.WIF_SERVICE_ACCOUNT }}", source)
+        self.assertNotIn("gcloud projects add-iam-policy-binding", source)
+        self.assertNotIn("deploy-dev.yml", source)
 
     def test_default_ci_runs_retained_legacy_python_suites(self):
         source = (ROOT / ".github/workflows/ci.yml").read_text()

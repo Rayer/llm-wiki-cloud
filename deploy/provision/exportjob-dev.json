@@ -1,0 +1,22 @@
+{
+  "environment": "development",
+  "project": "llm-wiki-cloud",
+  "region": "asia-east1",
+  "bucket": "llm-wiki-data-dev",
+  "database": "llm-wiki-cloud-dev",
+  "artifact_registry": "asia-east1-docker.pkg.dev/llm-wiki-cloud/cloud-run-images",
+  "job": "export-job-dev",
+  "runtime_service_account": "lwc-export-worker-dev@llm-wiki-cloud.iam.gserviceaccount.com",
+  "signing_service_account": "lwc-export-signer-dev@llm-wiki-cloud.iam.gserviceaccount.com",
+  "bff_service_account": "lwc-bff-dev@llm-wiki-cloud.iam.gserviceaccount.com",
+  "job_timeout": "23h",
+  "max_retries": 0,
+  "parallelism": 1,
+  "tasks": 1,
+  "storage_roles": {
+    "objectLister": ["storage.objects.list"],
+    "sourceReader": ["storage.objects.get"],
+    "archiveWriter": ["storage.objects.create", "storage.objects.delete", "storage.objects.get", "storage.objects.update"],
+    "blobSigner": ["iam.serviceAccounts.signBlob"]
+  }
+}

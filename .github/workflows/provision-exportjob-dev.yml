@@ -1,0 +1,49 @@
+name: Provision DEV Export Job prerequisites
+
+on:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  provision:
+    if: github.ref == 'refs/heads/develop'
+    runs-on: ubuntu-latest
+    timeout-minutes: 60
+    environment: Development
+    permissions:
+      contents: read
+      id-token: write
+    steps:
+      - name: Checkout exact develop source
+        uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+        with:
+          ref: ${{ github.sha }}
+          fetch-depth: 1
+          persist-credentials: false
+
+      - name: Set up gcloud
+        uses: google-github-actions/setup-gcloud@e427ad8a34f8676edf47cf7d7925499adf3eb74f # v2.1.4
+
+      - name: Authenticate with the existing DEV deploy identity
+        uses: google-github-actions/auth@7c6bc770dae815cd3e89ee6cdf493a5fab2cc093 # v3
+        with:
+          project_id: llm-wiki-cloud
+          workload_identity_provider: ${{ secrets.WIF_PROVIDER }}
+          service_account: ${{ secrets.WIF_SERVICE_ACCOUNT }}
+
+      - name: Build reviewed source and provision missing DEV prerequisites
+        env:
+          SOURCE_SHA: ${{ github.sha }}
+          SOURCE_REF: ${{ github.ref }}
+        run: python3 deploy/provision/exportjob_dev.py
+
+      - name: Upload provisioning and inverse evidence
+        if: always()
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
+        with:
+          name: exportjob-dev-provision-${{ github.sha }}-${{ github.run_id }}-${{ github.run_attempt }}
+          path: .provision/exportjob-dev-evidence.json
+          if-no-files-found: warn
+          retention-days: 90
