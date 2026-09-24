@@ -104,6 +104,7 @@ func newProductionRouter(cfg config.Config, localMode bool, fsClient *firestorec
 		authRoutes.POST("/register", unavailable)
 		authRoutes.POST("/refresh", unavailable)
 		authRoutes.POST("/logout", auth.LogoutHandlerWithCookiePolicy(auth.HostRefreshCookiePolicy()))
+		registerUnavailableCLIRoutes(authRoutes)
 	} else {
 		identityRepository := auth.NewIdentityRepository(fsClient.Raw())
 		sessionEnvironment := strings.TrimSpace(cfg.AuthSessionEnvironment)
@@ -116,6 +117,7 @@ func newProductionRouter(cfg config.Config, localMode bool, fsClient *firestorec
 		sessions := auth.NewRefreshSessionAuthorityWithConfig(fsClient.Raw(), auth.SessionAuthorityConfig{
 			Environment: sessionEnvironment, Migration: auth.RefreshSessionMigrationMode(cfg.AuthSessionMigration),
 		})
+		registerCLIAuthRoutes(authRoutes, cfg, fsClient.Raw(), sessions, sessionEnvironment)
 		authRoutes.POST("/login", middleware.NewRateLimiter(10, time.Minute), auth.LoginHandlerWithRepositoryAndSessionAuthority(identityRepository, cfg.JWTSecret, auth.HostRefreshCookiePolicy(), sessions))
 		authRoutes.POST("/register", middleware.NewRateLimiter(5, time.Minute), auth.RegisterHandlerWithRepository(identityRepository, cfg.JWTSecret, settingsStore))
 		authRoutes.POST("/refresh", auth.RefreshHandlerWithSessionAuthority(sessions, cfg.JWTSecret, auth.HostRefreshCookiePolicy()))

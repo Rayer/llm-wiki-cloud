@@ -46,24 +46,26 @@ var defaultAllowedOrigins = []string{
 
 // Config holds application configuration loaded from config.toml.
 type Config struct {
-	GCPProject               string
-	Bucket                   string
-	FirestoreDatabaseID      string
-	UserID                   string
-	ProjectID                string
-	Port                     string
-	DeepSeekAPIKey           string
-	QueryExpansionModel      string
-	QueryExpansionReasoning  llm.Reasoning
-	AnswerSynthesisModel     string
-	AnswerSynthesisReasoning llm.Reasoning
-	JWTSecret                string
-	DevJWT                   bool
-	LocalDataDir             string
-	PipelineJobURL           string
-	AllowedOrigins           []string
-	AllowedHosts             []string
-	Users                    []UserConfig
+	GCPProject                  string
+	Bucket                      string
+	FirestoreDatabaseID         string
+	UserID                      string
+	ProjectID                   string
+	Port                        string
+	DeepSeekAPIKey              string
+	QueryExpansionModel         string
+	QueryExpansionReasoning     llm.Reasoning
+	AnswerSynthesisModel        string
+	AnswerSynthesisReasoning    llm.Reasoning
+	JWTSecret                   string
+	DevJWT                      bool
+	LocalDataDir                string
+	PipelineJobURL              string
+	ExportJobURL                string
+	ExportSigningServiceAccount string
+	AllowedOrigins              []string
+	AllowedHosts                []string
+	Users                       []UserConfig
 
 	// Pipeline quota (LWC-138). Env: PIPELINE_DAILY_LIMIT, PIPELINE_COOLDOWN_SECONDS,
 	// PIPELINE_MIN_NEW_RAW, PIPELINE_DEMO_USER_IDS (comma-separated).
@@ -146,6 +148,8 @@ func Load(path string) (Config, error) {
 	v.BindEnv("deepseek_api_key")
 	v.BindEnv("firestore_database_id", "FIRESTORE_DATABASE_ID")
 	v.BindEnv("pipeline_job_url", "PIPELINE_JOB_URL")
+	v.BindEnv("export_job_url", "EXPORT_JOB_URL")
+	v.BindEnv("export_signing_service_account", "EXPORT_SIGNING_SERVICE_ACCOUNT")
 	v.BindEnv("allowed_origins", "ALLOWED_ORIGINS")
 	v.BindEnv("allowed_hosts", "ALLOWED_HOSTS")
 	v.BindEnv("pipeline_daily_limit", "PIPELINE_DAILY_LIMIT")
@@ -309,6 +313,8 @@ func Load(path string) (Config, error) {
 		DevJWT:                           v.GetBool("dev_jwt"),
 		LocalDataDir:                     v.GetString("local_data_dir"),
 		PipelineJobURL:                   pipelineJobURL,
+		ExportJobURL:                     strings.TrimSpace(v.GetString("export_job_url")),
+		ExportSigningServiceAccount:      strings.TrimSpace(v.GetString("export_signing_service_account")),
 		AllowedOrigins:                   allowedOrigins,
 		AllowedHosts:                     allowedHosts,
 		PipelineDailyLimit:               dailyLimit,

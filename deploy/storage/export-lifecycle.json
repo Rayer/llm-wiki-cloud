@@ -1,0 +1,18 @@
+{
+  "rule": [
+    {
+      "action": {"type": "Delete"},
+      "condition": {
+        "matchesPrefix": ["exports/ready/"],
+        "daysSinceCustomTime": 3
+      }
+    },
+    {
+      "action": {"type": "Delete"},
+      "condition": {
+        "matchesPrefix": ["exports/tmp/"],
+        "age": 1
+      }
+    }
+  ]
+}

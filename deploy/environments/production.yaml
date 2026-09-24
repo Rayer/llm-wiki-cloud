@@ -67,6 +67,10 @@ worker:
   secret_references:
     deepseek_api_key: deepseek-apikey
 
+# Export job deployment is unsupported for Production.
+export_job:
+  enabled: false
+
 frontend:
   project_name: llm-wiki-frontend
   team_slug: rayer-tung-s-projects

@@ -52,7 +52,8 @@ class BFFQueryConfigTests(unittest.TestCase):
                 else:
                     self.assertIn('AUTH_SERVICE_URL=https://auth.rayer.idv.tw', env_arg)
                     self.assertIn('JWT_SECRET=jwt-secret-prod:latest', update)
-                self.assertFalse(any(arg.startswith(('--remove-', '--clear-', '--set-', '--service-account', '--network', '--subnet')) for arg in update))
+                self.assertEqual(update[update.index('--remove-env-vars') + 1], 'EXPORT_JOB_URL,EXPORT_SIGNING_SERVICE_ACCOUNT')
+                self.assertFalse(any(arg.startswith(('--clear-', '--set-', '--service-account', '--network', '--subnet')) for arg in update))
                 traffic = next(i for i, c in enumerate(commands) if c[:3] == ['run', 'services', 'update-traffic'])
                 revision = value['metadata']['name']
                 self.assertIn(revision + '=100', commands[traffic])

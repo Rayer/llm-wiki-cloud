@@ -70,6 +70,11 @@ worker:
   secret_references:
     deepseek_api_key: deepseek-apikey
 
+# Enable only after the operator provisions and reads back the Cloud Run Job,
+# execution service account, and signing service account permissions.
+export_job:
+  enabled: false
+
 frontend:
   project_name: llm-wiki-frontend-dev
   team_slug: rayer-tung-s-projects
