@@ -21,6 +21,9 @@ type snapshotReader struct {
 	suggested       []byte
 	conceptsFrozen  bool
 	suggestedFrozen bool
+	idMap           []byte
+	idMapErr        error
+	idMapFrozen     bool
 }
 
 var _ cache.Reader = (*snapshotReader)(nil)
@@ -43,8 +46,11 @@ func (r *snapshotReader) ReadFile(ctx context.Context, relPath string) ([]byte, 
 	if err := ctx.Err(); err != nil {
 		return nil, err
 	}
-	if relPath != "cache/concepts.jsonl" && relPath != "cache/suggested_queries.json" {
+	if relPath != "cache/concepts.jsonl" && relPath != "cache/suggested_queries.json" && relPath != "cache/id_map.json" {
 		return nil, errors.New("snapshot reader permits only supported cache artifacts")
+	}
+	if relPath == "cache/id_map.json" && r.idMapFrozen {
+		return r.idMap, r.idMapErr
 	}
 	if relPath == "cache/concepts.jsonl" && r.conceptsFrozen {
 		return r.concepts, nil
@@ -73,10 +79,14 @@ func (r *snapshotReader) ListConcepts(context.Context, bool) ([]gcs.WikiPage, er
 }
 
 func (r *snapshotReader) GetPage(ctx context.Context, slug, category string) (*gcs.WikiPage, []byte, error) {
-	if category != "concepts" || slug == "" || strings.ContainsAny(slug, "/\\") || filepath.Base(slug) != slug {
+	if (category != "concepts" && category != "sources") || slug == "" || strings.ContainsAny(slug, "/\\") || filepath.Base(slug) != slug {
 		return nil, nil, errors.New("invalid snapshot page")
 	}
-	for _, relPath := range []string{"wiki/" + slug + ".md", "wiki/.drafts/" + slug + ".md"} {
+	paths := []string{"wiki/" + slug + ".md", "wiki/.drafts/" + slug + ".md"}
+	if category == "sources" {
+		paths = []string{"wiki/sources/" + slug + ".md"}
+	}
+	for _, relPath := range paths {
 		data, err := r.readPage(ctx, relPath)
 		if err == nil {
 			return &gcs.WikiPage{Slug: slug, Title: slug}, data, nil

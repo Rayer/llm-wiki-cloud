@@ -5,6 +5,7 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
+	"fmt"
 	"io"
 	"log"
 	"net/http"
@@ -128,9 +129,9 @@ func TestServiceRetainsAllHydratedResultsAndCitations(t *testing.T) {
 		t.Fatalf("citations = %#v, want all three hydrated results", result.Citations)
 	}
 	wantCitations := []search.Citation{
-		{Text: "Restaurant Alpha", Slug: "restaurant-alpha", Type: "concept", Path: "/concepts/restaurant-alpha"},
-		{Text: "Restaurant Beta", Slug: "restaurant-beta", Type: "concept", Path: "/concepts/restaurant-beta"},
-		{Text: "Restaurant Gamma", Slug: "restaurant-gamma", Type: "concept", Path: "/concepts/restaurant-gamma"},
+		{ID: "000000000001", Text: "Restaurant Alpha", Slug: "restaurant-alpha", Type: "concept", Path: "/concepts/000000000001-restaurant-alpha"},
+		{ID: "000000000002", Text: "Restaurant Beta", Slug: "restaurant-beta", Type: "concept", Path: "/concepts/000000000002-restaurant-beta"},
+		{ID: "000000000003", Text: "Restaurant Gamma", Slug: "restaurant-gamma", Type: "concept", Path: "/concepts/000000000003-restaurant-gamma"},
 	}
 	if !reflect.DeepEqual(result.Citations, wantCitations) {
 		t.Fatalf("citations = %#v, want all canonical hydrated results in rank order", result.Citations)
@@ -677,6 +678,23 @@ func serviceFixture(t *testing.T, conceptsJSONL string) (*Service, storage.Store
 	if _, err := reader.WriteBytes(context.Background(), []byte(conceptsJSONL), cache.GCSPath); err != nil {
 		t.Fatal(err)
 	}
+	var entries []map[string]any
+	for _, line := range strings.Split(strings.TrimSpace(conceptsJSONL), "\n") {
+		var entry map[string]any
+		if json.Unmarshal([]byte(line), &entry) == nil {
+			entries = append(entries, entry)
+		}
+	}
+	ids := map[string]string{}
+	for i, entry := range entries {
+		if slug, ok := entry["slug"].(string); ok {
+			ids[fmt.Sprintf("%012x", i+1)] = slug
+		}
+	}
+	data, _ := json.Marshal(map[string]any{"concept": ids})
+	if _, err := reader.WriteBytes(context.Background(), data, "cache/id_map.json"); err != nil {
+		t.Fatal(err)
+	}
 	return NewService(cache.New(), nil, nil), reader
 }
 
@@ -839,4 +857,21 @@ func (t queryCancellationTransport) RoundTrip(req *http.Request) (*http.Response
 	<-req.Context().Done()
 	close(t.canceled)
 	return nil, req.Context().Err()
+}
+
+func (r *queryContextReader) ReadFile(_ context.Context, path string) ([]byte, error) {
+	if path != "cache/id_map.json" {
+		return nil, errors.New("no persisted cache")
+	}
+	ids := map[string]string{}
+	for i, page := range r.concepts {
+		ids[fmt.Sprintf("%012x", i+1)] = page.Slug
+	}
+	return json.Marshal(map[string]any{"concept": ids})
+}
+func (r *blockingQueryContextReader) ReadFile(_ context.Context, path string) ([]byte, error) {
+	if path == "cache/id_map.json" {
+		return []byte(`{"concept":{}}`), nil
+	}
+	return nil, errors.New("no persisted cache")
 }

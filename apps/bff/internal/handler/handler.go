@@ -16,6 +16,7 @@ import (
 	"github.com/rayer/llm-wiki-bff/internal/gcs"
 	"github.com/rayer/llm-wiki-bff/internal/jsonutil"
 	"github.com/rayer/llm-wiki-bff/internal/llm"
+	"github.com/rayer/llm-wiki-bff/internal/query"
 	"github.com/rayer/llm-wiki-bff/internal/search"
 )
 
@@ -99,12 +100,23 @@ func (h *Handler) Query(c *gin.Context) {
 			c.JSON(http.StatusOK, resp)
 			return
 		}
+		ids, err := query.LoadCitationIDMap(ctx, pageReader)
+		if err != nil {
+			c.JSON(http.StatusOK, resp)
+			return
+		}
 		for rank, r := range results[:topN] {
 			category := r.Type + "s"
 			_, data, err := pageReader.GetPage(ctx, r.Slug, category)
 			if err != nil {
 				continue
 			}
+			r, err = query.ResolveCitationIdentity(r, ids)
+			if err != nil {
+				c.JSON(http.StatusOK, resp)
+				return
+			}
+			results[rank].ID = r.ID
 			contexts = append(contexts, authority.AddContext(rank, r, string(data)))
 		}
 

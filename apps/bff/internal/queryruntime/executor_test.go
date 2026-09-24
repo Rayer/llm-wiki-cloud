@@ -24,10 +24,13 @@ type runtimeReader struct {
 }
 
 func (r *runtimeReader) Prefix() string { return "users/test/projects/" + r.identity.ProjectID }
-func (r *runtimeReader) ReadFile(context.Context, string) ([]byte, error) {
+func (r *runtimeReader) ReadFile(_ context.Context, path string) ([]byte, error) {
 	r.mu.Lock()
 	r.reads++
 	r.mu.Unlock()
+	if path == "cache/id_map.json" {
+		return []byte(`{"concept":{"abcdef123456":"deploy"}}`), nil
+	}
 	return []byte(`{"slug":"deploy","title":"Deploy","body":"deploy docs"}` + "\n"), nil
 }
 func (r *runtimeReader) ListConcepts(context.Context, bool) ([]gcs.WikiPage, error) { return nil, nil }

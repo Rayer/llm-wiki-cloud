@@ -79,6 +79,9 @@ func (t *citationV1LLMTransport) RoundTrip(req *http.Request) (*http.Response, e
 func TestV1QueryUsesIssuedCapabilityFromActualPromptContext(t *testing.T) {
 	root := localfs.New(t.TempDir())
 	projectStore := root.Scope("user", "project")
+	if _, err := projectStore.WriteBytes(context.Background(), []byte(`{"concept":{"abcdef123456":"alpha-coffee","123456abcdef":"beta-coffee"}}`), "cache/id_map.json"); err != nil {
+		t.Fatal(err)
+	}
 	concepts := `{"slug":"alpha-coffee","title":"Alpha Coffee","body":"coffee and espresso"}
 {"slug":"beta-coffee","title":"Beta Coffee","body":"coffee and tea"}`
 	if _, err := projectStore.WriteBytes(context.Background(), []byte(concepts+"\n"), conceptcache.GCSPath); err != nil {
@@ -120,6 +123,9 @@ func TestV1QueryUsesIssuedCapabilityFromActualPromptContext(t *testing.T) {
 func TestV1QueryIgnoresLegacyProjectFieldFromBody(t *testing.T) {
 	root := localfs.New(t.TempDir())
 	projectStore := root.Scope("user", "project")
+	if _, err := projectStore.WriteBytes(context.Background(), []byte(`{"concept":{"abcdef123456":"alpha-coffee","123456abcdef":"beta-coffee"}}`), "cache/id_map.json"); err != nil {
+		t.Fatal(err)
+	}
 	concepts := `{"slug":"alpha-coffee","title":"Alpha Coffee","body":"coffee and espresso"}`
 	if _, err := projectStore.WriteBytes(context.Background(), []byte(concepts+"\n"), conceptcache.GCSPath); err != nil {
 		t.Fatal(err)
@@ -155,6 +161,9 @@ func TestV1QueryIgnoresLegacyProjectFieldFromBody(t *testing.T) {
 func TestV1QueryZeroValidatedCitationsPreservesRankedResults(t *testing.T) {
 	root := localfs.New(t.TempDir())
 	projectStore := root.Scope("user", "project")
+	if _, err := projectStore.WriteBytes(context.Background(), []byte(`{"concept":{"abcdef123456":"coffee-shops"}}`), "cache/id_map.json"); err != nil {
+		t.Fatal(err)
+	}
 	if _, err := projectStore.WriteBytes(context.Background(), []byte(`{"slug":"coffee-shops","title":"Coffee Shops","body":"Coffee body"}
 `), conceptcache.GCSPath); err != nil {
 		t.Fatal(err)

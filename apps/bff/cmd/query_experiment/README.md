@@ -5,6 +5,43 @@ operator tool for designing controlled runs and inspecting attempt-level
 results; it is not a quality verdict or an automated control/candidate
 comparison tool.
 
+## Local staged experiments
+
+Use the [local staged E2E manual](../../../../docs/local-staged-e2e.md)
+for container setup, raw-to-query execution, pinned read-only DEV snapshot imports,
+individual stages and checkpoint forks. The `experiment` Dockerfile target shares
+the production worker runtime; the default production target and `/worker`
+entrypoint remain unchanged.
+
+### Documentation completion gate
+
+Keep usage instructions in this README, the local staged manual and the
+[experiment platform portal](https://irisnode.youtrack.cloud/articles/LWC-A-25)
+in sync when commands or behavior change. Record run identities, acceptance
+commands, outcomes and remaining limitations in the corresponding work tickets,
+not in usage documentation. Parent owns portal synchronization. Existing
+container and migration reports remain historical evidence.
+
+The Go runner invokes public Synto through `--synto-bin` (default `synto`),
+worker index/suggestions through `--worker-bin`, and query stages directly through
+the sealed production `queryruntime` executor. No Python interpreter or
+`--query-bin` is required by the runner. Native modes below remain useful for
+existing experiment matrices and debugging.
+
+Receipts use `lwc-local-go-v2`; old Python forks are rejected. To reuse an old
+corpus, import its snapshot with `--input-snapshot ... --from 70` for fresh queries.
+The existing `--service production` path retains its legacy composition and CLI
+compatibility. Its fixture matrices and eight-file receipts are not
+interchangeable with staged replay records.
+
+Synto is one stage (20); its internal substages are not independently selectable.
+Public output acceptance does not prove exhaustive vendor completion. A pinned
+GCS snapshot identifies a Project, not a user Profile document; explicit
+historical-generation selectors are unsupported. Query profile/prompt selectors
+bind existing policies to the exact local generation. The optional
+`--require-grounded` oracle checks for answers and resolvable citation inventory,
+not factual correctness or complete per-claim support.
+
 ## Start here
 
 The basic production control uses operator-provided files. The repository does
@@ -257,3 +294,21 @@ does not create, rotate, or publish credentials.
 - [queryquality README](../../internal/queryquality/README.md)
 - [queryconfig README](../../internal/queryconfig/README.md)
 - [experiment report](EXPERIMENT_REPORT.md)
+
+## Local browser citation harness
+
+From repository root, use a fresh local directory:
+
+```sh
+LWC_BROWSER_ROOT=/private/tmp/lwc-browser-new go -C apps/bff test ./cmd/bff \
+  -run '^TestLocalCitationBrowserServer$' -count=1 -timeout 22m
+NEXT_PUBLIC_API_URL=http://localhost:18081 NEXT_PUBLIC_AUTH_URL=http://localhost:18081 \
+  npm --prefix apps/frontend run dev -- --port 18080
+```
+
+Open `http://localhost:18080`, choose **試用 Demo**, search `coffee`, click each
+inline citation, then its full-page link. Retrieval selections and LLM transport
+are mocked; synthesis, identity mapping, HTTP query/detail routes, frontend and
+navigation are real. Stop the harness by creating `$LWC_BROWSER_ROOT/stop`.
+Without opt-in the harness skips normal test runs. Record acceptance evidence
+in the work ticket, separately from live provider and deployed verification.

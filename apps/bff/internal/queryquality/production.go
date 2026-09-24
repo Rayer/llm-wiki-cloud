@@ -131,7 +131,7 @@ func (e *ProductionExecutor) Execute(ctx context.Context, reader cache.Reader, r
 		}
 		return query.Result{}, err
 	}
-	if e.synthesizer != nil {
+	if replay := stageReplay(ctx); e.synthesizer != nil && (replay == nil || replay.Stage == 100) {
 		var err error
 		result, err = e.synthesizer.SynthesizeWithError(receiptCtx, reader, request, result)
 		if err != nil {

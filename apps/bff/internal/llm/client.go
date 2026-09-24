@@ -284,7 +284,7 @@ func (c *Client) Chat(ctx context.Context, systemPrompt, userMessage string) (st
 		} else {
 			finish("provider_error")
 		}
-		return "", fmt.Errorf("api error %d", resp.StatusCode)
+		return "", &HTTPStatusError{StatusCode: resp.StatusCode}
 	}
 
 	var cr chatResponse
@@ -327,4 +327,37 @@ func callOutcome(ctx context.Context, err error) string {
 		return "timeout"
 	}
 	return "provider_error"
+}
+
+// HTTPStatusError retains only the status, never response bodies or endpoint credentials.
+type HTTPStatusError struct{ StatusCode int }
+
+func (e *HTTPStatusError) Error() string { return fmt.Sprintf("api error %d", e.StatusCode) }
+
+// SafeErrorCategory is suitable for durable experiment receipts.
+func SafeErrorCategory(err error) string {
+	if errors.Is(err, context.Canceled) {
+		return "canceled"
+	}
+	if errors.Is(err, context.DeadlineExceeded) {
+		return "timeout"
+	}
+	var status *HTTPStatusError
+	if errors.As(err, &status) {
+		switch {
+		case status.StatusCode == 401 || status.StatusCode == 403:
+			return "provider_auth_rejected"
+		case status.StatusCode == 429:
+			return "provider_rate_limited"
+		case status.StatusCode >= 500:
+			return "provider_server_error"
+		default:
+			return "provider_http_rejected"
+		}
+	}
+	var syntax *json.SyntaxError
+	if errors.As(err, &syntax) {
+		return "provider_response_invalid_json"
+	}
+	return "provider_transport_or_response_error"
 }

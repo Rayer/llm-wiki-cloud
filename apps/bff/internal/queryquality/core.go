@@ -270,6 +270,30 @@ type ExpansionInfo struct {
 type ExpansionAttemptInfo struct {
 	AttemptIndex int    `json:"attempt_index"`
 	Outcome      string `json:"outcome"`
+	Diagnostic   string `json:"diagnostic,omitempty"`
+}
+
+// Only bounded categories reach traces; provider error strings and bodies never do.
+func expansionDiagnostic(err error, fallback string) string {
+	if errors.Is(err, context.Canceled) {
+		return "canceled"
+	}
+	if errors.Is(err, context.DeadlineExceeded) {
+		return "timeout"
+	}
+	var expansion *ExpansionError
+	if errors.As(err, &expansion) {
+		fallback = expansion.Reason
+	}
+	switch fallback {
+	case "invalid_plan":
+		return "invalid_plan"
+	case "provider_not_configured":
+		return "provider_not_configured"
+	case "provider_error":
+		return llm.SafeErrorCategory(err)
+	}
+	return "plan_normalization_or_expansion_failed"
 }
 
 type TracedQueryExpander interface {
@@ -545,7 +569,11 @@ func (e parallelQueryExpander) ExpandWithTrace(ctx context.Context, request Expa
 		if outcome != "success" {
 			info.ProviderFailedAttempts++
 		}
-		info.AttemptOutcomes = append(info.AttemptOutcomes, ExpansionAttemptInfo{AttemptIndex: index + 1, Outcome: outcome})
+		diagnostic := ""
+		if outcome != "success" {
+			diagnostic = expansionDiagnostic(result.err, result.info.FallbackReason)
+		}
+		info.AttemptOutcomes = append(info.AttemptOutcomes, ExpansionAttemptInfo{AttemptIndex: index + 1, Outcome: outcome, Diagnostic: diagnostic})
 	}
 	if len(successes) == 0 {
 		if e.fallback == nil {
@@ -1212,7 +1240,10 @@ func (s *QueryRetrievalPipeline) execute(ctx context.Context, reader cache.Reade
 		provider, model, reasoning := providerIdentity(s.queryExpander)
 		stageCtx = recorder.StartStage(ctx, "query_expansion", provider, model, reasoning)
 	}
-	if traced, ok := s.queryExpander.(TracedQueryExpander); ok {
+	replay := stageReplay(ctx)
+	if replay != nil && replay.Stage > 70 {
+		plan, info = *replay.Plan, replay.Expansion
+	} else if traced, ok := s.queryExpander.(TracedQueryExpander); ok {
 		plan, info, err = traced.ExpandWithTrace(stageCtx, requestWithPolicy)
 	} else {
 		plan, err = s.queryExpander.Expand(stageCtx, requestWithPolicy)
@@ -1260,6 +1291,12 @@ func (s *QueryRetrievalPipeline) execute(ctx context.Context, reader cache.Reade
 	})
 	query.FinishStage(stageCtx, map[bool]string{true: "fallback", false: "success"}[plan.Fallback])
 
+	if replay != nil {
+		replay.Plan, replay.Expansion = &plan, info
+		if replay.Stage == 70 {
+			return query.Result{}, nil
+		}
+	}
 	seed := ReproducibleSeed(request.Query)
 	if s.options.Seed != nil {
 		seed = *s.options.Seed
@@ -1280,7 +1317,12 @@ func (s *QueryRetrievalPipeline) execute(ctx context.Context, reader cache.Reade
 	if trace != nil {
 		trace.MatchingPolicy = policy
 	}
-	eligible, err := s.candidateMatcher.Match(matchCtx, matchReq)
+	var eligible EligibilityResult
+	if replay != nil && replay.Stage > 80 {
+		eligible = *replay.Matching
+	} else {
+		eligible, err = s.candidateMatcher.Match(matchCtx, matchReq)
+	}
 	if err != nil {
 		query.FinishStage(matchCtx, "failure")
 		appendTraceStage(trace, StageTrace{Name: "matching", Outcome: "failure", ElapsedMS: elapsedSince(started), InputCount: len(entries)})
@@ -1295,12 +1337,23 @@ func (s *QueryRetrievalPipeline) execute(ctx context.Context, reader cache.Reade
 	appendTraceStage(trace, StageTrace{Name: "matching", Outcome: "success", ElapsedMS: elapsedSince(started), InputCount: len(entries), OutputCount: QualifiedCount(eligible.Candidates), TotalCount: len(eligible.Candidates), Candidates: eligible.Candidates, EvidenceThreshold: resolvedEvidenceThreshold(s.options)})
 	query.FinishStage(matchCtx, "success")
 
+	if replay != nil {
+		replay.Matching = &eligible
+		if replay.Stage == 80 {
+			return query.Result{}, nil
+		}
+	}
 	started = time.Now()
 	selectionCtx := ctx
 	if recorder := query.ReceiptRecorderFromContext(ctx); recorder != nil {
 		selectionCtx = recorder.StartStage(ctx, "result_selection", "", "", "")
 	}
-	selected, err := s.resultSelector.Select(selectionCtx, SelectionInput{Candidates: eligible.Candidates, Limit: s.options.SelectionLimit, ExplorationSlots: s.options.ExplorationSlots, Seed: seed})
+	var selected SelectionResult
+	if replay != nil && replay.Stage > 90 {
+		selected = *replay.Selection
+	} else {
+		selected, err = s.resultSelector.Select(selectionCtx, SelectionInput{Candidates: eligible.Candidates, Limit: s.options.SelectionLimit, ExplorationSlots: s.options.ExplorationSlots, Seed: seed})
+	}
 	if err != nil {
 		query.FinishStage(selectionCtx, "failure")
 		appendTraceStage(trace, StageTrace{Name: "selection", Outcome: "failure", ElapsedMS: elapsedSince(started), InputCount: len(eligible.Candidates)})
@@ -1314,6 +1367,9 @@ func (s *QueryRetrievalPipeline) execute(ctx context.Context, reader cache.Reade
 	}
 	appendTraceStage(trace, StageTrace{Name: "selection", Outcome: "success", ElapsedMS: elapsedSince(started), InputCount: len(eligible.Candidates), OutputCount: selectedCount(selected.Selected), TotalCount: len(selected.Selected), Decisions: selected.Selected, EvidenceThreshold: resolvedEvidenceThreshold(s.options)})
 	query.FinishStage(selectionCtx, "success")
+	if replay != nil {
+		replay.Selection = &selected
+	}
 	results := make([]search.Result, 0, len(selected.Selected))
 	for _, candidate := range selected.Selected {
 		if err := ctx.Err(); err != nil {

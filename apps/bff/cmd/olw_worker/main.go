@@ -304,7 +304,7 @@ func newRootCommand() *cobra.Command {
 		},
 	}
 
-	rootCmd.AddCommand(runCmd, postprocessCmd, suggestedQueriesCmd)
+	rootCmd.AddCommand(runCmd, postprocessCmd, suggestedQueriesCmd, newLocalExperimentCommand())
 	return rootCmd
 }
 
@@ -1335,7 +1335,19 @@ func ensureDormantConceptCache(vault string) error {
 }
 
 func writeSuggestedQueries(ctx context.Context, vault string, provider suggestedqueries.Provider) error {
+	return writeSuggestedQueriesObserved(ctx, vault, provider, nil)
+}
+
+// Observation does not alter the worker's last-known-good fallback semantics.
+func writeSuggestedQueriesObserved(ctx context.Context, vault string, provider suggestedqueries.Provider, observe func(string)) error {
+	report := func(category string) {
+		if observe != nil {
+			observe(category)
+		}
+	}
+
 	if provider == nil {
+		report("provider_not_configured")
 		return ensureEmptySuggestedQueries(ctx, vault)
 	}
 	store := fsstore.New(vault)
@@ -1344,17 +1356,20 @@ func writeSuggestedQueries(ctx context.Context, vault string, provider suggested
 		if errors.Is(err, wikiindex.ErrNotFound) || errors.Is(err, os.ErrNotExist) {
 			data = nil
 		} else {
+			report("corpus_read_failed")
 			return fmt.Errorf("read concepts jsonl: %w", err)
 		}
 	}
 
 	mtimes, err := listConceptMtTimes(vault)
 	if err != nil {
+		report("corpus_scan_failed")
 		return fmt.Errorf("list concept mtimes: %w", err)
 	}
 
 	entries, err := decodeSuggestedQueryConcepts(data)
 	if err != nil {
+		report("corpus_decode_failed")
 		return fmt.Errorf("decode suggested query concepts: %w", err)
 	}
 	artifact, err := suggestedqueries.Generate(ctx, provider, "", entries, mtimes, suggestedqueries.GenerationMetadata{
@@ -1362,7 +1377,9 @@ func writeSuggestedQueries(ctx context.Context, vault string, provider suggested
 		PromptVersion: suggestedqueries.PromptVersion,
 	}, time.Now())
 	if err != nil {
-		log.Printf("postprocess suggested queries: generation failed; preserving last-known-good artifact: %v", err)
+		category := suggestedFailureCategory(err)
+		report(category)
+		log.Printf("postprocess suggested queries: generation failed; preserving last-known-good artifact: %s", category)
 		return ensureEmptySuggestedQueries(ctx, vault)
 	}
 
@@ -1374,6 +1391,18 @@ func writeSuggestedQueries(ctx context.Context, vault string, provider suggested
 		return fmt.Errorf("write suggested queries: %w", err)
 	}
 	return nil
+}
+
+func suggestedFailureCategory(err error) string {
+	var failure *suggestedqueries.GenerationError
+	if errors.As(err, &failure) {
+		switch failure.Category {
+		case "provider_not_configured", "corpus_empty", "metadata_invalid", "provider_schema_invalid", "candidate_validation_failed", "candidate_cardinality_invalid", "provider_output_oversized",
+			"candidate_question_invalid", "candidate_question_duplicate", "candidate_title_only", "candidate_metadata_invalid", "candidate_anchors_invalid", "candidate_anchor_duplicate", "candidate_anchor_unknown":
+			return failure.Category
+		}
+	}
+	return llm.SafeErrorCategory(err)
 }
 
 func ensureEmptySuggestedQueries(ctx context.Context, vault string) error {

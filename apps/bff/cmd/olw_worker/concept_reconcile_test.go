@@ -853,8 +853,8 @@ func TestDockerfilePinsExactSyntoWheelHash(t *testing.T) {
 	}
 	text := string(data)
 	wantURL := "https://files.pythonhosted.org/packages/4a/e9/41c6b61338d98820780a43ed075cd77525674c38242110435330771d771b/synto-0.7.0-py3-none-any.whl"
-	wantHash := "sha256=4bc8dcf14b53f45fac32ce737ecf878f1a46d6d0b010c7decbe6c3b7b10afa77"
-	if !strings.Contains(text, wantURL) || !strings.Contains(text, wantHash) {
+	wantHash := "ARG SYNTO_SHA256=4bc8dcf14b53f45fac32ce737ecf878f1a46d6d0b010c7decbe6c3b7b10afa77"
+	if !strings.Contains(text, "ARG SYNTO_ARTIFACT_URL="+wantURL) || !strings.Contains(text, wantHash) || !strings.Contains(text, "ARG SYNTO_VERSION=0.7.0") || !strings.Contains(text, `pip install --no-cache-dir "${SYNTO_ARTIFACT_URL}#sha256=${SYNTO_SHA256}"`) {
 		t.Fatalf("Dockerfile does not pin exact wheel URL+hash:\n%s", text)
 	}
 	if strings.Contains(text, "obsidian_llm_wiki") || strings.Contains(text, "pip install synto") {

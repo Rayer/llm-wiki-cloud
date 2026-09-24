@@ -127,6 +127,9 @@ func TestProductionInvalidStructuredPlanUsesChatLegacyExpansion(t *testing.T) {
 			if _, err := reader.WriteBytes(context.Background(), []byte(`{"slug":"coffee","title":"Coffee","body":"coffee"}`+"\n"), conceptcache.GCSPath); err != nil {
 				t.Fatal(err)
 			}
+			if _, err := reader.WriteBytes(context.Background(), []byte(`{"concept":{"abcdef123456":"coffee"}}`), "cache/id_map.json"); err != nil {
+				t.Fatal(err)
+			}
 			transport := &productionFallbackTransport{}
 			previousTransport := http.DefaultTransport
 			http.DefaultTransport = transport

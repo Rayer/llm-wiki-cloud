@@ -87,6 +87,10 @@ type citationPageReader struct {
 	failOnSlug string
 }
 
+func (r citationPageReader) ReadFile(context.Context, string) ([]byte, error) {
+	return []byte(`{"concept":{"abcdef123456":"coffee-shops","abcdef123457":"skipped","abcdef123458":"included"}}`), nil
+}
+
 func (r citationPageReader) GetPage(_ context.Context, slug, _ string) (*gcs.WikiPage, []byte, error) {
 	if slug == r.failOnSlug {
 		return nil, nil, errors.New("missing test context")
@@ -126,6 +130,9 @@ func TestLegacyQueryUsesIssuedCapabilityFromActualPromptContext(t *testing.T) {
 	}
 	if response.AISynth == "" || len(response.Citations) != 1 || len(response.Results) != 1 {
 		t.Fatalf("legacy query did not resolve the issued token: %#v", response)
+	}
+	if response.Citations[0].ID != "abcdef123456" || response.Citations[0].Path != "/concepts/abcdef123456-coffee-shops" {
+		t.Fatalf("legacy citation lost canonical map identity: %#v", response.Citations[0])
 	}
 }
 
