@@ -138,6 +138,18 @@ func TestLoadQuerySelectionDefaultsAndTypedEnv(t *testing.T) {
 	}
 }
 
+func TestLoadExportWorkerSettingsFromEnvironment(t *testing.T) {
+	t.Setenv("EXPORT_JOB_URL", "https://run.googleapis.com/v2/projects/example/locations/asia-east1/jobs/project-export:run")
+	t.Setenv("EXPORT_SIGNING_SERVICE_ACCOUNT", "bff@example.iam.gserviceaccount.com")
+	cfg, err := Load(writeConfig(t, "dev_jwt = true\n"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if cfg.ExportJobURL != "https://run.googleapis.com/v2/projects/example/locations/asia-east1/jobs/project-export:run" || cfg.ExportSigningServiceAccount != "bff@example.iam.gserviceaccount.com" {
+		t.Fatalf("export settings = (%q, %q)", cfg.ExportJobURL, cfg.ExportSigningServiceAccount)
+	}
+}
+
 func TestLoadRejectsMalformedOrUnsafeQuerySelectionConfig(t *testing.T) {
 	t.Setenv("QUERY_STAGE_CONFIG_PATH", "")
 	tests := []struct {

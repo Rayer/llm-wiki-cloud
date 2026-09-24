@@ -17,6 +17,7 @@ BASE = ('GCP_PROJECT', 'FIRESTORE_DATABASE_ID', 'ALLOWED_HOSTS', 'ALLOWED_ORIGIN
         'AUTH_SERVICE_URL', 'AUTH_SESSION_ENVIRONMENT', 'AUTH_REFRESH_SESSION_MIGRATION', 'DEV_JWT')
 SECRET = ('JWT_SECRET', 'GOOGLE_CLIENT_SECRET')
 QUERY_PATH = 'QUERY_STAGE_CONFIG_PATH'
+EXPORT_BFF = ('EXPORT_JOB_URL', 'EXPORT_SIGNING_SERVICE_ACCOUNT')
 
 
 def require(condition):
@@ -53,6 +54,12 @@ def desired(plan, component='auth'):
         env = {QUERY_PATH: query_path(plan)}
         # DEV has no approved Auth-config migration; update only Query selection.
         if plan['environment'] == 'development' or plan['auth'].get('google') is None:
+            if plan['export_job']['enabled']:
+                env.update({
+                    'EXPORT_JOB_URL': 'https://run.googleapis.com/v2/projects/{}/locations/{}/jobs/{}:run'.format(
+                        plan['gcp']['project_id'], plan['export_job']['location'], plan['export_job']['job_name']),
+                    'EXPORT_SIGNING_SERVICE_ACCOUNT': plan['export_job']['signing_service_account'],
+                })
             return {'env': env, 'secrets': {}, 'service_account': bff['runtime_service_account']}
         return {'env': {
             **env,
@@ -78,7 +85,7 @@ def desired(plan, component='auth'):
     return {'env': env, 'secrets': secrets, 'service_account': auth['runtime_service_account']}
 
 
-def effective(revision, project, component='auth', query_only=False):
+def effective(revision, project, component='auth', query_only=False, selective_bff=False, include_exports=False):
     containers = revision['spec']['containers']
     require(len(containers) == 1)
     result = {'env': {}, 'secrets': {}, 'service_account': revision['spec']['serviceAccountName']}
@@ -93,7 +100,7 @@ def effective(revision, project, component='auth', query_only=False):
         name = entry['name']
         require(name not in seen)
         seen.add(name)
-        if name in SECRET and not query_only:
+        if name in SECRET and not query_only and not selective_bff:
             # Reject literal credentials without printing or retaining them.
             require(set(entry) == {'name', 'valueFrom'})
             ref = entry['valueFrom']['secretKeyRef']
@@ -106,10 +113,13 @@ def effective(revision, project, component='auth', query_only=False):
                 require(parts[1] in (project, revision['metadata'].get('namespace')))
                 ref = {'name': parts[3], 'key': ref['key']}
             result['secrets'][name] = ref
-        elif ((name in BASE or name in GOOGLE) and not query_only) or (component == 'bff' and name == QUERY_PATH):
+        elif component == 'bff' and include_exports and name in EXPORT_BFF:
+            require(not query_only and set(entry) == {'name', 'value'} and isinstance(entry['value'], str))
+            result['env'][name] = entry['value']
+        elif ((name in BASE or name in GOOGLE) and not query_only and not selective_bff) or (component == 'bff' and name == QUERY_PATH):
             require(set(entry) == {'name', 'value'} and isinstance(entry['value'], str))
             result['env'][name] = entry['value']
-        elif name.startswith('GOOGLE_') and not query_only:
+        elif name.startswith('GOOGLE_') and not query_only and not selective_bff:
             raise ValueError('unexpected Google variable')
     return result
 
@@ -131,6 +141,8 @@ def main():
             args += ['--update-secrets', ','.join(k + '=' + v['name'] + ':' + v['key'] for k, v in expected['secrets'].items())]
         if component == 'auth' and not plan['auth']['google']['enabled']:
             args += ['--remove-env-vars', ','.join(GOOGLE), '--remove-secrets', 'GOOGLE_CLIENT_SECRET']
+        if component == 'bff' and plan['environment'] == 'development' and not plan['export_job']['enabled']:
+            args += ['--remove-env-vars', ','.join(EXPORT_BFF)]
         print('\n'.join(args))
         return
     revision = json.load(sys.stdin)
@@ -140,7 +152,10 @@ def main():
     require(revision['status']['imageDigest'] == sys.argv[5])
     require(revision['spec']['containers'][0]['image'] == sys.argv[5])
     require(any(c['type'] == 'Ready' and c['status'] == 'True' for c in revision['status']['conditions']))
-    actual = effective(revision, plan['gcp']['project_id'], component, set(expected['env']) == {QUERY_PATH})
+    actual = effective(revision, plan['gcp']['project_id'], component,
+                       set(expected['env']) == {QUERY_PATH},
+                       component == 'bff' and plan['environment'] == 'development',
+                       component == 'bff' and plan['environment'] == 'development')
     digest = fingerprint(actual)
     if component == 'bff':
         # Pin all retained revision settings, including unrelated env/secrets and

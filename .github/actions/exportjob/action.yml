@@ -1,0 +1,14 @@
+name: Export Job CD component
+description: Runs the DEV-only export-job Cloud Run Job component's bounded CD operation.
+inputs:
+  operation:
+    required: true
+    description: preflight, freeze, mutate, reconcile, or rollback
+runs:
+  using: composite
+  steps:
+    - name: Run Export Job component
+      shell: bash
+      env:
+        OPERATION: ${{ inputs.operation }}
+      run: bash deploy/components/exportjob.sh "$OPERATION"

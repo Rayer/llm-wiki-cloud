@@ -4,6 +4,7 @@ import { FormEvent, useCallback, useEffect, useMemo, useRef, useState } from 're
 import { FileUp, Link2, Cog, Loader2, Construction, RotateCcw } from 'lucide-react';
 import { Surface } from './ui/Surface';
 import { Badge } from './ui/Badge';
+import { ExportPanel } from './ExportPanel';
 import {
   getPipelineStatus,
   triggerPipeline,
@@ -656,6 +657,8 @@ export function PipelineClient() {
             )}
           </p>
         </div>
+
+        <ExportPanel />
       </Surface>
 
       {/* Toast notifications */}

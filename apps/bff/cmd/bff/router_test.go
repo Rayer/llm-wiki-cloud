@@ -2,13 +2,19 @@ package main
 
 import (
 	"bytes"
+	"context"
+	"fmt"
 	"net/http"
 	"net/http/httptest"
+	"os"
 	"strings"
 	"testing"
+	"time"
 
 	"github.com/gin-gonic/gin"
+	"github.com/rayer/llm-wiki-bff/internal/auth"
 	"github.com/rayer/llm-wiki-bff/internal/config"
+	"github.com/rayer/llm-wiki-bff/internal/firestore"
 	handlerv1 "github.com/rayer/llm-wiki-bff/internal/handler/v1"
 	"github.com/rayer/llm-wiki-bff/internal/syssettings"
 )
@@ -100,8 +106,83 @@ func TestProductionRouterKeepsAuthCompatibilityLane(t *testing.T) {
 			t.Fatalf("BFF production router is missing GET %s", path)
 		}
 	}
+	for _, route := range []struct{ method, path string }{
+		{http.MethodPost, "/api/v1/exports"},
+		{http.MethodGet, "/api/v1/exports"},
+		{http.MethodGet, "/api/v1/exports/:exportID/status"},
+		{http.MethodPost, "/api/v1/exports/:exportID/download"},
+	} {
+		if !hasRoute(router, route.method, route.path) {
+			t.Fatalf("BFF router is missing export route %s %s", route.method, route.path)
+		}
+	}
 	if got := serveGet(router, "/api/v1/query/config").Code; got != http.StatusServiceUnavailable {
 		t.Fatalf("legacy public query config status=%d, want %d", got, http.StatusServiceUnavailable)
+	}
+}
+
+func TestProductionRouterUsesSharedCLIAndWebAuthAuthorities(t *testing.T) {
+	endpoint := strings.TrimSpace(os.Getenv("FIRESTORE_EMULATOR_HOST"))
+	if endpoint == "" {
+		t.Skip("local Firestore emulator required")
+	}
+	if !strings.HasPrefix(endpoint, "127.0.0.1:") && !strings.HasPrefix(endpoint, "localhost:") {
+		t.Fatal("production router auth test requires a loopback Firestore emulator")
+	}
+	gin.SetMode(gin.TestMode)
+	projectName := fmt.Sprintf("demo-lwc346-router-%d", time.Now().UnixNano())
+	fsClient, err := firestore.NewClientWithDatabase(projectName, "", "", "")
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = fsClient.Raw().Close() })
+	ctx := context.Background()
+	userID := fmt.Sprintf("routeruser%d", time.Now().UnixNano())
+	projectID := "owned"
+	if _, err := fsClient.Raw().Collection("users").Doc(userID).Set(ctx, map[string]any{
+		"status": auth.AccountActive, "auth_version": int64(0), "role": "member",
+	}); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := fsClient.Raw().Collection("projects").Doc(userID+"_"+projectID).Set(ctx, map[string]any{
+		"user_id": userID, "project_id": projectID, "name": "owned project",
+	}); err != nil {
+		t.Fatal(err)
+	}
+	const jwtSecret, environment = "lwc346-router-secret", "lwc346-router-emulator"
+	sessions := auth.NewRefreshSessionAuthority(fsClient.Raw(), environment)
+	cli, err := sessions.IssueCLISession(ctx, userID, "test client", jwtSecret)
+	if err != nil {
+		t.Fatal(err)
+	}
+	web, err := auth.GenerateToken(userID, jwtSecret, time.Hour)
+	if err != nil {
+		t.Fatal(err)
+	}
+	cfg := config.Config{JWTSecret: jwtSecret, AuthSessionEnvironment: environment, AllowedOrigins: []string{"https://wiki.example.test"}}
+	router := newProductionRouter(cfg, false, nil, fsClient, handlerv1.New(nil, fsClient, nil, nil, nil, nil), &syssettings.FakeStore{Enabled: true}, nil)
+	request := func(token, pid string) int {
+		req := httptest.NewRequest(http.MethodGet, "/api/v1/health", nil)
+		req.Header.Set("Authorization", "Bearer "+token)
+		req.Header.Set("X-Project-ID", pid)
+		recorder := httptest.NewRecorder()
+		router.ServeHTTP(recorder, req)
+		return recorder.Code
+	}
+	if got := request(cli.AccessToken, projectID); got != http.StatusOK {
+		t.Fatalf("valid CLI request status=%d, want %d", got, http.StatusOK)
+	}
+	if got := request(cli.AccessToken, "not-owned"); got != http.StatusForbidden {
+		t.Fatalf("CLI request for unowned project status=%d, want %d", got, http.StatusForbidden)
+	}
+	if err := sessions.RevokeCLISession(ctx, userID, cli.SessionID); err != nil {
+		t.Fatal(err)
+	}
+	if got := request(cli.AccessToken, projectID); got != http.StatusUnauthorized {
+		t.Fatalf("revoked CLI access status=%d, want %d", got, http.StatusUnauthorized)
+	}
+	if got := request(web, "not-owned"); got != http.StatusOK {
+		t.Fatalf("valid Web request changed by CLI authority wiring: status=%d, want %d", got, http.StatusOK)
 	}
 }
 

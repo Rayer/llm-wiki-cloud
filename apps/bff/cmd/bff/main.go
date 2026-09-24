@@ -23,6 +23,7 @@ import (
 	"github.com/rayer/llm-wiki-bff/internal/buildinfo"
 	conceptcache "github.com/rayer/llm-wiki-bff/internal/cache"
 	"github.com/rayer/llm-wiki-bff/internal/config"
+	"github.com/rayer/llm-wiki-bff/internal/exportjob"
 	"github.com/rayer/llm-wiki-bff/internal/firestore"
 	"github.com/rayer/llm-wiki-bff/internal/gcs"
 	handlerraw "github.com/rayer/llm-wiki-bff/internal/handler"
@@ -306,6 +307,7 @@ func newProductionRouter(
 	r.GET("/api/v1/query/config", hV1.QueryConfig)
 
 	// Temporary Stage A compatibility lane for the frontend Auth cutover.
+	var sessions *auth.RefreshSessionAuthority
 	authRoutes := r.Group("/api/v1/auth")
 	authRoutes.Use(auth.CompatibilityBodyLimit())
 	if localMode {
@@ -332,13 +334,18 @@ func newProductionRouter(
 				sessionEnvironment = "default"
 			}
 		}
-		sessions := auth.NewRefreshSessionAuthorityWithConfig(fsClient.Raw(), auth.SessionAuthorityConfig{
+		sessions = auth.NewRefreshSessionAuthorityWithConfig(fsClient.Raw(), auth.SessionAuthorityConfig{
 			Environment: sessionEnvironment, Migration: auth.RefreshSessionMigrationMode(cfg.AuthSessionMigration),
 		})
 		authRoutes.POST("/login", middleware.NewRateLimiter(10, time.Minute), auth.LoginHandlerWithRepositoryAndSessionAuthority(identityRepository, cfg.JWTSecret, auth.LegacyRefreshCookiePolicy(), sessions))
 		authRoutes.POST("/register", middleware.NewRateLimiter(5, time.Minute), auth.RegisterHandlerWithRepository(identityRepository, cfg.JWTSecret, settingsStore))
 		authRoutes.POST("/refresh", auth.RefreshHandlerWithSessionAuthority(sessions, cfg.JWTSecret, auth.LegacyRefreshCookiePolicy()))
 		authRoutes.POST("/logout", auth.LogoutHandlerWithSessionAuthority(sessions, cfg.JWTSecret, auth.LegacyRefreshCookiePolicy()))
+	}
+	if fsClient == nil {
+		wireCLIAuthorities(hV1, nil, sessions)
+	} else {
+		wireCLIAuthorities(hV1, fsClient.Raw(), sessions)
 	}
 
 	// ── Swagger UI ──
@@ -364,6 +371,23 @@ func newProductionRouter(
 
 	v1.Use(auth.ProjectMiddleware())
 	{
+		var exportRepo exportjob.Repository
+		var projectVerifier exportjob.ProjectVerifier
+		var archiveStore *exportjob.CloudArchiveStore
+		if fsClient != nil && fsClient.Raw() != nil {
+			exportRepo = exportjob.NewFirestoreRepository(fsClient.Raw())
+			projectVerifier = exportjob.NewFirestoreProjectVerifier(fsClient.Raw())
+		}
+		if !localMode && cfg.Bucket != "" && cfg.ExportSigningServiceAccount != "" {
+			var err error
+			archiveStore, err = exportjob.NewCloudArchiveStore(context.Background(), cfg.Bucket, cfg.ExportSigningServiceAccount)
+			if err != nil {
+				log.Printf("WARNING: export storage unavailable: %v", err)
+			}
+		}
+		exportHandler := exportjob.NewHTTPHandler(exportRepo, projectVerifier, archiveStore, exportjob.NewCloudRunJobStarter(cfg.ExportJobURL))
+		exportHandler.Register(v1)
+
 		v1.GET("/index", hV1.Index)
 		v1.POST("/query", hV1.Query)
 		v1.GET("/sources", hV1.ListSources)

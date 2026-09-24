@@ -113,7 +113,7 @@ class CDContractTests(unittest.TestCase):
         self.assertEqual(set(development), set(production))
         self.assertEqual(
             set(development),
-            {"gcp", "auth", "bff", "worker", "frontend"},
+        {"gcp", "auth", "bff", "worker", "export_job", "frontend"},
         )
         self.assertEqual(
             self.normalized("development")["query_config"],
@@ -691,6 +691,28 @@ class CDContractTests(unittest.TestCase):
             receipt = json.loads((image_dir / "dev-receipt.json").read_text())
             self.assertEqual(receipt["components"], ["auth", "worker"])
             self.assertEqual(receipt["images"], images)
+
+            bff_image = f"{registry}/llm-wiki-bff@sha256:{'d' * 64}"
+            exportjob_image = f"{registry}/llm-wiki-bff-export-job@sha256:{'e' * 64}"
+            plan.write_text(json.dumps({
+                "normalized": {
+                    "selected_components": ["bff", "exportjob"],
+                    "gcp": {"artifact_registry": registry},
+                    "evidence": {"config_fingerprint": "sha256:" + "f" * 64},
+                }
+            }))
+            (image_dir / f"bff-image-{source_sha}.txt").write_text(bff_image + "\n")
+            (image_dir / f"exportjob-image-{source_sha}.txt").write_text(exportjob_image + "\n")
+            exportjob_receipt = subprocess.run(
+                ["bash", str(ROOT / "deploy/cd.sh"), "record-dev-receipt"],
+                env=env,
+                text=True,
+                capture_output=True,
+            )
+            self.assertEqual(exportjob_receipt.returncode, 0, exportjob_receipt.stdout + exportjob_receipt.stderr)
+            receipt = json.loads((image_dir / "dev-receipt.json").read_text())
+            self.assertEqual(receipt["components"], ["bff"])
+            self.assertEqual(receipt["images"], {"bff": bff_image})
 
     def test_no_legacy_workflow_owns_deployment_literals(self):
         workflows = sorted((ROOT / ".github/workflows").glob("*.yml"))
@@ -2250,7 +2272,7 @@ class CDContractTests(unittest.TestCase):
                 }
             }))
             normalized = json.loads(plan.read_text())['normalized']
-            for key in ('environment', 'query_config', 'components', 'bff'):
+            for key in ('environment', 'query_config', 'components', 'bff', 'export_job'):
                 normalized[key] = deepcopy(bff_plan('development')[key])
             normalized['bff']['service_name'] = 'bff-service'
             plan.write_text(json.dumps({'normalized': normalized}))
@@ -2660,7 +2682,7 @@ class CDContractTests(unittest.TestCase):
 
 
 class ArchitectureAuthorityTests(unittest.TestCase):
-    COMPONENTS = ("auth", "bff", "worker", "frontend")
+    COMPONENTS = ("auth", "bff", "worker", "exportjob", "frontend")
 
     def test_each_component_has_a_real_independent_action_boundary(self):
         orchestrator = (ROOT / ".github/workflows/cd.yml").read_text()
@@ -2699,6 +2721,52 @@ class ArchitectureAuthorityTests(unittest.TestCase):
         frontend = (ROOT / "deploy/components/frontend.sh").read_text()
         self.assertNotIn("consume_dev_images", frontend)
         self.assertNotRegex(frontend, r"image_for (auth|bff|worker)")
+
+    def test_export_job_runtime_readback_requires_exact_service_account_and_environment(self):
+        config = {
+            "runtime_service_account": "export-worker@example.iam.gserviceaccount.com",
+            "signing_service_account": "export-signer@example.iam.gserviceaccount.com",
+            "bucket": "example-dev-bucket", "firestore_database_id": "example-dev-db",
+        }
+        runtime_v2 = {"template": {"template": {
+            "serviceAccount": config["runtime_service_account"],
+            "containers": [{"env": [
+                {"name": "GCP_PROJECT", "value": "example-project"},
+                {"name": "BUCKET", "value": config["bucket"]},
+                {"name": "FIRESTORE_DATABASE_ID", "value": config["firestore_database_id"]},
+                {"name": "EXPORT_SIGNING_SERVICE_ACCOUNT", "value": config["signing_service_account"]},
+            ]}],
+        }}}
+        runtime_v1 = {"spec": {"template": {"spec": {"template": {"spec": {
+            "serviceAccountName": config["runtime_service_account"],
+            "containers": runtime_v2["template"]["template"]["containers"],
+        }}}}}}
+        with tempfile.TemporaryDirectory() as directory:
+            plan = Path(directory) / "plan.json"
+            plan.write_text(json.dumps({"normalized": {
+                "gcp": {"project_id": "example-project"}, "export_job": config,
+            }}))
+
+            def verify(value):
+                return subprocess.run(
+                    ["bash", "-c", 'source "$COMMON"; PLAN_PATH="$PLAN"; exportjob_runtime_matches "$1"', "verify", json.dumps(value)],
+                    env={**os.environ, "COMMON": str(ROOT / "deploy/components/common.sh"), "PLAN": str(plan)},
+                    text=True, capture_output=True,
+                )
+
+            for runtime, account_path in ((runtime_v2, ("template", "template", "serviceAccount")),
+                                          (runtime_v1, ("spec", "template", "spec", "template", "spec", "serviceAccountName"))):
+                with self.subTest(shape=account_path):
+                    self.assertEqual(verify(runtime).returncode, 0)
+                    wrong = deepcopy(runtime)
+                    node = wrong
+                    for key in account_path[:-1]: node = node[key]
+                    node[account_path[-1]] = "unexpected@example.iam.gserviceaccount.com"
+                    self.assertNotEqual(verify(wrong).returncode, 0)
+                    wrong = deepcopy(runtime)
+                    containers = wrong["template"]["template"]["containers"] if "template" in wrong else wrong["spec"]["template"]["spec"]["template"]["spec"]["containers"]
+                    containers[0]["env"][1]["value"] = "other-bucket"
+                    self.assertNotEqual(verify(wrong).returncode, 0)
 
     def test_wrappers_require_explicit_components_and_inherit_secrets(self):
         for filename in ("deploy-dev.yml", "promote-production.yml"):

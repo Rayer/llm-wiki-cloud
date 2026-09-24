@@ -37,17 +37,47 @@ func TestLoadReviewedEnvironmentsAndQueryIdentity(t *testing.T) {
 }
 
 func TestParseComponentsIsExplicitAndDeterministic(t *testing.T) {
-	got, err := parseComponents("frontend, bff")
+	got, err := parseComponents("frontend, exportjob, bff")
 	if err != nil {
 		t.Fatal(err)
 	}
-	if strings.Join(got, ",") != "bff,frontend" {
+	if strings.Join(got, ",") != "bff,exportjob,frontend" {
 		t.Fatalf("components = %v", got)
 	}
 	for _, raw := range []string{"", "bff,", "bff,bff", "all", "auth,unknown"} {
 		if _, err := parseComponents(raw); err == nil {
 			t.Fatalf("parseComponents(%q) unexpectedly succeeded", raw)
 		}
+	}
+}
+
+func TestExportJobRequiresProvisionedDEVConfigAndIsNotSupportedInProduction(t *testing.T) {
+	root := repoRoot(t)
+	dev, err := decodeConfig(filepath.Join(root, "deploy/environments/development.yaml"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if dev.ExportJob.Enabled {
+		t.Fatal("export job must remain disabled until its runtime resources are read back")
+	}
+	if err := validateConfigForEnvironment("development", dev); err != nil {
+		t.Fatalf("disabled DEV export job config: %v", err)
+	}
+	dev.ExportJob = ExportJobConfig{Enabled: true, JobName: "export-job-dev", RuntimeServiceAccount: "export-worker@llm-wiki-cloud.iam.gserviceaccount.com", Bucket: dev.BFF.Bucket, FirestoreDatabaseID: dev.BFF.FirestoreDatabaseID, Location: dev.GCP.Region, SigningServiceAccount: "export-signer@llm-wiki-cloud.iam.gserviceaccount.com"}
+	if err := validateConfigForEnvironment("development", dev); err != nil {
+		t.Fatalf("provisioned DEV export job config: %v", err)
+	}
+	prod, err := decodeConfig(filepath.Join(root, "deploy/environments/production.yaml"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	prod.ExportJob.Enabled = true
+	prod.ExportJob.JobName = "export-job-prod"
+	if err := validateConfigForEnvironment("production", prod); err == nil {
+		t.Fatal("Production export job unexpectedly accepted")
+	}
+	if _, err := Load("development", filepath.Join(root, "deploy/environments/development.yaml"), "exportjob"); err == nil || !strings.Contains(err.Error(), "disabled") {
+		t.Fatalf("disabled export job selection error = %v", err)
 	}
 }
 

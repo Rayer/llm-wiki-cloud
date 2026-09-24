@@ -124,7 +124,7 @@ validate_inputs() {
   [[ "$GITHUB_REF_NAME" == "$SOURCE_REF" ]] || die "workflow branch does not match source ref"
   local components_json
   components_json=$(jq -Rn --arg raw "$COMPONENTS" '$raw | split(",") | map(gsub("^\\s+|\\s+$"; ""))')
-  jq -e 'type == "array" and length > 0 and all(.[]; . == "auth" or . == "bff" or . == "worker" or . == "frontend") and (unique|length == length)' <<<"$components_json" >/dev/null || die "component selection is not an exact nonempty allowlist"
+  jq -e 'type == "array" and length > 0 and all(.[]; . == "auth" or . == "bff" or . == "worker" or . == "exportjob" or . == "frontend") and (unique|length == length)' <<<"$components_json" >/dev/null || die "component selection is not an exact nonempty allowlist"
   [[ "$ENVIRONMENT" == development && "$SOURCE_REF" == develop || "$ENVIRONMENT" == production && "$SOURCE_REF" == main ]] || die "environment and source ref do not match"
   [[ "$CONFIG_PATH" == "deploy/environments/$ENVIRONMENT.yaml" ]] || die "config path is not fixed for the environment"
 }
@@ -280,6 +280,7 @@ component_image_name() {
     auth) printf 'llm-wiki-auth\n' ;;
     bff) printf 'llm-wiki-bff\n' ;;
     worker) printf 'olw-pipeline\n' ;;
+    exportjob) printf 'llm-wiki-bff-export-job\n' ;;
     *) die "component $1 has no backend image" ;;
   esac
 }
@@ -305,17 +306,18 @@ validate_image_value() {
 }
 
 record_dev_receipt() {
-  local components images='{}' component image fingerprint run_id run_attempt
-  components=$(plan_json '.selected_components'); fingerprint=$(plan_json '.evidence.config_fingerprint')
+  local selected components='[]' images='{}' component image fingerprint run_id run_attempt
+  selected=$(plan_json '.selected_components'); fingerprint=$(plan_json '.evidence.config_fingerprint')
   need GITHUB_RUN_ID; need GITHUB_RUN_ATTEMPT
   run_id="$GITHUB_RUN_ID"; run_attempt="$GITHUB_RUN_ATTEMPT"
   [[ "$run_id" =~ ^[0-9]+$ && "$run_id" -gt 0 && "$run_attempt" =~ ^[0-9]+$ && "$run_attempt" -gt 0 ]] || die "DEV workflow run identity is invalid"
   while IFS= read -r component; do
     case "$component" in auth|bff|worker)
       image=$(tr -d '[:space:]' < "$ARTIFACT_DIR/images/$component-image-$SOURCE_SHA.txt"); validate_image_value "$component" "$image"
-      images=$(jq --arg component "$component" --arg image "$image" '. + {($component):$image}' <<<"$images") ;;
+      images=$(jq --arg component "$component" --arg image "$image" '. + {($component):$image}' <<<"$images")
+      components=$(jq --arg component "$component" '. + [$component]' <<<"$components") ;;
     esac
-  done < <(jq -r '.[]' <<<"$components")
+  done < <(jq -r '.[]' <<<"$selected")
   jq -n --arg sha "$SOURCE_SHA" --arg fingerprint "$fingerprint" --argjson run_id "$run_id" --argjson run_attempt "$run_attempt" --argjson components "$components" --argjson images "$images" \
     '{schema:"lwc-306-dev-image-receipt-v1",source:{sha:$sha,ref:"develop",workflow_path:".github/workflows/deploy-dev.yml",event:"workflow_dispatch",run_id:$run_id,run_attempt:$run_attempt},config:{environment:"development",path:"deploy/environments/development.yaml",fingerprint:$fingerprint},components:$components,images:$images}' > "$ARTIFACT_DIR/images/dev-receipt.json"
 }
@@ -402,6 +404,41 @@ worker_image_readback() {
   if ! image=$(jq -er '(.spec.template.spec.template.spec.containers // .spec.template.spec.containers // []) | if type == "array" and length == 1 and (.[0].image|type) == "string" then .[0].image else error("Worker image is missing") end' <<<"$job_json"); then return 2; fi
   if [[ "$image" != "$expected_image" ]]; then return 1; fi
   jq -n --arg image "$image" '{image:$image}'
+}
+
+exportjob_image_handle() {
+  local project region job job_json image
+  project=$(plan_json '.gcp.project_id'); region=$(plan_json '.export_job.location'); job=$(plan_json '.export_job.job_name')
+  job_json=$(gcloud run jobs describe "$job" --project "$project" --region "$region" --format=json --quiet) || return 1
+  exportjob_runtime_matches "$job_json" || return 1
+  image=$(jq -er '(.template.template.containers // .spec.template.spec.template.spec.containers // .spec.template.spec.containers // []) | if type == "array" and length == 1 and (.[0].image|type) == "string" then .[0].image else error("export job image is missing") end' <<<"$job_json") || return 1
+  validate_image_value exportjob "$image" || return 1
+  printf '%s\n' "$image"
+}
+
+exportjob_image_readback() {
+  local expected_image="$1" project region job job_json image
+  project=$(plan_json '.gcp.project_id'); region=$(plan_json '.export_job.location'); job=$(plan_json '.export_job.job_name')
+  job_json=$(gcloud run jobs describe "$job" --project "$project" --region "$region" --format=json --quiet) || return 2
+  if ! exportjob_runtime_matches "$job_json"; then return 1; fi
+  if ! image=$(jq -er '(.template.template.containers // .spec.template.spec.template.spec.containers // .spec.template.spec.containers // []) | if type == "array" and length == 1 and (.[0].image|type) == "string" then .[0].image else error("export job image is missing") end' <<<"$job_json"); then return 2; fi
+  [[ "$image" == "$expected_image" ]] || return 1
+  jq -n --arg image "$image" '{image:$image,runtime_config_verified:true}'
+}
+
+exportjob_runtime_matches() {
+  local job_json="$1" account bucket database project signer
+  account=$(plan_json '.export_job.runtime_service_account'); bucket=$(plan_json '.export_job.bucket')
+  database=$(plan_json '.export_job.firestore_database_id'); project=$(plan_json '.gcp.project_id'); signer=$(plan_json '.export_job.signing_service_account')
+  jq -e --arg account "$account" --arg bucket "$bucket" --arg database "$database" --arg project "$project" --arg signer "$signer" '
+    def template: (.template.template // .spec.template.spec.template.spec // .spec.template.spec.template // .spec.template // {});
+    def containers: (template.containers // []);
+    def env: (containers[0].env // [] | map({key:.name,value:.value}) | from_entries);
+    def service_account: (template.serviceAccount // template.serviceAccountName);
+    type == "object" and (containers|type == "array" and length == 1) and
+    service_account == $account and env.GCP_PROJECT == $project and env.BUCKET == $bucket and
+    env.FIRESTORE_DATABASE_ID == $database and env.EXPORT_SIGNING_SERVICE_ACCOUNT == $signer
+  ' <<<"$job_json" >/dev/null
 }
 
 readback_retry() {

@@ -16,6 +16,17 @@ import (
 )
 
 func main() {
+	if isControlPlaneCommand(os.Args[1:]) {
+		if err := runControlPlaneCommand(os.Args[1:]); err != nil {
+			fmt.Fprintln(os.Stderr, "Error:", err)
+			os.Exit(1)
+		}
+		return
+	}
+	runLegacySync()
+}
+
+func runLegacySync() {
 	v := viper.New()
 	v.SetDefault("dry-run", false)
 
