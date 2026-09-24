@@ -8,6 +8,10 @@ on:
         required: true
         type: string
 
+concurrency:
+  group: lwc-development-deploy
+  cancel-in-progress: false
+
 jobs:
   deploy:
     if: github.ref == 'refs/heads/develop'

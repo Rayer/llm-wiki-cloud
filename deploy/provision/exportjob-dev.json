@@ -17,6 +17,7 @@
     "objectLister": ["storage.objects.list"],
     "sourceReader": ["storage.objects.get"],
     "archiveWriter": ["storage.objects.create", "storage.objects.delete", "storage.objects.get", "storage.objects.update"],
-    "blobSigner": ["iam.serviceAccounts.signBlob"]
+    "blobSigner": ["iam.serviceAccounts.signBlob"],
+    "readyArchiveReader": ["storage.objects.get"]
   }
 }

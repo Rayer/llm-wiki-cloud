@@ -736,6 +736,25 @@ class CDContractTests(unittest.TestCase):
         self.assertIn("service_account: ${{ secrets.WIF_SERVICE_ACCOUNT }}", source)
         self.assertNotIn("gcloud projects add-iam-policy-binding", source)
         self.assertNotIn("deploy-dev.yml", source)
+        deploy = (ROOT / ".github/workflows/deploy-dev.yml").read_text()
+        for lane in (source, deploy):
+            self.assertIn("group: lwc-development-deploy", lane)
+            self.assertIn("cancel-in-progress: false", lane)
+        self.assertIn("actions: read", source)
+        self.assertIn(".head_sha == $sha", source)
+        self.assertIn(".path == \".github/workflows/ci.yml\"", source)
+        self.assertIn(".name == \"canonical-ci\"", source)
+        self.assertIn(".conclusion == \"success\"", source)
+        self.assertLess(source.index("Require successful canonical CI"), source.index("Set up gcloud"))
+        self.assertLess(source.index("Require successful canonical CI"), source.index("Authenticate with the existing DEV deploy identity"))
+
+    def test_export_provision_workflow_run_blocks_are_shell_valid(self):
+        workflow = yaml.safe_load((ROOT / ".github/workflows/provision-exportjob-dev.yml").read_text())
+        steps = workflow["jobs"]["provision"]["steps"]
+        for step in steps:
+            if step.get("name") in ("Require successful canonical CI for this exact SHA", "Restore latest evidence for this DEV SHA"):
+                result = subprocess.run(["bash", "-n", "-c", step["run"]], text=True, capture_output=True)
+                self.assertEqual(result.returncode, 0, result.stderr)
 
     def test_default_ci_runs_retained_legacy_python_suites(self):
         source = (ROOT / ".github/workflows/ci.yml").read_text()
