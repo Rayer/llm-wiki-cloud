@@ -45,5 +45,6 @@ jobs:
         with:
           name: exportjob-dev-provision-${{ github.sha }}-${{ github.run_id }}-${{ github.run_attempt }}
           path: .provision/exportjob-dev-evidence.json
+          include-hidden-files: true
           if-no-files-found: warn
           retention-days: 90

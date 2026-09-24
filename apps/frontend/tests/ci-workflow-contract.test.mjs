@@ -23,17 +23,35 @@ function collectRunBlocks(value, blocks = []) {
   return blocks;
 }
 
-test('only the canonical CI and two fixed CD entry workflows are active', async () => {
+test('only canonical CI, fixed CD, and DEV provisioning entry workflows are active', async () => {
   const files = (await readdir(workflowDirectory)).filter((file) => file.endsWith('.yml')).sort();
-  assert.deepEqual(files, ['cd.yml', 'ci.yml', 'deploy-dev.yml', 'promote-production.yml']);
+  assert.deepEqual(files, ['cd.yml', 'ci.yml', 'deploy-dev.yml', 'promote-production.yml', 'provision-exportjob-dev.yml']);
   const dev = parseYaml(await workflow('deploy-dev.yml'));
   const production = parseYaml(await workflow('promote-production.yml'));
+  const provision = parseYaml(await workflow('provision-exportjob-dev.yml'));
   assert.equal(dev.on.push, undefined);
   assert.equal(production.on.push, undefined);
   assert.deepEqual(Object.keys(dev.on.workflow_dispatch.inputs), ['components']);
   assert.deepEqual(Object.keys(production.on.workflow_dispatch.inputs), ['components']);
   assert.equal(dev.jobs.deploy.with.environment, 'Development');
   assert.equal(production.jobs.promote.with.environment, 'Production');
+  assert.deepEqual(Object.keys(provision.on), ['workflow_dispatch']);
+  assert.equal(provision.jobs.provision.if, "github.ref == 'refs/heads/develop'");
+  assert.equal(provision.jobs.provision.environment, 'Development');
+  assert.equal(provision.jobs.provision.permissions['id-token'], 'write');
+});
+
+test('DEV provisioning uses the existing auth identity and preserves hidden evidence', async () => {
+  const source = await workflow('provision-exportjob-dev.yml');
+  const provision = parseYaml(source).jobs.provision;
+  const auth = provision.steps.find((step) => step.uses?.startsWith('google-github-actions/auth@'));
+  const evidence = provision.steps.find((step) => step.uses?.startsWith('actions/upload-artifact@'));
+  assert.equal(auth.with.workload_identity_provider, '${{ secrets.WIF_PROVIDER }}');
+  assert.equal(auth.with.service_account, '${{ secrets.WIF_SERVICE_ACCOUNT }}');
+  assert.equal(evidence.with['include-hidden-files'], true);
+  assert.equal(evidence.with['retention-days'], 90);
+  assert.match(source, /if: github\.ref == 'refs\/heads\/develop'/);
+  assert.doesNotMatch(source, /refs\/heads\/main|production\.yaml|run jobs execute/);
 });
 
 test('fixed wrappers cannot accept environment, config, or ref authority', async () => {
