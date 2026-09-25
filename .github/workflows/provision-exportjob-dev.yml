@@ -74,10 +74,11 @@ jobs:
           workload_identity_provider: ${{ secrets.WIF_PROVIDER }}
           service_account: ${{ secrets.WIF_SERVICE_ACCOUNT }}
 
-      - name: Build reviewed source and provision missing DEV prerequisites
+      - name: Verify owner prerequisites, build reviewed source, and deploy DEV Job
         env:
           SOURCE_SHA: ${{ github.sha }}
           SOURCE_REF: ${{ github.ref }}
+          WIF_SERVICE_ACCOUNT: ${{ secrets.WIF_SERVICE_ACCOUNT }}
         run: python3 deploy/provision/exportjob_dev.py
 
       - name: Upload provisioning and inverse evidence

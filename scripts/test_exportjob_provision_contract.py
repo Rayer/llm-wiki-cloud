@@ -1,14 +1,17 @@
 """Offline checks for first-time DEV Export Job provisioning and policy recovery."""
 import copy
 import json
+import os
 from pathlib import Path
 import subprocess
 import tempfile
 import unittest
+from unittest.mock import patch
 import yaml
 
 from deploy.provision.exportjob_dev import (
-    CONTRACT, STORAGE_EXPORTS, STORAGE_USERS, ProvisionError, Provisioner, load_contract, ready_archive_binding,
+    CONTRACT, DEPLOYER, STORAGE_EXPORTS, STORAGE_USERS, VERIFIER_ROLES, ProvisionError, Provisioner,
+    load_contract, ready_archive_binding,
 )
 
 ROOT = Path(__file__).resolve().parents[1]
@@ -16,6 +19,94 @@ IMAGE = "asia-east1-docker.pkg.dev/llm-wiki-cloud/cloud-run-images/llm-wiki-bff-
 
 
 class ExportJobProvisionContractTests(unittest.TestCase):
+    def _prerequisite_runner(self, calls, *, missing_role=None, extra_role_permission=None):
+        config = load_contract()
+        project = config["project"]
+        runtime = "serviceAccount:" + config["runtime_service_account"]
+        bff = "serviceAccount:" + config["bff_service_account"]
+        role_ids = {"objectLister": "lwcExportObjectLister", "sourceReader": "lwcExportSourceReader",
+                    "archiveWriter": "lwcExportArchiveWriter", "blobSigner": "lwcExportBlobSigner",
+                    "readyArchiveReader": "lwcExportReadyArchiveReader"}
+        role_names = {key: f"projects/{project}/roles/{value}" for key, value in role_ids.items()}
+        verifier_names = {key: f"projects/{project}/roles/{value[0]}" for key, value in VERIFIER_ROLES.items()}
+        project_policy = {"etag": "project-e1", "version": 3, "bindings": [
+            {"role": "roles/datastore.user", "members": [runtime], "condition": {
+                "title": "lwc344-export-worker-dev-firestore",
+                "description": "Limit Export worker to the DEV Firestore database",
+                "expression": "resource.name == 'projects/llm-wiki-cloud/databases/llm-wiki-cloud-dev'"}},
+            {"role": verifier_names["roleReadback"], "members": [DEPLOYER]},
+            {"role": verifier_names["projectPolicyReadback"], "members": [DEPLOYER]},
+        ]}
+        bucket_policy = {"etag": "bucket-e1", "bindings": [
+            {"role": role_names["objectLister"], "members": [runtime]},
+            {"role": role_names["sourceReader"], "members": [runtime], "condition": {
+                "title": "lwc344-export-source-objects", "description": "Read Export source objects only",
+                "expression": STORAGE_USERS}},
+            {"role": role_names["archiveWriter"], "members": [runtime], "condition": {
+                "title": "lwc344-export-archive-objects", "description": "Manage Export temporary and ready archives only",
+                "expression": STORAGE_EXPORTS}},
+            {"role": role_names["readyArchiveReader"],
+             "members": ["serviceAccount:" + config["signing_service_account"]],
+             "condition": ready_archive_binding(role_names["readyArchiveReader"], config["signing_service_account"])["condition"]},
+        ]}
+        signer_policy = {"etag": "signer-e1", "bindings": [
+            {"role": role_names["blobSigner"], "members": [bff]},
+            {"role": verifier_names["signerPolicyReadback"], "members": [DEPLOYER]},
+        ]}
+        state = {"project": project_policy, "bucket": bucket_policy, "signer": signer_policy,
+                 "job": {"etag": "job-e1", "bindings": []}}
+
+        def run(args, **kwargs):
+            calls.append(args)
+            gcloud_args = args[1:]
+            if gcloud_args[:4] == ["config", "get-value", "account", "--quiet"]:
+                return subprocess.CompletedProcess(args, 0, DEPLOYER.removeprefix("serviceAccount:") + "\n", "")
+            if gcloud_args[:3] == ["iam", "service-accounts", "describe"]:
+                email = gcloud_args[3]
+                return subprocess.CompletedProcess(args, 0, json.dumps({"email": email,
+                    "name": f"projects/{project}/serviceAccounts/{email}"}), "")
+            if gcloud_args[:3] == ["iam", "roles", "describe"]:
+                role_id = gcloud_args[3]
+                if role_id == missing_role:
+                    return subprocess.CompletedProcess(args, 1, "", "NOT_FOUND")
+                if role_id in role_ids.values():
+                    key = next(k for k, value in role_ids.items() if value == role_id)
+                    permissions = list(config["storage_roles"][key])
+                    name = role_names[key]
+                else:
+                    key = next(k for k, value in VERIFIER_ROLES.items() if value[0] == role_id)
+                    permissions = list(VERIFIER_ROLES[key][2])
+                    name = verifier_names[key]
+                if role_id == extra_role_permission:
+                    permissions.append("resourcemanager.projects.setIamPolicy")
+                return subprocess.CompletedProcess(args, 0, json.dumps({"name": name, "stage": "GA",
+                    "includedPermissions": permissions}), "")
+            if gcloud_args[:3] == ["storage", "buckets", "describe"]:
+                return subprocess.CompletedProcess(args, 0, json.dumps({"iam_configuration": {
+                    "uniform_bucket_level_access": {"enabled": True}}}), "")
+            if gcloud_args[:2] == ["projects", "get-iam-policy"]:
+                return subprocess.CompletedProcess(args, 0, json.dumps(state["project"]), "")
+            if gcloud_args[:3] == ["storage", "buckets", "get-iam-policy"]:
+                return subprocess.CompletedProcess(args, 0, json.dumps(state["bucket"]), "")
+            if gcloud_args[:3] == ["iam", "service-accounts", "get-iam-policy"]:
+                return subprocess.CompletedProcess(args, 0, json.dumps(state["signer"]), "")
+            if gcloud_args[:3] == ["run", "jobs", "get-iam-policy"]:
+                return subprocess.CompletedProcess(args, 0, json.dumps(state["job"]), "")
+            if gcloud_args[:3] in (["run", "jobs", "set-iam-policy"],
+                                    ["projects", "set-iam-policy"],
+                                    ["iam", "service-accounts", "set-iam-policy"]):
+                policy_path = Path(gcloud_args[-2])
+                policy = json.loads(policy_path.read_text())
+                if gcloud_args[0] == "run":
+                    state["job"] = policy
+                elif gcloud_args[0] == "projects":
+                    state["project"] = policy
+                else:
+                    state["signer"] = policy
+                return subprocess.CompletedProcess(args, 0, "", "")
+            raise AssertionError("unexpected gcloud command: " + " ".join(args))
+        return run, state
+
     def test_build_submit_substitutions_are_consumed_by_cloudbuild_config(self):
         config = yaml.safe_load((ROOT / "apps/bff/cloudbuild-exportjob.yaml").read_text())
         args = config["steps"][0]["args"]
@@ -236,6 +327,213 @@ class ExportJobProvisionContractTests(unittest.TestCase):
             path.write_text(json.dumps(data))
             with self.assertRaises(ProvisionError):
                 load_contract(path)
+
+    def test_owner_bootstrap_is_separate_from_workflow_build_and_job_deployment(self):
+        with tempfile.TemporaryDirectory() as temp:
+            p = Provisioner(load_contract(), evidence_path=Path(temp) / "evidence.json")
+            calls = []
+            p.ensure_service_account = lambda *args: calls.append(("service-account", args[0]))
+            p.ensure_custom_role = lambda key: calls.append(("custom-role", key)) or key
+            p.ensure_verifier_roles = lambda: calls.append(("verifier-roles",)) or {"r": "r"}
+            p.bucket_ready = lambda: calls.append(("bucket-ready",))
+            p.apply_iam = lambda *roles: calls.append(("owner-iam", roles))
+            p.apply_verifier_iam = lambda roles: calls.append(("verifier-iam", roles))
+            p.run_owner_bootstrap()
+        self.assertEqual([call[0] for call in calls], ["service-account", "service-account"] +
+            ["custom-role"] * 5 + ["verifier-roles", "bucket-ready", "owner-iam", "verifier-iam"])
+        self.assertEqual(p.evidence["result"], "owner_bootstrap_applied_and_read_back")
+
+    def test_verifier_roles_and_bindings_are_exact_and_signer_scoped(self):
+        self.assertEqual({key: definition[2] for key, definition in VERIFIER_ROLES.items()}, {
+            "roleReadback": ["iam.roles.get"],
+            "projectPolicyReadback": ["resourcemanager.projects.getIamPolicy"],
+            "signerPolicyReadback": ["iam.serviceAccounts.getIamPolicy"],
+        })
+        observed = []
+        with tempfile.TemporaryDirectory() as temp:
+            p = Provisioner(load_contract(), evidence_path=Path(temp) / "evidence.json")
+            p.policy = lambda target, get_args, set_args, desired: observed.append((target, set_args, desired))
+            p.apply_verifier_iam({key: f"projects/llm-wiki-cloud/roles/{value[0]}"
+                                  for key, value in VERIFIER_ROLES.items()})
+        self.assertEqual([item[0] for item in observed], ["project:llm-wiki-cloud"] * 2 +
+            ["serviceAccount:lwc-export-signer-dev@llm-wiki-cloud.iam.gserviceaccount.com"])
+        self.assertEqual([item[2] for item in observed], [
+            {"role": "projects/llm-wiki-cloud/roles/lwcExportRoleReadback", "member": DEPLOYER},
+            {"role": "projects/llm-wiki-cloud/roles/lwcExportProjectPolicyReadback", "member": DEPLOYER},
+            {"role": "projects/llm-wiki-cloud/roles/lwcExportSignerPolicyReadback", "member": DEPLOYER},
+        ])
+
+    def test_workflow_verifies_owner_prerequisites_before_build_and_job_mutations(self):
+        with tempfile.TemporaryDirectory() as temp:
+            p = Provisioner(load_contract(), evidence_path=Path(temp) / "evidence.json")
+            calls = []
+            p.owner_prerequisites = lambda: calls.append("verify-owner-prerequisites") or ("role",) * 5
+            p.build_image = lambda sha: calls.append("build-image") or IMAGE
+            p.ensure_job = lambda image: calls.append("create-or-verify-job")
+            p.apply_job_iam = lambda: calls.append("job-iam")
+            with patch.dict(os.environ, {"WIF_SERVICE_ACCOUNT": DEPLOYER.removeprefix("serviceAccount:")}):
+                p.run_workflow("a" * 40)
+        self.assertEqual(calls, ["verify-owner-prerequisites", "build-image", "create-or-verify-job", "job-iam"])
+        self.assertEqual(p.evidence["result"], "workflow_deployed_and_read_back")
+
+    def test_owner_prerequisites_accept_provider_shaped_exact_readbacks(self):
+        calls = []
+        run, _state = self._prerequisite_runner(calls)
+        with tempfile.TemporaryDirectory() as temp:
+            p = Provisioner(load_contract(), run, Path(temp) / "evidence.json")
+            p.owner_prerequisites()
+        self.assertEqual(sum(call[1:3] == ["iam", "roles"] for call in calls), 8)
+        self.assertEqual(sum(call[1:3] == ["iam", "service-accounts"] and "describe" in call for call in calls), 2)
+        self.assertEqual(sum(call[1:3] == ["projects", "get-iam-policy"] for call in calls), 3)
+        self.assertEqual(sum(call[1:4] == ["storage", "buckets", "get-iam-policy"] for call in calls), 4)
+        self.assertEqual(sum("set-iam-policy" in call for call in calls), 0)
+        self.assertEqual(sum("create" in call for call in calls), 0)
+
+    def test_workflow_stops_before_build_when_owner_prerequisite_is_missing_or_mismatched(self):
+        for scenario in ("missing", "mismatched"):
+            with self.subTest(scenario=scenario), tempfile.TemporaryDirectory() as temp:
+                calls = []
+                run, _state = self._prerequisite_runner(calls,
+                    missing_role="lwcExportSourceReader" if scenario == "missing" else None,
+                    extra_role_permission="lwcExportSourceReader" if scenario == "mismatched" else None)
+                p = Provisioner(load_contract(), run, Path(temp) / "evidence.json")
+                build_calls = []
+                p.build_image = lambda sha: build_calls.append(sha) or IMAGE
+                with patch.dict(os.environ, {"WIF_SERVICE_ACCOUNT": DEPLOYER.removeprefix("serviceAccount:")}):
+                    with self.assertRaises(ProvisionError):
+                        p.run_workflow("a" * 40)
+                self.assertEqual(build_calls, [])
+                self.assertFalse(any(call[1:3] == ["builds", "submit"] for call in calls))
+                self.assertFalse(any("set-iam-policy" in call or "create" in call for call in calls))
+
+    def test_workflow_rejects_a_different_configured_wif_service_account_before_provider_reads(self):
+        with tempfile.TemporaryDirectory() as temp:
+            calls = []
+            run, _state = self._prerequisite_runner(calls)
+            p = Provisioner(load_contract(), run, Path(temp) / "evidence.json")
+            with patch.dict(os.environ, {"WIF_SERVICE_ACCOUNT": "other@llm-wiki-cloud.iam.gserviceaccount.com"}):
+                with self.assertRaisesRegex(ProvisionError, "workflow identity differs"):
+                    p.run_workflow("a" * 40)
+        self.assertEqual(calls, [])
+
+    def test_workflow_never_writes_owner_managed_iam(self):
+        with tempfile.TemporaryDirectory() as temp:
+            calls = []
+            run, _state = self._prerequisite_runner(calls)
+            p = Provisioner(load_contract(), run, Path(temp) / "evidence.json")
+            p.build_image = lambda _sha: IMAGE
+            p.ensure_job = lambda _image: None
+            with patch.dict(os.environ, {"WIF_SERVICE_ACCOUNT": DEPLOYER.removeprefix("serviceAccount:")}):
+                p.run_workflow("a" * 40)
+        owner_writes = [call for call in calls if "set-iam-policy" in call and
+                        call[1:3] != ["run", "jobs"]]
+        role_or_account_creates = [call for call in calls if "create" in call and
+                                   call[1:3] in (["iam", "roles"], ["iam", "service-accounts"])]
+        self.assertEqual(owner_writes, [])
+        self.assertEqual(role_or_account_creates, [])
+        self.assertTrue(any(call[1:3] == ["run", "jobs"] and "set-iam-policy" in call for call in calls))
+
+    def test_cleanup_removes_only_bootstrap_added_verifier_members_after_matching_workflow(self):
+        config = load_contract()
+        project = config["project"]
+        signer = config["signing_service_account"]
+        role_ids = {key: f"projects/{project}/roles/{value[0]}" for key, value in VERIFIER_ROLES.items()}
+        principal = DEPLOYER
+        state = {
+            "project": {"etag": "p1", "bindings": [
+                {"role": role_ids["roleReadback"], "members": [principal]},
+                {"role": role_ids["projectPolicyReadback"], "members": [principal]},
+                {"role": "roles/other", "members": ["user:unrelated@example.com"]}]},
+            "signer": {"etag": "s1", "bindings": [
+                {"role": role_ids["signerPolicyReadback"], "members": [principal]},
+                {"role": "roles/other", "members": ["user:unrelated@example.com"]}]},
+        }
+        calls = []
+        project_conflicted = False
+        def run(args, **kwargs):
+            nonlocal project_conflicted
+            calls.append(args)
+            parts = args[1:]
+            if parts[:2] == ["projects", "get-iam-policy"]:
+                return subprocess.CompletedProcess(args, 0, json.dumps(state["project"]), "")
+            if parts[:2] == ["iam", "service-accounts"] and parts[2] == "get-iam-policy":
+                return subprocess.CompletedProcess(args, 0, json.dumps(state["signer"]), "")
+            if parts[:2] == ["projects", "set-iam-policy"]:
+                if not project_conflicted:
+                    project_conflicted = True
+                    state["project"]["bindings"].append({"role": "roles/concurrent", "members": ["user:concurrent@example.com"]})
+                    state["project"]["etag"] = "p-concurrent"
+                    return subprocess.CompletedProcess(args, 1, "", "etag conditionNotMet")
+                state["project"] = json.loads(Path(parts[-2]).read_text())
+                state["project"]["etag"] = "p2"
+                return subprocess.CompletedProcess(args, 0, "", "")
+            if parts[:3] == ["iam", "service-accounts", "set-iam-policy"]:
+                state["signer"] = json.loads(Path(parts[-2]).read_text())
+                state["signer"]["etag"] = "s2"
+                return subprocess.CompletedProcess(args, 0, "", "")
+            raise AssertionError("unexpected cleanup command: " + " ".join(args))
+        with tempfile.TemporaryDirectory() as temp:
+            owner_path = Path(temp) / "owner.json"
+            workflow_path = Path(temp) / "workflow.json"
+            p = Provisioner(config, run, owner_path)
+            p.evidence["source"]["sha"] = "a" * 40
+            p.evidence["result"] = "owner_bootstrap_applied_and_read_back"
+            for key in ("roleReadback", "projectPolicyReadback"):
+                p.evidence["policies"].append({"target": "project:" + project,
+                    "binding": {"role": role_ids[key], "member": DEPLOYER}, "added_by_this_run": key != "roleReadback"})
+            p.evidence["policies"].append({"target": "serviceAccount:" + signer,
+                "binding": {"role": role_ids["signerPolicyReadback"], "member": DEPLOYER}, "added_by_this_run": True})
+            p.save()
+            workflow_roles = [role_ids["roleReadback"], role_ids["projectPolicyReadback"], role_ids["signerPolicyReadback"]]
+            workflow_targets = ["project:" + project, "project:" + project, "serviceAccount:" + signer]
+            workflow_path.write_text(json.dumps({"schema": "lwc-344-exportjob-dev-provision-v2",
+                "result": "workflow_deployed_and_read_back", "source": {"ref": "refs/heads/develop", "sha": "a" * 40},
+                "target": p.evidence["target"], "image": {"status": "verified"},
+                "resources": {config["job"]: {"creation_status": "verified"}},
+                "policies": [{"target": target, "binding": {"role": role, "member": DEPLOYER},
+                              "status": "existing_verified", "before_etag": "verified"}
+                             for target, role in zip(workflow_targets, workflow_roles)]}))
+            p.cleanup_verifier_grants(workflow_path)
+            saved = json.loads(owner_path.read_text())
+        self.assertEqual(p.evidence["verifier_cleanup"], "complete")
+        self.assertEqual(state["project"]["bindings"], [
+            {"role": role_ids["roleReadback"], "members": [principal]},
+            {"role": "roles/other", "members": ["user:unrelated@example.com"]},
+            {"role": "roles/concurrent", "members": ["user:concurrent@example.com"]}])
+        self.assertEqual(state["signer"]["bindings"], [{"role": "roles/other", "members": ["user:unrelated@example.com"]}])
+        self.assertTrue(any(entry.get("cleanup_status") == "verified_removed" for entry in saved["policies"]))
+        self.assertFalse(any("delete" in call for call in calls))
+
+    def test_cleanup_requires_matching_successful_workflow_evidence(self):
+        with tempfile.TemporaryDirectory() as temp:
+            owner_path = Path(temp) / "owner.json"
+            workflow_path = Path(temp) / "workflow.json"
+            p = Provisioner(load_contract(), evidence_path=owner_path)
+            p.evidence["result"] = "owner_bootstrap_applied_and_read_back"
+            p.evidence["source"]["sha"] = "a" * 40
+            p.save()
+            workflow_path.write_text(json.dumps({"result": "failed", "source": {"sha": "a" * 40},
+                "target": p.evidence["target"]}))
+            with self.assertRaisesRegex(ProvisionError, "matching owner-bootstrap"):
+                p.cleanup_verifier_grants(workflow_path)
+
+    def test_owner_prerequisite_policy_verification_is_read_only_and_exact(self):
+        desired = {"role": "roles/datastore.user", "member": "serviceAccount:worker@example.iam.gserviceaccount.com",
+                   "condition": {"title": "dev", "expression": "resource.name == 'dev'"}}
+        calls = []
+        def run(args, **kwargs):
+            calls.append(args)
+            return subprocess.CompletedProcess(args, 0, json.dumps({"etag": "abc", "bindings": [{
+                "role": desired["role"], "members": [desired["member"]], "condition": desired["condition"]}]}), "")
+        with tempfile.TemporaryDirectory() as temp:
+            p = Provisioner(load_contract(), run, Path(temp) / "evidence.json")
+            p.verify_policy("project:llm-wiki-cloud", ["projects", "get-iam-policy", "llm-wiki-cloud"], desired)
+            saved = json.loads(p.evidence_path.read_text())
+        self.assertEqual(len(calls), 1)
+        self.assertIn("get-iam-policy", calls[0])
+        self.assertFalse(any("set-iam-policy" in part for part in calls[0]))
+        self.assertEqual(saved["policies"][0]["before_etag"], "abc")
+        self.assertFalse(saved["policies"][0]["added_by_this_run"])
 
     def test_job_is_created_when_absent_and_exact_existing_job_is_idempotent(self):
         config = load_contract()
