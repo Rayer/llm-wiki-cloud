@@ -76,6 +76,7 @@ def production(value):
 class AuthConfigContractTests(unittest.TestCase):
     def test_bff_export_settings_are_removed_when_disabled_and_exact_when_enabled(self):
         plan = copy.deepcopy(bff_plan('development'))
+        plan['export_job'] = {'enabled': False}
         script = ROOT / 'deploy/components/auth_config.py'
         with tempfile.TemporaryDirectory() as tmp:
             path = Path(tmp) / 'plan.json'
@@ -87,14 +88,14 @@ class AuthConfigContractTests(unittest.TestCase):
 
             plan['export_job'] = {
                 'enabled': True, 'job_name': 'export-job-dev', 'location': 'asia-east1',
-                'signing_service_account': 'export-signer@llm-wiki-cloud.iam.gserviceaccount.com',
+                'signing_service_account': 'lwc-export-signer-dev@llm-wiki-cloud.iam.gserviceaccount.com',
             }
             path.write_text(json.dumps({'normalized': plan}))
             enabled = subprocess.run(['python3', str(script), 'args', str(path), 'bff'],
                                      text=True, capture_output=True)
             self.assertEqual(enabled.returncode, 0, enabled.stderr)
             self.assertIn('EXPORT_JOB_URL=https://run.googleapis.com/v2/projects/llm-wiki-cloud/locations/asia-east1/jobs/export-job-dev:run', enabled.stdout)
-            self.assertIn('EXPORT_SIGNING_SERVICE_ACCOUNT=export-signer@llm-wiki-cloud.iam.gserviceaccount.com', enabled.stdout)
+            self.assertIn('EXPORT_SIGNING_SERVICE_ACCOUNT=lwc-export-signer-dev@llm-wiki-cloud.iam.gserviceaccount.com', enabled.stdout)
 
             from test_bff_auth_config_contract import candidate as bff_candidate
             runtime = bff_candidate('development')
@@ -102,7 +103,7 @@ class AuthConfigContractTests(unittest.TestCase):
             revision_name = runtime['metadata']['name']
             runtime['spec']['containers'][0]['env'] += [
                 {'name': 'EXPORT_JOB_URL', 'value': 'https://run.googleapis.com/v2/projects/llm-wiki-cloud/locations/asia-east1/jobs/export-job-dev:run'},
-                {'name': 'EXPORT_SIGNING_SERVICE_ACCOUNT', 'value': 'export-signer@llm-wiki-cloud.iam.gserviceaccount.com'},
+                {'name': 'EXPORT_SIGNING_SERVICE_ACCOUNT', 'value': 'lwc-export-signer-dev@llm-wiki-cloud.iam.gserviceaccount.com'},
             ]
             path.write_text(json.dumps({'normalized': plan}))
             verified = subprocess.run(['python3', str(script), 'verify', str(path), 'bff', revision_name, image, ''],

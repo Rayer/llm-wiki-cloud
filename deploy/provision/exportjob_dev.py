@@ -536,6 +536,7 @@ class Provisioner:
         self.evidence["image"] = {"tag": image_tag, "status": "verified", "reference": expected_ref}
         self.evidence["continuation"] = {"prior_run_id": run_id, "prior_source": copy.deepcopy(old_source),
                                          "owner_source_sha": owner_source_sha, "reason": "adopted_existing_job_after_readback_format_repair"}
+        self.owner_prerequisites()
         self.apply_job_iam()
         self.evidence["result"] = "workflow_deployed_and_read_back"
         self.save()

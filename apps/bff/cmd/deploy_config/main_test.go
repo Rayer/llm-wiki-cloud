@@ -57,15 +57,15 @@ func TestExportJobRequiresProvisionedDEVConfigAndIsNotSupportedInProduction(t *t
 	if err != nil {
 		t.Fatal(err)
 	}
-	if dev.ExportJob.Enabled {
-		t.Fatal("export job must remain disabled until its runtime resources are read back")
-	}
-	if err := validateConfigForEnvironment("development", dev); err != nil {
-		t.Fatalf("disabled DEV export job config: %v", err)
-	}
-	dev.ExportJob = ExportJobConfig{Enabled: true, JobName: "export-job-dev", RuntimeServiceAccount: "export-worker@llm-wiki-cloud.iam.gserviceaccount.com", Bucket: dev.BFF.Bucket, FirestoreDatabaseID: dev.BFF.FirestoreDatabaseID, Location: dev.GCP.Region, SigningServiceAccount: "export-signer@llm-wiki-cloud.iam.gserviceaccount.com"}
 	if err := validateConfigForEnvironment("development", dev); err != nil {
 		t.Fatalf("provisioned DEV export job config: %v", err)
+	}
+	if !dev.ExportJob.Enabled || dev.ExportJob.JobName != "export-job-dev" ||
+		dev.ExportJob.RuntimeServiceAccount != "lwc-export-worker-dev@llm-wiki-cloud.iam.gserviceaccount.com" ||
+		dev.ExportJob.Bucket != "llm-wiki-data-dev" || dev.ExportJob.FirestoreDatabaseID != "llm-wiki-cloud-dev" ||
+		dev.ExportJob.Location != "asia-east1" ||
+		dev.ExportJob.SigningServiceAccount != "lwc-export-signer-dev@llm-wiki-cloud.iam.gserviceaccount.com" {
+		t.Fatalf("DEV export job config = %#v", dev.ExportJob)
 	}
 	prod, err := decodeConfig(filepath.Join(root, "deploy/environments/production.yaml"))
 	if err != nil {
@@ -76,8 +76,8 @@ func TestExportJobRequiresProvisionedDEVConfigAndIsNotSupportedInProduction(t *t
 	if err := validateConfigForEnvironment("production", prod); err == nil {
 		t.Fatal("Production export job unexpectedly accepted")
 	}
-	if _, err := Load("development", filepath.Join(root, "deploy/environments/development.yaml"), "exportjob"); err == nil || !strings.Contains(err.Error(), "disabled") {
-		t.Fatalf("disabled export job selection error = %v", err)
+	if _, err := Load("development", filepath.Join(root, "deploy/environments/development.yaml"), "bff,exportjob"); err != nil {
+		t.Fatalf("provisioned DEV export job selection: %v", err)
 	}
 }
 

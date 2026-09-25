@@ -631,6 +631,7 @@ class ExportJobProvisionContractTests(unittest.TestCase):
                  "results": {"images": [{"name": image_tag, "digest": digest}]}}
         policy = {"etag": "job-e1", "bindings": []}
         calls = []
+        prerequisites = []
 
         def run(args, **kwargs):
             calls.append(args)
@@ -656,10 +657,12 @@ class ExportJobProvisionContractTests(unittest.TestCase):
                 "WIF_SERVICE_ACCOUNT": "gh-actions-bff-deployer@llm-wiki-cloud.iam.gserviceaccount.com"}):
             evidence_path = Path(temp) / "evidence.json"
             p = Provisioner(load_contract(), run, evidence_path)
-            p.continue_existing_job(prior, run_id="36102518949",
-                                    owner_source_sha="466b54a358c5d6a9274d9c085078fc7dd2a1b938", sha=current_sha)
+            with patch.object(p, "owner_prerequisites", side_effect=lambda: prerequisites.append("owner")):
+                p.continue_existing_job(prior, run_id="36102518949",
+                                        owner_source_sha="466b54a358c5d6a9274d9c085078fc7dd2a1b938", sha=current_sha)
             saved = json.loads(evidence_path.read_text())
 
+        self.assertEqual(prerequisites, ["owner"])
         self.assertEqual(policy["bindings"][0], {"role": "roles/run.jobsExecutorWithOverrides",
                                                   "members": ["serviceAccount:lwc-bff-dev@llm-wiki-cloud.iam.gserviceaccount.com"]})
         self.assertTrue(any(args[:3] == ["gcloud", "builds", "describe"] for args in calls))
