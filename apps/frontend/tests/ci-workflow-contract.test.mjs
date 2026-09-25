@@ -31,13 +31,15 @@ test('only fixed registered workflows dispatch and DEV provisioning is selected 
   const provision = parseYaml(await workflow('provision-exportjob-dev.yml'));
   assert.equal(dev.on.push, undefined);
   assert.equal(production.on.push, undefined);
-  assert.deepEqual(Object.keys(dev.on.workflow_dispatch.inputs), ['components']);
+  assert.deepEqual(Object.keys(dev.on.workflow_dispatch.inputs), ['components', 'exportjob_continuation_run_id']);
   assert.deepEqual(Object.keys(production.on.workflow_dispatch.inputs), ['components']);
   assert.equal(dev.jobs.deploy.with.environment, 'Development');
   assert.equal(production.jobs.promote.with.environment, 'Production');
   assert.deepEqual(Object.keys(provision.on), ['workflow_call']);
+  assert.deepEqual(Object.keys(provision.on.workflow_call.inputs), ['continuation_run_id']);
   assert.equal(dev.jobs['provision-exportjob-dev'].uses, './.github/workflows/provision-exportjob-dev.yml');
   assert.equal(dev.jobs['provision-exportjob-dev'].secrets, 'inherit');
+  assert.equal(dev.jobs['provision-exportjob-dev'].with.continuation_run_id, '${{ inputs.exportjob_continuation_run_id }}');
   assert.equal(dev.jobs['provision-exportjob-dev'].if, "github.ref == 'refs/heads/develop' && inputs.components == 'provision-exportjob-dev'");
   assert.equal(dev.jobs.deploy.if, "github.ref == 'refs/heads/develop' && inputs.components != 'provision-exportjob-dev'");
   assert.equal(provision.jobs.provision.if, "github.ref == 'refs/heads/develop'");
@@ -66,7 +68,8 @@ test('fixed wrappers cannot accept environment, config, or ref authority', async
   ]) {
     const text = await workflow(name);
     const parsed = parseYaml(text);
-    assert.deepEqual(Object.keys(parsed.on.workflow_dispatch.inputs), ['components']);
+    assert.deepEqual(Object.keys(parsed.on.workflow_dispatch.inputs),
+      name === 'deploy-dev.yml' ? ['components', 'exportjob_continuation_run_id'] : ['components']);
     assert.equal(parsed.jobs[job].with.source_ref, branch);
     assert.equal(parsed.jobs[job].with.config_path, `deploy/environments/${config}.yaml`);
     assert.equal(parsed.jobs[job].with.config_environment, config);

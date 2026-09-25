@@ -767,7 +767,7 @@ test('foreign-project exact-SHA candidate cannot suppress CREATE_NOT_ALLOWED', a
 test('DEV authority uses the fixed shared CD entry', async () => {
   const source = parseYaml(await readFile(join(monorepoRoot, '.github/workflows/deploy-dev.yml'), 'utf8'));
   assert.equal(source.on.push, undefined);
-  assert.deepEqual(Object.keys(source.on.workflow_dispatch.inputs), ['components']);
+  assert.deepEqual(Object.keys(source.on.workflow_dispatch.inputs), ['components', 'exportjob_continuation_run_id']);
   assert.equal(source.jobs.deploy.with.environment, 'Development');
   assert.equal(source.jobs.deploy.with.config_path, 'deploy/environments/development.yaml');
   assert.equal(source.jobs.deploy.with.source_ref, 'develop');

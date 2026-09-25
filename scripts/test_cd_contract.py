@@ -2813,7 +2813,10 @@ class ArchitectureAuthorityTests(unittest.TestCase):
         for filename in ("deploy-dev.yml", "promote-production.yml"):
             source = (ROOT / ".github/workflows" / filename).read_text()
             self.assertRegex(source, r"components:\n\s+description:.*\n\s+required: true")
-            self.assertNotIn("default:", source)
+            if filename == "deploy-dev.yml":
+                self.assertRegex(source, r"exportjob_continuation_run_id:\n\s+description:.*\n\s+required: false\n\s+default: ''\n\s+type: string")
+            else:
+                self.assertNotIn("default:", source)
             self.assertNotIn("inputs.components ||", source)
             self.assertIn("\n    secrets: inherit", source)
             self.assertNotRegex(source, r"\$\{\{\s*secrets\.")
