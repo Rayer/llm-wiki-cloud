@@ -736,6 +736,7 @@ class Provisioner:
                 raise ProvisionError("original owner evidence is unreadable; verifier cleanup stopped") from error
         owner_sha = owner.get("source", {}).get("sha", "")
         workflow_sha = workflow.get("source", {}).get("sha", "")
+        current_sha = self.evidence.get("source", {}).get("sha", "")
         same_source = owner_sha == workflow_sha
         if (owner.get("result") != "owner_bootstrap_applied_and_read_back" or
                 (not same_source and not repair) or
@@ -745,7 +746,9 @@ class Provisioner:
                 workflow.get("schema") != "lwc-344-exportjob-dev-provision-v2" or
                 workflow.get("source", {}).get("ref") != "refs/heads/develop" or
                 not re.fullmatch(r"[0-9a-f]{40}", workflow_sha) or
-                (same_source and workflow_sha != self.evidence.get("source", {}).get("sha")) or
+                workflow.get("source", {}).get("sha") != current_sha or
+                self.evidence.get("source", {}).get("ref") != "refs/heads/develop" or
+                not re.fullmatch(r"[0-9a-f]{40}", current_sha) or
                 workflow.get("target") != self.evidence.get("target") or
                 owner.get("target") != workflow.get("target") or
                 workflow.get("image", {}).get("status") != "verified"):
@@ -765,6 +768,7 @@ class Provisioner:
              ["iam", "service-accounts", "get-iam-policy", self.c["signing_service_account"], "--project", self.c["project"], "--format=json", "--quiet"],
              ["iam", "service-accounts", "set-iam-policy", self.c["signing_service_account"], "--project", self.c["project"]]),
         ]
+        cleanup_entries = []
         for target, role, get_args, set_args in specs:
             desired = {"role": role, "member": DEPLOYER}
             if not any(item.get("target") == target and item.get("binding") == desired and
@@ -775,6 +779,25 @@ class Provisioner:
                           if item.get("target") == target and item.get("binding") == desired), None)
             if entry is None:
                 raise ProvisionError(f"owner evidence has no exact bootstrap record for {role}")
+            if repair:
+                journal_entry = next((item for item in reversed(self.evidence["policies"])
+                                      if item.get("source_repair_owner_sha") == owner_sha and
+                                      item.get("target") == target and item.get("binding") == desired), None)
+                if journal_entry is None:
+                    journal_entry = copy.deepcopy(entry)
+                    journal_entry["source_repair_owner_sha"] = owner_sha
+                    journal_entry["source_repair_workflow_sha"] = workflow_sha
+                    if not journal_entry.get("inverse"):
+                        journal_entry["inverse"] = "Remove only this exact verifier member with a fresh-etag write; preserve and verify all other policy members."
+                    self.evidence["policies"].append(journal_entry)
+                cleanup_entries.append((target, get_args, set_args, desired, journal_entry))
+            else:
+                cleanup_entries.append((target, get_args, set_args, desired, entry))
+        if repair:
+            self.evidence["source_repair"] = {"owner_source_sha": owner_sha, "workflow_source_sha": workflow_sha,
+                                               "owner_receipt": "preserved_separate_file"}
+            self.save()
+        for target, get_args, set_args, desired, entry in cleanup_entries:
             if entry.get("added_by_this_run") is True:
                 self.remove_policy_member(target, get_args, set_args, desired, entry)
         self.evidence["verifier_cleanup"] = "complete"
