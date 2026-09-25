@@ -2,6 +2,7 @@
 """First-time DEV Export Job provisioning; run only from the reviewed develop workflow."""
 from __future__ import annotations
 
+import argparse
 import copy
 import json
 import os
@@ -32,6 +33,15 @@ STORAGE_READY_ARCHIVES = (
     "resource.type == 'storage.googleapis.com/Object' && "
     "resource.name.startsWith('projects/_/buckets/llm-wiki-data-dev/objects/exports/ready/')"
 )
+DEPLOYER = "serviceAccount:gh-actions-bff-deployer@llm-wiki-cloud.iam.gserviceaccount.com"
+# Read grants are read-only; project getIamPolicy exposes all project IAM metadata, but no secrets or write authority.
+VERIFIER_ROLES = {
+    "roleReadback": ("lwcExportRoleReadback", "LWC Export role readback", ["iam.roles.get"]),
+    "projectPolicyReadback": ("lwcExportProjectPolicyReadback", "LWC Export project IAM readback",
+                               ["resourcemanager.projects.getIamPolicy"]),
+    "signerPolicyReadback": ("lwcExportSignerPolicyReadback", "LWC Export signer IAM readback",
+                             ["iam.serviceAccounts.getIamPolicy"]),
+}
 
 
 class ProvisionError(RuntimeError):
@@ -376,15 +386,8 @@ class Provisioner:
         self.resource_attempt(c["job"], "cloudRunJob", {"name": c["job"], "config": desired},
                               create_result="verified", created=created, config=desired)
 
-    def ensure_custom_role(self, role_key: str) -> str:
+    def ensure_role(self, role_id: str, title: str, description: str, permissions: list[str]) -> str:
         c = self.c
-        role_id = {"objectLister": "lwcExportObjectLister", "sourceReader": "lwcExportSourceReader",
-                   "archiveWriter": "lwcExportArchiveWriter", "blobSigner": "lwcExportBlobSigner",
-                   "readyArchiveReader": "lwcExportReadyArchiveReader"}[role_key]
-        title = {"objectLister": "LWC DEV Export Object List", "sourceReader": "LWC DEV Export Source Reader",
-                 "archiveWriter": "LWC DEV Export Archive Writer", "blobSigner": "LWC DEV Export Blob Signer",
-                 "readyArchiveReader": "LWC DEV Export Ready Archive Reader"}[role_key]
-        permissions = c["storage_roles"][role_key]
         existing = self.gcloud("iam", "roles", "describe", role_id, "--project", c["project"], "--format=json", "--quiet", allow_missing=True)
         created = False
         name = f"projects/{c['project']}/roles/{role_id}"
@@ -397,7 +400,7 @@ class Provisioner:
         if existing is None:
             self.resource_attempt(name, "customRole", {"role_id": role_id}, create_result="pending")
             result = self.run(["gcloud", "iam", "roles", "create", role_id, "--project", c["project"],
-                               "--title", title, "--description", f"LWC-344 DEV Export {role_key}",
+                               "--title", title, "--description", description,
                                "--permissions", ",".join(permissions), "--stage", "GA", "--quiet"])
             self.resource_attempt(name, "customRole", {"role_id": role_id},
                                   create_result="accepted" if result.returncode == 0 else "unknown",
@@ -420,6 +423,24 @@ class Provisioner:
                               create_result="verified", created=created)
         return name
 
+    def ensure_custom_role(self, role_key: str) -> str:
+        role_id = {"objectLister": "lwcExportObjectLister", "sourceReader": "lwcExportSourceReader",
+                   "archiveWriter": "lwcExportArchiveWriter", "blobSigner": "lwcExportBlobSigner",
+                   "readyArchiveReader": "lwcExportReadyArchiveReader"}[role_key]
+        title = {"objectLister": "LWC DEV Export Object List", "sourceReader": "LWC DEV Export Source Reader",
+                 "archiveWriter": "LWC DEV Export Archive Writer", "blobSigner": "LWC DEV Export Blob Signer",
+                 "readyArchiveReader": "LWC DEV Export Ready Archive Reader"}[role_key]
+        return self.ensure_role(role_id, title, f"LWC-344 DEV Export {role_key}", self.c["storage_roles"][role_key])
+
+    def ensure_verifier_roles(self) -> dict[str, str]:
+        roles = {}
+        for key, (role_id, title, permissions) in VERIFIER_ROLES.items():
+            description = "LWC-344 DEV Export readback only; grants no IAM mutation authority"
+            if key == "projectPolicyReadback":
+                description += "; read access exposes all project IAM metadata, not secrets"
+            roles[key] = self.ensure_role(role_id, title, description, permissions)
+        return roles
+
     def verify_custom_role(self, role_key: str) -> str:
         c = self.c
         role_id = {"objectLister": "lwcExportObjectLister", "sourceReader": "lwcExportSourceReader",
@@ -436,6 +457,20 @@ class Provisioner:
             "included_permissions": role["includedPermissions"], "stage": role["stage"]},
             create_result="verified", created=False, first_observed="present")
         return name
+
+    def verify_verifier_roles(self) -> dict[str, str]:
+        roles = {}
+        for key, (role_id, _title, permissions) in VERIFIER_ROLES.items():
+            name = f"projects/{self.c['project']}/roles/{role_id}"
+            role = json.loads(self.gcloud("iam", "roles", "describe", role_id, "--project", self.c["project"],
+                                          "--format=json", "--quiet") or "{}")
+            if (role.get("name") != name or role.get("stage") != "GA" or
+                    role.get("includedPermissions") != permissions):
+                raise ProvisionError(f"required verifier role {role_id} is absent or differs from its exact read permission")
+            self.resource_attempt(name, "customRole", {"name": name, "included_permissions": permissions,
+                "stage": "GA"}, create_result="verified", created=False, first_observed="present")
+            roles[key] = name
+        return roles
 
     def bucket_ready(self) -> None:
         raw = self.gcloud("storage", "buckets", "describe", f"gs://{self.c['bucket']}", "--format=json", "--quiet")
@@ -565,6 +600,18 @@ class Provisioner:
                     ["iam", "service-accounts", "get-iam-policy", signer, "--project", project, "--format=json", "--quiet"],
                     ["iam", "service-accounts", "set-iam-policy", signer, "--project", project], signer_binding)
 
+    def apply_verifier_iam(self, roles: dict[str, str]) -> None:
+        project = self.c["project"]
+        for role_key in ("roleReadback", "projectPolicyReadback"):
+            desired = {"role": roles[role_key], "member": DEPLOYER}
+            self.policy("project:" + project, ["projects", "get-iam-policy", project, "--format=json", "--quiet"],
+                        ["projects", "set-iam-policy", project], desired)
+        signer = self.c["signing_service_account"]
+        desired = {"role": roles["signerPolicyReadback"], "member": DEPLOYER}
+        self.policy("serviceAccount:" + signer,
+                    ["iam", "service-accounts", "get-iam-policy", signer, "--project", project, "--format=json", "--quiet"],
+                    ["iam", "service-accounts", "set-iam-policy", signer, "--project", project], desired)
+
     def apply_job_iam(self) -> None:
         c = self.c
         binding = {"role": "roles/run.jobsExecutorWithOverrides",
@@ -578,8 +625,98 @@ class Provisioner:
         if not policy.get("etag") or not self.policy_has(policy, desired):
             raise ProvisionError(f"required IAM binding is absent or mismatched on {target}")
         entry = {"target": target, "binding": desired, "status": "existing_verified",
-                 "before_etag": policy["etag"], "readback_policy": policy, "added_by_this_run": False}
+                 "before_etag": policy["etag"], "added_by_this_run": False}
         self.evidence["policies"].append(entry)
+        self.save()
+
+    def remove_policy_member(self, target: str, get_args: list[str], set_args: list[str], desired: dict,
+                             entry: dict) -> None:
+        for attempt in range(MAX_ETAG_ATTEMPTS):
+            before = json.loads(self.gcloud(*get_args) or "{}")
+            entry.setdefault("cleanup_attempts", []).append({"before_etag": before.get("etag"), "before_policy": before})
+            self.save()
+            bindings = before.get("bindings", [])
+            exact = next((binding for binding in bindings if binding.get("role") == desired["role"] and
+                          binding.get("condition") == desired.get("condition")), None)
+            conflict = next((binding for binding in bindings if binding.get("role") == desired["role"] and
+                             desired["member"] in binding.get("members", []) and
+                             binding.get("condition") != desired.get("condition")), None)
+            if conflict:
+                raise ProvisionError(f"verifier binding for {target} changed condition; cleanup stopped")
+            if exact is None or desired["member"] not in exact.get("members", []):
+                entry.update(cleanup_status="already_absent", removed_by_cleanup=False)
+                self.save()
+                return
+            if not before.get("etag"):
+                raise ProvisionError(f"IAM policy for {target} has no etag; cleanup was not attempted")
+            updated = copy.deepcopy(before)
+            expected_after = copy.deepcopy(before)
+            selected = next(binding for binding in updated.get("bindings", []) if binding.get("role") == desired["role"] and
+                            binding.get("condition") == desired.get("condition"))
+            expected_selected = next(binding for binding in expected_after.get("bindings", []) if binding.get("role") == desired["role"] and
+                                     binding.get("condition") == desired.get("condition"))
+            selected["members"].remove(desired["member"])
+            expected_selected["members"].remove(desired["member"])
+            if not selected["members"]:
+                updated["bindings"].remove(selected)
+                expected_after["bindings"].remove(expected_selected)
+            with tempfile.TemporaryDirectory() as temp_dir:
+                path = Path(temp_dir) / "policy.json"
+                path.write_text(json.dumps(updated))
+                result = self.run(["gcloud", *set_args, str(path), "--quiet"])
+            if result.returncode:
+                if _etag_conflict(result) and attempt + 1 < MAX_ETAG_ATTEMPTS:
+                    continue
+                raise ProvisionError(f"IAM verifier cleanup for {target} failed; inspect policy read-back before retry")
+            after = json.loads(self.gcloud(*get_args) or "{}")
+            if (not after.get("etag") or self.policy_has(after, desired) or
+                    not self.policy_preserves(expected_after, after)):
+                raise ProvisionError(f"IAM verifier cleanup read-back for {target} failed preservation checks")
+            entry.update(cleanup_status="verified_removed", cleanup_after_etag=after["etag"],
+                         cleanup_after_policy=after, removed_by_cleanup=True)
+            self.save()
+            return
+        raise ProvisionError(f"IAM policy for {target} kept changing; cleanup stopped after fresh etag retries")
+
+    def cleanup_verifier_grants(self, workflow_evidence_path: Path) -> None:
+        try:
+            workflow = json.loads(workflow_evidence_path.read_text())
+        except (OSError, json.JSONDecodeError) as error:
+            raise ProvisionError("workflow verification evidence is unreadable; verifier cleanup stopped") from error
+        if (self.evidence.get("result") != "owner_bootstrap_applied_and_read_back" or
+                workflow.get("result") != "workflow_deployed_and_read_back" or
+                workflow.get("schema") != "lwc-344-exportjob-dev-provision-v2" or
+                workflow.get("source", {}).get("ref") != "refs/heads/develop" or
+                workflow.get("source", {}).get("sha") != self.evidence.get("source", {}).get("sha") or
+                workflow.get("target") != self.evidence.get("target") or
+                workflow.get("image", {}).get("status") != "verified"):
+            raise ProvisionError("cleanup requires matching owner-bootstrap and successful workflow verification evidence")
+        job = workflow.get("resources", {}).get(self.c["job"], {})
+        if job.get("creation_status") != "verified" and job.get("readback_status") != "verified":
+            raise ProvisionError("cleanup requires verified Cloud Run Job read-back evidence")
+        roles = {key: f"projects/{self.c['project']}/roles/{value[0]}" for key, value in VERIFIER_ROLES.items()}
+        specs = [
+            ("project:" + self.c["project"], roles["roleReadback"], ["projects", "get-iam-policy", self.c["project"], "--format=json", "--quiet"],
+             ["projects", "set-iam-policy", self.c["project"]]),
+            ("project:" + self.c["project"], roles["projectPolicyReadback"], ["projects", "get-iam-policy", self.c["project"], "--format=json", "--quiet"],
+             ["projects", "set-iam-policy", self.c["project"]]),
+            ("serviceAccount:" + self.c["signing_service_account"], roles["signerPolicyReadback"],
+             ["iam", "service-accounts", "get-iam-policy", self.c["signing_service_account"], "--project", self.c["project"], "--format=json", "--quiet"],
+             ["iam", "service-accounts", "set-iam-policy", self.c["signing_service_account"], "--project", self.c["project"]]),
+        ]
+        for target, role, get_args, set_args in specs:
+            desired = {"role": role, "member": DEPLOYER}
+            if not any(item.get("target") == target and item.get("binding") == desired and
+                       item.get("status") == "existing_verified" and item.get("before_etag")
+                       for item in workflow.get("policies", [])):
+                raise ProvisionError(f"workflow evidence does not verify {role}; verifier cleanup stopped")
+            entry = next((item for item in reversed(self.evidence["policies"])
+                          if item.get("target") == target and item.get("binding") == desired), None)
+            if entry is None:
+                raise ProvisionError(f"owner evidence has no exact bootstrap record for {role}")
+            if entry.get("added_by_this_run") is True:
+                self.remove_policy_member(target, get_args, set_args, desired, entry)
+        self.evidence["verifier_cleanup"] = "complete"
         self.save()
 
     def owner_prerequisites(self) -> tuple[str, str, str, str, str]:
@@ -588,6 +725,7 @@ class Provisioner:
         self.verify_service_account(c["signing_service_account"])
         roles = tuple(self.verify_custom_role(key) for key in
                       ("objectLister", "sourceReader", "archiveWriter", "blobSigner", "readyArchiveReader"))
+        verifier_roles = self.verify_verifier_roles()
         self.bucket_ready()
         runtime = "serviceAccount:" + c["runtime_service_account"]
         datastore = {"role": "roles/datastore.user", "member": runtime, "condition": {
@@ -609,6 +747,13 @@ class Provisioner:
         signer_binding = {"role": roles[3], "member": "serviceAccount:" + c["bff_service_account"]}
         self.verify_policy("serviceAccount:" + c["signing_service_account"],
             ["iam", "service-accounts", "get-iam-policy", c["signing_service_account"], "--project", c["project"], "--format=json", "--quiet"], signer_binding)
+        for key in ("roleReadback", "projectPolicyReadback"):
+            self.verify_policy("project:" + c["project"],
+                ["projects", "get-iam-policy", c["project"], "--format=json", "--quiet"],
+                {"role": verifier_roles[key], "member": DEPLOYER})
+        self.verify_policy("serviceAccount:" + c["signing_service_account"],
+            ["iam", "service-accounts", "get-iam-policy", c["signing_service_account"], "--project", c["project"], "--format=json", "--quiet"],
+            {"role": verifier_roles["signerPolicyReadback"], "member": DEPLOYER})
         return roles
 
     def run_owner_bootstrap(self) -> None:
@@ -620,13 +765,18 @@ class Provisioner:
         archive_role = self.ensure_custom_role("archiveWriter")
         signer_role = self.ensure_custom_role("blobSigner")
         ready_archive_role = self.ensure_custom_role("readyArchiveReader")
+        verifier_roles = self.ensure_verifier_roles()
         self.bucket_ready()
         self.apply_iam(list_role, source_role, archive_role, signer_role, ready_archive_role)
+        self.apply_verifier_iam(verifier_roles)
         self.evidence["result"] = "owner_bootstrap_applied_and_read_back"
         self.save()
 
     def run_workflow(self, sha: str) -> None:
         self.evidence["source"]["sha"] = sha
+        configured_account = os.getenv("WIF_SERVICE_ACCOUNT", "")
+        if configured_account != DEPLOYER.removeprefix("serviceAccount:"):
+            raise ProvisionError("workflow identity differs from the reviewed DEV deployer service account")
         self.owner_prerequisites()
         image = self.build_image(sha)
         self.ensure_job(image)
@@ -637,9 +787,16 @@ class Provisioner:
 
 def main() -> int:
     try:
-        owner_bootstrap = sys.argv[1:] == ["--owner-bootstrap"]
-        if sys.argv[1:] and not owner_bootstrap:
-            raise ProvisionError("the only supported option is --owner-bootstrap")
+        parser = argparse.ArgumentParser()
+        modes = parser.add_mutually_exclusive_group()
+        modes.add_argument("--owner-bootstrap", action="store_true")
+        modes.add_argument("--cleanup-verifier-grants", action="store_true")
+        parser.add_argument("--workflow-evidence", type=Path)
+        args = parser.parse_args()
+        if args.workflow_evidence and not args.cleanup_verifier_grants:
+            raise ProvisionError("--workflow-evidence is used only with --cleanup-verifier-grants")
+        if args.cleanup_verifier_grants and not args.workflow_evidence:
+            raise ProvisionError("cleanup requires --workflow-evidence from a successful matching DEV workflow run")
         c = load_contract()
         sha, ref = os.getenv("SOURCE_SHA", ""), os.getenv("SOURCE_REF", "")
         if ref != "refs/heads/develop" or not re.fullmatch(r"[0-9a-f]{40}", sha):
@@ -648,8 +805,10 @@ def main() -> int:
         if checked_out != sha:
             raise ProvisionError("checked out source does not match the workflow SHA")
         provisioner = Provisioner(c)
-        if owner_bootstrap:
+        if args.owner_bootstrap:
             provisioner.run_owner_bootstrap()
+        elif args.cleanup_verifier_grants:
+            provisioner.cleanup_verifier_grants(args.workflow_evidence)
         else:
             provisioner.run_workflow(sha)
         return 0

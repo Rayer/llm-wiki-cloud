@@ -78,6 +78,7 @@ jobs:
         env:
           SOURCE_SHA: ${{ github.sha }}
           SOURCE_REF: ${{ github.ref }}
+          WIF_SERVICE_ACCOUNT: ${{ secrets.WIF_SERVICE_ACCOUNT }}
         run: python3 deploy/provision/exportjob_dev.py
 
       - name: Upload provisioning and inverse evidence
