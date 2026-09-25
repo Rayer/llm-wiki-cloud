@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import argparse
+import ast
 import copy
 import json
 import os
@@ -86,7 +87,44 @@ def _redacted_diagnostic(value: str) -> str:
     value = re.sub(r"(?i)\b([A-Z0-9_]*(?:TOKEN|SECRET|PASSWORD|CREDENTIAL|PRIVATE_KEY)[A-Z0-9_]*\s*[=:]\s*)(?:\"[^\"]*\"|'[^']*'|[^\s,;]+)", r"\1[REDACTED]", value)
     value = re.sub(r"\bya29\.[A-Za-z0-9._~-]+", "[REDACTED TOKEN]", value)
     value = re.sub(r"\beyJ[A-Za-z0-9_-]+\.[A-Za-z0-9_-]+\.[A-Za-z0-9_-]+", "[REDACTED JWT]", value)
+    value = re.sub(r"(?i)(https?://)[^\s/@:]+:[^\s/@]+@", r"\1[REDACTED]@", value)
     return " ".join(value.split())[:500]
+
+
+def _is_absent_describe(args: tuple[str, ...], output: str) -> bool:
+    """Recognize only provider not-found responses for supported resource describes."""
+    message = output.lower()
+    operation = args[:3]
+    supported = {("run", "jobs", "describe"), ("iam", "service-accounts", "describe"), ("iam", "roles", "describe")}
+    if operation not in supported:
+        return False
+    if re.search(r"permission_denied|permission denied|access denied|unauthenticated|authentication|forbidden|timed? out|timeout|connection|transport|unavailable|deadline exceeded|\b(?:401|403)\b", message):
+        return False
+    if "not_found" in message or "not found" in message:
+        return True
+    expected = {"run": "job", "iam": "service account" if operation[1] == "service-accounts" else "role"}[operation[0]]
+    return re.search(rf"cannot find {expected} \[[^\]]+\]", message) is not None
+
+
+def _resource_iam_source_signature(source: str) -> str:
+    tree = ast.parse(source)
+    functions = {"load_contract", "ready_archive_binding"}
+    methods = {"image_and_job_config", "job_matches", "ensure_job", "apply_job_iam", "owner_prerequisites",
+               "verify_policy", "ensure_custom_role", "ensure_verifier_roles", "apply_iam", "apply_verifier_iam",
+               "verify_service_account", "verify_custom_role", "verify_verifier_roles", "bucket_ready"}
+    constants = {"DB_CONDITION", "STORAGE_USERS", "STORAGE_EXPORTS", "STORAGE_READY_ARCHIVES", "DEPLOYER", "VERIFIER_ROLES"}
+    selected = []
+    for node in tree.body:
+        if isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef)) and node.name in functions:
+            selected.append(ast.dump(node, include_attributes=False))
+        elif isinstance(node, (ast.Assign, ast.AnnAssign)):
+            targets = node.targets if isinstance(node, ast.Assign) else [node.target]
+            if any(isinstance(target, ast.Name) and target.id in constants for target in targets):
+                selected.append(ast.dump(node, include_attributes=False))
+        elif isinstance(node, ast.ClassDef) and node.name == "Provisioner":
+            selected.extend(ast.dump(method, include_attributes=False) for method in node.body
+                            if isinstance(method, (ast.FunctionDef, ast.AsyncFunctionDef)) and method.name in methods)
+    return "\n".join(selected)
 
 
 def _build_id_from(result: subprocess.CompletedProcess[str]) -> str | None:
@@ -150,9 +188,14 @@ class Provisioner:
         result = self.run(["gcloud", *args])
         if result.returncode:
             text = result.stderr + result.stdout
-            if allow_missing and ("NOT_FOUND" in text or "not found" in text.lower()):
+            if allow_missing and _is_absent_describe(args, text):
                 return None
-            raise ProvisionError(f"gcloud {args[0]} failed ({result.returncode}); inspect the workflow log")
+            diagnostic = _redacted_diagnostic(text) or "no provider diagnostic"
+            record = {"operation": "gcloud " + " ".join(args[:3]), "exit_code": result.returncode,
+                      "diagnostic": diagnostic}
+            self.evidence["provider_failure"] = record
+            self.save()
+            raise ProvisionError(f"gcloud {args[0]} failed ({result.returncode}): {diagnostic}")
         return result.stdout
 
     def build_image(self, sha: str) -> str:
@@ -678,19 +721,40 @@ class Provisioner:
             return
         raise ProvisionError(f"IAM policy for {target} kept changing; cleanup stopped after fresh etag retries")
 
-    def cleanup_verifier_grants(self, workflow_evidence_path: Path) -> None:
+    def cleanup_verifier_grants(self, workflow_evidence_path: Path,
+                                owner_source_repair_evidence_path: Path | None = None) -> None:
         try:
             workflow = json.loads(workflow_evidence_path.read_text())
         except (OSError, json.JSONDecodeError) as error:
             raise ProvisionError("workflow verification evidence is unreadable; verifier cleanup stopped") from error
-        if (self.evidence.get("result") != "owner_bootstrap_applied_and_read_back" or
+        owner = self.evidence
+        repair = owner_source_repair_evidence_path is not None
+        if repair:
+            try:
+                owner = json.loads(owner_source_repair_evidence_path.read_text())
+            except (OSError, json.JSONDecodeError) as error:
+                raise ProvisionError("original owner evidence is unreadable; verifier cleanup stopped") from error
+        owner_sha = owner.get("source", {}).get("sha", "")
+        workflow_sha = workflow.get("source", {}).get("sha", "")
+        current_sha = self.evidence.get("source", {}).get("sha", "")
+        same_source = owner_sha == workflow_sha
+        if (owner.get("result") != "owner_bootstrap_applied_and_read_back" or
+                (not same_source and not repair) or
+                (repair and (not re.fullmatch(r"[0-9a-f]{40}", owner_sha) or owner_sha == workflow_sha)) or
+                owner.get("source", {}).get("ref") != "refs/heads/develop" or
                 workflow.get("result") != "workflow_deployed_and_read_back" or
                 workflow.get("schema") != "lwc-344-exportjob-dev-provision-v2" or
                 workflow.get("source", {}).get("ref") != "refs/heads/develop" or
-                workflow.get("source", {}).get("sha") != self.evidence.get("source", {}).get("sha") or
+                not re.fullmatch(r"[0-9a-f]{40}", workflow_sha) or
+                workflow.get("source", {}).get("sha") != current_sha or
+                self.evidence.get("source", {}).get("ref") != "refs/heads/develop" or
+                not re.fullmatch(r"[0-9a-f]{40}", current_sha) or
                 workflow.get("target") != self.evidence.get("target") or
+                owner.get("target") != workflow.get("target") or
                 workflow.get("image", {}).get("status") != "verified"):
             raise ProvisionError("cleanup requires matching owner-bootstrap and successful workflow verification evidence")
+        if repair:
+            self._verify_owner_contract(owner)
         job = workflow.get("resources", {}).get(self.c["job"], {})
         if job.get("creation_status") != "verified" and job.get("readback_status") != "verified":
             raise ProvisionError("cleanup requires verified Cloud Run Job read-back evidence")
@@ -704,20 +768,97 @@ class Provisioner:
              ["iam", "service-accounts", "get-iam-policy", self.c["signing_service_account"], "--project", self.c["project"], "--format=json", "--quiet"],
              ["iam", "service-accounts", "set-iam-policy", self.c["signing_service_account"], "--project", self.c["project"]]),
         ]
+        cleanup_entries = []
         for target, role, get_args, set_args in specs:
             desired = {"role": role, "member": DEPLOYER}
             if not any(item.get("target") == target and item.get("binding") == desired and
                        item.get("status") == "existing_verified" and item.get("before_etag")
                        for item in workflow.get("policies", [])):
                 raise ProvisionError(f"workflow evidence does not verify {role}; verifier cleanup stopped")
-            entry = next((item for item in reversed(self.evidence["policies"])
+            entry = next((item for item in reversed(owner["policies"])
                           if item.get("target") == target and item.get("binding") == desired), None)
             if entry is None:
                 raise ProvisionError(f"owner evidence has no exact bootstrap record for {role}")
+            if repair:
+                journal_entry = next((item for item in reversed(self.evidence["policies"])
+                                      if item.get("source_repair_owner_sha") == owner_sha and
+                                      item.get("target") == target and item.get("binding") == desired), None)
+                if journal_entry is None:
+                    journal_entry = copy.deepcopy(entry)
+                    journal_entry["source_repair_owner_sha"] = owner_sha
+                    journal_entry["source_repair_workflow_sha"] = workflow_sha
+                    if not journal_entry.get("inverse"):
+                        journal_entry["inverse"] = "Remove only this exact verifier member with a fresh-etag write; preserve and verify all other policy members."
+                    self.evidence["policies"].append(journal_entry)
+                cleanup_entries.append((target, get_args, set_args, desired, journal_entry))
+            else:
+                cleanup_entries.append((target, get_args, set_args, desired, entry))
+        if repair:
+            self.evidence["source_repair"] = {"owner_source_sha": owner_sha, "workflow_source_sha": workflow_sha,
+                                               "owner_receipt": "preserved_separate_file"}
+            self.save()
+        for target, get_args, set_args, desired, entry in cleanup_entries:
             if entry.get("added_by_this_run") is True:
                 self.remove_policy_member(target, get_args, set_args, desired, entry)
         self.evidence["verifier_cleanup"] = "complete"
         self.save()
+
+    def _verify_owner_contract(self, owner: dict) -> None:
+        """Compare preserved old-SHA owner facts with the current fixed DEV contract."""
+        source_contract = subprocess.run(["git", "show", f"{owner['source']['sha']}:deploy/provision/exportjob-dev.json"],
+                                         cwd=ROOT, text=True, capture_output=True)
+        if source_contract.returncode != 0:
+            raise ProvisionError("original owner source is unavailable; cannot validate source-repair contract")
+        try:
+            old_contract = json.loads(source_contract.stdout)
+        except json.JSONDecodeError as error:
+            raise ProvisionError("original owner source contract is invalid") from error
+        if old_contract != load_contract():
+            raise ProvisionError("DEV resource contract changed across source repair; verifier cleanup stopped")
+        source_code = subprocess.run(["git", "show", f"{owner['source']['sha']}:deploy/provision/exportjob_dev.py"],
+                                     cwd=ROOT, text=True, capture_output=True)
+        if source_code.returncode != 0 or _resource_iam_source_signature(source_code.stdout) != _resource_iam_source_signature(Path(__file__).read_text()):
+            raise ProvisionError("DEV resource or IAM implementation changed across source repair; verifier cleanup stopped")
+        expected_roles = {f"projects/{self.c['project']}/roles/{role}": sorted(perms)
+                          for role, perms in (("lwcExportObjectLister", ["storage.objects.list"]),
+                                              ("lwcExportSourceReader", ["storage.objects.get"]),
+                                              ("lwcExportArchiveWriter", ["storage.objects.create", "storage.objects.delete", "storage.objects.get", "storage.objects.update"]),
+                                              ("lwcExportBlobSigner", ["iam.serviceAccounts.signBlob"]),
+                                              ("lwcExportReadyArchiveReader", ["storage.objects.get"]),
+                                              ("lwcExportRoleReadback", ["iam.roles.get"]),
+                                              ("lwcExportProjectPolicyReadback", ["resourcemanager.projects.getIamPolicy"]),
+                                              ("lwcExportSignerPolicyReadback", ["iam.serviceAccounts.getIamPolicy"]))}
+        resources = owner.get("resources", {})
+        for email in (self.c["runtime_service_account"], self.c["signing_service_account"]):
+            entry = resources.get(email, {})
+            if entry.get("creation_status") != "verified" or not isinstance(entry.get("readback_identity"), dict):
+                raise ProvisionError("original owner evidence does not verify both DEV service accounts")
+        for name, permissions in expected_roles.items():
+            entry = resources.get(name, {})
+            identity = entry.get("readback_identity", {})
+            if (entry.get("creation_status") != "verified" or identity.get("stage") != "GA" or
+                    sorted(identity.get("included_permissions", [])) != permissions):
+                raise ProvisionError(f"original owner evidence differs from the DEV role contract: {name}")
+        policy_bindings = {(item.get("target"), json.dumps(item.get("binding"), sort_keys=True))
+                           for item in owner.get("policies", [])
+                           if item.get("status") in {"existing_verified", "verified_addition"}}
+        required = [
+            ("project:" + self.c["project"], {"role": "roles/datastore.user", "member": "serviceAccount:" + self.c["runtime_service_account"],
+             "condition": {"title": "lwc344-export-worker-dev-firestore", "description": "Limit Export worker to the DEV Firestore database", "expression": DB_CONDITION}}),
+            ("bucket:" + self.c["bucket"], {"role": "projects/llm-wiki-cloud/roles/lwcExportObjectLister", "member": "serviceAccount:" + self.c["runtime_service_account"]}),
+            ("bucket:" + self.c["bucket"], {"role": "projects/llm-wiki-cloud/roles/lwcExportSourceReader", "member": "serviceAccount:" + self.c["runtime_service_account"],
+             "condition": {"title": "lwc344-export-source-objects", "description": "Read Export source objects only", "expression": STORAGE_USERS}}),
+            ("bucket:" + self.c["bucket"], {"role": "projects/llm-wiki-cloud/roles/lwcExportArchiveWriter", "member": "serviceAccount:" + self.c["runtime_service_account"],
+             "condition": {"title": "lwc344-export-archive-objects", "description": "Manage Export temporary and ready archives only", "expression": STORAGE_EXPORTS}}),
+            ("bucket:" + self.c["bucket"], ready_archive_binding("projects/llm-wiki-cloud/roles/lwcExportReadyArchiveReader", self.c["signing_service_account"])),
+            ("serviceAccount:" + self.c["signing_service_account"], {"role": "projects/llm-wiki-cloud/roles/lwcExportBlobSigner", "member": "serviceAccount:" + self.c["bff_service_account"]}),
+        ]
+        required.extend(("project:" + self.c["project"], {"role": f"projects/{self.c['project']}/roles/{role}", "member": DEPLOYER})
+                        for role in ("lwcExportRoleReadback", "lwcExportProjectPolicyReadback"))
+        required.append(("serviceAccount:" + self.c["signing_service_account"],
+                         {"role": "projects/llm-wiki-cloud/roles/lwcExportSignerPolicyReadback", "member": DEPLOYER}))
+        if any((target, json.dumps(binding, sort_keys=True)) not in policy_bindings for target, binding in required):
+            raise ProvisionError("original owner evidence does not prove the unchanged DEV IAM contract")
 
     def owner_prerequisites(self) -> tuple[str, str, str, str, str]:
         c = self.c
@@ -792,11 +933,14 @@ def main() -> int:
         modes.add_argument("--owner-bootstrap", action="store_true")
         modes.add_argument("--cleanup-verifier-grants", action="store_true")
         parser.add_argument("--workflow-evidence", type=Path)
+        parser.add_argument("--owner-source-repair-evidence", type=Path)
         args = parser.parse_args()
         if args.workflow_evidence and not args.cleanup_verifier_grants:
             raise ProvisionError("--workflow-evidence is used only with --cleanup-verifier-grants")
         if args.cleanup_verifier_grants and not args.workflow_evidence:
             raise ProvisionError("cleanup requires --workflow-evidence from a successful matching DEV workflow run")
+        if args.owner_source_repair_evidence and not args.cleanup_verifier_grants:
+            raise ProvisionError("--owner-source-repair-evidence is only used with --cleanup-verifier-grants")
         c = load_contract()
         sha, ref = os.getenv("SOURCE_SHA", ""), os.getenv("SOURCE_REF", "")
         if ref != "refs/heads/develop" or not re.fullmatch(r"[0-9a-f]{40}", sha):
@@ -804,11 +948,12 @@ def main() -> int:
         checked_out = subprocess.check_output(["git", "rev-parse", "HEAD"], cwd=ROOT, text=True).strip()
         if checked_out != sha:
             raise ProvisionError("checked out source does not match the workflow SHA")
-        provisioner = Provisioner(c)
+        evidence_path = EVIDENCE.with_name("exportjob-dev-source-repair-evidence.json") if args.owner_source_repair_evidence else EVIDENCE
+        provisioner = Provisioner(c, evidence_path=evidence_path)
         if args.owner_bootstrap:
             provisioner.run_owner_bootstrap()
         elif args.cleanup_verifier_grants:
-            provisioner.cleanup_verifier_grants(args.workflow_evidence)
+            provisioner.cleanup_verifier_grants(args.workflow_evidence, args.owner_source_repair_evidence)
         else:
             provisioner.run_workflow(sha)
         return 0

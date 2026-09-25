@@ -127,6 +127,8 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+        with:
+          fetch-depth: 0
       - uses: actions/setup-node@cdca7365b2dadb8aad0a33bc7601856ffabcc48e # v4.3.0
         with:
           node-version: 22
@@ -136,6 +138,8 @@ jobs:
         working-directory: apps/frontend
       - name: Parse canonical workflow YAML
         run: make workflow-yaml
+      - name: Test DEV Export Job provisioning source guards
+        run: python3 -m unittest scripts.test_exportjob_provision_contract deploy.provision.test_exportjob_dev
       - name: Check smoke script syntax
         run: bash -n scripts/local-vertical-smoke.sh
       - name: Run imported workflow guard tests

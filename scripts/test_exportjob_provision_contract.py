@@ -476,6 +476,7 @@ class ExportJobProvisionContractTests(unittest.TestCase):
             owner_path = Path(temp) / "owner.json"
             workflow_path = Path(temp) / "workflow.json"
             p = Provisioner(config, run, owner_path)
+            p.evidence["source"]["ref"] = "refs/heads/develop"
             p.evidence["source"]["sha"] = "a" * 40
             p.evidence["result"] = "owner_bootstrap_applied_and_read_back"
             for key in ("roleReadback", "projectPolicyReadback"):
