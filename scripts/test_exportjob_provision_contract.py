@@ -237,6 +237,49 @@ class ExportJobProvisionContractTests(unittest.TestCase):
             with self.assertRaises(ProvisionError):
                 load_contract(path)
 
+    def test_owner_bootstrap_is_separate_from_workflow_build_and_job_deployment(self):
+        with tempfile.TemporaryDirectory() as temp:
+            p = Provisioner(load_contract(), evidence_path=Path(temp) / "evidence.json")
+            calls = []
+            p.ensure_service_account = lambda *args: calls.append(("service-account", args[0]))
+            p.ensure_custom_role = lambda key: calls.append(("custom-role", key)) or key
+            p.bucket_ready = lambda: calls.append(("bucket-ready",))
+            p.apply_iam = lambda *roles: calls.append(("owner-iam", roles))
+            p.run_owner_bootstrap()
+        self.assertEqual([call[0] for call in calls], ["service-account", "service-account"] +
+            ["custom-role"] * 5 + ["bucket-ready", "owner-iam"])
+        self.assertEqual(p.evidence["result"], "owner_bootstrap_applied_and_read_back")
+
+    def test_workflow_verifies_owner_prerequisites_before_build_and_job_mutations(self):
+        with tempfile.TemporaryDirectory() as temp:
+            p = Provisioner(load_contract(), evidence_path=Path(temp) / "evidence.json")
+            calls = []
+            p.owner_prerequisites = lambda: calls.append("verify-owner-prerequisites") or ("role",) * 5
+            p.build_image = lambda sha: calls.append("build-image") or IMAGE
+            p.ensure_job = lambda image: calls.append("create-or-verify-job")
+            p.apply_job_iam = lambda: calls.append("job-iam")
+            p.run_workflow("a" * 40)
+        self.assertEqual(calls, ["verify-owner-prerequisites", "build-image", "create-or-verify-job", "job-iam"])
+        self.assertEqual(p.evidence["result"], "workflow_deployed_and_read_back")
+
+    def test_owner_prerequisite_policy_verification_is_read_only_and_exact(self):
+        desired = {"role": "roles/datastore.user", "member": "serviceAccount:worker@example.iam.gserviceaccount.com",
+                   "condition": {"title": "dev", "expression": "resource.name == 'dev'"}}
+        calls = []
+        def run(args, **kwargs):
+            calls.append(args)
+            return subprocess.CompletedProcess(args, 0, json.dumps({"etag": "abc", "bindings": [{
+                "role": desired["role"], "members": [desired["member"]], "condition": desired["condition"]}]}), "")
+        with tempfile.TemporaryDirectory() as temp:
+            p = Provisioner(load_contract(), run, Path(temp) / "evidence.json")
+            p.verify_policy("project:llm-wiki-cloud", ["projects", "get-iam-policy", "llm-wiki-cloud"], desired)
+            saved = json.loads(p.evidence_path.read_text())
+        self.assertEqual(len(calls), 1)
+        self.assertIn("get-iam-policy", calls[0])
+        self.assertFalse(any("set-iam-policy" in part for part in calls[0]))
+        self.assertEqual(saved["policies"][0]["before_etag"], "abc")
+        self.assertFalse(saved["policies"][0]["added_by_this_run"])
+
     def test_job_is_created_when_absent_and_exact_existing_job_is_idempotent(self):
         config = load_contract()
         expected = Provisioner(config).image_and_job_config(IMAGE)

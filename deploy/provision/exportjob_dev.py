@@ -301,6 +301,15 @@ class Provisioner:
         self.resource_attempt(email, "serviceAccount", {"email": actual["email"], "name": actual["name"]},
                               create_result="verified", created=created)
 
+    def verify_service_account(self, email: str) -> None:
+        raw = self.gcloud("iam", "service-accounts", "describe", email, "--project", self.c["project"],
+                          "--format=json", "--quiet")
+        observed = json.loads(raw or "{}")
+        if observed.get("email") != email or observed.get("name", "").split("/")[-1] != email:
+            raise ProvisionError(f"required service account {email} is absent or mismatched")
+        self.resource_attempt(email, "serviceAccount", {"email": observed["email"], "name": observed["name"]},
+                              create_result="verified", created=False, first_observed="present")
+
     def image_and_job_config(self, image: str) -> dict:
         c = self.c
         return {"image": image, "service_account": c["runtime_service_account"], "env": {
@@ -409,6 +418,23 @@ class Provisioner:
         self.resource_attempt(name, "customRole", {"role_id": role_id, "included_permissions": role.get("includedPermissions", []),
                                                      "stage": role.get("stage")},
                               create_result="verified", created=created)
+        return name
+
+    def verify_custom_role(self, role_key: str) -> str:
+        c = self.c
+        role_id = {"objectLister": "lwcExportObjectLister", "sourceReader": "lwcExportSourceReader",
+                   "archiveWriter": "lwcExportArchiveWriter", "blobSigner": "lwcExportBlobSigner",
+                   "readyArchiveReader": "lwcExportReadyArchiveReader"}[role_key]
+        expected = c["storage_roles"][role_key]
+        role = json.loads(self.gcloud("iam", "roles", "describe", role_id, "--project", c["project"],
+                                      "--format=json", "--quiet") or "{}")
+        name = f"projects/{c['project']}/roles/{role_id}"
+        if (role.get("name") != name or role.get("stage") != "GA" or
+                sorted(role.get("includedPermissions", [])) != sorted(expected)):
+            raise ProvisionError(f"required custom role {role_id} is absent or differs from the reviewed permission set")
+        self.resource_attempt(name, "customRole", {"name": role["name"],
+            "included_permissions": role["includedPermissions"], "stage": role["stage"]},
+            create_result="verified", created=False, first_observed="present")
         return name
 
     def bucket_ready(self) -> None:
@@ -533,22 +559,62 @@ class Provisioner:
         ready_archive = ready_archive_binding(ready_archive_role, c["signing_service_account"])
         self.policy("bucket:" + c["bucket"], ["storage", "buckets", "get-iam-policy", f"gs://{c['bucket']}", "--format=json", "--quiet"],
                     ["storage", "buckets", "set-iam-policy", f"gs://{c['bucket']}"], ready_archive)
-        job_binding = {"role": "roles/run.jobsExecutorWithOverrides", "member": bff}
-        self.policy("job:" + c["job"], ["run", "jobs", "get-iam-policy", c["job"], "--project", project, "--region", c["region"], "--format=json", "--quiet"],
-                    ["run", "jobs", "set-iam-policy", c["job"], "--project", project, "--region", c["region"]], job_binding)
         signer_binding = {"role": signer_role, "member": bff}
         signer = c["signing_service_account"]
         self.policy("serviceAccount:" + signer,
                     ["iam", "service-accounts", "get-iam-policy", signer, "--project", project, "--format=json", "--quiet"],
                     ["iam", "service-accounts", "set-iam-policy", signer, "--project", project], signer_binding)
 
-    def run_all(self, sha: str) -> None:
-        self.evidence["source"]["sha"] = sha
-        image = self.build_image(sha)
+    def apply_job_iam(self) -> None:
+        c = self.c
+        binding = {"role": "roles/run.jobsExecutorWithOverrides",
+                   "member": "serviceAccount:" + c["bff_service_account"]}
+        self.policy("job:" + c["job"],
+                    ["run", "jobs", "get-iam-policy", c["job"], "--project", c["project"], "--region", c["region"], "--format=json", "--quiet"],
+                    ["run", "jobs", "set-iam-policy", c["job"], "--project", c["project"], "--region", c["region"]], binding)
+
+    def verify_policy(self, target: str, get_args: list[str], desired: dict) -> None:
+        policy = json.loads(self.gcloud(*get_args) or "{}")
+        if not policy.get("etag") or not self.policy_has(policy, desired):
+            raise ProvisionError(f"required IAM binding is absent or mismatched on {target}")
+        entry = {"target": target, "binding": desired, "status": "existing_verified",
+                 "before_etag": policy["etag"], "readback_policy": policy, "added_by_this_run": False}
+        self.evidence["policies"].append(entry)
+        self.save()
+
+    def owner_prerequisites(self) -> tuple[str, str, str, str, str]:
+        c = self.c
+        self.verify_service_account(c["runtime_service_account"])
+        self.verify_service_account(c["signing_service_account"])
+        roles = tuple(self.verify_custom_role(key) for key in
+                      ("objectLister", "sourceReader", "archiveWriter", "blobSigner", "readyArchiveReader"))
+        self.bucket_ready()
+        runtime = "serviceAccount:" + c["runtime_service_account"]
+        datastore = {"role": "roles/datastore.user", "member": runtime, "condition": {
+            "title": "lwc344-export-worker-dev-firestore", "description": "Limit Export worker to the DEV Firestore database",
+            "expression": DB_CONDITION}}
+        self.verify_policy("project:" + c["project"],
+            ["projects", "get-iam-policy", c["project"], "--format=json", "--quiet"], datastore)
+        bindings = [
+            {"role": roles[0], "member": runtime},
+            {"role": roles[1], "member": runtime, "condition": {
+                "title": "lwc344-export-source-objects", "description": "Read Export source objects only", "expression": STORAGE_USERS}},
+            {"role": roles[2], "member": runtime, "condition": {
+                "title": "lwc344-export-archive-objects", "description": "Manage Export temporary and ready archives only", "expression": STORAGE_EXPORTS}},
+            ready_archive_binding(roles[4], c["signing_service_account"]),
+        ]
+        for desired in bindings:
+            self.verify_policy("bucket:" + c["bucket"],
+                ["storage", "buckets", "get-iam-policy", f"gs://{c['bucket']}", "--format=json", "--quiet"], desired)
+        signer_binding = {"role": roles[3], "member": "serviceAccount:" + c["bff_service_account"]}
+        self.verify_policy("serviceAccount:" + c["signing_service_account"],
+            ["iam", "service-accounts", "get-iam-policy", c["signing_service_account"], "--project", c["project"], "--format=json", "--quiet"], signer_binding)
+        return roles
+
+    def run_owner_bootstrap(self) -> None:
         c = self.c
         self.ensure_service_account(c["runtime_service_account"], "lwc-export-worker-dev", "LWC DEV Export Worker")
         self.ensure_service_account(c["signing_service_account"], "lwc-export-signer-dev", "LWC DEV Export Signing")
-        self.ensure_job(image)
         list_role = self.ensure_custom_role("objectLister")
         source_role = self.ensure_custom_role("sourceReader")
         archive_role = self.ensure_custom_role("archiveWriter")
@@ -556,12 +622,24 @@ class Provisioner:
         ready_archive_role = self.ensure_custom_role("readyArchiveReader")
         self.bucket_ready()
         self.apply_iam(list_role, source_role, archive_role, signer_role, ready_archive_role)
-        self.evidence["result"] = "provisioned_and_read_back"
+        self.evidence["result"] = "owner_bootstrap_applied_and_read_back"
+        self.save()
+
+    def run_workflow(self, sha: str) -> None:
+        self.evidence["source"]["sha"] = sha
+        self.owner_prerequisites()
+        image = self.build_image(sha)
+        self.ensure_job(image)
+        self.apply_job_iam()
+        self.evidence["result"] = "workflow_deployed_and_read_back"
         self.save()
 
 
 def main() -> int:
     try:
+        owner_bootstrap = sys.argv[1:] == ["--owner-bootstrap"]
+        if sys.argv[1:] and not owner_bootstrap:
+            raise ProvisionError("the only supported option is --owner-bootstrap")
         c = load_contract()
         sha, ref = os.getenv("SOURCE_SHA", ""), os.getenv("SOURCE_REF", "")
         if ref != "refs/heads/develop" or not re.fullmatch(r"[0-9a-f]{40}", sha):
@@ -569,7 +647,11 @@ def main() -> int:
         checked_out = subprocess.check_output(["git", "rev-parse", "HEAD"], cwd=ROOT, text=True).strip()
         if checked_out != sha:
             raise ProvisionError("checked out source does not match the workflow SHA")
-        Provisioner(c).run_all(sha)
+        provisioner = Provisioner(c)
+        if owner_bootstrap:
+            provisioner.run_owner_bootstrap()
+        else:
+            provisioner.run_workflow(sha)
         return 0
     except (ProvisionError, OSError, ValueError, KeyError, json.JSONDecodeError) as error:
         print(f"DEV Export provisioning stopped: {error}", file=sys.stderr)
