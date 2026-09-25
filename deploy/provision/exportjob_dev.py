@@ -925,7 +925,8 @@ def main() -> int:
         checked_out = subprocess.check_output(["git", "rev-parse", "HEAD"], cwd=ROOT, text=True).strip()
         if checked_out != sha:
             raise ProvisionError("checked out source does not match the workflow SHA")
-        provisioner = Provisioner(c)
+        evidence_path = EVIDENCE.with_name("exportjob-dev-source-repair-evidence.json") if args.owner_source_repair_evidence else EVIDENCE
+        provisioner = Provisioner(c, evidence_path=evidence_path)
         if args.owner_bootstrap:
             provisioner.run_owner_bootstrap()
         elif args.cleanup_verifier_grants:
