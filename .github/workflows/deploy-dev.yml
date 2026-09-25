@@ -4,7 +4,7 @@ on:
   workflow_dispatch:
     inputs:
       components:
-        description: Explicit components to deploy (comma-separated allowlist)
+        description: Explicit components to deploy, or provision-exportjob-dev for DEV prerequisites
         required: true
         type: string
 
@@ -14,7 +14,7 @@ concurrency:
 
 jobs:
   deploy:
-    if: github.ref == 'refs/heads/develop'
+    if: github.ref == 'refs/heads/develop' && inputs.components != 'provision-exportjob-dev'
     uses: ./.github/workflows/cd.yml
     secrets: inherit
     permissions:
@@ -29,9 +29,18 @@ jobs:
       config_path: deploy/environments/development.yaml
       components: ${{ inputs.components }}
 
+  provision-exportjob-dev:
+    if: github.ref == 'refs/heads/develop' && inputs.components == 'provision-exportjob-dev'
+    uses: ./.github/workflows/provision-exportjob-dev.yml
+    secrets: inherit
+    permissions:
+      contents: read
+      actions: read
+      id-token: write
+
   main-fast-forward-eligible:
     name: main-fast-forward-eligible
-    if: ${{ always() && github.event_name == 'workflow_dispatch' && github.ref == 'refs/heads/develop' }}
+    if: ${{ always() && github.event_name == 'workflow_dispatch' && github.ref == 'refs/heads/develop' && inputs.components != 'provision-exportjob-dev' }}
     needs: deploy
     runs-on: ubuntu-latest
     permissions:

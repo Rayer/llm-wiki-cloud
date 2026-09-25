@@ -188,11 +188,15 @@ class CDContractTests(unittest.TestCase):
                 expected_jobs = {details["job"]}
                 if filename == "deploy-dev.yml":
                     expected_jobs.add("main-fast-forward-eligible")
+                    expected_jobs.add("provision-exportjob-dev")
                 self.assertEqual(set(workflow["jobs"]), expected_jobs)
                 job = workflow["jobs"][details["job"]]
+                want_guard = f"github.ref == 'refs/heads/{details['branch']}'"
+                if filename == "deploy-dev.yml":
+                    want_guard += " && inputs.components != 'provision-exportjob-dev'"
                 self.assertEqual(
                     job.get("if"),
-                    f"github.ref == 'refs/heads/{details['branch']}'",
+                    want_guard,
                 )
                 self.assertEqual(job.get("uses"), shared_workflow)
                 self.assertEqual(job.get("secrets"), "inherit")
@@ -528,7 +532,7 @@ class CDContractTests(unittest.TestCase):
         self.assertEqual(job.get("needs"), "deploy")
         self.assertEqual(
             job.get("if"),
-            "${{ always() && github.event_name == 'workflow_dispatch' && github.ref == 'refs/heads/develop' }}",
+            "${{ always() && github.event_name == 'workflow_dispatch' && github.ref == 'refs/heads/develop' && inputs.components != 'provision-exportjob-dev' }}",
         )
         self.assertEqual(job.get("permissions"), {"contents": "read", "statuses": "write"})
         steps = job["steps"]
@@ -730,16 +734,25 @@ class CDContractTests(unittest.TestCase):
 
     def test_export_prerequisite_workflow_isolated_to_develop_and_reuses_existing_auth(self):
         source = (ROOT / ".github/workflows/provision-exportjob-dev.yml").read_text()
-        self.assertIn("workflow_dispatch:", source)
+        self.assertIn("workflow_call:", source)
+        self.assertNotIn("workflow_dispatch:", source)
         self.assertIn("if: github.ref == 'refs/heads/develop'", source)
         self.assertIn("workload_identity_provider: ${{ secrets.WIF_PROVIDER }}", source)
         self.assertIn("service_account: ${{ secrets.WIF_SERVICE_ACCOUNT }}", source)
         self.assertNotIn("gcloud projects add-iam-policy-binding", source)
-        self.assertNotIn("deploy-dev.yml", source)
         deploy = (ROOT / ".github/workflows/deploy-dev.yml").read_text()
-        for lane in (source, deploy):
-            self.assertIn("group: lwc-development-deploy", lane)
-            self.assertIn("cancel-in-progress: false", lane)
+        self.assertIn("      components:", deploy)
+        self.assertIn("        type: string", deploy)
+        self.assertNotIn("      operation:", deploy)
+        self.assertIn("if: github.ref == 'refs/heads/develop' && inputs.components == 'provision-exportjob-dev'", deploy)
+        self.assertIn("if: github.ref == 'refs/heads/develop' && inputs.components != 'provision-exportjob-dev'", deploy)
+        self.assertIn("uses: ./.github/workflows/provision-exportjob-dev.yml", deploy)
+        self.assertIn("group: lwc-development-deploy", deploy)
+        self.assertIn("cancel-in-progress: false", deploy)
+        self.assertNotIn("concurrency:", source)
+        runbook = (ROOT / "docs/deployment/lwc-344-dev-export-provisioning.md").read_text()
+        self.assertIn("gh workflow run deploy-dev.yml --ref develop -f components=provision-exportjob-dev", runbook)
+        self.assertIn("do not dispatch `provision-exportjob-dev.yml` directly", runbook)
         self.assertIn("actions: read", source)
         self.assertIn(".head_sha == $sha", source)
         self.assertIn(".path == \".github/workflows/ci.yml\"", source)

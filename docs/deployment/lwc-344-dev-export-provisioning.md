@@ -1,6 +1,6 @@
 # LWC-344 DEV Export prerequisite provisioning
 
-The Export Job has a separate, first-time provisioning workflow. It is restricted to `develop` and the fixed DEV contract in `deploy/provision/exportjob-dev.json`; it does not enable `export_job` in the normal deployment config or run the Job.
+The Export Job has a separate, first-time provisioning workflow. It is restricted to `develop` and the fixed DEV contract in `deploy/provision/exportjob-dev.json`; it does not enable `export_job` in the normal deployment config or run the Job. The provisioning workflow is reusable only; invoke it through the already registered `deploy-dev.yml` entry workflow with the exact selector `components=provision-exportjob-dev`.
 
 ## Contract
 
@@ -26,7 +26,7 @@ Each custom role must already match its exact reviewed permission set if present
 ## Operator runbook
 
 1. Review and merge this source PR to `develop`; wait for canonical CI on the resulting full SHA.
-2. On that exact `develop` SHA, dispatch **Provision DEV Export Job prerequisites** in GitHub Actions with the protected `Development` environment. Do not dispatch it on `main` or a tag.
+2. From the repository root, dispatch the already registered wrapper on that exact `develop` SHA with this command: `gh workflow run deploy-dev.yml --ref develop -f components=provision-exportjob-dev`. The existing `components` string input is retained so GitHub's default-branch dispatch schema accepts the request; the selected `develop` revision routes only this exact value to the reusable provisioning workflow. The protected `Development` environment is set by the called workflow. Do not dispatch it on `main` or a tag, and do not dispatch `provision-exportjob-dev.yml` directly.
 3. Inspect the workflow result and download `exportjob-dev-provision-<sha>-<run>-<attempt>`. Require `result=provisioned_and_read_back`, an immutable image digest, the exact resource list, etags, full before/after policies, and verified inverse binding records. A failed/partial run is recovered by dispatching the reviewed workflow again after resolving its reported mismatch; it never updates a mismatched existing Job or role.
 4. Keep `deploy/environments/development.yaml` export disabled until the provisioning evidence is reviewed. Enabling it and deploying the BFF/Export Job are separate reviewed source and DEV deployment steps; this workflow does not run an Export execution or establish DEV acceptance.
 
