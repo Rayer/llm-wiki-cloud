@@ -77,7 +77,11 @@ func TestFixedCDEntryWorkflowsUseCanonicalSourceAndConfig(t *testing.T) {
 				t.Fatal("components must be the only workflow input")
 			}
 			job := yamlMap(t, yamlMap(t, document["jobs"], "jobs")[tc.job], "job")
-			if job["if"] != "github.ref == 'refs/heads/"+tc.branch+"'" {
+			wantGuard := "github.ref == 'refs/heads/" + tc.branch + "'"
+			if tc.name == "deploy-dev.yml" {
+				wantGuard += " && inputs.components != 'provision-exportjob-dev'"
+			}
+			if job["if"] != wantGuard {
 				t.Fatalf("job ref guard = %#v", job["if"])
 			}
 			if job["uses"] != "./.github/workflows/cd.yml" {

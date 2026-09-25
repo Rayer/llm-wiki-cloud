@@ -23,7 +23,7 @@ function collectRunBlocks(value, blocks = []) {
   return blocks;
 }
 
-test('only canonical CI, fixed CD, and DEV provisioning entry workflows are active', async () => {
+test('only fixed registered workflows dispatch and DEV provisioning is selected through deploy-dev', async () => {
   const files = (await readdir(workflowDirectory)).filter((file) => file.endsWith('.yml')).sort();
   assert.deepEqual(files, ['cd.yml', 'ci.yml', 'deploy-dev.yml', 'promote-production.yml', 'provision-exportjob-dev.yml']);
   const dev = parseYaml(await workflow('deploy-dev.yml'));
@@ -35,7 +35,11 @@ test('only canonical CI, fixed CD, and DEV provisioning entry workflows are acti
   assert.deepEqual(Object.keys(production.on.workflow_dispatch.inputs), ['components']);
   assert.equal(dev.jobs.deploy.with.environment, 'Development');
   assert.equal(production.jobs.promote.with.environment, 'Production');
-  assert.deepEqual(Object.keys(provision.on), ['workflow_dispatch']);
+  assert.deepEqual(Object.keys(provision.on), ['workflow_call']);
+  assert.equal(dev.jobs['provision-exportjob-dev'].uses, './.github/workflows/provision-exportjob-dev.yml');
+  assert.equal(dev.jobs['provision-exportjob-dev'].secrets, 'inherit');
+  assert.equal(dev.jobs['provision-exportjob-dev'].if, "github.ref == 'refs/heads/develop' && inputs.components == 'provision-exportjob-dev'");
+  assert.equal(dev.jobs.deploy.if, "github.ref == 'refs/heads/develop' && inputs.components != 'provision-exportjob-dev'");
   assert.equal(provision.jobs.provision.if, "github.ref == 'refs/heads/develop'");
   assert.equal(provision.jobs.provision.environment, 'Development');
   assert.equal(provision.jobs.provision.permissions['id-token'], 'write');
@@ -51,6 +55,7 @@ test('DEV provisioning uses the existing auth identity and preserves hidden evid
   assert.equal(evidence.with['include-hidden-files'], true);
   assert.equal(evidence.with['retention-days'], 90);
   assert.match(source, /if: github\.ref == 'refs\/heads\/develop'/);
+  assert.doesNotMatch(source, /concurrency:/);
   assert.doesNotMatch(source, /refs\/heads\/main|production\.yaml|run jobs execute/);
 });
 

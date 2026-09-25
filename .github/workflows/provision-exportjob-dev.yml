@@ -1,11 +1,7 @@
 name: Provision DEV Export Job prerequisites
 
 on:
-  workflow_dispatch:
-
-concurrency:
-  group: lwc-development-deploy
-  cancel-in-progress: false
+  workflow_call:
 
 permissions:
   contents: read
