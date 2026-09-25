@@ -5,6 +5,7 @@ from pathlib import Path
 import subprocess
 import tempfile
 import unittest
+import yaml
 
 from deploy.provision.exportjob_dev import (
     CONTRACT, STORAGE_EXPORTS, STORAGE_USERS, ProvisionError, Provisioner, load_contract, ready_archive_binding,
@@ -15,6 +16,12 @@ IMAGE = "asia-east1-docker.pkg.dev/llm-wiki-cloud/cloud-run-images/llm-wiki-bff-
 
 
 class ExportJobProvisionContractTests(unittest.TestCase):
+    def test_build_submit_substitutions_are_consumed_by_cloudbuild_config(self):
+        config = yaml.safe_load((ROOT / "apps/bff/cloudbuild-exportjob.yaml").read_text())
+        args = config["steps"][0]["args"]
+        self.assertIn("${_IMAGE}", config["images"])
+        self.assertIn("--label=org.opencontainers.image.revision=${_SOURCE_SHA}", args)
+
     def _successful_build_run(self, calls, *, cli_status=0):
         build_id = "7e0c0b33-7b3e-4825-a447-81d3a280df1e"
         digest = "sha256:" + "b" * 64
