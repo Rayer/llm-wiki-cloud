@@ -1,4 +1,4 @@
 steps:
   - name: gcr.io/cloud-builders/docker
-    args: [build, -f, Dockerfile.exportjob, -t, '${_IMAGE}', .]
+    args: [build, -f, Dockerfile.exportjob, '--label=org.opencontainers.image.revision=${_SOURCE_SHA}', -t, '${_IMAGE}', .]
 images: ['${_IMAGE}']

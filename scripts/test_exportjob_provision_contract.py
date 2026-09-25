@@ -5,6 +5,7 @@ from pathlib import Path
 import subprocess
 import tempfile
 import unittest
+import yaml
 
 from deploy.provision.exportjob_dev import (
     CONTRACT, STORAGE_EXPORTS, STORAGE_USERS, ProvisionError, Provisioner, load_contract, ready_archive_binding,
@@ -15,6 +16,193 @@ IMAGE = "asia-east1-docker.pkg.dev/llm-wiki-cloud/cloud-run-images/llm-wiki-bff-
 
 
 class ExportJobProvisionContractTests(unittest.TestCase):
+    def test_build_submit_substitutions_are_consumed_by_cloudbuild_config(self):
+        config = yaml.safe_load((ROOT / "apps/bff/cloudbuild-exportjob.yaml").read_text())
+        args = config["steps"][0]["args"]
+        self.assertIn("${_IMAGE}", config["images"])
+        self.assertIn("--label=org.opencontainers.image.revision=${_SOURCE_SHA}", args)
+
+    def _successful_build_run(self, calls, *, cli_status=0):
+        build_id = "7e0c0b33-7b3e-4825-a447-81d3a280df1e"
+        digest = "sha256:" + "b" * 64
+        tag = load_contract()["artifact_registry"] + "/llm-wiki-bff-export-job:" + "a" * 40
+
+        def run(args, **kwargs):
+            calls.append(args)
+            if args[:3] == ["gcloud", "builds", "submit"]:
+                self.assertIn("--async", args)
+                self.assertIn("_SOURCE_SHA=" + "a" * 40, args[args.index("--substitutions") + 1])
+                return subprocess.CompletedProcess(args, cli_status, build_id + "\n", "log stream failed")
+            if args[:3] == ["gcloud", "builds", "describe"]:
+                return subprocess.CompletedProcess(args, 0, json.dumps({
+                    "id": build_id, "projectId": "llm-wiki-cloud", "status": "SUCCESS", "createTime": "now",
+                    "sourceProvenance": {"resolvedStorageSource": {"bucket": "source", "object": "archive.tgz", "generation": "1"}},
+                    "substitutions": {"_IMAGE": tag, "_SOURCE_SHA": "a" * 40},
+                    "results": {"images": [{"name": tag, "digest": digest}]},
+                }), "")
+            if args[:4] == ["gcloud", "artifacts", "docker", "images"]:
+                return subprocess.CompletedProcess(args, 0, digest, "")
+            self.fail("unexpected command: " + " ".join(args))
+
+        return run, build_id, digest
+
+    def test_build_success_is_reconciled_even_when_submit_cli_returns_nonzero(self):
+        calls = []
+        with tempfile.TemporaryDirectory() as temp:
+            path = Path(temp) / "evidence.json"
+            p = Provisioner(load_contract(), self._successful_build_run(calls, cli_status=1)[0], path)
+            image = p.build_image("a" * 40)
+            saved = json.loads(path.read_text())
+        self.assertTrue(image.endswith("@sha256:" + "b" * 64))
+        self.assertEqual(saved["build"]["provider_status"], "SUCCESS")
+        self.assertEqual(saved["build"]["cli_exit_code"], 1)
+        self.assertEqual(saved["build"]["source_sha"], "a" * 40)
+        self.assertEqual(saved["build"]["id"], "7e0c0b33-7b3e-4825-a447-81d3a280df1e")
+
+    def test_terminal_build_failure_is_recorded_and_not_rebuilt(self):
+        calls = []
+        with tempfile.TemporaryDirectory() as temp:
+            path = Path(temp) / "evidence.json"
+
+            def run(args, **kwargs):
+                calls.append(args)
+                if args[:3] == ["gcloud", "builds", "submit"]:
+                    return subprocess.CompletedProcess(args, 0, "7e0c0b33-7b3e-4825-a447-81d3a280df1e", "")
+                return subprocess.CompletedProcess(args, 0, json.dumps({"id": "7e0c0b33-7b3e-4825-a447-81d3a280df1e",
+                    "projectId": "llm-wiki-cloud", "status": "FAILURE", "substitutions": {
+                        "_IMAGE": load_contract()["artifact_registry"] + "/llm-wiki-bff-export-job:" + "a" * 40,
+                        "_SOURCE_SHA": "a" * 40}}), "")
+
+            p = Provisioner(load_contract(), run, path)
+            with self.assertRaisesRegex(ProvisionError, "terminal status FAILURE"):
+                p.build_image("a" * 40)
+            before = len(calls)
+            rerun = Provisioner(load_contract(), run, path)
+            with self.assertRaisesRegex(ProvisionError, "no proven operation identity"):
+                rerun.build_image("a" * 40)
+            self.assertEqual(len(calls), before)
+
+    def test_missing_build_identity_fails_closed_and_redacts_secrets(self):
+        with tempfile.TemporaryDirectory() as temp:
+            path = Path(temp) / "evidence.json"
+            def run(args, **kwargs):
+                return subprocess.CompletedProcess(args, 1, "", "WIF_SECRET=top-secret Authorization: Bearer ya29.secret")
+            p = Provisioner(load_contract(), run, path)
+            with self.assertRaisesRegex(ProvisionError, "identity is unknown") as raised:
+                p.build_image("a" * 40)
+            saved = path.read_text()
+            self.assertNotIn("top-secret", saved)
+            self.assertNotIn("ya29.secret", saved)
+            self.assertNotIn("top-secret", str(raised.exception))
+            self.assertEqual(json.loads(saved)["build"]["status"], "unknown")
+            calls = []
+            rerun = Provisioner(load_contract(), lambda args, **kwargs: calls.append(args), path)
+            with self.assertRaises(ProvisionError):
+                rerun.build_image("a" * 40)
+            self.assertEqual(calls, [])
+
+    def test_provider_build_identity_mismatch_is_unknown_and_never_reuses_image(self):
+        calls = []
+        build_id = "7e0c0b33-7b3e-4825-a447-81d3a280df1e"
+        tag = load_contract()["artifact_registry"] + "/llm-wiki-bff-export-job:" + "a" * 40
+
+        def run(args, **kwargs):
+            calls.append(args)
+            if args[:3] == ["gcloud", "builds", "submit"]:
+                return subprocess.CompletedProcess(args, 0, build_id, "")
+            return subprocess.CompletedProcess(args, 0, json.dumps({"id": "different", "projectId": "llm-wiki-cloud",
+                "status": "SUCCESS", "substitutions": {"_IMAGE": tag, "_SOURCE_SHA": "a" * 40}}), "")
+
+        with tempfile.TemporaryDirectory() as temp:
+            path = Path(temp) / "evidence.json"
+            p = Provisioner(load_contract(), run, path)
+            with self.assertRaisesRegex(ProvisionError, "identity or source provenance differs"):
+                p.build_image("a" * 40)
+            saved = json.loads(path.read_text())
+        self.assertEqual(saved["build"]["status"], "unknown")
+        self.assertEqual(saved["build"]["reason"], "provider_build_identity_or_source_mismatch")
+        self.assertFalse(any(args[:4] == ["gcloud", "artifacts", "docker", "images"] for args in calls))
+
+    def test_known_build_identity_can_be_reconciled_after_temporary_readback_failure(self):
+        calls = []
+        build_id = "7e0c0b33-7b3e-4825-a447-81d3a280df1e"
+        tag = load_contract()["artifact_registry"] + "/llm-wiki-bff-export-job:" + "a" * 40
+        digest = "sha256:" + "d" * 64
+
+        def run(args, **kwargs):
+            calls.append(args)
+            if args[:3] == ["gcloud", "builds", "submit"]:
+                return subprocess.CompletedProcess(args, 0, build_id, "")
+            if args[:3] == ["gcloud", "builds", "describe"] and sum(c[:3] == args[:3] for c in calls) == 1:
+                return subprocess.CompletedProcess(args, 1, "", "temporary provider read error")
+            if args[:3] == ["gcloud", "builds", "describe"]:
+                return subprocess.CompletedProcess(args, 0, json.dumps({"id": build_id, "projectId": "llm-wiki-cloud",
+                    "status": "SUCCESS", "substitutions": {"_IMAGE": tag, "_SOURCE_SHA": "a" * 40},
+                    "results": {"images": [{"name": tag, "digest": digest}]}}), "")
+            if args[:4] == ["gcloud", "artifacts", "docker", "images"]:
+                return subprocess.CompletedProcess(args, 0, digest, "")
+            self.fail("unexpected command")
+
+        with tempfile.TemporaryDirectory() as temp:
+            path = Path(temp) / "evidence.json"
+            first = Provisioner(load_contract(), run, path)
+            with self.assertRaisesRegex(ProvisionError, "status is unknown"):
+                first.build_image("a" * 40)
+            second = Provisioner(load_contract(), run, path)
+            image = second.build_image("a" * 40)
+            saved = json.loads(path.read_text())
+        self.assertTrue(image.endswith("@" + digest))
+        self.assertEqual(saved["build"]["id"], build_id)
+        self.assertEqual(sum(c[:3] == ["gcloud", "builds", "submit"] for c in calls), 1)
+
+    def test_source_mismatch_does_not_reuse_or_rebuild(self):
+        with tempfile.TemporaryDirectory() as temp:
+            path = Path(temp) / "evidence.json"
+            calls = []
+            p = Provisioner(load_contract(), self._successful_build_run(calls)[0], path)
+            p.build_image("a" * 40)
+            saved = json.loads(path.read_text())
+            saved["build"]["source_sha"] = "c" * 40
+            path.write_text(json.dumps(saved))
+            new_calls = []
+            rerun = Provisioner(load_contract(), lambda args, **kwargs: new_calls.append(args), path)
+            with self.assertRaisesRegex(ProvisionError, "provenance differs"):
+                rerun.build_image("a" * 40)
+            self.assertEqual(new_calls, [])
+
+    def test_legacy_same_sha_tag_without_build_identity_is_not_reused(self):
+        with tempfile.TemporaryDirectory() as temp:
+            path = Path(temp) / "evidence.json"
+            path.write_text(json.dumps({
+                "schema": "lwc-344-exportjob-dev-provision-v1",
+                "source": {"ref": "refs/heads/develop", "sha": "a" * 40},
+                "target": {"environment": "development", "project": "llm-wiki-cloud", "region": "asia-east1"},
+                "image": {"tag": load_contract()["artifact_registry"] + "/llm-wiki-bff-export-job:" + "a" * 40,
+                          "status": "verified", "reference": IMAGE},
+                "resources": {}, "policies": [],
+            }))
+            calls = []
+            p = Provisioner(load_contract(), lambda args, **kwargs: calls.append(args), path)
+            with self.assertRaisesRegex(ProvisionError, "no proven operation identity"):
+                p.build_image("a" * 40)
+            self.assertEqual(calls, [])
+
+    def test_verified_build_rerun_preserves_digest_and_evidence_without_resubmit(self):
+        with tempfile.TemporaryDirectory() as temp:
+            path = Path(temp) / "evidence.json"
+            calls = []
+            p = Provisioner(load_contract(), self._successful_build_run(calls)[0], path)
+            image = p.build_image("a" * 40)
+            before = json.loads(path.read_text())
+            rerun_calls = []
+            rerun = Provisioner(load_contract(), self._successful_build_run(rerun_calls)[0], path)
+            self.assertEqual(rerun.build_image("a" * 40), image)
+            after = json.loads(path.read_text())
+        self.assertFalse(any(args[:3] == ["gcloud", "builds", "submit"] for args in rerun_calls))
+        self.assertEqual(after["build"]["id"], before["build"]["id"])
+        self.assertEqual(after["build"]["image_digest"], before["build"]["image_digest"])
+        self.assertEqual(after["image"]["reference"], before["image"]["reference"])
+
     def job_v2(self, expected):
         return json.dumps({"apiVersion": "run.googleapis.com/v2", "template": {
             "parallelism": 1, "taskCount": 1, "template": {
