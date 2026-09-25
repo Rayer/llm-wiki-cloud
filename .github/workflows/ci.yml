@@ -136,6 +136,8 @@ jobs:
         working-directory: apps/frontend
       - name: Parse canonical workflow YAML
         run: make workflow-yaml
+      - name: Test DEV Export Job provisioning source guards
+        run: python3 -m unittest deploy.provision.test_exportjob_dev
       - name: Check smoke script syntax
         run: bash -n scripts/local-vertical-smoke.sh
       - name: Run imported workflow guard tests
