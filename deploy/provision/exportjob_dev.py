@@ -10,12 +10,14 @@ import re
 import subprocess
 import sys
 import tempfile
+import time
 
 ROOT = Path(__file__).resolve().parents[2]
 CONTRACT = ROOT / "deploy/provision/exportjob-dev.json"
 EVIDENCE = ROOT / ".provision/exportjob-dev-evidence.json"
 MAX_ETAG_ATTEMPTS = 5
 IMAGE_REPO = "llm-wiki-bff-export-job"
+BUILD_ID_RE = re.compile(r"\b[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}\b", re.I)
 DB_CONDITION = "resource.name == 'projects/llm-wiki-cloud/databases/llm-wiki-cloud-dev'"
 STORAGE_USERS = (
     "resource.type == 'storage.googleapis.com/Object' && "
@@ -68,6 +70,28 @@ def _etag_conflict(result: subprocess.CompletedProcess[str]) -> bool:
     return result.returncode != 0 and any(token in text for token in ("etag", "conditionnotmet", "precondition failed", "http 412", "status code: 412"))
 
 
+def _redacted_diagnostic(value: str) -> str:
+    value = re.sub(r"-----BEGIN [^-]+-----.*?-----END [^-]+-----", "[REDACTED PRIVATE KEY]", value, flags=re.S)
+    value = re.sub(r"(?i)(authorization\s*:\s*bearer\s+)[^\s]+", r"\1[REDACTED]", value)
+    value = re.sub(r"(?i)\b([A-Z0-9_]*(?:TOKEN|SECRET|PASSWORD|CREDENTIAL|PRIVATE_KEY)[A-Z0-9_]*\s*[=:]\s*)(?:\"[^\"]*\"|'[^']*'|[^\s,;]+)", r"\1[REDACTED]", value)
+    value = re.sub(r"\bya29\.[A-Za-z0-9._~-]+", "[REDACTED TOKEN]", value)
+    value = re.sub(r"\beyJ[A-Za-z0-9_-]+\.[A-Za-z0-9_-]+\.[A-Za-z0-9_-]+", "[REDACTED JWT]", value)
+    return " ".join(value.split())[:500]
+
+
+def _build_id_from(result: subprocess.CompletedProcess[str]) -> str | None:
+    try:
+        payload = json.loads(result.stdout)
+        if isinstance(payload, dict) and isinstance(payload.get("id"), str):
+            value = payload["id"]
+            if BUILD_ID_RE.fullmatch(value):
+                return value
+    except (json.JSONDecodeError, TypeError):
+        pass
+    match = BUILD_ID_RE.search(result.stdout)
+    return match.group(0) if match else None
+
+
 def ready_archive_binding(role: str, signing_service_account: str) -> dict:
     return {"role": role, "member": "serviceAccount:" + signing_service_account, "condition": {
         "title": "lwc344-export-ready-archive-read", "description": "Allow signed URL GETs for ready archives only",
@@ -80,10 +104,10 @@ class Provisioner:
         self.run = run
         self.evidence_path = evidence_path
         fresh = {
-            "schema": "lwc-344-exportjob-dev-provision-v1",
+            "schema": "lwc-344-exportjob-dev-provision-v2",
             "source": {"ref": os.getenv("SOURCE_REF", ""), "sha": os.getenv("SOURCE_SHA", "")},
             "target": {"environment": config["environment"], "project": config["project"], "region": config["region"]},
-            "image": None, "resources": {}, "policies": [],
+            "image": None, "build": None, "resources": {}, "policies": [],
             "inverse": "Remove only bindings and resources marked created_by_this_run; inspect consumers before deleting new Job/service accounts/custom role.",
         }
         if evidence_path.exists():
@@ -91,9 +115,17 @@ class Provisioner:
                 previous = json.loads(evidence_path.read_text())
             except (OSError, json.JSONDecodeError) as error:
                 raise ProvisionError("existing provisioning evidence is unreadable; preserve and inspect it before retry") from error
-            if previous.get("schema") != fresh["schema"] or previous.get("target") != fresh["target"]:
+            if previous.get("schema") not in (fresh["schema"], "lwc-344-exportjob-dev-provision-v1") or previous.get("target") != fresh["target"]:
                 raise ProvisionError("existing provisioning evidence belongs to a different contract or target")
+            requested_sha = os.getenv("SOURCE_SHA", "")
+            previous_sha = previous.get("source", {}).get("sha", "")
+            if requested_sha and previous_sha and requested_sha != previous_sha:
+                raise ProvisionError("existing provisioning evidence belongs to a different source SHA")
             fresh = previous
+            if fresh.get("schema") == "lwc-344-exportjob-dev-provision-v1":
+                # Legacy evidence did not retain a provider operation identity; it can never authorize image reuse.
+                fresh["build"] = {"status": "unknown", "identity": None, "reason": "legacy_evidence_has_no_build_identity"}
+                fresh["schema"] = "lwc-344-exportjob-dev-provision-v2"
             fresh["source"] = {"ref": os.getenv("SOURCE_REF", fresh.get("source", {}).get("ref", "")),
                                "sha": os.getenv("SOURCE_SHA", fresh.get("source", {}).get("sha", ""))}
         self.evidence = fresh
@@ -115,26 +147,103 @@ class Provisioner:
 
     def build_image(self, sha: str) -> str:
         tag = f"{self.c['artifact_registry']}/{IMAGE_REPO}:{sha}"
+        source = self.evidence.get("source", {})
+        if not source.get("sha"):
+            source["sha"] = sha
+            self.evidence["source"] = source
+            self.save()
+        build = self.evidence.get("build")
+        if build is not None:
+            if source.get("sha") != sha:
+                raise ProvisionError("prior build evidence source SHA differs; refusing image reuse or rebuild")
+            if (build.get("status") not in {"verified", "submitted", "unknown"} or
+                    not BUILD_ID_RE.fullmatch(str(build.get("id", "")))):
+                raise ProvisionError("prior build attempt has no proven operation identity; inspect evidence and reconcile before retry")
+            if build.get("source_sha") != sha or build.get("image_tag") != tag:
+                raise ProvisionError("prior build provenance differs; refusing image reuse or rebuild")
+            if build.get("reason") in {"provider_build_identity_or_source_mismatch", "successful_build_has_no_unique_image_digest",
+                                        "registry_digest_does_not_match_build_result"}:
+                raise ProvisionError("prior provider read-back mismatched; refusing image reuse or rebuild")
+            return self._verify_build(build, tag, sha, poll=build.get("status") != "verified")
+
+        self.evidence["build"] = {"status": "submitting", "id": None, "project": self.c["project"],
+                                   "region": "global", "source_sha": sha, "source_ref": source.get("ref", ""),
+                                   "image_tag": tag, "cli_exit_code": None}
         self.evidence["image"] = {"tag": tag, "status": "pending"}
         self.save()
-        try:
-            self.gcloud("builds", "submit", "apps/bff", "--project", self.c["project"],
-                        "--config", "apps/bff/cloudbuild-exportjob.yaml", "--substitutions", f"_IMAGE={tag}", "--quiet")
-        except ProvisionError:
+        command = ["gcloud", "builds", "submit", "apps/bff", "--project", self.c["project"], "--region", "global",
+                   "--config", "apps/bff/cloudbuild-exportjob.yaml", "--substitutions", f"_IMAGE={tag},_SOURCE_SHA={sha}",
+                   "--async", "--format=value(id)", "--quiet"]
+        result = self.run(command)
+        build_id = _build_id_from(result)
+        self.evidence["build"].update(cli_exit_code=result.returncode)
+        if result.returncode != 0:
+            self.evidence["build"]["diagnostic"] = _redacted_diagnostic(result.stderr or result.stdout)
+        if build_id is None:
+            self.evidence["build"].update(status="unknown", reason="submit_returned_no_build_identity")
             self.evidence["image"]["status"] = "unknown"
             self.save()
-            raise
-        self.evidence["image"]["status"] = "build_submitted"
+            raise ProvisionError("Cloud Build submission identity is unknown; refusing an automatic retry")
+        self.evidence["build"].update(id=build_id, status="submitted")
         self.save()
-        digest = self.gcloud("artifacts", "docker", "images", "describe", tag, "--project", self.c["project"],
-                             "--format=value(image_summary.digest)", "--quiet")
-        digest = (digest or "").strip()
-        if not re.fullmatch(r"sha256:[0-9a-f]{64}", digest):
-            raise ProvisionError("Cloud Build image digest read-back was invalid")
-        image = f"{self.c['artifact_registry']}/{IMAGE_REPO}@{digest}"
-        self.evidence["image"].update(status="verified", reference=image)
-        self.save()
-        return image
+        return self._verify_build(self.evidence["build"], tag, sha, poll=True)
+
+    def _verify_build(self, build: dict, tag: str, sha: str, *, poll: bool = False) -> str:
+        deadline = time.monotonic() + (600 if poll else 0)
+        while True:
+            result = self.run(["gcloud", "builds", "describe", build["id"], "--project", self.c["project"],
+                               "--region", "global", "--format=json", "--quiet"])
+            if result.returncode != 0:
+                build.update(status="unknown", reason="provider_status_readback_failed",
+                             diagnostic=_redacted_diagnostic(result.stderr or result.stdout))
+                self.save()
+                raise ProvisionError("Cloud Build status is unknown; inspect the recorded build identity before retry")
+            try:
+                observed = json.loads(result.stdout)
+            except json.JSONDecodeError as error:
+                build.update(status="unknown", diagnostic="provider_build_readback_invalid")
+                self.save()
+                raise ProvisionError("Cloud Build status read-back was invalid") from error
+            if (observed.get("id") != build["id"] or observed.get("projectId") != self.c["project"] or
+                    observed.get("substitutions", {}).get("_IMAGE") != tag or
+                    observed.get("substitutions", {}).get("_SOURCE_SHA") != sha):
+                build.update(status="unknown", reason="provider_build_identity_or_source_mismatch")
+                self.save()
+                raise ProvisionError("Cloud Build identity or source provenance differs; refusing image reuse")
+            provider_status = observed.get("status")
+            build.update(provider_status=provider_status, create_time=observed.get("createTime"),
+                         source_provenance=observed.get("sourceProvenance"),
+                         substitutions={key: observed.get("substitutions", {}).get(key) for key in ("_IMAGE", "_SOURCE_SHA")})
+            self.save()
+            if provider_status == "SUCCESS":
+                images = observed.get("results", {}).get("images", [])
+                matching = [item for item in images if item.get("name") == tag and re.fullmatch(r"sha256:[0-9a-f]{64}", item.get("digest", ""))]
+                if len(matching) != 1:
+                    build.update(status="unknown", reason="successful_build_has_no_unique_image_digest")
+                    self.save()
+                    raise ProvisionError("successful Cloud Build did not provide one matching immutable image digest")
+                image = f"{self.c['artifact_registry']}/{IMAGE_REPO}@{matching[0]['digest']}"
+                digest = self.gcloud("artifacts", "docker", "images", "describe", tag, "--project", self.c["project"],
+                                     "--format=value(image_summary.digest)", "--quiet")
+                if (digest or "").strip() != matching[0]["digest"]:
+                    build.update(status="unknown", reason="registry_digest_does_not_match_build_result")
+                    self.save()
+                    raise ProvisionError("Artifact Registry digest does not match the Cloud Build result")
+                build.update(status="verified", image_digest=matching[0]["digest"])
+                self.evidence["image"] = {"tag": tag, "status": "verified", "reference": image}
+                self.save()
+                return image
+            if provider_status in {"FAILURE", "INTERNAL_ERROR", "TIMEOUT", "CANCELLED", "EXPIRED"}:
+                build.update(status="failed")
+                self.evidence["image"]["status"] = "failed"
+                self.save()
+                raise ProvisionError(f"Cloud Build reached terminal status {provider_status}; refusing an automatic retry")
+            if not poll or time.monotonic() >= deadline:
+                build.update(status="unknown", reason="build_status_not_terminal")
+                self.evidence["image"]["status"] = "unknown"
+                self.save()
+                raise ProvisionError("Cloud Build has no verified terminal status; refusing an automatic retry")
+            time.sleep(5)
 
     def resource_attempt(self, key: str, kind: str, identity: dict, *, create_result: str | None = None,
                          created: bool | None = None, config: dict | None = None,
