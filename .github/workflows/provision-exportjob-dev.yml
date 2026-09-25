@@ -2,6 +2,10 @@ name: Provision DEV Export Job prerequisites
 
 on:
   workflow_call:
+    inputs:
+      continuation_run_id:
+        required: false
+        type: string
 
 permissions:
   contents: read
@@ -21,7 +25,7 @@ jobs:
         uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
         with:
           ref: ${{ github.sha }}
-          fetch-depth: 1
+          fetch-depth: 0
           persist-credentials: false
 
       - name: Require successful canonical CI for this exact SHA
@@ -47,8 +51,25 @@ jobs:
         env:
           GH_TOKEN: ${{ github.token }}
           SOURCE_SHA: ${{ github.sha }}
+          CONTINUATION_RUN_ID: ${{ inputs.continuation_run_id }}
         run: |
           set -Eeuo pipefail
+          if [[ -n "$CONTINUATION_RUN_ID" ]]; then
+            [[ "$CONTINUATION_RUN_ID" =~ ^[0-9]+$ ]]
+            artifacts="$(gh api "repos/${GITHUB_REPOSITORY}/actions/runs/${CONTINUATION_RUN_ID}/artifacts?per_page=100")"
+            name="$(jq -er --arg run "$CONTINUATION_RUN_ID" '
+              [.artifacts[] | select(.expired == false and
+                (.name | test("^exportjob-dev-provision-[0-9a-f]{40}-" + $run + "-[1-9][0-9]*$")))]
+              | if length == 1 then .[0].name else error("expected one exact prior DEV provisioning artifact") end
+            ' <<<"$artifacts")"
+            mkdir -p "$RUNNER_TEMP/exportjob-prior-evidence"
+            gh run download "$CONTINUATION_RUN_ID" --repo "$GITHUB_REPOSITORY" --name "$name" --dir "$RUNNER_TEMP/exportjob-prior-evidence"
+            prior_file="$(find "$RUNNER_TEMP/exportjob-prior-evidence" -type f -name exportjob-dev-evidence.json -print -quit)"
+            [[ -n "$prior_file" ]]
+            mkdir -p .provision
+            cp "$prior_file" .provision/exportjob-dev-prior-evidence.json
+            exit 0
+          fi
           prefix="exportjob-dev-provision-${SOURCE_SHA}-"
           artifacts="$(gh api --paginate --slurp "repos/${GITHUB_REPOSITORY}/actions/artifacts?per_page=100")"
           prior="$(jq -r --arg prefix "$prefix" '
@@ -79,7 +100,17 @@ jobs:
           SOURCE_SHA: ${{ github.sha }}
           SOURCE_REF: ${{ github.ref }}
           WIF_SERVICE_ACCOUNT: ${{ secrets.WIF_SERVICE_ACCOUNT }}
-        run: python3 deploy/provision/exportjob_dev.py
+          CONTINUATION_RUN_ID: ${{ inputs.continuation_run_id }}
+        run: |
+          set -Eeuo pipefail
+          if [[ -n "$CONTINUATION_RUN_ID" ]]; then
+            python3 deploy/provision/exportjob_dev.py \
+              --continue-existing-job-evidence .provision/exportjob-dev-prior-evidence.json \
+              --continuation-run-id "$CONTINUATION_RUN_ID" \
+              --owner-source-sha 466b54a358c5d6a9274d9c085078fc7dd2a1b938
+          else
+            python3 deploy/provision/exportjob_dev.py
+          fi
 
       - name: Upload provisioning and inverse evidence
         if: always()

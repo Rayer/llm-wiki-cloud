@@ -7,6 +7,11 @@ on:
         description: Explicit components to deploy, or provision-exportjob-dev for DEV prerequisites
         required: true
         type: string
+      exportjob_continuation_run_id:
+        description: Prior DEV workflow run ID for the reviewed existing Job continuation
+        required: false
+        default: ''
+        type: string
 
 concurrency:
   group: lwc-development-deploy
@@ -33,6 +38,8 @@ jobs:
     if: github.ref == 'refs/heads/develop' && inputs.components == 'provision-exportjob-dev'
     uses: ./.github/workflows/provision-exportjob-dev.yml
     secrets: inherit
+    with:
+      continuation_run_id: ${{ inputs.exportjob_continuation_run_id }}
     permissions:
       contents: read
       actions: read
