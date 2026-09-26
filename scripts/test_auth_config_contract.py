@@ -101,15 +101,12 @@ class AuthConfigContractTests(unittest.TestCase):
             runtime = bff_candidate('development')
             image = runtime['status']['imageDigest']
             revision_name = runtime['metadata']['name']
-            runtime['spec']['containers'][0]['env'] += [
-                {'name': 'EXPORT_JOB_URL', 'value': 'https://run.googleapis.com/v2/projects/llm-wiki-cloud/locations/asia-east1/jobs/export-job-dev:run'},
-                {'name': 'EXPORT_SIGNING_SERVICE_ACCOUNT', 'value': 'lwc-export-signer-dev@llm-wiki-cloud.iam.gserviceaccount.com'},
-            ]
             path.write_text(json.dumps({'normalized': plan}))
             verified = subprocess.run(['python3', str(script), 'verify', str(path), 'bff', revision_name, image, ''],
                                       input=json.dumps(runtime), text=True, capture_output=True)
             self.assertEqual(verified.returncode, 0, verified.stderr)
-            runtime['spec']['containers'][0]['env'][-1]['value'] = 'wrong@example.iam.gserviceaccount.com'
+            next(entry for entry in runtime['spec']['containers'][0]['env']
+                 if entry['name'] == 'EXPORT_SIGNING_SERVICE_ACCOUNT')['value'] = 'wrong@example.iam.gserviceaccount.com'
             rejected = subprocess.run(['python3', str(script), 'verify', str(path), 'bff', revision_name, image, ''],
                                       input=json.dumps(runtime), text=True, capture_output=True)
             self.assertNotEqual(rejected.returncode, 0)

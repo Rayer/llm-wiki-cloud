@@ -20,6 +20,10 @@ def candidate(environment):
             if entry['name'] != 'QUERY_STAGE_CONFIG_PATH' and 'value' in entry:
                 entry['value'] = 'preserved-dev-value'
         entries[-1]['valueFrom']['secretKeyRef'] = {'name': 'jwt-secret-dev', 'key': '7'}
+        entries.extend([
+            {'name': 'EXPORT_JOB_URL', 'value': 'https://run.googleapis.com/v2/projects/llm-wiki-cloud/locations/asia-east1/jobs/export-job-dev:run'},
+            {'name': 'EXPORT_SIGNING_SERVICE_ACCOUNT', 'value': 'lwc-export-signer-dev@llm-wiki-cloud.iam.gserviceaccount.com'},
+        ])
     value['spec']['containers'][0]['env'] += [
         {'name': 'BUCKET', 'value': 'preserved-bucket'},
         {'name': 'DEEPSEEK_API_KEY', 'valueFrom': {'secretKeyRef': {'name': 'deepseek-apikey', 'key': '3'}}},
@@ -47,15 +51,14 @@ class BFFQueryConfigTests(unittest.TestCase):
                 path = fixtures.bff_plan(environment)['query_config']['runtime_path']
                 self.assertIn('QUERY_STAGE_CONFIG_PATH=' + path, env_arg)
                 if environment == 'development':
-                    self.assertEqual(env_arg, '^|^QUERY_STAGE_CONFIG_PATH=' + path)
+                    self.assertEqual(env_arg, '^|^QUERY_STAGE_CONFIG_PATH=' + path
+                                     + '|EXPORT_JOB_URL=https://run.googleapis.com/v2/projects/llm-wiki-cloud/locations/asia-east1/jobs/export-job-dev:run'
+                                     + '|EXPORT_SIGNING_SERVICE_ACCOUNT=lwc-export-signer-dev@llm-wiki-cloud.iam.gserviceaccount.com')
                     self.assertNotIn('--update-secrets', update)
                 else:
                     self.assertIn('AUTH_SERVICE_URL=https://auth.rayer.idv.tw', env_arg)
                     self.assertIn('JWT_SECRET=jwt-secret-prod:latest', update)
-                if environment == 'development':
-                    self.assertEqual(update[update.index('--remove-env-vars') + 1], 'EXPORT_JOB_URL,EXPORT_SIGNING_SERVICE_ACCOUNT')
-                else:
-                    self.assertNotIn('--remove-env-vars', update)
+                self.assertNotIn('--remove-env-vars', update)
                 self.assertFalse(any(arg.startswith(('--clear-', '--set-', '--service-account', '--network', '--subnet')) for arg in update))
                 traffic = next(i for i, c in enumerate(commands) if c[:3] == ['run', 'services', 'update-traffic'])
                 revision = value['metadata']['name']
@@ -105,8 +108,12 @@ class BFFQueryConfigTests(unittest.TestCase):
                         action='bff_mutate', plan_override=plan, final_bad=final_bad)
                     self.assertEqual(result.returncode == 0, not final_bad, result.stderr)
                     update = next(c for c in commands if c[:3] == ['run', 'services', 'update'])
-                    self.assertEqual(update[update.index('--update-env-vars') + 1],
-                                     '^|^QUERY_STAGE_CONFIG_PATH=' + plan['query_config']['runtime_path'])
+                    expected_env = '^|^QUERY_STAGE_CONFIG_PATH=' + plan['query_config']['runtime_path']
+                    if environment == 'development':
+                        expected_env += ('|EXPORT_JOB_URL=https://run.googleapis.com/v2/projects/llm-wiki-cloud/locations/asia-east1/jobs/export-job-dev:run'
+                                         '|EXPORT_SIGNING_SERVICE_ACCOUNT=lwc-export-signer-dev@llm-wiki-cloud.iam.gserviceaccount.com')
+                    self.assertEqual(update[update.index('--update-env-vars') + 1], expected_env)
+                    self.assertNotIn('--remove-env-vars', update)
                     self.assertNotIn('--update-secrets', update)
                     self.assertTrue(any(c[:3] == ['run', 'services', 'update-traffic'] for c in commands))
                     if final_bad:
