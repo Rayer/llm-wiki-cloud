@@ -70,10 +70,14 @@ worker:
   secret_references:
     deepseek_api_key: deepseek-apikey
 
-# Enable only after the operator provisions and reads back the Cloud Run Job,
-# execution service account, and signing service account permissions.
 export_job:
-  enabled: false
+  enabled: true
+  job_name: export-job-dev
+  runtime_service_account: lwc-export-worker-dev@llm-wiki-cloud.iam.gserviceaccount.com
+  bucket: llm-wiki-data-dev
+  firestore_database_id: llm-wiki-cloud-dev
+  location: asia-east1
+  signing_service_account: lwc-export-signer-dev@llm-wiki-cloud.iam.gserviceaccount.com
 
 frontend:
   project_name: llm-wiki-frontend-dev

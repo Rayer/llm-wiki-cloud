@@ -122,9 +122,82 @@ def _resource_iam_source_signature(source: str) -> str:
             if any(isinstance(target, ast.Name) and target.id in constants for target in targets):
                 selected.append(ast.dump(node, include_attributes=False))
         elif isinstance(node, ast.ClassDef) and node.name == "Provisioner":
-            selected.extend(ast.dump(method, include_attributes=False) for method in node.body
-                            if isinstance(method, (ast.FunctionDef, ast.AsyncFunctionDef)) and method.name in methods)
+            for method in node.body:
+                if not isinstance(method, (ast.FunctionDef, ast.AsyncFunctionDef)) or method.name not in methods:
+                    continue
+                method = copy.deepcopy(method)
+                if method.name == "job_matches":
+                    assignments = [item for item in ast.walk(method) if isinstance(item, ast.Assign) and
+                                   any(isinstance(target, ast.Name) and target.id == "timeout_matches" for target in item.targets)]
+                    if len(assignments) != 1:
+                        selected.append("invalid timeout normalization")
+                        continue
+                    assignments[0].value = ast.Constant("approved timeout representation comparison")
+                selected.append(ast.dump(method, include_attributes=False))
     return "\n".join(selected)
+
+
+def _timeout_normalizer_is_approved(source: str) -> bool:
+    try:
+        tree = ast.parse(source)
+        matches = next(node for node in ast.walk(tree) if isinstance(node, ast.FunctionDef) and node.name == "_timeout_matches")
+    except (SyntaxError, StopIteration):
+        return False
+    expected = """def _timeout_matches(value: object, expected: str) -> bool:
+    seconds = {\"23h\": 82800}.get(expected)
+    if seconds is None or isinstance(value, bool):
+        return False
+    if isinstance(value, int):
+        return value == seconds
+    if not isinstance(value, str):
+        return False
+    if value == expected:
+        return True
+    duration = re.fullmatch(r\"(\\d+)([hms])\", value)
+    if duration:
+        scale = {\"h\": 3600, \"m\": 60, \"s\": 1}[duration.group(2)]
+        return int(duration.group(1)) * scale == seconds
+    return value.isdecimal() and int(value) == seconds
+"""
+    expected_node = ast.parse(expected).body[0]
+    return ast.dump(matches, include_attributes=False) == ast.dump(expected_node, include_attributes=False)
+
+
+def _timeout_source_repair_is_approved(owner_source: str, current_source: str) -> bool:
+    def expression(source: str) -> ast.expr | None:
+        try:
+            tree = ast.parse(source)
+        except SyntaxError:
+            return None
+        cls = next((node for node in tree.body if isinstance(node, ast.ClassDef) and node.name == "Provisioner"), None)
+        method = next((node for node in cls.body if isinstance(node, ast.FunctionDef) and node.name == "job_matches"), None) if cls else None
+        assignments = [item for item in ast.walk(method) if isinstance(item, ast.Assign) and
+                       any(isinstance(target, ast.Name) and target.id == "timeout_matches" for target in item.targets)] if method else []
+        return assignments[0].value if len(assignments) == 1 else None
+
+    old, new = expression(owner_source), expression(current_source)
+    expected_old = ast.parse('timeout in (expected["timeout"], "82800s", 82800)', mode="eval").body
+    expected_new = ast.parse('_timeout_matches(timeout, expected["timeout"])', mode="eval").body
+    return (old is not None and new is not None and
+            ast.dump(old, include_attributes=False) == ast.dump(expected_old, include_attributes=False) and
+            ast.dump(new, include_attributes=False) == ast.dump(expected_new, include_attributes=False))
+
+
+def _timeout_matches(value: object, expected: str) -> bool:
+    seconds = {"23h": 82800}.get(expected)
+    if seconds is None or isinstance(value, bool):
+        return False
+    if isinstance(value, int):
+        return value == seconds
+    if not isinstance(value, str):
+        return False
+    if value == expected:
+        return True
+    duration = re.fullmatch(r"(\d+)([hms])", value)
+    if duration:
+        scale = {"h": 3600, "m": 60, "s": 1}[duration.group(2)]
+        return int(duration.group(1)) * scale == seconds
+    return value.isdecimal() and int(value) == seconds
 
 
 def _build_id_from(result: subprocess.CompletedProcess[str]) -> str | None:
@@ -384,11 +457,89 @@ class Provisioner:
         containers = task.get("containers", [])
         env = {entry.get("name"): entry.get("value") for entry in (containers[0].get("env", []) if len(containers) == 1 else [])}
         timeout = task.get(timeout_key)
-        timeout_matches = timeout in (expected["timeout"], "82800s", 82800)
+        timeout_matches = _timeout_matches(timeout, expected["timeout"])
         return (len(containers) == 1 and containers[0].get("image") == expected["image"] and
                 task.get(account_key) == expected["service_account"] and env == expected["env"] and
                 timeout_matches and task.get("maxRetries") == expected["max_retries"] and
                 execution.get("parallelism") == expected["parallelism"] and execution.get("taskCount") == expected["tasks"])
+
+    def continue_existing_job(self, prior: dict, *, run_id: str, owner_source_sha: str, sha: str) -> None:
+        """Adopt only a matching Job backed by the exact previously verified Cloud Build operation."""
+        c = self.c
+        if (self.evidence.get("source", {}).get("sha") != sha or
+                self.evidence.get("source", {}).get("ref") != "refs/heads/develop"):
+            raise ProvisionError("continuation source differs from the exact current develop workflow SHA")
+        build = prior.get("build") or {}
+        old_source = prior.get("source") or {}
+        image = prior.get("image") or {}
+        resource = (prior.get("resources") or {}).get(c["job"], {})
+        image_tag = f"{c['artifact_registry']}/{IMAGE_REPO}:{old_source.get('sha', '')}"
+        digest = build.get("image_digest", "")
+        expected_ref = f"{c['artifact_registry']}/{IMAGE_REPO}@{digest}"
+        if (not run_id.isdecimal() or prior.get("target") != {"environment": "development", "project": c["project"], "region": c["region"]} or
+                old_source.get("ref") != "refs/heads/develop" or not re.fullmatch(r"[0-9a-f]{40}", old_source.get("sha", "")) or
+                build.get("status") != "verified" or build.get("source_ref") != old_source.get("ref") or
+                build.get("source_sha") != old_source.get("sha") or build.get("project") != c["project"] or
+                build.get("region") != "global" or build.get("image_tag") != image_tag or
+                not BUILD_ID_RE.fullmatch(str(build.get("id", ""))) or
+                not re.fullmatch(r"sha256:[0-9a-f]{64}", digest) or image.get("status") != "verified" or
+                image.get("reference") != expected_ref or resource.get("kind") != "cloudRunJob" or
+                resource.get("created_by_this_run") is not True or
+                (resource.get("readback_identity") or {}).get("name") != c["job"] or
+                not (resource.get("readback_identity") or {}).get("uid")):
+            raise ProvisionError("continuation evidence does not prove the recorded DEV build and created Job")
+        if (owner_source_sha != "466b54a358c5d6a9274d9c085078fc7dd2a1b938" or
+                not re.fullmatch(r"[0-9a-f]{40}", owner_source_sha)):
+            raise ProvisionError("continuation requires the original LWC-344 owner source SHA")
+        source_contract = subprocess.run(["git", "show", f"{owner_source_sha}:deploy/provision/exportjob-dev.json"],
+                                         cwd=ROOT, text=True, capture_output=True)
+        source_code = subprocess.run(["git", "show", f"{owner_source_sha}:deploy/provision/exportjob_dev.py"],
+                                     cwd=ROOT, text=True, capture_output=True)
+        current_code = Path(__file__).read_text()
+        if (source_contract.returncode or json.loads(source_contract.stdout) != load_contract() or source_code.returncode or
+                not _timeout_source_repair_is_approved(source_code.stdout, current_code) or
+                not _timeout_normalizer_is_approved(current_code) or
+                _resource_iam_source_signature(source_code.stdout) != _resource_iam_source_signature(current_code)):
+            raise ProvisionError("DEV runtime or IAM source differs from the original owner contract")
+        if os.getenv("WIF_SERVICE_ACCOUNT", "") != DEPLOYER.removeprefix("serviceAccount:"):
+            raise ProvisionError("workflow identity differs from the reviewed DEV deployer service account")
+
+        # Keep the provider's original source SHA in this build record; only the enclosing workflow SHA is new.
+        self.evidence["build"] = copy.deepcopy(build)
+        verified_image = self._verify_build(self.evidence["build"], image_tag, old_source["sha"])
+        if verified_image != expected_ref:
+            raise ProvisionError("recorded build digest changed during provider read-back")
+        raw = self.gcloud("run", "jobs", "describe", c["job"], "--project", c["project"], "--region", c["region"],
+                          "--format=json", "--quiet")
+        actual = json.loads(raw or "{}")
+        metadata = actual.get("metadata", {})
+        desired = self.image_and_job_config(expected_ref)
+        status = actual.get("status", {})
+        if actual.get("apiVersion") == "run.googleapis.com/v1" or "spec" in actual:
+            execution = actual.get("spec", {}).get("template", {}).get("spec", {})
+            task = execution.get("template", {}).get("spec", {})
+        else:
+            execution = actual.get("template", {})
+            task = execution.get("template", {})
+        containers = task.get("containers", [])
+        ready = any(condition.get("type") == "Ready" and condition.get("status") == "True"
+                    for condition in status.get("conditions", []))
+        if (metadata.get("name") != c["job"] or metadata.get("uid") != resource["readback_identity"]["uid"] or
+                status.get("observedGeneration") != metadata.get("generation") or not ready or
+                task.get("volumes", []) or len(containers) != 1 or containers[0].get("args") not in (None, []) or
+                containers[0].get("volumeMounts", []) or not self.job_matches(raw or "{}", desired)):
+            raise ProvisionError("live DEV Job identity or runtime differs from the recorded successful build")
+        self.resource_attempt(c["job"], "cloudRunJob", {"name": c["job"], "uid": metadata["uid"]},
+                              create_result="preexisting", created=False, config=desired, first_observed="present")
+        self.resource_attempt(c["job"], "cloudRunJob", {"name": c["job"], "uid": metadata["uid"]},
+                              create_result="verified", created=False, config=desired)
+        self.evidence["image"] = {"tag": image_tag, "status": "verified", "reference": expected_ref}
+        self.evidence["continuation"] = {"prior_run_id": run_id, "prior_source": copy.deepcopy(old_source),
+                                         "owner_source_sha": owner_source_sha, "reason": "adopted_existing_job_after_readback_format_repair"}
+        self.owner_prerequisites()
+        self.apply_job_iam()
+        self.evidence["result"] = "workflow_deployed_and_read_back"
+        self.save()
 
     def ensure_job(self, image: str) -> None:
         c = self.c
@@ -805,6 +956,8 @@ class Provisioner:
 
     def _verify_owner_contract(self, owner: dict) -> None:
         """Compare preserved old-SHA owner facts with the current fixed DEV contract."""
+        if owner.get("source", {}).get("sha") != "466b54a358c5d6a9274d9c085078fc7dd2a1b938":
+            raise ProvisionError("original owner evidence is not from the preserved LWC-344 owner SHA")
         source_contract = subprocess.run(["git", "show", f"{owner['source']['sha']}:deploy/provision/exportjob-dev.json"],
                                          cwd=ROOT, text=True, capture_output=True)
         if source_contract.returncode != 0:
@@ -817,7 +970,10 @@ class Provisioner:
             raise ProvisionError("DEV resource contract changed across source repair; verifier cleanup stopped")
         source_code = subprocess.run(["git", "show", f"{owner['source']['sha']}:deploy/provision/exportjob_dev.py"],
                                      cwd=ROOT, text=True, capture_output=True)
-        if source_code.returncode != 0 or _resource_iam_source_signature(source_code.stdout) != _resource_iam_source_signature(Path(__file__).read_text()):
+        current_code = Path(__file__).read_text()
+        if (source_code.returncode != 0 or not _timeout_source_repair_is_approved(source_code.stdout, current_code) or
+                not _timeout_normalizer_is_approved(current_code) or
+                _resource_iam_source_signature(source_code.stdout) != _resource_iam_source_signature(current_code)):
             raise ProvisionError("DEV resource or IAM implementation changed across source repair; verifier cleanup stopped")
         expected_roles = {f"projects/{self.c['project']}/roles/{role}": sorted(perms)
                           for role, perms in (("lwcExportObjectLister", ["storage.objects.list"]),
@@ -932,8 +1088,11 @@ def main() -> int:
         modes = parser.add_mutually_exclusive_group()
         modes.add_argument("--owner-bootstrap", action="store_true")
         modes.add_argument("--cleanup-verifier-grants", action="store_true")
+        modes.add_argument("--continue-existing-job-evidence", type=Path)
         parser.add_argument("--workflow-evidence", type=Path)
         parser.add_argument("--owner-source-repair-evidence", type=Path)
+        parser.add_argument("--continuation-run-id")
+        parser.add_argument("--owner-source-sha")
         args = parser.parse_args()
         if args.workflow_evidence and not args.cleanup_verifier_grants:
             raise ProvisionError("--workflow-evidence is used only with --cleanup-verifier-grants")
@@ -941,6 +1100,10 @@ def main() -> int:
             raise ProvisionError("cleanup requires --workflow-evidence from a successful matching DEV workflow run")
         if args.owner_source_repair_evidence and not args.cleanup_verifier_grants:
             raise ProvisionError("--owner-source-repair-evidence is only used with --cleanup-verifier-grants")
+        if (args.continuation_run_id or args.owner_source_sha) and not args.continue_existing_job_evidence:
+            raise ProvisionError("continuation run and owner source are required only with --continue-existing-job-evidence")
+        if args.continue_existing_job_evidence and (not args.continuation_run_id or not args.owner_source_sha):
+            raise ProvisionError("existing Job continuation requires its exact prior run ID and original owner source SHA")
         c = load_contract()
         sha, ref = os.getenv("SOURCE_SHA", ""), os.getenv("SOURCE_REF", "")
         if ref != "refs/heads/develop" or not re.fullmatch(r"[0-9a-f]{40}", sha):
@@ -954,6 +1117,13 @@ def main() -> int:
             provisioner.run_owner_bootstrap()
         elif args.cleanup_verifier_grants:
             provisioner.cleanup_verifier_grants(args.workflow_evidence, args.owner_source_repair_evidence)
+        elif args.continue_existing_job_evidence:
+            try:
+                prior = json.loads(args.continue_existing_job_evidence.read_text())
+            except (OSError, json.JSONDecodeError) as error:
+                raise ProvisionError("prior workflow evidence is unreadable; continuation stopped") from error
+            provisioner.continue_existing_job(prior, run_id=args.continuation_run_id,
+                                              owner_source_sha=args.owner_source_sha, sha=sha)
         else:
             provisioner.run_workflow(sha)
         return 0

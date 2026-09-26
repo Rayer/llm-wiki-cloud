@@ -2287,6 +2287,12 @@ class CDContractTests(unittest.TestCase):
                 calls = log_path.read_text().splitlines()
                 update = any(f"run services update {value['service']}" in call for call in calls)
                 traffic = any(f"run services update-traffic {value['service']}" in call for call in calls)
+                if component == 'bff':
+                    update_call = next(call for call in calls if f"run services update {value['service']}" in call)
+                    self.assertIn('--update-env-vars ^|^QUERY_STAGE_CONFIG_PATH=' + normalized['query_config']['runtime_path']
+                                  + '|EXPORT_JOB_URL=https://run.googleapis.com/v2/projects/llm-wiki-cloud/locations/asia-east1/jobs/export-job-dev:run'
+                                  + '|EXPORT_SIGNING_SERVICE_ACCOUNT=lwc-export-signer-dev@llm-wiki-cloud.iam.gserviceaccount.com', update_call)
+                    self.assertNotIn('--remove-env-vars', update_call)
                 self.assertTrue(update, result.stdout + result.stderr)
                 self.assertTrue(traffic, result.stdout + result.stderr)
 
@@ -2813,7 +2819,10 @@ class ArchitectureAuthorityTests(unittest.TestCase):
         for filename in ("deploy-dev.yml", "promote-production.yml"):
             source = (ROOT / ".github/workflows" / filename).read_text()
             self.assertRegex(source, r"components:\n\s+description:.*\n\s+required: true")
-            self.assertNotIn("default:", source)
+            if filename == "deploy-dev.yml":
+                self.assertRegex(source, r"exportjob_continuation_run_id:\n\s+description:.*\n\s+required: false\n\s+default: ''\n\s+type: string")
+            else:
+                self.assertNotIn("default:", source)
             self.assertNotIn("inputs.components ||", source)
             self.assertIn("\n    secrets: inherit", source)
             self.assertNotRegex(source, r"\$\{\{\s*secrets\.")

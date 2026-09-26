@@ -1,0 +1,66 @@
+{
+  "source": {
+    "ref": "refs/heads/develop",
+    "sha": "7d247901279c81ff0abd563de52a7a4dc7fa971e"
+  },
+  "target": {
+    "environment": "development",
+    "project": "llm-wiki-cloud",
+    "region": "asia-east1"
+  },
+  "build": {
+    "cli_exit_code": 0,
+    "create_time": "2026-09-25T06:22:42.164845641Z",
+    "id": "4a8a9625-54df-4acf-b64a-917edf47bce0",
+    "image_digest": "sha256:d97f7d8a05118c9c53873323a7353c980157fe81a5371cbd8aadc3888f2ba49f",
+    "image_tag": "asia-east1-docker.pkg.dev/llm-wiki-cloud/cloud-run-images/llm-wiki-bff-export-job:7d247901279c81ff0abd563de52a7a4dc7fa971e",
+    "project": "llm-wiki-cloud",
+    "provider_status": "SUCCESS",
+    "region": "global",
+    "source_provenance": {
+      "fileHashes": {
+        "gs://llm-wiki-cloud_cloudbuild/source/1790317361.043191-b1b8871366be439f9558fe0423b570e8.tgz#1790317361857041": {
+          "fileHash": [
+            {
+              "type": "MD5",
+              "value": "_X7D_eyqOr-qsuNijclfvg=="
+            },
+            {
+              "type": "SHA256",
+              "value": "JApl2D_TI_tNE0CezM0hTKyya3MUS8qZxZiYd8RCiww="
+            }
+          ]
+        }
+      },
+      "resolvedStorageSource": {
+        "bucket": "llm-wiki-cloud_cloudbuild",
+        "generation": "1790317361857041",
+        "object": "source/1790317361.043191-b1b8871366be439f9558fe0423b570e8.tgz"
+      }
+    },
+    "source_ref": "refs/heads/develop",
+    "source_sha": "7d247901279c81ff0abd563de52a7a4dc7fa971e",
+    "status": "verified",
+    "substitutions": {
+      "_IMAGE": "asia-east1-docker.pkg.dev/llm-wiki-cloud/cloud-run-images/llm-wiki-bff-export-job:7d247901279c81ff0abd563de52a7a4dc7fa971e",
+      "_SOURCE_SHA": "7d247901279c81ff0abd563de52a7a4dc7fa971e"
+    }
+  },
+  "image": {
+    "reference": "asia-east1-docker.pkg.dev/llm-wiki-cloud/cloud-run-images/llm-wiki-bff-export-job@sha256:d97f7d8a05118c9c53873323a7353c980157fe81a5371cbd8aadc3888f2ba49f",
+    "status": "verified",
+    "tag": "asia-east1-docker.pkg.dev/llm-wiki-cloud/cloud-run-images/llm-wiki-bff-export-job:7d247901279c81ff0abd563de52a7a4dc7fa971e"
+  },
+  "resources": {
+    "export-job-dev": {
+      "kind": "cloudRunJob",
+      "creation_status": "accepted",
+      "created_by_this_run": true,
+      "readback_identity": {
+        "name": "export-job-dev",
+        "readback": "mismatched",
+        "uid": "5208ffae-b368-44c6-82d1-53623640b7ce"
+      }
+    }
+  }
+}
