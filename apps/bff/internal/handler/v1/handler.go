@@ -22,14 +22,15 @@ import (
 
 // Handler holds the dependencies for the V1 API.
 type Handler struct {
-	accountLookup auth.AccountLookup
-	store         store.RootStore
-	firestore     *firestore.Client
-	index         *search.Index
-	cache         *conceptcache.Cache
-	llm           *llm.Client
-	expander      *llm.QueryExpander
-	queryExecutor query.Executor
+	accountLookup     auth.AccountLookup
+	store             store.RootStore
+	firestore         *firestore.Client
+	index             *search.Index
+	cache             *conceptcache.Cache
+	llm               *llm.Client
+	expander          *llm.QueryExpander
+	queryExecutor     query.Executor
+	profileRepository profileRepository
 
 	httpClient                   *http.Client
 	metadataTokenURL             string
@@ -85,6 +86,7 @@ func New(wikiStore store.RootStore, fs *firestore.Client, idx *search.Index, cac
 	}
 	if fs != nil && fs.Raw() != nil {
 		h.accountLookup = auth.FirestoreAccountLookup(fs.Raw())
+		h.profileRepository = newFirestoreProfileRepository(fs.Raw())
 	}
 	return h
 }

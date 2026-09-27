@@ -9,7 +9,7 @@ test('home status reloads when the current project changes', async () => {
   );
 
   assert.match(homeClient, /import \{ WorkspaceProvider, useWorkspace \}|import \{ useWorkspace \}/);
-  assert.match(homeClient, /const \{\s*currentProject\s*\} = useWorkspace\(\);/s);
+  assert.match(homeClient, /const \{\s*currentProject,\s*user\s*\} = useWorkspace\(\);/s);
   assert.match(
     homeClient,
     /useEffect\(\(\) => \{\s*getStatus\(\)[\s\S]*?\}, \[currentProject\]\);/,

@@ -303,6 +303,7 @@ func newProductionRouter(
 	}))
 
 	registerPublicRoutes(r, settingsStore, cfg.AuthServiceURL)
+	r.POST("/internal/profile/dispatch", productionProfileDispatcher(hV1, cfg).Gin)
 	r.GET("/api/v1/query/config", hV1.QueryConfig)
 
 	// Temporary Stage A compatibility lane for the frontend Auth cutover.
@@ -364,6 +365,17 @@ func newProductionRouter(
 
 	v1.Use(auth.ProjectMiddleware())
 	{
+		v1.GET("/projects/:pid/recompile-all/capability", hV1.RecompileAllCapability)
+		v1.POST("/projects/:pid/recompile-all", hV1.RecompileAll)
+		v1.GET("/projects/:pid/profile", hV1.GetProfile)
+		v1.PUT("/projects/:pid/profile", hV1.PutProfile)
+		v1.GET("/projects/:pid/profile/bootstrap-guidance", hV1.GetProfileBootstrapGuidance)
+		v1.POST("/projects/:pid/profile/bootstrap-guidance/:revision/confirm", hV1.ConfirmProfileBootstrapGuidance)
+		v1.POST("/projects/:pid/profile/candidates/:candidateID/confirm", hV1.ConfirmProfileCandidate)
+		v1.POST("/projects/:pid/profile/candidates/:candidateID/retry", hV1.RetryProfileCandidate)
+		v1.POST("/projects/:pid/profile/derivation/retry", hV1.RetryProfileDerivation)
+		v1.GET("/projects/:pid/profile/jobs/:jobID", hV1.GetProfileJob)
+
 		v1.GET("/index", hV1.Index)
 		v1.POST("/query", hV1.Query)
 		v1.GET("/sources", hV1.ListSources)

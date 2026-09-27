@@ -5,6 +5,8 @@ OpenAICompatClient ignores think and merges options last into the wire payload.
 """
 import hashlib
 import json
+import os
+from pathlib import Path
 
 import synto
 from synto.config import Config, ResolvedModel
@@ -59,6 +61,11 @@ def _resolve_flash(self, role, *, api_key_env=None):
 
 
 Config.resolve_role = _resolve_flash
+# The worker supplies this temporary overlay only when it pinned nonempty
+# active Profile guidance. Synto's own CLI still owns the vault's normal schema.
+_profile_schema_path = os.environ.get("LWC_PROFILE_SCHEMA_PATH")
+if _profile_schema_path:
+    Config.schema_path = property(lambda self: Path(_profile_schema_path))
 # New compile/checkpoint provenance must name the same effective model as the
 # role endpoint; this does not rewrite old rows or force a pipeline execution.
 Config.model_name = lambda self, role: self.resolve_role(role).model

@@ -51,6 +51,7 @@ type workerConfig struct {
 	// CleanRebuild skips materializing prior generation outputs (wiki/.synto/
 	// cache artifacts) so Synto cold-starts from raw only. Default false.
 	CleanRebuild             bool
+	pinnedProfileGuidance    *profileGuidancePin
 	cloudMode                bool
 	suggestedQueriesProvider suggestedqueries.Provider
 	// These record Cobra presence, rather than a truthy value, so an explicit
@@ -421,11 +422,22 @@ func runWorkerBatchAtVault(ctx context.Context, cfg workerConfig, commands [][]s
 	if err := cleanStaleLock(vault, 5*time.Minute); err != nil {
 		return preserveWorkerFailure(err, failureStageLeaseCleanup, failureClassStateInvalid)
 	}
+	cfg.VaultPath = vault
 	olwEnv, err := prepareOLWEnvironment(cfg)
 	if err != nil {
 		return preserveWorkerFailure(err, failureStageSyntoConfigValidation, failureClassIO)
 	}
 	defer cleanupOLWEnvironment(olwEnv)
+	if cfg.pinnedProfileGuidance != nil {
+		configHome := strings.TrimPrefix(olwEnv[0], "XDG_CONFIG_HOME=")
+		schemaPath, schemaErr := profileGuidanceSchemaPath(vault, cfg.pinnedProfileGuidance, configHome)
+		if schemaErr != nil {
+			return newWorkerFailure(ctx, failureStageSyntoConfigValidation, failureClassValidation, "", schemaErr)
+		}
+		if schemaPath != "" {
+			olwEnv = append(olwEnv, "LWC_PROFILE_SCHEMA_PATH="+schemaPath)
+		}
+	}
 	stdout, stderr, closeLog, err := pipelineLogWriters(vault, cfg, commands, cfg.SuppressOutput)
 	if err != nil {
 		return preserveWorkerFailure(err, failureStageReceiptRecording, failureClassIO)
@@ -915,7 +927,7 @@ func allowlistedSyntoEnvironment(extra []string) []string {
 			continue
 		}
 		switch key {
-		case "XDG_CONFIG_HOME", "SYNTO_API_KEY", "DEEPSEEK_API_KEY":
+		case "XDG_CONFIG_HOME", "SYNTO_API_KEY", "DEEPSEEK_API_KEY", "LWC_PROFILE_SCHEMA_PATH":
 			env = append(env, item)
 		}
 	}

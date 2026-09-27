@@ -100,6 +100,18 @@ func TestProductionRouterKeepsAuthCompatibilityLane(t *testing.T) {
 			t.Fatalf("BFF production router is missing GET %s", path)
 		}
 	}
+	for _, route := range []struct{ method, path string }{
+		{http.MethodGet, "/api/v1/projects/:pid/profile"},
+		{http.MethodPut, "/api/v1/projects/:pid/profile"},
+		{http.MethodPost, "/api/v1/projects/:pid/profile/candidates/:candidateID/confirm"},
+		{http.MethodPost, "/api/v1/projects/:pid/profile/candidates/:candidateID/retry"},
+		{http.MethodPost, "/api/v1/projects/:pid/profile/derivation/retry"},
+		{http.MethodGet, "/api/v1/projects/:pid/profile/jobs/:jobID"},
+	} {
+		if !hasRoute(router, route.method, route.path) {
+			t.Fatalf("BFF production router is missing %s %s", route.method, route.path)
+		}
+	}
 	if got := serveGet(router, "/api/v1/query/config").Code; got != http.StatusServiceUnavailable {
 		t.Fatalf("legacy public query config status=%d, want %d", got, http.StatusServiceUnavailable)
 	}

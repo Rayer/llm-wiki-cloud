@@ -2528,6 +2528,9 @@ func TestPublishCloudGenerationUsesImmutableFilesAndManifestCAS(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
+	if got.SourceSnapshotDigest != "" {
+		t.Fatalf("no-input legacy publish fabricated source inventory %q", got.SourceSnapshotDigest)
+	}
 	if len(got.Files) != 13 {
 		t.Fatalf("files=%d", len(got.Files))
 	}
@@ -2537,6 +2540,401 @@ func TestPublishCloudGenerationUsesImmutableFilesAndManifestCAS(t *testing.T) {
 	if _, err := generationOutputFiles(root); err != nil {
 		t.Fatal(err)
 	}
+}
+
+func TestPublishCloudGenerationArchivesSourceSnapshotsByGeneration(t *testing.T) {
+	prefix := "users/u/projects/p/"
+	store := newMemoryObjects()
+	firstRoot := t.TempDir()
+	firstBytes := []byte("source bytes at G1")
+	first := publishTestSource(t, store, prefix, firstRoot, firstBytes, "annotation-one", nil)
+	firstArchivePath, _ := generation.ArchivedManifestPath(first.GenerationID)
+	firstArchive, _, err := store.Read(context.Background(), prefix+firstArchivePath, 0, generation.MaxManifestBytes)
+	if err != nil || !bytes.Equal(firstArchive, mustJSON(t, first)) {
+		t.Fatalf("G1 archive=%s err=%v", firstArchive, err)
+	}
+	firstInventoryPath, _ := generation.SourceSnapshotPath(first.SourceSnapshotDigest)
+	firstInventory, _, err := store.Read(context.Background(), prefix+firstInventoryPath, 0, generation.MaxSourceSnapshotBytes)
+	if err != nil {
+		t.Fatalf("G1 source inventory: %v", err)
+	}
+	decodedFirst, err := generation.DecodeSourceSnapshot(firstInventory)
+	if err != nil || len(decodedFirst.Rows) != 1 || decodedFirst.Rows[0].ContentDigest != sha256Text(string(firstBytes)) {
+		t.Fatalf("G1 source inventory=%+v err=%v", decodedFirst, err)
+	}
+	firstBytesPath, _ := generation.SourceBytesPath(decodedFirst.Rows[0].ContentDigest)
+	gotFirstBytes, firstBytesAttrs, err := store.Read(context.Background(), prefix+firstBytesPath, decodedFirst.Rows[0].ObjectGeneration, generation.MaxFileBytes)
+	if err != nil || !bytes.Equal(gotFirstBytes, firstBytes) || firstBytesAttrs.Generation != decodedFirst.Rows[0].ObjectGeneration {
+		t.Fatalf("G1 source bytes=%q attrs=%+v err=%v", gotFirstBytes, firstBytesAttrs, err)
+	}
+
+	// Mutating the current raw object after G1 cannot alter its immutable inventory.
+	if _, err := store.Write(context.Background(), prefix+"raw/source.md", []byte("mutable raw now differs"), nil, objectConditions{}); err != nil {
+		t.Fatal(err)
+	}
+	secondRoot := t.TempDir()
+	secondBytes := []byte("source bytes at G2")
+	second := publishTestSource(t, store, prefix, secondRoot, secondBytes, "annotation-two", nil)
+	if second.GenerationID == first.GenerationID || second.SourceSnapshotDigest == first.SourceSnapshotDigest {
+		t.Fatalf("G1/G2 identities reused: first=%+v second=%+v", first, second)
+	}
+	secondArchivePath, _ := generation.ArchivedManifestPath(second.GenerationID)
+	secondArchive, _, err := store.Read(context.Background(), prefix+secondArchivePath, 0, generation.MaxManifestBytes)
+	if err != nil || !bytes.Equal(secondArchive, mustJSON(t, second)) {
+		t.Fatalf("G2 archive=%s err=%v", secondArchive, err)
+	}
+	currentData, _, err := store.Read(context.Background(), prefix+generation.ManifestPath, 0, generation.MaxManifestBytes)
+	if err != nil {
+		t.Fatal(err)
+	}
+	current, err := generation.Decode(currentData)
+	if err != nil || current.GenerationID != second.GenerationID {
+		t.Fatalf("current generation=%+v err=%v", current, err)
+	}
+	archivedAgain, _, err := store.Read(context.Background(), prefix+firstArchivePath, 0, generation.MaxManifestBytes)
+	if err != nil || !bytes.Equal(archivedAgain, firstArchive) {
+		t.Fatalf("G1 archive changed after G2: %v", err)
+	}
+	retainedInventory, _, err := store.Read(context.Background(), prefix+firstInventoryPath, 0, generation.MaxSourceSnapshotBytes)
+	if err != nil || !bytes.Equal(retainedInventory, firstInventory) {
+		t.Fatalf("G1 inventory changed after G2: %v", err)
+	}
+	gotFirstBytes, _, err = store.Read(context.Background(), prefix+firstBytesPath, decodedFirst.Rows[0].ObjectGeneration, generation.MaxFileBytes)
+	if err != nil || !bytes.Equal(gotFirstBytes, firstBytes) {
+		t.Fatalf("G1 source bytes changed after G2: %q err=%v", gotFirstBytes, err)
+	}
+}
+
+func TestPublishCloudGenerationRetainsUnchangedSourceAndBindsReceipt(t *testing.T) {
+	prefix := "users/u/projects/p/"
+	store := newMemoryObjects()
+	root := t.TempDir()
+	raw := []byte("unchanged original raw")
+	first := publishTestSource(t, store, prefix, root, raw, "annotation-one", nil)
+	firstInventoryPath, _ := generation.SourceSnapshotPath(first.SourceSnapshotDigest)
+	firstInventoryData, _, err := store.Read(context.Background(), prefix+firstInventoryPath, 0, generation.MaxSourceSnapshotBytes)
+	if err != nil {
+		t.Fatal(err)
+	}
+	firstInventory, err := generation.DecodeSourceSnapshot(firstInventoryData)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	secondRoot := t.TempDir()
+	writePublisherSourceWorkspace(t, secondRoot, raw, "annotation-only-change")
+	second, _, err := publishCloudGeneration(context.Background(), store, prefix, secondRoot, nil)
+	if err != nil {
+		t.Fatalf("publish unchanged source generation: %v", err)
+	}
+	secondPath, _ := generation.SourceSnapshotPath(second.SourceSnapshotDigest)
+	secondData, _, err := store.Read(context.Background(), prefix+secondPath, 0, generation.MaxSourceSnapshotBytes)
+	if err != nil {
+		t.Fatal(err)
+	}
+	secondInventory, err := generation.DecodeSourceSnapshot(secondData)
+	if err != nil || len(secondInventory.Rows) != 1 {
+		t.Fatalf("G2 inventory=%+v err=%v", secondInventory, err)
+	}
+	if secondInventory.Rows[0].ContentDigest != firstInventory.Rows[0].ContentDigest || secondInventory.Rows[0].ObjectGeneration != firstInventory.Rows[0].ObjectGeneration {
+		t.Fatalf("unchanged bytes were not retained: G1=%+v G2=%+v", firstInventory.Rows[0], secondInventory.Rows[0])
+	}
+	if secondInventory.SourceStatusDigest != digestBytes(mustReadFile(t, filepath.Join(secondRoot, filepath.FromSlash(sourcestatus.Path)))) {
+		t.Fatal("source_status_digest does not bind the exact current receipt bytes")
+	}
+}
+
+func TestOutputOnlyGenerationRetainsPinnedSourceWithoutReadingMutableRaw(t *testing.T) {
+	prefix := "users/u/projects/p/"
+	store := newMemoryObjects()
+	first := publishTestSource(t, store, prefix, t.TempDir(), []byte("G1 pinned raw"), "ann", nil)
+	currentData, currentAttrs, err := store.Read(context.Background(), prefix+generation.ManifestPath, 0, generation.MaxManifestBytes)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := store.Write(context.Background(), prefix+"raw/source.md", []byte("mutable raw after compile"), nil, objectConditions{}); err != nil {
+		t.Fatal(err)
+	}
+
+	root := t.TempDir()
+	for _, file := range first.Files {
+		data, _, err := store.Read(context.Background(), prefix+first.ObjectPath(file), file.Generation, file.Size)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if err := writeCloudFile(root, file.Path, data); err != nil {
+			t.Fatal(err)
+		}
+	}
+	mustWriteFile(t, filepath.Join(root, filepath.FromSlash("cache/suggested_queries.json")), []byte(`{"queries":["new query?"]}`))
+	noRawRead := &forbidMutableRawReadStore{objectStore: store, prefix: prefix}
+	second, _, err := publishCloudGenerationFromStart(context.Background(), noRawRead, prefix, root, []sourceSnapshot{{
+		SourceID: "s1", RawPath: "raw/source.md", RawBytes: []byte("mutable raw after compile"), RawSHA256: sha256Text("mutable raw after compile"),
+	}}, currentData, currentAttrs, true, true)
+	if err != nil {
+		t.Fatalf("publish output-only generation: %v", err)
+	}
+	firstSnapshotPath, _ := generation.SourceSnapshotPath(first.SourceSnapshotDigest)
+	firstSnapshotBytes, _, err := store.Read(context.Background(), prefix+firstSnapshotPath, 0, generation.MaxSourceSnapshotBytes)
+	if err != nil {
+		t.Fatal(err)
+	}
+	secondSnapshotPath, _ := generation.SourceSnapshotPath(second.SourceSnapshotDigest)
+	secondSnapshotBytes, _, err := store.Read(context.Background(), prefix+secondSnapshotPath, 0, generation.MaxSourceSnapshotBytes)
+	if err != nil {
+		t.Fatal(err)
+	}
+	firstSnapshot, err := generation.DecodeSourceSnapshot(firstSnapshotBytes)
+	if err != nil {
+		t.Fatal(err)
+	}
+	secondSnapshot, err := generation.DecodeSourceSnapshot(secondSnapshotBytes)
+	if err != nil || len(secondSnapshot.Rows) != 1 || secondSnapshot.Rows[0].ContentDigest != firstSnapshot.Rows[0].ContentDigest {
+		t.Fatalf("output-only source inventory=%+v err=%v", secondSnapshot, err)
+	}
+}
+
+type forbidMutableRawReadStore struct {
+	objectStore
+	prefix string
+}
+
+func (s *forbidMutableRawReadStore) Read(ctx context.Context, name string, objectGeneration, limit int64) ([]byte, objectAttrs, error) {
+	if strings.HasPrefix(name, s.prefix+"raw/") {
+		return nil, objectAttrs{}, errors.New("mutable raw read is forbidden")
+	}
+	return s.objectStore.Read(ctx, name, objectGeneration, limit)
+}
+
+func TestPublishCloudGenerationRejectsMissingOrMismatchedSourceReceipt(t *testing.T) {
+	for _, tc := range []struct {
+		name    string
+		receipt sourcestatus.Receipt
+	}{
+		{name: "missing"},
+		{name: "mismatched", receipt: publisherReceipt("s1", "raw/source.md", []byte("different raw"), "annotation")},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			root := t.TempDir()
+			writePublisherSourceWorkspace(t, root, []byte("pinned raw"), "annotation")
+			if tc.name == "missing" {
+				writePublisherReceipt(t, root, nil)
+			} else {
+				writePublisherReceipt(t, root, map[string]sourcestatus.Receipt{"s1": tc.receipt})
+			}
+			store := newMemoryObjects()
+			_, _, err := publishCloudGeneration(context.Background(), store, "p/", root, []sourceSnapshot{{SourceID: "s1", RawPath: "raw/source.md", RawBytes: []byte("pinned raw"), RawSHA256: sha256Text("pinned raw")}})
+			if err == nil || !strings.Contains(err.Error(), "receipt") {
+				t.Fatalf("publish error=%v, want source receipt failure", err)
+			}
+			if _, _, err := store.Read(context.Background(), "p/"+generation.ManifestPath, 0, generation.MaxManifestBytes); !isObjectNotFound(err) {
+				t.Fatalf("failed source validation advanced current manifest: %v", err)
+			}
+		})
+	}
+}
+
+func TestPublishCloudGenerationRejectsUningestedRawChangeAndDropsDeletedIDs(t *testing.T) {
+	prefix := "users/u/projects/p/"
+	store := newMemoryObjects()
+	first := publishTestSource(t, store, prefix, t.TempDir(), []byte("G1 raw"), "ann", nil)
+	currentBefore, currentAttrs, err := store.Read(context.Background(), prefix+generation.ManifestPath, 0, generation.MaxManifestBytes)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	changedRoot := t.TempDir()
+	writePublisherSourceWorkspace(t, changedRoot, []byte("G2 raw"), "ann")
+	writePublisherReceipt(t, changedRoot, map[string]sourcestatus.Receipt{"s1": publisherReceipt("s1", "raw/source.md", []byte("G1 raw"), "ann")})
+	_, _, err = publishCloudGeneration(context.Background(), store, prefix, changedRoot, []sourceSnapshot{{SourceID: "s1", RawPath: "raw/source.md", RawBytes: []byte("G2 raw"), RawSHA256: sha256Text("G2 raw")}})
+	if err == nil || !strings.Contains(err.Error(), "receipt") {
+		t.Fatalf("un-ingested raw change error=%v", err)
+	}
+	currentAfter, currentAttrsAfter, err := store.Read(context.Background(), prefix+generation.ManifestPath, 0, generation.MaxManifestBytes)
+	if err != nil || currentAttrsAfter.Generation != currentAttrs.Generation || !bytes.Equal(currentAfter, currentBefore) {
+		t.Fatalf("un-ingested change advanced current: attrs=%+v err=%v", currentAttrsAfter, err)
+	}
+
+	deletedRoot := t.TempDir()
+	writeCloudRequiredOutputs(t, deletedRoot)
+	writePublisherIDMap(t, deletedRoot, false)
+	writePublisherReceipt(t, deletedRoot, map[string]sourcestatus.Receipt{"s1": publisherReceipt("s1", "raw/source.md", []byte("G1 raw"), "ann")})
+	deleted, _, err := publishCloudGeneration(context.Background(), store, prefix, deletedRoot, []sourceSnapshot{{SourceID: "s1", RawPath: "raw/source.md", Tombstone: true}})
+	if err != nil {
+		t.Fatalf("publish deleted source identity: %v", err)
+	}
+	deletedPath, pathErr := generation.SourceSnapshotPath(deleted.SourceSnapshotDigest)
+	if pathErr != nil {
+		t.Fatalf("deleted manifest source snapshot digest=%q: %v", deleted.SourceSnapshotDigest, pathErr)
+	}
+	deletedBytes, _, err := store.Read(context.Background(), prefix+deletedPath, 0, generation.MaxSourceSnapshotBytes)
+	if err != nil {
+		t.Fatal(err)
+	}
+	deletedInventory, err := generation.DecodeSourceSnapshot(deletedBytes)
+	if err != nil || len(deletedInventory.Rows) != 0 {
+		t.Fatalf("deleted source inventory digest=%s bytes=%s decoded=%+v err=%v", deleted.SourceSnapshotDigest, deletedBytes, deletedInventory, err)
+	}
+	if first.SourceSnapshotDigest == deleted.SourceSnapshotDigest {
+		t.Fatal("deletion reused prior generation inventory")
+	}
+}
+
+func TestPublishCloudGenerationFailureAndCASLoserDoNotAdvanceCurrent(t *testing.T) {
+	prefix := "users/u/projects/p/"
+	base := newMemoryObjects()
+	first := publishTestSource(t, base, prefix, t.TempDir(), []byte("G1 raw"), "ann", nil)
+	currentName := prefix + generation.ManifestPath
+	currentBefore, attrsBefore, err := base.Read(context.Background(), currentName, 0, generation.MaxManifestBytes)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	failedRoot := t.TempDir()
+	writePublisherSourceWorkspace(t, failedRoot, []byte("G2 raw"), "ann")
+	failing := &failureStore{objectStore: base, failWrite: func(name string, _ int) error {
+		if strings.HasPrefix(name, prefix+generation.Prefix) && strings.HasSuffix(name, "/manifest.json") {
+			return errors.New("archive failure")
+		}
+		return nil
+	}}
+	_, _, err = publishCloudGeneration(context.Background(), failing, prefix, failedRoot, []sourceSnapshot{{SourceID: "s1", RawPath: "raw/source.md", RawBytes: []byte("G2 raw"), RawSHA256: sha256Text("G2 raw")}})
+	if err == nil || !strings.Contains(err.Error(), "archive failed") {
+		t.Fatalf("archive failure result=%v", err)
+	}
+	currentAfterFailure, attrsAfterFailure, err := base.Read(context.Background(), currentName, 0, generation.MaxManifestBytes)
+	if err != nil || attrsAfterFailure.Generation != attrsBefore.Generation || !bytes.Equal(currentAfterFailure, currentBefore) {
+		t.Fatalf("partial publish advanced current: attrs=%+v err=%v", attrsAfterFailure, err)
+	}
+
+	loserRoot := t.TempDir()
+	writePublisherSourceWorkspace(t, loserRoot, []byte("G2 raw"), "ann")
+	loser := &manifestCASLoserStore{objectStore: base, manifestName: currentName}
+	_, _, err = publishCloudGeneration(context.Background(), loser, prefix, loserRoot, []sourceSnapshot{{SourceID: "s1", RawPath: "raw/source.md", RawBytes: []byte("G2 raw"), RawSHA256: sha256Text("G2 raw")}})
+	if !errors.Is(err, errObjectGenerationConflict) {
+		t.Fatalf("CAS loser error=%v, want conflict", err)
+	}
+	currentAfterLoss, attrsAfterLoss, err := base.Read(context.Background(), currentName, 0, generation.MaxManifestBytes)
+	if err != nil || attrsAfterLoss.Generation != attrsBefore.Generation || !bytes.Equal(currentAfterLoss, currentBefore) {
+		t.Fatalf("CAS loser advanced current: attrs=%+v err=%v", attrsAfterLoss, err)
+	}
+	archives, err := base.List(context.Background(), prefix+generation.Prefix, generation.MaxFiles)
+	if err != nil {
+		t.Fatal(err)
+	}
+	var archiveData []byte
+	var archiveAttrs objectAttrs
+	var archivePath string
+	for _, item := range archives {
+		if !strings.HasSuffix(item.Name, "/manifest.json") || item.Name == prefix+mustArchivePath(t, first.GenerationID) {
+			continue
+		}
+		data, attrs, readErr := base.Read(context.Background(), item.Name, item.Generation, generation.MaxManifestBytes)
+		if readErr == nil {
+			archiveData, archiveAttrs, archivePath = data, attrs, strings.TrimPrefix(item.Name, prefix)
+			break
+		}
+	}
+	if err != nil || archiveAttrs.Generation <= 0 {
+		t.Fatalf("losing archive is missing: attrs=%+v err=%v", archiveAttrs, err)
+	}
+	archiveAttrsAgain, err := writeImmutableCloudObject(context.Background(), base, prefix+archivePath, archiveData, digestBytes(archiveData))
+	if err != nil || archiveAttrsAgain.Generation != archiveAttrs.Generation {
+		t.Fatalf("orphan archive replay was not idempotent: first=%+v replay=%+v err=%v", archiveAttrs, archiveAttrsAgain, err)
+	}
+	var orphan generation.Manifest
+	if err := json.Unmarshal(archiveData, &orphan); err != nil || orphan.GenerationID == first.GenerationID {
+		t.Fatalf("CAS loser archive=%s err=%v", archiveData, err)
+	}
+}
+
+func mustArchivePath(t *testing.T, generationID string) string {
+	t.Helper()
+	path, err := generation.ArchivedManifestPath(generationID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	return path
+}
+
+type manifestCASLoserStore struct {
+	objectStore
+	manifestName string
+}
+
+func (s *manifestCASLoserStore) Write(ctx context.Context, name string, data []byte, metadata map[string]string, condition objectConditions) (objectAttrs, error) {
+	if name == s.manifestName && condition.GenerationMatch > 0 {
+		return objectAttrs{}, errObjectGenerationConflict
+	}
+	return s.objectStore.Write(ctx, name, data, metadata, condition)
+}
+
+func publishTestSource(t *testing.T, store objectStore, prefix, root string, raw []byte, annotationBody string, snapshots []sourceSnapshot) generation.Manifest {
+	t.Helper()
+	writePublisherSourceWorkspace(t, root, raw, annotationBody)
+	if snapshots == nil {
+		snapshots = []sourceSnapshot{{SourceID: "s1", RawPath: "raw/source.md", RawBytes: append([]byte(nil), raw...), RawSHA256: sha256Text(string(raw))}}
+	}
+	manifest, _, err := publishCloudGeneration(context.Background(), store, prefix, root, snapshots)
+	if err != nil {
+		t.Fatalf("publish source generation: %v", err)
+	}
+	return manifest
+}
+
+func writePublisherSourceWorkspace(t *testing.T, root string, raw []byte, annotationBody string) {
+	t.Helper()
+	writeCloudRequiredOutputs(t, root)
+	writePublisherIDMap(t, root, true)
+	writePublisherReceipt(t, root, map[string]sourcestatus.Receipt{"s1": publisherReceipt("s1", "raw/source.md", raw, annotationBody)})
+}
+
+func writePublisherIDMap(t *testing.T, root string, active bool) {
+	t.Helper()
+	data := `{"concept":{},"source":{},"source_meta":{},"redirects":{}}`
+	if active {
+		data = `{"concept":{},"source":{"s1":"source"},"source_meta":{"s1":{"slug":"source","source_file":"raw/source.md"}},"redirects":{}}`
+	}
+	mustWriteFile(t, filepath.Join(root, "cache", "id_map.json"), []byte(data))
+}
+
+func writePublisherReceipt(t *testing.T, root string, sources map[string]sourcestatus.Receipt) {
+	t.Helper()
+	if sources == nil {
+		sources = map[string]sourcestatus.Receipt{}
+	}
+	data, err := json.Marshal(sourcestatus.Artifact{Version: 1, Sources: sources})
+	if err != nil {
+		t.Fatal(err)
+	}
+	mustWriteFile(t, filepath.Join(root, filepath.FromSlash(sourcestatus.Path)), data)
+}
+
+func publisherReceipt(id, path string, raw []byte, annotationBody string) sourcestatus.Receipt {
+	rawDigest := sha256Text(string(raw))
+	annotationDigest := annotation.Digest(annotationBody)
+	return sourcestatus.Receipt{
+		RawPath: path, LastIngestedRawSHA256: rawDigest, LastIngestedAnnSHA256: annotationDigest,
+		LastIngestFingerprint: sourcestatus.Fingerprint(rawDigest, annotationDigest), LastSuccessAt: "2026-09-25T00:00:00Z",
+	}
+}
+
+func mustJSON(t *testing.T, value any) []byte {
+	t.Helper()
+	data, err := json.Marshal(value)
+	if err != nil {
+		t.Fatal(err)
+	}
+	return data
+}
+
+func mustReadFile(t *testing.T, path string) []byte {
+	t.Helper()
+	data, err := os.ReadFile(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	return data
 }
 
 // These tests exercise the production cloud worker path.  The store is the
@@ -3679,14 +4077,6 @@ func writeCloudObject(t *testing.T, m *memoryObjects, name string, data []byte) 
 	if _, err := m.Write(context.Background(), name, data, nil, objectConditions{}); err != nil {
 		t.Fatal(err)
 	}
-}
-func mustJSON(t *testing.T, value any) []byte {
-	t.Helper()
-	b, err := json.Marshal(value)
-	if err != nil {
-		t.Fatal(err)
-	}
-	return b
 }
 func cloudAnnotation(t *testing.T, body string) []byte {
 	t.Helper()

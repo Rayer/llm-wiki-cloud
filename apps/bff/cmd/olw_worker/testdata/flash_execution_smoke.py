@@ -65,7 +65,7 @@ ingest_parallel = false
 """
 
 
-def run(vault, *args, fail=False):
+def run(vault, *args, fail=False, extra_env=None):
     script = "from synto.cli import cli; cli()" if os.environ.get("LWC_FLASH_RED") else wrapper.read_text()
     # Test-only network fence: a malformed fixture must never reach a provider.
     script = """import socket
@@ -77,6 +77,7 @@ def _loopback_only(self, address):
 socket.socket.connect = _loopback_only
 """ + script
     env = {"PATH": os.environ["PATH"], "XDG_CONFIG_HOME": str(vault / "isolated"), "DEEPSEEK_API_KEY": "fake"}
+    env.update(extra_env or {})
     result = subprocess.run([sys.executable, "-c", script, *args, "--vault", str(vault)], cwd=vault, env=env, text=True, capture_output=True, timeout=60)
     if not fail and result.returncode:
         raise AssertionError(result.stdout + result.stderr)
@@ -85,13 +86,20 @@ socket.socket.connect = _loopback_only
     return result
 
 
-def exercise(config, expected, filename="synto.toml", migrate=False, model="deepseek-flash", preserved=None):
+def exercise(config, expected, filename="synto.toml", migrate=False, model="deepseek-flash", preserved=None, profile_schema=None):
     with tempfile.TemporaryDirectory(prefix="lwc331-wire-") as temp:
-        vault = Path(temp).resolve()
+        temp_root = Path(temp).resolve()
+        vault = temp_root / "vault"
+        vault.mkdir()
         (vault / "raw").mkdir()
         (vault / "raw/source.md").write_text("# Alpha\n\nAlpha explains how a synthetic mechanism works. Alpha is the central concept.")
         path = vault / filename
         path.write_text(config + policy)
+        extra_env = None
+        if profile_schema is not None:
+            schema_path = temp_root / "pinned-profile-vault-schema.md"
+            schema_path.write_text(profile_schema, encoding="utf-8")
+            extra_env = {"LWC_PROFILE_SCHEMA_PATH": str(schema_path)}
         before = path.read_bytes()
         if migrate:
             # Real pinned migration of a synthetic legacy state, no user data.
@@ -100,9 +108,15 @@ def exercise(config, expected, filename="synto.toml", migrate=False, model="deep
             run(vault, "migrate-olw")
         configs = {p: p.read_bytes() for p in vault.glob("*.toml")}
         requests.clear()
-        result = run(vault, "run", "--auto-approve")
+        result = run(vault, "run", "--auto-approve", extra_env=extra_env)
         assert requests, result.stdout + result.stderr
         assert (vault / "wiki/Alpha.md").is_file(), "CLI failed to compile/publish synthetic article"
+        if profile_schema is not None:
+            prompts = [message.get("content", "") for body in requests for message in body.get("messages", [])]
+            assert any("Profile guidance: synthetic fixture favors explicit causal links." in prompt for prompt in prompts), prompts
+            assert any("Use `[[Article Title]]` wikilinks between notes." in prompt for prompt in prompts), prompts
+            assert any("Use [[wikilinks]] inline in prose to link to related concepts." in prompt for prompt in prompts), prompts
+            print("PASS pinned Profile guidance and mandatory vault conventions reached the actual Synto compile prompt")
         observed = tuple(body.get("thinking", {}).get("type") for body in requests)
         assert expected == observed, (expected, observed, result.stdout, result.stderr)
         for body in requests:
@@ -151,6 +165,12 @@ exercise(precedence, ("disabled", "disabled"), preserved={"max_tokens": 777, "to
 exercise(legacy.replace('fast = "deepseek-chat"', 'fast = "deepseek-reasoner"').replace('heavy = "deepseek-reasoner"', 'heavy = "deepseek-chat"'), ("enabled", "disabled"))
 # Aliased modern V4 models preserve their explicitly disabled/enabled policies.
 exercise(modern.replace('model = "deepseek-flash"', 'model = "deepseek-v4-pro"'), ("disabled", "enabled"))
+profile_schema = (
+    "# Vault Schema\n\n## Folder Structure\n- `raw/` — immutable inputs\n- `wiki/` — generated articles\n\n"
+    "## Links\nUse `[[Article Title]]` wikilinks between notes.\n\n"
+    "## Project Profile Compile Guidance\nProfile guidance: synthetic fixture favors explicit causal links.\n"
+)
+exercise(modern, ("disabled", "enabled"), profile_schema=profile_schema)
 # Other OpenAI-compatible providers are byte-for-byte unaffected by this policy.
 foreign = legacy.replace('name = "deepseek"', 'name = "openai"').replace('deepseek-chat', 'foreign-model').replace('deepseek-reasoner', 'foreign-model')
 exercise(foreign, (None, None), model="foreign-model")

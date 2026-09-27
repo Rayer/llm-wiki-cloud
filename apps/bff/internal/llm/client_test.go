@@ -77,6 +77,56 @@ func TestClientModelIdentityIsSanitizedAndUnavailableWhenNil(t *testing.T) {
 	}
 }
 
+func TestChatWithMetadataReturnsProviderReportedModelAndCallsOnce(t *testing.T) {
+	var calls atomic.Int32
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		calls.Add(1)
+		_, _ = w.Write([]byte(`{"model":"deepseek-flash-2026-09","choices":[{"message":{"content":"profile guidance"}}]}`))
+	}))
+	defer server.Close()
+	client := NewClient("fake-test-key")
+	client.baseURL = server.URL
+	recorder := &testCallRecorder{}
+	text, model, err := client.ChatWithMetadata(WithCallRecorder(context.Background(), recorder), "system", "requirements")
+	if err != nil || text != "profile guidance" || model != "deepseek-flash-2026-09" {
+		t.Fatalf("ChatWithMetadata() = (%q,%q,%v)", text, model, err)
+	}
+	if calls.Load() != 1 || recorder.starts.Load() != 1 || recorder.finishes.Load() != 1 {
+		t.Fatalf("calls=%d recorder starts=%d finishes=%d; want one each", calls.Load(), recorder.starts.Load(), recorder.finishes.Load())
+	}
+}
+
+func TestMissingProviderModelLeavesMetadataEmptyAndLegacyChatWorks(t *testing.T) {
+	var calls atomic.Int32
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		calls.Add(1)
+		_, _ = w.Write([]byte(`{"choices":[{"message":{"content":"ok"}}]}`))
+	}))
+	defer server.Close()
+	client := NewClient("fake-test-key")
+	client.baseURL = server.URL
+	text, model, err := client.ChatWithMetadata(context.Background(), "s", "u")
+	if err != nil || text != "ok" || model != "" {
+		t.Fatalf("ChatWithMetadata missing model = (%q,%q,%v), want successful text and empty provenance", text, model, err)
+	}
+	legacy, err := client.Chat(context.Background(), "s", "u")
+	if err != nil || legacy != "ok" || calls.Load() != 2 {
+		t.Fatalf("legacy Chat = (%q,%v), requests=%d; missing model must not break callers or retry", legacy, err, calls.Load())
+	}
+}
+
+func TestChatWithMetadataPreservesMalformedProviderAndCancellationErrors(t *testing.T) {
+	client := NewClient("key")
+	client.client = &http.Client{Transport: outcomeRoundTripper{mode: "decode"}}
+	if _, _, err := client.ChatWithMetadata(context.Background(), "s", "u"); err == nil {
+		t.Fatal("malformed response succeeded")
+	}
+	client.client = &http.Client{Transport: outcomeRoundTripper{mode: "canceled"}}
+	if _, _, err := client.ChatWithMetadata(context.Background(), "s", "u"); !errors.Is(err, context.Canceled) {
+		t.Fatalf("canceled ChatWithMetadata error = %v", err)
+	}
+}
+
 func TestChatReceiptUsesActualRequestURL(t *testing.T) {
 	transport := &countingRoundTripper{}
 	client := NewClient("key")

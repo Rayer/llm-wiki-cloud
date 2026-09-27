@@ -121,13 +121,17 @@ func (c *Client) Close() error {
 // WithScope returns a client that shares the bucket connection but uses the
 // supplied user/project prefix.
 func (c *Client) WithScope(userID, projectID string) *Client {
+	view, lease := c.view, c.legacyWriteLease
+	if userID != c.userID || projectID != c.projectID {
+		view, lease = nil, nil
+	}
 	return &Client{
 		bucket:           c.bucket,
 		userID:           userID,
 		projectID:        projectID,
 		backend:          c.backend,
-		view:             c.view,
-		legacyWriteLease: c.legacyWriteLease,
+		view:             view,
+		legacyWriteLease: lease,
 		owner:            c.owner,
 	}
 }
