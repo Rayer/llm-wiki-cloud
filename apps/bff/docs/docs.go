@@ -1372,6 +1372,81 @@ const docTemplate = `{
                 }
             }
         },
+        "/api/v1/projects/{pid}/profile/guidance/{revision}": {
+            "get": {
+                "security": [
+                    {
+                        "DevUserAuth": []
+                    },
+                    {
+                        "ProjectHeader": []
+                    }
+                ],
+                "description": "Returns the exact validated guidance text and version metadata for a current Profile reference.",
+                "produces": [
+                    "application/json"
+                ],
+                "tags": [
+                    "profile"
+                ],
+                "summary": "Get immutable Profile compile guidance",
+                "parameters": [
+                    {
+                        "type": "string",
+                        "description": "Project ID",
+                        "name": "pid",
+                        "in": "path",
+                        "required": true
+                    },
+                    {
+                        "type": "string",
+                        "description": "Immutable guidance artifact revision",
+                        "name": "revision",
+                        "in": "path",
+                        "required": true
+                    },
+                    {
+                        "type": "string",
+                        "description": "Project ID; must match the URL",
+                        "name": "X-Project-ID",
+                        "in": "header",
+                        "required": true
+                    }
+                ],
+                "responses": {
+                    "200": {
+                        "description": "OK",
+                        "schema": {
+                            "$ref": "#/definitions/v1.profileGuidanceArtifactResponse"
+                        }
+                    },
+                    "400": {
+                        "description": "Bad Request",
+                        "schema": {
+                            "$ref": "#/definitions/handler.ErrorResponse"
+                        }
+                    },
+                    "401": {
+                        "description": "Unauthorized",
+                        "schema": {
+                            "$ref": "#/definitions/handler.ErrorResponse"
+                        }
+                    },
+                    "404": {
+                        "description": "Not Found",
+                        "schema": {
+                            "$ref": "#/definitions/handler.ErrorResponse"
+                        }
+                    },
+                    "500": {
+                        "description": "Internal Server Error",
+                        "schema": {
+                            "$ref": "#/definitions/handler.ErrorResponse"
+                        }
+                    }
+                }
+            }
+        },
         "/api/v1/projects/{pid}/recompile-all": {
             "post": {
                 "security": [
@@ -3733,6 +3808,37 @@ const docTemplate = `{
                 },
                 "revision": {
                     "type": "integer"
+                }
+            }
+        },
+        "v1.profileGuidanceArtifactData": {
+            "type": "object",
+            "properties": {
+                "compile_guidance": {
+                    "type": "string"
+                },
+                "input_digest": {
+                    "type": "string"
+                },
+                "model_version": {
+                    "type": "string"
+                },
+                "prompt_version": {
+                    "type": "string"
+                },
+                "revision": {
+                    "type": "string"
+                },
+                "schema_version": {
+                    "type": "string"
+                }
+            }
+        },
+        "v1.profileGuidanceArtifactResponse": {
+            "type": "object",
+            "properties": {
+                "guidance_artifact": {
+                    "$ref": "#/definitions/v1.profileGuidanceArtifactData"
                 }
             }
         },

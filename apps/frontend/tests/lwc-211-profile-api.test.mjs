@@ -8,6 +8,7 @@ import {
   confirmProfileCandidate,
   getProfile,
   getProfileBootstrapGuidance,
+  getProfileGuidanceArtifact,
   getProfileJob,
   getRecompileAllCapability,
   retryProfileCandidate,
@@ -138,6 +139,34 @@ test('bootstrap guidance reads and confirmation use the artifact hash and exact 
       expected_revision: 4,
       input_digest: inputDigest,
     });
+  } finally {
+    globalThis.fetch = originalFetch;
+  }
+});
+
+test('immutable guidance reads use the content-addressed revision and project scope', async () => {
+  installAuth();
+  const originalFetch = globalThis.fetch;
+  const requests = [];
+  const revision = 'c'.repeat(64);
+  const guidanceArtifact = {
+    revision,
+    input_digest: 'd'.repeat(64),
+    model_version: 'profile-model-v1',
+    prompt_version: 'profile-prompt-v1',
+    schema_version: 'profile.guidance.v1',
+    compile_guidance: 'Preserve source references exactly.',
+  };
+  globalThis.fetch = async (url, init) => {
+    requests.push({ url: String(url), init });
+    return Response.json({ guidance_artifact: guidanceArtifact });
+  };
+
+  try {
+    assert.deepEqual(await getProfileGuidanceArtifact('project-a', revision), { guidance_artifact: guidanceArtifact });
+    assert.match(requests[0].url, new RegExp(`/projects/project-a/profile/guidance/${revision}$`));
+    assert.equal(requests[0].init.method, undefined);
+    assert.equal(requests[0].init.headers['X-Project-ID'], 'project-a');
   } finally {
     globalThis.fetch = originalFetch;
   }

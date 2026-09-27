@@ -1,8 +1,7 @@
 'use client';
 
+import { useState } from 'react';
 import type { ProfileRequirement } from '@/lib/api';
-
-const EMPTY_ROW_ID = '__profile-empty-row__';
 
 function newRequirementId(): string {
   return globalThis.crypto?.randomUUID?.() ?? `req-${Date.now()}-${Math.random().toString(36).slice(2)}`;
@@ -17,13 +16,14 @@ export function ProfileRequirementsEditor({
   onChange: (requirements: ProfileRequirement[]) => void;
   disabled?: boolean;
 }) {
+  const [emptyRowId, setEmptyRowId] = useState(newRequirementId);
   const rows = requirements.length > 0
     ? requirements
-    : [{ id: EMPTY_ROW_ID, text: '' }];
+    : [{ id: emptyRowId, text: '' }];
 
   function changeText(rowId: string, text: string) {
-    if (rowId === EMPTY_ROW_ID) {
-      if (text) onChange([{ id: newRequirementId(), text }]);
+    if (rowId === emptyRowId) {
+      if (text) onChange([{ id: rowId, text }]);
       return;
     }
     onChange(requirements.map((item) => item.id === rowId ? { ...item, text } : item));
@@ -41,7 +41,7 @@ export function ProfileRequirementsEditor({
     <div className="space-y-3">
       <ol className="space-y-3">
         {rows.map((requirement, index) => {
-          const placeholder = requirement.id === EMPTY_ROW_ID;
+          const placeholder = requirements.length === 0;
           return (
             <li key={requirement.id} className="flex items-start gap-2">
               <label className="min-w-0 flex-1 text-sm text-zinc-300">
@@ -80,7 +80,11 @@ export function ProfileRequirementsEditor({
                     type="button"
                     disabled={disabled}
                     aria-label={`Remove requirement ${index + 1}`}
-                    onClick={() => onChange(requirements.filter((item) => item.id !== requirement.id))}
+                    onClick={() => {
+                      const next = requirements.filter((item) => item.id !== requirement.id);
+                      if (next.length === 0) setEmptyRowId(newRequirementId());
+                      onChange(next);
+                    }}
                     className="min-h-10 rounded-md px-2 text-xs text-zinc-400 hover:bg-red-400/10 hover:text-red-200 disabled:opacity-40"
                   >
                     Remove

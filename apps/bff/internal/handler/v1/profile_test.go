@@ -2,6 +2,7 @@ package v1
 
 import (
 	"context"
+	"encoding/json"
 	"errors"
 	"net/http"
 	"net/http/httptest"
@@ -12,6 +13,7 @@ import (
 	"github.com/gin-gonic/gin"
 	"github.com/rayer/llm-wiki-bff/internal/gcs"
 	"github.com/rayer/llm-wiki-bff/internal/generation"
+	"github.com/rayer/llm-wiki-bff/internal/localfs"
 	"github.com/rayer/llm-wiki-bff/internal/profileartifacts"
 )
 
@@ -190,6 +192,80 @@ func TestProfileAPIRequiresMatchingProjectAndHidesNotFound(t *testing.T) {
 	if notFound.Code != http.StatusNotFound || strings.Contains(notFound.Body.String(), "owner") || strings.Contains(notFound.Body.String(), "foreign") {
 		t.Fatalf("not-found response status=%d body=%s", notFound.Code, notFound.Body.String())
 	}
+}
+
+func TestGetProfileGuidanceArtifactReturnsExactCurrentImmutableText(t *testing.T) {
+	gin.SetMode(gin.TestMode)
+	inputDigest := profileRequirementsDigest([]ProfileRequirement{{ID: "req-1", Text: "write concise notes"}})
+	bootstrapData, bootstrapRef, err := profileartifacts.EncodeBootstrapGuidance(profileartifacts.BootstrapGuidanceEnvelope{
+		SchemaVersion: profileartifacts.BootstrapGuidanceSchema, ProfileRevision: 1, InputDigest: inputDigest,
+		ModelVersion: "bootstrap-model-v1", PromptVersion: "bootstrap-prompt-v1", CompileGuidance: "Use the exact bootstrap text.",
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	guidanceData, guidanceRef, err := profileartifacts.EncodeGuidance(profileartifacts.GenerationGuidanceEnvelope{
+		SchemaVersion: profileartifacts.GuidanceSchema, InputDigest: inputDigest,
+		SourceContentGeneration: "generation-1", CanonicalConceptsDigest: profileartifacts.SHA256([]byte("concepts")),
+		ModelVersion: "candidate-model-v2", PromptVersion: "candidate-prompt-v3", CompileGuidance: "Use the exact candidate text.",
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	state := newProfileState("alpha")
+	state.Revision = 1
+	state.Requirements = []ProfileRequirement{{ID: "req-1", Text: "write concise notes"}}
+	state.BootstrapGuidance = &ProfileBootstrapGuidance{
+		Revision: bootstrapRef.Revision, InputDigest: bootstrapRef.InputDigest, ProfileRevision: bootstrapRef.ProfileRevision,
+		Status: profileBootstrapConfirmed, ModelVersion: bootstrapRef.ModelVersion, PromptVersion: bootstrapRef.PromptVersion,
+		SchemaVersion: bootstrapRef.SchemaVersion,
+	}
+	state.Candidate = &ProfileCandidate{CandidateID: "candidate-1", Guidance: profileDerivedRefFromArtifact(guidanceRef)}
+	objects := &profileDerivationIntegrationStore{objects: map[string][]byte{
+		profileartifacts.BootstrapObjectPath(bootstrapRef.Revision): bootstrapData,
+		profileartifacts.GuidanceObjectPath(guidanceRef.Revision):   guidanceData,
+	}}
+	h := New(&profileDerivationIntegrationRoot{RootStore: localfs.New(t.TempDir()), scoped: objects}, nil, nil, nil, nil, nil)
+	h.profileRepository = &profileRepositoryStub{state: state}
+
+	for _, tc := range []struct {
+		name, revision, wantText, wantModel string
+	}{
+		{name: "bootstrap", revision: bootstrapRef.Revision, wantText: "Use the exact bootstrap text.", wantModel: "bootstrap-model-v1"},
+		{name: "candidate", revision: guidanceRef.Revision, wantText: "Use the exact candidate text.", wantModel: "candidate-model-v2"},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			recorder := invokeProfileGuidanceArtifact(t, h, tc.revision)
+			if recorder.Code != http.StatusOK {
+				t.Fatalf("status=%d body=%s", recorder.Code, recorder.Body.String())
+			}
+			var response profileGuidanceArtifactResponse
+			if err := json.Unmarshal(recorder.Body.Bytes(), &response); err != nil {
+				t.Fatal(err)
+			}
+			if response.GuidanceArtifact.Revision != tc.revision || response.GuidanceArtifact.CompileGuidance != tc.wantText ||
+				response.GuidanceArtifact.ModelVersion != tc.wantModel || response.GuidanceArtifact.PromptVersion == "" ||
+				response.GuidanceArtifact.SchemaVersion == "" || response.GuidanceArtifact.InputDigest != inputDigest {
+				t.Fatalf("guidance artifact=%+v", response.GuidanceArtifact)
+			}
+		})
+	}
+
+	if recorder := invokeProfileGuidanceArtifact(t, h, strings.Repeat("f", 64)); recorder.Code != http.StatusNotFound {
+		t.Fatalf("stale guidance reference status=%d body=%s", recorder.Code, recorder.Body.String())
+	}
+}
+
+func invokeProfileGuidanceArtifact(t *testing.T, h *Handler, revision string) *httptest.ResponseRecorder {
+	t.Helper()
+	recorder := httptest.NewRecorder()
+	c, _ := gin.CreateTestContext(recorder)
+	c.Request = httptest.NewRequest(http.MethodGet, "/api/v1/projects/alpha/profile/guidance/"+revision, nil)
+	c.Request.Header.Set("X-Project-ID", "alpha")
+	c.Set("userID", "owner")
+	c.Params = gin.Params{{Key: "pid", Value: "alpha"}, {Key: "revision", Value: revision}}
+	h.GetProfileGuidanceArtifact(c)
+	return recorder
 }
 
 func TestProfileDerivationRetryRequiresExpectedRevision(t *testing.T) {

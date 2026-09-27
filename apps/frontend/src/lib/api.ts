@@ -217,6 +217,17 @@ export type ProfileBootstrapGuidance = {
 export type ProfileBootstrapGuidanceResponse = {
   bootstrap_guidance: ProfileBootstrapGuidance | null;
 };
+export type ProfileGuidanceArtifact = {
+  revision: string;
+  input_digest: string;
+  model_version: string;
+  prompt_version: string;
+  schema_version: string;
+  compile_guidance: string;
+};
+export type ProfileGuidanceArtifactResponse = {
+  guidance_artifact: ProfileGuidanceArtifact;
+};
 export type RecompileAllCapability = {
   allowed: boolean;
   denial_code?: string;
@@ -450,6 +461,10 @@ export async function getProfile(projectId: string): Promise<ProfileState> {
 
 export async function getProfileBootstrapGuidance(projectId: string): Promise<ProfileBootstrapGuidanceResponse> {
   return profileRequest<ProfileBootstrapGuidanceResponse>(projectId, '/bootstrap-guidance');
+}
+
+export async function getProfileGuidanceArtifact(projectId: string, revision: string): Promise<ProfileGuidanceArtifactResponse> {
+  return profileRequest<ProfileGuidanceArtifactResponse>(projectId, `/guidance/${profilePathSegment(revision)}`);
 }
 
 export async function confirmProfileBootstrapGuidance(

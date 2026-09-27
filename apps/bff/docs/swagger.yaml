@@ -861,6 +861,26 @@ definitions:
       revision:
         type: integer
     type: object
+  v1.profileGuidanceArtifactData:
+    properties:
+      compile_guidance:
+        type: string
+      input_digest:
+        type: string
+      model_version:
+        type: string
+      prompt_version:
+        type: string
+      revision:
+        type: string
+      schema_version:
+        type: string
+    type: object
+  v1.profileGuidanceArtifactResponse:
+    properties:
+      guidance_artifact:
+        $ref: '#/definitions/v1.profileGuidanceArtifactData'
+    type: object
   v1.profilePutRequest:
     properties:
       expected_revision:
@@ -1789,6 +1809,55 @@ paths:
       - DevUserAuth: []
       - ProjectHeader: []
       summary: Confirm first-compile Profile guidance
+      tags:
+      - profile
+  /api/v1/projects/{pid}/profile/guidance/{revision}:
+    get:
+      description: Returns the exact validated guidance text and version metadata
+        for a current Profile reference.
+      parameters:
+      - description: Project ID
+        in: path
+        name: pid
+        required: true
+        type: string
+      - description: Immutable guidance artifact revision
+        in: path
+        name: revision
+        required: true
+        type: string
+      - description: Project ID; must match the URL
+        in: header
+        name: X-Project-ID
+        required: true
+        type: string
+      produces:
+      - application/json
+      responses:
+        "200":
+          description: OK
+          schema:
+            $ref: '#/definitions/v1.profileGuidanceArtifactResponse'
+        "400":
+          description: Bad Request
+          schema:
+            $ref: '#/definitions/handler.ErrorResponse'
+        "401":
+          description: Unauthorized
+          schema:
+            $ref: '#/definitions/handler.ErrorResponse'
+        "404":
+          description: Not Found
+          schema:
+            $ref: '#/definitions/handler.ErrorResponse'
+        "500":
+          description: Internal Server Error
+          schema:
+            $ref: '#/definitions/handler.ErrorResponse'
+      security:
+      - DevUserAuth: []
+      - ProjectHeader: []
+      summary: Get immutable Profile compile guidance
       tags:
       - profile
   /api/v1/projects/{pid}/recompile-all:

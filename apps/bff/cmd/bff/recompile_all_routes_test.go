@@ -26,6 +26,7 @@ func TestProductionRouterRegistersRecompileAllAndBootstrapRoutes(t *testing.T) {
 		{http.MethodGet, "/api/v1/projects/:pid/recompile-all/capability"},
 		{http.MethodPost, "/api/v1/projects/:pid/recompile-all"},
 		{http.MethodGet, "/api/v1/projects/:pid/profile/bootstrap-guidance"},
+		{http.MethodGet, "/api/v1/projects/:pid/profile/guidance/:revision"},
 		{http.MethodPost, "/api/v1/projects/:pid/profile/bootstrap-guidance/:revision/confirm"},
 	} {
 		if !hasRoute(router, route.method, route.path) {

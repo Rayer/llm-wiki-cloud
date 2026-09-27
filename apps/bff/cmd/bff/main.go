@@ -377,6 +377,7 @@ func newProductionRouter(
 		v1.GET("/projects/:pid/profile", hV1.GetProfile)
 		v1.PUT("/projects/:pid/profile", hV1.PutProfile)
 		v1.GET("/projects/:pid/profile/bootstrap-guidance", hV1.GetProfileBootstrapGuidance)
+		v1.GET("/projects/:pid/profile/guidance/:revision", hV1.GetProfileGuidanceArtifact)
 		v1.POST("/projects/:pid/profile/bootstrap-guidance/:revision/confirm", hV1.ConfirmProfileBootstrapGuidance)
 		v1.POST("/projects/:pid/profile/candidates/:candidateID/confirm", hV1.ConfirmProfileCandidate)
 		v1.POST("/projects/:pid/profile/candidates/:candidateID/retry", hV1.RetryProfileCandidate)

@@ -6,6 +6,7 @@ import {
   confirmProfileBootstrapGuidance,
   getProfile,
   getProfileBootstrapGuidance,
+  getProfileGuidanceArtifact,
   getProfileJob,
   getRecompileAllCapability,
   recompileAll,
@@ -14,6 +15,7 @@ import {
   saveProfile,
   type ProfileRequirement,
   type ProfileBootstrapGuidance,
+  type ProfileGuidanceArtifact,
   type ProfileState,
 } from '@/lib/api';
 import { ProfileRequirementsEditor } from './ProfileRequirementsEditor';
@@ -45,6 +47,51 @@ function bootstrapDispositionLabel(value: ProfileBootstrapGuidance['preview']['r
     case 'both': return 'Compile guidance and dictionary or query';
     case 'limitation': return 'Limitation';
   }
+}
+
+function ProfileGuidanceArtifactDetails({ projectId, revision }: { projectId: string; revision: string }) {
+  const [result, setResult] = useState<{
+    projectId: string;
+    revision: string;
+    artifact?: ProfileGuidanceArtifact;
+    error?: string;
+  } | null>(null);
+
+  useEffect(() => {
+    let active = true;
+    getProfileGuidanceArtifact(projectId, revision)
+      .then(({ guidance_artifact: artifact }) => {
+        if (!active) return;
+        if (artifact.revision !== revision) {
+          setResult({ projectId, revision, error: 'The server returned a different guidance revision.' });
+          return;
+        }
+        setResult({ projectId, revision, artifact });
+      })
+      .catch((readError: unknown) => {
+        if (active) setResult({ projectId, revision, error: errorMessage(readError) });
+      });
+    return () => { active = false; };
+  }, [projectId, revision]);
+
+  const current = result?.projectId === projectId && result.revision === revision ? result : null;
+  if (current?.error) return <p className="mt-3 text-sm text-amber-200" role="alert">Unable to read immutable compile guidance: {current.error}</p>;
+  if (!current?.artifact) return <p className="mt-3 text-sm text-zinc-400" role="status">Loading immutable compile guidance…</p>;
+
+  return (
+    <section className="mt-4 rounded-lg border border-white/10 p-3" aria-label="Immutable compile guidance">
+      <h4 className="text-xs font-semibold uppercase tracking-wide text-sky-200">Immutable compile guidance</h4>
+      <p className="mt-2 break-all text-xs leading-5 text-zinc-400">
+        Revision: <code>{current.artifact.revision}</code>
+      </p>
+      <p className="text-xs leading-5 text-zinc-400">
+        Model {current.artifact.model_version} · Prompt {current.artifact.prompt_version} · Schema {current.artifact.schema_version}
+      </p>
+      <p className="mt-2 whitespace-pre-wrap text-sm leading-6 text-zinc-200">
+        {current.artifact.compile_guidance || 'No compile guidance is configured.'}
+      </p>
+    </section>
+  );
 }
 
 type RequestScope = { projectId: string; identity: object };
@@ -583,6 +630,7 @@ export function ProjectProfilePanel({ projectId }: { projectId: string }) {
                       {visibleBootstrapGuidance.preview.guidance_diff || 'No compile guidance changes.'}
                     </p>
                   </div>
+                  <ProfileGuidanceArtifactDetails projectId={projectId} revision={visibleBootstrapGuidance.revision} />
 
                   <div className="mt-4" aria-label="Requirement effects and limitations">
                     <h4 className="text-xs font-semibold uppercase tracking-wide text-zinc-300">Requirement effects and limitations</h4>
@@ -684,6 +732,7 @@ export function ProjectProfilePanel({ projectId }: { projectId: string }) {
                   </p>
                 </section>
               </div>
+              <ProfileGuidanceArtifactDetails projectId={projectId} revision={visibleProfile.candidate.guidance.revision} />
 
               {visibleProfile.job ? (
                 <div className="mt-4 flex flex-wrap items-center gap-x-4 gap-y-2 text-sm text-zinc-300" role="status">

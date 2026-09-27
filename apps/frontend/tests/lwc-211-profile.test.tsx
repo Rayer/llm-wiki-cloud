@@ -1,6 +1,6 @@
 import React from 'react';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
-import type { ProfileBootstrapGuidance, ProfileState } from '@/lib/api';
+import type { ProfileBootstrapGuidance, ProfileRequirement, ProfileState } from '@/lib/api';
 
 if (!(React as { act?: (callback: () => unknown) => Promise<unknown> | unknown }).act) {
   Object.defineProperty(React, 'act', {
@@ -14,6 +14,7 @@ const { act, cleanup, fireEvent, render, screen, waitFor } = await import('@test
 const mocks = vi.hoisted(() => ({
   getProfile: vi.fn(),
   getProfileBootstrapGuidance: vi.fn(),
+  getProfileGuidanceArtifact: vi.fn(),
   confirmProfileBootstrapGuidance: vi.fn(),
   saveProfile: vi.fn(),
   confirmProfileCandidate: vi.fn(),
@@ -30,6 +31,7 @@ vi.mock('@/lib/api', async () => {
     ...actual,
     getProfile: mocks.getProfile,
     getProfileBootstrapGuidance: mocks.getProfileBootstrapGuidance,
+    getProfileGuidanceArtifact: mocks.getProfileGuidanceArtifact,
     confirmProfileBootstrapGuidance: mocks.confirmProfileBootstrapGuidance,
     saveProfile: mocks.saveProfile,
     confirmProfileCandidate: mocks.confirmProfileCandidate,
@@ -42,6 +44,7 @@ vi.mock('@/lib/api', async () => {
 });
 
 import { ProjectProfilePanel } from '@/components/ProjectProfilePanel';
+import { ProfileRequirementsEditor } from '@/components/ProfileRequirementsEditor';
 
 function emptyProfile(projectId = 'project-a', revision = 0): ProfileState {
   return {
@@ -133,6 +136,16 @@ function deferred<T>() {
 beforeEach(() => {
   mocks.getProfile.mockResolvedValue(emptyProfile());
   mocks.getProfileBootstrapGuidance.mockResolvedValue({ bootstrap_guidance: null });
+  mocks.getProfileGuidanceArtifact.mockImplementation(async (_projectId: string, revision: string) => ({
+    guidance_artifact: {
+      revision,
+      input_digest: 'b'.repeat(64),
+      model_version: 'immutable-model-v1',
+      prompt_version: 'immutable-prompt-v1',
+      schema_version: revision === 'sha256-bootstrap-1' ? 'profile.bootstrap-guidance.v1' : 'profile.guidance.v1',
+      compile_guidance: 'Exact immutable instructions.',
+    },
+  }));
   mocks.confirmProfileBootstrapGuidance.mockImplementation(async (_projectId: string, _revision: string, profileRevision: number, inputDigest: string) => ({
     bootstrap_guidance: { ...bootstrapGuidance('confirmed', profileRevision, inputDigest) },
   }));
@@ -157,6 +170,22 @@ afterEach(() => {
 });
 
 describe('LWC-211 Project Profile', () => {
+  it('keeps the empty requirement editor mounted and focused after the first character', async () => {
+    function RequirementsHarness() {
+      const [requirements, setRequirements] = React.useState<ProfileRequirement[]>([]);
+      return <ProfileRequirementsEditor requirements={requirements} onChange={setRequirements} />;
+    }
+
+    render(<RequirementsHarness />);
+    const firstInput = await screen.findByRole('textbox', { name: 'Requirement 1' });
+    firstInput.focus();
+    fireEvent.change(firstInput, { target: { value: 'x' } });
+
+    const updatedInput = screen.getByRole('textbox', { name: 'Requirement 1' });
+    expect(updatedInput).toBe(firstInput);
+    expect(document.activeElement).toBe(updatedInput);
+  });
+
   it('saves ordered requirements with the server revision and reports the three-minute pending schedule', async () => {
     render(<ProjectProfilePanel projectId="project-a" />);
 
@@ -191,6 +220,10 @@ describe('LWC-211 Project Profile', () => {
     render(<ProjectProfilePanel projectId="project-a" />);
 
     expect(await screen.findByText('Prefer concrete, dated explanations.')).toBeDefined();
+    expect(await screen.findByText('Exact immutable instructions.')).toBeDefined();
+    expect(screen.getByText((_text, element) => element?.tagName === 'P' && element.textContent?.includes(
+      'Model immutable-model-v1 · Prompt immutable-prompt-v1 · Schema profile.bootstrap-guidance.v1',
+    ) === true)).toBeDefined();
     expect(screen.getByText(/req-1: Compile guidance/)).toBeDefined();
     expect(screen.getByText(/req-2: Limitation/)).toBeDefined();
     expect(screen.getByText(/No generation-bound Profile is active yet/)).toBeDefined();
@@ -206,6 +239,18 @@ describe('LWC-211 Project Profile', () => {
     expect(screen.getByText(/does not start tagging/)).toBeDefined();
     expect(screen.queryByText(/Active profile:/)).toBeNull();
     expect(screen.queryByText(/Tagging work:/)).toBeNull();
+  });
+
+  it('shows the candidate guidance artifact text and its immutable version metadata', async () => {
+    mocks.getProfile.mockResolvedValue(profileWithCandidate());
+
+    render(<ProjectProfilePanel projectId="project-a" />);
+
+    expect(await screen.findByText('Exact immutable instructions.')).toBeDefined();
+    expect(screen.getByText('guide-2', { selector: 'code' })).toBeDefined();
+    expect(screen.getByText((_text, element) => element?.tagName === 'P' && element.textContent?.includes(
+      'Model immutable-model-v1 · Prompt immutable-prompt-v1 · Schema profile.guidance.v1',
+    ) === true)).toBeDefined();
   });
 
   it('keeps confirmation after a polling GET resolves late with the same-revision preview', async () => {

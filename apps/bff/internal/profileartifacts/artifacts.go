@@ -224,6 +224,17 @@ func ReadBootstrapGuidance(ctx context.Context, objects ObjectStore, ref Bootstr
 	return data, envelope, err
 }
 
+func ReadGuidance(ctx context.Context, objects ObjectStore, ref DerivedRef) (GenerationGuidanceEnvelope, error) {
+	if objects == nil || GuidanceObjectPath(ref.Revision) == "" {
+		return GenerationGuidanceEnvelope{}, errors.New("invalid Profile guidance reference")
+	}
+	data, err := readObjectLimited(ctx, objects, GuidanceObjectPath(ref.Revision))
+	if err != nil {
+		return GenerationGuidanceEnvelope{}, err
+	}
+	return ValidateGuidance(data, ref)
+}
+
 func BootstrapObjectPath(revision string) string {
 	if !validSHA256(revision) {
 		return ""

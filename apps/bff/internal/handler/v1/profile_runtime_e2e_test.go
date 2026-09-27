@@ -80,6 +80,12 @@ func TestProfileRuntimeConnectedManualThenCompileTagging(t *testing.T) {
 		objects[prefix+generation.ManifestPath] = taggingGCSObject{data, currentGeneration}
 	}
 	publish(21)
+	// This fixture has a committed content generation before any Profile state,
+	// matching first activation for an existing project after Profile ships.
+	legacyState, err := f.repo.GetProfile(f.ctx, f.user, f.project)
+	if err != nil || legacyState.Revision != 0 || legacyState.BootstrapGuidance != nil || legacyState.Active != nil {
+		t.Fatalf("legacy generation should begin without Profile bootstrap or active state: %+v err=%v", legacyState, err)
+	}
 	assertRuntimeQuery(t, f, false, "Alpha", 200)
 
 	deriveCalls, tagCalls := 0, 0
@@ -151,7 +157,8 @@ func TestProfileRuntimeConnectedManualThenCompileTagging(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if current.Candidate == nil || current.Candidate.ContentGeneration != manifest.GenerationID || current.Active != nil || deriveCalls != 1 || f.work(t, deriveRef).Status != "complete" {
+	if current.Candidate == nil || current.Candidate.Source != "manual" || current.Candidate.ContentGeneration != manifest.GenerationID ||
+		current.BootstrapGuidance != nil || current.Active != nil || deriveCalls != 1 || f.work(t, deriveRef).Status != "complete" {
 		t.Fatalf("manual derivation not staged: %+v calls=%d work=%+v", current, deriveCalls, f.work(t, deriveRef))
 	}
 	current, err = f.repo.ConfirmProfileCandidate(f.ctx, f.user, f.project, current.Candidate.CandidateID, current.Revision)
@@ -163,7 +170,7 @@ func TestProfileRuntimeConnectedManualThenCompileTagging(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if current.Active == nil || current.Job.Status != profileJobReady || tagCalls != 2 {
+	if current.Active == nil || current.Active.ContentGeneration != manifest.GenerationID || current.BootstrapGuidance != nil || current.Job.Status != profileJobReady || tagCalls != 2 {
 		t.Fatalf("G1 not active: %+v calls=%d", current, tagCalls)
 	}
 	// A compile starts from this revision while its worker pins G2. Before G2
