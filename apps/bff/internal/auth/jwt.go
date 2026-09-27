@@ -1,8 +1,10 @@
 package auth
 
 import (
+	"context"
 	"crypto/rand"
 	"encoding/hex"
+	"errors"
 	"fmt"
 	"net/http"
 	"strings"
@@ -22,6 +24,7 @@ type Claims struct {
 	Sub         string `json:"sub"`
 	Role        string `json:"role,omitempty"`
 	TokenType   string `json:"token_type,omitempty"`
+	ClientKind  string `json:"client_kind,omitempty"`
 	SessionID   string `json:"sid,omitempty"`
 	TokenID     string `json:"tid,omitempty"`
 	jwt.RegisteredClaims
@@ -35,7 +38,21 @@ const (
 	refreshTokenCookieName = "refresh_token"
 	refreshTokenCookiePath = "/"
 	refreshTokenDomain     = "rayer.idv.tw"
+	cliClientKind          = "cli"
 )
+
+var (
+	ErrCLISessionInvalid     = errors.New("invalid CLI session")
+	ErrCLISessionReplay      = errors.New("CLI refresh token replay")
+	ErrCLISessionNotFound    = errors.New("CLI session not found")
+	ErrCLISessionRevoked     = errors.New("CLI session is revoked")
+	ErrCLISessionUnavailable = errors.New("CLI session authority unavailable")
+)
+
+// CLIAccessSessionVerifier validates the durable session represented by an
+// authenticated CLI access token. Implementations must fail closed on storage
+// errors.
+type CLIAccessSessionVerifier func(context.Context, string, string, int64) error
 
 var refreshTokenStore = struct {
 	sync.Mutex
@@ -49,15 +66,26 @@ var refreshTokenStore = struct {
 // DEV mode: if cfg.DevJWT is set AND no Authorization header is present,
 // it injects cfg.DefaultUserID into the context.
 func JWTAuth(cfg config.Config) gin.HandlerFunc {
-	return jwtAuth(cfg, nil, false)
+	return jwtAuth(cfg, nil, false, nil, nil)
 }
 
 // JWTAuthWithAccountLookup validates current account access on every request.
 func JWTAuthWithAccountLookup(cfg config.Config, lookup AccountLookup) gin.HandlerFunc {
-	return jwtAuth(cfg, lookup, true)
+	return jwtAuth(cfg, lookup, true, nil, nil)
 }
 
-func jwtAuth(cfg config.Config, lookup AccountLookup, enforce bool) gin.HandlerFunc {
+// JWTAuthWithAccountLookupAndSessionVerifier preserves Web token handling and
+// requires a durable session check for CLI access tokens. Optional project
+// authorization applies only to CLI requests carrying X-Project-ID.
+func JWTAuthWithAccountLookupAndSessionVerifier(cfg config.Config, lookup AccountLookup, verifySession CLIAccessSessionVerifier, authorizeProject ...ProjectOwnerAuthorizer) gin.HandlerFunc {
+	var projectAuthorizer ProjectOwnerAuthorizer
+	if len(authorizeProject) > 0 {
+		projectAuthorizer = authorizeProject[0]
+	}
+	return jwtAuth(cfg, lookup, true, verifySession, projectAuthorizer)
+}
+
+func jwtAuth(cfg config.Config, lookup AccountLookup, enforce bool, verifySession CLIAccessSessionVerifier, authorizeProject ProjectOwnerAuthorizer) gin.HandlerFunc {
 	return func(c *gin.Context) {
 		authHeader := c.GetHeader("Authorization")
 
@@ -100,6 +128,14 @@ func jwtAuth(cfg config.Config, lookup AccountLookup, enforce bool) gin.HandlerF
 			c.AbortWithStatusJSON(http.StatusUnauthorized, gin.H{"error": "invalid token"})
 			return
 		}
+		if claims.ClientKind != "" && claims.ClientKind != cliClientKind {
+			c.AbortWithStatusJSON(http.StatusUnauthorized, gin.H{"error": "invalid token"})
+			return
+		}
+		if claims.ClientKind == cliClientKind && (claims.TokenType != accessTokenType || !ValidPathSegment(claims.SessionID)) {
+			c.AbortWithStatusJSON(http.StatusUnauthorized, gin.H{"error": "invalid token"})
+			return
+		}
 
 		if enforce {
 			if lookup == nil {
@@ -107,14 +143,85 @@ func jwtAuth(cfg config.Config, lookup AccountLookup, enforce bool) gin.HandlerF
 				return
 			}
 			user, err := lookup(c.Request.Context(), claims.Sub)
-			if err != nil || !user.AllowsVersion(claims.AuthVersion) {
+			if err != nil {
+				if claims.ClientKind == cliClientKind {
+					c.AbortWithStatusJSON(http.StatusServiceUnavailable, gin.H{"error": "account access unavailable"})
+				} else {
+					c.AbortWithStatusJSON(http.StatusUnauthorized, gin.H{"error": "invalid token"})
+				}
+				return
+			}
+			if !user.AllowsVersion(claims.AuthVersion) {
 				c.AbortWithStatusJSON(http.StatusUnauthorized, gin.H{"error": "invalid token"})
 				return
 			}
 			claims.Role = user.Role
 		}
+		if claims.ClientKind == cliClientKind {
+			if verifySession == nil {
+				c.AbortWithStatusJSON(http.StatusServiceUnavailable, gin.H{"error": "CLI session authority unavailable"})
+				return
+			}
+			if err := verifySession(c.Request.Context(), claims.Sub, claims.SessionID, claims.AuthVersion); err != nil {
+				status := cliSessionHTTPStatus(err)
+				message := "invalid token"
+				if status == http.StatusServiceUnavailable {
+					message = "CLI session authority unavailable"
+				}
+				c.AbortWithStatusJSON(status, gin.H{"error": message})
+				return
+			}
+			projectID := strings.TrimSpace(c.GetHeader("X-Project-ID"))
+			if projectID != "" && !ValidPathSegment(projectID) {
+				c.AbortWithStatusJSON(http.StatusBadRequest, gin.H{"error": "invalid X-Project-ID header"})
+				return
+			}
+			if projectID != "" {
+				if authorizeProject == nil {
+					c.AbortWithStatusJSON(http.StatusServiceUnavailable, gin.H{"error": "project access authority unavailable"})
+					return
+				}
+				if err := authorizeProject(c.Request.Context(), claims.Sub, projectID); err != nil {
+					status := http.StatusServiceUnavailable
+					message := "project access authority unavailable"
+					if errors.Is(err, ErrProjectPermissionDenied) {
+						status = http.StatusForbidden
+						message = "project access denied"
+					}
+					c.AbortWithStatusJSON(status, gin.H{"error": message})
+					return
+				}
+			}
+		}
 		c.Set("userID", claims.Sub)
 		c.Set("userRole", claims.Role)
+		c.Set("clientKind", claims.ClientKind)
+		if claims.ClientKind == cliClientKind {
+			c.Set("sessionID", claims.SessionID)
+		}
+		c.Next()
+	}
+}
+
+// WebOnly rejects CLI credentials from browser-confirmation and self-service
+// endpoints that require an explicit Web session.
+func WebOnly() gin.HandlerFunc {
+	return func(c *gin.Context) {
+		if c.GetString("clientKind") == cliClientKind {
+			c.AbortWithStatusJSON(http.StatusForbidden, gin.H{"error": "Web authentication required"})
+			return
+		}
+		c.Next()
+	}
+}
+
+// CLIOnly limits an endpoint to a session-verified CLI credential.
+func CLIOnly() gin.HandlerFunc {
+	return func(c *gin.Context) {
+		if c.GetString("clientKind") != cliClientKind {
+			c.AbortWithStatusJSON(http.StatusForbidden, gin.H{"error": "CLI authentication required"})
+			return
+		}
 		c.Next()
 	}
 }
@@ -151,7 +258,16 @@ func GenerateTokenWithRole(userID, role, secret string, ttl time.Duration) (stri
 
 // GenerateAccessToken creates a short-lived HS256 JWT for API authorization.
 func GenerateAccessToken(userID, role, secret string, version ...int64) (string, error) {
-	return generateTokenAt(userID, role, secret, accessTokenTTL, accessTokenType, "", "", "", time.Now(), version...)
+	return generateTokenAt(userID, role, secret, accessTokenTTL, accessTokenType, "", "", "", time.Now(), "", version...)
+}
+
+// GenerateCLIAccessToken creates a short-lived access token bound to a durable
+// CLI session. Ordinary middleware rejects it unless given a session verifier.
+func GenerateCLIAccessToken(userID, role, sessionID, secret string, version ...int64) (string, error) {
+	if !ValidPathSegment(sessionID) {
+		return "", fmt.Errorf("invalid CLI session ID")
+	}
+	return generateTokenAt(userID, role, secret, accessTokenTTL, accessTokenType, "", sessionID, "", time.Now(), cliClientKind, version...)
 }
 
 // GenerateRefreshToken is retained for the local/test compatibility lane. The
@@ -162,7 +278,7 @@ func GenerateRefreshToken(userID, role, secret string, version ...int64) (string
 	if err != nil {
 		return "", err
 	}
-	token, err := generateTokenAt(userID, role, secret, refreshTokenTTL, refreshTokenType, jti, "", "", time.Now(), version...)
+	token, err := generateTokenAt(userID, role, secret, refreshTokenTTL, refreshTokenType, jti, "", "", time.Now(), "", version...)
 	if err != nil {
 		return "", err
 	}
@@ -184,8 +300,11 @@ func ValidateToken(tokenString, secret string) (*Claims, error) {
 	if err != nil {
 		return nil, err
 	}
-	if !token.Valid || claims.TokenType == refreshTokenType {
+	if !token.Valid || claims.TokenType == refreshTokenType || (claims.ClientKind != "" && claims.ClientKind != cliClientKind) {
 		return nil, fmt.Errorf("invalid token")
+	}
+	if claims.ClientKind == cliClientKind && (claims.TokenType != accessTokenType || !ValidPathSegment(claims.SessionID)) {
+		return nil, fmt.Errorf("invalid CLI access token")
 	}
 	return claims, nil
 }
@@ -225,7 +344,7 @@ func parseRefreshToken(tokenString, secret string) (*Claims, error) {
 }
 
 func generateToken(userID, role, secret string, ttl time.Duration, tokenType, jti string) (string, error) {
-	return generateTokenAt(userID, role, secret, ttl, tokenType, jti, "", "", time.Now())
+	return generateTokenAt(userID, role, secret, ttl, tokenType, jti, "", "", time.Now(), "")
 }
 
 func generateRefreshTokenAt(userID, role, secret, sessionID string, now time.Time, version ...int64) (string, error) {
@@ -233,12 +352,12 @@ func generateRefreshTokenAt(userID, role, secret, sessionID string, now time.Tim
 	if err != nil {
 		return "", err
 	}
-	return generateTokenAt(userID, role, secret, refreshTokenTTL, refreshTokenType, sessionID, sessionID, tokenID, now, version...)
+	return generateTokenAt(userID, role, secret, refreshTokenTTL, refreshTokenType, sessionID, sessionID, tokenID, now, "", version...)
 }
 
-func generateTokenAt(userID, role, secret string, ttl time.Duration, tokenType, jti, sessionID, tokenID string, now time.Time, version ...int64) (string, error) {
+func generateTokenAt(userID, role, secret string, ttl time.Duration, tokenType, jti, sessionID, tokenID string, now time.Time, clientKind string, version ...int64) (string, error) {
 	claims := &Claims{
-		Sub: userID, Role: role, TokenType: tokenType, SessionID: sessionID, TokenID: tokenID,
+		Sub: userID, Role: role, TokenType: tokenType, ClientKind: clientKind, SessionID: sessionID, TokenID: tokenID,
 		RegisteredClaims: jwt.RegisteredClaims{
 			IssuedAt:  jwt.NewNumericDate(now),
 			ExpiresAt: jwt.NewNumericDate(now.Add(ttl)),
@@ -265,4 +384,11 @@ func resetRefreshTokensForTest() {
 	refreshTokenStore.Lock()
 	refreshTokenStore.active = make(map[string]time.Time)
 	refreshTokenStore.Unlock()
+}
+
+func cliSessionHTTPStatus(err error) int {
+	if errors.Is(err, ErrCLISessionInvalid) || errors.Is(err, ErrCLISessionReplay) || errors.Is(err, ErrCLISessionRevoked) || errors.Is(err, ErrRefreshSessionInvalid) || errors.Is(err, ErrRefreshSessionReplay) || errors.Is(err, ErrRefreshSessionRevoked) {
+		return http.StatusUnauthorized
+	}
+	return http.StatusServiceUnavailable
 }

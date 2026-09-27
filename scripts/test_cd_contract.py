@@ -113,7 +113,7 @@ class CDContractTests(unittest.TestCase):
         self.assertEqual(set(development), set(production))
         self.assertEqual(
             set(development),
-            {"gcp", "auth", "bff", "worker", "frontend"},
+        {"gcp", "auth", "bff", "worker", "export_job", "frontend"},
         )
         self.assertEqual(
             self.normalized("development")["query_config"],
@@ -188,11 +188,15 @@ class CDContractTests(unittest.TestCase):
                 expected_jobs = {details["job"]}
                 if filename == "deploy-dev.yml":
                     expected_jobs.add("main-fast-forward-eligible")
+                    expected_jobs.add("provision-exportjob-dev")
                 self.assertEqual(set(workflow["jobs"]), expected_jobs)
                 job = workflow["jobs"][details["job"]]
+                want_guard = f"github.ref == 'refs/heads/{details['branch']}'"
+                if filename == "deploy-dev.yml":
+                    want_guard += " && inputs.components != 'provision-exportjob-dev'"
                 self.assertEqual(
                     job.get("if"),
-                    f"github.ref == 'refs/heads/{details['branch']}'",
+                    want_guard,
                 )
                 self.assertEqual(job.get("uses"), shared_workflow)
                 self.assertEqual(job.get("secrets"), "inherit")
@@ -528,7 +532,7 @@ class CDContractTests(unittest.TestCase):
         self.assertEqual(job.get("needs"), "deploy")
         self.assertEqual(
             job.get("if"),
-            "${{ always() && github.event_name == 'workflow_dispatch' && github.ref == 'refs/heads/develop' }}",
+            "${{ always() && github.event_name == 'workflow_dispatch' && github.ref == 'refs/heads/develop' && inputs.components != 'provision-exportjob-dev' }}",
         )
         self.assertEqual(job.get("permissions"), {"contents": "read", "statuses": "write"})
         steps = job["steps"]
@@ -692,11 +696,33 @@ class CDContractTests(unittest.TestCase):
             self.assertEqual(receipt["components"], ["auth", "worker"])
             self.assertEqual(receipt["images"], images)
 
+            bff_image = f"{registry}/llm-wiki-bff@sha256:{'d' * 64}"
+            exportjob_image = f"{registry}/llm-wiki-bff-export-job@sha256:{'e' * 64}"
+            plan.write_text(json.dumps({
+                "normalized": {
+                    "selected_components": ["bff", "exportjob"],
+                    "gcp": {"artifact_registry": registry},
+                    "evidence": {"config_fingerprint": "sha256:" + "f" * 64},
+                }
+            }))
+            (image_dir / f"bff-image-{source_sha}.txt").write_text(bff_image + "\n")
+            (image_dir / f"exportjob-image-{source_sha}.txt").write_text(exportjob_image + "\n")
+            exportjob_receipt = subprocess.run(
+                ["bash", str(ROOT / "deploy/cd.sh"), "record-dev-receipt"],
+                env=env,
+                text=True,
+                capture_output=True,
+            )
+            self.assertEqual(exportjob_receipt.returncode, 0, exportjob_receipt.stdout + exportjob_receipt.stderr)
+            receipt = json.loads((image_dir / "dev-receipt.json").read_text())
+            self.assertEqual(receipt["components"], ["bff"])
+            self.assertEqual(receipt["images"], {"bff": bff_image})
+
     def test_no_legacy_workflow_owns_deployment_literals(self):
         workflows = sorted((ROOT / ".github/workflows").glob("*.yml"))
         self.assertEqual(
             {path.name for path in workflows},
-            {"ci.yml", "cd.yml", "deploy-dev.yml", "promote-production.yml"},
+            {"ci.yml", "cd.yml", "deploy-dev.yml", "promote-production.yml", "provision-exportjob-dev.yml"},
         )
         all_source = "\n".join(path.read_text() for path in workflows)
         for literal in (
@@ -705,6 +731,43 @@ class CDContractTests(unittest.TestCase):
             "QUERY_STAGE_CONFIG_DIGEST:",
         ):
             self.assertNotIn(literal, all_source)
+
+    def test_export_prerequisite_workflow_isolated_to_develop_and_reuses_existing_auth(self):
+        source = (ROOT / ".github/workflows/provision-exportjob-dev.yml").read_text()
+        self.assertIn("workflow_call:", source)
+        self.assertNotIn("workflow_dispatch:", source)
+        self.assertIn("if: github.ref == 'refs/heads/develop'", source)
+        self.assertIn("workload_identity_provider: ${{ secrets.WIF_PROVIDER }}", source)
+        self.assertIn("service_account: ${{ secrets.WIF_SERVICE_ACCOUNT }}", source)
+        self.assertNotIn("gcloud projects add-iam-policy-binding", source)
+        deploy = (ROOT / ".github/workflows/deploy-dev.yml").read_text()
+        self.assertIn("      components:", deploy)
+        self.assertIn("        type: string", deploy)
+        self.assertNotIn("      operation:", deploy)
+        self.assertIn("if: github.ref == 'refs/heads/develop' && inputs.components == 'provision-exportjob-dev'", deploy)
+        self.assertIn("if: github.ref == 'refs/heads/develop' && inputs.components != 'provision-exportjob-dev'", deploy)
+        self.assertIn("uses: ./.github/workflows/provision-exportjob-dev.yml", deploy)
+        self.assertIn("group: lwc-development-deploy", deploy)
+        self.assertIn("cancel-in-progress: false", deploy)
+        self.assertNotIn("concurrency:", source)
+        runbook = (ROOT / "docs/deployment/lwc-344-dev-export-provisioning.md").read_text()
+        self.assertIn("gh workflow run deploy-dev.yml --ref develop -f components=provision-exportjob-dev", runbook)
+        self.assertIn("do not dispatch `provision-exportjob-dev.yml` directly", runbook)
+        self.assertIn("actions: read", source)
+        self.assertIn(".head_sha == $sha", source)
+        self.assertIn(".path == \".github/workflows/ci.yml\"", source)
+        self.assertIn(".name == \"canonical-ci\"", source)
+        self.assertIn(".conclusion == \"success\"", source)
+        self.assertLess(source.index("Require successful canonical CI"), source.index("Set up gcloud"))
+        self.assertLess(source.index("Require successful canonical CI"), source.index("Authenticate with the existing DEV deploy identity"))
+
+    def test_export_provision_workflow_run_blocks_are_shell_valid(self):
+        workflow = yaml.safe_load((ROOT / ".github/workflows/provision-exportjob-dev.yml").read_text())
+        steps = workflow["jobs"]["provision"]["steps"]
+        for step in steps:
+            if step.get("name") in ("Require successful canonical CI for this exact SHA", "Restore latest evidence for this DEV SHA"):
+                result = subprocess.run(["bash", "-n", "-c", step["run"]], text=True, capture_output=True)
+                self.assertEqual(result.returncode, 0, result.stderr)
 
     def test_default_ci_runs_retained_legacy_python_suites(self):
         source = (ROOT / ".github/workflows/ci.yml").read_text()
@@ -2224,6 +2287,12 @@ class CDContractTests(unittest.TestCase):
                 calls = log_path.read_text().splitlines()
                 update = any(f"run services update {value['service']}" in call for call in calls)
                 traffic = any(f"run services update-traffic {value['service']}" in call for call in calls)
+                if component == 'bff':
+                    update_call = next(call for call in calls if f"run services update {value['service']}" in call)
+                    self.assertIn('--update-env-vars ^|^QUERY_STAGE_CONFIG_PATH=' + normalized['query_config']['runtime_path']
+                                  + '|EXPORT_JOB_URL=https://run.googleapis.com/v2/projects/llm-wiki-cloud/locations/asia-east1/jobs/export-job-dev:run'
+                                  + '|EXPORT_SIGNING_SERVICE_ACCOUNT=lwc-export-signer-dev@llm-wiki-cloud.iam.gserviceaccount.com', update_call)
+                    self.assertNotIn('--remove-env-vars', update_call)
                 self.assertTrue(update, result.stdout + result.stderr)
                 self.assertTrue(traffic, result.stdout + result.stderr)
 
@@ -2250,7 +2319,7 @@ class CDContractTests(unittest.TestCase):
                 }
             }))
             normalized = json.loads(plan.read_text())['normalized']
-            for key in ('environment', 'query_config', 'components', 'bff'):
+            for key in ('environment', 'query_config', 'components', 'bff', 'export_job'):
                 normalized[key] = deepcopy(bff_plan('development')[key])
             normalized['bff']['service_name'] = 'bff-service'
             plan.write_text(json.dumps({'normalized': normalized}))
@@ -2660,7 +2729,7 @@ class CDContractTests(unittest.TestCase):
 
 
 class ArchitectureAuthorityTests(unittest.TestCase):
-    COMPONENTS = ("auth", "bff", "worker", "frontend")
+    COMPONENTS = ("auth", "bff", "worker", "exportjob", "frontend")
 
     def test_each_component_has_a_real_independent_action_boundary(self):
         orchestrator = (ROOT / ".github/workflows/cd.yml").read_text()
@@ -2700,11 +2769,60 @@ class ArchitectureAuthorityTests(unittest.TestCase):
         self.assertNotIn("consume_dev_images", frontend)
         self.assertNotRegex(frontend, r"image_for (auth|bff|worker)")
 
+    def test_export_job_runtime_readback_requires_exact_service_account_and_environment(self):
+        config = {
+            "runtime_service_account": "export-worker@example.iam.gserviceaccount.com",
+            "signing_service_account": "export-signer@example.iam.gserviceaccount.com",
+            "bucket": "example-dev-bucket", "firestore_database_id": "example-dev-db",
+        }
+        runtime_v2 = {"template": {"template": {
+            "serviceAccount": config["runtime_service_account"],
+            "containers": [{"env": [
+                {"name": "GCP_PROJECT", "value": "example-project"},
+                {"name": "BUCKET", "value": config["bucket"]},
+                {"name": "FIRESTORE_DATABASE_ID", "value": config["firestore_database_id"]},
+                {"name": "EXPORT_SIGNING_SERVICE_ACCOUNT", "value": config["signing_service_account"]},
+            ]}],
+        }}}
+        runtime_v1 = {"spec": {"template": {"spec": {"template": {"spec": {
+            "serviceAccountName": config["runtime_service_account"],
+            "containers": runtime_v2["template"]["template"]["containers"],
+        }}}}}}
+        with tempfile.TemporaryDirectory() as directory:
+            plan = Path(directory) / "plan.json"
+            plan.write_text(json.dumps({"normalized": {
+                "gcp": {"project_id": "example-project"}, "export_job": config,
+            }}))
+
+            def verify(value):
+                return subprocess.run(
+                    ["bash", "-c", 'source "$COMMON"; PLAN_PATH="$PLAN"; exportjob_runtime_matches "$1"', "verify", json.dumps(value)],
+                    env={**os.environ, "COMMON": str(ROOT / "deploy/components/common.sh"), "PLAN": str(plan)},
+                    text=True, capture_output=True,
+                )
+
+            for runtime, account_path in ((runtime_v2, ("template", "template", "serviceAccount")),
+                                          (runtime_v1, ("spec", "template", "spec", "template", "spec", "serviceAccountName"))):
+                with self.subTest(shape=account_path):
+                    self.assertEqual(verify(runtime).returncode, 0)
+                    wrong = deepcopy(runtime)
+                    node = wrong
+                    for key in account_path[:-1]: node = node[key]
+                    node[account_path[-1]] = "unexpected@example.iam.gserviceaccount.com"
+                    self.assertNotEqual(verify(wrong).returncode, 0)
+                    wrong = deepcopy(runtime)
+                    containers = wrong["template"]["template"]["containers"] if "template" in wrong else wrong["spec"]["template"]["spec"]["template"]["spec"]["containers"]
+                    containers[0]["env"][1]["value"] = "other-bucket"
+                    self.assertNotEqual(verify(wrong).returncode, 0)
+
     def test_wrappers_require_explicit_components_and_inherit_secrets(self):
         for filename in ("deploy-dev.yml", "promote-production.yml"):
             source = (ROOT / ".github/workflows" / filename).read_text()
             self.assertRegex(source, r"components:\n\s+description:.*\n\s+required: true")
-            self.assertNotIn("default:", source)
+            if filename == "deploy-dev.yml":
+                self.assertRegex(source, r"exportjob_continuation_run_id:\n\s+description:.*\n\s+required: false\n\s+default: ''\n\s+type: string")
+            else:
+                self.assertNotIn("default:", source)
             self.assertNotIn("inputs.components ||", source)
             self.assertIn("\n    secrets: inherit", source)
             self.assertNotRegex(source, r"\$\{\{\s*secrets\.")

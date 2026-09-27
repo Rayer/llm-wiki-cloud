@@ -5,7 +5,7 @@ source "$ROOT/deploy/components/common.sh"
 
 component_script() {
   case "$1" in
-    auth|bff|worker|frontend) printf '%s/deploy/components/%s.sh\n' "$ROOT" "$1" ;;
+    auth|bff|worker|exportjob|frontend) printf '%s/deploy/components/%s.sh\n' "$ROOT" "$1" ;;
     *) die "unexpected component $1" ;;
   esac
 }

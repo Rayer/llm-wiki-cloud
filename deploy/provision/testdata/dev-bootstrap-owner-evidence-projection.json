@@ -1,0 +1,255 @@
+{
+  "policies": [
+    {
+      "added_by_this_run": true,
+      "binding": {
+        "condition": {
+          "description": "Limit Export worker to the DEV Firestore database",
+          "expression": "resource.name == 'projects/llm-wiki-cloud/databases/llm-wiki-cloud-dev'",
+          "title": "lwc344-export-worker-dev-firestore"
+        },
+        "member": "serviceAccount:lwc-export-worker-dev@llm-wiki-cloud.iam.gserviceaccount.com",
+        "role": "roles/datastore.user"
+      },
+      "status": "verified_addition",
+      "target": "project:llm-wiki-cloud"
+    },
+    {
+      "added_by_this_run": true,
+      "binding": {
+        "member": "serviceAccount:lwc-export-worker-dev@llm-wiki-cloud.iam.gserviceaccount.com",
+        "role": "projects/llm-wiki-cloud/roles/lwcExportObjectLister"
+      },
+      "status": "verified_addition",
+      "target": "bucket:llm-wiki-data-dev"
+    },
+    {
+      "added_by_this_run": true,
+      "binding": {
+        "condition": {
+          "description": "Read Export source objects only",
+          "expression": "resource.type == 'storage.googleapis.com/Object' && resource.name.startsWith('projects/_/buckets/llm-wiki-data-dev/objects/users/')",
+          "title": "lwc344-export-source-objects"
+        },
+        "member": "serviceAccount:lwc-export-worker-dev@llm-wiki-cloud.iam.gserviceaccount.com",
+        "role": "projects/llm-wiki-cloud/roles/lwcExportSourceReader"
+      },
+      "status": "verified_addition",
+      "target": "bucket:llm-wiki-data-dev"
+    },
+    {
+      "added_by_this_run": true,
+      "binding": {
+        "condition": {
+          "description": "Manage Export temporary and ready archives only",
+          "expression": "resource.type == 'storage.googleapis.com/Object' && (resource.name.startsWith('projects/_/buckets/llm-wiki-data-dev/objects/exports/tmp/') || resource.name.startsWith('projects/_/buckets/llm-wiki-data-dev/objects/exports/ready/'))",
+          "title": "lwc344-export-archive-objects"
+        },
+        "member": "serviceAccount:lwc-export-worker-dev@llm-wiki-cloud.iam.gserviceaccount.com",
+        "role": "projects/llm-wiki-cloud/roles/lwcExportArchiveWriter"
+      },
+      "status": "verified_addition",
+      "target": "bucket:llm-wiki-data-dev"
+    },
+    {
+      "added_by_this_run": true,
+      "binding": {
+        "condition": {
+          "description": "Allow signed URL GETs for ready archives only",
+          "expression": "resource.type == 'storage.googleapis.com/Object' && resource.name.startsWith('projects/_/buckets/llm-wiki-data-dev/objects/exports/ready/')",
+          "title": "lwc344-export-ready-archive-read"
+        },
+        "member": "serviceAccount:lwc-export-signer-dev@llm-wiki-cloud.iam.gserviceaccount.com",
+        "role": "projects/llm-wiki-cloud/roles/lwcExportReadyArchiveReader"
+      },
+      "status": "verified_addition",
+      "target": "bucket:llm-wiki-data-dev"
+    },
+    {
+      "added_by_this_run": true,
+      "binding": {
+        "member": "serviceAccount:lwc-bff-dev@llm-wiki-cloud.iam.gserviceaccount.com",
+        "role": "projects/llm-wiki-cloud/roles/lwcExportBlobSigner"
+      },
+      "status": "verified_addition",
+      "target": "serviceAccount:lwc-export-signer-dev@llm-wiki-cloud.iam.gserviceaccount.com"
+    },
+    {
+      "added_by_this_run": true,
+      "binding": {
+        "member": "serviceAccount:gh-actions-bff-deployer@llm-wiki-cloud.iam.gserviceaccount.com",
+        "role": "projects/llm-wiki-cloud/roles/lwcExportRoleReadback"
+      },
+      "status": "verified_addition",
+      "target": "project:llm-wiki-cloud"
+    },
+    {
+      "added_by_this_run": true,
+      "binding": {
+        "member": "serviceAccount:gh-actions-bff-deployer@llm-wiki-cloud.iam.gserviceaccount.com",
+        "role": "projects/llm-wiki-cloud/roles/lwcExportProjectPolicyReadback"
+      },
+      "status": "verified_addition",
+      "target": "project:llm-wiki-cloud"
+    },
+    {
+      "added_by_this_run": true,
+      "binding": {
+        "member": "serviceAccount:gh-actions-bff-deployer@llm-wiki-cloud.iam.gserviceaccount.com",
+        "role": "projects/llm-wiki-cloud/roles/lwcExportSignerPolicyReadback"
+      },
+      "status": "verified_addition",
+      "target": "serviceAccount:lwc-export-signer-dev@llm-wiki-cloud.iam.gserviceaccount.com"
+    }
+  ],
+  "resources": {
+    "lwc-export-signer-dev@llm-wiki-cloud.iam.gserviceaccount.com": {
+      "created_by_this_run": true,
+      "creation_status": "verified",
+      "first_observed": "absent",
+      "inverse": "delete only after confirming no consumers",
+      "kind": "serviceAccount",
+      "readback_identity": {
+        "email": "lwc-export-signer-dev@llm-wiki-cloud.iam.gserviceaccount.com",
+        "name": "projects/llm-wiki-cloud/serviceAccounts/lwc-export-signer-dev@llm-wiki-cloud.iam.gserviceaccount.com"
+      }
+    },
+    "lwc-export-worker-dev@llm-wiki-cloud.iam.gserviceaccount.com": {
+      "created_by_this_run": true,
+      "creation_status": "verified",
+      "first_observed": "absent",
+      "inverse": "delete only after confirming no consumers",
+      "kind": "serviceAccount",
+      "readback_identity": {
+        "email": "lwc-export-worker-dev@llm-wiki-cloud.iam.gserviceaccount.com",
+        "name": "projects/llm-wiki-cloud/serviceAccounts/lwc-export-worker-dev@llm-wiki-cloud.iam.gserviceaccount.com"
+      }
+    },
+    "projects/llm-wiki-cloud/roles/lwcExportArchiveWriter": {
+      "created_by_this_run": true,
+      "creation_status": "verified",
+      "first_observed": "absent",
+      "inverse": "delete only after confirming no consumers",
+      "kind": "customRole",
+      "readback_identity": {
+        "included_permissions": [
+          "storage.objects.create",
+          "storage.objects.delete",
+          "storage.objects.get",
+          "storage.objects.update"
+        ],
+        "role_id": "lwcExportArchiveWriter",
+        "stage": "GA"
+      }
+    },
+    "projects/llm-wiki-cloud/roles/lwcExportBlobSigner": {
+      "created_by_this_run": true,
+      "creation_status": "verified",
+      "first_observed": "absent",
+      "inverse": "delete only after confirming no consumers",
+      "kind": "customRole",
+      "readback_identity": {
+        "included_permissions": [
+          "iam.serviceAccounts.signBlob"
+        ],
+        "role_id": "lwcExportBlobSigner",
+        "stage": "GA"
+      }
+    },
+    "projects/llm-wiki-cloud/roles/lwcExportObjectLister": {
+      "created_by_this_run": true,
+      "creation_status": "verified",
+      "first_observed": "absent",
+      "inverse": "delete only after confirming no consumers",
+      "kind": "customRole",
+      "readback_identity": {
+        "included_permissions": [
+          "storage.objects.list"
+        ],
+        "role_id": "lwcExportObjectLister",
+        "stage": "GA"
+      }
+    },
+    "projects/llm-wiki-cloud/roles/lwcExportProjectPolicyReadback": {
+      "created_by_this_run": true,
+      "creation_status": "verified",
+      "first_observed": "absent",
+      "inverse": "delete only after confirming no consumers",
+      "kind": "customRole",
+      "readback_identity": {
+        "included_permissions": [
+          "resourcemanager.projects.getIamPolicy"
+        ],
+        "role_id": "lwcExportProjectPolicyReadback",
+        "stage": "GA"
+      }
+    },
+    "projects/llm-wiki-cloud/roles/lwcExportReadyArchiveReader": {
+      "created_by_this_run": true,
+      "creation_status": "verified",
+      "first_observed": "absent",
+      "inverse": "delete only after confirming no consumers",
+      "kind": "customRole",
+      "readback_identity": {
+        "included_permissions": [
+          "storage.objects.get"
+        ],
+        "role_id": "lwcExportReadyArchiveReader",
+        "stage": "GA"
+      }
+    },
+    "projects/llm-wiki-cloud/roles/lwcExportRoleReadback": {
+      "created_by_this_run": true,
+      "creation_status": "verified",
+      "first_observed": "absent",
+      "inverse": "delete only after confirming no consumers",
+      "kind": "customRole",
+      "readback_identity": {
+        "included_permissions": [
+          "iam.roles.get"
+        ],
+        "role_id": "lwcExportRoleReadback",
+        "stage": "GA"
+      }
+    },
+    "projects/llm-wiki-cloud/roles/lwcExportSignerPolicyReadback": {
+      "created_by_this_run": true,
+      "creation_status": "verified",
+      "first_observed": "absent",
+      "inverse": "delete only after confirming no consumers",
+      "kind": "customRole",
+      "readback_identity": {
+        "included_permissions": [
+          "iam.serviceAccounts.getIamPolicy"
+        ],
+        "role_id": "lwcExportSignerPolicyReadback",
+        "stage": "GA"
+      }
+    },
+    "projects/llm-wiki-cloud/roles/lwcExportSourceReader": {
+      "created_by_this_run": true,
+      "creation_status": "verified",
+      "first_observed": "absent",
+      "inverse": "delete only after confirming no consumers",
+      "kind": "customRole",
+      "readback_identity": {
+        "included_permissions": [
+          "storage.objects.get"
+        ],
+        "role_id": "lwcExportSourceReader",
+        "stage": "GA"
+      }
+    }
+  },
+  "result": "owner_bootstrap_applied_and_read_back",
+  "schema": "lwc-344-exportjob-dev-provision-v2",
+  "source": {
+    "ref": "refs/heads/develop",
+    "sha": "466b54a358c5d6a9274d9c085078fc7dd2a1b938"
+  },
+  "target": {
+    "environment": "development",
+    "project": "llm-wiki-cloud",
+    "region": "asia-east1"
+  }
+}

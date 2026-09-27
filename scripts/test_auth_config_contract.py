@@ -74,6 +74,43 @@ def production(value):
 
 
 class AuthConfigContractTests(unittest.TestCase):
+    def test_bff_export_settings_are_removed_when_disabled_and_exact_when_enabled(self):
+        plan = copy.deepcopy(bff_plan('development'))
+        plan['export_job'] = {'enabled': False}
+        script = ROOT / 'deploy/components/auth_config.py'
+        with tempfile.TemporaryDirectory() as tmp:
+            path = Path(tmp) / 'plan.json'
+            path.write_text(json.dumps({'normalized': plan}))
+            disabled = subprocess.run(['python3', str(script), 'args', str(path), 'bff'],
+                                      text=True, capture_output=True)
+            self.assertEqual(disabled.returncode, 0, disabled.stderr)
+            self.assertIn('--remove-env-vars\nEXPORT_JOB_URL,EXPORT_SIGNING_SERVICE_ACCOUNT', disabled.stdout)
+
+            plan['export_job'] = {
+                'enabled': True, 'job_name': 'export-job-dev', 'location': 'asia-east1',
+                'signing_service_account': 'lwc-export-signer-dev@llm-wiki-cloud.iam.gserviceaccount.com',
+            }
+            path.write_text(json.dumps({'normalized': plan}))
+            enabled = subprocess.run(['python3', str(script), 'args', str(path), 'bff'],
+                                     text=True, capture_output=True)
+            self.assertEqual(enabled.returncode, 0, enabled.stderr)
+            self.assertIn('EXPORT_JOB_URL=https://run.googleapis.com/v2/projects/llm-wiki-cloud/locations/asia-east1/jobs/export-job-dev:run', enabled.stdout)
+            self.assertIn('EXPORT_SIGNING_SERVICE_ACCOUNT=lwc-export-signer-dev@llm-wiki-cloud.iam.gserviceaccount.com', enabled.stdout)
+
+            from test_bff_auth_config_contract import candidate as bff_candidate
+            runtime = bff_candidate('development')
+            image = runtime['status']['imageDigest']
+            revision_name = runtime['metadata']['name']
+            path.write_text(json.dumps({'normalized': plan}))
+            verified = subprocess.run(['python3', str(script), 'verify', str(path), 'bff', revision_name, image, ''],
+                                      input=json.dumps(runtime), text=True, capture_output=True)
+            self.assertEqual(verified.returncode, 0, verified.stderr)
+            next(entry for entry in runtime['spec']['containers'][0]['env']
+                 if entry['name'] == 'EXPORT_SIGNING_SERVICE_ACCOUNT')['value'] = 'wrong@example.iam.gserviceaccount.com'
+            rejected = subprocess.run(['python3', str(script), 'verify', str(path), 'bff', revision_name, image, ''],
+                                      input=json.dumps(runtime), text=True, capture_output=True)
+            self.assertNotEqual(rejected.returncode, 0)
+
     def run_shell(self, candidate, enabled=True, action='auth_mutate', final_bad=False, secret_state='ENABLED', environment='development', component='auth', plan_override=None):
         with tempfile.TemporaryDirectory() as tmp:
             path = Path(tmp)

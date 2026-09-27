@@ -9,10 +9,13 @@ FRONTEND_PORT ?= 3000
 LOCAL_LOGIN_EMAIL ?= demo@llm-wiki.dev
 LOCAL_LOGIN_PASSWORD ?= demo123456
 
-.PHONY: docker-build docker-push deploy deploy-dev deploy-prod all build-sync setup local-config seed ensure-local-data dev support-bff support-frontend support-pipeline bff-local auth-local frontend-local local-token pipeline-test pipeline-run kill-local clean-local vet test build
+.PHONY: docker-build docker-build-export-job docker-push deploy deploy-dev deploy-prod all build-sync setup local-config seed ensure-local-data dev support-bff support-frontend support-pipeline bff-local auth-local frontend-local local-token pipeline-test pipeline-run kill-local clean-local vet test build
 
 docker-build:
 	docker build -t $(IMAGE) .
+
+docker-build-export-job:
+	docker build -f Dockerfile.exportjob -t $(IMAGE_REPO)-export-job:$(IMAGE_TAG) .
 
 docker-push:
 	docker push $(IMAGE)

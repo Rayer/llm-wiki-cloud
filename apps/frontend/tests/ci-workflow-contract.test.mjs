@@ -23,17 +23,42 @@ function collectRunBlocks(value, blocks = []) {
   return blocks;
 }
 
-test('only the canonical CI and two fixed CD entry workflows are active', async () => {
+test('only fixed registered workflows dispatch and DEV provisioning is selected through deploy-dev', async () => {
   const files = (await readdir(workflowDirectory)).filter((file) => file.endsWith('.yml')).sort();
-  assert.deepEqual(files, ['cd.yml', 'ci.yml', 'deploy-dev.yml', 'promote-production.yml']);
+  assert.deepEqual(files, ['cd.yml', 'ci.yml', 'deploy-dev.yml', 'promote-production.yml', 'provision-exportjob-dev.yml']);
   const dev = parseYaml(await workflow('deploy-dev.yml'));
   const production = parseYaml(await workflow('promote-production.yml'));
+  const provision = parseYaml(await workflow('provision-exportjob-dev.yml'));
   assert.equal(dev.on.push, undefined);
   assert.equal(production.on.push, undefined);
-  assert.deepEqual(Object.keys(dev.on.workflow_dispatch.inputs), ['components']);
+  assert.deepEqual(Object.keys(dev.on.workflow_dispatch.inputs), ['components', 'exportjob_continuation_run_id']);
   assert.deepEqual(Object.keys(production.on.workflow_dispatch.inputs), ['components']);
   assert.equal(dev.jobs.deploy.with.environment, 'Development');
   assert.equal(production.jobs.promote.with.environment, 'Production');
+  assert.deepEqual(Object.keys(provision.on), ['workflow_call']);
+  assert.deepEqual(Object.keys(provision.on.workflow_call.inputs), ['continuation_run_id']);
+  assert.equal(dev.jobs['provision-exportjob-dev'].uses, './.github/workflows/provision-exportjob-dev.yml');
+  assert.equal(dev.jobs['provision-exportjob-dev'].secrets, 'inherit');
+  assert.equal(dev.jobs['provision-exportjob-dev'].with.continuation_run_id, '${{ inputs.exportjob_continuation_run_id }}');
+  assert.equal(dev.jobs['provision-exportjob-dev'].if, "github.ref == 'refs/heads/develop' && inputs.components == 'provision-exportjob-dev'");
+  assert.equal(dev.jobs.deploy.if, "github.ref == 'refs/heads/develop' && inputs.components != 'provision-exportjob-dev'");
+  assert.equal(provision.jobs.provision.if, "github.ref == 'refs/heads/develop'");
+  assert.equal(provision.jobs.provision.environment, 'Development');
+  assert.equal(provision.jobs.provision.permissions['id-token'], 'write');
+});
+
+test('DEV provisioning uses the existing auth identity and preserves hidden evidence', async () => {
+  const source = await workflow('provision-exportjob-dev.yml');
+  const provision = parseYaml(source).jobs.provision;
+  const auth = provision.steps.find((step) => step.uses?.startsWith('google-github-actions/auth@'));
+  const evidence = provision.steps.find((step) => step.uses?.startsWith('actions/upload-artifact@'));
+  assert.equal(auth.with.workload_identity_provider, '${{ secrets.WIF_PROVIDER }}');
+  assert.equal(auth.with.service_account, '${{ secrets.WIF_SERVICE_ACCOUNT }}');
+  assert.equal(evidence.with['include-hidden-files'], true);
+  assert.equal(evidence.with['retention-days'], 90);
+  assert.match(source, /if: github\.ref == 'refs\/heads\/develop'/);
+  assert.doesNotMatch(source, /concurrency:/);
+  assert.doesNotMatch(source, /refs\/heads\/main|production\.yaml|run jobs execute/);
 });
 
 test('fixed wrappers cannot accept environment, config, or ref authority', async () => {
@@ -43,7 +68,8 @@ test('fixed wrappers cannot accept environment, config, or ref authority', async
   ]) {
     const text = await workflow(name);
     const parsed = parseYaml(text);
-    assert.deepEqual(Object.keys(parsed.on.workflow_dispatch.inputs), ['components']);
+    assert.deepEqual(Object.keys(parsed.on.workflow_dispatch.inputs),
+      name === 'deploy-dev.yml' ? ['components', 'exportjob_continuation_run_id'] : ['components']);
     assert.equal(parsed.jobs[job].with.source_ref, branch);
     assert.equal(parsed.jobs[job].with.config_path, `deploy/environments/${config}.yaml`);
     assert.equal(parsed.jobs[job].with.config_environment, config);

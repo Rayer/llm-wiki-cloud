@@ -412,5 +412,5 @@ test('DEV workflow invokes the shared CD with fixed authority', async () => {
   assert.match(source, /config_environment: development/);
   assert.match(source, /source_ref: develop/);
   assert.match(source, /config_path: deploy\/environments\/development\.yaml/);
-  assert.deepEqual(Object.keys((await import('js-yaml')).load(workflow).on.workflow_dispatch.inputs), ['components']);
+  assert.deepEqual(Object.keys((await import('js-yaml')).load(workflow).on.workflow_dispatch.inputs), ['components', 'exportjob_continuation_run_id']);
 });

@@ -22,15 +22,17 @@ import (
 
 // Handler holds the dependencies for the V1 API.
 type Handler struct {
-	accountLookup     auth.AccountLookup
-	store             store.RootStore
-	firestore         *firestore.Client
-	index             *search.Index
-	cache             *conceptcache.Cache
-	llm               *llm.Client
-	expander          *llm.QueryExpander
-	queryExecutor     query.Executor
-	profileRepository profileRepository
+	accountLookup        auth.AccountLookup
+	cliSessionVerifier   auth.CLIAccessSessionVerifier
+	cliProjectAuthorizer auth.ProjectOwnerAuthorizer
+	store                store.RootStore
+	firestore            *firestore.Client
+	index                *search.Index
+	cache                *conceptcache.Cache
+	llm                  *llm.Client
+	expander             *llm.QueryExpander
+	queryExecutor        query.Executor
+	profileRepository    profileRepository
 
 	httpClient                   *http.Client
 	metadataTokenURL             string
@@ -100,7 +102,7 @@ func (h *Handler) AccountAuth(cfg config.Config) gin.HandlerFunc {
 	if cfg.DevJWT && h.accountLookup == nil {
 		return auth.JWTAuth(cfg)
 	}
-	return auth.JWTAuthWithAccountLookup(cfg, h.accountLookup)
+	return auth.JWTAuthWithAccountLookupAndSessionVerifier(cfg, h.accountLookup, h.cliSessionVerifier, h.cliProjectAuthorizer)
 }
 
 func (h *Handler) SetQueryExecutor(executor query.Executor) {

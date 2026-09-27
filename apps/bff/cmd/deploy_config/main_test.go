@@ -37,17 +37,47 @@ func TestLoadReviewedEnvironmentsAndQueryIdentity(t *testing.T) {
 }
 
 func TestParseComponentsIsExplicitAndDeterministic(t *testing.T) {
-	got, err := parseComponents("frontend, bff")
+	got, err := parseComponents("frontend, exportjob, bff")
 	if err != nil {
 		t.Fatal(err)
 	}
-	if strings.Join(got, ",") != "bff,frontend" {
+	if strings.Join(got, ",") != "bff,exportjob,frontend" {
 		t.Fatalf("components = %v", got)
 	}
 	for _, raw := range []string{"", "bff,", "bff,bff", "all", "auth,unknown"} {
 		if _, err := parseComponents(raw); err == nil {
 			t.Fatalf("parseComponents(%q) unexpectedly succeeded", raw)
 		}
+	}
+}
+
+func TestExportJobRequiresProvisionedDEVConfigAndIsNotSupportedInProduction(t *testing.T) {
+	root := repoRoot(t)
+	dev, err := decodeConfig(filepath.Join(root, "deploy/environments/development.yaml"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := validateConfigForEnvironment("development", dev); err != nil {
+		t.Fatalf("provisioned DEV export job config: %v", err)
+	}
+	if !dev.ExportJob.Enabled || dev.ExportJob.JobName != "export-job-dev" ||
+		dev.ExportJob.RuntimeServiceAccount != "lwc-export-worker-dev@llm-wiki-cloud.iam.gserviceaccount.com" ||
+		dev.ExportJob.Bucket != "llm-wiki-data-dev" || dev.ExportJob.FirestoreDatabaseID != "llm-wiki-cloud-dev" ||
+		dev.ExportJob.Location != "asia-east1" ||
+		dev.ExportJob.SigningServiceAccount != "lwc-export-signer-dev@llm-wiki-cloud.iam.gserviceaccount.com" {
+		t.Fatalf("DEV export job config = %#v", dev.ExportJob)
+	}
+	prod, err := decodeConfig(filepath.Join(root, "deploy/environments/production.yaml"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	prod.ExportJob.Enabled = true
+	prod.ExportJob.JobName = "export-job-prod"
+	if err := validateConfigForEnvironment("production", prod); err == nil {
+		t.Fatal("Production export job unexpectedly accepted")
+	}
+	if _, err := Load("development", filepath.Join(root, "deploy/environments/development.yaml"), "bff,exportjob"); err != nil {
+		t.Fatalf("provisioned DEV export job selection: %v", err)
 	}
 }
 

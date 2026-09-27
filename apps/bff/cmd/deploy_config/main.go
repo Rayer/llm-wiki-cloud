@@ -19,18 +19,19 @@ import (
 
 var (
 	allowedEnvironments = map[string]struct{}{"development": {}, "production": {}}
-	allowedComponents   = []string{"auth", "bff", "worker", "frontend"}
-	componentSet        = map[string]struct{}{"auth": {}, "bff": {}, "worker": {}, "frontend": {}}
+	allowedComponents   = []string{"auth", "bff", "worker", "exportjob", "frontend"}
+	componentSet        = map[string]struct{}{"auth": {}, "bff": {}, "worker": {}, "exportjob": {}, "frontend": {}}
 	secretRefPattern    = regexp.MustCompile(`^[A-Za-z0-9][A-Za-z0-9._-]*$`)
 	secretValuePattern  = regexp.MustCompile(`(?i)(?:github_pat_|ghp_|xox[baprs]-|-----begin|sk-[A-Za-z0-9])`)
 )
 
 type EnvironmentConfig struct {
-	GCP      GCPConfig      `yaml:"gcp"`
-	Auth     AuthConfig     `yaml:"auth"`
-	BFF      BFFConfig      `yaml:"bff"`
-	Worker   WorkerConfig   `yaml:"worker"`
-	Frontend FrontendConfig `yaml:"frontend"`
+	GCP       GCPConfig       `yaml:"gcp"`
+	Auth      AuthConfig      `yaml:"auth"`
+	BFF       BFFConfig       `yaml:"bff"`
+	Worker    WorkerConfig    `yaml:"worker"`
+	ExportJob ExportJobConfig `yaml:"export_job"`
+	Frontend  FrontendConfig  `yaml:"frontend"`
 }
 
 type GCPConfig struct {
@@ -97,6 +98,18 @@ type WorkerSecretReferences struct {
 	DeepSeekAPIKey string `yaml:"deepseek_api_key" json:"deepseek_api_key"`
 }
 
+// ExportJobConfig is deliberately disabled until the DEV job and its runtime
+// identities are provisioned and read back by the operator.
+type ExportJobConfig struct {
+	Enabled               bool   `yaml:"enabled" json:"enabled"`
+	JobName               string `yaml:"job_name" json:"job_name,omitempty"`
+	RuntimeServiceAccount string `yaml:"runtime_service_account" json:"runtime_service_account,omitempty"`
+	Bucket                string `yaml:"bucket" json:"bucket,omitempty"`
+	FirestoreDatabaseID   string `yaml:"firestore_database_id" json:"firestore_database_id,omitempty"`
+	Location              string `yaml:"location" json:"location,omitempty"`
+	SigningServiceAccount string `yaml:"signing_service_account" json:"signing_service_account,omitempty"`
+}
+
 type FrontendConfig struct {
 	ProjectName   string   `yaml:"project_name" json:"project_name"`
 	TeamSlug      string   `yaml:"team_slug" json:"team_slug"`
@@ -123,6 +136,7 @@ type Normalized struct {
 	Auth        AuthConfig          `json:"auth"`
 	BFF         BFFConfig           `json:"bff"`
 	Worker      WorkerConfig        `json:"worker"`
+	ExportJob   ExportJobConfig     `json:"export_job"`
 	Frontend    FrontendConfig      `json:"frontend"`
 	QueryConfig QueryConfigIdentity `json:"query_config"`
 	Components  map[string]any      `json:"components"`
@@ -184,6 +198,16 @@ func Load(environment, configPath, components string) (Normalized, error) {
 	if err := validateConfigForEnvironment(environment, config); err != nil {
 		return Normalized{}, err
 	}
+	for _, component := range selected {
+		if component == "exportjob" && !config.ExportJob.Enabled {
+			return Normalized{}, errors.New("exportjob is disabled until its DEV runtime resources are provisioned and read back")
+		}
+	}
+	for _, component := range selected {
+		if component == "exportjob" && !contains(selected, "bff") {
+			return Normalized{}, errors.New("exportjob deployment must include bff so its invocation URL is configured from the same reviewed plan")
+		}
+	}
 	query, err := loadQueryConfig(repoRoot, config.BFF.QueryConfig)
 	if err != nil {
 		return Normalized{}, err
@@ -194,7 +218,7 @@ func Load(environment, configPath, components string) (Normalized, error) {
 		ConfigPath:  filepath.ToSlash(filepath.Join("deploy", "environments", environment+".yaml")),
 		Selected:    selected,
 		GCP:         config.GCP, Auth: config.Auth, BFF: config.BFF,
-		Worker: config.Worker, Frontend: config.Frontend, QueryConfig: query,
+		Worker: config.Worker, ExportJob: config.ExportJob, Frontend: config.Frontend, QueryConfig: query,
 		Components: componentInputs(config, query, selected),
 	}
 	fingerprintInput := result
@@ -209,6 +233,15 @@ func Load(environment, configPath, components string) (Normalized, error) {
 		ConfigFingerprint: "sha256:" + hex.EncodeToString(sum[:]),
 	}
 	return result, nil
+}
+
+func contains(values []string, target string) bool {
+	for _, value := range values {
+		if value == target {
+			return true
+		}
+	}
+	return false
 }
 
 func decodeConfig(path string) (EnvironmentConfig, error) {
@@ -301,6 +334,25 @@ func validateConfigForEnvironment(environment string, config EnvironmentConfig) 
 	}
 	if config.Auth.MaxInstances != 1 || config.BFF.MaxInstances != 1 {
 		return errors.New("service max_instances must be exactly 1")
+	}
+	if config.ExportJob.Enabled {
+		if environment != "development" {
+			return errors.New("export_job is unsupported outside development")
+		}
+		for name, value := range map[string]string{
+			"export_job.job_name": config.ExportJob.JobName, "export_job.runtime_service_account": config.ExportJob.RuntimeServiceAccount,
+			"export_job.bucket": config.ExportJob.Bucket, "export_job.firestore_database_id": config.ExportJob.FirestoreDatabaseID,
+			"export_job.location": config.ExportJob.Location, "export_job.signing_service_account": config.ExportJob.SigningServiceAccount,
+		} {
+			if strings.TrimSpace(value) == "" || secretValuePattern.MatchString(value) {
+				return fmt.Errorf("export_job has missing or secret-bearing %s", name)
+			}
+		}
+		if config.ExportJob.Location != config.GCP.Region || config.ExportJob.Bucket != config.BFF.Bucket || config.ExportJob.FirestoreDatabaseID != config.BFF.FirestoreDatabaseID {
+			return errors.New("export_job target must match the reviewed DEV region, bucket, and Firestore database")
+		}
+	} else if config.ExportJob.JobName != "" || config.ExportJob.RuntimeServiceAccount != "" || config.ExportJob.Bucket != "" || config.ExportJob.FirestoreDatabaseID != "" || config.ExportJob.Location != "" || config.ExportJob.SigningServiceAccount != "" {
+		return errors.New("disabled export_job must remain unconfigured")
 	}
 	if config.Auth.Network != "default" || config.Auth.Subnet != "default" || config.Auth.VPCEgress != "private-ranges-only" || config.Auth.Ingress != "all" ||
 		config.BFF.Network != "default" || config.BFF.Subnet != "default" || config.BFF.VPCEgress != "private-ranges-only" || config.BFF.Ingress != "all" {
@@ -422,6 +474,8 @@ func componentInputs(config EnvironmentConfig, query QueryConfigIdentity, select
 			components[name] = map[string]any{"service_name": config.BFF.ServiceName, "runtime_service_account": config.BFF.RuntimeServiceAccount, "network": config.BFF.Network, "subnet": config.BFF.Subnet, "vpc_egress": config.BFF.VPCEgress, "ingress": config.BFF.Ingress, "max_instances": config.BFF.MaxInstances, "bucket": config.BFF.Bucket, "firestore_database_id": config.BFF.FirestoreDatabaseID, "pipeline_job_name": config.BFF.PipelineJobName, "pipeline_job_location": config.BFF.PipelineJobLocation, "pipeline_job_url": config.BFF.PipelineJobURL, "auth_service_url": config.BFF.AuthServiceURL, "allowed_origins": config.BFF.AllowedOrigins, "dev_jwt": false, "query_config": query, "secret_references": map[string]any{"jwt": config.BFF.SecretReferences.JWT, "deepseek_api_key": config.BFF.SecretReferences.DeepSeekAPIKey}}
 		case "worker":
 			components[name] = map[string]any{"job_name": config.Worker.JobName, "runtime_service_account": config.Worker.RuntimeServiceAccount, "bucket": config.Worker.Bucket, "location": config.Worker.Location, "args": config.Worker.Args, "secret_references": map[string]any{"deepseek_api_key": config.Worker.SecretReferences.DeepSeekAPIKey}}
+		case "exportjob":
+			components[name] = config.ExportJob
 		case "frontend":
 			components[name] = map[string]any{"project_name": config.Frontend.ProjectName, "team_slug": config.Frontend.TeamSlug, "repository": config.Frontend.Repository, "root_directory": config.Frontend.RootDirectory, "stable_aliases": config.Frontend.StableAliases, "api_url": config.Frontend.APIURL, "auth_url": config.Frontend.AuthURL}
 		}

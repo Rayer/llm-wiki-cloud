@@ -1,0 +1,58 @@
+{
+  "apiVersion": "run.googleapis.com/v1",
+  "metadata": {
+    "name": "export-job-dev",
+    "generation": 1,
+    "uid": "5208ffae-b368-44c6-82d1-53623640b7ce"
+  },
+  "spec": {
+    "template": {
+      "spec": {
+        "parallelism": 1,
+        "taskCount": 1,
+        "template": {
+          "spec": {
+            "serviceAccountName": "lwc-export-worker-dev@llm-wiki-cloud.iam.gserviceaccount.com",
+            "timeoutSeconds": "82800",
+            "maxRetries": 0,
+            "containers": [
+              {
+                "image": "asia-east1-docker.pkg.dev/llm-wiki-cloud/cloud-run-images/llm-wiki-bff-export-job@sha256:d97f7d8a05118c9c53873323a7353c980157fe81a5371cbd8aadc3888f2ba49f",
+                "env": [
+                  {
+                    "name": "GCP_PROJECT",
+                    "value": "llm-wiki-cloud"
+                  },
+                  {
+                    "name": "BUCKET",
+                    "value": "llm-wiki-data-dev"
+                  },
+                  {
+                    "name": "FIRESTORE_DATABASE_ID",
+                    "value": "llm-wiki-cloud-dev"
+                  },
+                  {
+                    "name": "EXPORT_SIGNING_SERVICE_ACCOUNT",
+                    "value": "lwc-export-signer-dev@llm-wiki-cloud.iam.gserviceaccount.com"
+                  }
+                ],
+                "args": null,
+                "volumeMounts": []
+              }
+            ],
+            "volumes": []
+          }
+        }
+      }
+    }
+  },
+  "status": {
+    "observedGeneration": 1,
+    "conditions": [
+      {
+        "type": "Ready",
+        "status": "True"
+      }
+    ]
+  }
+}
