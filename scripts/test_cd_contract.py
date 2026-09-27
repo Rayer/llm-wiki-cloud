@@ -565,13 +565,22 @@ class CDContractTests(unittest.TestCase):
         self.assertNotIn("environment:", json.dumps(job))
 
         source_sha = "a" * 40
-        pending, validation, failure, statuses, _ = self._run_main_eligibility(
+        pending, validation, failure, statuses, git_log = self._run_main_eligibility(
             source, candidate_sha=source_sha
         )
         self.assertEqual(pending.returncode, 0, pending.stdout + pending.stderr)
         self.assertEqual(validation.returncode, 0, validation.stdout + validation.stderr)
         self.assertEqual(failure.returncode, 0, failure.stdout + failure.stderr)
         self.assertEqual(statuses, ["pending", "success"])
+        self.assertEqual(git_log.splitlines(), [
+            "rev-parse --verify HEAD",
+            "ls-remote --refs origin refs/heads/develop",
+            "ls-remote --refs origin refs/heads/main",
+            "fetch --no-tags origin +refs/heads/main:refs/remotes/origin/main",
+            "rev-parse refs/remotes/origin/main",
+            f"merge-base --is-ancestor {'c' * 40} {source_sha}",
+            "ls-remote --refs origin refs/heads/develop",
+        ])
 
         rejected_cases = [
             {"deploy_result": "failure"},
