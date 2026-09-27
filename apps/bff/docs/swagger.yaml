@@ -1797,8 +1797,8 @@ paths:
           description: Conflict
           schema:
             $ref: '#/definitions/v1.profileConflictResponse'
-        "412":
-          description: Precondition Failed
+        "428":
+          description: Precondition Required
           schema:
             $ref: '#/definitions/handler.ErrorResponse'
         "500":
@@ -1814,7 +1814,7 @@ paths:
   /api/v1/projects/{pid}/profile/guidance/{revision}:
     get:
       description: Returns the exact validated guidance text and version metadata
-        for a current Profile reference.
+        for a current bootstrap, candidate, or Active Profile reference.
       parameters:
       - description: Project ID
         in: path

@@ -105,6 +105,7 @@ func TestProfileBlankStateAndDebouncedSave(t *testing.T) {
 type profileRepositoryStub struct {
 	state                    ProfileState
 	job                      ProfileJob
+	historicalCandidate      ProfileCandidate
 	getErr                   error
 	saveErr                  error
 	confirmErr               error
@@ -122,6 +123,13 @@ type profileRepositoryStub struct {
 
 func (r *profileRepositoryStub) GetProfile(context.Context, string, string) (ProfileState, error) {
 	return r.state, r.getErr
+}
+
+func (r *profileRepositoryStub) GetProfileCandidate(_ context.Context, _, _, candidateID string) (ProfileCandidate, error) {
+	if r.historicalCandidate.CandidateID != candidateID {
+		return ProfileCandidate{}, errors.New("historical candidate not found")
+	}
+	return r.historicalCandidate, nil
 }
 
 func (r *profileRepositoryStub) SaveProfile(_ context.Context, _, _ string, _ int64, _ []ProfileRequirement) (ProfileState, error) {
@@ -253,6 +261,69 @@ func TestGetProfileGuidanceArtifactReturnsExactCurrentImmutableText(t *testing.T
 
 	if recorder := invokeProfileGuidanceArtifact(t, h, strings.Repeat("f", 64)); recorder.Code != http.StatusNotFound {
 		t.Fatalf("stale guidance reference status=%d body=%s", recorder.Code, recorder.Body.String())
+	}
+}
+
+func TestGetProfileGuidanceArtifactServesRetainedActiveAfterSaveAndSeparateCandidate(t *testing.T) {
+	gin.SetMode(gin.TestMode)
+	activeDigest := profileRequirementsDigest([]ProfileRequirement{{ID: "old-req", Text: "old writing"}})
+	candidateDigest := profileRequirementsDigest([]ProfileRequirement{{ID: "new-req", Text: "new writing"}})
+	activeData, activeRef, err := profileartifacts.EncodeGuidance(profileartifacts.GenerationGuidanceEnvelope{
+		SchemaVersion: profileartifacts.GuidanceSchema, InputDigest: activeDigest,
+		SourceContentGeneration: "generation-old", CanonicalConceptsDigest: profileartifacts.SHA256([]byte("old concepts")),
+		ModelVersion: "active-model-v1", PromptVersion: "active-prompt-v1", CompileGuidance: "Retained active instructions.",
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	candidateData, candidateRef, err := profileartifacts.EncodeGuidance(profileartifacts.GenerationGuidanceEnvelope{
+		SchemaVersion: profileartifacts.GuidanceSchema, InputDigest: candidateDigest,
+		SourceContentGeneration: "generation-new", CanonicalConceptsDigest: profileartifacts.SHA256([]byte("new concepts")),
+		ModelVersion: "candidate-model-v2", PromptVersion: "candidate-prompt-v2", CompileGuidance: "Proposed candidate instructions.",
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	activeCandidate := ProfileCandidate{
+		CandidateID: "active-candidate", Source: "manual", ContentGeneration: "generation-old",
+		Dictionary: ProfileDerivedRef{Revision: "dict-active"}, Guidance: profileDerivedRefFromArtifact(activeRef),
+	}
+	active := &ProfileActive{
+		CandidateID: activeCandidate.CandidateID, ContentGeneration: activeCandidate.ContentGeneration,
+		DictionaryRevision: activeCandidate.Dictionary.Revision, TagSetRevision: "tags-active", QueryRuleRevision: "rules-active",
+		GuidanceRevision: activeRef.Revision,
+	}
+	state := newProfileState("alpha")
+	state.Revision = 1
+	state.Requirements = []ProfileRequirement{{ID: "old-req", Text: "old writing"}}
+	state.Active = active
+	state.Candidate = &activeCandidate
+	saved, err := saveProfileState(state, state.Revision, []ProfileRequirement{{ID: "new-req", Text: "new writing"}}, time.Date(2026, 9, 25, 3, 5, 0, 0, time.UTC))
+	if err != nil || saved.Candidate != nil || !sameProfileActive(saved.Active, active) {
+		t.Fatalf("save should clear the candidate while retaining Active: state=%+v err=%v", saved, err)
+	}
+	state = saved
+	repo := &profileRepositoryStub{state: state, historicalCandidate: activeCandidate}
+	objects := &profileDerivationIntegrationStore{objects: map[string][]byte{
+		profileartifacts.GuidanceObjectPath(activeRef.Revision):    activeData,
+		profileartifacts.GuidanceObjectPath(candidateRef.Revision): candidateData,
+	}}
+	h := New(&profileDerivationIntegrationRoot{RootStore: localfs.New(t.TempDir()), scoped: objects}, nil, nil, nil, nil, nil)
+	h.profileRepository = repo
+
+	activeRecorder := invokeProfileGuidanceArtifact(t, h, activeRef.Revision)
+	if activeRecorder.Code != http.StatusOK || !strings.Contains(activeRecorder.Body.String(), "Retained active instructions.") {
+		t.Fatalf("retained active guidance status=%d body=%s", activeRecorder.Code, activeRecorder.Body.String())
+	}
+
+	candidate := ProfileCandidate{
+		CandidateID: "new-candidate", Source: "manual", ContentGeneration: "generation-new",
+		Dictionary: ProfileDerivedRef{Revision: "dict-candidate"}, Guidance: profileDerivedRefFromArtifact(candidateRef),
+	}
+	repo.state.Candidate = &candidate
+	candidateRecorder := invokeProfileGuidanceArtifact(t, h, candidateRef.Revision)
+	if candidateRecorder.Code != http.StatusOK || !strings.Contains(candidateRecorder.Body.String(), "Proposed candidate instructions.") {
+		t.Fatalf("separate candidate guidance status=%d body=%s", candidateRecorder.Code, candidateRecorder.Body.String())
 	}
 }
 

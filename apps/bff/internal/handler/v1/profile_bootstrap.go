@@ -72,7 +72,7 @@ func (h *Handler) GetProfileBootstrapGuidance(c *gin.Context) {
 //	@Success		200					{object}	profileBootstrapGuidanceResponse
 //	@Failure		400,401,404,500	{object}	handler.ErrorResponse
 //	@Failure		409					{object}	profileConflictResponse
-//	@Failure		412					{object}	handler.ErrorResponse
+//	@Failure		428					{object}	handler.ErrorResponse
 //	@Security		DevUserAuth
 //	@Security		ProjectHeader
 //	@Router			/api/v1/projects/{pid}/profile/bootstrap-guidance/{revision}/confirm [post]

@@ -1357,8 +1357,8 @@ const docTemplate = `{
                             "$ref": "#/definitions/v1.profileConflictResponse"
                         }
                     },
-                    "412": {
-                        "description": "Precondition Failed",
+                    "428": {
+                        "description": "Precondition Required",
                         "schema": {
                             "$ref": "#/definitions/handler.ErrorResponse"
                         }
@@ -1382,7 +1382,7 @@ const docTemplate = `{
                         "ProjectHeader": []
                     }
                 ],
-                "description": "Returns the exact validated guidance text and version metadata for a current Profile reference.",
+                "description": "Returns the exact validated guidance text and version metadata for a current bootstrap, candidate, or Active Profile reference.",
                 "produces": [
                     "application/json"
                 ],

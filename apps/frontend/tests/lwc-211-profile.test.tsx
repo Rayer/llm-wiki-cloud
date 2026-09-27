@@ -77,7 +77,11 @@ function profileWithCandidate(source: 'manual' | 'compile_auto' = 'manual'): Pro
       content_generation: 'generation-9',
       dictionary: { revision: 'dict-2', input_digest: 'digest-6', model_version: 'm1', prompt_version: 'p1', schema_version: 's1' },
       guidance: { revision: 'guide-2', input_digest: 'digest-6', model_version: 'm1', prompt_version: 'p1', schema_version: 's1' },
-      preview: { dictionary_diff: 'Added invoice tag', guidance_diff: 'Prefer dated invoices' },
+      preview: {
+        dictionary_diff: 'Added invoice tag',
+        guidance_diff: 'Prefer dated invoices',
+        requirements: [{ id: 'req-1', disposition: 'both', explanation: 'Applied to tagging and writing.' }],
+      },
     },
     confirmed_candidate_id: null,
     active: {
@@ -140,10 +144,10 @@ beforeEach(() => {
     guidance_artifact: {
       revision,
       input_digest: 'b'.repeat(64),
-      model_version: 'immutable-model-v1',
-      prompt_version: 'immutable-prompt-v1',
+      model_version: revision === 'guide-1' ? 'active-model-v1' : 'immutable-model-v1',
+      prompt_version: revision === 'guide-1' ? 'active-prompt-v1' : 'immutable-prompt-v1',
       schema_version: revision === 'sha256-bootstrap-1' ? 'profile.bootstrap-guidance.v1' : 'profile.guidance.v1',
-      compile_guidance: 'Exact immutable instructions.',
+      compile_guidance: revision === 'guide-1' ? 'Active immutable instructions.' : 'Exact immutable instructions.',
     },
   }));
   mocks.confirmProfileBootstrapGuidance.mockImplementation(async (_projectId: string, _revision: string, profileRevision: number, inputDigest: string) => ({
@@ -173,7 +177,12 @@ describe('LWC-211 Project Profile', () => {
   it('keeps the empty requirement editor mounted and focused after the first character', async () => {
     function RequirementsHarness() {
       const [requirements, setRequirements] = React.useState<ProfileRequirement[]>([]);
-      return <ProfileRequirementsEditor requirements={requirements} onChange={setRequirements} />;
+      return (
+        <>
+          <ProfileRequirementsEditor requirements={requirements} onChange={setRequirements} />
+          <output aria-label="requirements state">{JSON.stringify(requirements)}</output>
+        </>
+      );
     }
 
     render(<RequirementsHarness />);
@@ -184,6 +193,33 @@ describe('LWC-211 Project Profile', () => {
     const updatedInput = screen.getByRole('textbox', { name: 'Requirement 1' });
     expect(updatedInput).toBe(firstInput);
     expect(document.activeElement).toBe(updatedInput);
+  });
+
+  it('preserves sibling requirements when editing or clearing the first requirement', () => {
+    function RequirementsHarness() {
+      const [requirements, setRequirements] = React.useState<ProfileRequirement[]>([]);
+      return (
+        <>
+          <ProfileRequirementsEditor requirements={requirements} onChange={setRequirements} />
+          <output aria-label="requirements state">{JSON.stringify(requirements)}</output>
+        </>
+      );
+    }
+
+    render(<RequirementsHarness />);
+    fireEvent.change(screen.getByRole('textbox', { name: 'Requirement 1' }), { target: { value: 'first' } });
+    fireEvent.click(screen.getByRole('button', { name: 'Add requirement' }));
+    fireEvent.change(screen.getByRole('textbox', { name: 'Requirement 2' }), { target: { value: 'second' } });
+
+    fireEvent.change(screen.getByRole('textbox', { name: 'Requirement 1' }), { target: { value: 'updated first' } });
+    const afterEdit = JSON.parse(screen.getByLabelText('requirements state').textContent ?? '[]') as ProfileRequirement[];
+    expect(afterEdit).toHaveLength(2);
+    expect(afterEdit.map(({ text }) => text)).toEqual(['updated first', 'second']);
+
+    fireEvent.change(screen.getByRole('textbox', { name: 'Requirement 1' }), { target: { value: '' } });
+    const afterClear = JSON.parse(screen.getByLabelText('requirements state').textContent ?? '[]') as ProfileRequirement[];
+    expect(afterClear).toHaveLength(2);
+    expect(afterClear.map(({ text }) => text)).toEqual(['', 'second']);
   });
 
   it('saves ordered requirements with the server revision and reports the three-minute pending schedule', async () => {
@@ -247,10 +283,36 @@ describe('LWC-211 Project Profile', () => {
     render(<ProjectProfilePanel projectId="project-a" />);
 
     expect(await screen.findByText('Exact immutable instructions.')).toBeDefined();
+    expect(await screen.findByText('Active immutable instructions.')).toBeDefined();
+    expect(screen.getByRole('heading', { name: 'Active writing guidance' })).toBeDefined();
+    expect(screen.getByRole('heading', { name: 'Candidate writing guidance' })).toBeDefined();
     expect(screen.getByText('guide-2', { selector: 'code' })).toBeDefined();
     expect(screen.getByText((_text, element) => element?.tagName === 'P' && element.textContent?.includes(
       'Model immutable-model-v1 · Prompt immutable-prompt-v1 · Schema profile.guidance.v1',
     ) === true)).toBeDefined();
+    expect(screen.getByText(/req-1: Compile guidance and dictionary or query/)).toBeDefined();
+    expect(screen.getByText('Applied to tagging and writing.')).toBeDefined();
+    expect(screen.getAllByText(/1,500-character adapter budget/).length).toBe(2);
+  });
+
+  it('shows retained active guidance after saving requirements clears the prior preview', async () => {
+    mocks.getProfile.mockResolvedValue({
+      ...profileWithCandidate(),
+      revision: 7,
+      requirements: [{ id: 'req-2', text: 'new writing' }],
+      derivation_status: 'pending',
+      scheduled_for: '2026-09-25T03:05:00Z',
+      candidate: null,
+      confirmed_candidate_id: null,
+      job: null,
+    });
+
+    render(<ProjectProfilePanel projectId="project-a" />);
+
+    expect(await screen.findByText('Active immutable instructions.')).toBeDefined();
+    expect(screen.getByRole('heading', { name: 'Active writing guidance' })).toBeDefined();
+    expect(screen.queryByRole('heading', { name: 'Candidate writing guidance' })).toBeNull();
+    expect(screen.getByText(/1,500-character adapter budget/)).toBeDefined();
   });
 
   it('keeps confirmation after a polling GET resolves late with the same-revision preview', async () => {

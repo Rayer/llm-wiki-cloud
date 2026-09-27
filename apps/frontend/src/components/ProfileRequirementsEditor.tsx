@@ -22,7 +22,7 @@ export function ProfileRequirementsEditor({
     : [{ id: emptyRowId, text: '' }];
 
   function changeText(rowId: string, text: string) {
-    if (rowId === emptyRowId) {
+    if (requirements.length === 0 && rowId === emptyRowId) {
       if (text) onChange([{ id: rowId, text }]);
       return;
     }

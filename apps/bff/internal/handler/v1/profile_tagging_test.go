@@ -343,6 +343,41 @@ func TestProfileTagInventoryUsesOnlyExactImmutableInputs(t *testing.T) {
 	}
 }
 
+func TestProfileTagInventoryRejectsLegacyGenerationWithoutPinnedSourceSnapshot(t *testing.T) {
+	reader, manifest := taggingInventoryFixture(t)
+	snapshotPath, err := generation.SourceSnapshotPath(manifest.SourceSnapshotDigest)
+	if err != nil {
+		t.Fatal(err)
+	}
+	snapshot, err := generation.DecodeSourceSnapshot(reader.files[snapshotPath])
+	if err != nil {
+		t.Fatal(err)
+	}
+	delete(reader.files, snapshotPath)
+	for _, row := range snapshot.Rows {
+		path, err := generation.SourceBytesPath(row.ContentDigest)
+		if err != nil {
+			t.Fatal(err)
+		}
+		delete(reader.files, path)
+		reader.files[row.RawPath] = []byte("mutable current source")
+	}
+	manifest.SourceSnapshotDigest = "" // pre-Profile publisher archives omitted this field.
+
+	inventory, err := readProfileTagInventory(context.Background(), reader, manifest, manifest.GenerationID)
+	if err == nil {
+		t.Fatalf("legacy generation unexpectedly produced source inventory: %+v", inventory)
+	}
+	if len(inventory.Items) != 0 {
+		t.Fatalf("legacy generation returned unpinned items after failure: %+v", inventory.Items)
+	}
+	for path := range reader.reads {
+		if strings.HasPrefix(path, "raw/") || strings.HasPrefix(path, generation.SourceSnapshotPrefix) {
+			t.Fatalf("legacy tagging fell back to mutable or absent source data: %s", path)
+		}
+	}
+}
+
 func TestProfileTagInventoryExplicitEmptySnapshot(t *testing.T) {
 	r, m := taggingInventoryFixture(t)
 	r.files["cache/id_map.json"] = []byte(`{"concept":{},"source":{}}`)

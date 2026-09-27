@@ -339,6 +339,111 @@ func TestProfileRuntimeFinalExecutionExhaustionIsVisible(t *testing.T) {
 	}
 }
 
+func TestProfileRuntimeFinalTagExhaustionIsVisible(t *testing.T) {
+	f := newRuntimeFixture(t)
+	state, deriveRef := f.save(t, 0, "write concisely")
+	f.clock = f.clock.Add(profileDebounce)
+	deriveWork := f.work(t, deriveRef)
+	if _, err := f.repo.ClaimProfileDerivation(f.ctx, f.user, f.project, state.Revision, deriveWork.ID); err != nil {
+		t.Fatal(err)
+	}
+	digest := profileRequirementsDigest(state.Requirements)
+	dictionary := ProfileDerivedRef{
+		Revision: strings.Repeat("a", 64), InputDigest: digest, ModelVersion: "model-v1",
+		PromptVersion: "dictionary-v1", SchemaVersion: "profile.dictionary.v1",
+	}
+	guidance := ProfileDerivedRef{
+		Revision: strings.Repeat("b", 64), InputDigest: digest, ModelVersion: "model-v1",
+		PromptVersion: "guidance-v1", SchemaVersion: "profile.guidance.v1",
+	}
+	state, err := f.repo.ProfileDerivationSucceeded(f.ctx, f.user, f.project, state.Revision, deriveWork.ID, digest, "generation-1", dictionary, guidance, ProfilePreview{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	deriveWork.Pending, deriveWork.Status = false, "complete"
+	if _, err := deriveRef.Set(f.ctx, deriveWork); err != nil {
+		t.Fatal(err)
+	}
+	state, err = f.repo.ConfirmProfileCandidate(f.ctx, f.user, f.project, state.Candidate.CandidateID, state.Revision)
+	if err != nil {
+		t.Fatal(err)
+	}
+	tagWork := profileruntime.Work{
+		UserID: f.user, ProjectID: f.project, Kind: "tag", Revision: state.Revision,
+		ID: state.Job.JobID, CandidateID: state.Candidate.CandidateID,
+	}
+	tagRef := f.repo.client.Collection(profileruntime.WorkCollection).Doc(profileruntime.WorkID(tagWork))
+	f.dispatcher.Handler.store = nil
+	for attempt := 1; attempt <= profileruntime.MaxAttempts; attempt++ {
+		f.request(t, "POST", "synthetic-valid-token", 200, 1)
+		work := f.work(t, tagRef)
+		if attempt < profileruntime.MaxAttempts {
+			if !work.Pending || work.Status != "retry_wait" {
+				t.Fatalf("tag retry %d work = %+v", attempt, work)
+			}
+			f.clock = work.Due
+		}
+	}
+	work := f.work(t, tagRef)
+	state, err = f.repo.GetProfile(f.ctx, f.user, f.project)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if work.Pending || work.Status != "exhausted" || state.Job == nil || state.Job.Status != profileJobIncomplete ||
+		state.Job.ErrorCode == nil || *state.Job.ErrorCode != "runtime_retry_exhausted" || state.Active != nil {
+		t.Fatalf("tag exhaustion is not visible: work=%+v state=%+v", work, state)
+	}
+}
+
+func TestProfileRuntimeCompileExhaustionHasNoProfileStateRecoverySignal(t *testing.T) {
+	f := newRuntimeFixture(t)
+	requirements := []ProfileRequirement{{ID: "r1", Text: "write concisely"}}
+	digest := profileRequirementsDigest(requirements)
+	bootstrap := &ProfileBootstrapGuidance{
+		Revision: strings.Repeat("c", 64), InputDigest: digest, ProfileRevision: 1,
+		Status: profileBootstrapConfirmed, ModelVersion: "model-v1", PromptVersion: "bootstrap-v1",
+		SchemaVersion: "profile.bootstrap-guidance.v1", ConfirmedAt: stringPtr(f.clock.Format(time.RFC3339Nano)),
+	}
+	state := ProfileState{
+		ProjectID: f.project, Revision: 1, Requirements: requirements,
+		DerivationStatus: stringPtr(profileDerivationReady), BootstrapGuidance: bootstrap,
+	}
+	_, stateRef := f.repo.profileRefs(f.user, f.project)
+	if _, err := stateRef.Set(f.ctx, state); err != nil {
+		t.Fatal(err)
+	}
+	work := profileruntime.Work{
+		UserID: f.user, ProjectID: f.project, Kind: "compile", Revision: state.Revision, ID: "generation-failure",
+		Due: f.clock.Add(-time.Second), Pending: true, Attempts: profileruntime.MaxAttempts - 1, Status: "retry_wait",
+	}
+	workRef := f.repo.client.Collection(profileruntime.WorkCollection).Doc(profileruntime.WorkID(work))
+	if _, err := workRef.Set(f.ctx, work); err != nil {
+		t.Fatal(err)
+	}
+	receipt := profileruntime.CompileReceipt{
+		UserID: f.user, ProjectID: f.project, ExecutionID: "synthetic-compile", ProfileRevision: state.Revision,
+		RequirementsDigest: digest, ContentGeneration: work.ID, ManifestSHA256: strings.Repeat("a", 64),
+		CanonicalConceptsDigest: strings.Repeat("b", 64), ManifestGeneration: 42, CreatedAt: f.clock,
+	}
+	if _, err := stateRef.Collection(profileruntime.CompileReceiptsCollection).Doc(work.ID).Set(f.ctx, receipt); err != nil {
+		t.Fatal(err)
+	}
+	// The store failure occurs after a successful compile receipt but before a
+	// Profile reconcile record exists, so the last runtime attempt has no status
+	// transition to attach to the user-facing Profile state.
+	f.dispatcher.Handler.store = nil
+	f.request(t, "POST", "synthetic-valid-token", 200, 1)
+	work = f.work(t, workRef)
+	current, err := f.repo.GetProfile(f.ctx, f.user, f.project)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if work.Pending || work.Status != "exhausted" || current.Revision != state.Revision || current.DerivationStatus == nil ||
+		*current.DerivationStatus != profileDerivationReady || current.DerivationErrorCode != nil || current.Candidate != nil || current.Job != nil {
+		t.Fatalf("compile exhaustion evidence: work=%+v Profile=%+v", work, current)
+	}
+}
+
 func TestProfileRuntimeQueueCannotCrossProjectBoundary(t *testing.T) {
 	f := newRuntimeFixture(t)
 	_, ref := f.save(t, 0, "write concisely")

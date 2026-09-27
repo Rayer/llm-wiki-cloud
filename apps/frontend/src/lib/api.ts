@@ -157,6 +157,11 @@ export type ProfileDerivedRef = {
   prompt_version: string;
   schema_version: string;
 };
+export type ProfileRequirementAccounting = {
+  id: string;
+  disposition: 'compile_guidance' | 'dictionary_or_query' | 'both' | 'limitation';
+  explanation: string;
+};
 export type ProfileCandidate = {
   candidate_id: string;
   source: 'manual' | 'compile_auto';
@@ -165,7 +170,7 @@ export type ProfileCandidate = {
   content_generation: string;
   dictionary: ProfileDerivedRef;
   guidance: ProfileDerivedRef;
-  preview: { dictionary_diff: string; guidance_diff: string };
+  preview: { dictionary_diff: string; guidance_diff: string; requirements: ProfileRequirementAccounting[] };
 };
 export type ProfileJob = {
   job_id: string;
@@ -195,11 +200,7 @@ export type ProfileState = {
   active: ProfileActive | null;
   job: ProfileJob | null;
 };
-export type ProfileBootstrapRequirement = {
-  id: string;
-  disposition: 'compile_guidance' | 'dictionary_or_query' | 'both' | 'limitation';
-  explanation: string;
-};
+export type ProfileBootstrapRequirement = ProfileRequirementAccounting;
 export type ProfileBootstrapGuidance = {
   revision: string;
   input_digest: string;

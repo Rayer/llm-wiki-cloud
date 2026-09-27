@@ -40,7 +40,7 @@ function scheduleLabel(value: string): string {
   return value;
 }
 
-function bootstrapDispositionLabel(value: ProfileBootstrapGuidance['preview']['requirements'][number]['disposition']): string {
+function requirementDispositionLabel(value: ProfileBootstrapGuidance['preview']['requirements'][number]['disposition']): string {
   switch (value) {
     case 'compile_guidance': return 'Compile guidance';
     case 'dictionary_or_query': return 'Dictionary or query';
@@ -49,7 +49,7 @@ function bootstrapDispositionLabel(value: ProfileBootstrapGuidance['preview']['r
   }
 }
 
-function ProfileGuidanceArtifactDetails({ projectId, revision }: { projectId: string; revision: string }) {
+function ProfileGuidanceArtifactDetails({ projectId, revision, title }: { projectId: string; revision: string; title: string }) {
   const [result, setResult] = useState<{
     projectId: string;
     revision: string;
@@ -79,8 +79,8 @@ function ProfileGuidanceArtifactDetails({ projectId, revision }: { projectId: st
   if (!current?.artifact) return <p className="mt-3 text-sm text-zinc-400" role="status">Loading immutable compile guidance…</p>;
 
   return (
-    <section className="mt-4 rounded-lg border border-white/10 p-3" aria-label="Immutable compile guidance">
-      <h4 className="text-xs font-semibold uppercase tracking-wide text-sky-200">Immutable compile guidance</h4>
+    <section className="mt-4 rounded-lg border border-white/10 p-3" aria-label={title}>
+      <h4 className="text-xs font-semibold uppercase tracking-wide text-sky-200">{title}</h4>
       <p className="mt-2 break-all text-xs leading-5 text-zinc-400">
         Revision: <code>{current.artifact.revision}</code>
       </p>
@@ -89,6 +89,9 @@ function ProfileGuidanceArtifactDetails({ projectId, revision }: { projectId: st
       </p>
       <p className="mt-2 whitespace-pre-wrap text-sm leading-6 text-zinc-200">
         {current.artifact.compile_guidance || 'No compile guidance is configured.'}
+      </p>
+      <p className="mt-2 text-xs leading-5 text-zinc-500">
+        Synto rejects the combined materialized vault schema plus this guidance when it exceeds the 1,500-character adapter budget. Profile input has no separate 1,500-character limit.
       </p>
     </section>
   );
@@ -630,7 +633,11 @@ export function ProjectProfilePanel({ projectId }: { projectId: string }) {
                       {visibleBootstrapGuidance.preview.guidance_diff || 'No compile guidance changes.'}
                     </p>
                   </div>
-                  <ProfileGuidanceArtifactDetails projectId={projectId} revision={visibleBootstrapGuidance.revision} />
+                  <ProfileGuidanceArtifactDetails
+                    projectId={projectId}
+                    revision={visibleBootstrapGuidance.revision}
+                    title="Bootstrap writing guidance"
+                  />
 
                   <div className="mt-4" aria-label="Requirement effects and limitations">
                     <h4 className="text-xs font-semibold uppercase tracking-wide text-zinc-300">Requirement effects and limitations</h4>
@@ -638,7 +645,7 @@ export function ProjectProfilePanel({ projectId }: { projectId: string }) {
                       {visibleBootstrapGuidance.preview.requirements.map((requirement) => (
                         <li key={requirement.id} className="rounded-lg border border-white/10 p-3">
                           <p className="text-sm font-medium text-zinc-200">
-                            {requirement.id}: {bootstrapDispositionLabel(requirement.disposition)}
+                            {requirement.id}: {requirementDispositionLabel(requirement.disposition)}
                           </p>
                           <p className="mt-1 text-sm leading-5 text-zinc-400">{requirement.explanation}</p>
                         </li>
@@ -661,6 +668,14 @@ export function ProjectProfilePanel({ projectId }: { projectId: string }) {
               )}
               {visibleBootstrapError ? <p className="mt-2 text-xs text-amber-200" role="alert">Unable to read first-compile guidance: {visibleBootstrapError}</p> : null}
             </section>
+          ) : null}
+
+          {visibleProfile.active ? (
+            <ProfileGuidanceArtifactDetails
+              projectId={projectId}
+              revision={visibleProfile.active.guidance_revision}
+              title="Active writing guidance"
+            />
           ) : null}
 
           {visibleProfile.derivation_status === 'pending' ? (
@@ -732,7 +747,29 @@ export function ProjectProfilePanel({ projectId }: { projectId: string }) {
                   </p>
                 </section>
               </div>
-              <ProfileGuidanceArtifactDetails projectId={projectId} revision={visibleProfile.candidate.guidance.revision} />
+              {visibleProfile.candidate.guidance.revision !== visibleProfile.active?.guidance_revision ? (
+                <ProfileGuidanceArtifactDetails
+                  projectId={projectId}
+                  revision={visibleProfile.candidate.guidance.revision}
+                  title="Candidate writing guidance"
+                />
+              ) : null}
+
+              {visibleProfile.candidate.preview.requirements.length > 0 ? (
+                <div className="mt-4" aria-label="Candidate requirement effects and limitations">
+                  <h4 className="text-xs font-semibold uppercase tracking-wide text-zinc-300">Requirement effects and limitations</h4>
+                  <ul className="mt-2 space-y-2">
+                    {visibleProfile.candidate.preview.requirements.map((requirement) => (
+                      <li key={requirement.id} className="rounded-lg border border-white/10 p-3">
+                        <p className="text-sm font-medium text-zinc-200">
+                          {requirement.id}: {requirementDispositionLabel(requirement.disposition)}
+                        </p>
+                        <p className="mt-1 text-sm leading-5 text-zinc-400">{requirement.explanation}</p>
+                      </li>
+                    ))}
+                  </ul>
+                </div>
+              ) : null}
 
               {visibleProfile.job ? (
                 <div className="mt-4 flex flex-wrap items-center gap-x-4 gap-y-2 text-sm text-zinc-300" role="status">
