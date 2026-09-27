@@ -4,6 +4,8 @@ The Export Job has a separate, first-time provisioning workflow. It is restricte
 
 The one-use existing-Job continuation was retired after accepted adopt run `36276804124`, BFF run `36276914319`, and export execution `export-job-dev-lz6w7` with its accepted download. `exportjob_continuation_run_id` and the continuation CLI arguments are no longer supported; normal create-only provisioning and same-SHA evidence restoration remain unchanged. The owner has removed all three temporary readback grants; do not recreate them or rerun the accepted adopt. Routine Job image updates remain separate from provisioning.
 
+For an already provisioned DEV Job, the ordinary `components=exportjob` CD path builds and updates only its immutable image, records the mutation journal, and verifies runtime/image readback. It requires no role-definition, project-policy, or signer-policy readback from the three retired temporary grants. Exportjob stays outside the DEV image receipt consumed by Production; receipt creation waits only for selected receipt members (`auth`, `bff`, `worker`). Existing DEV-only checks and provisioning prerequisites remain in force.
+
 ## Contract
 
 - Project and region: `llm-wiki-cloud` / `asia-east1`.

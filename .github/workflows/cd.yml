@@ -249,7 +249,7 @@ jobs:
 
       - name: Record DEV immutable image receipt
         id: record_dev_receipt
-        if: inputs.config_environment == 'development' && (contains(inputs.components, 'auth') || contains(inputs.components, 'bff') || contains(inputs.components, 'worker')) && (!contains(inputs.components, 'auth') || steps.auth_mutate.outcome == 'success') && (!contains(inputs.components, 'bff') || steps.bff_mutate.outcome == 'success') && (!contains(inputs.components, 'worker') || steps.worker_mutate.outcome == 'success') && (!contains(inputs.components, 'exportjob') || steps.exportjob_mutate.outcome == 'success')
+        if: inputs.config_environment == 'development' && (contains(inputs.components, 'auth') || contains(inputs.components, 'bff') || contains(inputs.components, 'worker')) && (!contains(inputs.components, 'auth') || steps.auth_mutate.outcome == 'success') && (!contains(inputs.components, 'bff') || steps.bff_mutate.outcome == 'success') && (!contains(inputs.components, 'worker') || steps.worker_mutate.outcome == 'success')
         run: bash deploy/cd.sh record-dev-receipt
 
       - name: Mutate Frontend

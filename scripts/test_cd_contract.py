@@ -354,6 +354,7 @@ class CDContractTests(unittest.TestCase):
 
         record = by_id["record_dev_receipt"]
         self.assertEqual(record["run"], "bash deploy/cd.sh record-dev-receipt")
+        self.assertNotIn("exportjob", record["if"])
         self.assertEqual(record["if"].split(" && ")[0], "inputs.config_environment == 'development'")
         self.assertGreater(
             positions["record_dev_receipt"],
@@ -1027,6 +1028,106 @@ class CDContractTests(unittest.TestCase):
             self.assertEqual(rendered["mutation_count"], 1)
             self.assertEqual(rendered["mutation_components"], ["worker"])
 
+
+    def test_exportjob_image_update_journals_and_reads_back_without_temporary_iam_grants(self):
+        sha = "a" * 40
+        registry = "asia-east1-docker.pkg.dev/llm-wiki-cloud/cloud-run-images"
+        image = f"{registry}/llm-wiki-bff-export-job@sha256:{'b' * 64}"
+        config = {"job_name": "export-job-dev", "location": "asia-east1",
+                  "runtime_service_account": "worker@example.com", "signing_service_account": "signer@example.com",
+                  "bucket": "dev-bucket", "firestore_database_id": "dev-db"}
+        job = {"template": {"template": {"serviceAccount": config["runtime_service_account"],
+               "containers": [{"image": image.replace('b' * 64, 'c' * 64), "env": [
+                   {"name": key, "value": value} for key, value in {
+                       "GCP_PROJECT": "llm-wiki-cloud", "BUCKET": config["bucket"],
+                       "FIRESTORE_DATABASE_ID": config["firestore_database_id"],
+                       "EXPORT_SIGNING_SERVICE_ACCOUNT": config["signing_service_account"],
+                   }.items()]}]}}}
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            bin_dir = root / "bin"
+            bin_dir.mkdir()
+            state = root / "job.json"
+            state.write_text(json.dumps(job))
+            log = root / "provider.log"
+            fake = textwrap.dedent(f"""
+                #!/usr/bin/env python3
+                import json, sys
+                from pathlib import Path
+                args = sys.argv[1:]
+                with Path({str(log)!r}).open('a') as stream:
+                    stream.write(Path(sys.argv[0]).name + ' ' + ' '.join(args) + '\\n')
+                state = Path({str(state)!r})
+                if Path(sys.argv[0]).name == 'docker' and args[0] in ('build', 'push'):
+                    pass
+                elif args[:3] == ['iam', 'service-accounts', 'describe']:
+                    print('{{}}')
+                elif args[:3] == ['run', 'jobs', 'get-iam-policy']:
+                    print(json.dumps({{'bindings': [{{'role': 'roles/run.jobsExecutorWithOverrides',
+                        'members': ['serviceAccount:bff@example.com']}}]}}))
+                elif args[:2] == ['auth', 'configure-docker']:
+                    pass
+                elif args[:4] == ['artifacts', 'docker', 'images', 'describe']:
+                    print('sha256:' + 'b' * 64)
+                elif args[:3] == ['run', 'jobs', 'describe']:
+                    print(state.read_text())
+                elif args == ['run', 'jobs', 'update', 'export-job-dev', '--project', 'llm-wiki-cloud',
+                              '--region', 'asia-east1', '--image', {image!r}, '--quiet']:
+                    job = json.loads(state.read_text())
+                    job['template']['template']['containers'][0]['image'] = {image!r}
+                    state.write_text(json.dumps(job))
+                else:
+                    raise SystemExit('unexpected provider operation: ' + ' '.join(args))
+            """).lstrip()
+            for name in ("gcloud", "docker"):
+                (bin_dir / name).write_text(fake)
+                (bin_dir / name).chmod(0o755)
+            plan = root / "plan.json"
+            normalized = {"selected_components": ["exportjob"], "export_job": config,
+                          "gcp": {"project_id": "llm-wiki-cloud", "artifact_registry": registry},
+                          "bff": {"runtime_service_account": "bff@example.com"}}
+            plan.write_text(json.dumps({"normalized": normalized}))
+            journal = root / "journal.json"
+            env = {**os.environ, "PATH": f"{bin_dir}:{os.environ['PATH']}", "ROOT": str(ROOT),
+                   "ENVIRONMENT": "development", "SOURCE_SHA": sha, "GITHUB_RUN_ID": "7", "GITHUB_RUN_ATTEMPT": "1",
+                   "PLAN_PATH": str(plan), "JOURNAL_PATH": str(journal), "ROLLBACK_PATH": str(root / "rollback.json"),
+                   "ARTIFACT_DIR": str(root / "artifacts"), "ROLLBACK_UPLOADED": ""}
+            command = f"source {shlex.quote(str(ROOT / 'deploy/components/exportjob.sh'))} help; "
+            result = subprocess.run(["bash", "-c", command +
+                "exportjob_preflight; exportjob_freeze; exportjob_mutate; exportjob_reconcile; journal_validate"],
+                env=env, text=True, capture_output=True)
+            self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
+            valid = json.loads(journal.read_text())
+            self.assertEqual(valid["order"], ["exportjob"])
+            self.assertEqual(valid["components"]["exportjob"]["history"], ["pending", "accepted"])
+            self.assertEqual(json.loads((root / "artifacts/components/exportjob.json").read_text())["result"], "success")
+            self.assertEqual(json.loads(state.read_text())["template"]["template"]["containers"][0]["image"], image)
+            self.assertEqual(log.read_text().count("gcloud run jobs update "), 1)
+            before = log.read_text()
+            production = subprocess.run(["bash", "-c", command + "exportjob_preflight"],
+                                        env={**env, "ENVIRONMENT": "production"}, text=True, capture_output=True)
+            self.assertNotEqual(production.returncode, 0)
+            self.assertIn("DEV-only", production.stderr)
+            self.assertEqual(log.read_text(), before)
+            for invalid in ("history", "unknown component", "duplicate order"):
+                with self.subTest(invalid=invalid):
+                    value = json.loads(json.dumps(valid))
+                    selected = ["exportjob"]
+                    if invalid == "history":
+                        value["components"]["exportjob"]["history"] = ["accepted"]
+                    elif invalid == "unknown component":
+                        selected = value["order"] = ["rogue"]
+                        value["components"] = {"rogue": value["components"]["exportjob"]}
+                    else:
+                        selected = value["order"] = ["exportjob", "exportjob"]
+                    journal.write_text(json.dumps(value))
+                    plan.write_text(json.dumps({"normalized": {**normalized, "selected_components": selected}}))
+                    before = log.read_text()
+                    rejected = subprocess.run(["bash", "-c", command + "exportjob_mutate"],
+                                              env=env, text=True, capture_output=True)
+                    self.assertNotEqual(rejected.returncode, 0)
+                    self.assertIn("mutation journal is malformed", rejected.stderr)
+                    self.assertEqual(log.read_text(), before)
 
     def test_backend_artifact_and_runtime_success_share_one_journal_entry(self):
         source_sha = "0123456789abcdef0123456789abcdef01234567"

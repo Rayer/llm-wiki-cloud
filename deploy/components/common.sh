@@ -178,7 +178,7 @@ write_rollback_result() {
 journal_validate() {
   local selected
   selected=$(plan_json '.selected_components') || return 1
-  jq -e --argjson selected "$selected" --argjson known '["auth","bff","worker","frontend"]' '
+  jq -e --argjson selected "$selected" --argjson known '["auth","bff","worker","exportjob","frontend"]' '
     def allowed_state:
       . == "pending" or . == "accepted" or . == "unknown" or . == "rejected_or_no_mutation" or
       . == "rollback_pending" or . == "rollback_accepted" or . == "rollback_failed" or . == "rollback_unknown";
