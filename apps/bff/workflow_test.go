@@ -53,14 +53,13 @@ func yamlMap(t *testing.T, value any, label string) map[string]any {
 
 func TestFixedCDEntryWorkflowsUseCanonicalSourceAndConfig(t *testing.T) {
 	for _, tc := range []struct {
-		name              string
-		job               string
-		branch            string
-		environment       string
-		config            string
-		continuationInput bool
+		name        string
+		job         string
+		branch      string
+		environment string
+		config      string
 	}{
-		{name: "deploy-dev.yml", job: "deploy", branch: "develop", environment: "Development", config: "development", continuationInput: true},
+		{name: "deploy-dev.yml", job: "deploy", branch: "develop", environment: "Development", config: "development"},
 		{name: "promote-production.yml", job: "promote", branch: "main", environment: "Production", config: "production"},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
@@ -71,21 +70,11 @@ func TestFixedCDEntryWorkflowsUseCanonicalSourceAndConfig(t *testing.T) {
 				t.Fatal("fixed entry workflow must be workflow_dispatch-only")
 			}
 			inputs := yamlMap(t, yamlMap(t, on["workflow_dispatch"], "workflow_dispatch")["inputs"], "inputs")
-			wantInputCount := 1
-			if tc.continuationInput {
-				wantInputCount++
-			}
-			if len(inputs) != wantInputCount {
-				t.Fatalf("workflow inputs = %v, want %d fixed inputs", inputs, wantInputCount)
+			if len(inputs) != 1 {
+				t.Fatalf("workflow inputs = %v, want only components", inputs)
 			}
 			if _, ok := inputs["components"]; !ok {
 				t.Fatal("components workflow input is required")
-			}
-			if tc.continuationInput {
-				continuation := yamlMap(t, inputs["exportjob_continuation_run_id"], "exportjob_continuation_run_id")
-				if continuation["required"] != false || continuation["type"] != "string" {
-					t.Fatalf("DEV continuation input = %v, want optional string", continuation)
-				}
 			}
 			job := yamlMap(t, yamlMap(t, document["jobs"], "jobs")[tc.job], "job")
 			wantGuard := "github.ref == 'refs/heads/" + tc.branch + "'"
