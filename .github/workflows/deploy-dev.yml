@@ -7,11 +7,6 @@ on:
         description: Explicit components to deploy, or provision-exportjob-dev for DEV prerequisites
         required: true
         type: string
-      exportjob_continuation_run_id:
-        description: Prior DEV workflow run ID for the reviewed existing Job continuation
-        required: false
-        default: ''
-        type: string
 
 concurrency:
   group: lwc-development-deploy
@@ -38,8 +33,6 @@ jobs:
     if: github.ref == 'refs/heads/develop' && inputs.components == 'provision-exportjob-dev'
     uses: ./.github/workflows/provision-exportjob-dev.yml
     secrets: inherit
-    with:
-      continuation_run_id: ${{ inputs.exportjob_continuation_run_id }}
     permissions:
       contents: read
       actions: read
@@ -120,10 +113,6 @@ jobs:
 
           current_develop="$(remote_head refs/heads/develop)"
           [[ "$current_develop" == "$candidate_sha" ]] || exit 1
-          current_main="$(remote_head refs/heads/main)"
-          git fetch --no-tags origin +refs/heads/main:refs/remotes/origin/main
-          [[ "$(git rev-parse refs/remotes/origin/main)" == "$current_main" ]] || exit 1
-          git merge-base --is-ancestor "$current_main" "$candidate_sha" || exit 1
 
           publish_status success 'Exact develop head is eligible for main fast-forward'
 

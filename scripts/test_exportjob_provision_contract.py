@@ -1,5 +1,7 @@
 """Offline checks for first-time DEV Export Job provisioning and policy recovery."""
 import copy
+import contextlib
+import io
 import json
 import os
 from pathlib import Path
@@ -11,7 +13,7 @@ import yaml
 
 from deploy.provision.exportjob_dev import (
     CONTRACT, DEPLOYER, STORAGE_EXPORTS, STORAGE_USERS, VERIFIER_ROLES, ProvisionError, Provisioner,
-    load_contract, ready_archive_binding,
+    load_contract, main, ready_archive_binding,
 )
 
 ROOT = Path(__file__).resolve().parents[1]
@@ -19,6 +21,17 @@ IMAGE = "asia-east1-docker.pkg.dev/llm-wiki-cloud/cloud-run-images/llm-wiki-bff-
 
 
 class ExportJobProvisionContractTests(unittest.TestCase):
+    def test_retired_continuation_arguments_are_rejected_before_provider_work(self):
+        for option in ("--continue-existing-job-evidence", "--continuation-run-id", "--owner-source-sha"):
+            with self.subTest(option=option), patch("sys.argv", ["exportjob_dev.py", option, "retired"]), \
+                    patch("deploy.provision.exportjob_dev.load_contract") as contract, \
+                    contextlib.redirect_stderr(io.StringIO()) as errors:
+                with self.assertRaises(SystemExit) as rejected:
+                    main()
+                self.assertEqual(rejected.exception.code, 2)
+                self.assertIn("unrecognized arguments", errors.getvalue())
+                contract.assert_not_called()
+
     def _prerequisite_runner(self, calls, *, missing_role=None, extra_role_permission=None):
         config = load_contract()
         project = config["project"]
@@ -619,73 +632,6 @@ class ExportJobProvisionContractTests(unittest.TestCase):
         self.assertEqual(live["metadata"]["generation"], 1)
         self.assertEqual(live["status"]["observedGeneration"], 1)
         self.assertEqual(live["spec"]["template"]["spec"]["template"]["spec"]["timeoutSeconds"], "82800")
-
-    def test_existing_job_continuation_revalidates_build_and_only_applies_missing_job_iam(self):
-        prior = json.loads((ROOT / "deploy/provision/testdata/exportjob-dev-prior-build-evidence.json").read_text())
-        job_raw = (ROOT / "deploy/provision/testdata/export-job-dev-live-response.json").read_text()
-        current_sha = subprocess.check_output(["git", "rev-parse", "HEAD"], cwd=ROOT, text=True).strip()
-        digest = prior["build"]["image_digest"]
-        image_tag = prior["build"]["image_tag"]
-        build = {"id": prior["build"]["id"], "projectId": "llm-wiki-cloud", "status": "SUCCESS",
-                 "substitutions": {"_IMAGE": image_tag, "_SOURCE_SHA": prior["source"]["sha"]},
-                 "results": {"images": [{"name": image_tag, "digest": digest}]}}
-        policy = {"etag": "job-e1", "bindings": []}
-        calls = []
-        prerequisites = []
-
-        def run(args, **kwargs):
-            calls.append(args)
-            parts = args[1:]
-            if parts[:2] == ["builds", "describe"]:
-                return subprocess.CompletedProcess(args, 0, json.dumps(build), "")
-            if parts[:4] == ["artifacts", "docker", "images", "describe"]:
-                return subprocess.CompletedProcess(args, 0, digest + "\n", "")
-            if parts[:3] == ["run", "jobs", "describe"]:
-                return subprocess.CompletedProcess(args, 0, job_raw, "")
-            if parts[:3] == ["run", "jobs", "get-iam-policy"]:
-                return subprocess.CompletedProcess(args, 0, json.dumps(policy), "")
-            if parts[:3] == ["run", "jobs", "set-iam-policy"]:
-                updated = json.loads(Path(parts[-2]).read_text())
-                updated["etag"] = "job-e2"
-                policy.clear()
-                policy.update(updated)
-                return subprocess.CompletedProcess(args, 0, "", "")
-            self.fail("continuation attempted an unexpected provider operation: " + " ".join(args[:4]))
-
-        with tempfile.TemporaryDirectory() as temp, patch.dict(os.environ, {
-                "SOURCE_SHA": current_sha, "SOURCE_REF": "refs/heads/develop",
-                "WIF_SERVICE_ACCOUNT": "gh-actions-bff-deployer@llm-wiki-cloud.iam.gserviceaccount.com"}):
-            evidence_path = Path(temp) / "evidence.json"
-            p = Provisioner(load_contract(), run, evidence_path)
-            with patch.object(p, "owner_prerequisites", side_effect=lambda: prerequisites.append("owner")):
-                p.continue_existing_job(prior, run_id="36102518949",
-                                        owner_source_sha="466b54a358c5d6a9274d9c085078fc7dd2a1b938", sha=current_sha)
-            saved = json.loads(evidence_path.read_text())
-
-        self.assertEqual(prerequisites, ["owner"])
-        self.assertEqual(policy["bindings"][0], {"role": "roles/run.jobsExecutorWithOverrides",
-                                                  "members": ["serviceAccount:lwc-bff-dev@llm-wiki-cloud.iam.gserviceaccount.com"]})
-        self.assertTrue(any(args[:3] == ["gcloud", "builds", "describe"] for args in calls))
-        self.assertFalse(any(args[:3] == ["gcloud", "builds", "submit"] for args in calls))
-        self.assertFalse(any(args[:4] == ["gcloud", "run", "jobs", "create"] for args in calls))
-        self.assertEqual(saved["source"]["sha"], current_sha)
-        self.assertEqual(saved["build"]["source_sha"], prior["source"]["sha"])
-        self.assertEqual(saved["image"]["reference"], prior["image"]["reference"])
-        self.assertEqual(saved["result"], "workflow_deployed_and_read_back")
-
-    def test_existing_job_continuation_rejects_arbitrary_or_retagged_prior_image(self):
-        prior = json.loads((ROOT / "deploy/provision/testdata/exportjob-dev-prior-build-evidence.json").read_text())
-        prior["image"]["reference"] = IMAGE
-        calls = []
-        current_sha = subprocess.check_output(["git", "rev-parse", "HEAD"], cwd=ROOT, text=True).strip()
-        with tempfile.TemporaryDirectory() as temp, patch.dict(os.environ, {
-                "SOURCE_SHA": current_sha, "SOURCE_REF": "refs/heads/develop",
-                "WIF_SERVICE_ACCOUNT": "gh-actions-bff-deployer@llm-wiki-cloud.iam.gserviceaccount.com"}):
-            p = Provisioner(load_contract(), lambda args, **kwargs: calls.append(args), Path(temp) / "evidence.json")
-            with self.assertRaisesRegex(ProvisionError, "recorded DEV build and created Job"):
-                p.continue_existing_job(prior, run_id="36102518949",
-                                        owner_source_sha="466b54a358c5d6a9274d9c085078fc7dd2a1b938", sha=current_sha)
-        self.assertEqual(calls, [])
 
     def test_mismatched_created_job_keeps_inverse_evidence_before_failure(self):
         config = load_contract()

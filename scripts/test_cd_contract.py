@@ -565,13 +565,22 @@ class CDContractTests(unittest.TestCase):
         self.assertNotIn("environment:", json.dumps(job))
 
         source_sha = "a" * 40
-        pending, validation, failure, statuses, _ = self._run_main_eligibility(
+        pending, validation, failure, statuses, git_log = self._run_main_eligibility(
             source, candidate_sha=source_sha
         )
         self.assertEqual(pending.returncode, 0, pending.stdout + pending.stderr)
         self.assertEqual(validation.returncode, 0, validation.stdout + validation.stderr)
         self.assertEqual(failure.returncode, 0, failure.stdout + failure.stderr)
         self.assertEqual(statuses, ["pending", "success"])
+        self.assertEqual(git_log.splitlines(), [
+            "rev-parse --verify HEAD",
+            "ls-remote --refs origin refs/heads/develop",
+            "ls-remote --refs origin refs/heads/main",
+            "fetch --no-tags origin +refs/heads/main:refs/remotes/origin/main",
+            "rev-parse refs/remotes/origin/main",
+            f"merge-base --is-ancestor {'c' * 40} {source_sha}",
+            "ls-remote --refs origin refs/heads/develop",
+        ])
 
         rejected_cases = [
             {"deploy_result": "failure"},
@@ -2819,10 +2828,7 @@ class ArchitectureAuthorityTests(unittest.TestCase):
         for filename in ("deploy-dev.yml", "promote-production.yml"):
             source = (ROOT / ".github/workflows" / filename).read_text()
             self.assertRegex(source, r"components:\n\s+description:.*\n\s+required: true")
-            if filename == "deploy-dev.yml":
-                self.assertRegex(source, r"exportjob_continuation_run_id:\n\s+description:.*\n\s+required: false\n\s+default: ''\n\s+type: string")
-            else:
-                self.assertNotIn("default:", source)
+            self.assertNotIn("default:", source)
             self.assertNotIn("inputs.components ||", source)
             self.assertIn("\n    secrets: inherit", source)
             self.assertNotRegex(source, r"\$\{\{\s*secrets\.")

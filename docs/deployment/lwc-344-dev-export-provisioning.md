@@ -2,6 +2,8 @@
 
 The Export Job has a separate, first-time provisioning workflow. It is restricted to `develop` and the fixed DEV contract in `deploy/provision/exportjob-dev.json`; it does not enable `export_job` in the normal deployment config or run the Job. The provisioning workflow is reusable only; invoke it through the already registered `deploy-dev.yml` entry workflow with the exact selector `components=provision-exportjob-dev`.
 
+The one-use existing-Job continuation was retired after accepted adopt run `36276804124`, BFF run `36276914319`, and export execution `export-job-dev-lz6w7` with its accepted download. `exportjob_continuation_run_id` and the continuation CLI arguments are no longer supported; normal create-only provisioning and same-SHA evidence restoration remain unchanged. The owner has removed all three temporary readback grants; do not recreate them or rerun the accepted adopt. Routine Job image updates remain separate from provisioning.
+
 ## Contract
 
 - Project and region: `llm-wiki-cloud` / `asia-east1`.
