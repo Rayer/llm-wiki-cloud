@@ -158,6 +158,20 @@ func (h *Handler) RunProfileCompileDerivation(ctx context.Context, userID, proje
 		if !profileBootstrapRefMatches(state.BootstrapGuidance, success.consumedBootstrapGuidance, revision, currentDigest) {
 			return ProfileState{}, errProfileBootstrapNotCurrent
 		}
+		generations, ok := h.store.Scope(project.UserID, project.ProjectID).(profileTagGenerationStore)
+		if !ok {
+			return ProfileState{}, errors.New("exact generation reader unavailable")
+		}
+		generationClient, generationSnapshot, err := generations.PinGeneration(ctx, generationID)
+		if err != nil {
+			return ProfileState{}, fmt.Errorf("pin immutable bootstrap compile generation: %w", err)
+		}
+		if generationSnapshot.Manifest.GenerationID != generationID || generationSnapshot.ManifestSHA256 != success.manifestSHA256 {
+			return ProfileState{}, errors.New("successful bootstrap compile result is not the retained generation")
+		}
+		if _, err := readProfileTagInventory(ctx, profileTagPinnedReader{generationClient}, generationSnapshot.Manifest, generationID); err != nil {
+			return ProfileState{}, fmt.Errorf("validate immutable bootstrap compile inventory: %w", err)
+		}
 	}
 	if provider == nil && len(state.Requirements) > 0 {
 		return ProfileState{}, errors.New("Profile derivation provider is not configured")
@@ -292,16 +306,31 @@ type profileGCSContentSource struct{ root store.RootStore }
 
 type profilePinnedGeneration struct {
 	snapshot gcs.GenerationSnapshot
+	client   *gcs.Client
 	idMap    []byte
 	concepts []byte
 }
 
-func (s profileGCSContentSource) PinCurrentProfileContent(ctx context.Context, attempt profilederive.Attempt, needConcepts bool) (profilederive.PinnedContent, bool, error) {
-	pinned, exists, err := s.pinCurrentProfileGeneration(ctx, attempt, needConcepts)
+func (s profileGCSContentSource) PinCurrentProfileContent(ctx context.Context, attempt profilederive.Attempt, needConcepts, hasActive bool) (profilederive.PinnedContent, bool, error) {
+	pinned, exists, err := s.pinCurrentProfileGeneration(ctx, attempt, false)
 	if err != nil || !exists {
 		return profilederive.PinnedContent{}, exists, err
 	}
-	return profilederive.PinnedContent{Generation: pinned.snapshot.Manifest.GenerationID, IDMap: pinned.idMap, Concepts: pinned.concepts}, true, nil
+	if needConcepts && (hasActive || pinned.snapshot.Manifest.SourceSnapshotDigest != "") {
+		idMap, err := readProfileGenerationFile(ctx, pinned.client, pinned.snapshot.Manifest, "cache/id_map.json")
+		if err != nil {
+			return profilederive.PinnedContent{}, false, err
+		}
+		concepts, err := readProfileGenerationFile(ctx, pinned.client, pinned.snapshot.Manifest, "cache/concepts.jsonl")
+		if err != nil {
+			return profilederive.PinnedContent{}, false, err
+		}
+		pinned.idMap, pinned.concepts = idMap, concepts
+	}
+	return profilederive.PinnedContent{
+		Generation: pinned.snapshot.Manifest.GenerationID, SourceSnapshotDigest: pinned.snapshot.Manifest.SourceSnapshotDigest,
+		IDMap: pinned.idMap, Concepts: pinned.concepts,
+	}, true, nil
 }
 
 func (s profileGCSContentSource) pinCurrentProfileGeneration(ctx context.Context, attempt profilederive.Attempt, needConcepts bool) (profilePinnedGeneration, bool, error) {
@@ -320,7 +349,7 @@ func (s profileGCSContentSource) pinCurrentProfileGeneration(ctx context.Context
 	if err != nil {
 		return profilePinnedGeneration{}, false, err
 	}
-	result := profilePinnedGeneration{snapshot: snapshot}
+	result := profilePinnedGeneration{snapshot: snapshot, client: pinned}
 	if snapshot.Manifest.GenerationID == "" {
 		return profilePinnedGeneration{}, false, errors.New("pinned generation manifest has no generation ID")
 	}

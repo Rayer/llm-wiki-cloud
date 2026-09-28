@@ -17,6 +17,8 @@ import (
 	"github.com/rayer/llm-wiki-bff/internal/profilederive"
 	"github.com/rayer/llm-wiki-bff/internal/profileruntime"
 	"github.com/rayer/llm-wiki-bff/internal/profiletags"
+	"google.golang.org/grpc/codes"
+	"google.golang.org/grpc/status"
 )
 
 // Connected local E2E: real dispatcher/repositories, loopback Firestore/GCS,
@@ -263,47 +265,158 @@ func TestProfileRuntimeConnectedManualThenCompileTagging(t *testing.T) {
 		}
 		return receipt
 	}
-	oldBootstrapEvidence := &profileartifacts.BootstrapGuidanceRef{
-		Revision: strings.Repeat("a", 64), ProfileRevision: state.Revision,
-		InputDigest: profileRequirementsDigest(state.Requirements), ModelVersion: "pinned-model",
-		PromptVersion: "pinned-bootstrap", SchemaVersion: profileartifacts.BootstrapGuidanceSchema,
-	}
-	compileReceipt := enqueueCompile(state, 51, oldBootstrapEvidence)
-	f.request(t, "POST", "synthetic-valid-token", 200, 1)
-	staged, err := f.repo.GetProfile(f.ctx, f.user, f.project)
-	if err != nil {
-		t.Fatal(err)
-	}
-	if staged.Candidate == nil || staged.Candidate.Source != "compile_auto" || staged.Candidate.ContentGeneration != manifest.GenerationID || staged.Candidate.BaseRevision != updated.Revision || staged.Candidate.RequirementsDigest != profileRequirementsDigest(updated.Requirements) || staged.Active == nil || *staged.Active != first || staged.Candidate.Guidance.Revision != first.GuidanceRevision || deriveCalls != 3 {
-		t.Fatalf("compile candidate not staged preserving G1: %+v calls=%d", staged, deriveCalls)
-	}
 	_, stateRef := f.repo.profileRefs(f.user, f.project)
-	storedReceiptSnapshot, err := stateRef.Collection("compile_receipts").Doc(manifest.GenerationID).Get(f.ctx)
-	if err != nil {
-		t.Fatal(err)
+	var final ProfileState
+	if !t.Run("old-revision-receipt-reconciles-newer-confirmed-intent", func(t *testing.T) {
+		oldBootstrapEvidence := &profileartifacts.BootstrapGuidanceRef{
+			Revision: strings.Repeat("a", 64), ProfileRevision: state.Revision,
+			InputDigest: profileRequirementsDigest(state.Requirements), ModelVersion: "pinned-model",
+			PromptVersion: "pinned-bootstrap", SchemaVersion: profileartifacts.BootstrapGuidanceSchema,
+		}
+		compileReceipt := enqueueCompile(state, 51, oldBootstrapEvidence)
+		f.request(t, "POST", "synthetic-valid-token", 200, 1)
+		staged, err := f.repo.GetProfile(f.ctx, f.user, f.project)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if staged.Candidate == nil || staged.Candidate.Source != "compile_auto" || staged.Candidate.ContentGeneration != manifest.GenerationID || staged.Candidate.BaseRevision != updated.Revision || staged.Candidate.RequirementsDigest != profileRequirementsDigest(updated.Requirements) || staged.Active == nil || *staged.Active != first || staged.Candidate.Guidance.Revision != first.GuidanceRevision || staged.DerivationStatus == nil || *staged.DerivationStatus != profileDerivationReady || staged.CompileRetryGeneration != "" || deriveCalls != 3 {
+			t.Fatalf("compile candidate not staged preserving G1: %+v calls=%d", staged, deriveCalls)
+		}
+		storedReceiptSnapshot, err := stateRef.Collection("compile_receipts").Doc(manifest.GenerationID).Get(f.ctx)
+		if err != nil {
+			t.Fatal(err)
+		}
+		var storedReceipt profileruntime.CompileReceipt
+		if err := storedReceiptSnapshot.DataTo(&storedReceipt); err != nil {
+			t.Fatal(err)
+		}
+		if storedReceipt.ProfileRevision != compileReceipt.ProfileRevision || storedReceipt.RequirementsDigest != compileReceipt.RequirementsDigest || storedReceipt.ConsumedBootstrapGuidance == nil || *storedReceipt.ConsumedBootstrapGuidance != *oldBootstrapEvidence {
+			t.Fatalf("compile receipt or bootstrap evidence changed: got=%+v want=%+v", storedReceipt, compileReceipt)
+		}
+		f.request(t, "POST", "synthetic-valid-token", 200, 1)
+		final, err = f.repo.GetProfile(f.ctx, f.user, f.project)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if final.Active == nil || final.Active.ContentGeneration != manifest.GenerationID || final.Active.CandidateID != staged.Candidate.CandidateID || final.Active.GuidanceRevision != first.GuidanceRevision || final.Active.DictionaryRevision == first.DictionaryRevision || final.Job.Status != profileJobReady || final.Candidate == nil || final.Candidate.CandidateID != final.Active.CandidateID || tagCalls != 3 {
+			t.Fatalf("G2 activation/reuse failed: %+v tag calls=%d", final, tagCalls)
+		}
+		f.request(t, "POST", "synthetic-valid-token", 200, 0)
+		if deriveCalls != 3 || tagCalls != 3 {
+			t.Fatalf("duplicate work calls derive=%d tags=%d", deriveCalls, tagCalls)
+		}
+	}) {
+		return
 	}
-	var storedReceipt profileruntime.CompileReceipt
-	if err := storedReceiptSnapshot.DataTo(&storedReceipt); err != nil {
-		t.Fatal(err)
-	}
-	if storedReceipt.ProfileRevision != compileReceipt.ProfileRevision || storedReceipt.RequirementsDigest != compileReceipt.RequirementsDigest || storedReceipt.ConsumedBootstrapGuidance == nil || *storedReceipt.ConsumedBootstrapGuidance != *oldBootstrapEvidence {
-		t.Fatalf("compile receipt or bootstrap evidence changed: got=%+v want=%+v", storedReceipt, compileReceipt)
-	}
-	f.request(t, "POST", "synthetic-valid-token", 200, 1)
-	final, err := f.repo.GetProfile(f.ctx, f.user, f.project)
-	if err != nil {
-		t.Fatal(err)
-	}
-	if final.Active == nil || final.Active.ContentGeneration != manifest.GenerationID || final.Active.GuidanceRevision != first.GuidanceRevision || final.Active.DictionaryRevision == first.DictionaryRevision || final.Job.Status != profileJobReady || tagCalls != 3 {
-		t.Fatalf("G2 activation/reuse failed: %+v tag calls=%d", final, tagCalls)
-	}
-	f.request(t, "POST", "synthetic-valid-token", 200, 0)
-	if deriveCalls != 3 || tagCalls != 3 {
-		t.Fatalf("duplicate work calls derive=%d tags=%d", deriveCalls, tagCalls)
+
+	// A current-revision compile exhausts before reconcile creation while the
+	// activated compile-auto Candidate remains retained beside Active.
+	var recoveredFinal ProfileState
+	if !t.Run("retained-candidate-exhaustion-retries-through-activation", func(t *testing.T) {
+		manifest.PreviousGenerationID = manifest.GenerationID
+		manifest.GenerationID = "generation-3"
+		reader.files["cache/concepts.jsonl"] = []byte(strings.ReplaceAll(string(reader.files["cache/concepts.jsonl"]), "Changed Alpha", "Retried Alpha"))
+		for i := range manifest.Files {
+			file := &manifest.Files[i]
+			file.SHA256 = generation.Digest(reader.files[file.Path])
+			file.Size = int64(len(reader.files[file.Path]))
+			file.Generation += 30
+		}
+		snapshot.ContentGeneration = manifest.GenerationID
+		snapshotBytes, snapshotDigest, err = generation.EncodeSourceSnapshot(snapshot)
+		if err != nil {
+			t.Fatal(err)
+		}
+		manifest.SourceSnapshotDigest = snapshotDigest
+		snapshotPath, _ = generation.SourceSnapshotPath(snapshotDigest)
+		reader.files[snapshotPath] = snapshotBytes
+		publish(71)
+		recoveryReceipt := enqueueCompile(final, 71, nil)
+		if final.Candidate == nil || final.Active == nil || final.Candidate.CandidateID != final.Active.CandidateID {
+			t.Fatalf("recovery compile should retain the activated candidate: candidate=%+v active=%+v", final.Candidate, final.Active)
+		}
+		recoveryWork := profileruntime.Work{UserID: f.user, ProjectID: f.project, Kind: "compile", Revision: final.Revision, ID: manifest.GenerationID}
+		recoveryWorkRef := f.repo.client.Collection(profileruntime.WorkCollection).Doc(profileruntime.WorkID(recoveryWork))
+		recoveryWork = f.work(t, recoveryWorkRef)
+		recoveryWork.Attempts = profileruntime.MaxAttempts - 1
+		recoveryWork.Due = f.clock.Add(-time.Second)
+		recoveryWork.Status = "retry_wait"
+		if _, err := recoveryWorkRef.Set(f.ctx, recoveryWork); err != nil {
+			t.Fatal(err)
+		}
+		f.dispatcher.Handler.store = nil
+		f.request(t, "POST", "synthetic-valid-token", 200, 1)
+		exhausted := f.work(t, recoveryWorkRef)
+		exhaustedProfile, err := f.repo.GetProfile(f.ctx, f.user, f.project)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if exhausted.Pending || exhausted.Status != "exhausted" || exhaustedProfile.DerivationStatus == nil ||
+			*exhaustedProfile.DerivationStatus != profileDerivationFailed || exhaustedProfile.DerivationErrorCode == nil ||
+			*exhaustedProfile.DerivationErrorCode != "runtime_retry_exhausted" || exhaustedProfile.CompileRetryGeneration != manifest.GenerationID ||
+			exhaustedProfile.Active == nil || *exhaustedProfile.Active != *final.Active || exhaustedProfile.Candidate == nil ||
+			exhaustedProfile.Candidate.CandidateID != final.Active.CandidateID {
+			t.Fatalf("active Profile compile exhaustion not visible/preserving: work=%+v Profile=%+v receipt=%+v", exhausted, exhaustedProfile, recoveryReceipt)
+		}
+		if _, err := profileCompileReconcileRef(stateRef, manifest.GenerationID).Get(f.ctx); status.Code(err) != codes.NotFound {
+			t.Fatalf("compile exhaustion should happen before reconcile creation: err=%v", err)
+		}
+		retried, err := f.repo.RetryProfileDerivation(f.ctx, f.user, f.project, final.Revision)
+		if err != nil || retried.DerivationStatus == nil || *retried.DerivationStatus != profileDerivationPending || retried.Active == nil || *retried.Active != *final.Active || retried.Candidate == nil || retried.Candidate.CandidateID != final.Active.CandidateID {
+			t.Fatalf("compile retry did not preserve Active and its retained candidate: state=%+v err=%v", retried, err)
+		}
+		firstRetryWork := f.work(t, recoveryWorkRef)
+		if !firstRetryWork.Pending || firstRetryWork.Status != "pending" || firstRetryWork.Attempts != 0 || firstRetryWork.ID != manifest.GenerationID {
+			t.Fatalf("compile retry did not requeue exact receipt work: %+v", firstRetryWork)
+		}
+		retriedAgain, err := f.repo.RetryProfileDerivation(f.ctx, f.user, f.project, final.Revision)
+		secondRetryWork := f.work(t, recoveryWorkRef)
+		if err != nil || retriedAgain.ScheduledFor == nil || *retriedAgain.ScheduledFor != *retried.ScheduledFor ||
+			secondRetryWork.Attempts != firstRetryWork.Attempts || !secondRetryWork.Due.Equal(firstRetryWork.Due) || secondRetryWork.Status != firstRetryWork.Status {
+			t.Fatalf("repeated compile retry changed or duplicated work: first=%+v second=%+v state=%+v err=%v", firstRetryWork, secondRetryWork, retriedAgain, err)
+		}
+		f.dispatcher.Handler.store = client
+		f.request(t, "POST", "synthetic-valid-token", 200, 1)
+		recoveryStaged, err := f.repo.GetProfile(f.ctx, f.user, f.project)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if recoveryStaged.Candidate == nil || recoveryStaged.Candidate.Source != "compile_auto" || recoveryStaged.Candidate.ContentGeneration != manifest.GenerationID || recoveryStaged.Candidate.BaseRevision != final.Revision || recoveryStaged.Active == nil || *recoveryStaged.Active != *final.Active || recoveryStaged.DerivationStatus == nil || *recoveryStaged.DerivationStatus != profileDerivationReady || recoveryStaged.CompileRetryGeneration != "" || f.work(t, recoveryWorkRef).Status != "complete" || deriveCalls != 4 {
+			t.Fatalf("retried compile candidate not staged preserving G2: %+v calls=%d", recoveryStaged, deriveCalls)
+		}
+		reconcileSnapshot, err := profileCompileReconcileRef(stateRef, manifest.GenerationID).Get(f.ctx)
+		if err != nil || reconcileSnapshot.Data()["status"] != "candidate_ready" || reconcileSnapshot.Data()["candidate_id"] != recoveryStaged.Candidate.CandidateID {
+			t.Fatalf("retried compile did not complete reconciliation: reconcile=%v err=%v", reconcileSnapshot.Data(), err)
+		}
+		storedRecoveryReceiptSnapshot, err := stateRef.Collection("compile_receipts").Doc(manifest.GenerationID).Get(f.ctx)
+		if err != nil {
+			t.Fatal(err)
+		}
+		var storedRecoveryReceipt profileruntime.CompileReceipt
+		if err := storedRecoveryReceiptSnapshot.DataTo(&storedRecoveryReceipt); err != nil {
+			t.Fatal(err)
+		}
+		if storedRecoveryReceipt != recoveryReceipt || storedRecoveryReceipt.ProfileRevision != final.Revision || storedRecoveryReceipt.RequirementsDigest != profileRequirementsDigest(final.Requirements) {
+			t.Fatalf("current compile receipt changed during retry: got=%+v want=%+v", storedRecoveryReceipt, recoveryReceipt)
+		}
+		f.request(t, "POST", "synthetic-valid-token", 200, 1)
+		recoveredFinal, err = f.repo.GetProfile(f.ctx, f.user, f.project)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if recoveredFinal.Active == nil || recoveredFinal.Active.ContentGeneration != manifest.GenerationID || recoveredFinal.Active.CandidateID != recoveryStaged.Candidate.CandidateID || recoveredFinal.Active.GuidanceRevision != final.Active.GuidanceRevision || recoveredFinal.Active.DictionaryRevision == final.Active.DictionaryRevision || recoveredFinal.Job.Status != profileJobReady || recoveredFinal.Candidate == nil || recoveredFinal.Candidate.CandidateID != recoveredFinal.Active.CandidateID || tagCalls != 4 {
+			t.Fatalf("retried G3 activation/reuse failed: %+v tag calls=%d", recoveredFinal, tagCalls)
+		}
+		f.request(t, "POST", "synthetic-valid-token", 200, 0)
+		if deriveCalls != 4 || tagCalls != 4 {
+			t.Fatalf("duplicate work calls derive=%d tags=%d", deriveCalls, tagCalls)
+		}
+	}) {
+		return
 	}
 	// Clearing an active profile publishes explicit empty coverage after the
 	// same debounce and confirmation, without calling either provider.
-	neutral, err := f.repo.SaveProfile(f.ctx, f.user, f.project, final.Revision, []ProfileRequirement{})
+	neutral, err := f.repo.SaveProfile(f.ctx, f.user, f.project, recoveredFinal.Revision, []ProfileRequirement{})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -325,7 +438,7 @@ func TestProfileRuntimeConnectedManualThenCompileTagging(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if neutral.Active == nil || neutral.Active.GuidanceRevision == first.GuidanceRevision || neutral.Job.Status != profileJobReady || deriveCalls != 3 || tagCalls != 3 {
+	if neutral.Active == nil || neutral.Active.GuidanceRevision == first.GuidanceRevision || neutral.Job.Status != profileJobReady || deriveCalls != 4 || tagCalls != 4 {
 		t.Fatalf("neutral activation failed: %+v derive=%d tags=%d", neutral, deriveCalls, tagCalls)
 	}
 	mu.Lock()
@@ -345,7 +458,7 @@ func TestProfileRuntimeConnectedManualThenCompileTagging(t *testing.T) {
 	}
 
 	manifest.PreviousGenerationID = manifest.GenerationID
-	manifest.GenerationID = "generation-3"
+	manifest.GenerationID = "generation-4"
 	snapshot.ContentGeneration = manifest.GenerationID
 	snapshotBytes, snapshotDigest, err = generation.EncodeSourceSnapshot(snapshot)
 	if err != nil {
@@ -354,15 +467,15 @@ func TestProfileRuntimeConnectedManualThenCompileTagging(t *testing.T) {
 	manifest.SourceSnapshotDigest = snapshotDigest
 	snapshotPath, _ = generation.SourceSnapshotPath(snapshotDigest)
 	reader.files[snapshotPath] = snapshotBytes
-	publish(71)
-	enqueueCompile(neutral, 71, nil)
+	publish(91)
+	enqueueCompile(neutral, 91, nil)
 	f.request(t, "POST", "synthetic-valid-token", 200, 1)
 	f.request(t, "POST", "synthetic-valid-token", 200, 1)
 	afterEmptyCompile, err := f.repo.GetProfile(f.ctx, f.user, f.project)
 	if err != nil {
 		t.Fatal(err)
 	}
-	if afterEmptyCompile.Active == nil || afterEmptyCompile.Active.ContentGeneration != manifest.GenerationID || afterEmptyCompile.Active.GuidanceRevision != neutral.Active.GuidanceRevision || afterEmptyCompile.Job.Status != profileJobReady || deriveCalls != 3 || tagCalls != 3 {
+	if afterEmptyCompile.Active == nil || afterEmptyCompile.Active.ContentGeneration != manifest.GenerationID || afterEmptyCompile.Active.GuidanceRevision != neutral.Active.GuidanceRevision || afterEmptyCompile.Job.Status != profileJobReady || deriveCalls != 4 || tagCalls != 4 {
 		t.Fatalf("empty-active compile failed: %+v derive=%d tags=%d", afterEmptyCompile, deriveCalls, tagCalls)
 	}
 

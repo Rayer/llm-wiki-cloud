@@ -55,9 +55,9 @@ type contentStub struct {
 	needsRows bool
 }
 
-func (c *contentStub) PinCurrentProfileContent(_ context.Context, _ Attempt, needConcepts bool) (PinnedContent, bool, error) {
+func (c *contentStub) PinCurrentProfileContent(_ context.Context, _ Attempt, needConcepts, hasActive bool) (PinnedContent, bool, error) {
 	c.called++
-	c.needsRows = c.exists && needConcepts
+	c.needsRows = c.exists && needConcepts && (hasActive || c.content.SourceSnapshotDigest != "")
 	return c.content, c.exists, c.err
 }
 
@@ -97,10 +97,10 @@ func (m *memoryArtifacts) WriteFileIfGeneration(_ context.Context, data []byte, 
 	return 1, nil
 }
 
-func TestExecutorRunsGenerationFreeBootstrapAndPersistsPreviewRef(t *testing.T) {
+func TestExecutorBootstrapsBeforeLegacyGenerationWithoutSnapshot(t *testing.T) {
 	requirements := []Requirement{{ID: "r1", Text: "write short"}, {ID: "r2", Text: "tag family-friendly"}}
 	repo := &transitionsStub{snapshot: ProfileSnapshot{Revision: 1, Requirements: requirements}}
-	content := &contentStub{}
+	content := &contentStub{exists: true, content: PinnedContent{Generation: "legacy-generation"}}
 	objects := newMemoryArtifacts()
 	provider := NewProvider(&fakeChat{model: "fake-http-model", text: `{"compile_guidance":"Write concise entries.","guidance_diff":"Added concise-entry rule.","requirements":[{"id":"r1","disposition":"compile_guidance","explanation":"Applied to note writing."},{"id":"r2","disposition":"dictionary_or_query","explanation":"Saved for later query tagging."}]}`})
 	result, err := (&Executor{Profiles: repo, Content: content, Artifacts: artifactsStub{objects}, Provider: provider}).Run(context.Background(), Attempt{UserID: "owner", ProjectID: "alpha", Revision: 1, AttemptID: "attempt-1"})
@@ -123,7 +123,7 @@ func TestExecutorRunsGenerationFreeBootstrapAndPersistsPreviewRef(t *testing.T) 
 func TestExecutorDerivesManualArtifactsFromOnePinnedEmptyConceptSnapshot(t *testing.T) {
 	requirements := []Requirement{{ID: "r1", Text: "write concise"}}
 	repo := &transitionsStub{snapshot: ProfileSnapshot{Revision: 2, Requirements: requirements}}
-	content := &contentStub{exists: true, content: PinnedContent{Generation: "G2", IDMap: []byte(`{"concept":{}}`), Concepts: []byte{}}}
+	content := &contentStub{exists: true, content: PinnedContent{Generation: "G2", SourceSnapshotDigest: strings.Repeat("a", 64), IDMap: []byte(`{"concept":{}}`), Concepts: []byte{}}}
 	objects := newMemoryArtifacts()
 	provider := NewProvider(&fakeChat{model: "fake-http-model", text: `{"tags":[],"compile_guidance":"Write concise entries.","dictionary_diff":"No Tags requested.","guidance_diff":"Added concise writing rule.","requirements":[{"id":"r1","disposition":"compile_guidance","explanation":"Used for future note generation."}]}`})
 	result, err := (&Executor{Profiles: repo, Content: content, Artifacts: artifactsStub{objects}, Provider: provider}).Run(context.Background(), Attempt{UserID: "owner", ProjectID: "alpha", Revision: 2, AttemptID: "attempt-2"})

@@ -571,6 +571,37 @@ describe('LWC-211 Project Profile', () => {
     expect(await screen.findByText(/scheduled by the server/i)).toBeDefined();
   });
 
+  it('exposes exhausted Profile runtime work and retries it at the current revision', async () => {
+    const active = {
+      candidate_id: 'active-candidate',
+      content_generation: 'generation-active',
+      dictionary_revision: 'dict-active',
+      tag_set_revision: 'tags-active',
+      query_rule_revision: 'query-active',
+      guidance_revision: 'guide-active',
+    };
+    const profile = {
+      ...emptyProfile('project-a', 3),
+      requirements: [{ id: 'req-1', text: 'invoice source' }],
+      derivation_status: 'failed' as const,
+      derivation_error_code: 'runtime_retry_exhausted',
+      active,
+    };
+    mocks.getProfile.mockResolvedValue(profile);
+    mocks.retryProfileDerivation.mockResolvedValue({
+      ...profile,
+      derivation_status: 'pending',
+      derivation_error_code: null,
+      scheduled_for: '2026-09-25T03:05:00Z',
+    });
+
+    render(<ProjectProfilePanel projectId="project-a" />);
+    expect(await screen.findByText('Profile runtime work exhausted its automatic retries (runtime_retry_exhausted).')).toBeDefined();
+    fireEvent.click(await screen.findByRole('button', { name: 'Retry Profile work' }));
+
+    await waitFor(() => expect(mocks.retryProfileDerivation).toHaveBeenCalledWith('project-a', 3));
+  });
+
   it('keeps requirement IDs and order when editing the original list', async () => {
     mocks.getProfile.mockResolvedValue({
       ...emptyProfile('project-a', 2),

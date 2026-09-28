@@ -32,7 +32,7 @@ type ProfileTransitions interface {
 }
 
 type ContentSource interface {
-	PinCurrentProfileContent(context.Context, Attempt, bool) (PinnedContent, bool, error)
+	PinCurrentProfileContent(context.Context, Attempt, bool, bool) (PinnedContent, bool, error)
 }
 
 type ArtifactStoreFactory interface {
@@ -40,9 +40,10 @@ type ArtifactStoreFactory interface {
 }
 
 type PinnedContent struct {
-	Generation string
-	IDMap      []byte
-	Concepts   []byte
+	Generation           string
+	SourceSnapshotDigest string
+	IDMap                []byte
+	Concepts             []byte
 }
 
 type Result struct {
@@ -79,9 +80,12 @@ func (e *Executor) Run(ctx context.Context, attempt Attempt) (Result, error) {
 		return Result{}, e.fail(ctx, attempt, inputDigest, "profile_requirements_invalid", err)
 	}
 	needsConcepts := len(profile.Requirements) > 0 || profile.HasActive
-	content, generationExists, err := e.Content.PinCurrentProfileContent(ctx, attempt, needsConcepts)
+	content, generationExists, err := e.Content.PinCurrentProfileContent(ctx, attempt, needsConcepts, profile.HasActive)
 	if err != nil {
 		return Result{}, e.fail(ctx, attempt, inputDigest, "profile_generation_unavailable", err)
+	}
+	if generationExists && len(profile.Requirements) > 0 && !profile.HasActive && content.SourceSnapshotDigest == "" {
+		generationExists = false
 	}
 	if !generationExists {
 		if len(profile.Requirements) == 0 || profile.HasActive {

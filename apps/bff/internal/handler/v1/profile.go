@@ -18,6 +18,7 @@ import (
 	"github.com/gin-gonic/gin"
 	"github.com/rayer/llm-wiki-bff/internal/auth"
 	"github.com/rayer/llm-wiki-bff/internal/profileartifacts"
+	"github.com/rayer/llm-wiki-bff/internal/profileruntime"
 	"google.golang.org/grpc/codes"
 	"google.golang.org/grpc/status"
 )
@@ -172,6 +173,7 @@ type ProfileState struct {
 	ConfirmedCandidateID    *string                   `json:"confirmed_candidate_id" firestore:"confirmed_candidate_id" binding:"required"`
 	Active                  *ProfileActive            `json:"active" firestore:"active" binding:"required"`
 	Job                     *ProfileJob               `json:"job" firestore:"job" binding:"required"`
+	CompileRetryGeneration  string                    `json:"-" firestore:"compile_retry_generation,omitempty"`
 	derivationClaimAcquired bool
 }
 
@@ -202,6 +204,10 @@ func newProfileState(projectID string) ProfileState {
 	return ProfileState{ProjectID: projectID, Requirements: []ProfileRequirement{}}
 }
 
+func hasUnactivatedProfileCandidate(state ProfileState) bool {
+	return state.Candidate != nil && (state.Active == nil || state.Candidate.CandidateID != state.Active.CandidateID)
+}
+
 func saveProfileState(current ProfileState, expected int64, requirements []ProfileRequirement, now time.Time) (ProfileState, error) {
 	if current.Revision != expected {
 		return ProfileState{}, &profileRevisionConflict{Latest: current.Revision}
@@ -219,6 +225,7 @@ func saveProfileState(current ProfileState, expected int64, requirements []Profi
 		current.ScheduledFor = stringPtr(now.Add(profileDebounce).Format(time.RFC3339Nano))
 	}
 	current.DerivationErrorCode = nil
+	current.CompileRetryGeneration = ""
 	current.Candidate = nil
 	current.BootstrapGuidance = nil
 	current.ConfirmedCandidateID = nil
@@ -369,6 +376,7 @@ func profileStateFromData(data map[string]interface{}) (ProfileState, error) {
 	if err := json.Unmarshal(encoded, &state); err != nil {
 		return ProfileState{}, err
 	}
+	state.CompileRetryGeneration, _ = data["compile_retry_generation"].(string)
 	return state, nil
 }
 
@@ -673,6 +681,13 @@ func (r *firestoreProfileRepository) RetryProfileDerivation(ctx context.Context,
 		if current.Revision != expected {
 			return &profileRevisionConflict{Latest: current.Revision}
 		}
+		if current.CompileRetryGeneration != "" {
+			result, err = r.retryExhaustedProfileCompile(ctx, tx, stateRef, userID, projectID, expected, current)
+			if err != nil {
+				return err
+			}
+			return setProfileState(tx, stateRef, result)
+		}
 		intent, err := readCurrentProfileDerivationIntent(ctx, tx, stateRef)
 		if err != nil {
 			return err
@@ -711,6 +726,58 @@ func (r *firestoreProfileRepository) RetryProfileDerivation(ctx context.Context,
 		return setProfileState(tx, stateRef, result)
 	})
 	return result, err
+}
+
+func (r *firestoreProfileRepository) retryExhaustedProfileCompile(ctx context.Context, tx *firestore.Transaction, stateRef *firestore.DocumentRef, userID, projectID string, expected int64, current ProfileState) (ProfileState, error) {
+	if current.CompileRetryGeneration == "" || hasUnactivatedProfileCandidate(current) {
+		return ProfileState{}, errProfileTransitionInvalid
+	}
+	work := profileruntime.Work{UserID: userID, ProjectID: projectID, Kind: "compile", Revision: expected, ID: current.CompileRetryGeneration}
+	if !validProfileRuntimeIdentity(work) {
+		return ProfileState{}, errProfileTransitionInvalid
+	}
+	workRef := r.client.Collection(profileruntime.WorkCollection).Doc(profileruntime.WorkID(work))
+	workSnapshot, err := tx.Get(workRef)
+	if err != nil {
+		return ProfileState{}, errProfileTransitionInvalid
+	}
+	if err := workSnapshot.DataTo(&work); err != nil || work.UserID != userID || work.ProjectID != projectID || work.Kind != "compile" ||
+		work.Revision != expected || work.ID != current.CompileRetryGeneration {
+		return ProfileState{}, errProfileTransitionInvalid
+	}
+	receiptSnapshot, err := tx.Get(stateRef.Collection(profileruntime.CompileReceiptsCollection).Doc(work.ID))
+	if err != nil {
+		return ProfileState{}, errProfileTransitionInvalid
+	}
+	var receipt profileruntime.CompileReceipt
+	if err := receiptSnapshot.DataTo(&receipt); err != nil || receipt.UserID != userID || receipt.ProjectID != projectID ||
+		receipt.ProfileRevision != expected || receipt.ContentGeneration != work.ID ||
+		receipt.RequirementsDigest != profileRequirementsDigest(current.Requirements) ||
+		!isLowerProfileDigest(receipt.ManifestSHA256) || !isLowerProfileDigest(receipt.CanonicalConceptsDigest) {
+		return ProfileState{}, errProfileCandidateNotCurrent
+	}
+	if current.DerivationStatus != nil && *current.DerivationStatus == profileDerivationPending && work.Pending &&
+		(work.Status == "pending" || work.Status == "running" || work.Status == "retry_wait") {
+		return current, nil
+	}
+	if current.DerivationStatus == nil || *current.DerivationStatus != profileDerivationFailed ||
+		current.DerivationErrorCode == nil || *current.DerivationErrorCode != "runtime_retry_exhausted" {
+		return ProfileState{}, errProfileTransitionInvalid
+	}
+	if work.Pending || work.Status != "exhausted" {
+		return ProfileState{}, errProfileTransitionInvalid
+	}
+	work.Attempts = 0
+	work.Token = ""
+	work.LeaseUntil = time.Time{}
+	work.Due = r.now()
+	if err := profileruntime.Enqueue(tx, r.client, work); err != nil {
+		return ProfileState{}, err
+	}
+	current.DerivationStatus = stringPtr(profileDerivationPending)
+	current.ScheduledFor = stringPtr(r.now().Format(time.RFC3339Nano))
+	current.DerivationErrorCode = nil
+	return current, nil
 }
 
 func (r *firestoreProfileRepository) GetProfileJob(ctx context.Context, userID, projectID, jobID string) (ProfileJob, error) {
@@ -1097,7 +1164,8 @@ func (r *firestoreProfileRepository) ProfileCompileCandidateReady(ctx context.Co
 			return nil
 		}
 
-		manualDerivationInProgress := current.DerivationStatus != nil && (*current.DerivationStatus == profileDerivationPending || *current.DerivationStatus == profileDerivationFailed)
+		compileRetryInProgress := current.CompileRetryGeneration == generation && current.DerivationStatus != nil && *current.DerivationStatus == profileDerivationPending
+		manualDerivationInProgress := !compileRetryInProgress && current.DerivationStatus != nil && (*current.DerivationStatus == profileDerivationPending || *current.DerivationStatus == profileDerivationFailed)
 		manualCandidateAwaitingActivation := current.Candidate != nil && current.Candidate.Source == "manual" &&
 			(current.ConfirmedCandidateID == nil || *current.ConfirmedCandidateID != current.Candidate.CandidateID || current.Active == nil || current.Active.CandidateID != current.Candidate.CandidateID)
 		if current.Active == nil || manualDerivationInProgress || manualCandidateAwaitingActivation {
@@ -1172,6 +1240,7 @@ func (r *firestoreProfileRepository) ProfileCompileCandidateReady(ctx context.Co
 		current.DerivationStatus = stringPtr(profileDerivationReady)
 		current.ScheduledFor = nil
 		current.DerivationErrorCode = nil
+		current.CompileRetryGeneration = ""
 		current.Candidate = &candidate
 		current.ConfirmedCandidateID = nil
 		current.Job = &job.ProfileJob
@@ -1306,6 +1375,7 @@ func (r *firestoreProfileRepository) ProfileBootstrapCompileCandidateReady(ctx c
 		current.DerivationStatus = stringPtr(profileDerivationReady)
 		current.ScheduledFor = nil
 		current.DerivationErrorCode = nil
+		current.CompileRetryGeneration = ""
 		current.Candidate = &candidate
 		current.ConfirmedCandidateID = nil
 		current.Job = &job.ProfileJob

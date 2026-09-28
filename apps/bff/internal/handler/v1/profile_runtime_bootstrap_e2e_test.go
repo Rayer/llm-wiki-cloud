@@ -24,8 +24,23 @@ import (
 func TestProfileRuntimeConnectedBootstrapFirstCompile(t *testing.T) {
 	f := newRuntimeFixture(t)
 	objects := map[string]taggingGCSObject{}
-	client, mu, _ := newTaggingGCSClient(t, objects)
+	client, mu, reads := newTaggingGCSClient(t, objects)
 	f.dispatcher.Handler.store = client
+	reader, manifest := taggingInventoryFixture(t)
+	prefix := "users/" + f.user + "/projects/" + f.project + "/"
+	legacyManifest := manifest
+	legacyManifest.GenerationID = "legacy-generation"
+	legacyManifest.SourceSnapshotDigest = ""
+	legacyManifestData, _ := json.Marshal(legacyManifest)
+	mu.Lock()
+	for _, file := range legacyManifest.Files {
+		objects[prefix+legacyManifest.ObjectPath(file)] = taggingGCSObject{reader.files[file.Path], file.Generation}
+	}
+	legacyArchive, _ := generation.ArchivedManifestPath(legacyManifest.GenerationID)
+	objects[prefix+legacyArchive] = taggingGCSObject{legacyManifestData, 21}
+	objects[prefix+generation.ManifestPath] = taggingGCSObject{legacyManifestData, 20}
+	objects[prefix+"raw/source.md"] = taggingGCSObject{[]byte("mutable legacy source"), 19}
+	mu.Unlock()
 	providerCalls, tagCalls := 0, 0
 	transport := http.DefaultTransport
 	t.Cleanup(func() { http.DefaultTransport = transport })
@@ -74,14 +89,47 @@ func TestProfileRuntimeConnectedBootstrapFirstCompile(t *testing.T) {
 	if state.BootstrapGuidance == nil || state.Active != nil || state.Candidate != nil || state.Job != nil || providerCalls != 1 {
 		t.Fatalf("bootstrap manufactured generation state: %+v calls=%d", state, providerCalls)
 	}
+	if legacyManifest.SourceSnapshotDigest != "" {
+		t.Fatal("legacy fixture unexpectedly has immutable Profile snapshot evidence")
+	}
+	mu.Lock()
+	legacyReads := reads[prefix+legacyManifest.ObjectPath(legacyManifest.Files[0])] + reads[prefix+legacyManifest.ObjectPath(legacyManifest.Files[1])]
+	mu.Unlock()
+	if legacyReads != 0 {
+		t.Fatalf("generation-free bootstrap read the legacy corpus: %d reads", legacyReads)
+	}
 	bootstrap := state.BootstrapGuidance
 	state, err = f.repo.ConfirmProfileBootstrapGuidance(f.ctx, f.user, f.project, bootstrap.Revision, bootstrap.InputDigest, state.Revision)
 	if err != nil {
 		t.Fatal(err)
 	}
 	consumed := &profileartifacts.BootstrapGuidanceRef{Revision: bootstrap.Revision, ProfileRevision: state.Revision, InputDigest: bootstrap.InputDigest, ModelVersion: bootstrap.ModelVersion, PromptVersion: bootstrap.PromptVersion, SchemaVersion: bootstrap.SchemaVersion}
-	reader, manifest := taggingInventoryFixture(t)
-	prefix := "users/" + f.user + "/projects/" + f.project + "/"
+	legacyConcepts, _ := legacyManifest.File("cache/concepts.jsonl")
+	legacyWork := profileruntime.Work{UserID: f.user, ProjectID: f.project, Kind: "compile", Revision: state.Revision, ID: legacyManifest.GenerationID, Due: f.clock}
+	legacyReceipt := profileruntime.CompileReceipt{
+		UserID: f.user, ProjectID: f.project, ExecutionID: "synthetic-legacy-compile", ProfileRevision: state.Revision,
+		RequirementsDigest: bootstrap.InputDigest, ContentGeneration: legacyManifest.GenerationID,
+		ManifestSHA256: generation.Digest(legacyManifestData), CanonicalConceptsDigest: legacyConcepts.SHA256,
+		ManifestGeneration: 20, ConsumedBootstrapGuidance: consumed, CreatedAt: f.clock,
+	}
+	_, stateRef := f.repo.profileRefs(f.user, f.project)
+	if err = f.repo.client.RunTransaction(f.ctx, func(ctx context.Context, tx *firestore.Transaction) error {
+		if err := tx.Create(stateRef.Collection(profileruntime.CompileReceiptsCollection).Doc(legacyWork.ID), legacyReceipt); err != nil {
+			return err
+		}
+		return profileruntime.Enqueue(tx, f.repo.client, legacyWork)
+	}); err != nil {
+		t.Fatal(err)
+	}
+	f.request(t, "POST", "synthetic-valid-token", 200, 1)
+	legacyWorkRef := f.repo.client.Collection(profileruntime.WorkCollection).Doc(profileruntime.WorkID(legacyWork))
+	legacyWork = f.work(t, legacyWorkRef)
+	state, err = f.repo.GetProfile(f.ctx, f.user, f.project)
+	if err != nil || !legacyWork.Pending || legacyWork.Status != "retry_wait" || state.Active != nil || state.Candidate != nil {
+		t.Fatalf("legacy compile was promoted without immutable source evidence: work=%+v state=%+v err=%v", legacyWork, state, err)
+	}
+	// The new publisher output supplies the immutable snapshot needed before
+	// the confirmed guidance can become a generation-bound candidate.
 	manifestData, _ := json.Marshal(manifest)
 	archive, _ := generation.ArchivedManifestPath(manifest.GenerationID)
 	mu.Lock()
@@ -103,7 +151,6 @@ func TestProfileRuntimeConnectedBootstrapFirstCompile(t *testing.T) {
 	concepts, _ := manifest.File("cache/concepts.jsonl")
 	receipt := profileruntime.CompileReceipt{UserID: f.user, ProjectID: f.project, ExecutionID: "synthetic-first-compile", ProfileRevision: state.Revision, RequirementsDigest: bootstrap.InputDigest, ContentGeneration: manifest.GenerationID, ManifestSHA256: generation.Digest(manifestData), CanonicalConceptsDigest: concepts.SHA256, ManifestGeneration: 30, ConsumedBootstrapGuidance: consumed, CreatedAt: f.clock}
 	work := profileruntime.Work{UserID: f.user, ProjectID: f.project, Kind: "compile", Revision: state.Revision, ID: manifest.GenerationID, Due: f.clock}
-	_, stateRef := f.repo.profileRefs(f.user, f.project)
 	if err = f.repo.client.RunTransaction(f.ctx, func(ctx context.Context, tx *firestore.Transaction) error {
 		if err := tx.Create(stateRef.Collection(profileruntime.CompileReceiptsCollection).Doc(work.ID), receipt); err != nil {
 			return err
@@ -138,5 +185,11 @@ func TestProfileRuntimeConnectedBootstrapFirstCompile(t *testing.T) {
 	}
 	if guidance.CompileGuidance != "Preserve explicit venue details." {
 		t.Fatalf("consumed guidance not preserved: %+v", guidance)
+	}
+	mu.Lock()
+	legacyBytes := string(objects[prefix+"raw/source.md"].data)
+	mu.Unlock()
+	if reads[prefix+"raw/source.md"] != 0 || legacyBytes != "mutable legacy source" {
+		t.Fatalf("legacy mutable source was read or changed: reads=%d bytes=%q", reads[prefix+"raw/source.md"], legacyBytes)
 	}
 }

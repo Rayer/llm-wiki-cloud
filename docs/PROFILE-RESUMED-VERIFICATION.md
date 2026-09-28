@@ -64,7 +64,7 @@ Hard required tags remain HTTP 422; directional geography filtering is not imple
 
 ## Second parent review follow-up (2026-09-27; review still open)
 
-The parent identified that the prior F3–F5 fixes were incomplete and separately narrowed F2 exhaustion behavior. These findings supersede any broader closure statements above. The current source edits are not yet committed or pushed; PR #58 still points at `d1bb90785b443e991393291afba845cb255a8e86` until the updated candidate passes the required local gates and parent review.
+The parent identified that the prior F3–F5 fixes were incomplete and separately narrowed F2 exhaustion behavior. These findings supersede any broader closure statements above. The follow-up source edits are committed and pushed as `18e5086f4275b576f14a80e0ff40d1cec37f40d9` (`fix(profile): repair follow-up review findings`); PR #58 points at that head and remains open, non-draft, and unmerged. The commit includes the F3/F5 fixes, Swagger regeneration, and F2/F4 diagnostic regressions described below.
 
 - **F3, data-loss correction:** The stable empty-row ID was also used as the placeholder test after the row had become real. Editing or clearing it after adding a sibling could drop the other rows. The branch now treats that ID as a placeholder only when `requirements.length === 0`; component regressions cover first-character focus identity, editing the first of two rows, and clearing it while preserving its sibling. Targeted tests and the full Profile component file passed.
 - **F4, legacy evidence reproduced; policy decision pending:** The local tagging fixture was faithfully reduced to a pre-Profile manifest by removing `source_snapshot_digest` and its archived source-snapshot/content-addressed-byte objects while leaving mutable `raw/source.md` available. `readProfileTagInventory` rejects that generation and does not read the mutable raw path, so a confirmed manual candidate on such a generation cannot receive exact source coverage. The prior happy-path test used a new-format fixture and does not close this issue. The proposed safe behavior is bootstrap-first only when no Profile is active and the existing generation lacks an immutable source snapshot: require owner confirmation of generation-free guidance, then promote that exact consumed ref only after a subsequent successful publish supplies new immutable snapshot evidence. This leaves the old corpus unprofiled until a new publish and performs no migration or mutable-source fallback. Parent decision is pending on ask `msg_e4f37b224750`; next check is a reply approving that compatibility behavior or specifying another policy.
@@ -79,4 +79,39 @@ The parent identified that the prior F3–F5 fixes were incomplete and separatel
 - Logs are retained at `/Users/rayer/.hermes/profiles/chatgpt/artifacts/lwc301-resumed/rereview-{make-test,lint,typecheck,vet,build}.log`.
 - After renaming the shared requirement disposition label and making the active-retention test invoke the actual Save transition, the full `make test`, lint, typecheck, vet, build, targeted tests, and `git diff --check` were rerun and passed again. Latest logs are `/Users/rayer/.hermes/profiles/chatgpt/artifacts/lwc301-resumed/rereview2-{make-test,lint,typecheck,vet,build}.log`.
 
-No deployed cloud, scheduler, IAM, secret, or live-provider work was performed. PR remains unmerged and undeployed while source tests, full local gates, parent review, and policy decisions remain open.
+No deployed cloud, scheduler, IAM, secret, or live-provider work was performed. PR #58 is open, non-draft, unmerged, and undeployed at `18e5086f4275b576f14a80e0ff40d1cec37f40d9`. Full local gates pass; parent review and the F4 compatibility and F2 compile-exhaustion policy dispositions remain open.
+
+## F2/F4 source follow-up (2026-09-28; parent review pending)
+
+On baseline `18e5086f4275b576f14a80e0ff40d1cec37f40d9`, implemented the approved F2/F4 source fixes and focused regressions. An existing no-snapshot generation now enters generation-free bootstrap only when no Active Profile exists; the confirmed bootstrap ref remains pinned to the next successful compile, whose retained generation must pass immutable source-inventory validation before candidate creation. Compile runtime exhaustion now exposes the existing failed/error-code shape, preserves Active, and reuses the existing derivation retry route to requeue the same successful receipt/work identity idempotently; stale receipts and newer Profile revisions do not overwrite current state. The Project Profile panel exposes the exhaustion and retry action.
+
+Focused results: backend profilederive and handler regressions PASS on loopback Firestore (`TestExecutorBootstrapsBeforeLegacyGenerationWithoutSnapshot`, `TestExecutorDerivesManualArtifactsFromOnePinnedEmptyConceptSnapshot`, `TestProfileRuntimeConnectedBootstrapFirstCompile`, `TestProfileRuntimeCompileExhaustionIsVisibleAndRetryable`, `TestProfileRuntimeCompileExhaustionIgnoresStaleReceipt`, `TestProfileRuntimeSupersededCompileRetryClearsOnlyMatchingState`); Project Profile component tests PASS (29); targeted ESLint, frontend typecheck, targeted Go vet, and `git diff --check` PASS. Existing full-suite logs from the baseline were reviewed and not rerun for this follow-up. Detailed commands and results: `/Users/rayer/.hermes/profiles/chatgpt/artifacts/lwc209-f2f4-followup/report.md`.
+
+Before source edits, the pre-existing dirty verification report and `scripts/__pycache__/` were archived to `/Users/rayer/.hermes/profiles/chatgpt/artifacts/lwc209-f2f4-followup/pre-edit-dirty-files.tar.gz` (SHA-256 `01c7e0346fc16a596a3ada56b1e263e987fd45d47d046a141f748e1a1fc0fb90`). The prior report text and unrelated untracked files remain preserved. No commit, push, merge, deploy, or cloud mutation was performed; parent source review remains outstanding.
+
+Exact review diffs: source-only `/Users/rayer/.hermes/profiles/chatgpt/artifacts/lwc209-f2f4-followup/source-changes.diff` (SHA-256 `213825cf4601fc5e6016f2ad51240d474ec04cbe693bbe5db76214dce88282cd`); tracked worktree `/Users/rayer/.hermes/profiles/chatgpt/artifacts/lwc209-f2f4-followup/tracked-worktree.diff`.
+
+
+## F2 retained activated-candidate retry follow-up (2026-09-28)
+
+The parent review found that exhaustion and retry rejected every nonnil Candidate, including the Candidate retained by an already activated Profile. Both guards now reject only a Candidate whose ID is not the Active Candidate ID. Compile reconciliation recognizes only its matching pending retry marker, while the existing independent manual-candidate activation guard remains in force.
+
+The connected emulator regression uses the real revision-2 retained Candidate and Active plus a valid revision-2 compile receipt. It exhausts the final attempt before generation validation/reconcile creation, checks the visible runtime error and unchanged Active/Candidate, retries the same receipt/work idempotently, restores the local fake generation store, and verifies reconcile status `candidate_ready`, compile-auto Candidate creation, tagging completion, and Active promotion. A separate regression verifies that an unactivated manual Candidate blocks both exhaustion-state mutation and retry; existing stale receipt and newer-revision tests remain in the focused run.
+
+Focused command:
+
+```sh
+cd apps/bff
+FIRESTORE_EMULATOR_HOST=127.0.0.1:8585 go test ./internal/handler/v1 -run 'TestProfileRuntimeConnectedManualThenCompileTagging|TestProfileRuntimeCompileExhaustionIsVisibleAndRetryable|TestProfileRuntimeCompileExhaustionIgnoresStaleReceipt|TestProfileRuntimeCompileExhaustionPreservesUnactivatedCandidate|TestProfileRuntimeSupersededCompileRetryClearsOnlyMatchingState' -count=1 -v
+```
+
+Result: PASS (all five selected tests; loopback Firestore emulator and local fake GCS/provider). The exact output is at `/Users/rayer/.hermes/profiles/chatgpt/artifacts/lwc209-f2f4-followup/f2-focused-handler.log`. The corrected regression fails against the original all-Candidate guard at the exhausted Profile-state assertion; red evidence is at `/Users/rayer/.hermes/profiles/chatgpt/artifacts/lwc209-f2f4-followup/f2-retained-candidate-red-check.log`. `git diff --check` passes. No full suite was rerun.
+
+No commit, push, merge, cloud mutation, or deployment was performed. Parent review remains open.
+
+
+## Dual F1/F2 focused regression correction (2026-09-28)
+
+The connected test now preserves both reviewed scenarios as separately named subtests sharing the same local fixture. `old-revision-receipt-reconciles-newer-confirmed-intent` restores the original generation-2 receipt at revision 1 with its pinned bootstrap evidence, then verifies the receipt remains unchanged while reconciliation creates a candidate for the newer confirmed revision-2 requirements and tags it active. `retained-candidate-exhaustion-retries-through-activation` uses a new generation-3 revision-2 receipt, exhausts before reconcile creation while its activated Candidate remains retained beside Active, and verifies same-work idempotent retry through candidate-ready reconciliation and tag activation.
+
+The focused handler command in the preceding section passes with both subtests, plus exhausted-retry visibility, stale receipt, independent pending-candidate, and superseded-retry regressions. Updated output: `/Users/rayer/.hermes/profiles/chatgpt/artifacts/lwc209-f2f4-followup/f2-dual-scenarios-focused.log`. `git diff --check` passes. The full suite was not rerun.

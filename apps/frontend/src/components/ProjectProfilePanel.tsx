@@ -688,7 +688,10 @@ export function ProjectProfilePanel({ projectId }: { projectId: string }) {
           {visibleProfile.derivation_status === 'failed' ? (
             <div className="mt-3 flex flex-wrap items-center gap-3" role="status">
               <p className="text-sm text-red-200">
-                Preview generation failed{visibleProfile.derivation_error_code ? ` (${visibleProfile.derivation_error_code})` : ''}.
+                {visibleProfile.derivation_error_code === 'runtime_retry_exhausted'
+                  ? 'Profile runtime work exhausted its automatic retries'
+                  : 'Preview generation failed'}
+                {visibleProfile.derivation_error_code ? ` (${visibleProfile.derivation_error_code})` : ''}.
               </p>
               <button
                 type="button"
@@ -696,7 +699,7 @@ export function ProjectProfilePanel({ projectId }: { projectId: string }) {
                 onClick={() => void retryDerivation()}
                 className="min-h-10 rounded-md border border-white/10 px-3 text-sm text-zinc-200 hover:bg-white/5 disabled:opacity-50"
               >
-                Retry preview generation
+                {visibleProfile.derivation_error_code === 'runtime_retry_exhausted' ? 'Retry Profile work' : 'Retry preview generation'}
               </button>
             </div>
           ) : null}

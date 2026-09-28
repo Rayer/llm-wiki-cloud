@@ -395,7 +395,7 @@ func TestProfileRuntimeFinalTagExhaustionIsVisible(t *testing.T) {
 	}
 }
 
-func TestProfileRuntimeCompileExhaustionHasNoProfileStateRecoverySignal(t *testing.T) {
+func TestProfileRuntimeCompileExhaustionIsVisibleAndRetryable(t *testing.T) {
 	f := newRuntimeFixture(t)
 	requirements := []ProfileRequirement{{ID: "r1", Text: "write concisely"}}
 	digest := profileRequirementsDigest(requirements)
@@ -404,9 +404,14 @@ func TestProfileRuntimeCompileExhaustionHasNoProfileStateRecoverySignal(t *testi
 		Status: profileBootstrapConfirmed, ModelVersion: "model-v1", PromptVersion: "bootstrap-v1",
 		SchemaVersion: "profile.bootstrap-guidance.v1", ConfirmedAt: stringPtr(f.clock.Format(time.RFC3339Nano)),
 	}
+	active := ProfileActive{
+		CandidateID: "active-candidate", ContentGeneration: "active-generation",
+		DictionaryRevision: strings.Repeat("d", 64), TagSetRevision: strings.Repeat("e", 64),
+		QueryRuleRevision: strings.Repeat("f", 64), GuidanceRevision: strings.Repeat("a", 64),
+	}
 	state := ProfileState{
 		ProjectID: f.project, Revision: 1, Requirements: requirements,
-		DerivationStatus: stringPtr(profileDerivationReady), BootstrapGuidance: bootstrap,
+		DerivationStatus: stringPtr(profileDerivationReady), BootstrapGuidance: bootstrap, Active: &active,
 	}
 	_, stateRef := f.repo.profileRefs(f.user, f.project)
 	if _, err := stateRef.Set(f.ctx, state); err != nil {
@@ -439,8 +444,141 @@ func TestProfileRuntimeCompileExhaustionHasNoProfileStateRecoverySignal(t *testi
 		t.Fatal(err)
 	}
 	if work.Pending || work.Status != "exhausted" || current.Revision != state.Revision || current.DerivationStatus == nil ||
-		*current.DerivationStatus != profileDerivationReady || current.DerivationErrorCode != nil || current.Candidate != nil || current.Job != nil {
+		*current.DerivationStatus != profileDerivationFailed || current.DerivationErrorCode == nil || *current.DerivationErrorCode != "runtime_retry_exhausted" ||
+		current.CompileRetryGeneration != work.ID || current.Candidate != nil || current.Job != nil || current.Active == nil || *current.Active != active {
 		t.Fatalf("compile exhaustion evidence: work=%+v Profile=%+v", work, current)
+	}
+
+	retried, err := f.repo.RetryProfileDerivation(f.ctx, f.user, f.project, state.Revision)
+	if err != nil || retried.DerivationStatus == nil || *retried.DerivationStatus != profileDerivationPending || retried.DerivationErrorCode != nil || retried.Active == nil || *retried.Active != active {
+		t.Fatalf("compile retry was not visible and active-preserving: state=%+v err=%v", retried, err)
+	}
+	firstRetryWork := f.work(t, workRef)
+	if !firstRetryWork.Pending || firstRetryWork.Status != "pending" || firstRetryWork.Attempts != 0 || firstRetryWork.ID != work.ID {
+		t.Fatalf("compile retry did not requeue the successful receipt idempotently: %+v", firstRetryWork)
+	}
+	retriedAgain, err := f.repo.RetryProfileDerivation(f.ctx, f.user, f.project, state.Revision)
+	if err != nil || retriedAgain.ScheduledFor == nil || *retriedAgain.ScheduledFor != *retried.ScheduledFor {
+		t.Fatalf("repeated compile retry changed its schedule: state=%+v err=%v", retriedAgain, err)
+	}
+	secondRetryWork := f.work(t, workRef)
+	if secondRetryWork.Attempts != firstRetryWork.Attempts || !secondRetryWork.Due.Equal(firstRetryWork.Due) || secondRetryWork.Status != firstRetryWork.Status {
+		t.Fatalf("repeated compile retry duplicated queue work: first=%+v second=%+v", firstRetryWork, secondRetryWork)
+	}
+	f.request(t, "POST", "synthetic-valid-token", 200, 1)
+	secondRetryWork = f.work(t, workRef)
+	current, err = f.repo.GetProfile(f.ctx, f.user, f.project)
+	if err != nil || !secondRetryWork.Pending || secondRetryWork.Status != "retry_wait" || secondRetryWork.Attempts != 1 || current.Active == nil || *current.Active != active {
+		t.Fatalf("explicit retry did not re-enter bounded runtime work: work=%+v state=%+v err=%v", secondRetryWork, current, err)
+	}
+	if _, err = f.repo.SaveProfile(f.ctx, f.user, f.project, state.Revision, []ProfileRequirement{{ID: "r1", Text: "new revision"}}); err != nil {
+		t.Fatal(err)
+	}
+	if _, err = f.repo.RetryProfileDerivation(f.ctx, f.user, f.project, state.Revision); err == nil {
+		t.Fatal("stale Profile revision retried an exhausted compile receipt")
+	}
+	if current, err = f.repo.GetProfile(f.ctx, f.user, f.project); err != nil || current.CompileRetryGeneration != "" || current.Active == nil || *current.Active != active {
+		t.Fatalf("new Profile revision retained stale compile retry state: state=%+v err=%v", current, err)
+	}
+}
+
+func TestProfileRuntimeCompileExhaustionIgnoresStaleReceipt(t *testing.T) {
+	f := newRuntimeFixture(t)
+	requirements := []ProfileRequirement{{ID: "r1", Text: "write concisely"}}
+	digest := profileRequirementsDigest(requirements)
+	active := ProfileActive{CandidateID: "active-candidate", ContentGeneration: "active-generation", DictionaryRevision: strings.Repeat("d", 64), TagSetRevision: strings.Repeat("e", 64), QueryRuleRevision: strings.Repeat("f", 64), GuidanceRevision: strings.Repeat("a", 64)}
+	state := ProfileState{ProjectID: f.project, Revision: 1, Requirements: requirements, DerivationStatus: stringPtr(profileDerivationReady), Active: &active}
+	_, stateRef := f.repo.profileRefs(f.user, f.project)
+	if _, err := stateRef.Set(f.ctx, state); err != nil {
+		t.Fatal(err)
+	}
+	work := profileruntime.Work{UserID: f.user, ProjectID: f.project, Kind: "compile", Revision: state.Revision, ID: "stale-generation", Due: f.clock.Add(-time.Second), Pending: true, Attempts: profileruntime.MaxAttempts, Status: "retry_wait"}
+	workRef := f.repo.client.Collection(profileruntime.WorkCollection).Doc(profileruntime.WorkID(work))
+	if _, err := workRef.Set(f.ctx, work); err != nil {
+		t.Fatal(err)
+	}
+	receipt := profileruntime.CompileReceipt{UserID: f.user, ProjectID: f.project, ExecutionID: "stale-compile", ProfileRevision: state.Revision - 1, RequirementsDigest: digest, ContentGeneration: work.ID, ManifestSHA256: strings.Repeat("a", 64), CanonicalConceptsDigest: strings.Repeat("b", 64), ManifestGeneration: 42, CreatedAt: f.clock}
+	if _, err := stateRef.Collection(profileruntime.CompileReceiptsCollection).Doc(work.ID).Set(f.ctx, receipt); err != nil {
+		t.Fatal(err)
+	}
+	if _, claimed, err := f.dispatcher.claim(f.ctx, f.repo, workRef); err != nil || claimed {
+		t.Fatalf("stale compile work claim = %v, %v", claimed, err)
+	}
+	work = f.work(t, workRef)
+	current, err := f.repo.GetProfile(f.ctx, f.user, f.project)
+	if err != nil || work.Pending || work.Status != "exhausted" || current.DerivationStatus == nil || *current.DerivationStatus != profileDerivationReady || current.DerivationErrorCode != nil || current.CompileRetryGeneration != "" || current.Active == nil || *current.Active != active {
+		t.Fatalf("stale receipt changed Profile state: work=%+v state=%+v err=%v", work, current, err)
+	}
+}
+
+func TestProfileRuntimeCompileExhaustionPreservesUnactivatedCandidate(t *testing.T) {
+	f := newRuntimeFixture(t)
+	requirements := []ProfileRequirement{{ID: "r1", Text: "write concisely"}}
+	digest := profileRequirementsDigest(requirements)
+	active := ProfileActive{CandidateID: "active-candidate", ContentGeneration: "active-generation", DictionaryRevision: strings.Repeat("d", 64), TagSetRevision: strings.Repeat("e", 64), QueryRuleRevision: strings.Repeat("f", 64), GuidanceRevision: strings.Repeat("a", 64)}
+	candidate := ProfileCandidate{CandidateID: "pending-candidate", Source: "manual", BaseRevision: 1, RequirementsDigest: digest, ContentGeneration: "active-generation"}
+	state := ProfileState{ProjectID: f.project, Revision: 1, Requirements: requirements, DerivationStatus: stringPtr(profileDerivationReady), Candidate: &candidate, Active: &active}
+	_, stateRef := f.repo.profileRefs(f.user, f.project)
+	if _, err := stateRef.Set(f.ctx, state); err != nil {
+		t.Fatal(err)
+	}
+	work := profileruntime.Work{UserID: f.user, ProjectID: f.project, Kind: "compile", Revision: state.Revision, ID: "generation-pending-candidate", Due: f.clock, Status: "exhausted"}
+	workRef := f.repo.client.Collection(profileruntime.WorkCollection).Doc(profileruntime.WorkID(work))
+	if _, err := workRef.Set(f.ctx, work); err != nil {
+		t.Fatal(err)
+	}
+	receipt := profileruntime.CompileReceipt{UserID: f.user, ProjectID: f.project, ExecutionID: "synthetic-compile", ProfileRevision: state.Revision, RequirementsDigest: digest, ContentGeneration: work.ID, ManifestSHA256: strings.Repeat("a", 64), CanonicalConceptsDigest: strings.Repeat("b", 64), ManifestGeneration: 42, CreatedAt: f.clock}
+	if _, err := stateRef.Collection(profileruntime.CompileReceiptsCollection).Doc(work.ID).Set(f.ctx, receipt); err != nil {
+		t.Fatal(err)
+	}
+	if err := f.repo.client.RunTransaction(f.ctx, func(ctx context.Context, tx *firestore.Transaction) error {
+		return markProfileRuntimeExhausted(ctx, tx, f.repo, work)
+	}); err != nil {
+		t.Fatal(err)
+	}
+	current, err := f.repo.GetProfile(f.ctx, f.user, f.project)
+	if err != nil || current.DerivationStatus == nil || *current.DerivationStatus != profileDerivationReady || current.DerivationErrorCode != nil || current.CompileRetryGeneration != "" || current.Candidate == nil || current.Candidate.CandidateID != candidate.CandidateID || current.Active == nil || *current.Active != active {
+		t.Fatalf("exhaustion replaced a pending candidate or Active: state=%+v err=%v", current, err)
+	}
+
+	// Even if a stale exhaustion marker exists, retry must not proceed while an
+	// independent manual candidate is still awaiting activation.
+	state.DerivationStatus = stringPtr(profileDerivationFailed)
+	state.DerivationErrorCode = stringPtr("runtime_retry_exhausted")
+	state.CompileRetryGeneration = work.ID
+	if _, err := stateRef.Set(f.ctx, state); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := f.repo.RetryProfileDerivation(f.ctx, f.user, f.project, state.Revision); err == nil {
+		t.Fatal("compile retry proceeded with an unactivated manual candidate")
+	}
+	current, err = f.repo.GetProfile(f.ctx, f.user, f.project)
+	if err != nil || current.DerivationStatus == nil || *current.DerivationStatus != profileDerivationFailed || current.CompileRetryGeneration != work.ID || current.Candidate == nil || current.Candidate.CandidateID != candidate.CandidateID || current.Active == nil || *current.Active != active {
+		t.Fatalf("rejected retry changed pending candidate or Active: state=%+v err=%v", current, err)
+	}
+}
+
+func TestProfileRuntimeSupersededCompileRetryClearsOnlyMatchingState(t *testing.T) {
+	f := newRuntimeFixture(t)
+	requirements := []ProfileRequirement{{ID: "r1", Text: "write concisely"}}
+	active := ProfileActive{CandidateID: "active-candidate", ContentGeneration: "active-generation", DictionaryRevision: strings.Repeat("d", 64), TagSetRevision: strings.Repeat("e", 64), QueryRuleRevision: strings.Repeat("f", 64), GuidanceRevision: strings.Repeat("a", 64)}
+	state := ProfileState{ProjectID: f.project, Revision: 1, Requirements: requirements, DerivationStatus: stringPtr(profileDerivationPending), Active: &active, CompileRetryGeneration: "stale-generation"}
+	_, stateRef := f.repo.profileRefs(f.user, f.project)
+	if _, err := stateRef.Set(f.ctx, state); err != nil {
+		t.Fatal(err)
+	}
+	work := profileruntime.Work{UserID: f.user, ProjectID: f.project, Kind: "compile", Revision: state.Revision, ID: state.CompileRetryGeneration, Due: f.clock, Pending: true, Attempts: 1, Token: "lease", LeaseUntil: f.clock.Add(time.Minute), Status: "running"}
+	workRef := f.repo.client.Collection(profileruntime.WorkCollection).Doc(profileruntime.WorkID(work))
+	if _, err := workRef.Set(f.ctx, work); err != nil {
+		t.Fatal(err)
+	}
+	if err := f.dispatcher.finish(f.ctx, f.repo, workRef, work, errProfileCandidateNotCurrent); err != nil {
+		t.Fatal(err)
+	}
+	work = f.work(t, workRef)
+	current, err := f.repo.GetProfile(f.ctx, f.user, f.project)
+	if err != nil || work.Pending || work.Status != "superseded" || current.DerivationStatus == nil || *current.DerivationStatus != profileDerivationReady || current.CompileRetryGeneration != "" || current.Active == nil || *current.Active != active {
+		t.Fatalf("superseded compile receipt changed or stranded Profile state: work=%+v state=%+v err=%v", work, current, err)
 	}
 }
 

@@ -16,6 +16,8 @@ import (
 	"github.com/rayer/llm-wiki-bff/internal/profiletags"
 	"google.golang.org/api/idtoken"
 	"google.golang.org/api/iterator"
+	"google.golang.org/grpc/codes"
+	"google.golang.org/grpc/status"
 )
 
 type profileRuntimeLeaseKey struct{}
@@ -216,6 +218,11 @@ func (d *ProfileDispatcher) finish(ctx context.Context, repo *firestoreProfileRe
 			w.Pending = false
 			w.Status = "complete"
 		} else if errors.As(cause, &conflict) || errors.Is(cause, errProfileCandidateNotCurrent) || errors.Is(cause, errProfileProjectNotFound) {
+			if w.Kind == "compile" {
+				if err := clearSupersededProfileCompileRetry(ctx, tx, repo, w); err != nil {
+					return err
+				}
+			}
 			w.Pending = false
 			w.Status = "superseded"
 		} else if w.Attempts >= profileruntime.MaxAttempts {
@@ -243,8 +250,10 @@ func (d *ProfileDispatcher) execute(ctx context.Context, repo *firestoreProfileR
 		if state.Revision < w.Revision {
 			return &profileRevisionConflict{Latest: state.Revision}
 		}
-		if state.DerivationStatus != nil && (*state.DerivationStatus == profileDerivationPending || *state.DerivationStatus == profileDerivationFailed) {
-			return errProfileRuntimeWaiting
+		if state.DerivationStatus != nil {
+			if *state.DerivationStatus == profileDerivationPending && state.CompileRetryGeneration != w.ID || *state.DerivationStatus == profileDerivationFailed {
+				return errProfileRuntimeWaiting
+			}
 		}
 		if c := state.Candidate; c != nil && c.Source == "manual" && (state.Active == nil || state.Active.CandidateID != c.CandidateID) {
 			return errProfileRuntimeWaiting
@@ -388,8 +397,11 @@ func (d *ProfileDispatcher) executeCompile(ctx context.Context, repo *firestoreP
 // An abandoned final execution must leave a visible terminal failure, not a
 // permanently running UI state, while preserving all active references.
 func markProfileRuntimeExhausted(ctx context.Context, tx *firestore.Transaction, repo *firestoreProfileRepository, w profileruntime.Work) error {
-	if !validProfileRuntimeIdentity(w) || w.Kind == "compile" {
+	if !validProfileRuntimeIdentity(w) {
 		return nil
+	}
+	if w.Kind == "compile" {
+		return markProfileCompileRuntimeExhausted(ctx, tx, repo, w)
 	}
 	_, stateRef, err := repo.authorizeTransaction(ctx, tx, w.UserID, w.ProjectID, ProjectEdit)
 	if errors.Is(err, errProfileProjectNotFound) {
@@ -455,5 +467,63 @@ func markProfileRuntimeExhausted(ctx context.Context, tx *firestore.Transaction,
 			return err
 		}
 	}
+	return setProfileState(tx, stateRef, state)
+}
+
+func markProfileCompileRuntimeExhausted(ctx context.Context, tx *firestore.Transaction, repo *firestoreProfileRepository, w profileruntime.Work) error {
+	_, stateRef, err := repo.authorizeTransaction(ctx, tx, w.UserID, w.ProjectID, ProjectEdit)
+	if errors.Is(err, errProfileProjectNotFound) {
+		return nil
+	}
+	if err != nil {
+		return err
+	}
+	state, err := readProfileState(ctx, tx, stateRef, w.ProjectID)
+	if err != nil {
+		return err
+	}
+	if state.Revision != w.Revision || len(state.Requirements) == 0 || hasUnactivatedProfileCandidate(state) {
+		return nil
+	}
+	receiptSnapshot, err := tx.Get(stateRef.Collection(profileruntime.CompileReceiptsCollection).Doc(w.ID))
+	if status.Code(err) == codes.NotFound {
+		return nil
+	}
+	if err != nil {
+		return err
+	}
+	var receipt profileruntime.CompileReceipt
+	if err := receiptSnapshot.DataTo(&receipt); err != nil || receipt.UserID != w.UserID || receipt.ProjectID != w.ProjectID ||
+		receipt.ProfileRevision != w.Revision || receipt.ContentGeneration != w.ID ||
+		receipt.RequirementsDigest != profileRequirementsDigest(state.Requirements) ||
+		!isLowerProfileDigest(receipt.ManifestSHA256) || !isLowerProfileDigest(receipt.CanonicalConceptsDigest) {
+		return nil
+	}
+	state.DerivationStatus = stringPtr(profileDerivationFailed)
+	state.ScheduledFor = nil
+	state.DerivationErrorCode = stringPtr("runtime_retry_exhausted")
+	state.CompileRetryGeneration = w.ID
+	return setProfileState(tx, stateRef, state)
+}
+
+func clearSupersededProfileCompileRetry(ctx context.Context, tx *firestore.Transaction, repo *firestoreProfileRepository, w profileruntime.Work) error {
+	_, stateRef, err := repo.authorizeTransaction(ctx, tx, w.UserID, w.ProjectID, ProjectEdit)
+	if errors.Is(err, errProfileProjectNotFound) {
+		return nil
+	}
+	if err != nil {
+		return err
+	}
+	state, err := readProfileState(ctx, tx, stateRef, w.ProjectID)
+	if err != nil {
+		return err
+	}
+	if state.Revision != w.Revision || state.CompileRetryGeneration != w.ID || state.DerivationStatus == nil || *state.DerivationStatus != profileDerivationPending {
+		return nil
+	}
+	state.DerivationStatus = stringPtr(profileDerivationReady)
+	state.ScheduledFor = nil
+	state.DerivationErrorCode = nil
+	state.CompileRetryGeneration = ""
 	return setProfileState(tx, stateRef, state)
 }
