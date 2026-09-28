@@ -111,9 +111,15 @@ func TestProductionRouterKeepsAuthCompatibilityLane(t *testing.T) {
 		{http.MethodGet, "/api/v1/exports"},
 		{http.MethodGet, "/api/v1/exports/:exportID/status"},
 		{http.MethodPost, "/api/v1/exports/:exportID/download"},
+		{http.MethodGet, "/api/v1/projects/:pid/profile"},
+		{http.MethodPut, "/api/v1/projects/:pid/profile"},
+		{http.MethodPost, "/api/v1/projects/:pid/profile/candidates/:candidateID/confirm"},
+		{http.MethodPost, "/api/v1/projects/:pid/profile/candidates/:candidateID/retry"},
+		{http.MethodPost, "/api/v1/projects/:pid/profile/derivation/retry"},
+		{http.MethodGet, "/api/v1/projects/:pid/profile/jobs/:jobID"},
 	} {
 		if !hasRoute(router, route.method, route.path) {
-			t.Fatalf("BFF router is missing export route %s %s", route.method, route.path)
+			t.Fatalf("BFF production router is missing %s %s", route.method, route.path)
 		}
 	}
 	if got := serveGet(router, "/api/v1/query/config").Code; got != http.StatusServiceUnavailable {

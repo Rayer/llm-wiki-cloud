@@ -149,6 +149,91 @@ export class ApiError extends Error {
   }
 }
 
+export type ProfileRequirement = { id: string; text: string };
+export type ProfileDerivedRef = {
+  revision: string;
+  input_digest: string;
+  model_version: string;
+  prompt_version: string;
+  schema_version: string;
+};
+export type ProfileRequirementAccounting = {
+  id: string;
+  disposition: 'compile_guidance' | 'dictionary_or_query' | 'both' | 'limitation';
+  explanation: string;
+};
+export type ProfileCandidate = {
+  candidate_id: string;
+  source: 'manual' | 'compile_auto';
+  base_revision: number;
+  requirements_digest: string;
+  content_generation: string;
+  dictionary: ProfileDerivedRef;
+  guidance: ProfileDerivedRef;
+  preview: { dictionary_diff: string; guidance_diff: string; requirements: ProfileRequirementAccounting[] };
+};
+export type ProfileJob = {
+  job_id: string;
+  candidate_id: string;
+  content_generation: string;
+  status: 'scheduled' | 'running' | 'retry_wait' | 'incomplete' | 'ready' | 'superseded';
+  missing_count: number;
+  error_code: string | null;
+};
+export type ProfileActive = {
+  candidate_id: string;
+  content_generation: string;
+  dictionary_revision: string;
+  tag_set_revision: string;
+  query_rule_revision: string;
+  guidance_revision: string;
+};
+export type ProfileState = {
+  project_id: string;
+  revision: number;
+  requirements: ProfileRequirement[];
+  derivation_status: 'pending' | 'ready' | 'failed' | 'superseded' | null;
+  scheduled_for: string | null;
+  derivation_error_code: string | null;
+  candidate: ProfileCandidate | null;
+  confirmed_candidate_id: string | null;
+  active: ProfileActive | null;
+  job: ProfileJob | null;
+};
+export type ProfileBootstrapRequirement = ProfileRequirementAccounting;
+export type ProfileBootstrapGuidance = {
+  revision: string;
+  input_digest: string;
+  profile_revision: number;
+  status: 'preview_ready' | 'confirmed';
+  model_version: string;
+  prompt_version: string;
+  schema_version: string;
+  confirmed_at: string | null;
+  preview: {
+    guidance_diff: string;
+    requirements: ProfileBootstrapRequirement[];
+  };
+};
+export type ProfileBootstrapGuidanceResponse = {
+  bootstrap_guidance: ProfileBootstrapGuidance | null;
+};
+export type ProfileGuidanceArtifact = {
+  revision: string;
+  input_digest: string;
+  model_version: string;
+  prompt_version: string;
+  schema_version: string;
+  compile_guidance: string;
+};
+export type ProfileGuidanceArtifactResponse = {
+  guidance_artifact: ProfileGuidanceArtifact;
+};
+export type RecompileAllCapability = {
+  allowed: boolean;
+  denial_code?: string;
+};
+
 const LAST_PROJECT_KEY = 'llm-wiki-last-project';
 
 type ApiAuthConfig = {
@@ -332,6 +417,142 @@ async function postJson<T>(path: string, body: unknown): Promise<T> {
   }
 
   return response.json() as Promise<T>;
+}
+
+function profilePathSegment(value: string): string {
+  let decoded: string;
+  try {
+    decoded = decodeURIComponent(value);
+  } catch {
+    throw new Error('Invalid project ID.');
+  }
+  if (!safeWikiRouteSegment(value) || !safeWikiRouteSegment(decoded)) {
+    throw new Error('Invalid project ID.');
+  }
+  return encodeURIComponent(value);
+}
+
+function profileApiError(payload: unknown, fallback: string): string {
+  if (!isRecord(payload)) return fallback;
+  return asString(payload.error) ?? asString(payload.message) ?? asString(payload.detail) ?? fallback;
+}
+
+async function profileRequest<T>(projectId: string, suffix = '', options: {
+  method?: string;
+  body?: unknown;
+} = {}): Promise<T> {
+  const safeProjectId = profilePathSegment(projectId);
+  const hasBody = options.body !== undefined;
+  const response = await apiFetch(`/api/v1/projects/${safeProjectId}/profile${suffix}`, {
+    method: options.method,
+    projectId,
+    json: hasBody,
+    body: hasBody ? JSON.stringify(options.body) : undefined,
+  });
+  const payload: unknown = await response.json().catch(() => null);
+  if (!response.ok) {
+    throw new ApiError(profileApiError(payload, `Profile request failed (${response.status})`), response.status);
+  }
+  return payload as T;
+}
+
+export async function getProfile(projectId: string): Promise<ProfileState> {
+  return profileRequest<ProfileState>(projectId);
+}
+
+export async function getProfileBootstrapGuidance(projectId: string): Promise<ProfileBootstrapGuidanceResponse> {
+  return profileRequest<ProfileBootstrapGuidanceResponse>(projectId, '/bootstrap-guidance');
+}
+
+export async function getProfileGuidanceArtifact(projectId: string, revision: string): Promise<ProfileGuidanceArtifactResponse> {
+  return profileRequest<ProfileGuidanceArtifactResponse>(projectId, `/guidance/${profilePathSegment(revision)}`);
+}
+
+export async function confirmProfileBootstrapGuidance(
+  projectId: string,
+  revision: string,
+  expectedRevision: number,
+  inputDigest: string,
+): Promise<ProfileBootstrapGuidanceResponse> {
+  return profileRequest<ProfileBootstrapGuidanceResponse>(projectId, `/bootstrap-guidance/${profilePathSegment(revision)}/confirm`, {
+    method: 'POST',
+    body: { expected_revision: expectedRevision, input_digest: inputDigest },
+  });
+}
+
+export async function saveProfile(
+  projectId: string,
+  expectedRevision: number,
+  requirements: ProfileRequirement[],
+): Promise<ProfileState> {
+  return profileRequest<ProfileState>(projectId, '', {
+    method: 'PUT',
+    body: { expected_revision: expectedRevision, requirements },
+  });
+}
+
+export async function confirmProfileCandidate(
+  projectId: string,
+  candidateId: string,
+  expectedRevision: number,
+): Promise<ProfileState> {
+  return profileRequest<ProfileState>(projectId, `/candidates/${profilePathSegment(candidateId)}/confirm`, {
+    method: 'POST',
+    body: { expected_revision: expectedRevision },
+  });
+}
+
+export async function retryProfileCandidate(
+  projectId: string,
+  candidateId: string,
+  expectedRevision: number,
+): Promise<ProfileState> {
+  return profileRequest<ProfileState>(projectId, `/candidates/${profilePathSegment(candidateId)}/retry`, {
+    method: 'POST',
+    body: { expected_revision: expectedRevision },
+  });
+}
+
+export async function retryProfileDerivation(
+  projectId: string,
+  expectedRevision: number,
+): Promise<ProfileState> {
+  return profileRequest<ProfileState>(projectId, '/derivation/retry', {
+    method: 'POST',
+    body: { expected_revision: expectedRevision },
+  });
+}
+
+export async function getProfileJob(projectId: string, jobId: string): Promise<ProfileJob> {
+  return profileRequest<ProfileJob>(projectId, `/jobs/${profilePathSegment(jobId)}`);
+}
+
+export async function getRecompileAllCapability(projectId: string): Promise<RecompileAllCapability> {
+  const projectSegment = profilePathSegment(projectId);
+  const response = await apiFetch(`/api/v1/projects/${projectSegment}/recompile-all/capability`, { projectId });
+  const payload: unknown = await response.json().catch(() => null);
+  if (!response.ok) {
+    throw new ApiError(profileApiError(payload, `Recompile capability request failed (${response.status})`), response.status);
+  }
+  if (!isRecord(payload) || typeof payload.allowed !== 'boolean') {
+    throw new ApiError('Invalid recompile capability response', 502);
+  }
+  return {
+    allowed: payload.allowed,
+    ...(asString(payload.denial_code) ? { denial_code: asString(payload.denial_code) } : {}),
+  };
+}
+
+export async function recompileAll(projectId: string): Promise<void> {
+  const projectSegment = profilePathSegment(projectId);
+  const response = await apiFetch(`/api/v1/projects/${projectSegment}/recompile-all`, {
+    method: 'POST',
+    projectId,
+  });
+  if (!response.ok) {
+    const payload: unknown = await response.json().catch(() => null);
+    throw new ApiError(profileApiError(payload, `Recompile all failed (${response.status})`), response.status);
+  }
 }
 
 function isRecord(value: unknown): value is Record<string, unknown> {

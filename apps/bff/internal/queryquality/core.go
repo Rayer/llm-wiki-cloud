@@ -1213,6 +1213,9 @@ func (s *QueryRetrievalPipeline) validate() error {
 }
 
 func (s *QueryRetrievalPipeline) execute(ctx context.Context, reader cache.Reader, request query.Request, trace *Trace) (query.Result, error) {
+	if err := query.ValidateProfileRequest(request); err != nil {
+		return query.Result{}, err
+	}
 	if recorder := query.ReceiptRecorderFromContext(ctx); recorder != nil {
 		recorder.SetRetrievalProfile(s.profile.ID, s.profileDigest)
 		recorder.SetPromptIdentity(s.prompt.ID, s.prompt.TemplateDigest)
@@ -1223,7 +1226,15 @@ func (s *QueryRetrievalPipeline) execute(ctx context.Context, reader cache.Reade
 	if recorder := query.ReceiptRecorderFromContext(ctx); recorder != nil {
 		cacheCtx = recorder.StartStage(ctx, "cache_load", "", "", "")
 	}
-	entries, err := s.cache.All(cacheCtx, reader)
+	var entries []cache.Entry
+	var err error
+	if request.Profile != nil {
+		for _, item := range request.Profile.Corpus.Entries {
+			entries = append(entries, item.Entry)
+		}
+	} else {
+		entries, err = s.cache.All(cacheCtx, reader)
+	}
 	query.FinishStage(cacheCtx, map[bool]string{true: "failure", false: "success"}[err != nil])
 	if err != nil {
 		if errors.Is(err, context.Canceled) || errors.Is(err, context.DeadlineExceeded) {
@@ -1333,6 +1344,12 @@ func (s *QueryRetrievalPipeline) execute(ctx context.Context, reader cache.Reade
 			return query.Result{}, err
 		}
 		return query.Result{}, fmt.Errorf("query-retrieval matching failed: %w", err)
+	}
+	if request.Profile != nil {
+		scores := request.Profile.PreferenceScores()
+		for i := range eligible.Candidates {
+			eligible.Candidates[i].Score += scores[eligible.Candidates[i].Slug]
+		}
 	}
 	appendTraceStage(trace, StageTrace{Name: "matching", Outcome: "success", ElapsedMS: elapsedSince(started), InputCount: len(entries), OutputCount: QualifiedCount(eligible.Candidates), TotalCount: len(eligible.Candidates), Candidates: eligible.Candidates, EvidenceThreshold: resolvedEvidenceThreshold(s.options)})
 	query.FinishStage(matchCtx, "success")

@@ -429,13 +429,20 @@ func (h *Handler) Ready(c *gin.Context) {
 //	@Security		ProjectHeader
 //	@Router			/api/v1/query [post]
 func (h *Handler) Query(c *gin.Context) {
-	gcsClient, err := h.GetGCSClient(c)
+	gcsClient, profileSnapshot, err := h.queryStore(c)
 	if err != nil {
+		if errors.Is(err, errProfileProjectNotFound) {
+			c.JSON(http.StatusNotFound, handler.ErrorResponse{Error: "project not found"})
+			return
+		}
 		c.JSON(http.StatusInternalServerError, handler.ErrorResponse{Error: "generated data unavailable"})
 		return
 	}
 
-	var req handler.QueryRequest
+	var req struct {
+		handler.QueryRequest
+		RequiredTagIDs []string `json:"required_tag_ids"`
+	}
 	if err := c.ShouldBindJSON(&req); err != nil {
 		c.JSON(http.StatusBadRequest, handler.ErrorResponse{Error: "invalid JSON: " + err.Error()})
 		return
@@ -455,8 +462,12 @@ func (h *Handler) Query(c *gin.Context) {
 		c.JSON(http.StatusInternalServerError, handler.ErrorResponse{Error: "generated data unavailable"})
 		return
 	}
-	result, err := executor.Execute(c.Request.Context(), gcsClient, query.Request{Query: queryText, Mode: mode})
+	result, err := executor.Execute(c.Request.Context(), gcsClient, query.Request{Query: queryText, Mode: mode, RequiredTagIDs: req.RequiredTagIDs, Profile: profileSnapshot})
 	if err != nil {
+		if errors.Is(err, query.ErrUnsupportedRequired) {
+			c.JSON(http.StatusUnprocessableEntity, handler.ErrorResponse{Error: "required Profile condition is unsupported"})
+			return
+		}
 		if errors.Is(err, query.ErrCacheNotConfigured) {
 			c.JSON(http.StatusInternalServerError, handler.ErrorResponse{Error: "concept cache is not configured"})
 			return

@@ -33,8 +33,10 @@ var ErrCacheNotConfigured = errors.New("concept cache is not configured")
 
 // Request is the application input for one query.
 type Request struct {
-	Query string
-	Mode  string
+	Query          string
+	Mode           string
+	RequiredTagIDs []string
+	Profile        *ProfileSnapshot
 }
 
 // Result is the application result for one query. Its fields are domain
@@ -168,6 +170,9 @@ func (s *Service) ModelIdentity() (llm.ModelIdentity, bool) {
 
 // Execute runs the production query pipeline.
 func (s *Service) Execute(ctx context.Context, reader cache.Reader, request Request) (Result, error) {
+	if err := ValidateProfileRequest(request); err != nil {
+		return Result{}, err
+	}
 	searchQuery := request.Query
 	var expandResult *llm.ExpandResult
 
@@ -262,7 +267,12 @@ func (s *Service) SynthesizeWithError(ctx context.Context, reader cache.Reader, 
 	if recorder := ReceiptRecorderFromContext(ctx); recorder != nil {
 		synthesisCtx = recorder.StartStage(ctx, "answer_synthesis", "deepseek", s.llm.Model(), string(s.llm.Reasoning()))
 	}
-	contexts, err := s.buildContexts(synthesisCtx, reader, response.Results[:min(10, len(response.Results))], authority)
+	var contexts []string
+	if request.Profile != nil {
+		contexts, err = buildProfileContexts(synthesisCtx, response.Results[:min(10, len(response.Results))], authority, request.Profile)
+	} else {
+		contexts, err = s.buildContexts(synthesisCtx, reader, response.Results[:min(10, len(response.Results))], authority)
+	}
 	if err != nil {
 		FinishStage(synthesisCtx, "failure")
 		return response, err

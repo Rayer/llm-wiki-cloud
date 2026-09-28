@@ -1211,6 +1211,334 @@ const docTemplate = `{
                 }
             }
         },
+        "/api/v1/projects/{pid}/profile/bootstrap-guidance": {
+            "get": {
+                "security": [
+                    {
+                        "DevUserAuth": []
+                    },
+                    {
+                        "ProjectHeader": []
+                    }
+                ],
+                "description": "Returns the current generation-free guidance preview before a Project has an active Profile generation.",
+                "produces": [
+                    "application/json"
+                ],
+                "tags": [
+                    "profile"
+                ],
+                "summary": "Get first-compile Profile guidance preview",
+                "parameters": [
+                    {
+                        "type": "string",
+                        "description": "Project ID",
+                        "name": "pid",
+                        "in": "path",
+                        "required": true
+                    },
+                    {
+                        "type": "string",
+                        "description": "Project ID; must match the URL",
+                        "name": "X-Project-ID",
+                        "in": "header",
+                        "required": true
+                    }
+                ],
+                "responses": {
+                    "200": {
+                        "description": "OK",
+                        "schema": {
+                            "$ref": "#/definitions/v1.profileBootstrapGuidanceResponse"
+                        }
+                    },
+                    "401": {
+                        "description": "Unauthorized",
+                        "schema": {
+                            "$ref": "#/definitions/handler.ErrorResponse"
+                        }
+                    },
+                    "404": {
+                        "description": "Not Found",
+                        "schema": {
+                            "$ref": "#/definitions/handler.ErrorResponse"
+                        }
+                    },
+                    "500": {
+                        "description": "Internal Server Error",
+                        "schema": {
+                            "$ref": "#/definitions/handler.ErrorResponse"
+                        }
+                    }
+                }
+            }
+        },
+        "/api/v1/projects/{pid}/profile/bootstrap-guidance/{revision}/confirm": {
+            "post": {
+                "security": [
+                    {
+                        "DevUserAuth": []
+                    },
+                    {
+                        "ProjectHeader": []
+                    }
+                ],
+                "description": "Confirms the current bootstrap guidance only when its immutable revision, Profile revision, and ordered requirements digest still match.",
+                "consumes": [
+                    "application/json"
+                ],
+                "produces": [
+                    "application/json"
+                ],
+                "tags": [
+                    "profile"
+                ],
+                "summary": "Confirm first-compile Profile guidance",
+                "parameters": [
+                    {
+                        "type": "string",
+                        "description": "Project ID",
+                        "name": "pid",
+                        "in": "path",
+                        "required": true
+                    },
+                    {
+                        "type": "string",
+                        "description": "Immutable bootstrap artifact revision",
+                        "name": "revision",
+                        "in": "path",
+                        "required": true
+                    },
+                    {
+                        "type": "string",
+                        "description": "Project ID; must match the URL",
+                        "name": "X-Project-ID",
+                        "in": "header",
+                        "required": true
+                    },
+                    {
+                        "description": "Current Profile revision and requirements digest",
+                        "name": "request",
+                        "in": "body",
+                        "required": true,
+                        "schema": {
+                            "$ref": "#/definitions/v1.profileBootstrapConfirmRequest"
+                        }
+                    }
+                ],
+                "responses": {
+                    "200": {
+                        "description": "OK",
+                        "schema": {
+                            "$ref": "#/definitions/v1.profileBootstrapGuidanceResponse"
+                        }
+                    },
+                    "400": {
+                        "description": "Bad Request",
+                        "schema": {
+                            "$ref": "#/definitions/handler.ErrorResponse"
+                        }
+                    },
+                    "401": {
+                        "description": "Unauthorized",
+                        "schema": {
+                            "$ref": "#/definitions/handler.ErrorResponse"
+                        }
+                    },
+                    "404": {
+                        "description": "Not Found",
+                        "schema": {
+                            "$ref": "#/definitions/handler.ErrorResponse"
+                        }
+                    },
+                    "409": {
+                        "description": "Conflict",
+                        "schema": {
+                            "$ref": "#/definitions/v1.profileConflictResponse"
+                        }
+                    },
+                    "428": {
+                        "description": "Precondition Required",
+                        "schema": {
+                            "$ref": "#/definitions/handler.ErrorResponse"
+                        }
+                    },
+                    "500": {
+                        "description": "Internal Server Error",
+                        "schema": {
+                            "$ref": "#/definitions/handler.ErrorResponse"
+                        }
+                    }
+                }
+            }
+        },
+        "/api/v1/projects/{pid}/profile/guidance/{revision}": {
+            "get": {
+                "security": [
+                    {
+                        "DevUserAuth": []
+                    },
+                    {
+                        "ProjectHeader": []
+                    }
+                ],
+                "description": "Returns the exact validated guidance text and version metadata for a current bootstrap, candidate, or Active Profile reference.",
+                "produces": [
+                    "application/json"
+                ],
+                "tags": [
+                    "profile"
+                ],
+                "summary": "Get immutable Profile compile guidance",
+                "parameters": [
+                    {
+                        "type": "string",
+                        "description": "Project ID",
+                        "name": "pid",
+                        "in": "path",
+                        "required": true
+                    },
+                    {
+                        "type": "string",
+                        "description": "Immutable guidance artifact revision",
+                        "name": "revision",
+                        "in": "path",
+                        "required": true
+                    },
+                    {
+                        "type": "string",
+                        "description": "Project ID; must match the URL",
+                        "name": "X-Project-ID",
+                        "in": "header",
+                        "required": true
+                    }
+                ],
+                "responses": {
+                    "200": {
+                        "description": "OK",
+                        "schema": {
+                            "$ref": "#/definitions/v1.profileGuidanceArtifactResponse"
+                        }
+                    },
+                    "400": {
+                        "description": "Bad Request",
+                        "schema": {
+                            "$ref": "#/definitions/handler.ErrorResponse"
+                        }
+                    },
+                    "401": {
+                        "description": "Unauthorized",
+                        "schema": {
+                            "$ref": "#/definitions/handler.ErrorResponse"
+                        }
+                    },
+                    "404": {
+                        "description": "Not Found",
+                        "schema": {
+                            "$ref": "#/definitions/handler.ErrorResponse"
+                        }
+                    },
+                    "500": {
+                        "description": "Internal Server Error",
+                        "schema": {
+                            "$ref": "#/definitions/handler.ErrorResponse"
+                        }
+                    }
+                }
+            }
+        },
+        "/api/v1/projects/{pid}/recompile-all": {
+            "post": {
+                "security": [
+                    {
+                        "DevUserAuth": []
+                    },
+                    {
+                        "ProjectHeader": []
+                    }
+                ],
+                "description": "Rejects the full-project recompile before quota or worker admission until project BYOK is available.",
+                "produces": [
+                    "application/json"
+                ],
+                "tags": [
+                    "profile"
+                ],
+                "summary": "Recompile all project content",
+                "responses": {
+                    "401": {
+                        "description": "Unauthorized",
+                        "schema": {
+                            "$ref": "#/definitions/handler.ErrorResponse"
+                        }
+                    },
+                    "403": {
+                        "description": "Forbidden",
+                        "schema": {
+                            "$ref": "#/definitions/v1.recompileAllDenialResponse"
+                        }
+                    },
+                    "404": {
+                        "description": "Not Found",
+                        "schema": {
+                            "$ref": "#/definitions/handler.ErrorResponse"
+                        }
+                    },
+                    "500": {
+                        "description": "Internal Server Error",
+                        "schema": {
+                            "$ref": "#/definitions/handler.ErrorResponse"
+                        }
+                    }
+                }
+            }
+        },
+        "/api/v1/projects/{pid}/recompile-all/capability": {
+            "get": {
+                "security": [
+                    {
+                        "DevUserAuth": []
+                    },
+                    {
+                        "ProjectHeader": []
+                    }
+                ],
+                "description": "Returns the project's current Recompile all capability. It is denied until project BYOK is available.",
+                "produces": [
+                    "application/json"
+                ],
+                "tags": [
+                    "profile"
+                ],
+                "summary": "Get Recompile all capability",
+                "responses": {
+                    "200": {
+                        "description": "OK",
+                        "schema": {
+                            "$ref": "#/definitions/v1.recompileAllCapabilityResponse"
+                        }
+                    },
+                    "401": {
+                        "description": "Unauthorized",
+                        "schema": {
+                            "$ref": "#/definitions/handler.ErrorResponse"
+                        }
+                    },
+                    "404": {
+                        "description": "Not Found",
+                        "schema": {
+                            "$ref": "#/definitions/handler.ErrorResponse"
+                        }
+                    },
+                    "500": {
+                        "description": "Internal Server Error",
+                        "schema": {
+                            "$ref": "#/definitions/handler.ErrorResponse"
+                        }
+                    }
+                }
+            }
+        },
         "/api/v1/projects/{projectID}": {
             "patch": {
                 "security": [
@@ -1277,6 +1605,469 @@ const docTemplate = `{
                     },
                     "413": {
                         "description": "Request Entity Too Large",
+                        "schema": {
+                            "$ref": "#/definitions/handler.ErrorResponse"
+                        }
+                    },
+                    "500": {
+                        "description": "Internal Server Error",
+                        "schema": {
+                            "$ref": "#/definitions/handler.ErrorResponse"
+                        }
+                    }
+                }
+            }
+        },
+        "/api/v1/projects/{projectID}/profile": {
+            "get": {
+                "security": [
+                    {
+                        "BearerAuth": []
+                    }
+                ],
+                "tags": [
+                    "profile"
+                ],
+                "summary": "Get project Profile state",
+                "parameters": [
+                    {
+                        "type": "string",
+                        "description": "Project ID",
+                        "name": "projectID",
+                        "in": "path",
+                        "required": true
+                    },
+                    {
+                        "type": "string",
+                        "description": "Project ID; must match the URL",
+                        "name": "X-Project-ID",
+                        "in": "header",
+                        "required": true
+                    }
+                ],
+                "responses": {
+                    "200": {
+                        "description": "OK",
+                        "schema": {
+                            "$ref": "#/definitions/v1.ProfileState"
+                        }
+                    },
+                    "401": {
+                        "description": "Unauthorized",
+                        "schema": {
+                            "$ref": "#/definitions/handler.ErrorResponse"
+                        }
+                    },
+                    "404": {
+                        "description": "Not Found",
+                        "schema": {
+                            "$ref": "#/definitions/handler.ErrorResponse"
+                        }
+                    },
+                    "500": {
+                        "description": "Internal Server Error",
+                        "schema": {
+                            "$ref": "#/definitions/handler.ErrorResponse"
+                        }
+                    }
+                }
+            },
+            "put": {
+                "security": [
+                    {
+                        "BearerAuth": []
+                    }
+                ],
+                "tags": [
+                    "profile"
+                ],
+                "summary": "Save project Profile requirements",
+                "parameters": [
+                    {
+                        "type": "string",
+                        "description": "Project ID",
+                        "name": "projectID",
+                        "in": "path",
+                        "required": true
+                    },
+                    {
+                        "type": "string",
+                        "description": "Project ID; must match the URL",
+                        "name": "X-Project-ID",
+                        "in": "header",
+                        "required": true
+                    },
+                    {
+                        "description": "Expected revision and complete requirements",
+                        "name": "request",
+                        "in": "body",
+                        "required": true,
+                        "schema": {
+                            "$ref": "#/definitions/v1.profilePutRequest"
+                        }
+                    }
+                ],
+                "responses": {
+                    "200": {
+                        "description": "OK",
+                        "schema": {
+                            "$ref": "#/definitions/v1.ProfileState"
+                        }
+                    },
+                    "400": {
+                        "description": "Bad Request",
+                        "schema": {
+                            "$ref": "#/definitions/handler.ErrorResponse"
+                        }
+                    },
+                    "401": {
+                        "description": "Unauthorized",
+                        "schema": {
+                            "$ref": "#/definitions/handler.ErrorResponse"
+                        }
+                    },
+                    "404": {
+                        "description": "Not Found",
+                        "schema": {
+                            "$ref": "#/definitions/handler.ErrorResponse"
+                        }
+                    },
+                    "409": {
+                        "description": "Conflict",
+                        "schema": {
+                            "$ref": "#/definitions/v1.profileConflictResponse"
+                        }
+                    },
+                    "428": {
+                        "description": "Precondition Required",
+                        "schema": {
+                            "$ref": "#/definitions/handler.ErrorResponse"
+                        }
+                    },
+                    "500": {
+                        "description": "Internal Server Error",
+                        "schema": {
+                            "$ref": "#/definitions/handler.ErrorResponse"
+                        }
+                    }
+                }
+            }
+        },
+        "/api/v1/projects/{projectID}/profile/candidates/{candidateID}/confirm": {
+            "post": {
+                "security": [
+                    {
+                        "BearerAuth": []
+                    }
+                ],
+                "tags": [
+                    "profile"
+                ],
+                "summary": "Confirm the current Profile candidate",
+                "parameters": [
+                    {
+                        "type": "string",
+                        "description": "Project ID",
+                        "name": "projectID",
+                        "in": "path",
+                        "required": true
+                    },
+                    {
+                        "type": "string",
+                        "description": "Candidate ID",
+                        "name": "candidateID",
+                        "in": "path",
+                        "required": true
+                    },
+                    {
+                        "type": "string",
+                        "description": "Project ID; must match the URL",
+                        "name": "X-Project-ID",
+                        "in": "header",
+                        "required": true
+                    },
+                    {
+                        "description": "Expected revision",
+                        "name": "request",
+                        "in": "body",
+                        "required": true,
+                        "schema": {
+                            "$ref": "#/definitions/v1.profileRevisionRequest"
+                        }
+                    }
+                ],
+                "responses": {
+                    "200": {
+                        "description": "OK",
+                        "schema": {
+                            "$ref": "#/definitions/v1.ProfileState"
+                        }
+                    },
+                    "400": {
+                        "description": "Bad Request",
+                        "schema": {
+                            "$ref": "#/definitions/handler.ErrorResponse"
+                        }
+                    },
+                    "401": {
+                        "description": "Unauthorized",
+                        "schema": {
+                            "$ref": "#/definitions/handler.ErrorResponse"
+                        }
+                    },
+                    "404": {
+                        "description": "Not Found",
+                        "schema": {
+                            "$ref": "#/definitions/handler.ErrorResponse"
+                        }
+                    },
+                    "409": {
+                        "description": "Conflict",
+                        "schema": {
+                            "$ref": "#/definitions/v1.profileConflictResponse"
+                        }
+                    },
+                    "428": {
+                        "description": "Precondition Required",
+                        "schema": {
+                            "$ref": "#/definitions/handler.ErrorResponse"
+                        }
+                    },
+                    "500": {
+                        "description": "Internal Server Error",
+                        "schema": {
+                            "$ref": "#/definitions/handler.ErrorResponse"
+                        }
+                    }
+                }
+            }
+        },
+        "/api/v1/projects/{projectID}/profile/candidates/{candidateID}/retry": {
+            "post": {
+                "security": [
+                    {
+                        "BearerAuth": []
+                    }
+                ],
+                "tags": [
+                    "profile"
+                ],
+                "summary": "Retry missing Profile tagging work",
+                "parameters": [
+                    {
+                        "type": "string",
+                        "description": "Project ID",
+                        "name": "projectID",
+                        "in": "path",
+                        "required": true
+                    },
+                    {
+                        "type": "string",
+                        "description": "Candidate ID",
+                        "name": "candidateID",
+                        "in": "path",
+                        "required": true
+                    },
+                    {
+                        "type": "string",
+                        "description": "Project ID; must match the URL",
+                        "name": "X-Project-ID",
+                        "in": "header",
+                        "required": true
+                    },
+                    {
+                        "description": "Expected revision",
+                        "name": "request",
+                        "in": "body",
+                        "required": true,
+                        "schema": {
+                            "$ref": "#/definitions/v1.profileRevisionRequest"
+                        }
+                    }
+                ],
+                "responses": {
+                    "200": {
+                        "description": "OK",
+                        "schema": {
+                            "$ref": "#/definitions/v1.ProfileState"
+                        }
+                    },
+                    "400": {
+                        "description": "Bad Request",
+                        "schema": {
+                            "$ref": "#/definitions/handler.ErrorResponse"
+                        }
+                    },
+                    "401": {
+                        "description": "Unauthorized",
+                        "schema": {
+                            "$ref": "#/definitions/handler.ErrorResponse"
+                        }
+                    },
+                    "404": {
+                        "description": "Not Found",
+                        "schema": {
+                            "$ref": "#/definitions/handler.ErrorResponse"
+                        }
+                    },
+                    "409": {
+                        "description": "Conflict",
+                        "schema": {
+                            "$ref": "#/definitions/v1.profileConflictResponse"
+                        }
+                    },
+                    "428": {
+                        "description": "Precondition Required",
+                        "schema": {
+                            "$ref": "#/definitions/handler.ErrorResponse"
+                        }
+                    },
+                    "500": {
+                        "description": "Internal Server Error",
+                        "schema": {
+                            "$ref": "#/definitions/handler.ErrorResponse"
+                        }
+                    }
+                }
+            }
+        },
+        "/api/v1/projects/{projectID}/profile/derivation/retry": {
+            "post": {
+                "security": [
+                    {
+                        "BearerAuth": []
+                    }
+                ],
+                "tags": [
+                    "profile"
+                ],
+                "summary": "Retry failed Profile derivation",
+                "parameters": [
+                    {
+                        "type": "string",
+                        "description": "Project ID",
+                        "name": "projectID",
+                        "in": "path",
+                        "required": true
+                    },
+                    {
+                        "type": "string",
+                        "description": "Project ID; must match the URL",
+                        "name": "X-Project-ID",
+                        "in": "header",
+                        "required": true
+                    },
+                    {
+                        "description": "Expected revision",
+                        "name": "request",
+                        "in": "body",
+                        "required": true,
+                        "schema": {
+                            "$ref": "#/definitions/v1.profileRevisionRequest"
+                        }
+                    }
+                ],
+                "responses": {
+                    "200": {
+                        "description": "OK",
+                        "schema": {
+                            "$ref": "#/definitions/v1.ProfileState"
+                        }
+                    },
+                    "400": {
+                        "description": "Bad Request",
+                        "schema": {
+                            "$ref": "#/definitions/handler.ErrorResponse"
+                        }
+                    },
+                    "401": {
+                        "description": "Unauthorized",
+                        "schema": {
+                            "$ref": "#/definitions/handler.ErrorResponse"
+                        }
+                    },
+                    "404": {
+                        "description": "Not Found",
+                        "schema": {
+                            "$ref": "#/definitions/handler.ErrorResponse"
+                        }
+                    },
+                    "409": {
+                        "description": "Conflict",
+                        "schema": {
+                            "$ref": "#/definitions/v1.profileConflictResponse"
+                        }
+                    },
+                    "428": {
+                        "description": "Precondition Required",
+                        "schema": {
+                            "$ref": "#/definitions/handler.ErrorResponse"
+                        }
+                    },
+                    "500": {
+                        "description": "Internal Server Error",
+                        "schema": {
+                            "$ref": "#/definitions/handler.ErrorResponse"
+                        }
+                    }
+                }
+            }
+        },
+        "/api/v1/projects/{projectID}/profile/jobs/{jobID}": {
+            "get": {
+                "security": [
+                    {
+                        "BearerAuth": []
+                    }
+                ],
+                "tags": [
+                    "profile"
+                ],
+                "summary": "Get a Profile tagging job",
+                "parameters": [
+                    {
+                        "type": "string",
+                        "description": "Project ID",
+                        "name": "projectID",
+                        "in": "path",
+                        "required": true
+                    },
+                    {
+                        "type": "string",
+                        "description": "Job ID",
+                        "name": "jobID",
+                        "in": "path",
+                        "required": true
+                    },
+                    {
+                        "type": "string",
+                        "description": "Project ID; must match the URL",
+                        "name": "X-Project-ID",
+                        "in": "header",
+                        "required": true
+                    }
+                ],
+                "responses": {
+                    "200": {
+                        "description": "OK",
+                        "schema": {
+                            "$ref": "#/definitions/v1.ProfileJob"
+                        }
+                    },
+                    "400": {
+                        "description": "Bad Request",
+                        "schema": {
+                            "$ref": "#/definitions/handler.ErrorResponse"
+                        }
+                    },
+                    "401": {
+                        "description": "Unauthorized",
+                        "schema": {
+                            "$ref": "#/definitions/handler.ErrorResponse"
+                        }
+                    },
+                    "404": {
+                        "description": "Not Found",
                         "schema": {
                             "$ref": "#/definitions/handler.ErrorResponse"
                         }
@@ -2479,6 +3270,9 @@ const docTemplate = `{
         "search.Citation": {
             "type": "object",
             "properties": {
+                "id": {
+                    "type": "string"
+                },
                 "path": {
                     "description": "pre-encoded URL path: /concepts/xxx or /sources/xxx",
                     "type": "string"
@@ -2498,6 +3292,9 @@ const docTemplate = `{
         "search.Result": {
             "type": "object",
             "properties": {
+                "id": {
+                    "type": "string"
+                },
                 "slug": {
                     "type": "string"
                 },
@@ -2526,15 +3323,13 @@ const docTemplate = `{
                     "type": "string"
                 },
                 "email_registration_enabled": {
-                    "description": "Effective email capability: master AND saved email preference.",
                     "type": "boolean"
                 },
                 "google_registration_enabled": {
-                    "description": "Effective Google capability: master AND saved Google preference.",
                     "type": "boolean"
                 },
                 "registration_enabled": {
-                    "description": "Master switch for new-account registration.",
+                    "description": "Master switch; method preferences are retained when off.",
                     "type": "boolean"
                 }
             }
@@ -2546,15 +3341,13 @@ const docTemplate = `{
                     "type": "string"
                 },
                 "email_registration_enabled": {
-                    "description": "Saved email preference, retained while the master is off.",
                     "type": "boolean"
                 },
                 "google_registration_enabled": {
-                    "description": "Saved Google preference, retained while the master is off.",
                     "type": "boolean"
                 },
                 "registration_enabled": {
-                    "description": "Master switch for new-account registration.",
+                    "description": "Master switch; method preferences are retained when off.",
                     "type": "boolean"
                 }
             }
@@ -2563,15 +3356,12 @@ const docTemplate = `{
             "type": "object",
             "properties": {
                 "email_registration_enabled": {
-                    "description": "Optional saved email preference. Omission retains its current value.",
                     "type": "boolean"
                 },
                 "google_registration_enabled": {
-                    "description": "Optional saved Google preference. Omission retains its current value.",
                     "type": "boolean"
                 },
                 "registration_enabled": {
-                    "description": "Optional master switch. Omission retains its current value.",
                     "type": "boolean"
                 }
             }
@@ -2583,6 +3373,333 @@ const docTemplate = `{
             ],
             "properties": {
                 "announcement_markdown": {
+                    "type": "string"
+                }
+            }
+        },
+        "v1.ProfileActive": {
+            "type": "object",
+            "required": [
+                "candidate_id",
+                "content_generation",
+                "dictionary_revision",
+                "guidance_revision",
+                "query_rule_revision",
+                "tag_set_revision"
+            ],
+            "properties": {
+                "candidate_id": {
+                    "type": "string"
+                },
+                "content_generation": {
+                    "type": "string"
+                },
+                "dictionary_revision": {
+                    "type": "string"
+                },
+                "guidance_revision": {
+                    "type": "string"
+                },
+                "query_rule_revision": {
+                    "type": "string"
+                },
+                "tag_set_revision": {
+                    "type": "string"
+                }
+            }
+        },
+        "v1.ProfileBootstrapGuidance": {
+            "type": "object",
+            "required": [
+                "confirmed_at",
+                "input_digest",
+                "model_version",
+                "preview",
+                "profile_revision",
+                "prompt_version",
+                "revision",
+                "schema_version",
+                "status"
+            ],
+            "properties": {
+                "confirmed_at": {
+                    "type": "string"
+                },
+                "input_digest": {
+                    "type": "string"
+                },
+                "model_version": {
+                    "type": "string"
+                },
+                "preview": {
+                    "$ref": "#/definitions/v1.ProfileBootstrapPreview"
+                },
+                "profile_revision": {
+                    "type": "integer"
+                },
+                "prompt_version": {
+                    "type": "string"
+                },
+                "revision": {
+                    "type": "string"
+                },
+                "schema_version": {
+                    "type": "string"
+                },
+                "status": {
+                    "type": "string",
+                    "enum": [
+                        "preview_ready",
+                        "confirmed"
+                    ]
+                }
+            }
+        },
+        "v1.ProfileBootstrapPreview": {
+            "type": "object",
+            "required": [
+                "guidance_diff",
+                "requirements"
+            ],
+            "properties": {
+                "guidance_diff": {
+                    "type": "string"
+                },
+                "requirements": {
+                    "type": "array",
+                    "items": {
+                        "$ref": "#/definitions/v1.ProfileRequirementAccounting"
+                    }
+                }
+            }
+        },
+        "v1.ProfileCandidate": {
+            "type": "object",
+            "required": [
+                "base_revision",
+                "candidate_id",
+                "content_generation",
+                "dictionary",
+                "guidance",
+                "preview",
+                "requirements_digest",
+                "source"
+            ],
+            "properties": {
+                "base_revision": {
+                    "type": "integer"
+                },
+                "candidate_id": {
+                    "type": "string"
+                },
+                "content_generation": {
+                    "type": "string"
+                },
+                "dictionary": {
+                    "$ref": "#/definitions/v1.ProfileDerivedRef"
+                },
+                "guidance": {
+                    "$ref": "#/definitions/v1.ProfileDerivedRef"
+                },
+                "preview": {
+                    "$ref": "#/definitions/v1.ProfilePreview"
+                },
+                "requirements_digest": {
+                    "type": "string"
+                },
+                "source": {
+                    "type": "string",
+                    "enum": [
+                        "manual",
+                        "compile_auto"
+                    ]
+                }
+            }
+        },
+        "v1.ProfileDerivedRef": {
+            "type": "object",
+            "required": [
+                "input_digest",
+                "model_version",
+                "prompt_version",
+                "revision",
+                "schema_version"
+            ],
+            "properties": {
+                "input_digest": {
+                    "type": "string"
+                },
+                "model_version": {
+                    "type": "string"
+                },
+                "prompt_version": {
+                    "type": "string"
+                },
+                "revision": {
+                    "type": "string"
+                },
+                "schema_version": {
+                    "type": "string"
+                }
+            }
+        },
+        "v1.ProfileJob": {
+            "type": "object",
+            "required": [
+                "candidate_id",
+                "content_generation",
+                "error_code",
+                "job_id",
+                "missing_count",
+                "status"
+            ],
+            "properties": {
+                "candidate_id": {
+                    "type": "string"
+                },
+                "content_generation": {
+                    "type": "string"
+                },
+                "error_code": {
+                    "type": "string"
+                },
+                "job_id": {
+                    "type": "string"
+                },
+                "missing_count": {
+                    "type": "integer"
+                },
+                "status": {
+                    "type": "string",
+                    "enum": [
+                        "scheduled",
+                        "running",
+                        "retry_wait",
+                        "incomplete",
+                        "ready",
+                        "superseded"
+                    ]
+                }
+            }
+        },
+        "v1.ProfilePreview": {
+            "type": "object",
+            "required": [
+                "dictionary_diff",
+                "guidance_diff",
+                "requirements"
+            ],
+            "properties": {
+                "dictionary_diff": {
+                    "type": "string"
+                },
+                "guidance_diff": {
+                    "type": "string"
+                },
+                "requirements": {
+                    "type": "array",
+                    "items": {
+                        "$ref": "#/definitions/v1.ProfileRequirementAccounting"
+                    }
+                }
+            }
+        },
+        "v1.ProfileRequirement": {
+            "type": "object",
+            "required": [
+                "id",
+                "text"
+            ],
+            "properties": {
+                "id": {
+                    "type": "string"
+                },
+                "text": {
+                    "type": "string"
+                }
+            }
+        },
+        "v1.ProfileRequirementAccounting": {
+            "type": "object",
+            "required": [
+                "disposition",
+                "explanation",
+                "id"
+            ],
+            "properties": {
+                "disposition": {
+                    "type": "string",
+                    "enum": [
+                        "compile_guidance",
+                        "dictionary_or_query",
+                        "both",
+                        "limitation"
+                    ]
+                },
+                "explanation": {
+                    "type": "string"
+                },
+                "id": {
+                    "type": "string"
+                }
+            }
+        },
+        "v1.ProfileState": {
+            "type": "object",
+            "required": [
+                "active",
+                "bootstrap_guidance",
+                "candidate",
+                "confirmed_candidate_id",
+                "derivation_error_code",
+                "derivation_status",
+                "job",
+                "project_id",
+                "requirements",
+                "revision",
+                "scheduled_for"
+            ],
+            "properties": {
+                "active": {
+                    "$ref": "#/definitions/v1.ProfileActive"
+                },
+                "bootstrap_guidance": {
+                    "$ref": "#/definitions/v1.ProfileBootstrapGuidance"
+                },
+                "candidate": {
+                    "$ref": "#/definitions/v1.ProfileCandidate"
+                },
+                "confirmed_candidate_id": {
+                    "type": "string"
+                },
+                "derivation_error_code": {
+                    "type": "string"
+                },
+                "derivation_status": {
+                    "type": "string",
+                    "enum": [
+                        "pending",
+                        "ready",
+                        "failed",
+                        "superseded"
+                    ]
+                },
+                "job": {
+                    "$ref": "#/definitions/v1.ProfileJob"
+                },
+                "project_id": {
+                    "type": "string"
+                },
+                "requirements": {
+                    "type": "array",
+                    "items": {
+                        "$ref": "#/definitions/v1.ProfileRequirement"
+                    }
+                },
+                "revision": {
+                    "type": "integer"
+                },
+                "scheduled_for": {
                     "type": "string"
                 }
             }
@@ -2657,6 +3774,122 @@ const docTemplate = `{
                     "items": {
                         "type": "string"
                     }
+                }
+            }
+        },
+        "v1.profileBootstrapConfirmRequest": {
+            "type": "object",
+            "required": [
+                "expected_revision",
+                "input_digest"
+            ],
+            "properties": {
+                "expected_revision": {
+                    "type": "integer"
+                },
+                "input_digest": {
+                    "type": "string"
+                }
+            }
+        },
+        "v1.profileBootstrapGuidanceResponse": {
+            "type": "object",
+            "properties": {
+                "bootstrap_guidance": {
+                    "$ref": "#/definitions/v1.ProfileBootstrapGuidance"
+                }
+            }
+        },
+        "v1.profileConflictResponse": {
+            "type": "object",
+            "properties": {
+                "error": {
+                    "type": "string"
+                },
+                "revision": {
+                    "type": "integer"
+                }
+            }
+        },
+        "v1.profileGuidanceArtifactData": {
+            "type": "object",
+            "properties": {
+                "compile_guidance": {
+                    "type": "string"
+                },
+                "input_digest": {
+                    "type": "string"
+                },
+                "model_version": {
+                    "type": "string"
+                },
+                "prompt_version": {
+                    "type": "string"
+                },
+                "revision": {
+                    "type": "string"
+                },
+                "schema_version": {
+                    "type": "string"
+                }
+            }
+        },
+        "v1.profileGuidanceArtifactResponse": {
+            "type": "object",
+            "properties": {
+                "guidance_artifact": {
+                    "$ref": "#/definitions/v1.profileGuidanceArtifactData"
+                }
+            }
+        },
+        "v1.profilePutRequest": {
+            "type": "object",
+            "required": [
+                "expected_revision",
+                "requirements"
+            ],
+            "properties": {
+                "expected_revision": {
+                    "type": "integer"
+                },
+                "requirements": {
+                    "type": "array",
+                    "items": {
+                        "$ref": "#/definitions/v1.ProfileRequirement"
+                    }
+                }
+            }
+        },
+        "v1.profileRevisionRequest": {
+            "type": "object",
+            "required": [
+                "expected_revision"
+            ],
+            "properties": {
+                "expected_revision": {
+                    "type": "integer"
+                }
+            }
+        },
+        "v1.recompileAllCapabilityResponse": {
+            "type": "object",
+            "properties": {
+                "allowed": {
+                    "type": "boolean"
+                },
+                "denial_code": {
+                    "type": "string"
+                }
+            }
+        },
+        "v1.recompileAllDenialResponse": {
+            "type": "object",
+            "properties": {
+                "denial_code": {
+                    "type": "string"
+                },
+                "error": {
+                    "type": "string"
                 }
             }
         },

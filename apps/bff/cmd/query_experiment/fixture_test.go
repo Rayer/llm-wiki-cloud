@@ -408,7 +408,7 @@ func TestFixtureRunnerUsesOneInjectedTracedServiceResult(t *testing.T) {
 	if gotConfig.Options.SelectionLimit != 1 || gotConfig.Options.ExplorationSlots != 0 || gotConfig.Options.EvidenceThreshold != canonicalThreshold || !gotConfig.Options.EvidenceThresholdSet || gotConfig.Options.ExpansionAttempts != 1 {
 		t.Fatalf("production config=%+v", gotConfig.Options)
 	}
-	if service.request != (query.Request{Query: "coffee", Mode: "wiki"}) {
+	if !reflect.DeepEqual(service.request, query.Request{Query: "coffee", Mode: "wiki"}) {
 		t.Fatalf("request=%+v", service.request)
 	}
 	if !reflect.DeepEqual(service.trace, originalTrace) || !reflect.DeepEqual(service.result, originalResult) {

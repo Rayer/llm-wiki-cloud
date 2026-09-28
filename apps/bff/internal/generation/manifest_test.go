@@ -66,3 +66,55 @@ func TestDecodeRejectsDuplicateManifestFields(t *testing.T) {
 		})
 	}
 }
+
+func TestGenerationManifestArchivesAndSourceSnapshotReference(t *testing.T) {
+	valid := `{"version":1,"generation_id":"g_abc123","created_at":"2026-07-18T00:00:00Z","input_fingerprint":"x","source_snapshot_digest":"` + strings.Repeat("a", 64) + `","files":[]}`
+	manifest, err := Decode([]byte(valid))
+	if err != nil || manifest.SourceSnapshotDigest != strings.Repeat("a", 64) {
+		t.Fatalf("Decode(source reference) = %+v, %v", manifest, err)
+	}
+	path, err := ArchivedManifestPath(manifest.GenerationID)
+	if err != nil || path != Prefix+manifest.GenerationID+"/manifest.json" {
+		t.Fatalf("ArchivedManifestPath = %q, %v", path, err)
+	}
+	if _, err := ArchivedManifestPath("../bad"); err == nil {
+		t.Fatal("ArchivedManifestPath accepted unsafe ID")
+	}
+	manifest.SourceSnapshotDigest = "bad"
+	if err := manifest.Validate(); err == nil {
+		t.Fatal("Validate accepted malformed source snapshot digest")
+	}
+}
+
+func TestSourceSnapshotCompactStrictManifestAndPaths(t *testing.T) {
+	contentDigest := Digest([]byte("original raw bytes"))
+	manifest := SourceSnapshotManifest{
+		SchemaVersion: SourceSnapshotSchema, ContentGeneration: "g_abc123",
+		IDMapDigest: strings.Repeat("a", 64), SourceStatusDigest: strings.Repeat("b", 64),
+		Rows: []SourceSnapshotRow{{StableID: "stable-source", RawPath: "raw/source.md", ContentDigest: contentDigest, ObjectGeneration: 17}},
+	}
+	data, digest, err := EncodeSourceSnapshot(manifest)
+	if err != nil || digest != Digest(data) || strings.HasSuffix(string(data), "\n") {
+		t.Fatalf("EncodeSourceSnapshot = %s, %q, %v", data, digest, err)
+	}
+	decoded, err := DecodeSourceSnapshot(data)
+	if err != nil || decoded.ContentGeneration != manifest.ContentGeneration || decoded.Rows[0] != manifest.Rows[0] {
+		t.Fatalf("DecodeSourceSnapshot = %+v, %v", decoded, err)
+	}
+	if got, err := SourceSnapshotPath(digest); err != nil || got != SourceSnapshotPrefix+digest+".json" {
+		t.Fatalf("SourceSnapshotPath = %q, %v", got, err)
+	}
+	if got, err := SourceBytesPath(contentDigest); err != nil || got != SourceBytesPrefix+contentDigest+".txt" {
+		t.Fatalf("SourceBytesPath = %q, %v", got, err)
+	}
+
+	for _, malformed := range []string{
+		strings.Replace(string(data), `"schema_version":"`+SourceSnapshotSchema+`",`, `"extra":true,"schema_version":"`+SourceSnapshotSchema+`",`, 1),
+		strings.Replace(string(data), `"stable_id":"stable-source",`, `"stable_id":"stable-source","stable_id":"stable-source",`, 1),
+		strings.Replace(string(data), `"object_generation":17`, `"object_generation":0`, 1),
+	} {
+		if _, err := DecodeSourceSnapshot([]byte(malformed)); err == nil {
+			t.Fatalf("DecodeSourceSnapshot accepted %s", malformed)
+		}
+	}
+}

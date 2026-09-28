@@ -29,6 +29,7 @@ import (
 	"github.com/rayer/llm-wiki-bff/internal/generation"
 	"github.com/rayer/llm-wiki-bff/internal/sourcestatus"
 	"github.com/rayer/llm-wiki-bff/internal/storage"
+	"github.com/rayer/llm-wiki-bff/internal/wikiindex"
 	"google.golang.org/api/googleapi"
 	"google.golang.org/api/iterator"
 )
@@ -388,7 +389,7 @@ func runCloudSuggestedQueries(ctx context.Context, cfg workerConfig, objects obj
 		return primary
 	}
 
-	if _, _, err := publishCloudGenerationFromStart(ctx, objects, prefix, workspace, snapshots, manifestData, manifestAttrs, true); err != nil {
+	if _, _, err := publishCloudGenerationFromStart(ctx, objects, prefix, workspace, snapshots, manifestData, manifestAttrs, true, true); err != nil {
 		if errors.Is(err, errManifestCommitOutcomeUnknown) {
 			if recordErr := recordCloudAmbiguousManifestFailure(ctx, objects, prefix, workspace, cfg); recordErr != nil {
 				return errors.Join(errManifestCommitOutcomeUnknown, recordErr)
@@ -449,6 +450,24 @@ func runCloudWorkerBatch(ctx context.Context, cfg workerConfig, commands [][]str
 			}
 		}
 	}()
+	cfg.pinnedProfileGuidance, err = resolveProfileGuidanceAtCompileStart(ctx, cfg, objects)
+	if err != nil {
+		failure := newWorkerFailure(ctx, failureStageSyntoConfigValidation, failureClassStateInvalid, "", err)
+		primary := annotateError(errCloudMaterialization, failure)
+		if recordErr := writeCloudFailureReceipts(ctx, objects, prefix, "", cfg, nil, failure); recordErr != nil {
+			return errors.Join(primary, recordErr)
+		}
+		return primary
+	}
+	if cfg.pinnedProfileGuidance != nil {
+		pin := *cfg.pinnedProfileGuidance
+		if pin.BootstrapRef != nil {
+			ref := *pin.BootstrapRef
+			pin.BootstrapRef = &ref
+		}
+		cfg.pinnedProfileGuidance = &pin
+		log.Printf("worker: pinned Profile guidance revision=%s", cfg.pinnedProfileGuidance.Revision)
+	}
 	// Cloud workers are deliberately detached from DATA_DIR, WORKSPACE and any
 	// mount. Their private work area is always local /tmp.
 	workspace, err = cloudMkdirTemp("/tmp", "olw-cloud-")
@@ -522,7 +541,18 @@ func runCloudWorkerBatch(ctx context.Context, cfg workerConfig, commands [][]str
 		}
 		return primary
 	}
-	if _, _, err := publishCloudGenerationFromStart(ctx, objects, prefix, workspace, snapshots, manifestData, manifestAttrs, manifestAttrs.Generation > 0); err != nil {
+	// Bind the captured raw digests to the successful worker receipt in this
+	// private workspace before archiving its generation-bound source inventory.
+	if err := recordSuccess(workspace, snapshots, time.Now().UTC()); err != nil {
+		failure := preserveWorkerFailure(err, failureStageReceiptRecording, failureClassRecordingFailure)
+		primary := annotateError(errCloudSourceStatusRecording, failure)
+		if recordErr := writeCloudFailureReceipts(ctx, objects, prefix, workspace, cfg, snapshots, failure); recordErr != nil {
+			return errors.Join(primary, recordErr)
+		}
+		return primary
+	}
+	publishedManifest, publishedGeneration, err := publishCloudGenerationFromStart(ctx, objects, prefix, workspace, snapshots, manifestData, manifestAttrs, manifestAttrs.Generation > 0, false)
+	if err != nil {
 		if errors.Is(err, errManifestCommitOutcomeUnknown) {
 			if recordErr := recordCloudAmbiguousManifestFailure(ctx, objects, prefix, workspace, cfg); recordErr != nil {
 				return errors.Join(errManifestCommitOutcomeUnknown, recordErr)
@@ -547,6 +577,9 @@ func runCloudWorkerBatch(ctx context.Context, cfg workerConfig, commands [][]str
 			return errors.Join(annotateError(errCloudCommittedReceipt, failure), cloudFailureRecordingError{failureDiagnostic: true})
 		}
 		return annotateError(errCloudCommittedReceipt, failure)
+	}
+	if err := recordProfileCompileReceipt(ctx, cfg, publishedManifest, publishedGeneration); err != nil {
+		return annotateError(errCloudCommittedReceipt, err)
 	}
 	return nil
 }
@@ -811,16 +844,16 @@ func publishCloudGeneration(ctx context.Context, objects objectStore, prefix, wo
 	if oldErr != nil && !isObjectNotFound(oldErr) {
 		return generation.Manifest{}, 0, oldErr
 	}
-	return publishCloudGenerationWithFiles(ctx, objects, prefix, workspace, snapshots, files, oldData, oldAttrs, oldErr == nil)
+	return publishCloudGenerationWithFiles(ctx, objects, prefix, workspace, snapshots, files, oldData, oldAttrs, oldErr == nil, false)
 }
-func publishCloudGenerationFromStart(ctx context.Context, objects objectStore, prefix, workspace string, snapshots []sourceSnapshot, oldData []byte, oldAttrs objectAttrs, oldExists bool) (generation.Manifest, int64, error) {
+func publishCloudGenerationFromStart(ctx context.Context, objects objectStore, prefix, workspace string, snapshots []sourceSnapshot, oldData []byte, oldAttrs objectAttrs, oldExists, preservePreviousSourceSnapshot bool) (generation.Manifest, int64, error) {
 	files, err := preflightGenerationOutputs(workspace)
 	if err != nil {
 		return generation.Manifest{}, 0, fmt.Errorf("generation output validation failed: %w", err)
 	}
-	return publishCloudGenerationWithFiles(ctx, objects, prefix, workspace, snapshots, files, oldData, oldAttrs, oldExists)
+	return publishCloudGenerationWithFiles(ctx, objects, prefix, workspace, snapshots, files, oldData, oldAttrs, oldExists, preservePreviousSourceSnapshot)
 }
-func publishCloudGenerationWithFiles(ctx context.Context, objects objectStore, prefix, workspace string, snapshots []sourceSnapshot, files []generationOutput, oldData []byte, oldAttrs objectAttrs, oldExists bool) (generation.Manifest, int64, error) {
+func publishCloudGenerationWithFiles(ctx context.Context, objects objectStore, prefix, workspace string, snapshots []sourceSnapshot, files []generationOutput, oldData []byte, oldAttrs objectAttrs, oldExists, preservePreviousSourceSnapshot bool) (generation.Manifest, int64, error) {
 	var old generation.Manifest
 	if oldExists {
 		var err error
@@ -857,10 +890,22 @@ func publishCloudGenerationWithFiles(ctx context.Context, objects objectStore, p
 		m.Files = append(m.Files, f)
 	}
 	sort.Slice(m.Files, func(i, j int) bool { return m.Files[i].Path < m.Files[j].Path })
+	digest, err := publishGenerationSourceSnapshot(ctx, objects, prefix, workspace, m, snapshots, old, oldExists, preservePreviousSourceSnapshot)
+	if err != nil {
+		return generation.Manifest{}, 0, err
+	}
+	m.SourceSnapshotDigest = digest
 	if err := m.Validate(); err != nil {
 		return generation.Manifest{}, 0, err
 	}
 	data, _ := json.Marshal(m)
+	archivePath, err := generation.ArchivedManifestPath(m.GenerationID)
+	if err != nil {
+		return generation.Manifest{}, 0, err
+	}
+	if _, err := writeImmutableCloudObject(ctx, objects, prefix+archivePath, data, digestBytes(data)); err != nil {
+		return generation.Manifest{}, 0, fmt.Errorf("generation manifest archive failed: %w", err)
+	}
 	condition := objectConditions{DoesNotExist: true}
 	if oldExists {
 		condition = objectConditions{GenerationMatch: oldAttrs.Generation}
@@ -875,6 +920,319 @@ func publishCloudGenerationWithFiles(ctx context.Context, objects objectStore, p
 		return generation.Manifest{}, 0, fmt.Errorf("generation manifest commit conflicted: %w", errObjectGenerationConflict)
 	}
 	return m, a.Generation, nil
+}
+
+func publishGenerationSourceSnapshot(ctx context.Context, objects objectStore, prefix, workspace string, manifest generation.Manifest, snapshots []sourceSnapshot, previous generation.Manifest, hasPrevious, preservePrevious bool) (string, error) {
+	if preservePrevious {
+		return retainUnchangedGenerationSourceSnapshot(ctx, objects, prefix, workspace, manifest, previous, hasPrevious)
+	}
+	statusBytes, err := os.ReadFile(filepath.Join(workspace, filepath.FromSlash(sourcestatus.Path)))
+	if errors.Is(err, os.ErrNotExist) && len(snapshots) == 0 {
+		// Compatibility for older direct callers that do not materialize source receipts.
+		return "", nil
+	}
+	if err != nil {
+		return "", fmt.Errorf("read source snapshot receipt: %w", err)
+	}
+	status, err := sourcestatus.Decode(statusBytes)
+	if err != nil || status.Version != 1 {
+		return "", fmt.Errorf("invalid source snapshot receipt")
+	}
+	if len(statusBytes) > generation.MaxFileBytes {
+		return "", errors.New("source snapshot receipt exceeds limit")
+	}
+	idMapBytes, err := os.ReadFile(filepath.Join(workspace, "cache", "id_map.json"))
+	if err != nil {
+		return "", fmt.Errorf("read source snapshot ID map: %w", err)
+	}
+	idMapFile, ok := manifest.File("cache/id_map.json")
+	if !ok || int64(len(idMapBytes)) != idMapFile.Size || digestBytes(idMapBytes) != idMapFile.SHA256 {
+		return "", errors.New("source snapshot ID map differs from generation manifest")
+	}
+	idMap, err := wikiindex.DecodeIDMap(idMapBytes)
+	if err != nil {
+		return "", fmt.Errorf("decode source snapshot ID map: %w", err)
+	}
+	hasSourceSnapshot := false
+	for _, snapshot := range snapshots {
+		hasSourceSnapshot = hasSourceSnapshot || !snapshot.Tombstone
+	}
+	if len(idMap.Source) == 0 && (len(idMap.SourceMeta) > 0 || hasSourceSnapshot) {
+		// Old manifests may carry source metadata without the canonical source-ID map.
+		// Keep baseline publication working, but do not claim Profile coverage.
+		return "", nil
+	}
+	sourceStatusDigest := digestBytes(statusBytes)
+	rowsByID := make(map[string]sourceSnapshot, len(snapshots))
+	tombstones := make(map[string]bool)
+	for _, snapshot := range snapshots {
+		if !annotation.ValidSourceID(snapshot.SourceID) {
+			return "", errors.New("source snapshot has invalid stable ID")
+		}
+		if snapshot.Tombstone {
+			tombstones[snapshot.SourceID] = true
+			continue
+		}
+		if _, exists := rowsByID[snapshot.SourceID]; exists {
+			return "", fmt.Errorf("duplicate source snapshot ID %q", snapshot.SourceID)
+		}
+		if !storage.SafeRawPath(snapshot.RawPath) || digestBytes(snapshot.RawBytes) != snapshot.RawSHA256 {
+			return "", fmt.Errorf("invalid pinned source snapshot %q", snapshot.SourceID)
+		}
+		rowsByID[snapshot.SourceID] = snapshot
+	}
+	previousRows := map[string]generation.SourceSnapshotRow{}
+	if hasPrevious && previous.SourceSnapshotDigest != "" {
+		path, err := generation.SourceSnapshotPath(previous.SourceSnapshotDigest)
+		if err != nil {
+			return "", err
+		}
+		data, attrs, err := objects.Read(ctx, prefix+path, 0, generation.MaxSourceSnapshotBytes)
+		if err != nil {
+			return "", fmt.Errorf("read previous source snapshot: %w", err)
+		}
+		if attrs.Size != int64(len(data)) || digestBytes(data) != previous.SourceSnapshotDigest {
+			return "", errors.New("previous source snapshot digest mismatch")
+		}
+		prior, err := generation.DecodeSourceSnapshot(data)
+		previousIDMap, hasIDMap := previous.File("cache/id_map.json")
+		if err != nil || prior.ContentGeneration != previous.GenerationID || !hasIDMap || prior.IDMapDigest != previousIDMap.SHA256 {
+			return "", errors.New("invalid previous source snapshot")
+		}
+		for _, row := range prior.Rows {
+			previousRows[row.StableID] = row
+		}
+	}
+
+	activeIDs := make([]string, 0, len(idMap.Source))
+	for id := range idMap.Source {
+		activeIDs = append(activeIDs, id)
+	}
+	sort.Strings(activeIDs)
+	rows := make([]generation.SourceSnapshotRow, 0, len(activeIDs))
+	for _, id := range activeIDs {
+		if !annotation.ValidSourceID(id) {
+			return "", errors.New("source ID map has invalid stable ID")
+		}
+		if tombstones[id] {
+			return "", fmt.Errorf("active source %q is missing its pinned raw bytes", id)
+		}
+		meta := idMap.SourceMeta[id]
+		path := meta.SourceFile
+		if path != strings.TrimSpace(path) || path != "" && !storage.SafeRawPath(path) {
+			return "", fmt.Errorf("invalid source path for %q", id)
+		}
+		if snapshot, exists := rowsByID[id]; exists {
+			if path != "" && path != snapshot.RawPath {
+				return "", fmt.Errorf("source path mismatch for %q", id)
+			}
+			path = snapshot.RawPath
+			receipt, ok := status.Sources[id]
+			if !ok || !sourcestatus.ValidReceipt(receipt, path) || receipt.LastIngestedRawSHA256 != snapshot.RawSHA256 {
+				return "", fmt.Errorf("source receipt missing or mismatched for %q", id)
+			}
+			objectPath, err := generation.SourceBytesPath(snapshot.RawSHA256)
+			if err != nil {
+				return "", err
+			}
+			attrs, err := writeImmutableCloudObject(ctx, objects, prefix+objectPath, snapshot.RawBytes, snapshot.RawSHA256)
+			if err != nil {
+				return "", fmt.Errorf("source bytes publish failed for %q: %w", id, err)
+			}
+			rows = append(rows, generation.SourceSnapshotRow{StableID: id, RawPath: path, ContentDigest: snapshot.RawSHA256, ObjectGeneration: attrs.Generation})
+			continue
+		}
+		prior, exists := previousRows[id]
+		if !exists || previous.SourceSnapshotDigest == "" {
+			return "", fmt.Errorf("historical source bytes unavailable for %q", id)
+		}
+		if path != "" && path != prior.RawPath {
+			return "", fmt.Errorf("retained source path mismatch for %q", id)
+		}
+		path = prior.RawPath
+		receipt, ok := status.Sources[id]
+		if !ok || !sourcestatus.ValidReceipt(receipt, path) || receipt.LastIngestedRawSHA256 != prior.ContentDigest {
+			return "", fmt.Errorf("retained source receipt missing or mismatched for %q", id)
+		}
+		bytesPath, err := generation.SourceBytesPath(prior.ContentDigest)
+		if err != nil {
+			return "", err
+		}
+		data, attrs, err := objects.Read(ctx, prefix+bytesPath, prior.ObjectGeneration, generation.MaxFileBytes)
+		if err != nil || attrs.Size != int64(len(data)) || digestBytes(data) != prior.ContentDigest {
+			return "", fmt.Errorf("retained source bytes unavailable or mismatched for %q", id)
+		}
+		prior.RawPath = path
+		rows = append(rows, prior)
+	}
+	seenPaths := make(map[string]string, len(rows))
+	for _, row := range rows {
+		if prior, exists := seenPaths[row.RawPath]; exists {
+			return "", fmt.Errorf("duplicate source path for %q and %q", prior, row.StableID)
+		}
+		seenPaths[row.RawPath] = row.StableID
+	}
+
+	inventory := generation.SourceSnapshotManifest{
+		SchemaVersion: generation.SourceSnapshotSchema, ContentGeneration: manifest.GenerationID,
+		IDMapDigest: idMapFile.SHA256, SourceStatusDigest: sourceStatusDigest, Rows: rows,
+	}
+	data, digest, err := generation.EncodeSourceSnapshot(inventory)
+	if err != nil {
+		return "", err
+	}
+	path, err := generation.SourceSnapshotPath(digest)
+	if err != nil {
+		return "", err
+	}
+	if _, err := writeImmutableCloudObject(ctx, objects, prefix+path, data, digest); err != nil {
+		return "", fmt.Errorf("source snapshot publish failed: %w", err)
+	}
+	return digest, nil
+}
+
+func retainUnchangedGenerationSourceSnapshot(ctx context.Context, objects objectStore, prefix, workspace string, manifest, previous generation.Manifest, hasPrevious bool) (string, error) {
+	if !hasPrevious || previous.SourceSnapshotDigest == "" {
+		// Legacy generations without a Profile source snapshot keep baseline behavior.
+		return "", nil
+	}
+	if !sameGenerationFilesExceptSuggestions(manifest.Files, previous.Files) {
+		return "", errors.New("output-only generation changed content outside suggested queries")
+	}
+	idMapBytes, err := os.ReadFile(filepath.Join(workspace, "cache", "id_map.json"))
+	if err != nil {
+		return "", fmt.Errorf("read retained source ID map: %w", err)
+	}
+	idMapFile, ok := manifest.File("cache/id_map.json")
+	previousIDMapFile, previousHasIDMap := previous.File("cache/id_map.json")
+	if !ok || !previousHasIDMap || idMapFile.SHA256 != previousIDMapFile.SHA256 || int64(len(idMapBytes)) != idMapFile.Size || digestBytes(idMapBytes) != idMapFile.SHA256 {
+		return "", errors.New("output-only generation changed source ID map")
+	}
+	idMap, err := wikiindex.DecodeIDMap(idMapBytes)
+	if err != nil {
+		return "", fmt.Errorf("decode retained source ID map: %w", err)
+	}
+	priorPath, err := generation.SourceSnapshotPath(previous.SourceSnapshotDigest)
+	if err != nil {
+		return "", err
+	}
+	priorBytes, priorAttrs, err := objects.Read(ctx, prefix+priorPath, 0, generation.MaxSourceSnapshotBytes)
+	if err != nil || priorAttrs.Size != int64(len(priorBytes)) || digestBytes(priorBytes) != previous.SourceSnapshotDigest {
+		return "", errors.New("retained source inventory is missing or mismatched")
+	}
+	priorInventory, err := generation.DecodeSourceSnapshot(priorBytes)
+	if err != nil || priorInventory.ContentGeneration != previous.GenerationID || priorInventory.IDMapDigest != idMapFile.SHA256 {
+		return "", errors.New("retained source inventory does not match previous generation")
+	}
+	previousRows := make(map[string]generation.SourceSnapshotRow, len(priorInventory.Rows))
+	for _, row := range priorInventory.Rows {
+		previousRows[row.StableID] = row
+	}
+	activeIDs := make([]string, 0, len(idMap.Source))
+	for id := range idMap.Source {
+		activeIDs = append(activeIDs, id)
+	}
+	sort.Strings(activeIDs)
+	if len(activeIDs) != len(previousRows) {
+		return "", errors.New("output-only generation changed source identity set")
+	}
+	rows := make([]generation.SourceSnapshotRow, 0, len(activeIDs))
+	for _, id := range activeIDs {
+		if !annotation.ValidSourceID(id) {
+			return "", errors.New("retained source ID map has invalid stable ID")
+		}
+		row, ok := previousRows[id]
+		if !ok {
+			return "", fmt.Errorf("retained source inventory is missing %q", id)
+		}
+		if path := idMap.SourceMeta[id].SourceFile; path != "" && path != row.RawPath {
+			return "", fmt.Errorf("retained source path mismatch for %q", id)
+		}
+		bytesPath, err := generation.SourceBytesPath(row.ContentDigest)
+		if err != nil {
+			return "", err
+		}
+		data, attrs, err := objects.Read(ctx, prefix+bytesPath, row.ObjectGeneration, generation.MaxFileBytes)
+		if err != nil || attrs.Size != int64(len(data)) || digestBytes(data) != row.ContentDigest {
+			return "", fmt.Errorf("retained source bytes unavailable or mismatched for %q", id)
+		}
+		rows = append(rows, row)
+	}
+	inventory := generation.SourceSnapshotManifest{
+		SchemaVersion: generation.SourceSnapshotSchema, ContentGeneration: manifest.GenerationID,
+		IDMapDigest: idMapFile.SHA256, SourceStatusDigest: priorInventory.SourceStatusDigest, Rows: rows,
+	}
+	data, digest, err := generation.EncodeSourceSnapshot(inventory)
+	if err != nil {
+		return "", err
+	}
+	path, err := generation.SourceSnapshotPath(digest)
+	if err != nil {
+		return "", err
+	}
+	if _, err := writeImmutableCloudObject(ctx, objects, prefix+path, data, digest); err != nil {
+		return "", fmt.Errorf("retained source snapshot publish failed: %w", err)
+	}
+	return digest, nil
+}
+
+func sameGenerationFilesExceptSuggestions(current, previous []generation.File) bool {
+	const changedPath = "cache/suggested_queries.json"
+	if len(current) != len(previous) {
+		return false
+	}
+	currentByPath := make(map[string]generation.File, len(current))
+	for _, file := range current {
+		currentByPath[file.Path] = file
+	}
+	for _, oldFile := range previous {
+		newFile, ok := currentByPath[oldFile.Path]
+		if !ok {
+			return false
+		}
+		if oldFile.Path == changedPath {
+			continue
+		}
+		if oldFile.Size != newFile.Size || oldFile.SHA256 != newFile.SHA256 {
+			return false
+		}
+	}
+	_, oldSuggestions := previousFile(previous, changedPath)
+	_, newSuggestions := previousFile(current, changedPath)
+	return oldSuggestions && newSuggestions
+}
+
+func previousFile(files []generation.File, path string) (generation.File, bool) {
+	for _, file := range files {
+		if file.Path == path {
+			return file, true
+		}
+	}
+	return generation.File{}, false
+}
+
+func writeImmutableCloudObject(ctx context.Context, objects objectStore, name string, data []byte, digest string) (objectAttrs, error) {
+	attrs, err := objects.Write(ctx, name, data, map[string]string{"sha256": digest}, objectConditions{DoesNotExist: true})
+	if err != nil && !errors.Is(err, errObjectGenerationConflict) {
+		return objectAttrs{}, err
+	}
+	if errors.Is(err, errObjectGenerationConflict) {
+		stored, existing, readErr := objects.Read(ctx, name, 0, generation.MaxFileBytes)
+		if readErr != nil || existing.Size != int64(len(stored)) || !bytes.Equal(stored, data) || digestBytes(stored) != digest {
+			return objectAttrs{}, errors.New("existing immutable object does not match")
+		}
+		attrs = existing
+	} else if err != nil {
+		return objectAttrs{}, err
+	}
+	if attrs.Size != int64(len(data)) || attrs.Generation <= 0 || attrs.Metadata["sha256"] != digest {
+		return objectAttrs{}, errors.New("immutable object attributes mismatch")
+	}
+	readback, readAttrs, err := objects.Read(ctx, name, attrs.Generation, int64(len(data)))
+	if err != nil || readAttrs.Generation != attrs.Generation || int64(len(readback)) != int64(len(data)) || digestBytes(readback) != digest || !bytes.Equal(readback, data) {
+		return objectAttrs{}, errors.New("immutable object readback mismatch")
+	}
+	return attrs, nil
 }
 
 func confirmManifestCommit(objects objectStore, prefix string, proposed []byte, manifest generation.Manifest) (bool, objectAttrs, error) {

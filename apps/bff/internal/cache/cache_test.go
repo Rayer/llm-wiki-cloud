@@ -2,6 +2,8 @@ package cache
 
 import (
 	"context"
+	"crypto/sha256"
+	"encoding/hex"
 	"encoding/json"
 	"errors"
 	"strings"
@@ -9,6 +11,7 @@ import (
 	"testing"
 
 	"github.com/rayer/llm-wiki-bff/internal/gcs"
+	"github.com/rayer/llm-wiki-bff/internal/storage"
 )
 
 type fakeReader struct {
@@ -17,16 +20,25 @@ type fakeReader struct {
 	errs         map[string]error
 	jsonl        string // pre-built JSONL for ReadFile
 	getPageCalls atomic.Int64
+	listCalls    atomic.Int64
+	readCalls    atomic.Int64
+	readErr      error
+	allowEmpty   bool
 }
 
 func (f *fakeReader) ReadFile(_ context.Context, _ string) ([]byte, error) {
-	if f.jsonl == "" {
+	f.readCalls.Add(1)
+	if f.readErr != nil {
+		return nil, f.readErr
+	}
+	if f.jsonl == "" && !f.allowEmpty {
 		return nil, errors.New("not found")
 	}
 	return []byte(f.jsonl), nil
 }
 
 func (f *fakeReader) ListConcepts(_ context.Context, _ bool) ([]gcs.WikiPage, error) {
+	f.listCalls.Add(1)
 	return f.concepts, nil
 }
 
@@ -114,6 +126,179 @@ type tokenReader struct {
 
 func (r *tokenReader) Prefix() string    { return r.prefix }
 func (r *tokenReader) ViewToken() string { return r.token }
+
+type pinnedSnapshotReader struct {
+	fakeReader
+	prefix   string
+	token    string
+	identity storage.QueryGenerationIdentity
+}
+
+func (r *pinnedSnapshotReader) Prefix() string    { return r.prefix }
+func (r *pinnedSnapshotReader) ViewToken() string { return r.token }
+func (r *pinnedSnapshotReader) QueryGenerationIdentity(context.Context) (storage.QueryGenerationIdentity, error) {
+	return r.identity, nil
+}
+
+func TestPinnedCanonicalSnapshotRequiresCanonicalJSONLWithoutFallback(t *testing.T) {
+	reader := &pinnedSnapshotReader{
+		fakeReader: fakeReader{
+			concepts: []gcs.WikiPage{{Slug: "fallback"}},
+			pages:    map[string]string{"fallback": "page body"},
+		},
+		prefix: "users/u/projects/p", token: "manifest-7",
+		identity: storage.QueryGenerationIdentity{ProjectID: "p", GenerationID: "G1", ConceptsDigest: "sha256:" + strings.Repeat("a", 64)},
+	}
+
+	if _, err := New().PinnedCanonicalSnapshot(context.Background(), reader); err == nil {
+		t.Fatal("PinnedCanonicalSnapshot() error = nil for missing canonical JSONL")
+	}
+	if got := reader.readCalls.Load(); got != 1 {
+		t.Fatalf("ReadFile calls = %d, want 1", got)
+	}
+	if got := reader.listCalls.Load(); got != 0 {
+		t.Fatalf("ListConcepts calls = %d, want 0", got)
+	}
+	if got := reader.getPageCalls.Load(); got != 0 {
+		t.Fatalf("GetPage calls = %d, want 0", got)
+	}
+
+	// The existing unprofiled path keeps its page-read fallback.
+	entries, err := New().All(context.Background(), reader)
+	if err != nil || len(entries) != 1 || entries[0].Slug != "fallback" {
+		t.Fatalf("All() fallback = %#v, %v", entries, err)
+	}
+}
+
+func TestPinnedCanonicalSnapshotReturnsExactRowDigestsFromOneRead(t *testing.T) {
+	row := `{"slug":"alpha","title":"Alpha","body":"alpha body","frontmatter":{"id":"stable-alpha"}}`
+	data := row + "\n"
+	digest := sha256.Sum256([]byte(row))
+	fileDigest := sha256.Sum256([]byte(data))
+	reader := &pinnedSnapshotReader{
+		fakeReader: fakeReader{jsonl: data},
+		prefix:     "users/u/projects/p", token: "manifest-7",
+		identity: storage.QueryGenerationIdentity{ProjectID: "p", GenerationID: "G1", ConceptsDigest: "sha256:" + hex.EncodeToString(fileDigest[:])},
+	}
+	cache := New()
+	if entries, err := cache.All(context.Background(), reader); err != nil || len(entries) != 1 || entries[0].Body != "alpha body" {
+		t.Fatalf("All() warm read = %#v, %v", entries, err)
+	}
+	if got := reader.readCalls.Load(); got != 1 {
+		t.Fatalf("ReadFile calls after All() = %d, want 1", got)
+	}
+
+	got, err := cache.PinnedCanonicalSnapshot(context.Background(), reader)
+	if err != nil {
+		t.Fatalf("PinnedCanonicalSnapshot() error = %v", err)
+	}
+	if got.Identity.GenerationID != "G1" || got.Identity.ConceptsDigest != reader.identity.ConceptsDigest {
+		t.Fatalf("snapshot identity = %#v", got.Identity)
+	}
+	if len(got.Entries) != 1 {
+		t.Fatalf("len(snapshot.Entries) = %d, want 1", len(got.Entries))
+	}
+	item := got.Entries[0]
+	if item.StableID != "stable-alpha" || item.ContentDigest != hex.EncodeToString(digest[:]) || item.Entry.Body != "alpha body" {
+		t.Fatalf("snapshot entry = %#v", item)
+	}
+	if got := reader.readCalls.Load(); got != 1 {
+		t.Fatalf("ReadFile calls = %d, want 1", got)
+	}
+	if _, err := cache.PinnedCanonicalSnapshot(context.Background(), reader); err != nil {
+		t.Fatalf("cached PinnedCanonicalSnapshot() error = %v", err)
+	}
+	if got := reader.readCalls.Load(); got != 1 {
+		t.Fatalf("ReadFile calls after cache hit = %d, want 1", got)
+	}
+}
+
+func TestPinnedCanonicalSnapshotRejectsCorruptJSONLWithoutFallback(t *testing.T) {
+	data := `{"slug":"alpha","frontmatter":{"id":"stable-alpha"}}` + "\n{" + "\n"
+	fileDigest := sha256.Sum256([]byte(data))
+	reader := &pinnedSnapshotReader{
+		fakeReader: fakeReader{jsonl: data, concepts: []gcs.WikiPage{{Slug: "fallback"}}},
+		prefix:     "users/u/projects/p", token: "manifest-7",
+		identity: storage.QueryGenerationIdentity{ProjectID: "p", GenerationID: "G1", ConceptsDigest: "sha256:" + hex.EncodeToString(fileDigest[:])},
+	}
+	if _, err := New().PinnedCanonicalSnapshot(context.Background(), reader); err == nil {
+		t.Fatal("PinnedCanonicalSnapshot() error = nil for corrupt JSONL")
+	}
+	if reader.listCalls.Load() != 0 || reader.getPageCalls.Load() != 0 {
+		t.Fatalf("fallback calls: ListConcepts=%d GetPage=%d", reader.listCalls.Load(), reader.getPageCalls.Load())
+	}
+}
+
+func TestPinnedCanonicalSnapshotRejectsManifestDigestMismatch(t *testing.T) {
+	data := `{"slug":"alpha","frontmatter":{"id":"stable-alpha"}}` + "\n"
+	reader := &pinnedSnapshotReader{
+		fakeReader: fakeReader{jsonl: data, concepts: []gcs.WikiPage{{Slug: "fallback"}}},
+		prefix:     "users/u/projects/p", token: "manifest-7",
+		identity: storage.QueryGenerationIdentity{ProjectID: "p", GenerationID: "G1", ConceptsDigest: "sha256:" + strings.Repeat("a", 64)},
+	}
+	if _, err := New().PinnedCanonicalSnapshot(context.Background(), reader); err == nil {
+		t.Fatal("PinnedCanonicalSnapshot() error = nil for manifest digest mismatch")
+	}
+	if reader.readCalls.Load() != 1 || reader.listCalls.Load() != 0 || reader.getPageCalls.Load() != 0 {
+		t.Fatalf("calls: ReadFile=%d ListConcepts=%d GetPage=%d", reader.readCalls.Load(), reader.listCalls.Load(), reader.getPageCalls.Load())
+	}
+}
+
+func TestPinnedCanonicalSnapshotAcceptsValidEmptyJSONL(t *testing.T) {
+	emptyDigest := sha256.Sum256(nil)
+	reader := &pinnedSnapshotReader{
+		fakeReader: fakeReader{
+			allowEmpty: true,
+			concepts:   []gcs.WikiPage{{Slug: "fallback"}},
+			pages:      map[string]string{"fallback": "page body"},
+		},
+		prefix: "users/u/projects/p", token: "manifest-empty",
+		identity: storage.QueryGenerationIdentity{ProjectID: "p", GenerationID: "G-empty", ConceptsDigest: "sha256:" + hex.EncodeToString(emptyDigest[:])},
+	}
+	cache := New()
+	snapshot, err := cache.PinnedCanonicalSnapshot(context.Background(), reader)
+	if err != nil {
+		t.Fatalf("PinnedCanonicalSnapshot() error = %v", err)
+	}
+	if len(snapshot.Entries) != 0 || reader.readCalls.Load() != 1 {
+		t.Fatalf("snapshot entries=%d ReadFile calls=%d", len(snapshot.Entries), reader.readCalls.Load())
+	}
+	entries, err := cache.All(context.Background(), reader)
+	if err != nil || len(entries) != 1 || entries[0].Slug != "fallback" {
+		t.Fatalf("All() fallback after strict empty snapshot = %#v, %v", entries, err)
+	}
+}
+
+func TestPinnedCanonicalSnapshotSeparatesGenerations(t *testing.T) {
+	cache := New()
+	firstData := `{"slug":"alpha","title":"G1","body":"first","frontmatter":{"id":"stable-alpha"}}` + "\n"
+	secondData := `{"slug":"alpha","title":"G2","body":"second","frontmatter":{"id":"stable-alpha"}}` + "\n"
+	firstDigest := sha256.Sum256([]byte(firstData))
+	secondDigest := sha256.Sum256([]byte(secondData))
+	reader := &pinnedSnapshotReader{
+		fakeReader: fakeReader{jsonl: firstData},
+		prefix:     "users/u/projects/p", token: "manifest-G1",
+		identity: storage.QueryGenerationIdentity{ProjectID: "p", GenerationID: "G1", ConceptsDigest: "sha256:" + hex.EncodeToString(firstDigest[:])},
+	}
+	first, err := cache.PinnedCanonicalSnapshot(context.Background(), reader)
+	if err != nil {
+		t.Fatalf("G1 snapshot error = %v", err)
+	}
+	reader.token = "manifest-G2"
+	reader.identity.GenerationID = "G2"
+	reader.identity.ConceptsDigest = "sha256:" + hex.EncodeToString(secondDigest[:])
+	reader.jsonl = secondData
+	second, err := cache.PinnedCanonicalSnapshot(context.Background(), reader)
+	if err != nil {
+		t.Fatalf("G2 snapshot error = %v", err)
+	}
+	if first.Entries[0].Entry.Body != "first" || second.Entries[0].Entry.Body != "second" {
+		t.Fatalf("snapshots mixed generations: G1=%#v G2=%#v", first.Entries[0].Entry, second.Entries[0].Entry)
+	}
+	if got := reader.readCalls.Load(); got != 2 {
+		t.Fatalf("ReadFile calls across G1/G2 = %d, want 2", got)
+	}
+}
 
 func TestQueryBuildsOnCacheMiss(t *testing.T) {
 	reader := &fakeReader{

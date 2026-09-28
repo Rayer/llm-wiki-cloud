@@ -122,7 +122,7 @@ func (e *ProductionExecutor) Execute(ctx context.Context, reader cache.Reader, r
 	result, err := e.queryRetrievalPipeline.Execute(receiptCtx, reader, request)
 	if err != nil {
 		var expansionErr *ExpansionError
-		if e.allowLegacyFallback && errors.As(err, &expansionErr) && ctx.Err() == nil {
+		if request.Profile == nil && e.allowLegacyFallback && errors.As(err, &expansionErr) && ctx.Err() == nil {
 			result, err = e.legacy.Execute(receiptCtx, reader, request)
 			if err == nil && identity.ProfileID != "" {
 				result.RuntimeConfigIdentity = query.CloneRuntimeConfigIdentity(&identity)

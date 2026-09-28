@@ -18,6 +18,7 @@ import {
   type SearchResult,
   type WikiEntry,
 } from '@/lib/api';
+import { ProjectProfilePanel } from './ProjectProfilePanel';
 import { useT } from '@/lib/i18n';
 import { getExactRawCitationRange } from '@/lib/markdown-citations';
 import { resolveWikilinksInMarkdown } from '@/lib/markdown-inline';
@@ -120,7 +121,7 @@ function entryDetailHref(entry: ModalEntry): string | null {
 
 export function HomeClient() {
   const { t } = useT();
-  const { currentProject } = useWorkspace();
+  const { currentProject, user } = useWorkspace();
   const [initialSearch] = useState(() => readSearchParams());
   const [query, setQuery] = useState(initialSearch.q);
   const [mode, setMode] = useState<SearchMode>(initialSearch.mode);
@@ -476,6 +477,13 @@ export function HomeClient() {
           ) : null}
         </form>
       </section>
+
+      {currentProject && user ? (
+        <ProjectProfilePanel
+          key={`${user?.id ?? 'anonymous'}:${currentProject.id}`}
+          projectId={currentProject.id}
+        />
+      ) : null}
 
       {!searched && latestConcepts.length > 0 ? (
         <section className="space-y-4" aria-labelledby="latest-concepts-heading">

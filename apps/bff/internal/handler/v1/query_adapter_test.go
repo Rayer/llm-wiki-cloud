@@ -38,7 +38,7 @@ func TestV1QueryDelegatesTrimmedDefaultRequestAndScopedReader(t *testing.T) {
 	if executor.reader == nil || executor.reader != root.scoped {
 		t.Fatalf("reader = %#v, want exact scoped reader %#v", executor.reader, root.scoped)
 	}
-	if executor.request != (query.Request{Query: "coffee", Mode: "wiki"}) {
+	if !reflect.DeepEqual(executor.request, query.Request{Query: "coffee", Mode: "wiki"}) {
 		t.Fatalf("request = %#v, want exact trimmed query and default mode", executor.request)
 	}
 	if executor.ctx == nil {

@@ -220,7 +220,6 @@ export function WorkspaceProvider({ children }: { children: ReactNode }) {
     window.localStorage.setItem(LAST_PROJECT_KEY, project.id);
     setCurrentProject(project);
     setProjectsError('');
-    setNewProjectOpen(false);
     return project;
   }, [isDemoSession, sessionEpoch, token]);
 

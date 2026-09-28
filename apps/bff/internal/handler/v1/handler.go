@@ -32,6 +32,7 @@ type Handler struct {
 	llm                  *llm.Client
 	expander             *llm.QueryExpander
 	queryExecutor        query.Executor
+	profileRepository    profileRepository
 
 	httpClient                   *http.Client
 	metadataTokenURL             string
@@ -87,6 +88,7 @@ func New(wikiStore store.RootStore, fs *firestore.Client, idx *search.Index, cac
 	}
 	if fs != nil && fs.Raw() != nil {
 		h.accountLookup = auth.FirestoreAccountLookup(fs.Raw())
+		h.profileRepository = newFirestoreProfileRepository(fs.Raw())
 	}
 	return h
 }

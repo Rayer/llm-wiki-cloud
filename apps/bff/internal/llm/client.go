@@ -143,6 +143,7 @@ type chatChoice struct {
 }
 
 type chatResponse struct {
+	Model   string       `json:"model"`
 	Choices []chatChoice `json:"choices"`
 }
 
@@ -187,6 +188,14 @@ func NewClientWithOptions(apiKey string, options ClientOptions) *Client {
 
 // Chat sends a system + user message and returns the assistant's reply.
 func (c *Client) Chat(ctx context.Context, systemPrompt, userMessage string) (string, error) {
+	text, _, err := c.ChatWithMetadata(ctx, systemPrompt, userMessage)
+	return text, err
+}
+
+// ChatWithMetadata returns the assistant reply and the model identifier
+// reported by the provider in this response. An omitted model stays empty;
+// callers that require returned provenance must reject it explicitly.
+func (c *Client) ChatWithMetadata(ctx context.Context, systemPrompt, userMessage string) (string, string, error) {
 	var closeCall func(string)
 	var closeCallAt func(string, time.Time)
 	finish := func(outcome string) {
@@ -223,18 +232,18 @@ func (c *Client) Chat(ctx context.Context, systemPrompt, userMessage string) (st
 
 	data, err := json.Marshal(body)
 	if err != nil {
-		return "", fmt.Errorf("marshal: %w", err)
+		return "", "", fmt.Errorf("marshal: %w", err)
 	}
 
 	req, err := http.NewRequestWithContext(ctx, "POST", c.baseURL+"/chat/completions", bytes.NewReader(data))
 	if err != nil {
-		return "", fmt.Errorf("new request: %w", err)
+		return "", "", fmt.Errorf("new request: %w", err)
 	}
 	req.Header.Set("Authorization", "Bearer "+c.apiKey)
 	req.Header.Set("Content-Type", "application/json")
 
 	if err := ctx.Err(); err != nil {
-		return "", err
+		return "", "", err
 	}
 	if recorder, ok := ctx.Value(recorderKey{}).(CallRecorder); ok {
 		stage := CallStage(ctx)
@@ -249,7 +258,7 @@ func (c *Client) Chat(ctx context.Context, systemPrompt, userMessage string) (st
 	resp, err := c.client.Do(req)
 	if err != nil {
 		finish(callOutcome(ctx, err))
-		return "", fmt.Errorf("api call: %w", err)
+		return "", "", fmt.Errorf("api call: %w", err)
 	}
 	defer resp.Body.Close()
 
@@ -263,7 +272,7 @@ func (c *Client) Chat(ctx context.Context, systemPrompt, userMessage string) (st
 		} else {
 			finish(callOutcome(ctx, err))
 		}
-		return "", fmt.Errorf("read response: %w", err)
+		return "", "", fmt.Errorf("read response: %w", err)
 	}
 	if len(respData) > maxChatResponseBytes {
 		if closeCallAt != nil {
@@ -273,7 +282,7 @@ func (c *Client) Chat(ctx context.Context, systemPrompt, userMessage string) (st
 		} else {
 			finish("decode_error")
 		}
-		return "", fmt.Errorf("response exceeds %d-byte limit", maxChatResponseBytes)
+		return "", "", fmt.Errorf("response exceeds %d-byte limit", maxChatResponseBytes)
 	}
 
 	if resp.StatusCode != 200 {
@@ -284,7 +293,7 @@ func (c *Client) Chat(ctx context.Context, systemPrompt, userMessage string) (st
 		} else {
 			finish("provider_error")
 		}
-		return "", &HTTPStatusError{StatusCode: resp.StatusCode}
+		return "", "", &HTTPStatusError{StatusCode: resp.StatusCode}
 	}
 
 	var cr chatResponse
@@ -296,7 +305,7 @@ func (c *Client) Chat(ctx context.Context, systemPrompt, userMessage string) (st
 		} else {
 			finish("decode_error")
 		}
-		return "", fmt.Errorf("unmarshal: %w", err)
+		return "", "", fmt.Errorf("unmarshal: %w", err)
 	}
 	if len(cr.Choices) == 0 {
 		if closeCallAt != nil {
@@ -306,7 +315,7 @@ func (c *Client) Chat(ctx context.Context, systemPrompt, userMessage string) (st
 		} else {
 			finish("decode_error")
 		}
-		return "", fmt.Errorf("no choices in response")
+		return "", "", fmt.Errorf("no choices in response")
 	}
 	if closeCallAt != nil {
 		f := closeCallAt
@@ -316,7 +325,7 @@ func (c *Client) Chat(ctx context.Context, systemPrompt, userMessage string) (st
 		finish("success")
 	}
 
-	return cr.Choices[0].Message.Content, nil
+	return cr.Choices[0].Message.Content, cr.Model, nil
 }
 
 func callOutcome(ctx context.Context, err error) string {

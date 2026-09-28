@@ -40,6 +40,7 @@ type Manifest struct {
 	Version              int    `json:"version"`
 	GenerationID         string `json:"generation_id"`
 	PreviousGenerationID string `json:"previous_generation_id,omitempty"`
+	SourceSnapshotDigest string `json:"source_snapshot_digest,omitempty"`
 	CreatedAt            string `json:"created_at"`
 	InputFingerprint     string `json:"input_fingerprint"`
 	Files                []File `json:"files"`
@@ -87,6 +88,8 @@ func decodeManifestStrict(data []byte) (Manifest, error) {
 			err = dec.Decode(&manifest.GenerationID)
 		case "previous_generation_id":
 			err = dec.Decode(&manifest.PreviousGenerationID)
+		case "source_snapshot_digest":
+			err = dec.Decode(&manifest.SourceSnapshotDigest)
 		case "created_at":
 			err = dec.Decode(&manifest.CreatedAt)
 		case "input_fingerprint":
@@ -184,7 +187,7 @@ func decodeManifestFile(dec *json.Decoder) (File, error) {
 }
 
 func (m Manifest) Validate() error {
-	if m.Version != Version || !safeGenerationID(m.GenerationID) || (m.PreviousGenerationID != "" && !safeGenerationID(m.PreviousGenerationID)) {
+	if m.Version != Version || !safeGenerationID(m.GenerationID) || (m.PreviousGenerationID != "" && !safeGenerationID(m.PreviousGenerationID)) || (m.SourceSnapshotDigest != "" && !validDigest(m.SourceSnapshotDigest)) {
 		return errors.New("invalid generation manifest")
 	}
 	if _, err := time.Parse(time.RFC3339, m.CreatedAt); err != nil || strings.TrimSpace(m.InputFingerprint) == "" || len(m.Files) > MaxFiles {
@@ -206,6 +209,14 @@ func (m Manifest) Validate() error {
 }
 
 func (m Manifest) ObjectPath(file File) string { return Prefix + m.GenerationID + "/" + file.Path }
+
+// ArchivedManifestPath addresses the immutable copy of a generation manifest.
+func ArchivedManifestPath(generationID string) (string, error) {
+	if !safeGenerationID(generationID) {
+		return "", errors.New("invalid generation ID")
+	}
+	return Prefix + generationID + "/manifest.json", nil
+}
 
 func (m Manifest) File(path string) (File, bool) {
 	i := sort.Search(len(m.Files), func(i int) bool { return m.Files[i].Path >= path })

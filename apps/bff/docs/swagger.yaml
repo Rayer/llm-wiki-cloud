@@ -485,6 +485,8 @@ definitions:
     type: object
   search.Citation:
     properties:
+      id:
+        type: string
       path:
         description: 'pre-encoded URL path: /concepts/xxx or /sources/xxx'
         type: string
@@ -498,6 +500,8 @@ definitions:
     type: object
   search.Result:
     properties:
+      id:
+        type: string
       slug:
         type: string
       snippet:
@@ -519,13 +523,11 @@ definitions:
       announcement_markdown:
         type: string
       email_registration_enabled:
-        description: "Effective email capability: master AND saved email preference."
         type: boolean
       google_registration_enabled:
-        description: "Effective Google capability: master AND saved Google preference."
         type: boolean
       registration_enabled:
-        description: "Master switch for new-account registration."
+        description: Master switch; method preferences are retained when off.
         type: boolean
     type: object
   syssettings.Settings:
@@ -533,25 +535,20 @@ definitions:
       announcement_markdown:
         type: string
       email_registration_enabled:
-        description: "Saved email preference, retained while the master is off."
         type: boolean
       google_registration_enabled:
-        description: "Saved Google preference, retained while the master is off."
         type: boolean
       registration_enabled:
-        description: "Master switch for new-account registration."
+        description: Master switch; method preferences are retained when off.
         type: boolean
     type: object
   syssettings.patchSettingsRequest:
     properties:
       email_registration_enabled:
-        description: "Optional saved email preference. Omission retains its current value."
         type: boolean
       google_registration_enabled:
-        description: "Optional saved Google preference. Omission retains its current value."
         type: boolean
       registration_enabled:
-        description: "Optional master switch. Omission retains its current value."
         type: boolean
     type: object
   syssettings.publishAnnouncementRequest:
@@ -560,6 +557,240 @@ definitions:
         type: string
     required:
     - announcement_markdown
+    type: object
+  v1.ProfileActive:
+    properties:
+      candidate_id:
+        type: string
+      content_generation:
+        type: string
+      dictionary_revision:
+        type: string
+      guidance_revision:
+        type: string
+      query_rule_revision:
+        type: string
+      tag_set_revision:
+        type: string
+    required:
+    - candidate_id
+    - content_generation
+    - dictionary_revision
+    - guidance_revision
+    - query_rule_revision
+    - tag_set_revision
+    type: object
+  v1.ProfileBootstrapGuidance:
+    properties:
+      confirmed_at:
+        type: string
+      input_digest:
+        type: string
+      model_version:
+        type: string
+      preview:
+        $ref: '#/definitions/v1.ProfileBootstrapPreview'
+      profile_revision:
+        type: integer
+      prompt_version:
+        type: string
+      revision:
+        type: string
+      schema_version:
+        type: string
+      status:
+        enum:
+        - preview_ready
+        - confirmed
+        type: string
+    required:
+    - confirmed_at
+    - input_digest
+    - model_version
+    - preview
+    - profile_revision
+    - prompt_version
+    - revision
+    - schema_version
+    - status
+    type: object
+  v1.ProfileBootstrapPreview:
+    properties:
+      guidance_diff:
+        type: string
+      requirements:
+        items:
+          $ref: '#/definitions/v1.ProfileRequirementAccounting'
+        type: array
+    required:
+    - guidance_diff
+    - requirements
+    type: object
+  v1.ProfileCandidate:
+    properties:
+      base_revision:
+        type: integer
+      candidate_id:
+        type: string
+      content_generation:
+        type: string
+      dictionary:
+        $ref: '#/definitions/v1.ProfileDerivedRef'
+      guidance:
+        $ref: '#/definitions/v1.ProfileDerivedRef'
+      preview:
+        $ref: '#/definitions/v1.ProfilePreview'
+      requirements_digest:
+        type: string
+      source:
+        enum:
+        - manual
+        - compile_auto
+        type: string
+    required:
+    - base_revision
+    - candidate_id
+    - content_generation
+    - dictionary
+    - guidance
+    - preview
+    - requirements_digest
+    - source
+    type: object
+  v1.ProfileDerivedRef:
+    properties:
+      input_digest:
+        type: string
+      model_version:
+        type: string
+      prompt_version:
+        type: string
+      revision:
+        type: string
+      schema_version:
+        type: string
+    required:
+    - input_digest
+    - model_version
+    - prompt_version
+    - revision
+    - schema_version
+    type: object
+  v1.ProfileJob:
+    properties:
+      candidate_id:
+        type: string
+      content_generation:
+        type: string
+      error_code:
+        type: string
+      job_id:
+        type: string
+      missing_count:
+        type: integer
+      status:
+        enum:
+        - scheduled
+        - running
+        - retry_wait
+        - incomplete
+        - ready
+        - superseded
+        type: string
+    required:
+    - candidate_id
+    - content_generation
+    - error_code
+    - job_id
+    - missing_count
+    - status
+    type: object
+  v1.ProfilePreview:
+    properties:
+      dictionary_diff:
+        type: string
+      guidance_diff:
+        type: string
+      requirements:
+        items:
+          $ref: '#/definitions/v1.ProfileRequirementAccounting'
+        type: array
+    required:
+    - dictionary_diff
+    - guidance_diff
+    - requirements
+    type: object
+  v1.ProfileRequirement:
+    properties:
+      id:
+        type: string
+      text:
+        type: string
+    required:
+    - id
+    - text
+    type: object
+  v1.ProfileRequirementAccounting:
+    properties:
+      disposition:
+        enum:
+        - compile_guidance
+        - dictionary_or_query
+        - both
+        - limitation
+        type: string
+      explanation:
+        type: string
+      id:
+        type: string
+    required:
+    - disposition
+    - explanation
+    - id
+    type: object
+  v1.ProfileState:
+    properties:
+      active:
+        $ref: '#/definitions/v1.ProfileActive'
+      bootstrap_guidance:
+        $ref: '#/definitions/v1.ProfileBootstrapGuidance'
+      candidate:
+        $ref: '#/definitions/v1.ProfileCandidate'
+      confirmed_candidate_id:
+        type: string
+      derivation_error_code:
+        type: string
+      derivation_status:
+        enum:
+        - pending
+        - ready
+        - failed
+        - superseded
+        type: string
+      job:
+        $ref: '#/definitions/v1.ProfileJob'
+      project_id:
+        type: string
+      requirements:
+        items:
+          $ref: '#/definitions/v1.ProfileRequirement'
+        type: array
+      revision:
+        type: integer
+      scheduled_for:
+        type: string
+    required:
+    - active
+    - bootstrap_guidance
+    - candidate
+    - confirmed_candidate_id
+    - derivation_error_code
+    - derivation_status
+    - job
+    - project_id
+    - requirements
+    - revision
+    - scheduled_for
     type: object
   v1.adminPipelineStatusResponse:
     properties:
@@ -607,6 +838,81 @@ definitions:
         items:
           type: string
         type: array
+    type: object
+  v1.profileBootstrapConfirmRequest:
+    properties:
+      expected_revision:
+        type: integer
+      input_digest:
+        type: string
+    required:
+    - expected_revision
+    - input_digest
+    type: object
+  v1.profileBootstrapGuidanceResponse:
+    properties:
+      bootstrap_guidance:
+        $ref: '#/definitions/v1.ProfileBootstrapGuidance'
+    type: object
+  v1.profileConflictResponse:
+    properties:
+      error:
+        type: string
+      revision:
+        type: integer
+    type: object
+  v1.profileGuidanceArtifactData:
+    properties:
+      compile_guidance:
+        type: string
+      input_digest:
+        type: string
+      model_version:
+        type: string
+      prompt_version:
+        type: string
+      revision:
+        type: string
+      schema_version:
+        type: string
+    type: object
+  v1.profileGuidanceArtifactResponse:
+    properties:
+      guidance_artifact:
+        $ref: '#/definitions/v1.profileGuidanceArtifactData'
+    type: object
+  v1.profilePutRequest:
+    properties:
+      expected_revision:
+        type: integer
+      requirements:
+        items:
+          $ref: '#/definitions/v1.ProfileRequirement'
+        type: array
+    required:
+    - expected_revision
+    - requirements
+    type: object
+  v1.profileRevisionRequest:
+    properties:
+      expected_revision:
+        type: integer
+    required:
+    - expected_revision
+    type: object
+  v1.recompileAllCapabilityResponse:
+    properties:
+      allowed:
+        type: boolean
+      denial_code:
+        type: string
+    type: object
+  v1.recompileAllDenialResponse:
+    properties:
+      denial_code:
+        type: string
+      error:
+        type: string
     type: object
   v1.renameProjectRequest:
     additionalProperties: false
@@ -1400,6 +1706,218 @@ paths:
       summary: List user projects
       tags:
       - projects
+  /api/v1/projects/{pid}/profile/bootstrap-guidance:
+    get:
+      description: Returns the current generation-free guidance preview before a Project
+        has an active Profile generation.
+      parameters:
+      - description: Project ID
+        in: path
+        name: pid
+        required: true
+        type: string
+      - description: Project ID; must match the URL
+        in: header
+        name: X-Project-ID
+        required: true
+        type: string
+      produces:
+      - application/json
+      responses:
+        "200":
+          description: OK
+          schema:
+            $ref: '#/definitions/v1.profileBootstrapGuidanceResponse'
+        "401":
+          description: Unauthorized
+          schema:
+            $ref: '#/definitions/handler.ErrorResponse'
+        "404":
+          description: Not Found
+          schema:
+            $ref: '#/definitions/handler.ErrorResponse'
+        "500":
+          description: Internal Server Error
+          schema:
+            $ref: '#/definitions/handler.ErrorResponse'
+      security:
+      - DevUserAuth: []
+      - ProjectHeader: []
+      summary: Get first-compile Profile guidance preview
+      tags:
+      - profile
+  /api/v1/projects/{pid}/profile/bootstrap-guidance/{revision}/confirm:
+    post:
+      consumes:
+      - application/json
+      description: Confirms the current bootstrap guidance only when its immutable
+        revision, Profile revision, and ordered requirements digest still match.
+      parameters:
+      - description: Project ID
+        in: path
+        name: pid
+        required: true
+        type: string
+      - description: Immutable bootstrap artifact revision
+        in: path
+        name: revision
+        required: true
+        type: string
+      - description: Project ID; must match the URL
+        in: header
+        name: X-Project-ID
+        required: true
+        type: string
+      - description: Current Profile revision and requirements digest
+        in: body
+        name: request
+        required: true
+        schema:
+          $ref: '#/definitions/v1.profileBootstrapConfirmRequest'
+      produces:
+      - application/json
+      responses:
+        "200":
+          description: OK
+          schema:
+            $ref: '#/definitions/v1.profileBootstrapGuidanceResponse'
+        "400":
+          description: Bad Request
+          schema:
+            $ref: '#/definitions/handler.ErrorResponse'
+        "401":
+          description: Unauthorized
+          schema:
+            $ref: '#/definitions/handler.ErrorResponse'
+        "404":
+          description: Not Found
+          schema:
+            $ref: '#/definitions/handler.ErrorResponse'
+        "409":
+          description: Conflict
+          schema:
+            $ref: '#/definitions/v1.profileConflictResponse'
+        "428":
+          description: Precondition Required
+          schema:
+            $ref: '#/definitions/handler.ErrorResponse'
+        "500":
+          description: Internal Server Error
+          schema:
+            $ref: '#/definitions/handler.ErrorResponse'
+      security:
+      - DevUserAuth: []
+      - ProjectHeader: []
+      summary: Confirm first-compile Profile guidance
+      tags:
+      - profile
+  /api/v1/projects/{pid}/profile/guidance/{revision}:
+    get:
+      description: Returns the exact validated guidance text and version metadata
+        for a current bootstrap, candidate, or Active Profile reference.
+      parameters:
+      - description: Project ID
+        in: path
+        name: pid
+        required: true
+        type: string
+      - description: Immutable guidance artifact revision
+        in: path
+        name: revision
+        required: true
+        type: string
+      - description: Project ID; must match the URL
+        in: header
+        name: X-Project-ID
+        required: true
+        type: string
+      produces:
+      - application/json
+      responses:
+        "200":
+          description: OK
+          schema:
+            $ref: '#/definitions/v1.profileGuidanceArtifactResponse'
+        "400":
+          description: Bad Request
+          schema:
+            $ref: '#/definitions/handler.ErrorResponse'
+        "401":
+          description: Unauthorized
+          schema:
+            $ref: '#/definitions/handler.ErrorResponse'
+        "404":
+          description: Not Found
+          schema:
+            $ref: '#/definitions/handler.ErrorResponse'
+        "500":
+          description: Internal Server Error
+          schema:
+            $ref: '#/definitions/handler.ErrorResponse'
+      security:
+      - DevUserAuth: []
+      - ProjectHeader: []
+      summary: Get immutable Profile compile guidance
+      tags:
+      - profile
+  /api/v1/projects/{pid}/recompile-all:
+    post:
+      description: Rejects the full-project recompile before quota or worker admission
+        until project BYOK is available.
+      produces:
+      - application/json
+      responses:
+        "401":
+          description: Unauthorized
+          schema:
+            $ref: '#/definitions/handler.ErrorResponse'
+        "403":
+          description: Forbidden
+          schema:
+            $ref: '#/definitions/v1.recompileAllDenialResponse'
+        "404":
+          description: Not Found
+          schema:
+            $ref: '#/definitions/handler.ErrorResponse'
+        "500":
+          description: Internal Server Error
+          schema:
+            $ref: '#/definitions/handler.ErrorResponse'
+      security:
+      - DevUserAuth: []
+      - ProjectHeader: []
+      summary: Recompile all project content
+      tags:
+      - profile
+  /api/v1/projects/{pid}/recompile-all/capability:
+    get:
+      description: Returns the project's current Recompile all capability. It is denied
+        until project BYOK is available.
+      produces:
+      - application/json
+      responses:
+        "200":
+          description: OK
+          schema:
+            $ref: '#/definitions/v1.recompileAllCapabilityResponse'
+        "401":
+          description: Unauthorized
+          schema:
+            $ref: '#/definitions/handler.ErrorResponse'
+        "404":
+          description: Not Found
+          schema:
+            $ref: '#/definitions/handler.ErrorResponse'
+        "500":
+          description: Internal Server Error
+          schema:
+            $ref: '#/definitions/handler.ErrorResponse'
+      security:
+      - DevUserAuth: []
+      - ProjectHeader: []
+      summary: Get Recompile all capability
+      tags:
+      - profile
   /api/v1/projects/{projectID}:
     patch:
       consumes:
@@ -1452,10 +1970,310 @@ paths:
       summary: Rename an owned project
       tags:
       - projects
+  /api/v1/projects/{projectID}/profile:
+    get:
+      parameters:
+      - description: Project ID
+        in: path
+        name: projectID
+        required: true
+        type: string
+      - description: Project ID; must match the URL
+        in: header
+        name: X-Project-ID
+        required: true
+        type: string
+      responses:
+        "200":
+          description: OK
+          schema:
+            $ref: '#/definitions/v1.ProfileState'
+        "401":
+          description: Unauthorized
+          schema:
+            $ref: '#/definitions/handler.ErrorResponse'
+        "404":
+          description: Not Found
+          schema:
+            $ref: '#/definitions/handler.ErrorResponse'
+        "500":
+          description: Internal Server Error
+          schema:
+            $ref: '#/definitions/handler.ErrorResponse'
+      security:
+      - BearerAuth: []
+      summary: Get project Profile state
+      tags:
+      - profile
+    put:
+      parameters:
+      - description: Project ID
+        in: path
+        name: projectID
+        required: true
+        type: string
+      - description: Project ID; must match the URL
+        in: header
+        name: X-Project-ID
+        required: true
+        type: string
+      - description: Expected revision and complete requirements
+        in: body
+        name: request
+        required: true
+        schema:
+          $ref: '#/definitions/v1.profilePutRequest'
+      responses:
+        "200":
+          description: OK
+          schema:
+            $ref: '#/definitions/v1.ProfileState'
+        "400":
+          description: Bad Request
+          schema:
+            $ref: '#/definitions/handler.ErrorResponse'
+        "401":
+          description: Unauthorized
+          schema:
+            $ref: '#/definitions/handler.ErrorResponse'
+        "404":
+          description: Not Found
+          schema:
+            $ref: '#/definitions/handler.ErrorResponse'
+        "409":
+          description: Conflict
+          schema:
+            $ref: '#/definitions/v1.profileConflictResponse'
+        "428":
+          description: Precondition Required
+          schema:
+            $ref: '#/definitions/handler.ErrorResponse'
+        "500":
+          description: Internal Server Error
+          schema:
+            $ref: '#/definitions/handler.ErrorResponse'
+      security:
+      - BearerAuth: []
+      summary: Save project Profile requirements
+      tags:
+      - profile
+  /api/v1/projects/{projectID}/profile/candidates/{candidateID}/confirm:
+    post:
+      parameters:
+      - description: Project ID
+        in: path
+        name: projectID
+        required: true
+        type: string
+      - description: Candidate ID
+        in: path
+        name: candidateID
+        required: true
+        type: string
+      - description: Project ID; must match the URL
+        in: header
+        name: X-Project-ID
+        required: true
+        type: string
+      - description: Expected revision
+        in: body
+        name: request
+        required: true
+        schema:
+          $ref: '#/definitions/v1.profileRevisionRequest'
+      responses:
+        "200":
+          description: OK
+          schema:
+            $ref: '#/definitions/v1.ProfileState'
+        "400":
+          description: Bad Request
+          schema:
+            $ref: '#/definitions/handler.ErrorResponse'
+        "401":
+          description: Unauthorized
+          schema:
+            $ref: '#/definitions/handler.ErrorResponse'
+        "404":
+          description: Not Found
+          schema:
+            $ref: '#/definitions/handler.ErrorResponse'
+        "409":
+          description: Conflict
+          schema:
+            $ref: '#/definitions/v1.profileConflictResponse'
+        "428":
+          description: Precondition Required
+          schema:
+            $ref: '#/definitions/handler.ErrorResponse'
+        "500":
+          description: Internal Server Error
+          schema:
+            $ref: '#/definitions/handler.ErrorResponse'
+      security:
+      - BearerAuth: []
+      summary: Confirm the current Profile candidate
+      tags:
+      - profile
+  /api/v1/projects/{projectID}/profile/candidates/{candidateID}/retry:
+    post:
+      parameters:
+      - description: Project ID
+        in: path
+        name: projectID
+        required: true
+        type: string
+      - description: Candidate ID
+        in: path
+        name: candidateID
+        required: true
+        type: string
+      - description: Project ID; must match the URL
+        in: header
+        name: X-Project-ID
+        required: true
+        type: string
+      - description: Expected revision
+        in: body
+        name: request
+        required: true
+        schema:
+          $ref: '#/definitions/v1.profileRevisionRequest'
+      responses:
+        "200":
+          description: OK
+          schema:
+            $ref: '#/definitions/v1.ProfileState'
+        "400":
+          description: Bad Request
+          schema:
+            $ref: '#/definitions/handler.ErrorResponse'
+        "401":
+          description: Unauthorized
+          schema:
+            $ref: '#/definitions/handler.ErrorResponse'
+        "404":
+          description: Not Found
+          schema:
+            $ref: '#/definitions/handler.ErrorResponse'
+        "409":
+          description: Conflict
+          schema:
+            $ref: '#/definitions/v1.profileConflictResponse'
+        "428":
+          description: Precondition Required
+          schema:
+            $ref: '#/definitions/handler.ErrorResponse'
+        "500":
+          description: Internal Server Error
+          schema:
+            $ref: '#/definitions/handler.ErrorResponse'
+      security:
+      - BearerAuth: []
+      summary: Retry missing Profile tagging work
+      tags:
+      - profile
+  /api/v1/projects/{projectID}/profile/derivation/retry:
+    post:
+      parameters:
+      - description: Project ID
+        in: path
+        name: projectID
+        required: true
+        type: string
+      - description: Project ID; must match the URL
+        in: header
+        name: X-Project-ID
+        required: true
+        type: string
+      - description: Expected revision
+        in: body
+        name: request
+        required: true
+        schema:
+          $ref: '#/definitions/v1.profileRevisionRequest'
+      responses:
+        "200":
+          description: OK
+          schema:
+            $ref: '#/definitions/v1.ProfileState'
+        "400":
+          description: Bad Request
+          schema:
+            $ref: '#/definitions/handler.ErrorResponse'
+        "401":
+          description: Unauthorized
+          schema:
+            $ref: '#/definitions/handler.ErrorResponse'
+        "404":
+          description: Not Found
+          schema:
+            $ref: '#/definitions/handler.ErrorResponse'
+        "409":
+          description: Conflict
+          schema:
+            $ref: '#/definitions/v1.profileConflictResponse'
+        "428":
+          description: Precondition Required
+          schema:
+            $ref: '#/definitions/handler.ErrorResponse'
+        "500":
+          description: Internal Server Error
+          schema:
+            $ref: '#/definitions/handler.ErrorResponse'
+      security:
+      - BearerAuth: []
+      summary: Retry failed Profile derivation
+      tags:
+      - profile
+  /api/v1/projects/{projectID}/profile/jobs/{jobID}:
+    get:
+      parameters:
+      - description: Project ID
+        in: path
+        name: projectID
+        required: true
+        type: string
+      - description: Job ID
+        in: path
+        name: jobID
+        required: true
+        type: string
+      - description: Project ID; must match the URL
+        in: header
+        name: X-Project-ID
+        required: true
+        type: string
+      responses:
+        "200":
+          description: OK
+          schema:
+            $ref: '#/definitions/v1.ProfileJob'
+        "400":
+          description: Bad Request
+          schema:
+            $ref: '#/definitions/handler.ErrorResponse'
+        "401":
+          description: Unauthorized
+          schema:
+            $ref: '#/definitions/handler.ErrorResponse'
+        "404":
+          description: Not Found
+          schema:
+            $ref: '#/definitions/handler.ErrorResponse'
+        "500":
+          description: Internal Server Error
+          schema:
+            $ref: '#/definitions/handler.ErrorResponse'
+      security:
+      - BearerAuth: []
+      summary: Get a Profile tagging job
+      tags:
+      - profile
   /api/v1/public/config:
     get:
-      description: Returns method-specific new-account registration capabilities and currently published announcement
-        Markdown.
+      description: Returns method-specific new-account registration capabilities and
+        currently published announcement Markdown.
       produces:
       - application/json
       responses:
