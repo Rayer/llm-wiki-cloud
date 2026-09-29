@@ -2299,6 +2299,8 @@ class CDContractTests(unittest.TestCase):
                 if component == 'bff':
                     update_call = next(call for call in calls if f"run services update {value['service']}" in call)
                     self.assertIn('--update-env-vars ^|^QUERY_STAGE_CONFIG_PATH=' + normalized['query_config']['runtime_path']
+                                  + '|PROFILE_RUNTIME_AUDIENCE=' + normalized['bff']['profile_runtime_audience']
+                                  + '|PROFILE_RUNTIME_SERVICE_ACCOUNT=' + normalized['bff']['profile_runtime_service_account']
                                   + '|EXPORT_JOB_URL=https://run.googleapis.com/v2/projects/llm-wiki-cloud/locations/asia-east1/jobs/export-job-dev:run'
                                   + '|EXPORT_SIGNING_SERVICE_ACCOUNT=lwc-export-signer-dev@llm-wiki-cloud.iam.gserviceaccount.com', update_call)
                     self.assertNotIn('--remove-env-vars', update_call)
