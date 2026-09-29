@@ -8,6 +8,7 @@ import (
 	"flag"
 	"fmt"
 	"io"
+	"net/url"
 	"os"
 	"path/filepath"
 	"regexp"
@@ -18,11 +19,13 @@ import (
 )
 
 var (
-	allowedEnvironments = map[string]struct{}{"development": {}, "production": {}}
-	allowedComponents   = []string{"auth", "bff", "worker", "exportjob", "frontend"}
-	componentSet        = map[string]struct{}{"auth": {}, "bff": {}, "worker": {}, "exportjob": {}, "frontend": {}}
-	secretRefPattern    = regexp.MustCompile(`^[A-Za-z0-9][A-Za-z0-9._-]*$`)
-	secretValuePattern  = regexp.MustCompile(`(?i)(?:github_pat_|ghp_|xox[baprs]-|-----begin|sk-[A-Za-z0-9])`)
+	allowedEnvironments                 = map[string]struct{}{"development": {}, "production": {}}
+	allowedComponents                   = []string{"auth", "bff", "worker", "exportjob", "frontend"}
+	componentSet                        = map[string]struct{}{"auth": {}, "bff": {}, "worker": {}, "exportjob": {}, "frontend": {}}
+	secretRefPattern                    = regexp.MustCompile(`^[A-Za-z0-9][A-Za-z0-9._-]*$`)
+	secretValuePattern                  = regexp.MustCompile(`(?i)(?:github_pat_|ghp_|xox[baprs]-|-----begin|sk-[A-Za-z0-9])`)
+	secretVersionPattern                = regexp.MustCompile(`^[1-9][0-9]*$`)
+	profileRuntimeServiceAccountPattern = regexp.MustCompile(`^[a-z][a-z0-9-]{4,28}[a-z0-9]@[a-z0-9.-]+\.iam\.gserviceaccount\.com$`)
 )
 
 type EnvironmentConfig struct {
@@ -61,23 +64,25 @@ type AuthSecretReferences struct {
 }
 
 type BFFConfig struct {
-	ServiceName           string                  `yaml:"service_name" json:"service_name"`
-	RuntimeServiceAccount string                  `yaml:"runtime_service_account" json:"runtime_service_account"`
-	Network               string                  `yaml:"network" json:"network"`
-	Subnet                string                  `yaml:"subnet" json:"subnet"`
-	VPCEgress             string                  `yaml:"vpc_egress" json:"vpc_egress"`
-	Ingress               string                  `yaml:"ingress" json:"ingress"`
-	MaxInstances          int                     `yaml:"max_instances" json:"max_instances"`
-	Bucket                string                  `yaml:"bucket" json:"bucket"`
-	FirestoreDatabaseID   string                  `yaml:"firestore_database_id" json:"firestore_database_id"`
-	PipelineJobName       string                  `yaml:"pipeline_job_name" json:"pipeline_job_name"`
-	PipelineJobLocation   string                  `yaml:"pipeline_job_location" json:"pipeline_job_location"`
-	PipelineJobURL        string                  `yaml:"pipeline_job_url" json:"pipeline_job_url"`
-	AuthServiceURL        string                  `yaml:"auth_service_url" json:"auth_service_url"`
-	AllowedOrigins        []string                `yaml:"allowed_origins" json:"allowed_origins"`
-	DevJWT                *bool                   `yaml:"dev_jwt" json:"dev_jwt"`
-	QueryConfig           string                  `yaml:"query_config" json:"query_config"`
-	SecretReferences      RuntimeSecretReferences `yaml:"secret_references" json:"secret_references"`
+	ServiceName                  string                  `yaml:"service_name" json:"service_name"`
+	RuntimeServiceAccount        string                  `yaml:"runtime_service_account" json:"runtime_service_account"`
+	ProfileRuntimeAudience       string                  `yaml:"profile_runtime_audience" json:"profile_runtime_audience,omitempty"`
+	ProfileRuntimeServiceAccount string                  `yaml:"profile_runtime_service_account" json:"profile_runtime_service_account,omitempty"`
+	Network                      string                  `yaml:"network" json:"network"`
+	Subnet                       string                  `yaml:"subnet" json:"subnet"`
+	VPCEgress                    string                  `yaml:"vpc_egress" json:"vpc_egress"`
+	Ingress                      string                  `yaml:"ingress" json:"ingress"`
+	MaxInstances                 int                     `yaml:"max_instances" json:"max_instances"`
+	Bucket                       string                  `yaml:"bucket" json:"bucket"`
+	FirestoreDatabaseID          string                  `yaml:"firestore_database_id" json:"firestore_database_id"`
+	PipelineJobName              string                  `yaml:"pipeline_job_name" json:"pipeline_job_name"`
+	PipelineJobLocation          string                  `yaml:"pipeline_job_location" json:"pipeline_job_location"`
+	PipelineJobURL               string                  `yaml:"pipeline_job_url" json:"pipeline_job_url"`
+	AuthServiceURL               string                  `yaml:"auth_service_url" json:"auth_service_url"`
+	AllowedOrigins               []string                `yaml:"allowed_origins" json:"allowed_origins"`
+	DevJWT                       *bool                   `yaml:"dev_jwt" json:"dev_jwt"`
+	QueryConfig                  string                  `yaml:"query_config" json:"query_config"`
+	SecretReferences             RuntimeSecretReferences `yaml:"secret_references" json:"secret_references"`
 }
 
 type WorkerConfig struct {
@@ -90,8 +95,14 @@ type WorkerConfig struct {
 }
 
 type RuntimeSecretReferences struct {
-	JWT            string `yaml:"jwt" json:"jwt"`
-	DeepSeekAPIKey string `yaml:"deepseek_api_key" json:"deepseek_api_key"`
+	JWT               string                    `yaml:"jwt" json:"jwt"`
+	DeepSeekAPIKey    string                    `yaml:"deepseek_api_key" json:"deepseek_api_key"`
+	TypeSafeJevAPIKey *VersionedSecretReference `yaml:"typesafe_jev_api_key,omitempty" json:"typesafe_jev_api_key,omitempty"`
+}
+
+type VersionedSecretReference struct {
+	Name    string `yaml:"name" json:"name"`
+	Version string `yaml:"version" json:"version"`
 }
 
 type WorkerSecretReferences struct {
@@ -409,8 +420,32 @@ func validateConfigForEnvironment(environment string, config EnvironmentConfig) 
 		if config.Auth.SecretReferences.JWT != jwt || config.BFF.SecretReferences.JWT != jwt || config.BFF.SecretReferences.DeepSeekAPIKey != "deepseek-apikey" || config.Worker.SecretReferences.DeepSeekAPIKey != "deepseek-apikey" {
 			return errors.New("secret references are not the reviewed environment bindings")
 		}
+		if environment == "development" {
+			if !validProfileRuntimeAudience(config.BFF.ProfileRuntimeAudience) || !validProfileRuntimeServiceAccount(config.BFF.ProfileRuntimeServiceAccount) {
+				return errors.New("DEV Profile runtime audience or invoker identity is invalid")
+			}
+			ref := config.BFF.SecretReferences.TypeSafeJevAPIKey
+			if ref == nil || !secretRefPattern.MatchString(ref.Name) || secretValuePattern.MatchString(ref.Name) || !secretVersionPattern.MatchString(ref.Version) {
+				return errors.New("DEV TypeSafe credential must use an exact secret reference and numeric version")
+			}
+		} else if config.BFF.ProfileRuntimeAudience != "" || config.BFF.ProfileRuntimeServiceAccount != "" || config.BFF.SecretReferences.TypeSafeJevAPIKey != nil {
+			return errors.New("Profile runtime bindings are supported only in development")
+		}
 	}
 	return validateGoogleDeployment(environment, config)
+}
+
+func validProfileRuntimeAudience(value string) bool {
+	if value == "" || value != strings.TrimSpace(value) {
+		return false
+	}
+	parsed, err := url.Parse(value)
+	return err == nil && parsed.Scheme == "https" && parsed.Host != "" && parsed.User == nil &&
+		(parsed.Path == "" || parsed.Path == "/") && parsed.RawQuery == "" && !parsed.ForceQuery && parsed.Fragment == "" && !strings.Contains(value, "#")
+}
+
+func validProfileRuntimeServiceAccount(value string) bool {
+	return value != "" && value == strings.TrimSpace(value) && profileRuntimeServiceAccountPattern.MatchString(value)
 }
 
 func validateStringList(name string, values []string) error {
@@ -471,7 +506,16 @@ func componentInputs(config EnvironmentConfig, query QueryConfigIdentity, select
 				components[name].(map[string]any)["google"] = config.Auth.Google
 			}
 		case "bff":
-			components[name] = map[string]any{"service_name": config.BFF.ServiceName, "runtime_service_account": config.BFF.RuntimeServiceAccount, "network": config.BFF.Network, "subnet": config.BFF.Subnet, "vpc_egress": config.BFF.VPCEgress, "ingress": config.BFF.Ingress, "max_instances": config.BFF.MaxInstances, "bucket": config.BFF.Bucket, "firestore_database_id": config.BFF.FirestoreDatabaseID, "pipeline_job_name": config.BFF.PipelineJobName, "pipeline_job_location": config.BFF.PipelineJobLocation, "pipeline_job_url": config.BFF.PipelineJobURL, "auth_service_url": config.BFF.AuthServiceURL, "allowed_origins": config.BFF.AllowedOrigins, "dev_jwt": false, "query_config": query, "secret_references": map[string]any{"jwt": config.BFF.SecretReferences.JWT, "deepseek_api_key": config.BFF.SecretReferences.DeepSeekAPIKey}}
+			secretReferences := map[string]any{"jwt": config.BFF.SecretReferences.JWT, "deepseek_api_key": config.BFF.SecretReferences.DeepSeekAPIKey}
+			if config.BFF.SecretReferences.TypeSafeJevAPIKey != nil {
+				secretReferences["typesafe_jev_api_key"] = config.BFF.SecretReferences.TypeSafeJevAPIKey
+			}
+			bff := map[string]any{"service_name": config.BFF.ServiceName, "runtime_service_account": config.BFF.RuntimeServiceAccount, "network": config.BFF.Network, "subnet": config.BFF.Subnet, "vpc_egress": config.BFF.VPCEgress, "ingress": config.BFF.Ingress, "max_instances": config.BFF.MaxInstances, "bucket": config.BFF.Bucket, "firestore_database_id": config.BFF.FirestoreDatabaseID, "pipeline_job_name": config.BFF.PipelineJobName, "pipeline_job_location": config.BFF.PipelineJobLocation, "pipeline_job_url": config.BFF.PipelineJobURL, "auth_service_url": config.BFF.AuthServiceURL, "allowed_origins": config.BFF.AllowedOrigins, "dev_jwt": false, "query_config": query, "secret_references": secretReferences}
+			if config.BFF.ProfileRuntimeAudience != "" {
+				bff["profile_runtime_audience"] = config.BFF.ProfileRuntimeAudience
+				bff["profile_runtime_service_account"] = config.BFF.ProfileRuntimeServiceAccount
+			}
+			components[name] = bff
 		case "worker":
 			components[name] = map[string]any{"job_name": config.Worker.JobName, "runtime_service_account": config.Worker.RuntimeServiceAccount, "bucket": config.Worker.Bucket, "location": config.Worker.Location, "args": config.Worker.Args, "secret_references": map[string]any{"deepseek_api_key": config.Worker.SecretReferences.DeepSeekAPIKey}}
 		case "exportjob":

@@ -37,6 +37,8 @@ auth:
 bff:
   service_name: llm-wiki-bff-dev
   runtime_service_account: lwc-bff-dev@llm-wiki-cloud.iam.gserviceaccount.com
+  profile_runtime_audience: https://llm-wiki-bff-dev-a5nkmux6pq-de.a.run.app
+  profile_runtime_service_account: lwc-bff-dev@llm-wiki-cloud.iam.gserviceaccount.com
   network: default
   subnet: default
   vpc_egress: private-ranges-only
@@ -58,6 +60,9 @@ bff:
   secret_references:
     jwt: jwt-secret-dev
     deepseek_api_key: deepseek-apikey
+    typesafe_jev_api_key:
+      name: typesafe-jev-api-key-dev
+      version: "1"
 
 worker:
   job_name: olw-pipeline-dev
