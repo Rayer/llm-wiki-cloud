@@ -127,9 +127,21 @@ func TestWorkerPromotionWorkflowsContract(t *testing.T) {
 	if !strings.Contains(components, "gcloud run jobs update") || !strings.Contains(components, "handles.worker.image") {
 		t.Fatal("Worker rollback must use the retained immutable image handle")
 	}
-	for _, forbidden := range []string{"gcloud run jobs replace", "handles.worker.definition", "--update-env-vars", "--update-secrets", "--service-account", "--args", "run jobs execute"} {
+	for _, forbidden := range []string{"gcloud run jobs replace", "handles.worker.definition", "--set-env-vars", "--clear-env-vars", "--update-secrets", "--service-account", "--args", "run jobs execute"} {
 		if strings.Contains(components, forbidden) {
-			t.Fatalf("Worker image-only contract contains forbidden marker %q", forbidden)
+			t.Fatalf("Worker deployment contains forbidden marker %q", forbidden)
+		}
+	}
+	worker := readWorkflow(t, "deploy/components/worker.sh")
+	for _, want := range []string{
+		`if [[ "$ENVIRONMENT" == development ]]; then`,
+		`--update-env-vars "^|^GCP_PROJECT=$project|FIRESTORE_DATABASE_ID=$database"`,
+		`profile_env:$profile_env`,
+		"worker_profile_env_matches_handle",
+		`elif timeout --signal=TERM --kill-after=5s 600s gcloud run jobs update "$job" --project "$project" --region "$region" --image "$image" --quiet`,
+	} {
+		if !strings.Contains(worker, want) {
+			t.Fatalf("Worker DEV Profile environment contract missing %q", want)
 		}
 	}
 }
