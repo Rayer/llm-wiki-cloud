@@ -26,6 +26,7 @@ var (
 	secretValuePattern                  = regexp.MustCompile(`(?i)(?:github_pat_|ghp_|xox[baprs]-|-----begin|sk-[A-Za-z0-9])`)
 	secretVersionPattern                = regexp.MustCompile(`^[1-9][0-9]*$`)
 	profileRuntimeServiceAccountPattern = regexp.MustCompile(`^[a-z][a-z0-9-]{4,28}[a-z0-9]@[a-z0-9.-]+\.iam\.gserviceaccount\.com$`)
+	pipelineDemoUserIDPattern           = regexp.MustCompile(`^[A-Za-z0-9_-]{1,128}$`)
 )
 
 type EnvironmentConfig struct {
@@ -68,6 +69,7 @@ type BFFConfig struct {
 	RuntimeServiceAccount        string                  `yaml:"runtime_service_account" json:"runtime_service_account"`
 	ProfileRuntimeAudience       string                  `yaml:"profile_runtime_audience" json:"profile_runtime_audience,omitempty"`
 	ProfileRuntimeServiceAccount string                  `yaml:"profile_runtime_service_account" json:"profile_runtime_service_account,omitempty"`
+	PipelineDemoUserIDs          []string                `yaml:"pipeline_demo_user_ids" json:"pipeline_demo_user_ids,omitempty"`
 	Network                      string                  `yaml:"network" json:"network"`
 	Subnet                       string                  `yaml:"subnet" json:"subnet"`
 	VPCEgress                    string                  `yaml:"vpc_egress" json:"vpc_egress"`
@@ -378,6 +380,19 @@ func validateConfigForEnvironment(environment string, config EnvironmentConfig) 
 	if err := validateStringList("bff.allowed_origins", config.BFF.AllowedOrigins); err != nil {
 		return err
 	}
+	if len(config.BFF.PipelineDemoUserIDs) > 0 {
+		if environment != "development" {
+			return errors.New("bff.pipeline_demo_user_ids is supported only in development")
+		}
+		if err := validateStringList("bff.pipeline_demo_user_ids", config.BFF.PipelineDemoUserIDs); err != nil {
+			return err
+		}
+		for _, id := range config.BFF.PipelineDemoUserIDs {
+			if !pipelineDemoUserIDPattern.MatchString(id) {
+				return errors.New("bff.pipeline_demo_user_ids contains an invalid user ID")
+			}
+		}
+	}
 	if err := validateStringList("frontend.stable_aliases", config.Frontend.StableAliases); err != nil {
 		return err
 	}
@@ -514,6 +529,9 @@ func componentInputs(config EnvironmentConfig, query QueryConfigIdentity, select
 			if config.BFF.ProfileRuntimeAudience != "" {
 				bff["profile_runtime_audience"] = config.BFF.ProfileRuntimeAudience
 				bff["profile_runtime_service_account"] = config.BFF.ProfileRuntimeServiceAccount
+			}
+			if len(config.BFF.PipelineDemoUserIDs) > 0 {
+				bff["pipeline_demo_user_ids"] = config.BFF.PipelineDemoUserIDs
 			}
 			components[name] = bff
 		case "worker":

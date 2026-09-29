@@ -3,6 +3,7 @@ package main
 import (
 	"os"
 	"path/filepath"
+	"reflect"
 	"strings"
 	"testing"
 )
@@ -43,18 +44,49 @@ func TestLoadReviewedEnvironmentsAndQueryIdentity(t *testing.T) {
 			if bff["profile_runtime_audience"] != config.BFF.ProfileRuntimeAudience || bff["profile_runtime_service_account"] != config.BFF.ProfileRuntimeServiceAccount {
 				t.Fatalf("DEV BFF component input omitted Profile runtime bindings: %#v", bff)
 			}
+			if !reflect.DeepEqual(config.BFF.PipelineDemoUserIDs, []string{"e492f6bdaf1735e12b2de96d"}) ||
+				!reflect.DeepEqual(bff["pipeline_demo_user_ids"], config.BFF.PipelineDemoUserIDs) {
+				t.Fatalf("DEV BFF component input omitted Demo IDs: %#v", bff)
+			}
 			secretRefs, ok := bff["secret_references"].(map[string]any)
 			if !ok || secretRefs["typesafe_jev_api_key"] != ref {
 				t.Fatalf("DEV BFF component input omitted TypeSafe secret binding: %#v", secretRefs)
 			}
-		} else if config.BFF.ProfileRuntimeAudience != "" || config.BFF.ProfileRuntimeServiceAccount != "" || config.BFF.SecretReferences.TypeSafeJevAPIKey != nil {
+		} else if config.BFF.ProfileRuntimeAudience != "" || config.BFF.ProfileRuntimeServiceAccount != "" || config.BFF.SecretReferences.TypeSafeJevAPIKey != nil || len(config.BFF.PipelineDemoUserIDs) != 0 {
 			t.Fatalf("Production unexpectedly received DEV Profile runtime bindings: %#v", config.BFF)
 		} else if _, exists := bff["profile_runtime_audience"]; exists {
 			t.Fatalf("Production BFF component input unexpectedly includes DEV bindings: %#v", bff)
+		} else if _, exists := bff["pipeline_demo_user_ids"]; exists {
+			t.Fatalf("Production BFF component input unexpectedly includes DEV Demo IDs: %#v", bff)
 		}
 		worker, ok := config.Components["worker"].(map[string]any)
 		if !ok || worker["args"] == nil || worker["secret_references"] == nil {
 			t.Fatalf("%s worker component input omitted behavior-bearing config: %#v", environment, config.Components["worker"])
+		}
+	}
+}
+
+func TestPipelineDemoUserIDsAreDevelopmentOnlyAndValidated(t *testing.T) {
+	root := repoRoot(t)
+	dev, err := decodeConfig(filepath.Join(root, "deploy/environments/development.yaml"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := validateConfigForEnvironment("development", dev); err != nil {
+		t.Fatalf("valid DEV Demo IDs: %v", err)
+	}
+	prod, err := decodeConfig(filepath.Join(root, "deploy/environments/production.yaml"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	prod.BFF.PipelineDemoUserIDs = []string{"e492f6bdaf1735e12b2de96d"}
+	if err := validateConfigForEnvironment("production", prod); err == nil {
+		t.Fatal("Production unexpectedly accepted DEV Demo IDs")
+	}
+	for _, ids := range [][]string{{"bad,id"}, {"bad|id"}, {" duplicate ", "duplicate"}, {""}} {
+		dev.BFF.PipelineDemoUserIDs = ids
+		if err := validateConfigForEnvironment("development", dev); err == nil {
+			t.Fatalf("invalid DEV Demo IDs accepted: %#v", ids)
 		}
 	}
 }
