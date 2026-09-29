@@ -7,6 +7,7 @@ import (
 	"net/http"
 	"time"
 
+	"github.com/gin-gonic/gin"
 	"github.com/rayer/llm-wiki-bff/internal/firestore"
 	"github.com/rayer/llm-wiki-bff/internal/pipelinequota"
 	"google.golang.org/grpc/codes"
@@ -44,6 +45,18 @@ func (h *Handler) isDemoUser(userID string) bool {
 	}
 	_, ok := h.demoUserIDs[userID]
 	return ok
+}
+
+// TrialDemoAccessGuard applies Pipeline's configured user-ID restriction to
+// Profile and Export routes; it does not infer trial mode from an email label.
+func (h *Handler) TrialDemoAccessGuard() gin.HandlerFunc {
+	return func(c *gin.Context) {
+		if h.isDemoUser(c.GetString("userID")) {
+			c.AbortWithStatusJSON(http.StatusForbidden, gin.H{"error": "demo users cannot access this feature"})
+			return
+		}
+		c.Next()
+	}
 }
 
 func (h *Handler) pipelineLimits() pipelinequota.Limits {

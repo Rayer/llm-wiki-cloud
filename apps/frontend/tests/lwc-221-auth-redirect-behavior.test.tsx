@@ -6,6 +6,7 @@ import { fireEvent, screen, waitFor } from '@testing-library/react';
 import { AuthProvider } from '@/lib/auth';
 import {
   AUTH_FORCE_HOME_REDIRECT_KEY,
+  DEMO_SESSION_STORAGE_KEY,
   clearForceHomeRedirect,
   setForceHomeRedirect,
   writeStoredAccessToken,
@@ -274,6 +275,30 @@ beforeEach(() => {
 });
 
 describe('LWC-221 auth redirect behavior', () => {
+  it('preserves normal login for the reserved demo email across hydration', async () => {
+    const user = { id: 'credential-demo-user', email: 'demo@llm-wiki.dev' };
+    setQueue('refresh', [{ status: 401, body: { error: 'missing' } }]);
+    setQueue('login', [{ status: 200, body: { access_token: 'credential-demo-token', user } }]);
+    setQueue('projects', [{ status: 200, body: [] }]);
+
+    await renderProviders();
+    await waitForHydrated();
+    await actSignIn(user.email, 'password');
+
+    expect(workspaceRef.current?.user).toEqual(user);
+    expect(workspaceRef.current?.isDemoSession).toBe(false);
+    expect(window.localStorage.getItem(DEMO_SESSION_STORAGE_KEY)).toBeNull();
+
+    await unmountProviders();
+    setQueue('refresh', [{ status: 200, body: { access_token: 'credential-demo-token', user } }]);
+    setQueue('projects', [{ status: 200, body: [] }]);
+    await renderProviders();
+    await waitForHydrated();
+
+    expect(workspaceRef.current?.user).toEqual(user);
+    expect(workspaceRef.current?.isDemoSession).toBe(false);
+  });
+
   it('does not let a newer same-session project load be overwritten by an older success', async () => {
     const olderProjects = deferred<FetchResponse>();
     setQueue('refresh', [{ status: 401, body: { error: 'missing' } }]);
@@ -905,6 +930,8 @@ describe('LWC-221 auth redirect behavior', () => {
     await actSignInAsDemo('demo@llm-wiki.dev', 'demo123456');
 
     await waitUntil(() => getForceHomeRedirect() === null);
+    expect(workspaceRef.current?.isDemoSession).toBe(true);
+    expect(window.localStorage.getItem(DEMO_SESSION_STORAGE_KEY)).toBe('1');
     expect(navigation.replace).toHaveBeenCalledTimes(url === '/' ? 0 : 1);
     if (url !== '/') expect(navigation.replace).toHaveBeenCalledWith('/');
   });

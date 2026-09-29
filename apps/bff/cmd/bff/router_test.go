@@ -127,6 +127,42 @@ func TestProductionRouterKeepsAuthCompatibilityLane(t *testing.T) {
 	}
 }
 
+func TestTrialDemoRestrictionCoversProfileAndExportForExactUserIDs(t *testing.T) {
+	gin.SetMode(gin.TestMode)
+	h := handlerv1.New(nil, nil, nil, nil, nil, nil)
+	h.SetPipelineQuotaConfig(2, 3600, 1, []string{"trial-user"})
+	router := newProductionRouter(
+		config.Config{DevJWT: true}, true, nil, nil, h,
+		&syssettings.FakeStore{Enabled: true}, nil,
+	)
+	request := func(userID, method, path string) *httptest.ResponseRecorder {
+		req := httptest.NewRequest(method, path, nil)
+		req.Header.Set("X-User-ID", userID)
+		req.Header.Set("X-Project-ID", "project-a")
+		recorder := httptest.NewRecorder()
+		router.ServeHTTP(recorder, req)
+		return recorder
+	}
+
+	for _, route := range []struct{ method, path string }{
+		{http.MethodGet, "/api/v1/projects/project-a/profile"},
+		{http.MethodPost, "/api/v1/projects/project-a/profile/candidates/candidate-a/confirm"},
+		{http.MethodGet, "/api/v1/exports"},
+		{http.MethodPost, "/api/v1/exports"},
+	} {
+		if got := request("trial-user", route.method, route.path).Code; got != http.StatusForbidden {
+			t.Errorf("trial user %s %s status = %d, want %d", route.method, route.path, got, http.StatusForbidden)
+		}
+	}
+
+	if got := request("non-listed-user", http.MethodGet, "/api/v1/projects/project-a/profile").Code; got == http.StatusForbidden {
+		t.Fatal("non-listed user was blocked from Profile")
+	}
+	if got := request("non-listed-user", http.MethodGet, "/api/v1/exports").Code; got == http.StatusForbidden {
+		t.Fatal("non-listed user was blocked from Export")
+	}
+}
+
 func TestProductionRouterUsesSharedCLIAndWebAuthAuthorities(t *testing.T) {
 	endpoint := strings.TrimSpace(os.Getenv("FIRESTORE_EMULATOR_HOST"))
 	if endpoint == "" {
