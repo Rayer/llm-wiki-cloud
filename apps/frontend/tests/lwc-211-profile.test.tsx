@@ -227,6 +227,10 @@ describe('LWC-211 Project Profile', () => {
     render(<ProjectProfilePanel projectId="project-a" />);
 
     const input = await screen.findByRole('textbox', { name: 'Requirement 1' });
+    expect(screen.getByRole('heading', { name: 'Project priorities (optional)' })).toBeDefined();
+    expect(screen.getByText(/tag list and rules preview for Jev concept tagging/)).toBeDefined();
+    expect(screen.getByText(/Lifestyle project/)).toBeDefined();
+    expect(screen.getByText(/current settings remain in use until the update completes\. Confirm the preview first/)).toBeDefined();
     expect(mocks.getProfileBootstrapGuidance).not.toHaveBeenCalled();
     expect(screen.queryByRole('heading', { name: 'First-compile guidance' })).toBeNull();
     fireEvent.change(input, { target: { value: '  invoice source  ' } });
@@ -842,7 +846,7 @@ describe('LWC-211 Project Profile', () => {
     localStorage.setItem('locale', 'zh-TW');
     render(<ProjectProfilePanel projectId="project-a" />);
 
-    expect(await screen.findByText('原始需求')).toBeDefined();
+    expect(await screen.findByRole('heading', { name: '專案重點與優先順序（選填）' })).toBeDefined();
     expect(screen.getByRole('textbox', { name: '需求 1' })).toBeDefined();
     expect(screen.queryByText('Original requirements')).toBeNull();
   });

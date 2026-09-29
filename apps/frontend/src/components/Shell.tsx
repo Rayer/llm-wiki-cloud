@@ -223,23 +223,6 @@ function ShellContent({ children }: { children: React.ReactNode }) {
                   placeholder={t('Shell.noProjects')}
                 />
               )}
-              {isAdminRoute ? null : (
-                <button
-                  type="button"
-                  onClick={() => {
-                    if (currentProject) {
-                      setRenameTarget({ id: currentProject.id, name: currentProject.name });
-                    }
-                  }}
-                  disabled={isDemoSession || !currentProject}
-                  className="mt-1.5 min-h-11 w-full rounded-lg px-3 py-2.5 text-left text-sm text-zinc-500 transition hover:bg-white/5 hover:text-zinc-300 disabled:cursor-not-allowed disabled:opacity-60"
-                >
-                  <span className="inline-flex items-center gap-2">
-                    <Pencil className="size-4" />
-                    Rename project
-                  </span>
-                </button>
-              )}
               {!isDemoSession ? (
                 <button
                   type="button"

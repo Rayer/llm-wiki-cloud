@@ -1,5 +1,5 @@
 import React from 'react';
-import { afterEach, describe, expect, it, vi } from 'vitest';
+import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 
 if (!(React as { act?: (callback: () => unknown) => Promise<unknown> | unknown }).act) {
   Object.defineProperty(React, 'act', {
@@ -34,6 +34,10 @@ function deferred<T>() {
 afterEach(() => {
   cleanup();
   vi.clearAllMocks();
+});
+
+beforeEach(() => {
+  localStorage.setItem('locale', 'en');
 });
 
 describe('LWC-174 project rename modal behavior', () => {
@@ -151,5 +155,29 @@ describe('LWC-174 project rename modal behavior', () => {
 
     expect(onSubmit).not.toHaveBeenCalled();
     expect(onClose).toHaveBeenCalledTimes(1);
+  });
+
+  it('localizes rename labels and validation in Traditional Chinese', () => {
+    localStorage.setItem('locale', 'zh-TW');
+    render(<ProjectRenameModal project={project} onSubmit={vi.fn()} onClose={vi.fn()} />);
+
+    expect(screen.getByRole('heading', { name: '重新命名專案' })).toBeDefined();
+    const input = screen.getByRole('textbox', { name: '專案名稱' });
+    fireEvent.change(input, { target: { value: '   ' } });
+    expect(screen.getByText('請輸入專案名稱。')).toBeDefined();
+    fireEvent.change(input, { target: { value: '專案名稱'.repeat(17) } });
+    expect(screen.getByText('專案名稱需為 1-64 個字元。')).toBeDefined();
+    expect(screen.getByRole('button', { name: '關閉重新命名專案對話框' })).toBeDefined();
+    expect(screen.getByRole('button', { name: '取消' })).toBeDefined();
+    expect(screen.getByRole('button', { name: '重新命名' })).toBeDefined();
+  });
+
+  it('localizes provisional project naming copy in Traditional Chinese', () => {
+    localStorage.setItem('locale', 'zh-TW');
+    render(<ProjectRenameModal project={{ id: 'project-a', name: 'Default Project' }} onSubmit={vi.fn()} onClose={vi.fn()} provisional />);
+
+    expect(screen.getByRole('heading', { name: '為專案命名' })).toBeDefined();
+    expect(screen.getByText('請為新的 Default Project 命名，或暫時略過。')).toBeDefined();
+    expect(screen.getByRole('button', { name: '暫不命名' })).toBeDefined();
   });
 });

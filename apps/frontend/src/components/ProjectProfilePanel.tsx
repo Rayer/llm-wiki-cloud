@@ -743,6 +743,9 @@ export function ProjectProfilePanel({ projectId }: { projectId: string }) {
           <div className="mt-6 border-t border-white/10 pt-5">
             <h3 className="text-sm font-semibold text-white">{t('Profile.originalRequirements')}</h3>
             <p className="mt-1 text-xs leading-5 text-zinc-500">{t('Profile.requirementsDescription')}</p>
+            <p className="mt-2 text-sm leading-6 text-zinc-400">{t('Profile.requirementsPriorities')}</p>
+            <p className="mt-2 text-sm leading-6 text-zinc-400">{t('Profile.requirementsExample')}</p>
+            <p className="mt-2 text-xs leading-5 text-zinc-500">{t('Profile.queryEffectDelay')}</p>
             <div className="mt-4">
               <ProfileRequirementsEditor
                 requirements={draft}

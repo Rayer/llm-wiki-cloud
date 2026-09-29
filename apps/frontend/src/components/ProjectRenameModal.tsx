@@ -2,6 +2,7 @@
 
 import { FormEvent, useEffect, useState } from 'react';
 import { MAX_PROJECT_NAME_LENGTH, type Project } from '@/lib/projects';
+import { useT } from '@/lib/i18n';
 
 type ProjectRenameModalProps = {
   project: Project;
@@ -10,16 +11,17 @@ type ProjectRenameModalProps = {
   provisional?: boolean;
 };
 
-function validateProjectName(name: string): string {
+function validateProjectName(name: string, t: (key: string, params?: Record<string, string | number>) => string): string {
   const trimmedName = name.trim();
-  if (!trimmedName) return 'Project name is required.';
+  if (!trimmedName) return t('ProjectRename.required');
   if ([...trimmedName].length > MAX_PROJECT_NAME_LENGTH) {
-    return `Project name must be 1-${MAX_PROJECT_NAME_LENGTH} characters.`;
+    return t('ProjectRename.length', { maxLength: MAX_PROJECT_NAME_LENGTH });
   }
   return '';
 }
 
 export function ProjectRenameModal({ project, onSubmit, onClose, provisional = false }: ProjectRenameModalProps) {
+  const { t } = useT();
   const [name, setName] = useState(project.name);
   const [error, setError] = useState('');
   const [loading, setLoading] = useState(false);
@@ -32,7 +34,7 @@ export function ProjectRenameModal({ project, onSubmit, onClose, provisional = f
     return () => document.removeEventListener('keydown', onKeyDown);
   }, [loading, onClose]);
 
-  const validationError = validateProjectName(name);
+  const validationError = validateProjectName(name, t);
   const isDuplicate = name.trim() === project.name.trim();
   const submitDisabled = loading || !!validationError || isDuplicate;
   const hasServerError = error !== '';
@@ -46,7 +48,7 @@ export function ProjectRenameModal({ project, onSubmit, onClose, provisional = f
       await onSubmit(name.trim());
       onClose();
     } catch (submitError) {
-      setError(submitError instanceof Error ? submitError.message : 'Unable to rename project.');
+      setError(submitError instanceof Error ? submitError.message : t('ProjectRename.submitFailed'));
     } finally {
       setLoading(false);
     }
@@ -68,23 +70,23 @@ export function ProjectRenameModal({ project, onSubmit, onClose, provisional = f
       >
         <div className="flex items-start justify-between gap-4">
           <h2 id="rename-project-title" className="text-2xl font-semibold text-white">
-            {provisional ? 'Name your project' : 'Rename project'}
+            {provisional ? t('ProjectRename.nameProject') : t('ProjectRename.title')}
           </h2>
           <button
             type="button"
             onClick={onClose}
             disabled={loading}
             className="rounded-md p-2 text-zinc-400 transition hover:bg-white/10 hover:text-white"
-            aria-label="Close rename project dialog"
+            aria-label={t('ProjectRename.close')}
           >
             ×
           </button>
         </div>
 
         <form onSubmit={handleSubmit} className="mt-6 space-y-4">
-          {provisional ? <p className="text-sm leading-6 text-zinc-400">Choose a name for your new Default Project, or skip for now.</p> : null}
+          {provisional ? <p className="text-sm leading-6 text-zinc-400">{t('ProjectRename.provisionalDescription')}</p> : null}
           <label className="block text-sm font-medium text-zinc-300">
-            Project name
+            {t('ProjectRename.projectName')}
             <input
               autoFocus
               required
@@ -93,7 +95,7 @@ export function ProjectRenameModal({ project, onSubmit, onClose, provisional = f
                 setName(event.target.value);
                 if (hasServerError) setError('');
               }}
-              placeholder="Project name"
+              placeholder={t('ProjectRename.projectName')}
               className="mt-2 w-full rounded-lg border border-white/10 bg-black/30 px-4 py-3 text-white outline-none transition placeholder:text-zinc-400 focus:border-emerald-300 focus-visible:outline focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-emerald-400"
             />
           </label>
@@ -107,14 +109,14 @@ export function ProjectRenameModal({ project, onSubmit, onClose, provisional = f
               disabled={loading}
               className="rounded-lg px-4 py-2.5 text-sm font-medium text-zinc-300 transition hover:bg-white/10 hover:text-white"
             >
-              {provisional ? 'Skip for now' : 'Cancel'}
+              {provisional ? t('ProjectRename.skip') : t('ProjectRename.cancel')}
             </button>
             <button
               type="submit"
               disabled={submitDisabled}
               className="rounded-lg bg-emerald-300 px-4 py-2.5 text-sm font-semibold text-black transition hover:bg-emerald-200 disabled:cursor-not-allowed disabled:opacity-60"
             >
-              {loading ? 'Renaming…' : 'Rename'}
+              {loading ? t('ProjectRename.renaming') : t('ProjectRename.rename')}
             </button>
           </div>
         </form>

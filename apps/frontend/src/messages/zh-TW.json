@@ -193,9 +193,13 @@
   },
   "Profile": {
     "pageTitle": "Profile",
+    "queryEffectDelay": "查詢相關設定會在背景更新，預計短時間內生效；更新完成前仍使用目前設定。預覽需先確認；首次編譯指引需另行確認，確認指引不會自動啟用 Profile。",
+    "requirementsExample": "例如 Lifestyle 專案：地點最重要，其次是是否適合孩童；預算與停車資訊作為次要考量。",
+    "requirementsPriorities": "請說明主要目標與次要偏好：最重視什麼，以及哪些內容可以作為補充。",
+    "renameProject": "重新命名專案",
     "title": "專案 Profile",
     "settings": "專案設定",
-    "intro": "在此管理原始需求。衍生的字典與指引預覽會分開顯示，直到你確認為止。",
+    "intro": "在此設定專案重點。衍生的字典與指引預覽會分開顯示，直到你確認為止。",
     "loading": "正在載入 Profile…",
     "signInRequired": "登入後才能查看這個專案的 Profile。",
     "selectProject": "請選擇要查看 Profile 的專案。",
@@ -256,8 +260,8 @@
     },
     "itemsIncomplete": "{count} 個項目未完成",
     "retryMissingTagging": "重試未完成的標記工作",
-    "originalRequirements": "原始需求",
-    "requirementsDescription": "你可以調整、加入或移除需求。儲存後會安排預覽，但不會直接啟用衍生結果。",
+    "originalRequirements": "專案重點與優先順序（選填）",
+    "requirementsDescription": "選填，可留白。這些需求會用來整理標記清單／規則預覽，供 Jev 概念標記流程參考。",
     "saving": "儲存中…",
     "saveRequirements": "儲存需求",
     "requirement": "需求 {index}",
@@ -297,6 +301,20 @@
       "confirmation": "無法確認操作：{error}",
       "taggingRetry": "無法確認標記工作已重試：{error}"
     }
+  },
+  "ProjectRename": {
+    "title": "重新命名專案",
+    "nameProject": "為專案命名",
+    "projectName": "專案名稱",
+    "close": "關閉重新命名專案對話框",
+    "required": "請輸入專案名稱。",
+    "length": "專案名稱需為 1-{maxLength} 個字元。",
+    "submitFailed": "無法重新命名專案。",
+    "provisionalDescription": "請為新的 Default Project 命名，或暫時略過。",
+    "skip": "暫不命名",
+    "cancel": "取消",
+    "rename": "重新命名",
+    "renaming": "重新命名中…"
   },
   "Command": {
     "placeholder": "搜尋或跳轉…",

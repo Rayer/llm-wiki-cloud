@@ -193,9 +193,13 @@
   },
   "Profile": {
     "pageTitle": "Profile",
+    "queryEffectDelay": "Query-related settings update in the background and are expected to take effect shortly; current settings remain in use until the update completes. Confirm the preview first. First-compile guidance requires separate confirmation, which does not automatically activate the Profile.",
+    "requirementsExample": "For example, in a Lifestyle project, location matters most, child suitability comes next, and budget and parking are secondary considerations.",
+    "requirementsPriorities": "Describe your primary goal and secondary preferences: what matters most, and what can provide supporting context.",
+    "renameProject": "Rename project",
     "title": "Project Profile",
     "settings": "Project settings",
-    "intro": "Keep your original requirements here. Generated dictionary and guidance previews stay separate until you confirm them.",
+    "intro": "Set this Project's priorities here. Generated dictionary and guidance previews stay separate until you confirm them.",
     "loading": "Loading Profile…",
     "signInRequired": "Sign in to view this Project Profile.",
     "selectProject": "Select a Project to view its Profile.",
@@ -256,8 +260,8 @@
     },
     "itemsIncomplete": "{count} items incomplete",
     "retryMissingTagging": "Retry missing tagging work",
-    "originalRequirements": "Original requirements",
-    "requirementsDescription": "Reorder, add, or remove your own requirements. Saving schedules a preview; it does not activate generated changes.",
+    "originalRequirements": "Project priorities (optional)",
+    "requirementsDescription": "Optional; leave blank if you prefer. These requirements inform the tag list and rules preview for Jev concept tagging.",
     "saving": "Saving…",
     "saveRequirements": "Save requirements",
     "requirement": "Requirement {index}",
@@ -297,6 +301,20 @@
       "confirmation": "Confirmation was not confirmed: {error}",
       "taggingRetry": "Tagging retry was not confirmed: {error}"
     }
+  },
+  "ProjectRename": {
+    "title": "Rename project",
+    "nameProject": "Name your project",
+    "projectName": "Project name",
+    "close": "Close rename project dialog",
+    "required": "Project name is required.",
+    "length": "Project name must be 1-{maxLength} characters.",
+    "submitFailed": "Unable to rename project.",
+    "provisionalDescription": "Choose a name for your new Default Project, or skip for now.",
+    "skip": "Skip for now",
+    "cancel": "Cancel",
+    "rename": "Rename",
+    "renaming": "Renaming…"
   },
   "Command": {
     "placeholder": "Search or jump to…",
