@@ -363,14 +363,20 @@ class SharedCDContractTest(unittest.TestCase):
                         print("sha256:{'b' * 64}")
                     elif args[:3] == ["run", "services", "update"]:
                         image = args[args.index("--image") + 1]
+                        env = [
+                            dict(name=k, value=v) for k, v in (item.split('=', 1)
+                                for item in args[args.index('--update-env-vars') + 1][3:].split('|'))
+                        ]
+                        if '--update-secrets' in args:
+                            for item in args[args.index('--update-secrets') + 1].split(','):
+                                key, target = item.split('=', 1)
+                                name, version = target.rsplit(':', 1)
+                                env.append(dict(name=key, valueFrom=dict(secretKeyRef=dict(name=name, key=version))))
                         state["service"]["status"]["latestCreatedRevisionName"] = "{candidate_revision}"
                         state["revisions"]["{candidate_revision}"] = {{
                             "metadata": {{"name": "{candidate_revision}"}},
                             "spec": {{"serviceAccountName": {normalized['bff']['runtime_service_account']!r},
-                                "containers": [{{"image": image, "env": [
-                                    {{'name': k, 'value': v}} for k, v in (item.split('=', 1)
-                                        for item in args[args.index('--update-env-vars') + 1][3:].split('|'))
-                                ]}}]}},
+                                "containers": [{{"image": image, "env": env}}]}},
                             "status": {{"imageDigest": image, "conditions": [{{"type": "Ready", "status": "True"}}]}},
                         }}
                         if "--no-traffic" not in args:
