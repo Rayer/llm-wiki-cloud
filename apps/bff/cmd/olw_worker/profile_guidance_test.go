@@ -85,6 +85,24 @@ func TestValidateProfileGuidanceArtifactStrictly(t *testing.T) {
 	}
 }
 
+func TestProfileGuidanceRequiresCloudProjectAndHonorsNamedFirestoreDatabase(t *testing.T) {
+	for _, name := range []string{"GOOGLE_CLOUD_PROJECT", "GCP_PROJECT", "GCLOUD_PROJECT"} {
+		t.Setenv(name, "")
+	}
+	if _, err := pinActiveProfileGuidance(context.Background(), workerConfig{UserID: "user", ProjectID: "project"}, newMemoryObjects()); err == nil || !strings.Contains(err.Error(), "Google Cloud project identity is unavailable") {
+		t.Fatalf("missing Cloud project error = %v", err)
+	}
+
+	t.Setenv("FIRESTORE_DATABASE_ID", "llm-wiki-cloud-dev")
+	if got := profileFirestoreDatabaseID(); got != "llm-wiki-cloud-dev" {
+		t.Fatalf("Profile guidance Firestore database = %q, want named DEV database", got)
+	}
+	t.Setenv("FIRESTORE_DATABASE_ID", "")
+	if got := profileFirestoreDatabaseID(); got != "(default)" {
+		t.Fatalf("unset Profile guidance Firestore database = %q, want default", got)
+	}
+}
+
 func TestProfileGuidanceSchemaMaterializationIsAdditiveAndBounded(t *testing.T) {
 	vault := t.TempDir()
 	if data, err := profileGuidanceSchema(vault, nil); err != nil || data != nil {

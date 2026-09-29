@@ -876,6 +876,7 @@ class CDContractTests(unittest.TestCase):
                 "normalized": {
                     "selected_components": ["worker"],
                     "gcp": {"project_id": "llm-wiki-cloud", "artifact_registry": "asia-east1-docker.pkg.dev/llm-wiki-cloud/cloud-run-images"},
+                    "bff": {"firestore_database_id": "llm-wiki-cloud-dev"},
                     "worker": {"job_name": "olw-pipeline", "location": "asia-east1", "runtime_service_account": "worker@llm-wiki-cloud.iam.gserviceaccount.com", "bucket": "bucket", "args": ["run", "--auto-approve"], "secret_references": {"deepseek_api_key": "deepseek-apikey"}},
                     "evidence": {"config_fingerprint": "sha256:fixture"},
                 },
@@ -935,6 +936,7 @@ class CDContractTests(unittest.TestCase):
                 "normalized": {
                     "selected_components": ["worker"],
                     "gcp": {"project_id": "llm-wiki-cloud", "artifact_registry": "asia-east1-docker.pkg.dev/llm-wiki-cloud/cloud-run-images"},
+                    "bff": {"firestore_database_id": "llm-wiki-cloud-dev"},
                     "worker": {"job_name": "olw-pipeline", "location": "asia-east1", "runtime_service_account": "worker@llm-wiki-cloud.iam.gserviceaccount.com", "bucket": "bucket", "args": ["run", "--auto-approve"], "secret_references": {"deepseek_api_key": "deepseek-apikey"}},
                     "evidence": {"config_fingerprint": "sha256:fixture"},
                 },
@@ -1053,6 +1055,7 @@ class CDContractTests(unittest.TestCase):
                 "normalized": {
                     "selected_components": ["worker"],
                     "gcp": {"project_id": "llm-wiki-cloud", "artifact_registry": "asia-east1-docker.pkg.dev/llm-wiki-cloud/cloud-run-images"},
+                    "bff": {"firestore_database_id": "llm-wiki-cloud-dev"},
                     "worker": {"job_name": "olw-pipeline", "location": "asia-east1", "runtime_service_account": "worker@llm-wiki-cloud.iam.gserviceaccount.com", "bucket": "bucket", "args": ["run", "--auto-approve"], "secret_references": {"deepseek_api_key": "deepseek-apikey"}},
                 },
             }))
@@ -1101,6 +1104,7 @@ class CDContractTests(unittest.TestCase):
                         "project_id": "llm-wiki-cloud",
                         "artifact_registry": registry,
                     },
+                    "bff": {"firestore_database_id": "llm-wiki-cloud-dev"},
                     "worker": {"job_name": "olw-pipeline", "location": "asia-east1", "runtime_service_account": "worker@llm-wiki-cloud.iam.gserviceaccount.com"},
                 },
             }))
@@ -2384,11 +2388,10 @@ class CDContractTests(unittest.TestCase):
             self.assertRegex(document['handles']['bff']['config_fingerprint'], r'^sha256:[0-9a-f]{64}$')
             self.assertNotIn('env', document['handles']['bff'])
 
-    def test_backend_mutation_paths_are_image_only_and_reject_mutable_refs(self):
+    def test_backend_mutation_paths_use_immutable_images_and_dev_worker_config_only(self):
         forbidden = (
             "gcloud run deploy", "--service-account", "--network", "--subnet", "--vpc-egress",
-            "--ingress", "--max", "--update-env-vars", "--update-secrets", "--remove-env-vars",
-            "--args", "--clear-volume-mounts", "--clear-volumes",
+            "--ingress", "--max", "--update-secrets", "--args", "--clear-volume-mounts", "--clear-volumes",
         )
         for component, next_function, command in (
             ("auth", "auth_verify", "gcloud run services update"),
@@ -2404,6 +2407,13 @@ class CDContractTests(unittest.TestCase):
                 self.assertIn("gcloud run services update-traffic", body)
             for marker in forbidden:
                 self.assertNotIn(marker, body, f"{component} mutation contains {marker}")
+            if component == "worker":
+                self.assertIn('if [[ "$ENVIRONMENT" == development ]]; then', body)
+                self.assertIn("--update-env-vars", body)
+                self.assertIn("--remove-env-vars", source)
+            else:
+                self.assertNotIn("--update-env-vars", body)
+                self.assertNotIn("--remove-env-vars", body)
 
         plan = {"normalized": {"gcp": {"artifact_registry": "registry.example/images"}}}
         with tempfile.TemporaryDirectory() as directory:
@@ -2460,14 +2470,19 @@ class CDContractTests(unittest.TestCase):
         for forbidden in ("service_expected", "normalize_service_readback", "component_config"):
             self.assertNotIn(forbidden, source)
 
-    def test_worker_rollback_uses_only_the_retained_image_handle(self):
+    def test_worker_rollback_uses_retained_image_and_dev_profile_env_snapshot(self):
         worker = (ROOT / "deploy/components/worker.sh").read_text()
         rollback = worker[worker.index("worker_rollback()"):worker.index("\n}\n\ncase", worker.index("worker_rollback()"))]
         self.assertIn(".handles.worker.image", rollback)
+        self.assertIn(".handles.worker.profile_env", rollback)
         self.assertIn("worker_image_readback", rollback)
         self.assertIn("gcloud run jobs update", rollback)
-        for forbidden in (".handles.worker.definition", "normalize_worker_definition", "worker_provider_state", "gcloud run jobs replace", "--update-env-vars", "--update-secrets", "--args"):
+        for forbidden in (".handles.worker.definition", "normalize_worker_definition", "worker_provider_state", "gcloud run jobs replace", "--set-env-vars", "--clear-env-vars", "--update-secrets", "--args"):
             self.assertNotIn(forbidden, rollback)
+        self.assertIn("worker_profile_env_args_from_handle \"$env_handle\"", rollback)
+        self.assertIn("${WORKER_PROFILE_ENV_ARGS[@]}", rollback)
+        self.assertIn("--update-env-vars", worker)
+        self.assertIn("--remove-env-vars", worker)
     def test_evidence_reports_actual_mutation_and_rollback_state(self):
         source = source_bundle()
         evidence = source[source.index("reconcile()") :]
@@ -2879,7 +2894,7 @@ class ArchitectureAuthorityTests(unittest.TestCase):
         self.assertNotIn("consume_dev_images", reconcile)
 
 
-    def test_fake_worker_rollback_updates_only_the_retained_image(self):
+    def test_fake_production_worker_rollback_updates_only_the_retained_image(self):
         old_image = "asia-east1-docker.pkg.dev/llm-wiki-cloud/cloud-run-images/olw-pipeline@sha256:" + "a" * 64
         new_image = "asia-east1-docker.pkg.dev/llm-wiki-cloud/cloud-run-images/olw-pipeline@sha256:" + "b" * 64
         with tempfile.TemporaryDirectory() as directory:
@@ -2922,7 +2937,7 @@ class ArchitectureAuthorityTests(unittest.TestCase):
             fake_path.chmod(0o755)
             journal = root / "journal.json"
             rollback = root / "rollback.json"
-            env = {**os.environ, "PATH": f"{bin_dir}:{os.environ['PATH']}", "ROOT": str(ROOT), "ENVIRONMENT": "development", "SOURCE_REF": "develop", "SOURCE_SHA": "0123456789abcdef0123456789abcdef01234567", "CONFIG_PATH": "deploy/environments/development.yaml", "COMPONENTS": "worker", "GITHUB_REF": "refs/heads/develop", "GITHUB_REF_NAME": "develop", "PLAN_PATH": str(plan), "ROLLBACK_PATH": str(rollback), "JOURNAL_PATH": str(journal), "ROLLBACK_RESULT_PATH": str(root / "rollback-result.json"), "ARTIFACT_DIR": str(root / "artifacts")}
+            env = {**os.environ, "PATH": f"{bin_dir}:{os.environ['PATH']}", "ROOT": str(ROOT), "ENVIRONMENT": "production", "SOURCE_REF": "main", "SOURCE_SHA": "0123456789abcdef0123456789abcdef01234567", "CONFIG_PATH": "deploy/environments/production.yaml", "COMPONENTS": "worker", "GITHUB_REF": "refs/heads/main", "GITHUB_REF_NAME": "main", "PLAN_PATH": str(plan), "ROLLBACK_PATH": str(rollback), "JOURNAL_PATH": str(journal), "ROLLBACK_RESULT_PATH": str(root / "rollback-result.json"), "ARTIFACT_DIR": str(root / "artifacts")}
             frozen = subprocess.run(["bash", str(ROOT / "deploy/cd.sh"), "freeze"], env=env, text=True, capture_output=True)
             self.assertEqual(frozen.returncode, 0, frozen.stdout + frozen.stderr)
             self.assertEqual(json.loads(rollback.read_text())["handles"]["worker"], {"image": old_image})
@@ -2937,6 +2952,94 @@ class ArchitectureAuthorityTests(unittest.TestCase):
             calls = log.read_text().splitlines()
             self.assertEqual(sum("run jobs update" in call for call in calls), 1)
             self.assertFalse(any("execute" in call for call in calls))
+
+    def test_dev_worker_profile_environment_is_applied_and_rollback_restores_prior_state(self):
+        old_image = "asia-east1-docker.pkg.dev/llm-wiki-cloud/cloud-run-images/olw-pipeline@sha256:" + "a" * 64
+        new_image = "asia-east1-docker.pkg.dev/llm-wiki-cloud/cloud-run-images/olw-pipeline@sha256:" + "b" * 64
+        for prior_env in ([], [
+            {"name": "GCP_PROJECT", "value": "previous-project"},
+            {"name": "FIRESTORE_DATABASE_ID", "value": "previous-database"},
+            {"name": "UNRELATED", "value": "preserve-me"},
+        ]):
+            with self.subTest(prior_env=prior_env), tempfile.TemporaryDirectory() as directory:
+                root = Path(directory)
+                bin_dir = root / "bin"
+                bin_dir.mkdir()
+                state = root / "job.json"
+                state.write_text(json.dumps({
+                    "apiVersion": "run.googleapis.com/v1", "kind": "Job",
+                    "metadata": {"name": "worker-job", "generation": 9, "etag": "live-etag"},
+                    "spec": {"template": {"spec": {"template": {"spec": {"containers": [{
+                        "name": "worker", "image": old_image, "env": prior_env,
+                    }]}}}}},
+                }))
+                plan = root / "plan.json"
+                plan.write_text(json.dumps({"normalized": {
+                    "selected_components": ["worker"],
+                    "gcp": {"project_id": "llm-wiki-cloud", "region": "asia-east1",
+                            "artifact_registry": "asia-east1-docker.pkg.dev/llm-wiki-cloud/cloud-run-images"},
+                    "bff": {"firestore_database_id": "llm-wiki-cloud-dev"},
+                    "worker": {"job_name": "worker-job", "location": "asia-east1"},
+                }}))
+                log = root / "provider.log"
+                fake = textwrap.dedent(f"""
+                    #!/usr/bin/env python3
+                    import json, sys
+                    from pathlib import Path
+                    state = Path({str(state)!r})
+                    args = sys.argv[1:]
+                    Path({str(log)!r}).open("a").write(" ".join(args) + "\\n")
+                    if args[:3] == ["run", "jobs", "describe"]:
+                        print(state.read_text(), end="")
+                    elif args[:3] == ["run", "jobs", "update"]:
+                        value = json.loads(state.read_text())
+                        container = value["spec"]["template"]["spec"]["template"]["spec"]["containers"][0]
+                        container["image"] = args[args.index("--image") + 1]
+                        if "--update-env-vars" in args:
+                            payload = args[args.index("--update-env-vars") + 1].removeprefix("^|^")
+                            for pair in payload.split("|"):
+                                name, item = pair.split("=", 1)
+                                container["env"] = [e for e in container.get("env", []) if e["name"] != name]
+                                container["env"].append({{"name": name, "value": item}})
+                        if "--remove-env-vars" in args:
+                            removed = args[args.index("--remove-env-vars") + 1].split(",")
+                            container["env"] = [e for e in container.get("env", []) if e["name"] not in removed]
+                        state.write_text(json.dumps(value))
+                    else:
+                        raise SystemExit(2)
+                """).lstrip()
+                fake_path = bin_dir / "gcloud"
+                fake_path.write_text(fake)
+                fake_path.chmod(0o755)
+                artifacts = root / "artifacts"
+                env = {
+                    **os.environ, "PATH": f"{bin_dir}:{os.environ['PATH']}", "ROOT": str(ROOT),
+                    "ENVIRONMENT": "development", "SOURCE_REF": "develop", "SOURCE_SHA": "c" * 40,
+                    "PLAN_PATH": str(plan), "ROLLBACK_PATH": str(root / "rollback.json"),
+                    "JOURNAL_PATH": str(root / "journal.json"), "ROLLBACK_RESULT_PATH": str(root / "rollback-result.json"),
+                    "ARTIFACT_DIR": str(artifacts), "NEW_IMAGE": new_image,
+                }
+                script = textwrap.dedent(f"""
+                    source {str(ROOT / 'deploy/components/worker.sh')!r} help
+                    revalidate_before_provider() {{ :; }}
+                    worker_build_image() {{ printf '%s\\n' "$NEW_IMAGE"; }}
+                    worker_freeze
+                    worker_mutate
+                    worker_rollback
+                """)
+                result = subprocess.run(["bash", "-c", script], env=env, text=True, capture_output=True)
+                self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
+                final = json.loads(state.read_text())
+                container = final["spec"]["template"]["spec"]["template"]["spec"]["containers"][0]
+                self.assertEqual(container["image"], old_image)
+                self.assertEqual({entry["name"]: entry["value"] for entry in container["env"]},
+                                 {entry["name"]: entry["value"] for entry in prior_env})
+                calls = log.read_text().splitlines()
+                dev_update = next(call for call in calls if call.startswith("run jobs update") and "b" * 64 in call)
+                self.assertIn("GCP_PROJECT=llm-wiki-cloud", dev_update)
+                self.assertIn("FIRESTORE_DATABASE_ID=llm-wiki-cloud-dev", dev_update)
+                self.assertNotIn("--set-env-vars", dev_update)
+                self.assertNotIn("UNRELATED=preserve-me", dev_update)
 
 
 if __name__ == "__main__":

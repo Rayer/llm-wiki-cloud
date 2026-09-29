@@ -298,11 +298,16 @@ func firstNonEmptyEnv(names ...string) string {
 
 // Both the compile-start reader and completion writer use the configured database.
 var newProfileFirestoreClient = func(ctx context.Context, project string) (*firestore.Client, error) {
+	database := profileFirestoreDatabaseID()
+	return firestore.NewClientWithDatabase(ctx, project, database)
+}
+
+func profileFirestoreDatabaseID() string {
 	database := firstNonEmptyEnv("FIRESTORE_DATABASE_ID")
 	if database == "" {
 		database = "(default)"
 	}
-	return firestore.NewClientWithDatabase(ctx, project, database)
+	return database
 }
 
 var persistProfileCompileReceipt = writeProfileCompileReceipt
