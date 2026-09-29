@@ -99,5 +99,6 @@ test('LWC-135: demo upload UI is disabled and localStorage backs demo flag', asy
   assert.match(pipelineClient, /disabled=\{isDemoSession \|\| uploading\}/);
   assert.match(pipelineClient, /htmlFor=\{isDemoSession \? undefined : 'raw-file-upload'\}/);
   assert.match(auth, /persistAuthSession\(\s*typeof window !== 'undefined' \? window\.localStorage/);
-  assert.match(auth, /demo@llm-wiki\.dev/);
+  assert.match(auth, /setIsDemoSession\(readStoredDemoSession\(storage\)\)/);
+  assert.doesNotMatch(auth, /demo@llm-wiki\.dev/);
 });

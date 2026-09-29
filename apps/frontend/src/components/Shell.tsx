@@ -79,6 +79,7 @@ function ShellContent({ children }: { children: React.ReactNode }) {
     countKey?: NavCountKey;
   }[] = [
     { href: '/', label: t('Shell.search'), icon: Search, exact: true },
+    ...(!isDemoSession ? [{ href: '/profile', label: t('Shell.profile'), icon: Pencil }] : []),
     { href: '/sources', label: t('Shell.sources'), icon: FileText, countKey: 'sources' },
     { href: '/concepts', label: t('Shell.concepts'), icon: Brain, countKey: 'concepts' },
     { href: '/status', label: t('Shell.status'), icon: Activity },
@@ -221,23 +222,6 @@ function ShellContent({ children }: { children: React.ReactNode }) {
                   onChange={(projectId) => selectProject(projectId)}
                   placeholder={t('Shell.noProjects')}
                 />
-              )}
-              {isAdminRoute ? null : (
-                <button
-                  type="button"
-                  onClick={() => {
-                    if (currentProject) {
-                      setRenameTarget({ id: currentProject.id, name: currentProject.name });
-                    }
-                  }}
-                  disabled={isDemoSession || !currentProject}
-                  className="mt-1.5 min-h-11 w-full rounded-lg px-3 py-2.5 text-left text-sm text-zinc-500 transition hover:bg-white/5 hover:text-zinc-300 disabled:cursor-not-allowed disabled:opacity-60"
-                >
-                  <span className="inline-flex items-center gap-2">
-                    <Pencil className="size-4" />
-                    Rename project
-                  </span>
-                </button>
               )}
               {!isDemoSession ? (
                 <button

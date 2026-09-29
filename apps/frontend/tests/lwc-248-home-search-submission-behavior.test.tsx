@@ -11,6 +11,7 @@ if (!(globalThis as { IS_REACT_ACT_ENVIRONMENT?: boolean }).IS_REACT_ACT_ENVIRON
 const mocks = vi.hoisted(() => ({
   currentProject: { id: 'project-a', name: 'Project A' },
   getConcepts: vi.fn(),
+  getProfile: vi.fn(),
   getStatus: vi.fn(),
   searchWiki: vi.fn(),
 }));
@@ -20,6 +21,7 @@ vi.mock('@/lib/api', async () => {
   return {
     ...actual,
     getConcepts: mocks.getConcepts,
+    getProfile: mocks.getProfile,
     getStatus: mocks.getStatus,
     searchWiki: mocks.searchWiki,
   };
@@ -121,6 +123,14 @@ async function getFormFromSearchButton() {
 }
 
 describe('LWC-248 home search submission contract', () => {
+  it('keeps Project Profile out of Search and does not load it there', async () => {
+    render(<HomeClient />);
+    await waitForInitialSearchState();
+
+    expect(screen.queryByRole('heading', { name: 'Project Profile' })).toBeNull();
+    expect(mocks.getProfile).not.toHaveBeenCalled();
+  });
+
   it('does not submit when changing modes with a non-empty query', async () => {
     render(<HomeClient />);
     await waitForInitialSearchState();

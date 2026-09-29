@@ -66,6 +66,7 @@ function deferred<T>() {
 }
 
 beforeEach(() => {
+  window.localStorage.setItem('locale', 'en');
   mocks.addProject.mockResolvedValue(newProject);
   mocks.closeNewProject.mockReset();
   mocks.confirmNavigation.mockReturnValue(true);

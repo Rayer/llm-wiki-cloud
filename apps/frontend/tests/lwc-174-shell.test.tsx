@@ -8,7 +8,7 @@ if (!(React as { act?: (callback: () => unknown) => Promise<unknown> | unknown }
   });
 }
 
-const { cleanup, fireEvent, render, screen, waitFor } = await import('@testing-library/react');
+const { cleanup, render, screen } = await import('@testing-library/react');
 
 const mocks = vi.hoisted(() => ({
   getProjects: vi.fn(),
@@ -105,6 +105,17 @@ describe('LWC-174 production Shell rename behavior', () => {
     expect(document.getElementById('main-content')).not.toBeNull();
   });
 
+  it('routes Profile from the sidebar and hides it in the trial Demo session', async () => {
+    renderShell();
+    expect(await screen.findByRole('link', { name: 'Profile' })).toHaveProperty('href', expect.stringContaining('/profile'));
+
+    cleanup();
+    mocks.isDemoSession = true;
+    renderShell();
+    await screen.findByRole('button', { name: 'Project Alpha' });
+    expect(screen.queryByRole('link', { name: 'Profile' })).toBeNull();
+  });
+
   it('hides rename on the admin route', async () => {
     mocks.pathname = '/admin';
     mocks.user = { id: 'admin-1', email: 'admin@example.com', role: 'admin' };
@@ -115,47 +126,9 @@ describe('LWC-174 production Shell rename behavior', () => {
     expect(screen.queryByRole('button', { name: 'Rename project' })).toBeNull();
   });
 
-  it('disables rename for demo sessions and when there is no current project', async () => {
-    mocks.isDemoSession = true;
-    const demoView = renderShell();
-    const demoRename = await screen.findByRole('button', { name: 'Rename project' });
-    expect((demoRename as HTMLButtonElement).disabled).toBe(true);
-    demoView.unmount();
-
-    mocks.getProjects.mockResolvedValue([]);
-    mocks.isDemoSession = false;
+  it('keeps the project switcher without a sidebar rename action', async () => {
     renderShell();
-    const noProjectRename = await screen.findByRole('button', { name: 'Rename project' });
-    expect((noProjectRename as HTMLButtonElement).disabled).toBe(true);
-  });
-
-  it('closes the A rename modal before B can submit A input', async () => {
-    renderShell();
-
     await screen.findByRole('button', { name: 'Project Alpha' });
-    fireEvent.click(screen.getByRole('button', { name: 'Rename project' }));
-    const input = await screen.findByRole('textbox', { name: 'Project name' });
-    expect((input as HTMLInputElement).value).toBe('Project Alpha');
-    fireEvent.change(input, {
-      target: { value: 'Stale A name' },
-    });
-
-    fireEvent.keyDown(window, { key: 'k', ctrlKey: true });
-    const projectB = await screen.findByRole('button', { name: 'Project Beta' });
-    fireEvent.click(projectB);
-
-    await waitFor(() => expect(screen.queryByRole('dialog', { name: 'Rename project' })).toBeNull());
-    expect(mocks.renameProject).not.toHaveBeenCalled();
-
-    fireEvent.click(screen.getByRole('button', { name: 'Rename project' }));
-    const projectBInput = await screen.findByRole('textbox', { name: 'Project name' });
-    expect((projectBInput as HTMLInputElement).value).toBe('Project Beta');
-    fireEvent.change(projectBInput, {
-      target: { value: 'Renamed B' },
-    });
-    fireEvent.click(screen.getByRole('button', { name: 'Rename' }));
-
-    await waitFor(() => expect(mocks.renameProject).toHaveBeenCalledWith('project-b', 'Renamed B'));
-    expect(mocks.renameProject).not.toHaveBeenCalledWith('project-b', 'Stale A name');
+    expect(screen.queryByRole('button', { name: /Rename project|重新命名專案/ })).toBeNull();
   });
 });

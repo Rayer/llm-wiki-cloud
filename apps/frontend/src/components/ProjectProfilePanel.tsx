@@ -8,8 +8,6 @@ import {
   getProfileBootstrapGuidance,
   getProfileGuidanceArtifact,
   getProfileJob,
-  getRecompileAllCapability,
-  recompileAll,
   retryProfileCandidate,
   retryProfileDerivation,
   saveProfile,
@@ -18,6 +16,7 @@ import {
   type ProfileGuidanceArtifact,
   type ProfileState,
 } from '@/lib/api';
+import { useT } from '@/lib/i18n';
 import { ProfileRequirementsEditor } from './ProfileRequirementsEditor';
 
 function sameRequirements(left: ProfileRequirement[], right: ProfileRequirement[]): boolean {
@@ -32,24 +31,25 @@ function errorStatus(error: unknown): number | undefined {
     : undefined;
 }
 
-function errorMessage(error: unknown): string {
-  return error instanceof Error ? error.message : 'The request could not be completed.';
+function errorMessage(error: unknown, fallback: string): string {
+  return error instanceof Error ? error.message : fallback;
 }
 
 function scheduleLabel(value: string): string {
   return value;
 }
 
-function requirementDispositionLabel(value: ProfileBootstrapGuidance['preview']['requirements'][number]['disposition']): string {
+function requirementDispositionLabel(value: ProfileBootstrapGuidance['preview']['requirements'][number]['disposition'], t: (key: string) => string): string {
   switch (value) {
-    case 'compile_guidance': return 'Compile guidance';
-    case 'dictionary_or_query': return 'Dictionary or query';
-    case 'both': return 'Compile guidance and dictionary or query';
-    case 'limitation': return 'Limitation';
+    case 'compile_guidance': return t('Profile.disposition.compileGuidance');
+    case 'dictionary_or_query': return t('Profile.disposition.dictionaryOrQuery');
+    case 'both': return t('Profile.disposition.both');
+    case 'limitation': return t('Profile.disposition.limitation');
   }
 }
 
 function ProfileGuidanceArtifactDetails({ projectId, revision, title }: { projectId: string; revision: string; title: string }) {
+  const { t } = useT();
   const [result, setResult] = useState<{
     projectId: string;
     revision: string;
@@ -63,35 +63,35 @@ function ProfileGuidanceArtifactDetails({ projectId, revision, title }: { projec
       .then(({ guidance_artifact: artifact }) => {
         if (!active) return;
         if (artifact.revision !== revision) {
-          setResult({ projectId, revision, error: 'The server returned a different guidance revision.' });
+          setResult({ projectId, revision, error: t('Profile.guidanceRevisionMismatch') });
           return;
         }
         setResult({ projectId, revision, artifact });
       })
       .catch((readError: unknown) => {
-        if (active) setResult({ projectId, revision, error: errorMessage(readError) });
+        if (active) setResult({ projectId, revision, error: errorMessage(readError, t('Profile.requestFailed')) });
       });
     return () => { active = false; };
-  }, [projectId, revision]);
+  }, [projectId, revision, t]);
 
   const current = result?.projectId === projectId && result.revision === revision ? result : null;
-  if (current?.error) return <p className="mt-3 text-sm text-amber-200" role="alert">Unable to read immutable compile guidance: {current.error}</p>;
-  if (!current?.artifact) return <p className="mt-3 text-sm text-zinc-400" role="status">Loading immutable compile guidance…</p>;
+  if (current?.error) return <p className="mt-3 text-sm text-amber-200" role="alert">{t('Profile.guidanceReadError', { error: current.error })}</p>;
+  if (!current?.artifact) return <p className="mt-3 text-sm text-zinc-400" role="status">{t('Profile.loadingImmutableGuidance')}</p>;
 
   return (
     <section className="mt-4 rounded-lg border border-white/10 p-3" aria-label={title}>
       <h4 className="text-xs font-semibold uppercase tracking-wide text-sky-200">{title}</h4>
       <p className="mt-2 break-all text-xs leading-5 text-zinc-400">
-        Revision: <code>{current.artifact.revision}</code>
+        {t('Profile.revisionLabel')} <code>{current.artifact.revision}</code>
       </p>
       <p className="text-xs leading-5 text-zinc-400">
-        Model {current.artifact.model_version} · Prompt {current.artifact.prompt_version} · Schema {current.artifact.schema_version}
+        {t('Profile.artifactVersions', { model: current.artifact.model_version, prompt: current.artifact.prompt_version, schema: current.artifact.schema_version })}
       </p>
       <p className="mt-2 whitespace-pre-wrap text-sm leading-6 text-zinc-200">
-        {current.artifact.compile_guidance || 'No compile guidance is configured.'}
+        {current.artifact.compile_guidance || t('Profile.noCompileGuidance')}
       </p>
       <p className="mt-2 text-xs leading-5 text-zinc-500">
-        Synto rejects the combined materialized vault schema plus this guidance when it exceeds the 1,500-character adapter budget. Profile input has no separate 1,500-character limit.
+        {t('Profile.adapterBudgetNote')}
       </p>
     </section>
   );
@@ -100,6 +100,7 @@ function ProfileGuidanceArtifactDetails({ projectId, revision, title }: { projec
 type RequestScope = { projectId: string; identity: object };
 
 export function ProjectProfilePanel({ projectId }: { projectId: string }) {
+  const { t } = useT();
   const [profile, setProfile] = useState<ProfileState | null>(null);
   const [bootstrapGuidance, setBootstrapGuidance] = useState<ProfileBootstrapGuidance | null>(null);
   const [bootstrapScope, setBootstrapScope] = useState<RequestScope | null>(null);
@@ -112,10 +113,6 @@ export function ProjectProfilePanel({ projectId }: { projectId: string }) {
   const [error, setError] = useState('');
   const [errorProjectId, setErrorProjectId] = useState('');
   const [notice, setNotice] = useState('');
-  const [capability, setCapability] = useState<{ allowed: boolean; denialCode?: string } | null>(null);
-  const [capabilityError, setCapabilityError] = useState('');
-  const [capabilityProjectId, setCapabilityProjectId] = useState('');
-  const [recompilingScope, setRecompilingScope] = useState<RequestScope | null>(null);
   const profileRef = useRef<ProfileState | null>(null);
   const bootstrapRequestRef = useRef(0);
   const loadedRef = useRef(false);
@@ -155,16 +152,15 @@ export function ProjectProfilePanel({ projectId }: { projectId: string }) {
       return currentGuidance;
     } catch (readError: unknown) {
       if (requestIsCurrent(scope) && requestId === bootstrapRequestRef.current) {
-        setBootstrapError(errorMessage(readError));
+        setBootstrapError(errorMessage(readError, t('Profile.requestFailed')));
       }
       return null;
     } finally {
       if (requestIsCurrent(scope) && requestId === bootstrapRequestRef.current) setBootstrapLoading(false);
     }
-  }, [requestIsCurrent]);
+  }, [requestIsCurrent, t]);
   const saving = savingScope === currentScope;
   const working = workingScope === currentScope;
-  const recompiling = recompilingScope === currentScope;
 
   const showError = useCallback((message: string, targetProjectId = projectId) => {
     setError(message);
@@ -179,11 +175,11 @@ export function ProjectProfilePanel({ projectId }: { projectId: string }) {
       && previous.active?.candidate_id !== next.active?.candidate_id
       && next.active
     ) {
-      setNotice(`Profile ${next.active.candidate_id} is now active.`);
+      setNotice(t('Profile.activeNotice', { candidateId: next.active.candidate_id }));
     }
     profileRef.current = next;
     setProfile(next);
-  }, []);
+  }, [t]);
 
   useEffect(() => {
     let active = true;
@@ -195,7 +191,7 @@ export function ProjectProfilePanel({ projectId }: { projectId: string }) {
       .then((next) => {
         if (!active) return;
         if (next.project_id !== projectId) {
-          showError('Profile response does not match the selected project.');
+          showError(t('Profile.responseProjectMismatch'));
           return;
         }
         profileRef.current = next;
@@ -210,27 +206,14 @@ export function ProjectProfilePanel({ projectId }: { projectId: string }) {
         }
       })
       .catch((loadError: unknown) => {
-        if (active) showError(`Unable to load this project's Profile: ${errorMessage(loadError)}`);
+        if (active) showError(t('Profile.errors.load', { error: errorMessage(loadError, t('Profile.requestFailed')) }));
       })
       .finally(() => {
         if (active) setLoading(false);
       });
 
-    getRecompileAllCapability(projectId)
-      .then((result) => {
-        if (!active) return;
-        setCapability({ allowed: result.allowed, denialCode: result.denial_code });
-        setCapabilityProjectId(projectId);
-      })
-      .catch((capabilityReadError: unknown) => {
-        if (!active) return;
-        setCapability(null);
-        setCapabilityError(errorMessage(capabilityReadError));
-        setCapabilityProjectId(projectId);
-      });
-
     return () => { active = false; };
-  }, [currentScope, loadBootstrapGuidance, projectId, showError]);
+  }, [currentScope, loadBootstrapGuidance, projectId, showError, t]);
 
   useEffect(() => {
     const current = profile?.project_id === projectId ? profile : null;
@@ -289,10 +272,6 @@ export function ProjectProfilePanel({ projectId }: { projectId: string }) {
   const visibleError = errorProjectId === projectId ? error : '';
   const profileLoading = loading || (!visibleProfile && !visibleError);
   const visibleNotice = visibleProfile ? notice : '';
-  const capabilityCurrent = capabilityProjectId === projectId ? capability : null;
-  const capabilityMessage = capabilityError && capabilityProjectId === projectId
-    ? capabilityError
-    : '';
   const showFirstCompileBootstrap = Boolean(visibleProfile && visibleProfile.requirements.length > 0 && visibleProfile.active === null);
   const bootstrapMatchesProfile = Boolean(
     visibleBootstrapGuidance
@@ -338,7 +317,7 @@ export function ProjectProfilePanel({ projectId }: { projectId: string }) {
           if (sameRequirements(latest.requirements, draft)) {
             setDraft(latest.requirements.map((item) => ({ ...item })));
             setError('');
-            setNotice('These requirements are already saved on the server.');
+            setNotice(t('Profile.requirementsAlreadySaved'));
             return;
           }
         }
@@ -347,8 +326,8 @@ export function ProjectProfilePanel({ projectId }: { projectId: string }) {
       }
       if (!requestIsCurrent(scope)) return;
       showError(status === 409
-        ? 'This Profile changed elsewhere. Your draft is kept; save again to use the latest revision.'
-        : `Profile save was not confirmed. Your draft is kept. ${errorMessage(saveError)}`);
+        ? t('Profile.errors.profileChanged')
+        : t('Profile.errors.saveUnconfirmed', { error: errorMessage(saveError, t('Profile.requestFailed')) }));
     } finally {
       if (requestIsCurrent(scope)) setSavingScope(null);
     }
@@ -369,7 +348,7 @@ export function ProjectProfilePanel({ projectId }: { projectId: string }) {
       }
     } catch (retryError: unknown) {
       if (!requestIsCurrent(scope)) return;
-      showError(`Preview retry was not confirmed: ${errorMessage(retryError)}`);
+      showError(t('Profile.errors.previewRetry', { error: errorMessage(retryError, t('Profile.requestFailed')) }));
     } finally {
       if (requestIsCurrent(scope)) setWorkingScope(null);
     }
@@ -408,13 +387,13 @@ export function ProjectProfilePanel({ projectId }: { projectId: string }) {
         || confirmed.status !== 'confirmed'
         || !confirmed.confirmed_at
       ) {
-        throw new Error('The server did not confirm the current guidance preview.');
+        throw new Error(t('Profile.errors.bootstrapPreviewNotConfirmed'));
       }
       bootstrapRequestRef.current += 1;
       setBootstrapLoading(false);
       setBootstrapGuidance(confirmed);
       setBootstrapScope(scope);
-      setNotice('Guidance confirmed for the first compile. It is separate from the generation-bound active Profile and does not start tagging.');
+      setNotice(t('Profile.bootstrapConfirmedNotice'));
     } catch (confirmError: unknown) {
       if (!requestIsCurrent(scope)) return;
       if (errorStatus(confirmError) === 409) {
@@ -437,10 +416,10 @@ export function ProjectProfilePanel({ projectId }: { projectId: string }) {
         }
         if (!requestIsCurrent(scope)) return;
         showError(profileReadbackSucceeded
-          ? 'Bootstrap guidance changed elsewhere. Latest Profile state was reloaded; your requirements draft is kept.'
-          : 'Bootstrap guidance changed elsewhere. The latest Profile state could not be confirmed; your requirements draft is kept.');
+          ? t('Profile.errors.bootstrapChangedReloaded')
+          : t('Profile.errors.bootstrapChangedUnconfirmed'));
       } else {
-        showError(`Guidance confirmation was not confirmed: ${errorMessage(confirmError)}`);
+        showError(t('Profile.errors.guidanceConfirm', { error: errorMessage(confirmError, t('Profile.requestFailed')) }));
       }
     } finally {
       if (requestIsCurrent(scope)) setWorkingScope(null);
@@ -460,11 +439,11 @@ export function ProjectProfilePanel({ projectId }: { projectId: string }) {
       if (!requestIsCurrent(scope) || next.project_id !== projectId) return;
       applyProfile(next);
       if (next.active?.candidate_id !== candidate.candidate_id || previousActiveId === candidate.candidate_id) {
-        setNotice('Preview confirmed. It becomes active only after its tagging job is ready.');
+        setNotice(t('Profile.previewConfirmedNotice'));
       }
     } catch (confirmError: unknown) {
       if (!requestIsCurrent(scope)) return;
-      showError(`Confirmation was not confirmed: ${errorMessage(confirmError)}`);
+      showError(t('Profile.errors.confirmation', { error: errorMessage(confirmError, t('Profile.requestFailed')) }));
     } finally {
       if (requestIsCurrent(scope)) setWorkingScope(null);
     }
@@ -483,27 +462,9 @@ export function ProjectProfilePanel({ projectId }: { projectId: string }) {
       applyProfile(next);
     } catch (retryError: unknown) {
       if (!requestIsCurrent(scope)) return;
-      showError(`Tagging retry was not confirmed: ${errorMessage(retryError)}`);
+      showError(t('Profile.errors.taggingRetry', { error: errorMessage(retryError, t('Profile.requestFailed')) }));
     } finally {
       if (requestIsCurrent(scope)) setWorkingScope(null);
-    }
-  }
-
-  async function startRecompileAll() {
-    if (capabilityCurrent?.allowed !== true || recompiling) return;
-    const scope = currentScope;
-    setRecompilingScope(scope);
-    setError('');
-    setNotice('');
-    try {
-      await recompileAll(projectId);
-      if (!requestIsCurrent(scope)) return;
-      setNotice('Full recompile request accepted.');
-    } catch (recompileError: unknown) {
-      if (!requestIsCurrent(scope)) return;
-      showError(`Full recompile was not accepted: ${errorMessage(recompileError)}`);
-    } finally {
-      if (requestIsCurrent(scope)) setRecompilingScope(null);
     }
   }
 
@@ -519,35 +480,18 @@ export function ProjectProfilePanel({ projectId }: { projectId: string }) {
     >
       <div className="flex flex-wrap items-start justify-between gap-4">
         <div>
-          <p className="font-mono text-[11px] uppercase tracking-[0.2em] text-emerald-300/90">Project settings</p>
-          <h2 id="project-profile-heading" className="mt-2 text-xl font-semibold text-white">Project Profile</h2>
+          <p className="font-mono text-[11px] uppercase tracking-[0.2em] text-emerald-300/90">{t('Profile.settings')}</p>
+          <h2 id="project-profile-heading" className="mt-2 text-xl font-semibold text-white">{t('Profile.title')}</h2>
           <p className="mt-2 max-w-3xl text-sm leading-6 text-zinc-400">
-            Keep your original requirements here. Generated dictionary and guidance previews stay separate until you confirm them.
+            {t('Profile.intro')}
           </p>
-        </div>
-        <div className="max-w-sm">
-          <button
-            type="button"
-            disabled={capabilityCurrent?.allowed !== true || recompiling}
-            onClick={() => void startRecompileAll()}
-            className="min-h-10 rounded-lg border border-white/10 px-3 text-sm font-medium text-zinc-300 transition hover:border-emerald-300/30 hover:text-white disabled:cursor-not-allowed disabled:opacity-50"
-          >
-            {recompiling ? 'Starting…' : 'Recompile all'}
-          </button>
-          <p className="mt-2 text-xs leading-5 text-zinc-500">
-            A full recompile can use BYOK model credits and incur costs. It stays disabled until the server capability allows it.
-          </p>
-          {capabilityCurrent?.allowed === false ? (
-            <p className="mt-1 text-xs text-zinc-500">Unavailable: {capabilityCurrent.denialCode ?? 'not enabled'}.</p>
-          ) : null}
-          {capabilityMessage ? <p className="mt-1 text-xs text-amber-200">Capability check failed; full recompile remains disabled.</p> : null}
         </div>
       </div>
 
-      {profileLoading ? <p className="mt-5 text-sm text-zinc-400">Loading Profile…</p> : null}
+      {profileLoading ? <p className="mt-5 text-sm text-zinc-400">{t('Profile.loading')}</p> : null}
       {!profileLoading && !visibleProfile ? (
         <div className="mt-5" role="alert">
-          <p className="text-sm text-red-200">{visibleError || 'Profile is unavailable for this project.'}</p>
+          <p className="text-sm text-red-200">{visibleError || t('Profile.unavailable')}</p>
           <button
             type="button"
             onClick={() => {
@@ -557,7 +501,7 @@ export function ProjectProfilePanel({ projectId }: { projectId: string }) {
                 .then((next) => {
                   if (!requestIsCurrent(scope)) return;
                   if (next.project_id !== projectId) {
-                    showError('Profile response does not match the selected project.');
+                    showError(t('Profile.responseProjectMismatch'));
                     return;
                   }
                   profileRef.current = next;
@@ -568,7 +512,7 @@ export function ProjectProfilePanel({ projectId }: { projectId: string }) {
                 })
                 .catch((loadError: unknown) => {
                   if (requestIsCurrent(scope)) {
-                    showError(`Unable to load this project's Profile: ${errorMessage(loadError)}`);
+                    showError(t('Profile.errors.load', { error: errorMessage(loadError, t('Profile.requestFailed')) }));
                   }
                 })
                 .finally(() => {
@@ -577,7 +521,7 @@ export function ProjectProfilePanel({ projectId }: { projectId: string }) {
             }}
             className="mt-2 min-h-10 rounded-md border border-white/10 px-3 text-sm text-zinc-200 hover:bg-white/5"
           >
-            Retry loading Profile
+            {t('Profile.retryLoading')}
           </button>
         </div>
       ) : null}
@@ -586,19 +530,19 @@ export function ProjectProfilePanel({ projectId }: { projectId: string }) {
         <>
           {visibleProfile.active ? (
             <p className="mt-5 text-sm text-emerald-200" role="status">
-              Active profile: {visibleProfile.active.candidate_id}
+              {t('Profile.active', { candidateId: visibleProfile.active.candidate_id })}
             </p>
           ) : (
-            <p className="mt-5 text-sm text-zinc-400" role="status">No generation-bound Profile is active yet.</p>
+            <p className="mt-5 text-sm text-zinc-400" role="status">{t('Profile.noActive')}</p>
           )}
 
           {showFirstCompileBootstrap ? (
             <section className="mt-5 rounded-xl border border-sky-300/20 bg-sky-300/5 p-4" aria-labelledby="profile-bootstrap-heading" aria-busy={visibleBootstrapLoading}>
               <div className="flex flex-wrap items-start justify-between gap-3">
                 <div>
-                  <h3 id="profile-bootstrap-heading" className="text-sm font-semibold text-white">First-compile guidance</h3>
+                  <h3 id="profile-bootstrap-heading" className="text-sm font-semibold text-white">{t('Profile.firstCompileGuidance')}</h3>
                   <p className="mt-1 text-xs leading-5 text-zinc-400">
-                    This guidance is separate from the generation-bound Profile and does not create a Tagging job or active Profile.
+                    {t('Profile.firstCompileDescription')}
                   </p>
                 </div>
                 {visibleBootstrapGuidance?.status === 'preview_ready' ? (
@@ -608,7 +552,7 @@ export function ProjectProfilePanel({ projectId }: { projectId: string }) {
                     onClick={() => void confirmBootstrapGuidance()}
                     className="min-h-10 rounded-lg bg-sky-200 px-3 text-sm font-semibold text-zinc-950 hover:bg-sky-100 disabled:cursor-not-allowed disabled:opacity-50"
                   >
-                    {working ? 'Confirming…' : 'Confirm for first compile'}
+                    {working ? t('Profile.confirming') : t('Profile.confirmForFirstCompile')}
                   </button>
                 ) : null}
               </div>
@@ -616,36 +560,38 @@ export function ProjectProfilePanel({ projectId }: { projectId: string }) {
               {visibleBootstrapGuidance ? (
                 <>
                   {!bootstrapMatchesProfile ? (
-                    <p className="mt-3 text-sm text-amber-100" role="status">This guidance preview is out of date for the current Profile revision.</p>
+                    <p className="mt-3 text-sm text-amber-100" role="status">{t('Profile.bootstrapOutOfDate')}</p>
                   ) : !bootstrapMatchesDraft ? (
-                    <p className="mt-3 text-sm text-amber-100" role="status">Save the current requirements before using this guidance preview.</p>
+                    <p className="mt-3 text-sm text-amber-100" role="status">{t('Profile.saveBeforeBootstrap')}</p>
                   ) : visibleBootstrapGuidance.status === 'confirmed' ? (
                     <p className="mt-3 text-sm text-emerald-200" role="status">
-                      Confirmed for first compile{visibleBootstrapGuidance.confirmed_at ? ` at ${visibleBootstrapGuidance.confirmed_at}` : ''}. It is not an active generation-bound Profile.
+                      {visibleBootstrapGuidance.confirmed_at
+                        ? t('Profile.bootstrapConfirmedAt', { time: visibleBootstrapGuidance.confirmed_at })
+                        : t('Profile.bootstrapConfirmedWithoutTime')}
                     </p>
                   ) : (
-                    <p className="mt-3 text-sm text-amber-100" role="status">Preview ready; confirm it before the first compile.</p>
+                    <p className="mt-3 text-sm text-amber-100" role="status">{t('Profile.bootstrapPreviewReady')}</p>
                   )}
 
                   <div className="mt-4 rounded-lg border border-white/10 p-3">
-                    <h4 className="text-xs font-semibold uppercase tracking-wide text-sky-200">Guidance preview</h4>
+                    <h4 className="text-xs font-semibold uppercase tracking-wide text-sky-200">{t('Profile.guidancePreview')}</h4>
                     <p className="mt-2 whitespace-pre-wrap text-sm leading-6 text-zinc-300">
-                      {visibleBootstrapGuidance.preview.guidance_diff || 'No compile guidance changes.'}
+                      {visibleBootstrapGuidance.preview.guidance_diff || t('Profile.noCompileGuidanceChanges')}
                     </p>
                   </div>
                   <ProfileGuidanceArtifactDetails
                     projectId={projectId}
                     revision={visibleBootstrapGuidance.revision}
-                    title="Bootstrap writing guidance"
+                    title={t('Profile.bootstrapWritingGuidance')}
                   />
 
-                  <div className="mt-4" aria-label="Requirement effects and limitations">
-                    <h4 className="text-xs font-semibold uppercase tracking-wide text-zinc-300">Requirement effects and limitations</h4>
+                  <div className="mt-4" aria-label={t('Profile.requirementEffects')}>
+                    <h4 className="text-xs font-semibold uppercase tracking-wide text-zinc-300">{t('Profile.requirementEffects')}</h4>
                     <ul className="mt-2 space-y-2">
                       {visibleBootstrapGuidance.preview.requirements.map((requirement) => (
                         <li key={requirement.id} className="rounded-lg border border-white/10 p-3">
                           <p className="text-sm font-medium text-zinc-200">
-                            {requirement.id}: {requirementDispositionLabel(requirement.disposition)}
+                            {requirement.id}: {requirementDispositionLabel(requirement.disposition, t)}
                           </p>
                           <p className="mt-1 text-sm leading-5 text-zinc-400">{requirement.explanation}</p>
                         </li>
@@ -656,17 +602,17 @@ export function ProjectProfilePanel({ projectId }: { projectId: string }) {
               ) : (
                 <p className="mt-3 text-sm leading-6 text-zinc-300" role="status">
                   {visibleBootstrapLoading
-                    ? 'Checking for the initial guidance preview…'
+                    ? t('Profile.bootstrapChecking')
                     : visibleBootstrapError
-                      ? 'Initial guidance status could not be read; Profile state remains available.'
+                      ? t('Profile.bootstrapStatusUnavailable')
                       : visibleProfile.derivation_status === 'pending'
-                        ? 'Initial guidance preview is pending Profile derivation. The server schedule is still in effect.'
+                        ? t('Profile.bootstrapPending')
                         : visibleProfile.derivation_status === 'failed'
-                          ? 'Initial guidance preview has not been produced. Retry the existing Profile derivation before compiling.'
-                          : 'The first compile is waiting for confirmed bootstrap guidance.'}
+                          ? t('Profile.bootstrapNotProduced')
+                          : t('Profile.waitingForBootstrap')}
                 </p>
               )}
-              {visibleBootstrapError ? <p className="mt-2 text-xs text-amber-200" role="alert">Unable to read first-compile guidance: {visibleBootstrapError}</p> : null}
+              {visibleBootstrapError ? <p className="mt-2 text-xs text-amber-200" role="alert">{t('Profile.bootstrapReadError', { error: visibleBootstrapError })}</p> : null}
             </section>
           ) : null}
 
@@ -674,23 +620,23 @@ export function ProjectProfilePanel({ projectId }: { projectId: string }) {
             <ProfileGuidanceArtifactDetails
               projectId={projectId}
               revision={visibleProfile.active.guidance_revision}
-              title="Active writing guidance"
+              title={t('Profile.activeWritingGuidance')}
             />
           ) : null}
 
           {visibleProfile.derivation_status === 'pending' ? (
             <p className="mt-3 text-sm leading-6 text-amber-100" role="status">
-              Preview generation is scheduled by the server for{' '}
-              <time dateTime={visibleProfile.scheduled_for ?? undefined}>{scheduleLabel(visibleProfile.scheduled_for ?? 'a later time')}</time>.
-              {' '}Saving requirements did not complete generation.
+              {t('Profile.generationScheduledPrefix')}{' '}
+              <time dateTime={visibleProfile.scheduled_for ?? undefined}>{scheduleLabel(visibleProfile.scheduled_for ?? t('Profile.later'))}</time>
+              {t('Profile.generationScheduledSuffix')}
             </p>
           ) : null}
           {visibleProfile.derivation_status === 'failed' ? (
             <div className="mt-3 flex flex-wrap items-center gap-3" role="status">
               <p className="text-sm text-red-200">
                 {visibleProfile.derivation_error_code === 'runtime_retry_exhausted'
-                  ? 'Profile runtime work exhausted its automatic retries'
-                  : 'Preview generation failed'}
+                  ? t('Profile.runtimeRetriesExhausted')
+                  : t('Profile.previewGenerationFailed')}
                 {visibleProfile.derivation_error_code ? ` (${visibleProfile.derivation_error_code})` : ''}.
               </p>
               <button
@@ -699,7 +645,7 @@ export function ProjectProfilePanel({ projectId }: { projectId: string }) {
                 onClick={() => void retryDerivation()}
                 className="min-h-10 rounded-md border border-white/10 px-3 text-sm text-zinc-200 hover:bg-white/5 disabled:opacity-50"
               >
-                {visibleProfile.derivation_error_code === 'runtime_retry_exhausted' ? 'Retry Profile work' : 'Retry preview generation'}
+                {visibleProfile.derivation_error_code === 'runtime_retry_exhausted' ? t('Profile.retryProfileWork') : t('Profile.retryPreviewGeneration')}
               </button>
             </div>
           ) : null}
@@ -708,17 +654,17 @@ export function ProjectProfilePanel({ projectId }: { projectId: string }) {
             <div className="mt-5 rounded-xl border border-white/10 bg-black/20 p-4" aria-labelledby="profile-preview-heading">
               <div className="flex flex-wrap items-start justify-between gap-3">
                 <div>
-                  <h3 id="profile-preview-heading" className="text-sm font-semibold text-white">Generated preview</h3>
+                  <h3 id="profile-preview-heading" className="text-sm font-semibold text-white">{t('Profile.generatedPreview')}</h3>
                   {visibleProfile.candidate.source === 'compile_auto' ? (
-                    <p className="mt-1 text-xs text-emerald-200">Tags-only update from compile; guidance stays unchanged.</p>
+                    <p className="mt-1 text-xs text-emerald-200">{t('Profile.tagsOnlyUpdate')}</p>
                   ) : null}
                   {visibleProfile.candidate.source === 'manual' ? (
                     <p className="mt-1 text-xs text-zinc-400">
                       {visibleProfile.active?.candidate_id === visibleProfile.candidate.candidate_id
-                        ? 'This preview is active.'
+                        ? t('Profile.previewActive')
                         : visibleProfile.confirmed_candidate_id === visibleProfile.candidate.candidate_id
-                          ? 'Preview confirmed; waiting for tagging to finish.'
-                          : 'Preview awaiting confirmation.'}
+                          ? t('Profile.previewWaitingForTagging')
+                          : t('Profile.previewAwaitingConfirmation')}
                     </p>
                   ) : null}
                 </div>
@@ -731,22 +677,22 @@ export function ProjectProfilePanel({ projectId }: { projectId: string }) {
                     onClick={() => void confirmCandidate()}
                     className="min-h-10 rounded-lg bg-emerald-300 px-3 text-sm font-semibold text-zinc-950 hover:bg-emerald-200 disabled:opacity-50"
                   >
-                    Confirm preview
+                    {t('Profile.confirmPreview')}
                   </button>
                 ) : null}
               </div>
 
               <div className="mt-4 grid gap-3 md:grid-cols-2">
                 <section className="rounded-lg border border-white/10 p-3" aria-labelledby="dictionary-preview-heading">
-                  <h4 id="dictionary-preview-heading" className="text-xs font-semibold uppercase tracking-wide text-emerald-200">Dictionary preview</h4>
-                  <p className="mt-2 whitespace-pre-wrap text-sm leading-6 text-zinc-300">{visibleProfile.candidate.preview.dictionary_diff || 'No dictionary changes.'}</p>
+                  <h4 id="dictionary-preview-heading" className="text-xs font-semibold uppercase tracking-wide text-emerald-200">{t('Profile.dictionaryPreview')}</h4>
+                  <p className="mt-2 whitespace-pre-wrap text-sm leading-6 text-zinc-300">{visibleProfile.candidate.preview.dictionary_diff || t('Profile.noDictionaryChanges')}</p>
                 </section>
                 <section className="rounded-lg border border-white/10 p-3" aria-labelledby="guidance-preview-heading">
-                  <h4 id="guidance-preview-heading" className="text-xs font-semibold uppercase tracking-wide text-sky-200">Guidance preview</h4>
+                  <h4 id="guidance-preview-heading" className="text-xs font-semibold uppercase tracking-wide text-sky-200">{t('Profile.guidancePreview')}</h4>
                   <p className="mt-2 whitespace-pre-wrap text-sm leading-6 text-zinc-300">
                     {visibleProfile.candidate.source === 'compile_auto'
-                      ? 'Guidance unchanged.'
-                      : visibleProfile.candidate.preview.guidance_diff || 'No guidance changes.'}
+                      ? t('Profile.guidanceUnchanged')
+                      : visibleProfile.candidate.preview.guidance_diff || t('Profile.noGuidanceChanges')}
                   </p>
                 </section>
               </div>
@@ -754,18 +700,18 @@ export function ProjectProfilePanel({ projectId }: { projectId: string }) {
                 <ProfileGuidanceArtifactDetails
                   projectId={projectId}
                   revision={visibleProfile.candidate.guidance.revision}
-                  title="Candidate writing guidance"
+                  title={t('Profile.candidateWritingGuidance')}
                 />
               ) : null}
 
               {visibleProfile.candidate.preview.requirements.length > 0 ? (
-                <div className="mt-4" aria-label="Candidate requirement effects and limitations">
-                  <h4 className="text-xs font-semibold uppercase tracking-wide text-zinc-300">Requirement effects and limitations</h4>
+                <div className="mt-4" aria-label={t('Profile.candidateRequirementEffects')}>
+                  <h4 className="text-xs font-semibold uppercase tracking-wide text-zinc-300">{t('Profile.requirementEffects')}</h4>
                   <ul className="mt-2 space-y-2">
                     {visibleProfile.candidate.preview.requirements.map((requirement) => (
                       <li key={requirement.id} className="rounded-lg border border-white/10 p-3">
                         <p className="text-sm font-medium text-zinc-200">
-                          {requirement.id}: {requirementDispositionLabel(requirement.disposition)}
+                            {requirement.id}: {requirementDispositionLabel(requirement.disposition, t)}
                         </p>
                         <p className="mt-1 text-sm leading-5 text-zinc-400">{requirement.explanation}</p>
                       </li>
@@ -776,8 +722,8 @@ export function ProjectProfilePanel({ projectId }: { projectId: string }) {
 
               {visibleProfile.job ? (
                 <div className="mt-4 flex flex-wrap items-center gap-x-4 gap-y-2 text-sm text-zinc-300" role="status">
-                  <span>Tagging work: {visibleProfile.job.status}</span>
-                  {visibleProfile.job.missing_count > 0 ? <span>{visibleProfile.job.missing_count} items incomplete</span> : null}
+                  <span>{t('Profile.taggingWork', { status: t(`Profile.jobStatus.${visibleProfile.job.status}`) })}</span>
+                  {visibleProfile.job.missing_count > 0 ? <span>{t('Profile.itemsIncomplete', { count: visibleProfile.job.missing_count })}</span> : null}
                   {visibleProfile.job.error_code ? <span className="text-amber-200">{visibleProfile.job.error_code}</span> : null}
                   {canRetryTagging ? (
                     <button
@@ -786,7 +732,7 @@ export function ProjectProfilePanel({ projectId }: { projectId: string }) {
                       onClick={() => void retryTagging()}
                       className="min-h-10 rounded-md border border-white/10 px-3 text-sm text-zinc-200 hover:bg-white/5 disabled:opacity-50"
                     >
-                      Retry missing tagging work
+                      {t('Profile.retryMissingTagging')}
                     </button>
                   ) : null}
                 </div>
@@ -795,8 +741,11 @@ export function ProjectProfilePanel({ projectId }: { projectId: string }) {
           ) : null}
 
           <div className="mt-6 border-t border-white/10 pt-5">
-            <h3 className="text-sm font-semibold text-white">Original requirements</h3>
-            <p className="mt-1 text-xs leading-5 text-zinc-500">Reorder, add, or remove your own requirements. Saving schedules a preview; it does not activate generated changes.</p>
+            <h3 className="text-sm font-semibold text-white">{t('Profile.originalRequirements')}</h3>
+            <p className="mt-1 text-xs leading-5 text-zinc-500">{t('Profile.requirementsDescription')}</p>
+            <p className="mt-2 text-sm leading-6 text-zinc-400">{t('Profile.requirementsPriorities')}</p>
+            <p className="mt-2 text-sm leading-6 text-zinc-400">{t('Profile.requirementsExample')}</p>
+            <p className="mt-2 text-xs leading-5 text-zinc-500">{t('Profile.queryEffectDelay')}</p>
             <div className="mt-4">
               <ProfileRequirementsEditor
                 requirements={draft}
@@ -814,7 +763,7 @@ export function ProjectProfilePanel({ projectId }: { projectId: string }) {
               onClick={() => void saveRequirements()}
               className="mt-4 min-h-11 rounded-lg bg-emerald-300 px-4 text-sm font-semibold text-zinc-950 transition hover:bg-emerald-200 disabled:cursor-not-allowed disabled:opacity-50"
             >
-              {saving ? 'Saving…' : 'Save requirements'}
+              {saving ? t('Profile.saving') : t('Profile.saveRequirements')}
             </button>
           </div>
         </>

@@ -138,6 +138,7 @@ function deferred<T>() {
 }
 
 beforeEach(() => {
+  localStorage.setItem('locale', 'en');
   mocks.getProfile.mockResolvedValue(emptyProfile());
   mocks.getProfileBootstrapGuidance.mockResolvedValue({ bootstrap_guidance: null });
   mocks.getProfileGuidanceArtifact.mockImplementation(async (_projectId: string, revision: string) => ({
@@ -226,6 +227,10 @@ describe('LWC-211 Project Profile', () => {
     render(<ProjectProfilePanel projectId="project-a" />);
 
     const input = await screen.findByRole('textbox', { name: 'Requirement 1' });
+    expect(screen.getByRole('heading', { name: 'Project priorities (optional)' })).toBeDefined();
+    expect(screen.getByText(/tag list and rules preview for Jev concept tagging/)).toBeDefined();
+    expect(screen.getByText(/Lifestyle project/)).toBeDefined();
+    expect(screen.getByText(/current settings remain in use until the update completes\. Confirm the preview first/)).toBeDefined();
     expect(mocks.getProfileBootstrapGuidance).not.toHaveBeenCalled();
     expect(screen.queryByRole('heading', { name: 'First-compile guidance' })).toBeNull();
     fireEvent.change(input, { target: { value: '  invoice source  ' } });
@@ -239,8 +244,8 @@ describe('LWC-211 Project Profile', () => {
     expect(await screen.findByText(/scheduled by the server/i)).toBeDefined();
     expect(screen.getByText(/2026-09-25T03:00:00Z/)).toBeDefined();
     expect(screen.queryByText('Added invoice tag')).toBeNull();
-    expect((screen.getByRole('button', { name: /Recompile all/i }) as HTMLButtonElement).disabled).toBe(true);
-    expect(screen.getAllByText(/BYOK/i).length).toBeGreaterThan(0);
+    expect(screen.queryByRole('button', { name: /Recompile all/i })).toBeNull();
+    expect(mocks.getRecompileAllCapability).not.toHaveBeenCalled();
   });
 
   it('shows first-compile guidance effects, explicitly confirms it, and keeps it separate from an active Profile', async () => {
@@ -506,7 +511,7 @@ describe('LWC-211 Project Profile', () => {
     fireEvent.click(screen.getByRole('button', { name: 'Retry missing tagging work' }));
 
     await waitFor(() => expect(mocks.retryProfileCandidate).toHaveBeenCalledWith('project-a', 'candidate-2', 6));
-    expect(await screen.findByText(/Tagging work: scheduled/)).toBeDefined();
+    expect(await screen.findByText(/Tagging work: Scheduled/)).toBeDefined();
   });
 
   it('requires an explicit confirmation and keeps the prior active Profile until tagging completes', async () => {
@@ -752,7 +757,7 @@ describe('LWC-211 Project Profile', () => {
 
     render(<ProjectProfilePanel projectId="project-a" />);
     await act(async () => { await Promise.resolve(); await Promise.resolve(); });
-    expect(screen.getByText(/Tagging work: running/)).toBeDefined();
+    expect(screen.getByText(/Tagging work: Running/)).toBeDefined();
 
     await act(async () => { await vi.advanceTimersByTimeAsync(5000); });
     expect(screen.getByText(/Active profile: candidate-1/)).toBeDefined();
@@ -828,14 +833,21 @@ describe('LWC-211 Project Profile', () => {
     expect(screen.queryByText('Added invoice tag')).toBeNull();
   });
 
-  it('keeps Recompile all disabled when the capability read fails', async () => {
-    mocks.getRecompileAllCapability.mockRejectedValue(new Error('capability service unavailable'));
-
+  it('omits the full-project recompile UI and makes no capability request', async () => {
     render(<ProjectProfilePanel projectId="project-a" />);
 
     await screen.findByRole('textbox', { name: 'Requirement 1' });
-    expect((screen.getByRole('button', { name: /Recompile all/i }) as HTMLButtonElement).disabled).toBe(true);
-    expect(await screen.findByText(/Capability check failed; full recompile remains disabled/)).toBeDefined();
+    expect(screen.queryByRole('button', { name: /Recompile all/i })).toBeNull();
+    expect(mocks.getRecompileAllCapability).not.toHaveBeenCalled();
     expect(mocks.recompileAll).not.toHaveBeenCalled();
+  });
+
+  it('renders the Profile panel in Traditional Chinese', async () => {
+    localStorage.setItem('locale', 'zh-TW');
+    render(<ProjectProfilePanel projectId="project-a" />);
+
+    expect(await screen.findByRole('heading', { name: '專案重點與優先順序（選填）' })).toBeDefined();
+    expect(screen.getByRole('textbox', { name: '需求 1' })).toBeDefined();
+    expect(screen.queryByText('Original requirements')).toBeNull();
   });
 });

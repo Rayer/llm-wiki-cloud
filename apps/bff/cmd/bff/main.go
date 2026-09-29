@@ -374,15 +374,17 @@ func newProductionRouter(
 	{
 		v1.GET("/projects/:pid/recompile-all/capability", hV1.RecompileAllCapability)
 		v1.POST("/projects/:pid/recompile-all", hV1.RecompileAll)
-		v1.GET("/projects/:pid/profile", hV1.GetProfile)
-		v1.PUT("/projects/:pid/profile", hV1.PutProfile)
-		v1.GET("/projects/:pid/profile/bootstrap-guidance", hV1.GetProfileBootstrapGuidance)
-		v1.GET("/projects/:pid/profile/guidance/:revision", hV1.GetProfileGuidanceArtifact)
-		v1.POST("/projects/:pid/profile/bootstrap-guidance/:revision/confirm", hV1.ConfirmProfileBootstrapGuidance)
-		v1.POST("/projects/:pid/profile/candidates/:candidateID/confirm", hV1.ConfirmProfileCandidate)
-		v1.POST("/projects/:pid/profile/candidates/:candidateID/retry", hV1.RetryProfileCandidate)
-		v1.POST("/projects/:pid/profile/derivation/retry", hV1.RetryProfileDerivation)
-		v1.GET("/projects/:pid/profile/jobs/:jobID", hV1.GetProfileJob)
+		profileRoutes := v1.Group("")
+		profileRoutes.Use(hV1.TrialDemoAccessGuard())
+		profileRoutes.GET("/projects/:pid/profile", hV1.GetProfile)
+		profileRoutes.PUT("/projects/:pid/profile", hV1.PutProfile)
+		profileRoutes.GET("/projects/:pid/profile/bootstrap-guidance", hV1.GetProfileBootstrapGuidance)
+		profileRoutes.GET("/projects/:pid/profile/guidance/:revision", hV1.GetProfileGuidanceArtifact)
+		profileRoutes.POST("/projects/:pid/profile/bootstrap-guidance/:revision/confirm", hV1.ConfirmProfileBootstrapGuidance)
+		profileRoutes.POST("/projects/:pid/profile/candidates/:candidateID/confirm", hV1.ConfirmProfileCandidate)
+		profileRoutes.POST("/projects/:pid/profile/candidates/:candidateID/retry", hV1.RetryProfileCandidate)
+		profileRoutes.POST("/projects/:pid/profile/derivation/retry", hV1.RetryProfileDerivation)
+		profileRoutes.GET("/projects/:pid/profile/jobs/:jobID", hV1.GetProfileJob)
 		var exportRepo exportjob.Repository
 		var projectVerifier exportjob.ProjectVerifier
 		var archiveStore *exportjob.CloudArchiveStore
@@ -398,7 +400,9 @@ func newProductionRouter(
 			}
 		}
 		exportHandler := exportjob.NewHTTPHandler(exportRepo, projectVerifier, archiveStore, exportjob.NewCloudRunJobStarter(cfg.ExportJobURL))
-		exportHandler.Register(v1)
+		exportRoutes := v1.Group("")
+		exportRoutes.Use(hV1.TrialDemoAccessGuard())
+		exportHandler.Register(exportRoutes)
 
 		v1.GET("/index", hV1.Index)
 		v1.POST("/query", hV1.Query)

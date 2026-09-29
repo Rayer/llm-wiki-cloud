@@ -230,10 +230,7 @@ export function AuthProvider({ children }: { children: ReactNode }) {
           setAccessToken(stored);
           accessTokenRef.current = stored;
           setUser(readStoredAuthUser(storage));
-          setIsDemoSession(
-            readStoredDemoSession(storage) ||
-              readStoredAuthUser(storage)?.email === 'demo@llm-wiki.dev',
-          );
+          setIsDemoSession(readStoredDemoSession(storage));
           setHydrated(true);
         }
         // StrictMode discards its first effect before rotating the single-use cookie.

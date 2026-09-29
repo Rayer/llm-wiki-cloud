@@ -39,10 +39,23 @@ vi.mock('@/lib/google-auth', async () => {
   return { ...actual, startGoogleLogin: mocks.startGoogleLogin };
 });
 
-vi.mock('@/lib/i18n', () => ({
-  useLocale: () => ({ t: (key: string) => key }),
-  useT: () => ({ t: (key: string) => key }),
-}));
+vi.mock('@/lib/i18n', () => {
+  const t = (key: string) => ({
+    'ProjectRename.title': 'Rename project',
+    'ProjectRename.nameProject': 'Name your project',
+    'ProjectRename.projectName': 'Project name',
+    'ProjectRename.close': 'Close rename project dialog',
+    'ProjectRename.required': 'Project name is required.',
+    'ProjectRename.length': 'Project name must be 1-64 characters.',
+    'ProjectRename.submitFailed': 'Unable to rename project.',
+    'ProjectRename.provisionalDescription': 'Choose a name for your new Default Project, or skip for now.',
+    'ProjectRename.skip': 'Skip for now',
+    'ProjectRename.cancel': 'Cancel',
+    'ProjectRename.rename': 'Rename',
+    'ProjectRename.renaming': 'Renaming…',
+  }[key] ?? key);
+  return { useLocale: () => ({ t }), useT: () => ({ t }) };
+});
 
 vi.mock('@/components/WorkspaceProvider', () => ({
   useWorkspace: () => ({
