@@ -7,10 +7,14 @@ import unittest
 import test_auth_config_contract as fixtures
 from test_production_auth_config_contract import candidate as production_candidate
 
+TEST_PROFILE_AUDIENCE = 'https://profile-dispatch.dev.example.invalid'
+TEST_PROFILE_SERVICE_ACCOUNT = 'lwc-profile-dispatcher-dev@llm-wiki-cloud.iam.gserviceaccount.com'
+TEST_TYPESAFE_SECRET = {'name': 'typesafe-jev-api-key-dev-test', 'version': '7'}
 
-def candidate(environment):
+
+def candidate(environment, plan_override=None):
     value = production_candidate('bff')
-    plan = fixtures.bff_plan(environment)
+    plan = plan_override or fixtures.bff_plan(environment)
     value['metadata']['name'] = plan['bff']['service_name'] + '-00042-test'
     value['spec']['serviceAccountName'] = plan['bff']['runtime_service_account']
     if environment == 'development':
@@ -28,8 +32,51 @@ def candidate(environment):
         {'name': 'BUCKET', 'value': 'preserved-bucket'},
         {'name': 'DEEPSEEK_API_KEY', 'valueFrom': {'secretKeyRef': {'name': 'deepseek-apikey', 'key': '3'}}},
     ]
+    if environment == 'development' and plan['bff'].get('profile_runtime_audience'):
+        value['spec']['containers'][0]['env'] += [
+            {'name': 'PROFILE_RUNTIME_AUDIENCE', 'value': plan['bff']['profile_runtime_audience']},
+            {'name': 'PROFILE_RUNTIME_SERVICE_ACCOUNT', 'value': plan['bff']['profile_runtime_service_account']},
+            {'name': 'TYPESAFE_JEV_API_KEY', 'valueFrom': {'secretKeyRef': {
+                'name': plan['bff']['secret_references']['typesafe_jev_api_key']['name'],
+                'key': plan['bff']['secret_references']['typesafe_jev_api_key']['version'],
+            }}},
+        ]
     value['metadata']['annotations'] = {'run.googleapis.com/vpc-access-egress': 'private-ranges-only'}
     return value
+
+
+def profile_runtime_plan():
+    import yaml
+
+    plan = copy.deepcopy(fixtures.bff_plan('production'))
+    dev_config = yaml.safe_load((fixtures.ROOT / 'deploy/environments/development.yaml').read_text())
+    plan['environment'] = 'development'
+    plan['config_path'] = 'deploy/environments/development.yaml'
+    plan['export_job'] = copy.deepcopy(dev_config['export_job'])
+    plan['bff'].update({
+        'service_name': dev_config['bff']['service_name'],
+        'runtime_service_account': dev_config['bff']['runtime_service_account'],
+        'firestore_database_id': dev_config['bff']['firestore_database_id'],
+        'allowed_origins': dev_config['bff']['allowed_origins'],
+        'query_config': dev_config['bff']['query_config'],
+        'secret_references': {
+            'jwt': dev_config['bff']['secret_references']['jwt'],
+            'deepseek_api_key': dev_config['bff']['secret_references']['deepseek_api_key'],
+        },
+    })
+    component = plan['components']['bff']
+    component.update({
+        'service_name': dev_config['bff']['service_name'],
+        'runtime_service_account': dev_config['bff']['runtime_service_account'],
+        'secret_references': copy.deepcopy(plan['bff']['secret_references']),
+    })
+    plan['bff']['profile_runtime_audience'] = TEST_PROFILE_AUDIENCE
+    plan['bff']['profile_runtime_service_account'] = TEST_PROFILE_SERVICE_ACCOUNT
+    plan['bff']['secret_references']['typesafe_jev_api_key'] = copy.deepcopy(TEST_TYPESAFE_SECRET)
+    component['profile_runtime_audience'] = TEST_PROFILE_AUDIENCE
+    component['profile_runtime_service_account'] = TEST_PROFILE_SERVICE_ACCOUNT
+    component['secret_references']['typesafe_jev_api_key'] = copy.deepcopy(TEST_TYPESAFE_SECRET)
+    return plan
 
 
 class BFFQueryConfigTests(unittest.TestCase):
@@ -40,7 +87,8 @@ class BFFQueryConfigTests(unittest.TestCase):
     def test_yaml_selection_delivered_and_exact_revision_verified_before_traffic(self):
         for environment in ('development', 'production'):
             with self.subTest(environment=environment):
-                value = candidate(environment)
+                plan = fixtures.bff_plan(environment)
+                value = candidate(environment, plan)
                 result, commands, artifacts = self.run_shell(value, environment, action='bff_mutate')
                 self.assertEqual(result.returncode, 0, result.stderr)
                 updates = [c for c in commands if c[:3] == ['run', 'services', 'update']]
@@ -52,9 +100,13 @@ class BFFQueryConfigTests(unittest.TestCase):
                 self.assertIn('QUERY_STAGE_CONFIG_PATH=' + path, env_arg)
                 if environment == 'development':
                     self.assertEqual(env_arg, '^|^QUERY_STAGE_CONFIG_PATH=' + path
+                                     + '|PROFILE_RUNTIME_AUDIENCE=' + plan['bff']['profile_runtime_audience']
+                                     + '|PROFILE_RUNTIME_SERVICE_ACCOUNT=' + plan['bff']['profile_runtime_service_account']
                                      + '|EXPORT_JOB_URL=https://run.googleapis.com/v2/projects/llm-wiki-cloud/locations/asia-east1/jobs/export-job-dev:run'
                                      + '|EXPORT_SIGNING_SERVICE_ACCOUNT=lwc-export-signer-dev@llm-wiki-cloud.iam.gserviceaccount.com')
-                    self.assertNotIn('--update-secrets', update)
+                    self.assertEqual(update[update.index('--update-secrets') + 1],
+                                     'TYPESAFE_JEV_API_KEY=' + plan['bff']['secret_references']['typesafe_jev_api_key']['name']
+                                     + ':' + plan['bff']['secret_references']['typesafe_jev_api_key']['version'])
                 else:
                     self.assertIn('AUTH_SERVICE_URL=https://auth.rayer.idv.tw', env_arg)
                     self.assertIn('JWT_SECRET=jwt-secret-prod:latest', update)
@@ -85,6 +137,74 @@ class BFFQueryConfigTests(unittest.TestCase):
                         self.assertNotEqual(result.returncode, 0)
                         self.assertFalse(any(c[:3] == ['run', 'services', 'update-traffic'] for c in commands))
 
+    def test_dev_profile_dispatcher_and_typesafe_secret_are_exactly_delivered_and_verified(self):
+        plan = profile_runtime_plan()
+        value = candidate('development', plan)
+        result, commands, _ = self.run_shell(value, 'development', action='bff_mutate', plan_override=plan)
+        self.assertEqual(result.returncode, 0, result.stderr)
+        update = next(c for c in commands if c[:3] == ['run', 'services', 'update'])
+        env_arg = update[update.index('--update-env-vars') + 1]
+        self.assertIn('PROFILE_RUNTIME_AUDIENCE=' + TEST_PROFILE_AUDIENCE, env_arg)
+        self.assertIn('PROFILE_RUNTIME_SERVICE_ACCOUNT=' + TEST_PROFILE_SERVICE_ACCOUNT, env_arg)
+        self.assertIn('--update-secrets', update)
+        self.assertIn('TYPESAFE_JEV_API_KEY=' + TEST_TYPESAFE_SECRET['name'] + ':' + TEST_TYPESAFE_SECRET['version'],
+                      update[update.index('--update-secrets') + 1])
+        traffic = next(i for i, c in enumerate(commands) if c[:3] == ['run', 'services', 'update-traffic'])
+        self.assertTrue(any(c[:3] == ['run', 'revisions', 'describe'] for c in commands[:traffic]))
+        self.assertTrue(any(c[:3] == ['run', 'revisions', 'describe'] for c in commands[traffic + 1:]))
+
+    def test_dev_profile_binding_mismatch_blocks_traffic(self):
+        plan = profile_runtime_plan()
+        cases = ('audience', 'invoker', 'missing secret', 'wrong secret version', 'duplicate secret')
+        for kind in cases:
+            value = candidate('development', plan)
+            entries = value['spec']['containers'][0]['env']
+            if kind in ('audience', 'invoker'):
+                name = 'PROFILE_RUNTIME_AUDIENCE' if kind == 'audience' else 'PROFILE_RUNTIME_SERVICE_ACCOUNT'
+                next(entry for entry in entries if entry['name'] == name)['value'] = 'wrong-binding'
+            elif kind == 'missing secret':
+                entries.remove(next(entry for entry in entries if entry['name'] == 'TYPESAFE_JEV_API_KEY'))
+            elif kind == 'wrong secret version':
+                next(entry for entry in entries if entry['name'] == 'TYPESAFE_JEV_API_KEY')[
+                    'valueFrom']['secretKeyRef']['key'] = 'latest'
+            else:
+                entries.append(copy.deepcopy(next(entry for entry in entries if entry['name'] == 'TYPESAFE_JEV_API_KEY')))
+            with self.subTest(kind=kind):
+                result, commands, _ = self.run_shell(value, 'development', action='bff_mutate', plan_override=plan)
+                self.assertNotEqual(result.returncode, 0)
+                self.assertFalse(any(c[:3] == ['run', 'services', 'update-traffic'] for c in commands))
+
+    def test_dev_typesafe_preflight_checks_exact_secret_and_enabled_numeric_version(self):
+        plan = profile_runtime_plan()
+        value = candidate('development', plan)
+        result, commands, _ = self.run_shell(value, 'development', action='bff_preflight', plan_override=plan)
+        self.assertEqual(result.returncode, 0, result.stderr)
+        reads = [c for c in commands if c[:3] == ['secrets', 'versions', 'describe']]
+        self.assertEqual(reads, [[
+            'secrets', 'versions', 'describe', TEST_TYPESAFE_SECRET['version'], '--secret', TEST_TYPESAFE_SECRET['name'],
+            '--project', 'llm-wiki-cloud', '--format=value(state)', '--quiet',
+        ]])
+        disabled, disabled_commands, _ = self.run_shell(
+            value, 'development', action='bff_preflight', secret_state='DISABLED', plan_override=plan)
+        self.assertNotEqual(disabled.returncode, 0)
+        self.assertTrue(any(c[:3] == ['secrets', 'versions', 'describe'] for c in disabled_commands))
+        self.assertFalse(any(c[:3] == ['run', 'services', 'update'] for c in disabled_commands))
+
+    def test_production_rejects_dev_profile_runtime_bindings(self):
+        for entry in (
+            {'name': 'PROFILE_RUNTIME_AUDIENCE', 'value': TEST_PROFILE_AUDIENCE},
+            {'name': 'PROFILE_RUNTIME_SERVICE_ACCOUNT', 'value': TEST_PROFILE_SERVICE_ACCOUNT},
+            {'name': 'TYPESAFE_JEV_API_KEY', 'valueFrom': {'secretKeyRef': {
+                'name': TEST_TYPESAFE_SECRET['name'], 'key': TEST_TYPESAFE_SECRET['version'],
+            }}},
+        ):
+            with self.subTest(name=entry['name']):
+                value = candidate('production')
+                value['spec']['containers'][0]['env'].append(entry)
+                result, commands, _ = self.run_shell(value, 'production', action='bff_mutate')
+                self.assertNotEqual(result.returncode, 0)
+                self.assertFalse(any(c[:3] == ['run', 'services', 'update-traffic'] for c in commands))
+
     def test_malformed_or_inconsistent_plan_fails_before_service_mutation(self):
         for environment in ('development', 'production'):
             for field, bad in (('runtime_path', '/tmp/query.json'), ('repository_path', '../query.json'),
@@ -110,11 +230,18 @@ class BFFQueryConfigTests(unittest.TestCase):
                     update = next(c for c in commands if c[:3] == ['run', 'services', 'update'])
                     expected_env = '^|^QUERY_STAGE_CONFIG_PATH=' + plan['query_config']['runtime_path']
                     if environment == 'development':
-                        expected_env += ('|EXPORT_JOB_URL=https://run.googleapis.com/v2/projects/llm-wiki-cloud/locations/asia-east1/jobs/export-job-dev:run'
+                        expected_env += ('|PROFILE_RUNTIME_AUDIENCE=' + plan['bff']['profile_runtime_audience']
+                                         + '|PROFILE_RUNTIME_SERVICE_ACCOUNT=' + plan['bff']['profile_runtime_service_account']
+                                         + '|EXPORT_JOB_URL=https://run.googleapis.com/v2/projects/llm-wiki-cloud/locations/asia-east1/jobs/export-job-dev:run'
                                          '|EXPORT_SIGNING_SERVICE_ACCOUNT=lwc-export-signer-dev@llm-wiki-cloud.iam.gserviceaccount.com')
                     self.assertEqual(update[update.index('--update-env-vars') + 1], expected_env)
                     self.assertNotIn('--remove-env-vars', update)
-                    self.assertNotIn('--update-secrets', update)
+                    if environment == 'development':
+                        self.assertEqual(update[update.index('--update-secrets') + 1],
+                                         'TYPESAFE_JEV_API_KEY=' + plan['bff']['secret_references']['typesafe_jev_api_key']['name']
+                                         + ':' + plan['bff']['secret_references']['typesafe_jev_api_key']['version'])
+                    else:
+                        self.assertNotIn('--update-secrets', update)
                     self.assertTrue(any(c[:3] == ['run', 'services', 'update-traffic'] for c in commands))
                     if final_bad:
                         self.assertEqual(json.loads(artifacts['journal.json'])['components']['bff']['state'], 'unknown')

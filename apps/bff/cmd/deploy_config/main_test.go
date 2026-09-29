@@ -29,10 +29,79 @@ func TestLoadReviewedEnvironmentsAndQueryIdentity(t *testing.T) {
 		if !config.Evidence.Validated || !config.Evidence.SecretFree || !strings.HasPrefix(config.Evidence.ConfigFingerprint, "sha256:") {
 			t.Fatalf("%s evidence = %#v", environment, config.Evidence)
 		}
+		bff, ok := config.Components["bff"].(map[string]any)
+		if !ok {
+			t.Fatalf("%s BFF component input omitted: %#v", environment, config.Components["bff"])
+		}
+		if environment == "development" {
+			ref := config.BFF.SecretReferences.TypeSafeJevAPIKey
+			if config.BFF.ProfileRuntimeAudience == "" || config.BFF.ProfileRuntimeServiceAccount == "" || ref == nil ||
+				!validProfileRuntimeAudience(config.BFF.ProfileRuntimeAudience) || !validProfileRuntimeServiceAccount(config.BFF.ProfileRuntimeServiceAccount) ||
+				!secretVersionPattern.MatchString(ref.Version) {
+				t.Fatalf("DEV Profile runtime bindings are incomplete or invalid: %#v", config.BFF)
+			}
+			if bff["profile_runtime_audience"] != config.BFF.ProfileRuntimeAudience || bff["profile_runtime_service_account"] != config.BFF.ProfileRuntimeServiceAccount {
+				t.Fatalf("DEV BFF component input omitted Profile runtime bindings: %#v", bff)
+			}
+			secretRefs, ok := bff["secret_references"].(map[string]any)
+			if !ok || secretRefs["typesafe_jev_api_key"] != ref {
+				t.Fatalf("DEV BFF component input omitted TypeSafe secret binding: %#v", secretRefs)
+			}
+		} else if config.BFF.ProfileRuntimeAudience != "" || config.BFF.ProfileRuntimeServiceAccount != "" || config.BFF.SecretReferences.TypeSafeJevAPIKey != nil {
+			t.Fatalf("Production unexpectedly received DEV Profile runtime bindings: %#v", config.BFF)
+		} else if _, exists := bff["profile_runtime_audience"]; exists {
+			t.Fatalf("Production BFF component input unexpectedly includes DEV bindings: %#v", bff)
+		}
 		worker, ok := config.Components["worker"].(map[string]any)
 		if !ok || worker["args"] == nil || worker["secret_references"] == nil {
 			t.Fatalf("%s worker component input omitted behavior-bearing config: %#v", environment, config.Components["worker"])
 		}
+	}
+}
+
+func TestProfileRuntimeConfigIsDEVOnlyAndPinsNumericSecretVersion(t *testing.T) {
+	root := repoRoot(t)
+	dev, err := decodeConfig(filepath.Join(root, "deploy/environments/development.yaml"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	dev.BFF.ProfileRuntimeAudience = "https://profile-dispatch.dev.example.invalid"
+	dev.BFF.ProfileRuntimeServiceAccount = "lwc-profile-dispatcher-dev@llm-wiki-cloud.iam.gserviceaccount.com"
+	dev.BFF.SecretReferences.TypeSafeJevAPIKey = &VersionedSecretReference{Name: "typesafe-jev-api-key-dev-test", Version: "7"}
+	if err := validateConfigForEnvironment("development", dev); err != nil {
+		t.Fatalf("valid synthetic DEV Profile runtime config: %v", err)
+	}
+	for name, alter := range map[string]func(*EnvironmentConfig){
+		"missing audience": func(c *EnvironmentConfig) { c.BFF.ProfileRuntimeAudience = "" },
+		"non-HTTPS audience": func(c *EnvironmentConfig) {
+			c.BFF.ProfileRuntimeAudience = "http://profile-dispatch.dev.example.invalid"
+		},
+		"path-bearing audience": func(c *EnvironmentConfig) {
+			c.BFF.ProfileRuntimeAudience = "https://profile-dispatch.dev.example.invalid/dispatch"
+		},
+		"missing invoker":       func(c *EnvironmentConfig) { c.BFF.ProfileRuntimeServiceAccount = "" },
+		"latest secret version": func(c *EnvironmentConfig) { c.BFF.SecretReferences.TypeSafeJevAPIKey.Version = "latest" },
+		"credential-shaped secret reference": func(c *EnvironmentConfig) {
+			c.BFF.SecretReferences.TypeSafeJevAPIKey.Name = "ghp_not-a-secret-reference"
+		},
+		"missing secret": func(c *EnvironmentConfig) { c.BFF.SecretReferences.TypeSafeJevAPIKey = nil },
+	} {
+		t.Run(name, func(t *testing.T) {
+			candidate := dev
+			candidate.BFF.SecretReferences.TypeSafeJevAPIKey = &VersionedSecretReference{Name: "typesafe-jev-api-key-dev-test", Version: "7"}
+			alter(&candidate)
+			if err := validateConfigForEnvironment("development", candidate); err == nil {
+				t.Fatal("invalid DEV Profile runtime config unexpectedly passed")
+			}
+		})
+	}
+	prod, err := decodeConfig(filepath.Join(root, "deploy/environments/production.yaml"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	prod.BFF.ProfileRuntimeAudience = "https://profile-dispatch.dev.example.invalid"
+	if err := validateConfigForEnvironment("production", prod); err == nil {
+		t.Fatal("Production unexpectedly accepted DEV Profile runtime configuration")
 	}
 }
 

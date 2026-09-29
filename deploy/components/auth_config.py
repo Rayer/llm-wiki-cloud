@@ -18,6 +18,8 @@ BASE = ('GCP_PROJECT', 'FIRESTORE_DATABASE_ID', 'ALLOWED_HOSTS', 'ALLOWED_ORIGIN
 SECRET = ('JWT_SECRET', 'GOOGLE_CLIENT_SECRET')
 QUERY_PATH = 'QUERY_STAGE_CONFIG_PATH'
 EXPORT_BFF = ('EXPORT_JOB_URL', 'EXPORT_SIGNING_SERVICE_ACCOUNT')
+PROFILE_RUNTIME_BFF = ('PROFILE_RUNTIME_AUDIENCE', 'PROFILE_RUNTIME_SERVICE_ACCOUNT')
+TYPESAFE_JEV_API_KEY = 'TYPESAFE_JEV_API_KEY'
 
 
 def require(condition):
@@ -52,15 +54,32 @@ def desired(plan, component='auth'):
     if component == 'bff':
         bff = plan['bff']
         env = {QUERY_PATH: query_path(plan)}
-        # DEV has no approved Auth-config migration; update only Query selection.
+        # DEV remains selective: manage Query plus explicitly configured Profile/Export bindings.
         if plan['environment'] == 'development' or plan['auth'].get('google') is None:
+            secrets = {}
+            if plan['environment'] == 'development':
+                audience = bff['profile_runtime_audience']
+                invoker = bff['profile_runtime_service_account']
+                ref = bff['secret_references']['typesafe_jev_api_key']
+                require(isinstance(audience, str) and audience.startswith('https://')
+                        and not any(c in audience for c in '\n|'))
+                require(isinstance(invoker, str) and re.fullmatch(
+                    r'[a-z][a-z0-9-]{4,28}[a-z0-9]@[a-z0-9.-]+\.iam\.gserviceaccount\.com', invoker))
+                require(isinstance(ref, dict) and set(ref) == {'name', 'version'}
+                        and re.fullmatch(r'[A-Za-z0-9][A-Za-z0-9._-]*', ref['name'])
+                        and re.fullmatch(r'[1-9][0-9]*', ref['version']))
+                env.update({
+                    'PROFILE_RUNTIME_AUDIENCE': audience,
+                    'PROFILE_RUNTIME_SERVICE_ACCOUNT': invoker,
+                })
+                secrets[TYPESAFE_JEV_API_KEY] = {'name': ref['name'], 'key': ref['version']}
             if plan['export_job']['enabled']:
                 env.update({
                     'EXPORT_JOB_URL': 'https://run.googleapis.com/v2/projects/{}/locations/{}/jobs/{}:run'.format(
                         plan['gcp']['project_id'], plan['export_job']['location'], plan['export_job']['job_name']),
                     'EXPORT_SIGNING_SERVICE_ACCOUNT': plan['export_job']['signing_service_account'],
                 })
-            return {'env': env, 'secrets': {}, 'service_account': bff['runtime_service_account']}
+            return {'env': env, 'secrets': secrets, 'service_account': bff['runtime_service_account']}
         return {'env': {
             **env,
             'GCP_PROJECT': plan['gcp']['project_id'], 'FIRESTORE_DATABASE_ID': bff['firestore_database_id'],
@@ -85,7 +104,7 @@ def desired(plan, component='auth'):
     return {'env': env, 'secrets': secrets, 'service_account': auth['runtime_service_account']}
 
 
-def effective(revision, project, component='auth', query_only=False, selective_bff=False, include_exports=False):
+def effective(revision, project, component='auth', query_only=False, selective_bff=False, include_dev_bindings=False):
     containers = revision['spec']['containers']
     require(len(containers) == 1)
     result = {'env': {}, 'secrets': {}, 'service_account': revision['spec']['serviceAccountName']}
@@ -100,7 +119,8 @@ def effective(revision, project, component='auth', query_only=False, selective_b
         name = entry['name']
         require(name not in seen)
         seen.add(name)
-        if name in SECRET and not query_only and not selective_bff:
+        if ((name in SECRET and not query_only and not selective_bff) or
+                (component == 'bff' and include_dev_bindings and name == TYPESAFE_JEV_API_KEY)):
             # Reject literal credentials without printing or retaining them.
             require(set(entry) == {'name', 'valueFrom'})
             ref = entry['valueFrom']['secretKeyRef']
@@ -113,12 +133,14 @@ def effective(revision, project, component='auth', query_only=False, selective_b
                 require(parts[1] in (project, revision['metadata'].get('namespace')))
                 ref = {'name': parts[3], 'key': ref['key']}
             result['secrets'][name] = ref
-        elif component == 'bff' and include_exports and name in EXPORT_BFF:
+        elif component == 'bff' and include_dev_bindings and name in EXPORT_BFF + PROFILE_RUNTIME_BFF:
             require(not query_only and set(entry) == {'name', 'value'} and isinstance(entry['value'], str))
             result['env'][name] = entry['value']
         elif ((name in BASE or name in GOOGLE) and not query_only and not selective_bff) or (component == 'bff' and name == QUERY_PATH):
             require(set(entry) == {'name', 'value'} and isinstance(entry['value'], str))
             result['env'][name] = entry['value']
+        elif component == 'bff' and (name in PROFILE_RUNTIME_BFF or name == TYPESAFE_JEV_API_KEY):
+            raise ValueError('unexpected Profile runtime binding')
         elif name.startswith('GOOGLE_') and not query_only and not selective_bff:
             raise ValueError('unexpected Google variable')
     return result

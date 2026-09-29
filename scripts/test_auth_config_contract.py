@@ -128,7 +128,7 @@ class AuthConfigContractTests(unittest.TestCase):
                 if not enabled:
                     config['auth']['google'] = {'enabled': False}
                 plan = {'normalized': config}
-            if component == 'bff':
+            if component == 'bff' and plan_override is None:
                 plan = {'normalized': copy.deepcopy(bff_plan(environment))}
                 if not enabled:
                     plan['normalized']['auth']['google'] = {'enabled': False}
@@ -161,6 +161,8 @@ elif a[:2] == ['secrets','get-iam-policy']:
  print(json.dumps({'bindings':[{'role':'roles/secretmanager.secretAccessor','members':['serviceAccount:' + os.environ['ACCOUNT']]}]}))
 elif a[:3] == ['run','services','get-iam-policy']:
  print(json.dumps({'bindings':[{'role':'roles/run.invoker','members':['allUsers']}]}))
+elif a[:3] == ['run','jobs','get-iam-policy']:
+ print(json.dumps({'bindings':[{'role':'roles/run.jobsExecutorWithOverrides','members':['serviceAccount:' + os.environ['ACCOUNT']]}]}))
 elif a[:2] == ['secrets','describe'] or a[:3] in (['iam','service-accounts','describe'], ['firestore','databases','describe']):
  print('{}')
 elif a[:3] == ['run','services','update']:
