@@ -20,6 +20,7 @@ QUERY_PATH = 'QUERY_STAGE_CONFIG_PATH'
 EXPORT_BFF = ('EXPORT_JOB_URL', 'EXPORT_SIGNING_SERVICE_ACCOUNT')
 PROFILE_RUNTIME_BFF = ('PROFILE_RUNTIME_AUDIENCE', 'PROFILE_RUNTIME_SERVICE_ACCOUNT')
 TYPESAFE_JEV_API_KEY = 'TYPESAFE_JEV_API_KEY'
+PIPELINE_DEMO_USER_IDS = 'PIPELINE_DEMO_USER_IDS'
 
 
 def require(condition):
@@ -79,6 +80,13 @@ def desired(plan, component='auth'):
                         plan['gcp']['project_id'], plan['export_job']['location'], plan['export_job']['job_name']),
                     'EXPORT_SIGNING_SERVICE_ACCOUNT': plan['export_job']['signing_service_account'],
                 })
+            if plan['environment'] == 'development':
+                demo_ids = bff.get('pipeline_demo_user_ids')
+                if demo_ids is not None:
+                    require(isinstance(demo_ids, list) and demo_ids and
+                            all(isinstance(user_id, str) and re.fullmatch(r'[A-Za-z0-9_-]{1,128}', user_id)
+                                for user_id in demo_ids) and len(set(demo_ids)) == len(demo_ids))
+                    env[PIPELINE_DEMO_USER_IDS] = ','.join(demo_ids)
             return {'env': env, 'secrets': secrets, 'service_account': bff['runtime_service_account']}
         return {'env': {
             **env,
@@ -104,7 +112,8 @@ def desired(plan, component='auth'):
     return {'env': env, 'secrets': secrets, 'service_account': auth['runtime_service_account']}
 
 
-def effective(revision, project, component='auth', query_only=False, selective_bff=False, include_dev_bindings=False):
+def effective(revision, project, component='auth', query_only=False, selective_bff=False,
+              include_dev_bindings=False, manage_demo_user_ids=False):
     containers = revision['spec']['containers']
     require(len(containers) == 1)
     result = {'env': {}, 'secrets': {}, 'service_account': revision['spec']['serviceAccountName']}
@@ -134,6 +143,9 @@ def effective(revision, project, component='auth', query_only=False, selective_b
                 ref = {'name': parts[3], 'key': ref['key']}
             result['secrets'][name] = ref
         elif component == 'bff' and include_dev_bindings and name in EXPORT_BFF + PROFILE_RUNTIME_BFF:
+            require(not query_only and set(entry) == {'name', 'value'} and isinstance(entry['value'], str))
+            result['env'][name] = entry['value']
+        elif component == 'bff' and include_dev_bindings and manage_demo_user_ids and name == PIPELINE_DEMO_USER_IDS:
             require(not query_only and set(entry) == {'name', 'value'} and isinstance(entry['value'], str))
             result['env'][name] = entry['value']
         elif ((name in BASE or name in GOOGLE) and not query_only and not selective_bff) or (component == 'bff' and name == QUERY_PATH):
@@ -177,7 +189,8 @@ def main():
     actual = effective(revision, plan['gcp']['project_id'], component,
                        set(expected['env']) == {QUERY_PATH},
                        component == 'bff' and plan['environment'] == 'development',
-                       component == 'bff' and plan['environment'] == 'development')
+                       component == 'bff' and plan['environment'] == 'development',
+                       component == 'bff' and PIPELINE_DEMO_USER_IDS in expected['env'])
     digest = fingerprint(actual)
     if component == 'bff':
         # Pin all retained revision settings, including unrelated env/secrets and

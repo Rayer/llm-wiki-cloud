@@ -41,6 +41,10 @@ def candidate(environment, plan_override=None):
                 'key': plan['bff']['secret_references']['typesafe_jev_api_key']['version'],
             }}},
         ]
+    if environment == 'development' and plan['bff'].get('pipeline_demo_user_ids'):
+        value['spec']['containers'][0]['env'].append({
+            'name': 'PIPELINE_DEMO_USER_IDS', 'value': ','.join(plan['bff']['pipeline_demo_user_ids']),
+        })
     value['metadata']['annotations'] = {'run.googleapis.com/vpc-access-egress': 'private-ranges-only'}
     return value
 
@@ -103,13 +107,15 @@ class BFFQueryConfigTests(unittest.TestCase):
                                      + '|PROFILE_RUNTIME_AUDIENCE=' + plan['bff']['profile_runtime_audience']
                                      + '|PROFILE_RUNTIME_SERVICE_ACCOUNT=' + plan['bff']['profile_runtime_service_account']
                                      + '|EXPORT_JOB_URL=https://run.googleapis.com/v2/projects/llm-wiki-cloud/locations/asia-east1/jobs/export-job-dev:run'
-                                     + '|EXPORT_SIGNING_SERVICE_ACCOUNT=lwc-export-signer-dev@llm-wiki-cloud.iam.gserviceaccount.com')
+                                     + '|EXPORT_SIGNING_SERVICE_ACCOUNT=lwc-export-signer-dev@llm-wiki-cloud.iam.gserviceaccount.com'
+                                     + '|PIPELINE_DEMO_USER_IDS=e492f6bdaf1735e12b2de96d')
                     self.assertEqual(update[update.index('--update-secrets') + 1],
                                      'TYPESAFE_JEV_API_KEY=' + plan['bff']['secret_references']['typesafe_jev_api_key']['name']
                                      + ':' + plan['bff']['secret_references']['typesafe_jev_api_key']['version'])
                 else:
                     self.assertIn('AUTH_SERVICE_URL=https://auth.rayer.idv.tw', env_arg)
                     self.assertIn('JWT_SECRET=jwt-secret-prod:latest', update)
+                    self.assertNotIn('PIPELINE_DEMO_USER_IDS', env_arg)
                 self.assertNotIn('--remove-env-vars', update)
                 self.assertFalse(any(arg.startswith(('--clear-', '--set-', '--service-account', '--network', '--subnet')) for arg in update))
                 traffic = next(i for i, c in enumerate(commands) if c[:3] == ['run', 'services', 'update-traffic'])
@@ -152,6 +158,28 @@ class BFFQueryConfigTests(unittest.TestCase):
         traffic = next(i for i, c in enumerate(commands) if c[:3] == ['run', 'services', 'update-traffic'])
         self.assertTrue(any(c[:3] == ['run', 'revisions', 'describe'] for c in commands[:traffic]))
         self.assertTrue(any(c[:3] == ['run', 'revisions', 'describe'] for c in commands[traffic + 1:]))
+
+    def test_demo_ids_are_dev_only_optional_and_preserve_unmanaged_values(self):
+        plan = copy.deepcopy(fixtures.bff_plan('development'))
+        self.assertEqual(plan['bff']['pipeline_demo_user_ids'], ['e492f6bdaf1735e12b2de96d'])
+        configured = candidate('development', plan)
+        result, commands, _ = self.run_shell(configured, 'development', action='bff_mutate', plan_override=plan)
+        self.assertEqual(result.returncode, 0, result.stderr)
+        update = next(c for c in commands if c[:3] == ['run', 'services', 'update'])
+        self.assertIn('PIPELINE_DEMO_USER_IDS=e492f6bdaf1735e12b2de96d',
+                      update[update.index('--update-env-vars') + 1])
+
+        plan['bff'].pop('pipeline_demo_user_ids')
+        unconfigured = candidate('development', plan)
+        unconfigured['spec']['containers'][0]['env'].append({
+            'name': 'PIPELINE_DEMO_USER_IDS', 'value': 'preexisting-demo-id',
+        })
+        result, commands, _ = self.run_shell(unconfigured, 'development', action='bff_mutate', plan_override=plan)
+        self.assertEqual(result.returncode, 0, result.stderr)
+        update = next(c for c in commands if c[:3] == ['run', 'services', 'update'])
+        self.assertNotIn('PIPELINE_DEMO_USER_IDS', update[update.index('--update-env-vars') + 1])
+        if '--remove-env-vars' in update:
+            self.assertNotIn('PIPELINE_DEMO_USER_IDS', update[update.index('--remove-env-vars') + 1])
 
     def test_dev_profile_binding_mismatch_blocks_traffic(self):
         plan = profile_runtime_plan()
@@ -233,7 +261,8 @@ class BFFQueryConfigTests(unittest.TestCase):
                         expected_env += ('|PROFILE_RUNTIME_AUDIENCE=' + plan['bff']['profile_runtime_audience']
                                          + '|PROFILE_RUNTIME_SERVICE_ACCOUNT=' + plan['bff']['profile_runtime_service_account']
                                          + '|EXPORT_JOB_URL=https://run.googleapis.com/v2/projects/llm-wiki-cloud/locations/asia-east1/jobs/export-job-dev:run'
-                                         '|EXPORT_SIGNING_SERVICE_ACCOUNT=lwc-export-signer-dev@llm-wiki-cloud.iam.gserviceaccount.com')
+                                         '|EXPORT_SIGNING_SERVICE_ACCOUNT=lwc-export-signer-dev@llm-wiki-cloud.iam.gserviceaccount.com'
+                                         '|PIPELINE_DEMO_USER_IDS=e492f6bdaf1735e12b2de96d')
                     self.assertEqual(update[update.index('--update-env-vars') + 1], expected_env)
                     self.assertNotIn('--remove-env-vars', update)
                     if environment == 'development':
@@ -248,7 +277,10 @@ class BFFQueryConfigTests(unittest.TestCase):
 
     def test_rollback_retains_exact_prior_config_without_redeploy_or_values(self):
         for environment in ('development', 'production'):
-            for tamper in ('', 'query', 'other env', 'secret', 'network'):
+            tampers = ('', 'query', 'other env', 'secret', 'network')
+            if environment == 'development':
+                tampers += ('demo IDs',)
+            for tamper in tampers:
                 value = candidate(environment)
                 value['spec']['containers'][0]['env'][0]['value'] = '/app/configs/query/prior-image-only.json'
                 value['spec']['containers'][0]['env'].append({'name': 'OPAQUE_SETTING', 'value': 'CANARY-NEVER-EMIT'})
@@ -257,6 +289,7 @@ class BFFQueryConfigTests(unittest.TestCase):
                     'other env': "sed -i.bak 's/preserved-bucket/changed/g' \"$FIXTURE/candidate.json\";",
                     'secret': "sed -i.bak 's/deepseek-apikey/changed/g' \"$FIXTURE/candidate.json\";",
                     'network': "sed -i.bak 's/private-ranges-only/all-traffic/g' \"$FIXTURE/candidate.json\";",
+                    'demo IDs': "sed -i.bak 's/e492f6bdaf1735e12b2de96d/changed/g' \"$FIXTURE/candidate.json\";",
                 }[tamper]
                 with self.subTest(environment=environment, tamper=tamper):
                     result, commands, artifacts = self.run_shell(value, environment,
@@ -270,6 +303,26 @@ class BFFQueryConfigTests(unittest.TestCase):
                     traffic = [c for c in commands if c[:3] == ['run', 'services', 'update-traffic']]
                     self.assertEqual(len(traffic), 0 if tamper else 1)
                     if traffic: self.assertIn(value['metadata']['name'] + '=100', traffic[0])
+
+    def test_rollback_restores_prior_demo_env_presence_or_value_by_revision(self):
+        plan = copy.deepcopy(fixtures.bff_plan('development'))
+        for prior_value in (None, 'previous-demo-user'):
+            value = candidate('development', plan)
+            entries = value['spec']['containers'][0]['env']
+            entries[:] = [entry for entry in entries if entry['name'] != 'PIPELINE_DEMO_USER_IDS']
+            if prior_value is not None:
+                entries.append({'name': 'PIPELINE_DEMO_USER_IDS', 'value': prior_value})
+            result, commands, artifacts = self.run_shell(value, 'development', plan_override=plan,
+                action='bff_freeze; touch "$FIXTURE/switch-needed"; bff_rollback')
+            self.assertEqual(result.returncode, 0, result.stderr)
+            restored = [entry['value'] for entry in value['spec']['containers'][0]['env']
+                        if entry['name'] == 'PIPELINE_DEMO_USER_IDS']
+            self.assertEqual(restored, [] if prior_value is None else [prior_value])
+            handle = json.loads(artifacts['rollback.json'])['handles']['bff']
+            self.assertEqual(handle['revision'], value['metadata']['name'])
+            self.assertFalse(any(c[:3] == ['run', 'services', 'update'] for c in commands))
+            traffic = next(c for c in commands if c[:3] == ['run', 'services', 'update-traffic'])
+            self.assertIn(value['metadata']['name'] + '=100', traffic)
 
 
 if __name__ == '__main__':
