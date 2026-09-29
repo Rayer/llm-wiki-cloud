@@ -163,6 +163,60 @@ func TestTrialDemoRestrictionCoversProfileAndExportForExactUserIDs(t *testing.T)
 	}
 }
 
+func TestProfileSavePreflightAllowsFrontendPutOnlyFromConfiguredOrigins(t *testing.T) {
+	gin.SetMode(gin.TestMode)
+	const allowedOrigin = "https://wiki.dev.rayer.idv.tw"
+	router := newProductionRouter(
+		config.Config{JWTSecret: "test-secret", AllowedOrigins: []string{allowedOrigin}},
+		false,
+		nil,
+		nil,
+		handlerv1.New(nil, nil, nil, nil, nil, nil),
+		&syssettings.FakeStore{Enabled: true},
+		nil,
+	)
+	preflight := func(origin string) *httptest.ResponseRecorder {
+		recorder := httptest.NewRecorder()
+		req := httptest.NewRequest(http.MethodOptions, "/api/v1/projects/project-1/profile", nil)
+		req.Header.Set("Origin", origin)
+		req.Header.Set("Access-Control-Request-Method", http.MethodPut)
+		req.Header.Set("Access-Control-Request-Headers", "authorization,content-type,x-project-id")
+		router.ServeHTTP(recorder, req)
+		return recorder
+	}
+
+	allowed := preflight(allowedOrigin)
+	if allowed.Code != http.StatusNoContent {
+		t.Fatalf("allowed Profile PUT preflight status = %d, want %d", allowed.Code, http.StatusNoContent)
+	}
+	if got := allowed.Header().Get("Access-Control-Allow-Origin"); got != allowedOrigin {
+		t.Fatalf("Access-Control-Allow-Origin = %q, want %q", got, allowedOrigin)
+	}
+	methods := strings.Split(allowed.Header().Get("Access-Control-Allow-Methods"), ",")
+	if !containsFold(methods, http.MethodPut) {
+		t.Fatalf("Access-Control-Allow-Methods = %q, want PUT", allowed.Header().Get("Access-Control-Allow-Methods"))
+	}
+	for _, name := range []string{"authorization", "content-type", "x-project-id"} {
+		if !containsFold(strings.Split(allowed.Header().Get("Access-Control-Allow-Headers"), ","), name) {
+			t.Errorf("Access-Control-Allow-Headers = %q, missing %s", allowed.Header().Get("Access-Control-Allow-Headers"), name)
+		}
+	}
+
+	rejected := preflight("https://unlisted.example")
+	if got := rejected.Header().Get("Access-Control-Allow-Origin"); got != "" {
+		t.Fatalf("unlisted origin received Access-Control-Allow-Origin %q", got)
+	}
+}
+
+func containsFold(values []string, want string) bool {
+	for _, value := range values {
+		if strings.EqualFold(strings.TrimSpace(value), want) {
+			return true
+		}
+	}
+	return false
+}
+
 func TestProductionRouterUsesSharedCLIAndWebAuthAuthorities(t *testing.T) {
 	endpoint := strings.TrimSpace(os.Getenv("FIRESTORE_EMULATOR_HOST"))
 	if endpoint == "" {

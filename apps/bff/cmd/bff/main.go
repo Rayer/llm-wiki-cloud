@@ -298,7 +298,7 @@ func newProductionRouter(
 	allowOrigins := cfg.AllowedOriginsFor(localMode)
 	r.Use(cors.New(cors.Config{
 		AllowOrigins:     allowOrigins,
-		AllowMethods:     []string{"GET", "POST", "PATCH", "DELETE", "OPTIONS"},
+		AllowMethods:     []string{"GET", "POST", "PUT", "PATCH", "DELETE", "OPTIONS"},
 		AllowHeaders:     []string{"Content-Type", "Authorization", "X-User-ID", "X-User-Role", "X-Project-ID", "Idempotency-Key"},
 		AllowCredentials: true,
 	}))
