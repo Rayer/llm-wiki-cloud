@@ -3,21 +3,29 @@ import { act, cleanup, fireEvent, render, screen, waitFor } from '@testing-libra
 
 const mocks = vi.hoisted(() => ({
   getExportState: vi.fn(), createExport: vi.fn(), getExportStatus: vi.fn(),
-  requestExportDownload: vi.fn(), currentProject: { id: 'project-a', name: 'Project A' },
+  requestExportDownload: vi.fn(), currentProject: { id: 'project-a', name: 'Project A' }, isDemoSession: false,
 }));
 vi.mock('@/lib/export-api', () => ({
   getExportState: mocks.getExportState, createExport: mocks.createExport,
   getExportStatus: mocks.getExportStatus, requestExportDownload: mocks.requestExportDownload,
 }));
-vi.mock('@/components/WorkspaceProvider', () => ({ useWorkspace: () => ({ currentProject: mocks.currentProject }) }));
+vi.mock('@/components/WorkspaceProvider', () => ({ useWorkspace: () => ({ currentProject: mocks.currentProject, isDemoSession: mocks.isDemoSession }) }));
 import { ExportPanel } from '@/components/ExportPanel';
 import type { ExportState } from '@/lib/export-api';
 
 const emptyState = { latest_job: null, current: null, previous: null, eligible: true, rejection_reason: null, next_allowed_at: null };
-beforeEach(() => { mocks.currentProject = { id: 'project-a', name: 'Project A' }; window.localStorage.setItem('locale', 'zh-TW'); mocks.getExportState.mockResolvedValue(emptyState); });
+beforeEach(() => { mocks.currentProject = { id: 'project-a', name: 'Project A' }; mocks.isDemoSession = false; window.localStorage.setItem('locale', 'zh-TW'); mocks.getExportState.mockResolvedValue(emptyState); });
 afterEach(() => { cleanup(); vi.clearAllMocks(); });
 
 describe('LWC-345 export UI fixtures', () => {
+  it('hides Export and skips its server read in the trial Demo session', () => {
+    mocks.isDemoSession = true;
+    render(<ExportPanel />);
+
+    expect(screen.queryByRole('heading', { name: '匯出專案' })).toBeNull();
+    expect(mocks.getExportState).not.toHaveBeenCalled();
+  });
+
   it('offers scope selection and explains exclusions, then renders server ready state and cooldown', async () => {
     render(<ExportPanel />);
     expect(await screen.findByRole('button', { name: '打包帶走' })).toBeDefined();

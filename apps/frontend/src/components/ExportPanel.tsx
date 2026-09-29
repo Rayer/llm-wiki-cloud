@@ -37,8 +37,8 @@ function formatTime(value: string | null, locale: string): string {
 
 export function ExportPanel() {
   const { t, locale } = useT();
-  const { currentProject } = useWorkspace();
-  const projectId = currentProject?.id ?? null;
+  const { currentProject, isDemoSession } = useWorkspace();
+  const projectId = isDemoSession ? null : currentProject?.id ?? null;
   const [data, setData] = useState<ExportState>(initialState);
   const [dataProjectId, setDataProjectId] = useState<string | null>(null);
   const [modalOpen, setModalOpen] = useState(false);
@@ -216,6 +216,8 @@ export function ExportPanel() {
       ? t('Export.blockedCooldown', { time: formatTime(currentData.next_allowed_at, locale) })
       : '';
   const disableReason = !projectId ? t('Export.selectProject') : blockReason;
+
+  if (isDemoSession) return null;
 
   return (
     <Surface as="section" className="space-y-4 p-5" aria-labelledby="export-heading">

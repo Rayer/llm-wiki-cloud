@@ -105,6 +105,17 @@ describe('LWC-174 production Shell rename behavior', () => {
     expect(document.getElementById('main-content')).not.toBeNull();
   });
 
+  it('routes Profile from the sidebar and hides it in the trial Demo session', async () => {
+    renderShell();
+    expect(await screen.findByRole('link', { name: 'Profile' })).toHaveProperty('href', expect.stringContaining('/profile'));
+
+    cleanup();
+    mocks.isDemoSession = true;
+    renderShell();
+    await screen.findByRole('button', { name: 'Project Alpha' });
+    expect(screen.queryByRole('link', { name: 'Profile' })).toBeNull();
+  });
+
   it('hides rename on the admin route', async () => {
     mocks.pathname = '/admin';
     mocks.user = { id: 'admin-1', email: 'admin@example.com', role: 'admin' };
