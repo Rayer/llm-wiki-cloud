@@ -1587,6 +1587,10 @@ func canonicalExistingDir(dir string) (string, error) {
 }
 
 func snapshotSources(vault string) ([]sourceSnapshot, error) {
+	return snapshotSourcesExcept(vault, nil)
+}
+
+func snapshotSourcesExcept(vault string, excludedIDs map[string]bool) ([]sourceSnapshot, error) {
 	status, err := readSourceStatus(vault)
 	if err != nil {
 		return nil, err
@@ -1617,6 +1621,9 @@ func snapshotSources(vault string) ([]sourceSnapshot, error) {
 			return fmt.Errorf("duplicate source mapping %q and %q -> %q", prior, sourceID, rawPath)
 		}
 		mappedRawPaths[rawPath] = sourceID
+		if excludedIDs[sourceID] {
+			return nil
+		}
 		raw, err := readRegularFileWithin(vault, rawPath)
 		if errors.Is(err, os.ErrNotExist) {
 			snapshots = append(snapshots, sourceSnapshot{SourceID: sourceID, RawPath: rawPath, Tombstone: true})

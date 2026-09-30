@@ -492,7 +492,7 @@ func runCloudWorkerBatch(ctx context.Context, cfg workerConfig, commands [][]str
 		}
 		return primary
 	}
-	startRawInputs, err := captureCloudRawInputs(ctx, workspace)
+	startRawInputs, err := captureCloudRawInputs(ctx, workspace, snapshots)
 	if err != nil {
 		failure := preserveWorkerFailure(err, failureStageInputMaterialization, failureClassUnknown)
 		primary := annotateError(errCloudMaterialization, failure)
@@ -658,13 +658,20 @@ func materializeCloudWorkspace(ctx context.Context, objects objectStore, prefix,
 	return snapshots, manifestData, manifestAttrs, err
 }
 
-func captureCloudRawInputs(ctx context.Context, workspace string) (map[string][]byte, error) {
+func captureCloudRawInputs(ctx context.Context, workspace string, snapshots []sourceSnapshot) (map[string][]byte, error) {
 	files, err := listVaultRawFiles(ctx, workspace)
 	if err != nil {
 		return nil, err
 	}
+	mappedPaths := make(map[string]bool, len(snapshots))
+	for _, snapshot := range snapshots {
+		mappedPaths[snapshot.RawPath] = true
+	}
 	inputs := make(map[string][]byte, len(files))
 	for _, file := range files {
+		if mappedPaths[file.Path] {
+			continue
+		}
 		data, err := readRegularFileWithin(workspace, file.Path)
 		if err != nil {
 			return nil, err
@@ -678,20 +685,22 @@ func captureCloudRawInputs(ctx context.Context, workspace string) (map[string][]
 }
 
 func pinNewlyMappedCloudSources(workspace string, snapshots []sourceSnapshot, startRawInputs map[string][]byte) ([]sourceSnapshot, error) {
-	mapped, err := snapshotSources(workspace)
+	known := make(map[string]bool, len(snapshots))
+	knownPaths := make(map[string]bool, len(snapshots))
+	for _, snapshot := range snapshots {
+		known[snapshot.SourceID] = true
+		knownPaths[snapshot.RawPath] = true
+	}
+	mapped, err := snapshotSourcesExcept(workspace, known)
 	if err != nil {
 		return nil, err
 	}
-	known := make(map[string]bool, len(snapshots))
-	for _, snapshot := range snapshots {
-		known[snapshot.SourceID] = true
-	}
 	for _, snapshot := range mapped {
-		if known[snapshot.SourceID] {
-			continue
-		}
 		if snapshot.Tombstone {
 			return nil, fmt.Errorf("new source %q has no start-time raw bytes", snapshot.SourceID)
+		}
+		if knownPaths[snapshot.RawPath] {
+			return nil, fmt.Errorf("new source %q reuses a mapped raw path", snapshot.SourceID)
 		}
 		startBytes, ok := startRawInputs[snapshot.RawPath]
 		if !ok || digestBytes(startBytes) != snapshot.RawSHA256 {
