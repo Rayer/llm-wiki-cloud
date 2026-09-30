@@ -2134,44 +2134,61 @@ func seedPriorCloudSourceGeneration(t *testing.T, store *memoryObjects, prefix s
 }
 
 func TestCloudPipelineRejectsNewSourceWhenRawChangedAfterStart(t *testing.T) {
-	old := execOLW
-	t.Cleanup(func() { execOLW = old })
-	store := newMemoryObjects()
-	prefix := "users/user/projects/project/"
-	retainedRaw := []byte("previous generation bytes")
-	seedPriorCloudSourceGeneration(t, store, prefix, retainedRaw)
-	previousManifest, _, err := store.Read(context.Background(), prefix+generation.ManifestPath, 0, generation.MaxManifestBytes)
-	if err != nil {
-		t.Fatal(err)
-	}
-	raw := []byte("new source bytes at start")
-	writeCloudObject(t, store, prefix+"raw/new-source.md", raw)
-	execOLW = func(_ context.Context, vault string, _ []string, _ []string, _, _ io.Writer) error {
-		if err := os.Remove(filepath.Join(vault, ".olw", "state.db")); err != nil && !errors.Is(err, os.ErrNotExist) {
-			t.Fatal(err)
-		}
-		writeCloudRequiredOutputs(t, vault)
-		mustWriteFile(t, filepath.Join(vault, "raw", "new-source.md"), []byte("different bytes after start"))
-		mustWriteFile(t, filepath.Join(vault, "cache", "id_map.json"), []byte(`{"source":{"s1":"source","2357df80178f":"new-source"},"source_meta":{"s1":{"slug":"source","source_file":"raw/source.md"},"2357df80178f":{"slug":"new-source","source_file":"raw/new-source.md"}}}`))
-		mustWriteFile(t, filepath.Join(vault, "wiki", "sources", "source.md"), []byte("---\nid: s1\nsource_file: raw/source.md\n---\nretained source\n"))
-		mustWriteFile(t, filepath.Join(vault, "wiki", "sources", "new-source.md"), []byte("---\nid: 2357df80178f\nsource_file: raw/new-source.md\n---\nnew source\n"))
-		return nil
-	}
-	err = runCloudWorkerBatch(context.Background(), cloudCfgFor("user", "project", "execution"), [][]string{{"run"}}, store)
-	if err == nil || !strings.Contains(err.Error(), "pipeline publish failed") {
-		t.Fatalf("runCloudWorkerBatch() error = %v, want fail-closed publish", err)
-	}
-	manifestAfter, _, err := store.Read(context.Background(), prefix+generation.ManifestPath, 0, generation.MaxManifestBytes)
-	if err != nil || !bytes.Equal(manifestAfter, previousManifest) {
-		t.Fatalf("current manifest changed after rejected generation: err=%v before=%q after=%q", err, previousManifest, manifestAfter)
-	}
-	got, _, err := store.Read(context.Background(), prefix+"raw/new-source.md", 0, generation.MaxFileBytes)
-	if err != nil || !bytes.Equal(got, raw) {
-		t.Fatalf("canonical raw=%q err=%v, want preserved start object %q", got, err, raw)
-	}
-	retained, _, err := store.Read(context.Background(), prefix+"raw/source.md", 0, generation.MaxFileBytes)
-	if err != nil || !bytes.Equal(retained, retainedRaw) {
-		t.Fatalf("retained canonical raw=%q err=%v", retained, err)
+	for _, tc := range []struct {
+		name      string
+		deleteRaw bool
+	}{
+		{name: "changed"},
+		{name: "missing", deleteRaw: true},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			old := execOLW
+			t.Cleanup(func() { execOLW = old })
+			store := newMemoryObjects()
+			prefix := "users/user/projects/project/"
+			retainedRaw := []byte("previous generation bytes")
+			seedPriorCloudSourceGeneration(t, store, prefix, retainedRaw)
+			previousManifest, _, err := store.Read(context.Background(), prefix+generation.ManifestPath, 0, generation.MaxManifestBytes)
+			if err != nil {
+				t.Fatal(err)
+			}
+			raw := []byte("new source bytes at start")
+			writeCloudObject(t, store, prefix+"raw/new-source.md", raw)
+			execOLW = func(_ context.Context, vault string, _ []string, _ []string, _, _ io.Writer) error {
+				if err := os.Remove(filepath.Join(vault, ".olw", "state.db")); err != nil && !errors.Is(err, os.ErrNotExist) {
+					t.Fatal(err)
+				}
+				writeCloudRequiredOutputs(t, vault)
+				newRawPath := filepath.Join(vault, "raw", "new-source.md")
+				if tc.deleteRaw {
+					if err := os.Remove(newRawPath); err != nil {
+						t.Fatal(err)
+					}
+				} else {
+					mustWriteFile(t, newRawPath, []byte("different bytes after start"))
+				}
+				mustWriteFile(t, filepath.Join(vault, "cache", "id_map.json"), []byte(`{"source":{"s1":"source","2357df80178f":"new-source"},"source_meta":{"s1":{"slug":"source","source_file":"raw/source.md"},"2357df80178f":{"slug":"new-source","source_file":"raw/new-source.md"}}}`))
+				mustWriteFile(t, filepath.Join(vault, "wiki", "sources", "source.md"), []byte("---\nid: s1\nsource_file: raw/source.md\n---\nretained source\n"))
+				mustWriteFile(t, filepath.Join(vault, "wiki", "sources", "new-source.md"), []byte("---\nid: 2357df80178f\nsource_file: raw/new-source.md\n---\nnew source\n"))
+				return nil
+			}
+			err = runCloudWorkerBatch(context.Background(), cloudCfgFor("user", "project", "execution"), [][]string{{"run"}}, store)
+			if err == nil || !strings.Contains(err.Error(), "pipeline publish failed") {
+				t.Fatalf("runCloudWorkerBatch() error = %v, want fail-closed publish", err)
+			}
+			manifestAfter, _, err := store.Read(context.Background(), prefix+generation.ManifestPath, 0, generation.MaxManifestBytes)
+			if err != nil || !bytes.Equal(manifestAfter, previousManifest) {
+				t.Fatalf("current manifest changed after rejected generation: err=%v", err)
+			}
+			got, _, err := store.Read(context.Background(), prefix+"raw/new-source.md", 0, generation.MaxFileBytes)
+			if err != nil || !bytes.Equal(got, raw) {
+				t.Fatalf("canonical raw=%q err=%v, want preserved start object %q", got, err, raw)
+			}
+			retained, _, err := store.Read(context.Background(), prefix+"raw/source.md", 0, generation.MaxFileBytes)
+			if err != nil || !bytes.Equal(retained, retainedRaw) {
+				t.Fatalf("retained canonical raw=%q err=%v", retained, err)
+			}
+		})
 	}
 }
 
