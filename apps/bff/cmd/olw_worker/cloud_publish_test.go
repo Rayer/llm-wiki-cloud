@@ -2048,6 +2048,87 @@ func TestCloudSuccessWritesNoFailureDiagnostic(t *testing.T) {
 	}
 }
 
+func TestCloudPipelinePinsNewlyIngestedSourceFromStartRaw(t *testing.T) {
+	old := execOLW
+	t.Cleanup(func() { execOLW = old })
+	store := newMemoryObjects()
+	prefix := "users/user/projects/project/"
+	raw := []byte("new source bytes present before ingest")
+	writeCloudObject(t, store, prefix+"raw/new-source.md", raw)
+	execOLW = func(_ context.Context, vault string, _ []string, _ []string, _, _ io.Writer) error {
+		writeCloudRequiredOutputs(t, vault)
+		mustWriteFile(t, filepath.Join(vault, "cache", "id_map.json"), []byte(`{"source":{"2357df80178f":"new-source"},"source_meta":{"2357df80178f":{"slug":"new-source","source_file":"raw/new-source.md"}}}`))
+		mustWriteFile(t, filepath.Join(vault, "wiki", "sources", "new-source.md"), []byte("---\nid: 2357df80178f\nsource_file: raw/new-source.md\n---\nnew source\n"))
+		return nil
+	}
+	if err := runCloudWorkerBatch(context.Background(), cloudCfgFor("user", "project", "execution"), [][]string{{"run"}}, store); err != nil {
+		t.Fatalf("runCloudWorkerBatch() error = %v", err)
+	}
+	manifestData, _, err := store.Read(context.Background(), prefix+generation.ManifestPath, 0, generation.MaxManifestBytes)
+	if err != nil {
+		t.Fatal(err)
+	}
+	manifest, err := generation.Decode(manifestData)
+	if err != nil {
+		t.Fatal(err)
+	}
+	inventoryPath, _ := generation.SourceSnapshotPath(manifest.SourceSnapshotDigest)
+	inventoryData, _, err := store.Read(context.Background(), prefix+inventoryPath, 0, generation.MaxSourceSnapshotBytes)
+	if err != nil {
+		t.Fatal(err)
+	}
+	inventory, err := generation.DecodeSourceSnapshot(inventoryData)
+	if err != nil || len(inventory.Rows) != 1 || inventory.Rows[0].StableID != "2357df80178f" || inventory.Rows[0].ContentDigest != sha256Text(string(raw)) {
+		t.Fatalf("source inventory=%+v err=%v", inventory, err)
+	}
+	bytesPath, _ := generation.SourceBytesPath(inventory.Rows[0].ContentDigest)
+	got, _, err := store.Read(context.Background(), prefix+bytesPath, inventory.Rows[0].ObjectGeneration, generation.MaxFileBytes)
+	if err != nil || !bytes.Equal(got, raw) {
+		t.Fatalf("published source bytes=%q err=%v", got, err)
+	}
+	if receipt := cloudStatus(t, store, prefix).Sources["2357df80178f"]; receipt.LastIngestedRawSHA256 != sha256Text(string(raw)) {
+		t.Fatalf("new source receipt=%+v", receipt)
+	}
+}
+
+func TestCloudPipelineRejectsNewSourceWhenRawChangedAfterStart(t *testing.T) {
+	old := execOLW
+	t.Cleanup(func() { execOLW = old })
+	store := newMemoryObjects()
+	prefix := "users/user/projects/project/"
+	raw := []byte("new source bytes at start")
+	writeCloudObject(t, store, prefix+"raw/new-source.md", raw)
+	execOLW = func(_ context.Context, vault string, _ []string, _ []string, _, _ io.Writer) error {
+		writeCloudRequiredOutputs(t, vault)
+		mustWriteFile(t, filepath.Join(vault, "raw", "new-source.md"), []byte("different bytes after start"))
+		mustWriteFile(t, filepath.Join(vault, "cache", "id_map.json"), []byte(`{"source":{"2357df80178f":"new-source"},"source_meta":{"2357df80178f":{"slug":"new-source","source_file":"raw/new-source.md"}}}`))
+		mustWriteFile(t, filepath.Join(vault, "wiki", "sources", "new-source.md"), []byte("---\nid: 2357df80178f\nsource_file: raw/new-source.md\n---\nnew source\n"))
+		return nil
+	}
+	err := runCloudWorkerBatch(context.Background(), cloudCfgFor("user", "project", "execution"), [][]string{{"run"}}, store)
+	if err == nil || !strings.Contains(err.Error(), "pipeline publish failed") {
+		t.Fatalf("runCloudWorkerBatch() error = %v, want fail-closed publish", err)
+	}
+	if _, _, err := store.Read(context.Background(), prefix+generation.ManifestPath, 0, generation.MaxManifestBytes); !errors.Is(err, cloudstorage.ErrObjectNotExist) {
+		t.Fatalf("manifest read err=%v, want no generation commit", err)
+	}
+	got, _, err := store.Read(context.Background(), prefix+"raw/new-source.md", 0, generation.MaxFileBytes)
+	if err != nil || !bytes.Equal(got, raw) {
+		t.Fatalf("canonical raw=%q err=%v, want preserved start object %q", got, err, raw)
+	}
+}
+
+func TestPinNewlyMappedCloudSourcesRejectsRawChangedSinceStart(t *testing.T) {
+	workspace := t.TempDir()
+	mustWriteFile(t, filepath.Join(workspace, "raw", "new-source.md"), []byte("changed bytes"))
+	mustWriteFile(t, filepath.Join(workspace, "cache", "id_map.json"), []byte(`{"source":{"2357df80178f":"new-source"},"source_meta":{"2357df80178f":{"slug":"new-source","source_file":"raw/new-source.md"}}}`))
+	mustWriteFile(t, filepath.Join(workspace, sourcestatus.Path), []byte(`{"version":1,"sources":{}}`))
+	_, err := pinNewlyMappedCloudSources(workspace, nil, map[string][]byte{"raw/new-source.md": []byte("start bytes")})
+	if err == nil || !strings.Contains(err.Error(), "raw bytes differ from start-time input") {
+		t.Fatalf("pinNewlyMappedCloudSources() error = %v, want fail-closed raw mismatch", err)
+	}
+}
+
 func TestCloudSuggestedQueriesGenerateInsidePrivateWorkspaceBeforeManifestPublish(t *testing.T) {
 	m := newMemoryObjects()
 	prefix := "users/user/projects/project/"
