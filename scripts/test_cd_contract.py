@@ -1538,76 +1538,78 @@ class CDContractTests(unittest.TestCase):
             )
             self.assertNotEqual(result.returncode, 0, result.stdout + result.stderr)
 
-    def test_production_receipt_does_not_compare_dev_and_production_config_fingerprints(self):
+    def test_production_receipt_matches_backend_subset_and_preserves_fingerprint_independence(self):
         source_sha = "0123456789abcdef0123456789abcdef01234567"
-        image = "asia-east1-docker.pkg.dev/llm-wiki-cloud/cloud-run-images/olw-pipeline@sha256:" + "a" * 64
+        registry = "asia-east1-docker.pkg.dev/llm-wiki-cloud/cloud-run-images"
+        image_names = {"auth": "llm-wiki-auth", "bff": "llm-wiki-bff", "worker": "olw-pipeline",
+                       "exportjob": "llm-wiki-bff-export-job"}
+        images = {component: f"{registry}/{name}@sha256:" + str(index) * 64
+                  for index, (component, name) in enumerate(image_names.items(), 1)}
         dev_fingerprint = "sha256:" + "d" * 64
         production_fingerprint = "sha256:" + "p" * 64
-        with tempfile.TemporaryDirectory() as directory:
-            root = Path(directory)
-            bin_dir = root / "bin"
-            bin_dir.mkdir()
-            receipt = {
-                "schema": "lwc-306-dev-image-receipt-v1",
-                "source": {
-                    "sha": source_sha,
-                    "ref": "develop",
-                    "workflow_path": ".github/workflows/deploy-dev.yml",
-                    "event": "workflow_dispatch",
-                    "run_id": 101,
-                    "run_attempt": 2,
-                },
-                "config": {"environment": "development", "path": "deploy/environments/development.yaml", "fingerprint": dev_fingerprint},
-                "components": ["worker"],
-                "images": {"worker": image},
-            }
-            fake = textwrap.dedent(f"""
-                #!/usr/bin/env python3
-                import json, sys
-                from pathlib import Path
-                args = sys.argv[1:]
-                endpoint = args[-1] if args else ""
-                if args[:2] == ["run", "download"]:
-                    target = Path(args[args.index("--dir") + 1])
-                    target.mkdir(parents=True, exist_ok=True)
-                    (target / "dev-receipt.json").write_text(json.dumps({receipt!r}))
-                elif "/actions/workflows/deploy-dev.yml/runs" in endpoint:
-                    print(json.dumps({{"workflow_runs": [{{"id": 101, "run_attempt": 2, "path": ".github/workflows/deploy-dev.yml", "event": "workflow_dispatch", "head_branch": "develop", "head_sha": {source_sha!r}, "status": "completed", "conclusion": "success"}}]}}))
-                elif "/actions/runs/101/artifacts" in endpoint:
-                    print(json.dumps({{"artifacts": [{{"id": 202, "name": "cd-images-{source_sha}", "expired": False, "size_in_bytes": 1, "digest": "sha256:{'e' * 64}", "workflow_run": {{"id": 101}}}}]}}))
-                else:
-                    raise SystemExit(2)
-            """).lstrip()
-            gh = bin_dir / "gh"
-            gh.write_text(fake)
-            gh.chmod(0o755)
-            plan = root / "plan.json"
-            plan.write_text(json.dumps({
-                "normalized": {
-                    "selected_components": ["worker"],
-                    "gcp": {"artifact_registry": "asia-east1-docker.pkg.dev/llm-wiki-cloud/cloud-run-images"},
+        cases = (
+            ("all-five", ["auth", "bff", "worker", "exportjob", "frontend"],
+             ["auth", "bff", "worker", "exportjob"], True),
+            ("missing-backend", ["auth", "bff", "worker", "exportjob", "frontend"],
+             ["auth", "bff", "worker"], False),
+            ("extra-backend", ["auth", "bff", "worker", "frontend"],
+             ["auth", "bff", "worker", "exportjob"], False),
+        )
+        for label, selected, receipt_components, should_pass in cases:
+            with self.subTest(label=label), tempfile.TemporaryDirectory() as directory:
+                root = Path(directory)
+                bin_dir = root / "bin"
+                bin_dir.mkdir()
+                receipt_path = root / "receipt.json"
+                receipt_path.write_text(json.dumps({
+                    "schema": "lwc-306-dev-image-receipt-v1",
+                    "source": {"sha": source_sha, "ref": "develop",
+                               "workflow_path": ".github/workflows/deploy-dev.yml",
+                               "event": "workflow_dispatch", "run_id": 101, "run_attempt": 2},
+                    "config": {"environment": "development", "path": "deploy/environments/development.yaml",
+                               "fingerprint": dev_fingerprint},
+                    "components": receipt_components,
+                    "images": {component: images[component] for component in receipt_components},
+                }))
+                fake = textwrap.dedent(f"""
+                    #!/usr/bin/env python3
+                    import json, sys
+                    from pathlib import Path
+                    args = sys.argv[1:]
+                    endpoint = args[-1] if args else ""
+                    if args[:2] == ["run", "download"]:
+                        target = Path(args[args.index("--dir") + 1])
+                        target.mkdir(parents=True, exist_ok=True)
+                        (target / "dev-receipt.json").write_bytes(Path({str(receipt_path)!r}).read_bytes())
+                    elif "/actions/workflows/deploy-dev.yml/runs" in endpoint:
+                        print(json.dumps({{"workflow_runs": [{{"id": 101, "run_attempt": 2, "path": ".github/workflows/deploy-dev.yml", "event": "workflow_dispatch", "head_branch": "develop", "head_sha": {source_sha!r}, "status": "completed", "conclusion": "success"}}]}}))
+                    elif "/actions/runs/101/artifacts" in endpoint:
+                        print(json.dumps({{"artifacts": [{{"id": 202, "name": "cd-images-{source_sha}", "expired": False, "size_in_bytes": 1, "digest": "sha256:{'e' * 64}", "workflow_run": {{"id": 101}}}}]}}))
+                    else:
+                        raise SystemExit(2)
+                """).lstrip()
+                gh = bin_dir / "gh"
+                gh.write_text(fake)
+                gh.chmod(0o755)
+                plan = root / "plan.json"
+                plan.write_text(json.dumps({"normalized": {
+                    "selected_components": selected,
+                    "gcp": {"artifact_registry": registry},
                     "evidence": {"config_fingerprint": production_fingerprint},
-                }
-            }))
-            env = {
-                **os.environ,
-                "PATH": f"{bin_dir}:{os.environ['PATH']}",
-                "PLAN_PATH": str(plan),
-                "ARTIFACT_DIR": str(root / "artifacts"),
-                "GH_TOKEN": "fixture",
-                "GITHUB_REPOSITORY": "Rayer/llm-wiki-cloud",
-                "ENVIRONMENT": "production",
-                "SOURCE_SHA": source_sha,
-            }
-            result = subprocess.run(
-                ["bash", "deploy/cd.sh", "consume-dev-images"],
-                cwd=ROOT,
-                env=env,
-                text=True,
-                capture_output=True,
-            )
-            self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
-            self.assertEqual(json.loads((root / "artifacts/dev-images/dev-artifact.json").read_text())["digest"], "sha256:" + "e" * 64)
+                }}))
+                env = {**os.environ, "PATH": f"{bin_dir}:{os.environ['PATH']}",
+                       "PLAN_PATH": str(plan), "ARTIFACT_DIR": str(root / "artifacts"),
+                       "GH_TOKEN": "fixture", "GITHUB_REPOSITORY": "Rayer/llm-wiki-cloud",
+                       "ENVIRONMENT": "production", "SOURCE_SHA": source_sha}
+                result = subprocess.run(["bash", "deploy/cd.sh", "consume-dev-images"],
+                                        cwd=ROOT, env=env, text=True, capture_output=True)
+                if should_pass:
+                    self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
+                    self.assertEqual(json.loads((root / "artifacts/dev-images/dev-artifact.json").read_text())["digest"],
+                                     "sha256:" + "e" * 64)
+                else:
+                    self.assertNotEqual(result.returncode, 0)
+                    self.assertIn("DEV receipt provenance does not match the selected production bundle", result.stderr)
 
     def test_auth_and_bff_mutation_and_rollback_converge_explicit_traffic(self):
         registry = "asia-east1-docker.pkg.dev/llm-wiki-cloud/cloud-run-images"
