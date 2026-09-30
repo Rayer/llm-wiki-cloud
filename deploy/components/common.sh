@@ -178,7 +178,7 @@ write_rollback_result() {
 journal_validate() {
   local selected
   selected=$(plan_json '.selected_components') || return 1
-  jq -e --argjson selected "$selected" --argjson known '["auth","bff","worker","frontend"]' '
+  jq -e --argjson selected "$selected" --argjson known '["auth","bff","worker","exportjob","frontend"]' '
     def allowed_state:
       . == "pending" or . == "accepted" or . == "unknown" or . == "rejected_or_no_mutation" or
       . == "rollback_pending" or . == "rollback_accepted" or . == "rollback_failed" or . == "rollback_unknown";
@@ -258,6 +258,15 @@ mutation_accepted() {
 }
 
 journal_possible_components() {
+  local selected
+  selected=$(plan_json '.selected_components')
+  if [[ "${ENVIRONMENT:-}" == production ]] && jq -e '(index("bff")) != null and (index("exportjob")) != null' <<<"$selected" >/dev/null; then
+    jq -r '. as $journal | ["frontend","worker","bff","auth","exportjob"][] as $component |
+      select(($journal.order|index($component)) != null and
+        ($journal.components[$component].state == "accepted" or $journal.components[$component].state == "pending" or $journal.components[$component].state == "unknown")) |
+      $component' "$JOURNAL_PATH"
+    return
+  fi
   jq -r '. as $journal | ($journal.order | reverse[]) as $component | select($journal.components[$component].state == "accepted" or $journal.components[$component].state == "pending" or $journal.components[$component].state == "unknown") | $component' "$JOURNAL_PATH"
 }
 journal_possible_count() { jq -er '[.order[] as $component | select(.components[$component].state == "accepted" or .components[$component].state == "pending" or .components[$component].state == "unknown")] | length' "$JOURNAL_PATH"; }
@@ -427,17 +436,25 @@ exportjob_image_readback() {
 }
 
 exportjob_runtime_matches() {
-  local job_json="$1" account bucket database project signer
+  local job_json="$1" account bucket database project signer timeout retries parallelism tasks
   account=$(plan_json '.export_job.runtime_service_account'); bucket=$(plan_json '.export_job.bucket')
   database=$(plan_json '.export_job.firestore_database_id'); project=$(plan_json '.gcp.project_id'); signer=$(plan_json '.export_job.signing_service_account')
-  jq -e --arg account "$account" --arg bucket "$bucket" --arg database "$database" --arg project "$project" --arg signer "$signer" '
+  timeout=$(plan_json '.export_job.job_timeout'); retries=$(plan_json '.export_job.max_retries')
+  parallelism=$(plan_json '.export_job.parallelism'); tasks=$(plan_json '.export_job.tasks')
+  jq -e --arg account "$account" --arg bucket "$bucket" --arg database "$database" --arg project "$project" --arg signer "$signer" \
+    --arg timeout "$timeout" --argjson retries "$retries" --argjson parallelism "$parallelism" --argjson tasks "$tasks" '
+    def execution: (.template // .spec.template.spec // .spec.template // {});
     def template: (.template.template // .spec.template.spec.template.spec // .spec.template.spec.template // .spec.template // {});
     def containers: (template.containers // []);
     def env: (containers[0].env // [] | map({key:.name,value:.value}) | from_entries);
     def service_account: (template.serviceAccount // template.serviceAccountName);
+    def timeout_value: (template.timeout // template.timeoutSeconds);
     type == "object" and (containers|type == "array" and length == 1) and
     service_account == $account and env.GCP_PROJECT == $project and env.BUCKET == $bucket and
-    env.FIRESTORE_DATABASE_ID == $database and env.EXPORT_SIGNING_SERVICE_ACCOUNT == $signer
+    env.FIRESTORE_DATABASE_ID == $database and env.EXPORT_SIGNING_SERVICE_ACCOUNT == $signer and
+    execution.parallelism == $parallelism and execution.taskCount == $tasks and
+    template.maxRetries == $retries and
+    (timeout_value == $timeout or timeout_value == "82800s" or timeout_value == "82800" or timeout_value == 82800)
   ' <<<"$job_json" >/dev/null
 }
 

@@ -328,7 +328,7 @@ class CDContractTests(unittest.TestCase):
         steps = workflow["jobs"]["mutate"]["steps"]
         by_id = {step["id"]: step for step in steps if "id" in step}
         positions = {step["id"]: index for index, step in enumerate(steps) if "id" in step}
-        backend = ("auth", "bff", "worker", "exportjob")
+        backend = ("auth", "bff", "worker")
 
         consume = by_id["consume_dev_images"]
         self.assertEqual(consume["run"], "bash deploy/cd.sh consume-dev-images")
@@ -341,17 +341,26 @@ class CDContractTests(unittest.TestCase):
         self.assertGreater(positions["consume_dev_images"], positions["revalidate_before_mutation"])
         self.assertLess(
             positions["consume_dev_images"],
-            min(positions[f"{component}_mutate"] for component in backend),
+            min(positions["exportjob_bootstrap_mutate"], *(positions[f"{component}_mutate"] for component in backend)),
         )
 
-        for component in (*backend, "frontend"):
+        bootstrap = by_id["exportjob_bootstrap_mutate"]
+        self.assertEqual(bootstrap["uses"], "./.github/actions/exportjob")
+        self.assertEqual(bootstrap["with"]["operation"], "mutate")
+        self.assertIn("inputs.config_environment == 'production'", bootstrap["if"])
+        self.assertLess(positions["exportjob_bootstrap_mutate"], positions["bff_mutate"])
+        self.assertIn("steps.exportjob_bootstrap_mutate.outcome == 'success'", by_id["bff_mutate"]["if"])
+        self.assertEqual(by_id["exportjob_mutate"]["if"].split(" && ")[0], "inputs.config_environment == 'development'")
+
+        for component in ("auth", "worker", "frontend"):
             condition = by_id[f"{component}_mutate"]["if"]
             self.assertRegex(
                 condition,
                 r"\(inputs\.config_environment != 'production' \|\| steps\.consume_dev_images\.outcome == 'success'\)",
             )
+        self.assertIn("steps.consume_dev_images.outcome == 'success'", by_id["bff_mutate"]["if"])
         frontend_condition = by_id["frontend_mutate"]["if"]
-        for component in backend:
+        for component in (*backend, "exportjob"):
             self.assertIn(f"!contains(inputs.components, '{component}')", frontend_condition)
 
         record = by_id["record_dev_receipt"]
@@ -362,7 +371,7 @@ class CDContractTests(unittest.TestCase):
             max(positions[f"{component}_mutate"] for component in backend),
         )
         self.assertLess(positions["record_dev_receipt"], positions["dev_receipt_upload"])
-        for component in backend:
+        for component in (*backend, "exportjob"):
             self.assertIn(
                 f"!contains(inputs.components, '{component}') || steps.{component}_mutate.outcome == 'success'",
                 record["if"],
@@ -377,6 +386,27 @@ class CDContractTests(unittest.TestCase):
             1,
         )
         self.assertNotIn("run: bash deploy/cd.sh mutate", (ROOT / ".github/workflows/cd.yml").read_text())
+
+    def test_production_export_bootstrap_rollback_reverses_actual_mutation_order(self):
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            plan = root / "plan.json"
+            journal = root / "journal.json"
+            plan.write_text(json.dumps({"normalized": {
+                "environment": "production", "selected_components": ["bff", "exportjob"],
+            }}))
+            journal.write_text(json.dumps({
+                "order": ["bff", "exportjob"],
+                "components": {component: {"state": "accepted"} for component in ("bff", "exportjob")},
+            }))
+            result = subprocess.run(
+                ["bash", "-c", 'source "$ROOT/deploy/components/common.sh"; journal_possible_components'],
+                env={**os.environ, "ROOT": str(ROOT), "ENVIRONMENT": "production",
+                     "PLAN_PATH": str(plan), "JOURNAL_PATH": str(journal)},
+                text=True, capture_output=True,
+            )
+            self.assertEqual(result.returncode, 0, result.stderr)
+            self.assertEqual(result.stdout.splitlines(), ["bff", "exportjob"])
 
     def _run_main_eligibility(self, source, *, candidate_sha, checked_out_sha=None,
                               develop_heads=None, main_sha=None, ancestor=True,
@@ -2840,20 +2870,26 @@ class ArchitectureAuthorityTests(unittest.TestCase):
             "runtime_service_account": "export-worker@example.iam.gserviceaccount.com",
             "signing_service_account": "export-signer@example.iam.gserviceaccount.com",
             "bucket": "example-dev-bucket", "firestore_database_id": "example-dev-db",
+            "job_timeout": "23h", "max_retries": 0, "parallelism": 1, "tasks": 1,
         }
-        runtime_v2 = {"template": {"template": {
-            "serviceAccount": config["runtime_service_account"],
-            "containers": [{"env": [
-                {"name": "GCP_PROJECT", "value": "example-project"},
-                {"name": "BUCKET", "value": config["bucket"]},
-                {"name": "FIRESTORE_DATABASE_ID", "value": config["firestore_database_id"]},
-                {"name": "EXPORT_SIGNING_SERVICE_ACCOUNT", "value": config["signing_service_account"]},
-            ]}],
-        }}}
+        runtime_v2 = {"template": {
+            "parallelism": 1, "taskCount": 1,
+            "template": {
+                "serviceAccount": config["runtime_service_account"],
+                "timeout": "82800s", "maxRetries": 0,
+                "containers": [{"env": [
+                    {"name": "GCP_PROJECT", "value": "example-project"},
+                    {"name": "BUCKET", "value": config["bucket"]},
+                    {"name": "FIRESTORE_DATABASE_ID", "value": config["firestore_database_id"]},
+                    {"name": "EXPORT_SIGNING_SERVICE_ACCOUNT", "value": config["signing_service_account"]},
+                ]}],
+            },
+        }}
         runtime_v1 = {"spec": {"template": {"spec": {"template": {"spec": {
+            "timeoutSeconds": "82800", "maxRetries": 0,
             "serviceAccountName": config["runtime_service_account"],
             "containers": runtime_v2["template"]["template"]["containers"],
-        }}}}}}
+        }}, "parallelism": 1, "taskCount": 1}}}}
         with tempfile.TemporaryDirectory() as directory:
             plan = Path(directory) / "plan.json"
             plan.write_text(json.dumps({"normalized": {
@@ -3104,58 +3140,7 @@ class ArchitectureAuthorityTests(unittest.TestCase):
                     self.assertNotIn("--set-env-vars", runtime_update)
                     self.assertNotIn("UNRELATED=preserve-me", runtime_update)
 
-    def test_production_export_preflight_parses_gcloud_cli_ubla_shape_fail_closed(self):
-        fixture = ROOT / "deploy/provision/testdata/gcloud-storage-bucket-ubla-enabled.json"
-        cases = (
-            ("actual CLI true", fixture.read_text(), True),
-            ("false", json.dumps({"uniform_bucket_level_access": False}), False),
-            ("missing", json.dumps({"name": "llm-wiki-data"}), False),
-        )
-        for label, description, should_pass in cases:
-            with self.subTest(label=label), tempfile.TemporaryDirectory() as directory:
-                root = Path(directory)
-                calls = root / "gcloud.log"
-                response = root / "bucket.json"
-                response.write_text(description)
-                plan = root / "plan.json"
-                plan.write_text(json.dumps({"normalized": {
-                    "environment": "production",
-                    "selected_components": ["bff", "exportjob"],
-                    "gcp": {"project_id": "llm-wiki-cloud", "region": "asia-east1"},
-                    "bff": {"runtime_service_account": "lwc-bff-prod@llm-wiki-cloud.iam.gserviceaccount.com"},
-                    "export_job": {
-                        "enabled": True, "job_name": "export-job", "location": "asia-east1",
-                        "bucket": "llm-wiki-data", "firestore_database_id": "llm-wiki-cloud-prod",
-                        "runtime_service_account": "lwc-export-worker-prod@llm-wiki-cloud.iam.gserviceaccount.com",
-                        "signing_service_account": "lwc-export-signer-prod@llm-wiki-cloud.iam.gserviceaccount.com",
-                    },
-                }}))
-                env = {**os.environ, "ROOT": str(ROOT), "ENVIRONMENT": "production",
-                       "PLAN_PATH": str(plan), "UBLA_RESPONSE": str(response), "GCLOUD_LOG": str(calls)}
-                script = textwrap.dedent(f"""
-                    source {str(ROOT / 'deploy/components/exportjob.sh')!r} help
-                    gcloud() {{
-                      printf '%s\\n' "$*" >> "$GCLOUD_LOG"
-                      if [[ "$1 $2 $3" == "storage buckets describe" ]]; then cat "$UBLA_RESPONSE"; fi
-                    }}
-                    preflight_service_account() {{ :; }}
-                    preflight_job_binding() {{ :; }}
-                    exportjob_runtime_matches() {{ :; }}
-                    exportjob_preflight
-                """)
-                result = subprocess.run(["bash", "-c", script], env=env, text=True, capture_output=True)
-                expected_bucket_call = "storage buckets describe gs://llm-wiki-data --project llm-wiki-cloud --format=json --quiet"
-                self.assertEqual(calls.read_text().splitlines()[0], expected_bucket_call)
-                if should_pass:
-                    self.assertEqual(result.returncode, 0, result.stderr)
-                    self.assertEqual(calls.read_text().splitlines()[1],
-                                     "run jobs describe export-job --project llm-wiki-cloud --region asia-east1 --format=json --quiet")
-                else:
-                    self.assertNotEqual(result.returncode, 0)
-                    self.assertIn("uniform bucket-level access", result.stderr)
-                    self.assertEqual(calls.read_text().splitlines(), [expected_bucket_call])
-
-    def test_production_export_preflight_requires_existing_job_without_creating_one(self):
+    def test_production_export_preflight_allows_first_job_without_bucket_access_gate(self):
         with tempfile.TemporaryDirectory() as directory:
             root = Path(directory)
             calls = root / "gcloud.log"
@@ -3172,14 +3157,14 @@ class ArchitectureAuthorityTests(unittest.TestCase):
                 },
             }}))
             env = {**os.environ, "ROOT": str(ROOT), "ENVIRONMENT": "production",
-                   "PLAN_PATH": str(plan), "GCLOUD_LOG": str(calls),
-                   "UBLA_RESPONSE": str(ROOT / "deploy/provision/testdata/gcloud-storage-bucket-ubla-enabled.json")}
+                   "PLAN_PATH": str(plan), "GCLOUD_LOG": str(calls)}
             script = textwrap.dedent(f"""
                 source {str(ROOT / 'deploy/components/exportjob.sh')!r} help
                 gcloud() {{
                   printf '%s\\n' "$*" >> "$GCLOUD_LOG"
-                  if [[ "$1 $2 $3" == "storage buckets describe" ]]; then cat "$UBLA_RESPONSE"
-                  elif [[ "$1 $2 $3" == "run jobs describe" ]]; then return 1
+                  if [[ "$1 $2 $3" == "run jobs describe" ]]; then
+                    echo 'ERROR: (gcloud.run.jobs.describe) Cannot find job [export-job].' >&2
+                    return 1
                   else return 99; fi
                 }}
                 preflight_service_account() {{ :; }}
@@ -3187,12 +3172,194 @@ class ArchitectureAuthorityTests(unittest.TestCase):
                 exportjob_preflight
             """)
             result = subprocess.run(["bash", "-c", script], env=env, text=True, capture_output=True)
-            self.assertNotEqual(result.returncode, 0)
-            self.assertIn("export job is missing or unreadable", result.stderr)
+            self.assertEqual(result.returncode, 0, result.stderr)
             self.assertEqual(calls.read_text().splitlines(), [
-                "storage buckets describe gs://llm-wiki-data --project llm-wiki-cloud --format=json --quiet",
                 "run jobs describe export-job --project llm-wiki-cloud --region asia-east1 --format=json --quiet",
             ])
+
+    def _production_exportjob_mutation_fixture(self, root, initial=None, *, bad_env=False, create_error=False):
+        bin_dir = root / "bin"
+        bin_dir.mkdir()
+        state = root / "job.json"
+        calls = root / "gcloud.log"
+        state.write_text(json.dumps(initial))
+        fake = textwrap.dedent(f"""
+            #!/usr/bin/env python3
+            import json, os, sys
+            from pathlib import Path
+            args = sys.argv[1:]
+            state = Path({str(state)!r})
+            with Path({str(calls)!r}).open("a") as stream: stream.write(json.dumps(args) + "\\n")
+            if args[:3] == ["run", "jobs", "describe"]:
+                value = json.loads(state.read_text())
+                if value is None:
+                    print("ERROR: (gcloud.run.jobs.describe) Cannot find job [export-job].", file=sys.stderr)
+                    raise SystemExit(1)
+                print(json.dumps(value))
+            elif args[:4] == ["run", "jobs", "get-iam-policy", "export-job"]:
+                print(json.dumps({{"bindings": [{{"role": "roles/run.jobsExecutorWithOverrides",
+                    "members": ["serviceAccount:lwc-bff-prod@llm-wiki-cloud.iam.gserviceaccount.com"]}}]}}))
+            elif args[:4] == ["run", "jobs", "add-iam-policy-binding", "export-job"]:
+                pass
+            elif args[:3] == ["run", "jobs", "create"]:
+                def flag(name): return args[args.index(name) + 1]
+                env_text = flag("--set-env-vars")
+                entries = [item.split("=", 1) for item in env_text[3:].split("|")]
+                env = {{key: value for key, value in entries}}
+                if {bad_env!r}: env["FIRESTORE_DATABASE_ID"] = "wrong-database"
+                labels = dict(item.split("=", 1) for item in flag("--labels").split(","))
+                value = {{"metadata": {{"name": "export-job", "labels": labels}},
+                    "template": {{"parallelism": int(flag("--parallelism")), "taskCount": int(flag("--tasks")),
+                        "template": {{"serviceAccount": flag("--service-account"), "timeout": "82800s",
+                            "maxRetries": int(flag("--max-retries")),
+                            "containers": [{{"name": "export", "image": flag("--image"),
+                                "env": [{{"name": key, "value": value}} for key, value in env.items()]}}]}}}}}}
+                state.write_text(json.dumps(value))
+                if {create_error!r}:
+                    print("simulated lost create response", file=sys.stderr)
+                    raise SystemExit(1)
+            elif args[:3] == ["run", "jobs", "update"]:
+                value = json.loads(state.read_text())
+                value["template"]["template"]["containers"][0]["image"] = args[args.index("--image") + 1]
+                state.write_text(json.dumps(value))
+            elif args[:3] == ["run", "jobs", "delete"]:
+                state.write_text("null")
+            else:
+                raise SystemExit(2)
+        """).lstrip()
+        fake_path = bin_dir / "gcloud"
+        fake_path.write_text(fake)
+        fake_path.chmod(0o755)
+        source_sha = "c" * 40
+        image = "asia-east1-docker.pkg.dev/llm-wiki-cloud/cloud-run-images/llm-wiki-bff-export-job@sha256:" + "d" * 64
+        artifacts = root / "artifacts"
+        dev_images = artifacts / "dev-images"
+        dev_images.mkdir(parents=True)
+        (dev_images / f"exportjob-image-{source_sha}.txt").write_text(image + "\n")
+        bff_image = "asia-east1-docker.pkg.dev/llm-wiki-cloud/cloud-run-images/llm-wiki-bff@sha256:" + "e" * 64
+        (dev_images / f"bff-image-{source_sha}.txt").write_text(bff_image + "\n")
+        (dev_images / "dev-receipt.json").write_text(json.dumps({
+            "schema": "lwc-306-dev-image-receipt-v1",
+            "source": {"sha": source_sha, "ref": "develop", "workflow_path": ".github/workflows/deploy-dev.yml", "event": "workflow_dispatch"},
+            "config": {"environment": "development", "path": "deploy/environments/development.yaml"},
+            "components": ["bff", "exportjob"], "images": {"bff": bff_image, "exportjob": image},
+        }))
+        plan = root / "plan.json"
+        plan.write_text(json.dumps({"normalized": {
+            "environment": "production", "selected_components": ["bff", "exportjob"],
+            "gcp": {"project_id": "llm-wiki-cloud", "region": "asia-east1",
+                    "artifact_registry": "asia-east1-docker.pkg.dev/llm-wiki-cloud/cloud-run-images"},
+            "bff": {"runtime_service_account": "lwc-bff-prod@llm-wiki-cloud.iam.gserviceaccount.com"},
+            "export_job": {"enabled": True, "job_name": "export-job", "location": "asia-east1",
+                "bucket": "llm-wiki-data", "firestore_database_id": "llm-wiki-cloud-prod",
+                "runtime_service_account": "lwc-export-worker-prod@llm-wiki-cloud.iam.gserviceaccount.com",
+                "signing_service_account": "lwc-export-signer-prod@llm-wiki-cloud.iam.gserviceaccount.com",
+                "job_timeout": "23h", "max_retries": 0, "parallelism": 1, "tasks": 1},
+        }}))
+        env = {**os.environ, "PATH": f"{bin_dir}:{os.environ['PATH']}", "ROOT": str(ROOT),
+               "ENVIRONMENT": "production", "SOURCE_REF": "main", "SOURCE_SHA": source_sha,
+               "GITHUB_RUN_ID": "12345", "GITHUB_RUN_ATTEMPT": "2", "ROLLBACK_UPLOADED": "1",
+               "PLAN_PATH": str(plan), "ROLLBACK_PATH": str(root / "rollback.json"),
+               "JOURNAL_PATH": str(root / "journal.json"), "ROLLBACK_RESULT_PATH": str(root / "rollback-result.json"),
+               "ARTIFACT_DIR": str(artifacts)}
+        return env, image, state, calls
+
+    def test_production_exportjob_bootstrap_uses_exact_dev_receipt_and_contract(self):
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            env, image, state, calls = self._production_exportjob_mutation_fixture(root)
+            script = textwrap.dedent(f"""
+                source {str(ROOT / 'deploy/components/exportjob.sh')!r} help
+                revalidate_before_provider() {{ :; }}
+                sleep() {{ :; }}
+                exportjob_freeze
+                exportjob_mutate
+            """)
+            result = subprocess.run(["bash", "-c", script], env=env, text=True, capture_output=True)
+            self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
+            created = json.loads(state.read_text())
+            container = created["template"]["template"]["containers"][0]
+            self.assertEqual(container["image"], image)
+            self.assertEqual(created["template"]["template"]["serviceAccount"],
+                             "lwc-export-worker-prod@llm-wiki-cloud.iam.gserviceaccount.com")
+            self.assertEqual({entry["name"]: entry["value"] for entry in container["env"]}, {
+                "GCP_PROJECT": "llm-wiki-cloud", "BUCKET": "llm-wiki-data",
+                "FIRESTORE_DATABASE_ID": "llm-wiki-cloud-prod",
+                "EXPORT_SIGNING_SERVICE_ACCOUNT": "lwc-export-signer-prod@llm-wiki-cloud.iam.gserviceaccount.com",
+            })
+            self.assertEqual((created["template"]["parallelism"], created["template"]["taskCount"],
+                              created["template"]["template"]["timeout"], created["template"]["template"]["maxRetries"]),
+                             (1, 1, "82800s", 0))
+            self.assertEqual(created["metadata"]["labels"], {
+                "lwc-created-by-sha": "c" * 40, "lwc-created-by-run": "12345-2",
+            })
+            create = next(call for call in map(json.loads, calls.read_text().splitlines()) if call[:3] == ["run", "jobs", "create"])
+            self.assertIn("--task-timeout", create)
+            self.assertIn("23h", create)
+            self.assertIn("--max-retries", create)
+            self.assertIn("--parallelism", create)
+            self.assertIn("--tasks", create)
+            self.assertNotIn("--execute-now", create)
+            binding = next(call for call in map(json.loads, calls.read_text().splitlines())
+                           if call[:4] == ["run", "jobs", "add-iam-policy-binding", "export-job"])
+            self.assertIn("serviceAccount:lwc-bff-prod@llm-wiki-cloud.iam.gserviceaccount.com", binding)
+            self.assertIn("roles/run.jobsExecutorWithOverrides", binding)
+            self.assertIn("--project", binding)
+            self.assertIn("llm-wiki-cloud", binding)
+            self.assertIn("--region", binding)
+            self.assertIn("asia-east1", binding)
+            self.assertTrue(json.loads((root / "rollback.json").read_text())["handles"]["exportjob"]["absent"])
+
+    def test_production_exportjob_existing_receipt_image_is_noop(self):
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            image = "asia-east1-docker.pkg.dev/llm-wiki-cloud/cloud-run-images/llm-wiki-bff-export-job@sha256:" + "d" * 64
+            initial = {"metadata": {"name": "export-job", "labels": {}}, "template": {
+                "parallelism": 1, "taskCount": 1, "template": {
+                    "serviceAccount": "lwc-export-worker-prod@llm-wiki-cloud.iam.gserviceaccount.com",
+                    "timeout": "82800s", "maxRetries": 0,
+                    "containers": [{"name": "export", "image": image, "env": [
+                        {"name": "GCP_PROJECT", "value": "llm-wiki-cloud"},
+                        {"name": "BUCKET", "value": "llm-wiki-data"},
+                        {"name": "FIRESTORE_DATABASE_ID", "value": "llm-wiki-cloud-prod"},
+                        {"name": "EXPORT_SIGNING_SERVICE_ACCOUNT", "value": "lwc-export-signer-prod@llm-wiki-cloud.iam.gserviceaccount.com"},
+                    ]}],
+                },
+            }}
+            env, _, state, calls = self._production_exportjob_mutation_fixture(root, initial)
+            script = textwrap.dedent(f"""
+                source {str(ROOT / 'deploy/components/exportjob.sh')!r} help
+                revalidate_before_provider() {{ :; }}
+                exportjob_freeze
+                exportjob_mutate
+            """)
+            result = subprocess.run(["bash", "-c", script], env=env, text=True, capture_output=True)
+            self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
+            calls = [json.loads(line) for line in calls.read_text().splitlines()]
+            self.assertFalse(any(call[:3] in (["run", "jobs", "create"], ["run", "jobs", "update"]) for call in calls))
+            self.assertEqual(json.loads(state.read_text()), initial)
+
+    def test_production_exportjob_partial_create_failure_rolls_back_own_job(self):
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            env, _, state, _ = self._production_exportjob_mutation_fixture(root, bad_env=True, create_error=True)
+            script = textwrap.dedent(f"""
+                source {str(ROOT / 'deploy/components/exportjob.sh')!r} help
+                revalidate_before_provider() {{ :; }}
+                sleep() {{ :; }}
+                exportjob_freeze
+                exportjob_mutate
+            """)
+            failed = subprocess.run(["bash", "-c", script], env=env, text=True, capture_output=True)
+            self.assertNotEqual(failed.returncode, 0)
+            self.assertIsInstance(json.loads(state.read_text()), dict)
+            rollback = subprocess.run(["bash", str(ROOT / "deploy/cd.sh"), "rollback"],
+                                      env=env, text=True, capture_output=True)
+            self.assertEqual(rollback.returncode, 0, rollback.stdout + rollback.stderr)
+            self.assertIsNone(json.loads(state.read_text()))
+            result = json.loads((root / "artifacts/rollback/exportjob.json").read_text())
+            self.assertEqual(result["result"], "success")
+            self.assertEqual(result["reason"], "created_job_deleted")
 
     def test_production_exportjob_freezes_verifies_and_rolls_back_immutable_image(self):
         old_image = "asia-east1-docker.pkg.dev/llm-wiki-cloud/cloud-run-images/llm-wiki-bff-export-job@sha256:" + "a" * 64
@@ -3208,10 +3375,14 @@ class ArchitectureAuthorityTests(unittest.TestCase):
                 {"name": "FIRESTORE_DATABASE_ID", "value": "llm-wiki-cloud-prod"},
                 {"name": "EXPORT_SIGNING_SERVICE_ACCOUNT", "value": "lwc-export-signer-prod@llm-wiki-cloud.iam.gserviceaccount.com"},
             ]
-            state.write_text(json.dumps({"template": {"template": {
-                "serviceAccount": "lwc-export-worker-prod@llm-wiki-cloud.iam.gserviceaccount.com",
-                "containers": [{"name": "export", "image": old_image, "env": runtime_env}],
-            }}}))
+            state.write_text(json.dumps({"template": {
+                "parallelism": 1, "taskCount": 1,
+                "template": {
+                    "serviceAccount": "lwc-export-worker-prod@llm-wiki-cloud.iam.gserviceaccount.com",
+                    "timeout": "82800s", "maxRetries": 0,
+                    "containers": [{"name": "export", "image": old_image, "env": runtime_env}],
+                },
+            }}))
             fake = textwrap.dedent(f"""
                 #!/usr/bin/env python3
                 import json, sys
@@ -3241,6 +3412,7 @@ class ArchitectureAuthorityTests(unittest.TestCase):
                     "firestore_database_id": "llm-wiki-cloud-prod",
                     "runtime_service_account": "lwc-export-worker-prod@llm-wiki-cloud.iam.gserviceaccount.com",
                     "signing_service_account": "lwc-export-signer-prod@llm-wiki-cloud.iam.gserviceaccount.com",
+                    "job_timeout": "23h", "max_retries": 0, "parallelism": 1, "tasks": 1,
                 },
             }}))
             env = {**os.environ, "PATH": f"{bin_dir}:{os.environ['PATH']}", "ROOT": str(ROOT),
