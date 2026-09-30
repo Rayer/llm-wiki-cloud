@@ -3104,30 +3104,64 @@ class ArchitectureAuthorityTests(unittest.TestCase):
                     self.assertNotIn("--set-env-vars", runtime_update)
                     self.assertNotIn("UNRELATED=preserve-me", runtime_update)
 
-    def test_production_export_preflight_rejects_bucket_without_ubla_before_any_mutation(self):
+    def test_production_export_preflight_parses_gcloud_cli_ubla_shape_fail_closed(self):
+        fixture = ROOT / "deploy/provision/testdata/gcloud-storage-bucket-ubla-enabled.json"
+        cases = (
+            ("actual CLI true", fixture.read_text(), True),
+            ("false", json.dumps({"uniform_bucket_level_access": False}), False),
+            ("missing", json.dumps({"name": "llm-wiki-data"}), False),
+        )
+        for label, description, should_pass in cases:
+            with self.subTest(label=label), tempfile.TemporaryDirectory() as directory:
+                root = Path(directory)
+                calls = root / "gcloud.log"
+                response = root / "bucket.json"
+                response.write_text(description)
+                plan = root / "plan.json"
+                plan.write_text(json.dumps({"normalized": {
+                    "environment": "production",
+                    "selected_components": ["bff", "exportjob"],
+                    "gcp": {"project_id": "llm-wiki-cloud", "region": "asia-east1"},
+                    "bff": {"runtime_service_account": "lwc-bff-prod@llm-wiki-cloud.iam.gserviceaccount.com"},
+                    "export_job": {
+                        "enabled": True, "job_name": "export-job", "location": "asia-east1",
+                        "bucket": "llm-wiki-data", "firestore_database_id": "llm-wiki-cloud-prod",
+                        "runtime_service_account": "lwc-export-worker-prod@llm-wiki-cloud.iam.gserviceaccount.com",
+                        "signing_service_account": "lwc-export-signer-prod@llm-wiki-cloud.iam.gserviceaccount.com",
+                    },
+                }}))
+                env = {**os.environ, "ROOT": str(ROOT), "ENVIRONMENT": "production",
+                       "PLAN_PATH": str(plan), "UBLA_RESPONSE": str(response), "GCLOUD_LOG": str(calls)}
+                script = textwrap.dedent(f"""
+                    source {str(ROOT / 'deploy/components/exportjob.sh')!r} help
+                    gcloud() {{
+                      printf '%s\\n' "$*" >> "$GCLOUD_LOG"
+                      if [[ "$1 $2 $3" == "storage buckets describe" ]]; then cat "$UBLA_RESPONSE"; fi
+                    }}
+                    preflight_service_account() {{ :; }}
+                    preflight_job_binding() {{ :; }}
+                    exportjob_runtime_matches() {{ :; }}
+                    exportjob_preflight
+                """)
+                result = subprocess.run(["bash", "-c", script], env=env, text=True, capture_output=True)
+                expected_bucket_call = "storage buckets describe gs://llm-wiki-data --project llm-wiki-cloud --format=json --quiet"
+                self.assertEqual(calls.read_text().splitlines()[0], expected_bucket_call)
+                if should_pass:
+                    self.assertEqual(result.returncode, 0, result.stderr)
+                    self.assertEqual(calls.read_text().splitlines()[1],
+                                     "run jobs describe export-job --project llm-wiki-cloud --region asia-east1 --format=json --quiet")
+                else:
+                    self.assertNotEqual(result.returncode, 0)
+                    self.assertIn("uniform bucket-level access", result.stderr)
+                    self.assertEqual(calls.read_text().splitlines(), [expected_bucket_call])
+
+    def test_production_export_preflight_requires_existing_job_without_creating_one(self):
         with tempfile.TemporaryDirectory() as directory:
             root = Path(directory)
-            bin_dir = root / "bin"
-            bin_dir.mkdir()
             calls = root / "gcloud.log"
-            fake = textwrap.dedent(f"""
-                #!/usr/bin/env python3
-                import json, sys
-                from pathlib import Path
-                args = sys.argv[1:]
-                Path({str(calls)!r}).open("a").write(" ".join(args) + "\\n")
-                if args[:3] == ["storage", "buckets", "describe"]:
-                    print(json.dumps({{"iamConfiguration": {{"uniformBucketLevelAccess": {{"enabled": False}}}}}}))
-                else:
-                    raise SystemExit(2)
-            """).lstrip()
-            fake_path = bin_dir / "gcloud"
-            fake_path.write_text(fake)
-            fake_path.chmod(0o755)
             plan = root / "plan.json"
             plan.write_text(json.dumps({"normalized": {
-                "environment": "production",
-                "selected_components": ["bff", "exportjob"],
+                "environment": "production", "selected_components": ["bff", "exportjob"],
                 "gcp": {"project_id": "llm-wiki-cloud", "region": "asia-east1"},
                 "bff": {"runtime_service_account": "lwc-bff-prod@llm-wiki-cloud.iam.gserviceaccount.com"},
                 "export_job": {
@@ -3137,16 +3171,28 @@ class ArchitectureAuthorityTests(unittest.TestCase):
                     "signing_service_account": "lwc-export-signer-prod@llm-wiki-cloud.iam.gserviceaccount.com",
                 },
             }}))
-            env = {**os.environ, "PATH": f"{bin_dir}:{os.environ['PATH']}", "ROOT": str(ROOT),
-                   "ENVIRONMENT": "production", "PLAN_PATH": str(plan)}
+            env = {**os.environ, "ROOT": str(ROOT), "ENVIRONMENT": "production",
+                   "PLAN_PATH": str(plan), "GCLOUD_LOG": str(calls),
+                   "UBLA_RESPONSE": str(ROOT / "deploy/provision/testdata/gcloud-storage-bucket-ubla-enabled.json")}
             script = textwrap.dedent(f"""
                 source {str(ROOT / 'deploy/components/exportjob.sh')!r} help
+                gcloud() {{
+                  printf '%s\\n' "$*" >> "$GCLOUD_LOG"
+                  if [[ "$1 $2 $3" == "storage buckets describe" ]]; then cat "$UBLA_RESPONSE"
+                  elif [[ "$1 $2 $3" == "run jobs describe" ]]; then return 1
+                  else return 99; fi
+                }}
+                preflight_service_account() {{ :; }}
+                preflight_job_binding() {{ :; }}
                 exportjob_preflight
             """)
             result = subprocess.run(["bash", "-c", script], env=env, text=True, capture_output=True)
             self.assertNotEqual(result.returncode, 0)
-            self.assertIn("uniform bucket-level access", result.stderr)
-            self.assertEqual(calls.read_text().splitlines(), ["storage buckets describe gs://llm-wiki-data --project llm-wiki-cloud --format=json --quiet"])
+            self.assertIn("export job is missing or unreadable", result.stderr)
+            self.assertEqual(calls.read_text().splitlines(), [
+                "storage buckets describe gs://llm-wiki-data --project llm-wiki-cloud --format=json --quiet",
+                "run jobs describe export-job --project llm-wiki-cloud --region asia-east1 --format=json --quiet",
+            ])
 
     def test_production_exportjob_freezes_verifies_and_rolls_back_immutable_image(self):
         old_image = "asia-east1-docker.pkg.dev/llm-wiki-cloud/cloud-run-images/llm-wiki-bff-export-job@sha256:" + "a" * 64

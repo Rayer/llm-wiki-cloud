@@ -11,7 +11,7 @@ exportjob_preflight() {
   bucket=$(plan_json '.export_job.bucket')
   if [[ "$ENVIRONMENT" == production ]]; then
     ubla=$(gcloud storage buckets describe "gs://$bucket" --project "$project" --format=json --quiet) || die "Production Export bucket access mode is unreadable"
-    jq -e '.iamConfiguration.uniformBucketLevelAccess.enabled == true' <<<"$ubla" >/dev/null || die "Production Export requires uniform bucket-level access; bucket configuration is unchanged"
+    jq -e '.uniform_bucket_level_access == true' <<<"$ubla" >/dev/null || die "Production Export requires uniform bucket-level access; bucket configuration is unchanged"
   fi
   preflight_service_account "$account" "$project"
   preflight_service_account "$(plan_json '.export_job.signing_service_account')" "$project"
