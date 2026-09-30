@@ -52,10 +52,17 @@ func TestLoadReviewedEnvironmentsAndQueryIdentity(t *testing.T) {
 			if !ok || secretRefs["typesafe_jev_api_key"] != ref {
 				t.Fatalf("DEV BFF component input omitted TypeSafe secret binding: %#v", secretRefs)
 			}
-		} else if config.BFF.ProfileRuntimeAudience != "" || config.BFF.ProfileRuntimeServiceAccount != "" || config.BFF.SecretReferences.TypeSafeJevAPIKey != nil || len(config.BFF.PipelineDemoUserIDs) != 0 {
-			t.Fatalf("Production unexpectedly received DEV Profile runtime bindings: %#v", config.BFF)
-		} else if _, exists := bff["profile_runtime_audience"]; exists {
-			t.Fatalf("Production BFF component input unexpectedly includes DEV bindings: %#v", bff)
+		} else if len(config.BFF.PipelineDemoUserIDs) != 0 {
+			t.Fatalf("Production unexpectedly received DEV Demo IDs: %#v", config.BFF)
+		} else if config.BFF.ProfileRuntimeAudience != "https://llm-wiki-bff-a5nkmux6pq-de.a.run.app" ||
+			config.BFF.ProfileRuntimeServiceAccount != "lwc-bff-prod@llm-wiki-cloud.iam.gserviceaccount.com" ||
+			config.BFF.SecretReferences.TypeSafeJevAPIKey == nil ||
+			config.BFF.SecretReferences.TypeSafeJevAPIKey.Name != "typesafe-jev-api-key-prod" ||
+			config.BFF.SecretReferences.TypeSafeJevAPIKey.Version != "1" ||
+			!secretVersionPattern.MatchString(config.BFF.SecretReferences.TypeSafeJevAPIKey.Version) {
+			t.Fatalf("Production Profile runtime bindings are incomplete or invalid: %#v", config.BFF)
+		} else if bff["profile_runtime_audience"] != config.BFF.ProfileRuntimeAudience || bff["profile_runtime_service_account"] != config.BFF.ProfileRuntimeServiceAccount {
+			t.Fatalf("Production BFF component input omitted Profile runtime bindings: %#v", bff)
 		} else if _, exists := bff["pipeline_demo_user_ids"]; exists {
 			t.Fatalf("Production BFF component input unexpectedly includes DEV Demo IDs: %#v", bff)
 		}
@@ -91,7 +98,7 @@ func TestPipelineDemoUserIDsAreDevelopmentOnlyAndValidated(t *testing.T) {
 	}
 }
 
-func TestProfileRuntimeConfigIsDEVOnlyAndPinsNumericSecretVersion(t *testing.T) {
+func TestProfileRuntimeConfigSupportsBothEnvironmentsAndPinsNumericSecretVersion(t *testing.T) {
 	root := repoRoot(t)
 	dev, err := decodeConfig(filepath.Join(root, "deploy/environments/development.yaml"))
 	if err != nil {
@@ -131,9 +138,39 @@ func TestProfileRuntimeConfigIsDEVOnlyAndPinsNumericSecretVersion(t *testing.T) 
 	if err != nil {
 		t.Fatal(err)
 	}
-	prod.BFF.ProfileRuntimeAudience = "https://profile-dispatch.dev.example.invalid"
+	prod.BFF.ProfileRuntimeAudience = "https://llm-wiki-bff-a5nkmux6pq-de.a.run.app"
+	prod.BFF.ProfileRuntimeServiceAccount = "lwc-bff-prod@llm-wiki-cloud.iam.gserviceaccount.com"
+	prod.BFF.SecretReferences.TypeSafeJevAPIKey = &VersionedSecretReference{Name: "typesafe-jev-api-key-prod", Version: "17"}
+	if err := validateConfigForEnvironment("production", prod); err != nil {
+		t.Fatalf("valid synthetic Production Profile runtime config: %v", err)
+	}
+	prod.BFF.ProfileRuntimeAudience = dev.BFF.ProfileRuntimeAudience
 	if err := validateConfigForEnvironment("production", prod); err == nil {
-		t.Fatal("Production unexpectedly accepted DEV Profile runtime configuration")
+		t.Fatal("Production accepted the DEV Profile runtime audience")
+	}
+}
+
+func TestProductionProfileBindingsAreRequiredOnlyForBFFDeployment(t *testing.T) {
+	root := repoRoot(t)
+	config, err := decodeConfig(filepath.Join(root, "deploy/environments/production.yaml"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	unprovisioned := config
+	unprovisioned.BFF.ProfileRuntimeAudience = ""
+	unprovisioned.BFF.ProfileRuntimeServiceAccount = ""
+	unprovisioned.BFF.SecretReferences.TypeSafeJevAPIKey = nil
+	if err := validateConfigForEnvironment("production", unprovisioned); err != nil {
+		t.Fatalf("Production non-BFF config without Profile bindings remains valid: %v", err)
+	}
+	if err := validateProfileRuntimeConfig("production", unprovisioned); err == nil {
+		t.Fatal("Production accepted missing Profile runtime configuration for BFF deployment")
+	}
+	if _, err := Load("production", filepath.Join(root, "deploy/environments/production.yaml"), "worker"); err != nil {
+		t.Fatalf("Production Worker plan remains loadable: %v", err)
+	}
+	if _, err := Load("production", filepath.Join(root, "deploy/environments/production.yaml"), "bff"); err != nil {
+		t.Fatalf("Production BFF plan with reviewed Profile runtime configuration failed: %v", err)
 	}
 }
 
@@ -152,7 +189,7 @@ func TestParseComponentsIsExplicitAndDeterministic(t *testing.T) {
 	}
 }
 
-func TestExportJobRequiresProvisionedDEVConfigAndIsNotSupportedInProduction(t *testing.T) {
+func TestExportJobConfigSupportsBothEnvironmentContracts(t *testing.T) {
 	root := repoRoot(t)
 	dev, err := decodeConfig(filepath.Join(root, "deploy/environments/development.yaml"))
 	if err != nil {
@@ -165,20 +202,41 @@ func TestExportJobRequiresProvisionedDEVConfigAndIsNotSupportedInProduction(t *t
 		dev.ExportJob.RuntimeServiceAccount != "lwc-export-worker-dev@llm-wiki-cloud.iam.gserviceaccount.com" ||
 		dev.ExportJob.Bucket != "llm-wiki-data-dev" || dev.ExportJob.FirestoreDatabaseID != "llm-wiki-cloud-dev" ||
 		dev.ExportJob.Location != "asia-east1" ||
-		dev.ExportJob.SigningServiceAccount != "lwc-export-signer-dev@llm-wiki-cloud.iam.gserviceaccount.com" {
+		dev.ExportJob.SigningServiceAccount != "lwc-export-signer-dev@llm-wiki-cloud.iam.gserviceaccount.com" ||
+		dev.ExportJob.JobTimeout != "23h" || dev.ExportJob.MaxRetries != 0 || dev.ExportJob.Parallelism != 1 || dev.ExportJob.Tasks != 1 {
 		t.Fatalf("DEV export job config = %#v", dev.ExportJob)
 	}
 	prod, err := decodeConfig(filepath.Join(root, "deploy/environments/production.yaml"))
 	if err != nil {
 		t.Fatal(err)
 	}
-	prod.ExportJob.Enabled = true
-	prod.ExportJob.JobName = "export-job-prod"
-	if err := validateConfigForEnvironment("production", prod); err == nil {
-		t.Fatal("Production export job unexpectedly accepted")
+	if err := validateConfigForEnvironment("production", prod); err != nil {
+		t.Fatalf("reviewed Production export job config: %v", err)
+	}
+	if !prod.ExportJob.Enabled || prod.ExportJob.JobName != "export-job" ||
+		prod.ExportJob.RuntimeServiceAccount != "lwc-export-worker-prod@llm-wiki-cloud.iam.gserviceaccount.com" ||
+		prod.ExportJob.Bucket != "llm-wiki-data" || prod.ExportJob.FirestoreDatabaseID != "llm-wiki-cloud-prod" ||
+		prod.ExportJob.Location != "asia-east1" ||
+		prod.ExportJob.SigningServiceAccount != "lwc-export-signer-prod@llm-wiki-cloud.iam.gserviceaccount.com" ||
+		prod.ExportJob.JobTimeout != "23h" || prod.ExportJob.MaxRetries != 0 || prod.ExportJob.Parallelism != 1 || prod.ExportJob.Tasks != 1 {
+		t.Fatalf("Production export job config = %#v", prod.ExportJob)
+	}
+	productionInputs := componentInputs(prod, QueryConfigIdentity{}, []string{"bff", "exportjob"})
+	exportInput, ok := productionInputs["exportjob"].(ExportJobConfig)
+	if !ok || !reflect.DeepEqual(exportInput, prod.ExportJob) {
+		t.Fatalf("Production component inputs omitted Export Job config: %#v", productionInputs)
 	}
 	if _, err := Load("development", filepath.Join(root, "deploy/environments/development.yaml"), "bff,exportjob"); err != nil {
 		t.Fatalf("provisioned DEV export job selection: %v", err)
+	}
+	if _, err := Load("development", filepath.Join(root, "deploy/environments/development.yaml"), "exportjob"); err == nil {
+		t.Fatal("DEV Export Job deployment unexpectedly bypassed its BFF invocation config")
+	}
+	if _, err := Load("production", filepath.Join(root, "deploy/environments/production.yaml"), "bff,exportjob"); err != nil {
+		t.Fatalf("reviewed Production export job selection: %v", err)
+	}
+	if _, err := Load("production", filepath.Join(root, "deploy/environments/production.yaml"), "exportjob"); err == nil {
+		t.Fatal("Production Export Job deployment unexpectedly bypassed its BFF invocation config")
 	}
 }
 

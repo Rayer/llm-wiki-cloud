@@ -219,9 +219,15 @@ jobs:
 
       - name: Consume DEV immutable image receipts for Production
         id: consume_dev_images
-        if: inputs.config_environment == 'production' && (contains(inputs.components, 'auth') || contains(inputs.components, 'bff') || contains(inputs.components, 'worker')) && steps.rollback_upload.outcome == 'success' && steps.revalidate_before_mutation.outcome == 'success'
+        if: inputs.config_environment == 'production' && (contains(inputs.components, 'auth') || contains(inputs.components, 'bff') || contains(inputs.components, 'worker') || contains(inputs.components, 'exportjob')) && steps.rollback_upload.outcome == 'success' && steps.revalidate_before_mutation.outcome == 'success'
         run: bash deploy/cd.sh consume-dev-images
 
+      - name: Create or update Production Export Job before BFF
+        id: exportjob_bootstrap_mutate
+        if: inputs.config_environment == 'production' && contains(inputs.components, 'exportjob') && steps.rollback_upload.outcome == 'success' && steps.revalidate_before_mutation.outcome == 'success' && steps.consume_dev_images.outcome == 'success'
+        uses: ./.github/actions/exportjob
+        with:
+          operation: mutate
       - name: Mutate Auth
         id: auth_mutate
         if: contains(inputs.components, 'auth') && steps.rollback_upload.outcome == 'success' && steps.revalidate_before_mutation.outcome == 'success' && (inputs.config_environment != 'production' || steps.consume_dev_images.outcome == 'success')
@@ -230,7 +236,7 @@ jobs:
           operation: mutate
       - name: Mutate BFF
         id: bff_mutate
-        if: contains(inputs.components, 'bff') && steps.rollback_upload.outcome == 'success' && steps.revalidate_before_mutation.outcome == 'success' && (inputs.config_environment != 'production' || steps.consume_dev_images.outcome == 'success')
+        if: contains(inputs.components, 'bff') && steps.rollback_upload.outcome == 'success' && steps.revalidate_before_mutation.outcome == 'success' && (inputs.config_environment != 'production' || (steps.consume_dev_images.outcome == 'success' && (!contains(inputs.components, 'exportjob') || steps.exportjob_bootstrap_mutate.outcome == 'success')))
         uses: ./.github/actions/bff
         with:
           operation: mutate
@@ -242,26 +248,26 @@ jobs:
           operation: mutate
       - name: Mutate Export Job
         id: exportjob_mutate
-        if: contains(inputs.components, 'exportjob') && steps.rollback_upload.outcome == 'success' && steps.revalidate_before_mutation.outcome == 'success' && inputs.config_environment == 'development'
+        if: inputs.config_environment == 'development' && contains(inputs.components, 'exportjob') && steps.rollback_upload.outcome == 'success' && steps.revalidate_before_mutation.outcome == 'success'
         uses: ./.github/actions/exportjob
         with:
           operation: mutate
 
       - name: Record DEV immutable image receipt
         id: record_dev_receipt
-        if: inputs.config_environment == 'development' && (contains(inputs.components, 'auth') || contains(inputs.components, 'bff') || contains(inputs.components, 'worker')) && (!contains(inputs.components, 'auth') || steps.auth_mutate.outcome == 'success') && (!contains(inputs.components, 'bff') || steps.bff_mutate.outcome == 'success') && (!contains(inputs.components, 'worker') || steps.worker_mutate.outcome == 'success') && (!contains(inputs.components, 'exportjob') || steps.exportjob_mutate.outcome == 'success')
+        if: inputs.config_environment == 'development' && (contains(inputs.components, 'auth') || contains(inputs.components, 'bff') || contains(inputs.components, 'worker') || contains(inputs.components, 'exportjob')) && (!contains(inputs.components, 'auth') || steps.auth_mutate.outcome == 'success') && (!contains(inputs.components, 'bff') || steps.bff_mutate.outcome == 'success') && (!contains(inputs.components, 'worker') || steps.worker_mutate.outcome == 'success') && (!contains(inputs.components, 'exportjob') || steps.exportjob_mutate.outcome == 'success')
         run: bash deploy/cd.sh record-dev-receipt
 
       - name: Mutate Frontend
         id: frontend_mutate
-        if: contains(inputs.components, 'frontend') && steps.rollback_upload.outcome == 'success' && steps.revalidate_before_mutation.outcome == 'success' && (!contains(inputs.components, 'exportjob') || steps.exportjob_mutate.outcome == 'success') && ((inputs.config_environment != 'production' || steps.consume_dev_images.outcome == 'success') || (!contains(inputs.components, 'auth') && !contains(inputs.components, 'bff') && !contains(inputs.components, 'worker')))
+        if: contains(inputs.components, 'frontend') && steps.rollback_upload.outcome == 'success' && steps.revalidate_before_mutation.outcome == 'success' && (!contains(inputs.components, 'exportjob') || (inputs.config_environment == 'production' && steps.exportjob_bootstrap_mutate.outcome == 'success') || (inputs.config_environment == 'development' && steps.exportjob_mutate.outcome == 'success')) && ((inputs.config_environment != 'production' || steps.consume_dev_images.outcome == 'success') || (!contains(inputs.components, 'auth') && !contains(inputs.components, 'bff') && !contains(inputs.components, 'worker')))
         uses: ./.github/actions/frontend
         with:
           operation: mutate
 
       - name: Upload DEV immutable image receipts
         id: dev_receipt_upload
-        if: inputs.config_environment == 'development' && (contains(inputs.components, 'auth') || contains(inputs.components, 'bff') || contains(inputs.components, 'worker')) && steps.record_dev_receipt.outcome == 'success'
+        if: inputs.config_environment == 'development' && (contains(inputs.components, 'auth') || contains(inputs.components, 'bff') || contains(inputs.components, 'worker') || contains(inputs.components, 'exportjob')) && steps.record_dev_receipt.outcome == 'success'
         uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
         with:
           name: cd-images-${{ inputs.source_sha }}
@@ -307,7 +313,7 @@ jobs:
           operation: reconcile
 
       - name: Run inverse journal for Production
-        if: always() && inputs.config_environment == 'production' && (steps.auth_mutate.outcome == 'failure' || steps.bff_mutate.outcome == 'failure' || steps.worker_mutate.outcome == 'failure' || steps.frontend_mutate.outcome == 'failure' || steps.auth_reconcile.outcome == 'failure' || steps.bff_reconcile.outcome == 'failure' || steps.worker_reconcile.outcome == 'failure' || steps.frontend_reconcile.outcome == 'failure')
+        if: always() && inputs.config_environment == 'production' && (steps.auth_mutate.outcome == 'failure' || steps.bff_mutate.outcome == 'failure' || steps.worker_mutate.outcome == 'failure' || steps.exportjob_bootstrap_mutate.outcome == 'failure' || steps.exportjob_mutate.outcome == 'failure' || steps.frontend_mutate.outcome == 'failure' || steps.auth_reconcile.outcome == 'failure' || steps.bff_reconcile.outcome == 'failure' || steps.worker_reconcile.outcome == 'failure' || steps.exportjob_reconcile.outcome == 'failure' || steps.frontend_reconcile.outcome == 'failure')
         continue-on-error: true
         run: bash deploy/cd.sh rollback
 

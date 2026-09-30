@@ -321,7 +321,7 @@ class ExportJobProvisionContractTests(unittest.TestCase):
                 "serviceAccountName": expected["service_account"], "timeoutSeconds": "82800s", "maxRetries": 0,
             }}}}}})
 
-    def test_fixed_dev_contract_and_production_remains_disabled(self):
+    def test_dev_provision_contract_and_reviewed_production_job_config(self):
         config = load_contract()
         self.assertEqual(config["job"], "export-job-dev")
         self.assertEqual(config["runtime_service_account"], "lwc-export-worker-dev@llm-wiki-cloud.iam.gserviceaccount.com")
@@ -332,7 +332,10 @@ class ExportJobProvisionContractTests(unittest.TestCase):
         self.assertIn("objects/exports/tmp/", STORAGE_EXPORTS)
         self.assertIn("objects/exports/ready/", STORAGE_EXPORTS)
         production = (ROOT / "deploy/environments/production.yaml").read_text()
-        self.assertIn("export_job:\n  enabled: false", production)
+        self.assertIn("export_job:\n  enabled: true", production)
+        self.assertIn("job_name: export-job", production)
+        self.assertIn("firestore_database_id: llm-wiki-cloud-prod", production)
+        # This standalone provisioning contract still describes DEV resources only.
         data = json.loads(CONTRACT.read_text())
         data["environment"] = "production"
         with tempfile.TemporaryDirectory() as temp:
