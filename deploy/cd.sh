@@ -11,6 +11,16 @@ component_script() {
 }
 run_component() { bash "$(component_script "$1")" "$2"; }
 selected_components() { plan_json '.selected_components[]'; }
+selected_image_components() {
+  local selected component result='[]'
+  selected=$(plan_json '.selected_components')
+  while IFS= read -r component; do
+    [[ "$component" == frontend ]] && continue
+    component_image_name "$component" >/dev/null
+    result=$(jq -cn --argjson result "$result" --arg component "$component" '$result + [$component]')
+  done < <(jq -r '.[]' <<<"$selected")
+  printf '%s\n' "$result"
+}
 
 consume_dev_images() {
   local runs candidates run id artifacts artifact
@@ -28,7 +38,7 @@ consume_dev_images() {
   mkdir -p "$ARTIFACT_DIR/dev-images"
   gh run download "$id" --repo "$GITHUB_REPOSITORY" --name "cd-images-$SOURCE_SHA" --dir "$ARTIFACT_DIR/dev-images" || die "DEV receipt artifact download failed"
   [[ -s "$ARTIFACT_DIR/dev-images/dev-receipt.json" ]] || die "DEV receipt content is missing"
-  jq -e --arg sha "$SOURCE_SHA" --argjson run_id "$id" --argjson run_attempt "$(jq -er '.run_attempt' <<<"$run")" --argjson selected "$(plan_json '.selected_components')" '.schema == "lwc-306-dev-image-receipt-v1" and .source.sha == $sha and .source.ref == "develop" and .source.workflow_path == ".github/workflows/deploy-dev.yml" and .source.event == "workflow_dispatch" and .source.run_id == $run_id and .source.run_attempt == $run_attempt and .config.environment == "development" and .config.path == "deploy/environments/development.yaml" and .components == $selected and (.images|type) == "object"' "$ARTIFACT_DIR/dev-images/dev-receipt.json" >/dev/null || die "DEV receipt provenance does not match the selected production bundle"
+  jq -e --arg sha "$SOURCE_SHA" --argjson run_id "$id" --argjson run_attempt "$(jq -er '.run_attempt' <<<"$run")" --argjson selected "$(selected_image_components)" '.schema == "lwc-306-dev-image-receipt-v1" and .source.sha == $sha and .source.ref == "develop" and .source.workflow_path == ".github/workflows/deploy-dev.yml" and .source.event == "workflow_dispatch" and .source.run_id == $run_id and .source.run_attempt == $run_attempt and .config.environment == "development" and .config.path == "deploy/environments/development.yaml" and .components == $selected and (.images|type) == "object"' "$ARTIFACT_DIR/dev-images/dev-receipt.json" >/dev/null || die "DEV receipt provenance does not match the selected production bundle"
   jq -n --argjson id "$(jq -er '.id' <<<"$artifact")" --arg digest "$(jq -er '.digest' <<<"$artifact")" '{schema:"lwc-306-dev-artifact-v1",id:$id,digest:$digest,run_id:'"$id"'}' > "$ARTIFACT_DIR/dev-images/dev-artifact.json"
 }
 
