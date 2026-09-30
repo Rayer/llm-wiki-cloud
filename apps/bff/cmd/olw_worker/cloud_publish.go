@@ -492,6 +492,15 @@ func runCloudWorkerBatch(ctx context.Context, cfg workerConfig, commands [][]str
 		}
 		return primary
 	}
+	startRawInputs, err := captureCloudRawInputs(ctx, workspace, snapshots)
+	if err != nil {
+		failure := preserveWorkerFailure(err, failureStageInputMaterialization, failureClassUnknown)
+		primary := annotateError(errCloudMaterialization, failure)
+		if recordErr := writeCloudFailureReceipts(ctx, objects, prefix, workspace, cfg, snapshots, failure); recordErr != nil {
+			return errors.Join(primary, recordErr)
+		}
+		return primary
+	}
 	// Capture concept IDs from the immediately prior committed/materialized
 	// workspace id_map before OLW regenerates transient concept identities.
 	priorConcepts, err := snapshotConcepts(workspace, snapshots)
@@ -535,6 +544,15 @@ func runCloudWorkerBatch(ctx context.Context, cfg workerConfig, commands [][]str
 	}
 	if err := cloudReconcileConcepts(workspace, priorConcepts, snapshots); err != nil {
 		failure := preserveWorkerFailure(err, failureStageConceptReconciliation, failureClassUnknown)
+		primary := annotateError(errCloudPipelinePublish, failure)
+		if recordErr := writeCloudFailureReceipts(ctx, objects, prefix, workspace, cfg, snapshots, failure, diagnosticSecrets(cfg, commands)); recordErr != nil {
+			return errors.Join(primary, recordErr)
+		}
+		return primary
+	}
+	snapshots, err = pinNewlyMappedCloudSources(workspace, snapshots, startRawInputs)
+	if err != nil {
+		failure := preserveWorkerFailure(err, failureStageSourceReconciliation, failureClassUnknown)
 		primary := annotateError(errCloudPipelinePublish, failure)
 		if recordErr := writeCloudFailureReceipts(ctx, objects, prefix, workspace, cfg, snapshots, failure, diagnosticSecrets(cfg, commands)); recordErr != nil {
 			return errors.Join(primary, recordErr)
@@ -638,6 +656,61 @@ func materializeCloudWorkspace(ctx context.Context, objects objectStore, prefix,
 		snapshots = appendCloudReservations(mapped, reservations)
 	}
 	return snapshots, manifestData, manifestAttrs, err
+}
+
+func captureCloudRawInputs(ctx context.Context, workspace string, snapshots []sourceSnapshot) (map[string][]byte, error) {
+	files, err := listVaultRawFiles(ctx, workspace)
+	if err != nil {
+		return nil, err
+	}
+	mappedPaths := make(map[string]bool, len(snapshots))
+	for _, snapshot := range snapshots {
+		mappedPaths[snapshot.RawPath] = true
+	}
+	inputs := make(map[string][]byte, len(files))
+	for _, file := range files {
+		if mappedPaths[file.Path] {
+			continue
+		}
+		data, err := readRegularFileWithin(workspace, file.Path)
+		if err != nil {
+			return nil, err
+		}
+		if digestBytes(data) != file.SHA256 {
+			return nil, fmt.Errorf("raw input changed while snapshotting %q", file.Path)
+		}
+		inputs[file.Path] = data
+	}
+	return inputs, nil
+}
+
+func pinNewlyMappedCloudSources(workspace string, snapshots []sourceSnapshot, startRawInputs map[string][]byte) ([]sourceSnapshot, error) {
+	known := make(map[string]bool, len(snapshots))
+	knownPaths := make(map[string]bool, len(snapshots))
+	for _, snapshot := range snapshots {
+		known[snapshot.SourceID] = true
+		knownPaths[snapshot.RawPath] = true
+	}
+	mapped, err := snapshotSourcesExcept(workspace, known)
+	if err != nil {
+		return nil, err
+	}
+	for _, snapshot := range mapped {
+		if snapshot.Tombstone {
+			return nil, fmt.Errorf("new source %q has no start-time raw bytes", snapshot.SourceID)
+		}
+		if knownPaths[snapshot.RawPath] {
+			return nil, fmt.Errorf("new source %q reuses a mapped raw path", snapshot.SourceID)
+		}
+		startBytes, ok := startRawInputs[snapshot.RawPath]
+		if !ok || digestBytes(startBytes) != snapshot.RawSHA256 {
+			return nil, fmt.Errorf("new source %q raw bytes differ from start-time input", snapshot.SourceID)
+		}
+		snapshot.RawBytes = startBytes
+		snapshots = append(snapshots, snapshot)
+		known[snapshot.SourceID] = true
+	}
+	return snapshots, nil
 }
 
 func cloudTombstones(snapshots []sourceSnapshot) []sourceSnapshot {
