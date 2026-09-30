@@ -202,7 +202,8 @@ func TestExportJobConfigSupportsBothEnvironmentContracts(t *testing.T) {
 		dev.ExportJob.RuntimeServiceAccount != "lwc-export-worker-dev@llm-wiki-cloud.iam.gserviceaccount.com" ||
 		dev.ExportJob.Bucket != "llm-wiki-data-dev" || dev.ExportJob.FirestoreDatabaseID != "llm-wiki-cloud-dev" ||
 		dev.ExportJob.Location != "asia-east1" ||
-		dev.ExportJob.SigningServiceAccount != "lwc-export-signer-dev@llm-wiki-cloud.iam.gserviceaccount.com" {
+		dev.ExportJob.SigningServiceAccount != "lwc-export-signer-dev@llm-wiki-cloud.iam.gserviceaccount.com" ||
+		dev.ExportJob.JobTimeout != "23h" || dev.ExportJob.MaxRetries != 0 || dev.ExportJob.Parallelism != 1 || dev.ExportJob.Tasks != 1 {
 		t.Fatalf("DEV export job config = %#v", dev.ExportJob)
 	}
 	prod, err := decodeConfig(filepath.Join(root, "deploy/environments/production.yaml"))
@@ -216,7 +217,8 @@ func TestExportJobConfigSupportsBothEnvironmentContracts(t *testing.T) {
 		prod.ExportJob.RuntimeServiceAccount != "lwc-export-worker-prod@llm-wiki-cloud.iam.gserviceaccount.com" ||
 		prod.ExportJob.Bucket != "llm-wiki-data" || prod.ExportJob.FirestoreDatabaseID != "llm-wiki-cloud-prod" ||
 		prod.ExportJob.Location != "asia-east1" ||
-		prod.ExportJob.SigningServiceAccount != "lwc-export-signer-prod@llm-wiki-cloud.iam.gserviceaccount.com" {
+		prod.ExportJob.SigningServiceAccount != "lwc-export-signer-prod@llm-wiki-cloud.iam.gserviceaccount.com" ||
+		prod.ExportJob.JobTimeout != "23h" || prod.ExportJob.MaxRetries != 0 || prod.ExportJob.Parallelism != 1 || prod.ExportJob.Tasks != 1 {
 		t.Fatalf("Production export job config = %#v", prod.ExportJob)
 	}
 	productionInputs := componentInputs(prod, QueryConfigIdentity{}, []string{"bff", "exportjob"})
@@ -227,8 +229,14 @@ func TestExportJobConfigSupportsBothEnvironmentContracts(t *testing.T) {
 	if _, err := Load("development", filepath.Join(root, "deploy/environments/development.yaml"), "bff,exportjob"); err != nil {
 		t.Fatalf("provisioned DEV export job selection: %v", err)
 	}
+	if _, err := Load("development", filepath.Join(root, "deploy/environments/development.yaml"), "exportjob"); err == nil {
+		t.Fatal("DEV Export Job deployment unexpectedly bypassed its BFF invocation config")
+	}
 	if _, err := Load("production", filepath.Join(root, "deploy/environments/production.yaml"), "bff,exportjob"); err != nil {
 		t.Fatalf("reviewed Production export job selection: %v", err)
+	}
+	if _, err := Load("production", filepath.Join(root, "deploy/environments/production.yaml"), "exportjob"); err == nil {
+		t.Fatal("Production Export Job deployment unexpectedly bypassed its BFF invocation config")
 	}
 }
 

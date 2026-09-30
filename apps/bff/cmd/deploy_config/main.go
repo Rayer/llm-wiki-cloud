@@ -121,6 +121,10 @@ type ExportJobConfig struct {
 	FirestoreDatabaseID   string `yaml:"firestore_database_id" json:"firestore_database_id,omitempty"`
 	Location              string `yaml:"location" json:"location,omitempty"`
 	SigningServiceAccount string `yaml:"signing_service_account" json:"signing_service_account,omitempty"`
+	JobTimeout            string `yaml:"job_timeout" json:"job_timeout"`
+	MaxRetries            int    `yaml:"max_retries" json:"max_retries"`
+	Parallelism           int    `yaml:"parallelism" json:"parallelism"`
+	Tasks                 int    `yaml:"tasks" json:"tasks"`
 }
 
 type FrontendConfig struct {
@@ -363,6 +367,10 @@ func validateConfigForEnvironment(environment string, config EnvironmentConfig) 
 				return fmt.Errorf("export_job has missing or secret-bearing %s", name)
 			}
 		}
+		if config.ExportJob.JobTimeout != "23h" || config.ExportJob.MaxRetries != 0 ||
+			config.ExportJob.Parallelism != 1 || config.ExportJob.Tasks != 1 {
+			return errors.New("export_job task limits are not the reviewed single-task contract")
+		}
 		if config.ExportJob.Location != config.GCP.Region || config.ExportJob.Bucket != config.BFF.Bucket || config.ExportJob.FirestoreDatabaseID != config.BFF.FirestoreDatabaseID {
 			return errors.New("export_job target must match the reviewed environment region, bucket, and Firestore database")
 		}
@@ -376,7 +384,7 @@ func validateConfigForEnvironment(environment string, config EnvironmentConfig) 
 			config.ExportJob.SigningServiceAccount != "lwc-export-signer-prod@llm-wiki-cloud.iam.gserviceaccount.com") {
 			return errors.New("export_job identities are not the reviewed Production resources")
 		}
-	} else if config.ExportJob.JobName != "" || config.ExportJob.RuntimeServiceAccount != "" || config.ExportJob.Bucket != "" || config.ExportJob.FirestoreDatabaseID != "" || config.ExportJob.Location != "" || config.ExportJob.SigningServiceAccount != "" {
+	} else if config.ExportJob.JobName != "" || config.ExportJob.RuntimeServiceAccount != "" || config.ExportJob.Bucket != "" || config.ExportJob.FirestoreDatabaseID != "" || config.ExportJob.Location != "" || config.ExportJob.SigningServiceAccount != "" || config.ExportJob.JobTimeout != "" || config.ExportJob.MaxRetries != 0 || config.ExportJob.Parallelism != 0 || config.ExportJob.Tasks != 0 {
 		return errors.New("disabled export_job must remain unconfigured")
 	}
 	if config.Auth.Network != "default" || config.Auth.Subnet != "default" || config.Auth.VPCEgress != "private-ranges-only" || config.Auth.Ingress != "all" ||

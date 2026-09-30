@@ -80,6 +80,10 @@ export_job:
   firestore_database_id: llm-wiki-cloud-prod
   location: asia-east1
   signing_service_account: lwc-export-signer-prod@llm-wiki-cloud.iam.gserviceaccount.com
+  job_timeout: 23h
+  max_retries: 0
+  parallelism: 1
+  tasks: 1
 
 frontend:
   project_name: llm-wiki-frontend
