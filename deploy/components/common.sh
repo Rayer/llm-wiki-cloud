@@ -312,7 +312,7 @@ record_dev_receipt() {
   run_id="$GITHUB_RUN_ID"; run_attempt="$GITHUB_RUN_ATTEMPT"
   [[ "$run_id" =~ ^[0-9]+$ && "$run_id" -gt 0 && "$run_attempt" =~ ^[0-9]+$ && "$run_attempt" -gt 0 ]] || die "DEV workflow run identity is invalid"
   while IFS= read -r component; do
-    case "$component" in auth|bff|worker)
+    case "$component" in auth|bff|worker|exportjob)
       image=$(tr -d '[:space:]' < "$ARTIFACT_DIR/images/$component-image-$SOURCE_SHA.txt"); validate_image_value "$component" "$image"
       images=$(jq --arg component "$component" --arg image "$image" '. + {($component):$image}' <<<"$images")
       components=$(jq --arg component "$component" '. + [$component]' <<<"$components") ;;

@@ -71,13 +71,9 @@ worker_profile_env_matches_handle() {
 worker_freeze() {
   local image profile_env
   image=$(worker_image_handle) || die "Worker effective image handle is unavailable or mutable"
-  if [[ "$ENVIRONMENT" == development ]]; then
-    profile_env=$(worker_profile_env_handle) || die "Worker Profile environment rollback handle is unavailable"
-    worker_profile_env_args_from_handle "$profile_env" || die "Worker Profile environment rollback handle is invalid"
-    freeze_store worker "$(jq -n --arg image "$image" --argjson profile_env "$profile_env" '{image:$image,profile_env:$profile_env}')"
-    return
-  fi
-  freeze_store worker "$(jq -n --arg image "$image" '{image:$image}')"
+  profile_env=$(worker_profile_env_handle) || die "Worker Profile environment rollback handle is unavailable"
+  worker_profile_env_args_from_handle "$profile_env" || die "Worker Profile environment rollback handle is invalid"
+  freeze_store worker "$(jq -n --arg image "$image" --argjson profile_env "$profile_env" '{image:$image,profile_env:$profile_env}')"
 }
 
 worker_build_image() {
@@ -121,11 +117,9 @@ worker_mutate() {
   revalidate_before_provider
   if ! jq -e '.components.worker? != null' "$JOURNAL_PATH" >/dev/null; then journal_pending worker; fi
   validate_image_value worker "$image"
-  if [[ "$ENVIRONMENT" == development ]]; then
-    database=$(plan_json '.bff.firestore_database_id')
-    if timeout --signal=TERM --kill-after=5s 600s gcloud run jobs update "$job" --project "$project" --region "$region" --image "$image" \
-      --update-env-vars "^|^GCP_PROJECT=$project|FIRESTORE_DATABASE_ID=$database" --quiet >/dev/null; then :; else update_status=$?; fi
-  elif timeout --signal=TERM --kill-after=5s 600s gcloud run jobs update "$job" --project "$project" --region "$region" --image "$image" --quiet >/dev/null; then :; else update_status=$?; fi
+  database=$(plan_json '.bff.firestore_database_id')
+  if timeout --signal=TERM --kill-after=5s 600s gcloud run jobs update "$job" --project "$project" --region "$region" --image "$image" \
+    --update-env-vars "^|^GCP_PROJECT=$project|FIRESTORE_DATABASE_ID=$database" --quiet >/dev/null; then :; else update_status=$?; fi
   if [[ "$update_status" -ne 0 ]]; then
     if ! worker_verify "$image"; then
       journal_transition worker unknown
@@ -140,7 +134,7 @@ worker_verify() {
   local image="$1" observed readback_status
   WORKER_READBACK=''; WORKER_READBACK_RESULT=unknown
   if observed=$(worker_image_readback "$image"); then
-    if [[ "$ENVIRONMENT" == development ]] && ! worker_profile_env_readback; then
+    if ! worker_profile_env_readback; then
       WORKER_READBACK_RESULT=failed
       return 1
     fi
@@ -166,38 +160,17 @@ worker_rollback() {
   local image project region job observed env_handle update_status=0 readback_status=0
   image=$(jq -er '.handles.worker.image' "$ROLLBACK_PATH") || { write_rollback_result worker failed '{}'; return 1; }
   validate_image_value worker "$image" || { write_rollback_result worker failed '{}'; return 1; }
-  if [[ "$ENVIRONMENT" == development ]]; then
-    env_handle=$(jq -cer '.handles.worker.profile_env | select(type == "object")' "$ROLLBACK_PATH") || { write_rollback_result worker failed '{}'; return 1; }
-    worker_profile_env_args_from_handle "$env_handle" || { write_rollback_result worker failed '{}'; return 1; }
-  fi
+  env_handle=$(jq -cer '.handles.worker.profile_env | select(type == "object")' "$ROLLBACK_PATH") || { write_rollback_result worker failed '{}'; return 1; }
+  worker_profile_env_args_from_handle "$env_handle" || { write_rollback_result worker failed '{}'; return 1; }
   project=$(plan_json '.gcp.project_id'); region=$(plan_json '.worker.location'); job=$(plan_json '.worker.job_name')
-  if [[ "$ENVIRONMENT" == development ]]; then
-    if observed=$(worker_image_readback "$image") && worker_profile_env_matches_handle "$env_handle"; then
-      write_rollback_result worker success "$observed" verified_noop
-      return 0
-    else
-      readback_status=$?
-    fi
-  elif observed=$(worker_image_readback "$image"); then
+  if observed=$(worker_image_readback "$image") && worker_profile_env_matches_handle "$env_handle"; then
     write_rollback_result worker success "$observed" verified_noop
     return 0
   else
     readback_status=$?
   fi
-  if [[ "$ENVIRONMENT" == development ]]; then
-    if timeout --signal=TERM --kill-after=5s 600s gcloud run jobs update "$job" --project "$project" --region "$region" --image "$image" "${WORKER_PROFILE_ENV_ARGS[@]}" --quiet >/dev/null; then :; else update_status=$?; fi
-  elif timeout --signal=TERM --kill-after=5s 600s gcloud run jobs update "$job" --project "$project" --region "$region" --image "$image" --quiet >/dev/null; then :; else update_status=$?; fi
-  if [[ "$ENVIRONMENT" == development ]]; then
-    if observed=$(worker_image_readback "$image") && worker_profile_env_matches_handle "$env_handle"; then
-      write_rollback_result worker success "$observed"
-    else
-      readback_status=$?
-      if [[ "$update_status" -ne 0 || "$readback_status" -eq 2 ]]; then
-        write_rollback_result worker unknown '{}'; return 2
-      fi
-      write_rollback_result worker failed '{}'; return 1
-    fi
-  elif observed=$(worker_image_readback "$image"); then
+  if timeout --signal=TERM --kill-after=5s 600s gcloud run jobs update "$job" --project "$project" --region "$region" --image "$image" "${WORKER_PROFILE_ENV_ARGS[@]}" --quiet >/dev/null; then :; else update_status=$?; fi
+  if observed=$(worker_image_readback "$image") && worker_profile_env_matches_handle "$env_handle"; then
     write_rollback_result worker success "$observed"
   else
     readback_status=$?

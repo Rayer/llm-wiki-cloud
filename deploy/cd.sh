@@ -45,10 +45,10 @@ revalidate_before_provider() { [[ "${ROLLBACK_UPLOADED:-}" == 1 ]] || die "durab
 mutate() {
   need PLAN_PATH; need JOURNAL_PATH; need ARTIFACT_DIR; [[ -s "$PLAN_PATH" ]] || die "validated plan is unavailable"
   journal_init; mkdir -p "$ARTIFACT_DIR/images"; set_mutation_status selected not_started
-  if [[ "$ENVIRONMENT" == production ]] && { has_component auth || has_component bff || has_component worker; }; then consume_dev_images; fi
+  if [[ "$ENVIRONMENT" == production ]] && { has_component auth || has_component bff || has_component worker || has_component exportjob; }; then consume_dev_images; fi
   local component
   while IFS= read -r component; do run_component "$component" mutate; done < <(selected_components)
-  if [[ "$ENVIRONMENT" == development ]] && { has_component auth || has_component bff || has_component worker; }; then record_dev_receipt; fi
+  if [[ "$ENVIRONMENT" == development ]] && { has_component auth || has_component bff || has_component worker || has_component exportjob; }; then record_dev_receipt; fi
 }
 
 initialize() {

@@ -111,8 +111,8 @@ type WorkerSecretReferences struct {
 	DeepSeekAPIKey string `yaml:"deepseek_api_key" json:"deepseek_api_key"`
 }
 
-// ExportJobConfig is deliberately disabled until the DEV job and its runtime
-// identities are provisioned and read back by the operator.
+// ExportJobConfig enables an environment only after its runtime resources are
+// provisioned and read back by the operator.
 type ExportJobConfig struct {
 	Enabled               bool   `yaml:"enabled" json:"enabled"`
 	JobName               string `yaml:"job_name" json:"job_name,omitempty"`
@@ -211,9 +211,14 @@ func Load(environment, configPath, components string) (Normalized, error) {
 	if err := validateConfigForEnvironment(environment, config); err != nil {
 		return Normalized{}, err
 	}
+	if environment == "production" && contains(selected, "bff") {
+		if err := validateProfileRuntimeConfig(environment, config); err != nil {
+			return Normalized{}, err
+		}
+	}
 	for _, component := range selected {
 		if component == "exportjob" && !config.ExportJob.Enabled {
-			return Normalized{}, errors.New("exportjob is disabled until its DEV runtime resources are provisioned and read back")
+			return Normalized{}, errors.New("exportjob is disabled until its environment runtime resources are provisioned and read back")
 		}
 	}
 	for _, component := range selected {
@@ -349,9 +354,6 @@ func validateConfigForEnvironment(environment string, config EnvironmentConfig) 
 		return errors.New("service max_instances must be exactly 1")
 	}
 	if config.ExportJob.Enabled {
-		if environment != "development" {
-			return errors.New("export_job is unsupported outside development")
-		}
 		for name, value := range map[string]string{
 			"export_job.job_name": config.ExportJob.JobName, "export_job.runtime_service_account": config.ExportJob.RuntimeServiceAccount,
 			"export_job.bucket": config.ExportJob.Bucket, "export_job.firestore_database_id": config.ExportJob.FirestoreDatabaseID,
@@ -362,7 +364,17 @@ func validateConfigForEnvironment(environment string, config EnvironmentConfig) 
 			}
 		}
 		if config.ExportJob.Location != config.GCP.Region || config.ExportJob.Bucket != config.BFF.Bucket || config.ExportJob.FirestoreDatabaseID != config.BFF.FirestoreDatabaseID {
-			return errors.New("export_job target must match the reviewed DEV region, bucket, and Firestore database")
+			return errors.New("export_job target must match the reviewed environment region, bucket, and Firestore database")
+		}
+		if environment == "development" && (config.ExportJob.JobName != "export-job-dev" ||
+			config.ExportJob.RuntimeServiceAccount != "lwc-export-worker-dev@llm-wiki-cloud.iam.gserviceaccount.com" ||
+			config.ExportJob.SigningServiceAccount != "lwc-export-signer-dev@llm-wiki-cloud.iam.gserviceaccount.com") {
+			return errors.New("export_job identities are not the reviewed Development resources")
+		}
+		if environment == "production" && (config.ExportJob.JobName != "export-job" ||
+			config.ExportJob.RuntimeServiceAccount != "lwc-export-worker-prod@llm-wiki-cloud.iam.gserviceaccount.com" ||
+			config.ExportJob.SigningServiceAccount != "lwc-export-signer-prod@llm-wiki-cloud.iam.gserviceaccount.com") {
+			return errors.New("export_job identities are not the reviewed Production resources")
 		}
 	} else if config.ExportJob.JobName != "" || config.ExportJob.RuntimeServiceAccount != "" || config.ExportJob.Bucket != "" || config.ExportJob.FirestoreDatabaseID != "" || config.ExportJob.Location != "" || config.ExportJob.SigningServiceAccount != "" {
 		return errors.New("disabled export_job must remain unconfigured")
@@ -435,19 +447,30 @@ func validateConfigForEnvironment(environment string, config EnvironmentConfig) 
 		if config.Auth.SecretReferences.JWT != jwt || config.BFF.SecretReferences.JWT != jwt || config.BFF.SecretReferences.DeepSeekAPIKey != "deepseek-apikey" || config.Worker.SecretReferences.DeepSeekAPIKey != "deepseek-apikey" {
 			return errors.New("secret references are not the reviewed environment bindings")
 		}
-		if environment == "development" {
-			if !validProfileRuntimeAudience(config.BFF.ProfileRuntimeAudience) || !validProfileRuntimeServiceAccount(config.BFF.ProfileRuntimeServiceAccount) {
-				return errors.New("DEV Profile runtime audience or invoker identity is invalid")
+		profileConfigured := config.BFF.ProfileRuntimeAudience != "" || config.BFF.ProfileRuntimeServiceAccount != "" || config.BFF.SecretReferences.TypeSafeJevAPIKey != nil
+		if environment == "development" || profileConfigured {
+			if err := validateProfileRuntimeConfig(environment, config); err != nil {
+				return err
 			}
-			ref := config.BFF.SecretReferences.TypeSafeJevAPIKey
-			if ref == nil || !secretRefPattern.MatchString(ref.Name) || secretValuePattern.MatchString(ref.Name) || !secretVersionPattern.MatchString(ref.Version) {
-				return errors.New("DEV TypeSafe credential must use an exact secret reference and numeric version")
-			}
-		} else if config.BFF.ProfileRuntimeAudience != "" || config.BFF.ProfileRuntimeServiceAccount != "" || config.BFF.SecretReferences.TypeSafeJevAPIKey != nil {
-			return errors.New("Profile runtime bindings are supported only in development")
 		}
 	}
 	return validateGoogleDeployment(environment, config)
+}
+
+func validateProfileRuntimeConfig(environment string, config EnvironmentConfig) error {
+	if !validProfileRuntimeAudience(config.BFF.ProfileRuntimeAudience) || !validProfileRuntimeServiceAccount(config.BFF.ProfileRuntimeServiceAccount) {
+		return errors.New("Profile runtime audience or invoker identity is invalid")
+	}
+	ref := config.BFF.SecretReferences.TypeSafeJevAPIKey
+	if ref == nil || !secretRefPattern.MatchString(ref.Name) || secretValuePattern.MatchString(ref.Name) || !secretVersionPattern.MatchString(ref.Version) {
+		return errors.New("TypeSafe credential must use an exact secret reference and numeric version")
+	}
+	if environment == "production" && (config.BFF.ProfileRuntimeAudience != "https://llm-wiki-bff-a5nkmux6pq-de.a.run.app" ||
+		config.BFF.ProfileRuntimeServiceAccount != "lwc-bff-prod@llm-wiki-cloud.iam.gserviceaccount.com" ||
+		ref.Name != "typesafe-jev-api-key-prod") {
+		return errors.New("Production Profile runtime bindings are not the reviewed target")
+	}
+	return nil
 }
 
 func validProfileRuntimeAudience(value string) bool {

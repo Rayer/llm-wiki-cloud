@@ -14,6 +14,7 @@ from pathlib import Path
 
 import yaml
 from test_auth_config_contract import bff_plan
+from test_bff_auth_config_contract import production_plan as synthetic_production_bff_plan
 from test_bff_auth_config_contract import candidate as bff_candidate
 
 
@@ -88,6 +89,7 @@ class CDContractTests(unittest.TestCase):
         return yaml.safe_load(path.read_text())
 
     def normalized(self, environment):
+        components = "auth,bff,worker,exportjob,frontend"
         result = subprocess.run(
             [
                 "go",
@@ -98,7 +100,7 @@ class CDContractTests(unittest.TestCase):
                 "--config",
                 f"../../deploy/environments/{environment}.yaml",
                 "--components",
-                "auth,bff,worker,frontend",
+                components,
             ],
             cwd=ROOT / "apps" / "bff",
             text=True,
@@ -326,14 +328,14 @@ class CDContractTests(unittest.TestCase):
         steps = workflow["jobs"]["mutate"]["steps"]
         by_id = {step["id"]: step for step in steps if "id" in step}
         positions = {step["id"]: index for index, step in enumerate(steps) if "id" in step}
-        backend = ("auth", "bff", "worker")
+        backend = ("auth", "bff", "worker", "exportjob")
 
         consume = by_id["consume_dev_images"]
         self.assertEqual(consume["run"], "bash deploy/cd.sh consume-dev-images")
         self.assertEqual(
             consume["if"],
             "inputs.config_environment == 'production' && "
-            "(contains(inputs.components, 'auth') || contains(inputs.components, 'bff') || contains(inputs.components, 'worker')) && "
+            "(contains(inputs.components, 'auth') || contains(inputs.components, 'bff') || contains(inputs.components, 'worker') || contains(inputs.components, 'exportjob')) && "
             "steps.rollback_upload.outcome == 'success' && steps.revalidate_before_mutation.outcome == 'success'",
         )
         self.assertGreater(positions["consume_dev_images"], positions["revalidate_before_mutation"])
@@ -724,8 +726,44 @@ class CDContractTests(unittest.TestCase):
             )
             self.assertEqual(exportjob_receipt.returncode, 0, exportjob_receipt.stdout + exportjob_receipt.stderr)
             receipt = json.loads((image_dir / "dev-receipt.json").read_text())
-            self.assertEqual(receipt["components"], ["bff"])
-            self.assertEqual(receipt["images"], {"bff": bff_image})
+            self.assertEqual(receipt["components"], ["bff", "exportjob"])
+            self.assertEqual(receipt["images"], {"bff": bff_image, "exportjob": exportjob_image})
+
+    def test_production_exportjob_requires_its_selected_immutable_dev_image_receipt(self):
+        source_sha = "0123456789abcdef0123456789abcdef01234567"
+        registry = "asia-east1-docker.pkg.dev/llm-wiki-cloud/cloud-run-images"
+        image = f"{registry}/llm-wiki-bff-export-job@sha256:{'e' * 64}"
+        with tempfile.TemporaryDirectory() as directory:
+            artifacts = Path(directory) / "artifacts"
+            dev_images = artifacts / "dev-images"
+            dev_images.mkdir(parents=True)
+            (dev_images / f"exportjob-image-{source_sha}.txt").write_text(image + "\n")
+            plan = Path(directory) / "plan.json"
+            plan.write_text(json.dumps({"normalized": {
+                "selected_components": ["bff", "exportjob"],
+                "gcp": {"artifact_registry": registry},
+            }}))
+            receipt = {
+                "source": {"sha": source_sha, "ref": "develop",
+                           "workflow_path": ".github/workflows/deploy-dev.yml", "event": "workflow_dispatch"},
+                "config": {"environment": "development", "path": "deploy/environments/development.yaml"},
+                "components": ["bff", "exportjob"],
+                "images": {"bff": f"{registry}/llm-wiki-bff@sha256:{'d' * 64}", "exportjob": image},
+            }
+            receipt_path = dev_images / "dev-receipt.json"
+            receipt_path.write_text(json.dumps(receipt))
+            env = {**os.environ, "ROOT": str(ROOT), "ENVIRONMENT": "production", "SOURCE_SHA": source_sha,
+                   "ARTIFACT_DIR": str(artifacts), "PLAN_PATH": str(plan)}
+            command = ["bash", "-c", 'source "$ROOT/deploy/components/common.sh"; image_for exportjob']
+            accepted = subprocess.run(command, env=env, text=True, capture_output=True)
+            self.assertEqual(accepted.returncode, 0, accepted.stderr)
+            self.assertEqual(accepted.stdout.strip(), image)
+
+            receipt["components"] = ["bff"]
+            receipt["images"].pop("exportjob")
+            receipt_path.write_text(json.dumps(receipt))
+            rejected = subprocess.run(command, env=env, text=True, capture_output=True)
+            self.assertNotEqual(rejected.returncode, 0)
 
     def test_no_legacy_workflow_owns_deployment_literals(self):
         workflows = sorted((ROOT / ".github/workflows").glob("*.yml"))
@@ -1623,7 +1661,7 @@ class CDContractTests(unittest.TestCase):
                     }
                 }))
                 if component == 'bff':
-                    normalized = deepcopy(bff_plan('production'))
+                    normalized = deepcopy(synthetic_production_bff_plan())
                     normalized['bff']['service_name'] = service_name
                     plan.write_text(json.dumps({'normalized': normalized}))
                 artifacts = root / "artifacts" / "dev-images"
@@ -1725,7 +1763,7 @@ class CDContractTests(unittest.TestCase):
                         state["readbacks"] += 1
                         state_path.write_text(json.dumps(state))
                         image = {new_image!r} if state["readbacks"] > 1 else {old_image!r}
-                        print(json.dumps(dict(spec=dict(template=dict(spec=dict(template=dict(spec=dict(containers=[dict(image=image)]))))))))
+                        print(json.dumps(dict(spec=dict(template=dict(spec=dict(template=dict(spec=dict(containers=[dict(image=image, env=[dict(name="GCP_PROJECT", value="llm-wiki-cloud"), dict(name="FIRESTORE_DATABASE_ID", value="llm-wiki-cloud-prod")])]))))))))
                     else:
                         raise SystemExit(2)
                 """).lstrip()
@@ -1734,9 +1772,9 @@ class CDContractTests(unittest.TestCase):
                 provider.chmod(0o755)
                 plan_component = {"service_name": f"{component}-service"} if component != "worker" else {"job_name": "worker-job", "location": "asia-east1"}
                 plan = root / "plan.json"
-                plan.write_text(json.dumps({"normalized": {"selected_components": [component], "gcp": {"project_id": "llm-wiki-cloud", "region": "asia-east1", "artifact_registry": registry}, "evidence": {"config_fingerprint": "sha256:" + "d" * 64}, component: plan_component}}))
+                plan.write_text(json.dumps({"normalized": {"selected_components": [component], "gcp": {"project_id": "llm-wiki-cloud", "region": "asia-east1", "artifact_registry": registry}, "bff": {"firestore_database_id": "llm-wiki-cloud-prod"}, "evidence": {"config_fingerprint": "sha256:" + "d" * 64}, component: plan_component}}))
                 if component == 'bff':
-                    normalized = deepcopy(bff_plan('production'))
+                    normalized = deepcopy(synthetic_production_bff_plan())
                     normalized['bff']['service_name'] = 'bff'
                     plan.write_text(json.dumps({'normalized': normalized}))
                 artifacts = root / "artifacts" / "dev-images"
@@ -1764,10 +1802,10 @@ class CDContractTests(unittest.TestCase):
                 old_revision = f"{component}-old"
                 plan_component = {"service_name": f"{component}-service"} if component != "worker" else {"job_name": "worker-job", "location": "asia-east1"}
                 plan = root / "plan.json"
-                plan.write_text(json.dumps({"normalized": {"selected_components": [component], "gcp": {"project_id": "llm-wiki-cloud", "region": "asia-east1", "artifact_registry": registry}, component: plan_component}}))
+                plan.write_text(json.dumps({"normalized": {"selected_components": [component], "gcp": {"project_id": "llm-wiki-cloud", "region": "asia-east1", "artifact_registry": registry}, "bff": {"firestore_database_id": "llm-wiki-cloud-prod"}, component: plan_component}}))
                 service = {"status": {"traffic": [{"revisionName": old_revision, "percent": 100}]}}
                 revision = {"spec": {"containers": [{"image": old_image}]}, "status": {"imageDigest": old_image, "conditions": [{"type": "Ready", "status": "True"}]}}
-                job = {"spec": {"template": {"spec": {"template": {"spec": {"containers": [{"image": old_image}]}}}}}}
+                job = {"spec": {"template": {"spec": {"template": {"spec": {"containers": [{"image": old_image, "env": [{"name": "GCP_PROJECT", "value": "llm-wiki-cloud"}, {"name": "FIRESTORE_DATABASE_ID", "value": "llm-wiki-cloud-prod"}]}]}}}}}}
                 fake = textwrap.dedent(f"""
                     #!/usr/bin/env python3
                     import json, os, sys
@@ -1860,7 +1898,7 @@ class CDContractTests(unittest.TestCase):
             artifact_dir.mkdir(parents=True)
             (artifact_dir / f"worker-image-{sha}.txt").write_text(image + "\n")
             plan = root / "plan.json"
-            plan.write_text(json.dumps({"normalized": {"selected_components": ["worker"], "gcp": {"artifact_registry": "asia-east1-docker.pkg.dev/llm-wiki-cloud/cloud-run-images", "project_id": "llm-wiki-cloud"}, "evidence": {"config_fingerprint": "sha256:fingerprint"}, "worker": {"job_name": "olw-pipeline", "location": "asia-east1", "runtime_service_account": "worker@llm-wiki-cloud.iam.gserviceaccount.com", "bucket": "bucket", "args": ["run", "--auto-approve"], "secret_references": {"deepseek_api_key": "deepseek-apikey"}}}}))
+            plan.write_text(json.dumps({"normalized": {"selected_components": ["worker"], "gcp": {"artifact_registry": "asia-east1-docker.pkg.dev/llm-wiki-cloud/cloud-run-images", "project_id": "llm-wiki-cloud"}, "bff": {"firestore_database_id": "llm-wiki-cloud-prod"}, "evidence": {"config_fingerprint": "sha256:fingerprint"}, "worker": {"job_name": "olw-pipeline", "location": "asia-east1", "runtime_service_account": "worker@llm-wiki-cloud.iam.gserviceaccount.com", "bucket": "bucket", "args": ["run", "--auto-approve"], "secret_references": {"deepseek_api_key": "deepseek-apikey"}}}}))
             (artifact_dir / "dev-receipt.json").write_text(json.dumps({"schema": "lwc-306-dev-image-receipt-v1", "source": {"sha": sha, "ref": "develop", "workflow_path": ".github/workflows/deploy-dev.yml", "event": "workflow_dispatch", "run_id": 99, "run_attempt": 1}, "config": {"environment": "development", "path": "deploy/environments/development.yaml", "fingerprint": "sha256:fingerprint"}, "components": ["worker"], "images": {"worker": image}}))
             desired = {
                 "spec": {"template": {"spec": {"template": {"spec": {
@@ -1869,6 +1907,8 @@ class CDContractTests(unittest.TestCase):
                         "image": image,
                         "env": [
                             {"name": "BUCKET", "value": "bucket"},
+                            {"name": "GCP_PROJECT", "value": "llm-wiki-cloud"},
+                            {"name": "FIRESTORE_DATABASE_ID", "value": "llm-wiki-cloud-prod"},
                             {"name": "PIPELINE_JOB_NAME", "value": "olw-pipeline"},
                             {"name": "PIPELINE_JOB_LOCATION", "value": "asia-east1"},
                             {"name": "DEEPSEEK_API_KEY", "valueSource": {"secretKeyRef": {"secret": "deepseek-apikey", "version": "latest"}}},
@@ -2894,7 +2934,7 @@ class ArchitectureAuthorityTests(unittest.TestCase):
         self.assertNotIn("consume_dev_images", reconcile)
 
 
-    def test_fake_production_worker_rollback_updates_only_the_retained_image(self):
+    def test_fake_production_worker_rollback_restores_image_and_prior_runtime_environment(self):
         old_image = "asia-east1-docker.pkg.dev/llm-wiki-cloud/cloud-run-images/olw-pipeline@sha256:" + "a" * 64
         new_image = "asia-east1-docker.pkg.dev/llm-wiki-cloud/cloud-run-images/olw-pipeline@sha256:" + "b" * 64
         with tempfile.TemporaryDirectory() as directory:
@@ -2911,7 +2951,7 @@ class ArchitectureAuthorityTests(unittest.TestCase):
             }
             state.write_text(json.dumps(state_value))
             plan = root / "plan.json"
-            plan.write_text(json.dumps({"normalized": {"selected_components": ["worker"], "gcp": {"project_id": "llm-wiki-cloud", "region": "asia-east1", "artifact_registry": "asia-east1-docker.pkg.dev/llm-wiki-cloud/cloud-run-images"}, "worker": {"job_name": "worker-job", "location": "asia-east1"}}}))
+            plan.write_text(json.dumps({"normalized": {"selected_components": ["worker"], "gcp": {"project_id": "llm-wiki-cloud", "region": "asia-east1", "artifact_registry": "asia-east1-docker.pkg.dev/llm-wiki-cloud/cloud-run-images"}, "bff": {"firestore_database_id": "llm-wiki-cloud-prod"}, "worker": {"job_name": "worker-job", "location": "asia-east1"}}}))
             log = root / "provider.log"
             fake = textwrap.dedent(f"""
                 #!/usr/bin/env python3
@@ -2923,11 +2963,20 @@ class ArchitectureAuthorityTests(unittest.TestCase):
                 if args[:3] == ["run", "jobs", "describe"]:
                     print(state.read_text(), end="")
                 elif args[:3] == ["run", "jobs", "update"]:
-                    forbidden = {["--update-env-vars", "--update-secrets", "--service-account", "--args", "--clear-volumes", "--clear-volume-mounts"]!r}
+                    forbidden = {["--update-secrets", "--service-account", "--args", "--clear-volumes", "--clear-volume-mounts"]!r}
                     if any(flag in args for flag in forbidden) or "execute" in args:
                         raise SystemExit(91)
                     value = json.loads(state.read_text())
-                    value["spec"]["template"]["spec"]["template"]["spec"]["containers"][0]["image"] = args[args.index("--image") + 1]
+                    container = value["spec"]["template"]["spec"]["template"]["spec"]["containers"][0]
+                    container["image"] = args[args.index("--image") + 1]
+                    if "--update-env-vars" in args:
+                        payload = args[args.index("--update-env-vars") + 1].removeprefix("^|^")
+                        for pair in payload.split("|"):
+                            name, item = pair.split("=", 1)
+                            container.setdefault("env", []).append({{"name": name, "value": item}})
+                    if "--remove-env-vars" in args:
+                        removed = args[args.index("--remove-env-vars") + 1].split(",")
+                        container["env"] = [entry for entry in container.get("env", []) if entry["name"] not in removed]
                     state.write_text(json.dumps(value))
                 else:
                     raise SystemExit(2)
@@ -2940,106 +2989,239 @@ class ArchitectureAuthorityTests(unittest.TestCase):
             env = {**os.environ, "PATH": f"{bin_dir}:{os.environ['PATH']}", "ROOT": str(ROOT), "ENVIRONMENT": "production", "SOURCE_REF": "main", "SOURCE_SHA": "0123456789abcdef0123456789abcdef01234567", "CONFIG_PATH": "deploy/environments/production.yaml", "COMPONENTS": "worker", "GITHUB_REF": "refs/heads/main", "GITHUB_REF_NAME": "main", "PLAN_PATH": str(plan), "ROLLBACK_PATH": str(rollback), "JOURNAL_PATH": str(journal), "ROLLBACK_RESULT_PATH": str(root / "rollback-result.json"), "ARTIFACT_DIR": str(root / "artifacts")}
             frozen = subprocess.run(["bash", str(ROOT / "deploy/cd.sh"), "freeze"], env=env, text=True, capture_output=True)
             self.assertEqual(frozen.returncode, 0, frozen.stdout + frozen.stderr)
-            self.assertEqual(json.loads(rollback.read_text())["handles"]["worker"], {"image": old_image})
+            self.assertEqual(json.loads(rollback.read_text())["handles"]["worker"], {
+                "image": old_image,
+                "profile_env": {"GCP_PROJECT": {"present": False}, "FIRESTORE_DATABASE_ID": {"present": False}},
+            })
             current = json.loads(state.read_text())
-            current["spec"]["template"]["spec"]["template"]["spec"]["containers"][0]["image"] = new_image
+            container = current["spec"]["template"]["spec"]["template"]["spec"]["containers"][0]
+            container["image"] = new_image
+            container["env"] = [
+                {"name": "GCP_PROJECT", "value": "llm-wiki-cloud"},
+                {"name": "FIRESTORE_DATABASE_ID", "value": "llm-wiki-cloud-prod"},
+            ]
             state.write_text(json.dumps(current))
             journal.write_text(json.dumps({"schema": "lwc-306-mutation-journal-v1", "order": ["worker"], "components": {"worker": {"state": "accepted", "history": ["pending", "accepted"], "timestamp": "2026-09-04T00:00:00Z", "attempt": 1}}}))
             rolled_back = subprocess.run(["bash", str(ROOT / "deploy/cd.sh"), "rollback"], env=env, text=True, capture_output=True)
             self.assertEqual(rolled_back.returncode, 0, rolled_back.stdout + rolled_back.stderr)
-            self.assertEqual(json.loads(state.read_text())["spec"]["template"]["spec"]["template"]["spec"]["containers"][0]["image"], old_image)
+            rolled_back_container = json.loads(state.read_text())["spec"]["template"]["spec"]["template"]["spec"]["containers"][0]
+            self.assertEqual(rolled_back_container["image"], old_image)
+            self.assertEqual(rolled_back_container.get("env", []), [])
             self.assertEqual(json.loads((root / "rollback-result.json").read_text())["result"], "success")
             calls = log.read_text().splitlines()
             self.assertEqual(sum("run jobs update" in call for call in calls), 1)
             self.assertFalse(any("execute" in call for call in calls))
 
-    def test_dev_worker_profile_environment_is_applied_and_rollback_restores_prior_state(self):
+    def test_worker_profile_environment_is_applied_and_rollback_restores_prior_state_in_both_environments(self):
         old_image = "asia-east1-docker.pkg.dev/llm-wiki-cloud/cloud-run-images/olw-pipeline@sha256:" + "a" * 64
         new_image = "asia-east1-docker.pkg.dev/llm-wiki-cloud/cloud-run-images/olw-pipeline@sha256:" + "b" * 64
-        for prior_env in ([], [
+        prior_values = ([], [
             {"name": "GCP_PROJECT", "value": "previous-project"},
             {"name": "FIRESTORE_DATABASE_ID", "value": "previous-database"},
             {"name": "UNRELATED", "value": "preserve-me"},
-        ]):
-            with self.subTest(prior_env=prior_env), tempfile.TemporaryDirectory() as directory:
-                root = Path(directory)
-                bin_dir = root / "bin"
-                bin_dir.mkdir()
-                state = root / "job.json"
-                state.write_text(json.dumps({
-                    "apiVersion": "run.googleapis.com/v1", "kind": "Job",
-                    "metadata": {"name": "worker-job", "generation": 9, "etag": "live-etag"},
-                    "spec": {"template": {"spec": {"template": {"spec": {"containers": [{
-                        "name": "worker", "image": old_image, "env": prior_env,
-                    }]}}}}},
-                }))
-                plan = root / "plan.json"
-                plan.write_text(json.dumps({"normalized": {
-                    "selected_components": ["worker"],
-                    "gcp": {"project_id": "llm-wiki-cloud", "region": "asia-east1",
-                            "artifact_registry": "asia-east1-docker.pkg.dev/llm-wiki-cloud/cloud-run-images"},
-                    "bff": {"firestore_database_id": "llm-wiki-cloud-dev"},
-                    "worker": {"job_name": "worker-job", "location": "asia-east1"},
-                }}))
-                log = root / "provider.log"
-                fake = textwrap.dedent(f"""
-                    #!/usr/bin/env python3
-                    import json, sys
-                    from pathlib import Path
-                    state = Path({str(state)!r})
-                    args = sys.argv[1:]
-                    Path({str(log)!r}).open("a").write(" ".join(args) + "\\n")
-                    if args[:3] == ["run", "jobs", "describe"]:
-                        print(state.read_text(), end="")
-                    elif args[:3] == ["run", "jobs", "update"]:
-                        value = json.loads(state.read_text())
-                        container = value["spec"]["template"]["spec"]["template"]["spec"]["containers"][0]
-                        container["image"] = args[args.index("--image") + 1]
-                        if "--update-env-vars" in args:
-                            payload = args[args.index("--update-env-vars") + 1].removeprefix("^|^")
-                            for pair in payload.split("|"):
-                                name, item = pair.split("=", 1)
-                                container["env"] = [e for e in container.get("env", []) if e["name"] != name]
-                                container["env"].append({{"name": name, "value": item}})
-                        if "--remove-env-vars" in args:
-                            removed = args[args.index("--remove-env-vars") + 1].split(",")
-                            container["env"] = [e for e in container.get("env", []) if e["name"] not in removed]
-                        state.write_text(json.dumps(value))
-                    else:
-                        raise SystemExit(2)
-                """).lstrip()
-                fake_path = bin_dir / "gcloud"
-                fake_path.write_text(fake)
-                fake_path.chmod(0o755)
-                artifacts = root / "artifacts"
-                env = {
-                    **os.environ, "PATH": f"{bin_dir}:{os.environ['PATH']}", "ROOT": str(ROOT),
-                    "ENVIRONMENT": "development", "SOURCE_REF": "develop", "SOURCE_SHA": "c" * 40,
-                    "PLAN_PATH": str(plan), "ROLLBACK_PATH": str(root / "rollback.json"),
-                    "JOURNAL_PATH": str(root / "journal.json"), "ROLLBACK_RESULT_PATH": str(root / "rollback-result.json"),
-                    "ARTIFACT_DIR": str(artifacts), "NEW_IMAGE": new_image,
-                }
-                script = textwrap.dedent(f"""
-                    source {str(ROOT / 'deploy/components/worker.sh')!r} help
-                    revalidate_before_provider() {{ :; }}
-                    worker_build_image() {{ printf '%s\\n' "$NEW_IMAGE"; }}
-                    worker_freeze
-                    worker_mutate
-                    worker_rollback
-                """)
-                result = subprocess.run(["bash", "-c", script], env=env, text=True, capture_output=True)
-                self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
-                final = json.loads(state.read_text())
-                container = final["spec"]["template"]["spec"]["template"]["spec"]["containers"][0]
-                self.assertEqual(container["image"], old_image)
-                self.assertEqual({entry["name"]: entry["value"] for entry in container["env"]},
-                                 {entry["name"]: entry["value"] for entry in prior_env})
-                calls = log.read_text().splitlines()
-                dev_update = next(call for call in calls if call.startswith("run jobs update") and "b" * 64 in call)
-                self.assertIn("GCP_PROJECT=llm-wiki-cloud", dev_update)
-                self.assertIn("FIRESTORE_DATABASE_ID=llm-wiki-cloud-dev", dev_update)
-                self.assertNotIn("--set-env-vars", dev_update)
-                self.assertNotIn("UNRELATED=preserve-me", dev_update)
+        ])
+        for environment, database in (("development", "llm-wiki-cloud-dev"), ("production", "llm-wiki-cloud-prod")):
+            for prior_env in prior_values:
+                with self.subTest(environment=environment, prior_env=prior_env), tempfile.TemporaryDirectory() as directory:
+                    root = Path(directory)
+                    bin_dir = root / "bin"
+                    bin_dir.mkdir()
+                    state = root / "job.json"
+                    state.write_text(json.dumps({
+                        "apiVersion": "run.googleapis.com/v1", "kind": "Job",
+                        "metadata": {"name": "worker-job", "generation": 9, "etag": "live-etag"},
+                        "spec": {"template": {"spec": {"template": {"spec": {"containers": [{
+                            "name": "worker", "image": old_image, "env": prior_env,
+                        }]}}}}},
+                    }))
+                    plan = root / "plan.json"
+                    plan.write_text(json.dumps({"normalized": {
+                        "selected_components": ["worker"],
+                        "gcp": {"project_id": "llm-wiki-cloud", "region": "asia-east1",
+                                "artifact_registry": "asia-east1-docker.pkg.dev/llm-wiki-cloud/cloud-run-images"},
+                        "bff": {"firestore_database_id": database},
+                        "worker": {"job_name": "worker-job", "location": "asia-east1"},
+                    }}))
+                    log = root / "provider.log"
+                    fake = textwrap.dedent(f"""
+                        #!/usr/bin/env python3
+                        import json, sys
+                        from pathlib import Path
+                        state = Path({str(state)!r})
+                        args = sys.argv[1:]
+                        Path({str(log)!r}).open("a").write(" ".join(args) + "\\n")
+                        if args[:3] == ["run", "jobs", "describe"]:
+                            print(state.read_text(), end="")
+                        elif args[:3] == ["run", "jobs", "update"]:
+                            value = json.loads(state.read_text())
+                            container = value["spec"]["template"]["spec"]["template"]["spec"]["containers"][0]
+                            container["image"] = args[args.index("--image") + 1]
+                            if "--update-env-vars" in args:
+                                payload = args[args.index("--update-env-vars") + 1].removeprefix("^|^")
+                                for pair in payload.split("|"):
+                                    name, item = pair.split("=", 1)
+                                    container["env"] = [e for e in container.get("env", []) if e["name"] != name]
+                                    container["env"].append({{"name": name, "value": item}})
+                            if "--remove-env-vars" in args:
+                                removed = args[args.index("--remove-env-vars") + 1].split(",")
+                                container["env"] = [e for e in container.get("env", []) if e["name"] not in removed]
+                            state.write_text(json.dumps(value))
+                        else:
+                            raise SystemExit(2)
+                    """).lstrip()
+                    fake_path = bin_dir / "gcloud"
+                    fake_path.write_text(fake)
+                    fake_path.chmod(0o755)
+                    artifacts = root / "artifacts"
+                    source_ref = "develop" if environment == "development" else "main"
+                    env = {
+                        **os.environ, "PATH": f"{bin_dir}:{os.environ['PATH']}", "ROOT": str(ROOT),
+                        "ENVIRONMENT": environment, "SOURCE_REF": source_ref, "SOURCE_SHA": "c" * 40,
+                        "PLAN_PATH": str(plan), "ROLLBACK_PATH": str(root / "rollback.json"),
+                        "JOURNAL_PATH": str(root / "journal.json"), "ROLLBACK_RESULT_PATH": str(root / "rollback-result.json"),
+                        "ARTIFACT_DIR": str(artifacts), "NEW_IMAGE": new_image,
+                    }
+                    script = textwrap.dedent(f"""
+                        source {str(ROOT / 'deploy/components/worker.sh')!r} help
+                        revalidate_before_provider() {{ :; }}
+                        worker_build_image() {{ printf '%s\\n' "$NEW_IMAGE"; }}
+                        image_for() {{ printf '%s\\n' "$NEW_IMAGE"; }}
+                        worker_freeze
+                        worker_mutate
+                        worker_rollback
+                    """)
+                    result = subprocess.run(["bash", "-c", script], env=env, text=True, capture_output=True)
+                    self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
+                    final = json.loads(state.read_text())
+                    container = final["spec"]["template"]["spec"]["template"]["spec"]["containers"][0]
+                    self.assertEqual(container["image"], old_image)
+                    self.assertEqual({entry["name"]: entry["value"] for entry in container["env"]},
+                                     {entry["name"]: entry["value"] for entry in prior_env})
+                    calls = log.read_text().splitlines()
+                    runtime_update = next(call for call in calls if call.startswith("run jobs update") and "b" * 64 in call)
+                    self.assertIn("GCP_PROJECT=llm-wiki-cloud", runtime_update)
+                    self.assertIn(f"FIRESTORE_DATABASE_ID={database}", runtime_update)
+                    self.assertNotIn("--set-env-vars", runtime_update)
+                    self.assertNotIn("UNRELATED=preserve-me", runtime_update)
+
+    def test_production_export_preflight_rejects_bucket_without_ubla_before_any_mutation(self):
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            bin_dir = root / "bin"
+            bin_dir.mkdir()
+            calls = root / "gcloud.log"
+            fake = textwrap.dedent(f"""
+                #!/usr/bin/env python3
+                import json, sys
+                from pathlib import Path
+                args = sys.argv[1:]
+                Path({str(calls)!r}).open("a").write(" ".join(args) + "\\n")
+                if args[:3] == ["storage", "buckets", "describe"]:
+                    print(json.dumps({{"iamConfiguration": {{"uniformBucketLevelAccess": {{"enabled": False}}}}}}))
+                else:
+                    raise SystemExit(2)
+            """).lstrip()
+            fake_path = bin_dir / "gcloud"
+            fake_path.write_text(fake)
+            fake_path.chmod(0o755)
+            plan = root / "plan.json"
+            plan.write_text(json.dumps({"normalized": {
+                "environment": "production",
+                "selected_components": ["bff", "exportjob"],
+                "gcp": {"project_id": "llm-wiki-cloud", "region": "asia-east1"},
+                "bff": {"runtime_service_account": "lwc-bff-prod@llm-wiki-cloud.iam.gserviceaccount.com"},
+                "export_job": {
+                    "enabled": True, "job_name": "export-job", "location": "asia-east1",
+                    "bucket": "llm-wiki-data", "firestore_database_id": "llm-wiki-cloud-prod",
+                    "runtime_service_account": "lwc-export-worker-prod@llm-wiki-cloud.iam.gserviceaccount.com",
+                    "signing_service_account": "lwc-export-signer-prod@llm-wiki-cloud.iam.gserviceaccount.com",
+                },
+            }}))
+            env = {**os.environ, "PATH": f"{bin_dir}:{os.environ['PATH']}", "ROOT": str(ROOT),
+                   "ENVIRONMENT": "production", "PLAN_PATH": str(plan)}
+            script = textwrap.dedent(f"""
+                source {str(ROOT / 'deploy/components/exportjob.sh')!r} help
+                exportjob_preflight
+            """)
+            result = subprocess.run(["bash", "-c", script], env=env, text=True, capture_output=True)
+            self.assertNotEqual(result.returncode, 0)
+            self.assertIn("uniform bucket-level access", result.stderr)
+            self.assertEqual(calls.read_text().splitlines(), ["storage buckets describe gs://llm-wiki-data --project llm-wiki-cloud --format=json --quiet"])
+
+    def test_production_exportjob_freezes_verifies_and_rolls_back_immutable_image(self):
+        old_image = "asia-east1-docker.pkg.dev/llm-wiki-cloud/cloud-run-images/llm-wiki-bff-export-job@sha256:" + "a" * 64
+        new_image = "asia-east1-docker.pkg.dev/llm-wiki-cloud/cloud-run-images/llm-wiki-bff-export-job@sha256:" + "b" * 64
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            bin_dir = root / "bin"
+            bin_dir.mkdir()
+            state = root / "job.json"
+            runtime_env = [
+                {"name": "GCP_PROJECT", "value": "llm-wiki-cloud"},
+                {"name": "BUCKET", "value": "llm-wiki-data"},
+                {"name": "FIRESTORE_DATABASE_ID", "value": "llm-wiki-cloud-prod"},
+                {"name": "EXPORT_SIGNING_SERVICE_ACCOUNT", "value": "lwc-export-signer-prod@llm-wiki-cloud.iam.gserviceaccount.com"},
+            ]
+            state.write_text(json.dumps({"template": {"template": {
+                "serviceAccount": "lwc-export-worker-prod@llm-wiki-cloud.iam.gserviceaccount.com",
+                "containers": [{"name": "export", "image": old_image, "env": runtime_env}],
+            }}}))
+            fake = textwrap.dedent(f"""
+                #!/usr/bin/env python3
+                import json, sys
+                from pathlib import Path
+                state = Path({str(state)!r})
+                args = sys.argv[1:]
+                if args[:3] == ["run", "jobs", "describe"]:
+                    print(state.read_text(), end="")
+                elif args[:3] == ["run", "jobs", "update"]:
+                    value = json.loads(state.read_text())
+                    value["template"]["template"]["containers"][0]["image"] = args[args.index("--image") + 1]
+                    state.write_text(json.dumps(value))
+                else:
+                    raise SystemExit(2)
+            """).lstrip()
+            fake_path = bin_dir / "gcloud"
+            fake_path.write_text(fake)
+            fake_path.chmod(0o755)
+            plan = root / "plan.json"
+            plan.write_text(json.dumps({"normalized": {
+                "selected_components": ["bff", "exportjob"],
+                "gcp": {"project_id": "llm-wiki-cloud", "region": "asia-east1",
+                        "artifact_registry": "asia-east1-docker.pkg.dev/llm-wiki-cloud/cloud-run-images"},
+                "bff": {"runtime_service_account": "lwc-bff-prod@llm-wiki-cloud.iam.gserviceaccount.com"},
+                "export_job": {
+                    "job_name": "export-job", "location": "asia-east1", "bucket": "llm-wiki-data",
+                    "firestore_database_id": "llm-wiki-cloud-prod",
+                    "runtime_service_account": "lwc-export-worker-prod@llm-wiki-cloud.iam.gserviceaccount.com",
+                    "signing_service_account": "lwc-export-signer-prod@llm-wiki-cloud.iam.gserviceaccount.com",
+                },
+            }}))
+            env = {**os.environ, "PATH": f"{bin_dir}:{os.environ['PATH']}", "ROOT": str(ROOT),
+                   "ENVIRONMENT": "production", "SOURCE_REF": "main", "SOURCE_SHA": "c" * 40,
+                   "PLAN_PATH": str(plan), "ROLLBACK_PATH": str(root / "rollback.json"),
+                   "JOURNAL_PATH": str(root / "journal.json"),
+                   "ROLLBACK_RESULT_PATH": str(root / "rollback-result.json"),
+                   "ARTIFACT_DIR": str(root / "artifacts")}
+            frozen = subprocess.run(["bash", str(ROOT / "deploy/components/exportjob.sh"), "freeze"],
+                                    env=env, text=True, capture_output=True)
+            self.assertEqual(frozen.returncode, 0, frozen.stdout + frozen.stderr)
+            self.assertEqual(json.loads((root / "rollback.json").read_text())["handles"]["exportjob"], {"image": old_image})
+            current = json.loads(state.read_text())
+            current["template"]["template"]["containers"][0]["image"] = new_image
+            state.write_text(json.dumps(current))
+            verify = subprocess.run(
+                ["bash", "-c", 'source "$ROOT/deploy/components/exportjob.sh" help; exportjob_verify "$IMAGE"'],
+                env={**env, "IMAGE": new_image}, text=True, capture_output=True,
+            )
+            self.assertEqual(verify.returncode, 0, verify.stdout + verify.stderr)
+            rollback = subprocess.run(["bash", str(ROOT / "deploy/components/exportjob.sh"), "rollback"],
+                                      env=env, text=True, capture_output=True)
+            self.assertEqual(rollback.returncode, 0, rollback.stdout + rollback.stderr)
+            final = json.loads(state.read_text())["template"]["template"]["containers"][0]
+            self.assertEqual(final["image"], old_image)
+            self.assertEqual(final["env"], runtime_env)
+            self.assertEqual(json.loads((root / "artifacts/rollback/exportjob.json").read_text())["result"], "success")
 
 
 if __name__ == "__main__":

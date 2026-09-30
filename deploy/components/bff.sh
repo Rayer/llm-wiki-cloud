@@ -13,12 +13,10 @@ bff_preflight() {
   gcloud firestore databases describe --database "$(plan_json '.bff.firestore_database_id')" --project "$project" --format=json --quiet >/dev/null || die "BFF Firestore database is missing or unreadable"
   preflight_secret "$(plan_json '.bff.secret_references.jwt')" "$account" "$project"
   preflight_secret "$(plan_json '.bff.secret_references.deepseek_api_key')" "$account" "$project"
-  if [[ "$ENVIRONMENT" == development ]]; then
-    typesafe_secret=$(plan_json '.bff.secret_references.typesafe_jev_api_key.name')
-    typesafe_version=$(plan_json '.bff.secret_references.typesafe_jev_api_key.version')
-    preflight_secret "$typesafe_secret" "$account" "$project"
-    [[ "$(gcloud secrets versions describe "$typesafe_version" --secret "$typesafe_secret" --project "$project" --format='value(state)' --quiet)" == ENABLED ]] || die "configured TypeSafe secret version is not enabled"
-  fi
+  typesafe_secret=$(plan_json '.bff.secret_references.typesafe_jev_api_key.name')
+  typesafe_version=$(plan_json '.bff.secret_references.typesafe_jev_api_key.version')
+  preflight_secret "$typesafe_secret" "$account" "$project"
+  [[ "$(gcloud secrets versions describe "$typesafe_version" --secret "$typesafe_secret" --project "$project" --format='value(state)' --quiet)" == ENABLED ]] || die "configured TypeSafe secret version is not enabled"
   preflight_public_service "$(plan_json '.bff.service_name')" "$project" "$region"
   preflight_job_binding "$(plan_json '.bff.pipeline_job_name')" "$project" "$region" roles/run.jobsExecutorWithOverrides "$account"
 }

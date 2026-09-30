@@ -134,14 +134,13 @@ func TestWorkerPromotionWorkflowsContract(t *testing.T) {
 	}
 	worker := readWorkflow(t, "deploy/components/worker.sh")
 	for _, want := range []string{
-		`if [[ "$ENVIRONMENT" == development ]]; then`,
+		`database=$(plan_json '.bff.firestore_database_id')`,
 		`--update-env-vars "^|^GCP_PROJECT=$project|FIRESTORE_DATABASE_ID=$database"`,
 		`profile_env:$profile_env`,
 		"worker_profile_env_matches_handle",
-		`elif timeout --signal=TERM --kill-after=5s 600s gcloud run jobs update "$job" --project "$project" --region "$region" --image "$image" --quiet`,
 	} {
 		if !strings.Contains(worker, want) {
-			t.Fatalf("Worker DEV Profile environment contract missing %q", want)
+			t.Fatalf("Worker environment config and rollback contract missing %q", want)
 		}
 	}
 }

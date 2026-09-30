@@ -50,11 +50,16 @@ bff:
   allowed_origins:
     - https://wiki.rayer.idv.tw
     - https://llm-wiki-frontend.vercel.app
+  profile_runtime_audience: https://llm-wiki-bff-a5nkmux6pq-de.a.run.app
+  profile_runtime_service_account: lwc-bff-prod@llm-wiki-cloud.iam.gserviceaccount.com
   dev_jwt: false
   query_config: apps/bff/configs/query/dev/query-dev-2026-09-12.1.json
   secret_references:
     jwt: jwt-secret-prod
     deepseek_api_key: deepseek-apikey
+    typesafe_jev_api_key:
+      name: typesafe-jev-api-key-prod
+      version: "1"
 
 worker:
   job_name: olw-pipeline
@@ -67,9 +72,14 @@ worker:
   secret_references:
     deepseek_api_key: deepseek-apikey
 
-# Export job deployment is unsupported for Production.
 export_job:
-  enabled: false
+  enabled: true
+  job_name: export-job
+  runtime_service_account: lwc-export-worker-prod@llm-wiki-cloud.iam.gserviceaccount.com
+  bucket: llm-wiki-data
+  firestore_database_id: llm-wiki-cloud-prod
+  location: asia-east1
+  signing_service_account: lwc-export-signer-prod@llm-wiki-cloud.iam.gserviceaccount.com
 
 frontend:
   project_name: llm-wiki-frontend

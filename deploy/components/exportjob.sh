@@ -5,10 +5,14 @@ ROOT=${ROOT:-$(cd "$(dirname "${BASH_SOURCE[0]}")/../.." && pwd)}
 source "$ROOT/deploy/components/common.sh"
 
 exportjob_preflight() {
-  local project account job region current
-  [[ "$ENVIRONMENT" == development ]] || die "export job deployment is DEV-only"
+  local project account job region current bucket ubla
   project=$(plan_json '.gcp.project_id'); account=$(plan_json '.export_job.runtime_service_account')
   job=$(plan_json '.export_job.job_name'); region=$(plan_json '.export_job.location')
+  bucket=$(plan_json '.export_job.bucket')
+  if [[ "$ENVIRONMENT" == production ]]; then
+    ubla=$(gcloud storage buckets describe "gs://$bucket" --project "$project" --format=json --quiet) || die "Production Export bucket access mode is unreadable"
+    jq -e '.iamConfiguration.uniformBucketLevelAccess.enabled == true' <<<"$ubla" >/dev/null || die "Production Export requires uniform bucket-level access; bucket configuration is unchanged"
+  fi
   preflight_service_account "$account" "$project"
   preflight_service_account "$(plan_json '.export_job.signing_service_account')" "$project"
   preflight_job_binding "$job" "$project" "$region" roles/run.jobsExecutorWithOverrides "$(plan_json '.bff.runtime_service_account')"
@@ -34,16 +38,28 @@ exportjob_build_image() {
 
 exportjob_mutate() {
   local image job project region update_status=0
-  journal_init; revalidate_before_provider; journal_pending exportjob
-  if ! image=$(exportjob_build_image); then journal_transition exportjob unknown; die "export job image build failed"; fi
-  validate_image_value exportjob "$image"
-  mkdir -p "$ARTIFACT_DIR/images"
-  printf '%s\n' "$image" > "$ARTIFACT_DIR/images/exportjob-image-$SOURCE_SHA.txt"
-  mutation_accepted exportjob
+  journal_init
+  if [[ "$ENVIRONMENT" == production ]]; then
+    if ! image=$(image_for exportjob); then
+      journal_rejected exportjob
+      write_component_result exportjob failed '{}' immutable_image_receipt_invalid
+      return 1
+    fi
+  else
+    revalidate_before_provider; journal_pending exportjob
+    if ! image=$(exportjob_build_image); then journal_transition exportjob unknown; die "export job image build failed"; fi
+    validate_image_value exportjob "$image"
+    mkdir -p "$ARTIFACT_DIR/images"
+    printf '%s\n' "$image" > "$ARTIFACT_DIR/images/exportjob-image-$SOURCE_SHA.txt"
+    mutation_accepted exportjob
+  fi
   job=$(plan_json '.export_job.job_name'); project=$(plan_json '.gcp.project_id'); region=$(plan_json '.export_job.location')
   revalidate_before_provider
+  if ! jq -e '.components.exportjob? != null' "$JOURNAL_PATH" >/dev/null; then journal_pending exportjob; fi
+  validate_image_value exportjob "$image"
   if timeout --signal=TERM --kill-after=5s 600s gcloud run jobs update "$job" --project "$project" --region "$region" --image "$image" --quiet >/dev/null; then :; else update_status=$?; fi
   if [[ "$update_status" -ne 0 ]] && ! exportjob_image_readback "$image"; then journal_transition exportjob unknown; die "export job image mutation did not converge (status=$update_status)"; fi
+  [[ "$ENVIRONMENT" == production ]] && mutation_accepted exportjob
   readback_retry exportjob_verify "$image" || { journal_transition exportjob unknown; die "export job image/config read-back did not converge"; }
 }
 

@@ -4,32 +4,54 @@ import json
 import unittest
 
 import test_auth_config_contract as fixtures
+from test_bff_auth_config_contract import production_plan as synthetic_production_plan
 from test_auth_config_contract import production, revision
 
 
-def candidate(component='auth', enabled=True):
+def candidate(component='auth', enabled=True, plan_override=None):
     value = production(revision(enabled))
     if component == 'bff':
+        plan = plan_override or synthetic_production_plan()
         value = json.loads(json.dumps(value).replace('llm-wiki-auth', 'llm-wiki-bff').replace('lwc-auth-prod@', 'lwc-bff-prod@'))
         value['spec']['containers'][0]['env'] = [entry for entry in value['spec']['containers'][0]['env']
             if entry['name'] in ('GCP_PROJECT', 'FIRESTORE_DATABASE_ID', 'ALLOWED_ORIGINS', 'AUTH_SERVICE_URL', 'DEV_JWT', 'JWT_SECRET')]
         value['spec']['containers'][0]['env'].insert(0, {'name': 'QUERY_STAGE_CONFIG_PATH',
-            'value': fixtures.bff_plan('production')['query_config']['runtime_path']})
+            'value': plan['query_config']['runtime_path']})
+        env = value['spec']['containers'][0]['env']
+        if plan['bff'].get('profile_runtime_audience'):
+            env.extend([
+                {'name': 'PROFILE_RUNTIME_AUDIENCE', 'value': plan['bff']['profile_runtime_audience']},
+                {'name': 'PROFILE_RUNTIME_SERVICE_ACCOUNT', 'value': plan['bff']['profile_runtime_service_account']},
+                {'name': 'TYPESAFE_JEV_API_KEY', 'valueFrom': {'secretKeyRef': {
+                    'name': plan['bff']['secret_references']['typesafe_jev_api_key']['name'],
+                    'key': plan['bff']['secret_references']['typesafe_jev_api_key']['version'],
+                }}},
+            ])
+        if plan['export_job']['enabled']:
+            env.extend([
+                {'name': 'EXPORT_JOB_URL', 'value': 'https://run.googleapis.com/v2/projects/{}/locations/{}/jobs/{}:run'.format(
+                    plan['gcp']['project_id'], plan['export_job']['location'], plan['export_job']['job_name'])},
+                {'name': 'EXPORT_SIGNING_SERVICE_ACCOUNT', 'value': plan['export_job']['signing_service_account']},
+            ])
     return value
 
 
 class ProductionConfigContractTests(unittest.TestCase):
     def run_shell(self, value, component='auth', **kwargs):
+        if component == 'bff' and 'plan_override' not in kwargs:
+            kwargs['plan_override'] = synthetic_production_plan()
         return fixtures.AuthConfigContractTests.run_shell(self, value, environment='production', component=component, **kwargs)
 
     def test_disabled_export_does_not_remove_production_bff_settings(self):
-        value = candidate('bff')
+        plan = synthetic_production_plan()
+        plan['export_job']['enabled'] = False
+        value = candidate('bff', plan_override=plan)
         retained = [
             {'name': 'EXPORT_JOB_URL', 'value': 'https://legacy.example/jobs:run'},
             {'name': 'EXPORT_SIGNING_SERVICE_ACCOUNT', 'value': 'legacy-signer@example.iam.gserviceaccount.com'},
         ]
         value['spec']['containers'][0]['env'].extend(retained)
-        result, commands, _ = self.run_shell(value, 'bff', action='bff_mutate')
+        result, commands, _ = self.run_shell(value, 'bff', action='bff_mutate', plan_override=plan)
         self.assertEqual(result.returncode, 0, result.stderr)
         update = next(c for c in commands if c[:3] == ['run', 'services', 'update'])
         self.assertNotIn('--remove-env-vars', update)
@@ -157,11 +179,18 @@ class ProductionConfigContractTests(unittest.TestCase):
                 elif kind == 'revision': value['metadata']['name'] += '-wrong'
                 elif kind == 'image': value['spec']['containers'][0]['image'] += 'wrong'
                 elif kind == 'not ready': value['status']['conditions'][0]['status'] = 'False'
-                elif kind == 'literal': entries[-1] = {'name': 'JWT_SECRET', 'value': 'CANARY-NEVER-EMIT'}
+                elif kind == 'literal':
+                    target = 'JWT_SECRET' if component == 'auth' else 'TYPESAFE_JEV_API_KEY'
+                    entries[entries.index(next(entry for entry in entries if entry['name'] == target))] = {
+                        'name': target, 'value': 'CANARY-NEVER-EMIT'}
                 elif kind == 'duplicate': entries.append(entries[0])
                 elif kind == 'residual': entries.append({'name': 'GOOGLE_UNREVIEWED', 'value': 'residual'})
-                elif kind == 'secret version': entries[-1]['valueFrom']['secretKeyRef']['key'] = 'latest' if component == 'auth' else '999'
-                elif kind == 'secret environment': entries[-1]['valueFrom']['secretKeyRef']['name'] = 'google-oauth-client-dev' if component == 'auth' else 'jwt-secret-dev'
+                elif kind == 'secret version':
+                    target = 'GOOGLE_CLIENT_SECRET' if component == 'auth' else 'TYPESAFE_JEV_API_KEY'
+                    next(entry for entry in entries if entry['name'] == target)['valueFrom']['secretKeyRef']['key'] = 'latest' if component == 'auth' else '999'
+                elif kind == 'secret environment':
+                    target = 'GOOGLE_CLIENT_SECRET' if component == 'auth' else 'TYPESAFE_JEV_API_KEY'
+                    next(entry for entry in entries if entry['name'] == target)['valueFrom']['secretKeyRef']['name'] = 'google-oauth-client-dev' if component == 'auth' else 'jwt-secret-dev'
                 with self.subTest(component=component, kind=kind):
                     result, commands, artifacts = self.run_shell(value, component, action=component + '_mutate', enabled=kind != 'residual')
                     self.assertNotEqual(result.returncode, 0)
