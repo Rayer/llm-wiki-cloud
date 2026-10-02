@@ -1,7 +1,7 @@
 {
-  "base": "b60dde9fb0318fa327ba2477fb0b796658e71a42",
-  "branch": "Rayer/LWC-358-stage1-resume-8a38c7f2",
-  "content_sha256": "8eb0b114ffddc038e1132585f4e8d379d68fd4e6c90da8d75df0ee97fb2eec86",
+  "base": "c8e32bef33107bd87d7bed44369ee717c7074308",
+  "branch": "Rayer/LWC-358-vercel-project-context",
+  "content_sha256": "b90aeb7c06e4eb11b71516a3c21292546d965a736522173e8ff8258fb06a445d",
   "scope": "All changed/new implementation, test, operator, accepted-appendix and frozen-spec files; excludes this manifest, evidence report and logs to avoid self-reference.",
   "frozen_sha256": "838817cad154b0ea773c205f671362a6c9c0ad97c38ddf34f2508eb4fcc2488b",
   "files": [
@@ -142,7 +142,7 @@
     },
     {
       "path": "deploy/engine/providers.py",
-      "sha256": "b051a4b22891cba1b01a34c660856044657de19b337303fa5e665064889a52f6",
+      "sha256": "8e64dcf58ef4383d12f7b3b674d1c414faa1104cb2efe739469f9e45c8fbbcf2",
       "mode": "0o644"
     },
     {
@@ -159,6 +159,16 @@
       "path": "deploy/engine/tests/fake_provider.py",
       "sha256": "65b2e2f85be13e04e90f28ffe812c580439d9a93b83aac2b7fbd603afe044bd4",
       "mode": "0o755"
+    },
+    {
+      "path": "deploy/engine/tests/fixtures/build-utils-14.9.1-get-platform-env.js",
+      "sha256": "c0d80c47c8508a603988d25b44e72c2a4d1c61addeb38247c80ce47cd88cb253",
+      "mode": "0o644"
+    },
+    {
+      "path": "deploy/engine/tests/fixtures/vercel-59.11.7-get-linked-project.js",
+      "sha256": "ada593b57dc8b17b882909cfeb67956b819019e8acb13388aa02f254e316bb29",
+      "mode": "0o644"
     },
     {
       "path": "deploy/engine/tests/test_build_submission.py",
@@ -182,12 +192,17 @@
     },
     {
       "path": "deploy/engine/tests/test_prepare_diagnostics.py",
-      "sha256": "51f3a86f3124e92f6949bc68de4018f28a5477c2bedd74bb5503faff2165dc2a",
+      "sha256": "af4ab1042562e9c1cfff11b2c19fdbf0824a1db689bc8d64c1a5b1fcb2c16edb",
       "mode": "0o644"
     },
     {
       "path": "deploy/engine/tests/test_transport_integration.py",
       "sha256": "956d7429b7dc1f5a60e00f158a753b939a0ac3678843d75a59e92c75d5587776",
+      "mode": "0o644"
+    },
+    {
+      "path": "deploy/engine/tests/test_vercel_env_context.js",
+      "sha256": "1eb74724bdaa05eefc3a22961b475d12daf2015401c0d39b48e1e32d68cbde71",
       "mode": "0o644"
     },
     {

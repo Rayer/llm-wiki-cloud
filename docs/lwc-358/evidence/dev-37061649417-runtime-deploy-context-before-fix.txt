@@ -1,0 +1,6 @@
+test_runtime_deploy_boundary_reproduces_missing_pair_before_fix (test_prepare_diagnostics.FrontendPrepareDiagnostics.test_runtime_deploy_boundary_reproduces_missing_pair_before_fix) ... ok
+
+----------------------------------------------------------------------
+Ran 1 test in 0.059s
+
+OK

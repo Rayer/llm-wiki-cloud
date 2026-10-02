@@ -1,0 +1,57 @@
+.............................................................F..
+======================================================================
+FAIL: test_provider_prepare_passes_readback_identity_to_pinned_cli_context (test_prepare_diagnostics.FrontendPrepareDiagnostics.test_provider_prepare_passes_readback_identity_to_pinned_cli_context)
+----------------------------------------------------------------------
+Traceback (most recent call last):
+  File "/Users/rayer/orca/workspaces/llm-wiki-cloud/LWC-358-engine-r2/deploy/engine/tests/test_prepare_diagnostics.py", line 379, in test_provider_prepare_passes_readback_identity_to_pinned_cli_context
+    artifact = provider.prepare('frontend')
+  File "/Users/rayer/orca/workspaces/llm-wiki-cloud/LWC-358-engine-r2/deploy/engine/providers.py", line 318, in prepare
+    run(['vercel', 'pull', '--yes', '--environment='+target, '--scope', cfg['team_slug'],
+    ~~~^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+         '--token', os.environ['VERCEL_TOKEN']], env=env, cwd=ROOT, timeout=30,
+         ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+        stage='frontend-vercel-pull')
+        ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+  File "/Users/rayer/orca/workspaces/llm-wiki-cloud/LWC-358-engine-r2/deploy/engine/support.py", line 57, in run
+    result = subprocess.run([str(a) for a in args], cwd=cwd, env=env, input=input,
+                            capture_output=True, text=True, timeout=timeout)
+  File "/opt/homebrew/Cellar/python@3.14/3.14.6/Frameworks/Python.framework/Versions/3.14/lib/python3.14/unittest/mock.py", line 1176, in __call__
+    return self._mock_call(*args, **kwargs)
+           ~~~~~~~~~~~~~~~^^^^^^^^^^^^^^^^^
+  File "/opt/homebrew/Cellar/python@3.14/3.14.6/Frameworks/Python.framework/Versions/3.14/lib/python3.14/unittest/mock.py", line 1180, in _mock_call
+    return self._execute_mock_call(*args, **kwargs)
+           ~~~~~~~~~~~~~~~~~~~~~~~^^^^^^^^^^^^^^^^^
+  File "/opt/homebrew/Cellar/python@3.14/3.14.6/Frameworks/Python.framework/Versions/3.14/lib/python3.14/unittest/mock.py", line 1247, in _execute_mock_call
+    result = effect(*args, **kwargs)
+  File "/Users/rayer/orca/workspaces/llm-wiki-cloud/LWC-358-engine-r2/deploy/engine/tests/test_prepare_diagnostics.py", line 368, in fake_subprocess
+    self.assertEqual(checked.returncode, 0, checked.stderr)
+    ~~~~~~~~~~~~~~~~^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+AssertionError: 1 != 0 : AssertionError [ERR_ASSERTION]: Expected values to be strictly equal:
++ actual - expected
+
++ null
+- undefined
+
+    at main (/Users/rayer/orca/workspaces/llm-wiki-cloud/LWC-358-engine-r2/deploy/engine/tests/test_vercel_env_context.js:67:12)
+    at Object.<anonymous> (/Users/rayer/orca/workspaces/llm-wiki-cloud/LWC-358-engine-r2/deploy/engine/tests/test_vercel_env_context.js:108:1)
+    at Module._compile (node:internal/modules/cjs/loader:1781:14)
+    at Module._extensions..js (node:internal/modules/cjs/loader:1913:10)
+    at Module.load (node:internal/modules/cjs/loader:1505:32)
+    at Module._load (node:internal/modules/cjs/loader:1309:12)
+    at wrapModuleLoad (node:internal/modules/cjs/loader:254:19)
+    at Function.executeUserEntryPoint [as runMain] (node:internal/modules/run_main:171:5)
+    at node:internal/main/run_main_module:36:49 {
+  generatedMessage: true,
+  code: 'ERR_ASSERTION',
+  actual: null,
+  expected: undefined,
+  operator: 'strictEqual',
+  diff: 'simple'
+}
+
+
+----------------------------------------------------------------------
+Ran 64 tests in 136.592s
+
+FAILED (failures=1)
+{"allowed_next_action": "reconcile-before-replay", "attempt": "7e0e001d61f3ab5871a4f21f7312a82d6351cd6ab4ca460c01dafbad7b1c4a21", "builds": {"auth": {"build_id": "12345678-1234-4234-8234-123456789abc", "identity_verified": true, "last_observed_status": "WORKING", "location": "global", "poll_outcome": "deadline", "project_id": "llm-wiki-cloud", "status": "STATUS_UNKNOWN"}}, "candidate": null, "component": "auth", "expected": {"identity": "f48495ced3478226aa78d341416b99e70f074c33159ba80915daf347e6b0a504", "source": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"}, "failure_diagnostic": {"exit_code": null, "stage": "build-status", "timeout_class": "build-poll-deadline"}, "last_verified_checkpoint": 4, "limitations": "Job executions and persistent writes are not reversed by image rollback.", "mutation_may_have_happened": false, "observed": {"component_status": "unstarted"}, "prior": null, "reason": "build-poll-deadline", "release": "test-lwc358-poll-resume", "stage": "prepared", "status": "unknown"}

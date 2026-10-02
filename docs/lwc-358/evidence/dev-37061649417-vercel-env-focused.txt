@@ -1,0 +1,6 @@
+test_provider_prepare_passes_readback_identity_to_pinned_cli_context (test_prepare_diagnostics.FrontendPrepareDiagnostics.test_provider_prepare_passes_readback_identity_to_pinned_cli_context) ... ok
+
+----------------------------------------------------------------------
+Ran 1 test in 0.054s
+
+OK
