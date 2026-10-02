@@ -1,0 +1,10 @@
+test_explicit_wrappers_and_recovery (__main__.EngineWorkflowContract.test_explicit_wrappers_and_recovery) ... ok
+test_pinned_recovery_download_has_effective_github_token (__main__.EngineWorkflowContract.test_pinned_recovery_download_has_effective_github_token) ... ok
+test_profiles_and_real_component_operations (__main__.EngineWorkflowContract.test_profiles_and_real_component_operations) ... ok
+test_readonly_diagnostic_is_a_separate_fixed_workflow_branch (__main__.EngineWorkflowContract.test_readonly_diagnostic_is_a_separate_fixed_workflow_branch) ... ok
+test_single_runtime_authority_with_separate_dev_diagnostic_job (__main__.EngineWorkflowContract.test_single_runtime_authority_with_separate_dev_diagnostic_job) ... ok
+
+----------------------------------------------------------------------
+Ran 5 tests in 0.016s
+
+OK

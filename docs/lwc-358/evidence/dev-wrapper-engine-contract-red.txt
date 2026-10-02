@@ -1,0 +1,15 @@
+test_readonly_diagnostic_is_a_separate_fixed_workflow_branch (__main__.EngineWorkflowContract.test_readonly_diagnostic_is_a_separate_fixed_workflow_branch) ... ERROR
+
+======================================================================
+ERROR: test_readonly_diagnostic_is_a_separate_fixed_workflow_branch (__main__.EngineWorkflowContract.test_readonly_diagnostic_is_a_separate_fixed_workflow_branch)
+----------------------------------------------------------------------
+Traceback (most recent call last):
+  File "/Users/rayer/orca/workspaces/llm-wiki-cloud/LWC-358-engine-r2/scripts/test_engine_workflow.py", line 78, in test_readonly_diagnostic_is_a_separate_fixed_workflow_branch
+    dev_operation=dev_trigger['workflow_dispatch']['inputs']['operation']
+                  ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~^^^^^^^^^^^^^
+KeyError: 'operation'
+
+----------------------------------------------------------------------
+Ran 1 test in 0.001s
+
+FAILED (errors=1)

@@ -402,18 +402,29 @@ for (const [scenario, reasonCode] of [
   });
 }
 
-test('DEV workflow invokes the shared engine with fixed authority and explicit receipt inputs', async () => {
+test('DEV workflow invokes the shared engine and isolates the fixed diagnostic reusable workflow', async () => {
   const workflow = (await import('js-yaml')).load(await readFile(join(monorepoRoot, '.github/workflows/deploy-dev.yml'), 'utf8'));
   const job = workflow.jobs.release;
   assert.equal(workflow.on.push, undefined);
-  assert.deepEqual(Object.keys(workflow.on.workflow_dispatch.inputs), ['components', 'release_tag', 'artifact_id', 'dev_artifact_id']);
+  assert.deepEqual(Object.keys(workflow.on.workflow_dispatch.inputs), ['components', 'release_tag', 'artifact_id', 'dev_artifact_id', 'operation']);
+  assert.equal(workflow.on.workflow_dispatch.inputs.operation.type, 'choice');
+  assert.deepEqual(workflow.on.workflow_dispatch.inputs.operation.options, ['release', 'diagnose-auth-image']);
+  assert.equal(workflow.on.workflow_dispatch.inputs.operation.default, 'release');
   assert.equal(workflow.on.workflow_dispatch.inputs.release_tag.required, true);
-  assert.equal(job.if, "github.ref == 'refs/heads/develop'");
+  assert.equal(job.if, "github.ref == 'refs/heads/develop' && inputs.operation == 'release'");
   assert.equal(job.uses, './.github/workflows/cd.yml');
   assert.equal(job.secrets, 'inherit');
   assert.deepEqual(job.with, {
     environment: 'development', source_sha: '${{ github.sha }}',
     components: '${{ inputs.components }}', release_tag: '${{ inputs.release_tag }}',
     artifact_id: '${{ inputs.artifact_id }}', dev_artifact_id: '${{ inputs.dev_artifact_id }}',
+    operation: '${{ inputs.operation }}',
   });
+  const diagnostic = workflow.jobs['auth-image-diagnostic'];
+  assert.ok(diagnostic.if.includes("inputs.operation == 'diagnose-auth-image'"));
+  assert.ok(diagnostic.if.includes("github.ref == 'refs/heads/develop'"));
+  assert.deepEqual(diagnostic.permissions, { contents: 'read', actions: 'read', 'id-token': 'write' });
+  assert.equal(diagnostic.uses, './.github/workflows/cd-auth-image-diagnostic.yml');
+  assert.equal(diagnostic.secrets, 'inherit');
+  assert.deepEqual(diagnostic.with, { source_sha: '${{ github.sha }}' });
 });

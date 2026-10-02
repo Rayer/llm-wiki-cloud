@@ -1,0 +1,56 @@
+TAP version 13
+# Subtest: r2 registered release and recovery workflows use explicit artifact inputs
+not ok 1 - r2 registered release and recovery workflows use explicit artifact inputs
+  ---
+  duration_ms: 8.239
+  type: 'test'
+  location: '/Users/rayer/orca/workspaces/llm-wiki-cloud/LWC-358-engine-r2/apps/frontend/tests/ci-workflow-contract.test.mjs:26:1'
+  failureType: 'testCodeFailure'
+  error: |-
+    The input was expected to not match the regular expression /GH_TOKEN|VERCEL_TOKEN|VERCEL_PROJECT_ID|VERCEL_TEAM_ID|artifacts\.cjs|checkpoint|receipt/i. Input:
+    
+    '{"if":"github.ref == \'refs/heads/develop\' && inputs.source_sha == github.sha","runs-on":"ubuntu-latest","timeout-minutes":10,"environment":"Development","permissions":{"contents":"read","actions":"read","id-token":"write"},"env":{"TARGET":"development","SOURCE":"${{ inputs.source_sha }}","COMPONENTS":"auth","RELEASE_TAG":"diagnostic-36992147920","REUSE_ID":"diagnostic-no-receipt","DEV_ID":"","ARTIFACT_ID":"diagnostic-no-receipt","OPERATION":"diagnose-auth-image","WORKFLOW_REF":"${{ github.ref }}","WORKFLOW_SHA":"${{ github.sha }}"},"steps":[{"uses":"actions/checkout@11d5960a326750d5838078e36cf38b85af677262","with":{"ref":"${{ inputs.source_sha }}","fetch-depth":1,"persist-credentials":false}},{"uses":"google-github-actions/auth@7c6bc770dae815cd3e89ee6cdf493a5fab2cc093","with":{"project_id":"llm-wiki-cloud","workload_identity_provider":"${{ secrets.WIF_PROVIDER }}","service_account":"${{ secrets.WIF_SERVICE_ACCOUNT }}"}},{"uses":"google-github-actions/setup-gcloud@e427ad8a34f8676edf47cf7d7925499adf3eb74f"},{"name":"Read-only Auth image diagnostic","run":"mkdir -p \\"$RUNNER_TEMP/lwc-auth-diagnostic\\"\\npython3 deploy/engine/diagnostics.py --output \\"$RUNNER_TEMP/lwc-auth-diagnostic/result.json\\"\\n"},{"name":"Retain redacted diagnostic result","if":"always()","uses":"actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02","with":{"name":"lwc-auth-diagnostic-${{ github.run_id }}-${{ github.run_attempt }}","path":"${{ runner.temp }}/lwc-auth-diagnostic/result.json","retention-days":90,"if-no-files-found":"warn"}}]}'
+    
+  code: 'ERR_ASSERTION'
+  name: 'AssertionError'
+  expected:
+  actual: '{"if":"github.ref == \'refs/heads/develop\' && inputs.source_sha == github.sha","runs-on":"ubuntu-latest","timeout-minutes":10,"environment":"Development","permissions":{"contents":"read","actions":"read","id-token":"write"},"env":{"TARGET":"development","SOURCE":"${{ inputs.source_sha }}","COMPONENTS":"auth","RELEASE_TAG":"diagnostic-36992147920","REUSE_ID":"diagnostic-no-receipt","DEV_ID":"","ARTIFACT_ID":"diagnostic-no-receipt","OPERATION":"diagnose-auth-image","WORKFLOW_REF":"${{ github.ref }}","WORKFLOW_SHA":"${{ github.sha }}"},"steps":[{"uses":"actions/checkout@11d5960a326750d5838078e36cf38b85af677262","with":{"ref":"${{ inputs.source_sha }}","fetch-depth":1,"persist-credentials":false}},{"uses":"google-github-actions/auth@7c6bc770dae815cd3e89ee6cdf493a5fab2cc093","with":{"project_id":"llm-wiki-cloud","workload_identity_provider":"${{ secrets.WIF_PROVIDER }}","service_account":"${{ secrets.WIF_SERVICE_ACCOUNT }}"}},{"uses":"google-github-actions/setup-gcloud@e427ad8a34f8676edf47cf7d7925499adf3eb74f"},{"name":"Read-only Auth image diagnostic","run":"mkdir -p \\"$RUNNER_TEMP/lwc-auth-diagnostic\\"\\npython3 deploy/engine/diagnostics.py --output \\"$RUNNER_TEMP/lwc-auth-diagnostic/result.json\\"\\n"},{"name":"Retain redacted diagnostic result","if":"always()","uses":"actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02","with":{"name":"lwc-auth-diagnostic-${{ github.run_id }}-${{ github.run_attempt }}","path":"${{ runner.temp }}/lwc-auth-diagnostic/result.json","retention-days":90,"if-no-files-found":"warn"}}]}'
+  operator: 'doesNotMatch'
+  stack: |-
+    TestContext.<anonymous> (file:///Users/rayer/orca/workspaces/llm-wiki-cloud/LWC-358-engine-r2/apps/frontend/tests/ci-workflow-contract.test.mjs:92:10)
+    async Test.run (node:internal/test_runner/test:1054:7)
+    async startSubtestAfterBootstrap (node:internal/test_runner/harness:296:3)
+  ...
+# Subtest: DEV provisioning uses the existing auth identity and preserves hidden evidence
+ok 2 - DEV provisioning uses the existing auth identity and preserves hidden evidence
+  ---
+  duration_ms: 1.773084
+  type: 'test'
+  ...
+# Subtest: shared engine has one approval and one serialized runtime authority
+ok 3 - shared engine has one approval and one serialized runtime authority
+  ---
+  duration_ms: 0.775167
+  type: 'test'
+  ...
+# Subtest: ready and result artifacts have bounded retention and always retain failure evidence
+ok 4 - ready and result artifacts have bounded retention and always retain failure evidence
+  ---
+  duration_ms: 0.995916
+  type: 'test'
+  ...
+# Subtest: all shared run blocks are shell-valid and production consumes, not rebuilds, cloud images
+ok 5 - all shared run blocks are shell-valid and production consumes, not rebuilds, cloud images
+  ---
+  duration_ms: 8.670583
+  type: 'test'
+  ...
+1..5
+# tests 5
+# suites 0
+# pass 4
+# fail 1
+# cancelled 0
+# skipped 0
+# todo 0
+# duration_ms 92.355084

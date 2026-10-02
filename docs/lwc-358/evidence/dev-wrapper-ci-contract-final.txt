@@ -1,0 +1,40 @@
+TAP version 13
+# Subtest: r2 registered release and recovery workflows use explicit artifact inputs
+ok 1 - r2 registered release and recovery workflows use explicit artifact inputs
+  ---
+  duration_ms: 7.253708
+  type: 'test'
+  ...
+# Subtest: DEV provisioning uses the existing auth identity and preserves hidden evidence
+ok 2 - DEV provisioning uses the existing auth identity and preserves hidden evidence
+  ---
+  duration_ms: 1.478458
+  type: 'test'
+  ...
+# Subtest: shared engine has one approval and one serialized runtime authority
+ok 3 - shared engine has one approval and one serialized runtime authority
+  ---
+  duration_ms: 1.39675
+  type: 'test'
+  ...
+# Subtest: ready and result artifacts have bounded retention and always retain failure evidence
+ok 4 - ready and result artifacts have bounded retention and always retain failure evidence
+  ---
+  duration_ms: 1.746167
+  type: 'test'
+  ...
+# Subtest: all shared run blocks are shell-valid and production consumes, not rebuilds, cloud images
+ok 5 - all shared run blocks are shell-valid and production consumes, not rebuilds, cloud images
+  ---
+  duration_ms: 12.04875
+  type: 'test'
+  ...
+1..5
+# tests 5
+# suites 0
+# pass 5
+# fail 0
+# cancelled 0
+# skipped 0
+# todo 0
+# duration_ms 100.505292

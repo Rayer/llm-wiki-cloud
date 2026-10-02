@@ -1,0 +1,16 @@
+TAP version 13
+# Subtest: r2 registered release and recovery workflows use explicit artifact inputs
+ok 1 - r2 registered release and recovery workflows use explicit artifact inputs
+  ---
+  duration_ms: 5.38925
+  type: 'test'
+  ...
+1..1
+# tests 1
+# suites 0
+# pass 1
+# fail 0
+# cancelled 0
+# skipped 0
+# todo 0
+# duration_ms 78.430917

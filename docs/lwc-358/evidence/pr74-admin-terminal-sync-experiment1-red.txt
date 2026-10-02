@@ -1,0 +1,73 @@
+
+ RUN  v4.1.10 /Users/rayer/orca/workspaces/llm-wiki-cloud/LWC-358-engine-r2/apps/frontend
+
+ ❯ tests/lwc-admin-pipeline-terminal-status.test.tsx (5 tests | 5 failed) 25029ms
+     × polls the accepted execution and reports success only after SUCCEEDED 5010ms
+     × polls the accepted execution and reports FAILED with diagnostic details 5005ms
+     × shows a visible bounded error when status polling rejects 5005ms
+     × disables project actions while query-chip polling owns the action state 5003ms
+     × stops polling for query-chip regeneration after unmount 5005ms
+
+⎯⎯⎯⎯⎯⎯⎯ Failed Tests 5 ⎯⎯⎯⎯⎯⎯⎯
+
+ FAIL  tests/lwc-admin-pipeline-terminal-status.test.tsx > admin query-chip regeneration > polls the accepted execution and reports success only after SUCCEEDED
+Error: Test timed out in 5000ms.
+If this is a long-running test, pass a timeout value as the last argument or configure it globally with "testTimeout".
+ ❯ tests/lwc-admin-pipeline-terminal-status.test.tsx:36:3
+     34|   });
+     35|
+     36|   it('polls the accepted execution and reports success only after SUCC…
+       |   ^
+     37|     mocks.getAdminProjects.mockResolvedValue([{
+     38|       id: 'owner_project', name: 'Project', projectId: 'project', user…
+
+⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯[1/5]⎯
+
+ FAIL  tests/lwc-admin-pipeline-terminal-status.test.tsx > admin query-chip regeneration > polls the accepted execution and reports FAILED with diagnostic details
+Error: Test timed out in 5000ms.
+If this is a long-running test, pass a timeout value as the last argument or configure it globally with "testTimeout".
+ ❯ tests/lwc-admin-pipeline-terminal-status.test.tsx:91:3
+     89|   });
+     90|
+     91|   it('polls the accepted execution and reports FAILED with diagnostic …
+       |   ^
+     92|     mocks.getAdminProjects.mockResolvedValue([{
+     93|       id: 'owner_project', name: 'Project', projectId: 'project', user…
+
+⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯[2/5]⎯
+
+ FAIL  tests/lwc-admin-pipeline-terminal-status.test.tsx > admin query-chip regeneration > shows a visible bounded error when status polling rejects
+Error: Test timed out in 5000ms.
+If this is a long-running test, pass a timeout value as the last argument or configure it globally with "testTimeout".
+ ❯ tests/lwc-admin-pipeline-terminal-status.test.tsx:148:3
+
+
+⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯[3/5]⎯
+
+ FAIL  tests/lwc-admin-pipeline-terminal-status.test.tsx > admin query-chip regeneration > disables project actions while query-chip polling owns the action state
+Error: Test timed out in 5000ms.
+If this is a long-running test, pass a timeout value as the last argument or configure it globally with "testTimeout".
+ ❯ tests/lwc-admin-pipeline-terminal-status.test.tsx:165:3
+
+
+⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯[4/5]⎯
+
+ FAIL  tests/lwc-admin-pipeline-terminal-status.test.tsx > admin query-chip regeneration > stops polling for query-chip regeneration after unmount
+Error: Test timed out in 5000ms.
+If this is a long-running test, pass a timeout value as the last argument or configure it globally with "testTimeout".
+ ❯ tests/lwc-admin-pipeline-terminal-status.test.tsx:182:3
+    180|   });
+    181|
+    182|   it('stops polling for query-chip regeneration after unmount', async …
+       |   ^
+    183|     let cleanupTimers: (() => void) | null = null;
+    184|     try {
+
+⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯[5/5]⎯
+
+
+ Test Files  1 failed (1)
+      Tests  5 failed (5)
+   Start at  21:47:08
+   Duration  25.70s (transform 51ms, setup 0ms, import 158ms, tests 25.03s, environment 404ms)
+

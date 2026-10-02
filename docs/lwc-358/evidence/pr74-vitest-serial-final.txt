@@ -1,0 +1,15 @@
+
+> llm-wiki-frontend@0.1.0 test:component
+> NODE_ENV=test vitest run --no-file-parallelism
+
+
+ RUN  v4.1.10 /Users/rayer/orca/workspaces/llm-wiki-cloud/LWC-358-engine-r2/apps/frontend
+
+Not implemented: navigation to another Document
+Not implemented: navigation to another Document
+
+ Test Files  32 passed (32)
+      Tests  292 passed (292)
+   Start at  21:22:02
+   Duration  20.84s (transform 394ms, setup 0ms, import 2.71s, tests 7.96s, environment 7.64s)
+

@@ -1,0 +1,56 @@
+name: Fixed DEV Auth image diagnostic
+on:
+  workflow_call:
+    inputs:
+      source_sha:
+        required: true
+        type: string
+permissions:
+  contents: read
+  actions: read
+  id-token: write
+jobs:
+  auth-image-diagnostic:
+    if: github.ref == 'refs/heads/develop' && inputs.source_sha == github.sha
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    environment: Development
+    permissions:
+      contents: read
+      actions: read
+      id-token: write
+    env:
+      TARGET: development
+      SOURCE: ${{ inputs.source_sha }}
+      COMPONENTS: auth
+      RELEASE_TAG: diagnostic-36992147920
+      REUSE_ID: diagnostic-no-receipt
+      DEV_ID: ''
+      ARTIFACT_ID: diagnostic-no-receipt
+      OPERATION: diagnose-auth-image
+      WORKFLOW_REF: ${{ github.ref }}
+      WORKFLOW_SHA: ${{ github.sha }}
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262
+        with:
+          ref: ${{ inputs.source_sha }}
+          fetch-depth: 1
+          persist-credentials: false
+      - uses: google-github-actions/auth@7c6bc770dae815cd3e89ee6cdf493a5fab2cc093
+        with:
+          project_id: llm-wiki-cloud
+          workload_identity_provider: ${{ secrets.WIF_PROVIDER }}
+          service_account: ${{ secrets.WIF_SERVICE_ACCOUNT }}
+      - uses: google-github-actions/setup-gcloud@e427ad8a34f8676edf47cf7d7925499adf3eb74f
+      - name: Read-only Auth image diagnostic
+        run: |
+          mkdir -p "$RUNNER_TEMP/lwc-auth-diagnostic"
+          python3 deploy/engine/diagnostics.py --output "$RUNNER_TEMP/lwc-auth-diagnostic/result.json"
+      - name: Retain redacted diagnostic result
+        if: always()
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02
+        with:
+          name: lwc-auth-diagnostic-${{ github.run_id }}-${{ github.run_attempt }}
+          path: ${{ runner.temp }}/lwc-auth-diagnostic/result.json
+          retention-days: 90
+          if-no-files-found: warn

@@ -1,0 +1,17 @@
+test_diagnostic_callers_obey_readonly_reusable_workflow_permission_ceiling (__main__.EngineWorkflowContract.test_diagnostic_callers_obey_readonly_reusable_workflow_permission_ceiling) ... FAIL
+
+======================================================================
+FAIL: test_diagnostic_callers_obey_readonly_reusable_workflow_permission_ceiling (__main__.EngineWorkflowContract.test_diagnostic_callers_obey_readonly_reusable_workflow_permission_ceiling)
+----------------------------------------------------------------------
+Traceback (most recent call last):
+  File "/Users/rayer/orca/workspaces/llm-wiki-cloud/LWC-358-engine-r2/scripts/test_engine_workflow.py", line 29, in test_diagnostic_callers_obey_readonly_reusable_workflow_permission_ceiling
+    self.assertLessEqual(rank[level],rank[ceiling],
+    ~~~~~~~~~~~~~~~~~~~~^^^^^^^^^^^^^^^^^^^^^^^^^^^
+                         f'{file} grants {ceiling} but called {called_path} {scope_name} requests {level} for {permission}')
+                         ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+AssertionError: 2 not less than or equal to 1 : deploy-dev.yml grants read but called ./.github/workflows/cd.yml release requests write for contents
+
+----------------------------------------------------------------------
+Ran 1 test in 0.005s
+
+FAILED (failures=1)

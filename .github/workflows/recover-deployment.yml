@@ -57,12 +57,7 @@ jobs:
       contents: read
       actions: read
       id-token: write
-    uses: ./.github/workflows/cd.yml
+    uses: ./.github/workflows/cd-auth-image-diagnostic.yml
     secrets: inherit
     with:
-      environment: ${{ inputs.environment }}
       source_sha: ${{ inputs.source_sha }}
-      components: ${{ inputs.components }}
-      release_tag: ${{ inputs.release_tag }}
-      operation: ${{ inputs.operation }}
-      artifact_id: ${{ inputs.artifact_id }}

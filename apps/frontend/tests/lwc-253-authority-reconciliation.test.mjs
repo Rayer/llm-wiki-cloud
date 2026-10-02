@@ -766,11 +766,10 @@ test('foreign-project exact-SHA candidate cannot suppress CREATE_NOT_ALLOWED', a
 
 test('DEV authority uses the protected shared engine and durable selected stage barrier', async () => {
   const source = parseYaml(await readFile(join(monorepoRoot, '.github/workflows/cd.yml'), 'utf8'));
-  assert.deepEqual(Object.keys(source.jobs).sort(), ['auth-image-diagnostic', 'release']);
+  assert.deepEqual(Object.keys(source.jobs), ['release']);
   assert.equal(source.concurrency.group, 'lwc-engine-${{ inputs.environment }}');
   assert.equal(source.concurrency['cancel-in-progress'], false);
   const job = source.jobs.release;
-  const diagnostic = source.jobs['auth-image-diagnostic'];
   assert.equal(job.if, "inputs.operation != 'diagnose-auth-image'");
   assert.equal(job.environment, "${{ inputs.environment == 'production' && 'Production' || 'Development' }}");
   assert.equal(job.permissions['id-token'], 'write');
@@ -791,12 +790,16 @@ test('DEV authority uses the protected shared engine and durable selected stage 
   assert.equal(job.steps[ready].with['if-no-files-found'], 'error');
   assert.equal(job.steps[ready].with.path, '${{ runner.temp }}/release');
   assert.equal(job.steps.find(step => step.uses?.startsWith('actions/checkout@')).with.ref, '${{ inputs.source_sha }}');
-  assert.match(diagnostic.if, /inputs\.operation == 'diagnose-auth-image'/);
+  const diagnosticWorkflow = parseYaml(await readFile(join(monorepoRoot, '.github/workflows/cd-auth-image-diagnostic.yml'), 'utf8'));
+  assert.deepEqual(Object.keys(diagnosticWorkflow.jobs), ['auth-image-diagnostic']);
+  const diagnostic = diagnosticWorkflow.jobs['auth-image-diagnostic'];
+  assert.equal(diagnostic.if, "github.ref == 'refs/heads/develop' && inputs.source_sha == github.sha");
   assert.equal(diagnostic.environment, 'Development');
   assert.deepEqual(diagnostic.permissions, { contents: 'read', actions: 'read', 'id-token': 'write' });
   assert.equal(diagnostic.steps.some(step => step.uses === './.github/actions/deployment-engine'), false);
   assert.equal(diagnostic.steps.some(step => step.run?.includes('artifacts.cjs download')), false);
-  assert.doesNotMatch(JSON.stringify(diagnostic), /GH_TOKEN|VERCEL_TOKEN|VERCEL_PROJECT_ID|VERCEL_TEAM_ID/);
+  assert.doesNotMatch(JSON.stringify(diagnostic), /GH_TOKEN|VERCEL_TOKEN|VERCEL_PROJECT_ID|VERCEL_TEAM_ID|checkpoint/i);
+  assert.doesNotMatch(JSON.stringify(diagnostic.steps), /artifacts\.cjs|checkpoint|receipt/i);
 });
 
 test('sourcing the normal helper is library-only and preserves direct evidence naming', async () => {

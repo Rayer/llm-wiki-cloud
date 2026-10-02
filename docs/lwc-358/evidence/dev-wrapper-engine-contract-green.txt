@@ -1,0 +1,6 @@
+test_readonly_diagnostic_is_a_separate_fixed_workflow_branch (__main__.EngineWorkflowContract.test_readonly_diagnostic_is_a_separate_fixed_workflow_branch) ... ok
+
+----------------------------------------------------------------------
+Ran 1 test in 0.007s
+
+OK
