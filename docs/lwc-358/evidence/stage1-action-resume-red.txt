@@ -1,0 +1,67 @@
+test_real_action_cross_plan_unresolved_handle_fails_closed (test_build_submission.AsyncBuildSubmission.test_real_action_cross_plan_unresolved_handle_fails_closed) ... FAIL
+test_real_action_download_blocks_idless_unknown_without_submit (test_build_submission.AsyncBuildSubmission.test_real_action_download_blocks_idless_unknown_without_submit) ... FAIL
+test_real_action_download_fresh_release_resumes_same_build_id (test_build_submission.AsyncBuildSubmission.test_real_action_download_fresh_release_resumes_same_build_id) ... 
+  test_real_action_download_fresh_release_resumes_same_build_id (test_build_submission.AsyncBuildSubmission.test_real_action_download_fresh_release_resumes_same_build_id) (first_status='WORKING') ... FAIL
+  test_real_action_download_fresh_release_resumes_same_build_id (test_build_submission.AsyncBuildSubmission.test_real_action_download_fresh_release_resumes_same_build_id) (first_status='STATUS_UNKNOWN') ... FAIL
+test_real_action_download_success_digest_failure_only_retries_digest (test_build_submission.AsyncBuildSubmission.test_real_action_download_success_digest_failure_only_retries_digest) ... FAIL
+test_real_action_terminal_failure_explicit_retry_and_receipt_expansion (test_build_submission.AsyncBuildSubmission.test_real_action_terminal_failure_explicit_retry_and_receipt_expansion) ... ok
+
+======================================================================
+FAIL: test_real_action_cross_plan_unresolved_handle_fails_closed (test_build_submission.AsyncBuildSubmission.test_real_action_cross_plan_unresolved_handle_fails_closed)
+----------------------------------------------------------------------
+Traceback (most recent call last):
+  File "/Users/rayer/orca/workspaces/llm-wiki-cloud/LWC-358-engine-r2/deploy/engine/tests/test_build_submission.py", line 333, in test_real_action_cross_plan_unresolved_handle_fails_closed
+    self.assertEqual(result.returncode,1)
+    ~~~~~~~~~~~~~~~~^^^^^^^^^^^^^^^^^^^^^
+AssertionError: 0 != 1
+
+======================================================================
+FAIL: test_real_action_download_blocks_idless_unknown_without_submit (test_build_submission.AsyncBuildSubmission.test_real_action_download_blocks_idless_unknown_without_submit)
+----------------------------------------------------------------------
+Traceback (most recent call last):
+  File "/Users/rayer/orca/workspaces/llm-wiki-cloud/LWC-358-engine-r2/deploy/engine/tests/test_build_submission.py", line 306, in test_real_action_download_blocks_idless_unknown_without_submit
+    self.assertEqual(resumed.returncode,1)
+    ~~~~~~~~~~~~~~~~^^^^^^^^^^^^^^^^^^^^^^
+AssertionError: 0 != 1
+
+======================================================================
+FAIL: test_real_action_download_fresh_release_resumes_same_build_id (test_build_submission.AsyncBuildSubmission.test_real_action_download_fresh_release_resumes_same_build_id) (first_status='WORKING')
+----------------------------------------------------------------------
+Traceback (most recent call last):
+  File "/Users/rayer/orca/workspaces/llm-wiki-cloud/LWC-358-engine-r2/deploy/engine/tests/test_build_submission.py", line 291, in test_real_action_download_fresh_release_resumes_same_build_id
+    self.assertEqual(result['builds']['auth']['build_id'],BUILD_IDS[0])
+    ~~~~~~~~~~~~~~~~^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+AssertionError: 'abcdefab-cdef-4abc-8def-abcdefabcdef' != '12345678-1234-4234-8234-123456789abc'
+- abcdefab-cdef-4abc-8def-abcdefabcdef
++ 12345678-1234-4234-8234-123456789abc
+
+
+======================================================================
+FAIL: test_real_action_download_fresh_release_resumes_same_build_id (test_build_submission.AsyncBuildSubmission.test_real_action_download_fresh_release_resumes_same_build_id) (first_status='STATUS_UNKNOWN')
+----------------------------------------------------------------------
+Traceback (most recent call last):
+  File "/Users/rayer/orca/workspaces/llm-wiki-cloud/LWC-358-engine-r2/deploy/engine/tests/test_build_submission.py", line 291, in test_real_action_download_fresh_release_resumes_same_build_id
+    self.assertEqual(result['builds']['auth']['build_id'],BUILD_IDS[0])
+    ~~~~~~~~~~~~~~~~^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+AssertionError: 'abcdefab-cdef-4abc-8def-abcdefabcdef' != '12345678-1234-4234-8234-123456789abc'
+- abcdefab-cdef-4abc-8def-abcdefabcdef
++ 12345678-1234-4234-8234-123456789abc
+
+
+======================================================================
+FAIL: test_real_action_download_success_digest_failure_only_retries_digest (test_build_submission.AsyncBuildSubmission.test_real_action_download_success_digest_failure_only_retries_digest)
+----------------------------------------------------------------------
+Traceback (most recent call last):
+  File "/Users/rayer/orca/workspaces/llm-wiki-cloud/LWC-358-engine-r2/deploy/engine/tests/test_build_submission.py", line 322, in test_real_action_download_success_digest_failure_only_retries_digest
+    self.assertEqual(result['builds']['auth']['build_id'],BUILD_IDS[0])
+    ~~~~~~~~~~~~~~~~^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+AssertionError: 'abcdefab-cdef-4abc-8def-abcdefabcdef' != '12345678-1234-4234-8234-123456789abc'
+- abcdefab-cdef-4abc-8def-abcdefabcdef
++ 12345678-1234-4234-8234-123456789abc
+
+
+----------------------------------------------------------------------
+Ran 5 tests in 96.189s
+
+FAILED (failures=5)
+{"allowed_next_action": "inspect-or-explicit-recovery", "attempt": "407e8bb7f0d6cb00f578f0c2d344dbd8cdef1939b7999f38ad850ba5c0d8447a", "builds": {"auth": {"build_id": "12345678-1234-4234-8234-123456789abc", "identity_verified": true, "last_observed_status": "SUCCESS", "location": "global", "poll_outcome": "succeeded", "project_id": "llm-wiki-cloud", "status": "SUCCESS"}}, "candidate": null, "component": "auth", "expected": {"identity": "199d1ada35fad2290b498dcacc5c45294ccd93f5a419d034bc530221ff2a3945", "source": "8ee9bed045c79dc72ad2d7d9ff551359e15b54c5"}, "last_verified_checkpoint": 5, "limitations": "Job executions and persistent writes are not reversed by image rollback.", "mutation_may_have_happened": false, "observed": {"component_status": "unstarted"}, "prior": null, "reason": "completed", "release": "test-lwc358-action-receipt-expansion", "stage": "ready", "status": "ready"}

@@ -33,15 +33,60 @@ bff_freeze() {
   freeze_store bff "$(jq -n --arg image "$image" '{image:$image}')"
 }
 
-bff_build_image() {
-  local image digest
+bff_record_build_failure() {
+  local stage="$1" exit_code="$2" detail="${3:-}" lower permission=0 marker
+  lower=$(printf '%s' "$detail" | tr '[:upper:]' '[:lower:]')
+  for marker in permission_denied "permission denied" forbidden unauthorized "returned error: 403" "returned error: 401"; do
+    if [[ "$lower" == *"$marker"* ]]; then permission=1; break; fi
+  done
+  printf 'LWC_ENGINE_FAILURE stage=%s exit_code=%s permission=%s\n' "$stage" "$exit_code" "$permission" >&2
+}
+
+bff_build_submit() {
+  local image project response detail exit_code stderr_file
+  project=$(plan_json '.gcp.project_id')
   image="$(plan_json '.gcp.artifact_registry')/llm-wiki-bff:$SOURCE_SHA"
-  timeout --signal=TERM --kill-after=5s 600s gcloud builds submit "$ROOT/apps/bff" --project "$(plan_json '.gcp.project_id')" --config "$ROOT/apps/bff/cloudbuild-bff.yaml" \
-    --substitutions="_IMAGE=$image,_APP_VERSION=$(cd "$BFF_DIR" && go run ./cmd/versioncheck VERSION),_GIT_SHA=$SOURCE_SHA,_GIT_BRANCH=$SOURCE_REF,_GIT_TAG=" --quiet --suppress-logs >/dev/null
-  digest=$(gcloud artifacts docker images describe "$image" --project "$(plan_json '.gcp.project_id')" --format='value(image_summary.digest)' --quiet)
-  [[ "$digest" =~ ^sha256:[0-9a-f]{64}$ ]] || die "bff image digest is invalid"
+  stderr_file=$(mktemp "${TMPDIR:-/tmp}/lwc-bff-submit.XXXXXX") || {
+    bff_record_build_failure build-submit 1 "temporary diagnostics file unavailable"
+    return 1
+  }
+  if response=$(timeout --signal=TERM --kill-after=5s 600s gcloud builds submit "$ROOT/apps/bff" --project "$project" --region=global --config "$ROOT/apps/bff/cloudbuild-bff.yaml" \
+    --substitutions="_IMAGE=$image,_APP_VERSION=$(cd "$BFF_DIR" && go run ./cmd/versioncheck VERSION),_GIT_SHA=$SOURCE_SHA,_GIT_BRANCH=$SOURCE_REF,_GIT_TAG=" --async --format=json --quiet 2>"$stderr_file"); then
+    rm -f "$stderr_file"
+    printf '%s\n' "$response"
+  else
+    exit_code=$?
+    detail=$(cat "$stderr_file" 2>/dev/null || true)
+    rm -f "$stderr_file"
+    bff_record_build_failure build-submit "$exit_code" "$detail"
+    return "$exit_code"
+  fi
+}
+
+bff_resolve_build_image() {
+  local image digest detail exit_code stderr_file
+  image="$(plan_json '.gcp.artifact_registry')/llm-wiki-bff:$SOURCE_SHA"
+  stderr_file=$(mktemp "${TMPDIR:-/tmp}/lwc-bff-digest.XXXXXX") || {
+    bff_record_build_failure tag-digest-resolve 1 "temporary diagnostics file unavailable"
+    return 1
+  }
+  if digest=$(gcloud artifacts docker images describe "$image" --project "$(plan_json '.gcp.project_id')" --format='value(image_summary.digest)' --quiet 2>"$stderr_file"); then
+    rm -f "$stderr_file"
+  else
+    exit_code=$?
+    detail=$(cat "$stderr_file" 2>/dev/null || true)
+    rm -f "$stderr_file"
+    bff_record_build_failure tag-digest-resolve "$exit_code" "$detail"
+    return "$exit_code"
+  fi
+  if [[ ! "$digest" =~ ^sha256:[0-9a-f]{64}$ ]]; then
+    bff_record_build_failure digest-validate 0 ""
+    die "bff image digest is invalid"
+  fi
   printf '%s@%s\n' "${image%:*}" "$digest"
 }
+
+bff_build_image() { die "BFF builds must be prepared by the deployment engine"; }
 
 bff_mutate() {
   local image service project region candidate_revision='' deploy_status=0 traffic_status=0
@@ -167,12 +212,14 @@ bff_rollback() {
 }
 
 case "${1:-}" in
+  submit) bff_build_submit ;;
+  resolve) bff_resolve_build_image ;;
   build) bff_build_image ;;
-  help) printf 'bff component: preflight|freeze|mutate|reconcile|rollback\n' ;;
+  help) printf 'bff component: submit|resolve|preflight|freeze|mutate|reconcile|rollback\n' ;;
   preflight) bff_preflight ;;
   freeze) bff_freeze ;;
   mutate) bff_mutate ;;
   reconcile) bff_reconcile ;;
   rollback) bff_rollback ;;
-  *) die "usage: bff.sh help|preflight|freeze|mutate|reconcile|rollback" ;;
+  *) die "usage: bff.sh help|submit|resolve|preflight|freeze|mutate|reconcile|rollback" ;;
 esac

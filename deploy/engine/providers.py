@@ -15,11 +15,53 @@ sys.path.insert(0, str(ROOT / 'deploy/components'))
 import auth_config
 import frontend_build_config
 
+CLOUD_BUILD_LOCATION = 'global'
+BUILD_POLL_INTERVAL_SECONDS = 5
+BUILD_POLL_TIMEOUT_SECONDS = 600
+BUILD_POLL_MAX_READS = 120
+BUILD_READ_TIMEOUT_SECONDS = 30
+BUILD_ID_RE = re.compile(r'^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$', re.I)
+BUILD_NAME_RE = re.compile(r'^projects/([^/]+)/locations/([^/]+)/builds/([^/]+)$')
+GCP_PROJECT_NUMBER_RE = re.compile(r'^[1-9][0-9]{5,19}$')
+BUILD_STATUSES = {'PENDING', 'QUEUED', 'WORKING', 'SUCCESS', 'FAILURE',
+                  'INTERNAL_ERROR', 'TIMEOUT', 'CANCELLED', 'EXPIRED', 'STATUS_UNKNOWN'}
+BUILD_TERMINAL_FAILURES = {'FAILURE', 'INTERNAL_ERROR', 'TIMEOUT', 'CANCELLED', 'EXPIRED'}
+
 
 class Providers:
     def __init__(self, plan, directory):
         self.plan, self.p, self.directory = plan, plan['normalized'], Path(directory)
         self.profiles = read(ROOT / 'deploy/engine/profiles.json')
+        self._gcp_project_number = None
+
+    def gcp_project_number(self):
+        """Resolve the authoritative number for this configured project ID."""
+        if self._gcp_project_number is not None:
+            return self._gcp_project_number
+        project_id = self.p['gcp']['project_id']
+        try:
+            output = run(['gcloud', 'projects', 'describe', project_id,
+                          '--format=json', '--quiet'], timeout=30,
+                         stage='build-project-identity')
+            identity = json.loads(output)
+        except Breakpoint as exc:
+            reason = 'permission-denied' if exc.reason == 'permission-denied' else 'gcp-project-identity-unavailable'
+            action = 'restore-existing-principal-permission' if reason == 'permission-denied' else 'verify-project-identity'
+            raise Breakpoint(reason, exc.status, False, action, stage='build-project-identity',
+                             exit_code=exc.exit_code, timeout_class=exc.timeout_class) from None
+        except (TypeError, ValueError):
+            raise Breakpoint('gcp-project-identity-unreadable', 'failed', False,
+                             'verify-project-identity', stage='build-project-identity') from None
+        project_number = identity.get('projectNumber') if isinstance(identity, dict) else None
+        if isinstance(project_number, int):
+            project_number = str(project_number)
+        if (not isinstance(identity, dict) or identity.get('projectId') != project_id or
+                not isinstance(project_number, str) or
+                not GCP_PROJECT_NUMBER_RE.fullmatch(project_number)):
+            raise Breakpoint('gcp-project-identity-mismatch', 'failed', False,
+                             'verify-project-identity', stage='build-project-identity', exit_code=0)
+        self._gcp_project_number = project_number
+        return project_number
 
     def cloud(self, c, *args, mutation=False):
         key = 'export_job' if c == 'exportjob' else c
@@ -92,16 +134,176 @@ class Providers:
         if actual != image.split('@')[1]:
             raise Breakpoint('artifact-unusable', stage='digest-validate', exit_code=0)
 
+    def _build_record(self, c, raw=None, *, status='SUBMITTED', poll_outcome='accepted',
+                      expected_id=None, require_name=True):
+        project = self.p['gcp']['project_id']
+        record = {'project_id': project, 'location': CLOUD_BUILD_LOCATION,
+                  'build_id': None, 'identity_verified': False, 'status': status,
+                  'last_observed_status': None, 'poll_outcome': poll_outcome}
+        if not isinstance(raw, dict):
+            return record, 'build-identity-invalid'
+
+        build_id = raw.get('id')
+        safe_id = build_id.lower() if isinstance(build_id, str) and BUILD_ID_RE.fullmatch(build_id) else None
+        record['build_id'] = safe_id
+        response_project = raw.get('projectId')
+        if isinstance(response_project, str) and re.fullmatch(r'[A-Za-z0-9][A-Za-z0-9.-]{0,99}', response_project):
+            if response_project != project:
+                record['reported_project_id'] = response_project
+
+        resource_name = raw.get('name')
+        name_parts = BUILD_NAME_RE.fullmatch(resource_name) if isinstance(resource_name, str) else None
+        name_project, name_location, name_id = name_parts.groups() if name_parts else (None, None, None)
+        name_project_matches = False
+        if name_project == project:
+            name_project_matches = True
+        elif name_project and GCP_PROJECT_NUMBER_RE.fullmatch(name_project):
+            name_project_matches = name_project == self.gcp_project_number()
+        if (name_project and not name_project_matches and
+                re.fullmatch(r'[A-Za-z0-9][A-Za-z0-9.-]{0,99}', name_project)):
+            record['reported_project_id'] = name_project
+        location = raw.get('location')
+        observed_location = location if isinstance(location, str) else name_location
+        if observed_location and re.fullmatch(r'[a-z][a-z0-9-]{0,62}', observed_location) and observed_location != CLOUD_BUILD_LOCATION:
+            record['reported_location'] = observed_location
+        if safe_id is None and name_id and BUILD_ID_RE.fullmatch(name_id):
+            record['build_id'] = name_id.lower()
+
+        observed_status = raw.get('status')
+        if isinstance(observed_status, str) and observed_status in BUILD_STATUSES:
+            record['last_observed_status'] = observed_status
+
+        valid = (safe_id is not None and response_project == project and
+                 (not require_name or name_parts is not None) and
+                 (name_parts is None or (name_project_matches and name_location == CLOUD_BUILD_LOCATION and
+                                         BUILD_ID_RE.fullmatch(name_id) and name_id.lower() == safe_id)) and
+                 (location is None or location == CLOUD_BUILD_LOCATION) and
+                 (expected_id is None or safe_id == expected_id))
+        if valid:
+            record['identity_verified'] = True
+            return record, None
+        if safe_id is None and record['build_id'] is None:
+            reason = 'build-identity-invalid'
+            record['status'] = 'IDENTITY_INVALID'
+            record['poll_outcome'] = 'identity_invalid'
+        else:
+            reason = 'build-identity-mismatch'
+            record['status'] = 'IDENTITY_MISMATCH'
+            record['poll_outcome'] = 'identity_mismatch'
+        return record, reason
+
+    def submit_build(self, c):
+        # Resolve project ID -> number before creating a build. Cloud Build's
+        # resource name may use either identifier; the numeric alias is accepted
+        # only after this explicit, read-only identity check.
+        self.gcp_project_number()
+        env = dict(os.environ, PLAN_PATH=str(self.directory / 'plan.json'), ROOT=str(ROOT),
+                   SOURCE_SHA=self.plan['source'], SOURCE_REF=self.plan['branch'],
+                   GITHUB_RUN_ID=os.environ.get('GITHUB_RUN_ID', '1'),
+                   GITHUB_RUN_ATTEMPT=os.environ.get('GITHUB_RUN_ATTEMPT', '1'))
+        output = run(['bash', ROOT / 'deploy/components' / (c + '.sh'), 'submit'], env=env,
+                     timeout=630, mutation=True, unknown_on_error=True, stage='auth-build')
+        try:
+            raw = json.loads(output)
+        except (TypeError, ValueError):
+            record, _ = self._build_record(c)
+            record.update(status='SUBMIT_UNKNOWN', poll_outcome='submit_unknown')
+            raise Breakpoint('build-response-invalid', 'unknown', False, 'reconcile-before-replay',
+                             stage='build-submit', build=record) from None
+        record, reason = self._build_record(c, raw, status='SUBMITTED', poll_outcome='accepted')
+        if reason:
+            raise Breakpoint(reason, 'unknown', False, 'reconcile-before-replay',
+                             stage='build-submit', build=record)
+        return record
+
+    def poll_build(self, c, build):
+        require(build.get('identity_verified') is True and
+                isinstance(build.get('build_id'), str) and BUILD_ID_RE.fullmatch(build['build_id']) and
+                build.get('project_id') == self.p['gcp']['project_id'] and
+                build.get('location') == CLOUD_BUILD_LOCATION, 'build-identity-unverified')
+        try:
+            self.gcp_project_number()
+        except Breakpoint as exc:
+            build.update(status='STATUS_UNKNOWN', poll_outcome='project_identity_unavailable')
+            action = ('restore-existing-principal-permission' if exc.reason == 'permission-denied'
+                      else 'reconcile-before-replay')
+            raise Breakpoint(exc.reason, 'unknown', False, action,
+                             stage='build-project-identity', exit_code=exc.exit_code,
+                             timeout_class=exc.timeout_class, build=build) from None
+        deadline = time.monotonic() + BUILD_POLL_TIMEOUT_SECONDS
+        for _ in range(BUILD_POLL_MAX_READS):
+            remaining = deadline - time.monotonic()
+            if remaining <= 0:
+                break
+            try:
+                output = run(['gcloud', 'builds', 'describe', build['build_id'],
+                              '--project', build['project_id'], '--region', build['location'],
+                              '--format=json', '--quiet'], timeout=min(BUILD_READ_TIMEOUT_SECONDS, remaining),
+                             stage='build-status', unknown_on_error=True)
+            except Breakpoint as exc:
+                build.update(status='STATUS_UNKNOWN', poll_outcome='status_unavailable')
+                raise Breakpoint(exc.reason, 'unknown', False, 'reconcile-before-replay',
+                                 stage='build-status', exit_code=exc.exit_code,
+                                 timeout_class=exc.timeout_class, build=build) from None
+            try:
+                raw = json.loads(output)
+            except (TypeError, ValueError):
+                build.update(status='STATUS_UNKNOWN', poll_outcome='malformed_status')
+                raise Breakpoint('build-status-unreadable', 'unknown', False,
+                                 'reconcile-before-replay', stage='build-status', build=build) from None
+            observed, reason = self._build_record(c, raw, expected_id=build['build_id'], require_name=True)
+            if reason:
+                for key in ('reported_project_id', 'reported_location'):
+                    if key in observed:
+                        build[key] = observed[key]
+                build.update(identity_verified=False, status='STATUS_UNKNOWN', poll_outcome='identity_mismatch')
+                raise Breakpoint(reason, 'unknown', False, 'reconcile-before-replay',
+                                 stage='build-status', build=build)
+            status = raw.get('status')
+            if status not in BUILD_STATUSES:
+                status = 'STATUS_UNKNOWN'
+            build['status'] = status
+            build['last_observed_status'] = status
+            if status == 'SUCCESS':
+                build['poll_outcome'] = 'succeeded'
+                return status
+            if status in BUILD_TERMINAL_FAILURES:
+                build['poll_outcome'] = 'terminal_failure'
+                raise Breakpoint('build-failed', 'failed', False, 'inspect-build-logs-by-id',
+                                 stage='build-status', build=build)
+            if status == 'STATUS_UNKNOWN':
+                build['poll_outcome'] = 'status_unknown'
+                raise Breakpoint('build-status-unknown', 'unknown', False,
+                                 'reconcile-before-replay', stage='build-status', build=build)
+            build['poll_outcome'] = 'pending'
+            remaining = deadline - time.monotonic()
+            if remaining > 0:
+                time.sleep(min(BUILD_POLL_INTERVAL_SECONDS, remaining))
+        build.update(status='STATUS_UNKNOWN', poll_outcome='deadline')
+        raise Breakpoint('build-poll-deadline', 'unknown', False, 'reconcile-before-replay',
+                         stage='build-status', timeout_class='build-poll-deadline', build=build)
+
+    def resolve_build_image(self, c):
+        env = dict(os.environ, PLAN_PATH=str(self.directory / 'plan.json'), ROOT=str(ROOT),
+                   SOURCE_SHA=self.plan['source'], SOURCE_REF=self.plan['branch'],
+                   GITHUB_RUN_ID=os.environ.get('GITHUB_RUN_ID', '1'),
+                   GITHUB_RUN_ATTEMPT=os.environ.get('GITHUB_RUN_ATTEMPT', '1'))
+        image = run(['bash', ROOT / 'deploy/components' / (c + '.sh'), 'resolve'], env=env,
+                    timeout=60, stage='auth-build')
+        self.valid_image(c, image)
+        return {'image': image}
+
     def prepare(self, c):
-        if c != 'frontend':
+        if c in ('worker', 'exportjob'):
             env = dict(os.environ, PLAN_PATH=str(self.directory / 'plan.json'), ROOT=str(ROOT),
                        SOURCE_SHA=self.plan['source'], SOURCE_REF=self.plan['branch'],
                        GITHUB_RUN_ID=os.environ.get('GITHUB_RUN_ID', '1'),
                        GITHUB_RUN_ATTEMPT=os.environ.get('GITHUB_RUN_ATTEMPT', '1'))
             image = run(['bash', ROOT / 'deploy/components' / (c + '.sh'), 'build'], env=env,
-                        timeout=1800, stage='auth-build' if c == 'auth' else None).splitlines()[-1]
+                        timeout=1800).splitlines()[-1]
             self.valid_image(c, image)
             return {'image': image}
+        require(c == 'frontend', 'container-prepare-requires-build-checkpoint')
         self.project()
         cfg = self.p['frontend']
         env = dict(os.environ, NEXT_PUBLIC_API_URL=cfg['api_url'], NEXT_PUBLIC_AUTH_URL=cfg['auth_url'])

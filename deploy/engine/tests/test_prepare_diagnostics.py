@@ -28,11 +28,27 @@ class AuthPrepareDiagnostics(unittest.TestCase):
         self.bin.mkdir()
         self.gcloud = self.bin / 'gcloud'
         self.gcloud.write_text('''#!/usr/bin/env python3
-import os, sys
+import json, os, sys
 args=sys.argv[1:]
+if args[:2] == ["projects", "describe"]:
+    print(json.dumps({"projectId":args[2],"projectNumber":"580854833715"}))
+    raise SystemExit(0)
 if args[:2] == ["builds", "submit"]:
-    print(os.environ.get("TEST_ONLY_RAW_PROVIDER_SECRET", ""), file=sys.stderr)
-    raise SystemExit(int(os.environ.get("FAKE_BUILD_EXIT", "0")))
+    exit_code=int(os.environ.get("FAKE_BUILD_EXIT", "0"))
+    if exit_code:
+        print(os.environ.get("TEST_ONLY_RAW_PROVIDER_SECRET", ""), file=sys.stderr)
+        raise SystemExit(exit_code)
+    build_id="12345678-1234-4234-8234-123456789abc"
+    print(json.dumps({"id":build_id,"projectId":"llm-wiki-cloud",
+        "name":"projects/580854833715/locations/global/builds/"+build_id,
+        "status":"QUEUED"}))
+    raise SystemExit(0)
+if args[:2] == ["builds", "describe"]:
+    build_id=args[2]
+    print(json.dumps({"id":build_id,"projectId":"llm-wiki-cloud",
+        "name":"projects/580854833715/locations/global/builds/"+build_id,
+        "location":"global","status":os.environ.get("FAKE_BUILD_STATUS", "SUCCESS")}))
+    raise SystemExit(0)
 if args[:4] == ["artifacts", "docker", "images", "describe"]:
     reference=args[4]
     key="FAKE_VALIDATE_EXIT" if "@" in reference else "FAKE_LOOKUP_EXIT"
@@ -58,7 +74,8 @@ os.execvpe(args[0], args, os.environ)
 ''')
         fake_timeout.chmod(0o755)
         artifact_registry = 'asia-east1-docker.pkg.dev/llm-wiki-cloud/cloud-run-images'
-        self.normalized = {'gcp': {'artifact_registry': artifact_registry,
+        self.normalized = {'environment': 'development',
+                           'gcp': {'artifact_registry': artifact_registry,
                                    'project_id': 'llm-wiki-cloud'}}
         self.plan = {'source': 'a' * 40, 'branch': 'develop', 'tag': 'diagnostic-fixture',
                      'normalized': self.normalized, 'selected': ['auth'],
@@ -67,6 +84,7 @@ os.execvpe(args[0], args, os.environ)
         self.plan['id'] = digest(self.plan)
         write(self.directory / 'plan.json', self.plan)
         self.provider = providers.Providers(self.plan, self.directory)
+        self.instance = engine.Engine(self.directory)
         minimal_env = {
             'PATH': str(self.bin) + os.pathsep + os.environ.get('PATH', '/usr/bin:/bin'),
             'HOME': str(self.root),
@@ -82,7 +100,7 @@ os.execvpe(args[0], args, os.environ)
     def failure(self, **env):
         with patch.dict(os.environ, env):
             with self.assertRaises(Breakpoint) as caught:
-                self.provider.prepare('auth')
+                self.instance.prepare()
         return caught.exception
 
     def render_engine_result(self, error):
@@ -96,7 +114,7 @@ os.execvpe(args[0], args, os.environ)
     def test_build_submit_stage_keeps_reason_and_redacts_child_output(self):
         exc = self.failure(FAKE_BUILD_EXIT='9')
         self.assertEqual((exc.reason, exc.status, exc.mutation, exc.action),
-                         ('command-failed', 'failed', False, 'reconcile-before-replay'))
+                         ('build-submit-outcome-unknown', 'unknown', False, 'reconcile-before-replay'))
         self.assertEqual((exc.stage, exc.exit_code, exc.timeout_class), ('build-submit', 9, None))
         self.assertNotIn('TEST_ONLY_RAW_PROVIDER_SECRET_SENTINEL', str(exc))
         stdout, result = self.render_engine_result(exc)

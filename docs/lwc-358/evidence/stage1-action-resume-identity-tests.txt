@@ -1,0 +1,7 @@
+test_cross_plan_source_target_tag_selection_and_engine_changes_fail_closed (test_build_submission.AsyncBuildSubmission.test_cross_plan_source_target_tag_selection_and_engine_changes_fail_closed) ... ok
+test_same_plan_runtime_started_and_corrupt_checkpoint_fail_closed (test_build_submission.AsyncBuildSubmission.test_same_plan_runtime_started_and_corrupt_checkpoint_fail_closed) ... ok
+
+----------------------------------------------------------------------
+Ran 2 tests in 0.019s
+
+OK

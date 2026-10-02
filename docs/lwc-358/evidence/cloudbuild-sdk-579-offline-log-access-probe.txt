@@ -1,0 +1,5 @@
+Traceback (most recent call last):
+  File "<stdin>", line 4, in <module>
+  File "/opt/homebrew/share/google-cloud-sdk/lib/googlecloudsdk/api_lib/cloudbuild/logs.py", line 23, in <module>
+    from apitools.base.py import exceptions as api_exceptions
+ModuleNotFoundError: No module named 'apitools'

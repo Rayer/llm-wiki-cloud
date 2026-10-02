@@ -108,6 +108,124 @@ class Acceptance(unittest.TestCase):
         self.assertEqual(e.state['status'],'success')
         self.assertTrue(any('--update-secrets' in x for x in calls));self.assertEqual(len(self.calls('POST')),1)
 
+    def test_auth_bff_ready_artifact_deploy_updates_traffic_and_strict_readback(self):
+        e=self.ready(self.make(('auth','bff'),name='auth-bff-ready-deploy'))
+        ready_artifacts={c:e.receipt(c)['artifact'] for c in ('auth','bff')}
+        self.assertEqual(e.state['status'],'ready')
+        self.assertEqual(set(ready_artifacts),set(e.plan['selected']))
+        submissions_before=len(self.calls('submit'))
+
+        persisted_states=[]
+        write_state=engine.write
+        def record_checkpoint(path,value):
+            write_state(path,value)
+            if Path(path)==e.state_path:
+                persisted_states.append(copy.deepcopy(value))
+        with patch('engine.write',side_effect=record_checkpoint):
+            e.deploy()
+
+        self.assertEqual(e.state['status'],'success')
+        self.assertEqual(len(self.calls('submit')),submissions_before,
+                         'Stage 2 consumes ready receipts without submitting builds')
+        for c in ('auth','bff'):
+            with self.subTest(component=c):
+                entry=e.state['components'][c]
+                self.assertEqual(entry['status'],'verified')
+                accepted=[state['components'][c] for state in persisted_states
+                          if c in state['components']
+                          and state['components'][c]['status']=='pending'
+                          and state['components'][c]['candidate'].get('revision')]
+                self.assertTrue(accepted,
+                                'accepted provider revision must be checkpointed before strict readback')
+                self.assertEqual(accepted[-1]['candidate']['revision'],entry['candidate']['revision'])
+                artifact=ready_artifacts[c]
+                revision_name=entry['candidate']['revision']
+                revision=self.current()['revisions'][revision_name]
+                service_name=self.normalized[c]['service_name']
+                service=self.current()['resources'][service_name]
+                self.assertEqual(revision['status']['imageDigest'],artifact['image'])
+                self.assertEqual(revision['spec']['containers'][0]['image'],artifact['image'])
+                self.assertEqual(service['status']['traffic'],[{'revisionName':revision_name,'percent':100}])
+                self.assertTrue(e.provider.service_matches(c,revision,artifact['image']))
+                self.assertTrue(e.provider.template_matches(service,revision))
+                self.assertTrue(e.provider.observe(c,artifact,entry['candidate']))
+
+                all_calls=self.current()['calls']
+                updates=[call for call in all_calls
+                         if call[:4]==['gcloud','run','services','update'] and service_name in call]
+                traffic=[call for call in all_calls
+                         if call[:4]==['gcloud','run','services','update-traffic'] and service_name in call]
+                self.assertEqual(len(updates),1)
+                self.assertEqual(len(traffic),1)
+                self.assertIn('--no-traffic',updates[0])
+                traffic_index=all_calls.index(traffic[0])
+                self.assertEqual(traffic[0][traffic[0].index('--to-revisions')+1],revision_name+'=100')
+                revision_reads=[i for i,call in enumerate(all_calls)
+                                if call[:4]==['gcloud','run','revisions','describe'] and call[4]==revision_name]
+                service_reads=[i for i,call in enumerate(all_calls)
+                               if call[:4]==['gcloud','run','services','describe'] and call[4]==service_name]
+                self.assertTrue(any(all_calls.index(updates[0]) < i < traffic_index for i in revision_reads))
+                self.assertTrue(any(all_calls.index(updates[0]) < i < traffic_index for i in service_reads))
+                cutovers=[x for x in self.current().get('traffic_before_cutover',[])
+                          if x['service']==service_name]
+                self.assertEqual(cutovers,[{
+                    'service':service_name,
+                    'traffic':[{'revisionName':service_name+'-prior','percent':100}],
+                    'target':revision_name+'=100',
+                }])
+                if c=='bff':
+                    desired=providers.auth_config.desired(e.plan['normalized'],'bff')['env']
+                    env_arg=updates[0][updates[0].index('--update-env-vars')+1]
+                    for key,value in desired.items():
+                        self.assertIn(key+'='+value,env_arg)
+                    self.assertNotIn('--remove-env-vars',updates[0])
+
+    def test_bff_incompatible_receipt_identity_fails_before_provider_mutation(self):
+        prepared=self.ready(self.make(('bff',),name='bff-applicability-source'))
+        retained=prepared.receipt('bff')
+        for field,value in (('profile','changed-profile'),('inputs','changed-inputs'),
+                            ('files',[['apps/bff/cmd/bff/main.go','f'*40]])):
+            with self.subTest(identity_field=field):
+                candidate=self.make(('bff',),name='bff-applicability-'+field)
+                candidate.plan['identities']['bff'][field]=value
+                candidate.plan['id']=engine.digest({k:v for k,v in candidate.plan.items() if k!='id'})
+                write(candidate.directory/'plan.json',candidate.plan)
+                candidate=engine.Engine(candidate.directory)
+                write(candidate.directory/'receipts'/'bff.json',retained)
+                before=len(self.current()['calls'])
+                with self.assertRaisesRegex(Breakpoint,'artifact-source-incompatible'):
+                    candidate.deploy()
+                runtime_calls=self.current()['calls'][before:]
+                self.assertFalse([call for call in runtime_calls
+                                  if call[:4] in (['gcloud','run','services','update'],
+                                                  ['gcloud','run','services','update-traffic'],
+                                                  ['gcloud','run','services','replace'])])
+                self.assertEqual(candidate.state['status'],'prepared')
+
+    def test_bff_candidate_readback_failure_compensates_without_unverified_cutover(self):
+        e=self.ready(self.make(('bff',),name='bff-candidate-readback-failure'))
+        service_name=self.normalized['bff']['service_name']
+        prior_traffic=copy.deepcopy(self.current()['resources'][service_name]['status']['traffic'])
+        self.configure(partial=service_name)
+        with self.assertRaises(Breakpoint):e.deploy()
+        calls=self.current()['calls']
+        updates=[call for call in calls
+                 if call[:4]==['gcloud','run','services','update'] and call[4]==service_name]
+        candidate_reads=[call for call in calls
+                         if call[:4]==['gcloud','run','revisions','describe'] and
+                         call[4]==service_name+'-candidate']
+        cutovers=[call for call in calls
+                  if call[:4]==['gcloud','run','services','update-traffic'] and call[4]==service_name]
+        self.assertEqual(len(updates),1)
+        self.assertIn('--no-traffic',updates[0])
+        self.assertTrue(candidate_reads)
+        self.assertEqual(cutovers,[])
+        self.assertEqual(e.state['status'],'failed_rolled_back')
+        self.assertEqual(e.state['components']['bff']['status'],'rolled_back')
+        self.assertEqual(self.current()['resources'][service_name]['status']['traffic'],prior_traffic)
+        self.assertEqual(len(self.calls('replace')),1)
+        self.assertTrue(e.provider.observe('bff',e.state['components']['bff']['prior'],{},True))
+
     def test_05_partial_failure_restores_changed_and_reactivation_no_build(self):
         e=self.ready(self.make(('auth','worker')));self.configure(partial=self.normalized['worker']['job_name'])
         with self.assertRaises(Breakpoint):e.deploy()

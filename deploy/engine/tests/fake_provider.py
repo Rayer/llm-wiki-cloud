@@ -27,12 +27,37 @@ elif tool == 'docker':
     if a[0] == 'build' and s.get('fail_build') and s['fail_build'] in flag('-t',''):
         fail = True
 elif tool == 'gcloud':
-    if a[:3] == ['artifacts','docker','images']:
+    if a[:2] == ['projects','describe']:
+        project=a[2]
+        out={'projectId':project,
+             'projectNumber':s.get('gcp_project_numbers',{}).get(project,'580854833715')}
+    elif a[:3] == ['artifacts','docker','images']:
         image = a[4]
         out = image.split('@')[-1] if '@' in image else 'sha256:'+'a'*64
         if s.get('expired'): fail=True
     elif a[:2] == ['builds','submit']:
-        if s.get('fail_build') and s['fail_build'] in ' '.join(a): fail=True
+        if s.get('fail_build') and s['fail_build'] in ' '.join(a):
+            fail=True
+        else:
+            s['build_counter']=s.get('build_counter',0)+1
+            build_id=f'12345678-1234-4234-8234-{s["build_counter"]:012d}'
+            project=flag('--project','llm-wiki-cloud')
+            location=flag('--region','global')
+            if location == 'global':
+                location=next((x.split('=',1)[1] for x in a if x.startswith('--region=')),location)
+            project_number=s.get('gcp_project_numbers',{}).get(project,'580854833715')
+            build={'id':build_id,'projectId':project,'location':location,
+                   'name':f'projects/{project_number}/locations/{location}/builds/{build_id}',
+                   'status':'QUEUED'}
+            s.setdefault('builds',{})[build_id]=build
+            out=build
+    elif a[:2] == ['builds','describe']:
+        build=s.get('builds',{}).get(a[2])
+        if not build:
+            fail=True
+        else:
+            build['status']='SUCCESS'
+            out=build
     elif a[:2] == ['auth','configure-docker']:
         pass
     elif a[0] == 'run':
@@ -64,6 +89,11 @@ elif tool == 'gcloud':
             if s.get('fail_rollback'): fail=True
             else:
                 raw=s['resources'][name]
+                s.setdefault('traffic_before_cutover',[]).append({
+                    'service':name,
+                    'traffic':copy.deepcopy(raw['status']['traffic']),
+                    'target':flag('--to-revisions'),
+                })
                 raw['status']['traffic']=[{'revisionName':flag('--to-revisions').split('=')[0], 'percent':100}]
                 out=raw
         elif op == 'update':

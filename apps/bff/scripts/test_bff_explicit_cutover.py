@@ -256,6 +256,9 @@ class SharedCDContractTest(unittest.TestCase):
                 "test_engine.Acceptance.test_durable_pending_failure_prevents_provider_mutation",
                 "test_engine.Acceptance.test_service_partial_update_restores_template_even_with_old_traffic",
                 "test_engine.Acceptance.test_hold_service_reactivation_preserves_candidate_and_next_snapshot",
+                "test_engine.Acceptance.test_auth_bff_ready_artifact_deploy_updates_traffic_and_strict_readback",
+                "test_engine.Acceptance.test_bff_incompatible_receipt_identity_fails_before_provider_mutation",
+                "test_engine.Acceptance.test_bff_candidate_readback_failure_compensates_without_unverified_cutover",
             ],
             cwd=REPO_ROOT / "deploy" / "engine" / "tests",
             capture_output=True, text=True, timeout=90,
@@ -341,212 +344,37 @@ class SharedCDContractTest(unittest.TestCase):
         self.assertNotIn(":latest", consume)
 
 
-    def test_bff_candidate_cutover_revalidates_after_candidate_creation(self):
-        """A candidate must stay dark and freshness failures must not cut it over."""
-        registry = "asia-east1-docker.pkg.dev/llm-wiki-cloud/cloud-run-images"
-        normalized = self.normalized()
-        normalized['bff']['service_name'] = 'bff-service'
-        ci_jobs = [{
-            "id": 1,
-            "name": "canonical-ci",
-            "run_id": 7,
-            "run_attempt": 1,
-            "status": "completed",
-            "conclusion": "success",
-        }]
-
-        for freshness, expected_error, expected_updates in (
-            ("branch-before", "canonical source ref advanced before provider work", 0),
-            ("rerun-before", "pinned canonical CI run is not the exact successful attempt", 0),
-            ("failure-before", "pinned canonical CI run is not the exact successful attempt", 0),
-            ("branch", "canonical source ref advanced before provider work", 1),
-            ("rerun", "pinned canonical CI run is not the exact successful attempt", 1),
-            ("failure", "pinned canonical CI run is not the exact successful attempt", 1),
-            ("success", None, 1),
-        ):
-            with self.subTest(freshness=freshness), tempfile.TemporaryDirectory() as directory:
-                root = Path(directory)
-                bin_dir = root / "bin"
-                bin_dir.mkdir()
-                phase = root / "phase"
-                phase.write_text("before-candidate")
-                events = root / "events"
-                state_path = root / "state.json"
-                old_revision = "bff-service-old"
-                candidate_revision = "bff-service-candidate"
-                old_image = f"{registry}/llm-wiki-bff@sha256:{'a' * 64}"
-                state_path.write_text(json.dumps({
-                    "service": {"status": {
-                        "traffic": [{"revisionName": old_revision, "percent": 100}],
-                        "latestCreatedRevisionName": old_revision,
-                    }},
-                    "revisions": {
-                        old_revision: {
-                            "spec": {"containers": [{"image": old_image}]},
-                            "status": {"imageDigest": old_image, "conditions": [{"type": "Ready", "status": "True"}]},
-                        },
-                    },
-                }))
-                (bin_dir / "git").write_text(textwrap.dedent(f"""
-                    #!/usr/bin/env python3
-                    import os, sys
-                    from pathlib import Path
-                    args = sys.argv[1:]
-                    Path(os.environ["FAKE_EVENTS"]).open("a").write("git " + " ".join(args) + "\\n")
-                    if args[0] == "fetch":
-                        raise SystemExit(0)
-                    if args[:2] == ["rev-parse", "HEAD"]:
-                        print("{SOURCE_SHA}")
-                        raise SystemExit(0)
-                    if args[:2] == ["rev-parse", "origin/develop"]:
-                        phase = Path(os.environ["FAKE_PHASE"]).read_text()
-                        print("{'c' * 40}" if os.environ["FAKE_FRESHNESS"] == "branch-before" or phase == "after-candidate" and os.environ["FAKE_FRESHNESS"] == "branch" else "{SOURCE_SHA}")
-                        raise SystemExit(0)
-                    raise SystemExit(2)
-                """).lstrip())
-                (bin_dir / "gh").write_text(textwrap.dedent(f"""
-                    #!/usr/bin/env python3
-                    import json, os, sys
-                    from pathlib import Path
-                    args = sys.argv[1:]
-                    endpoint = args[args.index("api") + 1]
-                    Path(os.environ["FAKE_EVENTS"]).open("a").write("gh " + endpoint + "\\n")
-                    phase = Path(os.environ["FAKE_PHASE"]).read_text()
-                    run = {{
-                        "id": 7, "path": ".github/workflows/ci.yml", "event": "push",
-                        "head_branch": "develop", "head_sha": "{SOURCE_SHA}",
-                        "run_attempt": 1, "status": "completed", "conclusion": "success",
-                    }}
-                    if os.environ["FAKE_FRESHNESS"] == "rerun-before" or phase == "after-candidate" and os.environ["FAKE_FRESHNESS"] == "rerun":
-                        run["run_attempt"] = 2
-                    if os.environ["FAKE_FRESHNESS"] == "failure-before" or phase == "after-candidate" and os.environ["FAKE_FRESHNESS"] == "failure":
-                        run["conclusion"] = "failure"
-                    if "/jobs?" in endpoint:
-                        print(json.dumps({{"total_count": 1, "jobs": [{{
-                            "id": 1, "name": "canonical-ci", "run_id": 7,
-                            "run_attempt": run["run_attempt"], "status": "completed",
-                            "conclusion": run["conclusion"],
-                        }}]}}))
-                    else:
-                        print(json.dumps(run))
-                """).lstrip())
-                (bin_dir / "gcloud").write_text(textwrap.dedent(f"""
-                    #!/usr/bin/env python3
-                    import json, os, sys
-                    from pathlib import Path
-                    args = sys.argv[1:]
-                    Path(os.environ["FAKE_EVENTS"]).open("a").write("gcloud " + " ".join(args) + "\\n")
-                    state_path = Path(os.environ["FAKE_STATE"])
-                    state = json.loads(state_path.read_text())
-                    if args[:2] == ["builds", "submit"]:
-                        pass
-                    elif args[:4] == ["artifacts", "docker", "images", "describe"]:
-                        print("sha256:{'b' * 64}")
-                    elif args[:3] == ["run", "services", "update"]:
-                        image = args[args.index("--image") + 1]
-                        env = [
-                            dict(name=k, value=v) for k, v in (item.split('=', 1)
-                                for item in args[args.index('--update-env-vars') + 1][3:].split('|'))
-                        ]
-                        if '--update-secrets' in args:
-                            for item in args[args.index('--update-secrets') + 1].split(','):
-                                key, target = item.split('=', 1)
-                                name, version = target.rsplit(':', 1)
-                                env.append(dict(name=key, valueFrom=dict(secretKeyRef=dict(name=name, key=version))))
-                        state["service"]["status"]["latestCreatedRevisionName"] = "{candidate_revision}"
-                        state["revisions"]["{candidate_revision}"] = {{
-                            "metadata": {{"name": "{candidate_revision}"}},
-                            "spec": {{"serviceAccountName": {normalized['bff']['runtime_service_account']!r},
-                                "containers": [{{"image": image, "env": env}}]}},
-                            "status": {{"imageDigest": image, "conditions": [{{"type": "Ready", "status": "True"}}]}},
-                        }}
-                        if "--no-traffic" not in args:
-                            state["service"]["status"]["traffic"] = [{{"revisionName": "{candidate_revision}", "percent": 100}}]
-                        state_path.write_text(json.dumps(state))
-                        Path(os.environ["FAKE_PHASE"]).write_text("after-candidate")
-                        print("{candidate_revision}")
-                    elif args[:3] == ["run", "services", "update-traffic"]:
-                        if "--to-revisions" not in args or args[args.index("--to-revisions") + 1] != "{candidate_revision}=100":
-                            raise SystemExit(2)
-                        state["service"]["status"]["traffic"] = [{{"revisionName": "{candidate_revision}", "percent": 100}}]
-                        state_path.write_text(json.dumps(state))
-                    elif args[:3] == ["run", "services", "describe"]:
-                        print(json.dumps(state["service"]))
-                    elif args[:3] == ["run", "revisions", "describe"]:
-                        print(json.dumps(state["revisions"][args[3]]))
-                    else:
-                        raise SystemExit(2)
-                """).lstrip())
-                for command in ("git", "gh", "gcloud"):
-                    (bin_dir / command).chmod(0o755)
-
-                plan = root / "plan.json"
-                plan.write_text(json.dumps({
-                    "ci": {
-                        "run_id": 7,
-                        "run_attempt": 1,
-                        "workflow_path": ".github/workflows/ci.yml",
-                        "event": "push",
-                        "head_branch": "develop",
-                        "head_sha": SOURCE_SHA,
-                        "conclusion": "success",
-                        "jobs": ci_jobs,
-                    },
-                    "normalized": normalized,
-                }))
-                env = {
-                    **os.environ,
-                    "PATH": f"{bin_dir}:{os.environ['PATH']}",
-                    "ROOT": str(REPO_ROOT),
-                    "ENVIRONMENT": "development",
-                    "SOURCE_REF": "develop",
-                    "SOURCE_SHA": SOURCE_SHA,
-                    "PLAN_PATH": str(plan),
-                    "JOURNAL_PATH": str(root / "artifacts" / "journal.json"),
-                    "ARTIFACT_DIR": str(root / "artifacts"),
-                    "ROLLBACK_UPLOADED": "1",
-                    "GH_TOKEN": "fixture",
-                    "GITHUB_REPOSITORY": "Rayer/llm-wiki-cloud",
-                    "FAKE_EVENTS": str(events),
-                    "FAKE_PHASE": str(phase),
-                    "FAKE_STATE": str(state_path),
-                    "FAKE_FRESHNESS": freshness,
-                }
-                result = subprocess.run(
-                    ["bash", str(REPO_ROOT / "deploy" / "components" / "bff.sh"), "mutate"],
-                    env=env,
-                    text=True,
-                    capture_output=True,
+    def test_retired_bff_build_entry_fails_closed(self):
+        """Legacy direct builds stay rejected; ready artifacts are engine-owned."""
+        with tempfile.TemporaryDirectory(prefix="lwc-bff-retired-build-") as directory:
+            root = Path(directory)
+            bin_dir = root / "bin"
+            bin_dir.mkdir()
+            events = root / "provider-events"
+            for tool in ("docker", "gcloud"):
+                stub = bin_dir / tool
+                stub.write_text(
+                    "#!/usr/bin/env python3\n"
+                    "import os, sys\n"
+                    "with open(os.environ['FAKE_PROVIDER_EVENTS'], 'a') as out:\n"
+                    "    out.write(" + repr(tool + " " ) + " + ' '.join(sys.argv[1:]) + '\n')\n"
                 )
-                calls = events.read_text().splitlines()
-                updates = [call for call in calls if call.startswith("gcloud run services update bff-service")]
-                cutovers = [call for call in calls if call.startswith("gcloud run services update-traffic bff-service")]
-                self.assertEqual(len(updates), expected_updates, result.stdout + result.stderr)
-                if updates:
-                    self.assertIn("--no-traffic", updates[0])
-                    self.assertTrue(calls[calls.index(updates[0]) - 1].startswith("gh repos/Rayer/llm-wiki-cloud/actions/runs/7/attempts/1/jobs?"))
-                candidate_reads = [
-                    index for index, call in enumerate(calls)
-                    if call == f"gcloud run revisions describe {candidate_revision} --project llm-wiki-cloud --region asia-east1 --format=json --quiet"
-                ]
-                if updates:
-                    self.assertTrue(candidate_reads, calls)
-                else:
-                    self.assertEqual(candidate_reads, [])
+                stub.chmod(0o755)
 
-                if expected_error:
-                    self.assertNotEqual(result.returncode, 0, result.stdout + result.stderr)
-                    self.assertIn(expected_error, result.stderr)
-                    self.assertEqual(cutovers, [])
-                    self.assertEqual(bool(candidate_reads), bool(updates))
-                    self.assertEqual(json.loads(state_path.read_text())["service"]["status"]["traffic"][0]["revisionName"], old_revision)
-                else:
-                    self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
-                    self.assertEqual(len(cutovers), 1)
-                    self.assertIn(f"--to-revisions {candidate_revision}=100", cutovers[0])
-                    self.assertLess(candidate_reads[0], calls.index(cutovers[0]))
-                    self.assertTrue(calls[calls.index(cutovers[0]) - 1].startswith("gh repos/Rayer/llm-wiki-cloud/actions/runs/7/attempts/1/jobs?"))
-                    self.assertEqual(json.loads(state_path.read_text())["service"]["status"]["traffic"][0]["revisionName"], candidate_revision)
+            result = subprocess.run(
+                ["bash", str(REPO_ROOT / "deploy/components/bff.sh"), "build"],
+                env={
+                    **os.environ,
+                    "ROOT": str(REPO_ROOT),
+                    "PATH": f"{bin_dir}{os.pathsep}{os.environ['PATH']}",
+                    "FAKE_PROVIDER_EVENTS": str(events),
+                },
+                capture_output=True,
+                text=True,
+            )
+            self.assertNotEqual(result.returncode, 0, result.stdout + result.stderr)
+            self.assertIn("BFF builds must be prepared by the deployment engine", result.stderr)
+            self.assertFalse(events.exists(), "retired shortcut must fail before provider tools run")
 
 
 if __name__ == "__main__":
