@@ -40,7 +40,7 @@ Frontend stage 1 只 `vercel pull`、`vercel build` 並封存 `.vercel/output` �
 
 Owner 已接受一個只讀診斷分支，供同一 Development WIF principal 查詢 Auth image metadata。入口是已在 GitHub default branch 註冊的 `Deploy Development` workflow（`.github/workflows/deploy-dev.yml`），明確選取 `operation=diagnose-auth-image`。`operation` 預設為 `release`，所以既有一般 dispatch 不變。先前 `Recover retained deployment` 對 `recover-deployment.yml` 的 dispatch 回 HTTP 404；當時 default-branch workflow list 沒有註冊該檔案，不能拿它當實際入口，也不應藉此更改 default branch。
 
-診斷入口只接受 `develop`、`components=auth`、`release_tag=diagnostic-36992147920`、`artifact_id=diagnostic-no-receipt` 與空的 `dev_artifact_id`。Wrapper 將 `source_sha` 固定為本次 dispatch 的 `github.sha`，並把 component、release tag、artifact sentinel 固定映射至 reusable `cd.yml`。診斷 job 和 shared workflow job 都有獨立條件；release job 只接受 `operation=release`。診斷不下載或製造 receipt/checkpoint、不進一般 runtime。
+診斷入口只接受 `develop`、`components=auth`、`release_tag=diagnostic-36992147920`、`artifact_id=diagnostic-no-receipt` 與空的 `dev_artifact_id`。兩個 wrapper 都將 operation/目標鎖定後，呼叫獨立的 reusable workflow `.github/workflows/cd-auth-image-diagnostic.yml`；它只含低權限診斷 job，source SHA 必須等於呼叫端的 `github.sha`。正常 DEV release 與一般 recovery 繼續呼叫 `.github/workflows/cd.yml`。唯讀呼叫端不再載入同時含 contents-write release job 的整份 reusable workflow。診斷不下載或製造 receipt/checkpoint、不進一般 runtime。
 
 Owner 的 standing DEV read-only diagnostic authority 已涵蓋這個固定操作，不需要逐次重複申請同等授權。本輪範圍明確限於本機實作與離線驗證，因此記錄 payload 供 Parent 後續協調，沒有送出 dispatch：
 

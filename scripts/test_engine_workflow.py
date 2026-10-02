@@ -9,13 +9,34 @@ import yaml
 ROOT=Path(__file__).resolve().parents[1]
 
 class EngineWorkflowContract(unittest.TestCase):
-    def test_single_runtime_authority_with_separate_dev_diagnostic_job(self):
+    def test_diagnostic_callers_obey_readonly_reusable_workflow_permission_ceiling(self):
+        read_only={'contents':'read','actions':'read','id-token':'write'}
+        rank={'none':0,'read':1,'write':2}
+        standalone='./.github/workflows/cd-auth-image-diagnostic.yml'
+        for file,job_name in [('deploy-dev.yml','auth-image-diagnostic'),
+                              ('recover-deployment.yml','auth-image-diagnostic')]:
+            caller=yaml.safe_load((ROOT/'.github/workflows'/file).read_text())
+            job=caller['jobs'][job_name]
+            self.assertEqual(job['permissions'],read_only)
+            called_path=job['uses']
+            called=yaml.safe_load((ROOT/called_path.removeprefix('./')).read_text())
+            scopes=[('workflow',called.get('permissions',{}))]
+            scopes.extend((child_name,child['permissions']) for child_name,child in called['jobs'].items()
+                          if 'permissions' in child)
+            for scope_name,scope in scopes:
+                for permission,level in scope.items():
+                    ceiling=job['permissions'].get(permission,'none')
+                    self.assertLessEqual(rank[level],rank[ceiling],
+                                         f'{file} grants {ceiling} but called {called_path} {scope_name} requests {level} for {permission}')
+            self.assertEqual(called_path,standalone)
+            self.assertEqual(set(called['jobs']),{'auth-image-diagnostic'})
+
+    def test_single_runtime_authority_stays_in_release_workflow(self):
         s=(ROOT/'.github/workflows/cd.yml').read_text()
         parsed=yaml.safe_load(s)
-        self.assertEqual(set(parsed['jobs']),{'release','auth-image-diagnostic'})
+        self.assertEqual(set(parsed['jobs']),{'release'})
         self.assertEqual(parsed['jobs']['release']['environment'],
                          "${{ inputs.environment == 'production' && 'Production' || 'Development' }}")
-        self.assertEqual(parsed['jobs']['auth-image-diagnostic']['environment'],'Development')
         prepare=next(step for step in parsed['jobs']['release']['steps']
                      if step.get('with',{}).get('operation') == 'prepare')
         runtime_step=next(step for step in parsed['jobs']['release']['steps']
@@ -81,21 +102,22 @@ class EngineWorkflowContract(unittest.TestCase):
         self.assertEqual(dev_operation['options'],['release','diagnose-auth-image'])
         self.assertEqual(dev['jobs']['release']['if'],
                          "github.ref == 'refs/heads/develop' && inputs.operation == 'release'")
-        self.assertEqual(dev['jobs']['release']['with']['operation'],'${{ inputs.operation }}')
+        self.assertEqual(dev['jobs']['release']['with'],{
+            'environment':'development','source_sha':'${{ github.sha }}',
+            'components':'${{ inputs.components }}','release_tag':'${{ inputs.release_tag }}',
+            'artifact_id':'${{ inputs.artifact_id }}','dev_artifact_id':'${{ inputs.dev_artifact_id }}',
+            'operation':'${{ inputs.operation }}',
+        })
         dev_diagnostic=dev['jobs']['auth-image-diagnostic']
         for fixed in ("inputs.operation == 'diagnose-auth-image'", "github.ref == 'refs/heads/develop'",
                       "inputs.components == 'auth'", "inputs.release_tag == 'diagnostic-36992147920'",
                       "inputs.artifact_id == 'diagnostic-no-receipt'", "inputs.dev_artifact_id == ''"):
             self.assertIn(fixed,dev_diagnostic['if'])
-        self.assertEqual(dev_diagnostic['uses'],'./.github/workflows/cd.yml')
+        self.assertEqual(dev_diagnostic['uses'],'./.github/workflows/cd-auth-image-diagnostic.yml')
         self.assertEqual(dev_diagnostic['permissions'],{'contents':'read','actions':'read','id-token':'write'})
         self.assertNotIn('GH_TOKEN',str(dev_diagnostic))
         self.assertNotIn('VERCEL_TOKEN',str(dev_diagnostic))
-        self.assertEqual(dev_diagnostic['with'],{
-            'environment':'development','source_sha':'${{ github.sha }}','components':'auth',
-            'release_tag':'diagnostic-36992147920','operation':'diagnose-auth-image',
-            'artifact_id':'diagnostic-no-receipt','dev_artifact_id':'',
-        })
+        self.assertEqual(dev_diagnostic['with'],{'source_sha':'${{ github.sha }}'})
 
         recovery=yaml.safe_load((ROOT/'.github/workflows/recover-deployment.yml').read_text())
         trigger=recovery.get('on',recovery.get(True,{}))
@@ -103,8 +125,11 @@ class EngineWorkflowContract(unittest.TestCase):
         self.assertIn('diagnose-auth-image',options)
         wrapper=recovery['jobs']['recovery']
         self.assertEqual(wrapper['if'],"inputs.operation != 'diagnose-auth-image'")
-        self.assertEqual(wrapper['with']['source_sha'],'${{ inputs.source_sha }}')
-        self.assertEqual(wrapper['with']['artifact_id'],'${{ inputs.artifact_id }}')
+        self.assertEqual(wrapper['with'],{
+            'environment':'${{ inputs.environment }}','source_sha':'${{ inputs.source_sha }}',
+            'components':'${{ inputs.components }}','release_tag':'${{ inputs.release_tag }}',
+            'operation':'${{ inputs.operation }}','artifact_id':'${{ inputs.artifact_id }}',
+        })
         diagnostic_wrapper=recovery['jobs']['auth-image-diagnostic']
         for fixed in ("github.ref == 'refs/heads/develop'", "inputs.environment == 'development'",
                       'inputs.source_sha == github.sha', "inputs.components == 'auth'",
@@ -113,28 +138,36 @@ class EngineWorkflowContract(unittest.TestCase):
             self.assertIn(fixed,diagnostic_wrapper['if'])
         self.assertEqual(diagnostic_wrapper['permissions'],
                          {'contents':'read','actions':'read','id-token':'write'})
-        self.assertEqual(diagnostic_wrapper['with']['source_sha'],'${{ inputs.source_sha }}')
-        self.assertEqual(diagnostic_wrapper['with']['artifact_id'],'${{ inputs.artifact_id }}')
+        self.assertEqual(diagnostic_wrapper['uses'],'./.github/workflows/cd-auth-image-diagnostic.yml')
+        self.assertEqual(diagnostic_wrapper['with'],{'source_sha':'${{ inputs.source_sha }}'})
 
         shared=yaml.safe_load((ROOT/'.github/workflows/cd.yml').read_text())
+        self.assertEqual(set(shared['jobs']),{'release'})
         job=shared['jobs']['release'];steps=job['steps']
         by_name={step.get('name'): (index,step) for index,step in enumerate(steps) if step.get('name')}
         self.assertEqual(job['if'],"inputs.operation != 'diagnose-auth-image'")
         self.assertEqual(job['env']['SOURCE'],'${{ inputs.source_sha }}')
         self.assertNotIn('VERCEL_TOKEN',job['env'])
         self.assertNotIn('GH_TOKEN',job['env'])
-        diag=shared['jobs']['auth-image-diagnostic']
-        for fixed in ("inputs.operation == 'diagnose-auth-image'", "github.ref == 'refs/heads/develop'",
-                      "inputs.environment == 'development'", 'inputs.source_sha == github.sha',
-                      "inputs.components == 'auth'", "inputs.release_tag == 'diagnostic-36992147920'",
-                      "inputs.artifact_id == 'diagnostic-no-receipt'"):
+        diagnostic_workflow=yaml.safe_load((ROOT/'.github/workflows/cd-auth-image-diagnostic.yml').read_text())
+        call_trigger=diagnostic_workflow.get('on',diagnostic_workflow.get(True,{}))
+        self.assertEqual(call_trigger['workflow_call']['inputs']['source_sha'],
+                         {'required':True,'type':'string'})
+        self.assertEqual(set(diagnostic_workflow['jobs']),{'auth-image-diagnostic'})
+        diag=diagnostic_workflow['jobs']['auth-image-diagnostic']
+        for fixed in ("github.ref == 'refs/heads/develop'", 'inputs.source_sha == github.sha'):
             self.assertIn(fixed,diag['if'])
         self.assertEqual(diag['permissions'],{'contents':'read','actions':'read','id-token':'write'})
         self.assertEqual(diag['environment'],'Development')
         self.assertEqual(diag['env']['SOURCE'],'${{ inputs.source_sha }}')
+        self.assertEqual(diag['env']['TARGET'],'development')
+        self.assertEqual(diag['env']['COMPONENTS'],'auth')
+        self.assertEqual(diag['env']['RELEASE_TAG'],'diagnostic-36992147920')
+        self.assertEqual(diag['env']['OPERATION'],'diagnose-auth-image')
+        self.assertEqual(diag['env']['REUSE_ID'],'diagnostic-no-receipt')
+        self.assertEqual(diag['env']['ARTIFACT_ID'],'diagnostic-no-receipt')
+        self.assertEqual(diag['env']['DEV_ID'],'')
         self.assertEqual(diag['env']['WORKFLOW_SHA'],'${{ github.sha }}')
-        self.assertEqual(diag['env']['DEV_ID'],'${{ inputs.dev_artifact_id }}')
-        self.assertEqual(diag['env']['ARTIFACT_ID'],'${{ inputs.artifact_id }}')
         for forbidden in ('GH_TOKEN','VERCEL_TOKEN','VERCEL_PROJECT_ID','VERCEL_TEAM_ID'):
             self.assertNotIn(forbidden,diag['env'])
         self.assertEqual(set(re.findall(r'\$\{\{\s*secrets\.([A-Z_]+)\s*\}\}',str(diag))),

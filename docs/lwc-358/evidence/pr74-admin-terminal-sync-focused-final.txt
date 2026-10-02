@@ -1,0 +1,9 @@
+
+ RUN  v4.1.10 /Users/rayer/orca/workspaces/llm-wiki-cloud/LWC-358-engine-r2/apps/frontend
+
+
+ Test Files  1 passed (1)
+      Tests  5 passed (5)
+   Start at  21:48:32
+   Duration  963ms (transform 50ms, setup 0ms, import 156ms, tests 306ms, environment 409ms)
+

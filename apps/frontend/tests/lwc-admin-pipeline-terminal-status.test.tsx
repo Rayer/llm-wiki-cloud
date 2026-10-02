@@ -43,18 +43,49 @@ describe('admin query-chip regeneration', () => {
     mocks.triggerAdminProjectPipeline.mockResolvedValue({
       status: 'accepted', execution_id: 'exec-chip', stage: 'suggested-queries',
     });
+
+    let notifyFirstPoll!: () => void;
+    const firstPollStarted = new Promise<void>((resolve) => {
+      notifyFirstPoll = resolve;
+    });
+    let releaseRunningStatus!: () => void;
+    const runningStatus = new Promise<{ last_execution: { status: 'RUNNING' } }>((resolve) => {
+      releaseRunningStatus = () => resolve({ last_execution: { status: 'RUNNING' } });
+    });
     mocks.getAdminPipelineStatus
-      .mockResolvedValueOnce({ last_execution: { status: 'RUNNING' } })
+      .mockImplementationOnce(() => {
+        notifyFirstPoll();
+        return runningStatus;
+      })
       .mockResolvedValueOnce({ last_execution: { status: 'SUCCEEDED' } });
 
     render(<AdminClient />);
     await screen.findByRole('button', { name: 'Regenerate query chips' });
     fireEvent.click(screen.getAllByRole('button', { name: 'Regenerate query chips' })[0]);
-    fireEvent.click(screen.getByRole('button', { name: 'Regenerate chips' }));
+    await screen.findByRole('button', { name: 'Regenerate chips' });
 
-    await waitFor(() => expect(mocks.getAdminPipelineStatus).toHaveBeenCalledWith('owner_project', 'exec-chip', expect.any(AbortSignal)));
-    expect(await screen.findByText('Query chips regeneration completed.')).toBeDefined();
-    expect(screen.queryByText(/triggered/)).toBeNull();
+    vi.useFakeTimers();
+    try {
+      fireEvent.click(screen.getByRole('button', { name: 'Regenerate chips' }));
+      await vi.waitFor(() => expect(mocks.getAdminPipelineStatus).toHaveBeenCalledTimes(1));
+      await firstPollStarted;
+      await act(async () => {
+        releaseRunningStatus();
+        await Promise.resolve();
+      });
+      await act(async () => {
+        await vi.advanceTimersToNextTimerAsync();
+      });
+
+      expect(mocks.getAdminPipelineStatus).toHaveBeenCalledTimes(2);
+      expect(mocks.getAdminPipelineStatus).toHaveBeenNthCalledWith(2, 'owner_project', 'exec-chip', expect.any(AbortSignal));
+      expect(screen.getByText('Query chips regeneration completed.')).toBeDefined();
+      expect(screen.queryByText(/triggered/)).toBeNull();
+    } finally {
+      releaseRunningStatus();
+      vi.clearAllTimers();
+      vi.useRealTimers();
+    }
   });
 
   it('polls the accepted execution and reports FAILED with diagnostic details', async () => {
@@ -67,8 +98,19 @@ describe('admin query-chip regeneration', () => {
     mocks.triggerAdminProjectPipeline.mockResolvedValue({
       status: 'accepted', execution_id: 'exec-chip', stage: 'suggested-queries',
     });
+    let notifyFirstPoll!: () => void;
+    const firstPollStarted = new Promise<void>((resolve) => {
+      notifyFirstPoll = resolve;
+    });
+    let releaseRunningStatus!: () => void;
+    const runningStatus = new Promise<{ last_execution: { status: 'RUNNING' } }>((resolve) => {
+      releaseRunningStatus = () => resolve({ last_execution: { status: 'RUNNING' } });
+    });
     mocks.getAdminPipelineStatus
-      .mockResolvedValueOnce({ last_execution: { status: 'RUNNING' } })
+      .mockImplementationOnce(() => {
+        notifyFirstPoll();
+        return runningStatus;
+      })
       .mockResolvedValueOnce({ last_execution: {
         status: 'FAILED',
         diagnostic: { detail_code: 'entity_mapping_article_source_missing' },
@@ -77,11 +119,30 @@ describe('admin query-chip regeneration', () => {
     render(<AdminClient />);
     await screen.findByRole('button', { name: 'Regenerate query chips' });
     fireEvent.click(screen.getAllByRole('button', { name: 'Regenerate query chips' })[0]);
-    fireEvent.click(screen.getByRole('button', { name: 'Regenerate chips' }));
+    await screen.findByRole('button', { name: 'Regenerate chips' });
 
-    await waitFor(() => expect(mocks.getAdminPipelineStatus).toHaveBeenCalledWith('owner_project', 'exec-chip', expect.any(AbortSignal)));
-    expect(await screen.findByText(/Query chips regeneration failed: entity_mapping_article_source_missing/)).toBeDefined();
-    expect(screen.queryByText('Query chips regeneration completed.')).toBeNull();
+    vi.useFakeTimers();
+    try {
+      fireEvent.click(screen.getByRole('button', { name: 'Regenerate chips' }));
+      await vi.waitFor(() => expect(mocks.getAdminPipelineStatus).toHaveBeenCalledTimes(1));
+      await firstPollStarted;
+      await act(async () => {
+        releaseRunningStatus();
+        await Promise.resolve();
+      });
+      await act(async () => {
+        await vi.advanceTimersToNextTimerAsync();
+      });
+
+      expect(mocks.getAdminPipelineStatus).toHaveBeenCalledTimes(2);
+      expect(mocks.getAdminPipelineStatus).toHaveBeenNthCalledWith(2, 'owner_project', 'exec-chip', expect.any(AbortSignal));
+      expect(screen.getByText(/Query chips regeneration failed: entity_mapping_article_source_missing/)).toBeDefined();
+      expect(screen.queryByText('Query chips regeneration completed.')).toBeNull();
+    } finally {
+      releaseRunningStatus();
+      vi.clearAllTimers();
+      vi.useRealTimers();
+    }
   });
 
   it('shows a visible bounded error when status polling rejects', async () => {

@@ -402,7 +402,7 @@ for (const [scenario, reasonCode] of [
   });
 }
 
-test('DEV workflow invokes the shared engine with fixed authority and explicit receipt inputs', async () => {
+test('DEV workflow invokes the shared engine and isolates the fixed diagnostic reusable workflow', async () => {
   const workflow = (await import('js-yaml')).load(await readFile(join(monorepoRoot, '.github/workflows/deploy-dev.yml'), 'utf8'));
   const job = workflow.jobs.release;
   assert.equal(workflow.on.push, undefined);
@@ -424,9 +424,7 @@ test('DEV workflow invokes the shared engine with fixed authority and explicit r
   assert.ok(diagnostic.if.includes("inputs.operation == 'diagnose-auth-image'"));
   assert.ok(diagnostic.if.includes("github.ref == 'refs/heads/develop'"));
   assert.deepEqual(diagnostic.permissions, { contents: 'read', actions: 'read', 'id-token': 'write' });
-  assert.deepEqual(diagnostic.with, {
-    environment: 'development', source_sha: '${{ github.sha }}', components: 'auth',
-    release_tag: 'diagnostic-36992147920', operation: 'diagnose-auth-image',
-    artifact_id: 'diagnostic-no-receipt', dev_artifact_id: '',
-  });
+  assert.equal(diagnostic.uses, './.github/workflows/cd-auth-image-diagnostic.yml');
+  assert.equal(diagnostic.secrets, 'inherit');
+  assert.deepEqual(diagnostic.with, { source_sha: '${{ github.sha }}' });
 });

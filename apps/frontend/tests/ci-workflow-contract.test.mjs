@@ -25,7 +25,7 @@ function collectRunBlocks(value, blocks = []) {
 
 test('r2 registered release and recovery workflows use explicit artifact inputs', async () => {
   const files = (await readdir(workflowDirectory)).filter((file) => file.endsWith('.yml')).sort();
-  assert.deepEqual(files, ['cd.yml', 'ci.yml', 'deploy-dev.yml', 'promote-production.yml', 'provision-exportjob-dev.yml', 'recover-deployment.yml']);
+  assert.deepEqual(files, ['cd-auth-image-diagnostic.yml', 'cd.yml', 'ci.yml', 'deploy-dev.yml', 'promote-production.yml', 'provision-exportjob-dev.yml', 'recover-deployment.yml']);
   for (const [file, environment, branch] of [['deploy-dev.yml', 'development', 'develop'], ['promote-production.yml', 'production', 'main']]) {
     const parsed = parseYaml(await workflow(file));
     assert.deepEqual(Object.keys(parsed.on), ['workflow_dispatch']);
@@ -52,20 +52,21 @@ test('r2 registered release and recovery workflows use explicit artifact inputs'
     "inputs.components == 'auth'", "inputs.release_tag == 'diagnostic-36992147920'",
     "inputs.artifact_id == 'diagnostic-no-receipt'", "inputs.dev_artifact_id == ''",
   ]) assert.ok(diagnostic.if.includes(condition), `missing diagnostic constraint: ${condition}`);
-  assert.equal(diagnostic.uses, './.github/workflows/cd.yml');
+  assert.equal(diagnostic.uses, './.github/workflows/cd-auth-image-diagnostic.yml');
   assert.equal(diagnostic.secrets, 'inherit');
   assert.equal(diagnostic.env, undefined);
   assert.doesNotMatch(JSON.stringify(diagnostic), /GH_TOKEN|VERCEL_TOKEN/);
   assert.deepEqual(diagnostic.permissions, { contents: 'read', actions: 'read', 'id-token': 'write' });
-  assert.deepEqual(diagnostic.with, {
-    environment: 'development', source_sha: '${{ github.sha }}', components: 'auth',
-    release_tag: 'diagnostic-36992147920', operation: 'diagnose-auth-image',
-    artifact_id: 'diagnostic-no-receipt', dev_artifact_id: '',
-  });
+  assert.deepEqual(diagnostic.with, { source_sha: '${{ github.sha }}' });
   const recovery = parseYaml(await workflow('recover-deployment.yml'));
   assert.deepEqual(recovery.on.workflow_dispatch.inputs.operation.options, ['rollback', 'reactivate', 'deploy', 'tag', 'readback', 'diagnose-auth-image']);
   assert.equal(recovery.jobs.recovery.uses, './.github/workflows/cd.yml');
   assert.equal(recovery.jobs.recovery.if, "inputs.operation != 'diagnose-auth-image'");
+  assert.deepEqual(recovery.jobs.recovery.with, {
+    environment: '${{ inputs.environment }}', source_sha: '${{ inputs.source_sha }}',
+    components: '${{ inputs.components }}', release_tag: '${{ inputs.release_tag }}',
+    operation: '${{ inputs.operation }}', artifact_id: '${{ inputs.artifact_id }}',
+  });
   const diagnosticRecovery = recovery.jobs['auth-image-diagnostic'];
   assert.match(diagnosticRecovery.if, /inputs\.operation == 'diagnose-auth-image'/);
   for (const condition of [
@@ -74,13 +75,40 @@ test('r2 registered release and recovery workflows use explicit artifact inputs'
     "inputs.release_tag == 'diagnostic-36992147920'",
     "inputs.artifact_id == 'diagnostic-no-receipt'",
   ]) assert.ok(diagnosticRecovery.if.includes(condition), `missing diagnostic constraint: ${condition}`);
-  assert.equal(diagnosticRecovery.uses, './.github/workflows/cd.yml');
+  assert.equal(diagnosticRecovery.uses, './.github/workflows/cd-auth-image-diagnostic.yml');
   assert.deepEqual(diagnosticRecovery.permissions, { contents: 'read', actions: 'read', 'id-token': 'write' });
-  assert.deepEqual(diagnosticRecovery.with, {
-    environment: '${{ inputs.environment }}', source_sha: '${{ inputs.source_sha }}',
-    components: '${{ inputs.components }}', release_tag: '${{ inputs.release_tag }}',
-    operation: '${{ inputs.operation }}', artifact_id: '${{ inputs.artifact_id }}',
-  });
+  assert.deepEqual(diagnosticRecovery.with, { source_sha: '${{ inputs.source_sha }}' });
+  const diagnosticWorkflow = parseYaml(await workflow('cd-auth-image-diagnostic.yml'));
+  assert.deepEqual(Object.keys(diagnosticWorkflow.on.workflow_call.inputs), ['source_sha']);
+  assert.deepEqual(diagnosticWorkflow.on.workflow_call.inputs.source_sha, { required: true, type: 'string' });
+  assert.deepEqual(Object.keys(diagnosticWorkflow.jobs), ['auth-image-diagnostic']);
+  assert.deepEqual(diagnosticWorkflow.permissions, { contents: 'read', actions: 'read', 'id-token': 'write' });
+  const standalone = diagnosticWorkflow.jobs['auth-image-diagnostic'];
+  assert.equal(standalone.if, "github.ref == 'refs/heads/develop' && inputs.source_sha == github.sha");
+  assert.deepEqual(standalone.permissions, { contents: 'read', actions: 'read', 'id-token': 'write' });
+  assert.deepEqual(standalone.with, undefined);
+  assert.equal(standalone.env.TARGET, 'development');
+  assert.equal(standalone.env.COMPONENTS, 'auth');
+  assert.equal(standalone.env.OPERATION, 'diagnose-auth-image');
+  assert.equal(standalone.env.RELEASE_TAG, 'diagnostic-36992147920');
+  assert.equal(standalone.env.ARTIFACT_ID, 'diagnostic-no-receipt');
+  assert.equal(standalone.env.REUSE_ID, 'diagnostic-no-receipt');
+  assert.equal(standalone.env.DEV_ID, '');
+  assert.doesNotMatch(JSON.stringify(standalone), /GH_TOKEN|VERCEL_TOKEN|VERCEL_PROJECT_ID|VERCEL_TEAM_ID|artifacts\.cjs|checkpoint/i);
+  assert.doesNotMatch(JSON.stringify(standalone.steps), /artifacts\.cjs|checkpoint|receipt/i);
+  const permissionRank = { none: 0, read: 1, write: 2 };
+  for (const call of [diagnostic, diagnosticRecovery]) {
+    assert.equal(call.uses, './.github/workflows/cd-auth-image-diagnostic.yml');
+    for (const [scopeName, scope] of [
+      ['workflow', diagnosticWorkflow.permissions],
+      ...Object.entries(diagnosticWorkflow.jobs).map(([name, value]) => [name, value.permissions]),
+    ]) {
+      for (const [permission, level] of Object.entries(scope)) {
+        const ceiling = call.permissions[permission] ?? 'none';
+        assert.ok(permissionRank[level] <= permissionRank[ceiling], `${scopeName} requests ${level} ${permission} beyond caller ${ceiling}`);
+      }
+    }
+  }
 });
 
 test('DEV provisioning uses the existing auth identity and preserves hidden evidence', async () => {
@@ -99,11 +127,10 @@ test('DEV provisioning uses the existing auth identity and preserves hidden evid
 
 test('shared engine has one approval and one serialized runtime authority', async () => {
   const parsed = parseYaml(await workflow('cd.yml'));
-  assert.deepEqual(Object.keys(parsed.jobs).sort(), ['auth-image-diagnostic', 'release']);
+  assert.deepEqual(Object.keys(parsed.jobs), ['release']);
   assert.equal(parsed.concurrency.group, 'lwc-engine-${{ inputs.environment }}');
   assert.equal(parsed.concurrency['cancel-in-progress'], false);
   const job = parsed.jobs.release;
-  const diagnostic = parsed.jobs['auth-image-diagnostic'];
   assert.equal(job.if, "inputs.operation != 'diagnose-auth-image'");
   assert.equal(job.environment, "${{ inputs.environment == 'production' && 'Production' || 'Development' }}");
   const steps = job.steps;
@@ -120,12 +147,6 @@ test('shared engine has one approval and one serialized runtime authority', asyn
   assert.equal(steps[runtime].uses, './.github/actions/deployment-engine');
   assert.equal(job.permissions.contents, 'write');
   assert.equal(job.permissions['id-token'], 'write');
-  assert.match(diagnostic.if, /inputs\.operation == 'diagnose-auth-image'/);
-  assert.equal(diagnostic.environment, 'Development');
-  assert.deepEqual(diagnostic.permissions, { contents: 'read', actions: 'read', 'id-token': 'write' });
-  assert.equal(diagnostic.steps.some(step => step.uses === './.github/actions/deployment-engine'), false);
-  assert.equal(diagnostic.steps.some(step => step.run?.includes('artifacts.cjs download')), false);
-  assert.doesNotMatch(JSON.stringify(diagnostic), /GH_TOKEN|VERCEL_TOKEN|VERCEL_PROJECT_ID|VERCEL_TEAM_ID/);
 });
 
 test('ready and result artifacts have bounded retention and always retain failure evidence', async () => {

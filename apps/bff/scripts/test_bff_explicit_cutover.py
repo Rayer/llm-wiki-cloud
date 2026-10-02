@@ -206,21 +206,35 @@ class SharedCDContractTest(unittest.TestCase):
                     "inputs.dev_artifact_id == ''",
                 ):
                     self.assertIn(condition, diagnostic["if"])
-                self.assertEqual(diagnostic["uses"], "./.github/workflows/cd.yml")
+                self.assertEqual(diagnostic["uses"], "./.github/workflows/cd-auth-image-diagnostic.yml")
                 self.assertEqual(diagnostic["permissions"], {"contents": "read", "actions": "read", "id-token": "write"})
-                self.assertEqual(diagnostic["with"], {
-                    "environment": "development", "source_sha": "${{ github.sha }}",
-                    "components": "auth", "release_tag": "diagnostic-36992147920",
-                    "operation": "diagnose-auth-image", "artifact_id": "diagnostic-no-receipt",
-                    "dev_artifact_id": "",
-                })
+                self.assertEqual(diagnostic["with"], {"source_sha": "${{ github.sha }}"})
 
         recovery = yaml.safe_load((workflows / "recover-deployment.yml").read_text())
         trigger = recovery.get("on", recovery.get(True, {}))
         self.assertIn("workflow_dispatch", trigger)
         self.assertEqual(recovery["jobs"]["recovery"]["uses"], "./.github/workflows/cd.yml")
+        self.assertEqual(recovery["jobs"]["recovery"]["with"], {
+            "environment": "${{ inputs.environment }}", "source_sha": "${{ inputs.source_sha }}",
+            "components": "${{ inputs.components }}", "release_tag": "${{ inputs.release_tag }}",
+            "operation": "${{ inputs.operation }}", "artifact_id": "${{ inputs.artifact_id }}",
+        })
+        diagnostic_recovery = recovery["jobs"]["auth-image-diagnostic"]
+        self.assertEqual(diagnostic_recovery["uses"], "./.github/workflows/cd-auth-image-diagnostic.yml")
+        self.assertEqual(diagnostic_recovery["permissions"], {"contents": "read", "actions": "read", "id-token": "write"})
+        self.assertEqual(diagnostic_recovery["with"], {"source_sha": "${{ inputs.source_sha }}"})
+
+        diagnostic_workflow = yaml.safe_load((workflows / "cd-auth-image-diagnostic.yml").read_text())
+        self.assertEqual(set(diagnostic_workflow["jobs"]), {"auth-image-diagnostic"})
+        self.assertEqual(diagnostic_workflow["permissions"], {"contents": "read", "actions": "read", "id-token": "write"})
+        self.assertEqual(diagnostic_workflow["jobs"]["auth-image-diagnostic"]["permissions"], diagnostic_recovery["permissions"])
+        diagnostic_call = diagnostic_workflow.get("on", diagnostic_workflow.get(True, {}))
+        self.assertEqual(diagnostic_call["workflow_call"]["inputs"], {
+            "source_sha": {"required": True, "type": "string"},
+        })
 
         shared = yaml.safe_load((workflows / "cd.yml").read_text())
+        self.assertEqual(set(shared["jobs"]), {"release"})
         job = shared["jobs"]["release"]
         self.assertEqual(shared["concurrency"]["cancel-in-progress"], False)
         self.assertEqual(shared["concurrency"]["group"], "lwc-engine-${{ inputs.environment }}")

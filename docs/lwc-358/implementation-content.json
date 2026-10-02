@@ -1,13 +1,13 @@
 {
-  "base": "f6e6a5e588088294c8829192b308b0813356f9da",
+  "base": "b60dde9fb0318fa327ba2477fb0b796658e71a42",
   "branch": "Rayer/LWC-358-engine-r2",
-  "content_sha256": "0d89071427956ad2d10724bfe1965e790a4a6e02cfb1fe6be6e8d8196fb73434",
+  "content_sha256": "86d50983d9d3073646665d6a258d4dddb12222bc30ff8cbfad17196c7a3d34a1",
   "scope": "All changed/new implementation, test, operator and frozen-spec files; excludes this manifest, evidence report and logs to avoid self-reference.",
   "frozen_sha256": "838817cad154b0ea773c205f671362a6c9c0ad97c38ddf34f2508eb4fcc2488b",
   "files": [
     {
       "path": ".agents/skills/deployment-operator/SKILL.md",
-      "sha256": "7332874c325ab4b2bbe93525adb093939f67d2247428ff643ea6049ffdeedcc7",
+      "sha256": "90a36bfbe6d0630c80c2b49f884fa2bb9bdffa29b9bb43ccf19bea2a2bdf0793",
       "mode": "0o644"
     },
     {
@@ -21,8 +21,13 @@
       "mode": "0o644"
     },
     {
+      "path": ".github/workflows/cd-auth-image-diagnostic.yml",
+      "sha256": "f19ce366fbe5e041a882043dd149116f22e5c8d5a5dfd9fd5d485443b1d80f02",
+      "mode": "0o644"
+    },
+    {
       "path": ".github/workflows/cd.yml",
-      "sha256": "2c09f6695f6c51c1c62aba93201a8801c6515163e7ccd664616eb6d60450c39d",
+      "sha256": "d480779da95f4fdb7d0b9636a3308b225bedb6bd1a5575bf2905572195e24c93",
       "mode": "0o644"
     },
     {
@@ -32,7 +37,7 @@
     },
     {
       "path": ".github/workflows/deploy-dev.yml",
-      "sha256": "e136c745ab81e99a803c709dd7034064d870396f6f0b127b2a85d009fd383d9a",
+      "sha256": "29f70bde7cdffd84dfca4851783c55f581064c8be213aa4309afd2d568ed2b32",
       "mode": "0o644"
     },
     {
@@ -42,7 +47,7 @@
     },
     {
       "path": ".github/workflows/recover-deployment.yml",
-      "sha256": "914cd3c7be71ec0d76000bb53e2d8a0709ee6dc1d30993303a139b6ac8279d70",
+      "sha256": "a4682baaeaae9d3c0db3eee37ce84db5b46cb968703f5db54d4fcf0518113fa8",
       "mode": "0o644"
     },
     {
@@ -57,7 +62,7 @@
     },
     {
       "path": "apps/bff/scripts/test_bff_explicit_cutover.py",
-      "sha256": "8df6eae99f4e38e8fc81abed5f4621d645b804314321f0bcd66409736de925d7",
+      "sha256": "8791eb20cd5cff7f63f81fe4611637724d64f588f05db65a3bd3283ff79ab3ce",
       "mode": "0o644"
     },
     {
@@ -67,7 +72,7 @@
     },
     {
       "path": "apps/frontend/tests/ci-workflow-contract.test.mjs",
-      "sha256": "d30532626e7dcd3b22e89a4e446b0c381aca041460025f8c92fc44a771f9d5af",
+      "sha256": "8689ab82313748d33610f2d4bda2ec0d34a535861c5ad5c67409595d2daf62c0",
       "mode": "0o644"
     },
     {
@@ -77,17 +82,22 @@
     },
     {
       "path": "apps/frontend/tests/lwc-253-authority-reconciliation.test.mjs",
-      "sha256": "516731f7693f7996dfb365cad1c7c37963c1e4003d8671fafd374d421ab4c57a",
+      "sha256": "dcb70144349cff02f3ca7c377cb32c9fc8d59bca08952c124db8236c9b4c1bf8",
       "mode": "0o644"
     },
     {
       "path": "apps/frontend/tests/lwc-253-vercel-dev-authority.test.mjs",
-      "sha256": "d8cf7e38cbaf1e788a6d44267a6c6d8052ce5e26d0e60296cd405930fb14c264",
+      "sha256": "d5db19f7177fdb9de72b36fc9f45e319aa1591423ab7099dd2ae95a2a530a838",
       "mode": "0o644"
     },
     {
       "path": "apps/frontend/tests/lwc-258-vercel-production-auth-env.test.mjs",
       "sha256": "a85e608a40928b264cfa6a0877f879f8e59044dc3ed815cd28e259ab3b0e115e",
+      "mode": "0o644"
+    },
+    {
+      "path": "apps/frontend/tests/lwc-admin-pipeline-terminal-status.test.tsx",
+      "sha256": "9781a096e6b1a5c3bd23e92b47f6d2afb900dfff2647380615cb12de976bc06f",
       "mode": "0o644"
     },
     {
@@ -187,7 +197,7 @@
     },
     {
       "path": "docs/lwc-358/operator-r2.md",
-      "sha256": "221b75c7f8a0ef854e7ca6b08b3972efe0b0be4004327f0e2420bae0aa09754a",
+      "sha256": "2d7a4b0ce734d2de1fef37cbe8330dc5669b9285e15c4562bc7a4d144b8c4d05",
       "mode": "0o644"
     },
     {
@@ -197,7 +207,7 @@
     },
     {
       "path": "scripts/test_engine_workflow.py",
-      "sha256": "436c0269aa89d918f892e41043204ecd01778601804e3988e404513cedca3915",
+      "sha256": "906a33cdd7d0a90125dc563bfd5313d77e45cf2678475de6c51b51d9628df879",
       "mode": "0o644"
     }
   ]

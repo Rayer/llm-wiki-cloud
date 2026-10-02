@@ -1,0 +1,32 @@
+TAP version 13
+# Subtest: DEV authority uses the protected shared engine and durable selected stage barrier
+not ok 1 - DEV authority uses the protected shared engine and durable selected stage barrier
+  ---
+  duration_ms: 6.740167
+  type: 'test'
+  location: '/Users/rayer/orca/workspaces/llm-wiki-cloud/LWC-358-engine-r2/apps/frontend/tests/lwc-253-authority-reconciliation.test.mjs:767:1'
+  failureType: 'testCodeFailure'
+  error: |-
+    The input was expected to not match the regular expression /GH_TOKEN|VERCEL_TOKEN|VERCEL_PROJECT_ID|VERCEL_TEAM_ID|checkpoint|receipt/i. Input:
+    
+    '{"if":"github.ref == \'refs/heads/develop\' && inputs.source_sha == github.sha","runs-on":"ubuntu-latest","timeout-minutes":10,"environment":"Development","permissions":{"contents":"read","actions":"read","id-token":"write"},"env":{"TARGET":"development","SOURCE":"${{ inputs.source_sha }}","COMPONENTS":"auth","RELEASE_TAG":"diagnostic-36992147920","REUSE_ID":"diagnostic-no-receipt","DEV_ID":"","ARTIFACT_ID":"diagnostic-no-receipt","OPERATION":"diagnose-auth-image","WORKFLOW_REF":"${{ github.ref }}","WORKFLOW_SHA":"${{ github.sha }}"},"steps":[{"uses":"actions/checkout@11d5960a326750d5838078e36cf38b85af677262","with":{"ref":"${{ inputs.source_sha }}","fetch-depth":1,"persist-credentials":false}},{"uses":"google-github-actions/auth@7c6bc770dae815cd3e89ee6cdf493a5fab2cc093","with":{"project_id":"llm-wiki-cloud","workload_identity_provider":"${{ secrets.WIF_PROVIDER }}","service_account":"${{ secrets.WIF_SERVICE_ACCOUNT }}"}},{"uses":"google-github-actions/setup-gcloud@e427ad8a34f8676edf47cf7d7925499adf3eb74f"},{"name":"Read-only Auth image diagnostic","run":"mkdir -p \\"$RUNNER_TEMP/lwc-auth-diagnostic\\"\\npython3 deploy/engine/diagnostics.py --output \\"$RUNNER_TEMP/lwc-auth-diagnostic/result.json\\"\\n"},{"name":"Retain redacted diagnostic result","if":"always()","uses":"actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02","with":{"name":"lwc-auth-diagnostic-${{ github.run_id }}-${{ github.run_attempt }}","path":"${{ runner.temp }}/lwc-auth-diagnostic/result.json","retention-days":90,"if-no-files-found":"warn"}}]}'
+    
+  code: 'ERR_ASSERTION'
+  name: 'AssertionError'
+  expected:
+  actual: '{"if":"github.ref == \'refs/heads/develop\' && inputs.source_sha == github.sha","runs-on":"ubuntu-latest","timeout-minutes":10,"environment":"Development","permissions":{"contents":"read","actions":"read","id-token":"write"},"env":{"TARGET":"development","SOURCE":"${{ inputs.source_sha }}","COMPONENTS":"auth","RELEASE_TAG":"diagnostic-36992147920","REUSE_ID":"diagnostic-no-receipt","DEV_ID":"","ARTIFACT_ID":"diagnostic-no-receipt","OPERATION":"diagnose-auth-image","WORKFLOW_REF":"${{ github.ref }}","WORKFLOW_SHA":"${{ github.sha }}"},"steps":[{"uses":"actions/checkout@11d5960a326750d5838078e36cf38b85af677262","with":{"ref":"${{ inputs.source_sha }}","fetch-depth":1,"persist-credentials":false}},{"uses":"google-github-actions/auth@7c6bc770dae815cd3e89ee6cdf493a5fab2cc093","with":{"project_id":"llm-wiki-cloud","workload_identity_provider":"${{ secrets.WIF_PROVIDER }}","service_account":"${{ secrets.WIF_SERVICE_ACCOUNT }}"}},{"uses":"google-github-actions/setup-gcloud@e427ad8a34f8676edf47cf7d7925499adf3eb74f"},{"name":"Read-only Auth image diagnostic","run":"mkdir -p \\"$RUNNER_TEMP/lwc-auth-diagnostic\\"\\npython3 deploy/engine/diagnostics.py --output \\"$RUNNER_TEMP/lwc-auth-diagnostic/result.json\\"\\n"},{"name":"Retain redacted diagnostic result","if":"always()","uses":"actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02","with":{"name":"lwc-auth-diagnostic-${{ github.run_id }}-${{ github.run_attempt }}","path":"${{ runner.temp }}/lwc-auth-diagnostic/result.json","retention-days":90,"if-no-files-found":"warn"}}]}'
+  operator: 'doesNotMatch'
+  stack: |-
+    TestContext.<anonymous> (file:///Users/rayer/orca/workspaces/llm-wiki-cloud/LWC-358-engine-r2/apps/frontend/tests/lwc-253-authority-reconciliation.test.mjs:801:10)
+    async Test.run (node:internal/test_runner/test:1054:7)
+    async startSubtestAfterBootstrap (node:internal/test_runner/harness:296:3)
+  ...
+1..1
+# tests 1
+# suites 0
+# pass 0
+# fail 1
+# cancelled 0
+# skipped 0
+# todo 0
+# duration_ms 82.211458
