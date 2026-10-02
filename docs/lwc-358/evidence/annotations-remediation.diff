@@ -1,0 +1,197 @@
+--- reviewed-9628/deploy/engine/providers.py
++++ working/deploy/engine/providers.py
+@@ -138,8 +138,25 @@
+ 
+     @staticmethod
+     def service_template(raw):
+-        # Revision metadata names and controller annotations are not managed fields.
+         return raw['spec']['template']['spec']
++
++    @staticmethod
++    def revision_config(revision):
++        # Preserve all effective annotations, including secret aliases and future
++        # config keys. Exclude only controller/audit output, never a whole prefix.
++        controller = {'run.googleapis.com/operation-id', 'run.googleapis.com/ingress-status',
++                      'run.googleapis.com/urls', 'serving.knative.dev/creator',
++                      'serving.knative.dev/lastModifier', 'serving.knative.dev/routes',
++                      'client.knative.dev/user-image', 'run.googleapis.com/client-name',
++                      'run.googleapis.com/client-version'}
++        return {'spec': revision['spec'], 'annotations': {
++            k: v for k, v in revision.get('metadata', {}).get('annotations', {}).items()
++            if k not in controller}}
++
++    def template_matches(self, raw, revision):
++        template = raw['spec']['template']
++        return (self.revision_config(template) == self.revision_config(revision) and
++                template.get('metadata', {}).get('name', revision['metadata']['name']) == revision['metadata']['name'])
+ 
+     def snapshot(self, c):
+         if c == 'frontend':
+@@ -157,10 +174,10 @@
+             image = revision['status']['imageDigest']
+             require('@sha256:' in image, 'mutable-prior-image')
+             template = self.service_template(raw)
+-            require(template == revision['spec'] and len(template['containers']) == 1 and template['containers'][0]['image'] == image, 'unrepresentable-prior-service-template')
++            require(self.template_matches(raw, revision) and len(template['containers']) == 1 and template['containers'][0]['image'] == image, 'unrepresentable-prior-service-template')
+             return {'revision': revision['metadata']['name'], 'image': image,
+-                    'template_fingerprint': digest(template),
+-                    'fingerprint': digest({'spec': revision['spec'], 'annotations': revision['metadata'].get('annotations', {})}),
++                    'template_fingerprint': digest(self.revision_config(raw['spec']['template'])),
++                    'fingerprint': digest(self.revision_config(revision)),
+                     'traffic': [{'revisionName': revision['metadata']['name'], 'percent': 100}]}
+         template = self.job_template(raw)
+         require(len(template['containers']) == 1, 'unrepresentable-job')
+@@ -221,10 +238,11 @@
+             revision = self.revision(c, traffic[0]['revisionName'])
+             if prior:
+                 return (revision['metadata']['name'] == artifact['revision'] and
+-                        digest(self.service_template(raw)) == artifact['template_fingerprint'] and
+-                        digest({'spec': revision['spec'], 'annotations': revision['metadata'].get('annotations', {})}) == artifact['fingerprint'])
++                        self.template_matches(raw, revision) and
++                        digest(self.revision_config(raw['spec']['template'])) == artifact['template_fingerprint'] and
++                        digest(self.revision_config(revision)) == artifact['fingerprint'])
+             return (self.service_matches(c, revision, artifact['image']) and
+-                    self.service_template(raw) == revision['spec'] and
++                    self.template_matches(raw, revision) and
+                     raw['spec']['template']['metadata']['name'] == revision['metadata']['name'] and
+                     (not candidate.get('revision') or candidate['revision'] == revision['metadata']['name']))
+         t = self.job_template(raw)
+@@ -283,7 +301,7 @@
+             retained = self.revision(c, revision)
+             require(self.service_matches(c, retained, artifact['image']), 'candidate-config-not-ready')
+             raw = self.describe(c)
+-            if self.service_template(raw) != retained['spec'] or raw['spec']['template'].get('metadata', {}).get('name') != revision:
++            if not self.template_matches(raw, retained) or raw['spec']['template'].get('metadata', {}).get('name') != revision:
+                 self.restore_service(c, retained, [{'revisionName': revision, 'percent': 100}])
+             else:
+                 self.cloud(c, 'services', 'update-traffic', name, '--to-revisions', revision+'=100', mutation=True)
+@@ -314,7 +332,7 @@
+         _, name = self.resource(c)
+         raw = self.describe(c)
+         template = {'metadata': {'name': revision['metadata']['name'],
+-                    'annotations': raw['spec']['template'].get('metadata', {}).get('annotations', {})},
++                    'annotations': self.revision_config(revision)['annotations']},
+                     'spec': revision['spec']}
+         body = {'apiVersion': 'serving.knative.dev/v1', 'kind': 'Service',
+                 'metadata': {'name': name, 'annotations': raw['metadata'].get('annotations', {})},
+@@ -335,7 +353,7 @@
+         kind, name = self.resource(c)
+         if c in ('auth', 'bff'):
+             revision = self.revision(c, prior['revision'])
+-            require(digest({'spec': revision['spec'], 'annotations': revision['metadata'].get('annotations', {})}) == prior['fingerprint'], 'prior-revision-changed')
++            require(digest(self.revision_config(revision)) == prior['fingerprint'], 'prior-revision-changed')
+             self.restore_service(c, revision, prior['traffic'])
+         else:
+             args = [kind, 'update', name, '--image', prior['image']]
+--- reviewed-9628/deploy/engine/tests/test_engine.py
++++ working/deploy/engine/tests/test_engine.py
+@@ -300,6 +300,58 @@
+                 self.assertEqual(replacement['spec']['traffic'],[{'revisionName':revision,'percent':100}])
+                 self.assertFalse([a for a in self.current()['calls'][offset:] if 'build' in a or 'submit' in a])
+ 
++    def test_retained_annotations_full_chain(self):
++        for c in ('auth','bff'):
++            with self.subTest(component=c):
++                state=self.current();name=self.normalized[c]['service_name'];prior=name+'-prior'
++                rev=state['revisions'][prior]
++                rev['spec']['containers'][0]['env']=[{'name':'JWT_SECRET','valueFrom':{'secretKeyRef':{'name':'prior-alias','key':'latest'}}}]
++                annotations={'run.googleapis.com/secrets':'prior-alias:projects/test-only/secrets/prior-test-only',
++                             'autoscaling.knative.dev/maxScale':'3'}
++                rev['metadata']['annotations']=dict(annotations, **{'run.googleapis.com/operation-id':'prior-controller'})
++                state['resources'][name]['spec']['template']={'metadata':{'name':prior,'annotations':annotations},'spec':copy.deepcopy(rev['spec'])}
++                state['secret_alias_fixture']=True;write(self.root/'provider.json',state)
++                e=self.ready(self.make((c,),name='aliases-'+c));e.deploy()
++                receipt=e.receipt(c);candidate=e.state['components'][c]['candidate']
++                retained=copy.deepcopy(self.current()['revisions'][candidate['revision']])
++                offset=len(self.current()['calls'])
++                e.restore([c])
++                self.assertEqual(e.state['components'][c]['status'],'rolled_back')
++                self.assertTrue(e.provider.observe(c,e.state['components'][c]['prior'],{},prior=True))
++                e.deploy([c],reactivate=True)
++                self.assertEqual(e.state['status'],'success')
++                self.assertEqual(self.current()['revisions'][candidate['revision']],retained)
++                self.assertEqual(e.receipt(c),receipt)
++                new=self.make((c,),name='aliases-next-'+c,tag='aliases-next-'+c)
++                new.prepare(reuse=e.directory);new.snapshot()
++                self.assertEqual(new.state['components'][c]['prior']['revision'],candidate['revision'])
++                self.assertFalse([a for a in self.current()['calls'][offset:] if 'build' in a or 'submit' in a])
++                for payload in self.current()['replacements'][-2:]:
++                    self.assertNotIn('run.googleapis.com/operation-id',payload['spec']['template']['metadata']['annotations'])
++                good=self.current()
++                for prior_mode in (False,True):
++                    bad=copy.deepcopy(good)
++                    bad['resources'][name]['spec']['template']['metadata']['annotations']={}
++                    write(self.root/'provider.json',bad)
++                    artifact=new.state['components'][c]['prior'] if prior_mode else receipt['artifact']
++                    self.assertFalse(e.provider.observe(c,artifact,candidate,prior=prior_mode))
++                    with self.assertRaises(Breakpoint):e.provider.snapshot(c)
++                # Controller-only churn is not effective config drift.
++                stable=copy.deepcopy(good)
++                stable['revisions'][candidate['revision']]['metadata']['annotations']['run.googleapis.com/operation-id']='new-controller'
++                write(self.root/'provider.json',stable)
++                self.assertTrue(e.provider.observe(c,new.state['components'][c]['prior'],{},prior=True))
++                # Matching template/revision tampering still violates retained fingerprint.
++                for obj in (stable['revisions'][candidate['revision']],stable['resources'][name]['spec']['template']):
++                    obj['metadata']['annotations']['autoscaling.knative.dev/maxScale']='99'
++                write(self.root/'provider.json',stable)
++                self.assertFalse(e.provider.observe(c,new.state['components'][c]['prior'],{},prior=True))
++                offset=len(self.current()['calls'])
++                with self.assertRaisesRegex(Breakpoint,'prior-revision-changed'):
++                    e.provider.rollback(c,new.state['components'][c]['prior'])
++                self.assertFalse([a for a in self.current()['calls'][offset:] if 'replace' in a])
++                write(self.root/'provider.json',good)
++
+ class SourceApplicability(unittest.TestCase):
+     def test_actual_go_inputs_include_embeds_exclude_engine_and_unrelated_packages(self):
+         sha=subprocess.check_output(['git','rev-parse','HEAD'],cwd=ROOT,text=True).strip()
+--- reviewed-9628/deploy/engine/tests/fake_provider.py
++++ working/deploy/engine/tests/fake_provider.py
+@@ -49,6 +49,9 @@
+             # Existing named revisions are immutable; replacement must reuse exact spec.
+             assert retained in s['revisions']
+             assert body['spec']['template']['spec']==s['revisions'][retained]['spec']
++            expected={k:v for k,v in s['revisions'][retained]['metadata'].get('annotations',{}).items()
++                      if k not in ('run.googleapis.com/operation-id','serving.knative.dev/creator','run.googleapis.com/ingress-status')}
++            assert body['spec']['template']['metadata'].get('annotations',{})==expected, 'incorrect retained effective annotations'
+             s.setdefault('replacements',[]).append(body)
+             if s.get('fail_rollback'): fail=True
+             else:
+@@ -89,10 +92,20 @@
+                     k,v=pair.split('=',1);n,key=v.split(':');env[k]={'name':k,'valueFrom':{'secretKeyRef':{'name':n,'key':key}}}
+             for k in flag('--remove-secrets','').split(','): env.pop(k,None)
+             container['env']=list(env.values())
++            if kind=='services' and s.get('secret_alias_fixture'):
++                bindings=[]
++                for entry in container['env']:
++                    if 'valueFrom' in entry:
++                        ref=entry['valueFrom']['secretKeyRef']
++                        alias='candidate-'+entry['name'].lower().replace('_','-')
++                        bindings.append(alias+':projects/'+flag('--project')+'/secrets/'+ref['name'])
++                        ref['name']=alias
++                rev['metadata']['annotations']={'run.googleapis.com/secrets':','.join(bindings),
++                    'autoscaling.knative.dev/maxScale':'7','run.googleapis.com/operation-id':'candidate-controller'}
+             if kind=='services':
+                 s['revisions'][revision]=rev
+                 raw['status']['latestCreatedRevisionName']=revision
+-                raw['spec']['template']={'metadata':{'name':revision},'spec':copy.deepcopy(rev['spec'])}
++                raw['spec']['template']={'metadata':{'name':revision,'annotations':{k:v for k,v in rev['metadata'].get('annotations',{}).items() if k!='run.googleapis.com/operation-id'}},'spec':copy.deepcopy(rev['spec'])}
+             out=raw
+             if s.get('partial') == name and not image.endswith('b'*64):
+                 container['image']='broken@sha256:'+'b'*64
+--- reviewed-9628/docs/lwc-358/operator-r2.md
++++ working/docs/lwc-358/operator-r2.md
+@@ -35,7 +35,7 @@
+ 
+ `Recover retained deployment` 輸入原 `source_sha`、`release_tag`、target environment、最新 `artifact_id`、受影響 components 及 `operation` (`rollback`, `reactivate`, `deploy`, `tag`, `readback`)。使用 artifact 清單中最新 `lwc-state-<target>-…` ID，而非舊 `lwc-ready-…`。Checkpoint 查詢一次讀最新 100 筆；若無法在界限內確認最新 state、artifact 到期或 provider 不可讀，停止並回报 TPM，不猜測。
+ 
+-Known failure 只自動逆序復原本次 invocation changed/possibly changed components；不把 release 歷史中已成功、且本次未選取或未更新的 component 納入補償。unknown 先 reconcile，無法確認時停止。獨立 rollback/reactivate 不 build。Service candidate-reactivation 使用保留 revision 的 exact template spec 與同一 revision 名稱／routing；基本 sanity 同時驗證 service template 與 active revision 一致，才可供下一次 release snapshot 使用。Provider 若拒絕既有 named revision 的 template restore，保留 failure/unknown，不改名建立替代 revision，也不重建 artifact。原 resource 不存在、prior image 非 digest、不可表示的 Service traffic（此版只接受一個 untagged 100% revision）、Export Job 現有 config 不符，均在 mutation 前停止。此版不 provision/delete resource、不執行 Job、不回復 persistent writes。
++Known failure 只自動逆序復原本次 invocation changed/possibly changed components；不把 release 歷史中已成功、且本次未選取或未更新的 component 納入補償。unknown 先 reconcile，無法確認時停止。獨立 rollback/reactivate 不 build。Service candidate-reactivation 使用保留 revision 的 exact template spec、retained effective annotations（含 secret aliases）與同一 revision 名稱／routing；基本 sanity 同時驗證 service template 與 active revision 一致，才可供下一次 release snapshot 使用。Provider 若拒絕既有 named revision 的 template restore，保留 failure/unknown，不改名建立替代 revision，也不重建 artifact。原 resource 不存在、prior image 非 digest、不可表示的 Service traffic（此版只接受一個 untagged 100% revision）、Export Job 現有 config 不符，均在 mutation 前停止。此版不 provision/delete resource、不執行 Job、不回復 persistent writes。
+ 
+ ## 本機與離線驗證
+ 
+@@ -58,3 +58,5 @@
+ ```
+ 
+ `deploy/engine/tests/fake_provider.py` 是 TEST ONLY executable，替代 command boundary，沒有 production fallback。測試使用真實 engine/adapters；不能當成 live provider、IAM、部署或 UAT 證據。旧 `deploy/cd.sh` 與 composite component runtime entrypoints 僅保留供既有 regression；正式 r2 workflow 不呼叫它們，也不呼叫原 Export bootstrap provisioning。
++
++Retained Service 設定的 snapshot、restore、observe 與 fingerprint 共用相同 spec + annotations 投影。僅排除明列的 controller／audit annotations（operation-id、ingress-status、urls、creator、lastModifier、routes、user-image、client-name/version），不排除整個 namespace；secret aliases、autoscaling、網路設定及其他 annotations 均保留。Service-level annotations 不由此 revision restore 改寫。設定不一致在 snapshot 前停止；readback 不一致不能回報成功。舊 engine checkpoint 的 fingerprint 不應手動轉換或繞過 engine-content guard。

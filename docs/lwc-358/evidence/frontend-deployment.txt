@@ -1,0 +1,376 @@
+TAP version 13
+# Subtest: r2 registered release and recovery workflows use explicit artifact inputs
+ok 1 - r2 registered release and recovery workflows use explicit artifact inputs
+  ---
+  duration_ms: 5.527166
+  type: 'test'
+  ...
+# Subtest: DEV provisioning uses the existing auth identity and preserves hidden evidence
+ok 2 - DEV provisioning uses the existing auth identity and preserves hidden evidence
+  ---
+  duration_ms: 1.438292
+  type: 'test'
+  ...
+# Subtest: shared engine has one approval and one serialized runtime authority
+ok 3 - shared engine has one approval and one serialized runtime authority
+  ---
+  duration_ms: 1.3665
+  type: 'test'
+  ...
+# Subtest: ready and result artifacts have bounded retention and always retain failure evidence
+ok 4 - ready and result artifacts have bounded retention and always retain failure evidence
+  ---
+  duration_ms: 0.865625
+  type: 'test'
+  ...
+# Subtest: all shared run blocks are shell-valid and production consumes, not rebuilds, cloud images
+ok 5 - all shared run blocks are shell-valid and production consumes, not rebuilds, cloud images
+  ---
+  duration_ms: 8.125333
+  type: 'test'
+  ...
+# Subtest: builds once with Vercel prebuilt ordering and keeps immutable ID separate from URL
+ok 6 - builds once with Vercel prebuilt ordering and keeps immutable ID separate from URL
+  ---
+  duration_ms: 1756.883917
+  type: 'test'
+  ...
+# Subtest: reuses a live-shaped existing candidate before any build mutation
+ok 7 - reuses a live-shaped existing candidate before any build mutation
+  ---
+  duration_ms: 681.969458
+  type: 'test'
+  ...
+# Subtest: LWC-318 exact-SHA reuse rejects missing build proof before alias writes
+ok 8 - LWC-318 exact-SHA reuse rejects missing build proof before alias writes
+  ---
+  duration_ms: 396.8625
+  type: 'test'
+  ...
+# Subtest: LWC-318 exact-SHA reuse rejects wrong-auth build proof before alias writes
+ok 9 - LWC-318 exact-SHA reuse rejects wrong-auth build proof before alias writes
+  ---
+  duration_ms: 405.908
+  type: 'test'
+  ...
+# Subtest: LWC-318 exact-SHA reuse rejects wrong-api build proof before alias writes
+ok 10 - LWC-318 exact-SHA reuse rejects wrong-api build proof before alias writes
+  ---
+  duration_ms: 420.109042
+  type: 'test'
+  ...
+# Subtest: LWC-318 exact-SHA reuse rejects unauthorized build proof before alias writes
+ok 11 - LWC-318 exact-SHA reuse rejects unauthorized build proof before alias writes
+  ---
+  duration_ms: 376.014292
+  type: 'test'
+  ...
+# Subtest: LWC-318 exact-SHA reuse rejects forbidden build proof before alias writes
+ok 12 - LWC-318 exact-SHA reuse rejects forbidden build proof before alias writes
+  ---
+  duration_ms: 395.146
+  type: 'test'
+  ...
+# Subtest: LWC-318 exact-SHA reuse rejects redirect build proof before alias writes
+ok 13 - LWC-318 exact-SHA reuse rejects redirect build proof before alias writes
+  ---
+  duration_ms: 376.594084
+  type: 'test'
+  ...
+# Subtest: LWC-318 exact-SHA reuse rejects malformed build proof before alias writes
+ok 14 - LWC-318 exact-SHA reuse rejects malformed build proof before alias writes
+  ---
+  duration_ms: 391.483416
+  type: 'test'
+  ...
+# Subtest: LWC-318 exact-SHA reuse rejects multiple build proof before alias writes
+ok 15 - LWC-318 exact-SHA reuse rejects multiple build proof before alias writes
+  ---
+  duration_ms: 403.758667
+  type: 'test'
+  ...
+# Subtest: LWC-318 exact-SHA reuse rejects nonjson build proof before alias writes
+ok 16 - LWC-318 exact-SHA reuse rejects nonjson build proof before alias writes
+  ---
+  duration_ms: 420.052208
+  type: 'test'
+  ...
+# Subtest: LWC-318 exact-SHA reuse rejects wrong-mime build proof before alias writes
+ok 17 - LWC-318 exact-SHA reuse rejects wrong-mime build proof before alias writes
+  ---
+  duration_ms: 403.902958
+  type: 'test'
+  ...
+# Subtest: LWC-318 exact-SHA reuse rejects extra build proof before alias writes
+ok 18 - LWC-318 exact-SHA reuse rejects extra build proof before alias writes
+  ---
+  duration_ms: 398.389291
+  type: 'test'
+  ...
+# Subtest: LWC-318 exact-SHA reuse rejects oversize build proof before alias writes
+ok 19 - LWC-318 exact-SHA reuse rejects oversize build proof before alias writes
+  ---
+  duration_ms: 397.753542
+  type: 'test'
+  ...
+# Subtest: LWC-318 exact-SHA reuse rejects wrong-status build proof before alias writes
+ok 20 - LWC-318 exact-SHA reuse rejects wrong-status build proof before alias writes
+  ---
+  duration_ms: 356.289334
+  type: 'test'
+  ...
+# Subtest: LWC-318 exact-SHA reuse rejects transport-failure build proof before alias writes
+ok 21 - LWC-318 exact-SHA reuse rejects transport-failure build proof before alias writes
+  ---
+  duration_ms: 371.407834
+  type: 'test'
+  ...
+# Subtest: LWC-318 exact-SHA reuse rejects wrong-schema build proof before alias writes
+ok 22 - LWC-318 exact-SHA reuse rejects wrong-schema build proof before alias writes
+  ---
+  duration_ms: 428.357833
+  type: 'test'
+  ...
+# Subtest: LWC-318 exact-SHA reuse rejects duplicate-json build proof before alias writes
+ok 23 - LWC-318 exact-SHA reuse rejects duplicate-json build proof before alias writes
+  ---
+  duration_ms: 429.732166
+  type: 'test'
+  ...
+# Subtest: LWC-318 exact-SHA reuse rejects extra-json build proof before alias writes
+ok 24 - LWC-318 exact-SHA reuse rejects extra-json build proof before alias writes
+  ---
+  duration_ms: 409.2495
+  type: 'test'
+  ...
+# Subtest: LWC-318 protected provider output verified reuse binds observed config and hash to receipt and rechecks it
+ok 25 - LWC-318 protected provider output verified reuse binds observed config and hash to receipt and rechecks it
+  ---
+  duration_ms: 1000.681667
+  type: 'test'
+  ...
+# Subtest: LWC-318 freshly created deployment with wrong effective Auth fails before alias writes
+ok 26 - LWC-318 freshly created deployment with wrong effective Auth fails before alias writes
+  ---
+  duration_ms: 593.710875
+  type: 'test'
+  ...
+# Subtest: LWC-318 reconciliation rejects changed receipt source_sha
+ok 27 - LWC-318 reconciliation rejects changed receipt source_sha
+  ---
+  duration_ms: 773.101666
+  type: 'test'
+  ...
+# Subtest: LWC-318 reconciliation rejects changed receipt target
+ok 28 - LWC-318 reconciliation rejects changed receipt target
+  ---
+  duration_ms: 799.34025
+  type: 'test'
+  ...
+# Subtest: LWC-318 reconciliation rejects changed receipt build_config_sha256
+ok 29 - LWC-318 reconciliation rejects changed receipt build_config_sha256
+  ---
+  duration_ms: 777.118708
+  type: 'test'
+  ...
+# Subtest: LWC-318 reconciliation rejects changed receipt build_config_transport
+ok 30 - LWC-318 reconciliation rejects changed receipt build_config_transport
+  ---
+  duration_ms: 796.8705
+  type: 'test'
+  ...
+# Subtest: LWC-318 reconciliation rejects changed receipt deployment_id
+ok 31 - LWC-318 reconciliation rejects changed receipt deployment_id
+  ---
+  duration_ms: 700.008917
+  type: 'test'
+  ...
+# Subtest: LWC-318 reconciliation rejects changed receipt deployment_url
+ok 32 - LWC-318 reconciliation rejects changed receipt deployment_url
+  ---
+  duration_ms: 676.6765
+  type: 'test'
+  ...
+# Subtest: LWC-318 reconciliation rejects changed receipt build_config
+ok 33 - LWC-318 reconciliation rejects changed receipt build_config
+  ---
+  duration_ms: 792.553666
+  type: 'test'
+  ...
+# Subtest: production already-converged candidate performs no provider write
+ok 34 - production already-converged candidate performs no provider write
+  ---
+  duration_ms: 583.910458
+  type: 'test'
+  ...
+# Subtest: production freeze paginates the complete alias inventory before mutation
+ok 35 - production freeze paginates the complete alias inventory before mutation
+  ---
+  duration_ms: 274.981833
+  type: 'test'
+  ...
+# Subtest: production mutate paginates a live-shaped 100+48 deployment inventory without argv overflow
+ok 36 - production mutate paginates a live-shaped 100+48 deployment inventory without argv overflow
+  ---
+  duration_ms: 936.049791
+  type: 'test'
+  ...
+# Subtest: duplicate-exact fails closed before provider mutation
+ok 37 - duplicate-exact fails closed before provider mutation
+  ---
+  duration_ms: 313.573417
+  type: 'test'
+  ...
+# Subtest: foreign-candidate fails closed before provider mutation
+ok 38 - foreign-candidate fails closed before provider mutation
+  ---
+  duration_ms: 289.068125
+  type: 'test'
+  ...
+# Subtest: malformed-candidate fails closed before provider mutation
+ok 39 - malformed-candidate fails closed before provider mutation
+  ---
+  duration_ms: 309.260375
+  type: 'test'
+  ...
+# Subtest: missing-uid fails closed before provider mutation
+ok 40 - missing-uid fails closed before provider mutation
+  ---
+  duration_ms: 299.466292
+  type: 'test'
+  ...
+# Subtest: wrong-authority fails closed before provider mutation
+ok 41 - wrong-authority fails closed before provider mutation
+  ---
+  duration_ms: 293.707875
+  type: 'test'
+  ...
+# Subtest: inventory-unreadable fails closed before provider mutation
+ok 42 - inventory-unreadable fails closed before provider mutation
+  ---
+  duration_ms: 266.8995
+  type: 'test'
+  ...
+# Subtest: zero candidate preserves the existing build and create path
+ok 43 - zero candidate preserves the existing build and create path
+  ---
+  duration_ms: 796.78825
+  type: 'test'
+  ...
+# Subtest: production inspect target null is rejected
+ok 44 - production inspect target null is rejected
+  ---
+  duration_ms: 619.4565
+  type: 'test'
+  ...
+# Subtest: freezes exact project and alias authority before any REST mutation
+ok 45 - freezes exact project and alias authority before any REST mutation
+  ---
+  duration_ms: 183.673
+  type: 'test'
+  ...
+# Subtest: rejects a full alias page without authoritative pagination metadata
+ok 46 - rejects a full alias page without authoritative pagination metadata
+  ---
+  duration_ms: 127.603333
+  type: 'test'
+  ...
+# Subtest: exact wrong-target read-back fails closed without retrying the alias mutation
+ok 47 - exact wrong-target read-back fails closed without retrying the alias mutation
+  ---
+  duration_ms: 571.858041
+  type: 'test'
+  ...
+# Subtest: accepts an ambiguous timeout only when exact alias and project inventory read-back converges
+ok 48 - accepts an ambiguous timeout only when exact alias and project inventory read-back converges
+  ---
+  duration_ms: 591.114917
+  type: 'test'
+  ...
+# Subtest: reconciles a deployment timeout through one exact project inventory candidate without retrying create
+ok 49 - reconciles a deployment timeout through one exact project inventory candidate without retrying create
+  ---
+  duration_ms: 758.9775
+  type: 'test'
+  ...
+# Subtest: rejects a full deployment page without authoritative pagination metadata
+ok 50 - rejects a full deployment page without authoritative pagination metadata
+  ---
+  duration_ms: 542.108292
+  type: 'test'
+  ...
+# Subtest: rejects an arbitrary deployment host after timeout reconciliation
+ok 51 - rejects an arbitrary deployment host after timeout reconciliation
+  ---
+  duration_ms: 563.634
+  type: 'test'
+  ...
+# Subtest: accepts the canonical deployment host after timeout reconciliation
+ok 52 - accepts the canonical deployment host after timeout reconciliation
+  ---
+  duration_ms: 769.443834
+  type: 'test'
+  ...
+# Subtest: accepts a short terminal alias page without pagination metadata
+ok 53 - accepts a short terminal alias page without pagination metadata
+  ---
+  duration_ms: 164.144125
+  type: 'test'
+  ...
+# Subtest: keeps deploy-timeout-absent unknown after one deployment inventory lookup
+ok 54 - keeps deploy-timeout-absent unknown after one deployment inventory lookup
+  ---
+  duration_ms: 554.307
+  type: 'test'
+  ...
+# Subtest: keeps deploy-timeout-duplicate unknown after one deployment inventory lookup
+ok 55 - keeps deploy-timeout-duplicate unknown after one deployment inventory lookup
+  ---
+  duration_ms: 513.419875
+  type: 'test'
+  ...
+# Subtest: keeps deploy-timeout-conflicting unknown after one deployment inventory lookup
+ok 56 - keeps deploy-timeout-conflicting unknown after one deployment inventory lookup
+  ---
+  duration_ms: 530.262334
+  type: 'test'
+  ...
+# Subtest: production rollback restores every frozen alias through REST and verifies exact read-back
+ok 57 - production rollback restores every frozen alias through REST and verifies exact read-back
+  ---
+  duration_ms: 1102.023208
+  type: 'test'
+  ...
+# Subtest: shared frontend path is REST-only and does not use the invalid npm build shortcut
+ok 58 - shared frontend path is REST-only and does not use the invalid npm build shortcut
+  ---
+  duration_ms: 0.341125
+  type: 'test'
+  ...
+# Subtest: LWC-318 invalid PROOF_ID rejects output request before HTTP
+ok 59 - LWC-318 invalid PROOF_ID rejects output request before HTTP
+  ---
+  duration_ms: 11.465916
+  type: 'test'
+  ...
+# Subtest: LWC-318 invalid VERCEL_TEAM_ID rejects output request before HTTP
+ok 60 - LWC-318 invalid VERCEL_TEAM_ID rejects output request before HTTP
+  ---
+  duration_ms: 10.329625
+  type: 'test'
+  ...
+# Subtest: LWC-318 invalid VERCEL_PROJECT_ID rejects output request before HTTP
+ok 61 - LWC-318 invalid VERCEL_PROJECT_ID rejects output request before HTTP
+  ---
+  duration_ms: 10.418041
+  type: 'test'
+  ...
+1..61
+# tests 61
+# suites 0
+# pass 61
+# fail 0
+# cancelled 0
+# skipped 0
+# todo 0
+# duration_ms 28188.392459

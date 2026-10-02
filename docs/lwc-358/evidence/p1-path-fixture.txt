@@ -1,0 +1,47 @@
+test_runtime_guard_reads_checkpoint_with_actual_engine_latest_argv (test_transport_integration.EngineTransportIntegration.test_runtime_guard_reads_checkpoint_with_actual_engine_latest_argv) ... FAIL
+test_save_reaches_sdk_with_actual_engine_upload_argv (test_transport_integration.EngineTransportIntegration.test_save_reaches_sdk_with_actual_engine_upload_argv) ... FAIL
+
+======================================================================
+FAIL: test_runtime_guard_reads_checkpoint_with_actual_engine_latest_argv (test_transport_integration.EngineTransportIntegration.test_runtime_guard_reads_checkpoint_with_actual_engine_latest_argv)
+----------------------------------------------------------------------
+Traceback (most recent call last):
+  File "/Users/rayer/orca/workspaces/llm-wiki-cloud/LWC-358-engine-r2/deploy/engine/tests/test_transport_integration.py", line 52, in test_runtime_guard_reads_checkpoint_with_actual_engine_latest_argv
+    self.assertEqual(state['argv'], [['latest', 'development', str(self.directory / '.latest.json')]])
+    ~~~~~~~~~~~~~~~~^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+AssertionError: Lists differ: [['la[19 chars]', '/private/var/folders/kw/1ljc0bxn5z32kwz67q[45 chars]on']] != [['la[19 chars]', '/var/folders/kw/1ljc0bxn5z32kwz67q3vykw000[37 chars]on']]
+
+First differing element 0:
+['lat[18 chars]', '/private/var/folders/kw/1ljc0bxn5z32kwz67q[44 chars]son']
+['lat[18 chars]', '/var/folders/kw/1ljc0bxn5z32kwz67q3vykw000[36 chars]son']
+
+  [['latest',
+    'development',
+-   '/private/var/folders/kw/1ljc0bxn5z32kwz67q3vykw00000gn/T/tmpm335icj7/release/.latest.json']]
+?    --------
+
++   '/var/folders/kw/1ljc0bxn5z32kwz67q3vykw00000gn/T/tmpm335icj7/release/.latest.json']]
+
+======================================================================
+FAIL: test_save_reaches_sdk_with_actual_engine_upload_argv (test_transport_integration.EngineTransportIntegration.test_save_reaches_sdk_with_actual_engine_upload_argv)
+----------------------------------------------------------------------
+Traceback (most recent call last):
+  File "/Users/rayer/orca/workspaces/llm-wiki-cloud/LWC-358-engine-r2/deploy/engine/tests/test_transport_integration.py", line 43, in test_save_reaches_sdk_with_actual_engine_upload_argv
+    self.assertEqual(state['argv'], [['upload', str(self.directory), name]])
+    ~~~~~~~~~~~~~~~~^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+AssertionError: Lists differ: [['upload', '/private/var/folders/kw/1ljc0bxn5z32kwz67q[81 chars]-1']] != [['upload', '/var/folders/kw/1ljc0bxn5z32kwz67q3vykw000[73 chars]-1']]
+
+First differing element 0:
+['upload', '/private/var/folders/kw/1ljc0bxn5z32kwz67q[80 chars]1-1']
+['upload', '/var/folders/kw/1ljc0bxn5z32kwz67q3vykw000[72 chars]1-1']
+
+  [['upload',
+-   '/private/var/folders/kw/1ljc0bxn5z32kwz67q3vykw00000gn/T/tmpkeshtjdx/release',
+?    --------
+
++   '/var/folders/kw/1ljc0bxn5z32kwz67q3vykw00000gn/T/tmpkeshtjdx/release',
+    'lwc-state-development-3cf40a157ed8d116-42-1-1']]
+
+----------------------------------------------------------------------
+Ran 2 tests in 0.097s
+
+FAILED (failures=2)

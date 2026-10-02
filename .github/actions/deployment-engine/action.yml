@@ -1,0 +1,9 @@
+name: Deployment engine r2
+description: Execute checkpointed stages with the runner artifact runtime context
+inputs:
+  operation:
+    required: true
+    description: prepare or runtime
+runs:
+  using: node20
+  main: index.cjs

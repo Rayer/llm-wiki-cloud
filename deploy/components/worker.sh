@@ -182,6 +182,7 @@ worker_rollback() {
 }
 
 case "${1:-}" in
+  build) worker_build_image ;;
   help) printf 'worker component: preflight|freeze|mutate|reconcile|rollback\n' ;;
   preflight) worker_preflight ;;
   freeze) worker_freeze ;;

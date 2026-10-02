@@ -4,6 +4,7 @@
 import json
 import os
 import shutil
+import sys
 import subprocess
 import tempfile
 import textwrap
@@ -171,20 +172,59 @@ class SharedCDContractTest(unittest.TestCase):
             shutil.rmtree(directory, ignore_errors=True)
 
     def test_shared_bff_path_preserves_cutover_safety_boundaries(self):
-        source = (REPO_ROOT / "deploy" / "cd.sh").read_text()
-        bff_source = (REPO_ROOT / "deploy" / "components" / "bff.sh").read_text()
-        shared = (REPO_ROOT / ".github" / "workflows" / "cd.yml").read_text()
-        for path in ("deploy-dev.yml", "promote-production.yml"):
-            workflow = yaml.safe_load((REPO_ROOT / ".github" / "workflows" / path).read_text())
-            triggers = workflow.get("on", workflow.get(True, {}))
-            self.assertIn("workflow_dispatch", triggers)
-            self.assertIn("./.github/workflows/cd.yml", (REPO_ROOT / ".github" / "workflows" / path).read_text())
-        self.assertLess(shared.index("Upload durable rollback artifact"), shared.index("Mutate Auth"))
-        self.assertIn("if: steps.rollback_upload.outcome == 'success'", shared)
-        self.assertIn("event=workflow_dispatch", source)
-        self.assertIn("gcloud run services update-traffic", bff_source)
-        self.assertNotIn("run jobs execute", source)
-        self.assertNotIn("vercel alias set", source)
+        workflows = REPO_ROOT / ".github" / "workflows"
+        for path, environment, branch in (
+            ("deploy-dev.yml", "development", "develop"),
+            ("promote-production.yml", "production", "main"),
+        ):
+            workflow = yaml.safe_load((workflows / path).read_text())
+            trigger = workflow.get("on", workflow.get(True, {}))
+            self.assertIn("workflow_dispatch", trigger)
+            self.assertEqual(list(workflow["jobs"]), ["release"])
+            job = workflow["jobs"]["release"]
+            self.assertEqual(job["if"], f"github.ref == 'refs/heads/{branch}'")
+            self.assertEqual(job["uses"], "./.github/workflows/cd.yml")
+            self.assertEqual(job["with"]["environment"], environment)
+            self.assertIn("release_tag", trigger["workflow_dispatch"]["inputs"])
+            self.assertTrue(trigger["workflow_dispatch"]["inputs"]["release_tag"]["required"])
+
+        recovery = yaml.safe_load((workflows / "recover-deployment.yml").read_text())
+        trigger = recovery.get("on", recovery.get(True, {}))
+        self.assertIn("workflow_dispatch", trigger)
+        self.assertEqual(recovery["jobs"]["recovery"]["uses"], "./.github/workflows/cd.yml")
+
+        shared = yaml.safe_load((workflows / "cd.yml").read_text())
+        job = shared["jobs"]["release"]
+        self.assertEqual(shared["concurrency"]["cancel-in-progress"], False)
+        self.assertEqual(shared["concurrency"]["group"], "lwc-engine-${{ inputs.environment }}")
+        steps = job["steps"]
+        prepare = next(i for i, step in enumerate(steps) if step.get("with", {}).get("operation") == "prepare")
+        barrier = next(i for i, step in enumerate(steps) if step.get("id") == "ready")
+        runtime = next(i for i, step in enumerate(steps) if step.get("with", {}).get("operation") == "runtime")
+        self.assertLess(prepare, barrier)
+        self.assertLess(barrier, runtime)
+        self.assertEqual(steps[barrier]["if"], "inputs.operation == 'release'")
+        self.assertEqual(steps[barrier]["with"]["if-no-files-found"], "error")
+        self.assertEqual(steps[barrier]["with"]["retention-days"], 90)
+        self.assertIn("always()", next(step["if"] for step in steps if step.get("name") == "Retain final result even after failure"))
+
+        engine_tests = subprocess.run(
+            [
+                sys.executable, "-m", "unittest",
+                "test_engine.Acceptance.test_04_order_barrier_and_real_config",
+                "test_engine.Acceptance.test_durable_pending_failure_prevents_provider_mutation",
+                "test_engine.Acceptance.test_service_partial_update_restores_template_even_with_old_traffic",
+                "test_engine.Acceptance.test_hold_service_reactivation_preserves_candidate_and_next_snapshot",
+            ],
+            cwd=REPO_ROOT / "deploy" / "engine" / "tests",
+            capture_output=True, text=True, timeout=90,
+        )
+        self.assertEqual(engine_tests.returncode, 0, engine_tests.stdout + engine_tests.stderr)
+
+        provider = (REPO_ROOT / "deploy" / "engine" / "providers.py").read_text()
+        self.assertIn("self.cloud(c, 'services', 'update-traffic'", provider)
+        self.assertIn("for alias, deployment in prior['aliases'].items()", provider)
+        self.assertNotIn("run jobs execute", provider)
 
     def test_bff_freezes_and_rolls_back_exact_config_without_auth_google(self):
         directory = Path(tempfile.mkdtemp(prefix="lwc-306-bff-legacy-"))

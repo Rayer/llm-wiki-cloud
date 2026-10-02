@@ -153,6 +153,7 @@ auth_rollback() {
 }
 
 case "${1:-}" in
+  build) auth_build_image ;;
   help) printf 'auth component: preflight|freeze|mutate|reconcile|rollback\n' ;;
   preflight) auth_preflight ;;
   freeze) auth_freeze ;;

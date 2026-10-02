@@ -1,0 +1,12 @@
+test_bff_candidate_cutover_revalidates_after_candidate_creation (test_bff_explicit_cutover.SharedCDContractTest.test_bff_candidate_cutover_revalidates_after_candidate_creation)
+A candidate must stay dark and freshness failures must not cut it over. ... ok
+test_bff_freezes_and_rolls_back_exact_config_without_auth_google (test_bff_explicit_cutover.SharedCDContractTest.test_bff_freezes_and_rolls_back_exact_config_without_auth_google) ... ok
+test_bff_partial_result_requires_an_accepted_mutation (test_bff_explicit_cutover.SharedCDContractTest.test_bff_partial_result_requires_an_accepted_mutation) ... ok
+test_bff_readback_rejects_runtime_mismatch_and_redacts_secrets (test_bff_explicit_cutover.SharedCDContractTest.test_bff_readback_rejects_runtime_mismatch_and_redacts_secrets) ... ok
+test_production_consumes_immutable_dev_receipt_without_rebuilding_bff (test_bff_explicit_cutover.SharedCDContractTest.test_production_consumes_immutable_dev_receipt_without_rebuilding_bff) ... ok
+test_shared_bff_path_preserves_cutover_safety_boundaries (test_bff_explicit_cutover.SharedCDContractTest.test_shared_bff_path_preserves_cutover_safety_boundaries) ... ok
+
+----------------------------------------------------------------------
+Ran 6 tests in 12.064s
+
+OK

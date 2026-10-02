@@ -1,0 +1,15 @@
+test_acceptance_does_not_inherit_actions_transport_or_credentials (test_ci_environment.OfflineCIEnvironment.test_acceptance_does_not_inherit_actions_transport_or_credentials) ... FAIL
+
+======================================================================
+FAIL: test_acceptance_does_not_inherit_actions_transport_or_credentials (test_ci_environment.OfflineCIEnvironment.test_acceptance_does_not_inherit_actions_transport_or_credentials)
+----------------------------------------------------------------------
+Traceback (most recent call last):
+  File "/Users/rayer/orca/workspaces/llm-wiki-cloud/LWC-358-engine-r2/deploy/engine/tests/test_ci_environment.py", line 25, in test_acceptance_does_not_inherit_actions_transport_or_credentials
+    self.assertFalse(marker.exists(), 'offline acceptance reached artifact transport')
+    ~~~~~~~~~~~~~~~~^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+AssertionError: True is not false : offline acceptance reached artifact transport
+
+----------------------------------------------------------------------
+Ran 1 test in 1.020s
+
+FAILED (failures=1)

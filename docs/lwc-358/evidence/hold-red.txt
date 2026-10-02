@@ -1,0 +1,52 @@
+test_hold_service_reactivation_preserves_candidate_and_next_snapshot (test_engine.Acceptance.test_hold_service_reactivation_preserves_candidate_and_next_snapshot) ... 
+  test_hold_service_reactivation_preserves_candidate_and_next_snapshot (test_engine.Acceptance.test_hold_service_reactivation_preserves_candidate_and_next_snapshot) (component='auth') ... ERROR
+  test_hold_service_reactivation_preserves_candidate_and_next_snapshot (test_engine.Acceptance.test_hold_service_reactivation_preserves_candidate_and_next_snapshot) (component='bff') ... ERROR
+test_hold_worker_reactivation_failure_does_not_compensate_healthy_auth (test_engine.Acceptance.test_hold_worker_reactivation_failure_does_not_compensate_healthy_auth) ... FAIL
+
+======================================================================
+ERROR: test_hold_service_reactivation_preserves_candidate_and_next_snapshot (test_engine.Acceptance.test_hold_service_reactivation_preserves_candidate_and_next_snapshot) (component='auth')
+----------------------------------------------------------------------
+Traceback (most recent call last):
+  File "/Users/rayer/orca/workspaces/llm-wiki-cloud/LWC-358-engine-r2/deploy/engine/tests/test_engine.py", line 289, in test_hold_service_reactivation_preserves_candidate_and_next_snapshot
+    new.prepare(reuse=e.directory);new.snapshot()
+                                   ~~~~~~~~~~~~^^
+  File "/Users/rayer/orca/workspaces/llm-wiki-cloud/LWC-358-engine-r2/deploy/engine/engine.py", line 190, in snapshot
+    self.state['components'][c] = {'status': 'unstarted', 'prior': self.provider.snapshot(c), 'candidate': {}}
+                                                                   ~~~~~~~~~~~~~~~~~~~~~~^^^
+  File "/Users/rayer/orca/workspaces/llm-wiki-cloud/LWC-358-engine-r2/deploy/engine/providers.py", line 160, in snapshot
+    require(template == revision['spec'] and len(template['containers']) == 1 and template['containers'][0]['image'] == image, 'unrepresentable-prior-service-template')
+    ~~~~~~~^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+  File "/Users/rayer/orca/workspaces/llm-wiki-cloud/LWC-358-engine-r2/deploy/engine/support.py", line 19, in require
+    raise Breakpoint(reason)
+support.Breakpoint: unrepresentable-prior-service-template
+
+======================================================================
+ERROR: test_hold_service_reactivation_preserves_candidate_and_next_snapshot (test_engine.Acceptance.test_hold_service_reactivation_preserves_candidate_and_next_snapshot) (component='bff')
+----------------------------------------------------------------------
+Traceback (most recent call last):
+  File "/Users/rayer/orca/workspaces/llm-wiki-cloud/LWC-358-engine-r2/deploy/engine/tests/test_engine.py", line 289, in test_hold_service_reactivation_preserves_candidate_and_next_snapshot
+    new.prepare(reuse=e.directory);new.snapshot()
+                                   ~~~~~~~~~~~~^^
+  File "/Users/rayer/orca/workspaces/llm-wiki-cloud/LWC-358-engine-r2/deploy/engine/engine.py", line 190, in snapshot
+    self.state['components'][c] = {'status': 'unstarted', 'prior': self.provider.snapshot(c), 'candidate': {}}
+                                                                   ~~~~~~~~~~~~~~~~~~~~~~^^^
+  File "/Users/rayer/orca/workspaces/llm-wiki-cloud/LWC-358-engine-r2/deploy/engine/providers.py", line 160, in snapshot
+    require(template == revision['spec'] and len(template['containers']) == 1 and template['containers'][0]['image'] == image, 'unrepresentable-prior-service-template')
+    ~~~~~~~^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+  File "/Users/rayer/orca/workspaces/llm-wiki-cloud/LWC-358-engine-r2/deploy/engine/support.py", line 19, in require
+    raise Breakpoint(reason)
+support.Breakpoint: unrepresentable-prior-service-template
+
+======================================================================
+FAIL: test_hold_worker_reactivation_failure_does_not_compensate_healthy_auth (test_engine.Acceptance.test_hold_worker_reactivation_failure_does_not_compensate_healthy_auth)
+----------------------------------------------------------------------
+Traceback (most recent call last):
+  File "/Users/rayer/orca/workspaces/llm-wiki-cloud/LWC-358-engine-r2/deploy/engine/tests/test_engine.py", line 273, in test_hold_worker_reactivation_failure_does_not_compensate_healthy_auth
+    self.assertFalse([a for a in calls if a[:3]==['gcloud','run','services'] and a[3] in ('update','replace','update-traffic')])
+    ~~~~~~~~~~~~~~~~^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+AssertionError: [['gcloud', 'run', 'services', 'replace', '/var/folders/kw/1ljc0bxn5z32kwz67q3vykw00000gn/T/tmpgwg932_n/restore.json', '--project', 'llm-wiki-cloud', '--region', 'asia-east1', '--format=json', '--quiet']] is not false
+
+----------------------------------------------------------------------
+Ran 2 tests in 3.279s
+
+FAILED (failures=1, errors=2)

@@ -79,16 +79,20 @@ async function providerCase(scenario, overrides = {}) {
   return { fixture, preflight, mutate, evidence, rollback, state, mutationLog, body };
 }
 
-test('production workflow invokes the shared CD with fixed authority', async () => {
+test('production workflow invokes the shared engine with fixed authority and DEV provenance', async () => {
   const workflow = parseYaml(await readFile(workflowPath, 'utf8'));
-  const job = workflow.jobs.promote;
+  const job = workflow.jobs.release;
   assert.equal(workflow.on.push, undefined);
-  assert.deepEqual(Object.keys(workflow.on.workflow_dispatch.inputs), ['components']);
+  assert.deepEqual(Object.keys(workflow.on.workflow_dispatch.inputs), ['components', 'release_tag', 'artifact_id', 'dev_artifact_id']);
+  assert.equal(workflow.on.workflow_dispatch.inputs.release_tag.required, true);
+  assert.equal(job.if, "github.ref == 'refs/heads/main'");
   assert.equal(job.uses, './.github/workflows/cd.yml');
-  assert.equal(job.with.environment, 'Production');
-  assert.equal(job.with.config_environment, 'production');
-  assert.equal(job.with.source_ref, 'main');
-  assert.equal(job.with.config_path, 'deploy/environments/production.yaml');
+  assert.equal(job.secrets, 'inherit');
+  assert.deepEqual(job.with, {
+    environment: 'production', source_sha: '${{ github.sha }}',
+    components: '${{ inputs.components }}', release_tag: '${{ inputs.release_tag }}',
+    artifact_id: '${{ inputs.artifact_id }}', dev_artifact_id: '${{ inputs.dev_artifact_id }}',
+  });
 });
 
 test('source and safety contract is main-only, production-only, and API-based', async () => {

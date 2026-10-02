@@ -1,0 +1,215 @@
+--- a/deploy/engine/engine.py
++++ b/deploy/engine/engine.py
+@@ -237,6 +237,7 @@
+         if self.state['status'] == 'ready':
+             self.snapshot()
+         chosen = components or self.plan['selected']
++        changed = []  # Compensation belongs to this invocation, not release history.
+         for c in self.plan['selected']:
+             if c not in chosen:
+                 continue
+@@ -245,6 +246,7 @@
+             if entry['status'] == 'verified' and not reactivate:
+                 continue
+             require(entry['status'] not in ('rollback_pending', 'rollback_unknown', 'rollback_failed'), 'recovery-must-be-reconciled')
++            changed.append(c)
+             was_pending = entry['status'] in ('pending', 'unknown')
+             entry['status'] = 'pending'
+             self.state['status'] = 'deploying'
+@@ -276,7 +278,7 @@
+                 self.state['status'] = entry['status']
+                 self.save()
+                 if exc.status != 'unknown':
+-                    self.restore([k for k,v in self.state['components'].items() if v['status'] != 'unstarted'], automatic=True)
++                    self.restore(changed, automatic=True)
+                 raise exc
+         if all(e['status'] == 'verified' for e in self.state['components'].values()) and len(self.state['components']) == len(self.plan['selected']):
+             self.state['status'] = 'runtime_success'
+--- a/deploy/engine/providers.py
++++ b/deploy/engine/providers.py
+@@ -223,7 +223,10 @@
+                 return (revision['metadata']['name'] == artifact['revision'] and
+                         digest(self.service_template(raw)) == artifact['template_fingerprint'] and
+                         digest({'spec': revision['spec'], 'annotations': revision['metadata'].get('annotations', {})}) == artifact['fingerprint'])
+-            return self.service_matches(c, revision, artifact['image']) and (not candidate.get('revision') or candidate['revision'] == revision['metadata']['name'])
++            return (self.service_matches(c, revision, artifact['image']) and
++                    self.service_template(raw) == revision['spec'] and
++                    raw['spec']['template']['metadata']['name'] == revision['metadata']['name'] and
++                    (not candidate.get('revision') or candidate['revision'] == revision['metadata']['name']))
+         t = self.job_template(raw)
+         if len(t['containers']) != 1 or t['containers'][0]['image'] != artifact['image']:
+             return False
+@@ -277,8 +280,13 @@
+                 candidate['revision'] = result['status']['latestCreatedRevisionName']
+                 save()
+             revision = candidate['revision']
+-            require(self.service_matches(c, self.revision(c, revision), artifact['image']), 'candidate-config-not-ready')
+-            self.cloud(c, 'services', 'update-traffic', name, '--to-revisions', revision+'=100', mutation=True)
++            retained = self.revision(c, revision)
++            require(self.service_matches(c, retained, artifact['image']), 'candidate-config-not-ready')
++            raw = self.describe(c)
++            if self.service_template(raw) != retained['spec'] or raw['spec']['template'].get('metadata', {}).get('name') != revision:
++                self.restore_service(c, retained, [{'revisionName': revision, 'percent': 100}])
++            else:
++                self.cloud(c, 'services', 'update-traffic', name, '--to-revisions', revision+'=100', mutation=True)
+         else:
+             if c == 'worker':
+                 args += ['--update-env-vars', '^|^GCP_PROJECT='+self.p['gcp']['project_id']+'|FIRESTORE_DATABASE_ID='+self.p['bff']['firestore_database_id']]
+@@ -300,6 +308,23 @@
+             candidate['deployment'] = matches[0].get('uid', matches[0].get('id'))
+             save()
+ 
++    def restore_service(self, c, revision, traffic):
++        # Use the retained revision name and exact spec: never mint a substitute
++        # revision or rebuild an artifact if the provider rejects this restore.
++        _, name = self.resource(c)
++        raw = self.describe(c)
++        template = {'metadata': {'name': revision['metadata']['name'],
++                    'annotations': raw['spec']['template'].get('metadata', {}).get('annotations', {})},
++                    'spec': revision['spec']}
++        body = {'apiVersion': 'serving.knative.dev/v1', 'kind': 'Service',
++                'metadata': {'name': name, 'annotations': raw['metadata'].get('annotations', {})},
++                'spec': {'template': template, 'traffic': traffic}}
++        # Raw configuration is private and ephemeral, not uploaded evidence.
++        with tempfile.TemporaryDirectory() as temp:
++            path = Path(temp) / 'restore.json'
++            write(path, body)
++            self.cloud(c, 'services', 'replace', path, mutation=True)
++
+     def rollback(self, c, prior):
+         if c == 'frontend':
+             for alias, deployment in prior['aliases'].items():
+@@ -311,17 +336,7 @@
+         if c in ('auth', 'bff'):
+             revision = self.revision(c, prior['revision'])
+             require(digest({'spec': revision['spec'], 'annotations': revision['metadata'].get('annotations', {})}) == prior['fingerprint'], 'prior-revision-changed')
+-            # Restore service template as well as routing. Raw provider values exist
+-            # only in this private ephemeral file, never in uploaded evidence.
+-            raw = self.describe(c)
+-            template = {'metadata': {'annotations': raw['spec']['template'].get('metadata', {}).get('annotations', {})}, 'spec': revision['spec']}
+-            body = {'apiVersion': 'serving.knative.dev/v1', 'kind': 'Service',
+-                    'metadata': {'name': name, 'annotations': raw['metadata'].get('annotations', {})},
+-                    'spec': {'template': template, 'traffic': prior['traffic']}}
+-            with tempfile.TemporaryDirectory() as temp:
+-                path = Path(temp) / 'restore.json'
+-                write(path, body)
+-                self.cloud(c, 'services', 'replace', path, mutation=True)
++            self.restore_service(c, revision, prior['traffic'])
+         else:
+             args = [kind, 'update', name, '--image', prior['image']]
+             if c == 'worker':
+--- a/deploy/engine/tests/test_engine.py
++++ b/deploy/engine/tests/test_engine.py
+@@ -56,10 +56,10 @@
+     def configure(self,**kw):
+         self.provider=self.current();self.provider.update(kw);self.flush()
+     def calls(self,verb):return [x for x in self.current()['calls'] if verb in x]
+-    def make(self,selected=('worker',),name='release',production=False):
++    def make(self,selected=('worker',),name='release',production=False,tag='test-release'):
+         directory=self.root/name;directory.mkdir()
+         n=copy.deepcopy(self.normalized);n['environment']='production' if production else 'development'
+-        p={'schema':2,'id':name,'source':'c'*40,'branch':'main' if production else 'develop','tag':'test-release','selected':list(selected),
++        p={'schema':2,'id':name,'source':'c'*40,'branch':'main' if production else 'develop','tag':tag,'selected':list(selected),
+            'normalized':n,'identities':{c:{'profile':'profile','inputs':'input','files':[]} for c in selected},
+            'dev_reference':'explicit-123' if production else None,'engine_content':engine.engine_fingerprint()}
+         p['id']=engine.digest({k:v for k,v in p.items() if k != 'id'})
+@@ -167,7 +167,7 @@
+         baseline=self.current()
+         for c in ('auth','bff'):
+             name=self.normalized[c]['service_name'];revision=e.state['components'][c]['candidate']['revision']
+-            for fault in ('image','specimage','ready','env','secret','account','traffic'):
++            for fault in ('image','specimage','ready','env','secret','account','traffic','template'):
+                 with self.subTest(component=c,fault=fault):
+                     self.provider=copy.deepcopy(baseline)
+                     rev=self.provider['revisions'][revision]
+@@ -177,6 +177,7 @@
+                     elif fault=='env':rev['spec']['containers'][0]['env']=[v for v in rev['spec']['containers'][0]['env'] if 'value' not in v]
+                     elif fault=='secret':rev['spec']['containers'][0]['env']=[v for v in rev['spec']['containers'][0]['env'] if 'valueFrom' not in v]
+                     elif fault=='account':rev['spec']['serviceAccountName']='wrong'
++                    elif fault=='template':self.provider['resources'][name]['spec']['template']['spec']['containers'][0]['image']='wrong'
+                     else:self.provider['resources'][name]['status']['traffic'][0]['percent']=50
+                     self.flush()
+                     self.assertFalse(e.provider.observe(c,e.receipt(c)['artifact'],e.state['components'][c]['candidate']))
+@@ -261,6 +262,44 @@
+         q=self.make(name='prod-missing-dev',production=True)
+         with self.assertRaisesRegex(Breakpoint,'explicit-dev-provenance-required'):q.prepare()
+ 
++    def test_hold_worker_reactivation_failure_does_not_compensate_healthy_auth(self):
++        e=self.ready(self.make(('auth','worker')));e.deploy();e.restore(['worker'])
++        auth_entry=copy.deepcopy(e.state['components']['auth'])
++        auth_name=self.normalized['auth']['service_name']
++        auth_resource=copy.deepcopy(self.current()['resources'][auth_name])
++        offset=len(self.current()['calls'])
++        self.configure(partial=self.normalized['worker']['job_name'])
++        with self.assertRaises(Breakpoint):e.deploy(['worker'],reactivate=True)
++        calls=self.current()['calls'][offset:]
++        self.assertFalse([a for a in calls if a[:3]==['gcloud','run','services'] and a[3] in ('update','replace','update-traffic')])
++        self.assertEqual(e.state['components']['auth'],auth_entry)
++        self.assertEqual(self.current()['resources'][auth_name],auth_resource)
++        self.assertEqual(e.state['components']['worker']['status'],'rolled_back')
++
++    def test_hold_service_reactivation_preserves_candidate_and_next_snapshot(self):
++        for component in ('auth','bff'):
++            with self.subTest(component=component):
++                e=self.ready(self.make((component,),name='reactivate-'+component));e.deploy()
++                receipt=e.receipt(component)
++                revision=e.state['components'][component]['candidate']['revision']
++                retained=copy.deepcopy(self.current()['revisions'][revision])
++                e.restore([component]);offset=len(self.current()['calls'])
++                e.deploy([component],reactivate=True)
++                self.assertEqual(e.state['status'],'success')
++                new=self.make((component,),name='next-'+component,tag='test-next-'+component)
++                self.assertNotEqual(new.plan['id'],e.plan['id'])
++                new.prepare(reuse=e.directory);new.snapshot()
++                snapshot=new.state['components'][component]['prior']
++                self.assertEqual(snapshot['revision'],revision)
++                self.assertEqual(snapshot['image'],receipt['artifact']['image'])
++                self.assertEqual(e.receipt(component),receipt)
++                self.assertEqual(self.current()['revisions'][revision],retained)
++                replacement=self.current()['replacements'][-1]
++                self.assertEqual(replacement['spec']['template']['metadata']['name'],revision)
++                self.assertEqual(replacement['spec']['template']['spec'],retained['spec'])
++                self.assertEqual(replacement['spec']['traffic'],[{'revisionName':revision,'percent':100}])
++                self.assertFalse([a for a in self.current()['calls'][offset:] if 'build' in a or 'submit' in a])
++
+ class SourceApplicability(unittest.TestCase):
+     def test_actual_go_inputs_include_embeds_exclude_engine_and_unrelated_packages(self):
+         sha=subprocess.check_output(['git','rev-parse','HEAD'],cwd=ROOT,text=True).strip()
+--- a/deploy/engine/tests/fake_provider.py
++++ b/deploy/engine/tests/fake_provider.py
+@@ -45,9 +45,15 @@
+             else: out=s['resources'][name]
+         elif op == 'replace':
+             body=json.loads(Path(name).read_text()); name=body['metadata']['name']
++            retained=body['spec']['template']['metadata']['name']
++            # Existing named revisions are immutable; replacement must reuse exact spec.
++            assert retained in s['revisions']
++            assert body['spec']['template']['spec']==s['revisions'][retained]['spec']
++            s.setdefault('replacements',[]).append(body)
+             if s.get('fail_rollback'): fail=True
+             else:
+                 raw=s['resources'][name]
++                raw['status']['latestCreatedRevisionName']=retained
+                 raw['spec']=body['spec']
+                 raw['status']['traffic']=body['spec']['traffic']
+                 out=raw
+@@ -86,7 +92,7 @@
+             if kind=='services':
+                 s['revisions'][revision]=rev
+                 raw['status']['latestCreatedRevisionName']=revision
+-                raw['spec']['template']={'spec':copy.deepcopy(rev['spec'])}
++                raw['spec']['template']={'metadata':{'name':revision},'spec':copy.deepcopy(rev['spec'])}
+             out=raw
+             if s.get('partial') == name and not image.endswith('b'*64):
+                 container['image']='broken@sha256:'+'b'*64
+--- a/docs/lwc-358/operator-r2.md
++++ b/docs/lwc-358/operator-r2.md
+@@ -35,7 +35,7 @@
+ 
+ `Recover retained deployment` 輸入原 `source_sha`、`release_tag`、target environment、最新 `artifact_id`、受影響 components 及 `operation` (`rollback`, `reactivate`, `deploy`, `tag`, `readback`)。使用 artifact 清單中最新 `lwc-state-<target>-…` ID，而非舊 `lwc-ready-…`。Checkpoint 查詢一次讀最新 100 筆；若無法在界限內確認最新 state、artifact 到期或 provider 不可讀，停止並回报 TPM，不猜測。
+ 
+-Known failure 自動逆序復原 changed/possibly changed components；unknown 先 reconcile，無法確認時停止。獨立 rollback/reactivate 不 build。原 resource 不存在、prior image 非 digest、不可表示的 Service traffic（此版只接受一個 untagged 100% revision）、Export Job 現有 config 不符，均在 mutation 前停止。此版不 provision/delete resource、不執行 Job、不回復 persistent writes。
++Known failure 只自動逆序復原本次 invocation changed/possibly changed components；不把 release 歷史中已成功、且本次未選取或未更新的 component 納入補償。unknown 先 reconcile，無法確認時停止。獨立 rollback/reactivate 不 build。Service candidate-reactivation 使用保留 revision 的 exact template spec 與同一 revision 名稱／routing；基本 sanity 同時驗證 service template 與 active revision 一致，才可供下一次 release snapshot 使用。Provider 若拒絕既有 named revision 的 template restore，保留 failure/unknown，不改名建立替代 revision，也不重建 artifact。原 resource 不存在、prior image 非 digest、不可表示的 Service traffic（此版只接受一個 untagged 100% revision）、Export Job 現有 config 不符，均在 mutation 前停止。此版不 provision/delete resource、不執行 Job、不回復 persistent writes。
+ 
+ ## 本機與離線驗證
+ 

@@ -25,7 +25,9 @@ jobs:
       - name: Validate product version
         run: go run ./cmd/versioncheck VERSION
       - name: Validate monorepo CD contract
-        run: python3 ../../scripts/test_cd_contract.py
+        run: |
+          python3 ../../scripts/test_cd_contract.py
+          python3 -m unittest discover -s ../../deploy/engine/tests -p 'test_*.py'
       - name: Validate Auth and Production BFF configuration delivery
         run: python3 -m unittest discover -s ../../scripts -p 'test_*auth_config_contract.py'
       - name: Run retained legacy CD safety suites
@@ -140,6 +142,8 @@ jobs:
         run: make workflow-yaml
       - name: Test DEV Export Job provisioning source guards
         run: python3 -m unittest scripts.test_exportjob_provision_contract deploy.provision.test_exportjob_dev
+      - name: Test deployment artifact transport offline
+        run: node --test deploy/engine/tests/artifacts.test.cjs
       - name: Check smoke script syntax
         run: bash -n scripts/local-vertical-smoke.sh
       - name: Run imported workflow guard tests
