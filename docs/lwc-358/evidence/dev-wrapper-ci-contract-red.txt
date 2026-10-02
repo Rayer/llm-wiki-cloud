@@ -1,0 +1,48 @@
+TAP version 13
+# Subtest: r2 registered release and recovery workflows use explicit artifact inputs
+not ok 1 - r2 registered release and recovery workflows use explicit artifact inputs
+  ---
+  duration_ms: 4.526166
+  type: 'test'
+  location: '/Users/rayer/orca/workspaces/llm-wiki-cloud/LWC-358-engine-r2/apps/frontend/tests/ci-workflow-contract.test.mjs:26:1'
+  failureType: 'testCodeFailure'
+  error: |-
+    Expected values to be strictly deep-equal:
+    + actual - expected
+    
+      [
+        'components',
+        'release_tag',
+        'artifact_id',
+        'dev_artifact_id',
+    -   'operation'
+      ]
+    
+  code: 'ERR_ASSERTION'
+  name: 'AssertionError'
+  expected:
+    0: 'components'
+    1: 'release_tag'
+    2: 'artifact_id'
+    3: 'dev_artifact_id'
+    4: 'operation'
+  actual:
+    0: 'components'
+    1: 'release_tag'
+    2: 'artifact_id'
+    3: 'dev_artifact_id'
+  operator: 'deepStrictEqual'
+  stack: |-
+    TestContext.<anonymous> (file:///Users/rayer/orca/workspaces/llm-wiki-cloud/LWC-358-engine-r2/apps/frontend/tests/ci-workflow-contract.test.mjs:34:12)
+    async Test.run (node:internal/test_runner/test:1054:7)
+    async startSubtestAfterBootstrap (node:internal/test_runner/harness:296:3)
+  ...
+1..1
+# tests 1
+# suites 0
+# pass 0
+# fail 1
+# cancelled 0
+# skipped 0
+# todo 0
+# duration_ms 73.881084

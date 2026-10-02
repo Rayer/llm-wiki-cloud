@@ -1,6 +1,6 @@
 # LWC-358 implementation evidence
 
-Status: PR71 CI acceptance repair 已完成本機驗證，待 Parent + Supervisor 對新 final PR SHA 複審。歷史：Supervisor f581daec8e88d84cb4432ea3 對 exact bbc0 implementation snapshot PASS；Owner 已授權本次 commit / push / PR 至 develop，供 Parent + Supervisor 審閱相同 final PR SHA。以下保留各輪歷史證據；live Actions / provider / tag / UAT NOT RUN，未授權 merge 或 dispatch。
+Status: PR73a 已合併基線上的本地 workflow-discovery remediation 已完成離線驗證；Parent 負責 publication、同 SHA reviews 與 CI。本輪未 commit/push/更新 PR/dispatch Actions/操作 provider、IAM、credentials、Production 或 tag。下列較早 review/publication 記錄皆為歷史證據，不代表這個新 candidate 已審查；原 Auth prepare root cause 仍 UNKNOWN。
 
 - Baseline/HEAD: e9ccf490251ed0262481fca94af7387107be6b5f
 - Branch: Rayer/LWC-358-engine-r2
@@ -346,3 +346,41 @@ node --test --test-name-pattern='frontend aliases use engine retained recovery a
 Canonical manifest 仍採原規則，source/test/operator/frozen-spec file rows 記錄實際 SHA256 與 mode；evidence report 和執行 log 維持 manifest 外，避免自我參照。此輪兩個變更 test 檔已列於 39-file manifest 並重算；其實際 identity 為 `ci-workflow-contract.test.mjs` SHA256 `b08ab715a3f1ca259dfde7fd2626be2571aa798920118cb18213ddfb5d44a73d`, mode `0o644`；`lwc-253-authority-reconciliation.test.mjs` SHA256 `516731f7693f7996dfb365cad1c7c37963c1e4003d8671fafd374d421ab4c57a`, mode `0o644`。目前 manifest 為 39 files，content SHA256 `9336288cd5ae6ee4bc720371bc460f4149cc0b9c1df0b7a683eca69f17ac0a03`，frozen spec SHA256 `838817cad154b0ea773c205f671362a6c9c0ad97c38ddf34f2508eb4fcc2488b`。
 
 本地 candidate 的基線 HEAD 為 `0650fb49608872cf683a9367684e9535e215fe3d`，tree `a6ab26815bd2b4a7fca5b88cc18d28d5f1a4fd36`；branch `Rayer/LWC-358-engine-r2`，merge-base `f6e6a5e588088294c8829192b308b0813356f9da`。LWC-366/f6 整合 tree 保持原樣；source diff 只有上述兩個測試檔，另更新 manifest/evidence。完整 tracked candidate diff 已保存至 `evidence/pr73-hold-remediation.diff`。此輪未 commit/push/PR update/merge、未重跑 Actions、未 dispatch 或操作 provider/credential/IAM/Production/tag。待 Parent publication phase 檢視 exact diff 並取得同一新 commit SHA 的 Parent + Supervisor reviews/CI。
+
+## PR73a default-branch workflow discovery blocker — registered DEV wrapper
+
+Owner/Parent 診斷 preflight 記錄（comment `3584-1641`）提供的線上事實：`gh workflow run recover-deployment.yml --ref develop` 回 HTTP 404，沒有建立 run；read-only workflow listing 只列出 canonical `ci`、`cd`、`deploy-dev`、`promote-production`、`provision`，沒有 `recover-deployment.yml`。沒有 provider call。依此改用已註冊 `Deploy Development` wrapper 暴露相同固定唯讀診斷；沒有改 default branch、註冊 `recover` 或擴大 Production/provider/credential/IAM 權限。這是 workflow discovery 的阻塞，並沒有確認先前 Auth prepare 的 root cause。
+
+實作前 HEAD `a042d4150e35830fbc36dbb7cf2a3bbce8ab1ec0` 的 tree 為 `76ff9524855a51f4fa3ef90e7abef73eff6a3643`，與 squash merge `b60dde9fb0318fa327ba2477fb0b796658e71a42` 的 tree 完全相同；branch `Rayer/LWC-358-engine-r2`，merge-base `f6e6a5e588088294c8829192b308b0813356f9da`，frozen spec SHA256 `838817cad154b0ea773c205f671362a6c9c0ad97c38ddf34f2508eb4fcc2488b`。保留現有整合 tree，未 reset。只修改已列於 canonical manifest 的 deploy-dev wrapper、既有 workflow/engine/BFF contract tests、operator 文件與 repository skill。正常 DEV release 明確要求 `operation=release` 並維持 default `release`；獨立 diagnostic job 固定 develop/auth/sentinel 輸入，以 `github.sha` 作 checkout source，僅授予 contents/actions read + WIF 所需 id-token，呼叫既有 shared CD diagnostic job。Wrapper 和 shared workflow contract 都要求固定 inputs；診斷不傳 GitHub/Vercel runtime token、不下載 checkpoint/receipt、不進一般 runtime，僅保留 redacted diagnostic result。沒有改 shared engine、CD/recovery workflows 或 provider adapter。
+
+新增的 contract 解析實際 YAML 並檢查 deploy-dev dispatch input、正常 release guard、診斷條件、固定 `with` payload、workflow permissions 與 shared-CD route；shared workflow assertion 另外確認 WIF secret 範圍、無 GH/Vercel credential env、無 engine/receipt download、唯一保存項是 redacted diagnostic result。先前 wrapper 尚無 `operation`/diagnostic job 時，ci-workflow、DEV authority、BFF cutover、engine workflow contract focused regression 分別失敗，輸出保留於 `evidence/dev-wrapper-ci-contract-red.txt`、`dev-wrapper-frontend-red.txt`、`dev-wrapper-bff-contract-red.txt`、`dev-wrapper-engine-contract-red.txt`；修正後四組都通過。完整 suite 均未使用 name filter，並確認 skipped 為零。
+
+精確本機命令與輸出（Python 3.14.6、Node v22.23.2）：
+
+| 命令 | 結果 | 輸出 |
+| --- | --- | --- |
+| `python3.14 scripts/test_engine_workflow.py -v` | 5 tests OK | `evidence/dev-wrapper-engine-contract-final.txt` |
+| `node --test apps/frontend/tests/ci-workflow-contract.test.mjs` | 5 pass / 0 fail / 0 skip | `evidence/dev-wrapper-ci-contract-final.txt` |
+| `python3.14 -m unittest discover -s apps/bff/scripts -p 'test_bff_explicit_cutover.py' -v` | 6 tests OK | `evidence/dev-wrapper-bff-contract-final.txt` |
+| `go test ./cmd/bff`（cwd `apps/bff`） | package tests OK，含 deploy workflow YAML / r2 contract invocation | `evidence/dev-wrapper-bff-go-final.txt` |
+| `node --test apps/frontend/tests/lwc-199-vercel-alias-promotion.test.mjs apps/frontend/tests/lwc-253-authority-reconciliation.test.mjs apps/frontend/tests/lwc-253-vercel-dev-authority.test.mjs apps/frontend/tests/lwc-258-vercel-production-auth-env.test.mjs` | 243 pass / 0 fail / 0 skip | `evidence/dev-wrapper-frontend-four-final.txt` |
+| `npm test`（cwd `apps/frontend`） | Node 523 pass / 0 fail / 0 skip；Vitest 32 files、292 tests pass | `evidence/dev-wrapper-frontend-npm-final.txt` |
+| `python3.14 scripts/test_cd_contract.py` | 67 tests OK | `evidence/dev-wrapper-cd-contract-final.txt` |
+| `python3.14 -m unittest discover -s deploy/engine/tests -p 'test_*.py'` | 36 tests OK | `evidence/dev-wrapper-engine-final.txt` |
+| `npx --no-install eslint tests/ci-workflow-contract.test.mjs tests/lwc-253-vercel-dev-authority.test.mjs`（cwd `apps/frontend`） | exit 0 | 無輸出 |
+| cached actionlint v1.7.12，offline；檢查 `deploy-dev.yml`、`cd.yml`、`recover-deployment.yml` | exit 0 | `evidence/dev-wrapper-actionlint-final.txt` |
+| `python3.14 -m py_compile scripts/test_engine_workflow.py apps/bff/scripts/test_bff_explicit_cutover.py && git diff --check` | exit 0 | 無輸出 |
+
+未執行建議的 live payload：
+
+```sh
+gh workflow run deploy-dev.yml --ref develop \
+  -f operation=diagnose-auth-image \
+  -f components=auth \
+  -f release_tag=diagnostic-36992147920 \
+  -f artifact_id=diagnostic-no-receipt
+```
+
+`dev_artifact_id` 留空並採 wrapper default；不提供 `source_sha`，workflow 固定使用所選 `develop` run 的 `github.sha`。GitHub 官方手動 dispatch 文件指出 workflow 必須存在 default branch，且 `--ref` 指定執行 ref；本次確認的阻塞是 `recover-deployment.yml` 不在註冊清單，因此修復只新增到既有註冊 wrapper。尚待遠端確認的細節：當已註冊 default-branch workflow YAML 的 input schema 尚未包含新 choice 時，GitHub 是否接受 develop ref 版本新增的 `operation=diagnose-auth-image`，並使用所選 develop revision 的 workflow 定義進行 job routing。這要等 Parent 發布同一 exact content 並 review/CI 後，透過受控 diagnostic dispatch 判定；本輪沒有送出 dispatch。Owner 的 standing DEV read-only 診斷範圍不需逐次重複申請，本輪明確限於 local-only。
+
+候選增量差異：`evidence/dev-wrapper-registered-entry.diff`。Canonical `implementation-content.json` 已依 39 個實際檔案的 bytes/modes 重算，content SHA256 為 `0d89071427956ad2d10724bfe1965e790a4a6e02cfb1fe6be6e8d8196fb73434`；frozen spec SHA256 仍為 `838817cad154b0ea773c205f671362a6c9c0ad97c38ddf34f2508eb4fcc2488b`。本候選仍是未提交工作樹 HEAD `a042d4150e35830fbc36dbb7cf2a3bbce8ab1ec0`、tree `76ff9524855a51f4fa3ef90e7abef73eff6a3643`，reviewed merge commit `b60dde9fb0318fa327ba2477fb0b796658e71a42` tree 相同。新 exact content 尚待 Parent publication、Parent + Supervisor 對同一 SHA 審閱與 CI；沒有 commit/push/PR/merge/Actions dispatch/provider/IAM/credential/Production/tag 操作。LWC-366 merged source 和 shared worktree 均未修改。Auth prepare root cause 仍 UNKNOWN，沒有 retry 或人工 receipt。

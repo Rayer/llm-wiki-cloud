@@ -1,0 +1,6 @@
+test_shared_bff_path_preserves_cutover_safety_boundaries (test_bff_explicit_cutover.SharedCDContractTest.test_shared_bff_path_preserves_cutover_safety_boundaries) ... ok
+
+----------------------------------------------------------------------
+Ran 1 test in 4.992s
+
+OK

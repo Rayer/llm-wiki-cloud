@@ -18,13 +18,19 @@ on:
         description: Explicit successful DEV result artifact (required for Production containers)
         type: string
         default: ''
+      operation:
+        description: Normal release by default; diagnose-auth-image is a fixed read-only Auth image check
+        required: true
+        type: choice
+        options: [release, diagnose-auth-image]
+        default: release
 permissions:
   contents: write
   actions: read
   id-token: write
 jobs:
   release:
-    if: github.ref == 'refs/heads/develop'
+    if: github.ref == 'refs/heads/develop' && inputs.operation == 'release'
     uses: ./.github/workflows/cd.yml
     secrets: inherit
     with:
@@ -34,3 +40,26 @@ jobs:
       release_tag: ${{ inputs.release_tag }}
       artifact_id: ${{ inputs.artifact_id }}
       dev_artifact_id: ${{ inputs.dev_artifact_id }}
+      operation: ${{ inputs.operation }}
+  auth-image-diagnostic:
+    if: >-
+      inputs.operation == 'diagnose-auth-image' &&
+      github.ref == 'refs/heads/develop' &&
+      inputs.components == 'auth' &&
+      inputs.release_tag == 'diagnostic-36992147920' &&
+      inputs.artifact_id == 'diagnostic-no-receipt' &&
+      inputs.dev_artifact_id == ''
+    permissions:
+      contents: read
+      actions: read
+      id-token: write
+    uses: ./.github/workflows/cd.yml
+    secrets: inherit
+    with:
+      environment: development
+      source_sha: ${{ github.sha }}
+      components: auth
+      release_tag: diagnostic-36992147920
+      operation: diagnose-auth-image
+      artifact_id: diagnostic-no-receipt
+      dev_artifact_id: ''

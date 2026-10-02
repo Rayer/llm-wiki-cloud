@@ -73,6 +73,30 @@ class EngineWorkflowContract(unittest.TestCase):
         self.assertIn('await client.downloadArtifact',download_impl)
 
     def test_readonly_diagnostic_is_a_separate_fixed_workflow_branch(self):
+        dev=yaml.safe_load((ROOT/'.github/workflows/deploy-dev.yml').read_text())
+        dev_trigger=dev.get('on',dev.get(True,{}))
+        dev_operation=dev_trigger['workflow_dispatch']['inputs']['operation']
+        self.assertEqual(dev_operation['type'],'choice')
+        self.assertEqual(dev_operation['default'],'release')
+        self.assertEqual(dev_operation['options'],['release','diagnose-auth-image'])
+        self.assertEqual(dev['jobs']['release']['if'],
+                         "github.ref == 'refs/heads/develop' && inputs.operation == 'release'")
+        self.assertEqual(dev['jobs']['release']['with']['operation'],'${{ inputs.operation }}')
+        dev_diagnostic=dev['jobs']['auth-image-diagnostic']
+        for fixed in ("inputs.operation == 'diagnose-auth-image'", "github.ref == 'refs/heads/develop'",
+                      "inputs.components == 'auth'", "inputs.release_tag == 'diagnostic-36992147920'",
+                      "inputs.artifact_id == 'diagnostic-no-receipt'", "inputs.dev_artifact_id == ''"):
+            self.assertIn(fixed,dev_diagnostic['if'])
+        self.assertEqual(dev_diagnostic['uses'],'./.github/workflows/cd.yml')
+        self.assertEqual(dev_diagnostic['permissions'],{'contents':'read','actions':'read','id-token':'write'})
+        self.assertNotIn('GH_TOKEN',str(dev_diagnostic))
+        self.assertNotIn('VERCEL_TOKEN',str(dev_diagnostic))
+        self.assertEqual(dev_diagnostic['with'],{
+            'environment':'development','source_sha':'${{ github.sha }}','components':'auth',
+            'release_tag':'diagnostic-36992147920','operation':'diagnose-auth-image',
+            'artifact_id':'diagnostic-no-receipt','dev_artifact_id':'',
+        })
+
         recovery=yaml.safe_load((ROOT/'.github/workflows/recover-deployment.yml').read_text())
         trigger=recovery.get('on',recovery.get(True,{}))
         options=trigger['workflow_dispatch']['inputs']['operation']['options']
@@ -109,12 +133,17 @@ class EngineWorkflowContract(unittest.TestCase):
         self.assertEqual(diag['environment'],'Development')
         self.assertEqual(diag['env']['SOURCE'],'${{ inputs.source_sha }}')
         self.assertEqual(diag['env']['WORKFLOW_SHA'],'${{ github.sha }}')
+        self.assertEqual(diag['env']['DEV_ID'],'${{ inputs.dev_artifact_id }}')
+        self.assertEqual(diag['env']['ARTIFACT_ID'],'${{ inputs.artifact_id }}')
         for forbidden in ('GH_TOKEN','VERCEL_TOKEN','VERCEL_PROJECT_ID','VERCEL_TEAM_ID'):
             self.assertNotIn(forbidden,diag['env'])
         self.assertEqual(set(re.findall(r'\$\{\{\s*secrets\.([A-Z_]+)\s*\}\}',str(diag))),
                          {'WIF_PROVIDER','WIF_SERVICE_ACCOUNT'})
         self.assertNotIn('${{ github.token }}',str(diag))
         diag_steps=diag['steps']
+        for forbidden in ('gh_token','vercel_token','vercel_project_id','vercel_team_id',
+                          'artifacts.cjs','checkpoint','receipt'):
+            self.assertNotIn(forbidden,str(diag_steps).lower())
         diag_by_name={step.get('name'): (index,step) for index,step in enumerate(diag_steps) if step.get('name')}
         auth_index=next(i for i,s in enumerate(diag_steps) if s.get('uses','').startswith('google-github-actions/auth@'))
         gcloud_index=next(i for i,s in enumerate(diag_steps) if s.get('uses','').startswith('google-github-actions/setup-gcloud@'))
@@ -124,6 +153,10 @@ class EngineWorkflowContract(unittest.TestCase):
         self.assertIn('deploy/engine/diagnostics.py',diagnostic['run'])
         self.assertNotIn('Download pinned ready artifact',str(diag_steps))
         self.assertNotIn('deployment-engine',str(diag_steps))
+        self.assertNotIn('artifacts.cjs',str(diag_steps))
+        self.assertEqual([step['with']['name'] for step in diag_steps
+                          if step.get('uses','').startswith('actions/upload-artifact@')],
+                         ['lwc-auth-diagnostic-${{ github.run_id }}-${{ github.run_attempt }}'])
         self.assertEqual(diag_by_name['Retain redacted diagnostic result'][1]['if'],'always()')
         self.assertIn('lwc-auth-diagnostic-',diag_by_name['Retain redacted diagnostic result'][1]['with']['name'])
 

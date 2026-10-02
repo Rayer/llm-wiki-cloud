@@ -29,12 +29,39 @@ test('r2 registered release and recovery workflows use explicit artifact inputs'
   for (const [file, environment, branch] of [['deploy-dev.yml', 'development', 'develop'], ['promote-production.yml', 'production', 'main']]) {
     const parsed = parseYaml(await workflow(file));
     assert.deepEqual(Object.keys(parsed.on), ['workflow_dispatch']);
-    assert.deepEqual(Object.keys(parsed.on.workflow_dispatch.inputs), ['components', 'release_tag', 'artifact_id', 'dev_artifact_id']);
+    const expectedInputs = ['components', 'release_tag', 'artifact_id', 'dev_artifact_id'];
+    if (file === 'deploy-dev.yml') expectedInputs.push('operation');
+    assert.deepEqual(Object.keys(parsed.on.workflow_dispatch.inputs), expectedInputs);
     assert.equal(parsed.jobs.release.with.environment, environment);
-    assert.equal(parsed.jobs.release.if, `github.ref == 'refs/heads/${branch}'`);
+    assert.equal(parsed.jobs.release.if, file === 'deploy-dev.yml'
+      ? `github.ref == 'refs/heads/${branch}' && inputs.operation == 'release'`
+      : `github.ref == 'refs/heads/${branch}'`);
     assert.equal(parsed.jobs.release.with.source_sha, '${{ github.sha }}');
     assert.equal(parsed.jobs.release.secrets, 'inherit');
+    if (file === 'deploy-dev.yml') assert.equal(parsed.jobs.release.with.operation, '${{ inputs.operation }}');
   }
+  const deployDev = parseYaml(await workflow('deploy-dev.yml'));
+  const operation = deployDev.on.workflow_dispatch.inputs.operation;
+  assert.equal(operation.type, 'choice');
+  assert.equal(operation.default, 'release');
+  assert.deepEqual(operation.options, ['release', 'diagnose-auth-image']);
+  assert.deepEqual(Object.keys(deployDev.jobs).sort(), ['auth-image-diagnostic', 'release']);
+  const diagnostic = deployDev.jobs['auth-image-diagnostic'];
+  for (const condition of [
+    "inputs.operation == 'diagnose-auth-image'", "github.ref == 'refs/heads/develop'",
+    "inputs.components == 'auth'", "inputs.release_tag == 'diagnostic-36992147920'",
+    "inputs.artifact_id == 'diagnostic-no-receipt'", "inputs.dev_artifact_id == ''",
+  ]) assert.ok(diagnostic.if.includes(condition), `missing diagnostic constraint: ${condition}`);
+  assert.equal(diagnostic.uses, './.github/workflows/cd.yml');
+  assert.equal(diagnostic.secrets, 'inherit');
+  assert.equal(diagnostic.env, undefined);
+  assert.doesNotMatch(JSON.stringify(diagnostic), /GH_TOKEN|VERCEL_TOKEN/);
+  assert.deepEqual(diagnostic.permissions, { contents: 'read', actions: 'read', 'id-token': 'write' });
+  assert.deepEqual(diagnostic.with, {
+    environment: 'development', source_sha: '${{ github.sha }}', components: 'auth',
+    release_tag: 'diagnostic-36992147920', operation: 'diagnose-auth-image',
+    artifact_id: 'diagnostic-no-receipt', dev_artifact_id: '',
+  });
   const recovery = parseYaml(await workflow('recover-deployment.yml'));
   assert.deepEqual(recovery.on.workflow_dispatch.inputs.operation.options, ['rollback', 'reactivate', 'deploy', 'tag', 'readback', 'diagnose-auth-image']);
   assert.equal(recovery.jobs.recovery.uses, './.github/workflows/cd.yml');

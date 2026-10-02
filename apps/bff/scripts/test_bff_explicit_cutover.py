@@ -180,13 +180,40 @@ class SharedCDContractTest(unittest.TestCase):
             workflow = yaml.safe_load((workflows / path).read_text())
             trigger = workflow.get("on", workflow.get(True, {}))
             self.assertIn("workflow_dispatch", trigger)
-            self.assertEqual(list(workflow["jobs"]), ["release"])
+            expected_jobs = ["auth-image-diagnostic", "release"] if path == "deploy-dev.yml" else ["release"]
+            self.assertEqual(sorted(workflow["jobs"]), expected_jobs)
             job = workflow["jobs"]["release"]
-            self.assertEqual(job["if"], f"github.ref == 'refs/heads/{branch}'")
+            expected_release_guard = f"github.ref == 'refs/heads/{branch}'"
+            if path == "deploy-dev.yml":
+                expected_release_guard += " && inputs.operation == 'release'"
+            self.assertEqual(job["if"], expected_release_guard)
             self.assertEqual(job["uses"], "./.github/workflows/cd.yml")
             self.assertEqual(job["with"]["environment"], environment)
             self.assertIn("release_tag", trigger["workflow_dispatch"]["inputs"])
             self.assertTrue(trigger["workflow_dispatch"]["inputs"]["release_tag"]["required"])
+            if path == "deploy-dev.yml":
+                operation = trigger["workflow_dispatch"]["inputs"]["operation"]
+                self.assertEqual(operation["default"], "release")
+                self.assertEqual(operation["options"], ["release", "diagnose-auth-image"])
+                self.assertEqual(job["with"]["operation"], "${{ inputs.operation }}")
+                diagnostic = workflow["jobs"]["auth-image-diagnostic"]
+                for condition in (
+                    "inputs.operation == 'diagnose-auth-image'",
+                    "github.ref == 'refs/heads/develop'",
+                    "inputs.components == 'auth'",
+                    "inputs.release_tag == 'diagnostic-36992147920'",
+                    "inputs.artifact_id == 'diagnostic-no-receipt'",
+                    "inputs.dev_artifact_id == ''",
+                ):
+                    self.assertIn(condition, diagnostic["if"])
+                self.assertEqual(diagnostic["uses"], "./.github/workflows/cd.yml")
+                self.assertEqual(diagnostic["permissions"], {"contents": "read", "actions": "read", "id-token": "write"})
+                self.assertEqual(diagnostic["with"], {
+                    "environment": "development", "source_sha": "${{ github.sha }}",
+                    "components": "auth", "release_tag": "diagnostic-36992147920",
+                    "operation": "diagnose-auth-image", "artifact_id": "diagnostic-no-receipt",
+                    "dev_artifact_id": "",
+                })
 
         recovery = yaml.safe_load((workflows / "recover-deployment.yml").read_text())
         trigger = recovery.get("on", recovery.get(True, {}))

@@ -1,0 +1,26 @@
+test_shared_bff_path_preserves_cutover_safety_boundaries (test_bff_explicit_cutover.SharedCDContractTest.test_shared_bff_path_preserves_cutover_safety_boundaries) ... FAIL
+
+======================================================================
+FAIL: test_shared_bff_path_preserves_cutover_safety_boundaries (test_bff_explicit_cutover.SharedCDContractTest.test_shared_bff_path_preserves_cutover_safety_boundaries)
+----------------------------------------------------------------------
+Traceback (most recent call last):
+  File "/Users/rayer/orca/workspaces/llm-wiki-cloud/LWC-358-engine-r2/apps/bff/scripts/test_bff_explicit_cutover.py", line 184, in test_shared_bff_path_preserves_cutover_safety_boundaries
+    self.assertEqual(sorted(workflow["jobs"]), expected_jobs)
+    ~~~~~~~~~~~~~~~~^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+AssertionError: Lists differ: ['release'] != ['auth-image-diagnostic', 'release']
+
+First differing element 0:
+'release'
+'auth-image-diagnostic'
+
+Second list contains 1 additional elements.
+First extra element 1:
+'release'
+
+- ['release']
++ ['auth-image-diagnostic', 'release']
+
+----------------------------------------------------------------------
+Ran 1 test in 0.001s
+
+FAILED (failures=1)

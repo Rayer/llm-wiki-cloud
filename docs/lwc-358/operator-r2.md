@@ -10,6 +10,7 @@ Actions 表單輸入：
 - `release_tag`：明確的合法 Git tag 名稱；沒有預設版本或 semver 推算。
 - `artifact_id`：選填，上一個準備結果的確切 Actions artifact ID，用於失敗續建、選擇擴大或工具變更後重用。
 - `dev_artifact_id`：Production 容器必填，成功 DEV release 的結果 artifact ID。容器保留原 build SHA；source-input identity 必須對得上 main 候選。Frontend 按 Production 設定建置。
+- `operation`：Deploy Development 新增的選項，預設 `release`，保持原正常發佈路徑；只有明確選取 `diagnose-auth-image` 才會進入固定唯讀診斷。Production wrapper 不提供這個 operation。
 
 Workflow 在 admission 固定 `github.sha`，Go `cmd/deploy_config` 產生 normalized config。Profile 透過 Go dependency package 與 embed file、Dockerfile、module files 及明確靜態 inputs 計算 identity；部署工具與無關 package 不使既有容器失效。Frontend identity 使用其 source tree 及目標 public config。Plan 的內容 hash 是 attempt ID；選擇改變必須建立新 plan。
 
@@ -37,7 +38,23 @@ Frontend stage 1 只 `vercel pull`、`vercel build` 並封存 `.vercel/output` �
 
 ### 固定 DEV image 診斷（暫時）
 
-Owner 已接受一個只讀診斷分支，供同一 Development WIF principal 查詢 Auth image metadata。它只能從 `develop` 呼叫，固定輸入為 `operation=diagnose-auth-image`、`environment=development`、`components=auth`、`release_tag=diagnostic-36992147920`、`artifact_id=diagnostic-no-receipt`。此處 `source_sha` 必須是本次已審查 workflow code 的 SHA，且等於所選 dispatch workflow 的 `github.sha`；它控制 checkout。被查詢的 Auth image 仍固定為失敗 run 36992147920 的 f6 source tag 與 immutable digest，不會 checkout f6 舊 engine。
+Owner 已接受一個只讀診斷分支，供同一 Development WIF principal 查詢 Auth image metadata。入口是已在 GitHub default branch 註冊的 `Deploy Development` workflow（`.github/workflows/deploy-dev.yml`），明確選取 `operation=diagnose-auth-image`。`operation` 預設為 `release`，所以既有一般 dispatch 不變。先前 `Recover retained deployment` 對 `recover-deployment.yml` 的 dispatch 回 HTTP 404；當時 default-branch workflow list 沒有註冊該檔案，不能拿它當實際入口，也不應藉此更改 default branch。
+
+診斷入口只接受 `develop`、`components=auth`、`release_tag=diagnostic-36992147920`、`artifact_id=diagnostic-no-receipt` 與空的 `dev_artifact_id`。Wrapper 將 `source_sha` 固定為本次 dispatch 的 `github.sha`，並把 component、release tag、artifact sentinel 固定映射至 reusable `cd.yml`。診斷 job 和 shared workflow job 都有獨立條件；release job 只接受 `operation=release`。診斷不下載或製造 receipt/checkpoint、不進一般 runtime。
+
+Owner 的 standing DEV read-only diagnostic authority 已涵蓋這個固定操作，不需要逐次重複申請同等授權。本輪範圍明確限於本機實作與離線驗證，因此記錄 payload 供 Parent 後續協調，沒有送出 dispatch：
+
+```sh
+gh workflow run deploy-dev.yml --ref develop \
+  -f operation=diagnose-auth-image \
+  -f components=auth \
+  -f release_tag=diagnostic-36992147920 \
+  -f artifact_id=diagnostic-no-receipt
+```
+
+`dev_artifact_id` 使用 wrapper 預設空字串；不傳入 `source_sha`，workflow 固定使用 `github.sha`。GitHub 文件要求 `workflow_dispatch` workflow 存在 default branch，且指定 `--ref` 選擇實際執行的 branch/ref；本次已觀察到 `deploy-dev.yml` 已註冊、`recover-deployment.yml` 未註冊。尚待 Parent publication 後，在這個已註冊 workflow 上確認 GitHub 對新 `operation` choice input 的實際接受與 branch/job 路由；本機不嘗試 live dispatch。[GitHub manual workflow dispatch 文件](https://docs.github.com/en/actions/how-tos/manage-workflow-runs/manually-run-a-workflow)。
+
+固定診斷參數為 `operation=diagnose-auth-image`、`environment=development`、`components=auth`、`release_tag=diagnostic-36992147920`、`artifact_id=diagnostic-no-receipt`。`source_sha` 是所選 `develop` workflow code 的 SHA，等於 `github.sha` 並控制 checkout；被查詢的 Auth image 仍固定為失敗 run 36992147920 的 f6 source tag 與 immutable digest，不會 checkout f6 舊 engine。
 
 這是獨立 read-only job，不讀取或要求 ready/recovery checkpoint，不走 artifact download、runtime、build、deploy、traffic、alias、tag、Firestore/password write 或 rollback。只執行兩次固定 `gcloud artifacts docker images describe`，捕捉並丟棄 provider stdout/stderr，結果限於 operation label、exit code/timeout class、digest-format 布林值、比對布林值與 bounded conclusion；Actions 保存同樣 redacted 的 result artifact。Job 只授予 `contents: read`、`actions: read` 與既有 WIF 所需的 `id-token: write`。這個暫時分支僅在精確新 code SHA 通過兩方 review 和 CI 後使用；診斷結果不等於 root-cause 確認、artifact receipt、release success 或部署授權。
 

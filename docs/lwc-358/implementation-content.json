@@ -1,13 +1,13 @@
 {
   "base": "f6e6a5e588088294c8829192b308b0813356f9da",
   "branch": "Rayer/LWC-358-engine-r2",
-  "content_sha256": "9336288cd5ae6ee4bc720371bc460f4149cc0b9c1df0b7a683eca69f17ac0a03",
+  "content_sha256": "0d89071427956ad2d10724bfe1965e790a4a6e02cfb1fe6be6e8d8196fb73434",
   "scope": "All changed/new implementation, test, operator and frozen-spec files; excludes this manifest, evidence report and logs to avoid self-reference.",
   "frozen_sha256": "838817cad154b0ea773c205f671362a6c9c0ad97c38ddf34f2508eb4fcc2488b",
   "files": [
     {
       "path": ".agents/skills/deployment-operator/SKILL.md",
-      "sha256": "534f6c25adf8ce84f94337240f8046ab0e50cee237f52581a4e335be38bd032e",
+      "sha256": "7332874c325ab4b2bbe93525adb093939f67d2247428ff643ea6049ffdeedcc7",
       "mode": "0o644"
     },
     {
@@ -32,7 +32,7 @@
     },
     {
       "path": ".github/workflows/deploy-dev.yml",
-      "sha256": "27550dd8f65a9126edacf58fd28cc4e2b8316ea5e8a3daddbeb3570ddf8f83a1",
+      "sha256": "e136c745ab81e99a803c709dd7034064d870396f6f0b127b2a85d009fd383d9a",
       "mode": "0o644"
     },
     {
@@ -57,7 +57,7 @@
     },
     {
       "path": "apps/bff/scripts/test_bff_explicit_cutover.py",
-      "sha256": "dc01bfa8310614e03fe6c0a43635b21c6ab64618c749228e67658fcc3103cab8",
+      "sha256": "8df6eae99f4e38e8fc81abed5f4621d645b804314321f0bcd66409736de925d7",
       "mode": "0o644"
     },
     {
@@ -67,7 +67,7 @@
     },
     {
       "path": "apps/frontend/tests/ci-workflow-contract.test.mjs",
-      "sha256": "b08ab715a3f1ca259dfde7fd2626be2571aa798920118cb18213ddfb5d44a73d",
+      "sha256": "d30532626e7dcd3b22e89a4e446b0c381aca041460025f8c92fc44a771f9d5af",
       "mode": "0o644"
     },
     {
@@ -82,7 +82,7 @@
     },
     {
       "path": "apps/frontend/tests/lwc-253-vercel-dev-authority.test.mjs",
-      "sha256": "8c892cc859199ee884b8081645c1cbd7ff75f44ad3fe8095acf4537e2747a6c2",
+      "sha256": "d8cf7e38cbaf1e788a6d44267a6c6d8052ce5e26d0e60296cd405930fb14c264",
       "mode": "0o644"
     },
     {
@@ -187,7 +187,7 @@
     },
     {
       "path": "docs/lwc-358/operator-r2.md",
-      "sha256": "3643aeb76aaefcbaa94ef3f9a26b3eba86ac839ced158628b33cd342b5345e3c",
+      "sha256": "221b75c7f8a0ef854e7ca6b08b3972efe0b0be4004327f0e2420bae0aa09754a",
       "mode": "0o644"
     },
     {
@@ -197,7 +197,7 @@
     },
     {
       "path": "scripts/test_engine_workflow.py",
-      "sha256": "7e6056fc8aa9ca165ac270039a7e148c06d859768e48334043d8d31d75dae265",
+      "sha256": "436c0269aa89d918f892e41043204ecd01778601804e3988e404513cedca3915",
       "mode": "0o644"
     }
   ]
