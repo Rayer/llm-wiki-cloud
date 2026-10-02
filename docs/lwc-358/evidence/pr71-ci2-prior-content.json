@@ -1,7 +1,7 @@
 {
   "base": "e9ccf490251ed0262481fca94af7387107be6b5f",
   "branch": "Rayer/LWC-358-engine-r2",
-  "content_sha256": "8c92173b50e3b55b9a27f4b9f288d430934a7fd6305d1e10ae0e31ca305bff39",
+  "content_sha256": "47ff72090d28ca644454c0a0e4a08742148742c1619bad13724201f63cd3e986",
   "scope": "All changed/new implementation, test, operator and frozen-spec files; excludes this manifest, evidence report and logs to avoid self-reference.",
   "frozen_sha256": "838817cad154b0ea773c205f671362a6c9c0ad97c38ddf34f2508eb4fcc2488b",
   "files": [
@@ -53,11 +53,6 @@
     {
       "path": "apps/bff/cmd/olw_worker/workflow_test.go",
       "sha256": "d6cb7c1e2f9fbdd0d32d7ec27561e3b858d5c23f1ca2136964388041ef68a824",
-      "mode": "0o644"
-    },
-    {
-      "path": "apps/bff/scripts/test_bff_explicit_cutover.py",
-      "sha256": "dc01bfa8310614e03fe6c0a43635b21c6ab64618c749228e67658fcc3103cab8",
       "mode": "0o644"
     },
     {

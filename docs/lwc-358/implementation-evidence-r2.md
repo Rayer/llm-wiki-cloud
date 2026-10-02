@@ -232,3 +232,22 @@ Publication staging check: 30 manifest implementation files 均通過 git diff -
 - `python3.14 -m py_compile deploy/engine/tests/test_ci_environment.py deploy/engine/tests/test_engine.py` 與 `git diff --check`：exit 0（新 evidence 加入前；原始 red logs 保留行尾空白）。
 
 新 manifest 35 files：原30 + 四個 Frontend test files + CI environment regression。Content SHA256：47ff72090d28ca644454c0a0e4a08742148742c1619bad13724201f63cd3e986。Base/frozen SHA 不變，原 manifest 保留 evidence/pr71-ci-prior-content.json。仅 tests + manifest/evidence 改動；Parent+Supervisor 必須審閱相同新 head。未變更 model/effort、未改 Bug366 或 shared worktree；未 merge/dispatch/tag/provider/credential write。Live engine/provider acceptance 仍 NOT RUN。
+
+
+## PR71 BFF workflow-contract acceptance repair
+
+起點 head `0b40ec0617d44bf0a2b3de5a853888fe50827b67` / content `47ff72090d28ca644454c0a0e4a08742148742c1619bad13724201f63cd3e986`。已閱讀 Parent / Supervisor review：`LWC-358-deploy-convergence/docs/lwc-358/deployment-engine-pr71-review-0b40.md`。Sibling audit 在 apps/bff/scripts/test_*.py 只找到 test_bff_explicit_cutover.py 中該組 retired workflow-step assertions；其他 workflow-run/promotion contract tests 驗證實際 provenance parser，並非舊 shared-CD step graph，保留原樣。
+
+`test_shared_bff_path_preserves_cutover_safety_boundaries` 仍保留並重寫為：DEV/Production 固定 branch 與 explicit release_tag、兩者與 recovery wrapper 共用 cd.yml、single protected runtime/per-target serialization、prepare → durable upload barrier → runtime 順序與 90-day retention/failure stop。它還 subprocess 執行真實 Engine acceptance regressions：`test_04_order_barrier_and_real_config`、`test_durable_pending_failure_prevents_provider_mutation`、Auth partial Service restore、Auth/BFF reactivation→next snapshot。既有 BFF alias/candidate freshness/cutover、immutable DEV receipt 與 readback/redaction cases 未刪改。無舊 rollback-upload/Mutate Auth step shape，無 legacy orchestration 復活。
+
+先前 sandbox 首跑全 suite：109 tests 中 107 pass，兩個既有 local-dev tests 因 bind loopback PermissionError（Operation not permitted）失敗，原始輸出 evidence/pr71-ci2-bff-scripts-sandbox.txt。依 sandbox 指示取得 escalation 並以相同命令在 sandbox 外重跑；最終 **109 tests OK**，兩個 port-binding tests 正常執行，無 skip。這是環境權限，不是 acceptance workaround。
+
+精確命令與輸出：
+- `python3.14 -m unittest discover -s apps/bff/scripts -p test_bff_explicit_cutover.py -v`：6 tests OK；包含 nested production engine regressions，evidence/pr71-ci2-bff-target-green.txt。
+- `python3.14 -m unittest discover -s apps/bff/scripts -p 'test_*.py'`（經核准 outside sandbox，以同一命令重跑）：109 tests OK，47.298s；evidence/pr71-ci2-bff-scripts-escalated.txt。
+- `GITHUB_ACTIONS=true GITHUB_RUN_ID=42 GITHUB_RUN_ATTEMPT=1 python3.14 -m unittest discover -s deploy/engine/tests -p 'test_*.py'`：27 tests OK，29.307s；上一節 evidence/pr71-ci-engine.txt。
+- `python3.14 scripts/test_engine_workflow.py`：3 tests OK；上一節 evidence/pr71-ci-workflow.txt。
+- `node --test deploy/engine/tests/artifacts.test.cjs`：4 pass；上一節 evidence/pr71-ci-transport.txt。
+- `python3.14 -m py_compile apps/bff/scripts/test_bff_explicit_cutover.py`、`git diff --check -- apps/bff/scripts/test_bff_explicit_cutover.py`：exit 0。
+
+新 manifest **36 files**，僅加此 BFF regression test；Content SHA256 `8c92173b50e3b55b9a27f4b9f288d430934a7fd6305d1e10ae0e31ca305bff39`。Base/frozen/runtime implementation 未改。本輪僅限既有 BFF contract regression 與 evidence/manifest；未改 Bug366/shared checkout、engine runtime、production provider 或 credentials。待 Parent + Supervisor 對相同下一 PR SHA 審閱；未 merge/dispatch/live/tag。
