@@ -1,0 +1,98 @@
+TAP version 13
+# Subtest: r2 registered release and recovery workflows use explicit artifact inputs
+not ok 1 - r2 registered release and recovery workflows use explicit artifact inputs
+  ---
+  duration_ms: 6.746625
+  type: 'test'
+  location: '/Users/rayer/orca/workspaces/llm-wiki-cloud/LWC-358-engine-r2/apps/frontend/tests/ci-workflow-contract.test.mjs:26:1'
+  failureType: 'testCodeFailure'
+  error: |-
+    Expected values to be strictly deep-equal:
+    + actual - expected
+    
+      [
+        'rollback',
+        'reactivate',
+        'deploy',
+        'tag',
+        'readback',
+    +   'diagnose-auth-image'
+      ]
+    
+  code: 'ERR_ASSERTION'
+  name: 'AssertionError'
+  expected:
+    0: 'rollback'
+    1: 'reactivate'
+    2: 'deploy'
+    3: 'tag'
+    4: 'readback'
+  actual:
+    0: 'rollback'
+    1: 'reactivate'
+    2: 'deploy'
+    3: 'tag'
+    4: 'readback'
+    5: 'diagnose-auth-image'
+  operator: 'deepStrictEqual'
+  stack: |-
+    TestContext.<anonymous> (file:///Users/rayer/orca/workspaces/llm-wiki-cloud/LWC-358-engine-r2/apps/frontend/tests/ci-workflow-contract.test.mjs:39:10)
+    async Test.run (node:internal/test_runner/test:1054:7)
+    async startSubtestAfterBootstrap (node:internal/test_runner/harness:296:3)
+  ...
+# Subtest: DEV provisioning uses the existing auth identity and preserves hidden evidence
+ok 2 - DEV provisioning uses the existing auth identity and preserves hidden evidence
+  ---
+  duration_ms: 1.884792
+  type: 'test'
+  ...
+# Subtest: shared engine has one approval and one serialized runtime authority
+not ok 3 - shared engine has one approval and one serialized runtime authority
+  ---
+  duration_ms: 1.211625
+  type: 'test'
+  location: '/Users/rayer/orca/workspaces/llm-wiki-cloud/LWC-358-engine-r2/apps/frontend/tests/ci-workflow-contract.test.mjs:57:1'
+  failureType: 'testCodeFailure'
+  error: |-
+    Expected values to be strictly deep-equal:
+    + actual - expected
+    
+      [
+        'release',
+    +   'auth-image-diagnostic'
+      ]
+    
+  code: 'ERR_ASSERTION'
+  name: 'AssertionError'
+  expected:
+    0: 'release'
+  actual:
+    0: 'release'
+    1: 'auth-image-diagnostic'
+  operator: 'deepStrictEqual'
+  stack: |-
+    TestContext.<anonymous> (file:///Users/rayer/orca/workspaces/llm-wiki-cloud/LWC-358-engine-r2/apps/frontend/tests/ci-workflow-contract.test.mjs:59:10)
+    async Test.run (node:internal/test_runner/test:1054:7)
+    async Test.processPendingSubtests (node:internal/test_runner/test:744:7)
+  ...
+# Subtest: ready and result artifacts have bounded retention and always retain failure evidence
+ok 4 - ready and result artifacts have bounded retention and always retain failure evidence
+  ---
+  duration_ms: 1.537667
+  type: 'test'
+  ...
+# Subtest: all shared run blocks are shell-valid and production consumes, not rebuilds, cloud images
+ok 5 - all shared run blocks are shell-valid and production consumes, not rebuilds, cloud images
+  ---
+  duration_ms: 11.156916
+  type: 'test'
+  ...
+1..5
+# tests 5
+# suites 0
+# pass 3
+# fail 2
+# cancelled 0
+# skipped 0
+# todo 0
+# duration_ms 91.2405

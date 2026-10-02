@@ -1,0 +1,39 @@
+TAP version 13
+# Subtest: DEV authority uses the protected shared engine and durable selected stage barrier
+not ok 1 - DEV authority uses the protected shared engine and durable selected stage barrier
+  ---
+  duration_ms: 6.140417
+  type: 'test'
+  location: '/Users/rayer/orca/workspaces/llm-wiki-cloud/LWC-358-engine-r2/apps/frontend/tests/lwc-253-authority-reconciliation.test.mjs:767:1'
+  failureType: 'testCodeFailure'
+  error: |-
+    Expected values to be strictly deep-equal:
+    + actual - expected
+    
+      [
+        'release',
+    +   'auth-image-diagnostic'
+      ]
+    
+  code: 'ERR_ASSERTION'
+  name: 'AssertionError'
+  expected:
+    0: 'release'
+  actual:
+    0: 'release'
+    1: 'auth-image-diagnostic'
+  operator: 'deepStrictEqual'
+  stack: |-
+    TestContext.<anonymous> (file:///Users/rayer/orca/workspaces/llm-wiki-cloud/LWC-358-engine-r2/apps/frontend/tests/lwc-253-authority-reconciliation.test.mjs:769:10)
+    async Test.run (node:internal/test_runner/test:1054:7)
+    async startSubtestAfterBootstrap (node:internal/test_runner/harness:296:3)
+  ...
+1..1
+# tests 1
+# suites 0
+# pass 0
+# fail 1
+# cancelled 0
+# skipped 0
+# todo 0
+# duration_ms 80.044

@@ -270,15 +270,17 @@ Auth prepare 的真實 `auth.sh → Providers.prepare → support.run → Engine
 | `python3.14 -m unittest -v test_diagnostics test_prepare_diagnostics`（cwd `deploy/engine/tests`） | 9 targeted diagnostic/redaction tests OK，1.494s | `evidence/dev-diagnostic-auth-redaction.txt` |
 | `python3.14 scripts/test_engine_workflow.py` | 4 tests OK | `evidence/dev-diagnostic-workflow.txt` |
 | `python3.14 -m unittest discover -s apps/bff/scripts -p 'test_bff_explicit_cutover.py'` | 6 tests OK，13.092s | `evidence/dev-diagnostic-bff.txt` |
-| Selected shared-CD Frontend authority/alias workflow tests | 4 pass / 0 fail / 0 skip | `evidence/dev-diagnostic-frontend-workflow.txt` |
+| Selected shared-CD Frontend authority/alias tests (legacy name filter) | TAP reported 4 pass entries, but 2 were file-level results with `1..0`; only 2 named tests executed. Historical limited coverage; superseded below. | `evidence/dev-diagnostic-frontend-workflow.txt` |
 | `bash -n deploy/components/auth.sh && python3.14 -m py_compile deploy/engine/diagnostics.py deploy/engine/support.py deploy/engine/providers.py deploy/engine/engine.py deploy/engine/tests/test_diagnostics.py deploy/engine/tests/test_prepare_diagnostics.py scripts/test_engine_workflow.py && git diff --check` | exit 0、無輸出 | `evidence/dev-diagnostic-static.txt` |
 | cwd `/Users/rayer/go/pkg/mod/github.com/rhysd/actionlint@v1.7.12`: `env GOPROXY=off GOMODCACHE=/Users/rayer/go/pkg/mod GOCACHE=/private/tmp/lwc358-actionlint-cache go run ./cmd/actionlint /Users/rayer/orca/workspaces/llm-wiki-cloud/LWC-358-engine-r2/.github/workflows/cd.yml /Users/rayer/orca/workspaces/llm-wiki-cloud/LWC-358-engine-r2/.github/workflows/recover-deployment.yml` | exit 0、無錯誤 | `evidence/dev-diagnostic-actionlint.txt` |
 
-Frontend workflow regression 的精確命令：
+先前 Frontend workflow regression 使用下列 legacy name filter；它保留為歷史命令，不能把 TAP 的四個 pass entries 解讀為四個 named cases：
 
 ```sh
 node --test --test-name-pattern='frontend aliases use the shared CD|DEV authority uses the fixed|DEV workflow invokes|production workflow invokes' apps/frontend/tests/lwc-199-vercel-alias-promotion.test.mjs apps/frontend/tests/lwc-253-authority-reconciliation.test.mjs apps/frontend/tests/lwc-253-vercel-dev-authority.test.mjs apps/frontend/tests/lwc-258-vercel-production-auth-env.test.mjs
 ```
+
+兩個舊 alternatives 已不符合現行 test names。保留的輸出中，lwc-199 與 authority-reconciliation 檔案各輸出 `1..0`；實際執行的只有後兩個 workflow-invocation named cases。對應 log 未刪改，現已由 PR73 修正版的 4/4 named-case 命令與未過濾完整 suites 取代。
 
 Workflow contract 測試首輪保留一筆失敗：舊 assertion 假設 shared CD 只有一個 `environment` job；現在額外 read-only job 使此數量變為二。測試已改為驗證唯一 runtime action、release protected job 與單獨低權限 Development diagnostic job；後續 4 tests 全通過。原失敗輸出保留在 `evidence/dev-diagnostic-workflow-contract-red.txt`。Actionlint CLI 不在 PATH；第一次 module@version 呼叫受 sandbox DNS 限制，之後使用已快取 actionlint source、`GOPROXY=off` 執行同版檢查，通過。沒有為此擴權或連網。
 
@@ -299,8 +301,48 @@ Parent 在實際工作差異檢查中發現 release job 曾把 `GH_TOKEN` 從 jo
 | `python3.14 scripts/test_engine_workflow.py -k pinned_recovery_download_has_effective_github_token`（修正前） | 1 failure；`effective_env.get('GH_TOKEN')` 為 `None` | `evidence/dev-diagnostic-download-token-red.txt` |
 | `python3.14 scripts/test_engine_workflow.py -v` | 5 tests OK | `evidence/dev-diagnostic-download-token-workflow.txt` |
 | `python3.14 -m unittest discover -s apps/bff/scripts -p 'test_bff_explicit_cutover.py'` | 6 tests OK | `evidence/dev-diagnostic-download-token-bff.txt` |
-| `node --test --test-name-pattern='frontend aliases use the shared CD|DEV authority uses the fixed|DEV workflow invokes|production workflow invokes' apps/frontend/tests/lwc-199-vercel-alias-promotion.test.mjs apps/frontend/tests/lwc-253-authority-reconciliation.test.mjs apps/frontend/tests/lwc-253-vercel-dev-authority.test.mjs apps/frontend/tests/lwc-258-vercel-production-auth-env.test.mjs` | 4 pass / 0 fail / 0 skip | `evidence/dev-diagnostic-download-token-frontend.txt` |
+| Legacy filtered `node --test` invocation on the four Frontend files | 4 TAP entries, but only 2 named tests ran; 2 file results had `1..0`. Historical limited coverage, superseded by PR73 complete suites. | `evidence/dev-diagnostic-download-token-frontend.txt` |
 | `python3.14 scripts/test_cd_contract.py` | 67 tests OK | `evidence/dev-diagnostic-download-token-cd.txt` |
 | `GOPROXY=off GOMODCACHE=/Users/rayer/go/pkg/mod GOCACHE=/private/tmp/lwc358-actionlint-cache go run ./cmd/actionlint /Users/rayer/orca/workspaces/llm-wiki-cloud/LWC-358-engine-r2/.github/workflows/cd.yml /Users/rayer/orca/workspaces/llm-wiki-cloud/LWC-358-engine-r2/.github/workflows/recover-deployment.yml`（cwd `/Users/rayer/go/pkg/mod/github.com/rhysd/actionlint@v1.7.12`） | exit 0 | `evidence/dev-diagnostic-download-token-actionlint.txt` |
 
 另執行 `python3.14 -m py_compile scripts/test_engine_workflow.py && git diff --check`，exit 0、無輸出。精確整合 diff 更新於 `evidence/dev-diagnostic-implementation.diff`。環境為 Python 3.14.6；Frontend workflow tests 使用 Node v22.23.2。改動後的 `cd.yml` 和 recovery wrapper 通過 actionlint；未觸發 Actions。測試 log 和此段 evidence 不納入 implementation-content manifest。現行 manifest 為 39 個檔案，內容 SHA256 `4f44306d203c39b76d41f6e4eb3952c2cdcbd0e9f5a5447b091fe4e0b0f3a5ca`。本地修改仍未 commit/push/PR/merge，未 dispatch Actions、未做 provider/credential/IAM/Production/tag 操作。HEAD/tree 仍是 `a90590974722248893a4676084093cf29951e1a4` / `1c69404ed0303bf7ea94457163ca09a88e1a6b6a`，base `e9ccf490251ed0262481fca94af7387107be6b5f`；此 HEAD 不含稍後 publication integration 的 LWC-366 merged source。
+
+## PR73 same-head CI HOLD — workflow contract assertion repair
+
+PR73 reviewed base HEAD 為 `0650fb49608872cf683a9367684e9535e215fe3d`，其 tree `a6ab26815bd2b4a7fca5b88cc18d28d5f1a4fd36` 已包含 `origin/develop`/LWC-366 dependency `f6e6a5e588088294c8829192b308b0813356f9da`。本輪只改既有 Frontend tests 與 manifest/evidence，沒有重置或改寫這個整合基線。
+
+Parent 回報 same-head Actions run `37000610609` 在 `0650fb49608872cf683a9367684e9535e215fe3d` 失敗：Frontend `npm test` 的 Node suite 523 tests 為 520 pass / 3 fail / 0 skip；三個失敗是以下兩個過期 workflow-shape checks 及 LWC-253 case。canonical-CI downstream failed、Frontend build skipped；BFF、lint、typecheck、actionlint、local vertical smoke 成功。Node 20/Ubuntu 訊息是 annotations/warnings，非這三個 assertion failures。此 worker 的 sandbox 無法連到 api.github.com 讀回 raw log；本輪以 Parent 提供的 run summary 為同-head CI 事實來源，並在 local HEAD 重現各 test failures。沒有 rerun CI。
+
+保留原有安全 coverage，只把 expectation 改成現行隔離 diagnostic interface：`lwc-253-authority-reconciliation` 現在要求 release + `auth-image-diagnostic` 兩個 job，唯一 runtime operation 屬於 protected release job，並驗證 per-target concurrency、protected environment、prepare → durable ready → runtime barrier。Diagnostic job 必須獨立限定於 `diagnose-auth-image`，Development environment、read-only contents/actions 加 WIF 所需 id-token permission、無 GH/Vercel credentials、無 runtime engine action 及 artifact checkpoint download。`ci-workflow-contract.test.mjs` 的 recovery options 現在明列 `diagnose-auth-image`，同時要求一般 recovery 排除該 operation， diagnostic wrapper 使用 shared CD 且維持 read-only permission；shared-engine case 同樣驗證唯一 runtime authority 和低權限隔離。沒有刪除、skip 或放寬原有 deployment safeguards。
+
+兩個 red checks 已在修正前本機重現：精確 LWC-253 case 在 `Object.keys(source.jobs) == ['release']` 失敗；完整四套件為 243 tests、242 pass / 1 fail / 0 skip；`ci-workflow-contract.test.mjs` 為 5 tests、3 pass / 2 fail / 0 skip，失敗正是 recovery operation allowlist 與只有 release job 的假設。原始輸出保留於 `evidence/pr73-workflow-repair-focused-red.txt`、`evidence/pr73-frontend-four-red.txt`、`evidence/pr73-ci-workflow-contract-red.txt`。
+
+舊 filtered evidence 的兩個過期 patterns 已以 current named cases 取代。使用以下精確命令時，四個 intended tests 都逐名出現在 TAP 且實際執行通過：`frontend aliases use engine retained recovery and read-back with durable checkpoints`、`DEV authority uses the protected shared engine and durable selected stage barrier`、`DEV workflow invokes the shared engine with fixed authority and explicit receipt inputs`、`production workflow invokes the shared engine with fixed authority and DEV provenance`。原 log 保留作歷史資料，明確標示兩個 `1..0` unmatched file outputs 不代表 named tests 通過。
+
+```sh
+node --test --test-name-pattern='frontend aliases use engine retained recovery and read-back with durable checkpoints|DEV authority uses the protected shared engine and durable selected stage barrier|DEV workflow invokes the shared engine with fixed authority and explicit receipt inputs|production workflow invokes the shared engine with fixed authority and DEV provenance' apps/frontend/tests/lwc-199-vercel-alias-promotion.test.mjs apps/frontend/tests/lwc-253-authority-reconciliation.test.mjs apps/frontend/tests/lwc-253-vercel-dev-authority.test.mjs apps/frontend/tests/lwc-258-vercel-production-auth-env.test.mjs
+```
+
+### PR73 local red/green 與受影響 suites
+
+環境 Node v22.23.2、Python 3.14.6。所有命令均在目前整合工作樹上執行；`npm test` cwd 為 `apps/frontend`，其餘 cwd 為 repository root。
+
+| 精確命令 | 結果 | 輸出 |
+| --- | --- | --- |
+| `node --test --test-name-pattern='DEV authority uses the protected shared engine and durable selected stage barrier' apps/frontend/tests/lwc-253-authority-reconciliation.test.mjs`（修正前） | 0 pass / 1 fail；job list 多出已接受的 `auth-image-diagnostic` | `evidence/pr73-workflow-repair-focused-red.txt` |
+| 同上（修正後） | 1 pass / 0 fail / 0 skip | `evidence/pr73-workflow-repair-focused-green.txt` |
+| `node --test apps/frontend/tests/ci-workflow-contract.test.mjs`（修正前） | 3 pass / 2 fail / 0 skip | `evidence/pr73-ci-workflow-contract-red.txt` |
+| 同上（修正後） | 5 pass / 0 fail / 0 skip | `evidence/pr73-ci-workflow-contract-green.txt` |
+| 上方 corrected four-name `node --test` 命令 | 四個完整 named cases 確認逐一出現於 TAP，4 pass / 0 fail / 0 skip | `evidence/pr73-frontend-named-cases.txt` |
+| `node --test apps/frontend/tests/lwc-199-vercel-alias-promotion.test.mjs apps/frontend/tests/lwc-253-authority-reconciliation.test.mjs apps/frontend/tests/lwc-253-vercel-dev-authority.test.mjs apps/frontend/tests/lwc-258-vercel-production-auth-env.test.mjs` | **243 pass / 0 fail / 0 skip** | `evidence/pr73-frontend-four-green.txt` |
+| `npm test`（cwd `apps/frontend`） | Node **523 pass / 0 fail / 0 skip**；Vitest **32 files、292 tests pass** | `evidence/pr73-frontend-npm-green.txt` |
+| `node --test deploy/engine/tests/artifacts.test.cjs` | 4 pass / 0 fail / 0 skip | `evidence/pr73-transport.txt` |
+| `python3.14 -m unittest discover -s deploy/engine/tests -p 'test_*.py'` | 36 tests OK | `evidence/pr73-engine.txt` |
+| `python3.14 scripts/test_engine_workflow.py -v` | 5 tests OK | `evidence/pr73-engine-workflow.txt` |
+| `python3.14 scripts/test_cd_contract.py` | 67 tests OK | `evidence/pr73-cd-contract.txt` |
+| `python3.14 -m unittest discover -s apps/bff/scripts -p 'test_bff_explicit_cutover.py'` | 6 tests OK | `evidence/pr73-bff-focused.txt` |
+| `npx --no-install eslint tests/lwc-253-authority-reconciliation.test.mjs tests/ci-workflow-contract.test.mjs`（cwd `apps/frontend`） | exit 0 | `evidence/pr73-eslint.txt` |
+
+Canonical manifest 仍採原規則，source/test/operator/frozen-spec file rows 記錄實際 SHA256 與 mode；evidence report 和執行 log 維持 manifest 外，避免自我參照。此輪兩個變更 test 檔已列於 39-file manifest 並重算；其實際 identity 為 `ci-workflow-contract.test.mjs` SHA256 `b08ab715a3f1ca259dfde7fd2626be2571aa798920118cb18213ddfb5d44a73d`, mode `0o644`；`lwc-253-authority-reconciliation.test.mjs` SHA256 `516731f7693f7996dfb365cad1c7c37963c1e4003d8671fafd374d421ab4c57a`, mode `0o644`。目前 manifest 為 39 files，content SHA256 `9336288cd5ae6ee4bc720371bc460f4149cc0b9c1df0b7a683eca69f17ac0a03`，frozen spec SHA256 `838817cad154b0ea773c205f671362a6c9c0ad97c38ddf34f2508eb4fcc2488b`。
+
+本地 candidate 的基線 HEAD 為 `0650fb49608872cf683a9367684e9535e215fe3d`，tree `a6ab26815bd2b4a7fca5b88cc18d28d5f1a4fd36`；branch `Rayer/LWC-358-engine-r2`，merge-base `f6e6a5e588088294c8829192b308b0813356f9da`。LWC-366/f6 整合 tree 保持原樣；source diff 只有上述兩個測試檔，另更新 manifest/evidence。完整 tracked candidate diff 已保存至 `evidence/pr73-hold-remediation.diff`。此輪未 commit/push/PR update/merge、未重跑 Actions、未 dispatch 或操作 provider/credential/IAM/Production/tag。待 Parent publication phase 檢視 exact diff 並取得同一新 commit SHA 的 Parent + Supervisor reviews/CI。

@@ -1,7 +1,7 @@
 {
-  "base": "e9ccf490251ed0262481fca94af7387107be6b5f",
+  "base": "f6e6a5e588088294c8829192b308b0813356f9da",
   "branch": "Rayer/LWC-358-engine-r2",
-  "content_sha256": "4f44306d203c39b76d41f6e4eb3952c2cdcbd0e9f5a5447b091fe4e0b0f3a5ca",
+  "content_sha256": "9336288cd5ae6ee4bc720371bc460f4149cc0b9c1df0b7a683eca69f17ac0a03",
   "scope": "All changed/new implementation, test, operator and frozen-spec files; excludes this manifest, evidence report and logs to avoid self-reference.",
   "frozen_sha256": "838817cad154b0ea773c205f671362a6c9c0ad97c38ddf34f2508eb4fcc2488b",
   "files": [
@@ -67,7 +67,7 @@
     },
     {
       "path": "apps/frontend/tests/ci-workflow-contract.test.mjs",
-      "sha256": "8c66d9d225fba6cbb73ea9f7e02c4ad6975fbca0e28a5bfc802393e833ab1859",
+      "sha256": "b08ab715a3f1ca259dfde7fd2626be2571aa798920118cb18213ddfb5d44a73d",
       "mode": "0o644"
     },
     {
@@ -77,7 +77,7 @@
     },
     {
       "path": "apps/frontend/tests/lwc-253-authority-reconciliation.test.mjs",
-      "sha256": "72e5ee2387db592c133683ccb7b9e85b42bd80222358d0b4b8638b9b9a731caa",
+      "sha256": "516731f7693f7996dfb365cad1c7c37963c1e4003d8671fafd374d421ab4c57a",
       "mode": "0o644"
     },
     {
