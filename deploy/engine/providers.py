@@ -83,7 +83,7 @@ class Providers:
         require(re.fullmatch(r'[a-z][a-z0-9-]+', revision), 'invalid-revision')
         return json.loads(self.cloud(c, 'revisions', 'describe', revision))
 
-    def api(self, endpoint, body=None, output=False):
+    def api(self, endpoint, body=None, output=False, stage=None):
         token = os.environ.get('VERCEL_TOKEN')
         team = os.environ.get('VERCEL_TEAM_ID', '')
         require(token and re.fullmatch(r'team_[A-Za-z0-9]+', team), 'missing-vercel-authority')
@@ -96,13 +96,14 @@ class Providers:
             args += ['--request', 'POST', '--header', 'Content-Type: application/json', '--data', json.dumps(body)]
         if output:
             args += ['--max-filesize', '8192']
-        raw = run(args, input='header = "Authorization: Bearer '+token+'"\n', mutation=body is not None)
+        raw = run(args, input='header = "Authorization: Bearer '+token+'"\n',
+                  mutation=body is not None, stage=stage)
         return json.loads(frontend_build_config.document(raw.encode()) if output else raw)
 
-    def project(self):
+    def project(self, stage=None):
         identity = os.environ.get('VERCEL_PROJECT_ID', '')
         require(re.fullmatch(r'prj_[A-Za-z0-9]+', identity), 'invalid-vercel-project')
-        raw = self.api('/v9/projects/'+identity)
+        raw = self.api('/v9/projects/'+identity, stage=stage)
         cfg = self.p['frontend']
         link = raw.get('link', {})
         repository = link.get('repo')
@@ -304,15 +305,18 @@ class Providers:
             self.valid_image(c, image)
             return {'image': image}
         require(c == 'frontend', 'container-prepare-requires-build-checkpoint')
-        self.project()
+        self.project(stage='frontend-project-readback')
         cfg = self.p['frontend']
         env = dict(os.environ, NEXT_PUBLIC_API_URL=cfg['api_url'], NEXT_PUBLIC_AUTH_URL=cfg['auth_url'])
         target = 'production' if self.p['environment'] == 'production' else 'preview'
-        run(['npm', 'ci', '--ignore-scripts'], cwd=ROOT / 'apps/frontend', timeout=600)
+        run(['npm', 'ci', '--ignore-scripts'], cwd=ROOT / 'apps/frontend', timeout=600,
+            stage='frontend-npm-ci')
         run(['vercel', 'pull', '--yes', '--environment='+target, '--scope', cfg['team_slug'],
-             '--token', os.environ['VERCEL_TOKEN']], env=env, cwd=ROOT, timeout=30)
+             '--token', os.environ['VERCEL_TOKEN']], env=env, cwd=ROOT, timeout=30,
+            stage='frontend-vercel-pull')
         run(['vercel', 'build', '--scope', cfg['team_slug'], '--token', os.environ['VERCEL_TOKEN'],
-             *(['--prod'] if target == 'production' else [])], env=env, cwd=ROOT, timeout=900)
+             *(['--prod'] if target == 'production' else [])], env=env, cwd=ROOT, timeout=900,
+            stage='frontend-vercel-build')
         output = ROOT / '.vercel/output'
         require(output.is_dir(), 'frontend-output-missing')
         expected = {'schema_version': 1, 'api_url': cfg['api_url'], 'auth_url': cfg['auth_url']}

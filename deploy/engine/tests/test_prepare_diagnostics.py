@@ -4,6 +4,7 @@ import io
 import json
 import os
 from pathlib import Path
+import subprocess
 import sys
 import tempfile
 import unittest
@@ -14,7 +15,7 @@ ROOT = HERE.parents[1]
 sys.path.insert(0, str(HERE))
 import engine
 import providers
-from support import Breakpoint, digest, write
+from support import Breakpoint, ROOT as SUPPORT_ROOT, digest, write
 
 
 class AuthPrepareDiagnostics(unittest.TestCase):
@@ -172,6 +173,148 @@ os.execvpe(args[0], args, os.environ)
         self.assertEqual(result['allowed_next_action'], 'correct-input-and-resume')
         self.assertNotIn('TEST_ONLY_RAW_PROVIDER_SECRET_SENTINEL', stdout.getvalue())
         self.assertNotIn('TEST_ONLY_RAW_PROVIDER_SECRET_SENTINEL', json.dumps(result))
+
+
+class FrontendPrepareDiagnostics(unittest.TestCase):
+    stages = (
+        ('frontend-project-readback', 'curl', 'repo', 30),
+        ('frontend-npm-ci', 'npm', 'frontend', 600),
+        ('frontend-vercel-pull', 'vercel-pull', 'fake-root', 30),
+        ('frontend-vercel-build', 'vercel-build', 'fake-root', 900),
+    )
+    token = 'TEST_ONLY_VERCEL_TOKEN_SENTINEL'
+    team = 'team_TestTeam123'
+    project = 'prj_TestProject123'
+    output_sentinel = 'TEST_ONLY_CHILD_OUTPUT_SENTINEL'
+
+    def make_engine(self, work):
+        work = Path(work)
+        fake_root = work / 'repo'
+        (fake_root / 'apps/frontend').mkdir(parents=True)
+        directory = work / 'attempt'
+        directory.mkdir()
+        identities = {'auth': {'profile': 'fake-auth', 'inputs': 'a' * 64, 'files': []},
+                      'frontend': {'profile': 'fake-frontend', 'inputs': 'b' * 64, 'files': []}}
+        frontend = {'project_name': 'llm-wiki-frontend-test', 'team_slug': 'test-team',
+                    'repository': 'Rayer/llm-wiki-cloud', 'root_directory': 'apps/frontend',
+                    'api_url': 'https://api.test.invalid', 'auth_url': 'https://auth.test.invalid'}
+        plan = {'schema': 2, 'source': 'c' * 40, 'branch': 'develop', 'tag': 'offline-diagnostic',
+                'normalized': {'environment': 'development',
+                               'gcp': {'project_id': 'llm-wiki-cloud',
+                                       'artifact_registry': 'asia-east1-docker.pkg.dev/llm-wiki-cloud/cloud-run-images'},
+                               'frontend': frontend},
+                'selected': ['auth', 'frontend'], 'identities': identities,
+                'engine_content': 'd' * 64}
+        plan['id'] = digest(plan)
+        write(directory / 'plan.json', plan)
+        auth_receipt = {'schema': 2, 'component': 'auth', 'identity': identities['auth'],
+                        'build_sha': plan['source'],
+                        'artifact': {'image': 'asia-east1-docker.pkg.dev/llm-wiki-cloud/cloud-run-images/'
+                                              'llm-wiki-auth@sha256:' + 'a' * 64},
+                        'target_config': None}
+        write(directory / 'receipts/auth.json', auth_receipt)
+        auth_receipt_bytes = (directory / 'receipts/auth.json').read_bytes()
+        return engine.Engine(directory), directory, fake_root, auth_receipt_bytes
+
+    @staticmethod
+    def child_operation(args):
+        if args[:4] == ['gcloud', 'artifacts', 'docker', 'images']:
+            return 'auth-digest'
+        if args and args[0] == 'curl':
+            return 'frontend-project-readback'
+        if args[:2] == ['npm', 'ci']:
+            return 'frontend-npm-ci'
+        if args[:2] == ['vercel', 'pull']:
+            return 'frontend-vercel-pull'
+        if args[:2] == ['vercel', 'build']:
+            return 'frontend-vercel-build'
+        raise AssertionError('unexpected subprocess in Frontend prepare fixture')
+
+    def assert_failure_case(self, work, failing_stage, failure_kind):
+        instance, directory, fake_root, auth_receipt_bytes = self.make_engine(work)
+        trace = []
+        operations = [stage for stage, _, _, _ in self.stages]
+
+        def fake_subprocess(args, *, cwd, env, input, capture_output, text, timeout):
+            operation = self.child_operation(args)
+            trace.append((operation, str(cwd), timeout))
+            if operation == 'auth-digest':
+                return subprocess.CompletedProcess(args, 0, stdout='sha256:' + 'a' * 64,
+                                                   stderr=self.output_sentinel)
+            if operation == failing_stage:
+                if failure_kind == 'timeout':
+                    raise subprocess.TimeoutExpired(args, timeout, output=self.output_sentinel,
+                                                    stderr=self.output_sentinel)
+                return subprocess.CompletedProcess(args, 23, stdout=self.output_sentinel,
+                                                   stderr=self.output_sentinel)
+            if operation == 'frontend-project-readback':
+                response = {'id': self.project, 'name': 'llm-wiki-frontend-test',
+                            'accountId': self.team, 'rootDirectory': 'apps/frontend',
+                            'link': {'org': 'Rayer', 'repo': 'llm-wiki-cloud'}}
+                return subprocess.CompletedProcess(args, 0, stdout=json.dumps(response), stderr='')
+            return subprocess.CompletedProcess(args, 0, stdout='', stderr='')
+
+        env = {'PATH': os.environ.get('PATH', '/usr/bin:/bin'), 'HOME': str(work),
+               'TMPDIR': str(work), 'VERCEL_TOKEN': self.token,
+               'VERCEL_TEAM_ID': self.team, 'VERCEL_PROJECT_ID': self.project}
+        with patch.dict(os.environ, env, clear=True), patch('providers.ROOT', fake_root), \
+                patch('support.subprocess.run', side_effect=fake_subprocess), \
+                patch.object(instance, 'barrier', side_effect=AssertionError('ready barrier reached')), \
+                patch.object(instance, 'runtime_guard', side_effect=AssertionError('runtime path reached')):
+            with self.assertRaises(Breakpoint) as caught:
+                instance.prepare()
+            error = caught.exception
+            self.assertEqual(error.stage, failing_stage)
+            self.assertEqual(error.status, 'failed')
+            self.assertFalse(error.mutation)
+            stdout = io.StringIO()
+            with contextlib.redirect_stdout(stdout):
+                instance.result(error)
+
+        expected_operations = ['auth-digest', *operations[:operations.index(failing_stage) + 1]]
+        self.assertEqual([operation for operation, _, _ in trace], expected_operations)
+        for operation, cwd, timeout in trace:
+            if operation == 'auth-digest':
+                self.assertEqual(cwd, str(SUPPORT_ROOT))
+                self.assertEqual(timeout, 30)
+            else:
+                expected = next(row for row in self.stages if row[0] == operation)
+                expected_cwd = {'repo': SUPPORT_ROOT,
+                                'frontend': fake_root / 'apps/frontend',
+                                'fake-root': fake_root}[expected[2]]
+                self.assertEqual(cwd, str(expected_cwd))
+                self.assertEqual(timeout, expected[3])
+        self.assertEqual((error.exit_code, error.timeout_class),
+                         (23, None) if failure_kind == 'exit' else (None, 'subprocess-timeout'))
+        self.assertEqual((directory / 'receipts/auth.json').read_bytes(), auth_receipt_bytes)
+        self.assertFalse((directory / 'receipts/frontend.json').exists())
+        self.assertFalse((directory / 'frontend.tgz').exists())
+        self.assertEqual(instance.state['status'], 'prepared')
+        self.assertEqual(instance.state['components'], {})
+        self.assertFalse(any(operation in ('auth-build', 'auth-submit') for operation, _, _ in trace))
+
+        result = json.loads((directory / 'result.json').read_text())
+        self.assertEqual(result['failure_diagnostic'], {
+            'stage': failing_stage,
+            'exit_code': 23 if failure_kind == 'exit' else None,
+            'timeout_class': None if failure_kind == 'exit' else 'subprocess-timeout'})
+        self.assertEqual(set(result['failure_diagnostic']), {'stage', 'exit_code', 'timeout_class'})
+        self.assertEqual((result['component'], result['status'], result['mutation_may_have_happened']),
+                         ('frontend', 'failed', False))
+        safe_output = stdout.getvalue() + json.dumps(result) + str(error)
+        for private_value in (self.token, self.team, self.project, self.output_sentinel,
+                              'https://api.test.invalid', 'https://auth.test.invalid',
+                              'test-team', 'Rayer/llm-wiki-cloud', '--token', '--scope',
+                              'VERCEL_TOKEN', 'VERCEL_TEAM_ID', 'VERCEL_PROJECT_ID',
+                              'NEXT_PUBLIC_API_URL', 'NEXT_PUBLIC_AUTH_URL',
+                              'Authorization: Bearer'):
+            self.assertNotIn(private_value, safe_output)
+
+    def test_each_frontend_subprocess_failure_is_typed_redacted_and_stops_prepare(self):
+        for failure_kind in ('exit', 'timeout'):
+            for stage, _, _, _ in self.stages:
+                with self.subTest(stage=stage, failure=failure_kind), tempfile.TemporaryDirectory() as work:
+                    self.assert_failure_case(work, stage, failure_kind)
 
 
 if __name__ == '__main__':
