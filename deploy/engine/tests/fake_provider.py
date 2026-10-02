@@ -89,6 +89,11 @@ elif tool == 'gcloud':
             if s.get('fail_rollback'): fail=True
             else:
                 raw=s['resources'][name]
+                s.setdefault('traffic_before_cutover',[]).append({
+                    'service':name,
+                    'traffic':copy.deepcopy(raw['status']['traffic']),
+                    'target':flag('--to-revisions'),
+                })
                 raw['status']['traffic']=[{'revisionName':flag('--to-revisions').split('=')[0], 'percent':100}]
                 out=raw
         elif op == 'update':
