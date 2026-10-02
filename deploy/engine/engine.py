@@ -12,7 +12,7 @@ import shutil
 import sys
 import urllib.parse
 
-from support import ROOT, Breakpoint, digest, read, require, run, write
+from support import ROOT, Breakpoint, digest, read, require, run, structured_cause, write
 from providers import Providers, CLOUD_BUILD_LOCATION
 
 ORDER = ('exportjob', 'auth', 'bff', 'worker', 'frontend')
@@ -545,6 +545,8 @@ class Engine:
                 'exit_code': exc.exit_code,
                 'timeout_class': exc.timeout_class,
             }
+        if exc and exc.cause:
+            result['cause'] = exc.cause
         write(self.directory / 'result.json', result)
         print(json.dumps(result, sort_keys=True))
 
@@ -593,17 +595,21 @@ def main():
                 else:
                     engine.deploy(chosen, reactivate=True)
             engine.result()
-    except (Breakpoint, OSError, KeyError, ValueError, TypeError) as exc:
+    except (Breakpoint, OSError, KeyError, ValueError, TypeError, AttributeError) as exc:
         if not isinstance(exc, Breakpoint):
-            exc = Breakpoint('invalid-or-unreadable-input')
+            exc = Breakpoint('invalid-or-unreadable-input', stage='unknown',
+                             cause=structured_cause(exc))
         if engine:
             engine.result(exc)
         else:
-            print(json.dumps({'release': args.tag, 'attempt': None, 'stage': 'admission', 'component': None,
-                              'status': exc.status, 'reason': exc.reason, 'mutation_may_have_happened': False,
-                              'prior': None, 'candidate': None, 'expected': 'valid pinned input',
-                              'observed': 'input rejected', 'last_verified_checkpoint': None,
-                              'allowed_next_action': exc.action}))
+            result = {'release': args.tag, 'attempt': None, 'stage': 'admission', 'component': None,
+                      'status': exc.status, 'reason': exc.reason, 'mutation_may_have_happened': False,
+                      'prior': None, 'candidate': None, 'expected': 'valid pinned input',
+                      'observed': 'input rejected', 'last_verified_checkpoint': None,
+                      'allowed_next_action': exc.action}
+            if exc.cause:
+                result['cause'] = exc.cause
+            print(json.dumps(result))
         return 1
     return 0
 

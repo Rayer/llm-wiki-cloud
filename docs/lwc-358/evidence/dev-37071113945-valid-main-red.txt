@@ -1,0 +1,16 @@
+test_engine_main_valid_project_response_prepares_frontend_and_keeps_auth (test_prepare_diagnostics.FrontendPrepareDiagnostics.test_engine_main_valid_project_response_prepares_frontend_and_keeps_auth) ... FAIL
+
+======================================================================
+FAIL: test_engine_main_valid_project_response_prepares_frontend_and_keeps_auth (test_prepare_diagnostics.FrontendPrepareDiagnostics.test_engine_main_valid_project_response_prepares_frontend_and_keeps_auth)
+----------------------------------------------------------------------
+Traceback (most recent call last):
+  File "/Users/rayer/orca/workspaces/llm-wiki-cloud/LWC-358-engine-r2/deploy/engine/tests/test_prepare_diagnostics.py", line 426, in test_engine_main_valid_project_response_prepares_frontend_and_keeps_auth
+    self.assertEqual(engine.main(), 0, stdout.getvalue())
+    ~~~~~~~~~~~~~~~~^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+AssertionError: 1 != 0 : {"release": "offline-diagnostic", "attempt": null, "stage": "admission", "component": null, "status": "failed", "reason": "invalid-or-unreadable-input", "mutation_may_have_happened": false, "prior": null, "candidate": null, "expected": "valid pinned input", "observed": "input rejected", "last_verified_checkpoint": null, "allowed_next_action": "correct-input-and-resume", "cause": {"exception_type": "FileNotFoundError", "exception_type_omitted": false, "stage": "unknown", "code": "local-input-unreadable", "message": "[Errno 2] No such file or directory: '/Users/rayer/.hermes/profiles/lwc-tpm/cache/scratch/tmp8hfb_xmm/repo/deploy/engine/profiles.json'", "message_truncated": false, "message_omitted": false}}
+
+
+----------------------------------------------------------------------
+Ran 1 test in 0.003s
+
+FAILED (failures=1)

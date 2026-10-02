@@ -1,0 +1,165 @@
+test_build_submit_stage_keeps_reason_and_redacts_child_output (test_prepare_diagnostics.AuthPrepareDiagnostics.test_build_submit_stage_keeps_reason_and_redacts_child_output) ... ok
+test_digest_lookup_and_digest_validation_are_distinct_stages (test_prepare_diagnostics.AuthPrepareDiagnostics.test_digest_lookup_and_digest_validation_are_distinct_stages) ... ok
+test_engine_result_exposes_only_allowlisted_failure_metadata (test_prepare_diagnostics.AuthPrepareDiagnostics.test_engine_result_exposes_only_allowlisted_failure_metadata) ... ok
+test_immutable_validation_failure_is_typed_without_raw_output (test_prepare_diagnostics.AuthPrepareDiagnostics.test_immutable_validation_failure_is_typed_without_raw_output) ... ok
+test_known_permission_classification_and_safe_action_are_preserved (test_prepare_diagnostics.AuthPrepareDiagnostics.test_known_permission_classification_and_safe_action_are_preserved) ... ok
+test_action_forwards_main_cause_to_stdout_and_retained_result_without_raw_input (test_prepare_diagnostics.FrontendPrepareDiagnostics.test_action_forwards_main_cause_to_stdout_and_retained_result_without_raw_input) ... ok
+test_each_frontend_subprocess_failure_is_typed_redacted_and_stops_prepare (test_prepare_diagnostics.FrontendPrepareDiagnostics.test_each_frontend_subprocess_failure_is_typed_redacted_and_stops_prepare) ... 
+  test_each_frontend_subprocess_failure_is_typed_redacted_and_stops_prepare (test_prepare_diagnostics.FrontendPrepareDiagnostics.test_each_frontend_subprocess_failure_is_typed_redacted_and_stops_prepare) (stage='frontend-project-readback', failure='exit') ... FAIL
+  test_each_frontend_subprocess_failure_is_typed_redacted_and_stops_prepare (test_prepare_diagnostics.FrontendPrepareDiagnostics.test_each_frontend_subprocess_failure_is_typed_redacted_and_stops_prepare) (stage='frontend-npm-ci', failure='exit') ... FAIL
+  test_each_frontend_subprocess_failure_is_typed_redacted_and_stops_prepare (test_prepare_diagnostics.FrontendPrepareDiagnostics.test_each_frontend_subprocess_failure_is_typed_redacted_and_stops_prepare) (stage='frontend-vercel-pull', failure='exit') ... FAIL
+  test_each_frontend_subprocess_failure_is_typed_redacted_and_stops_prepare (test_prepare_diagnostics.FrontendPrepareDiagnostics.test_each_frontend_subprocess_failure_is_typed_redacted_and_stops_prepare) (stage='frontend-vercel-build', failure='exit') ... FAIL
+  test_each_frontend_subprocess_failure_is_typed_redacted_and_stops_prepare (test_prepare_diagnostics.FrontendPrepareDiagnostics.test_each_frontend_subprocess_failure_is_typed_redacted_and_stops_prepare) (stage='frontend-project-readback', failure='timeout') ... FAIL
+  test_each_frontend_subprocess_failure_is_typed_redacted_and_stops_prepare (test_prepare_diagnostics.FrontendPrepareDiagnostics.test_each_frontend_subprocess_failure_is_typed_redacted_and_stops_prepare) (stage='frontend-npm-ci', failure='timeout') ... FAIL
+  test_each_frontend_subprocess_failure_is_typed_redacted_and_stops_prepare (test_prepare_diagnostics.FrontendPrepareDiagnostics.test_each_frontend_subprocess_failure_is_typed_redacted_and_stops_prepare) (stage='frontend-vercel-pull', failure='timeout') ... FAIL
+  test_each_frontend_subprocess_failure_is_typed_redacted_and_stops_prepare (test_prepare_diagnostics.FrontendPrepareDiagnostics.test_each_frontend_subprocess_failure_is_typed_redacted_and_stops_prepare) (stage='frontend-vercel-build', failure='timeout') ... FAIL
+test_engine_main_valid_project_response_prepares_frontend_and_keeps_auth (test_prepare_diagnostics.FrontendPrepareDiagnostics.test_engine_main_valid_project_response_prepares_frontend_and_keeps_auth) ... FAIL
+test_pinned_vercel_and_build_utils_source_env_contract (test_prepare_diagnostics.FrontendPrepareDiagnostics.test_pinned_vercel_and_build_utils_source_env_contract) ... ok
+test_provider_prepare_passes_readback_identity_to_pinned_cli_context (test_prepare_diagnostics.FrontendPrepareDiagnostics.test_provider_prepare_passes_readback_identity_to_pinned_cli_context) ... ok
+test_runtime_deploy_maps_selected_context_before_pinned_cli (test_prepare_diagnostics.FrontendPrepareDiagnostics.test_runtime_deploy_maps_selected_context_before_pinned_cli) ... ok
+test_code_override_is_allowlisted_and_unknown_cause_is_not_inspected (test_prepare_diagnostics.StructuredCauseContract.test_code_override_is_allowlisted_and_unknown_cause_is_not_inspected) ... FAIL
+test_message_is_bounded_selectively_redacted_and_marks_truncation (test_prepare_diagnostics.StructuredCauseContract.test_message_is_bounded_selectively_redacted_and_marks_truncation) ... FAIL
+test_python_input_messages_keep_location_and_omit_json_source_text (test_prepare_diagnostics.StructuredCauseContract.test_python_input_messages_keep_location_and_omit_json_source_text) ... ok
+
+======================================================================
+FAIL: test_each_frontend_subprocess_failure_is_typed_redacted_and_stops_prepare (test_prepare_diagnostics.FrontendPrepareDiagnostics.test_each_frontend_subprocess_failure_is_typed_redacted_and_stops_prepare) (stage='frontend-project-readback', failure='exit')
+----------------------------------------------------------------------
+Traceback (most recent call last):
+  File "/Users/rayer/orca/workspaces/llm-wiki-cloud/LWC-358-engine-r2/deploy/engine/tests/test_prepare_diagnostics.py", line 506, in test_each_frontend_subprocess_failure_is_typed_redacted_and_stops_prepare
+    self.assert_failure_case(work, stage, failure_kind)
+    ~~~~~~~~~~~~~~~~~~~~~~~~^^^^^^^^^^^^^^^^^^^^^^^^^^^
+  File "/Users/rayer/orca/workspaces/llm-wiki-cloud/LWC-358-engine-r2/deploy/engine/tests/test_prepare_diagnostics.py", line 375, in assert_failure_case
+    self.assertIn('--token="[REDACTED]"', cause['message'])
+    ~~~~~~~~~~~~~^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+AssertionError: '--token="[REDACTED]"' not found in 'TEST_ONLY_CHILD_OUTPUT_SENTINEL: project=prj_TestProject123 team=team_TestTeam123 url=https://api.test.invalid Authorization: Bearer [REDACTED]; --token=[REDACTED]; VERCEL_TOKEN=[REDACTED]'
+
+======================================================================
+FAIL: test_each_frontend_subprocess_failure_is_typed_redacted_and_stops_prepare (test_prepare_diagnostics.FrontendPrepareDiagnostics.test_each_frontend_subprocess_failure_is_typed_redacted_and_stops_prepare) (stage='frontend-npm-ci', failure='exit')
+----------------------------------------------------------------------
+Traceback (most recent call last):
+  File "/Users/rayer/orca/workspaces/llm-wiki-cloud/LWC-358-engine-r2/deploy/engine/tests/test_prepare_diagnostics.py", line 506, in test_each_frontend_subprocess_failure_is_typed_redacted_and_stops_prepare
+    self.assert_failure_case(work, stage, failure_kind)
+    ~~~~~~~~~~~~~~~~~~~~~~~~^^^^^^^^^^^^^^^^^^^^^^^^^^^
+  File "/Users/rayer/orca/workspaces/llm-wiki-cloud/LWC-358-engine-r2/deploy/engine/tests/test_prepare_diagnostics.py", line 375, in assert_failure_case
+    self.assertIn('--token="[REDACTED]"', cause['message'])
+    ~~~~~~~~~~~~~^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+AssertionError: '--token="[REDACTED]"' not found in 'TEST_ONLY_CHILD_OUTPUT_SENTINEL: project=prj_TestProject123 team=team_TestTeam123 url=https://api.test.invalid Authorization: Bearer [REDACTED]; --token=[REDACTED]; VERCEL_TOKEN=[REDACTED]'
+
+======================================================================
+FAIL: test_each_frontend_subprocess_failure_is_typed_redacted_and_stops_prepare (test_prepare_diagnostics.FrontendPrepareDiagnostics.test_each_frontend_subprocess_failure_is_typed_redacted_and_stops_prepare) (stage='frontend-vercel-pull', failure='exit')
+----------------------------------------------------------------------
+Traceback (most recent call last):
+  File "/Users/rayer/orca/workspaces/llm-wiki-cloud/LWC-358-engine-r2/deploy/engine/tests/test_prepare_diagnostics.py", line 506, in test_each_frontend_subprocess_failure_is_typed_redacted_and_stops_prepare
+    self.assert_failure_case(work, stage, failure_kind)
+    ~~~~~~~~~~~~~~~~~~~~~~~~^^^^^^^^^^^^^^^^^^^^^^^^^^^
+  File "/Users/rayer/orca/workspaces/llm-wiki-cloud/LWC-358-engine-r2/deploy/engine/tests/test_prepare_diagnostics.py", line 375, in assert_failure_case
+    self.assertIn('--token="[REDACTED]"', cause['message'])
+    ~~~~~~~~~~~~~^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+AssertionError: '--token="[REDACTED]"' not found in 'TEST_ONLY_CHILD_OUTPUT_SENTINEL: project=prj_TestProject123 team=team_TestTeam123 url=https://api.test.invalid Authorization: Bearer [REDACTED]; --token=[REDACTED]; VERCEL_TOKEN=[REDACTED]'
+
+======================================================================
+FAIL: test_each_frontend_subprocess_failure_is_typed_redacted_and_stops_prepare (test_prepare_diagnostics.FrontendPrepareDiagnostics.test_each_frontend_subprocess_failure_is_typed_redacted_and_stops_prepare) (stage='frontend-vercel-build', failure='exit')
+----------------------------------------------------------------------
+Traceback (most recent call last):
+  File "/Users/rayer/orca/workspaces/llm-wiki-cloud/LWC-358-engine-r2/deploy/engine/tests/test_prepare_diagnostics.py", line 506, in test_each_frontend_subprocess_failure_is_typed_redacted_and_stops_prepare
+    self.assert_failure_case(work, stage, failure_kind)
+    ~~~~~~~~~~~~~~~~~~~~~~~~^^^^^^^^^^^^^^^^^^^^^^^^^^^
+  File "/Users/rayer/orca/workspaces/llm-wiki-cloud/LWC-358-engine-r2/deploy/engine/tests/test_prepare_diagnostics.py", line 375, in assert_failure_case
+    self.assertIn('--token="[REDACTED]"', cause['message'])
+    ~~~~~~~~~~~~~^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+AssertionError: '--token="[REDACTED]"' not found in 'TEST_ONLY_CHILD_OUTPUT_SENTINEL: project=prj_TestProject123 team=team_TestTeam123 url=https://api.test.invalid Authorization: Bearer [REDACTED]; --token=[REDACTED]; VERCEL_TOKEN=[REDACTED]'
+
+======================================================================
+FAIL: test_each_frontend_subprocess_failure_is_typed_redacted_and_stops_prepare (test_prepare_diagnostics.FrontendPrepareDiagnostics.test_each_frontend_subprocess_failure_is_typed_redacted_and_stops_prepare) (stage='frontend-project-readback', failure='timeout')
+----------------------------------------------------------------------
+Traceback (most recent call last):
+  File "/Users/rayer/orca/workspaces/llm-wiki-cloud/LWC-358-engine-r2/deploy/engine/tests/test_prepare_diagnostics.py", line 506, in test_each_frontend_subprocess_failure_is_typed_redacted_and_stops_prepare
+    self.assert_failure_case(work, stage, failure_kind)
+    ~~~~~~~~~~~~~~~~~~~~~~~~^^^^^^^^^^^^^^^^^^^^^^^^^^^
+  File "/Users/rayer/orca/workspaces/llm-wiki-cloud/LWC-358-engine-r2/deploy/engine/tests/test_prepare_diagnostics.py", line 375, in assert_failure_case
+    self.assertIn('--token="[REDACTED]"', cause['message'])
+    ~~~~~~~~~~~~~^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+AssertionError: '--token="[REDACTED]"' not found in 'TEST_ONLY_CHILD_OUTPUT_SENTINEL: project=prj_TestProject123 team=team_TestTeam123 url=https://api.test.invalid Authorization: Bearer [REDACTED]; --token=[REDACTED]; VERCEL_TOKEN=[REDACTED]'
+
+======================================================================
+FAIL: test_each_frontend_subprocess_failure_is_typed_redacted_and_stops_prepare (test_prepare_diagnostics.FrontendPrepareDiagnostics.test_each_frontend_subprocess_failure_is_typed_redacted_and_stops_prepare) (stage='frontend-npm-ci', failure='timeout')
+----------------------------------------------------------------------
+Traceback (most recent call last):
+  File "/Users/rayer/orca/workspaces/llm-wiki-cloud/LWC-358-engine-r2/deploy/engine/tests/test_prepare_diagnostics.py", line 506, in test_each_frontend_subprocess_failure_is_typed_redacted_and_stops_prepare
+    self.assert_failure_case(work, stage, failure_kind)
+    ~~~~~~~~~~~~~~~~~~~~~~~~^^^^^^^^^^^^^^^^^^^^^^^^^^^
+  File "/Users/rayer/orca/workspaces/llm-wiki-cloud/LWC-358-engine-r2/deploy/engine/tests/test_prepare_diagnostics.py", line 375, in assert_failure_case
+    self.assertIn('--token="[REDACTED]"', cause['message'])
+    ~~~~~~~~~~~~~^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+AssertionError: '--token="[REDACTED]"' not found in 'TEST_ONLY_CHILD_OUTPUT_SENTINEL: project=prj_TestProject123 team=team_TestTeam123 url=https://api.test.invalid Authorization: Bearer [REDACTED]; --token=[REDACTED]; VERCEL_TOKEN=[REDACTED]'
+
+======================================================================
+FAIL: test_each_frontend_subprocess_failure_is_typed_redacted_and_stops_prepare (test_prepare_diagnostics.FrontendPrepareDiagnostics.test_each_frontend_subprocess_failure_is_typed_redacted_and_stops_prepare) (stage='frontend-vercel-pull', failure='timeout')
+----------------------------------------------------------------------
+Traceback (most recent call last):
+  File "/Users/rayer/orca/workspaces/llm-wiki-cloud/LWC-358-engine-r2/deploy/engine/tests/test_prepare_diagnostics.py", line 506, in test_each_frontend_subprocess_failure_is_typed_redacted_and_stops_prepare
+    self.assert_failure_case(work, stage, failure_kind)
+    ~~~~~~~~~~~~~~~~~~~~~~~~^^^^^^^^^^^^^^^^^^^^^^^^^^^
+  File "/Users/rayer/orca/workspaces/llm-wiki-cloud/LWC-358-engine-r2/deploy/engine/tests/test_prepare_diagnostics.py", line 375, in assert_failure_case
+    self.assertIn('--token="[REDACTED]"', cause['message'])
+    ~~~~~~~~~~~~~^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+AssertionError: '--token="[REDACTED]"' not found in 'TEST_ONLY_CHILD_OUTPUT_SENTINEL: project=prj_TestProject123 team=team_TestTeam123 url=https://api.test.invalid Authorization: Bearer [REDACTED]; --token=[REDACTED]; VERCEL_TOKEN=[REDACTED]'
+
+======================================================================
+FAIL: test_each_frontend_subprocess_failure_is_typed_redacted_and_stops_prepare (test_prepare_diagnostics.FrontendPrepareDiagnostics.test_each_frontend_subprocess_failure_is_typed_redacted_and_stops_prepare) (stage='frontend-vercel-build', failure='timeout')
+----------------------------------------------------------------------
+Traceback (most recent call last):
+  File "/Users/rayer/orca/workspaces/llm-wiki-cloud/LWC-358-engine-r2/deploy/engine/tests/test_prepare_diagnostics.py", line 506, in test_each_frontend_subprocess_failure_is_typed_redacted_and_stops_prepare
+    self.assert_failure_case(work, stage, failure_kind)
+    ~~~~~~~~~~~~~~~~~~~~~~~~^^^^^^^^^^^^^^^^^^^^^^^^^^^
+  File "/Users/rayer/orca/workspaces/llm-wiki-cloud/LWC-358-engine-r2/deploy/engine/tests/test_prepare_diagnostics.py", line 375, in assert_failure_case
+    self.assertIn('--token="[REDACTED]"', cause['message'])
+    ~~~~~~~~~~~~~^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+AssertionError: '--token="[REDACTED]"' not found in 'TEST_ONLY_CHILD_OUTPUT_SENTINEL: project=prj_TestProject123 team=team_TestTeam123 url=https://api.test.invalid Authorization: Bearer [REDACTED]; --token=[REDACTED]; VERCEL_TOKEN=[REDACTED]'
+
+======================================================================
+FAIL: test_engine_main_valid_project_response_prepares_frontend_and_keeps_auth (test_prepare_diagnostics.FrontendPrepareDiagnostics.test_engine_main_valid_project_response_prepares_frontend_and_keeps_auth)
+----------------------------------------------------------------------
+Traceback (most recent call last):
+  File "/Users/rayer/orca/workspaces/llm-wiki-cloud/LWC-358-engine-r2/deploy/engine/tests/test_prepare_diagnostics.py", line 426, in test_engine_main_valid_project_response_prepares_frontend_and_keeps_auth
+    self.assertEqual(engine.main(), 0)
+    ~~~~~~~~~~~~~~~~^^^^^^^^^^^^^^^^^^
+AssertionError: 1 != 0
+
+======================================================================
+FAIL: test_code_override_is_allowlisted_and_unknown_cause_is_not_inspected (test_prepare_diagnostics.StructuredCauseContract.test_code_override_is_allowlisted_and_unknown_cause_is_not_inspected)
+----------------------------------------------------------------------
+Traceback (most recent call last):
+  File "/Users/rayer/orca/workspaces/llm-wiki-cloud/LWC-358-engine-r2/deploy/engine/tests/test_prepare_diagnostics.py", line 45, in test_code_override_is_allowlisted_and_unknown_cause_is_not_inspected
+    self.assertEqual(unknown, {
+    ~~~~~~~~~~~~~~~~^^^^^^^^^^^
+        'exception_type': 'unknown', 'exception_type_omitted': True,
+        ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+        'stage': 'unknown', 'code': 'unclassified-input-error',
+        ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+        'message': None, 'message_truncated': False, 'message_omitted': True})
+        ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+AssertionError: {'exc[81 chars]e': 'invalid-json', 'message': None, 'message_[38 chars]True} != {'exc[81 chars]e': 'unclassified-input-error', 'message': Non[50 chars]True}
+- {'code': 'invalid-json',
++ {'code': 'unclassified-input-error',
+   'exception_type': 'unknown',
+   'exception_type_omitted': True,
+   'message': None,
+   'message_omitted': True,
+   'message_truncated': False,
+   'stage': 'unknown'}
+
+======================================================================
+FAIL: test_message_is_bounded_selectively_redacted_and_marks_truncation (test_prepare_diagnostics.StructuredCauseContract.test_message_is_bounded_selectively_redacted_and_marks_truncation)
+----------------------------------------------------------------------
+Traceback (most recent call last):
+  File "/Users/rayer/orca/workspaces/llm-wiki-cloud/LWC-358-engine-r2/deploy/engine/tests/test_prepare_diagnostics.py", line 75, in test_message_is_bounded_selectively_redacted_and_marks_truncation
+    self.assertIn('--token="[REDACTED]"', cause['message'])
+    ~~~~~~~~~~~~~^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+AssertionError: '--token="[REDACTED]"' not found in 'CLI could not link prj_TestProject at https://api.test.invalid; Authorization: Bearer [REDACTED]; --token=[REDACTED]; VERCEL_TOKEN=[REDACTED]; xxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxx'
+
+----------------------------------------------------------------------
+Ran 14 tests in 3.172s
+
+FAILED (failures=11)
+Pinned resolver baseline=pair-incomplete; runtime-child=linked; resume=single-deploy

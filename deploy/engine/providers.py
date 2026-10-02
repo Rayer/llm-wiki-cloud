@@ -10,7 +10,7 @@ import tempfile
 import time
 import urllib.parse
 
-from support import ROOT, Breakpoint, digest, read, require, run, write
+from support import ROOT, Breakpoint, InputShapeError, digest, read, require, run, structured_cause, write
 sys.path.insert(0, str(ROOT / 'deploy/components'))
 import auth_config
 import frontend_build_config
@@ -103,15 +103,35 @@ class Providers:
     def project(self, stage=None):
         identity = os.environ.get('VERCEL_PROJECT_ID', '')
         require(re.fullmatch(r'prj_[A-Za-z0-9]+', identity), 'invalid-vercel-project')
-        raw = self.api('/v9/projects/'+identity, stage=stage)
-        cfg = self.p['frontend']
-        link = raw.get('link', {})
-        repository = link.get('repo')
-        if repository and '/' not in repository:
-            repository = link.get('org', '')+'/'+repository
-        require(raw['id'] == identity and raw['name'] == cfg['project_name'] and
-                raw.get('accountId', raw.get('team', {}).get('id')) == os.environ['VERCEL_TEAM_ID'] and
-                raw.get('rootDirectory') == cfg['root_directory'] and repository == cfg['repository'], 'vercel-project-config-incompatible')
+        diagnostic_stage = stage if stage in {
+            'frontend-project-readback', 'frontend-npm-ci',
+            'frontend-vercel-pull', 'frontend-vercel-build',
+        } else 'unknown'
+        try:
+            raw = self.api('/v9/projects/'+identity, stage=stage)
+            if not isinstance(raw, dict):
+                raise InputShapeError('project response must be a JSON object')
+            cfg = self.p['frontend']
+            link = raw.get('link', {})
+            team = raw.get('team', {})
+            if not isinstance(link, dict) or not isinstance(team, dict):
+                raise InputShapeError('project response link and team fields must be objects')
+            repository = link.get('repo')
+            if repository is not None and not isinstance(repository, str):
+                raise InputShapeError('project response repository field must be a string')
+            if repository and '/' not in repository:
+                organization = link.get('org', '')
+                if not isinstance(organization, str):
+                    raise InputShapeError('project response organization field must be a string')
+                repository = organization+'/'+repository
+            require(raw['id'] == identity and raw['name'] == cfg['project_name'] and
+                    raw.get('accountId', team.get('id')) == os.environ['VERCEL_TEAM_ID'] and
+                    raw.get('rootDirectory') == cfg['root_directory'] and repository == cfg['repository'], 'vercel-project-config-incompatible')
+        except Breakpoint:
+            raise
+        except (InputShapeError, AttributeError, KeyError, OSError, TypeError, ValueError) as exc:
+            raise Breakpoint('invalid-or-unreadable-input', stage=diagnostic_stage,
+                             cause=structured_cause(exc, diagnostic_stage)) from None
 
     def deployment(self, identity):
         require(re.fullmatch(r'(dpl_[A-Za-z0-9]+|[A-Za-z0-9.-]+\.vercel\.app)', identity), 'invalid-deployment')
