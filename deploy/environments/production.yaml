@@ -24,6 +24,8 @@ auth:
   ingress: all
   max_instances: 1
   firestore_database_id: llm-wiki-cloud-prod
+  # Populate only after TPM confirms this environment's existing Demo UID.
+  demo_user_id: ""
   public_domain: auth.rayer.idv.tw
   allowed_hosts:
     - auth.rayer.idv.tw

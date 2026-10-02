@@ -14,7 +14,8 @@ GOOGLE = {
     'GOOGLE_COMPLETION_URL': 'completion_url',
 }
 BASE = ('GCP_PROJECT', 'FIRESTORE_DATABASE_ID', 'ALLOWED_HOSTS', 'ALLOWED_ORIGINS',
-        'AUTH_SERVICE_URL', 'AUTH_SESSION_ENVIRONMENT', 'AUTH_REFRESH_SESSION_MIGRATION', 'DEV_JWT')
+        'AUTH_SERVICE_URL', 'AUTH_SESSION_ENVIRONMENT', 'AUTH_REFRESH_SESSION_MIGRATION',
+        'AUTH_DEMO_USER_ID', 'DEV_JWT')
 SECRET = ('JWT_SECRET', 'GOOGLE_CLIENT_SECRET')
 QUERY_PATH = 'QUERY_STAGE_CONFIG_PATH'
 EXPORT_BFF = ('EXPORT_JOB_URL', 'EXPORT_SIGNING_SERVICE_ACCOUNT')
@@ -97,10 +98,12 @@ def desired(plan, component='auth'):
             'service_account': bff['runtime_service_account']}
     auth = plan['auth']
     google = auth['google']
+    demo_user_id = auth.get('demo_user_id', '')
+    require(isinstance(demo_user_id, str) and (demo_user_id == '' or re.fullmatch(r'[A-Za-z0-9_-]{1,128}', demo_user_id)))
     env = dict(zip(BASE, (
         plan['gcp']['project_id'], auth['firestore_database_id'],
         ','.join(auth['allowed_hosts']), ','.join(auth['allowed_origins']),
-        'https://' + auth['public_domain'], auth['firestore_database_id'], 'disabled', 'false',
+        'https://' + auth['public_domain'], auth['firestore_database_id'], 'disabled', demo_user_id, 'false',
     )))
     secrets = {'JWT_SECRET': {'name': auth['secret_references']['jwt'], 'key': 'latest'}}
     require(type(google['enabled']) is bool)

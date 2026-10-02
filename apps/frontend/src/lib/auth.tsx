@@ -49,7 +49,7 @@ type AuthContextValue = {
   isAuthenticated: boolean;
   isDemoSession: boolean;
   login: (email: string, password: string) => Promise<void>;
-  loginAsDemo: (email: string, password: string) => Promise<void>;
+  loginAsDemo: () => Promise<void>;
   register: (email: string, password: string) => Promise<void>;
   logout: () => Promise<void>;
   refreshAccessToken: (options?: RefreshAccessTokenOptions) => Promise<string | null>;
@@ -260,8 +260,8 @@ export function AuthProvider({ children }: { children: ReactNode }) {
     applyAuthResponse(normalizeAuthResponse(payload), { demo: false });
   }, [applyAuthResponse]);
 
-  const loginAsDemo = useCallback(async (email: string, password: string) => {
-    const payload = await postAuth('/api/v1/auth/login', { email, password });
+  const loginAsDemo = useCallback(async () => {
+    const payload = await postAuth('/api/v1/auth/demo');
     applyAuthResponse(normalizeAuthResponse(payload), { demo: true });
   }, [applyAuthResponse]);
 

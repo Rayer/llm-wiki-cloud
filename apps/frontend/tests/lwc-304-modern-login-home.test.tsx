@@ -124,6 +124,13 @@ describe('LWC-304 modern login and knowledge home', () => {
     await waitFor(() => expect(mocks.signIn).toHaveBeenCalledWith('person@example.com', 'secret'));
   });
 
+  it('starts Demo sign-in without passing credentials', async () => {
+    render(<LoginModal />);
+    fireEvent.click(screen.getByRole('button', { name: 'Login.tryDemo' }));
+    await waitFor(() => expect(mocks.signInAsDemo).toHaveBeenCalledTimes(1));
+    expect(mocks.signInAsDemo).toHaveBeenCalledWith();
+  });
+
   it('renders the HomeClient query composer and submits its selected mode', async () => {
     render(<HomeClient />);
 

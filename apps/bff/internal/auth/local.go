@@ -47,6 +47,31 @@ func LocalDevLoginHandler(jwtSecret string) gin.HandlerFunc {
 	}
 }
 
+// LocalDevDemoLoginHandler issues the synthetic local Demo identity without
+// accepting the local fixture credentials from the frontend.
+func LocalDevDemoLoginHandler(jwtSecret string) gin.HandlerFunc {
+	return func(c *gin.Context) {
+		if !validateDemoLoginBody(c) {
+			return
+		}
+		accessToken, err := GenerateAccessToken(localDevUserID, localDevRole, jwtSecret)
+		if err != nil {
+			c.JSON(http.StatusInternalServerError, gin.H{"error": "failed to generate token"})
+			return
+		}
+		refreshToken, err := GenerateRefreshToken(localDevUserID, localDevRole, jwtSecret)
+		if err != nil {
+			c.JSON(http.StatusInternalServerError, gin.H{"error": "failed to generate token"})
+			return
+		}
+		setRefreshTokenCookieWithPolicy(c, refreshToken, int(refreshTokenTTL.Seconds()), LocalRefreshCookiePolicy())
+		c.JSON(http.StatusOK, LoginResponse{
+			AccessToken: accessToken,
+			User:        User{ID: localDevUserID, Email: localDevEmail, Role: localDevRole},
+		})
+	}
+}
+
 // LocalDevRefreshHandler rotates local refresh tokens without Firestore.
 func LocalDevRefreshHandler(jwtSecret string) gin.HandlerFunc {
 	return func(c *gin.Context) {

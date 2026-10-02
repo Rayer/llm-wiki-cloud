@@ -54,6 +54,7 @@ type AuthConfig struct {
 	Ingress               string               `yaml:"ingress" json:"ingress"`
 	MaxInstances          int                  `yaml:"max_instances" json:"max_instances"`
 	FirestoreDatabaseID   string               `yaml:"firestore_database_id" json:"firestore_database_id"`
+	DemoUserID            string               `yaml:"demo_user_id" json:"demo_user_id"`
 	PublicDomain          string               `yaml:"public_domain" json:"public_domain"`
 	AllowedHosts          []string             `yaml:"allowed_hosts" json:"allowed_hosts"`
 	AllowedOrigins        []string             `yaml:"allowed_origins" json:"allowed_origins"`
@@ -391,6 +392,9 @@ func validateConfigForEnvironment(environment string, config EnvironmentConfig) 
 		config.BFF.Network != "default" || config.BFF.Subnet != "default" || config.BFF.VPCEgress != "private-ranges-only" || config.BFF.Ingress != "all" {
 		return errors.New("service network configuration is not the reviewed Cloud Run definition")
 	}
+	if config.Auth.DemoUserID != "" && !pipelineDemoUserIDPattern.MatchString(config.Auth.DemoUserID) {
+		return errors.New("auth.demo_user_id is invalid")
+	}
 	if err := validateStringList("auth.allowed_hosts", config.Auth.AllowedHosts); err != nil {
 		return err
 	}
@@ -547,7 +551,7 @@ func componentInputs(config EnvironmentConfig, query QueryConfigIdentity, select
 	for _, name := range selected {
 		switch name {
 		case "auth":
-			components[name] = map[string]any{"service_name": config.Auth.ServiceName, "runtime_service_account": config.Auth.RuntimeServiceAccount, "network": config.Auth.Network, "subnet": config.Auth.Subnet, "vpc_egress": config.Auth.VPCEgress, "ingress": config.Auth.Ingress, "max_instances": config.Auth.MaxInstances, "public_domain": config.Auth.PublicDomain, "firestore_database_id": config.Auth.FirestoreDatabaseID, "allowed_hosts": config.Auth.AllowedHosts, "allowed_origins": config.Auth.AllowedOrigins, "dev_jwt": false, "secret_references": map[string]any{"jwt": config.Auth.SecretReferences.JWT}}
+			components[name] = map[string]any{"service_name": config.Auth.ServiceName, "runtime_service_account": config.Auth.RuntimeServiceAccount, "network": config.Auth.Network, "subnet": config.Auth.Subnet, "vpc_egress": config.Auth.VPCEgress, "ingress": config.Auth.Ingress, "max_instances": config.Auth.MaxInstances, "public_domain": config.Auth.PublicDomain, "firestore_database_id": config.Auth.FirestoreDatabaseID, "demo_user_id": config.Auth.DemoUserID, "allowed_hosts": config.Auth.AllowedHosts, "allowed_origins": config.Auth.AllowedOrigins, "dev_jwt": false, "secret_references": map[string]any{"jwt": config.Auth.SecretReferences.JWT}}
 			if config.Auth.Google != nil {
 				components[name].(map[string]any)["google"] = config.Auth.Google
 			}
