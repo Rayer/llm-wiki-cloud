@@ -402,15 +402,18 @@ for (const [scenario, reasonCode] of [
   });
 }
 
-test('DEV workflow invokes the shared CD with fixed authority', async () => {
-  const workflow = (await readFile(join(monorepoRoot, '.github/workflows/deploy-dev.yml'), 'utf8'));
-  const source = workflow.replace(/\$\{\{[\s\S]*?\}\}/g, 'VALUE');
-  assert.doesNotMatch(source, /\n  push:/);
-  assert.match(source, /workflow_dispatch:/);
-  assert.match(source, /uses: \.\/\.github\/workflows\/cd\.yml/);
-  assert.match(source, /environment: Development/);
-  assert.match(source, /config_environment: development/);
-  assert.match(source, /source_ref: develop/);
-  assert.match(source, /config_path: deploy\/environments\/development\.yaml/);
-  assert.deepEqual(Object.keys((await import('js-yaml')).load(workflow).on.workflow_dispatch.inputs), ['components']);
+test('DEV workflow invokes the shared engine with fixed authority and explicit receipt inputs', async () => {
+  const workflow = (await import('js-yaml')).load(await readFile(join(monorepoRoot, '.github/workflows/deploy-dev.yml'), 'utf8'));
+  const job = workflow.jobs.release;
+  assert.equal(workflow.on.push, undefined);
+  assert.deepEqual(Object.keys(workflow.on.workflow_dispatch.inputs), ['components', 'release_tag', 'artifact_id', 'dev_artifact_id']);
+  assert.equal(workflow.on.workflow_dispatch.inputs.release_tag.required, true);
+  assert.equal(job.if, "github.ref == 'refs/heads/develop'");
+  assert.equal(job.uses, './.github/workflows/cd.yml');
+  assert.equal(job.secrets, 'inherit');
+  assert.deepEqual(job.with, {
+    environment: 'development', source_sha: '${{ github.sha }}',
+    components: '${{ inputs.components }}', release_tag: '${{ inputs.release_tag }}',
+    artifact_id: '${{ inputs.artifact_id }}', dev_artifact_id: '${{ inputs.dev_artifact_id }}',
+  });
 });

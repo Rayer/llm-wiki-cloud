@@ -1,0 +1,50 @@
+{
+  "auth": {
+    "revision": 1,
+    "package": "./cmd/auth",
+    "image": "llm-wiki-auth",
+    "inputs": [
+      "apps/bff/Dockerfile.auth",
+      "apps/bff/cloudbuild-auth.yaml",
+      "apps/bff/VERSION",
+      "apps/bff/cmd/versioncheck"
+    ]
+  },
+  "bff": {
+    "revision": 1,
+    "package": "./cmd/bff",
+    "image": "llm-wiki-bff",
+    "inputs": [
+      "apps/bff/Dockerfile",
+      "apps/bff/cloudbuild-bff.yaml",
+      "apps/bff/VERSION",
+      "apps/bff/configs/query",
+      "apps/bff/scripts/postprocess_swagger.py",
+      "apps/bff/cmd/versioncheck"
+    ]
+  },
+  "worker": {
+    "revision": 1,
+    "package": "./cmd/olw_worker",
+    "image": "olw-pipeline",
+    "inputs": [
+      "apps/bff/cmd/olw_worker/Dockerfile",
+      "apps/bff/cmd/olw_worker/validate_build_nonce.sh"
+    ]
+  },
+  "exportjob": {
+    "revision": 1,
+    "package": "./cmd/export_worker",
+    "image": "llm-wiki-bff-export-job",
+    "inputs": [
+      "apps/bff/Dockerfile.exportjob"
+    ]
+  },
+  "frontend": {
+    "revision": 1,
+    "inputs": [
+      "apps/frontend"
+    ],
+    "cli": "59.11.7"
+  }
+}

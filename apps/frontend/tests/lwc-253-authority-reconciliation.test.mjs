@@ -764,16 +764,26 @@ test('foreign-project exact-SHA candidate cannot suppress CREATE_NOT_ALLOWED', a
   assert.equal((await lines(join(fixture.root, 'mutation-log'))).length, 0);
 });
 
-test('DEV authority uses the fixed shared CD entry', async () => {
-  const source = parseYaml(await readFile(join(monorepoRoot, '.github/workflows/deploy-dev.yml'), 'utf8'));
-  assert.equal(source.on.push, undefined);
-  assert.deepEqual(Object.keys(source.on.workflow_dispatch.inputs), ['components']);
-  assert.equal(source.jobs.deploy.with.environment, 'Development');
-  assert.equal(source.jobs.deploy.with.config_path, 'deploy/environments/development.yaml');
-  assert.equal(source.jobs.deploy.with.source_ref, 'develop');
-  const component = await readFile(join(monorepoRoot, 'deploy/components/frontend.sh'), 'utf8');
-  assert.match(component, /frontend_mutate/);
-  assert.match(component, /vercel_alias_apply/);
+test('DEV authority uses the protected shared engine and durable selected stage barrier', async () => {
+  const source = parseYaml(await readFile(join(monorepoRoot, '.github/workflows/cd.yml'), 'utf8'));
+  assert.deepEqual(Object.keys(source.jobs), ['release']);
+  assert.equal(source.concurrency.group, 'lwc-engine-${{ inputs.environment }}');
+  assert.equal(source.concurrency['cancel-in-progress'], false);
+  const job = source.jobs.release;
+  assert.equal(job.environment, "${{ inputs.environment == 'production' && 'Production' || 'Development' }}");
+  assert.equal(job.permissions['id-token'], 'write');
+  assert.equal(job.env.COMPONENTS, '${{ inputs.components }}');
+  const prepare = job.steps.findIndex(step => step.with?.operation === 'prepare');
+  const ready = job.steps.findIndex(step => step.id === 'ready');
+  const runtime = job.steps.findIndex(step => step.with?.operation === 'runtime');
+  assert.ok(prepare >= 0 && prepare < ready && ready < runtime);
+  assert.equal(job.steps[prepare].uses, './.github/actions/deployment-engine');
+  assert.equal(job.steps[runtime].uses, './.github/actions/deployment-engine');
+  assert.equal(job.steps[ready].if, "inputs.operation == 'release'");
+  assert.match(job.steps[ready].uses, /^actions\/upload-artifact@/);
+  assert.equal(job.steps[ready].with['if-no-files-found'], 'error');
+  assert.equal(job.steps[ready].with.path, '${{ runner.temp }}/release');
+  assert.equal(job.steps.find(step => step.uses?.startsWith('actions/checkout@')).with.ref, '${{ inputs.source_sha }}');
 });
 
 test('sourcing the normal helper is library-only and preserves direct evidence naming', async () => {

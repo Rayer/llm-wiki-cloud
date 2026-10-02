@@ -1,0 +1,42 @@
+name: Recover retained deployment
+on:
+  workflow_dispatch:
+    inputs:
+      environment:
+        type: choice
+        options: [development, production]
+        required: true
+      source_sha:
+        description: Original pinned release source and engine revision
+        required: true
+        type: string
+      artifact_id:
+        description: Latest exact retained checkpoint artifact ID
+        required: true
+        type: string
+      release_tag:
+        required: true
+        type: string
+      components:
+        description: Explicit affected components
+        required: true
+        type: string
+      operation:
+        required: true
+        type: choice
+        options: [rollback, reactivate, deploy, tag, readback]
+permissions:
+  contents: write
+  actions: read
+  id-token: write
+jobs:
+  recovery:
+    uses: ./.github/workflows/cd.yml
+    secrets: inherit
+    with:
+      environment: ${{ inputs.environment }}
+      source_sha: ${{ inputs.source_sha }}
+      components: ${{ inputs.components }}
+      release_tag: ${{ inputs.release_tag }}
+      operation: ${{ inputs.operation }}
+      artifact_id: ${{ inputs.artifact_id }}

@@ -1,0 +1,189 @@
+{
+  "base": "e9ccf490251ed0262481fca94af7387107be6b5f",
+  "branch": "Rayer/LWC-358-engine-r2",
+  "content_sha256": "8c92173b50e3b55b9a27f4b9f288d430934a7fd6305d1e10ae0e31ca305bff39",
+  "scope": "All changed/new implementation, test, operator and frozen-spec files; excludes this manifest, evidence report and logs to avoid self-reference.",
+  "frozen_sha256": "838817cad154b0ea773c205f671362a6c9c0ad97c38ddf34f2508eb4fcc2488b",
+  "files": [
+    {
+      "path": ".agents/skills/deployment-operator/SKILL.md",
+      "sha256": "0387f406e3df6baabe4c0caa44665ed40a91362865c5b38bd3f20c2e6a77b595",
+      "mode": "0o644"
+    },
+    {
+      "path": ".github/actions/deployment-engine/action.yml",
+      "sha256": "c5d16ad58b897d34cacb13257db8617a39157cf33fc8206aecad6b3864ef3949",
+      "mode": "0o644"
+    },
+    {
+      "path": ".github/actions/deployment-engine/index.cjs",
+      "sha256": "99fae610f0c81d41d7bbcbb23620c8f047321c367cd00de0f9beb62a566455b4",
+      "mode": "0o644"
+    },
+    {
+      "path": ".github/workflows/cd.yml",
+      "sha256": "a53cf41d5e9a48b265db52347296a9d375d183e467c4376d48177a50f80c6ea6",
+      "mode": "0o644"
+    },
+    {
+      "path": ".github/workflows/ci.yml",
+      "sha256": "170682ecdf28063f599ad1bc9221ec17d99f233c5805618ff8cd2e66f43f831c",
+      "mode": "0o644"
+    },
+    {
+      "path": ".github/workflows/deploy-dev.yml",
+      "sha256": "27550dd8f65a9126edacf58fd28cc4e2b8316ea5e8a3daddbeb3570ddf8f83a1",
+      "mode": "0o644"
+    },
+    {
+      "path": ".github/workflows/promote-production.yml",
+      "sha256": "db94449c927baf91148fb07bf78baa25a9f32115d2852685159eb9d5f880aaa3",
+      "mode": "0o644"
+    },
+    {
+      "path": ".github/workflows/recover-deployment.yml",
+      "sha256": "18aeab2332d719da8eadb4e1e4248cf8e83f225b3985457486cf49407e0aa27e",
+      "mode": "0o644"
+    },
+    {
+      "path": "apps/bff/cmd/bff/deploy_workflow_test.go",
+      "sha256": "f20fe094c595833997eeafecefbe0c08c36b62706579ba454fce595be95267c9",
+      "mode": "0o644"
+    },
+    {
+      "path": "apps/bff/cmd/olw_worker/workflow_test.go",
+      "sha256": "d6cb7c1e2f9fbdd0d32d7ec27561e3b858d5c23f1ca2136964388041ef68a824",
+      "mode": "0o644"
+    },
+    {
+      "path": "apps/bff/scripts/test_bff_explicit_cutover.py",
+      "sha256": "dc01bfa8310614e03fe6c0a43635b21c6ab64618c749228e67658fcc3103cab8",
+      "mode": "0o644"
+    },
+    {
+      "path": "apps/bff/workflow_test.go",
+      "sha256": "38bd20384424f3f63dfd68270feb4b457d8a17848d2ba5ccd33ce452132a9f11",
+      "mode": "0o644"
+    },
+    {
+      "path": "apps/frontend/tests/ci-workflow-contract.test.mjs",
+      "sha256": "8c66d9d225fba6cbb73ea9f7e02c4ad6975fbca0e28a5bfc802393e833ab1859",
+      "mode": "0o644"
+    },
+    {
+      "path": "apps/frontend/tests/lwc-199-vercel-alias-promotion.test.mjs",
+      "sha256": "193230a5e45b9c7d1cd238db2bcc24e8f0737cc43597d061ad4a85d1e93a20bd",
+      "mode": "0o644"
+    },
+    {
+      "path": "apps/frontend/tests/lwc-253-authority-reconciliation.test.mjs",
+      "sha256": "72e5ee2387db592c133683ccb7b9e85b42bd80222358d0b4b8638b9b9a731caa",
+      "mode": "0o644"
+    },
+    {
+      "path": "apps/frontend/tests/lwc-253-vercel-dev-authority.test.mjs",
+      "sha256": "8c892cc859199ee884b8081645c1cbd7ff75f44ad3fe8095acf4537e2747a6c2",
+      "mode": "0o644"
+    },
+    {
+      "path": "apps/frontend/tests/lwc-258-vercel-production-auth-env.test.mjs",
+      "sha256": "a85e608a40928b264cfa6a0877f879f8e59044dc3ed815cd28e259ab3b0e115e",
+      "mode": "0o644"
+    },
+    {
+      "path": "deploy/components/auth.sh",
+      "sha256": "efffbd2aa85c35b2dde79d205de1554e68b165a568b801a97dfd4e993180ca46",
+      "mode": "0o755"
+    },
+    {
+      "path": "deploy/components/bff.sh",
+      "sha256": "a90135ca3f6f5de6b406c460dd9118c7ff8383d232d3894dddd781e522bd6d43",
+      "mode": "0o755"
+    },
+    {
+      "path": "deploy/components/exportjob.sh",
+      "sha256": "394c52d7b6ec10aa053cdbd01475b805e10f3d2c778589477b4d15668f1c0bb5",
+      "mode": "0o644"
+    },
+    {
+      "path": "deploy/components/worker.sh",
+      "sha256": "efbd820731851e185aff814ba1db0b7cc87762aab5cf12edb315594e14aace10",
+      "mode": "0o755"
+    },
+    {
+      "path": "deploy/engine/artifacts.cjs",
+      "sha256": "bd519a735e414057ef4e5dea21bec8473817a519d32220ae1eade9f8b67cd0e9",
+      "mode": "0o644"
+    },
+    {
+      "path": "deploy/engine/engine.py",
+      "sha256": "0c4e2abe151dac9fd24aec000f7d318ce2dc9a8ee4be7eae62e6862d242ddc40",
+      "mode": "0o644"
+    },
+    {
+      "path": "deploy/engine/profiles.json",
+      "sha256": "707dfdefe958ead24cdef222589bb1a376f148d0f266eb2eac3c838a66f9660d",
+      "mode": "0o644"
+    },
+    {
+      "path": "deploy/engine/providers.py",
+      "sha256": "28a2fde4ebb0e344834daa20ea1433b909eb22035e5dca6658d3947bde15dff1",
+      "mode": "0o644"
+    },
+    {
+      "path": "deploy/engine/support.py",
+      "sha256": "8a2972402acddea2ab5264c4825422591516b672d88326fedecbadb5c41f62bd",
+      "mode": "0o644"
+    },
+    {
+      "path": "deploy/engine/tests/artifacts.test.cjs",
+      "sha256": "aabe3b77d36ef43b2b449bdc2de12bd92cd440e337afdf048bbc447dd14fad59",
+      "mode": "0o644"
+    },
+    {
+      "path": "deploy/engine/tests/fake_provider.py",
+      "sha256": "ec5cdf5c38cf84b7b463ce7e2608657e23a2a731aea1f4d8a3dd80b34d6fdc4c",
+      "mode": "0o755"
+    },
+    {
+      "path": "deploy/engine/tests/test_ci_environment.py",
+      "sha256": "2e2f9d9ed92088d684506ec48d7d575dc6a3080455ba148d6a1a444b82e243d4",
+      "mode": "0o644"
+    },
+    {
+      "path": "deploy/engine/tests/test_engine.py",
+      "sha256": "193c80099e622cc283a957be3fe3b78668ca2dd28ee5f29145752c9543279df7",
+      "mode": "0o644"
+    },
+    {
+      "path": "deploy/engine/tests/test_transport_integration.py",
+      "sha256": "956d7429b7dc1f5a60e00f158a753b939a0ac3678843d75a59e92c75d5587776",
+      "mode": "0o644"
+    },
+    {
+      "path": "deploy/engine/tests/transport_sdk_stub.cjs",
+      "sha256": "dfe3b2d73b283263f400545eccbe5a9f2dc646f1f2c899e12b762063f18a1413",
+      "mode": "0o644"
+    },
+    {
+      "path": "docs/lwc-358/deployment-engine-spec-r2.md",
+      "sha256": "838817cad154b0ea773c205f671362a6c9c0ad97c38ddf34f2508eb4fcc2488b",
+      "mode": "0o644"
+    },
+    {
+      "path": "docs/lwc-358/operator-r2.md",
+      "sha256": "7382bb610df90a2e3368bd71bfd2aee82bb6e2e3f81149b1b9c20f15e0dc14fd",
+      "mode": "0o644"
+    },
+    {
+      "path": "scripts/test_cd_contract.py",
+      "sha256": "760f3c615753b5a22acb09d327b35819ba0fcd0afdc8edf97a94449d200f0c5e",
+      "mode": "0o644"
+    },
+    {
+      "path": "scripts/test_engine_workflow.py",
+      "sha256": "d98df7c5ad1606651d79579f0f1b952de825dad830823ec5509002eb4c8a403f",
+      "mode": "0o644"
+    }
+  ]
+}

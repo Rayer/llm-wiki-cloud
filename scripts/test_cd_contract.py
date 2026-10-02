@@ -122,270 +122,10 @@ class CDContractTests(unittest.TestCase):
             self.normalized("production")["query_config"],
         )
 
-    def test_fixed_workflows_delegate_to_one_orchestrator(self):
-        development = (ROOT / ".github/workflows/deploy-dev.yml").read_text()
-        production = (ROOT / ".github/workflows/promote-production.yml").read_text()
-        for source, branch, environment, config in [
-            (development, "develop", "Development", "development"),
-            (production, "main", "Production", "production"),
-        ]:
-            self.assertIn("uses: ./.github/workflows/cd.yml", source)
-            self.assertIn(f"environment: {environment}", source)
-            self.assertIn(f"source_ref: {branch}", source)
-            self.assertIn(f"config_path: deploy/environments/{config}.yaml", source)
-            self.assertNotIn("inputs.config", source)
-            self.assertNotIn("inputs.environment", source)
-            self.assertNotIn("inputs.ref", source)
-            self.assertNotIn("inputs.source_sha", source)
-            self.assertIn(f"if: github.ref == 'refs/heads/{branch}'", source)
-            self.assertIn("source_sha: ${{ github.sha }}", source)
 
-    def test_reusable_workflow_secret_forwarding_contract(self):
-        expected = {
-            "deploy-dev.yml": {
-                "job": "deploy",
-                "branch": "develop",
-                "environment": "Development",
-                "config_environment": "development",
-                "source_ref": "develop",
-                "config_path": "deploy/environments/development.yaml",
-            },
-            "promote-production.yml": {
-                "job": "promote",
-                "branch": "main",
-                "environment": "Production",
-                "config_environment": "production",
-                "source_ref": "main",
-                "config_path": "deploy/environments/production.yaml",
-            },
-        }
-        permissions = {"contents": "read", "actions": "read", "id-token": "write"}
-        shared_workflow = "./.github/workflows/cd.yml"
-        secret_allowlist = {
-            "WIF_PROVIDER",
-            "WIF_SERVICE_ACCOUNT",
-            "VERCEL_PROJECT_ID",
-            "VERCEL_SCOPE",
-            "VERCEL_TEAM_ID",
-            "VERCEL_TOKEN",
-        }
 
-        def workflow_trigger(workflow):
-            return workflow.get("on") if "on" in workflow else workflow.get(True)
 
-        def assert_wrappers(workflows):
-            callers = {
-                (filename, job_id)
-                for filename, workflow in all_workflows.items()
-                for job_id, job in workflow["jobs"].items()
-                if job.get("uses") == shared_workflow
-            }
-            self.assertEqual(
-                callers,
-                {(filename, details["job"]) for filename, details in expected.items()},
-            )
-            for filename, details in expected.items():
-                workflow = workflows[filename]
-                self.assertEqual(set(workflow_trigger(workflow)), {"workflow_dispatch"})
-                expected_jobs = {details["job"]}
-                if filename == "deploy-dev.yml":
-                    expected_jobs.add("main-fast-forward-eligible")
-                    expected_jobs.add("provision-exportjob-dev")
-                self.assertEqual(set(workflow["jobs"]), expected_jobs)
-                job = workflow["jobs"][details["job"]]
-                want_guard = f"github.ref == 'refs/heads/{details['branch']}'"
-                if filename == "deploy-dev.yml":
-                    want_guard += " && inputs.components != 'provision-exportjob-dev'"
-                self.assertEqual(
-                    job.get("if"),
-                    want_guard,
-                )
-                self.assertEqual(job.get("uses"), shared_workflow)
-                self.assertEqual(job.get("secrets"), "inherit")
-                self.assertEqual(job.get("permissions"), permissions)
-                self.assertEqual(
-                    job.get("with"),
-                    {
-                        "environment": details["environment"],
-                        "config_environment": details["config_environment"],
-                        "source_ref": details["source_ref"],
-                        "source_sha": "${{ github.sha }}",
-                        "config_path": details["config_path"],
-                        "components": "${{ inputs.components }}",
-                    },
-                )
-                self.assertNotRegex(json.dumps(workflow), r"\$\{\{\s*secrets\.")
 
-        workflows = {
-            filename: yaml.safe_load((ROOT / ".github/workflows" / filename).read_text())
-            for filename in expected
-        }
-        all_workflows = {
-            path.name: yaml.safe_load(path.read_text())
-            for path in (ROOT / ".github/workflows").glob("*.yml")
-        }
-        assert_wrappers(workflows)
-
-        missing_inherit = deepcopy(workflows)
-        del missing_inherit["deploy-dev.yml"]["jobs"]["deploy"]["secrets"]
-        with self.assertRaises(AssertionError):
-            assert_wrappers(missing_inherit)
-
-        explicit_map = deepcopy(workflows)
-        explicit_map["promote-production.yml"]["jobs"]["promote"]["secrets"] = {
-            "WIF_PROVIDER": "${{ secrets.WIF_PROVIDER }}"
-        }
-        with self.assertRaises(AssertionError):
-            assert_wrappers(explicit_map)
-
-        cd_path = ROOT / ".github/workflows/cd.yml"
-        cd_source = cd_path.read_text()
-        called = yaml.safe_load(cd_source)
-        self.assertEqual(
-            called["jobs"]["mutate"].get("environment"),
-            "${{ inputs.environment }}",
-        )
-        secret_ref_names = set(re.findall(r"secrets\.([A-Za-z_][A-Za-z0-9_]*)", cd_source))
-        self.assertTrue(secret_ref_names)
-        self.assertTrue(secret_ref_names <= secret_allowlist)
-        secret_consumers = [
-            value
-            for value in called["jobs"]["mutate"]["env"].values()
-            if isinstance(value, str) and "secrets." in value
-        ]
-        secret_consumers.extend(
-            step.get("with", {}).get("workload_identity_provider")
-            for step in called["jobs"]["mutate"]["steps"]
-            if step.get("name") == "Authenticate to Google Cloud"
-        )
-        secret_consumers.extend(
-            step.get("with", {}).get("service_account")
-            for step in called["jobs"]["mutate"]["steps"]
-            if step.get("name") == "Authenticate to Google Cloud"
-        )
-        self.assertEqual(
-            {
-                re.search(r"secrets\.([A-Za-z_][A-Za-z0-9_]*)", value).group(1)
-                for value in secret_consumers
-            },
-            secret_ref_names,
-        )
-        for value in secret_consumers:
-            self.assertRegex(value, r"^\$\{\{\s*secrets\.[A-Z_]+\s*\}\}$")
-        self.assertIn("${{ github.token }}", cd_source)
-        self.assertNotRegex(
-            cd_source,
-            r"\b(?:WIF_PROVIDER|WIF_SERVICE_ACCOUNT|VERCEL_PROJECT_ID|VERCEL_SCOPE|VERCEL_TEAM_ID|VERCEL_TOKEN):(?![ \t]*\$\{\{)[ \t]+",
-        )
-
-    def test_reusable_callers_grant_mutation_permissions(self):
-        called = yaml.safe_load((ROOT / ".github/workflows/cd.yml").read_text())
-        required = called["jobs"]["mutate"]["permissions"]
-        self.assertEqual(required["id-token"], "write")
-
-        def assert_contract(workflow):
-            callers = [
-                (name, job)
-                for name, job in workflow["jobs"].items()
-                if job.get("uses") == "./.github/workflows/cd.yml"
-            ]
-            self.assertEqual(len(callers), 1)
-            self.assertEqual(callers[0][1].get("permissions"), required)
-
-        for filename in ("deploy-dev.yml", "promote-production.yml"):
-            with self.subTest(filename=filename):
-                workflow = yaml.safe_load((ROOT / ".github/workflows" / filename).read_text())
-                assert_contract(workflow)
-                caller_name = next(
-                    name
-                    for name, job in workflow["jobs"].items()
-                    if job.get("uses") == "./.github/workflows/cd.yml"
-                )
-                for degraded in (
-                    {key: value for key, value in required.items() if key != "id-token"},
-                    {**required, "id-token": "none"},
-                ):
-                    fixture = deepcopy(workflow)
-                    fixture["jobs"][caller_name]["permissions"] = degraded
-                    with self.assertRaises(AssertionError):
-                        assert_contract(fixture)
-
-    def test_orchestrator_validates_before_environment_and_gates_mutation_on_rollback_upload(self):
-        source = (ROOT / ".github/workflows/cd.yml").read_text()
-        plan = source.index("  plan:")
-        mutation = source.index("  mutate:")
-        self.assertLess(plan, mutation)
-        self.assertNotIn("environment:", source[plan:mutation])
-        self.assertIn("needs: plan", source[mutation:])
-        rollback_upload = source.index("id: rollback_upload")
-        first_mutation = source.index("operation: mutate", mutation)
-        self.assertLess(rollback_upload, first_mutation)
-        self.assertIn("steps.rollback_upload.outcome == 'success'", source)
-        self.assertNotIn("run jobs execute", source)
-
-    def test_receipt_boundaries_are_environment_gated_and_causally_ordered(self):
-        workflow = yaml.safe_load((ROOT / ".github/workflows/cd.yml").read_text())
-        steps = workflow["jobs"]["mutate"]["steps"]
-        by_id = {step["id"]: step for step in steps if "id" in step}
-        positions = {step["id"]: index for index, step in enumerate(steps) if "id" in step}
-        backend = ("auth", "bff", "worker")
-
-        consume = by_id["consume_dev_images"]
-        self.assertEqual(consume["run"], "bash deploy/cd.sh consume-dev-images")
-        self.assertEqual(
-            consume["if"],
-            "inputs.config_environment == 'production' && "
-            "(contains(inputs.components, 'auth') || contains(inputs.components, 'bff') || contains(inputs.components, 'worker') || contains(inputs.components, 'exportjob')) && "
-            "steps.rollback_upload.outcome == 'success' && steps.revalidate_before_mutation.outcome == 'success'",
-        )
-        self.assertGreater(positions["consume_dev_images"], positions["revalidate_before_mutation"])
-        self.assertLess(
-            positions["consume_dev_images"],
-            min(positions["exportjob_bootstrap_mutate"], *(positions[f"{component}_mutate"] for component in backend)),
-        )
-
-        bootstrap = by_id["exportjob_bootstrap_mutate"]
-        self.assertEqual(bootstrap["uses"], "./.github/actions/exportjob")
-        self.assertEqual(bootstrap["with"]["operation"], "mutate")
-        self.assertIn("inputs.config_environment == 'production'", bootstrap["if"])
-        self.assertLess(positions["exportjob_bootstrap_mutate"], positions["bff_mutate"])
-        self.assertIn("steps.exportjob_bootstrap_mutate.outcome == 'success'", by_id["bff_mutate"]["if"])
-        self.assertEqual(by_id["exportjob_mutate"]["if"].split(" && ")[0], "inputs.config_environment == 'development'")
-
-        for component in ("auth", "worker", "frontend"):
-            condition = by_id[f"{component}_mutate"]["if"]
-            self.assertRegex(
-                condition,
-                r"\(inputs\.config_environment != 'production' \|\| steps\.consume_dev_images\.outcome == 'success'\)",
-            )
-        self.assertIn("steps.consume_dev_images.outcome == 'success'", by_id["bff_mutate"]["if"])
-        frontend_condition = by_id["frontend_mutate"]["if"]
-        for component in (*backend, "exportjob"):
-            self.assertIn(f"!contains(inputs.components, '{component}')", frontend_condition)
-
-        record = by_id["record_dev_receipt"]
-        self.assertEqual(record["run"], "bash deploy/cd.sh record-dev-receipt")
-        self.assertEqual(record["if"].split(" && ")[0], "inputs.config_environment == 'development'")
-        self.assertGreater(
-            positions["record_dev_receipt"],
-            max(positions[f"{component}_mutate"] for component in backend),
-        )
-        self.assertLess(positions["record_dev_receipt"], positions["dev_receipt_upload"])
-        for component in (*backend, "exportjob"):
-            self.assertIn(
-                f"!contains(inputs.components, '{component}') || steps.{component}_mutate.outcome == 'success'",
-                record["if"],
-            )
-
-        upload_condition = by_id["dev_receipt_upload"]["if"]
-        self.assertIn("steps.record_dev_receipt.outcome == 'success'", upload_condition)
-        for component in backend:
-            self.assertNotIn(f"steps.{component}_mutate.outcome == 'success'", upload_condition)
-        self.assertEqual(
-            sum(step.get("id") == "dev_receipt_upload" for step in steps),
-            1,
-        )
-        self.assertNotIn("run: bash deploy/cd.sh mutate", (ROOT / ".github/workflows/cd.yml").read_text())
 
     def test_production_export_bootstrap_rollback_reverses_actual_mutation_order(self):
         with tempfile.TemporaryDirectory() as directory:
@@ -556,134 +296,8 @@ class CDContractTests(unittest.TestCase):
             self.assertFalse(provider_log.exists(), provider_log.read_text() if provider_log.exists() else "")
             return pending, validation, failure, statuses, git_log.read_text() if git_log.exists() else ""
 
-    def test_main_eligibility_producer_contract_is_causal_and_read_only(self):
-        source = (ROOT / ".github/workflows/deploy-dev.yml").read_text()
-        workflow = yaml.safe_load(source)
-        job = workflow["jobs"].get("main-fast-forward-eligible")
-        self.assertIsNotNone(job)
-        self.assertEqual(job.get("needs"), "deploy")
-        self.assertEqual(
-            job.get("if"),
-            "${{ always() && github.event_name == 'workflow_dispatch' && github.ref == 'refs/heads/develop' && inputs.components != 'provision-exportjob-dev' }}",
-        )
-        self.assertEqual(job.get("permissions"), {"contents": "read", "statuses": "write"})
-        steps = job["steps"]
-        pending_step = next(step for step in steps if step.get("name") == "Publish pending eligibility status")
-        self.assertEqual(pending_step.get("id"), "publish_pending_eligibility")
-        checkout = next(step for step in job["steps"] if step.get("uses", "").startswith("actions/checkout@"))
-        self.assertEqual(checkout.get("id"), "checkout_exact_candidate")
-        self.assertEqual(checkout["with"], {
-            "ref": "${{ github.sha }}",
-            "fetch-depth": 0,
-            "persist-credentials": False,
-        })
-        validation = next(step for step in steps if step.get("name") == "Validate exact main fast-forward eligibility")
-        self.assertEqual(validation.get("if"), "always()")
-        self.assertEqual(validation["env"]["PENDING_OUTCOME"], "${{ steps.publish_pending_eligibility.outcome }}")
-        self.assertEqual(validation["env"]["CHECKOUT_OUTCOME"], "${{ steps.checkout_exact_candidate.outcome }}")
-        self.assertIn('[[ "$deploy_result" == success ]]', validation["run"])
-        self.assertIn('[[ "$pending_outcome" == success ]]', validation["run"])
-        self.assertIn('[[ "$checkout_outcome" == success ]]', validation["run"])
-        failure = steps[-1]
-        self.assertEqual(failure.get("if"), "${{ failure() || cancelled() }}")
-        self.assertNotIn("trap", validation["run"])
-        producer_source = "\n".join(step.get("run", "") for step in steps)
-        self.assertIn("main-fast-forward-eligible", producer_source)
-        self.assertIn("pending", producer_source)
-        self.assertIn("success", producer_source)
-        self.assertIn("failure", producer_source)
-        for forbidden in ("gcloud", "vercel", "docker", "curl", "secrets.", "WIF_", "id-token", "upload-artifact"):
-            self.assertNotIn(forbidden, producer_source)
-        self.assertNotIn("environment:", json.dumps(job))
 
-        source_sha = "a" * 40
-        pending, validation, failure, statuses, git_log = self._run_main_eligibility(
-            source, candidate_sha=source_sha
-        )
-        self.assertEqual(pending.returncode, 0, pending.stdout + pending.stderr)
-        self.assertEqual(validation.returncode, 0, validation.stdout + validation.stderr)
-        self.assertEqual(failure.returncode, 0, failure.stdout + failure.stderr)
-        self.assertEqual(statuses, ["pending", "success"])
-        self.assertEqual(git_log.splitlines(), [
-            "rev-parse --verify HEAD",
-            "ls-remote --refs origin refs/heads/develop",
-            "ls-remote --refs origin refs/heads/main",
-            "fetch --no-tags origin +refs/heads/main:refs/remotes/origin/main",
-            "rev-parse refs/remotes/origin/main",
-            f"merge-base --is-ancestor {'c' * 40} {source_sha}",
-            "ls-remote --refs origin refs/heads/develop",
-        ])
 
-        rejected_cases = [
-            {"deploy_result": "failure"},
-            {"candidate_sha": "A" * 40},
-            {"checked_out_sha": "b" * 40},
-            {"develop_heads": [source_sha, "b" * 40]},
-            {"ancestor": False},
-            {"deploy_result": "cancelled"},
-        ]
-        for case in rejected_cases:
-            with self.subTest(case=case):
-                options = {"candidate_sha": source_sha, **case}
-                _, result, failure, states, _ = self._run_main_eligibility(source, **options)
-                self.assertNotEqual(result.returncode, 0, result.stdout + result.stderr)
-                self.assertEqual(states[0], "pending")
-                self.assertEqual(states[-1], "failure")
-                self.assertNotIn("success", states)
-
-        for case in (
-            {"pending_outcome": "failure"},
-            {"checkout_outcome": "failure"},
-            {"checkout_outcome": "cancelled"},
-        ):
-            with self.subTest(case=case):
-                _, result, failure, states, _ = self._run_main_eligibility(
-                    source, candidate_sha=source_sha, **case
-                )
-                self.assertNotEqual(result.returncode, 0)
-                self.assertEqual(failure.returncode, 0)
-                self.assertEqual(states, ["failure"] if case.get("pending_outcome") == "failure" else ["pending", "failure"])
-
-    def test_main_eligibility_gate_mutations_are_caught(self):
-        source = (ROOT / ".github/workflows/deploy-dev.yml").read_text()
-        source_sha = "a" * 40
-        mutations = [
-            (
-                '[[ "$checked_out_sha" == "$candidate_sha" ]]',
-                "true",
-                {"checked_out_sha": "b" * 40},
-            ),
-            (
-                '[[ "$current_develop" == "$candidate_sha" ]]',
-                "true",
-                {"develop_heads": [source_sha, "b" * 40]},
-            ),
-            (
-                'git merge-base --is-ancestor "$current_main" "$candidate_sha"',
-                "true",
-                {"ancestor": False},
-            ),
-        ]
-        for needle, replacement, case in mutations:
-            with self.subTest(needle=needle):
-                self.assertIn(needle, source)
-                mutant = source.replace(needle, replacement)
-                with self.assertRaises(AssertionError):
-                    _, result, failure, states, _ = self._run_main_eligibility(
-                        mutant, **{"candidate_sha": source_sha, **case}
-                    )
-                    self.assertNotEqual(result.returncode, 0)
-                    self.assertEqual(states[-1], "failure")
-                    self.assertNotIn("success", states)
-
-    def test_main_eligibility_rejects_missing_github_cli(self):
-        source_sha = "a" * 40
-        source = (ROOT / ".github/workflows/deploy-dev.yml").read_text()
-        _, result, _, states, _ = self._run_main_eligibility(
-            source, candidate_sha=source_sha, with_gh=False
-        )
-        self.assertNotEqual(result.returncode, 0)
-        self.assertEqual(states, [])
 
     def test_record_dev_receipt_cli_rejects_partial_backend_images_and_writes_complete_receipt(self):
         source_sha = "0123456789abcdef0123456789abcdef01234567"
@@ -795,48 +409,7 @@ class CDContractTests(unittest.TestCase):
             rejected = subprocess.run(command, env=env, text=True, capture_output=True)
             self.assertNotEqual(rejected.returncode, 0)
 
-    def test_no_legacy_workflow_owns_deployment_literals(self):
-        workflows = sorted((ROOT / ".github/workflows").glob("*.yml"))
-        self.assertEqual(
-            {path.name for path in workflows},
-            {"ci.yml", "cd.yml", "deploy-dev.yml", "promote-production.yml", "provision-exportjob-dev.yml"},
-        )
-        all_source = "\n".join(path.read_text() for path in workflows)
-        for literal in (
-            "QUERY_STAGE_CONFIG_PATH:",
-            "QUERY_STAGE_CONFIG_REVISION:",
-            "QUERY_STAGE_CONFIG_DIGEST:",
-        ):
-            self.assertNotIn(literal, all_source)
 
-    def test_export_prerequisite_workflow_isolated_to_develop_and_reuses_existing_auth(self):
-        source = (ROOT / ".github/workflows/provision-exportjob-dev.yml").read_text()
-        self.assertIn("workflow_call:", source)
-        self.assertNotIn("workflow_dispatch:", source)
-        self.assertIn("if: github.ref == 'refs/heads/develop'", source)
-        self.assertIn("workload_identity_provider: ${{ secrets.WIF_PROVIDER }}", source)
-        self.assertIn("service_account: ${{ secrets.WIF_SERVICE_ACCOUNT }}", source)
-        self.assertNotIn("gcloud projects add-iam-policy-binding", source)
-        deploy = (ROOT / ".github/workflows/deploy-dev.yml").read_text()
-        self.assertIn("      components:", deploy)
-        self.assertIn("        type: string", deploy)
-        self.assertNotIn("      operation:", deploy)
-        self.assertIn("if: github.ref == 'refs/heads/develop' && inputs.components == 'provision-exportjob-dev'", deploy)
-        self.assertIn("if: github.ref == 'refs/heads/develop' && inputs.components != 'provision-exportjob-dev'", deploy)
-        self.assertIn("uses: ./.github/workflows/provision-exportjob-dev.yml", deploy)
-        self.assertIn("group: lwc-development-deploy", deploy)
-        self.assertIn("cancel-in-progress: false", deploy)
-        self.assertNotIn("concurrency:", source)
-        runbook = (ROOT / "docs/deployment/lwc-344-dev-export-provisioning.md").read_text()
-        self.assertIn("gh workflow run deploy-dev.yml --ref develop -f components=provision-exportjob-dev", runbook)
-        self.assertIn("do not dispatch `provision-exportjob-dev.yml` directly", runbook)
-        self.assertIn("actions: read", source)
-        self.assertIn(".head_sha == $sha", source)
-        self.assertIn(".path == \".github/workflows/ci.yml\"", source)
-        self.assertIn(".name == \"canonical-ci\"", source)
-        self.assertIn(".conclusion == \"success\"", source)
-        self.assertLess(source.index("Require successful canonical CI"), source.index("Set up gcloud"))
-        self.assertLess(source.index("Require successful canonical CI"), source.index("Authenticate with the existing DEV deploy identity"))
 
     def test_export_provision_workflow_run_blocks_are_shell_valid(self):
         workflow = yaml.safe_load((ROOT / ".github/workflows/provision-exportjob-dev.yml").read_text())
@@ -896,16 +469,6 @@ class CDContractTests(unittest.TestCase):
         self.assertIn('gh run download "$id"', consume)
         self.assertIn("cd-images-$SOURCE_SHA", consume)
 
-    def test_protected_mutation_maps_environment_scoped_vercel_credentials(self):
-        source = (ROOT / ".github/workflows/cd.yml").read_text()
-        mutation = source[source.index("  mutate:"):]
-        for mapping in (
-            "VERCEL_TOKEN: ${{ secrets.VERCEL_TOKEN }}",
-            "VERCEL_PROJECT_ID: ${{ secrets.VERCEL_PROJECT_ID }}",
-            "VERCEL_TEAM_ID: ${{ secrets.VERCEL_TEAM_ID }}",
-        ):
-            self.assertIn(mapping, mutation)
-            self.assertNotIn(mapping, source[:source.index("  mutate:")])
 
     def test_revalidation_rejection_leaves_zero_mutation_and_skips_rollback(self):
         source_sha = "0123456789abcdef0123456789abcdef01234567"
@@ -2504,28 +2067,6 @@ class CDContractTests(unittest.TestCase):
                 )
                 self.assertNotEqual(result.returncode, 0, f"mutable {component} image was accepted")
 
-    def test_backend_rollbacks_use_only_retained_immutable_image_handles(self):
-        forbidden = (".revision", ".readback", ".definition", "normalize_service_readback", "normalize_worker", "gcloud run jobs replace")
-        for component, command in (
-            ("auth", "gcloud run services update"),
-            ("bff", "gcloud run services update"),
-            ("worker", "gcloud run jobs update"),
-        ):
-            source = (ROOT / "deploy/components" / f"{component}.sh").read_text()
-            start = source.index(f"{component}_rollback() {{")
-            end = source.index("\n}\n", start) + 3
-            body = source[start:end]
-            self.assertIn(f".handles.{component}.image", body)
-            self.assertIn(command, body)
-            self.assertIn('--image "$image"', body)
-            for marker in forbidden:
-                self.assertNotIn(marker, body, f"{component} rollback contains {marker}")
-
-        workflow = (ROOT / ".github/workflows/cd.yml").read_text()
-        mutation = workflow[workflow.index("      - name: Mutate Auth"):]
-        self.assertIn("steps.rollback_upload.outcome == 'success'", mutation)
-        self.assertNotIn("normalize_service_readback", mutation)
-        self.assertNotIn("normalize_worker_definition", mutation)
 
 
     def test_readback_and_rollback_are_truthful_and_handle_based(self):
@@ -2829,29 +2370,6 @@ class CDContractTests(unittest.TestCase):
 class ArchitectureAuthorityTests(unittest.TestCase):
     COMPONENTS = ("auth", "bff", "worker", "exportjob", "frontend")
 
-    def test_each_component_has_a_real_independent_action_boundary(self):
-        orchestrator = (ROOT / ".github/workflows/cd.yml").read_text()
-        self.assertLessEqual(len(orchestrator.splitlines()), 360)
-        for component in self.COMPONENTS:
-            action_path = ROOT / ".github/actions" / component / "action.yml"
-            script_path = ROOT / "deploy/components" / f"{component}.sh"
-            self.assertTrue(action_path.is_file(), f"missing {action_path}")
-            self.assertTrue(script_path.is_file(), f"missing {script_path}")
-            action = yaml.safe_load(action_path.read_text())
-            self.assertEqual(action["runs"]["using"], "composite")
-            action_source = action_path.read_text()
-            self.assertIn(f"deploy/components/{component}.sh", action_source)
-            script = script_path.read_text()
-            for operation in ("preflight", "freeze", "mutate", "reconcile", "rollback"):
-                self.assertRegex(script, rf"\b{operation}\b")
-            self.assertIn(f"uses: ./.github/actions/{component}", orchestrator)
-        for forbidden in (
-            "gcloud run deploy",
-            "gcloud run jobs update",
-            "vercel deploy --prebuilt",
-            'case "$component" in',
-        ):
-            self.assertNotIn(forbidden, (ROOT / "deploy/cd.sh").read_text())
 
     def test_component_actions_are_invocable_without_backend_receipts(self):
         for component in self.COMPONENTS:
@@ -2919,30 +2437,8 @@ class ArchitectureAuthorityTests(unittest.TestCase):
                     containers[0]["env"][1]["value"] = "other-bucket"
                     self.assertNotEqual(verify(wrong).returncode, 0)
 
-    def test_wrappers_require_explicit_components_and_inherit_secrets(self):
-        for filename in ("deploy-dev.yml", "promote-production.yml"):
-            source = (ROOT / ".github/workflows" / filename).read_text()
-            self.assertRegex(source, r"components:\n\s+description:.*\n\s+required: true")
-            self.assertNotIn("default:", source)
-            self.assertNotIn("inputs.components ||", source)
-            self.assertIn("\n    secrets: inherit", source)
-            self.assertNotRegex(source, r"\$\{\{\s*secrets\.")
 
-    def test_reusable_workflow_validates_the_complete_fixed_tuple_before_protected_environment(self):
-        source = (ROOT / ".github/workflows/cd.yml").read_text()
-        plan = source[source.index("  plan:"):source.index("  mutate:")]
-        self.assertNotIn("environment:", plan)
-        self.assertIn("DEPLOYMENT_ENVIRONMENT:", plan)
-        contract = source_bundle()
-        self.assertIn("environment and config/ref tuple", contract)
-        self.assertIn("DEPLOYMENT_ENVIRONMENT", contract)
 
-    def test_production_is_serialized_without_a_shared_development_lock(self):
-        production = (ROOT / ".github/workflows/promote-production.yml").read_text()
-        self.assertIn("concurrency:", production)
-        self.assertRegex(production, r"cancel-in-progress:\s*false")
-        development = (ROOT / ".github/workflows/deploy-dev.yml").read_text()
-        self.assertNotIn("group: production", development)
 
     def test_all_third_party_workflow_actions_are_immutable_sha_pinned(self):
         pattern = re.compile(r"uses:\s+([^\s@]+)@([^\s#]+)")
@@ -3443,6 +2939,8 @@ class ArchitectureAuthorityTests(unittest.TestCase):
             self.assertEqual(final["env"], runtime_env)
             self.assertEqual(json.loads((root / "artifacts/rollback/exportjob.json").read_text())["result"], "success")
 
+
+from test_engine_workflow import EngineWorkflowContract
 
 if __name__ == "__main__":
     unittest.main()

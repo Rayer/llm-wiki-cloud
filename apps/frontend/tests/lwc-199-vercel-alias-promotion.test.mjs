@@ -762,16 +762,28 @@ for (const [scenario, expected] of [
   });
 }
 
-test('frontend aliases use the shared CD mutation and read-back path', async () => {
-  const workflow = await readFile(join(monorepoRoot, '.github/workflows/cd.yml'), 'utf8');
-  const script = await readFile(join(monorepoRoot, 'deploy/components/frontend.sh'), 'utf8');
-  assert.match(script, /frontend_mutate/);
-  assert.match(script, /vercel_alias_apply/);
-  assert.match(script, /vercel_verify_alias_target/);
-  assert.match(workflow, /Upload durable rollback artifact/);
-  assert.match(workflow, /Reconcile Frontend/);
-  assert.doesNotMatch(script, /vercel alias set/);
-  await execFileAsync('bash', ['-n', join(monorepoRoot, 'deploy/components/frontend.sh')]);
+test('frontend aliases use engine retained recovery and read-back with durable checkpoints', async () => {
+  const workflow = (await import('js-yaml')).load(await readFile(join(monorepoRoot, '.github/workflows/cd.yml'), 'utf8'));
+  const engine = await readFile(join(monorepoRoot, 'deploy/engine/engine.py'), 'utf8');
+  const provider = await readFile(join(monorepoRoot, 'deploy/engine/providers.py'), 'utf8');
+  const action = await readFile(join(monorepoRoot, '.github/actions/deployment-engine/index.cjs'), 'utf8');
+  const steps = workflow.jobs.release.steps;
+  const download = steps.findIndex(step => step.name === 'Download pinned ready artifact or checkpoint');
+  const runtime = steps.findIndex(step => step.with?.operation === 'runtime');
+  assert.ok(download >= 0 && download < runtime);
+  assert.equal(steps[download].if, "inputs.operation != 'release'");
+  assert.match(steps[download].run, /artifacts\.cjs download "\$ARTIFACT_ID"/);
+  const retain = steps.find(step => step.name === 'Retain final result even after failure');
+  assert.equal(retain.if, 'always()');
+  assert.match(retain.uses, /^actions\/upload-artifact@/);
+  assert.match(action, /'deploy','rollback','reactivate','tag','readback'/);
+  assert.match(engine, /entry\['status'\] = 'pending'[\s\S]*?self\.save\(\)[\s\S]*?self\.provider\.deploy/);
+  assert.match(engine, /artifacts\.cjs', 'upload'/);
+  assert.match(provider, /aliases = \{a: self\.alias\(a\)/);
+  assert.match(provider, /self\.alias\(alias\) != deployment/);
+  assert.match(provider, /for alias, deployment in prior\['aliases'\]\.items\(\)/);
+  assert.match(provider, /self\.api\('\/v2\/deployments\/'.*'\/aliases'/);
+  assert.doesNotMatch(provider, /vercel alias set/);
 });
 
 for (const scenario of [

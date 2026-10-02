@@ -235,6 +235,7 @@ exportjob_rollback() {
 }
 
 case "${1:-}" in
+  build) exportjob_build_image ;;
   help) printf 'exportjob component: preflight|freeze|mutate|reconcile|rollback\n' ;;
   preflight) exportjob_preflight ;;
   freeze) exportjob_freeze ;;

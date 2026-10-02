@@ -1,0 +1,158 @@
+--- a/deploy/engine/engine.py
++++ b/deploy/engine/engine.py
+@@ -103,7 +103,7 @@
+         write(self.state_path, self.state)
+         if os.environ.get('GITHUB_ACTIONS') == 'true':
+             # Every pending marker is durable before mutation. A failed upload stops work.
+-            run(['node', ROOT / 'deploy/engine/artifacts.cjs', ROOT / '.github/actions/deployment-engine/index.cjs', ROOT / '.github/actions/deployment-engine/action.yml', 'upload', self.directory,
++            run(['node', ROOT / 'deploy/engine/artifacts.cjs', 'upload', self.directory,
+                  ('lwc-prepared-' if self.state['status'] in ('prepared', 'ready') else 'lwc-state-')+self.plan['normalized']['environment']+'-'+self.plan['id'][:16]+'-'+
+                  os.environ['GITHUB_RUN_ID']+'-'+os.environ['GITHUB_RUN_ATTEMPT']+'-'+str(self.state['sequence'])], timeout=120)
+ 
+@@ -170,7 +170,7 @@
+         # recovery of an older release after any newer pending mutation.
+         latest_path = self.directory / '.latest.json'
+         latest_path.unlink(missing_ok=True)
+-        run(['node', ROOT / 'deploy/engine/artifacts.cjs', ROOT / '.github/actions/deployment-engine/index.cjs', ROOT / '.github/actions/deployment-engine/action.yml', 'latest',
++        run(['node', ROOT / 'deploy/engine/artifacts.cjs', 'latest',
+              self.plan['normalized']['environment'], latest_path], timeout=120)
+         if latest_path.exists():
+             record = read(latest_path)
+--- a/docs/lwc-358/operator-r2.md
++++ b/docs/lwc-358/operator-r2.md
+@@ -39,10 +39,12 @@
+ 
+ ## 本機與離線驗證
+ 
++Runtime 前提：Python **3.12 以上**（Frontend archive extraction 使用 `tarfile.extractall(filter="data")`），本次明確以 **Python 3.14.6** 驗證。Python 3.9 不支援此介面，不能以 host 的 `python3` 名稱推定相容；執行前確認 `python3 --version`。Actions 的 `python3` 也必須符合此要求。下列本機指令明確選用 `python3.14`。
++
+ 只準備一個 component 的 CLI 範例（建置／publish 仍需另有授權；本次實作只執行 TEST ONLY fakes）：
+ 
+ ```sh
+-python3 deploy/engine/engine.py prepare --directory /tmp/lwc-attempt \
++python3.14 deploy/engine/engine.py prepare --directory /tmp/lwc-attempt \
+   --environment development --source <full-checked-out-sha> \
+   --components worker --tag <explicit-tag>
+ ```
+@@ -50,9 +52,9 @@
+ 同一 directory 可續建；改變 selection/source/config 使用新 directory 和 `--reuse <retained-directory>`。Production 加上 `--dev <successful-dev-directory> --dev-reference <explicit-artifact-id>`。runtime CLI 只在 Actions 的 JS action 中執行，禁止直接以 agent 身分呼叫 provider。
+ 
+ ```sh
+-python3 -m unittest discover -s deploy/engine/tests -p 'test_*.py'
+-python3 scripts/test_engine_workflow.py
+-python3 scripts/test_cd_contract.py
++python3.14 -m unittest discover -s deploy/engine/tests -p 'test_*.py'
++python3.14 scripts/test_engine_workflow.py
++python3.14 scripts/test_cd_contract.py
+ ```
+ 
+ `deploy/engine/tests/fake_provider.py` 是 TEST ONLY executable，替代 command boundary，沒有 production fallback。測試使用真實 engine/adapters；不能當成 live provider、IAM、部署或 UAT 證據。旧 `deploy/cd.sh` 與 composite component runtime entrypoints 僅保留供既有 regression；正式 r2 workflow 不呼叫它們，也不呼叫原 Export bootstrap provisioning。
+--- /dev/null
++++ b/deploy/engine/tests/test_transport_integration.py
+@@ -0,0 +1,60 @@
++"""TEST ONLY: actual Engine argv and subprocess into actual artifacts.cjs parser."""
++import os
++from pathlib import Path
++import sys
++import tempfile
++import unittest
++from unittest.mock import patch
++
++sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
++from engine import Engine, engine_fingerprint
++from support import digest, read, write
++
++
++class EngineTransportIntegration(unittest.TestCase):
++    def setUp(self):
++        temp = tempfile.TemporaryDirectory()
++        self.addCleanup(temp.cleanup)
++        self.root = Path(temp.name).resolve()
++        self.directory = self.root / 'release'
++        plan = {'selected':['worker'], 'normalized':{'environment':'development'},
++                'engine_content':engine_fingerprint()}
++        plan['id'] = digest(plan)
++        write(self.directory / 'plan.json', plan)
++        self.engine = Engine(self.directory)
++        self.engine.state['status'] = 'snapshotted'
++        self.stub_state = self.root / 'sdk.json'
++        write(self.stub_state, {'argv':[], 'uploads':[], 'downloads':[], 'requests':[],
++                               'checkpoint':self.engine.state})
++        preload = Path(__file__).with_name('transport_sdk_stub.cjs')
++        env = patch.dict(os.environ, {
++            'GITHUB_ACTIONS':'true', 'GITHUB_RUN_ID':'42', 'GITHUB_RUN_ATTEMPT':'1',
++            'GITHUB_REPOSITORY':'test/repo', 'GH_TOKEN':'TEST_ONLY',
++            'NODE_OPTIONS':f'--require="{preload}"',
++            'LWC_TRANSPORT_TEST_STATE':str(self.stub_state),
++        })
++        env.start()
++        self.addCleanup(env.stop)
++
++    def test_save_reaches_sdk_with_actual_engine_upload_argv(self):
++        self.engine.save()  # No engine.run or subprocess mock.
++        state = read(self.stub_state)
++        name = f'lwc-state-development-{self.engine.plan["id"][:16]}-42-1-1'
++        self.assertEqual(state['argv'], [['upload', str(self.directory), name]])
++        self.assertEqual(len(state['uploads']), 1)
++        self.assertEqual(state['uploads'][0]['name'], name)
++        self.assertEqual(state['uploads'][0]['checkpoint'], self.engine.state)
++        self.assertEqual(state['requests'], [])
++
++    def test_runtime_guard_reads_checkpoint_with_actual_engine_latest_argv(self):
++        self.engine.runtime_guard()  # Real subprocess, parser, fetch routing and file readback.
++        state = read(self.stub_state)
++        self.assertEqual(state['argv'], [['latest', 'development', str(self.directory / '.latest.json')]])
++        self.assertEqual(len(state['requests']), 3)
++        self.assertEqual(state['downloads'], [12])
++        self.assertEqual(read(self.directory / '.latest.json'), self.engine.state)
++        self.assertEqual(state['uploads'], [])
++
++
++if __name__ == '__main__':
++    unittest.main(verbosity=2)
+--- /dev/null
++++ b/deploy/engine/tests/transport_sdk_stub.cjs
+@@ -0,0 +1,43 @@
++// TEST ONLY preload: real engine -> real Node transport; stub only SDK/HTTP.
++const fs = require('node:fs');
++const path = require('node:path');
++const Module = require('node:module');
++const statePath = process.env.LWC_TRANSPORT_TEST_STATE;
++if (!statePath) throw Error('TEST ONLY state required');
++const read = () => JSON.parse(fs.readFileSync(statePath, 'utf8'));
++const write = state => fs.writeFileSync(statePath, JSON.stringify(state));
++const initial = read();
++initial.argv.push(process.argv.slice(2));
++write(initial);
++class Client {
++  async uploadArtifact(name, files, directory) {
++    const state = read();
++    state.uploads.push({name, files, checkpoint: JSON.parse(fs.readFileSync(path.join(directory, 'state.json'), 'utf8'))});
++    write(state);
++  }
++  async downloadArtifact(id, options) {
++    const state = read();
++    state.downloads.push(id);
++    write(state);
++    fs.mkdirSync(options.path, {recursive:true});
++    fs.writeFileSync(path.join(options.path, 'state.json'), JSON.stringify(state.checkpoint));
++  }
++}
++const load = Module._load;
++Module._load = function(name, ...args) {
++  return name === '@actions/artifact' ? {DefaultArtifactClient: Client} : load.call(this, name, ...args);
++};
++global.fetch = async url => {
++  const state = read();
++  state.requests.push(url);
++  write(state);
++  const endpoint = url.split('/repos/test/repo/')[1];
++  const artifact = {id:12, name:'lwc-state-development-test', expired:false, workflow_run:{id:42}};
++  const responses = {
++    'actions/artifacts?per_page=100': {total_count:1, artifacts:[artifact]},
++    'actions/artifacts/12': artifact,
++    'actions/runs/42': {event:'workflow_dispatch', path:'.github/workflows/deploy-dev.yml'}
++  };
++  if (!(endpoint in responses)) throw Error('Unexpected TEST ONLY request');
++  return {ok:true, json:async () => responses[endpoint]};
++};

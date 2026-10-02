@@ -2,6 +2,7 @@ package main
 
 import (
 	"os"
+	"os/exec"
 	"path/filepath"
 	"strings"
 	"testing"
@@ -59,31 +60,6 @@ func TestBFFServiceCDContractUsesImageOnlyMutation(t *testing.T) {
 	}
 }
 
-func TestProductionBFFUsesDEVReceiptAndNoRebuild(t *testing.T) {
-	production := readBFFCDFile(t, ".github/workflows/promote-production.yml")
-	script := readBFFCDFile(t, "deploy/cd.sh")
-	if !strings.Contains(production, "source_ref: main") || !strings.Contains(production, "config_environment: production") || !strings.Contains(production, "environment: Production") {
-		t.Fatal("production wrapper is not fixed to main/Production")
-	}
-	start := strings.Index(script, "consume_dev_images()")
-	end := -1
-	if start >= 0 {
-		end = start + strings.Index(script[start:], "\n}\n\npreflight_shared")
-	}
-	if start < 0 || end < start {
-		t.Fatal("production receipt consumer is missing")
-	}
-	consume := script[start:end]
-	for _, marker := range []string{"event=workflow_dispatch", "head_sha=${SOURCE_SHA}", "branch=develop", "gh run download", "cd-images-$SOURCE_SHA"} {
-		if !strings.Contains(consume, marker) {
-			t.Fatalf("production BFF receipt path missing %q", marker)
-		}
-	}
-	if strings.Contains(consume, "gcloud builds submit") || strings.Contains(consume, "docker build") {
-		t.Fatal("production BFF must not rebuild DEV artifacts")
-	}
-}
-
 func TestBFFWorkflowAndConfigAreValidAndMutationSafe(t *testing.T) {
 	for _, path := range []string{".github/workflows/cd.yml", ".github/workflows/deploy-dev.yml", ".github/workflows/promote-production.yml"} {
 		contents := readBFFCDFile(t, path)
@@ -101,5 +77,12 @@ func TestBFFWorkflowAndConfigAreValidAndMutationSafe(t *testing.T) {
 	script := readBFFCDFile(t, "deploy/cd.sh")
 	if strings.Contains(script, "gcloud projects add-iam-policy-binding") || strings.Contains(script, "gcloud run services set-iam-policy") || strings.Contains(script, "run jobs execute") {
 		t.Fatal("BFF CD path contains forbidden IAM or Worker execution mutation")
+	}
+}
+
+func TestDeploymentEngineR2WorkflowContract(t *testing.T) {
+	command := exec.Command("python3", "../../../../scripts/test_engine_workflow.py")
+	if output, err := command.CombinedOutput(); err != nil {
+		t.Fatalf("r2 workflow contract: %v\n%s", err, output)
 	}
 }
