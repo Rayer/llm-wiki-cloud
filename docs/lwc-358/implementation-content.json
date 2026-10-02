@@ -1,8 +1,8 @@
 {
   "base": "b60dde9fb0318fa327ba2477fb0b796658e71a42",
   "branch": "Rayer/LWC-358-engine-r2",
-  "content_sha256": "86d50983d9d3073646665d6a258d4dddb12222bc30ff8cbfad17196c7a3d34a1",
-  "scope": "All changed/new implementation, test, operator and frozen-spec files; excludes this manifest, evidence report and logs to avoid self-reference.",
+  "content_sha256": "8a38c7f2820b8130719a80848d2c173edb680082c1d35ffb220f5c0c4d62e8b4",
+  "scope": "All changed/new implementation, test, operator, accepted-appendix and frozen-spec files; excludes this manifest, evidence report and logs to avoid self-reference.",
   "frozen_sha256": "838817cad154b0ea773c205f671362a6c9c0ad97c38ddf34f2508eb4fcc2488b",
   "files": [
     {
@@ -102,12 +102,12 @@
     },
     {
       "path": "deploy/components/auth.sh",
-      "sha256": "f32ac7b394e15b58f8aed3ed1ce7f4b3f7c545c8919ceb9bb1ac03712ed76c9c",
+      "sha256": "13115cb2e43ced364afcbfd13caa49e67c982c826978d3ffa87dd35e256df86e",
       "mode": "0o755"
     },
     {
       "path": "deploy/components/bff.sh",
-      "sha256": "a90135ca3f6f5de6b406c460dd9118c7ff8383d232d3894dddd781e522bd6d43",
+      "sha256": "1ef66f33c4b7857808fefcd1920fcf161c21313b3f7b4d6e99f63984d5dd05c7",
       "mode": "0o755"
     },
     {
@@ -132,7 +132,7 @@
     },
     {
       "path": "deploy/engine/engine.py",
-      "sha256": "ce54da47bd8a9305f26931914979d1a55fb6a77a0833fee90f2023c838aa8679",
+      "sha256": "476ab51c7ca0459dfac4e165c9d95617d4746e7224b108c06f615c645ec96b51",
       "mode": "0o644"
     },
     {
@@ -142,12 +142,12 @@
     },
     {
       "path": "deploy/engine/providers.py",
-      "sha256": "e72feed1c6895425ace0c566b89159de7c3d47eb6506ec7d21ff5184292110aa",
+      "sha256": "f4860f1b88d2d61107edf60b4f2028a825524536808c661452ad4f840d4f9983",
       "mode": "0o644"
     },
     {
       "path": "deploy/engine/support.py",
-      "sha256": "cc9377091c4feeaf6b005f24041dadff7002dd5cea18bc1540747d0ad85fe9fd",
+      "sha256": "6b56b9588225fa1948be7815caa1707938fe03bd531169534842525a165c6d43",
       "mode": "0o644"
     },
     {
@@ -157,8 +157,13 @@
     },
     {
       "path": "deploy/engine/tests/fake_provider.py",
-      "sha256": "ec5cdf5c38cf84b7b463ce7e2608657e23a2a731aea1f4d8a3dd80b34d6fdc4c",
+      "sha256": "183a5026156f52170cfb6babf181ef3f5c97bc0701fb552e206114b65b061d4b",
       "mode": "0o755"
+    },
+    {
+      "path": "deploy/engine/tests/test_build_submission.py",
+      "sha256": "666ed04eb24a3a0a68f79eaf38544d6986149b2987c075c32c66cb52abe877bc",
+      "mode": "0o644"
     },
     {
       "path": "deploy/engine/tests/test_ci_environment.py",
@@ -172,12 +177,12 @@
     },
     {
       "path": "deploy/engine/tests/test_engine.py",
-      "sha256": "193c80099e622cc283a957be3fe3b78668ca2dd28ee5f29145752c9543279df7",
+      "sha256": "2f30f92c7edf1103b83597fc0c8b53c7125de5c13aaf2900f1f1edcf13bfe527",
       "mode": "0o644"
     },
     {
       "path": "deploy/engine/tests/test_prepare_diagnostics.py",
-      "sha256": "7814138f3d64f70f481ab561c8da7fa16c95d0d6120aa87a6c94fd881971a368",
+      "sha256": "691b062a39e523413cf4c85eebcb85a836971f7f1145fd20cccfc4ccb551d99a",
       "mode": "0o644"
     },
     {
@@ -191,18 +196,23 @@
       "mode": "0o644"
     },
     {
+      "path": "docs/lwc-358/deployment-engine-spec-r2-accepted-appendix-build-submit.md",
+      "sha256": "b0ac51d8c135e4cb6964e85f0f27c83966e42eb17e1dc40d37aabe5261672fac",
+      "mode": "0o644"
+    },
+    {
       "path": "docs/lwc-358/deployment-engine-spec-r2.md",
       "sha256": "838817cad154b0ea773c205f671362a6c9c0ad97c38ddf34f2508eb4fcc2488b",
       "mode": "0o644"
     },
     {
       "path": "docs/lwc-358/operator-r2.md",
-      "sha256": "2d7a4b0ce734d2de1fef37cbe8330dc5669b9285e15c4562bc7a4d144b8c4d05",
+      "sha256": "f430573291df39ea6389c18543a7084c546291175948c15626cab9e4e28e6910",
       "mode": "0o644"
     },
     {
       "path": "scripts/test_cd_contract.py",
-      "sha256": "760f3c615753b5a22acb09d327b35819ba0fcd0afdc8edf97a94449d200f0c5e",
+      "sha256": "3be25f693476eb7418a4545a0afbc9fc8af00dfed3c4f86c361d06fe54791e63",
       "mode": "0o644"
     },
     {

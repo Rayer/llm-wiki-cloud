@@ -1,6 +1,7 @@
 #!/usr/bin/env python3
 """LWC-358 two-stage release engine. Runtime entry is owned by Actions."""
 import argparse
+import copy
 import fcntl
 import hashlib
 import json
@@ -12,7 +13,7 @@ import sys
 import urllib.parse
 
 from support import ROOT, Breakpoint, digest, read, require, run, write
-from providers import Providers
+from providers import Providers, CLOUD_BUILD_LOCATION
 
 ORDER = ('exportjob', 'auth', 'bff', 'worker', 'frontend')
 PROFILES = read(ROOT / 'deploy/engine/profiles.json')
@@ -96,6 +97,7 @@ class Engine:
         self.state = read(self.state_path) if self.state_path.exists() else {
             'plan': self.plan['id'], 'status': 'prepared', 'components': {}, 'sequence': 0}
         require(self.state['plan'] == self.plan['id'], 'checkpoint-plan-mismatch')
+        self.state.setdefault('builds', {})
         self.component = None
 
     def save(self):
@@ -118,9 +120,212 @@ class Engine:
     def barrier(self):
         return {c: self.receipt(c)['artifact'] for c in self.plan['selected']}
 
+    @staticmethod
+    def safe_build_record(build):
+        fields = ('project_id', 'location', 'build_id', 'identity_verified', 'status',
+                  'last_observed_status', 'poll_outcome', 'reported_project_id', 'reported_location')
+        return {key: build[key] for key in fields if key in build}
+
+    def prepare_container(self, c):
+        builds = self.state['builds']
+        build = builds.get(c)
+        terminal_failures = {'FAILURE', 'INTERNAL_ERROR', 'TIMEOUT', 'CANCELLED', 'EXPIRED',
+                             'SUBMIT_REJECTED'}
+        if build and build.get('status') in terminal_failures:
+            # A new prepare invocation is the explicit retry; the prior invocation
+            # already reconciled that build to a terminal state.
+            build = None
+        if build and build.get('status') == 'SUCCESS' and build.get('identity_verified') is True:
+            pass
+        elif build:
+            if build.get('identity_verified') is not True or not build.get('build_id'):
+                raise Breakpoint('build-identity-unverified', 'unknown', False,
+                                 'reconcile-before-replay', stage='build-submit', build=build)
+            try:
+                self.provider.poll_build(c, build)
+            except Breakpoint:
+                self.save()
+                raise
+            self.save()
+        else:
+            build = {'project_id': self.plan['normalized']['gcp']['project_id'],
+                     'location': CLOUD_BUILD_LOCATION,
+                     'build_id': None, 'identity_verified': False, 'status': 'SUBMITTING',
+                     'last_observed_status': None, 'poll_outcome': 'submitting'}
+            builds[c] = build
+            self.save()
+            try:
+                submitted = self.provider.submit_build(c)
+            except Breakpoint as exc:
+                if exc.build:
+                    build = exc.build
+                    builds[c] = build
+                elif exc.reason == 'permission-denied':
+                    build.update(status='SUBMIT_REJECTED', poll_outcome='rejected')
+                elif exc.stage == 'build-project-identity':
+                    build.update(status='SUBMIT_REJECTED', poll_outcome='project_identity_unverified')
+                else:
+                    build.update(status='SUBMIT_UNKNOWN', poll_outcome='submit_unknown')
+                self.save()
+                if exc.reason == 'permission-denied':
+                    raise Breakpoint('permission-denied', 'failed', False,
+                                     'restore-existing-principal-permission', stage=exc.stage,
+                                     exit_code=exc.exit_code, timeout_class=exc.timeout_class,
+                                     build=build) from None
+                if exc.stage == 'build-project-identity':
+                    raise Breakpoint(exc.reason, 'failed', False, 'verify-project-identity',
+                                     stage=exc.stage, exit_code=exc.exit_code,
+                                     timeout_class=exc.timeout_class, build=build) from None
+                if exc.build:
+                    raise
+                raise Breakpoint('build-submit-outcome-unknown', 'unknown', False,
+                                 'reconcile-before-replay', stage=exc.stage,
+                                 exit_code=exc.exit_code, timeout_class=exc.timeout_class,
+                                 build=build) from None
+            build = submitted
+            builds[c] = build
+            self.save()
+            try:
+                self.provider.poll_build(c, build)
+            except Breakpoint:
+                self.save()
+                raise
+            self.save()
+
+        return self.provider.resolve_build_image(c)
+
+    def resume_or_validate_reuse(self, old):
+        """Restore only an exact Stage 1 attempt; never carry build handles across plans."""
+        if old is None:
+            return
+        retained_plan_path = old / 'plan.json'
+        retained_state_path = old / 'state.json'
+        if not retained_plan_path.exists() and not retained_state_path.exists():
+            return  # receipt-only reuse remains supported
+        if not retained_plan_path.exists() or not retained_state_path.exists():
+            raise Breakpoint('stage1-checkpoint-invalid', 'failed', False,
+                             'inspect-retained-artifact', stage='prepare')
+        try:
+            retained_plan = read(retained_plan_path)
+            retained_state = read(retained_state_path)
+        except (OSError, TypeError, ValueError):
+            raise Breakpoint('stage1-checkpoint-invalid', 'failed', False,
+                             'inspect-retained-artifact', stage='prepare') from None
+        if not isinstance(retained_plan, dict) or not isinstance(retained_state, dict):
+            raise Breakpoint('stage1-checkpoint-invalid', 'failed', False,
+                             'inspect-retained-artifact', stage='prepare')
+        plan_body = {key: value for key, value in retained_plan.items() if key != 'id'}
+        old_id = retained_plan.get('id')
+        builds = retained_state.get('builds', {})
+        sequence = retained_state.get('sequence')
+        try:
+            selected = retained_plan['selected']
+            plan_shape_valid = (
+                selected == selection(','.join(selected) if isinstance(selected, list) else '') and
+                re.fullmatch(r'[0-9a-f]{40}', retained_plan.get('source', '')) is not None and
+                re.fullmatch(r'[0-9a-f]{64}', retained_plan.get('engine_content', '')) is not None and
+                retained_plan.get('normalized', {}).get('environment') in ('development', 'production') and
+                isinstance(retained_plan.get('identities'), dict) and
+                set(selected) <= set(retained_plan['identities']) and
+                isinstance(retained_plan['normalized']['gcp']['project_id'], str))
+        except (AttributeError, Breakpoint, KeyError, TypeError, ValueError):
+            plan_shape_valid = False
+        if (not isinstance(old_id, str) or old_id != digest(plan_body) or
+                not plan_shape_valid or
+                retained_state.get('plan') != old_id or
+                not isinstance(retained_state.get('components'), dict) or
+                not isinstance(builds, dict) or
+                not isinstance(sequence, int) or isinstance(sequence, bool) or sequence < 0 or
+                not isinstance(retained_state.get('status'), str)):
+            raise Breakpoint('stage1-checkpoint-invalid', 'failed', False,
+                             'inspect-retained-artifact', stage='prepare')
+
+        checkpoint_statuses = {'SUBMITTING', 'SUBMIT_UNKNOWN', 'SUBMIT_REJECTED',
+                               'IDENTITY_INVALID', 'IDENTITY_MISMATCH', 'SUBMITTED',
+                               'PENDING', 'QUEUED', 'WORKING', 'SUCCESS', 'FAILURE',
+                               'INTERNAL_ERROR', 'TIMEOUT', 'CANCELLED', 'EXPIRED',
+                               'STATUS_UNKNOWN'}
+        precreate_statuses = {'SUBMITTING', 'SUBMIT_UNKNOWN', 'SUBMIT_REJECTED',
+                              'IDENTITY_INVALID'}
+        for component, build in builds.items():
+            if (component not in ('auth', 'bff') or component not in retained_plan['selected'] or
+                    not isinstance(build, dict) or build.get('status') not in checkpoint_statuses or
+                    not isinstance(build.get('identity_verified'), bool)):
+                raise Breakpoint('stage1-checkpoint-invalid', 'failed', False,
+                                 'inspect-retained-artifact', stage='prepare')
+            build_id = build.get('build_id')
+            if build_id is not None and (not isinstance(build_id, str) or not re.fullmatch(
+                    r'[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}',
+                    build_id, re.I)):
+                raise Breakpoint('stage1-checkpoint-invalid', 'failed', False,
+                                 'inspect-retained-artifact', stage='prepare')
+            if build.get('identity_verified'):
+                if (not build_id or build.get('project_id') != retained_plan['normalized']['gcp']['project_id'] or
+                        build.get('location') != CLOUD_BUILD_LOCATION or
+                        build.get('status') in precreate_statuses | {'IDENTITY_INVALID', 'IDENTITY_MISMATCH'}):
+                    raise Breakpoint('stage1-checkpoint-invalid', 'failed', False,
+                                     'inspect-retained-artifact', stage='prepare')
+            elif build.get('status') not in precreate_statuses | {'IDENTITY_MISMATCH', 'STATUS_UNKNOWN'}:
+                raise Breakpoint('stage1-checkpoint-invalid', 'failed', False,
+                                 'inspect-retained-artifact', stage='prepare')
+            elif build_id is None and build.get('status') not in precreate_statuses:
+                raise Breakpoint('stage1-checkpoint-invalid', 'failed', False,
+                                 'inspect-retained-artifact', stage='prepare')
+
+        if retained_plan == self.plan:
+            if retained_state.get('status') not in ('prepared', 'ready'):
+                raise Breakpoint('stage1-checkpoint-runtime-started', 'failed', False,
+                                 'inspect-latest-checkpoint', stage='prepare')
+            if retained_state['components']:
+                raise Breakpoint('stage1-checkpoint-runtime-started', 'failed', False,
+                                 'inspect-latest-checkpoint', stage='prepare')
+            # Plan equality binds source, target/config, tag, selection and engine
+            # content. Restore the complete durable build state before any submission.
+            self.state = copy.deepcopy(retained_state)
+            self.state.setdefault('builds', {})
+            write(self.state_path, self.state)
+            return
+
+        # A changed plan can consume completed compatible receipts, but cannot
+        # inherit a Cloud Build handle whose applicability to the new plan is unknown.
+        terminal = {'FAILURE', 'INTERNAL_ERROR', 'TIMEOUT', 'CANCELLED', 'EXPIRED',
+                    'SUBMIT_REJECTED'}
+        uses_old_source = set(self.plan['selected'])
+        if self.plan['normalized']['environment'] == 'production' and self.plan.get('dev_reference'):
+            uses_old_source = {'frontend'} & uses_old_source
+        for component, build in builds.items():
+            if component not in uses_old_source:
+                continue
+            if not isinstance(build, dict):
+                raise Breakpoint('stage1-checkpoint-invalid', 'failed', False,
+                                 'inspect-retained-artifact', stage='prepare')
+            if build.get('status') in terminal:
+                continue
+            receipt_path = old / 'receipts' / (component + '.json')
+            applicable = False
+            if receipt_path.exists() and component in self.plan['selected']:
+                try:
+                    candidate = read(receipt_path)
+                    applicable = (isinstance(candidate, dict) and
+                                  candidate.get('component') == component and
+                                  candidate.get('identity') == self.plan['identities'][component] and
+                                  (component != 'frontend' or candidate.get('target_config') ==
+                                   digest(self.plan['normalized']['frontend'])))
+                    if applicable:
+                        self.provider.usable(component, candidate['artifact'])
+                except (Breakpoint, KeyError, OSError, TypeError, ValueError):
+                    applicable = False
+            if not applicable:
+                self.component = component
+                safe_build = self.safe_build_record(build)
+                raise Breakpoint('cross-plan-build-checkpoint-unresolved', 'unknown', False,
+                                 'resume-original-plan-checkpoint', stage='build-submit',
+                                 build=safe_build)
+
     def prepare(self, reuse=None, dev=None):
         require(not self.state['components'], 'prepare-after-runtime-forbidden')
         old = Path(reuse).resolve() if reuse else None
+        self.resume_or_validate_reuse(old)
         provenance = Engine(dev) if dev else None
         for c in self.plan['selected']:
             self.component = c
@@ -151,10 +356,13 @@ class Engine:
                         shutil.copy2(source / 'frontend.tgz', self.directory / 'frontend.tgz')
             if receipt is None:
                 require(not (self.plan['normalized']['environment'] == 'production' and c != 'frontend'), 'dev-source-config-incompatible')
-                artifact = self.provider.prepare(c)
+                artifact = (self.prepare_container(c) if c in ('auth', 'bff')
+                            else self.provider.prepare(c))
                 receipt = {'schema': 2, 'component': c, 'identity': self.plan['identities'][c],
                            'build_sha': self.plan['source'], 'artifact': artifact,
                            'target_config': digest(self.plan['normalized']['frontend']) if c == 'frontend' else None}
+                if c in ('auth', 'bff'):
+                    receipt['build'] = self.safe_build_record(self.state['builds'][c])
             self.provider.usable(c, receipt['artifact'])
             write(self.directory / 'receipts/retained' / (digest(receipt)+'.json'), receipt)
             write(dest, receipt)
@@ -325,6 +533,12 @@ class Engine:
                   'last_verified_checkpoint': self.state['sequence'],
                   'allowed_next_action': exc.action if exc else 'inspect-or-explicit-recovery',
                   'limitations': 'Job executions and persistent writes are not reversed by image rollback.'}
+        build_records = {c: self.safe_build_record(self.state['builds'][c])
+                         for c in self.plan['selected'] if c in self.state.get('builds', {})}
+        if exc and exc.build and self.component and self.component not in build_records:
+            build_records[self.component] = self.safe_build_record(exc.build)
+        if build_records:
+            result['builds'] = build_records
         if exc and exc.stage:
             result['failure_diagnostic'] = {
                 'stage': exc.stage,

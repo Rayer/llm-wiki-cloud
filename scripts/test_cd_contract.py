@@ -1828,74 +1828,21 @@ class CDContractTests(unittest.TestCase):
             self.assertNotEqual(duplicate.returncode, 0)
             self.assertEqual(json.loads(journal.read_text())["components"]["auth"]["state"], "accepted")
 
-    def test_dev_auth_and_bff_mutate_succeeds_with_successful_provider_update_and_strict_readback(self):
+    def test_dev_auth_and_bff_component_mutation_fails_closed_without_engine_ready_artifact(self):
         source_sha = "0123456789abcdef0123456789abcdef01234567"
         registry = "asia-east1-docker.pkg.dev/llm-wiki-cloud/cloud-run-images"
-        cases = {
-            "auth": {
-                "service": "auth-service",
-                "image": f"{registry}/llm-wiki-auth@sha256:{'a' * 64}",
-                "revision": "auth-revision",
-            },
-            "bff": {
-                "service": "bff-service",
-                "image": f"{registry}/llm-wiki-bff@sha256:{'b' * 64}",
-                "revision": "bff-service-revision",
-            },
-        }
-        for component, value in cases.items():
+        for component in ("auth", "bff"):
             with self.subTest(component=component), tempfile.TemporaryDirectory() as directory:
                 root = Path(directory)
                 bin_dir = root / "bin"
                 bin_dir.mkdir()
                 log_path = root / "provider.log"
-                provider_state = {
-                    "services": {
-                        value["service"]: {
-                            "metadata": {"name": value["service"]},
-                            "status": {"traffic": [{"revisionName": value["revision"], "percent": 100}], "latestCreatedRevisionName": value["revision"]},
-                        },
-                    },
-                    "revisions": {
-                        value["revision"]: {
-                            "metadata": {"name": value["revision"]},
-                            "status": {"imageDigest": value["image"], "conditions": [{"type": "Ready", "status": "True"}]},
-                            "spec": {"containers": [{"name": "provider-generated", "image": value["image"]}]},
-                        },
-                    },
-                }
-                if component == 'bff':
-                    configured = bff_candidate('development')
-                    configured['metadata']['name'] = value['revision']
-                    configured['spec']['containers'][0]['image'] = value['image']
-                    configured['status']['imageDigest'] = value['image']
-                    provider_state['revisions'][value['revision']] = configured
                 provider_script = textwrap.dedent(f"""
                     #!/usr/bin/env python3
-                    import json, sys
+                    import json, os, sys
                     from pathlib import Path
-
-                    args = sys.argv[1:]
-                    state = json.loads('''{json.dumps(provider_state)}''')
-                    Path('{str(log_path)}').open('a').write(' '.join(args) + '\\n')
-
-                    if args[:2] == ['builds', 'submit']:
-                        pass
-                    elif args[:4] == ['artifacts', 'docker', 'images', 'describe']:
-                        print('sha256:{value["image"].split("sha256:")[1]}')
-                    elif args[:4] == ['run', 'services', 'describe', '{value["service"]}']:
-                        print(json.dumps(state['services']['{value["service"]}']))
-                    elif args[:3] == ['run', 'revisions', 'describe']:
-                        print(json.dumps(state['revisions'][args[3]]))
-                    elif args[:4] == ['run', 'services', 'update', '{value["service"]}'] and '{component}' == 'bff':
-                        print('{value["revision"]}')
-                    elif args[:4] in (
-                        ['run', 'services', 'update', '{value["service"]}'],
-                        ['run', 'services', 'update-traffic', '{value["service"]}'],
-                    ):
-                        print('{{}}')
-                    else:
-                        raise SystemExit(2)
+                    Path(os.environ['PROVIDER_LOG']).open('a').write(' '.join(sys.argv[1:]) + '\\n')
+                    raise SystemExit(2)
                 """).lstrip()
                 gcloud = bin_dir / "gcloud"
                 gcloud.write_text(provider_script)
@@ -1906,15 +1853,11 @@ class CDContractTests(unittest.TestCase):
                     "normalized": {
                         "selected_components": [component],
                         "gcp": {"project_id": "llm-wiki-cloud", "region": "asia-east1", "artifact_registry": registry},
-                        "auth": {"service_name": cases["auth"]["service"]},
-                        "bff": {"service_name": cases["bff"]["service"]},
+                        "auth": {"service_name": "auth-service"},
+                        "bff": {"service_name": "bff-service"},
                     },
                 }))
                 journal = root / "journal.json"
-                if component == 'bff':
-                    normalized = deepcopy(bff_plan('development'))
-                    normalized['bff']['service_name'] = value['service']
-                    plan.write_text(json.dumps({'normalized': normalized}))
                 env = {
                     **os.environ,
                     "PATH": f"{bin_dir}:{os.environ['PATH']}",
@@ -1925,26 +1868,17 @@ class CDContractTests(unittest.TestCase):
                     "PLAN_PATH": str(plan),
                     "JOURNAL_PATH": str(journal),
                     "ARTIFACT_DIR": str(root / "artifacts"),
+                    "PROVIDER_LOG": str(log_path),
                 }
                 command = [str(ROOT / "deploy/components" / f"{component}.sh"), "mutate"]
                 result = subprocess.run(command, env=env, text=True, capture_output=True)
-                self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
+                self.assertNotEqual(result.returncode, 0, result.stdout + result.stderr)
+                label = "Auth" if component == "auth" else "BFF"
+                self.assertIn(f"{label} builds must be prepared by the deployment engine",
+                              result.stderr + result.stdout)
                 journal_data = json.loads(journal.read_text())
-                self.assertIn(component, journal_data["components"], result.stdout + result.stderr)
-                self.assertEqual(journal_data["components"][component]["state"], "accepted")
-                calls = log_path.read_text().splitlines()
-                update = any(f"run services update {value['service']}" in call for call in calls)
-                traffic = any(f"run services update-traffic {value['service']}" in call for call in calls)
-                if component == 'bff':
-                    update_call = next(call for call in calls if f"run services update {value['service']}" in call)
-                    self.assertIn('--update-env-vars ^|^QUERY_STAGE_CONFIG_PATH=' + normalized['query_config']['runtime_path']
-                                  + '|PROFILE_RUNTIME_AUDIENCE=' + normalized['bff']['profile_runtime_audience']
-                                  + '|PROFILE_RUNTIME_SERVICE_ACCOUNT=' + normalized['bff']['profile_runtime_service_account']
-                                  + '|EXPORT_JOB_URL=https://run.googleapis.com/v2/projects/llm-wiki-cloud/locations/asia-east1/jobs/export-job-dev:run'
-                                  + '|EXPORT_SIGNING_SERVICE_ACCOUNT=lwc-export-signer-dev@llm-wiki-cloud.iam.gserviceaccount.com', update_call)
-                    self.assertNotIn('--remove-env-vars', update_call)
-                self.assertTrue(update, result.stdout + result.stderr)
-                self.assertTrue(traffic, result.stdout + result.stderr)
+                self.assertEqual(journal_data["components"][component]["state"], "unknown")
+                self.assertFalse(log_path.exists(), "the component shortcut must stop before provider calls")
 
     def test_freeze_extracts_only_immutable_backend_handles_from_live_provider_shapes(self):
         source_sha = "0123456789abcdef0123456789abcdef01234567"

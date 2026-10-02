@@ -33,17 +33,30 @@ auth_freeze() {
   freeze_store auth "$(jq -n --arg image "$image" '{image:$image}')"
 }
 
-auth_build_image() {
-  local image digest detail exit_code permission lower stderr_file
+auth_build_submit() {
+  local image project response detail exit_code stderr_file
+  project=$(plan_json '.gcp.project_id')
   image="$(plan_json '.gcp.artifact_registry')/llm-wiki-auth:$SOURCE_SHA"
-  if detail=$(timeout --signal=TERM --kill-after=5s 600s gcloud builds submit "$ROOT/apps/bff" --project "$(plan_json '.gcp.project_id')" --config "$ROOT/apps/bff/cloudbuild-auth.yaml" \
-    --substitutions="_IMAGE=$image,_APP_VERSION=$(cd "$BFF_DIR" && go run ./cmd/versioncheck VERSION),_GIT_SHA=$SOURCE_SHA,_GIT_BRANCH=$SOURCE_REF,_GIT_TAG=" --quiet --suppress-logs 2>&1 >/dev/null); then
-    :
+  stderr_file=$(mktemp "${TMPDIR:-/tmp}/lwc-auth-submit.XXXXXX") || {
+    auth_record_build_failure build-submit 1 "temporary diagnostics file unavailable"
+    return 1
+  }
+  if response=$(timeout --signal=TERM --kill-after=5s 600s gcloud builds submit "$ROOT/apps/bff" --project "$project" --region=global --config "$ROOT/apps/bff/cloudbuild-auth.yaml" \
+    --substitutions="_IMAGE=$image,_APP_VERSION=$(cd "$BFF_DIR" && go run ./cmd/versioncheck VERSION),_GIT_SHA=$SOURCE_SHA,_GIT_BRANCH=$SOURCE_REF,_GIT_TAG=" --async --format=json --quiet 2>"$stderr_file"); then
+    rm -f "$stderr_file"
+    printf '%s\n' "$response"
   else
     exit_code=$?
+    detail=$(cat "$stderr_file" 2>/dev/null || true)
+    rm -f "$stderr_file"
     auth_record_build_failure build-submit "$exit_code" "$detail"
     return "$exit_code"
   fi
+}
+
+auth_resolve_build_image() {
+  local image digest detail exit_code stderr_file
+  image="$(plan_json '.gcp.artifact_registry')/llm-wiki-auth:$SOURCE_SHA"
   stderr_file=$(mktemp "${TMPDIR:-/tmp}/lwc-auth-digest.XXXXXX") || {
     auth_record_build_failure tag-digest-resolve 1 "temporary diagnostics file unavailable"
     return 1
@@ -63,6 +76,8 @@ auth_build_image() {
   fi
   printf '%s@%s\n' "${image%:*}" "$digest"
 }
+
+auth_build_image() { die "Auth builds must be prepared by the deployment engine"; }
 
 auth_record_build_failure() {
   local stage="$1" exit_code="$2" detail="${3:-}" lower permission=0 marker
@@ -183,12 +198,14 @@ auth_rollback() {
 }
 
 case "${1:-}" in
+  submit) auth_build_submit ;;
+  resolve) auth_resolve_build_image ;;
   build) auth_build_image ;;
-  help) printf 'auth component: preflight|freeze|mutate|reconcile|rollback\n' ;;
+  help) printf 'auth component: submit|resolve|preflight|freeze|mutate|reconcile|rollback\n' ;;
   preflight) auth_preflight ;;
   freeze) auth_freeze ;;
   mutate) auth_mutate ;;
   reconcile) auth_reconcile ;;
   rollback) auth_rollback ;;
-  *) die "usage: auth.sh help|preflight|freeze|mutate|reconcile|rollback" ;;
+  *) die "usage: auth.sh help|submit|resolve|preflight|freeze|mutate|reconcile|rollback" ;;
 esac

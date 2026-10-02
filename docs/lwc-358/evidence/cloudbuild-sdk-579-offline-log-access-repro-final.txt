@@ -1,0 +1,3 @@
+Waiting for build to complete. Polling interval: 0 second(s).
+{"cloud_build_api_final_status": "SUCCESS", "cloud_build_status_reads": 2, "fake_log_transport_requests": 2, "probe": "offline-only; installed SDK CloudBuildClient with fake build API and fake log transport", "sdk_raised": "DefaultLogsBucketIsOutsideSecurityPerimeterException", "sdk_version": "579.0.0", "stream_output_argument_is_none": true}
+EXIT=0

@@ -14,6 +14,8 @@ Actions 表單輸入：
 
 Workflow 在 admission 固定 `github.sha`，Go `cmd/deploy_config` 產生 normalized config。Profile 透過 Go dependency package 與 embed file、Dockerfile、module files 及明確靜態 inputs 計算 identity；部署工具與無關 package 不使既有容器失效。Frontend identity 使用其 source tree 及目標 public config。Plan 的內容 hash 是 attempt ID；選擇改變必須建立新 plan。
 
+同一 Stage 1 attempt 跨 Actions job 續跑時，請保持 source、target/config、release tag、components 選擇及 engine code 完全相同，並把該 attempt 最新的 prepared/ready checkpoint artifact ID 傳回 `artifact_id`。Engine 會驗證完整 plan/hash 與 state 綁定、runtime 尚未開始，再把原 build checkpoint 帶入新 job；pending/status unknown 只查原 build ID，ID-less submit unknown 停止，SUCCESS 後只重試 digest/receipt。若其中任何 plan/engine 身分不同，Engine 不會搬移舊 build state：只可重用 identity/config 相符且 provider 可讀的已完成 receipts。不同 plan 若有尚未完成且沒有可用 receipt 的 build handle，會以 `cross-plan-build-checkpoint-unresolved` 停止；回到原 attempt 的 artifact 與輸入續跑，不能用新 tag/selection/engine 變更觸發另一個 submit。已明確觀察為 terminal failure 或 pre-create rejection 的 handle，可由之後明確 prepare invocation 重試。完整判斷表見 [accepted Stage 1 checkpoint appendix](deployment-engine-spec-r2-accepted-appendix-build-submit.md#stage-1-checkpoint-resume-boundary)。
+
 Stage 1 每完成一個 component 即保存獨立 receipt/checkpoint；build failure 不做 runtime mutation、不 rollback、不標記成功 tag。所有 selected receipts usable 才過 barrier。Stage 2 保存可用的 pre-state，再逐一 deploy/readback，順序 `exportjob → auth → bff → worker → frontend`（只執行 selected）。成功須所有 selected provider sanity 通過，接著寫入 tag；功能 smoke/UAT 不在這個 gate。
 
 Frontend stage 1 只 `vercel pull`、`vercel build` 並封存 `.vercel/output` 與 project identity；檢查輸出的 build-config.json。Stage 2 使用 `deploy --prebuilt`；Production 加上 `--prod --skip-domain`（官方限定 skip-domain 與 prod 搭配），DEV 使用 `--target=preview`，在無 Git metadata 的封存目錄執行，排除 branch-domain 自動指派，保存 deployment ID，再逐一指派已存在的 target aliases；readback 驗證 READY、target、artifact metadata、實際 build-config 與 alias identity。依據 [Vercel build](https://vercel.com/docs/cli/build) 與 [deploy](https://vercel.com/docs/cli/deploy)；使用 pinned CLI 59.11.7。
@@ -33,6 +35,29 @@ Frontend stage 1 只 `vercel pull`、`vercel build` 並封存 `.vercel/output` �
 | rolled_back | 指定的 changed components 已還原；成功 tag 保留，Jobs 的已執行工作與資料不會倒轉 |
 | partially_reactivated | 指定 component 已重新啟用，尚未所有 selected components verified |
 | stale-checkpoint / stale-ready-artifact-use-latest-checkpoint | 拒絕舊 checkpoint；取得最新 target state artifact 後再判斷 |
+
+### Auth/BFF Cloud Build 狀態
+
+Auth/BFF 的 Stage 1 先用唯讀 `gcloud projects describe PROJECT_ID --format=json --quiet` 驗證設定的 project ID 與權威 project number，再用 `gcloud builds submit --async --region=global` 取得 Cloud Build ID，之後只以 `gcloud builds describe` 查狀態。Cloud Build resource name 可使用 project ID 或該 project 對應的數字 project number；不匹配的數字名稱會被拒絕。`global` 延續原本 Cloud Build 預設 location；每筆建置仍綁定精確的 project ID、location 與 build ID。取得並驗證 ID 後，engine 會先上傳 checkpoint，再開始狀態輪詢。固定 600 秒期限、5 秒間隔；狀態查詢每次最多 30 秒並受整體期限限制。不讀 log，不把 log tail 成敗當作 ready gate；此身份查詢不修改 IAM。
+
+失敗或待 reconcile 的 `result.json` 會在 `builds[component]` 保存安全欄位：`project_id`、`location`、`build_id`、`identity_verified`、狀態與輪詢結果；階段、數字 exit code 與 timeout 類別另列在 `failure_diagnostic`。只有 `SUCCESS` 會進入既有 tag-to-digest 查詢及 immutable digest 驗證；都通過後才寫 component receipt。所有 selected receipts usable 才成為 `ready`。若 SUCCESS 後 digest 查詢失敗，續跑會重用同一 build ID，只重試 digest/receipt 路徑。
+
+- `PENDING` / `QUEUED` / `WORKING` 到達期限：結果為 unknown；續跑只查相同 ID，不重送。
+- status API error、timeout 或 `STATUS_UNKNOWN`：保留 ID 與 unknown 狀態，先 reconcile 相同 ID；不得重送。
+- `FAILURE`、`INTERNAL_ERROR`、`TIMEOUT`、`CANCELLED`、`EXPIRED`：保存終止狀態及 ID。該次 prepare 不會自動重送；只有另一次明確 prepare invocation 在已觀察到舊 build 終止後，才可開始替代建置。
+- Submit 未回傳可驗證 ID：保留 `submitting`/unknown checkpoint 並停止；不得猜測 ID、補造 receipt 或自動重送。
+- Project ID/project number 對應、location、resource name 或 ID 不一致：標記 identity 未驗證，停止，不以不匹配的 tuple 查詢狀態。Numeric resource-name segment 必須與唯讀 project identity lookup 的 project number 完全相等。
+
+需要查 log 時，只能使用 result 中已驗證的 build ID。Cloud Logging 有該筆資料時，以 project 限定並套用精確 build ID filter；預設只列時間、severity、logName，不輸出或保存 raw payload：
+
+```sh
+gcloud logging read \
+  'resource.type="build" AND resource.labels.build_id="BUILD_ID"' \
+  --project="PROJECT_ID" --limit=100 \
+  --format='table(timestamp,severity,logName)'
+```
+
+`LEGACY` logging 不保證有 Cloud Logging entries；查無資料不改變 Cloud Build status，也不表示可改 logging mode、IAM 或 log bucket。完整契約記於 [r2 accepted build-submit appendix](deployment-engine-spec-r2-accepted-appendix-build-submit.md)。
 
 `Recover retained deployment` 輸入原 `source_sha`、`release_tag`、target environment、最新 `artifact_id`、受影響 components 及 `operation` (`rollback`, `reactivate`, `deploy`, `tag`, `readback`)。使用 artifact 清單中最新 `lwc-state-<target>-…` ID，而非舊 `lwc-ready-…`。Checkpoint 查詢一次讀最新 100 筆；若無法在界限內確認最新 state、artifact 到期或 provider 不可讀，停止並回报 TPM，不猜測。
 

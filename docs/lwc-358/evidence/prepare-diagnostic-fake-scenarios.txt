@@ -1,0 +1,7 @@
+success => receipt-returned events= submit,tag-digest,registry-validation
+submit-fails-after-accept => command-failed/failed/reconcile-before-replay events= submit
+submit-times-out-after-accept => provider-timeout/unknown/reconcile-before-replay events= submit
+digest-lookup-fails => command-failed/failed/reconcile-before-replay events= submit,tag-digest
+malformed-digest => command-failed/failed/reconcile-before-replay events= submit,tag-digest
+registry-mismatch => artifact-unusable/failed/correct-input-and-resume events= submit,tag-digest,registry-validation
+registry-read-fails => command-failed/failed/reconcile-before-replay events= submit,tag-digest,registry-validation
