@@ -325,6 +325,12 @@ class Engine:
                   'last_verified_checkpoint': self.state['sequence'],
                   'allowed_next_action': exc.action if exc else 'inspect-or-explicit-recovery',
                   'limitations': 'Job executions and persistent writes are not reversed by image rollback.'}
+        if exc and exc.stage:
+            result['failure_diagnostic'] = {
+                'stage': exc.stage,
+                'exit_code': exc.exit_code,
+                'timeout_class': exc.timeout_class,
+            }
         write(self.directory / 'result.json', result)
         print(json.dumps(result, sort_keys=True))
 

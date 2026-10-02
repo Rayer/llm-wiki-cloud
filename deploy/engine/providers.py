@@ -87,8 +87,10 @@ class Providers:
         prefix = self.p['gcp']['artifact_registry'] + '/' + self.profiles[c]['image']
         require(re.fullmatch(re.escape(prefix) + r'@sha256:[0-9a-f]{64}', image), 'artifact-config-incompatible')
         actual = run(['gcloud', 'artifacts', 'docker', 'images', 'describe', image,
-                      '--project', self.p['gcp']['project_id'], '--format=value(image_summary.digest)', '--quiet'])
-        require(actual == image.split('@')[1], 'artifact-unusable')
+                      '--project', self.p['gcp']['project_id'], '--format=value(image_summary.digest)', '--quiet'],
+                     stage='digest-validate')
+        if actual != image.split('@')[1]:
+            raise Breakpoint('artifact-unusable', stage='digest-validate', exit_code=0)
 
     def prepare(self, c):
         if c != 'frontend':
@@ -96,7 +98,8 @@ class Providers:
                        SOURCE_SHA=self.plan['source'], SOURCE_REF=self.plan['branch'],
                        GITHUB_RUN_ID=os.environ.get('GITHUB_RUN_ID', '1'),
                        GITHUB_RUN_ATTEMPT=os.environ.get('GITHUB_RUN_ATTEMPT', '1'))
-            image = run(['bash', ROOT / 'deploy/components' / (c + '.sh'), 'build'], env=env, timeout=1800).splitlines()[-1]
+            image = run(['bash', ROOT / 'deploy/components' / (c + '.sh'), 'build'], env=env,
+                        timeout=1800, stage='auth-build' if c == 'auth' else None).splitlines()[-1]
             self.valid_image(c, image)
             return {'image': image}
         self.project()

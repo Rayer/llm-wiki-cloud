@@ -251,3 +251,56 @@ Publication staging check: 30 manifest implementation files 均通過 git diff -
 - `python3.14 -m py_compile apps/bff/scripts/test_bff_explicit_cutover.py`、`git diff --check -- apps/bff/scripts/test_bff_explicit_cutover.py`：exit 0。
 
 新 manifest **36 files**，僅加此 BFF regression test；Content SHA256 `8c92173b50e3b55b9a27f4b9f288d430934a7fd6305d1e10ae0e31ca305bff39`。Base/frozen/runtime implementation 未改。本輪僅限既有 BFF contract regression 與 evidence/manifest；未改 Bug366/shared checkout、engine runtime、production provider 或 credentials。待 Parent + Supervisor 對相同下一 PR SHA 審閱；未 merge/dispatch/live/tag。
+
+## Owner-approved fixed DEV image diagnostic implementation
+
+本輪由原 Implementer 在同一 checkout 實作 Owner 接受的唯讀 DEV Actions 診斷與固定 Auth prepare stage/exit-code metadata。Accepted contract：`/Users/rayer/orca/workspaces/llm-wiki-cloud/LWC-358-deploy-convergence/docs/lwc-358/deployment-engine-dev-diagnostic-owner-direction-r1.md`；暫時 DEV 診斷授權記錄：`/Users/rayer/orca/workspaces/llm-wiki-cloud/LWC-358-deploy-convergence/docs/lwc-358/deployment-diagnostics-standing-owner-direction.md`。兩份 source records 均未修改。編輯前 HEAD `a90590974722248893a4676084093cf29951e1a4`、tree `1c69404ed0303bf7ea94457163ca09a88e1a6b6a`、branch `Rayer/LWC-358-engine-r2`；merge-base/base `e9ccf490251ed0262481fca94af7387107be6b5f`；frozen spec SHA256 `838817cad154b0ea773c205f671362a6c9c0ad97c38ddf34f2508eb4fcc2488b`。目前仍為未提交本地差異，HEAD/tree 未變。
+
+Diagnostic 有獨立 `auth-image-diagnostic` Actions job；wrapper 與 reusable workflow 兩處都只接受 develop、Development、auth、operation `diagnose-auth-image`、release-tag sentinel `diagnostic-36992147920`、artifact sentinel `diagnostic-no-receipt`，並要求輸入 `source_sha == github.sha`。因此 checkout 是日後同一 workflow dispatch ref 的已審查診斷程式碼，而查詢目標固定仍為失敗 run 36992147920 的 Auth tag 與 digest；不再把舊 f6 SHA 當成 engine checkout。這條 job 使用獨立 Development WIF setup，GitHub token 僅 `contents: read` / `actions: read` 與 WIF 所需 `id-token: write`；不帶 GH/Vercel token，不安裝 Node/artifact transport，不下載 checkpoint/receipt，不進正常 recovery validation 或 runtime，不 build/deploy/traffic/alias/tag/write。它捕捉並丟棄 gcloud stdout/stderr，只印固定 operation、exit code/timeout class、digest-format boolean、tag-digest comparison boolean 與 bounded conclusion；成功或失敗均只保留 redacted diagnostic result artifact。沒有任何測試或本地動作接觸真實 provider。
+
+Auth prepare 的真實 `auth.sh → Providers.prepare → support.run → Engine.result()` 路徑現在只傳 allowlisted `build-submit`、`tag-digest-resolve`、`digest-validate` stage 與 exit code；malformed digest 使用固定 exit code 0 表示命令成功但驗證失敗。既有 reason/status/mutation/allowed-next-action 語意保留，permission-denied 只帶出既有安全 action；provider stderr、args、環境或哨兵值不進結果。Shell 分類採 Bash 3 可用的 `tr`，不依賴 Bash 4 小寫擴展。
+
+### 本機驗證
+
+環境為 Python 3.14.6。新 workflow-branch regression 以假 gcloud 執行實際 diagnostic helper，逐一驗證精確兩個 describe calls、沒有 mutation verb、舊 f6 checkout/錯誤 target/selection/ref/tag/artifact sentinel 在 gcloud 前拒絕、digest mismatch/invalid/read error/timeout/tool-unavailable 的有界輸出，以及 stdout/result 不含 provider/token 哨兵。Auth prepare tests 以 TEST ONLY gcloud/go/timeout executables 執行真實 shell 與 production adapters，驗證三個 stage、inner exit code、reason/action 保留及完整 result redaction。未使用 network fallback。
+
+| 精確命令 | 結果 | 保存輸出 |
+| --- | --- | --- |
+| `python3.14 -m unittest discover -s deploy/engine/tests -p 'test_*.py'` | 36 tests OK，29.310s | `evidence/dev-diagnostic-engine.txt` |
+| `python3.14 -m unittest -v test_diagnostics test_prepare_diagnostics`（cwd `deploy/engine/tests`） | 9 targeted diagnostic/redaction tests OK，1.494s | `evidence/dev-diagnostic-auth-redaction.txt` |
+| `python3.14 scripts/test_engine_workflow.py` | 4 tests OK | `evidence/dev-diagnostic-workflow.txt` |
+| `python3.14 -m unittest discover -s apps/bff/scripts -p 'test_bff_explicit_cutover.py'` | 6 tests OK，13.092s | `evidence/dev-diagnostic-bff.txt` |
+| Selected shared-CD Frontend authority/alias workflow tests | 4 pass / 0 fail / 0 skip | `evidence/dev-diagnostic-frontend-workflow.txt` |
+| `bash -n deploy/components/auth.sh && python3.14 -m py_compile deploy/engine/diagnostics.py deploy/engine/support.py deploy/engine/providers.py deploy/engine/engine.py deploy/engine/tests/test_diagnostics.py deploy/engine/tests/test_prepare_diagnostics.py scripts/test_engine_workflow.py && git diff --check` | exit 0、無輸出 | `evidence/dev-diagnostic-static.txt` |
+| cwd `/Users/rayer/go/pkg/mod/github.com/rhysd/actionlint@v1.7.12`: `env GOPROXY=off GOMODCACHE=/Users/rayer/go/pkg/mod GOCACHE=/private/tmp/lwc358-actionlint-cache go run ./cmd/actionlint /Users/rayer/orca/workspaces/llm-wiki-cloud/LWC-358-engine-r2/.github/workflows/cd.yml /Users/rayer/orca/workspaces/llm-wiki-cloud/LWC-358-engine-r2/.github/workflows/recover-deployment.yml` | exit 0、無錯誤 | `evidence/dev-diagnostic-actionlint.txt` |
+
+Frontend workflow regression 的精確命令：
+
+```sh
+node --test --test-name-pattern='frontend aliases use the shared CD|DEV authority uses the fixed|DEV workflow invokes|production workflow invokes' apps/frontend/tests/lwc-199-vercel-alias-promotion.test.mjs apps/frontend/tests/lwc-253-authority-reconciliation.test.mjs apps/frontend/tests/lwc-253-vercel-dev-authority.test.mjs apps/frontend/tests/lwc-258-vercel-production-auth-env.test.mjs
+```
+
+Workflow contract 測試首輪保留一筆失敗：舊 assertion 假設 shared CD 只有一個 `environment` job；現在額外 read-only job 使此數量變為二。測試已改為驗證唯一 runtime action、release protected job 與單獨低權限 Development diagnostic job；後續 4 tests 全通過。原失敗輸出保留在 `evidence/dev-diagnostic-workflow-contract-red.txt`。Actionlint CLI 不在 PATH；第一次 module@version 呼叫受 sandbox DNS 限制，之後使用已快取 actionlint source、`GOPROXY=off` 執行同版檢查，通過。沒有為此擴權或連網。
+
+Live 事實未變：失敗 run 36992147920 的 Cloud Build 成功且 image published，prepare 失敗、runtime skipped；既有 result artifact 沒有 ready receipt。離線測試只能辨識程式各失敗分支及保護 workflow 入口，**不能證實該 live run root cause**。本輪未 dispatch Actions、未 retry、未造 manual receipt、未讀取 provider；Parent/Supervisor 尚需對同一新 content/CI review 後，才可依 Owner 已接受範圍協調一次唯讀診斷。沒有 Production/IAM/credential/provider write、commit、push、PR publish、merge、tag 操作；Bug366 merged code與原 shared worktree未改。
+
+可供後續 PR 使用的完整說明草稿：`evidence/pr-dev-image-diagnostic-body-draft.md`。目前精確 implementation manifest 為 39 個檔案，內容 SHA256 `694bff9b59dbb1d91fcd477e0d68b1f322221ece31852be2fc01a21c997cd823`；base `e9ccf490251ed0262481fca94af7387107be6b5f`、frozen SHA 不變。本地候選尚無新 commit/tree SHA。
+
+## Recovery artifact download token regression repair
+
+Parent 在實際工作差異檢查中發現 release job 曾把 `GH_TOKEN` 從 job env 收窄到 prepare/runtime action steps，但正常 rollback/reactivate/deploy/tag/readback recovery 的 `Download pinned ready artifact or checkpoint` shell step 沒有 token。該步執行 `node deploy/engine/artifacts.cjs download`；transport 的 GitHub API lookup 與 Actions artifact SDK 都讀 `process.env.GH_TOKEN`，所以 recovery 在取得 checkpoint 前會失敗。
+
+修正只在這個 recovery-only download step 加入 `GH_TOKEN: ${{ github.token }}`。下載條件仍是 `inputs.operation != 'release'`，release job 仍排除 `diagnose-auth-image`；diagnostic 保持獨立 job，沒有 GH/Vercel token 或 checkpoint download。新增的 regression 解析真實 `cd.yml`，合併 release job 與 download step env 後檢查有效 token、release/diagnostic job guards、recover-only step condition 和實際 artifacts.cjs download 實作讀取 GH_TOKEN 並呼叫 API/SDK。
+
+先以未修正 workflow 執行 causal regression，斷言實際有效環境的 `GH_TOKEN` 為空而失敗；結果保留於 `evidence/dev-diagnostic-download-token-red.txt`。修正後驗證：
+
+| 精確命令 | 結果 | 保存輸出 |
+| --- | --- | --- |
+| `python3.14 scripts/test_engine_workflow.py -k pinned_recovery_download_has_effective_github_token`（修正前） | 1 failure；`effective_env.get('GH_TOKEN')` 為 `None` | `evidence/dev-diagnostic-download-token-red.txt` |
+| `python3.14 scripts/test_engine_workflow.py -v` | 5 tests OK | `evidence/dev-diagnostic-download-token-workflow.txt` |
+| `python3.14 -m unittest discover -s apps/bff/scripts -p 'test_bff_explicit_cutover.py'` | 6 tests OK | `evidence/dev-diagnostic-download-token-bff.txt` |
+| `node --test --test-name-pattern='frontend aliases use the shared CD|DEV authority uses the fixed|DEV workflow invokes|production workflow invokes' apps/frontend/tests/lwc-199-vercel-alias-promotion.test.mjs apps/frontend/tests/lwc-253-authority-reconciliation.test.mjs apps/frontend/tests/lwc-253-vercel-dev-authority.test.mjs apps/frontend/tests/lwc-258-vercel-production-auth-env.test.mjs` | 4 pass / 0 fail / 0 skip | `evidence/dev-diagnostic-download-token-frontend.txt` |
+| `python3.14 scripts/test_cd_contract.py` | 67 tests OK | `evidence/dev-diagnostic-download-token-cd.txt` |
+| `GOPROXY=off GOMODCACHE=/Users/rayer/go/pkg/mod GOCACHE=/private/tmp/lwc358-actionlint-cache go run ./cmd/actionlint /Users/rayer/orca/workspaces/llm-wiki-cloud/LWC-358-engine-r2/.github/workflows/cd.yml /Users/rayer/orca/workspaces/llm-wiki-cloud/LWC-358-engine-r2/.github/workflows/recover-deployment.yml`（cwd `/Users/rayer/go/pkg/mod/github.com/rhysd/actionlint@v1.7.12`） | exit 0 | `evidence/dev-diagnostic-download-token-actionlint.txt` |
+
+另執行 `python3.14 -m py_compile scripts/test_engine_workflow.py && git diff --check`，exit 0、無輸出。精確整合 diff 更新於 `evidence/dev-diagnostic-implementation.diff`。環境為 Python 3.14.6；Frontend workflow tests 使用 Node v22.23.2。改動後的 `cd.yml` 和 recovery wrapper 通過 actionlint；未觸發 Actions。測試 log 和此段 evidence 不納入 implementation-content manifest。現行 manifest 為 39 個檔案，內容 SHA256 `4f44306d203c39b76d41f6e4eb3952c2cdcbd0e9f5a5447b091fe4e0b0f3a5ca`。本地修改仍未 commit/push/PR/merge，未 dispatch Actions、未做 provider/credential/IAM/Production/tag 操作。HEAD/tree 仍是 `a90590974722248893a4676084093cf29951e1a4` / `1c69404ed0303bf7ea94457163ca09a88e1a6b6a`，base `e9ccf490251ed0262481fca94af7387107be6b5f`；此 HEAD 不含稍後 publication integration 的 LWC-366 merged source。

@@ -1,0 +1,14 @@
+...F
+======================================================================
+FAIL: test_single_authority_and_one_protected_job (__main__.EngineWorkflowContract.test_single_authority_and_one_protected_job)
+----------------------------------------------------------------------
+Traceback (most recent call last):
+  File "/Users/rayer/orca/workspaces/llm-wiki-cloud/LWC-358-engine-r2/scripts/test_engine_workflow.py", line 14, in test_single_authority_and_one_protected_job
+    self.assertEqual(len(re.findall(r'^    environment:',s,re.M)),1)
+    ~~~~~~~~~~~~~~~~^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+AssertionError: 2 != 1
+
+----------------------------------------------------------------------
+Ran 4 tests in 0.007s
+
+FAILED (failures=1)

@@ -34,13 +34,43 @@ auth_freeze() {
 }
 
 auth_build_image() {
-  local image digest
+  local image digest detail exit_code permission lower stderr_file
   image="$(plan_json '.gcp.artifact_registry')/llm-wiki-auth:$SOURCE_SHA"
-  timeout --signal=TERM --kill-after=5s 600s gcloud builds submit "$ROOT/apps/bff" --project "$(plan_json '.gcp.project_id')" --config "$ROOT/apps/bff/cloudbuild-auth.yaml" \
-    --substitutions="_IMAGE=$image,_APP_VERSION=$(cd "$BFF_DIR" && go run ./cmd/versioncheck VERSION),_GIT_SHA=$SOURCE_SHA,_GIT_BRANCH=$SOURCE_REF,_GIT_TAG=" --quiet --suppress-logs >/dev/null
-  digest=$(gcloud artifacts docker images describe "$image" --project "$(plan_json '.gcp.project_id')" --format='value(image_summary.digest)' --quiet)
-  [[ "$digest" =~ ^sha256:[0-9a-f]{64}$ ]] || die "auth image digest is invalid"
+  if detail=$(timeout --signal=TERM --kill-after=5s 600s gcloud builds submit "$ROOT/apps/bff" --project "$(plan_json '.gcp.project_id')" --config "$ROOT/apps/bff/cloudbuild-auth.yaml" \
+    --substitutions="_IMAGE=$image,_APP_VERSION=$(cd "$BFF_DIR" && go run ./cmd/versioncheck VERSION),_GIT_SHA=$SOURCE_SHA,_GIT_BRANCH=$SOURCE_REF,_GIT_TAG=" --quiet --suppress-logs 2>&1 >/dev/null); then
+    :
+  else
+    exit_code=$?
+    auth_record_build_failure build-submit "$exit_code" "$detail"
+    return "$exit_code"
+  fi
+  stderr_file=$(mktemp "${TMPDIR:-/tmp}/lwc-auth-digest.XXXXXX") || {
+    auth_record_build_failure tag-digest-resolve 1 "temporary diagnostics file unavailable"
+    return 1
+  }
+  if digest=$(gcloud artifacts docker images describe "$image" --project "$(plan_json '.gcp.project_id')" --format='value(image_summary.digest)' --quiet 2>"$stderr_file"); then
+    rm -f "$stderr_file"
+  else
+    exit_code=$?
+    detail=$(cat "$stderr_file" 2>/dev/null || true)
+    rm -f "$stderr_file"
+    auth_record_build_failure tag-digest-resolve "$exit_code" "$detail"
+    return "$exit_code"
+  fi
+  if [[ ! "$digest" =~ ^sha256:[0-9a-f]{64}$ ]]; then
+    auth_record_build_failure digest-validate 0 ""
+    die "auth image digest is invalid"
+  fi
   printf '%s@%s\n' "${image%:*}" "$digest"
+}
+
+auth_record_build_failure() {
+  local stage="$1" exit_code="$2" detail="${3:-}" lower permission=0 marker
+  lower=$(printf '%s' "$detail" | tr '[:upper:]' '[:lower:]')
+  for marker in permission_denied "permission denied" forbidden unauthorized "returned error: 403" "returned error: 401"; do
+    if [[ "$lower" == *"$marker"* ]]; then permission=1; break; fi
+  done
+  printf 'LWC_ENGINE_FAILURE stage=%s exit_code=%s permission=%s\n' "$stage" "$exit_code" "$permission" >&2
 }
 
 auth_mutate() {

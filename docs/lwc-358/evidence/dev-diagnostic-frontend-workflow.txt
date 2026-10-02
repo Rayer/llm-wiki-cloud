@@ -1,0 +1,36 @@
+TAP version 13
+1..0
+# Subtest: apps/frontend/tests/lwc-199-vercel-alias-promotion.test.mjs
+ok 1 - apps/frontend/tests/lwc-199-vercel-alias-promotion.test.mjs
+  ---
+  duration_ms: 67.106083
+  type: 'test'
+  ...
+1..0
+# Subtest: apps/frontend/tests/lwc-253-authority-reconciliation.test.mjs
+ok 2 - apps/frontend/tests/lwc-253-authority-reconciliation.test.mjs
+  ---
+  duration_ms: 69.855
+  type: 'test'
+  ...
+# Subtest: DEV workflow invokes the shared engine with fixed authority and explicit receipt inputs
+ok 3 - DEV workflow invokes the shared engine with fixed authority and explicit receipt inputs
+  ---
+  duration_ms: 7.799
+  type: 'test'
+  ...
+# Subtest: production workflow invokes the shared engine with fixed authority and DEV provenance
+ok 4 - production workflow invokes the shared engine with fixed authority and DEV provenance
+  ---
+  duration_ms: 3.95975
+  type: 'test'
+  ...
+1..4
+# tests 4
+# suites 0
+# pass 4
+# fail 0
+# cancelled 0
+# skipped 0
+# todo 0
+# duration_ms 77.950458

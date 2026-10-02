@@ -1,13 +1,13 @@
 {
   "base": "e9ccf490251ed0262481fca94af7387107be6b5f",
   "branch": "Rayer/LWC-358-engine-r2",
-  "content_sha256": "8c92173b50e3b55b9a27f4b9f288d430934a7fd6305d1e10ae0e31ca305bff39",
+  "content_sha256": "4f44306d203c39b76d41f6e4eb3952c2cdcbd0e9f5a5447b091fe4e0b0f3a5ca",
   "scope": "All changed/new implementation, test, operator and frozen-spec files; excludes this manifest, evidence report and logs to avoid self-reference.",
   "frozen_sha256": "838817cad154b0ea773c205f671362a6c9c0ad97c38ddf34f2508eb4fcc2488b",
   "files": [
     {
       "path": ".agents/skills/deployment-operator/SKILL.md",
-      "sha256": "0387f406e3df6baabe4c0caa44665ed40a91362865c5b38bd3f20c2e6a77b595",
+      "sha256": "534f6c25adf8ce84f94337240f8046ab0e50cee237f52581a4e335be38bd032e",
       "mode": "0o644"
     },
     {
@@ -22,7 +22,7 @@
     },
     {
       "path": ".github/workflows/cd.yml",
-      "sha256": "a53cf41d5e9a48b265db52347296a9d375d183e467c4376d48177a50f80c6ea6",
+      "sha256": "2c09f6695f6c51c1c62aba93201a8801c6515163e7ccd664616eb6d60450c39d",
       "mode": "0o644"
     },
     {
@@ -42,7 +42,7 @@
     },
     {
       "path": ".github/workflows/recover-deployment.yml",
-      "sha256": "18aeab2332d719da8eadb4e1e4248cf8e83f225b3985457486cf49407e0aa27e",
+      "sha256": "914cd3c7be71ec0d76000bb53e2d8a0709ee6dc1d30993303a139b6ac8279d70",
       "mode": "0o644"
     },
     {
@@ -92,7 +92,7 @@
     },
     {
       "path": "deploy/components/auth.sh",
-      "sha256": "efffbd2aa85c35b2dde79d205de1554e68b165a568b801a97dfd4e993180ca46",
+      "sha256": "f32ac7b394e15b58f8aed3ed1ce7f4b3f7c545c8919ceb9bb1ac03712ed76c9c",
       "mode": "0o755"
     },
     {
@@ -116,8 +116,13 @@
       "mode": "0o644"
     },
     {
+      "path": "deploy/engine/diagnostics.py",
+      "sha256": "fdc3b1de46f0db95ff0e40f64e8e83b4c2a0a2fc9c458c4a69483f06b48e4f2f",
+      "mode": "0o644"
+    },
+    {
       "path": "deploy/engine/engine.py",
-      "sha256": "0c4e2abe151dac9fd24aec000f7d318ce2dc9a8ee4be7eae62e6862d242ddc40",
+      "sha256": "ce54da47bd8a9305f26931914979d1a55fb6a77a0833fee90f2023c838aa8679",
       "mode": "0o644"
     },
     {
@@ -127,12 +132,12 @@
     },
     {
       "path": "deploy/engine/providers.py",
-      "sha256": "28a2fde4ebb0e344834daa20ea1433b909eb22035e5dca6658d3947bde15dff1",
+      "sha256": "e72feed1c6895425ace0c566b89159de7c3d47eb6506ec7d21ff5184292110aa",
       "mode": "0o644"
     },
     {
       "path": "deploy/engine/support.py",
-      "sha256": "8a2972402acddea2ab5264c4825422591516b672d88326fedecbadb5c41f62bd",
+      "sha256": "cc9377091c4feeaf6b005f24041dadff7002dd5cea18bc1540747d0ad85fe9fd",
       "mode": "0o644"
     },
     {
@@ -151,8 +156,18 @@
       "mode": "0o644"
     },
     {
+      "path": "deploy/engine/tests/test_diagnostics.py",
+      "sha256": "6f9d01392fcbc01f134b6f957beaf5678ffe368572d4711501d2bfa49191f5b5",
+      "mode": "0o644"
+    },
+    {
       "path": "deploy/engine/tests/test_engine.py",
       "sha256": "193c80099e622cc283a957be3fe3b78668ca2dd28ee5f29145752c9543279df7",
+      "mode": "0o644"
+    },
+    {
+      "path": "deploy/engine/tests/test_prepare_diagnostics.py",
+      "sha256": "7814138f3d64f70f481ab561c8da7fa16c95d0d6120aa87a6c94fd881971a368",
       "mode": "0o644"
     },
     {
@@ -172,7 +187,7 @@
     },
     {
       "path": "docs/lwc-358/operator-r2.md",
-      "sha256": "7382bb610df90a2e3368bd71bfd2aee82bb6e2e3f81149b1b9c20f15e0dc14fd",
+      "sha256": "3643aeb76aaefcbaa94ef3f9a26b3eba86ac839ced158628b33cd342b5345e3c",
       "mode": "0o644"
     },
     {
@@ -182,7 +197,7 @@
     },
     {
       "path": "scripts/test_engine_workflow.py",
-      "sha256": "d98df7c5ad1606651d79579f0f1b952de825dad830823ec5509002eb4c8a403f",
+      "sha256": "7e6056fc8aa9ca165ac270039a7e148c06d859768e48334043d8d31d75dae265",
       "mode": "0o644"
     }
   ]
