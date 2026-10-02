@@ -1,0 +1,43 @@
+EE
+======================================================================
+ERROR: test_runtime_guard_reads_checkpoint_with_actual_engine_latest_argv (test_transport_integration.EngineTransportIntegration.test_runtime_guard_reads_checkpoint_with_actual_engine_latest_argv)
+----------------------------------------------------------------------
+Traceback (most recent call last):
+  File "/Users/rayer/orca/workspaces/llm-wiki-cloud/LWC-358-engine-r2/deploy/engine/tests/test_transport_integration.py", line 50, in test_runtime_guard_reads_checkpoint_with_actual_engine_latest_argv
+    self.engine.runtime_guard()  # Real subprocess, parser, fetch routing and file readback.
+    ~~~~~~~~~~~~~~~~~~~~~~~~~^^
+  File "/Users/rayer/orca/workspaces/llm-wiki-cloud/LWC-358-engine-r2/deploy/engine/engine.py", line 173, in runtime_guard
+    run(['node', ROOT / 'deploy/engine/artifacts.cjs', ROOT / '.github/actions/deployment-engine/index.cjs', ROOT / '.github/actions/deployment-engine/action.yml', 'latest',
+    ~~~^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+         self.plan['normalized']['environment'], latest_path], timeout=120)
+         ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+  File "/Users/rayer/orca/workspaces/llm-wiki-cloud/LWC-358-engine-r2/deploy/engine/support.py", line 55, in run
+    raise Breakpoint('permission-denied' if permission else 'command-failed',
+                     'unknown' if mutation else 'failed', mutation,
+                     'restore-existing-principal-permission' if permission else 'reconcile-before-replay')
+support.Breakpoint: command-failed
+
+======================================================================
+ERROR: test_save_reaches_sdk_with_actual_engine_upload_argv (test_transport_integration.EngineTransportIntegration.test_save_reaches_sdk_with_actual_engine_upload_argv)
+----------------------------------------------------------------------
+Traceback (most recent call last):
+  File "/Users/rayer/orca/workspaces/llm-wiki-cloud/LWC-358-engine-r2/deploy/engine/tests/test_transport_integration.py", line 40, in test_save_reaches_sdk_with_actual_engine_upload_argv
+    self.engine.save()  # No engine.run or subprocess mock.
+    ~~~~~~~~~~~~~~~~^^
+  File "/Users/rayer/orca/workspaces/llm-wiki-cloud/LWC-358-engine-r2/deploy/engine/engine.py", line 106, in save
+    run(['node', ROOT / 'deploy/engine/artifacts.cjs', ROOT / '.github/actions/deployment-engine/index.cjs', ROOT / '.github/actions/deployment-engine/action.yml', 'upload', self.directory,
+    ~~~^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+         ('lwc-prepared-' if self.state['status'] in ('prepared', 'ready') else 'lwc-state-')+self.plan['normalized']['environment']+'-'+self.plan['id'][:16]+'-'+
+         ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+         os.environ['GITHUB_RUN_ID']+'-'+os.environ['GITHUB_RUN_ATTEMPT']+'-'+str(self.state['sequence'])], timeout=120)
+         ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+  File "/Users/rayer/orca/workspaces/llm-wiki-cloud/LWC-358-engine-r2/deploy/engine/support.py", line 55, in run
+    raise Breakpoint('permission-denied' if permission else 'command-failed',
+                     'unknown' if mutation else 'failed', mutation,
+                     'restore-existing-principal-permission' if permission else 'reconcile-before-replay')
+support.Breakpoint: command-failed
+
+----------------------------------------------------------------------
+Ran 2 tests in 0.097s
+
+FAILED (errors=2)

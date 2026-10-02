@@ -1,0 +1,30 @@
+test_retained_annotations_full_chain (test_engine.Acceptance.test_retained_annotations_full_chain) ... 
+  test_retained_annotations_full_chain (test_engine.Acceptance.test_retained_annotations_full_chain) (component='auth') ... ERROR
+  test_retained_annotations_full_chain (test_engine.Acceptance.test_retained_annotations_full_chain) (component='bff') ... ERROR
+
+======================================================================
+ERROR: test_retained_annotations_full_chain (test_engine.Acceptance.test_retained_annotations_full_chain) (component='auth')
+----------------------------------------------------------------------
+Traceback (most recent call last):
+  File "/Users/rayer/orca/workspaces/llm-wiki-cloud/LWC-358-engine-r2/deploy/engine/tests/test_engine.py", line 318, in test_retained_annotations_full_chain
+    e.restore([c])
+    ~~~~~~~~~^^^^^
+  File "/Users/rayer/orca/workspaces/llm-wiki-cloud/LWC-358-engine-r2/deploy/engine/engine.py", line 225, in restore
+    raise Breakpoint('rollback-not-verified', 'unknown', True, 'inspect-retained-checkpoint')
+support.Breakpoint: rollback-not-verified
+
+======================================================================
+ERROR: test_retained_annotations_full_chain (test_engine.Acceptance.test_retained_annotations_full_chain) (component='bff')
+----------------------------------------------------------------------
+Traceback (most recent call last):
+  File "/Users/rayer/orca/workspaces/llm-wiki-cloud/LWC-358-engine-r2/deploy/engine/tests/test_engine.py", line 318, in test_retained_annotations_full_chain
+    e.restore([c])
+    ~~~~~~~~~^^^^^
+  File "/Users/rayer/orca/workspaces/llm-wiki-cloud/LWC-358-engine-r2/deploy/engine/engine.py", line 225, in restore
+    raise Breakpoint('rollback-not-verified', 'unknown', True, 'inspect-retained-checkpoint')
+support.Breakpoint: rollback-not-verified
+
+----------------------------------------------------------------------
+Ran 1 test in 2.362s
+
+FAILED (errors=2)

@@ -167,6 +167,7 @@ bff_rollback() {
 }
 
 case "${1:-}" in
+  build) bff_build_image ;;
   help) printf 'bff component: preflight|freeze|mutate|reconcile|rollback\n' ;;
   preflight) bff_preflight ;;
   freeze) bff_freeze ;;

@@ -1,0 +1,6 @@
+test_retained_annotations_full_chain (test_engine.Acceptance.test_retained_annotations_full_chain) ... ok
+
+----------------------------------------------------------------------
+Ran 1 test in 2.805s
+
+OK

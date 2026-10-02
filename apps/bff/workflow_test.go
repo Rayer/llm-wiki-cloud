@@ -51,102 +51,6 @@ func yamlMap(t *testing.T, value any, label string) map[string]any {
 	return result
 }
 
-func TestFixedCDEntryWorkflowsUseCanonicalSourceAndConfig(t *testing.T) {
-	for _, tc := range []struct {
-		name        string
-		job         string
-		branch      string
-		environment string
-		config      string
-	}{
-		{name: "deploy-dev.yml", job: "deploy", branch: "develop", environment: "Development", config: "development"},
-		{name: "promote-production.yml", job: "promote", branch: "main", environment: "Production", config: "production"},
-	} {
-		t.Run(tc.name, func(t *testing.T) {
-			source := readCDFile(t, ".github/workflows/"+tc.name)
-			document := parseCDWorkflow(t, ".github/workflows/"+tc.name)
-			on := yamlMap(t, document["on"], "on")
-			if _, ok := on["push"]; ok {
-				t.Fatal("fixed entry workflow must be workflow_dispatch-only")
-			}
-			inputs := yamlMap(t, yamlMap(t, on["workflow_dispatch"], "workflow_dispatch")["inputs"], "inputs")
-			if len(inputs) != 1 {
-				t.Fatalf("workflow inputs = %v, want only components", inputs)
-			}
-			if _, ok := inputs["components"]; !ok {
-				t.Fatal("components workflow input is required")
-			}
-			job := yamlMap(t, yamlMap(t, document["jobs"], "jobs")[tc.job], "job")
-			wantGuard := "github.ref == 'refs/heads/" + tc.branch + "'"
-			if tc.name == "deploy-dev.yml" {
-				wantGuard += " && inputs.components != 'provision-exportjob-dev'"
-			}
-			if job["if"] != wantGuard {
-				t.Fatalf("job ref guard = %#v", job["if"])
-			}
-			if job["uses"] != "./.github/workflows/cd.yml" {
-				t.Fatalf("job uses = %#v", job["uses"])
-			}
-			with := yamlMap(t, job["with"], "with")
-			if _, ok := with["continuation_run_id"]; ok {
-				t.Fatal("DEV provisioning continuation input must not reach the general CD workflow")
-			}
-			for key, want := range map[string]string{
-				"environment": tc.environment, "config_environment": tc.config,
-				"source_ref": tc.branch, "config_path": "deploy/environments/" + tc.config + ".yaml",
-			} {
-				if with[key] != want {
-					t.Fatalf("with.%s = %#v, want %q", key, with[key], want)
-				}
-			}
-			if with["source_sha"] != "${{ github.sha }}" {
-				t.Fatalf("with.source_sha = %#v", with["source_sha"])
-			}
-			if strings.Contains(source, "inputs.environment") || strings.Contains(source, "inputs.config") || strings.Contains(source, "inputs.ref") || strings.Contains(source, "inputs.source_sha") {
-				t.Fatal("fixed entry workflow exposes mutable authority inputs")
-			}
-		})
-	}
-}
-
-func TestSharedCDOrchestratorOrdersValidationRollbackAndMutation(t *testing.T) {
-	source := readCDFile(t, ".github/workflows/cd.yml")
-	script := readCDFile(t, "deploy/cd.sh")
-	document := parseCDWorkflow(t, ".github/workflows/cd.yml")
-	jobs := yamlMap(t, document["jobs"], "jobs")
-	mutate := yamlMap(t, jobs["mutate"], "mutate")
-	if mutate["needs"] != "plan" || mutate["environment"] != "${{ inputs.environment }}" || mutate["if"] != "needs.plan.result == 'success'" {
-		t.Fatalf("mutation job gates = %#v", mutate)
-	}
-	planStart := strings.Index(source, "  plan:")
-	planEnd := strings.Index(source, "  mutate:")
-	if planStart < 0 || planEnd < 0 || strings.Contains(source[planStart:planEnd], "environment:") {
-		t.Fatal("config validation job must not acquire the protected environment")
-	}
-	for _, marker := range []string{
-		"Checkout exact source SHA", "ref: ${{ inputs.source_sha }}",
-		"Freeze Auth rollback handle", "id: rollback_upload", "Upload durable rollback artifact",
-		"Mutate Auth", "steps.rollback_upload.outcome == 'success'",
-		"Reconcile Auth", "Upload normalized CD evidence",
-	} {
-		if !strings.Contains(source, marker) {
-			t.Fatalf("shared workflow missing %q", marker)
-		}
-	}
-	common := readCDFile(t, "deploy/components/common.sh")
-	if !strings.Contains(script+common, "go run ./cmd/deploy_config") {
-		t.Fatal("shared CD script must invoke the canonical config loader")
-	}
-	if !(strings.Index(source, "Upload durable rollback artifact") < strings.Index(source, "      - name: Mutate Auth")) {
-		t.Fatal("durable rollback upload must precede every mutation")
-	}
-	for _, forbidden := range []string{"run jobs execute", "add-iam-policy-binding", "remove-iam-policy-binding", "set-iam-policy"} {
-		if strings.Contains(source, forbidden) {
-			t.Fatalf("shared workflow contains forbidden provider mutation %q", forbidden)
-		}
-	}
-}
-
 func TestSharedCDRunBlocksAreShellValid(t *testing.T) {
 	source := readCDFile(t, ".github/workflows/cd.yml")
 	parseCDWorkflow(t, ".github/workflows/cd.yml")
@@ -163,32 +67,6 @@ func TestSharedCDRunBlocksAreShellValid(t *testing.T) {
 		if output, err := command.CombinedOutput(); err != nil {
 			t.Fatalf("shared run block is not shell-valid: %v\n%s", err, output)
 		}
-	}
-}
-
-func TestCDPreflightIsReadOnlyAndPrecedesRollbackFreeze(t *testing.T) {
-	workflow := readCDFile(t, ".github/workflows/cd.yml")
-	script := readCDFile(t, "deploy/cd.sh")
-	if !strings.Contains(workflow, "run: bash deploy/cd.sh preflight-shared") || !strings.Contains(script, "preflight()") {
-		t.Fatal("shared CD must run the common read-only preflight")
-	}
-	preflight := script + readCDFile(t, "deploy/components/common.sh") + readCDFile(t, "deploy/components/auth.sh") + readCDFile(t, "deploy/components/bff.sh") + readCDFile(t, "deploy/components/worker.sh")
-	for _, marker := range []string{
-		"gcloud iam service-accounts describe", "gcloud artifacts repositories describe", "gcloud firestore databases describe",
-		"secrets get-iam-policy", "run services get-iam-policy", "run jobs get-iam-policy",
-		"roles/secretmanager.secretAccessor", "roles/run.invoker", "roles/run.jobsExecutorWithOverrides",
-	} {
-		if !strings.Contains(preflight, marker) {
-			t.Fatalf("read-only preflight missing %q", marker)
-		}
-	}
-	for _, forbidden := range []string{"add-iam-policy-binding", "remove-iam-policy-binding", "set-iam-policy", "run jobs execute"} {
-		if strings.Contains(preflight, forbidden) {
-			t.Fatalf("read-only preflight contains mutation %q", forbidden)
-		}
-	}
-	if !(strings.Index(workflow, "run: bash deploy/cd.sh preflight-shared") < strings.Index(workflow, "Freeze Auth rollback handle")) {
-		t.Fatal("preflight must precede rollback freeze")
 	}
 }
 
@@ -396,5 +274,12 @@ func TestDockerfilesPreserveBuildIdentityContracts(t *testing.T) {
 	auth := readCDFile(t, "apps/bff/Dockerfile.auth")
 	if !strings.Contains(auth, "./cmd/auth") || !strings.Contains(auth, "internal/buildinfo.ImageTag=${GIT_SHA}") {
 		t.Fatal("Auth Dockerfile must preserve its distinct immutable build identity")
+	}
+}
+
+func TestDeploymentEngineR2WorkflowContract(t *testing.T) {
+	command := exec.Command("python3", "../../scripts/test_engine_workflow.py")
+	if output, err := command.CombinedOutput(); err != nil {
+		t.Fatalf("r2 workflow contract: %v\n%s", err, output)
 	}
 }

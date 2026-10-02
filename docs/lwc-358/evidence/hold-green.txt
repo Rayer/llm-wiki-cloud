@@ -1,0 +1,7 @@
+test_hold_service_reactivation_preserves_candidate_and_next_snapshot (test_engine.Acceptance.test_hold_service_reactivation_preserves_candidate_and_next_snapshot) ... ok
+test_hold_worker_reactivation_failure_does_not_compensate_healthy_auth (test_engine.Acceptance.test_hold_worker_reactivation_failure_does_not_compensate_healthy_auth) ... ok
+
+----------------------------------------------------------------------
+Ran 2 tests in 3.368s
+
+OK
