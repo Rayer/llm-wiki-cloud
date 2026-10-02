@@ -1,0 +1,7 @@
+test_runtime_deploy_maps_selected_context_before_pinned_cli (test_prepare_diagnostics.FrontendPrepareDiagnostics.test_runtime_deploy_maps_selected_context_before_pinned_cli) ... ok
+
+----------------------------------------------------------------------
+Ran 1 test in 0.101s
+
+OK
+Pinned resolver baseline=pair-incomplete; runtime-child=linked; resume=single-deploy

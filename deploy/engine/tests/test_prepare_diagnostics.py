@@ -1,11 +1,13 @@
 """Causal, offline regression for Auth build stage and exit-code metadata."""
 import contextlib
+import hashlib
 import io
 import json
 import os
 from pathlib import Path
 import subprocess
 import sys
+import tarfile
 import tempfile
 import unittest
 from unittest.mock import patch
@@ -398,6 +400,103 @@ class FrontendPrepareDiagnostics(unittest.TestCase):
             self.assertEqual(build[3], 900)
             self.assertEqual(artifact['project'], self.project)
             self.assertEqual(artifact['team'], self.team)
+
+    def test_runtime_deploy_maps_selected_context_before_pinned_cli(self):
+        with tempfile.TemporaryDirectory() as work:
+            work = Path(work)
+            instance, directory, _, _ = self.make_engine(work)
+            provider = providers.Providers(instance.plan, directory)
+            provider.p['frontend']['stable_aliases'] = ['site.test.invalid']
+            project_file = work / 'archive/.vercel/project.json'
+            project_file.parent.mkdir(parents=True)
+            project_file.write_text(json.dumps({'projectId': self.project, 'orgId': self.team}))
+            archive = directory / 'frontend.tgz'
+            with tarfile.open(archive, 'w:gz') as tar:
+                tar.add(project_file, arcname='.vercel/project.json')
+            artifact = {'archive': 'frontend.tgz', 'sha256': hashlib.sha256(
+                            archive.read_bytes()).hexdigest(), 'project': self.project,
+                        'team': self.team, 'target': 'preview'}
+            candidate = {}
+            saved = []
+            trace = []
+            probe = HERE / 'tests' / 'test_vercel_env_context.js'
+
+            def classify(child_env, cwd):
+                safe_env = {key: child_env[key] for key in (
+                    'VERCEL_PROJECT_ID', 'VERCEL_ORG_ID', 'VERCEL_TEAM_ID',
+                    'NOW_PROJECT_ID', 'NOW_ORG_ID') if key in child_env}
+                checked = ORIGINAL_SUBPROCESS_RUN(
+                    ['node', probe, '--classify-runtime-env'],
+                    input=json.dumps({'env': safe_env, 'cwd': str(cwd),
+                                      'expected': {'project': self.project, 'team': self.team}}),
+                    capture_output=True, text=True, check=False,
+                    env={'PATH': os.environ.get('PATH', '/usr/bin:/bin')})
+                self.assertEqual(checked.returncode, 0, checked.stderr)
+                return checked.stdout.strip()
+
+            def fake_subprocess(args, *, cwd, env, input, capture_output, text, timeout):
+                self.assertEqual(args, ['vercel', 'deploy', '--prebuilt', '--yes', '--scope',
+                                        'test-team', '--token', self.token, '--meta',
+                                        'lwcArtifact='+artifact['sha256'], '--meta',
+                                        'lwcAttempt='+instance.plan['id'], '--target=preview'])
+                self.assertEqual(Path(cwd, '.vercel/project.json').read_text(),
+                                 json.dumps({'projectId': self.project, 'orgId': self.team}))
+                baseline = dict(env)
+                for name in ('VERCEL_ORG_ID', 'NOW_ORG_ID', 'NOW_PROJECT_ID'):
+                    baseline.pop(name, None)
+                self.assertEqual(classify(baseline, cwd), 'pair-incomplete')
+                self.assertEqual(classify(env, cwd), 'linked')
+                trace.append((list(args), str(cwd), timeout, dict(env)))
+                return subprocess.CompletedProcess(args, 0, stdout='https://candidate.vercel.app', stderr='')
+
+            inherited = {'PATH': os.environ.get('PATH', '/usr/bin:/bin'), 'HOME': str(work),
+                         'TMPDIR': str(work), 'VERCEL_TOKEN': self.token,
+                         'VERCEL_TEAM_ID': self.team, 'VERCEL_PROJECT_ID': self.project,
+                         'VERCEL_ORG_ID': 'team_InheritedWrong',
+                         'NOW_ORG_ID': 'team_LegacyWrong', 'NOW_PROJECT_ID': 'prj_LegacyWrong',
+                         'GITHUB_ACTIONS': 'true', 'GITHUB_SHA': 'a' * 40,
+                         'VERCEL_GIT_COMMIT_SHA': 'b' * 40}
+            with patch.dict(os.environ, inherited, clear=True), \
+                    patch('support.subprocess.run', side_effect=fake_subprocess), \
+                    patch.object(provider, 'deployment', return_value={'id': 'dpl_candidate'}) as deployment_readback, \
+                    patch.object(provider, 'alias', return_value='dpl_candidate') as alias_readback, \
+                    patch.object(provider, 'api') as api:
+                provider.deploy('frontend', artifact, candidate, lambda: saved.append(dict(candidate)))
+                self.assertEqual(os.environ['VERCEL_PROJECT_ID'], self.project)
+                self.assertEqual(os.environ['VERCEL_TEAM_ID'], self.team)
+                self.assertEqual(os.environ['VERCEL_ORG_ID'], 'team_InheritedWrong')
+                self.assertEqual(os.environ['NOW_ORG_ID'], 'team_LegacyWrong')
+                self.assertEqual(os.environ['NOW_PROJECT_ID'], 'prj_LegacyWrong')
+                self.assertEqual(os.environ['GITHUB_SHA'], 'a' * 40)
+                self.assertEqual(os.environ['VERCEL_GIT_COMMIT_SHA'], 'b' * 40)
+                self.assertEqual(candidate, {'deployment': 'dpl_candidate'})
+                self.assertEqual(saved, [{'deployment': 'dpl_candidate'}])
+                deployment_readback.assert_called_once_with('candidate.vercel.app')
+                self.assertEqual([call.args[0] for call in alias_readback.call_args_list],
+                                 ['site.test.invalid'])
+                api.assert_not_called()
+
+            with patch.dict(os.environ, inherited, clear=True), \
+                    patch('support.subprocess.run', side_effect=fake_subprocess), \
+                    patch.object(provider, 'deployment', return_value={'id': 'dpl_candidate'}), \
+                    patch.object(provider, 'alias', return_value='dpl_candidate') as alias_readback, \
+                    patch.object(provider, 'api') as api:
+                provider.deploy('frontend', artifact, candidate, lambda: saved.append(dict(candidate)))
+                alias_readback.assert_called_once_with('site.test.invalid')
+                api.assert_not_called()
+
+            self.assertEqual(len(trace), 1)
+            self.assertEqual(trace[0][2], 30)
+            self.assertNotIn('GITHUB_SHA', trace[0][3])
+            self.assertNotIn('VERCEL_GIT_COMMIT_SHA', trace[0][3])
+            self.assertEqual(trace[0][3]['VERCEL_ORG_ID'], self.team)
+            self.assertEqual(trace[0][3]['VERCEL_PROJECT_ID'], self.project)
+            self.assertEqual(trace[0][3]['VERCEL_TEAM_ID'], self.team)
+            self.assertNotIn('NOW_ORG_ID', trace[0][3])
+            self.assertNotIn('NOW_PROJECT_ID', trace[0][3])
+            self.assertEqual(trace[0][3]['VERCEL_TOKEN'], self.token)
+            self.assertEqual(len(saved), 1)
+            print('Pinned resolver baseline=pair-incomplete; runtime-child=linked; resume=single-deploy')
 
 
 if __name__ == '__main__':

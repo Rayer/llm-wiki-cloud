@@ -1,7 +1,7 @@
 {
-  "base": "95c466eb4ccd71302a11ff416de8180d55182d9d",
-  "branch": "Rayer/LWC-358-frontend-stage-diagnostics",
-  "content_sha256": "3dfb6aefcaa9c37a63a8280d64c2f7b499d45b53e53653e1872ff6a1882359bc",
+  "base": "c8e32bef33107bd87d7bed44369ee717c7074308",
+  "branch": "Rayer/LWC-358-vercel-project-context",
+  "content_sha256": "b90aeb7c06e4eb11b71516a3c21292546d965a736522173e8ff8258fb06a445d",
   "scope": "All changed/new implementation, test, operator, accepted-appendix and frozen-spec files; excludes this manifest, evidence report and logs to avoid self-reference.",
   "frozen_sha256": "838817cad154b0ea773c205f671362a6c9c0ad97c38ddf34f2508eb4fcc2488b",
   "files": [
@@ -142,7 +142,7 @@
     },
     {
       "path": "deploy/engine/providers.py",
-      "sha256": "f320100327d41dbdb34cc8d280635881f13d5e3c1d8dde3eb93a9b773fd389de",
+      "sha256": "8e64dcf58ef4383d12f7b3b674d1c414faa1104cb2efe739469f9e45c8fbbcf2",
       "mode": "0o644"
     },
     {
@@ -192,7 +192,7 @@
     },
     {
       "path": "deploy/engine/tests/test_prepare_diagnostics.py",
-      "sha256": "e7795c92901561a8b79bf6ea0a741e528a703b60d20413184d54300358f35ee9",
+      "sha256": "af4ab1042562e9c1cfff11b2c19fdbf0824a1db689bc8d64c1a5b1fcb2c16edb",
       "mode": "0o644"
     },
     {
@@ -202,7 +202,7 @@
     },
     {
       "path": "deploy/engine/tests/test_vercel_env_context.js",
-      "sha256": "dff5ed6a063a7777b7c39993f41a50410850ed38d50822548e117ab749fc7bca",
+      "sha256": "1eb74724bdaa05eefc3a22961b475d12daf2015401c0d39b48e1e32d68cbde71",
       "mode": "0o644"
     },
     {

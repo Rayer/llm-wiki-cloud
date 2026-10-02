@@ -48,12 +48,13 @@ const getProjectByNameOrId = async (client, id, orgId) => {
 `;
 const executable = `${prelude}\n${platformEnvSource}\nconst getPlatformEnv2 = getPlatformEnv;\n${linkedProjectSource}\nglobalThis.resolveLinkedProject = getLinkedProject;`;
 
-async function resolve(env, expectedProject = 'prj_Validated', expectedOrg = 'team_Validated') {
+async function resolve(env, expectedProject = 'prj_Validated', expectedOrg = 'team_Validated',
+  cwd = '/offline-fake-root') {
   const context = { __env: { ...env }, __errors: [], __lookups: 0,
     __expectedProject: expectedProject, __expectedOrg: expectedOrg };
   vm.runInNewContext(executable, context, { filename: 'vercel-59.11.7-get-linked-project.js' });
   const result = await context.resolveLinkedProject(
-    { cwd: '/offline-fake-root', config: { currentTeam: env.VERCEL_TEAM_ID } },
+    { cwd, config: { currentTeam: env.VERCEL_TEAM_ID } },
     { scopeIsExplicit: true });
   return { result, errors: context.__errors, lookups: context.__lookups };
 }
@@ -73,6 +74,24 @@ async function main() {
     assert.equal(linked.lookups, 2);
     console.log('Provider.prepare child identity follows pinned Vercel linked branch: PASS');
     return;
+  }
+
+  if (process.argv[2] === '--classify-runtime-env') {
+    const input = JSON.parse(fs.readFileSync(0, 'utf8'));
+    const localProject = JSON.parse(fs.readFileSync(path.join(input.cwd, '.vercel/project.json'), 'utf8'));
+    assert.equal(localProject.projectId, input.expected.project);
+    assert.equal(localProject.orgId, input.expected.team);
+    const resolved = await resolve(input.env, input.expected.project, input.expected.team, input.cwd);
+    if (resolved.result.status === 'error' && resolved.result.exitCode === 1 && resolved.lookups === 0) {
+      console.log('pair-incomplete');
+      return;
+    }
+    if (resolved.result.status === 'linked' && resolved.lookups === 2 &&
+        resolved.result.project.id === input.expected.project && resolved.result.org.id === input.expected.team) {
+      console.log('linked');
+      return;
+    }
+    throw new Error('unexpected pinned resolver result');
   }
 
   const incomplete = await resolve({

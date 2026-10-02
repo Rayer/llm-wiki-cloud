@@ -494,6 +494,9 @@ class Providers:
                         args += ['--target=preview']
                     # Detached archive deployment: no branch-domain auto-assignment.
                     env = {k:v for k,v in os.environ.items() if not k.startswith(('GITHUB_', 'VERCEL_GIT_'))}
+                    env.update(VERCEL_ORG_ID=artifact['team'], VERCEL_PROJECT_ID=artifact['project'])
+                    env.pop('NOW_ORG_ID', None)
+                    env.pop('NOW_PROJECT_ID', None)
                     url = run(args, cwd=temp, env=env, mutation=True).splitlines()[-1].removeprefix('https://')
                     d = self.deployment(url)
                     candidate['deployment'] = d['id']
