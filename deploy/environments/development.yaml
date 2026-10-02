@@ -23,6 +23,8 @@ auth:
   ingress: all
   max_instances: 1
   firestore_database_id: llm-wiki-cloud-dev
+  # TPM readonly authority-verified DEV UID; do not copy to other environments.
+  demo_user_id: "e492f6bdaf1735e12b2de96d"
   public_domain: auth.dev.rayer.idv.tw
   allowed_hosts:
     - auth.dev.rayer.idv.tw

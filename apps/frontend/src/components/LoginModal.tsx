@@ -96,7 +96,7 @@ export function LoginModal() {
     setLoading(true);
     setError('');
     try {
-      await signInAsDemo('demo@llm-wiki.dev', 'demo123456');
+      await signInAsDemo();
     } catch {
       setError(t('Login.demoError'));
     } finally {

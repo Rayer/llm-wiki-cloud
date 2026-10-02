@@ -73,10 +73,13 @@ class ProductionConfigContractTests(unittest.TestCase):
                     if component == 'auth':
                         self.assertIn('AUTH_SESSION_ENVIRONMENT=llm-wiki-cloud-prod', env_arg)
                         self.assertIn('AUTH_REFRESH_SESSION_MIGRATION=disabled', env_arg)
+                        self.assertIn('AUTH_DEMO_USER_ID=fixture-demo-user-prod', env_arg)
                         if enabled:
                             self.assertIn('GOOGLE_CLIENT_SECRET=google-oauth-client-prod:1', update[update.index('--update-secrets') + 1])
                         else:
                             self.assertIn('--remove-secrets', update)
+                    else:
+                        self.assertNotIn('AUTH_DEMO_USER_ID=', env_arg)
                     traffic = next(i for i,c in enumerate(commands) if c[:3] == ['run', 'services', 'update-traffic'])
                     self.assertIn(value['metadata']['name'] + '=100', commands[traffic])
                     self.assertTrue(any(c[:3] == ['run', 'revisions', 'describe'] for c in commands[:traffic]))

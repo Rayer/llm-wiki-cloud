@@ -44,6 +44,7 @@ type Deferred<T> = {
 type QueuedResponse = FetchResponse | Promise<FetchResponse>;
 type RouteQueue = {
   login: QueuedResponse[];
+  demo: QueuedResponse[];
   refresh: QueuedResponse[];
   logout: QueuedResponse[];
   projects: QueuedResponse[];
@@ -52,6 +53,7 @@ type RouteQueue = {
 
 const queue: RouteQueue = {
   login: [],
+  demo: [],
   refresh: [],
   logout: [],
   projects: [],
@@ -68,6 +70,7 @@ function routeFrom(input: Parameters<typeof fetch>[0]) {
   const url = requestUrl(input);
   const path = new URL(url).pathname;
 
+  if (path.endsWith('/api/v1/auth/demo')) return 'demo';
   if (path.endsWith('/api/v1/auth/login')) return 'login';
   if (path.endsWith('/api/v1/auth/refresh')) return 'refresh';
   if (path.endsWith('/api/v1/auth/logout')) return 'logout';
@@ -180,9 +183,9 @@ async function actSignIn(email: string, password: string) {
   });
 }
 
-async function actSignInAsDemo(email: string, password: string) {
+async function actSignInAsDemo() {
   await act(async () => {
-    await workspaceRef.current!.signInAsDemo(email, password);
+    await workspaceRef.current!.signInAsDemo();
   });
 }
 
@@ -920,14 +923,14 @@ describe('LWC-221 auth redirect behavior', () => {
   ])('consumes marker after demo login and redirects only from dirty URL %s', async (url) => {
     window.history.pushState({}, '', url);
     setQueue('refresh', [{ status: 401, body: { error: 'missing' } }]);
-    setQueue('login', [{ status: 200, body: loginBody('demo-token') }]);
+    setQueue('demo', [{ status: 200, body: loginBody('demo-token') }]);
     setQueue('projects', [{ status: 200, body: [] }]);
 
     setForceHomeRedirect(window.localStorage);
     await renderProviders();
     await waitForHydrated();
 
-    await actSignInAsDemo('demo@llm-wiki.dev', 'demo123456');
+    await actSignInAsDemo();
 
     await waitUntil(() => getForceHomeRedirect() === null);
     expect(workspaceRef.current?.isDemoSession).toBe(true);

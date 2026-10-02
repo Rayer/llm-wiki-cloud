@@ -30,6 +30,10 @@ func TestLoadReviewedEnvironmentsAndQueryIdentity(t *testing.T) {
 		if !config.Evidence.Validated || !config.Evidence.SecretFree || !strings.HasPrefix(config.Evidence.ConfigFingerprint, "sha256:") {
 			t.Fatalf("%s evidence = %#v", environment, config.Evidence)
 		}
+		auth, ok := config.Components["auth"].(map[string]any)
+		if !ok || auth["demo_user_id"] != config.Auth.DemoUserID {
+			t.Fatalf("%s Auth component input omitted Demo UID: %#v", environment, config.Components["auth"])
+		}
 		bff, ok := config.Components["bff"].(map[string]any)
 		if !ok {
 			t.Fatalf("%s BFF component input omitted: %#v", environment, config.Components["bff"])
@@ -70,6 +74,26 @@ func TestLoadReviewedEnvironmentsAndQueryIdentity(t *testing.T) {
 		if !ok || worker["args"] == nil || worker["secret_references"] == nil {
 			t.Fatalf("%s worker component input omitted behavior-bearing config: %#v", environment, config.Components["worker"])
 		}
+	}
+}
+
+func TestAuthDemoUIDConfigIsOptionalButValidatedAndRendered(t *testing.T) {
+	root := repoRoot(t)
+	config, err := decodeConfig(filepath.Join(root, "deploy/environments/development.yaml"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	config.Auth.DemoUserID = "fixture-demo-user"
+	if err := validateConfigForEnvironment("development", config); err != nil {
+		t.Fatalf("valid Auth Demo UID: %v", err)
+	}
+	input := componentInputs(config, QueryConfigIdentity{}, []string{"auth"})["auth"].(map[string]any)
+	if input["demo_user_id"] != config.Auth.DemoUserID {
+		t.Fatalf("Auth component Demo UID = %#v", input["demo_user_id"])
+	}
+	config.Auth.DemoUserID = "bad|uid"
+	if err := validateConfigForEnvironment("development", config); err == nil {
+		t.Fatal("invalid Auth Demo UID was accepted")
 	}
 }
 

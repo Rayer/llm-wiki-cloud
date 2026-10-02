@@ -89,6 +89,9 @@ type Config struct {
 	// AuthSessionMigration controls legacy refresh-token import. Env:
 	// AUTH_REFRESH_SESSION_MIGRATION. Valid values: disabled, legacy_read_through.
 	AuthSessionMigration string
+	// AuthDemoUserID selects the existing Demo account for passwordless Demo login.
+	// Env: AUTH_DEMO_USER_ID. This is nonsecret identity configuration.
+	AuthDemoUserID string
 
 	// Google OIDC configuration (LWC-316). These values are required together
 	// when any Google setting is provided.
@@ -160,6 +163,7 @@ func Load(path string) (Config, error) {
 	v.BindEnv("auth_service_url", "AUTH_SERVICE_URL")
 	v.BindEnv("auth_session_environment", "AUTH_SESSION_ENVIRONMENT")
 	v.BindEnv("auth_session_migration", "AUTH_REFRESH_SESSION_MIGRATION")
+	v.BindEnv("auth_demo_user_id", "AUTH_DEMO_USER_ID")
 	v.BindEnv("google_client_id", "GOOGLE_CLIENT_ID")
 	v.BindEnv("google_client_secret", "GOOGLE_CLIENT_SECRET")
 	v.BindEnv("google_issuer", "GOOGLE_ISSUER")
@@ -325,6 +329,7 @@ func Load(path string) (Config, error) {
 		AuthServiceURL:                   authServiceURL,
 		AuthSessionEnvironment:           authSessionEnvironment,
 		AuthSessionMigration:             authSessionMigration,
+		AuthDemoUserID:                   strings.TrimSpace(v.GetString("auth_demo_user_id")),
 		GoogleClientID:                   googleClientID,
 		GoogleClientSecret:               googleClientSecret,
 		GoogleIssuer:                     googleIssuer,

@@ -97,6 +97,14 @@ func NewIdentityRepository(fs *firestore.Client) *IdentityRepository {
 	return &IdentityRepository{fs: fs}
 }
 
+// GetUserByID reads an existing user for server-configured Demo login.
+func (r *IdentityRepository) GetUserByID(ctx context.Context, userID string) (*UserRecord, error) {
+	if r == nil || r.fs == nil || !ValidPathSegment(userID) {
+		return nil, ErrIdentityRepositoryUnavailable
+	}
+	return GetUser(ctx, r.fs, userID)
+}
+
 // IdentityTransaction exposes transaction-scoped identity operations. Reads
 // happen before queued writes are flushed so callers can safely reserve and
 // link more than one identity in a single Firestore transaction.
