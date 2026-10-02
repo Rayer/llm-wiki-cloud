@@ -36,8 +36,24 @@ test('r2 registered release and recovery workflows use explicit artifact inputs'
     assert.equal(parsed.jobs.release.secrets, 'inherit');
   }
   const recovery = parseYaml(await workflow('recover-deployment.yml'));
-  assert.deepEqual(recovery.on.workflow_dispatch.inputs.operation.options, ['rollback', 'reactivate', 'deploy', 'tag', 'readback']);
+  assert.deepEqual(recovery.on.workflow_dispatch.inputs.operation.options, ['rollback', 'reactivate', 'deploy', 'tag', 'readback', 'diagnose-auth-image']);
   assert.equal(recovery.jobs.recovery.uses, './.github/workflows/cd.yml');
+  assert.equal(recovery.jobs.recovery.if, "inputs.operation != 'diagnose-auth-image'");
+  const diagnosticRecovery = recovery.jobs['auth-image-diagnostic'];
+  assert.match(diagnosticRecovery.if, /inputs\.operation == 'diagnose-auth-image'/);
+  for (const condition of [
+    "github.ref == 'refs/heads/develop'", "inputs.environment == 'development'",
+    'inputs.source_sha == github.sha', "inputs.components == 'auth'",
+    "inputs.release_tag == 'diagnostic-36992147920'",
+    "inputs.artifact_id == 'diagnostic-no-receipt'",
+  ]) assert.ok(diagnosticRecovery.if.includes(condition), `missing diagnostic constraint: ${condition}`);
+  assert.equal(diagnosticRecovery.uses, './.github/workflows/cd.yml');
+  assert.deepEqual(diagnosticRecovery.permissions, { contents: 'read', actions: 'read', 'id-token': 'write' });
+  assert.deepEqual(diagnosticRecovery.with, {
+    environment: '${{ inputs.environment }}', source_sha: '${{ inputs.source_sha }}',
+    components: '${{ inputs.components }}', release_tag: '${{ inputs.release_tag }}',
+    operation: '${{ inputs.operation }}', artifact_id: '${{ inputs.artifact_id }}',
+  });
 });
 
 test('DEV provisioning uses the existing auth identity and preserves hidden evidence', async () => {
@@ -56,20 +72,33 @@ test('DEV provisioning uses the existing auth identity and preserves hidden evid
 
 test('shared engine has one approval and one serialized runtime authority', async () => {
   const parsed = parseYaml(await workflow('cd.yml'));
-  assert.deepEqual(Object.keys(parsed.jobs), ['release']);
+  assert.deepEqual(Object.keys(parsed.jobs).sort(), ['auth-image-diagnostic', 'release']);
   assert.equal(parsed.concurrency.group, 'lwc-engine-${{ inputs.environment }}');
   assert.equal(parsed.concurrency['cancel-in-progress'], false);
   const job = parsed.jobs.release;
+  const diagnostic = parsed.jobs['auth-image-diagnostic'];
+  assert.equal(job.if, "inputs.operation != 'diagnose-auth-image'");
   assert.equal(job.environment, "${{ inputs.environment == 'production' && 'Production' || 'Development' }}");
   const steps = job.steps;
   const prepare = steps.findIndex(step => step.with?.operation === 'prepare');
   const barrier = steps.findIndex(step => step.id === 'ready');
-  const runtime = steps.findIndex(step => step.with?.operation === 'runtime');
+  const runtimeAuthorities = Object.entries(parsed.jobs).flatMap(([jobName, candidate]) =>
+    candidate.steps.flatMap((step, index) => step.with?.operation === 'runtime' ? [{ jobName, index, step }] : []));
+  assert.equal(runtimeAuthorities.length, 1);
+  assert.equal(runtimeAuthorities[0].jobName, 'release');
+  assert.equal(runtimeAuthorities[0].step.uses, './.github/actions/deployment-engine');
+  const runtime = runtimeAuthorities[0].index;
   assert.ok(prepare >= 0 && prepare < barrier && barrier < runtime);
   assert.equal(steps[prepare].if, "inputs.operation == 'release'");
   assert.equal(steps[runtime].uses, './.github/actions/deployment-engine');
   assert.equal(job.permissions.contents, 'write');
   assert.equal(job.permissions['id-token'], 'write');
+  assert.match(diagnostic.if, /inputs\.operation == 'diagnose-auth-image'/);
+  assert.equal(diagnostic.environment, 'Development');
+  assert.deepEqual(diagnostic.permissions, { contents: 'read', actions: 'read', 'id-token': 'write' });
+  assert.equal(diagnostic.steps.some(step => step.uses === './.github/actions/deployment-engine'), false);
+  assert.equal(diagnostic.steps.some(step => step.run?.includes('artifacts.cjs download')), false);
+  assert.doesNotMatch(JSON.stringify(diagnostic), /GH_TOKEN|VERCEL_TOKEN|VERCEL_PROJECT_ID|VERCEL_TEAM_ID/);
 });
 
 test('ready and result artifacts have bounded retention and always retain failure evidence', async () => {

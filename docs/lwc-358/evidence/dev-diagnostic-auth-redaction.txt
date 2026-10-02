@@ -1,0 +1,14 @@
+test_actual_action_helper_runs_only_two_fixed_read_operations_and_redacts (test_diagnostics.ReadOnlyDiagnostic.test_actual_action_helper_runs_only_two_fixed_read_operations_and_redacts) ... ok
+test_actual_helper_rejects_old_source_and_other_dispatch_tuples_before_gcloud (test_diagnostics.ReadOnlyDiagnostic.test_actual_helper_rejects_old_source_and_other_dispatch_tuples_before_gcloud) ... ok
+test_mismatch_invalid_digest_and_failed_read_are_bounded (test_diagnostics.ReadOnlyDiagnostic.test_mismatch_invalid_digest_and_failed_read_are_bounded) ... ok
+test_timeouts_and_missing_tool_have_only_fixed_timeout_classes (test_diagnostics.ReadOnlyDiagnostic.test_timeouts_and_missing_tool_have_only_fixed_timeout_classes) ... ok
+test_build_submit_stage_keeps_reason_and_redacts_child_output (test_prepare_diagnostics.AuthPrepareDiagnostics.test_build_submit_stage_keeps_reason_and_redacts_child_output) ... ok
+test_digest_lookup_and_digest_validation_are_distinct_stages (test_prepare_diagnostics.AuthPrepareDiagnostics.test_digest_lookup_and_digest_validation_are_distinct_stages) ... ok
+test_engine_result_exposes_only_allowlisted_failure_metadata (test_prepare_diagnostics.AuthPrepareDiagnostics.test_engine_result_exposes_only_allowlisted_failure_metadata) ... ok
+test_immutable_validation_failure_is_typed_without_raw_output (test_prepare_diagnostics.AuthPrepareDiagnostics.test_immutable_validation_failure_is_typed_without_raw_output) ... ok
+test_known_permission_classification_and_safe_action_are_preserved (test_prepare_diagnostics.AuthPrepareDiagnostics.test_known_permission_classification_and_safe_action_are_preserved) ... ok
+
+----------------------------------------------------------------------
+Ran 9 tests in 1.494s
+
+OK

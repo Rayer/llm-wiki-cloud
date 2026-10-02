@@ -7,14 +7,15 @@ on:
         options: [development, production]
         required: true
       source_sha:
-        description: Original pinned release source and engine revision
+        description: Checkout revision; diagnostic requires this to equal the selected workflow SHA (the queried image remains fixed to the failed release)
         required: true
         type: string
       artifact_id:
-        description: Latest exact retained checkpoint artifact ID
+        description: Latest retained checkpoint; diagnostic requires diagnostic-no-receipt and downloads no checkpoint
         required: true
         type: string
       release_tag:
+        description: Explicit release tag; diagnostic requires diagnostic-36992147920 and creates no tag
         required: true
         type: string
       components:
@@ -24,13 +25,38 @@ on:
       operation:
         required: true
         type: choice
-        options: [rollback, reactivate, deploy, tag, readback]
+        options: [rollback, reactivate, deploy, tag, readback, diagnose-auth-image]
 permissions:
   contents: write
   actions: read
   id-token: write
 jobs:
   recovery:
+    if: inputs.operation != 'diagnose-auth-image'
+    permissions:
+      contents: write
+      actions: read
+      id-token: write
+    uses: ./.github/workflows/cd.yml
+    secrets: inherit
+    with:
+      environment: ${{ inputs.environment }}
+      source_sha: ${{ inputs.source_sha }}
+      components: ${{ inputs.components }}
+      release_tag: ${{ inputs.release_tag }}
+      operation: ${{ inputs.operation }}
+      artifact_id: ${{ inputs.artifact_id }}
+  auth-image-diagnostic:
+    if: >-
+      inputs.operation == 'diagnose-auth-image' &&
+      github.ref == 'refs/heads/develop' && inputs.environment == 'development' &&
+      inputs.source_sha == github.sha && inputs.components == 'auth' &&
+      inputs.release_tag == 'diagnostic-36992147920' &&
+      inputs.artifact_id == 'diagnostic-no-receipt'
+    permissions:
+      contents: read
+      actions: read
+      id-token: write
     uses: ./.github/workflows/cd.yml
     secrets: inherit
     with:

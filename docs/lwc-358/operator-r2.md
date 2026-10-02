@@ -35,6 +35,12 @@ Frontend stage 1 只 `vercel pull`、`vercel build` 並封存 `.vercel/output` �
 
 `Recover retained deployment` 輸入原 `source_sha`、`release_tag`、target environment、最新 `artifact_id`、受影響 components 及 `operation` (`rollback`, `reactivate`, `deploy`, `tag`, `readback`)。使用 artifact 清單中最新 `lwc-state-<target>-…` ID，而非舊 `lwc-ready-…`。Checkpoint 查詢一次讀最新 100 筆；若無法在界限內確認最新 state、artifact 到期或 provider 不可讀，停止並回报 TPM，不猜測。
 
+### 固定 DEV image 診斷（暫時）
+
+Owner 已接受一個只讀診斷分支，供同一 Development WIF principal 查詢 Auth image metadata。它只能從 `develop` 呼叫，固定輸入為 `operation=diagnose-auth-image`、`environment=development`、`components=auth`、`release_tag=diagnostic-36992147920`、`artifact_id=diagnostic-no-receipt`。此處 `source_sha` 必須是本次已審查 workflow code 的 SHA，且等於所選 dispatch workflow 的 `github.sha`；它控制 checkout。被查詢的 Auth image 仍固定為失敗 run 36992147920 的 f6 source tag 與 immutable digest，不會 checkout f6 舊 engine。
+
+這是獨立 read-only job，不讀取或要求 ready/recovery checkpoint，不走 artifact download、runtime、build、deploy、traffic、alias、tag、Firestore/password write 或 rollback。只執行兩次固定 `gcloud artifacts docker images describe`，捕捉並丟棄 provider stdout/stderr，結果限於 operation label、exit code/timeout class、digest-format 布林值、比對布林值與 bounded conclusion；Actions 保存同樣 redacted 的 result artifact。Job 只授予 `contents: read`、`actions: read` 與既有 WIF 所需的 `id-token: write`。這個暫時分支僅在精確新 code SHA 通過兩方 review 和 CI 後使用；診斷結果不等於 root-cause 確認、artifact receipt、release success 或部署授權。
+
 Known failure 只自動逆序復原本次 invocation changed/possibly changed components；不把 release 歷史中已成功、且本次未選取或未更新的 component 納入補償。unknown 先 reconcile，無法確認時停止。獨立 rollback/reactivate 不 build。Service candidate-reactivation 使用保留 revision 的 exact template spec、retained effective annotations（含 secret aliases）與同一 revision 名稱／routing；基本 sanity 同時驗證 service template 與 active revision 一致，才可供下一次 release snapshot 使用。Provider 若拒絕既有 named revision 的 template restore，保留 failure/unknown，不改名建立替代 revision，也不重建 artifact。原 resource 不存在、prior image 非 digest、不可表示的 Service traffic（此版只接受一個 untagged 100% revision）、Export Job 現有 config 不符，均在 mutation 前停止。此版不 provision/delete resource、不執行 Job、不回復 persistent writes。
 
 ## 本機與離線驗證

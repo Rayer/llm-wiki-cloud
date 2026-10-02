@@ -766,16 +766,23 @@ test('foreign-project exact-SHA candidate cannot suppress CREATE_NOT_ALLOWED', a
 
 test('DEV authority uses the protected shared engine and durable selected stage barrier', async () => {
   const source = parseYaml(await readFile(join(monorepoRoot, '.github/workflows/cd.yml'), 'utf8'));
-  assert.deepEqual(Object.keys(source.jobs), ['release']);
+  assert.deepEqual(Object.keys(source.jobs).sort(), ['auth-image-diagnostic', 'release']);
   assert.equal(source.concurrency.group, 'lwc-engine-${{ inputs.environment }}');
   assert.equal(source.concurrency['cancel-in-progress'], false);
   const job = source.jobs.release;
+  const diagnostic = source.jobs['auth-image-diagnostic'];
+  assert.equal(job.if, "inputs.operation != 'diagnose-auth-image'");
   assert.equal(job.environment, "${{ inputs.environment == 'production' && 'Production' || 'Development' }}");
   assert.equal(job.permissions['id-token'], 'write');
   assert.equal(job.env.COMPONENTS, '${{ inputs.components }}');
   const prepare = job.steps.findIndex(step => step.with?.operation === 'prepare');
   const ready = job.steps.findIndex(step => step.id === 'ready');
-  const runtime = job.steps.findIndex(step => step.with?.operation === 'runtime');
+  const runtimeAuthorities = Object.entries(source.jobs).flatMap(([jobName, candidate]) =>
+    candidate.steps.flatMap((step, index) => step.with?.operation === 'runtime' ? [{ jobName, index, step }] : []));
+  assert.equal(runtimeAuthorities.length, 1);
+  assert.equal(runtimeAuthorities[0].jobName, 'release');
+  assert.equal(runtimeAuthorities[0].step.uses, './.github/actions/deployment-engine');
+  const runtime = runtimeAuthorities[0].index;
   assert.ok(prepare >= 0 && prepare < ready && ready < runtime);
   assert.equal(job.steps[prepare].uses, './.github/actions/deployment-engine');
   assert.equal(job.steps[runtime].uses, './.github/actions/deployment-engine');
@@ -784,6 +791,12 @@ test('DEV authority uses the protected shared engine and durable selected stage 
   assert.equal(job.steps[ready].with['if-no-files-found'], 'error');
   assert.equal(job.steps[ready].with.path, '${{ runner.temp }}/release');
   assert.equal(job.steps.find(step => step.uses?.startsWith('actions/checkout@')).with.ref, '${{ inputs.source_sha }}');
+  assert.match(diagnostic.if, /inputs\.operation == 'diagnose-auth-image'/);
+  assert.equal(diagnostic.environment, 'Development');
+  assert.deepEqual(diagnostic.permissions, { contents: 'read', actions: 'read', 'id-token': 'write' });
+  assert.equal(diagnostic.steps.some(step => step.uses === './.github/actions/deployment-engine'), false);
+  assert.equal(diagnostic.steps.some(step => step.run?.includes('artifacts.cjs download')), false);
+  assert.doesNotMatch(JSON.stringify(diagnostic), /GH_TOKEN|VERCEL_TOKEN|VERCEL_PROJECT_ID|VERCEL_TEAM_ID/);
 });
 
 test('sourcing the normal helper is library-only and preserves direct evidence naming', async () => {

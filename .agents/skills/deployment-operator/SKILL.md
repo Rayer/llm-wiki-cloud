@@ -9,6 +9,8 @@ Normal entry is Deploy Development or Promote Production with explicit component
 
 Use the engine's result.json and latest target checkpoint. Runtime work belongs to the shared Actions workflow; do not operate providers directly or retry an unknown mutation from an older ready artifact. Correct the stated input/permission issue with the existing principal, or resume the exact checkpoint. A tag_failed result requires tag-only recovery. Selection enlargement uses a new plan and the retained artifact reference.
 
+The temporary DEV Auth image diagnostic is a separate, fixed read-only Actions branch described in the operator instructions. Its source SHA is the reviewed workflow-code SHA (`github.sha`), while the queried image target remains fixed to the failed release. It requires no checkpoint and does not create a receipt or release result.
+
 A later serious issue requires the Owner's explicit recovery decision or an already-defined assertion. Invoke Recover retained deployment with affected components and the latest checkpoint; rollback and candidate reactivation perform no build. Preserve the successful source tag after rollback. Do not classify ordinary improvements as serious issues.
 
 Stop at unknown state, failed recovery, stale/expired checkpoint, unrepresentable pre-state or scope ambiguity. Report the typed reason, checkpoint, redacted prior/candidate handles and safe next action to TPM. Do not substitute another credential, create/delete resources, reverse persistent writes or install this skill into another profile.

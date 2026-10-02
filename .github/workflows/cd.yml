@@ -31,6 +31,7 @@ permissions:
   actions: read
 jobs:
   release:
+    if: inputs.operation != 'diagnose-auth-image'
     runs-on: ubuntu-latest
     timeout-minutes: 120
     environment: ${{ inputs.environment == 'production' && 'Production' || 'Development' }}
@@ -39,10 +40,6 @@ jobs:
       actions: read
       id-token: write
     env:
-      GH_TOKEN: ${{ github.token }}
-      VERCEL_TOKEN: ${{ secrets.VERCEL_TOKEN }}
-      VERCEL_PROJECT_ID: ${{ secrets.VERCEL_PROJECT_ID }}
-      VERCEL_TEAM_ID: ${{ secrets.VERCEL_TEAM_ID }}
       TARGET: ${{ inputs.environment }}
       SOURCE: ${{ inputs.source_sha }}
       COMPONENTS: ${{ inputs.components }}
@@ -79,6 +76,11 @@ jobs:
       - name: Resolve explicit receipt references and prepare selected artifacts
         if: inputs.operation == 'release'
         uses: ./.github/actions/deployment-engine
+        env:
+          GH_TOKEN: ${{ github.token }}
+          VERCEL_TOKEN: ${{ secrets.VERCEL_TOKEN }}
+          VERCEL_PROJECT_ID: ${{ secrets.VERCEL_PROJECT_ID }}
+          VERCEL_TEAM_ID: ${{ secrets.VERCEL_TEAM_ID }}
         with:
           operation: prepare
       - name: Publish ready stage barrier
@@ -93,8 +95,11 @@ jobs:
 
       - name: Download pinned ready artifact or checkpoint
         if: inputs.operation != 'release'
+        env:
+          GH_TOKEN: ${{ github.token }}
         run: node deploy/engine/artifacts.cjs download "$ARTIFACT_ID" "$RUNNER_TEMP/release"
       - name: Validate pinned workflow interface
+        if: inputs.operation != 'release'
         run: |
           python3 - <<'PY'
           import json, os
@@ -105,6 +110,11 @@ jobs:
           PY
       - name: Execute bounded runtime or explicit recovery
         uses: ./.github/actions/deployment-engine
+        env:
+          GH_TOKEN: ${{ github.token }}
+          VERCEL_TOKEN: ${{ secrets.VERCEL_TOKEN }}
+          VERCEL_PROJECT_ID: ${{ secrets.VERCEL_PROJECT_ID }}
+          VERCEL_TEAM_ID: ${{ secrets.VERCEL_TEAM_ID }}
         with:
           operation: runtime
       - name: Retain final result even after failure
@@ -113,5 +123,54 @@ jobs:
         with:
           name: lwc-result-${{ inputs.environment }}-${{ github.run_id }}-${{ github.run_attempt }}
           path: ${{ runner.temp }}/release
+          retention-days: 90
+          if-no-files-found: warn
+  auth-image-diagnostic:
+    if: >-
+      inputs.operation == 'diagnose-auth-image' &&
+      github.ref == 'refs/heads/develop' && inputs.environment == 'development' &&
+      inputs.source_sha == github.sha && inputs.components == 'auth' &&
+      inputs.release_tag == 'diagnostic-36992147920' &&
+      inputs.artifact_id == 'diagnostic-no-receipt'
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    environment: Development
+    permissions:
+      contents: read
+      actions: read
+      id-token: write
+    env:
+      TARGET: ${{ inputs.environment }}
+      SOURCE: ${{ inputs.source_sha }}
+      COMPONENTS: ${{ inputs.components }}
+      RELEASE_TAG: ${{ inputs.release_tag }}
+      REUSE_ID: ${{ inputs.artifact_id }}
+      DEV_ID: ${{ inputs.dev_artifact_id }}
+      ARTIFACT_ID: ${{ inputs.artifact_id }}
+      OPERATION: ${{ inputs.operation }}
+      WORKFLOW_REF: ${{ github.ref }}
+      WORKFLOW_SHA: ${{ github.sha }}
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262
+        with:
+          ref: ${{ inputs.source_sha }}
+          fetch-depth: 1
+          persist-credentials: false
+      - uses: google-github-actions/auth@7c6bc770dae815cd3e89ee6cdf493a5fab2cc093
+        with:
+          project_id: llm-wiki-cloud
+          workload_identity_provider: ${{ secrets.WIF_PROVIDER }}
+          service_account: ${{ secrets.WIF_SERVICE_ACCOUNT }}
+      - uses: google-github-actions/setup-gcloud@e427ad8a34f8676edf47cf7d7925499adf3eb74f
+      - name: Read-only Auth image diagnostic
+        run: |
+          mkdir -p "$RUNNER_TEMP/lwc-auth-diagnostic"
+          python3 deploy/engine/diagnostics.py --output "$RUNNER_TEMP/lwc-auth-diagnostic/result.json"
+      - name: Retain redacted diagnostic result
+        if: always()
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02
+        with:
+          name: lwc-auth-diagnostic-${{ github.run_id }}-${{ github.run_attempt }}
+          path: ${{ runner.temp }}/lwc-auth-diagnostic/result.json
           retention-days: 90
           if-no-files-found: warn

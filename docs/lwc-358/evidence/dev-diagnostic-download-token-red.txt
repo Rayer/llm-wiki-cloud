@@ -1,0 +1,14 @@
+F
+======================================================================
+FAIL: test_pinned_recovery_download_has_effective_github_token (__main__.EngineWorkflowContract.test_pinned_recovery_download_has_effective_github_token)
+----------------------------------------------------------------------
+Traceback (most recent call last):
+  File "/Users/rayer/orca/workspaces/llm-wiki-cloud/LWC-358-engine-r2/scripts/test_engine_workflow.py", line 63, in test_pinned_recovery_download_has_effective_github_token
+    self.assertEqual(effective_env.get('GH_TOKEN'),'${{ github.token }}')
+    ~~~~~~~~~~~~~~~~^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+AssertionError: None != '${{ github.token }}'
+
+----------------------------------------------------------------------
+Ran 1 test in 0.004s
+
+FAILED (failures=1)
