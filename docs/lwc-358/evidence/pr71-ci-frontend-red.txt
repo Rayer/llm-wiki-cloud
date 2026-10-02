@@ -1,0 +1,426 @@
+TAP version 13
+# Subtest: frontend aliases use the shared CD mutation and read-back path
+not ok 1 - frontend aliases use the shared CD mutation and read-back path
+  ---
+  duration_ms: 3.433375
+  type: 'test'
+  location: '/Users/rayer/orca/workspaces/llm-wiki-cloud/LWC-358-engine-r2/apps/frontend/tests/lwc-199-vercel-alias-promotion.test.mjs:765:1'
+  failureType: 'testCodeFailure'
+  error: |-
+    The input did not match the regular expression /Upload durable rollback artifact/. Input:
+    
+    'name: Deployment engine r2\n' +
+      'on:\n' +
+      '  workflow_call:\n' +
+      '    inputs:\n' +
+      '      environment:\n' +
+      '        required: true\n' +
+      '        type: string\n' +
+      '      source_sha:\n' +
+      '        required: true\n' +
+      '        type: string\n' +
+      '      components:\n' +
+      '        required: true\n' +
+      '        type: string\n' +
+      '      release_tag:\n' +
+      '        required: true\n' +
+      '        type: string\n' +
+      '      operation:\n' +
+      '        type: string\n' +
+      '        default: release\n' +
+      '      artifact_id:\n' +
+      '        type: string\n' +
+      "        default: ''\n" +
+      '      dev_artifact_id:\n' +
+      '        type: string\n' +
+      "        default: ''\n" +
+      'concurrency:\n' +
+      '  group: lwc-engine-${{ inputs.environment }}\n' +
+      '  cancel-in-progress: false\n' +
+      'permissions:\n' +
+      '  contents: read\n' +
+      '  actions: read\n' +
+      'jobs:\n' +
+      '  release:\n' +
+      '    runs-on: ubuntu-latest\n' +
+      '    timeout-minutes: 120\n' +
+      "    environment: ${{ inputs.environment == 'production' && 'Production' || 'Development' }}\n" +
+      '    permissions:\n' +
+      '      contents: write\n' +
+      '      actions: read\n' +
+      '      id-token: write\n' +
+      '    env:\n' +
+      '      GH_TOKEN: ${{ github.token }}\n' +
+      '      VERCEL_TOKEN: ${{ secrets.VERCEL_TOKEN }}\n' +
+      '      VERCEL_PROJECT_ID: ${{ secrets.VERCEL_PROJECT_ID }}\n' +
+      '      VERCEL_TEAM_ID: ${{ secrets.VERCEL_TEAM_ID }}\n' +
+      '      TARGET: ${{ inputs.environment }}\n' +
+      '      SOURCE: ${{ inputs.source_sha }}\n' +
+      '      COMPONENTS: ${{ inputs.components }}\n' +
+      '      RELEASE_TAG: ${{ inputs.release_tag }}\n' +
+      '      REUSE_ID: ${{ inputs.artifact_id }}\n' +
+      '      DEV_ID: ${{ inputs.dev_artifact_id }}\n' +
+      '      ARTIFACT_ID: ${{ inputs.artifact_id }}\n' +
+      '      OPERATION: ${{ inputs.operation }}\n' +
+      '    steps:\n' +
+      '      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262\n' +
+      '        with:\n' +
+      '          ref: ${{ inputs.source_sha }}\n' +
+      '          fetch-depth: 0\n' +
+      '          persist-credentials: false\n' +
+      '      - uses: actions/setup-go@d35c59abb061a4a6fb18e82ac0862c26744d6ab5\n' +
+      "        if: inputs.operation == 'release'\n" +
+      '        with:\n' +
+      '          go-version-file: apps/bff/go.mod\n' +
+      '          cache-dependency-path: apps/bff/go.sum\n' +
+      '      - uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020\n' +
+      '        with:\n' +
+      "          node-version: '22'\n" +
+      '      - name: Install artifact transport and pinned Vercel CLI\n' +
+      '        run: |\n' +
+      '          echo "NODE_PATH=$RUNNER_TEMP/lwc-tools/node_modules" >> "$GITHUB_ENV"\n' +
+      '          npm install --prefix "$RUNNER_TEMP/lwc-tools" @actions/artifact@2.3.2 --ignore-scripts\n' +
+      '          npm install --global vercel@59.11.7 --ignore-scripts\n' +
+      '      - uses: google-github-actions/auth@7c6bc770dae815cd3e89ee6cdf493a5fab2cc093\n' +
+      '        with:\n' +
+      '          project_id: llm-wiki-cloud\n' +
+      '          workload_identity_provider: ${{ secrets.WIF_PROVIDER }}\n' +
+      '          service_account: ${{ secrets.WIF_SERVICE_ACCOUNT }}\n' +
+      '      - uses: google-github-actions/setup-gcloud@e427ad8a34f8676edf47cf7d7925499adf3eb74f\n' +
+      '      - name: Resolve explicit receipt references and prepare selected artifacts\n' +
+      "        if: inputs.operation == 'release'\n" +
+      '        uses: ./.github/actions/deployment-engine\n' +
+      '        with:\n' +
+      '          operation: prepare\n' +
+      '      - name: Publish ready stage barrier\n' +
+      "        if: inputs.operation == 'release'\n" +
+      '        id: ready\n' +
+      '        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02\n' +
+      '        with:\n' +
+      '          name: lwc-ready-${{ inputs.environment }}-${{ github.run_id }}-${{ github.run_attempt }}\n' +
+      '          path: ${{ runner.temp }}/release\n' +
+      '          retention-days: 90\n' +
+      '          if-no-files-found: error\n' +
+      '\n' +
+      '      - name: Download pinned ready artifact or checkpoint\n' +
+      "        if: inputs.operation != 'release'\n" +
+      '        run: node deploy/engine/artifacts.cjs download "$ARTIFACT_ID" "$RUNNER_TEMP/release"\n' +
+      '      - name: Validate pinned workflow interface\n' +
+      '        run: |\n' +
+      "          python3 - <<'PY'\n" +
+      '          import json, os\n' +
+      "          p=json.load(open(os.environ['RUNNER_TEMP']+'/release/plan.json'))\n" +
+      "          assert p['normalized']['environment']==os.environ['TARGET']\n" +
+      "          assert p['source']==os.environ['SOURCE'] and p['tag']==os.environ['RELEASE_TAG']\n" +
+      "          assert os.environ['OPERATION'] in ('release','deploy','rollback','reactivate','tag','readback')\n" +
+      '          PY\n' +
+      '      - name: Execute bounded runtime or explicit recovery\n' +
+      '        uses: ./.github/actions/deployment-engine\n' +
+      '        with:\n' +
+      '          operation: runtime\n' +
+      '      - name: Retain final result even after failure\n' +
+      '        if: always()\n' +
+      '        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02\n' +
+      '        with:\n' +
+      '          name: lwc-result-${{ inputs.environment }}-${{ github.run_id }}-${{ github.run_attempt }}\n' +
+      '          path: ${{ runner.temp }}/release\n' +
+      '          retention-days: 90\n' +
+      '          if-no-files-found: warn\n'
+    
+  code: 'ERR_ASSERTION'
+  name: 'AssertionError'
+  expected:
+  actual: |-
+    name: Deployment engine r2
+    on:
+      workflow_call:
+        inputs:
+          environment:
+            required: true
+            type: string
+          source_sha:
+            required: true
+            type: string
+          components:
+            required: true
+            type: string
+          release_tag:
+            required: true
+            type: string
+          operation:
+            type: string
+            default: release
+          artifact_id:
+            type: string
+            default: ''
+          dev_artifact_id:
+            type: string
+            default: ''
+    concurrency:
+      group: lwc-engine-${{ inputs.environment }}
+      cancel-in-progress: false
+    permissions:
+      contents: read
+      actions: read
+    jobs:
+      release:
+        runs-on: ubuntu-latest
+        timeout-minutes: 120
+        environment: ${{ inputs.environment == 'production' && 'Production' || 'Development' }}
+        permissions:
+          contents: write
+          actions: read
+          id-token: write
+        env:
+          GH_TOKEN: ${{ github.token }}
+          VERCEL_TOKEN: ${{ secrets.VERCEL_TOKEN }}
+          VERCEL_PROJECT_ID: ${{ secrets.VERCEL_PROJECT_ID }}
+          VERCEL_TEAM_ID: ${{ secrets.VERCEL_TEAM_ID }}
+          TARGET: ${{ inputs.environment }}
+          SOURCE: ${{ inputs.source_sha }}
+          COMPONENTS: ${{ inputs.components }}
+          RELEASE_TAG: ${{ inputs.release_tag }}
+          REUSE_ID: ${{ inputs.artifact_id }}
+          DEV_ID: ${{ inputs.dev_artifact_id }}
+          ARTIFACT_ID: ${{ inputs.artifact_id }}
+          OPERATION: ${{ inputs.operation }}
+        steps:
+          - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262
+            with:
+              ref: ${{ inputs.source_sha }}
+              fetch-depth: 0
+              persist-credentials: false
+          - uses: actions/setup-go@d35c59abb061a4a6fb18e82ac0862c26744d6ab5
+            if: inputs.operation == 'release'
+            with:
+              go-version-file: apps/bff/go.mod
+              cache-dependency-path: apps/bff/go.sum
+          - uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020
+            with:
+              node-version: '22'
+          - name: Install artifact transport and pinned Vercel CLI
+            run: |
+              echo "NODE_PATH=$RUNNER_TEMP/lwc-tools/node_modules" >> "$GITHUB_ENV"
+              npm install --prefix "$RUNNER_TEMP/lwc-tools" @actions/artifact@2.3.2 --ignore-scripts
+              npm install --global vercel@59.11.7 --ignore-scripts
+          - uses: google-github-actions/auth@7c6bc770dae815cd3e89ee6cdf493a5fab2cc093
+            with:
+              project_id: llm-wiki-cloud
+              workload_identity_provider: ${{ secrets.WIF_PROVIDER }}
+              service_account: ${{ secrets.WIF_SERVICE_ACCOUNT }}
+          - uses: google-github-actions/setup-gcloud@e427ad8a34f8676edf47cf7d7925499adf3eb74f
+          - name: Resolve explicit receipt references and prepare selected artifacts
+            if: inputs.operation == 'release'
+            uses: ./.github/actions/deployment-engine
+            with:
+              operation: prepare
+          - name: Publish ready stage barrier
+            if: inputs.operation == 'release'
+            id: ready
+            uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02
+            with:
+              name: lwc-ready-${{ inputs.environment }}-${{ github.run_id }}-${{ github.run_attempt }}
+              path: ${{ runner.temp }}/release
+              retention-days: 90
+              if-no-files-found: error
+    
+          - name: Download pinned ready artifact or checkpoint
+            if: inputs.operation != 'release'
+            run: node deploy/engine/artifacts.cjs download "$ARTIFACT_ID" "$RUNNER_TEMP/release"
+          - name: Validate pinned workflow interface
+            run: |
+              python3 - <<'PY'
+              import json, os
+              p=json.load(open(os.environ['RUNNER_TEMP']+'/release/plan.json'))
+              assert p['normalized']['environment']==os.environ['TARGET']
+              assert p['source']==os.environ['SOURCE'] and p['tag']==os.environ['RELEASE_TAG']
+              assert os.environ['OPERATION'] in ('release','deploy','rollback','reactivate','tag','readback')
+              PY
+          - name: Execute bounded runtime or explicit recovery
+            uses: ./.github/actions/deployment-engine
+            with:
+              operation: runtime
+          - name: Retain final result even after failure
+            if: always()
+            uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02
+            with:
+              name: lwc-result-${{ inputs.environment }}-${{ github.run_id }}-${{ github.run_attempt }}
+              path: ${{ runner.temp }}/release
+              retention-days: 90
+              if-no-files-found: warn
+    
+  operator: 'match'
+  stack: |-
+    TestContext.<anonymous> (file:///Users/rayer/orca/workspaces/llm-wiki-cloud/LWC-358-engine-r2/apps/frontend/tests/lwc-199-vercel-alias-promotion.test.mjs:771:10)
+    async Test.run (node:internal/test_runner/test:1054:7)
+    async startSubtestAfterBootstrap (node:internal/test_runner/harness:296:3)
+  ...
+# Subtest: DEV authority uses the fixed shared CD entry
+not ok 2 - DEV authority uses the fixed shared CD entry
+  ---
+  duration_ms: 4.966375
+  type: 'test'
+  location: '/Users/rayer/orca/workspaces/llm-wiki-cloud/LWC-358-engine-r2/apps/frontend/tests/lwc-253-authority-reconciliation.test.mjs:767:1'
+  failureType: 'testCodeFailure'
+  error: |-
+    Expected values to be strictly deep-equal:
+    + actual - expected
+    
+      [
+        'components',
+    +   'release_tag',
+    +   'artifact_id',
+    +   'dev_artifact_id'
+      ]
+    
+  code: 'ERR_ASSERTION'
+  name: 'AssertionError'
+  expected:
+    0: 'components'
+  actual:
+    0: 'components'
+    1: 'release_tag'
+    2: 'artifact_id'
+    3: 'dev_artifact_id'
+  operator: 'deepStrictEqual'
+  stack: |-
+    TestContext.<anonymous> (file:///Users/rayer/orca/workspaces/llm-wiki-cloud/LWC-358-engine-r2/apps/frontend/tests/lwc-253-authority-reconciliation.test.mjs:770:10)
+    async Test.run (node:internal/test_runner/test:1054:7)
+    async startSubtestAfterBootstrap (node:internal/test_runner/harness:296:3)
+  ...
+# Subtest: DEV workflow invokes the shared CD with fixed authority
+not ok 3 - DEV workflow invokes the shared CD with fixed authority
+  ---
+  duration_ms: 2.718125
+  type: 'test'
+  location: '/Users/rayer/orca/workspaces/llm-wiki-cloud/LWC-358-engine-r2/apps/frontend/tests/lwc-253-vercel-dev-authority.test.mjs:405:1'
+  failureType: 'testCodeFailure'
+  error: |-
+    The input did not match the regular expression /environment: Development/. Input:
+    
+    'name: Deploy Development\n' +
+      'on:\n' +
+      '  workflow_dispatch:\n' +
+      '    inputs:\n' +
+      '      components:\n' +
+      '        description: Comma-separated selected components\n' +
+      '        required: true\n' +
+      '        type: string\n' +
+      '      release_tag:\n' +
+      '        description: Explicit immutable release tag\n' +
+      '        required: true\n' +
+      '        type: string\n' +
+      '      artifact_id:\n' +
+      '        description: Optional retained artifact ID for reuse\n' +
+      '        type: string\n' +
+      "        default: ''\n" +
+      '      dev_artifact_id:\n' +
+      '        description: Explicit successful DEV result artifact (required for Production containers)\n' +
+      '        type: string\n' +
+      "        default: ''\n" +
+      'permissions:\n' +
+      '  contents: write\n' +
+      '  actions: read\n' +
+      '  id-token: write\n' +
+      'jobs:\n' +
+      '  release:\n' +
+      "    if: github.ref == 'refs/heads/develop'\n" +
+      '    uses: ./.github/workflows/cd.yml\n' +
+      '    secrets: inherit\n' +
+      '    with:\n' +
+      '      environment: development\n' +
+      '      source_sha: VALUE\n' +
+      '      components: VALUE\n' +
+      '      release_tag: VALUE\n' +
+      '      artifact_id: VALUE\n' +
+      '      dev_artifact_id: VALUE\n'
+    
+  code: 'ERR_ASSERTION'
+  name: 'AssertionError'
+  expected:
+  actual: |-
+    name: Deploy Development
+    on:
+      workflow_dispatch:
+        inputs:
+          components:
+            description: Comma-separated selected components
+            required: true
+            type: string
+          release_tag:
+            description: Explicit immutable release tag
+            required: true
+            type: string
+          artifact_id:
+            description: Optional retained artifact ID for reuse
+            type: string
+            default: ''
+          dev_artifact_id:
+            description: Explicit successful DEV result artifact (required for Production containers)
+            type: string
+            default: ''
+    permissions:
+      contents: write
+      actions: read
+      id-token: write
+    jobs:
+      release:
+        if: github.ref == 'refs/heads/develop'
+        uses: ./.github/workflows/cd.yml
+        secrets: inherit
+        with:
+          environment: development
+          source_sha: VALUE
+          components: VALUE
+          release_tag: VALUE
+          artifact_id: VALUE
+          dev_artifact_id: VALUE
+    
+  operator: 'match'
+  stack: |-
+    TestContext.<anonymous> (file:///Users/rayer/orca/workspaces/llm-wiki-cloud/LWC-358-engine-r2/apps/frontend/tests/lwc-253-vercel-dev-authority.test.mjs:411:10)
+    async Test.run (node:internal/test_runner/test:1054:7)
+    async startSubtestAfterBootstrap (node:internal/test_runner/harness:296:3)
+  ...
+# Subtest: production workflow invokes the shared CD with fixed authority
+not ok 4 - production workflow invokes the shared CD with fixed authority
+  ---
+  duration_ms: 4.871708
+  type: 'test'
+  location: '/Users/rayer/orca/workspaces/llm-wiki-cloud/LWC-358-engine-r2/apps/frontend/tests/lwc-258-vercel-production-auth-env.test.mjs:82:1'
+  failureType: 'testCodeFailure'
+  error: |-
+    Expected values to be strictly deep-equal:
+    + actual - expected
+    
+      [
+        'components',
+    +   'release_tag',
+    +   'artifact_id',
+    +   'dev_artifact_id'
+      ]
+    
+  code: 'ERR_ASSERTION'
+  name: 'AssertionError'
+  expected:
+    0: 'components'
+  actual:
+    0: 'components'
+    1: 'release_tag'
+    2: 'artifact_id'
+    3: 'dev_artifact_id'
+  operator: 'deepStrictEqual'
+  stack: |-
+    TestContext.<anonymous> (file:///Users/rayer/orca/workspaces/llm-wiki-cloud/LWC-358-engine-r2/apps/frontend/tests/lwc-258-vercel-production-auth-env.test.mjs:86:10)
+    async Test.run (node:internal/test_runner/test:1054:7)
+    async startSubtestAfterBootstrap (node:internal/test_runner/harness:296:3)
+  ...
+1..4
+# tests 4
+# suites 0
+# pass 0
+# fail 4
+# cancelled 0
+# skipped 0
+# todo 0
+# duration_ms 78.974375

@@ -27,8 +27,10 @@ class Acceptance(unittest.TestCase):
         self.root=Path(self.tmp.name);bin=self.root/'bin';bin.mkdir()
         fake=HERE/'tests/fake_provider.py';fake.chmod(0o755)
         for name in ('gcloud','docker','go','curl','vercel','npm','git','gh'):(bin/name).symlink_to(fake)
-        self.env=patch.dict(os.environ,{'PATH':str(bin)+os.pathsep+os.environ['PATH'],'LWC_TEST_STATE':str(self.root/'provider.json'),
-            'VERCEL_PROJECT_ID':'prj_test','VERCEL_TEAM_ID':'team_test','VERCEL_TOKEN':'test-only','GITHUB_REPOSITORY':'test/repo'},clear=False)
+        # Keep tool discovery/cache paths, never inherited CI authority or credentials.
+        offline_env={k:os.environ[k] for k in ('HOME','TMPDIR','LANG','LC_ALL','SYSTEMROOT') if k in os.environ}
+        self.env=patch.dict(os.environ,{**offline_env,'PATH':str(bin)+os.pathsep+os.environ['PATH'],'LWC_TEST_STATE':str(self.root/'provider.json'),
+            'VERCEL_PROJECT_ID':'prj_test','VERCEL_TEAM_ID':'team_test','VERCEL_TOKEN':'test-only','GITHUB_REPOSITORY':'test/repo'},clear=True)
         self.env.start();self.addCleanup(self.env.stop)
         self.sleep=patch('providers.time.sleep');self.sleep.start();self.addCleanup(self.sleep.stop)
         self.provider={'resources':{},'revisions':{},'calls':[], 'aliases':{'wiki.dev.rayer.idv.tw':'dpl_prior'},
@@ -66,6 +68,11 @@ class Acceptance(unittest.TestCase):
         write(directory/'plan.json',p)
         return engine.Engine(directory)
     def ready(self,e):e.prepare();return e
+
+    def test_offline_fixture_has_no_inherited_authority(self):
+        for key in ('GITHUB_ACTIONS','ACTIONS_RUNTIME_TOKEN','GH_TOKEN','GITHUB_TOKEN',
+                    'GOOGLE_APPLICATION_CREDENTIALS','NODE_OPTIONS'):
+            self.assertNotIn(key,os.environ)
 
     def test_01_stage_barrier_and_retry_retains_first(self):
         e=self.make(('auth','worker'));self.configure(fail_build='olw-pipeline')

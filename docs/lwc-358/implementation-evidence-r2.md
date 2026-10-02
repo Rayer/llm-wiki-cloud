@@ -1,6 +1,6 @@
 # LWC-358 implementation evidence
 
-Status: Supervisor f581daec8e88d84cb4432ea3 對 exact bbc0 implementation snapshot PASS；Owner 已授權本次 commit / push / PR 至 develop，供 Parent + Supervisor 審閱相同 final PR SHA。以下保留各輪歷史證據；live Actions / provider / tag / UAT NOT RUN，未授權 merge 或 dispatch。
+Status: PR71 CI acceptance repair 已完成本機驗證，待 Parent + Supervisor 對新 final PR SHA 複審。歷史：Supervisor f581daec8e88d84cb4432ea3 對 exact bbc0 implementation snapshot PASS；Owner 已授權本次 commit / push / PR 至 develop，供 Parent + Supervisor 審閱相同 final PR SHA。以下保留各輪歷史證據；live Actions / provider / tag / UAT NOT RUN，未授權 merge 或 dispatch。
 
 - Baseline/HEAD: e9ccf490251ed0262481fca94af7387107be6b5f
 - Branch: Rayer/LWC-358-engine-r2
@@ -210,3 +210,25 @@ TEST ONLY subprocess fake 會拒絕 named retained revision 的錯誤 spec 或 e
 剩餘限制：live provider 接受 retained named revision restore、Vercel auto-promotion/alias readback 仍待授權驗證。舊 engine checkpoint 不手動轉換或繞過 pinned-engine-mismatch。Owner historical DEV promotion revocation 仍 NONBLOCKING 未裁定，未加 gate/current-head equality/IAM gate。未修改 shared package 或 LWC-366；frozen source byte compare 相同。未 commit/push/PR/merge/live Actions/provider/credential/tag 操作。
 
 Publication staging check: 30 manifest implementation files 均通過 git diff --cached --check；完整 staged check 僅指出原始 red-test logs 與 unified diff 證據的 whitespace（context 空白行／原始 runner 行尾）。為保留 exact 原始輸出未改寫證據；無 implementation whitespace 問題。
+
+## PR71 actual CI acceptance repair
+
+起點 PR71 head 8eaa7cb687cd24dfbdec360861c0c6ee92c1c94f / content bbc0ae53655fc05d4977cb128b28c673551cd0659ee9932d186fd0f92a1a1b65。
+已讀 Parent findings：LWC-358-deploy-convergence/docs/lwc-358/deployment-engine-pr71-ci-findings.md，及其指定完整 CI log out-1790921421-57743-3360.log。Actual failed run：https://github.com/Rayer/llm-wiki-cloud/actions/runs/36972022713 。沒有把 prepublication PASS 視為新 head acceptance。
+
+根因已實際重現：Acceptance clear=False 繼承 GITHUB_ACTIONS=true，save() 進入真實 artifact transport。新 test_ci_environment.py 用 subprocess 啟動真實 Acceptance，注入 TEST ONLY Actions 環境與 node 攔截器，修正前 marker 證實 transport 被呼叫而失敗；攔截器在任何 transport/network 執行前 exit，無 live 操作。修正為 clear=True + 最小工具/cache/locale 環境 allowlist，另驗證 CI authority/credential/Node preload 不會繼承。Production engine、provider、durability upload、transport adapter 及 dedicated Engine→subprocess→Node SDK-stub integration 逐 byte 未改。
+
+四個 Frontend superseded workflow assertions 均保留測試並重寫：DEV/Production 固定 branch、source SHA、explicit release tag/receipt inputs、shared engine + inherited secrets；protected runtime 與 per-target concurrency；selected prepare→durable ready artifact→runtime 順序；pinned recovery artifact、pending checkpoint、final failure retention、alias snapshot/readback/restore。既有 provider 功能案例未刪除或 skip；沒有恢復 legacy polling/reapproval machinery。
+
+環境 Python 3.14.6 / Node v22.23.2。精確命令：
+- `python3.14 -m unittest discover -s deploy/engine/tests -p test_ci_environment.py -v`：red 1 failure，green 1 OK；evidence/pr71-ci-red.txt / pr71-ci-green.txt。
+- `node --test --test-name-pattern='frontend aliases use the shared CD|DEV authority uses the fixed|DEV workflow invokes|production workflow invokes' apps/frontend/tests/lwc-199-vercel-alias-promotion.test.mjs apps/frontend/tests/lwc-253-authority-reconciliation.test.mjs apps/frontend/tests/lwc-253-vercel-dev-authority.test.mjs apps/frontend/tests/lwc-258-vercel-production-auth-env.test.mjs`：修改前 4 fail / 0 pass / 0 skip，evidence/pr71-ci-frontend-red.txt。
+- `GITHUB_ACTIONS=true GITHUB_RUN_ID=42 GITHUB_RUN_ATTEMPT=1 python3.14 -m unittest discover -s deploy/engine/tests -p 'test_*.py'`：27 tests OK，含 dedicated actual transport 2 tests；evidence/pr71-ci-engine.txt。
+- `npm test`（cwd apps/frontend）：Node 523 pass / 0 fail / 0 skip；Vitest 31 files、288 tests pass；evidence/pr71-ci-frontend.txt。jsdom 印出兩次 navigation not implemented 非失敗，保留原始輸出。
+- `npx --no-install eslint tests/lwc-199-vercel-alias-promotion.test.mjs tests/lwc-253-authority-reconciliation.test.mjs tests/lwc-253-vercel-dev-authority.test.mjs tests/lwc-258-vercel-production-auth-env.test.mjs`（cwd apps/frontend）：exit 0，evidence/pr71-ci-eslint.txt。
+- `python3.14 scripts/test_cd_contract.py`：65 OK，evidence/pr71-ci-cd.txt。
+- `python3.14 scripts/test_engine_workflow.py`：3 OK，evidence/pr71-ci-workflow.txt。
+- `node --test deploy/engine/tests/artifacts.test.cjs`：4 pass，evidence/pr71-ci-transport.txt。
+- `python3.14 -m py_compile deploy/engine/tests/test_ci_environment.py deploy/engine/tests/test_engine.py` 與 `git diff --check`：exit 0（新 evidence 加入前；原始 red logs 保留行尾空白）。
+
+新 manifest 35 files：原30 + 四個 Frontend test files + CI environment regression。Content SHA256：47ff72090d28ca644454c0a0e4a08742148742c1619bad13724201f63cd3e986。Base/frozen SHA 不變，原 manifest 保留 evidence/pr71-ci-prior-content.json。仅 tests + manifest/evidence 改動；Parent+Supervisor 必須審閱相同新 head。未變更 model/effort、未改 Bug366 或 shared worktree；未 merge/dispatch/tag/provider/credential write。Live engine/provider acceptance 仍 NOT RUN。

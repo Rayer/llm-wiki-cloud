@@ -1,7 +1,7 @@
 {
   "base": "e9ccf490251ed0262481fca94af7387107be6b5f",
   "branch": "Rayer/LWC-358-engine-r2",
-  "content_sha256": "47ff72090d28ca644454c0a0e4a08742148742c1619bad13724201f63cd3e986",
+  "content_sha256": "bbc0ae53655fc05d4977cb128b28c673551cd0659ee9932d186fd0f92a1a1b65",
   "scope": "All changed/new implementation, test, operator and frozen-spec files; excludes this manifest, evidence report and logs to avoid self-reference.",
   "frozen_sha256": "838817cad154b0ea773c205f671362a6c9c0ad97c38ddf34f2508eb4fcc2488b",
   "files": [
@@ -66,26 +66,6 @@
       "mode": "0o644"
     },
     {
-      "path": "apps/frontend/tests/lwc-199-vercel-alias-promotion.test.mjs",
-      "sha256": "193230a5e45b9c7d1cd238db2bcc24e8f0737cc43597d061ad4a85d1e93a20bd",
-      "mode": "0o644"
-    },
-    {
-      "path": "apps/frontend/tests/lwc-253-authority-reconciliation.test.mjs",
-      "sha256": "72e5ee2387db592c133683ccb7b9e85b42bd80222358d0b4b8638b9b9a731caa",
-      "mode": "0o644"
-    },
-    {
-      "path": "apps/frontend/tests/lwc-253-vercel-dev-authority.test.mjs",
-      "sha256": "8c892cc859199ee884b8081645c1cbd7ff75f44ad3fe8095acf4537e2747a6c2",
-      "mode": "0o644"
-    },
-    {
-      "path": "apps/frontend/tests/lwc-258-vercel-production-auth-env.test.mjs",
-      "sha256": "a85e608a40928b264cfa6a0877f879f8e59044dc3ed815cd28e259ab3b0e115e",
-      "mode": "0o644"
-    },
-    {
       "path": "deploy/components/auth.sh",
       "sha256": "efffbd2aa85c35b2dde79d205de1554e68b165a568b801a97dfd4e993180ca46",
       "mode": "0o755"
@@ -141,13 +121,8 @@
       "mode": "0o755"
     },
     {
-      "path": "deploy/engine/tests/test_ci_environment.py",
-      "sha256": "2e2f9d9ed92088d684506ec48d7d575dc6a3080455ba148d6a1a444b82e243d4",
-      "mode": "0o644"
-    },
-    {
       "path": "deploy/engine/tests/test_engine.py",
-      "sha256": "193c80099e622cc283a957be3fe3b78668ca2dd28ee5f29145752c9543279df7",
+      "sha256": "44e5be280181ff31789b60dccd3706a46ba71cfe7b7fa08112eb7b605845e341",
       "mode": "0o644"
     },
     {

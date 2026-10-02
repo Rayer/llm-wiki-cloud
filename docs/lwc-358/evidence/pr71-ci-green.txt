@@ -1,0 +1,6 @@
+test_acceptance_does_not_inherit_actions_transport_or_credentials (test_ci_environment.OfflineCIEnvironment.test_acceptance_does_not_inherit_actions_transport_or_credentials) ... ok
+
+----------------------------------------------------------------------
+Ran 1 test in 0.649s
+
+OK
