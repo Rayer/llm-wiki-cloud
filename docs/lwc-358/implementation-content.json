@@ -1,7 +1,7 @@
 {
   "base": "b60dde9fb0318fa327ba2477fb0b796658e71a42",
   "branch": "Rayer/LWC-358-stage1-resume-8a38c7f2",
-  "content_sha256": "afe3464d75fb245b49776d9407b25831d1975e8a3a56336f9ccda3615d20cdaf",
+  "content_sha256": "8eb0b114ffddc038e1132585f4e8d379d68fd4e6c90da8d75df0ee97fb2eec86",
   "scope": "All changed/new implementation, test, operator, accepted-appendix and frozen-spec files; excludes this manifest, evidence report and logs to avoid self-reference.",
   "frozen_sha256": "838817cad154b0ea773c205f671362a6c9c0ad97c38ddf34f2508eb4fcc2488b",
   "files": [
@@ -142,7 +142,7 @@
     },
     {
       "path": "deploy/engine/providers.py",
-      "sha256": "f4860f1b88d2d61107edf60b4f2028a825524536808c661452ad4f840d4f9983",
+      "sha256": "b051a4b22891cba1b01a34c660856044657de19b337303fa5e665064889a52f6",
       "mode": "0o644"
     },
     {
@@ -182,7 +182,7 @@
     },
     {
       "path": "deploy/engine/tests/test_prepare_diagnostics.py",
-      "sha256": "691b062a39e523413cf4c85eebcb85a836971f7f1145fd20cccfc4ccb551d99a",
+      "sha256": "51f3a86f3124e92f6949bc68de4018f28a5477c2bedd74bb5503faff2165dc2a",
       "mode": "0o644"
     },
     {
