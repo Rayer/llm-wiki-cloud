@@ -30,6 +30,7 @@ ENV = {
     'ALLOWED_ORIGINS': 'https://wiki.dev.rayer.idv.tw,https://llm-wiki-frontend-dev.vercel.app,http://localhost:3000',
     'AUTH_SERVICE_URL': 'https://auth.dev.rayer.idv.tw', 'AUTH_SESSION_ENVIRONMENT': 'llm-wiki-cloud-dev',
     'AUTH_REFRESH_SESSION_MIGRATION': 'disabled',
+    'AUTH_DEMO_USER_ID': 'fixture-demo-user-dev',
     'GOOGLE_CLIENT_ID': GOOGLE['client_id'], 'GOOGLE_ISSUER': GOOGLE['issuer'],
     'GOOGLE_JWKS_URL': GOOGLE['jwks_url'], 'GOOGLE_TOKEN_URL': GOOGLE['token_url'],
     'GOOGLE_LOGIN_REDIRECT_URL': GOOGLE['login_redirect_url'],
@@ -66,6 +67,7 @@ def production(value):
         ('wiki.dev.rayer.idv.tw', 'wiki.rayer.idv.tw'), ('llm-wiki-frontend-dev', 'llm-wiki-frontend'),
         ('llm-wiki-auth-dev', 'llm-wiki-auth'), ('lwc-auth-dev@', 'lwc-auth-prod@'),
         ('llm-wiki-cloud-dev', 'llm-wiki-cloud-prod'), ('jwt-secret-dev', 'jwt-secret-prod'),
+        ('fixture-demo-user-dev', 'fixture-demo-user-prod'),
         ('google-oauth-client-dev', 'google-oauth-client-prod'),
         ('123456-test.apps.googleusercontent.com', '580854833715-1b37asap0uocbdcrighjaorflvj2n94m.apps.googleusercontent.com'),
     ):
@@ -117,14 +119,18 @@ class AuthConfigContractTests(unittest.TestCase):
             plan = {'normalized': {'environment': 'development', 'gcp': {
                 'project_id': 'llm-wiki-cloud', 'region': 'asia-east1',
                 'artifact_registry': IMAGE.split('/llm-wiki-auth@')[0]}, 'auth': {
-                    'service_name': SERVICE, 'runtime_service_account': 'lwc-auth-dev@llm-wiki-cloud.iam.gserviceaccount.com',
-                    'firestore_database_id': 'llm-wiki-cloud-dev', 'public_domain': 'auth.dev.rayer.idv.tw',
+                'service_name': SERVICE, 'runtime_service_account': 'lwc-auth-dev@llm-wiki-cloud.iam.gserviceaccount.com',
+                    'firestore_database_id': 'llm-wiki-cloud-dev', 'demo_user_id': ENV['AUTH_DEMO_USER_ID'],
+                    'public_domain': 'auth.dev.rayer.idv.tw',
                     'allowed_hosts': ENV['ALLOWED_HOSTS'].split(','), 'allowed_origins': ENV['ALLOWED_ORIGINS'].split(','),
                     'secret_references': {'jwt': 'jwt-secret-dev'}, 'google': GOOGLE if enabled else {'enabled': False}}}}
             if environment == 'production':
                 import yaml
                 config = yaml.safe_load((ROOT / 'deploy/environments/production.yaml').read_text())
                 config['environment'] = environment
+                # Synthetic fixture UID keeps Production test data independent
+                # from Development and proves the plan carries each value.
+                config['auth']['demo_user_id'] = 'fixture-demo-user-prod'
                 if not enabled:
                     config['auth']['google'] = {'enabled': False}
                 plan = {'normalized': config}

@@ -66,7 +66,7 @@ type WorkspaceContextValue = {
   navCounts: NavCounts;
   refreshNavCounts: () => Promise<void>;
   signIn: (email: string, password: string) => Promise<void>;
-  signInAsDemo: (email: string, password: string) => Promise<void>;
+  signInAsDemo: () => Promise<void>;
   register: (email: string, password: string) => Promise<void>;
   signOut: () => Promise<void>;
   selectProject: (projectId: string) => void;
@@ -167,8 +167,8 @@ export function WorkspaceProvider({ children }: { children: ReactNode }) {
     consumeExpiredLoginRedirect(router);
   }, [login, router]);
 
-  const signInAsDemo = useCallback(async (email: string, password: string) => {
-    await loginAsDemo(email, password);
+  const signInAsDemo = useCallback(async () => {
+    await loginAsDemo();
     consumeExpiredLoginRedirect(router);
   }, [loginAsDemo, router]);
 

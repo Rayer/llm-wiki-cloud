@@ -49,6 +49,25 @@ func TestLoadDefaultsQueryExpansionModel(t *testing.T) {
 	}
 }
 
+func TestLoadAuthDemoUserIDFromEnvironment(t *testing.T) {
+	t.Setenv("AUTH_DEMO_USER_ID", " fixture-demo-user ")
+	cfg, err := Load(writeConfig(t, "dev_jwt = true\n"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if cfg.AuthDemoUserID != "fixture-demo-user" {
+		t.Fatalf("AuthDemoUserID = %q", cfg.AuthDemoUserID)
+	}
+	t.Setenv("AUTH_DEMO_USER_ID", "")
+	cfg, err = Load(writeConfig(t, "dev_jwt = true\n"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if cfg.AuthDemoUserID != "" {
+		t.Fatalf("unset AuthDemoUserID = %q", cfg.AuthDemoUserID)
+	}
+}
+
 func TestLoadDefaultsAndEnvForParallelQueryExpansion(t *testing.T) {
 	t.Setenv("QUERY_STAGE_CONFIG_PATH", "")
 	for _, name := range []string{

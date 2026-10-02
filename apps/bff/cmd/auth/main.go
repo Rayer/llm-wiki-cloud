@@ -90,6 +90,7 @@ func newProductionRouter(cfg config.Config, localMode bool, fsClient *firestorec
 	authRoutes := r.Group("/api/v1/auth")
 	authRoutes.Use(auth.RequestBodyLimit())
 	if localMode {
+		authRoutes.POST("/demo", middleware.NewRateLimiter(10, time.Minute), auth.LocalDevDemoLoginHandler(cfg.JWTSecret))
 		authRoutes.POST("/login", middleware.NewRateLimiter(10, time.Minute), auth.LocalDevLoginHandler(cfg.JWTSecret))
 		authRoutes.POST("/register", func(c *gin.Context) {
 			c.JSON(http.StatusServiceUnavailable, gin.H{"error": "registration is disabled in local mode; use demo@llm-wiki.dev / demo123456"})
@@ -100,6 +101,7 @@ func newProductionRouter(cfg config.Config, localMode bool, fsClient *firestorec
 		unavailable := func(c *gin.Context) {
 			c.JSON(http.StatusServiceUnavailable, gin.H{"error": "auth routes require Firestore"})
 		}
+		authRoutes.POST("/demo", middleware.NewRateLimiter(10, time.Minute), auth.DemoLoginHandlerWithRepository(nil, cfg.AuthDemoUserID, cfg.JWTSecret, auth.HostRefreshCookiePolicy(), nil))
 		authRoutes.POST("/login", unavailable)
 		authRoutes.POST("/register", unavailable)
 		authRoutes.POST("/refresh", unavailable)
@@ -119,6 +121,7 @@ func newProductionRouter(cfg config.Config, localMode bool, fsClient *firestorec
 		})
 		registerCLIAuthRoutes(authRoutes, cfg, fsClient.Raw(), sessions, sessionEnvironment)
 		authRoutes.POST("/login", middleware.NewRateLimiter(10, time.Minute), auth.LoginHandlerWithRepositoryAndSessionAuthority(identityRepository, cfg.JWTSecret, auth.HostRefreshCookiePolicy(), sessions))
+		authRoutes.POST("/demo", middleware.NewRateLimiter(10, time.Minute), auth.DemoLoginHandlerWithRepository(identityRepository, cfg.AuthDemoUserID, cfg.JWTSecret, auth.HostRefreshCookiePolicy(), sessions))
 		authRoutes.POST("/register", middleware.NewRateLimiter(5, time.Minute), auth.RegisterHandlerWithRepository(identityRepository, cfg.JWTSecret, settingsStore))
 		authRoutes.POST("/refresh", auth.RefreshHandlerWithSessionAuthority(sessions, cfg.JWTSecret, auth.HostRefreshCookiePolicy()))
 		authRoutes.POST("/logout", auth.LogoutHandlerWithSessionAuthority(sessions, cfg.JWTSecret, auth.HostRefreshCookiePolicy()))
