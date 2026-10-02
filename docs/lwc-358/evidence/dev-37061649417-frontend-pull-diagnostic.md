@@ -1,0 +1,39 @@
+# DEV run 37061649417 — Frontend Vercel pull diagnosis
+
+Status: offline source and retained-result diagnosis only. No CLI command was executed. The run's actual underlying CLI error remains **UNKNOWN**; this report records a source-verified project-context contract that is a discriminating candidate, not an attribution to the run.
+
+## Safe run readback
+
+The Action result and state were read from `/Users/rayer/.hermes/profiles/lwc-tpm/cache/scratch/dev-37061649417-result/`, using an allowlist of result fields. Run source in the retained plan/result is `adb6e7f03ef68266e113bcf1b82ea04a488aa78e`; selected components are `auth,frontend` in the Development target.
+
+- Result artifact `11251011750`: `status=failed`, `component=frontend`, `reason=command-failed`, `mutation_may_have_happened=false`, checkpoint `1`, allowed next action `reconcile-before-replay`.
+- `failure_diagnostic` contains only `stage=frontend-vercel-pull`, `exit_code=1`, `timeout_class=null`. This confirms that the pull subprocess returned nonzero; it does not expose its error text or establish why.
+- State is still `prepared`, sequence `1`, with empty runtime components and empty build records. There is no Frontend receipt or `frontend.tgz`; Vercel build, ready barrier, and runtime were not reached.
+- Parent independently verified that the Auth receipt bytes match the prior compatible receipt, whose source is `d388` and image digest remains `21e76de66f4d61b42ad056b74db896fa6e6bb1c3f6cb10714309fc754d07553c`. The run had no new Auth build. I did not read the receipt file or any raw auth file.
+- The prior run `37055245620` failed earlier with stage metadata absent; that historical result remains separate. No Vercel/npm raw output, masked Action log, secret environment file, token, credential, or argument value was read or reproduced for this diagnosis.
+
+## Exact pinned CLI material inspected offline
+
+The workflow pins Vercel CLI `59.11.7`. Although the installed global CLI on this workstation is `58.9.0` and is not evidence for the run, npm's local offline cache contains the exact `vercel@59.11.7` tarball. I read the cached tarball directly, verified its npm cache integrity, and inspected source without installing or executing it. Tarball SHA256: `34432b6f0ddd6501ab17140dcf6c5baa2e68fa1ce91eabcb2afef4fbf4db44eb`. Its declared `@vercel/build-utils` dependency is `14.9.1`; the matching cached package was also integrity-verified (tarball SHA256 `49fb66d28b64bacf2183cfa166e873dbb04459f50d07591bce9e6a7b022f07d6`). No network access was used.
+
+Relevant Vercel 59.11.7 modules are `package/dist/chunks/chunk-XIFATBH5.js` (`commands/pull`) and `package/dist/chunks/chunk-2TSBB22D.js` (project-link resolution); the platform environment helper is in build-utils 14.9.1 `package/dist/get-platform-env.js`.
+
+The adapter's real call shape, from `deploy/engine/providers.py`, is `vercel pull --yes --environment=preview --scope <configured team slug> --token <redacted>`, with repository-root cwd. The inherited environment includes the existing Vercel variables and adds the configured public API/Auth URLs; the report records no values. It does not pass `--project`. Before this call, the engine performs its separate project API readback and `npm ci --ignore-scripts`; the Parent's readback confirms both completed on this run. The Frontend API readback checks project ID/name/team, repository link, and `rootDirectory=apps/frontend`; that API call does not write a local Vercel project link.
+
+The cached 59.11.7 source shows that `pull` calls `ensureLink` and then `getLinkedProject`. For an existing repository link, the pull code derives its target directory from `repoRoot` plus the linked project's `rootDirectory`; it writes the preview environment file and project settings under that project directory. In the environment-link branch, `getLinkedProject` requests the `ORG_ID` and `PROJECT_ID` platform variables. The matching build-utils source resolves those names only from the `VERCEL_` or legacy `NOW_` prefixes. Its project-link code has a deterministic exit-code-1 path if a project-ID variable is present without an organization-ID variable; `VERCEL_TEAM_ID` is not that organization variable. The explicit `--scope` flag selects a team scope but does not populate the `ORG_ID` environment variable checked by that pair guard.
+
+The registered `cd.yml` prepare step explicitly provides `VERCEL_TOKEN`, `VERCEL_PROJECT_ID`, and `VERCEL_TEAM_ID`; the workflow has no `VERCEL_ORG_ID` assignment. The project-readback stage preceding `npm ci` succeeded, so the engine had a valid `VERCEL_PROJECT_ID` for that earlier process. However, the persisted result does not record whether either `VERCEL_ORG_ID` or legacy `NOW_ORG_ID` was present in the pull subprocess environment, and it does not include a safe CLI error class. Therefore the exact missing-pair branch cannot yet be attributed to run 37061649417. Permission, cwd, token, team, and project-link causes remain unconfirmed. No fix or environment change is proposed as established fact.
+
+The root-directory behavior also does not prove a cwd defect: the pinned CLI derives the pull target from resolved link metadata when available, while the engine invokes the command from repository root. The live run proves only the stage and return code. Do not infer that the pull used the wrong directory or alter cwd, CLI flags, dependencies, or timeouts on this evidence.
+
+## Next discriminating check for Parent approval
+
+If Parent wants to separate the exact source-identified project-context branch from other CLI errors, use a one-shot isolated Development diagnostic after review. It must not reuse the normal `release` job, since a successful pull could continue into Frontend build, ready receipt, and runtime. Keep it separate from the deployment engine/barrier/runtime and Cloud Build; use only the fixed DEV project/team inputs and pinned CLI, and never emit values or raw process output.
+
+At command entry, record presence booleans only for `VERCEL_PROJECT_ID`, `VERCEL_ORG_ID`, `NOW_PROJECT_ID`, and `NOW_ORG_ID` (no values; no token-presence report is needed). A local allowlisted classifier may return `project-context-pair-incomplete` only when the required project alias is present and both organization aliases are absent, or `unclassified` otherwise. If a pull subprocess is separately authorized, capture stdout/stderr privately and classify only the exact pinned-CLI pair diagnostic into that fixed enum; persist only the enum, fixed stage, exit code, and timeout class. All other output stays discarded. Do not classify permission, cwd, or token failures by guess, and never persist argv, environment values, stdout, or stderr.
+
+The diagnostic must stop after this command, create no receipt/archive, publish no artifact, and perform no alias/deploy/build operation. Because `vercel pull` may write environment and project files locally and accesses Vercel remotely, dispatching it still requires Parent's prior action-specific approval. If Parent does not authorize that step, the source-level discrepancy plus unknown inherited-alias presence is the current stopping point. No release retry or Auth rebuild is indicated; retain the compatible Auth receipt for any separately approved future release.
+
+## Boundary and identity
+
+The analysis read only allowlisted result/state fields, workflow and adapter source, and integrity-verified offline npm tarballs. It did not execute or contact Vercel/npm, Cloud Build, GitHub Actions, or another provider; it did not read credentials or raw logs; it did not change source, tests, manifest, Git metadata, or release state. Repository HEAD at inspection was `95c466eb4ccd71302a11ff416de8180d55182d9d`, tree `3216e0b20e8e0567ae655c82a506ddf46a7c7857`. This report is evidence only and is excluded from the implementation manifest.

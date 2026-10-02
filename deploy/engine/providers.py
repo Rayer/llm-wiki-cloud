@@ -307,7 +307,11 @@ class Providers:
         require(c == 'frontend', 'container-prepare-requires-build-checkpoint')
         self.project(stage='frontend-project-readback')
         cfg = self.p['frontend']
-        env = dict(os.environ, NEXT_PUBLIC_API_URL=cfg['api_url'], NEXT_PUBLIC_AUTH_URL=cfg['auth_url'])
+        env = dict(os.environ, NEXT_PUBLIC_API_URL=cfg['api_url'], NEXT_PUBLIC_AUTH_URL=cfg['auth_url'],
+                   VERCEL_ORG_ID=os.environ['VERCEL_TEAM_ID'],
+                   VERCEL_PROJECT_ID=os.environ['VERCEL_PROJECT_ID'])
+        env.pop('NOW_ORG_ID', None)
+        env.pop('NOW_PROJECT_ID', None)
         target = 'production' if self.p['environment'] == 'production' else 'preview'
         run(['npm', 'ci', '--ignore-scripts'], cwd=ROOT / 'apps/frontend', timeout=600,
             stage='frontend-npm-ci')

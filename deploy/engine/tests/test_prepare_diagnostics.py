@@ -17,6 +17,8 @@ import engine
 import providers
 from support import Breakpoint, ROOT as SUPPORT_ROOT, digest, write
 
+ORIGINAL_SUBPROCESS_RUN = subprocess.run
+
 
 class AuthPrepareDiagnostics(unittest.TestCase):
     def setUp(self):
@@ -315,6 +317,87 @@ class FrontendPrepareDiagnostics(unittest.TestCase):
             for stage, _, _, _ in self.stages:
                 with self.subTest(stage=stage, failure=failure_kind), tempfile.TemporaryDirectory() as work:
                     self.assert_failure_case(work, stage, failure_kind)
+
+    def test_pinned_vercel_and_build_utils_source_env_contract(self):
+        result = ORIGINAL_SUBPROCESS_RUN(
+            ['node', HERE / 'tests' / 'test_vercel_env_context.js'],
+            capture_output=True, text=True, check=False,
+            env={'PATH': os.environ.get('PATH', '/usr/bin:/bin')})
+        self.assertEqual(result.returncode, 0, result.stderr)
+        self.assertIn('PROJECT present + ORG absent', result.stdout)
+        self.assertIn('Validated TEAM mapped to ORG', result.stdout)
+        self.assertIn('conflicting inherited NOW aliases', result.stdout)
+
+    def test_provider_prepare_passes_readback_identity_to_pinned_cli_context(self):
+        with tempfile.TemporaryDirectory() as work:
+            work = Path(work)
+            instance, directory, fake_root, _ = self.make_engine(work)
+            output = fake_root / '.vercel/output'
+            (output / 'static').mkdir(parents=True)
+            cfg = instance.plan['normalized']['frontend']
+            (output / 'static/build-config.json').write_text(json.dumps({
+                'schema_version': 1, 'api_url': cfg['api_url'], 'auth_url': cfg['auth_url']}))
+            (fake_root / '.vercel/project.json').write_text('{}')
+            provider = providers.Providers(instance.plan, directory)
+            trace = []
+            probe = HERE / 'tests' / 'test_vercel_env_context.js'
+
+            def fake_subprocess(args, *, cwd, env, input, capture_output, text, timeout):
+                operation = self.child_operation(args)
+                trace.append((operation, list(args), str(cwd), timeout, env))
+                if operation == 'frontend-project-readback':
+                    response = {'id': self.project, 'name': 'llm-wiki-frontend-test',
+                                'accountId': self.team, 'rootDirectory': 'apps/frontend',
+                                'link': {'org': 'Rayer', 'repo': 'llm-wiki-cloud'}}
+                    return subprocess.CompletedProcess(args, 0, stdout=json.dumps(response), stderr='')
+                if operation == 'frontend-npm-ci':
+                    return subprocess.CompletedProcess(args, 0, stdout='', stderr='')
+                if operation in ('frontend-vercel-pull', 'frontend-vercel-build'):
+                    if operation == 'frontend-vercel-pull':
+                        self.assertEqual(args, ['vercel', 'pull', '--yes', '--environment=preview',
+                                                '--scope', 'test-team', '--token', self.token])
+                        safe_env = {key: env[key] for key in (
+                            'VERCEL_PROJECT_ID', 'VERCEL_ORG_ID', 'VERCEL_TEAM_ID',
+                            'NOW_PROJECT_ID', 'NOW_ORG_ID') if key in env}
+                        checked = ORIGINAL_SUBPROCESS_RUN(
+                            ['node', probe, '--assert-linked-env'],
+                            input=json.dumps({'env': safe_env,
+                                              'expected': {'project': self.project, 'team': self.team}}),
+                            capture_output=True, text=True, check=False,
+                            env={'PATH': os.environ.get('PATH', '/usr/bin:/bin')})
+                        self.assertEqual(checked.returncode, 0, checked.stderr)
+                    return subprocess.CompletedProcess(args, 0, stdout='', stderr='')
+                raise AssertionError('unexpected subprocess in Provider.prepare integration fixture')
+
+            inherited = {'PATH': os.environ.get('PATH', '/usr/bin:/bin'), 'HOME': str(work),
+                         'TMPDIR': str(work), 'VERCEL_TOKEN': self.token,
+                         'VERCEL_TEAM_ID': self.team, 'VERCEL_PROJECT_ID': self.project,
+                         'VERCEL_ORG_ID': 'team_InheritedWrong',
+                         'NOW_ORG_ID': 'team_LegacyWrong', 'NOW_PROJECT_ID': 'prj_LegacyWrong'}
+            with patch.dict(os.environ, inherited, clear=True), patch('providers.ROOT', fake_root), \
+                    patch('support.subprocess.run', side_effect=fake_subprocess):
+                artifact = provider.prepare('frontend')
+                self.assertEqual(os.environ['VERCEL_ORG_ID'], 'team_InheritedWrong')
+                self.assertEqual(os.environ['NOW_ORG_ID'], 'team_LegacyWrong')
+                self.assertEqual(os.environ['NOW_PROJECT_ID'], 'prj_LegacyWrong')
+
+            self.assertEqual([row[0] for row in trace], [
+                'frontend-project-readback', 'frontend-npm-ci',
+                'frontend-vercel-pull', 'frontend-vercel-build'])
+            pull, build = trace[2], trace[3]
+            for row in (pull, build):
+                child_env = row[4]
+                self.assertEqual(child_env['VERCEL_ORG_ID'], self.team)
+                self.assertEqual(child_env['VERCEL_PROJECT_ID'], self.project)
+                self.assertEqual(child_env['VERCEL_TEAM_ID'], self.team)
+                self.assertNotIn('NOW_ORG_ID', child_env)
+                self.assertNotIn('NOW_PROJECT_ID', child_env)
+            self.assertEqual(pull[2], str(fake_root))
+            self.assertEqual(pull[3], 30)
+            self.assertEqual(build[2], str(fake_root))
+            self.assertEqual(build[3], 900)
+            self.assertEqual(artifact['project'], self.project)
+            self.assertEqual(artifact['team'], self.team)
 
 
 if __name__ == '__main__':
