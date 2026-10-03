@@ -1,0 +1,5 @@
+real_writer_output=present
+route_func_is_symlink= True
+route_func_target= build-config.json.rsc.func
+resolved_target_is_directory= True
+validator_result= rejected

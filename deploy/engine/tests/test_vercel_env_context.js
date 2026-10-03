@@ -280,21 +280,36 @@ async function main() {
     }
     if (prerenderCase) {
       const functions = path.join(build.output, 'functions');
-      const func = path.join(functions, 'build-config.json.func');
-      fs.mkdirSync(func, { recursive: true });
-      const handler = path.join(func, '___next_launcher.cjs');
-      const functionConfig = { handler: '___next_launcher.cjs' };
-      if (input.outputCase === 'prerender-handler-sibling-symlink') {
-        const sibling = path.join(functions, 'other-route.func');
-        fs.mkdirSync(sibling, { recursive: true });
-        fs.writeFileSync(path.join(sibling, 'handler.cjs'), 'TEST ONLY sibling handler');
-        fs.symlinkSync(sibling, path.join(func, 'nested'), 'dir');
-        functionConfig.handler = 'nested/handler.cjs';
-      } else if (input.outputCase !== 'prerender-missing-handler') {
-        fs.writeFileSync(handler, 'TEST ONLY handler');
+      fs.mkdirSync(functions, { recursive: true });
+      const routeFunc = path.join(functions, 'build-config.json.func');
+      const dedup = input.outputCase === 'prerender-dedup';
+      const dangling = input.outputCase === 'prerender-dangling-func-link';
+      const escaping = input.outputCase === 'prerender-func-link-escape';
+      const siblingFuncLink = input.outputCase === 'prerender-func-link-sibling';
+      const func = dedup
+        ? path.join(functions, 'build-config.json.rsc.func')
+        : (escaping ? path.join(build.output, 'outside.func')
+          : (dangling ? path.join(functions, 'missing.func')
+            : (siblingFuncLink ? path.join(functions, 'other-route.func') : routeFunc)));
+      const linkTarget = dedup ? path.basename(func) : (escaping ? '../outside.func'
+        : (dangling ? 'missing.func' : (siblingFuncLink ? 'other-route.func' : null)));
+      if (!dangling) fs.mkdirSync(func, { recursive: true });
+      if (!dangling) {
+        const handler = path.join(func, '___next_launcher.cjs');
+        const functionConfig = { handler: '___next_launcher.cjs' };
+        if (input.outputCase === 'prerender-handler-sibling-symlink') {
+          const sibling = path.join(functions, 'other-route.func');
+          fs.mkdirSync(sibling, { recursive: true });
+          fs.writeFileSync(path.join(sibling, 'handler.cjs'), 'TEST ONLY sibling handler');
+          fs.symlinkSync(sibling, path.join(func, 'nested'), 'dir');
+          functionConfig.handler = 'nested/handler.cjs';
+        } else if (input.outputCase !== 'prerender-missing-handler') {
+          fs.writeFileSync(handler, 'TEST ONLY handler');
+        }
+        if (input.outputCase === 'prerender-handler-escape') functionConfig.handler = '../outside.cjs';
+        fs.writeFileSync(path.join(func, '.vc-config.json'), JSON.stringify(functionConfig));
       }
-      if (input.outputCase === 'prerender-handler-escape') functionConfig.handler = '../outside.cjs';
-      fs.writeFileSync(path.join(func, '.vc-config.json'), JSON.stringify(functionConfig));
+      if (linkTarget !== null) fs.symlinkSync(linkTarget, routeFunc, 'dir');
       const descriptor = {
         type: 'Prerender',
         initialHeaders: { 'content-type': 'application/json' },

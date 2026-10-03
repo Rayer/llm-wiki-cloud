@@ -150,6 +150,8 @@ class Providers:
                 return 'file'
             if stat.S_ISDIR(mode):
                 return 'directory'
+            if stat.S_ISLNK(mode):
+                return 'symlink'
             return 'other'
 
         try:
@@ -178,9 +180,18 @@ class Providers:
         if not prerender_present:
             raise FileNotFoundError(static_path)
 
-        if (kind(func_path) != 'directory' or kind(descriptor_path) != 'file' or
+        func_kind = kind(func_path)
+        if (func_kind not in ('directory', 'symlink') or kind(descriptor_path) != 'file' or
                 kind(fallback_path) != 'file' or
                 not all(contained(path) for path in (func_path, descriptor_path, fallback_path))):
+            return None
+        try:
+            functions_root = functions.resolve(strict=True)
+            function_root = func_path.resolve(strict=True)
+            function_root.relative_to(functions_root)
+        except (FileNotFoundError, ValueError):
+            return None
+        if not function_root.is_dir():
             return None
         function_config_path = func_path / '.vc-config.json'
         if kind(function_config_path) != 'file' or not contained(function_config_path):
