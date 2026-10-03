@@ -1,0 +1,11 @@
+# Accepted r2 appendix — complete latest-checkpoint lookup
+
+This appendix records Owner acceptance 3584-1777 and Parent direction 4-1776. It supplements the frozen r2 specification; `deployment-engine-spec-r2.md` remains byte-for-byte unchanged. It changes only the existing read-only latest-checkpoint lookup and its failure cause.
+
+The artifact list API is read with `per_page=100&page=n`. The first response's `total_count` determines the final page. Before selecting a candidate or declaring absence, the transport must read every page and verify that each response repeats the same `total_count`, each page has the expected number of records, every record has a valid positive integer ID and name, IDs are unique, and the combined record count equals `total_count`. Missing pages, changed totals, incomplete coverage, duplicate IDs, API errors, or the existing 120-second subprocess timeout fail closed; no partial listing may yield a candidate or an absence result. There is no fixed artifact-count ceiling.
+
+Only after a complete listing does the transport select names with the existing `lwc-state-<target>-` prefix and choose the highest numeric artifact ID. An expired selected artifact, an untrusted workflow, or a download/validation failure remains a hard failure; the transport never falls back to an older artifact. The existing artifact-ID download, workflow trust check, and engine plan/sequence/status guards are unchanged.
+
+The runtime subprocess is labeled `latest-checkpoint`. Its existing generic reason, exit code, status, mutation flag, and next action remain unchanged. The transport adds one bounded machine-readable cause record containing the originating exception type and message; Python passes it through the existing result `cause` field using the existing known-value message handling. It does not expose argv, environment values, or API response bodies. Timeout and tool-unavailable outcomes retain their existing typed cause and timeout metadata.
+
+Offline regression evidence is in `evidence/latest-checkpoint-node-final2.txt` and `evidence/latest-checkpoint-integration-final4.txt`. Both are included in the complete engine discovery output `evidence/latest-checkpoint-full-engine-final.txt`. The frozen r2 specification remains unchanged.

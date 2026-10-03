@@ -41,8 +41,9 @@ _CAUSE_TYPES = {
 }
 _CAUSE_STAGES = {
     'frontend-project-readback', 'frontend-npm-ci',
-    'frontend-vercel-pull', 'frontend-vercel-build', 'unknown',
+    'frontend-vercel-pull', 'frontend-vercel-build', 'latest-checkpoint', 'unknown',
 }
+_ARTIFACT_CAUSE_PREFIX = 'LWC_ARTIFACT_CAUSE '
 _SENSITIVE_ENVIRONMENT_KEYS = ('VERCEL_TOKEN', 'GH_TOKEN', 'GITHUB_TOKEN', 'ACTIONS_RUNTIME_TOKEN')
 _MAX_CAUSE_MESSAGE_LENGTH = 512
 _CAUSE_CODES = {value[1] for value in _CAUSE_TYPES.values()} | {
@@ -127,6 +128,37 @@ def structured_cause(exc, stage='unknown', *, code=None, message=_MESSAGE_UNSET,
     return cause
 
 
+def latest_artifact_cause(stderr, sensitive_values=()):
+    """Convert the latest transport's bounded error record into the result cause."""
+    for line in reversed(stderr.splitlines()):
+        if not line.startswith(_ARTIFACT_CAUSE_PREFIX):
+            continue
+        try:
+            value = json.loads(line[len(_ARTIFACT_CAUSE_PREFIX):])
+        except (json.JSONDecodeError, TypeError):
+            break
+        if (not isinstance(value, dict) or
+                not isinstance(value.get('exception_type'), str) or
+                len(value['exception_type']) > 80 or
+                not isinstance(value.get('exception_type_truncated'), bool) or
+                not isinstance(value.get('message'), str) or len(value['message']) > 513 or
+                not isinstance(value.get('message_truncated'), bool)):
+            break
+        cause = structured_cause(
+            ChildProcessError(), 'latest-checkpoint', code='child-command-failed',
+            message=value['message'], sensitive_values=sensitive_values)
+        exception_type = value['exception_type']
+        cause['exception_type'] = exception_type or 'unknown'
+        cause['exception_type_omitted'] = not bool(exception_type)
+        if value['exception_type_truncated']:
+            cause['exception_type_truncated'] = True
+        if value['message_truncated']:
+            cause['message_truncated'] = True
+        return cause
+    return structured_cause(ChildProcessError(), 'latest-checkpoint',
+                            code='child-command-failed', message=None)
+
+
 def require(ok, reason):
     if not ok:
         raise Breakpoint(reason)
@@ -162,7 +194,7 @@ _STAGE_FAILURE = re.compile(
 
 def run(args, *, cwd=ROOT, env=None, timeout=30, mutation=False, input=None, stage=None,
         unknown_on_error=False, return_process=False):
-    frontend_stage = stage in _CAUSE_STAGES - {'unknown'}
+    cause_stage = stage in _CAUSE_STAGES - {'unknown'}
     sensitive_values = tuple((env if isinstance(env, dict) else os.environ).get(key, '')
                              for key in _SENSITIVE_ENVIRONMENT_KEYS)
     try:
@@ -172,13 +204,13 @@ def run(args, *, cwd=ROOT, env=None, timeout=30, mutation=False, input=None, sta
         status = 'unknown' if mutation or unknown_on_error else 'failed'
         cause = (structured_cause(exc, stage, code='child-command-timeout',
                                   message=exc.stderr, sensitive_values=sensitive_values)
-                 if frontend_stage else None)
+                 if cause_stage else None)
         raise Breakpoint('provider-timeout', status, mutation, 'reconcile-before-replay',
                          stage=stage, timeout_class='subprocess-timeout', cause=cause) from None
     except OSError as exc:
         cause = (structured_cause(exc, stage, code='tool-unavailable',
                                   sensitive_values=sensitive_values)
-                 if frontend_stage else None)
+                 if cause_stage else None)
         raise Breakpoint('tool-unavailable', stage=stage, timeout_class='tool-unavailable',
                          cause=cause) from None
     if result.returncode:
@@ -188,15 +220,21 @@ def run(args, *, cwd=ROOT, env=None, timeout=30, mutation=False, input=None, sta
                 details = _STAGE_FAILURE.fullmatch(line)
                 if details:
                     break
-        permission = (details and details.group(3) == '1') or any(
-            s in result.stderr.lower() for s in ('permission_denied', 'permission denied', 'forbidden',
-                'unauthorized', 'returned error: 403', 'returned error: 401'))
+        permission = False
+        if stage != 'latest-checkpoint':
+            permission = bool(details and details.group(3) == '1') or any(
+                s in result.stderr.lower() for s in (
+                    'permission_denied', 'permission denied', 'forbidden', 'unauthorized',
+                    'returned error: 403', 'returned error: 401'))
         reported_stage = details.group(1) if details else stage
         exit_code = int(details.group(2)) if details else result.returncode
         status = 'unknown' if mutation or unknown_on_error else 'failed'
-        cause = (structured_cause(ChildProcessError(), stage, code='child-command-failed',
-                                  message=result.stderr, sensitive_values=sensitive_values)
-                 if frontend_stage else None)
+        if stage == 'latest-checkpoint':
+            cause = latest_artifact_cause(result.stderr, sensitive_values)
+        else:
+            cause = (structured_cause(ChildProcessError(), stage, code='child-command-failed',
+                                       message=result.stderr, sensitive_values=sensitive_values)
+                     if cause_stage else None)
         raise Breakpoint('permission-denied' if permission else 'command-failed',
                          status, mutation,
                          'restore-existing-principal-permission' if permission else 'reconcile-before-replay',

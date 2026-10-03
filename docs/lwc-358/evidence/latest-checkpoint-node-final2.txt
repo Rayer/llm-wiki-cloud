@@ -1,0 +1,64 @@
+TAP version 13
+# Subtest: upload includes receipts but omits transient lock/latest files
+ok 1 - upload includes receipts but omits transient lock/latest files
+  ---
+  duration_ms: 2.43625
+  type: 'test'
+  ...
+# Subtest: latest target checkpoint uses artifact identity and writes exact state
+ok 2 - latest target checkpoint uses artifact identity and writes exact state
+  ---
+  duration_ms: 1.347334
+  type: 'test'
+  ...
+# Subtest: latest consumes every page beyond 400 before selecting the highest matching ID
+ok 3 - latest consumes every page beyond 400 before selecting the highest matching ID
+  ---
+  duration_ms: 1.270541
+  type: 'test'
+  ...
+# Subtest: complete listing with no matching checkpoint is absence only after all pages
+ok 4 - complete listing with no matching checkpoint is absence only after all pages
+  ---
+  duration_ms: 0.427834
+  type: 'test'
+  ...
+# Subtest: incomplete, inconsistent and duplicate pages fail closed with a cause
+ok 5 - incomplete, inconsistent and duplicate pages fail closed with a cause
+  ---
+  duration_ms: 0.8505
+  type: 'test'
+  ...
+# Subtest: latest API source failure preserves fixed cause metadata
+ok 6 - latest API source failure preserves fixed cause metadata
+  ---
+  duration_ms: 0.370417
+  type: 'test'
+  ...
+# Subtest: newest expired checkpoint does not fall back to an older usable one
+ok 7 - newest expired checkpoint does not fall back to an older usable one
+  ---
+  duration_ms: 0.359208
+  type: 'test'
+  ...
+# Subtest: untrusted checkpoint workflow fails closed
+ok 8 - untrusted checkpoint workflow fails closed
+  ---
+  duration_ms: 0.669291
+  type: 'test'
+  ...
+# Subtest: explicit download rejects nonnumeric references before any network
+ok 9 - explicit download rejects nonnumeric references before any network
+  ---
+  duration_ms: 0.330542
+  type: 'test'
+  ...
+1..9
+# tests 9
+# suites 0
+# pass 9
+# fail 0
+# cancelled 0
+# skipped 0
+# todo 0
+# duration_ms 72.776708

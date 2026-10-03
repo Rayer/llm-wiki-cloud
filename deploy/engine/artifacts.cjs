@@ -4,6 +4,7 @@ const fs = require('node:fs');
 const path = require('node:path');
 const {DefaultArtifactClient} = require('@actions/artifact');
 const client = new DefaultArtifactClient();
+const ARTIFACT_PAGE_SIZE = 100;
 async function api(endpoint) {
   const response = await fetch(`https://api.github.com/repos/${process.env.GITHUB_REPOSITORY}/${endpoint}`, {
     headers: {Authorization: `Bearer ${process.env.GH_TOKEN}`, Accept:'application/vnd.github+json'},
@@ -11,6 +12,50 @@ async function api(endpoint) {
   });
   if (!response.ok) throw Error('artifact API unavailable');
   return response.json();
+}
+function artifactPage(response, totalCount, page) {
+  if (!response || !Number.isSafeInteger(response.total_count) ||
+      response.total_count !== totalCount || !Array.isArray(response.artifacts)) {
+    throw Error('artifact list page is inconsistent');
+  }
+  const expected = Math.min(ARTIFACT_PAGE_SIZE,
+    Math.max(0, totalCount - (page - 1) * ARTIFACT_PAGE_SIZE));
+  if (response.artifacts.length !== expected) throw Error('artifact list page coverage mismatch');
+  return response.artifacts;
+}
+async function allArtifacts() {
+  const first = await api(`actions/artifacts?per_page=${ARTIFACT_PAGE_SIZE}&page=1`);
+  const totalCount = first && first.total_count;
+  if (!Number.isSafeInteger(totalCount) || totalCount < 0 || !Array.isArray(first.artifacts)) {
+    throw Error('artifact list response is invalid');
+  }
+  const pageCount = Math.max(1, Math.ceil(totalCount / ARTIFACT_PAGE_SIZE));
+  const seen = new Set();
+  const artifacts = [];
+  for (let page = 1; page <= pageCount; page++) {
+    const response = page === 1 ? first : await api(
+      `actions/artifacts?per_page=${ARTIFACT_PAGE_SIZE}&page=${page}`);
+    for (const artifact of artifactPage(response, totalCount, page)) {
+      if (!artifact || !Number.isSafeInteger(artifact.id) || artifact.id < 1 ||
+          typeof artifact.name !== 'string') throw Error('artifact list item is invalid');
+      if (seen.has(artifact.id)) throw Error('duplicate artifact ID across pages');
+      seen.add(artifact.id);
+      artifacts.push(artifact);
+    }
+  }
+  if (artifacts.length !== totalCount || seen.size !== totalCount) {
+    throw Error('artifact list coverage is incomplete');
+  }
+  return artifacts;
+}
+function artifactFailure(error) {
+  const name = error && typeof error.name === 'string' ? error.name : typeof error;
+  const message = error && typeof error.message === 'string' ? error.message
+    : (typeof error === 'string' ? error : '');
+  return {
+    exception_type: name.slice(0, 80), exception_type_truncated: name.length > 80,
+    message: message.slice(0, 513), message_truncated: message.length > 513,
+  };
 }
 function files(dir) {
   return fs.readdirSync(dir, {withFileTypes:true}).flatMap(entry => {
@@ -39,13 +84,9 @@ async function main() {
     await download(arg, name);
   } else if (op === 'latest') {
     if (!['development','production'].includes(arg)) throw Error('invalid target');
-    // One bounded latest-state lookup, distinct from CI eligibility machinery.
-    const response = await api('actions/artifacts?per_page=100');
-    const candidates = response.artifacts.filter(a => a.name.startsWith(`lwc-state-${arg}-`));
-    if (!candidates.length) {
-      if (response.total_count >= 100) throw Error('target checkpoint outside bounded lookup');
-      return;
-    }
+    // Consume a complete repository listing before deciding latest or absence.
+    const candidates = (await allArtifacts()).filter(a => a.name.startsWith(`lwc-state-${arg}-`));
+    if (!candidates.length) return;
     const latest = candidates.sort((a,b)=>b.id-a.id)[0];
     if (latest.expired) throw Error('latest checkpoint expired');
     const temp = fs.mkdtempSync(path.join(require('node:os').tmpdir(), 'lwc-checkpoint-'));
@@ -58,4 +99,9 @@ async function main() {
     } finally { fs.rmSync(temp, {recursive:true, force:true}); }
   } else throw Error('unknown artifact operation');
 }
-main().catch(() => {console.error('artifact transport failed (details suppressed)'); process.exitCode=1;});
+main().catch(error => {
+  if (process.argv[2] === 'latest') {
+    console.error('LWC_ARTIFACT_CAUSE ' + JSON.stringify(artifactFailure(error)));
+  } else console.error('artifact transport failed (details suppressed)');
+  process.exitCode=1;
+});

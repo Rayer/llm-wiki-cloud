@@ -1,0 +1,8 @@
+test_latest_page_failure_reaches_engine_result_with_original_cause (deploy.engine.tests.test_transport_integration.EngineTransportIntegration.test_latest_page_failure_reaches_engine_result_with_original_cause) ... ok
+test_runtime_guard_reads_checkpoint_with_actual_engine_latest_argv (deploy.engine.tests.test_transport_integration.EngineTransportIntegration.test_runtime_guard_reads_checkpoint_with_actual_engine_latest_argv) ... ok
+test_save_reaches_sdk_with_actual_engine_upload_argv (deploy.engine.tests.test_transport_integration.EngineTransportIntegration.test_save_reaches_sdk_with_actual_engine_upload_argv) ... ok
+
+----------------------------------------------------------------------
+Ran 3 tests in 0.137s
+
+OK

@@ -1,0 +1,44 @@
+test_latest_page_failure_reaches_engine_result_with_original_cause (deploy.engine.tests.test_transport_integration.EngineTransportIntegration.test_latest_page_failure_reaches_engine_result_with_original_cause) ... ERROR
+test_runtime_guard_reads_checkpoint_with_actual_engine_latest_argv (deploy.engine.tests.test_transport_integration.EngineTransportIntegration.test_runtime_guard_reads_checkpoint_with_actual_engine_latest_argv) ... ok
+test_save_reaches_sdk_with_actual_engine_upload_argv (deploy.engine.tests.test_transport_integration.EngineTransportIntegration.test_save_reaches_sdk_with_actual_engine_upload_argv) ... ok
+
+======================================================================
+ERROR: test_latest_page_failure_reaches_engine_result_with_original_cause (deploy.engine.tests.test_transport_integration.EngineTransportIntegration.test_latest_page_failure_reaches_engine_result_with_original_cause)
+----------------------------------------------------------------------
+Traceback (most recent call last):
+  File "/Users/rayer/orca/workspaces/llm-wiki-cloud/LWC-358-engine-r2/deploy/engine/engine.py", line 586, in main
+    engine.runtime_guard()
+    ~~~~~~~~~~~~~~~~~~~~^^
+  File "/Users/rayer/orca/workspaces/llm-wiki-cloud/LWC-358-engine-r2/deploy/engine/engine.py", line 381, in runtime_guard
+    run(['node', ROOT / 'deploy/engine/artifacts.cjs', 'latest',
+    ~~~^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+         self.plan['normalized']['environment'], latest_path], timeout=120,
+         ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+        stage='latest-checkpoint')
+        ^^^^^^^^^^^^^^^^^^^^^^^^^^
+  File "/Users/rayer/orca/workspaces/llm-wiki-cloud/LWC-358-engine-r2/deploy/engine/support.py", line 238, in run
+    raise Breakpoint('permission-denied' if permission else 'command-failed',
+    ...<2 lines>...
+                     stage=reported_stage, exit_code=exit_code, cause=cause)
+support.Breakpoint: command-failed
+
+During handling of the above exception, another exception occurred:
+
+Traceback (most recent call last):
+  File "/Users/rayer/orca/workspaces/llm-wiki-cloud/LWC-358-engine-r2/deploy/engine/tests/test_transport_integration.py", line 75, in test_latest_page_failure_reaches_engine_result_with_original_cause
+    self.assertEqual(self._main(), 1)
+                     ~~~~~~~~~~^^
+  File "/Users/rayer/orca/workspaces/llm-wiki-cloud/LWC-358-engine-r2/deploy/engine/tests/test_transport_integration.py", line 97, in _main
+    return main()
+  File "/Users/rayer/orca/workspaces/llm-wiki-cloud/LWC-358-engine-r2/deploy/engine/engine.py", line 608, in main
+    engine.result(exc)
+    ~~~~~~~~~~~~~^^^^^
+  File "/Users/rayer/orca/workspaces/llm-wiki-cloud/LWC-358-engine-r2/deploy/engine/engine.py", line 528, in result
+    result = {'release': self.plan['tag'], 'attempt': self.plan['id'], 'stage': self.state['status'],
+                         ~~~~~~~~~^^^^^^^
+KeyError: 'tag'
+
+----------------------------------------------------------------------
+Ran 3 tests in 0.139s
+
+FAILED (errors=1)
