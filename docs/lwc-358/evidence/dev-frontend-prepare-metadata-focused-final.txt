@@ -1,0 +1,73 @@
+test_build_submit_stage_keeps_reason_and_redacts_child_output (test_prepare_diagnostics.AuthPrepareDiagnostics.test_build_submit_stage_keeps_reason_and_redacts_child_output) ... ok
+test_digest_lookup_and_digest_validation_are_distinct_stages (test_prepare_diagnostics.AuthPrepareDiagnostics.test_digest_lookup_and_digest_validation_are_distinct_stages) ... ok
+test_engine_result_exposes_only_allowlisted_failure_metadata (test_prepare_diagnostics.AuthPrepareDiagnostics.test_engine_result_exposes_only_allowlisted_failure_metadata) ... ok
+test_immutable_validation_failure_is_typed_without_raw_output (test_prepare_diagnostics.AuthPrepareDiagnostics.test_immutable_validation_failure_is_typed_without_raw_output) ... ok
+test_known_permission_classification_and_safe_action_are_preserved (test_prepare_diagnostics.AuthPrepareDiagnostics.test_known_permission_classification_and_safe_action_are_preserved) ... ok
+test_action_forwards_main_cause_to_stdout_and_retained_result_without_raw_input (test_prepare_diagnostics.FrontendPrepareDiagnostics.test_action_forwards_main_cause_to_stdout_and_retained_result_without_raw_input) ... 
+  test_action_forwards_main_cause_to_stdout_and_retained_result_without_raw_input (test_prepare_diagnostics.FrontendPrepareDiagnostics.test_action_forwards_main_cause_to_stdout_and_retained_result_without_raw_input) (case='missing-field') ... ERROR
+  test_action_forwards_main_cause_to_stdout_and_retained_result_without_raw_input (test_prepare_diagnostics.FrontendPrepareDiagnostics.test_action_forwards_main_cause_to_stdout_and_retained_result_without_raw_input) (case='invalid-json') ... ERROR
+test_diagnostic_collection_error_does_not_replace_primary_prepare_failure (test_prepare_diagnostics.FrontendPrepareDiagnostics.test_diagnostic_collection_error_does_not_replace_primary_prepare_failure) ... ok
+test_each_frontend_subprocess_failure_is_typed_redacted_and_stops_prepare (test_prepare_diagnostics.FrontendPrepareDiagnostics.test_each_frontend_subprocess_failure_is_typed_redacted_and_stops_prepare) ... 
+  test_each_frontend_subprocess_failure_is_typed_redacted_and_stops_prepare (test_prepare_diagnostics.FrontendPrepareDiagnostics.test_each_frontend_subprocess_failure_is_typed_redacted_and_stops_prepare) (stage='frontend-project-readback', failure='exit') ... ERROR
+  test_each_frontend_subprocess_failure_is_typed_redacted_and_stops_prepare (test_prepare_diagnostics.FrontendPrepareDiagnostics.test_each_frontend_subprocess_failure_is_typed_redacted_and_stops_prepare) (stage='frontend-project-readback', failure='timeout') ... ERROR
+test_engine_main_valid_project_response_prepares_frontend_and_keeps_auth (test_prepare_diagnostics.FrontendPrepareDiagnostics.test_engine_main_valid_project_response_prepares_frontend_and_keeps_auth) ... ok
+test_failure_reports_fixed_root_and_configured_output_candidates_without_changing_failure (test_prepare_diagnostics.FrontendPrepareDiagnostics.test_failure_reports_fixed_root_and_configured_output_candidates_without_changing_failure) ... ok
+test_malformed_diagnostic_metadata_keeps_primary_prepare_failure (test_prepare_diagnostics.FrontendPrepareDiagnostics.test_malformed_diagnostic_metadata_keeps_primary_prepare_failure) ... ok
+test_missing_or_wrong_project_root_config_fails_closed_without_root_fallback (test_prepare_diagnostics.FrontendPrepareDiagnostics.test_missing_or_wrong_project_root_config_fails_closed_without_root_fallback) ... ok
+test_pinned_vercel_and_build_utils_source_env_contract (test_prepare_diagnostics.FrontendPrepareDiagnostics.test_pinned_vercel_and_build_utils_source_env_contract) ... ok
+test_production_frontend_failure_does_not_add_dev_diagnostic (test_prepare_diagnostics.FrontendPrepareDiagnostics.test_production_frontend_failure_does_not_add_dev_diagnostic) ... ok
+test_provider_prepare_passes_readback_identity_to_pinned_cli_context (test_prepare_diagnostics.FrontendPrepareDiagnostics.test_provider_prepare_passes_readback_identity_to_pinned_cli_context) ... ok
+test_runtime_deploy_maps_selected_context_before_pinned_cli (test_prepare_diagnostics.FrontendPrepareDiagnostics.test_runtime_deploy_maps_selected_context_before_pinned_cli) ... ok
+test_code_override_is_allowlisted_and_unknown_cause_is_not_inspected (test_prepare_diagnostics.StructuredCauseContract.test_code_override_is_allowlisted_and_unknown_cause_is_not_inspected) ... ok
+test_engine_main_admission_exit_keeps_cause_when_engine_was_not_created (test_prepare_diagnostics.StructuredCauseContract.test_engine_main_admission_exit_keeps_cause_when_engine_was_not_created) ... ok
+test_message_is_bounded_selectively_redacted_and_marks_truncation (test_prepare_diagnostics.StructuredCauseContract.test_message_is_bounded_selectively_redacted_and_marks_truncation) ... ok
+test_python_input_messages_keep_location_and_omit_json_source_text (test_prepare_diagnostics.StructuredCauseContract.test_python_input_messages_keep_location_and_omit_json_source_text) ... ok
+
+======================================================================
+ERROR: test_action_forwards_main_cause_to_stdout_and_retained_result_without_raw_input (test_prepare_diagnostics.FrontendPrepareDiagnostics.test_action_forwards_main_cause_to_stdout_and_retained_result_without_raw_input) (case='missing-field')
+----------------------------------------------------------------------
+Traceback (most recent call last):
+  File "/Users/rayer/orca/workspaces/llm-wiki-cloud/LWC-358-engine-r2/deploy/engine/tests/test_prepare_diagnostics.py", line 730, in test_action_forwards_main_cause_to_stdout_and_retained_result_without_raw_input
+    diagnostic = action_result['frontend_prepare_diagnostic']
+                 ~~~~~~~~~~~~~^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+KeyError: 'frontend_prepare_diagnostic'
+
+======================================================================
+ERROR: test_action_forwards_main_cause_to_stdout_and_retained_result_without_raw_input (test_prepare_diagnostics.FrontendPrepareDiagnostics.test_action_forwards_main_cause_to_stdout_and_retained_result_without_raw_input) (case='invalid-json')
+----------------------------------------------------------------------
+Traceback (most recent call last):
+  File "/Users/rayer/orca/workspaces/llm-wiki-cloud/LWC-358-engine-r2/deploy/engine/tests/test_prepare_diagnostics.py", line 730, in test_action_forwards_main_cause_to_stdout_and_retained_result_without_raw_input
+    diagnostic = action_result['frontend_prepare_diagnostic']
+                 ~~~~~~~~~~~~~^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+KeyError: 'frontend_prepare_diagnostic'
+
+======================================================================
+ERROR: test_each_frontend_subprocess_failure_is_typed_redacted_and_stops_prepare (test_prepare_diagnostics.FrontendPrepareDiagnostics.test_each_frontend_subprocess_failure_is_typed_redacted_and_stops_prepare) (stage='frontend-project-readback', failure='exit')
+----------------------------------------------------------------------
+Traceback (most recent call last):
+  File "/Users/rayer/orca/workspaces/llm-wiki-cloud/LWC-358-engine-r2/deploy/engine/tests/test_prepare_diagnostics.py", line 752, in test_each_frontend_subprocess_failure_is_typed_redacted_and_stops_prepare
+    self.assert_failure_case(work, stage, failure_kind)
+    ~~~~~~~~~~~~~~~~~~~~~~~~^^^^^^^^^^^^^^^^^^^^^^^^^^^
+  File "/Users/rayer/orca/workspaces/llm-wiki-cloud/LWC-358-engine-r2/deploy/engine/tests/test_prepare_diagnostics.py", line 378, in assert_failure_case
+    diagnostic = result['frontend_prepare_diagnostic']
+                 ~~~~~~^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+KeyError: 'frontend_prepare_diagnostic'
+
+======================================================================
+ERROR: test_each_frontend_subprocess_failure_is_typed_redacted_and_stops_prepare (test_prepare_diagnostics.FrontendPrepareDiagnostics.test_each_frontend_subprocess_failure_is_typed_redacted_and_stops_prepare) (stage='frontend-project-readback', failure='timeout')
+----------------------------------------------------------------------
+Traceback (most recent call last):
+  File "/Users/rayer/orca/workspaces/llm-wiki-cloud/LWC-358-engine-r2/deploy/engine/tests/test_prepare_diagnostics.py", line 752, in test_each_frontend_subprocess_failure_is_typed_redacted_and_stops_prepare
+    self.assert_failure_case(work, stage, failure_kind)
+    ~~~~~~~~~~~~~~~~~~~~~~~~^^^^^^^^^^^^^^^^^^^^^^^^^^^
+  File "/Users/rayer/orca/workspaces/llm-wiki-cloud/LWC-358-engine-r2/deploy/engine/tests/test_prepare_diagnostics.py", line 378, in assert_failure_case
+    diagnostic = result['frontend_prepare_diagnostic']
+                 ~~~~~~^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+KeyError: 'frontend_prepare_diagnostic'
+
+----------------------------------------------------------------------
+Ran 20 tests in 1.934s
+
+FAILED (errors=4)
+{"allowed_next_action": "correct-input-and-resume", "attempt": "1b20930fbe14dc5bf77fa9254668d9d3fac28feb27020ad9ad2e09c6bf141f4e", "candidate": null, "component": "frontend", "expected": {"identity": "47d80b4cc2bf273ddeea241c2a440d855c8a3b5c777f35d7b014c3fce0fcc695", "source": "cccccccccccccccccccccccccccccccccccccccc"}, "last_verified_checkpoint": 0, "limitations": "Job executions and persistent writes are not reversed by image rollback.", "mutation_may_have_happened": false, "observed": {"component_status": "unstarted"}, "prior": null, "reason": "frontend-output-missing", "release": "offline-diagnostic", "stage": "prepared", "status": "failed"}
+Pinned resolver baseline=pair-incomplete; runtime-child=linked; resume=single-deploy

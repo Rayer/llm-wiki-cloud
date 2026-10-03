@@ -12,11 +12,13 @@ ROOT = Path(__file__).resolve().parents[2]
 
 class Breakpoint(Exception):
     def __init__(self, reason, status='failed', mutation=False, action='correct-input-and-resume',
-                 stage=None, exit_code=None, timeout_class=None, build=None, cause=None):
+                 stage=None, exit_code=None, timeout_class=None, build=None, cause=None,
+                 frontend_prepare_diagnostic=None):
         super().__init__(reason)
         self.reason, self.status, self.mutation, self.action = reason, status, mutation, action
         self.stage, self.exit_code, self.timeout_class = stage, exit_code, timeout_class
         self.build, self.cause = build, cause
+        self.frontend_prepare_diagnostic = frontend_prepare_diagnostic
 
 
 class InputShapeError(Exception):
