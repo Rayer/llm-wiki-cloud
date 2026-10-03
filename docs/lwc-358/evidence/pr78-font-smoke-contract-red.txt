@@ -1,0 +1,37 @@
+test_exit_cleanup_statuses (scripts.test_local_vertical_smoke.LocalVerticalSmokeTests.test_exit_cleanup_statuses) ... FAIL
+test_failed_parallel_build_reaps_sibling (scripts.test_local_vertical_smoke.LocalVerticalSmokeTests.test_failed_parallel_build_reaps_sibling) ... ERROR
+test_smoke_isolates_google_fonts_and_keeps_auth_bff_frontend_checks (scripts.test_local_vertical_smoke.LocalVerticalSmokeTests.test_smoke_isolates_google_fonts_and_keeps_auth_bff_frontend_checks) ... ok
+
+======================================================================
+ERROR: test_failed_parallel_build_reaps_sibling (scripts.test_local_vertical_smoke.LocalVerticalSmokeTests.test_failed_parallel_build_reaps_sibling)
+----------------------------------------------------------------------
+Traceback (most recent call last):
+  File "/Users/rayer/orca/workspaces/llm-wiki-cloud/LWC-358-engine-r2/scripts/test_local_vertical_smoke.py", line 89, in test_failed_parallel_build_reaps_sibling
+    ports = free_ports(3)
+  File "/Users/rayer/orca/workspaces/llm-wiki-cloud/LWC-358-engine-r2/scripts/test_local_vertical_smoke.py", line 20, in free_ports
+    listener.bind(("127.0.0.1", 0))
+    ~~~~~~~~~~~~~^^^^^^^^^^^^^^^^^^
+PermissionError: [Errno 1] Operation not permitted
+
+======================================================================
+FAIL: test_exit_cleanup_statuses (scripts.test_local_vertical_smoke.LocalVerticalSmokeTests.test_exit_cleanup_statuses)
+----------------------------------------------------------------------
+Traceback (most recent call last):
+  File "/Users/rayer/orca/workspaces/llm-wiki-cloud/LWC-358-engine-r2/scripts/test_local_vertical_smoke.py", line 82, in test_exit_cleanup_statuses
+    self.assertEqual(
+    ~~~~~~~~~~~~~~~~^
+        result.returncode,
+        ^^^^^^^^^^^^^^^^^^
+        expected,
+        ^^^^^^^^^
+        f"original={original} occupied={occupied}: stderr={result.stderr}",
+        ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+    )
+    ^
+AssertionError: 1 != 0 : original=0 occupied=False: stderr=mktemp: mkdtemp failed on /Users/rayer/.hermes/profiles/lwc-tpm/cache/scratch/tmp.lR8vNXNYqD: Operation not permitted
+
+
+----------------------------------------------------------------------
+Ran 3 tests in 0.008s
+
+FAILED (failures=1, errors=1)

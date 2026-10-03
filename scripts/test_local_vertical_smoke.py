@@ -25,6 +25,35 @@ def free_ports(count):
 
 
 class LocalVerticalSmokeTests(unittest.TestCase):
+    def test_smoke_isolates_google_fonts_and_keeps_auth_bff_frontend_checks(self):
+        source = SCRIPT.read_text()
+        layout = (ROOT / "apps/frontend/src/app/layout.tsx").read_text()
+
+        self.assertIn('font_mock="$tmp_dir/google-fonts-local-fallback.cjs"', source)
+        mock = source.split('cat > "$font_mock" <<\'NODE\'\n', 1)[1].split('\nNODE\n', 1)[0]
+        self.assertIn("module.exports = {", mock)
+        self.assertIn("family=Geist:wght@100..900&display=swap", mock)
+        self.assertIn("family=Geist+Mono:wght@100..900&display=swap", mock)
+        self.assertIn("family=Noto+Serif+TC:wght@500;600&display=swap", mock)
+        self.assertIn('src: local("Arial")', mock)
+        self.assertNotIn("src: url(", mock)
+        self.assertIn('NEXT_FONT_GOOGLE_MOCKED_RESPONSES="$font_mock"', source)
+        self.assertIn('NODE_ENV=development NEXT_TELEMETRY_DISABLED=1', source)
+
+        # The mock is scoped to the smoke process; product font defaults stay intact.
+        self.assertIn('from "next/font/google"', layout)
+        self.assertIn('Noto_Serif_TC({', layout)
+        self.assertNotIn("NEXT_FONT_GOOGLE_MOCKED_RESPONSES", layout)
+
+        # Retain the complete canonical vertical checks around the isolated font input.
+        self.assertIn('wait_for_http auth "http://127.0.0.1:$AUTH_PORT/api/v1/public/healthz"', source)
+        self.assertIn('wait_for_http bff "http://127.0.0.1:$BFF_PORT/api/v1/public/version"', source)
+        self.assertIn('wait_for_http frontend "http://127.0.0.1:$FRONTEND_PORT/"', source)
+        self.assertIn('/api/v1/auth/login', source)
+        self.assertIn('/api/v1/projects', source)
+        self.assertIn('project.get("id") == "demo"', source)
+        self.assertIn('"LLM Wiki Cloud" in body and "<html" in body', source)
+
     def test_exit_cleanup_statuses(self):
         source = SCRIPT.read_text()
         functions = source[source.index("listeners() {"):source.index("trap cleanup EXIT INT TERM")]

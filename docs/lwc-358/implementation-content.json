@@ -1,7 +1,7 @@
 {
-  "base": "c8e32bef33107bd87d7bed44369ee717c7074308",
-  "branch": "Rayer/LWC-358-vercel-project-context",
-  "content_sha256": "b90aeb7c06e4eb11b71516a3c21292546d965a736522173e8ff8258fb06a445d",
+  "base": "d7ac3acfcd26dd675d6d83f3036aa0e1e4e30d0b",
+  "branch": "Rayer/LWC-358-original-error-cause",
+  "content_sha256": "55d9a891c626fcf2c4e0f327ad140f3d3491fa5459656759237fa330ab39f301",
   "scope": "All changed/new implementation, test, operator, accepted-appendix and frozen-spec files; excludes this manifest, evidence report and logs to avoid self-reference.",
   "frozen_sha256": "838817cad154b0ea773c205f671362a6c9c0ad97c38ddf34f2508eb4fcc2488b",
   "files": [
@@ -132,7 +132,7 @@
     },
     {
       "path": "deploy/engine/engine.py",
-      "sha256": "476ab51c7ca0459dfac4e165c9d95617d4746e7224b108c06f615c645ec96b51",
+      "sha256": "9c40ba33b1c7fa47722c0544ef9f7c8edd4f52a1b28c8f5b5c14d53d49705a6d",
       "mode": "0o644"
     },
     {
@@ -142,12 +142,12 @@
     },
     {
       "path": "deploy/engine/providers.py",
-      "sha256": "8e64dcf58ef4383d12f7b3b674d1c414faa1104cb2efe739469f9e45c8fbbcf2",
+      "sha256": "f1d0fbc00242e642f4b63365a594cf8623c4f0bc2a938b56c28896226b19e528",
       "mode": "0o644"
     },
     {
       "path": "deploy/engine/support.py",
-      "sha256": "6b56b9588225fa1948be7815caa1707938fe03bd531169534842525a165c6d43",
+      "sha256": "a08378f5e532348dd104072eb3ba47f11251e9e7a85d4cb665b1b73baeaaf6f2",
       "mode": "0o644"
     },
     {
@@ -192,7 +192,7 @@
     },
     {
       "path": "deploy/engine/tests/test_prepare_diagnostics.py",
-      "sha256": "af4ab1042562e9c1cfff11b2c19fdbf0824a1db689bc8d64c1a5b1fcb2c16edb",
+      "sha256": "d1e58ce164994f06d560954e4d45ee2af27128568c68d53aebdbda69af068271",
       "mode": "0o644"
     },
     {
@@ -226,6 +226,11 @@
       "mode": "0o644"
     },
     {
+      "path": "scripts/local-vertical-smoke.sh",
+      "sha256": "b5e5835dfe7967a3faaafc6230624b0125ca55ce0f2880a0deec901eb4fe8c94",
+      "mode": "0o755"
+    },
+    {
       "path": "scripts/test_cd_contract.py",
       "sha256": "3be25f693476eb7418a4545a0afbc9fc8af00dfed3c4f86c361d06fe54791e63",
       "mode": "0o644"
@@ -233,6 +238,11 @@
     {
       "path": "scripts/test_engine_workflow.py",
       "sha256": "906a33cdd7d0a90125dc563bfd5313d77e45cf2678475de6c51b51d9628df879",
+      "mode": "0o644"
+    },
+    {
+      "path": "scripts/test_local_vertical_smoke.py",
+      "sha256": "00ad8efa82ea940d53db059b8bc2053a8038f6f3cc792e3dfd9282c482c77695",
       "mode": "0o644"
     }
   ]

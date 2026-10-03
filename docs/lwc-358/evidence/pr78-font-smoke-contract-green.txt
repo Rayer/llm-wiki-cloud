@@ -1,0 +1,8 @@
+test_exit_cleanup_statuses (scripts.test_local_vertical_smoke.LocalVerticalSmokeTests.test_exit_cleanup_statuses) ... ok
+test_failed_parallel_build_reaps_sibling (scripts.test_local_vertical_smoke.LocalVerticalSmokeTests.test_failed_parallel_build_reaps_sibling) ... ok
+test_smoke_isolates_google_fonts_and_keeps_auth_bff_frontend_checks (scripts.test_local_vertical_smoke.LocalVerticalSmokeTests.test_smoke_isolates_google_fonts_and_keeps_auth_bff_frontend_checks) ... ok
+
+----------------------------------------------------------------------
+Ran 3 tests in 1.008s
+
+OK
