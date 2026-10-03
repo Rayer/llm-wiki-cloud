@@ -1,0 +1,7 @@
+test_provider_prepare_passes_readback_identity_to_pinned_cli_context (test_prepare_diagnostics.FrontendPrepareDiagnostics.test_provider_prepare_passes_readback_identity_to_pinned_cli_context) ... ok
+test_provider_prepare_pinned_build_workpath_with_claiming_ancestor (test_prepare_diagnostics.FrontendPrepareDiagnostics.test_provider_prepare_pinned_build_workpath_with_claiming_ancestor) ... ok
+
+----------------------------------------------------------------------
+Ran 2 tests in 0.233s
+
+OK

@@ -1,7 +1,7 @@
 {
-  "base": "77733ab480295b64fbe5e0130f81321c5df93806",
-  "branch": "Rayer/LWC-358-frontend-prepare-metadata",
-  "content_sha256": "6e5377ca18b8fb36d255020ce512779a59ea8b027e028baf9c9c875e3b04cc0d",
+  "base": "f1480c03fe7aa0c4a10054de741d057210310db1",
+  "branch": "Rayer/LWC-358-vercel-project-cwd",
+  "content_sha256": "32086cc748b927e4af3f2b876ddf21e4f9b7b04469c246e20e3e74e05cf988ea",
   "scope": "All changed/new implementation, test, operator, accepted-appendix and frozen-spec files; excludes this manifest, evidence report and logs to avoid self-reference.",
   "frozen_sha256": "838817cad154b0ea773c205f671362a6c9c0ad97c38ddf34f2508eb4fcc2488b",
   "files": [
@@ -142,7 +142,7 @@
     },
     {
       "path": "deploy/engine/providers.py",
-      "sha256": "a692359627d395ffad1dcea094ab5ac763e8d1cab5b201b4f3fe9dcbe13b6530",
+      "sha256": "95677c1108a761da5fbfe2e7360e704bd4e54a020d8a25a0732d9b95b2bce778",
       "mode": "0o644"
     },
     {
@@ -163,6 +163,11 @@
     {
       "path": "deploy/engine/tests/fixtures/build-utils-14.9.1-get-platform-env.js",
       "sha256": "c0d80c47c8508a603988d25b44e72c2a4d1c61addeb38247c80ce47cd88cb253",
+      "mode": "0o644"
+    },
+    {
+      "path": "deploy/engine/tests/fixtures/vercel-59.11.7-build-caller.js",
+      "sha256": "2402f538a975d67664cd114e01a19aa70f8986aa3370b0911d5507d4ea224788",
       "mode": "0o644"
     },
     {
@@ -202,7 +207,7 @@
     },
     {
       "path": "deploy/engine/tests/test_prepare_diagnostics.py",
-      "sha256": "23bcf2e1fbd9ee25983ddcf487ebedf30defb191af891b3fd086efcc684956d1",
+      "sha256": "edbb7a7c1cba3d8ef587e09a194f6e47951f05cdca17f4324fd8c56e8a0c1ff4",
       "mode": "0o644"
     },
     {
@@ -212,7 +217,7 @@
     },
     {
       "path": "deploy/engine/tests/test_vercel_env_context.js",
-      "sha256": "8a77de8e576a514ce722f450787cfb49b57b3c49790ad88f8cc3ce16870353a9",
+      "sha256": "73558d45044fefac8cc16140da131b694680574ed2bb75a363cb7241a20bbd49",
       "mode": "0o644"
     },
     {

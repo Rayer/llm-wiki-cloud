@@ -473,14 +473,27 @@ class Providers:
             command('frontend-vercel-pull', pull_args, env=env, cwd=project_root, timeout=30)
             build_args = ['vercel', 'build', '--scope', cfg['team_slug'], '--token', os.environ['VERCEL_TOKEN'],
                           *(['--prod'] if target == 'production' else [])]
-            command('frontend-vercel-build', build_args, env=env, cwd=project_root, timeout=900)
+            project_link = project_root / '.vercel/project.json'
+            original_project_link = project_link.read_bytes()
+            project_link_mode = project_link.stat().st_mode & 0o7777
+            try:
+                local_project = json.loads(original_project_link)
+                settings = local_project.get('settings') if isinstance(local_project, dict) else None
+                require(isinstance(settings, dict) and
+                        settings.get('rootDirectory') == cfg['root_directory'],
+                        'frontend-project-config-incompatible')
+                settings.pop('rootDirectory')
+                write(project_link, local_project)
+                command('frontend-vercel-build', build_args, env=env, cwd=project_root, timeout=900)
+            finally:
+                project_link.write_bytes(original_project_link)
+                os.chmod(project_link, project_link_mode)
             output = project_root / '.vercel/output'
             require(output.is_dir(), 'frontend-output-missing')
             expected = {'schema_version': 1, 'api_url': cfg['api_url'], 'auth_url': cfg['auth_url']}
             require(read(output / 'static/build-config.json') == expected, 'frontend-build-config-mismatch')
             archive = self.directory / 'frontend.tgz'
-            # Pull and build share the validated project root; keep the archive's canonical root paths.
-            project_link = project_root / '.vercel/project.json'
+            # Restore the exact pulled link before archiving; runtime receives the original provider context.
             with tarfile.open(archive, 'w:gz') as tar:
                 tar.add(output, arcname='.vercel/output')
                 tar.add(project_link, arcname='.vercel/project.json')
