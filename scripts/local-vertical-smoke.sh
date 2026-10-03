@@ -11,6 +11,7 @@ tmp_dir="$(mktemp -d "${TMPDIR:-/tmp}/lwc-306-smoke.XXXXXX")"
 declare -a pids=()
 env_file="$FRONTEND_DIR/.env.local"
 env_backup="$tmp_dir/env.local"
+font_mock="$tmp_dir/google-fonts-local-fallback.cjs"
 had_env_file=false
 cleanup_active=false
 
@@ -101,6 +102,24 @@ printf '%s\n' \
   'NEXT_PUBLIC_DEV_PROJECT_ID=demo' > "$env_file"
 cp -R "$BFF_DIR/demo" "$tmp_dir/local-data"
 
+# Keep the local smoke independent of Google Fonts availability. This uses the
+# mock hook shipped by the pinned Next.js version and returns only local font
+# sources; the production layout and font defaults remain unchanged.
+cat > "$font_mock" <<'NODE'
+module.exports = {
+  'https://fonts.googleapis.com/css2?family=Geist:wght@100..900&display=swap': `/* latin */
+@font-face { font-family: 'Geist'; font-style: normal; font-weight: 100 900; src: local("Arial"); }
+`,
+  'https://fonts.googleapis.com/css2?family=Geist+Mono:wght@100..900&display=swap': `/* latin */
+@font-face { font-family: 'Geist Mono'; font-style: normal; font-weight: 100 900; src: local("Arial"); }
+`,
+  'https://fonts.googleapis.com/css2?family=Noto+Serif+TC:wght@500;600&display=swap': `/* latin */
+@font-face { font-family: 'Noto Serif TC'; font-style: normal; font-weight: 500; src: local("Arial"); }
+@font-face { font-family: 'Noto Serif TC'; font-style: normal; font-weight: 600; src: local("Arial"); }
+`,
+};
+NODE
+
 unset GOOGLE_APPLICATION_CREDENTIALS GOOGLE_CLOUD_PROJECT GOOGLE_CLOUD_QUOTA_PROJECT GCP_PROJECT \
   DEEPSEEK_API_KEY LLM_API_KEY OPENAI_API_KEY ANTHROPIC_API_KEY VERCEL_TOKEN 2>/dev/null || true
 
@@ -128,7 +147,8 @@ pids+=("$!")
   PORT="$AUTH_PORT" LOCAL_DATA_DIR="$tmp_dir/local-data" DEV_JWT=true JWT_SECRET=dev-secret \
   "$tmp_dir/auth" --local "$tmp_dir/local-data") > "$tmp_dir/auth.log" 2>&1 &
 pids+=("$!")
-(cd "$FRONTEND_DIR" && NODE_ENV=development NEXT_TELEMETRY_DISABLED=1 \
+(cd "$FRONTEND_DIR" && NEXT_FONT_GOOGLE_MOCKED_RESPONSES="$font_mock" \
+  NODE_ENV=development NEXT_TELEMETRY_DISABLED=1 \
   npm run dev -- --hostname 127.0.0.1 --port "$FRONTEND_PORT") > "$tmp_dir/frontend.log" 2>&1 &
 pids+=("$!")
 

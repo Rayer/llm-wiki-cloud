@@ -1,0 +1,11 @@
+curl: (7) Failed to connect to 127.0.0.1 port 18081 after 0 ms: Couldn't connect to server
+curl: (7) Failed to connect to 127.0.0.1 port 18081 after 0 ms: Couldn't connect to server
+auth ready: http://127.0.0.1:18081/api/v1/public/healthz
+curl: (7) Failed to connect to 127.0.0.1 port 18080 after 0 ms: Couldn't connect to server
+bff ready: http://127.0.0.1:18080/api/v1/public/version
+curl: (28) Operation timed out after 1007 milliseconds with 0 bytes received
+frontend ready: http://127.0.0.1:13000/
+auth login useful: user=local-user access_token=present
+bff scoped API useful: project=demo
+frontend HTTP useful: title=LLM Wiki Cloud
+smoke complete: ports 18080 18081 13000 cleaned up and verified free

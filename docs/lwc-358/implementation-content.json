@@ -1,7 +1,7 @@
 {
-  "base": "c8e32bef33107bd87d7bed44369ee717c7074308",
-  "branch": "Rayer/LWC-358-vercel-project-context",
-  "content_sha256": "20405d5d999aa22667ab270e15eab8a299db1010cd8fa3cd48d7e3e9a6784344",
+  "base": "d7ac3acfcd26dd675d6d83f3036aa0e1e4e30d0b",
+  "branch": "Rayer/LWC-358-original-error-cause",
+  "content_sha256": "55d9a891c626fcf2c4e0f327ad140f3d3491fa5459656759237fa330ab39f301",
   "scope": "All changed/new implementation, test, operator, accepted-appendix and frozen-spec files; excludes this manifest, evidence report and logs to avoid self-reference.",
   "frozen_sha256": "838817cad154b0ea773c205f671362a6c9c0ad97c38ddf34f2508eb4fcc2488b",
   "files": [
@@ -226,6 +226,11 @@
       "mode": "0o644"
     },
     {
+      "path": "scripts/local-vertical-smoke.sh",
+      "sha256": "b5e5835dfe7967a3faaafc6230624b0125ca55ce0f2880a0deec901eb4fe8c94",
+      "mode": "0o755"
+    },
+    {
       "path": "scripts/test_cd_contract.py",
       "sha256": "3be25f693476eb7418a4545a0afbc9fc8af00dfed3c4f86c361d06fe54791e63",
       "mode": "0o644"
@@ -233,6 +238,11 @@
     {
       "path": "scripts/test_engine_workflow.py",
       "sha256": "906a33cdd7d0a90125dc563bfd5313d77e45cf2678475de6c51b51d9628df879",
+      "mode": "0o644"
+    },
+    {
+      "path": "scripts/test_local_vertical_smoke.py",
+      "sha256": "00ad8efa82ea940d53db059b8bc2053a8038f6f3cc792e3dfd9282c482c77695",
       "mode": "0o644"
     }
   ]

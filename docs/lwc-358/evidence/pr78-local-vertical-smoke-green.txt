@@ -1,0 +1,246 @@
+curl: (7) Failed to connect to 127.0.0.1 port 18081 after 0 ms: Couldn't connect to server
+curl: (7) Failed to connect to 127.0.0.1 port 18081 after 0 ms: Couldn't connect to server
+auth ready: http://127.0.0.1:18081/api/v1/public/healthz
+curl: (7) Failed to connect to 127.0.0.1 port 18080 after 0 ms: Couldn't connect to server
+bff ready: http://127.0.0.1:18080/api/v1/public/version
+curl: (28) Operation timed out after 1003 milliseconds with 0 bytes received
+curl: (28) Operation timed out after 1001 milliseconds with 0 bytes received
+curl: (22) The requested URL returned error: 500
+curl: (22) The requested URL returned error: 500
+curl: (22) The requested URL returned error: 500
+curl: (22) The requested URL returned error: 500
+curl: (22) The requested URL returned error: 500
+curl: (22) The requested URL returned error: 500
+curl: (22) The requested URL returned error: 500
+curl: (22) The requested URL returned error: 500
+curl: (22) The requested URL returned error: 500
+curl: (22) The requested URL returned error: 500
+curl: (22) The requested URL returned error: 500
+curl: (22) The requested URL returned error: 500
+curl: (22) The requested URL returned error: 500
+curl: (22) The requested URL returned error: 500
+curl: (22) The requested URL returned error: 500
+curl: (22) The requested URL returned error: 500
+curl: (22) The requested URL returned error: 500
+curl: (22) The requested URL returned error: 500
+curl: (22) The requested URL returned error: 500
+curl: (22) The requested URL returned error: 500
+curl: (22) The requested URL returned error: 500
+curl: (22) The requested URL returned error: 500
+curl: (22) The requested URL returned error: 500
+curl: (22) The requested URL returned error: 500
+curl: (22) The requested URL returned error: 500
+curl: (22) The requested URL returned error: 500
+curl: (22) The requested URL returned error: 500
+curl: (22) The requested URL returned error: 500
+curl: (22) The requested URL returned error: 500
+curl: (22) The requested URL returned error: 500
+curl: (22) The requested URL returned error: 500
+curl: (22) The requested URL returned error: 500
+curl: (22) The requested URL returned error: 500
+curl: (22) The requested URL returned error: 500
+curl: (22) The requested URL returned error: 500
+curl: (22) The requested URL returned error: 500
+curl: (22) The requested URL returned error: 500
+curl: (22) The requested URL returned error: 500
+curl: (22) The requested URL returned error: 500
+curl: (22) The requested URL returned error: 500
+curl: (22) The requested URL returned error: 500
+curl: (22) The requested URL returned error: 500
+curl: (22) The requested URL returned error: 500
+curl: (22) The requested URL returned error: 500
+curl: (22) The requested URL returned error: 500
+curl: (22) The requested URL returned error: 500
+curl: (22) The requested URL returned error: 500
+curl: (22) The requested URL returned error: 500
+curl: (22) The requested URL returned error: 500
+curl: (22) The requested URL returned error: 500
+curl: (22) The requested URL returned error: 500
+curl: (22) The requested URL returned error: 500
+curl: (22) The requested URL returned error: 500
+curl: (22) The requested URL returned error: 500
+curl: (22) The requested URL returned error: 500
+curl: (22) The requested URL returned error: 500
+curl: (22) The requested URL returned error: 500
+curl: (22) The requested URL returned error: 500
+curl: (22) The requested URL returned error: 500
+curl: (22) The requested URL returned error: 500
+curl: (22) The requested URL returned error: 500
+curl: (22) The requested URL returned error: 500
+curl: (22) The requested URL returned error: 500
+curl: (22) The requested URL returned error: 500
+curl: (22) The requested URL returned error: 500
+curl: (22) The requested URL returned error: 500
+curl: (22) The requested URL returned error: 500
+curl: (22) The requested URL returned error: 500
+curl: (22) The requested URL returned error: 500
+curl: (22) The requested URL returned error: 500
+curl: (22) The requested URL returned error: 500
+curl: (22) The requested URL returned error: 500
+curl: (22) The requested URL returned error: 500
+curl: (22) The requested URL returned error: 500
+curl: (22) The requested URL returned error: 500
+curl: (22) The requested URL returned error: 500
+curl: (22) The requested URL returned error: 500
+curl: (22) The requested URL returned error: 500
+curl: (22) The requested URL returned error: 500
+curl: (22) The requested URL returned error: 500
+curl: (22) The requested URL returned error: 500
+curl: (22) The requested URL returned error: 500
+curl: (22) The requested URL returned error: 500
+curl: (22) The requested URL returned error: 500
+curl: (22) The requested URL returned error: 500
+curl: (22) The requested URL returned error: 500
+curl: (22) The requested URL returned error: 500
+curl: (22) The requested URL returned error: 500
+curl: (22) The requested URL returned error: 500
+curl: (22) The requested URL returned error: 500
+curl: (22) The requested URL returned error: 500
+curl: (22) The requested URL returned error: 500
+curl: (22) The requested URL returned error: 500
+curl: (22) The requested URL returned error: 500
+curl: (22) The requested URL returned error: 500
+curl: (22) The requested URL returned error: 500
+curl: (22) The requested URL returned error: 500
+curl: (22) The requested URL returned error: 500
+curl: (22) The requested URL returned error: 500
+curl: (22) The requested URL returned error: 500
+curl: (22) The requested URL returned error: 500
+curl: (22) The requested URL returned error: 500
+curl: (22) The requested URL returned error: 500
+curl: (22) The requested URL returned error: 500
+curl: (22) The requested URL returned error: 500
+curl: (22) The requested URL returned error: 500
+curl: (22) The requested URL returned error: 500
+curl: (22) The requested URL returned error: 500
+curl: (22) The requested URL returned error: 500
+curl: (22) The requested URL returned error: 500
+curl: (22) The requested URL returned error: 500
+curl: (22) The requested URL returned error: 500
+curl: (22) The requested URL returned error: 500
+curl: (22) The requested URL returned error: 500
+curl: (22) The requested URL returned error: 500
+curl: (22) The requested URL returned error: 500
+curl: (22) The requested URL returned error: 500
+curl: (22) The requested URL returned error: 500
+frontend did not become ready: http://127.0.0.1:13000/; log:
+
+> llm-wiki-frontend@0.1.0 dev
+> next dev --hostname 127.0.0.1 --port 13000
+
+▲ Next.js 16.2.7 (Turbopack)
+- Local:         http://127.0.0.1:13000
+- Network:       http://127.0.0.1:13000
+- Environments: .env.local
+✓ Ready in 264ms
+
+
+thread 'tokio-runtime-worker' (53601284) panicked at crates/next-core/src/next_font/google/mod.rs:807:13:
+Unexpected error evaluating JS
+note: run with `RUST_BACKTRACE=1` environment variable to display a backtrace
+
+thread 'tokio-runtime-worker' (53601288) panicked at crates/next-core/src/next_font/google/mod.rs:807:13:
+Unexpected error evaluating JS
+
+thread 'tokio-runtime-worker' (53601288) panicked at crates/next-core/src/next_font/google/mod.rs:807:13:
+Unexpected error evaluating JS
+⨯ [mock]/loader.js
+Error evaluating Node.js code
+TypeError: Invalid URL
+    [at new URL (node:internal/url:818:25)]
+    [at Object.get (turbopack:///[mock]/google-fonts-local-fallback.cjs:3:21)]
+    [at Context.esmImport (turbopack:///[turbopack]/shared/runtime/runtime-utils.ts:408:25)]
+    [at Module.cssFamily (turbopack:///[mock]/loader.js:1:1)]
+    [at exec (turbopack:///[turbopack]/shared/runtime/hmr-runtime.ts:650:21)]
+    [at runModuleExecutionHooksFn (turbopack:///[turbopack]/nodejs/runtime/dev-base.ts:69:5)]
+    [at instantiateModuleShared (turbopack:///[turbopack]/shared/runtime/hmr-runtime.ts:648:5)]
+    [at instantiateModule (turbopack:///[turbopack]/nodejs/runtime/dev-base.ts:73:21)]
+    [at getOrInstantiateModuleFromParent (turbopack:///[turbopack]/nodejs/runtime/dev-base.ts:143:21)]
+    [at Context.esmImport (turbopack:///[turbopack]/shared/runtime/runtime-utils.ts:398:18)]
+
+
+
+[next]/internal/font/google/geist_a71539c9.js:1:1
+Module not found: Can't resolve '@vercel/turbopack-next/internal/font/google/cssmodule.module.css'
+[31m[1m>[0m [90m1 |[0m ...[32m%22path%22:%22layout.tsx%22,%22import%22:%22Geist%22,%22arguments%22:[{%22variable%22:%2...[0m
+  [90m  |[0m    [31m[1m^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^[0m
+  [90m2 |[0m ...
+  [90m3 |[0m ...
+  [90m4 |[0m ...
+
+Unexpected error evaluating JS
+
+Debug info:
+- Execution of <ModuleAssetContext as AssetContext>::resolve_asset failed
+- Execution of resolve failed
+- Execution of resolve_internal failed
+- Execution of NextFontGoogleCssModuleReplacer::import_map_result failed
+- Unexpected error evaluating JS
+Error while looking up import map: Unexpected error evaluating JS
+
+Debug info:
+- Execution of NextFontGoogleCssModuleReplacer::import_map_result failed
+- Unexpected error evaluating JS
+
+
+Import trace:
+  Server Component:
+    [next]/internal/font/google/geist_a71539c9.js
+    ./src/app/layout.tsx
+
+https://nextjs.org/docs/messages/module-not-found
+
+
+
+[next]/internal/font/google/geist_mono_8d43a2aa.js:1:1
+Module not found: Can't resolve '@vercel/turbopack-next/internal/font/google/cssmodule.module.css'
+[31m[1m>[0m [90m1 |[0m ...[32m2path%22:%22layout.tsx%22,%22import%22:%22Geist_Mono%22,%22arguments%22:[{%22variable%22...[0m
+  [90m  |[0m    [31m[1m^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^[0m
+  [90m2 |[0m ...
+  [90m3 |[0m ...
+  [90m4 |[0m ...
+
+Unexpected error evaluating JS
+
+Debug info:
+- Execution of <ModuleAssetContext as AssetContext>::resolve_asset failed
+- Execution of resolve failed
+- Execution of resolve_internal failed
+- Execution of NextFontGoogleCssModuleReplacer::import_map_result failed
+- Unexpected error evaluating JS
+Error while looking up import map: Unexpected error evaluating JS
+
+Debug info:
+- Execution of NextFontGoogleCssModuleReplacer::import_map_result failed
+- Unexpected error evaluating JS
+
+
+Import trace:
+  Server Component:
+    [next]/internal/font/google/geist_mono_8d43a2aa.js
+    ./src/app/layout.tsx
+
+https://nextjs.org/docs/messages/module-not-found
+
+
+
+[next]/internal/font/google/noto_serif_tc_6e902374.js:1:1
+Module not found: Can't resolve '@vercel/turbopack-next/internal/font/google/cssmodule.module.css'
+[31m[1m>[0m [90m1 |[0m ...[32mort%22:%22Noto_Serif_TC%22,%22arguments%22:[{%22variable%22:%22--font-noto-serif%22,%22s...[0m
+  [90m  |[0m    [31m[1m^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^[0m
+  [90m2 |[0m ...
+  [90m3 |[0m ...
+  [90m4 |[0m ...
+
+Unexpected error evaluating JS
+
+Debug info:
+- Execution of <ModuleAssetContext as AssetContext>::resolve_asset failed
+- Execution of resolve failed
+- Execution of resolve_internal failed
+- Execution of NextFontGoogleCssModuleReplacer::import_map_result failed
+- Unexpected error evaluating JS
+Error while looking up import map: Unexpected error evaluating JS
+
+Debug info:
+- Execution of NextFontGoogleCssModuleReplacer::import_map_result failed
