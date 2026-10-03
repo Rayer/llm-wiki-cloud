@@ -147,7 +147,7 @@ class Acceptance(unittest.TestCase):
                 self.assertEqual(revision['spec']['containers'][0]['image'],artifact['image'])
                 self.assertEqual(service['status']['traffic'],[{'revisionName':revision_name,'percent':100}])
                 self.assertTrue(e.provider.service_matches(c,revision,artifact['image']))
-                self.assertTrue(e.provider.template_matches(service,revision))
+                self.assertTrue(e.provider.service_template_matches(c,service,revision,artifact['image']))
                 self.assertTrue(e.provider.observe(c,artifact,entry['candidate']))
 
                 all_calls=self.current()['calls']
@@ -292,10 +292,12 @@ class Acceptance(unittest.TestCase):
         baseline=self.current()
         for c in ('auth','bff'):
             name=self.normalized[c]['service_name'];revision=e.state['components'][c]['candidate']['revision']
-            for fault in ('image','specimage','ready','env','secret','account','traffic','template'):
+            for fault in ('image','specimage','ready','env','secret','account','traffic','template',
+                          'template-env','template-secret','template-account'):
                 with self.subTest(component=c,fault=fault):
                     self.provider=copy.deepcopy(baseline)
                     rev=self.provider['revisions'][revision]
+                    template=self.provider['resources'][name]['spec']['template']['spec']
                     if fault=='image':rev['status']['imageDigest']='wrong'
                     elif fault=='specimage':rev['spec']['containers'][0]['image']='wrong'
                     elif fault=='ready':rev['status']['conditions'][0]['status']='False'
@@ -303,9 +305,21 @@ class Acceptance(unittest.TestCase):
                     elif fault=='secret':rev['spec']['containers'][0]['env']=[v for v in rev['spec']['containers'][0]['env'] if 'valueFrom' not in v]
                     elif fault=='account':rev['spec']['serviceAccountName']='wrong'
                     elif fault=='template':self.provider['resources'][name]['spec']['template']['spec']['containers'][0]['image']='wrong'
+                    elif fault=='template-env':template['containers'][0]['env']=[]
+                    elif fault=='template-secret':template['containers'][0]['env']=[v for v in template['containers'][0].get('env',[]) if 'valueFrom' not in v]
+                    elif fault=='template-account':template['serviceAccountName']='wrong'
                     else:self.provider['resources'][name]['status']['traffic'][0]['percent']=50
                     self.flush()
                     self.assertFalse(e.provider.observe(c,e.receipt(c)['artifact'],e.state['components'][c]['candidate']))
+        for c in ('auth','bff'):
+            name=self.normalized[c]['service_name'];revision=e.state['components'][c]['candidate']['revision']
+            self.provider=copy.deepcopy(baseline)
+            self.provider['revisions'][revision]['spec']['containers'][0]['name']='provider-default'
+            template=self.provider['resources'][name]['spec']['template']
+            template['spec']['containers'][0]['name']='service-default'
+            template.setdefault('metadata',{}).setdefault('annotations',{})['autoscaling.knative.dev/maxScale']='7'
+            self.flush()
+            self.assertTrue(e.provider.observe(c,e.receipt(c)['artifact'],e.state['components'][c]['candidate']))
         self.provider=baseline;self.flush()
 
     def test_job_template_and_frontend_readback_failures(self):
@@ -368,6 +382,93 @@ class Acceptance(unittest.TestCase):
         self.assertEqual(e.state['status'],'failed_rolled_back')
         self.assertEqual(len(self.calls('replace')),1)
         self.assertTrue(e.provider.observe('auth',e.state['components']['auth']['prior'],{},True))
+
+    def test_prior_service_snapshot_and_rollback_use_retained_image_identity(self):
+        for c in ('auth','bff'):
+            with self.subTest(component=c):
+                e=self.ready(self.make((c,),name='image-identity-'+c))
+                service_name=self.normalized[c]['service_name']
+                prior_revision=service_name+'-prior'
+                state=self.current()
+                state['revisions'][prior_revision]['spec']['containers'][0]['name']='provider-default'
+                state['revisions'][prior_revision]['metadata']['annotations']['autoscaling.knative.dev/maxScale']='2'
+                self.provider=state;self.flush()
+
+                e.snapshot()
+                prior=copy.deepcopy(e.state['components'][c]['prior'])
+                old_image=prior['image']
+                self.assertEqual(set(prior),{'revision','image','traffic'})
+                self.assertEqual(prior['revision'],prior_revision)
+                self.assertEqual(prior['traffic'],[{'revisionName':prior_revision,'percent':100}])
+
+                e.deploy([c])
+                state=self.current()
+                retained=state['revisions'][prior_revision]
+                retained['metadata']['annotations']['autoscaling.knative.dev/maxScale']='3'
+                self.provider=state;self.flush()
+                self.assertEqual(retained['status']['imageDigest'],old_image)
+                self.assertFalse(e.provider.observe(c,prior,{},prior=True))
+                replace_count=len(self.calls('replace'))
+                build_count=len(self.calls('build'))+len(self.calls('submit'))
+                e.restore([c])
+
+                self.assertEqual(e.state['components'][c]['status'],'rolled_back')
+                self.assertEqual(len(self.calls('replace')),replace_count+1)
+                self.assertEqual(len(self.calls('build'))+len(self.calls('submit')),build_count)
+                replacement=self.current()['replacements'][-1]
+                self.assertEqual(replacement['spec']['template']['spec'],retained['spec'])
+                self.assertEqual(replacement['spec']['template']['metadata']['annotations'],
+                                 {'autoscaling.knative.dev/maxScale':'3'})
+                self.assertEqual(replacement['spec']['traffic'],prior['traffic'])
+                self.assertTrue(e.provider.observe(c,prior,{},prior=True))
+                state=self.current()
+                state['resources'][service_name]['spec']['template']['metadata']['annotations']['autoscaling.knative.dev/maxScale']='service-only'
+                self.provider=state;self.flush()
+                self.assertTrue(e.provider.observe(c,prior,{},prior=True))
+                self.assertEqual(e.provider.snapshot(c)['image'],old_image)
+
+    def test_prior_image_and_route_checks_remain_fail_closed(self):
+        e=self.ready(self.make(('auth',),name='prior-image-checks'))
+        e.snapshot()
+        prior=copy.deepcopy(e.state['components']['auth']['prior'])
+        service_name=self.normalized['auth']['service_name']
+        revision_name=prior['revision']
+        baseline=self.current()
+        faults=('saved-image','revision-spec-image','revision-status-digest',
+                'service-template-image','route','not-ready')
+        for fault in faults:
+            with self.subTest(fault=fault):
+                self.provider=copy.deepcopy(baseline)
+                resource=self.provider['resources'][service_name]
+                revision=self.provider['revisions'][revision_name]
+                if fault=='saved-image':
+                    observed=copy.deepcopy(prior);observed['image']='wrong@sha256:'+'0'*64
+                elif fault=='revision-spec-image':
+                    revision['spec']['containers'][0]['image']='wrong@sha256:'+'0'*64
+                    observed=prior
+                elif fault=='revision-status-digest':
+                    revision['status']['imageDigest']='wrong@sha256:'+'0'*64
+                    observed=prior
+                elif fault=='service-template-image':
+                    resource['spec']['template']['spec']['containers'][0]['image']='wrong@sha256:'+'0'*64
+                    observed=prior
+                elif fault=='route':
+                    resource['status']['traffic'][0]['percent']=50
+                    observed=prior
+                else:
+                    revision['status']['conditions'][0]['status']='False'
+                    observed=prior
+                self.flush()
+                self.assertFalse(e.provider.observe('auth',observed,{},prior=True))
+                if fault=='saved-image':
+                    self.assertEqual(e.provider.snapshot('auth')['image'],prior['image'])
+                else:
+                    with self.assertRaises(Breakpoint):e.provider.snapshot('auth')
+                offset=len(self.calls('replace'))
+                if fault in ('saved-image','revision-spec-image','revision-status-digest','not-ready'):
+                    with self.assertRaisesRegex(Breakpoint,'prior-revision-changed'):
+                        e.provider.rollback('auth',observed)
+                    self.assertEqual(len(self.calls('replace')),offset)
 
     def test_durable_pending_failure_prevents_provider_mutation(self):
         e=self.ready(self.make());uploads=[]
@@ -459,22 +560,26 @@ class Acceptance(unittest.TestCase):
                     bad['resources'][name]['spec']['template']['metadata']['annotations']={}
                     write(self.root/'provider.json',bad)
                     artifact=new.state['components'][c]['prior'] if prior_mode else receipt['artifact']
-                    self.assertFalse(e.provider.observe(c,artifact,candidate,prior=prior_mode))
-                    with self.assertRaises(Breakpoint):e.provider.snapshot(c)
+                    self.assertEqual(e.provider.observe(c,artifact,candidate,prior=prior_mode),prior_mode)
+                    self.assertEqual(e.provider.snapshot(c)['image'],artifact['image'] if prior_mode else receipt['artifact']['image'])
                 # Controller-only churn is not effective config drift.
                 stable=copy.deepcopy(good)
                 stable['revisions'][candidate['revision']]['metadata']['annotations']['run.googleapis.com/operation-id']='new-controller'
                 write(self.root/'provider.json',stable)
                 self.assertTrue(e.provider.observe(c,new.state['components'][c]['prior'],{},prior=True))
-                # Matching template/revision tampering still violates retained fingerprint.
+                # Unmanaged effective-config drift does not change prior image identity.
                 for obj in (stable['revisions'][candidate['revision']],stable['resources'][name]['spec']['template']):
                     obj['metadata']['annotations']['autoscaling.knative.dev/maxScale']='99'
                 write(self.root/'provider.json',stable)
-                self.assertFalse(e.provider.observe(c,new.state['components'][c]['prior'],{},prior=True))
+                self.assertTrue(e.provider.observe(c,new.state['components'][c]['prior'],{},prior=True))
                 offset=len(self.current()['calls'])
-                with self.assertRaisesRegex(Breakpoint,'prior-revision-changed'):
-                    e.provider.rollback(c,new.state['components'][c]['prior'])
-                self.assertFalse([a for a in self.current()['calls'][offset:] if 'replace' in a])
+                build_count=len(self.calls('build'))+len(self.calls('submit'))
+                e.provider.rollback(c,new.state['components'][c]['prior'])
+                replacement=self.current()['replacements'][-1]
+                self.assertEqual(replacement['spec']['template']['spec'],stable['revisions'][candidate['revision']]['spec'])
+                self.assertEqual(replacement['spec']['template']['metadata']['annotations']['autoscaling.knative.dev/maxScale'],'99')
+                self.assertEqual(len(self.calls('build'))+len(self.calls('submit')),build_count)
+                self.assertEqual(len([a for a in self.current()['calls'][offset:] if 'replace' in a]),1)
                 write(self.root/'provider.json',good)
 
 class SourceApplicability(unittest.TestCase):
