@@ -33,6 +33,7 @@ class Providers:
         self.plan, self.p, self.directory = plan, plan['normalized'], Path(directory)
         self.profiles = read(ROOT / 'deploy/engine/profiles.json')
         self._gcp_project_number = None
+        self._frontend_prepare_commands = None
 
     def gcp_project_number(self):
         """Resolve the authoritative number for this configured project ID."""
@@ -96,11 +97,30 @@ class Providers:
             args += ['--request', 'POST', '--header', 'Content-Type: application/json', '--data', json.dumps(body)]
         if output:
             args += ['--max-filesize', '8192']
-        raw = run(args, input='header = "Authorization: Bearer '+token+'"\n',
-                  mutation=body is not None, stage=stage)
+        try:
+            raw = run(args, input='header = "Authorization: Bearer '+token+'"\n',
+                      mutation=body is not None, stage=stage)
+        except Breakpoint as exc:
+            if stage == 'frontend-project-readback' and self._frontend_prepare_commands is not None:
+                self._frontend_prepare_commands[stage] = {
+                    'status': 'timeout' if exc.reason == 'provider-timeout' else 'typed-fail',
+                    'exit_code': exc.exit_code, 'timeout_class': exc.timeout_class}
+            raise
+        else:
+            if stage == 'frontend-project-readback' and self._frontend_prepare_commands is not None:
+                self._frontend_prepare_commands[stage] = {
+                    'status': 'exit0', 'exit_code': 0, 'timeout_class': None}
         return json.loads(frontend_build_config.document(raw.encode()) if output else raw)
 
-    def project(self, stage=None):
+    @staticmethod
+    def _root_label(value, expected):
+        if value == '':
+            return 'empty'
+        if value == expected:
+            return 'matches-config'
+        return 'other'
+
+    def project(self, stage=None, frontend_diagnostic=None):
         identity = os.environ.get('VERCEL_PROJECT_ID', '')
         require(re.fullmatch(r'prj_[A-Za-z0-9]+', identity), 'invalid-vercel-project')
         diagnostic_stage = stage if stage in {
@@ -116,6 +136,10 @@ class Providers:
             team = raw.get('team', {})
             if not isinstance(link, dict) or not isinstance(team, dict):
                 raise InputShapeError('project response link and team fields must be objects')
+            if frontend_diagnostic is not None:
+                frontend_diagnostic['linked_root'] = (
+                    self._root_label(raw['rootDirectory'], cfg['root_directory'])
+                    if 'rootDirectory' in raw else 'missing')
             repository = link.get('repo')
             if repository is not None and not isinstance(repository, str):
                 raise InputShapeError('project response repository field must be a string')
@@ -132,6 +156,99 @@ class Providers:
         except (InputShapeError, AttributeError, KeyError, OSError, TypeError, ValueError) as exc:
             raise Breakpoint('invalid-or-unreadable-input', stage=diagnostic_stage,
                              cause=structured_cause(exc, diagnostic_stage)) from None
+
+    def _run_frontend_command(self, stage, args, **kwargs):
+        try:
+            output = run(args, stage=stage, **kwargs)
+        except Breakpoint as exc:
+            if self._frontend_prepare_commands is not None:
+                self._frontend_prepare_commands[stage] = {
+                    'status': 'timeout' if exc.reason == 'provider-timeout' else 'typed-fail',
+                    'exit_code': exc.exit_code, 'timeout_class': exc.timeout_class}
+            raise
+        except Exception:
+            if self._frontend_prepare_commands is not None:
+                self._frontend_prepare_commands[stage] = {
+                    'status': 'typed-fail', 'exit_code': None, 'timeout_class': None}
+            raise
+        if self._frontend_prepare_commands is not None:
+            self._frontend_prepare_commands[stage] = {
+                'status': 'exit0', 'exit_code': 0, 'timeout_class': None}
+        return output
+
+    def _frontend_prepare_evidence(self, cfg, child_env, readback, commands):
+        metadata_read_failed = False
+        settings_root = None
+        try:
+            link = read(ROOT / '.vercel/project.json')
+        except FileNotFoundError:
+            settings_root = 'missing'
+        except Exception:
+            settings_root = 'other'
+            metadata_read_failed = True
+        else:
+            settings = link.get('settings') if isinstance(link, dict) else None
+            if not isinstance(link, dict) or not isinstance(settings, dict):
+                settings_root = 'other'
+            elif 'rootDirectory' not in settings:
+                settings_root = 'missing'
+            else:
+                settings_root = self._root_label(settings['rootDirectory'], cfg['root_directory'])
+
+        expected = {'schema_version': 1, 'api_url': cfg['api_url'], 'auth_url': cfg['auth_url']}
+
+        def candidate(output):
+            nonlocal metadata_read_failed
+            try:
+                exists = output.exists()
+                is_dir = output.is_dir() if exists else False
+            except Exception:
+                metadata_read_failed = True
+                return {'exists': False, 'static_config_valid': False, 'target_equal': False}
+            if not exists:
+                return {'exists': False, 'static_config_valid': False, 'target_equal': False}
+            if not is_dir:
+                return {'exists': True, 'static_config_valid': False, 'target_equal': False}
+            try:
+                document = read(output / 'static/build-config.json')
+            except FileNotFoundError:
+                return {'exists': True, 'static_config_valid': False, 'target_equal': False}
+            except Exception:
+                metadata_read_failed = True
+                return {'exists': True, 'static_config_valid': False, 'target_equal': False}
+            valid = (isinstance(document, dict) and set(document) == set(expected) and
+                     type(document.get('schema_version')) is int and
+                     document.get('schema_version') == 1 and
+                     isinstance(document.get('api_url'), str) and
+                     isinstance(document.get('auth_url'), str))
+            return {'exists': True, 'static_config_valid': valid,
+                    'target_equal': bool(valid and document == expected)}
+
+        try:
+            outputs = {
+                'repo_root': candidate(ROOT / '.vercel/output'),
+                'configured_root': candidate(ROOT / cfg['root_directory'] / '.vercel/output'),
+            }
+        except Exception:
+            metadata_read_failed = True
+            outputs = {
+                name: {'exists': False, 'static_config_valid': False, 'target_equal': False}
+                for name in ('repo_root', 'configured_root')
+            }
+        context_keys = ('VERCEL_ORG_ID', 'VERCEL_PROJECT_ID', 'VERCEL_TEAM_ID',
+                        'NOW_ORG_ID', 'NOW_PROJECT_ID')
+        context_presence = {
+            key: (bool(child_env.get(key)) if child_env is not None else None)
+            for key in context_keys
+        }
+        return {
+            'linked_root': readback.get('linked_root'),
+            'settings_root': settings_root,
+            'context_presence': context_presence,
+            'commands': dict(commands),
+            'outputs': outputs,
+            'metadata_read_failed': metadata_read_failed,
+        }
 
     def deployment(self, identity):
         require(re.fullmatch(r'(dpl_[A-Za-z0-9]+|[A-Za-z0-9.-]+\.vercel\.app)', identity), 'invalid-deployment')
@@ -325,37 +442,63 @@ class Providers:
             self.valid_image(c, image)
             return {'image': image}
         require(c == 'frontend', 'container-prepare-requires-build-checkpoint')
-        self.project(stage='frontend-project-readback')
-        cfg = self.p['frontend']
-        env = dict(os.environ, NEXT_PUBLIC_API_URL=cfg['api_url'], NEXT_PUBLIC_AUTH_URL=cfg['auth_url'],
-                   VERCEL_ORG_ID=os.environ['VERCEL_TEAM_ID'],
-                   VERCEL_PROJECT_ID=os.environ['VERCEL_PROJECT_ID'])
-        env.pop('NOW_ORG_ID', None)
-        env.pop('NOW_PROJECT_ID', None)
-        target = 'production' if self.p['environment'] == 'production' else 'preview'
-        run(['npm', 'ci', '--ignore-scripts'], cwd=ROOT / 'apps/frontend', timeout=600,
-            stage='frontend-npm-ci')
-        run(['vercel', 'pull', '--yes', '--environment='+target, '--scope', cfg['team_slug'],
-             '--token', os.environ['VERCEL_TOKEN']], env=env, cwd=ROOT, timeout=30,
-            stage='frontend-vercel-pull')
-        run(['vercel', 'build', '--scope', cfg['team_slug'], '--token', os.environ['VERCEL_TOKEN'],
-             *(['--prod'] if target == 'production' else [])], env=env, cwd=ROOT, timeout=900,
-            stage='frontend-vercel-build')
-        project_root = ROOT / cfg['root_directory']
-        output = project_root / '.vercel/output'
-        require(output.is_dir(), 'frontend-output-missing')
-        expected = {'schema_version': 1, 'api_url': cfg['api_url'], 'auth_url': cfg['auth_url']}
-        require(read(output / 'static/build-config.json') == expected, 'frontend-build-config-mismatch')
-        archive = self.directory / 'frontend.tgz'
-        # Env-linked `vercel pull` writes project.json under cwd; build output uses the project root.
-        project_link = ROOT / '.vercel/project.json'
-        with tarfile.open(archive, 'w:gz') as tar:
-            tar.add(output, arcname='.vercel/output')
-            tar.add(project_link, arcname='.vercel/project.json')
-        import hashlib
-        return {'archive': 'frontend.tgz', 'sha256': hashlib.sha256(archive.read_bytes()).hexdigest(),
-                'config': expected, 'target': target, 'project': os.environ['VERCEL_PROJECT_ID'],
-                'team': os.environ['VERCEL_TEAM_ID']}
+        cfg = self.p.get('frontend')
+        diagnostic_enabled = self.p.get('environment') == 'development'
+        commands = {stage: {'status': 'not-run', 'exit_code': None, 'timeout_class': None}
+                    for stage in ('frontend-project-readback', 'frontend-npm-ci',
+                                  'frontend-vercel-pull', 'frontend-vercel-build')}
+        readback = {'linked_root': 'missing'}
+        if diagnostic_enabled:
+            self._frontend_prepare_commands = commands
+
+        def command(stage, args, **kwargs):
+            if diagnostic_enabled:
+                return self._run_frontend_command(stage, args, **kwargs)
+            return run(args, stage=stage, **kwargs)
+
+        try:
+            self.project(stage='frontend-project-readback',
+                         frontend_diagnostic=readback if diagnostic_enabled else None)
+            env = dict(os.environ, NEXT_PUBLIC_API_URL=cfg['api_url'], NEXT_PUBLIC_AUTH_URL=cfg['auth_url'],
+                       VERCEL_ORG_ID=os.environ['VERCEL_TEAM_ID'],
+                       VERCEL_PROJECT_ID=os.environ['VERCEL_PROJECT_ID'])
+            env.pop('NOW_ORG_ID', None)
+            env.pop('NOW_PROJECT_ID', None)
+            target = 'production' if self.p['environment'] == 'production' else 'preview'
+            command('frontend-npm-ci', ['npm', 'ci', '--ignore-scripts'],
+                    cwd=ROOT / 'apps/frontend', timeout=600)
+            pull_args = ['vercel', 'pull', '--yes', '--environment='+target, '--scope', cfg['team_slug'],
+                         '--token', os.environ['VERCEL_TOKEN']]
+            command('frontend-vercel-pull', pull_args, env=env, cwd=ROOT, timeout=30)
+            build_args = ['vercel', 'build', '--scope', cfg['team_slug'], '--token', os.environ['VERCEL_TOKEN'],
+                          *(['--prod'] if target == 'production' else [])]
+            command('frontend-vercel-build', build_args, env=env, cwd=ROOT, timeout=900)
+            project_root = ROOT / cfg['root_directory']
+            output = project_root / '.vercel/output'
+            require(output.is_dir(), 'frontend-output-missing')
+            expected = {'schema_version': 1, 'api_url': cfg['api_url'], 'auth_url': cfg['auth_url']}
+            require(read(output / 'static/build-config.json') == expected, 'frontend-build-config-mismatch')
+            archive = self.directory / 'frontend.tgz'
+            # Env-linked `vercel pull` writes project.json under cwd; build output uses the project root.
+            project_link = ROOT / '.vercel/project.json'
+            with tarfile.open(archive, 'w:gz') as tar:
+                tar.add(output, arcname='.vercel/output')
+                tar.add(project_link, arcname='.vercel/project.json')
+            import hashlib
+            return {'archive': 'frontend.tgz', 'sha256': hashlib.sha256(archive.read_bytes()).hexdigest(),
+                    'config': expected, 'target': target, 'project': os.environ['VERCEL_PROJECT_ID'],
+                    'team': os.environ['VERCEL_TEAM_ID']}
+        except Exception as exc:
+            if diagnostic_enabled:
+                try:
+                    exc.frontend_prepare_diagnostic = self._frontend_prepare_evidence(
+                        locals().get('cfg'), locals().get('env'), readback, commands)
+                except Exception:
+                    # Diagnostic collection is best-effort and cannot replace the prepare failure.
+                    pass
+            raise
+        finally:
+            self._frontend_prepare_commands = None
 
     def usable(self, c, artifact):
         if c != 'frontend':

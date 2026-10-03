@@ -547,6 +547,8 @@ class Engine:
             }
         if exc and exc.cause:
             result['cause'] = exc.cause
+        if exc and isinstance(exc.frontend_prepare_diagnostic, dict):
+            result['frontend_prepare_diagnostic'] = exc.frontend_prepare_diagnostic
         write(self.directory / 'result.json', result)
         print(json.dumps(result, sort_keys=True))
 
@@ -598,7 +600,9 @@ def main():
     except (Breakpoint, OSError, KeyError, ValueError, TypeError, AttributeError) as exc:
         if not isinstance(exc, Breakpoint):
             exc = Breakpoint('invalid-or-unreadable-input', stage='unknown',
-                             cause=structured_cause(exc))
+                             cause=structured_cause(exc),
+                             frontend_prepare_diagnostic=getattr(
+                                 exc, 'frontend_prepare_diagnostic', None))
         if engine:
             engine.result(exc)
         else:

@@ -243,6 +243,7 @@ os.execvpe(args[0], args, os.environ)
         with contextlib.redirect_stdout(stdout):
             instance.result(error)
         result = json.loads((directory / 'result.json').read_text())
+        self.assertNotIn('frontend_prepare_diagnostic', result)
         self.assertEqual(result['failure_diagnostic'], {
             'stage': 'build-submit', 'exit_code': 9, 'timeout_class': None})
         self.assertEqual(result['reason'], 'command-failed')
@@ -325,6 +326,8 @@ class FrontendPrepareDiagnostics(unittest.TestCase):
                 if failure_kind == 'timeout':
                     raise subprocess.TimeoutExpired(args, timeout, output='TEST_ONLY_RAW_STDOUT_SENTINEL',
                                                     stderr=raw_failure_message)
+                if failure_kind == 'missing':
+                    raise FileNotFoundError('vercel')
                 return subprocess.CompletedProcess(args, 23, stdout='TEST_ONLY_RAW_STDOUT_SENTINEL',
                                                    stderr=raw_failure_message)
             if operation == 'frontend-project-readback':
@@ -365,7 +368,9 @@ class FrontendPrepareDiagnostics(unittest.TestCase):
                 self.assertEqual(cwd, str(expected_cwd))
                 self.assertEqual(timeout, expected[3])
         self.assertEqual((error.exit_code, error.timeout_class),
-                         (23, None) if failure_kind == 'exit' else (None, 'subprocess-timeout'))
+                         (23, None) if failure_kind == 'exit' else
+                         (None, 'subprocess-timeout') if failure_kind == 'timeout' else
+                         (None, 'tool-unavailable'))
         self.assertEqual((directory / 'receipts/auth.json').read_bytes(), auth_receipt_bytes)
         self.assertFalse((directory / 'receipts/frontend.json').exists())
         self.assertFalse((directory / 'frontend.tgz').exists())
@@ -374,36 +379,71 @@ class FrontendPrepareDiagnostics(unittest.TestCase):
         self.assertFalse(any(operation in ('auth-build', 'auth-submit') for operation, _, _ in trace))
 
         result = json.loads((directory / 'result.json').read_text())
+        diagnostic = result['frontend_prepare_diagnostic']
+        self.assertEqual(set(diagnostic['commands']), {stage for stage, _, _, _ in self.stages})
+        expected_command_state = {
+            stage: ({'status': 'timeout', 'exit_code': None,
+                     'timeout_class': 'subprocess-timeout'}
+                    if stage == failing_stage and failure_kind == 'timeout' else
+                    {'status': 'typed-fail', 'exit_code': 23, 'timeout_class': None}
+                    if stage == failing_stage and failure_kind == 'exit' else
+                    {'status': 'typed-fail', 'exit_code': None, 'timeout_class': 'tool-unavailable'}
+                    if stage == failing_stage else
+                    {'status': 'exit0', 'exit_code': 0, 'timeout_class': None}
+                    if operations.index(stage) < operations.index(failing_stage) else
+                    {'status': 'not-run', 'exit_code': None, 'timeout_class': None})
+            for stage, _, _, _ in self.stages
+        }
+        self.assertEqual(diagnostic['commands'], expected_command_state)
+        self.assertIn(diagnostic['linked_root'], ('matches-config', 'empty', 'missing', 'other'))
+        self.assertIn(diagnostic['settings_root'], ('matches-config', 'empty', 'missing', 'other'))
+        self.assertEqual(set(diagnostic['context_presence']), {
+            'VERCEL_ORG_ID', 'VERCEL_PROJECT_ID', 'VERCEL_TEAM_ID', 'NOW_ORG_ID', 'NOW_PROJECT_ID'})
+        self.assertEqual(set(diagnostic['outputs']), {'repo_root', 'configured_root'})
+        for observation in diagnostic['outputs'].values():
+            self.assertEqual(set(observation), {'exists', 'static_config_valid', 'target_equal'})
+            self.assertTrue(all(type(value) is bool for value in observation.values()))
+        serialized = json.dumps(diagnostic)
+        for secret_or_value in (self.token, self.team, self.project, 'TEST_ONLY_RAW_STDOUT_SENTINEL'):
+            self.assertNotIn(secret_or_value, serialized)
         self.assertEqual(result['failure_diagnostic'], {
             'stage': failing_stage,
             'exit_code': 23 if failure_kind == 'exit' else None,
-            'timeout_class': None if failure_kind == 'exit' else 'subprocess-timeout'})
+            'timeout_class': None if failure_kind == 'exit' else
+                             'subprocess-timeout' if failure_kind == 'timeout' else 'tool-unavailable'})
         self.assertEqual(set(result['failure_diagnostic']), {'stage', 'exit_code', 'timeout_class'})
         self.assertEqual((result['component'], result['status'], result['mutation_may_have_happened']),
                          ('frontend', 'failed', False))
         cause = result['cause']
         self.assertEqual(cause['exception_type'],
-                         'ChildProcessError' if failure_kind == 'exit' else 'TimeoutExpired')
+                         'ChildProcessError' if failure_kind == 'exit' else
+                         'TimeoutExpired' if failure_kind == 'timeout' else 'FileNotFoundError')
         self.assertEqual(cause['stage'], failing_stage)
         self.assertEqual(cause['code'],
-                         'child-command-failed' if failure_kind == 'exit' else 'child-command-timeout')
-        self.assertIn(self.output_sentinel, cause['message'])
-        self.assertIn(self.project, cause['message'])
-        self.assertIn('https://api.test.invalid', cause['message'])
-        self.assertIn('Authorization: [REDACTED]', cause['message'])
-        self.assertIn('--token="[REDACTED]"', cause['message'])
-        self.assertEqual(cause['message'].count('--token="[REDACTED]"'), 2)
-        self.assertIn('VERCEL_TOKEN=[REDACTED]', cause['message'])
+                         'child-command-failed' if failure_kind == 'exit' else
+                         'child-command-timeout' if failure_kind == 'timeout' else 'tool-unavailable')
+        if failure_kind == 'missing':
+            self.assertEqual(cause['message'], 'vercel')
+        else:
+            self.assertIn(self.output_sentinel, cause['message'])
+            self.assertIn(self.project, cause['message'])
+            self.assertIn('https://api.test.invalid', cause['message'])
+            self.assertIn('Authorization: [REDACTED]', cause['message'])
+            self.assertIn('--token="[REDACTED]"', cause['message'])
+            self.assertEqual(cause['message'].count('--token="[REDACTED]"'), 2)
+            self.assertIn('VERCEL_TOKEN=[REDACTED]', cause['message'])
         self.assertFalse(cause['message_truncated'])
         safe_output = stdout.getvalue() + json.dumps(result) + str(error)
-        self.assertIn(self.output_sentinel, safe_output)
+        if failure_kind != 'missing':
+            self.assertIn(self.output_sentinel, safe_output)
         self.assertNotIn(self.token, safe_output)
         self.assertNotIn('different-secret', safe_output)
         self.assertNotIn('TEST_ONLY_RAW_STDOUT_SENTINEL', safe_output)
         self.assertNotIn('VERCEL_TEAM_ID=', safe_output)
         self.assertNotIn('VERCEL_PROJECT_ID=', safe_output)
 
-    def run_engine_main_prepare(self, output_case='valid', root_decoy=False):
+    def run_engine_main_prepare(self, output_case='valid', root_decoy=False,
+                                settings_case='valid', metadata_failure=False):
         with tempfile.TemporaryDirectory() as work:
             instance, directory, fake_root, auth_receipt_bytes = self.make_engine(work)
             fake_profiles = fake_root / 'deploy/engine/profiles.json'
@@ -440,17 +480,28 @@ class FrontendPrepareDiagnostics(unittest.TestCase):
                     self.assertEqual(resolved.returncode, 0, resolved.stderr)
                     self.assertEqual(json.loads(resolved.stdout), {
                         'linkPath': '.vercel/project.json', 'pullDirectory': '.'})
+                    project_link = fake_root / '.vercel/project.json'
+                    project_link.parent.mkdir(parents=True, exist_ok=True)
+                    if settings_case == 'malformed':
+                        project_link.write_text('{malformed')
+                    else:
+                        project_link.write_text(json.dumps({
+                            'projectId': self.project, 'orgId': self.team,
+                            'projectName': 'test-project',
+                            'settings': {'rootDirectory': 'apps/frontend'}}))
                     return subprocess.CompletedProcess(args, 0, stdout='', stderr='')
                 if operation == 'frontend-vercel-build':
                     output = fake_root / 'apps/frontend/.vercel/output/static'
-                    output.mkdir(parents=True)
+                    if output_case != 'none':
+                        output.mkdir(parents=True)
                     cfg = instance.plan['normalized']['frontend']
                     if output_case != 'missing':
                         built_config = {'schema_version': 1, 'api_url': cfg['api_url'],
                                         'auth_url': cfg['auth_url']}
                         if output_case == 'wrong':
                             built_config['api_url'] = 'https://wrong.invalid'
-                        (output / 'build-config.json').write_text(json.dumps(built_config))
+                        if output_case != 'none':
+                            (output / 'build-config.json').write_text(json.dumps(built_config))
                     if root_decoy:
                         decoy = fake_root / '.vercel/output/static'
                         decoy.mkdir(parents=True)
@@ -471,8 +522,11 @@ class FrontendPrepareDiagnostics(unittest.TestCase):
             def observe_barrier(engine_instance):
                 barrier_calls.append(engine_instance.state['status'])
                 return original_barrier(engine_instance)
+            diagnostic_patch = (patch.object(providers.Providers, '_frontend_prepare_evidence',
+                                             side_effect=OSError('diagnostic fixture failure'))
+                                if metadata_failure else contextlib.nullcontext())
             with patch.dict(os.environ, env, clear=True), patch('providers.ROOT', fake_root), \
-                    patch('support.subprocess.run', side_effect=fake_subprocess), \
+                    patch('support.subprocess.run', side_effect=fake_subprocess), diagnostic_patch, \
                     patch.object(sys, 'argv', argv), \
                     patch.object(engine.Engine, 'barrier', new=observe_barrier), \
                     patch.object(engine.Engine, 'runtime_guard', side_effect=AssertionError('runtime reached')), \
@@ -526,6 +580,96 @@ class FrontendPrepareDiagnostics(unittest.TestCase):
         self.assertIn('frontend-vercel-build', outcome['trace'])
         self.assertNotIn('auth-build', outcome['trace'])
         self.assertEqual(json.loads(outcome['stdout']), result)
+        self.assertNotIn('frontend_prepare_diagnostic', result)
+
+    def test_failure_reports_fixed_root_and_configured_output_candidates_without_changing_failure(self):
+        outcome = self.run_engine_main_prepare(output_case='none', root_decoy=True)
+        self.assertEqual(outcome['exit_code'], 1, outcome['stdout'])
+        self.assertEqual(outcome['result']['reason'], 'frontend-output-missing')
+        self.assertEqual(outcome['result']['status'], 'failed')
+        self.assertFalse(outcome['result']['mutation_may_have_happened'])
+        self.assertEqual(outcome['result']['observed']['component_status'], 'unstarted')
+        diagnostic = outcome['result']['frontend_prepare_diagnostic']
+        self.assertEqual(diagnostic['linked_root'], 'matches-config')
+        self.assertEqual(diagnostic['settings_root'], 'matches-config')
+        self.assertEqual(diagnostic['commands'], {stage: {
+            'status': 'exit0', 'exit_code': 0, 'timeout_class': None}
+            for stage, _, _, _ in self.stages})
+        self.assertEqual(diagnostic['outputs'], {
+            'repo_root': {'exists': True, 'static_config_valid': True, 'target_equal': True},
+            'configured_root': {'exists': False, 'static_config_valid': False, 'target_equal': False},
+        })
+        self.assertFalse(diagnostic['metadata_read_failed'])
+        self.assertEqual(outcome['auth_receipt'], outcome['expected_auth_receipt'])
+        self.assertIsNone(outcome['frontend_receipt'])
+        self.assertFalse(outcome['archive_exists'])
+        self.assertIsNone(outcome['state'])
+        self.assertEqual(outcome['barrier_calls'], [])
+
+    def test_malformed_diagnostic_metadata_keeps_primary_prepare_failure(self):
+        outcome = self.run_engine_main_prepare(
+            output_case='none', settings_case='malformed', root_decoy=False)
+        self.assertEqual(outcome['exit_code'], 1, outcome['stdout'])
+        self.assertEqual(outcome['result']['reason'], 'frontend-output-missing')
+        self.assertEqual(outcome['result']['status'], 'failed')
+        self.assertFalse(outcome['result']['mutation_may_have_happened'])
+        self.assertEqual(outcome['result']['observed']['component_status'], 'unstarted')
+        diagnostic = outcome['result']['frontend_prepare_diagnostic']
+        self.assertEqual(diagnostic['settings_root'], 'other')
+        self.assertTrue(diagnostic['metadata_read_failed'])
+        self.assertEqual(diagnostic['outputs']['repo_root'], {
+            'exists': False, 'static_config_valid': False, 'target_equal': False})
+        self.assertEqual(outcome['auth_receipt'], outcome['expected_auth_receipt'])
+        self.assertIsNone(outcome['frontend_receipt'])
+        self.assertFalse(outcome['archive_exists'])
+        self.assertEqual(outcome['barrier_calls'], [])
+
+    def test_diagnostic_collection_error_does_not_replace_primary_prepare_failure(self):
+        outcome = self.run_engine_main_prepare(
+            output_case='none', metadata_failure=True)
+        self.assertEqual(outcome['exit_code'], 1, outcome['stdout'])
+        self.assertEqual(outcome['result']['reason'], 'frontend-output-missing')
+        self.assertNotIn('frontend_prepare_diagnostic', outcome['result'])
+        self.assertIsNone(outcome['frontend_receipt'])
+        self.assertFalse(outcome['archive_exists'])
+        self.assertEqual(outcome['barrier_calls'], [])
+
+    def test_production_frontend_failure_does_not_add_dev_diagnostic(self):
+        with tempfile.TemporaryDirectory() as work:
+            instance, directory, fake_root, _ = self.make_engine(work)
+            instance.plan['normalized']['environment'] = 'production'
+            trace = []
+
+            def fake_subprocess(args, *, cwd, env, input, capture_output, text, timeout):
+                operation = self.child_operation(args)
+                trace.append(operation)
+                if operation == 'frontend-project-readback':
+                    response = {'id': self.project, 'name': 'llm-wiki-frontend-test',
+                                'accountId': self.team, 'rootDirectory': 'apps/frontend',
+                                'link': {'org': 'Rayer', 'repo': 'llm-wiki-cloud'}}
+                    return subprocess.CompletedProcess(args, 0, stdout=json.dumps(response), stderr='')
+                if operation == 'frontend-vercel-pull':
+                    link = fake_root / '.vercel/project.json'
+                    link.parent.mkdir(parents=True)
+                    link.write_text(json.dumps({'settings': {'rootDirectory': 'apps/frontend'}}))
+                return subprocess.CompletedProcess(args, 0, stdout='', stderr='')
+
+            env = {'PATH': os.environ.get('PATH', '/usr/bin:/bin'), 'HOME': str(work),
+                   'TMPDIR': str(work), 'VERCEL_TOKEN': self.token,
+                   'VERCEL_TEAM_ID': self.team, 'VERCEL_PROJECT_ID': self.project}
+            with patch.dict(os.environ, env, clear=True), patch('providers.ROOT', fake_root), \
+                    patch('support.subprocess.run', side_effect=fake_subprocess):
+                with self.assertRaises(Breakpoint) as caught:
+                    instance.provider.prepare('frontend')
+                error = caught.exception
+                self.assertEqual(error.reason, 'frontend-output-missing')
+                self.assertIsNone(error.frontend_prepare_diagnostic)
+                instance.component = 'frontend'
+                instance.result(error)
+
+            result = read(directory / 'result.json')
+            self.assertNotIn('frontend_prepare_diagnostic', result)
+            self.assertEqual(trace, [stage for stage, _, _, _ in self.stages])
 
     def test_missing_or_wrong_project_root_config_fails_closed_without_root_fallback(self):
         for output_case in ('missing', 'wrong'):
@@ -602,6 +746,17 @@ sys.stdout.write(os.environ['FAKE_PROJECT_RESPONSE'])
                 self.assertIn(message_fragment, action_result['cause']['message'])
                 self.assertEqual(action_result['failure_diagnostic'], {
                     'stage': 'frontend-project-readback', 'exit_code': None, 'timeout_class': None})
+                diagnostic = action_result['frontend_prepare_diagnostic']
+                self.assertEqual(diagnostic['commands'], {
+                    'frontend-project-readback': {
+                        'status': 'exit0', 'exit_code': 0, 'timeout_class': None},
+                    'frontend-npm-ci': {
+                        'status': 'not-run', 'exit_code': None, 'timeout_class': None},
+                    'frontend-vercel-pull': {
+                        'status': 'not-run', 'exit_code': None, 'timeout_class': None},
+                    'frontend-vercel-build': {
+                        'status': 'not-run', 'exit_code': None, 'timeout_class': None}})
+                self.assertIn(diagnostic['settings_root'], ('matches-config', 'empty', 'missing', 'other'))
                 combined = result.stdout + result.stderr + json.dumps(retained_result)
                 self.assertNotIn(self.token, combined)
                 self.assertNotIn('TEST_ONLY_VERCEL_TOKEN_SENTINEL', combined)
@@ -614,6 +769,10 @@ sys.stdout.write(os.environ['FAKE_PROJECT_RESPONSE'])
             for stage, _, _, _ in self.stages:
                 with self.subTest(stage=stage, failure=failure_kind), tempfile.TemporaryDirectory() as work:
                     self.assert_failure_case(work, stage, failure_kind)
+
+    def test_missing_frontend_cli_is_typed_failure_not_timeout(self):
+        with tempfile.TemporaryDirectory() as work:
+            self.assert_failure_case(work, 'frontend-vercel-build', 'missing')
 
     def test_pinned_vercel_and_build_utils_source_env_contract(self):
         result = ORIGINAL_SUBPROCESS_RUN(

@@ -1,7 +1,7 @@
 {
-  "base": "d7ac3acfcd26dd675d6d83f3036aa0e1e4e30d0b",
-  "branch": "Rayer/LWC-358-original-error-cause",
-  "content_sha256": "0cddd7d51f06ba5fc8c1b372018357504d09c4c9cd32110b58e67d7a80cce390",
+  "base": "f9814ded505e4fa9b41dbb74709a82943becc8b7",
+  "branch": "Rayer/LWC-358-vercel-build-output-root",
+  "content_sha256": "1b9a0a6028c8653c8e45c4992808ad27efa8bdf55d5b440e596eb7f1ded710d6",
   "scope": "All changed/new implementation, test, operator, accepted-appendix and frozen-spec files; excludes this manifest, evidence report and logs to avoid self-reference.",
   "frozen_sha256": "838817cad154b0ea773c205f671362a6c9c0ad97c38ddf34f2508eb4fcc2488b",
   "files": [
@@ -132,7 +132,7 @@
     },
     {
       "path": "deploy/engine/engine.py",
-      "sha256": "9c40ba33b1c7fa47722c0544ef9f7c8edd4f52a1b28c8f5b5c14d53d49705a6d",
+      "sha256": "a6b4f2f3b2b8f90a806b8447f9fbbcfd548ca0a2767029eec232427a07c7176f",
       "mode": "0o644"
     },
     {
@@ -142,12 +142,12 @@
     },
     {
       "path": "deploy/engine/providers.py",
-      "sha256": "b07fd1719953bbc29eedb5cd2cc3c58d5d5e83170eadb6ffc9c4feded2252ae6",
+      "sha256": "bd00d8eb37b8ff34524fd0c0eb0c1cdbdb88ba57779db1c2bd8aceddc5eaf659",
       "mode": "0o644"
     },
     {
       "path": "deploy/engine/support.py",
-      "sha256": "a08378f5e532348dd104072eb3ba47f11251e9e7a85d4cb665b1b73baeaaf6f2",
+      "sha256": "ac2dae885384050fea19979d2e15f3fc0e791ae87a756a213e403cc602506b79",
       "mode": "0o644"
     },
     {
@@ -197,7 +197,7 @@
     },
     {
       "path": "deploy/engine/tests/test_prepare_diagnostics.py",
-      "sha256": "faabf6eef5109ef809cee38e750643e118cdeaba510ba8fb3c630b330a57ee7c",
+      "sha256": "cad059bc57b75de656c920260ef511a504739cc7cb654b52ae89c59e7ff16771",
       "mode": "0o644"
     },
     {
