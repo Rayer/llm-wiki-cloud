@@ -179,8 +179,9 @@ class Providers:
     def _frontend_prepare_evidence(self, cfg, child_env, readback, commands):
         metadata_read_failed = False
         settings_root = None
+        project_root = ROOT / cfg['root_directory']
         try:
-            link = read(ROOT / '.vercel/project.json')
+            link = read(project_root / '.vercel/project.json')
         except FileNotFoundError:
             settings_root = 'missing'
         except Exception:
@@ -459,28 +460,27 @@ class Providers:
         try:
             self.project(stage='frontend-project-readback',
                          frontend_diagnostic=readback if diagnostic_enabled else None)
+            project_root = ROOT / cfg['root_directory']
             env = dict(os.environ, NEXT_PUBLIC_API_URL=cfg['api_url'], NEXT_PUBLIC_AUTH_URL=cfg['auth_url'],
                        VERCEL_ORG_ID=os.environ['VERCEL_TEAM_ID'],
                        VERCEL_PROJECT_ID=os.environ['VERCEL_PROJECT_ID'])
             env.pop('NOW_ORG_ID', None)
             env.pop('NOW_PROJECT_ID', None)
             target = 'production' if self.p['environment'] == 'production' else 'preview'
-            command('frontend-npm-ci', ['npm', 'ci', '--ignore-scripts'],
-                    cwd=ROOT / 'apps/frontend', timeout=600)
+            command('frontend-npm-ci', ['npm', 'ci', '--ignore-scripts'], cwd=project_root, timeout=600)
             pull_args = ['vercel', 'pull', '--yes', '--environment='+target, '--scope', cfg['team_slug'],
                          '--token', os.environ['VERCEL_TOKEN']]
-            command('frontend-vercel-pull', pull_args, env=env, cwd=ROOT, timeout=30)
+            command('frontend-vercel-pull', pull_args, env=env, cwd=project_root, timeout=30)
             build_args = ['vercel', 'build', '--scope', cfg['team_slug'], '--token', os.environ['VERCEL_TOKEN'],
                           *(['--prod'] if target == 'production' else [])]
-            command('frontend-vercel-build', build_args, env=env, cwd=ROOT, timeout=900)
-            project_root = ROOT / cfg['root_directory']
+            command('frontend-vercel-build', build_args, env=env, cwd=project_root, timeout=900)
             output = project_root / '.vercel/output'
             require(output.is_dir(), 'frontend-output-missing')
             expected = {'schema_version': 1, 'api_url': cfg['api_url'], 'auth_url': cfg['auth_url']}
             require(read(output / 'static/build-config.json') == expected, 'frontend-build-config-mismatch')
             archive = self.directory / 'frontend.tgz'
-            # Env-linked `vercel pull` writes project.json under cwd; build output uses the project root.
-            project_link = ROOT / '.vercel/project.json'
+            # Pull and build share the validated project root; keep the archive's canonical root paths.
+            project_link = project_root / '.vercel/project.json'
             with tarfile.open(archive, 'w:gz') as tar:
                 tar.add(output, arcname='.vercel/output')
                 tar.add(project_link, arcname='.vercel/project.json')

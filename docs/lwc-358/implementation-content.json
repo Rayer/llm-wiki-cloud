@@ -1,7 +1,7 @@
 {
-  "base": "f9814ded505e4fa9b41dbb74709a82943becc8b7",
-  "branch": "Rayer/LWC-358-vercel-build-output-root",
-  "content_sha256": "1b9a0a6028c8653c8e45c4992808ad27efa8bdf55d5b440e596eb7f1ded710d6",
+  "base": "77733ab480295b64fbe5e0130f81321c5df93806",
+  "branch": "Rayer/LWC-358-frontend-prepare-metadata",
+  "content_sha256": "6e5377ca18b8fb36d255020ce512779a59ea8b027e028baf9c9c875e3b04cc0d",
   "scope": "All changed/new implementation, test, operator, accepted-appendix and frozen-spec files; excludes this manifest, evidence report and logs to avoid self-reference.",
   "frozen_sha256": "838817cad154b0ea773c205f671362a6c9c0ad97c38ddf34f2508eb4fcc2488b",
   "files": [
@@ -142,7 +142,7 @@
     },
     {
       "path": "deploy/engine/providers.py",
-      "sha256": "bd00d8eb37b8ff34524fd0c0eb0c1cdbdb88ba57779db1c2bd8aceddc5eaf659",
+      "sha256": "a692359627d395ffad1dcea094ab5ac763e8d1cab5b201b4f3fe9dcbe13b6530",
       "mode": "0o644"
     },
     {
@@ -157,12 +157,17 @@
     },
     {
       "path": "deploy/engine/tests/fake_provider.py",
-      "sha256": "f2b2534864d13d7a12c62c250a03c4a55d0396b40ac7b0f8377b32ea22291148",
+      "sha256": "5e6f8833ff82442485207882dd7e3a834dcf77dff8a84f5f945384d6c1d40f57",
       "mode": "0o755"
     },
     {
       "path": "deploy/engine/tests/fixtures/build-utils-14.9.1-get-platform-env.js",
       "sha256": "c0d80c47c8508a603988d25b44e72c2a4d1c61addeb38247c80ce47cd88cb253",
+      "mode": "0o644"
+    },
+    {
+      "path": "deploy/engine/tests/fixtures/vercel-59.11.7-build-root.js",
+      "sha256": "eac3775d0a261ec4508bfe0e83b6d82c5fe21b0873cf354d95f8ddae9b9283f3",
       "mode": "0o644"
     },
     {
@@ -197,7 +202,7 @@
     },
     {
       "path": "deploy/engine/tests/test_prepare_diagnostics.py",
-      "sha256": "cad059bc57b75de656c920260ef511a504739cc7cb654b52ae89c59e7ff16771",
+      "sha256": "23bcf2e1fbd9ee25983ddcf487ebedf30defb191af891b3fd086efcc684956d1",
       "mode": "0o644"
     },
     {
@@ -207,7 +212,7 @@
     },
     {
       "path": "deploy/engine/tests/test_vercel_env_context.js",
-      "sha256": "0056466df9a0a2650ea5adab52774632490189ae280a5dab0f9ef036cd8af15e",
+      "sha256": "8a77de8e576a514ce722f450787cfb49b57b3c49790ad88f8cc3ce16870353a9",
       "mode": "0o644"
     },
     {
