@@ -19,10 +19,10 @@ on:
         type: string
         default: ''
       operation:
-        description: Normal release by default; diagnose-auth-image is a fixed read-only Auth image check
+        description: Normal release by default; diagnostic choices are fixed read-only DEV checks
         required: true
         type: choice
-        options: [release, diagnose-auth-image]
+        options: [release, diagnose-auth-image, diagnose-frontend-deployment]
         default: release
 permissions:
   contents: write
@@ -55,5 +55,18 @@ jobs:
       id-token: write
     uses: ./.github/workflows/cd-auth-image-diagnostic.yml
     secrets: inherit
+    with:
+      source_sha: ${{ github.sha }}
+  frontend-deployment-diagnostic:
+    if: >-
+      inputs.operation == 'diagnose-frontend-deployment' &&
+      github.ref == 'refs/heads/develop' &&
+      inputs.components == 'frontend' &&
+      inputs.release_tag == 'dev-lwc-366-b978fe10fb53' &&
+      inputs.artifact_id == '' &&
+      inputs.dev_artifact_id == ''
+    permissions:
+      contents: read
+    uses: ./.github/workflows/cd-frontend-deployment-diagnostic.yml
     with:
       source_sha: ${{ github.sha }}

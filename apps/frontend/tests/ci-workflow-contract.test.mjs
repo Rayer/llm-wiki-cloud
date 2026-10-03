@@ -25,7 +25,7 @@ function collectRunBlocks(value, blocks = []) {
 
 test('r2 registered release and recovery workflows use explicit artifact inputs', async () => {
   const files = (await readdir(workflowDirectory)).filter((file) => file.endsWith('.yml')).sort();
-  assert.deepEqual(files, ['cd-auth-image-diagnostic.yml', 'cd.yml', 'ci.yml', 'deploy-dev.yml', 'promote-production.yml', 'provision-exportjob-dev.yml', 'recover-deployment.yml']);
+  assert.deepEqual(files, ['cd-auth-image-diagnostic.yml', 'cd-frontend-deployment-diagnostic.yml', 'cd.yml', 'ci.yml', 'deploy-dev.yml', 'promote-production.yml', 'provision-exportjob-dev.yml', 'recover-deployment.yml']);
   for (const [file, environment, branch] of [['deploy-dev.yml', 'development', 'develop'], ['promote-production.yml', 'production', 'main']]) {
     const parsed = parseYaml(await workflow(file));
     assert.deepEqual(Object.keys(parsed.on), ['workflow_dispatch']);
@@ -44,8 +44,8 @@ test('r2 registered release and recovery workflows use explicit artifact inputs'
   const operation = deployDev.on.workflow_dispatch.inputs.operation;
   assert.equal(operation.type, 'choice');
   assert.equal(operation.default, 'release');
-  assert.deepEqual(operation.options, ['release', 'diagnose-auth-image']);
-  assert.deepEqual(Object.keys(deployDev.jobs).sort(), ['auth-image-diagnostic', 'release']);
+  assert.deepEqual(operation.options, ['release', 'diagnose-auth-image', 'diagnose-frontend-deployment']);
+  assert.deepEqual(Object.keys(deployDev.jobs).sort(), ['auth-image-diagnostic', 'frontend-deployment-diagnostic', 'release']);
   const diagnostic = deployDev.jobs['auth-image-diagnostic'];
   for (const condition of [
     "inputs.operation == 'diagnose-auth-image'", "github.ref == 'refs/heads/develop'",
@@ -58,6 +58,17 @@ test('r2 registered release and recovery workflows use explicit artifact inputs'
   assert.doesNotMatch(JSON.stringify(diagnostic), /GH_TOKEN|VERCEL_TOKEN/);
   assert.deepEqual(diagnostic.permissions, { contents: 'read', actions: 'read', 'id-token': 'write' });
   assert.deepEqual(diagnostic.with, { source_sha: '${{ github.sha }}' });
+  const frontendDiagnostic = deployDev.jobs['frontend-deployment-diagnostic'];
+  for (const condition of [
+    "inputs.operation == 'diagnose-frontend-deployment'", "github.ref == 'refs/heads/develop'",
+    "inputs.components == 'frontend'", "inputs.release_tag == 'dev-lwc-366-b978fe10fb53'",
+    "inputs.artifact_id == ''", "inputs.dev_artifact_id == ''",
+  ]) assert.ok(frontendDiagnostic.if.includes(condition), `missing Frontend diagnostic constraint: ${condition}`);
+  assert.equal(frontendDiagnostic.uses, './.github/workflows/cd-frontend-deployment-diagnostic.yml');
+  assert.deepEqual(frontendDiagnostic.permissions, { contents: 'read' });
+  assert.deepEqual(frontendDiagnostic.with, { source_sha: '${{ github.sha }}' });
+  assert.equal(frontendDiagnostic.secrets, undefined);
+  assert.doesNotMatch(JSON.stringify(frontendDiagnostic), /actions:|id-token|GCP|WIF|GH_TOKEN|secrets: inherit/i);
   const recovery = parseYaml(await workflow('recover-deployment.yml'));
   assert.deepEqual(recovery.on.workflow_dispatch.inputs.operation.options, ['rollback', 'reactivate', 'deploy', 'tag', 'readback', 'diagnose-auth-image']);
   assert.equal(recovery.jobs.recovery.uses, './.github/workflows/cd.yml');
@@ -109,6 +120,21 @@ test('r2 registered release and recovery workflows use explicit artifact inputs'
       }
     }
   }
+  const frontendDiagnosticWorkflow = parseYaml(await workflow('cd-frontend-deployment-diagnostic.yml'));
+  assert.deepEqual(Object.keys(frontendDiagnosticWorkflow.on.workflow_call.inputs), ['source_sha']);
+  assert.deepEqual(frontendDiagnosticWorkflow.permissions, { contents: 'read' });
+  assert.deepEqual(Object.keys(frontendDiagnosticWorkflow.jobs), ['frontend-deployment-diagnostic']);
+  const frontendReadOnlyJob = frontendDiagnosticWorkflow.jobs['frontend-deployment-diagnostic'];
+  assert.equal(frontendReadOnlyJob.if, "github.ref == 'refs/heads/develop' && inputs.source_sha == github.sha");
+  assert.equal(frontendReadOnlyJob.environment, 'Development');
+  assert.deepEqual(frontendReadOnlyJob.permissions, { contents: 'read' });
+  assert.equal(frontendReadOnlyJob.env.VERCEL_TOKEN, '${{ secrets.VERCEL_TOKEN }}');
+  assert.equal(frontendReadOnlyJob.env.DIAGNOSTIC_CODE_SHA, '${{ inputs.source_sha }}');
+  assert.equal(frontendReadOnlyJob.env.DIAGNOSTIC_OPERATION, 'diagnose-frontend-deployment');
+  assert.equal(frontendReadOnlyJob.steps[0].with.ref, '${{ inputs.source_sha }}');
+  assert.equal(frontendReadOnlyJob.steps[0].with['persist-credentials'], false);
+  assert.match(frontendReadOnlyJob.steps[1].run, /frontend_deployment_diagnostic\.py/);
+  assert.doesNotMatch(JSON.stringify(frontendReadOnlyJob), /actions:|id-token|google-github-actions|WIF|GH_TOKEN|actions\/upload-artifact|cd\.yml|secrets: inherit/i);
 });
 
 test('DEV provisioning uses the existing auth identity and preserves hidden evidence', async () => {

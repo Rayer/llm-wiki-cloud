@@ -1,279 +1,294 @@
 {
-  "base": "677c433e7494a3c8b5bb40c94121851b54642e54",
-  "branch": "Rayer/LWC-358-latest-checkpoint-pagination",
-  "content_sha256": "fadc56bab289fe591e2fbde60dc027acfbd8bb82a2fdd3610469ba19717e9875",
-  "scope": "All changed/new implementation, test, operator, accepted-appendix and frozen-spec files; excludes this manifest, evidence report and raw logs to avoid self-reference.",
-  "frozen_sha256": "838817cad154b0ea773c205f671362a6c9c0ad97c38ddf34f2508eb4fcc2488b",
+  "base": "b978fe10fb532e87b5afe5dee7e65712622857dd",
+  "branch": "Rayer/LWC-358-frontend-readonly-diagnostic",
+  "content_sha256": "d6963f6a6d1c39db178a82d1701b62df6661ed405208fcdb4d2341bf40203fb2",
   "files": [
     {
+      "mode": "0o644",
       "path": ".agents/skills/deployment-operator/SKILL.md",
-      "sha256": "90a36bfbe6d0630c80c2b49f884fa2bb9bdffa29b9bb43ccf19bea2a2bdf0793",
-      "mode": "0o644"
+      "sha256": "90a36bfbe6d0630c80c2b49f884fa2bb9bdffa29b9bb43ccf19bea2a2bdf0793"
     },
     {
+      "mode": "0o644",
       "path": ".github/actions/deployment-engine/action.yml",
-      "sha256": "c5d16ad58b897d34cacb13257db8617a39157cf33fc8206aecad6b3864ef3949",
-      "mode": "0o644"
+      "sha256": "c5d16ad58b897d34cacb13257db8617a39157cf33fc8206aecad6b3864ef3949"
     },
     {
+      "mode": "0o644",
       "path": ".github/actions/deployment-engine/index.cjs",
-      "sha256": "99fae610f0c81d41d7bbcbb23620c8f047321c367cd00de0f9beb62a566455b4",
-      "mode": "0o644"
+      "sha256": "99fae610f0c81d41d7bbcbb23620c8f047321c367cd00de0f9beb62a566455b4"
     },
     {
+      "mode": "0o644",
       "path": ".github/workflows/cd-auth-image-diagnostic.yml",
-      "sha256": "f19ce366fbe5e041a882043dd149116f22e5c8d5a5dfd9fd5d485443b1d80f02",
-      "mode": "0o644"
+      "sha256": "f19ce366fbe5e041a882043dd149116f22e5c8d5a5dfd9fd5d485443b1d80f02"
     },
     {
+      "mode": "0o644",
+      "path": ".github/workflows/cd-frontend-deployment-diagnostic.yml",
+      "sha256": "0cf85ab5f6db0d1ea2e9b66638d8d4d502648b2cdef4fdd621dc1fcdc86b209e"
+    },
+    {
+      "mode": "0o644",
       "path": ".github/workflows/cd.yml",
-      "sha256": "d480779da95f4fdb7d0b9636a3308b225bedb6bd1a5575bf2905572195e24c93",
-      "mode": "0o644"
+      "sha256": "d480779da95f4fdb7d0b9636a3308b225bedb6bd1a5575bf2905572195e24c93"
     },
     {
+      "mode": "0o644",
       "path": ".github/workflows/ci.yml",
-      "sha256": "170682ecdf28063f599ad1bc9221ec17d99f233c5805618ff8cd2e66f43f831c",
-      "mode": "0o644"
+      "sha256": "170682ecdf28063f599ad1bc9221ec17d99f233c5805618ff8cd2e66f43f831c"
     },
     {
+      "mode": "0o644",
       "path": ".github/workflows/deploy-dev.yml",
-      "sha256": "29f70bde7cdffd84dfca4851783c55f581064c8be213aa4309afd2d568ed2b32",
-      "mode": "0o644"
+      "sha256": "3b427a0f85b4863edbc791b834b74e2736ea6dec84a3a32da230add3533e4ab8"
     },
     {
+      "mode": "0o644",
       "path": ".github/workflows/promote-production.yml",
-      "sha256": "db94449c927baf91148fb07bf78baa25a9f32115d2852685159eb9d5f880aaa3",
-      "mode": "0o644"
+      "sha256": "db94449c927baf91148fb07bf78baa25a9f32115d2852685159eb9d5f880aaa3"
     },
     {
+      "mode": "0o644",
       "path": ".github/workflows/recover-deployment.yml",
-      "sha256": "a4682baaeaae9d3c0db3eee37ce84db5b46cb968703f5db54d4fcf0518113fa8",
-      "mode": "0o644"
+      "sha256": "a4682baaeaae9d3c0db3eee37ce84db5b46cb968703f5db54d4fcf0518113fa8"
     },
     {
+      "mode": "0o644",
       "path": "apps/bff/cmd/bff/deploy_workflow_test.go",
-      "sha256": "f20fe094c595833997eeafecefbe0c08c36b62706579ba454fce595be95267c9",
-      "mode": "0o644"
+      "sha256": "f20fe094c595833997eeafecefbe0c08c36b62706579ba454fce595be95267c9"
     },
     {
+      "mode": "0o644",
       "path": "apps/bff/cmd/olw_worker/workflow_test.go",
-      "sha256": "d6cb7c1e2f9fbdd0d32d7ec27561e3b858d5c23f1ca2136964388041ef68a824",
-      "mode": "0o644"
+      "sha256": "d6cb7c1e2f9fbdd0d32d7ec27561e3b858d5c23f1ca2136964388041ef68a824"
     },
     {
+      "mode": "0o644",
       "path": "apps/bff/scripts/test_bff_explicit_cutover.py",
-      "sha256": "59eaa3dfc563d827986d1c4567dfbb0459a0627da95abbf7961f81e432ea6690",
-      "mode": "0o644"
+      "sha256": "59eaa3dfc563d827986d1c4567dfbb0459a0627da95abbf7961f81e432ea6690"
     },
     {
+      "mode": "0o644",
       "path": "apps/bff/workflow_test.go",
-      "sha256": "38bd20384424f3f63dfd68270feb4b457d8a17848d2ba5ccd33ce452132a9f11",
-      "mode": "0o644"
+      "sha256": "38bd20384424f3f63dfd68270feb4b457d8a17848d2ba5ccd33ce452132a9f11"
     },
     {
+      "mode": "0o644",
       "path": "apps/frontend/tests/ci-workflow-contract.test.mjs",
-      "sha256": "8689ab82313748d33610f2d4bda2ec0d34a535861c5ad5c67409595d2daf62c0",
-      "mode": "0o644"
+      "sha256": "83e974b38b88aedba2d3dc49862276e08c92f791fd616c637e4067771d8bd3fa"
     },
     {
+      "mode": "0o644",
       "path": "apps/frontend/tests/lwc-199-vercel-alias-promotion.test.mjs",
-      "sha256": "193230a5e45b9c7d1cd238db2bcc24e8f0737cc43597d061ad4a85d1e93a20bd",
-      "mode": "0o644"
+      "sha256": "193230a5e45b9c7d1cd238db2bcc24e8f0737cc43597d061ad4a85d1e93a20bd"
     },
     {
+      "mode": "0o644",
       "path": "apps/frontend/tests/lwc-253-authority-reconciliation.test.mjs",
-      "sha256": "dcb70144349cff02f3ca7c377cb32c9fc8d59bca08952c124db8236c9b4c1bf8",
-      "mode": "0o644"
+      "sha256": "dcb70144349cff02f3ca7c377cb32c9fc8d59bca08952c124db8236c9b4c1bf8"
     },
     {
+      "mode": "0o644",
       "path": "apps/frontend/tests/lwc-253-vercel-dev-authority.test.mjs",
-      "sha256": "d5db19f7177fdb9de72b36fc9f45e319aa1591423ab7099dd2ae95a2a530a838",
-      "mode": "0o644"
+      "sha256": "c43ee7cd953a0334148527843fd64554a500e03bf1a7c4b0e4d7cffe9b0e6897"
     },
     {
+      "mode": "0o644",
       "path": "apps/frontend/tests/lwc-258-vercel-production-auth-env.test.mjs",
-      "sha256": "a85e608a40928b264cfa6a0877f879f8e59044dc3ed815cd28e259ab3b0e115e",
-      "mode": "0o644"
+      "sha256": "a85e608a40928b264cfa6a0877f879f8e59044dc3ed815cd28e259ab3b0e115e"
     },
     {
+      "mode": "0o644",
       "path": "apps/frontend/tests/lwc-admin-pipeline-terminal-status.test.tsx",
-      "sha256": "9781a096e6b1a5c3bd23e92b47f6d2afb900dfff2647380615cb12de976bc06f",
-      "mode": "0o644"
+      "sha256": "9781a096e6b1a5c3bd23e92b47f6d2afb900dfff2647380615cb12de976bc06f"
     },
     {
+      "mode": "0o755",
       "path": "deploy/components/auth.sh",
-      "sha256": "13115cb2e43ced364afcbfd13caa49e67c982c826978d3ffa87dd35e256df86e",
-      "mode": "0o755"
+      "sha256": "13115cb2e43ced364afcbfd13caa49e67c982c826978d3ffa87dd35e256df86e"
     },
     {
+      "mode": "0o755",
       "path": "deploy/components/bff.sh",
-      "sha256": "1ef66f33c4b7857808fefcd1920fcf161c21313b3f7b4d6e99f63984d5dd05c7",
-      "mode": "0o755"
+      "sha256": "1ef66f33c4b7857808fefcd1920fcf161c21313b3f7b4d6e99f63984d5dd05c7"
     },
     {
+      "mode": "0o644",
       "path": "deploy/components/exportjob.sh",
-      "sha256": "394c52d7b6ec10aa053cdbd01475b805e10f3d2c778589477b4d15668f1c0bb5",
-      "mode": "0o644"
+      "sha256": "394c52d7b6ec10aa053cdbd01475b805e10f3d2c778589477b4d15668f1c0bb5"
     },
     {
+      "mode": "0o755",
       "path": "deploy/components/worker.sh",
-      "sha256": "efbd820731851e185aff814ba1db0b7cc87762aab5cf12edb315594e14aace10",
-      "mode": "0o755"
+      "sha256": "efbd820731851e185aff814ba1db0b7cc87762aab5cf12edb315594e14aace10"
     },
     {
+      "mode": "0o644",
       "path": "deploy/engine/artifacts.cjs",
-      "sha256": "22e3623b15ff721e8b3c37abd883ef4e47fba9ff2222ed7fcb7595a97bfcd5cc",
-      "mode": "0o644"
+      "sha256": "22e3623b15ff721e8b3c37abd883ef4e47fba9ff2222ed7fcb7595a97bfcd5cc"
     },
     {
+      "mode": "0o644",
       "path": "deploy/engine/diagnostics.py",
-      "sha256": "fdc3b1de46f0db95ff0e40f64e8e83b4c2a0a2fc9c458c4a69483f06b48e4f2f",
-      "mode": "0o644"
+      "sha256": "fdc3b1de46f0db95ff0e40f64e8e83b4c2a0a2fc9c458c4a69483f06b48e4f2f"
     },
     {
+      "mode": "0o644",
       "path": "deploy/engine/engine.py",
-      "sha256": "0834462bcfc24f1be5463b2ff7fab5a3266af928793b1b0a71040601b8666023",
-      "mode": "0o644"
+      "sha256": "0834462bcfc24f1be5463b2ff7fab5a3266af928793b1b0a71040601b8666023"
     },
     {
+      "mode": "0o644",
+      "path": "deploy/engine/frontend_deployment_diagnostic.py",
+      "sha256": "066c67fac6b03673f085a784d446f924b272c4a7e4509d26a5255d69b9caf198"
+    },
+    {
+      "mode": "0o644",
       "path": "deploy/engine/profiles.json",
-      "sha256": "707dfdefe958ead24cdef222589bb1a376f148d0f266eb2eac3c838a66f9660d",
-      "mode": "0o644"
+      "sha256": "707dfdefe958ead24cdef222589bb1a376f148d0f266eb2eac3c838a66f9660d"
     },
     {
+      "mode": "0o644",
       "path": "deploy/engine/providers.py",
-      "sha256": "ff1433a0e4c6db177acbbbd260fe07de2af3516eb2246def666bbd48681874a2",
-      "mode": "0o644"
+      "sha256": "ff1433a0e4c6db177acbbbd260fe07de2af3516eb2246def666bbd48681874a2"
     },
     {
+      "mode": "0o644",
       "path": "deploy/engine/support.py",
-      "sha256": "fa8b6149862be18c17f8e57930e528cf8c3132a64ec90cc96686ec2deed9cc3a",
-      "mode": "0o644"
+      "sha256": "fa8b6149862be18c17f8e57930e528cf8c3132a64ec90cc96686ec2deed9cc3a"
     },
     {
+      "mode": "0o644",
       "path": "deploy/engine/tests/artifacts.test.cjs",
-      "sha256": "60569bb093f9a2b16a5158bf61148ecd1117df017e77566d801de4565a14879d",
-      "mode": "0o644"
+      "sha256": "60569bb093f9a2b16a5158bf61148ecd1117df017e77566d801de4565a14879d"
     },
     {
+      "mode": "0o755",
       "path": "deploy/engine/tests/fake_provider.py",
-      "sha256": "5e6f8833ff82442485207882dd7e3a834dcf77dff8a84f5f945384d6c1d40f57",
-      "mode": "0o755"
+      "sha256": "5e6f8833ff82442485207882dd7e3a834dcf77dff8a84f5f945384d6c1d40f57"
     },
     {
+      "mode": "0o644",
       "path": "deploy/engine/tests/fixtures/build-utils-14.9.1-get-platform-env.js",
-      "sha256": "c0d80c47c8508a603988d25b44e72c2a4d1c61addeb38247c80ce47cd88cb253",
-      "mode": "0o644"
+      "sha256": "c0d80c47c8508a603988d25b44e72c2a4d1c61addeb38247c80ce47cd88cb253"
     },
     {
+      "mode": "0o644",
       "path": "deploy/engine/tests/fixtures/vercel-59.11.7-build-caller.js",
-      "sha256": "2402f538a975d67664cd114e01a19aa70f8986aa3370b0911d5507d4ea224788",
-      "mode": "0o644"
+      "sha256": "2402f538a975d67664cd114e01a19aa70f8986aa3370b0911d5507d4ea224788"
     },
     {
+      "mode": "0o644",
       "path": "deploy/engine/tests/fixtures/vercel-59.11.7-build-root.js",
-      "sha256": "eac3775d0a261ec4508bfe0e83b6d82c5fe21b0873cf354d95f8ddae9b9283f3",
-      "mode": "0o644"
+      "sha256": "eac3775d0a261ec4508bfe0e83b6d82c5fe21b0873cf354d95f8ddae9b9283f3"
     },
     {
+      "mode": "0o644",
       "path": "deploy/engine/tests/fixtures/vercel-59.11.7-env-pull-path.js",
-      "sha256": "e6980387ae28260767aa7dd006a5d565f623ec2cc68368265bcc504b9f429921",
-      "mode": "0o644"
+      "sha256": "e6980387ae28260767aa7dd006a5d565f623ec2cc68368265bcc504b9f429921"
     },
     {
+      "mode": "0o644",
       "path": "deploy/engine/tests/fixtures/vercel-59.11.7-get-linked-project.js",
-      "sha256": "ada593b57dc8b17b882909cfeb67956b819019e8acb13388aa02f254e316bb29",
-      "mode": "0o644"
+      "sha256": "ada593b57dc8b17b882909cfeb67956b819019e8acb13388aa02f254e316bb29"
     },
     {
+      "mode": "0o644",
       "path": "deploy/engine/tests/test_build_submission.py",
-      "sha256": "666ed04eb24a3a0a68f79eaf38544d6986149b2987c075c32c66cb52abe877bc",
-      "mode": "0o644"
+      "sha256": "666ed04eb24a3a0a68f79eaf38544d6986149b2987c075c32c66cb52abe877bc"
     },
     {
+      "mode": "0o644",
       "path": "deploy/engine/tests/test_ci_environment.py",
-      "sha256": "2e2f9d9ed92088d684506ec48d7d575dc6a3080455ba148d6a1a444b82e243d4",
-      "mode": "0o644"
+      "sha256": "2e2f9d9ed92088d684506ec48d7d575dc6a3080455ba148d6a1a444b82e243d4"
     },
     {
+      "mode": "0o644",
       "path": "deploy/engine/tests/test_diagnostics.py",
-      "sha256": "6f9d01392fcbc01f134b6f957beaf5678ffe368572d4711501d2bfa49191f5b5",
-      "mode": "0o644"
+      "sha256": "6f9d01392fcbc01f134b6f957beaf5678ffe368572d4711501d2bfa49191f5b5"
     },
     {
+      "mode": "0o644",
       "path": "deploy/engine/tests/test_engine.py",
-      "sha256": "254a29f2ab238ac93c50af8607b2cdb7bb1afac6a202b0e2b699f8f53fb0a33c",
-      "mode": "0o644"
+      "sha256": "254a29f2ab238ac93c50af8607b2cdb7bb1afac6a202b0e2b699f8f53fb0a33c"
     },
     {
+      "mode": "0o644",
+      "path": "deploy/engine/tests/test_frontend_deployment_diagnostic.py",
+      "sha256": "a721b5cc93c8dd7b494e6fdfd265b11e5714486f508504d8d6c987d77ee50227"
+    },
+    {
+      "mode": "0o644",
       "path": "deploy/engine/tests/test_prepare_diagnostics.py",
-      "sha256": "b901d93ba8e43ebbf0d64ccf2a5a3b942a67b6bc28413d6d530196947c42b2b3",
-      "mode": "0o644"
+      "sha256": "b901d93ba8e43ebbf0d64ccf2a5a3b942a67b6bc28413d6d530196947c42b2b3"
     },
     {
+      "mode": "0o644",
       "path": "deploy/engine/tests/test_transport_integration.py",
-      "sha256": "997df36414c291503122e72249906f93df460fca5165f7eaa3752c73c0c02978",
-      "mode": "0o644"
+      "sha256": "997df36414c291503122e72249906f93df460fca5165f7eaa3752c73c0c02978"
     },
     {
+      "mode": "0o644",
       "path": "deploy/engine/tests/test_vercel_env_context.js",
-      "sha256": "581ffccfa19f8bccc55330d753118ddd5e607324155e6497fdbdf08c42492f2c",
-      "mode": "0o644"
+      "sha256": "581ffccfa19f8bccc55330d753118ddd5e607324155e6497fdbdf08c42492f2c"
     },
     {
+      "mode": "0o644",
       "path": "deploy/engine/tests/transport_sdk_stub.cjs",
-      "sha256": "233bba2581bd6bb796ffc89f9babe08d06315eca63ad3e783d0dee649a318c91",
-      "mode": "0o644"
+      "sha256": "233bba2581bd6bb796ffc89f9babe08d06315eca63ad3e783d0dee649a318c91"
     },
     {
+      "mode": "0o644",
       "path": "docs/lwc-358/deployment-engine-spec-r2-accepted-appendix-auth-image-rollback.md",
-      "sha256": "bde933015957f7c24930955a196c98512f01e92dba447b41a908013b71ea30ae",
-      "mode": "0o644"
+      "sha256": "bde933015957f7c24930955a196c98512f01e92dba447b41a908013b71ea30ae"
     },
     {
+      "mode": "0o644",
       "path": "docs/lwc-358/deployment-engine-spec-r2-accepted-appendix-build-submit.md",
-      "sha256": "b0ac51d8c135e4cb6964e85f0f27c83966e42eb17e1dc40d37aabe5261672fac",
-      "mode": "0o644"
+      "sha256": "b0ac51d8c135e4cb6964e85f0f27c83966e42eb17e1dc40d37aabe5261672fac"
     },
     {
+      "mode": "0o644",
       "path": "docs/lwc-358/deployment-engine-spec-r2-accepted-appendix-frontend-config-layout.md",
-      "sha256": "35ead0727af68a024f77a60f7720edfce6fc1534639a05865a222e27155be1c7",
-      "mode": "0o644"
+      "sha256": "35ead0727af68a024f77a60f7720edfce6fc1534639a05865a222e27155be1c7"
     },
     {
+      "mode": "0o644",
       "path": "docs/lwc-358/deployment-engine-spec-r2-accepted-appendix-latest-checkpoint.md",
-      "sha256": "b76c714bf347017517e555b27a2b294adfe338e702b1ecfb52093b480e82e3ff",
-      "mode": "0o644"
+      "sha256": "b76c714bf347017517e555b27a2b294adfe338e702b1ecfb52093b480e82e3ff"
     },
     {
+      "mode": "0o644",
       "path": "docs/lwc-358/deployment-engine-spec-r2.md",
-      "sha256": "838817cad154b0ea773c205f671362a6c9c0ad97c38ddf34f2508eb4fcc2488b",
-      "mode": "0o644"
+      "sha256": "838817cad154b0ea773c205f671362a6c9c0ad97c38ddf34f2508eb4fcc2488b"
     },
     {
+      "mode": "0o644",
       "path": "docs/lwc-358/operator-r2.md",
-      "sha256": "4cd7655723ea4e095ad4f7223eb82ca2d2a9ae9a2565286ab886a0758f53a4f7",
-      "mode": "0o644"
+      "sha256": "4cd7655723ea4e095ad4f7223eb82ca2d2a9ae9a2565286ab886a0758f53a4f7"
     },
     {
+      "mode": "0o755",
       "path": "scripts/local-vertical-smoke.sh",
-      "sha256": "b5e5835dfe7967a3faaafc6230624b0125ca55ce0f2880a0deec901eb4fe8c94",
-      "mode": "0o755"
+      "sha256": "b5e5835dfe7967a3faaafc6230624b0125ca55ce0f2880a0deec901eb4fe8c94"
     },
     {
+      "mode": "0o644",
       "path": "scripts/test_cd_contract.py",
-      "sha256": "3be25f693476eb7418a4545a0afbc9fc8af00dfed3c4f86c361d06fe54791e63",
-      "mode": "0o644"
+      "sha256": "3be25f693476eb7418a4545a0afbc9fc8af00dfed3c4f86c361d06fe54791e63"
     },
     {
+      "mode": "0o644",
       "path": "scripts/test_engine_workflow.py",
-      "sha256": "906a33cdd7d0a90125dc563bfd5313d77e45cf2678475de6c51b51d9628df879",
-      "mode": "0o644"
+      "sha256": "906a33cdd7d0a90125dc563bfd5313d77e45cf2678475de6c51b51d9628df879"
     },
     {
+      "mode": "0o644",
       "path": "scripts/test_local_vertical_smoke.py",
-      "sha256": "00ad8efa82ea940d53db059b8bc2053a8038f6f3cc792e3dfd9282c482c77695",
-      "mode": "0o644"
+      "sha256": "00ad8efa82ea940d53db059b8bc2053a8038f6f3cc792e3dfd9282c482c77695"
     }
-  ]
+  ],
+  "frozen_sha256": "838817cad154b0ea773c205f671362a6c9c0ad97c38ddf34f2508eb4fcc2488b",
+  "scope": "All changed/new implementation, test, operator, accepted-appendix and frozen-spec files; excludes this manifest, evidence report and raw logs to avoid self-reference."
 }

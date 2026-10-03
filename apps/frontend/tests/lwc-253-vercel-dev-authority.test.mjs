@@ -408,7 +408,7 @@ test('DEV workflow invokes the shared engine and isolates the fixed diagnostic r
   assert.equal(workflow.on.push, undefined);
   assert.deepEqual(Object.keys(workflow.on.workflow_dispatch.inputs), ['components', 'release_tag', 'artifact_id', 'dev_artifact_id', 'operation']);
   assert.equal(workflow.on.workflow_dispatch.inputs.operation.type, 'choice');
-  assert.deepEqual(workflow.on.workflow_dispatch.inputs.operation.options, ['release', 'diagnose-auth-image']);
+  assert.deepEqual(workflow.on.workflow_dispatch.inputs.operation.options, ['release', 'diagnose-auth-image', 'diagnose-frontend-deployment']);
   assert.equal(workflow.on.workflow_dispatch.inputs.operation.default, 'release');
   assert.equal(workflow.on.workflow_dispatch.inputs.release_tag.required, true);
   assert.equal(job.if, "github.ref == 'refs/heads/develop' && inputs.operation == 'release'");
@@ -427,4 +427,11 @@ test('DEV workflow invokes the shared engine and isolates the fixed diagnostic r
   assert.equal(diagnostic.uses, './.github/workflows/cd-auth-image-diagnostic.yml');
   assert.equal(diagnostic.secrets, 'inherit');
   assert.deepEqual(diagnostic.with, { source_sha: '${{ github.sha }}' });
+  const frontendDiagnostic = workflow.jobs['frontend-deployment-diagnostic'];
+  assert.ok(frontendDiagnostic.if.includes("inputs.operation == 'diagnose-frontend-deployment'"));
+  assert.ok(frontendDiagnostic.if.includes("github.ref == 'refs/heads/develop'"));
+  assert.deepEqual(frontendDiagnostic.permissions, { contents: 'read' });
+  assert.equal(frontendDiagnostic.uses, './.github/workflows/cd-frontend-deployment-diagnostic.yml');
+  assert.deepEqual(frontendDiagnostic.with, { source_sha: '${{ github.sha }}' });
+  assert.equal(frontendDiagnostic.secrets, undefined);
 });
