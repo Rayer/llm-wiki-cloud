@@ -1,7 +1,7 @@
 {
-  "base": "f1480c03fe7aa0c4a10054de741d057210310db1",
-  "branch": "Rayer/LWC-358-vercel-project-cwd",
-  "content_sha256": "695c221822be079c89be7cc7179b95320bdb649f33041cdb8818a7604fe784d7",
+  "base": "e8989d4abf7072cfc3945812904219e2175c3551",
+  "branch": "Rayer/LWC-358-frontend-build-logs",
+  "content_sha256": "6c934b7db848398221ff580f40cb42e2b8293d7fb8efba2ae69595b0ba5935b1",
   "scope": "All changed/new implementation, test, operator, accepted-appendix and frozen-spec files; excludes this manifest, evidence report and logs to avoid self-reference.",
   "frozen_sha256": "838817cad154b0ea773c205f671362a6c9c0ad97c38ddf34f2508eb4fcc2488b",
   "files": [
@@ -142,7 +142,7 @@
     },
     {
       "path": "deploy/engine/providers.py",
-      "sha256": "109b2fd490e8f4ef1d49b97146736393a6481ae77d07341fb6b51001d3096c19",
+      "sha256": "e5bd7a4e9cb09eb711dc89e49622a46b8623bd66ed09b7c57d8843fe057da68d",
       "mode": "0o644"
     },
     {
@@ -207,7 +207,7 @@
     },
     {
       "path": "deploy/engine/tests/test_prepare_diagnostics.py",
-      "sha256": "ab05c42aca91add21c4b7538e28a6fcc81b37b60e89942a1f1f0127ea9f56917",
+      "sha256": "c2e35892cdf7169a8ac0dd7fa121f8c95dfb261cf1e49e394408f8423c98d270",
       "mode": "0o644"
     },
     {
@@ -217,7 +217,7 @@
     },
     {
       "path": "deploy/engine/tests/test_vercel_env_context.js",
-      "sha256": "73558d45044fefac8cc16140da131b694680574ed2bb75a363cb7241a20bbd49",
+      "sha256": "017ae21c75bf6fce0b1f5a06b497e04d78dd7e54fcc2cf35239d8e7fb1005fb9",
       "mode": "0o644"
     },
     {
@@ -228,6 +228,11 @@
     {
       "path": "docs/lwc-358/deployment-engine-spec-r2-accepted-appendix-build-submit.md",
       "sha256": "b0ac51d8c135e4cb6964e85f0f27c83966e42eb17e1dc40d37aabe5261672fac",
+      "mode": "0o644"
+    },
+    {
+      "path": "docs/lwc-358/deployment-engine-spec-r2-accepted-appendix-frontend-config-layout.md",
+      "sha256": "18021bbc9e58411d9972e40812612851c71cf6d91dfb80dd23563225f2d0b93a",
       "mode": "0o644"
     },
     {
