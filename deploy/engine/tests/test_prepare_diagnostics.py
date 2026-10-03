@@ -488,7 +488,8 @@ class FrontendPrepareDiagnostics(unittest.TestCase):
 
     def run_engine_main_prepare(self, output_case='valid', root_decoy=False,
                                 settings_case='valid', metadata_failure=False,
-                                claiming_workspace=False):
+                                claiming_workspace=False, archive_failure=False,
+                                prebuilt_runtime=False):
         with tempfile.TemporaryDirectory() as work:
             instance, directory, fake_root, auth_receipt_bytes = self.make_engine(
                 work, claiming_workspace=claiming_workspace)
@@ -578,7 +579,7 @@ class FrontendPrepareDiagnostics(unittest.TestCase):
                 raise AssertionError('unexpected operation in Engine.main valid-response fixture')
 
             env = {'PATH': os.environ.get('PATH', '/usr/bin:/bin'), 'HOME': str(work),
-                   'TMPDIR': str(work), 'VERCEL_TOKEN': self.token,
+                   'TMPDIR': os.environ.get('TMPDIR', str(work)), 'VERCEL_TOKEN': self.token,
                    'VERCEL_TEAM_ID': self.team, 'VERCEL_PROJECT_ID': self.project}
             argv = ['engine.py', 'prepare', '--directory', str(directory),
                     '--environment', 'development', '--source', instance.plan['source'],
@@ -603,24 +604,68 @@ class FrontendPrepareDiagnostics(unittest.TestCase):
                 diagnostic_patch = patch('providers.read', side_effect=malformed_diagnostic_link)
             else:
                 diagnostic_patch = contextlib.nullcontext()
+            archive_patch = (patch('providers.tarfile.open', side_effect=OSError('archive fixture failure'))
+                             if archive_failure else contextlib.nullcontext())
             with patch.dict(os.environ, env, clear=True), patch('providers.ROOT', fake_root), \
-                    patch('support.subprocess.run', side_effect=fake_subprocess), diagnostic_patch, \
+                    patch('support.subprocess.run', side_effect=fake_subprocess), diagnostic_patch, archive_patch, \
                     patch.object(sys, 'argv', argv), \
                     patch.object(engine.Engine, 'barrier', new=observe_barrier), \
                     patch.object(engine.Engine, 'runtime_guard', side_effect=AssertionError('runtime reached')), \
                     contextlib.redirect_stdout(stdout):
                 exit_code = engine.main()
 
+            prebuilt_checks = []
+            if prebuilt_runtime and exit_code == 0:
+                artifact = read(directory / 'receipts/frontend.json')['artifact']
+                instance.provider.p['frontend']['stable_aliases'] = ['site.test.invalid']
+                candidate = {}
+
+                def fake_prebuilt(args, *, cwd, env, input, capture_output, text, timeout):
+                    self.assertEqual(args[:3], ['vercel', 'deploy', '--prebuilt'])
+                    output_root = Path(cwd) / '.vercel/output'
+                    route_func = output_root / 'functions/build-config.json.func'
+                    resolved = route_func.resolve(strict=True)
+                    handler = route_func / '___next_launcher.cjs'
+                    descriptor = json.loads((output_root / 'functions/build-config.json.prerender-config.json').read_text())
+                    fallback = json.loads((output_root / 'functions/build-config.json.prerender-fallback.body').read_text())
+                    prebuilt_checks.append({
+                        'route_func_is_symlink': route_func.is_symlink(),
+                        'route_func_target': route_func.readlink().as_posix(),
+                        'resolved_func_is_directory': resolved.is_dir(),
+                        'handler_is_file': handler.is_file(),
+                        'descriptor_type': descriptor.get('type'),
+                        'fallback_type': descriptor.get('fallback', {}).get('type'),
+                        'fallback_target_equal': fallback == artifact['config'],
+                        'project_link_present': Path(cwd, '.vercel/project.json').is_file(),
+                        'static_config_present': (output_root / 'static/build-config.json').exists(),
+                    })
+                    return subprocess.CompletedProcess(args, 0, stdout='https://candidate.vercel.app', stderr='')
+
+                with patch.dict(os.environ, env, clear=True), \
+                        patch('support.subprocess.run', side_effect=fake_prebuilt), \
+                        patch.object(instance.provider, 'deployment', return_value={'id': 'dpl_candidate'}), \
+                        patch.object(instance.provider, 'alias', return_value='dpl_candidate'):
+                    instance.provider.usable('frontend', artifact)
+                    instance.provider.deploy('frontend', artifact, candidate, lambda: None)
+
             result = json.loads((directory / 'result.json').read_text())
             receipt_bytes = ((directory / 'receipts/frontend.json').read_bytes()
                              if (directory / 'receipts/frontend.json').exists() else None)
             archive_members = []
             archive_payloads = {}
+            archive_bytes = ((directory / 'frontend.tgz').read_bytes()
+                             if (directory / 'frontend.tgz').exists() else None)
             if (directory / 'frontend.tgz').exists():
                 with tarfile.open(directory / 'frontend.tgz', 'r:gz') as archive:
                     archive_members = archive.getnames()
                     for name in ('.vercel/project.json',
-                                 '.vercel/output/static/build-config.json'):
+                                 '.vercel/output/static/build-config.json',
+                                 '.vercel/output/functions/build-config.json.func/.vc-config.json',
+                                 '.vercel/output/functions/build-config.json.func/___next_launcher.cjs',
+                                 '.vercel/output/functions/build-config.json.rsc.func/.vc-config.json',
+                                 '.vercel/output/functions/build-config.json.rsc.func/___next_launcher.cjs',
+                                 '.vercel/output/functions/build-config.json.prerender-config.json',
+                                 '.vercel/output/functions/build-config.json.prerender-fallback.body'):
                         extracted = archive.extractfile(name) if name in archive_members else None
                         if extracted:
                             archive_payloads[name] = extracted.read()
@@ -629,7 +674,9 @@ class FrontendPrepareDiagnostics(unittest.TestCase):
                 'trace': trace, 'auth_receipt': (directory / 'receipts/auth.json').read_bytes(),
                 'expected_auth_receipt': auth_receipt_bytes, 'frontend_receipt': receipt_bytes,
                 'archive_exists': (directory / 'frontend.tgz').exists(),
+                'archive_bytes': archive_bytes,
                 'archive_members': archive_members, 'archive_payloads': archive_payloads,
+                'prebuilt_checks': prebuilt_checks,
                 'state': read(directory / 'state.json') if (directory / 'state.json').exists() else None,
                 'barrier_calls': barrier_calls, 'root_decoy': root_decoy,
                 'pulled_link': pulled_link,
@@ -670,6 +717,100 @@ class FrontendPrepareDiagnostics(unittest.TestCase):
                 self.assertNotIn('frontend_prepare_diagnostic', result)
                 self.assertNotIn('DEV_BUILD_SUCCESS_STDOUT_SENTINEL', outcome['stdout'])
                 self.assertNotIn('DEV_BUILD_SUCCESS_STDERR_SENTINEL', outcome['stdout'])
+
+    def test_official_prerender_output_prepares_and_archives_exact_fallback(self):
+        outcome = self.run_engine_main_prepare(output_case='prerender')
+        self.assertEqual(outcome['exit_code'], 0, outcome['stdout'])
+        self.assertEqual(outcome['result']['reason'], 'completed')
+        self.assertEqual(outcome['result']['stage'], 'ready')
+        self.assertEqual(outcome['auth_receipt'], outcome['expected_auth_receipt'])
+        self.assertIsNotNone(outcome['frontend_receipt'])
+        self.assertTrue(outcome['archive_exists'])
+        self.assertEqual(len(outcome['barrier_calls']), 1)
+        self.assertIn('.vercel/project.json', outcome['archive_members'])
+        self.assertNotIn('.vercel/output/static/build-config.json', outcome['archive_members'])
+        expected = {'schema_version': 1, 'api_url': 'https://api.test.invalid',
+                    'auth_url': 'https://auth.test.invalid'}
+        self.assertEqual(json.loads(outcome['archive_payloads'][
+            '.vercel/output/functions/build-config.json.prerender-fallback.body']), expected)
+        descriptor = json.loads(outcome['archive_payloads'][
+            '.vercel/output/functions/build-config.json.prerender-config.json'])
+        self.assertEqual(descriptor['type'], 'Prerender')
+        self.assertEqual(descriptor['fallback'], {
+            'type': 'FileFsRef', 'fsPath': 'build-config.json.prerender-fallback.body',
+            'contentType': 'application/json'})
+        function_config = json.loads(outcome['archive_payloads'][
+            '.vercel/output/functions/build-config.json.func/.vc-config.json'])
+        self.assertEqual(function_config['handler'], '___next_launcher.cjs')
+        self.assertIn('.vercel/output/functions/build-config.json.func/___next_launcher.cjs',
+                      outcome['archive_members'])
+
+    def test_official_deduplicated_prerender_archives_and_deploys_prebuilt(self):
+        for output_case, target in (
+                ('prerender-dedup', 'build-config.json.rsc.func'),
+                ('prerender-func-link-sibling', 'other-route.func')):
+            with self.subTest(output_case=output_case):
+                outcome = self.run_engine_main_prepare(
+                    output_case=output_case, prebuilt_runtime=True)
+                self.assertEqual(outcome['exit_code'], 0, outcome['stdout'])
+                self.assertEqual(outcome['result']['reason'], 'completed')
+                self.assertEqual(outcome['result']['stage'], 'ready')
+                self.assertEqual(outcome['auth_receipt'], outcome['expected_auth_receipt'])
+                self.assertIsNotNone(outcome['frontend_receipt'])
+                self.assertTrue(outcome['archive_exists'])
+                self.assertEqual(len(outcome['barrier_calls']), 1)
+                alias_name = '.vercel/output/functions/build-config.json.func'
+                with tarfile.open(fileobj=io.BytesIO(outcome['archive_bytes']), mode='r:gz') as archive:
+                    link = archive.getmember(alias_name)
+                    self.assertTrue(link.issym())
+                    self.assertEqual(link.linkname, target)
+                function_root = f'.vercel/output/functions/{target}'
+                self.assertIn(f'{function_root}/.vc-config.json', outcome['archive_members'])
+                self.assertIn(f'{function_root}/___next_launcher.cjs', outcome['archive_members'])
+                self.assertEqual(outcome['prebuilt_checks'], [{
+                    'route_func_is_symlink': True,
+                    'route_func_target': target,
+                    'resolved_func_is_directory': True,
+                    'handler_is_file': True,
+                    'descriptor_type': 'Prerender',
+                    'fallback_type': 'FileFsRef',
+                    'fallback_target_equal': True,
+                    'project_link_present': True,
+                    'static_config_present': False,
+                }])
+
+    def test_diagnostic_uses_the_same_prerender_validation_as_prepare(self):
+        outcome = self.run_engine_main_prepare(output_case='prerender', archive_failure=True)
+        self.assertEqual(outcome['exit_code'], 1, outcome['stdout'])
+        self.assertEqual(outcome['result']['status'], 'failed')
+        diagnostic = outcome['result']['frontend_prepare_diagnostic']
+        self.assertEqual(diagnostic['outputs']['configured_root'], {
+            'exists': True, 'static_config_valid': True, 'target_equal': True})
+        self.assertFalse(diagnostic['metadata_read_failed'])
+        self.assertEqual(outcome['auth_receipt'], outcome['expected_auth_receipt'])
+        self.assertIsNone(outcome['frontend_receipt'])
+        self.assertEqual(outcome['barrier_calls'], [])
+
+    def test_official_prerender_invalid_or_ambiguous_layouts_fail_closed(self):
+        for output_case in ('prerender-malformed', 'prerender-wrong-type',
+                            'prerender-wrong-fallback-type', 'prerender-handler-escape',
+                            'prerender-handler-sibling-symlink',
+                            'prerender-dangling-func-link', 'prerender-func-link-escape',
+                            'prerender-escape', 'prerender-missing-fallback',
+                            'prerender-missing-handler', 'prerender-wrong-content-type',
+                            'prerender-target-mismatch', 'ambiguous'):
+            with self.subTest(output_case=output_case):
+                outcome = self.run_engine_main_prepare(output_case=output_case)
+                self.assertEqual(outcome['exit_code'], 1, outcome['stdout'])
+                self.assertEqual(outcome['result']['status'], 'failed')
+                self.assertFalse(outcome['result']['mutation_may_have_happened'])
+                self.assertEqual(outcome['result']['observed']['component_status'], 'unstarted')
+                self.assertEqual(outcome['auth_receipt'], outcome['expected_auth_receipt'])
+                self.assertIsNone(outcome['frontend_receipt'])
+                self.assertFalse(outcome['archive_exists'])
+                self.assertEqual(outcome['barrier_calls'], [])
+                self.assertNotIn('auth-build', outcome['trace'])
+                self.assertNotEqual(outcome['result']['stage'], 'ready')
 
     def test_failure_reports_fixed_root_and_configured_output_candidates_without_changing_failure(self):
         outcome = self.run_engine_main_prepare(output_case='none', root_decoy=True)
@@ -1144,10 +1285,19 @@ else:
             project_file = work / 'archive/.vercel/project.json'
             project_file.parent.mkdir(parents=True)
             project_file.write_text(json.dumps({'projectId': self.project, 'orgId': self.team}))
-            config_file = work / 'archive/.vercel/output/static/build-config.json'
-            config_file.parent.mkdir(parents=True)
-            config_file.write_text(json.dumps({'schema_version': 1, 'api_url': 'https://api.test.invalid',
-                                               'auth_url': 'https://auth.test.invalid'}))
+            functions = work / 'archive/.vercel/output/functions'
+            func = functions / 'build-config.json.func'
+            func.mkdir(parents=True)
+            (func / '___next_launcher.cjs').write_text('TEST ONLY handler')
+            (func / '.vc-config.json').write_text(json.dumps({'handler': '___next_launcher.cjs'}))
+            (functions / 'build-config.json.prerender-config.json').write_text(json.dumps({
+                'type': 'Prerender', 'initialHeaders': {'content-type': 'application/json'},
+                'fallback': {'type': 'FileFsRef',
+                             'fsPath': 'build-config.json.prerender-fallback.body',
+                             'contentType': 'application/json'}}))
+            (functions / 'build-config.json.prerender-fallback.body').write_text(json.dumps({
+                'schema_version': 1, 'api_url': 'https://api.test.invalid',
+                'auth_url': 'https://auth.test.invalid'}))
             archive = directory / 'frontend.tgz'
             with tarfile.open(archive, 'w:gz') as tar:
                 tar.add(project_file, arcname='.vercel/project.json')
@@ -1180,9 +1330,13 @@ else:
                                         'lwcAttempt='+instance.plan['id'], '--target=preview'])
                 self.assertEqual(Path(cwd, '.vercel/project.json').read_text(),
                                  json.dumps({'projectId': self.project, 'orgId': self.team}))
-                self.assertEqual(json.loads(Path(cwd, '.vercel/output/static/build-config.json').read_text()),
+                self.assertFalse(Path(cwd, '.vercel/output/static/build-config.json').exists())
+                self.assertEqual(json.loads(Path(cwd, '.vercel/output/functions/'
+                                                  'build-config.json.prerender-fallback.body').read_text()),
                                  {'schema_version': 1, 'api_url': 'https://api.test.invalid',
                                   'auth_url': 'https://auth.test.invalid'})
+                self.assertTrue(Path(cwd, '.vercel/output/functions/build-config.json.func/'
+                                     '___next_launcher.cjs').is_file())
                 baseline = dict(env)
                 for name in ('VERCEL_ORG_ID', 'NOW_ORG_ID', 'NOW_PROJECT_ID'):
                     baseline.pop(name, None)

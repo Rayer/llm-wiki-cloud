@@ -1,0 +1,6 @@
+.....
+----------------------------------------------------------------------
+Ran 5 tests in 1.370s
+
+OK
+Pinned resolver baseline=pair-incomplete; runtime-child=linked; resume=single-deploy

@@ -1,0 +1,15 @@
+F
+======================================================================
+FAIL: test_official_deduplicated_prerender_archives_and_deploys_prebuilt (deploy.engine.tests.test_prepare_diagnostics.FrontendPrepareDiagnostics.test_official_deduplicated_prerender_archives_and_deploys_prebuilt)
+----------------------------------------------------------------------
+Traceback (most recent call last):
+  File "/Users/rayer/orca/workspaces/llm-wiki-cloud/LWC-358-engine-r2/deploy/engine/tests/test_prepare_diagnostics.py", line 750, in test_official_deduplicated_prerender_archives_and_deploys_prebuilt
+    self.assertEqual(outcome['exit_code'], 0, outcome['stdout'])
+    ~~~~~~~~~~~~~~~~^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+AssertionError: 1 != 0 : {"allowed_next_action": "correct-input-and-resume", "attempt": "1b20930fbe14dc5bf77fa9254668d9d3fac28feb27020ad9ad2e09c6bf141f4e", "candidate": null, "component": "frontend", "expected": {"identity": "47d80b4cc2bf273ddeea241c2a440d855c8a3b5c777f35d7b014c3fce0fcc695", "source": "cccccccccccccccccccccccccccccccccccccccc"}, "frontend_prepare_diagnostic": {"build_output": {"stderr": {"text": "DEV_BUILD_SUCCESS_STDERR_SENTINEL", "truncated": false}, "stdout": {"text": "DEV_BUILD_SUCCESS_STDOUT_SENTINEL", "truncated": false}}, "commands": {"frontend-npm-ci": {"exit_code": 0, "status": "exit0", "timeout_class": null}, "frontend-project-readback": {"exit_code": 0, "status": "exit0", "timeout_class": null}, "frontend-vercel-build": {"exit_code": 0, "status": "exit0", "timeout_class": null}, "frontend-vercel-pull": {"exit_code": 0, "status": "exit0", "timeout_class": null}}, "context_presence": {"NOW_ORG_ID": false, "NOW_PROJECT_ID": false, "VERCEL_ORG_ID": true, "VERCEL_PROJECT_ID": true, "VERCEL_TEAM_ID": true}, "linked_root": "matches-config", "metadata_read_failed": false, "outputs": {"configured_root": {"exists": true, "static_config_valid": false, "target_equal": false}, "repo_root": {"exists": false, "static_config_valid": false, "target_equal": false}}, "settings_root": "matches-config"}, "last_verified_checkpoint": 0, "limitations": "Job executions and persistent writes are not reversed by image rollback.", "mutation_may_have_happened": false, "observed": {"component_status": "unstarted"}, "prior": null, "reason": "frontend-build-config-mismatch", "release": "offline-diagnostic", "stage": "prepared", "status": "failed"}
+
+
+----------------------------------------------------------------------
+Ran 1 test in 0.116s
+
+FAILED (failures=1)

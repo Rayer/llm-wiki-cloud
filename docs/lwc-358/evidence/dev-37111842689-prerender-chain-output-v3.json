@@ -1,0 +1,61 @@
+{
+  "next_body": {
+    "exists": true,
+    "bytes": 101,
+    "generated_by_adapter_build": true,
+    "exact_target_match": true
+  },
+  "adapter": {
+    "package": "@vercel/next@11.0.2",
+    "output_key": "build-config.json",
+    "output_type": "Prerender",
+    "fallback_type": "FileFsRef",
+    "fallback_source": ".next/server/app/build-config.json.body"
+  },
+  "cli_writer": {
+    "package": "vercel@59.11.7",
+    "function_path": "functions/build-config.json.func",
+    "function_dir_exists": true,
+    "function_config_path": "functions/build-config.json.func/.vc-config.json",
+    "function_config_keys": [
+      "architecture",
+      "environment",
+      "experimentalAllowBundling",
+      "filePathMap",
+      "framework",
+      "handler",
+      "launcherType",
+      "operationType",
+      "runtime",
+      "shouldAddHelpers",
+      "shouldAddSourcemapSupport",
+      "shouldDisableAutomaticFetchInstrumentation",
+      "supportsMultiPayloads"
+    ],
+    "function_handler": "___next_launcher.cjs",
+    "function_runtime": "nodejs24.x",
+    "descriptor_path": "functions/build-config.json.prerender-config.json",
+    "descriptor_keys": [
+      "allowHeader",
+      "allowQuery",
+      "bypassToken",
+      "experimentalBypassFor",
+      "expiration",
+      "fallback",
+      "group",
+      "initialHeaders",
+      "type"
+    ],
+    "descriptor_fallback_keys": [
+      "contentType",
+      "fsPath",
+      "mode",
+      "type"
+    ],
+    "descriptor_fallback_basename": "build-config.json.prerender-fallback.body",
+    "fallback_path": "functions/build-config.json.prerender-fallback.body",
+    "fallback_byte_identical_to_next_body": true,
+    "fallback_exact_target_match": true,
+    "static_path_exists": false
+  }
+}

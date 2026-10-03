@@ -1,8 +1,8 @@
 {
-  "base": "f1480c03fe7aa0c4a10054de741d057210310db1",
-  "branch": "Rayer/LWC-358-vercel-project-cwd",
-  "content_sha256": "695c221822be079c89be7cc7179b95320bdb649f33041cdb8818a7604fe784d7",
-  "scope": "All changed/new implementation, test, operator, accepted-appendix and frozen-spec files; excludes this manifest, evidence report and logs to avoid self-reference.",
+  "base": "4c9c14646fafab01239e3ce6822e77db111dc2c7",
+  "branch": "Rayer/LWC-358-frontend-prerender-config",
+  "content_sha256": "298c3cfc98e0df1b1df4228da25d89ff6ba78c536280e4f3d8ea902ab8ff4b4c",
+  "scope": "All changed/new implementation, test, operator, accepted-appendix and frozen-spec files; excludes this manifest, evidence report and raw logs to avoid self-reference.",
   "frozen_sha256": "838817cad154b0ea773c205f671362a6c9c0ad97c38ddf34f2508eb4fcc2488b",
   "files": [
     {
@@ -142,7 +142,7 @@
     },
     {
       "path": "deploy/engine/providers.py",
-      "sha256": "109b2fd490e8f4ef1d49b97146736393a6481ae77d07341fb6b51001d3096c19",
+      "sha256": "1203e5d2f60dcde7b1720fd1611e64d537cb29061af8f2ac844f6347dda86f1e",
       "mode": "0o644"
     },
     {
@@ -207,7 +207,7 @@
     },
     {
       "path": "deploy/engine/tests/test_prepare_diagnostics.py",
-      "sha256": "ab05c42aca91add21c4b7538e28a6fcc81b37b60e89942a1f1f0127ea9f56917",
+      "sha256": "b901d93ba8e43ebbf0d64ccf2a5a3b942a67b6bc28413d6d530196947c42b2b3",
       "mode": "0o644"
     },
     {
@@ -217,7 +217,7 @@
     },
     {
       "path": "deploy/engine/tests/test_vercel_env_context.js",
-      "sha256": "73558d45044fefac8cc16140da131b694680574ed2bb75a363cb7241a20bbd49",
+      "sha256": "581ffccfa19f8bccc55330d753118ddd5e607324155e6497fdbdf08c42492f2c",
       "mode": "0o644"
     },
     {
@@ -228,6 +228,11 @@
     {
       "path": "docs/lwc-358/deployment-engine-spec-r2-accepted-appendix-build-submit.md",
       "sha256": "b0ac51d8c135e4cb6964e85f0f27c83966e42eb17e1dc40d37aabe5261672fac",
+      "mode": "0o644"
+    },
+    {
+      "path": "docs/lwc-358/deployment-engine-spec-r2-accepted-appendix-frontend-config-layout.md",
+      "sha256": "35ead0727af68a024f77a60f7720edfce6fc1534639a05865a222e27155be1c7",
       "mode": "0o644"
     },
     {

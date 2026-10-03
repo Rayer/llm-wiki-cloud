@@ -269,11 +269,67 @@ async function main() {
     assert.equal(outputRelative, '.vercel/output');
     assert.equal(path.relative(input.repositoryRoot, build.output).split(path.sep).join('/'),
       path.posix.join(input.configuredRoot, '.vercel/output'));
-    if (input.outputCase !== 'none') {
+    const prerenderCase = input.outputCase.startsWith('prerender') || input.outputCase === 'ambiguous';
+    const staticCase = ['valid', 'wrong', 'missing', 'ambiguous'].includes(input.outputCase);
+    if (staticCase) {
       const staticDirectory = path.join(build.output, 'static');
       fs.mkdirSync(staticDirectory, { recursive: true });
       if (input.outputCase !== 'missing') {
         fs.writeFileSync(path.join(staticDirectory, 'build-config.json'), JSON.stringify(input.config));
+      }
+    }
+    if (prerenderCase) {
+      const functions = path.join(build.output, 'functions');
+      fs.mkdirSync(functions, { recursive: true });
+      const routeFunc = path.join(functions, 'build-config.json.func');
+      const dedup = input.outputCase === 'prerender-dedup';
+      const dangling = input.outputCase === 'prerender-dangling-func-link';
+      const escaping = input.outputCase === 'prerender-func-link-escape';
+      const siblingFuncLink = input.outputCase === 'prerender-func-link-sibling';
+      const func = dedup
+        ? path.join(functions, 'build-config.json.rsc.func')
+        : (escaping ? path.join(build.output, 'outside.func')
+          : (dangling ? path.join(functions, 'missing.func')
+            : (siblingFuncLink ? path.join(functions, 'other-route.func') : routeFunc)));
+      const linkTarget = dedup ? path.basename(func) : (escaping ? '../outside.func'
+        : (dangling ? 'missing.func' : (siblingFuncLink ? 'other-route.func' : null)));
+      if (!dangling) fs.mkdirSync(func, { recursive: true });
+      if (!dangling) {
+        const handler = path.join(func, '___next_launcher.cjs');
+        const functionConfig = { handler: '___next_launcher.cjs' };
+        if (input.outputCase === 'prerender-handler-sibling-symlink') {
+          const sibling = path.join(functions, 'other-route.func');
+          fs.mkdirSync(sibling, { recursive: true });
+          fs.writeFileSync(path.join(sibling, 'handler.cjs'), 'TEST ONLY sibling handler');
+          fs.symlinkSync(sibling, path.join(func, 'nested'), 'dir');
+          functionConfig.handler = 'nested/handler.cjs';
+        } else if (input.outputCase !== 'prerender-missing-handler') {
+          fs.writeFileSync(handler, 'TEST ONLY handler');
+        }
+        if (input.outputCase === 'prerender-handler-escape') functionConfig.handler = '../outside.cjs';
+        fs.writeFileSync(path.join(func, '.vc-config.json'), JSON.stringify(functionConfig));
+      }
+      if (linkTarget !== null) fs.symlinkSync(linkTarget, routeFunc, 'dir');
+      const descriptor = {
+        type: 'Prerender',
+        initialHeaders: { 'content-type': 'application/json' },
+        fallback: {
+          type: 'FileFsRef',
+          fsPath: 'build-config.json.prerender-fallback.body',
+          contentType: 'application/json',
+        },
+      };
+      if (input.outputCase === 'prerender-wrong-type') descriptor.type = 'Static';
+      if (input.outputCase === 'prerender-wrong-fallback-type') descriptor.fallback.type = 'FileRef';
+      if (input.outputCase === 'prerender-escape') descriptor.fallback.fsPath = '../build-config.json.prerender-fallback.body';
+      if (input.outputCase === 'prerender-wrong-content-type') descriptor.fallback.contentType = 'text/plain';
+      const descriptorPath = path.join(functions, 'build-config.json.prerender-config.json');
+      fs.writeFileSync(descriptorPath,
+        input.outputCase === 'prerender-malformed' ? '{malformed' : JSON.stringify(descriptor));
+      if (input.outputCase !== 'prerender-missing-fallback') {
+        const config = input.outputCase === 'prerender-target-mismatch'
+          ? { ...input.config, api_url: 'https://wrong.invalid' } : input.config;
+        fs.writeFileSync(path.join(functions, 'build-config.json.prerender-fallback.body'), JSON.stringify(config));
       }
     }
     console.log(JSON.stringify({ workPathContainsPackage: true, duplicateRoot: false,

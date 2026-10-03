@@ -1,0 +1,118 @@
+....FF.
+======================================================================
+FAIL: test_official_prerender_invalid_or_ambiguous_layouts_fail_closed (deploy.engine.tests.test_prepare_diagnostics.FrontendPrepareDiagnostics.test_official_prerender_invalid_or_ambiguous_layouts_fail_closed) (output_case='prerender-dangling-func-link')
+----------------------------------------------------------------------
+Traceback (most recent call last):
+  File "/Users/rayer/orca/workspaces/llm-wiki-cloud/LWC-358-engine-r2/deploy/engine/tests/test_prepare_diagnostics.py", line 800, in test_official_prerender_invalid_or_ambiguous_layouts_fail_closed
+    outcome = self.run_engine_main_prepare(output_case=output_case)
+  File "/Users/rayer/orca/workspaces/llm-wiki-cloud/LWC-358-engine-r2/deploy/engine/tests/test_prepare_diagnostics.py", line 615, in run_engine_main_prepare
+    exit_code = engine.main()
+  File "/Users/rayer/orca/workspaces/llm-wiki-cloud/LWC-358-engine-r2/deploy/engine/engine.py", line 583, in main
+    engine.prepare(args.reuse, args.dev)
+    ~~~~~~~~~~~~~~^^^^^^^^^^^^^^^^^^^^^^
+  File "/Users/rayer/orca/workspaces/llm-wiki-cloud/LWC-358-engine-r2/deploy/engine/engine.py", line 360, in prepare
+    else self.provider.prepare(c))
+         ~~~~~~~~~~~~~~~~~~~~~^^^
+  File "/Users/rayer/orca/workspaces/llm-wiki-cloud/LWC-358-engine-r2/deploy/engine/providers.py", line 602, in prepare
+    build_result = command('frontend-vercel-build', build_args, env=env,
+                           cwd=project_root, timeout=900,
+                           return_process=diagnostic_enabled)
+  File "/Users/rayer/orca/workspaces/llm-wiki-cloud/LWC-358-engine-r2/deploy/engine/providers.py", line 572, in command
+    return self._run_frontend_command(stage, args, **kwargs)
+           ~~~~~~~~~~~~~~~~~~~~~~~~~~^^^^^^^^^^^^^^^^^^^^^^^
+  File "/Users/rayer/orca/workspaces/llm-wiki-cloud/LWC-358-engine-r2/deploy/engine/providers.py", line 268, in _run_frontend_command
+    output = run(args, stage=stage, **kwargs)
+  File "/Users/rayer/orca/workspaces/llm-wiki-cloud/LWC-358-engine-r2/deploy/engine/support.py", line 169, in run
+    result = subprocess.run([str(a) for a in args], cwd=cwd, env=env, input=input,
+                            capture_output=True, text=True, timeout=timeout)
+  File "/opt/homebrew/Cellar/python@3.14/3.14.6/Frameworks/Python.framework/Versions/3.14/lib/python3.14/unittest/mock.py", line 1176, in __call__
+    return self._mock_call(*args, **kwargs)
+           ~~~~~~~~~~~~~~~^^^^^^^^^^^^^^^^^
+  File "/opt/homebrew/Cellar/python@3.14/3.14.6/Frameworks/Python.framework/Versions/3.14/lib/python3.14/unittest/mock.py", line 1180, in _mock_call
+    return self._execute_mock_call(*args, **kwargs)
+           ~~~~~~~~~~~~~~~~~~~~~~~^^^^^^^^^^^^^^^^^
+  File "/opt/homebrew/Cellar/python@3.14/3.14.6/Frameworks/Python.framework/Versions/3.14/lib/python3.14/unittest/mock.py", line 1247, in _execute_mock_call
+    result = effect(*args, **kwargs)
+  File "/Users/rayer/orca/workspaces/llm-wiki-cloud/LWC-358-engine-r2/deploy/engine/tests/test_prepare_diagnostics.py", line 568, in fake_subprocess
+    self.assertEqual(resolved.returncode, 0, resolved.stderr)
+    ~~~~~~~~~~~~~~~~^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+AssertionError: 1 != 0 : Error: ENOENT: no such file or directory, symlink 'missing.func' -> '/Users/rayer/.hermes/profiles/lwc-tpm/cache/scratch/lwc358-prerender-probe-20261003-02/tmp3uqmrkjo/repo/apps/frontend/.vercel/output/functions/build-config.json.func'
+    at Object.symlinkSync (node:fs:1885:11)
+    at main (/Users/rayer/orca/workspaces/llm-wiki-cloud/LWC-358-engine-r2/deploy/engine/tests/test_vercel_env_context.js:311:35)
+    at Object.<anonymous> (/Users/rayer/orca/workspaces/llm-wiki-cloud/LWC-358-engine-r2/deploy/engine/tests/test_vercel_env_context.js:388:1)
+    at Module._compile (node:internal/modules/cjs/loader:1781:14)
+    at Module._extensions..js (node:internal/modules/cjs/loader:1913:10)
+    at Module.load (node:internal/modules/cjs/loader:1505:32)
+    at Module._load (node:internal/modules/cjs/loader:1309:12)
+    at wrapModuleLoad (node:internal/modules/cjs/loader:254:19)
+    at Function.executeUserEntryPoint [as runMain] (node:internal/modules/run_main:171:5)
+    at node:internal/main/run_main_module:36:49 {
+  errno: -2,
+  code: 'ENOENT',
+  syscall: 'symlink',
+  path: 'missing.func',
+  dest: '/Users/rayer/.hermes/profiles/lwc-tpm/cache/scratch/lwc358-prerender-probe-20261003-02/tmp3uqmrkjo/repo/apps/frontend/.vercel/output/functions/build-config.json.func'
+}
+
+
+======================================================================
+FAIL: test_official_prerender_invalid_or_ambiguous_layouts_fail_closed (deploy.engine.tests.test_prepare_diagnostics.FrontendPrepareDiagnostics.test_official_prerender_invalid_or_ambiguous_layouts_fail_closed) (output_case='prerender-func-link-escape')
+----------------------------------------------------------------------
+Traceback (most recent call last):
+  File "/Users/rayer/orca/workspaces/llm-wiki-cloud/LWC-358-engine-r2/deploy/engine/tests/test_prepare_diagnostics.py", line 800, in test_official_prerender_invalid_or_ambiguous_layouts_fail_closed
+    outcome = self.run_engine_main_prepare(output_case=output_case)
+  File "/Users/rayer/orca/workspaces/llm-wiki-cloud/LWC-358-engine-r2/deploy/engine/tests/test_prepare_diagnostics.py", line 615, in run_engine_main_prepare
+    exit_code = engine.main()
+  File "/Users/rayer/orca/workspaces/llm-wiki-cloud/LWC-358-engine-r2/deploy/engine/engine.py", line 583, in main
+    engine.prepare(args.reuse, args.dev)
+    ~~~~~~~~~~~~~~^^^^^^^^^^^^^^^^^^^^^^
+  File "/Users/rayer/orca/workspaces/llm-wiki-cloud/LWC-358-engine-r2/deploy/engine/engine.py", line 360, in prepare
+    else self.provider.prepare(c))
+         ~~~~~~~~~~~~~~~~~~~~~^^^
+  File "/Users/rayer/orca/workspaces/llm-wiki-cloud/LWC-358-engine-r2/deploy/engine/providers.py", line 602, in prepare
+    build_result = command('frontend-vercel-build', build_args, env=env,
+                           cwd=project_root, timeout=900,
+                           return_process=diagnostic_enabled)
+  File "/Users/rayer/orca/workspaces/llm-wiki-cloud/LWC-358-engine-r2/deploy/engine/providers.py", line 572, in command
+    return self._run_frontend_command(stage, args, **kwargs)
+           ~~~~~~~~~~~~~~~~~~~~~~~~~~^^^^^^^^^^^^^^^^^^^^^^^
+  File "/Users/rayer/orca/workspaces/llm-wiki-cloud/LWC-358-engine-r2/deploy/engine/providers.py", line 268, in _run_frontend_command
+    output = run(args, stage=stage, **kwargs)
+  File "/Users/rayer/orca/workspaces/llm-wiki-cloud/LWC-358-engine-r2/deploy/engine/support.py", line 169, in run
+    result = subprocess.run([str(a) for a in args], cwd=cwd, env=env, input=input,
+                            capture_output=True, text=True, timeout=timeout)
+  File "/opt/homebrew/Cellar/python@3.14/3.14.6/Frameworks/Python.framework/Versions/3.14/lib/python3.14/unittest/mock.py", line 1176, in __call__
+    return self._mock_call(*args, **kwargs)
+           ~~~~~~~~~~~~~~~^^^^^^^^^^^^^^^^^
+  File "/opt/homebrew/Cellar/python@3.14/3.14.6/Frameworks/Python.framework/Versions/3.14/lib/python3.14/unittest/mock.py", line 1180, in _mock_call
+    return self._execute_mock_call(*args, **kwargs)
+           ~~~~~~~~~~~~~~~~~~~~~~~^^^^^^^^^^^^^^^^^
+  File "/opt/homebrew/Cellar/python@3.14/3.14.6/Frameworks/Python.framework/Versions/3.14/lib/python3.14/unittest/mock.py", line 1247, in _execute_mock_call
+    result = effect(*args, **kwargs)
+  File "/Users/rayer/orca/workspaces/llm-wiki-cloud/LWC-358-engine-r2/deploy/engine/tests/test_prepare_diagnostics.py", line 568, in fake_subprocess
+    self.assertEqual(resolved.returncode, 0, resolved.stderr)
+    ~~~~~~~~~~~~~~~~^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+AssertionError: 1 != 0 : Error: ENOENT: no such file or directory, symlink '../outside.func' -> '/Users/rayer/.hermes/profiles/lwc-tpm/cache/scratch/lwc358-prerender-probe-20261003-02/tmp9rqbel_g/repo/apps/frontend/.vercel/output/functions/build-config.json.func'
+    at Object.symlinkSync (node:fs:1885:11)
+    at main (/Users/rayer/orca/workspaces/llm-wiki-cloud/LWC-358-engine-r2/deploy/engine/tests/test_vercel_env_context.js:311:35)
+    at Object.<anonymous> (/Users/rayer/orca/workspaces/llm-wiki-cloud/LWC-358-engine-r2/deploy/engine/tests/test_vercel_env_context.js:388:1)
+    at Module._compile (node:internal/modules/cjs/loader:1781:14)
+    at Module._extensions..js (node:internal/modules/cjs/loader:1913:10)
+    at Module.load (node:internal/modules/cjs/loader:1505:32)
+    at Module._load (node:internal/modules/cjs/loader:1309:12)
+    at wrapModuleLoad (node:internal/modules/cjs/loader:254:19)
+    at Function.executeUserEntryPoint [as runMain] (node:internal/modules/run_main:171:5)
+    at node:internal/main/run_main_module:36:49 {
+  errno: -2,
+  code: 'ENOENT',
+  syscall: 'symlink',
+  path: '../outside.func',
+  dest: '/Users/rayer/.hermes/profiles/lwc-tpm/cache/scratch/lwc358-prerender-probe-20261003-02/tmp9rqbel_g/repo/apps/frontend/.vercel/output/functions/build-config.json.func'
+}
+
+
+----------------------------------------------------------------------
+Ran 6 tests in 2.119s
+
+FAILED (failures=2)
+Pinned resolver baseline=pair-incomplete; runtime-child=linked; resume=single-deploy

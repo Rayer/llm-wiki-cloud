@@ -3,7 +3,9 @@ import copy
 import json
 import os
 from pathlib import Path
+from pathlib import PurePosixPath
 import re
+import stat
 import sys
 import tarfile
 import tempfile
@@ -122,6 +124,106 @@ class Providers:
             return 'matches-config'
         return 'other'
 
+    @staticmethod
+    def _frontend_config_matches(document, expected):
+        return (isinstance(document, dict) and set(document) == set(expected) and
+                type(document.get('schema_version')) is int and
+                document.get('schema_version') == 1 and
+                isinstance(document.get('api_url'), str) and
+                isinstance(document.get('auth_url'), str))
+
+    @staticmethod
+    def _frontend_build_config(output):
+        """Read only the exact Static file or pinned Vercel Prerender representation."""
+        static_path = output / 'static/build-config.json'
+        functions = output / 'functions'
+        func_path = functions / 'build-config.json.func'
+        descriptor_path = functions / 'build-config.json.prerender-config.json'
+        fallback_path = functions / 'build-config.json.prerender-fallback.body'
+
+        def kind(path):
+            try:
+                mode = path.lstat().st_mode
+            except FileNotFoundError:
+                return None
+            if stat.S_ISREG(mode):
+                return 'file'
+            if stat.S_ISDIR(mode):
+                return 'directory'
+            if stat.S_ISLNK(mode):
+                return 'symlink'
+            return 'other'
+
+        try:
+            if not stat.S_ISDIR(output.lstat().st_mode):
+                return None
+        except FileNotFoundError:
+            raise
+        output_root = output.resolve(strict=True)
+
+        def contained(path):
+            try:
+                path.resolve(strict=True).relative_to(output_root)
+            except (FileNotFoundError, ValueError):
+                return False
+            return True
+
+        static_kind = kind(static_path)
+        prerender_paths = (func_path, descriptor_path, fallback_path)
+        prerender_present = any(kind(path) is not None for path in prerender_paths)
+        if static_kind is not None and prerender_present:
+            return None
+        if static_kind is not None:
+            if static_kind != 'file' or not contained(static_path):
+                return None
+            return read(static_path)
+        if not prerender_present:
+            raise FileNotFoundError(static_path)
+
+        func_kind = kind(func_path)
+        if (func_kind not in ('directory', 'symlink') or kind(descriptor_path) != 'file' or
+                kind(fallback_path) != 'file' or
+                not all(contained(path) for path in (func_path, descriptor_path, fallback_path))):
+            return None
+        try:
+            functions_root = functions.resolve(strict=True)
+            function_root = func_path.resolve(strict=True)
+            function_root.relative_to(functions_root)
+        except (FileNotFoundError, ValueError):
+            return None
+        if not function_root.is_dir():
+            return None
+        function_config_path = func_path / '.vc-config.json'
+        if kind(function_config_path) != 'file' or not contained(function_config_path):
+            return None
+
+        descriptor = read(descriptor_path)
+        function_config = read(function_config_path)
+        if not isinstance(descriptor, dict) or descriptor.get('type') != 'Prerender':
+            return None
+        fallback = descriptor.get('fallback')
+        headers = descriptor.get('initialHeaders')
+        if (not isinstance(fallback, dict) or fallback.get('type') != 'FileFsRef' or
+                fallback.get('fsPath') != 'build-config.json.prerender-fallback.body' or
+                fallback.get('contentType') != 'application/json' or
+                not isinstance(headers, dict) or headers.get('content-type') != 'application/json' or
+                not isinstance(function_config, dict)):
+            return None
+
+        handler = function_config.get('handler')
+        if (not isinstance(handler, str) or not handler or '\\' in handler or '\x00' in handler or
+                handler.startswith('/') or re.match(r'^[A-Za-z]:', handler) or
+                any(part in ('', '.', '..') for part in handler.split('/'))):
+            return None
+        handler_path = func_path.joinpath(*PurePosixPath(handler).parts)
+        try:
+            handler_path.resolve(strict=True).relative_to(func_path.resolve(strict=True))
+        except (FileNotFoundError, ValueError):
+            return None
+        if kind(handler_path) != 'file':
+            return None
+        return read(fallback_path)
+
     def project(self, stage=None, frontend_diagnostic=None):
         identity = os.environ.get('VERCEL_PROJECT_ID', '')
         require(re.fullmatch(r'prj_[A-Za-z0-9]+', identity), 'invalid-vercel-project')
@@ -213,17 +315,13 @@ class Providers:
             if not is_dir:
                 return {'exists': True, 'static_config_valid': False, 'target_equal': False}
             try:
-                document = read(output / 'static/build-config.json')
+                document = self._frontend_build_config(output)
             except FileNotFoundError:
                 return {'exists': True, 'static_config_valid': False, 'target_equal': False}
             except Exception:
                 metadata_read_failed = True
                 return {'exists': True, 'static_config_valid': False, 'target_equal': False}
-            valid = (isinstance(document, dict) and set(document) == set(expected) and
-                     type(document.get('schema_version')) is int and
-                     document.get('schema_version') == 1 and
-                     isinstance(document.get('api_url'), str) and
-                     isinstance(document.get('auth_url'), str))
+            valid = self._frontend_config_matches(document, expected)
             return {'exists': True, 'static_config_valid': valid,
                     'target_equal': bool(valid and document == expected)}
 
@@ -510,7 +608,9 @@ class Providers:
             output = project_root / '.vercel/output'
             require(output.is_dir(), 'frontend-output-missing')
             expected = {'schema_version': 1, 'api_url': cfg['api_url'], 'auth_url': cfg['auth_url']}
-            require(read(output / 'static/build-config.json') == expected, 'frontend-build-config-mismatch')
+            document = self._frontend_build_config(output)
+            require(self._frontend_config_matches(document, expected) and document == expected,
+                    'frontend-build-config-mismatch')
             archive = self.directory / 'frontend.tgz'
             # Restore the exact pulled link before archiving; runtime receives the original provider context.
             with tarfile.open(archive, 'w:gz') as tar:
