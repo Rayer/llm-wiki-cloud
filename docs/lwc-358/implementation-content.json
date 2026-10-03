@@ -1,7 +1,7 @@
 {
   "base": "d7ac3acfcd26dd675d6d83f3036aa0e1e4e30d0b",
   "branch": "Rayer/LWC-358-original-error-cause",
-  "content_sha256": "55d9a891c626fcf2c4e0f327ad140f3d3491fa5459656759237fa330ab39f301",
+  "content_sha256": "4edf3e8346989ce301eb5393fcc4cb5a06eaaa6be265066372362e3b8d41af0f",
   "scope": "All changed/new implementation, test, operator, accepted-appendix and frozen-spec files; excludes this manifest, evidence report and logs to avoid self-reference.",
   "frozen_sha256": "838817cad154b0ea773c205f671362a6c9c0ad97c38ddf34f2508eb4fcc2488b",
   "files": [
@@ -142,7 +142,7 @@
     },
     {
       "path": "deploy/engine/providers.py",
-      "sha256": "f1d0fbc00242e642f4b63365a594cf8623c4f0bc2a938b56c28896226b19e528",
+      "sha256": "f5adb7bf592dae23ff0f4903592c86e0fb3c39f8db1f852c83441c02463e388f",
       "mode": "0o644"
     },
     {
@@ -157,7 +157,7 @@
     },
     {
       "path": "deploy/engine/tests/fake_provider.py",
-      "sha256": "65b2e2f85be13e04e90f28ffe812c580439d9a93b83aac2b7fbd603afe044bd4",
+      "sha256": "1ada9a5420857930e7bf8568bca191ba875b65649f6ac5b64da5ec320784075e",
       "mode": "0o755"
     },
     {
@@ -192,7 +192,7 @@
     },
     {
       "path": "deploy/engine/tests/test_prepare_diagnostics.py",
-      "sha256": "d1e58ce164994f06d560954e4d45ee2af27128568c68d53aebdbda69af068271",
+      "sha256": "86ee968f7f5690b4e23194cb125219ec33866b0552638a949c91dcdbf8f9e765",
       "mode": "0o644"
     },
     {

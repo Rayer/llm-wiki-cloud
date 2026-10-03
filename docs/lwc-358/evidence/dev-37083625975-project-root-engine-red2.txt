@@ -1,0 +1,16 @@
+test_engine_main_valid_project_response_prepares_frontend_and_keeps_auth (test_prepare_diagnostics.FrontendPrepareDiagnostics.test_engine_main_valid_project_response_prepares_frontend_and_keeps_auth) ... FAIL
+
+======================================================================
+FAIL: test_engine_main_valid_project_response_prepares_frontend_and_keeps_auth (test_prepare_diagnostics.FrontendPrepareDiagnostics.test_engine_main_valid_project_response_prepares_frontend_and_keeps_auth)
+----------------------------------------------------------------------
+Traceback (most recent call last):
+  File "/Users/rayer/orca/workspaces/llm-wiki-cloud/LWC-358-engine-r2/deploy/engine/tests/test_prepare_diagnostics.py", line 495, in test_engine_main_valid_project_response_prepares_frontend_and_keeps_auth
+    self.assertEqual(outcome['exit_code'], 0, outcome['stdout'])
+    ~~~~~~~~~~~~~~~~^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+AssertionError: 1 != 0 : {"allowed_next_action": "correct-input-and-resume", "attempt": "1b20930fbe14dc5bf77fa9254668d9d3fac28feb27020ad9ad2e09c6bf141f4e", "candidate": null, "component": "frontend", "expected": {"identity": "47d80b4cc2bf273ddeea241c2a440d855c8a3b5c777f35d7b014c3fce0fcc695", "source": "cccccccccccccccccccccccccccccccccccccccc"}, "last_verified_checkpoint": 0, "limitations": "Job executions and persistent writes are not reversed by image rollback.", "mutation_may_have_happened": false, "observed": {"component_status": "unstarted"}, "prior": null, "reason": "frontend-output-missing", "release": "offline-diagnostic", "stage": "prepared", "status": "failed"}
+
+
+----------------------------------------------------------------------
+Ran 1 test in 0.004s
+
+FAILED (failures=1)

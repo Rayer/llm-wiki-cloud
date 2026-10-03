@@ -181,15 +181,18 @@ elif tool == 'curl':
 elif tool=='npm':pass
 elif tool=='vercel':
     if a[0]=='pull':
-        p=Path.cwd()/'.vercel';p.mkdir(exist_ok=True);(p/'project.json').write_text('{}')
+        p=Path.cwd()/'apps/frontend/.vercel';p.mkdir(parents=True,exist_ok=True)
+        (p/'project.json').write_text(json.dumps({'rootDirectory':'apps/frontend'}))
     elif a[0]=='build':
-        p=Path.cwd()/'.vercel/output/static';p.mkdir(parents=True,exist_ok=True)
+        p=Path.cwd()/'apps/frontend/.vercel/output/static';p.mkdir(parents=True,exist_ok=True)
         s['build_config']={'schema_version':1,'api_url':os.environ['NEXT_PUBLIC_API_URL'],'auth_url':os.environ['NEXT_PUBLIC_AUTH_URL']}
         (p/'build-config.json').write_text(json.dumps(s['build_config']))
     elif a[0]=='deploy':
         assert '--prebuilt' in a
         assert ('--skip-domain' in a) == ('--prod' in a)
         assert '--prod' in a or '--target=preview' in a
+        assert Path.cwd().joinpath('.vercel/project.json').is_file()
+        assert json.loads(Path.cwd().joinpath('.vercel/output/static/build-config.json').read_text())==s['build_config']
         meta={}
         for i,v in enumerate(a):
             if v=='--meta': k,val=a[i+1].split('=',1);meta[k]=val

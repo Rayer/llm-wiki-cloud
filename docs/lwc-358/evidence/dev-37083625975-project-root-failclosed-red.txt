@@ -1,0 +1,36 @@
+test_missing_or_wrong_project_root_config_fails_closed_without_root_fallback (test_prepare_diagnostics.FrontendPrepareDiagnostics.test_missing_or_wrong_project_root_config_fails_closed_without_root_fallback) ... 
+  test_missing_or_wrong_project_root_config_fails_closed_without_root_fallback (test_prepare_diagnostics.FrontendPrepareDiagnostics.test_missing_or_wrong_project_root_config_fails_closed_without_root_fallback) (output_case='missing') ... ERROR
+  test_missing_or_wrong_project_root_config_fails_closed_without_root_fallback (test_prepare_diagnostics.FrontendPrepareDiagnostics.test_missing_or_wrong_project_root_config_fails_closed_without_root_fallback) (output_case='wrong') ... ERROR
+
+======================================================================
+ERROR: test_missing_or_wrong_project_root_config_fails_closed_without_root_fallback (test_prepare_diagnostics.FrontendPrepareDiagnostics.test_missing_or_wrong_project_root_config_fails_closed_without_root_fallback) (output_case='missing')
+----------------------------------------------------------------------
+Traceback (most recent call last):
+  File "/Users/rayer/orca/workspaces/llm-wiki-cloud/LWC-358-engine-r2/deploy/engine/tests/test_prepare_diagnostics.py", line 520, in test_missing_or_wrong_project_root_config_fails_closed_without_root_fallback
+    outcome = self.run_engine_main_prepare(output_case, root_decoy=True)
+  File "/Users/rayer/orca/workspaces/llm-wiki-cloud/LWC-358-engine-r2/deploy/engine/tests/test_prepare_diagnostics.py", line 480, in run_engine_main_prepare
+    extracted = archive.extractfile(name)
+  File "/opt/homebrew/Cellar/python@3.14/3.14.6/Frameworks/Python.framework/Versions/3.14/lib/python3.14/tarfile.py", line 2594, in extractfile
+    tarinfo = self.getmember(member)
+  File "/opt/homebrew/Cellar/python@3.14/3.14.6/Frameworks/Python.framework/Versions/3.14/lib/python3.14/tarfile.py", line 2154, in getmember
+    raise KeyError("filename %r not found" % name)
+KeyError: "filename '.vercel/project.json' not found"
+
+======================================================================
+ERROR: test_missing_or_wrong_project_root_config_fails_closed_without_root_fallback (test_prepare_diagnostics.FrontendPrepareDiagnostics.test_missing_or_wrong_project_root_config_fails_closed_without_root_fallback) (output_case='wrong')
+----------------------------------------------------------------------
+Traceback (most recent call last):
+  File "/Users/rayer/orca/workspaces/llm-wiki-cloud/LWC-358-engine-r2/deploy/engine/tests/test_prepare_diagnostics.py", line 520, in test_missing_or_wrong_project_root_config_fails_closed_without_root_fallback
+    outcome = self.run_engine_main_prepare(output_case, root_decoy=True)
+  File "/Users/rayer/orca/workspaces/llm-wiki-cloud/LWC-358-engine-r2/deploy/engine/tests/test_prepare_diagnostics.py", line 480, in run_engine_main_prepare
+    extracted = archive.extractfile(name)
+  File "/opt/homebrew/Cellar/python@3.14/3.14.6/Frameworks/Python.framework/Versions/3.14/lib/python3.14/tarfile.py", line 2594, in extractfile
+    tarinfo = self.getmember(member)
+  File "/opt/homebrew/Cellar/python@3.14/3.14.6/Frameworks/Python.framework/Versions/3.14/lib/python3.14/tarfile.py", line 2154, in getmember
+    raise KeyError("filename %r not found" % name)
+KeyError: "filename '.vercel/project.json' not found"
+
+----------------------------------------------------------------------
+Ran 1 test in 0.012s
+
+FAILED (errors=2)

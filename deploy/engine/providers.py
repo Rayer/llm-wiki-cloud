@@ -341,14 +341,15 @@ class Providers:
         run(['vercel', 'build', '--scope', cfg['team_slug'], '--token', os.environ['VERCEL_TOKEN'],
              *(['--prod'] if target == 'production' else [])], env=env, cwd=ROOT, timeout=900,
             stage='frontend-vercel-build')
-        output = ROOT / '.vercel/output'
+        project_root = ROOT / cfg['root_directory']
+        output = project_root / '.vercel/output'
         require(output.is_dir(), 'frontend-output-missing')
         expected = {'schema_version': 1, 'api_url': cfg['api_url'], 'auth_url': cfg['auth_url']}
         require(read(output / 'static/build-config.json') == expected, 'frontend-build-config-mismatch')
         archive = self.directory / 'frontend.tgz'
         with tarfile.open(archive, 'w:gz') as tar:
             tar.add(output, arcname='.vercel/output')
-            tar.add(ROOT / '.vercel/project.json', arcname='.vercel/project.json')
+            tar.add(project_root / '.vercel/project.json', arcname='.vercel/project.json')
         import hashlib
         return {'archive': 'frontend.tgz', 'sha256': hashlib.sha256(archive.read_bytes()).hexdigest(),
                 'config': expected, 'target': target, 'project': os.environ['VERCEL_PROJECT_ID'],

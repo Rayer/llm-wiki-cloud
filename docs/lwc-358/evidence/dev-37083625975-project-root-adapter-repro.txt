@@ -1,0 +1,4 @@
+actual Providers.prepare frontend boundary: reproduced FileNotFoundError at repository-root build-config read
+fake pinned-builder output path derived from rootDirectory=apps/frontend: present
+all four prepare operations returned; archive/receipt creation not reached
+fixture retained under designated profile scratch; no network/provider/credential access

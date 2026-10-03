@@ -1,0 +1,135 @@
+▲ Next.js 16.2.7 (webpack)
+
+  Creating an optimized production build ...
+✓ Compiled successfully in 1512ms
+  Running TypeScript ...
+
+  We detected TypeScript in your project and reconfigured your tsconfig.json file for you. Strict-mode is set to false by default.
+  The following suggested values were added to your tsconfig.json. These values can be changed to fit your project's needs:
+
+  	- target was set to ES2017 (For top-level `await`. Note: Next.js only polyfills for the esmodules target.)
+  	- lib was set to dom,dom.iterable,esnext
+  	- allowJs was set to true
+  	- skipLibCheck was set to true
+  	- strict was set to false
+  	- incremental was set to true
+  	- include was set to ['next-env.d.ts', '.next/types/**/*.ts', '.next/dev/types/**/*.ts', '**/*.mts', '**/*.ts', '**/*.tsx']
+  	- plugins was updated to add { name: 'next' }
+
+  The following mandatory changes were made to your tsconfig.json:
+
+  	- module was set to esnext (for dynamic import() support)
+  	- esModuleInterop was set to true (requirement for SWC / babel)
+  	- resolveJsonModule was set to true (to match webpack resolution)
+  	- isolatedModules was set to true (requirement for SWC / Babel)
+  	- jsx was set to react-jsx (next.js uses the React automatic runtime)
+
+  Finished TypeScript in 807ms ...
+  Collecting page data using 5 workers ...
+  Generating static pages using 5 workers (0/4) ...
+  Generating static pages using 5 workers (1/4) 
+  Generating static pages using 5 workers (2/4) 
+  Generating static pages using 5 workers (3/4) 
+✓ Generating static pages using 5 workers (4/4) in 175ms
+  Finalizing page optimization ...
+  Collecting build traces ...
+
+Route (app)
+┌ ○ /
+├ ○ /_not-found
+└ ○ /build-config.json
+
+
+○  (Static)  prerendered as static content
+
+{"fixture":"/Users/rayer/.hermes/profiles/lwc-tpm/cache/scratch/lwc-318-built-zYbtEZ","observed":{"schema_version":1,"api_url":"https://bff.build.example","auth_url":"https://auth.dev.rayer.idv.tw"},"browser_origins_verified":true,"cd_verifier_exit":0}
+▲ Next.js 16.2.7 (webpack)
+
+  Creating an optimized production build ...
+✓ Compiled successfully in 1464ms
+  Running TypeScript ...
+
+  We detected TypeScript in your project and reconfigured your tsconfig.json file for you. Strict-mode is set to false by default.
+  The following suggested values were added to your tsconfig.json. These values can be changed to fit your project's needs:
+
+  	- target was set to ES2017 (For top-level `await`. Note: Next.js only polyfills for the esmodules target.)
+  	- lib was set to dom,dom.iterable,esnext
+  	- allowJs was set to true
+  	- skipLibCheck was set to true
+  	- strict was set to false
+  	- incremental was set to true
+  	- include was set to ['next-env.d.ts', '.next/types/**/*.ts', '.next/dev/types/**/*.ts', '**/*.mts', '**/*.ts', '**/*.tsx']
+  	- plugins was updated to add { name: 'next' }
+
+  The following mandatory changes were made to your tsconfig.json:
+
+  	- module was set to esnext (for dynamic import() support)
+  	- esModuleInterop was set to true (requirement for SWC / babel)
+  	- resolveJsonModule was set to true (to match webpack resolution)
+  	- isolatedModules was set to true (requirement for SWC / Babel)
+  	- jsx was set to react-jsx (next.js uses the React automatic runtime)
+
+  Finished TypeScript in 749ms ...
+  Collecting page data using 5 workers ...
+  Generating static pages using 5 workers (0/4) ...
+  Generating static pages using 5 workers (1/4) 
+  Generating static pages using 5 workers (2/4) 
+  Generating static pages using 5 workers (3/4) 
+✓ Generating static pages using 5 workers (4/4) in 184ms
+  Finalizing page optimization ...
+  Collecting build traces ...
+
+Route (app)
+┌ ○ /
+├ ○ /_not-found
+└ ○ /build-config.json
+
+
+○  (Static)  prerendered as static content
+
+{"fixture":"/Users/rayer/.hermes/profiles/lwc-tpm/cache/scratch/lwc-318-built-AYq6xN","observed":{"schema_version":1,"api_url":"https://bff.build.example","auth_url":"https://auth.example"},"browser_origins_verified":true,"cd_verifier_exit":0}
+▲ Next.js 16.2.7 (webpack)
+
+  Creating an optimized production build ...
+✓ Compiled successfully in 1564ms
+  Running TypeScript ...
+
+  We detected TypeScript in your project and reconfigured your tsconfig.json file for you. Strict-mode is set to false by default.
+  The following suggested values were added to your tsconfig.json. These values can be changed to fit your project's needs:
+
+  	- target was set to ES2017 (For top-level `await`. Note: Next.js only polyfills for the esmodules target.)
+  	- lib was set to dom,dom.iterable,esnext
+  	- allowJs was set to true
+  	- skipLibCheck was set to true
+  	- strict was set to false
+  	- incremental was set to true
+  	- include was set to ['next-env.d.ts', '.next/types/**/*.ts', '.next/dev/types/**/*.ts', '**/*.mts', '**/*.ts', '**/*.tsx']
+  	- plugins was updated to add { name: 'next' }
+
+  The following mandatory changes were made to your tsconfig.json:
+
+  	- module was set to esnext (for dynamic import() support)
+  	- esModuleInterop was set to true (requirement for SWC / babel)
+  	- resolveJsonModule was set to true (to match webpack resolution)
+  	- isolatedModules was set to true (requirement for SWC / Babel)
+  	- jsx was set to react-jsx (next.js uses the React automatic runtime)
+
+  Finished TypeScript in 751ms ...
+  Collecting page data using 5 workers ...
+  Generating static pages using 5 workers (0/4) ...
+  Generating static pages using 5 workers (1/4) 
+  Generating static pages using 5 workers (2/4) 
+  Generating static pages using 5 workers (3/4) 
+✓ Generating static pages using 5 workers (4/4) in 172ms
+  Finalizing page optimization ...
+  Collecting build traces ...
+
+Route (app)
+┌ ○ /
+├ ○ /_not-found
+└ ○ /build-config.json
+
+
+○  (Static)  prerendered as static content
+
+{"fixture":"/Users/rayer/.hermes/profiles/lwc-tpm/cache/scratch/lwc-318-built-tgEiMY","observed":{"schema_version":1,"api_url":"https://bff.build.example","auth_url":"https://auth-dev.rayer.idv.tw"},"browser_origins_verified":true,"cd_verifier_exit":1}
