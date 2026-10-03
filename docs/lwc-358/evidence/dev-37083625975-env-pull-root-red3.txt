@@ -1,0 +1,48 @@
+test_engine_main_valid_project_response_prepares_frontend_and_keeps_auth (test_prepare_diagnostics.FrontendPrepareDiagnostics.test_engine_main_valid_project_response_prepares_frontend_and_keeps_auth) ... FAIL
+
+======================================================================
+FAIL: test_engine_main_valid_project_response_prepares_frontend_and_keeps_auth (test_prepare_diagnostics.FrontendPrepareDiagnostics.test_engine_main_valid_project_response_prepares_frontend_and_keeps_auth)
+----------------------------------------------------------------------
+Traceback (most recent call last):
+  File "/Users/rayer/orca/workspaces/llm-wiki-cloud/LWC-358-engine-r2/deploy/engine/tests/test_prepare_diagnostics.py", line 507, in test_engine_main_valid_project_response_prepares_frontend_and_keeps_auth
+    outcome = self.run_engine_main_prepare()
+  File "/Users/rayer/orca/workspaces/llm-wiki-cloud/LWC-358-engine-r2/deploy/engine/tests/test_prepare_diagnostics.py", line 481, in run_engine_main_prepare
+    exit_code = engine.main()
+  File "/Users/rayer/orca/workspaces/llm-wiki-cloud/LWC-358-engine-r2/deploy/engine/engine.py", line 581, in main
+    engine.prepare(args.reuse, args.dev)
+    ~~~~~~~~~~~~~~^^^^^^^^^^^^^^^^^^^^^^
+  File "/Users/rayer/orca/workspaces/llm-wiki-cloud/LWC-358-engine-r2/deploy/engine/engine.py", line 360, in prepare
+    else self.provider.prepare(c))
+         ~~~~~~~~~~~~~~~~~~~~~^^^
+  File "/Users/rayer/orca/workspaces/llm-wiki-cloud/LWC-358-engine-r2/deploy/engine/providers.py", line 338, in prepare
+    run(['vercel', 'pull', '--yes', '--environment='+target, '--scope', cfg['team_slug'],
+    ~~~^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+         '--token', os.environ['VERCEL_TOKEN']], env=env, cwd=ROOT, timeout=30,
+         ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+        stage='frontend-vercel-pull')
+        ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+  File "/Users/rayer/orca/workspaces/llm-wiki-cloud/LWC-358-engine-r2/deploy/engine/support.py", line 154, in run
+    result = subprocess.run([str(a) for a in args], cwd=cwd, env=env, input=input,
+                            capture_output=True, text=True, timeout=timeout)
+  File "/opt/homebrew/Cellar/python@3.14/3.14.6/Frameworks/Python.framework/Versions/3.14/lib/python3.14/unittest/mock.py", line 1176, in __call__
+    return self._mock_call(*args, **kwargs)
+           ~~~~~~~~~~~~~~~^^^^^^^^^^^^^^^^^
+  File "/opt/homebrew/Cellar/python@3.14/3.14.6/Frameworks/Python.framework/Versions/3.14/lib/python3.14/unittest/mock.py", line 1180, in _mock_call
+    return self._execute_mock_call(*args, **kwargs)
+           ~~~~~~~~~~~~~~~~~~~~~~~^^^^^^^^^^^^^^^^^
+  File "/opt/homebrew/Cellar/python@3.14/3.14.6/Frameworks/Python.framework/Versions/3.14/lib/python3.14/unittest/mock.py", line 1247, in _execute_mock_call
+    result = effect(*args, **kwargs)
+  File "/Users/rayer/orca/workspaces/llm-wiki-cloud/LWC-358-engine-r2/deploy/engine/tests/test_prepare_diagnostics.py", line 438, in fake_subprocess
+    self.assertEqual(resolved.returncode, 0, resolved.stderr)
+    ~~~~~~~~~~~~~~~~^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+AssertionError: 1 != 0 : TypeError: settingsStamp is not a function
+    at pullCommandLogic (vercel-59.11.7-env-pull-path.js:371:38)
+    at async globalThis.runPinnedPull (vercel-59.11.7-env-pull-path.js:409:20)
+    at async simulatePull (/Users/rayer/orca/workspaces/llm-wiki-cloud/LWC-358-engine-r2/deploy/engine/tests/test_vercel_env_context.js:98:16)
+    at async main (/Users/rayer/orca/workspaces/llm-wiki-cloud/LWC-358-engine-r2/deploy/engine/tests/test_vercel_env_context.js:137:20)
+
+
+----------------------------------------------------------------------
+Ran 1 test in 0.057s
+
+FAILED (failures=1)
