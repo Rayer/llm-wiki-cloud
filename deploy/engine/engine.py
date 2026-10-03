@@ -379,7 +379,8 @@ class Engine:
         latest_path = self.directory / '.latest.json'
         latest_path.unlink(missing_ok=True)
         run(['node', ROOT / 'deploy/engine/artifacts.cjs', 'latest',
-             self.plan['normalized']['environment'], latest_path], timeout=120)
+             self.plan['normalized']['environment'], latest_path], timeout=120,
+            stage='latest-checkpoint')
         if latest_path.exists():
             record = read(latest_path)
             if self.state['status'] != 'ready':

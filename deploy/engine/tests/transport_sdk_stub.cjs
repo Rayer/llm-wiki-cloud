@@ -34,10 +34,17 @@ global.fetch = async url => {
   const endpoint = url.split('/repos/test/repo/')[1];
   const artifact = {id:12, name:'lwc-state-development-test', expired:false, workflow_run:{id:42}};
   const responses = {
-    'actions/artifacts?per_page=100': {total_count:1, artifacts:[artifact]},
+    'actions/artifacts?per_page=100&page=1': {total_count:1, artifacts:[artifact]},
     'actions/artifacts/12': artifact,
-    'actions/runs/42': {event:'workflow_dispatch', path:'.github/workflows/deploy-dev.yml'}
+    'actions/runs/42': {event:'workflow_dispatch', path:'.github/workflows/deploy-dev.yml'},
+    ...state.responses
   };
+  if (state.errors && endpoint in state.errors) {
+    const failure = state.errors[endpoint];
+    const error = new Error(failure.message);
+    error.name = failure.name;
+    throw error;
+  }
   if (!(endpoint in responses)) throw Error('Unexpected TEST ONLY request');
   return {ok:true, json:async () => responses[endpoint]};
 };

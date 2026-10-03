@@ -1,7 +1,7 @@
 {
   "base": "4c9c14646fafab01239e3ce6822e77db111dc2c7",
   "branch": "Rayer/LWC-358-frontend-prerender-config",
-  "content_sha256": "298c3cfc98e0df1b1df4228da25d89ff6ba78c536280e4f3d8ea902ab8ff4b4c",
+  "content_sha256": "a4a3d5edf34266e1487883bb6364db751d8cf5a78b8b57c0f7bd7afa36bc6bf8",
   "scope": "All changed/new implementation, test, operator, accepted-appendix and frozen-spec files; excludes this manifest, evidence report and raw logs to avoid self-reference.",
   "frozen_sha256": "838817cad154b0ea773c205f671362a6c9c0ad97c38ddf34f2508eb4fcc2488b",
   "files": [
@@ -122,7 +122,7 @@
     },
     {
       "path": "deploy/engine/artifacts.cjs",
-      "sha256": "bd519a735e414057ef4e5dea21bec8473817a519d32220ae1eade9f8b67cd0e9",
+      "sha256": "22e3623b15ff721e8b3c37abd883ef4e47fba9ff2222ed7fcb7595a97bfcd5cc",
       "mode": "0o644"
     },
     {
@@ -132,7 +132,7 @@
     },
     {
       "path": "deploy/engine/engine.py",
-      "sha256": "a6b4f2f3b2b8f90a806b8447f9fbbcfd548ca0a2767029eec232427a07c7176f",
+      "sha256": "0834462bcfc24f1be5463b2ff7fab5a3266af928793b1b0a71040601b8666023",
       "mode": "0o644"
     },
     {
@@ -147,12 +147,12 @@
     },
     {
       "path": "deploy/engine/support.py",
-      "sha256": "5bc5a03af1b63099f74df2255f10baa9875f029e9a6bc7adc49a231759f302c1",
+      "sha256": "fa8b6149862be18c17f8e57930e528cf8c3132a64ec90cc96686ec2deed9cc3a",
       "mode": "0o644"
     },
     {
       "path": "deploy/engine/tests/artifacts.test.cjs",
-      "sha256": "aabe3b77d36ef43b2b449bdc2de12bd92cd440e337afdf048bbc447dd14fad59",
+      "sha256": "60569bb093f9a2b16a5158bf61148ecd1117df017e77566d801de4565a14879d",
       "mode": "0o644"
     },
     {
@@ -212,7 +212,7 @@
     },
     {
       "path": "deploy/engine/tests/test_transport_integration.py",
-      "sha256": "956d7429b7dc1f5a60e00f158a753b939a0ac3678843d75a59e92c75d5587776",
+      "sha256": "997df36414c291503122e72249906f93df460fca5165f7eaa3752c73c0c02978",
       "mode": "0o644"
     },
     {
@@ -222,7 +222,7 @@
     },
     {
       "path": "deploy/engine/tests/transport_sdk_stub.cjs",
-      "sha256": "dfe3b2d73b283263f400545eccbe5a9f2dc646f1f2c899e12b762063f18a1413",
+      "sha256": "233bba2581bd6bb796ffc89f9babe08d06315eca63ad3e783d0dee649a318c91",
       "mode": "0o644"
     },
     {
@@ -233,6 +233,11 @@
     {
       "path": "docs/lwc-358/deployment-engine-spec-r2-accepted-appendix-frontend-config-layout.md",
       "sha256": "35ead0727af68a024f77a60f7720edfce6fc1534639a05865a222e27155be1c7",
+      "mode": "0o644"
+    },
+    {
+      "path": "docs/lwc-358/deployment-engine-spec-r2-accepted-appendix-latest-checkpoint.md",
+      "sha256": "b76c714bf347017517e555b27a2b294adfe338e702b1ecfb52093b480e82e3ff",
       "mode": "0o644"
     },
     {

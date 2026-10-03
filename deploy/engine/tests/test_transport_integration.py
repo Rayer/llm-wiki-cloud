@@ -1,6 +1,10 @@
 """TEST ONLY: actual Engine argv and subprocess into actual artifacts.cjs parser."""
+import contextlib
+import io
+import json
 import os
 from pathlib import Path
+import subprocess
 import sys
 import tempfile
 import unittest
@@ -17,7 +21,8 @@ class EngineTransportIntegration(unittest.TestCase):
         self.addCleanup(temp.cleanup)
         self.root = Path(temp.name).resolve()
         self.directory = self.root / 'release'
-        plan = {'selected':['worker'], 'normalized':{'environment':'development'},
+        plan = {'selected':['worker'], 'tag':'test-release', 'source':'a' * 40,
+                'identities':{'worker':{}}, 'normalized':{'environment':'development'},
                 'engine_content':engine_fingerprint()}
         plan['id'] = digest(plan)
         write(self.directory / 'plan.json', plan)
@@ -54,6 +59,63 @@ class EngineTransportIntegration(unittest.TestCase):
         self.assertEqual(state['downloads'], [12])
         self.assertEqual(read(self.directory / '.latest.json'), self.engine.state)
         self.assertEqual(state['uploads'], [])
+
+    def test_latest_page_failure_reaches_engine_result_with_original_cause(self):
+        first = [{'id': i, 'name': f'unrelated-{i}'} for i in range(1, 101)]
+        write(self.stub_state, {
+            'argv': [], 'uploads': [], 'downloads': [], 'requests': [],
+            'checkpoint': self.engine.state,
+            'responses': {
+                'actions/artifacts?per_page=100&page=1': {'total_count': 101, 'artifacts': first},
+                'actions/artifacts?per_page=100&page=2': {'total_count': 101, 'artifacts': []},
+            },
+        })
+        stdout = io.StringIO()
+        with patch.dict(os.environ, {'GITHUB_ACTIONS': 'true'}), \
+             patch('sys.argv', ['engine.py', 'readback', '--directory', str(self.directory)]), \
+             contextlib.redirect_stdout(stdout):
+            self.assertEqual(self._main(), 1)
+        state = read(self.stub_state)
+        result = read(self.directory / 'result.json')
+        self.assertEqual(state['argv'], [['latest', 'development', str(self.directory / '.latest.json')]])
+        self.assertEqual(len(state['requests']), 2)
+        self.assertEqual(state['downloads'], [])
+        self.assertEqual((result['reason'], result['status'], result['mutation_may_have_happened']),
+                         ('command-failed', 'failed', False))
+        self.assertEqual(result['failure_diagnostic'], {
+            'stage': 'latest-checkpoint', 'exit_code': 1, 'timeout_class': None})
+        self.assertEqual(result['allowed_next_action'], 'reconcile-before-replay')
+        self.assertEqual(result['cause'], {
+            'exception_type': 'Error', 'exception_type_omitted': False,
+            'stage': 'latest-checkpoint', 'code': 'child-command-failed',
+            'message': 'artifact list page coverage mismatch',
+            'message_truncated': False, 'message_omitted': False,
+        })
+        self.assertEqual(json.loads(stdout.getvalue())['cause'], result['cause'])
+
+    def test_latest_subprocess_timeout_keeps_fixed_stage_and_timeout_class(self):
+        stdout = io.StringIO()
+        timeout = subprocess.TimeoutExpired('node artifacts.cjs latest', 120, stderr=b'')
+        with patch.dict(os.environ, {'GITHUB_ACTIONS': 'true'}), \
+             patch('sys.argv', ['engine.py', 'readback', '--directory', str(self.directory)]), \
+             patch('support.subprocess.run', side_effect=timeout), \
+             contextlib.redirect_stdout(stdout):
+            self.assertEqual(self._main(), 1)
+        result = read(self.directory / 'result.json')
+        self.assertEqual(result['reason'], 'provider-timeout')
+        self.assertEqual(result['failure_diagnostic'], {
+            'stage': 'latest-checkpoint', 'exit_code': None,
+            'timeout_class': 'subprocess-timeout'})
+        self.assertEqual(result['cause']['exception_type'], 'TimeoutExpired')
+        self.assertEqual(result['cause']['code'], 'child-command-timeout')
+        self.assertEqual(result['cause']['stage'], 'latest-checkpoint')
+        self.assertEqual(result['allowed_next_action'], 'reconcile-before-replay')
+        self.assertEqual(json.loads(stdout.getvalue())['cause'], result['cause'])
+
+    @staticmethod
+    def _main():
+        from engine import main
+        return main()
 
 
 if __name__ == '__main__':
