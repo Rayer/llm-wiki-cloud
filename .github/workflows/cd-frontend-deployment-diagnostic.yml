@@ -1,0 +1,30 @@
+name: Fixed DEV Frontend deployment read-only diagnostic
+on:
+  workflow_call:
+    inputs:
+      source_sha:
+        required: true
+        type: string
+permissions:
+  contents: read
+jobs:
+  frontend-deployment-diagnostic:
+    if: github.ref == 'refs/heads/develop' && inputs.source_sha == github.sha
+    runs-on: ubuntu-latest
+    timeout-minutes: 12
+    environment: Development
+    permissions:
+      contents: read
+    env:
+      DIAGNOSTIC_REF: ${{ github.ref }}
+      DIAGNOSTIC_CODE_SHA: ${{ inputs.source_sha }}
+      DIAGNOSTIC_OPERATION: diagnose-frontend-deployment
+      VERCEL_TOKEN: ${{ secrets.VERCEL_TOKEN }}
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262
+        with:
+          ref: ${{ inputs.source_sha }}
+          fetch-depth: 1
+          persist-credentials: false
+      - name: Read fixed DEV deployment, detail and alias state (GET only)
+        run: python3 deploy/engine/frontend_deployment_diagnostic.py
