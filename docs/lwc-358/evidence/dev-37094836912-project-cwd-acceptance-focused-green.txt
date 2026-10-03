@@ -1,0 +1,8 @@
+test_02_four_to_five_reuses_four_and_frontend_build_only (test_engine.Acceptance.test_02_four_to_five_reuses_four_and_frontend_build_only) ... ok
+test_09_frontend_alias_restore_and_config_applicability (test_engine.Acceptance.test_09_frontend_alias_restore_and_config_applicability) ... ok
+test_frontend_sanity_checks_ready_target_alias_artifact_and_config (test_engine.Acceptance.test_frontend_sanity_checks_ready_target_alias_artifact_and_config) ... ok
+
+----------------------------------------------------------------------
+Ran 3 tests in 2.488s
+
+OK

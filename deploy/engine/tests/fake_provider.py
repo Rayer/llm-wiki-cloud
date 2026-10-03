@@ -186,7 +186,7 @@ elif tool=='vercel':
             'orgId':os.environ['VERCEL_ORG_ID'],'projectName':'llm-wiki-frontend-dev',
             'settings':{'rootDirectory':'apps/frontend'}}))
     elif a[0]=='build':
-        p=Path.cwd()/'apps/frontend/.vercel/output/static';p.mkdir(parents=True,exist_ok=True)
+        p=Path.cwd()/'.vercel/output/static';p.mkdir(parents=True,exist_ok=True)
         s['build_config']={'schema_version':1,'api_url':os.environ['NEXT_PUBLIC_API_URL'],'auth_url':os.environ['NEXT_PUBLIC_AUTH_URL']}
         (p/'build-config.json').write_text(json.dumps(s['build_config']))
     elif a[0]=='deploy':

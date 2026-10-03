@@ -256,18 +256,23 @@ class FrontendPrepareDiagnostics(unittest.TestCase):
     stages = (
         ('frontend-project-readback', 'curl', 'repo', 30),
         ('frontend-npm-ci', 'npm', 'frontend', 600),
-        ('frontend-vercel-pull', 'vercel-pull', 'fake-root', 30),
-        ('frontend-vercel-build', 'vercel-build', 'fake-root', 900),
+        ('frontend-vercel-pull', 'vercel-pull', 'frontend', 30),
+        ('frontend-vercel-build', 'vercel-build', 'frontend', 900),
     )
     token = 'TEST_ONLY_VERCEL_TOKEN_SENTINEL'
     team = 'team_TestTeam123'
     project = 'prj_TestProject123'
     output_sentinel = 'TEST_ONLY_CHILD_OUTPUT_SENTINEL'
 
-    def make_engine(self, work):
+    def make_engine(self, work, claiming_workspace=False):
         work = Path(work)
         fake_root = work / 'repo'
-        (fake_root / 'apps/frontend').mkdir(parents=True)
+        project_root = fake_root / 'apps/frontend'
+        project_root.mkdir(parents=True)
+        shutil.copy2(SUPPORT_ROOT / 'apps/frontend/package.json', project_root / 'package.json')
+        if claiming_workspace:
+            (fake_root / 'package.json').write_text(json.dumps({
+                'name': 'offline-workspace', 'workspaces': ['apps/frontend']}))
         directory = work / 'attempt'
         directory.mkdir()
         identities = {'auth': {'profile': 'fake-auth', 'inputs': 'a' * 64, 'files': []},
@@ -310,6 +315,7 @@ class FrontendPrepareDiagnostics(unittest.TestCase):
     def assert_failure_case(self, work, failing_stage, failure_kind):
         instance, directory, fake_root, auth_receipt_bytes = self.make_engine(work)
         trace = []
+        pulled_link = {}
         operations = [stage for stage, _, _, _ in self.stages]
         raw_failure_message = (
             f'{self.output_sentinel}: project={self.project} team={self.team} '
@@ -323,6 +329,11 @@ class FrontendPrepareDiagnostics(unittest.TestCase):
                 return subprocess.CompletedProcess(args, 0, stdout='sha256:' + 'a' * 64,
                                                    stderr=self.output_sentinel)
             if operation == failing_stage:
+                if operation == 'frontend-vercel-build':
+                    project_link = fake_root / 'apps/frontend/.vercel/project.json'
+                    self.assertTrue(pulled_link)
+                    active_link = json.loads(project_link.read_text())
+                    self.assertNotIn('rootDirectory', active_link['settings'])
                 if failure_kind == 'timeout':
                     raise subprocess.TimeoutExpired(args, timeout, output='TEST_ONLY_RAW_STDOUT_SENTINEL',
                                                     stderr=raw_failure_message)
@@ -335,6 +346,25 @@ class FrontendPrepareDiagnostics(unittest.TestCase):
                             'accountId': self.team, 'rootDirectory': 'apps/frontend',
                             'link': {'org': 'Rayer', 'repo': 'llm-wiki-cloud'}}
                 return subprocess.CompletedProcess(args, 0, stdout=json.dumps(response), stderr='')
+            if operation == 'frontend-vercel-pull':
+                project_root = fake_root / 'apps/frontend'
+                safe_env = {key: env[key] for key in (
+                    'VERCEL_PROJECT_ID', 'VERCEL_ORG_ID', 'VERCEL_TEAM_ID') if key in env}
+                pulled = ORIGINAL_SUBPROCESS_RUN(
+                    ['node', HERE / 'tests' / 'test_vercel_env_context.js',
+                     '--simulate-project-cwd-pull'],
+                    input=json.dumps({'env': safe_env, 'cwd': str(project_root),
+                                      'repositoryRoot': str(fake_root), 'workspaceCase': 'none',
+                                      'expected': {'project': self.project, 'team': self.team}}),
+                    capture_output=True, text=True, check=False,
+                    env={'PATH': os.environ.get('PATH', '/usr/bin:/bin'),
+                         'TMPDIR': os.environ.get('TMPDIR', tempfile.gettempdir()),
+                         'PYTHONDONTWRITEBYTECODE': '1'})
+                self.assertEqual(pulled.returncode, 0, pulled.stderr)
+                project_link = project_root / '.vercel/project.json'
+                pulled_link['bytes'] = project_link.read_bytes()
+                pulled_link['mode'] = project_link.stat().st_mode & 0o7777
+                return subprocess.CompletedProcess(args, 0, stdout='', stderr='')
             return subprocess.CompletedProcess(args, 0, stdout='', stderr='')
 
         env = {'PATH': os.environ.get('PATH', '/usr/bin:/bin'), 'HOME': str(work),
@@ -374,6 +404,10 @@ class FrontendPrepareDiagnostics(unittest.TestCase):
         self.assertEqual((directory / 'receipts/auth.json').read_bytes(), auth_receipt_bytes)
         self.assertFalse((directory / 'receipts/frontend.json').exists())
         self.assertFalse((directory / 'frontend.tgz').exists())
+        if pulled_link:
+            project_link = fake_root / 'apps/frontend/.vercel/project.json'
+            self.assertEqual(project_link.read_bytes(), pulled_link['bytes'])
+            self.assertEqual(project_link.stat().st_mode & 0o7777, pulled_link['mode'])
         self.assertEqual(instance.state['status'], 'prepared')
         self.assertEqual(instance.state['components'], {})
         self.assertFalse(any(operation in ('auth-build', 'auth-submit') for operation, _, _ in trace))
@@ -443,14 +477,17 @@ class FrontendPrepareDiagnostics(unittest.TestCase):
         self.assertNotIn('VERCEL_PROJECT_ID=', safe_output)
 
     def run_engine_main_prepare(self, output_case='valid', root_decoy=False,
-                                settings_case='valid', metadata_failure=False):
+                                settings_case='valid', metadata_failure=False,
+                                claiming_workspace=False):
         with tempfile.TemporaryDirectory() as work:
-            instance, directory, fake_root, auth_receipt_bytes = self.make_engine(work)
+            instance, directory, fake_root, auth_receipt_bytes = self.make_engine(
+                work, claiming_workspace=claiming_workspace)
             fake_profiles = fake_root / 'deploy/engine/profiles.json'
             fake_profiles.parent.mkdir(parents=True)
             shutil.copy2(SUPPORT_ROOT / 'deploy/engine/profiles.json', fake_profiles)
             trace = []
             barrier_calls = []
+            pulled_link = {}
             probe = HERE / 'tests' / 'test_vercel_env_context.js'
 
             def fake_subprocess(args, *, cwd, env, input, capture_output, text, timeout):
@@ -464,44 +501,61 @@ class FrontendPrepareDiagnostics(unittest.TestCase):
                                 'link': {'org': 'Rayer', 'repo': 'llm-wiki-cloud'}}
                     return subprocess.CompletedProcess(args, 0, stdout=json.dumps(response), stderr='')
                 if operation == 'frontend-npm-ci':
+                    self.assertEqual(Path(cwd), fake_root / 'apps/frontend')
+                    self.assertEqual(args, ['npm', 'ci', '--ignore-scripts'])
                     return subprocess.CompletedProcess(args, 0, stdout='', stderr='')
                 if operation == 'frontend-vercel-pull':
-                    self.assertEqual(Path(cwd), fake_root)
+                    project_root = fake_root / 'apps/frontend'
+                    self.assertEqual(Path(cwd), project_root)
                     self.assertEqual(args, ['vercel', 'pull', '--yes', '--environment=preview',
                                             '--scope', 'test-team', '--token', self.token])
                     identity_env = {key: env[key] for key in (
                         'VERCEL_ORG_ID', 'VERCEL_PROJECT_ID', 'VERCEL_TEAM_ID')}
                     resolved = ORIGINAL_SUBPROCESS_RUN(
-                        ['node', probe, '--simulate-env-pull'],
-                        input=json.dumps({'env': identity_env, 'cwd': str(fake_root),
+                        ['node', probe, '--simulate-project-cwd-pull'],
+                        input=json.dumps({'env': identity_env, 'cwd': str(project_root),
+                                          'repositoryRoot': str(fake_root),
+                                          'workspaceCase': ('claiming-ancestor' if claiming_workspace else 'none'),
                                           'expected': {'project': self.project, 'team': self.team}}),
                         capture_output=True, text=True, check=False,
-                        env={'PATH': os.environ.get('PATH', '/usr/bin:/bin')})
+                        env={'PATH': os.environ.get('PATH', '/usr/bin:/bin'),
+                             'TMPDIR': os.environ.get('TMPDIR', tempfile.gettempdir()),
+                             'PYTHONDONTWRITEBYTECODE': '1'})
                     self.assertEqual(resolved.returncode, 0, resolved.stderr)
-                    self.assertEqual(json.loads(resolved.stdout), {
-                        'linkPath': '.vercel/project.json', 'pullDirectory': '.'})
-                    project_link = fake_root / '.vercel/project.json'
-                    project_link.parent.mkdir(parents=True, exist_ok=True)
+                    pull_evidence = json.loads(resolved.stdout)
+                    self.assertEqual(pull_evidence['linkPath'], '.vercel/project.json')
+                    self.assertEqual(pull_evidence['pullDirectory'], '.')
+                    self.assertEqual(pull_evidence['outputPath'], '.vercel/output')
+                    self.assertEqual(pull_evidence['repoCwdOutputPath'], '.vercel/output')
+                    project_link = project_root / '.vercel/project.json'
                     if settings_case == 'malformed':
                         project_link.write_text('{malformed')
-                    else:
-                        project_link.write_text(json.dumps({
-                            'projectId': self.project, 'orgId': self.team,
-                            'projectName': 'test-project',
-                            'settings': {'rootDirectory': 'apps/frontend'}}))
+                    pulled_link['bytes'] = project_link.read_bytes()
+                    pulled_link['mode'] = project_link.stat().st_mode & 0o7777
                     return subprocess.CompletedProcess(args, 0, stdout='', stderr='')
                 if operation == 'frontend-vercel-build':
-                    output = fake_root / 'apps/frontend/.vercel/output/static'
-                    if output_case != 'none':
-                        output.mkdir(parents=True)
                     cfg = instance.plan['normalized']['frontend']
-                    if output_case != 'missing':
+                    self.assertEqual(Path(cwd), fake_root / 'apps/frontend')
+                    self.assertEqual(args, ['vercel', 'build', '--scope', 'test-team',
+                                            '--token', self.token])
+                    if settings_case != 'malformed':
                         built_config = {'schema_version': 1, 'api_url': cfg['api_url'],
                                         'auth_url': cfg['auth_url']}
                         if output_case == 'wrong':
                             built_config['api_url'] = 'https://wrong.invalid'
-                        if output_case != 'none':
-                            (output / 'build-config.json').write_text(json.dumps(built_config))
+                        resolved = ORIGINAL_SUBPROCESS_RUN(
+                            ['node', probe, '--simulate-project-cwd-build'],
+                            input=json.dumps({'cwd': str(fake_root / 'apps/frontend'),
+                                              'repositoryRoot': str(fake_root),
+                                              'projectRoot': str(fake_root / 'apps/frontend'),
+                                              'configuredRoot': 'apps/frontend',
+                                              'outputCase': output_case, 'config': built_config}),
+                            capture_output=True, text=True, check=False,
+                            env={'PATH': os.environ.get('PATH', '/usr/bin:/bin'),
+                                 'TMPDIR': os.environ.get('TMPDIR', tempfile.gettempdir()),
+                                 'PYTHONDONTWRITEBYTECODE': '1'})
+                        self.assertEqual(resolved.returncode, 0, resolved.stderr)
+                        self.assertEqual(json.loads(resolved.stdout)['outputPath'], '.vercel/output')
                     if root_decoy:
                         decoy = fake_root / '.vercel/output/static'
                         decoy.mkdir(parents=True)
@@ -522,9 +576,21 @@ class FrontendPrepareDiagnostics(unittest.TestCase):
             def observe_barrier(engine_instance):
                 barrier_calls.append(engine_instance.state['status'])
                 return original_barrier(engine_instance)
-            diagnostic_patch = (patch.object(providers.Providers, '_frontend_prepare_evidence',
-                                             side_effect=OSError('diagnostic fixture failure'))
-                                if metadata_failure else contextlib.nullcontext())
+            original_read = providers.read
+
+            def malformed_diagnostic_link(path):
+                if Path(path) == fake_root / 'apps/frontend/.vercel/project.json':
+                    raise json.JSONDecodeError('invalid diagnostic JSON', '{malformed', 0)
+                return original_read(path)
+
+            if metadata_failure:
+                diagnostic_patch = patch.object(
+                    providers.Providers, '_frontend_prepare_evidence',
+                    side_effect=OSError('diagnostic fixture failure'))
+            elif settings_case == 'malformed-diagnostic':
+                diagnostic_patch = patch('providers.read', side_effect=malformed_diagnostic_link)
+            else:
+                diagnostic_patch = contextlib.nullcontext()
             with patch.dict(os.environ, env, clear=True), patch('providers.ROOT', fake_root), \
                     patch('support.subprocess.run', side_effect=fake_subprocess), diagnostic_patch, \
                     patch.object(sys, 'argv', argv), \
@@ -554,33 +620,42 @@ class FrontendPrepareDiagnostics(unittest.TestCase):
                 'archive_members': archive_members, 'archive_payloads': archive_payloads,
                 'state': read(directory / 'state.json') if (directory / 'state.json').exists() else None,
                 'barrier_calls': barrier_calls, 'root_decoy': root_decoy,
+                'pulled_link': pulled_link,
+                'restored_link_bytes': ((fake_root / 'apps/frontend/.vercel/project.json').read_bytes()
+                                        if pulled_link else None),
+                'restored_link_mode': (((fake_root / 'apps/frontend/.vercel/project.json')
+                                        .stat().st_mode & 0o7777) if pulled_link else None),
             }
 
     def test_engine_main_valid_project_response_prepares_frontend_and_keeps_auth(self):
-        outcome = self.run_engine_main_prepare()
-        self.assertEqual(outcome['exit_code'], 0, outcome['stdout'])
-        result = outcome['result']
-        self.assertEqual(result['reason'], 'completed')
-        self.assertEqual(result['stage'], 'ready')
-        self.assertNotIn('cause', result)
-        self.assertEqual(outcome['auth_receipt'], outcome['expected_auth_receipt'])
-        self.assertIsNotNone(outcome['frontend_receipt'])
-        self.assertTrue(outcome['archive_exists'])
-        self.assertEqual(len(outcome['barrier_calls']), 1)
-        self.assertIn('.vercel/project.json', outcome['archive_members'])
-        self.assertIn('.vercel/output/static/build-config.json', outcome['archive_members'])
-        self.assertEqual(json.loads(outcome['archive_payloads']['.vercel/project.json']),
-                         {'projectId': self.project, 'orgId': self.team, 'projectName': 'test-project',
-                          'settings': {'rootDirectory': 'apps/frontend'}})
-        self.assertEqual(json.loads(outcome['archive_payloads']['.vercel/output/static/build-config.json']), {
-            'schema_version': 1, 'api_url': 'https://api.test.invalid',
-            'auth_url': 'https://auth.test.invalid'})
-        self.assertEqual(outcome['trace'][:4], ['auth-digest', 'frontend-project-readback',
-                                                'frontend-npm-ci', 'frontend-vercel-pull'])
-        self.assertIn('frontend-vercel-build', outcome['trace'])
-        self.assertNotIn('auth-build', outcome['trace'])
-        self.assertEqual(json.loads(outcome['stdout']), result)
-        self.assertNotIn('frontend_prepare_diagnostic', result)
+        for claiming_workspace in (False, True):
+            with self.subTest(claiming_workspace=claiming_workspace):
+                outcome = self.run_engine_main_prepare(claiming_workspace=claiming_workspace)
+                self.assertEqual(outcome['exit_code'], 0, outcome['stdout'])
+                result = outcome['result']
+                self.assertEqual(result['reason'], 'completed')
+                self.assertEqual(result['stage'], 'ready')
+                self.assertNotIn('cause', result)
+                self.assertEqual(outcome['auth_receipt'], outcome['expected_auth_receipt'])
+                self.assertIsNotNone(outcome['frontend_receipt'])
+                self.assertTrue(outcome['archive_exists'])
+                self.assertEqual(len(outcome['barrier_calls']), 1)
+                self.assertIn('.vercel/project.json', outcome['archive_members'])
+                self.assertIn('.vercel/output/static/build-config.json', outcome['archive_members'])
+                self.assertEqual(json.loads(outcome['archive_payloads']['.vercel/project.json']),
+                                 {'projectId': self.project, 'orgId': self.team,
+                                  'projectName': 'test-project',
+                                  'settings': {'rootDirectory': 'apps/frontend'}})
+                self.assertEqual(json.loads(
+                    outcome['archive_payloads']['.vercel/output/static/build-config.json']), {
+                        'schema_version': 1, 'api_url': 'https://api.test.invalid',
+                        'auth_url': 'https://auth.test.invalid'})
+                self.assertEqual(outcome['trace'][:4], ['auth-digest', 'frontend-project-readback',
+                                                        'frontend-npm-ci', 'frontend-vercel-pull'])
+                self.assertIn('frontend-vercel-build', outcome['trace'])
+                self.assertNotIn('auth-build', outcome['trace'])
+                self.assertEqual(json.loads(outcome['stdout']), result)
+                self.assertNotIn('frontend_prepare_diagnostic', result)
 
     def test_failure_reports_fixed_root_and_configured_output_candidates_without_changing_failure(self):
         outcome = self.run_engine_main_prepare(output_case='none', root_decoy=True)
@@ -606,9 +681,28 @@ class FrontendPrepareDiagnostics(unittest.TestCase):
         self.assertIsNone(outcome['state'])
         self.assertEqual(outcome['barrier_calls'], [])
 
-    def test_malformed_diagnostic_metadata_keeps_primary_prepare_failure(self):
+    def test_malformed_pulled_project_settings_fail_closed_as_required_build_input(self):
         outcome = self.run_engine_main_prepare(
             output_case='none', settings_case='malformed', root_decoy=False)
+        self.assertEqual(outcome['exit_code'], 1, outcome['stdout'])
+        self.assertEqual(outcome['result']['reason'], 'invalid-or-unreadable-input')
+        self.assertEqual(outcome['result']['status'], 'failed')
+        self.assertFalse(outcome['result']['mutation_may_have_happened'])
+        self.assertEqual(outcome['result']['observed']['component_status'], 'unstarted')
+        self.assertEqual(outcome['result']['cause']['exception_type'], 'JSONDecodeError')
+        self.assertEqual(outcome['trace'], [
+            'auth-digest', 'frontend-project-readback', 'frontend-npm-ci', 'frontend-vercel-pull'])
+        self.assertEqual(outcome['pulled_link']['bytes'], b'{malformed')
+        self.assertEqual(outcome['restored_link_bytes'], outcome['pulled_link']['bytes'])
+        self.assertEqual(outcome['restored_link_mode'], outcome['pulled_link']['mode'])
+        self.assertEqual(outcome['auth_receipt'], outcome['expected_auth_receipt'])
+        self.assertIsNone(outcome['frontend_receipt'])
+        self.assertFalse(outcome['archive_exists'])
+        self.assertEqual(outcome['barrier_calls'], [])
+
+    def test_malformed_diagnostic_metadata_keeps_primary_prepare_failure(self):
+        outcome = self.run_engine_main_prepare(
+            output_case='none', settings_case='malformed-diagnostic', root_decoy=False)
         self.assertEqual(outcome['exit_code'], 1, outcome['stdout'])
         self.assertEqual(outcome['result']['reason'], 'frontend-output-missing')
         self.assertEqual(outcome['result']['status'], 'failed')
@@ -649,7 +743,7 @@ class FrontendPrepareDiagnostics(unittest.TestCase):
                                 'link': {'org': 'Rayer', 'repo': 'llm-wiki-cloud'}}
                     return subprocess.CompletedProcess(args, 0, stdout=json.dumps(response), stderr='')
                 if operation == 'frontend-vercel-pull':
-                    link = fake_root / '.vercel/project.json'
+                    link = fake_root / 'apps/frontend/.vercel/project.json'
                     link.parent.mkdir(parents=True)
                     link.write_text(json.dumps({'settings': {'rootDirectory': 'apps/frontend'}}))
                 return subprocess.CompletedProcess(args, 0, stdout='', stderr='')
@@ -785,19 +879,21 @@ sys.stdout.write(os.environ['FAKE_PROJECT_RESPONSE'])
         self.assertIn('conflicting inherited NOW aliases', result.stdout)
 
     def test_provider_prepare_passes_readback_identity_to_pinned_cli_context(self):
+        self.assert_provider_prepare_uses_pinned_build_workpath(False)
+
+    def test_provider_prepare_pinned_build_workpath_with_claiming_ancestor(self):
+        self.assert_provider_prepare_uses_pinned_build_workpath(True)
+
+    def assert_provider_prepare_uses_pinned_build_workpath(self, claiming_workspace):
         with tempfile.TemporaryDirectory() as work:
             work = Path(work)
-            instance, directory, fake_root, _ = self.make_engine(work)
+            instance, directory, fake_root, _ = self.make_engine(
+                work, claiming_workspace=claiming_workspace)
             project_root = fake_root / 'apps/frontend'
-            output = project_root / '.vercel/output'
-            (output / 'static').mkdir(parents=True)
             cfg = instance.plan['normalized']['frontend']
-            (output / 'static/build-config.json').write_text(json.dumps({
-                'schema_version': 1, 'api_url': cfg['api_url'], 'auth_url': cfg['auth_url']}))
-            (fake_root / '.vercel/project.json').parent.mkdir(parents=True)
-            (fake_root / '.vercel/project.json').write_text('{}')
             provider = providers.Providers(instance.plan, directory)
             trace = []
+            pulled_link = {}
             probe = HERE / 'tests' / 'test_vercel_env_context.js'
 
             def fake_subprocess(args, *, cwd, env, input, capture_output, text, timeout):
@@ -809,6 +905,8 @@ sys.stdout.write(os.environ['FAKE_PROJECT_RESPONSE'])
                                 'link': {'org': 'Rayer', 'repo': 'llm-wiki-cloud'}}
                     return subprocess.CompletedProcess(args, 0, stdout=json.dumps(response), stderr='')
                 if operation == 'frontend-npm-ci':
+                    self.assertEqual(Path(cwd), project_root)
+                    self.assertEqual(args, ['npm', 'ci', '--ignore-scripts'])
                     return subprocess.CompletedProcess(args, 0, stdout='', stderr='')
                 if operation in ('frontend-vercel-pull', 'frontend-vercel-build'):
                     if operation == 'frontend-vercel-pull':
@@ -818,17 +916,49 @@ sys.stdout.write(os.environ['FAKE_PROJECT_RESPONSE'])
                             'VERCEL_PROJECT_ID', 'VERCEL_ORG_ID', 'VERCEL_TEAM_ID',
                             'NOW_PROJECT_ID', 'NOW_ORG_ID') if key in env}
                         checked = ORIGINAL_SUBPROCESS_RUN(
-                            ['node', probe, '--assert-linked-env'],
-                            input=json.dumps({'env': safe_env,
+                            ['node', probe, '--simulate-project-cwd-pull'],
+                            input=json.dumps({'env': safe_env, 'cwd': str(project_root),
+                                              'repositoryRoot': str(fake_root),
+                                              'workspaceCase': ('claiming-ancestor' if claiming_workspace else 'none'),
                                               'expected': {'project': self.project, 'team': self.team}}),
                             capture_output=True, text=True, check=False,
-                            env={'PATH': os.environ.get('PATH', '/usr/bin:/bin')})
+                            env={'PATH': os.environ.get('PATH', '/usr/bin:/bin'),
+                                 'TMPDIR': os.environ.get('TMPDIR', tempfile.gettempdir()),
+                                 'PYTHONDONTWRITEBYTECODE': '1'})
                         self.assertEqual(checked.returncode, 0, checked.stderr)
+                        project_link = project_root / '.vercel/project.json'
+                        pulled_link['bytes'] = project_link.read_bytes()
+                        pulled_link['mode'] = project_link.stat().st_mode & 0o7777
+                    else:
+                        self.assertEqual(args, ['vercel', 'build', '--scope', 'test-team',
+                                                '--token', self.token])
+                        project_link = project_root / '.vercel/project.json'
+                        original = json.loads(pulled_link['bytes'])
+                        original['settings'].pop('rootDirectory')
+                        self.assertEqual(json.loads(project_link.read_text()), original)
+                        checked = ORIGINAL_SUBPROCESS_RUN(
+                            ['node', probe, '--simulate-project-cwd-build'],
+                            input=json.dumps({'cwd': str(project_root), 'repositoryRoot': str(fake_root),
+                                              'projectRoot': str(project_root),
+                                              'configuredRoot': 'apps/frontend',
+                                              'outputCase': 'valid',
+                                              'config': {'schema_version': 1, 'api_url': cfg['api_url'],
+                                                         'auth_url': cfg['auth_url']}}),
+                            capture_output=True, text=True, check=False,
+                            env={'PATH': os.environ.get('PATH', '/usr/bin:/bin'),
+                                 'TMPDIR': os.environ.get('TMPDIR', tempfile.gettempdir()),
+                                 'PYTHONDONTWRITEBYTECODE': '1'})
+                        self.assertEqual(checked.returncode, 0, checked.stderr)
+                        self.assertEqual(json.loads(checked.stdout), {
+                            'workPathContainsPackage': True, 'duplicateRoot': False,
+                            'outputPath': '.vercel/output',
+                            'resolvedRootDirectory': '' if not claiming_workspace else 'apps/frontend'})
                     return subprocess.CompletedProcess(args, 0, stdout='', stderr='')
                 raise AssertionError('unexpected subprocess in Provider.prepare integration fixture')
 
             inherited = {'PATH': os.environ.get('PATH', '/usr/bin:/bin'), 'HOME': str(work),
-                         'TMPDIR': str(work), 'VERCEL_TOKEN': self.token,
+                         'TMPDIR': os.environ.get('TMPDIR', tempfile.gettempdir()),
+                         'VERCEL_TOKEN': self.token,
                          'VERCEL_TEAM_ID': self.team, 'VERCEL_PROJECT_ID': self.project,
                          'VERCEL_ORG_ID': 'team_InheritedWrong',
                          'NOW_ORG_ID': 'team_LegacyWrong', 'NOW_PROJECT_ID': 'prj_LegacyWrong'}
@@ -850,12 +980,20 @@ sys.stdout.write(os.environ['FAKE_PROJECT_RESPONSE'])
                 self.assertEqual(child_env['VERCEL_TEAM_ID'], self.team)
                 self.assertNotIn('NOW_ORG_ID', child_env)
                 self.assertNotIn('NOW_PROJECT_ID', child_env)
-            self.assertEqual(pull[2], str(fake_root))
+            self.assertEqual(pull[2], str(project_root))
             self.assertEqual(pull[3], 30)
-            self.assertEqual(build[2], str(fake_root))
+            self.assertEqual(build[2], str(project_root))
             self.assertEqual(build[3], 900)
             self.assertEqual(artifact['project'], self.project)
             self.assertEqual(artifact['team'], self.team)
+            project_link = project_root / '.vercel/project.json'
+            self.assertEqual(project_link.read_bytes(), pulled_link['bytes'])
+            self.assertEqual(project_link.stat().st_mode & 0o7777, pulled_link['mode'])
+            with tarfile.open(directory / artifact['archive'], 'r:gz') as archive:
+                self.assertEqual(archive.extractfile('.vercel/project.json').read(), pulled_link['bytes'])
+                self.assertEqual(json.loads(archive.extractfile(
+                    '.vercel/output/static/build-config.json').read()), {
+                        'schema_version': 1, 'api_url': cfg['api_url'], 'auth_url': cfg['auth_url']})
 
     def test_runtime_deploy_maps_selected_context_before_pinned_cli(self):
         with tempfile.TemporaryDirectory() as work:
