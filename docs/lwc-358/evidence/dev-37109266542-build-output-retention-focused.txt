@@ -1,0 +1,20 @@
+.E
+======================================================================
+ERROR: test_action_retains_bounded_dev_build_streams_only_on_later_prepare_failure (test_prepare_diagnostics.FrontendPrepareDiagnostics.test_action_retains_bounded_dev_build_streams_only_on_later_prepare_failure)
+----------------------------------------------------------------------
+Traceback (most recent call last):
+  File "/Users/rayer/orca/workspaces/llm-wiki-cloud/LWC-358-engine-r2/deploy/engine/tests/test_prepare_diagnostics.py", line 976, in test_action_retains_bounded_dev_build_streams_only_on_later_prepare_failure
+    result, action_result = run_action(short_stdout, short_stderr)
+                            ~~~~~~~~~~^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+  File "/Users/rayer/orca/workspaces/llm-wiki-cloud/LWC-358-engine-r2/deploy/engine/tests/test_prepare_diagnostics.py", line 898, in run_action
+    fake_root.mkdir()
+    ~~~~~~~~~~~~~~~^^
+  File "/opt/homebrew/Cellar/python@3.14/3.14.6/Frameworks/Python.framework/Versions/3.14/lib/python3.14/pathlib/__init__.py", line 1011, in mkdir
+    os.mkdir(self, mode)
+    ~~~~~~~~^^^^^^^^^^^^
+FileExistsError: [Errno 17] File exists: '/Users/rayer/.hermes/profiles/lwc-tpm/cache/scratch/tmpo7nhdjl8/repo'
+
+----------------------------------------------------------------------
+Ran 2 tests in 0.003s
+
+FAILED (errors=1)

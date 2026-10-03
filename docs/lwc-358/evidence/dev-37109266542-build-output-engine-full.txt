@@ -1,0 +1,7 @@
+.................................................................................
+----------------------------------------------------------------------
+Ran 81 tests in 138.820s
+
+OK
+{"allowed_next_action": "reconcile-before-replay", "attempt": "4a2a16a19449507d3cbe2568248d67eccc2617ccd8d0a9f2e98010dd7103436a", "builds": {"auth": {"build_id": "12345678-1234-4234-8234-123456789abc", "identity_verified": true, "last_observed_status": "WORKING", "location": "global", "poll_outcome": "deadline", "project_id": "llm-wiki-cloud", "status": "STATUS_UNKNOWN"}}, "candidate": null, "component": "auth", "expected": {"identity": "f48495ced3478226aa78d341416b99e70f074c33159ba80915daf347e6b0a504", "source": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"}, "failure_diagnostic": {"exit_code": null, "stage": "build-status", "timeout_class": "build-poll-deadline"}, "last_verified_checkpoint": 4, "limitations": "Job executions and persistent writes are not reversed by image rollback.", "mutation_may_have_happened": false, "observed": {"component_status": "unstarted"}, "prior": null, "reason": "build-poll-deadline", "release": "test-lwc358-poll-resume", "stage": "prepared", "status": "unknown"}
+Pinned resolver baseline=pair-incomplete; runtime-child=linked; resume=single-deploy

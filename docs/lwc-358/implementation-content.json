@@ -1,7 +1,7 @@
 {
   "base": "f1480c03fe7aa0c4a10054de741d057210310db1",
   "branch": "Rayer/LWC-358-vercel-project-cwd",
-  "content_sha256": "32086cc748b927e4af3f2b876ddf21e4f9b7b04469c246e20e3e74e05cf988ea",
+  "content_sha256": "695c221822be079c89be7cc7179b95320bdb649f33041cdb8818a7604fe784d7",
   "scope": "All changed/new implementation, test, operator, accepted-appendix and frozen-spec files; excludes this manifest, evidence report and logs to avoid self-reference.",
   "frozen_sha256": "838817cad154b0ea773c205f671362a6c9c0ad97c38ddf34f2508eb4fcc2488b",
   "files": [
@@ -142,12 +142,12 @@
     },
     {
       "path": "deploy/engine/providers.py",
-      "sha256": "95677c1108a761da5fbfe2e7360e704bd4e54a020d8a25a0732d9b95b2bce778",
+      "sha256": "109b2fd490e8f4ef1d49b97146736393a6481ae77d07341fb6b51001d3096c19",
       "mode": "0o644"
     },
     {
       "path": "deploy/engine/support.py",
-      "sha256": "ac2dae885384050fea19979d2e15f3fc0e791ae87a756a213e403cc602506b79",
+      "sha256": "5bc5a03af1b63099f74df2255f10baa9875f029e9a6bc7adc49a231759f302c1",
       "mode": "0o644"
     },
     {
@@ -207,7 +207,7 @@
     },
     {
       "path": "deploy/engine/tests/test_prepare_diagnostics.py",
-      "sha256": "edbb7a7c1cba3d8ef587e09a194f6e47951f05cdca17f4324fd8c56e8a0c1ff4",
+      "sha256": "ab05c42aca91add21c4b7538e28a6fcc81b37b60e89942a1f1f0127ea9f56917",
       "mode": "0o644"
     },
     {

@@ -50,7 +50,7 @@ _CAUSE_CODES = {value[1] for value in _CAUSE_TYPES.values()} | {
 _MESSAGE_UNSET = object()
 
 
-def safe_error_message(value, *, sensitive_values=()):
+def safe_error_message(value, *, sensitive_values=(), max_bytes=None):
     """Keep bounded error text while masking known credentials and auth syntax."""
     if isinstance(value, bytes):
         value = value.decode('utf-8', errors='replace')
@@ -74,6 +74,19 @@ def safe_error_message(value, *, sensitive_values=()):
                    redact_token_option, value)
     value = re.sub(r'(?i)\b(VERCEL_TOKEN|GH_TOKEN|GITHUB_TOKEN|ACTIONS_RUNTIME_TOKEN)\s*=\s*([^\s,;]+)',
                    r'\1=[REDACTED]', value)
+    if max_bytes is not None:
+        encoded = value.encode('utf-8')
+        if len(encoded) <= max_bytes:
+            return value, False
+        marker = b'\n...[truncated; middle omitted]...\n'
+        if max_bytes <= len(marker):
+            return marker[:max_bytes].decode('ascii'), True
+        available = max_bytes - len(marker)
+        head_size = available // 2
+        tail_size = available - head_size
+        head = encoded[:head_size].decode('utf-8', errors='ignore')
+        tail = encoded[-tail_size:].decode('utf-8', errors='ignore') if tail_size else ''
+        return head + marker.decode('ascii') + tail, True
     truncated = len(value) > _MAX_CAUSE_MESSAGE_LENGTH
     return value[:_MAX_CAUSE_MESSAGE_LENGTH], truncated
 
@@ -148,7 +161,7 @@ _STAGE_FAILURE = re.compile(
 
 
 def run(args, *, cwd=ROOT, env=None, timeout=30, mutation=False, input=None, stage=None,
-        unknown_on_error=False):
+        unknown_on_error=False, return_process=False):
     frontend_stage = stage in _CAUSE_STAGES - {'unknown'}
     sensitive_values = tuple((env if isinstance(env, dict) else os.environ).get(key, '')
                              for key in _SENSITIVE_ENVIRONMENT_KEYS)
@@ -188,4 +201,4 @@ def run(args, *, cwd=ROOT, env=None, timeout=30, mutation=False, input=None, sta
                          status, mutation,
                          'restore-existing-principal-permission' if permission else 'reconcile-before-replay',
                          stage=reported_stage, exit_code=exit_code, cause=cause)
-    return result.stdout.strip()
+    return result if return_process else result.stdout.strip()
