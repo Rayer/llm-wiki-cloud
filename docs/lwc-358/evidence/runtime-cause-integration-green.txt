@@ -1,0 +1,6 @@
+test_frontend_runtime_deploy_and_reconcile_causes_reach_formal_result (test_engine.Acceptance.test_frontend_runtime_deploy_and_reconcile_causes_reach_formal_result) ... ok
+
+----------------------------------------------------------------------
+Ran 1 test in 0.611s
+
+OK

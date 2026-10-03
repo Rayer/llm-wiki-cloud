@@ -32,6 +32,8 @@ Frontend stage 1 只 `vercel pull`、`vercel build` 並封存 `.vercel/output` �
 | failed_rolled_back | 原部署失敗，已驗證還原；保留候選，可明確決定 reactivate |
 | unknown | Provider 結果不可確認；使用最新 checkpoint `deploy` 先 reconcile，不能從 ready artifact 盲重送 |
 | recovery_failed | 至少一個 rollback failed/unknown；仍是失敗，檢查 checkpoint，不可宣称成功 |
+
+`provider-result-unreadable` 仍是 unknown，並維持 `reconcile-before-replay`。結果可另外含 `causes` 陣列，將 deploy 與 reconcile 階段的既有 bounded 原因分開呈現；它只補充診斷，不改變重播或復原行為。
 | rolled_back | 指定的 changed components 已還原；成功 tag 保留，Jobs 的已執行工作與資料不會倒轉 |
 | partially_reactivated | 指定 component 已重新啟用，尚未所有 selected components verified |
 | stale-checkpoint / stale-ready-artifact-use-latest-checkpoint | 拒絕舊 checkpoint；取得最新 target state artifact 後再判斷 |

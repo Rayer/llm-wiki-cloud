@@ -13,12 +13,13 @@ ROOT = Path(__file__).resolve().parents[2]
 class Breakpoint(Exception):
     def __init__(self, reason, status='failed', mutation=False, action='correct-input-and-resume',
                  stage=None, exit_code=None, timeout_class=None, build=None, cause=None,
-                 frontend_prepare_diagnostic=None):
+                 frontend_prepare_diagnostic=None, causes=None):
         super().__init__(reason)
         self.reason, self.status, self.mutation, self.action = reason, status, mutation, action
         self.stage, self.exit_code, self.timeout_class = stage, exit_code, timeout_class
         self.build, self.cause = build, cause
         self.frontend_prepare_diagnostic = frontend_prepare_diagnostic
+        self.causes = causes
 
 
 class InputShapeError(Exception):
@@ -41,7 +42,8 @@ _CAUSE_TYPES = {
 }
 _CAUSE_STAGES = {
     'frontend-project-readback', 'frontend-npm-ci',
-    'frontend-vercel-pull', 'frontend-vercel-build', 'latest-checkpoint', 'unknown',
+    'frontend-vercel-pull', 'frontend-vercel-build', 'frontend-vercel-deploy',
+    'frontend-deployment-reconcile', 'latest-checkpoint', 'unknown',
 }
 _ARTIFACT_CAUSE_PREFIX = 'LWC_ARTIFACT_CAUSE '
 _SENSITIVE_ENVIRONMENT_KEYS = ('VERCEL_TOKEN', 'GH_TOKEN', 'GITHUB_TOKEN', 'ACTIONS_RUNTIME_TOKEN')
