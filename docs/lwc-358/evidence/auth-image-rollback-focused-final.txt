@@ -1,0 +1,10 @@
+test_auth_bff_ready_artifact_deploy_updates_traffic_and_strict_readback (test_engine.Acceptance.test_auth_bff_ready_artifact_deploy_updates_traffic_and_strict_readback) ... ok
+test_sanity_rejects_each_managed_service_field (test_engine.Acceptance.test_sanity_rejects_each_managed_service_field) ... ok
+test_prior_service_snapshot_and_rollback_use_retained_image_identity (test_engine.Acceptance.test_prior_service_snapshot_and_rollback_use_retained_image_identity) ... ok
+test_prior_image_and_route_checks_remain_fail_closed (test_engine.Acceptance.test_prior_image_and_route_checks_remain_fail_closed) ... ok
+test_retained_annotations_full_chain (test_engine.Acceptance.test_retained_annotations_full_chain) ... ok
+
+----------------------------------------------------------------------
+Ran 5 tests in 9.441s
+
+OK

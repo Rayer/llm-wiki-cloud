@@ -665,10 +665,23 @@ class Providers:
             k: v for k, v in revision.get('metadata', {}).get('annotations', {}).items()
             if k not in controller}}
 
-    def template_matches(self, raw, revision):
+    @staticmethod
+    def retained_service_image_matches(revision, name, image):
+        containers = revision.get('spec', {}).get('containers', [])
+        return (revision.get('metadata', {}).get('name') == name and
+                isinstance(image, str) and '@sha256:' in image and len(containers) == 1 and
+                containers[0].get('image') == image and
+                revision.get('status', {}).get('imageDigest') == image and
+                any(x.get('type') == 'Ready' and x.get('status') == 'True'
+                    for x in revision.get('status', {}).get('conditions', [])))
+
+    def service_template_matches(self, c, raw, revision, image):
         template = raw['spec']['template']
-        return (self.revision_config(template) == self.revision_config(revision) and
-                template.get('metadata', {}).get('name', revision['metadata']['name']) == revision['metadata']['name'])
+        metadata = dict(template.get('metadata', {}))
+        metadata.setdefault('namespace', revision.get('metadata', {}).get('namespace'))
+        effective_template = {'metadata': metadata, 'spec': self.service_template(raw), 'status': revision['status']}
+        return (metadata.get('name') == revision['metadata']['name'] and
+                self.service_matches(c, effective_template, image))
 
     def snapshot(self, c):
         if c == 'frontend':
@@ -686,10 +699,10 @@ class Providers:
             image = revision['status']['imageDigest']
             require('@sha256:' in image, 'mutable-prior-image')
             template = self.service_template(raw)
-            require(self.template_matches(raw, revision) and len(template['containers']) == 1 and template['containers'][0]['image'] == image, 'unrepresentable-prior-service-template')
+            require(self.retained_service_image_matches(revision, traffic[0]['revisionName'], image) and
+                    len(template.get('containers', [])) == 1 and template['containers'][0].get('image') == image,
+                    'unrepresentable-prior-service-template')
             return {'revision': revision['metadata']['name'], 'image': image,
-                    'template_fingerprint': digest(self.revision_config(raw['spec']['template'])),
-                    'fingerprint': digest(self.revision_config(revision)),
                     'traffic': [{'revisionName': revision['metadata']['name'], 'percent': 100}]}
         template = self.job_template(raw)
         require(len(template['containers']) == 1, 'unrepresentable-job')
@@ -749,13 +762,12 @@ class Providers:
                 return False
             revision = self.revision(c, traffic[0]['revisionName'])
             if prior:
-                return (revision['metadata']['name'] == artifact['revision'] and
-                        self.template_matches(raw, revision) and
-                        digest(self.revision_config(raw['spec']['template'])) == artifact['template_fingerprint'] and
-                        digest(self.revision_config(revision)) == artifact['fingerprint'])
+                template = self.service_template(raw)
+                return (self.retained_service_image_matches(revision, artifact['revision'], artifact.get('image')) and
+                        len(template.get('containers', [])) == 1 and
+                        template['containers'][0].get('image') == artifact.get('image'))
             return (self.service_matches(c, revision, artifact['image']) and
-                    self.template_matches(raw, revision) and
-                    raw['spec']['template']['metadata']['name'] == revision['metadata']['name'] and
+                    self.service_template_matches(c, raw, revision, artifact['image']) and
                     (not candidate.get('revision') or candidate['revision'] == revision['metadata']['name']))
         t = self.job_template(raw)
         if len(t['containers']) != 1 or t['containers'][0]['image'] != artifact['image']:
@@ -816,7 +828,7 @@ class Providers:
             retained = self.revision(c, revision)
             require(self.service_matches(c, retained, artifact['image']), 'candidate-config-not-ready')
             raw = self.describe(c)
-            if not self.template_matches(raw, retained) or raw['spec']['template'].get('metadata', {}).get('name') != revision:
+            if not self.service_template_matches(c, raw, retained, artifact['image']):
                 self.restore_service(c, retained, [{'revisionName': revision, 'percent': 100}])
             else:
                 self.cloud(c, 'services', 'update-traffic', name, '--to-revisions', revision+'=100', mutation=True)
@@ -868,7 +880,8 @@ class Providers:
         kind, name = self.resource(c)
         if c in ('auth', 'bff'):
             revision = self.revision(c, prior['revision'])
-            require(digest(self.revision_config(revision)) == prior['fingerprint'], 'prior-revision-changed')
+            require(self.retained_service_image_matches(revision, prior['revision'], prior.get('image')),
+                    'prior-revision-changed')
             self.restore_service(c, revision, prior['traffic'])
         else:
             args = [kind, 'update', name, '--image', prior['image']]

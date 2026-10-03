@@ -1,7 +1,7 @@
 {
-  "base": "4c9c14646fafab01239e3ce6822e77db111dc2c7",
-  "branch": "Rayer/LWC-358-frontend-prerender-config",
-  "content_sha256": "a4a3d5edf34266e1487883bb6364db751d8cf5a78b8b57c0f7bd7afa36bc6bf8",
+  "base": "677c433e7494a3c8b5bb40c94121851b54642e54",
+  "branch": "Rayer/LWC-358-latest-checkpoint-pagination",
+  "content_sha256": "fadc56bab289fe591e2fbde60dc027acfbd8bb82a2fdd3610469ba19717e9875",
   "scope": "All changed/new implementation, test, operator, accepted-appendix and frozen-spec files; excludes this manifest, evidence report and raw logs to avoid self-reference.",
   "frozen_sha256": "838817cad154b0ea773c205f671362a6c9c0ad97c38ddf34f2508eb4fcc2488b",
   "files": [
@@ -142,7 +142,7 @@
     },
     {
       "path": "deploy/engine/providers.py",
-      "sha256": "1203e5d2f60dcde7b1720fd1611e64d537cb29061af8f2ac844f6347dda86f1e",
+      "sha256": "ff1433a0e4c6db177acbbbd260fe07de2af3516eb2246def666bbd48681874a2",
       "mode": "0o644"
     },
     {
@@ -202,7 +202,7 @@
     },
     {
       "path": "deploy/engine/tests/test_engine.py",
-      "sha256": "58ae83ed66011cc9c63a906971c56173b9592978f05bae0d3a9b8324152bc34f",
+      "sha256": "254a29f2ab238ac93c50af8607b2cdb7bb1afac6a202b0e2b699f8f53fb0a33c",
       "mode": "0o644"
     },
     {
@@ -223,6 +223,11 @@
     {
       "path": "deploy/engine/tests/transport_sdk_stub.cjs",
       "sha256": "233bba2581bd6bb796ffc89f9babe08d06315eca63ad3e783d0dee649a318c91",
+      "mode": "0o644"
+    },
+    {
+      "path": "docs/lwc-358/deployment-engine-spec-r2-accepted-appendix-auth-image-rollback.md",
+      "sha256": "bde933015957f7c24930955a196c98512f01e92dba447b41a908013b71ea30ae",
       "mode": "0o644"
     },
     {
@@ -247,7 +252,7 @@
     },
     {
       "path": "docs/lwc-358/operator-r2.md",
-      "sha256": "f430573291df39ea6389c18543a7084c546291175948c15626cab9e4e28e6910",
+      "sha256": "4cd7655723ea4e095ad4f7223eb82ca2d2a9ae9a2565286ab886a0758f53a4f7",
       "mode": "0o644"
     },
     {
