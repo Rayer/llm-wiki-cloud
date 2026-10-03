@@ -21,6 +21,9 @@ const platformEnvSource = source(
 const linkedProjectSource = source(
   'vercel-59.11.7-get-linked-project.js',
   '2e749ec1e3821d3f3ab10d6a1579b8eda9d8676350925981cd58e1cfe269a364');
+const pullPathSource = source(
+  'vercel-59.11.7-env-pull-path.js',
+  'a76939e5e3a9e549c7addaeae102c88c048bb7c475ba1af4bee3ac44b2234f7e');
 
 const prelude = `
 const import_errors = { NowBuildError: class NowBuildError extends Error {
@@ -29,13 +32,29 @@ const import_errors = { NowBuildError: class NowBuildError extends Error {
 const process = { env: globalThis.__env };
 const resolveProjectCwd = async value => value;
 const output_manager_default = {
-  error: value => globalThis.__errors.push(value), spinner() {}, stopSpinner() {}, debug() {}, print() {}
+  error: value => globalThis.__errors.push(value), spinner() {}, stopSpinner() {}, debug() {}, print() {}, log() {}
 };
 class ProjectNotFound {}
 const isAPIError = () => false;
 const isOwnerLookupUnavailableError = () => false;
 const code = value => value;
 const VERCEL_DIR = '.vercel';
+const VERCEL_DIR_PROJECT = 'project.json';
+const join = path.join;
+const import_fs_extra = { outputJSON: async (file, value, options) => {
+  fs.mkdirSync(path.dirname(file), { recursive: true });
+  fs.writeFileSync(file, JSON.stringify(value, null, options.spaces));
+} };
+const pullAllEnvFiles = async (_environment, _client, _link, _flags, directory) => {
+  globalThis.__pullEnvDirectory = directory;
+  return 0;
+};
+const stamp_default = () => () => '';
+const prependEmoji = value => value;
+const emoji = () => '';
+const import_chalk = { default: { bold: value => value, gray: value => value } };
+const humanizePath = value => value;
+const detectExplicitScope = () => true;
 const getProjectLink = async () => { throw new Error('unexpected local-link lookup'); };
 const getOrgById = async (client, id) => { globalThis.__lookups++; return { id, slug: 'test-team' }; };
 const getProjectByNameOrId = async (client, id, orgId) => {
@@ -46,17 +65,54 @@ const getProjectByNameOrId = async (client, id, orgId) => {
   return { id, accountId: orgId, name: 'test-project', rootDirectory: 'apps/frontend' };
 };
 `;
-const executable = `${prelude}\n${platformEnvSource}\nconst getPlatformEnv2 = getPlatformEnv;\n${linkedProjectSource}\nglobalThis.resolveLinkedProject = getLinkedProject;`;
+const executable = `${prelude}\n${platformEnvSource}\nconst getPlatformEnv2 = getPlatformEnv;\n${linkedProjectSource}
+const originalGetLinkedProject = getLinkedProject;
+getLinkedProject = async (...args) => {
+  const result = await originalGetLinkedProject(...args);
+  globalThis.__lastLinkedProject = result;
+  return result;
+};
+${pullPathSource}
+globalThis.resolveLinkedProject = getLinkedProject;
+globalThis.runPinnedPull = async cwd => {
+  const client = { cwd, config: { currentTeam: globalThis.__env.VERCEL_TEAM_ID }, nonInteractive: true };
+  const exitCode = await pullCommandLogic(client, cwd, true, 'preview', {}, undefined);
+  return { exitCode, currentTeam: client.config.currentTeam };
+};`;
 
 async function resolve(env, expectedProject = 'prj_Validated', expectedOrg = 'team_Validated',
   cwd = '/offline-fake-root') {
   const context = { __env: { ...env }, __errors: [], __lookups: 0,
-    __expectedProject: expectedProject, __expectedOrg: expectedOrg };
+    __expectedProject: expectedProject, __expectedOrg: expectedOrg, fs, path };
   vm.runInNewContext(executable, context, { filename: 'vercel-59.11.7-get-linked-project.js' });
   const result = await context.resolveLinkedProject(
     { cwd, config: { currentTeam: env.VERCEL_TEAM_ID } },
     { scopeIsExplicit: true });
   return { result, errors: context.__errors, lookups: context.__lookups };
+}
+
+async function simulatePull(env, cwd, expectedProject, expectedOrg) {
+  const context = { __env: { ...env }, __errors: [], __lookups: 0,
+    __expectedProject: expectedProject, __expectedOrg: expectedOrg, fs, path };
+  vm.runInNewContext(executable, context, { filename: 'vercel-59.11.7-env-pull-path.js' });
+  const pull = await context.runPinnedPull(cwd);
+  const linked = context.__lastLinkedProject;
+  const rootLink = path.join(cwd, '.vercel/project.json');
+  const nestedLink = path.join(cwd, 'apps/frontend/.vercel/project.json');
+  assert.equal(pull.exitCode, 0);
+  assert.equal(linked.status, 'linked');
+  assert.equal(linked.project.id, expectedProject);
+  assert.equal(linked.project.rootDirectory, 'apps/frontend');
+  assert.equal(linked.repoRoot, undefined);
+  assert.equal(linked.projectRootDirectory, undefined);
+  assert.equal(context.__pullEnvDirectory, cwd);
+  assert.equal(fs.existsSync(rootLink), true);
+  assert.equal(fs.existsSync(nestedLink), false);
+  const settings = JSON.parse(fs.readFileSync(rootLink, 'utf8'));
+  assert.equal(settings.projectId, expectedProject);
+  assert.equal(settings.orgId, expectedOrg);
+  assert.equal(settings.settings.rootDirectory, 'apps/frontend');
+  return { linkPath: '.vercel/project.json', pullDirectory: '.', settings };
 }
 
 async function main() {
@@ -73,6 +129,14 @@ async function main() {
     assert.equal(linked.result.org.id, input.expected.team);
     assert.equal(linked.lookups, 2);
     console.log('Provider.prepare child identity follows pinned Vercel linked branch: PASS');
+    return;
+  }
+
+  if (process.argv[2] === '--simulate-env-pull') {
+    const input = JSON.parse(fs.readFileSync(0, 'utf8'));
+    const result = await simulatePull(input.env, input.cwd,
+      input.expected.project, input.expected.team);
+    console.log(JSON.stringify({ linkPath: result.linkPath, pullDirectory: result.pullDirectory }));
     return;
   }
 

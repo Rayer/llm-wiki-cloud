@@ -347,9 +347,11 @@ class Providers:
         expected = {'schema_version': 1, 'api_url': cfg['api_url'], 'auth_url': cfg['auth_url']}
         require(read(output / 'static/build-config.json') == expected, 'frontend-build-config-mismatch')
         archive = self.directory / 'frontend.tgz'
+        # Env-linked `vercel pull` writes project.json under cwd; build output uses the project root.
+        project_link = ROOT / '.vercel/project.json'
         with tarfile.open(archive, 'w:gz') as tar:
             tar.add(output, arcname='.vercel/output')
-            tar.add(project_root / '.vercel/project.json', arcname='.vercel/project.json')
+            tar.add(project_link, arcname='.vercel/project.json')
         import hashlib
         return {'archive': 'frontend.tgz', 'sha256': hashlib.sha256(archive.read_bytes()).hexdigest(),
                 'config': expected, 'target': target, 'project': os.environ['VERCEL_PROJECT_ID'],

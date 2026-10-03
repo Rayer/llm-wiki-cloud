@@ -411,6 +411,7 @@ class FrontendPrepareDiagnostics(unittest.TestCase):
             shutil.copy2(SUPPORT_ROOT / 'deploy/engine/profiles.json', fake_profiles)
             trace = []
             barrier_calls = []
+            probe = HERE / 'tests' / 'test_vercel_env_context.js'
 
             def fake_subprocess(args, *, cwd, env, input, capture_output, text, timeout):
                 operation = self.child_operation(args)
@@ -425,9 +426,20 @@ class FrontendPrepareDiagnostics(unittest.TestCase):
                 if operation == 'frontend-npm-ci':
                     return subprocess.CompletedProcess(args, 0, stdout='', stderr='')
                 if operation == 'frontend-vercel-pull':
-                    project_link = fake_root / 'apps/frontend/.vercel/project.json'
-                    project_link.parent.mkdir(parents=True, exist_ok=True)
-                    project_link.write_text(json.dumps({'rootDirectory': 'apps/frontend'}))
+                    self.assertEqual(Path(cwd), fake_root)
+                    self.assertEqual(args, ['vercel', 'pull', '--yes', '--environment=preview',
+                                            '--scope', 'test-team', '--token', self.token])
+                    identity_env = {key: env[key] for key in (
+                        'VERCEL_ORG_ID', 'VERCEL_PROJECT_ID', 'VERCEL_TEAM_ID')}
+                    resolved = ORIGINAL_SUBPROCESS_RUN(
+                        ['node', probe, '--simulate-env-pull'],
+                        input=json.dumps({'env': identity_env, 'cwd': str(fake_root),
+                                          'expected': {'project': self.project, 'team': self.team}}),
+                        capture_output=True, text=True, check=False,
+                        env={'PATH': os.environ.get('PATH', '/usr/bin:/bin')})
+                    self.assertEqual(resolved.returncode, 0, resolved.stderr)
+                    self.assertEqual(json.loads(resolved.stdout), {
+                        'linkPath': '.vercel/project.json', 'pullDirectory': '.'})
                     return subprocess.CompletedProcess(args, 0, stdout='', stderr='')
                 if operation == 'frontend-vercel-build':
                     output = fake_root / 'apps/frontend/.vercel/output/static'
@@ -445,9 +457,6 @@ class FrontendPrepareDiagnostics(unittest.TestCase):
                         (decoy / 'build-config.json').write_text(json.dumps({
                             'schema_version': 1, 'api_url': cfg['api_url'],
                             'auth_url': cfg['auth_url']}))
-                        root_project = fake_root / '.vercel/project.json'
-                        root_project.parent.mkdir(parents=True, exist_ok=True)
-                        root_project.write_text(json.dumps({'rootDirectory': '.'}))
                     return subprocess.CompletedProcess(args, 0, stdout='', stderr='')
                 raise AssertionError('unexpected operation in Engine.main valid-response fixture')
 
@@ -507,7 +516,8 @@ class FrontendPrepareDiagnostics(unittest.TestCase):
         self.assertIn('.vercel/project.json', outcome['archive_members'])
         self.assertIn('.vercel/output/static/build-config.json', outcome['archive_members'])
         self.assertEqual(json.loads(outcome['archive_payloads']['.vercel/project.json']),
-                         {'rootDirectory': 'apps/frontend'})
+                         {'projectId': self.project, 'orgId': self.team, 'projectName': 'test-project',
+                          'settings': {'rootDirectory': 'apps/frontend'}})
         self.assertEqual(json.loads(outcome['archive_payloads']['.vercel/output/static/build-config.json']), {
             'schema_version': 1, 'api_url': 'https://api.test.invalid',
             'auth_url': 'https://auth.test.invalid'})
@@ -625,7 +635,8 @@ sys.stdout.write(os.environ['FAKE_PROJECT_RESPONSE'])
             cfg = instance.plan['normalized']['frontend']
             (output / 'static/build-config.json').write_text(json.dumps({
                 'schema_version': 1, 'api_url': cfg['api_url'], 'auth_url': cfg['auth_url']}))
-            (project_root / '.vercel/project.json').write_text('{}')
+            (fake_root / '.vercel/project.json').parent.mkdir(parents=True)
+            (fake_root / '.vercel/project.json').write_text('{}')
             provider = providers.Providers(instance.plan, directory)
             trace = []
             probe = HERE / 'tests' / 'test_vercel_env_context.js'

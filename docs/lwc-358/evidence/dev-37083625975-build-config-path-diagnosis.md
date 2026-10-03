@@ -1,49 +1,46 @@
-# DEV 37083625975 — Frontend build-config path correction
+# DEV 37083625975 — Frontend pull-link and build-output roots
 
-Status: offline pinned-source verification, local adapter repair, and regression evidence. Historical live prepare cause remains **UNKNOWN**; the run did not retain its link/output tree, and this repair does not retroactively establish that tree.
+Status: offline source verification, local adapter correction, and regressions. The historical live prepare cause remains **UNKNOWN**; that run did not retain the pulled link file or output tree.
 
-## Live result readback
+## Live result identity
 
 Allowlisted fields were read from `/Users/rayer/.hermes/profiles/lwc-tpm/cache/scratch/dev-37083625975-result/result.json` and `state.json`.
 
-- Run: `37083625975`; artifact: `11259555588`.
-- `result.source`: `fc5be16e85a7832b21ccf63333881e655d44c04f`. This corrects the earlier report’s mistaken use of the reviewed HEAD `aacd8eb2d3e0fa805ac9ea98a559c3f5e4afc8da`.
-- Frontend prepare returned `invalid-or-unreadable-input`, with `FileNotFoundError` / `local-input-unreadable` for the repository-root path `/home/runner/work/llm-wiki-cloud/llm-wiki-cloud/.vercel/output/static/build-config.json`. Its structured cause stage was `unknown`; no child exit code or timeout was recorded.
-- The plan’s configured Frontend root was `apps/frontend`. The successful project-readback step requires the API `rootDirectory` to equal that plan value. The failure says the adapter’s repository-root static-file lookup was absent; it does not show where the live link or output existed.
-- Checkpoint remained `prepared`, sequence `1`, with no component/build entries, no candidate, no possible runtime mutation, and runtime unstarted. Parent confirmed the retained Auth receipt bytes match the earlier receipt; Auth was not rebuilt. No Frontend receipt or ready barrier was produced.
+- Run `37083625975`, final artifact `11259555588`.
+- `result.source` is `fc5be16e85a7832b21ccf63333881e655d44c04f`. Earlier local evidence incorrectly substituted reviewed HEAD `aacd8eb2d3e0fa805ac9ea98a559c3f5e4afc8da`.
+- Frontend prepare returned `invalid-or-unreadable-input`, `FileNotFoundError` / `local-input-unreadable`, for the repo-root `.vercel/output/static/build-config.json`; cause stage was `unknown`, with no child exit code or timeout.
+- The plan’s configured root was `apps/frontend`. The recorded checkpoint stayed `prepared`, sequence `1`; no component/build entry, candidate, Frontend receipt, ready barrier, or runtime mutation. Parent confirmed the retained Auth receipt remained byte-identical and was not rebuilt.
 
-## Pinned Vercel path contract, checked independently
+## Pinned CLI branch verification
 
-I read the cached `vercel@59.11.7` tarball without installing or executing it. Its SHA256 is `34432b6f0ddd6501ab17140dcf6c5baa2e68fa1ce91eabcb2afef4fbf4db44eb`.
+I read the exact cached `vercel@59.11.7` tarball without installing or running the CLI; SHA256 `34432b6f0ddd6501ab17140dcf6c5baa2e68fa1ce91eabcb2afef4fbf4db44eb`.
 
-The project-link location and build-output location come from separate code paths:
+The project-link path and build-output path differ for this adapter’s actual pull environment:
 
-1. `pullCommandLogic` in `package/dist/chunks/chunk-XIFATBH5.js:162-193` takes `repoRoot` and `project.rootDirectory`, then sets `currentDirectory = join(repoRoot, project.rootDirectory || '')`. `writeProjectSettings` in `chunk-EPOLDWRA.js:23-48` writes `join(currentDirectory, '.vercel', 'project.json')`. For the validated `apps/frontend` root, pull therefore writes `ROOT/apps/frontend/.vercel/project.json`.
-2. `getProjectLinkFromRepoLink` in `chunk-2TSBB22D.js:13556-13615` exposes the repository link’s project directory as `projectRootDirectory`. `getLinkedProject` resolves the project context from that repo link. `commands/build/index.js:4436-4443` reads Vercel settings from `join(repoRoot, projectRootDirectory, '.vercel')`; separately, `commands/build/index.js:4548-4549` derives the default output as `join(repoRoot, projectRootDirectory, OUTPUT_DIR)`. `chunk-QHS645AZ.js:10259-10262` defines `OUTPUT_DIR` as `.vercel/output`. For the validated `apps/frontend` root, the build output is `ROOT/apps/frontend/.vercel/output`.
+1. `Providers.prepare` emits `VERCEL_ORG_ID` and `VERCEL_PROJECT_ID`, passes `--scope`, runs `vercel pull` with cwd `ROOT`, and supplies no explicit `--project` selector. In `chunk-2TSBB22D.js:13702-13709,13757-13758`, pinned `getLinkedProject` therefore chooses env context (`orgId`/`projectId`) instead of `getProjectLinkFromRepoLink`. That result has no `repoRoot` or `projectRootDirectory`. Pinned `ensureLink` (`chunk-C762AAVU.js:58-131`) returns the already-linked result.
+2. Pinned `pullCommandLogic` (`chunk-XIFATBH5.js:162-193`) uses `currentDirectory=cwd` when `repoRoot` is absent. `writeProjectSettings` (`chunk-EPOLDWRA.js:23-48`) writes `join(currentDirectory, '.vercel', 'project.json')`. Thus this adapter’s pull writes `ROOT/.vercel/project.json`; the earlier nested project-link assumption was wrong.
+3. The build code independently resolves the per-directory project root in `commands/build/index.js:4534-4548` and computes its default `OUTPUT_DIR`; `chunk-QHS645AZ.js:10259-10262` defines that output as `.vercel/output`. The already-validated `apps/frontend` output remains `ROOT/apps/frontend/.vercel/output`. The nested build-output path does not imply a nested pull-link path.
 
-The paths coincide here because both contracts consume the validated project root; the project-link formula and build-output formula were checked separately. No fallback search across repository and project roots is part of the pinned contract.
+This is a static pinned-source contract finding, not proof of the historical live output tree or its cause.
 
-The app’s `build-config.json/route.ts` is statically configured with `dynamic = 'force-static'` and `revalidate = false`. A prior offline integration check ran three real Next `16.2.7` builds; each listed `/build-config.json` as static and the test checked the generated route body and prerender manifest. Its retained output is [dev-37083625975-next-build-config-trace.txt](dev-37083625975-next-build-config-trace.txt), SHA256 `a1a4d4b273360803f9f932493bd6e885c91ee74d4b28e93ca7194d0f2e564b9a`.
+## Source-backed regression and minimal fix
 
-## Local correction
+The test fixture `vercel-59.11.7-env-pull-path.js` contains the pinned `ensureLink`, `pullCommandLogic`, and `writeProjectSettings` function bodies. Their source slices were extracted from the exact tarball above (SHA256s `e437c8ad8e254a636ae724144cdf6eaf5592855ddf45f678e3985f8759ad3365`, `c4cf134bd16a85cd02676e2eedb05d96c1ef595387c8be1f013ec7f8aa0efb49`, and `82d3fb6a70a0398c6c5ac679dd57e41ce1c8c193069ec55fd79c5a6a72b9c0cf`). `test_vercel_env_context.js` combines them with the exact pinned env resolver and `getLinkedProject` fixtures. Only API readback and env-file download are stubbed; it supplies the adapter’s selected project/team environment, repository-root cwd, scope context, and executes the real source branches through project-settings file creation. It asserts the link is written only at `ROOT/.vercel/project.json` while the linked project still reports `rootDirectory=apps/frontend`.
 
-`Providers.prepare('frontend')` already calls `project()` before the pull/build commands; that readback rejects a `rootDirectory` which differs from the plan’s `apps/frontend`. The adapter now joins `ROOT` with that validated `cfg['root_directory']` for the static output read and for the separately verified project-link file. It still requires the exact expected `schema_version`, `api_url`, and `auth_url` object. It packages them under the existing canonical archive names `.vercel/output/...` and `.vercel/project.json`.
+The Engine prepare integration invokes that source-backed pull simulation with the production adapter’s actual child env/cwd and CLI argv; the fake build independently creates only nested `.vercel/output`. Before the adapter correction, this test failed because the adapter attempted `apps/frontend/.vercel/project.json`, which the pinned pull did not create. The preserved causal red is [dev-37083625975-env-pull-root-red4.txt](dev-37083625975-env-pull-root-red4.txt), SHA256 `872ac3577ad053d18cee38bf97a5ab827268af0a50abff26561f04b2c4c23b7a`.
 
-The runtime `vercel deploy --prebuilt` argv, cwd/context setup, aliases, candidate handling, and archive layout are unchanged. There is no alternate-root fallback, file scan, relaxed validation, new ready path, or Frontend rebuild behavior change.
+The adapter now reads static build config from `ROOT / cfg['root_directory'] / '.vercel/output'` and project-link metadata independently from `ROOT / '.vercel/project.json'`. Strict config equality, canonical archive names `.vercel/output/...` and `.vercel/project.json`, runtime cwd/context/argv, and `--prebuilt` consumption remain unchanged. Missing or wrong configured-root config still fails before Frontend receipt/archive/barrier even with a valid repo-root output decoy. The successful selected Auth+Frontend case checks Auth receipt bytes and proves no Auth build. Runtime tests inspect both canonical archive entries after extraction.
 
-The offline integration fake now models the pinned pull/build roots. Positive prepare assertions inspect both canonical archive entries. Missing and incorrect configured-root static config cases each place a valid repository-root decoy and assert prepare still fails before Frontend receipt/archive or the ready barrier. The same positive case asserts the Auth receipt is byte-identical and no Auth build ran. The runtime boundary regression reads the canonical project link and static config from the archive consumed by the real `Providers.deploy` path. The full engine acceptance fake also creates output only under `apps/frontend/.vercel/output` and checks the `--prebuilt` child receives that archive content.
+## Verification and retained attempts
 
-## Offline regression evidence
+Commands used `TMPDIR=/Users/rayer/.hermes/profiles/lwc-tpm/cache/scratch` and `PYTHONDONTWRITEBYTECODE=1`.
 
-All Python commands explicitly used `TMPDIR=/Users/rayer/.hermes/profiles/lwc-tpm/cache/scratch` and `PYTHONDONTWRITEBYTECODE=1`.
+- Focused prepare, source-branch, fail-closed, identity, and archive-to-runtime checks: **5 tests / 0.362s / OK**. Output: [dev-37083625975-env-pull-root-focused-green.txt](dev-37083625975-env-pull-root-focused-green.txt), SHA256 `9966cf988ddd00edc9393fc22442d7ac1ca01c7ff2187929ed9c9041c2889785`.
+- Full deployment-engine suite: **72 tests / 143.009s / OK**, including the ten acceptance tests and Auth/BFF recovery/transport coverage. Output: [dev-37083625975-env-pull-root-engine-full-green.txt](dev-37083625975-env-pull-root-engine-full-green.txt), SHA256 `40af1fef2f37af2920e31c07016783866bf3a68044a7c58e9831311b2753c451`.
+- Earlier `env-pull-root-red.txt` through `red3.txt` are preserved setup/test-harness failures (initial syntax, fixture-hash, and stub-shape corrections); only `red4` is the pre-fix causal source-branch regression. None is counted as a pass.
+- The preceding `project-root-engine-full-green.txt` (72 tests) and the parent’s 16-test narrow diagnostic pass are historical results that missed this branch: their fake pull placed `project.json` at the nested root. They do not verify the pinned env-context path. The earlier `project-root-failclosed-red2.txt` remains valid evidence for the separate static-output fallback defect.
+- `git diff --check` passed after the correction.
 
-- Before the source fix, the positive Engine/Providers prepare test failed because the adapter reported `frontend-output-missing` when the fake build wrote only to the configured project root. Retained red: [dev-37083625975-project-root-engine-red2.txt](dev-37083625975-project-root-engine-red2.txt), SHA256 `98bdb45e3bebe873aad92e73d72a458d8056432250b4042c516914309c0f9026`.
-- Before the fix, with valid repo-root decoys present, both missing and wrong configured-root config cases incorrectly completed as `ready`, demonstrating the fallback bug. Retained red: [dev-37083625975-project-root-failclosed-red2.txt](dev-37083625975-project-root-failclosed-red2.txt), SHA256 `eaaa75f41861ba5e608642b58bf1fc7d1296e709378ac4e8137ac80e302b31b8`.
-- The earlier `project-root-engine-red.txt` (SHA256 `8bab0d7e7fcd4de8958d7b9fa05e05760a2275c63ac2cb4cfb139ba6c0ee12ac`) and `project-root-failclosed-red.txt` (SHA256 `8f070ba9eb86f21ab127e1d144630a7d80e537e1c06b5973a6946d0d6ce79301`) are preserved fixture-development failures, not source-causal results: the first expected a state file not yet persisted on prepare failure; the second lacked a repository-root project-link decoy and failed before reaching the assertion.
-- The four focused post-fix tests passed: Engine main success, missing/wrong config rejection, adapter readback identity, and archive-to-runtime consumption. Exact output: [dev-37083625975-project-root-engine-focused-green.txt](dev-37083625975-project-root-engine-focused-green.txt), SHA256 `fdaf123bbd9deb45999a2f9094f24577c67802d777786b59a7ac2ef9ba810844`.
-- Full deployment-engine Python suite: `python3.14 -m unittest discover -s deploy/engine/tests -p 'test_*.py' -v` passed **72 tests in 139.287s**. This includes all ten acceptance tests, Auth/BFF recovery and readback coverage, Frontend alias/config behavior, workflow/transport integration, and the new nested-root archive flow. Exact output: [dev-37083625975-project-root-engine-full-green.txt](dev-37083625975-project-root-engine-full-green.txt), SHA256 `3a33f05dcba6d6ccfbc6dce6a36e9f8ffcf8f3aeb1bb52363e36a60a2719605c`.
-- `git diff --check` exited `0` with no output.
+The current implementation manifest has 49 byte/mode rows. Content SHA256: `0cddd7d51f06ba5fc8c1b372018357504d09c4c9cd32110b58e67d7a80cce390`; manifest-file SHA256: `5388605d1112d31933dd57b2bac643642f288534301f7348a679ee804942467f`. Frozen r2 SHA256 remains `838817cad154b0ea773c205f671362a6c9c0ad97c38ddf34f2508eb4fcc2488b`.
 
-The canonical implementation manifest now records 48 byte/mode rows. Content SHA256: `4edf3e8346989ce301eb5393fcc4cb5a06eaaa6be265066372362e3b8d41af0f`; manifest file SHA256: `9054994bd09a9f6f2cd883873c29e516ae4b4733dbf1bec3d2d29a1909e24212`. Frozen spec SHA256 remains `838817cad154b0ea773c205f671362a6c9c0ad97c38ddf34f2508eb4fcc2488b`.
-
-Worktree HEAD/tree remain `aacd8eb2d3e0fa805ac9ea98a559c3f5e4afc8da` / `74201d0dc27d95a8bfa7829de12aafee1ab54826`; source edits are local and uncommitted. No Action dispatch, live provider/Vercel/build, npm network/install, credential/IAM, runtime, Production, tag, or Git publication occurred. The exact live `apps/frontend/.vercel/output` presence and historical cause remain unknown.
+PR79 base/head were `fc5be16e85a7832b21ccf63333881e655d44c04f` / `0fa162fa9df118bde00ba3996e960bb827b1fabd`, tree `80bd5c0589ccd3c48d244acd19ade7035ff6d544`. This correction is local and uncommitted. No live CLI, provider, Vercel API/build, npm network/install, Action dispatch, credential/IAM, runtime, Production, tag, or Git publication occurred. Historical live cause remains UNKNOWN.

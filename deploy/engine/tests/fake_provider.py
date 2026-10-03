@@ -181,8 +181,10 @@ elif tool == 'curl':
 elif tool=='npm':pass
 elif tool=='vercel':
     if a[0]=='pull':
-        p=Path.cwd()/'apps/frontend/.vercel';p.mkdir(parents=True,exist_ok=True)
-        (p/'project.json').write_text(json.dumps({'rootDirectory':'apps/frontend'}))
+        p=Path.cwd()/'.vercel';p.mkdir(parents=True,exist_ok=True)
+        (p/'project.json').write_text(json.dumps({'projectId':os.environ['VERCEL_PROJECT_ID'],
+            'orgId':os.environ['VERCEL_ORG_ID'],'projectName':'llm-wiki-frontend-dev',
+            'settings':{'rootDirectory':'apps/frontend'}}))
     elif a[0]=='build':
         p=Path.cwd()/'apps/frontend/.vercel/output/static';p.mkdir(parents=True,exist_ok=True)
         s['build_config']={'schema_version':1,'api_url':os.environ['NEXT_PUBLIC_API_URL'],'auth_url':os.environ['NEXT_PUBLIC_AUTH_URL']}

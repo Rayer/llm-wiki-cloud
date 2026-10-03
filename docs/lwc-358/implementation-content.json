@@ -1,7 +1,7 @@
 {
   "base": "d7ac3acfcd26dd675d6d83f3036aa0e1e4e30d0b",
   "branch": "Rayer/LWC-358-original-error-cause",
-  "content_sha256": "4edf3e8346989ce301eb5393fcc4cb5a06eaaa6be265066372362e3b8d41af0f",
+  "content_sha256": "0cddd7d51f06ba5fc8c1b372018357504d09c4c9cd32110b58e67d7a80cce390",
   "scope": "All changed/new implementation, test, operator, accepted-appendix and frozen-spec files; excludes this manifest, evidence report and logs to avoid self-reference.",
   "frozen_sha256": "838817cad154b0ea773c205f671362a6c9c0ad97c38ddf34f2508eb4fcc2488b",
   "files": [
@@ -142,7 +142,7 @@
     },
     {
       "path": "deploy/engine/providers.py",
-      "sha256": "f5adb7bf592dae23ff0f4903592c86e0fb3c39f8db1f852c83441c02463e388f",
+      "sha256": "b07fd1719953bbc29eedb5cd2cc3c58d5d5e83170eadb6ffc9c4feded2252ae6",
       "mode": "0o644"
     },
     {
@@ -157,12 +157,17 @@
     },
     {
       "path": "deploy/engine/tests/fake_provider.py",
-      "sha256": "1ada9a5420857930e7bf8568bca191ba875b65649f6ac5b64da5ec320784075e",
+      "sha256": "f2b2534864d13d7a12c62c250a03c4a55d0396b40ac7b0f8377b32ea22291148",
       "mode": "0o755"
     },
     {
       "path": "deploy/engine/tests/fixtures/build-utils-14.9.1-get-platform-env.js",
       "sha256": "c0d80c47c8508a603988d25b44e72c2a4d1c61addeb38247c80ce47cd88cb253",
+      "mode": "0o644"
+    },
+    {
+      "path": "deploy/engine/tests/fixtures/vercel-59.11.7-env-pull-path.js",
+      "sha256": "e6980387ae28260767aa7dd006a5d565f623ec2cc68368265bcc504b9f429921",
       "mode": "0o644"
     },
     {
@@ -192,7 +197,7 @@
     },
     {
       "path": "deploy/engine/tests/test_prepare_diagnostics.py",
-      "sha256": "86ee968f7f5690b4e23194cb125219ec33866b0552638a949c91dcdbf8f9e765",
+      "sha256": "faabf6eef5109ef809cee38e750643e118cdeaba510ba8fb3c630b330a57ee7c",
       "mode": "0o644"
     },
     {
@@ -202,7 +207,7 @@
     },
     {
       "path": "deploy/engine/tests/test_vercel_env_context.js",
-      "sha256": "1eb74724bdaa05eefc3a22961b475d12daf2015401c0d39b48e1e32d68cbde71",
+      "sha256": "0056466df9a0a2650ea5adab52774632490189ae280a5dab0f9ef036cd8af15e",
       "mode": "0o644"
     },
     {
