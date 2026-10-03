@@ -93,6 +93,16 @@ class StructuredCauseContract(unittest.TestCase):
         self.assertIn('Authorization: [REDACTED]', cause['message'])
         self.assertEqual(cause['message'].count('--token="[REDACTED]"'), 2)
 
+    def test_large_error_message_cap_uses_utf8_bytes_and_keeps_both_ends(self):
+        from support import safe_error_message
+        value = 'HEAD-' + ('é' * 20000) + '-TAIL'
+        bounded, truncated = safe_error_message(value, max_bytes=32 * 1024)
+        self.assertTrue(truncated)
+        self.assertTrue(bounded.startswith('HEAD-'))
+        self.assertTrue(bounded.endswith('-TAIL'))
+        self.assertIn('[truncated; middle omitted]', bounded)
+        self.assertLessEqual(len(bounded.encode('utf-8')), 32 * 1024)
+
 
 class AuthPrepareDiagnostics(unittest.TestCase):
     def setUp(self):
@@ -562,7 +572,9 @@ class FrontendPrepareDiagnostics(unittest.TestCase):
                         (decoy / 'build-config.json').write_text(json.dumps({
                             'schema_version': 1, 'api_url': cfg['api_url'],
                             'auth_url': cfg['auth_url']}))
-                    return subprocess.CompletedProcess(args, 0, stdout='', stderr='')
+                    return subprocess.CompletedProcess(
+                        args, 0, stdout='DEV_BUILD_SUCCESS_STDOUT_SENTINEL',
+                        stderr='DEV_BUILD_SUCCESS_STDERR_SENTINEL')
                 raise AssertionError('unexpected operation in Engine.main valid-response fixture')
 
             env = {'PATH': os.environ.get('PATH', '/usr/bin:/bin'), 'HOME': str(work),
@@ -656,6 +668,8 @@ class FrontendPrepareDiagnostics(unittest.TestCase):
                 self.assertNotIn('auth-build', outcome['trace'])
                 self.assertEqual(json.loads(outcome['stdout']), result)
                 self.assertNotIn('frontend_prepare_diagnostic', result)
+                self.assertNotIn('DEV_BUILD_SUCCESS_STDOUT_SENTINEL', outcome['stdout'])
+                self.assertNotIn('DEV_BUILD_SUCCESS_STDERR_SENTINEL', outcome['stdout'])
 
     def test_failure_reports_fixed_root_and_configured_output_candidates_without_changing_failure(self):
         outcome = self.run_engine_main_prepare(output_case='none', root_decoy=True)
@@ -746,11 +760,16 @@ class FrontendPrepareDiagnostics(unittest.TestCase):
                     link = fake_root / 'apps/frontend/.vercel/project.json'
                     link.parent.mkdir(parents=True)
                     link.write_text(json.dumps({'settings': {'rootDirectory': 'apps/frontend'}}))
+                if operation == 'frontend-vercel-build':
+                    return subprocess.CompletedProcess(
+                        args, 0, stdout='PRODUCTION_BUILD_STDOUT_SENTINEL',
+                        stderr='PRODUCTION_BUILD_STDERR_SENTINEL')
                 return subprocess.CompletedProcess(args, 0, stdout='', stderr='')
 
             env = {'PATH': os.environ.get('PATH', '/usr/bin:/bin'), 'HOME': str(work),
                    'TMPDIR': str(work), 'VERCEL_TOKEN': self.token,
                    'VERCEL_TEAM_ID': self.team, 'VERCEL_PROJECT_ID': self.project}
+            stdout = io.StringIO()
             with patch.dict(os.environ, env, clear=True), patch('providers.ROOT', fake_root), \
                     patch('support.subprocess.run', side_effect=fake_subprocess):
                 with self.assertRaises(Breakpoint) as caught:
@@ -759,11 +778,14 @@ class FrontendPrepareDiagnostics(unittest.TestCase):
                 self.assertEqual(error.reason, 'frontend-output-missing')
                 self.assertIsNone(error.frontend_prepare_diagnostic)
                 instance.component = 'frontend'
-                instance.result(error)
+                with contextlib.redirect_stdout(stdout):
+                    instance.result(error)
 
             result = read(directory / 'result.json')
             self.assertNotIn('frontend_prepare_diagnostic', result)
             self.assertEqual(trace, [stage for stage, _, _, _ in self.stages])
+            self.assertNotIn('PRODUCTION_BUILD_STDOUT_SENTINEL', stdout.getvalue())
+            self.assertNotIn('PRODUCTION_BUILD_STDERR_SENTINEL', stdout.getvalue())
 
     def test_missing_or_wrong_project_root_config_fails_closed_without_root_fallback(self):
         for output_case in ('missing', 'wrong'):
@@ -857,6 +879,124 @@ sys.stdout.write(os.environ['FAKE_PROJECT_RESPONSE'])
                 self.assertEqual((release / 'receipts/auth.json').read_bytes(), auth_receipt_bytes)
                 self.assertFalse((release / 'receipts/frontend.json').exists())
                 self.assertFalse((release / 'frontend.tgz').exists())
+
+    def test_action_retains_bounded_dev_build_streams_only_on_later_prepare_failure(self):
+        action = SUPPORT_ROOT / '.github/actions/deployment-engine/index.cjs'
+        project_response = json.dumps({
+            'id': self.project, 'name': 'llm-wiki-frontend-test',
+            'accountId': self.team, 'rootDirectory': 'apps/frontend',
+            'link': {'org': 'Rayer', 'repo': 'llm-wiki-cloud'},
+        })
+
+        def run_action(stdout_text, stderr_text):
+            with tempfile.TemporaryDirectory() as work:
+                work = Path(work)
+                _, source_directory, fake_root, auth_receipt_bytes = self.make_engine(work)
+                release = work / 'release'
+                shutil.copytree(source_directory, release)
+                (fake_root / '.github/actions/deployment-engine').mkdir(parents=True)
+                shutil.copy2(action, fake_root / '.github/actions/deployment-engine/index.cjs')
+                shutil.copytree(SUPPORT_ROOT / 'deploy/engine', fake_root / 'deploy/engine',
+                                ignore=shutil.ignore_patterns('__pycache__'))
+                shutil.copytree(SUPPORT_ROOT / 'deploy/components', fake_root / 'deploy/components',
+                                ignore=shutil.ignore_patterns('__pycache__'))
+
+                fake_bin = work / 'bin'
+                fake_bin.mkdir()
+                python = fake_bin / 'python3'
+                python.write_text('#!/bin/sh\nexec ' + shlex.quote(sys.executable) + ' "$@"\n')
+                python.chmod(0o755)
+                gcloud = fake_bin / 'gcloud'
+                gcloud.write_text('#!/bin/sh\nprintf "sha256:' + 'a' * 64 + '\\n"\n')
+                gcloud.chmod(0o755)
+                curl = fake_bin / 'curl'
+                curl.write_text('''#!/usr/bin/env python3
+import os, sys
+sys.stdout.write(os.environ['FAKE_PROJECT_RESPONSE'])
+''')
+                curl.chmod(0o755)
+                npm = fake_bin / 'npm'
+                npm.write_text('#!/bin/sh\nexit 0\n')
+                npm.chmod(0o755)
+                vercel = fake_bin / 'vercel'
+                vercel.write_text('''#!/usr/bin/env python3
+import json, os, pathlib, sys
+if sys.argv[1] == 'pull':
+    path = pathlib.Path('.vercel/project.json')
+    path.parent.mkdir(parents=True, exist_ok=True)
+    path.write_text(json.dumps({'projectId': os.environ['VERCEL_PROJECT_ID'],
+        'orgId': os.environ['VERCEL_ORG_ID'], 'projectName': 'test-project',
+        'settings': {'rootDirectory': 'apps/frontend'}}))
+elif sys.argv[1] == 'build':
+    pathlib.Path('.vercel/output/static').mkdir(parents=True, exist_ok=True)
+    sys.stdout.write(os.environ.get('FAKE_BUILD_STDOUT', ''))
+    sys.stderr.write(os.environ.get('FAKE_BUILD_STDERR', ''))
+else:
+    raise SystemExit(9)
+''')
+                vercel.chmod(0o755)
+
+                env = {
+                    'PATH': str(fake_bin) + os.pathsep + os.environ.get('PATH', '/usr/bin:/bin'),
+                    'HOME': str(work), 'TMPDIR': os.environ.get('TMPDIR', str(work)),
+                    'RUNNER_TEMP': str(work), 'INPUT_OPERATION': 'prepare',
+                    'TARGET': 'development', 'SOURCE': 'c' * 40,
+                    'COMPONENTS': 'auth,frontend', 'RELEASE_TAG': 'offline-diagnostic',
+                    'VERCEL_TOKEN': self.token, 'VERCEL_TEAM_ID': self.team,
+                    'VERCEL_PROJECT_ID': self.project, 'FAKE_PROJECT_RESPONSE': project_response,
+                    'FAKE_BUILD_STDOUT': stdout_text, 'FAKE_BUILD_STDERR': stderr_text,
+                }
+                result = ORIGINAL_SUBPROCESS_RUN(
+                    ['node', fake_root / '.github/actions/deployment-engine/index.cjs'],
+                    cwd=fake_root, env=env, capture_output=True, text=True, check=False)
+                self.assertEqual(result.returncode, 1, result.stderr)
+                action_result = json.loads(result.stdout)
+                retained_result = json.loads((release / 'result.json').read_text())
+                self.assertEqual(action_result, retained_result)
+                self.assertEqual(action_result['reason'], 'invalid-or-unreadable-input')
+                self.assertEqual(action_result['cause']['exception_type'], 'FileNotFoundError')
+                self.assertEqual(action_result['cause']['code'], 'local-input-unreadable')
+                self.assertEqual(action_result['observed']['component_status'], 'unstarted')
+                self.assertFalse(action_result['mutation_may_have_happened'])
+                self.assertEqual(action_result['frontend_prepare_diagnostic']['commands'][
+                    'frontend-vercel-build'], {
+                        'status': 'exit0', 'exit_code': 0, 'timeout_class': None})
+                self.assertEqual((release / 'receipts/auth.json').read_bytes(), auth_receipt_bytes)
+                self.assertFalse((release / 'receipts/frontend.json').exists())
+                self.assertFalse((release / 'frontend.tgz').exists())
+                return result, action_result
+
+        token = self.token
+        short_stdout = (f'Vercel CLI 59.11.7\nDetected Next.js\nRoute app: '
+                        f'/build-config.json\nBuild Completed; token={token}\n')
+        short_stderr = f'Build diagnostic warning; ordinary provider detail; token={token}\n'
+        result, action_result = run_action(short_stdout, short_stderr)
+        diagnostic = action_result['frontend_prepare_diagnostic']['build_output']
+        self.assertEqual(diagnostic['stdout'], {
+            'text': short_stdout.replace(token, '[REDACTED]'), 'truncated': False})
+        self.assertEqual(diagnostic['stderr'], {
+            'text': short_stderr.replace(token, '[REDACTED]'), 'truncated': False})
+        self.assertIn('/build-config.json', diagnostic['stdout']['text'])
+        self.assertIn('ordinary provider detail', diagnostic['stderr']['text'])
+        combined = result.stdout + result.stderr + json.dumps(action_result)
+        self.assertNotIn(token, combined)
+        self.assertNotIn('TEST_ONLY_VERCEL_TOKEN_SENTINEL', combined)
+
+        long_stdout = 'STDOUT_HEAD\n' + ('é' * 20000) + '\nSTDOUT_TAIL'
+        long_stderr = 'STDERR_HEAD\n' + ('λ' * 20000) + '\nSTDERR_TAIL'
+        _, long_result = run_action(long_stdout, long_stderr)
+        long_output = long_result['frontend_prepare_diagnostic']['build_output']
+        for stream, head, tail in (
+            (long_output['stdout'], 'STDOUT_HEAD', 'STDOUT_TAIL'),
+            (long_output['stderr'], 'STDERR_HEAD', 'STDERR_TAIL'),
+        ):
+            self.assertTrue(stream['truncated'])
+            self.assertTrue(stream['text'].startswith(head))
+            self.assertTrue(stream['text'].endswith(tail))
+            self.assertIn('[truncated; middle omitted]', stream['text'])
+            self.assertLessEqual(len(stream['text'].encode('utf-8')), 32 * 1024)
+        self.assertLessEqual(sum(len(long_output[key]['text'].encode('utf-8'))
+                                 for key in ('stdout', 'stderr')), 64 * 1024)
 
     def test_each_frontend_subprocess_failure_is_typed_redacted_and_stops_prepare(self):
         for failure_kind in ('exit', 'timeout'):

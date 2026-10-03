@@ -10,7 +10,8 @@ import tempfile
 import time
 import urllib.parse
 
-from support import ROOT, Breakpoint, InputShapeError, digest, read, require, run, structured_cause, write
+from support import (ROOT, Breakpoint, InputShapeError, digest, read, require, run,
+                     safe_error_message, structured_cause, write)
 sys.path.insert(0, str(ROOT / 'deploy/components'))
 import auth_config
 import frontend_build_config
@@ -20,6 +21,7 @@ BUILD_POLL_INTERVAL_SECONDS = 5
 BUILD_POLL_TIMEOUT_SECONDS = 600
 BUILD_POLL_MAX_READS = 120
 BUILD_READ_TIMEOUT_SECONDS = 30
+FRONTEND_BUILD_STREAM_MAX_BYTES = 32 * 1024
 BUILD_ID_RE = re.compile(r'^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$', re.I)
 BUILD_NAME_RE = re.compile(r'^projects/([^/]+)/locations/([^/]+)/builds/([^/]+)$')
 GCP_PROJECT_NUMBER_RE = re.compile(r'^[1-9][0-9]{5,19}$')
@@ -176,7 +178,7 @@ class Providers:
                 'status': 'exit0', 'exit_code': 0, 'timeout_class': None}
         return output
 
-    def _frontend_prepare_evidence(self, cfg, child_env, readback, commands):
+    def _frontend_prepare_evidence(self, cfg, child_env, readback, commands, build_output=None):
         metadata_read_failed = False
         settings_root = None
         project_root = ROOT / cfg['root_directory']
@@ -242,7 +244,7 @@ class Providers:
             key: (bool(child_env.get(key)) if child_env is not None else None)
             for key in context_keys
         }
-        return {
+        evidence = {
             'linked_root': readback.get('linked_root'),
             'settings_root': settings_root,
             'context_presence': context_presence,
@@ -250,6 +252,18 @@ class Providers:
             'outputs': outputs,
             'metadata_read_failed': metadata_read_failed,
         }
+        if build_output is not None:
+            token = child_env.get('VERCEL_TOKEN') if child_env is not None else None
+            sensitive_values = (token,) if isinstance(token, str) and token else ()
+            evidence['build_output'] = {}
+            for stream in ('stdout', 'stderr'):
+                text, truncated = safe_error_message(
+                    build_output.get(stream, ''), sensitive_values=sensitive_values,
+                    max_bytes=FRONTEND_BUILD_STREAM_MAX_BYTES)
+                evidence['build_output'][stream] = {
+                    'text': text or '', 'truncated': truncated,
+                }
+        return evidence
 
     def deployment(self, identity):
         require(re.fullmatch(r'(dpl_[A-Za-z0-9]+|[A-Za-z0-9.-]+\.vercel\.app)', identity), 'invalid-deployment')
@@ -449,6 +463,7 @@ class Providers:
                     for stage in ('frontend-project-readback', 'frontend-npm-ci',
                                   'frontend-vercel-pull', 'frontend-vercel-build')}
         readback = {'linked_root': 'missing'}
+        build_output = None
         if diagnostic_enabled:
             self._frontend_prepare_commands = commands
 
@@ -484,7 +499,11 @@ class Providers:
                         'frontend-project-config-incompatible')
                 settings.pop('rootDirectory')
                 write(project_link, local_project)
-                command('frontend-vercel-build', build_args, env=env, cwd=project_root, timeout=900)
+                build_result = command('frontend-vercel-build', build_args, env=env,
+                                       cwd=project_root, timeout=900,
+                                       return_process=diagnostic_enabled)
+                if diagnostic_enabled:
+                    build_output = {'stdout': build_result.stdout, 'stderr': build_result.stderr}
             finally:
                 project_link.write_bytes(original_project_link)
                 os.chmod(project_link, project_link_mode)
@@ -505,7 +524,8 @@ class Providers:
             if diagnostic_enabled:
                 try:
                     exc.frontend_prepare_diagnostic = self._frontend_prepare_evidence(
-                        locals().get('cfg'), locals().get('env'), readback, commands)
+                        locals().get('cfg'), locals().get('env'), readback, commands,
+                        build_output=build_output)
                 except Exception:
                     # Diagnostic collection is best-effort and cannot replace the prepare failure.
                     pass
