@@ -1,0 +1,12 @@
+archive_sha256=b41d2d45518670a9fd3bdd9e8a90f9c3667ea9adf8f10592cc5434d716fcfe31
+map_fixture_sha256=9c8caba360889cde948af62467b6d94cfb5406f5f785c11b43bd8fbe2ce17cc5
+
+portable pinned-source hash excerpt:
+event=hashes-calculated
+map_refs=197
+hashed_paths=201
+unique_hashes=201
+
+actual cached Vercel 59.11.7 continueDeployment collector/hash:
+event=hashes-calculated
+unique_hashes=201

@@ -202,6 +202,21 @@ elif tool=='vercel':
         p=Path.cwd()/'.vercel/output/static';p.mkdir(parents=True,exist_ok=True)
         s['build_config']={'schema_version':1,'api_url':os.environ['NEXT_PUBLIC_API_URL'],'auth_url':os.environ['NEXT_PUBLIC_AUTH_URL']}
         (p/'build-config.json').write_text(json.dumps(s['build_config']))
+        fixture_path=os.environ.get('LWC_TEST_VERCEL_FILE_PATH_MAP_FIXTURE')
+        if fixture_path:
+            fixture=json.loads(Path(fixture_path).read_text())
+            refs=set()
+            output=Path.cwd()/'.vercel/output'
+            for item in fixture['configs']:
+                rel=item['config'].removeprefix('.vercel/output/')
+                config=output/rel
+                config.parent.mkdir(parents=True,exist_ok=True)
+                config.write_text(json.dumps({'filePathMap':item['filePathMap']}))
+                refs.update(item['filePathMap'].values())
+            for ref in refs:
+                source=Path.cwd()/ref
+                source.parent.mkdir(parents=True,exist_ok=True)
+                source.write_bytes(('test-only Vercel filePathMap payload: '+ref).encode())
     elif a[0]=='deploy':
         assert '--prebuilt' in a
         assert ('--skip-domain' in a) == ('--prod' in a)
@@ -220,6 +235,11 @@ elif tool=='vercel':
             'remote_root_setting_preserved':project_link['settings']['rootDirectory']=='apps/frontend',
         }
         assert json.loads(prebuilt.joinpath('static/build-config.json').read_text())==s['build_config']
+        fixture_path=os.environ.get('LWC_TEST_VERCEL_FILE_PATH_MAP_FIXTURE')
+        if fixture_path:
+            fixture=json.loads(Path(fixture_path).read_text())
+            refs={ref for item in fixture['configs'] for ref in item['filePathMap'].values()}
+            assert all(os.path.lexists(Path.cwd()/ref) for ref in refs), 'filePathMap closure missing from prepared artifact'
         meta={}
         for i,v in enumerate(a):
             if v=='--meta': k,val=a[i+1].split('=',1);meta[k]=val

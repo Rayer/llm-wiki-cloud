@@ -1,0 +1,4 @@
+collector_error=Error
+collector_code=ENOENT
+collector_path=/Users/rayer/.hermes/profiles/lwc-tpm/cache/scratch/lwc358-pr90-oldarchive-red-20261004/node_modules/@swc/helpers/_/_interop_require_default/package.json
+collector_message=ENOENT: no such file or directory, lstat '/Users/rayer/.hermes/profiles/lwc-tpm/cache/scratch/lwc358-pr90-oldarchive-red-20261004/node_modules/@swc/helpers/_/_interop_require_default/package.json'

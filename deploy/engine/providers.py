@@ -615,6 +615,11 @@ class Providers:
             # Restore the exact pulled link before archiving; runtime receives the original provider context.
             with tarfile.open(archive, 'w:gz') as tar:
                 tar.add(output, arcname='.vercel/output')
+                for ref in self._frontend_file_path_map_refs(project_root, output):
+                    archive_path = ref.relative_to(project_root).as_posix()
+                    if archive_path in ('.vercel/project.json', '.vercel/output') or archive_path.startswith('.vercel/output/'):
+                        continue
+                    tar.add(ref, arcname=archive_path)
                 tar.add(project_link, arcname='.vercel/project.json')
             import hashlib
             return {'archive': 'frontend.tgz', 'sha256': hashlib.sha256(archive.read_bytes()).hexdigest(),
@@ -632,6 +637,29 @@ class Providers:
             raise
         finally:
             self._frontend_prepare_commands = None
+
+    @staticmethod
+    def _frontend_file_path_map_refs(project_root, output):
+        """Retain exactly the source files the prebuilt collector will add from filePathMap."""
+        project_root = Path(os.path.abspath(project_root))
+        refs = set()
+        for config_path in output.rglob('.vc-config.json'):
+            config = json.loads(config_path.read_text())
+            file_path_map = config.get('filePathMap')
+            if file_path_map is None:
+                continue
+            require(isinstance(file_path_map, dict), 'frontend-file-path-map-invalid')
+            for value in file_path_map.values():
+                require(isinstance(value, str), 'frontend-file-path-map-invalid')
+                ref = Path(os.path.abspath(project_root / value))
+                try:
+                    ref.relative_to(project_root)
+                except ValueError:
+                    # The pinned collector ignores filePathMap entries outside its deployment root.
+                    continue
+                require(os.path.lexists(ref), 'frontend-file-path-map-reference-missing')
+                refs.add(ref)
+        return sorted(refs)
 
     def usable(self, c, artifact):
         if c != 'frontend':

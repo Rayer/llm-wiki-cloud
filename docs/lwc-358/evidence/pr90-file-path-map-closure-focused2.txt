@@ -1,0 +1,7 @@
+test_frontend_prepare_archives_pinned_file_path_map_closure (test_engine.Acceptance.test_frontend_prepare_archives_pinned_file_path_map_closure) ... ok
+
+----------------------------------------------------------------------
+Ran 1 test in 0.858s
+
+OK
+exit=0
