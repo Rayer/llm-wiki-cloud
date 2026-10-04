@@ -1,11 +1,16 @@
 #!/usr/bin/env python3
 """LWC-319 Production config tests; all provider calls are local stubs."""
 import json
+import subprocess
+import sys
 import unittest
 
 import test_auth_config_contract as fixtures
 from test_bff_auth_config_contract import production_plan as synthetic_production_plan
 from test_auth_config_contract import production, revision
+
+sys.path.insert(0, str(fixtures.ROOT / 'deploy/engine'))
+import providers
 
 
 def candidate(component='auth', enabled=True, plan_override=None):
@@ -37,6 +42,39 @@ def candidate(component='auth', enabled=True, plan_override=None):
 
 
 class ProductionConfigContractTests(unittest.TestCase):
+    def test_empty_demo_user_id_accepts_cloud_run_omitted_value_only(self):
+        config = subprocess.run(
+            ['go', 'run', './cmd/deploy_config', '--environment', 'production',
+             '--config', '../../deploy/environments/production.yaml', '--components', 'auth'],
+            cwd=fixtures.ROOT / 'apps/bff', text=True, capture_output=True, check=True)
+        plan = json.loads(config.stdout)
+        expected = providers.auth_config.desired(plan, 'auth')
+        self.assertEqual(expected['env']['AUTH_DEMO_USER_ID'], '')
+        image = fixtures.IMAGE
+        revision_name = 'llm-wiki-auth-00009-rzw'
+        env = [
+            ({'name': name} if name == 'AUTH_DEMO_USER_ID' and value == ''
+             else {'name': name, 'value': value})
+            for name, value in expected['env'].items()
+        ]
+        env.extend({'name': name, 'valueFrom': {'secretKeyRef': reference}}
+                   for name, reference in expected['secrets'].items())
+        candidate_revision = {
+            'metadata': {'name': revision_name, 'annotations': {}},
+            'spec': {'serviceAccountName': expected['service_account'],
+                     'containers': [{'image': image, 'env': env}]},
+            'status': {'imageDigest': image,
+                       'conditions': [{'type': 'Ready', 'status': 'True'}]},
+        }
+        adapter = providers.Providers({'normalized': plan}, fixtures.ROOT)
+        self.assertTrue(adapter.service_matches('auth', candidate_revision, image))
+
+        wrong = json.loads(json.dumps(candidate_revision))
+        next(item for item in wrong['spec']['containers'][0]['env']
+             if item['name'] == 'GCP_PROJECT').pop('value')
+        with self.assertRaises(ValueError):
+            adapter.service_matches('auth', wrong, image)
+
     def run_shell(self, value, component='auth', **kwargs):
         if component == 'bff' and 'plan_override' not in kwargs:
             kwargs['plan_override'] = synthetic_production_plan()
