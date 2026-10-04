@@ -140,6 +140,27 @@ class Acceptance(unittest.TestCase):
         first_snapshot=next(item for item in uploads if item.get('status')=='snapshotted')
         self.assertIn('b'*64,json.dumps(first_snapshot['components']['worker']['prior']))
 
+    def test_real_action_readback_ignores_stale_or_failed_latest_lookup_without_writes(self):
+        for name, latest_fail in (('stale', False), ('lookup-failure', True)):
+            with self.subTest(name=name):
+                e=self.ready(self.make(('worker',),name='readback-'+name))
+                e.deploy()
+                before_updates=len(self.calls('update'))
+                before_latest=len(self.calls('latest'))
+                old_latest=self.latest_checkpoint(
+                    plan=e.plan['id'], sequence=e.state['sequence']-1, status='deploying')
+                action, release, _, _=self.invoke_runtime_action(
+                    e, old_latest, operation='readback', state_status='deploying',
+                    extra_env={'LWC_TEST_LATEST_FAIL':'1'} if latest_fail else None)
+                self.assertEqual(action.returncode,0,action.stdout+action.stderr)
+                result=json.loads(action.stdout.strip().splitlines()[-1])
+                self.assertEqual(result['reason'],'completed')
+                self.assertEqual(result['status'],'deploying')
+                self.assertEqual(len(self.calls('update')),before_updates)
+                self.assertEqual(read(release/'state.json')['sequence'],e.state['sequence'])
+                self.assertEqual(read(release/'state.json')['status'],'deploying')
+                self.assertEqual(len(self.calls('latest')),before_latest)
+
     def test_force_rejections_leave_target_unmutated(self):
         cases=(
             ('false', self.latest_checkpoint(), False, 'release', 'ready', {}),

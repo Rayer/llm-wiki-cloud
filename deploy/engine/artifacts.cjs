@@ -87,7 +87,20 @@ async function main() {
     // Consume a complete repository listing before deciding latest or absence.
     const candidates = (await allArtifacts()).filter(a => a.name.startsWith(`lwc-state-${arg}-`));
     if (!candidates.length) return;
-    const latest = candidates.sort((a,b)=>b.id-a.id)[0];
+    let latest = candidates.sort((a,b)=>b.id-a.id)[0];
+    const identity = artifact => artifact.name.match(/^lwc-state-(development|production)-([0-9a-f]{16})-(\d+)-(\d+)-(\d+)$/);
+    const attempt = identity(latest);
+    if (attempt && String(latest.workflow_run?.id) === attempt[3]) {
+      for (const candidate of candidates) {
+        const candidateIdentity = identity(candidate);
+        if (candidateIdentity && candidateIdentity[1] === arg && candidateIdentity[2] === attempt[2] &&
+            candidateIdentity[3] === attempt[3] && candidateIdentity[4] === attempt[4] &&
+            String(candidate.workflow_run?.id) === attempt[3] &&
+            BigInt(candidateIdentity[5]) > BigInt(identity(latest)[5])) {
+          latest = candidate;
+        }
+      }
+    }
     if (latest.expired) throw Error('latest checkpoint expired');
     const temp = fs.mkdtempSync(path.join(require('node:os').tmpdir(), 'lwc-checkpoint-'));
     try {

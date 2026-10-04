@@ -26,6 +26,8 @@ Workflow 把目前 reviewed `github.sha` 當作 `executor_sha` 來 checkout engi
 
 Latest checkpoint 必須是可讀的 schema 1 記錄，包含有效的 plan ID、已知 engine status、components map 與非負 sequence；舊的 schema-less 記錄按 schema 1 解讀。缺欄位、未知 status 或不支援的 schema 會以 `latest-checkpoint-invalid` 停止，force 不會略過這項檢查。
 
+Mutating runtime operations use the complete latest-checkpoint lookup and stale-state guard. `readback` remains Actions-owned but is read-only: it polls the retained plan's component receipts/candidates without consulting that mutation guard or latest-checkpoint endpoint, and does not save a checkpoint or issue provider writes. Within one target/plan-prefix/workflow-run/attempt, latest selection uses the greatest checkpoint sequence rather than artifact ID; existing selection between attempts is unchanged.
+
 Stage 1 每完成一個 component 即保存獨立 receipt/checkpoint；build failure 不做 runtime mutation、不 rollback、不標記成功 tag。所有 selected receipts usable 才過 barrier。Stage 2 保存可用的 pre-state，再逐一 deploy/readback，順序 `exportjob → auth → bff → worker → frontend`（只執行 selected）。成功須所有 selected provider sanity 通過，接著寫入 tag；功能 smoke/UAT 不在這個 gate。
 
 Frontend stage 1 只 `vercel pull`、`vercel build` 並封存 `.vercel/output` 與 project identity；檢查輸出的 build-config.json。Stage 2 使用 `deploy --prebuilt`；Production 加上 `--prod --skip-domain`（官方限定 skip-domain 與 prod 搭配），DEV 使用 `--target=preview`，在無 Git metadata 的封存目錄執行，排除 branch-domain 自動指派，保存 deployment ID，再逐一指派已存在的 target aliases；readback 驗證 READY、target、artifact metadata、實際 build-config 與 alias identity。依據 [Vercel build](https://vercel.com/docs/cli/build) 與 [deploy](https://vercel.com/docs/cli/deploy)；使用 pinned CLI 59.11.7。

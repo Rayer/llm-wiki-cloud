@@ -6,7 +6,7 @@ const os = require('node:os');
 const path = require('node:path');
 const vm = require('node:vm');
 const source = fs.readFileSync(path.join(__dirname,'../artifacts.cjs'),'utf8');
-async function execute(op,arg,name,responses, directory) {
+async function execute(op,arg,name,responses, directory, downloadedStates={}) {
   const uploads=[];
   const errors=[];
   const process={argv:['node','artifacts.cjs',op,arg,name],env:{GITHUB_REPOSITORY:'test/repo',GH_TOKEN:'TEST_ONLY'},exitCode:0};
@@ -15,7 +15,8 @@ async function execute(op,arg,name,responses, directory) {
     async downloadArtifact(id, options) {
       assert.equal(options.findBy.token,'TEST_ONLY');
       fs.mkdirSync(options.path,{recursive:true});
-      fs.writeFileSync(path.join(options.path,'state.json'),JSON.stringify({plan:'retained',sequence:id,status:'success'}));
+      fs.writeFileSync(path.join(options.path,'state.json'),JSON.stringify(
+        downloadedStates[id] || {plan:'retained',sequence:id,status:'success'}));
     }
   }
   const calls=[];
@@ -55,6 +56,30 @@ test('latest target checkpoint uses artifact identity and writes exact state',as
     });
     assert.equal(result.code,0);assert.equal(JSON.parse(fs.readFileSync(dest)).sequence,12);
     assert.equal(result.calls.length,3);
+  } finally {fs.rmSync(dir,{recursive:true,force:true});}
+});
+test('latest uses checkpoint sequence within the same workflow attempt, not artifact ID',async()=>{
+  const plan='a'.repeat(64), prefix=plan.slice(0,16), runId=42, attempt=1;
+  const sequence9={id:11285623722,name:`lwc-state-development-${prefix}-${runId}-${attempt}-9`,
+    expired:false,workflow_run:{id:runId}};
+  const sequence5={id:11286159266,name:`lwc-state-development-${prefix}-${runId}-${attempt}-5`,
+    expired:false,workflow_run:{id:runId}};
+  const dir=fs.mkdtempSync(path.join(os.tmpdir(),'lwc-transport-test-'));
+  try {
+    const dest=path.join(dir,'latest.json');
+    const result=await execute('latest','development',dest,{
+      [listKey(1)]:page([sequence5,sequence9]),
+      [`actions/artifacts/${sequence9.id}`]:sequence9,
+      [`actions/artifacts/${sequence5.id}`]:sequence5,
+      'actions/runs/42':run,
+    },undefined,{
+      [sequence9.id]:{plan,sequence:9,status:'unknown'},
+      [sequence5.id]:{plan,sequence:5,status:'deploying'},
+    });
+    assert.equal(result.code,0);
+    assert.equal(JSON.parse(fs.readFileSync(dest)).sequence,9);
+    assert.equal(result.calls.includes(`https://api.github.com/repos/test/repo/actions/artifacts/${sequence9.id}`),true);
+    assert.equal(result.calls.includes(`https://api.github.com/repos/test/repo/actions/artifacts/${sequence5.id}`),false);
   } finally {fs.rmSync(dir,{recursive:true,force:true});}
 });
 test('latest consumes every page beyond 400 before selecting the highest matching ID',async()=>{

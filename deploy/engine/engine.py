@@ -456,8 +456,10 @@ class Engine:
         require(not force or (operation == 'deploy' and
                               self.plan['normalized']['environment'] == 'development' and
                               self.state['status'] == 'ready'), 'force-not-allowed')
+        if operation == 'readback':
+            return
         # Workflow concurrency serializes all entrypoints; latest durable state fences
-        # recovery of an older release after any newer pending mutation.
+        # mutations that would replay an older release after a newer pending mutation.
         latest_path = self.directory / '.latest.json'
         latest_path.unlink(missing_ok=True)
         run(['node', ROOT / 'deploy/engine/artifacts.cjs', 'latest',
