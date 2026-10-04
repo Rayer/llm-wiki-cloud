@@ -789,7 +789,7 @@ test('DEV authority uses the protected shared engine and durable selected stage 
   assert.match(job.steps[ready].uses, /^actions\/upload-artifact@/);
   assert.equal(job.steps[ready].with['if-no-files-found'], 'error');
   assert.equal(job.steps[ready].with.path, '${{ runner.temp }}/release');
-  assert.equal(job.steps.find(step => step.uses?.startsWith('actions/checkout@')).with.ref, '${{ inputs.source_sha }}');
+  assert.equal(job.steps.find(step => step.uses?.startsWith('actions/checkout@')).with.ref, '${{ inputs.executor_sha }}');
   const diagnosticWorkflow = parseYaml(await readFile(join(monorepoRoot, '.github/workflows/cd-auth-image-diagnostic.yml'), 'utf8'));
   assert.deepEqual(Object.keys(diagnosticWorkflow.jobs), ['auth-image-diagnostic']);
   const diagnostic = diagnosticWorkflow.jobs['auth-image-diagnostic'];

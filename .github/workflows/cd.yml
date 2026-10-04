@@ -8,6 +8,9 @@ on:
       source_sha:
         required: true
         type: string
+      executor_sha:
+        required: true
+        type: string
       components:
         required: true
         type: string
@@ -23,6 +26,9 @@ on:
       dev_artifact_id:
         type: string
         default: ''
+      force:
+        type: boolean
+        default: false
 concurrency:
   group: lwc-engine-${{ inputs.environment }}
   cancel-in-progress: false
@@ -42,18 +48,22 @@ jobs:
     env:
       TARGET: ${{ inputs.environment }}
       SOURCE: ${{ inputs.source_sha }}
+      EXECUTOR_SHA: ${{ inputs.executor_sha }}
       COMPONENTS: ${{ inputs.components }}
       RELEASE_TAG: ${{ inputs.release_tag }}
       REUSE_ID: ${{ inputs.artifact_id }}
       DEV_ID: ${{ inputs.dev_artifact_id }}
       ARTIFACT_ID: ${{ inputs.artifact_id }}
       OPERATION: ${{ inputs.operation }}
+      FORCE: ${{ inputs.force }}
     steps:
       - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262
         with:
-          ref: ${{ inputs.source_sha }}
+          ref: ${{ inputs.executor_sha }}
           fetch-depth: 0
           persist-credentials: false
+      - name: Validate executor checkout
+        run: test "$(git rev-parse HEAD)" = "$EXECUTOR_SHA"
       - uses: actions/setup-go@d35c59abb061a4a6fb18e82ac0862c26744d6ab5
         if: inputs.operation == 'release'
         with:
@@ -93,6 +103,15 @@ jobs:
           retention-days: 90
           if-no-files-found: error
 
+      - name: Validate explicit recovery inputs
+        if: inputs.operation != 'release'
+        run: |
+          python3 - <<'PY'
+          import os, re
+          assert os.environ['OPERATION'] in ('deploy', 'rollback', 'reactivate', 'tag', 'readback')
+          assert re.fullmatch(r'[0-9a-f]{40}', os.environ['SOURCE'])
+          assert re.fullmatch(r'[1-9][0-9]*', os.environ['ARTIFACT_ID'])
+          PY
       - name: Download pinned ready artifact or checkpoint
         if: inputs.operation != 'release'
         env:
@@ -107,6 +126,9 @@ jobs:
           assert p['normalized']['environment']==os.environ['TARGET']
           assert p['source']==os.environ['SOURCE'] and p['tag']==os.environ['RELEASE_TAG']
           assert os.environ['OPERATION'] in ('release','deploy','rollback','reactivate','tag','readback')
+          if os.environ.get('FORCE') == 'true':
+              assert os.environ['TARGET'] == 'development'
+              assert os.environ['OPERATION'] in ('release','deploy')
           PY
       - name: Execute bounded runtime or explicit recovery
         uses: ./.github/actions/deployment-engine
@@ -117,6 +139,7 @@ jobs:
           VERCEL_TEAM_ID: ${{ secrets.VERCEL_TEAM_ID }}
         with:
           operation: runtime
+          force: ${{ inputs.force }}
       - name: Retain final result even after failure
         if: always()
         uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02

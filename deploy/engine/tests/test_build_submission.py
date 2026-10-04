@@ -196,13 +196,14 @@ class AsyncBuildSubmission(unittest.TestCase):
             'auth': {'service_name': 'auth-test'},
             'bff': {'service_name': 'bff-test'},
         }
-        plan = {'schema': 2, 'source': 'a' * 40, 'branch': 'develop',
-                'tag': 'test-lwc358-' + name, 'engine': 'test-engine',
-                'engine_content': engine.engine_fingerprint(), 'normalized': normalized,
+        plan = {'schema': 3, 'source': 'a' * 40, 'branch': 'develop',
+                'tag': 'test-lwc358-' + name,
+                'executor_sha': 'e' * 40,
+                'normalized': normalized,
                 'identities': {c: {'profile': 'test', 'inputs': 'test', 'files': []}
                                for c in selected},
                 'dev_reference': None, 'selected': list(selected)}
-        plan['id'] = digest(plan)
+        plan['id'] = digest(engine.release_identity(plan))
         write(directory / 'plan.json', plan)
         return directory
 
@@ -261,6 +262,7 @@ class AsyncBuildSubmission(unittest.TestCase):
         runner_temp=self.root/f'runner-temp-{self.action_runs}'
         runner_temp.mkdir(exist_ok=True)
         env={**self.environment,**(extra or {}),'RUNNER_TEMP':str(runner_temp),
+             'EXECUTOR_SHA':source,
              'INPUT_OPERATION':'prepare','TARGET':'development','SOURCE':source,
              'COMPONENTS':components,'RELEASE_TAG':tag,'REUSE_ID':'9001','DEV_ID':'',
              'LWC_TEST_ARTIFACT_ID':'9001','LWC_TEST_ARTIFACT_SOURCE':str(artifact_source)}
@@ -296,6 +298,36 @@ class AsyncBuildSubmission(unittest.TestCase):
                 self.assertTrue(all(call[2]==BUILD_IDS[0] for call in describe))
                 self.assertTrue((self.root/f'runner-temp-{self.action_runs}'/'reuse'/'state.json').exists())
                 self.assertTrue((self.root/f'runner-temp-{self.action_runs}'/'release'/'receipts'/'auth.json').exists())
+
+    def test_real_action_download_v2_checkpoint_keeps_legacy_id_sequence_and_handle(self):
+        retained, plan, first = self.make_action_checkpoint(
+            'action-v2-resume',statuses=['WORKING'])
+        legacy = {'schema':2,'source':plan['source'],'branch':plan['branch'],'tag':plan['tag'],
+                  'engine':'1'*40,'engine_content':'2'*64,'normalized':plan['normalized'],
+                  'identities':plan['identities'],'dev_reference':plan['dev_reference'],
+                  'selected':plan['selected']}
+        legacy['id'] = digest(legacy)
+        state = read(retained/'state.json')
+        state['plan'] = legacy['id']
+        state.pop('checkpoint_schema',None)
+        state.pop('executor_sha',None)
+        write(retained/'plan.json',legacy)
+        write(retained/'state.json',state)
+        old_sequence = state['sequence']
+        resumed = self.run_action_prepare(source=plan['source'],tag=plan['tag'],
+                                          components='auth',artifact_source=retained,
+                                          extra={'FAKE_STATUSES':json.dumps(['SUCCESS'])})
+        self.assertEqual(resumed.returncode,0,resumed.stdout+resumed.stderr)
+        directory=self.root/f'runner-temp-{self.action_runs}'/'release'
+        kept_plan=read(directory/'plan.json')
+        kept_state=read(directory/'state.json')
+        self.assertEqual(kept_plan,legacy)
+        self.assertEqual(kept_state['plan'],legacy['id'])
+        self.assertGreater(kept_state['sequence'],old_sequence)
+        self.assertEqual(kept_state['checkpoint_schema'],1)
+        self.assertEqual(kept_state['executor_sha'],plan['executor_sha'])
+        self.assertEqual(read(directory/'receipts/auth.json')['build']['build_id'],BUILD_IDS[0])
+        self.assertEqual(self.fake_data()['submit_count'],1)
 
     def test_real_action_download_blocks_idless_unknown_without_submit(self):
         retained, plan, first = self.make_action_checkpoint(
@@ -339,7 +371,7 @@ class AsyncBuildSubmission(unittest.TestCase):
         self.assertEqual(self.fake_data()['submit_count'],1)
 
     def test_cross_plan_source_target_tag_selection_and_engine_changes_fail_closed(self):
-        for changed in ('source','target','tag','selected','engine-content'):
+        for changed in ('source','target','tag','selected','input-identity'):
             with self.subTest(changed=changed):
                 self.reset_fake()
                 current=self.make_plan(('auth',),'identity-current-'+changed)
@@ -358,8 +390,8 @@ class AsyncBuildSubmission(unittest.TestCase):
                     old_plan['selected']=['auth','bff']
                     old_plan['identities']['bff']={'profile':'test','inputs':'other','files':[]}
                 else:
-                    old_plan['engine_content']='f'*64
-                old_plan['id']=digest({key:value for key,value in old_plan.items() if key!='id'})
+                    old_plan['identities']['auth']['inputs']='changed'
+                old_plan['id']=engine.plan_id(old_plan)
                 write(retained/'plan.json',old_plan)
                 write(retained/'state.json',{'plan':old_plan['id'],'status':'prepared',
                     'components':{},'sequence':1,'builds':{'auth':{

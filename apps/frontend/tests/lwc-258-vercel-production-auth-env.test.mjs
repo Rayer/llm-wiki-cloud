@@ -90,6 +90,7 @@ test('production workflow invokes the shared engine with fixed authority and DEV
   assert.equal(job.secrets, 'inherit');
   assert.deepEqual(job.with, {
     environment: 'production', source_sha: '${{ github.sha }}',
+    executor_sha: '${{ github.sha }}',
     components: '${{ inputs.components }}', release_tag: '${{ inputs.release_tag }}',
     artifact_id: '${{ inputs.artifact_id }}', dev_artifact_id: '${{ inputs.dev_artifact_id }}',
   });

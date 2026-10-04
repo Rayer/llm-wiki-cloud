@@ -1,0 +1,328 @@
+TAP version 13
+# node:internal/modules/package_json_reader:314
+#   throw new ERR_MODULE_NOT_FOUND(packageName, fileURLToPath(base), null);
+#         ^
+# Error [ERR_MODULE_NOT_FOUND]: Cannot find package 'js-yaml' imported from /Users/rayer/.hermes/profiles/lwc-tpm/cache/scratch/lwc358-owner-correction-4-1814-wt/apps/frontend/tests/ci-workflow-contract.test.mjs
+#     at Object.getPackageJSONURL (node:internal/modules/package_json_reader:314:9)
+#     at packageResolve (node:internal/modules/esm/resolve:768:81)
+#     at moduleResolve (node:internal/modules/esm/resolve:855:18)
+#     at defaultResolve (node:internal/modules/esm/resolve:985:11)
+#     at \#cachedDefaultResolve (node:internal/modules/esm/loader:747:20)
+#     at ModuleLoader.resolve (node:internal/modules/esm/loader:724:38)
+#     at ModuleLoader.getModuleJobForImport (node:internal/modules/esm/loader:320:38)
+#     at ModuleJob._link (node:internal/modules/esm/module_job:182:49) {
+#   code: 'ERR_MODULE_NOT_FOUND'
+# }
+# Node.js v22.23.2
+# Subtest: tests/ci-workflow-contract.test.mjs
+not ok 1 - tests/ci-workflow-contract.test.mjs
+  ---
+  duration_ms: 62.395209
+  type: 'test'
+  location: '/Users/rayer/.hermes/profiles/lwc-tpm/cache/scratch/lwc358-owner-correction-4-1814-wt/apps/frontend/tests/ci-workflow-contract.test.mjs:1:1'
+  failureType: 'testCodeFailure'
+  exitCode: 1
+  signal: ~
+  error: 'test failed'
+  code: 'ERR_TEST_FAILURE'
+  ...
+# node:internal/modules/package_json_reader:314
+#   throw new ERR_MODULE_NOT_FOUND(packageName, fileURLToPath(base), null);
+#         ^
+# Error [ERR_MODULE_NOT_FOUND]: Cannot find package 'js-yaml' imported from /Users/rayer/.hermes/profiles/lwc-tpm/cache/scratch/lwc358-owner-correction-4-1814-wt/apps/frontend/tests/lwc-253-authority-reconciliation.test.mjs
+#     at Object.getPackageJSONURL (node:internal/modules/package_json_reader:314:9)
+#     at packageResolve (node:internal/modules/esm/resolve:768:81)
+#     at moduleResolve (node:internal/modules/esm/resolve:855:18)
+#     at defaultResolve (node:internal/modules/esm/resolve:985:11)
+#     at \#cachedDefaultResolve (node:internal/modules/esm/loader:747:20)
+#     at ModuleLoader.resolve (node:internal/modules/esm/loader:724:38)
+#     at ModuleLoader.getModuleJobForImport (node:internal/modules/esm/loader:320:38)
+#     at ModuleJob._link (node:internal/modules/esm/module_job:182:49) {
+#   code: 'ERR_MODULE_NOT_FOUND'
+# }
+# Node.js v22.23.2
+# Subtest: tests/lwc-253-authority-reconciliation.test.mjs
+not ok 2 - tests/lwc-253-authority-reconciliation.test.mjs
+  ---
+  duration_ms: 60.39325
+  type: 'test'
+  location: '/Users/rayer/.hermes/profiles/lwc-tpm/cache/scratch/lwc358-owner-correction-4-1814-wt/apps/frontend/tests/lwc-253-authority-reconciliation.test.mjs:1:1'
+  failureType: 'testCodeFailure'
+  exitCode: 1
+  signal: ~
+  error: 'test failed'
+  code: 'ERR_TEST_FAILURE'
+  ...
+# Subtest: fails closed on contradictory DEV alias authority before mutation
+ok 3 - fails closed on contradictory DEV alias authority before mutation
+  ---
+  duration_ms: 357.035708
+  type: 'test'
+  ...
+# Subtest: root directory contract fails closed before provider mutation
+ok 4 - root directory contract fails closed before provider mutation
+  ---
+  duration_ms: 272.876667
+  type: 'test'
+  ...
+# Subtest: rejects the retired Vercel scope slug
+ok 5 - rejects the retired Vercel scope slug
+  ---
+  duration_ms: 14.2665
+  type: 'test'
+  ...
+# Subtest: uses bounded project-scoped alias inventory without the unsupported domain filter
+ok 6 - uses bounded project-scoped alias inventory without the unsupported domain filter
+  ---
+  duration_ms: 661.902458
+  type: 'test'
+  ...
+# Subtest: fails closed before mutation for ci-failure
+ok 7 - fails closed before mutation for ci-failure
+  ---
+  duration_ms: 62.564334
+  type: 'test'
+  ...
+# Subtest: fails closed before mutation for ci-wrong-sha
+ok 8 - fails closed before mutation for ci-wrong-sha
+  ---
+  duration_ms: 55.253709
+  type: 'test'
+  ...
+# Subtest: fails closed before mutation for success
+ok 9 - fails closed before mutation for success
+  ---
+  duration_ms: 14.052416
+  type: 'test'
+  ...
+# Subtest: fails closed before mutation for success
+ok 10 - fails closed before mutation for success
+  ---
+  duration_ms: 14.141166
+  type: 'test'
+  ...
+# Subtest: fails closed before mutation for success
+ok 11 - fails closed before mutation for success
+  ---
+  duration_ms: 14.834958
+  type: 'test'
+  ...
+# Subtest: fails closed before mutation for project-mismatch
+ok 12 - fails closed before mutation for project-mismatch
+  ---
+  duration_ms: 88.242833
+  type: 'test'
+  ...
+# Subtest: fails closed before mutation for team-mismatch
+ok 13 - fails closed before mutation for team-mismatch
+  ---
+  duration_ms: 91.83575
+  type: 'test'
+  ...
+# Subtest: fails closed before mutation for alias-absent
+ok 14 - fails closed before mutation for alias-absent
+  ---
+  duration_ms: 129.43525
+  type: 'test'
+  ...
+# Subtest: fails closed before mutation for alias-divergent
+ok 15 - fails closed before mutation for alias-divergent
+  ---
+  duration_ms: 127.615791
+  type: 'test'
+  ...
+# Subtest: fails closed before mutation for alias-project-mismatch
+ok 16 - fails closed before mutation for alias-project-mismatch
+  ---
+  duration_ms: 124.310708
+  type: 'test'
+  ...
+# Subtest: fails closed before mutation for rollback-freeze-failure
+ok 17 - fails closed before mutation for rollback-freeze-failure
+  ---
+  duration_ms: 106.23775
+  type: 'test'
+  ...
+# Subtest: read-only preflight records a typed create-needed decision without provider mutation
+ok 18 - read-only preflight records a typed create-needed decision without provider mutation
+  ---
+  duration_ms: 498.9415
+  type: 'test'
+  ...
+# Subtest: rejects a wrong-linked repository before any mutation
+ok 19 - rejects a wrong-linked repository before any mutation
+  ---
+  duration_ms: 93.471083
+  type: 'test'
+  ...
+# Subtest: uses the frozen exact repository ID for a linked project deployment
+ok 20 - uses the frozen exact repository ID for a linked project deployment
+  ---
+  duration_ms: 485.368792
+  type: 'test'
+  ...
+# Subtest: rechecks project authority before mutation for root-drift
+ok 21 - rechecks project authority before mutation for root-drift
+  ---
+  duration_ms: 311.650834
+  type: 'test'
+  ...
+# Subtest: rechecks project authority before mutation for link-drift
+ok 22 - rechecks project authority before mutation for link-drift
+  ---
+  duration_ms: 304.8375
+  type: 'test'
+  ...
+# Subtest: creates through historical deployments and counts deployment plus alias mutations
+ok 23 - creates through historical deployments and counts deployment plus alias mutations
+  ---
+  duration_ms: 500.188792
+  type: 'test'
+  ...
+# Subtest: promote without durable artifact handoff performs no provider mutation
+ok 24 - promote without durable artifact handoff performs no provider mutation
+  ---
+  duration_ms: 199.219292
+  type: 'test'
+  ...
+# Subtest: rejects invalid durable artifact digest prefixed-sha256 before mutation
+ok 25 - rejects invalid durable artifact digest prefixed-sha256 before mutation
+  ---
+  duration_ms: 199.077916
+  type: 'test'
+  ...
+# Subtest: rejects invalid durable artifact digest uppercase before mutation
+ok 26 - rejects invalid durable artifact digest uppercase before mutation
+  ---
+  duration_ms: 197.853166
+  type: 'test'
+  ...
+# Subtest: rejects invalid durable artifact digest too-short-63 before mutation
+ok 27 - rejects invalid durable artifact digest too-short-63 before mutation
+  ---
+  duration_ms: 198.363042
+  type: 'test'
+  ...
+# Subtest: rejects invalid durable artifact digest too-long-65 before mutation
+ok 28 - rejects invalid durable artifact digest too-long-65 before mutation
+  ---
+  duration_ms: 195.599209
+  type: 'test'
+  ...
+# Subtest: rejects invalid durable artifact digest empty before mutation
+ok 29 - rejects invalid durable artifact digest empty before mutation
+  ---
+  duration_ms: 204.290709
+  type: 'test'
+  ...
+# Subtest: page-one and page-two uid deployments are normalized and reused without deployment creation
+ok 30 - page-one and page-two uid deployments are normalized and reused without deployment creation
+  ---
+  duration_ms: 469.959459
+  type: 'test'
+  ...
+# Subtest: existing candidate source failure remains zero-mutation blocked
+ok 31 - existing candidate source failure remains zero-mutation blocked
+  ---
+  duration_ms: 297.990042
+  type: 'test'
+  ...
+# Subtest: reconciles a partial mutation and records the uncertain state without retrying
+ok 32 - reconciles a partial mutation and records the uncertain state without retrying
+  ---
+  duration_ms: 398.828542
+  type: 'test'
+  ...
+# Subtest: refuses to mutate without a durable rollback artifact handoff
+ok 33 - refuses to mutate without a durable rollback artifact handoff
+  ---
+  duration_ms: 189.465042
+  type: 'test'
+  ...
+# Subtest: fails closed when post-mutation alias or deployment read-back diverges
+ok 34 - fails closed when post-mutation alias or deployment read-back diverges
+  ---
+  duration_ms: 388.4875
+  type: 'test'
+  ...
+# Subtest: classifies create-uncertain as partial mutation and preserves rollback identity
+ok 35 - classifies create-uncertain as partial mutation and preserves rollback identity
+  ---
+  duration_ms: 317.411417
+  type: 'test'
+  ...
+# Subtest: classifies create-poll-timeout as partial mutation and preserves rollback identity
+ok 36 - classifies create-poll-timeout as partial mutation and preserves rollback identity
+  ---
+  duration_ms: 409.621584
+  type: 'test'
+  ...
+# Subtest: classifies create-source-mismatch as partial mutation and preserves rollback identity
+ok 37 - classifies create-source-mismatch as partial mutation and preserves rollback identity
+  ---
+  duration_ms: 366.60225
+  type: 'test'
+  ...
+# Subtest: classifies create-read-failure as partial mutation and preserves rollback identity
+ok 38 - classifies create-read-failure as partial mutation and preserves rollback identity
+  ---
+  duration_ms: 335.503333
+  type: 'test'
+  ...
+# Subtest: DEV workflow invokes the shared engine and isolates the fixed diagnostic reusable workflow
+not ok 39 - DEV workflow invokes the shared engine and isolates the fixed diagnostic reusable workflow
+  ---
+  duration_ms: 1.141333
+  type: 'test'
+  location: '/Users/rayer/.hermes/profiles/lwc-tpm/cache/scratch/lwc358-owner-correction-4-1814-wt/apps/frontend/tests/lwc-253-vercel-dev-authority.test.mjs:405:1'
+  failureType: 'testCodeFailure'
+  error: "Cannot find package 'js-yaml' imported from /Users/rayer/.hermes/profiles/lwc-tpm/cache/scratch/lwc358-owner-correction-4-1814-wt/apps/frontend/tests/lwc-253-vercel-dev-authority.test.mjs"
+  code: 'ERR_MODULE_NOT_FOUND'
+  stack: |-
+    Object.getPackageJSONURL (node:internal/modules/package_json_reader:314:9)
+    packageResolve (node:internal/modules/esm/resolve:768:81)
+    moduleResolve (node:internal/modules/esm/resolve:855:18)
+    defaultResolve (node:internal/modules/esm/resolve:985:11)
+    #cachedDefaultResolve (node:internal/modules/esm/loader:747:20)
+    ModuleLoader.resolve (node:internal/modules/esm/loader:724:38)
+    ModuleLoader.getModuleJobForImport (node:internal/modules/esm/loader:320:38)
+    onImport.tracePromise.__proto__ (node:internal/modules/esm/loader:680:36)
+    TracingChannel.tracePromise (node:diagnostics_channel:350:14)
+    ModuleLoader.import (node:internal/modules/esm/loader:679:21)
+  ...
+# node:internal/modules/package_json_reader:314
+#   throw new ERR_MODULE_NOT_FOUND(packageName, fileURLToPath(base), null);
+#         ^
+# Error [ERR_MODULE_NOT_FOUND]: Cannot find package 'js-yaml' imported from /Users/rayer/.hermes/profiles/lwc-tpm/cache/scratch/lwc358-owner-correction-4-1814-wt/apps/frontend/tests/lwc-258-vercel-production-auth-env.test.mjs
+#     at Object.getPackageJSONURL (node:internal/modules/package_json_reader:314:9)
+#     at packageResolve (node:internal/modules/esm/resolve:768:81)
+#     at moduleResolve (node:internal/modules/esm/resolve:855:18)
+#     at defaultResolve (node:internal/modules/esm/resolve:985:11)
+#     at \#cachedDefaultResolve (node:internal/modules/esm/loader:747:20)
+#     at ModuleLoader.resolve (node:internal/modules/esm/loader:724:38)
+#     at ModuleLoader.getModuleJobForImport (node:internal/modules/esm/loader:320:38)
+#     at ModuleJob._link (node:internal/modules/esm/module_job:182:49) {
+#   code: 'ERR_MODULE_NOT_FOUND'
+# }
+# Node.js v22.23.2
+# Subtest: tests/lwc-258-vercel-production-auth-env.test.mjs
+not ok 4 - tests/lwc-258-vercel-production-auth-env.test.mjs
+  ---
+  duration_ms: 60.59875
+  type: 'test'
+  location: '/Users/rayer/.hermes/profiles/lwc-tpm/cache/scratch/lwc358-owner-correction-4-1814-wt/apps/frontend/tests/lwc-258-vercel-production-auth-env.test.mjs:1:1'
+  failureType: 'testCodeFailure'
+  exitCode: 1
+  signal: ~
+  error: 'test failed'
+  code: 'ERR_TEST_FAILURE'
+  ...
+1..40
+# tests 40
+# suites 0
+# pass 36
+# fail 4
+# cancelled 0
+# skipped 0
+# todo 0
+# duration_ms 8772.206291

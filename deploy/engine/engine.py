@@ -17,6 +17,26 @@ from providers import Providers, CLOUD_BUILD_LOCATION
 
 ORDER = ('exportjob', 'auth', 'bff', 'worker', 'frontend')
 PROFILES = read(ROOT / 'deploy/engine/profiles.json')
+RELEASE_IDENTITY_FIELDS = ('source', 'branch', 'tag', 'normalized', 'identities',
+                           'dev_reference', 'selected')
+CHECKPOINT_STATUSES = frozenset({
+    'prepared', 'ready', 'snapshotted', 'deploying', 'failed', 'unknown',
+    'rolling_back', 'recovery_failed', 'failed_rolled_back', 'runtime_success',
+    'partially_reactivated', 'rolled_back', 'tag_failed', 'success',
+})
+RESOLVED_TARGET_STATUSES = frozenset({
+    'success', 'rolled_back', 'failed_rolled_back', 'ready', 'prepared',
+})
+def release_identity(plan):
+    return {key: plan[key] for key in RELEASE_IDENTITY_FIELDS}
+
+
+def plan_id(plan):
+    if plan.get('schema') == 2:
+        return digest({key: value for key, value in plan.items() if key != 'id'})
+    if plan.get('schema') == 3:
+        return digest(release_identity(plan))
+    raise Breakpoint('unsupported-plan-schema', 'failed', False, 'inspect-retained-artifact')
 
 
 def _phase_cause(phase, exc, stage):
@@ -76,7 +96,10 @@ def source_identity(c, sha):
 def admit(args):
     selected = selection(args.components)
     require(re.fullmatch(r'[0-9a-f]{40}', args.source), 'invalid-source')
-    require(run(['git', 'rev-parse', 'HEAD']) == args.source, 'checkout-source-mismatch')
+    executor_sha = getattr(args, 'executor_sha', None) or run(['git', 'rev-parse', 'HEAD'])
+    require(re.fullmatch(r'[0-9a-f]{40}', executor_sha), 'invalid-executor-sha')
+    require(run(['git', 'rev-parse', 'HEAD']) == executor_sha, 'executor-checkout-mismatch')
+    require(run(['git', 'rev-parse', args.source+'^{commit}']) == args.source, 'invalid-source')
     require(args.tag and not args.tag.startswith('-'), 'invalid-release-tag')
     run(['git', 'check-ref-format', 'refs/tags/'+args.tag])
     branch = 'develop' if args.environment == 'development' else 'main'
@@ -85,11 +108,10 @@ def admit(args):
     normalized = json.loads(run(['go', 'run', './cmd/deploy_config', '--environment', args.environment,
                        '--config', str(ROOT / cfg), '--components', ','.join(selected)], cwd=ROOT / 'apps/bff', timeout=180))
     identities = {c: source_identity(c, args.source) for c in selected}
-    body = {'schema': 2, 'source': args.source, 'branch': branch, 'tag': args.tag,
-            'engine': run(['git', 'rev-parse', 'HEAD']), 'engine_content': engine_fingerprint(),
-            'normalized': normalized, 'identities': identities,
+    body = {'schema': 3, 'source': args.source, 'branch': branch, 'tag': args.tag,
+            'executor_sha': executor_sha, 'normalized': normalized, 'identities': identities,
             'dev_reference': args.dev_reference, 'selected': selected}
-    body['id'] = digest(body)
+    body['id'] = digest(release_identity(body))
     return body
 
 
@@ -101,21 +123,49 @@ def engine_fingerprint():
 
 
 class Engine:
-    def __init__(self, directory):
+    def __init__(self, directory, executor_sha=None):
         self.directory = Path(directory).resolve()
         self.plan = read(self.directory / 'plan.json')
-        body = {k:v for k,v in self.plan.items() if k != 'id'}
-        require(self.plan['id'] == digest(body), 'plan-content-mismatch')
+        require(self.plan.get('id') == plan_id(self.plan), 'plan-content-mismatch')
+        self.executor_sha = (executor_sha or os.environ.get('GITHUB_SHA') or
+                             self.plan.get('executor_sha'))
+        require(self.executor_sha is None or
+                re.fullmatch(r'[0-9a-f]{40}', self.executor_sha) is not None,
+                'invalid-executor-sha')
+        if self.plan['schema'] == 2:
+            require(re.fullmatch(r'[0-9a-f]{64}', self.plan.get('engine_content', '')) is not None and
+                    re.fullmatch(r'[0-9a-f]{40}', self.plan.get('engine', '')) is not None,
+                    'plan-content-mismatch')
+        else:
+            require(re.fullmatch(r'[0-9a-f]{40}', self.plan.get('executor_sha', '')) is not None,
+                    'plan-content-mismatch')
         require(self.plan['selected'] == selection(','.join(self.plan['selected'])), 'invalid-plan-selection')
         self.provider = Providers(self.plan, self.directory)
         self.state_path = self.directory / 'state.json'
         self.state = read(self.state_path) if self.state_path.exists() else {
-            'plan': self.plan['id'], 'status': 'prepared', 'components': {}, 'sequence': 0}
-        require(self.state['plan'] == self.plan['id'], 'checkpoint-plan-mismatch')
+            'plan': self.plan['id'], 'status': 'prepared', 'components': {}, 'sequence': 0,
+            'checkpoint_schema': 1}
+        if self.executor_sha:
+            self.state.setdefault('executor_sha', self.executor_sha)
+        require(isinstance(self.state, dict) and
+                all(key in self.state for key in ('plan', 'status', 'components', 'sequence')) and
+                self.state['plan'] == self.plan['id'] and isinstance(self.state['status'], str) and
+                isinstance(self.state['components'], dict) and
+                isinstance(self.state['sequence'], int) and not isinstance(self.state['sequence'], bool) and
+                self.state['sequence'] >= 0 and
+                type(self.state.get('checkpoint_schema', 1)) is int and
+                self.state.get('checkpoint_schema', 1) == 1,
+                'checkpoint-plan-mismatch')
+        self.state.setdefault('checkpoint_schema', 1)
         self.state.setdefault('builds', {})
+        require(isinstance(self.state['builds'], dict), 'checkpoint-plan-mismatch')
         self.component = None
+        self.force_bypass = None
 
     def save(self):
+        self.state['checkpoint_schema'] = 1
+        if self.executor_sha:
+            self.state['executor_sha'] = self.executor_sha
         self.state['sequence'] += 1
         write(self.state_path, self.state)
         if os.environ.get('GITHUB_ACTIONS') == 'true':
@@ -229,26 +279,35 @@ class Engine:
         if not isinstance(retained_plan, dict) or not isinstance(retained_state, dict):
             raise Breakpoint('stage1-checkpoint-invalid', 'failed', False,
                              'inspect-retained-artifact', stage='prepare')
-        plan_body = {key: value for key, value in retained_plan.items() if key != 'id'}
         old_id = retained_plan.get('id')
         builds = retained_state.get('builds', {})
         sequence = retained_state.get('sequence')
         try:
             selected = retained_plan['selected']
             plan_shape_valid = (
+                retained_plan.get('schema') in (2, 3) and
                 selected == selection(','.join(selected) if isinstance(selected, list) else '') and
                 re.fullmatch(r'[0-9a-f]{40}', retained_plan.get('source', '')) is not None and
-                re.fullmatch(r'[0-9a-f]{64}', retained_plan.get('engine_content', '')) is not None and
+                ((retained_plan.get('schema') == 2 and
+                  re.fullmatch(r'[0-9a-f]{64}', retained_plan.get('engine_content', '')) is not None and
+                  re.fullmatch(r'[0-9a-f]{40}', retained_plan.get('engine', '')) is not None) or
+                 (retained_plan.get('schema') == 3 and
+                  re.fullmatch(r'[0-9a-f]{40}', retained_plan.get('executor_sha', '')) is not None)) and
                 retained_plan.get('normalized', {}).get('environment') in ('development', 'production') and
                 isinstance(retained_plan.get('identities'), dict) and
                 set(selected) <= set(retained_plan['identities']) and
                 isinstance(retained_plan['normalized']['gcp']['project_id'], str))
         except (AttributeError, Breakpoint, KeyError, TypeError, ValueError):
             plan_shape_valid = False
-        if (not isinstance(old_id, str) or old_id != digest(plan_body) or
-                not plan_shape_valid or
+        try:
+            old_id_valid = isinstance(old_id, str) and old_id == plan_id(retained_plan)
+        except (Breakpoint, KeyError, TypeError, ValueError):
+            old_id_valid = False
+        if (not old_id_valid or not plan_shape_valid or
                 retained_state.get('plan') != old_id or
                 not isinstance(retained_state.get('components'), dict) or
+                type(retained_state.get('checkpoint_schema', 1)) is not int or
+                retained_state.get('checkpoint_schema', 1) != 1 or
                 not isinstance(builds, dict) or
                 not isinstance(sequence, int) or isinstance(sequence, bool) or sequence < 0 or
                 not isinstance(retained_state.get('status'), str)):
@@ -287,17 +346,23 @@ class Engine:
                 raise Breakpoint('stage1-checkpoint-invalid', 'failed', False,
                                  'inspect-retained-artifact', stage='prepare')
 
-        if retained_plan == self.plan:
+        if release_identity(retained_plan) == release_identity(self.plan):
             if retained_state.get('status') not in ('prepared', 'ready'):
                 raise Breakpoint('stage1-checkpoint-runtime-started', 'failed', False,
                                  'inspect-latest-checkpoint', stage='prepare')
             if retained_state['components']:
                 raise Breakpoint('stage1-checkpoint-runtime-started', 'failed', False,
                                  'inspect-latest-checkpoint', stage='prepare')
-            # Plan equality binds source, target/config, tag, selection and engine
-            # content. Restore the complete durable build state before any submission.
+            # Equal release identity keeps the immutable legacy attempt ID, sequence,
+            # and build handles while allowing a newer executor to resume it.
+            self.plan = copy.deepcopy(retained_plan)
+            write(self.directory / 'plan.json', self.plan)
+            self.provider = Providers(self.plan, self.directory)
             self.state = copy.deepcopy(retained_state)
             self.state.setdefault('builds', {})
+            self.state.setdefault('checkpoint_schema', 1)
+            if self.executor_sha:
+                self.state['executor_sha'] = self.executor_sha
             write(self.state_path, self.state)
             return
 
@@ -386,9 +451,11 @@ class Engine:
         self.state['status'] = 'ready'
         self.save()
 
-    def runtime_guard(self):
+    def runtime_guard(self, operation=None, force=False):
         require(os.environ.get('GITHUB_ACTIONS') == 'true', 'runtime-owned-by-actions')
-        require(self.plan['engine_content'] == engine_fingerprint(), 'pinned-engine-mismatch')
+        require(not force or (operation == 'deploy' and
+                              self.plan['normalized']['environment'] == 'development' and
+                              self.state['status'] == 'ready'), 'force-not-allowed')
         # Workflow concurrency serializes all entrypoints; latest durable state fences
         # recovery of an older release after any newer pending mutation.
         latest_path = self.directory / '.latest.json'
@@ -398,11 +465,29 @@ class Engine:
             stage='latest-checkpoint')
         if latest_path.exists():
             record = read(latest_path)
+            require(isinstance(record, dict) and
+                    all(key in record for key in ('plan', 'status', 'components', 'sequence')) and
+                    isinstance(record.get('plan'), str) and
+                    re.fullmatch(r'[0-9a-f]{64}', record['plan']) is not None and
+                    isinstance(record.get('status'), str) and
+                    record['status'] in CHECKPOINT_STATUSES and
+                    isinstance(record.get('components'), dict) and
+                    all(component in ORDER for component in record['components']) and
+                    isinstance(record.get('sequence'), int) and
+                    not isinstance(record.get('sequence'), bool) and record['sequence'] >= 0 and
+                    type(record.get('checkpoint_schema', 1)) is int and
+                    record.get('checkpoint_schema', 1) == 1 and
+                    ('builds' not in record or isinstance(record['builds'], dict)),
+                    'latest-checkpoint-invalid')
             if self.state['status'] != 'ready':
                 require(record['plan'] == self.plan['id'] and record['sequence'] == self.state['sequence'], 'stale-checkpoint')
             else:
                 require(record['plan'] != self.plan['id'] or record['status'] in ('ready', 'prepared'), 'stale-ready-artifact-use-latest-checkpoint')
-                require(record['status'] in ('success', 'rolled_back', 'failed_rolled_back', 'ready', 'prepared'), 'target-has-unresolved-attempt')
+                resolved = record['status'] in RESOLVED_TARGET_STATUSES
+                if not resolved and force and operation == 'deploy' and record['plan'] != self.plan['id']:
+                    self.force_bypass = 'target-has-unresolved-attempt'
+                else:
+                    require(resolved, 'target-has-unresolved-attempt')
         else:
             require(self.state['status'] == 'ready', 'target-checkpoint-unavailable')
 
@@ -571,6 +656,8 @@ class Engine:
             result['cause'] = exc.cause
         if exc and exc.causes:
             result['causes'] = exc.causes
+        if self.force_bypass:
+            result['force_bypass'] = self.force_bypass
         if exc and isinstance(exc.frontend_prepare_diagnostic, dict):
             result['frontend_prepare_diagnostic'] = exc.frontend_prepare_diagnostic
         write(self.directory / 'result.json', result)
@@ -588,17 +675,22 @@ def main():
     parser.add_argument('--reuse')
     parser.add_argument('--dev')
     parser.add_argument('--dev-reference')
+    parser.add_argument('--executor-sha')
+    parser.add_argument('--force', action='store_true')
     args = parser.parse_args()
     directory = Path(args.directory).resolve()
     directory.mkdir(parents=True, exist_ok=True)
     engine = None
     try:
+        require(args.executor_sha is None or
+                re.fullmatch(r'[0-9a-f]{40}', args.executor_sha) is not None,
+                'invalid-executor-sha')
         with (directory / '.lock').open('w') as lock:
             fcntl.flock(lock, fcntl.LOCK_EX | fcntl.LOCK_NB)
             if args.operation == 'prepare' and not (directory / 'plan.json').exists():
                 require(all((args.environment, args.source, args.tag, args.components)), 'missing-admission-input')
                 write(directory / 'plan.json', admit(args))
-            engine = Engine(directory)
+            engine = Engine(directory, args.executor_sha)
             if args.operation == 'prepare':
                 require(not args.components or selection(args.components) == engine.plan['selected'], 'selection-change-requires-new-plan')
                 require(not args.source or args.source == engine.plan['source'], 'source-change-requires-new-plan')
@@ -606,7 +698,8 @@ def main():
                 require(not args.environment or args.environment == engine.plan['normalized']['environment'], 'target-change-requires-new-plan')
                 engine.prepare(args.reuse, args.dev)
             else:
-                engine.runtime_guard()
+                require(not args.force or args.operation == 'deploy', 'force-not-allowed')
+                engine.runtime_guard(args.operation, args.force)
                 chosen = selection(args.components) if args.components else engine.plan['selected']
                 require(set(chosen) <= set(engine.plan['selected']), 'component-outside-plan')
                 if args.operation == 'deploy':

@@ -1,0 +1,8 @@
+test_real_action_force_only_bypasses_other_unresolved_dev_attempt (deploy.engine.tests.test_engine.Acceptance.test_real_action_force_only_bypasses_other_unresolved_dev_attempt) ... ok
+test_force_rejections_leave_target_unmutated (deploy.engine.tests.test_engine.Acceptance.test_force_rejections_leave_target_unmutated) ... ok
+test_real_action_download_v2_checkpoint_keeps_legacy_id_sequence_and_handle (deploy.engine.tests.test_build_submission.AsyncBuildSubmission.test_real_action_download_v2_checkpoint_keeps_legacy_id_sequence_and_handle) ... ok
+
+----------------------------------------------------------------------
+Ran 3 tests in 19.867s
+
+OK

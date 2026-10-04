@@ -1,0 +1,164 @@
+test_01_stage_barrier_and_retry_retains_first (deploy.engine.tests.test_engine.Acceptance.test_01_stage_barrier_and_retry_retains_first) ... ok
+test_02_four_to_five_reuses_four_and_frontend_build_only (deploy.engine.tests.test_engine.Acceptance.test_02_four_to_five_reuses_four_and_frontend_build_only) ... ok
+test_03_production_explicit_dev_no_build_source_and_handle_rejection (deploy.engine.tests.test_engine.Acceptance.test_03_production_explicit_dev_no_build_source_and_handle_rejection) ... ok
+test_04_order_barrier_and_real_config (deploy.engine.tests.test_engine.Acceptance.test_04_order_barrier_and_real_config) ... ok
+test_05_partial_failure_restores_changed_and_reactivation_no_build (deploy.engine.tests.test_engine.Acceptance.test_05_partial_failure_restores_changed_and_reactivation_no_build) ... ok
+test_06_timeout_after_acceptance_and_unknown_and_rollback_failure (deploy.engine.tests.test_engine.Acceptance.test_06_timeout_after_acceptance_and_unknown_and_rollback_failure) ... ok
+test_07_severe_recovery_unchanged_not_redeployed (deploy.engine.tests.test_engine.Acceptance.test_07_severe_recovery_unchanged_not_redeployed) ... ok
+test_08_tag_only_retry_idempotence_conflict (deploy.engine.tests.test_engine.Acceptance.test_08_tag_only_retry_idempotence_conflict) ... ok
+test_09_frontend_alias_restore_and_config_applicability (deploy.engine.tests.test_engine.Acceptance.test_09_frontend_alias_restore_and_config_applicability) ... ok
+test_10_stale_checkpoint_and_absent_resource (deploy.engine.tests.test_engine.Acceptance.test_10_stale_checkpoint_and_absent_resource) ... ok
+test_auth_bff_ready_artifact_deploy_updates_traffic_and_strict_readback (deploy.engine.tests.test_engine.Acceptance.test_auth_bff_ready_artifact_deploy_updates_traffic_and_strict_readback) ... ok
+test_bff_candidate_readback_failure_compensates_without_unverified_cutover (deploy.engine.tests.test_engine.Acceptance.test_bff_candidate_readback_failure_compensates_without_unverified_cutover) ... ok
+test_bff_incompatible_receipt_identity_fails_before_provider_mutation (deploy.engine.tests.test_engine.Acceptance.test_bff_incompatible_receipt_identity_fails_before_provider_mutation) ... ok
+test_durable_pending_failure_prevents_provider_mutation (deploy.engine.tests.test_engine.Acceptance.test_durable_pending_failure_prevents_provider_mutation) ... ok
+test_force_rejections_leave_target_unmutated (deploy.engine.tests.test_engine.Acceptance.test_force_rejections_leave_target_unmutated) ... 
+  test_force_rejections_leave_target_unmutated (deploy.engine.tests.test_engine.Acceptance.test_force_rejections_leave_target_unmutated) (name='false') ... ERROR
+  test_force_rejections_leave_target_unmutated (deploy.engine.tests.test_engine.Acceptance.test_force_rejections_leave_target_unmutated) (name='lookup-failure') ... ERROR
+  test_force_rejections_leave_target_unmutated (deploy.engine.tests.test_engine.Acceptance.test_force_rejections_leave_target_unmutated) (name='same-plan') ... ERROR
+  test_force_rejections_leave_target_unmutated (deploy.engine.tests.test_engine.Acceptance.test_force_rejections_leave_target_unmutated) (name='stale') ... ERROR
+test_force_rejections_leave_target_unmutated (deploy.engine.tests.test_engine.Acceptance.test_force_rejections_leave_target_unmutated) ... ERROR
+test_frontend_runtime_deploy_and_reconcile_causes_reach_formal_result (deploy.engine.tests.test_engine.Acceptance.test_frontend_runtime_deploy_and_reconcile_causes_reach_formal_result) ... ok
+test_frontend_sanity_checks_ready_target_alias_artifact_and_config (deploy.engine.tests.test_engine.Acceptance.test_frontend_sanity_checks_ready_target_alias_artifact_and_config) ... ok
+test_hold_service_reactivation_preserves_candidate_and_next_snapshot (deploy.engine.tests.test_engine.Acceptance.test_hold_service_reactivation_preserves_candidate_and_next_snapshot) ... ok
+test_hold_worker_reactivation_failure_does_not_compensate_healthy_auth (deploy.engine.tests.test_engine.Acceptance.test_hold_worker_reactivation_failure_does_not_compensate_healthy_auth) ... ok
+test_job_template_and_frontend_readback_failures (deploy.engine.tests.test_engine.Acceptance.test_job_template_and_frontend_readback_failures) ... ok
+test_offline_fixture_has_no_inherited_authority (deploy.engine.tests.test_engine.Acceptance.test_offline_fixture_has_no_inherited_authority) ... ok
+test_plan_tamper_and_runtime_authority_rejected (deploy.engine.tests.test_engine.Acceptance.test_plan_tamper_and_runtime_authority_rejected) ... ok
+test_prior_image_and_route_checks_remain_fail_closed (deploy.engine.tests.test_engine.Acceptance.test_prior_image_and_route_checks_remain_fail_closed) ... ok
+test_prior_service_snapshot_and_rollback_use_retained_image_identity (deploy.engine.tests.test_engine.Acceptance.test_prior_service_snapshot_and_rollback_use_retained_image_identity) ... ok
+test_real_action_force_only_bypasses_other_unresolved_dev_attempt (deploy.engine.tests.test_engine.Acceptance.test_real_action_force_only_bypasses_other_unresolved_dev_attempt) ... ERROR
+test_retained_annotations_full_chain (deploy.engine.tests.test_engine.Acceptance.test_retained_annotations_full_chain) ... ok
+test_sanity_rejects_each_managed_service_field (deploy.engine.tests.test_engine.Acceptance.test_sanity_rejects_each_managed_service_field) ... ok
+test_service_partial_update_restores_template_even_with_old_traffic (deploy.engine.tests.test_engine.Acceptance.test_service_partial_update_restores_template_even_with_old_traffic) ... ok
+test_unknown_resume_does_not_repeat_accepted_job_update (deploy.engine.tests.test_engine.Acceptance.test_unknown_resume_does_not_repeat_accepted_job_update) ... ok
+test_unusable_receipt_rebuilds_only_affected_component (deploy.engine.tests.test_engine.Acceptance.test_unusable_receipt_rebuilds_only_affected_component) ... ok
+test_wrong_container_repository_and_missing_dev_reference_rejected (deploy.engine.tests.test_engine.Acceptance.test_wrong_container_repository_and_missing_dev_reference_rejected) ... ok
+test_actual_go_inputs_include_embeds_exclude_engine_and_unrelated_packages (deploy.engine.tests.test_engine.SourceApplicability.test_actual_go_inputs_include_embeds_exclude_engine_and_unrelated_packages) ... ok
+test_latest_page_failure_reaches_engine_result_with_original_cause (deploy.engine.tests.test_transport_integration.EngineTransportIntegration.test_latest_page_failure_reaches_engine_result_with_original_cause) ... ok
+test_latest_subprocess_timeout_keeps_fixed_stage_and_timeout_class (deploy.engine.tests.test_transport_integration.EngineTransportIntegration.test_latest_subprocess_timeout_keeps_fixed_stage_and_timeout_class) ... ok
+test_runtime_guard_reads_checkpoint_with_actual_engine_latest_argv (deploy.engine.tests.test_transport_integration.EngineTransportIntegration.test_runtime_guard_reads_checkpoint_with_actual_engine_latest_argv) ... ok
+test_save_reaches_sdk_with_actual_engine_upload_argv (deploy.engine.tests.test_transport_integration.EngineTransportIntegration.test_save_reaches_sdk_with_actual_engine_upload_argv) ... ok
+test_auth_and_bff_async_submit_exact_tuple_status_only_then_digest (deploy.engine.tests.test_build_submission.AsyncBuildSubmission.test_auth_and_bff_async_submit_exact_tuple_status_only_then_digest) ... ok
+test_configured_project_id_resource_name_remains_accepted (deploy.engine.tests.test_build_submission.AsyncBuildSubmission.test_configured_project_id_resource_name_remains_accepted) ... ok
+test_cross_plan_source_target_tag_selection_and_engine_changes_fail_closed (deploy.engine.tests.test_build_submission.AsyncBuildSubmission.test_cross_plan_source_target_tag_selection_and_engine_changes_fail_closed) ... ok
+test_digest_failure_keeps_successful_build_id_and_retry_does_not_resubmit (deploy.engine.tests.test_build_submission.AsyncBuildSubmission.test_digest_failure_keeps_successful_build_id_and_retry_does_not_resubmit) ... ok
+test_malformed_id_and_submit_project_or_location_mismatch_never_poll (deploy.engine.tests.test_build_submission.AsyncBuildSubmission.test_malformed_id_and_submit_project_or_location_mismatch_never_poll) ... ok
+test_multi_component_prepare_fails_barrier_without_runtime_and_retains_both_build_ids (deploy.engine.tests.test_build_submission.AsyncBuildSubmission.test_multi_component_prepare_fails_barrier_without_runtime_and_retains_both_build_ids) ... ok
+test_numeric_resource_name_matches_only_authoritative_project_number (deploy.engine.tests.test_build_submission.AsyncBuildSubmission.test_numeric_resource_name_matches_only_authoritative_project_number) ... ok
+test_permission_rejection_is_typed_and_terminal_build_failure_can_be_explicitly_retried (deploy.engine.tests.test_build_submission.AsyncBuildSubmission.test_permission_rejection_is_typed_and_terminal_build_failure_can_be_explicitly_retried) ... ok
+test_poll_deadline_and_status_unknown_resume_same_id_without_duplicate_build (deploy.engine.tests.test_build_submission.AsyncBuildSubmission.test_poll_deadline_and_status_unknown_resume_same_id_without_duplicate_build) ... ok
+test_project_identity_lookup_must_match_config_before_submit (deploy.engine.tests.test_build_submission.AsyncBuildSubmission.test_project_identity_lookup_must_match_config_before_submit) ... ok
+test_real_action_cross_plan_unresolved_handle_fails_closed (deploy.engine.tests.test_build_submission.AsyncBuildSubmission.test_real_action_cross_plan_unresolved_handle_fails_closed) ... ok
+test_real_action_download_blocks_idless_unknown_without_submit (deploy.engine.tests.test_build_submission.AsyncBuildSubmission.test_real_action_download_blocks_idless_unknown_without_submit) ... ok
+test_real_action_download_fresh_release_resumes_same_build_id (deploy.engine.tests.test_build_submission.AsyncBuildSubmission.test_real_action_download_fresh_release_resumes_same_build_id) ... ok
+test_real_action_download_success_digest_failure_only_retries_digest (deploy.engine.tests.test_build_submission.AsyncBuildSubmission.test_real_action_download_success_digest_failure_only_retries_digest) ... ok
+test_real_action_download_v2_checkpoint_keeps_legacy_id_sequence_and_handle (deploy.engine.tests.test_build_submission.AsyncBuildSubmission.test_real_action_download_v2_checkpoint_keeps_legacy_id_sequence_and_handle) ... ok
+test_real_action_terminal_failure_explicit_retry_and_receipt_expansion (deploy.engine.tests.test_build_submission.AsyncBuildSubmission.test_real_action_terminal_failure_explicit_retry_and_receipt_expansion) ... ok
+test_resume_rechecks_project_number_mapping_before_status_read (deploy.engine.tests.test_build_submission.AsyncBuildSubmission.test_resume_rechecks_project_number_mapping_before_status_read) ... ok
+test_same_plan_runtime_started_and_corrupt_checkpoint_fail_closed (deploy.engine.tests.test_build_submission.AsyncBuildSubmission.test_same_plan_runtime_started_and_corrupt_checkpoint_fail_closed) ... ok
+test_status_api_error_retains_id_redacts_output_and_reconciles_same_build (deploy.engine.tests.test_build_submission.AsyncBuildSubmission.test_status_api_error_retains_id_redacts_output_and_reconciles_same_build) ... ok
+test_status_project_or_location_mismatch_keeps_id_unverified_and_stops (deploy.engine.tests.test_build_submission.AsyncBuildSubmission.test_status_project_or_location_mismatch_keeps_id_unverified_and_stops) ... ok
+test_submit_api_error_or_timeout_has_no_id_and_blocks_blind_replay (deploy.engine.tests.test_build_submission.AsyncBuildSubmission.test_submit_api_error_or_timeout_has_no_id_and_blocks_blind_replay) ... ok
+test_terminal_failure_and_cancel_are_recorded_and_not_retried_in_same_invocation (deploy.engine.tests.test_build_submission.AsyncBuildSubmission.test_terminal_failure_and_cancel_are_recorded_and_not_retried_in_same_invocation) ... ok
+test_verified_id_is_uploaded_before_poll_and_pending_resume_does_not_resubmit (deploy.engine.tests.test_build_submission.AsyncBuildSubmission.test_verified_id_is_uploaded_before_poll_and_pending_resume_does_not_resubmit) ... ok
+
+======================================================================
+ERROR: test_force_rejections_leave_target_unmutated (deploy.engine.tests.test_engine.Acceptance.test_force_rejections_leave_target_unmutated) (name='false')
+----------------------------------------------------------------------
+Traceback (most recent call last):
+  File "/Users/rayer/.hermes/profiles/lwc-tpm/cache/scratch/lwc358-owner-correction-4-1814-wt/deploy/engine/tests/test_engine.py", line 153, in test_force_rejections_leave_target_unmutated
+    action, release, _, _=self.invoke_runtime_action(
+                          ~~~~~~~~~~~~~~~~~~~~~~~~~~^
+        ready,latest,force=force,operation=operation,state_status=state_status,
+        ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+        extra_env=env)
+        ^^^^^^^^^^^^^^
+  File "/Users/rayer/.hermes/profiles/lwc-tpm/cache/scratch/lwc358-owner-correction-4-1814-wt/deploy/engine/tests/test_engine.py", line 79, in invoke_runtime_action
+    node = self.bin / 'node'
+           ^^^^^^^^
+AttributeError: 'Acceptance' object has no attribute 'bin'
+
+======================================================================
+ERROR: test_force_rejections_leave_target_unmutated (deploy.engine.tests.test_engine.Acceptance.test_force_rejections_leave_target_unmutated) (name='lookup-failure')
+----------------------------------------------------------------------
+Traceback (most recent call last):
+  File "/Users/rayer/.hermes/profiles/lwc-tpm/cache/scratch/lwc358-owner-correction-4-1814-wt/deploy/engine/tests/test_engine.py", line 153, in test_force_rejections_leave_target_unmutated
+    action, release, _, _=self.invoke_runtime_action(
+                          ~~~~~~~~~~~~~~~~~~~~~~~~~~^
+        ready,latest,force=force,operation=operation,state_status=state_status,
+        ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+        extra_env=env)
+        ^^^^^^^^^^^^^^
+  File "/Users/rayer/.hermes/profiles/lwc-tpm/cache/scratch/lwc358-owner-correction-4-1814-wt/deploy/engine/tests/test_engine.py", line 79, in invoke_runtime_action
+    node = self.bin / 'node'
+           ^^^^^^^^
+AttributeError: 'Acceptance' object has no attribute 'bin'
+
+======================================================================
+ERROR: test_force_rejections_leave_target_unmutated (deploy.engine.tests.test_engine.Acceptance.test_force_rejections_leave_target_unmutated) (name='same-plan')
+----------------------------------------------------------------------
+Traceback (most recent call last):
+  File "/Users/rayer/.hermes/profiles/lwc-tpm/cache/scratch/lwc358-owner-correction-4-1814-wt/deploy/engine/tests/test_engine.py", line 153, in test_force_rejections_leave_target_unmutated
+    action, release, _, _=self.invoke_runtime_action(
+                          ~~~~~~~~~~~~~~~~~~~~~~~~~~^
+        ready,latest,force=force,operation=operation,state_status=state_status,
+        ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+        extra_env=env)
+        ^^^^^^^^^^^^^^
+  File "/Users/rayer/.hermes/profiles/lwc-tpm/cache/scratch/lwc358-owner-correction-4-1814-wt/deploy/engine/tests/test_engine.py", line 79, in invoke_runtime_action
+    node = self.bin / 'node'
+           ^^^^^^^^
+AttributeError: 'Acceptance' object has no attribute 'bin'
+
+======================================================================
+ERROR: test_force_rejections_leave_target_unmutated (deploy.engine.tests.test_engine.Acceptance.test_force_rejections_leave_target_unmutated) (name='stale')
+----------------------------------------------------------------------
+Traceback (most recent call last):
+  File "/Users/rayer/.hermes/profiles/lwc-tpm/cache/scratch/lwc358-owner-correction-4-1814-wt/deploy/engine/tests/test_engine.py", line 153, in test_force_rejections_leave_target_unmutated
+    action, release, _, _=self.invoke_runtime_action(
+                          ~~~~~~~~~~~~~~~~~~~~~~~~~~^
+        ready,latest,force=force,operation=operation,state_status=state_status,
+        ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+        extra_env=env)
+        ^^^^^^^^^^^^^^
+  File "/Users/rayer/.hermes/profiles/lwc-tpm/cache/scratch/lwc358-owner-correction-4-1814-wt/deploy/engine/tests/test_engine.py", line 79, in invoke_runtime_action
+    node = self.bin / 'node'
+           ^^^^^^^^
+AttributeError: 'Acceptance' object has no attribute 'bin'
+
+======================================================================
+ERROR: test_force_rejections_leave_target_unmutated (deploy.engine.tests.test_engine.Acceptance.test_force_rejections_leave_target_unmutated)
+----------------------------------------------------------------------
+Traceback (most recent call last):
+  File "/Users/rayer/.hermes/profiles/lwc-tpm/cache/scratch/lwc358-owner-correction-4-1814-wt/deploy/engine/tests/test_engine.py", line 171, in test_force_rejections_leave_target_unmutated
+    action, release, _, _=self.invoke_runtime_action(
+                          ~~~~~~~~~~~~~~~~~~~~~~~~~~^
+        wrongop,{'plan':'older','sequence':3,'status':'unknown'},
+        ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+        force=True,operation='rollback')
+        ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+  File "/Users/rayer/.hermes/profiles/lwc-tpm/cache/scratch/lwc358-owner-correction-4-1814-wt/deploy/engine/tests/test_engine.py", line 79, in invoke_runtime_action
+    node = self.bin / 'node'
+           ^^^^^^^^
+AttributeError: 'Acceptance' object has no attribute 'bin'
+
+======================================================================
+ERROR: test_real_action_force_only_bypasses_other_unresolved_dev_attempt (deploy.engine.tests.test_engine.Acceptance.test_real_action_force_only_bypasses_other_unresolved_dev_attempt)
+----------------------------------------------------------------------
+Traceback (most recent call last):
+  File "/Users/rayer/.hermes/profiles/lwc-tpm/cache/scratch/lwc358-owner-correction-4-1814-wt/deploy/engine/tests/test_engine.py", line 123, in test_real_action_force_only_bypasses_other_unresolved_dev_attempt
+    action, release, latest_path, original_latest = self.invoke_runtime_action(
+                                                    ~~~~~~~~~~~~~~~~~~~~~~~~~~^
+        ready, latest, force=True)
+        ^^^^^^^^^^^^^^^^^^^^^^^^^^
+  File "/Users/rayer/.hermes/profiles/lwc-tpm/cache/scratch/lwc358-owner-correction-4-1814-wt/deploy/engine/tests/test_engine.py", line 79, in invoke_runtime_action
+    node = self.bin / 'node'
+           ^^^^^^^^
+AttributeError: 'Acceptance' object has no attribute 'bin'
+
+----------------------------------------------------------------------
+Ran 59 tests in 160.714s
+
+FAILED (errors=6)
+{"allowed_next_action": "reconcile-before-replay", "attempt": "2d4a83f197d3fab23544de7fcf9ca8a1ea20fcc66db71f868e0a815e00589f5b", "builds": {"auth": {"build_id": "12345678-1234-4234-8234-123456789abc", "identity_verified": true, "last_observed_status": "WORKING", "location": "global", "poll_outcome": "deadline", "project_id": "llm-wiki-cloud", "status": "STATUS_UNKNOWN"}}, "candidate": null, "component": "auth", "expected": {"identity": "f48495ced3478226aa78d341416b99e70f074c33159ba80915daf347e6b0a504", "source": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"}, "failure_diagnostic": {"exit_code": null, "stage": "build-status", "timeout_class": "build-poll-deadline"}, "last_verified_checkpoint": 4, "limitations": "Job executions and persistent writes are not reversed by image rollback.", "mutation_may_have_happened": false, "observed": {"component_status": "unstarted"}, "prior": null, "reason": "build-poll-deadline", "release": "test-lwc358-poll-resume", "stage": "prepared", "status": "unknown"}

@@ -5,6 +5,7 @@ import io
 import json
 import os
 from pathlib import Path
+import shutil
 import subprocess
 import sys
 import tempfile
@@ -24,8 +25,9 @@ class Acceptance(unittest.TestCase):
             '--config',str(ROOT/'deploy/environments/development.yaml'),'--components',','.join(engine.ORDER)],cwd=ROOT/'apps/bff',text=True))
 
     def setUp(self):
+        self.real_node = shutil.which('node')
         self.tmp=tempfile.TemporaryDirectory();self.addCleanup(self.tmp.cleanup)
-        self.root=Path(self.tmp.name);bin=self.root/'bin';bin.mkdir()
+        self.root=Path(self.tmp.name);bin=self.root/'bin';bin.mkdir();self.bin=bin
         fake=HERE/'tests/fake_provider.py';fake.chmod(0o755)
         for name in ('gcloud','docker','go','curl','vercel','npm','git','gh'):(bin/name).symlink_to(fake)
         # Keep tool discovery/cache paths, never inherited CI authority or credentials.
@@ -62,13 +64,127 @@ class Acceptance(unittest.TestCase):
     def make(self,selected=('worker',),name='release',production=False,tag='test-release'):
         directory=self.root/name;directory.mkdir()
         n=copy.deepcopy(self.normalized);n['environment']='production' if production else 'development'
-        p={'schema':2,'id':name,'source':'c'*40,'branch':'main' if production else 'develop','tag':tag,'selected':list(selected),
+        p={'schema':3,'id':name,'source':'c'*40,'branch':'main' if production else 'develop','tag':tag,'selected':list(selected),
            'normalized':n,'identities':{c:{'profile':'profile','inputs':'input','files':[]} for c in selected},
-           'dev_reference':'explicit-123' if production else None,'engine_content':engine.engine_fingerprint()}
-        p['id']=engine.digest({k:v for k,v in p.items() if k != 'id'})
+           'dev_reference':'explicit-123' if production else None,
+           'executor_sha':'e'*40}
+        p['id']=engine.digest(engine.release_identity(p))
         write(directory/'plan.json',p)
         return engine.Engine(directory)
     def ready(self,e):e.prepare();return e
+
+    @staticmethod
+    def latest_checkpoint(plan='f'*64, sequence=4, status='unknown', **extra):
+        return {'plan':plan,'status':status,'components':{},'sequence':sequence,**extra}
+
+    def invoke_runtime_action(self, e, latest, *, force=False, operation='release',
+                              target=None, state_status=None, extra_env=None):
+        self.assertIsNotNone(self.real_node, 'Node is required for the real Action entrypoint')
+        node = self.bin / 'node'
+        node.unlink(missing_ok=True)
+        node.symlink_to(HERE / 'tests/fake_provider.py')
+        python = self.bin / 'python3'
+        python.write_text('#!/bin/sh\nexec '+sys.executable+' "$@"\n')
+        python.chmod(0o755)
+        runner = self.root / ('action-runtime-'+str(len(list(self.root.glob('action-runtime-*')))))
+        runner.mkdir()
+        release = runner / 'release'
+        shutil.copytree(e.directory, release)
+        state_path = release / 'state.json'
+        state = read(state_path)
+        if state_status:
+            state['status'] = state_status
+            write(state_path, state)
+        latest_path = self.root / (runner.name+'-latest.json')
+        if latest is not None:
+            write(latest_path, latest)
+        latest_bytes = latest_path.read_bytes() if latest_path.exists() else None
+        env = dict(os.environ)
+        env.update({
+            'PATH': str(self.bin)+os.pathsep+os.environ['PATH'],
+            'RUNNER_TEMP': str(runner), 'EXECUTOR_SHA': e.plan.get('executor_sha','e'*40),
+            'TARGET': target or e.plan['normalized']['environment'],
+            'SOURCE': e.plan['source'], 'COMPONENTS': ','.join(e.plan['selected']),
+            'RELEASE_TAG': e.plan['tag'], 'OPERATION': operation,
+            'INPUT_OPERATION': 'runtime', 'INPUT_FORCE': 'true' if force else 'false',
+            'GITHUB_ACTIONS': 'true', 'GITHUB_RUN_ID': '424242',
+            'GITHUB_RUN_ATTEMPT': '1', 'GITHUB_REPOSITORY': 'test/repo',
+            'LWC_TEST_LATEST_RECORD': str(latest_path),
+        })
+        if latest is None:
+            env.pop('LWC_TEST_LATEST_RECORD', None)
+        if extra_env:
+            env.update(extra_env)
+        result = subprocess.run(
+            [self.real_node, str(ROOT/'.github/actions/deployment-engine/index.cjs')],
+            cwd=ROOT, env=env, text=True, capture_output=True, timeout=60)
+        return result, release, latest_path, latest_bytes
+
+    def test_real_action_force_only_bypasses_other_unresolved_dev_attempt(self):
+        ready = self.ready(self.make(('worker',), name='force-ready'))
+        latest = self.latest_checkpoint(sequence=19, operator_note='accepted extra metadata')
+        before_updates = len(self.calls('update'))
+        action, release, latest_path, original_latest = self.invoke_runtime_action(
+            ready, latest, force=True)
+        self.assertEqual(action.returncode,0,action.stdout+action.stderr)
+        result = json.loads(action.stdout.strip().splitlines()[-1])
+        self.assertEqual(result['force_bypass'],'target-has-unresolved-attempt')
+        state = read(release/'state.json')
+        self.assertEqual(state['plan'],ready.plan['id'])
+        self.assertEqual(state['components']['worker']['status'],'verified')
+        self.assertIn('b'*64,json.dumps(state['components']['worker']['prior']))
+        self.assertEqual(len(self.calls('update'))-before_updates,1)
+        self.assertEqual(latest_path.read_bytes(),original_latest)
+        saved = self.current()
+        uploads=saved['checkpoint_uploads']
+        first_snapshot=next(item for item in uploads if item.get('status')=='snapshotted')
+        self.assertIn('b'*64,json.dumps(first_snapshot['components']['worker']['prior']))
+
+    def test_force_rejections_leave_target_unmutated(self):
+        cases=(
+            ('false', self.latest_checkpoint(), False, 'release', 'ready', {}),
+            ('lookup-failure', self.latest_checkpoint(), True, 'release', 'ready',
+             {'LWC_TEST_LATEST_FAIL':'1'}),
+            ('same-plan', None, True, 'release', 'ready', {}),
+            ('stale', self.latest_checkpoint(), False, 'release', 'unknown', {}),
+            ('invalid-status', self.latest_checkpoint(status='unknwon'), True, 'release', 'ready', {}),
+            ('unsupported-schema', self.latest_checkpoint(checkpoint_schema=2), True, 'release', 'ready', {}),
+            ('missing-sequence', {'plan':'f'*64,'status':'unknown','components':{}}, True,
+             'release', 'ready', {}),
+        )
+        for name, latest, force, operation, state_status, env in cases:
+            with self.subTest(name=name):
+                ready=self.ready(self.make(('worker',),name='force-reject-'+name))
+                if name=='same-plan':
+                    latest=self.latest_checkpoint(plan=ready.plan['id'],
+                                                  sequence=ready.state['sequence'])
+                before_updates=len(self.calls('update'))
+                action, release, _, _=self.invoke_runtime_action(
+                    ready,latest,force=force,operation=operation,state_status=state_status,
+                    extra_env=env)
+                self.assertNotEqual(action.returncode,0)
+                self.assertEqual(len(self.calls('update')),before_updates)
+                if (release/'result.json').exists():
+                    result=read(release/'result.json')
+                    self.assertFalse(result['mutation_may_have_happened'])
+                    self.assertNotIn('force_bypass',result)
+                    if name in ('invalid-status','unsupported-schema','missing-sequence'):
+                        self.assertEqual(result['reason'],'latest-checkpoint-invalid')
+
+        production=self.make(('worker',),name='force-production',production=True)
+        production.state['status']='ready'
+        write(production.state_path,production.state)
+        with patch.dict(os.environ,{'GITHUB_ACTIONS':'true'}):
+            with self.assertRaisesRegex(Breakpoint,'force-not-allowed'):
+                production.runtime_guard('deploy',True)
+        wrongop=self.ready(self.make(('worker',),name='force-wrong-operation'))
+        before_updates=len(self.calls('update'))
+        action, release, _, _=self.invoke_runtime_action(
+            wrongop,self.latest_checkpoint(sequence=3),
+            force=True,operation='rollback')
+        self.assertNotEqual(action.returncode,0)
+        self.assertFalse((release/'result.json').exists())
+        self.assertEqual(len(self.calls('update')),before_updates)
 
     def test_offline_fixture_has_no_inherited_authority(self):
         for key in ('GITHUB_ACTIONS','ACTIONS_RUNTIME_TOKEN','GH_TOKEN','GITHUB_TOKEN',
@@ -189,7 +305,7 @@ class Acceptance(unittest.TestCase):
             with self.subTest(identity_field=field):
                 candidate=self.make(('bff',),name='bff-applicability-'+field)
                 candidate.plan['identities']['bff'][field]=value
-                candidate.plan['id']=engine.digest({k:v for k,v in candidate.plan.items() if k!='id'})
+                candidate.plan['id']=engine.digest(engine.release_identity(candidate.plan))
                 write(candidate.directory/'plan.json',candidate.plan)
                 candidate=engine.Engine(candidate.directory)
                 write(candidate.directory/'receipts'/'bff.json',retained)
@@ -280,7 +396,7 @@ class Acceptance(unittest.TestCase):
     def test_10_stale_checkpoint_and_absent_resource(self):
         e=self.ready(self.make());e.snapshot()
         def latest(*args,**kwargs):
-            write(e.directory/'.latest.json',{'plan':'later','sequence':1})
+            write(e.directory/'.latest.json',self.latest_checkpoint(plan='f'*64,sequence=1))
         with patch.dict(os.environ,{'GITHUB_ACTIONS':'true'}),patch('engine.run',side_effect=latest):
             with self.assertRaisesRegex(Breakpoint,'stale-checkpoint'):e.runtime_guard()
         self.provider=self.current();self.provider['resources']={};self.flush()

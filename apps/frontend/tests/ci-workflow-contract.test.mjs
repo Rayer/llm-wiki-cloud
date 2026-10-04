@@ -30,13 +30,16 @@ test('r2 registered release and recovery workflows use explicit artifact inputs'
     const parsed = parseYaml(await workflow(file));
     assert.deepEqual(Object.keys(parsed.on), ['workflow_dispatch']);
     const expectedInputs = ['components', 'release_tag', 'artifact_id', 'dev_artifact_id'];
-    if (file === 'deploy-dev.yml') expectedInputs.push('operation');
+    if (file === 'deploy-dev.yml') expectedInputs.push('source_sha', 'force', 'operation');
     assert.deepEqual(Object.keys(parsed.on.workflow_dispatch.inputs), expectedInputs);
     assert.equal(parsed.jobs.release.with.environment, environment);
     assert.equal(parsed.jobs.release.if, file === 'deploy-dev.yml'
-      ? `github.ref == 'refs/heads/${branch}' && inputs.operation == 'release'`
+      ? `github.ref == 'refs/heads/${branch}' && inputs.operation != 'diagnose-auth-image'`
       : `github.ref == 'refs/heads/${branch}'`);
-    assert.equal(parsed.jobs.release.with.source_sha, '${{ github.sha }}');
+    assert.equal(parsed.jobs.release.with.source_sha, file === 'deploy-dev.yml'
+      ? "${{ inputs.operation == 'release' && github.sha || inputs.source_sha }}"
+      : '${{ github.sha }}');
+    assert.equal(parsed.jobs.release.with.executor_sha, '${{ github.sha }}');
     assert.equal(parsed.jobs.release.secrets, 'inherit');
     if (file === 'deploy-dev.yml') assert.equal(parsed.jobs.release.with.operation, '${{ inputs.operation }}');
   }
@@ -44,7 +47,9 @@ test('r2 registered release and recovery workflows use explicit artifact inputs'
   const operation = deployDev.on.workflow_dispatch.inputs.operation;
   assert.equal(operation.type, 'choice');
   assert.equal(operation.default, 'release');
-  assert.deepEqual(operation.options, ['release', 'diagnose-auth-image']);
+  assert.deepEqual(operation.options, ['release', 'deploy', 'rollback', 'reactivate', 'tag', 'readback', 'diagnose-auth-image']);
+  assert.equal(deployDev.on.workflow_dispatch.inputs.source_sha.default, '');
+  assert.deepEqual(deployDev.on.workflow_dispatch.inputs.force, { description: 'Explicitly accept duplicate-mutation risk to deploy a new ready attempt past another attempt\'s unresolved target status', type: 'boolean', default: false });
   assert.deepEqual(Object.keys(deployDev.jobs).sort(), ['auth-image-diagnostic', 'release']);
   const diagnostic = deployDev.jobs['auth-image-diagnostic'];
   for (const condition of [
@@ -64,6 +69,7 @@ test('r2 registered release and recovery workflows use explicit artifact inputs'
   assert.equal(recovery.jobs.recovery.if, "inputs.operation != 'diagnose-auth-image'");
   assert.deepEqual(recovery.jobs.recovery.with, {
     environment: '${{ inputs.environment }}', source_sha: '${{ inputs.source_sha }}',
+    executor_sha: '${{ github.sha }}',
     components: '${{ inputs.components }}', release_tag: '${{ inputs.release_tag }}',
     operation: '${{ inputs.operation }}', artifact_id: '${{ inputs.artifact_id }}',
   });
@@ -131,6 +137,10 @@ test('shared engine has one approval and one serialized runtime authority', asyn
   assert.equal(parsed.concurrency.group, 'lwc-engine-${{ inputs.environment }}');
   assert.equal(parsed.concurrency['cancel-in-progress'], false);
   const job = parsed.jobs.release;
+  assert.deepEqual(parsed.on.workflow_call.inputs.executor_sha, { required: true, type: 'string' });
+  assert.deepEqual(parsed.on.workflow_call.inputs.force, { type: 'boolean', default: false });
+  assert.equal(parsed.jobs.release.env.EXECUTOR_SHA, '${{ inputs.executor_sha }}');
+  assert.equal(parsed.jobs.release.env.FORCE, '${{ inputs.force }}');
   assert.equal(job.if, "inputs.operation != 'diagnose-auth-image'");
   assert.equal(job.environment, "${{ inputs.environment == 'production' && 'Production' || 'Development' }}");
   const steps = job.steps;
@@ -144,6 +154,7 @@ test('shared engine has one approval and one serialized runtime authority', asyn
   const runtime = runtimeAuthorities[0].index;
   assert.ok(prepare >= 0 && prepare < barrier && barrier < runtime);
   assert.equal(steps[prepare].if, "inputs.operation == 'release'");
+  assert.equal(steps.find(step => step.uses?.startsWith('actions/checkout@')).with.ref, '${{ inputs.executor_sha }}');
   assert.equal(steps[runtime].uses, './.github/actions/deployment-engine');
   assert.equal(job.permissions.contents, 'write');
   assert.equal(job.permissions['id-token'], 'write');

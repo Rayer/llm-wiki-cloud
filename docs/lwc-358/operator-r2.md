@@ -10,11 +10,21 @@ Actions 表單輸入：
 - `release_tag`：明確的合法 Git tag 名稱；沒有預設版本或 semver 推算。
 - `artifact_id`：選填，上一個準備結果的確切 Actions artifact ID，用於失敗續建、選擇擴大或工具變更後重用。
 - `dev_artifact_id`：Production 容器必填，成功 DEV release 的結果 artifact ID。容器保留原 build SHA；source-input identity 必須對得上 main 候選。Frontend 按 Production 設定建置。
-- `operation`：Deploy Development 新增的選項，預設 `release`，保持原正常發佈路徑；只有明確選取 `diagnose-auth-image` 才會進入固定唯讀診斷。Production wrapper 不提供這個 operation。
+- `operation`：Deploy Development 預設 `release`；也可明確選 `deploy`、`rollback`、`reactivate`、`tag` 或 `readback`，使用 retained artifact 執行現有 runtime 操作。`diagnose-auth-image` 仍是獨立固定唯讀分支。Production wrapper 不提供 recovery operations 或 force。
+- `source_sha`：僅在 DEV retained-artifact operation 使用，填原 plan 的 deployment source SHA；一般 `release` 固定使用目前 workflow `github.sha`。
+- `force`：選填布林值，預設 `false`。僅新 ready DEV attempt 的 `deploy` 可使用；細節見下方。
 
-Workflow 在 admission 固定 `github.sha`，Go `cmd/deploy_config` 產生 normalized config。Profile 透過 Go dependency package 與 embed file、Dockerfile、module files 及明確靜態 inputs 計算 identity；部署工具與無關 package 不使既有容器失效。Frontend identity 使用其 source tree 及目標 public config。Plan 的內容 hash 是 attempt ID；選擇改變必須建立新 plan。
+Workflow 把目前 reviewed `github.sha` 當作 `executor_sha` 來 checkout engine；它與 plan 的 `source`（deployment source SHA）分開。Go `cmd/deploy_config` 產生 normalized config。Profile 透過 Go dependency package 與 embed file、Dockerfile、module files 及明確靜態 inputs 計算 identity；部署工具與無關 package 不使既有容器失效。Frontend identity 使用其 source tree 及目標 public config。Schema 3 plan ID 由穩定 release identity 計算，包含 source、target/config、tag、selected components、輸入 identity 與 DEV provenance，不含 executor SHA；選擇或 release identity 改變必須建立新 plan。
 
-同一 Stage 1 attempt 跨 Actions job 續跑時，請保持 source、target/config、release tag、components 選擇及 engine code 完全相同，並把該 attempt 最新的 prepared/ready checkpoint artifact ID 傳回 `artifact_id`。Engine 會驗證完整 plan/hash 與 state 綁定、runtime 尚未開始，再把原 build checkpoint 帶入新 job；pending/status unknown 只查原 build ID，ID-less submit unknown 停止，SUCCESS 後只重試 digest/receipt。若其中任何 plan/engine 身分不同，Engine 不會搬移舊 build state：只可重用 identity/config 相符且 provider 可讀的已完成 receipts。不同 plan 若有尚未完成且沒有可用 receipt 的 build handle，會以 `cross-plan-build-checkpoint-unresolved` 停止；回到原 attempt 的 artifact 與輸入續跑，不能用新 tag/selection/engine 變更觸發另一個 submit。已明確觀察為 terminal failure 或 pre-create rejection 的 handle，可由之後明確 prepare invocation 重試。完整判斷表見 [accepted Stage 1 checkpoint appendix](deployment-engine-spec-r2-accepted-appendix-build-submit.md#stage-1-checkpoint-resume-boundary)。
+同一 Stage 1 attempt 跨 Actions job 續跑時，保持 source、target/config、release tag、components 選擇與輸入 identity 相同，並把該 attempt 最新的 prepared/ready checkpoint artifact ID 傳回 `artifact_id`。Schema 2 舊 plan 的原 ID/hash 保持不變；已驗證的 schema-less 舊 state 視為 checkpoint schema 1。Schema 3 的 executor SHA 可更新，不改 release plan ID。Engine 驗證 retained plan/hash 與 state 綁定、runtime 尚未開始，再帶入原 build checkpoint；pending/status unknown 只查原 build ID，ID-less submit unknown 停止，SUCCESS 後只重試 digest/receipt。改變 release identity 時 Engine 不搬移舊 build state：只可重用 identity/config 相符且 provider 可讀的已完成 receipts。不同 release identity 若有尚未完成且沒有可用 receipt 的 build handle，會以 `cross-plan-build-checkpoint-unresolved` 停止；回到原 attempt 的 artifact 與輸入續跑。已明確觀察為 terminal failure 或 pre-create rejection 的 handle，可由之後明確 prepare invocation 重試。完整判斷表見 [accepted Stage 1 checkpoint appendix](deployment-engine-spec-r2-accepted-appendix-build-submit.md#stage-1-checkpoint-resume-boundary)。
+
+### DEV recovery 與明確 force
+
+使用已註冊的 `Deploy Development` workflow 進行 retained-release recovery；它把目前 reviewed `github.sha` 作為 `executor_sha` checkout，再由 `cd.yml` 下載並驗證指定 artifact。`source_sha` 仍須是 retained plan 的原 deployment source SHA。`rollback`、`reactivate`、`deploy`、`tag`、`readback` 都使用現有共享 Actions runtime；不依賴 `recover-deployment.yml` 在 GitHub default branch 的註冊狀態。
+
+正常 `force=false` 行為不變。只在已經有新且完整 `ready` DEV attempt、準備執行該 attempt 的 `deploy` 時，`force=true` 可略過唯一的 `target-has-unresolved-attempt` 擋點，且只有 latest state 成功讀取並屬於不同 plan 時才生效。一般 `release` 可把 force 傳到 Stage 2，但必須先完成正常 Stage 1 與 ready barrier。force 不重播或修改舊 unknown attempt、不自動 rollback、不略過 latest lookup、artifact/receipt/provenance/checkpoint 檢查、snapshot、provider readback 或其他失敗條件。新 attempt 仍先保存當下 provider state，再做 mutation；舊 mutation 可能稍後可見，因此操作者明確承擔重複或競態 mutation 風險。只有實際略過上述擋點時，result 才包含 `force_bypass: target-has-unresolved-attempt`。不支援 Production force，也不支援 force 搭配 `rollback`、`reactivate`、`tag` 或 `readback`；沒有額外確認提示。
+
+Latest checkpoint 必須是可讀的 schema 1 記錄，包含有效的 plan ID、已知 engine status、components map 與非負 sequence；舊的 schema-less 記錄按 schema 1 解讀。缺欄位、未知 status 或不支援的 schema 會以 `latest-checkpoint-invalid` 停止，force 不會略過這項檢查。
 
 Stage 1 每完成一個 component 即保存獨立 receipt/checkpoint；build failure 不做 runtime mutation、不 rollback、不標記成功 tag。所有 selected receipts usable 才過 barrier。Stage 2 保存可用的 pre-state，再逐一 deploy/readback，順序 `exportjob → auth → bff → worker → frontend`（只執行 selected）。成功須所有 selected provider sanity 通過，接著寫入 tag；功能 smoke/UAT 不在這個 gate。
 
@@ -61,7 +71,7 @@ gcloud logging read \
 
 `LEGACY` logging 不保證有 Cloud Logging entries；查無資料不改變 Cloud Build status，也不表示可改 logging mode、IAM 或 log bucket。完整契約記於 [r2 accepted build-submit appendix](deployment-engine-spec-r2-accepted-appendix-build-submit.md)。
 
-`Recover retained deployment` 輸入原 `source_sha`、`release_tag`、target environment、最新 `artifact_id`、受影響 components 及 `operation` (`rollback`, `reactivate`, `deploy`, `tag`, `readback`)。使用 artifact 清單中最新 `lwc-state-<target>-…` ID，而非舊 `lwc-ready-…`。Checkpoint 查詢一次讀最新 100 筆；若無法在界限內確認最新 state、artifact 到期或 provider 不可讀，停止並回报 TPM，不猜測。
+在已註冊 `Deploy Development` 選擇 recovery operation 時，輸入原 `source_sha`、`release_tag`、environment、最新 `artifact_id`、受影響 components 及 operation。使用 artifact 清單中最新 `lwc-state-<target>-…` ID，而非舊 `lwc-ready-…`；workflow 使用目前 reviewed SHA 作 executor checkout，下載後仍驗 retained plan 的 source/target/tag/components。Checkpoint 查詢一次讀最新 100 筆；若無法在界限內確認最新 state、artifact 到期或 provider 不可讀，停止並回報 TPM，不猜測。`recover-deployment.yml` 不是此 DEV 入口的註冊前提。
 
 ### 固定 DEV image 診斷（暫時）
 
@@ -109,4 +119,4 @@ python3.14 scripts/test_cd_contract.py
 
 `deploy/engine/tests/fake_provider.py` 是 TEST ONLY executable，替代 command boundary，沒有 production fallback。測試使用真實 engine/adapters；不能當成 live provider、IAM、部署或 UAT 證據。旧 `deploy/cd.sh` 與 composite component runtime entrypoints 僅保留供既有 regression；正式 r2 workflow 不呼叫它們，也不呼叫原 Export bootstrap provisioning。
 
-Auth/BFF 的 `revision_config()` 只供 restore payload 擷取完整 retained spec 與有效 annotations；明列的 controller/audit annotations 仍不重播，secret aliases 等有效 annotations 保留。它不參與 prior image 身分 fingerprint 或整份 template equality gate。prior snapshot/readback 以 retained revision identity、Ready、spec/status/service-template image digest 及既有 traffic 條件判斷；candidate readback 另核對 Owner 要求的 managed configuration、image、readiness、identity 與 routing。Service-level annotations 不由 revision restore 改寫。舊 engine checkpoint 不應手動轉換或繞過 engine-content guard。
+Auth/BFF 的 `revision_config()` 只供 restore payload 擷取完整 retained spec 與有效 annotations；明列的 controller/audit annotations 仍不重播，secret aliases 等有效 annotations 保留。它不參與 prior image 身分 fingerprint 或整份 template equality gate。prior snapshot/readback 以 retained revision identity、Ready、spec/status/service-template image digest 及既有 traffic 條件判斷；candidate readback 另核對 Owner 要求的 managed configuration、image、readiness、identity 與 routing。Service-level annotations 不由 revision restore 改寫。舊 schema-2 plan 與 schema-less checkpoint 由 engine 依相容規則讀取；不要手動改 plan ID、executor/source 或 checkpoint 欄位。

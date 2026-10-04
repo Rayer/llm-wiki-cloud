@@ -179,6 +179,19 @@ elif tool == 'curl':
         out={'alias':alias}
     else:fail=True
 elif tool=='npm':pass
+elif tool=='node':
+    if len(a)>=4 and a[0].endswith('deploy/engine/artifacts.cjs') and a[1]=='latest':
+        if os.environ.get('LWC_TEST_LATEST_FAIL') == '1':
+            fail=True
+        else:
+            source=os.environ.get('LWC_TEST_LATEST_RECORD')
+            if source and Path(source).exists():
+                Path(a[3]).write_text(Path(source).read_text())
+    elif len(a)>=4 and a[0].endswith('deploy/engine/artifacts.cjs') and a[1]=='upload':
+        state=json.loads((Path(a[2])/'state.json').read_text())
+        s.setdefault('checkpoint_uploads',[]).append(state)
+    else:
+        fail=True
 elif tool=='vercel':
     if a[0]=='pull':
         p=Path.cwd()/'.vercel';p.mkdir(parents=True,exist_ok=True)

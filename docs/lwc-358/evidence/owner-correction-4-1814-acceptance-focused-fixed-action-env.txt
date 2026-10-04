@@ -1,0 +1,10 @@
+test_real_action_force_only_bypasses_other_unresolved_dev_attempt (deploy.engine.tests.test_engine.Acceptance.test_real_action_force_only_bypasses_other_unresolved_dev_attempt) ... ok
+test_force_rejections_leave_target_unmutated (deploy.engine.tests.test_engine.Acceptance.test_force_rejections_leave_target_unmutated) ... ok
+test_real_action_download_v2_checkpoint_keeps_legacy_id_sequence_and_handle (deploy.engine.tests.test_build_submission.AsyncBuildSubmission.test_real_action_download_v2_checkpoint_keeps_legacy_id_sequence_and_handle) ... ok
+test_action_forwards_main_cause_to_stdout_and_retained_result_without_raw_input (deploy.engine.tests.test_prepare_diagnostics.FrontendPrepareDiagnostics.test_action_forwards_main_cause_to_stdout_and_retained_result_without_raw_input) ... ok
+test_action_retains_bounded_dev_build_streams_only_on_later_prepare_failure (deploy.engine.tests.test_prepare_diagnostics.FrontendPrepareDiagnostics.test_action_retains_bounded_dev_build_streams_only_on_later_prepare_failure) ... ok
+
+----------------------------------------------------------------------
+Ran 5 tests in 20.623s
+
+OK

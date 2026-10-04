@@ -7,7 +7,7 @@ on:
         options: [development, production]
         required: true
       source_sha:
-        description: Checkout revision; diagnostic requires this to equal the selected workflow SHA (the queried image remains fixed to the failed release)
+        description: Deployment source SHA from the retained release plan; the workflow uses its current reviewed github.sha as executor
         required: true
         type: string
       artifact_id:
@@ -42,6 +42,7 @@ jobs:
     with:
       environment: ${{ inputs.environment }}
       source_sha: ${{ inputs.source_sha }}
+      executor_sha: ${{ github.sha }}
       components: ${{ inputs.components }}
       release_tag: ${{ inputs.release_tag }}
       operation: ${{ inputs.operation }}
