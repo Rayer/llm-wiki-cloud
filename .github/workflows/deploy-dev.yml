@@ -67,3 +67,129 @@ jobs:
     secrets: inherit
     with:
       source_sha: ${{ github.sha }}
+  main-fast-forward-eligible:
+    name: main-fast-forward-eligible
+    if: >-
+      always() && github.event_name == 'workflow_dispatch' &&
+      github.ref == 'refs/heads/develop' &&
+      inputs.components != 'provision-exportjob-dev' &&
+      inputs.operation != 'diagnose-auth-image' &&
+      inputs.operation != 'readback'
+    needs: release
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      actions: read
+      statuses: write
+    steps:
+      - name: Publish pending eligibility status
+        id: publish_pending_eligibility
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          set -Eeuo pipefail
+          gh api --method POST "repos/${GITHUB_REPOSITORY}/statuses/${GITHUB_SHA}" \
+            -f state=pending \
+            -f context=main-fast-forward-eligible \
+            -f description='Waiting for exact develop head validation' >/dev/null
+
+      - name: Download this DEV attempt result
+        id: download_result
+        if: needs.release.result == 'success'
+        uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4.3.0
+        with:
+          name: lwc-result-development-${{ github.run_id }}-${{ github.run_attempt }}
+          path: ${{ runner.temp }}/dev-result
+
+      - name: Checkout exact candidate
+        id: checkout_exact_candidate
+        if: needs.release.result == 'success'
+        uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+        with:
+          ref: ${{ github.sha }}
+          fetch-depth: 0
+          persist-credentials: false
+
+      - name: Validate formal DEV result and exact main fast-forward eligibility
+        id: validate_eligibility
+        if: always()
+        env:
+          GH_TOKEN: ${{ github.token }}
+          DEPLOY_RESULT: ${{ needs.release.result }}
+          OPERATION: ${{ inputs.operation }}
+          EXPECTED_SOURCE: ${{ inputs.operation == 'release' && (inputs.source_sha || github.sha) || inputs.source_sha }}
+          RELEASE_TAG: ${{ inputs.release_tag }}
+          COMPONENTS: ${{ inputs.components }}
+          RESULT_DIR: ${{ runner.temp }}/dev-result
+          RESULT_DOWNLOAD_OUTCOME: ${{ steps.download_result.outcome }}
+          CHECKOUT_OUTCOME: ${{ steps.checkout_exact_candidate.outcome }}
+          PENDING_OUTCOME: ${{ steps.publish_pending_eligibility.outcome }}
+        run: |
+          set -Eeuo pipefail
+
+          [[ "$DEPLOY_RESULT" == success ]] || exit 1
+          [[ "$OPERATION" != readback ]] || exit 1
+          [[ "$RESULT_DOWNLOAD_OUTCOME" == success ]] || exit 1
+          [[ "$CHECKOUT_OUTCOME" == success ]] || exit 1
+          [[ "$PENDING_OUTCOME" == success ]] || exit 1
+          [[ "$GITHUB_SHA" =~ ^[0-9a-f]{40}$ ]] || exit 1
+
+          python3 - <<'PY'
+          import json
+          import os
+          from pathlib import Path
+
+          root = Path(os.environ['RESULT_DIR'])
+          plan = json.loads((root / 'plan.json').read_text())
+          state = json.loads((root / 'state.json').read_text())
+          result = json.loads((root / 'result.json').read_text())
+          requested = os.environ['COMPONENTS'].split(',')
+          if (not plan.get('id') or plan.get('source') != os.environ['EXPECTED_SOURCE'] or
+                  plan.get('tag') != os.environ['RELEASE_TAG'] or
+                  plan.get('branch') != 'develop' or
+                  plan.get('normalized', {}).get('environment') != 'development' or
+                  sorted(plan.get('selected', [])) != sorted(requested) or
+                  state.get('plan') != plan['id'] or state.get('status') != 'success' or
+                  state.get('executor_sha') != os.environ['GITHUB_SHA'] or
+                  result.get('attempt') != plan['id'] or
+                  result.get('release') != os.environ['RELEASE_TAG'] or
+                  result.get('expected', {}).get('source') != plan['source'] or
+                  result.get('status') != 'success' or result.get('stage') != 'success' or
+                  result.get('reason') != 'completed' or
+                  result.get('last_verified_checkpoint') != state.get('sequence')):
+              raise SystemExit('formal DEV result/state is not a successful current attempt')
+          PY
+
+          checked_out_sha="$(git rev-parse --verify HEAD)"
+          [[ "$checked_out_sha" == "$GITHUB_SHA" ]] || exit 1
+
+          remote_head() {
+            local branch="$1" head
+            head="$(gh api --jq '.object.sha' \
+              "repos/${GITHUB_REPOSITORY}/git/ref/heads/${branch}")"
+            [[ "$head" =~ ^[0-9a-f]{40}$ ]] || return 1
+            printf '%s\n' "$head"
+          }
+
+          current_develop="$(remote_head develop)"
+          [[ "$current_develop" == "$GITHUB_SHA" ]] || exit 1
+          current_main="$(remote_head main)"
+          [[ "$(git rev-parse refs/remotes/origin/main)" == "$current_main" ]] || exit 1
+          git merge-base --is-ancestor "$current_main" "$GITHUB_SHA" || exit 1
+          [[ "$(remote_head develop)" == "$GITHUB_SHA" ]] || exit 1
+
+          gh api --method POST "repos/${GITHUB_REPOSITORY}/statuses/${GITHUB_SHA}" \
+            -f state=success \
+            -f context=main-fast-forward-eligible \
+            -f description='Exact successful DEV result is eligible for main fast-forward' >/dev/null
+
+      - name: Publish eligibility failure status
+        if: ${{ failure() || cancelled() }}
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          set -Eeuo pipefail
+          gh api --method POST "repos/${GITHUB_REPOSITORY}/statuses/${GITHUB_SHA}" \
+            -f state=failure \
+            -f context=main-fast-forward-eligible \
+            -f description='Exact DEV result or develop/main fast-forward validation failed' >/dev/null

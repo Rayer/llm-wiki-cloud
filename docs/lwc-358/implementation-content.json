@@ -1,7 +1,7 @@
 {
-  "base": "50a166f2b4af3f1d2dd371c2975989fb0fbf1f82",
-  "branch": "Rayer/LWC-358-readback-unblock",
-  "content_sha256": "1cfb21e36a87b511bb4d0dff0caeabac36257b76520040ce7603bb7200e58e6f",
+  "base": "ce6fb32d7dbaf816f0b9d9c43ff6b325a4a99da5",
+  "branch": "Rayer/LWC-358-output-bytes",
+  "content_sha256": "9a542ec5b5def2252d16149995e1ab80824d5f39adfbffdf788251d5ecfe590a",
   "scope": "All implementation, test, operator, accepted-appendix and frozen-spec paths in this candidate; excludes this manifest, evidence report, raw test logs and generated caches.",
   "frozen_sha256": "838817cad154b0ea773c205f671362a6c9c0ad97c38ddf34f2508eb4fcc2488b",
   "files": [
@@ -37,7 +37,7 @@
     },
     {
       "path": ".github/workflows/deploy-dev.yml",
-      "sha256": "71aa283742dc85e3815aedd4821f0b4da44985c4a900451fc9a5fefa6959ecbd",
+      "sha256": "1274983e202111e6b425a58805fa2ab822405f1003f216007b74a6737918a9e7",
       "mode": "0o644"
     },
     {
@@ -62,7 +62,7 @@
     },
     {
       "path": "apps/bff/scripts/test_bff_explicit_cutover.py",
-      "sha256": "4eb5ab182e32a21eaf66761bcfd22d9637313e1bd972b0242333bc333f2ab698",
+      "sha256": "a676bdba339dab43d2074b886773f300ae5f2aec758925b8e5db39f397cf0131",
       "mode": "0o644"
     },
     {
@@ -72,7 +72,7 @@
     },
     {
       "path": "apps/frontend/tests/ci-workflow-contract.test.mjs",
-      "sha256": "d61259e8c9dc4110c6126515fc9fa53548e72ad9fafafc0b045b97c900ac21a6",
+      "sha256": "8f76dc98e11a6faaeabf89425a9e6dc71e798ba5a3791093e7dd8473428e3070",
       "mode": "0o644"
     },
     {
@@ -303,6 +303,11 @@
     {
       "path": "scripts/test_local_vertical_smoke.py",
       "sha256": "00ad8efa82ea940d53db059b8bc2053a8038f6f3cc792e3dfd9282c482c77695",
+      "mode": "0o644"
+    },
+    {
+      "path": "scripts/test_main_fast_forward_eligibility.py",
+      "sha256": "8a28973820815052379f818636e29eb79debf3ad52bbfb542a2dad7aed7b769b",
       "mode": "0o644"
     }
   ]

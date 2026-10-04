@@ -50,7 +50,14 @@ test('r2 registered release and recovery workflows use explicit artifact inputs'
   assert.deepEqual(operation.options, ['release', 'deploy', 'rollback', 'reactivate', 'tag', 'readback', 'diagnose-auth-image']);
   assert.equal(deployDev.on.workflow_dispatch.inputs.source_sha.default, '');
   assert.deepEqual(deployDev.on.workflow_dispatch.inputs.force, { description: 'Explicitly accept duplicate-mutation risk to deploy a new ready attempt past another attempt\'s unresolved target status', type: 'boolean', default: false });
-  assert.deepEqual(Object.keys(deployDev.jobs).sort(), ['auth-image-diagnostic', 'release']);
+  assert.deepEqual(Object.keys(deployDev.jobs).sort(), ['auth-image-diagnostic', 'main-fast-forward-eligible', 'release']);
+  const eligibility = deployDev.jobs['main-fast-forward-eligible'];
+  assert.equal(eligibility.name, 'main-fast-forward-eligible');
+  assert.equal(eligibility.needs, 'release');
+  assert.ok(eligibility.if.includes("inputs.operation != 'readback'"));
+  assert.deepEqual(eligibility.permissions, { contents: 'read', actions: 'read', statuses: 'write' });
+  assert.equal(eligibility.steps.find((step) => step.name === 'Download this DEV attempt result').with.name,
+    'lwc-result-development-${{ github.run_id }}-${{ github.run_attempt }}');
   const diagnostic = deployDev.jobs['auth-image-diagnostic'];
   for (const condition of [
     "inputs.operation == 'diagnose-auth-image'", "github.ref == 'refs/heads/develop'",
