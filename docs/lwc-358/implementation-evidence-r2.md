@@ -727,3 +727,17 @@ A separate `actionlint` attempt did not run because the pinned module is absent 
 The previously recorded complete Frontend `npm test` log is `evidence/owner-correction-4-1814-frontend-full.txt` (SHA256 `32754159a35de97793d54552b3e5726c165ed7e76b7a4a5c6c96fe3edb111ed1`). It ran `test:node` (**523 passed, 0 failed, 0 skipped**) and then `test:component` with Vitest (**32 files, 292 tests passed**). That complete npm run predates this F1 candidate and is not claimed as a rerun against it. For this candidate the full affected Frontend workflow-contract file is the 5/5 run above; no broad npm suite was repeated.
 
 The source diff is limited to `.github/workflows/deploy-dev.yml`, `.github/workflows/cd.yml`, `deploy/engine/tests/test_build_submission.py`, `scripts/test_engine_workflow.py`, `apps/frontend/tests/ci-workflow-contract.test.mjs`, `apps/bff/scripts/test_bff_explicit_cutover.py`, `docs/lwc-358/operator-r2.md`, and `.agents/skills/deployment-operator/SKILL.md`. This evidence report, the canonical manifest, and raw command outputs are local additions/updates; generated `__pycache__` is excluded. No commit, push, PR update, Action dispatch, live provider, credential/IAM, Production, or tag operation occurred.
+
+## PR88 CI finding on 7a614649 — sibling DEV source expression assertion
+
+The CI failure reported for exact candidate `7a61464914ac52635d1e657c00735e6ea19d9bb8` was a stale sibling assertion in `apps/frontend/tests/lwc-253-vercel-dev-authority.test.mjs`: it expected the former release expression and no longer matched the already-accepted `deploy-dev.yml` source routing. Only that expected string changed to the actual workflow value `inputs.operation == 'release' && (inputs.source_sha || github.sha) || inputs.source_sha`. The workflow and production code were not changed. The existing `executor_sha: github.sha` assertion remains. Existing CI failure evidence was preserved.
+
+The isolated worktree now has HEAD/tree `7a61464914ac52635d1e657c00735e6ea19d9bb8` / `a2e2113ce1318e41b455f71d1a630d8f6c0b33a8`; the sibling test, evidence report, and canonical manifest are local changes. No package was installed: commands used the existing local dependency tree via a temporary symlink that was removed after the runs. `npm test` was executed with the package's default parallel Vitest invocation.
+
+| Exact command | Result | Evidence SHA256 |
+|---|---|---|
+| `node --test tests/ci-workflow-contract.test.mjs tests/lwc-253-vercel-dev-authority.test.mjs` (cwd `apps/frontend`) | Both complete files: 42 tests, 42 passed, 0 failed, 0 skipped; 10.284s | `evidence/pr88-source-fallback-related-frontend.txt` / `3ee92b25e042b8bff2639ad867b6e2abf80b26eaa79fbf399e5598ee042f5b3e` |
+| `npm test` (cwd `apps/frontend`) | `test:node`: 523 passed, 0 failed, 0 skipped; then Vitest: 32 files, 292 passed; exit 0, 66.363s | `evidence/pr88-source-fallback-npm-test.txt` / `c139b771741ce907b91bf7126fbf619d778ee2128364348b83a1bbb558482009` |
+| `git diff --check` | exit 0 | no output |
+
+Canonical manifest rows were refreshed from actual bytes and modes. Frozen r2 remains unchanged at SHA256 `838817cad154b0ea773c205f671362a6c9c0ad97c38ddf34f2508eb4fcc2488b`. This is local test/evidence repair only: no commit, push, PR publication, Action dispatch, provider/IAM/credential/Production operation, or network install occurred.

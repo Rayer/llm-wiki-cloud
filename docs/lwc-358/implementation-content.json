@@ -1,7 +1,7 @@
 {
   "base": "60178904b62f7702a236689576ffb5862b8addcc",
-  "branch": "Rayer/LWC-358-recovery-owner-correction (local unpublished F1 candidate based on e08c76aa955a1251f34ea44c8b59350607a06549)",
-  "content_sha256": "34caad08e1019fb497acce6004f97bc80464af0ba1486e096c0b885fd752b223",
+  "branch": "Rayer/LWC-358-recovery-owner-correction (local sibling assertion repair based on 7a61464914ac52635d1e657c00735e6ea19d9bb8)",
+  "content_sha256": "0ac4f4d9d2d39797c58df8b153e6222d4ab3d8f405f4cdf93d3111807c125f44",
   "scope": "All implementation, test, operator, accepted-appendix and frozen-spec paths in this candidate; excludes this manifest, evidence report, raw test logs and generated caches.",
   "frozen_sha256": "838817cad154b0ea773c205f671362a6c9c0ad97c38ddf34f2508eb4fcc2488b",
   "files": [
@@ -87,7 +87,7 @@
     },
     {
       "path": "apps/frontend/tests/lwc-253-vercel-dev-authority.test.mjs",
-      "sha256": "4a39b274ef3a1f309f2ebea1c49d1a0965c0e1395083e1be23a2d1be95c77761",
+      "sha256": "18fff1e1c8c17fe6fc5b24a19d8f09d59442c3819f38531f7443413ce2fb5c00",
       "mode": "0o644"
     },
     {

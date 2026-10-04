@@ -415,7 +415,7 @@ test('DEV workflow invokes the shared engine and isolates the fixed diagnostic r
   assert.equal(job.uses, './.github/workflows/cd.yml');
   assert.equal(job.secrets, 'inherit');
   assert.deepEqual(job.with, {
-    environment: 'development', source_sha: "${{ inputs.operation == 'release' && github.sha || inputs.source_sha }}",
+    environment: 'development', source_sha: "${{ inputs.operation == 'release' && (inputs.source_sha || github.sha) || inputs.source_sha }}",
     executor_sha: '${{ github.sha }}',
     components: '${{ inputs.components }}', release_tag: '${{ inputs.release_tag }}',
     artifact_id: '${{ inputs.artifact_id }}', dev_artifact_id: '${{ inputs.dev_artifact_id }}',
