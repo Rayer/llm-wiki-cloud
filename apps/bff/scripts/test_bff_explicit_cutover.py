@@ -196,6 +196,9 @@ class SharedCDContractTest(unittest.TestCase):
                 self.assertEqual(operation["default"], "release")
                 self.assertEqual(operation["options"], ["release", "deploy", "rollback", "reactivate", "tag", "readback", "diagnose-auth-image"])
                 self.assertEqual(job["with"]["operation"], "${{ inputs.operation }}")
+                self.assertEqual(job["with"]["source_sha"], "${{ inputs.operation == 'release' && (inputs.source_sha || github.sha) || inputs.source_sha }}")
+                self.assertEqual(job["with"]["executor_sha"], "${{ github.sha }}")
+                self.assertEqual(trigger["workflow_dispatch"]["inputs"]["source_sha"]["default"], "")
                 diagnostic = workflow["jobs"]["auth-image-diagnostic"]
                 for condition in (
                     "inputs.operation == 'diagnose-auth-image'",
@@ -209,6 +212,9 @@ class SharedCDContractTest(unittest.TestCase):
                 self.assertEqual(diagnostic["uses"], "./.github/workflows/cd-auth-image-diagnostic.yml")
                 self.assertEqual(diagnostic["permissions"], {"contents": "read", "actions": "read", "id-token": "write"})
                 self.assertEqual(diagnostic["with"], {"source_sha": "${{ github.sha }}"})
+            else:
+                self.assertEqual(job["with"]["source_sha"], "${{ github.sha }}")
+                self.assertEqual(job["with"]["executor_sha"], "${{ github.sha }}")
 
         recovery = yaml.safe_load((workflows / "recover-deployment.yml").read_text())
         trigger = recovery.get("on", recovery.get(True, {}))
@@ -246,7 +252,13 @@ class SharedCDContractTest(unittest.TestCase):
         steps = job["steps"]
         self.assertEqual(job["env"]["EXECUTOR_SHA"], "${{ inputs.executor_sha }}")
         self.assertEqual(job["env"]["FORCE"], "${{ inputs.force }}")
+        self.assertEqual(job["env"]["SOURCE"], "${{ inputs.source_sha }}")
         self.assertEqual(next(step for step in steps if step.get("uses", "").startswith("actions/checkout@"))["with"]["ref"], "${{ inputs.executor_sha }}")
+        resume_validation = next(step for step in steps
+                                 if step.get("name") == "Validate retained Stage 1 source input")
+        self.assertEqual(resume_validation["if"], "inputs.operation == 'release' && inputs.environment == 'development' && inputs.source_sha != github.sha")
+        self.assertEqual(resume_validation["env"]["ARTIFACT_ID"], "${{ inputs.artifact_id }}")
+        self.assertIn('test -n "$ARTIFACT_ID"', resume_validation["run"])
         prepare = next(i for i, step in enumerate(steps) if step.get("with", {}).get("operation") == "prepare")
         barrier = next(i for i, step in enumerate(steps) if step.get("id") == "ready")
         runtime = next(i for i, step in enumerate(steps) if step.get("with", {}).get("operation") == "runtime")

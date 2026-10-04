@@ -37,7 +37,7 @@ test('r2 registered release and recovery workflows use explicit artifact inputs'
       ? `github.ref == 'refs/heads/${branch}' && inputs.operation != 'diagnose-auth-image'`
       : `github.ref == 'refs/heads/${branch}'`);
     assert.equal(parsed.jobs.release.with.source_sha, file === 'deploy-dev.yml'
-      ? "${{ inputs.operation == 'release' && github.sha || inputs.source_sha }}"
+      ? "${{ inputs.operation == 'release' && (inputs.source_sha || github.sha) || inputs.source_sha }}"
       : '${{ github.sha }}');
     assert.equal(parsed.jobs.release.with.executor_sha, '${{ github.sha }}');
     assert.equal(parsed.jobs.release.secrets, 'inherit');
@@ -153,6 +153,12 @@ test('shared engine has one approval and one serialized runtime authority', asyn
   assert.equal(runtimeAuthorities[0].step.uses, './.github/actions/deployment-engine');
   const runtime = runtimeAuthorities[0].index;
   assert.ok(prepare >= 0 && prepare < barrier && barrier < runtime);
+  const resumeSource = steps.find(step => step.name === 'Validate retained Stage 1 source input');
+  assert.equal(resumeSource.if, "inputs.operation == 'release' && inputs.environment == 'development' && inputs.source_sha != github.sha");
+  assert.equal(resumeSource.env.ARTIFACT_ID, '${{ inputs.artifact_id }}');
+  assert.match(resumeSource.run, /test -n \"\$ARTIFACT_ID\"/);
+  assert.equal(job.env.SOURCE, '${{ inputs.source_sha }}');
+  assert.equal(job.env.EXECUTOR_SHA, '${{ inputs.executor_sha }}');
   assert.equal(steps[prepare].if, "inputs.operation == 'release'");
   assert.equal(steps.find(step => step.uses?.startsWith('actions/checkout@')).with.ref, '${{ inputs.executor_sha }}');
   assert.equal(steps[runtime].uses, './.github/actions/deployment-engine');

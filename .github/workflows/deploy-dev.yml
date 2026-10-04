@@ -19,7 +19,7 @@ on:
         type: string
         default: ''
       source_sha:
-        description: Retained release source SHA for explicit recovery; normal release uses this workflow's github.sha
+        description: Original source SHA for retained Stage 1 resume or recovery; leave blank for a normal release using this workflow's github.sha
         type: string
         default: ''
       force:
@@ -43,7 +43,7 @@ jobs:
     secrets: inherit
     with:
       environment: development
-      source_sha: ${{ inputs.operation == 'release' && github.sha || inputs.source_sha }}
+      source_sha: ${{ inputs.operation == 'release' && (inputs.source_sha || github.sha) || inputs.source_sha }}
       executor_sha: ${{ github.sha }}
       components: ${{ inputs.components }}
       release_tag: ${{ inputs.release_tag }}

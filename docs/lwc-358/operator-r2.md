@@ -11,12 +11,12 @@ Actions 表單輸入：
 - `artifact_id`：選填，上一個準備結果的確切 Actions artifact ID，用於失敗續建、選擇擴大或工具變更後重用。
 - `dev_artifact_id`：Production 容器必填，成功 DEV release 的結果 artifact ID。容器保留原 build SHA；source-input identity 必須對得上 main 候選。Frontend 按 Production 設定建置。
 - `operation`：Deploy Development 預設 `release`；也可明確選 `deploy`、`rollback`、`reactivate`、`tag` 或 `readback`，使用 retained artifact 執行現有 runtime 操作。`diagnose-auth-image` 仍是獨立固定唯讀分支。Production wrapper 不提供 recovery operations 或 force。
-- `source_sha`：僅在 DEV retained-artifact operation 使用，填原 plan 的 deployment source SHA；一般 `release` 固定使用目前 workflow `github.sha`。
+- `source_sha`：DEV 普通 `release` 留空時使用目前 workflow `github.sha`。跨 executor 續跑 Stage 1 時，選 `release` 並同時填原 plan 的 deployment source SHA 與 retained `artifact_id`；DEV recovery operations 也填原 plan source。Executor checkout 一律使用目前 reviewed `github.sha`。
 - `force`：選填布林值，預設 `false`。僅新 ready DEV attempt 的 `deploy` 可使用；細節見下方。
 
 Workflow 把目前 reviewed `github.sha` 當作 `executor_sha` 來 checkout engine；它與 plan 的 `source`（deployment source SHA）分開。Go `cmd/deploy_config` 產生 normalized config。Profile 透過 Go dependency package 與 embed file、Dockerfile、module files 及明確靜態 inputs 計算 identity；部署工具與無關 package 不使既有容器失效。Frontend identity 使用其 source tree 及目標 public config。Schema 3 plan ID 由穩定 release identity 計算，包含 source、target/config、tag、selected components、輸入 identity 與 DEV provenance，不含 executor SHA；選擇或 release identity 改變必須建立新 plan。
 
-同一 Stage 1 attempt 跨 Actions job 續跑時，保持 source、target/config、release tag、components 選擇與輸入 identity 相同，並把該 attempt 最新的 prepared/ready checkpoint artifact ID 傳回 `artifact_id`。Schema 2 舊 plan 的原 ID/hash 保持不變；已驗證的 schema-less 舊 state 視為 checkpoint schema 1。Schema 3 的 executor SHA 可更新，不改 release plan ID。Engine 驗證 retained plan/hash 與 state 綁定、runtime 尚未開始，再帶入原 build checkpoint；pending/status unknown 只查原 build ID，ID-less submit unknown 停止，SUCCESS 後只重試 digest/receipt。改變 release identity 時 Engine 不搬移舊 build state：只可重用 identity/config 相符且 provider 可讀的已完成 receipts。不同 release identity 若有尚未完成且沒有可用 receipt 的 build handle，會以 `cross-plan-build-checkpoint-unresolved` 停止；回到原 attempt 的 artifact 與輸入續跑。已明確觀察為 terminal failure 或 pre-create rejection 的 handle，可由之後明確 prepare invocation 重試。完整判斷表見 [accepted Stage 1 checkpoint appendix](deployment-engine-spec-r2-accepted-appendix-build-submit.md#stage-1-checkpoint-resume-boundary)。
+同一 Stage 1 attempt 跨 Actions job 續跑時，保持 source、target/config、release tag、components 選擇與輸入 identity 相同，並把該 attempt 最新的 prepared/ready checkpoint artifact ID 傳回 `artifact_id`。在已註冊 DEV workflow 選 `release`，填原 `source_sha` 和該 `artifact_id`；留空 `source_sha` 的一般 release 仍使用目前 `github.sha`。共用 workflow 用目前 reviewed `github.sha` 當 executor checkout，並以指定 artifact 驗證及續跑原 deployment source。Schema 2 舊 plan 的原 ID/hash 保持不變；已驗證的 schema-less 舊 state 視為 checkpoint schema 1。Schema 3 的 executor SHA 可更新，不改 release plan ID。Engine 驗證 retained plan/hash 與 state 綁定、runtime 尚未開始，再帶入原 build checkpoint；pending/status unknown 只查原 build ID，ID-less submit unknown 停止，SUCCESS 後只重試 digest/receipt。改變 release identity 時 Engine 不搬移舊 build state：只可重用 identity/config 相符且 provider 可讀的已完成 receipts。不同 release identity 若有尚未完成且沒有可用 receipt 的 build handle，會以 `cross-plan-build-checkpoint-unresolved` 停止；要回到原 attempt 的 source、tag、selection/config/input identity 與 artifact 續跑，不能用新 identity 帶走 handle。已明確觀察為 terminal failure 或 pre-create rejection 的 handle，可由之後明確 prepare invocation 重試。完整判斷表見 [accepted Stage 1 checkpoint appendix](deployment-engine-spec-r2-accepted-appendix-build-submit.md#stage-1-checkpoint-resume-boundary)。
 
 ### DEV recovery 與明確 force
 
@@ -71,7 +71,7 @@ gcloud logging read \
 
 `LEGACY` logging 不保證有 Cloud Logging entries；查無資料不改變 Cloud Build status，也不表示可改 logging mode、IAM 或 log bucket。完整契約記於 [r2 accepted build-submit appendix](deployment-engine-spec-r2-accepted-appendix-build-submit.md)。
 
-在已註冊 `Deploy Development` 選擇 recovery operation 時，輸入原 `source_sha`、`release_tag`、environment、最新 `artifact_id`、受影響 components 及 operation。使用 artifact 清單中最新 `lwc-state-<target>-…` ID，而非舊 `lwc-ready-…`；workflow 使用目前 reviewed SHA 作 executor checkout，下載後仍驗 retained plan 的 source/target/tag/components。Checkpoint 查詢一次讀最新 100 筆；若無法在界限內確認最新 state、artifact 到期或 provider 不可讀，停止並回報 TPM，不猜測。`recover-deployment.yml` 不是此 DEV 入口的註冊前提。
+在已註冊 `Deploy Development` 選擇 recovery operation 時，輸入原 `source_sha`、`release_tag`、environment、最新 `artifact_id`、受影響 components 及 operation。使用 artifact 清單中最新 `lwc-state-<target>-…` ID，而非舊 `lwc-ready-…`；workflow 使用目前 reviewed SHA 作 executor checkout，下載後仍驗 retained plan 的 source/target/tag/components。Checkpoint 清單以每頁 100 筆完整分頁至 `total_count`，確認所有頁面後才選最新 artifact；不設 100 筆總量上限。若清單不完整、artifact 到期或 provider 不可讀，停止並回報 TPM，不猜測。`recover-deployment.yml` 不是此 DEV 入口的註冊前提。
 
 ### 固定 DEV image 診斷（暫時）
 

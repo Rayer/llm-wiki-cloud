@@ -1,0 +1,7 @@
+test_registered_dev_release_resumes_legacy_source_with_current_executor (test_build_submission.AsyncBuildSubmission.test_registered_dev_release_resumes_legacy_source_with_current_executor) ... ok
+test_cross_plan_source_target_tag_selection_input_and_provenance_changes_fail_closed (test_build_submission.AsyncBuildSubmission.test_cross_plan_source_target_tag_selection_input_and_provenance_changes_fail_closed) ... ok
+
+----------------------------------------------------------------------
+Ran 2 tests in 18.753s
+
+OK
