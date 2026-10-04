@@ -406,7 +406,13 @@ class Acceptance(unittest.TestCase):
         e=self.make(('frontend',))
         with tempfile.TemporaryDirectory() as temp,patch('providers.ROOT',Path(temp)):
             (Path(temp)/'apps/frontend').mkdir(parents=True);e.prepare()
-        e.deploy();self.assertEqual(self.current()['aliases']['wiki.dev.rayer.idv.tw'],'dpl_candidate')
+        e.deploy()
+        layout=self.current()['frontend_deploy_layout']
+        self.assertTrue(layout['configured_root_exists'], 'the local extracted root must satisfy the pinned CLI project root')
+        self.assertTrue(layout['cwd_prebuilt_output_exists'], 'the pinned CLI reads .vercel/output from cwd on the env-linked branch')
+        self.assertTrue(layout['project_identity_matches_artifact'])
+        self.assertTrue(layout['remote_root_setting_preserved'])
+        self.assertEqual(self.current()['aliases']['wiki.dev.rayer.idv.tw'],'dpl_candidate')
         count=len([x for x in self.calls('build') if x[0]=='vercel'])
         e.restore(['frontend']);self.assertEqual(self.current()['aliases']['wiki.dev.rayer.idv.tw'],'dpl_prior')
         e.deploy(['frontend'],reactivate=True)

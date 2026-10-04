@@ -1,0 +1,3 @@
+PROJECT present + ORG absent + TEAM and --scope context is rejected before lookup: PASS
+Validated TEAM mapped to ORG + selected PROJECT uses the same linked branch: PASS
+Pinned build-utils rejects conflicting inherited NOW aliases: PASS

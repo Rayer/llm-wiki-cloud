@@ -1,0 +1,6 @@
+test_09_frontend_alias_restore_and_config_applicability (test_engine.Acceptance.test_09_frontend_alias_restore_and_config_applicability) ... ok
+
+----------------------------------------------------------------------
+Ran 1 test in 1.202s
+
+OK

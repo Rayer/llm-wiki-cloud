@@ -1,7 +1,7 @@
 {
-  "base": "60178904b62f7702a236689576ffb5862b8addcc",
-  "branch": "Rayer/LWC-358-recovery-owner-correction (local test-fixture repair based on 6a108072b22f448751ef00c89414875988da0e9c)",
-  "content_sha256": "db377ea694a27ad70f5340e228fe50b747ed3ce6b966f12184e0747b6980e927",
+  "base": "50a166f2b4af3f1d2dd371c2975989fb0fbf1f82",
+  "branch": "Rayer/LWC-358-readback-unblock",
+  "content_sha256": "38adad6938a9f155f0d79faf2fef41b894bd5e466800e95508e4281840fbb266",
   "scope": "All implementation, test, operator, accepted-appendix and frozen-spec paths in this candidate; excludes this manifest, evidence report, raw test logs and generated caches.",
   "frozen_sha256": "838817cad154b0ea773c205f671362a6c9c0ad97c38ddf34f2508eb4fcc2488b",
   "files": [
@@ -142,7 +142,7 @@
     },
     {
       "path": "deploy/engine/providers.py",
-      "sha256": "3b80e0508ee756d7b1479ba52d26eb7351ca2e894ac0adad4a17bc995ce02ea1",
+      "sha256": "74a0e1fc4c6e32f4a1fafcb15e44efe063ee766016bae39e63e7527ec8b010a3",
       "mode": "0o644"
     },
     {
@@ -157,7 +157,7 @@
     },
     {
       "path": "deploy/engine/tests/fake_provider.py",
-      "sha256": "b941cdb934b91e52bd7982d925bdda37057e067183c90a396441106fa4c51ca1",
+      "sha256": "fd7c6caad9932e3e8ff7bde0605448d77846f31c0ab0134e955297fbbea8438b",
       "mode": "0o755"
     },
     {
@@ -186,6 +186,11 @@
       "mode": "0o644"
     },
     {
+      "path": "deploy/engine/tests/fixtures/vercel-59.11.7-prebuilt-deploy-root.js",
+      "sha256": "2023915c8c57f295a1730cbd75298022d6f85406bba8e9ad101237024c888de9",
+      "mode": "0o644"
+    },
+    {
       "path": "deploy/engine/tests/test_build_submission.py",
       "sha256": "202eda0f285cf5df5921a292a3f1ed4d41383f3ec131447922e70934089fdbc5",
       "mode": "0o644"
@@ -202,7 +207,7 @@
     },
     {
       "path": "deploy/engine/tests/test_engine.py",
-      "sha256": "d472fd7ccf8467d33f25f8d953da23402bc40d7b533ed25c22d7460849640627",
+      "sha256": "a51f8bed17081f6c7ef3e8ba2d500f3e908c631f7e49b87940319c1fde8f5f2f",
       "mode": "0o644"
     },
     {
@@ -217,7 +222,7 @@
     },
     {
       "path": "deploy/engine/tests/test_vercel_env_context.js",
-      "sha256": "581ffccfa19f8bccc55330d753118ddd5e607324155e6497fdbdf08c42492f2c",
+      "sha256": "ed6a2f96e950b2d2396e17badbec631a934a22b5fd292b609b306b3ea3aa825e",
       "mode": "0o644"
     },
     {
@@ -262,7 +267,7 @@
     },
     {
       "path": "docs/lwc-358/operator-r2.md",
-      "sha256": "ba56ae30c49b75c1a02c7cb7d32134424058bdc77a8dab6b5970fb1b3814ff51",
+      "sha256": "4af541363c84af7d2b2a40350805b547bff88680ca58ff552ac56079b3b79b20",
       "mode": "0o644"
     },
     {
