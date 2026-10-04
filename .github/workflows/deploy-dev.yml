@@ -18,11 +18,19 @@ on:
         description: Explicit successful DEV result artifact (required for Production containers)
         type: string
         default: ''
+      source_sha:
+        description: Original source SHA for retained Stage 1 resume or recovery; leave blank for a normal release using this workflow's github.sha
+        type: string
+        default: ''
+      force:
+        description: Explicitly accept duplicate-mutation risk to deploy a new ready attempt past another attempt's unresolved target status
+        type: boolean
+        default: false
       operation:
-        description: Normal release by default; diagnose-auth-image is a fixed read-only Auth image check
+        description: Normal release by default; recovery operations consume a pinned retained artifact
         required: true
         type: choice
-        options: [release, diagnose-auth-image]
+        options: [release, deploy, rollback, reactivate, tag, readback, diagnose-auth-image]
         default: release
 permissions:
   contents: write
@@ -30,17 +38,19 @@ permissions:
   id-token: write
 jobs:
   release:
-    if: github.ref == 'refs/heads/develop' && inputs.operation == 'release'
+    if: github.ref == 'refs/heads/develop' && inputs.operation != 'diagnose-auth-image'
     uses: ./.github/workflows/cd.yml
     secrets: inherit
     with:
       environment: development
-      source_sha: ${{ github.sha }}
+      source_sha: ${{ inputs.operation == 'release' && (inputs.source_sha || github.sha) || inputs.source_sha }}
+      executor_sha: ${{ github.sha }}
       components: ${{ inputs.components }}
       release_tag: ${{ inputs.release_tag }}
       artifact_id: ${{ inputs.artifact_id }}
       dev_artifact_id: ${{ inputs.dev_artifact_id }}
       operation: ${{ inputs.operation }}
+      force: ${{ inputs.force }}
   auth-image-diagnostic:
     if: >-
       inputs.operation == 'diagnose-auth-image' &&

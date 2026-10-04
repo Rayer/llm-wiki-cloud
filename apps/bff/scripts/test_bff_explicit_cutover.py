@@ -185,7 +185,7 @@ class SharedCDContractTest(unittest.TestCase):
             job = workflow["jobs"]["release"]
             expected_release_guard = f"github.ref == 'refs/heads/{branch}'"
             if path == "deploy-dev.yml":
-                expected_release_guard += " && inputs.operation == 'release'"
+                expected_release_guard += " && inputs.operation != 'diagnose-auth-image'"
             self.assertEqual(job["if"], expected_release_guard)
             self.assertEqual(job["uses"], "./.github/workflows/cd.yml")
             self.assertEqual(job["with"]["environment"], environment)
@@ -194,8 +194,11 @@ class SharedCDContractTest(unittest.TestCase):
             if path == "deploy-dev.yml":
                 operation = trigger["workflow_dispatch"]["inputs"]["operation"]
                 self.assertEqual(operation["default"], "release")
-                self.assertEqual(operation["options"], ["release", "diagnose-auth-image"])
+                self.assertEqual(operation["options"], ["release", "deploy", "rollback", "reactivate", "tag", "readback", "diagnose-auth-image"])
                 self.assertEqual(job["with"]["operation"], "${{ inputs.operation }}")
+                self.assertEqual(job["with"]["source_sha"], "${{ inputs.operation == 'release' && (inputs.source_sha || github.sha) || inputs.source_sha }}")
+                self.assertEqual(job["with"]["executor_sha"], "${{ github.sha }}")
+                self.assertEqual(trigger["workflow_dispatch"]["inputs"]["source_sha"]["default"], "")
                 diagnostic = workflow["jobs"]["auth-image-diagnostic"]
                 for condition in (
                     "inputs.operation == 'diagnose-auth-image'",
@@ -209,6 +212,9 @@ class SharedCDContractTest(unittest.TestCase):
                 self.assertEqual(diagnostic["uses"], "./.github/workflows/cd-auth-image-diagnostic.yml")
                 self.assertEqual(diagnostic["permissions"], {"contents": "read", "actions": "read", "id-token": "write"})
                 self.assertEqual(diagnostic["with"], {"source_sha": "${{ github.sha }}"})
+            else:
+                self.assertEqual(job["with"]["source_sha"], "${{ github.sha }}")
+                self.assertEqual(job["with"]["executor_sha"], "${{ github.sha }}")
 
         recovery = yaml.safe_load((workflows / "recover-deployment.yml").read_text())
         trigger = recovery.get("on", recovery.get(True, {}))
@@ -216,6 +222,7 @@ class SharedCDContractTest(unittest.TestCase):
         self.assertEqual(recovery["jobs"]["recovery"]["uses"], "./.github/workflows/cd.yml")
         self.assertEqual(recovery["jobs"]["recovery"]["with"], {
             "environment": "${{ inputs.environment }}", "source_sha": "${{ inputs.source_sha }}",
+            "executor_sha": "${{ github.sha }}",
             "components": "${{ inputs.components }}", "release_tag": "${{ inputs.release_tag }}",
             "operation": "${{ inputs.operation }}", "artifact_id": "${{ inputs.artifact_id }}",
         })
@@ -234,11 +241,24 @@ class SharedCDContractTest(unittest.TestCase):
         })
 
         shared = yaml.safe_load((workflows / "cd.yml").read_text())
+        self.assertEqual(shared.get("on", shared.get(True, {}))["workflow_call"]["inputs"]["executor_sha"],
+                         {"required": True, "type": "string"})
+        self.assertEqual(shared.get("on", shared.get(True, {}))["workflow_call"]["inputs"]["force"],
+                         {"type": "boolean", "default": False})
         self.assertEqual(set(shared["jobs"]), {"release"})
         job = shared["jobs"]["release"]
         self.assertEqual(shared["concurrency"]["cancel-in-progress"], False)
         self.assertEqual(shared["concurrency"]["group"], "lwc-engine-${{ inputs.environment }}")
         steps = job["steps"]
+        self.assertEqual(job["env"]["EXECUTOR_SHA"], "${{ inputs.executor_sha }}")
+        self.assertEqual(job["env"]["FORCE"], "${{ inputs.force }}")
+        self.assertEqual(job["env"]["SOURCE"], "${{ inputs.source_sha }}")
+        self.assertEqual(next(step for step in steps if step.get("uses", "").startswith("actions/checkout@"))["with"]["ref"], "${{ inputs.executor_sha }}")
+        resume_validation = next(step for step in steps
+                                 if step.get("name") == "Validate retained Stage 1 source input")
+        self.assertEqual(resume_validation["if"], "inputs.operation == 'release' && inputs.environment == 'development' && inputs.source_sha != github.sha")
+        self.assertEqual(resume_validation["env"]["ARTIFACT_ID"], "${{ inputs.artifact_id }}")
+        self.assertIn('test -n "$ARTIFACT_ID"', resume_validation["run"])
         prepare = next(i for i, step in enumerate(steps) if step.get("with", {}).get("operation") == "prepare")
         barrier = next(i for i, step in enumerate(steps) if step.get("id") == "ready")
         runtime = next(i for i, step in enumerate(steps) if step.get("with", {}).get("operation") == "runtime")

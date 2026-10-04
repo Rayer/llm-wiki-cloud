@@ -4,6 +4,10 @@ inputs:
   operation:
     required: true
     description: prepare or runtime
+  force:
+    required: false
+    default: 'false'
+    description: DEV-only bypass for another attempt's unresolved target status on a new ready deploy
 runs:
   using: node20
   main: index.cjs

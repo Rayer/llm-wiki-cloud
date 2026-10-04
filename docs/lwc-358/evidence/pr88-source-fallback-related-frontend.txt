@@ -1,0 +1,262 @@
+TAP version 13
+# Subtest: r2 registered release and recovery workflows use explicit artifact inputs
+ok 1 - r2 registered release and recovery workflows use explicit artifact inputs
+  ---
+  duration_ms: 7.249125
+  type: 'test'
+  ...
+# Subtest: DEV provisioning uses the existing auth identity and preserves hidden evidence
+ok 2 - DEV provisioning uses the existing auth identity and preserves hidden evidence
+  ---
+  duration_ms: 1.314333
+  type: 'test'
+  ...
+# Subtest: shared engine has one approval and one serialized runtime authority
+ok 3 - shared engine has one approval and one serialized runtime authority
+  ---
+  duration_ms: 1.146542
+  type: 'test'
+  ...
+# Subtest: ready and result artifacts have bounded retention and always retain failure evidence
+ok 4 - ready and result artifacts have bounded retention and always retain failure evidence
+  ---
+  duration_ms: 1.478791
+  type: 'test'
+  ...
+# Subtest: all shared run blocks are shell-valid and production consumes, not rebuilds, cloud images
+ok 5 - all shared run blocks are shell-valid and production consumes, not rebuilds, cloud images
+  ---
+  duration_ms: 14.71275
+  type: 'test'
+  ...
+# Subtest: fails closed on contradictory DEV alias authority before mutation
+ok 6 - fails closed on contradictory DEV alias authority before mutation
+  ---
+  duration_ms: 231.659458
+  type: 'test'
+  ...
+# Subtest: root directory contract fails closed before provider mutation
+ok 7 - root directory contract fails closed before provider mutation
+  ---
+  duration_ms: 313.75575
+  type: 'test'
+  ...
+# Subtest: rejects the retired Vercel scope slug
+ok 8 - rejects the retired Vercel scope slug
+  ---
+  duration_ms: 17.371584
+  type: 'test'
+  ...
+# Subtest: uses bounded project-scoped alias inventory without the unsupported domain filter
+ok 9 - uses bounded project-scoped alias inventory without the unsupported domain filter
+  ---
+  duration_ms: 564.001875
+  type: 'test'
+  ...
+# Subtest: fails closed before mutation for ci-failure
+ok 10 - fails closed before mutation for ci-failure
+  ---
+  duration_ms: 72.831208
+  type: 'test'
+  ...
+# Subtest: fails closed before mutation for ci-wrong-sha
+ok 11 - fails closed before mutation for ci-wrong-sha
+  ---
+  duration_ms: 60.407333
+  type: 'test'
+  ...
+# Subtest: fails closed before mutation for success
+ok 12 - fails closed before mutation for success
+  ---
+  duration_ms: 19.029959
+  type: 'test'
+  ...
+# Subtest: fails closed before mutation for success
+ok 13 - fails closed before mutation for success
+  ---
+  duration_ms: 18.386584
+  type: 'test'
+  ...
+# Subtest: fails closed before mutation for success
+ok 14 - fails closed before mutation for success
+  ---
+  duration_ms: 17.754333
+  type: 'test'
+  ...
+# Subtest: fails closed before mutation for project-mismatch
+ok 15 - fails closed before mutation for project-mismatch
+  ---
+  duration_ms: 104.877917
+  type: 'test'
+  ...
+# Subtest: fails closed before mutation for team-mismatch
+ok 16 - fails closed before mutation for team-mismatch
+  ---
+  duration_ms: 112.884708
+  type: 'test'
+  ...
+# Subtest: fails closed before mutation for alias-absent
+ok 17 - fails closed before mutation for alias-absent
+  ---
+  duration_ms: 156.415458
+  type: 'test'
+  ...
+# Subtest: fails closed before mutation for alias-divergent
+ok 18 - fails closed before mutation for alias-divergent
+  ---
+  duration_ms: 160.156333
+  type: 'test'
+  ...
+# Subtest: fails closed before mutation for alias-project-mismatch
+ok 19 - fails closed before mutation for alias-project-mismatch
+  ---
+  duration_ms: 155.632583
+  type: 'test'
+  ...
+# Subtest: fails closed before mutation for rollback-freeze-failure
+ok 20 - fails closed before mutation for rollback-freeze-failure
+  ---
+  duration_ms: 120.221166
+  type: 'test'
+  ...
+# Subtest: read-only preflight records a typed create-needed decision without provider mutation
+ok 21 - read-only preflight records a typed create-needed decision without provider mutation
+  ---
+  duration_ms: 601.353042
+  type: 'test'
+  ...
+# Subtest: rejects a wrong-linked repository before any mutation
+ok 22 - rejects a wrong-linked repository before any mutation
+  ---
+  duration_ms: 109.320959
+  type: 'test'
+  ...
+# Subtest: uses the frozen exact repository ID for a linked project deployment
+ok 23 - uses the frozen exact repository ID for a linked project deployment
+  ---
+  duration_ms: 612.723125
+  type: 'test'
+  ...
+# Subtest: rechecks project authority before mutation for root-drift
+ok 24 - rechecks project authority before mutation for root-drift
+  ---
+  duration_ms: 386.554583
+  type: 'test'
+  ...
+# Subtest: rechecks project authority before mutation for link-drift
+ok 25 - rechecks project authority before mutation for link-drift
+  ---
+  duration_ms: 387.417709
+  type: 'test'
+  ...
+# Subtest: creates through historical deployments and counts deployment plus alias mutations
+ok 26 - creates through historical deployments and counts deployment plus alias mutations
+  ---
+  duration_ms: 673.578333
+  type: 'test'
+  ...
+# Subtest: promote without durable artifact handoff performs no provider mutation
+ok 27 - promote without durable artifact handoff performs no provider mutation
+  ---
+  duration_ms: 232.721416
+  type: 'test'
+  ...
+# Subtest: rejects invalid durable artifact digest prefixed-sha256 before mutation
+ok 28 - rejects invalid durable artifact digest prefixed-sha256 before mutation
+  ---
+  duration_ms: 241.5185
+  type: 'test'
+  ...
+# Subtest: rejects invalid durable artifact digest uppercase before mutation
+ok 29 - rejects invalid durable artifact digest uppercase before mutation
+  ---
+  duration_ms: 245.534334
+  type: 'test'
+  ...
+# Subtest: rejects invalid durable artifact digest too-short-63 before mutation
+ok 30 - rejects invalid durable artifact digest too-short-63 before mutation
+  ---
+  duration_ms: 245.152
+  type: 'test'
+  ...
+# Subtest: rejects invalid durable artifact digest too-long-65 before mutation
+ok 31 - rejects invalid durable artifact digest too-long-65 before mutation
+  ---
+  duration_ms: 247.250416
+  type: 'test'
+  ...
+# Subtest: rejects invalid durable artifact digest empty before mutation
+ok 32 - rejects invalid durable artifact digest empty before mutation
+  ---
+  duration_ms: 243.507958
+  type: 'test'
+  ...
+# Subtest: page-one and page-two uid deployments are normalized and reused without deployment creation
+ok 33 - page-one and page-two uid deployments are normalized and reused without deployment creation
+  ---
+  duration_ms: 570.960959
+  type: 'test'
+  ...
+# Subtest: existing candidate source failure remains zero-mutation blocked
+ok 34 - existing candidate source failure remains zero-mutation blocked
+  ---
+  duration_ms: 361.687959
+  type: 'test'
+  ...
+# Subtest: reconciles a partial mutation and records the uncertain state without retrying
+ok 35 - reconciles a partial mutation and records the uncertain state without retrying
+  ---
+  duration_ms: 477.502792
+  type: 'test'
+  ...
+# Subtest: refuses to mutate without a durable rollback artifact handoff
+ok 36 - refuses to mutate without a durable rollback artifact handoff
+  ---
+  duration_ms: 236.658917
+  type: 'test'
+  ...
+# Subtest: fails closed when post-mutation alias or deployment read-back diverges
+ok 37 - fails closed when post-mutation alias or deployment read-back diverges
+  ---
+  duration_ms: 472.860834
+  type: 'test'
+  ...
+# Subtest: classifies create-uncertain as partial mutation and preserves rollback identity
+ok 38 - classifies create-uncertain as partial mutation and preserves rollback identity
+  ---
+  duration_ms: 389.043917
+  type: 'test'
+  ...
+# Subtest: classifies create-poll-timeout as partial mutation and preserves rollback identity
+ok 39 - classifies create-poll-timeout as partial mutation and preserves rollback identity
+  ---
+  duration_ms: 506.374875
+  type: 'test'
+  ...
+# Subtest: classifies create-source-mismatch as partial mutation and preserves rollback identity
+ok 40 - classifies create-source-mismatch as partial mutation and preserves rollback identity
+  ---
+  duration_ms: 448.079084
+  type: 'test'
+  ...
+# Subtest: classifies create-read-failure as partial mutation and preserves rollback identity
+ok 41 - classifies create-read-failure as partial mutation and preserves rollback identity
+  ---
+  duration_ms: 392.02075
+  type: 'test'
+  ...
+# Subtest: DEV workflow invokes the shared engine and isolates the fixed diagnostic reusable workflow
+ok 42 - DEV workflow invokes the shared engine and isolates the fixed diagnostic reusable workflow
+  ---
+  duration_ms: 5.827875
+  type: 'test'
+  ...
+1..42
+# tests 42
+# suites 0
+# pass 42
+# fail 0
+# cancelled 0
+# skipped 0
+# todo 0
+# duration_ms 10283.808375

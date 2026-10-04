@@ -196,13 +196,14 @@ class AsyncBuildSubmission(unittest.TestCase):
             'auth': {'service_name': 'auth-test'},
             'bff': {'service_name': 'bff-test'},
         }
-        plan = {'schema': 2, 'source': 'a' * 40, 'branch': 'develop',
-                'tag': 'test-lwc358-' + name, 'engine': 'test-engine',
-                'engine_content': engine.engine_fingerprint(), 'normalized': normalized,
+        plan = {'schema': 3, 'source': 'a' * 40, 'branch': 'develop',
+                'tag': 'test-lwc358-' + name,
+                'executor_sha': 'e' * 40,
+                'normalized': normalized,
                 'identities': {c: {'profile': 'test', 'inputs': 'test', 'files': []}
                                for c in selected},
                 'dev_reference': None, 'selected': list(selected)}
-        plan['id'] = digest(plan)
+        plan['id'] = digest(engine.release_identity(plan))
         write(directory / 'plan.json', plan)
         return directory
 
@@ -224,8 +225,8 @@ class AsyncBuildSubmission(unittest.TestCase):
     def result_from(self, directory):
         return json.loads((directory / 'result.json').read_text())
 
-    def admitted_plan(self, *, name, selected=('auth',), tag=None):
-        source = subprocess.check_output(['git','rev-parse','HEAD'], cwd=ROOT, text=True).strip()
+    def admitted_plan(self, *, name, selected=('auth',), tag=None, source=None):
+        source = source or subprocess.check_output(['git','rev-parse','HEAD'], cwd=ROOT, text=True).strip()
         args = SimpleNamespace(environment='development', source=source,
                                components=','.join(selected), tag=tag or 'test-lwc358-'+name,
                                dev_reference=None)
@@ -235,8 +236,42 @@ class AsyncBuildSubmission(unittest.TestCase):
         write(directory/'plan.json', plan)
         return directory, plan
 
-    def make_action_checkpoint(self, name, *, statuses=None, extra=None):
-        directory, plan = self.admitted_plan(name=name)
+    def scratch_source_commit(self, executor):
+        git_dir = self.root / 'retained-source.git'
+        initialized = subprocess.run(['git','init','--bare',str(git_dir)],cwd=ROOT,
+                                     text=True,capture_output=True)
+        self.assertEqual(initialized.returncode,0,initialized.stdout+initialized.stderr)
+        objects = git_dir/'objects'
+        source_objects = subprocess.check_output(
+            ['git','rev-parse','--git-path','objects'],cwd=ROOT,text=True).strip()
+        source_objects = Path(source_objects)
+        if not source_objects.is_absolute():
+            source_objects = ROOT/source_objects
+        (objects/'info'/'alternates').write_text(str(source_objects.resolve())+'\n')
+
+        tree = subprocess.check_output(['git','rev-parse','HEAD^{tree}'],cwd=ROOT,text=True).strip()
+        commit_env = {**os.environ,'GIT_AUTHOR_NAME':'LWC test fixture',
+                      'GIT_AUTHOR_EMAIL':'lwc-test@example.invalid',
+                      'GIT_COMMITTER_NAME':'LWC test fixture',
+                      'GIT_COMMITTER_EMAIL':'lwc-test@example.invalid',
+                      'GIT_AUTHOR_DATE':'@1700000000 +0000',
+                      'GIT_COMMITTER_DATE':'@1700000000 +0000'}
+        source = subprocess.check_output(
+            ['git','--git-dir',str(git_dir),'commit-tree',tree,'-m','retained Stage 1 source fixture'],
+            cwd=ROOT,env=commit_env,text=True).strip()
+        git_env = {'GIT_ALTERNATE_OBJECT_DIRECTORIES':str(objects)}
+        resolved = subprocess.check_output(
+            ['git','rev-parse',source+'^{commit}'],cwd=ROOT,
+            env={**os.environ,**git_env},text=True).strip()
+        self.assertEqual(resolved,source)
+        self.assertNotEqual(source,executor)
+        self.assertEqual(subprocess.check_output(
+            ['git','--git-dir',str(git_dir),'for-each-ref','--format=%(refname)'],
+            cwd=ROOT,text=True).strip(),'')
+        return source,git_env
+
+    def make_action_checkpoint(self, name, *, statuses=None, extra=None, source=None):
+        directory, plan = self.admitted_plan(name=name, source=source)
         with patch.dict(os.environ,{**self.environment,**(extra or {}),
                                     'FAKE_STATUSES':json.dumps(statuses or ['WORKING'])},clear=True), \
              patch.object(providers,'BUILD_POLL_MAX_READS',1), \
@@ -254,14 +289,16 @@ class AsyncBuildSubmission(unittest.TestCase):
         self.assertIsNotNone(error, 'checkpoint setup must stop before a ready receipt')
         return directory, plan, self.result_from(directory)
 
-    def run_action_prepare(self, *, source, tag, components, artifact_source, extra=None):
+    def run_action_prepare(self, *, source, tag, components, artifact_source, executor_sha=None,
+                           target='development', extra=None):
         node = shutil.which('node')
         self.assertIsNotNone(node, 'Node is required to execute the real JavaScript Action')
         self.action_runs += 1
         runner_temp=self.root/f'runner-temp-{self.action_runs}'
         runner_temp.mkdir(exist_ok=True)
         env={**self.environment,**(extra or {}),'RUNNER_TEMP':str(runner_temp),
-             'INPUT_OPERATION':'prepare','TARGET':'development','SOURCE':source,
+             'EXECUTOR_SHA':executor_sha or source,
+             'INPUT_OPERATION':'prepare','TARGET':target,'SOURCE':source,
              'COMPONENTS':components,'RELEASE_TAG':tag,'REUSE_ID':'9001','DEV_ID':'',
              'LWC_TEST_ARTIFACT_ID':'9001','LWC_TEST_ARTIFACT_SOURCE':str(artifact_source)}
         return subprocess.run([node,str(ROOT/'.github/actions/deployment-engine/index.cjs')],
@@ -296,6 +333,81 @@ class AsyncBuildSubmission(unittest.TestCase):
                 self.assertTrue(all(call[2]==BUILD_IDS[0] for call in describe))
                 self.assertTrue((self.root/f'runner-temp-{self.action_runs}'/'reuse'/'state.json').exists())
                 self.assertTrue((self.root/f'runner-temp-{self.action_runs}'/'release'/'receipts'/'auth.json').exists())
+
+    def test_real_action_download_v2_checkpoint_keeps_legacy_id_sequence_and_handle(self):
+        retained, plan, first = self.make_action_checkpoint(
+            'action-v2-resume',statuses=['WORKING'])
+        legacy = {'schema':2,'source':plan['source'],'branch':plan['branch'],'tag':plan['tag'],
+                  'engine':'1'*40,'engine_content':'2'*64,'normalized':plan['normalized'],
+                  'identities':plan['identities'],'dev_reference':plan['dev_reference'],
+                  'selected':plan['selected']}
+        legacy['id'] = digest(legacy)
+        state = read(retained/'state.json')
+        state['plan'] = legacy['id']
+        state.pop('checkpoint_schema',None)
+        state.pop('executor_sha',None)
+        write(retained/'plan.json',legacy)
+        write(retained/'state.json',state)
+        old_sequence = state['sequence']
+        resumed = self.run_action_prepare(source=plan['source'],tag=plan['tag'],
+                                          components='auth',artifact_source=retained,
+                                          extra={'FAKE_STATUSES':json.dumps(['SUCCESS'])})
+        self.assertEqual(resumed.returncode,0,resumed.stdout+resumed.stderr)
+        directory=self.root/f'runner-temp-{self.action_runs}'/'release'
+        kept_plan=read(directory/'plan.json')
+        kept_state=read(directory/'state.json')
+        self.assertEqual(kept_plan,legacy)
+        self.assertEqual(kept_state['plan'],legacy['id'])
+        self.assertGreater(kept_state['sequence'],old_sequence)
+        self.assertEqual(kept_state['checkpoint_schema'],1)
+        self.assertEqual(kept_state['executor_sha'],plan['executor_sha'])
+        self.assertEqual(read(directory/'receipts/auth.json')['build']['build_id'],BUILD_IDS[0])
+        self.assertEqual(self.fake_data()['submit_count'],1)
+
+    def test_registered_dev_release_resumes_legacy_source_with_current_executor(self):
+        executor = subprocess.check_output(['git','rev-parse','HEAD'],cwd=ROOT,text=True).strip()
+        source,git_env = self.scratch_source_commit(executor)
+        wrapper=(ROOT/'.github/workflows/deploy-dev.yml').read_text()
+        shared=(ROOT/'.github/workflows/cd.yml').read_text()
+        self.assertIn("source_sha: ${{ inputs.operation == 'release' && (inputs.source_sha || github.sha) || inputs.source_sha }}",wrapper)
+        self.assertIn('executor_sha: ${{ github.sha }}',wrapper)
+        self.assertIn('SOURCE: ${{ inputs.source_sha }}',shared)
+        self.assertIn('EXECUTOR_SHA: ${{ inputs.executor_sha }}',shared)
+
+        with patch.dict(os.environ,git_env):
+            retained, plan, first = self.make_action_checkpoint(
+                'registered-cross-executor-resume',statuses=['WORKING'],source=source,extra=git_env)
+        self.assertEqual(plan['source'],source)
+        self.assertEqual(first['builds']['auth']['build_id'],BUILD_IDS[0])
+        legacy={'schema':2,**{key:value for key,value in plan.items()
+                             if key not in ('id','schema','executor_sha')},
+                'engine':'1'*40,'engine_content':'2'*64}
+        legacy['id']=digest(legacy)
+        state=read(retained/'state.json')
+        state['plan']=legacy['id']
+        state.pop('checkpoint_schema',None)
+        state.pop('executor_sha',None)
+        write(retained/'plan.json',legacy)
+        write(retained/'state.json',state)
+        original_sequence=state['sequence']
+
+        resumed=self.run_action_prepare(source=source,executor_sha=executor,tag=plan['tag'],
+                                        components='auth',artifact_source=retained,
+                                        extra={**git_env,'FAKE_STATUSES':json.dumps(['SUCCESS'])})
+        self.assertEqual(resumed.returncode,0,resumed.stdout+resumed.stderr)
+        runner=self.root/f'runner-temp-{self.action_runs}'
+        release=runner/'release'
+        kept_plan=read(release/'plan.json')
+        kept_state=read(release/'state.json')
+        result=json.loads(resumed.stdout)
+        self.assertEqual(result['stage'],'ready')
+        self.assertEqual(kept_plan,legacy)
+        self.assertEqual(kept_state['plan'],legacy['id'])
+        self.assertGreater(kept_state['sequence'],original_sequence)
+        self.assertEqual(kept_state['executor_sha'],executor)
+        self.assertEqual(result['builds']['auth']['build_id'],BUILD_IDS[0])
+        self.assertEqual(read(release/'receipts/auth.json')['build']['build_id'],BUILD_IDS[0])
+        self.assertEqual(self.fake_data()['submit_count'],1)
 
     def test_real_action_download_blocks_idless_unknown_without_submit(self):
         retained, plan, first = self.make_action_checkpoint(
@@ -338,8 +450,8 @@ class AsyncBuildSubmission(unittest.TestCase):
         self.assertEqual(body['builds']['auth']['build_id'],BUILD_IDS[0])
         self.assertEqual(self.fake_data()['submit_count'],1)
 
-    def test_cross_plan_source_target_tag_selection_and_engine_changes_fail_closed(self):
-        for changed in ('source','target','tag','selected','engine-content'):
+    def test_cross_plan_source_target_tag_selection_input_and_provenance_changes_fail_closed(self):
+        for changed in ('source','target','tag','selected','input-identity','dev-reference'):
             with self.subTest(changed=changed):
                 self.reset_fake()
                 current=self.make_plan(('auth',),'identity-current-'+changed)
@@ -357,9 +469,11 @@ class AsyncBuildSubmission(unittest.TestCase):
                 elif changed == 'selected':
                     old_plan['selected']=['auth','bff']
                     old_plan['identities']['bff']={'profile':'test','inputs':'other','files':[]}
+                elif changed == 'input-identity':
+                    old_plan['identities']['auth']['inputs']='changed'
                 else:
-                    old_plan['engine_content']='f'*64
-                old_plan['id']=digest({key:value for key,value in old_plan.items() if key!='id'})
+                    old_plan['dev_reference']='different-dev-reference'
+                old_plan['id']=engine.plan_id(old_plan)
                 write(retained/'plan.json',old_plan)
                 write(retained/'state.json',{'plan':old_plan['id'],'status':'prepared',
                     'components':{},'sequence':1,'builds':{'auth':{

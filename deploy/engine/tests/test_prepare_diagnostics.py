@@ -164,9 +164,10 @@ os.execvpe(args[0], args, os.environ)
         self.normalized = {'environment': 'development',
                            'gcp': {'artifact_registry': artifact_registry,
                                    'project_id': 'llm-wiki-cloud'}}
-        self.plan = {'source': 'a' * 40, 'branch': 'develop', 'tag': 'diagnostic-fixture',
+        self.plan = {'schema': 2, 'source': 'a' * 40, 'branch': 'develop', 'tag': 'diagnostic-fixture',
                      'normalized': self.normalized, 'selected': ['auth'],
-                     'identities': {'auth': {'profile': 'test', 'inputs': 'test', 'files': []}}}
+                     'identities': {'auth': {'profile': 'test', 'inputs': 'test', 'files': []}},
+                     'engine': 'f' * 40}
         self.plan['engine_content'] = engine.engine_fingerprint()
         self.plan['id'] = digest(self.plan)
         write(self.directory / 'plan.json', self.plan)
@@ -290,14 +291,15 @@ class FrontendPrepareDiagnostics(unittest.TestCase):
         frontend = {'project_name': 'llm-wiki-frontend-test', 'team_slug': 'test-team',
                     'repository': 'Rayer/llm-wiki-cloud', 'root_directory': 'apps/frontend',
                     'api_url': 'https://api.test.invalid', 'auth_url': 'https://auth.test.invalid'}
-        plan = {'schema': 2, 'source': 'c' * 40, 'branch': 'develop', 'tag': 'offline-diagnostic',
+        plan = {'schema': 3, 'source': 'c' * 40, 'branch': 'develop', 'tag': 'offline-diagnostic',
+                'executor_sha': 'e' * 40,
                 'normalized': {'environment': 'development',
                                'gcp': {'project_id': 'llm-wiki-cloud',
                                        'artifact_registry': 'asia-east1-docker.pkg.dev/llm-wiki-cloud/cloud-run-images'},
                                'frontend': frontend},
                 'selected': ['auth', 'frontend'], 'identities': identities,
-                'engine_content': 'd' * 64}
-        plan['id'] = digest(plan)
+                'dev_reference': None}
+        plan['id'] = digest(engine.release_identity(plan))
         write(directory / 'plan.json', plan)
         auth_receipt = {'schema': 2, 'component': 'auth', 'identity': identities['auth'],
                         'build_sha': plan['source'],
@@ -984,6 +986,7 @@ sys.stdout.write(os.environ['FAKE_PROJECT_RESPONSE'])
                     'PATH': str(fake_bin) + os.pathsep + os.environ.get('PATH', '/usr/bin:/bin'),
                     'HOME': str(work), 'TMPDIR': os.environ.get('TMPDIR', str(work)),
                     'RUNNER_TEMP': str(work), 'INPUT_OPERATION': 'prepare',
+                    'EXECUTOR_SHA': 'e' * 40,
                     'TARGET': 'development', 'SOURCE': 'c' * 40,
                     'COMPONENTS': 'auth,frontend', 'RELEASE_TAG': 'offline-diagnostic',
                     'VERCEL_TOKEN': self.token, 'VERCEL_TEAM_ID': self.team,
@@ -1081,6 +1084,7 @@ else:
                     'PATH': str(fake_bin) + os.pathsep + os.environ.get('PATH', '/usr/bin:/bin'),
                     'HOME': str(work), 'TMPDIR': os.environ.get('TMPDIR', str(work)),
                     'RUNNER_TEMP': str(work), 'INPUT_OPERATION': 'prepare',
+                    'EXECUTOR_SHA': 'e' * 40,
                     'TARGET': 'development', 'SOURCE': 'c' * 40,
                     'COMPONENTS': 'auth,frontend', 'RELEASE_TAG': 'offline-diagnostic',
                     'VERCEL_TOKEN': self.token, 'VERCEL_TEAM_ID': self.team,

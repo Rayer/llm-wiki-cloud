@@ -1,23 +1,23 @@
 {
-  "base": "b978fe10fb532e87b5afe5dee7e65712622857dd",
-  "branch": "local runtime-cause-passthrough candidate",
-  "content_sha256": "7fbf5e07c9bb8745fc10386b64e46811d4bffe8e9c89b9f989b4034b1ce39d6b",
-  "scope": "All changed/new implementation, test, operator, accepted-appendix and frozen-spec files; excludes this manifest, evidence report and raw logs to avoid self-reference.",
+  "base": "60178904b62f7702a236689576ffb5862b8addcc",
+  "branch": "Rayer/LWC-358-recovery-owner-correction (local test-fixture repair based on 6a108072b22f448751ef00c89414875988da0e9c)",
+  "content_sha256": "950c0b597a107f3591103f827d9e67075ce2b5e90af2f5500d01cdb080eb7e3d",
+  "scope": "All implementation, test, operator, accepted-appendix and frozen-spec paths in this candidate; excludes this manifest, evidence report, raw test logs and generated caches.",
   "frozen_sha256": "838817cad154b0ea773c205f671362a6c9c0ad97c38ddf34f2508eb4fcc2488b",
   "files": [
     {
       "path": ".agents/skills/deployment-operator/SKILL.md",
-      "sha256": "90a36bfbe6d0630c80c2b49f884fa2bb9bdffa29b9bb43ccf19bea2a2bdf0793",
+      "sha256": "0c35e42d21cf914c9dd6d14cdbcfb780f13507b11bb0a83b4b968f8c0fb7ebf6",
       "mode": "0o644"
     },
     {
       "path": ".github/actions/deployment-engine/action.yml",
-      "sha256": "c5d16ad58b897d34cacb13257db8617a39157cf33fc8206aecad6b3864ef3949",
+      "sha256": "e9693ef8e16a565e2ee2ad274f2f47bee22f7717ecb545aaf64297bc08455eae",
       "mode": "0o644"
     },
     {
       "path": ".github/actions/deployment-engine/index.cjs",
-      "sha256": "99fae610f0c81d41d7bbcbb23620c8f047321c367cd00de0f9beb62a566455b4",
+      "sha256": "33fef0134419ef8d170f56611b9cb032c65359f4d4d71cdde62dccea5b74d1c5",
       "mode": "0o644"
     },
     {
@@ -27,7 +27,7 @@
     },
     {
       "path": ".github/workflows/cd.yml",
-      "sha256": "d480779da95f4fdb7d0b9636a3308b225bedb6bd1a5575bf2905572195e24c93",
+      "sha256": "29496c0271b60df3c1bd453cb9cb3de411c8c18935d8d89aa0dc87cccdf35b3b",
       "mode": "0o644"
     },
     {
@@ -37,17 +37,17 @@
     },
     {
       "path": ".github/workflows/deploy-dev.yml",
-      "sha256": "29f70bde7cdffd84dfca4851783c55f581064c8be213aa4309afd2d568ed2b32",
+      "sha256": "71aa283742dc85e3815aedd4821f0b4da44985c4a900451fc9a5fefa6959ecbd",
       "mode": "0o644"
     },
     {
       "path": ".github/workflows/promote-production.yml",
-      "sha256": "db94449c927baf91148fb07bf78baa25a9f32115d2852685159eb9d5f880aaa3",
+      "sha256": "7e3b91a086cd91816a7fedbcec1eb9a9a88785a9ac90296f83102dac10e6f71c",
       "mode": "0o644"
     },
     {
       "path": ".github/workflows/recover-deployment.yml",
-      "sha256": "a4682baaeaae9d3c0db3eee37ce84db5b46cb968703f5db54d4fcf0518113fa8",
+      "sha256": "4efc1a27c11fca385266192a47bf1fcd27d695a8c172dd5c3ef016be1276e215",
       "mode": "0o644"
     },
     {
@@ -62,7 +62,7 @@
     },
     {
       "path": "apps/bff/scripts/test_bff_explicit_cutover.py",
-      "sha256": "59eaa3dfc563d827986d1c4567dfbb0459a0627da95abbf7961f81e432ea6690",
+      "sha256": "4eb5ab182e32a21eaf66761bcfd22d9637313e1bd972b0242333bc333f2ab698",
       "mode": "0o644"
     },
     {
@@ -72,7 +72,7 @@
     },
     {
       "path": "apps/frontend/tests/ci-workflow-contract.test.mjs",
-      "sha256": "8689ab82313748d33610f2d4bda2ec0d34a535861c5ad5c67409595d2daf62c0",
+      "sha256": "d61259e8c9dc4110c6126515fc9fa53548e72ad9fafafc0b045b97c900ac21a6",
       "mode": "0o644"
     },
     {
@@ -82,17 +82,17 @@
     },
     {
       "path": "apps/frontend/tests/lwc-253-authority-reconciliation.test.mjs",
-      "sha256": "dcb70144349cff02f3ca7c377cb32c9fc8d59bca08952c124db8236c9b4c1bf8",
+      "sha256": "260f77039a84539a8aa14b314f93f6790647daded62331439dc958bb9aa09d0d",
       "mode": "0o644"
     },
     {
       "path": "apps/frontend/tests/lwc-253-vercel-dev-authority.test.mjs",
-      "sha256": "d5db19f7177fdb9de72b36fc9f45e319aa1591423ab7099dd2ae95a2a530a838",
+      "sha256": "18fff1e1c8c17fe6fc5b24a19d8f09d59442c3819f38531f7443413ce2fb5c00",
       "mode": "0o644"
     },
     {
       "path": "apps/frontend/tests/lwc-258-vercel-production-auth-env.test.mjs",
-      "sha256": "a85e608a40928b264cfa6a0877f879f8e59044dc3ed815cd28e259ab3b0e115e",
+      "sha256": "4b145b9a0b352b8552cf1b4650750a68b65961773db6d5cd5095cd1b2bb7f1bd",
       "mode": "0o644"
     },
     {
@@ -132,7 +132,7 @@
     },
     {
       "path": "deploy/engine/engine.py",
-      "sha256": "7e3687a950159577c3e4156f8685bf442d89dbdd64512fa9fb250f480d4acef9",
+      "sha256": "03850b196fd8fa410b8eababa02c3fc8f53f38aaacee7b402bbe9bcce0944c62",
       "mode": "0o644"
     },
     {
@@ -157,7 +157,7 @@
     },
     {
       "path": "deploy/engine/tests/fake_provider.py",
-      "sha256": "5e6f8833ff82442485207882dd7e3a834dcf77dff8a84f5f945384d6c1d40f57",
+      "sha256": "b941cdb934b91e52bd7982d925bdda37057e067183c90a396441106fa4c51ca1",
       "mode": "0o755"
     },
     {
@@ -187,7 +187,7 @@
     },
     {
       "path": "deploy/engine/tests/test_build_submission.py",
-      "sha256": "666ed04eb24a3a0a68f79eaf38544d6986149b2987c075c32c66cb52abe877bc",
+      "sha256": "202eda0f285cf5df5921a292a3f1ed4d41383f3ec131447922e70934089fdbc5",
       "mode": "0o644"
     },
     {
@@ -202,17 +202,17 @@
     },
     {
       "path": "deploy/engine/tests/test_engine.py",
-      "sha256": "f882cc9aa65acc2dad5c26547ad83684460c1c763cbae18753087dcd007bea24",
+      "sha256": "7f0966708f174174ef3c5212eab058eb6fe27bb7754afb04a2793896bbaa07e9",
       "mode": "0o644"
     },
     {
       "path": "deploy/engine/tests/test_prepare_diagnostics.py",
-      "sha256": "b901d93ba8e43ebbf0d64ccf2a5a3b942a67b6bc28413d6d530196947c42b2b3",
+      "sha256": "1d19b9a74948e774c0d461605152b5ebb73bb7fcca2d3afcc479e8ecdc40d0d3",
       "mode": "0o644"
     },
     {
       "path": "deploy/engine/tests/test_transport_integration.py",
-      "sha256": "997df36414c291503122e72249906f93df460fca5165f7eaa3752c73c0c02978",
+      "sha256": "abfabee52846c8248d4e67bb00863215d812612a95215c3093d807bb4bf702c4",
       "mode": "0o644"
     },
     {
@@ -246,13 +246,18 @@
       "mode": "0o644"
     },
     {
+      "path": "docs/lwc-358/deployment-engine-spec-r2-accepted-appendix-owner-correction-4-1814.md",
+      "sha256": "ea405161c80f894eb5532602bf0d4e5bd558544483ffaeeea593930649bc84df",
+      "mode": "0o644"
+    },
+    {
       "path": "docs/lwc-358/deployment-engine-spec-r2.md",
       "sha256": "838817cad154b0ea773c205f671362a6c9c0ad97c38ddf34f2508eb4fcc2488b",
       "mode": "0o644"
     },
     {
       "path": "docs/lwc-358/operator-r2.md",
-      "sha256": "57c740218dbe8a104ff9b08734ecb668dbe23b80d5c7088d845318e63e134612",
+      "sha256": "064995c96fcc6caca762423f60c3d258c6fd3f612d37e4eb8cb0d6af01bb838c",
       "mode": "0o644"
     },
     {
@@ -267,7 +272,7 @@
     },
     {
       "path": "scripts/test_engine_workflow.py",
-      "sha256": "906a33cdd7d0a90125dc563bfd5313d77e45cf2678475de6c51b51d9628df879",
+      "sha256": "b3a72e17c3867d22102543714f397e351b752f745be8adb18334885a38fef0f7",
       "mode": "0o644"
     },
     {

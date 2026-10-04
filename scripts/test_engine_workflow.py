@@ -67,9 +67,56 @@ class EngineWorkflowContract(unittest.TestCase):
             for text in ('workflow_dispatch:','release_tag:','components:','artifact_id:','secrets: inherit','uses: ./.github/workflows/cd.yml','environment: '+env,"refs/heads/"+branch):
                 self.assertIn(text,s)
             self.assertNotIn('workflow_run:',s)
+            wrapper = yaml.safe_load(s)
+            reusable = yaml.safe_load((ROOT/'.github/workflows/cd.yml').read_text())
+            reusable_trigger = reusable.get('on', reusable.get(True, {}))
+            self.assertEqual(wrapper['jobs']['release']['with']['executor_sha'], '${{ github.sha }}')
+            if file == 'promote-production.yml':
+                self.assertNotIn('force', wrapper['jobs']['release']['with'])
+                self.assertEqual(wrapper['jobs']['release']['with']['source_sha'], '${{ github.sha }}')
+            self.assertEqual(reusable_trigger['workflow_call']['inputs']['executor_sha'],
+                             {'required': True, 'type': 'string'})
+            self.assertEqual(reusable_trigger['workflow_call']['inputs']['force'],
+                             {'type': 'boolean', 'default': False})
+            self.assertEqual(next(step for step in reusable['jobs']['release']['steps']
+                                  if step.get('uses', '').startswith('actions/checkout@'))['with']['ref'],
+                             '${{ inputs.executor_sha }}')
         recovery=(ROOT/'.github/workflows/recover-deployment.yml').read_text()
         self.assertIn('[rollback, reactivate, deploy, tag, readback, diagnose-auth-image]',recovery)
         self.assertIn('uses: ./.github/workflows/cd.yml',recovery)
+
+    def test_registered_dev_release_can_resume_stage1_source_with_current_executor(self):
+        dev=yaml.safe_load((ROOT/'.github/workflows/deploy-dev.yml').read_text())
+        dev_trigger=dev.get('on',dev.get(True,{}))
+        inputs=dev_trigger['workflow_dispatch']['inputs']
+        self.assertEqual(inputs['operation']['default'],'release')
+        self.assertEqual(inputs['source_sha']['default'],'')
+        self.assertEqual(dev['jobs']['release']['with']['source_sha'],
+                         "${{ inputs.operation == 'release' && (inputs.source_sha || github.sha) || inputs.source_sha }}")
+        self.assertEqual(dev['jobs']['release']['with']['executor_sha'],'${{ github.sha }}')
+        self.assertEqual(dev['jobs']['release']['with']['artifact_id'],'${{ inputs.artifact_id }}')
+
+        cd=yaml.safe_load((ROOT/'.github/workflows/cd.yml').read_text())
+        job=cd['jobs']['release']
+        self.assertEqual(job['env']['SOURCE'],'${{ inputs.source_sha }}')
+        self.assertEqual(job['env']['EXECUTOR_SHA'],'${{ inputs.executor_sha }}')
+        steps=job['steps']
+        validate=next((index,step) for index,step in enumerate(steps)
+                      if step.get('name')=='Validate retained Stage 1 source input')
+        prepare=next((index,step) for index,step in enumerate(steps)
+                     if step.get('with',{}).get('operation')=='prepare')
+        auth=next(index for index,step in enumerate(steps)
+                  if step.get('uses','').startswith('google-github-actions/auth@'))
+        self.assertEqual(validate[1]['if'],"inputs.operation == 'release' && inputs.environment == 'development' && inputs.source_sha != github.sha")
+        self.assertEqual(validate[1]['env']['ARTIFACT_ID'],'${{ inputs.artifact_id }}')
+        self.assertIn('test -n "$ARTIFACT_ID"',validate[1]['run'])
+        self.assertLess(validate[0],auth)
+        self.assertLess(auth,prepare[0])
+        self.assertEqual(prepare[1]['if'],"inputs.operation == 'release'")
+        self.assertEqual(next(step for step in steps if step.get('id')=='ready')['if'],
+                         "inputs.operation == 'release'")
+        self.assertEqual(job['environment'],
+                         "${{ inputs.environment == 'production' && 'Production' || 'Development' }}")
 
     def test_pinned_recovery_download_has_effective_github_token(self):
         workflow=yaml.safe_load((ROOT/'.github/workflows/cd.yml').read_text())
@@ -99,14 +146,16 @@ class EngineWorkflowContract(unittest.TestCase):
         dev_operation=dev_trigger['workflow_dispatch']['inputs']['operation']
         self.assertEqual(dev_operation['type'],'choice')
         self.assertEqual(dev_operation['default'],'release')
-        self.assertEqual(dev_operation['options'],['release','diagnose-auth-image'])
+        self.assertEqual(dev_operation['options'],['release','deploy','rollback','reactivate','tag','readback','diagnose-auth-image'])
         self.assertEqual(dev['jobs']['release']['if'],
-                         "github.ref == 'refs/heads/develop' && inputs.operation == 'release'")
+                         "github.ref == 'refs/heads/develop' && inputs.operation != 'diagnose-auth-image'")
         self.assertEqual(dev['jobs']['release']['with'],{
-            'environment':'development','source_sha':'${{ github.sha }}',
+            'environment':'development','source_sha':"${{ inputs.operation == 'release' && (inputs.source_sha || github.sha) || inputs.source_sha }}",
+            'executor_sha':'${{ github.sha }}',
             'components':'${{ inputs.components }}','release_tag':'${{ inputs.release_tag }}',
             'artifact_id':'${{ inputs.artifact_id }}','dev_artifact_id':'${{ inputs.dev_artifact_id }}',
             'operation':'${{ inputs.operation }}',
+            'force':'${{ inputs.force }}',
         })
         dev_diagnostic=dev['jobs']['auth-image-diagnostic']
         for fixed in ("inputs.operation == 'diagnose-auth-image'", "github.ref == 'refs/heads/develop'",
@@ -127,6 +176,7 @@ class EngineWorkflowContract(unittest.TestCase):
         self.assertEqual(wrapper['if'],"inputs.operation != 'diagnose-auth-image'")
         self.assertEqual(wrapper['with'],{
             'environment':'${{ inputs.environment }}','source_sha':'${{ inputs.source_sha }}',
+            'executor_sha':'${{ github.sha }}',
             'components':'${{ inputs.components }}','release_tag':'${{ inputs.release_tag }}',
             'operation':'${{ inputs.operation }}','artifact_id':'${{ inputs.artifact_id }}',
         })
@@ -147,6 +197,8 @@ class EngineWorkflowContract(unittest.TestCase):
         by_name={step.get('name'): (index,step) for index,step in enumerate(steps) if step.get('name')}
         self.assertEqual(job['if'],"inputs.operation != 'diagnose-auth-image'")
         self.assertEqual(job['env']['SOURCE'],'${{ inputs.source_sha }}')
+        self.assertEqual(job['env']['EXECUTOR_SHA'],'${{ inputs.executor_sha }}')
+        self.assertEqual(job['env']['FORCE'],'${{ inputs.force }}')
         self.assertNotIn('VERCEL_TOKEN',job['env'])
         self.assertNotIn('GH_TOKEN',job['env'])
         diagnostic_workflow=yaml.safe_load((ROOT/'.github/workflows/cd-auth-image-diagnostic.yml').read_text())

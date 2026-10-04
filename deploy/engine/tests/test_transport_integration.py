@@ -11,7 +11,7 @@ import unittest
 from unittest.mock import patch
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
-from engine import Engine, engine_fingerprint
+from engine import Engine, release_identity
 from support import digest, read, write
 
 
@@ -21,10 +21,10 @@ class EngineTransportIntegration(unittest.TestCase):
         self.addCleanup(temp.cleanup)
         self.root = Path(temp.name).resolve()
         self.directory = self.root / 'release'
-        plan = {'selected':['worker'], 'tag':'test-release', 'source':'a' * 40,
-                'identities':{'worker':{}}, 'normalized':{'environment':'development'},
-                'engine_content':engine_fingerprint()}
-        plan['id'] = digest(plan)
+        plan = {'schema':3,'selected':['worker'], 'tag':'test-release', 'source':'a' * 40,
+                'branch':'develop','dev_reference':None,'identities':{'worker':{}},
+                'normalized':{'environment':'development'},'executor_sha':'e' * 40}
+        plan['id'] = digest(release_identity(plan))
         write(self.directory / 'plan.json', plan)
         self.engine = Engine(self.directory)
         self.engine.state['status'] = 'snapshotted'
