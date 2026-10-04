@@ -1,0 +1,11 @@
+ReferenceError: __localLink is not defined
+    at resolvePrebuiltDeployment (/Users/rayer/.hermes/profiles/lwc-tpm/cache/scratch/lwc358-owner-correction-4-1814-wt/deploy/engine/tests/test_vercel_env_context.js:136:64)
+    at main (/Users/rayer/.hermes/profiles/lwc-tpm/cache/scratch/lwc358-owner-correction-4-1814-wt/deploy/engine/tests/test_vercel_env_context.js:222:30)
+    at Object.<anonymous> (/Users/rayer/.hermes/profiles/lwc-tpm/cache/scratch/lwc358-owner-correction-4-1814-wt/deploy/engine/tests/test_vercel_env_context.js:443:1)
+    at Module._compile (node:internal/modules/cjs/loader:1781:14)
+    at Module._extensions..js (node:internal/modules/cjs/loader:1913:10)
+    at Module.load (node:internal/modules/cjs/loader:1505:32)
+    at Module._load (node:internal/modules/cjs/loader:1309:12)
+    at wrapModuleLoad (node:internal/modules/cjs/loader:254:19)
+    at Function.executeUserEntryPoint [as runMain] (node:internal/modules/run_main:171:5)
+    at node:internal/main/run_main_module:36:49

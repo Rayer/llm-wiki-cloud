@@ -206,8 +206,20 @@ elif tool=='vercel':
         assert '--prebuilt' in a
         assert ('--skip-domain' in a) == ('--prod' in a)
         assert '--prod' in a or '--target=preview' in a
-        assert Path.cwd().joinpath('.vercel/project.json').is_file()
-        assert json.loads(Path.cwd().joinpath('.vercel/output/static/build-config.json').read_text())==s['build_config']
+        project_link=json.loads(Path.cwd().joinpath('.vercel/project.json').read_text())
+        assert project_link['projectId']=='prj_test' and project_link['orgId']=='team_test'
+        assert project_link['settings']['rootDirectory']=='apps/frontend'
+        configured_root=Path.cwd()/project_link['settings']['rootDirectory']
+        prebuilt=Path.cwd()/'.vercel/output'
+        assert configured_root.is_dir(), 'Vercel deploy must resolve the configured project root locally'
+        assert prebuilt.joinpath('static/build-config.json').is_file(), 'pinned CLI reads prebuilt output from cwd without repoRoot'
+        s['frontend_deploy_layout']={
+            'configured_root_exists':configured_root.is_dir(),
+            'cwd_prebuilt_output_exists':prebuilt.is_dir(),
+            'project_identity_matches_artifact':project_link['projectId']=='prj_test' and project_link['orgId']=='team_test',
+            'remote_root_setting_preserved':project_link['settings']['rootDirectory']=='apps/frontend',
+        }
+        assert json.loads(prebuilt.joinpath('static/build-config.json').read_text())==s['build_config']
         meta={}
         for i,v in enumerate(a):
             if v=='--meta': k,val=a[i+1].split('=',1);meta[k]=val

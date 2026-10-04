@@ -796,6 +796,12 @@ class Providers:
                 with tempfile.TemporaryDirectory() as temp:
                     with tarfile.open(self.directory / artifact['archive']) as tar:
                         tar.extractall(temp, filter='data')
+                    # The env-linked Vercel CLI validates the selected project's
+                    # remote rootDirectory even for --prebuilt, but reads output
+                    # from cwd when the link has no repository root. Recreate the
+                    # configured root locally; keep the immutable archive/output
+                    # and remote project settings unchanged.
+                    (Path(temp) / self.p['frontend']['root_directory']).mkdir(parents=True, exist_ok=True)
                     args = ['vercel', 'deploy', '--prebuilt', '--yes', '--scope', self.p['frontend']['team_slug'],
                             '--token', os.environ['VERCEL_TOKEN'], '--meta', 'lwcArtifact='+artifact['sha256'],
                             '--meta', 'lwcAttempt='+self.plan['id']]

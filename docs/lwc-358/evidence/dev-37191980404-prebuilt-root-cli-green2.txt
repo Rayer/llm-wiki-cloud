@@ -1,0 +1,1 @@
+Pinned Vercel 59.11.7 env-linked --prebuilt caller reproduces missing root, then accepts local configured-root directory while reading cwd/.vercel/output: PASS

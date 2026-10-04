@@ -1,0 +1,23 @@
+test_09_frontend_alias_restore_and_config_applicability (test_engine.Acceptance.test_09_frontend_alias_restore_and_config_applicability) ... ERROR
+
+======================================================================
+ERROR: test_09_frontend_alias_restore_and_config_applicability (test_engine.Acceptance.test_09_frontend_alias_restore_and_config_applicability)
+----------------------------------------------------------------------
+Traceback (most recent call last):
+  File "/Users/rayer/.hermes/profiles/lwc-tpm/cache/scratch/lwc358-owner-correction-4-1814-wt/deploy/engine/tests/test_engine.py", line 409, in test_09_frontend_alias_restore_and_config_applicability
+    e.deploy()
+    ~~~~~~~~^^
+  File "/Users/rayer/.hermes/profiles/lwc-tpm/cache/scratch/lwc358-owner-correction-4-1814-wt/deploy/engine/engine.py", line 599, in deploy
+    raise exc
+  File "/Users/rayer/.hermes/profiles/lwc-tpm/cache/scratch/lwc358-owner-correction-4-1814-wt/deploy/engine/engine.py", line 586, in deploy
+    self.reconcile(c, artifacts[c], entry['candidate'], deploy_error=deploy_error)
+    ~~~~~~~~~~~~~~^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+  File "/Users/rayer/.hermes/profiles/lwc-tpm/cache/scratch/lwc358-owner-correction-4-1814-wt/deploy/engine/engine.py", line 547, in reconcile
+    raise Breakpoint('provider-result-unreadable', 'unknown', True, 'reconcile-before-replay',
+                     causes=causes) from None
+support.Breakpoint: provider-result-unreadable
+
+----------------------------------------------------------------------
+Ran 1 test in 0.641s
+
+FAILED (errors=1)

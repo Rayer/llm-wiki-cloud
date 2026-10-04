@@ -30,7 +30,7 @@ Mutating runtime operations use the complete latest-checkpoint lookup and stale-
 
 Stage 1 每完成一個 component 即保存獨立 receipt/checkpoint；build failure 不做 runtime mutation、不 rollback、不標記成功 tag。所有 selected receipts usable 才過 barrier。Stage 2 保存可用的 pre-state，再逐一 deploy/readback，順序 `exportjob → auth → bff → worker → frontend`（只執行 selected）。成功須所有 selected provider sanity 通過，接著寫入 tag；功能 smoke/UAT 不在這個 gate。
 
-Frontend stage 1 只 `vercel pull`、`vercel build` 並封存 `.vercel/output` 與 project identity；檢查輸出的 build-config.json。Stage 2 使用 `deploy --prebuilt`；Production 加上 `--prod --skip-domain`（官方限定 skip-domain 與 prod 搭配），DEV 使用 `--target=preview`，在無 Git metadata 的封存目錄執行，排除 branch-domain 自動指派，保存 deployment ID，再逐一指派已存在的 target aliases；readback 驗證 READY、target、artifact metadata、實際 build-config 與 alias identity。依據 [Vercel build](https://vercel.com/docs/cli/build) 與 [deploy](https://vercel.com/docs/cli/deploy)；使用 pinned CLI 59.11.7。
+Frontend stage 1 只 `vercel pull`、`vercel build` 並封存 `.vercel/output` 與 project identity；檢查輸出的 build-config.json。Stage 2 使用 `deploy --prebuilt`；Production 加上 `--prod --skip-domain`（官方限定 skip-domain 與 prod 搭配），DEV 使用 `--target=preview`，在無 Git metadata 的封存目錄執行，排除 branch-domain 自動指派，保存 deployment ID，再逐一指派已存在的 target aliases；readback 驗證 READY、target、artifact metadata、實際 build-config 與 alias identity。封存目錄會保留已驗證的 project `rootDirectory` 設定，並在本機暫存解包 root 建立對應目錄；pinned CLI 的 env-linked branch 仍從該 root 的 `.vercel/output` 讀取 prebuilt 成品。這不改寫 archive 或遠端設定。依據 [Vercel build](https://vercel.com/docs/cli/build) 與 [deploy](https://vercel.com/docs/cli/deploy)；使用 pinned CLI 59.11.7。
 
 ## 結果與續跑
 

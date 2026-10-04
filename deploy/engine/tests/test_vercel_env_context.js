@@ -3,6 +3,7 @@
 const assert = require('node:assert/strict');
 const crypto = require('node:crypto');
 const fs = require('node:fs');
+const os = require('node:os');
 const path = require('node:path');
 const vm = require('node:vm');
 
@@ -30,6 +31,9 @@ const buildRootSource = source(
 const buildCallerSource = source(
   'vercel-59.11.7-build-caller.js',
   'b0aa8d6efad9e8280e385d42ac8a63bdeeef25dbc3f574c4c38442c1c1c1738a');
+const prebuiltDeploySource = source(
+  'vercel-59.11.7-prebuilt-deploy-root.js',
+  'd61dea7724b4bda73747385108659a9592f2209b1c5d3d20d59ed2c7486718cb');
 
 const prelude = `
 const import_errors = { NowBuildError: class NowBuildError extends Error {
@@ -47,6 +51,7 @@ const code = value => value;
 const VERCEL_DIR = '.vercel';
 const VERCEL_DIR_PROJECT = 'project.json';
 const join = path.join;
+const join4 = path.join;
 const import_fs_extra = { outputJSON: async (file, value, options) => {
   fs.mkdirSync(path.dirname(file), { recursive: true });
   fs.writeFileSync(file, JSON.stringify(value, null, options.spaces));
@@ -61,7 +66,10 @@ const emoji = () => '';
 const import_chalk = { default: { bold: value => value, gray: value => value } };
 const humanizePath = value => value;
 const detectExplicitScope = () => true;
-const getProjectLink = async () => { throw new Error('unexpected local-link lookup'); };
+const getProjectLink = async () => {
+  if (!globalThis.__localLink) throw new Error('unexpected local-link lookup');
+  return globalThis.__localLink;
+};
 const getOrgById = async (client, id) => { globalThis.__lookups++; return { id, slug: 'test-team' }; };
 const getProjectByNameOrId = async (client, id, orgId) => {
   globalThis.__lookups++;
@@ -79,7 +87,9 @@ getLinkedProject = async (...args) => {
   return result;
 };
 ${pullPathSource}
+${prebuiltDeploySource}
 globalThis.resolveLinkedProject = getLinkedProject;
+globalThis.selectPrebuiltLocation = selectPrebuiltLocation;
 globalThis.runPinnedPull = async cwd => {
   const client = { cwd, config: { currentTeam: globalThis.__env.VERCEL_TEAM_ID }, nonInteractive: true };
   const exitCode = await pullCommandLogic(client, cwd, true, 'preview', {}, undefined);
@@ -119,6 +129,17 @@ async function simulatePull(env, cwd, expectedProject, expectedOrg) {
   assert.equal(settings.orgId, expectedOrg);
   assert.equal(settings.settings.rootDirectory, 'apps/frontend');
   return { linkPath: '.vercel/project.json', pullDirectory: '.', settings };
+}
+
+async function resolvePrebuiltDeployment(env, cwd, localLink) {
+  const context = { __env: { ...env }, __errors: [], __lookups: 0,
+    __expectedProject: 'prj_Validated', __expectedOrg: 'team_Validated', __localLink: localLink,
+    fs, path };
+  vm.runInNewContext(executable, context, { filename: 'vercel-59.11.7-prebuilt-deploy-root.js' });
+  const link = await context.resolveLinkedProject(
+    { cwd, config: { currentTeam: env.VERCEL_TEAM_ID }, nonInteractive: true },
+    { skipRemoteLookup: true });
+  return { link, location: context.selectPrebuiltLocation(cwd, link), lookups: context.__lookups };
 }
 
 function pinnedResolveBuildRoot(cwd, repositoryRoot, rootDirectorySetting, allowedRoot = repositoryRoot) {
@@ -191,6 +212,39 @@ function pinnedBuildOutput(cwd, repositoryRoot) {
 }
 
 async function main() {
+  if (process.argv[2] === '--verify-prebuilt-deploy-root') {
+    const cwd = fs.mkdtempSync(path.join(os.tmpdir(), 'lwc358-vercel-prebuilt-'));
+    try {
+      fs.mkdirSync(path.join(cwd, '.vercel/output/static'), { recursive: true });
+      fs.writeFileSync(path.join(cwd, '.vercel/output/static/build-config.json'), '{"schema_version":1}');
+      const localLink = { orgId: 'team_Validated', projectId: 'prj_Validated',
+        projectName: 'test-project', settings: { rootDirectory: 'apps/frontend' } };
+      const selected = await resolvePrebuiltDeployment({
+        VERCEL_ORG_ID: 'team_Validated', VERCEL_PROJECT_ID: 'prj_Validated',
+        VERCEL_TEAM_ID: 'team_Validated'
+      }, cwd, localLink);
+      assert.equal(selected.link.status, 'linked');
+      assert.equal(selected.link.repoRoot, undefined);
+      assert.equal(selected.link.project.rootDirectory, 'apps/frontend');
+      assert.equal(selected.lookups, 2, 'the pinned environment-linked resolver reads the selected project');
+      assert.equal(selected.location.validationPath, path.join(cwd, 'apps/frontend'));
+      assert.equal(selected.location.prebuiltOutput, path.join(cwd, '.vercel/output'));
+      assert.equal(fs.existsSync(selected.location.validationPath), false,
+        'causal red: extracted root is missing the selected project root');
+      assert.equal(fs.existsSync(selected.location.prebuiltOutput), true,
+        'the actual no-repoRoot prebuilt branch reads output from cwd');
+
+      fs.mkdirSync(selected.location.validationPath, { recursive: true });
+      assert.equal(fs.existsSync(selected.location.validationPath), true,
+        'local layout green: remote rootDirectory resolves without changing project settings');
+      assert.equal(fs.existsSync(selected.location.prebuiltOutput), true);
+      console.log('Pinned Vercel 59.11.7 env-linked --prebuilt caller reproduces missing root, then accepts local configured-root directory while reading cwd/.vercel/output: PASS');
+      return;
+    } finally {
+      fs.rmSync(cwd, { recursive: true, force: true });
+    }
+  }
+
   if (process.argv[2] === '--assert-linked-env') {
     const input = JSON.parse(fs.readFileSync(0, 'utf8'));
     assert.equal(input.env.VERCEL_PROJECT_ID, input.expected.project);
