@@ -195,13 +195,14 @@ _STAGE_FAILURE = re.compile(
 
 
 def run(args, *, cwd=ROOT, env=None, timeout=30, mutation=False, input=None, stage=None,
-        unknown_on_error=False, return_process=False):
+        unknown_on_error=False, return_process=False, preserve_stdout_bytes=False):
     cause_stage = stage in _CAUSE_STAGES - {'unknown'}
     sensitive_values = tuple((env if isinstance(env, dict) else os.environ).get(key, '')
                              for key in _SENSITIVE_ENVIRONMENT_KEYS)
+    child_input = input.encode('utf-8') if preserve_stdout_bytes and isinstance(input, str) else input
     try:
-        result = subprocess.run([str(a) for a in args], cwd=cwd, env=env, input=input,
-                                capture_output=True, text=True, timeout=timeout)
+        result = subprocess.run([str(a) for a in args], cwd=cwd, env=env, input=child_input,
+                                capture_output=True, text=not preserve_stdout_bytes, timeout=timeout)
     except subprocess.TimeoutExpired as exc:
         status = 'unknown' if mutation or unknown_on_error else 'failed'
         cause = (structured_cause(exc, stage, code='child-command-timeout',
@@ -216,29 +217,30 @@ def run(args, *, cwd=ROOT, env=None, timeout=30, mutation=False, input=None, sta
         raise Breakpoint('tool-unavailable', stage=stage, timeout_class='tool-unavailable',
                          cause=cause) from None
     if result.returncode:
+        stderr = result.stderr.decode('utf-8', errors='replace') if isinstance(result.stderr, bytes) else result.stderr
         details = None
         if stage == 'auth-build':
-            for line in result.stderr.splitlines():
+            for line in stderr.splitlines():
                 details = _STAGE_FAILURE.fullmatch(line)
                 if details:
                     break
         permission = False
         if stage != 'latest-checkpoint':
             permission = bool(details and details.group(3) == '1') or any(
-                s in result.stderr.lower() for s in (
+                s in stderr.lower() for s in (
                     'permission_denied', 'permission denied', 'forbidden', 'unauthorized',
                     'returned error: 403', 'returned error: 401'))
         reported_stage = details.group(1) if details else stage
         exit_code = int(details.group(2)) if details else result.returncode
         status = 'unknown' if mutation or unknown_on_error else 'failed'
         if stage == 'latest-checkpoint':
-            cause = latest_artifact_cause(result.stderr, sensitive_values)
+            cause = latest_artifact_cause(stderr, sensitive_values)
         else:
             cause = (structured_cause(ChildProcessError(), stage, code='child-command-failed',
-                                       message=result.stderr, sensitive_values=sensitive_values)
+                                       message=stderr, sensitive_values=sensitive_values)
                      if cause_stage else None)
         raise Breakpoint('permission-denied' if permission else 'command-failed',
                          status, mutation,
                          'restore-existing-principal-permission' if permission else 'reconcile-before-replay',
                          stage=reported_stage, exit_code=exit_code, cause=cause)
-    return result if return_process else result.stdout.strip()
+    return result if return_process else result.stdout if preserve_stdout_bytes else result.stdout.strip()

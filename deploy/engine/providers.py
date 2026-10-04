@@ -103,7 +103,8 @@ class Providers:
             args += ['--max-filesize', '8192']
         try:
             raw = run(args, input='header = "Authorization: Bearer '+token+'"\n',
-                      mutation=body is not None, stage=stage)
+                      mutation=body is not None, stage=stage,
+                      preserve_stdout_bytes=output)
         except Breakpoint as exc:
             if stage == 'frontend-project-readback' and self._frontend_prepare_commands is not None:
                 self._frontend_prepare_commands[stage] = {
@@ -114,7 +115,7 @@ class Providers:
             if stage == 'frontend-project-readback' and self._frontend_prepare_commands is not None:
                 self._frontend_prepare_commands[stage] = {
                     'status': 'exit0', 'exit_code': 0, 'timeout_class': None}
-        return json.loads(frontend_build_config.document(raw.encode()) if output else raw)
+        return json.loads(frontend_build_config.document(raw) if output else raw)
 
     @staticmethod
     def _root_label(value, expected):

@@ -13,6 +13,7 @@ tool = Path(sys.argv[0]).name
 s['calls'].append([tool, *a])
 fail = False
 out = ''
+binary_out = None
 
 def flag(name, default=None):
     if name in a:
@@ -168,7 +169,9 @@ elif tool == 'curl':
         if identity.endswith('.vercel.app'): identity='dpl_candidate'
         out=s['deployments'][identity]
     elif '/files/outputs?' in endpoint:
-        out=s['build_config']
+        if 'multipart_output_hex' in s:
+            binary_out=bytes.fromhex(s['multipart_output_hex'])
+        else:out=s['build_config']
     elif '/v6/deployments?' in endpoint:
         out={'deployments':[dict(v,uid=k) for k,v in s['deployments'].items()]}
     elif '/aliases?' in endpoint:
@@ -251,4 +254,6 @@ else:
 root.write_text(json.dumps(s))
 if fail:
     sys.stderr.write('TEST ONLY simulated provider failure\n');sys.exit(1)
-if out != '':print(json.dumps(out) if isinstance(out,(dict,list)) else out)
+if binary_out is not None:
+    sys.stdout.buffer.write(binary_out)
+elif out != '':print(json.dumps(out) if isinstance(out,(dict,list)) else out)

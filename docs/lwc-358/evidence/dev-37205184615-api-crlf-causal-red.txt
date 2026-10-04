@@ -1,0 +1,22 @@
+test_frontend_multipart_output_crlf_survives_api_run_document (test_engine.Acceptance.test_frontend_multipart_output_crlf_survives_api_run_document) ... ERROR
+
+======================================================================
+ERROR: test_frontend_multipart_output_crlf_survives_api_run_document (test_engine.Acceptance.test_frontend_multipart_output_crlf_survives_api_run_document)
+----------------------------------------------------------------------
+Traceback (most recent call last):
+  File "/Users/rayer/.hermes/profiles/lwc-tpm/cache/scratch/lwc358-owner-correction-4-1814-wt/deploy/engine/tests/test_engine.py", line 478, in test_frontend_multipart_output_crlf_survives_api_run_document
+    actual=providers.Providers(e.plan,e.directory).api(
+        '/v6/deployments/dpl_test/files/outputs?file=build-config.json',
+        output=True,stage='frontend-deployment-reconcile')
+  File "/Users/rayer/.hermes/profiles/lwc-tpm/cache/scratch/lwc358-owner-correction-4-1814-wt/deploy/engine/providers.py", line 117, in api
+    return json.loads(frontend_build_config.document(raw.encode()) if output else raw)
+                      ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~^^^^^^^^^^^^^^
+  File "/Users/rayer/.hermes/profiles/lwc-tpm/cache/scratch/lwc358-owner-correction-4-1814-wt/deploy/components/frontend_build_config.py", line 19, in document
+    raise ValueError("boundary")
+ValueError: boundary
+
+----------------------------------------------------------------------
+Ran 1 test in 0.433s
+
+FAILED (errors=1)
+exit=1

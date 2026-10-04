@@ -1,0 +1,7 @@
+test_frontend_multipart_output_crlf_survives_api_run_document (test_engine.Acceptance.test_frontend_multipart_output_crlf_survives_api_run_document) ... ok
+
+----------------------------------------------------------------------
+Ran 1 test in 0.376s
+
+OK
+exit=0

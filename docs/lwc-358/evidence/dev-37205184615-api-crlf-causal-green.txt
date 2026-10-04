@@ -1,0 +1,32 @@
+test_frontend_multipart_output_crlf_survives_api_run_document (test_engine.Acceptance.test_frontend_multipart_output_crlf_survives_api_run_document) ... ERROR
+
+======================================================================
+ERROR: test_frontend_multipart_output_crlf_survives_api_run_document (test_engine.Acceptance.test_frontend_multipart_output_crlf_survives_api_run_document)
+----------------------------------------------------------------------
+Traceback (most recent call last):
+  File "/Users/rayer/.hermes/profiles/lwc-tpm/cache/scratch/lwc358-owner-correction-4-1814-wt/deploy/engine/tests/test_engine.py", line 478, in test_frontend_multipart_output_crlf_survives_api_run_document
+    actual=providers.Providers(e.plan,e.directory).api(
+        '/v6/deployments/dpl_test/files/outputs?file=build-config.json',
+        output=True,stage='frontend-deployment-reconcile')
+  File "/Users/rayer/.hermes/profiles/lwc-tpm/cache/scratch/lwc358-owner-correction-4-1814-wt/deploy/engine/providers.py", line 105, in api
+    raw = run(args, input='header = "Authorization: Bearer '+token+'"\n',
+              mutation=body is not None, stage=stage,
+              preserve_stdout_bytes=output)
+  File "/Users/rayer/.hermes/profiles/lwc-tpm/cache/scratch/lwc358-owner-correction-4-1814-wt/deploy/engine/support.py", line 203, in run
+    result = subprocess.run([str(a) for a in args], cwd=cwd, env=env, input=input,
+                            capture_output=True, text=not preserve_stdout_bytes, timeout=timeout)
+  File "/opt/homebrew/Cellar/python@3.14/3.14.6/Frameworks/Python.framework/Versions/3.14/lib/python3.14/subprocess.py", line 557, in run
+    stdout, stderr = process.communicate(input, timeout=timeout)
+                     ~~~~~~~~~~~~~~~~~~~^^^^^^^^^^^^^^^^^^^^^^^^
+  File "/opt/homebrew/Cellar/python@3.14/3.14.6/Frameworks/Python.framework/Versions/3.14/lib/python3.14/subprocess.py", line 1221, in communicate
+    stdout, stderr = self._communicate(input, endtime, timeout)
+                     ~~~~~~~~~~~~~~~~~^^^^^^^^^^^^^^^^^^^^^^^^^
+  File "/opt/homebrew/Cellar/python@3.14/3.14.6/Frameworks/Python.framework/Versions/3.14/lib/python3.14/subprocess.py", line 2131, in _communicate
+    input_view = memoryview(self._input)
+TypeError: memoryview: a bytes-like object is required, not 'str'
+
+----------------------------------------------------------------------
+Ran 1 test in 0.335s
+
+FAILED (errors=1)
+exit=1
