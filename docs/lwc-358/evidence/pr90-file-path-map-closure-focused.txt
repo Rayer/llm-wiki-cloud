@@ -1,0 +1,16 @@
+test_frontend_prepare_archives_pinned_file_path_map_closure (test_engine.Acceptance.test_frontend_prepare_archives_pinned_file_path_map_closure) ... ERROR
+
+======================================================================
+ERROR: test_frontend_prepare_archives_pinned_file_path_map_closure (test_engine.Acceptance.test_frontend_prepare_archives_pinned_file_path_map_closure)
+----------------------------------------------------------------------
+Traceback (most recent call last):
+  File "/Users/rayer/.hermes/profiles/lwc-tpm/cache/scratch/lwc358-owner-correction-4-1814-wt/deploy/engine/tests/test_engine.py", line 434, in test_frontend_prepare_archives_pinned_file_path_map_closure
+    with tarfile.open(archive,'r:gz') as tar:
+         ^^^^^^^
+NameError: name 'tarfile' is not defined. Did you mean: 'tempfile'? Or did you forget to import 'tarfile'?
+
+----------------------------------------------------------------------
+Ran 1 test in 0.755s
+
+FAILED (errors=1)
+exit=1

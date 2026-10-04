@@ -8,6 +8,7 @@ from pathlib import Path
 import shutil
 import subprocess
 import sys
+import tarfile
 import tempfile
 import unittest
 from unittest.mock import patch
@@ -26,6 +27,8 @@ class Acceptance(unittest.TestCase):
 
     def setUp(self):
         self.real_node = shutil.which('node')
+        self.vercel_chunk = os.environ.get('LWC_TEST_VERCEL_CHUNK')
+        self.capture_frontend_archive = os.environ.get('LWC_TEST_CAPTURE_FRONTEND_ARCHIVE')
         self.tmp=tempfile.TemporaryDirectory();self.addCleanup(self.tmp.cleanup)
         self.root=Path(self.tmp.name);bin=self.root/'bin';bin.mkdir();self.bin=bin
         fake=HERE/'tests/fake_provider.py';fake.chmod(0o755)
@@ -419,6 +422,48 @@ class Acceptance(unittest.TestCase):
         self.assertEqual(count,len([x for x in self.calls('build') if x[0]=='vercel']))
         e.plan['normalized']['frontend']['api_url']='https://wrong.example'
         with self.assertRaisesRegex(Breakpoint,'config-incompatible'):e.receipt('frontend')
+
+    def test_frontend_prepare_archives_pinned_file_path_map_closure(self):
+        fixture_path=HERE/'tests/fixtures/vercel-59.11.7-file-path-map-refs.json'
+        fixture=json.loads(fixture_path.read_text())
+        refs={ref for item in fixture['configs'] for ref in item['filePathMap'].values()}
+        self.assertEqual(len(refs),197)
+        e=self.make(('frontend',),name='frontend-map-closure')
+        with tempfile.TemporaryDirectory() as temp, patch('providers.ROOT',Path(temp)), patch.dict(os.environ,{
+                'LWC_TEST_VERCEL_FILE_PATH_MAP_FIXTURE':str(fixture_path)}):
+            (Path(temp)/'apps/frontend').mkdir(parents=True)
+            e.prepare()
+            archive=e.directory/e.receipt('frontend')['artifact']['archive']
+            with tarfile.open(archive,'r:gz') as tar:
+                names=set(tar.getnames())
+                self.assertTrue({*refs}.issubset(names))
+                extracted=Path(temp)/'extracted'
+                extracted.mkdir()
+                tar.extractall(extracted,filter='data')
+            self.assertTrue(all(os.path.lexists(extracted/ref) for ref in refs))
+            self.assertTrue((extracted/'.vercel/output/static/build-config.json').is_file())
+            pinned_probe=subprocess.run([
+                self.real_node, str(HERE/'tests/fixtures/vercel-59.11.7-file-path-map-hash.cjs'),
+                str(extracted)], text=True, capture_output=True, timeout=60)
+            self.assertEqual(pinned_probe.returncode,0,pinned_probe.stdout+'\n'+pinned_probe.stderr)
+            self.assertIn('event=hashes-calculated',pinned_probe.stdout)
+            self.assertIn('map_refs=197',pinned_probe.stdout)
+            capture=self.capture_frontend_archive
+            if capture:
+                capture_path=Path(capture)
+                self.assertFalse(capture_path.exists())
+                shutil.copy2(archive,capture_path)
+            chunk=self.vercel_chunk
+            if chunk:
+                result=subprocess.run([
+                    self.real_node, str(HERE/'tests/fixtures/vercel-59.11.7-prebuilt-collector.cjs'),
+                    chunk, str(extracted)], text=True, capture_output=True, timeout=60)
+                self.assertEqual(result.returncode,0,result.stdout+'\n'+result.stderr)
+                self.assertIn('event=hashes-calculated',result.stdout)
+                print(result.stdout,end='')
+            e.deploy()
+        layout=self.current()['frontend_deploy_layout']
+        self.assertTrue(layout['cwd_prebuilt_output_exists'])
 
     def test_10_stale_checkpoint_and_absent_resource(self):
         e=self.ready(self.make());e.snapshot()

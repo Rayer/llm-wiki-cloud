@@ -1,7 +1,7 @@
 {
   "base": "50a166f2b4af3f1d2dd371c2975989fb0fbf1f82",
   "branch": "Rayer/LWC-358-readback-unblock",
-  "content_sha256": "38adad6938a9f155f0d79faf2fef41b894bd5e466800e95508e4281840fbb266",
+  "content_sha256": "6e740d73e716a409d86e10a7c76e1c51aece19d3daf1b80e2e8943d46a73a8df",
   "scope": "All implementation, test, operator, accepted-appendix and frozen-spec paths in this candidate; excludes this manifest, evidence report, raw test logs and generated caches.",
   "frozen_sha256": "838817cad154b0ea773c205f671362a6c9c0ad97c38ddf34f2508eb4fcc2488b",
   "files": [
@@ -142,7 +142,7 @@
     },
     {
       "path": "deploy/engine/providers.py",
-      "sha256": "74a0e1fc4c6e32f4a1fafcb15e44efe063ee766016bae39e63e7527ec8b010a3",
+      "sha256": "638bd05e05a6e7e960dc45d9faedefde38547ad59b9f0bbbdea4d7a8849c43fd",
       "mode": "0o644"
     },
     {
@@ -157,7 +157,7 @@
     },
     {
       "path": "deploy/engine/tests/fake_provider.py",
-      "sha256": "fd7c6caad9932e3e8ff7bde0605448d77846f31c0ab0134e955297fbbea8438b",
+      "sha256": "618ec0503b8c2a29e8cab0d13981c4fb006be2fd84a2fd6920c30e44fa94f359",
       "mode": "0o755"
     },
     {
@@ -181,8 +181,23 @@
       "mode": "0o644"
     },
     {
+      "path": "deploy/engine/tests/fixtures/vercel-59.11.7-file-path-map-hash.cjs",
+      "sha256": "35526176b47a319bbf79e3885d430b0bb61d3939f706c205bd62aea7082fd27e",
+      "mode": "0o644"
+    },
+    {
+      "path": "deploy/engine/tests/fixtures/vercel-59.11.7-file-path-map-refs.json",
+      "sha256": "9c8caba360889cde948af62467b6d94cfb5406f5f785c11b43bd8fbe2ce17cc5",
+      "mode": "0o644"
+    },
+    {
       "path": "deploy/engine/tests/fixtures/vercel-59.11.7-get-linked-project.js",
       "sha256": "ada593b57dc8b17b882909cfeb67956b819019e8acb13388aa02f254e316bb29",
+      "mode": "0o644"
+    },
+    {
+      "path": "deploy/engine/tests/fixtures/vercel-59.11.7-prebuilt-collector.cjs",
+      "sha256": "24647be29f370da32b9c3df8a228d53adf1a8b160ea34759991cede84cd65621",
       "mode": "0o644"
     },
     {
@@ -207,7 +222,7 @@
     },
     {
       "path": "deploy/engine/tests/test_engine.py",
-      "sha256": "a51f8bed17081f6c7ef3e8ba2d500f3e908c631f7e49b87940319c1fde8f5f2f",
+      "sha256": "0b5c5fd9967860c399d9249f6df537da1e2bd26b031f122491e480f8a409d8cf",
       "mode": "0o644"
     },
     {
