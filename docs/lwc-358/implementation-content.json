@@ -1,7 +1,7 @@
 {
   "base": "50a166f2b4af3f1d2dd371c2975989fb0fbf1f82",
   "branch": "Rayer/LWC-358-readback-unblock",
-  "content_sha256": "6e740d73e716a409d86e10a7c76e1c51aece19d3daf1b80e2e8943d46a73a8df",
+  "content_sha256": "1cfb21e36a87b511bb4d0dff0caeabac36257b76520040ce7603bb7200e58e6f",
   "scope": "All implementation, test, operator, accepted-appendix and frozen-spec paths in this candidate; excludes this manifest, evidence report, raw test logs and generated caches.",
   "frozen_sha256": "838817cad154b0ea773c205f671362a6c9c0ad97c38ddf34f2508eb4fcc2488b",
   "files": [
@@ -142,12 +142,12 @@
     },
     {
       "path": "deploy/engine/providers.py",
-      "sha256": "638bd05e05a6e7e960dc45d9faedefde38547ad59b9f0bbbdea4d7a8849c43fd",
+      "sha256": "7f16c7a605c782804df5b383e39e3d99421d36a74a5f406362247e3c323dc3f1",
       "mode": "0o644"
     },
     {
       "path": "deploy/engine/support.py",
-      "sha256": "4c8825c52e3d6d1d5d46f9e2721718dd748cd8019da7ce57d9b055ae62561509",
+      "sha256": "eaa801c3c1bc922566bd8af4015cf851f1fdc0b9ff61dc3a30c8e27a196de685",
       "mode": "0o644"
     },
     {
@@ -157,7 +157,7 @@
     },
     {
       "path": "deploy/engine/tests/fake_provider.py",
-      "sha256": "618ec0503b8c2a29e8cab0d13981c4fb006be2fd84a2fd6920c30e44fa94f359",
+      "sha256": "468199404ff8a1b5a681f1bae819cd3d3e82014dcd472b1da682af293aa5267e",
       "mode": "0o755"
     },
     {
@@ -222,7 +222,7 @@
     },
     {
       "path": "deploy/engine/tests/test_engine.py",
-      "sha256": "0b5c5fd9967860c399d9249f6df537da1e2bd26b031f122491e480f8a409d8cf",
+      "sha256": "489e6591ba72232a5cd8df3f221da28e8628a4fc92dc28a69d09fd23ac26985b",
       "mode": "0o644"
     },
     {

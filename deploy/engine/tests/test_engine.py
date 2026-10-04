@@ -465,6 +465,22 @@ class Acceptance(unittest.TestCase):
         layout=self.current()['frontend_deploy_layout']
         self.assertTrue(layout['cwd_prebuilt_output_exists'])
 
+    def test_frontend_multipart_output_crlf_survives_api_run_document(self):
+        config={'schema_version':1,'api_url':'https://api.example','auth_url':'https://auth.example'}
+        boundary=b'--lwc-runtime-output'
+        body=(boundary+b'\r\nContent-Type: application/json\r\n\r\n'+
+              json.dumps(config,separators=(',',':')).encode()+b'\r\n'+boundary+b'--\r\n')
+        self.provider=self.current()
+        self.provider['build_config']=config
+        self.provider['multipart_output_hex']=body.hex()
+        self.flush()
+        e=self.make(('frontend',),name='frontend-runtime-output-crlf')
+        actual=providers.Providers(e.plan,e.directory).api(
+            '/v6/deployments/dpl_test/files/outputs?file=build-config.json',
+            output=True,stage='frontend-deployment-reconcile')
+        self.assertEqual(actual,config)
+        self.assertEqual(len([call for call in self.calls('curl') if '/files/outputs?' in ' '.join(call)]),1)
+
     def test_10_stale_checkpoint_and_absent_resource(self):
         e=self.ready(self.make());e.snapshot()
         def latest(*args,**kwargs):
