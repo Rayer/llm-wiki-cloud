@@ -1,7 +1,7 @@
 {
   "base": "60178904b62f7702a236689576ffb5862b8addcc",
   "branch": "Rayer/LWC-358-recovery-owner-correction (local test-fixture repair based on 6a108072b22f448751ef00c89414875988da0e9c)",
-  "content_sha256": "950c0b597a107f3591103f827d9e67075ce2b5e90af2f5500d01cdb080eb7e3d",
+  "content_sha256": "db377ea694a27ad70f5340e228fe50b747ed3ce6b966f12184e0747b6980e927",
   "scope": "All implementation, test, operator, accepted-appendix and frozen-spec paths in this candidate; excludes this manifest, evidence report, raw test logs and generated caches.",
   "frozen_sha256": "838817cad154b0ea773c205f671362a6c9c0ad97c38ddf34f2508eb4fcc2488b",
   "files": [
@@ -122,7 +122,7 @@
     },
     {
       "path": "deploy/engine/artifacts.cjs",
-      "sha256": "22e3623b15ff721e8b3c37abd883ef4e47fba9ff2222ed7fcb7595a97bfcd5cc",
+      "sha256": "f197fad0d838d4d063d04c6ca9df7ef962eb68b3f80b3396ce1fb386e13f58a0",
       "mode": "0o644"
     },
     {
@@ -132,7 +132,7 @@
     },
     {
       "path": "deploy/engine/engine.py",
-      "sha256": "03850b196fd8fa410b8eababa02c3fc8f53f38aaacee7b402bbe9bcce0944c62",
+      "sha256": "dd2df1596329bfd1b5c8366c2ef61fc0b8f08a317a7b26905fd2bf18a1d5eedf",
       "mode": "0o644"
     },
     {
@@ -152,7 +152,7 @@
     },
     {
       "path": "deploy/engine/tests/artifacts.test.cjs",
-      "sha256": "60569bb093f9a2b16a5158bf61148ecd1117df017e77566d801de4565a14879d",
+      "sha256": "d0334457c5ea23e26e3dbd15c29d3a5a10ef354c9d29afc169799edc2c8f5671",
       "mode": "0o644"
     },
     {
@@ -202,7 +202,7 @@
     },
     {
       "path": "deploy/engine/tests/test_engine.py",
-      "sha256": "7f0966708f174174ef3c5212eab058eb6fe27bb7754afb04a2793896bbaa07e9",
+      "sha256": "d472fd7ccf8467d33f25f8d953da23402bc40d7b533ed25c22d7460849640627",
       "mode": "0o644"
     },
     {
@@ -212,7 +212,7 @@
     },
     {
       "path": "deploy/engine/tests/test_transport_integration.py",
-      "sha256": "abfabee52846c8248d4e67bb00863215d812612a95215c3093d807bb4bf702c4",
+      "sha256": "b49af6cc1c9eac90913714d2c78b0cd58cf86bc9282b2bd06a31d1b49d9b99ba",
       "mode": "0o644"
     },
     {
@@ -222,7 +222,7 @@
     },
     {
       "path": "deploy/engine/tests/transport_sdk_stub.cjs",
-      "sha256": "233bba2581bd6bb796ffc89f9babe08d06315eca63ad3e783d0dee649a318c91",
+      "sha256": "2324eb4d2bd7c61c819417777963eb9c8ecef2406926f7f3572686774247e16b",
       "mode": "0o644"
     },
     {
@@ -251,13 +251,18 @@
       "mode": "0o644"
     },
     {
+      "path": "docs/lwc-358/deployment-engine-spec-r2-accepted-appendix-owner-correction-4-1834-4-1835.md",
+      "sha256": "f73e1b2befb42167226c0d8364b09423249de46960bdd9236fd37e81b04e9b65",
+      "mode": "0o644"
+    },
+    {
       "path": "docs/lwc-358/deployment-engine-spec-r2.md",
       "sha256": "838817cad154b0ea773c205f671362a6c9c0ad97c38ddf34f2508eb4fcc2488b",
       "mode": "0o644"
     },
     {
       "path": "docs/lwc-358/operator-r2.md",
-      "sha256": "064995c96fcc6caca762423f60c3d258c6fd3f612d37e4eb8cb0d6af01bb838c",
+      "sha256": "ba56ae30c49b75c1a02c7cb7d32134424058bdc77a8dab6b5970fb1b3814ff51",
       "mode": "0o644"
     },
     {

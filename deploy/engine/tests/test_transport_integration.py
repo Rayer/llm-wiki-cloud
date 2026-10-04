@@ -60,6 +60,39 @@ class EngineTransportIntegration(unittest.TestCase):
         self.assertEqual(read(self.directory / '.latest.json'), self.engine.state)
         self.assertEqual(state['uploads'], [])
 
+    def test_runtime_guard_uses_sequence_within_attempt_when_ids_disagree(self):
+        run_id, attempt = 42, 1
+        prefix = self.engine.plan['id'][:16]
+        sequence9 = {'id': 11285623722,
+                     'name': f'lwc-state-development-{prefix}-{run_id}-{attempt}-9',
+                     'expired': False, 'workflow_run': {'id': run_id}}
+        sequence5 = {'id': 11286159266,
+                     'name': f'lwc-state-development-{prefix}-{run_id}-{attempt}-5',
+                     'expired': False, 'workflow_run': {'id': run_id}}
+        self.engine.state.update(sequence=9, status='deploying')
+        state9 = {**self.engine.state, 'status':'unknown'}
+        state5 = {**self.engine.state, 'sequence':5, 'status':'deploying'}
+        write(self.stub_state, {
+            'argv': [], 'uploads': [], 'downloads': [], 'requests': [],
+            'checkpoint':self.engine.state,
+            'artifact_checkpoints': {str(sequence9['id']):state9, str(sequence5['id']):state5},
+            'responses': {
+                'actions/artifacts?per_page=100&page=1': {
+                    'total_count':2, 'artifacts':[sequence5, sequence9]},
+                f"actions/artifacts/{sequence9['id']}":sequence9,
+                f"actions/artifacts/{sequence5['id']}":sequence5,
+                f'actions/runs/{run_id}': {
+                    'event':'workflow_dispatch', 'path':'.github/workflows/deploy-dev.yml'},
+            },
+        })
+
+        self.engine.runtime_guard('deploy')
+
+        state = read(self.stub_state)
+        self.assertEqual(state['downloads'], [sequence9['id']])
+        self.assertEqual(read(self.directory / '.latest.json'), state9)
+        self.assertEqual(state['uploads'], [])
+
     def test_latest_page_failure_reaches_engine_result_with_original_cause(self):
         first = [{'id': i, 'name': f'unrelated-{i}'} for i in range(1, 101)]
         write(self.stub_state, {
@@ -72,7 +105,7 @@ class EngineTransportIntegration(unittest.TestCase):
         })
         stdout = io.StringIO()
         with patch.dict(os.environ, {'GITHUB_ACTIONS': 'true'}), \
-             patch('sys.argv', ['engine.py', 'readback', '--directory', str(self.directory)]), \
+             patch('sys.argv', ['engine.py', 'deploy', '--directory', str(self.directory)]), \
              contextlib.redirect_stdout(stdout):
             self.assertEqual(self._main(), 1)
         state = read(self.stub_state)
@@ -97,7 +130,7 @@ class EngineTransportIntegration(unittest.TestCase):
         stdout = io.StringIO()
         timeout = subprocess.TimeoutExpired('node artifacts.cjs latest', 120, stderr=b'')
         with patch.dict(os.environ, {'GITHUB_ACTIONS': 'true'}), \
-             patch('sys.argv', ['engine.py', 'readback', '--directory', str(self.directory)]), \
+             patch('sys.argv', ['engine.py', 'deploy', '--directory', str(self.directory)]), \
              patch('support.subprocess.run', side_effect=timeout), \
              contextlib.redirect_stdout(stdout):
             self.assertEqual(self._main(), 1)

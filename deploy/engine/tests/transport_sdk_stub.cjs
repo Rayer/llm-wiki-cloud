@@ -20,7 +20,8 @@ class Client {
     state.downloads.push(id);
     write(state);
     fs.mkdirSync(options.path, {recursive:true});
-    fs.writeFileSync(path.join(options.path, 'state.json'), JSON.stringify(state.checkpoint));
+    fs.writeFileSync(path.join(options.path, 'state.json'),
+      JSON.stringify(state.artifact_checkpoints?.[id] || state.checkpoint));
   }
 }
 const load = Module._load;
