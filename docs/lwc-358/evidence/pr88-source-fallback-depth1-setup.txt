@@ -1,0 +1,10 @@
+command: git clone --depth 1 --branch Rayer/LWC-358-recovery-owner-correction file:///Users/rayer/.hermes/profiles/lwc-tpm/cache/scratch/lwc358-owner-correction-4-1814-wt /Users/rayer/.hermes/profiles/lwc-tpm/cache/scratch/pr88-source-fallback-depth1-6a108
+exit_code: 0
+Cloning into '/Users/rayer/.hermes/profiles/lwc-tpm/cache/scratch/pr88-source-fallback-depth1-6a108'...
+shallow=true
+commit_count=1
+head=6a108072b22f448751ef00c89414875988da0e9c
+old_source_cat_file_exit=128
+candidate_test_sha256=202eda0f285cf5df5921a292a3f1ed4d41383f3ec131447922e70934089fdbc5
+copied_test_sha256=202eda0f285cf5df5921a292a3f1ed4d41383f3ec131447922e70934089fdbc5
+scratch_source_fixture: created by the named test in a temporary bare Git object store; no refs

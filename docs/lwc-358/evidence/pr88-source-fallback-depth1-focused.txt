@@ -1,0 +1,6 @@
+test_registered_dev_release_resumes_legacy_source_with_current_executor (test_build_submission.AsyncBuildSubmission.test_registered_dev_release_resumes_legacy_source_with_current_executor) ... ok
+
+----------------------------------------------------------------------
+Ran 1 test in 23.277s
+
+OK

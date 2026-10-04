@@ -1,7 +1,7 @@
 {
   "base": "60178904b62f7702a236689576ffb5862b8addcc",
-  "branch": "Rayer/LWC-358-recovery-owner-correction (local sibling assertion repair based on 7a61464914ac52635d1e657c00735e6ea19d9bb8)",
-  "content_sha256": "0ac4f4d9d2d39797c58df8b153e6222d4ab3d8f405f4cdf93d3111807c125f44",
+  "branch": "Rayer/LWC-358-recovery-owner-correction (local test-fixture repair based on 6a108072b22f448751ef00c89414875988da0e9c)",
+  "content_sha256": "950c0b597a107f3591103f827d9e67075ce2b5e90af2f5500d01cdb080eb7e3d",
   "scope": "All implementation, test, operator, accepted-appendix and frozen-spec paths in this candidate; excludes this manifest, evidence report, raw test logs and generated caches.",
   "frozen_sha256": "838817cad154b0ea773c205f671362a6c9c0ad97c38ddf34f2508eb4fcc2488b",
   "files": [
@@ -187,7 +187,7 @@
     },
     {
       "path": "deploy/engine/tests/test_build_submission.py",
-      "sha256": "25e11278d96d97e2640bc9c935107ae6b32df1b4d912c9d4bbd6f6babb3862ee",
+      "sha256": "202eda0f285cf5df5921a292a3f1ed4d41383f3ec131447922e70934089fdbc5",
       "mode": "0o644"
     },
     {

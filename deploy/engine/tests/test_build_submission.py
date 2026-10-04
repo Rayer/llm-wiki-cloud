@@ -236,6 +236,40 @@ class AsyncBuildSubmission(unittest.TestCase):
         write(directory/'plan.json', plan)
         return directory, plan
 
+    def scratch_source_commit(self, executor):
+        git_dir = self.root / 'retained-source.git'
+        initialized = subprocess.run(['git','init','--bare',str(git_dir)],cwd=ROOT,
+                                     text=True,capture_output=True)
+        self.assertEqual(initialized.returncode,0,initialized.stdout+initialized.stderr)
+        objects = git_dir/'objects'
+        source_objects = subprocess.check_output(
+            ['git','rev-parse','--git-path','objects'],cwd=ROOT,text=True).strip()
+        source_objects = Path(source_objects)
+        if not source_objects.is_absolute():
+            source_objects = ROOT/source_objects
+        (objects/'info'/'alternates').write_text(str(source_objects.resolve())+'\n')
+
+        tree = subprocess.check_output(['git','rev-parse','HEAD^{tree}'],cwd=ROOT,text=True).strip()
+        commit_env = {**os.environ,'GIT_AUTHOR_NAME':'LWC test fixture',
+                      'GIT_AUTHOR_EMAIL':'lwc-test@example.invalid',
+                      'GIT_COMMITTER_NAME':'LWC test fixture',
+                      'GIT_COMMITTER_EMAIL':'lwc-test@example.invalid',
+                      'GIT_AUTHOR_DATE':'@1700000000 +0000',
+                      'GIT_COMMITTER_DATE':'@1700000000 +0000'}
+        source = subprocess.check_output(
+            ['git','--git-dir',str(git_dir),'commit-tree',tree,'-m','retained Stage 1 source fixture'],
+            cwd=ROOT,env=commit_env,text=True).strip()
+        git_env = {'GIT_ALTERNATE_OBJECT_DIRECTORIES':str(objects)}
+        resolved = subprocess.check_output(
+            ['git','rev-parse',source+'^{commit}'],cwd=ROOT,
+            env={**os.environ,**git_env},text=True).strip()
+        self.assertEqual(resolved,source)
+        self.assertNotEqual(source,executor)
+        self.assertEqual(subprocess.check_output(
+            ['git','--git-dir',str(git_dir),'for-each-ref','--format=%(refname)'],
+            cwd=ROOT,text=True).strip(),'')
+        return source,git_env
+
     def make_action_checkpoint(self, name, *, statuses=None, extra=None, source=None):
         directory, plan = self.admitted_plan(name=name, source=source)
         with patch.dict(os.environ,{**self.environment,**(extra or {}),
@@ -331,8 +365,8 @@ class AsyncBuildSubmission(unittest.TestCase):
         self.assertEqual(self.fake_data()['submit_count'],1)
 
     def test_registered_dev_release_resumes_legacy_source_with_current_executor(self):
-        source = '60178904b62f7702a236689576ffb5862b8addcc'
         executor = subprocess.check_output(['git','rev-parse','HEAD'],cwd=ROOT,text=True).strip()
+        source,git_env = self.scratch_source_commit(executor)
         wrapper=(ROOT/'.github/workflows/deploy-dev.yml').read_text()
         shared=(ROOT/'.github/workflows/cd.yml').read_text()
         self.assertIn("source_sha: ${{ inputs.operation == 'release' && (inputs.source_sha || github.sha) || inputs.source_sha }}",wrapper)
@@ -340,8 +374,9 @@ class AsyncBuildSubmission(unittest.TestCase):
         self.assertIn('SOURCE: ${{ inputs.source_sha }}',shared)
         self.assertIn('EXECUTOR_SHA: ${{ inputs.executor_sha }}',shared)
 
-        retained, plan, first = self.make_action_checkpoint(
-            'registered-cross-executor-resume',statuses=['WORKING'],source=source)
+        with patch.dict(os.environ,git_env):
+            retained, plan, first = self.make_action_checkpoint(
+                'registered-cross-executor-resume',statuses=['WORKING'],source=source,extra=git_env)
         self.assertEqual(plan['source'],source)
         self.assertEqual(first['builds']['auth']['build_id'],BUILD_IDS[0])
         legacy={'schema':2,**{key:value for key,value in plan.items()
@@ -358,7 +393,7 @@ class AsyncBuildSubmission(unittest.TestCase):
 
         resumed=self.run_action_prepare(source=source,executor_sha=executor,tag=plan['tag'],
                                         components='auth',artifact_source=retained,
-                                        extra={'FAKE_STATUSES':json.dumps(['SUCCESS'])})
+                                        extra={**git_env,'FAKE_STATUSES':json.dumps(['SUCCESS'])})
         self.assertEqual(resumed.returncode,0,resumed.stdout+resumed.stderr)
         runner=self.root/f'runner-temp-{self.action_runs}'
         release=runner/'release'
