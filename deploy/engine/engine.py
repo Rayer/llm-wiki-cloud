@@ -19,6 +19,21 @@ ORDER = ('exportjob', 'auth', 'bff', 'worker', 'frontend')
 PROFILES = read(ROOT / 'deploy/engine/profiles.json')
 
 
+def _phase_cause(phase, exc, stage):
+    if not isinstance(exc, Breakpoint):
+        return {'phase': phase, **structured_cause(exc, stage)}
+    cause = {'phase': phase, 'reason': exc.reason, 'status': exc.status}
+    if exc.stage or stage != 'unknown':
+        cause['stage'] = exc.stage or stage
+    if exc.exit_code is not None:
+        cause['exit_code'] = exc.exit_code
+    if exc.timeout_class is not None:
+        cause['timeout_class'] = exc.timeout_class
+    if exc.cause is not None:
+        cause['cause'] = exc.cause
+    return cause
+
+
 def selection(raw):
     values = raw.split(',')
     require(values and len(set(values)) == len(values) and all(c in ORDER for c in values), 'invalid-components')
@@ -433,11 +448,17 @@ class Engine:
         if errors:
             raise Breakpoint('rollback-not-verified', 'unknown', True, 'inspect-retained-checkpoint')
 
-    def reconcile(self, c, artifact, candidate):
+    def reconcile(self, c, artifact, candidate, deploy_error=None):
         try:
             self.provider.reconcile_candidate(c, artifact, candidate, self.save)
-        except (Breakpoint, KeyError, ValueError):
-            raise Breakpoint('provider-result-unreadable', 'unknown', True, 'reconcile-before-replay') from None
+        except (Breakpoint, KeyError, ValueError) as exc:
+            stage = 'frontend-deployment-reconcile' if c == 'frontend' else 'unknown'
+            causes = ([_phase_cause('deploy', deploy_error,
+                                    'frontend-vercel-deploy' if c == 'frontend' else 'unknown')]
+                      if deploy_error else [])
+            causes.append(_phase_cause('reconcile', exc, stage))
+            raise Breakpoint('provider-result-unreadable', 'unknown', True, 'reconcile-before-replay',
+                             causes=causes) from None
 
     def deploy(self, components=None, reactivate=False):
         artifacts = self.barrier()
@@ -474,8 +495,8 @@ class Engine:
                     require(bool(entry['candidate']), 'mutation-result-unknown')
                 try:
                     self.provider.deploy(c, artifacts[c], entry['candidate'], self.save)
-                except Breakpoint:
-                    self.reconcile(c, artifacts[c], entry['candidate'])
+                except Breakpoint as deploy_error:
+                    self.reconcile(c, artifacts[c], entry['candidate'], deploy_error=deploy_error)
                     # No second update. Readback determines known failure vs unknown.
                 self.provider.poll(c, artifacts[c], entry['candidate'])
                 entry['status'] = 'verified'
@@ -548,6 +569,8 @@ class Engine:
             }
         if exc and exc.cause:
             result['cause'] = exc.cause
+        if exc and exc.causes:
+            result['causes'] = exc.causes
         if exc and isinstance(exc.frontend_prepare_diagnostic, dict):
             result['frontend_prepare_diagnostic'] = exc.frontend_prepare_diagnostic
         write(self.directory / 'result.json', result)

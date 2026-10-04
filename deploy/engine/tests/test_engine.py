@@ -1,6 +1,7 @@
 """TEST ONLY offline acceptance; real production orchestration and adapters."""
 import copy
 import hashlib
+import io
 import json
 import os
 from pathlib import Path
@@ -366,6 +367,55 @@ class Acceptance(unittest.TestCase):
                 else:self.provider['build_config']['api_url']='https://wrong.example'
                 self.flush()
                 self.assertFalse(e.provider.observe('frontend',e.receipt('frontend')['artifact'],e.state['components']['frontend']['candidate']))
+
+    def test_frontend_runtime_deploy_and_reconcile_causes_reach_formal_result(self):
+        e=self.make(('frontend',),name='frontend-runtime-cause')
+        with tempfile.TemporaryDirectory() as temp, patch('providers.ROOT',Path(temp)):
+            (Path(temp)/'apps/frontend').mkdir(parents=True)
+            e.prepare()
+        e.snapshot()
+
+        calls=[]
+        def fake_subprocess(args, **kwargs):
+            argv=[str(arg) for arg in args]
+            calls.append(argv)
+            if argv[0]=='vercel':
+                return subprocess.CompletedProcess(args,17,'','frontend deploy failed with test-only')
+            if argv[0]=='curl':
+                return subprocess.CompletedProcess(args,0,'{','')
+            raise AssertionError('unexpected subprocess boundary')
+
+        stdout=io.StringIO()
+        with patch.object(engine.Engine,'runtime_guard'), \
+             patch('support.subprocess.run',side_effect=fake_subprocess), \
+             patch.object(providers.Providers,'poll',side_effect=AssertionError('poll must not follow failed reconciliation')), \
+             patch('sys.argv',['engine.py','deploy','--directory',str(e.directory)]), \
+             patch('sys.stdout',stdout):
+            exit_code=engine.main()
+
+        result=read(e.directory/'result.json')
+        rendered=stdout.getvalue()
+        self.assertEqual(exit_code,1)
+        self.assertEqual(result['reason'],'provider-result-unreadable',result)
+        self.assertEqual(result['status'],'unknown')
+        self.assertTrue(result['mutation_may_have_happened'])
+        self.assertEqual(result['allowed_next_action'],'reconcile-before-replay')
+        self.assertEqual(result['component'],'frontend')
+        self.assertEqual(result['observed']['component_status'],'unknown')
+        self.assertEqual(result['last_verified_checkpoint'],read(e.state_path)['sequence'])
+        self.assertEqual(len([argv for argv in calls if argv[0]=='vercel']),1,
+                         'reconciliation failure must not replay deploy')
+        self.assertEqual(len([argv for argv in calls if argv[0]=='curl']),1)
+        self.assertEqual([cause['phase'] for cause in result['causes']],['deploy','reconcile'])
+        self.assertEqual(result['causes'][0]['stage'],'frontend-vercel-deploy')
+        self.assertEqual(result['causes'][0]['exit_code'],17)
+        self.assertEqual(result['causes'][0]['cause']['message'],
+                         'frontend deploy failed with [REDACTED]')
+        self.assertEqual(result['causes'][1]['exception_type'],'JSONDecodeError')
+        self.assertEqual(result['causes'][1]['stage'],'frontend-deployment-reconcile')
+        self.assertIn('line 1 column 2',result['causes'][1]['message'])
+        self.assertNotIn('test-only',rendered)
+        self.assertNotIn('frontend deploy failed with test-only',rendered)
 
     def test_unusable_receipt_rebuilds_only_affected_component(self):
         e=self.ready(self.make(('auth','worker')))

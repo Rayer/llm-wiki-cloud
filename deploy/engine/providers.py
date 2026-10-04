@@ -808,7 +808,8 @@ class Providers:
                     env.update(VERCEL_ORG_ID=artifact['team'], VERCEL_PROJECT_ID=artifact['project'])
                     env.pop('NOW_ORG_ID', None)
                     env.pop('NOW_PROJECT_ID', None)
-                    url = run(args, cwd=temp, env=env, mutation=True).splitlines()[-1].removeprefix('https://')
+                    url = run(args, cwd=temp, env=env, mutation=True,
+                              stage='frontend-vercel-deploy').splitlines()[-1].removeprefix('https://')
                     d = self.deployment(url)
                     candidate['deployment'] = d['id']
                     save()
@@ -846,7 +847,8 @@ class Providers:
                 candidate['revision'] = name
                 save()
         if c == 'frontend' and not candidate.get('deployment'):
-            result = self.api('/v6/deployments?projectId='+os.environ['VERCEL_PROJECT_ID']+'&limit=100')
+            result = self.api('/v6/deployments?projectId='+os.environ['VERCEL_PROJECT_ID']+'&limit=100',
+                              stage='frontend-deployment-reconcile')
             matches = [d for d in result['deployments'] if d.get('meta', {}).get('lwcAttempt') == self.plan['id']
                        and d.get('meta', {}).get('lwcArtifact') == artifact['sha256']]
             require(len(matches) == 1, 'deployment-identity-unknown')

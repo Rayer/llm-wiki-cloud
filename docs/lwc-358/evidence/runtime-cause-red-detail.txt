@@ -1,0 +1,18 @@
+test_frontend_runtime_deploy_and_reconcile_causes_reach_formal_result (test_engine.Acceptance.test_frontend_runtime_deploy_and_reconcile_causes_reach_formal_result) ... FAIL
+
+======================================================================
+FAIL: test_frontend_runtime_deploy_and_reconcile_causes_reach_formal_result (test_engine.Acceptance.test_frontend_runtime_deploy_and_reconcile_causes_reach_formal_result)
+----------------------------------------------------------------------
+Traceback (most recent call last):
+  File "/Users/rayer/.hermes/profiles/lwc-tpm/cache/scratch/lwc358-runtime-cause-passthrough-worktree/deploy/engine/tests/test_engine.py", line 398, in test_frontend_runtime_deploy_and_reconcile_causes_reach_formal_result
+    self.assertEqual(result['reason'],'provider-result-unreadable',result)
+    ~~~~~~~~~~~~~~~~^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+AssertionError: 'invalid-or-unreadable-input' != 'provider-result-unreadable'
+- invalid-or-unreadable-input
++ provider-result-unreadable
+ : {'allowed_next_action': 'correct-input-and-resume', 'attempt': 'a5a46f1a4f464ba797694495e494c1ff34b4d135d48c337bca945dbf169a2a7f', 'candidate': None, 'cause': {'code': 'invalid-json', 'exception_type': 'JSONDecodeError', 'exception_type_omitted': False, 'message': 'Expecting property name enclosed in double quotes at line 1 column 2', 'message_omitted': False, 'message_truncated': False, 'stage': 'unknown'}, 'component': 'frontend', 'expected': {'identity': '61e188147247af8048df5b5995b0947cd7dfaf486e3ab695a79f9de7579dd9b1', 'source': 'cccccccccccccccccccccccccccccccccccccccc'}, 'failure_diagnostic': {'exit_code': None, 'stage': 'unknown', 'timeout_class': None}, 'last_verified_checkpoint': 2, 'limitations': 'Job executions and persistent writes are not reversed by image rollback.', 'mutation_may_have_happened': False, 'observed': {'component_status': 'unstarted'}, 'prior': None, 'reason': 'invalid-or-unreadable-input', 'release': 'test-release', 'stage': 'ready', 'status': 'failed'}
+
+----------------------------------------------------------------------
+Ran 1 test in 0.781s
+
+FAILED (failures=1)

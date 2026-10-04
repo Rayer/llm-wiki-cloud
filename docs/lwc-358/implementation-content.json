@@ -1,7 +1,7 @@
 {
-  "base": "677c433e7494a3c8b5bb40c94121851b54642e54",
-  "branch": "Rayer/LWC-358-latest-checkpoint-pagination",
-  "content_sha256": "fadc56bab289fe591e2fbde60dc027acfbd8bb82a2fdd3610469ba19717e9875",
+  "base": "b978fe10fb532e87b5afe5dee7e65712622857dd",
+  "branch": "local runtime-cause-passthrough candidate",
+  "content_sha256": "7fbf5e07c9bb8745fc10386b64e46811d4bffe8e9c89b9f989b4034b1ce39d6b",
   "scope": "All changed/new implementation, test, operator, accepted-appendix and frozen-spec files; excludes this manifest, evidence report and raw logs to avoid self-reference.",
   "frozen_sha256": "838817cad154b0ea773c205f671362a6c9c0ad97c38ddf34f2508eb4fcc2488b",
   "files": [
@@ -132,7 +132,7 @@
     },
     {
       "path": "deploy/engine/engine.py",
-      "sha256": "0834462bcfc24f1be5463b2ff7fab5a3266af928793b1b0a71040601b8666023",
+      "sha256": "7e3687a950159577c3e4156f8685bf442d89dbdd64512fa9fb250f480d4acef9",
       "mode": "0o644"
     },
     {
@@ -142,12 +142,12 @@
     },
     {
       "path": "deploy/engine/providers.py",
-      "sha256": "ff1433a0e4c6db177acbbbd260fe07de2af3516eb2246def666bbd48681874a2",
+      "sha256": "3b80e0508ee756d7b1479ba52d26eb7351ca2e894ac0adad4a17bc995ce02ea1",
       "mode": "0o644"
     },
     {
       "path": "deploy/engine/support.py",
-      "sha256": "fa8b6149862be18c17f8e57930e528cf8c3132a64ec90cc96686ec2deed9cc3a",
+      "sha256": "4c8825c52e3d6d1d5d46f9e2721718dd748cd8019da7ce57d9b055ae62561509",
       "mode": "0o644"
     },
     {
@@ -202,7 +202,7 @@
     },
     {
       "path": "deploy/engine/tests/test_engine.py",
-      "sha256": "254a29f2ab238ac93c50af8607b2cdb7bb1afac6a202b0e2b699f8f53fb0a33c",
+      "sha256": "f882cc9aa65acc2dad5c26547ad83684460c1c763cbae18753087dcd007bea24",
       "mode": "0o644"
     },
     {
@@ -252,7 +252,7 @@
     },
     {
       "path": "docs/lwc-358/operator-r2.md",
-      "sha256": "4cd7655723ea4e095ad4f7223eb82ca2d2a9ae9a2565286ab886a0758f53a4f7",
+      "sha256": "57c740218dbe8a104ff9b08734ecb668dbe23b80d5c7088d845318e63e134612",
       "mode": "0o644"
     },
     {
