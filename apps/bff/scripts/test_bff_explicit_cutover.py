@@ -180,7 +180,7 @@ class SharedCDContractTest(unittest.TestCase):
             workflow = yaml.safe_load((workflows / path).read_text())
             trigger = workflow.get("on", workflow.get(True, {}))
             self.assertIn("workflow_dispatch", trigger)
-            expected_jobs = ["auth-image-diagnostic", "release"] if path == "deploy-dev.yml" else ["release"]
+            expected_jobs = ["auth-image-diagnostic", "main-fast-forward-eligible", "release"] if path == "deploy-dev.yml" else ["release"]
             self.assertEqual(sorted(workflow["jobs"]), expected_jobs)
             job = workflow["jobs"]["release"]
             expected_release_guard = f"github.ref == 'refs/heads/{branch}'"
@@ -199,6 +199,12 @@ class SharedCDContractTest(unittest.TestCase):
                 self.assertEqual(job["with"]["source_sha"], "${{ inputs.operation == 'release' && (inputs.source_sha || github.sha) || inputs.source_sha }}")
                 self.assertEqual(job["with"]["executor_sha"], "${{ github.sha }}")
                 self.assertEqual(trigger["workflow_dispatch"]["inputs"]["source_sha"]["default"], "")
+                eligibility = workflow["jobs"]["main-fast-forward-eligible"]
+                self.assertEqual(eligibility["name"], "main-fast-forward-eligible")
+                self.assertEqual(eligibility["needs"], "release")
+                self.assertIn("inputs.operation != 'readback'", eligibility["if"])
+                self.assertEqual(eligibility["permissions"], {"contents": "read", "actions": "read", "statuses": "write"})
+                self.assertIn("${{ github.run_attempt }}", eligibility["steps"][1]["with"]["name"])
                 diagnostic = workflow["jobs"]["auth-image-diagnostic"]
                 for condition in (
                     "inputs.operation == 'diagnose-auth-image'",

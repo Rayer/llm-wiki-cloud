@@ -1,0 +1,11 @@
+test_changed_develop_head_or_nonancestor_main_does_not_publish_success (__main__.MainFastForwardEligibilityTests.test_changed_develop_head_or_nonancestor_main_does_not_publish_success) ... ok
+test_failed_or_unknown_formal_result_does_not_publish_success (__main__.MainFastForwardEligibilityTests.test_failed_or_unknown_formal_result_does_not_publish_success) ... ok
+test_readback_does_not_publish_or_overwrite_eligibility_status (__main__.MainFastForwardEligibilityTests.test_readback_does_not_publish_or_overwrite_eligibility_status) ... ok
+test_registered_workflow_restores_required_status_from_current_result (__main__.MainFastForwardEligibilityTests.test_registered_workflow_restores_required_status_from_current_result) ... ok
+test_retained_source_with_current_executor_is_eligible (__main__.MainFastForwardEligibilityTests.test_retained_source_with_current_executor_is_eligible) ... ok
+test_successful_dev_result_publishes_required_status (__main__.MainFastForwardEligibilityTests.test_successful_dev_result_publishes_required_status) ... ok
+
+----------------------------------------------------------------------
+Ran 6 tests in 2.408s
+
+OK
