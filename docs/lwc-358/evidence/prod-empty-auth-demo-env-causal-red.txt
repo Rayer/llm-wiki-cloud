@@ -1,0 +1,28 @@
+test_empty_demo_user_id_accepts_cloud_run_omitted_value_only (__main__.ProductionConfigContractTests.test_empty_demo_user_id_accepts_cloud_run_omitted_value_only) ... ERROR
+
+======================================================================
+ERROR: test_empty_demo_user_id_accepts_cloud_run_omitted_value_only (__main__.ProductionConfigContractTests.test_empty_demo_user_id_accepts_cloud_run_omitted_value_only)
+----------------------------------------------------------------------
+Traceback (most recent call last):
+  File "/Users/rayer/.hermes/profiles/lwc-tpm/cache/scratch/lwc358-owner-correction-4-1814-wt/scripts/test_production_auth_config_contract.py", line 70, in test_empty_demo_user_id_accepts_cloud_run_omitted_value_only
+    self.assertTrue(adapter.service_matches('auth', candidate_revision, image))
+                    ~~~~~~~~~~~~~~~~~~~~~~~^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+  File "/Users/rayer/.hermes/profiles/lwc-tpm/cache/scratch/lwc358-owner-correction-4-1814-wt/deploy/engine/providers.py", line 762, in service_matches
+    actual = auth_config.effective(revision, self.p['gcp']['project_id'], c,
+        set(expected['env']) == {auth_config.QUERY_PATH},
+        c == 'bff' and (self.p['environment'] == 'development' or self.p['auth'].get('google') is None),
+        c == 'bff', c == 'bff' and auth_config.PIPELINE_DEMO_USER_IDS in expected['env'],
+        c == 'bff' and (self.p['environment'] == 'development' or self.p['export_job']['enabled']))
+  File "/Users/rayer/.hermes/profiles/lwc-tpm/cache/scratch/lwc358-owner-correction-4-1814-wt/deploy/components/auth_config.py", line 158, in effective
+    require(set(entry) == {'name', 'value'} and isinstance(entry['value'], str))
+    ~~~~~~~^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+  File "/Users/rayer/.hermes/profiles/lwc-tpm/cache/scratch/lwc358-owner-correction-4-1814-wt/deploy/components/auth_config.py", line 29, in require
+    raise ValueError("contract mismatch")
+ValueError: contract mismatch
+
+----------------------------------------------------------------------
+Ran 1 test in 1.541s
+
+FAILED (errors=1)
+
+EXIT_CODE=1

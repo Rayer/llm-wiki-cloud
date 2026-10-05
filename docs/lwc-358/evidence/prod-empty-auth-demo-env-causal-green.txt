@@ -1,0 +1,8 @@
+test_empty_demo_user_id_accepts_cloud_run_omitted_value_only (__main__.ProductionConfigContractTests.test_empty_demo_user_id_accepts_cloud_run_omitted_value_only) ... ok
+
+----------------------------------------------------------------------
+Ran 1 test in 0.400s
+
+OK
+
+EXIT_CODE=0

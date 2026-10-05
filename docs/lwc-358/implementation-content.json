@@ -1,7 +1,7 @@
 {
-  "base": "ce6fb32d7dbaf816f0b9d9c43ff6b325a4a99da5",
-  "branch": "Rayer/LWC-358-output-bytes",
-  "content_sha256": "9a542ec5b5def2252d16149995e1ab80824d5f39adfbffdf788251d5ecfe590a",
+  "base": "b7fc574003a33f2543b59d079e2d5df556078771",
+  "branch": "Rayer/LWC-358-restore-main-eligibility",
+  "content_sha256": "15b86374aebad0cb807b093c017ac1a7034f2271a7033d2718020240fa7162b4",
   "scope": "All implementation, test, operator, accepted-appendix and frozen-spec paths in this candidate; excludes this manifest, evidence report, raw test logs and generated caches.",
   "frozen_sha256": "838817cad154b0ea773c205f671362a6c9c0ad97c38ddf34f2508eb4fcc2488b",
   "files": [
@@ -104,6 +104,11 @@
       "path": "deploy/components/auth.sh",
       "sha256": "13115cb2e43ced364afcbfd13caa49e67c982c826978d3ffa87dd35e256df86e",
       "mode": "0o755"
+    },
+    {
+      "path": "deploy/components/auth_config.py",
+      "sha256": "d902520238cacc9107587f80c298b487d79b5529daaa3c713ecc4636158a0007",
+      "mode": "0o644"
     },
     {
       "path": "deploy/components/bff.sh",
@@ -308,6 +313,11 @@
     {
       "path": "scripts/test_main_fast_forward_eligibility.py",
       "sha256": "8a28973820815052379f818636e29eb79debf3ad52bbfb542a2dad7aed7b769b",
+      "mode": "0o644"
+    },
+    {
+      "path": "scripts/test_production_auth_config_contract.py",
+      "sha256": "ff10bac4f2d17fa201a69101b93a0cb195334e80854049ab1e4cc1de05a5bf6c",
       "mode": "0o644"
     }
   ]
