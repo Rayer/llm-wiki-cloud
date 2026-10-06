@@ -12,6 +12,7 @@ import (
 	"errors"
 	"flag"
 	"fmt"
+	scopedfirestore "github.com/rayer/llm-wiki-bff/internal/firestore"
 	"io"
 	"net"
 	"os"
@@ -380,7 +381,7 @@ func (s *firestoreRotationStore) readUser(ctx context.Context, userID string) (r
 	if s == nil || s.client == nil || !auth.ValidPathSegment(userID) {
 		return rotationSnapshot{}, errStoreUnavailable
 	}
-	doc, err := s.client.Collection("users").Doc(userID).Get(ctx)
+	doc, err := scopedfirestore.Collection(s.client, "users").Doc(userID).Get(ctx)
 	if status.Code(err) == codes.NotFound {
 		return rotationSnapshot{}, errUserMissing
 	}
@@ -412,7 +413,7 @@ func (s *firestoreRotationStore) updatePasswordHash(ctx context.Context, userID 
 	if s == nil || s.client == nil || !auth.ValidPathSegment(userID) || passwordHash == "" {
 		return errStoreUnavailable
 	}
-	ref := s.client.Collection("users").Doc(userID)
+	ref := scopedfirestore.Collection(s.client, "users").Doc(userID)
 	err := s.client.RunTransaction(ctx, func(ctx context.Context, tx *firestore.Transaction) error {
 		doc, err := tx.Get(ref)
 		if status.Code(err) == codes.NotFound {

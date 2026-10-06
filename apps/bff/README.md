@@ -5,7 +5,7 @@ Backend-for-frontend API for LLM Wiki. It serves project-scoped wiki sources, co
 ## Requirements
 
 - Go 1.26
-- Docker for the optional Compose local integration flow
+- Google Cloud ADC for the real local GCS/Firestore development target
 - `gcloud` and Docker registry access for deploys
 
 ## Test
@@ -24,67 +24,26 @@ go test ./internal/localfs
 
 ## Local Development
 
-Local app development uses filesystem-backed storage under `local-data/`. It does not require GCP credentials, GCS, Firestore, Cloud Run, or the worker.
+Native local development uses ADC with the project `llm-wiki-cloud`, bucket
+`llm-wiki-cloud-local`, and Firestore database `llm-wiki-cloud-local`. The
+bucket/database must already be provisioned. The local app uses stable
+worktree-specific `local_scopes/{scope}` roots in Firestore and GCS and does
+not run pipeline jobs on Cloud Run.
 
-Seed demo data:
+From the monorepo root, run `make bootstrap` once, then `make local-start`.
+Bootstrap installs the pinned Synto wheel in a worktree-private Python
+environment used by the BFF's native worker. This creates the default password
+fixture only when missing; it does not reset an existing account. Sign in
+through the normal form with
+`demo@llm-wiki.dev` / `demo123456`. BFF APIs require a formal Bearer token and
+do not accept `X-User-ID` as identity. Default URLs are Frontend
+`http://localhost:3000`, BFF `http://localhost:8080`, and Auth
+`http://localhost:8081`; use the `localhost` host for local HTTP and cookies.
 
-```sh
-make seed
-```
-
-Start BFF only for a fast backend loop:
-
-```sh
-make bff-local
-```
-
-Start BFF + Auth + frontend with the native local commands:
-
-```sh
-make dev
-```
-
-From the monorepo root, use `make bootstrap` once and then `make local-start`.
-The frontend is at `../frontend` relative to this directory; no sibling checkout
-is required.
-
-BFF listens on `http://localhost:8080`, Auth listens on `http://localhost:8081`, and Frontend listens on `http://localhost:3000`.
-
-Local frontend login is enabled in Auth local mode:
-
-```text
-email: demo@llm-wiki.dev
-password: demo123456
-```
-
-The frontend "Try demo" button uses these credentials.
-
-Local scoped API calls require dev headers:
-
-```text
-X-User-ID: local-user
-X-Project-ID: demo
-```
-
-Example smoke checks:
-
-```sh
-curl -X POST http://localhost:8081/api/v1/auth/login \
-  -H 'Content-Type: application/json' \
-  -d '{"email":"demo@llm-wiki.dev","password":"demo123456"}'
-curl -H 'X-User-ID: local-user' http://localhost:8080/api/v1/projects
-curl -H 'X-User-ID: local-user' -H 'X-Project-ID: demo' http://localhost:8080/api/v1/concepts
-curl -H 'X-User-ID: local-user' -H 'X-Project-ID: demo' http://localhost:8080/api/v1/sources
-curl -X POST -H 'X-User-ID: local-user' -H 'X-Project-ID: demo' http://localhost:8080/api/v1/pipeline/rebuild-index
-```
-
-Clean local seeded data:
-
-```sh
-make clean-local
-```
-
-More detail: [docs/LOCAL_DEV.md](docs/LOCAL_DEV.md).
+`make local-stop` stops only this worktree's supervisor-managed processes.
+For component debugger workflows, port overrides, ADC setup, account lifecycle,
+scope retention, troubleshooting, and pipeline cost boundaries, see
+[docs/LOCAL_DEV.md](docs/LOCAL_DEV.md).
 
 ## Deploy
 
@@ -114,7 +73,9 @@ Build, push, and deploy:
 make all
 ```
 
-Production mode expects GCP credentials and uses GCS/Firestore. Local mode is selected only when `--local` or `LOCAL_DATA_DIR` is set.
+Deployed mode expects GCP credentials and uses GCS/Firestore. The native local
+cloud workflow is configured by `LOCAL_CLOUD_SCOPE`; filesystem storage and
+synthetic `--local`/`DEV_JWT` auth modes are not available.
 
 ### Immutable worker generations
 
@@ -134,8 +95,7 @@ Query retrieval is typed configuration: `query_expansion_keywords_per_attempt` /
 
 ```sh
 make build-sync
-go run ./cmd/bff --local ./local-data
-LOCAL_DATA_DIR=./local-data DEV_JWT=true JWT_SECRET=dev-secret go run ./cmd/auth --local ./local-data
+go test ./internal/localfs
 ```
 
 Audit existing Firestore users before enabling canonical-email reservations. The
@@ -149,7 +109,8 @@ go run ./cmd/auth_identity_audit --apply
 
 ## Pipeline rate limits (LWC-138)
 
-User `POST /api/v1/pipeline/run` enforces per-project quotas before Cloud Run:
+User `POST /api/v1/pipeline/run` enforces per-project quotas before dispatching
+to the native local worker or deployed Cloud Run job:
 
 | Env | Default | Meaning |
 |-----|---------|---------|
@@ -158,4 +119,7 @@ User `POST /api/v1/pipeline/run` enforces per-project quotas before Cloud Run:
 | `PIPELINE_MIN_NEW_RAW` | 1 | Require this many new/modified raw files since last run |
 | `PIPELINE_DEMO_USER_IDS` | (empty) | Comma-separated user IDs blocked from pipeline |
 
-When Firestore is unavailable, quota is not enforced (`quota.enforced=false`). Admin pipeline trigger skips daily/cooldown/new-raw but still blocks if already running.
+Configurations without a Firestore quota backend report `quota.enforced=false`;
+native local startup requires its configured Firestore database to be reachable.
+Admin pipeline trigger skips daily/cooldown/new-raw but still blocks if already
+running.

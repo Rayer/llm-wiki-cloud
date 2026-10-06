@@ -1656,7 +1656,7 @@ func TestAdminRebuildIndexUsesAuthoritativeRecordAndFailsClosedOnMismatch(t *tes
 	}
 }
 
-func TestPublicRebuildNeverInvokesGenerationRebuilder(t *testing.T) {
+func TestPublicRebuildRejectsSpoofedIdentityBeforeGenerationProbe(t *testing.T) {
 	project := &adminGenerationRebuilderStore{
 		adminStatsProjectStore: &adminStatsProjectStore{prefix: "users/user/project", hasManifest: true},
 	}
@@ -1670,8 +1670,8 @@ func TestPublicRebuildNeverInvokesGenerationRebuilder(t *testing.T) {
 	c.Request.Header.Set("X-Project-ID", "spoofed-project")
 	h.RebuildIndex(c)
 
-	if recorder.Code != http.StatusConflict || project.called {
-		t.Fatalf("public rebuild status=%d called=%v body=%s, want managed 409 and zero writer calls", recorder.Code, project.called, recorder.Body.String())
+	if recorder.Code != http.StatusUnauthorized || project.called {
+		t.Fatalf("public rebuild status=%d called=%v body=%s, want spoofed identity rejected before any writer call", recorder.Code, project.called, recorder.Body.String())
 	}
 }
 

@@ -3,6 +3,7 @@ package auth
 import (
 	"context"
 	"errors"
+	scopedfirestore "github.com/rayer/llm-wiki-bff/internal/firestore"
 	"sort"
 	"strings"
 	"time"
@@ -83,7 +84,7 @@ func (a *SyncBindingAuthority) ready() bool {
 }
 
 func (a *SyncBindingAuthority) projectRef(userID, projectID string) *firestore.DocumentRef {
-	return a.fs.Collection("projects").Doc(projectDocumentID(userID, projectID))
+	return scopedfirestore.Collection(a.fs, "projects").Doc(projectDocumentID(userID, projectID))
 }
 
 func (a *SyncBindingAuthority) CreateBinding(ctx context.Context, userID, projectID, wikiID, host string) (SyncBinding, error) {
@@ -149,7 +150,7 @@ func (a *SyncBindingAuthority) writeBinding(ctx context.Context, action, userID,
 		if action == "reauthorize" {
 			reason = "user_reauthorized"
 		}
-		return tx.Create(a.fs.Collection(syncBindingAuditCollection).NewDoc(), syncBindingAuditEvent{
+		return tx.Create(scopedfirestore.Collection(a.fs, syncBindingAuditCollection).NewDoc(), syncBindingAuditEvent{
 			Action: "sync_binding_" + action, ActorID: userID, ProjectID: projectID, BindingID: bindingID,
 			Reason: reason, Result: syncBindingStatusActive, CreatedAt: now,
 		})
@@ -191,7 +192,7 @@ func (a *SyncBindingAuthority) RevokeBinding(ctx context.Context, userID, projec
 		if err := tx.Update(ref, []firestore.Update{{Path: "sync_binding", Value: current}}); err != nil {
 			return ErrSyncBindingUnavailable
 		}
-		return tx.Create(a.fs.Collection(syncBindingAuditCollection).NewDoc(), syncBindingAuditEvent{
+		return tx.Create(scopedfirestore.Collection(a.fs, syncBindingAuditCollection).NewDoc(), syncBindingAuditEvent{
 			Action: "sync_binding_revoke", ActorID: userID, ProjectID: projectID, BindingID: bindingID,
 			Reason: reason, Result: syncBindingStatusRevoked, CreatedAt: now,
 		})
@@ -230,7 +231,7 @@ func (a *SyncBindingAuthority) ListBindings(ctx context.Context, userID string) 
 	if !a.ready() || !ValidPathSegment(userID) {
 		return nil, ErrSyncBindingUnavailable
 	}
-	it := a.fs.Collection("projects").Documents(ctx)
+	it := scopedfirestore.Collection(a.fs, "projects").Documents(ctx)
 	defer it.Stop()
 	var result []SyncBinding
 	for {

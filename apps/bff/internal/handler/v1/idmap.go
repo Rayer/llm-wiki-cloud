@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	scopedfirestore "github.com/rayer/llm-wiki-bff/internal/firestore"
 	"time"
 
 	"cloud.google.com/go/firestore"
@@ -137,7 +138,7 @@ func convertMarkdownFiles(files []store.MarkdownFile) []wikiindex.MarkdownFile {
 }
 
 func acquireRebuildIndexLock(ctx context.Context, fs *firestore.Client, uid, pid string, now time.Time) error {
-	ref := fs.Collection("locks").Doc(fmt.Sprintf("%s__%s", uid, pid))
+	ref := scopedfirestore.Collection(fs, "locks").Doc(fmt.Sprintf("%s__%s", uid, pid))
 	expiresAt := now.Add(rebuildIndexTTL)
 
 	return fs.RunTransaction(ctx, func(ctx context.Context, tx *firestore.Transaction) error {
@@ -160,7 +161,7 @@ func acquireRebuildIndexLock(ctx context.Context, fs *firestore.Client, uid, pid
 }
 
 func releaseRebuildIndexLock(ctx context.Context, fs *firestore.Client, uid, pid string) error {
-	ref := fs.Collection("locks").Doc(fmt.Sprintf("%s__%s", uid, pid))
+	ref := scopedfirestore.Collection(fs, "locks").Doc(fmt.Sprintf("%s__%s", uid, pid))
 	return fs.RunTransaction(ctx, func(ctx context.Context, tx *firestore.Transaction) error {
 		if _, err := tx.Get(ref); err != nil {
 			if status.Code(err) == codes.NotFound {

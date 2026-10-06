@@ -22,6 +22,8 @@ import (
 
 	"github.com/rayer/llm-wiki-bff/internal/annotation"
 	"github.com/rayer/llm-wiki-bff/internal/generation"
+	"github.com/rayer/llm-wiki-bff/internal/localcloud"
+	"github.com/rayer/llm-wiki-bff/internal/localpipeline"
 	"github.com/rayer/llm-wiki-bff/internal/sourcestatus"
 	"github.com/rayer/llm-wiki-bff/internal/suggestedqueries"
 	_ "modernc.org/sqlite"
@@ -2825,7 +2827,7 @@ func TestOutputOnlyGenerationRetainsPinnedSourceWithoutReadingMutableRaw(t *test
 	noRawRead := &forbidMutableRawReadStore{objectStore: store, prefix: prefix}
 	second, _, err := publishCloudGenerationFromStart(context.Background(), noRawRead, prefix, root, []sourceSnapshot{{
 		SourceID: "s1", RawPath: "raw/source.md", RawBytes: []byte("mutable raw after compile"), RawSHA256: sha256Text("mutable raw after compile"),
-	}}, currentData, currentAttrs, true, true)
+	}}, currentData, currentAttrs, true, true, "")
 	if err != nil {
 		t.Fatalf("publish output-only generation: %v", err)
 	}
@@ -3362,6 +3364,87 @@ func TestCloudPostCommitReceiptFailureDoesNotRollbackManifest(t *testing.T) {
 	}
 	if diagnostic.Stage != failureStageReceiptRecording || diagnostic.ErrorClass != failureClassRecordingFailure || diagnostic.Child != "" {
 		t.Fatalf("diagnostic=%+v", diagnostic)
+	}
+}
+
+func TestCommittedLocalExecutionSurvivesReceiptWriteFailureAndLaterCommitIsNotMisattributed(t *testing.T) {
+	oldExecOLW := execOLW
+	t.Cleanup(func() { execOLW = oldExecOLW })
+	base := newMemoryObjects()
+	firstID := "local-aaaaaaaaaaaaaaaaaaaaaaaa"
+	secondID := "local-bbbbbbbbbbbbbbbbbbbbbbbb"
+	firstCfg := cloudCfgFor("user", "project", firstID)
+	firstCfg.LocalCloudScope = "worktree-test"
+	prefix := workerProjectObjectPrefix(firstCfg)
+	seedCloudSource(t, base, prefix, "raw-start", "", priorCloudReceipt())
+	previous, err := generation.Decode(seedCloudManifest(t, base, prefix, "old"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	receiptPath, err := localcloud.PublicationReceiptPath(firstID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	store := &failureStore{objectStore: base, failWrite: func(name string, _ int) error {
+		if name == prefix+receiptPath {
+			return errors.New("injected local execution receipt failure")
+		}
+		return nil
+	}}
+	execOLW = func(_ context.Context, vault string, _ []string, _ []string, _, _ io.Writer) error {
+		mustWriteFile(t, filepath.Join(vault, "wiki", "new.md"), []byte("new"))
+		writeCloudRequiredOutputs(t, vault)
+		return nil
+	}
+
+	firstErr := runCloudWorkerBatch(context.Background(), firstCfg, [][]string{{"run", "--auto-approve"}}, store)
+	if !errors.Is(firstErr, errCloudCommittedReceipt) {
+		t.Fatalf("first worker error=%v, want post-commit local receipt failure", firstErr)
+	}
+	currentBytes, _, err := base.Read(context.Background(), prefix+generation.ManifestPath, 0, generation.MaxManifestBytes)
+	if err != nil {
+		t.Fatal(err)
+	}
+	current, err := generation.Decode(currentBytes)
+	if err != nil || current.GenerationID == previous.GenerationID || current.LocalExecutionID != firstID {
+		t.Fatalf("current manifest=%+v err=%v, want first execution identity in a new commit", current, err)
+	}
+	if _, _, err := base.Read(context.Background(), prefix+receiptPath, 0, 4096); !errors.Is(err, cloudstorage.ErrObjectNotExist) {
+		t.Fatalf("local execution receipt read error=%v, want missing receipt", err)
+	}
+	state, reason := localpipeline.ResolvePublicationOutcome(firstID, previous.GenerationID, current, true, false, firstErr, nil, nil, cloudstorage.ErrObjectNotExist)
+	if state != "SUCCEEDED" || !strings.Contains(reason, "committed its manifest") {
+		t.Fatalf("Manager outcome after commit/receipt failure=%q reason=%q", state, reason)
+	}
+
+	secondWorkspace := t.TempDir()
+	snapshots, oldData, oldAttrs, err := materializeCloudWorkspace(context.Background(), base, prefix, secondWorkspace, false)
+	if err != nil {
+		t.Fatalf("materialize second execution inputs: %v", err)
+	}
+	secondPage := filepath.Join(secondWorkspace, "wiki", "new.md")
+	secondPageBytes, err := os.ReadFile(secondPage)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(secondPage, append(secondPageBytes, []byte("\nSecond execution\n")...), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	secondCommit, _, err := publishCloudGenerationFromStart(context.Background(), store, prefix, secondWorkspace, snapshots, oldData, oldAttrs, true, false, secondID)
+	if err != nil {
+		t.Fatalf("second execution manifest commit: %v", err)
+	}
+	secondBytes, _, err := base.Read(context.Background(), prefix+generation.ManifestPath, 0, generation.MaxManifestBytes)
+	if err != nil {
+		t.Fatal(err)
+	}
+	readback, err := generation.Decode(secondBytes)
+	if err != nil || readback.LocalExecutionID != secondID || readback.GenerationID != secondCommit.GenerationID || readback.GenerationID == current.GenerationID {
+		t.Fatalf("second current manifest=%+v err=%v", readback, err)
+	}
+	state, _ = localpipeline.ResolvePublicationOutcome(firstID, previous.GenerationID, readback, true, false, firstErr, nil, nil, cloudstorage.ErrObjectNotExist)
+	if state != "UNKNOWN" {
+		t.Fatalf("first execution after second commit outcome=%q, want UNKNOWN", state)
 	}
 }
 

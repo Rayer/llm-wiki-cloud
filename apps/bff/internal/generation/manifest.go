@@ -23,9 +23,9 @@ const (
 	MaxFileBytes = 64 << 20
 	MaxTotalSize = 512 << 20
 	// Manifest fields are bounded by the schema: 10k file rows with a 1024-byte
-	// path plus fixed JSON/digest/generation fields and a small header.
+	// path plus fixed JSON/digest/generation fields, execution identity, and header.
 	MaxPathBytes        = 1024
-	MaxManifestBytes    = 1024 + MaxFiles*(MaxPathBytes+192)
+	MaxManifestBytes    = 1280 + MaxFiles*(MaxPathBytes+192)
 	LeaseReleaseTimeout = 5 * time.Second
 )
 
@@ -39,6 +39,7 @@ type File struct {
 type Manifest struct {
 	Version              int    `json:"version"`
 	GenerationID         string `json:"generation_id"`
+	LocalExecutionID     string `json:"local_execution_id,omitempty"`
 	PreviousGenerationID string `json:"previous_generation_id,omitempty"`
 	SourceSnapshotDigest string `json:"source_snapshot_digest,omitempty"`
 	CreatedAt            string `json:"created_at"`
@@ -86,6 +87,8 @@ func decodeManifestStrict(data []byte) (Manifest, error) {
 			err = dec.Decode(&manifest.Version)
 		case "generation_id":
 			err = dec.Decode(&manifest.GenerationID)
+		case "local_execution_id":
+			err = dec.Decode(&manifest.LocalExecutionID)
 		case "previous_generation_id":
 			err = dec.Decode(&manifest.PreviousGenerationID)
 		case "source_snapshot_digest":
@@ -187,7 +190,7 @@ func decodeManifestFile(dec *json.Decoder) (File, error) {
 }
 
 func (m Manifest) Validate() error {
-	if m.Version != Version || !safeGenerationID(m.GenerationID) || (m.PreviousGenerationID != "" && !safeGenerationID(m.PreviousGenerationID)) || (m.SourceSnapshotDigest != "" && !validDigest(m.SourceSnapshotDigest)) {
+	if m.Version != Version || !safeGenerationID(m.GenerationID) || !safeLocalExecutionID(m.LocalExecutionID) || (m.PreviousGenerationID != "" && !safeGenerationID(m.PreviousGenerationID)) || (m.SourceSnapshotDigest != "" && !validDigest(m.SourceSnapshotDigest)) {
 		return errors.New("invalid generation manifest")
 	}
 	if _, err := time.Parse(time.RFC3339, m.CreatedAt); err != nil || strings.TrimSpace(m.InputFingerprint) == "" || len(m.Files) > MaxFiles {
@@ -263,6 +266,21 @@ func NewFile(path string, data []byte, objectGeneration int64) (File, error) {
 
 func safeGenerationID(id string) bool {
 	if len(id) < 8 || len(id) > 128 {
+		return false
+	}
+	for _, r := range id {
+		if !(r >= 'a' && r <= 'z' || r >= 'A' && r <= 'Z' || r >= '0' && r <= '9' || r == '-' || r == '_') {
+			return false
+		}
+	}
+	return true
+}
+
+func safeLocalExecutionID(id string) bool {
+	if id == "" {
+		return true
+	}
+	if len(id) > 128 {
 		return false
 	}
 	for _, r := range id {

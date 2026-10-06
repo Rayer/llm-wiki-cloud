@@ -108,6 +108,9 @@ func (h *Handler) pendingWorkForProject(ctx context.Context, userID, projectID s
 // Cloud Run execution in RUNNING. All-terminal owned history overrides a stale
 // Firestore lock (LWC-144).
 func (h *Handler) isPipelineRunning(ctx context.Context, userID, projectID string) (bool, error) {
+	if h.localPipeline != nil {
+		return h.localPipeline.Running(ctx, userID, projectID)
+	}
 	locked, err := h.projectLockActive(ctx, userID, projectID)
 	if err != nil {
 		return false, err
@@ -182,7 +185,7 @@ func (h *Handler) projectLockActive(ctx context.Context, userID, projectID strin
 		return false, nil
 	}
 	docID := fmt.Sprintf("%s__%s", userID, projectID)
-	doc, err := h.firestore.Raw().Collection("locks").Doc(docID).Get(ctx)
+	doc, err := firestore.Collection(h.firestore.Raw(), "locks").Doc(docID).Get(ctx)
 	if err != nil {
 		if status.Code(err) == codes.NotFound {
 			return false, nil

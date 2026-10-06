@@ -1,9 +1,18 @@
 BFF_DIR := apps/bff
 FRONTEND_DIR := apps/frontend
+TEST_ENV := env -u LLM_API_KEY -u DEEPSEEK_API_KEY -u SYNTO_API_KEY -u OPENAI_API_KEY -u ANTHROPIC_API_KEY -u GEMINI_API_KEY -u TYPESAFE_API_KEY -u TYPESAFE_JEV_API_KEY -u LWC331_TEST_API_KEY
 
-.PHONY: all bootstrap lint typecheck vet test build local-start dev local-stop stop smoke workflow-yaml verify
+.PHONY: all help bootstrap lint typecheck vet test build local-start dev local-stop stop smoke workflow-yaml verify
 
 all: verify
+
+help:
+	@printf '%s\n' \
+	  'bootstrap      Install app dependencies and write frontend local config' \
+	  'local-start    Start native Auth, BFF, and Frontend against local GCS/Firestore' \
+	  'local-stop     Stop managed local processes for this worktree' \
+	  'smoke          Run loopback/auth-boundary and cloud-scope smoke tests' \
+	  'lint typecheck test build vet verify  Run repository checks'
 
 bootstrap:
 	$(MAKE) -C $(BFF_DIR) setup
@@ -18,8 +27,8 @@ vet:
 	$(MAKE) -C $(BFF_DIR) vet
 
 test:
-	$(MAKE) -C $(BFF_DIR) test
-	npm --prefix $(FRONTEND_DIR) test
+	$(TEST_ENV) $(MAKE) -C $(BFF_DIR) test
+	$(TEST_ENV) npm --prefix $(FRONTEND_DIR) test
 
 build:
 	$(MAKE) -C $(BFF_DIR) build

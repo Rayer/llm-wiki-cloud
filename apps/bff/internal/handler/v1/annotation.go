@@ -72,7 +72,7 @@ func (h *Handler) annotationTarget(c *gin.Context) (store.Store, store.Condition
 // @Param id path string true "Source ID"
 // @Success 200 {object} handler.AnnotationResponse
 // @Failure 404,409,500 {object} handler.ErrorResponse
-// @Security DevUserAuth
+// @Security BearerAuth
 // @Security ProjectHeader
 // @Router /api/v1/sources/{id}/annotation [get]
 func (h *Handler) GetAnnotation(c *gin.Context) {
@@ -107,7 +107,7 @@ func (h *Handler) GetAnnotation(c *gin.Context) {
 // @Param annotation body handler.AnnotationRequest true "Annotation"
 // @Success 200 {object} handler.AnnotationResponse
 // @Failure 400,404,409,412,413,500 {object} handler.ErrorResponse
-// @Security DevUserAuth
+// @Security BearerAuth
 // @Security ProjectHeader
 // @Router /api/v1/sources/{id}/annotation [put]
 func (h *Handler) PutAnnotation(c *gin.Context) {

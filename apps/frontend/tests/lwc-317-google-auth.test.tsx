@@ -13,7 +13,6 @@ const { cleanup, fireEvent, render, screen, waitFor } = await import('@testing-l
 const mocks = vi.hoisted(() => ({
   getPublicConfig: vi.fn(),
   signIn: vi.fn(),
-  signInAsDemo: vi.fn(),
   startGoogleLogin: vi.fn(),
   fetch: vi.fn(),
   refreshAccessToken: vi.fn(),
@@ -77,7 +76,6 @@ vi.mock('@/components/WorkspaceProvider', () => ({
     projects: mocks.projects,
     loginOpen: mocks.pathname !== '/login' || !mocks.token,
     signIn: mocks.signIn,
-    signInAsDemo: mocks.signInAsDemo,
     renameProject: mocks.renameProject,
     getProjects: mocks.getProjects,
   }),
@@ -118,7 +116,6 @@ beforeEach(() => {
   vi.stubGlobal('fetch', mocks.fetch);
   mocks.fetch.mockReset();
   mocks.signIn.mockResolvedValue(undefined);
-  mocks.signInAsDemo.mockResolvedValue(undefined);
   mocks.refreshAccessToken.mockResolvedValue('google-access-token');
   mocks.pathname = '/login';
   mocks.token = null;

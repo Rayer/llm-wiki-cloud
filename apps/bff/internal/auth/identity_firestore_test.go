@@ -18,8 +18,60 @@ import (
 
 	"cloud.google.com/go/firestore"
 	"github.com/gin-gonic/gin"
+	scopedfirestore "github.com/rayer/llm-wiki-bff/internal/firestore"
 	"google.golang.org/api/option"
 )
+
+func TestEnsureLocalPasswordFixtureCreatesOnlyMissingScopedAccount(t *testing.T) {
+	_, client := newIdentityEmulatorRepository(t)
+	t.Cleanup(func() { _ = client.Close() })
+	scope := fmt.Sprintf("fixture-test-%d", time.Now().UnixNano())
+	if err := scopedfirestore.RegisterLocalScope(client, scope); err != nil {
+		t.Fatal(err)
+	}
+	defer scopedfirestore.RegisterLocalScope(client, "")
+
+	ctx := context.Background()
+	email := fmt.Sprintf("fixture-%d@example.test", time.Now().UnixNano())
+	userID, created, err := EnsureLocalPasswordFixture(ctx, client, email, "password123")
+	if err != nil || !created || userID == "" {
+		t.Fatalf("first fixture ensure=(%q,%v,%v), want a new account", userID, created, err)
+	}
+	users := scopedfirestore.Collection(client, "users")
+	reservations := scopedfirestore.Collection(client, EmailReservationsCollection)
+	t.Cleanup(func() {
+		_, _ = users.Doc(userID).Collection("projects").Doc(defaultProjectID).Delete(ctx)
+		_, _ = users.Doc(userID).Delete(ctx)
+		_, _ = reservations.Doc(emailReservationDocumentID(CanonicalizeEmail(email))).Delete(ctx)
+	})
+	userSnapshot, err := users.Doc(userID).Get(ctx)
+	if err != nil {
+		t.Fatal(err)
+	}
+	user, err := decodeUserRecord(userSnapshot)
+	if err != nil || user.Role != "admin" || user.PasswordHash == "" || user.DefaultProject != defaultProjectID {
+		t.Fatalf("new local fixture user=%+v, error=%v", user, err)
+	}
+	project, err := users.Doc(userID).Collection("projects").Doc(defaultProjectID).Get(ctx)
+	if err != nil || !project.Exists() {
+		t.Fatalf("scoped default project exists=%v, error=%v", project != nil && project.Exists(), err)
+	}
+	reservation, err := reservations.Doc(emailReservationDocumentID(CanonicalizeEmail(email))).Get(ctx)
+	if err != nil || !reservation.Exists() {
+		t.Fatalf("scoped email reservation exists=%v, error=%v", reservation != nil && reservation.Exists(), err)
+	}
+	originalHash := user.PasswordHash
+
+	reusedID, created, err := EnsureLocalPasswordFixture(ctx, client, email, "another-password")
+	if err != nil || created || reusedID != userID {
+		t.Fatalf("second fixture ensure=(%q,%v,%v), want preserved account", reusedID, created, err)
+	}
+	_, preserved, err := NewIdentityRepository(client).GetPasswordUserByEmail(ctx, email)
+	if err != nil || preserved.PasswordHash != originalHash || preserved.Role != "admin" {
+		t.Fatalf("existing account changed: user=%+v error=%v", preserved, err)
+	}
+
+}
 
 func TestRegistrationHandlerWithFirestoreCommitsIdentityBoundary(t *testing.T) {
 	repo, client := newIdentityEmulatorRepository(t)

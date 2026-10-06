@@ -37,7 +37,7 @@ type profileGuidanceArtifactResponse struct {
 //	@Failure		401	{object}	handler.ErrorResponse
 //	@Failure		404	{object}	handler.ErrorResponse
 //	@Failure		500	{object}	handler.ErrorResponse
-//	@Security		DevUserAuth
+//	@Security		BearerAuth
 //	@Security		ProjectHeader
 //	@Router		/api/v1/projects/{pid}/profile/guidance/{revision} [get]
 func (h *Handler) GetProfileGuidanceArtifact(c *gin.Context) {

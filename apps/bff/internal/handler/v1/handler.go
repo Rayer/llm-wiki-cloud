@@ -13,6 +13,7 @@ import (
 	conceptcache "github.com/rayer/llm-wiki-bff/internal/cache"
 	"github.com/rayer/llm-wiki-bff/internal/config"
 	"github.com/rayer/llm-wiki-bff/internal/firestore"
+	handlerapi "github.com/rayer/llm-wiki-bff/internal/handler"
 	"github.com/rayer/llm-wiki-bff/internal/llm"
 	"github.com/rayer/llm-wiki-bff/internal/query"
 	"github.com/rayer/llm-wiki-bff/internal/search"
@@ -32,6 +33,7 @@ type Handler struct {
 	llm                  *llm.Client
 	expander             *llm.QueryExpander
 	queryExecutor        query.Executor
+	localPipeline        LocalPipelineExecutor
 	profileRepository    profileRepository
 
 	httpClient                   *http.Client
@@ -61,6 +63,13 @@ type Handler struct {
 
 	// Optional injectable quota backend for tests; nil → use firestore when available.
 	quotaStore pipelineQuotaStore
+}
+
+// LocalPipelineExecutor runs an actual worker process for native local cloud.
+type LocalPipelineExecutor interface {
+	Start(context.Context, string, string, string, bool) (string, error)
+	Status(context.Context, string, string, string) (*handlerapi.PipelineExecutionResponse, error)
+	Running(context.Context, string, string) (bool, error)
 }
 
 type cachedLists struct {
@@ -96,17 +105,17 @@ func New(wikiStore store.RootStore, fs *firestore.Client, idx *search.Index, cac
 // SetAccountLookup supplies the shared account authority (also used by local test adapters).
 func (h *Handler) SetAccountLookup(lookup auth.AccountLookup) { h.accountLookup = lookup }
 
-// AccountAuth preserves the explicit local developer lane; all normal API
-// requests require the live account authority, even when it is unavailable.
+// AccountAuth always requires a signed token and the current account authority.
 func (h *Handler) AccountAuth(cfg config.Config) gin.HandlerFunc {
-	if cfg.DevJWT && h.accountLookup == nil {
-		return auth.JWTAuth(cfg)
-	}
 	return auth.JWTAuthWithAccountLookupAndSessionVerifier(cfg, h.accountLookup, h.cliSessionVerifier, h.cliProjectAuthorizer)
 }
 
 func (h *Handler) SetQueryExecutor(executor query.Executor) {
 	h.queryExecutor = executor
+}
+
+func (h *Handler) SetLocalPipelineExecutor(executor LocalPipelineExecutor) {
+	h.localPipeline = executor
 }
 
 // SetRebuildIndexFunc overrides rebuild behavior for environments that do not

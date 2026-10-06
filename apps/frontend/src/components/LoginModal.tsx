@@ -20,6 +20,7 @@ export function LoginModal() {
   const [registerOpen, setRegisterOpen] = useState(false);
   // Fail-closed until public config says open.
   const [registrationEnabled, setRegistrationEnabled] = useState(false);
+  const [demoEnabled, setDemoEnabled] = useState(false);
   const [announcementMarkdown, setAnnouncementMarkdown] = useState<string | null>(null);
   const [announcementDigest, setAnnouncementDigest] = useState<string | null>(null);
   const [announcementOpen, setAnnouncementOpen] = useState(false);
@@ -35,6 +36,7 @@ export function LoginModal() {
       autoOpenedDigest.current = null;
       /* eslint-disable react-hooks/set-state-in-effect -- reset hidden modal state at the login lifecycle boundary. */
       setRegistrationEnabled(false);
+      setDemoEnabled(false);
       setRegisterOpen(false);
       setAnnouncementOpen(false);
       setAnnouncementMarkdown(null);
@@ -49,6 +51,7 @@ export function LoginModal() {
       .then((config) => {
         if (!cancelled) {
           setRegistrationEnabled(config.registration_enabled === true && config.email_registration_enabled === true);
+          setDemoEnabled(config.demo_enabled === true);
           setAnnouncementMarkdown(config.announcement_markdown ?? null);
           const digest = typeof config.announcement_digest === 'string' && /^sha256:[0-9a-f]{64}$/.test(config.announcement_digest) ? config.announcement_digest : null;
           setAnnouncementDigest(digest);
@@ -67,6 +70,7 @@ export function LoginModal() {
       .catch(() => {
         if (!cancelled) {
           setRegistrationEnabled(false);
+          setDemoEnabled(false);
           setAnnouncementMarkdown(null);
           setAnnouncementDigest(null);
         }
@@ -217,12 +221,12 @@ export function LoginModal() {
             >
               {t('Login.continueWithGoogle')}
             </button>
-            <button
+            {demoEnabled === true ? <button
               type="button" onClick={handleDemo}
               className="w-full rounded-lg border border-emerald-400/20 bg-emerald-400/10 px-4 py-3 text-sm font-medium text-emerald-200 transition hover:bg-emerald-400/20 focus-visible:outline focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-emerald-400"
             >
               {t('Login.tryDemo')}
-            </button>
+            </button> : null}
             {registrationEnabled === true ? (
               <button
                 type="button" onClick={() => setRegisterOpen(true)}

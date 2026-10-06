@@ -9,6 +9,7 @@ import (
 	"encoding/binary"
 	"encoding/hex"
 	"errors"
+	scopedfirestore "github.com/rayer/llm-wiki-bff/internal/firestore"
 	"sort"
 	"strings"
 	"time"
@@ -167,7 +168,7 @@ func (a *RefreshSessionAuthority) ready() bool {
 }
 
 func (a *RefreshSessionAuthority) collection() *firestore.CollectionRef {
-	return a.fs.Collection(refreshSessionsCollection)
+	return scopedfirestore.Collection(a.fs, refreshSessionsCollection)
 }
 
 func (a *RefreshSessionAuthority) sessionRef(sessionID string) *firestore.DocumentRef {
@@ -175,7 +176,7 @@ func (a *RefreshSessionAuthority) sessionRef(sessionID string) *firestore.Docume
 }
 
 func (a *RefreshSessionAuthority) replayRef(sessionID, tokenHash string) *firestore.DocumentRef {
-	return a.fs.Collection(refreshSessionReplaysCollection).Doc(refreshSessionDocumentID(a.environment, sessionID+"\x00"+tokenHash))
+	return scopedfirestore.Collection(a.fs, refreshSessionReplaysCollection).Doc(refreshSessionDocumentID(a.environment, sessionID+"\x00"+tokenHash))
 }
 
 func refreshSessionDocumentID(environment, sessionID string) string {
@@ -218,7 +219,7 @@ func (a *RefreshSessionAuthority) Issue(ctx context.Context, userID, role, secre
 		IssuedAt: now, ExpiresAt: now.Add(refreshTokenTTL), CreatedAt: now, UpdatedAt: now,
 	}
 	if err := a.fs.RunTransaction(ctx, func(ctx context.Context, tx *firestore.Transaction) error {
-		snapshot, err := tx.Get(a.fs.Collection("users").Doc(userID))
+		snapshot, err := tx.Get(scopedfirestore.Collection(a.fs, "users").Doc(userID))
 		if err != nil {
 			return ErrAccountUnavailable
 		}
@@ -256,7 +257,7 @@ func (a *RefreshSessionAuthority) IssueCLISession(ctx context.Context, userID, c
 	now := a.now().UTC()
 	var result CLISessionCredential
 	err = a.fs.RunTransaction(ctx, func(ctx context.Context, tx *firestore.Transaction) error {
-		account, err := tx.Get(a.fs.Collection("users").Doc(userID))
+		account, err := tx.Get(scopedfirestore.Collection(a.fs, "users").Doc(userID))
 		if err != nil {
 			return ErrCLISessionUnavailable
 		}
@@ -330,7 +331,7 @@ func (a *RefreshSessionAuthority) RotateCLISession(ctx context.Context, rawToken
 		if session.Status != refreshSessionStatusActive || !session.RevokedAt.IsZero() {
 			return ErrCLISessionRevoked
 		}
-		account, err := tx.Get(a.fs.Collection("users").Doc(session.UserID))
+		account, err := tx.Get(scopedfirestore.Collection(a.fs, "users").Doc(session.UserID))
 		if err != nil {
 			return ErrCLISessionUnavailable
 		}
@@ -465,7 +466,7 @@ func (a *RefreshSessionAuthority) RevokeCLISession(ctx context.Context, userID, 
 	if err != nil {
 		return ErrCLISessionUnavailable
 	}
-	auditRef := a.fs.Collection("auth_audit_events").Doc(refreshSessionDocumentID(a.environment, "cli-session-revoked-"+auditID))
+	auditRef := scopedfirestore.Collection(a.fs, "auth_audit_events").Doc(refreshSessionDocumentID(a.environment, "cli-session-revoked-"+auditID))
 	ref := a.sessionRef(sessionID)
 	return a.fs.RunTransaction(ctx, func(ctx context.Context, tx *firestore.Transaction) error {
 		snapshot, err := tx.Get(ref)
@@ -508,7 +509,7 @@ func (a *RefreshSessionAuthority) RevokeCLISessionWithRefreshToken(ctx context.C
 	if err != nil {
 		return ErrCLISessionUnavailable
 	}
-	auditRef := a.fs.Collection("auth_audit_events").Doc(refreshSessionDocumentID(a.environment, "cli-session-logout-"+auditID))
+	auditRef := scopedfirestore.Collection(a.fs, "auth_audit_events").Doc(refreshSessionDocumentID(a.environment, "cli-session-logout-"+auditID))
 	ref := a.sessionRef(sessionID)
 	return a.fs.RunTransaction(ctx, func(ctx context.Context, tx *firestore.Transaction) error {
 		snapshot, err := tx.Get(ref)
@@ -622,7 +623,7 @@ func (a *RefreshSessionAuthority) Rotate(ctx context.Context, rawToken, secret s
 	var terminalErr error
 	err = a.fs.RunTransaction(ctx, func(ctx context.Context, tx *firestore.Transaction) error {
 		terminalErr = nil
-		account, err := tx.Get(a.fs.Collection("users").Doc(claims.Sub))
+		account, err := tx.Get(scopedfirestore.Collection(a.fs, "users").Doc(claims.Sub))
 		if err != nil {
 			return ErrAccountUnavailable
 		}
@@ -860,7 +861,7 @@ func (a *RefreshSessionAuthority) CleanupExpired(ctx context.Context, now time.T
 		removed += end - start
 	}
 	if removed < limit {
-		iter := a.fs.Collection(refreshSessionReplaysCollection).Where("environment", "==", a.environment).Documents(ctx)
+		iter := scopedfirestore.Collection(a.fs, refreshSessionReplaysCollection).Where("environment", "==", a.environment).Documents(ctx)
 		defer iter.Stop()
 		var replayRefs []*firestore.DocumentRef
 		for removed+len(replayRefs) < limit {

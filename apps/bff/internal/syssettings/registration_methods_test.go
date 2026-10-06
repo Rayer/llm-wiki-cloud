@@ -22,7 +22,7 @@ func TestRegistrationMethodsFourCombinations(t *testing.T) {
 				router := gin.New()
 				router.PATCH("/settings", AdminPatchSettingsHandler(store))
 				router.GET("/settings", AdminGetSettingsHandler(store))
-				router.GET("/config", PublicConfigHandler(store))
+				router.GET("/config", PublicConfigHandler(store, false))
 				rec := httptest.NewRecorder()
 				router.ServeHTTP(rec, httptest.NewRequest(http.MethodPatch, "/settings", strings.NewReader(fmt.Sprintf(`{"email_registration_enabled":%t,"google_registration_enabled":%t}`, email, google))))
 				if rec.Code != http.StatusOK {
@@ -108,7 +108,7 @@ func TestRegistrationMethodPartialUpdatesAndLegacyCompatibility(t *testing.T) {
 func TestRegistrationMethodsAdminAuthorizationAndReadFailure(t *testing.T) {
 	store := &FakeStore{Enabled: true}
 	router := gin.New()
-	router.GET("/config", PublicConfigHandler(store))
+	router.GET("/config", PublicConfigHandler(store, false))
 	admin := router.Group("/admin")
 	admin.Use(auth.JWTAuth(config.Config{JWTSecret: "test-secret"}), auth.AdminOnly())
 	admin.PATCH("/settings", AdminPatchSettingsHandler(store))
@@ -146,7 +146,7 @@ func TestRegistrationMasterRetainsPreferencesAndMasksCapabilities(t *testing.T) 
 				store := &FakeStore{Enabled: true}
 				router := gin.New()
 				router.PATCH("/settings", AdminPatchSettingsHandler(store))
-				router.GET("/config", PublicConfigHandler(store))
+				router.GET("/config", PublicConfigHandler(store, false))
 				patch := func(body string) {
 					rec := httptest.NewRecorder()
 					router.ServeHTTP(rec, httptest.NewRequest(http.MethodPatch, "/settings", strings.NewReader(body)))

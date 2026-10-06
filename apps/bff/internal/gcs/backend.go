@@ -70,11 +70,13 @@ func gcsConditions(condition writeCondition) storage.Conditions {
 
 type backendObject struct {
 	Name       string
+	Prefix     string
 	Data       []byte
 	Generation int64
 	Size       int64
 	Metadata   map[string]string
 	Updated    time.Time
+	Created    time.Time
 }
 
 func (c *Client) readObject(ctx context.Context, name string, generation, limit int64) (backendObject, error) {
@@ -141,7 +143,7 @@ func (c *Client) objectAttrs(ctx context.Context, name string, generation int64)
 	if err != nil {
 		return backendObject{}, err
 	}
-	return backendObject{Name: attrs.Name, Generation: attrs.Generation, Size: attrs.Size, Metadata: attrs.Metadata, Updated: attrs.Updated.UTC()}, nil
+	return backendObject{Name: attrs.Name, Generation: attrs.Generation, Size: attrs.Size, Metadata: attrs.Metadata, Updated: attrs.Updated.UTC(), Created: attrs.Created.UTC()}, nil
 }
 
 func (c *Client) listObjects(ctx context.Context, prefix string) ([]backendObject, error) {
@@ -202,10 +204,10 @@ func (c *Client) visitObjectsRaw(ctx context.Context, prefix string, directOnly 
 			finish(finishGCSCall(ctx, err))
 			return err
 		}
-		if attrs.Name == "" {
+		if attrs.Name == "" && attrs.Prefix == "" {
 			continue
 		}
-		if err := visit(backendObject{Name: attrs.Name, Generation: attrs.Generation, Size: attrs.Size, Metadata: attrs.Metadata, Updated: attrs.Updated.UTC()}); err != nil {
+		if err := visit(backendObject{Name: attrs.Name, Prefix: attrs.Prefix, Generation: attrs.Generation, Size: attrs.Size, Metadata: attrs.Metadata, Updated: attrs.Updated.UTC(), Created: attrs.Created.UTC()}); err != nil {
 			finish(finishGCSCall(ctx, err))
 			return err
 		}

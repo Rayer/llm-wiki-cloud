@@ -19,6 +19,7 @@ import (
 
 	"cloud.google.com/go/firestore"
 	"github.com/rayer/llm-wiki-bff/internal/auth"
+	scopedfirestore "github.com/rayer/llm-wiki-bff/internal/firestore"
 	"github.com/rayer/llm-wiki-bff/internal/profileartifacts"
 	"google.golang.org/grpc/codes"
 	"google.golang.org/grpc/status"
@@ -129,7 +130,7 @@ func readActiveProfileGuidance(ctx context.Context, client *firestore.Client, cf
 		return nil, errors.New("invalid Profile guidance reader input")
 	}
 	projectID := cfg.UserID + "_" + cfg.ProjectID
-	stateRef := client.Collection("projects").Doc(projectID).Collection("profile").Doc("state")
+	stateRef := scopedfirestore.Collection(client, "projects").Doc(projectID).Collection("profile").Doc("state")
 	stateSnapshot, err := stateRef.Get(ctx)
 	if status.Code(err) == codes.NotFound {
 		return nil, nil
@@ -176,7 +177,7 @@ func readActiveProfileGuidance(ctx context.Context, client *firestore.Client, cf
 	if relativePath == "" {
 		return nil, errors.New("active Profile guidance reference has an invalid object revision")
 	}
-	objectName := fmt.Sprintf("users/%s/projects/%s/%s", cfg.UserID, cfg.ProjectID, relativePath)
+	objectName := workerProjectObjectPrefix(cfg) + relativePath
 	data, _, err := objects.Read(ctx, objectName, 0, profileGuidanceReadLimit)
 	if err != nil {
 		return nil, fmt.Errorf("read active Profile guidance artifact: %w", err)
@@ -203,7 +204,7 @@ func readConfirmedBootstrapProfileGuidance(ctx context.Context, state profileGui
 	if relativePath == "" {
 		return nil, errors.New("confirmed Profile bootstrap guidance has an invalid object revision")
 	}
-	objectName := fmt.Sprintf("users/%s/projects/%s/%s", cfg.UserID, cfg.ProjectID, relativePath)
+	objectName := workerProjectObjectPrefix(cfg) + relativePath
 	data, _, err := objects.Read(ctx, objectName, 0, profileGuidanceReadLimit)
 	if err != nil {
 		return nil, fmt.Errorf("read confirmed Profile bootstrap guidance artifact: %w", err)
@@ -299,7 +300,15 @@ func firstNonEmptyEnv(names ...string) string {
 // Both the compile-start reader and completion writer use the configured database.
 var newProfileFirestoreClient = func(ctx context.Context, project string) (*firestore.Client, error) {
 	database := profileFirestoreDatabaseID()
-	return firestore.NewClientWithDatabase(ctx, project, database)
+	client, err := firestore.NewClientWithDatabase(ctx, project, database)
+	if err != nil {
+		return nil, err
+	}
+	if err := scopedfirestore.RegisterLocalScope(client, os.Getenv("LOCAL_CLOUD_SCOPE")); err != nil {
+		_ = client.Close()
+		return nil, err
+	}
+	return client, nil
 }
 
 func profileFirestoreDatabaseID() string {
@@ -362,7 +371,7 @@ func writeProfileCompileReceipt(ctx context.Context, receipt profileruntime.Comp
 	if !isLowerSHA256(receipt.ManifestSHA256) || !isLowerSHA256(receipt.CanonicalConceptsDigest) {
 		return errors.New("invalid Profile compile manifest evidence")
 	}
-	ref := client.Collection("projects").Doc(receipt.UserID + "_" + receipt.ProjectID).
+	ref := scopedfirestore.Collection(client, "projects").Doc(receipt.UserID + "_" + receipt.ProjectID).
 		Collection("profile").Doc("state").Collection(profileruntime.CompileReceiptsCollection).Doc(receipt.ContentGeneration)
 	return client.RunTransaction(ctx, func(ctx context.Context, tx *firestore.Transaction) error {
 		existing, err := tx.Get(ref)

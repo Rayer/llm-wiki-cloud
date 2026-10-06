@@ -49,25 +49,6 @@ func TestLoadDefaultsQueryExpansionModel(t *testing.T) {
 	}
 }
 
-func TestLoadAuthDemoUserIDFromEnvironment(t *testing.T) {
-	t.Setenv("AUTH_DEMO_USER_ID", " fixture-demo-user ")
-	cfg, err := Load(writeConfig(t, "dev_jwt = true\n"))
-	if err != nil {
-		t.Fatal(err)
-	}
-	if cfg.AuthDemoUserID != "fixture-demo-user" {
-		t.Fatalf("AuthDemoUserID = %q", cfg.AuthDemoUserID)
-	}
-	t.Setenv("AUTH_DEMO_USER_ID", "")
-	cfg, err = Load(writeConfig(t, "dev_jwt = true\n"))
-	if err != nil {
-		t.Fatal(err)
-	}
-	if cfg.AuthDemoUserID != "" {
-		t.Fatalf("unset AuthDemoUserID = %q", cfg.AuthDemoUserID)
-	}
-}
-
 func TestLoadDefaultsAndEnvForParallelQueryExpansion(t *testing.T) {
 	t.Setenv("QUERY_STAGE_CONFIG_PATH", "")
 	for _, name := range []string{
@@ -239,12 +220,16 @@ func TestLoadAllowsEmptyJWTSecretInDevelopment(t *testing.T) {
 func TestLoadAuthSessionConfigIsExplicitAndFailClosed(t *testing.T) {
 	t.Setenv("AUTH_SESSION_ENVIRONMENT", " dev ")
 	t.Setenv("AUTH_REFRESH_SESSION_MIGRATION", "legacy_read_through")
+	t.Setenv("AUTH_DEMO_USER_ID", " configured-demo-user ")
 	cfg, err := Load(writeConfig(t, "dev_jwt = true\n"))
 	if err != nil {
 		t.Fatal(err)
 	}
 	if cfg.AuthSessionEnvironment != "dev" || cfg.AuthSessionMigration != "legacy_read_through" {
 		t.Fatalf("auth session config = environment %q migration %q", cfg.AuthSessionEnvironment, cfg.AuthSessionMigration)
+	}
+	if cfg.AuthDemoUserID != "configured-demo-user" {
+		t.Fatalf("AuthDemoUserID=%q; want trimmed configured identity", cfg.AuthDemoUserID)
 	}
 	t.Setenv("AUTH_REFRESH_SESSION_MIGRATION", "accept-anything")
 	if _, err := Load(writeConfig(t, "dev_jwt = true\n")); err == nil {
@@ -433,7 +418,7 @@ func TestLoadEnvironmentSelectionFromEnv(t *testing.T) {
 	if !reflect.DeepEqual(cfg.AllowedOrigins, wantOrigins) {
 		t.Fatalf("AllowedOrigins = %#v, want %#v", cfg.AllowedOrigins, wantOrigins)
 	}
-	if got := cfg.AllowedOriginsFor(true); !reflect.DeepEqual(got, append(wantOrigins, "http://127.0.0.1:3000")) {
+	if got := cfg.AllowedOriginsFor(true); !reflect.DeepEqual(got, wantOrigins) {
 		t.Fatalf("AllowedOriginsFor(local) = %#v", got)
 	}
 }
@@ -470,6 +455,84 @@ func writeConfig(t *testing.T, contents string) string {
 		t.Fatalf("write config: %v", err)
 	}
 	return dir
+}
+
+func localCloudConfig(t *testing.T) string {
+	t.Helper()
+	state := t.TempDir()
+	secretPath := filepath.Join(state, "jwt-secret")
+	if err := os.WriteFile(secretPath, []byte(strings.Repeat("a", 64)+"\n"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	for _, name := range []string{
+		"DEV_JWT", "LOCAL_DATA_DIR", "LOCAL_CLOUD_SCOPE", "LOCAL_CLOUD_JWT_SECRET_FILE",
+		"GCP_PROJECT", "GOOGLE_CLOUD_PROJECT", "BUCKET", "FIRESTORE_DATABASE_ID", "JWT_SECRET",
+	} {
+		t.Setenv(name, "")
+	}
+	t.Setenv("ALLOWED_ORIGINS", "http://localhost:3000")
+	t.Setenv("ALLOWED_HOSTS", "localhost,127.0.0.1")
+	return writeConfig(t, "gcp_project = \"llm-wiki-cloud\"\n"+
+		"bucket = \"llm-wiki-cloud-local\"\n"+
+		"firestore_database_id = \"llm-wiki-cloud-local\"\n"+
+		"local_cloud_scope = \"worktree-test\"\n"+
+		"local_cloud_jwt_secret_file = \""+secretPath+"\"\n")
+}
+
+func TestLoadLocalCloudRequiresExactTargetAndSigningPolicy(t *testing.T) {
+	configPath := localCloudConfig(t)
+	cfg, err := Load(configPath)
+	if err != nil {
+		t.Fatalf("valid local cloud config: %v", err)
+	}
+	if cfg.LocalCloudScope != "worktree-test" || cfg.GCPProject != "llm-wiki-cloud" || cfg.Bucket != "llm-wiki-cloud-local" || cfg.FirestoreDatabaseID != "llm-wiki-cloud-local" {
+		t.Fatalf("local config targets/scope = %+v", cfg)
+	}
+	if !reflect.DeepEqual(cfg.AllowedOrigins, []string{"http://localhost:3000"}) {
+		t.Fatalf("local AllowedOrigins = %q, want only the explicit local frontend origin", cfg.AllowedOrigins)
+	}
+	if !reflect.DeepEqual(cfg.AllowedOriginsFor(true), []string{"http://localhost:3000"}) {
+		t.Fatalf("local effective origins = %q", cfg.AllowedOriginsFor(true))
+	}
+	if !reflect.DeepEqual(cfg.AllowedHostsFor(true), []string{"localhost", "127.0.0.1"}) {
+		t.Fatalf("local effective hosts = %q", cfg.AllowedHostsFor(true))
+	}
+
+	for _, test := range []struct{ name, env, value string }{
+		{name: "wrong project", env: "GCP_PROJECT", value: "another-project"},
+		{name: "wrong bucket", env: "BUCKET", value: "another-bucket"},
+		{name: "wrong database", env: "FIRESTORE_DATABASE_ID", value: "another-database"},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			configPath := localCloudConfig(t)
+			t.Setenv(test.env, test.value)
+			if _, err := Load(configPath); err == nil {
+				t.Fatalf("Load accepted conflicting %s=%q", test.env, test.value)
+			}
+		})
+	}
+
+	t.Run("dev jwt", func(t *testing.T) {
+		configPath := localCloudConfig(t)
+		t.Setenv("DEV_JWT", "true")
+		if _, err := Load(configPath); err == nil {
+			t.Fatal("Load accepted DEV_JWT=true with local cloud scope")
+		}
+	})
+	t.Run("missing origin", func(t *testing.T) {
+		configPath := localCloudConfig(t)
+		t.Setenv("ALLOWED_ORIGINS", "")
+		if _, err := Load(configPath); err == nil {
+			t.Fatal("Load accepted local cloud config without explicit Frontend origin")
+		}
+	})
+	t.Run("non-loopback host", func(t *testing.T) {
+		configPath := localCloudConfig(t)
+		t.Setenv("ALLOWED_HOSTS", "example.test")
+		if _, err := Load(configPath); err == nil {
+			t.Fatal("Load accepted a non-loopback local Host")
+		}
+	})
 }
 
 func TestLoadInvalidRegistrationEnvironmentFailsClosed(t *testing.T) {

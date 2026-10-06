@@ -85,15 +85,12 @@ func TestJWTAuthSetsUserRoleFromClaims(t *testing.T) {
 	}
 }
 
-func TestJWTAuthDevJWTSetsUserRoleFromHeader(t *testing.T) {
+func TestJWTAuthIgnoresXUserIDWithoutBearerToken(t *testing.T) {
 	gin.SetMode(gin.TestMode)
 
 	router := gin.New()
-	router.Use(JWTAuth(config.Config{DevJWT: true}))
+	router.Use(JWTAuth(config.Config{}))
 	router.GET("/", func(c *gin.Context) {
-		if got := c.GetString("userRole"); got != "admin" {
-			t.Fatalf("userRole = %q, want %q", got, "admin")
-		}
 		c.Status(http.StatusNoContent)
 	})
 
@@ -103,8 +100,8 @@ func TestJWTAuthDevJWTSetsUserRoleFromHeader(t *testing.T) {
 	rec := httptest.NewRecorder()
 	router.ServeHTTP(rec, req)
 
-	if rec.Code != http.StatusNoContent {
-		t.Fatalf("status = %d, want %d", rec.Code, http.StatusNoContent)
+	if rec.Code != http.StatusUnauthorized {
+		t.Fatalf("status = %d, want %d", rec.Code, http.StatusUnauthorized)
 	}
 }
 

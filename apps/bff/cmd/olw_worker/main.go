@@ -23,6 +23,7 @@ import (
 	conceptcache "github.com/rayer/llm-wiki-bff/internal/cache"
 	"github.com/rayer/llm-wiki-bff/internal/generation"
 	"github.com/rayer/llm-wiki-bff/internal/llm"
+	"github.com/rayer/llm-wiki-bff/internal/localcloud"
 	"github.com/rayer/llm-wiki-bff/internal/pipelinediagnostic"
 	"github.com/rayer/llm-wiki-bff/internal/rawstatus"
 	"github.com/rayer/llm-wiki-bff/internal/sourcestatus"
@@ -39,6 +40,7 @@ type workerConfig struct {
 	DataDir          string
 	UserID           string
 	ProjectID        string
+	LocalCloudScope  string
 	ExecutionID      string
 	APIKey           string
 	InitVault        bool
@@ -63,7 +65,7 @@ type workerConfig struct {
 
 type execOLWFunc func(ctx context.Context, vault string, command []string, env []string, stdout, stderr io.Writer) error
 
-var execOLW execOLWFunc = execOLWCommand
+var execOLW execOLWFunc
 
 var pipelineLiveDestination = func(stream pipelineStream) io.Writer {
 	if stream == stderrStream {
@@ -375,6 +377,9 @@ func runWorkerBatch(ctx context.Context, cfg workerConfig, rawCommands string) e
 }
 
 func configFromEnvironment(cfg workerConfig) workerConfig {
+	if cfg.LocalCloudScope == "" {
+		cfg.LocalCloudScope = envOr("LOCAL_CLOUD_SCOPE", "")
+	}
 	if cfg.Bucket == "" && !cfg.bucketSet {
 		cfg.Bucket = envOr("BUCKET", "")
 	}
@@ -1212,6 +1217,9 @@ func validateSyntoCommandBatch(commands [][]string) error {
 }
 
 func validateWorkerConfigBounds(cfg workerConfig) error {
+	if _, err := localcloud.Parse(cfg.LocalCloudScope); err != nil {
+		return err
+	}
 	keyValues := []string{cfg.APIKey}
 	if !cfg.apiKeySet {
 		keyValues = append(keyValues, os.Getenv("LLM_API_KEY"), os.Getenv("DEEPSEEK_API_KEY"))
@@ -1235,6 +1243,11 @@ func validateWorkerConfigBounds(cfg workerConfig) error {
 		}
 	}
 	return nil
+}
+
+func workerProjectObjectPrefix(cfg workerConfig) string {
+	scope, _ := localcloud.Parse(cfg.LocalCloudScope)
+	return scope.ObjectPrefix() + fmt.Sprintf("users/%s/projects/%s/", cfg.UserID, cfg.ProjectID)
 }
 
 func pipelineLogPath(vault, executionID string) (string, error) {
@@ -1272,7 +1285,7 @@ func runPostprocess(ctx context.Context, vault string) error {
 	return runPostprocessWithProvider(ctx, vault, nil, nil)
 }
 
-func suggestedQueryProvider(cfg workerConfig) suggestedqueries.Provider {
+var suggestedQueryProvider = func(cfg workerConfig) suggestedqueries.Provider {
 	if cfg.suggestedQueriesProvider != nil {
 		return cfg.suggestedQueriesProvider
 	}

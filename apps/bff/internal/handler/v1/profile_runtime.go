@@ -5,6 +5,7 @@ import (
 	"errors"
 	"fmt"
 	"github.com/rayer/llm-wiki-bff/internal/auth"
+	scopedfirestore "github.com/rayer/llm-wiki-bff/internal/firestore"
 	"net/http"
 	"strings"
 	"time"
@@ -124,7 +125,7 @@ func (d *ProfileDispatcher) Dispatch(ctx context.Context, limit int) (int, error
 	if !ok || limit < 1 || limit > 100 {
 		return 0, errors.New("Profile dispatcher repository unavailable")
 	}
-	iter := repo.client.Collection(profileruntime.WorkCollection).Where("pending", "==", true).Where("due", "<=", repo.now()).OrderBy("due", firestore.Asc).Limit(limit).Documents(ctx)
+	iter := scopedfirestore.Collection(repo.client, profileruntime.WorkCollection).Where("pending", "==", true).Where("due", "<=", repo.now()).OrderBy("due", firestore.Asc).Limit(limit).Documents(ctx)
 	defer iter.Stop()
 	count := 0
 	for {
@@ -154,7 +155,7 @@ func (d *ProfileDispatcher) Dispatch(ctx context.Context, limit int) (int, error
 func (d *ProfileDispatcher) claim(ctx context.Context, repo *firestoreProfileRepository, ref *firestore.DocumentRef) (profileruntime.Work, bool, error) {
 	var work profileruntime.Work
 	claimed := false
-	token := repo.client.Collection(profileruntime.WorkCollection).NewDoc().ID
+	token := scopedfirestore.Collection(repo.client, profileruntime.WorkCollection).NewDoc().ID
 	err := repo.client.RunTransaction(ctx, func(ctx context.Context, tx *firestore.Transaction) error {
 		claimed = false
 		snapshot, err := tx.Get(ref)

@@ -6,10 +6,24 @@ FRONTEND_DIR ?= ../frontend
 BFF_PORT ?= 8080
 AUTH_PORT ?= 8081
 FRONTEND_PORT ?= 3000
-LOCAL_LOGIN_EMAIL ?= demo@llm-wiki.dev
-LOCAL_LOGIN_PASSWORD ?= demo123456
+LOCAL_ENV := ../../scripts/local-cloud-env.sh
+LOCAL_SERVICES := ../../scripts/local-services.py
+SYNTO_VERSION := 0.7.0
+SYNTO_ARTIFACT_URL := https://files.pythonhosted.org/packages/4a/e9/41c6b61338d98820780a43ed075cd77525674c38242110435330771d771b/synto-0.7.0-py3-none-any.whl
+SYNTO_SHA256 := 4bc8dcf14b53f45fac32ce737ecf878f1a46d6d0b010c7decbe6c3b7b10afa77
+TEST_ENV := env -u LLM_API_KEY -u DEEPSEEK_API_KEY -u SYNTO_API_KEY -u OPENAI_API_KEY -u ANTHROPIC_API_KEY -u GEMINI_API_KEY -u TYPESAFE_API_KEY -u TYPESAFE_JEV_API_KEY -u LWC331_TEST_API_KEY
 
-.PHONY: docker-build docker-build-export-job docker-push deploy deploy-dev deploy-prod all build-sync setup local-config seed ensure-local-data dev support-bff support-frontend support-pipeline bff-local auth-local frontend-local local-token pipeline-test pipeline-run kill-local clean-local vet test build
+.PHONY: help docker-build docker-build-export-job docker-push deploy deploy-dev deploy-prod all build-sync setup local-config local-synto-runtime local-synto-runtime-test local-worker-build local-fixture local-start dev support-bff support-frontend support-pipeline bff-local auth-local frontend-local local-stop kill-local pipeline-test vet test build
+
+help:
+	@printf '%s\n' \
+	  'setup              Install Go/frontend/pinned Synto dependencies and configure localhost URLs' \
+	  'local-start        Build worker, ensure missing fixture account, start Auth/BFF/Frontend' \
+	  'support-bff        Start Auth + Frontend for a BFF debugger session' \
+	  'support-frontend   Start Auth + BFF for a Frontend debugger session' \
+	  'support-pipeline   Start all apps; use pipeline-test for no-provider worker tests' \
+	  'local-stop         Stop only processes supervised for this worktree' \
+	  'pipeline-test      Run worker tests without calling a paid provider'
 
 docker-build:
 	docker build -t $(IMAGE) .
@@ -34,7 +48,7 @@ all: docker-build docker-push deploy-dev
 build-sync:
 	go build -o lwc-sync ./cmd/sync/
 
-setup: local-config seed
+setup: local-config local-synto-runtime
 	go mod download
 	cd "$(FRONTEND_DIR)" && NODE_ENV=development npm ci --include=dev
 
@@ -42,84 +56,69 @@ vet:
 	go vet ./...
 
 test:
-	python3 ../../scripts/test_cd_contract.py
-	python3 -m unittest discover -s ../../scripts -p 'test_*auth_config_contract.py'
-	go test ./... -v -count=1 -race
+	$(TEST_ENV) python3 ../../scripts/test_cd_contract.py
+	$(TEST_ENV) python3 -m unittest discover -s ../../scripts -p 'test_*auth_config_contract.py'
+	$(TEST_ENV) go test ./... -v -count=1 -race
 
 build:
 	go build ./...
 
 local-config:
-	@test -d "$(FRONTEND_DIR)" || { echo "Frontend repo not found: $(FRONTEND_DIR)" >&2; exit 1; }
-	@printf '%s\n' \
-		'NEXT_PUBLIC_API_URL=http://localhost:$(BFF_PORT)' \
-		'NEXT_PUBLIC_AUTH_URL=http://localhost:$(AUTH_PORT)' \
-		'NEXT_PUBLIC_DEV_USER_ID=local-user' \
-		'NEXT_PUBLIC_DEV_PROJECT_ID=demo' \
-		> "$(FRONTEND_DIR)/.env.local"
+	BFF_PORT="$(BFF_PORT)" AUTH_PORT="$(AUTH_PORT)" FRONTEND_PORT="$(FRONTEND_PORT)" $(LOCAL_ENV) --configure-frontend "$(FRONTEND_DIR)"
+	BFF_PORT="$(BFF_PORT)" AUTH_PORT="$(AUTH_PORT)" FRONTEND_PORT="$(FRONTEND_PORT)" $(LOCAL_ENV) --summary
 
-seed:
-	rm -rf local-data
-	cp -R demo local-data
+local-synto-runtime:
+	@set -eu; \
+	state_dir="$$($(LOCAL_ENV) --state-dir)"; \
+	venv="$$state_dir/python"; \
+	if [ ! -x "$$venv/bin/python3" ]; then python3 -m venv "$$venv"; fi; \
+	if ! "$$venv/bin/python3" -c 'import synto; raise SystemExit(synto.__version__ != "$(SYNTO_VERSION)")' >/dev/null 2>&1; then \
+	  PIP_CONFIG_FILE=/dev/null PIP_INDEX_URL=https://pypi.org/simple "$$venv/bin/python3" -m pip install --disable-pip-version-check --no-input --no-cache-dir --force-reinstall "$(SYNTO_ARTIFACT_URL)#sha256=$(SYNTO_SHA256)"; \
+	fi; \
+	"$$venv/bin/python3" -c 'import sys, synto; assert synto.__version__ == "$(SYNTO_VERSION)"; print("Synto", synto.__version__, "Python", sys.version.split()[0], "at", sys.executable)'; \
+	test "$$("$$venv/bin/synto" --version)" = "synto, version $(SYNTO_VERSION)"
 
-ensure-local-data:
-	@test -d local-data || $(MAKE) seed
+local-synto-runtime-test: local-synto-runtime
+	@env -u LLM_API_KEY -u DEEPSEEK_API_KEY -u SYNTO_API_KEY -u OPENAI_API_KEY -u ANTHROPIC_API_KEY -u GEMINI_API_KEY -u TYPESAFE_API_KEY -u TYPESAFE_JEV_API_KEY -u LWC331_TEST_API_KEY \
+	  BFF_PORT="$(BFF_PORT)" AUTH_PORT="$(AUTH_PORT)" FRONTEND_PORT="$(FRONTEND_PORT)" \
+	  $(LOCAL_ENV) -- go test -tags lwc_local_synto_runtime ./cmd/olw_worker -run '^TestLocalSyntoRuntime' -count=1 -v
 
-dev: local-config ensure-local-data
-	@$(MAKE) -j3 bff-local auth-local frontend-local
+local-worker-build:
+	worker="$$($(LOCAL_ENV) --worker-path)"; mkdir -p "$$(dirname "$$worker")"; go build -o "$$worker" ./cmd/olw_worker
 
-support-bff: local-config ensure-local-data
-	@$(MAKE) -j2 auth-local frontend-local
+local-fixture:
+	LOCAL_LOGIN_EMAIL='demo@llm-wiki.dev' LOCAL_LOGIN_PASSWORD='demo123456' BFF_PORT="$(BFF_PORT)" AUTH_PORT="$(AUTH_PORT)" FRONTEND_PORT="$(FRONTEND_PORT)" $(LOCAL_ENV) -- go run ./cmd/local_fixture
 
-support-frontend: local-config ensure-local-data
-	@$(MAKE) -j2 bff-local auth-local
+local-start: local-config local-synto-runtime
+	$(MAKE) local-worker-build BFF_PORT="$(BFF_PORT)" AUTH_PORT="$(AUTH_PORT)" FRONTEND_PORT="$(FRONTEND_PORT)"
+	$(MAKE) local-fixture BFF_PORT="$(BFF_PORT)" AUTH_PORT="$(AUTH_PORT)" FRONTEND_PORT="$(FRONTEND_PORT)"
+	BFF_PORT="$(BFF_PORT)" AUTH_PORT="$(AUTH_PORT)" FRONTEND_PORT="$(FRONTEND_PORT)" $(LOCAL_ENV) -- python3 $(LOCAL_SERVICES) start auth bff frontend
 
-support-pipeline: local-config ensure-local-data
-	@$(MAKE) -j3 bff-local auth-local frontend-local
+dev: local-start
 
-bff-local:
-	PORT=$(BFF_PORT) LOCAL_DATA_DIR=./local-data DEV_JWT=true JWT_SECRET=dev-secret go run ./cmd/bff --local ./local-data
+support-bff: local-config
+	$(MAKE) local-worker-build BFF_PORT="$(BFF_PORT)" AUTH_PORT="$(AUTH_PORT)" FRONTEND_PORT="$(FRONTEND_PORT)"
+	$(MAKE) local-fixture BFF_PORT="$(BFF_PORT)" AUTH_PORT="$(AUTH_PORT)" FRONTEND_PORT="$(FRONTEND_PORT)"
+	BFF_PORT="$(BFF_PORT)" AUTH_PORT="$(AUTH_PORT)" FRONTEND_PORT="$(FRONTEND_PORT)" $(LOCAL_ENV) -- python3 $(LOCAL_SERVICES) start auth frontend
 
-auth-local:
-	PORT=$(AUTH_PORT) LOCAL_DATA_DIR=./local-data DEV_JWT=true JWT_SECRET=dev-secret go run ./cmd/auth --local ./local-data
+support-frontend: local-config local-synto-runtime
+	$(MAKE) local-worker-build BFF_PORT="$(BFF_PORT)" AUTH_PORT="$(AUTH_PORT)" FRONTEND_PORT="$(FRONTEND_PORT)"
+	$(MAKE) local-fixture BFF_PORT="$(BFF_PORT)" AUTH_PORT="$(AUTH_PORT)" FRONTEND_PORT="$(FRONTEND_PORT)"
+	BFF_PORT="$(BFF_PORT)" AUTH_PORT="$(AUTH_PORT)" FRONTEND_PORT="$(FRONTEND_PORT)" $(LOCAL_ENV) -- python3 $(LOCAL_SERVICES) start auth bff
 
-frontend-local:
-	cd "$(FRONTEND_DIR)" && NODE_ENV=development npm run dev -- --hostname 127.0.0.1 --port $(FRONTEND_PORT)
+support-pipeline: local-start
 
-local-token:
-	@AUTH_URL='http://127.0.0.1:$(AUTH_PORT)' \
-		LOCAL_LOGIN_EMAIL='$(LOCAL_LOGIN_EMAIL)' \
-		LOCAL_LOGIN_PASSWORD='$(LOCAL_LOGIN_PASSWORD)' \
-		python3 -c 'import json, os, urllib.request; payload = json.dumps({"email": os.environ["LOCAL_LOGIN_EMAIL"], "password": os.environ["LOCAL_LOGIN_PASSWORD"]}).encode(); request = urllib.request.Request(os.environ["AUTH_URL"] + "/api/v1/auth/login", data=payload, headers={"Content-Type": "application/json"}); response = json.load(urllib.request.urlopen(request)); token = response.get("access_token"); assert isinstance(token, str) and token, "login response has no access_token"; print(token)'
+bff-local: local-config local-synto-runtime local-worker-build local-fixture
+	BFF_PORT="$(BFF_PORT)" AUTH_PORT="$(AUTH_PORT)" FRONTEND_PORT="$(FRONTEND_PORT)" PORT="$(BFF_PORT)" $(LOCAL_ENV) -- go run ./cmd/bff
+
+auth-local: local-config local-fixture
+	BFF_PORT="$(BFF_PORT)" AUTH_PORT="$(AUTH_PORT)" FRONTEND_PORT="$(FRONTEND_PORT)" PORT="$(AUTH_PORT)" $(LOCAL_ENV) -- go run ./cmd/auth
+
+frontend-local: local-config
+	BFF_PORT="$(BFF_PORT)" AUTH_PORT="$(AUTH_PORT)" FRONTEND_PORT="$(FRONTEND_PORT)" $(LOCAL_ENV) -- sh -c 'cd "$(FRONTEND_DIR)" && NODE_ENV=development npm run dev -- --hostname localhost --port "$$FRONTEND_PORT"'
+
+local-stop kill-local:
+	$(LOCAL_ENV) -- python3 $(LOCAL_SERVICES) stop
 
 pipeline-test:
 	go test ./cmd/olw_worker
-
-pipeline-run: ensure-local-data
-	@test -n "$$LLM_API_KEY" || { echo "LLM_API_KEY is required" >&2; exit 1; }
-	go run ./cmd/olw_worker run '[["run","--auto-approve"]]' --vault ./local-data/users/local-user/projects/demo
-
-kill-local:
-	@ports='$(BFF_PORT) $(AUTH_PORT) $(FRONTEND_PORT)'; \
-	listeners() { for port in $$ports; do lsof -tiTCP:$$port -sTCP:LISTEN 2>/dev/null || true; done | sort -u; }; \
-	pids="$$(listeners)"; \
-	if [ -z "$$pids" ]; then echo "No local listeners on ports $$ports"; exit 0; fi; \
-	echo "Stopping local listeners on ports $$ports (PIDs: $$(echo $$pids))"; \
-	kill -TERM $$pids 2>/dev/null || true; \
-	remaining="$$pids"; \
-	for attempt in 1 2 3 4 5 6 7 8 9 10 11 12 13 14 15 16 17 18 19 20; do \
-		remaining="$$(listeners)"; \
-		[ -z "$$remaining" ] && break; \
-		sleep 0.1; \
-	done; \
-	if [ -n "$$remaining" ]; then \
-		echo "Force-stopping remaining listeners (PIDs: $$(echo $$remaining))"; \
-		kill -KILL $$remaining 2>/dev/null || true; \
-	fi
-
-clean-local:
-	rm -rf local-data
-
-.PHONY: test-flash-execution
-test-flash-execution:
-	sh scripts/test_flash_execution.sh

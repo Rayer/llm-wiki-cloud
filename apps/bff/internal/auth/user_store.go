@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	scopedfirestore "github.com/rayer/llm-wiki-bff/internal/firestore"
 	"time"
 
 	"cloud.google.com/go/firestore"
@@ -26,7 +27,7 @@ type UserRecord struct {
 
 // CountProjects returns the number of projects a user has in Firestore.
 func CountProjects(ctx context.Context, fs *firestore.Client, userID string) (int, error) {
-	iter := fs.Collection("users").Doc(userID).Collection("projects").Documents(ctx)
+	iter := scopedfirestore.Collection(fs, "users").Doc(userID).Collection("projects").Documents(ctx)
 	defer iter.Stop()
 	count := 0
 	for {
@@ -44,7 +45,7 @@ func CountProjects(ctx context.Context, fs *firestore.Client, userID string) (in
 
 // GetUser fetches a user record from Firestore by ID.
 func GetUser(ctx context.Context, fs *firestore.Client, userID string) (*UserRecord, error) {
-	doc, err := fs.Collection("users").Doc(userID).Get(ctx)
+	doc, err := scopedfirestore.Collection(fs, "users").Doc(userID).Get(ctx)
 	if err != nil {
 		return nil, fmt.Errorf("get user %s: %w", userID, err)
 	}

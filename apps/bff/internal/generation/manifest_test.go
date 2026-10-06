@@ -1,6 +1,7 @@
 package generation
 
 import (
+	"encoding/json"
 	"strings"
 	"testing"
 )
@@ -83,6 +84,25 @@ func TestGenerationManifestArchivesAndSourceSnapshotReference(t *testing.T) {
 	manifest.SourceSnapshotDigest = "bad"
 	if err := manifest.Validate(); err == nil {
 		t.Fatal("Validate accepted malformed source snapshot digest")
+	}
+}
+
+func TestManifestCarriesBoundedLocalExecutionIdentity(t *testing.T) {
+	manifest := Manifest{
+		Version: Version, GenerationID: "g_abc123", LocalExecutionID: "local-aaaaaaaaaaaaaaaaaaaaaaaa",
+		CreatedAt: "2026-07-18T00:00:00Z", InputFingerprint: "x", Files: []File{},
+	}
+	data, err := json.Marshal(manifest)
+	if err != nil {
+		t.Fatal(err)
+	}
+	decoded, err := Decode(data)
+	if err != nil || decoded.LocalExecutionID != manifest.LocalExecutionID {
+		t.Fatalf("Decode(local execution identity) = %+v, %v", decoded, err)
+	}
+	manifest.LocalExecutionID = "local/unsafe"
+	if err := manifest.Validate(); err == nil {
+		t.Fatal("Validate accepted an unsafe local execution identity")
 	}
 }
 

@@ -1,6 +1,7 @@
 package config
 
 import (
+	"encoding/hex"
 	"errors"
 	"fmt"
 	"net/url"
@@ -9,6 +10,7 @@ import (
 	"strings"
 
 	"github.com/rayer/llm-wiki-bff/internal/llm"
+	"github.com/rayer/llm-wiki-bff/internal/localcloud"
 	"github.com/spf13/viper"
 )
 
@@ -49,6 +51,7 @@ type Config struct {
 	GCPProject                  string
 	Bucket                      string
 	FirestoreDatabaseID         string
+	LocalCloudScope             string
 	UserID                      string
 	ProjectID                   string
 	Port                        string
@@ -58,8 +61,6 @@ type Config struct {
 	AnswerSynthesisModel        string
 	AnswerSynthesisReasoning    llm.Reasoning
 	JWTSecret                   string
-	DevJWT                      bool
-	LocalDataDir                string
 	PipelineJobURL              string
 	ExportJobURL                string
 	ExportSigningServiceAccount string
@@ -73,6 +74,8 @@ type Config struct {
 	PipelineCooldownSeconds int
 	PipelineMinNewRaw       int
 	PipelineDemoUserIDs     []string
+	// AuthDemoUserID selects the existing Demo account for formal Demo login.
+	AuthDemoUserID string
 
 	// Registration gate (LWC-149). Env: REGISTRATION_ENABLED (true/false/1/0).
 	// Nil means unset; resolution falls back to default true when Firestore doc is absent.
@@ -89,10 +92,6 @@ type Config struct {
 	// AuthSessionMigration controls legacy refresh-token import. Env:
 	// AUTH_REFRESH_SESSION_MIGRATION. Valid values: disabled, legacy_read_through.
 	AuthSessionMigration string
-	// AuthDemoUserID selects the existing Demo account for passwordless Demo login.
-	// Env: AUTH_DEMO_USER_ID. This is nonsecret identity configuration.
-	AuthDemoUserID string
-
 	// Google OIDC configuration (LWC-316). These values are required together
 	// when any Google setting is provided.
 	GoogleClientID         string
@@ -150,6 +149,8 @@ func Load(path string) (Config, error) {
 	v.AutomaticEnv()
 	v.BindEnv("deepseek_api_key")
 	v.BindEnv("firestore_database_id", "FIRESTORE_DATABASE_ID")
+	v.BindEnv("local_cloud_scope", "LOCAL_CLOUD_SCOPE")
+	v.BindEnv("local_cloud_jwt_secret_file", "LOCAL_CLOUD_JWT_SECRET_FILE")
 	v.BindEnv("pipeline_job_url", "PIPELINE_JOB_URL")
 	v.BindEnv("export_job_url", "EXPORT_JOB_URL")
 	v.BindEnv("export_signing_service_account", "EXPORT_SIGNING_SERVICE_ACCOUNT")
@@ -159,11 +160,11 @@ func Load(path string) (Config, error) {
 	v.BindEnv("pipeline_cooldown_seconds", "PIPELINE_COOLDOWN_SECONDS")
 	v.BindEnv("pipeline_min_new_raw", "PIPELINE_MIN_NEW_RAW")
 	v.BindEnv("pipeline_demo_user_ids", "PIPELINE_DEMO_USER_IDS")
+	v.BindEnv("auth_demo_user_id", "AUTH_DEMO_USER_ID")
 	v.BindEnv("registration_enabled", "REGISTRATION_ENABLED")
 	v.BindEnv("auth_service_url", "AUTH_SERVICE_URL")
 	v.BindEnv("auth_session_environment", "AUTH_SESSION_ENVIRONMENT")
 	v.BindEnv("auth_session_migration", "AUTH_REFRESH_SESSION_MIGRATION")
-	v.BindEnv("auth_demo_user_id", "AUTH_DEMO_USER_ID")
 	v.BindEnv("google_client_id", "GOOGLE_CLIENT_ID")
 	v.BindEnv("google_client_secret", "GOOGLE_CLIENT_SECRET")
 	v.BindEnv("google_issuer", "GOOGLE_ISSUER")
@@ -220,6 +221,47 @@ func Load(path string) (Config, error) {
 	allowedHosts, err := parseAllowedHosts(v.GetString("allowed_hosts"))
 	if err != nil {
 		return Config{}, fmt.Errorf("invalid allowed_hosts: %w", err)
+	}
+	localCloudScope, err := localcloud.Parse(v.GetString("local_cloud_scope"))
+	if err != nil {
+		return Config{}, err
+	}
+	if localCloudScope != "" {
+		if len(allowedHosts) == 0 {
+			return Config{}, errors.New("local cloud requires an explicit loopback ALLOWED_HOSTS value")
+		}
+		for _, host := range allowedHosts {
+			if host != "localhost" && host != "127.0.0.1" {
+				return Config{}, errors.New("local cloud ALLOWED_HOSTS must contain only localhost loopback hosts")
+			}
+		}
+		if strings.TrimSpace(v.GetString("gcp_project")) != "llm-wiki-cloud" || strings.TrimSpace(v.GetString("bucket")) != "llm-wiki-cloud-local" || strings.TrimSpace(v.GetString("firestore_database_id")) != "llm-wiki-cloud-local" {
+			return Config{}, errors.New("local cloud requires project llm-wiki-cloud, bucket llm-wiki-cloud-local, and Firestore database llm-wiki-cloud-local")
+		}
+		if v.GetBool("dev_jwt") || strings.TrimSpace(v.GetString("local_data_dir")) != "" || strings.TrimSpace(os.Getenv("LOCAL_DATA_DIR")) != "" {
+			return Config{}, errors.New("local cloud does not allow DEV_JWT or LOCAL_DATA_DIR")
+		}
+		origins := parseAllowedOrigins(v.GetString("allowed_origins"))
+		if len(origins) != 1 || !strings.HasPrefix(origins[0], "http://localhost:") {
+			return Config{}, errors.New("local cloud requires one explicit localhost Frontend origin")
+		}
+		secretPath := strings.TrimSpace(v.GetString("local_cloud_jwt_secret_file"))
+		if secretPath == "" || strings.TrimSpace(v.GetString("jwt_secret")) != "" {
+			return Config{}, errors.New("local cloud requires a dedicated LOCAL_CLOUD_JWT_SECRET_FILE")
+		}
+		secretBytes, err := os.ReadFile(secretPath)
+		if err != nil {
+			return Config{}, errors.New("local cloud signing key file is unavailable")
+		}
+		secret := strings.TrimSpace(string(secretBytes))
+		decoded, err := hex.DecodeString(secret)
+		if err != nil || len(decoded) != 32 {
+			return Config{}, errors.New("local cloud signing key file is invalid")
+		}
+		jwtSecret := secret
+		v.Set("jwt_secret", jwtSecret)
+	} else if strings.TrimSpace(v.GetString("local_cloud_jwt_secret_file")) != "" {
+		return Config{}, errors.New("LOCAL_CLOUD_JWT_SECRET_FILE requires LOCAL_CLOUD_SCOPE")
 	}
 
 	var registrationEnabled *bool
@@ -305,6 +347,7 @@ func Load(path string) (Config, error) {
 		GCPProject:                       v.GetString("gcp_project"),
 		Bucket:                           v.GetString("bucket"),
 		FirestoreDatabaseID:              strings.TrimSpace(v.GetString("firestore_database_id")),
+		LocalCloudScope:                  string(localCloudScope),
 		UserID:                           v.GetString("user_id"),
 		ProjectID:                        v.GetString("project_id"),
 		Port:                             v.GetString("port"),
@@ -314,8 +357,6 @@ func Load(path string) (Config, error) {
 		AnswerSynthesisModel:             llm.CanonicalDeepSeekModel(answerSynthesisModel),
 		AnswerSynthesisReasoning:         answerSynthesisReasoning,
 		JWTSecret:                        v.GetString("jwt_secret"),
-		DevJWT:                           v.GetBool("dev_jwt"),
-		LocalDataDir:                     v.GetString("local_data_dir"),
 		PipelineJobURL:                   pipelineJobURL,
 		ExportJobURL:                     strings.TrimSpace(v.GetString("export_job_url")),
 		ExportSigningServiceAccount:      strings.TrimSpace(v.GetString("export_signing_service_account")),
@@ -325,11 +366,11 @@ func Load(path string) (Config, error) {
 		PipelineCooldownSeconds:          cooldownSeconds,
 		PipelineMinNewRaw:                minNewRaw,
 		PipelineDemoUserIDs:              splitCommaList(v.GetString("pipeline_demo_user_ids")),
+		AuthDemoUserID:                   strings.TrimSpace(v.GetString("auth_demo_user_id")),
 		RegistrationEnabled:              registrationEnabled,
 		AuthServiceURL:                   authServiceURL,
 		AuthSessionEnvironment:           authSessionEnvironment,
 		AuthSessionMigration:             authSessionMigration,
-		AuthDemoUserID:                   strings.TrimSpace(v.GetString("auth_demo_user_id")),
 		GoogleClientID:                   googleClientID,
 		GoogleClientSecret:               googleClientSecret,
 		GoogleIssuer:                     googleIssuer,
@@ -457,18 +498,25 @@ func isSafePipelinePathSegment(segment string) bool {
 func (c Config) AllowedOriginsFor(localMode bool) []string {
 	origins := append([]string(nil), c.AllowedOrigins...)
 	if localMode {
-		origins = append(origins, "http://localhost:3000", "http://127.0.0.1:3000")
+		if len(origins) == 0 {
+			return []string{"http://localhost:3000"}
+		}
+		return origins
 	}
 	return uniqueAllowedOrigins(origins)
 }
 
-// AllowedHostsFor returns configured hosts and adds loopback hosts in local mode.
+// AllowedHostsFor returns only configured hosts in deployed mode. Local mode
+// accepts configured loopback hosts; tests with hand-built Config values get
+// the documented loopback defaults.
 func (c Config) AllowedHostsFor(localMode bool) []string {
-	hosts := append([]string(nil), c.AllowedHosts...)
 	if localMode {
-		hosts = append(hosts, "localhost", "127.0.0.1")
+		if len(c.AllowedHosts) > 0 {
+			return uniqueAllowedHosts(append([]string(nil), c.AllowedHosts...))
+		}
+		return []string{"localhost", "127.0.0.1"}
 	}
-	return uniqueAllowedHosts(hosts)
+	return uniqueAllowedHosts(append([]string(nil), c.AllowedHosts...))
 }
 
 func parseBoolEnv(raw string) (bool, bool) {

@@ -10,7 +10,7 @@ import {
 } from '../src/lib/auth-core.ts';
 
 // LWC-135: demo button login restricts create project, upload, and pipeline trigger
-test('LWC-135: demo session storage helpers round-trip active flag', () => {
+test('LWC-135: legacy demo session storage helpers round-trip active flag', () => {
   const data = new Map();
   const storage = {
     getItem: (key) => data.get(key) ?? null,
@@ -30,26 +30,28 @@ test('LWC-135: demo session storage helpers round-trip active flag', () => {
   assert.equal(readStoredDemoSession(storage), false);
 });
 
-test('LWC-135: auth provider exposes demo session state and login paths', async () => {
+test('LWC-135: auth provider preserves demo restrictions with formal demo login', async () => {
   const auth = await readFile(new URL('../src/lib/auth.tsx', import.meta.url), 'utf8');
 
   assert.match(auth, /isDemoSession/);
-  assert.match(auth, /loginAsDemo/);
   assert.match(auth, /readStoredDemoSession/);
   assert.match(auth, /persistAuthSession/);
   assert.match(auth, /clearStoredDemoSession/);
   assert.match(auth, /demo:\s*false/);
+  assert.match(auth, /loginAsDemo/);
+  assert.match(auth, /postAuth\('\/api\/v1\/auth\/demo'\)/);
   assert.match(auth, /demo:\s*true/);
 });
 
-test('LWC-135: demo button uses restricted demo login path', async () => {
+test('LWC-135: login UI uses the formal password flow', async () => {
   const [loginModal, workspaceProvider] = await Promise.all([
     readFile(new URL('../src/components/LoginModal.tsx', import.meta.url), 'utf8'),
     readFile(new URL('../src/components/WorkspaceProvider.tsx', import.meta.url), 'utf8'),
   ]);
 
+  assert.match(loginModal, /signIn\(email\.trim\(\), password\)/);
+  assert.match(loginModal, /Login\.tryDemo/);
   assert.match(loginModal, /signInAsDemo/);
-  assert.doesNotMatch(loginModal, /handleDemo[\s\S]*?signIn\('demo@llm-wiki\.dev'/);
   assert.match(workspaceProvider, /signInAsDemo/);
   assert.match(workspaceProvider, /isDemoSession/);
   assert.doesNotMatch(workspaceProvider, /test@example\.com/);

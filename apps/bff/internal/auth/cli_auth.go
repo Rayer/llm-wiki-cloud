@@ -8,6 +8,7 @@ import (
 	"encoding/hex"
 	"errors"
 	"fmt"
+	scopedfirestore "github.com/rayer/llm-wiki-bff/internal/firestore"
 	"net"
 	"net/http"
 	"net/url"
@@ -115,7 +116,7 @@ func (s *CLIAuthService) SetSyncBindingAuthority(authority *SyncBindingAuthority
 }
 
 func (s *CLIAuthService) pairingRef(pairingID string) *firestore.DocumentRef {
-	return s.fs.Collection(cliPairingsCollection).Doc(refreshSessionDocumentID(s.sessions.environment, pairingID))
+	return scopedfirestore.Collection(s.fs, cliPairingsCollection).Doc(refreshSessionDocumentID(s.sessions.environment, pairingID))
 }
 
 // StartPairing stores a short-lived request using only hashes of its code and
@@ -220,7 +221,7 @@ func (s *CLIAuthService) DecidePairing(ctx context.Context, userCode, decision, 
 				return ErrCLIPairingInvalid
 			}
 		}
-		actorSnapshot, err := tx.Get(s.fs.Collection("users").Doc(actorID))
+		actorSnapshot, err := tx.Get(scopedfirestore.Collection(s.fs, "users").Doc(actorID))
 		if err != nil {
 			return ErrCLISessionUnavailable
 		}
@@ -332,7 +333,7 @@ func (s *CLIAuthService) PollPairing(ctx context.Context, pairingID, pollSecret 
 		default:
 			return ErrCLIPairingInvalid
 		}
-		accountSnapshot, err := tx.Get(s.fs.Collection("users").Doc(pair.ApprovedUserID))
+		accountSnapshot, err := tx.Get(scopedfirestore.Collection(s.fs, "users").Doc(pair.ApprovedUserID))
 		if err != nil {
 			return ErrCLISessionUnavailable
 		}
@@ -374,7 +375,7 @@ func (s *CLIAuthService) auditRef() *firestore.DocumentRef {
 	if err != nil {
 		id = fmt.Sprintf("audit-%d", s.now().UnixNano())
 	}
-	return s.fs.Collection("auth_audit_events").Doc(refreshSessionDocumentID(s.sessions.environment, id))
+	return scopedfirestore.Collection(s.fs, "auth_audit_events").Doc(refreshSessionDocumentID(s.sessions.environment, id))
 }
 
 func (s *CLIAuthService) hashUserCode(code string) string {

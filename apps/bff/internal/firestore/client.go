@@ -41,6 +41,10 @@ func NewClientWithDatabase(project, databaseID, userID, projectID string) (*Clie
 	if err != nil {
 		return nil, fmt.Errorf("firestore client: %w", err)
 	}
+	if err := RegisterLocalScope(fs, configuredScope()); err != nil {
+		_ = fs.Close()
+		return nil, fmt.Errorf("local cloud scope: %w", err)
+	}
 	if databaseID == "" {
 		databaseID = firestore.DefaultDatabaseID
 	}
@@ -50,7 +54,7 @@ func NewClientWithDatabase(project, databaseID, userID, projectID string) (*Clie
 		fs:         fs,
 		databaseID: databaseID,
 		lockID:     lockID,
-		locks:      fs.Collection("locks"),
+		locks:      Collection(fs, "locks"),
 	}, nil
 }
 
@@ -120,7 +124,7 @@ type ExecutionRecord struct {
 
 // WriteExecutionStart records a pipeline execution start.
 func (c *Client) WriteExecutionStart(ctx context.Context, userID, projectID string, startedAt time.Time) (string, error) {
-	doc := c.fs.Collection("executions").NewDoc()
+	doc := Collection(c.fs, "executions").NewDoc()
 	_, err := doc.Set(ctx, map[string]interface{}{
 		"user_id":    userID,
 		"project_id": projectID,
@@ -135,7 +139,7 @@ func (c *Client) WriteExecutionStart(ctx context.Context, userID, projectID stri
 
 // WriteExecutionEnd updates a pipeline execution with completion data.
 func (c *Client) WriteExecutionEnd(ctx context.Context, docID string, finishedAt time.Time, status string) error {
-	doc := c.fs.Collection("executions").Doc(docID)
+	doc := Collection(c.fs, "executions").Doc(docID)
 	dsnap, err := doc.Get(ctx)
 	if err != nil {
 		return err
@@ -156,7 +160,7 @@ func (c *Client) ListRecentExecutions(ctx context.Context, limit int) ([]Executi
 	if limit <= 0 {
 		limit = 50
 	}
-	iter := c.fs.Collection("executions").OrderBy("started_at", firestore.Desc).Limit(limit).Documents(ctx)
+	iter := Collection(c.fs, "executions").OrderBy("started_at", firestore.Desc).Limit(limit).Documents(ctx)
 	defer iter.Stop()
 	var records []ExecutionRecord
 	for {
@@ -222,10 +226,18 @@ func firestoreTimestamp(value interface{}) (time.Time, bool) {
 
 // Close closes the Firestore client.
 func (c *Client) Close() error {
+	forgetLocalScope(c.fs)
 	return c.fs.Close()
 }
 
 // Raw exposes the underlying firestore.Client for direct operations.
 func (c *Client) Raw() *firestore.Client {
 	return c.fs
+}
+
+// CheckAvailable performs a scoped read so a client constructor cannot be
+// mistaken for proof that the configured project and database are reachable.
+func (c *Client) CheckAvailable(ctx context.Context) error {
+	_, err := Collection(c.fs, "users").Limit(1).Documents(ctx).GetAll()
+	return err
 }

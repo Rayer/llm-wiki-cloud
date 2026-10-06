@@ -807,7 +807,7 @@
             "get": {
                 "security": [
                     {
-                        "DevUserAuth": []
+                        "BearerAuth": []
                     },
                     {
                         "ProjectHeader": []
@@ -856,7 +856,7 @@
             "get": {
                 "security": [
                     {
-                        "DevUserAuth": []
+                        "BearerAuth": []
                     },
                     {
                         "ProjectHeader": []
@@ -905,7 +905,7 @@
             "get": {
                 "security": [
                     {
-                        "DevUserAuth": []
+                        "BearerAuth": []
                     },
                     {
                         "ProjectHeader": []
@@ -933,7 +933,7 @@
             "post": {
                 "security": [
                     {
-                        "DevUserAuth": []
+                        "BearerAuth": []
                     },
                     {
                         "ProjectHeader": []
@@ -981,7 +981,7 @@
             "get": {
                 "security": [
                     {
-                        "DevUserAuth": []
+                        "BearerAuth": []
                     },
                     {
                         "ProjectHeader": []
@@ -1053,7 +1053,7 @@
             "get": {
                 "security": [
                     {
-                        "DevUserAuth": []
+                        "BearerAuth": []
                     },
                     {
                         "ProjectHeader": []
@@ -1114,7 +1114,7 @@
             "get": {
                 "security": [
                     {
-                        "DevUserAuth": []
+                        "BearerAuth": []
                     },
                     {
                         "ProjectHeader": []
@@ -1168,7 +1168,7 @@
             "get": {
                 "security": [
                     {
-                        "DevUserAuth": []
+                        "BearerAuth": []
                     }
                 ],
                 "description": "Returns all projects for the authenticated user.",
@@ -1208,7 +1208,7 @@
             "get": {
                 "security": [
                     {
-                        "DevUserAuth": []
+                        "BearerAuth": []
                     },
                     {
                         "ProjectHeader": []
@@ -1270,7 +1270,7 @@
             "post": {
                 "security": [
                     {
-                        "DevUserAuth": []
+                        "BearerAuth": []
                     },
                     {
                         "ProjectHeader": []
@@ -1369,7 +1369,7 @@
             "get": {
                 "security": [
                     {
-                        "DevUserAuth": []
+                        "BearerAuth": []
                     },
                     {
                         "ProjectHeader": []
@@ -1444,7 +1444,7 @@
             "post": {
                 "security": [
                     {
-                        "DevUserAuth": []
+                        "BearerAuth": []
                     },
                     {
                         "ProjectHeader": []
@@ -1490,7 +1490,7 @@
             "get": {
                 "security": [
                     {
-                        "DevUserAuth": []
+                        "BearerAuth": []
                     },
                     {
                         "ProjectHeader": []
@@ -1537,9 +1537,6 @@
                 "security": [
                     {
                         "BearerAuth": []
-                    },
-                    {
-                        "DevUserAuth": []
                     }
                 ],
                 "description": "Updates only the display name of a project owned by the authenticated user. The JSON body is limited to 1024 bytes; name is trimmed and must be 1-64 Unicode code points.",
@@ -2076,7 +2073,7 @@
         },
         "/api/v1/public/config": {
             "get": {
-                "description": "Returns method-specific new-account registration capabilities and currently published announcement Markdown.",
+                "description": "Returns registration and Demo sign-in capabilities plus the currently published announcement Markdown.",
                 "produces": [
                     "application/json"
                 ],
@@ -2124,7 +2121,7 @@
             "post": {
                 "security": [
                     {
-                        "DevUserAuth": []
+                        "BearerAuth": []
                     },
                     {
                         "ProjectHeader": []
@@ -2242,7 +2239,7 @@
             "get": {
                 "security": [
                     {
-                        "DevUserAuth": []
+                        "BearerAuth": []
                     },
                     {
                         "ProjectHeader": []
@@ -2276,7 +2273,7 @@
             "get": {
                 "security": [
                     {
-                        "DevUserAuth": []
+                        "BearerAuth": []
                     },
                     {
                         "ProjectHeader": []
@@ -2310,7 +2307,7 @@
             "get": {
                 "security": [
                     {
-                        "DevUserAuth": []
+                        "BearerAuth": []
                     },
                     {
                         "ProjectHeader": []
@@ -2362,7 +2359,7 @@
             "put": {
                 "security": [
                     {
-                        "DevUserAuth": []
+                        "BearerAuth": []
                     },
                     {
                         "ProjectHeader": []
@@ -2446,7 +2443,7 @@
             "get": {
                 "security": [
                     {
-                        "DevUserAuth": []
+                        "BearerAuth": []
                     },
                     {
                         "ProjectHeader": []
@@ -2495,7 +2492,7 @@
             "get": {
                 "security": [
                     {
-                        "DevUserAuth": []
+                        "BearerAuth": []
                     },
                     {
                         "ProjectHeader": []
@@ -3312,10 +3309,13 @@
                     "x-nullable": true,
                     "example": "sha256:315f5bdb76d078c43b8ac0064e4a0164612b1fce77c869345bfc94c75894edd3"
                 },
-                "announcement_markdown": {
-                    "type": "string"
-                },
-                "email_registration_enabled": {
+            "announcement_markdown": {
+                "type": "string"
+            },
+            "demo_enabled": {
+                "type": "boolean"
+            },
+            "email_registration_enabled": {
                     "type": "boolean"
                 },
                 "google_registration_enabled": {
@@ -3915,12 +3915,6 @@
             "description": "JWT Bearer token issued by the standalone Auth service. Format: \\\"Bearer \u003ctoken\u003e\\\".",
             "type": "apiKey",
             "name": "Authorization",
-            "in": "header"
-        },
-        "DevUserAuth": {
-            "description": "DEV mode user identity header. Required when dev_jwt=true.",
-            "type": "apiKey",
-            "name": "X-User-ID",
             "in": "header"
         },
         "ProjectHeader": {

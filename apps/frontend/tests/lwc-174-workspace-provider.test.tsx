@@ -7,7 +7,6 @@ const mocks = vi.hoisted(() => ({
   createProject: vi.fn(),
   renameProject: vi.fn(),
   getStatus: vi.fn(),
-  loginAsDemo: vi.fn(),
   replace: vi.fn(),
   token: 'auth-token' as string | null,
 }));
@@ -45,7 +44,6 @@ vi.mock('@/lib/auth', () => ({
     isAuthenticated: true,
     isDemoSession: false,
     login: async () => undefined,
-    loginAsDemo: mocks.loginAsDemo,
     register: async () => undefined,
     logout: async () => undefined,
     refreshAccessToken: async () => 'auth-token',
@@ -124,11 +122,6 @@ function ProjectStateProbe() {
   );
 }
 
-function DemoSignInProbe() {
-  const { signInAsDemo } = useWorkspace();
-  return <button type="button" onClick={() => void signInAsDemo()}>Try Demo</button>;
-}
-
 function apiStatus() {
   return {
     sourcesCount: 0,
@@ -149,7 +142,6 @@ beforeEach(() => {
   mocks.renameProject.mockResolvedValue('Rename from API');
   mocks.createProject.mockResolvedValue({ id: 'created', name: 'Created' });
   mocks.getStatus.mockResolvedValue(apiStatus());
-  mocks.loginAsDemo.mockResolvedValue(undefined);
   localStorage.setItem('llm-wiki-last-project', 'project-a');
 });
 
@@ -160,13 +152,6 @@ afterEach(() => {
 });
 
 describe('LWC-174 WorkspaceProvider rename behavior', () => {
-  it('forwards passwordless Demo sign-in without credentials', async () => {
-    render(<WorkspaceProvider><DemoSignInProbe /></WorkspaceProvider>);
-    fireEvent.click(screen.getByRole('button', { name: 'Try Demo' }));
-    await waitFor(() => expect(mocks.loginAsDemo).toHaveBeenCalledTimes(1));
-    expect(mocks.loginAsDemo).toHaveBeenCalledWith();
-  });
-
   it('updates project state after a successful rename under React StrictMode', async () => {
     render(
       <StrictMode>
