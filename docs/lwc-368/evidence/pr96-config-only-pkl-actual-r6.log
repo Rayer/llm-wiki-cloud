@@ -1,0 +1,2 @@
+cd apps/bff && LWC_REPOSITORY_ROOT="/Users/rayer/orca/workspaces/llm-wiki-cloud/LWC-368-pipeline-cac" go run ./cmd/pipeline_config prepare --environment local --output "/Users/rayer/orca/workspaces/llm-wiki-cloud/LWC-368-pipeline-cac/.build/lwc368-reviewhold/config-local/local"
+prepared Pipeline config environment=local synto_sha256=f421afaf7f0a8528074b92542d62f71a576a2777f0498da8362f088ccce31b16

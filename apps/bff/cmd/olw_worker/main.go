@@ -34,23 +34,26 @@ import (
 )
 
 type workerConfig struct {
-	VaultPath        string
-	Bucket           string
-	DataDir          string
-	UserID           string
-	ProjectID        string
-	ExecutionID      string
-	APIKey           string
-	InitVault        bool
-	Postprocess      bool
-	StopOnError      bool
-	Workspace        bool
-	WorkspaceDir     string
-	SuppressOutput   bool
-	SuggestedQueries bool
+	VaultPath            string
+	Bucket               string
+	DataDir              string
+	UserID               string
+	ProjectID            string
+	ExecutionID          string
+	APIKey               string
+	InitVault            bool
+	Postprocess          bool
+	StopOnError          bool
+	Workspace            bool
+	WorkspaceDir         string
+	PipelineConfigPath   string
+	PipelineBindingsPath string
+	SuppressOutput       bool
+	SuggestedQueries     bool
 	// CleanRebuild skips materializing prior generation outputs (wiki/.synto/
 	// cache artifacts) so Synto cold-starts from raw only. Default false.
 	CleanRebuild             bool
+	DeployedSynto            []byte
 	pinnedProfileGuidance    *profileGuidancePin
 	cloudMode                bool
 	suggestedQueriesProvider suggestedqueries.Provider
@@ -259,6 +262,8 @@ func newRootCommand() *cobra.Command {
 	rootCmd.PersistentFlags().BoolVar(&cfg.StopOnError, "stop-on-error", true, "stop on first failed Synto command")
 	rootCmd.PersistentFlags().BoolVar(&cfg.Workspace, "workspace", false, "run against a private copied workspace")
 	rootCmd.PersistentFlags().StringVar(&cfg.WorkspaceDir, "workspace-dir", "", "parent directory for private workspaces")
+	rootCmd.PersistentFlags().StringVar(&cfg.PipelineConfigPath, "pipeline-config", "", "rendered local Pipeline TOML")
+	rootCmd.PersistentFlags().StringVar(&cfg.PipelineBindingsPath, "pipeline-private-bindings", "", "private local Pipeline bindings file")
 	rootCmd.PersistentFlags().BoolVar(&cfg.SuppressOutput, "suppress-output", false, "write child output only to the durable pipeline log (skip console tee)")
 
 	runCmd := &cobra.Command{
@@ -336,6 +341,9 @@ func fixedArgs(want int) cobra.PositionalArgs {
 func runWorkerBatch(ctx context.Context, cfg workerConfig, rawCommands string) error {
 	cfg = configFromEnvironment(cfg)
 	if cfg.Bucket != "" {
+		if cfg.PipelineConfigPath != "" || cfg.PipelineBindingsPath != "" {
+			return errCloudWorkerConfigInvalid
+		}
 		cfg.cloudMode = true
 		if err := validateWorkerConfigBounds(cfg); err != nil {
 			return annotateError(errWorkerInputInvalid, err)
@@ -359,6 +367,35 @@ func runWorkerBatch(ctx context.Context, cfg workerConfig, rawCommands string) e
 			return errWorkerConfigInvalid
 		}
 		return runCloudWorkerBatch(ctx, cfg, commands, newCloudObjectStore(cfg.Bucket))
+	}
+	if cfg.PipelineConfigPath == "" && cfg.PipelineBindingsPath != "" {
+		return errWorkerConfigInvalid
+	}
+	if cfg.PipelineConfigPath != "" {
+		if len(cfg.DeployedSynto) != 0 || cfg.PipelineBindingsPath == "" {
+			return errWorkerConfigInvalid
+		}
+		deployed, readErr := os.ReadFile(cfg.PipelineConfigPath)
+		if readErr != nil {
+			return annotateError(errWorkerConfigInvalid, fmt.Errorf("read local Pipeline config: %w", readErr))
+		}
+		localAPIKey, bindingErr := readLocalPipelineAPIKey(cfg.PipelineBindingsPath)
+		if bindingErr != nil {
+			return annotateError(errWorkerConfigInvalid, bindingErr)
+		}
+		if len(localAPIKey) > 0 {
+			cfg.APIKey = string(localAPIKey)
+			cfg.apiKeySet = true
+		}
+		clear(localAPIKey)
+		timeoutSeconds, timeoutErr := pipelineRunTimeout(deployed)
+		if timeoutErr != nil {
+			return annotateError(errWorkerConfigInvalid, timeoutErr)
+		}
+		cfg.DeployedSynto = deployed
+		var cancel context.CancelFunc
+		ctx, cancel = context.WithTimeout(ctx, time.Duration(timeoutSeconds)*time.Second)
+		defer cancel()
 	}
 	vault, err := resolveVaultPath(cfg)
 	if err != nil {
@@ -824,46 +861,6 @@ func resolveVaultPath(cfg workerConfig) (string, error) {
 	return "", errors.New("cannot resolve vault path: set --vault or provide --data-dir, --user-id, and --project-id")
 }
 
-func ensureWikiTOML(vault string, cfg workerConfig) error {
-	target := filepath.Join(vault, "wiki.toml")
-	if _, err := os.Stat(target); err == nil {
-		return nil
-	} else if !errors.Is(err, os.ErrNotExist) {
-		return fmt.Errorf("stat wiki.toml: %w", err)
-	}
-	if strings.TrimSpace(cfg.APIKey) == "" {
-		return errors.New("missing API key: set --api-key or LLM_API_KEY to create wiki.toml")
-	}
-
-	toml := `[provider]
-name = "deepseek"
-url = "https://api.deepseek.com/v1"
-
-[models.fast]
-model = "deepseek-flash"
-[models.fast.options]
-thinking = { type = "disabled" }
-
-[models.heavy]
-model = "deepseek-flash"
-[models.heavy.options]
-thinking = { type = "enabled" }
-
-[pipeline]
-auto_approve = true
-auto_commit = true
-auto_maintain = true
-article_max_tokens = 32768
-max_concepts_per_source = 8
-ingest_parallel = false
-`
-
-	if err := os.WriteFile(target, []byte(toml), 0o644); err != nil {
-		return fmt.Errorf("write wiki.toml: %w", err)
-	}
-	return nil
-}
-
 func prepareOLWEnvironment(cfg workerConfig) ([]string, error) {
 	configHome, err := os.MkdirTemp("", "synto-config-*")
 	if err != nil {
@@ -1229,7 +1226,8 @@ func validateWorkerConfigBounds(cfg workerConfig) error {
 	if cfg.cloudMode && !validPipelineExecutionID(cfg.ExecutionID) {
 		return errors.New("invalid execution id")
 	}
-	for _, value := range []string{cfg.VaultPath, cfg.WorkspaceDir, cfg.DataDir} {
+	for _, value := range []string{cfg.VaultPath, cfg.WorkspaceDir, cfg.DataDir,
+		cfg.PipelineConfigPath, cfg.PipelineBindingsPath} {
 		if len(value) > maxWorkerPathBytes {
 			return errors.New("oversize path")
 		}

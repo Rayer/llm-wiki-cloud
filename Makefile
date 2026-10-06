@@ -1,7 +1,8 @@
 BFF_DIR := apps/bff
 FRONTEND_DIR := apps/frontend
+CAC_OUTPUT_DIR ?= $(CURDIR)/.build/cac
 
-.PHONY: all bootstrap lint typecheck vet test build local-start dev local-stop stop smoke workflow-yaml verify
+.PHONY: all bootstrap lint typecheck vet test build local-start dev local-stop stop smoke workflow-yaml config-local config-dev config-prod verify
 
 all: verify
 
@@ -39,7 +40,16 @@ smoke:
 	bash scripts/local-vertical-smoke.sh
 
 workflow-yaml:
-	node -e 'const fs=require("fs"); const yaml=require("./$(FRONTEND_DIR)/node_modules/js-yaml"); const workflow=yaml.load(fs.readFileSync(".github/workflows/ci.yml", "utf8")); if (!workflow || !workflow.jobs || !workflow.jobs.build || Object.values(workflow.jobs).some((job) => job.permissions?.statuses === "write")) process.exit(1); console.log(".github/workflows/ci.yml: valid YAML");'
+	ruby -e 'require "yaml"; files=%w[ci.yml cd.yml deploy-dev.yml promote-production.yml]; workflows=files.to_h { |file| [file, YAML.load_file(".github/workflows/"+file)] }; abort "invalid CI workflow" unless workflows["ci.yml"]["jobs"].key?("bff"); abort "invalid config-only workflow branch" unless workflows["cd.yml"]["jobs"].key?("pipeline-config-only") && workflows["cd.yml"]["jobs"]["release"]["if"].include?("config-only"); files.each { |file| puts ".github/workflows/#{file}: valid YAML" }'
+
+config-local:
+	cd $(BFF_DIR) && LWC_REPOSITORY_ROOT="$(CURDIR)" go run ./cmd/pipeline_config prepare --environment local --output "$(CAC_OUTPUT_DIR)/local"
+
+config-dev:
+	cd $(BFF_DIR) && LWC_REPOSITORY_ROOT="$(CURDIR)" go run ./cmd/pipeline_config prepare --environment dev --output "$(CAC_OUTPUT_DIR)/dev"
+
+config-prod:
+	cd $(BFF_DIR) && LWC_REPOSITORY_ROOT="$(CURDIR)" go run ./cmd/pipeline_config prepare --environment prod --output "$(CAC_OUTPUT_DIR)/prod"
 
 verify: bootstrap workflow-yaml lint typecheck vet test build smoke
 	git diff --check

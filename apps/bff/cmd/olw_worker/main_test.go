@@ -226,56 +226,6 @@ func TestResolveVaultPathErrorsWithoutEnoughConfig(t *testing.T) {
 	}
 }
 
-func TestEnsureWikiTOMLCreatesButDoesNotOverwrite(t *testing.T) {
-	vault := t.TempDir()
-	cfg := workerConfig{APIKey: "secret"}
-	if err := ensureWikiTOML(vault, cfg); err != nil {
-		t.Fatalf("ensureWikiTOML(create) error = %v", err)
-	}
-	data, err := os.ReadFile(filepath.Join(vault, "wiki.toml"))
-	if err != nil {
-		t.Fatal(err)
-	}
-	text := string(data)
-	for _, want := range []string{
-		`name = "deepseek"`,
-		`url = "https://api.deepseek.com/v1"`,
-		`[models.fast]`,
-		`thinking = { type = "disabled" }`,
-		`[models.heavy]`,
-		`thinking = { type = "enabled" }`,
-		`auto_approve = true`,
-		`article_max_tokens = 32768`,
-	} {
-		if !strings.Contains(text, want) {
-			t.Fatalf("wiki.toml missing %q:\n%s", want, text)
-		}
-	}
-	if strings.Contains(text, "api_key") || strings.Contains(text, "secret") {
-		t.Fatalf("wiki.toml should not persist API keys:\n%s", text)
-	}
-
-	if err := os.WriteFile(filepath.Join(vault, "wiki.toml"), []byte("custom"), 0o644); err != nil {
-		t.Fatal(err)
-	}
-	if err := ensureWikiTOML(vault, workerConfig{APIKey: "new"}); err != nil {
-		t.Fatalf("ensureWikiTOML(existing) error = %v", err)
-	}
-	data, err = os.ReadFile(filepath.Join(vault, "wiki.toml"))
-	if err != nil {
-		t.Fatal(err)
-	}
-	if string(data) != "custom" {
-		t.Fatalf("existing wiki.toml overwritten: %q", data)
-	}
-}
-
-func TestEnsureWikiTOMLRequiresAPIKeyWhenMissing(t *testing.T) {
-	if err := ensureWikiTOML(t.TempDir(), workerConfig{}); err == nil {
-		t.Fatal("ensureWikiTOML() error = nil, want error")
-	}
-}
-
 func TestPrepareOLWEnvironmentIsolatesConfigAndMapsDeepSeekKey(t *testing.T) {
 	env, err := prepareOLWEnvironment(workerConfig{APIKey: "secret"})
 	if err != nil {
@@ -303,6 +253,7 @@ func TestRunWorkerBatchPassesIsolatedOLWEnvironment(t *testing.T) {
 	defer func() { execOLW = old }()
 
 	vault := t.TempDir()
+	writeTestDeployedPipelineConfig(t, vault)
 	var gotEnv []string
 	execOLW = func(_ context.Context, _ string, _ []string, env []string, _, _ io.Writer) error {
 		gotEnv = append([]string(nil), env...)
@@ -348,6 +299,7 @@ func TestRunWorkerBatchDoesNotInitializeVaultByDefault(t *testing.T) {
 	defer func() { execOLW = old }()
 
 	vault := t.TempDir()
+	writeTestDeployedPipelineConfig(t, vault)
 	var ran [][]string
 	execOLW = func(_ context.Context, _ string, command []string, _ []string, _, _ io.Writer) error {
 		ran = append(ran, append([]string(nil), command...))
@@ -417,6 +369,7 @@ func TestRunWorkerBatchWritesPipelineLogForExecution(t *testing.T) {
 	defer func() { execOLW = old }()
 
 	vault := t.TempDir()
+	writeTestDeployedPipelineConfig(t, vault)
 	execOLW = func(_ context.Context, _ string, _ []string, _ []string, stdout, stderr io.Writer) error {
 		if _, err := stdout.Write([]byte("stdout line\n")); err != nil {
 			t.Fatalf("write stdout: %v", err)

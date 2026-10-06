@@ -1,0 +1,12 @@
+test_config_only_renders_uploads_and_verifies_without_changing_image (test_pipeline_config.PipelineConfigContract.test_config_only_renders_uploads_and_verifies_without_changing_image) ... ok
+test_config_only_updates_timeout_that_differs_from_current_job (test_pipeline_config.PipelineConfigContract.test_config_only_updates_timeout_that_differs_from_current_job) ... ok
+test_config_only_uses_real_normalizer_with_controlled_providers (test_pipeline_config.PipelineConfigContract.test_config_only_uses_real_normalizer_with_controlled_providers) ... ok
+test_full_secret_version_maps_to_cloud_run_reference_without_payload (test_pipeline_config.PipelineConfigContract.test_full_secret_version_maps_to_cloud_run_reference_without_payload) ... ok
+test_missing_verified_timeout_stops_before_prepare_or_mutation (test_pipeline_config.PipelineConfigContract.test_missing_verified_timeout_stops_before_prepare_or_mutation) ... ok
+test_normal_prepare_does_not_gate_on_current_worker_timeout (test_pipeline_config.PipelineConfigContract.test_normal_prepare_does_not_gate_on_current_worker_timeout) ... ok
+
+----------------------------------------------------------------------
+Ran 6 tests in 0.504s
+
+OK
+Pipeline config-only verified environment=dev sha256=d2a796c1e805cfe57866afad3b716680e46b2d9be0e162a285ee013a10dc3a95 image_unchanged=true

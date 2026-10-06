@@ -1,0 +1,314 @@
+..........git: warning: confstr() failed with code 5: couldn't get path of DARWIN_USER_TEMP_DIR; using /tmp instead
+git: warning: confstr() failed with code 5: couldn't get path of DARWIN_USER_TEMP_DIR; using /tmp instead
+Egit: warning: confstr() failed with code 5: couldn't get path of DARWIN_USER_TEMP_DIR; using /tmp instead
+Egit: warning: confstr() failed with code 5: couldn't get path of DARWIN_USER_TEMP_DIR; using /tmp instead
+Egit: warning: confstr() failed with code 5: couldn't get path of DARWIN_USER_TEMP_DIR; using /tmp instead
+Egit: warning: confstr() failed with code 5: couldn't get path of DARWIN_USER_TEMP_DIR; using /tmp instead
+Egit: warning: confstr() failed with code 5: couldn't get path of DARWIN_USER_TEMP_DIR; using /tmp instead
+Egit: warning: confstr() failed with code 5: couldn't get path of DARWIN_USER_TEMP_DIR; using /tmp instead
+Egit: warning: confstr() failed with code 5: couldn't get path of DARWIN_USER_TEMP_DIR; using /tmp instead
+git: warning: confstr() failed with code 5: couldn't get path of DARWIN_USER_TEMP_DIR; using /tmp instead
+git: warning: confstr() failed with code 5: couldn't get path of DARWIN_USER_TEMP_DIR; using /tmp instead
+git: warning: confstr() failed with code 5: couldn't get path of DARWIN_USER_TEMP_DIR; using /tmp instead
+git: warning: confstr() failed with code 5: couldn't get path of DARWIN_USER_TEMP_DIR; using /tmp instead
+git: warning: confstr() failed with code 5: couldn't get path of DARWIN_USER_TEMP_DIR; using /tmp instead
+E.......F....go: creating work dir: stat /Users/rayer/orca/workspaces/llm-wiki-cloud/LWC-368-pipeline-cac/.build/lwc368-test-scratch/candidate-r5/.build/test-tmp: no such file or directory
+Egit: warning: confstr() failed with code 5: couldn't get path of DARWIN_USER_TEMP_DIR; using /tmp instead
+.....................................EE.
+======================================================================
+ERROR: test_real_action_cross_plan_unresolved_handle_fails_closed (test_build_submission.AsyncBuildSubmission.test_real_action_cross_plan_unresolved_handle_fails_closed)
+----------------------------------------------------------------------
+Traceback (most recent call last):
+  File "/Users/rayer/orca/workspaces/llm-wiki-cloud/LWC-368-pipeline-cac/.build/lwc368-test-scratch/candidate-r5/deploy/engine/tests/test_build_submission.py", line 444, in test_real_action_cross_plan_unresolved_handle_fails_closed
+    retained, plan, first = self.make_action_checkpoint('action-cross-plan')
+                            ~~~~~~~~~~~~~~~~~~~~~~~~~~~^^^^^^^^^^^^^^^^^^^^^
+  File "/Users/rayer/orca/workspaces/llm-wiki-cloud/LWC-368-pipeline-cac/.build/lwc368-test-scratch/candidate-r5/deploy/engine/tests/test_build_submission.py", line 277, in make_action_checkpoint
+    directory, plan = self.admitted_plan(name=name, source=source)
+                      ~~~~~~~~~~~~~~~~~~^^^^^^^^^^^^^^^^^^^^^^^^^^
+  File "/Users/rayer/orca/workspaces/llm-wiki-cloud/LWC-368-pipeline-cac/.build/lwc368-test-scratch/candidate-r5/deploy/engine/tests/test_build_submission.py", line 236, in admitted_plan
+    plan = engine.admit(args)
+  File "/Users/rayer/orca/workspaces/llm-wiki-cloud/LWC-368-pipeline-cac/.build/lwc368-test-scratch/candidate-r5/deploy/engine/engine.py", line 108, in admit
+    normalized = json.loads(run(['go', 'run', './cmd/deploy_config', '--environment', args.environment,
+                            ~~~^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+                       '--config', str(ROOT / cfg), '--components', ','.join(selected)], cwd=ROOT / 'apps/bff', timeout=180))
+                       ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+  File "/Users/rayer/orca/workspaces/llm-wiki-cloud/LWC-368-pipeline-cac/.build/lwc368-test-scratch/candidate-r5/deploy/engine/support.py", line 243, in run
+    raise Breakpoint('permission-denied' if permission else 'command-failed',
+    ...<2 lines>...
+                     stage=reported_stage, exit_code=exit_code, cause=cause)
+support.Breakpoint: command-failed
+
+======================================================================
+ERROR: test_real_action_download_blocks_idless_unknown_without_submit (test_build_submission.AsyncBuildSubmission.test_real_action_download_blocks_idless_unknown_without_submit)
+----------------------------------------------------------------------
+Traceback (most recent call last):
+  File "/Users/rayer/orca/workspaces/llm-wiki-cloud/LWC-368-pipeline-cac/.build/lwc368-test-scratch/candidate-r5/deploy/engine/tests/test_build_submission.py", line 416, in test_real_action_download_blocks_idless_unknown_without_submit
+    retained, plan, first = self.make_action_checkpoint(
+                            ~~~~~~~~~~~~~~~~~~~~~~~~~~~^
+        'action-resume-idless',extra={'FAKE_SUBMIT_EXIT':'17'})
+        ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+  File "/Users/rayer/orca/workspaces/llm-wiki-cloud/LWC-368-pipeline-cac/.build/lwc368-test-scratch/candidate-r5/deploy/engine/tests/test_build_submission.py", line 277, in make_action_checkpoint
+    directory, plan = self.admitted_plan(name=name, source=source)
+                      ~~~~~~~~~~~~~~~~~~^^^^^^^^^^^^^^^^^^^^^^^^^^
+  File "/Users/rayer/orca/workspaces/llm-wiki-cloud/LWC-368-pipeline-cac/.build/lwc368-test-scratch/candidate-r5/deploy/engine/tests/test_build_submission.py", line 236, in admitted_plan
+    plan = engine.admit(args)
+  File "/Users/rayer/orca/workspaces/llm-wiki-cloud/LWC-368-pipeline-cac/.build/lwc368-test-scratch/candidate-r5/deploy/engine/engine.py", line 108, in admit
+    normalized = json.loads(run(['go', 'run', './cmd/deploy_config', '--environment', args.environment,
+                            ~~~^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+                       '--config', str(ROOT / cfg), '--components', ','.join(selected)], cwd=ROOT / 'apps/bff', timeout=180))
+                       ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+  File "/Users/rayer/orca/workspaces/llm-wiki-cloud/LWC-368-pipeline-cac/.build/lwc368-test-scratch/candidate-r5/deploy/engine/support.py", line 243, in run
+    raise Breakpoint('permission-denied' if permission else 'command-failed',
+    ...<2 lines>...
+                     stage=reported_stage, exit_code=exit_code, cause=cause)
+support.Breakpoint: command-failed
+
+======================================================================
+ERROR: test_real_action_download_fresh_release_resumes_same_build_id (test_build_submission.AsyncBuildSubmission.test_real_action_download_fresh_release_resumes_same_build_id) (first_status='WORKING')
+----------------------------------------------------------------------
+Traceback (most recent call last):
+  File "/Users/rayer/orca/workspaces/llm-wiki-cloud/LWC-368-pipeline-cac/.build/lwc368-test-scratch/candidate-r5/deploy/engine/tests/test_build_submission.py", line 323, in test_real_action_download_fresh_release_resumes_same_build_id
+    retained, plan, first = self.make_action_checkpoint(
+                            ~~~~~~~~~~~~~~~~~~~~~~~~~~~^
+        'action-resume-'+first_status.lower(),statuses=[first_status])
+        ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+  File "/Users/rayer/orca/workspaces/llm-wiki-cloud/LWC-368-pipeline-cac/.build/lwc368-test-scratch/candidate-r5/deploy/engine/tests/test_build_submission.py", line 277, in make_action_checkpoint
+    directory, plan = self.admitted_plan(name=name, source=source)
+                      ~~~~~~~~~~~~~~~~~~^^^^^^^^^^^^^^^^^^^^^^^^^^
+  File "/Users/rayer/orca/workspaces/llm-wiki-cloud/LWC-368-pipeline-cac/.build/lwc368-test-scratch/candidate-r5/deploy/engine/tests/test_build_submission.py", line 236, in admitted_plan
+    plan = engine.admit(args)
+  File "/Users/rayer/orca/workspaces/llm-wiki-cloud/LWC-368-pipeline-cac/.build/lwc368-test-scratch/candidate-r5/deploy/engine/engine.py", line 108, in admit
+    normalized = json.loads(run(['go', 'run', './cmd/deploy_config', '--environment', args.environment,
+                            ~~~^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+                       '--config', str(ROOT / cfg), '--components', ','.join(selected)], cwd=ROOT / 'apps/bff', timeout=180))
+                       ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+  File "/Users/rayer/orca/workspaces/llm-wiki-cloud/LWC-368-pipeline-cac/.build/lwc368-test-scratch/candidate-r5/deploy/engine/support.py", line 243, in run
+    raise Breakpoint('permission-denied' if permission else 'command-failed',
+    ...<2 lines>...
+                     stage=reported_stage, exit_code=exit_code, cause=cause)
+support.Breakpoint: command-failed
+
+======================================================================
+ERROR: test_real_action_download_fresh_release_resumes_same_build_id (test_build_submission.AsyncBuildSubmission.test_real_action_download_fresh_release_resumes_same_build_id) (first_status='STATUS_UNKNOWN')
+----------------------------------------------------------------------
+Traceback (most recent call last):
+  File "/Users/rayer/orca/workspaces/llm-wiki-cloud/LWC-368-pipeline-cac/.build/lwc368-test-scratch/candidate-r5/deploy/engine/tests/test_build_submission.py", line 323, in test_real_action_download_fresh_release_resumes_same_build_id
+    retained, plan, first = self.make_action_checkpoint(
+                            ~~~~~~~~~~~~~~~~~~~~~~~~~~~^
+        'action-resume-'+first_status.lower(),statuses=[first_status])
+        ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+  File "/Users/rayer/orca/workspaces/llm-wiki-cloud/LWC-368-pipeline-cac/.build/lwc368-test-scratch/candidate-r5/deploy/engine/tests/test_build_submission.py", line 277, in make_action_checkpoint
+    directory, plan = self.admitted_plan(name=name, source=source)
+                      ~~~~~~~~~~~~~~~~~~^^^^^^^^^^^^^^^^^^^^^^^^^^
+  File "/Users/rayer/orca/workspaces/llm-wiki-cloud/LWC-368-pipeline-cac/.build/lwc368-test-scratch/candidate-r5/deploy/engine/tests/test_build_submission.py", line 236, in admitted_plan
+    plan = engine.admit(args)
+  File "/Users/rayer/orca/workspaces/llm-wiki-cloud/LWC-368-pipeline-cac/.build/lwc368-test-scratch/candidate-r5/deploy/engine/engine.py", line 108, in admit
+    normalized = json.loads(run(['go', 'run', './cmd/deploy_config', '--environment', args.environment,
+                            ~~~^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+                       '--config', str(ROOT / cfg), '--components', ','.join(selected)], cwd=ROOT / 'apps/bff', timeout=180))
+                       ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+  File "/Users/rayer/orca/workspaces/llm-wiki-cloud/LWC-368-pipeline-cac/.build/lwc368-test-scratch/candidate-r5/deploy/engine/support.py", line 243, in run
+    raise Breakpoint('permission-denied' if permission else 'command-failed',
+    ...<2 lines>...
+                     stage=reported_stage, exit_code=exit_code, cause=cause)
+support.Breakpoint: command-failed
+
+======================================================================
+ERROR: test_real_action_download_success_digest_failure_only_retries_digest (test_build_submission.AsyncBuildSubmission.test_real_action_download_success_digest_failure_only_retries_digest)
+----------------------------------------------------------------------
+Traceback (most recent call last):
+  File "/Users/rayer/orca/workspaces/llm-wiki-cloud/LWC-368-pipeline-cac/.build/lwc368-test-scratch/candidate-r5/deploy/engine/tests/test_build_submission.py", line 430, in test_real_action_download_success_digest_failure_only_retries_digest
+    retained, plan, first = self.make_action_checkpoint(
+                            ~~~~~~~~~~~~~~~~~~~~~~~~~~~^
+        'action-resume-digest',statuses=['SUCCESS'],extra={'FAKE_TAG_LOOKUP_EXIT':'9'})
+        ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+  File "/Users/rayer/orca/workspaces/llm-wiki-cloud/LWC-368-pipeline-cac/.build/lwc368-test-scratch/candidate-r5/deploy/engine/tests/test_build_submission.py", line 277, in make_action_checkpoint
+    directory, plan = self.admitted_plan(name=name, source=source)
+                      ~~~~~~~~~~~~~~~~~~^^^^^^^^^^^^^^^^^^^^^^^^^^
+  File "/Users/rayer/orca/workspaces/llm-wiki-cloud/LWC-368-pipeline-cac/.build/lwc368-test-scratch/candidate-r5/deploy/engine/tests/test_build_submission.py", line 236, in admitted_plan
+    plan = engine.admit(args)
+  File "/Users/rayer/orca/workspaces/llm-wiki-cloud/LWC-368-pipeline-cac/.build/lwc368-test-scratch/candidate-r5/deploy/engine/engine.py", line 108, in admit
+    normalized = json.loads(run(['go', 'run', './cmd/deploy_config', '--environment', args.environment,
+                            ~~~^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+                       '--config', str(ROOT / cfg), '--components', ','.join(selected)], cwd=ROOT / 'apps/bff', timeout=180))
+                       ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+  File "/Users/rayer/orca/workspaces/llm-wiki-cloud/LWC-368-pipeline-cac/.build/lwc368-test-scratch/candidate-r5/deploy/engine/support.py", line 243, in run
+    raise Breakpoint('permission-denied' if permission else 'command-failed',
+    ...<2 lines>...
+                     stage=reported_stage, exit_code=exit_code, cause=cause)
+support.Breakpoint: command-failed
+
+======================================================================
+ERROR: test_real_action_download_v2_checkpoint_keeps_legacy_id_sequence_and_handle (test_build_submission.AsyncBuildSubmission.test_real_action_download_v2_checkpoint_keeps_legacy_id_sequence_and_handle)
+----------------------------------------------------------------------
+Traceback (most recent call last):
+  File "/Users/rayer/orca/workspaces/llm-wiki-cloud/LWC-368-pipeline-cac/.build/lwc368-test-scratch/candidate-r5/deploy/engine/tests/test_build_submission.py", line 341, in test_real_action_download_v2_checkpoint_keeps_legacy_id_sequence_and_handle
+    retained, plan, first = self.make_action_checkpoint(
+                            ~~~~~~~~~~~~~~~~~~~~~~~~~~~^
+        'action-v2-resume',statuses=['WORKING'])
+        ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+  File "/Users/rayer/orca/workspaces/llm-wiki-cloud/LWC-368-pipeline-cac/.build/lwc368-test-scratch/candidate-r5/deploy/engine/tests/test_build_submission.py", line 277, in make_action_checkpoint
+    directory, plan = self.admitted_plan(name=name, source=source)
+                      ~~~~~~~~~~~~~~~~~~^^^^^^^^^^^^^^^^^^^^^^^^^^
+  File "/Users/rayer/orca/workspaces/llm-wiki-cloud/LWC-368-pipeline-cac/.build/lwc368-test-scratch/candidate-r5/deploy/engine/tests/test_build_submission.py", line 236, in admitted_plan
+    plan = engine.admit(args)
+  File "/Users/rayer/orca/workspaces/llm-wiki-cloud/LWC-368-pipeline-cac/.build/lwc368-test-scratch/candidate-r5/deploy/engine/engine.py", line 108, in admit
+    normalized = json.loads(run(['go', 'run', './cmd/deploy_config', '--environment', args.environment,
+                            ~~~^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+                       '--config', str(ROOT / cfg), '--components', ','.join(selected)], cwd=ROOT / 'apps/bff', timeout=180))
+                       ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+  File "/Users/rayer/orca/workspaces/llm-wiki-cloud/LWC-368-pipeline-cac/.build/lwc368-test-scratch/candidate-r5/deploy/engine/support.py", line 243, in run
+    raise Breakpoint('permission-denied' if permission else 'command-failed',
+    ...<2 lines>...
+                     stage=reported_stage, exit_code=exit_code, cause=cause)
+support.Breakpoint: command-failed
+
+======================================================================
+ERROR: test_real_action_terminal_failure_explicit_retry_and_receipt_expansion (test_build_submission.AsyncBuildSubmission.test_real_action_terminal_failure_explicit_retry_and_receipt_expansion)
+----------------------------------------------------------------------
+Traceback (most recent call last):
+  File "/Users/rayer/orca/workspaces/llm-wiki-cloud/LWC-368-pipeline-cac/.build/lwc368-test-scratch/candidate-r5/deploy/engine/tests/test_build_submission.py", line 521, in test_real_action_terminal_failure_explicit_retry_and_receipt_expansion
+    terminal, plan, first = self.make_action_checkpoint(
+                            ~~~~~~~~~~~~~~~~~~~~~~~~~~~^
+        'action-terminal-retry',statuses=['FAILURE'])
+        ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+  File "/Users/rayer/orca/workspaces/llm-wiki-cloud/LWC-368-pipeline-cac/.build/lwc368-test-scratch/candidate-r5/deploy/engine/tests/test_build_submission.py", line 277, in make_action_checkpoint
+    directory, plan = self.admitted_plan(name=name, source=source)
+                      ~~~~~~~~~~~~~~~~~~^^^^^^^^^^^^^^^^^^^^^^^^^^
+  File "/Users/rayer/orca/workspaces/llm-wiki-cloud/LWC-368-pipeline-cac/.build/lwc368-test-scratch/candidate-r5/deploy/engine/tests/test_build_submission.py", line 236, in admitted_plan
+    plan = engine.admit(args)
+  File "/Users/rayer/orca/workspaces/llm-wiki-cloud/LWC-368-pipeline-cac/.build/lwc368-test-scratch/candidate-r5/deploy/engine/engine.py", line 108, in admit
+    normalized = json.loads(run(['go', 'run', './cmd/deploy_config', '--environment', args.environment,
+                            ~~~^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+                       '--config', str(ROOT / cfg), '--components', ','.join(selected)], cwd=ROOT / 'apps/bff', timeout=180))
+                       ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+  File "/Users/rayer/orca/workspaces/llm-wiki-cloud/LWC-368-pipeline-cac/.build/lwc368-test-scratch/candidate-r5/deploy/engine/support.py", line 243, in run
+    raise Breakpoint('permission-denied' if permission else 'command-failed',
+    ...<2 lines>...
+                     stage=reported_stage, exit_code=exit_code, cause=cause)
+support.Breakpoint: command-failed
+
+======================================================================
+ERROR: test_registered_dev_release_resumes_legacy_source_with_current_executor (test_build_submission.AsyncBuildSubmission.test_registered_dev_release_resumes_legacy_source_with_current_executor)
+----------------------------------------------------------------------
+Traceback (most recent call last):
+  File "/Users/rayer/orca/workspaces/llm-wiki-cloud/LWC-368-pipeline-cac/.build/lwc368-test-scratch/candidate-r5/deploy/engine/tests/test_build_submission.py", line 381, in test_registered_dev_release_resumes_legacy_source_with_current_executor
+    retained, plan, first = self.make_action_checkpoint(
+                            ~~~~~~~~~~~~~~~~~~~~~~~~~~~^
+        'registered-cross-executor-resume',statuses=['WORKING'],source=source,extra=git_env)
+        ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+  File "/Users/rayer/orca/workspaces/llm-wiki-cloud/LWC-368-pipeline-cac/.build/lwc368-test-scratch/candidate-r5/deploy/engine/tests/test_build_submission.py", line 277, in make_action_checkpoint
+    directory, plan = self.admitted_plan(name=name, source=source)
+                      ~~~~~~~~~~~~~~~~~~^^^^^^^^^^^^^^^^^^^^^^^^^^
+  File "/Users/rayer/orca/workspaces/llm-wiki-cloud/LWC-368-pipeline-cac/.build/lwc368-test-scratch/candidate-r5/deploy/engine/tests/test_build_submission.py", line 236, in admitted_plan
+    plan = engine.admit(args)
+  File "/Users/rayer/orca/workspaces/llm-wiki-cloud/LWC-368-pipeline-cac/.build/lwc368-test-scratch/candidate-r5/deploy/engine/engine.py", line 108, in admit
+    normalized = json.loads(run(['go', 'run', './cmd/deploy_config', '--environment', args.environment,
+                            ~~~^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+                       '--config', str(ROOT / cfg), '--components', ','.join(selected)], cwd=ROOT / 'apps/bff', timeout=180))
+                       ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+  File "/Users/rayer/orca/workspaces/llm-wiki-cloud/LWC-368-pipeline-cac/.build/lwc368-test-scratch/candidate-r5/deploy/engine/support.py", line 243, in run
+    raise Breakpoint('permission-denied' if permission else 'command-failed',
+    ...<2 lines>...
+                     stage=reported_stage, exit_code=exit_code, cause=cause)
+support.Breakpoint: command-failed
+
+======================================================================
+ERROR: setUpClass (test_engine.Acceptance)
+----------------------------------------------------------------------
+Traceback (most recent call last):
+  File "/Users/rayer/orca/workspaces/llm-wiki-cloud/LWC-368-pipeline-cac/.build/lwc368-test-scratch/candidate-r5/deploy/engine/tests/test_engine.py", line 25, in setUpClass
+    cls.normalized=json.loads(subprocess.check_output(['go','run','./cmd/deploy_config','--environment','development',
+                              ~~~~~~~~~~~~~~~~~~~~~~~^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+        '--config',str(ROOT/'deploy/environments/development.yaml'),'--components',','.join(engine.ORDER)],cwd=ROOT/'apps/bff',text=True))
+        ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+  File "/opt/homebrew/Cellar/python@3.14/3.14.6/Frameworks/Python.framework/Versions/3.14/lib/python3.14/subprocess.py", line 473, in check_output
+    return run(*popenargs, stdout=PIPE, timeout=timeout, check=True,
+           ~~~^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+               **kwargs).stdout
+               ^^^^^^^^^
+  File "/opt/homebrew/Cellar/python@3.14/3.14.6/Frameworks/Python.framework/Versions/3.14/lib/python3.14/subprocess.py", line 578, in run
+    raise CalledProcessError(retcode, process.args,
+                             output=stdout, stderr=stderr)
+subprocess.CalledProcessError: Command '['go', 'run', './cmd/deploy_config', '--environment', 'development', '--config', '/Users/rayer/orca/workspaces/llm-wiki-cloud/LWC-368-pipeline-cac/.build/lwc368-test-scratch/candidate-r5/deploy/environments/development.yaml', '--components', 'exportjob,auth,bff,worker,frontend']' returned non-zero exit status 1.
+
+======================================================================
+ERROR: test_runtime_guard_reads_checkpoint_with_actual_engine_latest_argv (test_transport_integration.EngineTransportIntegration.test_runtime_guard_reads_checkpoint_with_actual_engine_latest_argv)
+----------------------------------------------------------------------
+Traceback (most recent call last):
+  File "/Users/rayer/orca/workspaces/llm-wiki-cloud/LWC-368-pipeline-cac/.build/lwc368-test-scratch/candidate-r5/deploy/engine/tests/test_transport_integration.py", line 55, in test_runtime_guard_reads_checkpoint_with_actual_engine_latest_argv
+    self.engine.runtime_guard()  # Real subprocess, parser, fetch routing and file readback.
+    ~~~~~~~~~~~~~~~~~~~~~~~~~^^
+  File "/Users/rayer/orca/workspaces/llm-wiki-cloud/LWC-368-pipeline-cac/.build/lwc368-test-scratch/candidate-r5/deploy/engine/engine.py", line 482, in runtime_guard
+    run(['node', ROOT / 'deploy/engine/artifacts.cjs', 'latest',
+    ~~~^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+         self.plan['normalized']['environment'], latest_path], timeout=120,
+         ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+        stage='latest-checkpoint')
+        ^^^^^^^^^^^^^^^^^^^^^^^^^^
+  File "/Users/rayer/orca/workspaces/llm-wiki-cloud/LWC-368-pipeline-cac/.build/lwc368-test-scratch/candidate-r5/deploy/engine/support.py", line 243, in run
+    raise Breakpoint('permission-denied' if permission else 'command-failed',
+    ...<2 lines>...
+                     stage=reported_stage, exit_code=exit_code, cause=cause)
+support.Breakpoint: command-failed
+
+======================================================================
+ERROR: test_runtime_guard_uses_sequence_within_attempt_when_ids_disagree (test_transport_integration.EngineTransportIntegration.test_runtime_guard_uses_sequence_within_attempt_when_ids_disagree)
+----------------------------------------------------------------------
+Traceback (most recent call last):
+  File "/Users/rayer/orca/workspaces/llm-wiki-cloud/LWC-368-pipeline-cac/.build/lwc368-test-scratch/candidate-r5/deploy/engine/tests/test_transport_integration.py", line 89, in test_runtime_guard_uses_sequence_within_attempt_when_ids_disagree
+    self.engine.runtime_guard('deploy')
+    ~~~~~~~~~~~~~~~~~~~~~~~~~^^^^^^^^^^
+  File "/Users/rayer/orca/workspaces/llm-wiki-cloud/LWC-368-pipeline-cac/.build/lwc368-test-scratch/candidate-r5/deploy/engine/engine.py", line 482, in runtime_guard
+    run(['node', ROOT / 'deploy/engine/artifacts.cjs', 'latest',
+    ~~~^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+         self.plan['normalized']['environment'], latest_path], timeout=120,
+         ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+        stage='latest-checkpoint')
+        ^^^^^^^^^^^^^^^^^^^^^^^^^^
+  File "/Users/rayer/orca/workspaces/llm-wiki-cloud/LWC-368-pipeline-cac/.build/lwc368-test-scratch/candidate-r5/deploy/engine/support.py", line 243, in run
+    raise Breakpoint('permission-denied' if permission else 'command-failed',
+    ...<2 lines>...
+                     stage=reported_stage, exit_code=exit_code, cause=cause)
+support.Breakpoint: command-failed
+
+======================================================================
+FAIL: test_acceptance_does_not_inherit_actions_transport_or_credentials (test_ci_environment.OfflineCIEnvironment.test_acceptance_does_not_inherit_actions_transport_or_credentials)
+----------------------------------------------------------------------
+Traceback (most recent call last):
+  File "/Users/rayer/orca/workspaces/llm-wiki-cloud/LWC-368-pipeline-cac/.build/lwc368-test-scratch/candidate-r5/deploy/engine/tests/test_ci_environment.py", line 27, in test_acceptance_does_not_inherit_actions_transport_or_credentials
+    self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
+    ~~~~~~~~~~~~~~~~^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+AssertionError: 1 != 0 : go: creating work dir: stat /Users/rayer/orca/workspaces/llm-wiki-cloud/LWC-368-pipeline-cac/.build/lwc368-test-scratch/candidate-r5/.build/test-tmp: no such file or directory
+E
+======================================================================
+ERROR: setUpClass (test_engine.Acceptance)
+----------------------------------------------------------------------
+Traceback (most recent call last):
+  File "/Users/rayer/orca/workspaces/llm-wiki-cloud/LWC-368-pipeline-cac/.build/lwc368-test-scratch/candidate-r5/deploy/engine/tests/test_engine.py", line 25, in setUpClass
+    cls.normalized=json.loads(subprocess.check_output(['go','run','./cmd/deploy_config','--environment','development',
+                              ~~~~~~~~~~~~~~~~~~~~~~~^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+        '--config',str(ROOT/'deploy/environments/development.yaml'),'--components',','.join(engine.ORDER)],cwd=ROOT/'apps/bff',text=True))
+        ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+  File "/opt/homebrew/Cellar/python@3.14/3.14.6/Frameworks/Python.framework/Versions/3.14/lib/python3.14/subprocess.py", line 473, in check_output
+    return run(*popenargs, stdout=PIPE, timeout=timeout, check=True,
+           ~~~^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+               **kwargs).stdout
+               ^^^^^^^^^
+  File "/opt/homebrew/Cellar/python@3.14/3.14.6/Frameworks/Python.framework/Versions/3.14/lib/python3.14/subprocess.py", line 578, in run
+    raise CalledProcessError(retcode, process.args,
+                             output=stdout, stderr=stderr)
+subprocess.CalledProcessError: Command '['go', 'run', './cmd/deploy_config', '--environment', 'development', '--config', '/Users/rayer/orca/workspaces/llm-wiki-cloud/LWC-368-pipeline-cac/.build/lwc368-test-scratch/candidate-r5/deploy/environments/development.yaml', '--components', 'exportjob,auth,bff,worker,frontend']' returned non-zero exit status 1.
+
+----------------------------------------------------------------------
+Ran 0 tests in 0.007s
+
+FAILED (errors=1)
+
+
+----------------------------------------------------------------------
+Ran 69 tests in 24.324s
+
+FAILED (failures=1, errors=11)
+{"allowed_next_action": "reconcile-before-replay", "attempt": "2d4a83f197d3fab23544de7fcf9ca8a1ea20fcc66db71f868e0a815e00589f5b", "builds": {"auth": {"build_id": "12345678-1234-4234-8234-123456789abc", "identity_verified": true, "last_observed_status": "WORKING", "location": "global", "poll_outcome": "deadline", "project_id": "llm-wiki-cloud", "status": "STATUS_UNKNOWN"}}, "candidate": null, "component": "auth", "expected": {"identity": "f48495ced3478226aa78d341416b99e70f074c33159ba80915daf347e6b0a504", "source": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"}, "failure_diagnostic": {"exit_code": null, "stage": "build-status", "timeout_class": "build-poll-deadline"}, "last_verified_checkpoint": 4, "limitations": "Job executions and persistent writes are not reversed by image rollback.", "mutation_may_have_happened": false, "observed": {"component_status": "unstarted"}, "prior": null, "reason": "build-poll-deadline", "release": "test-lwc358-poll-resume", "stage": "prepared", "status": "unknown"}
+Pinned resolver baseline=pair-incomplete; runtime-child=linked; resume=single-deploy

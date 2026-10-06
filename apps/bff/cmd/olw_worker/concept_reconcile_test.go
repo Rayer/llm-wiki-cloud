@@ -401,6 +401,7 @@ func TestDefaultInPlacePathReconcilesConceptIDs(t *testing.T) {
 	defer func() { execOLW = old }()
 
 	vault := t.TempDir()
+	writeTestDeployedPipelineConfig(t, vault)
 	mustWriteFile(t, filepath.Join(vault, "raw", "source.md"), []byte("x"))
 	mustWriteFile(t, filepath.Join(vault, "cache", "id_map.json"), []byte(`{"concept":{"a3f7b2c01d9d":"alpha"},"source":{"stable-source":"source"},"source_meta":{"stable-source":{"source_file":"raw/source.md"}},"redirects":{}}`))
 	mustWriteFile(t, filepath.Join(vault, "wiki", "alpha.md"), []byte("---\nid: a3f7b2c01d9d\ntitle: Alpha\n---\nprior body\n"))
@@ -1040,6 +1041,7 @@ func TestDefaultPathNoPostprocessIgnoresMalformedPriorConceptMap(t *testing.T) {
 	old := execOLW
 	defer func() { execOLW = old }()
 	vault := t.TempDir()
+	writeTestDeployedPipelineConfig(t, vault)
 	mustWriteFile(t, filepath.Join(vault, "cache", "id_map.json"), []byte(`{"concept":{"a":"one","a":"two"}`))
 	var ran bool
 	execOLW = func(_ context.Context, work string, _ []string, _ []string, _, _ io.Writer) error {
@@ -1055,6 +1057,7 @@ func TestDefaultPathNoPostprocessIgnoresMalformedPriorConceptMap(t *testing.T) {
 	}
 	// Missing map is rejected the same way.
 	vault2 := t.TempDir()
+	writeTestDeployedPipelineConfig(t, vault2)
 	ran = false
 	if err := runWorkerBatch(context.Background(), workerConfig{VaultPath: vault2, APIKey: "secret", Workspace: false, Postprocess: false}, `[["run"]]`); err != nil {
 		t.Fatalf("missing-map no-postprocess run failed: %v", err)

@@ -1,0 +1,15 @@
+test_shared_bff_path_preserves_cutover_safety_boundaries (scripts.test_bff_explicit_cutover.SharedCDContractTest.test_shared_bff_path_preserves_cutover_safety_boundaries) ... FAIL
+
+======================================================================
+FAIL: test_shared_bff_path_preserves_cutover_safety_boundaries (scripts.test_bff_explicit_cutover.SharedCDContractTest.test_shared_bff_path_preserves_cutover_safety_boundaries)
+----------------------------------------------------------------------
+Traceback (most recent call last):
+  File "/Users/rayer/orca/workspaces/llm-wiki-cloud/LWC-368-pipeline-cac/apps/bff/scripts/test_bff_explicit_cutover.py", line 193, in test_shared_bff_path_preserves_cutover_safety_boundaries
+    self.assertTrue(trigger["workflow_dispatch"]["inputs"]["release_tag"]["required"])
+    ~~~~~~~~~~~~~~~^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+AssertionError: False is not true
+
+----------------------------------------------------------------------
+Ran 1 test in 0.003s
+
+FAILED (failures=1)

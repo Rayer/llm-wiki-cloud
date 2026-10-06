@@ -31,6 +31,8 @@ test('r2 registered release and recovery workflows use explicit artifact inputs'
     assert.deepEqual(Object.keys(parsed.on), ['workflow_dispatch']);
     const expectedInputs = ['components', 'release_tag', 'artifact_id', 'dev_artifact_id'];
     if (file === 'deploy-dev.yml') expectedInputs.push('source_sha', 'force', 'operation');
+    else expectedInputs.push('operation');
+    expectedInputs.push('pipeline_run_timeout_seconds');
     assert.deepEqual(Object.keys(parsed.on.workflow_dispatch.inputs), expectedInputs);
     assert.equal(parsed.jobs.release.with.environment, environment);
     assert.equal(parsed.jobs.release.if, file === 'deploy-dev.yml'
@@ -47,7 +49,7 @@ test('r2 registered release and recovery workflows use explicit artifact inputs'
   const operation = deployDev.on.workflow_dispatch.inputs.operation;
   assert.equal(operation.type, 'choice');
   assert.equal(operation.default, 'release');
-  assert.deepEqual(operation.options, ['release', 'deploy', 'rollback', 'reactivate', 'tag', 'readback', 'diagnose-auth-image']);
+  assert.deepEqual(operation.options, ['release', 'config-only', 'deploy', 'rollback', 'reactivate', 'tag', 'readback', 'diagnose-auth-image']);
   assert.equal(deployDev.on.workflow_dispatch.inputs.source_sha.default, '');
   assert.deepEqual(deployDev.on.workflow_dispatch.inputs.force, { description: 'Explicitly accept duplicate-mutation risk to deploy a new ready attempt past another attempt\'s unresolved target status', type: 'boolean', default: false });
   assert.deepEqual(Object.keys(deployDev.jobs).sort(), ['auth-image-diagnostic', 'main-fast-forward-eligible', 'release']);
@@ -140,7 +142,7 @@ test('DEV provisioning uses the existing auth identity and preserves hidden evid
 
 test('shared engine has one approval and one serialized runtime authority', async () => {
   const parsed = parseYaml(await workflow('cd.yml'));
-  assert.deepEqual(Object.keys(parsed.jobs), ['release']);
+  assert.deepEqual(Object.keys(parsed.jobs), ['release', 'pipeline-config-only']);
   assert.equal(parsed.concurrency.group, 'lwc-engine-${{ inputs.environment }}');
   assert.equal(parsed.concurrency['cancel-in-progress'], false);
   const job = parsed.jobs.release;
@@ -148,7 +150,9 @@ test('shared engine has one approval and one serialized runtime authority', asyn
   assert.deepEqual(parsed.on.workflow_call.inputs.force, { type: 'boolean', default: false });
   assert.equal(parsed.jobs.release.env.EXECUTOR_SHA, '${{ inputs.executor_sha }}');
   assert.equal(parsed.jobs.release.env.FORCE, '${{ inputs.force }}');
-  assert.equal(job.if, "inputs.operation != 'diagnose-auth-image'");
+  assert.equal(job.if, "inputs.operation != 'diagnose-auth-image' && inputs.operation != 'config-only'");
+  assert.equal(parsed.jobs['pipeline-config-only'].if, "inputs.operation == 'config-only'");
+  assert.equal(parsed.jobs['pipeline-config-only'].permissions['id-token'], 'write');
   assert.equal(job.environment, "${{ inputs.environment == 'production' && 'Production' || 'Development' }}");
   const steps = job.steps;
   const prepare = steps.findIndex(step => step.with?.operation === 'prepare');

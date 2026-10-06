@@ -1,0 +1,28 @@
+...................................................................................E..E......................
+======================================================================
+ERROR: test_kill_local_terminates_listeners_on_both_ports (test_local_dev_makefile.LocalDevMakefileTests.test_kill_local_terminates_listeners_on_both_ports)
+----------------------------------------------------------------------
+Traceback (most recent call last):
+  File "/Users/rayer/orca/workspaces/llm-wiki-cloud/LWC-368-pipeline-cac/apps/bff/scripts/test_local_dev_makefile.py", line 142, in test_kill_local_terminates_listeners_on_both_ports
+    ports = [self.free_port(), self.free_port(), self.free_port()]
+             ~~~~~~~~~~~~~~^^
+  File "/Users/rayer/orca/workspaces/llm-wiki-cloud/LWC-368-pipeline-cac/apps/bff/scripts/test_local_dev_makefile.py", line 128, in free_port
+    listener.bind(("127.0.0.1", 0))
+    ~~~~~~~~~~~~~^^^^^^^^^^^^^^^^^^
+PermissionError: [Errno 1] Operation not permitted
+
+======================================================================
+ERROR: test_local_token_logs_in_with_demo_credential (test_local_dev_makefile.LocalDevMakefileTests.test_local_token_logs_in_with_demo_credential)
+----------------------------------------------------------------------
+Traceback (most recent call last):
+  File "/Users/rayer/orca/workspaces/llm-wiki-cloud/LWC-368-pipeline-cac/apps/bff/scripts/test_local_dev_makefile.py", line 180, in test_local_token_logs_in_with_demo_credential
+    port = self.free_port()
+  File "/Users/rayer/orca/workspaces/llm-wiki-cloud/LWC-368-pipeline-cac/apps/bff/scripts/test_local_dev_makefile.py", line 128, in free_port
+    listener.bind(("127.0.0.1", 0))
+    ~~~~~~~~~~~~~^^^^^^^^^^^^^^^^^^
+PermissionError: [Errno 1] Operation not permitted
+
+----------------------------------------------------------------------
+Ran 109 tests in 39.917s
+
+FAILED (errors=2)

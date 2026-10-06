@@ -35,6 +35,27 @@ func ensureSyntoVault(ctx context.Context, vault string, cfg workerConfig, env [
 	if err := validateSyntoVaultLayout(vault); err != nil {
 		return newWorkerFailure(ctx, failureStageSyntoConfigValidation, failureClassStateInvalid, "", err)
 	}
+	if len(cfg.DeployedSynto) > 0 {
+		if _, timeoutErr := pipelineRunTimeout(cfg.DeployedSynto); timeoutErr != nil {
+			return newWorkerFailure(ctx, failureStageSyntoConfigValidation, failureClassValidation, "", timeoutErr)
+		}
+		_, legacyErr := os.Lstat(filepath.Join(vault, ".olw", "state.db"))
+		_, syntoErr := os.Lstat(filepath.Join(vault, ".synto", "state.db"))
+		if legacyErr != nil && !errors.Is(legacyErr, os.ErrNotExist) {
+			return newWorkerFailure(ctx, failureStageSyntoConfigValidation, failureClassIO, "", legacyErr)
+		}
+		if syntoErr != nil && !errors.Is(syntoErr, os.ErrNotExist) {
+			return newWorkerFailure(ctx, failureStageSyntoConfigValidation, failureClassIO, "", syntoErr)
+		}
+		// Legacy migration needs its old wiki.toml input. Install the deployed
+		// config before all other execution paths, then replace the migration's
+		// converted defaults before Synto can start.
+		if errors.Is(legacyErr, os.ErrNotExist) || syntoErr == nil {
+			if err := writeFileAtomicWithin(vault, "synto.toml", cfg.DeployedSynto); err != nil {
+				return newWorkerFailure(ctx, failureStageSyntoConfigValidation, failureClassIO, "", fmt.Errorf("install deployed synto.toml: %w", err))
+			}
+		}
+	}
 	syntoConfig := filepath.Join(vault, "synto.toml")
 	configInfo, configErr := os.Lstat(syntoConfig)
 	if configErr == nil {
@@ -82,9 +103,9 @@ func ensureSyntoVault(ctx context.Context, vault string, cfg workerConfig, env [
 				return newWorkerFailure(ctx, failureStageSyntoConfigValidation, failureClassStateInvalid, "", err)
 			}
 		}
-		// Existing Synto configuration is user/migration-owned. The worker may
-		// create a safe default, but must not rewrite an existing config while
-		// preparing a fresh or migrated generation.
+		// Existing Synto configuration is project-owned unless a freshly
+		// deployed config was installed above. Never synthesize Pipeline defaults
+		// here or rewrite an existing project config during preparation.
 		if err := validateSyntoPipelineSafety(syntoConfig); err != nil {
 			return newWorkerFailure(ctx, failureStageSyntoConfigValidation, failureClassValidation, "", err)
 		}
@@ -164,6 +185,11 @@ func ensureSyntoVault(ctx context.Context, vault string, cfg workerConfig, env [
 			}
 			return fmt.Errorf("normalize migrated synto.toml: %w", newWorkerFailure(ctx, failureStageSyntoConfigNormalization, class, "", err))
 		}
+		if len(cfg.DeployedSynto) > 0 {
+			if err := writeFileAtomicWithin(vault, "synto.toml", cfg.DeployedSynto); err != nil {
+				return newWorkerFailure(ctx, failureStageSyntoConfigNormalization, failureClassIO, "", fmt.Errorf("install deployed synto.toml after legacy migration: %w", err))
+			}
+		}
 		if err := validateSyntoPipelineSafety(syntoConfig); err != nil {
 			return newWorkerFailure(ctx, failureStageSyntoConfigValidation, failureClassValidation, "", err)
 		}
@@ -173,45 +199,7 @@ func ensureSyntoVault(ctx context.Context, vault string, cfg workerConfig, env [
 		return newWorkerFailure(ctx, failureStageSyntoMigration, failureClassStateInvalid, "", errors.New("legacy wiki.toml exists without .olw/state.db"))
 	}
 
-	const config = `[providers.default]
-name = "deepseek"
-url = "https://api.deepseek.com/v1"
-timeout = 600
-api_key_env = "DEEPSEEK_API_KEY"
-
-[models.fast]
-provider = "default"
-model = "deepseek-flash"
-ctx = 16384
-[models.fast.options]
-thinking = { type = "disabled" }
-
-[models.heavy]
-provider = "default"
-model = "deepseek-flash"
-ctx = 32768
-[models.heavy.options]
-thinking = { type = "enabled" }
-
-[pipeline]
-auto_approve = true
-auto_commit = false
-auto_maintain = false
-relation_extraction = false
-article_max_tokens = 32768
-max_concepts_per_source = 8
-ingest_parallel = false
-`
-	if strings.TrimSpace(cfg.APIKey) == "" {
-		return newWorkerFailure(ctx, failureStageSyntoConfigValidation, failureClassValidation, "", errors.New("missing API key: set --api-key or LLM_API_KEY to create synto.toml"))
-	}
-	if err := writeFileAtomicWithin(vault, "synto.toml", []byte(config)); err != nil {
-		return newWorkerFailure(ctx, failureStageSyntoConfigValidation, failureClassIO, "", fmt.Errorf("write synto.toml: %w", err))
-	}
-	if err := validateSyntoPipelineSafety(syntoConfig); err != nil {
-		return newWorkerFailure(ctx, failureStageSyntoConfigValidation, failureClassValidation, "", err)
-	}
-	return nil
+	return newWorkerFailure(ctx, failureStageSyntoConfigValidation, failureClassValidation, "", errors.New("missing authoritative Pipeline synto.toml: deploy a rendered config or provide an existing project config"))
 }
 
 // validateSyntoVaultLayout rejects symlinked control/state paths before any

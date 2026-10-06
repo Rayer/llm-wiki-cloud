@@ -427,6 +427,14 @@ func runCloudWorkerBatch(ctx context.Context, cfg workerConfig, commands [][]str
 		return errCloudWorkerConfigInvalid
 	}
 	defer objects.Close()
+	deployedConfig, runTimeoutSeconds, err := readDeployedPipelineConfig(ctx, objects)
+	if err != nil {
+		return annotateError(errCloudWorkerConfigInvalid, err)
+	}
+	cfg.DeployedSynto = append([]byte(nil), deployedConfig...)
+	runCtx, cancelRun := context.WithTimeout(ctx, time.Duration(runTimeoutSeconds)*time.Second)
+	defer cancelRun()
+	ctx = runCtx
 	prefix := fmt.Sprintf("users/%s/projects/%s/", cfg.UserID, cfg.ProjectID)
 	lease, err := acquireCloudLease(ctx, objects, prefix, cfg.ExecutionID)
 	if err != nil {
@@ -435,7 +443,9 @@ func runCloudWorkerBatch(ctx context.Context, cfg workerConfig, commands [][]str
 	committed := false
 	workspace := ""
 	defer func() {
-		if cleanupErr := lease.Release(ctx); cleanupErr != nil {
+		releaseCtx, cancelRelease := context.WithTimeout(context.WithoutCancel(ctx), cloudFailureRecordingTimeout)
+		defer cancelRelease()
+		if cleanupErr := lease.Release(releaseCtx); cleanupErr != nil {
 			if result == nil {
 				if committed {
 					failure := newWorkerFailure(nil, failureStageLeaseCleanup, failureClassIO, "", cleanupErr)
@@ -628,6 +638,9 @@ func materializeCloudWorkspace(ctx context.Context, objects objectStore, prefix,
 			return snapshots, nil, objectAttrs{}, err
 		}
 		for _, f := range m.Files {
+			if f.Path == "synto.toml" {
+				continue
+			}
 			b, a, err := readCloudMaterializedObject(ctx, objects, prefix+m.ObjectPath(f), f.Generation, f.Size, &budget)
 			if err != nil {
 				return snapshots, nil, objectAttrs{}, fmt.Errorf("generation object fails manifest validation: %w", err)
@@ -877,7 +890,7 @@ func materializeLegacyCloudOutputs(ctx context.Context, objects objectStore, pre
 			return err
 		}
 	}
-	for _, config := range []string{"wiki.toml", "synto.toml"} {
+	for _, config := range []string{"wiki.toml"} {
 		data, attrs, err := objects.Read(ctx, prefix+config, 0, generation.MaxFileBytes)
 		if isObjectNotFound(err) {
 			continue
@@ -1421,6 +1434,11 @@ func preflightGenerationOutputsWithLimits(root string, limits generationTraversa
 		if !generation.GenerationOwned(rel) {
 			return nil
 		}
+		// Historical Synto TOMLs remain decodable from manifests, but new
+		// generations no longer publish them as runtime configuration.
+		if rel == "synto.toml" {
+			return nil
+		}
 		if info.Size() > generation.MaxFileBytes {
 			return errors.New("generation output too large")
 		}
@@ -1444,7 +1462,7 @@ func preflightGenerationOutputsWithLimits(root string, limits generationTraversa
 	if err != nil {
 		return nil, err
 	}
-	for _, required := range []string{"synto.toml", "cache/id_map.json", "cache/concepts.jsonl", "cache/dormant_concepts.jsonl", "cache/raw_status.json", "cache/suggested_queries.json", ".synto/state.db", ".synto/INDEX.json"} {
+	for _, required := range []string{"cache/id_map.json", "cache/concepts.jsonl", "cache/dormant_concepts.jsonl", "cache/raw_status.json", "cache/suggested_queries.json", ".synto/state.db", ".synto/INDEX.json"} {
 		if !seen[required] {
 			return nil, errors.New("generation output is incomplete")
 		}

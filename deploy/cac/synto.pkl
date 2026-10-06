@@ -1,0 +1,90 @@
+/// Renderer-only Pipeline defaults. SSOT values, when present, take precedence.
+module lwc.pipeline.synto
+
+import "package://pkg.pkl-lang.org/pkl-pantry/pkl.toml@1.0.0#/toml.pkl"
+
+/// Prepared, non-payload projection passed by pipeline-config after selecting
+/// and resolving this run's SSOT inputs.
+preparedEnvironment: String = read("prop:preparedEnvironment")
+preparedBucket: String? = read?("prop:preparedBucket")
+preparedRunTimeoutSeconds: Int = read("prop:preparedRunTimeoutSeconds").toInt()
+preparedSecretSource: String = read("prop:preparedSecretSource")
+preparedSecretTarget: String = read("prop:preparedSecretTarget")
+preparedSecretEnvName: String? = read?("prop:preparedSecretEnvName")
+preparedSecretResource: String? = read?("prop:preparedSecretResource")
+preparedArticleMaxTokens: Int? = read?("prop:preparedArticleMaxTokens")?.toInt()
+
+local defaults = new {
+  provider = "deepseek"
+  endpoint = "https://api.deepseek.com/v1"
+  model = "deepseek-flash"
+  providerTimeoutSeconds = 600
+  fastContextTokens = 16384
+  heavyContextTokens = 32768
+  articleMaxTokens = 32768
+  maxConceptsPerSource = 8
+}
+
+local preparedSecretBinding = new {
+  source = preparedSecretSource
+  target = preparedSecretTarget
+  envName = preparedSecretEnvName
+  resource = preparedSecretResource
+}
+
+local config = new {
+  providers = new Mapping<String, Dynamic> {
+    ["default"] = new {
+      name = defaults.provider
+      url = defaults.endpoint
+      timeout = defaults.providerTimeoutSeconds
+      api_key_env = preparedSecretBinding.target
+    }
+  }
+  models = new {
+    fast = new {
+      provider = "default"
+      model = defaults.model
+      ctx = defaults.fastContextTokens
+      options = new { thinking = new { type = "disabled" } }
+    }
+    heavy = new {
+      provider = "default"
+      model = defaults.model
+      ctx = defaults.heavyContextTokens
+      options = new { thinking = new { type = "enabled" } }
+    }
+  }
+  pipeline = new {
+    auto_approve = true
+    auto_commit = false
+    auto_maintain = false
+    relation_extraction = false
+    article_max_tokens = preparedArticleMaxTokens ?? defaults.articleMaxTokens
+    max_concepts_per_source = defaults.maxConceptsPerSource
+    ingest_parallel = false
+    run_timeout_seconds = preparedRunTimeoutSeconds
+  }
+}
+
+local publicConfig = new {
+  environment = preparedEnvironment
+  bucket = preparedBucket
+  runTimeoutSeconds = preparedRunTimeoutSeconds
+  secret = preparedSecretBinding
+  synto = config
+}
+
+output {
+  value = publicConfig
+  files {
+    ["pipeline.json"] {
+      value = publicConfig
+      renderer = new JsonRenderer {}
+    }
+    ["synto.toml"] {
+      value = config
+      renderer = new toml.Renderer {}
+    }
+  }
+}

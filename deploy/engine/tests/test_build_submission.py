@@ -129,6 +129,8 @@ class AsyncBuildSubmission(unittest.TestCase):
         (self.bin / 'gcloud').chmod(0o755)
         real_go = shutil.which('go')
         self.assertIsNotNone(real_go, 'real Go is required for the actual Action admission path')
+        go_cache, go_module_cache = subprocess.check_output(
+            [real_go, 'env', 'GOCACHE', 'GOMODCACHE'], text=True).splitlines()
         (self.bin / 'go').write_text(textwrap.dedent(f'''\
             #!/usr/bin/env python3
             import os, sys
@@ -180,6 +182,7 @@ class AsyncBuildSubmission(unittest.TestCase):
             'PATH': str(self.bin) + os.pathsep + os.environ.get('PATH', '/usr/bin:/bin'),
             'PYTHONPATH': str(self.bin),
             'HOME': str(self.root), 'TMPDIR': str(self.root),
+            'GOCACHE': go_cache, 'GOMODCACHE': go_module_cache,
             'LWC_TEST_FAKE_STATE': str(self.fake_state),
             'LWC_TEST_FAKE_UPLOADS': str(self.fake_uploads),
             'FAKE_STATUSES': json.dumps(['SUCCESS']),
