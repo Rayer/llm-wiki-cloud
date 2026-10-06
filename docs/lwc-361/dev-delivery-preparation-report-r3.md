@@ -81,3 +81,62 @@ npm ci 每次輸出鎖檔套件稽核摘要：17 vulnerabilities（3 moderate、
 | Paid LLM execution、quota、Production/IAM/credentials | **NOT RUN** | 本 worker 未發 provider request、未改 quota、未操作雲端資源或 credentials。 |
 
 下一步以本報告 source snapshot hash 對應的 final PR head SHA 完成 exact-SHA Supervisor/TPM review 與 required CI；parent 接續 live/browser/article evidence，只有符合 Owner 授權與 gates 後才 merge 到 develop 並執行 DEV Actions。Full `make verify` 的 exit 2、單項/同來源 Vitest PASS、已完成的 parent API evidence 分別標示；本報告不代表整票完成。
+
+## PR #98 develop integration continuation — 2026-10-07
+
+本節記錄後續 PR98 integration；上文所列舊 source snapshot digest、較早 full-root gate 與舊 PR head 保留為歷史紀錄，不代表這次 integration 的新 source identity 或最終驗收。
+
+### Source 與 merge 身份
+
+- Worktree/branch 延續原值：`/Users/rayer/orca/workspaces/llm-wiki-cloud/LWC-361-local-cloud-discussion` / `Rayer/LWC-361-local-cloud-discussion`；此輪起始 PR98 remote head 為 `669e0a96b740224872a0c9a13a1d5251b59c7ed7`。
+- 第一段以 normal merge commit `8c5eb54696e7daf16285ec8651b51dd13a354fc4` 整合 `origin/develop` `54a80197e797eafc612acaf43351935a63494d89`，並以相同提交加入本輪 local Pipeline 設定 consumer、測試和指南接線。
+- Parent 通知 PR99 已合併；fetch 後 `origin/develop` 為 `af5698f3c0215c71d6c87566cb9361de08c62b91`。第二段以 normal merge commit `dc712c69f18319fcce5b21e3da54b90c24dd4591` 整合，不改寫 PR96/97/99 歷史；保留 PR99 bounded Secret Manager SDK 診斷修正及其回歸。
+- 本次程式碼測試的候選 source tip 為 `dc712c69f18319fcce5b21e3da54b90c24dd4591`。本報告與新增 evidence 會在該 source tip 之後以一個 docs/evidence-only commit 發佈；最後 PR head 以正常 push 後的 `git rev-parse HEAD`／PR readback 為準，source changes 沒有在這個 report-only commit 後續再修改。
+- `git ls-files -u` 無輸出；`git diff origin/develop...HEAD --check` exit 0。PR98 在 push 前的 GitHub readback 還是舊 head `669e0a9…`、`mergeable=CONFLICTING`，這是 push 前狀態，不能當作新 source 的 mergeability 結果。
+
+### 這次整合內容
+
+- Native BFF 將 `LOCAL_CLOUD_PIPELINE_CONFIG_PATH` 與 `LOCAL_CLOUD_PIPELINE_BINDINGS_PATH` 結構化傳給 worker。Root/app Make 與 `scripts/local-cloud-env.sh` 指向同 worktree 的 `CAC_OUTPUT_DIR/local`（預設 `.build/cac/local`）；`local-start`、`support-frontend`、`bff-local` 傳入相同路徑。
+- Local-scope cloud worker 要求兩個 rendered files，讀取本機 `synto.toml`／private binding 並採用該檔 run timeout；缺檔或無效 binding 清楚失敗，不 fallback 到 DEV 的 GCS TOML、不上傳設定，也不呼叫 Cloud Run。無 local scope 的 deployed path 保留既有 GCS `pipeline-config/synto.toml` run-start read。
+- BFF→worker fixture 與 manager process-boundary 回歸驗證旗標保留為獨立 argv（檔名包含空白時亦不拆參數）；worker 回歸驗證 local generated files 不觸發 GCS config read、deployed mode 拒絕本機 files，以及 receipt commit/failure 語義。
+- `apps/bff/docs/LOCAL_DEV.md` 已明確說明 local config 的產生入口、產物位置、`CAC_OUTPUT_DIR` 一致性、provider key 名稱（不記錄值）、timeout prerequisite、缺檔錯誤及部署模式差異。Parent 隨後從 commit `dc712c69…` 讀取此 guide 並更新／回讀 LWC-A-17 article；parent 訊息 `msg_4f3547ce63a2` 回報 article exact content 雙讀一致，guide SHA-256 前綴 `9732e234…`。fresh-worktree walkthrough 仍未完成，這項 article readback 不能當作 walkthrough pass。
+
+### 本輪驗證：命令與結果
+
+所有 Go/Python/Make regression subprocess 均移除 `LLM_API_KEY`、`DEEPSEEK_API_KEY`、`SYNTO_API_KEY`、`OPENAI_API_KEY`、`ANTHROPIC_API_KEY`、`GEMINI_API_KEY`、`TYPESAFE_API_KEY`、`TYPESAFE_JEV_API_KEY`、`LWC331_TEST_API_KEY`；需離線 Go 測試另設 `GOPROXY=off GOSUMDB=off`。下列 raw output 收錄於同目錄 `evidence/`。
+
+| 目的 | 精確命令 | Exit / raw evidence |
+|---|---|---|
+| Local scope Pipeline input／deployed GCS separation、committed receipt regression、worker/localpipeline canonical race coverage | `env -u LLM_API_KEY -u DEEPSEEK_API_KEY -u SYNTO_API_KEY -u OPENAI_API_KEY -u ANTHROPIC_API_KEY -u GEMINI_API_KEY -u TYPESAFE_API_KEY -u TYPESAFE_JEV_API_KEY -u LWC331_TEST_API_KEY -u FIRESTORE_EMULATOR_HOST -u STORAGE_EMULATOR_HOST -u VERCEL_TOKEN GOPROXY=off GOSUMDB=off go test ./... -v -count=1 -race`（workdir `apps/bff`） | **0**；所有執行套件通過，預期的 test-level skip 保留在輸出。`bff-canonical-go-test-race-final.log`。 |
+| BFF HTTP→native worker→fake GCS/Firestore publisher、receipt/status/readback | `env -u LLM_API_KEY -u DEEPSEEK_API_KEY -u SYNTO_API_KEY -u OPENAI_API_KEY -u ANTHROPIC_API_KEY -u GEMINI_API_KEY -u TYPESAFE_API_KEY -u TYPESAFE_JEV_API_KEY -u LWC331_TEST_API_KEY FIRESTORE_EMULATOR_HOST=127.0.0.1:18885 STORAGE_EMULATOR_HOST=http://127.0.0.1:14443 GOPROXY=off GOSUMDB=off go test ./cmd/bff -run '^TestLocalPipelineHTTPTriggerRunsWorkerAndReportsSuccessAndFailure$' -count=1 -race -v`（workdir `apps/bff`） | **0**；HTTP trigger 202、重入 409、成功與增量 status 200、child failure 500、other-scope sentinel 與 cleanup/readback assertions 通過。`bff-local-pipeline-loopback-final-race.log`。只替代 Synto compile/provider 邊界；無付費 LLM。 |
+| PR99 bounded Secret Manager SDK diagnostics | `env -u LLM_API_KEY -u DEEPSEEK_API_KEY -u SYNTO_API_KEY -u OPENAI_API_KEY -u ANTHROPIC_API_KEY -u GEMINI_API_KEY -u TYPESAFE_API_KEY -u TYPESAFE_JEV_API_KEY -u LWC331_TEST_API_KEY GOPROXY=off GOSUMDB=off go test ./cmd/pipeline_config -run '^TestRunPreparePreservesBoundedSecretManagerSDKMessage|TestRunPrepareDistinguishesEmptySecretManagerPayload|TestRunPrepareDistinguishesSecretManagerClientInitializationFailure|TestGoogleSecretManagerSDKAccessPath$' -count=1 -v`（workdir `apps/bff`） | **0**；4 tests pass，SDK HTTP 是 test transport/fake reader，無 Secret Manager live read。`pr99-sdk-diagnostic-go-r1.log`。 |
+| Worker manager process-boundary／worker pipeline-config fixture與失敗後修正 | `env -u LLM_API_KEY -u DEEPSEEK_API_KEY -u SYNTO_API_KEY -u OPENAI_API_KEY -u ANTHROPIC_API_KEY -u GEMINI_API_KEY -u TYPESAFE_API_KEY -u TYPESAFE_JEV_API_KEY -u LWC331_TEST_API_KEY GOPROXY=off GOSUMDB=off go test ./cmd/olw_worker -run '^TestCommittedLocalExecutionSurvivesReceiptWriteFailureAndLaterCommitIsNotMisattributed$' -count=1 -v`（workdir `apps/bff`） | **0**；committed manifest 即使 receipt write failure 仍歸屬原 execution；test-only rendered config fixture 已補齊。`worker-local-execution-receipt-regression-r1.log`。第一次整包輸出因 fixture 只有最小 TOML 而顯示 `pipeline execution failed`，原 red `go-local-pipeline-config-regressions-r1.log` 保留；改用既有完整 deployed TOML test fixture 後本具名因果回歸通過，沒有移除 receipt assertion。 |
+| Root Make/local supervisor、IPv6 readiness、support targets/provider isolation contracts | `env -u LLM_API_KEY -u DEEPSEEK_API_KEY -u SYNTO_API_KEY -u OPENAI_API_KEY -u ANTHROPIC_API_KEY -u GEMINI_API_KEY -u TYPESAFE_API_KEY -u TYPESAFE_JEV_API_KEY -u LWC331_TEST_API_KEY python3 -m unittest test_local_dev_makefile.py -v`（workdir `apps/bff/scripts`） | **0**；12/12。修正 stale test assertion，使其檢查真實分行 `LOCAL_CLOUD_*`／`PATH` exports，不改 runtime 以迎合舊字串。`local-dev-make-contract-r1.log`。 |
+| Apps/BFF existing Python contract suite | `env -u LLM_API_KEY -u DEEPSEEK_API_KEY -u SYNTO_API_KEY -u OPENAI_API_KEY -u ANTHROPIC_API_KEY -u GEMINI_API_KEY -u TYPESAFE_API_KEY -u TYPESAFE_JEV_API_KEY -u LWC331_TEST_API_KEY python3 -m unittest discover -s scripts -p 'test_*.py' -v`（workdir `apps/bff`） | **0**；110 tests。`bff-script-contracts-python-final.log`。 |
+| Deploy engine／PR99 Python prepare diagnostics | `env -u LLM_API_KEY -u DEEPSEEK_API_KEY -u SYNTO_API_KEY -u OPENAI_API_KEY -u ANTHROPIC_API_KEY -u GEMINI_API_KEY -u TYPESAFE_API_KEY -u TYPESAFE_JEV_API_KEY -u LWC331_TEST_API_KEY -u VERCEL_TOKEN python3 -m unittest discover -s ../../deploy/engine/tests -p 'test_*.py' -v`（workdir `apps/bff`）；並以 `python3 -m unittest discover -s ../../deploy/engine/tests -p 'test_prepare_diagnostics.py' -v` 單獨重跑該類 | **0**；完整 engine suite 110 tests；diagnostic subset 32 tests。`deploy-engine-python-final.log`、`pr99-pipeline-prepare-diagnostics-python-r1.log`。 |
+| Canonical Auth config／CD source contract | `python3 -m unittest discover -s ../../scripts -p 'test_*auth_config_contract.py' -v` 與 `python3 ../../scripts/test_cd_contract.py`（workdir `apps/bff`） | **0**；Auth config 32 tests，CD contract 69 tests。`auth-config-contract-python-final.log`、`cd-contract-python-final.log`。 |
+| Canonical BFF job static/build gates | `go vet ./...`；`go build ./...`（workdir `apps/bff`） | 各 **0**。`bff-canonical-go-vet-final.log`、`bff-canonical-go-build-final.log`。 |
+| Canonical pinned Synto Flash wire test | `env -u LLM_API_KEY -u DEEPSEEK_API_KEY -u SYNTO_API_KEY -u OPENAI_API_KEY -u ANTHROPIC_API_KEY -u GEMINI_API_KEY -u TYPESAFE_API_KEY -u TYPESAFE_JEV_API_KEY -u LWC331_TEST_API_KEY -u VERCEL_TOKEN -u PIP_EXTRA_INDEX_URL -u PIP_USER -u PIP_PASSWORD PIP_CONFIG_FILE=/dev/null PIP_INDEX_URL=https://pypi.org/simple PIP_NO_INPUT=1 make test-flash-execution`（workdir `apps/bff`） | **0**；exact hashed Synto 0.7.0 wheel；test server 僅 loopback，測試內 provider key 為 synthetic fake，未呼叫付費 provider。`bff-test-flash-execution-final.log`。 |
+| Feature diff whitespace/unmerged checks | `git ls-files -u`；`git diff origin/develop...HEAD --check` | **0**；無 unmerged entries、feature diff 無 whitespace errors。 |
+
+### 驗收界線與尚待項目
+
+| AC / 外部結果 | 狀態 | 界線 |
+|---|---|---|
+| current develop/PR99 正常整合、無 unmerged、361/368 同存 | **PASS（source merge）** | 兩個 normal merge commit 如上；未 rebase、force-push 或刪分支。 |
+| BFF local config 來源與 native child argv、private binding／timeout consumer | **PASS（offline + loopback fixture）** | 所有程式 consumer 與 publisher/readback 的具名 regressions 在表中；不是實際 provider-backed generation。 |
+| deployed no-scope GCS config reader、receipt commit/failure publisher語義 | **PASS（offline regression）** | full worker race suite、GCS read-once 和 execution-specific manifest tests通過；正式 DEV job 未執行。 |
+| Local config generation (`make config-local`) | **NOT RUN** | 此命令依既定 renderer 需要 provider key/Secret Manager resolver 與 timeout config；本任務禁止讀 credential/呼叫 live provider，所以只執行離線 renderer tests與 loopback fixture。 |
+| Fresh QA worktree `make bootstrap` / browser walkthrough | **NOT RUN / 尚未 PASS** | Parent 保留系統 Python 3.9.6 的 `mcp>=1.10` 失敗、Homebrew 3.14.6 的 fresh bootstrap timeout；不把既有原 worktree venv/loopback tests 換算成 walkthrough PASS。 |
+| Browser registration/session → local page → real provider pipeline | **NOT RUN** | 需 parent 的 browser/live acceptance；本輪沒有 paid LLM 或真 provider request。 |
+| Parent article LWC-A-17 | **PASS at prior guide revision; final sync pending** | Parent 由 `dc712c69…` 的 `LOCAL_DEV.md` 更新後做 exact content/readback；本節之後新增 Pkl CLI prerequisite，故 parent 需將此最後一行同步到文章並 read back。這不證明 fresh walkthrough。 |
+| Remote PR98 final head/mergeability/same-SHA required GitHub CI | **PENDING publication readback** | push 前遠端仍在 `669e0a9…` 並標 `CONFLICTING`；normal push 後另回報完整 PR head、mergeability 與 CI run status。Parent 執行 exact-final-SHA TPM/Supervisor review、CI 對帳與遠端 PR merge/DEV。 |
+| Full `make verify`／整票驗收 | **NOT PASS / PENDING** | Parent 原 `make-verify-final-source.log` 為 exit 2（Node 524 pass；Vitest 15/292 failed），後續同來源 component replay 32/32 files、292/292 cases PASS。該 red log仍保留；本輪不重跑 root verify、不宣稱 full gate 或整票完成。 |
+
+此交付只完成 LWC-361 PR98 本機 worker config consumer 的 develop integration、離線/loopback回歸與程式指南；Owner live/browser/DEV 流程、fresh worktree walkthrough、exact final SHA review、required GitHub CI 和 Parent merge/DEV Actions 尚待完成。
+
+### Pkl CLI guide clarification — 2026-10-07
+
+Parent 依 `cmd/pipeline_config/main.go` 確認 `make config-local` 直接以 `exec.CommandContext` 執行 `PKL_BIN` 或 PATH 中的 `pkl`。因此 `apps/bff/docs/LOCAL_DEV.md` 的 Pipeline generation step 現要求 Pkl CLI 可從 `PATH` 執行或用 `PKL_BIN` 指定，並建議以 `pkl --version` 確認；沒有指定或猜測 minimum version，沒有新增 installer 或 bootstrap/preflight gate。這只改文件，依 parent 指示不重跑完整 root suite。
+
+之前 parent 的 LWC-A-17 exact article readback 對應 `dc712c69f18319fcce5b21e3da54b90c24dd4591` 上的舊 guide 文字。該 readback 對原 guide 有效；Pkl prerequisite 是其後新增的一行，故最終文章同步/readback 必須由 parent 在本次 guide commit 後重做。本次 guide 修正的 source/worktree digest 為 `10ee0f0d50cb70ed26000d03d356c781b5a73ecd1a5f9fb5361268ad329ecc65`（1,204 paths，沿用本報告前述路徑與內容長度編碼算法，排除 `docs/lwc-361/`、`__pycache__` 和 `*.pyc`）；已測試的程式碼 source tip 仍為 `dc712c69f18319fcce5b21e3da54b90c24dd4591`。本次沒有 source code 或測試變更。Pkl CLI 可用 `PKL_BIN` 覆寫路徑，此項已依 source inspection 核對；本輪未另外執行 `pkl --version`，也不將該命令列為本 worker 的 runtime pass。

@@ -1,0 +1,10 @@
+=== RUN   TestGoogleSecretManagerSDKAccessPath
+--- PASS: TestGoogleSecretManagerSDKAccessPath (0.00s)
+=== RUN   TestRunPreparePreservesBoundedSecretManagerSDKMessage
+--- PASS: TestRunPreparePreservesBoundedSecretManagerSDKMessage (0.24s)
+=== RUN   TestRunPrepareDistinguishesEmptySecretManagerPayload
+--- PASS: TestRunPrepareDistinguishesEmptySecretManagerPayload (0.02s)
+=== RUN   TestRunPrepareDistinguishesSecretManagerClientInitializationFailure
+--- PASS: TestRunPrepareDistinguishesSecretManagerClientInitializationFailure (0.02s)
+PASS
+ok  	github.com/rayer/llm-wiki-bff/cmd/pipeline_config	0.614s

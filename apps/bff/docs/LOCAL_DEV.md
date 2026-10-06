@@ -158,7 +158,8 @@ runtime above. A real provider-backed pipeline still requires the existing
 `LLM_API_KEY` or `DEEPSEEK_API_KEY` setting; bootstrap does not read, create, or
 set those values. The worker reads and publishes through the configured
 GCS bucket. Before the first pipeline run, render the selected local Pipeline
-config from the checked-in SSOT:
+config from the checked-in SSOT. Rendering requires the Pkl CLI on `PATH`, or
+an explicit `PKL_BIN` path; check the available CLI with `pkl --version`:
 
 The current Pipeline Job timeout is 7200 seconds. Render the local config
 from the repository root with:
