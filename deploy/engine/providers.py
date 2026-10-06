@@ -1,5 +1,6 @@
 """Production adapters. Tests replace subprocess executables, never these adapters."""
 import copy
+import hashlib
 import json
 import os
 from pathlib import Path
@@ -11,12 +12,14 @@ import tarfile
 import tempfile
 import time
 import urllib.parse
+import tomllib
 
 from support import (ROOT, Breakpoint, InputShapeError, digest, read, require, run,
                      safe_error_message, structured_cause, write)
 sys.path.insert(0, str(ROOT / 'deploy/components'))
 import auth_config
 import frontend_build_config
+import pipeline_config as pipeline_config_contract
 
 CLOUD_BUILD_LOCATION = 'global'
 BUILD_POLL_INTERVAL_SECONDS = 5
@@ -38,6 +41,86 @@ class Providers:
         self.profiles = read(ROOT / 'deploy/engine/profiles.json')
         self._gcp_project_number = None
         self._frontend_prepare_commands = None
+
+    def prepare_pipeline_config(self):
+        target = {'development': 'dev', 'production': 'prod'}.get(self.p.get('environment'))
+        require(target is not None, 'pipeline-config-environment-invalid')
+        timeout = os.environ.get('LWC_PIPELINE_RUN_TIMEOUT_SECONDS', '').strip()
+        require(re.fullmatch(r'[1-9][0-9]*', timeout) is not None,
+                'verified-pipeline-run-timeout-required')
+        with tempfile.TemporaryDirectory(prefix='lwc-pipeline-config-') as temp:
+            run(['make', 'config-'+target, 'CAC_OUTPUT_DIR='+temp], cwd=ROOT,
+                timeout=600, stage='unknown')
+            try:
+                config = pipeline_config_contract.rendered_pipeline_config(
+                    Path(temp) / target, target)
+            except (OSError, TypeError, ValueError):
+                raise Breakpoint('pipeline-config-render-invalid', 'failed', False,
+                                 'inspect-pipeline-config-prepare') from None
+        require(config['timeout_seconds'] == int(timeout), 'pipeline-config-timeout-mismatch')
+        require(config['bucket'] == self.p['worker']['bucket'], 'pipeline-config-bucket-mismatch')
+        return config
+
+    def pipeline_config_object(self, pipeline_config):
+        try:
+            return pipeline_config_contract.pipeline_config_uri(pipeline_config['bucket'])
+        except (KeyError, TypeError, ValueError):
+            raise Breakpoint('pipeline-config-bucket-invalid') from None
+
+    @staticmethod
+    def _pipeline_config_object_missing(exc, command):
+        message = (exc.cause or {}).get('message') if isinstance(exc, Breakpoint) else None
+        expected = f'ERROR: (gcloud.storage.{command}) One or more URLs matched no objects.'
+        return (isinstance(message, str) and
+                expected in (line.strip() for line in message.splitlines()))
+
+    def read_pipeline_config_object(self, pipeline_config, *, allow_absent=False):
+        uri = self.pipeline_config_object(pipeline_config)
+        try:
+            raw = run(['gcloud', 'storage', 'cat', uri], timeout=60,
+                      stage='pipeline-config-object-read', preserve_stdout_bytes=True)
+        except Breakpoint as exc:
+            if (allow_absent and exc.reason == 'command-failed' and
+                    self._pipeline_config_object_missing(exc, 'cat')):
+                return None
+            raise
+        if isinstance(raw, bytes):
+            try:
+                raw = raw.decode('utf-8')
+            except UnicodeDecodeError:
+                raise Breakpoint('pipeline-config-object-invalid') from None
+        if not raw or len(raw.encode('utf-8')) > pipeline_config_contract.MAX_CONFIG_BYTES:
+            raise Breakpoint('pipeline-config-object-invalid', 'failed', False,
+                             'inspect-pipeline-config-object')
+        return raw
+
+    def delete_pipeline_config_object(self, pipeline_config):
+        uri = self.pipeline_config_object(pipeline_config)
+        try:
+            run(['gcloud', 'storage', 'rm', '--quiet', uri], timeout=60,
+                mutation=True, stage='pipeline-config-object-delete')
+        except Breakpoint as exc:
+            if not (exc.reason == 'command-failed' and
+                    self._pipeline_config_object_missing(exc, 'rm')):
+                raise
+        require(self.read_pipeline_config_object(pipeline_config, allow_absent=True) is None,
+                'pipeline-config-rollback-readback-mismatch')
+
+    def upload_pipeline_config(self, pipeline_config):
+        try:
+            config = pipeline_config_contract.parse_synto_toml(pipeline_config['toml'])
+            expected_timeout = pipeline_config.get(
+                'timeout_seconds', config['pipeline']['run_timeout_seconds'])
+            if config['pipeline']['run_timeout_seconds'] != expected_timeout:
+                raise ValueError
+        except (KeyError, TypeError, ValueError, tomllib.TOMLDecodeError):
+            raise Breakpoint('pipeline-config-render-invalid') from None
+        with tempfile.TemporaryDirectory(prefix='lwc-pipeline-config-') as temp:
+            source = Path(temp) / 'synto.toml'
+            source.write_text(pipeline_config['toml'], encoding='utf-8')
+            run(['gcloud', 'storage', 'cp', '--quiet', source,
+                 self.pipeline_config_object(pipeline_config)], timeout=120,
+                mutation=True, stage='unknown')
 
     def gcp_project_number(self):
         """Resolve the authoritative number for this configured project ID."""
@@ -554,7 +637,10 @@ class Providers:
             image = run(['bash', ROOT / 'deploy/components' / (c + '.sh'), 'build'], env=env,
                         timeout=1800).splitlines()[-1]
             self.valid_image(c, image)
-            return {'image': image}
+            artifact = {'image': image}
+            if c == 'worker':
+                artifact['pipeline_config'] = self.prepare_pipeline_config()
+            return artifact
         require(c == 'frontend', 'container-prepare-requires-build-checkpoint')
         cfg = self.p.get('frontend')
         diagnostic_enabled = self.p.get('environment') == 'development'
@@ -665,8 +751,33 @@ class Providers:
     def usable(self, c, artifact):
         if c != 'frontend':
             self.valid_image(c, artifact['image'])
+            if c == 'worker':
+                if artifact.get('pipeline_config') is None:
+                    # Receipts created before Pipeline config delivery remain
+                    # usable for explicit image-only recovery operations.
+                    return
+                target = {'development': 'dev', 'production': 'prod'}.get(self.p.get('environment'))
+                pipeline_config = artifact.get('pipeline_config')
+                require(isinstance(pipeline_config, dict) and
+                        pipeline_config.get('environment') == target and
+                        type(pipeline_config.get('timeout_seconds')) is int and
+                        pipeline_config['timeout_seconds'] > 0 and
+                        isinstance(pipeline_config.get('toml'), str) and
+                        hashlib.sha256(pipeline_config['toml'].encode()).hexdigest() == pipeline_config.get('sha256'),
+                        'artifact-config-incompatible')
+                try:
+                    expected_binding = pipeline_config_contract.SECRET_RESOURCE_RE.fullmatch(
+                        pipeline_config['secret']['resource']) is not None
+                    parsed = pipeline_config_contract.parse_synto_toml(pipeline_config['toml'])
+                    expected_timeout = parsed['pipeline']['run_timeout_seconds']
+                    expected_bucket = pipeline_config_contract.pipeline_config_uri(pipeline_config['bucket'])
+                except (KeyError, TypeError, ValueError, tomllib.TOMLDecodeError):
+                    expected_binding, expected_timeout, expected_bucket = False, None, None
+                require(expected_binding and expected_timeout == pipeline_config['timeout_seconds'] and
+                        pipeline_config['bucket'] == self.p['worker']['bucket'] and
+                        expected_bucket is not None,
+                        'artifact-config-incompatible')
         else:
-            import hashlib
             require(artifact['archive'] == 'frontend.tgz', 'invalid-archive-path')
             require(hashlib.sha256((self.directory / 'frontend.tgz').read_bytes()).hexdigest() == artifact['sha256'], 'artifact-unusable')
             expected = {'schema_version': 1, 'api_url': self.p['frontend']['api_url'], 'auth_url': self.p['frontend']['auth_url']}
@@ -742,6 +853,31 @@ class Providers:
         if c == 'worker':
             prior['env'] = [x for x in container.get('env', []) if x['name'] in ('GCP_PROJECT', 'FIRESTORE_DATABASE_ID')]
             require(all(set(x) == {'name', 'value'} and isinstance(x['value'], str) for x in prior['env']), 'unrepresentable-job-env')
+            try:
+                prior['api_key_binding'] = pipeline_config_contract.job_secret_binding(
+                    container, self.p['gcp']['project_id'])
+                prior_timeout = template.get('timeoutSeconds')
+                if isinstance(prior_timeout, str):
+                    prior_timeout = int(prior_timeout)
+                require(type(prior_timeout) is int and prior_timeout > 0,
+                        'unrepresentable-worker-timeout')
+                prior['timeout_seconds'] = prior_timeout
+                config_target = {'bucket': self.p['worker']['bucket']}
+                config_data = self.read_pipeline_config_object(config_target, allow_absent=True)
+                if config_data is None:
+                    prior['pipeline_config_absent'] = True
+                else:
+                    parsed_config = pipeline_config_contract.parse_synto_toml(config_data)
+                    config_timeout = parsed_config.get('pipeline', {}).get('run_timeout_seconds')
+                    require(type(config_timeout) is int and config_timeout > 0,
+                            'unrepresentable-prior-pipeline-config')
+                    prior['pipeline_config'] = {
+                        'bucket': self.p['worker']['bucket'],
+                        'toml': config_data,
+                        'sha256': hashlib.sha256(config_data.encode()).hexdigest(),
+                    }
+            except (KeyError, TypeError, ValueError, tomllib.TOMLDecodeError):
+                raise Breakpoint('unrepresentable-prior-pipeline-config') from None
         else:
             require(self.export_matches(raw), 'prior-export-config-incompatible')
         return prior
@@ -806,7 +942,36 @@ class Providers:
         env = [x for x in t['containers'][0].get('env', []) if x['name'] in ('GCP_PROJECT', 'FIRESTORE_DATABASE_ID')]
         expected = artifact['env'] if prior else [{'name': 'GCP_PROJECT', 'value': self.p['gcp']['project_id']},
                            {'name': 'FIRESTORE_DATABASE_ID', 'value': self.p['bff']['firestore_database_id']}]
-        return sorted(env, key=lambda x:x['name']) == sorted(expected, key=lambda x:x['name'])
+        if sorted(env, key=lambda x:x['name']) != sorted(expected, key=lambda x:x['name']):
+            return False
+        if c != 'worker':
+            return True
+        config = artifact.get('pipeline_config')
+        config_absent = prior and artifact.get('pipeline_config_absent') is True
+        if config is None and not config_absent:
+            return True
+        expected_timeout = config.get('timeout_seconds') if not prior else artifact.get('timeout_seconds')
+        expected_secret = (config['secret']['resource'] if not prior else
+                           artifact.get('api_key_binding'))
+        try:
+            actual_timeout = t.get('timeoutSeconds')
+            if isinstance(actual_timeout, str):
+                actual_timeout = int(actual_timeout)
+            if actual_timeout != expected_timeout:
+                return False
+            actual_secret = pipeline_config_contract.job_secret_binding(
+                t['containers'][0], self.p['gcp']['project_id'])
+            if actual_secret != expected_secret:
+                return False
+            if config_absent:
+                return self.read_pipeline_config_object(
+                    {'bucket': self.p['worker']['bucket']}, allow_absent=True) is None
+            actual_config = self.read_pipeline_config_object(config)
+        except (Breakpoint, KeyError, TypeError, ValueError):
+            raise
+        except Exception:
+            return False
+        return hashlib.sha256(actual_config.encode()).hexdigest() == config.get('sha256')
 
     def poll(self, c, artifact, candidate, prior=False):
         for n in range(12):
@@ -870,7 +1035,13 @@ class Providers:
                 self.cloud(c, 'services', 'update-traffic', name, '--to-revisions', revision+'=100', mutation=True)
         else:
             if c == 'worker':
+                pipeline_config = artifact.get('pipeline_config')
                 args += ['--update-env-vars', '^|^GCP_PROJECT='+self.p['gcp']['project_id']+'|FIRESTORE_DATABASE_ID='+self.p['bff']['firestore_database_id']]
+                if pipeline_config is not None:
+                    self.upload_pipeline_config(pipeline_config)
+                    key, value = pipeline_config_contract.secret_cli_binding(pipeline_config['secret'])
+                    args += ['--update-secrets', key+'='+value,
+                             '--task-timeout', str(pipeline_config['timeout_seconds'])+'s']
             self.cloud(c, *args, mutation=True)
 
     def reconcile_candidate(self, c, artifact, candidate, save):
@@ -930,4 +1101,15 @@ class Providers:
                 missing = set(('GCP_PROJECT', 'FIRESTORE_DATABASE_ID')) - env.keys()
                 if missing:
                     args += ['--remove-env-vars', ','.join(sorted(missing))]
+                if prior.get('pipeline_config_absent') is True:
+                    self.delete_pipeline_config_object({'bucket': self.p['worker']['bucket']})
+                elif prior.get('pipeline_config') is not None:
+                    self.upload_pipeline_config(prior['pipeline_config'])
+                if prior.get('api_key_binding'):
+                    binding = {'target': 'DEEPSEEK_API_KEY', 'resource': prior['api_key_binding']}
+                    key, value = pipeline_config_contract.secret_cli_binding(binding)
+                    args += ['--update-secrets', key+'='+value]
+                else:
+                    args += ['--remove-secrets', 'DEEPSEEK_API_KEY']
+                args += ['--task-timeout', str(prior['timeout_seconds'])+'s']
             self.cloud(c, *args, mutation=True)

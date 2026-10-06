@@ -1,0 +1,5 @@
+=== RUN   TestCloudRunFailureWritesStrictBoundedDiagnosticAndFixedReceipts
+2026/10/06 20:05:25 [1/1] synto command
+--- PASS: TestCloudRunFailureWritesStrictBoundedDiagnosticAndFixedReceipts (6.65s)
+PASS
+ok  	github.com/rayer/llm-wiki-bff/cmd/olw_worker	7.236s

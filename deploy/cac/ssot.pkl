@@ -1,0 +1,72 @@
+/// Project-wide settings consumed by the Pipeline target renderer.
+module lwc.pipeline.ssot
+
+environment: "local" | "dev" | "prod" = read("prop:environment")
+
+/// Required until the existing Cloud Run Job timeout has been independently read back.
+runTimeoutSeconds: Int = read("prop:runTimeoutSeconds").toInt()
+
+/// Optional explicit SSOT override, used only when a target environment does not
+/// declare its own article cap. Renderer defaults remain in synto.pkl.
+pipelineArticleMaxTokens: Int? = read?("prop:pipelineArticleMaxTokens")?.toInt()
+
+class SecretBinding {
+  source: "environment" | "secret-manager"
+  target: "DEEPSEEK_API_KEY"
+  envName: String?
+  resource: String?
+}
+
+class EnvironmentConfig {
+  bucket: String?
+  secret: SecretBinding
+  articleMaxTokens: Int?
+}
+
+local localSecretResource: String? = read?("prop:localSecretVersionResource")
+
+local environments: Mapping<String, EnvironmentConfig> = new {
+  ["local"] = new {
+    bucket = null
+    secret = new SecretBinding {
+      source = if (localSecretResource == null) "environment" else "secret-manager"
+      target = "DEEPSEEK_API_KEY"
+      envName = if (localSecretResource == null) "LLM_API_KEY" else null
+      resource = localSecretResource
+    }
+    articleMaxTokens = null
+  }
+  ["dev"] = new {
+    bucket = "llm-wiki-data-dev"
+    secret = new SecretBinding {
+      source = "secret-manager"
+      target = "DEEPSEEK_API_KEY"
+      envName = null
+      resource = "projects/llm-wiki-cloud/secrets/deepseek-apikey/versions/latest"
+    }
+    articleMaxTokens = null
+  }
+  ["prod"] = new {
+    bucket = "llm-wiki-data"
+    secret = new SecretBinding {
+      source = "secret-manager"
+      target = "DEEPSEEK_API_KEY"
+      envName = null
+      resource = "projects/llm-wiki-cloud/secrets/deepseek-apikey/versions/latest"
+    }
+    articleMaxTokens = null
+  }
+}
+
+pipeline = new {
+  environment = outer.environment
+  runTimeoutSeconds = outer.runTimeoutSeconds
+  bucket = environments[environment].bucket
+  secret = environments[environment].secret
+  articleMaxTokens = environments[environment].articleMaxTokens ?? outer.pipelineArticleMaxTokens
+}
+
+output {
+  value = pipeline
+  renderer = new JsonRenderer {}
+}

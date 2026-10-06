@@ -8,6 +8,7 @@ AUTH_PORT ?= 8081
 FRONTEND_PORT ?= 3000
 LOCAL_LOGIN_EMAIL ?= demo@llm-wiki.dev
 LOCAL_LOGIN_PASSWORD ?= demo123456
+CAC_OUTPUT_DIR ?= ../../.build/cac
 
 .PHONY: docker-build docker-build-export-job docker-push deploy deploy-dev deploy-prod all build-sync setup local-config seed ensure-local-data dev support-bff support-frontend support-pipeline bff-local auth-local frontend-local local-token pipeline-test pipeline-run kill-local clean-local vet test build
 
@@ -96,8 +97,8 @@ pipeline-test:
 	go test ./cmd/olw_worker
 
 pipeline-run: ensure-local-data
-	@test -n "$$LLM_API_KEY" || { echo "LLM_API_KEY is required" >&2; exit 1; }
-	go run ./cmd/olw_worker run '[["run","--auto-approve"]]' --vault ./local-data/users/local-user/projects/demo
+	$(MAKE) -C ../.. config-local CAC_OUTPUT_DIR="$(abspath $(CAC_OUTPUT_DIR))"
+	go run ./cmd/olw_worker run '[["run","--auto-approve"]]' --vault ./local-data/users/local-user/projects/demo --pipeline-config "$(abspath $(CAC_OUTPUT_DIR))/local/synto.toml" --pipeline-private-bindings "$(abspath $(CAC_OUTPUT_DIR))/local/private-bindings.json"
 
 kill-local:
 	@ports='$(BFF_PORT) $(AUTH_PORT) $(FRONTEND_PORT)'; \

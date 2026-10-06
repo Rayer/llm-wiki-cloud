@@ -1,0 +1,7 @@
+/Library/Developer/CommandLineTools/usr/bin/make -C apps/bff vet
+go vet ./...
+ruby -e 'require "yaml"; files=%w[ci.yml cd.yml deploy-dev.yml promote-production.yml]; workflows=files.to_h { |file| [file, YAML.load_file(".github/workflows/"+file)] }; abort "invalid CI workflow" unless workflows["ci.yml"]["jobs"].key?("bff"); abort "invalid config-only workflow branch" unless workflows["cd.yml"]["jobs"].key?("pipeline-config-only") && workflows["cd.yml"]["jobs"]["release"]["if"].include?("config-only"); files.each { |file| puts ".github/workflows/#{file}: valid YAML" }'
+.github/workflows/ci.yml: valid YAML
+.github/workflows/cd.yml: valid YAML
+.github/workflows/deploy-dev.yml: valid YAML
+.github/workflows/promote-production.yml: valid YAML

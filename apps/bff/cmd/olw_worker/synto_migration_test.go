@@ -831,12 +831,16 @@ func TestSnapshotMigrationInputsIsBoundedAndDetectsChanges(t *testing.T) {
 
 func TestSyntoConfigDisablesPrivateGitAndCurationSideEffects(t *testing.T) {
 	vault := t.TempDir()
-	if err := ensureSyntoVault(context.Background(), vault, workerConfig{APIKey: "fake"}, nil); err != nil {
+	deployed := []byte("[providers.default]\nname = \"deepseek\"\napi_key_env = \"DEEPSEEK_API_KEY\"\n\n[pipeline]\nauto_approve = true\nauto_commit = false\nauto_maintain = false\nrelation_extraction = false\narticle_max_tokens = 32768\nrun_timeout_seconds = 15\n")
+	if err := ensureSyntoVault(context.Background(), vault, workerConfig{DeployedSynto: deployed}, nil); err != nil {
 		t.Fatal(err)
 	}
 	data, err := os.ReadFile(filepath.Join(vault, "synto.toml"))
 	if err != nil {
 		t.Fatal(err)
+	}
+	if !bytes.Equal(data, deployed) {
+		t.Fatalf("worker changed deployed Pipeline configuration: %s", data)
 	}
 	text := string(data)
 	for _, want := range []string{"auto_commit = false", "auto_maintain = false", "relation_extraction = false"} {
@@ -1085,6 +1089,7 @@ func TestWorkerProductionSequenceInstallsPackExportIndexBeforePostprocess(t *tes
 	old := execOLW
 	defer func() { execOLW = old }()
 	vault := t.TempDir()
+	writeTestDeployedPipelineConfig(t, vault)
 	workspaceDir := t.TempDir()
 	var calls []string
 	var generatedIndex []byte
@@ -1455,8 +1460,20 @@ func TestSyntoMigrationStateMatrixFailsClosedBeforeChild(t *testing.T) {
 
 	t.Run("fresh config before first run is allowed", func(t *testing.T) {
 		vault := t.TempDir()
-		if err := ensureSyntoVault(context.Background(), vault, workerConfig{APIKey: "fake"}, nil); err != nil {
+		deployed := []byte("[pipeline]\nauto_commit = false\nauto_maintain = false\nrelation_extraction = false\nrun_timeout_seconds = 15\n")
+		if err := ensureSyntoVault(context.Background(), vault, workerConfig{DeployedSynto: deployed}, nil); err != nil {
 			t.Fatal(err)
+		}
+		got, err := os.ReadFile(filepath.Join(vault, "synto.toml"))
+		if err != nil || !bytes.Equal(got, deployed) {
+			t.Fatalf("deployed synto.toml=%q err=%v", got, err)
+		}
+	})
+	t.Run("fresh vault requires rendered Pipeline config", func(t *testing.T) {
+		vault := t.TempDir()
+		err := ensureSyntoVault(context.Background(), vault, workerConfig{APIKey: "test-only"}, nil)
+		if err == nil || !strings.Contains(err.Error(), "missing authoritative Pipeline synto.toml") {
+			t.Fatalf("ensureSyntoVault() error=%v, want explicit missing config", err)
 		}
 	})
 }
@@ -3175,6 +3192,7 @@ func TestSyntoWorkerPrivateWorkspacePersistsEntityMapping(t *testing.T) {
 	old := execOLW
 	defer func() { execOLW = old }()
 	vault := t.TempDir()
+	writeTestDeployedPipelineConfig(t, vault)
 	workspaceDir := t.TempDir()
 	mustWriteFile(t, filepath.Join(vault, "raw", "source.md"), []byte("raw"))
 	mustWriteFile(t, filepath.Join(vault, "cache", "id_map.json"), []byte(`{"source_meta":{"source-1":{"source_file":"raw/source.md"}}}`))
@@ -3221,6 +3239,7 @@ func TestSyntoWorkerDirectEntityPathExcludesEntitylessPageWithoutChangingBytes(t
 	old := execOLW
 	defer func() { execOLW = old }()
 	vault := t.TempDir()
+	writeTestDeployedPipelineConfig(t, vault)
 	workspaceDir := t.TempDir()
 	execOLW = func(_ context.Context, work string, command []string, _ []string, _, _ io.Writer) error {
 		if strings.Join(command, " ") != "run --auto-approve" {
@@ -3287,6 +3306,7 @@ func TestSyntoWorkerDirectEntityMigratesOldIDRedirectIdempotently(t *testing.T) 
 	old := execOLW
 	t.Cleanup(func() { execOLW = old })
 	vault := t.TempDir()
+	writeTestDeployedPipelineConfig(t, vault)
 	workspaceDir := t.TempDir()
 	const entityID = "01JAZ5N7Y3K8M2Q4R6T9VWXABC"
 	mustWriteFile(t, filepath.Join(vault, "cache", "id_map.json"), []byte(`{"concept":{"a3f7b2c01d9d":"alpha"},"source":{},"redirects":{}}`))
@@ -3424,6 +3444,7 @@ func TestFreshSyntoRunInitializesAndPublishesWithoutLegacyArtifacts(t *testing.T
 	old := execOLW
 	defer func() { execOLW = old }()
 	vault := t.TempDir()
+	writeTestDeployedPipelineConfig(t, vault)
 	execOLW = func(_ context.Context, work string, command []string, _ []string, _, _ io.Writer) error {
 		if strings.Join(command, " ") != "run --auto-approve" {
 			return fmt.Errorf("unexpected command %v", command)

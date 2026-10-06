@@ -3,12 +3,12 @@ on:
   workflow_dispatch:
     inputs:
       components:
-        description: Comma-separated selected components
-        required: true
+        description: Comma-separated selected components; config-only always targets Worker
+        required: false
         type: string
       release_tag:
-        description: Explicit immutable release tag
-        required: true
+        description: Explicit immutable release tag; not used by config-only
+        required: false
         type: string
       artifact_id:
         description: Optional retained artifact ID for reuse
@@ -27,11 +27,15 @@ on:
         type: boolean
         default: false
       operation:
-        description: Normal release by default; recovery operations consume a pinned retained artifact
+        description: Config-only updates Pipeline settings without changing its image
         required: true
         type: choice
-        options: [release, deploy, rollback, reactivate, tag, readback, diagnose-auth-image]
+        options: [release, config-only, deploy, rollback, reactivate, tag, readback, diagnose-auth-image]
         default: release
+      pipeline_run_timeout_seconds:
+        description: Verified existing Worker Job timeout in seconds; required for Pipeline config generation
+        type: string
+        default: ''
 permissions:
   contents: write
   actions: read
@@ -51,6 +55,7 @@ jobs:
       dev_artifact_id: ${{ inputs.dev_artifact_id }}
       operation: ${{ inputs.operation }}
       force: ${{ inputs.force }}
+      pipeline_run_timeout_seconds: ${{ inputs.pipeline_run_timeout_seconds }}
   auth-image-diagnostic:
     if: >-
       inputs.operation == 'diagnose-auth-image' &&
@@ -74,6 +79,7 @@ jobs:
       github.ref == 'refs/heads/develop' &&
       inputs.components != 'provision-exportjob-dev' &&
       inputs.operation != 'diagnose-auth-image' &&
+      inputs.operation != 'config-only' &&
       inputs.operation != 'readback'
     needs: release
     runs-on: ubuntu-latest

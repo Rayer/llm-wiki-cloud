@@ -39,6 +39,17 @@ class Acceptance(unittest.TestCase):
             'VERCEL_PROJECT_ID':'prj_test','VERCEL_TEAM_ID':'team_test','VERCEL_TOKEN':'test-only','GITHUB_REPOSITORY':'test/repo'},clear=True)
         self.env.start();self.addCleanup(self.env.stop)
         self.sleep=patch('providers.time.sleep');self.sleep.start();self.addCleanup(self.sleep.stop)
+        def test_pipeline_config(provider):
+            import hashlib
+            bucket=provider.p['worker']['bucket']
+            toml='[pipeline]\nrun_timeout_seconds = 321\n'
+            return {'environment':'prod' if provider.p['environment']=='production' else 'dev',
+                    'bucket':bucket,'timeout_seconds':321,'toml':toml,
+                    'sha256':hashlib.sha256(toml.encode()).hexdigest(),
+                    'secret':{'source':'secret-manager','target':'DEEPSEEK_API_KEY','envName':'',
+                              'resource':'projects/llm-wiki-cloud/secrets/deepseek-apikey/versions/latest'}}
+        self.pipeline_config=patch.object(providers.Providers,'prepare_pipeline_config',test_pipeline_config)
+        self.pipeline_config.start();self.addCleanup(self.pipeline_config.stop)
         self.provider={'resources':{},'revisions':{},'calls':[], 'aliases':{'wiki.dev.rayer.idv.tw':'dpl_prior'},
             'deployments':{'dpl_prior':{'id':'dpl_prior','projectId':'prj_test','teamId':'team_test','readyState':'READY'}}}
         n=self.normalized
@@ -51,12 +62,18 @@ class Acceptance(unittest.TestCase):
                 'latestCreatedRevisionName':rev,'traffic':[{'revisionName':rev,'percent':100}]}}
         for c in ('worker','exportjob'):
             cfg=n['export_job' if c=='exportjob' else c]; env=[]
+            if c=='worker':
+                env=[{'name':'DEEPSEEK_API_KEY','valueFrom':{'secretKeyRef':{'name':'deepseek-apikey','key':'latest'}}}]
             if c=='exportjob':
                 env=[{'name':k,'value':v} for k,v in {'GCP_PROJECT':n['gcp']['project_id'],'BUCKET':cfg['bucket'],
                    'FIRESTORE_DATABASE_ID':cfg['firestore_database_id'],'EXPORT_SIGNING_SERVICE_ACCOUNT':cfg['signing_service_account']}.items()]
             t={'serviceAccountName':cfg['runtime_service_account'],'containers':[{'image':'prior@sha256:'+'b'*64,'env':env}],
                'timeoutSeconds':'82800','maxRetries':0}
             self.provider['resources'][cfg['job_name']]={'spec':{'template':{'spec':{'parallelism':1,'taskCount':1,'template':{'spec':t}}}}}
+        for environment in ('development', 'production'):
+            bucket=n['worker']['bucket'] if environment == n['environment'] else ('llm-wiki-data' if environment == 'production' else 'llm-wiki-data-dev')
+            self.provider.setdefault('pipeline_configs', {})[
+                f'gs://{bucket}/pipeline-config/synto.toml'] = '[pipeline]\nrun_timeout_seconds = 82800\n'
         self.flush()
 
     def flush(self):write(self.root/'provider.json',self.provider)
@@ -491,6 +508,50 @@ class Acceptance(unittest.TestCase):
         f=self.ready(self.make(name='absent'))
         with self.assertRaises(Breakpoint):f.deploy()
         self.assertFalse(self.calls('update'))
+
+    def test_worker_first_config_adoption_and_rollback_preserve_absence(self):
+        e = self.ready(self.make(name='first-config-adoption'))
+        self.provider = self.current()
+        uri = f"gs://{self.normalized['worker']['bucket']}/pipeline-config/synto.toml"
+        del self.provider['pipeline_configs'][uri]
+        self.flush()
+
+        e.snapshot()
+        prior = e.state['components']['worker']['prior']
+        self.assertIs(prior.get('pipeline_config_absent'), True)
+        self.assertNotIn('pipeline_config', prior)
+
+        artifact = e.receipt('worker')['artifact']
+        e.provider.deploy('worker', artifact, {}, lambda: None)
+        self.assertIn(uri, self.current()['pipeline_configs'])
+        e.provider.rollback('worker', prior)
+        self.assertNotIn(uri, self.current()['pipeline_configs'])
+        self.assertTrue(e.provider.observe('worker', prior, {}, prior=True))
+
+    def test_worker_snapshot_preserves_prior_config_without_timeout_gate(self):
+        e = self.make(name='prior-config-timeout-differs')
+        self.provider = self.current()
+        uri = f"gs://{self.normalized['worker']['bucket']}/pipeline-config/synto.toml"
+        prior_config = '[pipeline]\nrun_timeout_seconds = 321\n'
+        self.provider['pipeline_configs'][uri] = prior_config
+        self.flush()
+
+        prior = e.provider.snapshot('worker')
+        self.assertEqual(prior['timeout_seconds'], 82800)
+        self.assertEqual(prior['pipeline_config']['toml'], prior_config)
+
+    def test_worker_snapshot_does_not_treat_permission_or_invalid_toml_as_absence(self):
+        for name, configure in (
+                ('permission-denied', lambda state: state.update(pipeline_config_read_denied=True)),
+                ('malformed', lambda state: state['pipeline_configs'].__setitem__(
+                    f"gs://{self.normalized['worker']['bucket']}/pipeline-config/synto.toml", '[pipeline\n'))):
+            with self.subTest(name=name):
+                e = self.ready(self.make(name='config-'+name))
+                self.provider = self.current()
+                configure(self.provider)
+                self.flush()
+                with self.assertRaises(Breakpoint):
+                    e.provider.snapshot('worker')
 
     def test_sanity_rejects_each_managed_service_field(self):
         e=self.ready(self.make(('auth','bff')));e.deploy()
