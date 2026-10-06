@@ -1,0 +1,6 @@
+test_action_preserves_bounded_pipeline_make_failure_and_masks_known_value (test_prepare_diagnostics.PipelineConfigPrepareDiagnostics.test_action_preserves_bounded_pipeline_make_failure_and_masks_known_value) ... ok
+
+----------------------------------------------------------------------
+Ran 1 test in 0.302s
+
+OK

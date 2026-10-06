@@ -263,9 +263,119 @@ func TestGoogleSecretManagerSDKAccessPath(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	resolved, value, err := (googleSecretReader{service: service}).Access(context.Background(), resource)
+	value, resolved, err := resolveBinding(context.Background(), secretBinding{
+		Source: "secret-manager", Target: "DEEPSEEK_API_KEY", Resource: resource,
+	}, func(context.Context) (secretReader, error) {
+		return googleSecretReader{service: service}, nil
+	})
 	if err != nil || string(value) != payload || resolved != resource {
 		t.Fatalf("Google Secret Manager client response = %q version=%q, %v", value, resolved, err)
 	}
 	clear(value)
+}
+
+func TestRunPreparePreservesBoundedSecretManagerSDKMessage(t *testing.T) {
+	const resource = "projects/test-project/secrets/test-secret/versions/11"
+	const serverBodyMarker = "TEST_ONLY_RAW_SECRET_MANAGER_ERROR_BODY"
+	message := "Permission denied for the selected Secret Manager version: " + strings.Repeat("x", 700)
+	body, err := json.Marshal(map[string]any{
+		"error": map[string]any{
+			"code": 403, "message": message,
+			"details": []any{map[string]any{"message": serverBodyMarker}},
+		},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	reader := secretManagerResponseReader(t, resource, http.StatusForbidden, string(body))
+	root := prepareRootForSecretManager(t, resource)
+	err = runPrepare(context.Background(), "dev", filepath.Join(root, "out"),
+		func(context.Context) (secretReader, error) { return reader, nil })
+	if err == nil {
+		t.Fatal("runPrepare() accepted a Secret Manager access failure")
+	}
+	diagnostic := err.Error()
+	if !strings.Contains(diagnostic, "Google API HTTP 403") ||
+		!strings.Contains(diagnostic, "Permission denied for the selected Secret Manager version") ||
+		!strings.Contains(diagnostic, "message_truncated=true") {
+		t.Fatalf("runPrepare() lost the bounded SDK diagnostic: %q", diagnostic)
+	}
+	if strings.Contains(diagnostic, serverBodyMarker) || len(diagnostic) > 900 {
+		t.Fatalf("runPrepare() exposed raw SDK body or an unbounded message: %q", diagnostic)
+	}
+}
+
+func TestRunPrepareDistinguishesEmptySecretManagerPayload(t *testing.T) {
+	const resource = "projects/test-project/secrets/test-secret/versions/11"
+	body := fmt.Sprintf(`{"name":%q,"payload":{"data":""}}`, resource)
+	reader := secretManagerResponseReader(t, resource, http.StatusOK, body)
+	root := prepareRootForSecretManager(t, resource)
+	err := runPrepare(context.Background(), "dev", filepath.Join(root, "out"),
+		func(context.Context) (secretReader, error) { return reader, nil })
+	if err == nil || !strings.Contains(err.Error(), "payload is empty") || strings.Contains(err.Error(), "access failed") {
+		t.Fatalf("empty payload was not distinguished from access failure: %v", err)
+	}
+}
+
+func TestRunPrepareDistinguishesSecretManagerClientInitializationFailure(t *testing.T) {
+	root := prepareRootForSecretManager(t, "projects/test-project/secrets/test-secret/versions/11")
+	const detail = "TEST_ONLY_INITIALIZATION_DETAIL"
+	err := runPrepare(context.Background(), "dev", filepath.Join(root, "out"),
+		func(context.Context) (secretReader, error) { return nil, errors.New(detail) })
+	if err == nil || !strings.Contains(err.Error(), "initialize Secret Manager resolver") ||
+		!strings.Contains(err.Error(), "error type") || strings.Contains(err.Error(), detail) {
+		t.Fatalf("client initialization failure was not safely classified: %v", err)
+	}
+}
+
+func secretManagerResponseReader(t *testing.T, resource string, status int, body string) secretReader {
+	t.Helper()
+	client := &http.Client{Transport: roundTripFunc(func(request *http.Request) (*http.Response, error) {
+		if request.Method != http.MethodGet || request.URL.Path != "/v1/"+resource+":access" {
+			return nil, fmt.Errorf("unexpected request %s %s", request.Method, request.URL.Path)
+		}
+		return &http.Response{
+			StatusCode: status,
+			Header:     http.Header{"Content-Type": []string{"application/json"}},
+			Body:       io.NopCloser(strings.NewReader(body)),
+			Request:    request,
+		}, nil
+	})}
+	service, err := secretmanager.NewService(context.Background(), option.WithEndpoint("https://secretmanager.test/"), option.WithHTTPClient(client), option.WithoutAuthentication())
+	if err != nil {
+		t.Fatal(err)
+	}
+	return googleSecretReader{service: service}
+}
+
+func prepareRootForSecretManager(t *testing.T, resource string) string {
+	t.Helper()
+	root := t.TempDir()
+	configDir := filepath.Join(root, "deploy", "cac")
+	if err := os.MkdirAll(configDir, 0o700); err != nil {
+		t.Fatal(err)
+	}
+	for _, name := range []string{"ssot.pkl", "synto.pkl"} {
+		if err := os.WriteFile(filepath.Join(configDir, name), []byte("offline fixture"), 0o600); err != nil {
+			t.Fatal(err)
+		}
+	}
+	config, err := json.Marshal(pipelineConfig{
+		Environment: "dev", RunTimeoutSeconds: 23,
+		Secret: secretBinding{Source: "secret-manager", Target: "DEEPSEEK_API_KEY", Resource: resource},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	pkl := filepath.Join(root, "pkl-fixture")
+	script := "#!/bin/sh\ncat <<'SSOT_JSON'\n" + string(config) + "\nSSOT_JSON\n"
+	if err := os.WriteFile(pkl, []byte(script), 0o700); err != nil {
+		t.Fatal(err)
+	}
+	t.Setenv("LWC_REPOSITORY_ROOT", root)
+	t.Setenv("PKL_BIN", pkl)
+	t.Setenv("PKL_CACHE_DIR", "")
+	t.Setenv("LWC_PIPELINE_RUN_TIMEOUT_SECONDS", "23")
+	t.Setenv("LWC_PIPELINE_LOCAL_SECRET_VERSION_RESOURCE", "")
+	return root
 }
