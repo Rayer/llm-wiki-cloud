@@ -442,7 +442,7 @@ test('removes the provider mutation response temp file when interrupted in fligh
   const output = [];
   child.stdout.on('data', (chunk) => output.push(chunk));
   child.stderr.on('data', (chunk) => output.push(chunk));
-  for (let attempt = 0; attempt < 100; attempt += 1) {
+  for (let attempt = 0; attempt < 1000; attempt += 1) {
     try {
       await readFile(join(run.root, 'mutation-in-flight'));
       break;

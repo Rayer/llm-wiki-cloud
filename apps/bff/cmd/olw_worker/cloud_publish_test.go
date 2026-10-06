@@ -641,7 +641,7 @@ func TestCloudCanceledAndExpiredFailuresStillRecordAllArtifacts(t *testing.T) {
 		if err == nil {
 			t.Fatal("cancelled execution unexpectedly succeeded")
 		}
-		assertCloudFailure(t, m, prefix, "provider", "secret")
+		assertCloudFailure(t, m, prefix, "provider", "api-secret")
 		if _, _, readErr := m.Read(context.Background(), prefix+"cache/pipeline-execution-secret.failure.json", 0, generation.MaxFileBytes); readErr != nil {
 			t.Fatalf("cancelled diagnostic missing: %v", readErr)
 		}
@@ -662,7 +662,7 @@ func TestCloudCanceledAndExpiredFailuresStillRecordAllArtifacts(t *testing.T) {
 		if err == nil {
 			t.Fatal("expired execution unexpectedly succeeded")
 		}
-		assertCloudFailure(t, m, prefix, "provider", "secret")
+		assertCloudFailure(t, m, prefix, "provider", "api-secret")
 		if _, _, readErr := m.Read(context.Background(), prefix+"cache/pipeline-execution-secret.failure.json", 0, generation.MaxFileBytes); readErr != nil {
 			t.Fatalf("expired diagnostic missing: %v", readErr)
 		}
