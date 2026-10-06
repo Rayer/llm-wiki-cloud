@@ -68,11 +68,24 @@ class Providers:
             raise Breakpoint('pipeline-config-bucket-invalid') from None
 
     @staticmethod
-    def _pipeline_config_object_missing(exc, command):
-        message = (exc.cause or {}).get('message') if isinstance(exc, Breakpoint) else None
-        expected = f'ERROR: (gcloud.storage.{command}) One or more URLs matched no objects.'
-        return (isinstance(message, str) and
-                expected in (line.strip() for line in message.splitlines()))
+    def _pipeline_config_object_missing(exc, command, uri):
+        if not isinstance(exc, Breakpoint) or exc.reason != 'command-failed':
+            return False
+        cause = exc.cause
+        stage = {'cat': 'pipeline-config-object-read',
+                 'rm': 'pipeline-config-object-delete'}.get(command)
+        if (not isinstance(cause, dict) or stage is None or
+                cause.get('stage') != stage or
+                cause.get('code') != 'child-command-failed' or
+                cause.get('message_truncated') is not False):
+            return False
+        message = cause.get('message')
+        if not isinstance(message, str):
+            return False
+        lines = [line.strip() for line in message.splitlines() if line.strip()]
+        prefix = f'ERROR: (gcloud.storage.{command}) '
+        return lines in ([prefix + 'One or more URLs matched no objects.'],
+                         [prefix + 'The following URLs matched no objects or files:', uri])
 
     def read_pipeline_config_object(self, pipeline_config, *, allow_absent=False):
         uri = self.pipeline_config_object(pipeline_config)
@@ -81,7 +94,7 @@ class Providers:
                       stage='pipeline-config-object-read', preserve_stdout_bytes=True)
         except Breakpoint as exc:
             if (allow_absent and exc.reason == 'command-failed' and
-                    self._pipeline_config_object_missing(exc, 'cat')):
+                    self._pipeline_config_object_missing(exc, 'cat', uri)):
                 return None
             raise
         if isinstance(raw, bytes):
@@ -101,7 +114,7 @@ class Providers:
                 mutation=True, stage='pipeline-config-object-delete')
         except Breakpoint as exc:
             if not (exc.reason == 'command-failed' and
-                    self._pipeline_config_object_missing(exc, 'rm')):
+                    self._pipeline_config_object_missing(exc, 'rm', uri)):
                 raise
         require(self.read_pipeline_config_object(pipeline_config, allow_absent=True) is None,
                 'pipeline-config-rollback-readback-mismatch')
