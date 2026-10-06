@@ -1,0 +1,29 @@
+=== RUN   TestEnvironmentBindingDoesNotInitializeSecretManager
+--- PASS: TestEnvironmentBindingDoesNotInitializeSecretManager (0.00s)
+=== RUN   TestMissingLocalEnvironmentSecretFailsWithoutSecretManager
+--- PASS: TestMissingLocalEnvironmentSecretFailsWithoutSecretManager (0.00s)
+=== RUN   TestSecretManagerBindingUsesOnlySelectedVersion
+--- PASS: TestSecretManagerBindingUsesOnlySelectedVersion (0.00s)
+=== RUN   TestLatestSecretManagerBindingIsPinnedToResolvedNumericVersion
+--- PASS: TestLatestSecretManagerBindingIsPinnedToResolvedNumericVersion (0.00s)
+=== RUN   TestPreparedSecretReferenceUpdatesOnlyPublicAndPrivateBindings
+--- PASS: TestPreparedSecretReferenceUpdatesOnlyPublicAndPrivateBindings (0.00s)
+=== RUN   TestSecretManagerFailureIsExplicitAndDoesNotExposePayload
+--- PASS: TestSecretManagerFailureIsExplicitAndDoesNotExposePayload (0.00s)
+=== RUN   TestInvalidSecretVersionFailsBeforeClientInitialization
+--- PASS: TestInvalidSecretVersionFailsBeforeClientInitialization (0.00s)
+=== RUN   TestRunTimeoutMustBeExplicit
+--- PASS: TestRunTimeoutMustBeExplicit (0.00s)
+=== RUN   TestRunPrepareRendersOnlyThePreparedProjection
+prepared Pipeline config environment=local synto_sha256=04744901c5cb51bc8985cde6a11fad644de7e210228dc5e842fc0f6894098389
+--- PASS: TestRunPrepareRendersOnlyThePreparedProjection (0.67s)
+=== RUN   TestGoogleSecretManagerSDKAccessPath
+--- PASS: TestGoogleSecretManagerSDKAccessPath (0.00s)
+=== RUN   TestRunPreparePreservesBoundedSecretManagerSDKMessage
+--- PASS: TestRunPreparePreservesBoundedSecretManagerSDKMessage (0.05s)
+=== RUN   TestRunPrepareDistinguishesEmptySecretManagerPayload
+--- PASS: TestRunPrepareDistinguishesEmptySecretManagerPayload (0.04s)
+=== RUN   TestRunPrepareDistinguishesSecretManagerClientInitializationFailure
+--- PASS: TestRunPrepareDistinguishesSecretManagerClientInitializationFailure (0.03s)
+PASS
+ok  	github.com/rayer/llm-wiki-bff/cmd/pipeline_config	2.020s

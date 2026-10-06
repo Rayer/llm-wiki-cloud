@@ -1,0 +1,9 @@
+--- FAIL: TestRunPreparePreservesBoundedSecretManagerSDKMessage (0.25s)
+    main_test.go:301: runPrepare() lost the bounded SDK diagnostic: "resolve Secret Manager version projects/test-project/secrets/test-secret/versions/11: access failed or payload is empty"
+--- FAIL: TestRunPrepareDistinguishesEmptySecretManagerPayload (0.05s)
+    main_test.go:316: empty payload was not distinguished from access failure: resolve Secret Manager version projects/test-project/secrets/test-secret/versions/11: access failed or payload is empty
+--- FAIL: TestRunPrepareDistinguishesSecretManagerClientInitializationFailure (0.04s)
+    main_test.go:327: client initialization failure was not safely classified: initialize Secret Manager resolver
+FAIL
+FAIL	github.com/rayer/llm-wiki-bff/cmd/pipeline_config	0.738s
+FAIL

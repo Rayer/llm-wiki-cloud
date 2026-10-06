@@ -9,8 +9,6 @@ import (
 	"errors"
 	"flag"
 	"fmt"
-	"google.golang.org/api/option"
-	"google.golang.org/api/secretmanager/v1"
 	"os"
 	"os/exec"
 	"path/filepath"
@@ -18,6 +16,11 @@ import (
 	"strconv"
 	"strings"
 	"time"
+	"unicode/utf8"
+
+	"google.golang.org/api/googleapi"
+	"google.golang.org/api/option"
+	"google.golang.org/api/secretmanager/v1"
 )
 
 const maxConfigBytes = 1 << 20
@@ -57,12 +60,18 @@ func (r googleSecretReader) Access(ctx context.Context, resource string) (string
 	if err != nil {
 		return "", nil, err
 	}
-	if response.Name == "" || response.Payload == nil || response.Payload.Data == "" {
-		return "", nil, errors.New("empty version response")
+	if response.Name == "" {
+		return "", nil, errors.New("Secret Manager response omitted version name")
+	}
+	if response.Payload == nil || response.Payload.Data == "" {
+		return response.Name, nil, nil
 	}
 	value, err := base64.StdEncoding.DecodeString(response.Payload.Data)
-	if err != nil || len(value) == 0 {
-		return "", nil, errors.New("invalid or empty payload")
+	if err != nil {
+		return "", nil, errors.New("Secret Manager payload encoding is invalid")
+	}
+	if len(value) == 0 {
+		return response.Name, nil, nil
 	}
 	return response.Name, value, nil
 }
@@ -72,7 +81,7 @@ type readerFactory func(context.Context) (secretReader, error)
 func googleReader(ctx context.Context) (secretReader, error) {
 	service, err := secretmanager.NewService(ctx, option.WithScopes("https://www.googleapis.com/auth/cloud-platform"))
 	if err != nil {
-		return nil, errors.New("initialize Google Secret Manager client")
+		return nil, err
 	}
 	return googleSecretReader{service: service}, nil
 }
@@ -253,12 +262,15 @@ func resolveBinding(ctx context.Context, binding secretBinding, newReader reader
 		}
 		reader, err := newReader(ctx)
 		if err != nil {
-			return nil, "", errors.New("initialize Secret Manager resolver")
+			return nil, "", fmt.Errorf("initialize Secret Manager resolver failed: %s", secretManagerErrorSummary(err))
 		}
 		resolvedResource, value, err := reader.Access(ctx, binding.Resource)
-		if err != nil || len(value) == 0 {
+		if err != nil {
 			clear(value)
-			return nil, "", fmt.Errorf("resolve Secret Manager version %s: access failed or payload is empty", binding.Resource)
+			return nil, "", fmt.Errorf("resolve Secret Manager version %s: access failed: %s", binding.Resource, secretManagerErrorSummary(err))
+		}
+		if len(value) == 0 {
+			return nil, "", fmt.Errorf("resolve Secret Manager version %s: payload is empty", binding.Resource)
 		}
 		if !resolvedSecretResourceMatches(binding.Resource, resolvedResource) {
 			clear(value)
@@ -268,6 +280,27 @@ func resolveBinding(ctx context.Context, binding secretBinding, newReader reader
 	default:
 		return nil, "", errors.New("Pipeline secret binding source is unsupported")
 	}
+}
+
+func secretManagerErrorSummary(err error) string {
+	var apiError *googleapi.Error
+	if errors.As(err, &apiError) && apiError != nil {
+		message, truncated := boundedSecretManagerMessage(apiError.Message)
+		return fmt.Sprintf("Google API HTTP %d: %s (message_truncated=%t)", apiError.Code, message, truncated)
+	}
+	return fmt.Sprintf("SDK error type %T", err)
+}
+
+func boundedSecretManagerMessage(message string) (string, bool) {
+	const maxMessageBytes = 512
+	if len(message) <= maxMessageBytes {
+		return message, false
+	}
+	end := maxMessageBytes
+	for end > 0 && !utf8.RuneStart(message[end]) {
+		end--
+	}
+	return message[:end], true
 }
 
 func resolvedSecretResourceMatches(requested, resolved string) bool {

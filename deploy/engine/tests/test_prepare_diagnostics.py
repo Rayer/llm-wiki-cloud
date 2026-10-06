@@ -1446,8 +1446,9 @@ output = pathlib.Path(next(value.split('=', 1)[1] for value in args
                            if value.startswith('CAC_OUTPUT_DIR='))) / 'dev'
 output.mkdir(parents=True)
 if case == 'child-failure':
-    print('synthetic Pkl renderer failed; VERCEL_TOKEN=' + os.environ['VERCEL_TOKEN'] +
-          '; ' + 'x' * 700,
+    print('resolve Secret Manager version projects/test-project/secrets/test-secret/versions/11: '
+          'access failed: Google API HTTP 403: Permission denied for the selected version; '
+          'VERCEL_TOKEN=' + os.environ['VERCEL_TOKEN'] + '; ' + 'x' * 700,
           file=sys.stderr)
     raise SystemExit(2)
 if case == 'parser-failure':
@@ -1491,8 +1492,8 @@ public = {'environment': 'dev', 'bucket': 'llm-wiki-data-dev',
         self.assertEqual(completed.returncode, 1, completed.stderr)
         self.assertEqual((result['reason'], result['status'],
                           result['mutation_may_have_happened']),
-                         ('command-failed', 'failed', False))
-        self.assertEqual(result['allowed_next_action'], 'reconcile-before-replay')
+                         ('permission-denied', 'failed', False))
+        self.assertEqual(result['allowed_next_action'], 'restore-existing-principal-permission')
         self.assertEqual(result['last_verified_checkpoint'], 0)
         self.assertEqual(result['observed']['component_status'], 'unstarted')
         self.assertIn('cause', result, 'make stderr was dropped before the formal result')
@@ -1501,7 +1502,8 @@ public = {'environment': 'dev', 'bucket': 'llm-wiki-data-dev',
         self.assertEqual(result['cause']['exception_type'], 'ChildProcessError')
         self.assertEqual(result['cause']['stage'], 'pipeline-config-prepare')
         self.assertEqual(result['cause']['code'], 'child-command-failed')
-        self.assertIn('synthetic Pkl renderer failed', result['cause']['message'])
+        self.assertIn('Google API HTTP 403', result['cause']['message'])
+        self.assertIn('Permission denied for the selected version', result['cause']['message'])
         self.assertIn('VERCEL_TOKEN=[REDACTED]', result['cause']['message'])
         self.assertTrue(result['cause']['message_truncated'])
         self.assertEqual(len(result['cause']['message']), 512)
