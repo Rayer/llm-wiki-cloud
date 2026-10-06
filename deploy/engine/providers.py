@@ -50,7 +50,7 @@ class Providers:
                 'verified-pipeline-run-timeout-required')
         with tempfile.TemporaryDirectory(prefix='lwc-pipeline-config-') as temp:
             run(['make', 'config-'+target, 'CAC_OUTPUT_DIR='+temp], cwd=ROOT,
-                timeout=600, stage='unknown')
+                timeout=600, stage='pipeline-config-prepare')
             try:
                 config = pipeline_config_contract.rendered_pipeline_config(
                     Path(temp) / target, target)
