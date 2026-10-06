@@ -1,0 +1,17 @@
+F
+======================================================================
+FAIL: test_action_preserves_bounded_pipeline_make_failure_and_masks_known_value (test_prepare_diagnostics.PipelineConfigPrepareDiagnostics.test_action_preserves_bounded_pipeline_make_failure_and_masks_known_value)
+----------------------------------------------------------------------
+Traceback (most recent call last):
+  File "/Users/rayer/orca/workspaces/llm-wiki-cloud/LWC-368-pipeline-cac/deploy/engine/tests/test_prepare_diagnostics.py", line 1495, in test_action_preserves_bounded_pipeline_make_failure_and_masks_known_value
+    self.assertEqual(result['allowed_next_action'], 'reconcile-before-replay')
+    ~~~~~~~~~~~~~~~~^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+AssertionError: 'correct-input-and-resume' != 'reconcile-before-replay'
+- correct-input-and-resume
++ reconcile-before-replay
+
+
+----------------------------------------------------------------------
+Ran 1 test in 2.101s
+
+FAILED (failures=1)

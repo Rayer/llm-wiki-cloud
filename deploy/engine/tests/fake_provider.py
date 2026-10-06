@@ -12,6 +12,7 @@ a = sys.argv[1:]
 tool = Path(sys.argv[0]).name
 s['calls'].append([tool, *a])
 fail = False
+failure_message = 'TEST ONLY simulated provider failure\n'
 out = ''
 binary_out = None
 
@@ -28,7 +29,28 @@ elif tool == 'docker':
     if a[0] == 'build' and s.get('fail_build') and s['fail_build'] in flag('-t',''):
         fail = True
 elif tool == 'gcloud':
-    if a[:2] == ['projects','describe']:
+    if a[:2] == ['storage', 'cat']:
+        uri=a[2]
+        if s.get('pipeline_config_read_denied'):
+            fail=True
+            failure_message='ERROR: (gcloud.storage.cat) 403 Permission denied.\n'
+        elif uri not in s.get('pipeline_configs', {}):
+            fail=True
+            failure_message='ERROR: (gcloud.storage.cat) One or more URLs matched no objects.\n'
+        else:
+            binary_out=s['pipeline_configs'][uri].encode()
+    elif a[:2] == ['storage', 'cp']:
+        source=Path(a[3])
+        uri=a[4]
+        s.setdefault('pipeline_configs', {})[uri]=source.read_bytes().decode()
+    elif a[:2] == ['storage', 'rm']:
+        uri=a[-1]
+        if uri not in s.get('pipeline_configs', {}):
+            fail=True
+            failure_message='ERROR: (gcloud.storage.rm) One or more URLs matched no objects.\n'
+        else:
+            del s['pipeline_configs'][uri]
+    elif a[:2] == ['projects','describe']:
         project=a[2]
         out={'projectId':project,
              'projectNumber':s.get('gcp_project_numbers',{}).get(project,'580854833715')}
@@ -110,7 +132,8 @@ elif tool == 'gcloud':
                 container=rev['spec']['containers'][0]
             else:
                 container=raw['spec']['template']['spec']['template']['spec']['containers'][0]
-                container['image']=image
+                if image:
+                    container['image']=image
             env={v['name']:v for v in container.get('env',[])}
             updates=flag('--update-env-vars','')
             if updates:
@@ -122,6 +145,9 @@ elif tool == 'gcloud':
                 if pair:
                     k,v=pair.split('=',1);n,key=v.split(':');env[k]={'name':k,'valueFrom':{'secretKeyRef':{'name':n,'key':key}}}
             for k in flag('--remove-secrets','').split(','): env.pop(k,None)
+            timeout=flag('--task-timeout')
+            if timeout:
+                raw['spec']['template']['spec']['template']['spec']['timeoutSeconds']=timeout.removesuffix('s')
             container['env']=list(env.values())
             if kind=='services' and s.get('secret_alias_fixture'):
                 bindings=[]
@@ -253,7 +279,7 @@ else:
     fail=True
 root.write_text(json.dumps(s))
 if fail:
-    sys.stderr.write('TEST ONLY simulated provider failure\n');sys.exit(1)
+    sys.stderr.write(failure_message);sys.exit(1)
 if binary_out is not None:
     sys.stdout.buffer.write(binary_out)
 elif out != '':print(json.dumps(out) if isinstance(out,(dict,list)) else out)

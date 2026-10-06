@@ -1,0 +1,188 @@
+2026/10/06 19:31:23 worker: lease reclaim refused state=malformed holder=exec-x job=""
+2026/10/06 19:31:24 [1/1] synto command
+2026/10/06 19:31:24 [1/1] synto command
+2026/10/06 19:31:24 [1/1] synto command
+2026/10/06 19:31:24 [1/1] synto command
+2026/10/06 19:31:24 [1/1] synto command
+2026/10/06 19:31:24 [1/1] synto command
+2026/10/06 19:31:24 WARNING cloud failure pipeline log recording failed execution_id="execution-secret" project_id="project-secret" stage="generation_publish" detail_code=""
+2026/10/06 19:31:24 [1/1] synto command
+2026/10/06 19:31:24 [1/1] synto command
+2026/10/06 19:31:25 [1/1] synto command
+2026/10/06 19:31:25 [1/1] synto command
+2026/10/06 19:31:25 [1/1] synto command
+2026/10/06 19:31:25 [1/1] synto command
+2026/10/06 19:31:25 [1/1] synto command
+2026/10/06 19:31:26 [1/1] synto command
+2026/10/06 19:31:26 [1/1] synto command
+2026/10/06 19:31:26 [1/1] synto command
+2026/10/06 19:31:26 [1/1] synto command
+2026/10/06 19:31:26 [1/1] synto command
+2026/10/06 19:31:26 [1/1] synto command
+2026/10/06 19:31:26 [1/1] synto command
+2026/10/06 19:31:26 [1/1] synto command
+2026/10/06 19:31:27 [1/1] synto command
+2026/10/06 19:31:27 WARNING cloud failure pipeline log recording failed execution_id="execution-secret" project_id="project-secret" stage="synto_run" detail_code=""
+2026/10/06 19:31:27 [1/1] synto command
+2026/10/06 19:31:27 [1/1] synto command
+2026/10/06 19:31:27 WARNING cloud failure pipeline log recording failed execution_id="execution-secret" project_id="project-secret" stage="synto_run" detail_code=""
+2026/10/06 19:31:27 [1/1] synto command
+2026/10/06 19:31:27 WARNING cloud failure pipeline log recording failed execution_id="execution-secret" project_id="project-secret" stage="generation_publish" detail_code=""
+2026/10/06 19:31:27 [1/1] synto command
+2026/10/06 19:31:29 [1/1] synto command
+--- FAIL: TestCloudRunFailureWritesStrictBoundedDiagnosticAndFixedReceipts (194.71s)
+    cloud_publish_test.go:2026: diagnostic={Version:1 Status:failed Stage:synto_run ErrorClass:timeout DetailCode: Child:run ExitCode:0xe4076fab990 Execution:execution-secret Message:synto command failed: exit status 23}
+2026/10/06 19:34:43 [1/1] synto command
+2026/10/06 19:34:43 [1/1] synto command
+2026/10/06 19:34:44 [1/1] synto command
+2026/10/06 19:34:44 [1/1] synto command
+2026/10/06 19:34:44 [1/1] synto command
+2026/10/06 19:34:44 postprocess suggested queries: generation failed; preserving last-known-good artifact: corpus_empty
+2026/10/06 19:34:45 [1/1] synto command
+2026/10/06 19:34:45 postprocess suggested queries: generation failed; preserving last-known-good artifact: provider_transport_or_response_error
+2026/10/06 19:34:45 [1/1] synto command
+2026/10/06 19:34:45 [1/1] synto command
+2026/10/06 19:34:45 [1/1] synto command
+2026/10/06 19:35:18 [1/1] synto command
+2026/10/06 19:35:18 [1/1] synto command
+2026/10/06 19:35:18 [1/1] synto command
+2026/10/06 19:35:18 [1/1] synto command
+2026/10/06 19:35:18 [1/1] synto command
+2026/10/06 19:35:18 [1/1] synto command
+2026/10/06 19:35:19 [1/1] synto command
+2026/10/06 19:35:19 worker: lease reclaim refused state=malformed holder=first job=""
+2026/10/06 19:35:19 [1/1] synto command
+2026/10/06 19:35:19 [1/1] synto command
+2026/10/06 19:35:19 [1/1] synto command
+2026/10/06 19:35:19 [1/1] synto command
+2026/10/06 19:35:19 [1/1] synto command
+2026/10/06 19:35:19 [1/1] synto command
+2026/10/06 19:35:19 [1/1] synto command
+2026/10/06 19:35:19 [1/1] synto command
+2026/10/06 19:35:19 [1/1] synto command
+2026/10/06 19:35:19 [1/1] synto command
+2026/10/06 19:35:20 [1/1] synto command
+2026/10/06 19:35:20 [1/1] synto command
+2026/10/06 19:35:20 [1/1] synto command
+2026/10/06 19:35:20 [1/1] synto command
+2026/10/06 19:35:21 [1/1] synto command
+2026/10/06 19:35:21 [1/1] synto command
+2026/10/06 19:35:21 [1/1] synto command
+2026/10/06 19:35:22 [1/1] synto command
+2026/10/06 19:35:23 [1/1] synto command
+2026/10/06 19:35:23 [1/1] synto command
+2026/10/06 19:35:24 [1/1] synto command
+2026/10/06 19:35:24 worker: lease conflict holder=olw-pipeline-dev-bwqhz started_at=2026-08-01T00:00:00Z state=terminal reclaim=true
+2026/10/06 19:35:24 worker: lease conflict holder=olw-pipeline-dev-lplb8 started_at=2026-08-01T00:00:00Z state=RUNNING reclaim=false
+2026/10/06 19:35:24 worker: lease conflict holder=olw-pipeline-dev-old1 started_at=2026-08-01T00:00:00Z state=terminal reclaim=true
+2026/10/06 19:35:24 worker: lease conflict holder=olw-pipeline-dev-gone started_at=2026-08-01T00:00:00Z state=not_found reclaim=true
+2026/10/06 19:35:24 worker: lease conflict holder=olw-pipeline-dev-live started_at=2026-08-01T00:00:00Z state=RUNNING reclaim=false
+2026/10/06 19:35:24 worker: lease conflict holder=olw-pipeline-dev-old started_at=2026-08-01T00:00:00Z state=lookup_failed reclaim=false
+2026/10/06 19:35:24 worker: lease conflict holder=olw-pipeline-dev-ancient started_at=2020-01-01T00:00:00Z state=RUNNING reclaim=false
+2026/10/06 19:35:24 worker: lease reclaim refused state=malformed holder=other-job-exec1 job="olw-pipeline-dev"
+2026/10/06 19:35:24 worker: lease conflict holder=olw-pipeline-dev-dead started_at=2026-08-01T00:00:00Z state=terminal reclaim=true
+2026/10/06 19:35:24 worker: lease conflict holder=olw-pipeline-dev-racer-7 started_at=2026-10-06T11:35:24Z state=RUNNING reclaim=false
+2026/10/06 19:35:24 worker: lease conflict holder=olw-pipeline-dev-racer-7 started_at=2026-10-06T11:35:24Z state=RUNNING reclaim=false
+2026/10/06 19:35:24 worker: lease conflict holder=olw-pipeline-dev-racer-7 started_at=2026-10-06T11:35:24Z state=RUNNING reclaim=false
+2026/10/06 19:35:24 worker: lease conflict holder=olw-pipeline-dev-racer-7 started_at=2026-10-06T11:35:24Z state=RUNNING reclaim=false
+2026/10/06 19:35:24 worker: lease conflict holder=olw-pipeline-dev-racer-7 started_at=2026-10-06T11:35:24Z state=RUNNING reclaim=false
+2026/10/06 19:35:24 worker: lease conflict holder=olw-pipeline-dev-racer-7 started_at=2026-10-06T11:35:24Z state=RUNNING reclaim=false
+2026/10/06 19:35:24 worker: lease conflict holder=olw-pipeline-dev-racer-7 started_at=2026-10-06T11:35:24Z state=RUNNING reclaim=false
+2026/10/06 19:35:24 worker: lease conflict holder=olw-pipeline-dev-exec-x started_at=2026-10-06T11:35:24Z state=RUNNING reclaim=false
+2026/10/06 19:35:24 postprocess suggested queries: generation failed; preserving last-known-good artifact: provider_transport_or_response_error
+2026/10/06 19:35:24 postprocess suggested queries: generation failed; preserving last-known-good artifact: provider_transport_or_response_error
+2026/10/06 19:35:24 postprocess suggested queries: generation failed; preserving last-known-good artifact: provider_rate_limited
+2026/10/06 19:35:24 postprocess suggested queries: generation failed; preserving last-known-good artifact: provider_rate_limited
+2026/10/06 19:35:24 postprocess suggested queries: generation failed; preserving last-known-good artifact: provider_schema_invalid
+2026/10/06 19:35:24 postprocess suggested queries: generation failed; preserving last-known-good artifact: provider_schema_invalid
+2026/10/06 19:35:24 postprocess suggested queries: generation failed; preserving last-known-good artifact: candidate_cardinality_invalid
+2026/10/06 19:35:24 postprocess suggested queries: generation failed; preserving last-known-good artifact: candidate_cardinality_invalid
+2026/10/06 19:35:24 postprocess suggested queries: generation failed; preserving last-known-good artifact: candidate_anchor_unknown
+2026/10/06 19:35:24 postprocess suggested queries: generation failed; preserving last-known-good artifact: candidate_anchor_unknown
+2026/10/06 19:35:24 postprocess suggested queries: generation failed; preserving last-known-good artifact: corpus_empty
+{"time":"2026-10-06T19:35:27.667611+08:00","severity":"WARNING","message":"observability_degraded","component":"olw_worker","child_component":"synto","user_id":"","project_id":"","execution_id":"","stream":"stderr","sequence":1,"event":"observability_degraded","destination":"live_stdout","cause":"write live stdout output: short write (11/12)"}
+2026/10/06 19:35:27 [1/1] synto command
+2026/10/06 19:35:28 [1/1] synto command
+2026/10/06 19:35:28 [1/1] synto command
+2026/10/06 19:35:28 [1/1] synto command
+stdout line
+stderr line
+2026/10/06 19:35:28 [1/1] synto command
+token=[REDACTED]2026/10/06 19:35:30 postprocess suggested queries: generation failed; preserving last-known-good artifact: candidate_cardinality_invalid
+2026/10/06 19:35:30 postprocess suggested queries: generation failed; preserving last-known-good artifact: candidate_cardinality_invalid
+2026/10/06 19:35:30 postprocess suggested queries: generation failed; preserving last-known-good artifact: provider_transport_or_response_error
+2026/10/06 19:35:30 postprocess suggested queries: generation failed; preserving last-known-good artifact: candidate_question_duplicate
+2026/10/06 19:35:30 postprocess suggested queries: generation failed; preserving last-known-good artifact: provider_transport_or_response_error
+2026/10/06 19:35:32 [1/1] synto command
+2026/10/06 19:35:33 [1/1] synto command
+2026/10/06 19:35:34 [1/1] synto command
+2026/10/06 19:35:34 [1/1] synto command
+2026/10/06 19:35:35 [1/1] synto command
+2026/10/06 19:35:35 WARNING cloud failure pipeline log recording failed execution_id="" project_id="" stage="input_materialization" detail_code=""
+2026/10/06 19:35:35 [1/1] synto command
+2026/10/06 19:35:35 [1/1] synto command
+2026/10/06 19:35:37 [1/1] synto command
+key=[REDACTED]2026/10/06 19:35:37 synto command failed (continuing)
+2026/10/06 19:35:38 [1/1] synto command
+child output resource-visible [REDACTED]
+2026/10/06 19:35:38 synto command failed (continuing)
+2026/10/06 19:35:41 [1/1] synto command
+child output
+2026/10/06 19:35:41 synto command failed (continuing)
+2026/10/06 19:35:41 [1/1] synto command
+successful child output
+2026/10/06 19:35:42 [1/1] synto command
+2026/10/06 19:35:43 [1/1] synto command
+2026/10/06 19:35:44 [1/1] synto command
+2026/10/06 19:35:44 synto command failed (continuing)
+2026/10/06 19:35:44 WARNING cloud failure pipeline log recording failed execution_id="" project_id="" stage="synto_run" detail_code=""
+2026/10/06 19:35:44 WARNING cloud failure pipeline log recording failed execution_id="" project_id="" stage="input_materialization" detail_code=""
+2026/10/06 19:35:44 WARNING cloud failure pipeline log recording failed execution_id="" project_id="" stage="input_materialization" detail_code=""
+2026/10/06 19:35:44 WARNING cloud failure pipeline log recording failed execution_id="" project_id="" stage="input_materialization" detail_code=""
+2026/10/06 19:35:44 WARNING cloud failure pipeline log recording failed execution_id="" project_id="" stage="input_materialization" detail_code=""
+2026/10/06 19:35:45 [1/1] synto command
+2026/10/06 19:35:45 [1/1] synto command
+2026/10/06 19:35:46 [1/1] synto command
+hello-console-tee
+{"time":"2026-10-06T19:35:48.060466+08:00","severity":"WARNING","message":"observability_degraded","component":"olw_worker","child_component":"synto","user_id":"","project_id":"","execution_id":"exec-console-tee","stream":"stderr","sequence":1,"event":"observability_degraded","destination":"durable","cause":"close /Users/rayer/orca/workspaces/llm-wiki-cloud/LWC-368-pipeline-cac/.build/lwc368-test-scratch/TestPipelineLogWritersTeesConsoleUnlessSuppressed2928592293/001/cache/pipeline-exec-console-tee.log: file already closed"}
+2026/10/06 19:35:48 [1/1] synto command
+2026/10/06 19:35:49 [1/1] synto command
+2026/10/06 19:35:49 [1/1] synto command
+2026/10/06 19:35:49 worker: pinned Profile guidance revision=aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa
+2026/10/06 19:35:49 [1/1] synto command
+2026/10/06 19:35:49 worker: pinned Profile guidance revision=aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa
+2026/10/06 19:35:49 [1/1] synto command
+2026/10/06 19:35:50 worker: pinned Profile guidance revision=aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa
+2026/10/06 19:35:50 [1/1] synto command
+2026/10/06 19:35:50 worker: pinned Profile guidance revision=aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa
+2026/10/06 19:35:50 [1/1] synto command
+2026/10/06 19:35:50 worker: pinned Profile guidance revision=aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa
+2026/10/06 19:35:50 [1/1] synto command
+2026/10/06 19:35:51 worker: pinned Profile guidance revision=aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa
+2026/10/06 19:35:51 [1/1] synto command
+2026/10/06 19:35:53 [1/1] synto command
+2026/10/06 19:35:53 [1/1] synto command
+2026/10/06 19:35:53 [1/1] synto command
+2026/10/06 19:35:53 [1/1] synto command
+2026/10/06 19:35:53 [1/1] synto command
+2026/10/06 19:35:54 [1/1] synto command
+2026/10/06 19:35:54 [1/1] synto command
+2026/10/06 19:35:56 [1/1] synto command
+2026/10/06 19:35:56 [1/1] synto command
+2026/10/06 19:35:57 WARNING postprocess identity_coverage_gap_summary count=1 detail="active Synto entities missing entity-bound articles; continuing"
+2026/10/06 19:35:57 WARNING postprocess identity_coverage_gap entity_id="01KYW6JAFPX69EDQZERN3X5R09" concept_names="Orphan Concept" source_paths="raw/other.md,raw/source.md" candidate_article_paths="articles/orphan-concept.md" detail="active Synto entity has no entity-bound article; continuing without concept"
+2026/10/06 19:36:01 [1/1] synto command
+2026/10/06 19:36:02 [1/1] synto command
+2026/10/06 19:36:04 [1/1] synto command
+2026/10/06 19:36:05 [1/1] synto command
+2026/10/06 19:36:08 [1/1] synto command
+2026/10/06 19:36:10 [1/1] synto command
+2026/10/06 19:36:12 [1/1] synto command
+2026/10/06 19:36:14 [1/1] synto command
+2026/10/06 19:36:16 [1/1] synto command
+2026/10/06 19:36:19 [1/1] synto command
+2026/10/06 19:36:20 [1/1] synto command
+FAIL
+FAIL	github.com/rayer/llm-wiki-bff/cmd/olw_worker	311.162s
+ok  	github.com/rayer/llm-wiki-bff/cmd/pipeline_config	0.393s
+FAIL

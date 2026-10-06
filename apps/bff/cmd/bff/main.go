@@ -167,6 +167,8 @@ func main() {
 			Firestore: fsClient.Raw(), Storage: gcsClient, Worker: workerPath,
 			Project: cfg.GCPProject, Bucket: cfg.Bucket, Database: cfg.FirestoreDatabaseID,
 			Scope: cfg.LocalCloudScope, WorkDir: ".",
+			PipelineConfigPath:   os.Getenv("LOCAL_CLOUD_PIPELINE_CONFIG_PATH"),
+			PipelineBindingsPath: os.Getenv("LOCAL_CLOUD_PIPELINE_BINDINGS_PATH"),
 		})
 		if err != nil {
 			log.Fatalf("configure local pipeline executor: %v", err)

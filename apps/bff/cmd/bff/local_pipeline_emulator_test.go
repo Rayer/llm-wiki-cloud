@@ -173,6 +173,19 @@ func TestLocalPipelineHTTPTriggerRunsWorkerAndReportsSuccessAndFailure(t *testin
 		t.Fatalf("build tagged local pipeline worker: %v\n%s", err, output)
 	}
 	workerStderrPath := filepath.Join(t.TempDir(), "worker.stderr")
+	generatedConfigDir := filepath.Join(t.TempDir(), "rendered Pipeline config")
+	if err := os.Mkdir(generatedConfigDir, 0o700); err != nil {
+		t.Fatalf("create rendered Pipeline config fixture directory: %v", err)
+	}
+	generatedConfigPath := filepath.Join(generatedConfigDir, "synto.toml")
+	generatedConfig := []byte("[pipeline]\nauto_commit = false\nauto_maintain = false\nrelation_extraction = false\nrun_timeout_seconds = 30\n")
+	if err := os.WriteFile(generatedConfigPath, generatedConfig, 0o600); err != nil {
+		t.Fatalf("write rendered Pipeline TOML fixture: %v", err)
+	}
+	privateBindingsPath := filepath.Join(generatedConfigDir, "private-bindings.json")
+	if err := os.WriteFile(privateBindingsPath, []byte(`{"environment":"local"}`), 0o600); err != nil {
+		t.Fatalf("write private Pipeline binding fixture: %v", err)
+	}
 	workerStderr, err := os.Create(workerStderrPath)
 	if err != nil {
 		t.Fatalf("create native worker stderr capture: %v", err)
@@ -182,6 +195,7 @@ func TestLocalPipelineHTTPTriggerRunsWorkerAndReportsSuccessAndFailure(t *testin
 		Firestore: fsClient.Raw(), Storage: storageClient, Worker: worker, Stderr: workerStderr,
 		Project: project, Bucket: bucket, Database: database,
 		Scope: scope, WorkDir: t.TempDir(),
+		PipelineConfigPath: generatedConfigPath, PipelineBindingsPath: privateBindingsPath,
 	})
 	if err != nil {
 		t.Fatalf("configure native worker manager: %v", err)
@@ -221,8 +235,7 @@ func TestLocalPipelineHTTPTriggerRunsWorkerAndReportsSuccessAndFailure(t *testin
 	if _, err := projectStorage.WriteBytes(ctx, historicalRaw, "raw/historical.md"); err != nil {
 		t.Fatalf("seed historical raw source: %v", err)
 	}
-	fixtureSyntoConfig := []byte("[pipeline]\nauto_commit = false\nauto_maintain = false\nrelation_extraction = false\n")
-	if _, err := projectStorage.WriteBytes(ctx, fixtureSyntoConfig, "synto.toml"); err != nil {
+	if _, err := projectStorage.WriteBytes(ctx, []byte("[pipeline]\nauto_commit = false\nauto_maintain = false\nrelation_extraction = false\n"), "synto.toml"); err != nil {
 		t.Fatalf("seed keyless fixture Synto config: %v", err)
 	}
 	rawDigestBytes := sha256.Sum256(historicalRaw)

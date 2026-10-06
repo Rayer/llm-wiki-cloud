@@ -43,7 +43,9 @@ _CAUSE_TYPES = {
 _CAUSE_STAGES = {
     'frontend-project-readback', 'frontend-npm-ci',
     'frontend-vercel-pull', 'frontend-vercel-build', 'frontend-vercel-deploy',
-    'frontend-deployment-reconcile', 'latest-checkpoint', 'unknown',
+    'frontend-deployment-reconcile', 'pipeline-config-object-read',
+    'pipeline-config-object-delete', 'pipeline-config-prepare',
+    'latest-checkpoint', 'unknown',
 }
 _ARTIFACT_CAUSE_PREFIX = 'LWC_ARTIFACT_CAUSE '
 _SENSITIVE_ENVIRONMENT_KEYS = ('VERCEL_TOKEN', 'GH_TOKEN', 'GITHUB_TOKEN', 'ACTIONS_RUNTIME_TOKEN')

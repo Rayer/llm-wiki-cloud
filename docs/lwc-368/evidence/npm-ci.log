@@ -1,0 +1,4 @@
+npm error Exit handler never called!
+npm error This is an error with npm itself. Please report this error at:
+npm error   <https://github.com/npm/cli/issues>
+npm error A complete log of this run can be found in: /Users/rayer/orca/workspaces/llm-wiki-cloud/LWC-368-pipeline-cac/.build/lwc368-test-scratch/npm-cache/_logs/2026-10-06T11_18_20_441Z-debug-0.log

@@ -3,12 +3,12 @@ on:
   workflow_dispatch:
     inputs:
       components:
-        description: Comma-separated selected components
-        required: true
+        description: Comma-separated selected components; config-only always targets Worker
+        required: false
         type: string
       release_tag:
-        description: Explicit immutable release tag
-        required: true
+        description: Explicit immutable release tag; not used by config-only
+        required: false
         type: string
       artifact_id:
         description: Optional retained artifact ID for reuse
@@ -16,6 +16,16 @@ on:
         default: ''
       dev_artifact_id:
         description: Explicit successful DEV result artifact (required for Production containers)
+        type: string
+        default: ''
+      operation:
+        description: Config-only updates Pipeline settings without changing its image
+        required: true
+        type: choice
+        options: [release, config-only]
+        default: release
+      pipeline_run_timeout_seconds:
+        description: Verified existing Worker Job timeout in seconds; required for Pipeline config generation
         type: string
         default: ''
 permissions:
@@ -35,3 +45,5 @@ jobs:
       release_tag: ${{ inputs.release_tag }}
       artifact_id: ${{ inputs.artifact_id }}
       dev_artifact_id: ${{ inputs.dev_artifact_id }}
+      operation: ${{ inputs.operation }}
+      pipeline_run_timeout_seconds: ${{ inputs.pipeline_run_timeout_seconds }}

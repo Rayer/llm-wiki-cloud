@@ -412,7 +412,21 @@ class Engine:
             dest = self.directory / 'receipts' / (c+'.json')
             if dest.exists():
                 try:
-                    self.receipt(c)
+                    if c != 'worker':
+                        self.receipt(c)
+                        continue
+                    existing = read(dest)
+                    require(existing.get('component') == c and
+                            existing.get('identity') == self.plan['identities'][c],
+                            'artifact-source-incompatible')
+                    self.provider.valid_image(c, existing['artifact']['image'])
+                    # A retained Worker image stays reusable while target config
+                    # is freshly prepared for this release/environment.
+                    existing = copy.deepcopy(existing)
+                    existing['artifact']['pipeline_config'] = self.provider.prepare_pipeline_config()
+                    self.provider.usable(c, existing['artifact'])
+                    write(dest, existing)
+                    self.save()
                     continue
                 except Breakpoint as exc:
                     require(self.plan['normalized']['environment'] == 'development' and exc.reason in ('artifact-source-incompatible', 'artifact-config-incompatible', 'artifact-unusable'), exc.reason)
@@ -443,6 +457,9 @@ class Engine:
                            'target_config': digest(self.plan['normalized']['frontend']) if c == 'frontend' else None}
                 if c in ('auth', 'bff'):
                     receipt['build'] = self.safe_build_record(self.state['builds'][c])
+            elif c == 'worker':
+                receipt = copy.deepcopy(receipt)
+                receipt['artifact']['pipeline_config'] = self.provider.prepare_pipeline_config()
             self.provider.usable(c, receipt['artifact'])
             write(self.directory / 'receipts/retained' / (digest(receipt)+'.json'), receipt)
             write(dest, receipt)

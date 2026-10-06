@@ -1,0 +1,61 @@
+status	mode	bytes	sha256	kind	path
+ M	0644	9138	acfca623c834d148462fc8ac23379db65136cdb9cb7c3de0f66ec18d963d00ef	file	.github/workflows/cd.yml
+ M	0644	8583	5b9f9a5cce79c18bc9233f522e7e55c824e26d95dc8c1bed624ccd972a34bd05	file	.github/workflows/deploy-dev.yml
+ M	0644	1640	52a57ba5355388f22a6d35cf614269d94b9ed3810bce2de5dce51993994081fc	file	.github/workflows/promote-production.yml
+??	0644	22	27e0af6dd45541dd174fae5d62dd0a215f6f6481d2157348ae18030f3766eca5	file	.gitignore
+ M	0644	1805	0480323958964880624e14ade716f1ce7204b22409f69691cee02180d7b1e2dd	file	Makefile
+ M	0644	5759	9b5c67292dec4a0c326f2adfc20f4e5447c2cd63b3471d7fd3363c3b8c9f7060	file	apps/bff/Makefile
+ M	0644	78651	58a6a083da4bd72cd0b34cd20e118d874b4c95bff4fde9af680a64355d367c68	file	apps/bff/cmd/olw_worker/cloud_publish.go
+ M	0644	192975	f5880e117c695c1e546cbf44edf82582d6302dfa5ac4a7b3e57d7171d40106e7	file	apps/bff/cmd/olw_worker/cloud_publish_test.go
+ M	0644	87777	e2bea58f8500ec3d9b4399e3e0d82b1b42488b8be49a917df8f673b8ade39615	file	apps/bff/cmd/olw_worker/concept_reconcile_test.go
+ M	0644	65492	7ce919a55bf8d02ff768cf914105c772a0eb8181d3bed8e8ad4e3762c52c61d1	file	apps/bff/cmd/olw_worker/main.go
+ M	0644	111208	c80f69ea77532fb2d9ef4738f237070ce86e9c962bef49e5797322dd617d212d	file	apps/bff/cmd/olw_worker/main_test.go
+??	0644	2229	a9c8ccdd073bb0b107cbcb35fa55d698e83a03bd3dd45a32c05b9f3a04348857	file	apps/bff/cmd/olw_worker/pipeline_config.go
+??	0644	8415	2456b22b0215026ef87e179d47cb441deb5ec0ba53238dee743bd77a4caf80a1	file	apps/bff/cmd/olw_worker/pipeline_config_test.go
+ M	0644	79764	208fd0c496a2ced4cf72c6d3cdf34644629be58234e47a998c3df5e180c82c3d	file	apps/bff/cmd/olw_worker/synto_adapter.go
+ M	0644	167203	53801cfa8eeccce1d76d9a4ced37569b04050ecd589134afc4a0f6dcc2620870	file	apps/bff/cmd/olw_worker/synto_migration_test.go
+??	0644	13082	71b7cb89a8f38c0f05157fc16e1869f718d6a515977be6ce77c68336b5e301c8	file	apps/bff/cmd/pipeline_config/main.go
+??	0644	11515	c2561e54ceb19d4a4278a31e7ba575b212621b7b8d03d6ad7f451ff14502e083	file	apps/bff/cmd/pipeline_config/main_test.go
+ M	0644	13803	25bde3db2bd288ba6a0df2d15b52b1293087b103201c19c6aaa7df608356bd92	file	apps/frontend/tests/ci-workflow-contract.test.mjs
+ M	0644	46037	2249e23fc6dbc8222b190f43457f6a4956113712daae1ad6c548ff0ead6e3b8a	file	apps/frontend/tests/lwc-253-authority-reconciliation.test.mjs
+ M	0644	21510	50c1efa93f94b2e873451fcd172d658c7ef59b6dde871f76a0a8afc32dcaeb9e	file	apps/frontend/tests/lwc-253-vercel-dev-authority.test.mjs
+ M	0644	20456	5acb846c537ae0146dcf692f4edb9dd9c4b1aa8c8e9e4454d5c99783bd08b817	file	apps/frontend/tests/lwc-258-vercel-production-auth-env.test.mjs
+??	0644	2193	9792dadcd8a33132851e105d028e4026ecc48a6c4bb2fc8992f5109fb094abbe	file	deploy/cac/ssot.pkl
+??	0644	2694	7c8c9f540eaea96a9eda13188ccb1072ccab79d76860c5ce6c418bb4e468d3eb	file	deploy/cac/synto.pkl
+ M	0644	43545	0c7f738812829be45dcdd8f1c01db7c81df0c0361e71878ae36f8a2b785c0052	file	deploy/engine/engine.py
+??	0644	4703	9ebcafe04ecb89fe7e1c57df9dc365ae1711bf2c0847050f76817f404380a1da	file	deploy/engine/pipeline_config.py
+??	0644	5836	0410b1cb9f2fe77e3ce5338d306b3e64b64b6b6ac7c4275b46c0601cb6d28eb0	file	deploy/engine/pipeline_config_only.py
+ M	0644	63451	a4bcb3329b375ab5cde97a21c8c122ca070daba0cb5b626e228c90267f531472	file	deploy/engine/providers.py
+ M	0644	11746	add95df67a137966ee9fe6d6a6d1ff0ffb2a09c83afc6be6d5e1ad71b90308d1	file	deploy/engine/support.py
+ M	0755	14399	125225e37aae3f6e71fca71b85a0eaa0fab71f27175dd853c7d45eb3c88118d2	file	deploy/engine/tests/fake_provider.py
+ M	0644	53057	772564e4e3c646dc7a4b2a1f4b51a70248cd2c6bcda8aeebcf285a0013806837	file	deploy/engine/tests/test_build_submission.py
+ M	0644	58940	8ef1e63efe5648cbaa15e0ea4b96dc4953df2da893c70fbda11b116b53ce25ae	file	deploy/engine/tests/test_engine.py
+??	0644	8418	07aa7b907c4cd55bd277efa6a659b1cd9d2541df61c1d4f4f1ef049f3d573390	file	deploy/engine/tests/test_pipeline_config.py
+??	0644	409	f63f8264fadc6c45f18e1a0498538445ef3c4af11166a411fc37fe58855571d9	file	docs/lwc-368/evidence/config-local-actual.log
+??	0644	92	a6a354624456b51089f2fd396defda260d7c41f6642cb514fecf42819840753f	file	docs/lwc-368/evidence/config-local-assertions.log
+??	0644	141	4653603f0cdfecf01e66746b498ccb4ccf50d1243186255961e6e9d57adee376	file	docs/lwc-368/evidence/engine-bootstrap-focused.log
+??	0644	281	c9a3133466efdac3e990d568e4bdb5db83fa4caf1facb9c9cb3852d22c07360f	file	docs/lwc-368/evidence/engine-bootstrap-timeout-focused-final.log
+??	0644	1297	5fbf58459218c95688d9b19adb1c45c2584b6e3509ecbe74de63efc6aad63f6e	file	docs/lwc-368/evidence/engine-full-candidate-r5-green.log
+??	0644	30096	73e11f11a058dfa684a59a47928a3bac8ee89311a1dc99138acce6428ead405a	file	docs/lwc-368/evidence/engine-full-candidate-r5-missing-tmp.log
+??	0644	12399	a5189f6fbab23bed72866100746e3eefd6328451f87c570e5ddc4b8a60dae2b5	file	docs/lwc-368/evidence/engine-full-candidate.log
+??	0644	1437	b7d9016d6ee25aefacb1c2b5ad0ab16a597a3c004090215aa73269de8c7f31bb	file	docs/lwc-368/evidence/engine-full-final-candidate-r7.log
+??	0644	1297	5fbf58459218c95688d9b19adb1c45c2584b6e3509ecbe74de63efc6aad63f6e	file	docs/lwc-368/evidence/engine-full-final-candidate.log
+??	0644	105	039e9903180cbdc239d39f88d3b86737834b312b3b9c57e32c791293e1af5908	file	docs/lwc-368/evidence/engine-workflow-tests.log
+??	0644	13906	60d6b9375c9668d811c59580e3f04349fd8172520b6aa21c50628be97ab0e76c	file	docs/lwc-368/evidence/go-focused.log
+??	0644	57	b9caeaebed467d6b949bfae5494729511b064e73beb0d3dc220e150284332c67	file	docs/lwc-368/evidence/go-local-pipeline-run.log
+??	0644	62	53cf8184eada7e5bdb6bc88ff044a58ec13133c211864d453179c27df96676bf	file	docs/lwc-368/evidence/go-pipeline-config-final.log
+??	0644	888	caf2ede260fce3bb331569e3aba365da1309d8300007c813be06787ce4574184	file	docs/lwc-368/evidence/local-pipeline-run-make-dry-run-final.log
+??	0644	828	0a57c3543828ed2e6ee1967245d5499f2e3be190ff1cc5fe84c5622cfaed77f5	file	docs/lwc-368/evidence/local-pipeline-run-make-dry-run.log
+??	0644	332142	3c5243de9014035cea2acb89d56fe0932cec0d7f249d545c803589d248134d6e	file	docs/lwc-368/evidence/npm-ci-debug.log
+??	0644	356	6625f09d5a2d07933524e6075f4ce84cbd9fdd7fcd00dfd51af8231b2dcafa98	file	docs/lwc-368/evidence/npm-ci-retry.log
+??	0644	357	266553b0b0c9dd0420c384bc684f8919a4a82ecf207a303db3c842099b807b6a	file	docs/lwc-368/evidence/npm-ci.log
+??	0644	1678	bfa0519ba43acd87b2955fb2efbcdaf44a6ed3468ebb21608e3c36072ffc4e53	file	docs/lwc-368/evidence/root-make-build.log
+??	0644	913997	515531b70951f89a94831aa26b7813afbba9224d631282e9af16ced65762bd16	file	docs/lwc-368/evidence/root-make-full-final.log
+??	0644	910549	cefc94c3730f86f74268d9fa89f3037d73c11b97417e517804d131d641a865cd	file	docs/lwc-368/evidence/root-make-lint-typecheck-test-build-final.log
+??	0644	671473	0e69c976a78471510e2559b2eb47010077ee6b9cd51b159e210f2c6023e5141c	file	docs/lwc-368/evidence/root-make-lint-typecheck-test-build.log
+??	0644	746	daf90686c37fffc8206bc13e4aad55a93b33bf2afefcf77771617bbd5b86eebb	file	docs/lwc-368/evidence/root-make-vet-workflow-yaml.log
+??	0644	260	45382505d1097b7772566c89cecfd72705cd6525c735765cb8dabc8f0c11d8c7	file	docs/lwc-368/evidence/worker-cloud-run-failure-isolated.log
+??	0644	58	c2422eef510a23191301863b382b8b638abc6190074affe92fa363a015e521cb	file	docs/lwc-368/evidence/worker-package-full-isolated.log
+??	0644	5701	2c09f739261b5ac5553e715a7beeea2407ac95e4c64ab6f18610e7d916e4fb18	file	docs/lwc-368/implementation-brief-r4.md
+??	0644	14161	ac24c63d3cb1c6ce0e26fc65e2ba30742c84fb2954be9d01a6808a7c756fb4a3	file	docs/lwc-368/implementation-report-r4.md
+ M	0644	18683	5277bbc738d990fa326984516dca8f28741955fe310b518177a715f69b077244	file	scripts/test_engine_workflow.py

@@ -766,11 +766,12 @@ test('foreign-project exact-SHA candidate cannot suppress CREATE_NOT_ALLOWED', a
 
 test('DEV authority uses the protected shared engine and durable selected stage barrier', async () => {
   const source = parseYaml(await readFile(join(monorepoRoot, '.github/workflows/cd.yml'), 'utf8'));
-  assert.deepEqual(Object.keys(source.jobs), ['release']);
+  assert.deepEqual(Object.keys(source.jobs), ['release', 'pipeline-config-only']);
   assert.equal(source.concurrency.group, 'lwc-engine-${{ inputs.environment }}');
   assert.equal(source.concurrency['cancel-in-progress'], false);
   const job = source.jobs.release;
-  assert.equal(job.if, "inputs.operation != 'diagnose-auth-image'");
+  assert.equal(job.if, "inputs.operation != 'diagnose-auth-image' && inputs.operation != 'config-only'");
+  assert.equal(source.jobs['pipeline-config-only'].if, "inputs.operation == 'config-only'");
   assert.equal(job.environment, "${{ inputs.environment == 'production' && 'Production' || 'Development' }}");
   assert.equal(job.permissions['id-token'], 'write');
   assert.equal(job.env.COMPONENTS, '${{ inputs.components }}');

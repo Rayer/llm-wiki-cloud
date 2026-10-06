@@ -34,9 +34,10 @@ type memoryObject struct {
 	attrs objectAttrs
 }
 type memoryObjects struct {
-	mu      sync.Mutex
-	next    int64
-	objects map[string]memoryObject
+	mu                    sync.Mutex
+	next                  int64
+	objects               map[string]memoryObject
+	missingDeployedConfig bool
 }
 
 func newMemoryObjects() *memoryObjects { return &memoryObjects{objects: map[string]memoryObject{}} }
@@ -44,6 +45,13 @@ func (m *memoryObjects) Read(_ context.Context, name string, generation, limit i
 	m.mu.Lock()
 	defer m.mu.Unlock()
 	o, ok := m.objects[name]
+	if !ok && name == deployedPipelineConfigObjectPath && !m.missingDeployedConfig {
+		data := []byte(testDeployedPipelineConfig)
+		if int64(len(data)) > limit {
+			return nil, objectAttrs{}, errors.New("object exceeds input limit")
+		}
+		return data, objectAttrs{Size: int64(len(data)), Generation: 1}, nil
+	}
 	if !ok || generation > 0 && o.attrs.Generation != generation {
 		return nil, objectAttrs{}, cloudstorage.ErrObjectNotExist
 	}
@@ -52,6 +60,9 @@ func (m *memoryObjects) Read(_ context.Context, name string, generation, limit i
 	}
 	return append([]byte(nil), o.data...), o.attrs, nil
 }
+
+const testDeployedPipelineConfig = "[pipeline]\nauto_approve = true\nauto_commit = false\nauto_maintain = false\nrelation_extraction = false\narticle_max_tokens = 32768\nmax_concepts_per_source = 8\ningest_parallel = false\nrun_timeout_seconds = 15\n"
+
 func (m *memoryObjects) List(_ context.Context, prefix string, max int) ([]objectAttrs, error) {
 	m.mu.Lock()
 	defer m.mu.Unlock()
@@ -115,6 +126,18 @@ func (s *countingObjectStore) Write(ctx context.Context, name string, data []byt
 func (s *countingObjectStore) Delete(ctx context.Context, name string, generation int64) error {
 	s.calls++
 	return s.objectStore.Delete(ctx, name, generation)
+}
+
+type pipelineConfigReadOnceStore struct {
+	objectStore
+	reads int
+}
+
+func (s *pipelineConfigReadOnceStore) Read(ctx context.Context, name string, generation, limit int64) ([]byte, objectAttrs, error) {
+	if name == deployedPipelineConfigObjectPath {
+		s.reads++
+	}
+	return s.objectStore.Read(ctx, name, generation, limit)
 }
 
 type noFullProjectListStore struct {
@@ -1969,6 +1992,12 @@ func TestCloudWorkerPersistsArbitraryChildOutputWithBoundedMarker(t *testing.T) 
 
 func TestCloudRunFailureWritesStrictBoundedDiagnosticAndFixedReceipts(t *testing.T) {
 	m := newMemoryObjects()
+	config := strings.Replace(testDeployedPipelineConfig, "run_timeout_seconds = 15",
+		"run_timeout_seconds = 300", 1)
+	if _, err := m.Write(context.Background(), deployedPipelineConfigObjectPath,
+		[]byte(config), nil, objectConditions{DoesNotExist: true}); err != nil {
+		t.Fatal(err)
+	}
 	prefix := "users/user-secret/projects/project-secret/"
 	seedCloudSource(t, m, prefix, "raw-start", "", priorCloudReceipt())
 	child := exec.Command("sh", "-c", "exit 23")
@@ -2688,8 +2717,13 @@ func TestPublishCloudGenerationUsesImmutableFilesAndManifestCAS(t *testing.T) {
 	if got.SourceSnapshotDigest != "" {
 		t.Fatalf("no-input legacy publish fabricated source inventory %q", got.SourceSnapshotDigest)
 	}
-	if len(got.Files) != 13 {
+	if len(got.Files) != 12 {
 		t.Fatalf("files=%d", len(got.Files))
+	}
+	for _, file := range got.Files {
+		if file.Path == "synto.toml" {
+			t.Fatal("deployed Pipeline config was included in project generation outputs")
+		}
 	}
 	if _, _, err := publishCloudGeneration(context.Background(), m, "p/", root, nil); err != nil {
 		t.Fatal(err)
@@ -3124,7 +3158,7 @@ func TestCloudPreflightStopsWalkAtMaxFilesPlusOne(t *testing.T) {
 		return oldWalk(root, func(path string, entry fs.DirEntry, err error) error {
 			if err == nil && !entry.IsDir() {
 				rel, _ := filepath.Rel(root, path)
-				if generation.GenerationOwned(filepath.ToSlash(rel)) {
+				if generation.GenerationOwned(filepath.ToSlash(rel)) && filepath.ToSlash(rel) != "synto.toml" {
 					ownedVisits++
 				}
 			}
@@ -3375,6 +3409,7 @@ func TestCommittedLocalExecutionSurvivesReceiptWriteFailureAndLaterCommitIsNotMi
 	secondID := "local-bbbbbbbbbbbbbbbbbbbbbbbb"
 	firstCfg := cloudCfgFor("user", "project", firstID)
 	firstCfg.LocalCloudScope = "worktree-test"
+	firstCfg.PipelineConfigPath, firstCfg.PipelineBindingsPath = writeTestLocalCloudPipelineInputs(t)
 	prefix := workerProjectObjectPrefix(firstCfg)
 	seedCloudSource(t, base, prefix, "raw-start", "", priorCloudReceipt())
 	previous, err := generation.Decode(seedCloudManifest(t, base, prefix, "old"))
@@ -4245,6 +4280,21 @@ func cloudCfgFor(user, project, execution string) workerConfig {
 	cfg.UserID, cfg.ProjectID, cfg.ExecutionID = user, project, execution
 	return cfg
 }
+
+func writeTestLocalCloudPipelineInputs(t *testing.T) (string, string) {
+	t.Helper()
+	dir := t.TempDir()
+	configPath := filepath.Join(dir, "synto.toml")
+	if err := os.WriteFile(configPath, []byte(testDeployedPipelineConfig), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	bindingsPath := filepath.Join(dir, "private-bindings.json")
+	if err := os.WriteFile(bindingsPath, []byte(`{"environment":"local"}`), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	return configPath, bindingsPath
+}
+
 func writeCloudRequiredOutputs(t *testing.T, root string) {
 	t.Helper()
 	mustWriteFile(t, filepath.Join(root, "wiki", "old.md"), []byte("---\nid: a3f7b2c01d9d\n---\nOld\n"))

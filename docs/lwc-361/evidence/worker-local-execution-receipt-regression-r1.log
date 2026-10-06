@@ -1,0 +1,5 @@
+=== RUN   TestCommittedLocalExecutionSurvivesReceiptWriteFailureAndLaterCommitIsNotMisattributed
+2026/10/07 01:39:15 [1/1] synto command
+--- PASS: TestCommittedLocalExecutionSurvivesReceiptWriteFailureAndLaterCommitIsNotMisattributed (0.06s)
+PASS
+ok  	github.com/rayer/llm-wiki-bff/cmd/olw_worker	0.644s

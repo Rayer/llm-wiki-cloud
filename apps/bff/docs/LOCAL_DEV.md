@@ -157,7 +157,34 @@ The browser's pipeline action calls the local BFF, which starts the native
 runtime above. A real provider-backed pipeline still requires the existing
 `LLM_API_KEY` or `DEEPSEEK_API_KEY` setting; bootstrap does not read, create, or
 set those values. The worker reads and publishes through the configured
-GCS bucket. Each local generation manifest carries the execution ID in the
+GCS bucket. Before the first pipeline run, render the selected local Pipeline
+config from the checked-in SSOT:
+
+The current Pipeline Job timeout is 7200 seconds. Render the local config
+from the repository root with:
+
+```sh
+LWC_PIPELINE_RUN_TIMEOUT_SECONDS=7200 make config-local
+```
+
+If the Job timeout changes, use its verified value here; the renderer has no
+default.
+
+`make config-local` also needs the existing local provider key from
+`LLM_API_KEY` or `DEEPSEEK_API_KEY`; keep the key only in your shell
+environment. It writes `.build/cac/local/synto.toml` and a mode-`0600`
+`private-bindings.json` in this worktree. Set
+`CAC_OUTPUT_DIR=/path/to/cac-output` on both `make config-local` and the
+`apps/bff` local start/debugger target if you use a custom output directory.
+`local-start`, `support-frontend`, and `bff-local` pass those same-worktree
+file paths to the native worker. If either file is missing or invalid, the
+run reports a configuration error; it does not fetch DEV's GCS TOML, use an
+old project `synto.toml`, upload the local config, or deploy a job. Deployed
+workers without a local scope continue to read their run-start snapshot from
+`pipeline-config/synto.toml` in GCS. Config rendering is explicit and does not
+run automatically during app startup.
+
+Each local generation manifest carries the execution ID in the
 same conditional write that commits it as current. After that write is
 acknowledged, the worker adds a create-only receipt with the execution and
 manifest generations; an acknowledged write is not a separate manifest
@@ -225,8 +252,10 @@ OAuth or deployed cookie/Host policy.
 - **No worker binary:** `make local-start` builds it. For a debugger workflow,
   run `make -C apps/bff local-worker-build` before starting BFF.
 - **Pipeline provider config is absent:** use `pipeline-test` or the loopback
-  smoke check. A real pipeline run requires the existing provider key and may
-  incur charges.
+  smoke check. For a real local pipeline, render the local files with
+  `make config-local`, set `LWC_PIPELINE_RUN_TIMEOUT_SECONDS` to the verified
+  Pipeline Job timeout, and provide the existing local provider key. A real
+  run may incur charges.
 - **Pinned Synto install reports no matching `mcp>=1.10` distribution:** check
   `command -v python3` and `python3 --version`. macOS may be selecting its
   Python 3.9 system interpreter; select Python 3.12 or newer before creating

@@ -1,0 +1,12 @@
+status	mode	bytes	sha256	kind	path
+M	0644	63467	e996469f2ebf44906c5e23cc3ec2eb939bc65f95fd4c8de59b68faa80daf474a	file	deploy/engine/providers.py
+M	0644	11777	dc135ea29bcaa27c3fc45f112992994bab09c0b3f95e57b9ed2f73221130ffaf	file	deploy/engine/support.py
+M	0644	95479	8c70d816a427175879117aa20da65f0277d0f8d3a3f39b133166e0e343659c22	file	deploy/engine/tests/test_prepare_diagnostics.py
+A	0644	1715	75ad37ddb935ac863c6bef48e8654bc7b2e4f34c216f02dfbb545b18fb1600c2	file	docs/lwc-368/evidence/dev-prepare-cause-engine-integration-fixture-lifetime-fail-r7.log
+A	0644	101	2d8d30d7cfe8a6fb49205988972dbd817581d6b047883d00818ea00f748eb53a	file	docs/lwc-368/evidence/dev-prepare-cause-engine-integration-green-r7-bounded.log
+A	0644	1296	83098f6bfa2e785df0aefbf2fa30fc8fd45782d2cfac7364952901568112c9b9	file	docs/lwc-368/evidence/dev-prepare-cause-engine-integration-hash-assertion-fail-r7.log
+A	0644	101	7090b000d09515b1083339e04a8091f6c4fd2456e92fc8a839cd85b30f0de850	file	docs/lwc-368/evidence/dev-prepare-cause-engine-integration-pre-bound-pass-r7.log
+A	0644	1722	baa9dcafc8d5714dfa7dbbaab928cf212a9f7fdad890ef65c34bb6ff6bdb11f0	file	docs/lwc-368/evidence/dev-prepare-cause-red-fresh-r7.log
+A	0644	1002	a80c96c06f32d6efbadbbdd43875fd55e9f5a81f63cafcaaf739ee09e5188fc2	file	docs/lwc-368/evidence/dev-prepare-cause-red-seeded-receipt-r7.log
+A	0644	20978	30146327befefab4a93e1a08354a18b7ac4d38c528733b42f9fd31360441a745	file	docs/lwc-368/evidence/dev-prepare-engine-python-full-r7.log
+A	0644	6191	e19c2000ed71dd8cb43e685999d87d3cc9bf768bb934d1b151f503abe36c5b63	file	docs/lwc-368/evidence/dev-prepare-error-diagnosis-r7.md

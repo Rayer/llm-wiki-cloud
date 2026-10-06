@@ -73,6 +73,7 @@ class LocalDevMakefileTests(unittest.TestCase):
         self.assertIn("python3 -m venv", output)
         self.assertIn('bin/synto" --version', output)
         self.assertIn("LOCAL_LOGIN_EMAIL", output)
+        self.assertIn("LOCAL_CLOUD_PIPELINE_CONFIG_DIR=", output)
         self.assertNotIn("docker compose", output)
         for retired in ("--local", "LOCAL_DATA_DIR", "DEV_JWT", "make seed", "local-token"):
             self.assertNotIn(retired, output)
@@ -92,7 +93,8 @@ class LocalDevMakefileTests(unittest.TestCase):
         self.assertIn("pip install --disable-pip-version-check --no-input --no-cache-dir --force-reinstall", makefile)
         local_env = (ROOT.parents[1] / "scripts" / "local-cloud-env.sh").read_text()
         self.assertIn('PATH="$state_dir/python/bin:$PATH"', local_env)
-        self.assertIn("LOCAL_CLOUD_PYTHON PATH", local_env)
+        self.assertIn("export LOCAL_CLOUD_WORKER_PATH LOCAL_CLOUD_STATE_DIR LOCAL_CLOUD_REPO_ROOT LOCAL_CLOUD_PYTHON", local_env)
+        self.assertIn("export LOCAL_CLOUD_PIPELINE_CONFIG_DIR LOCAL_CLOUD_PIPELINE_CONFIG_PATH LOCAL_CLOUD_PIPELINE_BINDINGS_PATH PATH", local_env)
         runtime_test = self.make_dry_run("local-synto-runtime-test")
         self.assertIn("go test -tags lwc_local_synto_runtime ./cmd/olw_worker", runtime_test)
         for key in ("LLM_API_KEY", "DEEPSEEK_API_KEY", "SYNTO_API_KEY", "OPENAI_API_KEY", "ANTHROPIC_API_KEY", "GEMINI_API_KEY", "TYPESAFE_API_KEY", "TYPESAFE_JEV_API_KEY", "LWC331_TEST_API_KEY"):
@@ -103,6 +105,7 @@ class LocalDevMakefileTests(unittest.TestCase):
         support_frontend = self.make_dry_run("support-frontend")
         self.assertIn("local-services.py start auth frontend", support_bff)
         self.assertIn("local-services.py start auth bff", support_frontend)
+        self.assertIn("LOCAL_CLOUD_PIPELINE_CONFIG_DIR=", support_frontend)
 
     def test_stop_is_scoped_to_supervisor_metadata(self):
         output = self.make_dry_run("kill-local")

@@ -1,0 +1,19 @@
+..F
+======================================================================
+FAIL: test_successful_prepare_still_reaches_ready_through_action (test_prepare_diagnostics.PipelineConfigPrepareDiagnostics.test_successful_prepare_still_reaches_ready_through_action)
+----------------------------------------------------------------------
+Traceback (most recent call last):
+  File "/Users/rayer/orca/workspaces/llm-wiki-cloud/LWC-368-pipeline-cac/deploy/engine/tests/test_prepare_diagnostics.py", line 1522, in test_successful_prepare_still_reaches_ready_through_action
+    self.assertEqual(receipt['artifact']['pipeline_config']['sha256'],
+    ~~~~~~~~~~~~~~~~^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+                     hashlib.sha256(b'[pipeline]\\nrun_timeout_seconds = 321\\n').hexdigest())
+                     ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+AssertionError: 'd2a796c1e805cfe57866afad3b716680e46b2d9be0e162a285ee013a10dc3a95' != '4369e7f06f37283bf6eafd7238dc79e1a2a613c7f98d2d9d7194cfd171454fbe'
+- d2a796c1e805cfe57866afad3b716680e46b2d9be0e162a285ee013a10dc3a95
++ 4369e7f06f37283bf6eafd7238dc79e1a2a613c7f98d2d9d7194cfd171454fbe
+
+
+----------------------------------------------------------------------
+Ran 3 tests in 4.505s
+
+FAILED (failures=1)

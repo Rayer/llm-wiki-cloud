@@ -406,11 +406,11 @@ test('DEV workflow invokes the shared engine and isolates the fixed diagnostic r
   const workflow = (await import('js-yaml')).load(await readFile(join(monorepoRoot, '.github/workflows/deploy-dev.yml'), 'utf8'));
   const job = workflow.jobs.release;
   assert.equal(workflow.on.push, undefined);
-  assert.deepEqual(Object.keys(workflow.on.workflow_dispatch.inputs), ['components', 'release_tag', 'artifact_id', 'dev_artifact_id', 'source_sha', 'force', 'operation']);
+  assert.deepEqual(Object.keys(workflow.on.workflow_dispatch.inputs), ['components', 'release_tag', 'artifact_id', 'dev_artifact_id', 'source_sha', 'force', 'operation', 'pipeline_run_timeout_seconds']);
   assert.equal(workflow.on.workflow_dispatch.inputs.operation.type, 'choice');
-  assert.deepEqual(workflow.on.workflow_dispatch.inputs.operation.options, ['release', 'deploy', 'rollback', 'reactivate', 'tag', 'readback', 'diagnose-auth-image']);
+  assert.deepEqual(workflow.on.workflow_dispatch.inputs.operation.options, ['release', 'config-only', 'deploy', 'rollback', 'reactivate', 'tag', 'readback', 'diagnose-auth-image']);
   assert.equal(workflow.on.workflow_dispatch.inputs.operation.default, 'release');
-  assert.equal(workflow.on.workflow_dispatch.inputs.release_tag.required, true);
+  assert.equal(workflow.on.workflow_dispatch.inputs.release_tag.required, false);
   assert.equal(job.if, "github.ref == 'refs/heads/develop' && inputs.operation != 'diagnose-auth-image'");
   assert.equal(job.uses, './.github/workflows/cd.yml');
   assert.equal(job.secrets, 'inherit');
@@ -421,6 +421,7 @@ test('DEV workflow invokes the shared engine and isolates the fixed diagnostic r
     artifact_id: '${{ inputs.artifact_id }}', dev_artifact_id: '${{ inputs.dev_artifact_id }}',
     operation: '${{ inputs.operation }}',
     force: '${{ inputs.force }}',
+    pipeline_run_timeout_seconds: '${{ inputs.pipeline_run_timeout_seconds }}',
   });
   const diagnostic = workflow.jobs['auth-image-diagnostic'];
   assert.ok(diagnostic.if.includes("inputs.operation == 'diagnose-auth-image'"));

@@ -39,11 +39,13 @@ func TestNativeWorkerCommandCrossesRealProcessBoundaryWithScopedEnvironment(t *t
 	tmp := t.TempDir()
 	worker := filepath.Join(tmp, "worker-fixture")
 	output := filepath.Join(tmp, "boundary.json")
+	configPath := filepath.Join(tmp, "rendered Pipeline config", "synto.toml")
+	bindingsPath := filepath.Join(tmp, "rendered Pipeline config", "private-bindings.json")
 	script := "#!" + python + "\nimport json,os,sys\njson.dump({'args':sys.argv[1:],'cwd':os.getcwd(),'env':{k:os.environ.get(k) for k in ['GCP_PROJECT','GOOGLE_CLOUD_PROJECT','BUCKET','FIRESTORE_DATABASE_ID','LOCAL_CLOUD_SCOPE','USER_ID','PROJECT_ID','EXECUTION_ID','CLEAN_REBUILD','KEEP_FROM_BFF']}},open(os.environ['PROBE_OUTPUT'],'w'))\n"
 	if err := os.WriteFile(worker, []byte(script), 0o700); err != nil {
 		t.Fatal(err)
 	}
-	cmd := newWorkerCommand(Config{Worker: worker, WorkDir: tmp, Project: "llm-wiki-cloud", Bucket: "llm-wiki-cloud-local", Database: "llm-wiki-cloud-local", Scope: "worktree-one"}, "local-execution-1", "user-a", "project-a", "full", false, []string{"PATH=" + os.Getenv("PATH"), "KEEP_FROM_BFF=preserved"})
+	cmd := newWorkerCommand(Config{Worker: worker, WorkDir: tmp, Project: "llm-wiki-cloud", Bucket: "llm-wiki-cloud-local", Database: "llm-wiki-cloud-local", Scope: "worktree-one", PipelineConfigPath: configPath, PipelineBindingsPath: bindingsPath}, "local-execution-1", "user-a", "project-a", "full", false, []string{"PATH=" + os.Getenv("PATH"), "KEEP_FROM_BFF=preserved"})
 	cmd.Env = append(cmd.Env, "PROBE_OUTPUT="+output)
 	if err := cmd.Run(); err != nil {
 		t.Fatalf("run native worker fixture: %v", err)
@@ -64,7 +66,7 @@ func TestNativeWorkerCommandCrossesRealProcessBoundaryWithScopedEnvironment(t *t
 	if err != nil {
 		t.Fatal(err)
 	}
-	wantArgs := []string{"run", `[["run","--auto-approve"]]`}
+	wantArgs := []string{"run", `[["run","--auto-approve"]]`, "--pipeline-config", configPath, "--pipeline-private-bindings", bindingsPath}
 	if strings.Join(observed.Args, "\x00") != strings.Join(wantArgs, "\x00") || observed.CWD != resolvedWorkDir {
 		t.Fatalf("worker process args=%q cwd=%q want_cwd=%q", observed.Args, observed.CWD, resolvedWorkDir)
 	}

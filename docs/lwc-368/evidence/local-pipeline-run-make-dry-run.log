@@ -1,0 +1,7 @@
+test -d local-data || /Library/Developer/CommandLineTools/usr/bin/make seed
+rm -rf local-data
+cp -R demo local-data
+test -n "$LLM_API_KEY" || { echo "LLM_API_KEY is required" >&2; exit 1; }
+/Library/Developer/CommandLineTools/usr/bin/make -C ../.. config-local CAC_OUTPUT_DIR="/Users/rayer/orca/workspaces/llm-wiki-cloud/LWC-368-pipeline-cac/.build/cac"
+cd apps/bff && LWC_REPOSITORY_ROOT="/Users/rayer/orca/workspaces/llm-wiki-cloud/LWC-368-pipeline-cac" go run ./cmd/pipeline_config prepare --environment local --output "/Users/rayer/orca/workspaces/llm-wiki-cloud/LWC-368-pipeline-cac/.build/cac/local"
+go run ./cmd/olw_worker run '[["run","--auto-approve"]]' --vault ./local-data/users/local-user/projects/demo --pipeline-config "/Users/rayer/orca/workspaces/llm-wiki-cloud/LWC-368-pipeline-cac/.build/cac/local/synto.toml"

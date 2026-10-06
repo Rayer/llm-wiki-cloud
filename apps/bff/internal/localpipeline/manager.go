@@ -31,15 +31,17 @@ var ErrManagerClosed = errors.New("pipeline manager is closing")
 var ErrExecutionNotFound = handlerapi.ErrPipelineExecutionNotFound
 
 type Config struct {
-	Firestore *cloudfirestore.Client
-	Storage   *gcs.Client
-	Worker    string
-	Stderr    io.Writer
-	Project   string
-	Bucket    string
-	Database  string
-	Scope     string
-	WorkDir   string
+	Firestore            *cloudfirestore.Client
+	Storage              *gcs.Client
+	Worker               string
+	Stderr               io.Writer
+	Project              string
+	Bucket               string
+	Database             string
+	Scope                string
+	WorkDir              string
+	PipelineConfigPath   string
+	PipelineBindingsPath string
 }
 
 type Manager struct {
@@ -57,6 +59,9 @@ type process struct {
 func New(cfg Config) (*Manager, error) {
 	if cfg.Firestore == nil || cfg.Storage == nil || strings.TrimSpace(cfg.Worker) == "" || strings.TrimSpace(cfg.Scope) == "" {
 		return nil, errors.New("local pipeline configuration is incomplete")
+	}
+	if (strings.TrimSpace(cfg.PipelineConfigPath) == "") != (strings.TrimSpace(cfg.PipelineBindingsPath) == "") {
+		return nil, errors.New("local Pipeline config and private bindings must be configured together")
 	}
 	if err := scopedfirestore.RegisterLocalScope(cfg.Firestore, cfg.Scope); err != nil {
 		return nil, err
@@ -358,7 +363,11 @@ func workerArgs(stage string) []string {
 }
 
 func newWorkerCommand(cfg Config, executionID, userID, projectID, stage string, cleanRebuild bool, parentEnv []string) *exec.Cmd {
-	cmd := exec.Command(cfg.Worker, workerArgs(stage)...)
+	args := workerArgs(stage)
+	if cfg.PipelineConfigPath != "" {
+		args = append(args, "--pipeline-config", cfg.PipelineConfigPath, "--pipeline-private-bindings", cfg.PipelineBindingsPath)
+	}
+	cmd := exec.Command(cfg.Worker, args...)
 	cmd.Dir = cfg.WorkDir
 	cmd.Env = workerEnvironment(parentEnv, map[string]string{
 		"GCP_PROJECT":           cfg.Project,

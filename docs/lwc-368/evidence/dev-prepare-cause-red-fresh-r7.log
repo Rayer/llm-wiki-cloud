@@ -1,0 +1,14 @@
+F
+======================================================================
+FAIL: test_action_preserves_bounded_pipeline_make_failure_and_masks_known_value (test_prepare_diagnostics.PipelineConfigPrepareDiagnostics.test_action_preserves_bounded_pipeline_make_failure_and_masks_known_value)
+----------------------------------------------------------------------
+Traceback (most recent call last):
+  File "/Users/rayer/orca/workspaces/llm-wiki-cloud/LWC-368-pipeline-cac/deploy/engine/tests/test_prepare_diagnostics.py", line 1496, in test_action_preserves_bounded_pipeline_make_failure_and_masks_known_value
+    self.assertIn('cause', result, 'make stderr was dropped before the formal result')
+    ~~~~~~~~~~~~~^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+AssertionError: 'cause' not found in {'allowed_next_action': 'reconcile-before-replay', 'attempt': '4418a5c92b21d3b0f55c19c549566c04f6a7ca8f67130e6c7d19b61047e977b2', 'candidate': None, 'component': 'worker', 'expected': {'identity': '05cd02fcb7429888e38991a81ce911994742b69110f1b3c8e1f58e540491f1f1', 'source': 'cccccccccccccccccccccccccccccccccccccccc'}, 'failure_diagnostic': {'exit_code': 2, 'stage': 'unknown', 'timeout_class': None}, 'last_verified_checkpoint': 0, 'limitations': 'Job executions and persistent writes are not reversed by image rollback.', 'mutation_may_have_happened': False, 'observed': {'component_status': 'unstarted'}, 'prior': None, 'reason': 'command-failed', 'release': 'offline-pipeline-config-diagnostic', 'stage': 'prepared', 'status': 'failed'} : make stderr was dropped before the formal result
+
+----------------------------------------------------------------------
+Ran 1 test in 1.931s
+
+FAILED (failures=1)
