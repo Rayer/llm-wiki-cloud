@@ -1,0 +1,1716 @@
+=== RUN   TestEnvironmentBindingDoesNotInitializeSecretManager
+--- PASS: TestEnvironmentBindingDoesNotInitializeSecretManager (0.00s)
+=== RUN   TestMissingLocalEnvironmentSecretFailsWithoutSecretManager
+--- PASS: TestMissingLocalEnvironmentSecretFailsWithoutSecretManager (0.00s)
+=== RUN   TestSecretManagerBindingUsesOnlySelectedVersion
+--- PASS: TestSecretManagerBindingUsesOnlySelectedVersion (0.00s)
+=== RUN   TestLatestSecretManagerBindingIsPinnedToResolvedNumericVersion
+--- PASS: TestLatestSecretManagerBindingIsPinnedToResolvedNumericVersion (0.00s)
+=== RUN   TestPreparedSecretReferenceUpdatesOnlyPublicAndPrivateBindings
+--- PASS: TestPreparedSecretReferenceUpdatesOnlyPublicAndPrivateBindings (0.00s)
+=== RUN   TestSecretManagerFailureIsExplicitAndDoesNotExposePayload
+--- PASS: TestSecretManagerFailureIsExplicitAndDoesNotExposePayload (0.00s)
+=== RUN   TestInvalidSecretVersionFailsBeforeClientInitialization
+--- PASS: TestInvalidSecretVersionFailsBeforeClientInitialization (0.00s)
+=== RUN   TestRunTimeoutMustBeExplicit
+--- PASS: TestRunTimeoutMustBeExplicit (0.00s)
+=== RUN   TestRunPrepareRendersOnlyThePreparedProjection
+prepared Pipeline config environment=local synto_sha256=04744901c5cb51bc8985cde6a11fad644de7e210228dc5e842fc0f6894098389
+--- PASS: TestRunPrepareRendersOnlyThePreparedProjection (0.27s)
+=== RUN   TestGoogleSecretManagerSDKAccessPath
+--- PASS: TestGoogleSecretManagerSDKAccessPath (0.00s)
+PASS
+ok  	github.com/rayer/llm-wiki-bff/cmd/pipeline_config	0.596s
+=== RUN   TestWorkerBuildNonceDefaultAndStartupLine
+--- PASS: TestWorkerBuildNonceDefaultAndStartupLine (0.00s)
+=== RUN   TestWorkerBuildNonceStartupPrecedesCobraExecution
+--- PASS: TestWorkerBuildNonceStartupPrecedesCobraExecution (0.00s)
+=== RUN   TestWorkerDockerfileBuildNonceContract
+--- PASS: TestWorkerDockerfileBuildNonceContract (0.00s)
+=== RUN   TestDeployWorkflowBuildNonceContract
+--- PASS: TestDeployWorkflowBuildNonceContract (0.00s)
+=== RUN   TestBuildNonceIsNotPublicBFFBuildInfo
+--- PASS: TestBuildNonceIsNotPublicBFFBuildInfo (0.00s)
+=== RUN   TestCloudLeaseRejectsOverlapAndReleaseUsesGeneration
+2026/10/06 22:38:45 worker: lease reclaim refused state=malformed holder=exec-x job=""
+--- PASS: TestCloudLeaseRejectsOverlapAndReleaseUsesGeneration (0.00s)
+=== RUN   TestCloudPrimaryFailuresWinCleanupFailures
+=== RUN   TestCloudPrimaryFailuresWinCleanupFailures/execution
+2026/10/06 22:38:45 [1/1] synto command
+=== RUN   TestCloudPrimaryFailuresWinCleanupFailures/pre-commit_publish
+2026/10/06 22:38:45 [1/1] synto command
+=== RUN   TestCloudPrimaryFailuresWinCleanupFailures/post-commit_receipt
+2026/10/06 22:38:45 [1/1] synto command
+--- PASS: TestCloudPrimaryFailuresWinCleanupFailures (0.11s)
+    --- PASS: TestCloudPrimaryFailuresWinCleanupFailures/execution (0.03s)
+    --- PASS: TestCloudPrimaryFailuresWinCleanupFailures/pre-commit_publish (0.04s)
+    --- PASS: TestCloudPrimaryFailuresWinCleanupFailures/post-commit_receipt (0.04s)
+=== RUN   TestCloudSuggestedQueriesPrimaryWinsLeaseCleanupFailure
+--- PASS: TestCloudSuggestedQueriesPrimaryWinsLeaseCleanupFailure (0.01s)
+=== RUN   TestCloudLeaseReleaseRetriesWithExactGenerationAndFreshContext
+=== RUN   TestCloudLeaseReleaseRetriesWithExactGenerationAndFreshContext/success_on_final_attempt
+=== RUN   TestCloudLeaseReleaseRetriesWithExactGenerationAndFreshContext/exhausted
+--- PASS: TestCloudLeaseReleaseRetriesWithExactGenerationAndFreshContext (0.00s)
+    --- PASS: TestCloudLeaseReleaseRetriesWithExactGenerationAndFreshContext/success_on_final_attempt (0.00s)
+    --- PASS: TestCloudLeaseReleaseRetriesWithExactGenerationAndFreshContext/exhausted (0.00s)
+=== RUN   TestCloudLeaseReleaseNeverDeletesReplacementGeneration
+--- PASS: TestCloudLeaseReleaseNeverDeletesReplacementGeneration (0.00s)
+=== RUN   TestDeploymentLeaseBreakGlassRunbookRequiresGenerationPrecondition
+--- PASS: TestDeploymentLeaseBreakGlassRunbookRequiresGenerationPrecondition (0.00s)
+=== RUN   TestCloudManifestCommitTimeoutReadbackControlsReceipts
+=== RUN   TestCloudManifestCommitTimeoutReadbackControlsReceipts/matching_pointer_is_committed
+2026/10/06 22:38:45 [1/1] synto command
+=== RUN   TestCloudManifestCommitTimeoutReadbackControlsReceipts/ambiguous_pointer_leaves_receipts_untouched
+2026/10/06 22:38:45 [1/1] synto command
+=== RUN   TestCloudManifestCommitTimeoutReadbackControlsReceipts/ambiguous_raw-log_failure_keeps_primary
+2026/10/06 22:38:45 [1/1] synto command
+2026/10/06 22:38:45 WARNING cloud failure pipeline log recording failed execution_id="execution-secret" project_id="project-secret" stage="generation_publish" detail_code=""
+--- PASS: TestCloudManifestCommitTimeoutReadbackControlsReceipts (0.12s)
+    --- PASS: TestCloudManifestCommitTimeoutReadbackControlsReceipts/matching_pointer_is_committed (0.04s)
+    --- PASS: TestCloudManifestCommitTimeoutReadbackControlsReceipts/ambiguous_pointer_leaves_receipts_untouched (0.04s)
+    --- PASS: TestCloudManifestCommitTimeoutReadbackControlsReceipts/ambiguous_raw-log_failure_keeps_primary (0.04s)
+=== RUN   TestCloudCanceledAndExpiredFailuresStillRecordAllArtifacts
+=== RUN   TestCloudCanceledAndExpiredFailuresStillRecordAllArtifacts/cancelled
+2026/10/06 22:38:45 [1/1] synto command
+=== RUN   TestCloudCanceledAndExpiredFailuresStillRecordAllArtifacts/expired
+2026/10/06 22:38:45 [1/1] synto command
+--- PASS: TestCloudCanceledAndExpiredFailuresStillRecordAllArtifacts (0.07s)
+    --- PASS: TestCloudCanceledAndExpiredFailuresStillRecordAllArtifacts/cancelled (0.01s)
+    --- PASS: TestCloudCanceledAndExpiredFailuresStillRecordAllArtifacts/expired (0.06s)
+=== RUN   TestCloudWorkspaceCreationFailureRecordsDiagnosticWithoutPublication
+--- PASS: TestCloudWorkspaceCreationFailureRecordsDiagnosticWithoutPublication (0.00s)
+=== RUN   TestCloudMigrationPostconditionFailureIsTyped
+--- PASS: TestCloudMigrationPostconditionFailureIsTyped (0.01s)
+=== RUN   TestCloudSyntoLifecycleOutputIsPublishedForEveryFailurePhase
+=== RUN   TestCloudSyntoLifecycleOutputIsPublishedForEveryFailurePhase/migration
+=== RUN   TestCloudSyntoLifecycleOutputIsPublishedForEveryFailurePhase/run
+2026/10/06 22:38:45 [1/1] synto command
+=== RUN   TestCloudSyntoLifecycleOutputIsPublishedForEveryFailurePhase/pack_export
+2026/10/06 22:38:46 [1/1] synto command
+=== RUN   TestCloudSyntoLifecycleOutputIsPublishedForEveryFailurePhase/postprocess
+2026/10/06 22:38:46 [1/1] synto command
+=== RUN   TestCloudSyntoLifecycleOutputIsPublishedForEveryFailurePhase/ambiguous_manifest
+2026/10/06 22:38:46 [1/1] synto command
+--- PASS: TestCloudSyntoLifecycleOutputIsPublishedForEveryFailurePhase (0.14s)
+    --- PASS: TestCloudSyntoLifecycleOutputIsPublishedForEveryFailurePhase/migration (0.01s)
+    --- PASS: TestCloudSyntoLifecycleOutputIsPublishedForEveryFailurePhase/run (0.02s)
+    --- PASS: TestCloudSyntoLifecycleOutputIsPublishedForEveryFailurePhase/pack_export (0.02s)
+    --- PASS: TestCloudSyntoLifecycleOutputIsPublishedForEveryFailurePhase/postprocess (0.03s)
+    --- PASS: TestCloudSyntoLifecycleOutputIsPublishedForEveryFailurePhase/ambiguous_manifest (0.05s)
+=== RUN   TestCloudMigrationNormalizationFailureIsTyped
+--- PASS: TestCloudMigrationNormalizationFailureIsTyped (0.01s)
+=== RUN   TestFailureDiagnosticCreateOnlyReplayRequiresCanonicalIdentity
+--- PASS: TestFailureDiagnosticCreateOnlyReplayRequiresCanonicalIdentity (0.00s)
+=== RUN   TestWorkerFailureContextClassificationUsesAuthoritativeContext
+--- PASS: TestWorkerFailureContextClassificationUsesAuthoritativeContext (0.00s)
+=== RUN   TestCloudManifestGenerationConflictKeepsTypedPublicationClass
+2026/10/06 22:38:46 [1/1] synto command
+--- PASS: TestCloudManifestGenerationConflictKeepsTypedPublicationClass (0.04s)
+=== RUN   TestCloudMaterializationArbitraryErrorFallsBackToUnknown
+--- PASS: TestCloudMaterializationArbitraryErrorFallsBackToUnknown (0.00s)
+=== RUN   TestCloudReconciliationArbitraryErrorsFallBackToUnknown
+=== RUN   TestCloudReconciliationArbitraryErrorsFallBackToUnknown/source
+2026/10/06 22:38:46 [1/1] synto command
+=== RUN   TestCloudReconciliationArbitraryErrorsFallBackToUnknown/concept
+2026/10/06 22:38:46 [1/1] synto command
+--- PASS: TestCloudReconciliationArbitraryErrorsFallBackToUnknown (0.04s)
+    --- PASS: TestCloudReconciliationArbitraryErrorsFallBackToUnknown/source (0.02s)
+    --- PASS: TestCloudReconciliationArbitraryErrorsFallBackToUnknown/concept (0.02s)
+=== RUN   TestWorkerFailureDiagnosticHandlesTypedNilAndInvalidExitCode
+--- PASS: TestWorkerFailureDiagnosticHandlesTypedNilAndInvalidExitCode (0.00s)
+=== RUN   TestFailureDiagnosticDetailCodeIsBackwardCompatibleAndStrict
+--- PASS: TestFailureDiagnosticDetailCodeIsBackwardCompatibleAndStrict (0.00s)
+=== RUN   TestFailureDiagnosticDetailCodeUsesOnlyNestedTypedMetadata
+--- PASS: TestFailureDiagnosticDetailCodeUsesOnlyNestedTypedMetadata (0.00s)
+=== RUN   TestFailureDiagnosticDetailCodeTypedNilAndAllPhases
+--- PASS: TestFailureDiagnosticDetailCodeTypedNilAndAllPhases (0.00s)
+=== RUN   TestCloudPersistsConceptReconciliationDetailAndReplaysIdempotently
+2026/10/06 22:38:46 [1/1] synto command
+2026/10/06 22:38:46 [1/1] synto command
+--- PASS: TestCloudPersistsConceptReconciliationDetailAndReplaysIdempotently (0.05s)
+=== RUN   TestCloudPersistsNestedEntityMappingDetailAndReplaysIdempotently
+2026/10/06 22:38:46 [1/1] synto command
+2026/10/06 22:38:46 [1/1] synto command
+--- PASS: TestCloudPersistsNestedEntityMappingDetailAndReplaysIdempotently (0.05s)
+=== RUN   TestCloudInternalConceptFailureAppendsWorkerFailureToPipelineLog
+2026/10/06 22:38:46 [1/1] synto command
+--- PASS: TestCloudInternalConceptFailureAppendsWorkerFailureToPipelineLog (0.02s)
+=== RUN   TestWorkerFailurePipelineLogCoversEveryOwnedTerminalStageExactlyOnce
+=== RUN   TestWorkerFailurePipelineLogCoversEveryOwnedTerminalStageExactlyOnce/input_materialization
+=== RUN   TestWorkerFailurePipelineLogCoversEveryOwnedTerminalStageExactlyOnce/synto_migration
+=== RUN   TestWorkerFailurePipelineLogCoversEveryOwnedTerminalStageExactlyOnce/synto_config_normalization
+=== RUN   TestWorkerFailurePipelineLogCoversEveryOwnedTerminalStageExactlyOnce/synto_config_validation
+=== RUN   TestWorkerFailurePipelineLogCoversEveryOwnedTerminalStageExactlyOnce/synto_run
+=== RUN   TestWorkerFailurePipelineLogCoversEveryOwnedTerminalStageExactlyOnce/synto_index_export
+=== RUN   TestWorkerFailurePipelineLogCoversEveryOwnedTerminalStageExactlyOnce/source_reconciliation
+=== RUN   TestWorkerFailurePipelineLogCoversEveryOwnedTerminalStageExactlyOnce/concept_reconciliation
+=== RUN   TestWorkerFailurePipelineLogCoversEveryOwnedTerminalStageExactlyOnce/postprocess
+=== RUN   TestWorkerFailurePipelineLogCoversEveryOwnedTerminalStageExactlyOnce/generation_publish
+=== RUN   TestWorkerFailurePipelineLogCoversEveryOwnedTerminalStageExactlyOnce/receipt_recording
+=== RUN   TestWorkerFailurePipelineLogCoversEveryOwnedTerminalStageExactlyOnce/lease_cleanup
+--- PASS: TestWorkerFailurePipelineLogCoversEveryOwnedTerminalStageExactlyOnce (0.06s)
+    --- PASS: TestWorkerFailurePipelineLogCoversEveryOwnedTerminalStageExactlyOnce/input_materialization (0.01s)
+    --- PASS: TestWorkerFailurePipelineLogCoversEveryOwnedTerminalStageExactlyOnce/synto_migration (0.00s)
+    --- PASS: TestWorkerFailurePipelineLogCoversEveryOwnedTerminalStageExactlyOnce/synto_config_normalization (0.01s)
+    --- PASS: TestWorkerFailurePipelineLogCoversEveryOwnedTerminalStageExactlyOnce/synto_config_validation (0.01s)
+    --- PASS: TestWorkerFailurePipelineLogCoversEveryOwnedTerminalStageExactlyOnce/synto_run (0.01s)
+    --- PASS: TestWorkerFailurePipelineLogCoversEveryOwnedTerminalStageExactlyOnce/synto_index_export (0.00s)
+    --- PASS: TestWorkerFailurePipelineLogCoversEveryOwnedTerminalStageExactlyOnce/source_reconciliation (0.01s)
+    --- PASS: TestWorkerFailurePipelineLogCoversEveryOwnedTerminalStageExactlyOnce/concept_reconciliation (0.01s)
+    --- PASS: TestWorkerFailurePipelineLogCoversEveryOwnedTerminalStageExactlyOnce/postprocess (0.01s)
+    --- PASS: TestWorkerFailurePipelineLogCoversEveryOwnedTerminalStageExactlyOnce/generation_publish (0.01s)
+    --- PASS: TestWorkerFailurePipelineLogCoversEveryOwnedTerminalStageExactlyOnce/receipt_recording (0.00s)
+    --- PASS: TestWorkerFailurePipelineLogCoversEveryOwnedTerminalStageExactlyOnce/lease_cleanup (0.01s)
+=== RUN   TestWorkerFailurePipelineLogInitializesMissingArtifactWithStartupIdentity
+--- PASS: TestWorkerFailurePipelineLogInitializesMissingArtifactWithStartupIdentity (0.00s)
+=== RUN   TestRecordCloudFailurePipelineLogObjectStoreSerializesConcurrentDuplicates
+--- PASS: TestRecordCloudFailurePipelineLogObjectStoreSerializesConcurrentDuplicates (0.10s)
+=== RUN   TestCloudInternalSourceFailureAppendsWorkerFailureToPipelineLog
+2026/10/06 22:38:46 [1/1] synto command
+--- PASS: TestCloudInternalSourceFailureAppendsWorkerFailureToPipelineLog (0.02s)
+=== RUN   TestAppendWorkerFailurePipelineLogBoundsAndRedactsSecrets
+--- PASS: TestAppendWorkerFailurePipelineLogBoundsAndRedactsSecrets (0.02s)
+=== RUN   TestAppendWorkerFailurePipelineLogNearCapRetainsCompleteRecord
+--- PASS: TestAppendWorkerFailurePipelineLogNearCapRetainsCompleteRecord (0.01s)
+=== RUN   TestAppendWorkerFailurePipelineLogDelimitsChildOutputWithoutTrailingNewline
+=== RUN   TestAppendWorkerFailurePipelineLogDelimitsChildOutputWithoutTrailingNewline/without_trailing_newline
+=== RUN   TestAppendWorkerFailurePipelineLogDelimitsChildOutputWithoutTrailingNewline/empty
+--- PASS: TestAppendWorkerFailurePipelineLogDelimitsChildOutputWithoutTrailingNewline (0.01s)
+    --- PASS: TestAppendWorkerFailurePipelineLogDelimitsChildOutputWithoutTrailingNewline/without_trailing_newline (0.00s)
+    --- PASS: TestAppendWorkerFailurePipelineLogDelimitsChildOutputWithoutTrailingNewline/empty (0.01s)
+=== RUN   TestAppendWorkerFailurePipelineLogRedactsSecretBeforeCauseTruncation
+--- PASS: TestAppendWorkerFailurePipelineLogRedactsSecretBeforeCauseTruncation (0.00s)
+=== RUN   TestCloudRejectsUnsafeCommandContractBeforeLeaseStorageOrChild
+=== RUN   TestCloudRejectsUnsafeCommandContractBeforeLeaseStorageOrChild/no_postprocess
+=== RUN   TestCloudRejectsUnsafeCommandContractBeforeLeaseStorageOrChild/approve_only
+=== RUN   TestCloudRejectsUnsafeCommandContractBeforeLeaseStorageOrChild/run_is_not_first
+--- PASS: TestCloudRejectsUnsafeCommandContractBeforeLeaseStorageOrChild (0.00s)
+    --- PASS: TestCloudRejectsUnsafeCommandContractBeforeLeaseStorageOrChild/no_postprocess (0.00s)
+    --- PASS: TestCloudRejectsUnsafeCommandContractBeforeLeaseStorageOrChild/approve_only (0.00s)
+    --- PASS: TestCloudRejectsUnsafeCommandContractBeforeLeaseStorageOrChild/run_is_not_first (0.00s)
+=== RUN   TestCloudRejectsInvalidExecutionIDBeforeAnyTouch
+=== RUN   TestCloudRejectsInvalidExecutionIDBeforeAnyTouch/id-""
+=== RUN   TestCloudRejectsInvalidExecutionIDBeforeAnyTouch/id-"_"
+=== RUN   TestCloudRejectsInvalidExecutionIDBeforeAnyTouch/id-"../escape"
+=== RUN   TestCloudRejectsInvalidExecutionIDBeforeAnyTouch/id-"a/b"
+--- PASS: TestCloudRejectsInvalidExecutionIDBeforeAnyTouch (0.00s)
+    --- PASS: TestCloudRejectsInvalidExecutionIDBeforeAnyTouch/id-"" (0.00s)
+    --- PASS: TestCloudRejectsInvalidExecutionIDBeforeAnyTouch/id-"_" (0.00s)
+    --- PASS: TestCloudRejectsInvalidExecutionIDBeforeAnyTouch/id-"../escape" (0.00s)
+    --- PASS: TestCloudRejectsInvalidExecutionIDBeforeAnyTouch/id-"a/b" (0.00s)
+=== RUN   TestCloudFailureRecordingPropagatesLogAndStatusFailures
+=== RUN   TestCloudFailureRecordingPropagatesLogAndStatusFailures/log
+2026/10/06 22:38:46 [1/1] synto command
+2026/10/06 22:38:46 WARNING cloud failure pipeline log recording failed execution_id="execution-secret" project_id="project-secret" stage="synto_run" detail_code=""
+=== RUN   TestCloudFailureRecordingPropagatesLogAndStatusFailures/status
+2026/10/06 22:38:46 [1/1] synto command
+=== RUN   TestCloudFailureRecordingPropagatesLogAndStatusFailures/both
+2026/10/06 22:38:46 [1/1] synto command
+2026/10/06 22:38:46 WARNING cloud failure pipeline log recording failed execution_id="execution-secret" project_id="project-secret" stage="synto_run" detail_code=""
+--- PASS: TestCloudFailureRecordingPropagatesLogAndStatusFailures (0.04s)
+    --- PASS: TestCloudFailureRecordingPropagatesLogAndStatusFailures/log (0.01s)
+    --- PASS: TestCloudFailureRecordingPropagatesLogAndStatusFailures/status (0.01s)
+    --- PASS: TestCloudFailureRecordingPropagatesLogAndStatusFailures/both (0.01s)
+=== RUN   TestCloudRawPipelineLogFailureIsBestEffortWarnsOnceAndKeepsPrimary
+--- PASS: TestCloudRawPipelineLogFailureIsBestEffortWarnsOnceAndKeepsPrimary (0.01s)
+=== RUN   TestCloudPublishFailureWithRecordingFailurePreservesPublishCategory
+2026/10/06 22:38:46 [1/1] synto command
+2026/10/06 22:38:46 WARNING cloud failure pipeline log recording failed execution_id="execution-secret" project_id="project-secret" stage="generation_publish" detail_code=""
+--- PASS: TestCloudPublishFailureWithRecordingFailurePreservesPublishCategory (0.04s)
+=== RUN   TestCloudWorkerPersistsArbitraryChildOutputWithBoundedMarker
+2026/10/06 22:38:46 [1/1] synto command
+--- PASS: TestCloudWorkerPersistsArbitraryChildOutputWithBoundedMarker (0.29s)
+=== RUN   TestCloudRunFailureWritesStrictBoundedDiagnosticAndFixedReceipts
+2026/10/06 22:38:46 [1/1] synto command
+--- PASS: TestCloudRunFailureWritesStrictBoundedDiagnosticAndFixedReceipts (6.83s)
+=== RUN   TestCloudSuccessWritesNoFailureDiagnostic
+2026/10/06 22:38:53 [1/1] synto command
+--- PASS: TestCloudSuccessWritesNoFailureDiagnostic (0.03s)
+=== RUN   TestCloudPipelinePinsNewlyIngestedSourceFromStartRaw
+2026/10/06 22:38:53 [1/1] synto command
+--- PASS: TestCloudPipelinePinsNewlyIngestedSourceFromStartRaw (0.05s)
+=== RUN   TestCloudPipelineRejectsNewSourceWhenRawChangedAfterStart
+=== RUN   TestCloudPipelineRejectsNewSourceWhenRawChangedAfterStart/changed
+2026/10/06 22:38:53 [1/1] synto command
+=== RUN   TestCloudPipelineRejectsNewSourceWhenRawChangedAfterStart/missing
+2026/10/06 22:38:53 [1/1] synto command
+--- PASS: TestCloudPipelineRejectsNewSourceWhenRawChangedAfterStart (0.09s)
+    --- PASS: TestCloudPipelineRejectsNewSourceWhenRawChangedAfterStart/changed (0.04s)
+    --- PASS: TestCloudPipelineRejectsNewSourceWhenRawChangedAfterStart/missing (0.04s)
+=== RUN   TestPinNewlyMappedCloudSourcesRejectsRawChangedSinceStart
+--- PASS: TestPinNewlyMappedCloudSourcesRejectsRawChangedSinceStart (0.00s)
+=== RUN   TestCloudSuggestedQueriesGenerateInsidePrivateWorkspaceBeforeManifestPublish
+2026/10/06 22:38:53 [1/1] synto command
+--- PASS: TestCloudSuggestedQueriesGenerateInsidePrivateWorkspaceBeforeManifestPublish (0.03s)
+=== RUN   TestCloudSuggestedQueriesStageOnlyPublishesNewChips
+--- PASS: TestCloudSuggestedQueriesStageOnlyPublishesNewChips (0.01s)
+=== RUN   TestCloudSuggestedQueriesRequiresCommittedGeneration
+--- PASS: TestCloudSuggestedQueriesRequiresCommittedGeneration (0.00s)
+=== RUN   TestCloudSuggestedQueriesAmbiguousManifestRecordsFailureWithoutReceipts
+2026/10/06 22:38:53 postprocess suggested queries: generation failed; preserving last-known-good artifact: corpus_empty
+--- PASS: TestCloudSuggestedQueriesAmbiguousManifestRecordsFailureWithoutReceipts (0.01s)
+=== RUN   TestCloudSuggestedQueryProviderFailurePreservesByteIdenticalLKG
+2026/10/06 22:38:53 [1/1] synto command
+2026/10/06 22:38:53 postprocess suggested queries: generation failed; preserving last-known-good artifact: provider_transport_or_response_error
+--- PASS: TestCloudSuggestedQueryProviderFailurePreservesByteIdenticalLKG (0.03s)
+=== RUN   TestFailureDiagnosticUnknownErrorIsFiniteAndMessageFree
+--- PASS: TestFailureDiagnosticUnknownErrorIsFiniteAndMessageFree (0.00s)
+=== RUN   TestCloudDiagnosticWriteFailureRecordsFixedCategoryBeforePublication
+2026/10/06 22:38:54 [1/1] synto command
+--- PASS: TestCloudDiagnosticWriteFailureRecordsFixedCategoryBeforePublication (0.02s)
+=== RUN   TestWriteCloudPipelineLogBoundsExistingRawOutput
+--- PASS: TestWriteCloudPipelineLogBoundsExistingRawOutput (0.02s)
+=== RUN   TestCloudMaterializationReadsManifestDirectlyAndNeverListsGenerations
+--- PASS: TestCloudMaterializationReadsManifestDirectlyAndNeverListsGenerations (0.00s)
+=== RUN   TestCloudMaterializationPreservesValidatedSyntoIndexAndState
+--- PASS: TestCloudMaterializationPreservesValidatedSyntoIndexAndState (0.01s)
+=== RUN   TestCloudMaterializationCleanRebuildSkipsPriorGenerationOutputs
+--- PASS: TestCloudMaterializationCleanRebuildSkipsPriorGenerationOutputs (0.00s)
+=== RUN   TestCloudMaterializationRejectsPresentEmptyManifestBeforeChild
+--- PASS: TestCloudMaterializationRejectsPresentEmptyManifestBeforeChild (0.01s)
+=== RUN   TestCloudMaterializationFailureRecordsFixedFailureReceipt
+--- PASS: TestCloudMaterializationFailureRecordsFixedFailureReceipt (0.01s)
+=== RUN   TestCloudOversizeCanonicalInputFailsBeforeChild
+--- PASS: TestCloudOversizeCanonicalInputFailsBeforeChild (0.00s)
+=== RUN   TestCloudReleaseUsesFreshContextAfterRunCancellation
+2026/10/06 22:38:54 [1/1] synto command
+--- PASS: TestCloudReleaseUsesFreshContextAfterRunCancellation (0.01s)
+=== RUN   TestCloudReleaseTimeoutIsGenericAfterCommit
+2026/10/06 22:38:54 [1/1] synto command
+--- PASS: TestCloudReleaseTimeoutIsGenericAfterCommit (0.03s)
+=== RUN   TestPublishCloudGenerationUsesImmutableFilesAndManifestCAS
+--- PASS: TestPublishCloudGenerationUsesImmutableFilesAndManifestCAS (0.01s)
+=== RUN   TestPublishCloudGenerationArchivesSourceSnapshotsByGeneration
+--- PASS: TestPublishCloudGenerationArchivesSourceSnapshotsByGeneration (0.01s)
+=== RUN   TestPublishCloudGenerationRetainsUnchangedSourceAndBindsReceipt
+--- PASS: TestPublishCloudGenerationRetainsUnchangedSourceAndBindsReceipt (0.01s)
+=== RUN   TestOutputOnlyGenerationRetainsPinnedSourceWithoutReadingMutableRaw
+--- PASS: TestOutputOnlyGenerationRetainsPinnedSourceWithoutReadingMutableRaw (0.01s)
+=== RUN   TestPublishCloudGenerationRejectsMissingOrMismatchedSourceReceipt
+=== RUN   TestPublishCloudGenerationRejectsMissingOrMismatchedSourceReceipt/missing
+=== RUN   TestPublishCloudGenerationRejectsMissingOrMismatchedSourceReceipt/mismatched
+--- PASS: TestPublishCloudGenerationRejectsMissingOrMismatchedSourceReceipt (0.01s)
+    --- PASS: TestPublishCloudGenerationRejectsMissingOrMismatchedSourceReceipt/missing (0.00s)
+    --- PASS: TestPublishCloudGenerationRejectsMissingOrMismatchedSourceReceipt/mismatched (0.00s)
+=== RUN   TestPublishCloudGenerationRejectsUningestedRawChangeAndDropsDeletedIDs
+--- PASS: TestPublishCloudGenerationRejectsUningestedRawChangeAndDropsDeletedIDs (0.01s)
+=== RUN   TestPublishCloudGenerationFailureAndCASLoserDoNotAdvanceCurrent
+--- PASS: TestPublishCloudGenerationFailureAndCASLoserDoNotAdvanceCurrent (0.01s)
+=== RUN   TestCloudPreflightRejectsUnsafeOutputBeforeAnyGenerationWrite
+--- PASS: TestCloudPreflightRejectsUnsafeOutputBeforeAnyGenerationWrite (0.00s)
+=== RUN   TestCloudPreflightStopsWalkAtMaxFilesPlusOne
+--- PASS: TestCloudPreflightStopsWalkAtMaxFilesPlusOne (1.24s)
+=== RUN   TestCloudPreflightRejectsGlobalEntryBudgetOutsideGeneration
+--- PASS: TestCloudPreflightRejectsGlobalEntryBudgetOutsideGeneration (1.08s)
+=== RUN   TestCloudPreflightRejectsExcessiveTraversalDepth
+--- PASS: TestCloudPreflightRejectsExcessiveTraversalDepth (0.01s)
+=== RUN   TestCloudPreflightRejectsDirectoryAndTraversalByteBudgets
+--- PASS: TestCloudPreflightRejectsDirectoryAndTraversalByteBudgets (0.01s)
+=== RUN   TestCloudPreflightAndPublicationAcceptFreshSyntoOutputWithoutLegacyState
+--- PASS: TestCloudPreflightAndPublicationAcceptFreshSyntoOutputWithoutLegacyState (0.12s)
+=== RUN   TestCloudPreflightRequiresBothMigratedRollbackArtifacts
+--- PASS: TestCloudPreflightRequiresBothMigratedRollbackArtifacts (0.00s)
+=== RUN   TestSyntoPublicationFailsClosedOnMissingMalformedOrUnsafeState
+=== RUN   TestSyntoPublicationFailsClosedOnMissingMalformedOrUnsafeState/missing_state_preserves_current
+=== RUN   TestSyntoPublicationFailsClosedOnMissingMalformedOrUnsafeState/invalid_page_size
+=== RUN   TestSyntoPublicationFailsClosedOnMissingMalformedOrUnsafeState/arbitrary_bytes
+=== RUN   TestSyntoPublicationFailsClosedOnMissingMalformedOrUnsafeState/truncated_header
+=== RUN   TestSyntoPublicationFailsClosedOnMissingMalformedOrUnsafeState/state_symlink_and_special_file
+=== RUN   TestSyntoPublicationFailsClosedOnMissingMalformedOrUnsafeState/state_symlink_and_special_file/symlink
+=== RUN   TestSyntoPublicationFailsClosedOnMissingMalformedOrUnsafeState/state_symlink_and_special_file/directory
+--- PASS: TestSyntoPublicationFailsClosedOnMissingMalformedOrUnsafeState (0.05s)
+    --- PASS: TestSyntoPublicationFailsClosedOnMissingMalformedOrUnsafeState/missing_state_preserves_current (0.04s)
+    --- PASS: TestSyntoPublicationFailsClosedOnMissingMalformedOrUnsafeState/invalid_page_size (0.00s)
+    --- PASS: TestSyntoPublicationFailsClosedOnMissingMalformedOrUnsafeState/arbitrary_bytes (0.00s)
+    --- PASS: TestSyntoPublicationFailsClosedOnMissingMalformedOrUnsafeState/truncated_header (0.00s)
+    --- PASS: TestSyntoPublicationFailsClosedOnMissingMalformedOrUnsafeState/state_symlink_and_special_file (0.00s)
+        --- PASS: TestSyntoPublicationFailsClosedOnMissingMalformedOrUnsafeState/state_symlink_and_special_file/symlink (0.00s)
+        --- PASS: TestSyntoPublicationFailsClosedOnMissingMalformedOrUnsafeState/state_symlink_and_special_file/directory (0.00s)
+=== RUN   TestCloudPreCommitFailuresKeepOldManifestAndRecordSanitizedFailure
+2026/10/06 22:38:56 [1/1] synto command
+--- PASS: TestCloudPreCommitFailuresKeepOldManifestAndRecordSanitizedFailure (0.03s)
+=== RUN   TestCloudPostCommitReceiptFailureDoesNotRollbackManifest
+2026/10/06 22:38:56 [1/1] synto command
+--- PASS: TestCloudPostCommitReceiptFailureDoesNotRollbackManifest (0.04s)
+=== RUN   TestCloudPostCommitReceiptDiagnosticFailurePreservesCommittedCategory
+2026/10/06 22:38:56 [1/1] synto command
+--- PASS: TestCloudPostCommitReceiptDiagnosticFailurePreservesCommittedCategory (0.04s)
+=== RUN   TestCloudPostCommitDiagnosticUsesBoundedDetachedContext
+2026/10/06 22:38:56 [1/1] synto command
+--- PASS: TestCloudPostCommitDiagnosticUsesBoundedDetachedContext (0.03s)
+=== RUN   TestCloudFailureRecordingArtifactsShareOneDeadline
+--- PASS: TestCloudFailureRecordingArtifactsShareOneDeadline (0.00s)
+=== RUN   TestCloudPostprocessFailureUsesPostprocessDiagnosticStage
+2026/10/06 22:38:56 [1/1] synto command
+--- PASS: TestCloudPostprocessFailureUsesPostprocessDiagnosticStage (0.02s)
+=== RUN   TestCloudSuccessUsesExactStartAndConcurrentChangesStayDirty
+2026/10/06 22:38:56 [1/1] synto command
+--- PASS: TestCloudSuccessUsesExactStartAndConcurrentChangesStayDirty (0.03s)
+=== RUN   TestCloudManifestConflictKeepsOldManifestWithoutSuccessReceipt
+2026/10/06 22:38:56 [1/1] synto command
+--- PASS: TestCloudManifestConflictKeepsOldManifestWithoutSuccessReceipt (0.04s)
+=== RUN   TestCloudLeaseOverlapDoesNotMaterializeOrExecute
+2026/10/06 22:38:56 worker: lease reclaim refused state=malformed holder=first job=""
+--- PASS: TestCloudLeaseOverlapDoesNotMaterializeOrExecute (0.00s)
+=== RUN   TestCloudRejectsOversizeInputBeforeLeaseOrChild
+--- PASS: TestCloudRejectsOversizeInputBeforeLeaseOrChild (0.00s)
+=== RUN   TestCloudReceiptCASRetriesOnlyConflictsAndPreservesConcurrentReceipts
+2026/10/06 22:38:56 [1/1] synto command
+--- PASS: TestCloudReceiptCASRetriesOnlyConflictsAndPreservesConcurrentReceipts (0.03s)
+=== RUN   TestMergeCloudReceiptsRejectsMalformedExistingSentinels
+--- PASS: TestMergeCloudReceiptsRejectsMalformedExistingSentinels (0.00s)
+=== RUN   TestCloudReceiptCASExhaustionIsGenericAndFailurePreservesSuccess
+--- PASS: TestCloudReceiptCASExhaustionIsGenericAndFailurePreservesSuccess (0.00s)
+=== RUN   TestCloudLeaseReleaseConflictsPreserveExactState
+=== RUN   TestCloudLeaseReleaseConflictsPreserveExactState/before_commit
+2026/10/06 22:38:56 [1/1] synto command
+=== RUN   TestCloudLeaseReleaseConflictsPreserveExactState/after_commit
+2026/10/06 22:38:56 [1/1] synto command
+--- PASS: TestCloudLeaseReleaseConflictsPreserveExactState (0.04s)
+    --- PASS: TestCloudLeaseReleaseConflictsPreserveExactState/before_commit (0.01s)
+    --- PASS: TestCloudLeaseReleaseConflictsPreserveExactState/after_commit (0.03s)
+=== RUN   TestCloudLeaseCleanupDiagnosticFailurePreservesCommittedCleanupCategory
+2026/10/06 22:38:56 [1/1] synto command
+--- PASS: TestCloudLeaseCleanupDiagnosticFailurePreservesCommittedCleanupCategory (0.03s)
+=== RUN   TestCloudSuccessExactStartRawAndAnnotationPairs
+=== RUN   TestCloudSuccessExactStartRawAndAnnotationPairs/unchanged_nonempty
+2026/10/06 22:38:57 [1/1] synto command
+=== RUN   TestCloudSuccessExactStartRawAndAnnotationPairs/annotation_A_to_B
+2026/10/06 22:38:57 [1/1] synto command
+=== RUN   TestCloudSuccessExactStartRawAndAnnotationPairs/annotation_nonempty_to_clear
+2026/10/06 22:38:57 [1/1] synto command
+=== RUN   TestCloudSuccessExactStartRawAndAnnotationPairs/annotation_clear_to_nonempty
+2026/10/06 22:38:57 [1/1] synto command
+=== RUN   TestCloudSuccessExactStartRawAndAnnotationPairs/unchanged_clear
+2026/10/06 22:38:57 [1/1] synto command
+=== RUN   TestCloudSuccessExactStartRawAndAnnotationPairs/raw_changed
+2026/10/06 22:38:57 [1/1] synto command
+--- PASS: TestCloudSuccessExactStartRawAndAnnotationPairs (0.20s)
+    --- PASS: TestCloudSuccessExactStartRawAndAnnotationPairs/unchanged_nonempty (0.03s)
+    --- PASS: TestCloudSuccessExactStartRawAndAnnotationPairs/annotation_A_to_B (0.03s)
+    --- PASS: TestCloudSuccessExactStartRawAndAnnotationPairs/annotation_nonempty_to_clear (0.03s)
+    --- PASS: TestCloudSuccessExactStartRawAndAnnotationPairs/annotation_clear_to_nonempty (0.03s)
+    --- PASS: TestCloudSuccessExactStartRawAndAnnotationPairs/unchanged_clear (0.03s)
+    --- PASS: TestCloudSuccessExactStartRawAndAnnotationPairs/raw_changed (0.04s)
+=== RUN   TestCloudPriorStatusInvalidEntryFailsClosedWithoutLeakingIdentifier
+--- PASS: TestCloudPriorStatusInvalidEntryFailsClosedWithoutLeakingIdentifier (0.00s)
+=== RUN   TestCloudPriorReceiptVariantsFailClosedExceptOneValidReceipt
+=== RUN   TestCloudPriorReceiptVariantsFailClosedExceptOneValidReceipt/raw_path_only
+=== RUN   TestCloudPriorReceiptVariantsFailClosedExceptOneValidReceipt/missing_required_field
+=== RUN   TestCloudPriorReceiptVariantsFailClosedExceptOneValidReceipt/invalid_digest
+=== RUN   TestCloudPriorReceiptVariantsFailClosedExceptOneValidReceipt/inconsistent_fingerprint
+=== RUN   TestCloudPriorReceiptVariantsFailClosedExceptOneValidReceipt/valid
+--- PASS: TestCloudPriorReceiptVariantsFailClosedExceptOneValidReceipt (0.00s)
+    --- PASS: TestCloudPriorReceiptVariantsFailClosedExceptOneValidReceipt/raw_path_only (0.00s)
+    --- PASS: TestCloudPriorReceiptVariantsFailClosedExceptOneValidReceipt/missing_required_field (0.00s)
+    --- PASS: TestCloudPriorReceiptVariantsFailClosedExceptOneValidReceipt/invalid_digest (0.00s)
+    --- PASS: TestCloudPriorReceiptVariantsFailClosedExceptOneValidReceipt/inconsistent_fingerprint (0.00s)
+    --- PASS: TestCloudPriorReceiptVariantsFailClosedExceptOneValidReceipt/valid (0.00s)
+=== RUN   TestCloudStatusOnlyReservationRejectsTransientReuseBeforePublish
+2026/10/06 22:38:57 [1/1] synto command
+--- PASS: TestCloudStatusOnlyReservationRejectsTransientReuseBeforePublish (0.02s)
+=== RUN   TestCloudMalformedPriorStatusPreventsPublish
+--- PASS: TestCloudMalformedPriorStatusPreventsPublish (0.01s)
+=== RUN   TestCloudTwoGenerationsReconcileStableSourceAndAnnotation
+2026/10/06 22:38:57 [1/1] synto command
+2026/10/06 22:38:57 [1/1] synto command
+--- PASS: TestCloudTwoGenerationsReconcileStableSourceAndAnnotation (0.09s)
+=== RUN   TestFailureDiagnosticUnknownErrorKeepsBoundedRedactedMessage
+--- PASS: TestFailureDiagnosticUnknownErrorKeepsBoundedRedactedMessage (0.00s)
+=== RUN   TestAnnotatedBoundaryPreservesRootCause
+--- PASS: TestAnnotatedBoundaryPreservesRootCause (0.00s)
+=== RUN   TestMergeCloudReceiptsPreservesReadCause
+--- PASS: TestMergeCloudReceiptsPreservesReadCause (0.00s)
+=== RUN   TestReconcileConceptIDMapPreservesPriorStableIDForSameSlug
+--- PASS: TestReconcileConceptIDMapPreservesPriorStableIDForSameSlug (0.00s)
+=== RUN   TestReconcileConceptIDMapIsOrderIndependentAndDeterministic
+--- PASS: TestReconcileConceptIDMapIsOrderIndependentAndDeterministic (0.00s)
+=== RUN   TestReconcileConceptIDMapSameSlugTitleBodyRewriteKeepsStableRoute
+--- PASS: TestReconcileConceptIDMapSameSlugTitleBodyRewriteKeepsStableRoute (0.00s)
+=== RUN   TestReconcileConceptIDMapRejectsAmbiguousRenameMergeSplit
+--- PASS: TestReconcileConceptIDMapRejectsAmbiguousRenameMergeSplit (0.00s)
+=== RUN   TestReconcileConceptIDMapFailClosedOnCollisionsMalformedUnsafe
+=== RUN   TestReconcileConceptIDMapFailClosedOnCollisionsMalformedUnsafe/duplicate_generated_slug
+=== RUN   TestReconcileConceptIDMapFailClosedOnCollisionsMalformedUnsafe/duplicate_prior_slug
+=== RUN   TestReconcileConceptIDMapFailClosedOnCollisionsMalformedUnsafe/reserved_ID_used_by_different_slug
+=== RUN   TestReconcileConceptIDMapFailClosedOnCollisionsMalformedUnsafe/unsafe_generated_concept_ID
+=== RUN   TestReconcileConceptIDMapFailClosedOnCollisionsMalformedUnsafe/unsafe_generated_slug
+=== RUN   TestReconcileConceptIDMapFailClosedOnCollisionsMalformedUnsafe/unsafe_prior_concept_ID
+=== RUN   TestReconcileConceptIDMapFailClosedOnCollisionsMalformedUnsafe/malformed_id_map
+=== RUN   TestReconcileConceptIDMapFailClosedOnCollisionsMalformedUnsafe/stable_ID_collision_across_raw_paths_equivalent
+--- PASS: TestReconcileConceptIDMapFailClosedOnCollisionsMalformedUnsafe (0.00s)
+    --- PASS: TestReconcileConceptIDMapFailClosedOnCollisionsMalformedUnsafe/duplicate_generated_slug (0.00s)
+    --- PASS: TestReconcileConceptIDMapFailClosedOnCollisionsMalformedUnsafe/duplicate_prior_slug (0.00s)
+    --- PASS: TestReconcileConceptIDMapFailClosedOnCollisionsMalformedUnsafe/reserved_ID_used_by_different_slug (0.00s)
+    --- PASS: TestReconcileConceptIDMapFailClosedOnCollisionsMalformedUnsafe/unsafe_generated_concept_ID (0.00s)
+    --- PASS: TestReconcileConceptIDMapFailClosedOnCollisionsMalformedUnsafe/unsafe_generated_slug (0.00s)
+    --- PASS: TestReconcileConceptIDMapFailClosedOnCollisionsMalformedUnsafe/unsafe_prior_concept_ID (0.00s)
+    --- PASS: TestReconcileConceptIDMapFailClosedOnCollisionsMalformedUnsafe/malformed_id_map (0.00s)
+    --- PASS: TestReconcileConceptIDMapFailClosedOnCollisionsMalformedUnsafe/stable_ID_collision_across_raw_paths_equivalent (0.00s)
+=== RUN   TestReconcileWorkspaceConceptsRewritesIdentityAndReferences
+--- PASS: TestReconcileWorkspaceConceptsRewritesIdentityAndReferences (0.02s)
+=== RUN   TestReconcileWorkspaceConceptsFailClosedOnInconsistentPage
+--- PASS: TestReconcileWorkspaceConceptsFailClosedOnInconsistentPage (0.00s)
+=== RUN   TestReconcileWorkspaceConceptsFailClosedOnMissingPage
+--- PASS: TestReconcileWorkspaceConceptsFailClosedOnMissingPage (0.00s)
+=== RUN   TestSnapshotConceptsReadsPriorIDMap
+--- PASS: TestSnapshotConceptsReadsPriorIDMap (0.00s)
+=== RUN   TestSnapshotConceptsMissingMapIsEmpty
+--- PASS: TestSnapshotConceptsMissingMapIsEmpty (0.00s)
+=== RUN   TestSourceAndConceptReconciliationCompose
+--- PASS: TestSourceAndConceptReconciliationCompose (0.03s)
+=== RUN   TestDefaultInPlacePathReconcilesConceptIDs
+2026/10/06 22:38:57 [1/1] synto command
+--- PASS: TestDefaultInPlacePathReconcilesConceptIDs (0.16s)
+=== RUN   TestReconcileWorkspaceConceptsUsesCurrentExplicitULIDAtSameSlug
+--- PASS: TestReconcileWorkspaceConceptsUsesCurrentExplicitULIDAtSameSlug (0.02s)
+=== RUN   TestReconcileWorkspaceConceptsExcludesEntitylessArticleFromConceptArtifacts
+=== RUN   TestReconcileWorkspaceConceptsExcludesEntitylessArticleFromConceptArtifacts/null
+=== RUN   TestReconcileWorkspaceConceptsExcludesEntitylessArticleFromConceptArtifacts/omitted
+--- PASS: TestReconcileWorkspaceConceptsExcludesEntitylessArticleFromConceptArtifacts (0.03s)
+    --- PASS: TestReconcileWorkspaceConceptsExcludesEntitylessArticleFromConceptArtifacts/null (0.02s)
+    --- PASS: TestReconcileWorkspaceConceptsExcludesEntitylessArticleFromConceptArtifacts/omitted (0.01s)
+=== RUN   TestReconcileWorkspaceConceptsRejectsEntitylessIDPathDisagreementWithoutWrites
+--- PASS: TestReconcileWorkspaceConceptsRejectsEntitylessIDPathDisagreementWithoutWrites (0.00s)
+=== RUN   TestReconcileWorkspaceConceptsDirectPathDropsEntitylessConceptCacheRows
+--- PASS: TestReconcileWorkspaceConceptsDirectPathDropsEntitylessConceptCacheRows (0.01s)
+=== RUN   TestRewriteOtherConceptPageWikilinksIncludesSources
+--- PASS: TestRewriteOtherConceptPageWikilinksIncludesSources (0.00s)
+=== RUN   TestReconcileWorkspaceConceptsRejectsSymlinksAndOversized
+=== RUN   TestReconcileWorkspaceConceptsRejectsSymlinksAndOversized/concept_page_symlink
+=== RUN   TestReconcileWorkspaceConceptsRejectsSymlinksAndOversized/other_page_symlink
+=== RUN   TestReconcileWorkspaceConceptsRejectsSymlinksAndOversized/id_map_symlink
+=== RUN   TestReconcileWorkspaceConceptsRejectsSymlinksAndOversized/concepts_cache_symlink
+=== RUN   TestReconcileWorkspaceConceptsRejectsSymlinksAndOversized/oversized_concept_page
+=== RUN   TestReconcileWorkspaceConceptsRejectsSymlinksAndOversized/oversized_concepts_cache
+--- PASS: TestReconcileWorkspaceConceptsRejectsSymlinksAndOversized (0.07s)
+    --- PASS: TestReconcileWorkspaceConceptsRejectsSymlinksAndOversized/concept_page_symlink (0.00s)
+    --- PASS: TestReconcileWorkspaceConceptsRejectsSymlinksAndOversized/other_page_symlink (0.00s)
+    --- PASS: TestReconcileWorkspaceConceptsRejectsSymlinksAndOversized/id_map_symlink (0.00s)
+    --- PASS: TestReconcileWorkspaceConceptsRejectsSymlinksAndOversized/concepts_cache_symlink (0.00s)
+    --- PASS: TestReconcileWorkspaceConceptsRejectsSymlinksAndOversized/oversized_concept_page (0.03s)
+    --- PASS: TestReconcileWorkspaceConceptsRejectsSymlinksAndOversized/oversized_concepts_cache (0.03s)
+=== RUN   TestRewriteConceptIDBearingWikilinksIsExactRouteOnly
+--- PASS: TestRewriteConceptIDBearingWikilinksIsExactRouteOnly (0.00s)
+=== RUN   TestRewriteConceptCacheIDsFailClosedOnDuplicateAndIncomplete
+=== RUN   TestRewriteConceptCacheIDsFailClosedOnDuplicateAndIncomplete/duplicate_slug_rows
+=== RUN   TestRewriteConceptCacheIDsFailClosedOnDuplicateAndIncomplete/missing_cache_row
+=== RUN   TestRewriteConceptCacheIDsFailClosedOnDuplicateAndIncomplete/extra_cache_row
+--- PASS: TestRewriteConceptCacheIDsFailClosedOnDuplicateAndIncomplete (0.00s)
+    --- PASS: TestRewriteConceptCacheIDsFailClosedOnDuplicateAndIncomplete/duplicate_slug_rows (0.00s)
+    --- PASS: TestRewriteConceptCacheIDsFailClosedOnDuplicateAndIncomplete/missing_cache_row (0.00s)
+    --- PASS: TestRewriteConceptCacheIDsFailClosedOnDuplicateAndIncomplete/extra_cache_row (0.00s)
+=== RUN   TestRewriteConceptCacheIDsRejectsDuplicateJSONKeys
+=== RUN   TestRewriteConceptCacheIDsRejectsDuplicateJSONKeys/duplicate_top-level_slug_key
+=== RUN   TestRewriteConceptCacheIDsRejectsDuplicateJSONKeys/duplicate_nested_frontmatter_id_key
+=== RUN   TestRewriteConceptCacheIDsRejectsDuplicateJSONKeys/trailing_data
+--- PASS: TestRewriteConceptCacheIDsRejectsDuplicateJSONKeys (0.00s)
+    --- PASS: TestRewriteConceptCacheIDsRejectsDuplicateJSONKeys/duplicate_top-level_slug_key (0.00s)
+    --- PASS: TestRewriteConceptCacheIDsRejectsDuplicateJSONKeys/duplicate_nested_frontmatter_id_key (0.00s)
+    --- PASS: TestRewriteConceptCacheIDsRejectsDuplicateJSONKeys/trailing_data (0.00s)
+=== RUN   TestDockerfilePinsExactSyntoWheelHash
+--- PASS: TestDockerfilePinsExactSyntoWheelHash (0.00s)
+=== RUN   TestSourceThenConceptReconcileRejectsDuplicateJSONKeysWithoutSanitizing
+--- PASS: TestSourceThenConceptReconcileRejectsDuplicateJSONKeysWithoutSanitizing (0.00s)
+=== RUN   TestDefaultInPlaceReconcileLateCacheFailureDoesNotPartiallyMutate
+--- PASS: TestDefaultInPlaceReconcileLateCacheFailureDoesNotPartiallyMutate (0.00s)
+=== RUN   TestReconcileConceptIDMapRejectsUnsafeRedirectKeysAndTargets
+=== RUN   TestReconcileConceptIDMapRejectsUnsafeRedirectKeysAndTargets/escape_key
+=== RUN   TestReconcileConceptIDMapRejectsUnsafeRedirectKeysAndTargets/slash_key
+=== RUN   TestReconcileConceptIDMapRejectsUnsafeRedirectKeysAndTargets/backslash_key
+=== RUN   TestReconcileConceptIDMapRejectsUnsafeRedirectKeysAndTargets/blank_target
+=== RUN   TestReconcileConceptIDMapRejectsUnsafeRedirectKeysAndTargets/dot_target
+=== RUN   TestReconcileConceptIDMapRejectsUnsafeRedirectKeysAndTargets/dotdot_target
+=== RUN   TestReconcileConceptIDMapRejectsUnsafeRedirectKeysAndTargets/slash_target
+=== RUN   TestReconcileConceptIDMapRejectsUnsafeRedirectKeysAndTargets/backslash_target
+--- PASS: TestReconcileConceptIDMapRejectsUnsafeRedirectKeysAndTargets (0.00s)
+    --- PASS: TestReconcileConceptIDMapRejectsUnsafeRedirectKeysAndTargets/escape_key (0.00s)
+    --- PASS: TestReconcileConceptIDMapRejectsUnsafeRedirectKeysAndTargets/slash_key (0.00s)
+    --- PASS: TestReconcileConceptIDMapRejectsUnsafeRedirectKeysAndTargets/backslash_key (0.00s)
+    --- PASS: TestReconcileConceptIDMapRejectsUnsafeRedirectKeysAndTargets/blank_target (0.00s)
+    --- PASS: TestReconcileConceptIDMapRejectsUnsafeRedirectKeysAndTargets/dot_target (0.00s)
+    --- PASS: TestReconcileConceptIDMapRejectsUnsafeRedirectKeysAndTargets/dotdot_target (0.00s)
+    --- PASS: TestReconcileConceptIDMapRejectsUnsafeRedirectKeysAndTargets/slash_target (0.00s)
+    --- PASS: TestReconcileConceptIDMapRejectsUnsafeRedirectKeysAndTargets/backslash_target (0.00s)
+=== RUN   TestRewriteConceptPageIDRejectsDuplicateStableAndCurrentIDs
+--- PASS: TestRewriteConceptPageIDRejectsDuplicateStableAndCurrentIDs (0.00s)
+=== RUN   TestDefaultPathNoPostprocessIgnoresMalformedPriorConceptMap
+2026/10/06 22:38:57 [1/1] synto command
+2026/10/06 22:38:57 [1/1] synto command
+--- PASS: TestDefaultPathNoPostprocessIgnoresMalformedPriorConceptMap (0.02s)
+=== RUN   TestExactSlugStabilityThroughWorkspaceAndCloudCompose
+2026/10/06 22:38:57 [1/1] synto command
+2026/10/06 22:38:58 [1/1] synto command
+2026/10/06 22:38:58 [1/1] synto command
+2026/10/06 22:38:58 [1/1] synto command
+--- PASS: TestExactSlugStabilityThroughWorkspaceAndCloudCompose (0.63s)
+=== RUN   TestWikilinksInsideMarkdownCodeArePreservedByteForByte
+--- PASS: TestWikilinksInsideMarkdownCodeArePreservedByteForByte (0.00s)
+=== RUN   TestWikilinksInsideBlockquotedFencedCodeArePreservedByteForByte
+--- PASS: TestWikilinksInsideBlockquotedFencedCodeArePreservedByteForByte (0.00s)
+=== RUN   TestConceptCacheReconciliationPreservesLargeIntegerFidelity
+--- PASS: TestConceptCacheReconciliationPreservesLargeIntegerFidelity (0.01s)
+=== RUN   TestSyntoMigrationConceptSlugChangeUsesExactSourceProvenance
+--- PASS: TestSyntoMigrationConceptSlugChangeUsesExactSourceProvenance (0.02s)
+=== RUN   TestSyntoMigrationMissingCandidatesRemainFailClosed
+=== RUN   TestSyntoMigrationMissingCandidatesRemainFailClosed/modified_prior_page
+=== RUN   TestSyntoMigrationMissingCandidatesRemainFailClosed/arbitrary_source_reference
+=== RUN   TestSyntoMigrationMissingCandidatesRemainFailClosed/candidate_not_in_prior
+--- PASS: TestSyntoMigrationMissingCandidatesRemainFailClosed (0.01s)
+    --- PASS: TestSyntoMigrationMissingCandidatesRemainFailClosed/modified_prior_page (0.00s)
+    --- PASS: TestSyntoMigrationMissingCandidatesRemainFailClosed/arbitrary_source_reference (0.00s)
+    --- PASS: TestSyntoMigrationMissingCandidatesRemainFailClosed/candidate_not_in_prior (0.00s)
+=== RUN   TestSyntoMigrationSourceSetAmbiguityDoesNotTransferIdentity
+=== RUN   TestSyntoMigrationSourceSetAmbiguityDoesNotTransferIdentity/multiple_prior_concepts
+=== RUN   TestSyntoMigrationSourceSetAmbiguityDoesNotTransferIdentity/multiple_current_entities
+=== RUN   TestSyntoMigrationSourceSetAmbiguityDoesNotTransferIdentity/non-omitted_prior_concept_does_not_transfer
+=== RUN   TestSyntoMigrationSourceSetAmbiguityDoesNotTransferIdentity/proven_prior_transfers
+--- PASS: TestSyntoMigrationSourceSetAmbiguityDoesNotTransferIdentity (0.00s)
+    --- PASS: TestSyntoMigrationSourceSetAmbiguityDoesNotTransferIdentity/multiple_prior_concepts (0.00s)
+    --- PASS: TestSyntoMigrationSourceSetAmbiguityDoesNotTransferIdentity/multiple_current_entities (0.00s)
+    --- PASS: TestSyntoMigrationSourceSetAmbiguityDoesNotTransferIdentity/non-omitted_prior_concept_does_not_transfer (0.00s)
+    --- PASS: TestSyntoMigrationSourceSetAmbiguityDoesNotTransferIdentity/proven_prior_transfers (0.00s)
+=== RUN   TestFilterUnmappedLegacyConceptsRejectsDuplicateGeneratedSlugs
+--- PASS: TestFilterUnmappedLegacyConceptsRejectsDuplicateGeneratedSlugs (0.00s)
+=== RUN   TestSyntoMigrationCaseFoldIndexPathMatchRetainsCandidateAndFailsClosed
+--- PASS: TestSyntoMigrationCaseFoldIndexPathMatchRetainsCandidateAndFailsClosed (0.00s)
+=== RUN   TestReconcileConceptIDMapRejectsRedirectTranslationCollisions
+--- PASS: TestReconcileConceptIDMapRejectsRedirectTranslationCollisions (0.00s)
+=== RUN   TestReconcileConceptIDMapPreservesIDRedirectsInEntityMode
+--- PASS: TestReconcileConceptIDMapPreservesIDRedirectsInEntityMode (0.00s)
+=== RUN   TestReconcileConceptIDMapAllowsManyLegacySourcesToOneCurrentULID
+--- PASS: TestReconcileConceptIDMapAllowsManyLegacySourcesToOneCurrentULID (0.00s)
+=== RUN   TestReconcileConceptIDMapRejectsInvalidIDRedirects
+=== RUN   TestReconcileConceptIDMapRejectsInvalidIDRedirects/missing_target
+=== RUN   TestReconcileConceptIDMapRejectsInvalidIDRedirects/source_reused_as_active_concept
+=== RUN   TestReconcileConceptIDMapRejectsInvalidIDRedirects/redirect_chain
+--- PASS: TestReconcileConceptIDMapRejectsInvalidIDRedirects (0.00s)
+    --- PASS: TestReconcileConceptIDMapRejectsInvalidIDRedirects/missing_target (0.00s)
+    --- PASS: TestReconcileConceptIDMapRejectsInvalidIDRedirects/source_reused_as_active_concept (0.00s)
+    --- PASS: TestReconcileConceptIDMapRejectsInvalidIDRedirects/redirect_chain (0.00s)
+=== RUN   TestRunWorkerBatchWorkspacePublishesStableConceptIDFromSourceProvenance
+2026/10/06 22:38:58 [1/1] synto command
+--- PASS: TestRunWorkerBatchWorkspacePublishesStableConceptIDFromSourceProvenance (0.25s)
+=== RUN   TestAllowLeaseReclaimPolicy
+--- PASS: TestAllowLeaseReclaimPolicy (0.00s)
+=== RUN   TestExecutionBelongsToJob
+--- PASS: TestExecutionBelongsToJob (0.00s)
+=== RUN   TestLWC222AcceptanceHappyPathOrphanHistoryReclaim
+2026/10/06 22:38:58 worker: lease conflict holder=olw-pipeline-dev-bwqhz started_at=2026-08-01T00:00:00Z state=terminal reclaim=true
+--- PASS: TestLWC222AcceptanceHappyPathOrphanHistoryReclaim (0.00s)
+=== RUN   TestLWC222AcceptanceGateWhileHistoryWouldBeRunning
+2026/10/06 22:38:58 worker: lease conflict holder=olw-pipeline-dev-lplb8 started_at=2026-08-01T00:00:00Z state=RUNNING reclaim=false
+--- PASS: TestLWC222AcceptanceGateWhileHistoryWouldBeRunning (0.00s)
+=== RUN   TestAcquireCloudLeaseReclaimsTerminalHolder
+2026/10/06 22:38:58 worker: lease conflict holder=olw-pipeline-dev-old1 started_at=2026-08-01T00:00:00Z state=terminal reclaim=true
+--- PASS: TestAcquireCloudLeaseReclaimsTerminalHolder (0.00s)
+=== RUN   TestAcquireCloudLeaseReclaimsNotFoundHolder
+2026/10/06 22:38:58 worker: lease conflict holder=olw-pipeline-dev-gone started_at=2026-08-01T00:00:00Z state=not_found reclaim=true
+--- PASS: TestAcquireCloudLeaseReclaimsNotFoundHolder (0.00s)
+=== RUN   TestAcquireCloudLeaseRefusesRunningHolder
+2026/10/06 22:38:58 worker: lease conflict holder=olw-pipeline-dev-live started_at=2026-08-01T00:00:00Z state=RUNNING reclaim=false
+--- PASS: TestAcquireCloudLeaseRefusesRunningHolder (0.00s)
+=== RUN   TestAcquireCloudLeaseRefusesLookupFailed
+2026/10/06 22:38:58 worker: lease conflict holder=olw-pipeline-dev-old started_at=2026-08-01T00:00:00Z state=lookup_failed reclaim=false
+--- PASS: TestAcquireCloudLeaseRefusesLookupFailed (0.00s)
+=== RUN   TestAcquireCloudLeaseRefusesAgeBasedWithoutProbeTerminal
+2026/10/06 22:38:58 worker: lease conflict holder=olw-pipeline-dev-ancient started_at=2020-01-01T00:00:00Z state=RUNNING reclaim=false
+--- PASS: TestAcquireCloudLeaseRefusesAgeBasedWithoutProbeTerminal (0.00s)
+=== RUN   TestAcquireCloudLeaseRefusesForeignJobPrefix
+2026/10/06 22:38:58 worker: lease reclaim refused state=malformed holder=other-job-exec1 job="olw-pipeline-dev"
+--- PASS: TestAcquireCloudLeaseRefusesForeignJobPrefix (0.00s)
+=== RUN   TestAcquireCloudLeaseConcurrentReclaimOnlyOneWins
+2026/10/06 22:38:58 worker: lease conflict holder=olw-pipeline-dev-dead started_at=2026-08-01T00:00:00Z state=terminal reclaim=true
+2026/10/06 22:38:58 worker: lease conflict holder=olw-pipeline-dev-dead started_at=2026-08-01T00:00:00Z state=terminal reclaim=true
+2026/10/06 22:38:58 worker: lease conflict holder=olw-pipeline-dev-racer-7 started_at=2026-10-06T14:38:58Z state=RUNNING reclaim=false
+2026/10/06 22:38:58 worker: lease conflict holder=olw-pipeline-dev-racer-7 started_at=2026-10-06T14:38:58Z state=RUNNING reclaim=false
+2026/10/06 22:38:58 worker: lease conflict holder=olw-pipeline-dev-racer-7 started_at=2026-10-06T14:38:58Z state=RUNNING reclaim=false
+2026/10/06 22:38:58 worker: lease conflict holder=olw-pipeline-dev-racer-7 started_at=2026-10-06T14:38:58Z state=RUNNING reclaim=false
+2026/10/06 22:38:58 worker: lease conflict holder=olw-pipeline-dev-racer-7 started_at=2026-10-06T14:38:58Z state=RUNNING reclaim=false
+2026/10/06 22:38:58 worker: lease conflict holder=olw-pipeline-dev-racer-7 started_at=2026-10-06T14:38:58Z state=RUNNING reclaim=false
+--- PASS: TestAcquireCloudLeaseConcurrentReclaimOnlyOneWins (0.00s)
+=== RUN   TestClassifyCloudRunExecutionJSON
+=== RUN   TestClassifyCloudRunExecutionJSON/completion_succeeded
+=== RUN   TestClassifyCloudRunExecutionJSON/completion_failed
+=== RUN   TestClassifyCloudRunExecutionJSON/completion_cancelled
+=== RUN   TestClassifyCloudRunExecutionJSON/history_completed_failedCount+condition
+=== RUN   TestClassifyCloudRunExecutionJSON/reconciling
+=== RUN   TestClassifyCloudRunExecutionJSON/running_count
+=== RUN   TestClassifyCloudRunExecutionJSON/partial_failed_still_running
+=== RUN   TestClassifyCloudRunExecutionJSON/partial_succeeded_still_reconciling
+=== RUN   TestClassifyCloudRunExecutionJSON/empty_unknown
+=== RUN   TestClassifyCloudRunExecutionJSON/garbage
+--- PASS: TestClassifyCloudRunExecutionJSON (0.00s)
+    --- PASS: TestClassifyCloudRunExecutionJSON/completion_succeeded (0.00s)
+    --- PASS: TestClassifyCloudRunExecutionJSON/completion_failed (0.00s)
+    --- PASS: TestClassifyCloudRunExecutionJSON/completion_cancelled (0.00s)
+    --- PASS: TestClassifyCloudRunExecutionJSON/history_completed_failedCount+condition (0.00s)
+    --- PASS: TestClassifyCloudRunExecutionJSON/reconciling (0.00s)
+    --- PASS: TestClassifyCloudRunExecutionJSON/running_count (0.00s)
+    --- PASS: TestClassifyCloudRunExecutionJSON/partial_failed_still_running (0.00s)
+    --- PASS: TestClassifyCloudRunExecutionJSON/partial_succeeded_still_reconciling (0.00s)
+    --- PASS: TestClassifyCloudRunExecutionJSON/empty_unknown (0.00s)
+    --- PASS: TestClassifyCloudRunExecutionJSON/garbage (0.00s)
+=== RUN   TestCloudRunExecutionProbeHTTP
+--- PASS: TestCloudRunExecutionProbeHTTP (0.00s)
+=== RUN   TestParsePipelineJobURLScope
+--- PASS: TestParsePipelineJobURLScope (0.00s)
+=== RUN   TestExistingOverlapTestStillBlocksWithoutProbeTerminal
+2026/10/06 22:38:58 worker: lease conflict holder=olw-pipeline-dev-exec-x started_at=2026-10-06T14:38:58Z state=RUNNING reclaim=false
+--- PASS: TestExistingOverlapTestStillBlocksWithoutProbeTerminal (0.00s)
+=== RUN   TestSuggestedDiagnosticsSurviveFallbackWithoutPrivateText
+=== RUN   TestSuggestedDiagnosticsSurviveFallbackWithoutPrivateText/transport
+2026/10/06 22:38:58 postprocess suggested queries: generation failed; preserving last-known-good artifact: provider_transport_or_response_error
+2026/10/06 22:38:58 postprocess suggested queries: generation failed; preserving last-known-good artifact: provider_transport_or_response_error
+=== RUN   TestSuggestedDiagnosticsSurviveFallbackWithoutPrivateText/rate
+2026/10/06 22:38:58 postprocess suggested queries: generation failed; preserving last-known-good artifact: provider_rate_limited
+2026/10/06 22:38:58 postprocess suggested queries: generation failed; preserving last-known-good artifact: provider_rate_limited
+=== RUN   TestSuggestedDiagnosticsSurviveFallbackWithoutPrivateText/schema
+2026/10/06 22:38:58 postprocess suggested queries: generation failed; preserving last-known-good artifact: provider_schema_invalid
+2026/10/06 22:38:58 postprocess suggested queries: generation failed; preserving last-known-good artifact: provider_schema_invalid
+=== RUN   TestSuggestedDiagnosticsSurviveFallbackWithoutPrivateText/count
+2026/10/06 22:38:58 postprocess suggested queries: generation failed; preserving last-known-good artifact: candidate_cardinality_invalid
+2026/10/06 22:38:58 postprocess suggested queries: generation failed; preserving last-known-good artifact: candidate_cardinality_invalid
+=== RUN   TestSuggestedDiagnosticsSurviveFallbackWithoutPrivateText/anchors
+2026/10/06 22:38:58 postprocess suggested queries: generation failed; preserving last-known-good artifact: candidate_anchor_unknown
+2026/10/06 22:38:58 postprocess suggested queries: generation failed; preserving last-known-good artifact: candidate_anchor_unknown
+=== RUN   TestSuggestedDiagnosticsSurviveFallbackWithoutPrivateText/valid
+--- PASS: TestSuggestedDiagnosticsSurviveFallbackWithoutPrivateText (0.01s)
+    --- PASS: TestSuggestedDiagnosticsSurviveFallbackWithoutPrivateText/transport (0.00s)
+    --- PASS: TestSuggestedDiagnosticsSurviveFallbackWithoutPrivateText/rate (0.00s)
+    --- PASS: TestSuggestedDiagnosticsSurviveFallbackWithoutPrivateText/schema (0.00s)
+    --- PASS: TestSuggestedDiagnosticsSurviveFallbackWithoutPrivateText/count (0.00s)
+    --- PASS: TestSuggestedDiagnosticsSurviveFallbackWithoutPrivateText/anchors (0.00s)
+    --- PASS: TestSuggestedDiagnosticsSurviveFallbackWithoutPrivateText/valid (0.00s)
+=== RUN   TestSuggestedCorpusFailureIsDistinctAndMakesNoProviderCall
+2026/10/06 22:38:58 postprocess suggested queries: generation failed; preserving last-known-good artifact: corpus_empty
+--- PASS: TestSuggestedCorpusFailureIsDistinctAndMakesNoProviderCall (0.00s)
+=== RUN   TestFrozenSuggestedCorpusAcceptsValidMockProvider
+    local_experiment_test.go:106: optional frozen local snapshot
+--- SKIP: TestFrozenSuggestedCorpusAcceptsValidMockProvider (0.00s)
+=== RUN   TestLocalSuggestedCommandEmitsBoundedJSONDiagnostic
+--- PASS: TestLocalSuggestedCommandEmitsBoundedJSONDiagnostic (0.00s)
+=== RUN   TestLocalIndexUsesSelectedPublicSyntoExecutable
+--- PASS: TestLocalIndexUsesSelectedPublicSyntoExecutable (0.22s)
+=== RUN   TestLWC237LiveChildOutputIsRawTextPayloadCompatible
+--- PASS: TestLWC237LiveChildOutputIsRawTextPayloadCompatible (0.00s)
+=== RUN   TestLWC237RunningChildSentinelReachesContainerBeforeClose
+--- PASS: TestLWC237RunningChildSentinelReachesContainerBeforeClose (0.00s)
+=== RUN   TestLWC237StdoutStderrAreStructuredIndependentAndExactlyOnce
+--- PASS: TestLWC237StdoutStderrAreStructuredIndependentAndExactlyOnce (0.00s)
+=== RUN   TestLWC237CancellationKeepsAlreadyEmittedOutput
+--- PASS: TestLWC237CancellationKeepsAlreadyEmittedOutput (0.00s)
+=== RUN   TestLWC237LiveOutputExceedsDurableArtifactBoundLosslessly
+--- PASS: TestLWC237LiveOutputExceedsDurableArtifactBoundLosslessly (0.17s)
+=== RUN   TestLWC237PipelineExactCapThenOverflowRetainsMarker
+--- PASS: TestLWC237PipelineExactCapThenOverflowRetainsMarker (0.13s)
+=== RUN   TestLWC237SharedDurableSinkPreservesCrossStreamOrder
+--- PASS: TestLWC237SharedDurableSinkPreservesCrossStreamOrder (0.00s)
+=== RUN   TestLWC237ImmediateAndLargeNoNewlineStreaming
+--- PASS: TestLWC237ImmediateAndLargeNoNewlineStreaming (0.00s)
+=== RUN   TestLWC237SmallWritesCanExceedLiveFrameWithoutNewline
+--- PASS: TestLWC237SmallWritesCanExceedLiveFrameWithoutNewline (0.00s)
+=== RUN   TestLWC237InvalidUTF8OutputReconstructsLosslessly
+--- PASS: TestLWC237InvalidUTF8OutputReconstructsLosslessly (0.00s)
+=== RUN   TestLWC237InvalidUTF8EscapeIsInjective
+--- PASS: TestLWC237InvalidUTF8EscapeIsInjective (0.00s)
+=== RUN   TestLWC237OrdinaryUTF8WithBackslashesAndLiteralsIsLossless
+--- PASS: TestLWC237OrdinaryUTF8WithBackslashesAndLiteralsIsLossless (0.00s)
+=== RUN   TestLWC237InjectiveAcrossWritesForLiteralEscapeTokenInvalidBytesAndContinuation
+--- PASS: TestLWC237InjectiveAcrossWritesForLiteralEscapeTokenInvalidBytesAndContinuation (0.00s)
+=== RUN   TestLWC237ShortLiveWriteDisablesOnceAndWarnsOnce
+--- PASS: TestLWC237ShortLiveWriteDisablesOnceAndWarnsOnce (0.00s)
+=== RUN   TestLWC237ShortLiveWriteWithoutErrorDisablesOnce
+{"time":"2026-10-06T22:38:59.160473+08:00","severity":"WARNING","message":"observability_degraded","component":"olw_worker","child_component":"synto","user_id":"","project_id":"","execution_id":"","stream":"stderr","sequence":1,"event":"observability_degraded","destination":"live_stdout","cause":"write live stdout output: short write (11/12)"}
+--- PASS: TestLWC237ShortLiveWriteWithoutErrorDisablesOnce (0.00s)
+=== RUN   TestLWC237EncodedPhysicalLinesAreBoundedAndReversible
+--- PASS: TestLWC237EncodedPhysicalLinesAreBoundedAndReversible (0.00s)
+=== RUN   TestLWC237UTF8RuneCrossingInternalChunkBoundaryStaysNatural
+--- PASS: TestLWC237UTF8RuneCrossingInternalChunkBoundaryStaysNatural (0.00s)
+=== RUN   TestLWC237SecretsSplitAcrossWritesAndChunksOnBothStreams
+--- PASS: TestLWC237SecretsSplitAcrossWritesAndChunksOnBothStreams (0.00s)
+=== RUN   TestLWC237UTF8OutputPreservesText
+--- PASS: TestLWC237UTF8OutputPreservesText (0.00s)
+=== RUN   TestLWC237ParseLWC237TextLineQuotedBackslashQuote
+--- PASS: TestLWC237ParseLWC237TextLineQuotedBackslashQuote (0.00s)
+=== RUN   TestLWC237StructuredIdentityAndCredentialRedaction
+--- PASS: TestLWC237StructuredIdentityAndCredentialRedaction (0.00s)
+=== RUN   TestLWC237DurableFailureDoesNotAffectHealthyLiveOutput
+--- PASS: TestLWC237DurableFailureDoesNotAffectHealthyLiveOutput (0.00s)
+=== RUN   TestLWC237DurableCloseFailureWarnsOnce
+--- PASS: TestLWC237DurableCloseFailureWarnsOnce (0.00s)
+=== RUN   TestLWC237SuppressOutputStillEmitsWorkerOwnedWarn
+--- PASS: TestLWC237SuppressOutputStillEmitsWorkerOwnedWarn (0.00s)
+=== RUN   TestLWC237OrdinaryBusinessErrorNotMaskedByLoggingFailure
+2026/10/06 22:38:59 [1/1] synto command
+--- PASS: TestLWC237OrdinaryBusinessErrorNotMaskedByLoggingFailure (0.01s)
+=== RUN   TestParseCommandBatch
+--- PASS: TestParseCommandBatch (0.00s)
+=== RUN   TestParseCommandBatchRejectsEmptyCommand
+--- PASS: TestParseCommandBatchRejectsEmptyCommand (0.00s)
+=== RUN   TestParseCommandBatchRejectsEmptyCommandName
+--- PASS: TestParseCommandBatchRejectsEmptyCommandName (0.00s)
+=== RUN   TestCloudCommandValidationHappensBeforeDecode
+=== RUN   TestCloudCommandValidationHappensBeforeDecode/empty_execution_id
+=== RUN   TestCloudCommandValidationHappensBeforeDecode/oversized_raw_command
+--- PASS: TestCloudCommandValidationHappensBeforeDecode (0.00s)
+    --- PASS: TestCloudCommandValidationHappensBeforeDecode/empty_execution_id (0.00s)
+    --- PASS: TestCloudCommandValidationHappensBeforeDecode/oversized_raw_command (0.00s)
+=== RUN   TestCloudCommandStructuralLimits
+--- PASS: TestCloudCommandStructuralLimits (0.00s)
+=== RUN   TestExplicitAPIKeyExcludesInheritedDiagnosticSecrets
+--- PASS: TestExplicitAPIKeyExcludesInheritedDiagnosticSecrets (0.00s)
+=== RUN   TestResolveVaultPathPrefersExplicitVault
+--- PASS: TestResolveVaultPathPrefersExplicitVault (0.00s)
+=== RUN   TestResolveVaultPathFromUserProject
+--- PASS: TestResolveVaultPathFromUserProject (0.00s)
+=== RUN   TestResolveVaultPathErrorsWithoutEnoughConfig
+--- PASS: TestResolveVaultPathErrorsWithoutEnoughConfig (0.00s)
+=== RUN   TestPrepareOLWEnvironmentIsolatesConfigAndMapsDeepSeekKey
+--- PASS: TestPrepareOLWEnvironmentIsolatesConfigAndMapsDeepSeekKey (0.00s)
+=== RUN   TestRunWorkerBatchPassesIsolatedOLWEnvironment
+2026/10/06 22:38:59 [1/1] synto command
+--- PASS: TestRunWorkerBatchPassesIsolatedOLWEnvironment (0.00s)
+=== RUN   TestRunWorkerBatchCanInitializeVaultBeforeCommands
+--- PASS: TestRunWorkerBatchCanInitializeVaultBeforeCommands (0.00s)
+=== RUN   TestRunWorkerBatchDoesNotInitializeVaultByDefault
+2026/10/06 22:38:59 [1/1] synto command
+--- PASS: TestRunWorkerBatchDoesNotInitializeVaultByDefault (0.00s)
+=== RUN   TestRunOLWBatchStopsOnFirstFailure
+--- PASS: TestRunOLWBatchStopsOnFirstFailure (0.00s)
+=== RUN   TestRunOLWBatchContinuesWhenStopOnErrorFalse
+--- PASS: TestRunOLWBatchContinuesWhenStopOnErrorFalse (0.00s)
+=== RUN   TestRunWorkerBatchWritesPipelineLogForExecution
+2026/10/06 22:38:59 [1/1] synto command
+stdout line
+stderr line
+--- PASS: TestRunWorkerBatchWritesPipelineLogForExecution (0.01s)
+=== RUN   TestPipelineLogPathRejectsUnsafeExecutionID
+--- PASS: TestPipelineLogPathRejectsUnsafeExecutionID (0.00s)
+=== RUN   TestWorkspaceSuccessSanitizesSecretSplitAcrossWrites
+2026/10/06 22:38:59 [1/1] synto command
+token=[REDACTED]--- PASS: TestWorkspaceSuccessSanitizesSecretSplitAcrossWrites (0.18s)
+=== RUN   TestRunPostprocessWritesSuggestedQueriesFromConcepts
+--- PASS: TestRunPostprocessWritesSuggestedQueriesFromConcepts (0.01s)
+=== RUN   TestSuggestedQueryGenerationDoesNotReadVaultRootIndexAsDescription
+--- PASS: TestSuggestedQueryGenerationDoesNotReadVaultRootIndexAsDescription (0.01s)
+=== RUN   TestSuggestedQueryGenerationRejectsInvalidCountPreservesByteIdenticalLegacyLKG
+=== RUN   TestSuggestedQueryGenerationRejectsInvalidCountPreservesByteIdenticalLegacyLKG/count-19
+2026/10/06 22:38:59 postprocess suggested queries: generation failed; preserving last-known-good artifact: candidate_cardinality_invalid
+=== RUN   TestSuggestedQueryGenerationRejectsInvalidCountPreservesByteIdenticalLegacyLKG/count-21
+2026/10/06 22:38:59 postprocess suggested queries: generation failed; preserving last-known-good artifact: candidate_cardinality_invalid
+--- PASS: TestSuggestedQueryGenerationRejectsInvalidCountPreservesByteIdenticalLegacyLKG (0.01s)
+    --- PASS: TestSuggestedQueryGenerationRejectsInvalidCountPreservesByteIdenticalLegacyLKG/count-19 (0.01s)
+    --- PASS: TestSuggestedQueryGenerationRejectsInvalidCountPreservesByteIdenticalLegacyLKG/count-21 (0.00s)
+=== RUN   TestSuggestedQueryGenerationFailurePreservesLastKnownGoodBytes
+2026/10/06 22:38:59 postprocess suggested queries: generation failed; preserving last-known-good artifact: provider_transport_or_response_error
+--- PASS: TestSuggestedQueryGenerationFailurePreservesLastKnownGoodBytes (0.01s)
+=== RUN   TestSuggestedQueryDuplicateOutputPreservesLastKnownGoodBytes
+2026/10/06 22:38:59 postprocess suggested queries: generation failed; preserving last-known-good artifact: candidate_question_duplicate
+--- PASS: TestSuggestedQueryDuplicateOutputPreservesLastKnownGoodBytes (0.01s)
+=== RUN   TestSuggestedQueryGenerationFailureWritesValidEmptyV2WhenAbsent
+2026/10/06 22:38:59 postprocess suggested queries: generation failed; preserving last-known-good artifact: provider_transport_or_response_error
+--- PASS: TestSuggestedQueryGenerationFailureWritesValidEmptyV2WhenAbsent (0.01s)
+=== RUN   TestSuggestedQueriesStageOnlyRewritesQueryChips
+--- PASS: TestSuggestedQueriesStageOnlyRewritesQueryChips (0.00s)
+=== RUN   TestCacheIndexStageDoesNotTouchSuggestedQueries
+--- PASS: TestCacheIndexStageDoesNotTouchSuggestedQueries (0.01s)
+=== RUN   TestSuggestedQueriesCommandPublishesChipsWithoutIndexRebuild
+--- PASS: TestSuggestedQueriesCommandPublishesChipsWithoutIndexRebuild (0.17s)
+=== RUN   TestSuggestedQueriesCommandRejectsCloudWithLocalRouting
+--- PASS: TestSuggestedQueriesCommandRejectsCloudWithLocalRouting (0.00s)
+=== RUN   TestWorkerPostprocessDirectPreservesDormantConceptAndEntityMappings
+--- PASS: TestWorkerPostprocessDirectPreservesDormantConceptAndEntityMappings (0.14s)
+=== RUN   TestWorkerPostprocessWorkspacePreservesDormantConceptAndEntityMappings
+--- PASS: TestWorkerPostprocessWorkspacePreservesDormantConceptAndEntityMappings (0.15s)
+=== RUN   TestRunPostprocessWritesEmptyRawStatusWhenStateDBMissing
+--- PASS: TestRunPostprocessWritesEmptyRawStatusWhenStateDBMissing (0.01s)
+=== RUN   TestWorkspaceMaterializesAnnotationWithoutChangingStoredRaw
+2026/10/06 22:38:59 [1/1] synto command
+--- PASS: TestWorkspaceMaterializesAnnotationWithoutChangingStoredRaw (0.18s)
+=== RUN   TestWorkspaceEmptyAnnotationRemovesPriorInfluence
+2026/10/06 22:39:00 [1/1] synto command
+--- PASS: TestWorkspaceEmptyAnnotationRemovesPriorInfluence (0.17s)
+=== RUN   TestWorkspaceMarkerLikeAnnotationOnlyGetsOneSystemTrailer
+2026/10/06 22:39:00 [1/1] synto command
+--- PASS: TestWorkspaceMarkerLikeAnnotationOnlyGetsOneSystemTrailer (0.18s)
+=== RUN   TestWorkspaceMaterializesAnnotatedSourceIdenticallyOnSequentialRuns
+2026/10/06 22:39:00 [1/1] synto command
+2026/10/06 22:39:00 [1/1] synto command
+--- PASS: TestWorkspaceMaterializesAnnotatedSourceIdenticallyOnSequentialRuns (0.39s)
+=== RUN   TestWorkspaceRejectsDuplicateMappedRawPath
+2026/10/06 22:39:00 WARNING cloud failure pipeline log recording failed execution_id="" project_id="" stage="input_materialization" detail_code=""
+--- PASS: TestWorkspaceRejectsDuplicateMappedRawPath (0.01s)
+=== RUN   TestSnapshotSourcesLegacyFallback
+=== RUN   TestSnapshotSourcesLegacyFallback/success_uses_authoritative_source_ID
+=== RUN   TestSnapshotSourcesLegacyFallback/missing_page
+=== RUN   TestSnapshotSourcesLegacyFallback/malformed_frontmatter
+=== RUN   TestSnapshotSourcesLegacyFallback/missing_source_file
+=== RUN   TestSnapshotSourcesLegacyFallback/unsafe_source_file
+=== RUN   TestSnapshotSourcesLegacyFallback/duplicate_raw_path
+=== RUN   TestSnapshotSourcesLegacyFallback/duplicate_source_slug
+=== RUN   TestSnapshotSourcesLegacyFallback/source_and_source_metadata_disagree
+=== RUN   TestSnapshotSourcesLegacyFallback/mixed_metadata_duplicate_raw_path
+--- PASS: TestSnapshotSourcesLegacyFallback (0.01s)
+    --- PASS: TestSnapshotSourcesLegacyFallback/success_uses_authoritative_source_ID (0.00s)
+    --- PASS: TestSnapshotSourcesLegacyFallback/missing_page (0.00s)
+    --- PASS: TestSnapshotSourcesLegacyFallback/malformed_frontmatter (0.00s)
+    --- PASS: TestSnapshotSourcesLegacyFallback/missing_source_file (0.00s)
+    --- PASS: TestSnapshotSourcesLegacyFallback/unsafe_source_file (0.00s)
+    --- PASS: TestSnapshotSourcesLegacyFallback/duplicate_raw_path (0.00s)
+    --- PASS: TestSnapshotSourcesLegacyFallback/duplicate_source_slug (0.00s)
+    --- PASS: TestSnapshotSourcesLegacyFallback/source_and_source_metadata_disagree (0.00s)
+    --- PASS: TestSnapshotSourcesLegacyFallback/mixed_metadata_duplicate_raw_path (0.00s)
+=== RUN   TestWorkspaceRequiresFirstCommandToBeRunBeforeLeaseOrExecution
+=== RUN   TestWorkspaceRequiresFirstCommandToBeRunBeforeLeaseOrExecution/[["clear"],["run","--auto-approve"]]
+=== RUN   TestWorkspaceRequiresFirstCommandToBeRunBeforeLeaseOrExecution/[["approve","--all"]]
+=== RUN   TestWorkspaceRequiresFirstCommandToBeRunBeforeLeaseOrExecution/[["clear"],["approve","--all"]]
+--- PASS: TestWorkspaceRequiresFirstCommandToBeRunBeforeLeaseOrExecution (0.01s)
+    --- PASS: TestWorkspaceRequiresFirstCommandToBeRunBeforeLeaseOrExecution/[["clear"],["run","--auto-approve"]] (0.00s)
+    --- PASS: TestWorkspaceRequiresFirstCommandToBeRunBeforeLeaseOrExecution/[["approve","--all"]] (0.00s)
+    --- PASS: TestWorkspaceRequiresFirstCommandToBeRunBeforeLeaseOrExecution/[["clear"],["approve","--all"]] (0.00s)
+=== RUN   TestWorkspaceAcceptsProductionCommandContract
+2026/10/06 22:39:00 [1/1] synto command
+--- PASS: TestWorkspaceAcceptsProductionCommandContract (0.18s)
+=== RUN   TestWorkspaceLeaseRejectsOverlapBeforeSnapshotOrPublish
+2026/10/06 22:39:01 [1/1] synto command
+--- PASS: TestWorkspaceLeaseRejectsOverlapBeforeSnapshotOrPublish (0.18s)
+=== RUN   TestStagePublishMirrorsWikiAndExcludesUnownedFiles
+--- PASS: TestStagePublishMirrorsWikiAndExcludesUnownedFiles (0.13s)
+=== RUN   TestPublishRollbackPreservesPriorGenerationOnRenameError
+--- PASS: TestPublishRollbackPreservesPriorGenerationOnRenameError (0.06s)
+=== RUN   TestRecoverCommittedPublishPreservesNewGeneration
+--- PASS: TestRecoverCommittedPublishPreservesNewGeneration (0.00s)
+=== RUN   TestRecoverInterruptedPublishRejectsMalformedJournalWithoutChanges
+=== RUN   TestRecoverInterruptedPublishRejectsMalformedJournalWithoutChanges/raw_destination
+=== RUN   TestRecoverInterruptedPublishRejectsMalformedJournalWithoutChanges/raw_backup_path
+=== RUN   TestRecoverInterruptedPublishRejectsMalformedJournalWithoutChanges/traversal_backup_path
+=== RUN   TestRecoverInterruptedPublishRejectsMalformedJournalWithoutChanges/bad_stage
+=== RUN   TestRecoverInterruptedPublishRejectsMalformedJournalWithoutChanges/duplicate_destination
+=== RUN   TestRecoverInterruptedPublishRejectsMalformedJournalWithoutChanges/invalid_phase
+--- PASS: TestRecoverInterruptedPublishRejectsMalformedJournalWithoutChanges (0.01s)
+    --- PASS: TestRecoverInterruptedPublishRejectsMalformedJournalWithoutChanges/raw_destination (0.00s)
+    --- PASS: TestRecoverInterruptedPublishRejectsMalformedJournalWithoutChanges/raw_backup_path (0.00s)
+    --- PASS: TestRecoverInterruptedPublishRejectsMalformedJournalWithoutChanges/traversal_backup_path (0.00s)
+    --- PASS: TestRecoverInterruptedPublishRejectsMalformedJournalWithoutChanges/bad_stage (0.00s)
+    --- PASS: TestRecoverInterruptedPublishRejectsMalformedJournalWithoutChanges/duplicate_destination (0.00s)
+    --- PASS: TestRecoverInterruptedPublishRejectsMalformedJournalWithoutChanges/invalid_phase (0.00s)
+=== RUN   TestCommittedCleanupFailurePreservesNewGeneration
+--- PASS: TestCommittedCleanupFailurePreservesNewGeneration (0.10s)
+=== RUN   TestPublishRejectsDestinationSymlink
+--- PASS: TestPublishRejectsDestinationSymlink (0.05s)
+=== RUN   TestWorkspaceFailurePublishesCappedRedactedLog
+2026/10/06 22:39:01 [1/1] synto command
+key=[REDACTED]2026/10/06 22:39:01 synto command failed (continuing)
+--- PASS: TestWorkspaceFailurePublishesCappedRedactedLog (0.06s)
+=== RUN   TestWorkspaceOwnedChildFailurePublishesWorkerFailureEvent
+2026/10/06 22:39:01 [1/1] synto command
+child output resource-visible [REDACTED]
+2026/10/06 22:39:01 synto command failed (continuing)
+--- PASS: TestWorkspaceOwnedChildFailurePublishesWorkerFailureEvent (0.06s)
+=== RUN   TestWorkspacePostLeaseTerminalStageMatrix
+=== RUN   TestWorkspacePostLeaseTerminalStageMatrix/recover_interrupted_publish
+=== RUN   TestWorkspacePostLeaseTerminalStageMatrix/source_snapshot
+=== RUN   TestWorkspacePostLeaseTerminalStageMatrix/concept_snapshot
+=== RUN   TestWorkspacePostLeaseTerminalStageMatrix/workspace_creation
+=== RUN   TestWorkspacePostLeaseTerminalStageMatrix/snapshot_materialization
+=== RUN   TestWorkspacePostLeaseTerminalStageMatrix/synto_run
+=== RUN   TestWorkspacePostLeaseTerminalStageMatrix/source_reconciliation
+=== RUN   TestWorkspacePostLeaseTerminalStageMatrix/concept_reconciliation
+=== RUN   TestWorkspacePostLeaseTerminalStageMatrix/generation_publish
+=== RUN   TestWorkspacePostLeaseTerminalStageMatrix/receipt_recording
+--- PASS: TestWorkspacePostLeaseTerminalStageMatrix (0.36s)
+    --- PASS: TestWorkspacePostLeaseTerminalStageMatrix/recover_interrupted_publish (0.01s)
+    --- PASS: TestWorkspacePostLeaseTerminalStageMatrix/source_snapshot (0.01s)
+    --- PASS: TestWorkspacePostLeaseTerminalStageMatrix/concept_snapshot (0.01s)
+    --- PASS: TestWorkspacePostLeaseTerminalStageMatrix/workspace_creation (0.01s)
+    --- PASS: TestWorkspacePostLeaseTerminalStageMatrix/snapshot_materialization (0.05s)
+    --- PASS: TestWorkspacePostLeaseTerminalStageMatrix/synto_run (0.06s)
+    --- PASS: TestWorkspacePostLeaseTerminalStageMatrix/source_reconciliation (0.06s)
+    --- PASS: TestWorkspacePostLeaseTerminalStageMatrix/concept_reconciliation (0.06s)
+    --- PASS: TestWorkspacePostLeaseTerminalStageMatrix/generation_publish (0.06s)
+    --- PASS: TestWorkspacePostLeaseTerminalStageMatrix/receipt_recording (0.05s)
+=== RUN   TestWorkspaceCleanupAndLeaseFailuresRecordOneTerminalEvent
+=== RUN   TestWorkspaceCleanupAndLeaseFailuresRecordOneTerminalEvent/workspace_cleanup
+=== RUN   TestWorkspaceCleanupAndLeaseFailuresRecordOneTerminalEvent/lease_cleanup
+=== RUN   TestWorkspaceCleanupAndLeaseFailuresRecordOneTerminalEvent/primary_wins_cleanup
+--- PASS: TestWorkspaceCleanupAndLeaseFailuresRecordOneTerminalEvent (0.15s)
+    --- PASS: TestWorkspaceCleanupAndLeaseFailuresRecordOneTerminalEvent/workspace_cleanup (0.05s)
+    --- PASS: TestWorkspaceCleanupAndLeaseFailuresRecordOneTerminalEvent/lease_cleanup (0.04s)
+    --- PASS: TestWorkspaceCleanupAndLeaseFailuresRecordOneTerminalEvent/primary_wins_cleanup (0.06s)
+=== RUN   TestWorkspaceConcurrentOwnedFailuresPublishOneWorkerFailureEvent
+2026/10/06 22:39:02 [1/1] synto command
+child output
+2026/10/06 22:39:02 synto command failed (continuing)
+--- PASS: TestWorkspaceConcurrentOwnedFailuresPublishOneWorkerFailureEvent (0.06s)
+=== RUN   TestWorkspaceFailureRecordingIsBestEffortAndKeepsPrimary
+=== RUN   TestWorkspaceFailureRecordingIsBestEffortAndKeepsPrimary/append
+=== RUN   TestWorkspaceFailureRecordingIsBestEffortAndKeepsPrimary/publish
+--- PASS: TestWorkspaceFailureRecordingIsBestEffortAndKeepsPrimary (0.10s)
+    --- PASS: TestWorkspaceFailureRecordingIsBestEffortAndKeepsPrimary/append (0.05s)
+    --- PASS: TestWorkspaceFailureRecordingIsBestEffortAndKeepsPrimary/publish (0.05s)
+=== RUN   TestWorkspaceSuccessPublishesZeroWorkerFailureEvents
+2026/10/06 22:39:02 [1/1] synto command
+successful child output
+--- PASS: TestWorkspaceSuccessPublishesZeroWorkerFailureEvents (0.18s)
+=== RUN   TestStandaloneCommandsRecordOwnedTerminalFailuresOnce
+=== RUN   TestStandaloneCommandsRecordOwnedTerminalFailuresOnce/postprocess
+=== RUN   TestStandaloneCommandsRecordOwnedTerminalFailuresOnce/postprocess/invalid_publish_journal
+=== RUN   TestStandaloneCommandsRecordOwnedTerminalFailuresOnce/postprocess/workspace_creation
+=== RUN   TestStandaloneCommandsRecordOwnedTerminalFailuresOnce/postprocess/processing
+=== RUN   TestStandaloneCommandsRecordOwnedTerminalFailuresOnce/postprocess/publish
+=== RUN   TestStandaloneCommandsRecordOwnedTerminalFailuresOnce/postprocess/workspace_cleanup
+=== RUN   TestStandaloneCommandsRecordOwnedTerminalFailuresOnce/postprocess/primary_plus_cleanup
+=== RUN   TestStandaloneCommandsRecordOwnedTerminalFailuresOnce/postprocess/lease_cleanup
+=== RUN   TestStandaloneCommandsRecordOwnedTerminalFailuresOnce/suggested-queries
+=== RUN   TestStandaloneCommandsRecordOwnedTerminalFailuresOnce/suggested-queries/invalid_publish_journal
+=== RUN   TestStandaloneCommandsRecordOwnedTerminalFailuresOnce/suggested-queries/workspace_creation
+=== RUN   TestStandaloneCommandsRecordOwnedTerminalFailuresOnce/suggested-queries/processing
+=== RUN   TestStandaloneCommandsRecordOwnedTerminalFailuresOnce/suggested-queries/publish
+=== RUN   TestStandaloneCommandsRecordOwnedTerminalFailuresOnce/suggested-queries/workspace_cleanup
+=== RUN   TestStandaloneCommandsRecordOwnedTerminalFailuresOnce/suggested-queries/primary_plus_cleanup
+=== RUN   TestStandaloneCommandsRecordOwnedTerminalFailuresOnce/suggested-queries/lease_cleanup
+--- PASS: TestStandaloneCommandsRecordOwnedTerminalFailuresOnce (0.12s)
+    --- PASS: TestStandaloneCommandsRecordOwnedTerminalFailuresOnce/postprocess (0.06s)
+        --- PASS: TestStandaloneCommandsRecordOwnedTerminalFailuresOnce/postprocess/invalid_publish_journal (0.01s)
+        --- PASS: TestStandaloneCommandsRecordOwnedTerminalFailuresOnce/postprocess/workspace_creation (0.00s)
+        --- PASS: TestStandaloneCommandsRecordOwnedTerminalFailuresOnce/postprocess/processing (0.02s)
+        --- PASS: TestStandaloneCommandsRecordOwnedTerminalFailuresOnce/postprocess/publish (0.01s)
+        --- PASS: TestStandaloneCommandsRecordOwnedTerminalFailuresOnce/postprocess/workspace_cleanup (0.00s)
+        --- PASS: TestStandaloneCommandsRecordOwnedTerminalFailuresOnce/postprocess/primary_plus_cleanup (0.01s)
+        --- PASS: TestStandaloneCommandsRecordOwnedTerminalFailuresOnce/postprocess/lease_cleanup (0.01s)
+    --- PASS: TestStandaloneCommandsRecordOwnedTerminalFailuresOnce/suggested-queries (0.06s)
+        --- PASS: TestStandaloneCommandsRecordOwnedTerminalFailuresOnce/suggested-queries/invalid_publish_journal (0.00s)
+        --- PASS: TestStandaloneCommandsRecordOwnedTerminalFailuresOnce/suggested-queries/workspace_creation (0.01s)
+        --- PASS: TestStandaloneCommandsRecordOwnedTerminalFailuresOnce/suggested-queries/processing (0.01s)
+        --- PASS: TestStandaloneCommandsRecordOwnedTerminalFailuresOnce/suggested-queries/publish (0.01s)
+        --- PASS: TestStandaloneCommandsRecordOwnedTerminalFailuresOnce/suggested-queries/workspace_cleanup (0.01s)
+        --- PASS: TestStandaloneCommandsRecordOwnedTerminalFailuresOnce/suggested-queries/primary_plus_cleanup (0.01s)
+        --- PASS: TestStandaloneCommandsRecordOwnedTerminalFailuresOnce/suggested-queries/lease_cleanup (0.00s)
+=== RUN   TestStandaloneCommandsKeepPrimaryAndIsolateRawLogFailure
+=== RUN   TestStandaloneCommandsKeepPrimaryAndIsolateRawLogFailure/postprocess
+=== RUN   TestStandaloneCommandsKeepPrimaryAndIsolateRawLogFailure/suggested-queries
+--- PASS: TestStandaloneCommandsKeepPrimaryAndIsolateRawLogFailure (0.00s)
+    --- PASS: TestStandaloneCommandsKeepPrimaryAndIsolateRawLogFailure/postprocess (0.00s)
+    --- PASS: TestStandaloneCommandsKeepPrimaryAndIsolateRawLogFailure/suggested-queries (0.00s)
+=== RUN   TestStandaloneCommandsHaveZeroEventsBeforeLeaseAndOnSuccess
+=== RUN   TestStandaloneCommandsHaveZeroEventsBeforeLeaseAndOnSuccess/postprocess
+=== RUN   TestStandaloneCommandsHaveZeroEventsBeforeLeaseAndOnSuccess/suggested-queries
+--- PASS: TestStandaloneCommandsHaveZeroEventsBeforeLeaseAndOnSuccess (0.00s)
+    --- PASS: TestStandaloneCommandsHaveZeroEventsBeforeLeaseAndOnSuccess/postprocess (0.00s)
+    --- PASS: TestStandaloneCommandsHaveZeroEventsBeforeLeaseAndOnSuccess/suggested-queries (0.00s)
+=== RUN   TestStandaloneCommandsRecordInvalidPublishJournalAfterLease
+=== RUN   TestStandaloneCommandsRecordInvalidPublishJournalAfterLease/postprocess
+=== RUN   TestStandaloneCommandsRecordInvalidPublishJournalAfterLease/suggested-queries
+--- PASS: TestStandaloneCommandsRecordInvalidPublishJournalAfterLease (0.02s)
+    --- PASS: TestStandaloneCommandsRecordInvalidPublishJournalAfterLease/postprocess (0.01s)
+    --- PASS: TestStandaloneCommandsRecordInvalidPublishJournalAfterLease/suggested-queries (0.01s)
+=== RUN   TestStandaloneCommandsSerializeOwnedFailureRecording
+=== RUN   TestStandaloneCommandsSerializeOwnedFailureRecording/postprocess
+=== RUN   TestStandaloneCommandsSerializeOwnedFailureRecording/suggested-queries
+--- PASS: TestStandaloneCommandsSerializeOwnedFailureRecording (0.10s)
+    --- PASS: TestStandaloneCommandsSerializeOwnedFailureRecording/postprocess (0.05s)
+    --- PASS: TestStandaloneCommandsSerializeOwnedFailureRecording/suggested-queries (0.05s)
+=== RUN   TestWorkspaceFailureLogPublishesWhenOtherWorkspaceOutputIsInvalid
+--- PASS: TestWorkspaceFailureLogPublishesWhenOtherWorkspaceOutputIsInvalid (0.01s)
+=== RUN   TestCappedRedactingWriterCapsAndRedacts
+--- PASS: TestCappedRedactingWriterCapsAndRedacts (0.00s)
+=== RUN   TestDiagnosticSinkRedactsSplitAlternatingOutputAndArguments
+--- PASS: TestDiagnosticSinkRedactsSplitAlternatingOutputAndArguments (0.00s)
+=== RUN   TestDiagnosticSinkRetainsFullCapUntilOverflow
+=== RUN   TestDiagnosticSinkRetainsFullCapUntilOverflow/exact_cap
+=== RUN   TestDiagnosticSinkRetainsFullCapUntilOverflow/cap_plus_one
+=== RUN   TestDiagnosticSinkRetainsFullCapUntilOverflow/late_multi-write_overflow
+=== RUN   TestDiagnosticSinkRetainsFullCapUntilOverflow/far_oversized
+=== RUN   TestDiagnosticSinkRetainsFullCapUntilOverflow/empty
+=== RUN   TestDiagnosticSinkRetainsFullCapUntilOverflow/ordinary
+--- PASS: TestDiagnosticSinkRetainsFullCapUntilOverflow (0.01s)
+    --- PASS: TestDiagnosticSinkRetainsFullCapUntilOverflow/exact_cap (0.00s)
+    --- PASS: TestDiagnosticSinkRetainsFullCapUntilOverflow/cap_plus_one (0.00s)
+    --- PASS: TestDiagnosticSinkRetainsFullCapUntilOverflow/late_multi-write_overflow (0.00s)
+    --- PASS: TestDiagnosticSinkRetainsFullCapUntilOverflow/far_oversized (0.00s)
+    --- PASS: TestDiagnosticSinkRetainsFullCapUntilOverflow/empty (0.00s)
+    --- PASS: TestDiagnosticSinkRetainsFullCapUntilOverflow/ordinary (0.00s)
+=== RUN   TestWorkerCommandErrorsAreFixedAndSilent
+--- PASS: TestWorkerCommandErrorsAreFixedAndSilent (0.00s)
+=== RUN   TestWorkerOperationalExitLogKeepsLeaseCause
+--- PASS: TestWorkerOperationalExitLogKeepsLeaseCause (0.00s)
+=== RUN   TestWorkerExitLogRedactsCredentialsInCause
+--- PASS: TestWorkerExitLogRedactsCredentialsInCause (0.00s)
+=== RUN   TestWorkerCLIRejectionClassification
+--- PASS: TestWorkerCLIRejectionClassification (0.00s)
+=== RUN   TestWorkerRuntimeLeaseErrorIsNotCollapsedToRejected
+--- PASS: TestWorkerRuntimeLeaseErrorIsNotCollapsedToRejected (0.00s)
+=== RUN   TestConfigEnvironmentDoesNotBecomeFlagDefaultAndExplicitWins
+--- PASS: TestConfigEnvironmentDoesNotBecomeFlagDefaultAndExplicitWins (0.00s)
+=== RUN   TestCloudConfigIgnoresInheritedLocalRoutingAndHonorsExplicitFalse
+--- PASS: TestCloudConfigIgnoresInheritedLocalRoutingAndHonorsExplicitFalse (0.00s)
+=== RUN   TestExplicitEmptyAndFalseFlagsSuppressInheritedEnvironment
+--- PASS: TestExplicitEmptyAndFalseFlagsSuppressInheritedEnvironment (0.00s)
+=== RUN   TestAPIKeyEnvironmentPrecedenceAndExplicitEmptySuppression
+--- PASS: TestAPIKeyEnvironmentPrecedenceAndExplicitEmptySuppression (0.00s)
+=== RUN   TestWorkspaceConcurrentAnnotationRemainsDirtyAndIsNotSyncedBack
+2026/10/06 22:39:02 [1/1] synto command
+--- PASS: TestWorkspaceConcurrentAnnotationRemainsDirtyAndIsNotSyncedBack (0.19s)
+=== RUN   TestWorkspaceConcurrentRawChangeKeepsStartReceipt
+2026/10/06 22:39:03 [1/1] synto command
+--- PASS: TestWorkspaceConcurrentRawChangeKeepsStartReceipt (0.18s)
+=== RUN   TestWorkspaceFailurePreservesLastSuccessAndRecordsFailure
+2026/10/06 22:39:03 [1/1] synto command
+2026/10/06 22:39:03 synto command failed (continuing)
+2026/10/06 22:39:03 WARNING cloud failure pipeline log recording failed execution_id="" project_id="" stage="synto_run" detail_code=""
+--- PASS: TestWorkspaceFailurePreservesLastSuccessAndRecordsFailure (0.05s)
+=== RUN   TestWorkspaceRejectsUnsafeMappingsAndCleansUp
+2026/10/06 22:39:03 WARNING cloud failure pipeline log recording failed execution_id="" project_id="" stage="input_materialization" detail_code=""
+--- PASS: TestWorkspaceRejectsUnsafeMappingsAndCleansUp (0.01s)
+=== RUN   TestWorkspaceRejectsRawSymlinkEscapeAndMalformedAnnotation
+2026/10/06 22:39:03 WARNING cloud failure pipeline log recording failed execution_id="" project_id="" stage="input_materialization" detail_code=""
+2026/10/06 22:39:03 WARNING cloud failure pipeline log recording failed execution_id="" project_id="" stage="input_materialization" detail_code=""
+2026/10/06 22:39:03 WARNING cloud failure pipeline log recording failed execution_id="" project_id="" stage="input_materialization" detail_code=""
+--- PASS: TestWorkspaceRejectsRawSymlinkEscapeAndMalformedAnnotation (0.02s)
+=== RUN   TestNoWorkspaceRunsAgainstOriginalVault
+2026/10/06 22:39:03 [1/1] synto command
+--- PASS: TestNoWorkspaceRunsAgainstOriginalVault (0.03s)
+=== RUN   TestBucketConfigurationRejectsVaultAndMountedRoutingBeforeChild
+=== RUN   TestBucketConfigurationRejectsVaultAndMountedRoutingBeforeChild/explicit_vault
+--- PASS: TestBucketConfigurationRejectsVaultAndMountedRoutingBeforeChild (0.00s)
+    --- PASS: TestBucketConfigurationRejectsVaultAndMountedRoutingBeforeChild/explicit_vault (0.00s)
+=== RUN   TestRecordFailurePersistsOnlySafeErrorAndKeepsSuccessFields
+--- PASS: TestRecordFailurePersistsOnlySafeErrorAndKeepsSuccessFields (0.01s)
+=== RUN   TestWorkspaceSuccessiveGenerationRunsPreserveSourceIDAndAnnotation
+2026/10/06 22:39:03 [1/1] synto command
+2026/10/06 22:39:03 [1/1] synto command
+--- PASS: TestWorkspaceSuccessiveGenerationRunsPreserveSourceIDAndAnnotation (0.44s)
+=== RUN   TestWorkerInputInvalidPreservesCause
+--- PASS: TestWorkerInputInvalidPreservesCause (0.00s)
+=== RUN   TestPipelineLogWritersTeesConsoleUnlessSuppressed
+hello-console-tee
+{"time":"2026-10-06T22:39:03.693783+08:00","severity":"WARNING","message":"observability_degraded","component":"olw_worker","child_component":"synto","user_id":"","project_id":"","execution_id":"exec-console-tee","stream":"stderr","sequence":1,"event":"observability_degraded","destination":"durable","cause":"close /Users/rayer/orca/workspaces/llm-wiki-cloud/LWC-368-pipeline-cac/.build/lwc368-reviewhold/root-tmp/TestPipelineLogWritersTeesConsoleUnlessSuppressed77549193/001/cache/pipeline-exec-console-tee.log: file already closed"}
+--- PASS: TestPipelineLogWritersTeesConsoleUnlessSuppressed (0.00s)
+=== RUN   TestDiagnosticSecretsAreCredentialsOnly
+--- PASS: TestDiagnosticSecretsAreCredentialsOnly (0.00s)
+=== RUN   TestPipelineRunTimeoutRequiresPositiveBoundedTOMLValue
+=== RUN   TestPipelineRunTimeoutRequiresPositiveBoundedTOMLValue/valid
+=== RUN   TestPipelineRunTimeoutRequiresPositiveBoundedTOMLValue/missing
+=== RUN   TestPipelineRunTimeoutRequiresPositiveBoundedTOMLValue/zero
+=== RUN   TestPipelineRunTimeoutRequiresPositiveBoundedTOMLValue/invalid_TOML
+=== RUN   TestPipelineRunTimeoutRequiresPositiveBoundedTOMLValue/overflow
+--- PASS: TestPipelineRunTimeoutRequiresPositiveBoundedTOMLValue (0.00s)
+    --- PASS: TestPipelineRunTimeoutRequiresPositiveBoundedTOMLValue/valid (0.00s)
+    --- PASS: TestPipelineRunTimeoutRequiresPositiveBoundedTOMLValue/missing (0.00s)
+    --- PASS: TestPipelineRunTimeoutRequiresPositiveBoundedTOMLValue/zero (0.00s)
+    --- PASS: TestPipelineRunTimeoutRequiresPositiveBoundedTOMLValue/invalid_TOML (0.00s)
+    --- PASS: TestPipelineRunTimeoutRequiresPositiveBoundedTOMLValue/overflow (0.00s)
+=== RUN   TestDeployedPipelineConfigIsReadOnce
+--- PASS: TestDeployedPipelineConfigIsReadOnce (0.00s)
+=== RUN   TestCloudRunTimeoutCancelsWorkerChild
+2026/10/06 22:39:03 [1/1] synto command
+--- PASS: TestCloudRunTimeoutCancelsWorkerChild (1.01s)
+=== RUN   TestLocalWorkerRunConsumesRenderedPipelineConfig
+--- PASS: TestLocalWorkerRunConsumesRenderedPipelineConfig (0.00s)
+=== RUN   TestDeployedSyntoReplacesOldTOMLAndPreservesProjectState
+=== RUN   TestDeployedSyntoReplacesOldTOMLAndPreservesProjectState/existing_Synto_state
+=== RUN   TestDeployedSyntoReplacesOldTOMLAndPreservesProjectState/legacy_OLW_migration
+--- PASS: TestDeployedSyntoReplacesOldTOMLAndPreservesProjectState (0.02s)
+    --- PASS: TestDeployedSyntoReplacesOldTOMLAndPreservesProjectState/existing_Synto_state (0.01s)
+    --- PASS: TestDeployedSyntoReplacesOldTOMLAndPreservesProjectState/legacy_OLW_migration (0.01s)
+=== RUN   TestGenerationOutputsExcludeConfigWhileReadingHistoricalManifestIsSupported
+--- PASS: TestGenerationOutputsExcludeConfigWhileReadingHistoricalManifestIsSupported (0.00s)
+=== RUN   TestDeployedConfigReadErrorNamesTheObjectWithoutLeakingPayload
+--- PASS: TestDeployedConfigReadErrorNamesTheObjectWithoutLeakingPayload (0.00s)
+=== RUN   TestValidateProfileGuidanceArtifactStrictly
+--- PASS: TestValidateProfileGuidanceArtifactStrictly (0.00s)
+=== RUN   TestProfileGuidanceRequiresCloudProjectAndHonorsNamedFirestoreDatabase
+--- PASS: TestProfileGuidanceRequiresCloudProjectAndHonorsNamedFirestoreDatabase (0.00s)
+=== RUN   TestProfileGuidanceSchemaMaterializationIsAdditiveAndBounded
+--- PASS: TestProfileGuidanceSchemaMaterializationIsAdditiveAndBounded (0.00s)
+=== RUN   TestRunWorkerBatchAtVaultPassesPinnedGuidanceOnlyThroughSyntoSchemaPath
+2026/10/06 22:39:04 [1/1] synto command
+--- PASS: TestRunWorkerBatchAtVaultPassesPinnedGuidanceOnlyThroughSyntoSchemaPath (0.00s)
+=== RUN   TestRunWorkerBatchAtVaultLeavesNoProfileSchemaOverrideWhenNoPin
+2026/10/06 22:39:04 [1/1] synto command
+--- PASS: TestRunWorkerBatchAtVaultLeavesNoProfileSchemaOverrideWhenNoPin (0.00s)
+=== RUN   TestCloudProfileGuidanceFailureReleasesLease
+--- PASS: TestCloudProfileGuidanceFailureReleasesLease (0.00s)
+=== RUN   TestCloudProfileGuidanceRemainsPinnedAfterProfileEdit
+2026/10/06 22:39:04 worker: pinned Profile guidance revision=aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa
+2026/10/06 22:39:04 [1/1] synto command
+--- PASS: TestCloudProfileGuidanceRemainsPinnedAfterProfileEdit (0.03s)
+=== RUN   TestReadActiveProfileGuidancePinsImmutableReference
+    profile_guidance_test.go:327: FIRESTORE_EMULATOR_HOST is not set
+--- SKIP: TestReadActiveProfileGuidancePinsImmutableReference (0.00s)
+=== RUN   TestProfileRequirementsDigestContract
+--- PASS: TestProfileRequirementsDigestContract (0.00s)
+=== RUN   TestProfileReceiptActualPublisherCallback
+=== RUN   TestProfileReceiptActualPublisherCallback/success
+2026/10/06 22:39:04 worker: pinned Profile guidance revision=aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa
+2026/10/06 22:39:04 [1/1] synto command
+=== RUN   TestProfileReceiptActualPublisherCallback/confirmed_readback
+2026/10/06 22:39:04 worker: pinned Profile guidance revision=aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa
+2026/10/06 22:39:04 [1/1] synto command
+=== RUN   TestProfileReceiptActualPublisherCallback/execution_failure
+2026/10/06 22:39:04 worker: pinned Profile guidance revision=aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa
+2026/10/06 22:39:04 [1/1] synto command
+=== RUN   TestProfileReceiptActualPublisherCallback/ambiguous
+2026/10/06 22:39:04 worker: pinned Profile guidance revision=aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa
+2026/10/06 22:39:04 [1/1] synto command
+=== RUN   TestProfileReceiptActualPublisherCallback/receipt_failure
+2026/10/06 22:39:04 worker: pinned Profile guidance revision=aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa
+2026/10/06 22:39:04 [1/1] synto command
+--- PASS: TestProfileReceiptActualPublisherCallback (0.16s)
+    --- PASS: TestProfileReceiptActualPublisherCallback/success (0.03s)
+    --- PASS: TestProfileReceiptActualPublisherCallback/confirmed_readback (0.03s)
+    --- PASS: TestProfileReceiptActualPublisherCallback/execution_failure (0.02s)
+    --- PASS: TestProfileReceiptActualPublisherCallback/ambiguous (0.04s)
+    --- PASS: TestProfileReceiptActualPublisherCallback/receipt_failure (0.04s)
+=== RUN   TestProfileReceiptFirestoreAtomicOutboxAndDuplicate
+    profile_receipt_test.go:106: local Firestore emulator required
+--- SKIP: TestProfileReceiptFirestoreAtomicOutboxAndDuplicate (0.00s)
+=== RUN   TestReconcileSourceIDMapPreservesIDsAddsNewAndRemovesMissing
+--- PASS: TestReconcileSourceIDMapPreservesIDsAddsNewAndRemovesMissing (0.00s)
+=== RUN   TestReconcileSourceIDMapRejectsDuplicateRawPathAndIDCollision
+=== RUN   TestReconcileSourceIDMapRejectsDuplicateRawPathAndIDCollision/duplicate_raw_path
+=== RUN   TestReconcileSourceIDMapRejectsDuplicateRawPathAndIDCollision/stable_ID_collision
+--- PASS: TestReconcileSourceIDMapRejectsDuplicateRawPathAndIDCollision (0.00s)
+    --- PASS: TestReconcileSourceIDMapRejectsDuplicateRawPathAndIDCollision/duplicate_raw_path (0.00s)
+    --- PASS: TestReconcileSourceIDMapRejectsDuplicateRawPathAndIDCollision/stable_ID_collision (0.00s)
+=== RUN   TestReconcileSourceIDMapRedirectNormalizationIsDeterministic
+--- PASS: TestReconcileSourceIDMapRedirectNormalizationIsDeterministic (0.00s)
+=== RUN   TestReconcileSourceIDMapPreservesRedirectSlugTargets
+--- PASS: TestReconcileSourceIDMapPreservesRedirectSlugTargets (0.00s)
+=== RUN   TestDecodeIDMapRejectsDuplicateJSONKeys
+--- PASS: TestDecodeIDMapRejectsDuplicateJSONKeys (0.00s)
+=== RUN   TestDecodeRejectsNestedDuplicateJSONFields
+--- PASS: TestDecodeRejectsNestedDuplicateJSONFields (0.00s)
+=== RUN   TestRewriteSourcePageIDRejectsDuplicateFrontmatterIDs
+--- PASS: TestRewriteSourcePageIDRejectsDuplicateFrontmatterIDs (0.00s)
+=== RUN   TestRewriteSourcePageIDOnlyRewritesAuthoritativeTopLevelID
+--- PASS: TestRewriteSourcePageIDOnlyRewritesAuthoritativeTopLevelID (0.00s)
+=== RUN   TestReconcileWorkspaceRewritesAuthoritativeSourceReferencesOnly
+--- PASS: TestReconcileWorkspaceRewritesAuthoritativeSourceReferencesOnly (0.02s)
+=== RUN   TestReconcileWorkspaceCollapsesExactSyntoSourceRegenerationPair
+--- PASS: TestReconcileWorkspaceCollapsesExactSyntoSourceRegenerationPair (0.02s)
+=== RUN   TestReconcileWorkspaceRejectsMismatchedSyntoTransientIDWithoutMutation
+--- PASS: TestReconcileWorkspaceRejectsMismatchedSyntoTransientIDWithoutMutation (0.00s)
+=== RUN   TestReconcileWorkspaceDoesNotCollapseUnprovableSyntoSourceGroups
+=== RUN   TestReconcileWorkspaceDoesNotCollapseUnprovableSyntoSourceGroups/two_transient_candidates
+=== RUN   TestReconcileWorkspaceDoesNotCollapseUnprovableSyntoSourceGroups/fake_marker_with_explicit_id
+--- PASS: TestReconcileWorkspaceDoesNotCollapseUnprovableSyntoSourceGroups (0.00s)
+    --- PASS: TestReconcileWorkspaceDoesNotCollapseUnprovableSyntoSourceGroups/two_transient_candidates (0.00s)
+    --- PASS: TestReconcileWorkspaceDoesNotCollapseUnprovableSyntoSourceGroups/fake_marker_with_explicit_id (0.00s)
+=== RUN   TestReconcileWorkspaceRejectsRemovedIDReuse
+--- PASS: TestReconcileWorkspaceRejectsRemovedIDReuse (0.00s)
+=== RUN   TestAnnotationTrailerRequiresOwnedTerminalDigest
+--- PASS: TestAnnotationTrailerRequiresOwnedTerminalDigest (0.00s)
+=== RUN   TestAnnotationTrailerRejectsDuplicateOwnedTrailers
+--- PASS: TestAnnotationTrailerRejectsDuplicateOwnedTrailers (0.00s)
+=== RUN   TestClearStableSourceAnnotationRemovesExactlyOneValidTrailer
+--- PASS: TestClearStableSourceAnnotationRemovesExactlyOneValidTrailer (0.01s)
+=== RUN   TestRewriteConceptSourceReferencesRejectsBounds
+--- PASS: TestRewriteConceptSourceReferencesRejectsBounds (0.02s)
+=== RUN   TestSourceReconcileMalformedConceptsCacheLeavesAllBytesUnchanged
+--- PASS: TestSourceReconcileMalformedConceptsCacheLeavesAllBytesUnchanged (0.00s)
+=== RUN   TestSourceReconcileLateMalformedSourcePageLeavesAllBytesUnchanged
+--- PASS: TestSourceReconcileLateMalformedSourcePageLeavesAllBytesUnchanged (0.00s)
+=== RUN   TestSourceReconcileLateMalformedAnnotationTrailerLeavesAllBytesUnchanged
+--- PASS: TestSourceReconcileLateMalformedAnnotationTrailerLeavesAllBytesUnchanged (0.00s)
+=== RUN   TestApplyStableSourceAnnotationsIsExactlyOnceAndIdempotent
+--- PASS: TestApplyStableSourceAnnotationsIsExactlyOnceAndIdempotent (0.02s)
+=== RUN   TestSyntoMigrationChildFailureCarriesBoundedDiagnosticMetadata
+--- PASS: TestSyntoMigrationChildFailureCarriesBoundedDiagnosticMetadata (0.01s)
+=== RUN   TestSyntoChildBoundariesClassifyRunExportAndContext
+=== RUN   TestSyntoChildBoundariesClassifyRunExportAndContext/accepted_run
+2026/10/06 22:39:05 [1/1] synto command
+=== RUN   TestSyntoChildBoundariesClassifyRunExportAndContext/pack_export
+=== RUN   TestSyntoChildBoundariesClassifyRunExportAndContext/deadline
+2026/10/06 22:39:05 [1/1] synto command
+=== RUN   TestSyntoChildBoundariesClassifyRunExportAndContext/cancelled
+2026/10/06 22:39:05 [1/1] synto command
+--- PASS: TestSyntoChildBoundariesClassifyRunExportAndContext (0.01s)
+    --- PASS: TestSyntoChildBoundariesClassifyRunExportAndContext/accepted_run (0.00s)
+    --- PASS: TestSyntoChildBoundariesClassifyRunExportAndContext/pack_export (0.00s)
+    --- PASS: TestSyntoChildBoundariesClassifyRunExportAndContext/deadline (0.00s)
+    --- PASS: TestSyntoChildBoundariesClassifyRunExportAndContext/cancelled (0.00s)
+=== RUN   TestSyntoChildBoundariesKeepOrdinaryErrorsUnknown
+=== RUN   TestSyntoChildBoundariesKeepOrdinaryErrorsUnknown/migrate-olw
+=== RUN   TestSyntoChildBoundariesKeepOrdinaryErrorsUnknown/run
+2026/10/06 22:39:05 [1/1] synto command
+=== RUN   TestSyntoChildBoundariesKeepOrdinaryErrorsUnknown/pack-export
+--- PASS: TestSyntoChildBoundariesKeepOrdinaryErrorsUnknown (0.00s)
+    --- PASS: TestSyntoChildBoundariesKeepOrdinaryErrorsUnknown/migrate-olw (0.00s)
+    --- PASS: TestSyntoChildBoundariesKeepOrdinaryErrorsUnknown/run (0.00s)
+    --- PASS: TestSyntoChildBoundariesKeepOrdinaryErrorsUnknown/pack-export (0.00s)
+=== RUN   TestWorkerFailureTypedNilExitErrorIsSafe
+--- PASS: TestWorkerFailureTypedNilExitErrorIsSafe (0.00s)
+=== RUN   TestSyntoMigrationAndIndexChildBoundariesHonorContextClassification
+=== RUN   TestSyntoMigrationAndIndexChildBoundariesHonorContextClassification/migration_timeout_wins_over_canceled_child_cause
+=== RUN   TestSyntoMigrationAndIndexChildBoundariesHonorContextClassification/index_export_cancelled_wins_over_deadline_child_cause
+--- PASS: TestSyntoMigrationAndIndexChildBoundariesHonorContextClassification (0.00s)
+    --- PASS: TestSyntoMigrationAndIndexChildBoundariesHonorContextClassification/migration_timeout_wins_over_canceled_child_cause (0.00s)
+    --- PASS: TestSyntoMigrationAndIndexChildBoundariesHonorContextClassification/index_export_cancelled_wins_over_deadline_child_cause (0.00s)
+=== RUN   TestSyntoMigrationPostconditionsAreStateInvalid
+--- PASS: TestSyntoMigrationPostconditionsAreStateInvalid (0.00s)
+=== RUN   TestWorkerIncoherentSyntoStateFailsBeforeChildWithStateDiagnostic
+--- PASS: TestWorkerIncoherentSyntoStateFailsBeforeChildWithStateDiagnostic (0.00s)
+=== RUN   TestRunOLWBatchSafetyValidationCarriesConfigDiagnostic
+2026/10/06 22:39:05 [1/1] synto command
+--- PASS: TestRunOLWBatchSafetyValidationCarriesConfigDiagnostic (0.00s)
+=== RUN   TestSyntoIndexExportValidationCarriesIndexStateDiagnostic
+--- PASS: TestSyntoIndexExportValidationCarriesIndexStateDiagnostic (0.00s)
+=== RUN   TestSyntoWorkerImagePinsExactWheel
+--- PASS: TestSyntoWorkerImagePinsExactWheel (0.00s)
+=== RUN   TestSyntoMigrationRunsPrivatelyAndPreservesInputs
+--- PASS: TestSyntoMigrationRunsPrivatelyAndPreservesInputs (0.01s)
+=== RUN   TestSyntoMigrationRejectsOversizedConfigBeforeNormalization
+--- PASS: TestSyntoMigrationRejectsOversizedConfigBeforeNormalization (0.00s)
+=== RUN   TestSyntoLimitedEncoderStopsExpansionBeforeMaterializingOutput
+--- PASS: TestSyntoLimitedEncoderStopsExpansionBeforeMaterializingOutput (0.00s)
+=== RUN   TestExactSyntoBridgeEnvironmentRequiresCombinedOutputs
+--- PASS: TestExactSyntoBridgeEnvironmentRequiresCombinedOutputs (0.00s)
+=== RUN   TestSyntoMigrationMissingPipelineReachesRunAfterNormalization
+2026/10/06 22:39:05 [1/1] synto command
+--- PASS: TestSyntoMigrationMissingPipelineReachesRunAfterNormalization (0.01s)
+=== RUN   TestRunWorkerBatchLegacyFullTransactionPreservesIdentityAndSourceLifecycle
+2026/10/06 22:39:05 [1/1] synto command
+--- PASS: TestRunWorkerBatchLegacyFullTransactionPreservesIdentityAndSourceLifecycle (0.23s)
+=== RUN   TestNormalizeMigratedSyntoConfigPreservesSemantics
+--- PASS: TestNormalizeMigratedSyntoConfigPreservesSemantics (0.01s)
+=== RUN   TestBurntSushiTemporalSupportAndMetadata
+=== RUN   TestBurntSushiTemporalSupportAndMetadata/offset_datetime
+=== RUN   TestBurntSushiTemporalSupportAndMetadata/local_datetime
+=== RUN   TestBurntSushiTemporalSupportAndMetadata/local_date
+=== RUN   TestBurntSushiTemporalSupportAndMetadata/local_time
+--- PASS: TestBurntSushiTemporalSupportAndMetadata (0.00s)
+    --- PASS: TestBurntSushiTemporalSupportAndMetadata/offset_datetime (0.00s)
+    --- PASS: TestBurntSushiTemporalSupportAndMetadata/local_datetime (0.00s)
+    --- PASS: TestBurntSushiTemporalSupportAndMetadata/local_date (0.00s)
+    --- PASS: TestBurntSushiTemporalSupportAndMetadata/local_time (0.00s)
+=== RUN   TestNormalizeMigratedSyntoConfigFailsClosedForSupportedTemporalForms
+=== RUN   TestNormalizeMigratedSyntoConfigFailsClosedForSupportedTemporalForms/offset_datetime
+=== RUN   TestNormalizeMigratedSyntoConfigFailsClosedForSupportedTemporalForms/local_datetime
+=== RUN   TestNormalizeMigratedSyntoConfigFailsClosedForSupportedTemporalForms/local_date
+--- PASS: TestNormalizeMigratedSyntoConfigFailsClosedForSupportedTemporalForms (0.00s)
+    --- PASS: TestNormalizeMigratedSyntoConfigFailsClosedForSupportedTemporalForms/offset_datetime (0.00s)
+    --- PASS: TestNormalizeMigratedSyntoConfigFailsClosedForSupportedTemporalForms/local_datetime (0.00s)
+    --- PASS: TestNormalizeMigratedSyntoConfigFailsClosedForSupportedTemporalForms/local_date (0.00s)
+=== RUN   TestEqualSyntoTOMLValuesDoesNotCollapseTemporalRepresentations
+--- PASS: TestEqualSyntoTOMLValuesDoesNotCollapseTemporalRepresentations (0.00s)
+=== RUN   TestNormalizeMigratedSyntoConfigCreatesMissingPipeline
+--- PASS: TestNormalizeMigratedSyntoConfigCreatesMissingPipeline (0.01s)
+=== RUN   TestNormalizeMigratedSyntoConfigFailsClosedWithoutPartialWrite
+=== RUN   TestNormalizeMigratedSyntoConfigFailsClosedWithoutPartialWrite/malformed
+=== RUN   TestNormalizeMigratedSyntoConfigFailsClosedWithoutPartialWrite/duplicate_key
+=== RUN   TestNormalizeMigratedSyntoConfigFailsClosedWithoutPartialWrite/duplicate_table
+=== RUN   TestNormalizeMigratedSyntoConfigFailsClosedWithoutPartialWrite/non-boolean_safety_value
+=== RUN   TestNormalizeMigratedSyntoConfigFailsClosedWithoutPartialWrite/non-table_pipeline
+--- PASS: TestNormalizeMigratedSyntoConfigFailsClosedWithoutPartialWrite (0.00s)
+    --- PASS: TestNormalizeMigratedSyntoConfigFailsClosedWithoutPartialWrite/malformed (0.00s)
+    --- PASS: TestNormalizeMigratedSyntoConfigFailsClosedWithoutPartialWrite/duplicate_key (0.00s)
+    --- PASS: TestNormalizeMigratedSyntoConfigFailsClosedWithoutPartialWrite/duplicate_table (0.00s)
+    --- PASS: TestNormalizeMigratedSyntoConfigFailsClosedWithoutPartialWrite/non-boolean_safety_value (0.00s)
+    --- PASS: TestNormalizeMigratedSyntoConfigFailsClosedWithoutPartialWrite/non-table_pipeline (0.00s)
+=== RUN   TestSnapshotMigrationInputsIsBoundedAndDetectsChanges
+--- PASS: TestSnapshotMigrationInputsIsBoundedAndDetectsChanges (0.00s)
+=== RUN   TestSyntoConfigDisablesPrivateGitAndCurationSideEffects
+--- PASS: TestSyntoConfigDisablesPrivateGitAndCurationSideEffects (0.01s)
+=== RUN   TestSyntoConfigMaterializationIsIndependentAndBytePreserving
+=== RUN   TestSyntoConfigMaterializationIsIndependentAndBytePreserving/fresh-synto-only
+=== RUN   TestSyntoConfigMaterializationIsIndependentAndBytePreserving/migrated-dual-config
+--- PASS: TestSyntoConfigMaterializationIsIndependentAndBytePreserving (0.02s)
+    --- PASS: TestSyntoConfigMaterializationIsIndependentAndBytePreserving/fresh-synto-only (0.01s)
+    --- PASS: TestSyntoConfigMaterializationIsIndependentAndBytePreserving/migrated-dual-config (0.02s)
+=== RUN   TestExistingSafeSyntoConfigIsByteIdenticalAndSkipsMigration
+--- PASS: TestExistingSafeSyntoConfigIsByteIdenticalAndSkipsMigration (0.00s)
+=== RUN   TestSyntoPipelineSafetyRejectsUnsafeEffectiveValues
+=== RUN   TestSyntoPipelineSafetyRejectsUnsafeEffectiveValues/omitted_auto_commit
+=== RUN   TestSyntoPipelineSafetyRejectsUnsafeEffectiveValues/explicit_auto_commit
+=== RUN   TestSyntoPipelineSafetyRejectsUnsafeEffectiveValues/explicit_auto_maintain
+=== RUN   TestSyntoPipelineSafetyRejectsUnsafeEffectiveValues/explicit_relation_extraction
+=== RUN   TestSyntoPipelineSafetyRejectsUnsafeEffectiveValues/duplicate_key
+=== RUN   TestSyntoPipelineSafetyRejectsUnsafeEffectiveValues/duplicate_table
+--- PASS: TestSyntoPipelineSafetyRejectsUnsafeEffectiveValues (0.00s)
+    --- PASS: TestSyntoPipelineSafetyRejectsUnsafeEffectiveValues/omitted_auto_commit (0.00s)
+    --- PASS: TestSyntoPipelineSafetyRejectsUnsafeEffectiveValues/explicit_auto_commit (0.00s)
+    --- PASS: TestSyntoPipelineSafetyRejectsUnsafeEffectiveValues/explicit_auto_maintain (0.00s)
+    --- PASS: TestSyntoPipelineSafetyRejectsUnsafeEffectiveValues/explicit_relation_extraction (0.00s)
+    --- PASS: TestSyntoPipelineSafetyRejectsUnsafeEffectiveValues/duplicate_key (0.00s)
+    --- PASS: TestSyntoPipelineSafetyRejectsUnsafeEffectiveValues/duplicate_table (0.00s)
+=== RUN   TestSyntoPipelineSafetyAcceptsExplicitSafeFalse
+--- PASS: TestSyntoPipelineSafetyAcceptsExplicitSafeFalse (0.00s)
+=== RUN   TestSyntoPipelineSafetyIgnoresCommentsAndStringLookalikes
+--- PASS: TestSyntoPipelineSafetyIgnoresCommentsAndStringLookalikes (0.00s)
+=== RUN   TestSyntoPipelineSafetyNormalizesMigratedConfig
+--- PASS: TestSyntoPipelineSafetyNormalizesMigratedConfig (0.01s)
+=== RUN   TestSyntoPipelineSafetyBlocksChildProcess
+2026/10/06 22:39:05 [1/1] synto command
+--- PASS: TestSyntoPipelineSafetyBlocksChildProcess (0.00s)
+=== RUN   TestSyntoCommandContractRejectsForceAndUnsafeSecondCommandsBeforeChild
+--- PASS: TestSyntoCommandContractRejectsForceAndUnsafeSecondCommandsBeforeChild (0.00s)
+=== RUN   TestWorkerProductionSequenceInstallsPackExportIndexBeforePostprocess
+2026/10/06 22:39:05 [1/1] synto command
+--- PASS: TestWorkerProductionSequenceInstallsPackExportIndexBeforePostprocess (0.14s)
+=== RUN   TestSyntoOfflineExportJoinsAgentConceptIdentity
+--- PASS: TestSyntoOfflineExportJoinsAgentConceptIdentity (0.00s)
+=== RUN   TestSyntoOfflineExportFillsNullArticleEntityFromAgent
+--- PASS: TestSyntoOfflineExportFillsNullArticleEntityFromAgent (0.00s)
+=== RUN   TestSyntoOfflineExportFillsOmittedArticleEntityFromAgent
+--- PASS: TestSyntoOfflineExportFillsOmittedArticleEntityFromAgent (0.00s)
+=== RUN   TestEnforceActiveEntityCoverageFailsWhenAllUnbound
+--- PASS: TestEnforceActiveEntityCoverageFailsWhenAllUnbound (0.00s)
+=== RUN   TestReportUnboundActiveEntitiesRecordsCoverageGap
+2026/10/06 22:39:05 WARNING postprocess identity_coverage_gap_summary count=1 detail="active Synto entities missing entity-bound articles; continuing"
+2026/10/06 22:39:05 WARNING postprocess identity_coverage_gap entity_id="01KYW6JAFPX69EDQZERN3X5R09" concept_names="Orphan Concept" source_paths="raw/other.md,raw/source.md" candidate_article_paths="articles/orphan-concept.md" detail="active Synto entity has no entity-bound article; continuing without concept"
+--- PASS: TestReportUnboundActiveEntitiesRecordsCoverageGap (0.00s)
+=== RUN   TestSyntoIdentityPlanValidatesDuplicateMetadataForEntitylessArticles
+=== RUN   TestSyntoIdentityPlanValidatesDuplicateMetadataForEntitylessArticles/duplicate_article_ID
+=== RUN   TestSyntoIdentityPlanValidatesDuplicateMetadataForEntitylessArticles/duplicate_article_slug
+--- PASS: TestSyntoIdentityPlanValidatesDuplicateMetadataForEntitylessArticles (0.00s)
+    --- PASS: TestSyntoIdentityPlanValidatesDuplicateMetadataForEntitylessArticles/duplicate_article_ID (0.00s)
+    --- PASS: TestSyntoIdentityPlanValidatesDuplicateMetadataForEntitylessArticles/duplicate_article_slug (0.00s)
+=== RUN   TestSyntoAgentConceptDoesNotVetoExplicitArticleEntity
+--- PASS: TestSyntoAgentConceptDoesNotVetoExplicitArticleEntity (0.00s)
+=== RUN   TestSyntoAgentConceptJoinFailsClosed
+=== RUN   TestSyntoAgentConceptJoinFailsClosed/ID-only_match
+=== RUN   TestSyntoAgentConceptJoinFailsClosed/path-only_match
+=== RUN   TestSyntoAgentConceptJoinFailsClosed/ID/path_point_to_different_articles
+=== RUN   TestSyntoAgentConceptJoinFailsClosed/same_article_multiple_entities
+=== RUN   TestSyntoAgentConceptJoinFailsClosed/same_article_duplicate_proof
+=== RUN   TestSyntoAgentConceptJoinFailsClosed/unsafe_entity
+=== RUN   TestSyntoAgentConceptJoinFailsClosed/unsafe_ID
+=== RUN   TestSyntoAgentConceptJoinFailsClosed/unsafe_path
+=== RUN   TestSyntoAgentConceptJoinFailsClosed/linked_entry_without_entity
+=== RUN   TestSyntoAgentConceptJoinFailsClosed/malformed_trailing_JSON
+=== RUN   TestSyntoAgentConceptJoinFailsClosed/schema_mismatch
+--- PASS: TestSyntoAgentConceptJoinFailsClosed (0.00s)
+    --- PASS: TestSyntoAgentConceptJoinFailsClosed/ID-only_match (0.00s)
+    --- PASS: TestSyntoAgentConceptJoinFailsClosed/path-only_match (0.00s)
+    --- PASS: TestSyntoAgentConceptJoinFailsClosed/ID/path_point_to_different_articles (0.00s)
+    --- PASS: TestSyntoAgentConceptJoinFailsClosed/same_article_multiple_entities (0.00s)
+    --- PASS: TestSyntoAgentConceptJoinFailsClosed/same_article_duplicate_proof (0.00s)
+    --- PASS: TestSyntoAgentConceptJoinFailsClosed/unsafe_entity (0.00s)
+    --- PASS: TestSyntoAgentConceptJoinFailsClosed/unsafe_ID (0.00s)
+    --- PASS: TestSyntoAgentConceptJoinFailsClosed/unsafe_path (0.00s)
+    --- PASS: TestSyntoAgentConceptJoinFailsClosed/linked_entry_without_entity (0.00s)
+    --- PASS: TestSyntoAgentConceptJoinFailsClosed/malformed_trailing_JSON (0.00s)
+    --- PASS: TestSyntoAgentConceptJoinFailsClosed/schema_mismatch (0.00s)
+=== RUN   TestSyntoOmittedArticleDoesNotUseExactSourceNameAsIdentity
+--- PASS: TestSyntoOmittedArticleDoesNotUseExactSourceNameAsIdentity (0.00s)
+=== RUN   TestSyntoDirectAgentProofFillsTitleDriftedArticleEntity
+--- PASS: TestSyntoDirectAgentProofFillsTitleDriftedArticleEntity (0.00s)
+=== RUN   TestSyntoMigrationStateMatrixFailsClosedBeforeChild
+=== RUN   TestSyntoMigrationStateMatrixFailsClosedBeforeChild/symlinked_legacy_state_directory
+=== RUN   TestSyntoMigrationStateMatrixFailsClosedBeforeChild/config_plus_partial_synto_directory
+=== RUN   TestSyntoMigrationStateMatrixFailsClosedBeforeChild/config_plus_legacy_state_without_synto_state
+=== RUN   TestSyntoMigrationStateMatrixFailsClosedBeforeChild/synto_directory_without_config
+=== RUN   TestSyntoMigrationStateMatrixFailsClosedBeforeChild/legacy_config_without_state
+=== RUN   TestSyntoMigrationStateMatrixFailsClosedBeforeChild/legacy_state_without_config
+=== RUN   TestSyntoMigrationStateMatrixFailsClosedBeforeChild/symlinked_synto_config
+=== RUN   TestSyntoMigrationStateMatrixFailsClosedBeforeChild/fresh_config_before_first_run_is_allowed
+=== RUN   TestSyntoMigrationStateMatrixFailsClosedBeforeChild/fresh_vault_requires_rendered_Pipeline_config
+--- PASS: TestSyntoMigrationStateMatrixFailsClosedBeforeChild (0.01s)
+    --- PASS: TestSyntoMigrationStateMatrixFailsClosedBeforeChild/symlinked_legacy_state_directory (0.00s)
+    --- PASS: TestSyntoMigrationStateMatrixFailsClosedBeforeChild/config_plus_partial_synto_directory (0.00s)
+    --- PASS: TestSyntoMigrationStateMatrixFailsClosedBeforeChild/config_plus_legacy_state_without_synto_state (0.00s)
+    --- PASS: TestSyntoMigrationStateMatrixFailsClosedBeforeChild/synto_directory_without_config (0.00s)
+    --- PASS: TestSyntoMigrationStateMatrixFailsClosedBeforeChild/legacy_config_without_state (0.00s)
+    --- PASS: TestSyntoMigrationStateMatrixFailsClosedBeforeChild/legacy_state_without_config (0.00s)
+    --- PASS: TestSyntoMigrationStateMatrixFailsClosedBeforeChild/symlinked_synto_config (0.00s)
+    --- PASS: TestSyntoMigrationStateMatrixFailsClosedBeforeChild/fresh_config_before_first_run_is_allowed (0.00s)
+    --- PASS: TestSyntoMigrationStateMatrixFailsClosedBeforeChild/fresh_vault_requires_rendered_Pipeline_config (0.00s)
+=== RUN   TestMigrationSnapshotProtectsRollbackArtifactsAndRootRace
+--- PASS: TestMigrationSnapshotProtectsRollbackArtifactsAndRootRace (0.00s)
+=== RUN   TestSyntoIndexIdentityAndHashValidationFailBeforeRewrite
+=== RUN   TestSyntoIndexIdentityAndHashValidationFailBeforeRewrite/empty
+=== RUN   TestSyntoIndexIdentityAndHashValidationFailBeforeRewrite/short
+=== RUN   TestSyntoIndexIdentityAndHashValidationFailBeforeRewrite/non-hex
+=== RUN   TestSyntoIndexIdentityAndHashValidationFailBeforeRewrite/uppercase
+=== RUN   TestSyntoIndexIdentityAndHashValidationFailBeforeRewrite/valid
+--- PASS: TestSyntoIndexIdentityAndHashValidationFailBeforeRewrite (0.00s)
+    --- PASS: TestSyntoIndexIdentityAndHashValidationFailBeforeRewrite/empty (0.00s)
+    --- PASS: TestSyntoIndexIdentityAndHashValidationFailBeforeRewrite/short (0.00s)
+    --- PASS: TestSyntoIndexIdentityAndHashValidationFailBeforeRewrite/non-hex (0.00s)
+    --- PASS: TestSyntoIndexIdentityAndHashValidationFailBeforeRewrite/uppercase (0.00s)
+    --- PASS: TestSyntoIndexIdentityAndHashValidationFailBeforeRewrite/valid (0.00s)
+=== RUN   TestSyntoPackExportArticlesPathIsConsumedByAdapter
+--- PASS: TestSyntoPackExportArticlesPathIsConsumedByAdapter (0.00s)
+=== RUN   TestSyntoPackExportOmittedArticleEntityUsesPriorStablePathIdentity
+--- PASS: TestSyntoPackExportOmittedArticleEntityUsesPriorStablePathIdentity (0.00s)
+=== RUN   TestSyntoPackExportOmittedArticleEntityUsesPriorStableIdentityAcrossMultipleSources
+--- PASS: TestSyntoPackExportOmittedArticleEntityUsesPriorStableIdentityAcrossMultipleSources (0.00s)
+=== RUN   TestSyntoPackExportOmittedArticleDoesNotReusePriorPathAcrossNestedSource
+--- PASS: TestSyntoPackExportOmittedArticleDoesNotReusePriorPathAcrossNestedSource (0.02s)
+=== RUN   TestSyntoPackExportSourcesIDAcceptsRawRelativePath
+--- PASS: TestSyntoPackExportSourcesIDAcceptsRawRelativePath (0.00s)
+=== RUN   TestSafeSyntoSourceID
+=== RUN   TestSafeSyntoSourceID/accept_bare_id
+=== RUN   TestSafeSyntoSourceID/accept_raw_path
+=== RUN   TestSafeSyntoSourceID/reject_empty
+=== RUN   TestSafeSyntoSourceID/reject_dot
+=== RUN   TestSafeSyntoSourceID/reject_dotdot
+=== RUN   TestSafeSyntoSourceID/reject_absolute
+=== RUN   TestSafeSyntoSourceID/reject_traversal
+=== RUN   TestSafeSyntoSourceID/reject_normalized_traversal
+=== RUN   TestSafeSyntoSourceID/reject_backslash_path
+=== RUN   TestSafeSyntoSourceID/reject_windows_volume
+=== RUN   TestSafeSyntoSourceID/reject_windows_partial_volume
+=== RUN   TestSafeSyntoSourceID/reject_newline
+=== RUN   TestSafeSyntoSourceID/reject_del
+--- PASS: TestSafeSyntoSourceID (0.00s)
+    --- PASS: TestSafeSyntoSourceID/accept_bare_id (0.00s)
+    --- PASS: TestSafeSyntoSourceID/accept_raw_path (0.00s)
+    --- PASS: TestSafeSyntoSourceID/reject_empty (0.00s)
+    --- PASS: TestSafeSyntoSourceID/reject_dot (0.00s)
+    --- PASS: TestSafeSyntoSourceID/reject_dotdot (0.00s)
+    --- PASS: TestSafeSyntoSourceID/reject_absolute (0.00s)
+    --- PASS: TestSafeSyntoSourceID/reject_traversal (0.00s)
+    --- PASS: TestSafeSyntoSourceID/reject_normalized_traversal (0.00s)
+    --- PASS: TestSafeSyntoSourceID/reject_backslash_path (0.00s)
+    --- PASS: TestSafeSyntoSourceID/reject_windows_volume (0.00s)
+    --- PASS: TestSafeSyntoSourceID/reject_windows_partial_volume (0.00s)
+    --- PASS: TestSafeSyntoSourceID/reject_newline (0.00s)
+    --- PASS: TestSafeSyntoSourceID/reject_del (0.00s)
+=== RUN   TestSyntoArticlePathNormalizationIsStrict
+--- PASS: TestSyntoArticlePathNormalizationIsStrict (0.00s)
+=== RUN   TestSyntoPackExportMalformedPathsAndCaseCollisionsLeaveIDMapUnchanged
+=== RUN   TestSyntoPackExportMalformedPathsAndCaseCollisionsLeaveIDMapUnchanged/nested_path
+=== RUN   TestSyntoPackExportMalformedPathsAndCaseCollisionsLeaveIDMapUnchanged/unexpected_prefix
+=== RUN   TestSyntoPackExportMalformedPathsAndCaseCollisionsLeaveIDMapUnchanged/case_collision
+--- PASS: TestSyntoPackExportMalformedPathsAndCaseCollisionsLeaveIDMapUnchanged (0.00s)
+    --- PASS: TestSyntoPackExportMalformedPathsAndCaseCollisionsLeaveIDMapUnchanged/nested_path (0.00s)
+    --- PASS: TestSyntoPackExportMalformedPathsAndCaseCollisionsLeaveIDMapUnchanged/unexpected_prefix (0.00s)
+    --- PASS: TestSyntoPackExportMalformedPathsAndCaseCollisionsLeaveIDMapUnchanged/case_collision (0.00s)
+=== RUN   TestExactSyntoPackExportBridge
+    synto_migration_test.go:1763: set the four exact Synto bridge output paths
+--- SKIP: TestExactSyntoPackExportBridge (0.00s)
+=== RUN   TestExactSyntoMigratedConfigBridge
+    synto_migration_test.go:1924: set the four exact Synto bridge output paths
+--- SKIP: TestExactSyntoMigratedConfigBridge (0.00s)
+=== RUN   TestPostprocessCreatesAndPreservesDormantCache
+--- PASS: TestPostprocessCreatesAndPreservesDormantCache (0.01s)
+=== RUN   TestSyntoIndexDecoderRejectsAdversarialJSON
+=== RUN   TestSyntoIndexDecoderRejectsAdversarialJSON/duplicate_top-level_key
+=== RUN   TestSyntoIndexDecoderRejectsAdversarialJSON/trailing_JSON
+=== RUN   TestSyntoIndexDecoderRejectsAdversarialJSON/extra_field
+=== RUN   TestSyntoIndexDecoderRejectsAdversarialJSON/unsafe_source_path
+=== RUN   TestSyntoIndexDecoderRejectsAdversarialJSON/missing_required_field
+--- PASS: TestSyntoIndexDecoderRejectsAdversarialJSON (0.00s)
+    --- PASS: TestSyntoIndexDecoderRejectsAdversarialJSON/duplicate_top-level_key (0.00s)
+    --- PASS: TestSyntoIndexDecoderRejectsAdversarialJSON/trailing_JSON (0.00s)
+    --- PASS: TestSyntoIndexDecoderRejectsAdversarialJSON/extra_field (0.00s)
+    --- PASS: TestSyntoIndexDecoderRejectsAdversarialJSON/unsafe_source_path (0.00s)
+    --- PASS: TestSyntoIndexDecoderRejectsAdversarialJSON/missing_required_field (0.00s)
+=== RUN   TestSyntoIndexLimitMatchesSharedGenerationMaximum
+--- PASS: TestSyntoIndexLimitMatchesSharedGenerationMaximum (0.02s)
+=== RUN   TestStrictJSONNestingDepthBoundary
+--- PASS: TestStrictJSONNestingDepthBoundary (0.00s)
+=== RUN   TestSyntoEntityMappingRejectsEntitylessIDPathDisagreement
+--- PASS: TestSyntoEntityMappingRejectsEntitylessIDPathDisagreement (0.00s)
+=== RUN   TestSyntoEntityMappingSkipsReservedRootPagesBeforeMandatoryMapping
+--- PASS: TestSyntoEntityMappingSkipsReservedRootPagesBeforeMandatoryMapping (0.00s)
+=== RUN   TestSyntoEntityMappingReservedRootsFillsAgentIdentityJoin
+--- PASS: TestSyntoEntityMappingReservedRootsFillsAgentIdentityJoin (0.00s)
+=== RUN   TestSyntoEntityMappingReservedRootsStillValidateIdentity
+=== RUN   TestSyntoEntityMappingReservedRootsStillValidateIdentity/unsafe_article_ID
+=== RUN   TestSyntoEntityMappingReservedRootsStillValidateIdentity/unsafe_entity_ID
+--- PASS: TestSyntoEntityMappingReservedRootsStillValidateIdentity (0.00s)
+    --- PASS: TestSyntoEntityMappingReservedRootsStillValidateIdentity/unsafe_article_ID (0.00s)
+    --- PASS: TestSyntoEntityMappingReservedRootsStillValidateIdentity/unsafe_entity_ID (0.00s)
+=== RUN   TestSyntoEntityMappingReservedRootPathMatrixFailsClosed
+=== RUN   TestSyntoEntityMappingReservedRootPathMatrixFailsClosed/uppercase_index
+=== RUN   TestSyntoEntityMappingReservedRootPathMatrixFailsClosed/uppercase_log
+=== RUN   TestSyntoEntityMappingReservedRootPathMatrixFailsClosed/nested_index
+=== RUN   TestSyntoEntityMappingReservedRootPathMatrixFailsClosed/nested_log
+=== RUN   TestSyntoEntityMappingReservedRootPathMatrixFailsClosed/index_lookalike
+=== RUN   TestSyntoEntityMappingReservedRootPathMatrixFailsClosed/log_lookalike
+=== RUN   TestSyntoEntityMappingReservedRootPathMatrixFailsClosed/articles_index
+--- PASS: TestSyntoEntityMappingReservedRootPathMatrixFailsClosed (0.00s)
+    --- PASS: TestSyntoEntityMappingReservedRootPathMatrixFailsClosed/uppercase_index (0.00s)
+    --- PASS: TestSyntoEntityMappingReservedRootPathMatrixFailsClosed/uppercase_log (0.00s)
+    --- PASS: TestSyntoEntityMappingReservedRootPathMatrixFailsClosed/nested_index (0.00s)
+    --- PASS: TestSyntoEntityMappingReservedRootPathMatrixFailsClosed/nested_log (0.00s)
+    --- PASS: TestSyntoEntityMappingReservedRootPathMatrixFailsClosed/index_lookalike (0.00s)
+    --- PASS: TestSyntoEntityMappingReservedRootPathMatrixFailsClosed/log_lookalike (0.00s)
+    --- PASS: TestSyntoEntityMappingReservedRootPathMatrixFailsClosed/articles_index (0.00s)
+=== RUN   TestReadSyntoEntityIDsReturnsReasonedDetailCodes
+=== RUN   TestReadSyntoEntityIDsReturnsReasonedDetailCodes/decode_article_identity
+=== RUN   TestReadSyntoEntityIDsReturnsReasonedDetailCodes/decode_article_path
+=== RUN   TestReadSyntoEntityIDsReturnsReasonedDetailCodes/decode_source_concept_identity
+=== RUN   TestReadSyntoEntityIDsReturnsReasonedDetailCodes/source_concept_identity
+=== RUN   TestReadSyntoEntityIDsReturnsReasonedDetailCodes/article_identity
+=== RUN   TestReadSyntoEntityIDsReturnsReasonedDetailCodes/source_concept_ambiguity
+=== RUN   TestReadSyntoEntityIDsReturnsReasonedDetailCodes/source_concept_missing
+=== RUN   TestReadSyntoEntityIDsReturnsReasonedDetailCodes/article_path
+=== RUN   TestReadSyntoEntityIDsReturnsReasonedDetailCodes/article_source_disagreement
+=== RUN   TestReadSyntoEntityIDsReturnsReasonedDetailCodes/duplicate_article_ID
+=== RUN   TestReadSyntoEntityIDsReturnsReasonedDetailCodes/duplicate_article_path
+=== RUN   TestReadSyntoEntityIDsReturnsReasonedDetailCodes/duplicate_entity_ID
+=== RUN   TestReadSyntoEntityIDsReturnsReasonedDetailCodes/active_entity_collision
+=== RUN   TestReadSyntoEntityIDsReturnsReasonedDetailCodes/concept_slug_case_mismatch
+=== RUN   TestReadSyntoEntityIDsReturnsReasonedDetailCodes/concept_ID-path_disagreement
+=== RUN   TestReadSyntoEntityIDsReturnsReasonedDetailCodes/concept_missing_mapping
+=== RUN   TestReadSyntoEntityIDsReturnsReasonedDetailCodes/concept_ID_has_no_matching_path
+=== RUN   TestReadSyntoEntityIDsReturnsReasonedDetailCodes/concept_is_missing_id_and_slug_from_INDEX
+=== RUN   TestReadSyntoEntityIDsReturnsReasonedDetailCodes/concept_entity_collision
+--- PASS: TestReadSyntoEntityIDsReturnsReasonedDetailCodes (0.00s)
+    --- PASS: TestReadSyntoEntityIDsReturnsReasonedDetailCodes/decode_article_identity (0.00s)
+    --- PASS: TestReadSyntoEntityIDsReturnsReasonedDetailCodes/decode_article_path (0.00s)
+    --- PASS: TestReadSyntoEntityIDsReturnsReasonedDetailCodes/decode_source_concept_identity (0.00s)
+    --- PASS: TestReadSyntoEntityIDsReturnsReasonedDetailCodes/source_concept_identity (0.00s)
+    --- PASS: TestReadSyntoEntityIDsReturnsReasonedDetailCodes/article_identity (0.00s)
+    --- PASS: TestReadSyntoEntityIDsReturnsReasonedDetailCodes/source_concept_ambiguity (0.00s)
+    --- PASS: TestReadSyntoEntityIDsReturnsReasonedDetailCodes/source_concept_missing (0.00s)
+    --- PASS: TestReadSyntoEntityIDsReturnsReasonedDetailCodes/article_path (0.00s)
+    --- PASS: TestReadSyntoEntityIDsReturnsReasonedDetailCodes/article_source_disagreement (0.00s)
+    --- PASS: TestReadSyntoEntityIDsReturnsReasonedDetailCodes/duplicate_article_ID (0.00s)
+    --- PASS: TestReadSyntoEntityIDsReturnsReasonedDetailCodes/duplicate_article_path (0.00s)
+    --- PASS: TestReadSyntoEntityIDsReturnsReasonedDetailCodes/duplicate_entity_ID (0.00s)
+    --- PASS: TestReadSyntoEntityIDsReturnsReasonedDetailCodes/active_entity_collision (0.00s)
+    --- PASS: TestReadSyntoEntityIDsReturnsReasonedDetailCodes/concept_slug_case_mismatch (0.00s)
+    --- PASS: TestReadSyntoEntityIDsReturnsReasonedDetailCodes/concept_ID-path_disagreement (0.00s)
+    --- PASS: TestReadSyntoEntityIDsReturnsReasonedDetailCodes/concept_missing_mapping (0.00s)
+    --- PASS: TestReadSyntoEntityIDsReturnsReasonedDetailCodes/concept_ID_has_no_matching_path (0.00s)
+    --- PASS: TestReadSyntoEntityIDsReturnsReasonedDetailCodes/concept_is_missing_id_and_slug_from_INDEX (0.00s)
+    --- PASS: TestReadSyntoEntityIDsReturnsReasonedDetailCodes/concept_entity_collision (0.00s)
+=== RUN   TestSyntoEntityFirstMappingPreservesRenameAndFailsClosed
+=== RUN   TestSyntoEntityFirstMappingPreservesRenameAndFailsClosed/missing_mapping
+=== RUN   TestSyntoEntityFirstMappingPreservesRenameAndFailsClosed/changed_entity
+=== RUN   TestSyntoEntityFirstMappingPreservesRenameAndFailsClosed/collision
+--- PASS: TestSyntoEntityFirstMappingPreservesRenameAndFailsClosed (0.00s)
+    --- PASS: TestSyntoEntityFirstMappingPreservesRenameAndFailsClosed/missing_mapping (0.00s)
+    --- PASS: TestSyntoEntityFirstMappingPreservesRenameAndFailsClosed/changed_entity (0.00s)
+    --- PASS: TestSyntoEntityFirstMappingPreservesRenameAndFailsClosed/collision (0.00s)
+=== RUN   TestSyntoOmittedArticleAmbiguityRequiresPriorOwnedSourceEvidence
+=== RUN   TestSyntoOmittedArticleAmbiguityRequiresPriorOwnedSourceEvidence/one_prior-owned_match_selects_prior_entity
+=== RUN   TestSyntoOmittedArticleAmbiguityRequiresPriorOwnedSourceEvidence/duplicate_prior-owned_support_selects_prior_entity
+=== RUN   TestSyntoOmittedArticleAmbiguityRequiresPriorOwnedSourceEvidence/zero_prior-owned_matches
+--- PASS: TestSyntoOmittedArticleAmbiguityRequiresPriorOwnedSourceEvidence (0.00s)
+    --- PASS: TestSyntoOmittedArticleAmbiguityRequiresPriorOwnedSourceEvidence/one_prior-owned_match_selects_prior_entity (0.00s)
+    --- PASS: TestSyntoOmittedArticleAmbiguityRequiresPriorOwnedSourceEvidence/duplicate_prior-owned_support_selects_prior_entity (0.00s)
+    --- PASS: TestSyntoOmittedArticleAmbiguityRequiresPriorOwnedSourceEvidence/zero_prior-owned_matches (0.00s)
+=== RUN   TestSyntoOmittedArticlePriorRecoveryIgnoresCurrentArticleTitle
+--- PASS: TestSyntoOmittedArticlePriorRecoveryIgnoresCurrentArticleTitle (0.00s)
+=== RUN   TestSyntoArticleEntityMustMatchCurrentTitleCandidates
+--- PASS: TestSyntoArticleEntityMustMatchCurrentTitleCandidates (0.00s)
+=== RUN   TestSyntoOmittedArticleIdentityRejectsUnprovenSourceOwnership
+=== RUN   TestSyntoOmittedArticleIdentityRejectsUnprovenSourceOwnership/wrong_current_source_path
+=== RUN   TestSyntoOmittedArticleIdentityRejectsUnprovenSourceOwnership/same_path_wrong_entity
+=== RUN   TestSyntoOmittedArticleIdentityRejectsUnprovenSourceOwnership/ordinary_unknown_article
+=== RUN   TestSyntoOmittedArticleIdentityRejectsUnprovenSourceOwnership/direct_entity_disagreement
+--- PASS: TestSyntoOmittedArticleIdentityRejectsUnprovenSourceOwnership (0.00s)
+    --- PASS: TestSyntoOmittedArticleIdentityRejectsUnprovenSourceOwnership/wrong_current_source_path (0.00s)
+    --- PASS: TestSyntoOmittedArticleIdentityRejectsUnprovenSourceOwnership/same_path_wrong_entity (0.00s)
+    --- PASS: TestSyntoOmittedArticleIdentityRejectsUnprovenSourceOwnership/ordinary_unknown_article (0.00s)
+    --- PASS: TestSyntoOmittedArticleIdentityRejectsUnprovenSourceOwnership/direct_entity_disagreement (0.00s)
+=== RUN   TestSyntoIdentityLogRejectsMergeAndSplitLineage
+--- PASS: TestSyntoIdentityLogRejectsMergeAndSplitLineage (0.00s)
+=== RUN   TestMapSyntoEntityIDsFromIndexTruthConceptIterationIsDeterministic
+--- PASS: TestMapSyntoEntityIDsFromIndexTruthConceptIterationIsDeterministic (0.00s)
+=== RUN   TestExecSyntoUsesAllowlistedEnvironment
+--- PASS: TestExecSyntoUsesAllowlistedEnvironment (0.22s)
+=== RUN   TestCreateWorkspaceCopiesSyntoMigrationState
+--- PASS: TestCreateWorkspaceCopiesSyntoMigrationState (0.03s)
+=== RUN   TestGenerationOwnsSyntoStateAndNotSyntoExports
+--- PASS: TestGenerationOwnsSyntoStateAndNotSyntoExports (0.00s)
+=== RUN   TestStageWorkspaceOutputsIncludesSyntoState
+--- PASS: TestStageWorkspaceOutputsIncludesSyntoState (0.02s)
+=== RUN   TestSyntoCommandBoundaryDoesNotAddForce
+2026/10/06 22:39:05 [1/1] synto command
+--- PASS: TestSyntoCommandBoundaryDoesNotAddForce (0.00s)
+=== RUN   TestSyntoLifecycleDormantsZeroSourceAndReactivatesSameID
+--- PASS: TestSyntoLifecycleDormantsZeroSourceAndReactivatesSameID (0.04s)
+=== RUN   TestPostprocessPreservesDormantLineageForEntityAwareReactivation
+--- PASS: TestPostprocessPreservesDormantLineageForEntityAwareReactivation (0.03s)
+=== RUN   TestSyntoProductionLifecycleUsesAuthoritativeEmptyAndTombstoneSourceSets
+=== RUN   TestSyntoProductionLifecycleUsesAuthoritativeEmptyAndTombstoneSourceSets/explicitly_empty_source_artifact
+2026/10/06 22:39:05 [1/1] synto command
+=== RUN   TestSyntoProductionLifecycleUsesAuthoritativeEmptyAndTombstoneSourceSets/tombstone-only_source_artifact
+2026/10/06 22:39:06 [1/1] synto command
+=== RUN   TestSyntoProductionLifecycleUsesAuthoritativeEmptyAndTombstoneSourceSets/matching_non-empty_source_artifact
+2026/10/06 22:39:06 [1/1] synto command
+--- PASS: TestSyntoProductionLifecycleUsesAuthoritativeEmptyAndTombstoneSourceSets (0.48s)
+    --- PASS: TestSyntoProductionLifecycleUsesAuthoritativeEmptyAndTombstoneSourceSets/explicitly_empty_source_artifact (0.16s)
+    --- PASS: TestSyntoProductionLifecycleUsesAuthoritativeEmptyAndTombstoneSourceSets/tombstone-only_source_artifact (0.16s)
+    --- PASS: TestSyntoProductionLifecycleUsesAuthoritativeEmptyAndTombstoneSourceSets/matching_non-empty_source_artifact (0.17s)
+=== RUN   TestSyntoLifecycleFailsClosedWhenCurrentSourceTruthIsUnavailable
+--- PASS: TestSyntoLifecycleFailsClosedWhenCurrentSourceTruthIsUnavailable (0.02s)
+=== RUN   TestSyntoSourceEdgesDormantUsesAuthoritativeIndexNotStaleArticleCache
+--- PASS: TestSyntoSourceEdgesDormantUsesAuthoritativeIndexNotStaleArticleCache (0.03s)
+=== RUN   TestSyntoSourceEdgesIntersectCurrentMaterializedHashAndTombstones
+=== RUN   TestSyntoSourceEdgesIntersectCurrentMaterializedHashAndTombstones/changed_source_set
+=== RUN   TestSyntoSourceEdgesIntersectCurrentMaterializedHashAndTombstones/removed_source_tombstone
+--- PASS: TestSyntoSourceEdgesIntersectCurrentMaterializedHashAndTombstones (0.06s)
+    --- PASS: TestSyntoSourceEdgesIntersectCurrentMaterializedHashAndTombstones/changed_source_set (0.03s)
+    --- PASS: TestSyntoSourceEdgesIntersectCurrentMaterializedHashAndTombstones/removed_source_tombstone (0.03s)
+=== RUN   TestWorkerDecodeSyntoIndexRejectsDuplicateSourceConceptGroupsAndRows
+=== RUN   TestWorkerDecodeSyntoIndexRejectsDuplicateSourceConceptGroupsAndRows/duplicate_source_path
+=== RUN   TestWorkerDecodeSyntoIndexRejectsDuplicateSourceConceptGroupsAndRows/duplicate_source_concept_row
+--- PASS: TestWorkerDecodeSyntoIndexRejectsDuplicateSourceConceptGroupsAndRows (0.00s)
+    --- PASS: TestWorkerDecodeSyntoIndexRejectsDuplicateSourceConceptGroupsAndRows/duplicate_source_path (0.00s)
+    --- PASS: TestWorkerDecodeSyntoIndexRejectsDuplicateSourceConceptGroupsAndRows/duplicate_source_concept_row (0.00s)
+=== RUN   TestSyntoIdentityPlanValidatesReservedRootEntityUniquenessBeforeExclusion
+--- PASS: TestSyntoIdentityPlanValidatesReservedRootEntityUniquenessBeforeExclusion (0.00s)
+=== RUN   TestSyntoIdentityPlanFromIndexDoesNotVetoExplicitEntityBySourceConceptName
+=== RUN   TestSyntoIdentityPlanFromIndexDoesNotVetoExplicitEntityBySourceConceptName/single_conflicting_source_concept
+=== RUN   TestSyntoIdentityPlanFromIndexDoesNotVetoExplicitEntityBySourceConceptName/ambiguous_source_concepts
+--- PASS: TestSyntoIdentityPlanFromIndexDoesNotVetoExplicitEntityBySourceConceptName (0.00s)
+    --- PASS: TestSyntoIdentityPlanFromIndexDoesNotVetoExplicitEntityBySourceConceptName/single_conflicting_source_concept (0.00s)
+    --- PASS: TestSyntoIdentityPlanFromIndexDoesNotVetoExplicitEntityBySourceConceptName/ambiguous_source_concepts (0.00s)
+=== RUN   TestSyntoIdentityPlanFromIndexEntitylessRowsParticipateInValidation
+=== RUN   TestSyntoIdentityPlanFromIndexEntitylessRowsParticipateInValidation/duplicate_id_with_null_and_omitted
+=== RUN   TestSyntoIdentityPlanFromIndexEntitylessRowsParticipateInValidation/duplicate_slug_with_null_and_omitted
+--- PASS: TestSyntoIdentityPlanFromIndexEntitylessRowsParticipateInValidation (0.00s)
+    --- PASS: TestSyntoIdentityPlanFromIndexEntitylessRowsParticipateInValidation/duplicate_id_with_null_and_omitted (0.00s)
+    --- PASS: TestSyntoIdentityPlanFromIndexEntitylessRowsParticipateInValidation/duplicate_slug_with_null_and_omitted (0.00s)
+=== RUN   TestSyntoWorkerPrivateWorkspacePersistsEntityMapping
+2026/10/06 22:39:06 [1/1] synto command
+2026/10/06 22:39:06 [1/1] synto command
+--- PASS: TestSyntoWorkerPrivateWorkspacePersistsEntityMapping (0.44s)
+=== RUN   TestSyntoWorkerDirectEntityPathExcludesEntitylessPageWithoutChangingBytes
+2026/10/06 22:39:06 [1/1] synto command
+--- PASS: TestSyntoWorkerDirectEntityPathExcludesEntitylessPageWithoutChangingBytes (0.14s)
+=== RUN   TestReconcileWorkspaceConceptsDirectEntityMigratesOldIDRedirect
+--- PASS: TestReconcileWorkspaceConceptsDirectEntityMigratesOldIDRedirect (0.01s)
+=== RUN   TestSyntoWorkerDirectEntityMigratesOldIDRedirectIdempotently
+2026/10/06 22:39:07 [1/1] synto command
+2026/10/06 22:39:07 [1/1] synto command
+--- PASS: TestSyntoWorkerDirectEntityMigratesOldIDRedirectIdempotently (0.38s)
+=== RUN   TestSyntoDirectRedirectsAllowManyLegacySourcesAndRejectNonLegacyPriorIDs
+--- PASS: TestSyntoDirectRedirectsAllowManyLegacySourcesAndRejectNonLegacyPriorIDs (0.00s)
+=== RUN   TestReconcileWorkspaceConceptsDirectEntityRejectsInvalidIDRedirectsAtomically
+=== RUN   TestReconcileWorkspaceConceptsDirectEntityRejectsInvalidIDRedirectsAtomically/conflicting_existing_redirect
+=== RUN   TestReconcileWorkspaceConceptsDirectEntityRejectsInvalidIDRedirectsAtomically/redirect_chain
+=== RUN   TestReconcileWorkspaceConceptsDirectEntityRejectsInvalidIDRedirectsAtomically/missing_target
+=== RUN   TestReconcileWorkspaceConceptsDirectEntityRejectsInvalidIDRedirectsAtomically/current_ID_source
+--- PASS: TestReconcileWorkspaceConceptsDirectEntityRejectsInvalidIDRedirectsAtomically (0.01s)
+    --- PASS: TestReconcileWorkspaceConceptsDirectEntityRejectsInvalidIDRedirectsAtomically/conflicting_existing_redirect (0.00s)
+    --- PASS: TestReconcileWorkspaceConceptsDirectEntityRejectsInvalidIDRedirectsAtomically/redirect_chain (0.00s)
+    --- PASS: TestReconcileWorkspaceConceptsDirectEntityRejectsInvalidIDRedirectsAtomically/missing_target (0.00s)
+    --- PASS: TestReconcileWorkspaceConceptsDirectEntityRejectsInvalidIDRedirectsAtomically/current_ID_source (0.00s)
+=== RUN   TestFreshSyntoRunInitializesAndPublishesWithoutLegacyArtifacts
+2026/10/06 22:39:07 [1/1] synto command
+--- PASS: TestFreshSyntoRunInitializesAndPublishesWithoutLegacyArtifacts (0.14s)
+=== RUN   TestFreshSyntoCloudRunPublishesWithoutLegacyArtifacts
+2026/10/06 22:39:07 [1/1] synto command
+--- PASS: TestFreshSyntoCloudRunPublishesWithoutLegacyArtifacts (0.03s)
+=== RUN   TestWorkerBuildNonceValidatorScript
+=== RUN   TestWorkerBuildNonceValidatorScript/valid_32_lowercase_hex
+=== RUN   TestWorkerBuildNonceValidatorScript/empty
+=== RUN   TestWorkerBuildNonceValidatorScript/31_chars
+=== RUN   TestWorkerBuildNonceValidatorScript/33_chars
+=== RUN   TestWorkerBuildNonceValidatorScript/uppercase
+=== RUN   TestWorkerBuildNonceValidatorScript/invalid_character_g
+=== RUN   TestWorkerBuildNonceValidatorScript/spaces_and_newline
+--- PASS: TestWorkerBuildNonceValidatorScript (0.03s)
+    --- PASS: TestWorkerBuildNonceValidatorScript/valid_32_lowercase_hex (0.00s)
+    --- PASS: TestWorkerBuildNonceValidatorScript/empty (0.00s)
+    --- PASS: TestWorkerBuildNonceValidatorScript/31_chars (0.00s)
+    --- PASS: TestWorkerBuildNonceValidatorScript/33_chars (0.00s)
+    --- PASS: TestWorkerBuildNonceValidatorScript/uppercase (0.00s)
+    --- PASS: TestWorkerBuildNonceValidatorScript/invalid_character_g (0.00s)
+    --- PASS: TestWorkerBuildNonceValidatorScript/spaces_and_newline (0.00s)
+=== RUN   TestWorkerJobContractFixtures
+--- PASS: TestWorkerJobContractFixtures (0.04s)
+=== RUN   TestDeploymentEngineR2WorkflowContract
+--- PASS: TestDeploymentEngineR2WorkflowContract (0.09s)
+PASS
+ok  	github.com/rayer/llm-wiki-bff/cmd/olw_worker	22.716s

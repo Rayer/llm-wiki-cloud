@@ -1,0 +1,14 @@
+status	mode	bytes	sha256	kind	path
+M	0644	5903	632a10e7e5a0130c8b0dc9506a9e52bba0a2a46d59846b4791ea18ef6be95fb7	file	deploy/engine/pipeline_config_only.py
+M	0644	13709	e40a068aabd836fab97065ff6c383afb02fd3fcddcd53c9b56f7263e10102e2c	file	deploy/engine/tests/test_pipeline_config.py
+A	0644	20383	f40373b180913d2952899f93b0a2566733cb37b222944455dae5d3492096a2c0	file	docs/lwc-368/evidence/pr96-config-only-engine-full-r6.log
+A	0644	1277	163414eca6beb282f5157d8a1d87ac26da0ff4fbb0e5e9c9675510adc38f0ddd	file	docs/lwc-368/evidence/pr96-config-only-engine-workflow-r6.log
+A	0644	12399	ae62a4531abcfc6f80913a0934f2b0c991d63bb4fd16920dd957f905049f6970	file	docs/lwc-368/evidence/pr96-config-only-go-normalizer-r6.log
+A	0644	133517	a3fd75ff574120de620f1c832cae6f6ac21b28ba5e8b66c689a24908d86d921e	file	docs/lwc-368/evidence/pr96-config-only-go-pkl-worker-r6.log
+A	0644	1331	a2cf1d70f6965fb336b536dbdd2993ff6dd66b3bd298ea2d2e5a2bc7c52d4345	file	docs/lwc-368/evidence/pr96-config-only-normalizer-green-r6.log
+A	0644	5461	1539f4f28c17ec78b5cee8c5a34ca0e57d3c408ac042251b8476d0382e84ff19	file	docs/lwc-368/evidence/pr96-config-only-normalizer-red-r6.log
+A	0644	6362	ddb6d992fa815cde750ebd1518b98f751db94b536bdcc1968d70ad0dcce02666	file	docs/lwc-368/evidence/pr96-config-only-path-repair-r6.md
+A	0644	272	da1ba4527d51441eb0dd21f0c07928ba72450309355c4407e9cc7040d983eedc	file	docs/lwc-368/evidence/pr96-config-only-pkl-actual-assertions-green-r6.log
+A	0644	1772	067aa8eca018f80734bbe8355b6669de028866288024169efc5d2347e4f9ec8e	file	docs/lwc-368/evidence/pr96-config-only-pkl-actual-assertions-r6.log
+A	0644	400	989efcc51bb191147150e6dabc84c64604b48f60f475804a4a19ff58f2a30836	file	docs/lwc-368/evidence/pr96-config-only-pkl-actual-r6.log
+A	0644	169	13914c3ca3088a2b5cb071a759dcb8e8bb75c06e1ef1c6939d8be08ab27fd30a	file	docs/lwc-368/evidence/pr96-config-only-shared-cd-workflow-r6.log

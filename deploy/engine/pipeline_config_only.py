@@ -33,7 +33,8 @@ def run_config_only(environment, *, root=ROOT, run_command=run, process_env=None
         require(generated['timeout_seconds'] == int(timeout), 'pipeline-config-timeout-mismatch')
         normalized_text = run_command(
             ['go', 'run', './cmd/deploy_config', '--environment', environment,
-             '--config', f'deploy/environments/{environment}.yaml', '--components', 'worker'],
+             '--config', str((Path(root) / 'deploy' / 'environments' /
+                             f'{environment}.yaml').resolve()), '--components', 'worker'],
             cwd=root / 'apps/bff', env=source_env, timeout=300, stage='unknown')
         try:
             normalized = json.loads(normalized_text)
