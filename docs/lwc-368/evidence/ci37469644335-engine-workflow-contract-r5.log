@@ -1,0 +1,12 @@
+test_diagnostic_callers_obey_readonly_reusable_workflow_permission_ceiling (scripts.test_engine_workflow.EngineWorkflowContract.test_diagnostic_callers_obey_readonly_reusable_workflow_permission_ceiling) ... ok
+test_explicit_wrappers_and_recovery (scripts.test_engine_workflow.EngineWorkflowContract.test_explicit_wrappers_and_recovery) ... ok
+test_pinned_recovery_download_has_effective_github_token (scripts.test_engine_workflow.EngineWorkflowContract.test_pinned_recovery_download_has_effective_github_token) ... ok
+test_profiles_and_real_component_operations (scripts.test_engine_workflow.EngineWorkflowContract.test_profiles_and_real_component_operations) ... ok
+test_readonly_diagnostic_is_a_separate_fixed_workflow_branch (scripts.test_engine_workflow.EngineWorkflowContract.test_readonly_diagnostic_is_a_separate_fixed_workflow_branch) ... ok
+test_registered_dev_release_can_resume_stage1_source_with_current_executor (scripts.test_engine_workflow.EngineWorkflowContract.test_registered_dev_release_can_resume_stage1_source_with_current_executor) ... ok
+test_single_runtime_authority_stays_in_release_workflow (scripts.test_engine_workflow.EngineWorkflowContract.test_single_runtime_authority_stays_in_release_workflow) ... ok
+
+----------------------------------------------------------------------
+Ran 7 tests in 0.046s
+
+OK

@@ -190,11 +190,11 @@ class SharedCDContractTest(unittest.TestCase):
             self.assertEqual(job["uses"], "./.github/workflows/cd.yml")
             self.assertEqual(job["with"]["environment"], environment)
             self.assertIn("release_tag", trigger["workflow_dispatch"]["inputs"])
-            self.assertTrue(trigger["workflow_dispatch"]["inputs"]["release_tag"]["required"])
+            self.assertFalse(trigger["workflow_dispatch"]["inputs"]["release_tag"]["required"])
             if path == "deploy-dev.yml":
                 operation = trigger["workflow_dispatch"]["inputs"]["operation"]
                 self.assertEqual(operation["default"], "release")
-                self.assertEqual(operation["options"], ["release", "deploy", "rollback", "reactivate", "tag", "readback", "diagnose-auth-image"])
+                self.assertEqual(operation["options"], ["release", "config-only", "deploy", "rollback", "reactivate", "tag", "readback", "diagnose-auth-image"])
                 self.assertEqual(job["with"]["operation"], "${{ inputs.operation }}")
                 self.assertEqual(job["with"]["source_sha"], "${{ inputs.operation == 'release' && (inputs.source_sha || github.sha) || inputs.source_sha }}")
                 self.assertEqual(job["with"]["executor_sha"], "${{ github.sha }}")
@@ -219,6 +219,9 @@ class SharedCDContractTest(unittest.TestCase):
                 self.assertEqual(diagnostic["permissions"], {"contents": "read", "actions": "read", "id-token": "write"})
                 self.assertEqual(diagnostic["with"], {"source_sha": "${{ github.sha }}"})
             else:
+                operation = trigger["workflow_dispatch"]["inputs"]["operation"]
+                self.assertEqual(operation["default"], "release")
+                self.assertEqual(operation["options"], ["release", "config-only"])
                 self.assertEqual(job["with"]["source_sha"], "${{ github.sha }}")
                 self.assertEqual(job["with"]["executor_sha"], "${{ github.sha }}")
 
@@ -247,12 +250,19 @@ class SharedCDContractTest(unittest.TestCase):
         })
 
         shared = yaml.safe_load((workflows / "cd.yml").read_text())
-        self.assertEqual(shared.get("on", shared.get(True, {}))["workflow_call"]["inputs"]["executor_sha"],
-                         {"required": True, "type": "string"})
-        self.assertEqual(shared.get("on", shared.get(True, {}))["workflow_call"]["inputs"]["force"],
-                         {"type": "boolean", "default": False})
-        self.assertEqual(set(shared["jobs"]), {"release"})
+        shared_inputs = shared.get("on", shared.get(True, {}))["workflow_call"]["inputs"]
+        self.assertEqual(shared_inputs["executor_sha"], {"required": True, "type": "string"})
+        self.assertEqual(shared_inputs["release_tag"], {"required": True, "type": "string"})
+        self.assertEqual(shared_inputs["force"], {"type": "boolean", "default": False})
+        self.assertEqual(set(shared["jobs"]), {"release", "pipeline-config-only"})
         job = shared["jobs"]["release"]
+        self.assertEqual(job["if"], "inputs.operation != 'diagnose-auth-image' && inputs.operation != 'config-only'")
+        config_only = shared["jobs"]["pipeline-config-only"]
+        self.assertEqual(config_only["if"], "inputs.operation == 'config-only'")
+        self.assertEqual(config_only["permissions"], {"contents": "read", "id-token": "write"})
+        config_only_delivery = next(step for step in config_only["steps"]
+                                    if "pipeline_config_only.py" in step.get("run", ""))
+        self.assertNotIn("--image", config_only_delivery["run"])
         self.assertEqual(shared["concurrency"]["cancel-in-progress"], False)
         self.assertEqual(shared["concurrency"]["group"], "lwc-engine-${{ inputs.environment }}")
         steps = job["steps"]

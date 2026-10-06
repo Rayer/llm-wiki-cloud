@@ -1,0 +1,40 @@
+test_shared_bff_path_preserves_cutover_safety_boundaries (scripts.test_bff_explicit_cutover.SharedCDContractTest.test_shared_bff_path_preserves_cutover_safety_boundaries) ... FAIL
+
+======================================================================
+FAIL: test_shared_bff_path_preserves_cutover_safety_boundaries (scripts.test_bff_explicit_cutover.SharedCDContractTest.test_shared_bff_path_preserves_cutover_safety_boundaries)
+----------------------------------------------------------------------
+Traceback (most recent call last):
+  File "/Users/rayer/orca/workspaces/llm-wiki-cloud/LWC-368-pipeline-cac/apps/bff/scripts/test_bff_explicit_cutover.py", line 302, in test_shared_bff_path_preserves_cutover_safety_boundaries
+    self.assertEqual(engine_tests.returncode, 0, engine_tests.stdout + engine_tests.stderr)
+    ~~~~~~~~~~~~~~~~^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+AssertionError: 1 != 0 : open /Users/rayer/Library/Caches/go-build/0b/0b0d1f7fd74ee78128a8f4cb6ebc5082f8d5c80ebf150d0192cfe2a77999101e-d: operation not permitted
+E
+======================================================================
+ERROR: setUpClass (test_engine.Acceptance)
+----------------------------------------------------------------------
+Traceback (most recent call last):
+  File "/Users/rayer/orca/workspaces/llm-wiki-cloud/LWC-368-pipeline-cac/deploy/engine/tests/test_engine.py", line 25, in setUpClass
+    cls.normalized=json.loads(subprocess.check_output(['go','run','./cmd/deploy_config','--environment','development',
+                              ~~~~~~~~~~~~~~~~~~~~~~~^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+        '--config',str(ROOT/'deploy/environments/development.yaml'),'--components',','.join(engine.ORDER)],cwd=ROOT/'apps/bff',text=True))
+        ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+  File "/opt/homebrew/Cellar/python@3.14/3.14.6/Frameworks/Python.framework/Versions/3.14/lib/python3.14/subprocess.py", line 473, in check_output
+    return run(*popenargs, stdout=PIPE, timeout=timeout, check=True,
+           ~~~^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+               **kwargs).stdout
+               ^^^^^^^^^
+  File "/opt/homebrew/Cellar/python@3.14/3.14.6/Frameworks/Python.framework/Versions/3.14/lib/python3.14/subprocess.py", line 578, in run
+    raise CalledProcessError(retcode, process.args,
+                             output=stdout, stderr=stderr)
+subprocess.CalledProcessError: Command '['go', 'run', './cmd/deploy_config', '--environment', 'development', '--config', '/Users/rayer/orca/workspaces/llm-wiki-cloud/LWC-368-pipeline-cac/deploy/environments/development.yaml', '--components', 'exportjob,auth,bff,worker,frontend']' returned non-zero exit status 1.
+
+----------------------------------------------------------------------
+Ran 0 tests in 0.010s
+
+FAILED (errors=1)
+
+
+----------------------------------------------------------------------
+Ran 1 test in 0.100s
+
+FAILED (failures=1)
