@@ -1399,5 +1399,132 @@ else:
             print('Pinned resolver baseline=pair-incomplete; runtime-child=linked; resume=single-deploy')
 
 
+class PipelineConfigPrepareDiagnostics(unittest.TestCase):
+    token = 'TEST_ONLY_PIPELINE_TOKEN_SENTINEL'
+    image_digest = 'sha256:' + 'b' * 64
+
+    def run_action(self, make_case):
+        with tempfile.TemporaryDirectory() as temp:
+            work = Path(temp)
+            release = work / 'release'
+            (release / 'receipts').mkdir(parents=True)
+            plan = {
+                'schema': 3, 'source': 'c' * 40, 'branch': 'develop',
+                'tag': 'offline-pipeline-config-diagnostic', 'executor_sha': 'e' * 40,
+                'normalized': {
+                    'environment': 'development',
+                    'gcp': {'project_id': 'test-project',
+                            'artifact_registry': 'asia-east1-docker.pkg.dev/test-project/images'},
+                    'worker': {'bucket': 'llm-wiki-data-dev'},
+                },
+                'identities': {'worker': {'profile': 'offline-worker',
+                                          'inputs': 'a' * 64, 'files': []}},
+                'dev_reference': None, 'selected': ['worker'],
+            }
+            plan['id'] = engine.plan_id(plan)
+            write(release / 'plan.json', plan)
+            image = ('asia-east1-docker.pkg.dev/test-project/images/olw-pipeline@' +
+                     self.image_digest)
+
+            fake_bin = work / 'bin'
+            fake_bin.mkdir()
+            python = fake_bin / 'python3'
+            python.write_text('#!/bin/sh\nexec ' + shlex.quote(sys.executable) + ' "$@"\n')
+            python.chmod(0o755)
+            gcloud = fake_bin / 'gcloud'
+            gcloud.write_text('#!/bin/sh\nprintf "%s\\n" ' + shlex.quote(self.image_digest) + '\n')
+            gcloud.chmod(0o755)
+            bash = fake_bin / 'bash'
+            bash.write_text('#!/bin/sh\nprintf "%s\\n" ' + shlex.quote(image) + '\n')
+            bash.chmod(0o755)
+            make = fake_bin / 'make'
+            make.write_text('''#!/usr/bin/env python3
+import json, os, pathlib, sys
+case = os.environ['TEST_MAKE_CASE']
+args = sys.argv[1:]
+output = pathlib.Path(next(value.split('=', 1)[1] for value in args
+                           if value.startswith('CAC_OUTPUT_DIR='))) / 'dev'
+output.mkdir(parents=True)
+if case == 'child-failure':
+    print('synthetic Pkl renderer failed; VERCEL_TOKEN=' + os.environ['VERCEL_TOKEN'] +
+          '; ' + 'x' * 700,
+          file=sys.stderr)
+    raise SystemExit(2)
+if case == 'parser-failure':
+    (output / 'pipeline.json').write_text('{invalid-json')
+    raise SystemExit(0)
+secret = {
+    'source': 'secret-manager', 'target': 'DEEPSEEK_API_KEY', 'envName': '',
+    'resource': 'projects/test-project/secrets/test-key/versions/latest',
+}
+public = {'environment': 'dev', 'bucket': 'llm-wiki-data-dev',
+          'runTimeoutSeconds': 321, 'secret': secret}
+(output / 'pipeline.json').write_text(json.dumps(public))
+(output / 'private-bindings.json').write_text(json.dumps({
+    'environment': 'dev', 'bindings': [secret]}))
+(output / 'synto.toml').write_text('[pipeline]\\nrun_timeout_seconds = 321\\n')
+''')
+            make.chmod(0o755)
+
+            env = {
+                'PATH': str(fake_bin) + os.pathsep + os.environ.get('PATH', '/usr/bin:/bin'),
+                'HOME': str(work), 'TMPDIR': str(work), 'RUNNER_TEMP': str(work),
+                'INPUT_OPERATION': 'prepare', 'EXECUTOR_SHA': 'e' * 40,
+                'TARGET': 'development', 'SOURCE': 'c' * 40,
+                'COMPONENTS': 'worker', 'RELEASE_TAG': plan['tag'],
+                'LWC_PIPELINE_RUN_TIMEOUT_SECONDS': '321',
+                'TEST_MAKE_CASE': make_case, 'VERCEL_TOKEN': self.token,
+            }
+            action = SUPPORT_ROOT / '.github/actions/deployment-engine/index.cjs'
+            completed = ORIGINAL_SUBPROCESS_RUN(
+                ['node', str(action)], cwd=SUPPORT_ROOT, env=env,
+                capture_output=True, text=True, timeout=30)
+            result = json.loads(completed.stdout)
+            retained = read(release / 'result.json')
+            self.assertEqual(result, retained)
+            receipt = (read(release / 'receipts/worker.json')
+                       if (release / 'receipts/worker.json').exists() else None)
+            return completed, result, receipt
+
+    def test_action_preserves_bounded_pipeline_make_failure_and_masks_known_value(self):
+        completed, result, _ = self.run_action('child-failure')
+        self.assertEqual(completed.returncode, 1, completed.stderr)
+        self.assertEqual((result['reason'], result['status'],
+                          result['mutation_may_have_happened']),
+                         ('command-failed', 'failed', False))
+        self.assertEqual(result['allowed_next_action'], 'reconcile-before-replay')
+        self.assertEqual(result['last_verified_checkpoint'], 0)
+        self.assertEqual(result['observed']['component_status'], 'unstarted')
+        self.assertIn('cause', result, 'make stderr was dropped before the formal result')
+        self.assertEqual(result['failure_diagnostic'], {
+            'stage': 'pipeline-config-prepare', 'exit_code': 2, 'timeout_class': None})
+        self.assertEqual(result['cause']['exception_type'], 'ChildProcessError')
+        self.assertEqual(result['cause']['stage'], 'pipeline-config-prepare')
+        self.assertEqual(result['cause']['code'], 'child-command-failed')
+        self.assertIn('synthetic Pkl renderer failed', result['cause']['message'])
+        self.assertIn('VERCEL_TOKEN=[REDACTED]', result['cause']['message'])
+        self.assertTrue(result['cause']['message_truncated'])
+        self.assertEqual(len(result['cause']['message']), 512)
+        self.assertNotIn(self.token, completed.stdout + completed.stderr + json.dumps(result))
+
+    def test_parser_failure_is_not_reported_as_a_child_command_failure(self):
+        completed, result, _ = self.run_action('parser-failure')
+        self.assertEqual(completed.returncode, 1, completed.stderr)
+        self.assertEqual(result['reason'], 'pipeline-config-render-invalid')
+        self.assertNotIn('cause', result)
+        self.assertNotIn('failure_diagnostic', result)
+
+    def test_successful_prepare_still_reaches_ready_through_action(self):
+        completed, result, receipt = self.run_action('success')
+        self.assertEqual(completed.returncode, 0, completed.stderr)
+        self.assertEqual((result['stage'], result['status'], result['reason']),
+                         ('ready', 'ready', 'completed'))
+        self.assertIsNotNone(receipt)
+        self.assertEqual(receipt['artifact']['pipeline_config']['timeout_seconds'], 321)
+        self.assertEqual(receipt['artifact']['pipeline_config']['sha256'],
+                         hashlib.sha256(b'[pipeline]\nrun_timeout_seconds = 321\n').hexdigest())
+        self.assertNotIn('cause', result)
+
+
 if __name__ == '__main__':
     unittest.main(verbosity=2)
