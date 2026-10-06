@@ -527,6 +527,29 @@ class Acceptance(unittest.TestCase):
         e.provider.rollback('worker', prior)
         self.assertNotIn(uri, self.current()['pipeline_configs'])
         self.assertTrue(e.provider.observe('worker', prior, {}, prior=True))
+        e.provider.delete_pipeline_config_object({'bucket': self.normalized['worker']['bucket']})
+
+    def test_worker_snapshot_accepts_legacy_config_absence_message(self):
+        e = self.ready(self.make(name='legacy-config-absence'))
+        self.provider = self.current()
+        uri = f"gs://{self.normalized['worker']['bucket']}/pipeline-config/synto.toml"
+        del self.provider['pipeline_configs'][uri]
+        self.provider['pipeline_config_absence_legacy'] = True
+        self.flush()
+
+        e.snapshot()
+        self.assertIs(e.state['components']['worker']['prior'].get('pipeline_config_absent'), True)
+
+    def test_worker_config_absence_requires_allow_absent(self):
+        e = self.ready(self.make(name='config-absence-required'))
+        self.provider = self.current()
+        uri = f"gs://{self.normalized['worker']['bucket']}/pipeline-config/synto.toml"
+        del self.provider['pipeline_configs'][uri]
+        self.flush()
+
+        with self.assertRaisesRegex(Breakpoint, 'command-failed'):
+            e.provider.read_pipeline_config_object(
+                {'bucket': self.normalized['worker']['bucket']})
 
     def test_worker_snapshot_preserves_prior_config_without_timeout_gate(self):
         e = self.make(name='prior-config-timeout-differs')
@@ -541,10 +564,19 @@ class Acceptance(unittest.TestCase):
         self.assertEqual(prior['pipeline_config']['toml'], prior_config)
 
     def test_worker_snapshot_does_not_treat_permission_or_invalid_toml_as_absence(self):
+        uri = f"gs://{self.normalized['worker']['bucket']}/pipeline-config/synto.toml"
         for name, configure in (
                 ('permission-denied', lambda state: state.update(pipeline_config_read_denied=True)),
+                ('different-object', lambda state: state.update(
+                    pipeline_config_read_error=(
+                        'ERROR: (gcloud.storage.cat) The following URLs matched no objects or files:\n'
+                        '  gs://other-bucket/pipeline-config/synto.toml\n'))),
+                ('multiple-objects', lambda state: state.update(
+                    pipeline_config_read_error=(
+                        'ERROR: (gcloud.storage.cat) The following URLs matched no objects or files:\n'
+                        f'  {uri}\n  gs://other-bucket/extra.toml\n'))),
                 ('malformed', lambda state: state['pipeline_configs'].__setitem__(
-                    f"gs://{self.normalized['worker']['bucket']}/pipeline-config/synto.toml", '[pipeline\n'))):
+                    uri, '[pipeline\n'))):
             with self.subTest(name=name):
                 e = self.ready(self.make(name='config-'+name))
                 self.provider = self.current()
@@ -552,6 +584,16 @@ class Acceptance(unittest.TestCase):
                 self.flush()
                 with self.assertRaises(Breakpoint):
                     e.provider.snapshot('worker')
+
+    def test_worker_config_absence_does_not_hide_timeout(self):
+        e = self.ready(self.make(name='config-read-timeout'))
+        failure = Breakpoint('provider-timeout', 'failed', False,
+                             'reconcile-before-replay', stage='pipeline-config-object-read',
+                             timeout_class='subprocess-timeout')
+        with patch('providers.run', side_effect=failure):
+            with self.assertRaisesRegex(Breakpoint, 'provider-timeout'):
+                e.provider.read_pipeline_config_object(
+                    {'bucket': self.normalized['worker']['bucket']}, allow_absent=True)
 
     def test_sanity_rejects_each_managed_service_field(self):
         e=self.ready(self.make(('auth','bff')));e.deploy()

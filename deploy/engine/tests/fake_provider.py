@@ -34,9 +34,15 @@ elif tool == 'gcloud':
         if s.get('pipeline_config_read_denied'):
             fail=True
             failure_message='ERROR: (gcloud.storage.cat) 403 Permission denied.\n'
+        elif s.get('pipeline_config_read_error'):
+            fail=True
+            failure_message=s['pipeline_config_read_error']
         elif uri not in s.get('pipeline_configs', {}):
             fail=True
-            failure_message='ERROR: (gcloud.storage.cat) One or more URLs matched no objects.\n'
+            failure_message=(
+                'ERROR: (gcloud.storage.cat) One or more URLs matched no objects.\n'
+                if s.get('pipeline_config_absence_legacy') else
+                f'ERROR: (gcloud.storage.cat) The following URLs matched no objects or files:\n  {uri}\n')
         else:
             binary_out=s['pipeline_configs'][uri].encode()
     elif a[:2] == ['storage', 'cp']:
@@ -47,7 +53,10 @@ elif tool == 'gcloud':
         uri=a[-1]
         if uri not in s.get('pipeline_configs', {}):
             fail=True
-            failure_message='ERROR: (gcloud.storage.rm) One or more URLs matched no objects.\n'
+            failure_message=(
+                'ERROR: (gcloud.storage.rm) One or more URLs matched no objects.\n'
+                if s.get('pipeline_config_absence_legacy') else
+                f'ERROR: (gcloud.storage.rm) The following URLs matched no objects or files:\n  {uri}\n')
         else:
             del s['pipeline_configs'][uri]
     elif a[:2] == ['projects','describe']:
