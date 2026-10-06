@@ -24,17 +24,17 @@ Browser (Next.js frontend)
         ▼                               ▼
   Auth service ───────────────▶ Go BFF API
                                       │
-                    ┌─────────────────┼─────────────────┐
-                    ▼                 ▼                 ▼
-              local filesystem   GCS + Firestore   Cloud Run pipeline
-                                      ▲                 │
-                                      └── generated wiki, indexes,
-                                          and suggested queries
+                    ┌─────────────────┴─────────────────┐
+                    ▼                                   ▼
+            Native local worker                  Cloud Run worker
+                    └───────────────┬───────────────────┘
+                                    ▼
+                              GCS + Firestore
 ```
 
-Local mode uses filesystem-backed data and disables GCP clients. Deployed mode
-uses environment-specific GCS and Firestore resources; the BFF also invokes
-the environment's Cloud Run pipeline job. See the [local development
+Native local development uses ADC, real GCS/Firestore resources, and a
+worktree-scoped data root. The local BFF starts a native worker process;
+deployed mode keeps its Cloud Run worker. See the [local development
 guide](apps/bff/docs/LOCAL_DEV.md) and [deployment authority and
 runbook](apps/bff/docs/DEPLOYMENT.md) for the operational details.
 
@@ -55,9 +55,9 @@ The versions below match canonical CI:
 - Go 1.26
 - Node.js 22 and npm
 
-Docker is optional for the BFF Compose integration flow. `gcloud` and access
-to the configured container registry are only needed for development or
-workflow-operated deployment work; they are not required for local mode.
+Google Cloud ADC and access to the pre-provisioned local GCS bucket and
+Firestore database are required for the native local app. Container registry
+access is only needed for deployment work.
 
 ## Staged experiments
 
@@ -70,8 +70,8 @@ digest metadata, host-only read-only DEV snapshot preparation, and parent checks
 
 ## Run locally
 
-From the repository root, bootstrap dependencies and seeded demo data, then
-start all local services:
+From the repository root, bootstrap dependencies once, then start the local
+services:
 
 ```sh
 make bootstrap && make local-start
@@ -84,34 +84,38 @@ Open the local-only app at <http://localhost:3000>. The local services are:
 - Auth: <http://localhost:8081>
 - BFF Swagger UI: <http://localhost:8080/swagger/index.html>
 
-Use the documented local-only demo sign-in:
+Use the normal password login with the default local fixture account:
 
 ```text
 email: demo@llm-wiki.dev
 password: demo123456
 ```
 
-These credentials and local JWT settings are for local mode only. Do not use
-them in a deployed environment. Press `Ctrl-C` to stop the foreground
-processes, or run `make local-stop` from the root.
+The fixture is created only if its email is missing and is not reset on
+startup. Local data uses a stable scope unique to this worktree in the
+`llm-wiki-cloud-local` bucket/database. The browser, BFF, Auth, and native
+worker share that scope. The local pipeline runs as a native worker process and
+does not call Cloud Run. Use `make local-stop` to stop only this worktree's
+supervisor-managed processes.
 
-For component-isolated workflows, port overrides, local tokens, and seeded
-data details, read [Local Development](apps/bff/docs/LOCAL_DEV.md).
+For ADC setup, component debugger workflows, port overrides, auth cookies,
+data retention, and troubleshooting, read
+[Local Development](apps/bff/docs/LOCAL_DEV.md).
 
 ## Everyday commands
 
 Run these from the repository root:
 
 ```sh
-make bootstrap       # install dependencies and reset seeded local data
+make bootstrap       # install app dependencies, pinned Synto venv, and local frontend config
 make local-start     # start BFF, Auth, and frontend
-make local-stop      # stop local listeners
+make local-stop      # stop this worktree's supervised local processes
 make lint            # frontend lint
 make typecheck       # frontend TypeScript check
 make vet             # Go vet
 make test            # BFF contract/race tests and frontend tests
 make build           # BFF and production frontend builds
-make smoke           # local Auth → BFF → frontend vertical smoke
+make smoke           # loopback/auth, scope, and optional emulator worker tests
 make verify          # bootstrap plus the complete local verification gate
 ```
 

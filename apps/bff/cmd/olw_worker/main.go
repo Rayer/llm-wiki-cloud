@@ -23,6 +23,7 @@ import (
 	conceptcache "github.com/rayer/llm-wiki-bff/internal/cache"
 	"github.com/rayer/llm-wiki-bff/internal/generation"
 	"github.com/rayer/llm-wiki-bff/internal/llm"
+	"github.com/rayer/llm-wiki-bff/internal/localcloud"
 	"github.com/rayer/llm-wiki-bff/internal/pipelinediagnostic"
 	"github.com/rayer/llm-wiki-bff/internal/rawstatus"
 	"github.com/rayer/llm-wiki-bff/internal/sourcestatus"
@@ -39,6 +40,7 @@ type workerConfig struct {
 	DataDir              string
 	UserID               string
 	ProjectID            string
+	LocalCloudScope      string
 	ExecutionID          string
 	APIKey               string
 	InitVault            bool
@@ -66,7 +68,7 @@ type workerConfig struct {
 
 type execOLWFunc func(ctx context.Context, vault string, command []string, env []string, stdout, stderr io.Writer) error
 
-var execOLW execOLWFunc = execOLWCommand
+var execOLW execOLWFunc
 
 var pipelineLiveDestination = func(stream pipelineStream) io.Writer {
 	if stream == stderrStream {
@@ -341,7 +343,8 @@ func fixedArgs(want int) cobra.PositionalArgs {
 func runWorkerBatch(ctx context.Context, cfg workerConfig, rawCommands string) error {
 	cfg = configFromEnvironment(cfg)
 	if cfg.Bucket != "" {
-		if cfg.PipelineConfigPath != "" || cfg.PipelineBindingsPath != "" {
+		if (cfg.LocalCloudScope == "" && (cfg.PipelineConfigPath != "" || cfg.PipelineBindingsPath != "")) ||
+			(cfg.LocalCloudScope != "" && (cfg.PipelineConfigPath == "" || cfg.PipelineBindingsPath == "")) {
 			return errCloudWorkerConfigInvalid
 		}
 		cfg.cloudMode = true
@@ -372,26 +375,18 @@ func runWorkerBatch(ctx context.Context, cfg workerConfig, rawCommands string) e
 		return errWorkerConfigInvalid
 	}
 	if cfg.PipelineConfigPath != "" {
-		if len(cfg.DeployedSynto) != 0 || cfg.PipelineBindingsPath == "" {
+		if len(cfg.DeployedSynto) != 0 {
 			return errWorkerConfigInvalid
 		}
-		deployed, readErr := os.ReadFile(cfg.PipelineConfigPath)
+		deployed, localAPIKey, timeoutSeconds, readErr := readLocalPipelineInputs(cfg.PipelineConfigPath, cfg.PipelineBindingsPath)
 		if readErr != nil {
-			return annotateError(errWorkerConfigInvalid, fmt.Errorf("read local Pipeline config: %w", readErr))
-		}
-		localAPIKey, bindingErr := readLocalPipelineAPIKey(cfg.PipelineBindingsPath)
-		if bindingErr != nil {
-			return annotateError(errWorkerConfigInvalid, bindingErr)
+			return annotateError(errWorkerConfigInvalid, readErr)
 		}
 		if len(localAPIKey) > 0 {
 			cfg.APIKey = string(localAPIKey)
 			cfg.apiKeySet = true
 		}
 		clear(localAPIKey)
-		timeoutSeconds, timeoutErr := pipelineRunTimeout(deployed)
-		if timeoutErr != nil {
-			return annotateError(errWorkerConfigInvalid, timeoutErr)
-		}
 		cfg.DeployedSynto = deployed
 		var cancel context.CancelFunc
 		ctx, cancel = context.WithTimeout(ctx, time.Duration(timeoutSeconds)*time.Second)
@@ -412,6 +407,9 @@ func runWorkerBatch(ctx context.Context, cfg workerConfig, rawCommands string) e
 }
 
 func configFromEnvironment(cfg workerConfig) workerConfig {
+	if cfg.LocalCloudScope == "" {
+		cfg.LocalCloudScope = envOr("LOCAL_CLOUD_SCOPE", "")
+	}
 	if cfg.Bucket == "" && !cfg.bucketSet {
 		cfg.Bucket = envOr("BUCKET", "")
 	}
@@ -1209,6 +1207,9 @@ func validateSyntoCommandBatch(commands [][]string) error {
 }
 
 func validateWorkerConfigBounds(cfg workerConfig) error {
+	if _, err := localcloud.Parse(cfg.LocalCloudScope); err != nil {
+		return err
+	}
 	keyValues := []string{cfg.APIKey}
 	if !cfg.apiKeySet {
 		keyValues = append(keyValues, os.Getenv("LLM_API_KEY"), os.Getenv("DEEPSEEK_API_KEY"))
@@ -1233,6 +1234,11 @@ func validateWorkerConfigBounds(cfg workerConfig) error {
 		}
 	}
 	return nil
+}
+
+func workerProjectObjectPrefix(cfg workerConfig) string {
+	scope, _ := localcloud.Parse(cfg.LocalCloudScope)
+	return scope.ObjectPrefix() + fmt.Sprintf("users/%s/projects/%s/", cfg.UserID, cfg.ProjectID)
 }
 
 func pipelineLogPath(vault, executionID string) (string, error) {
@@ -1270,7 +1276,7 @@ func runPostprocess(ctx context.Context, vault string) error {
 	return runPostprocessWithProvider(ctx, vault, nil, nil)
 }
 
-func suggestedQueryProvider(cfg workerConfig) suggestedqueries.Provider {
+var suggestedQueryProvider = func(cfg workerConfig) suggestedqueries.Provider {
 	if cfg.suggestedQueriesProvider != nil {
 		return cfg.suggestedQueriesProvider
 	}

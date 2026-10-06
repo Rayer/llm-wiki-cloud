@@ -3,7 +3,7 @@ import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 
 const mocks = vi.hoisted(() => ({
  getPublicConfig: vi.fn(), getAdminSettings: vi.fn(), updateAdminSettings: vi.fn(),
- startGoogleLogin: vi.fn(), signIn: vi.fn(), loginOpen: true,
+ startGoogleLogin: vi.fn(), signIn: vi.fn(), signInAsDemo: vi.fn(), loginOpen: true,
 }));
 vi.mock('@/lib/api', async () => ({
  ...await vi.importActual<typeof import('@/lib/api')>('@/lib/api'),
@@ -13,17 +13,29 @@ vi.mock('@/lib/api', async () => ({
 vi.mock('@/lib/google-auth', () => ({ startGoogleLogin: mocks.startGoogleLogin }));
 vi.mock('@/lib/auth', () => ({ useAuth: () => ({ hydrated: true, user: { role: 'admin' } }) }));
 vi.mock('@/lib/i18n', () => ({ useLocale: () => ({ t: (key: string) => key }), useT: () => ({ t: (key: string) => key }) }));
-vi.mock('@/components/WorkspaceProvider', () => ({ useWorkspace: () => ({ loginOpen: mocks.loginOpen, signIn: mocks.signIn, signInAsDemo: vi.fn() }) }));
+vi.mock('@/components/WorkspaceProvider', () => ({ useWorkspace: () => ({ loginOpen: mocks.loginOpen, signIn: mocks.signIn, signInAsDemo: mocks.signInAsDemo }) }));
 vi.mock('@/components/RegisterModal', () => ({ RegisterModal: () => <div role="dialog" aria-label="email registration" /> }));
 import { LoginModal } from '@/components/LoginModal';
 import { AdminClient } from '@/components/AdminClient';
 import { NavigationBlockerProvider } from '@/components/NavigationBlocker';
 
-const settings = (email: boolean, google: boolean, master = true) => ({ registration_enabled: master, email_registration_enabled: email, google_registration_enabled: google, announcement_markdown: '' });
-beforeEach(() => { vi.clearAllMocks(); mocks.loginOpen = true; mocks.signIn.mockResolvedValue(undefined); });
+const settings = (email: boolean, google: boolean, master = true, demo = true) => ({ registration_enabled: master, email_registration_enabled: email, google_registration_enabled: google, demo_enabled: demo, announcement_markdown: '' });
+beforeEach(() => { vi.clearAllMocks(); mocks.loginOpen = true; mocks.signIn.mockResolvedValue(undefined); mocks.signInAsDemo.mockResolvedValue(undefined); });
 afterEach(cleanup);
 
 describe('LWC-324 independent registration UI', () => {
+ it('shows Demo only when public config enables the route, for deployed while retired locally', async () => {
+  mocks.getPublicConfig.mockResolvedValue(settings(true, true, true, false));
+  const local = render(<LoginModal />);
+  await waitFor(() => expect(mocks.getPublicConfig).toHaveBeenCalled());
+  expect(screen.queryByRole('button', { name: 'Login.tryDemo' })).toBeNull();
+  local.unmount();
+
+  mocks.getPublicConfig.mockResolvedValue(settings(true, true, true, true));
+  render(<LoginModal />);
+  fireEvent.click(await screen.findByRole('button', { name: 'Login.tryDemo' }));
+  await waitFor(() => expect(mocks.signInAsDemo).toHaveBeenCalledOnce());
+ });
  for (const master of [false, true]) for (const email of [false, true]) for (const google of [false, true]) {
   it(`master=${master} email=${email} Google=${google}: signup follows master and email, both existing login methods work`, async () => {
    mocks.getPublicConfig.mockResolvedValue(settings(email, google, master));

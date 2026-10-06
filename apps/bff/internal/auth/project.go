@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/base64"
 	"errors"
+	scopedfirestore "github.com/rayer/llm-wiki-bff/internal/firestore"
 	"net/http"
 	"sort"
 	"strings"
@@ -44,7 +45,7 @@ func FirestoreProjectOwnerAuthorizer(fs *firestore.Client) ProjectOwnerAuthorize
 		if !ValidPathSegment(userID) || !ValidPathSegment(projectID) {
 			return ErrProjectPermissionDenied
 		}
-		ref := fs.Collection("projects").Doc(projectDocumentID(userID, projectID))
+		ref := scopedfirestore.Collection(fs, "projects").Doc(projectDocumentID(userID, projectID))
 		snapshot, err := ref.Get(ctx)
 		if err == nil {
 			if _, ok := projectFromFirestoreDocument(userID, snapshot.Ref.ID, snapshot.Data()); ok {
@@ -58,7 +59,7 @@ func FirestoreProjectOwnerAuthorizer(fs *firestore.Client) ProjectOwnerAuthorize
 
 		// Older real project records can use a display label as the document
 		// suffix while storing their stable project_id in the document.
-		iter := fs.Collection("projects").Documents(ctx)
+		iter := scopedfirestore.Collection(fs, "projects").Documents(ctx)
 		defer iter.Stop()
 		found := false
 		for {
@@ -106,7 +107,7 @@ func ListOwnedProjectsPage(ctx context.Context, fs *firestore.Client, userID str
 		cursor = string(decoded)
 	}
 
-	iter := fs.Collection("projects").Documents(ctx)
+	iter := scopedfirestore.Collection(fs, "projects").Documents(ctx)
 	defer iter.Stop()
 	projectsByID := make(map[string]ProjectSummary)
 	for {

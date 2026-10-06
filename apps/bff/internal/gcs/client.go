@@ -21,6 +21,7 @@ import (
 	fm "github.com/adrg/frontmatter"
 	"github.com/rayer/llm-wiki-bff/internal/annotation"
 	"github.com/rayer/llm-wiki-bff/internal/generation"
+	"github.com/rayer/llm-wiki-bff/internal/localcloud"
 	store "github.com/rayer/llm-wiki-bff/internal/storage"
 	"google.golang.org/api/googleapi"
 	"google.golang.org/api/iterator"
@@ -37,6 +38,7 @@ type Client struct {
 	view             *generationView
 	legacyWriteLease *legacyGenerationLease
 	owner            *clientOwner
+	localScope       localcloud.Scope
 }
 
 type clientOwner struct {
@@ -99,14 +101,19 @@ var errBucketByteLimit = errors.New("bucket byte limit exceeded")
 
 // NewClient creates a new GCS client for the given bucket.
 func NewClient(bucket string) (*Client, error) {
+	scope, err := localcloud.Parse(os.Getenv("LOCAL_CLOUD_SCOPE"))
+	if err != nil {
+		return nil, err
+	}
 	ctx := context.Background()
 	client, err := storage.NewClient(ctx)
 	if err != nil {
 		return nil, fmt.Errorf("storage client: %w", err)
 	}
 	return &Client{
-		bucket: client.Bucket(bucket),
-		owner:  &clientOwner{closer: client},
+		bucket:     client.Bucket(bucket),
+		owner:      &clientOwner{closer: client},
+		localScope: scope,
 	}, nil
 }
 
@@ -116,6 +123,19 @@ func (c *Client) Close() error {
 	}
 	c.owner.once.Do(func() { c.owner.err = c.owner.closer.Close() })
 	return c.owner.err
+}
+
+// CheckAvailable performs a list request under the configured local root.
+func (c *Client) CheckAvailable(ctx context.Context) error {
+	if c == nil || c.bucket == nil {
+		return errors.New("storage client unavailable")
+	}
+	it := c.bucket.Objects(ctx, &storage.Query{Prefix: c.localScope.ObjectPrefix()})
+	_, err := it.Next()
+	if errors.Is(err, iterator.Done) {
+		return nil
+	}
+	return err
 }
 
 // WithScope returns a client that shares the bucket connection but uses the
@@ -133,6 +153,7 @@ func (c *Client) WithScope(userID, projectID string) *Client {
 		view:             view,
 		legacyWriteLease: lease,
 		owner:            c.owner,
+		localScope:       c.localScope,
 	}
 }
 
@@ -283,7 +304,7 @@ func (c *Client) NewScopedClient(userID, projectID string) *Client {
 }
 
 func (c *Client) prefix() string {
-	return store.ProjectPrefix(c.userID, c.projectID)
+	return c.localScope.ObjectPrefix() + store.ProjectPrefix(c.userID, c.projectID)
 }
 
 // ListSources returns all compiled wiki sources.
@@ -415,6 +436,20 @@ func (c *Client) ReadRaw(ctx context.Context, name string) ([]byte, error) {
 	object, err := c.readObject(ctx, path, 0, generation.MaxFileBytes)
 	if err != nil {
 		return nil, fmt.Errorf("read raw %s: %w", path, err)
+	}
+	return object.Data, nil
+}
+
+// ReadLocalPublicationReceipt reads the local worker's create-only publication
+// attestation directly, outside the generated current-generation view.
+func (c *Client) ReadLocalPublicationReceipt(ctx context.Context, executionID string) ([]byte, error) {
+	relPath, err := localcloud.PublicationReceiptPath(executionID)
+	if err != nil {
+		return nil, err
+	}
+	object, err := c.readObject(ctx, c.prefix()+"/"+relPath, 0, 4096)
+	if err != nil {
+		return nil, err
 	}
 	return object.Data, nil
 }
@@ -604,6 +639,11 @@ func (c *Client) HasCurrentManifest(ctx context.Context) (bool, error) {
 	return err == nil, err
 }
 
+// CurrentManifest reads the current committed manifest and its GCS generation.
+func (c *Client) CurrentManifest(ctx context.Context) (generation.Manifest, int64, bool, error) {
+	return c.currentManifest(ctx)
+}
+
 func (c *Client) currentManifest(ctx context.Context) (generation.Manifest, int64, bool, error) {
 	object, err := c.readObject(ctx, c.prefix()+"/"+generation.ManifestPath, 0, generation.MaxManifestBytes)
 	if objectNotFound(err) {
@@ -758,7 +798,7 @@ func (c *Client) DeleteProjectPrefix(ctx context.Context, userID, projectID stri
 	if !safeProjectPrefixSegment(userID) || !safeProjectPrefixSegment(projectID) {
 		return 0, errors.New("invalid project prefix")
 	}
-	prefix := "users/" + userID + "/projects/" + projectID + "/"
+	prefix := c.localScope.ObjectPrefix() + "users/" + userID + "/projects/" + projectID + "/"
 
 	deleted := 0
 	err := c.visitObjectsRaw(ctx, prefix, false, func(object backendObject) error {
@@ -1291,49 +1331,32 @@ func (c *Client) objectRelativePath(objectName, requestedSubPrefix string) (stri
 	return rel, true
 }
 
-// ListProjects returns project directories under users/{userID}/projects/.
+// ListProjects returns project directories under the configured storage root.
 func (c *Client) ListProjects(ctx context.Context, userID string) ([]Project, error) {
-	if c == nil || c.bucket == nil {
+	if c == nil || c.bucket == nil && c.backend == nil {
 		return nil, fmt.Errorf("GCS client is not configured")
 	}
 
-	basePrefix := store.UserProjectsPrefix(userID)
-	it := c.bucket.Objects(ctx, &storage.Query{
-		Prefix:    basePrefix,
-		Delimiter: "/",
-	})
+	basePrefix := c.localScope.ObjectPrefix() + store.UserProjectsPrefix(userID)
 
 	seen := make(map[string]struct{})
-	var listedBytes int64
-	listedObjects := 0
-	for {
-		attrs, err := it.Next()
-		if err != nil {
-			if errors.Is(err, iterator.Done) {
-				break
-			}
-			return nil, err
-		}
-		if attrs.Size < 0 || attrs.Size > generation.MaxTotalSize || listedBytes > generation.MaxTotalSize-attrs.Size || listedObjects >= generation.MaxFiles {
-			return nil, errors.New("object list exceeds limit")
-		}
-		listedObjects++
-		listedBytes += attrs.Size
-
-		prefix := attrs.Prefix
+	err := c.visitObjectsWithBudget(ctx, basePrefix, true, generation.MaxFiles, generation.MaxTotalSize, errors.New("object list exceeds limit"), errors.New("object list exceeds limit"), func(object backendObject) error {
+		prefix := object.Prefix
 		if prefix == "" {
-			name := strings.TrimPrefix(attrs.Name, basePrefix)
-			if name == attrs.Name || name == "" || !strings.Contains(name, "/") {
-				continue
+			name := strings.TrimPrefix(object.Name, basePrefix)
+			if name == object.Name || name == "" || !strings.Contains(name, "/") {
+				return nil
 			}
 			prefix = basePrefix + strings.SplitN(name, "/", 2)[0] + "/"
 		}
-
 		projectID := strings.TrimSuffix(strings.TrimPrefix(prefix, basePrefix), "/")
-		if projectID == "" || strings.Contains(projectID, "/") {
-			continue
+		if projectID != "" && !strings.Contains(projectID, "/") {
+			seen[projectID] = struct{}{}
 		}
-		seen[projectID] = struct{}{}
+		return nil
+	})
+	if err != nil {
+		return nil, err
 	}
 
 	ids := make([]string, 0, len(seen))
@@ -1353,8 +1376,8 @@ func (c *Client) ListProjects(ctx context.Context, userID string) ([]Project, er
 }
 
 func (c *Client) projectCreatedAt(ctx context.Context, userID, projectID string) string {
-	path := store.ProjectObjectPath(userID, projectID, "index.md")
-	attrs, err := c.bucket.Object(path).Attrs(ctx)
+	name := c.localScope.ObjectPrefix() + store.ProjectObjectPath(userID, projectID, "index.md")
+	attrs, err := c.objectAttrs(ctx, name, 0)
 	if err != nil || attrs.Created.IsZero() {
 		return ""
 	}
@@ -1380,6 +1403,9 @@ func (c *Client) BucketStats(ctx context.Context) (int64, int64, error) {
 		prefix := c.prefix() + "/"
 		canonical := int64(0)
 		countCanonical := func(attrs backendObject) error {
+			if attrs.Prefix != "" {
+				return nil
+			}
 			rel := strings.TrimPrefix(attrs.Name, prefix)
 			if strings.HasPrefix(rel, generation.Prefix) || generation.GenerationOwned(rel) || rel == generation.ManifestPath || rel == generation.LeasePath {
 				return nil

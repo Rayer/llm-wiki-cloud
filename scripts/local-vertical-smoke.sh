@@ -2,190 +2,24 @@
 set -euo pipefail
 
 BFF_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")/../apps/bff" && pwd)"
-FRONTEND_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")/../apps/frontend" && pwd)"
-BFF_PORT="${BFF_PORT:-18080}"
-AUTH_PORT="${AUTH_PORT:-18081}"
-FRONTEND_PORT="${FRONTEND_PORT:-13000}"
+cd "$BFF_DIR"
 
-tmp_dir="$(mktemp -d "${TMPDIR:-/tmp}/lwc-306-smoke.XXXXXX")"
-declare -a pids=()
-env_file="$FRONTEND_DIR/.env.local"
-env_backup="$tmp_dir/env.local"
-font_mock="$tmp_dir/google-fonts-local-fallback.cjs"
-had_env_file=false
-cleanup_active=false
-
-listeners() {
-  lsof -nP -tiTCP:"$1" -sTCP:LISTEN 2>/dev/null || true
+run_offline_test() {
+  env -u LLM_API_KEY -u DEEPSEEK_API_KEY -u SYNTO_API_KEY \
+    -u OPENAI_API_KEY -u ANTHROPIC_API_KEY -u GEMINI_API_KEY \
+    -u TYPESAFE_API_KEY -u TYPESAFE_JEV_API_KEY -u LWC331_TEST_API_KEY "$@"
 }
 
-stop_tree() {
-  local pid="$1" child
-  for child in $(pgrep -P "$pid" 2>/dev/null || true); do
-    stop_tree "$child"
-  done
-  kill -TERM "$pid" 2>/dev/null || true
-}
+# This smoke stays on loopback. Its native worker subprocess test runs only
+# when both explicitly configured emulator endpoints are loopback addresses;
+# otherwise Go reports it as skipped. It does not modify .env.local, inspect or
+# kill other port owners, or invoke a paid LLM provider.
+run_offline_test go test ./cmd/bff -run '^TestLocalCloudLoopbackUsesBearerAndIgnoresUserHeaderIdentity$' -count=1
+run_offline_test go test ./cmd/bff -run '^TestLocalPipelineHTTPTriggerRunsWorkerAndReportsSuccessAndFailure$' -count=1
+run_offline_test go test ./internal/auth -run '^TestLocalRefreshCookiePolicySupportsLoopbackHTTP$' -count=1
+run_offline_test go test ./internal/localcloud ./internal/firestore ./internal/gcs ./internal/localpipeline -run 'Scope|WorkerArgs' -count=1
+run_offline_test make local-synto-runtime-test
+run_offline_test python3 -m unittest scripts.test_local_dev_makefile -v
+run_offline_test python3 -m unittest discover -s ../../scripts -p 'test_local_vertical_smoke.py' -v
 
-force_tree() {
-  local pid="$1" child
-  for child in $(pgrep -P "$pid" 2>/dev/null || true); do
-    force_tree "$child"
-  done
-  kill -KILL "$pid" 2>/dev/null || true
-}
-
-cleanup() {
-  local exit_status=$? pid port remaining attempt alive cleanup_failed=false
-  trap - EXIT INT TERM
-  if [ "$cleanup_active" != true ]; then
-    rm -rf "$tmp_dir"
-    exit "$exit_status"
-  fi
-  for pid in "${pids[@]}"; do
-    stop_tree "$pid"
-  done
-  for attempt in $(seq 1 40); do
-    alive=false
-    for pid in "${pids[@]}"; do
-      if kill -0 "$pid" 2>/dev/null; then
-        alive=true
-      fi
-    done
-    [ "$alive" = false ] && break
-    sleep 0.1
-  done
-  for pid in "${pids[@]}"; do
-    if kill -0 "$pid" 2>/dev/null; then
-      force_tree "$pid"
-    fi
-    wait "$pid" 2>/dev/null || true
-  done
-
-  for port in "$BFF_PORT" "$AUTH_PORT" "$FRONTEND_PORT"; do
-    remaining="$(listeners "$port")"
-    if [ -n "$remaining" ]; then
-      echo "smoke cleanup failed: port $port still has listener PID(s): $remaining" >&2
-      cleanup_failed=true
-    fi
-  done
-
-  if "$had_env_file"; then
-    cp "$env_backup" "$env_file"
-  else
-    rm -f "$env_file"
-  fi
-  rm -rf "$tmp_dir"
-  if [ "$cleanup_failed" = true ] && [ "$exit_status" -eq 0 ]; then
-    exit_status=1
-  fi
-  exit "$exit_status"
-}
-trap cleanup EXIT INT TERM
-
-for port in "$BFF_PORT" "$AUTH_PORT" "$FRONTEND_PORT"; do
-  if [ -n "$(listeners "$port")" ]; then
-    echo "smoke refused to start: port $port is already occupied" >&2
-    exit 1
-  fi
-done
-
-if [ -e "$env_file" ]; then
-  cp "$env_file" "$env_backup"
-  had_env_file=true
-fi
-cleanup_active=true
-printf '%s\n' \
-  "NEXT_PUBLIC_API_URL=http://127.0.0.1:$BFF_PORT" \
-  "NEXT_PUBLIC_AUTH_URL=http://127.0.0.1:$AUTH_PORT" \
-  'NEXT_PUBLIC_DEV_USER_ID=local-user' \
-  'NEXT_PUBLIC_DEV_PROJECT_ID=demo' > "$env_file"
-cp -R "$BFF_DIR/demo" "$tmp_dir/local-data"
-
-# Keep the local smoke independent of Google Fonts availability. This uses the
-# mock hook shipped by the pinned Next.js version and returns only local font
-# sources; the production layout and font defaults remain unchanged.
-cat > "$font_mock" <<'NODE'
-module.exports = {
-  'https://fonts.googleapis.com/css2?family=Geist:wght@100..900&display=swap': `/* latin */
-@font-face { font-family: 'Geist'; font-style: normal; font-weight: 100 900; src: local("Arial"); }
-`,
-  'https://fonts.googleapis.com/css2?family=Geist+Mono:wght@100..900&display=swap': `/* latin */
-@font-face { font-family: 'Geist Mono'; font-style: normal; font-weight: 100 900; src: local("Arial"); }
-`,
-  'https://fonts.googleapis.com/css2?family=Noto+Serif+TC:wght@500;600&display=swap': `/* latin */
-@font-face { font-family: 'Noto Serif TC'; font-style: normal; font-weight: 500; src: local("Arial"); }
-@font-face { font-family: 'Noto Serif TC'; font-style: normal; font-weight: 600; src: local("Arial"); }
-`,
-};
-NODE
-
-unset GOOGLE_APPLICATION_CREDENTIALS GOOGLE_CLOUD_PROJECT GOOGLE_CLOUD_QUOTA_PROJECT GCP_PROJECT \
-  DEEPSEEK_API_KEY LLM_API_KEY OPENAI_API_KEY ANTHROPIC_API_KEY VERCEL_TOKEN 2>/dev/null || true
-
-(
-  cd "$BFF_DIR"
-  go build -o "$tmp_dir/bff" ./cmd/bff
-) &
-bff_build_pid="$!"
-pids+=("$bff_build_pid")
-(
-  cd "$BFF_DIR"
-  go build -o "$tmp_dir/auth" ./cmd/auth
-) &
-auth_build_pid="$!"
-pids+=("$auth_build_pid")
-wait "$bff_build_pid"
-wait "$auth_build_pid"
-pids=()
-
-(cd "$BFF_DIR" && \
-  PORT="$BFF_PORT" LOCAL_DATA_DIR="$tmp_dir/local-data" DEV_JWT=true JWT_SECRET=dev-secret \
-  "$tmp_dir/bff" --local "$tmp_dir/local-data") > "$tmp_dir/bff.log" 2>&1 &
-pids+=("$!")
-(cd "$BFF_DIR" && \
-  PORT="$AUTH_PORT" LOCAL_DATA_DIR="$tmp_dir/local-data" DEV_JWT=true JWT_SECRET=dev-secret \
-  "$tmp_dir/auth" --local "$tmp_dir/local-data") > "$tmp_dir/auth.log" 2>&1 &
-pids+=("$!")
-(cd "$FRONTEND_DIR" && NEXT_FONT_GOOGLE_MOCKED_RESPONSES="$font_mock" \
-  NODE_ENV=development NEXT_TELEMETRY_DISABLED=1 \
-  npm run dev -- --hostname 127.0.0.1 --port "$FRONTEND_PORT") > "$tmp_dir/frontend.log" 2>&1 &
-pids+=("$!")
-
-wait_for_http() {
-  local name="$1" url="$2" log="$3" pid="$4" body="$tmp_dir/$1.body" attempt
-  for attempt in $(seq 1 120); do
-    if curl --fail --silent --show-error --max-time 1 "$url" > "$body"; then
-      echo "$name ready: $url"
-      return 0
-    fi
-    if ! kill -0 "$pid" 2>/dev/null; then
-      echo "$name exited before readiness; log:" >&2
-      sed -n '1,120p' "$log" >&2
-      return 1
-    fi
-    sleep 0.25
-  done
-  echo "$name did not become ready: $url; log:" >&2
-  sed -n '1,120p' "$log" >&2
-  return 1
-}
-
-wait_for_http auth "http://127.0.0.1:$AUTH_PORT/api/v1/public/healthz" "$tmp_dir/auth.log" "${pids[1]}"
-wait_for_http bff "http://127.0.0.1:$BFF_PORT/api/v1/public/version" "$tmp_dir/bff.log" "${pids[0]}"
-wait_for_http frontend "http://127.0.0.1:$FRONTEND_PORT/" "$tmp_dir/frontend.log" "${pids[2]}"
-
-login="$(curl --fail --silent --show-error --max-time 2 \
-  -H 'Content-Type: application/json' \
-  -d '{"email":"demo@llm-wiki.dev","password":"demo123456"}' \
-  "http://127.0.0.1:$AUTH_PORT/api/v1/auth/login")"
-token="$(printf '%s' "$login" | python3 -c 'import json, sys; value=json.load(sys.stdin); assert value.get("user", {}).get("id") == "local-user"; token=value.get("access_token"); assert isinstance(token, str) and token; print(token)')"
-echo 'auth login useful: user=local-user access_token=present'
-
-projects="$(curl --fail --silent --show-error --max-time 2 \
-  -H "Authorization: Bearer $token" \
-  "http://127.0.0.1:$BFF_PORT/api/v1/projects")"
-printf '%s' "$projects" | python3 -c 'import json, sys; projects=json.load(sys.stdin); assert any(project.get("id") == "demo" for project in projects); print("bff scoped API useful: project=demo")'
-
-python3 -c 'from pathlib import Path; body=Path(__import__("sys").argv[1]).read_text(); assert "LLM Wiki Cloud" in body and "<html" in body; print("frontend HTTP useful: title=LLM Wiki Cloud")' "$tmp_dir/frontend.body"
-echo "smoke complete: ports $BFF_PORT $AUTH_PORT $FRONTEND_PORT cleaned up and verified free"
+printf '%s\n' 'loopback/auth-boundary and cloud-scope smoke complete'

@@ -15,6 +15,7 @@ test('public config preserves announcement markdown and fails safe when unavaila
     registration_enabled: true,
     email_registration_enabled: true,
     google_registration_enabled: true,
+    demo_enabled: false,
     announcement_markdown: '# Live',
     announcement_digest: `sha256:${'a'.repeat(64)}`,
   });
@@ -24,6 +25,7 @@ test('public config preserves announcement markdown and fails safe when unavaila
     registration_enabled: true,
     email_registration_enabled: true,
     google_registration_enabled: true,
+    demo_enabled: false,
     announcement_markdown: '# Live',
     announcement_digest: null,
   });
@@ -33,6 +35,7 @@ test('public config preserves announcement markdown and fails safe when unavaila
     registration_enabled: false,
     email_registration_enabled: false,
     google_registration_enabled: false,
+    demo_enabled: false,
   });
 });
 

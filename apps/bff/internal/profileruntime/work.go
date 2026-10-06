@@ -4,6 +4,7 @@ package profileruntime
 import (
 	"crypto/sha256"
 	"encoding/hex"
+	scopedfirestore "github.com/rayer/llm-wiki-bff/internal/firestore"
 	"time"
 
 	"cloud.google.com/go/firestore"
@@ -37,5 +38,5 @@ func WorkID(w Work) string {
 // Enqueue is part of the same transaction that creates the intent/job/receipt.
 func Enqueue(tx *firestore.Transaction, client *firestore.Client, w Work) error {
 	w.Pending, w.Status = true, "pending"
-	return tx.Set(client.Collection(WorkCollection).Doc(WorkID(w)), w)
+	return tx.Set(scopedfirestore.Collection(client, WorkCollection).Doc(WorkID(w)), w)
 }

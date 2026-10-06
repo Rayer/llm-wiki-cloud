@@ -2,12 +2,15 @@ package handler
 
 import (
 	"encoding/json"
+	"errors"
 
 	"github.com/rayer/llm-wiki-bff/internal/gcs"
 	"github.com/rayer/llm-wiki-bff/internal/llm"
 	"github.com/rayer/llm-wiki-bff/internal/query"
 	"github.com/rayer/llm-wiki-bff/internal/search"
 )
+
+var ErrPipelineExecutionNotFound = errors.New("pipeline execution not found")
 
 type QueryConfigResponse struct {
 	QueryConfig PublicQueryConfig    `json:"query_config"`

@@ -22,16 +22,30 @@ import (
 
 func TestProductionRouterExposesOnlyAuthPublicSurface(t *testing.T) {
 	gin.SetMode(gin.TestMode)
-	router := newProductionRouter(config.Config{DevJWT: true, JWTSecret: "test-secret"}, true, nil, &syssettings.FakeStore{Enabled: true})
+	router := newProductionRouter(config.Config{JWTSecret: "test-secret"}, true, nil, &syssettings.FakeStore{Enabled: true})
 
 	want := map[string]bool{
-		http.MethodPost + " /api/v1/auth/demo":     true,
-		http.MethodPost + " /api/v1/auth/register": true,
-		http.MethodPost + " /api/v1/auth/login":    true,
-		http.MethodPost + " /api/v1/auth/refresh":  true,
-		http.MethodPost + " /api/v1/auth/logout":   true,
-		http.MethodGet + " /api/v1/public/healthz": true,
-		http.MethodGet + " /api/v1/public/version": true,
+		http.MethodDelete + " /api/v1/auth/cli/bindings/:projectID/:bindingID":      true,
+		http.MethodDelete + " /api/v1/auth/cli/sessions/:id":                        true,
+		http.MethodGet + " /api/v1/auth/cli/bindings":                               true,
+		http.MethodGet + " /api/v1/auth/cli/projects":                               true,
+		http.MethodGet + " /api/v1/auth/cli/sessions":                               true,
+		http.MethodGet + " /api/v1/auth/cli/status":                                 true,
+		http.MethodGet + " /api/v1/public/healthz":                                  true,
+		http.MethodGet + " /api/v1/public/version":                                  true,
+		http.MethodPost + " /api/v1/auth/cli/bindings":                              true,
+		http.MethodPost + " /api/v1/auth/cli/bindings/:projectID/:bindingID/revoke": true,
+		http.MethodPost + " /api/v1/auth/cli/bindings/:projectID/reauthorize":       true,
+		http.MethodPost + " /api/v1/auth/cli/logout":                                true,
+		http.MethodPost + " /api/v1/auth/cli/pairing/decision":                      true,
+		http.MethodPost + " /api/v1/auth/cli/pairing/poll":                          true,
+		http.MethodPost + " /api/v1/auth/cli/pairing/start":                         true,
+		http.MethodPost + " /api/v1/auth/cli/refresh":                               true,
+		http.MethodPost + " /api/v1/auth/cli/sessions/:id/revoke":                   true,
+		http.MethodPost + " /api/v1/auth/register":                                  true,
+		http.MethodPost + " /api/v1/auth/login":                                     true,
+		http.MethodPost + " /api/v1/auth/refresh":                                   true,
+		http.MethodPost + " /api/v1/auth/logout":                                    true,
 	}
 
 	got := make(map[string]bool)
@@ -53,107 +67,47 @@ func TestProductionRouterExposesOnlyAuthPublicSurface(t *testing.T) {
 	}
 }
 
-func TestAuthDemoRouteUsesLocalFixtureAndUnavailableProductionDoesNotFallBack(t *testing.T) {
+func TestAuthDemoRouteIsNotMounted(t *testing.T) {
 	gin.SetMode(gin.TestMode)
-	local := newProductionRouter(config.Config{DevJWT: true, JWTSecret: "test-secret"}, true, nil, &syssettings.FakeStore{Enabled: true})
-	localResponse := httptest.NewRecorder()
-	localRequest := httptest.NewRequest(http.MethodPost, "http://localhost:8081/api/v1/auth/demo", nil)
-	local.ServeHTTP(localResponse, localRequest)
-	if localResponse.Code != http.StatusOK {
-		t.Fatalf("local Demo login status=%d, want %d", localResponse.Code, http.StatusOK)
-	}
-	var localLogin auth.LoginResponse
-	if err := json.Unmarshal(localResponse.Body.Bytes(), &localLogin); err != nil || localLogin.User.ID != "local-user" {
-		t.Fatalf("local Demo response user=%#v decode_error=%v", localLogin.User, err)
-	}
-	if cookies := localResponse.Result().Cookies(); len(cookies) != 1 || cookies[0].Name != auth.LocalRefreshCookiePolicy().Name {
-		t.Fatalf("local Demo cookies=%#v", cookies)
-	}
-
-	unavailable := newProductionRouter(config.Config{JWTSecret: "test-secret", AllowedHosts: []string{"auth.example.test"}, AllowedOrigins: []string{"https://frontend.example"}}, false, nil, &syssettings.FakeStore{Enabled: true})
-	productionResponse := httptest.NewRecorder()
-	productionRequest := httptest.NewRequest(http.MethodPost, "http://auth.example.test/api/v1/auth/demo", nil)
-	unavailable.ServeHTTP(productionResponse, productionRequest)
-	if productionResponse.Code != http.StatusServiceUnavailable || len(productionResponse.Result().Cookies()) != 0 {
-		t.Fatalf("unavailable production Demo status=%d cookies=%d, want 503 and no cookie", productionResponse.Code, len(productionResponse.Result().Cookies()))
-	}
-
-	limited := newProductionRouter(config.Config{DevJWT: true, JWTSecret: "test-secret"}, true, nil, &syssettings.FakeStore{Enabled: true})
-	for i := 0; i < 11; i++ {
-		request := httptest.NewRequest(http.MethodPost, "http://localhost:8081/api/v1/auth/demo", nil)
-		request.Header.Set("CF-Connecting-IP", "203.0.113.246")
-		recorder := httptest.NewRecorder()
-		limited.ServeHTTP(recorder, request)
-		if i == 10 && recorder.Code != http.StatusTooManyRequests {
-			t.Fatalf("Demo request %d status=%d, want %d", i+1, recorder.Code, http.StatusTooManyRequests)
-		}
+	router := newProductionRouter(config.Config{JWTSecret: "test-secret"}, true, nil, &syssettings.FakeStore{Enabled: true})
+	response := httptest.NewRecorder()
+	request := httptest.NewRequest(http.MethodPost, "http://localhost:8081/api/v1/auth/demo", nil)
+	router.ServeHTTP(response, request)
+	if response.Code != http.StatusNotFound || len(response.Result().Cookies()) != 0 {
+		t.Fatalf("passwordless Demo route status=%d cookies=%d; want 404 without cookie", response.Code, len(response.Result().Cookies()))
 	}
 }
 
-func TestUnavailableProductionDemoValidatesBodyBeforeReturning503(t *testing.T) {
+func TestDeployedDemoRouteIsMountedAndFailsClosedWithoutIdentityStorage(t *testing.T) {
 	gin.SetMode(gin.TestMode)
-	router := newProductionRouter(config.Config{
-		JWTSecret: "test-secret", AllowedHosts: []string{"auth.example.test"}, AllowedOrigins: []string{"https://frontend.example"},
-	}, false, nil, &syssettings.FakeStore{Enabled: true})
-	oversized := strings.Repeat("x", int(auth.MaxRequestBodyBytes)+1)
-	cases := []struct {
-		name          string
-		body          string
-		unknownLength bool
-		wantStatus    int
-	}{
-		{name: "empty body", wantStatus: http.StatusServiceUnavailable},
-		{name: "empty object", body: `{}`, wantStatus: http.StatusServiceUnavailable},
-		{name: "nonempty object", body: `{"client_id":"ignored"}`, wantStatus: http.StatusBadRequest},
-		{name: "primitive JSON", body: `null`, wantStatus: http.StatusBadRequest},
-		{name: "malformed JSON", body: `{`, wantStatus: http.StatusBadRequest},
-		{name: "trailing JSON", body: `{} {}`, wantStatus: http.StatusBadRequest},
-		{name: "oversized known length", body: oversized, wantStatus: http.StatusRequestEntityTooLarge},
-		{name: "oversized unknown length", body: oversized, unknownLength: true, wantStatus: http.StatusRequestEntityTooLarge},
+	router := newProductionRouter(config.Config{JWTSecret: "test-secret", AllowedHosts: []string{"auth.example.test"}, AllowedOrigins: []string{"https://frontend.example"}, AuthDemoUserID: "configured-demo-user"}, false, nil, &syssettings.FakeStore{Enabled: true})
+	registered := false
+	for _, route := range router.Routes() {
+		if route.Method == http.MethodPost && route.Path == "/api/v1/auth/demo" {
+			registered = true
+		}
 	}
-	for _, tc := range cases {
-		t.Run(tc.name, func(t *testing.T) {
-			recorder := httptest.NewRecorder()
-			request := httptest.NewRequest(http.MethodPost, "http://auth.example.test/api/v1/auth/demo", strings.NewReader(tc.body))
-			request.Header.Set("Content-Type", "application/json")
-			if tc.unknownLength {
-				request.ContentLength = -1
-			}
-			router.ServeHTTP(recorder, request)
-			if recorder.Code != tc.wantStatus {
-				t.Fatalf("unavailable Demo body status=%d, want %d; body=%s", recorder.Code, tc.wantStatus, recorder.Body.String())
-			}
-			if recorder.Header().Get("Set-Cookie") != "" || len(recorder.Result().Cookies()) != 0 {
-				t.Fatalf("unavailable Demo body response set cookie: %#v", recorder.Result().Cookies())
-			}
-			var response map[string]json.RawMessage
-			if err := json.Unmarshal(recorder.Body.Bytes(), &response); err != nil {
-				t.Fatalf("decode unavailable Demo response: %v", err)
-			}
-			if _, hasAccessToken := response["access_token"]; hasAccessToken {
-				t.Fatal("unavailable Demo response unexpectedly includes an access token")
-			}
-		})
+	if !registered {
+		t.Fatal("deployed formal Demo route is not registered")
 	}
 
-	limited := newProductionRouter(config.Config{
-		JWTSecret: "test-secret", AllowedHosts: []string{"auth.example.test"}, AllowedOrigins: []string{"https://frontend.example"},
-	}, false, nil, &syssettings.FakeStore{Enabled: true})
-	for i := 0; i < 11; i++ {
-		recorder := httptest.NewRecorder()
-		request := httptest.NewRequest(http.MethodPost, "http://auth.example.test/api/v1/auth/demo", nil)
-		request.Header.Set("CF-Connecting-IP", "203.0.113.247")
-		limited.ServeHTTP(recorder, request)
-		wantStatus := http.StatusServiceUnavailable
-		if i == 10 {
-			wantStatus = http.StatusTooManyRequests
-		}
-		if recorder.Code != wantStatus {
-			t.Fatalf("unavailable Demo request %d status=%d, want %d", i+1, recorder.Code, wantStatus)
-		}
-		if recorder.Header().Get("Set-Cookie") != "" {
-			t.Fatalf("unavailable Demo request %d set cookie %q", i+1, recorder.Header().Get("Set-Cookie"))
-		}
+	for _, test := range []struct {
+		name string
+		body string
+		want int
+	}{
+		{name: "unavailable identity store", want: http.StatusServiceUnavailable},
+		{name: "identity input rejected", body: `{"user_id":"attacker"}`, want: http.StatusBadRequest},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			recorder := httptest.NewRecorder()
+			request := httptest.NewRequest(http.MethodPost, "http://auth.example.test/api/v1/auth/demo", strings.NewReader(test.body))
+			request.Header.Set("Content-Type", "application/json")
+			router.ServeHTTP(recorder, request)
+			if recorder.Code != test.want || len(recorder.Result().Cookies()) != 0 {
+				t.Fatalf("Demo status=%d cookies=%d body=%s; want %d without cookie", recorder.Code, len(recorder.Result().Cookies()), recorder.Body.String(), test.want)
+			}
+		})
 	}
 }
 
@@ -207,33 +161,27 @@ func TestProductionRouterWiresGoogleAuthRoutesWhenConfigured(t *testing.T) {
 	}
 }
 
-func TestProductionRouterWiresLocalAuthHandlers(t *testing.T) {
+func TestProductionRouterWiresFormalLocalAuthHandlers(t *testing.T) {
 	gin.SetMode(gin.TestMode)
-	router := newProductionRouter(config.Config{DevJWT: true, JWTSecret: "test-secret"}, true, nil, &syssettings.FakeStore{Enabled: true})
-
+	router := newProductionRouter(config.Config{JWTSecret: "test-secret"}, true, nil, &syssettings.FakeStore{Enabled: true})
+	registered := map[string]bool{}
+	for _, route := range router.Routes() {
+		registered[route.Method+" "+route.Path] = true
+	}
+	for _, path := range []string{"/api/v1/auth/login", "/api/v1/auth/register", "/api/v1/auth/refresh", "/api/v1/auth/logout"} {
+		if !registered[http.MethodPost+" "+path] {
+			t.Fatalf("local Auth route %s is missing", path)
+		}
+	}
 	recorder := httptest.NewRecorder()
 	request := httptest.NewRequest(http.MethodPost, "http://localhost:8081/api/v1/auth/login", bytes.NewBufferString(`{"email":"demo@llm-wiki.dev","password":"demo123456"}`))
 	request.Header.Set("Content-Type", "application/json")
 	router.ServeHTTP(recorder, request)
-	if recorder.Code != http.StatusOK {
-		t.Fatalf("local login status = %d, body = %s", recorder.Code, recorder.Body.String())
+	if recorder.Code != http.StatusServiceUnavailable || len(recorder.Result().Cookies()) != 0 {
+		t.Fatalf("local login without Firestore status=%d cookies=%d; want 503 without cookie", recorder.Code, len(recorder.Result().Cookies()))
 	}
-	var loginResponse struct {
-		AccessToken string `json:"access_token"`
-	}
-	if err := json.Unmarshal(recorder.Body.Bytes(), &loginResponse); err != nil {
-		t.Fatalf("decode local login response: %v", err)
-	}
-	if loginResponse.AccessToken == "" {
-		t.Fatal("local login response did not contain an access token")
-	}
-
-	recorder = httptest.NewRecorder()
-	request = httptest.NewRequest(http.MethodPost, "http://localhost:8081/api/v1/auth/register", bytes.NewBufferString(`{"email":"new@example.com","password":"password123"}`))
-	request.Header.Set("Content-Type", "application/json")
-	router.ServeHTTP(recorder, request)
-	if recorder.Code != http.StatusServiceUnavailable {
-		t.Fatalf("local register status = %d, want %d", recorder.Code, http.StatusServiceUnavailable)
+	if strings.Contains(recorder.Body.String(), "access_token") {
+		t.Fatal("unavailable login unexpectedly returned an access token")
 	}
 }
 
@@ -565,7 +513,6 @@ func TestProductionRouterUsesDurableRefreshAuthorityAcrossRouterInstances(t *tes
 func TestAuthHostAllowlistRejectsBeforeRouteHandling(t *testing.T) {
 	gin.SetMode(gin.TestMode)
 	router := newProductionRouter(config.Config{
-		DevJWT:         true,
 		JWTSecret:      "test-secret",
 		AllowedHosts:   []string{"auth.example.test"},
 		AllowedOrigins: []string{"https://frontend.example"},
@@ -601,7 +548,7 @@ func TestAuthHostAllowlistRejectsBeforeRouteHandling(t *testing.T) {
 
 func TestAuthLocalHostAllowlistAcceptsLocalhostOnlyInLocalMode(t *testing.T) {
 	gin.SetMode(gin.TestMode)
-	localRouter := newProductionRouter(config.Config{DevJWT: true, JWTSecret: "test-secret"}, true, nil, &syssettings.FakeStore{Enabled: true})
+	localRouter := newProductionRouter(config.Config{JWTSecret: "test-secret"}, true, nil, &syssettings.FakeStore{Enabled: true})
 	for _, host := range []string{"localhost:8081", "127.0.0.1:8081"} {
 		recorder := httptest.NewRecorder()
 		request := httptest.NewRequest(http.MethodGet, "http://"+host+"/api/v1/public/healthz", nil)
@@ -623,7 +570,6 @@ func TestAuthLocalHostAllowlistAcceptsLocalhostOnlyInLocalMode(t *testing.T) {
 func TestAuthCORSAllowsOnlyBaselineMethodsAndHeaders(t *testing.T) {
 	gin.SetMode(gin.TestMode)
 	router := newProductionRouter(config.Config{
-		DevJWT:         true,
 		JWTSecret:      "test-secret",
 		AllowedHosts:   []string{"auth.example.test"},
 		AllowedOrigins: []string{"https://frontend.example"},
@@ -654,7 +600,7 @@ func TestAuthCORSAllowsOnlyBaselineMethodsAndHeaders(t *testing.T) {
 
 func TestAuthRequestBodyLimitRejectsOversizedLogin(t *testing.T) {
 	gin.SetMode(gin.TestMode)
-	router := newProductionRouter(config.Config{DevJWT: true, JWTSecret: "test-secret"}, true, nil, &syssettings.FakeStore{Enabled: true})
+	router := newProductionRouter(config.Config{JWTSecret: "test-secret"}, true, nil, &syssettings.FakeStore{Enabled: true})
 
 	recorder := httptest.NewRecorder()
 	request := httptest.NewRequest(http.MethodPost, "http://localhost:8081/api/v1/auth/login", strings.NewReader(`{"email":"demo@llm-wiki.dev","password":"`+strings.Repeat("x", 64<<10)+`"}`))
@@ -667,13 +613,13 @@ func TestAuthRequestBodyLimitRejectsOversizedLogin(t *testing.T) {
 
 func TestAuthRequestBodyLimitPreservesSmallMalformedLoginStatus(t *testing.T) {
 	gin.SetMode(gin.TestMode)
-	router := newProductionRouter(config.Config{DevJWT: true, JWTSecret: "test-secret"}, true, nil, &syssettings.FakeStore{Enabled: true})
+	router := newProductionRouter(config.Config{JWTSecret: "test-secret"}, true, nil, &syssettings.FakeStore{Enabled: true})
 
 	recorder := httptest.NewRecorder()
 	request := httptest.NewRequest(http.MethodPost, "http://localhost:8081/api/v1/auth/login", strings.NewReader(`{}`))
 	request.Header.Set("Content-Type", "application/json")
 	router.ServeHTTP(recorder, request)
-	if recorder.Code != http.StatusBadRequest {
-		t.Fatalf("small malformed login status = %d, want %d", recorder.Code, http.StatusBadRequest)
+	if recorder.Code != http.StatusServiceUnavailable {
+		t.Fatalf("login without Firestore status = %d, want %d", recorder.Code, http.StatusServiceUnavailable)
 	}
 }

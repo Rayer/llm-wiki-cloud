@@ -6,6 +6,7 @@ import (
 	"crypto/sha256"
 	"errors"
 	"fmt"
+	scopedfirestore "github.com/rayer/llm-wiki-bff/internal/firestore"
 	"hash"
 	"io"
 	"net/http"
@@ -167,7 +168,7 @@ func rawUploadDecision(exists bool, existingDigest, digest string, overwrite boo
 }
 
 func (h *Handler) rawUploadProjectReady(c *gin.Context, userID, projectID string) (bool, error) {
-	snap, err := h.firestore.Raw().Collection("projects").Doc(projectDocID(userID, projectID)).Get(c.Request.Context())
+	snap, err := scopedfirestore.Collection(h.firestore.Raw(), "projects").Doc(projectDocID(userID, projectID)).Get(c.Request.Context())
 	if err != nil {
 		return false, err
 	}

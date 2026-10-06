@@ -522,6 +522,8 @@ definitions:
         x-nullable: true
       announcement_markdown:
         type: string
+      demo_enabled:
+        type: boolean
       email_registration_enabled:
         type: boolean
       google_registration_enabled:
@@ -1482,7 +1484,7 @@ paths:
           schema:
             $ref: '#/definitions/handler.ErrorResponse'
       security:
-      - DevUserAuth: []
+      - BearerAuth: []
       - ProjectHeader: []
       summary: List wiki concepts
       tags:
@@ -1512,7 +1514,7 @@ paths:
           schema:
             $ref: '#/definitions/handler.ErrorResponse'
       security:
-      - DevUserAuth: []
+      - BearerAuth: []
       - ProjectHeader: []
       summary: Get a concept by slug
       tags:
@@ -1528,7 +1530,7 @@ paths:
           schema:
             $ref: '#/definitions/handler.HealthResponse'
       security:
-      - DevUserAuth: []
+      - BearerAuth: []
       - ProjectHeader: []
       summary: Health check
       tags:
@@ -1557,7 +1559,7 @@ paths:
           schema:
             $ref: '#/definitions/handler.ErrorResponse'
       security:
-      - DevUserAuth: []
+      - BearerAuth: []
       - ProjectHeader: []
       summary: Import bookmarks
       tags:
@@ -1582,7 +1584,7 @@ paths:
           schema:
             $ref: '#/definitions/handler.ErrorResponse'
       security:
-      - DevUserAuth: []
+      - BearerAuth: []
       - ProjectHeader: []
       summary: Read generated index
       tags:
@@ -1640,7 +1642,7 @@ paths:
           schema:
             $ref: '#/definitions/handler.ErrorResponse'
       security:
-      - DevUserAuth: []
+      - BearerAuth: []
       - ProjectHeader: []
       summary: Read pipeline log
       tags:
@@ -1676,7 +1678,7 @@ paths:
           schema:
             $ref: '#/definitions/handler.ErrorResponse'
       security:
-      - DevUserAuth: []
+      - BearerAuth: []
       - ProjectHeader: []
       summary: Pipeline execution status
       tags:
@@ -1702,7 +1704,7 @@ paths:
           schema:
             $ref: '#/definitions/handler.ErrorResponse'
       security:
-      - DevUserAuth: []
+      - BearerAuth: []
       summary: List user projects
       tags:
       - projects
@@ -1741,7 +1743,7 @@ paths:
           schema:
             $ref: '#/definitions/handler.ErrorResponse'
       security:
-      - DevUserAuth: []
+      - BearerAuth: []
       - ProjectHeader: []
       summary: Get first-compile Profile guidance preview
       tags:
@@ -1806,7 +1808,7 @@ paths:
           schema:
             $ref: '#/definitions/handler.ErrorResponse'
       security:
-      - DevUserAuth: []
+      - BearerAuth: []
       - ProjectHeader: []
       summary: Confirm first-compile Profile guidance
       tags:
@@ -1855,7 +1857,7 @@ paths:
           schema:
             $ref: '#/definitions/handler.ErrorResponse'
       security:
-      - DevUserAuth: []
+      - BearerAuth: []
       - ProjectHeader: []
       summary: Get immutable Profile compile guidance
       tags:
@@ -1884,7 +1886,7 @@ paths:
           schema:
             $ref: '#/definitions/handler.ErrorResponse'
       security:
-      - DevUserAuth: []
+      - BearerAuth: []
       - ProjectHeader: []
       summary: Recompile all project content
       tags:
@@ -1913,7 +1915,7 @@ paths:
           schema:
             $ref: '#/definitions/handler.ErrorResponse'
       security:
-      - DevUserAuth: []
+      - BearerAuth: []
       - ProjectHeader: []
       summary: Get Recompile all capability
       tags:
@@ -1966,7 +1968,6 @@ paths:
             $ref: '#/definitions/handler.ErrorResponse'
       security:
       - BearerAuth: []
-      - DevUserAuth: []
       summary: Rename an owned project
       tags:
       - projects
@@ -2272,8 +2273,8 @@ paths:
       - profile
   /api/v1/public/config:
     get:
-      description: Returns method-specific new-account registration capabilities and
-        currently published announcement Markdown.
+      description: Returns registration and Demo sign-in capabilities plus the currently
+        published announcement Markdown.
       produces:
       - application/json
       responses:
@@ -2334,7 +2335,7 @@ paths:
           schema:
             $ref: '#/definitions/handler.ErrorResponse'
       security:
-      - DevUserAuth: []
+      - BearerAuth: []
       - ProjectHeader: []
       summary: Search wiki content
       tags:
@@ -2396,7 +2397,7 @@ paths:
           schema:
             $ref: '#/definitions/handler.ReadyResponse'
       security:
-      - DevUserAuth: []
+      - BearerAuth: []
       - ProjectHeader: []
       summary: Readiness check
       tags:
@@ -2417,7 +2418,7 @@ paths:
           schema:
             $ref: '#/definitions/handler.ErrorResponse'
       security:
-      - DevUserAuth: []
+      - BearerAuth: []
       - ProjectHeader: []
       summary: List compiled sources and pending raw files
       tags:
@@ -2450,7 +2451,7 @@ paths:
           schema:
             $ref: '#/definitions/handler.ErrorResponse'
       security:
-      - DevUserAuth: []
+      - BearerAuth: []
       - ProjectHeader: []
       summary: Get a source annotation
       tags:
@@ -2502,7 +2503,7 @@ paths:
           schema:
             $ref: '#/definitions/handler.ErrorResponse'
       security:
-      - DevUserAuth: []
+      - BearerAuth: []
       - ProjectHeader: []
       summary: Save or clear a source annotation
       tags:
@@ -2532,7 +2533,7 @@ paths:
           schema:
             $ref: '#/definitions/handler.ErrorResponse'
       security:
-      - DevUserAuth: []
+      - BearerAuth: []
       - ProjectHeader: []
       summary: Get a source by slug
       tags:
@@ -2552,7 +2553,7 @@ paths:
           schema:
             $ref: '#/definitions/handler.ErrorResponse'
       security:
-      - DevUserAuth: []
+      - BearerAuth: []
       - ProjectHeader: []
       summary: Pipeline status
       tags:
@@ -2563,11 +2564,6 @@ securityDefinitions:
       \"Bearer <token>\".'
     in: header
     name: Authorization
-    type: apiKey
-  DevUserAuth:
-    description: DEV mode user identity header. Required when dev_jwt=true.
-    in: header
-    name: X-User-ID
     type: apiKey
   ProjectHeader:
     description: Project identifier header.

@@ -1,0 +1,7 @@
+test_start_rejects_existing_listener_before_delayed_child_can_fake_readiness (test_local_dev_makefile.LocalDevMakefileTests.test_start_rejects_existing_listener_before_delayed_child_can_fake_readiness) ... ok
+test_startup_port_check_allows_recently_closed_listener_port (test_local_dev_makefile.LocalDevMakefileTests.test_startup_port_check_allows_recently_closed_listener_port) ... ok
+
+----------------------------------------------------------------------
+Ran 2 tests in 0.156s
+
+OK

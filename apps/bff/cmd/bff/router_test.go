@@ -23,7 +23,7 @@ func TestProductionRouterKeepsAuthCompatibilityLane(t *testing.T) {
 	gin.SetMode(gin.TestMode)
 
 	router := newProductionRouter(
-		config.Config{DevJWT: true, JWTSecret: "test-secret"},
+		config.Config{JWTSecret: "test-secret"},
 		true,
 		nil,
 		nil,
@@ -40,39 +40,34 @@ func TestProductionRouterKeepsAuthCompatibilityLane(t *testing.T) {
 
 	request := func(path string, body string) *httptest.ResponseRecorder {
 		recorder := httptest.NewRecorder()
-		req := httptest.NewRequest(http.MethodPost, path, bytes.NewBufferString(body))
+		req := httptest.NewRequest(http.MethodPost, "http://localhost"+path, bytes.NewBufferString(body))
 		req.Header.Set("Content-Type", "application/json")
 		router.ServeHTTP(recorder, req)
 		return recorder
 	}
-	if got := request("/api/v1/auth/login", `{"email":"demo@llm-wiki.dev","password":"demo123456"}`).Code; got != http.StatusOK {
-		t.Fatalf("local compatibility login status = %d, want %d", got, http.StatusOK)
+	if got := request("/api/v1/auth/login", `{"email":"demo@llm-wiki.dev","password":"demo123456"}`).Code; got != http.StatusServiceUnavailable {
+		t.Fatalf("local compatibility login without Firestore status = %d, want %d", got, http.StatusServiceUnavailable)
+	}
+	badHost := httptest.NewRequest(http.MethodPost, "http://example.test/api/v1/auth/login", strings.NewReader(`{}`))
+	badHostRecorder := httptest.NewRecorder()
+	router.ServeHTTP(badHostRecorder, badHost)
+	if badHostRecorder.Code != http.StatusBadRequest {
+		t.Fatalf("local compatibility auth accepted Host %q: status=%d, want 400", badHost.Host, badHostRecorder.Code)
 	}
 	if got := request("/api/v1/auth/register", `{}`).Code; got != http.StatusServiceUnavailable {
 		t.Fatalf("local compatibility register status = %d, want %d", got, http.StatusServiceUnavailable)
 	}
-	if got := request("/api/v1/auth/refresh", "").Code; got != http.StatusUnauthorized {
-		t.Fatalf("local compatibility refresh status = %d, want %d", got, http.StatusUnauthorized)
+	if got := request("/api/v1/auth/refresh", "").Code; got != http.StatusServiceUnavailable {
+		t.Fatalf("local compatibility refresh without Firestore status = %d, want %d", got, http.StatusServiceUnavailable)
 	}
 	if got := request("/api/v1/auth/logout", "").Code; got != http.StatusOK {
 		t.Fatalf("local compatibility logout status = %d, want %d", got, http.StatusOK)
 	}
-	if got := request("/api/v1/auth/login", `{}`).Code; got != http.StatusBadRequest {
-		t.Fatalf("small malformed local compatibility login status = %d, want %d", got, http.StatusBadRequest)
+	if got := request("/api/v1/auth/login", `{}`).Code; got != http.StatusServiceUnavailable {
+		t.Fatalf("local compatibility login without Firestore status = %d, want %d", got, http.StatusServiceUnavailable)
 	}
 	if got := request("/api/v1/auth/login", `{"email":"demo@llm-wiki.dev","password":"`+strings.Repeat("x", 64<<10)+`"}`).Code; got != http.StatusRequestEntityTooLarge {
 		t.Fatalf("oversized local compatibility login status = %d, want %d", got, http.StatusRequestEntityTooLarge)
-	}
-
-	for i := 0; i < 11; i++ {
-		req := httptest.NewRequest(http.MethodPost, "/api/v1/auth/login", bytes.NewBufferString(`{}`))
-		req.Header.Set("Content-Type", "application/json")
-		req.Header.Set("CF-Connecting-IP", "203.0.113.258")
-		rec := httptest.NewRecorder()
-		router.ServeHTTP(rec, req)
-		if i == 10 && rec.Code != http.StatusTooManyRequests {
-			t.Fatalf("local compatibility login request %d status = %d, want %d", i+1, rec.Code, http.StatusTooManyRequests)
-		}
 	}
 
 	unavailable := newProductionRouter(
@@ -131,13 +126,20 @@ func TestTrialDemoRestrictionCoversProfileAndExportForExactUserIDs(t *testing.T)
 	gin.SetMode(gin.TestMode)
 	h := handlerv1.New(nil, nil, nil, nil, nil, nil)
 	h.SetPipelineQuotaConfig(2, 3600, 1, []string{"trial-user"})
+	h.SetAccountLookup(func(_ context.Context, _ string) (*auth.UserRecord, error) {
+		return &auth.UserRecord{Role: "member"}, nil
+	})
 	router := newProductionRouter(
-		config.Config{DevJWT: true}, true, nil, nil, h,
+		config.Config{JWTSecret: "test-secret"}, true, nil, nil, h,
 		&syssettings.FakeStore{Enabled: true}, nil,
 	)
 	request := func(userID, method, path string) *httptest.ResponseRecorder {
 		req := httptest.NewRequest(method, path, nil)
-		req.Header.Set("X-User-ID", userID)
+		token, err := auth.GenerateAccessToken(userID, "member", "test-secret")
+		if err != nil {
+			t.Fatal(err)
+		}
+		req.Header.Set("Authorization", "Bearer "+token)
 		req.Header.Set("X-Project-ID", "project-a")
 		recorder := httptest.NewRecorder()
 		router.ServeHTTP(recorder, req)

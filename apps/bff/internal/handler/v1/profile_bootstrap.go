@@ -37,7 +37,7 @@ type profileBootstrapGuidanceResponse struct {
 //	@Failure		401	{object}	handler.ErrorResponse
 //	@Failure		404	{object}	handler.ErrorResponse
 //	@Failure		500	{object}	handler.ErrorResponse
-//	@Security		DevUserAuth
+//	@Security		BearerAuth
 //	@Security		ProjectHeader
 //	@Router			/api/v1/projects/{pid}/profile/bootstrap-guidance [get]
 func (h *Handler) GetProfileBootstrapGuidance(c *gin.Context) {
@@ -73,7 +73,7 @@ func (h *Handler) GetProfileBootstrapGuidance(c *gin.Context) {
 //	@Failure		400,401,404,500	{object}	handler.ErrorResponse
 //	@Failure		409					{object}	profileConflictResponse
 //	@Failure		428					{object}	handler.ErrorResponse
-//	@Security		DevUserAuth
+//	@Security		BearerAuth
 //	@Security		ProjectHeader
 //	@Router			/api/v1/projects/{pid}/profile/bootstrap-guidance/{revision}/confirm [post]
 func (h *Handler) ConfirmProfileBootstrapGuidance(c *gin.Context) {

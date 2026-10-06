@@ -25,7 +25,7 @@ func TestPublicConfig_NoAuth(t *testing.T) {
 
 	store := &FakeStore{Enabled: false}
 	router := gin.New()
-	router.GET("/api/v1/public/config", PublicConfigHandler(store))
+	router.GET("/api/v1/public/config", PublicConfigHandler(store, false))
 
 	rec := httptest.NewRecorder()
 	req := httptest.NewRequest(http.MethodGet, "/api/v1/public/config", nil)
@@ -51,7 +51,7 @@ func TestPublicConfigAnnounceDigest_EmptyAndAsciiAndMultibyte(t *testing.T) {
 			gin.SetMode(gin.TestMode)
 			store := &FakeStore{Enabled: false, Published: markdown}
 			router := gin.New()
-			router.GET("/api/v1/public/config", PublicConfigHandler(store))
+			router.GET("/api/v1/public/config", PublicConfigHandler(store, false))
 
 			rec := httptest.NewRecorder()
 			router.ServeHTTP(rec, httptest.NewRequest(http.MethodGet, "/api/v1/public/config", nil))
@@ -76,7 +76,7 @@ func TestPublicConfigAnnouncementDigestStableAcrossRepeatedReads(t *testing.T) {
 	markdown := "same content"
 	store := &FakeStore{Enabled: false, Published: markdown}
 	router := gin.New()
-	router.GET("/api/v1/public/config", PublicConfigHandler(store))
+	router.GET("/api/v1/public/config", PublicConfigHandler(store, false))
 
 	rec1 := httptest.NewRecorder()
 	router.ServeHTTP(rec1, httptest.NewRequest(http.MethodGet, "/api/v1/public/config", nil))
@@ -97,7 +97,7 @@ func TestPublicConfigAnnouncementDigestChangesOnWhitespace(t *testing.T) {
 	gin.SetMode(gin.TestMode)
 	store := &FakeStore{Enabled: false, Published: "line\n"}
 	router := gin.New()
-	router.GET("/api/v1/public/config", PublicConfigHandler(store))
+	router.GET("/api/v1/public/config", PublicConfigHandler(store, false))
 
 	rec1 := httptest.NewRecorder()
 	router.ServeHTTP(rec1, httptest.NewRequest(http.MethodGet, "/api/v1/public/config", nil))
@@ -195,7 +195,7 @@ func TestAnnouncementPublishReplacesPublishedContent(t *testing.T) {
 
 	store := &FakeStore{Enabled: true, Published: "old"}
 	router := gin.New()
-	router.GET("/api/v1/public/config", PublicConfigHandler(store))
+	router.GET("/api/v1/public/config", PublicConfigHandler(store, false))
 	admin := router.Group("/api/v1/admin")
 	admin.Use(auth.JWTAuth(config.Config{JWTSecret: "test-secret"}), auth.AdminOnly())
 	admin.GET("/settings", AdminGetSettingsHandler(store))
@@ -285,7 +285,7 @@ func TestAnnouncementPublishAcceptsMarkdownDirectly(t *testing.T) {
 	gin.SetMode(gin.TestMode)
 	store := &FakeStore{Enabled: true, Published: "old"}
 	router := gin.New()
-	router.GET("/api/v1/public/config", PublicConfigHandler(store))
+	router.GET("/api/v1/public/config", PublicConfigHandler(store, false))
 	admin := router.Group("/api/v1/admin")
 	admin.Use(auth.JWTAuth(config.Config{JWTSecret: "test-secret"}), auth.AdminOnly())
 	admin.POST("/settings/announcement/publish", AdminPublishAnnouncementHandler(store))
@@ -327,7 +327,7 @@ func TestAnnouncementPublishFailurePreservesPreviouslyPublishedMarkdownAndDigest
 	store := &FakeStore{Enabled: true, Published: "old"}
 	store.PublishErr = assert.AnError
 	router := gin.New()
-	router.GET("/api/v1/public/config", PublicConfigHandler(store))
+	router.GET("/api/v1/public/config", PublicConfigHandler(store, false))
 	admin := router.Group("/api/v1/admin")
 	admin.Use(auth.JWTAuth(config.Config{JWTSecret: "test-secret"}), auth.AdminOnly())
 	admin.POST("/settings/announcement/publish", AdminPublishAnnouncementHandler(store))

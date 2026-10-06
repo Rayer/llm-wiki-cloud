@@ -27,6 +27,7 @@ import (
 	cloudstorage "cloud.google.com/go/storage"
 	"github.com/rayer/llm-wiki-bff/internal/annotation"
 	"github.com/rayer/llm-wiki-bff/internal/generation"
+	"github.com/rayer/llm-wiki-bff/internal/localcloud"
 	"github.com/rayer/llm-wiki-bff/internal/sourcestatus"
 	"github.com/rayer/llm-wiki-bff/internal/storage"
 	"github.com/rayer/llm-wiki-bff/internal/wikiindex"
@@ -204,15 +205,30 @@ func (s *cloudObjectStore) Read(ctx context.Context, name string, objectGenerati
 	if err := s.ensure(ctx); err != nil {
 		return nil, objectAttrs{}, err
 	}
+	if limit < 0 {
+		return nil, objectAttrs{}, errors.New("object exceeds input limit")
+	}
 	o := s.bucket.Object(name)
 	if objectGeneration > 0 {
 		o = o.Generation(objectGeneration)
 	}
+	attrs, err := o.Attrs(ctx)
+	if err != nil {
+		return nil, objectAttrs{}, normalizeObjectPrecondition(err)
+	}
+	if attrs.Size < 0 || attrs.Size > limit {
+		return nil, objectAttrs{}, errors.New("object exceeds input limit")
+	}
+	o = o.Generation(attrs.Generation)
 	r, err := o.NewReader(ctx)
 	if err != nil {
 		return nil, objectAttrs{}, normalizeObjectPrecondition(err)
 	}
-	if limit < 0 || r.Attrs.Size < 0 || r.Attrs.Size > limit {
+	if r.Attrs.Generation != attrs.Generation || r.Attrs.Size != attrs.Size {
+		_ = r.Close()
+		return nil, objectAttrs{}, errors.New("object changed while reading")
+	}
+	if r.Attrs.Size < 0 || r.Attrs.Size > limit {
 		_ = r.Close()
 		return nil, objectAttrs{}, errors.New("object exceeds input limit")
 	}
@@ -227,8 +243,7 @@ func (s *cloudObjectStore) Read(ctx context.Context, name string, objectGenerati
 	if int64(len(b)) != r.Attrs.Size || int64(len(b)) > limit {
 		return nil, objectAttrs{}, errors.New("object exceeds input limit")
 	}
-	a := r.Attrs
-	return b, objectAttrs{Name: name, Generation: a.Generation, Size: a.Size}, nil
+	return b, objectAttrs{Name: name, Generation: attrs.Generation, Size: attrs.Size, Metadata: attrs.Metadata}, nil
 }
 func (s *cloudObjectStore) List(ctx context.Context, prefix string, max int) ([]objectAttrs, error) {
 	if err := s.ensure(ctx); err != nil {
@@ -327,7 +342,7 @@ func runCloudSuggestedQueries(ctx context.Context, cfg workerConfig, objects obj
 		return annotateError(errCloudWorkerInputInvalid, err)
 	}
 	defer objects.Close()
-	prefix := fmt.Sprintf("users/%s/projects/%s/", cfg.UserID, cfg.ProjectID)
+	prefix := workerProjectObjectPrefix(cfg)
 	lease, err := acquireCloudLease(ctx, objects, prefix, cfg.ExecutionID)
 	if err != nil {
 		return annotateError(errCloudLeaseUnavailable, err)
@@ -389,7 +404,8 @@ func runCloudSuggestedQueries(ctx context.Context, cfg workerConfig, objects obj
 		return primary
 	}
 
-	if _, _, err := publishCloudGenerationFromStart(ctx, objects, prefix, workspace, snapshots, manifestData, manifestAttrs, true, true); err != nil {
+	publishedManifest, publishedGeneration, err := publishCloudGenerationFromStart(ctx, objects, prefix, workspace, snapshots, manifestData, manifestAttrs, true, true, localExecutionIDFor(cfg))
+	if err != nil {
 		if errors.Is(err, errManifestCommitOutcomeUnknown) {
 			if recordErr := recordCloudAmbiguousManifestFailure(ctx, objects, prefix, workspace, cfg); recordErr != nil {
 				return errors.Join(errManifestCommitOutcomeUnknown, recordErr)
@@ -408,6 +424,9 @@ func runCloudSuggestedQueries(ctx context.Context, cfg workerConfig, objects obj
 		return primary
 	}
 	committed = true
+	if err := writeLocalPublicationReceipt(ctx, objects, prefix, cfg, publishedManifest, publishedGeneration); err != nil {
+		return annotateError(errCloudCommittedReceipt, err)
+	}
 	if err := writeCloudReceipts(ctx, objects, prefix, workspace, cfg, snapshots); err != nil {
 		failure := preserveWorkerFailure(err, failureStageReceiptRecording, failureClassRecordingFailure)
 		if recordErr := writeCloudFailureLogAndDiagnostic(ctx, objects, prefix, workspace, cfg, failure); recordErr != nil {
@@ -427,15 +446,20 @@ func runCloudWorkerBatch(ctx context.Context, cfg workerConfig, commands [][]str
 		return errCloudWorkerConfigInvalid
 	}
 	defer objects.Close()
-	deployedConfig, runTimeoutSeconds, err := readDeployedPipelineConfig(ctx, objects)
+	deployedConfig, localAPIKey, runTimeoutSeconds, err := readCloudPipelineInputs(ctx, cfg, objects)
 	if err != nil {
 		return annotateError(errCloudWorkerConfigInvalid, err)
 	}
+	if len(localAPIKey) > 0 {
+		cfg.APIKey = string(localAPIKey)
+		cfg.apiKeySet = true
+	}
+	clear(localAPIKey)
 	cfg.DeployedSynto = append([]byte(nil), deployedConfig...)
 	runCtx, cancelRun := context.WithTimeout(ctx, time.Duration(runTimeoutSeconds)*time.Second)
 	defer cancelRun()
 	ctx = runCtx
-	prefix := fmt.Sprintf("users/%s/projects/%s/", cfg.UserID, cfg.ProjectID)
+	prefix := workerProjectObjectPrefix(cfg)
 	lease, err := acquireCloudLease(ctx, objects, prefix, cfg.ExecutionID)
 	if err != nil {
 		return annotateError(errCloudLeaseUnavailable, err)
@@ -579,7 +603,7 @@ func runCloudWorkerBatch(ctx context.Context, cfg workerConfig, commands [][]str
 		}
 		return primary
 	}
-	publishedManifest, publishedGeneration, err := publishCloudGenerationFromStart(ctx, objects, prefix, workspace, snapshots, manifestData, manifestAttrs, manifestAttrs.Generation > 0, false)
+	publishedManifest, publishedGeneration, err := publishCloudGenerationFromStart(ctx, objects, prefix, workspace, snapshots, manifestData, manifestAttrs, manifestAttrs.Generation > 0, false, localExecutionIDFor(cfg))
 	if err != nil {
 		if errors.Is(err, errManifestCommitOutcomeUnknown) {
 			if recordErr := recordCloudAmbiguousManifestFailure(ctx, objects, prefix, workspace, cfg); recordErr != nil {
@@ -599,6 +623,9 @@ func runCloudWorkerBatch(ctx context.Context, cfg workerConfig, commands [][]str
 		return primary
 	}
 	committed = true
+	if err := writeLocalPublicationReceipt(ctx, objects, prefix, cfg, publishedManifest, publishedGeneration); err != nil {
+		return annotateError(errCloudCommittedReceipt, err)
+	}
 	if err := writeCloudReceipts(ctx, objects, prefix, workspace, cfg, snapshots); err != nil {
 		failure := preserveWorkerFailure(err, failureStageReceiptRecording, failureClassRecordingFailure)
 		if recordErr := writeCloudFailureLogAndDiagnostic(ctx, objects, prefix, workspace, cfg, failure); recordErr != nil {
@@ -930,16 +957,16 @@ func publishCloudGeneration(ctx context.Context, objects objectStore, prefix, wo
 	if oldErr != nil && !isObjectNotFound(oldErr) {
 		return generation.Manifest{}, 0, oldErr
 	}
-	return publishCloudGenerationWithFiles(ctx, objects, prefix, workspace, snapshots, files, oldData, oldAttrs, oldErr == nil, false)
+	return publishCloudGenerationWithFiles(ctx, objects, prefix, workspace, snapshots, files, oldData, oldAttrs, oldErr == nil, false, "")
 }
-func publishCloudGenerationFromStart(ctx context.Context, objects objectStore, prefix, workspace string, snapshots []sourceSnapshot, oldData []byte, oldAttrs objectAttrs, oldExists, preservePreviousSourceSnapshot bool) (generation.Manifest, int64, error) {
+func publishCloudGenerationFromStart(ctx context.Context, objects objectStore, prefix, workspace string, snapshots []sourceSnapshot, oldData []byte, oldAttrs objectAttrs, oldExists, preservePreviousSourceSnapshot bool, localExecutionID string) (generation.Manifest, int64, error) {
 	files, err := preflightGenerationOutputs(workspace)
 	if err != nil {
 		return generation.Manifest{}, 0, fmt.Errorf("generation output validation failed: %w", err)
 	}
-	return publishCloudGenerationWithFiles(ctx, objects, prefix, workspace, snapshots, files, oldData, oldAttrs, oldExists, preservePreviousSourceSnapshot)
+	return publishCloudGenerationWithFiles(ctx, objects, prefix, workspace, snapshots, files, oldData, oldAttrs, oldExists, preservePreviousSourceSnapshot, localExecutionID)
 }
-func publishCloudGenerationWithFiles(ctx context.Context, objects objectStore, prefix, workspace string, snapshots []sourceSnapshot, files []generationOutput, oldData []byte, oldAttrs objectAttrs, oldExists, preservePreviousSourceSnapshot bool) (generation.Manifest, int64, error) {
+func publishCloudGenerationWithFiles(ctx context.Context, objects objectStore, prefix, workspace string, snapshots []sourceSnapshot, files []generationOutput, oldData []byte, oldAttrs objectAttrs, oldExists, preservePreviousSourceSnapshot bool, localExecutionID string) (generation.Manifest, int64, error) {
 	var old generation.Manifest
 	if oldExists {
 		var err error
@@ -952,7 +979,7 @@ func publishCloudGenerationWithFiles(ctx context.Context, objects objectStore, p
 	if err != nil {
 		return generation.Manifest{}, 0, err
 	}
-	m := generation.Manifest{Version: generation.Version, GenerationID: id, CreatedAt: time.Now().UTC().Format(time.RFC3339), InputFingerprint: snapshotFingerprint(snapshots)}
+	m := generation.Manifest{Version: generation.Version, GenerationID: id, LocalExecutionID: localExecutionID, CreatedAt: time.Now().UTC().Format(time.RFC3339), InputFingerprint: snapshotFingerprint(snapshots)}
 	if old.GenerationID != "" {
 		m.PreviousGenerationID = old.GenerationID
 	}
@@ -1534,6 +1561,33 @@ func writeCloudReceipts(ctx context.Context, objects objectStore, prefix, worksp
 		warnCloudFailurePipelineLog(cfg, newWorkerFailure(ctx, failureStageReceiptRecording, failureClassRecordingFailure, "", err), nil)
 	}
 	return mergeCloudSuccess(ctx, objects, prefix, snapshots)
+}
+
+func writeLocalPublicationReceipt(ctx context.Context, objects objectStore, prefix string, cfg workerConfig, manifest generation.Manifest, manifestGeneration int64) error {
+	if cfg.LocalCloudScope == "" {
+		return nil
+	}
+	receipt := localcloud.PublicationReceipt{
+		ExecutionID: cfg.ExecutionID, GenerationID: manifest.GenerationID,
+		ManifestGeneration: manifestGeneration,
+	}
+	data, err := localcloud.EncodePublicationReceipt(receipt)
+	if err != nil {
+		return err
+	}
+	relPath, err := localcloud.PublicationReceiptPath(cfg.ExecutionID)
+	if err != nil {
+		return err
+	}
+	_, err = objects.Write(ctx, prefix+relPath, data, map[string]string{"execution_id": cfg.ExecutionID, "generation_id": manifest.GenerationID}, objectConditions{DoesNotExist: true})
+	return err
+}
+
+func localExecutionIDFor(cfg workerConfig) string {
+	if strings.TrimSpace(cfg.LocalCloudScope) == "" {
+		return ""
+	}
+	return cfg.ExecutionID
 }
 func writeCloudFailureReceipts(ctx context.Context, objects objectStore, prefix, workspace string, cfg workerConfig, snapshots []sourceSnapshot, failure error, secrets ...[]string) error {
 	recordingCtx, cancel := cloudFailureRecordingContext(ctx)

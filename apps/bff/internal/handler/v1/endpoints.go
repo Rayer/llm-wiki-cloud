@@ -6,6 +6,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	scopedfirestore "github.com/rayer/llm-wiki-bff/internal/firestore"
 	"io"
 	"log"
 	"net/http"
@@ -45,7 +46,7 @@ var (
 	errIndexNotFound                 = errors.New("index not found")
 	errFirestoreNotConfigured        = errors.New("Firestore client is not configured")
 	errInvalidAdminProjectRecord     = errors.New("invalid admin project record")
-	errPipelineExecutionNotFound     = errors.New("pipeline execution not found")
+	errPipelineExecutionNotFound     = handler.ErrPipelineExecutionNotFound
 	errWikiStorageNotConfigured      = errors.New("wiki storage is not configured")
 	errAdminDeleteStorageUnsupported = errors.New("admin delete storage capability is unavailable")
 )
@@ -64,7 +65,7 @@ const (
 //	@Tags			health
 //	@Produce		json
 //	@Success		200		{object}	handler.HealthResponse
-//	@Security		DevUserAuth
+//	@Security		BearerAuth
 //	@Security		ProjectHeader
 //	@Router			/api/v1/health [get]
 func (h *Handler) Health(c *gin.Context) {
@@ -80,7 +81,7 @@ func (h *Handler) Health(c *gin.Context) {
 //	@Success		200	{object}	map[string]any
 //	@Failure		404	{object}	handler.ErrorResponse
 //	@Failure		500	{object}	handler.ErrorResponse
-//	@Security		DevUserAuth
+//	@Security		BearerAuth
 //	@Security		ProjectHeader
 //	@Router			/api/v1/index [get]
 func (h *Handler) Index(c *gin.Context) {
@@ -127,7 +128,7 @@ func readIndexJSON(ctx context.Context, reader indexReader) ([]byte, error) {
 //	@Success		200	{array}		handler.ProjectResponse
 //	@Failure		401	{object}	handler.ErrorResponse
 //	@Failure		500	{object}	handler.ErrorResponse
-//	@Security		DevUserAuth
+//	@Security		BearerAuth
 //	@Router			/api/v1/projects [get]
 func (h *Handler) ListProjects(c *gin.Context) {
 	userID := c.GetString("userID")
@@ -169,7 +170,7 @@ func (h *Handler) ListProjects(c *gin.Context) {
 		// If still using project ID, try Firestore for the actual name
 		if name == project.ID && h.firestore != nil && h.firestore.Raw() != nil {
 			docID := userID + "_" + project.ID
-			if doc, err := h.firestore.Raw().Collection("projects").Doc(docID).Get(c.Request.Context()); err == nil {
+			if doc, err := scopedfirestore.Collection(h.firestore.Raw(), "projects").Doc(docID).Get(c.Request.Context()); err == nil {
 				if fsName, ok := doc.Data()["name"].(string); ok && strings.TrimSpace(fsName) != "" {
 					name = fsName
 				}
@@ -201,7 +202,6 @@ func (h *Handler) ListProjects(c *gin.Context) {
 //	@Failure		413	{object}	handler.ErrorResponse
 //	@Failure		500	{object}	handler.ErrorResponse
 //	@Security		BearerAuth
-//	@Security		DevUserAuth
 //	@Router			/api/v1/projects/{projectID} [patch]
 func (h *Handler) RenameProject(c *gin.Context) {
 	userID := strings.TrimSpace(c.GetString("userID"))
@@ -274,7 +274,7 @@ func (h *Handler) renameOwnedProject(ctx context.Context, userID, projectID, nam
 }
 
 func (h *Handler) listFirestoreProjects(ctx context.Context, userID string) ([]handler.ProjectResponse, error) {
-	iter := h.firestore.Raw().Collection("projects").Documents(ctx)
+	iter := scopedfirestore.Collection(h.firestore.Raw(), "projects").Documents(ctx)
 	defer iter.Stop()
 
 	resp := make([]handler.ProjectResponse, 0)
@@ -378,7 +378,7 @@ func projectTitleFromIndex(data []byte) string {
 //	@Produce		json
 //	@Success		200	{object}	handler.ReadyResponse
 //	@Failure		503	{object}	handler.ReadyResponse
-//	@Security		DevUserAuth
+//	@Security		BearerAuth
 //	@Security		ProjectHeader
 //	@Router			/api/v1/ready [get]
 func (h *Handler) Ready(c *gin.Context) {
@@ -425,7 +425,7 @@ func (h *Handler) Ready(c *gin.Context) {
 //	@Success		200		{object}	handler.QueryResponse
 //	@Failure		400		{object}	handler.ErrorResponse
 //	@Failure		500		{object}	handler.ErrorResponse
-//	@Security		DevUserAuth
+//	@Security		BearerAuth
 //	@Security		ProjectHeader
 //	@Router			/api/v1/query [post]
 func (h *Handler) Query(c *gin.Context) {
@@ -510,7 +510,7 @@ func (h *Handler) QueryConfig(c *gin.Context) {
 //	@Produce		json
 //	@Success		200		{object}	handler.SourcesListResponse
 //	@Failure		500		{object}	handler.ErrorResponse
-//	@Security		DevUserAuth
+//	@Security		BearerAuth
 //	@Security		ProjectHeader
 //	@Router			/api/v1/sources [get]
 func (h *Handler) ListSources(c *gin.Context) {
@@ -706,7 +706,7 @@ func mergeWikiPageIDs(pages []gcs.WikiPage, entries map[string]string) {
 //	@Success		200		{object}	handler.SourceDetailResponse
 //	@Failure		404		{object}	handler.ErrorResponse
 //	@Failure		500		{object}	handler.ErrorResponse
-//	@Security		DevUserAuth
+//	@Security		BearerAuth
 //	@Security		ProjectHeader
 //	@Router			/api/v1/sources/{slug} [get]
 func (h *Handler) GetSource(c *gin.Context) {
@@ -754,7 +754,7 @@ func (h *Handler) GetSource(c *gin.Context) {
 //	@Success		200				{object}	handler.ConceptsListResponse
 //	@Failure		400				{object}	handler.ErrorResponse
 //	@Failure		500				{object}	handler.ErrorResponse
-//	@Security		DevUserAuth
+//	@Security		BearerAuth
 //	@Security		ProjectHeader
 //	@Router			/api/v1/concepts [get]
 func (h *Handler) ListConcepts(c *gin.Context) {
@@ -798,7 +798,7 @@ func (h *Handler) ListConcepts(c *gin.Context) {
 //	@Success		200		{object}	handler.ConceptDetailResponse
 //	@Failure		404		{object}	handler.ErrorResponse
 //	@Failure		500		{object}	handler.ErrorResponse
-//	@Security		DevUserAuth
+//	@Security		BearerAuth
 //	@Security		ProjectHeader
 //	@Router			/api/v1/concepts/{slug} [get]
 func (h *Handler) GetConcept(c *gin.Context) {
@@ -857,7 +857,7 @@ func (h *Handler) GetConcept(c *gin.Context) {
 //	@Param			body	body		handler.ImportRequest	true	"URLs to import"
 //	@Success		200		{object}	handler.ImportResponse
 //	@Failure		400		{object}	handler.ErrorResponse
-//	@Security		DevUserAuth
+//	@Security		BearerAuth
 //	@Security		ProjectHeader
 //	@Router			/api/v1/import [post]
 func (h *Handler) Import(c *gin.Context) {
@@ -974,6 +974,9 @@ func (h *Handler) invokePipelineJobStage(ctx context.Context, userID, projectID 
 	}
 	if cleanRebuild && stage != pipelineStageFull {
 		return "", fmt.Errorf("clean_rebuild is only valid for full pipeline stage")
+	}
+	if h.localPipeline != nil {
+		return h.localPipeline.Start(ctx, userID, projectID, stage, cleanRebuild)
 	}
 
 	token, err := h.getMetadataAccessToken(ctx)
@@ -1129,7 +1132,7 @@ type cloudRunCondition struct {
 //	@Failure		400				{object}	handler.ErrorResponse
 //	@Failure		401				{object}	handler.ErrorResponse
 //	@Failure		500				{object}	handler.ErrorResponse
-//	@Security		DevUserAuth
+//	@Security		BearerAuth
 //	@Security		ProjectHeader
 //	@Router			/api/v1/pipeline/status [get]
 func (h *Handler) PipelineStatus(c *gin.Context) {
@@ -1184,15 +1187,8 @@ func (h *Handler) PipelineStatus(c *gin.Context) {
 
 // RebuildIndex handles POST /api/v1/pipeline/rebuild-index.
 func (h *Handler) RebuildIndex(c *gin.Context) {
-	// Header first — this route is outside JWTAuth, defaultRequestScope may set global values
-	userID := strings.TrimSpace(c.GetHeader("X-User-ID"))
-	if userID == "" {
-		userID = strings.TrimSpace(c.GetString("userID"))
-	}
-	projectID := strings.TrimSpace(c.GetHeader("X-Project-ID"))
-	if projectID == "" {
-		projectID = strings.TrimSpace(c.GetString("projectID"))
-	}
+	userID := strings.TrimSpace(c.GetString("userID"))
+	projectID := strings.TrimSpace(c.GetString("projectID"))
 	if userID == "" {
 		c.JSON(http.StatusUnauthorized, handler.ErrorResponse{Error: "user not authenticated"})
 		return
@@ -1414,6 +1410,9 @@ type pipelineExecutionOwner struct {
 }
 
 func (h *Handler) pipelineExecutionStatusWithOwner(ctx context.Context, executionID string, owner *pipelineExecutionOwner) (*handler.PipelineExecutionResponse, error) {
+	if h.localPipeline != nil && owner != nil {
+		return h.localPipeline.Status(ctx, owner.userID, owner.projectID, executionID)
+	}
 	token, err := h.getMetadataAccessToken(ctx)
 	if err != nil {
 		return nil, err
@@ -1715,7 +1714,7 @@ func pipelineLogURLForExecution(execution cloudRunExecution) string {
 //	@Failure		401				{object}	handler.ErrorResponse
 //	@Failure		404				{object}	handler.ErrorResponse
 //	@Failure		500				{object}	handler.ErrorResponse
-//	@Security		DevUserAuth
+//	@Security		BearerAuth
 //	@Security		ProjectHeader
 //	@Router			/api/v1/pipeline/log [get]
 func (h *Handler) PipelineLog(c *gin.Context) {
@@ -1860,7 +1859,7 @@ func executionDuration(startTime, endTime string) string {
 //	@Produce		json
 //	@Success		200		{object}	handler.StatusResponse
 //	@Failure		500		{object}	handler.ErrorResponse
-//	@Security		DevUserAuth
+//	@Security		BearerAuth
 //	@Security		ProjectHeader
 //	@Router			/api/v1/status [get]
 func (h *Handler) Status(c *gin.Context) {
@@ -1991,7 +1990,7 @@ func (h *Handler) verifyAdminProjectExists(ctx context.Context, docID string) er
 	if h.firestore == nil || h.firestore.Raw() == nil {
 		return errFirestoreNotConfigured
 	}
-	_, err := h.firestore.Raw().Collection("projects").Doc(docID).Get(ctx)
+	_, err := scopedfirestore.Collection(h.firestore.Raw(), "projects").Doc(docID).Get(ctx)
 	return err
 }
 
@@ -2009,7 +2008,7 @@ func (h *Handler) resolveAdminProjectRecord(ctx context.Context, docID string) (
 	if h.firestore == nil || h.firestore.Raw() == nil {
 		return adminProjectRecord{}, errFirestoreNotConfigured
 	}
-	doc, err := h.firestore.Raw().Collection("projects").Doc(docID).Get(ctx)
+	doc, err := scopedfirestore.Collection(h.firestore.Raw(), "projects").Doc(docID).Get(ctx)
 	if err != nil {
 		return adminProjectRecord{}, err
 	}
@@ -2244,7 +2243,7 @@ func (h *Handler) listAdminProjectRecords(ctx context.Context) ([]adminProjectRe
 		return nil, errFirestoreNotConfigured
 	}
 
-	iter := h.firestore.Raw().Collection("projects").Documents(ctx)
+	iter := scopedfirestore.Collection(h.firestore.Raw(), "projects").Documents(ctx)
 	defer iter.Stop()
 
 	projects := make([]adminProjectRecord, 0)
@@ -2327,7 +2326,7 @@ func (h *Handler) AdminProjects(c *gin.Context) {
 		if fs == nil {
 			break
 		}
-		userDoc, err := fs.Collection("users").Doc(uid).Get(ctx)
+		userDoc, err := scopedfirestore.Collection(fs, "users").Doc(uid).Get(ctx)
 		if err != nil {
 			continue // user might be deleted
 		}
@@ -2387,7 +2386,7 @@ type firestoreAdminDeleteBackend struct {
 }
 
 func (b firestoreAdminDeleteBackend) getUser(ctx context.Context, userID string) (adminDeleteDocument, error) {
-	snap, err := b.fs.Collection("users").Doc(userID).Get(ctx)
+	snap, err := scopedfirestore.Collection(b.fs, "users").Doc(userID).Get(ctx)
 	if err != nil {
 		return adminDeleteDocument{}, err
 	}
@@ -2395,7 +2394,7 @@ func (b firestoreAdminDeleteBackend) getUser(ctx context.Context, userID string)
 }
 
 func (b firestoreAdminDeleteBackend) getProject(ctx context.Context, docID string) (adminDeleteDocument, error) {
-	snap, err := b.fs.Collection("projects").Doc(docID).Get(ctx)
+	snap, err := scopedfirestore.Collection(b.fs, "projects").Doc(docID).Get(ctx)
 	if err != nil {
 		return adminDeleteDocument{}, err
 	}
@@ -2403,7 +2402,7 @@ func (b firestoreAdminDeleteBackend) getProject(ctx context.Context, docID strin
 }
 
 func (b firestoreAdminDeleteBackend) listProjects(ctx context.Context) ([]adminDeleteDocument, error) {
-	iter := b.fs.Collection("projects").Documents(ctx)
+	iter := scopedfirestore.Collection(b.fs, "projects").Documents(ctx)
 	defer iter.Stop()
 
 	documents := make([]adminDeleteDocument, 0)
@@ -2417,7 +2416,7 @@ func (b firestoreAdminDeleteBackend) listProjects(ctx context.Context) ([]adminD
 }
 
 func (b firestoreAdminDeleteBackend) listUserProjects(ctx context.Context, userID string) ([]adminDeleteDocument, error) {
-	iter := b.fs.Collection("users").Doc(userID).Collection("projects").Documents(ctx)
+	iter := scopedfirestore.Collection(b.fs, "users").Doc(userID).Collection("projects").Documents(ctx)
 	defer iter.Stop()
 
 	documents := make([]adminDeleteDocument, 0)
@@ -2450,23 +2449,23 @@ func validAdminDeleteUserProjectID(projectID string) bool {
 }
 
 func (b firestoreAdminDeleteBackend) deleteLock(ctx context.Context, userID, projectID string) error {
-	return deleteAdminFirestoreDoc(ctx, b.fs.Collection("locks").Doc(fmt.Sprintf("%s__%s", userID, projectID)))
+	return deleteAdminFirestoreDoc(ctx, scopedfirestore.Collection(b.fs, "locks").Doc(fmt.Sprintf("%s__%s", userID, projectID)))
 }
 
 func (b firestoreAdminDeleteBackend) deleteProject(ctx context.Context, docID string) error {
-	return deleteAdminFirestoreDoc(ctx, b.fs.Collection("projects").Doc(docID))
+	return deleteAdminFirestoreDoc(ctx, scopedfirestore.Collection(b.fs, "projects").Doc(docID))
 }
 
 func (b firestoreAdminDeleteBackend) deleteProjectMetadata(ctx context.Context, docID string) error {
-	return deleteAdminFirestoreDoc(ctx, b.fs.Collection("projects").Doc(docID))
+	return deleteAdminFirestoreDoc(ctx, scopedfirestore.Collection(b.fs, "projects").Doc(docID))
 }
 
 func (b firestoreAdminDeleteBackend) deleteUserProjectMetadata(ctx context.Context, userID, projectID string) error {
-	return deleteAdminFirestoreDoc(ctx, b.fs.Collection("users").Doc(userID).Collection("projects").Doc(projectID))
+	return deleteAdminFirestoreDoc(ctx, scopedfirestore.Collection(b.fs, "users").Doc(userID).Collection("projects").Doc(projectID))
 }
 
 func (b firestoreAdminDeleteBackend) deleteUser(ctx context.Context, userID string) error {
-	return deleteAdminFirestoreDoc(ctx, b.fs.Collection("users").Doc(userID))
+	return deleteAdminFirestoreDoc(ctx, scopedfirestore.Collection(b.fs, "users").Doc(userID))
 }
 
 func (h *Handler) adminDeleteBackendOrError() (adminDeleteBackend, error) {
@@ -2960,9 +2959,9 @@ func (h *Handler) AdminListUsers(c *gin.Context) {
 
 	var iter *firestore.DocumentIterator
 	if filterRole != "" {
-		iter = fs.Collection("users").Where("role", "==", filterRole).Documents(ctx)
+		iter = scopedfirestore.Collection(fs, "users").Where("role", "==", filterRole).Documents(ctx)
 	} else {
-		iter = fs.Collection("users").Documents(ctx)
+		iter = scopedfirestore.Collection(fs, "users").Documents(ctx)
 	}
 	defer iter.Stop()
 

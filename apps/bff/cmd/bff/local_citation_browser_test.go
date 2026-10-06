@@ -84,7 +84,7 @@ func TestLocalCitationBrowserServer(t *testing.T) {
 	h := v1.New(root, nil, search.NewIndex(), cc, nil, nil)
 	h.SetQueryExecutor(browserCitationExecutor{query.NewService(cc, nil, llm.NewClient("explicit-mock-not-a-key"))})
 	gin.SetMode(gin.ReleaseMode)
-	router := newProductionRouter(config.Config{DevJWT: true, JWTSecret: "isolated-browser-fixture", AllowedOrigins: []string{"http://localhost:18080"}}, true, nil, nil, h, &syssettings.FakeStore{Enabled: true}, nil)
+	router := newProductionRouter(config.Config{JWTSecret: "isolated-browser-fixture", AllowedOrigins: []string{"http://localhost:18080"}}, true, nil, nil, h, &syssettings.FakeStore{Enabled: true}, nil)
 	listener, err := net.Listen("tcp", addr)
 	if err != nil {
 		t.Fatal(err)

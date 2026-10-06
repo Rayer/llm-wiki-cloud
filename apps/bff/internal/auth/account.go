@@ -3,6 +3,7 @@ package auth
 import (
 	"context"
 	"errors"
+	scopedfirestore "github.com/rayer/llm-wiki-bff/internal/firestore"
 	"math"
 
 	"cloud.google.com/go/firestore"
@@ -58,7 +59,7 @@ func UpdateAccount(ctx context.Context, fs *firestore.Client, actorID, targetID 
 		return ErrAccountSelfSuspension
 	}
 	return fs.RunTransaction(ctx, func(ctx context.Context, tx *firestore.Transaction) error {
-		actorDoc, err := tx.Get(fs.Collection("users").Doc(actorID))
+		actorDoc, err := tx.Get(scopedfirestore.Collection(fs, "users").Doc(actorID))
 		if err != nil {
 			return ErrAccountAdminRequired
 		}
@@ -66,7 +67,7 @@ func UpdateAccount(ctx context.Context, fs *firestore.Client, actorID, targetID 
 		if err := actorDoc.DataTo(&actor); err != nil || !actor.Active() || actor.Role != "admin" {
 			return ErrAccountAdminRequired
 		}
-		targetRef := fs.Collection("users").Doc(targetID)
+		targetRef := scopedfirestore.Collection(fs, "users").Doc(targetID)
 		targetDoc, err := tx.Get(targetRef)
 		if err != nil {
 			return err
@@ -85,7 +86,7 @@ func UpdateAccount(ctx context.Context, fs *firestore.Client, actorID, targetID 
 		if target.Active() && target.Role == "admin" && (!next.Active() || next.Role != "admin") {
 			// ponytail: read all admin documents for atomic last-admin protection;
 			// replace with an explicit membership authority only if admin count grows large.
-			admins, err := tx.Documents(fs.Collection("users").Where("role", "==", "admin")).GetAll()
+			admins, err := tx.Documents(scopedfirestore.Collection(fs, "users").Where("role", "==", "admin")).GetAll()
 			if err != nil {
 				return err
 			}

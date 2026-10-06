@@ -814,7 +814,7 @@ const docTemplate = `{
             "get": {
                 "security": [
                     {
-                        "DevUserAuth": []
+                        "BearerAuth": []
                     },
                     {
                         "ProjectHeader": []
@@ -863,7 +863,7 @@ const docTemplate = `{
             "get": {
                 "security": [
                     {
-                        "DevUserAuth": []
+                        "BearerAuth": []
                     },
                     {
                         "ProjectHeader": []
@@ -912,7 +912,7 @@ const docTemplate = `{
             "get": {
                 "security": [
                     {
-                        "DevUserAuth": []
+                        "BearerAuth": []
                     },
                     {
                         "ProjectHeader": []
@@ -940,7 +940,7 @@ const docTemplate = `{
             "post": {
                 "security": [
                     {
-                        "DevUserAuth": []
+                        "BearerAuth": []
                     },
                     {
                         "ProjectHeader": []
@@ -988,7 +988,7 @@ const docTemplate = `{
             "get": {
                 "security": [
                     {
-                        "DevUserAuth": []
+                        "BearerAuth": []
                     },
                     {
                         "ProjectHeader": []
@@ -1060,7 +1060,7 @@ const docTemplate = `{
             "get": {
                 "security": [
                     {
-                        "DevUserAuth": []
+                        "BearerAuth": []
                     },
                     {
                         "ProjectHeader": []
@@ -1121,7 +1121,7 @@ const docTemplate = `{
             "get": {
                 "security": [
                     {
-                        "DevUserAuth": []
+                        "BearerAuth": []
                     },
                     {
                         "ProjectHeader": []
@@ -1175,7 +1175,7 @@ const docTemplate = `{
             "get": {
                 "security": [
                     {
-                        "DevUserAuth": []
+                        "BearerAuth": []
                     }
                 ],
                 "description": "Returns all projects for the authenticated user.",
@@ -1215,7 +1215,7 @@ const docTemplate = `{
             "get": {
                 "security": [
                     {
-                        "DevUserAuth": []
+                        "BearerAuth": []
                     },
                     {
                         "ProjectHeader": []
@@ -1277,7 +1277,7 @@ const docTemplate = `{
             "post": {
                 "security": [
                     {
-                        "DevUserAuth": []
+                        "BearerAuth": []
                     },
                     {
                         "ProjectHeader": []
@@ -1376,7 +1376,7 @@ const docTemplate = `{
             "get": {
                 "security": [
                     {
-                        "DevUserAuth": []
+                        "BearerAuth": []
                     },
                     {
                         "ProjectHeader": []
@@ -1451,7 +1451,7 @@ const docTemplate = `{
             "post": {
                 "security": [
                     {
-                        "DevUserAuth": []
+                        "BearerAuth": []
                     },
                     {
                         "ProjectHeader": []
@@ -1497,7 +1497,7 @@ const docTemplate = `{
             "get": {
                 "security": [
                     {
-                        "DevUserAuth": []
+                        "BearerAuth": []
                     },
                     {
                         "ProjectHeader": []
@@ -1544,9 +1544,6 @@ const docTemplate = `{
                 "security": [
                     {
                         "BearerAuth": []
-                    },
-                    {
-                        "DevUserAuth": []
                     }
                 ],
                 "description": "Updates only the display name of a project owned by the authenticated user. The JSON body is limited to 1024 bytes; name is trimmed and must be 1-64 Unicode code points.",
@@ -2083,7 +2080,7 @@ const docTemplate = `{
         },
         "/api/v1/public/config": {
             "get": {
-                "description": "Returns method-specific new-account registration capabilities and currently published announcement Markdown.",
+                "description": "Returns registration and Demo sign-in capabilities plus the currently published announcement Markdown.",
                 "produces": [
                     "application/json"
                 ],
@@ -2131,7 +2128,7 @@ const docTemplate = `{
             "post": {
                 "security": [
                     {
-                        "DevUserAuth": []
+                        "BearerAuth": []
                     },
                     {
                         "ProjectHeader": []
@@ -2249,7 +2246,7 @@ const docTemplate = `{
             "get": {
                 "security": [
                     {
-                        "DevUserAuth": []
+                        "BearerAuth": []
                     },
                     {
                         "ProjectHeader": []
@@ -2283,7 +2280,7 @@ const docTemplate = `{
             "get": {
                 "security": [
                     {
-                        "DevUserAuth": []
+                        "BearerAuth": []
                     },
                     {
                         "ProjectHeader": []
@@ -2317,7 +2314,7 @@ const docTemplate = `{
             "get": {
                 "security": [
                     {
-                        "DevUserAuth": []
+                        "BearerAuth": []
                     },
                     {
                         "ProjectHeader": []
@@ -2369,7 +2366,7 @@ const docTemplate = `{
             "put": {
                 "security": [
                     {
-                        "DevUserAuth": []
+                        "BearerAuth": []
                     },
                     {
                         "ProjectHeader": []
@@ -2453,7 +2450,7 @@ const docTemplate = `{
             "get": {
                 "security": [
                     {
-                        "DevUserAuth": []
+                        "BearerAuth": []
                     },
                     {
                         "ProjectHeader": []
@@ -2502,7 +2499,7 @@ const docTemplate = `{
             "get": {
                 "security": [
                     {
-                        "DevUserAuth": []
+                        "BearerAuth": []
                     },
                     {
                         "ProjectHeader": []
@@ -3322,6 +3319,9 @@ const docTemplate = `{
                 "announcement_markdown": {
                     "type": "string"
                 },
+                "demo_enabled": {
+                    "type": "boolean"
+                },
                 "email_registration_enabled": {
                     "type": "boolean"
                 },
@@ -3922,12 +3922,6 @@ const docTemplate = `{
             "description": "JWT Bearer token issued by the standalone Auth service. Format: \\\"Bearer \u003ctoken\u003e\\\".",
             "type": "apiKey",
             "name": "Authorization",
-            "in": "header"
-        },
-        "DevUserAuth": {
-            "description": "DEV mode user identity header. Required when dev_jwt=true.",
-            "type": "apiKey",
-            "name": "X-User-ID",
             "in": "header"
         },
         "ProjectHeader": {

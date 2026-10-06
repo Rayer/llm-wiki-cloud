@@ -6,6 +6,7 @@ import (
 	"encoding/hex"
 	"encoding/json"
 	"errors"
+	scopedfirestore "github.com/rayer/llm-wiki-bff/internal/firestore"
 	"strings"
 	"time"
 
@@ -68,6 +69,7 @@ type PasswordUserProvisioning struct {
 	CanonicalEmail string
 	PasswordHash   string
 	ProjectID      string
+	Role           string
 }
 
 // ExternalUserProvisioning contains the records required for a new
@@ -150,7 +152,7 @@ func (r *IdentityRepository) GetCanonicalEmailReservation(ctx context.Context, e
 	if err != nil {
 		return nil, err
 	}
-	snapshot, err := r.fs.Collection(EmailReservationsCollection).Doc(emailReservationDocumentID(canonical)).Get(ctx)
+	snapshot, err := scopedfirestore.Collection(r.fs, EmailReservationsCollection).Doc(emailReservationDocumentID(canonical)).Get(ctx)
 	if err != nil {
 		if status.Code(err) == codes.NotFound {
 			return nil, nil
@@ -180,7 +182,7 @@ func (r *IdentityRepository) GetPasswordUserByEmail(ctx context.Context, email s
 		return "", nil, err
 	}
 	if reservation != nil {
-		snapshot, getErr := r.fs.Collection("users").Doc(reservation.UserID).Get(ctx)
+		snapshot, getErr := scopedfirestore.Collection(r.fs, "users").Doc(reservation.UserID).Get(ctx)
 		if getErr != nil {
 			return "", nil, ErrMalformedIdentityRecord
 		}
@@ -194,7 +196,7 @@ func (r *IdentityRepository) GetPasswordUserByEmail(ctx context.Context, email s
 		return reservation.UserID, user, nil
 	}
 
-	iter := r.fs.Collection("users").Documents(ctx)
+	iter := scopedfirestore.Collection(r.fs, "users").Documents(ctx)
 	defer iter.Stop()
 	var matchID string
 	var match *UserRecord
@@ -224,6 +226,56 @@ func (r *IdentityRepository) GetPasswordUserByEmail(ctx context.Context, email s
 	return matchID, match, nil
 }
 
+// FindPasswordUserByEmail distinguishes a missing account from malformed or
+// ambiguous identity data. It is used only by create-if-missing local fixture
+// setup; callers must not turn lookup errors into account creation.
+func (r *IdentityRepository) FindPasswordUserByEmail(ctx context.Context, email string) (string, *UserRecord, bool, error) {
+	if r == nil || r.fs == nil {
+		return "", nil, false, ErrIdentityRepositoryUnavailable
+	}
+	canonical := CanonicalizeEmail(email)
+	if canonical == "" {
+		return "", nil, false, ErrInvalidIdentityInput
+	}
+	reservation, err := r.GetCanonicalEmailReservation(ctx, canonical)
+	if err != nil {
+		return "", nil, false, err
+	}
+	if reservation != nil {
+		user, err := GetUser(ctx, r.fs, reservation.UserID)
+		if err != nil || CanonicalizeEmail(user.Email) != canonical || (user.EmailCanonical != "" && user.EmailCanonical != canonical) {
+			return "", nil, false, ErrMalformedIdentityRecord
+		}
+		return reservation.UserID, user, true, nil
+	}
+
+	iter := scopedfirestore.Collection(r.fs, "users").Documents(ctx)
+	defer iter.Stop()
+	var foundID string
+	var found *UserRecord
+	for {
+		snapshot, iterErr := iter.Next()
+		if errors.Is(iterErr, iterator.Done) {
+			break
+		}
+		if iterErr != nil {
+			return "", nil, false, iterErr
+		}
+		user, decodeErr := decodeUserRecord(snapshot)
+		if decodeErr != nil {
+			return "", nil, false, ErrMalformedIdentityRecord
+		}
+		if CanonicalizeEmail(user.Email) != canonical {
+			continue
+		}
+		if found != nil {
+			return "", nil, false, ErrCanonicalEmailConflict
+		}
+		foundID, found = snapshot.Ref.ID, user
+	}
+	return foundID, found, found != nil, nil
+}
+
 // ReserveCanonicalEmail atomically claims a canonical email for userID. A
 // repeated claim by the same user is idempotent; another owner is a conflict.
 func (r *IdentityRepository) ReserveCanonicalEmail(ctx context.Context, userID, email, displayEmail string) error {
@@ -241,7 +293,7 @@ func (r *IdentityRepository) GetExternalIdentity(ctx context.Context, provider, 
 	if err != nil {
 		return nil, err
 	}
-	snapshot, err := r.fs.Collection(ExternalIdentitiesCollection).Doc(externalIdentityDocumentID(provider, issuer, subject)).Get(ctx)
+	snapshot, err := scopedfirestore.Collection(r.fs, ExternalIdentitiesCollection).Doc(externalIdentityDocumentID(provider, issuer, subject)).Get(ctx)
 	if err != nil {
 		if status.Code(err) == codes.NotFound {
 			return nil, nil
@@ -606,6 +658,7 @@ func (tx *IdentityTransaction) ProvisionPasswordUser(input PasswordUserProvision
 			Email:          input.DisplayEmail,
 			EmailCanonical: input.CanonicalEmail,
 			PasswordHash:   input.PasswordHash,
+			Role:           input.Role,
 			EmailVerified:  false,
 			ProjectCount:   0,
 			DefaultProject: input.ProjectID,
@@ -669,7 +722,7 @@ func opaqueDigest(value string) string {
 }
 
 func (tx *IdentityTransaction) txClientCollection(name string) *firestore.CollectionRef {
-	return tx.client.Collection(name)
+	return scopedfirestore.Collection(tx.client, name)
 }
 
 // rejectLegacyCanonicalCollision keeps registration fail-closed during the
@@ -794,7 +847,7 @@ func (r *IdentityRepository) AuditAndBackfill(ctx context.Context, apply bool) (
 	}
 	users := make([]auditUser, 0)
 	canonicalOwners := make(map[string]string)
-	iter := r.fs.Collection("users").Documents(ctx)
+	iter := scopedfirestore.Collection(r.fs, "users").Documents(ctx)
 	defer iter.Stop()
 	for {
 		snapshot, err := iter.Next()
@@ -832,7 +885,7 @@ func (r *IdentityRepository) AuditAndBackfill(ctx context.Context, apply bool) (
 	reservationRefs := make([]*firestore.DocumentRef, 0, len(users))
 	missing := make([]auditUser, 0)
 	for _, user := range users {
-		ref := r.fs.Collection(EmailReservationsCollection).Doc(emailReservationDocumentID(user.canonical))
+		ref := scopedfirestore.Collection(r.fs, EmailReservationsCollection).Doc(emailReservationDocumentID(user.canonical))
 		snapshot, err := ref.Get(ctx)
 		if err != nil {
 			if status.Code(err) == codes.NotFound {

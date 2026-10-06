@@ -2392,11 +2392,16 @@ func TestBucketConfigurationRejectsVaultAndMountedRoutingBeforeChild(t *testing.
 		name string
 		cfg  workerConfig
 		env  map[string]string
+		want string
 	}{
-		{"explicit vault", workerConfig{VaultPath: t.TempDir(), APIKey: "secret", ExecutionID: "exec-1", Postprocess: true}, nil},
+		{"explicit vault", workerConfig{VaultPath: t.TempDir(), APIKey: "secret", ExecutionID: "exec-1", Postprocess: true}, nil, "worker configuration is invalid"},
+		{"deployed mode rejects local rendered files", workerConfig{PipelineConfigPath: "/tmp/local/synto.toml", PipelineBindingsPath: "/tmp/local/private-bindings.json"}, map[string]string{"LOCAL_CLOUD_SCOPE": ""}, "cloud worker configuration is invalid"},
+		{"local mode requires rendered files", workerConfig{}, map[string]string{"LOCAL_CLOUD_SCOPE": "worktree-test"}, "cloud worker configuration is invalid"},
+		{"local mode requires both rendered files", workerConfig{PipelineConfigPath: "/tmp/local/synto.toml"}, map[string]string{"LOCAL_CLOUD_SCOPE": "worktree-test"}, "cloud worker configuration is invalid"},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			t.Setenv("BUCKET", "bucket")
+			t.Setenv("LOCAL_CLOUD_SCOPE", "")
 			for key, value := range tc.env {
 				t.Setenv(key, value)
 			}
@@ -2408,7 +2413,7 @@ func TestBucketConfigurationRejectsVaultAndMountedRoutingBeforeChild(t *testing.
 				return nil
 			}
 			err := runWorkerBatch(context.Background(), tc.cfg, `[["run"]]`)
-			if err == nil || err.Error() != "worker configuration is invalid" || called {
+			if err == nil || err.Error() != tc.want || called {
 				t.Fatalf("error=%v child=%v", err, called)
 			}
 		})

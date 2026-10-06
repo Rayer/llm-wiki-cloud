@@ -3,6 +3,7 @@ package syssettings
 import (
 	"context"
 	"fmt"
+	scopedfirestore "github.com/rayer/llm-wiki-bff/internal/firestore"
 	"sync"
 	"unicode/utf8"
 
@@ -30,6 +31,7 @@ type PublicSettings struct {
 	RegistrationEnabled       bool   `json:"registration_enabled"` // Master switch; method preferences are retained when off.
 	EmailRegistrationEnabled  bool   `json:"email_registration_enabled"`
 	GoogleRegistrationEnabled bool   `json:"google_registration_enabled"`
+	DemoEnabled               bool   `json:"demo_enabled"`
 	AnnouncementMarkdown      string `json:"announcement_markdown"`
 	// AnnouncementDigest is nil when announcement_markdown is empty; otherwise it is lowercase sha256:<64 lowercase hex>.
 	AnnouncementDigest *string `json:"announcement_digest" extensions:"x-nullable" example:"sha256:315f5bdb76d078c43b8ac0064e4a0164612b1fce77c869345bfc94c75894edd3"`
@@ -55,7 +57,7 @@ func NewStore(fs *firestore.Client, envValue *bool) *Store {
 }
 
 func (s *Store) settingsRef() *firestore.DocumentRef {
-	return s.fs.Collection(settingsCollection).Doc(settingsDocID)
+	return scopedfirestore.Collection(s.fs, settingsCollection).Doc(settingsDocID)
 }
 
 // IsRegistrationEnabled checks only the requested new-account method.

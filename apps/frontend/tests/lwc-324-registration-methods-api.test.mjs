@@ -38,6 +38,18 @@ test('LWC-324 missing methods inherit legacy; malformed values and request failu
  } finally { globalThis.fetch = originalFetch; clearPublicConfigCache(); }
 });
 
+test('public Demo capability requires an explicit true response', async () => {
+ const originalFetch = globalThis.fetch;
+ try {
+  for (const [payload, expected] of [[{ demo_enabled: true }, true], [{ demo_enabled: false }, false], [{}, false], [{ demo_enabled: 'true' }, false]]) {
+   globalThis.fetch = async () => Response.json(payload);
+   assert.equal((await getPublicConfig({ refresh: true })).demo_enabled, expected);
+  }
+  globalThis.fetch = async () => { throw new Error('offline'); };
+  assert.equal((await getPublicConfig({ refresh: true })).demo_enabled, false);
+ } finally { globalThis.fetch = originalFetch; clearPublicConfigCache(); }
+});
+
 test('master off masks true public preferences and stays independent of selected methods', async () => {
  const originalFetch = globalThis.fetch;
  try {

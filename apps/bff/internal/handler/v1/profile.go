@@ -7,6 +7,7 @@ import (
 	"encoding/hex"
 	"encoding/json"
 	"errors"
+	scopedfirestore "github.com/rayer/llm-wiki-bff/internal/firestore"
 	"io"
 	"net/http"
 	"reflect"
@@ -312,7 +313,7 @@ func (h *Handler) AuthorizeProject(ctx context.Context, principal, projectID str
 	if !auth.ValidPathSegment(principal) || !auth.ValidPathSegment(projectID) {
 		return AuthorizedProject{}, errProfileProjectNotFound
 	}
-	projectRef := h.firestore.Raw().Collection("projects").Doc(projectDocID(principal, projectID))
+	projectRef := scopedfirestore.Collection(h.firestore.Raw(), "projects").Doc(projectDocID(principal, projectID))
 	snapshot, err := projectRef.Get(ctx)
 	if err != nil {
 		if status.Code(err) == codes.NotFound {
@@ -327,7 +328,7 @@ func (h *Handler) AuthorizeProject(ctx context.Context, principal, projectID str
 }
 
 func (r *firestoreProfileRepository) profileRefs(userID, projectID string) (*firestore.DocumentRef, *firestore.DocumentRef) {
-	projectRef := r.client.Collection("projects").Doc(projectDocID(userID, projectID))
+	projectRef := scopedfirestore.Collection(r.client, "projects").Doc(projectDocID(userID, projectID))
 	return projectRef, projectRef.Collection("profile").Doc("state")
 }
 
@@ -736,7 +737,7 @@ func (r *firestoreProfileRepository) retryExhaustedProfileCompile(ctx context.Co
 	if !validProfileRuntimeIdentity(work) {
 		return ProfileState{}, errProfileTransitionInvalid
 	}
-	workRef := r.client.Collection(profileruntime.WorkCollection).Doc(profileruntime.WorkID(work))
+	workRef := scopedfirestore.Collection(r.client, profileruntime.WorkCollection).Doc(profileruntime.WorkID(work))
 	workSnapshot, err := tx.Get(workRef)
 	if err != nil {
 		return ProfileState{}, errProfileTransitionInvalid

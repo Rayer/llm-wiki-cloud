@@ -232,6 +232,16 @@ func runtimeConfig(t *testing.T) queryconfig.Config {
 	return sealed
 }
 
-func runtimeSynthesizer() *query.Service {
-	return query.NewService(cache.New(), nil, llm.NewClientWithOptions("test", llm.ClientOptions{Model: "deepseek-flash", Reasoning: llm.ReasoningNone}))
+type offlineSynthesizer struct{}
+
+func (offlineSynthesizer) SynthesizeWithError(_ context.Context, _ cache.Reader, _ query.Request, result query.Result) (query.Result, error) {
+	return result, nil
+}
+
+func (offlineSynthesizer) ModelIdentity() (llm.ModelIdentity, bool) {
+	return llm.ModelIdentity{Provider: queryconfig.ProviderDeepSeek, Model: "deepseek-flash", Reasoning: "none", Temperature: 0}, true
+}
+
+func runtimeSynthesizer() query.Synthesizer {
+	return offlineSynthesizer{}
 }

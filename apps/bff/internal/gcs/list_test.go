@@ -5,8 +5,10 @@ import (
 	"fmt"
 	"strings"
 	"testing"
+	"time"
 
 	"github.com/rayer/llm-wiki-bff/internal/generation"
+	"github.com/rayer/llm-wiki-bff/internal/localcloud"
 )
 
 func TestObjectRelativePathTrimsProjectPrefix(t *testing.T) {
@@ -109,6 +111,40 @@ func TestListObjectMetaEnforcesCountAndByteBounds(t *testing.T) {
 				t.Fatalf("bounded listing error = %v", err)
 			}
 		})
+	}
+}
+
+func TestListProjectsUsesScopedObjectAndCreatedAtPaths(t *testing.T) {
+	client, backend := newMemoryClient()
+	client.localScope = localcloud.Scope("scope-a")
+	created := time.Date(2024, 3, 4, 5, 6, 7, 0, time.UTC)
+	backend.put("local_scopes/scope-a/users/user/projects/a/index.md", []byte("A"), 1, nil)
+	backend.put("local_scopes/scope-a/users/user/projects/b/index.md", []byte("B"), 2, nil)
+	backend.put("local_scopes/scope-b/users/user/projects/foreign/index.md", []byte("foreign"), 3, nil)
+	backend.put("users/user/projects/unscoped/index.md", []byte("unscoped"), 4, nil)
+	backend.mu.Lock()
+	object := backend.objects["local_scopes/scope-a/users/user/projects/a/index.md"]
+	object.Created = created
+	backend.objects[object.Name] = object
+	backend.mu.Unlock()
+
+	projects, err := client.ListProjects(context.Background(), "user")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(projects) != 2 || projects[0].ID != "a" || projects[1].ID != "b" {
+		t.Fatalf("scoped projects = %#v; want only a and b", projects)
+	}
+	if projects[0].CreatedAt != created.Format(time.RFC3339) {
+		t.Fatalf("scoped project created_at = %q; want %q", projects[0].CreatedAt, created.Format(time.RFC3339))
+	}
+	if len(backend.listPrefixes) != 1 || backend.listPrefixes[0] != "local_scopes/scope-a/users/user/projects/" {
+		t.Fatalf("project listing prefixes = %v", backend.listPrefixes)
+	}
+	for _, requested := range backend.requests {
+		if requested.Name == "" {
+			t.Errorf("unexpected nameless object read: %#v", requested)
+		}
 	}
 }
 

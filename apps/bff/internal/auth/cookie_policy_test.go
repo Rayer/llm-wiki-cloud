@@ -59,6 +59,13 @@ func TestRefreshCookiePoliciesSetExactRotationAndLogoutAttributes(t *testing.T) 
 	}
 }
 
+func TestLocalRefreshCookiePolicySupportsLoopbackHTTP(t *testing.T) {
+	policy := LocalRefreshCookiePolicy()
+	if policy.Name == "" || policy.Domain != "" || policy.Path != "/" || policy.Secure || !policy.HttpOnly || policy.SameSite != http.SameSiteLaxMode {
+		t.Fatalf("local cookie policy=%+v, want host-only HttpOnly SameSite Lax cookie without Secure for loopback HTTP", policy)
+	}
+}
+
 func cookieNamed(t *testing.T, recorder *httptest.ResponseRecorder, name string) *http.Cookie {
 	t.Helper()
 	for _, cookie := range recorder.Result().Cookies() {

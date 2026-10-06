@@ -119,9 +119,12 @@ func (m *memoryBackend) List(_ context.Context, prefix string, directOnly bool, 
 	m.listCalls++
 	m.listPrefixes = append(m.listPrefixes, prefix)
 	objects := make([]backendObject, 0)
+	commonPrefixes := make(map[string]struct{})
 	for name, object := range m.objects {
 		if strings.HasPrefix(name, prefix) {
-			if directOnly && strings.Contains(strings.TrimPrefix(name, prefix), "/") {
+			relative := strings.TrimPrefix(name, prefix)
+			if directOnly && strings.Contains(relative, "/") {
+				commonPrefixes[prefix+strings.SplitN(relative, "/", 2)[0]+"/"] = struct{}{}
 				continue
 			}
 			object.Name = name
@@ -129,6 +132,9 @@ func (m *memoryBackend) List(_ context.Context, prefix string, directOnly bool, 
 			object.Metadata = cloneMetadata(object.Metadata)
 			objects = append(objects, object)
 		}
+	}
+	for commonPrefix := range commonPrefixes {
+		objects = append(objects, backendObject{Prefix: commonPrefix})
 	}
 	sort.Slice(objects, func(i, j int) bool { return objects[i].Name < objects[j].Name })
 	m.mu.Unlock()
@@ -167,7 +173,7 @@ func (m *memoryBackend) Write(_ context.Context, name string, data []byte, _ str
 		return backendObject{}, store.ErrGenerationMismatch
 	}
 	m.nextGeneration++
-	object := backendObject{Name: name, Data: append([]byte(nil), data...), Generation: m.nextGeneration, Size: int64(len(data)), Metadata: cloneMetadata(metadata), Updated: time.Now().UTC()}
+	object := backendObject{Name: name, Data: append([]byte(nil), data...), Generation: m.nextGeneration, Size: int64(len(data)), Metadata: cloneMetadata(metadata), Updated: time.Now().UTC(), Created: time.Now().UTC()}
 	m.objects[name] = object
 	if m.corruptGeneratedUploads && strings.Contains(name, generation.Prefix) && len(m.objects[name].Data) > 0 {
 		m.objects[name].Data[0] ^= 0xff
@@ -200,7 +206,8 @@ func (m *memoryBackend) Delete(_ context.Context, name string, generation int64)
 func (m *memoryBackend) put(name string, data []byte, generation int64, metadata map[string]string) {
 	m.mu.Lock()
 	defer m.mu.Unlock()
-	m.objects[name] = backendObject{Name: name, Data: append([]byte(nil), data...), Generation: generation, Size: int64(len(data)), Metadata: cloneMetadata(metadata), Updated: time.Now().UTC()}
+	now := time.Now().UTC()
+	m.objects[name] = backendObject{Name: name, Data: append([]byte(nil), data...), Generation: generation, Size: int64(len(data)), Metadata: cloneMetadata(metadata), Updated: now, Created: now}
 }
 
 func (m *memoryBackend) snapshots() ([]backendObject, int) {

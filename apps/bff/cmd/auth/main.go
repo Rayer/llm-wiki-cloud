@@ -2,7 +2,6 @@ package main
 
 import (
 	"context"
-	"flag"
 	"log"
 	"net"
 	"net/http"
@@ -23,39 +22,31 @@ import (
 )
 
 func main() {
-	localFlag := flag.String("local", "", "local data directory")
-	flag.Parse()
-
 	cfg, err := config.Load(".")
 	if err != nil {
 		log.Fatalf("Failed to load config: %v", err)
 	}
 
-	localDataDir := strings.TrimSpace(*localFlag)
-	if localDataDir == "" {
-		localDataDir = strings.TrimSpace(cfg.LocalDataDir)
+	localMode := cfg.LocalCloudScope != ""
+	if localMode && strings.TrimSpace(cfg.JWTSecret) == "" {
+		log.Fatal("local cloud signing key is missing")
 	}
-	if localDataDir == "" {
-		localDataDir = strings.TrimSpace(os.Getenv("LOCAL_DATA_DIR"))
-	}
-	localMode := localDataDir != ""
 
-	var fsClient *firestoreclient.Client
+	fsClient, err := firestoreclient.NewClientWithDatabase(cfg.GCPProject, cfg.FirestoreDatabaseID, "", "")
+	if err != nil {
+		log.Fatalf("Firestore client unavailable: %v", err)
+	}
 	if localMode {
-		log.Printf("Local mode: Firestore client disabled")
-	} else {
-		fsClient, err = firestoreclient.NewClientWithDatabase(cfg.GCPProject, cfg.FirestoreDatabaseID, "", "")
+		ctx, cancel := context.WithTimeout(context.Background(), 15*time.Second)
+		err = fsClient.CheckAvailable(ctx)
+		cancel()
 		if err != nil {
-			log.Printf("WARNING: Firestore client not available: %v", err)
+			_ = fsClient.Close()
+			log.Fatalf("local Firestore target is unavailable: %v", err)
 		}
 	}
 
-	var settingsStore *syssettings.Store
-	if !localMode && fsClient != nil && fsClient.Raw() != nil {
-		settingsStore = syssettings.NewStore(fsClient.Raw(), cfg.RegistrationEnabled)
-	} else {
-		settingsStore = syssettings.NewStore(nil, cfg.RegistrationEnabled)
-	}
+	settingsStore := syssettings.NewStore(fsClient.Raw(), cfg.RegistrationEnabled)
 
 	provider, err := observability.InitMetrics(context.Background(), observabilityServiceName(os.Getenv("K_SERVICE")), observability.GetProjectID())
 	if err != nil {
@@ -70,14 +61,18 @@ func main() {
 
 	r := newProductionRouter(cfg, localMode, fsClient, settingsStore)
 
-	log.Printf("Auth service listening on :%s", cfg.Port)
-	log.Fatal(r.Run(":" + cfg.Port))
+	listenHost := ":"
+	if localMode {
+		listenHost = "127.0.0.1:"
+	}
+	log.Printf("Auth service listening on %s%s", listenHost, cfg.Port)
+	log.Fatal(r.Run(listenHost + cfg.Port))
 }
 
 func newProductionRouter(cfg config.Config, localMode bool, fsClient *firestoreclient.Client, settingsStore syssettings.RegistrationGate) *gin.Engine {
 	r := gin.Default()
 	r.Use(authHostAllowlist(cfg, localMode))
-	r.Use(middleware.SecurityHeaders(!cfg.DevJWT))
+	r.Use(middleware.SecurityHeaders(true))
 	r.Use(middleware.LatencyMiddleware())
 
 	r.Use(cors.New(cors.Config{
@@ -89,23 +84,21 @@ func newProductionRouter(cfg config.Config, localMode bool, fsClient *firestorec
 
 	authRoutes := r.Group("/api/v1/auth")
 	authRoutes.Use(auth.RequestBodyLimit())
+	cookiePolicy := auth.HostRefreshCookiePolicy()
 	if localMode {
-		authRoutes.POST("/demo", middleware.NewRateLimiter(10, time.Minute), auth.LocalDevDemoLoginHandler(cfg.JWTSecret))
-		authRoutes.POST("/login", middleware.NewRateLimiter(10, time.Minute), auth.LocalDevLoginHandler(cfg.JWTSecret))
-		authRoutes.POST("/register", func(c *gin.Context) {
-			c.JSON(http.StatusServiceUnavailable, gin.H{"error": "registration is disabled in local mode; use demo@llm-wiki.dev / demo123456"})
-		})
-		authRoutes.POST("/refresh", auth.LocalDevRefreshHandler(cfg.JWTSecret))
-		authRoutes.POST("/logout", auth.LogoutHandlerWithCookiePolicy(auth.LocalRefreshCookiePolicy()))
-	} else if fsClient == nil || fsClient.Raw() == nil {
+		cookiePolicy = auth.LocalRefreshCookiePolicy()
+	}
+	var demoUsers auth.DemoUserLookup
+	var sessions *auth.RefreshSessionAuthority
+	if fsClient == nil || fsClient.Raw() == nil {
 		unavailable := func(c *gin.Context) {
 			c.JSON(http.StatusServiceUnavailable, gin.H{"error": "auth routes require Firestore"})
 		}
-		authRoutes.POST("/demo", middleware.NewRateLimiter(10, time.Minute), auth.DemoLoginHandlerWithRepository(nil, cfg.AuthDemoUserID, cfg.JWTSecret, auth.HostRefreshCookiePolicy(), nil))
-		authRoutes.POST("/login", unavailable)
-		authRoutes.POST("/register", unavailable)
-		authRoutes.POST("/refresh", unavailable)
-		authRoutes.POST("/logout", auth.LogoutHandlerWithCookiePolicy(auth.HostRefreshCookiePolicy()))
+		oversizedBody := auth.RejectOversizedRequestBody()
+		authRoutes.POST("/login", oversizedBody, unavailable)
+		authRoutes.POST("/register", oversizedBody, unavailable)
+		authRoutes.POST("/refresh", oversizedBody, unavailable)
+		authRoutes.POST("/logout", auth.LogoutHandlerWithCookiePolicy(cookiePolicy))
 		registerUnavailableCLIRoutes(authRoutes)
 	} else {
 		identityRepository := auth.NewIdentityRepository(fsClient.Raw())
@@ -116,15 +109,15 @@ func newProductionRouter(cfg config.Config, localMode bool, fsClient *firestorec
 				sessionEnvironment = "default"
 			}
 		}
-		sessions := auth.NewRefreshSessionAuthorityWithConfig(fsClient.Raw(), auth.SessionAuthorityConfig{
+		sessions = auth.NewRefreshSessionAuthorityWithConfig(fsClient.Raw(), auth.SessionAuthorityConfig{
 			Environment: sessionEnvironment, Migration: auth.RefreshSessionMigrationMode(cfg.AuthSessionMigration),
 		})
+		demoUsers = identityRepository
 		registerCLIAuthRoutes(authRoutes, cfg, fsClient.Raw(), sessions, sessionEnvironment)
-		authRoutes.POST("/login", middleware.NewRateLimiter(10, time.Minute), auth.LoginHandlerWithRepositoryAndSessionAuthority(identityRepository, cfg.JWTSecret, auth.HostRefreshCookiePolicy(), sessions))
-		authRoutes.POST("/demo", middleware.NewRateLimiter(10, time.Minute), auth.DemoLoginHandlerWithRepository(identityRepository, cfg.AuthDemoUserID, cfg.JWTSecret, auth.HostRefreshCookiePolicy(), sessions))
+		authRoutes.POST("/login", middleware.NewRateLimiter(10, time.Minute), auth.LoginHandlerWithRepositoryAndSessionAuthority(identityRepository, cfg.JWTSecret, cookiePolicy, sessions))
 		authRoutes.POST("/register", middleware.NewRateLimiter(5, time.Minute), auth.RegisterHandlerWithRepository(identityRepository, cfg.JWTSecret, settingsStore))
-		authRoutes.POST("/refresh", auth.RefreshHandlerWithSessionAuthority(sessions, cfg.JWTSecret, auth.HostRefreshCookiePolicy()))
-		authRoutes.POST("/logout", auth.LogoutHandlerWithSessionAuthority(sessions, cfg.JWTSecret, auth.HostRefreshCookiePolicy()))
+		authRoutes.POST("/refresh", auth.RefreshHandlerWithSessionAuthority(sessions, cfg.JWTSecret, cookiePolicy))
+		authRoutes.POST("/logout", auth.LogoutHandlerWithSessionAuthority(sessions, cfg.JWTSecret, cookiePolicy))
 		if cfg.GoogleClientID != "" {
 			google := auth.NewGoogleOAuthServiceWithSessionAuthority(auth.GoogleConfig{
 				ClientID: cfg.GoogleClientID, ClientSecret: cfg.GoogleClientSecret, Issuer: cfg.GoogleIssuer,
@@ -148,6 +141,9 @@ func newProductionRouter(cfg config.Config, localMode bool, fsClient *firestorec
 			authRoutes.GET("/google/complete", google.CompletionHandler())
 			authRoutes.GET("/google/identity", auth.JWTAuthWithAccountLookup(cfg, auth.FirestoreAccountLookup(fsClient.Raw())), google.IdentitySummaryHandler())
 		}
+	}
+	if !localMode {
+		authRoutes.POST("/demo", middleware.NewRateLimiter(10, time.Minute), auth.DemoLoginHandlerWithRepository(demoUsers, cfg.AuthDemoUserID, cfg.JWTSecret, auth.HostRefreshCookiePolicy(), sessions))
 	}
 
 	r.GET("/api/v1/public/healthz", func(c *gin.Context) {

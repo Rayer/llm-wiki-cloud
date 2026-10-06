@@ -7,6 +7,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	scopedfirestore "github.com/rayer/llm-wiki-bff/internal/firestore"
 	"io"
 	"os"
 	"strings"
@@ -305,7 +306,7 @@ func includeScopePath(relative string, scope Scope) bool {
 }
 
 func addProjectRecord(ctx context.Context, fs *firestore.Client, userID, projectID string, files *[]FileSource) error {
-	snapshot, err := fs.Collection("projects").Doc(userID + "_" + projectID).Get(ctx)
+	snapshot, err := scopedfirestore.Collection(fs, "projects").Doc(userID + "_" + projectID).Get(ctx)
 	if status.Code(err) == codes.NotFound {
 		return errors.New("project export metadata is unavailable")
 	}

@@ -13,7 +13,7 @@ import (
 func TestProductionRouterRegistersRecompileAllAndBootstrapRoutes(t *testing.T) {
 	gin.SetMode(gin.TestMode)
 	router := newProductionRouter(
-		config.Config{DevJWT: true, JWTSecret: "test-secret"},
+		config.Config{JWTSecret: "test-secret"},
 		true,
 		nil,
 		nil,

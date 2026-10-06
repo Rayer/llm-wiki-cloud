@@ -7,6 +7,7 @@ import (
 	"encoding/hex"
 	"errors"
 	"fmt"
+	scopedfirestore "github.com/rayer/llm-wiki-bff/internal/firestore"
 	"strings"
 	"time"
 
@@ -39,7 +40,7 @@ func (v *FirestoreProjectVerifier) VerifyProject(ctx context.Context, userID, pr
 	if v == nil || v.fs == nil || !validSegment(userID) || !validSegment(projectID) {
 		return "", ErrProjectMissing
 	}
-	snap, err := v.fs.Collection("projects").Doc(userID + "_" + projectID).Get(ctx)
+	snap, err := scopedfirestore.Collection(v.fs, "projects").Doc(userID + "_" + projectID).Get(ctx)
 	if status.Code(err) == codes.NotFound {
 		return "", ErrProjectMissing
 	}
@@ -68,10 +69,10 @@ func (r *FirestoreRepository) Admit(ctx context.Context, userID, projectID strin
 		return Job{}, false, errors.New("export repository unavailable")
 	}
 	now = now.UTC()
-	stateRef := r.fs.Collection(stateCollection).Doc(ownerID(userID, projectID))
+	stateRef := scopedfirestore.Collection(r.fs, stateCollection).Doc(ownerID(userID, projectID))
 	var idemRef *firestore.DocumentRef
 	if idempotencyKey != "" {
-		idemRef = r.fs.Collection(idemCollection).Doc(ownerID(userID, projectID) + "_" + hashID(idempotencyKey))
+		idemRef = scopedfirestore.Collection(r.fs, idemCollection).Doc(ownerID(userID, projectID) + "_" + hashID(idempotencyKey))
 	}
 	jobID, err := newExportID()
 	if err != nil {
@@ -191,7 +192,7 @@ func (r *FirestoreRepository) Snapshot(ctx context.Context, userID, projectID st
 	if r == nil || r.fs == nil {
 		return result, errors.New("export repository unavailable")
 	}
-	ref := r.fs.Collection(stateCollection).Doc(ownerID(userID, projectID))
+	ref := scopedfirestore.Collection(r.fs, stateCollection).Doc(ownerID(userID, projectID))
 	snap, err := ref.Get(ctx)
 	if status.Code(err) == codes.NotFound {
 		return result, nil
@@ -237,7 +238,7 @@ func (r *FirestoreRepository) MarkRunning(ctx context.Context, userID, projectID
 }
 
 func (r *FirestoreRepository) Fail(ctx context.Context, userID, projectID, exportID, errorCode, errorMessage string) error {
-	stateRef := r.fs.Collection(stateCollection).Doc(ownerID(userID, projectID))
+	stateRef := scopedfirestore.Collection(r.fs, stateCollection).Doc(ownerID(userID, projectID))
 	jobRef := r.jobRef(userID, projectID, exportID)
 	errorCode = safeErrorCode(errorCode)
 	errorMessage = safeErrorMessage(errorMessage)
@@ -269,7 +270,7 @@ func (r *FirestoreRepository) Fail(ctx context.Context, userID, projectID, expor
 }
 
 func (r *FirestoreRepository) Complete(ctx context.Context, userID, projectID, exportID string, snapshotAt, completedAt time.Time, size int64) error {
-	stateRef := r.fs.Collection(stateCollection).Doc(ownerID(userID, projectID))
+	stateRef := scopedfirestore.Collection(r.fs, stateCollection).Doc(ownerID(userID, projectID))
 	jobRef := r.jobRef(userID, projectID, exportID)
 	completedAt = completedAt.UTC()
 	snapshotAt = snapshotAt.UTC()
@@ -347,7 +348,7 @@ func (r *FirestoreRepository) optionalJob(ctx context.Context, userID, projectID
 }
 
 func (r *FirestoreRepository) jobRef(userID, projectID, exportID string) *firestore.DocumentRef {
-	return r.fs.Collection(jobCollection).Doc(ownerID(userID, projectID) + "_" + hashID(exportID))
+	return scopedfirestore.Collection(r.fs, jobCollection).Doc(ownerID(userID, projectID) + "_" + hashID(exportID))
 }
 
 func jobData(userID, projectID string, job Job) map[string]interface{} {

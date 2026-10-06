@@ -4,7 +4,9 @@ import (
 	"bytes"
 	"context"
 	"encoding/json"
+	"errors"
 	"io"
+	"net"
 	"net/http"
 	"net/http/httptest"
 	"os"
@@ -23,6 +25,7 @@ import (
 	handlerraw "github.com/rayer/llm-wiki-bff/internal/handler"
 	handlerv1 "github.com/rayer/llm-wiki-bff/internal/handler/v1"
 	"github.com/rayer/llm-wiki-bff/internal/localfs"
+	"github.com/rayer/llm-wiki-bff/internal/localpipeline"
 	"github.com/rayer/llm-wiki-bff/internal/middleware"
 	"github.com/rayer/llm-wiki-bff/internal/query"
 	"github.com/rayer/llm-wiki-bff/internal/queryconfig"
@@ -57,6 +60,70 @@ func TestConfiguredProductionQueryCompositionLoadsImmutableRuntime(t *testing.T)
 	readback := runtime.Readback()
 	if readback.SchemaVersion != 2 || readback.ConfigRevision != "query-dev-2026-09-12.1" || readback.ConfigDigest != "sha256:645404d90133ba8adabed71e83b22560093dabaf3e8136953961392be7b33da0" || readback.DefaultProfileID != "platform-owned-lifestyle-v1" || readback.DefaultPromptID != "minimal-v1" || readback.ExpansionModel != "deepseek-flash" || readback.SynthesisModel != "deepseek-flash" || readback.NoEvidencePolicy != "full-model-prior-fallback-v1" || readback.Options.SelectionLimit != 10 || readback.BindingCount != 0 || readback.DistinctServiceCompositionCount != 1 {
 		t.Fatalf("readback=%+v", readback)
+	}
+}
+
+type shutdownContextProbe struct{ err error }
+
+func (p *shutdownContextProbe) Close(ctx context.Context) error {
+	p.err = ctx.Err()
+	return nil
+}
+
+func TestShutdownBFFSkipsTypedNilLocalPipelineManager(t *testing.T) {
+	var manager *localpipeline.Manager
+	var worker localPipelineCloser = manager
+
+	if err := shutdownBFF(&http.Server{}, worker, time.Second, time.Second); err != nil {
+		t.Fatalf("shutdownBFF() error = %v", err)
+	}
+}
+
+func TestShutdownBFFKeepsWorkerCleanupIndependentOfHTTPTimeout(t *testing.T) {
+	listener, err := net.Listen("tcp", "127.0.0.1:0")
+	if err != nil {
+		t.Fatal(err)
+	}
+	started, release := make(chan struct{}), make(chan struct{})
+	server := &http.Server{Handler: http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		close(started)
+		<-release
+		w.WriteHeader(http.StatusOK)
+	})}
+	serveDone := make(chan error, 1)
+	go func() { serveDone <- server.Serve(listener) }()
+	requestDone := make(chan error, 1)
+	go func() {
+		response, requestErr := http.Get("http://" + listener.Addr().String())
+		if response != nil {
+			_ = response.Body.Close()
+		}
+		requestDone <- requestErr
+	}()
+	select {
+	case <-started:
+	case <-time.After(2 * time.Second):
+		close(release)
+		t.Fatal("blocking HTTP handler did not start")
+	}
+	worker := &shutdownContextProbe{}
+	shutdownErr := shutdownBFF(server, worker, 10*time.Millisecond, time.Second)
+	if !errors.Is(shutdownErr, context.DeadlineExceeded) {
+		t.Fatalf("shutdown error = %v, want HTTP timeout", shutdownErr)
+	}
+	if worker.err != nil {
+		t.Fatalf("worker cleanup received expired HTTP context: %v", worker.err)
+	}
+	close(release)
+	select {
+	case <-requestDone:
+	case <-time.After(2 * time.Second):
+		t.Fatal("request did not finish after forced HTTP close")
+	}
+	select {
+	case <-serveDone:
+	case <-time.After(time.Second):
+		t.Fatal("HTTP server did not stop")
 	}
 }
 
@@ -396,8 +463,8 @@ func TestSwaggerOwnerRenameContractIsExactAcrossArtifacts(t *testing.T) {
 	if err := json.Unmarshal(operation, &patch); err != nil {
 		t.Fatal(err)
 	}
-	if len(patch.Security) != 2 || patch.Security[0]["BearerAuth"] == nil || patch.Security[1]["DevUserAuth"] == nil {
-		t.Fatalf("security=%v, want BearerAuth and DevUserAuth", patch.Security)
+	if len(patch.Security) != 1 || patch.Security[0]["BearerAuth"] == nil {
+		t.Fatalf("security=%v, want only BearerAuth", patch.Security)
 	}
 	var bodySchemaRef string
 	for _, parameter := range patch.Parameters {
@@ -437,12 +504,38 @@ func TestPublicVersionRouteDoesNotRequireAuthOrProject(t *testing.T) {
 	router := gin.New()
 	v1 := router.Group("/api/v1")
 	v1.Use(auth.JWTAuth(config.Config{JWTSecret: "test-secret"}), auth.ProjectMiddleware())
-	registerPublicRoutes(router, &syssettings.FakeStore{Enabled: true}, "https://auth.dev.rayer.idv.tw")
+	registerPublicRoutes(router, &syssettings.FakeStore{Enabled: true}, "https://auth.dev.rayer.idv.tw", true)
 
 	recorder := httptest.NewRecorder()
 	router.ServeHTTP(recorder, httptest.NewRequest(http.MethodGet, "/api/v1/public/version", nil))
 	if recorder.Code != http.StatusOK {
 		t.Fatalf("public version status = %d, want %d without authentication or project header", recorder.Code, http.StatusOK)
+	}
+}
+
+func TestBFFPublicConfigDemoCapabilityMatchesMode(t *testing.T) {
+	gin.SetMode(gin.TestMode)
+	for _, test := range []struct {
+		name      string
+		localMode bool
+		want      string
+	}{
+		{name: "local", localMode: true, want: `"demo_enabled":false`},
+		{name: "deployed", localMode: false, want: `"demo_enabled":true`},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			cfg := config.Config{JWTSecret: "test-secret"}
+			if !test.localMode {
+				cfg.AllowedOrigins = []string{"https://frontend.example"}
+			}
+			router := newProductionRouter(cfg, test.localMode, nil, nil,
+				handlerv1.New(nil, nil, nil, nil, nil, nil), &syssettings.FakeStore{Enabled: true}, nil)
+			recorder := httptest.NewRecorder()
+			router.ServeHTTP(recorder, httptest.NewRequest(http.MethodGet, "/api/v1/public/config", nil))
+			if recorder.Code != http.StatusOK || !strings.Contains(recorder.Body.String(), test.want) {
+				t.Fatalf("public config status=%d body=%s, want demo capability %s", recorder.Code, recorder.Body.String(), test.want)
+			}
+		})
 	}
 }
 
@@ -454,12 +547,16 @@ func TestProductionRouterRegistersRawScrapeRouteUnderAuthAndProjectMiddleware(t 
 		return rawScrapeTestHandler{}
 	}
 
+	scrapeHandler := handlerv1.New(nil, nil, nil, nil, nil, nil)
+	scrapeHandler.SetAccountLookup(func(_ context.Context, _ string) (*auth.UserRecord, error) {
+		return &auth.UserRecord{Role: "member"}, nil
+	})
 	router := newProductionRouter(
-		config.Config{DevJWT: true, JWTSecret: "test-secret", AllowedOrigins: []string{"http://example.test"}},
+		config.Config{JWTSecret: "test-secret", AllowedOrigins: []string{"http://example.test"}},
 		false,
 		&gcs.Client{},
 		nil,
-		handlerv1.New(nil, nil, nil, nil, nil, nil),
+		scrapeHandler,
 		&syssettings.FakeStore{Enabled: true},
 		recordingFactory,
 	)
@@ -479,7 +576,11 @@ func TestProductionRouterRegistersRawScrapeRouteUnderAuthAndProjectMiddleware(t 
 		req := httptest.NewRequest(http.MethodPost, "/api/v1/raw/scrape", strings.NewReader(`{}`))
 		req.Header.Set("Content-Type", "application/json")
 		if userID != "" {
-			req.Header.Set("X-User-ID", userID)
+			token, err := auth.GenerateAccessToken(userID, "member", "test-secret")
+			if err != nil {
+				t.Fatal(err)
+			}
+			req.Header.Set("Authorization", "Bearer "+token)
 		}
 		if projectID != "" {
 			req.Header.Set("X-Project-ID", projectID)
@@ -489,7 +590,7 @@ func TestProductionRouterRegistersRawScrapeRouteUnderAuthAndProjectMiddleware(t 
 	}
 
 	if recorder := request("", "demo"); recorder.Code != http.StatusUnauthorized {
-		t.Fatalf("missing DevJWT user status = %d, want %d", recorder.Code, http.StatusUnauthorized)
+		t.Fatalf("missing bearer status = %d, want %d", recorder.Code, http.StatusUnauthorized)
 	}
 
 	recorder := request("tenant-user", "")
@@ -534,7 +635,7 @@ func TestProductionRouterRegistersRawScrapeRouteUnderAuthAndProjectMiddleware(t 
 func TestProductionRouterRegistersOwnerProjectRenameRoute(t *testing.T) {
 	gin.SetMode(gin.TestMode)
 	router := newProductionRouter(
-		config.Config{DevJWT: true, JWTSecret: "test-secret", AllowedOrigins: []string{"http://example.test"}},
+		config.Config{JWTSecret: "test-secret", AllowedOrigins: []string{"http://example.test"}},
 		false,
 		nil,
 		nil,
@@ -554,16 +655,73 @@ func TestProductionRouterRegistersOwnerProjectRenameRoute(t *testing.T) {
 	}
 }
 
+func TestLocalCloudLoopbackUsesBearerAndIgnoresUserHeaderIdentity(t *testing.T) {
+	gin.SetMode(gin.TestMode)
+	var lookedUpUser string
+	h := handlerv1.New(nil, nil, nil, nil, nil, nil)
+	h.SetAccountLookup(func(_ context.Context, id string) (*auth.UserRecord, error) {
+		lookedUpUser = id
+		return &auth.UserRecord{Role: "member"}, nil
+	})
+	router := newProductionRouter(
+		config.Config{JWTSecret: "loopback-test-secret", AllowedOrigins: []string{"http://localhost:3000"}},
+		true,
+		nil,
+		nil,
+		h,
+		&syssettings.FakeStore{Enabled: true},
+		nil,
+	)
+	server := httptest.NewServer(router)
+	defer server.Close()
+
+	request, err := http.NewRequest(http.MethodGet, server.URL+"/api/v1/health", nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	request.Header.Set("X-User-ID", "spoofed-user")
+	response, err := http.DefaultClient.Do(request)
+	if err != nil {
+		t.Fatal(err)
+	}
+	response.Body.Close()
+	if response.StatusCode != http.StatusUnauthorized {
+		t.Fatalf("header-only auth status=%d, want %d", response.StatusCode, http.StatusUnauthorized)
+	}
+
+	token, err := auth.GenerateAccessToken("real-user", "member", "loopback-test-secret")
+	if err != nil {
+		t.Fatal(err)
+	}
+	request, err = http.NewRequest(http.MethodGet, server.URL+"/api/v1/health", nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	request.Header.Set("Authorization", "Bearer "+token)
+	request.Header.Set("X-User-ID", "spoofed-user")
+	response, err = http.DefaultClient.Do(request)
+	if err != nil {
+		t.Fatal(err)
+	}
+	response.Body.Close()
+	if response.StatusCode != http.StatusOK || lookedUpUser != "real-user" {
+		t.Fatalf("Bearer request status=%d looked-up-user=%q, want 200 and token subject", response.StatusCode, lookedUpUser)
+	}
+}
+
 func TestProductionRouterOwnerProjectRenameUsesAuthenticatedOwner(t *testing.T) {
 	gin.SetMode(gin.TestMode)
 	var gotUserID, gotProjectID, gotName string
 	h := handlerv1.New(nil, nil, nil, nil, nil, nil)
+	h.SetAccountLookup(func(_ context.Context, _ string) (*auth.UserRecord, error) {
+		return &auth.UserRecord{Role: "member"}, nil
+	})
 	h.SetProjectRenameFunc(func(_ context.Context, userID, projectID, name string) error {
 		gotUserID, gotProjectID, gotName = userID, projectID, name
 		return nil
 	})
 	router := newProductionRouter(
-		config.Config{DevJWT: true, JWTSecret: "test-secret", AllowedOrigins: []string{"http://example.test"}},
+		config.Config{JWTSecret: "test-secret", AllowedOrigins: []string{"http://example.test"}},
 		false,
 		nil,
 		nil,
@@ -575,7 +733,12 @@ func TestProductionRouterOwnerProjectRenameUsesAuthenticatedOwner(t *testing.T) 
 	recorder := httptest.NewRecorder()
 	req := httptest.NewRequest(http.MethodPatch, "/api/v1/projects/project-1", strings.NewReader(`{"name":"  Renamed  "}`))
 	req.Header.Set("Content-Type", "application/json")
-	req.Header.Set("X-User-ID", "owner-1")
+	token, err := auth.GenerateAccessToken("owner-1", "member", "test-secret")
+	if err != nil {
+		t.Fatal(err)
+	}
+	req.Header.Set("Authorization", "Bearer "+token)
+	req.Header.Set("X-User-ID", "spoofed-user")
 	router.ServeHTTP(recorder, req)
 
 	if recorder.Code != http.StatusOK {

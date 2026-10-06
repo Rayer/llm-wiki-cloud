@@ -1320,6 +1320,7 @@ export type PublicConfig = {
   registration_enabled: boolean;
   email_registration_enabled: boolean;
   google_registration_enabled: boolean;
+  demo_enabled: boolean;
   announcement_markdown?: string | null;
   announcement_digest?: string | null;
 };
@@ -1346,6 +1347,7 @@ function registrationCapabilities(record: Record<string, unknown>) {
     ...settings,
     email_registration_enabled: settings.registration_enabled && settings.email_registration_enabled,
     google_registration_enabled: settings.registration_enabled && settings.google_registration_enabled,
+    demo_enabled: record.demo_enabled === true,
   };
 }
 

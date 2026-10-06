@@ -11,6 +11,7 @@ import (
 	cloudstorage "cloud.google.com/go/storage"
 	"github.com/rayer/llm-wiki-bff/internal/generation"
 	"github.com/rayer/llm-wiki-bff/internal/llm"
+	"github.com/rayer/llm-wiki-bff/internal/localcloud"
 	store "github.com/rayer/llm-wiki-bff/internal/storage"
 	"google.golang.org/api/googleapi"
 	"google.golang.org/grpc/codes"
@@ -37,6 +38,38 @@ func TestClientCloseOwnsProviderAndScopesPreserveOwnership(t *testing.T) {
 	}
 	if closer.calls != 1 {
 		t.Fatalf("close calls=%d want 1", closer.calls)
+	}
+}
+
+func TestLocalScopeRootsWriterAndReaderTogether(t *testing.T) {
+	client, backend := newMemoryClient()
+	client.localScope = "worktree-one"
+	project := client.WithScope("user-a", "project-a")
+	if got, want := project.Prefix(), "local_scopes/worktree-one/users/user-a/projects/project-a"; got != want {
+		t.Fatalf("project prefix=%q, want %q", got, want)
+	}
+	const relative = "raw/input.md"
+	fullPath := project.prefix() + "/" + relative
+	if _, err := project.writeObject(context.Background(), fullPath, []byte("published"), "text/markdown", nil, writeCondition{}); err != nil {
+		t.Fatal(err)
+	}
+	stored, err := project.readObject(context.Background(), fullPath, 0, 100)
+	if err != nil || string(stored.Data) != "published" {
+		t.Fatalf("scoped reader data=%q err=%v", stored.Data, err)
+	}
+	backend.mu.Lock()
+	_, written := backend.objects[fullPath]
+	backend.mu.Unlock()
+	if !written {
+		t.Fatalf("writer did not use local scope object path %q", fullPath)
+	}
+	other := client.WithScope("user-a", "project-b")
+	if _, err := other.readObject(context.Background(), other.prefix()+"/"+relative, 0, 100); !errors.Is(err, cloudstorage.ErrObjectNotExist) {
+		t.Fatalf("other project read error=%v, want not found", err)
+	}
+	requests, _ := backend.snapshots()
+	if len(requests) == 0 || requests[len(requests)-1].Name != other.prefix()+"/"+relative {
+		t.Fatalf("other scope reads=%#v, want its own object path", requests)
 	}
 }
 
@@ -174,6 +207,31 @@ func TestDeleteProjectPrefixRejectsUnsafeSegmentsBeforeProviderCalls(t *testing.
 				}
 			})
 		}
+	}
+}
+
+func TestScopedDeleteProjectPrefixPreservesOtherScopesAndUnscopedObjects(t *testing.T) {
+	client, backend := newMemoryClient()
+	client.localScope = localcloud.Scope("scope-a")
+	backend.put("local_scopes/scope-a/users/user/projects/project/wiki/a.md", []byte("a"), 1, nil)
+	backend.put("local_scopes/scope-a/users/user/projects/project/cache/id_map.json", []byte("{}"), 2, nil)
+	backend.put("local_scopes/scope-b/users/user/projects/project/wiki/keep.md", []byte("b"), 3, nil)
+	backend.put("users/user/projects/project/wiki/keep.md", []byte("unscoped"), 4, nil)
+
+	deleted, err := client.DeleteProjectPrefix(context.Background(), "user", "project")
+	if err != nil || deleted != 2 {
+		t.Fatalf("scoped DeleteProjectPrefix() = %d, %v; want 2, nil", deleted, err)
+	}
+	for _, name := range []string{
+		"local_scopes/scope-b/users/user/projects/project/wiki/keep.md",
+		"users/user/projects/project/wiki/keep.md",
+	} {
+		if _, err := backend.Read(context.Background(), name, 0, 100); err != nil {
+			t.Errorf("scoped delete removed %s: %v", name, err)
+		}
+	}
+	if got := backend.listPrefixes[len(backend.listPrefixes)-1]; got != "local_scopes/scope-a/users/user/projects/project/" {
+		t.Fatalf("scoped delete prefix = %q", got)
 	}
 }
 

@@ -33,7 +33,7 @@ type recompileAllDenialResponse struct {
 //	@Failure		401	{object}	handler.ErrorResponse
 //	@Failure		404	{object}	handler.ErrorResponse
 //	@Failure		500	{object}	handler.ErrorResponse
-//	@Security		DevUserAuth
+//	@Security		BearerAuth
 //	@Security		ProjectHeader
 //	@Router		/api/v1/projects/{pid}/recompile-all/capability [get]
 func (h *Handler) RecompileAllCapability(c *gin.Context) {
@@ -58,7 +58,7 @@ func (h *Handler) RecompileAllCapability(c *gin.Context) {
 //	@Failure		403	{object}	recompileAllDenialResponse
 //	@Failure		404	{object}	handler.ErrorResponse
 //	@Failure		500	{object}	handler.ErrorResponse
-//	@Security		DevUserAuth
+//	@Security		BearerAuth
 //	@Security		ProjectHeader
 //	@Router		/api/v1/projects/{pid}/recompile-all [post]
 func (h *Handler) RecompileAll(c *gin.Context) {

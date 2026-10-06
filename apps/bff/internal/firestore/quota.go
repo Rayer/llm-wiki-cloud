@@ -27,7 +27,7 @@ func QuotaDocID(userID, projectID string) string {
 
 // LoadQuotaState reads the pipeline_quota document (missing → zeros).
 func (c *Client) LoadQuotaState(ctx context.Context, userID, projectID string) (runsToday int, dayKey string, lastRunAt time.Time, err error) {
-	doc, err := c.fs.Collection(pipelineQuotaCollection).Doc(QuotaDocID(userID, projectID)).Get(ctx)
+	doc, err := Collection(c.fs, pipelineQuotaCollection).Doc(QuotaDocID(userID, projectID)).Get(ctx)
 	if err != nil {
 		if status.Code(err) == codes.NotFound {
 			return 0, "", time.Time{}, nil
@@ -53,7 +53,7 @@ func (c *Client) ReserveQuota(
 	newRawFiles, rawDirtyFiles, annotationDirtyFiles int,
 ) (prev QuotaPrev, snap pipelinequota.Snapshot, reserved bool, err error) {
 	now = now.UTC()
-	ref := c.fs.Collection(pipelineQuotaCollection).Doc(QuotaDocID(userID, projectID))
+	ref := Collection(c.fs, pipelineQuotaCollection).Doc(QuotaDocID(userID, projectID))
 
 	err = c.fs.RunTransaction(ctx, func(ctx context.Context, tx *firestore.Transaction) error {
 		prev = QuotaPrev{}
@@ -127,7 +127,7 @@ func (c *Client) ReserveQuota(
 
 // RefundQuota restores pipeline_quota fields to a pre-reserve snapshot after a failed trigger.
 func (c *Client) RefundQuota(ctx context.Context, userID, projectID string, prevRuns int, prevDayKey string, prevLastRunAt time.Time) error {
-	ref := c.fs.Collection(pipelineQuotaCollection).Doc(QuotaDocID(userID, projectID))
+	ref := Collection(c.fs, pipelineQuotaCollection).Doc(QuotaDocID(userID, projectID))
 	now := time.Now().UTC()
 
 	updates := []firestore.Update{

@@ -63,8 +63,6 @@ var refreshTokenStore = struct {
 
 // JWTAuth returns a Gin middleware that validates a JWT from the Authorization header.
 // Config-driven: uses cfg.JWTSecret for HS256 verification.
-// DEV mode: if cfg.DevJWT is set AND no Authorization header is present,
-// it injects cfg.DefaultUserID into the context.
 func JWTAuth(cfg config.Config) gin.HandlerFunc {
 	return jwtAuth(cfg, nil, false, nil, nil)
 }
@@ -88,23 +86,6 @@ func JWTAuthWithAccountLookupAndSessionVerifier(cfg config.Config, lookup Accoun
 func jwtAuth(cfg config.Config, lookup AccountLookup, enforce bool, verifySession CLIAccessSessionVerifier, authorizeProject ProjectOwnerAuthorizer) gin.HandlerFunc {
 	return func(c *gin.Context) {
 		authHeader := c.GetHeader("Authorization")
-
-		// DEV mode: inject user from X-User-ID header when DevJWT is configured and no auth header
-		if cfg.DevJWT && !enforce && authHeader == "" {
-			userID := strings.TrimSpace(c.GetHeader("X-User-ID"))
-			if !ValidPathSegment(userID) {
-				c.AbortWithStatusJSON(http.StatusUnauthorized, gin.H{"error": "invalid user ID"})
-				return
-			}
-			userRole := strings.TrimSpace(c.GetHeader("X-User-Role"))
-			if userRole == "" {
-				userRole = "admin"
-			}
-			c.Set("userID", userID)
-			c.Set("userRole", userRole)
-			c.Next()
-			return
-		}
 
 		// Production / normal mode: require Bearer token
 		if authHeader == "" {

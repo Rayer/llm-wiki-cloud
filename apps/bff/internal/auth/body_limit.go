@@ -17,6 +17,12 @@ func RequestBodyLimit() gin.HandlerFunc {
 	return requestBodyLimit(0)
 }
 
+// RejectOversizedRequestBody is used when an unavailable handler will return
+// before decoding a request body. Normal handlers should use RequestBodyLimit.
+func RejectOversizedRequestBody() gin.HandlerFunc {
+	return requestBodyLimit(http.StatusBadRequest)
+}
+
 // CompatibilityBodyLimit applies the Auth limit to the temporary BFF lane and
 // rejects a declared oversized request before the compatibility handler runs.
 func CompatibilityBodyLimit() gin.HandlerFunc {

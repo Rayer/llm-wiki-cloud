@@ -6,6 +6,7 @@ import (
 	"errors"
 	"fmt"
 	"os"
+	"strings"
 	"time"
 
 	"github.com/BurntSushi/toml"
@@ -29,6 +30,45 @@ func readLocalPipelineAPIKey(path string) ([]byte, error) {
 		return nil, errors.New("local Pipeline private bindings file is invalid")
 	}
 	return bindings.LocalAPIKey, nil
+}
+
+func readLocalPipelineInputs(configPath, bindingsPath string) ([]byte, []byte, int, error) {
+	if strings.TrimSpace(configPath) == "" || strings.TrimSpace(bindingsPath) == "" {
+		return nil, nil, 0, errors.New("local Pipeline config and private bindings must be configured together")
+	}
+	info, err := os.Lstat(configPath)
+	if err != nil || !info.Mode().IsRegular() || info.Size() <= 0 || info.Size() > maxDeployedPipelineConfigBytes {
+		return nil, nil, 0, errors.New("local Pipeline config file is unavailable or invalid")
+	}
+	data, err := os.ReadFile(configPath)
+	if err != nil {
+		return nil, nil, 0, errors.New("local Pipeline config file is unavailable or invalid")
+	}
+	apiKey, err := readLocalPipelineAPIKey(bindingsPath)
+	if err != nil {
+		return nil, nil, 0, err
+	}
+	seconds, err := pipelineRunTimeout(data)
+	if err != nil {
+		clear(apiKey)
+		return nil, nil, 0, err
+	}
+	return data, apiKey, seconds, nil
+}
+
+func readCloudPipelineInputs(ctx context.Context, cfg workerConfig, objects objectStore) ([]byte, []byte, int, error) {
+	if cfg.LocalCloudScope == "" {
+		if cfg.PipelineConfigPath != "" || cfg.PipelineBindingsPath != "" {
+			return nil, nil, 0, errCloudWorkerConfigInvalid
+		}
+		data, seconds, err := readDeployedPipelineConfig(ctx, objects)
+		return data, nil, seconds, err
+	}
+	data, apiKey, seconds, err := readLocalPipelineInputs(cfg.PipelineConfigPath, cfg.PipelineBindingsPath)
+	if err != nil {
+		return nil, nil, 0, err
+	}
+	return data, apiKey, seconds, nil
 }
 
 func readDeployedPipelineConfig(ctx context.Context, objects objectStore) ([]byte, int, error) {

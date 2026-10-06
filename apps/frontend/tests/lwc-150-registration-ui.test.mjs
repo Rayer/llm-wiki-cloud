@@ -32,7 +32,7 @@ test('getPublicConfig fetches public config without auth or project header', asy
     );
     assert.equal(requestedInit?.headers?.Authorization, undefined);
     assert.equal(requestedInit?.headers?.['X-Project-ID'], undefined);
-    assert.deepEqual(config, { registration_enabled: false, email_registration_enabled: false, google_registration_enabled: false });
+    assert.deepEqual(config, { registration_enabled: false, email_registration_enabled: false, google_registration_enabled: false, demo_enabled: false });
   } finally {
     globalThis.fetch = originalFetch;
     clearPublicConfigCache();

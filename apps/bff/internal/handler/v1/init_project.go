@@ -6,6 +6,7 @@ import (
 	"encoding/hex"
 	"errors"
 	"fmt"
+	scopedfirestore "github.com/rayer/llm-wiki-bff/internal/firestore"
 	"net/http"
 	"strings"
 	"time"
@@ -67,7 +68,7 @@ func (h *Handler) InitProject(c *gin.Context) {
 
 	ctx := c.Request.Context()
 	fs := h.firestore.Raw()
-	projects := fs.Collection("projects")
+	projects := scopedfirestore.Collection(fs, "projects")
 	if idempotencyKey != "" {
 		snap, err := projects.Doc(projectDocID(userID, idempotencyKey)).Get(ctx)
 		if err == nil && snap.Exists() {
@@ -131,7 +132,7 @@ func (h *Handler) ProjectStatus(c *gin.Context) {
 		return
 	}
 
-	snap, err := h.firestore.Raw().Collection("projects").Doc(projectDocID(userID, projectID)).Get(c.Request.Context())
+	snap, err := scopedfirestore.Collection(h.firestore.Raw(), "projects").Doc(projectDocID(userID, projectID)).Get(c.Request.Context())
 	if err != nil {
 		if status.Code(err) == codes.NotFound {
 			c.JSON(http.StatusNotFound, handler.ErrorResponse{Error: "project not found"})

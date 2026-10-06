@@ -10,6 +10,7 @@ import (
 	"encoding/hex"
 	"encoding/json"
 	"errors"
+	scopedfirestore "github.com/rayer/llm-wiki-bff/internal/firestore"
 	"io"
 	"log"
 	"math"
@@ -540,7 +541,7 @@ func (s *GoogleOAuthService) CompletionReadHandler() gin.HandlerFunc {
 			writeOAuthFailure(c.Writer, http.StatusBadRequest, oauthOutcomeInvalidRequest, OAuthFlowLink)
 			return
 		}
-		snapshot, err := s.fs.Collection(oauthPendingLinksCollection).Doc(cookie.Value).Get(c.Request.Context())
+		snapshot, err := scopedfirestore.Collection(s.fs, oauthPendingLinksCollection).Doc(cookie.Value).Get(c.Request.Context())
 		if err != nil || !snapshot.Exists() {
 			writeOAuthFailure(c.Writer, http.StatusBadRequest, oauthOutcomeInvalidRequest, OAuthFlowLink)
 			return
@@ -584,7 +585,7 @@ func (s *GoogleOAuthService) CompletionResultHandler() gin.HandlerFunc {
 		var result oauthCompletionResult
 		var terminalErr error
 		err = s.fs.RunTransaction(c.Request.Context(), func(ctx context.Context, tx *firestore.Transaction) error {
-			resultRef := s.fs.Collection(oauthCompletionsCollection).Doc(cookie.Value)
+			resultRef := scopedfirestore.Collection(s.fs, oauthCompletionsCollection).Doc(cookie.Value)
 			snapshot, err := optionalTransactionGet(tx, resultRef)
 			if err != nil {
 				return err
@@ -655,7 +656,7 @@ func (s *GoogleOAuthService) IdentitySummaryHandler() gin.HandlerFunc {
 		}
 		c.Header("Cache-Control", "no-store")
 		providers := make([]ProviderIdentitySummary, 0, 1)
-		iter := s.fs.Collection(ExternalIdentitiesCollection).Where("user_id", "==", userID).Documents(c.Request.Context())
+		iter := scopedfirestore.Collection(s.fs, ExternalIdentitiesCollection).Where("user_id", "==", userID).Documents(c.Request.Context())
 		defer iter.Stop()
 		for {
 			snapshot, err := iter.Next()
@@ -693,7 +694,7 @@ func (s *GoogleOAuthService) completeLoginCallback(c *gin.Context, browserValue 
 			return
 		}
 		if usableProviderEmail(claims.Email) {
-			if _, err := s.fs.Collection(ExternalIdentitiesCollection).Doc(externalIdentityDocumentID(googleProvider, claims.Issuer, claims.Subject)).Update(c.Request.Context(), []firestore.Update{
+			if _, err := scopedfirestore.Collection(s.fs, ExternalIdentitiesCollection).Doc(externalIdentityDocumentID(googleProvider, claims.Issuer, claims.Subject)).Update(c.Request.Context(), []firestore.Update{
 				{Path: "provider_email", Value: strings.TrimSpace(claims.Email)},
 				{Path: "provider_email_verified", Value: claims.EmailVerified},
 			}); err != nil {
@@ -785,7 +786,7 @@ func (s *GoogleOAuthService) completeLinkCallback(c *gin.Context, browserValue, 
 		PasswordProofHash: transaction.PasswordProofHash, Status: oauthStatusActive, CreatedAt: now, ExpiresAt: now.Add(oauthTransactionTTL),
 	}
 	if err := s.fs.RunTransaction(c.Request.Context(), func(ctx context.Context, tx *firestore.Transaction) error {
-		identityRef := s.fs.Collection(ExternalIdentitiesCollection).Doc(externalIdentityDocumentID(googleProvider, claims.Issuer, claims.Subject))
+		identityRef := scopedfirestore.Collection(s.fs, ExternalIdentitiesCollection).Doc(externalIdentityDocumentID(googleProvider, claims.Issuer, claims.Subject))
 		identitySnapshot, err := optionalTransactionGet(tx, identityRef)
 		if err != nil {
 			return err
@@ -793,7 +794,7 @@ func (s *GoogleOAuthService) completeLinkCallback(c *gin.Context, browserValue, 
 		if identitySnapshot != nil {
 			return ErrExternalIdentityConflict
 		}
-		return tx.Create(s.fs.Collection(oauthPendingLinksCollection).Doc(confirmationID), pending)
+		return tx.Create(scopedfirestore.Collection(s.fs, oauthPendingLinksCollection).Doc(confirmationID), pending)
 	}); err != nil {
 		if errors.Is(err, ErrExternalIdentityConflict) {
 			s.redirectOAuthFailure(c, browserValue, OAuthFlowLink, oauthOutcomeLinkConflict)
@@ -853,7 +854,7 @@ func (s *GoogleOAuthService) redirectOAuthResult(c *gin.Context, browserValue st
 		State: oauthCompletionStateActive, Outcome: string(outcome), SupportRef: supportRef,
 		JITProvisioned: jitProvisioned, CreatedAt: now, ExpiresAt: now.Add(oauthCompletionTTL),
 	}
-	if _, err := s.fs.Collection(oauthCompletionsCollection).Doc(resultID).Create(c.Request.Context(), result); err != nil {
+	if _, err := scopedfirestore.Collection(s.fs, oauthCompletionsCollection).Doc(resultID).Create(c.Request.Context(), result); err != nil {
 		writeOAuthFailure(c.Writer, http.StatusServiceUnavailable, oauthOutcomeUnavailable, kind)
 		return
 	}
@@ -877,8 +878,8 @@ func (s *GoogleOAuthService) fixedCompletionURL() (string, error) {
 
 func (s *GoogleOAuthService) createTransaction(ctx context.Context, transactionID, browserValue string, transaction oauthTransaction) error {
 	browserHash := transaction.BrowserHash
-	browserRef := s.fs.Collection(oauthBrowsersCollection).Doc(browserHash)
-	transactionRef := s.fs.Collection(oauthTransactionsCollection).Doc(transactionID)
+	browserRef := scopedfirestore.Collection(s.fs, oauthBrowsersCollection).Doc(browserHash)
+	transactionRef := scopedfirestore.Collection(s.fs, oauthTransactionsCollection).Doc(transactionID)
 	return s.fs.RunTransaction(ctx, func(ctx context.Context, tx *firestore.Transaction) error {
 		lockSnapshot, err := optionalTransactionGet(tx, browserRef)
 		if err != nil {
@@ -890,7 +891,7 @@ func (s *GoogleOAuthService) createTransaction(ctx context.Context, transactionI
 				return err
 			}
 			if lock.TransactionID != "" && lock.TransactionID != transactionID {
-				oldRef := s.fs.Collection(oauthTransactionsCollection).Doc(lock.TransactionID)
+				oldRef := scopedfirestore.Collection(s.fs, oauthTransactionsCollection).Doc(lock.TransactionID)
 				oldSnapshot, err := optionalTransactionGet(tx, oldRef)
 				if err != nil {
 					return err
@@ -921,7 +922,7 @@ func (s *GoogleOAuthService) consumeTransaction(ctx context.Context, state, brow
 	var terminalErr error
 	err := s.fs.RunTransaction(ctx, func(ctx context.Context, tx *firestore.Transaction) error {
 		stateHash := hashOAuthValue(state)
-		query := s.fs.Collection(oauthTransactionsCollection).Where("state_hash", "==", stateHash).Limit(1)
+		query := scopedfirestore.Collection(s.fs, oauthTransactionsCollection).Where("state_hash", "==", stateHash).Limit(1)
 		iter := tx.Documents(query)
 		snapshot, err := iter.Next()
 		iter.Stop()
@@ -951,7 +952,7 @@ func (s *GoogleOAuthService) consumeTransaction(ctx context.Context, state, brow
 		if transaction.Status != oauthStatusActive {
 			return errOAuthReplay
 		}
-		browserRef := s.fs.Collection(oauthBrowsersCollection).Doc(transaction.BrowserHash)
+		browserRef := scopedfirestore.Collection(s.fs, oauthBrowsersCollection).Doc(transaction.BrowserHash)
 		lockSnapshot, err := optionalTransactionGet(tx, browserRef)
 		if err != nil {
 			return err
@@ -1013,7 +1014,7 @@ func (s *GoogleOAuthService) confirmLink(ctx context.Context, userID, confirmati
 	var result oauthCompletionResponse
 	var terminalErr error
 	err := s.fs.RunTransaction(ctx, func(ctx context.Context, tx *firestore.Transaction) error {
-		pendingRef := s.fs.Collection(oauthPendingLinksCollection).Doc(confirmationID)
+		pendingRef := scopedfirestore.Collection(s.fs, oauthPendingLinksCollection).Doc(confirmationID)
 		snapshot, err := optionalTransactionGet(tx, pendingRef)
 		if err != nil {
 			return err
@@ -1036,7 +1037,7 @@ func (s *GoogleOAuthService) confirmLink(ctx context.Context, userID, confirmati
 			terminalErr = errOAuthPendingExpired
 			return nil
 		}
-		userSnapshot, err := tx.Get(s.fs.Collection("users").Doc(userID))
+		userSnapshot, err := tx.Get(scopedfirestore.Collection(s.fs, "users").Doc(userID))
 		if err != nil {
 			return errOAuthPendingNotFound
 		}
@@ -1044,7 +1045,7 @@ func (s *GoogleOAuthService) confirmLink(ctx context.Context, userID, confirmati
 		if err := userSnapshot.DataTo(&user); err != nil || !user.AllowsVersion(pending.AuthVersion) || user.PasswordHash == "" || passwordProofHash(user.PasswordHash) != pending.PasswordProofHash {
 			return errOAuthPasswordChanged
 		}
-		identityRef := s.fs.Collection(ExternalIdentitiesCollection).Doc(externalIdentityDocumentID(pending.Provider, pending.Issuer, pending.Subject))
+		identityRef := scopedfirestore.Collection(s.fs, ExternalIdentitiesCollection).Doc(externalIdentityDocumentID(pending.Provider, pending.Issuer, pending.Subject))
 		identitySnapshot, err := optionalTransactionGet(tx, identityRef)
 		if err != nil {
 			return err
@@ -1082,7 +1083,7 @@ func (s *GoogleOAuthService) cancelLink(ctx context.Context, userID, confirmatio
 	var result oauthCompletionResponse
 	var terminalErr error
 	err := s.fs.RunTransaction(ctx, func(ctx context.Context, tx *firestore.Transaction) error {
-		pendingRef := s.fs.Collection(oauthPendingLinksCollection).Doc(confirmationID)
+		pendingRef := scopedfirestore.Collection(s.fs, oauthPendingLinksCollection).Doc(confirmationID)
 		snapshot, err := optionalTransactionGet(tx, pendingRef)
 		if err != nil {
 			return err

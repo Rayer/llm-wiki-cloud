@@ -50,6 +50,45 @@ func TestDeployedPipelineConfigIsReadOnce(t *testing.T) {
 	}
 }
 
+func TestLocalCloudPipelineInputsUseRenderedWorktreeFiles(t *testing.T) {
+	dir := t.TempDir()
+	configPath := filepath.Join(dir, "synto.toml")
+	config := []byte("[pipeline]\nrun_timeout_seconds = 23\n")
+	if err := os.WriteFile(configPath, config, 0o600); err != nil {
+		t.Fatal(err)
+	}
+	const localKey = "TEST_ONLY_LOCAL_PIPELINE_KEY"
+	bindings, err := json.Marshal(struct {
+		Environment string `json:"environment"`
+		LocalAPIKey []byte `json:"localApiKey"`
+	}{Environment: "local", LocalAPIKey: []byte(localKey)})
+	if err != nil {
+		t.Fatal(err)
+	}
+	bindingsPath := filepath.Join(dir, "private-bindings.json")
+	if err := os.WriteFile(bindingsPath, bindings, 0o600); err != nil {
+		t.Fatal(err)
+	}
+	store := &pipelineConfigReadOnceStore{objectStore: newMemoryObjects()}
+	data, apiKey, timeoutSeconds, err := readCloudPipelineInputs(context.Background(), workerConfig{
+		LocalCloudScope: "worktree-local", PipelineConfigPath: configPath, PipelineBindingsPath: bindingsPath,
+	}, store)
+	if err != nil || string(data) != string(config) || string(apiKey) != localKey || timeoutSeconds != 23 || store.reads != 0 {
+		t.Fatalf("local cloud config=%q key=%q timeout=%d GCS reads=%d err=%v", data, apiKey, timeoutSeconds, store.reads, err)
+	}
+	clear(apiKey)
+}
+
+func TestDeployedCloudPipelineInputsRejectLocalFilesBeforeGCSRead(t *testing.T) {
+	store := &pipelineConfigReadOnceStore{objectStore: newMemoryObjects()}
+	_, _, _, err := readCloudPipelineInputs(context.Background(), workerConfig{
+		PipelineConfigPath: "/tmp/local/synto.toml", PipelineBindingsPath: "/tmp/local/private-bindings.json",
+	}, store)
+	if !errors.Is(err, errCloudWorkerConfigInvalid) || store.reads != 0 {
+		t.Fatalf("deployed config error=%v GCS reads=%d, want fail before GCS read", err, store.reads)
+	}
+}
+
 func TestCloudRunTimeoutCancelsWorkerChild(t *testing.T) {
 	objects := newMemoryObjects()
 	config := strings.ReplaceAll(testDeployedPipelineConfig, "run_timeout_seconds = 15", "run_timeout_seconds = 1")

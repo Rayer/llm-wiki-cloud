@@ -49,7 +49,6 @@ vi.mock('@/lib/auth', () => ({
     isAuthenticated: Boolean(mocks.token),
     isDemoSession: mocks.isDemoSession,
     login: async () => undefined,
-    loginAsDemo: async () => undefined,
     register: async () => undefined,
     logout: async () => undefined,
     refreshAccessToken: async () => mocks.token,

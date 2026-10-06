@@ -5,6 +5,7 @@ import (
 	"crypto/rand"
 	"encoding/hex"
 	"errors"
+	scopedfirestore "github.com/rayer/llm-wiki-bff/internal/firestore"
 	"log"
 	"net/http"
 	"strings"
@@ -157,7 +158,7 @@ func generateUserID() string {
 }
 
 func createDefaultProject(ctx context.Context, fs *firestore.Client, userID, projectID string) error {
-	_, err := fs.Collection("users").Doc(userID).Collection("projects").Doc(projectID).Set(ctx, map[string]interface{}{
+	_, err := scopedfirestore.Collection(fs, "users").Doc(userID).Collection("projects").Doc(projectID).Set(ctx, map[string]interface{}{
 		"name":       "My First Wiki",
 		"created_at": nil,
 	})

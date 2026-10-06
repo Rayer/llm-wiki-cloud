@@ -5,6 +5,7 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
+	scopedfirestore "github.com/rayer/llm-wiki-bff/internal/firestore"
 	"io"
 	"log"
 	"net/http"
@@ -48,7 +49,7 @@ type firestoreProjectRenameTransaction struct {
 }
 
 func (a firestoreProjectRenameTransaction) RenameProject(ctx context.Context, userID, projectID, name string, authorize func(string, map[string]interface{}) bool) error {
-	docRef := a.client.Collection("projects").Doc(projectDocID(userID, projectID))
+	docRef := scopedfirestore.Collection(a.client, "projects").Doc(projectDocID(userID, projectID))
 	return a.client.RunTransaction(ctx, func(_ context.Context, tx *firestore.Transaction) error {
 		snap, err := tx.Get(docRef)
 		if err != nil {

@@ -63,12 +63,12 @@ func bindStrictJSONBody(c *gin.Context, req any) error {
 // PublicConfigHandler serves GET /api/v1/public/config without auth.
 //
 //	@Summary		Public runtime config
-//	@Description	Returns method-specific new-account registration capabilities and currently published announcement Markdown.
+//	@Description	Returns registration and Demo sign-in capabilities plus the currently published announcement Markdown.
 //	@Tags			public
 //	@Produce		json
 //	@Success		200	{object}	PublicSettings
 //	@Router			/api/v1/public/config [get]
-func PublicConfigHandler(gate RegistrationGate) gin.HandlerFunc {
+func PublicConfigHandler(gate RegistrationGate, demoEnabled bool) gin.HandlerFunc {
 	return func(c *gin.Context) {
 		settings, err := gate.GetSettings(c.Request.Context())
 		if err != nil {
@@ -79,6 +79,7 @@ func PublicConfigHandler(gate RegistrationGate) gin.HandlerFunc {
 			RegistrationEnabled:       settings.RegistrationEnabled,
 			EmailRegistrationEnabled:  settings.RegistrationEnabled && settings.EmailRegistrationEnabled,
 			GoogleRegistrationEnabled: settings.RegistrationEnabled && settings.GoogleRegistrationEnabled,
+			DemoEnabled:               demoEnabled,
 			AnnouncementMarkdown:      settings.AnnouncementMarkdown,
 			AnnouncementDigest:        announcementDigest(settings.AnnouncementMarkdown),
 		})

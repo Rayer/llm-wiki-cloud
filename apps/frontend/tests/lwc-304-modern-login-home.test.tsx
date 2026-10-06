@@ -63,7 +63,7 @@ beforeEach(() => {
   localStorage.clear();
   mocks.currentProject = { id: 'project-a', name: 'Project A' };
   mocks.getConcepts.mockResolvedValue([]);
-  mocks.getPublicConfig.mockResolvedValue({ registration_enabled: false });
+  mocks.getPublicConfig.mockResolvedValue({ registration_enabled: false, demo_enabled: true });
   mocks.getStatus.mockResolvedValue(status());
   mocks.loginOpen = true;
   mocks.searchWiki.mockResolvedValue(SEARCH_RESPONSE);
@@ -124,11 +124,11 @@ describe('LWC-304 modern login and knowledge home', () => {
     await waitFor(() => expect(mocks.signIn).toHaveBeenCalledWith('person@example.com', 'secret'));
   });
 
-  it('starts Demo sign-in without passing credentials', async () => {
+  it('exposes the formal demo sign-in action', async () => {
     render(<LoginModal />);
-    fireEvent.click(screen.getByRole('button', { name: 'Login.tryDemo' }));
-    await waitFor(() => expect(mocks.signInAsDemo).toHaveBeenCalledTimes(1));
-    expect(mocks.signInAsDemo).toHaveBeenCalledWith();
+    fireEvent.click(await screen.findByRole('button', { name: 'Login.tryDemo' }));
+    expect(mocks.signInAsDemo).toHaveBeenCalledOnce();
+    expect(mocks.signIn).not.toHaveBeenCalled();
   });
 
   it('renders the HomeClient query composer and submits its selected mode', async () => {
