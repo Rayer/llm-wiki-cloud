@@ -4,6 +4,7 @@
 from __future__ import annotations
 
 import argparse
+import errno
 import json
 import os
 from pathlib import Path
@@ -90,6 +91,34 @@ def readiness_addresses(name: str) -> tuple[str, ...]:
     return ("127.0.0.1", "::1") if name == "frontend" else ("127.0.0.1",)
 
 
+def unavailable_service_port(name: str, env: dict[str, str]) -> str | None:
+    try:
+        port = int(env[f"{name.upper()}_PORT"])
+    except (KeyError, TypeError, ValueError):
+        return "service port is not configured for readiness check"
+    for address in readiness_addresses(name):
+        family = socket.AF_INET6 if ":" in address else socket.AF_INET
+        try:
+            with socket.socket(family, socket.SOCK_STREAM) as probe:
+                probe.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
+                probe.bind((address, port))
+        except OSError as exc:
+            if family == socket.AF_INET6 and exc.errno in {errno.EAFNOSUPPORT, errno.EADDRNOTAVAIL, errno.EPROTONOSUPPORT}:
+                continue
+            if exc.errno == errno.EADDRINUSE:
+                return f"port {port} is already in use on {address}"
+            return f"could not verify port {port} on {address}: {exc}"
+    return None
+
+
+def unavailable_service(names: list[str], env: dict[str, str]) -> tuple[str, str] | None:
+    for name in names:
+        reason = unavailable_service_port(name, env)
+        if reason is not None:
+            return name, reason
+    return None
+
+
 def wait_for_service_readiness(children: dict[str, subprocess.Popen], env: dict[str, str], timeout: float) -> tuple[str, str] | None:
     pending = set(children)
     deadline = time.monotonic() + timeout
@@ -141,6 +170,11 @@ def daemon(state: Path, token: str, names: list[str], startup_timeout: float = S
     signal.signal(signal.SIGINT, stop_handler)
     write_startup(state, token, "starting")
     try:
+        unavailable = unavailable_service(names, os.environ)
+        if unavailable is not None:
+            name, reason = unavailable
+            write_startup(state, token, "failed", service=name, reason=reason)
+            return 1
         for name in names:
             child_env = os.environ.copy()
             child_env.pop("LOCAL_LOGIN_EMAIL", None)

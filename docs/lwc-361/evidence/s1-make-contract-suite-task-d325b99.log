@@ -1,0 +1,19 @@
+test_component_support_targets_start_only_required_native_services (test_local_dev_makefile.LocalDevMakefileTests.test_component_support_targets_start_only_required_native_services) ... ok
+test_deploy_dev_recipe_is_parseable_and_keeps_production_target (test_local_dev_makefile.LocalDevMakefileTests.test_deploy_dev_recipe_is_parseable_and_keeps_production_target) ... ok
+test_frontend_readiness_accepts_ipv6_localhost (test_local_dev_makefile.LocalDevMakefileTests.test_frontend_readiness_accepts_ipv6_localhost) ... ok
+test_frontend_readiness_rejects_an_unbound_loopback_port (test_local_dev_makefile.LocalDevMakefileTests.test_frontend_readiness_rejects_an_unbound_loopback_port) ... ok
+test_local_config_writes_only_public_frontend_urls (test_local_dev_makefile.LocalDevMakefileTests.test_local_config_writes_only_public_frontend_urls) ... ok
+test_local_worker_runtime_matches_pinned_image_and_runs_without_provider (test_local_dev_makefile.LocalDevMakefileTests.test_local_worker_runtime_matches_pinned_image_and_runs_without_provider) ... ok
+test_make_help_documents_native_local_path (test_local_dev_makefile.LocalDevMakefileTests.test_make_help_documents_native_local_path) ... ok
+test_native_targets_use_worktree_supervisor_and_same_fixture_config (test_local_dev_makefile.LocalDevMakefileTests.test_native_targets_use_worktree_supervisor_and_same_fixture_config) ... ok
+test_pipeline_test_is_local_worker_suite_without_cloud_run (test_local_dev_makefile.LocalDevMakefileTests.test_pipeline_test_is_local_worker_suite_without_cloud_run) ... ok
+test_start_rejects_existing_listener_before_delayed_child_can_fake_readiness (test_local_dev_makefile.LocalDevMakefileTests.test_start_rejects_existing_listener_before_delayed_child_can_fake_readiness) ... ok
+test_start_returns_named_failure_when_supervised_service_cannot_start (test_local_dev_makefile.LocalDevMakefileTests.test_start_returns_named_failure_when_supervised_service_cannot_start) ... ok
+test_startup_port_check_allows_recently_closed_listener_port (test_local_dev_makefile.LocalDevMakefileTests.test_startup_port_check_allows_recently_closed_listener_port) ... ok
+test_stop_is_scoped_to_supervisor_metadata (test_local_dev_makefile.LocalDevMakefileTests.test_stop_is_scoped_to_supervisor_metadata) ... ok
+test_supervisor_reports_partial_start_failure_and_cleans_only_its_child (test_local_dev_makefile.LocalDevMakefileTests.test_supervisor_reports_partial_start_failure_and_cleans_only_its_child) ... ok
+
+----------------------------------------------------------------------
+Ran 14 tests in 0.764s
+
+OK

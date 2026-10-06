@@ -134,6 +134,99 @@ class LocalDevMakefileTests(unittest.TestCase):
         self.assertIn("go test ./cmd/olw_worker", output)
         self.assertNotIn("gcloud run jobs execute", output)
 
+    def test_start_rejects_existing_listener_before_delayed_child_can_fake_readiness(self):
+        with tempfile.TemporaryDirectory() as tmp, socket.socket() as unrelated:
+            root = Path(tmp) / "repo"
+            (root / "apps" / "bff").mkdir(parents=True)
+            state = Path(tmp) / "state"
+            fake_bin = Path(tmp) / "bin"
+            fake_bin.mkdir()
+            unrelated.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
+            unrelated.bind(("127.0.0.1", 0))
+            unrelated.listen()
+            port = unrelated.getsockname()[1]
+            launcher_started = state / "launcher-started"
+            bind_failed = state / "child-bind-failed"
+            state.mkdir()
+            fake_go = fake_bin / "go"
+            fake_go.write_text(
+                "#!/usr/bin/env python3\n"
+                "import os, socket, sys, time\n"
+                "from pathlib import Path\n"
+                "Path(os.environ['FIXTURE_LAUNCHER_STARTED']).write_text('started')\n"
+                "time.sleep(0.6)\n"
+                "listener = socket.socket()\n"
+                "try:\n"
+                "    listener.bind(('127.0.0.1', int(os.environ['PORT'])))\n"
+                "except OSError as exc:\n"
+                "    Path(os.environ['FIXTURE_BIND_FAILED']).write_text(str(exc))\n"
+                "    raise SystemExit(17)\n"
+                "listener.close()\n"
+                "raise SystemExit(18)\n"
+            )
+            fake_go.chmod(0o755)
+            env = os.environ.copy()
+            for key in (
+                "LLM_API_KEY", "DEEPSEEK_API_KEY", "SYNTO_API_KEY", "OPENAI_API_KEY",
+                "ANTHROPIC_API_KEY", "GEMINI_API_KEY", "TYPESAFE_API_KEY",
+                "TYPESAFE_JEV_API_KEY", "LWC331_TEST_API_KEY", "FIRESTORE_EMULATOR_HOST",
+                "STORAGE_EMULATOR_HOST", "VERCEL_TOKEN",
+            ):
+                env.pop(key, None)
+            env.update({
+                "AUTH_PORT": str(port),
+                "LOCAL_CLOUD_REPO_ROOT": str(root),
+                "LOCAL_CLOUD_STATE_DIR": str(state),
+                "PATH": str(fake_bin) + os.pathsep + env.get("PATH", ""),
+                "FIXTURE_LAUNCHER_STARTED": str(launcher_started),
+                "FIXTURE_BIND_FAILED": str(bind_failed),
+            })
+
+            result = subprocess.run(
+                [sys.executable, str(LOCAL_SERVICES), "start", "auth"],
+                cwd=REPO,
+                env=env,
+                capture_output=True,
+                text=True,
+                timeout=10,
+            )
+            if result.returncode == 0:
+                deadline = time.monotonic() + 3
+                while time.monotonic() < deadline and not bind_failed.exists():
+                    time.sleep(0.05)
+            startup = json.loads((state / "startup.json").read_text())
+            self.assertEqual(
+                result.returncode,
+                1,
+                f"occupied port was reported ready; startup={startup}, "
+                f"launcher_started={launcher_started.exists()}, child_bind_failed={bind_failed.exists()}, "
+                f"stdout={result.stdout!r}, stderr={result.stderr!r}",
+            )
+            self.assertEqual(startup["state"], "failed")
+            self.assertEqual(startup["service"], "auth")
+            self.assertIn(f"port {port} is already in use", startup["reason"])
+            self.assertIn("already in use", result.stderr)
+            self.assertFalse(launcher_started.exists())
+            self.assertFalse((state / "services.json").exists())
+            self.assertFalse((state / "children.json").exists())
+            with socket.create_connection(("127.0.0.1", port), timeout=0.2):
+                pass
+
+    def test_startup_port_check_allows_recently_closed_listener_port(self):
+        spec = importlib.util.spec_from_file_location("local_services_reuse_fixture", LOCAL_SERVICES)
+        module = importlib.util.module_from_spec(spec)
+        spec.loader.exec_module(module)
+        with socket.socket() as server:
+            server.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
+            server.bind(("127.0.0.1", 0))
+            server.listen()
+            port = server.getsockname()[1]
+            with socket.create_connection(("127.0.0.1", port), timeout=0.2):
+                accepted, _ = server.accept()
+                accepted.close()
+
+        self.assertIsNone(module.unavailable_service_port("auth", {"AUTH_PORT": str(port)}))
+
     def test_supervisor_reports_partial_start_failure_and_cleans_only_its_child(self):
         with tempfile.TemporaryDirectory() as tmp, socket.socket() as unrelated:
             state = Path(tmp) / "state"
@@ -179,9 +272,12 @@ class LocalDevMakefileTests(unittest.TestCase):
             root = Path(tmp) / "repo"
             state = Path(tmp) / "state"
             root.mkdir()
+            with socket.socket() as probe:
+                probe.bind(("127.0.0.1", 0))
+                auth_port = probe.getsockname()[1]
             module.STARTUP_TIMEOUT_SECONDS = 3
             stderr = io.StringIO()
-            with patch.dict(os.environ, {"LOCAL_CLOUD_REPO_ROOT": str(root), "AUTH_PORT": "18081"}), redirect_stderr(stderr):
+            with patch.dict(os.environ, {"LOCAL_CLOUD_REPO_ROOT": str(root), "AUTH_PORT": str(auth_port)}), redirect_stderr(stderr):
                 result = module.start(state, ["auth"])
             self.assertEqual(result, 1)
             self.assertIn("local service auth failed startup", stderr.getvalue())
