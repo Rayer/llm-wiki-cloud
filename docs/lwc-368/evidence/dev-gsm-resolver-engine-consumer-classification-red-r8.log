@@ -1,0 +1,26 @@
+test_action_preserves_bounded_pipeline_make_failure_and_masks_known_value (test_prepare_diagnostics.PipelineConfigPrepareDiagnostics.test_action_preserves_bounded_pipeline_make_failure_and_masks_known_value) ... FAIL
+
+======================================================================
+FAIL: test_action_preserves_bounded_pipeline_make_failure_and_masks_known_value (test_prepare_diagnostics.PipelineConfigPrepareDiagnostics.test_action_preserves_bounded_pipeline_make_failure_and_masks_known_value)
+----------------------------------------------------------------------
+Traceback (most recent call last):
+  File "/Users/rayer/orca/workspaces/llm-wiki-cloud/LWC-368-pipeline-cac/deploy/engine/tests/test_prepare_diagnostics.py", line 1493, in test_action_preserves_bounded_pipeline_make_failure_and_masks_known_value
+    self.assertEqual((result['reason'], result['status'],
+    ~~~~~~~~~~~~~~~~^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+                      result['mutation_may_have_happened']),
+                      ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+                     ('command-failed', 'failed', False))
+                     ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+AssertionError: Tuples differ: ('permission-denied', 'failed', False) != ('command-failed', 'failed', False)
+
+First differing element 0:
+'permission-denied'
+'command-failed'
+
+- ('permission-denied', 'failed', False)
++ ('command-failed', 'failed', False)
+
+----------------------------------------------------------------------
+Ran 1 test in 0.888s
+
+FAILED (failures=1)

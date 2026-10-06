@@ -1,0 +1,11 @@
+status	mode	bytes	sha256	kind	path
+M	0644	14006	1473f4f9a2656d710d32354f886f3e1873020041d1f40aeca01d6e94835ef111	file	apps/bff/cmd/pipeline_config/main.go
+M	0644	16367	97da11b216bcf47bb6695f6ded322ac896c100177f60e54bdf8949442077e8f0	file	apps/bff/cmd/pipeline_config/main_test.go
+M	0644	95733	05e9cc2cbc0c18c92b2604841b607142d01a1ae1c6389bbb57c3f27b6d1e30bd	file	deploy/engine/tests/test_prepare_diagnostics.py
+A	0644	804	1cb54493f29bc8abcf043bc1940764be6163420e0ca7822f92d10339e9c519d7	file	docs/lwc-368/evidence/dev-gsm-resolver-red-r8.log
+A	0644	1542	e12cbd964e8367b0bc9588d8b1298f773755238724f9d42cafc70fab043bafc0	file	docs/lwc-368/evidence/dev-gsm-resolver-engine-consumer-classification-red-r8.log
+A	0644	312	3b403e67ea92e4b04ea06aefbc8a420e3989fda53cab0d2ce5553d9462b2737f	file	docs/lwc-368/evidence/dev-gsm-resolver-engine-consumer-green-r8.log
+A	0644	1928	93afbc577acea5cc5345659e66af14f3d11db95bc9262aa0d7111748e2ea50aa	file	docs/lwc-368/evidence/dev-gsm-resolver-go-package-offline-r8.log
+A	0644	0	e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855	file	docs/lwc-368/evidence/dev-gsm-resolver-go-vet-offline-r8.log
+A	0644	0	e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855	file	docs/lwc-368/evidence/dev-gsm-resolver-go-build-offline-r8.log
+A	0644	4588	3b8505fb55da7f92d1f058f912e7bca189271283b407196472987a0dcc151a1b	file	docs/lwc-368/evidence/dev-gsm-resolver-diagnosis-r8.md
