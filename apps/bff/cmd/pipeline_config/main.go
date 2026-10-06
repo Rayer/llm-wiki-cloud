@@ -18,6 +18,7 @@ import (
 	"time"
 	"unicode/utf8"
 
+	"google.golang.org/api/cloudresourcemanager/v3"
 	"google.golang.org/api/googleapi"
 	"google.golang.org/api/option"
 	"google.golang.org/api/secretmanager/v1"
@@ -27,6 +28,12 @@ const maxConfigBytes = 1 << 20
 
 var secretResourcePattern = regexp.MustCompile(`^projects/[A-Za-z0-9.-]+/secrets/[A-Za-z0-9_-]+/versions/(?:[1-9][0-9]*|latest)$`)
 var resolvedSecretResourcePattern = regexp.MustCompile(`^projects/[A-Za-z0-9.-]+/secrets/[A-Za-z0-9_-]+/versions/[1-9][0-9]*$`)
+var projectNumberPattern = regexp.MustCompile(`^[1-9][0-9]{5,19}$`)
+
+var (
+	errProjectIdentityUnavailable = errors.New("Cloud Resource Manager response omitted canonical project identity")
+	errProjectIdentityMismatch    = errors.New("Cloud Resource Manager response does not identify the selected project")
+)
 
 type secretBinding struct {
 	Source   string `json:"source"`
@@ -53,7 +60,19 @@ type secretReader interface {
 	Access(context.Context, string) (string, []byte, error)
 }
 
-type googleSecretReader struct{ service *secretmanager.Service }
+type projectIdentity struct {
+	ProjectID     string
+	ProjectNumber string
+}
+
+type projectIdentityReader interface {
+	ProjectIdentity(context.Context, string) (projectIdentity, error)
+}
+
+type googleSecretReader struct {
+	service  *secretmanager.Service
+	projects *cloudresourcemanager.Service
+}
 
 func (r googleSecretReader) Access(ctx context.Context, resource string) (string, []byte, error) {
 	response, err := r.service.Projects.Secrets.Versions.Access(resource).Context(ctx).Do()
@@ -76,14 +95,42 @@ func (r googleSecretReader) Access(ctx context.Context, resource string) (string
 	return response.Name, value, nil
 }
 
+func (r googleSecretReader) ProjectIdentity(ctx context.Context, project string) (projectIdentity, error) {
+	if r.projects == nil {
+		return projectIdentity{}, errProjectIdentityUnavailable
+	}
+	response, err := r.projects.Projects.Get("projects/" + project).Context(ctx).Do()
+	if err != nil {
+		return projectIdentity{}, err
+	}
+	if response == nil || !strings.HasPrefix(response.Name, "projects/") {
+		return projectIdentity{}, errProjectIdentityUnavailable
+	}
+	projectNumber := strings.TrimPrefix(response.Name, "projects/")
+	if response.ProjectId == "" || !projectNumberPattern.MatchString(projectNumber) {
+		return projectIdentity{}, errProjectIdentityUnavailable
+	}
+	if !projectIdentityMatchesRequest(project, projectIdentity{
+		ProjectID: response.ProjectId, ProjectNumber: projectNumber,
+	}) {
+		return projectIdentity{}, errProjectIdentityMismatch
+	}
+	return projectIdentity{ProjectID: response.ProjectId, ProjectNumber: projectNumber}, nil
+}
+
 type readerFactory func(context.Context) (secretReader, error)
 
 func googleReader(ctx context.Context) (secretReader, error) {
-	service, err := secretmanager.NewService(ctx, option.WithScopes("https://www.googleapis.com/auth/cloud-platform"))
+	const scope = "https://www.googleapis.com/auth/cloud-platform"
+	service, err := secretmanager.NewService(ctx, option.WithScopes(scope))
 	if err != nil {
 		return nil, err
 	}
-	return googleSecretReader{service: service}, nil
+	projects, err := cloudresourcemanager.NewService(ctx, option.WithScopes(scope))
+	if err != nil {
+		return nil, err
+	}
+	return googleSecretReader{service: service, projects: projects}, nil
 }
 
 func main() {
@@ -262,19 +309,43 @@ func resolveBinding(ctx context.Context, binding secretBinding, newReader reader
 		}
 		reader, err := newReader(ctx)
 		if err != nil {
-			return nil, "", fmt.Errorf("initialize Secret Manager resolver failed: %s", secretManagerErrorSummary(err))
+			return nil, "", fmt.Errorf("initialize Secret Manager resolver failed: %s", googleAPIErrorSummary(err))
 		}
 		resolvedResource, value, err := reader.Access(ctx, binding.Resource)
 		if err != nil {
 			clear(value)
-			return nil, "", fmt.Errorf("resolve Secret Manager version %s: access failed: %s", binding.Resource, secretManagerErrorSummary(err))
+			return nil, "", fmt.Errorf("resolve Secret Manager version %s: access failed: %s", binding.Resource, googleAPIErrorSummary(err))
 		}
 		if len(value) == 0 {
 			return nil, "", fmt.Errorf("resolve Secret Manager version %s: payload is empty", binding.Resource)
 		}
 		if !resolvedSecretResourceMatches(binding.Resource, resolvedResource) {
-			clear(value)
-			return nil, "", fmt.Errorf("resolve Secret Manager version %s: response did not identify the selected numeric version", binding.Resource)
+			requestedParts := strings.Split(binding.Resource, "/")
+			if !resolvedSecretVersionMatches(binding.Resource, resolvedResource) {
+				clear(value)
+				return nil, "", fmt.Errorf("resolve Secret Manager version %s: response did not identify the selected numeric version", binding.Resource)
+			}
+			identityReader, ok := reader.(projectIdentityReader)
+			if !ok {
+				clear(value)
+				return nil, "", fmt.Errorf("resolve Secret Manager version %s: response did not identify the selected project and numeric version", binding.Resource)
+			}
+			identity, err := identityReader.ProjectIdentity(ctx, requestedParts[1])
+			if err != nil {
+				clear(value)
+				if errors.Is(err, errProjectIdentityMismatch) || errors.Is(err, errProjectIdentityUnavailable) {
+					return nil, "", fmt.Errorf("resolve Secret Manager version %s: %s", binding.Resource, err)
+				}
+				return nil, "", fmt.Errorf("resolve Secret Manager version %s: project identity lookup failed: %s", binding.Resource, googleAPIErrorSummary(err))
+			}
+			if !resolvedSecretResourceMatchesProjectIdentity(binding.Resource, resolvedResource, identity) {
+				clear(value)
+				return nil, "", fmt.Errorf("resolve Secret Manager version %s: response did not identify the selected project and numeric version", binding.Resource)
+			}
+			resolvedParts := strings.Split(resolvedResource, "/")
+			resolvedResource = strings.Join([]string{
+				"projects", requestedParts[1], "secrets", requestedParts[3], "versions", resolvedParts[5],
+			}, "/")
 		}
 		return value, resolvedResource, nil
 	default:
@@ -282,7 +353,7 @@ func resolveBinding(ctx context.Context, binding secretBinding, newReader reader
 	}
 }
 
-func secretManagerErrorSummary(err error) string {
+func googleAPIErrorSummary(err error) string {
 	var apiError *googleapi.Error
 	if errors.As(err, &apiError) && apiError != nil {
 		message, truncated := boundedSecretManagerMessage(apiError.Message)
@@ -304,17 +375,35 @@ func boundedSecretManagerMessage(message string) (string, bool) {
 }
 
 func resolvedSecretResourceMatches(requested, resolved string) bool {
-	if !secretResourcePattern.MatchString(requested) {
-		return false
-	}
-	if !resolvedSecretResourcePattern.MatchString(resolved) {
+	if !resolvedSecretVersionMatches(requested, resolved) {
 		return false
 	}
 	requestedParts, resolvedParts := strings.Split(requested, "/"), strings.Split(resolved, "/")
-	if requestedParts[1] != resolvedParts[1] || requestedParts[3] != resolvedParts[3] {
+	return requestedParts[1] == resolvedParts[1]
+}
+
+func resolvedSecretVersionMatches(requested, resolved string) bool {
+	if !secretResourcePattern.MatchString(requested) || !resolvedSecretResourcePattern.MatchString(resolved) {
 		return false
 	}
-	return requestedParts[5] == "latest" || requestedParts[5] == resolvedParts[5]
+	requestedParts, resolvedParts := strings.Split(requested, "/"), strings.Split(resolved, "/")
+	return requestedParts[3] == resolvedParts[3] &&
+		(requestedParts[5] == "latest" || requestedParts[5] == resolvedParts[5])
+}
+
+func projectIdentityMatchesRequest(requestedProject string, identity projectIdentity) bool {
+	return identity.ProjectID != "" && projectNumberPattern.MatchString(identity.ProjectNumber) &&
+		(requestedProject == identity.ProjectID || requestedProject == identity.ProjectNumber)
+}
+
+func resolvedSecretResourceMatchesProjectIdentity(requested, resolved string, identity projectIdentity) bool {
+	if !resolvedSecretVersionMatches(requested, resolved) {
+		return false
+	}
+	requestedProject := strings.Split(requested, "/")[1]
+	resolvedProject := strings.Split(resolved, "/")[1]
+	return projectIdentityMatchesRequest(requestedProject, identity) &&
+		(resolvedProject == identity.ProjectID || resolvedProject == identity.ProjectNumber)
 }
 
 func bindResolvedSecretReference(outputDir string, binding secretBinding) error {

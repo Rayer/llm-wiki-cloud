@@ -14,15 +14,19 @@ import (
 	"strings"
 	"testing"
 
+	"google.golang.org/api/cloudresourcemanager/v3"
 	"google.golang.org/api/option"
 	"google.golang.org/api/secretmanager/v1"
 )
 
 type fakeSecretReader struct {
-	resource string
-	resolved string
-	value    []byte
-	err      error
+	resource      string
+	resolved      string
+	value         []byte
+	err           error
+	identity      projectIdentity
+	identityErr   error
+	identityCalls int
 }
 
 type roundTripFunc func(*http.Request) (*http.Response, error)
@@ -37,6 +41,17 @@ func (r *fakeSecretReader) Access(_ context.Context, resource string) (string, [
 		r.resolved = resource
 	}
 	return r.resolved, r.value, r.err
+}
+
+func (r *fakeSecretReader) ProjectIdentity(_ context.Context, project string) (projectIdentity, error) {
+	r.identityCalls++
+	if r.identityErr != nil {
+		return projectIdentity{}, r.identityErr
+	}
+	if !projectIdentityMatchesRequest(project, r.identity) {
+		return projectIdentity{}, errProjectIdentityMismatch
+	}
+	return r.identity, nil
 }
 
 func TestEnvironmentBindingDoesNotInitializeSecretManager(t *testing.T) {
@@ -94,6 +109,77 @@ func TestLatestSecretManagerBindingIsPinnedToResolvedNumericVersion(t *testing.T
 		t.Fatalf("latest Secret Manager version was not pinned: resolved=%q err=%v", resolved, err)
 	}
 	clear(value)
+}
+
+func TestSecretManagerBindingAcceptsAuthoritativeNumericProjectAlias(t *testing.T) {
+	const requested = "projects/test-project/secrets/test-secret/versions/latest"
+	const numericResponse = "projects/580854833715/secrets/test-secret/versions/19"
+	reader := &fakeSecretReader{
+		resolved: numericResponse, value: []byte("TEST_ONLY_GSM_PAYLOAD"),
+		identity: projectIdentity{ProjectID: "test-project", ProjectNumber: "580854833715"},
+	}
+	value, resolved, err := resolveBinding(context.Background(), secretBinding{
+		Source: "secret-manager", Target: "DEEPSEEK_API_KEY", Resource: requested,
+	}, func(context.Context) (secretReader, error) { return reader, nil })
+	if err != nil || string(value) != "TEST_ONLY_GSM_PAYLOAD" || reader.resource != requested ||
+		reader.identityCalls != 1 || resolved != "projects/test-project/secrets/test-secret/versions/19" {
+		t.Fatalf("numeric project alias was not authoritatively resolved: resource=%q version=%q identity_calls=%d err=%v",
+			reader.resource, resolved, reader.identityCalls, err)
+	}
+	clear(value)
+}
+
+func TestSecretManagerNumericProjectAliasRejectsUnboundResponses(t *testing.T) {
+	const requested = "projects/test-project/secrets/test-secret/versions/11"
+	identity := projectIdentity{ProjectID: "test-project", ProjectNumber: "580854833715"}
+	for _, tc := range []struct {
+		name           string
+		resolved       string
+		identity       projectIdentity
+		identityErr    error
+		emptyPayload   bool
+		wantIdentity   int
+		wantDiagnostic string
+	}{
+		{name: "wrong numeric project", resolved: "projects/999999999999/secrets/test-secret/versions/11", identity: identity, wantIdentity: 1},
+		{name: "wrong secret", resolved: "projects/580854833715/secrets/other-secret/versions/11", identity: identity},
+		{name: "wrong version", resolved: "projects/580854833715/secrets/test-secret/versions/12", identity: identity},
+		{name: "malformed response", resolved: "projects/580854833715/secrets/test-secret/versions/latest", identity: identity},
+		{name: "metadata identity mismatch", resolved: "projects/580854833715/secrets/test-secret/versions/11",
+			identity: projectIdentity{ProjectID: "other-project", ProjectNumber: "580854833715"}, wantIdentity: 1,
+			wantDiagnostic: "does not identify the selected project"},
+		{name: "metadata unavailable", resolved: "projects/580854833715/secrets/test-secret/versions/11",
+			identity: identity, identityErr: errors.New("TEST_ONLY_METADATA_FAILURE"), wantIdentity: 1,
+			wantDiagnostic: "project identity lookup failed"},
+		{name: "empty payload precedes metadata lookup", resolved: "projects/580854833715/secrets/test-secret/versions/11",
+			identity: identity, emptyPayload: true, wantDiagnostic: "payload is empty"},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			payload := []byte("TEST_ONLY_GSM_PAYLOAD")
+			if tc.emptyPayload {
+				payload = nil
+			}
+			reader := &fakeSecretReader{
+				resolved: tc.resolved, value: payload,
+				identity: tc.identity, identityErr: tc.identityErr,
+			}
+			_, _, err := resolveBinding(context.Background(), secretBinding{
+				Source: "secret-manager", Target: "DEEPSEEK_API_KEY", Resource: requested,
+			}, func(context.Context) (secretReader, error) { return reader, nil })
+			if err == nil || strings.Contains(err.Error(), "TEST_ONLY_GSM_PAYLOAD") ||
+				strings.Contains(err.Error(), "TEST_ONLY_METADATA_FAILURE") || reader.identityCalls != tc.wantIdentity {
+				t.Fatalf("unbound response was accepted or leaked data: identity_calls=%d err=%v", reader.identityCalls, err)
+			}
+			if tc.wantDiagnostic != "" && !strings.Contains(err.Error(), tc.wantDiagnostic) {
+				t.Fatalf("metadata failure lost its diagnostic class: %v", err)
+			}
+			for _, b := range reader.value {
+				if b != 0 {
+					t.Fatal("rejected synthetic secret buffer was not cleared")
+				}
+			}
+		})
+	}
 }
 
 func TestPreparedSecretReferenceUpdatesOnlyPublicAndPrivateBindings(t *testing.T) {
@@ -270,6 +356,52 @@ func TestGoogleSecretManagerSDKAccessPath(t *testing.T) {
 	})
 	if err != nil || string(value) != payload || resolved != resource {
 		t.Fatalf("Google Secret Manager client response = %q version=%q, %v", value, resolved, err)
+	}
+	clear(value)
+}
+
+func TestGoogleSecretManagerSDKResolvesCanonicalNumericProjectName(t *testing.T) {
+	const requested = "projects/test-project/secrets/test-secret/versions/11"
+	const canonical = "projects/580854833715/secrets/test-secret/versions/11"
+	const payload = "TEST_ONLY_SDK_PAYLOAD"
+	accessCalls, projectCalls := 0, 0
+	secretHTTP := &http.Client{Transport: roundTripFunc(func(request *http.Request) (*http.Response, error) {
+		accessCalls++
+		if request.Method != http.MethodGet || request.URL.Path != "/v1/"+requested+":access" {
+			return nil, fmt.Errorf("unexpected Secret Manager request %s %s", request.Method, request.URL.Path)
+		}
+		body := fmt.Sprintf(`{"name":%q,"payload":{"data":%q}}`, canonical,
+			base64.StdEncoding.EncodeToString([]byte(payload)))
+		return &http.Response{StatusCode: http.StatusOK, Header: http.Header{"Content-Type": []string{"application/json"}},
+			Body: io.NopCloser(strings.NewReader(body)), Request: request}, nil
+	})}
+	projectHTTP := &http.Client{Transport: roundTripFunc(func(request *http.Request) (*http.Response, error) {
+		projectCalls++
+		if request.Method != http.MethodGet || request.URL.Path != "/v3/projects/test-project" {
+			return nil, fmt.Errorf("unexpected Cloud Resource Manager request %s %s", request.Method, request.URL.Path)
+		}
+		body := `{"name":"projects/580854833715","projectId":"test-project","state":"ACTIVE"}`
+		return &http.Response{StatusCode: http.StatusOK, Header: http.Header{"Content-Type": []string{"application/json"}},
+			Body: io.NopCloser(strings.NewReader(body)), Request: request}, nil
+	})}
+	secretService, err := secretmanager.NewService(context.Background(), option.WithEndpoint("https://secretmanager.test/"),
+		option.WithHTTPClient(secretHTTP), option.WithoutAuthentication())
+	if err != nil {
+		t.Fatal(err)
+	}
+	projectService, err := cloudresourcemanager.NewService(context.Background(), option.WithEndpoint("https://cloudresourcemanager.test/"),
+		option.WithHTTPClient(projectHTTP), option.WithoutAuthentication())
+	if err != nil {
+		t.Fatal(err)
+	}
+	reader := googleSecretReader{service: secretService, projects: projectService}
+	value, resolved, err := resolveBinding(context.Background(), secretBinding{
+		Source: "secret-manager", Target: "DEEPSEEK_API_KEY", Resource: requested,
+	}, func(context.Context) (secretReader, error) { return reader, nil })
+	if err != nil || string(value) != payload || accessCalls != 1 || projectCalls != 1 ||
+		resolved != requested {
+		t.Fatalf("SDK canonical project response was not safely pinned: version=%q access_calls=%d project_calls=%d err=%v",
+			resolved, accessCalls, projectCalls, err)
 	}
 	clear(value)
 }
