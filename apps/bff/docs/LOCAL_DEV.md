@@ -9,7 +9,9 @@ outside this guide.
 
 ## Prerequisites
 
-- macOS with Go, Node.js/npm, Python 3, Make, and Google Cloud CLI installed.
+- macOS with Go, Node.js/npm, Python 3.12 or newer, Make, and Google Cloud CLI
+  installed. The pinned Synto runtime was verified with Python 3.14.6; make
+  sure `python3` on `PATH` resolves to a supported interpreter before bootstrap.
 - Network access to the public Python package host for the pinned Synto wheel
   and its dependencies during bootstrap.
 - Google Cloud ADC with access to the local bucket and database. To configure
@@ -39,6 +41,29 @@ inherits this venv at the front of `PATH`, so its `python3` adapter uses the
 installed package; no global Python package is modified. A BFF start or
 debugger target also ensures this runtime exists. Setup does not configure a
 provider key or call a model.
+
+The bootstrap uses the `python3` selected from your current `PATH` to create
+that venv. On macOS, `/usr/bin/python3` may be an older system Python such as
+3.9.6, which cannot install the pinned Synto dependency set (for example,
+`No matching distribution found for mcp>=1.10`). Install or select Python 3.12
+or newer, and put its `bin` directory before `/usr/bin` in `PATH`. For a
+Homebrew Python 3.14 installation:
+
+```sh
+export PATH="$(brew --prefix python@3.14)/bin:$PATH"
+command -v python3
+python3 --version  # should report 3.12 or newer
+make bootstrap
+```
+
+If an earlier bootstrap created the private venv with the older interpreter,
+remove only that worktree's Synto venv after correcting `PATH`, then bootstrap
+again:
+
+```sh
+rm -rf "$(git rev-parse --absolute-git-dir)/lwc361-local-cloud/python"
+make bootstrap
+```
 
 `local-start` writes `apps/frontend/.env.local`, builds the native worker,
 creates the default account only if it is absent in this worktree's Firestore
@@ -202,3 +227,9 @@ OAuth or deployed cookie/Host policy.
 - **Pipeline provider config is absent:** use `pipeline-test` or the loopback
   smoke check. A real pipeline run requires the existing provider key and may
   incur charges.
+- **Pinned Synto install reports no matching `mcp>=1.10` distribution:** check
+  `command -v python3` and `python3 --version`. macOS may be selecting its
+  Python 3.9 system interpreter; select Python 3.12 or newer before creating
+  the worktree venv, then remove only that venv and rerun `make bootstrap` as
+  shown above. This error can come from the selected Python version even when
+  the pinned wheel URL is reachable.

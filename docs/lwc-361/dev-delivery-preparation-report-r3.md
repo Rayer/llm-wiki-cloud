@@ -8,7 +8,7 @@
 - Branch：Rayer/LWC-361-local-cloud-discussion
 - 起始 HEAD：2180d48274aec48b89b6ccf35eea5e2b08ff1e25
 - Runtime：依 Dispatch 指定延續 GPT-6-Luna xhigh；未切換 model 或 effort。
-- 最終 source snapshot SHA-256：c7b0bae8356f069dafe5956d6a72ef19793c558226aff82835724417f8a216af，涵蓋 1,126 個 source/worktree paths；排除 docs/lwc-361/、__pycache__ 和 *.pyc。計算方式為排序 `git ls-files --cached --others --exclude-standard -z` 路徑，逐路徑以 8-byte big-endian 路徑長度、路徑 bytes、8-byte big-endian 內容長度、內容 bytes 更新 SHA-256；刪除檔以 `DELETED` 表示，symlink 以 `SYMLINK\0` 加 link target 表示。候選 Git HEAD 仍為 5454ab762d2268a21e432b6d70d0fa379589daca，加上本輪兩個 test-only working-tree edits；出版後的 Git commit SHA 以 PR head readback 為準。
+- 最終 source snapshot SHA-256：`83d5322c1a105ad09be0cccc689fddb26e19e0ad121ca0f155682bea40f221c9`，涵蓋 1,126 個 source/worktree paths；排除 docs/lwc-361/、__pycache__ 和 *.pyc。計算方式為排序 `git ls-files --cached --others --exclude-standard -z` 路徑，逐路徑以 8-byte big-endian 路徑長度、路徑 bytes、8-byte big-endian 內容長度、內容 bytes 更新 SHA-256；刪除檔以 `DELETED` 表示，symlink 以 `SYMLINK\0` 加 link target 表示。本報告更新前的 PR head 為 `3ab348e51343b587eac91e78f3e344d032a372d6`；本輪加入 `apps/bff/docs/LOCAL_DEV.md` 的 Python prerequisite/troubleshooting 文件修正後，新的出版 head 以 PR readback 與 coordinator 狀態訊息為準。
 - 舊 Supervisor digest bd7c9c1106b778b8ee8da76574a48f8ff46290b67763250eabb9bf0f2e381c3f 不涵蓋本次變更，沒有移用其 review verdict。此候選仍需 parent／Supervisor 對出版後的同一 SHA 做 review；本報告不宣稱 review PASS。
 
 ## 本輪變更
@@ -21,6 +21,12 @@
 - 修正既有 public-config 前端測試，讓預設 demo_enabled=false 的回應契約與本票 fail-closed capability 一致；Make local-config regression 明確指定測試 ports，不依賴 parent 當前服務 ports。
 
 實際安裝 readback：Synto 0.7.0，Python 3.14.6，interpreter 為 worktree Git metadata 的 lwc361-local-cloud/python/bin/python3。本機只有 Python 3.14 可用；wheel 與 import/CLI/worker adapter 正反向 regression 均通過。DEV worker image 仍使用原 Dockerfile 的 Python 3.12，沒有更動。
+
+### 新鮮 worktree guide walkthrough 發現
+
+Parent 的第二 QA worktree `/Users/rayer/orca/workspaces/llm-wiki-cloud/LWC-361-local-acceptance` 依 guide 執行 `make bootstrap` 時，PATH 選到 `/usr/bin/python3` 3.9.6，venv 也因此建立為 3.9.6；pinned Synto dependency `mcp>=1.10` 沒有相容 distribution。Parent 確認這不是 wheel URL 下載失敗或 provider 問題，並在 QA worktree 清除未完成 venv、改用已安裝的 Homebrew Python 3.14.6 繼續 walkthrough；通知來源為本 Dispatch inbox `msg_55699bd814b1`。該通知未附 3.14.6 walkthrough 的最後成功輸出路徑，故此報告只將 3.9.6 問題列為已觀察的 guide gap，不宣稱 fresh-worktree walkthrough 已完成。
+
+本輪僅修正 `apps/bff/docs/LOCAL_DEV.md`：明列 Python 3.12+ prerequisite、`python3` 的 PATH 選擇、3.9.6 常見 `No matching distribution found for mcp>=1.10` 錯誤與只清理該 worktree Synto venv 的重試方式。這是文件修正；沒有改 Make/runtime/source 或擴增產品 gate。Parent 仍需用修正後 guide 完成 fresh-worktree walkthrough 並讀回結果。
 
 ## 驗證紀錄
 
@@ -52,6 +58,7 @@ Loopback integration 的讀回包含 metadata digest 相等、trigger 202、重�
 | Same-source canonical component replay（parent） | 原命令 `npm run test:component`，沒有 worker/timeout 覆寫，provider/YouTrack keys unset | 0；32/32 files、292/292 cases，3.54 秒。與 serial diagnostic 分開記錄；不抹去上一列 full-root `make verify` exit 2。 |
 | 父方 Vitest evidence note | `/Users/rayer/.hermes/workflows/lwc/lwc361-component-replay-20261007.md` | 讀回並與原 Dispatch inbox delivery `msg_0416d9212121` 對帳；該 note 在 shared workflow package，不屬此 source snapshot。 |
 | 父方 canonical smoke replay | `make smoke BFF_PORT=18080 AUTH_PORT=18081 FRONTEND_PORT=13000`；provider/YouTrack keys unset、明確 loopback emulator endpoints | 0，父方 raw `tpm-smoke-replay.log`；這是獨立 smoke evidence，不替代上述 full verify 或正式 browser AC。 |
+| Fresh QA worktree Python prerequisite probe（parent） | `make bootstrap`；worktree `/Users/rayer/orca/workspaces/llm-wiki-cloud/LWC-361-local-acceptance`，`python3=/usr/bin/python3` 3.9.6 | **FAIL**；通知記錄 `mcp>=1.10` 無相容 distribution，未提供數值 exit code 或 raw log 路徑。Parent 認定是選到系統 Python，非 wheel URL/provider 問題，之後清除未完成 venv 並以已安裝的 Homebrew Python 3.14.6 繼續 walkthrough；該後續成功 readback 尚未提供。 |
 
 Live formal Auth API parent evidence 已收錄於 [live-formal-auth-api-evidence-r3.md](live-formal-auth-api-evidence-r3.md)：其註冊／登入／有效 token 存取 BFF／refresh／logout revocation 與負向 token/header bypass checks 是 parent 實際 API 證據；該次服務執行點早於本輪最終來源身份，不能借為 browser journey 或 final-source runtime proof。
 
@@ -66,7 +73,7 @@ npm ci 每次輸出鎖檔套件稽核摘要：17 vulnerabilities（3 moderate、
 | Complete root `make verify` on final source | **BLOCKED（exit 2）** | Vitest full-root run recorded 15 failures/292 cases; parent’s same-source isolated and canonical replays passed, but this does not erase that full-gate result. Required CI remains pending. |
 | Component Vitest on same source | **PASS（parent replay）** | Parent serial 及 canonical default 都為 32/32 files、292/292 tests；前一份 full-root failure 仍如實保留，最終 required CI 尚未跑。 |
 | BFF → native worker → loopback publisher/status/cleanup | **PASS（emulator fixture）** | 具名 -race integration；fixture 替代 compile/provider boundary，其餘路徑保持真實。 |
-| Guide text/Make/start/debugger/Synto instructions | **PASS（文件/Make contract）** | Repository guide 已更新並由 root gate/Make regression 驗證。完整實機指南 walkthrough 與 guide article 發布仍由 parent readback。 |
+| Guide text/Make/start/debugger/Synto instructions | **PASS（guide 修正與 Make contract）；fresh walkthrough 待回報** | `LOCAL_DEV.md` 現明列 Python 3.12+、`python3` PATH 選擇、macOS 系統 Python 3.9.6 的 `mcp>=1.10` 安裝錯誤及 worktree venv 重試步驟。Make contracts 已通過；Parent fresh QA worktree 的 3.9.6 失敗已記錄，3.14.6 walkthrough 成功結果與 guide article readback 仍待 parent 回報。 |
 | Live formal Auth API | **PASS（parent evidence; API only）** | 對應的限定範圍與執行點見 `live-formal-auth-api-evidence-r3.md`；不是 final-source browser 或 DEV evidence。 |
 | 兩 worktree隔離與清理／browser registration & page endpoint／正式 pipeline compile | **NOT RUN by this worker** | Parent owns live/browser acceptance。不得以 emulator page-read、fixture 或 Auth API evidence 換算。 |
 | YouTrack LWC-A-17 article readback | **NOT RUN by this worker** | Parent owns article publication/readback。 |
