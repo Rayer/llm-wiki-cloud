@@ -195,6 +195,9 @@ func main() {
 	go func() { serveErr <- server.ListenAndServe() }()
 	stop, stopSignal := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
 	defer stopSignal()
+	if !localMode {
+		go hV1.RunPipelineQuotaReconciler(stop)
+	}
 	select {
 	case err := <-serveErr:
 		if err != nil && !errors.Is(err, http.ErrServerClosed) {

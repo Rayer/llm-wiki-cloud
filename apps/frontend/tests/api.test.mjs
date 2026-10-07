@@ -63,6 +63,7 @@ test('normalizeStatus drops malformed diagnostic fields and accepts only BFF exi
     detail_code: null,
     child_command: null,
     exit_code: null,
+    message: null,
   });
 
   assert.equal(normalizeStatus({

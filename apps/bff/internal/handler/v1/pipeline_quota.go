@@ -2,6 +2,8 @@ package v1
 
 import (
 	"context"
+	"crypto/rand"
+	"encoding/hex"
 	"fmt"
 	"log"
 	"net/http"
@@ -14,19 +16,30 @@ import (
 	"google.golang.org/grpc/status"
 )
 
+func newPipelineReservationID() (string, error) {
+	var raw [16]byte
+	if _, err := rand.Read(raw[:]); err != nil {
+		return "", err
+	}
+	return "pr-" + hex.EncodeToString(raw[:]), nil
+}
+
 // pipelineQuotaStore is the quota persistence surface used by evaluateQuota.
 // *firestore.Client implements it; tests may inject a fake via SetPipelineQuotaStore.
 type pipelineQuotaStore interface {
 	LoadQuotaState(ctx context.Context, userID, projectID string) (runsToday int, dayKey string, lastRunAt time.Time, err error)
 	ReserveQuota(
 		ctx context.Context,
-		userID, projectID string,
+		reservationID, userID, projectID string,
 		limits pipelinequota.Limits,
 		now time.Time,
 		isDemo, alreadyRunning bool,
 		newRawFiles, rawDirtyFiles, annotationDirtyFiles int,
-	) (prev firestore.QuotaPrev, snap pipelinequota.Snapshot, reserved bool, err error)
-	RefundQuotaPrev(ctx context.Context, userID, projectID string, prev firestore.QuotaPrev) error
+	) (snap pipelinequota.Snapshot, reserved bool, err error)
+	LinkQuotaReservation(ctx context.Context, reservationID, executionID string) error
+	GetQuotaReservation(ctx context.Context, reservationID string) (firestore.QuotaReservation, bool, error)
+	ListPendingQuotaReservations(ctx context.Context) ([]firestore.QuotaReservation, error)
+	SettleQuotaReservation(ctx context.Context, reservationID, executionStatus string) (string, error)
 }
 
 func (h *Handler) effectiveQuotaStore() pipelineQuotaStore {
@@ -206,20 +219,20 @@ func (h *Handler) projectLockActive(ctx context.Context, userID, projectID strin
 func (h *Handler) evaluateQuota(
 	ctx context.Context,
 	userID, projectID string,
-	reserve bool,
-) (snap pipelinequota.Snapshot, reserved bool, prev firestore.QuotaPrev, err error) {
+	reservationID string,
+) (snap pipelinequota.Snapshot, reserved bool, err error) {
 	limits := h.pipelineLimits()
 	now := time.Now().UTC()
 	isDemo := h.isDemoUser(userID)
 
 	alreadyRunning, err := h.isPipelineRunning(ctx, userID, projectID)
 	if err != nil {
-		return pipelinequota.Snapshot{}, false, firestore.QuotaPrev{}, err
+		return pipelinequota.Snapshot{}, false, err
 	}
 
 	newRaw, rawDirty, annotationDirty, err := h.pendingWorkForProject(ctx, userID, projectID)
 	if err != nil {
-		return pipelinequota.Snapshot{}, false, firestore.QuotaPrev{}, err
+		return pipelinequota.Snapshot{}, false, err
 	}
 
 	qs := h.effectiveQuotaStore()
@@ -234,22 +247,22 @@ func (h *Handler) evaluateQuota(
 			AnnotationDirtyFiles: annotationDirty,
 			Enforced:             false,
 		})
-		return snap, false, firestore.QuotaPrev{}, nil
+		return snap, false, nil
 	}
 
-	if reserve {
-		prev, snap, reserved, err = qs.ReserveQuota(
-			ctx, userID, projectID, limits, now, isDemo, alreadyRunning, newRaw, rawDirty, annotationDirty,
+	if reservationID != "" {
+		snap, reserved, err = qs.ReserveQuota(
+			ctx, reservationID, userID, projectID, limits, now, isDemo, alreadyRunning, newRaw, rawDirty, annotationDirty,
 		)
 		if err != nil {
-			return pipelinequota.Snapshot{}, false, firestore.QuotaPrev{}, err
+			return pipelinequota.Snapshot{}, false, err
 		}
-		return snap, reserved, prev, nil
+		return snap, reserved, nil
 	}
 
 	runsToday, dayKey, lastRunAt, err := qs.LoadQuotaState(ctx, userID, projectID)
 	if err != nil {
-		return pipelinequota.Snapshot{}, false, firestore.QuotaPrev{}, err
+		return pipelinequota.Snapshot{}, false, err
 	}
 	snap = pipelinequota.Evaluate(pipelinequota.Input{
 		Now:                  now,
@@ -264,7 +277,7 @@ func (h *Handler) evaluateQuota(
 		AnnotationDirtyFiles: annotationDirty,
 		Enforced:             true,
 	})
-	return snap, false, firestore.QuotaPrev{}, nil
+	return snap, false, nil
 }
 
 // httpStatusForReason maps a blocking quota reason to an HTTP status code.

@@ -14,7 +14,7 @@ import (
 
 type emptyLocalPipelineHistory struct{}
 
-func (emptyLocalPipelineHistory) Start(context.Context, string, string, string, bool) (string, error) {
+func (emptyLocalPipelineHistory) Start(context.Context, string, string, string, bool, string) (string, error) {
 	return "", nil
 }
 func (emptyLocalPipelineHistory) Status(_ context.Context, _, _, executionID string) (*handler.PipelineExecutionResponse, error) {

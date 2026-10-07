@@ -17,6 +17,7 @@ import { useWorkspace } from './WorkspaceProvider';
 import { Badge } from './ui/Badge';
 import { Surface } from './ui/Surface';
 import { getPipelineTimelineState, PIPELINE_STEPS } from '@/lib/pipeline-timeline';
+import { formatQuotaLine } from '@/lib/pipeline-quota';
 import {
   beginPipelineLogRequest,
   completePipelineLogRequest,
@@ -109,7 +110,9 @@ export function StatusClient() {
       getStatus(projectId)
         .then((apiStatus) => {
           if (!isCurrent()) return;
-          shouldPoll = apiStatus.lastExecution?.status === 'RUNNING';
+          shouldPoll = apiStatus.lastExecution?.status === 'RUNNING'
+            || apiStatus.lastExecution?.quota_settlement === 'pending'
+            || apiStatus.lastExecution?.quota_settlement === 'unknown';
           if (lastExecution && (lastExecution.name !== apiStatus.lastExecution?.name || lastExecution.log_url !== apiStatus.lastExecution?.log_url)) {
             setLogState(initialPipelineLogState(projectId));
             setShowFullLog(false);
@@ -220,6 +223,15 @@ export function StatusClient() {
           </div>
 
           <PipelineTimeline execution={status.lastExecution} />
+          {status.quota ? (
+            <p className="text-xs text-zinc-500" data-testid="status-pipeline-quota">
+              {formatQuotaLine(status.quota, new Date(), {
+                quotaLine: t('Pipeline.quotaLine'),
+                quotaNotEnforced: t('Pipeline.quotaNotEnforced'),
+                cooldownClear: t('Pipeline.cooldownClear'),
+              })}
+            </p>
+          ) : null}
           <PipelineLogPanel
             logState={logState}
             execution={status.lastExecution}
@@ -402,10 +414,12 @@ function Metric({ label, value }: { label: string; value: number }) {
 }
 
 function PipelineTimeline({ execution }: { execution?: PipelineExecution | null }) {
+  const { t } = useT();
   const execStatus = execution?.status;
   const isRunning = execStatus === 'RUNNING';
   const isSuccess = execStatus === 'SUCCEEDED';
   const isFailed = execStatus === 'FAILED';
+  const failureReason = execution?.failure_reason || execution?.diagnostic?.message;
 
   const { completedSteps, failedStep, stageLabel } = getPipelineTimelineState(execution);
 
@@ -458,6 +472,26 @@ function PipelineTimeline({ execution }: { execution?: PipelineExecution | null 
 
           {isFailed ? (
             <dl className="mt-5 grid gap-3 text-xs text-zinc-500 sm:grid-cols-2">
+              <div>
+                <dt className="uppercase tracking-wider">{t('Pipeline.failureReasonLabel')}</dt>
+                <dd className="mt-1 text-zinc-300">
+                  {failureReason || t('Pipeline.failureReasonUnavailable')}
+                </dd>
+              </div>
+              <div>
+                <dt className="uppercase tracking-wider">{t('Pipeline.quotaSettlementLabel')}</dt>
+                <dd className="mt-1 text-zinc-300">
+                  {execution.quota_settlement === 'refunded'
+                    ? t('Pipeline.quotaRefunded')
+                    : execution.quota_settlement === 'pending'
+                      ? t('Pipeline.quotaRefundPending')
+                      : execution.quota_settlement === 'charged'
+                        ? t('Pipeline.quotaCharged')
+                        : execution.quota_settlement === 'not_applicable'
+                          ? t('Pipeline.quotaNotApplicable')
+                          : t('Pipeline.quotaSettlementUnavailable')}
+                </dd>
+              </div>
               <div>
                 <dt className="uppercase tracking-wider">Failed stage</dt>
                 <dd className="mt-1 text-zinc-300">

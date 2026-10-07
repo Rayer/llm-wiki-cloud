@@ -5,11 +5,12 @@ import { API_URL } from './public-build-config.ts';
 import { normalizeAnnotationBody, normalizeAnnotationGeneration } from './source-annotation.ts';
 
 export type PipelineDiagnostic = {
-  stage?: string | null;
-  error_class?: string | null;
-  detail_code?: string | null;
-  child_command?: string | null;
-  exit_code?: number | null;
+	stage?: string | null;
+	error_class?: string | null;
+	detail_code?: string | null;
+	child_command?: string | null;
+	exit_code?: number | null;
+	message?: string | null;
 };
 
 export type PipelineExecution = {
@@ -20,9 +21,12 @@ export type PipelineExecution = {
   finished_at?: string | null;
   log_url?: string | null;
   log_state?: 'pending' | 'available' | 'unavailable' | 'missing' | string | null;
-  log_state_reason?: string | null;
-  diagnostic?: PipelineDiagnostic | null;
-  [key: string]: unknown;
+	log_state_reason?: string | null;
+	diagnostic?: PipelineDiagnostic | null;
+	diagnostic_state?: 'available' | 'unavailable' | string | null;
+	failure_reason?: string | null;
+	quota_settlement?: 'pending' | 'refunded' | 'charged' | 'not_applicable' | 'unknown' | string | null;
+	[key: string]: unknown;
 };
 
 export type ApiStatus = {
@@ -30,8 +34,9 @@ export type ApiStatus = {
   conceptsCount: number;
   rawCount: number;
   suggestedQueries: string[];
-  lastExecution?: PipelineExecution | null;
-  raw: Record<string, unknown>;
+	lastExecution?: PipelineExecution | null;
+	quota?: PipelineQuota | null;
+	raw: Record<string, unknown>;
 };
 
 export type WikiEntry = {
@@ -630,6 +635,7 @@ function normalizePipelineDiagnostic(value: unknown): PipelineDiagnostic | null 
     detail_code: asString(value.detail_code) ?? null,
     child_command: asString(value.child_command) ?? null,
     exit_code: asExitCode(value.exit_code),
+    message: asString(value.message) ?? null,
   };
 }
 
@@ -643,11 +649,31 @@ function normalizePipelineExecution(value: unknown): PipelineExecution | null {
     log_state: typeof value.log_state === 'string' ? value.log_state : null,
     log_state_reason: asString(value.log_state_reason) ?? null,
     diagnostic: normalizePipelineDiagnostic(value.diagnostic),
+    diagnostic_state: asString(value.diagnostic_state) ?? null,
+    failure_reason: asString(value.failure_reason) ?? null,
+    quota_settlement: asString(value.quota_settlement) ?? null,
   };
 }
 
 function asBoolean(value: unknown): boolean | undefined {
   return typeof value === 'boolean' ? value : undefined;
+}
+
+function normalizePipelineQuota(value: unknown): PipelineQuota | null {
+  if (!isRecord(value)) return null;
+  return {
+    enforced: asBoolean(value.enforced) ?? false,
+    allowed: asBoolean(value.allowed) ?? false,
+    reason: asString(value.reason),
+    message: asString(value.message),
+    runs_today: asNumber(value.runs_today) ?? 0,
+    daily_limit: asNumber(value.daily_limit) ?? 0,
+    cooldown_until: asString(value.cooldown_until) ?? null,
+    next_reset: asString(value.next_reset) ?? null,
+    new_raw_files: asNumber(value.new_raw_files) ?? 0,
+    min_new_raw: asNumber(value.min_new_raw) ?? 0,
+    already_running: asBoolean(value.already_running) ?? false,
+  };
 }
 
 function firstString(record: Record<string, unknown>, keys: string[]) {
@@ -893,7 +919,15 @@ export function normalizeStatus(payload: unknown): ApiStatus {
   const lastExecution = normalizePipelineExecution(record.last_execution);
   const suggestedQueries = stringArray(record.suggested_queries ?? record.suggestedQueries);
 
-  return { sourcesCount, conceptsCount, rawCount, suggestedQueries, lastExecution, raw: record };
+  return {
+    sourcesCount,
+    conceptsCount,
+    rawCount,
+    suggestedQueries,
+    lastExecution,
+    quota: normalizePipelineQuota(record.quota),
+    raw: record,
+  };
 }
 
 export function normalizeRawFile(item: unknown): RawFile {

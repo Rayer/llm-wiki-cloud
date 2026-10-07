@@ -273,6 +273,7 @@ func TestLocalPipelineHTTPTriggerRunsWorkerAndReportsSuccessAndFailure(t *testin
 		stderr, readErr := os.ReadFile(workerStderrPath)
 		t.Fatalf("successful worker status=%q reason=%q; actual worker stderr=%q (read error: %v)", state, reason, stderr, readErr)
 	}
+	assertLocalPipelineQuota(t, ctx, fsClient, userID, projectID, executionID, 1, "charged")
 	manifest1, _, exists, err := projectStorage.CurrentManifest(ctx)
 	if err != nil || !exists || manifest1.GenerationID == "" {
 		t.Fatalf("first GCS manifest readback exists=%v generation=%q err=%v", exists, manifest1.GenerationID, err)
@@ -298,6 +299,7 @@ func TestLocalPipelineHTTPTriggerRunsWorkerAndReportsSuccessAndFailure(t *testin
 	if state != "SUCCEEDED" || reason != "" {
 		t.Fatalf("incremental worker status=%q reason=%q; actual worker stderr=%q", state, reason, readLocalPipelineWorkerStderr(t, workerStderr, workerStderrPath))
 	}
+	lastRunBeforeFailure := assertLocalPipelineQuota(t, ctx, fsClient, userID, projectID, executionID, 2, "charged")
 	manifest2, _, exists, err := projectStorage.CurrentManifest(ctx)
 	if err != nil || !exists || manifest2.GenerationID == "" || manifest2.GenerationID == manifest1.GenerationID {
 		t.Fatalf("incremental manifest readback=%q exists=%v err=%v, before=%q", manifest2.GenerationID, exists, err, manifest1.GenerationID)
@@ -323,6 +325,7 @@ func TestLocalPipelineHTTPTriggerRunsWorkerAndReportsSuccessAndFailure(t *testin
 	if state != "FAILED" || reason == "" {
 		t.Fatalf("child-failure status=%q reason=%q, want a visible failure; actual worker stderr=%q", state, reason, readLocalPipelineWorkerStderr(t, workerStderr, workerStderrPath))
 	}
+	assertLocalPipelineQuota(t, ctx, fsClient, userID, projectID, executionID, 2, "refunded", lastRunBeforeFailure)
 	if stderr := readLocalPipelineWorkerStderr(t, workerStderr, workerStderrPath); !strings.Contains(stderr, "fixture compile failure") {
 		t.Fatalf("expected fixture failure was not preserved in native worker stderr: %q", stderr)
 	}
@@ -333,6 +336,60 @@ func TestLocalPipelineHTTPTriggerRunsWorkerAndReportsSuccessAndFailure(t *testin
 	page, err = projectStorage.ReadFile(ctx, "wiki/alpha.md")
 	if err != nil || !bytes.Contains(page, []byte("Alpha fixture output")) {
 		t.Fatalf("prior published page unavailable after child failure: %q err=%v", page, err)
+	}
+
+	// The same failed input can be retried after the reservation refund restores
+	// its prior cooldown timestamp.
+	executionID = postLocalPipelineRun(t, ctx, server.Client(), server.URL, token, projectID, http.StatusAccepted)
+	state, reason = waitLocalPipelineStatus(t, ctx, server.Client(), server.URL, token, projectID, executionID)
+	if state != "FAILED" || reason == "" {
+		t.Fatalf("same-input retry status=%q reason=%q, want the fixture failure", state, reason)
+	}
+	assertLocalPipelineQuota(t, ctx, fsClient, userID, projectID, executionID, 2, "refunded", lastRunBeforeFailure)
+
+	const configFailureProject = "missing-config-project"
+	if _, err := storageClient.WithScope(userID, configFailureProject).WriteBytes(ctx, []byte("A local config failure fixture."), "raw/source.md"); err != nil {
+		t.Fatalf("seed raw input for config failure: %v", err)
+	}
+	missingConfigPath := generatedConfigPath + ".missing"
+	if err := os.Rename(generatedConfigPath, missingConfigPath); err != nil {
+		t.Fatalf("temporarily remove synthetic Pipeline config: %v", err)
+	}
+	configRestored := false
+	defer func() {
+		if !configRestored {
+			if err := os.Rename(missingConfigPath, generatedConfigPath); err != nil {
+				t.Errorf("restore synthetic Pipeline config: %v", err)
+			}
+		}
+	}()
+	executionID = postLocalPipelineRun(t, ctx, server.Client(), server.URL, token, configFailureProject, http.StatusAccepted)
+	state, reason = waitLocalPipelineStatus(t, ctx, server.Client(), server.URL, token, configFailureProject, executionID)
+	if state != "FAILED" || reason == "" {
+		t.Fatalf("missing-config status=%q reason=%q, want visible early failure", state, reason)
+	}
+	if err := os.Rename(missingConfigPath, generatedConfigPath); err != nil {
+		t.Fatalf("restore synthetic Pipeline config: %v", err)
+	}
+	configRestored = true
+	assertLocalPipelineQuota(t, ctx, fsClient, userID, configFailureProject, executionID, 0, "refunded")
+
+	const timeoutProject = "timeout-project"
+	if _, err := storageClient.WithScope(userID, timeoutProject).WriteBytes(ctx, []byte("A local timeout fixture."), "raw/fixture-timeout.md"); err != nil {
+		t.Fatalf("seed raw input for timeout: %v", err)
+	}
+	timeoutConfig := []byte("[pipeline]\nauto_commit = false\nauto_maintain = false\nrelation_extraction = false\nrun_timeout_seconds = 3\n")
+	if err := os.WriteFile(generatedConfigPath, timeoutConfig, 0o600); err != nil {
+		t.Fatalf("configure synthetic worker timeout: %v", err)
+	}
+	executionID = postLocalPipelineRun(t, ctx, server.Client(), server.URL, token, timeoutProject, http.StatusAccepted)
+	state, reason = waitLocalPipelineStatus(t, ctx, server.Client(), server.URL, token, timeoutProject, executionID)
+	if state != "FAILED" || reason == "" {
+		t.Fatalf("timeout worker status=%q reason=%q, want visible timeout", state, reason)
+	}
+	assertLocalPipelineQuota(t, ctx, fsClient, userID, timeoutProject, executionID, 0, "refunded")
+	if err := os.WriteFile(generatedConfigPath, generatedConfig, 0o600); err != nil {
+		t.Fatalf("restore synthetic Pipeline timeout config: %v", err)
 	}
 
 	const spawnFailureProject = "spawn-failure-project"
@@ -369,6 +426,7 @@ func TestLocalPipelineHTTPTriggerRunsWorkerAndReportsSuccessAndFailure(t *testin
 	if spawnState != "FAILED" || spawnReason == "" {
 		t.Fatalf("spawn-failure status=%q reason=%q, want a visible failure", spawnState, spawnReason)
 	}
+	assertLocalPipelineQuota(t, ctx, fsClient, userID, spawnFailureProject, "", 0, "refunded")
 
 	if err := manager.Close(ctx); err != nil {
 		t.Fatalf("close native worker manager: %v", err)
@@ -377,6 +435,42 @@ func TestLocalPipelineHTTPTriggerRunsWorkerAndReportsSuccessAndFailure(t *testin
 	if calls := cloudRunCalls.Load(); calls != 0 {
 		t.Fatalf("native local pipeline made %d intercepted Cloud Run calls", calls)
 	}
+}
+
+func assertLocalPipelineQuota(t *testing.T, ctx context.Context, client *scopedfirestore.Client, userID, projectID, executionID string, wantRuns int, wantSettlement string, wantLastRun ...time.Time) time.Time {
+	t.Helper()
+	runsToday, _, lastRunAt, err := client.LoadQuotaState(ctx, userID, projectID)
+	if err != nil {
+		t.Fatalf("read local pipeline quota for %s: %v", projectID, err)
+	}
+	if runsToday != wantRuns {
+		t.Fatalf("local pipeline quota runs_today for %s = %d, want %d", projectID, runsToday, wantRuns)
+	}
+	if len(wantLastRun) > 0 && !lastRunAt.Equal(wantLastRun[0]) {
+		t.Fatalf("local pipeline quota last_run_at for %s = %s, want prior run %s", projectID, lastRunAt, wantLastRun[0])
+	}
+	query := scopedfirestore.Collection(client.Raw(), "pipeline_quota_reservations").Where("project_id", "==", projectID)
+	reservations, err := query.Documents(ctx).GetAll()
+	if err != nil {
+		t.Fatalf("read local quota reservations for %s: %v", projectID, err)
+	}
+	var matching map[string]any
+	for _, reservation := range reservations {
+		data := reservation.Data()
+		if executionID == "" || data["execution_id"] == executionID {
+			if matching != nil {
+				t.Fatalf("multiple local quota reservations match project %s execution %s", projectID, executionID)
+			}
+			matching = data
+		}
+	}
+	if matching == nil {
+		t.Fatalf("local quota reservation missing for project %s execution %s", projectID, executionID)
+	}
+	if got := matching["settlement_status"]; got != wantSettlement {
+		t.Fatalf("local quota reservation settlement for %s = %v, want %s", projectID, got, wantSettlement)
+	}
+	return lastRunAt
 }
 
 func readLocalPipelineWorkerStderr(t *testing.T, file *os.File, path string) string {
@@ -472,6 +566,7 @@ func waitLocalPipelineStatus(t *testing.T, ctx context.Context, client *http.Cli
 			LastExecution *struct {
 				Status         string `json:"status"`
 				LogStateReason string `json:"log_state_reason"`
+				FailureReason  string `json:"failure_reason"`
 				Diagnostic     *struct {
 					DetailCode string `json:"detail_code"`
 				} `json:"diagnostic"`
@@ -489,6 +584,9 @@ func waitLocalPipelineStatus(t *testing.T, ctx context.Context, client *http.Cli
 			state := strings.ToUpper(payload.LastExecution.Status)
 			if state == "SUCCEEDED" || state == "FAILED" || state == "UNKNOWN" {
 				reason := payload.LastExecution.LogStateReason
+				if reason == "" {
+					reason = payload.LastExecution.FailureReason
+				}
 				if reason == "" && payload.LastExecution.Diagnostic != nil {
 					reason = payload.LastExecution.Diagnostic.DetailCode
 				}

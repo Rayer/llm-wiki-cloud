@@ -6,6 +6,7 @@ import (
 
 	"github.com/rayer/llm-wiki-bff/internal/gcs"
 	"github.com/rayer/llm-wiki-bff/internal/llm"
+	"github.com/rayer/llm-wiki-bff/internal/pipelinequota"
 	"github.com/rayer/llm-wiki-bff/internal/query"
 	"github.com/rayer/llm-wiki-bff/internal/search"
 )
@@ -210,6 +211,7 @@ type StatusResponse struct {
 	SuggestedQueries []string                   `json:"suggested_queries"`
 	RunningPipelines int                        `json:"running_pipelines"`
 	LastExecution    *PipelineExecutionResponse `json:"last_execution,omitempty"`
+	Quota            *pipelinequota.Snapshot    `json:"quota,omitempty"`
 	Locked           bool                       `json:"locked,omitempty"`
 	LockWorker       string                     `json:"lock_worker,omitempty"`
 	LockExpiry       string                     `json:"lock_expiry,omitempty"`
@@ -217,15 +219,18 @@ type StatusResponse struct {
 
 // PipelineExecutionResponse is a normalized Cloud Run execution summary.
 type PipelineExecutionResponse struct {
-	Name           string                     `json:"name"`
-	Status         string                     `json:"status"`
-	StartTime      string                     `json:"start_time"`
-	EndTime        string                     `json:"end_time"`
-	Duration       string                     `json:"duration"`
-	LogURL         string                     `json:"log_url,omitempty"`
-	Diagnostic     *PipelineFailureDiagnostic `json:"diagnostic,omitempty"`
-	LogState       string                     `json:"log_state,omitempty"`
-	LogStateReason string                     `json:"log_state_reason,omitempty"`
+	Name            string                     `json:"name"`
+	Status          string                     `json:"status"`
+	StartTime       string                     `json:"start_time"`
+	EndTime         string                     `json:"end_time"`
+	Duration        string                     `json:"duration"`
+	LogURL          string                     `json:"log_url,omitempty"`
+	Diagnostic      *PipelineFailureDiagnostic `json:"diagnostic,omitempty"`
+	DiagnosticState string                     `json:"diagnostic_state,omitempty"`
+	FailureReason   string                     `json:"failure_reason,omitempty"`
+	QuotaSettlement string                     `json:"quota_settlement,omitempty"`
+	LogState        string                     `json:"log_state,omitempty"`
+	LogStateReason  string                     `json:"log_state_reason,omitempty"`
 }
 
 // PipelineFailureDiagnostic is the allowlisted, worker-produced failure
@@ -238,6 +243,7 @@ type PipelineFailureDiagnostic struct {
 	DetailCode string `json:"detail_code,omitempty"`
 	Child      string `json:"child_command,omitempty"`
 	ExitCode   *int   `json:"exit_code,omitempty"`
+	Message    string `json:"message,omitempty"`
 }
 
 // MetricsResponse is for GET /api/metrics (Grafana).

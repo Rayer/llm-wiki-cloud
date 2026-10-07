@@ -26,7 +26,7 @@ func init() {
 	suggestedQueryProvider = func(workerConfig) suggestedqueries.Provider { return nil }
 }
 
-func execLocalCloudFixture(_ context.Context, vault string, command, _ []string, _, _ io.Writer) error {
+func execLocalCloudFixture(ctx context.Context, vault string, command, _ []string, _, _ io.Writer) error {
 	if len(command) == 0 || command[0] != "run" {
 		return errors.New("local pipeline fixture only supports the run command")
 	}
@@ -34,6 +34,18 @@ func execLocalCloudFixture(_ context.Context, vault string, command, _ []string,
 		return errors.New("fixture compile failure")
 	} else if !errors.Is(err, os.ErrNotExist) {
 		return fmt.Errorf("read fixture failure input: %w", err)
+	}
+	if _, err := os.Stat(filepath.Join(vault, "raw", "fixture-timeout.md")); err == nil {
+		timer := time.NewTimer(5 * time.Second)
+		defer timer.Stop()
+		select {
+		case <-ctx.Done():
+			return ctx.Err()
+		case <-timer.C:
+			return context.DeadlineExceeded
+		}
+	} else if !errors.Is(err, os.ErrNotExist) {
+		return fmt.Errorf("read fixture timeout input: %w", err)
 	}
 	// Keep a short observable RUNNING window for duplicate-trigger contract tests.
 	time.Sleep(750 * time.Millisecond)

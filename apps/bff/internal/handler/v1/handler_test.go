@@ -1229,8 +1229,8 @@ type stubQuotaStore struct {
 	lastRunAt    time.Time
 	reserveCalls int
 	refundCalls  int
-	lastRefund   firestore.QuotaPrev
 	refundErr    error
+	reservations map[string]firestore.QuotaReservation
 }
 
 func (s *stubQuotaStore) LoadQuotaState(context.Context, string, string) (int, string, time.Time, error) {
@@ -1239,19 +1239,14 @@ func (s *stubQuotaStore) LoadQuotaState(context.Context, string, string) (int, s
 
 func (s *stubQuotaStore) ReserveQuota(
 	_ context.Context,
-	_, _ string,
+	reservationID, userID, projectID string,
 	limits pipelinequota.Limits,
 	now time.Time,
 	isDemo, alreadyRunning bool,
 	newRawFiles, rawDirtyFiles, annotationDirtyFiles int,
-) (prev firestore.QuotaPrev, snap pipelinequota.Snapshot, reserved bool, err error) {
+) (snap pipelinequota.Snapshot, reserved bool, err error) {
 	s.reserveCalls++
 	now = now.UTC()
-	prev = firestore.QuotaPrev{
-		RunsToday: s.runsToday,
-		DayKey:    s.dayKey,
-		LastRunAt: s.lastRunAt,
-	}
 	pre := pipelinequota.Evaluate(pipelinequota.Input{
 		Now:                  now,
 		Limits:               limits,
@@ -1266,9 +1261,17 @@ func (s *stubQuotaStore) ReserveQuota(
 		Enforced:             true,
 	})
 	if !pre.Allowed {
-		return prev, pre, false, nil
+		return pre, false, nil
 	}
 	today := pipelinequota.DayKeyUTC(now)
+	if s.reservations == nil {
+		s.reservations = make(map[string]firestore.QuotaReservation)
+	}
+	s.reservations[reservationID] = firestore.QuotaReservation{
+		ID: reservationID, UserID: userID, ProjectID: projectID,
+		ReservedAt: now, PreviousLastRunAt: s.lastRunAt, DayKey: today,
+		SettlementStatus: "pending",
+	}
 	s.runsToday = pre.RunsToday + 1
 	s.dayKey = today
 	s.lastRunAt = now
@@ -1285,16 +1288,60 @@ func (s *stubQuotaStore) ReserveQuota(
 		AnnotationDirtyFiles: annotationDirtyFiles,
 		Enforced:             true,
 	})
-	return prev, snap, true, nil
+	return snap, true, nil
 }
 
-func (s *stubQuotaStore) RefundQuotaPrev(_ context.Context, _, _ string, prev firestore.QuotaPrev) error {
+func (s *stubQuotaStore) LinkQuotaReservation(_ context.Context, reservationID, executionID string) error {
+	reservation := s.reservations[reservationID]
+	reservation.ExecutionID = executionID
+	s.reservations[reservationID] = reservation
+	return nil
+}
+
+func (s *stubQuotaStore) GetQuotaReservation(_ context.Context, reservationID string) (firestore.QuotaReservation, bool, error) {
+	reservation, ok := s.reservations[reservationID]
+	return reservation, ok, nil
+}
+
+func (s *stubQuotaStore) ListPendingQuotaReservations(context.Context) ([]firestore.QuotaReservation, error) {
+	var pending []firestore.QuotaReservation
+	for _, reservation := range s.reservations {
+		if reservation.SettlementStatus == "pending" {
+			pending = append(pending, reservation)
+		}
+	}
+	return pending, nil
+}
+
+func (s *stubQuotaStore) SettleQuotaReservation(_ context.Context, reservationID, executionStatus string) (string, error) {
+	reservation, ok := s.reservations[reservationID]
+	if !ok {
+		return "not_applicable", nil
+	}
+	if reservation.SettlementStatus != "pending" {
+		return reservation.SettlementStatus, nil
+	}
 	s.refundCalls++
-	s.lastRefund = prev
-	s.runsToday = prev.RunsToday
-	s.dayKey = prev.DayKey
-	s.lastRunAt = prev.LastRunAt
-	return s.refundErr
+	if s.refundErr != nil {
+		return "", s.refundErr
+	}
+	switch executionStatus {
+	case "FAILED":
+		if s.dayKey == reservation.DayKey && s.runsToday > 0 {
+			s.runsToday--
+		}
+		if s.lastRunAt.Equal(reservation.ReservedAt) {
+			s.lastRunAt = reservation.PreviousLastRunAt
+		}
+		reservation.SettlementStatus = "refunded"
+	case "SUCCEEDED", "CANCELLED":
+		reservation.SettlementStatus = "charged"
+	default:
+		return "pending", nil
+	}
+	reservation.Outcome = executionStatus
+	s.reservations[reservationID] = reservation
+	return reservation.SettlementStatus, nil
 }
 
 func pipelineRunHTTPClient(t *testing.T, runHits *int) *http.Client {
@@ -1481,8 +1528,8 @@ func TestPipelineRunRefundsOnInvokeFailure(t *testing.T) {
 	if stub.refundCalls != 1 {
 		t.Fatalf("refundCalls = %d, want 1", stub.refundCalls)
 	}
-	if stub.runsToday != 0 {
-		t.Fatalf("runsToday after refund = %d, want 0", stub.runsToday)
+	if stub.runsToday != 1 {
+		t.Fatalf("runsToday after failed settlement = %d, want the reserved credit to remain pending", stub.runsToday)
 	}
 	if output.String() != "pipeline quota refund failed\n" {
 		t.Fatalf("refund log = %q, want fixed event", output.String())

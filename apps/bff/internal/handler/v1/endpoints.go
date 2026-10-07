@@ -25,6 +25,7 @@ import (
 	"github.com/rayer/llm-wiki-bff/internal/config"
 	"github.com/rayer/llm-wiki-bff/internal/gcs"
 	"github.com/rayer/llm-wiki-bff/internal/handler"
+	"github.com/rayer/llm-wiki-bff/internal/localcloud"
 	"github.com/rayer/llm-wiki-bff/internal/pipelinediagnostic"
 	"github.com/rayer/llm-wiki-bff/internal/pipelinequota"
 	"github.com/rayer/llm-wiki-bff/internal/query"
@@ -43,12 +44,13 @@ const (
 )
 
 var (
-	errIndexNotFound                 = errors.New("index not found")
-	errFirestoreNotConfigured        = errors.New("Firestore client is not configured")
-	errInvalidAdminProjectRecord     = errors.New("invalid admin project record")
-	errPipelineExecutionNotFound     = handler.ErrPipelineExecutionNotFound
-	errWikiStorageNotConfigured      = errors.New("wiki storage is not configured")
-	errAdminDeleteStorageUnsupported = errors.New("admin delete storage capability is unavailable")
+	errIndexNotFound                    = errors.New("index not found")
+	errFirestoreNotConfigured           = errors.New("Firestore client is not configured")
+	errInvalidAdminProjectRecord        = errors.New("invalid admin project record")
+	errPipelineExecutionNotFound        = handler.ErrPipelineExecutionNotFound
+	errWikiStorageNotConfigured         = errors.New("wiki storage is not configured")
+	errAdminDeleteStorageUnsupported    = errors.New("admin delete storage capability is unavailable")
+	errPipelineInvocationOutcomeUnknown = errors.New("pipeline invocation outcome is unknown")
 )
 
 const (
@@ -888,7 +890,12 @@ func (h *Handler) PipelineRun(c *gin.Context) {
 	}
 
 	ctx := c.Request.Context()
-	snap, reserved, prev, err := h.evaluateQuota(ctx, userID, projectID, true)
+	reservationID, err := newPipelineReservationID()
+	if err != nil {
+		c.JSON(http.StatusInternalServerError, handler.ErrorResponse{Error: pipelineUnavailableMessage})
+		return
+	}
+	snap, reserved, err := h.evaluateQuota(ctx, userID, projectID, reservationID)
 	if err != nil {
 		c.JSON(http.StatusInternalServerError, handler.ErrorResponse{
 			Error: pipelineUnavailableMessage,
@@ -906,11 +913,15 @@ func (h *Handler) PipelineRun(c *gin.Context) {
 		return
 	}
 
-	executionID, err := h.invokePipelineJob(ctx, userID, projectID, false)
+	quotaReservationID := ""
+	if reserved {
+		quotaReservationID = reservationID
+	}
+	executionID, err := h.invokePipelineJobStageWithReservation(ctx, userID, projectID, false, pipelineStageFull, quotaReservationID)
 	if err != nil {
-		if reserved {
+		if reserved && !errors.Is(err, errPipelineInvocationOutcomeUnknown) {
 			if qs := h.effectiveQuotaStore(); qs != nil {
-				if refundErr := qs.RefundQuotaPrev(ctx, userID, projectID, prev); refundErr != nil {
+				if _, settleErr := qs.SettleQuotaReservation(ctx, reservationID, "FAILED"); settleErr != nil {
 					log.Print("pipeline quota refund failed")
 				}
 			}
@@ -923,6 +934,15 @@ func (h *Handler) PipelineRun(c *gin.Context) {
 			Error: pipelineUnavailableMessage,
 		})
 		return
+	}
+	if reserved && h.localPipeline == nil {
+		if qs := h.effectiveQuotaStore(); qs != nil {
+			if linkErr := qs.LinkQuotaReservation(ctx, reservationID, executionID); linkErr != nil {
+				// The ID is also present in the Cloud Run execution environment, so
+				// background reconciliation can repair this link after a transient write failure.
+				log.Print("pipeline quota reservation link pending reconciliation")
+			}
+		}
 	}
 
 	c.JSON(http.StatusAccepted, gin.H{
@@ -941,6 +961,7 @@ const (
 	pipelineStageFull             = "full"
 	pipelineStageSuggestedQueries = "suggested-queries"
 	pipelineStageEnvName          = "PIPELINE_STAGE"
+	pipelineReservationEnvName    = "PIPELINE_RESERVATION_ID"
 )
 
 // invokePipelineJob starts the shared Cloud Run pipeline job for userID/projectID.
@@ -953,6 +974,10 @@ func (h *Handler) invokePipelineJob(ctx context.Context, userID, projectID strin
 }
 
 func (h *Handler) invokePipelineJobStage(ctx context.Context, userID, projectID string, cleanRebuild bool, stage string) (executionID string, err error) {
+	return h.invokePipelineJobStageWithReservation(ctx, userID, projectID, cleanRebuild, stage, "")
+}
+
+func (h *Handler) invokePipelineJobStageWithReservation(ctx context.Context, userID, projectID string, cleanRebuild bool, stage, reservationID string) (executionID string, err error) {
 	// This is the admission boundary, shared by user and admin triggers. A job
 	// admitted before suspension may finish; workers/publication remain unchanged.
 	if h.accountLookup != nil {
@@ -976,7 +1001,7 @@ func (h *Handler) invokePipelineJobStage(ctx context.Context, userID, projectID 
 		return "", fmt.Errorf("clean_rebuild is only valid for full pipeline stage")
 	}
 	if h.localPipeline != nil {
-		return h.localPipeline.Start(ctx, userID, projectID, stage, cleanRebuild)
+		return h.localPipeline.Start(ctx, userID, projectID, stage, cleanRebuild, reservationID)
 	}
 
 	token, err := h.getMetadataAccessToken(ctx)
@@ -990,6 +1015,9 @@ func (h *Handler) invokePipelineJobStage(ctx context.Context, userID, projectID 
 		// Keep TASK_TYPE=pipeline for ownership matching across stages.
 		{"name": "TASK_TYPE", "value": "pipeline"},
 		{"name": pipelineStageEnvName, "value": stage},
+	}
+	if reservationID != "" {
+		env = append(env, gin.H{"name": pipelineReservationEnvName, "value": reservationID})
 	}
 	if cleanRebuild {
 		// Worker treats only explicit true as clean rebuild; omitted means false.
@@ -1019,19 +1047,19 @@ func (h *Handler) invokePipelineJobStage(ctx context.Context, userID, projectID 
 
 	resp, err := h.pipelineHTTPClient().Do(runReq)
 	if err != nil {
-		return "", err
+		return "", fmt.Errorf("%w: %v", errPipelineInvocationOutcomeUnknown, err)
 	}
 	defer resp.Body.Close()
 	responseBody, err := io.ReadAll(resp.Body)
 	if err != nil {
-		return "", err
+		return "", fmt.Errorf("%w: %v", errPipelineInvocationOutcomeUnknown, err)
 	}
 	if resp.StatusCode < http.StatusOK || resp.StatusCode >= http.StatusMultipleChoices {
 		return "", fmt.Errorf("%s", string(responseBody))
 	}
 	executionID, err = cloudRunExecutionIDFromRunResponse(responseBody)
 	if err != nil {
-		return "", err
+		return "", fmt.Errorf("%w: %v", errPipelineInvocationOutcomeUnknown, err)
 	}
 	return executionID, nil
 }
@@ -1176,7 +1204,7 @@ func (h *Handler) PipelineStatus(c *gin.Context) {
 	response.LastExecution = lastExecution
 
 	// Evaluate-only quota snapshot for frontend Run-button gating (never mutates).
-	snap, _, _, err := h.evaluateQuota(ctx, userID, projectID, false)
+	snap, _, err := h.evaluateQuota(ctx, userID, projectID, "")
 	if err != nil {
 		c.JSON(http.StatusInternalServerError, handler.ErrorResponse{Error: pipelineStatusUnavailableMessage})
 		return
@@ -1431,7 +1459,12 @@ func (h *Handler) pipelineExecutionStatusWithOwner(ctx context.Context, executio
 		}
 		response := newPipelineExecutionResponse(execution)
 		if owner != nil {
+			reservationID := cloudRunExecutionReservationID(execution, owner.userID, owner.projectID)
+			if response.Status == "FAILED" && h.cloudRunPublicationCommitted(ctx, owner, executionID) {
+				response.Status = "SUCCEEDED"
+			}
 			h.attachPipelineDiagnostic(ctx, response, owner)
+			h.attachPipelineQuotaSettlement(ctx, response, owner, reservationID)
 		}
 		return response, nil
 	}
@@ -1451,7 +1484,12 @@ func (h *Handler) pipelineExecutionStatusWithOwner(ctx context.Context, executio
 		for _, execution := range executions.Executions {
 			if cloudRunExecutionOwnedBy(execution, owner.userID, owner.projectID) {
 				response := newPipelineExecutionResponse(execution)
+				executionID := shortCloudRunExecutionName(execution.Name, true)
+				if response.Status == "FAILED" && h.cloudRunPublicationCommitted(ctx, owner, executionID) {
+					response.Status = "SUCCEEDED"
+				}
 				h.attachPipelineDiagnostic(ctx, response, owner)
+				h.attachPipelineQuotaSettlement(ctx, response, owner, cloudRunExecutionReservationID(execution, owner.userID, owner.projectID))
 				return response, nil
 			}
 		}
@@ -1460,6 +1498,26 @@ func (h *Handler) pipelineExecutionStatusWithOwner(ctx context.Context, executio
 		}
 		pageToken = executions.NextPageToken
 	}
+}
+
+type pipelinePublicationReceiptReader interface {
+	ReadLocalPublicationReceipt(context.Context, string) ([]byte, error)
+}
+
+func (h *Handler) cloudRunPublicationCommitted(ctx context.Context, owner *pipelineExecutionOwner, executionID string) bool {
+	if h.store == nil || owner == nil || executionID == "" {
+		return false
+	}
+	reader, ok := h.store.Scope(owner.userID, owner.projectID).(pipelinePublicationReceiptReader)
+	if !ok {
+		return false
+	}
+	data, err := reader.ReadLocalPublicationReceipt(ctx, executionID)
+	if err != nil {
+		return false
+	}
+	receipt, err := localcloud.DecodePublicationReceipt(data)
+	return err == nil && receipt.ExecutionID == executionID
 }
 
 func (h *Handler) attachPipelineDiagnostic(ctx context.Context, response *handler.PipelineExecutionResponse, owner *pipelineExecutionOwner) {
@@ -1476,6 +1534,9 @@ func (h *Handler) attachPipelineDiagnostic(ctx context.Context, response *handle
 		response.LogState = pipelineLogStateUnavailable
 		response.LogStateReason = "unsupported_execution_status"
 		return
+	}
+	if response.Status == "FAILED" {
+		response.DiagnosticState = "unavailable"
 	}
 
 	projectStore := h.store
@@ -1509,8 +1570,31 @@ func (h *Handler) attachPipelineDiagnostic(ctx context.Context, response *handle
 	if response.Status == "FAILED" {
 		if diagnostic, err := readPipelineFailureDiagnostic(ctx, project, response.Name); err == nil {
 			response.Diagnostic = diagnostic
+			response.DiagnosticState = "available"
+			response.FailureReason = diagnostic.Message
+			if response.FailureReason == "" {
+				response.FailureReason = diagnostic.DetailCode
+			}
 		}
 	}
+}
+
+func (h *Handler) attachPipelineQuotaSettlement(ctx context.Context, response *handler.PipelineExecutionResponse, owner *pipelineExecutionOwner, reservationID string) {
+	response.QuotaSettlement = "not_applicable"
+	if reservationID == "" {
+		return
+	}
+	quotaStore := h.effectiveQuotaStore()
+	if quotaStore == nil {
+		response.QuotaSettlement = "unknown"
+		return
+	}
+	reservation, exists, err := quotaStore.GetQuotaReservation(ctx, reservationID)
+	if err != nil || !exists || reservation.UserID != owner.userID || reservation.ProjectID != owner.projectID {
+		response.QuotaSettlement = "unknown"
+		return
+	}
+	response.QuotaSettlement = reservation.SettlementStatus
 }
 
 // pipelineLogStatter is intentionally optional so the main storage contract
@@ -1559,44 +1643,64 @@ func readPipelineFailureDiagnostic(ctx context.Context, projectStore store.Store
 	if len(data) > maxPipelineDiagnosticBytes {
 		return nil, errors.New("diagnostic too large")
 	}
-	var diagnostic handler.PipelineFailureDiagnostic
+	var payload struct {
+		Version    int    `json:"version"`
+		Status     string `json:"status"`
+		Stage      string `json:"stage"`
+		ErrorClass string `json:"error_class"`
+		DetailCode string `json:"detail_code,omitempty"`
+		Child      string `json:"child_command,omitempty"`
+		ExitCode   *int   `json:"exit_code,omitempty"`
+		Execution  string `json:"execution,omitempty"`
+		Message    string `json:"message,omitempty"`
+	}
 	decoder := json.NewDecoder(bytes.NewReader(data))
 	decoder.DisallowUnknownFields()
-	if err := decoder.Decode(&diagnostic); err != nil {
+	if err := decoder.Decode(&payload); err != nil {
 		return nil, err
 	}
 	var trailing any
 	if err := decoder.Decode(&trailing); err != io.EOF {
 		return nil, errors.New("diagnostic has trailing data")
 	}
-	if diagnostic.Version != 1 || diagnostic.Status != "failed" {
+	if payload.Version != 1 || payload.Status != "failed" {
 		return nil, errors.New("unsupported diagnostic")
 	}
-	if _, ok := pipelinediagnostic.ValidStages[pipelinediagnostic.Stage(diagnostic.Stage)]; !ok {
+	if payload.Execution != "" && payload.Execution != executionID {
+		return nil, errors.New("diagnostic execution mismatch")
+	}
+	if len(payload.Message) > 512 {
+		return nil, errors.New("diagnostic message too large")
+	}
+	if _, ok := pipelinediagnostic.ValidStages[pipelinediagnostic.Stage(payload.Stage)]; !ok {
 		return nil, errors.New("invalid diagnostic stage")
 	}
-	if _, ok := pipelinediagnostic.ValidErrorClasses[pipelinediagnostic.ErrorClass(diagnostic.ErrorClass)]; !ok {
+	if _, ok := pipelinediagnostic.ValidErrorClasses[pipelinediagnostic.ErrorClass(payload.ErrorClass)]; !ok {
 		return nil, errors.New("invalid diagnostic class")
 	}
-	if diagnostic.DetailCode != "" {
-		if diagnostic.Stage != "concept_reconciliation" {
+	if payload.DetailCode != "" {
+		if payload.Stage != "concept_reconciliation" {
 			return nil, errors.New("invalid diagnostic detail")
 		}
-		if _, ok := pipelinediagnostic.ValidDetailCodes[pipelinediagnostic.DetailCode(diagnostic.DetailCode)]; !ok {
+		if _, ok := pipelinediagnostic.ValidDetailCodes[pipelinediagnostic.DetailCode(payload.DetailCode)]; !ok {
 			return nil, errors.New("invalid diagnostic detail")
 		}
 	}
-	if diagnostic.Child != "" {
-		if _, ok := pipelinediagnostic.ValidChildCommands[pipelinediagnostic.ChildCommand(diagnostic.Child)]; !ok {
+	if payload.Child != "" {
+		if _, ok := pipelinediagnostic.ValidChildCommands[pipelinediagnostic.ChildCommand(payload.Child)]; !ok {
 			return nil, errors.New("invalid diagnostic child")
 		}
-	} else if diagnostic.ExitCode != nil {
+	} else if payload.ExitCode != nil {
 		return nil, errors.New("diagnostic exit code without child")
 	}
-	if diagnostic.ExitCode != nil && (*diagnostic.ExitCode < 0 || *diagnostic.ExitCode > 255) {
+	if payload.ExitCode != nil && (*payload.ExitCode < 0 || *payload.ExitCode > 255) {
 		return nil, errors.New("invalid diagnostic exit code")
 	}
-	return &diagnostic, nil
+	return &handler.PipelineFailureDiagnostic{
+		Version: payload.Version, Status: payload.Status, Stage: payload.Stage,
+		ErrorClass: payload.ErrorClass, DetailCode: payload.DetailCode,
+		Child: payload.Child, ExitCode: payload.ExitCode, Message: payload.Message,
+	}, nil
 }
 
 func (h *Handler) fetchCloudRunExecution(ctx context.Context, token, executionID string) (cloudRunExecution, error) {
@@ -1826,8 +1930,10 @@ func normalizeCloudRunStatus(value string) string {
 		return "FAILED"
 	case "CANCELLED":
 		return "CANCELLED"
-	case "PENDING", "RECONCILING", "UNKNOWN":
+	case "PENDING", "RECONCILING":
 		return "RUNNING"
+	case "UNKNOWN":
+		return "UNKNOWN"
 	default:
 		return status
 	}
@@ -1902,6 +2008,11 @@ func (h *Handler) Status(c *gin.Context) {
 
 	if lastExecution, err := h.pipelineExecutionStatusForOwner(ctx, "", userID, projectID); err == nil {
 		resp.LastExecution = lastExecution
+	}
+	if h.effectiveQuotaStore() != nil {
+		if quota, _, err := h.evaluateQuota(ctx, userID, projectID, ""); err == nil {
+			resp.Quota = &quota
+		}
 	}
 
 	if h.firestore != nil {

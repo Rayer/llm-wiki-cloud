@@ -90,10 +90,59 @@ func (m *Manager) ReconcileInterrupted(ctx context.Context) error {
 			return err
 		}
 	}
+	return m.ReconcilePendingQuotaSettlements(ctx)
+}
+
+func (m *Manager) ReconcilePendingQuotaSettlements(ctx context.Context) error {
+	reservations, err := scopedfirestore.ListPendingQuotaReservationsFromFirestore(ctx, m.cfg.Firestore)
+	if err != nil {
+		return err
+	}
+	executions := scopedfirestore.Collection(m.cfg.Firestore, "executions")
+	for _, reservation := range reservations {
+		if reservation.ExecutionID == "" {
+			continue
+		}
+		snapshot, err := executions.Doc(reservation.ExecutionID).Get(ctx)
+		if status.Code(err) == codes.NotFound {
+			continue
+		}
+		if err != nil {
+			return err
+		}
+		data := snapshot.Data()
+		if data["native"] != true || data["quota_reservation_id"] != reservation.ID ||
+			data["user_id"] != reservation.UserID || data["project_id"] != reservation.ProjectID {
+			continue
+		}
+		state, _ := data["status"].(string)
+		if state != "SUCCEEDED" && state != "FAILED" && state != "CANCELLED" {
+			continue
+		}
+		if err := m.cfg.Firestore.RunTransaction(ctx, func(ctx context.Context, tx *cloudfirestore.Transaction) error {
+			current, err := tx.Get(snapshot.Ref)
+			if err != nil {
+				return err
+			}
+			currentData := current.Data()
+			currentStatus, _ := currentData["status"].(string)
+			currentReservationID, _ := currentData["quota_reservation_id"].(string)
+			if currentStatus != state || currentReservationID != reservation.ID {
+				return nil
+			}
+			settlement, err := scopedfirestore.SettleQuotaReservationInTransaction(ctx, tx, m.cfg.Firestore, reservation.ID, currentStatus)
+			if err != nil {
+				return err
+			}
+			return tx.Update(snapshot.Ref, []cloudfirestore.Update{{Path: "quota_settlement", Value: settlement}})
+		}); err != nil {
+			return err
+		}
+	}
 	return nil
 }
 
-func (m *Manager) Start(ctx context.Context, userID, projectID, stage string, cleanRebuild bool) (string, error) {
+func (m *Manager) Start(ctx context.Context, userID, projectID, stage string, cleanRebuild bool, reservationID string) (string, error) {
 	if !auth.ValidPathSegment(userID) || !auth.ValidPathSegment(projectID) {
 		return "", errors.New("invalid Project identity")
 	}
@@ -112,6 +161,10 @@ func (m *Manager) Start(ctx context.Context, userID, projectID, stage string, cl
 	lockID := userID + "__" + projectID
 	lockRef := scopedfirestore.Collection(m.cfg.Firestore, "local_pipeline_locks").Doc(lockID)
 	executionRef := scopedfirestore.Collection(m.cfg.Firestore, "executions").Doc(executionID)
+	var reservationRef *cloudfirestore.DocumentRef
+	if reservationID != "" {
+		reservationRef = scopedfirestore.Collection(m.cfg.Firestore, "pipeline_quota_reservations").Doc(reservationID)
+	}
 	beforeID := ""
 	if exists {
 		beforeID = manifest.GenerationID
@@ -127,15 +180,37 @@ func (m *Manager) Start(ctx context.Context, userID, projectID, stage string, cl
 		} else if status.Code(getErr) != codes.NotFound {
 			return getErr
 		}
+		if reservationID != "" {
+			reservation, err := tx.Get(reservationRef)
+			if err != nil {
+				return err
+			}
+			data := reservation.Data()
+			if data["user_id"] != userID || data["project_id"] != projectID || data["settlement_status"] != "pending" {
+				return errors.New("local pipeline quota reservation is unavailable")
+			}
+		}
 		if err := tx.Set(lockRef, map[string]any{"user_id": userID, "project_id": projectID, "execution_id": executionID, "status": "RUNNING", "updated_at": started}); err != nil {
 			return err
 		}
-		return tx.Create(executionRef, map[string]any{
+		quotaSettlement := "not_applicable"
+		if reservationID != "" {
+			quotaSettlement = "pending"
+		}
+		execution := map[string]any{
 			"user_id": userID, "project_id": projectID, "execution_id": executionID,
 			"task_type": "pipeline", "native": true, "stage": stage,
 			"status": "RUNNING", "started_at": started,
 			"manifest_generation_before": beforeID,
-		})
+			"quota_reservation_id":       reservationID, "quota_settlement": quotaSettlement,
+		}
+		if err := tx.Create(executionRef, execution); err != nil {
+			return err
+		}
+		if reservationID != "" {
+			return tx.Update(reservationRef, []cloudfirestore.Update{{Path: "execution_id", Value: executionID}, {Path: "updated_at", Value: started}})
+		}
+		return nil
 	})
 	if err != nil {
 		return "", err
@@ -145,26 +220,26 @@ func (m *Manager) Start(ctx context.Context, userID, projectID, stage string, cl
 	p := &process{cmd: cmd, done: make(chan struct{})}
 	if err := m.startProcess(executionID, p, cmd.Start); err != nil {
 		finishCtx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
-		m.finish(finishCtx, executionID, lockRef, userID, projectID, beforeID, false, err)
+		m.finish(finishCtx, executionID, lockRef, userID, projectID, beforeID, reservationID, false, err)
 		cancel()
 		return "", fmt.Errorf("start local worker: %w", err)
 	}
-	go m.wait(p, executionID, lockRef, userID, projectID, beforeID)
+	go m.wait(p, executionID, lockRef, userID, projectID, beforeID, reservationID)
 	return executionID, nil
 }
 
-func (m *Manager) wait(p *process, executionID string, lockRef *cloudfirestore.DocumentRef, userID, projectID, beforeID string) {
+func (m *Manager) wait(p *process, executionID string, lockRef *cloudfirestore.DocumentRef, userID, projectID, beforeID, reservationID string) {
 	err := p.cmd.Wait()
 	ctx, cancel := context.WithTimeout(context.Background(), 20*time.Second)
 	defer cancel()
-	m.finish(ctx, executionID, lockRef, userID, projectID, beforeID, err == nil, err)
+	m.finish(ctx, executionID, lockRef, userID, projectID, beforeID, reservationID, err == nil, err)
 	m.mu.Lock()
 	delete(m.processes, executionID)
 	m.mu.Unlock()
 	close(p.done)
 }
 
-func (m *Manager) finish(ctx context.Context, executionID string, lockRef *cloudfirestore.DocumentRef, userID, projectID, beforeID string, childSucceeded bool, childErr error) {
+func (m *Manager) finish(ctx context.Context, executionID string, lockRef *cloudfirestore.DocumentRef, userID, projectID, beforeID, reservationID string, childSucceeded bool, childErr error) {
 	storage := m.cfg.Storage.WithScope(userID, projectID)
 	manifest, _, exists, manifestErr := storage.CurrentManifest(ctx)
 	receiptData, receiptErr := storage.ReadLocalPublicationReceipt(ctx, executionID)
@@ -180,6 +255,11 @@ func (m *Manager) finish(ctx context.Context, executionID string, lockRef *cloud
 		if err != nil {
 			return err
 		}
+		settlement, err := scopedfirestore.SettleQuotaReservationInTransaction(ctx, tx, m.cfg.Firestore, reservationID, statusValue)
+		if err != nil {
+			return err
+		}
+		updates = append(updates, cloudfirestore.Update{Path: "quota_settlement", Value: settlement})
 		if err := tx.Update(executionRef, updates); err != nil {
 			return err
 		}
@@ -291,10 +371,28 @@ func (m *Manager) Status(ctx context.Context, userID, projectID, executionID str
 		LogURL:   "/api/v1/pipeline/log?execution_id=" + selected.Ref.ID,
 	}
 	if reason, _ := data["failure_reason"].(string); reason != "" {
-		response.LogStateReason = reason
+		response.FailureReason = reason
+		response.DiagnosticState = "available"
 		code, _ := data["exit_code"].(int64)
-		exitCode := int(code)
-		response.Diagnostic = &handlerapi.PipelineFailureDiagnostic{Version: 1, Status: strings.ToLower(state), Stage: "native-worker", ErrorClass: "execution", DetailCode: reason, ExitCode: &exitCode}
+		diagnostic := &handlerapi.PipelineFailureDiagnostic{Version: 1, Status: strings.ToLower(state), Stage: "unknown", ErrorClass: "unknown"}
+		if code >= 0 && code <= 255 {
+			exitCode := int(code)
+			diagnostic.ExitCode = &exitCode
+		}
+		response.Diagnostic = diagnostic
+	} else if state == "FAILED" {
+		response.DiagnosticState = "unavailable"
+		response.LogStateReason = "failure diagnostic unavailable"
+	}
+	reservationID, _ := data["quota_reservation_id"].(string)
+	response.QuotaSettlement = "not_applicable"
+	if reservationID != "" {
+		reservation, exists, err := scopedfirestore.GetQuotaReservationFromFirestore(ctx, m.cfg.Firestore, reservationID)
+		if err != nil {
+			response.QuotaSettlement = "unknown"
+		} else if exists {
+			response.QuotaSettlement = reservation.SettlementStatus
+		}
 	}
 	return response, nil
 }
