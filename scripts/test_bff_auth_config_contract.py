@@ -182,6 +182,33 @@ class BFFQueryConfigTests(unittest.TestCase):
                 self.assertFalse(any(command[:3] == ["run", "services", "update-traffic"]
                                      for command in rejected_commands))
 
+    def test_legacy_plan_leaves_existing_cooldown_unmanaged_in_both_environments(self):
+        for environment, cooldown in (("development", 600), ("production", 3600)):
+            plan = fixtures.bff_plan(environment) if environment == "development" else production_plan()
+            value = candidate(environment, plan)
+            legacy = copy.deepcopy(plan)
+            legacy['bff'].pop('pipeline_cooldown_seconds')
+            legacy['components']['bff'].pop('pipeline_cooldown_seconds')
+            for retained in (False, True):
+                with self.subTest(environment=environment, retained=retained):
+                    runtime = copy.deepcopy(value)
+                    env = runtime['spec']['containers'][0]['env']
+                    if not retained:
+                        env[:] = [entry for entry in env
+                                  if entry['name'] != 'PIPELINE_COOLDOWN_SECONDS']
+                    result, commands, _ = self.run_shell(
+                        runtime, environment, action='bff_mutate', plan_override=legacy,
+                    )
+                    self.assertEqual(result.returncode, 0, result.stderr)
+                    update = next(command for command in commands
+                                  if command[:3] == ['run', 'services', 'update'])
+                    env_arg = update[update.index('--update-env-vars') + 1]
+                    self.assertNotIn('PIPELINE_COOLDOWN_SECONDS=', env_arg)
+                    if retained:
+                        actual = next(entry for entry in runtime['spec']['containers'][0]['env']
+                                      if entry['name'] == 'PIPELINE_COOLDOWN_SECONDS')
+                        self.assertEqual(actual['value'], str(cooldown))
+
     def test_yaml_selection_delivered_and_exact_revision_verified_before_traffic(self):
         for environment in ('development', 'production'):
             with self.subTest(environment=environment):

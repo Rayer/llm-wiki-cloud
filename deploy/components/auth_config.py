@@ -122,7 +122,8 @@ def desired(plan, component='auth'):
 
 
 def effective(revision, project, component='auth', query_only=False, selective_bff=False,
-              include_runtime_bindings=False, manage_demo_user_ids=False, manage_export_bindings=False):
+              include_runtime_bindings=False, manage_demo_user_ids=False, manage_export_bindings=False,
+              manage_pipeline_cooldown=False):
     containers = revision['spec']['containers']
     require(len(containers) == 1)
     result = {'env': {}, 'secrets': {}, 'service_account': revision['spec']['serviceAccountName']}
@@ -160,7 +161,7 @@ def effective(revision, project, component='auth', query_only=False, selective_b
         elif component == 'bff' and manage_demo_user_ids and name == PIPELINE_DEMO_USER_IDS:
             require(not query_only and set(entry) == {'name', 'value'} and isinstance(entry['value'], str))
             result['env'][name] = entry['value']
-        elif component == 'bff' and name == PIPELINE_COOLDOWN_SECONDS:
+        elif component == 'bff' and name == PIPELINE_COOLDOWN_SECONDS and manage_pipeline_cooldown:
             require(not query_only and set(entry) == {'name', 'value'} and
                     isinstance(entry['value'], str) and re.fullmatch(r'[1-9][0-9]*', entry['value']) and
                     int(entry['value']) <= MAX_PIPELINE_COOLDOWN_SECONDS)
@@ -211,7 +212,8 @@ def main():
                        component == 'bff' and (plan['environment'] == 'development' or plan['auth'].get('google') is None),
                        component == 'bff',
                        component == 'bff' and PIPELINE_DEMO_USER_IDS in expected['env'],
-                       component == 'bff' and (plan['environment'] == 'development' or plan['export_job']['enabled']))
+                       component == 'bff' and (plan['environment'] == 'development' or plan['export_job']['enabled']),
+                       component == 'bff' and PIPELINE_COOLDOWN_SECONDS in expected['env'])
     digest = fingerprint(actual)
     if component == 'bff':
         # Pin all retained revision settings, including unrelated env/secrets and
