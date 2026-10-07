@@ -15,7 +15,7 @@ GOOGLE = {
 }
 BASE = ('GCP_PROJECT', 'FIRESTORE_DATABASE_ID', 'ALLOWED_HOSTS', 'ALLOWED_ORIGINS',
         'AUTH_SERVICE_URL', 'AUTH_SESSION_ENVIRONMENT', 'AUTH_REFRESH_SESSION_MIGRATION',
-        'AUTH_DEMO_USER_ID', 'DEV_JWT')
+        'AUTH_DEMO_USER_ID', 'AUTH_DEMO_USER_EMAIL', 'AUTH_DEMO_USER_ROLE', 'DEV_JWT')
 SECRET = ('JWT_SECRET', 'GOOGLE_CLIENT_SECRET')
 QUERY_PATH = 'QUERY_STAGE_CONFIG_PATH'
 EXPORT_BFF = ('EXPORT_JOB_URL', 'EXPORT_SIGNING_SERVICE_ACCOUNT')
@@ -85,13 +85,10 @@ def desired(plan, component='auth'):
                     plan['gcp']['project_id'], plan['export_job']['location'], plan['export_job']['job_name']),
                 'EXPORT_SIGNING_SERVICE_ACCOUNT': plan['export_job']['signing_service_account'],
             })
-        if plan['environment'] == 'development':
-            demo_ids = bff.get('pipeline_demo_user_ids')
-            if demo_ids is not None:
-                require(isinstance(demo_ids, list) and demo_ids and
-                        all(isinstance(user_id, str) and re.fullmatch(r'[A-Za-z0-9_-]{1,128}', user_id)
-                            for user_id in demo_ids) and len(set(demo_ids)) == len(demo_ids))
-                env[PIPELINE_DEMO_USER_IDS] = ','.join(demo_ids)
+        demo_user_id = plan['auth'].get('demo_user_id')
+        require(isinstance(demo_user_id, str) and re.fullmatch(r'[A-Za-z0-9_-]{1,128}', demo_user_id))
+        require(bff.get('pipeline_demo_user_ids') == [demo_user_id])
+        env[PIPELINE_DEMO_USER_IDS] = demo_user_id
         if plan['environment'] == 'development' or plan['auth'].get('google') is None:
             return {'env': env, 'secrets': secrets, 'service_account': bff['runtime_service_account']}
         secrets['JWT_SECRET'] = {'name': bff['secret_references']['jwt'], 'key': 'latest'}
@@ -105,11 +102,17 @@ def desired(plan, component='auth'):
     auth = plan['auth']
     google = auth['google']
     demo_user_id = auth.get('demo_user_id', '')
-    require(isinstance(demo_user_id, str) and (demo_user_id == '' or re.fullmatch(r'[A-Za-z0-9_-]{1,128}', demo_user_id)))
+    demo_user_email = auth.get('demo_user_email', '')
+    demo_user_role = auth.get('demo_user_role', '')
+    require(isinstance(demo_user_id, str) and re.fullmatch(r'[A-Za-z0-9_-]{1,128}', demo_user_id))
+    require(isinstance(demo_user_email, str) and re.fullmatch(r'[^@\s]+@[^@\s]+\.[^@\s]+', demo_user_email))
+    require(isinstance(demo_user_role, str) and re.fullmatch(r'[a-z][a-z0-9_-]{0,31}', demo_user_role)
+            and demo_user_role != 'admin')
     env = dict(zip(BASE, (
         plan['gcp']['project_id'], auth['firestore_database_id'],
         ','.join(auth['allowed_hosts']), ','.join(auth['allowed_origins']),
-        'https://' + auth['public_domain'], auth['firestore_database_id'], 'disabled', demo_user_id, 'false',
+        'https://' + auth['public_domain'], auth['firestore_database_id'], 'disabled', demo_user_id,
+        demo_user_email, demo_user_role, 'false',
     )))
     secrets = {'JWT_SECRET': {'name': auth['secret_references']['jwt'], 'key': 'latest'}}
     require(type(google['enabled']) is bool)

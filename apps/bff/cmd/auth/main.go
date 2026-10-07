@@ -9,6 +9,7 @@ import (
 	"strings"
 	"time"
 
+	"cloud.google.com/go/firestore"
 	"github.com/gin-contrib/cors"
 	"github.com/gin-gonic/gin"
 
@@ -45,6 +46,7 @@ func main() {
 			log.Fatalf("local Firestore target is unavailable: %v", err)
 		}
 	}
+	demoReady := ensureDemoAccountAtStartup(cfg, fsClient.Raw())
 
 	settingsStore := syssettings.NewStore(fsClient.Raw(), cfg.RegistrationEnabled)
 
@@ -59,7 +61,7 @@ func main() {
 		}()
 	}
 
-	r := newProductionRouter(cfg, localMode, fsClient, settingsStore)
+	r := newProductionRouter(cfg, localMode, fsClient, settingsStore, demoReady)
 
 	listenHost := ":"
 	if localMode {
@@ -69,7 +71,7 @@ func main() {
 	log.Fatal(r.Run(listenHost + cfg.Port))
 }
 
-func newProductionRouter(cfg config.Config, localMode bool, fsClient *firestoreclient.Client, settingsStore syssettings.RegistrationGate) *gin.Engine {
+func newProductionRouter(cfg config.Config, localMode bool, fsClient *firestoreclient.Client, settingsStore syssettings.RegistrationGate, demoReady bool) *gin.Engine {
 	r := gin.Default()
 	r.Use(authHostAllowlist(cfg, localMode))
 	r.Use(middleware.SecurityHeaders(true))
@@ -142,9 +144,15 @@ func newProductionRouter(cfg config.Config, localMode bool, fsClient *firestorec
 			authRoutes.GET("/google/identity", auth.JWTAuthWithAccountLookup(cfg, auth.FirestoreAccountLookup(fsClient.Raw())), google.IdentitySummaryHandler())
 		}
 	}
-	if !localMode {
-		authRoutes.POST("/demo", middleware.NewRateLimiter(10, time.Minute), auth.DemoLoginHandlerWithRepository(demoUsers, cfg.AuthDemoUserID, cfg.JWTSecret, auth.HostRefreshCookiePolicy(), sessions))
+	demoHandler := auth.DemoLoginHandlerWithRepository(
+		demoUsers, cfg.AuthDemoUserID, cfg.AuthDemoUserEmail, cfg.AuthDemoUserRole, cfg.JWTSecret, cookiePolicy, sessions,
+	)
+	if !demoReady {
+		demoHandler = func(c *gin.Context) {
+			c.JSON(http.StatusServiceUnavailable, gin.H{"error": "demo login unavailable"})
+		}
 	}
+	authRoutes.POST("/demo", middleware.NewRateLimiter(10, time.Minute), demoHandler)
 
 	r.GET("/api/v1/public/healthz", func(c *gin.Context) {
 		c.Status(http.StatusOK)
@@ -152,6 +160,21 @@ func newProductionRouter(cfg config.Config, localMode bool, fsClient *firestorec
 	r.GET("/api/v1/public/version", buildinfo.Handler())
 
 	return r
+}
+
+func ensureDemoAccountAtStartup(cfg config.Config, fsClient *firestore.Client) bool {
+	if strings.TrimSpace(cfg.AuthDemoUserID) == "" && strings.TrimSpace(cfg.AuthDemoUserEmail) == "" && strings.TrimSpace(cfg.AuthDemoUserRole) == "" {
+		return true
+	}
+	ctx, cancel := context.WithTimeout(context.Background(), 20*time.Second)
+	defer cancel()
+	created, err := auth.EnsureDemoAccount(ctx, fsClient, cfg.AuthDemoUserID, cfg.AuthDemoUserEmail, cfg.AuthDemoUserRole)
+	if err != nil {
+		log.Printf("[demo] startup ensure unavailable: %v", err)
+		return false
+	}
+	log.Printf("[demo] startup identity ready (created=%t)", created)
+	return true
 }
 
 func authHostAllowlist(cfg config.Config, localMode bool) gin.HandlerFunc {

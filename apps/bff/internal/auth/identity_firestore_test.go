@@ -70,6 +70,20 @@ func TestEnsureLocalPasswordFixtureCreatesOnlyMissingScopedAccount(t *testing.T)
 	if err != nil || preserved.PasswordHash != originalHash || preserved.Role != "admin" {
 		t.Fatalf("existing account changed: user=%+v error=%v", preserved, err)
 	}
+	login := gin.New()
+	login.POST("/login", LoginHandlerWithRepository(NewIdentityRepository(client), "fixture-jwt-key", HostRefreshCookiePolicy()))
+	for _, test := range []struct {
+		password string
+		want     int
+	}{{password: "password123", want: http.StatusOK}, {password: "another-password", want: http.StatusUnauthorized}} {
+		request := httptest.NewRequest(http.MethodPost, "/login", strings.NewReader(`{"email":"`+email+`","password":"`+test.password+`"}`))
+		request.Header.Set("Content-Type", "application/json")
+		recorder := httptest.NewRecorder()
+		login.ServeHTTP(recorder, request)
+		if recorder.Code != test.want {
+			t.Fatalf("local fixture login with supplied password status=%d, want %d", recorder.Code, test.want)
+		}
+	}
 
 }
 

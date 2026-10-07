@@ -33,6 +33,7 @@ jobs:
           "$pkl" --version | grep -E '^Pkl 0\.32\.1([[:space:]]|$)'
           echo "PKL_BIN=$pkl" >> "$GITHUB_ENV"
           echo "PKL_CACHE_DIR=$RUNNER_TEMP/pkl-cache" >> "$GITHUB_ENV"
+          echo "$RUNNER_TEMP" >> "$GITHUB_PATH"
       - name: Validate product version
         run: go run ./cmd/versioncheck VERSION
       - name: Validate monorepo CD contract

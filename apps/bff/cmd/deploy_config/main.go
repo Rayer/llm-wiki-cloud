@@ -32,6 +32,8 @@ var (
 	secretVersionPattern                = regexp.MustCompile(`^[1-9][0-9]*$`)
 	profileRuntimeServiceAccountPattern = regexp.MustCompile(`^[a-z][a-z0-9-]{4,28}[a-z0-9]@[a-z0-9.-]+\.iam\.gserviceaccount\.com$`)
 	pipelineDemoUserIDPattern           = regexp.MustCompile(`^[A-Za-z0-9_-]{1,128}$`)
+	demoEmailPattern                    = regexp.MustCompile(`^[^@\s]+@[^@\s]+\.[^@\s]+$`)
+	demoRolePattern                     = regexp.MustCompile(`^[a-z][a-z0-9_-]{0,31}$`)
 )
 
 type EnvironmentConfig struct {
@@ -60,6 +62,8 @@ type AuthConfig struct {
 	MaxInstances          int                  `yaml:"max_instances" json:"max_instances"`
 	FirestoreDatabaseID   string               `yaml:"firestore_database_id" json:"firestore_database_id"`
 	DemoUserID            string               `yaml:"demo_user_id" json:"demo_user_id"`
+	DemoUserEmail         string               `yaml:"demo_user_email" json:"demo_user_email"`
+	DemoUserRole          string               `yaml:"demo_user_role" json:"demo_user_role"`
 	PublicDomain          string               `yaml:"public_domain" json:"public_domain"`
 	AllowedHosts          []string             `yaml:"allowed_hosts" json:"allowed_hosts"`
 	AllowedOrigins        []string             `yaml:"allowed_origins" json:"allowed_origins"`
@@ -76,7 +80,7 @@ type BFFConfig struct {
 	RuntimeServiceAccount        string                  `yaml:"runtime_service_account" json:"runtime_service_account"`
 	ProfileRuntimeAudience       string                  `yaml:"profile_runtime_audience" json:"profile_runtime_audience,omitempty"`
 	ProfileRuntimeServiceAccount string                  `yaml:"profile_runtime_service_account" json:"profile_runtime_service_account,omitempty"`
-	PipelineDemoUserIDs          []string                `yaml:"pipeline_demo_user_ids" json:"pipeline_demo_user_ids,omitempty"`
+	PipelineDemoUserIDs          []string                `yaml:"-" json:"pipeline_demo_user_ids,omitempty"`
 	Network                      string                  `yaml:"network" json:"network"`
 	Subnet                       string                  `yaml:"subnet" json:"subnet"`
 	VPCEgress                    string                  `yaml:"vpc_egress" json:"vpc_egress"`
@@ -240,6 +244,9 @@ func load(environment, configPath, components, bffConfigPath string, requireBFFP
 	if err != nil {
 		return Normalized{}, err
 	}
+	if config.Auth.DemoUserID != "" {
+		config.BFF.PipelineDemoUserIDs = []string{config.Auth.DemoUserID}
+	}
 	if err := validateConfigForEnvironment(environment, config); err != nil {
 		return Normalized{}, err
 	}
@@ -397,6 +404,8 @@ func validateConfigForEnvironment(environment string, config EnvironmentConfig) 
 		"auth.service_name":     config.Auth.ServiceName, "auth.runtime_service_account": config.Auth.RuntimeServiceAccount,
 		"auth.network": config.Auth.Network, "auth.subnet": config.Auth.Subnet, "auth.vpc_egress": config.Auth.VPCEgress, "auth.ingress": config.Auth.Ingress,
 		"auth.firestore_database_id": config.Auth.FirestoreDatabaseID, "auth.public_domain": config.Auth.PublicDomain,
+		"auth.demo_user_id": config.Auth.DemoUserID, "auth.demo_user_email": config.Auth.DemoUserEmail,
+		"auth.demo_user_role":        config.Auth.DemoUserRole,
 		"auth.secret_references.jwt": config.Auth.SecretReferences.JWT,
 		"bff.service_name":           config.BFF.ServiceName, "bff.runtime_service_account": config.BFF.RuntimeServiceAccount,
 		"bff.network": config.BFF.Network, "bff.subnet": config.BFF.Subnet, "bff.vpc_egress": config.BFF.VPCEgress, "bff.ingress": config.BFF.Ingress,
@@ -462,8 +471,16 @@ func validateConfigForEnvironment(environment string, config EnvironmentConfig) 
 		config.BFF.Network != "default" || config.BFF.Subnet != "default" || config.BFF.VPCEgress != "private-ranges-only" || config.BFF.Ingress != "all" {
 		return errors.New("service network configuration is not the reviewed Cloud Run definition")
 	}
-	if config.Auth.DemoUserID != "" && !pipelineDemoUserIDPattern.MatchString(config.Auth.DemoUserID) {
+	if !pipelineDemoUserIDPattern.MatchString(config.Auth.DemoUserID) {
 		return errors.New("auth.demo_user_id is invalid")
+	}
+	if config.Auth.DemoUserEmail != strings.TrimSpace(config.Auth.DemoUserEmail) ||
+		!demoEmailPattern.MatchString(config.Auth.DemoUserEmail) ||
+		strings.ToLower(config.Auth.DemoUserEmail) != config.Auth.DemoUserEmail {
+		return errors.New("auth.demo_user_email is invalid")
+	}
+	if !demoRolePattern.MatchString(config.Auth.DemoUserRole) || strings.EqualFold(config.Auth.DemoUserRole, "admin") {
+		return errors.New("auth.demo_user_role must be a non-admin role")
 	}
 	if err := validateStringList("auth.allowed_hosts", config.Auth.AllowedHosts); err != nil {
 		return err
@@ -475,16 +492,11 @@ func validateConfigForEnvironment(environment string, config EnvironmentConfig) 
 		return err
 	}
 	if len(config.BFF.PipelineDemoUserIDs) > 0 {
-		if environment != "development" {
-			return errors.New("bff.pipeline_demo_user_ids is supported only in development")
-		}
 		if err := validateStringList("bff.pipeline_demo_user_ids", config.BFF.PipelineDemoUserIDs); err != nil {
 			return err
 		}
-		for _, id := range config.BFF.PipelineDemoUserIDs {
-			if !pipelineDemoUserIDPattern.MatchString(id) {
-				return errors.New("bff.pipeline_demo_user_ids contains an invalid user ID")
-			}
+		if len(config.BFF.PipelineDemoUserIDs) != 1 || config.BFF.PipelineDemoUserIDs[0] != config.Auth.DemoUserID {
+			return errors.New("bff.pipeline_demo_user_ids must match auth.demo_user_id")
 		}
 	}
 	if err := validateStringList("frontend.stable_aliases", config.Frontend.StableAliases); err != nil {
@@ -621,7 +633,7 @@ func componentInputs(config EnvironmentConfig, query QueryConfigIdentity, select
 	for _, name := range selected {
 		switch name {
 		case "auth":
-			components[name] = map[string]any{"service_name": config.Auth.ServiceName, "runtime_service_account": config.Auth.RuntimeServiceAccount, "network": config.Auth.Network, "subnet": config.Auth.Subnet, "vpc_egress": config.Auth.VPCEgress, "ingress": config.Auth.Ingress, "max_instances": config.Auth.MaxInstances, "public_domain": config.Auth.PublicDomain, "firestore_database_id": config.Auth.FirestoreDatabaseID, "demo_user_id": config.Auth.DemoUserID, "allowed_hosts": config.Auth.AllowedHosts, "allowed_origins": config.Auth.AllowedOrigins, "dev_jwt": false, "secret_references": map[string]any{"jwt": config.Auth.SecretReferences.JWT}}
+			components[name] = map[string]any{"service_name": config.Auth.ServiceName, "runtime_service_account": config.Auth.RuntimeServiceAccount, "network": config.Auth.Network, "subnet": config.Auth.Subnet, "vpc_egress": config.Auth.VPCEgress, "ingress": config.Auth.Ingress, "max_instances": config.Auth.MaxInstances, "public_domain": config.Auth.PublicDomain, "firestore_database_id": config.Auth.FirestoreDatabaseID, "demo_user_id": config.Auth.DemoUserID, "demo_user_email": config.Auth.DemoUserEmail, "demo_user_role": config.Auth.DemoUserRole, "allowed_hosts": config.Auth.AllowedHosts, "allowed_origins": config.Auth.AllowedOrigins, "dev_jwt": false, "secret_references": map[string]any{"jwt": config.Auth.SecretReferences.JWT}}
 			if config.Auth.Google != nil {
 				components[name].(map[string]any)["google"] = config.Auth.Google
 			}

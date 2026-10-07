@@ -60,6 +60,14 @@ class LocalDevMakefileTests(unittest.TestCase):
             text=True,
         ).stdout
 
+    def test_bff_ci_pinned_pkl_is_discoverable_by_direct_test_children(self):
+        workflow = (REPO / ".github" / "workflows" / "ci.yml").read_text()
+        bff_job = workflow.split("\n  lint:", 1)[0]
+        self.assertIn("- name: Install pinned Pkl CLI", bff_job)
+        self.assertIn("releases/download/0.32.1/pkl-linux-amd64", bff_job)
+        self.assertIn('echo "PKL_BIN=$pkl" >> "$GITHUB_ENV"', bff_job)
+        self.assertIn('echo "$RUNNER_TEMP" >> "$GITHUB_PATH"', bff_job)
+
     def test_local_config_writes_only_public_frontend_urls(self):
         with tempfile.TemporaryDirectory() as tmp:
             frontend = Path(tmp) / "frontend"
@@ -83,11 +91,37 @@ class LocalDevMakefileTests(unittest.TestCase):
         self.assertIn("python3 ../../scripts/local-services.py start auth bff frontend", output)
         self.assertIn("python3 -m venv", output)
         self.assertIn('bin/synto" --version', output)
-        self.assertIn("LOCAL_LOGIN_EMAIL", output)
+        self.assertIn("local_fixture.yaml", output)
+        self.assertIn("local_demo.json", output)
+        self.assertIn("--config", output)
+        self.assertNotIn("LOCAL_LOGIN_EMAIL", output)
+        self.assertNotIn("LOCAL_LOGIN_PASSWORD", output)
         self.assertIn("LOCAL_CLOUD_PIPELINE_CONFIG_DIR=", output)
         self.assertNotIn("docker compose", output)
         for retired in ("--local", "LOCAL_DATA_DIR", "DEV_JWT", "make seed", "local-token"):
             self.assertNotIn(retired, output)
+
+    def test_local_fixture_pkl_renders_a_stable_password_and_separate_demo_config(self):
+        import yaml
+
+        pkl = REPO / "deploy" / "cac" / "local_fixture.pkl"
+        with tempfile.TemporaryDirectory() as tmp:
+            fixture_path = Path(tmp) / "local_fixture.yaml"
+            demo_path = Path(tmp) / "local_demo.json"
+            args = ["pkl", "eval", "--multiple-file-output-path", tmp, str(pkl)]
+            subprocess.run(args, check=True, capture_output=True, text=True)
+            fixture = yaml.safe_load(fixture_path.read_text())
+            demo = json.loads(demo_path.read_text())
+            password = fixture["password"]
+            self.assertEqual(fixture["email"], "admin-local@llm.wiki.dev")
+            self.assertGreaterEqual(len(password), 32)
+            self.assertEqual(demo, {"user_id": "demo-local-372", "email": "demo@llm-wiki.dev", "role": "member"})
+            self.assertNotIn(password, demo_path.read_text())
+            first_fixture = fixture_path.read_bytes()
+            first_demo = demo_path.read_bytes()
+            subprocess.run(args, check=True, capture_output=True, text=True)
+            self.assertEqual(fixture_path.read_bytes(), first_fixture)
+            self.assertEqual(demo_path.read_bytes(), first_demo)
 
     def test_local_worker_runtime_matches_pinned_image_and_runs_without_provider(self):
         makefile = (ROOT / "Makefile").read_text()

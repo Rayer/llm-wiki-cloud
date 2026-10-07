@@ -22,7 +22,7 @@ import (
 
 func TestProductionRouterExposesOnlyAuthPublicSurface(t *testing.T) {
 	gin.SetMode(gin.TestMode)
-	router := newProductionRouter(config.Config{JWTSecret: "test-secret"}, true, nil, &syssettings.FakeStore{Enabled: true})
+	router := newProductionRouter(config.Config{JWTSecret: "test-secret"}, true, nil, &syssettings.FakeStore{Enabled: true}, true)
 
 	want := map[string]bool{
 		http.MethodDelete + " /api/v1/auth/cli/bindings/:projectID/:bindingID":      true,
@@ -46,6 +46,7 @@ func TestProductionRouterExposesOnlyAuthPublicSurface(t *testing.T) {
 		http.MethodPost + " /api/v1/auth/login":                                     true,
 		http.MethodPost + " /api/v1/auth/refresh":                                   true,
 		http.MethodPost + " /api/v1/auth/logout":                                    true,
+		http.MethodPost + " /api/v1/auth/demo":                                      true,
 	}
 
 	got := make(map[string]bool)
@@ -67,20 +68,20 @@ func TestProductionRouterExposesOnlyAuthPublicSurface(t *testing.T) {
 	}
 }
 
-func TestAuthDemoRouteIsNotMounted(t *testing.T) {
+func TestLocalAuthDemoRouteIsMountedAndFailsClosedWithoutIdentityStorage(t *testing.T) {
 	gin.SetMode(gin.TestMode)
-	router := newProductionRouter(config.Config{JWTSecret: "test-secret"}, true, nil, &syssettings.FakeStore{Enabled: true})
+	router := newProductionRouter(config.Config{JWTSecret: "test-secret"}, true, nil, &syssettings.FakeStore{Enabled: true}, true)
 	response := httptest.NewRecorder()
 	request := httptest.NewRequest(http.MethodPost, "http://localhost:8081/api/v1/auth/demo", nil)
 	router.ServeHTTP(response, request)
-	if response.Code != http.StatusNotFound || len(response.Result().Cookies()) != 0 {
-		t.Fatalf("passwordless Demo route status=%d cookies=%d; want 404 without cookie", response.Code, len(response.Result().Cookies()))
+	if response.Code != http.StatusServiceUnavailable || len(response.Result().Cookies()) != 0 {
+		t.Fatalf("passwordless Demo route status=%d cookies=%d; want 503 without cookie", response.Code, len(response.Result().Cookies()))
 	}
 }
 
 func TestDeployedDemoRouteIsMountedAndFailsClosedWithoutIdentityStorage(t *testing.T) {
 	gin.SetMode(gin.TestMode)
-	router := newProductionRouter(config.Config{JWTSecret: "test-secret", AllowedHosts: []string{"auth.example.test"}, AllowedOrigins: []string{"https://frontend.example"}, AuthDemoUserID: "configured-demo-user"}, false, nil, &syssettings.FakeStore{Enabled: true})
+	router := newProductionRouter(config.Config{JWTSecret: "test-secret", AllowedHosts: []string{"auth.example.test"}, AllowedOrigins: []string{"https://frontend.example"}, AuthDemoUserID: "configured-demo-user", AuthDemoUserEmail: "demo@example.test", AuthDemoUserRole: "member"}, false, nil, &syssettings.FakeStore{Enabled: true}, true)
 	registered := false
 	for _, route := range router.Routes() {
 		if route.Method == http.MethodPost && route.Path == "/api/v1/auth/demo" {
@@ -127,7 +128,7 @@ func TestProductionRouterWiresGoogleAuthRoutesWhenConfigured(t *testing.T) {
 		GoogleLoginRedirectURL: "https://auth.example.test/api/v1/auth/google/login/callback",
 		GoogleLinkRedirectURL:  "https://auth.example.test/api/v1/auth/google/link/callback",
 		GoogleCompletionURL:    "https://frontend.example/login",
-	}, false, client, &syssettings.FakeStore{Enabled: true})
+	}, false, client, &syssettings.FakeStore{Enabled: true}, true)
 	want := map[string]bool{
 		"POST /api/v1/auth/google/start": true, "GET /api/v1/auth/google/start": true,
 		"POST /api/v1/auth/google/login/start": true, "GET /api/v1/auth/google/login/start": true, "POST /api/v1/auth/google/link/start": true,
@@ -163,7 +164,7 @@ func TestProductionRouterWiresGoogleAuthRoutesWhenConfigured(t *testing.T) {
 
 func TestProductionRouterWiresFormalLocalAuthHandlers(t *testing.T) {
 	gin.SetMode(gin.TestMode)
-	router := newProductionRouter(config.Config{JWTSecret: "test-secret"}, true, nil, &syssettings.FakeStore{Enabled: true})
+	router := newProductionRouter(config.Config{JWTSecret: "test-secret"}, true, nil, &syssettings.FakeStore{Enabled: true}, true)
 	registered := map[string]bool{}
 	for _, route := range router.Routes() {
 		registered[route.Method+" "+route.Path] = true
@@ -190,7 +191,7 @@ func TestProductionRouterFailsClosedAndRegistersCLIControlPlanePaths(t *testing.
 	router := newProductionRouter(config.Config{
 		JWTSecret: "test-secret", AllowedHosts: []string{"auth.example.test"},
 		AllowedOrigins: []string{"https://frontend.example"}, AuthServiceURL: "https://auth.example.test",
-	}, false, nil, &syssettings.FakeStore{Enabled: true})
+	}, false, nil, &syssettings.FakeStore{Enabled: true}, true)
 	want := []string{
 		"POST /api/v1/auth/cli/pairing/start",
 		"POST /api/v1/auth/cli/pairing/poll",
@@ -249,7 +250,7 @@ func TestCLISessionRevokePostPassesExistingCORSPreflightContract(t *testing.T) {
 	router := newProductionRouter(config.Config{
 		JWTSecret: "test-secret", AllowedHosts: []string{"auth.example.test"},
 		AllowedOrigins: []string{"https://frontend.example"}, AuthServiceURL: "https://auth.example.test",
-	}, false, nil, &syssettings.FakeStore{Enabled: true})
+	}, false, nil, &syssettings.FakeStore{Enabled: true}, true)
 	for _, path := range []string{
 		"/api/v1/auth/cli/sessions/session-1/revoke",
 		"/api/v1/auth/cli/bindings/project-1/binding-1/revoke",
@@ -294,7 +295,7 @@ func TestProductionRouterCLIApprovalSessionProjectAndBindingLifecycle(t *testing
 		JWTSecret: jwtSecret, FirestoreDatabaseID: "lwc-346-auth-router", AuthServiceURL: "https://auth.example.test",
 		AllowedHosts: []string{"auth.example.test"}, AllowedOrigins: []string{"https://frontend.example"},
 	}
-	router := newProductionRouter(cfg, false, client, &syssettings.FakeStore{Enabled: true})
+	router := newProductionRouter(cfg, false, client, &syssettings.FakeStore{Enabled: true}, true)
 	webToken, err := auth.GenerateAccessToken(userID, "user", jwtSecret, 0)
 	if err != nil {
 		t.Fatal(err)
@@ -420,7 +421,7 @@ func TestProductionRouterUsesHostOnlyRefreshCookiePolicy(t *testing.T) {
 		JWTSecret:      "test-secret",
 		AllowedHosts:   []string{"auth.example.test"},
 		AllowedOrigins: []string{"https://frontend.example"},
-	}, false, nil, &syssettings.FakeStore{Enabled: true})
+	}, false, nil, &syssettings.FakeStore{Enabled: true}, true)
 
 	recorder := httptest.NewRecorder()
 	request := httptest.NewRequest(http.MethodPost, "http://auth.example.test/api/v1/auth/logout", nil)
@@ -463,7 +464,7 @@ func TestProductionRouterUsesDurableRefreshAuthorityAcrossRouterInstances(t *tes
 		t.Fatal(err)
 	}
 	cfg := config.Config{JWTSecret: "router-key-320", FirestoreDatabaseID: "lwc-320-router", AllowedHosts: []string{"auth.example.test"}, AllowedOrigins: []string{"https://frontend.example"}}
-	first := newProductionRouter(cfg, false, client, &syssettings.FakeStore{Enabled: true})
+	first := newProductionRouter(cfg, false, client, &syssettings.FakeStore{Enabled: true}, true)
 	loginRequest := httptest.NewRequest(http.MethodPost, "http://auth.example.test/api/v1/auth/login", strings.NewReader(fmt.Sprintf(`{"email":%q,"password":"passphrase-320"}`, email)))
 	loginRequest.Header.Set("Content-Type", "application/json")
 	login := httptest.NewRecorder()
@@ -476,7 +477,7 @@ func TestProductionRouterUsesDurableRefreshAuthorityAcrossRouterInstances(t *tes
 		t.Fatalf("durable login cookies=%#v", cookies)
 	}
 
-	second := newProductionRouter(cfg, false, client, &syssettings.FakeStore{Enabled: true})
+	second := newProductionRouter(cfg, false, client, &syssettings.FakeStore{Enabled: true}, true)
 	refreshRequest := httptest.NewRequest(http.MethodPost, "http://auth.example.test/api/v1/auth/refresh", nil)
 	refreshRequest.AddCookie(cookies[0])
 	refresh := httptest.NewRecorder()
@@ -516,7 +517,7 @@ func TestAuthHostAllowlistRejectsBeforeRouteHandling(t *testing.T) {
 		JWTSecret:      "test-secret",
 		AllowedHosts:   []string{"auth.example.test"},
 		AllowedOrigins: []string{"https://frontend.example"},
-	}, false, nil, &syssettings.FakeStore{Enabled: true})
+	}, false, nil, &syssettings.FakeStore{Enabled: true}, true)
 
 	recorder := httptest.NewRecorder()
 	for _, rawURL := range []string{"http://wrong.example.test/api/v1/public/healthz", "http://auth.example.test./api/v1/public/healthz"} {
@@ -548,7 +549,7 @@ func TestAuthHostAllowlistRejectsBeforeRouteHandling(t *testing.T) {
 
 func TestAuthLocalHostAllowlistAcceptsLocalhostOnlyInLocalMode(t *testing.T) {
 	gin.SetMode(gin.TestMode)
-	localRouter := newProductionRouter(config.Config{JWTSecret: "test-secret"}, true, nil, &syssettings.FakeStore{Enabled: true})
+	localRouter := newProductionRouter(config.Config{JWTSecret: "test-secret"}, true, nil, &syssettings.FakeStore{Enabled: true}, true)
 	for _, host := range []string{"localhost:8081", "127.0.0.1:8081"} {
 		recorder := httptest.NewRecorder()
 		request := httptest.NewRequest(http.MethodGet, "http://"+host+"/api/v1/public/healthz", nil)
@@ -558,7 +559,7 @@ func TestAuthLocalHostAllowlistAcceptsLocalhostOnlyInLocalMode(t *testing.T) {
 		}
 	}
 
-	productionRouter := newProductionRouter(config.Config{JWTSecret: "test-secret", AllowedOrigins: []string{"https://frontend.example"}}, false, nil, &syssettings.FakeStore{Enabled: true})
+	productionRouter := newProductionRouter(config.Config{JWTSecret: "test-secret", AllowedOrigins: []string{"https://frontend.example"}}, false, nil, &syssettings.FakeStore{Enabled: true}, true)
 	recorder := httptest.NewRecorder()
 	request := httptest.NewRequest(http.MethodGet, "http://localhost/api/v1/public/healthz", nil)
 	productionRouter.ServeHTTP(recorder, request)
@@ -573,7 +574,7 @@ func TestAuthCORSAllowsOnlyBaselineMethodsAndHeaders(t *testing.T) {
 		JWTSecret:      "test-secret",
 		AllowedHosts:   []string{"auth.example.test"},
 		AllowedOrigins: []string{"https://frontend.example"},
-	}, false, nil, &syssettings.FakeStore{Enabled: true})
+	}, false, nil, &syssettings.FakeStore{Enabled: true}, true)
 
 	recorder := httptest.NewRecorder()
 	request := httptest.NewRequest(http.MethodOptions, "http://auth.example.test/api/v1/auth/login", nil)
@@ -600,7 +601,7 @@ func TestAuthCORSAllowsOnlyBaselineMethodsAndHeaders(t *testing.T) {
 
 func TestAuthRequestBodyLimitRejectsOversizedLogin(t *testing.T) {
 	gin.SetMode(gin.TestMode)
-	router := newProductionRouter(config.Config{JWTSecret: "test-secret"}, true, nil, &syssettings.FakeStore{Enabled: true})
+	router := newProductionRouter(config.Config{JWTSecret: "test-secret"}, true, nil, &syssettings.FakeStore{Enabled: true}, true)
 
 	recorder := httptest.NewRecorder()
 	request := httptest.NewRequest(http.MethodPost, "http://localhost:8081/api/v1/auth/login", strings.NewReader(`{"email":"demo@llm-wiki.dev","password":"`+strings.Repeat("x", 64<<10)+`"}`))
@@ -613,7 +614,7 @@ func TestAuthRequestBodyLimitRejectsOversizedLogin(t *testing.T) {
 
 func TestAuthRequestBodyLimitPreservesSmallMalformedLoginStatus(t *testing.T) {
 	gin.SetMode(gin.TestMode)
-	router := newProductionRouter(config.Config{JWTSecret: "test-secret"}, true, nil, &syssettings.FakeStore{Enabled: true})
+	router := newProductionRouter(config.Config{JWTSecret: "test-secret"}, true, nil, &syssettings.FakeStore{Enabled: true}, true)
 
 	recorder := httptest.NewRecorder()
 	request := httptest.NewRequest(http.MethodPost, "http://localhost:8081/api/v1/auth/login", strings.NewReader(`{}`))

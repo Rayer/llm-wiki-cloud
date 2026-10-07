@@ -42,25 +42,26 @@ def candidate(component='auth', enabled=True, plan_override=None):
                     plan['gcp']['project_id'], plan['export_job']['location'], plan['export_job']['job_name'])},
                 {'name': 'EXPORT_SIGNING_SERVICE_ACCOUNT', 'value': plan['export_job']['signing_service_account']},
             ])
+        if plan['bff'].get('pipeline_demo_user_ids'):
+            env.append({'name': 'PIPELINE_DEMO_USER_IDS',
+                        'value': ','.join(plan['bff']['pipeline_demo_user_ids'])})
     return value
 
 
 class ProductionConfigContractTests(unittest.TestCase):
-    def test_empty_demo_user_id_accepts_cloud_run_omitted_value_only(self):
+    def test_configured_demo_identity_is_exactly_projected_and_read_back(self):
         config = subprocess.run(
             ['go', 'run', './cmd/deploy_config', '--environment', 'production',
              '--config', '../../deploy/environments/production.yaml', '--components', 'auth'],
             cwd=fixtures.ROOT / 'apps/bff', text=True, capture_output=True, check=True)
         plan = json.loads(config.stdout)
         expected = providers.auth_config.desired(plan, 'auth')
-        self.assertEqual(expected['env']['AUTH_DEMO_USER_ID'], '')
+        self.assertEqual(expected['env']['AUTH_DEMO_USER_ID'], 'e492f6bdaf1735e12b2de96d')
+        self.assertEqual(expected['env']['AUTH_DEMO_USER_EMAIL'], 'demo@llm-wiki.dev')
+        self.assertEqual(expected['env']['AUTH_DEMO_USER_ROLE'], 'member')
         image = fixtures.IMAGE
         revision_name = 'llm-wiki-auth-00009-rzw'
-        env = [
-            ({'name': name} if name == 'AUTH_DEMO_USER_ID' and value == ''
-             else {'name': name, 'value': value})
-            for name, value in expected['env'].items()
-        ]
+        env = [{'name': name, 'value': value} for name, value in expected['env'].items()]
         env.extend({'name': name, 'valueFrom': {'secretKeyRef': reference}}
                    for name, reference in expected['secrets'].items())
         candidate_revision = {
@@ -75,9 +76,8 @@ class ProductionConfigContractTests(unittest.TestCase):
 
         wrong = json.loads(json.dumps(candidate_revision))
         next(item for item in wrong['spec']['containers'][0]['env']
-             if item['name'] == 'GCP_PROJECT').pop('value')
-        with self.assertRaises(ValueError):
-            adapter.service_matches('auth', wrong, image)
+             if item['name'] == 'AUTH_DEMO_USER_EMAIL')['value'] = 'other@example.test'
+        self.assertFalse(adapter.service_matches('auth', wrong, image))
 
     def run_shell(self, value, component='auth', **kwargs):
         if component == 'bff' and 'plan_override' not in kwargs:

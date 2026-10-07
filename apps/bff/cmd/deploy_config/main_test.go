@@ -32,7 +32,8 @@ func TestLoadReviewedEnvironmentsAndQueryIdentity(t *testing.T) {
 			t.Fatalf("%s evidence = %#v", environment, config.Evidence)
 		}
 		auth, ok := config.Components["auth"].(map[string]any)
-		if !ok || auth["demo_user_id"] != config.Auth.DemoUserID {
+		if !ok || auth["demo_user_id"] != config.Auth.DemoUserID ||
+			auth["demo_user_email"] != config.Auth.DemoUserEmail || auth["demo_user_role"] != config.Auth.DemoUserRole {
 			t.Fatalf("%s Auth component input omitted Demo UID: %#v", environment, config.Components["auth"])
 		}
 		bff, ok := config.Components["bff"].(map[string]any)
@@ -49,16 +50,17 @@ func TestLoadReviewedEnvironmentsAndQueryIdentity(t *testing.T) {
 			if bff["profile_runtime_audience"] != config.BFF.ProfileRuntimeAudience || bff["profile_runtime_service_account"] != config.BFF.ProfileRuntimeServiceAccount {
 				t.Fatalf("DEV BFF component input omitted Profile runtime bindings: %#v", bff)
 			}
-			if !reflect.DeepEqual(config.BFF.PipelineDemoUserIDs, []string{"e492f6bdaf1735e12b2de96d"}) ||
+			if !reflect.DeepEqual(config.BFF.PipelineDemoUserIDs, []string{config.Auth.DemoUserID}) ||
 				!reflect.DeepEqual(bff["pipeline_demo_user_ids"], config.BFF.PipelineDemoUserIDs) {
-				t.Fatalf("DEV BFF component input omitted Demo IDs: %#v", bff)
+				t.Fatalf("DEV BFF component input did not project Auth Demo ID: %#v", bff)
 			}
 			secretRefs, ok := bff["secret_references"].(map[string]any)
 			if !ok || secretRefs["typesafe_jev_api_key"] != ref {
 				t.Fatalf("DEV BFF component input omitted TypeSafe secret binding: %#v", secretRefs)
 			}
-		} else if len(config.BFF.PipelineDemoUserIDs) != 0 {
-			t.Fatalf("Production unexpectedly received DEV Demo IDs: %#v", config.BFF)
+		} else if !reflect.DeepEqual(config.BFF.PipelineDemoUserIDs, []string{config.Auth.DemoUserID}) ||
+			!reflect.DeepEqual(bff["pipeline_demo_user_ids"], config.BFF.PipelineDemoUserIDs) {
+			t.Fatalf("Production BFF component input did not project its Auth Demo ID: %#v", bff)
 		} else if config.BFF.ProfileRuntimeAudience != "https://llm-wiki-bff-a5nkmux6pq-de.a.run.app" ||
 			config.BFF.ProfileRuntimeServiceAccount != "lwc-bff-prod@llm-wiki-cloud.iam.gserviceaccount.com" ||
 			config.BFF.SecretReferences.TypeSafeJevAPIKey == nil ||
@@ -68,8 +70,6 @@ func TestLoadReviewedEnvironmentsAndQueryIdentity(t *testing.T) {
 			t.Fatalf("Production Profile runtime bindings are incomplete or invalid: %#v", config.BFF)
 		} else if bff["profile_runtime_audience"] != config.BFF.ProfileRuntimeAudience || bff["profile_runtime_service_account"] != config.BFF.ProfileRuntimeServiceAccount {
 			t.Fatalf("Production BFF component input omitted Profile runtime bindings: %#v", bff)
-		} else if _, exists := bff["pipeline_demo_user_ids"]; exists {
-			t.Fatalf("Production BFF component input unexpectedly includes DEV Demo IDs: %#v", bff)
 		}
 		worker, ok := config.Components["worker"].(map[string]any)
 		if !ok || worker["args"] == nil || worker["secret_references"] == nil {
@@ -155,27 +155,39 @@ func writeBFFCooldownFixture(t *testing.T, fixture bffCooldownFixture) string {
 	return path
 }
 
-func TestAuthDemoUIDConfigIsOptionalButValidatedAndRendered(t *testing.T) {
+func TestAuthDemoIdentityConfigIsRequiredAndRendered(t *testing.T) {
 	root := repoRoot(t)
 	config, err := decodeConfig(filepath.Join(root, "deploy/environments/development.yaml"))
 	if err != nil {
 		t.Fatal(err)
 	}
-	config.Auth.DemoUserID = "fixture-demo-user"
 	if err := validateConfigForEnvironment("development", config); err != nil {
-		t.Fatalf("valid Auth Demo UID: %v", err)
+		t.Fatalf("configured Auth Demo identity: %v", err)
 	}
-	input := componentInputs(config, QueryConfigIdentity{}, []string{"auth"})["auth"].(map[string]any)
-	if input["demo_user_id"] != config.Auth.DemoUserID {
-		t.Fatalf("Auth component Demo UID = %#v", input["demo_user_id"])
+	configuredID := config.Auth.DemoUserID
+	config.Auth.DemoUserID = ""
+	if err := validateConfigForEnvironment("development", config); err == nil {
+		t.Fatal("missing Auth Demo UID was accepted")
 	}
 	config.Auth.DemoUserID = "bad|uid"
 	if err := validateConfigForEnvironment("development", config); err == nil {
 		t.Fatal("invalid Auth Demo UID was accepted")
 	}
+	config.Auth.DemoUserID = configuredID
+	if err := validateConfigForEnvironment("development", config); err != nil {
+		t.Fatalf("restored Auth Demo identity: %v", err)
+	}
+	input := componentInputs(config, QueryConfigIdentity{}, []string{"auth"})["auth"].(map[string]any)
+	if input["demo_user_id"] != config.Auth.DemoUserID || input["demo_user_email"] != config.Auth.DemoUserEmail || input["demo_user_role"] != config.Auth.DemoUserRole {
+		t.Fatalf("Auth component Demo identity = %#v", input)
+	}
+	config.Auth.DemoUserRole = "admin"
+	if err := validateConfigForEnvironment("development", config); err == nil {
+		t.Fatal("admin Demo role was accepted")
+	}
 }
 
-func TestPipelineDemoUserIDsAreDevelopmentOnlyAndValidated(t *testing.T) {
+func TestPipelineDemoUserIDsMustMatchTheConfiguredAuthIdentity(t *testing.T) {
 	root := repoRoot(t)
 	dev, err := decodeConfig(filepath.Join(root, "deploy/environments/development.yaml"))
 	if err != nil {
@@ -184,18 +196,10 @@ func TestPipelineDemoUserIDsAreDevelopmentOnlyAndValidated(t *testing.T) {
 	if err := validateConfigForEnvironment("development", dev); err != nil {
 		t.Fatalf("valid DEV Demo IDs: %v", err)
 	}
-	prod, err := decodeConfig(filepath.Join(root, "deploy/environments/production.yaml"))
-	if err != nil {
-		t.Fatal(err)
-	}
-	prod.BFF.PipelineDemoUserIDs = []string{"e492f6bdaf1735e12b2de96d"}
-	if err := validateConfigForEnvironment("production", prod); err == nil {
-		t.Fatal("Production unexpectedly accepted DEV Demo IDs")
-	}
-	for _, ids := range [][]string{{"bad,id"}, {"bad|id"}, {" duplicate ", "duplicate"}, {""}} {
+	for _, ids := range [][]string{{"different-demo"}, {"bad,id"}, {"bad|id"}, {" duplicate ", "duplicate"}, {""}} {
 		dev.BFF.PipelineDemoUserIDs = ids
 		if err := validateConfigForEnvironment("development", dev); err == nil {
-			t.Fatalf("invalid DEV Demo IDs accepted: %#v", ids)
+			t.Fatalf("mismatched or invalid Demo IDs accepted: %#v", ids)
 		}
 	}
 }

@@ -32,7 +32,7 @@ def production_plan():
             'typesafe_jev_api_key': {'name': 'typesafe-jev-api-key-prod', 'version': '17'},
         },
     })
-    plan['bff'].pop('pipeline_demo_user_ids', None)
+    plan['bff']['pipeline_demo_user_ids'] = [plan['auth']['demo_user_id']]
     plan['bff']['pipeline_cooldown_seconds'] = 3600
     plan['components']['bff']['pipeline_cooldown_seconds'] = 3600
     plan['export_job'] = {
@@ -97,7 +97,7 @@ def candidate(environment, plan_override=None):
                 plan['gcp']['project_id'], plan['export_job']['location'], plan['export_job']['job_name'])},
             {'name': 'EXPORT_SIGNING_SERVICE_ACCOUNT', 'value': plan['export_job']['signing_service_account']},
         ]
-    if environment == 'development' and plan['bff'].get('pipeline_demo_user_ids'):
+    if plan['bff'].get('pipeline_demo_user_ids'):
         value['spec']['containers'][0]['env'].append({
             'name': 'PIPELINE_DEMO_USER_IDS', 'value': ','.join(plan['bff']['pipeline_demo_user_ids']),
         })
@@ -159,7 +159,7 @@ class BFFQueryConfigTests(unittest.TestCase):
         self.assertIn('EXPORT_JOB_URL=https://run.googleapis.com/v2/projects/llm-wiki-cloud/locations/asia-east1/jobs/export-job:run', result.stdout)
         self.assertIn('EXPORT_SIGNING_SERVICE_ACCOUNT=lwc-export-signer-prod@llm-wiki-cloud.iam.gserviceaccount.com', result.stdout)
         self.assertIn('TYPESAFE_JEV_API_KEY=typesafe-jev-api-key-prod:17', result.stdout)
-        self.assertNotIn('PIPELINE_DEMO_USER_IDS', result.stdout)
+        self.assertIn('PIPELINE_DEMO_USER_IDS=e492f6bdaf1735e12b2de96d', result.stdout)
 
     def test_cooldown_is_explicit_and_effective_readback_must_match(self):
         for environment, cooldown in (("development", 600), ("production", 3600)):
@@ -243,7 +243,7 @@ class BFFQueryConfigTests(unittest.TestCase):
                     secrets_arg = update[update.index('--update-secrets') + 1]
                     self.assertIn('JWT_SECRET=jwt-secret-prod:latest', secrets_arg)
                     self.assertIn('TYPESAFE_JEV_API_KEY=typesafe-jev-api-key-prod:17', secrets_arg)
-                    self.assertNotIn('PIPELINE_DEMO_USER_IDS', env_arg)
+                    self.assertIn('PIPELINE_DEMO_USER_IDS=e492f6bdaf1735e12b2de96d', env_arg)
                 self.assertNotIn('--remove-env-vars', update)
                 self.assertFalse(any(arg.startswith(('--clear-', '--set-', '--service-account', '--network', '--subnet')) for arg in update))
                 traffic = next(i for i, c in enumerate(commands) if c[:3] == ['run', 'services', 'update-traffic'])
@@ -288,27 +288,17 @@ class BFFQueryConfigTests(unittest.TestCase):
         self.assertTrue(any(c[:3] == ['run', 'revisions', 'describe'] for c in commands[:traffic]))
         self.assertTrue(any(c[:3] == ['run', 'revisions', 'describe'] for c in commands[traffic + 1:]))
 
-    def test_demo_ids_are_dev_only_optional_and_preserve_unmanaged_values(self):
-        plan = copy.deepcopy(fixtures.bff_plan('development'))
-        self.assertEqual(plan['bff']['pipeline_demo_user_ids'], ['e492f6bdaf1735e12b2de96d'])
-        configured = candidate('development', plan)
-        result, commands, _ = self.run_shell(configured, 'development', action='bff_mutate', plan_override=plan)
-        self.assertEqual(result.returncode, 0, result.stderr)
-        update = next(c for c in commands if c[:3] == ['run', 'services', 'update'])
-        self.assertIn('PIPELINE_DEMO_USER_IDS=e492f6bdaf1735e12b2de96d',
-                      update[update.index('--update-env-vars') + 1])
-
-        plan['bff'].pop('pipeline_demo_user_ids')
-        unconfigured = candidate('development', plan)
-        unconfigured['spec']['containers'][0]['env'].append({
-            'name': 'PIPELINE_DEMO_USER_IDS', 'value': 'preexisting-demo-id',
-        })
-        result, commands, _ = self.run_shell(unconfigured, 'development', action='bff_mutate', plan_override=plan)
-        self.assertEqual(result.returncode, 0, result.stderr)
-        update = next(c for c in commands if c[:3] == ['run', 'services', 'update'])
-        self.assertNotIn('PIPELINE_DEMO_USER_IDS', update[update.index('--update-env-vars') + 1])
-        if '--remove-env-vars' in update:
-            self.assertNotIn('PIPELINE_DEMO_USER_IDS', update[update.index('--remove-env-vars') + 1])
+    def test_demo_ids_for_both_environments_are_derived_from_auth_identity(self):
+        for environment in ('development', 'production'):
+            plan = fixtures.bff_plan(environment) if environment == 'development' else production_plan()
+            demo_id = plan['auth']['demo_user_id']
+            self.assertEqual(plan['bff']['pipeline_demo_user_ids'], [demo_id])
+            result, commands, _ = self.run_shell(candidate(environment, plan), environment,
+                action='bff_mutate', plan_override=plan)
+            self.assertEqual(result.returncode, 0, result.stderr)
+            update = next(c for c in commands if c[:3] == ['run', 'services', 'update'])
+            self.assertIn('PIPELINE_DEMO_USER_IDS=' + demo_id,
+                          update[update.index('--update-env-vars') + 1])
 
     def test_dev_profile_binding_mismatch_blocks_traffic(self):
         plan = profile_runtime_plan()
@@ -411,8 +401,7 @@ class BFFQueryConfigTests(unittest.TestCase):
                                      + '|EXPORT_JOB_URL=https://run.googleapis.com/v2/projects/llm-wiki-cloud/locations/{}/jobs/{}:run'.format(
                                          plan['export_job']['location'], plan['export_job']['job_name'])
                                      + '|EXPORT_SIGNING_SERVICE_ACCOUNT=' + plan['export_job']['signing_service_account'])
-                    if environment == 'development':
-                        expected_env += '|PIPELINE_DEMO_USER_IDS=e492f6bdaf1735e12b2de96d'
+                    expected_env += '|PIPELINE_DEMO_USER_IDS=' + plan['auth']['demo_user_id']
                     self.assertEqual(update[update.index('--update-env-vars') + 1], expected_env)
                     self.assertNotIn('--remove-env-vars', update)
                     self.assertEqual(update[update.index('--update-secrets') + 1],

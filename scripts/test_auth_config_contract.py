@@ -31,6 +31,8 @@ ENV = {
     'AUTH_SERVICE_URL': 'https://auth.dev.rayer.idv.tw', 'AUTH_SESSION_ENVIRONMENT': 'llm-wiki-cloud-dev',
     'AUTH_REFRESH_SESSION_MIGRATION': 'disabled',
     'AUTH_DEMO_USER_ID': 'fixture-demo-user-dev',
+    'AUTH_DEMO_USER_EMAIL': 'demo@llm-wiki.dev',
+    'AUTH_DEMO_USER_ROLE': 'member',
     'GOOGLE_CLIENT_ID': GOOGLE['client_id'], 'GOOGLE_ISSUER': GOOGLE['issuer'],
     'GOOGLE_JWKS_URL': GOOGLE['jwks_url'], 'GOOGLE_TOKEN_URL': GOOGLE['token_url'],
     'GOOGLE_LOGIN_REDIRECT_URL': GOOGLE['login_redirect_url'],
@@ -149,6 +151,7 @@ class AuthConfigContractTests(unittest.TestCase):
                 'artifact_registry': IMAGE.split('/llm-wiki-auth@')[0]}, 'auth': {
                 'service_name': SERVICE, 'runtime_service_account': 'lwc-auth-dev@llm-wiki-cloud.iam.gserviceaccount.com',
                     'firestore_database_id': 'llm-wiki-cloud-dev', 'demo_user_id': ENV['AUTH_DEMO_USER_ID'],
+                    'demo_user_email': ENV['AUTH_DEMO_USER_EMAIL'], 'demo_user_role': ENV['AUTH_DEMO_USER_ROLE'],
                     'public_domain': 'auth.dev.rayer.idv.tw',
                     'allowed_hosts': ENV['ALLOWED_HOSTS'].split(','), 'allowed_origins': ENV['ALLOWED_ORIGINS'].split(','),
                     'secret_references': {'jwt': 'jwt-secret-dev'}, 'google': GOOGLE if enabled else {'enabled': False}}}}

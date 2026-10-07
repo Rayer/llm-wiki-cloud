@@ -1,0 +1,28 @@
+module lwc.local_fixture
+
+/// Local passwordless Demo identity used by Auth and BFF in this worktree.
+demo = new {
+  user_id = "demo-local-372"
+  email = "demo@llm-wiki.dev"
+  role = "member"
+}
+
+/// Local admin login fixture. This value is stable across generation and is
+/// read only by cmd/local_fixture; changing it does not reset an existing user.
+localFixture = new {
+  email = "admin-local@llm.wiki.dev"
+  password = "OFIPH9Uf1077gZiJ4ohi1x5XCTD9CkvDTGHEnkYa1R4R-t2q"
+}
+
+output {
+  files {
+    ["local_fixture.yaml"] {
+      value = localFixture
+      renderer = new YamlRenderer {}
+    }
+    ["local_demo.json"] {
+      value = demo
+      renderer = new JsonRenderer {}
+    }
+  }
+}
