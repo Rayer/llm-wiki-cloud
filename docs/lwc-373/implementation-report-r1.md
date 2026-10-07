@@ -52,4 +52,43 @@ All listed commands exited 0. Python contract suites below were run at `a09a78c5
 | Local child-to-consumer acceptance: real Pkl output, `local_services.child_environment`, then `go test ./internal/handler/v1 -run '^TestLoadedCooldownOverrideReachesQuotaConsumer$' -count=1` | exit 0; env `60` observed by the actual quota consumer |
 | Offline plan admission for `development` and `production` at SHA `fc55ba8cd8563ff66a3b66ad71d0fda63f649013` | exit 0; normalized/component cooldowns 600/3600 and plan IDs emitted |
 
-Frontend npm lint/typecheck/test/build were not run because this change does not modify frontend files. Canonical CI and independent TPM/reviewer checks remain with the coordinator after PR publication.
+At the initial r1 implementation checkpoint, frontend npm lint/typecheck/test/build were not run because no frontend files changed. Repair r2 ran the full canonical frontend commands below; fresh canonical GitHub CI and same-final-SHA reviews remain with the coordinator.
+
+## PR105 supervisor repair r2 — 2026-10-07 UTC
+
+### Receipt and findings
+
+- Frozen scope remains `lwc373-spec-r2`; source baseline and target remain `develop` at `8b01fcb385fb43a71f1b82cb0a7dc443c775082a`. PR [#105](https://github.com/Rayer/llm-wiki-cloud/pull/105) was open at reviewed head `a0fb682a07b0f9345a02bf9eec104ee6af7156c9` when repair began; its base was independently read as the same `develop` SHA.
+- Repair task/dispatch: `task_bd867a7eb268` / `ctx_0f3a5caf0969`. Reused terminal `term_38a9f6bc-26c3-4c02-94e0-e4c60eae9ac6`, process incarnation `e7de0083-1ff3-4166-a205-ce8214f14cd1`, generation 8, worktree `/Users/rayer/orca/workspaces/llm-wiki-cloud/LWC-373-implementation-r1`. The dispatch requested the existing Codex Luna xhigh/YOLO context. The durable launch receipt records provider `codex` but leaves model/effort null for the reused terminal; the prior worker record identifies `gpt-6-luna` and also had no effective effort value, so no more specific runtime effort is claimed.
+- Code and regression tests are in commit `77377073fa4cf51d27da632875715faa1844097c`, tested with real Pkl 0.32.1. Report-only changes are recorded separately after the code commit.
+- Historical canonical CI run `37694980162`, job `113044365792`, failed at head `a0fb682a` in `test_real_action_terminal_failure_explicit_retry_and_receipt_expansion` (engine test line 536) with admission `command-failed`. The BFF CI job had no Pkl install step, unlike the pinned release jobs. The actual Go producer command, run with a deliberately unavailable `PKL_BIN`, returned inner stderr `evaluate selected Pipeline SSOT: fork/exec /lwc-test/missing-pkl: no such file or directory: exit status 1`; the local installed tool reports Pkl 0.32.1. The repair adds the established pinned 0.32.1 install to the BFF job, and preserves the workflow's `PKL_BIN`/`PKL_CACHE_DIR` through the isolated Action test environment so the installed tool reaches the real admission child. The original CI run did not print a direct `command -v pkl` result; the diagnosis is supported by the absent setup step and reproduced inner error.
+
+### Repair acceptance matrix
+
+| Finding | Result | Evidence |
+|---|---|---|
+| BFF projection must match the authoritative source while source and executor can differ | PASS | Admission runs real Pkl prepare and the deploy-config normalizer, then checks the working `deploy/cac/ssot.pkl` Git blob against the selected source commit. The fixture uses a config-only source commit at cooldown 601 with a distinct executor; admission succeeds, the normalized projection is 601, and the BFF build identity equals the executor identity. The same chain with uncommitted 602 produces a real Pkl projection and normalized 602, then fails admission as `dirty-bff-ssot`. No hardcoded or shallow-only source SHA is used; config-only changes do not force an image rebuild. |
+| Immutable legacy BFF plan with no cooldown remains recoverable | PASS | An offline fake-provider fixture loads a retained plan without the field, calls `Providers.service_matches`, `observe`, and `reconcile_candidate`, then reactivates the candidate without a new build. The legacy plan and receipt bytes are unchanged through recovery. Newly admitted plans remain strict: `LoadWithBFFProjection` rejects a missing generated projection and the Go invalid-input test explicitly rejects a projection missing `pipeline_cooldown_seconds` plus wrong schema/environment/value/shape. |
+| Canonical BFF CI has the real Pkl prerequisite | PASS locally; fresh remote CI pending | Pinned public Pkl 0.32.1 setup was added to the BFF job using the existing CD workflow pattern. The real producer/normalizer/action admission regression passes with explicit `PKL_BIN` and `PKL_CACHE_DIR`. The new canonical workflow run will be read by the coordinator after this head is pushed; no CI run is represented as complete here. |
+| Frozen LWC-373 AC and cloud boundaries | PASS offline / NOT RUN cloud | The existing AC1–AC6 evidence remains applicable; repair keeps scalar values 60/600/3600, Pipeline default behavior, and source/config-only identity separation. The repair and full canonical local smoke used no provider, GSM, IAM, deploy, or paid Pipeline action. Formal DEV deployment/runtime readback remains **NOT RUN**. |
+
+### Repair verification
+
+| Command | Result |
+|---|---|
+| `env PKL_BIN=/Users/rayer/.local/bin/pkl PKL_CACHE_DIR=/Users/rayer/.hermes/profiles/lwc-tpm/cache/pkl-packages python3 -m unittest test_build_submission.AsyncBuildSubmission.test_bff_admission_binds_real_projection_to_source_not_executor` (from `deploy/engine/tests`) | exit 0; 1 named integration test, source/executor split and dirty 601→602 control |
+| `python3 -m unittest test_engine.Acceptance.test_legacy_bff_retained_plan_without_cooldown_recovers_and_reactivates` (from `deploy/engine/tests`) | exit 0; 1 named retained-provider recovery test |
+| `go test ./cmd/deploy_config -run '^TestGeneratedBFFCooldownProjectionRejectsInvalidInputs$' -count=1` (from `apps/bff`) | exit 0; missing and invalid new-plan projection cases rejected |
+| `python3 ../../scripts/test_cd_contract.py` (from `apps/bff`) | exit 0; 70 tests |
+| `python3 -m unittest discover -s ../../deploy/engine/tests -p 'test_*.py'` (from `apps/bff`) | exit 0; 115 tests |
+| `python3 -m unittest discover -s ../../scripts -p 'test_*auth_config_contract.py'` (from `apps/bff`) | exit 0; 33 tests |
+| `python3 -m unittest discover -s scripts -p 'test_*.py'` (from `apps/bff`) | exit 0; 115 tests |
+| `go vet ./...` (from `apps/bff`) | exit 0 |
+| `go test ./... -v -count=1 -race` (from `apps/bff`) | exit 0; Firestore-emulator-dependent tests reported SKIP: `TestProductionRouterUsesSharedCLIAndWebAuthAuthorities` requires the local emulator, and `TestEmulatorPasswordRotationChangesOnlyPasswordAndKeepsSession` / `TestEmulatorTargetCannotUseProductionOrDefaultDatabase` require unset `LWC366_FIRESTORE_EMULATOR_HOST`; these skips are not claimed as coverage |
+| `go build ./...` and `make test-flash-execution` (from `apps/bff`) | both exit 0; the flash command reported 12 synthetic wire-contract checks |
+| `make workflow-yaml` and `go run github.com/rhysd/actionlint/cmd/actionlint@v1.7.12` | both exit 0 |
+| `node --experimental-strip-types --test tests/ci-workflow-contract.test.mjs` (from `apps/frontend`, after `npm ci`) | exit 0; 5 tests. The first attempt exited 1 because `js-yaml` was absent; standard `npm ci` installed the declared frontend dependencies before rerun. |
+| `npm run lint`, `npm run typecheck`, `npm test`, `npm run build` (from `apps/frontend`) | all exit 0; lint/typecheck/build passed, Node suite 524 tests, component suite 292 tests |
+| `make smoke` (repo root) | exit 0; canonical offline loopback smoke, including the local cooldown child-isolation tests, 17 local Makefile tests, and 2 smoke-script contract tests |
+
+No local emulator test was counted as covered when skipped, and no result above verifies cloud deployment. The coordinator retains ownership of remote CI, same-final-SHA TPM/lwc-reviewer review, and normal merge.
