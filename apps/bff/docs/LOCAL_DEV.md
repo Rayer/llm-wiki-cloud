@@ -12,8 +12,8 @@ outside this guide.
 - macOS with Go, Node.js/npm, Python 3.12 or newer, Make, and Google Cloud CLI
   installed. The pinned Synto runtime was verified with Python 3.14.6; make
   sure `python3` on `PATH` resolves to a supported interpreter before bootstrap.
-- Network access to the public Python package host for the pinned Synto wheel
-  and its dependencies during bootstrap.
+- Network access to the public Pkl release and Python package hosts for the
+  pinned Pkl CLI, Synto wheel, and its dependencies during bootstrap.
 - Google Cloud ADC with access to the local bucket and database. To configure
   ADC interactively, run `gcloud auth application-default login` and select
   the `llm-wiki-cloud` project. Do not download a service-account key.
@@ -33,7 +33,9 @@ make bootstrap
 make local-start
 ```
 
-`make bootstrap` creates a worktree-private Python virtual environment under
+`make bootstrap` checks for Pkl CLI `0.32.1`, downloading the matching public
+release binary into `.build/tools/pkl` when that pinned version is not already
+on `PATH`. It also creates a worktree-private Python virtual environment under
 the Git metadata directory and installs the same Synto `0.7.0` wheel pinned by
 the worker Dockerfile, including its SHA-256 check. It verifies the Python
 import/version and the `synto --version` command. The BFF's local worker child
@@ -165,8 +167,10 @@ runtime above. A real provider-backed pipeline still requires the existing
 `LLM_API_KEY` or `DEEPSEEK_API_KEY` setting; bootstrap does not read, create, or
 set those values. The worker reads and publishes through the configured
 GCS bucket. Before the first pipeline run, render the selected local Pipeline
-config from the checked-in SSOT. Rendering requires the Pkl CLI on `PATH`, or
-an explicit `PKL_BIN` path; check the available CLI with `pkl --version`:
+config from the checked-in SSOT. Repository Make targets use the pinned Pkl
+CLI selected during bootstrap; direct Pkl and config-generator invocations can
+use `pkl` on `PATH` or an explicit `PKL_BIN` path. Check it with
+`pkl --version`:
 
 The current Pipeline Job timeout is 7200 seconds. Render the local config
 from the repository root with:

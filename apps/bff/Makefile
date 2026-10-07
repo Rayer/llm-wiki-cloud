@@ -7,6 +7,9 @@ BFF_PORT ?= 8080
 AUTH_PORT ?= 8081
 FRONTEND_PORT ?= 3000
 CAC_OUTPUT_DIR ?= ../../.build/cac
+PKL_BIN ?= $(shell if command -v pkl >/dev/null 2>&1 && pkl --version 2>/dev/null | grep -Eq '^Pkl 0\.32\.1([[:space:]]|$$)'; then command -v pkl; else printf '%s' '$(abspath ../../.build/tools/pkl)'; fi)
+export PKL_BIN
+export PATH := $(dir $(PKL_BIN)):$(PATH)
 LOCAL_ENV := ../../scripts/local-cloud-env.sh
 LOCAL_SERVICES := ../../scripts/local-services.py
 LOCAL_DEMO_CONFIG_PATH ?= $(abspath $(CAC_OUTPUT_DIR)/local/local_demo.json)
@@ -17,7 +20,7 @@ SYNTO_ARTIFACT_URL := https://files.pythonhosted.org/packages/4a/e9/41c6b61338d9
 SYNTO_SHA256 := 4bc8dcf14b53f45fac32ce737ecf878f1a46d6d0b010c7decbe6c3b7b10afa77
 TEST_ENV := env -u LLM_API_KEY -u DEEPSEEK_API_KEY -u SYNTO_API_KEY -u OPENAI_API_KEY -u ANTHROPIC_API_KEY -u GEMINI_API_KEY -u TYPESAFE_API_KEY -u TYPESAFE_JEV_API_KEY -u LWC331_TEST_API_KEY
 
-.PHONY: help docker-build docker-build-export-job docker-push deploy deploy-dev deploy-prod all build-sync setup local-config local-fixture-config local-synto-runtime local-synto-runtime-test local-worker-build local-fixture local-start dev support-bff support-frontend support-pipeline bff-local auth-local frontend-local local-stop kill-local pipeline-test test-flash-execution vet test build
+.PHONY: help ensure-pkl docker-build docker-build-export-job docker-push deploy deploy-dev deploy-prod all build-sync setup local-config local-fixture-config local-synto-runtime local-synto-runtime-test local-worker-build local-fixture local-start dev support-bff support-frontend support-pipeline bff-local auth-local frontend-local local-stop kill-local pipeline-test test-flash-execution vet test build
 
 help:
 	@printf '%s\n' \
@@ -52,14 +55,17 @@ all: docker-build docker-push deploy-dev
 build-sync:
 	go build -o lwc-sync ./cmd/sync/
 
-setup: local-config local-synto-runtime
+ensure-pkl:
+	bash ../../scripts/ensure-pkl.sh "$(PKL_BIN)"
+
+setup: ensure-pkl local-config local-synto-runtime
 	go mod download
 	cd "$(FRONTEND_DIR)" && NODE_ENV=development npm ci --include=dev
 
 vet:
 	go vet ./...
 
-test:
+test: ensure-pkl
 	$(TEST_ENV) python3 ../../scripts/test_cd_contract.py
 	$(TEST_ENV) python3 -m unittest discover -s ../../scripts -p 'test_*auth_config_contract.py'
 	$(TEST_ENV) python3 ../../apps/bff/scripts/test_local_dev_makefile.py
@@ -72,9 +78,9 @@ local-config: local-fixture-config
 	BFF_PORT="$(BFF_PORT)" AUTH_PORT="$(AUTH_PORT)" FRONTEND_PORT="$(FRONTEND_PORT)" $(LOCAL_DEMO_CONFIG_ENV) $(LOCAL_ENV) --configure-frontend "$(FRONTEND_DIR)"
 	BFF_PORT="$(BFF_PORT)" AUTH_PORT="$(AUTH_PORT)" FRONTEND_PORT="$(FRONTEND_PORT)" $(LOCAL_DEMO_CONFIG_ENV) $(LOCAL_ENV) --summary
 
-local-fixture-config:
+local-fixture-config: ensure-pkl
 	mkdir -p "$(CAC_OUTPUT_DIR)/local"
-	pkl eval --multiple-file-output-path "$(CAC_OUTPUT_DIR)/local" ../../deploy/cac/local_fixture.pkl
+	"$(PKL_BIN)" eval --multiple-file-output-path "$(CAC_OUTPUT_DIR)/local" ../../deploy/cac/local_fixture.pkl
 
 local-synto-runtime:
 	@set -eu; \
