@@ -8,7 +8,7 @@
 - Commits: `3aa8ea74c0bbe6fd31a5ae2212c0c7ffacb71c60` (implementation), `a09a78c5d6d2e304e4f03fb0ae06dedc36ec6ff7` (local child-to-consumer test), `fc55ba8cd8563ff66a3b66ad71d0fda63f649013` (quota HTTP acceptance tests).
 - Runtime readback: provider/model `codex` / `gpt-6-luna`; requested and effective launch effort were `null` in `worker-show` (no effort value was exposed). Orca runtime/session `8bc79eed-2312-4c07-a306-f91ae8d31716`; dispatch `ctx_1d476c9d7079`; terminal `term_38a9f6bc-26c3-4c02-94e0-e4c60eae9ac6`.
 - Toolchain: Pkl 0.32.1; Go 1.26.5 (`darwin/arm64`); Python 3.14.6.
-- PR publication/readback: pending; this report will be updated with the exact PR URL, remote head SHA, and base after creation.
+- PR: [#105](https://github.com/Rayer/llm-wiki-cloud/pull/105), base `develop` at `8b01fcb385fb43a71f1b82cb0a7dc443c775082a`. Creation readback reported head `804bac045dc75305450cc590284aae558a4153cd`, matching the pushed branch ref; this report-only follow-up advances the PR head, whose final readback is included in the worker completion receipt.
 
 ## Delivered scope
 
