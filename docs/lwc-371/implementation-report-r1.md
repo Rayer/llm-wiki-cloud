@@ -15,7 +15,9 @@ The status API returns quota settlement and safe failure details; the UI shows t
 - Branch: `Rayer/LWC-371-implementation-r1`.
 - Baseline SHA: `8b01fcb385fb43a71f1b82cb0a7dc443c775082a`.
 - Implementation commit and tested backend source SHA: `2549853e92759bc779162bbb4974d6e11eb3a593` (`feat: refund failed pipeline reservations (LWC-371)`).
-- PR publication details will be appended after the authorized PR create and remote readback.
+- PR #104: [LWC-371: refund confirmed failed pipeline reservations](https://github.com/Rayer/llm-wiki-cloud/pull/104), state `OPEN`.
+- Exact create-time remote readback: head branch `Rayer/LWC-371-implementation-r1`, head SHA `a9cac0d33474fad614bb96d047b771c64ed24fdb`; base branch `develop`, base SHA `8b01fcb385fb43a71f1b82cb0a7dc443c775082a`. `git ls-remote` matched the head SHA.
+- This report-only follow-up commit advances the PR head after that create-time readback; the final remote head was re-read and is included in the dispatch completion record.
 
 ## Commands and results
 
