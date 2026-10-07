@@ -13,12 +13,12 @@ preparedSecretTarget: String = read("prop:preparedSecretTarget")
 preparedSecretEnvName: String? = read?("prop:preparedSecretEnvName")
 preparedSecretResource: String? = read?("prop:preparedSecretResource")
 preparedArticleMaxTokens: Int? = read?("prop:preparedArticleMaxTokens")?.toInt()
+preparedLlmProvider: String = read("prop:preparedLlmProvider")
+preparedLlmEndpoint: String = read("prop:preparedLlmEndpoint")
+preparedLlmModel: String = read("prop:preparedLlmModel")
+preparedLlmRequestTimeoutSeconds: Int = read("prop:preparedLlmRequestTimeoutSeconds").toInt()
 
 local defaults = new {
-  provider = "deepseek"
-  endpoint = "https://api.deepseek.com/v1"
-  model = "deepseek-flash"
-  providerTimeoutSeconds = 600
   fastContextTokens = 16384
   heavyContextTokens = 32768
   articleMaxTokens = 32768
@@ -35,22 +35,22 @@ local preparedSecretBinding = new {
 local config = new {
   providers = new Mapping<String, Dynamic> {
     ["default"] = new {
-      name = defaults.provider
-      url = defaults.endpoint
-      timeout = defaults.providerTimeoutSeconds
+      name = preparedLlmProvider
+      url = preparedLlmEndpoint
+      timeout = preparedLlmRequestTimeoutSeconds
       api_key_env = preparedSecretBinding.target
     }
   }
   models = new {
     fast = new {
       provider = "default"
-      model = defaults.model
+      model = preparedLlmModel
       ctx = defaults.fastContextTokens
       options = new { thinking = new { type = "disabled" } }
     }
     heavy = new {
       provider = "default"
-      model = defaults.model
+      model = preparedLlmModel
       ctx = defaults.heavyContextTokens
       options = new { thinking = new { type = "enabled" } }
     }

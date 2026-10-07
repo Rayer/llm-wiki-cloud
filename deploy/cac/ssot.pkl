@@ -17,53 +17,81 @@ class SecretBinding {
   resource: String?
 }
 
-class EnvironmentConfig {
-  bucket: String?
+class LlmProfile {
+  provider: String
+  endpoint: String
+  model: String
+  requestTimeoutSeconds: Int
   secret: SecretBinding
+}
+
+class EnvironmentConfig {
+  llm: LlmProfile
+  bucket: String?
   articleMaxTokens: Int?
+}
+
+class Environments {
+  `local`: EnvironmentConfig
+  dev: EnvironmentConfig
+  prod: EnvironmentConfig
 }
 
 local localSecretResource: String? = read?("prop:localSecretVersionResource")
 
-local environments: Mapping<String, EnvironmentConfig> = new {
-  ["local"] = new {
+/// The shared LLM authority is defined once; local changes only its binding source.
+local deepseekSecret = new SecretBinding {
+  source = "secret-manager"
+  target = "DEEPSEEK_API_KEY"
+  envName = null
+  resource = "projects/llm-wiki-cloud/secrets/deepseek-apikey/versions/latest"
+}
+
+local deepseek = new LlmProfile {
+  provider = "deepseek"
+  endpoint = "https://api.deepseek.com/v1"
+  model = "deepseek-flash"
+  requestTimeoutSeconds = 600
+  secret = deepseekSecret
+}
+
+local deepseekLocal = (deepseek) {
+  secret = new SecretBinding {
+    source = if (localSecretResource == null) "environment" else "secret-manager"
+    target = deepseek.secret.target
+    envName = if (localSecretResource == null) "LLM_API_KEY" else null
+    resource = localSecretResource
+  }
+}
+
+local environments = new Environments {
+  `local` = new EnvironmentConfig {
+    llm = deepseekLocal
     bucket = null
-    secret = new SecretBinding {
-      source = if (localSecretResource == null) "environment" else "secret-manager"
-      target = "DEEPSEEK_API_KEY"
-      envName = if (localSecretResource == null) "LLM_API_KEY" else null
-      resource = localSecretResource
-    }
     articleMaxTokens = null
   }
-  ["dev"] = new {
+  dev = new EnvironmentConfig {
+    llm = deepseek
     bucket = "llm-wiki-data-dev"
-    secret = new SecretBinding {
-      source = "secret-manager"
-      target = "DEEPSEEK_API_KEY"
-      envName = null
-      resource = "projects/llm-wiki-cloud/secrets/deepseek-apikey/versions/latest"
-    }
     articleMaxTokens = null
   }
-  ["prod"] = new {
+  prod = new EnvironmentConfig {
+    llm = deepseek
     bucket = "llm-wiki-data"
-    secret = new SecretBinding {
-      source = "secret-manager"
-      target = "DEEPSEEK_API_KEY"
-      envName = null
-      resource = "projects/llm-wiki-cloud/secrets/deepseek-apikey/versions/latest"
-    }
     articleMaxTokens = null
   }
 }
 
+local selected = if (environment == "local") environments.`local`
+  else if (environment == "dev") environments.dev
+  else environments.prod
+
 pipeline = new {
   environment = outer.environment
   runTimeoutSeconds = outer.runTimeoutSeconds
-  bucket = environments[environment].bucket
-  secret = environments[environment].secret
-  articleMaxTokens = environments[environment].articleMaxTokens ?? outer.pipelineArticleMaxTokens
+  bucket = selected.bucket
+  articleMaxTokens = selected.articleMaxTokens ?? outer.pipelineArticleMaxTokens
+  llm = selected.llm
 }
 
 output {

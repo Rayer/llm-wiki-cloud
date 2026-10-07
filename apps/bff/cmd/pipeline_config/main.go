@@ -42,12 +42,20 @@ type secretBinding struct {
 	Resource string `json:"resource"`
 }
 
+type llmProfile struct {
+	Provider              string        `json:"provider"`
+	Endpoint              string        `json:"endpoint"`
+	Model                 string        `json:"model"`
+	RequestTimeoutSeconds int           `json:"requestTimeoutSeconds"`
+	Secret                secretBinding `json:"secret"`
+}
+
 type pipelineConfig struct {
-	Environment       string        `json:"environment"`
-	Bucket            string        `json:"bucket"`
-	RunTimeoutSeconds int           `json:"runTimeoutSeconds"`
-	ArticleMaxTokens  *int          `json:"articleMaxTokens"`
-	Secret            secretBinding `json:"secret"`
+	Environment       string     `json:"environment"`
+	Bucket            string     `json:"bucket"`
+	RunTimeoutSeconds int        `json:"runTimeoutSeconds"`
+	ArticleMaxTokens  *int       `json:"articleMaxTokens"`
+	LLM               llmProfile `json:"llm"`
 }
 
 type privateBindings struct {
@@ -199,16 +207,19 @@ func runPrepare(ctx context.Context, environment, output string, newReader reade
 	if err := json.Unmarshal(ssotBytes, &config); err != nil {
 		return fmt.Errorf("decode selected Pipeline SSOT: %w", err)
 	}
-	if config.Environment != environment || config.RunTimeoutSeconds != timeoutSeconds || config.Secret.Target != "DEEPSEEK_API_KEY" {
+	if config.Environment != environment || config.RunTimeoutSeconds != timeoutSeconds ||
+		config.LLM.Provider == "" || config.LLM.Endpoint == "" || config.LLM.Model == "" ||
+		config.LLM.RequestTimeoutSeconds <= 0 || config.LLM.Secret.Target != "DEEPSEEK_API_KEY" {
 		return errors.New("selected Pipeline SSOT identity is invalid")
 	}
-	secretValue, resolvedResource, err := resolveBinding(ctx, config.Secret, newReader)
+	secret := config.LLM.Secret
+	secretValue, resolvedResource, err := resolveBinding(ctx, secret, newReader)
 	if err != nil {
 		return err
 	}
 	defer clear(secretValue)
-	if config.Secret.Source == "secret-manager" {
-		config.Secret.Resource = resolvedResource
+	if secret.Source == "secret-manager" {
+		secret.Resource = resolvedResource
 	}
 
 	output = filepath.Clean(output)
@@ -222,16 +233,20 @@ func runPrepare(ctx context.Context, environment, output string, newReader reade
 	defer os.RemoveAll(tempDir)
 	renderProperties := []string{"--property", "preparedEnvironment=" + config.Environment,
 		"--property", "preparedRunTimeoutSeconds=" + strconv.Itoa(config.RunTimeoutSeconds),
-		"--property", "preparedSecretSource=" + config.Secret.Source,
-		"--property", "preparedSecretTarget=" + config.Secret.Target}
+		"--property", "preparedSecretSource=" + secret.Source,
+		"--property", "preparedSecretTarget=" + secret.Target,
+		"--property", "preparedLlmProvider=" + config.LLM.Provider,
+		"--property", "preparedLlmEndpoint=" + config.LLM.Endpoint,
+		"--property", "preparedLlmModel=" + config.LLM.Model,
+		"--property", "preparedLlmRequestTimeoutSeconds=" + strconv.Itoa(config.LLM.RequestTimeoutSeconds)}
 	if config.Bucket != "" {
 		renderProperties = append(renderProperties, "--property", "preparedBucket="+config.Bucket)
 	}
-	if config.Secret.EnvName != "" {
-		renderProperties = append(renderProperties, "--property", "preparedSecretEnvName="+config.Secret.EnvName)
+	if secret.EnvName != "" {
+		renderProperties = append(renderProperties, "--property", "preparedSecretEnvName="+secret.EnvName)
 	}
-	if config.Secret.Resource != "" {
-		renderProperties = append(renderProperties, "--property", "preparedSecretResource="+config.Secret.Resource)
+	if secret.Resource != "" {
+		renderProperties = append(renderProperties, "--property", "preparedSecretResource="+secret.Resource)
 	}
 	if config.ArticleMaxTokens != nil {
 		renderProperties = append(renderProperties, "--property",
@@ -251,7 +266,7 @@ func runPrepare(ctx context.Context, environment, output string, newReader reade
 			return fmt.Errorf("renderer did not produce a valid %s", name)
 		}
 	}
-	if err := bindResolvedSecretReference(tempDir, config.Secret); err != nil {
+	if err := bindResolvedSecretReference(tempDir, secret); err != nil {
 		return fmt.Errorf("bind prepared Pipeline secret reference: %w", err)
 	}
 	tomlBytes, err := os.ReadFile(filepath.Join(tempDir, "synto.toml"))
@@ -259,12 +274,12 @@ func runPrepare(ctx context.Context, environment, output string, newReader reade
 		return fmt.Errorf("read rendered synto.toml: %w", err)
 	}
 	if strings.Contains(string(tomlBytes), "secret-manager") ||
-		(config.Secret.Resource != "" && strings.Contains(string(tomlBytes), config.Secret.Resource)) {
+		(secret.Resource != "" && strings.Contains(string(tomlBytes), secret.Resource)) {
 		return errors.New("rendered synto.toml contains a secret reference")
 	}
 	private := privateBindings{Environment: environment}
-	if config.Secret.Source == "secret-manager" {
-		private.Bindings = []secretBinding{config.Secret}
+	if secret.Source == "secret-manager" {
+		private.Bindings = []secretBinding{secret}
 		if environment == "local" {
 			private.LocalAPIKey = append([]byte(nil), secretValue...)
 		}
