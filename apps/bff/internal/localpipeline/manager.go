@@ -1,12 +1,15 @@
 package localpipeline
 
 import (
+	"bytes"
 	"context"
 	"crypto/rand"
 	"encoding/hex"
+	"encoding/json"
 	"errors"
 	"fmt"
 	"io"
+	"log"
 	"os"
 	"os/exec"
 	"strings"
@@ -22,6 +25,8 @@ import (
 	"github.com/rayer/llm-wiki-bff/internal/generation"
 	handlerapi "github.com/rayer/llm-wiki-bff/internal/handler"
 	"github.com/rayer/llm-wiki-bff/internal/localcloud"
+	"github.com/rayer/llm-wiki-bff/internal/pipelinediagnostic"
+	storeapi "github.com/rayer/llm-wiki-bff/internal/storage"
 	"google.golang.org/grpc/codes"
 	"google.golang.org/grpc/status"
 )
@@ -45,15 +50,23 @@ type Config struct {
 }
 
 type Manager struct {
-	cfg       Config
-	mu        sync.Mutex
-	processes map[string]*process
-	closing   bool
+	cfg            Config
+	mu             sync.Mutex
+	processes      map[string]*process
+	pendingResults map[string]processResult
+	closing        bool
 }
 
 type process struct {
 	cmd  *exec.Cmd
 	done chan struct{}
+}
+
+type processResult struct {
+	executionID, userID, projectID, beforeID, reservationID string
+	childSucceeded                                          bool
+	spawnFailed                                             bool
+	childErr                                                error
 }
 
 func New(cfg Config) (*Manager, error) {
@@ -66,7 +79,7 @@ func New(cfg Config) (*Manager, error) {
 	if err := scopedfirestore.RegisterLocalScope(cfg.Firestore, cfg.Scope); err != nil {
 		return nil, err
 	}
-	return &Manager{cfg: cfg, processes: make(map[string]*process)}, nil
+	return &Manager{cfg: cfg, processes: make(map[string]*process), pendingResults: make(map[string]processResult)}, nil
 }
 
 // ReconcileInterrupted marks prior RUNNING records unknown. A restarted BFF
@@ -83,17 +96,74 @@ func (m *Manager) ReconcileInterrupted(ctx context.Context) error {
 			continue
 		}
 		ref := scopedfirestore.Collection(m.cfg.Firestore, "executions").Doc(executionID)
-		if _, err := ref.Update(ctx, []cloudfirestore.Update{{Path: "status", Value: "UNKNOWN"}, {Path: "failure_reason", Value: "BFF restarted before the worker result could be confirmed"}}); err != nil && status.Code(err) != codes.NotFound {
+		execution, err := ref.Get(ctx)
+		if status.Code(err) == codes.NotFound {
+			if _, err := lock.Ref.Update(ctx, []cloudfirestore.Update{{Path: "status", Value: "UNKNOWN"}, {Path: "updated_at", Value: time.Now().UTC()}}); err != nil {
+				return err
+			}
+			continue
+		}
+		if err != nil {
 			return err
 		}
-		if _, err := lock.Ref.Update(ctx, []cloudfirestore.Update{{Path: "status", Value: "UNKNOWN"}, {Path: "updated_at", Value: time.Now().UTC()}}); err != nil {
+		state, reason, err := m.resolveInterruptedOutcome(ctx, executionID, execution.Data())
+		if err != nil {
+			return err
+		}
+		if state == "UNKNOWN" && reason == "" {
+			reason = "BFF restarted before the worker result could be confirmed"
+		}
+		if err := m.persistRecoveredExecution(ctx, ref, lock.Ref, executionID, stringValue(execution.Data()["quota_reservation_id"]), state, reason); err != nil {
 			return err
 		}
 	}
 	return m.ReconcilePendingQuotaSettlements(ctx)
 }
 
+func (m *Manager) persistRecoveredExecution(ctx context.Context, executionRef, lockRef *cloudfirestore.DocumentRef, executionID, reservationID, state, reason string) error {
+	return m.cfg.Firestore.RunTransaction(ctx, func(ctx context.Context, tx *cloudfirestore.Transaction) error {
+		execution, err := tx.Get(executionRef)
+		if status.Code(err) == codes.NotFound {
+			return nil
+		}
+		if err != nil {
+			return err
+		}
+		currentData := execution.Data()
+		currentStatus, _ := currentData["status"].(string)
+		if currentStatus == "SUCCEEDED" || currentStatus == "FAILED" || currentStatus == "CANCELLED" {
+			state = currentStatus
+		}
+		lock, lockErr := tx.Get(lockRef)
+		if lockErr != nil && status.Code(lockErr) != codes.NotFound {
+			return lockErr
+		}
+		lockExists := lockErr == nil
+		settlement, err := scopedfirestore.SettleQuotaReservationInTransaction(ctx, tx, m.cfg.Firestore, reservationID, state)
+		if err != nil {
+			return err
+		}
+		updates := []cloudfirestore.Update{
+			{Path: "status", Value: state}, {Path: "failure_reason", Value: reason},
+			{Path: "quota_settlement", Value: settlement},
+		}
+		if currentData["finished_at"] == nil && state != "UNKNOWN" {
+			updates = append(updates, cloudfirestore.Update{Path: "finished_at", Value: time.Now().UTC()})
+		}
+		if err := tx.Update(executionRef, updates); err != nil {
+			return err
+		}
+		if lockExists && lock.Data()["execution_id"] == executionID {
+			return tx.Update(lockRef, []cloudfirestore.Update{{Path: "status", Value: state}, {Path: "updated_at", Value: time.Now().UTC()}})
+		}
+		return nil
+	})
+}
+
 func (m *Manager) ReconcilePendingQuotaSettlements(ctx context.Context) error {
+	if err := m.retryPendingResults(ctx); err != nil {
+		return err
+	}
 	reservations, err := scopedfirestore.ListPendingQuotaReservationsFromFirestore(ctx, m.cfg.Firestore)
 	if err != nil {
 		return err
@@ -101,6 +171,18 @@ func (m *Manager) ReconcilePendingQuotaSettlements(ctx context.Context) error {
 	executions := scopedfirestore.Collection(m.cfg.Firestore, "executions")
 	for _, reservation := range reservations {
 		if reservation.ExecutionID == "" {
+			confirmedFailure, err := m.hasConfirmedInvokeFailure(ctx, reservation)
+			if err != nil {
+				return err
+			}
+			if confirmedFailure {
+				if err := m.cfg.Firestore.RunTransaction(ctx, func(ctx context.Context, tx *cloudfirestore.Transaction) error {
+					_, err := scopedfirestore.SettleQuotaReservationInTransaction(ctx, tx, m.cfg.Firestore, reservation.ID, "FAILED")
+					return err
+				}); err != nil {
+					return err
+				}
+			}
 			continue
 		}
 		snapshot, err := executions.Doc(reservation.ExecutionID).Get(ctx)
@@ -116,8 +198,15 @@ func (m *Manager) ReconcilePendingQuotaSettlements(ctx context.Context) error {
 			continue
 		}
 		state, _ := data["status"].(string)
+		reason, _ := data["failure_reason"].(string)
 		if state != "SUCCEEDED" && state != "FAILED" && state != "CANCELLED" {
-			continue
+			state, reason, err = m.resolveInterruptedOutcome(ctx, reservation.ExecutionID, data)
+			if err != nil {
+				return err
+			}
+			if state != "SUCCEEDED" && state != "FAILED" && state != "CANCELLED" {
+				continue
+			}
 		}
 		if err := m.cfg.Firestore.RunTransaction(ctx, func(ctx context.Context, tx *cloudfirestore.Transaction) error {
 			current, err := tx.Get(snapshot.Ref)
@@ -127,19 +216,311 @@ func (m *Manager) ReconcilePendingQuotaSettlements(ctx context.Context) error {
 			currentData := current.Data()
 			currentStatus, _ := currentData["status"].(string)
 			currentReservationID, _ := currentData["quota_reservation_id"].(string)
-			if currentStatus != state || currentReservationID != reservation.ID {
+			if currentReservationID != reservation.ID || currentData["user_id"] != reservation.UserID ||
+				currentData["project_id"] != reservation.ProjectID || currentData["native"] != true {
 				return nil
 			}
-			settlement, err := scopedfirestore.SettleQuotaReservationInTransaction(ctx, tx, m.cfg.Firestore, reservation.ID, currentStatus)
+			if currentStatus == "SUCCEEDED" || currentStatus == "FAILED" || currentStatus == "CANCELLED" {
+				state = currentStatus
+			}
+			lockRef := scopedfirestore.Collection(m.cfg.Firestore, "local_pipeline_locks").Doc(reservation.UserID + "__" + reservation.ProjectID)
+			lock, err := tx.Get(lockRef)
+			if err != nil && status.Code(err) != codes.NotFound {
+				return err
+			}
+			lockExists := err == nil
+			settlement, err := scopedfirestore.SettleQuotaReservationInTransaction(ctx, tx, m.cfg.Firestore, reservation.ID, state)
 			if err != nil {
 				return err
 			}
-			return tx.Update(snapshot.Ref, []cloudfirestore.Update{{Path: "quota_settlement", Value: settlement}})
+			updates := []cloudfirestore.Update{
+				{Path: "status", Value: state},
+				{Path: "failure_reason", Value: reason},
+				{Path: "quota_settlement", Value: settlement},
+			}
+			if currentData["finished_at"] == nil {
+				updates = append(updates, cloudfirestore.Update{Path: "finished_at", Value: time.Now().UTC()})
+			}
+			if err := tx.Update(snapshot.Ref, updates); err != nil {
+				return err
+			}
+			if lockExists && lock.Data()["execution_id"] == reservation.ExecutionID {
+				return tx.Update(lockRef, []cloudfirestore.Update{{Path: "status", Value: state}, {Path: "updated_at", Value: time.Now().UTC()}})
+			}
+			return nil
 		}); err != nil {
 			return err
 		}
 	}
 	return nil
+}
+
+func (m *Manager) retryPendingResults(ctx context.Context) error {
+	m.mu.Lock()
+	pending := make([]processResult, 0, len(m.pendingResults))
+	for _, result := range m.pendingResults {
+		pending = append(pending, result)
+	}
+	m.mu.Unlock()
+	for _, result := range pending {
+		if err := m.finish(ctx, result); err != nil {
+			return err
+		}
+		m.mu.Lock()
+		delete(m.pendingResults, result.executionID)
+		m.mu.Unlock()
+	}
+	return nil
+}
+
+func (m *Manager) savePendingResult(result processResult) {
+	m.mu.Lock()
+	if m.pendingResults == nil {
+		m.pendingResults = make(map[string]processResult)
+	}
+	m.pendingResults[result.executionID] = result
+	m.mu.Unlock()
+}
+
+func (m *Manager) clearPendingResult(executionID string) {
+	m.mu.Lock()
+	delete(m.pendingResults, executionID)
+	m.mu.Unlock()
+}
+
+func (m *Manager) RunQuotaReconciler(ctx context.Context) {
+	ticker := time.NewTicker(15 * time.Second)
+	defer ticker.Stop()
+	for {
+		if err := m.ReconcilePendingQuotaSettlements(ctx); err != nil {
+			log.Print("native pipeline quota reconciliation unavailable")
+		}
+		select {
+		case <-ctx.Done():
+			return
+		case <-ticker.C:
+		}
+	}
+}
+
+func (m *Manager) resolveInterruptedOutcome(ctx context.Context, executionID string, data map[string]any) (string, string, error) {
+	userID, _ := data["user_id"].(string)
+	projectID, _ := data["project_id"].(string)
+	if userID == "" || projectID == "" {
+		return "UNKNOWN", "execution owner is unavailable", nil
+	}
+	storage := m.cfg.Storage.WithScope(userID, projectID)
+	manifest, _, exists, manifestErr := storage.CurrentManifest(ctx)
+	receiptData, receiptErr := storage.ReadLocalPublicationReceipt(ctx, executionID)
+	if data["worker_result_observed"] == true {
+		code := firestoreInt(data["exit_code"])
+		childSucceeded := code == 0
+		var childErr error
+		if !childSucceeded {
+			childErr = recordedExitError{code: code}
+		}
+		state, reason := ResolvePublicationOutcome(executionID, stringValue(data["manifest_generation_before"]), manifest, exists, childSucceeded, childErr, manifestErr, receiptData, receiptErr)
+		return state, reason, nil
+	}
+	if receiptErr == nil {
+		receipt, err := localcloud.DecodePublicationReceipt(receiptData)
+		if err == nil && receipt.ExecutionID == executionID {
+			return "SUCCEEDED", "", nil
+		}
+		return "UNKNOWN", "execution publication receipt could not be verified", nil
+	}
+	if !errors.Is(receiptErr, cloudstorage.ErrObjectNotExist) && !errors.Is(receiptErr, storeapi.ErrObjectNotExist) {
+		return "UNKNOWN", "execution publication receipt could not be read", nil
+	}
+	if manifestErr != nil {
+		return "UNKNOWN", "publication result could not be read back from GCS", nil
+	}
+	if exists && manifest.LocalExecutionID == executionID {
+		return "SUCCEEDED", "", nil
+	}
+	diagnostic, diagnosticErr := readNativeFailureDiagnostic(ctx, storage, executionID)
+	if diagnosticErr != nil || diagnostic == nil {
+		return "UNKNOWN", "BFF restarted before the worker result could be confirmed", nil
+	}
+	if diagnostic.Stage == string(pipelinediagnostic.StageLeaseCleanup) {
+		return "SUCCEEDED", diagnostic.Message, nil
+	}
+	if diagnostic.Stage == string(pipelinediagnostic.StageReceiptRecording) {
+		return "UNKNOWN", "publication result could not be confirmed from the current manifest", nil
+	}
+	if diagnostic.Message != "" {
+		return "FAILED", diagnostic.Message, nil
+	}
+	return "FAILED", "native worker failed; detailed reason unavailable", nil
+}
+
+func readNativeFailureDiagnostic(ctx context.Context, storage *gcs.Client, executionID string) (*handlerapi.PipelineFailureDiagnostic, error) {
+	if storage == nil {
+		return nil, errors.New("native execution storage unavailable")
+	}
+	if _, err := localcloud.Parse(executionID); err != nil {
+		return nil, errors.New("invalid native execution diagnostic scope")
+	}
+	data, err := storage.ReadFileLimited(ctx, "cache/pipeline-"+executionID+".failure.json", 4<<10+1)
+	if err != nil {
+		return nil, err
+	}
+	if len(data) > 4<<10 {
+		return nil, errors.New("native pipeline diagnostic too large")
+	}
+	var payload struct {
+		Version    int    `json:"version"`
+		Status     string `json:"status"`
+		Stage      string `json:"stage"`
+		ErrorClass string `json:"error_class"`
+		DetailCode string `json:"detail_code,omitempty"`
+		Child      string `json:"child_command,omitempty"`
+		ExitCode   *int   `json:"exit_code,omitempty"`
+		Execution  string `json:"execution,omitempty"`
+		Message    string `json:"message,omitempty"`
+	}
+	decoder := json.NewDecoder(bytes.NewReader(data))
+	decoder.DisallowUnknownFields()
+	if err := decoder.Decode(&payload); err != nil {
+		return nil, err
+	}
+	var trailing any
+	if err := decoder.Decode(&trailing); err != io.EOF {
+		return nil, errors.New("native pipeline diagnostic has trailing data")
+	}
+	if payload.Version != 1 || payload.Status != "failed" || payload.Execution != executionID || len(payload.Message) > 512 {
+		return nil, errors.New("native pipeline diagnostic identity is invalid")
+	}
+	if _, ok := pipelinediagnostic.ValidStages[pipelinediagnostic.Stage(payload.Stage)]; !ok {
+		return nil, errors.New("native pipeline diagnostic stage is invalid")
+	}
+	if _, ok := pipelinediagnostic.ValidErrorClasses[pipelinediagnostic.ErrorClass(payload.ErrorClass)]; !ok {
+		return nil, errors.New("native pipeline diagnostic class is invalid")
+	}
+	if payload.DetailCode != "" {
+		if payload.Stage != string(pipelinediagnostic.StageConceptReconciliation) {
+			return nil, errors.New("native pipeline diagnostic detail is invalid")
+		}
+		if _, ok := pipelinediagnostic.ValidDetailCodes[pipelinediagnostic.DetailCode(payload.DetailCode)]; !ok {
+			return nil, errors.New("native pipeline diagnostic detail is invalid")
+		}
+	}
+	if payload.Child != "" {
+		if _, ok := pipelinediagnostic.ValidChildCommands[pipelinediagnostic.ChildCommand(payload.Child)]; !ok {
+			return nil, errors.New("native pipeline diagnostic child is invalid")
+		}
+	} else if payload.ExitCode != nil {
+		return nil, errors.New("native pipeline diagnostic exit code has no child")
+	}
+	if payload.ExitCode != nil && (*payload.ExitCode < 0 || *payload.ExitCode > 255) {
+		return nil, errors.New("native pipeline diagnostic exit code is invalid")
+	}
+	return &handlerapi.PipelineFailureDiagnostic{
+		Version: payload.Version, Status: payload.Status, Stage: payload.Stage,
+		ErrorClass: payload.ErrorClass, DetailCode: payload.DetailCode,
+		Child: payload.Child, ExitCode: payload.ExitCode, Message: payload.Message,
+	}, nil
+}
+
+func ensureNativeFailureDiagnostic(ctx context.Context, storage *gcs.Client, executionID string, exitCode int, spawnFailed bool) error {
+	if _, err := readNativeFailureDiagnostic(ctx, storage, executionID); err == nil {
+		return nil
+	} else if !errors.Is(err, cloudstorage.ErrObjectNotExist) && !errors.Is(err, storeapi.ErrObjectNotExist) {
+		return err
+	}
+	class := pipelinediagnostic.ErrorClassChildExit
+	message := fmt.Sprintf("native worker exited with code %d before confirmed publication", exitCode)
+	child := string(pipelinediagnostic.ChildCommandRun)
+	var diagnosticExitCode *int
+	if exitCode >= 0 && exitCode <= 255 {
+		value := exitCode
+		diagnosticExitCode = &value
+	}
+	if spawnFailed {
+		class = pipelinediagnostic.ErrorClassIO
+		message = "native worker could not be started"
+		child = ""
+		diagnosticExitCode = nil
+	}
+	data, err := json.Marshal(struct {
+		Version    int    `json:"version"`
+		Status     string `json:"status"`
+		Stage      string `json:"stage"`
+		ErrorClass string `json:"error_class"`
+		Child      string `json:"child_command,omitempty"`
+		ExitCode   *int   `json:"exit_code,omitempty"`
+		Execution  string `json:"execution"`
+		Message    string `json:"message"`
+	}{
+		Version: 1, Status: "failed", Stage: string(pipelinediagnostic.StageUnknown),
+		ErrorClass: string(class), Child: child, ExitCode: diagnosticExitCode,
+		Execution: executionID, Message: message,
+	})
+	if err != nil {
+		return err
+	}
+	_, err = storage.WriteBytes(ctx, data, "cache/pipeline-"+executionID+".failure.json")
+	return err
+}
+
+func firestoreInt(value any) int {
+	switch number := value.(type) {
+	case int:
+		return number
+	case int32:
+		return int(number)
+	case int64:
+		return int(number)
+	case float64:
+		return int(number)
+	default:
+		return -1
+	}
+}
+
+func stringValue(value any) string {
+	text, _ := value.(string)
+	return text
+}
+
+type recordedExitError struct{ code int }
+
+func (e recordedExitError) Error() string { return "recorded worker exit" }
+func (e recordedExitError) ExitCode() int { return e.code }
+
+func (m *Manager) hasConfirmedInvokeFailure(ctx context.Context, reservation scopedfirestore.QuotaReservation) (bool, error) {
+	storage := m.cfg.Storage.WithScope(reservation.UserID, reservation.ProjectID)
+	data, err := storage.ReadFileLimited(ctx, "cache/pipeline-"+reservation.ID+".failure.json", 4<<10+1)
+	if errors.Is(err, cloudstorage.ErrObjectNotExist) || errors.Is(err, storeapi.ErrObjectNotExist) {
+		return false, nil
+	}
+	if err != nil {
+		return false, err
+	}
+	if len(data) > 4<<10 {
+		return false, nil
+	}
+	var evidence struct {
+		Version    int    `json:"version"`
+		Status     string `json:"status"`
+		Stage      string `json:"stage"`
+		ErrorClass string `json:"error_class"`
+		Execution  string `json:"execution"`
+		Message    string `json:"message"`
+	}
+	decoder := json.NewDecoder(bytes.NewReader(data))
+	decoder.DisallowUnknownFields()
+	if err := decoder.Decode(&evidence); err != nil {
+		return false, nil
+	}
+	var trailing any
+	if err := decoder.Decode(&trailing); err != io.EOF {
+		return false, nil
+	}
+	_, validStage := pipelinediagnostic.ValidStages[pipelinediagnostic.Stage(evidence.Stage)]
+	_, validClass := pipelinediagnostic.ValidErrorClasses[pipelinediagnostic.ErrorClass(evidence.ErrorClass)]
+	return evidence.Version == 1 && evidence.Status == "failed" && evidence.Execution == reservation.ID &&
+		validStage && validClass && evidence.Message == "pipeline invocation failed before an execution was accepted", nil
 }
 
 func (m *Manager) Start(ctx context.Context, userID, projectID, stage string, cleanRebuild bool, reservationID string) (string, error) {
@@ -219,34 +600,55 @@ func (m *Manager) Start(ctx context.Context, userID, projectID, stage string, cl
 	cmd := newWorkerCommand(m.cfg, executionID, userID, projectID, stage, cleanRebuild, os.Environ())
 	p := &process{cmd: cmd, done: make(chan struct{})}
 	if err := m.startProcess(executionID, p, cmd.Start); err != nil {
+		result := processResult{executionID: executionID, userID: userID, projectID: projectID, beforeID: beforeID, reservationID: reservationID, spawnFailed: true, childErr: err}
+		m.savePendingResult(result)
 		finishCtx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
-		m.finish(finishCtx, executionID, lockRef, userID, projectID, beforeID, reservationID, false, err)
+		finishErr := m.finish(finishCtx, result)
 		cancel()
+		if finishErr == nil {
+			m.clearPendingResult(executionID)
+		}
 		return "", fmt.Errorf("start local worker: %w", err)
 	}
-	go m.wait(p, executionID, lockRef, userID, projectID, beforeID, reservationID)
+	go m.wait(p, executionID, userID, projectID, beforeID, reservationID)
 	return executionID, nil
 }
 
-func (m *Manager) wait(p *process, executionID string, lockRef *cloudfirestore.DocumentRef, userID, projectID, beforeID, reservationID string) {
+func (m *Manager) wait(p *process, executionID, userID, projectID, beforeID, reservationID string) {
 	err := p.cmd.Wait()
+	result := processResult{executionID: executionID, userID: userID, projectID: projectID, beforeID: beforeID, reservationID: reservationID, childSucceeded: err == nil, childErr: err}
+	m.savePendingResult(result)
 	ctx, cancel := context.WithTimeout(context.Background(), 20*time.Second)
 	defer cancel()
-	m.finish(ctx, executionID, lockRef, userID, projectID, beforeID, reservationID, err == nil, err)
+	if finishErr := m.finish(ctx, result); finishErr == nil {
+		m.clearPendingResult(executionID)
+	}
 	m.mu.Lock()
 	delete(m.processes, executionID)
 	m.mu.Unlock()
 	close(p.done)
 }
 
-func (m *Manager) finish(ctx context.Context, executionID string, lockRef *cloudfirestore.DocumentRef, userID, projectID, beforeID, reservationID string, childSucceeded bool, childErr error) {
-	storage := m.cfg.Storage.WithScope(userID, projectID)
+func (m *Manager) finish(ctx context.Context, result processResult) error {
+	storage := m.cfg.Storage.WithScope(result.userID, result.projectID)
 	manifest, _, exists, manifestErr := storage.CurrentManifest(ctx)
-	receiptData, receiptErr := storage.ReadLocalPublicationReceipt(ctx, executionID)
-	statusValue, reason := ResolvePublicationOutcome(executionID, beforeID, manifest, exists, childSucceeded, childErr, manifestErr, receiptData, receiptErr)
+	receiptData, receiptErr := storage.ReadLocalPublicationReceipt(ctx, result.executionID)
+	statusValue, reason := ResolvePublicationOutcome(result.executionID, result.beforeID, manifest, exists, result.childSucceeded, result.childErr, manifestErr, receiptData, receiptErr)
+	if result.spawnFailed {
+		statusValue = "FAILED"
+		reason = "native worker could not be started"
+	}
+	if statusValue == "FAILED" {
+		_ = ensureNativeFailureDiagnostic(ctx, storage, result.executionID, processExitCode(result.childErr), result.spawnFailed)
+	}
 	finished := time.Now().UTC()
-	executionRef := scopedfirestore.Collection(m.cfg.Firestore, "executions").Doc(executionID)
-	updates := []cloudfirestore.Update{{Path: "status", Value: statusValue}, {Path: "finished_at", Value: finished}, {Path: "failure_reason", Value: reason}, {Path: "exit_code", Value: processExitCode(childErr)}}
+	executionRef := scopedfirestore.Collection(m.cfg.Firestore, "executions").Doc(result.executionID)
+	updates := []cloudfirestore.Update{
+		{Path: "status", Value: statusValue}, {Path: "finished_at", Value: finished},
+		{Path: "failure_reason", Value: reason}, {Path: "exit_code", Value: processExitCode(result.childErr)},
+		{Path: "worker_result_observed", Value: true},
+	}
+	lockRef := scopedfirestore.Collection(m.cfg.Firestore, "local_pipeline_locks").Doc(result.userID + "__" + result.projectID)
 	if err := m.cfg.Firestore.RunTransaction(ctx, func(ctx context.Context, tx *cloudfirestore.Transaction) error {
 		if _, err := tx.Get(executionRef); err != nil {
 			return err
@@ -255,23 +657,27 @@ func (m *Manager) finish(ctx context.Context, executionID string, lockRef *cloud
 		if err != nil {
 			return err
 		}
-		settlement, err := scopedfirestore.SettleQuotaReservationInTransaction(ctx, tx, m.cfg.Firestore, reservationID, statusValue)
+		settlement, err := scopedfirestore.SettleQuotaReservationInTransaction(ctx, tx, m.cfg.Firestore, result.reservationID, statusValue)
 		if err != nil {
 			return err
 		}
-		updates = append(updates, cloudfirestore.Update{Path: "quota_settlement", Value: settlement})
-		if err := tx.Update(executionRef, updates); err != nil {
+		transactionUpdates := append([]cloudfirestore.Update(nil), updates...)
+		transactionUpdates = append(transactionUpdates, cloudfirestore.Update{Path: "quota_settlement", Value: settlement})
+		if err := tx.Update(executionRef, transactionUpdates); err != nil {
 			return err
 		}
-		if lock.Data()["execution_id"] != executionID {
+		if lock.Data()["execution_id"] != result.executionID {
 			return nil
 		}
 		return tx.Update(lockRef, []cloudfirestore.Update{{Path: "status", Value: statusValue}, {Path: "updated_at", Value: finished}})
 	}); err != nil {
 		// Keep this diagnostic free of subprocess output, which can contain user
-		// content. A later BFF startup will reconcile the still-running lock.
-		fmt.Fprintf(os.Stderr, "local pipeline result write failed for %s\n", executionID)
+		// content. The observed result remains in memory and in the execution record
+		// for the native reconciler to retry without status polling.
+		fmt.Fprintf(os.Stderr, "local pipeline result write failed for %s\n", result.executionID)
+		return err
 	}
+	return nil
 }
 
 // ResolvePublicationOutcome uses the execution receipt when available and
@@ -370,19 +776,24 @@ func (m *Manager) Status(ctx context.Context, userID, projectID, executionID str
 		Duration: formatDuration(data["started_at"], data["finished_at"]),
 		LogURL:   "/api/v1/pipeline/log?execution_id=" + selected.Ref.ID,
 	}
-	if reason, _ := data["failure_reason"].(string); reason != "" {
-		response.FailureReason = reason
-		response.DiagnosticState = "available"
-		code, _ := data["exit_code"].(int64)
-		diagnostic := &handlerapi.PipelineFailureDiagnostic{Version: 1, Status: strings.ToLower(state), Stage: "unknown", ErrorClass: "unknown"}
-		if code >= 0 && code <= 255 {
-			exitCode := int(code)
-			diagnostic.ExitCode = &exitCode
-		}
-		response.Diagnostic = diagnostic
-	} else if state == "FAILED" {
+	response.FailureReason, _ = data["failure_reason"].(string)
+	if state == "FAILED" {
 		response.DiagnosticState = "unavailable"
 		response.LogStateReason = "failure diagnostic unavailable"
+		if diagnostic, err := readNativeFailureDiagnostic(ctx, m.cfg.Storage.WithScope(userID, projectID), selected.Ref.ID); err == nil {
+			response.Diagnostic = diagnostic
+			response.DiagnosticState = "available"
+			response.LogStateReason = ""
+			if diagnostic.Message != "" {
+				response.FailureReason = diagnostic.Message
+			} else if diagnostic.DetailCode != "" {
+				response.FailureReason = diagnostic.DetailCode
+			}
+		}
+		if response.FailureReason == "" {
+			code := firestoreInt(data["exit_code"])
+			response.FailureReason = fmt.Sprintf("native worker failed with exit code %d; detailed reason unavailable", code)
+		}
 	}
 	reservationID, _ := data["quota_reservation_id"].(string)
 	response.QuotaSettlement = "not_applicable"
@@ -446,7 +857,7 @@ func processExitCode(err error) int {
 	if err == nil {
 		return 0
 	}
-	var exitErr *exec.ExitError
+	var exitErr interface{ ExitCode() int }
 	if errors.As(err, &exitErr) {
 		return exitErr.ExitCode()
 	}

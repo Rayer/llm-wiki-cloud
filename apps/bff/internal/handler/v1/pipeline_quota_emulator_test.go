@@ -9,8 +9,12 @@ import (
 	"net"
 	"net/http"
 	"net/http/httptest"
+	"net/http/httputil"
 	"net/url"
 	"os"
+	"os/exec"
+	"path/filepath"
+	"runtime"
 	"strings"
 	"sync"
 	"testing"
@@ -68,6 +72,8 @@ func TestPipelineQuotaCloudRunHandlerEmulator(t *testing.T) {
 		t.Fatalf("create scoped GCS client: %v", err)
 	}
 	bucketAvailable := false
+	workerBucket := "lwc371-cloudrun-producer-" + fmt.Sprintf("%d", time.Now().UnixNano())
+	workerBucketAvailable := false
 	t.Cleanup(func() {
 		cleanupCtx, cleanupCancel := context.WithTimeout(context.Background(), 20*time.Second)
 		defer cleanupCancel()
@@ -77,6 +83,11 @@ func TestPipelineQuotaCloudRunHandlerEmulator(t *testing.T) {
 		if bucketAvailable {
 			if err := deletePipelineQuotaObjectScope(cleanupCtx, storageClient, bucket, scope); err != nil {
 				t.Errorf("delete/read back Storage test scope: %v", err)
+			}
+		}
+		if workerBucketAvailable {
+			if err := deleteQuotaFixtureBucket(cleanupCtx, storageClient, workerBucket); err != nil {
+				t.Errorf("delete/read back Cloud Run worker fixture bucket: %v", err)
 			}
 		}
 		if err := quotaClient.Close(); err != nil {
@@ -207,19 +218,116 @@ func TestPipelineQuotaCloudRunHandlerEmulator(t *testing.T) {
 	assertQuotaProjectHasNoReservation(t, ctx, fsClient, adminProject)
 
 	// A valid execution publication receipt is authoritative even when Cloud
-	// Run reports a cleanup exit failure.
+	// Run reports a cleanup exit failure. Build and run the actual deployed-mode
+	// worker against a disposable GCS emulator bucket, then let the actual quota
+	// reconciler consume its execution-owned manifest and receipt.
 	committedProject := "published-cleanup-failure"
-	seedQuotaRaw(t, ctx, quotaClient, storageClient, bucket, scope, userID, committedProject)
-	committedID := triggerQuotaPipeline(t, h, userID, committedProject, http.StatusAccepted)
+	if err := storageClient.Bucket(workerBucket).Create(ctx, project, nil); err != nil {
+		t.Fatalf("create isolated Cloud Run worker emulator bucket: %v", err)
+	}
+	workerBucketAvailable = true
+	configWriter := storageClient.Bucket(workerBucket).Object("pipeline-config/synto.toml").NewWriter(ctx)
+	if _, err := configWriter.Write([]byte("[pipeline]\nauto_approve = true\nauto_commit = false\nauto_maintain = false\nrelation_extraction = false\nrun_timeout_seconds = 15\n")); err != nil {
+		_ = configWriter.Close()
+		t.Fatalf("seed synthetic deployed Pipeline config: %v", err)
+	}
+	if err := configWriter.Close(); err != nil {
+		t.Fatalf("commit synthetic deployed Pipeline config: %v", err)
+	}
+	t.Setenv("LOCAL_CLOUD_SCOPE", "")
+	storageEndpoint := strings.TrimSpace(os.Getenv("STORAGE_EMULATOR_HOST"))
+	deployedQuotaClient, err := gcs.NewClient(workerBucket)
+	if err != nil {
+		t.Fatalf("create unscoped deployed-mode GCS reader: %v", err)
+	}
+	t.Cleanup(func() {
+		if err := deployedQuotaClient.Close(); err != nil {
+			t.Errorf("close deployed-mode GCS reader: %v", err)
+		}
+	})
+	t.Setenv("STORAGE_EMULATOR_HOST", storageEndpoint)
+	t.Setenv("LOCAL_CLOUD_SCOPE", scope)
+	if _, err := deployedQuotaClient.WithScope(userID, committedProject).WriteBytes(ctx, []byte("synthetic deployed worker input"), "raw/source.md"); err != nil {
+		t.Fatalf("seed deployed-mode worker input: %v", err)
+	}
+	deployedHandler := New(deployedQuotaClient, fsClient, search.NewIndex(), conceptcache.New(), nil, nil)
+	deployedHandler.SetAccountLookup(func(context.Context, string) (*auth.UserRecord, error) {
+		return &auth.UserRecord{Status: auth.AccountActive, Role: "member"}, nil
+	})
+	deployedHandler.metadataTokenURL = h.metadataTokenURL
+	deployedHandler.SetPipelineJobURL("http://run.test/job:run")
+	deployedHandler.SetPipelineQuotaConfig(5, 1, 1, nil)
+	deployedHandler.httpClient = &http.Client{Transport: roundTripFunc(fixture.roundTrip)}
+	committedID := triggerQuotaPipeline(t, deployedHandler, userID, committedProject, http.StatusAccepted)
 	committedReservation := fixture.reservationID(committedID)
-	seedQuotaPublicationReceipt(t, ctx, storageClient, bucket, scope, userID, committedProject, committedID)
+	worker := buildLocalCloudPipelineFixtureWorker(t, ctx)
+	workerCommand := exec.CommandContext(ctx, worker,
+		"--bucket", workerBucket, "--user-id", userID, "--project-id", committedProject,
+		"--execution-id", committedID, "run", `[["run","--auto-approve"]]`)
+	workerCommand.Env = []string{
+		"GOOGLE_CLOUD_PROJECT=" + project,
+		"GCP_PROJECT=" + project,
+		"STORAGE_EMULATOR_HOST=" + os.Getenv("STORAGE_EMULATOR_HOST"),
+		"LOCAL_CLOUD_SCOPE=",
+		"TMPDIR=" + os.TempDir(),
+	}
+	workerOutput, err := workerCommand.CombinedOutput()
+	if err != nil {
+		t.Fatalf("run deployed-mode Cloud Run worker fixture: %v\n%s", err, workerOutput)
+	}
+	manifest, _, exists, err := deployedQuotaClient.WithScope(userID, committedProject).CurrentManifest(ctx)
+	if err != nil || !exists || manifest.LocalExecutionID != committedID {
+		t.Fatalf("deployed worker manifest exists=%v execution=%q err=%v, want execution-owned commit", exists, manifest.LocalExecutionID, err)
+	}
+	if _, err := deployedQuotaClient.WithScope(userID, committedProject).ReadLocalPublicationReceipt(ctx, committedID); err != nil {
+		t.Fatalf("deployed worker publication receipt readback: %v", err)
+	}
+	storageProxy := newQuotaStorageProxy(t, storageEndpoint)
+	t.Setenv("STORAGE_EMULATOR_HOST", storageProxy.URL())
+	t.Setenv("LOCAL_CLOUD_SCOPE", "")
+	proxyQuotaClient, err := gcs.NewClient(workerBucket)
+	if err != nil {
+		t.Fatalf("create proxied deployed-mode GCS reader: %v", err)
+	}
+	t.Cleanup(func() {
+		if err := proxyQuotaClient.Close(); err != nil {
+			t.Errorf("close proxied deployed-mode GCS reader: %v", err)
+		}
+	})
+	t.Setenv("STORAGE_EMULATOR_HOST", storageEndpoint)
+	t.Setenv("LOCAL_CLOUD_SCOPE", scope)
+	proxyManifest, _, proxyManifestExists, proxyManifestErr := proxyQuotaClient.WithScope(userID, committedProject).CurrentManifest(ctx)
+	if proxyManifestErr != nil || !proxyManifestExists || proxyManifest.LocalExecutionID != committedID {
+		t.Fatalf("proxied worker manifest exists=%v execution=%q err=%v, want execution-owned commit", proxyManifestExists, proxyManifest.LocalExecutionID, proxyManifestErr)
+	}
+	if _, err := proxyQuotaClient.WithScope(userID, committedProject).ReadLocalPublicationReceipt(ctx, committedID); err != nil {
+		t.Fatalf("proxied worker publication receipt readback: %v", err)
+	}
+	proxyHandler := New(proxyQuotaClient, fsClient, search.NewIndex(), conceptcache.New(), nil, nil)
+	proxyHandler.SetAccountLookup(func(context.Context, string) (*auth.UserRecord, error) {
+		return &auth.UserRecord{Status: auth.AccountActive, Role: "member"}, nil
+	})
+	proxyHandler.metadataTokenURL = h.metadataTokenURL
+	proxyHandler.SetPipelineJobURL("http://run.test/job:run")
+	proxyHandler.SetPipelineQuotaConfig(5, 1, 1, nil)
+	proxyHandler.httpClient = &http.Client{Transport: roundTripFunc(fixture.roundTrip)}
 	fixture.setStatus(committedID, "FAILED")
-	if err := h.ReconcilePipelineQuota(ctx); err != nil {
-		t.Fatalf("reconcile published execution with cleanup failure: %v", err)
+	storageProxy.SetBlocked(true)
+	storageOutageCtx, storageOutageCancel := context.WithTimeout(ctx, 5*time.Second)
+	if err := proxyHandler.ReconcilePipelineQuota(storageOutageCtx); err != nil {
+		storageOutageCancel()
+		t.Fatalf("reconcile published execution during temporary GCS outage: %v", err)
+	}
+	storageOutageCancel()
+	assertQuotaReservation(t, ctx, fsClient, committedReservation, "pending")
+	assertQuotaState(t, ctx, fsClient, userID, committedProject, 1, pipelinequota.DayKeyUTC(time.Now()))
+	storageProxy.SetBlocked(false)
+	if err := proxyHandler.ReconcilePipelineQuota(ctx); err != nil {
+		t.Fatalf("reconcile published execution after GCS recovery: %v", err)
 	}
 	assertQuotaReservation(t, ctx, fsClient, committedReservation, "charged")
 	assertQuotaState(t, ctx, fsClient, userID, committedProject, 1, pipelinequota.DayKeyUTC(time.Now()))
-	assertQuotaPipelineStatus(t, h, userID, committedProject, committedID, "SUCCEEDED", "", "charged", 1)
+	assertQuotaPipelineStatus(t, proxyHandler, userID, committedProject, committedID, "SUCCEEDED", "", "charged", 1)
 
 	// A restarted handler recovers a reservation whose execution link was not
 	// persisted, and refuses to associate a different owner's execution.
@@ -360,30 +468,83 @@ func seedQuotaRaw(t *testing.T, ctx context.Context, client *gcs.Client, rawClie
 	}
 }
 
-func seedQuotaPublicationReceipt(t *testing.T, ctx context.Context, client *cloudstorage.Client, bucket, scope, userID, projectID, executionID string) {
+func buildLocalCloudPipelineFixtureWorker(t *testing.T, ctx context.Context) string {
 	t.Helper()
-	data := fmt.Sprintf(`{"execution_id":%q,"generation_id":"fixture-generation","manifest_generation":1}`, executionID)
-	if err := writeQuotaFixtureObject(ctx, client, bucket, scope, userID, projectID, "cache/local-pipeline-"+executionID+".commit.json", []byte(data)); err != nil {
-		t.Fatalf("seed publication receipt for %s: %v", projectID, err)
+	_, sourceFile, _, ok := runtime.Caller(0)
+	if !ok {
+		t.Fatal("resolve BFF module path for Cloud Run worker fixture")
 	}
+	moduleRoot := filepath.Clean(filepath.Join(filepath.Dir(sourceFile), "../../.."))
+	worker := filepath.Join(t.TempDir(), "olw_worker")
+	build := exec.CommandContext(ctx, "go", "build", "-tags", "lwc_local_pipeline_fixture", "-o", worker, "./cmd/olw_worker")
+	build.Dir = moduleRoot
+	if output, err := build.CombinedOutput(); err != nil {
+		t.Fatalf("build deployed-mode Cloud Run worker fixture: %v\n%s", err, output)
+	}
+	return worker
 }
 
-func writeQuotaFixtureObject(ctx context.Context, client *cloudstorage.Client, bucket, scope, userID, projectID, path string, data []byte) error {
-	name := "local_scopes/" + scope + "/users/" + userID + "/projects/" + projectID + "/" + path
-	writer := client.Bucket(bucket).Object(name).NewWriter(ctx)
-	writer.ContentType = "application/json"
-	if _, err := writer.Write(data); err != nil {
-		_ = writer.Close()
-		return err
+func deleteQuotaFixtureBucket(ctx context.Context, client *cloudstorage.Client, bucket string) error {
+	objects := client.Bucket(bucket).Objects(ctx, &cloudstorage.Query{})
+	var failures []error
+	for {
+		attrs, err := objects.Next()
+		if err == iterator.Done {
+			break
+		}
+		if err != nil {
+			return errors.Join(append(failures, err)...)
+		}
+		if err := client.Bucket(bucket).Object(attrs.Name).Generation(attrs.Generation).Delete(ctx); err != nil && !errors.Is(err, cloudstorage.ErrObjectNotExist) {
+			failures = append(failures, err)
+		}
 	}
-	if err := writer.Close(); err != nil {
-		return err
+	if err := client.Bucket(bucket).Delete(ctx); err != nil && !errors.Is(err, cloudstorage.ErrBucketNotExist) {
+		failures = append(failures, err)
 	}
-	attrs, err := client.Bucket(bucket).Object(name).Attrs(ctx)
-	if err == nil && attrs.Name != name {
-		return fmt.Errorf("fixture object name readback %q, want %q", attrs.Name, name)
+	return errors.Join(failures...)
+}
+
+type quotaStorageProxy struct {
+	server  *httptest.Server
+	proxy   *httputil.ReverseProxy
+	mu      sync.RWMutex
+	blocked bool
+}
+
+func newQuotaStorageProxy(t *testing.T, endpoint string) *quotaStorageProxy {
+	t.Helper()
+	target, err := url.Parse(endpoint)
+	if err != nil || target.Scheme == "" || target.Host == "" {
+		t.Fatalf("parse loopback Storage emulator endpoint %q", endpoint)
 	}
-	return err
+	proxy := httputil.NewSingleHostReverseProxy(target)
+	director := proxy.Director
+	proxy.Director = func(r *http.Request) {
+		director(r)
+		r.Host = target.Host
+	}
+	gate := &quotaStorageProxy{proxy: proxy}
+	gate.server = httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		gate.mu.RLock()
+		blocked := gate.blocked
+		gate.mu.RUnlock()
+		if blocked {
+			http.Error(w, "synthetic temporary Storage outage", http.StatusServiceUnavailable)
+			return
+		}
+		gate.proxy.ServeHTTP(w, r)
+	}))
+	t.Cleanup(func() { gate.server.Close() })
+	return gate
+}
+
+func (p *quotaStorageProxy) URL() string { return p.server.URL }
+
+func (p *quotaStorageProxy) SetBlocked(blocked bool) {
+	p.mu.Lock()
+	p.blocked = blocked
+	p.mu.Unlock()
 }
 
 func triggerQuotaPipeline(t *testing.T, h *Handler, userID, projectID string, wantStatus int) string {

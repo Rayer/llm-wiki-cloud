@@ -20,14 +20,34 @@ func (h *Handler) ReconcilePipelineQuota(ctx context.Context) error {
 	if err != nil || len(reservations) == 0 {
 		return err
 	}
+	pendingWithoutExecution := make(map[string]firestore.QuotaReservation)
+	needsExecutionLookup := false
+	for _, reservation := range reservations {
+		if reservation.ExecutionID != "" {
+			needsExecutionLookup = true
+			continue
+		}
+		confirmedFailure, err := h.hasConfirmedPipelineInvokeFailure(ctx, reservation.UserID, reservation.ProjectID, reservation.ID)
+		if err != nil {
+			return err
+		}
+		if confirmedFailure {
+			if _, err := quotaStore.SettleQuotaReservation(ctx, reservation.ID, "FAILED"); err != nil {
+				return err
+			}
+			continue
+		}
+		pendingWithoutExecution[reservation.ID] = reservation
+	}
+	if !needsExecutionLookup && len(pendingWithoutExecution) == 0 {
+		return nil
+	}
 	token, err := h.getMetadataAccessToken(ctx)
 	if err != nil {
 		return err
 	}
-	needsExecutionLookup := false
 	for _, reservation := range reservations {
 		if reservation.ExecutionID == "" {
-			needsExecutionLookup = true
 			continue
 		}
 		execution, err := h.fetchCloudRunExecution(ctx, token, reservation.ExecutionID)
@@ -44,16 +64,11 @@ func (h *Handler) ReconcilePipelineQuota(ctx context.Context) error {
 			return err
 		}
 	}
-	if !needsExecutionLookup {
+	if len(pendingWithoutExecution) == 0 {
 		return nil
 	}
 
-	pendingByID := make(map[string]firestore.QuotaReservation, len(reservations))
-	for _, reservation := range reservations {
-		if reservation.ExecutionID == "" {
-			pendingByID[reservation.ID] = reservation
-		}
-	}
+	pendingByID := pendingWithoutExecution
 	pageToken := ""
 	for {
 		page, err := h.listCloudRunExecutions(ctx, token, pageToken)
@@ -84,8 +99,14 @@ func (h *Handler) ReconcilePipelineQuota(ctx context.Context) error {
 
 func (h *Handler) settleCloudRunQuotaReservation(ctx context.Context, quotaStore pipelineQuotaStore, reservation firestore.QuotaReservation, execution cloudRunExecution) error {
 	state := cloudRunExecutionStatus(execution)
-	if state == "FAILED" && h.cloudRunPublicationCommitted(ctx, &pipelineExecutionOwner{userID: reservation.UserID, projectID: reservation.ProjectID}, shortCloudRunExecutionName(execution.Name, true)) {
-		state = "SUCCEEDED"
+	if state == "FAILED" {
+		publication := h.cloudRunPublicationOutcome(ctx, &pipelineExecutionOwner{userID: reservation.UserID, projectID: reservation.ProjectID}, shortCloudRunExecutionName(execution.Name, true))
+		switch publication {
+		case pipelinePublicationCommitted:
+			state = "SUCCEEDED"
+		case pipelinePublicationUnknown:
+			return nil
+		}
 	}
 	if state != "SUCCEEDED" && state != "FAILED" && state != "CANCELLED" {
 		return nil

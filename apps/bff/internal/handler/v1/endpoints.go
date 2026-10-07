@@ -24,6 +24,7 @@ import (
 	"github.com/rayer/llm-wiki-bff/internal/buildinfo"
 	"github.com/rayer/llm-wiki-bff/internal/config"
 	"github.com/rayer/llm-wiki-bff/internal/gcs"
+	"github.com/rayer/llm-wiki-bff/internal/generation"
 	"github.com/rayer/llm-wiki-bff/internal/handler"
 	"github.com/rayer/llm-wiki-bff/internal/localcloud"
 	"github.com/rayer/llm-wiki-bff/internal/pipelinediagnostic"
@@ -923,6 +924,9 @@ func (h *Handler) PipelineRun(c *gin.Context) {
 			if qs := h.effectiveQuotaStore(); qs != nil {
 				if _, settleErr := qs.SettleQuotaReservation(ctx, reservationID, "FAILED"); settleErr != nil {
 					log.Print("pipeline quota refund failed")
+					if evidenceErr := h.writeConfirmedPipelineInvokeFailure(ctx, userID, projectID, reservationID); evidenceErr != nil {
+						log.Print("pipeline invoke failure recovery evidence unavailable")
+					}
 				}
 			}
 		}
@@ -1460,8 +1464,8 @@ func (h *Handler) pipelineExecutionStatusWithOwner(ctx context.Context, executio
 		response := newPipelineExecutionResponse(execution)
 		if owner != nil {
 			reservationID := cloudRunExecutionReservationID(execution, owner.userID, owner.projectID)
-			if response.Status == "FAILED" && h.cloudRunPublicationCommitted(ctx, owner, executionID) {
-				response.Status = "SUCCEEDED"
+			if response.Status == "FAILED" {
+				response.Status = h.cloudRunStatusWithPublicationEvidence(ctx, owner, executionID)
 			}
 			h.attachPipelineDiagnostic(ctx, response, owner)
 			h.attachPipelineQuotaSettlement(ctx, response, owner, reservationID)
@@ -1485,8 +1489,8 @@ func (h *Handler) pipelineExecutionStatusWithOwner(ctx context.Context, executio
 			if cloudRunExecutionOwnedBy(execution, owner.userID, owner.projectID) {
 				response := newPipelineExecutionResponse(execution)
 				executionID := shortCloudRunExecutionName(execution.Name, true)
-				if response.Status == "FAILED" && h.cloudRunPublicationCommitted(ctx, owner, executionID) {
-					response.Status = "SUCCEEDED"
+				if response.Status == "FAILED" {
+					response.Status = h.cloudRunStatusWithPublicationEvidence(ctx, owner, executionID)
 				}
 				h.attachPipelineDiagnostic(ctx, response, owner)
 				h.attachPipelineQuotaSettlement(ctx, response, owner, cloudRunExecutionReservationID(execution, owner.userID, owner.projectID))
@@ -1504,20 +1508,131 @@ type pipelinePublicationReceiptReader interface {
 	ReadLocalPublicationReceipt(context.Context, string) ([]byte, error)
 }
 
-func (h *Handler) cloudRunPublicationCommitted(ctx context.Context, owner *pipelineExecutionOwner, executionID string) bool {
+type pipelineCurrentManifestReader interface {
+	CurrentManifest(context.Context) (generation.Manifest, int64, bool, error)
+}
+
+type pipelinePublicationOutcome int
+
+const (
+	pipelinePublicationUnknown pipelinePublicationOutcome = iota
+	pipelinePublicationAbsent
+	pipelinePublicationCommitted
+)
+
+func (h *Handler) cloudRunPublicationOutcome(ctx context.Context, owner *pipelineExecutionOwner, executionID string) pipelinePublicationOutcome {
 	if h.store == nil || owner == nil || executionID == "" {
-		return false
+		return pipelinePublicationUnknown
 	}
-	reader, ok := h.store.Scope(owner.userID, owner.projectID).(pipelinePublicationReceiptReader)
+	project := h.store.Scope(owner.userID, owner.projectID)
+	reader, ok := project.(pipelinePublicationReceiptReader)
 	if !ok {
-		return false
+		return pipelinePublicationUnknown
 	}
 	data, err := reader.ReadLocalPublicationReceipt(ctx, executionID)
-	if err != nil {
-		return false
+	if err == nil {
+		receipt, decodeErr := localcloud.DecodePublicationReceipt(data)
+		if decodeErr != nil || receipt.ExecutionID != executionID {
+			return pipelinePublicationUnknown
+		}
+		return pipelinePublicationCommitted
 	}
-	receipt, err := localcloud.DecodePublicationReceipt(data)
-	return err == nil && receipt.ExecutionID == executionID
+	if !errors.Is(err, store.ErrObjectNotExist) && !errors.Is(err, storage.ErrObjectNotExist) {
+		return pipelinePublicationUnknown
+	}
+	manifestReader, ok := project.(pipelineCurrentManifestReader)
+	if !ok {
+		return pipelinePublicationUnknown
+	}
+	manifest, _, exists, manifestErr := manifestReader.CurrentManifest(ctx)
+	if manifestErr != nil {
+		return pipelinePublicationUnknown
+	}
+	if exists && manifest.LocalExecutionID == executionID {
+		return pipelinePublicationCommitted
+	}
+	if !exists || manifest.LocalExecutionID == "" {
+		return pipelinePublicationAbsent
+	}
+	return pipelinePublicationUnknown
+}
+
+func (h *Handler) cloudRunStatusWithPublicationEvidence(ctx context.Context, owner *pipelineExecutionOwner, executionID string) string {
+	switch h.cloudRunPublicationOutcome(ctx, owner, executionID) {
+	case pipelinePublicationCommitted:
+		return "SUCCEEDED"
+	case pipelinePublicationAbsent:
+		return "FAILED"
+	default:
+		// Cloud Run's terminal child result is known independently of whether
+		// GCS publication evidence is currently readable; quota stays pending.
+		return "FAILED"
+	}
+}
+
+func (h *Handler) writeConfirmedPipelineInvokeFailure(ctx context.Context, userID, projectID, reservationID string) error {
+	if h.store == nil || userID == "" || projectID == "" || reservationID == "" {
+		return errors.New("pipeline recovery storage unavailable")
+	}
+	evidence := struct {
+		Version    int    `json:"version"`
+		Status     string `json:"status"`
+		Stage      string `json:"stage"`
+		ErrorClass string `json:"error_class"`
+		Execution  string `json:"execution"`
+		Message    string `json:"message"`
+	}{
+		Version: 1, Status: "failed", Stage: string(pipelinediagnostic.StageUnknown),
+		ErrorClass: string(pipelinediagnostic.ErrorClassUnknown), Execution: reservationID,
+		Message: "pipeline invocation failed before an execution was accepted",
+	}
+	data, err := json.Marshal(evidence)
+	if err != nil {
+		return err
+	}
+	_, err = h.store.Scope(userID, projectID).WriteBytes(ctx, data, "cache/pipeline-"+reservationID+".failure.json")
+	return err
+}
+
+func (h *Handler) hasConfirmedPipelineInvokeFailure(ctx context.Context, userID, projectID, reservationID string) (bool, error) {
+	if h.store == nil || userID == "" || projectID == "" || reservationID == "" {
+		return false, nil
+	}
+	reader, ok := h.store.Scope(userID, projectID).(limitedPipelineLogReader)
+	if !ok {
+		return false, nil
+	}
+	data, err := reader.ReadFileLimited(ctx, "cache/pipeline-"+reservationID+".failure.json", maxPipelineDiagnosticBytes+1)
+	if errors.Is(err, store.ErrObjectNotExist) || errors.Is(err, storage.ErrObjectNotExist) {
+		return false, nil
+	}
+	if err != nil {
+		return false, err
+	}
+	if len(data) > maxPipelineDiagnosticBytes {
+		return false, nil
+	}
+	var evidence struct {
+		Version    int    `json:"version"`
+		Status     string `json:"status"`
+		Stage      string `json:"stage"`
+		ErrorClass string `json:"error_class"`
+		Execution  string `json:"execution"`
+		Message    string `json:"message"`
+	}
+	decoder := json.NewDecoder(bytes.NewReader(data))
+	decoder.DisallowUnknownFields()
+	if err := decoder.Decode(&evidence); err != nil {
+		return false, nil
+	}
+	var trailing any
+	if err := decoder.Decode(&trailing); err != io.EOF {
+		return false, nil
+	}
+	_, validStage := pipelinediagnostic.ValidStages[pipelinediagnostic.Stage(evidence.Stage)]
+	_, validClass := pipelinediagnostic.ValidErrorClasses[pipelinediagnostic.ErrorClass(evidence.ErrorClass)]
+	return evidence.Version == 1 && evidence.Status == "failed" && evidence.Execution == reservationID &&
+		evidence.Message == "pipeline invocation failed before an execution was accepted" && validStage && validClass, nil
 }
 
 func (h *Handler) attachPipelineDiagnostic(ctx context.Context, response *handler.PipelineExecutionResponse, owner *pipelineExecutionOwner) {

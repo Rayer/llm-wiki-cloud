@@ -1166,7 +1166,8 @@ func TestExactSlugStabilityThroughWorkspaceAndCloudCompose(t *testing.T) {
 		return nil
 	}
 	for i := 0; i < 2; i++ {
-		if err := runCloudWorkerBatch(context.Background(), cloudCfg(), [][]string{{"run"}}, m); err != nil {
+		cfg := cloudCfgFor("user-secret", "project-secret", fmt.Sprintf("cloud-compose-%d", i+1))
+		if err := runCloudWorkerBatch(context.Background(), cfg, [][]string{{"run"}}, m); err != nil {
 			t.Fatalf("cloud gen %d: %v", i+1, err)
 		}
 		manifestData, _, err := m.Read(context.Background(), prefix+generation.ManifestPath, 0, generation.MaxManifestBytes)

@@ -1535,6 +1535,24 @@ func TestPipelineRunRefundsOnInvokeFailure(t *testing.T) {
 		t.Fatalf("refund log = %q, want fixed event", output.String())
 	}
 	assertSecuritySentinelsAbsent(t, output.String())
+	var reservationID string
+	for id := range stub.reservations {
+		reservationID = id
+	}
+	if reservationID == "" {
+		t.Fatal("invoke failure reservation missing")
+	}
+	if _, err := os.Stat(filepath.Join(root, "users", "request-user", "projects", "proj-1", "cache", "pipeline-"+reservationID+".failure.json")); err != nil {
+		t.Fatalf("confirmed invoke failure recovery evidence missing: %v", err)
+	}
+	stub.refundErr = nil
+	if err := h.ReconcilePipelineQuota(context.Background()); err != nil {
+		t.Fatalf("reconcile failed invoke after storage recovery: %v", err)
+	}
+	reservation := stub.reservations[reservationID]
+	if reservation.SettlementStatus != "refunded" || stub.runsToday != 0 {
+		t.Fatalf("recovered invoke reservation=%+v runs_today=%d, want refunded and 0", reservation, stub.runsToday)
+	}
 }
 
 func TestPipelineStatusIncludesSuggestedQueries(t *testing.T) {

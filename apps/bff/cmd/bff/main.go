@@ -195,7 +195,9 @@ func main() {
 	go func() { serveErr <- server.ListenAndServe() }()
 	stop, stopSignal := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
 	defer stopSignal()
-	if !localMode {
+	if localMode && nativeWorker != nil {
+		go nativeWorker.RunQuotaReconciler(stop)
+	} else {
 		go hV1.RunPipelineQuotaReconciler(stop)
 	}
 	select {

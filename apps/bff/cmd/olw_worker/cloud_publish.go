@@ -1564,9 +1564,6 @@ func writeCloudReceipts(ctx context.Context, objects objectStore, prefix, worksp
 }
 
 func writeLocalPublicationReceipt(ctx context.Context, objects objectStore, prefix string, cfg workerConfig, manifest generation.Manifest, manifestGeneration int64) error {
-	if cfg.LocalCloudScope == "" {
-		return nil
-	}
 	receipt := localcloud.PublicationReceipt{
 		ExecutionID: cfg.ExecutionID, GenerationID: manifest.GenerationID,
 		ManifestGeneration: manifestGeneration,
@@ -1584,9 +1581,6 @@ func writeLocalPublicationReceipt(ctx context.Context, objects objectStore, pref
 }
 
 func localExecutionIDFor(cfg workerConfig) string {
-	if strings.TrimSpace(cfg.LocalCloudScope) == "" {
-		return ""
-	}
 	return cfg.ExecutionID
 }
 func writeCloudFailureReceipts(ctx context.Context, objects objectStore, prefix, workspace string, cfg workerConfig, snapshots []sourceSnapshot, failure error, secrets ...[]string) error {
