@@ -58,8 +58,10 @@ def desired(plan, component='auth'):
     if component == 'bff':
         bff = plan['bff']
         cooldown = bff.get('pipeline_cooldown_seconds')
-        require(type(cooldown) is int and 0 < cooldown <= MAX_PIPELINE_COOLDOWN_SECONDS)
-        env = {QUERY_PATH: query_path(plan), PIPELINE_COOLDOWN_SECONDS: str(cooldown)}
+        env = {QUERY_PATH: query_path(plan)}
+        if cooldown is not None:
+            require(type(cooldown) is int and 0 < cooldown <= MAX_PIPELINE_COOLDOWN_SECONDS)
+            env[PIPELINE_COOLDOWN_SECONDS] = str(cooldown)
         secrets = {}
         audience = bff.get('profile_runtime_audience')
         invoker = bff.get('profile_runtime_service_account')

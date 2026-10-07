@@ -118,6 +118,9 @@ def admit(args):
                 cwd=ROOT / 'apps/bff', env=normalize_env, timeout=180)
             normalize_args.extend(['--bff-config', str(Path(projection_dir) / 'bff.json')])
             normalized = json.loads(run(normalize_args, cwd=ROOT / 'apps/bff', env=normalize_env, timeout=180))
+        ssot = 'deploy/cac/ssot.pkl'
+        require(run(['git', 'hash-object', ssot]) == run(['git', 'rev-parse', args.source+':'+ssot]),
+                'dirty-bff-ssot')
     else:
         normalized = json.loads(run(normalize_args, cwd=ROOT / 'apps/bff', env=normalize_env, timeout=180))
     identities = {c: source_identity(c, args.source) for c in selected}

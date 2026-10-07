@@ -888,6 +888,36 @@ class Acceptance(unittest.TestCase):
                 self.assertEqual(replacement['spec']['traffic'],[{'revisionName':revision,'percent':100}])
                 self.assertFalse([a for a in self.current()['calls'][offset:] if 'build' in a or 'submit' in a])
 
+    def test_legacy_bff_retained_plan_without_cooldown_recovers_and_reactivates(self):
+        initial=self.make(('bff',),name='legacy-bff-cooldown')
+        initial.plan['normalized']['bff'].pop('pipeline_cooldown_seconds')
+        initial.plan['id']=engine.digest(engine.release_identity(initial.plan))
+        write(initial.directory/'plan.json',initial.plan)
+        e=engine.Engine(initial.directory)
+        e.prepare()
+        e.deploy()
+        plan_bytes=(e.directory/'plan.json').read_bytes()
+        receipt_path=e.directory/'receipts'/'bff.json'
+        receipt_bytes=receipt_path.read_bytes()
+        artifact=e.receipt('bff')['artifact']
+        candidate=copy.deepcopy(e.state['components']['bff']['candidate'])
+        revision=e.provider.revision('bff',candidate['revision'])
+        self.assertNotIn(providers.auth_config.PIPELINE_COOLDOWN_SECONDS,
+                         providers.auth_config.desired(e.plan['normalized'],'bff')['env'])
+        self.assertTrue(e.provider.service_matches('bff',revision,artifact['image']))
+        self.assertTrue(e.provider.observe('bff',artifact,candidate))
+
+        unresolved={'revision':None}
+        e.provider.reconcile_candidate('bff',artifact,unresolved,lambda:None)
+        self.assertEqual(unresolved['revision'],candidate['revision'])
+        e.restore(['bff'])
+        builds=len(self.calls('build'))+len(self.calls('submit'))
+        e.deploy(['bff'],reactivate=True)
+        self.assertEqual(e.state['status'],'success')
+        self.assertEqual(builds,len(self.calls('build'))+len(self.calls('submit')))
+        self.assertEqual((e.directory/'plan.json').read_bytes(),plan_bytes)
+        self.assertEqual(receipt_path.read_bytes(),receipt_bytes)
+
     def test_retained_annotations_full_chain(self):
         for c in ('auth','bff'):
             with self.subTest(component=c):

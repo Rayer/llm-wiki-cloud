@@ -118,6 +118,7 @@ func TestGeneratedBFFCooldownProjectionRejectsInvalidInputs(t *testing.T) {
 	configPath := filepath.Join(root, "deploy/environments/development.yaml")
 	for _, raw := range []string{
 		`{}`,
+		`{"schema_version":1,"environment":"dev"}`,
 		`{"schema_version":2,"environment":"dev","pipeline_cooldown_seconds":600}`,
 		`{"schema_version":1,"environment":"prod","pipeline_cooldown_seconds":600}`,
 		`{"schema_version":1,"environment":"dev","pipeline_cooldown_seconds":0}`,
