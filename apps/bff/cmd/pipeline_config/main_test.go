@@ -280,6 +280,23 @@ func TestRunPrepareRendersOnlyThePreparedProjection(t *testing.T) {
 		if err != nil {
 			t.Fatal(err)
 		}
+		if name == "ssot.pkl" {
+			content := string(data)
+			for _, replacement := range [][2]string{
+				{`provider = "deepseek"`, `provider = "selected-provider"`},
+				{`endpoint = "https://api.deepseek.com/v1"`, `endpoint = "https://selected.example.invalid/v1"`},
+				{`model = "deepseek-flash"`, `model = "selected-model"`},
+				{`requestTimeoutSeconds = 600`, `requestTimeoutSeconds = 437`},
+				{`pipelineArticleMaxTokens: Int? = read?("prop:pipelineArticleMaxTokens")?.toInt()`,
+					`pipelineArticleMaxTokens: Int? = 24680`},
+			} {
+				if !strings.Contains(content, replacement[0]) {
+					t.Fatalf("SSOT fixture did not contain selected profile override %q", replacement[0])
+				}
+				content = strings.Replace(content, replacement[0], replacement[1], 1)
+			}
+			data = []byte(content)
+		}
 		if err := os.WriteFile(filepath.Join(root, "deploy", "cac", name), data, 0o600); err != nil {
 			t.Fatal(err)
 		}
@@ -309,13 +326,26 @@ func TestRunPrepareRendersOnlyThePreparedProjection(t *testing.T) {
 		t.Fatalf("SSOT fixture was not mutated between evaluate and render: %q err=%v", mutated, err)
 	}
 	tomlBytes, err := os.ReadFile(filepath.Join(output, "synto.toml"))
-	if err != nil || !strings.Contains(string(tomlBytes), "article_max_tokens = 32768") ||
+	if err != nil || !strings.Contains(string(tomlBytes), "article_max_tokens = 24680") ||
 		!strings.Contains(string(tomlBytes), "run_timeout_seconds = 23") || strings.Contains(string(tomlBytes), payload) {
-		t.Fatalf("render did not use the prepared projection/defaults: %s err=%v", tomlBytes, err)
+		t.Fatalf("render did not use the prepared projection/override: %s err=%v", tomlBytes, err)
+	}
+	for _, selected := range []string{
+		`name = "selected-provider"`, `url = "https://selected.example.invalid/v1"`,
+		`timeout = 437`, `model = "selected-model"`, `article_max_tokens = 24680`,
+	} {
+		if !strings.Contains(string(tomlBytes), selected) {
+			t.Fatalf("render did not use selected SSOT profile/override %q: %s", selected, tomlBytes)
+		}
 	}
 	publicBytes, err := os.ReadFile(filepath.Join(output, "pipeline.json"))
 	if err != nil || strings.Contains(string(publicBytes), payload) {
 		t.Fatalf("public config contains local secret payload: err=%v", err)
+	}
+	for _, selected := range []string{"selected-provider", "https://selected.example.invalid/v1", "selected-model"} {
+		if !strings.Contains(string(publicBytes), selected) {
+			t.Fatalf("public Pipeline projection lost selected profile value %q", selected)
+		}
 	}
 	privateInfo, err := os.Stat(filepath.Join(output, "private-bindings.json"))
 	if err != nil {
@@ -494,7 +524,11 @@ func prepareRootForSecretManager(t *testing.T, resource string) string {
 	}
 	config, err := json.Marshal(pipelineConfig{
 		Environment: "dev", RunTimeoutSeconds: 23,
-		Secret: secretBinding{Source: "secret-manager", Target: "DEEPSEEK_API_KEY", Resource: resource},
+		LLM: llmProfile{
+			Provider: "deepseek", Endpoint: "https://api.deepseek.com/v1", Model: "deepseek-flash",
+			RequestTimeoutSeconds: 600,
+			Secret:                secretBinding{Source: "secret-manager", Target: "DEEPSEEK_API_KEY", Resource: resource},
+		},
 	})
 	if err != nil {
 		t.Fatal(err)
