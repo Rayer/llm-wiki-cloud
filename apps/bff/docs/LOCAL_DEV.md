@@ -65,13 +65,25 @@ rm -rf "$(git rev-parse --absolute-git-dir)/lwc361-local-cloud/python"
 make bootstrap
 ```
 
-`local-start` writes `apps/frontend/.env.local`, builds the native worker,
-creates the default account only if it is absent in this worktree's Firestore
-scope, then starts Auth, BFF, and Frontend. If that email already exists, its
-password, role, settings, and data are left intact. The default fixture is
-`demo@llm-wiki.dev` / `demo123456`; it is a normal password account and is not
-reset on startup. You can also register another account through the app when
-email registration is enabled.
+`local-start` writes `apps/frontend/.env.local`, renders the local Pkl
+configuration, builds the native worker, creates the admin/test account only
+if it is absent in this worktree's Firestore scope, then starts Auth, BFF, and
+Frontend. The Pkl source is `deploy/cac/local_fixture.pkl`; it generates
+`.build/cac/local/local_fixture.yaml` for `cmd/local_fixture` and a separate
+non-secret `local_demo.json` for Auth/BFF configuration. The admin/test email
+is `admin-local@llm.wiki.dev`; its stable local-only password is in the Pkl
+source. If that email already exists, its password, role, settings, and data
+are left intact. Changing the Pkl password only affects a newly created
+account; it does not reset an existing one.
+
+The passwordless Demo button signs in as a separate, configured non-admin
+account. Auth creates it only when its configured UID and email are unused,
+with an empty default project; it does not seed example wiki content. If the
+Demo identity conflicts with an older local account, startup keeps that account
+unchanged and Demo login returns unavailable. Choose a free Demo UID/email in
+the Pkl Demo section, regenerate local config, and restart the affected app.
+You can also register another account through the app when email registration
+is enabled.
 
 ```sh
 make local-stop
@@ -121,19 +133,14 @@ local-stop` to stop supervisor-managed support processes after debugging.
 
 ## Sign in and use the APIs
 
-Sign in through the app with the default fixture credentials above, or use the
-normal registration flow when enabled. Login and refresh set the same local
+Sign in through the normal form with `admin-local@llm.wiki.dev` and the
+local-only password in `deploy/cac/local_fixture.pkl`, or use the passwordless
+Demo button. The two buttons use separate accounts: the admin/test account is
+for local development, while Demo uses the restricted non-admin identity.
+Login and refresh set the same local
 refresh cookie policy; logout revokes the session. BFF APIs require the access
 token returned by formal Auth and resolve the account from Firestore. They do
 not accept `X-User-ID` as identity.
-
-The login endpoint is useful for API debugging:
-
-```sh
-curl -fsS -H 'Content-Type: application/json' \
-  -d '{"email":"demo@llm-wiki.dev","password":"demo123456"}' \
-  http://localhost:8081/api/v1/auth/login
-```
 
 Use the response's `access_token` as a Bearer token for BFF requests. Keep the
 token in your terminal session and do not paste it into logs or commit it.

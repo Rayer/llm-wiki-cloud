@@ -1903,8 +1903,10 @@ class CDContractTests(unittest.TestCase):
                 }
             }))
             normalized = json.loads(plan.read_text())['normalized']
-            for key in ('environment', 'query_config', 'components', 'bff', 'export_job'):
+            for key in ('environment', 'query_config', 'components', 'auth', 'bff', 'export_job'):
                 normalized[key] = deepcopy(bff_plan('development')[key])
+            normalized['auth']['service_name'] = 'auth-service'
+            normalized['auth'].pop('google', None)
             normalized['bff']['service_name'] = 'bff-service'
             plan.write_text(json.dumps({'normalized': normalized}))
             prior_bff = bff_candidate('development')

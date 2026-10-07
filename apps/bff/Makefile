@@ -9,12 +9,15 @@ FRONTEND_PORT ?= 3000
 CAC_OUTPUT_DIR ?= ../../.build/cac
 LOCAL_ENV := ../../scripts/local-cloud-env.sh
 LOCAL_SERVICES := ../../scripts/local-services.py
+LOCAL_DEMO_CONFIG_PATH ?= $(abspath $(CAC_OUTPUT_DIR)/local/local_demo.json)
+LOCAL_DEMO_CONFIG_ENV := LOCAL_DEMO_CONFIG_PATH="$(LOCAL_DEMO_CONFIG_PATH)"
+LOCAL_FIXTURE_CONFIG := $(abspath $(CAC_OUTPUT_DIR)/local/local_fixture.yaml)
 SYNTO_VERSION := 0.7.0
 SYNTO_ARTIFACT_URL := https://files.pythonhosted.org/packages/4a/e9/41c6b61338d98820780a43ed075cd77525674c38242110435330771d771b/synto-0.7.0-py3-none-any.whl
 SYNTO_SHA256 := 4bc8dcf14b53f45fac32ce737ecf878f1a46d6d0b010c7decbe6c3b7b10afa77
 TEST_ENV := env -u LLM_API_KEY -u DEEPSEEK_API_KEY -u SYNTO_API_KEY -u OPENAI_API_KEY -u ANTHROPIC_API_KEY -u GEMINI_API_KEY -u TYPESAFE_API_KEY -u TYPESAFE_JEV_API_KEY -u LWC331_TEST_API_KEY
 
-.PHONY: help docker-build docker-build-export-job docker-push deploy deploy-dev deploy-prod all build-sync setup local-config local-synto-runtime local-synto-runtime-test local-worker-build local-fixture local-start dev support-bff support-frontend support-pipeline bff-local auth-local frontend-local local-stop kill-local pipeline-test test-flash-execution vet test build
+.PHONY: help docker-build docker-build-export-job docker-push deploy deploy-dev deploy-prod all build-sync setup local-config local-fixture-config local-synto-runtime local-synto-runtime-test local-worker-build local-fixture local-start dev support-bff support-frontend support-pipeline bff-local auth-local frontend-local local-stop kill-local pipeline-test test-flash-execution vet test build
 
 help:
 	@printf '%s\n' \
@@ -59,14 +62,19 @@ vet:
 test:
 	$(TEST_ENV) python3 ../../scripts/test_cd_contract.py
 	$(TEST_ENV) python3 -m unittest discover -s ../../scripts -p 'test_*auth_config_contract.py'
+	$(TEST_ENV) python3 ../../apps/bff/scripts/test_local_dev_makefile.py
 	$(TEST_ENV) go test ./... -v -count=1 -race
 
 build:
 	go build ./...
 
-local-config:
-	BFF_PORT="$(BFF_PORT)" AUTH_PORT="$(AUTH_PORT)" FRONTEND_PORT="$(FRONTEND_PORT)" $(LOCAL_ENV) --configure-frontend "$(FRONTEND_DIR)"
-	BFF_PORT="$(BFF_PORT)" AUTH_PORT="$(AUTH_PORT)" FRONTEND_PORT="$(FRONTEND_PORT)" $(LOCAL_ENV) --summary
+local-config: local-fixture-config
+	BFF_PORT="$(BFF_PORT)" AUTH_PORT="$(AUTH_PORT)" FRONTEND_PORT="$(FRONTEND_PORT)" $(LOCAL_DEMO_CONFIG_ENV) $(LOCAL_ENV) --configure-frontend "$(FRONTEND_DIR)"
+	BFF_PORT="$(BFF_PORT)" AUTH_PORT="$(AUTH_PORT)" FRONTEND_PORT="$(FRONTEND_PORT)" $(LOCAL_DEMO_CONFIG_ENV) $(LOCAL_ENV) --summary
+
+local-fixture-config:
+	mkdir -p "$(CAC_OUTPUT_DIR)/local"
+	pkl eval --multiple-file-output-path "$(CAC_OUTPUT_DIR)/local" ../../deploy/cac/local_fixture.pkl
 
 local-synto-runtime:
 	@set -eu; \
@@ -87,20 +95,20 @@ local-synto-runtime-test: local-synto-runtime
 local-worker-build:
 	worker="$$($(LOCAL_ENV) --worker-path)"; mkdir -p "$$(dirname "$$worker")"; go build -o "$$worker" ./cmd/olw_worker
 
-local-fixture:
-	LOCAL_LOGIN_EMAIL='demo@llm-wiki.dev' LOCAL_LOGIN_PASSWORD='demo123456' BFF_PORT="$(BFF_PORT)" AUTH_PORT="$(AUTH_PORT)" FRONTEND_PORT="$(FRONTEND_PORT)" $(LOCAL_ENV) -- go run ./cmd/local_fixture
+local-fixture: local-config
+	BFF_PORT="$(BFF_PORT)" AUTH_PORT="$(AUTH_PORT)" FRONTEND_PORT="$(FRONTEND_PORT)" $(LOCAL_DEMO_CONFIG_ENV) $(LOCAL_ENV) -- go run ./cmd/local_fixture --config "$(LOCAL_FIXTURE_CONFIG)"
 
 local-start: local-config local-synto-runtime
 	$(MAKE) local-worker-build BFF_PORT="$(BFF_PORT)" AUTH_PORT="$(AUTH_PORT)" FRONTEND_PORT="$(FRONTEND_PORT)"
 	$(MAKE) local-fixture BFF_PORT="$(BFF_PORT)" AUTH_PORT="$(AUTH_PORT)" FRONTEND_PORT="$(FRONTEND_PORT)"
-	LOCAL_CLOUD_PIPELINE_CONFIG_DIR="$(abspath $(CAC_OUTPUT_DIR)/local)" BFF_PORT="$(BFF_PORT)" AUTH_PORT="$(AUTH_PORT)" FRONTEND_PORT="$(FRONTEND_PORT)" $(LOCAL_ENV) -- python3 $(LOCAL_SERVICES) start auth bff frontend
+	LOCAL_CLOUD_PIPELINE_CONFIG_DIR="$(abspath $(CAC_OUTPUT_DIR)/local)" $(LOCAL_DEMO_CONFIG_ENV) BFF_PORT="$(BFF_PORT)" AUTH_PORT="$(AUTH_PORT)" FRONTEND_PORT="$(FRONTEND_PORT)" $(LOCAL_ENV) -- python3 $(LOCAL_SERVICES) start auth bff frontend
 
 dev: local-start
 
 support-bff: local-config
 	$(MAKE) local-worker-build BFF_PORT="$(BFF_PORT)" AUTH_PORT="$(AUTH_PORT)" FRONTEND_PORT="$(FRONTEND_PORT)"
 	$(MAKE) local-fixture BFF_PORT="$(BFF_PORT)" AUTH_PORT="$(AUTH_PORT)" FRONTEND_PORT="$(FRONTEND_PORT)"
-	BFF_PORT="$(BFF_PORT)" AUTH_PORT="$(AUTH_PORT)" FRONTEND_PORT="$(FRONTEND_PORT)" $(LOCAL_ENV) -- python3 $(LOCAL_SERVICES) start auth frontend
+	$(LOCAL_DEMO_CONFIG_ENV) BFF_PORT="$(BFF_PORT)" AUTH_PORT="$(AUTH_PORT)" FRONTEND_PORT="$(FRONTEND_PORT)" $(LOCAL_ENV) -- python3 $(LOCAL_SERVICES) start auth frontend
 
 support-frontend: local-config local-synto-runtime
 	$(MAKE) local-worker-build BFF_PORT="$(BFF_PORT)" AUTH_PORT="$(AUTH_PORT)" FRONTEND_PORT="$(FRONTEND_PORT)"
@@ -110,10 +118,10 @@ support-frontend: local-config local-synto-runtime
 support-pipeline: local-start
 
 bff-local: local-config local-synto-runtime local-worker-build local-fixture
-	LOCAL_CLOUD_PIPELINE_CONFIG_DIR="$(abspath $(CAC_OUTPUT_DIR)/local)" BFF_PORT="$(BFF_PORT)" AUTH_PORT="$(AUTH_PORT)" FRONTEND_PORT="$(FRONTEND_PORT)" PORT="$(BFF_PORT)" $(LOCAL_ENV) -- go run ./cmd/bff
+	LOCAL_CLOUD_PIPELINE_CONFIG_DIR="$(abspath $(CAC_OUTPUT_DIR)/local)" $(LOCAL_DEMO_CONFIG_ENV) BFF_PORT="$(BFF_PORT)" AUTH_PORT="$(AUTH_PORT)" FRONTEND_PORT="$(FRONTEND_PORT)" PORT="$(BFF_PORT)" $(LOCAL_ENV) -- go run ./cmd/bff
 
 auth-local: local-config local-fixture
-	BFF_PORT="$(BFF_PORT)" AUTH_PORT="$(AUTH_PORT)" FRONTEND_PORT="$(FRONTEND_PORT)" PORT="$(AUTH_PORT)" $(LOCAL_ENV) -- go run ./cmd/auth
+	$(LOCAL_DEMO_CONFIG_ENV) BFF_PORT="$(BFF_PORT)" AUTH_PORT="$(AUTH_PORT)" FRONTEND_PORT="$(FRONTEND_PORT)" PORT="$(AUTH_PORT)" $(LOCAL_ENV) -- go run ./cmd/auth
 
 frontend-local: local-config
 	BFF_PORT="$(BFF_PORT)" AUTH_PORT="$(AUTH_PORT)" FRONTEND_PORT="$(FRONTEND_PORT)" $(LOCAL_ENV) -- sh -c 'cd "$(FRONTEND_DIR)" && NODE_ENV=development npm run dev -- --hostname localhost --port "$$FRONTEND_PORT"'

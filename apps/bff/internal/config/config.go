@@ -74,8 +74,11 @@ type Config struct {
 	PipelineCooldownSeconds int
 	PipelineMinNewRaw       int
 	PipelineDemoUserIDs     []string
-	// AuthDemoUserID selects the existing Demo account for formal Demo login.
-	AuthDemoUserID string
+	// AuthDemoUserID, AuthDemoUserEmail, and AuthDemoUserRole identify the
+	// environment's Demo account for startup ensure and passwordless login.
+	AuthDemoUserID    string
+	AuthDemoUserEmail string
+	AuthDemoUserRole  string
 
 	// Registration gate (LWC-149). Env: REGISTRATION_ENABLED (true/false/1/0).
 	// Nil means unset; resolution falls back to default true when Firestore doc is absent.
@@ -161,6 +164,8 @@ func Load(path string) (Config, error) {
 	v.BindEnv("pipeline_min_new_raw", "PIPELINE_MIN_NEW_RAW")
 	v.BindEnv("pipeline_demo_user_ids", "PIPELINE_DEMO_USER_IDS")
 	v.BindEnv("auth_demo_user_id", "AUTH_DEMO_USER_ID")
+	v.BindEnv("auth_demo_user_email", "AUTH_DEMO_USER_EMAIL")
+	v.BindEnv("auth_demo_user_role", "AUTH_DEMO_USER_ROLE")
 	v.BindEnv("registration_enabled", "REGISTRATION_ENABLED")
 	v.BindEnv("auth_service_url", "AUTH_SERVICE_URL")
 	v.BindEnv("auth_session_environment", "AUTH_SESSION_ENVIRONMENT")
@@ -367,6 +372,8 @@ func Load(path string) (Config, error) {
 		PipelineMinNewRaw:                minNewRaw,
 		PipelineDemoUserIDs:              splitCommaList(v.GetString("pipeline_demo_user_ids")),
 		AuthDemoUserID:                   strings.TrimSpace(v.GetString("auth_demo_user_id")),
+		AuthDemoUserEmail:                strings.TrimSpace(v.GetString("auth_demo_user_email")),
+		AuthDemoUserRole:                 strings.TrimSpace(v.GetString("auth_demo_user_role")),
 		RegistrationEnabled:              registrationEnabled,
 		AuthServiceURL:                   authServiceURL,
 		AuthSessionEnvironment:           authSessionEnvironment,

@@ -46,6 +46,7 @@ func TestProductionRouterExposesOnlyAuthPublicSurface(t *testing.T) {
 		http.MethodPost + " /api/v1/auth/login":                                     true,
 		http.MethodPost + " /api/v1/auth/refresh":                                   true,
 		http.MethodPost + " /api/v1/auth/logout":                                    true,
+		http.MethodPost + " /api/v1/auth/demo":                                      true,
 	}
 
 	got := make(map[string]bool)
@@ -67,20 +68,20 @@ func TestProductionRouterExposesOnlyAuthPublicSurface(t *testing.T) {
 	}
 }
 
-func TestAuthDemoRouteIsNotMounted(t *testing.T) {
+func TestLocalAuthDemoRouteIsMountedAndFailsClosedWithoutIdentityStorage(t *testing.T) {
 	gin.SetMode(gin.TestMode)
 	router := newProductionRouter(config.Config{JWTSecret: "test-secret"}, true, nil, &syssettings.FakeStore{Enabled: true})
 	response := httptest.NewRecorder()
 	request := httptest.NewRequest(http.MethodPost, "http://localhost:8081/api/v1/auth/demo", nil)
 	router.ServeHTTP(response, request)
-	if response.Code != http.StatusNotFound || len(response.Result().Cookies()) != 0 {
-		t.Fatalf("passwordless Demo route status=%d cookies=%d; want 404 without cookie", response.Code, len(response.Result().Cookies()))
+	if response.Code != http.StatusServiceUnavailable || len(response.Result().Cookies()) != 0 {
+		t.Fatalf("passwordless Demo route status=%d cookies=%d; want 503 without cookie", response.Code, len(response.Result().Cookies()))
 	}
 }
 
 func TestDeployedDemoRouteIsMountedAndFailsClosedWithoutIdentityStorage(t *testing.T) {
 	gin.SetMode(gin.TestMode)
-	router := newProductionRouter(config.Config{JWTSecret: "test-secret", AllowedHosts: []string{"auth.example.test"}, AllowedOrigins: []string{"https://frontend.example"}, AuthDemoUserID: "configured-demo-user"}, false, nil, &syssettings.FakeStore{Enabled: true})
+	router := newProductionRouter(config.Config{JWTSecret: "test-secret", AllowedHosts: []string{"auth.example.test"}, AllowedOrigins: []string{"https://frontend.example"}, AuthDemoUserID: "configured-demo-user", AuthDemoUserEmail: "demo@example.test", AuthDemoUserRole: "member"}, false, nil, &syssettings.FakeStore{Enabled: true})
 	registered := false
 	for _, route := range router.Routes() {
 		if route.Method == http.MethodPost && route.Path == "/api/v1/auth/demo" {

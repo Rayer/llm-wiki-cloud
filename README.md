@@ -84,17 +84,19 @@ Open the local-only app at <http://localhost:3000>. The local services are:
 - Auth: <http://localhost:8081>
 - BFF Swagger UI: <http://localhost:8080/swagger/index.html>
 
-Use the normal password login with the default local fixture account:
+Use the normal password login with the local admin/test fixture:
 
 ```text
-email: demo@llm-wiki.dev
-password: demo123456
+email: admin-local@llm.wiki.dev
+password: read from deploy/cac/local_fixture.pkl
 ```
 
-The fixture is created only if its email is missing and is not reset on
-startup. Local data uses a stable scope unique to this worktree in the
-`llm-wiki-cloud-local` bucket/database. The browser, BFF, Auth, and native
-worker share that scope. The local pipeline runs as a native worker process and
+The fixture's password is stable and local-only. The account is created only
+if its email is missing and is not reset on startup. The passwordless Demo
+button uses a separate restricted account. Local data uses a stable scope
+unique to this worktree in the `llm-wiki-cloud-local` bucket/database. The
+browser, BFF, Auth, and native worker share that scope. The local pipeline runs
+as a native worker process and
 does not call Cloud Run. Use `make local-stop` to stop only this worktree's
 supervisor-managed processes.
 

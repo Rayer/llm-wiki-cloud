@@ -20,28 +20,32 @@ type refreshSessionIssuer interface {
 	Issue(context.Context, string, string, string, ...int64) (string, error)
 }
 
-// DemoLoginHandlerWithRepository signs in the configured existing Demo user.
-func DemoLoginHandlerWithRepository(repo DemoUserLookup, userID, jwtSecret string, cookiePolicy RefreshCookiePolicy, sessions *RefreshSessionAuthority) gin.HandlerFunc {
+// DemoLoginHandlerWithRepository signs in the configured active non-admin Demo user.
+func DemoLoginHandlerWithRepository(repo DemoUserLookup, userID, email, role, jwtSecret string, cookiePolicy RefreshCookiePolicy, sessions *RefreshSessionAuthority) gin.HandlerFunc {
 	var issuer refreshSessionIssuer
 	if sessions != nil {
 		issuer = sessions
 	}
-	return demoLoginHandlerWithIssuer(repo, userID, jwtSecret, cookiePolicy, issuer)
+	return demoLoginHandlerWithIssuer(repo, userID, email, role, jwtSecret, cookiePolicy, issuer)
 }
 
-func demoLoginHandlerWithIssuer(repo DemoUserLookup, userID, jwtSecret string, cookiePolicy RefreshCookiePolicy, sessions refreshSessionIssuer) gin.HandlerFunc {
+func demoLoginHandlerWithIssuer(repo DemoUserLookup, userID, email, role, jwtSecret string, cookiePolicy RefreshCookiePolicy, sessions refreshSessionIssuer) gin.HandlerFunc {
 	configuredUserID := strings.TrimSpace(userID)
+	configuredEmail := CanonicalizeEmail(email)
+	configuredRole := strings.TrimSpace(role)
 	return func(c *gin.Context) {
 		if !validateDemoLoginBody(c) {
 			return
 		}
 
-		if repo == nil || !ValidPathSegment(configuredUserID) {
+		if repo == nil || !ValidPathSegment(configuredUserID) || configuredEmail == "" ||
+			configuredRole == "" || strings.EqualFold(configuredRole, "admin") {
 			c.JSON(http.StatusServiceUnavailable, gin.H{"error": "demo login unavailable"})
 			return
 		}
 		user, err := repo.GetUserByID(c.Request.Context(), configuredUserID)
-		if err != nil || user == nil || !user.Active() {
+		if err != nil || user == nil || !user.Active() ||
+			CanonicalizeEmail(user.Email) != configuredEmail || user.Role == "" || strings.EqualFold(user.Role, "admin") {
 			c.JSON(http.StatusServiceUnavailable, gin.H{"error": "demo login unavailable"})
 			return
 		}

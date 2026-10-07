@@ -221,6 +221,8 @@ func TestLoadAuthSessionConfigIsExplicitAndFailClosed(t *testing.T) {
 	t.Setenv("AUTH_SESSION_ENVIRONMENT", " dev ")
 	t.Setenv("AUTH_REFRESH_SESSION_MIGRATION", "legacy_read_through")
 	t.Setenv("AUTH_DEMO_USER_ID", " configured-demo-user ")
+	t.Setenv("AUTH_DEMO_USER_EMAIL", " demo@example.test ")
+	t.Setenv("AUTH_DEMO_USER_ROLE", " member ")
 	cfg, err := Load(writeConfig(t, "dev_jwt = true\n"))
 	if err != nil {
 		t.Fatal(err)
@@ -228,8 +230,8 @@ func TestLoadAuthSessionConfigIsExplicitAndFailClosed(t *testing.T) {
 	if cfg.AuthSessionEnvironment != "dev" || cfg.AuthSessionMigration != "legacy_read_through" {
 		t.Fatalf("auth session config = environment %q migration %q", cfg.AuthSessionEnvironment, cfg.AuthSessionMigration)
 	}
-	if cfg.AuthDemoUserID != "configured-demo-user" {
-		t.Fatalf("AuthDemoUserID=%q; want trimmed configured identity", cfg.AuthDemoUserID)
+	if cfg.AuthDemoUserID != "configured-demo-user" || cfg.AuthDemoUserEmail != "demo@example.test" || cfg.AuthDemoUserRole != "member" {
+		t.Fatalf("Auth Demo identity = (%q,%q,%q); want trimmed configured values", cfg.AuthDemoUserID, cfg.AuthDemoUserEmail, cfg.AuthDemoUserRole)
 	}
 	t.Setenv("AUTH_REFRESH_SESSION_MIGRATION", "accept-anything")
 	if _, err := Load(writeConfig(t, "dev_jwt = true\n")); err == nil {
