@@ -2,9 +2,10 @@
 module lwc.pipeline.ssot
 
 environment: "local" | "dev" | "prod" = read("prop:environment")
+target: "pipeline" | "bff" = read?("prop:target") ?? "pipeline"
 
 /// Required until the existing Cloud Run Job timeout has been independently read back.
-runTimeoutSeconds: Int = read("prop:runTimeoutSeconds").toInt()
+runTimeoutSeconds: Int? = read?("prop:runTimeoutSeconds")?.toInt()
 
 /// Optional explicit SSOT override, used only when a target environment does not
 /// declare its own article cap. Renderer defaults remain in synto.pkl.
@@ -29,6 +30,7 @@ class EnvironmentConfig {
   llm: LlmProfile
   bucket: String?
   articleMaxTokens: Int?
+  pipelineCooldownSeconds: Int
 }
 
 class Environments {
@@ -69,16 +71,19 @@ local environments = new Environments {
     llm = deepseekLocal
     bucket = null
     articleMaxTokens = null
+    pipelineCooldownSeconds = 60
   }
   dev = new EnvironmentConfig {
     llm = deepseek
     bucket = "llm-wiki-data-dev"
     articleMaxTokens = null
+    pipelineCooldownSeconds = 600
   }
   prod = new EnvironmentConfig {
     llm = deepseek
     bucket = "llm-wiki-data"
     articleMaxTokens = null
+    pipelineCooldownSeconds = 3600
   }
 }
 
@@ -86,7 +91,7 @@ local selected = if (environment == "local") environments.`local`
   else if (environment == "dev") environments.dev
   else environments.prod
 
-pipeline = new {
+local pipeline = new {
   environment = outer.environment
   runTimeoutSeconds = outer.runTimeoutSeconds
   bucket = selected.bucket
@@ -94,7 +99,13 @@ pipeline = new {
   llm = selected.llm
 }
 
+local bff = new {
+  schema_version = 1
+  environment = outer.environment
+  pipeline_cooldown_seconds = selected.pipelineCooldownSeconds
+}
+
 output {
-  value = pipeline
+  value = if (target == "bff") bff else pipeline
   renderer = new JsonRenderer {}
 }

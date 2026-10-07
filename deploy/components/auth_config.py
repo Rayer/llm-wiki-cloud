@@ -22,6 +22,8 @@ EXPORT_BFF = ('EXPORT_JOB_URL', 'EXPORT_SIGNING_SERVICE_ACCOUNT')
 PROFILE_RUNTIME_BFF = ('PROFILE_RUNTIME_AUDIENCE', 'PROFILE_RUNTIME_SERVICE_ACCOUNT')
 TYPESAFE_JEV_API_KEY = 'TYPESAFE_JEV_API_KEY'
 PIPELINE_DEMO_USER_IDS = 'PIPELINE_DEMO_USER_IDS'
+PIPELINE_COOLDOWN_SECONDS = 'PIPELINE_COOLDOWN_SECONDS'
+MAX_PIPELINE_COOLDOWN_SECONDS = ((1 << 63) - 1) // 1_000_000_000
 
 
 def require(condition):
@@ -55,7 +57,11 @@ def desired(plan, component='auth'):
     require(component in ('auth', 'bff'))
     if component == 'bff':
         bff = plan['bff']
+        cooldown = bff.get('pipeline_cooldown_seconds')
         env = {QUERY_PATH: query_path(plan)}
+        if cooldown is not None:
+            require(type(cooldown) is int and 0 < cooldown <= MAX_PIPELINE_COOLDOWN_SECONDS)
+            env[PIPELINE_COOLDOWN_SECONDS] = str(cooldown)
         secrets = {}
         audience = bff.get('profile_runtime_audience')
         invoker = bff.get('profile_runtime_service_account')
@@ -116,7 +122,8 @@ def desired(plan, component='auth'):
 
 
 def effective(revision, project, component='auth', query_only=False, selective_bff=False,
-              include_runtime_bindings=False, manage_demo_user_ids=False, manage_export_bindings=False):
+              include_runtime_bindings=False, manage_demo_user_ids=False, manage_export_bindings=False,
+              manage_pipeline_cooldown=False):
     containers = revision['spec']['containers']
     require(len(containers) == 1)
     result = {'env': {}, 'secrets': {}, 'service_account': revision['spec']['serviceAccountName']}
@@ -153,6 +160,11 @@ def effective(revision, project, component='auth', query_only=False, selective_b
             result['env'][name] = entry['value']
         elif component == 'bff' and manage_demo_user_ids and name == PIPELINE_DEMO_USER_IDS:
             require(not query_only and set(entry) == {'name', 'value'} and isinstance(entry['value'], str))
+            result['env'][name] = entry['value']
+        elif component == 'bff' and name == PIPELINE_COOLDOWN_SECONDS and manage_pipeline_cooldown:
+            require(not query_only and set(entry) == {'name', 'value'} and
+                    isinstance(entry['value'], str) and re.fullmatch(r'[1-9][0-9]*', entry['value']) and
+                    int(entry['value']) <= MAX_PIPELINE_COOLDOWN_SECONDS)
             result['env'][name] = entry['value']
         elif ((name in BASE or name in GOOGLE) and not query_only and not selective_bff) or (component == 'bff' and name == QUERY_PATH):
             omitted_empty_demo = name == 'AUTH_DEMO_USER_ID' and set(entry) == {'name'}
@@ -200,7 +212,8 @@ def main():
                        component == 'bff' and (plan['environment'] == 'development' or plan['auth'].get('google') is None),
                        component == 'bff',
                        component == 'bff' and PIPELINE_DEMO_USER_IDS in expected['env'],
-                       component == 'bff' and (plan['environment'] == 'development' or plan['export_job']['enabled']))
+                       component == 'bff' and (plan['environment'] == 'development' or plan['export_job']['enabled']),
+                       component == 'bff' and PIPELINE_COOLDOWN_SECONDS in expected['env'])
     digest = fingerprint(actual)
     if component == 'bff':
         # Pin all retained revision settings, including unrelated env/secrets and

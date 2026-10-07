@@ -1,6 +1,7 @@
 package main
 
 import (
+	"encoding/json"
 	"os"
 	"path/filepath"
 	"reflect"
@@ -75,6 +76,83 @@ func TestLoadReviewedEnvironmentsAndQueryIdentity(t *testing.T) {
 			t.Fatalf("%s worker component input omitted behavior-bearing config: %#v", environment, config.Components["worker"])
 		}
 	}
+}
+
+func TestGeneratedBFFCooldownFlowsIntoNormalizedPlanIdentity(t *testing.T) {
+	root := repoRoot(t)
+	for _, tc := range []struct {
+		environment string
+		projection  bffCooldownFixture
+	}{
+		{"development", bffCooldownFixture{1, "dev", 600}},
+		{"production", bffCooldownFixture{1, "prod", 3600}},
+	} {
+		path := writeBFFCooldownFixture(t, tc.projection)
+		configPath := filepath.Join(root, "deploy/environments", tc.environment+".yaml")
+		plan, err := LoadWithBFFProjection(tc.environment, configPath, "bff", path)
+		if err != nil {
+			t.Fatalf("LoadWithBFFProjection(%s): %v", tc.environment, err)
+		}
+		bff, ok := plan.Components["bff"].(map[string]any)
+		if !ok || plan.BFF.PipelineCooldownSeconds != tc.projection.Cooldown || bff["pipeline_cooldown_seconds"] != tc.projection.Cooldown {
+			t.Fatalf("%s normalized BFF cooldown=%d component=%#v", tc.environment, plan.BFF.PipelineCooldownSeconds, bff)
+		}
+		if plan.Evidence.ConfigFingerprint == "" {
+			t.Fatalf("%s omitted normalized plan fingerprint", tc.environment)
+		}
+		if tc.environment == "development" {
+			changedPath := writeBFFCooldownFixture(t, bffCooldownFixture{1, "dev", 601})
+			changed, err := LoadWithBFFProjection(tc.environment, configPath, "bff", changedPath)
+			if err != nil {
+				t.Fatal(err)
+			}
+			if changed.Evidence.ConfigFingerprint == plan.Evidence.ConfigFingerprint {
+				t.Fatal("normalized plan identity ignored the generated BFF cooldown")
+			}
+		}
+	}
+}
+
+func TestGeneratedBFFCooldownProjectionRejectsInvalidInputs(t *testing.T) {
+	root := repoRoot(t)
+	configPath := filepath.Join(root, "deploy/environments/development.yaml")
+	for _, raw := range []string{
+		`{}`,
+		`{"schema_version":1,"environment":"dev"}`,
+		`{"schema_version":2,"environment":"dev","pipeline_cooldown_seconds":600}`,
+		`{"schema_version":1,"environment":"prod","pipeline_cooldown_seconds":600}`,
+		`{"schema_version":1,"environment":"dev","pipeline_cooldown_seconds":0}`,
+		`{"schema_version":1,"environment":"dev","pipeline_cooldown_seconds":1.5}`,
+		`{"schema_version":1,"environment":"dev","pipeline_cooldown_seconds":600,"other":true}`,
+		`{"schema_version":1,"environment":"dev","pipeline_cooldown_seconds":9223372037}`,
+	} {
+		path := filepath.Join(t.TempDir(), "bff.json")
+		if err := os.WriteFile(path, []byte(raw), 0o600); err != nil {
+			t.Fatal(err)
+		}
+		if _, err := LoadWithBFFProjection("development", configPath, "bff", path); err == nil {
+			t.Errorf("LoadWithBFFProjection accepted invalid projection %s", raw)
+		}
+	}
+}
+
+type bffCooldownFixture struct {
+	SchemaVersion int    `json:"schema_version"`
+	Environment   string `json:"environment"`
+	Cooldown      int    `json:"pipeline_cooldown_seconds"`
+}
+
+func writeBFFCooldownFixture(t *testing.T, fixture bffCooldownFixture) string {
+	t.Helper()
+	path := filepath.Join(t.TempDir(), "bff.json")
+	data, err := json.Marshal(fixture)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(path, data, 0o600); err != nil {
+		t.Fatal(err)
+	}
+	return path
 }
 
 func TestAuthDemoUIDConfigIsOptionalButValidatedAndRendered(t *testing.T) {
