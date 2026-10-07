@@ -66,7 +66,15 @@ func TestPipelineLimitsDefaults(t *testing.T) {
 }
 
 func TestLoadedCooldownOverrideReachesQuotaConsumer(t *testing.T) {
-	t.Setenv("PIPELINE_COOLDOWN_SECONDS", "60")
+	cooldown := os.Getenv("PIPELINE_COOLDOWN_SECONDS")
+	if os.Getenv("LWC373_CHILD_ENV_TEST") == "1" {
+		if cooldown != "60" {
+			t.Fatalf("managed child cooldown=%q, want 60", cooldown)
+		}
+	} else {
+		cooldown = "60"
+		t.Setenv("PIPELINE_COOLDOWN_SECONDS", cooldown)
+	}
 	dir := t.TempDir()
 	if err := os.WriteFile(filepath.Join(dir, "config.toml"), []byte("pipeline_cooldown_seconds = 900\n"), 0o600); err != nil {
 		t.Fatal(err)

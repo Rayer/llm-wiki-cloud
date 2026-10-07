@@ -132,6 +132,23 @@ class LocalDevMakefileTests(unittest.TestCase):
             self.assertEqual(bff["PIPELINE_COOLDOWN_SECONDS"], "60")
             self.assertEqual(auth["PIPELINE_COOLDOWN_SECONDS"], "777")
             self.assertEqual(frontend["PIPELINE_COOLDOWN_SECONDS"], "777")
+
+            workerless = os.environ.copy()
+            for name in ("LLM_API_KEY", "DEEPSEEK_API_KEY", "LWC_PIPELINE_RUN_TIMEOUT_SECONDS",
+                         "LWC_PIPELINE_LOCAL_SECRET_VERSION_RESOURCE", "GOOGLE_APPLICATION_CREDENTIALS"):
+                workerless.pop(name, None)
+            child = module.child_environment("bff", {
+                **workerless, "LOCAL_CLOUD_BFF_CONFIG_PATH": str(path),
+                "PIPELINE_COOLDOWN_SECONDS": "777",
+            })
+            child["LWC373_CHILD_ENV_TEST"] = "1"
+            result = subprocess.run(
+                ["go", "test", "./internal/handler/v1",
+                 "-run", "^TestLoadedCooldownOverrideReachesQuotaConsumer$", "-count=1"],
+                cwd=ROOT, env=child, capture_output=True, text=True,
+            )
+            self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
+
             path.write_text(json.dumps({
                 "schema_version": 1, "environment": "dev", "pipeline_cooldown_seconds": 600,
             }))
