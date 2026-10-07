@@ -5,9 +5,12 @@ import (
 	"errors"
 	"log"
 	"net/http"
+	"os"
+	"path/filepath"
 	"testing"
 	"time"
 
+	"github.com/rayer/llm-wiki-bff/internal/config"
 	"github.com/rayer/llm-wiki-bff/internal/pipelinequota"
 )
 
@@ -59,6 +62,34 @@ func TestPipelineLimitsDefaults(t *testing.T) {
 	lim = h.pipelineLimits()
 	if lim.DailyLimit != 4 || lim.Cooldown != 90*time.Second || lim.MinNewRaw != 2 {
 		t.Fatalf("configured = %+v", lim)
+	}
+}
+
+func TestLoadedCooldownOverrideReachesQuotaConsumer(t *testing.T) {
+	cooldown := os.Getenv("PIPELINE_COOLDOWN_SECONDS")
+	if os.Getenv("LWC373_CHILD_ENV_TEST") == "1" {
+		if cooldown != "60" {
+			t.Fatalf("managed child cooldown=%q, want 60", cooldown)
+		}
+	} else {
+		cooldown = "60"
+		t.Setenv("PIPELINE_COOLDOWN_SECONDS", cooldown)
+	}
+	dir := t.TempDir()
+	if err := os.WriteFile(filepath.Join(dir, "config.toml"), []byte("pipeline_cooldown_seconds = 900\n"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	cfg, err := config.Load(dir)
+	if err != nil {
+		t.Fatalf("config.Load(): %v", err)
+	}
+	if cfg.PipelineCooldownSeconds != 60 {
+		t.Fatalf("config cooldown=%d, want managed environment override 60", cfg.PipelineCooldownSeconds)
+	}
+	h := &Handler{}
+	h.SetPipelineQuotaConfig(cfg.PipelineDailyLimit, cfg.PipelineCooldownSeconds, cfg.PipelineMinNewRaw, nil)
+	if got := h.pipelineLimits().Cooldown; got != 60*time.Second {
+		t.Fatalf("quota consumer cooldown=%s, want 60s", got)
 	}
 }
 

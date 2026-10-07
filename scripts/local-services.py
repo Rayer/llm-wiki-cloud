@@ -15,6 +15,9 @@ import sys
 import tempfile
 import time
 
+sys.path.insert(0, str(Path(__file__).resolve().parent))
+from bff_config import load_projection
+
 SERVICES = {"auth", "bff", "frontend"}
 STARTUP_TIMEOUT_SECONDS = 45
 STOPPING = False
@@ -84,6 +87,14 @@ def service_command(name: str, root: Path, env: dict[str, str]) -> tuple[list[st
     if name == "frontend":
         return ["npm", "run", "dev", "--", "--hostname", "localhost", "--port", env["FRONTEND_PORT"]], root / "apps" / "frontend", env | {"NODE_ENV": "development"}
     raise ValueError(f"unknown service {name}")
+
+
+def child_environment(name: str, env: dict[str, str]) -> dict[str, str]:
+    child_env = env.copy()
+    if name == "bff":
+        cooldown = load_projection(child_env.get("LOCAL_CLOUD_BFF_CONFIG_PATH", ""), "local")
+        child_env["PIPELINE_COOLDOWN_SECONDS"] = str(cooldown)
+    return child_env
 
 
 def readiness_addresses(name: str) -> tuple[str, ...]:
@@ -175,8 +186,13 @@ def daemon(state: Path, token: str, names: list[str], startup_timeout: float = S
             name, reason = unavailable
             write_startup(state, token, "failed", service=name, reason=reason)
             return 1
+        try:
+            child_envs = {name: child_environment(name, os.environ) for name in names}
+        except (OSError, TypeError, ValueError, json.JSONDecodeError):
+            write_startup(state, token, "failed", service="bff", reason="current-worktree BFF cooldown projection is missing or invalid")
+            return 1
         for name in names:
-            child_env = os.environ.copy()
+            child_env = child_envs[name]
             child_env.pop("LOCAL_LOGIN_EMAIL", None)
             child_env.pop("LOCAL_LOGIN_PASSWORD", None)
             log_paths[name] = str(state / f"{name}.log")

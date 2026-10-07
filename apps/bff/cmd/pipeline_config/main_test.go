@@ -245,6 +245,91 @@ func TestRunTimeoutMustBeExplicit(t *testing.T) {
 	}
 }
 
+func TestRunPrepareBFFTargetDoesNotReadPipelineInputs(t *testing.T) {
+	root := t.TempDir()
+	if err := os.MkdirAll(filepath.Join(root, "deploy", "cac"), 0o700); err != nil {
+		t.Fatal(err)
+	}
+	for _, name := range []string{"ssot.pkl", "synto.pkl"} {
+		if err := os.WriteFile(filepath.Join(root, "deploy", "cac", name), []byte("fixture"), 0o600); err != nil {
+			t.Fatal(err)
+		}
+	}
+	pkl := filepath.Join(root, "pkl-stub")
+	if err := os.WriteFile(pkl, []byte("#!/bin/sh\nprintf '%s\\n' \"$LWC_TEST_BFF_JSON\"\n"), 0o700); err != nil {
+		t.Fatal(err)
+	}
+	t.Setenv("LWC_REPOSITORY_ROOT", root)
+	t.Setenv("PKL_BIN", pkl)
+	t.Setenv("LWC_PIPELINE_RUN_TIMEOUT_SECONDS", "")
+	t.Setenv("LWC_PIPELINE_LOCAL_SECRET_VERSION_RESOURCE", "")
+	t.Setenv("LLM_API_KEY", "")
+	t.Setenv("DEEPSEEK_API_KEY", "")
+	t.Setenv("LWC_TEST_BFF_JSON", `{"schema_version":1,"environment":"local","pipeline_cooldown_seconds":60}`)
+	readerCalled := false
+	output := filepath.Join(root, "out")
+	if err := runPrepareTarget(context.Background(), "bff", "local", output,
+		func(context.Context) (secretReader, error) {
+			readerCalled = true
+			return nil, errors.New("BFF target must not resolve a secret")
+		}); err != nil {
+		t.Fatalf("runPrepareTarget(bff) = %v", err)
+	}
+	if readerCalled {
+		t.Fatal("BFF target initialized a Pipeline secret reader")
+	}
+	data, err := os.ReadFile(filepath.Join(output, "bff.json"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	var projection bffProjection
+	if err := json.Unmarshal(data, &projection); err != nil || projection != (bffProjection{
+		SchemaVersion: 1, Environment: "local", PipelineCooldownSeconds: 60,
+	}) {
+		t.Fatalf("BFF projection = %+v, err=%v", projection, err)
+	}
+	for _, name := range []string{"pipeline.json", "synto.toml", "private-bindings.json"} {
+		if _, err := os.Stat(filepath.Join(output, name)); !errors.Is(err, os.ErrNotExist) {
+			t.Fatalf("BFF target emitted Pipeline artifact %s: err=%v", name, err)
+		}
+	}
+}
+
+func TestInvalidBFFTargetDoesNotReplacePriorProjection(t *testing.T) {
+	root := t.TempDir()
+	if err := os.MkdirAll(filepath.Join(root, "deploy", "cac"), 0o700); err != nil {
+		t.Fatal(err)
+	}
+	for _, name := range []string{"ssot.pkl", "synto.pkl"} {
+		if err := os.WriteFile(filepath.Join(root, "deploy", "cac", name), []byte("fixture"), 0o600); err != nil {
+			t.Fatal(err)
+		}
+	}
+	pkl := filepath.Join(root, "pkl-stub")
+	if err := os.WriteFile(pkl, []byte("#!/bin/sh\nprintf '%s\\n' \"$LWC_TEST_BFF_JSON\"\n"), 0o700); err != nil {
+		t.Fatal(err)
+	}
+	t.Setenv("LWC_REPOSITORY_ROOT", root)
+	t.Setenv("PKL_BIN", pkl)
+	t.Setenv("LWC_PIPELINE_RUN_TIMEOUT_SECONDS", "")
+	t.Setenv("LWC_TEST_BFF_JSON", `{"schema_version":1,"environment":"local","pipeline_cooldown_seconds":0}`)
+	output := filepath.Join(root, "out")
+	if err := os.Mkdir(output, 0o700); err != nil {
+		t.Fatal(err)
+	}
+	old := []byte(`{"schema_version":1,"environment":"local","pipeline_cooldown_seconds":99}`)
+	if err := os.WriteFile(filepath.Join(output, "bff.json"), old, 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if err := runPrepareTarget(context.Background(), "bff", "local", output, nil); err == nil {
+		t.Fatal("invalid generated cooldown projection was accepted")
+	}
+	got, err := os.ReadFile(filepath.Join(output, "bff.json"))
+	if err != nil || string(got) != string(old) {
+		t.Fatalf("failed generation changed prior projection: %q err=%v", got, err)
+	}
+}
+
 func TestRunPrepareRendersOnlyThePreparedProjection(t *testing.T) {
 	realPKL := strings.TrimSpace(os.Getenv("LWC_TEST_REAL_PKL"))
 	if realPKL == "" {

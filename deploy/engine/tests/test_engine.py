@@ -22,8 +22,18 @@ import providers
 class Acceptance(unittest.TestCase):
     @classmethod
     def setUpClass(cls):
-        cls.normalized=json.loads(subprocess.check_output(['go','run','./cmd/deploy_config','--environment','development',
-            '--config',str(ROOT/'deploy/environments/development.yaml'),'--components',','.join(engine.ORDER)],cwd=ROOT/'apps/bff',text=True))
+        with tempfile.TemporaryDirectory() as directory:
+            projection=Path(directory)/'bff.json'
+            projection.write_text(json.dumps({'schema_version':1,'environment':'dev',
+                'pipeline_cooldown_seconds':600}))
+            cls.normalized=json.loads(subprocess.check_output(['go','run','./cmd/deploy_config','--environment','development',
+                '--config',str(ROOT/'deploy/environments/development.yaml'),'--components',','.join(engine.ORDER),
+                '--bff-config',str(projection)],cwd=ROOT/'apps/bff',text=True))
+            projection.write_text(json.dumps({'schema_version':1,'environment':'prod',
+                'pipeline_cooldown_seconds':3600}))
+            cls.production_normalized=json.loads(subprocess.check_output(['go','run','./cmd/deploy_config',
+                '--environment','production','--config','../../deploy/environments/production.yaml',
+                '--components','bff','--bff-config',str(projection)],cwd=ROOT/'apps/bff',text=True))
 
     def setUp(self):
         self.real_node = shutil.which('node')
@@ -81,9 +91,10 @@ class Acceptance(unittest.TestCase):
     def configure(self,**kw):
         self.provider=self.current();self.provider.update(kw);self.flush()
     def calls(self,verb):return [x for x in self.current()['calls'] if verb in x]
-    def make(self,selected=('worker',),name='release',production=False,tag='test-release'):
+    def make(self,selected=('worker',),name='release',production=False,tag='test-release',normalized=None):
         directory=self.root/name;directory.mkdir()
-        n=copy.deepcopy(self.normalized);n['environment']='production' if production else 'development'
+        n=copy.deepcopy(normalized if normalized is not None else self.normalized)
+        n['environment']='production' if production else 'development'
         p={'schema':3,'id':name,'source':'c'*40,'branch':'main' if production else 'develop','tag':tag,'selected':list(selected),
            'normalized':n,'identities':{c:{'profile':'profile','inputs':'input','files':[]} for c in selected},
            'dev_reference':'explicit-123' if production else None,
@@ -882,6 +893,78 @@ class Acceptance(unittest.TestCase):
                 self.assertEqual(replacement['spec']['template']['spec'],retained['spec'])
                 self.assertEqual(replacement['spec']['traffic'],[{'revisionName':revision,'percent':100}])
                 self.assertFalse([a for a in self.current()['calls'][offset:] if 'build' in a or 'submit' in a])
+
+    def test_legacy_bff_retained_plan_without_cooldown_recovers_and_reactivates(self):
+        dev_provenance=None
+        for environment, normalized, cooldown in (
+                ('development',self.normalized,600),
+                ('production',self.production_normalized,3600)):
+            for existing_cooldown in (False,True):
+                with self.subTest(environment=environment,existing_cooldown=existing_cooldown):
+                    if environment=='production' and dev_provenance is None:
+                        dev_provenance=self.ready(self.make(('bff',),name='legacy-bff-dev-provenance'))
+                        dev_provenance.deploy()
+
+                    name='legacy-bff-'+environment+'-'+('retained' if existing_cooldown else 'absent')
+                    initial=self.make(('bff',),name=name,production=environment=='production',
+                                      normalized=normalized if environment=='production' else None)
+                    initial.plan['normalized']['bff'].pop('pipeline_cooldown_seconds')
+                    initial.plan['normalized']['components']['bff'].pop('pipeline_cooldown_seconds')
+                    initial.plan['id']=engine.digest(engine.release_identity(initial.plan))
+                    write(initial.directory/'plan.json',initial.plan)
+
+                    expected=providers.auth_config.desired(initial.plan['normalized'],'bff')
+                    service=initial.plan['normalized']['bff']['service_name']
+                    revision_name=service+'-legacy-prior'
+                    image='prior@sha256:'+'b'*64
+                    env=[{'name':key,'value':value} for key,value in expected['env'].items()]
+                    env.extend({'name':key,'valueFrom':{'secretKeyRef':reference}}
+                               for key,reference in expected['secrets'].items())
+                    if existing_cooldown:
+                        env.append({'name':providers.auth_config.PIPELINE_COOLDOWN_SECONDS,
+                                    'value':str(cooldown)})
+                    spec={'serviceAccountName':expected['service_account'],
+                          'containers':[{'image':image,'env':env}]}
+                    state=self.current()
+                    state['revisions'][revision_name]={
+                        'metadata':{'name':revision_name,'annotations':{}},'spec':copy.deepcopy(spec),
+                        'status':{'imageDigest':image,'conditions':[{'type':'Ready','status':'True'}]}}
+                    state['resources'][service]={
+                        'metadata':{'name':service},
+                        'spec':{'template':{'metadata':{'name':revision_name,'annotations':{}},
+                                            'spec':copy.deepcopy(spec)}},
+                        'status':{'latestCreatedRevisionName':revision_name,
+                                  'traffic':[{'revisionName':revision_name,'percent':100}]}}
+                    write(self.root/'provider.json',state)
+
+                    e=engine.Engine(initial.directory)
+                    if environment=='production':e.prepare(dev=dev_provenance.directory)
+                    else:e.prepare()
+                    e.deploy()
+                    plan_bytes=(e.directory/'plan.json').read_bytes()
+                    receipt_path=e.directory/'receipts'/'bff.json'
+                    receipt_bytes=receipt_path.read_bytes()
+                    artifact=e.receipt('bff')['artifact']
+                    candidate=copy.deepcopy(e.state['components']['bff']['candidate'])
+                    revision=e.provider.revision('bff',candidate['revision'])
+                    self.assertNotIn(providers.auth_config.PIPELINE_COOLDOWN_SECONDS,
+                                     providers.auth_config.desired(e.plan['normalized'],'bff')['env'])
+                    actual_cooldown=[entry['value'] for entry in revision['spec']['containers'][0].get('env',[])
+                                     if entry['name']==providers.auth_config.PIPELINE_COOLDOWN_SECONDS]
+                    self.assertEqual(actual_cooldown,[str(cooldown)] if existing_cooldown else [])
+                    self.assertTrue(e.provider.service_matches('bff',revision,artifact['image']))
+                    self.assertTrue(e.provider.observe('bff',artifact,candidate))
+
+                    unresolved={'revision':None}
+                    e.provider.reconcile_candidate('bff',artifact,unresolved,lambda:None)
+                    self.assertEqual(unresolved['revision'],candidate['revision'])
+                    e.restore(['bff'])
+                    builds=len(self.calls('build'))+len(self.calls('submit'))
+                    e.deploy(['bff'],reactivate=True)
+                    self.assertEqual(e.state['status'],'success')
+                    self.assertEqual(builds,len(self.calls('build'))+len(self.calls('submit')))
+                    self.assertEqual((e.directory/'plan.json').read_bytes(),plan_bytes)
+                    self.assertEqual(receipt_path.read_bytes(),receipt_bytes)
 
     def test_retained_annotations_full_chain(self):
         for c in ('auth','bff'):

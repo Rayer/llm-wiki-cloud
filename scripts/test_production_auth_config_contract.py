@@ -19,9 +19,13 @@ def candidate(component='auth', enabled=True, plan_override=None):
         plan = plan_override or synthetic_production_plan()
         value = json.loads(json.dumps(value).replace('llm-wiki-auth', 'llm-wiki-bff').replace('lwc-auth-prod@', 'lwc-bff-prod@'))
         value['spec']['containers'][0]['env'] = [entry for entry in value['spec']['containers'][0]['env']
-            if entry['name'] in ('GCP_PROJECT', 'FIRESTORE_DATABASE_ID', 'ALLOWED_ORIGINS', 'AUTH_SERVICE_URL', 'DEV_JWT', 'JWT_SECRET')]
+            if entry['name'] in ('GCP_PROJECT', 'FIRESTORE_DATABASE_ID', 'ALLOWED_ORIGINS', 'AUTH_SERVICE_URL', 'DEV_JWT', 'JWT_SECRET', 'PIPELINE_COOLDOWN_SECONDS')]
         value['spec']['containers'][0]['env'].insert(0, {'name': 'QUERY_STAGE_CONFIG_PATH',
             'value': plan['query_config']['runtime_path']})
+        value['spec']['containers'][0]['env'].append({
+            'name': 'PIPELINE_COOLDOWN_SECONDS',
+            'value': str(plan['bff']['pipeline_cooldown_seconds']),
+        })
         env = value['spec']['containers'][0]['env']
         if plan['bff'].get('profile_runtime_audience'):
             env.extend([

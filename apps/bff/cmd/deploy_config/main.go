@@ -18,6 +18,11 @@ import (
 	"gopkg.in/yaml.v3"
 )
 
+const (
+	maxConfigBytes        = 1 << 20
+	maxBFFCooldownSeconds = 9_223_372_036
+)
+
 var (
 	allowedEnvironments                 = map[string]struct{}{"development": {}, "production": {}}
 	allowedComponents                   = []string{"auth", "bff", "worker", "exportjob", "frontend"}
@@ -71,6 +76,7 @@ type AuthSecretReferences struct {
 
 type BFFConfig struct {
 	ServiceName                  string                  `yaml:"service_name" json:"service_name"`
+	PipelineCooldownSeconds      int                     `yaml:"-" json:"pipeline_cooldown_seconds,omitempty"`
 	RuntimeServiceAccount        string                  `yaml:"runtime_service_account" json:"runtime_service_account"`
 	ProfileRuntimeAudience       string                  `yaml:"profile_runtime_audience" json:"profile_runtime_audience,omitempty"`
 	ProfileRuntimeServiceAccount string                  `yaml:"profile_runtime_service_account" json:"profile_runtime_service_account,omitempty"`
@@ -175,12 +181,25 @@ func main() {
 	environment := flag.String("environment", "", "fixed environment: development or production")
 	configPath := flag.String("config", "", "repository-relative environment YAML path")
 	components := flag.String("components", "", "explicit comma-separated component set")
+	bffConfigPath := flag.String("bff-config", "", "generated BFF cooldown projection from pipeline_config prepare --target bff")
 	flag.Parse()
 
 	if *environment == "" || *components == "" {
 		fail("environment and components are required")
 	}
-	normalized, err := Load(*environment, *configPath, *components)
+	selected, err := parseComponents(*components)
+	if err != nil {
+		fail("%v", err)
+	}
+	var normalized Normalized
+	if contains(selected, "bff") {
+		normalized, err = LoadWithBFFProjection(*environment, *configPath, *components, *bffConfigPath)
+	} else {
+		if *bffConfigPath != "" {
+			fail("--bff-config requires bff in --components")
+		}
+		normalized, err = Load(*environment, *configPath, *components)
+	}
 	if err != nil {
 		fail("%v", err)
 	}
@@ -192,6 +211,14 @@ func main() {
 }
 
 func Load(environment, configPath, components string) (Normalized, error) {
+	return load(environment, configPath, components, "", false)
+}
+
+func LoadWithBFFProjection(environment, configPath, components, bffConfigPath string) (Normalized, error) {
+	return load(environment, configPath, components, bffConfigPath, true)
+}
+
+func load(environment, configPath, components, bffConfigPath string, requireBFFProjection bool) (Normalized, error) {
 	if _, ok := allowedEnvironments[environment]; !ok {
 		return Normalized{}, fmt.Errorf("environment %q is not allowlisted", environment)
 	}
@@ -228,6 +255,19 @@ func Load(environment, configPath, components string) (Normalized, error) {
 			return Normalized{}, err
 		}
 	}
+	if requireBFFProjection && !contains(selected, "bff") {
+		return Normalized{}, errors.New("BFF cooldown projection requires bff in the selected components")
+	}
+	if requireBFFProjection && strings.TrimSpace(bffConfigPath) == "" {
+		return Normalized{}, errors.New("generated BFF cooldown projection is required when bff is selected")
+	}
+	if requireBFFProjection {
+		cooldown, err := loadBFFCooldownProjection(bffConfigPath, environment)
+		if err != nil {
+			return Normalized{}, err
+		}
+		config.BFF.PipelineCooldownSeconds = cooldown
+	}
 	for _, component := range selected {
 		if component == "exportjob" && !config.ExportJob.Enabled {
 			return Normalized{}, errors.New("exportjob is disabled until its environment runtime resources are provisioned and read back")
@@ -263,6 +303,36 @@ func Load(environment, configPath, components string) (Normalized, error) {
 		ConfigFingerprint: "sha256:" + hex.EncodeToString(sum[:]),
 	}
 	return result, nil
+}
+
+func loadBFFCooldownProjection(path, environment string) (int, error) {
+	data, err := os.ReadFile(path)
+	if err != nil {
+		return 0, fmt.Errorf("read generated BFF cooldown projection: %w", err)
+	}
+	if len(data) == 0 || len(data) > maxConfigBytes {
+		return 0, errors.New("generated BFF cooldown projection has an invalid size")
+	}
+	decoder := json.NewDecoder(strings.NewReader(string(data)))
+	decoder.DisallowUnknownFields()
+	var projection struct {
+		SchemaVersion           int    `json:"schema_version"`
+		Environment             string `json:"environment"`
+		PipelineCooldownSeconds int    `json:"pipeline_cooldown_seconds"`
+	}
+	if err := decoder.Decode(&projection); err != nil {
+		return 0, fmt.Errorf("decode generated BFF cooldown projection: %w", err)
+	}
+	var extra any
+	if err := decoder.Decode(&extra); !errors.Is(err, io.EOF) {
+		return 0, errors.New("generated BFF cooldown projection must contain one JSON object")
+	}
+	expectedEnvironment := map[string]string{"development": "dev", "production": "prod"}[environment]
+	if expectedEnvironment == "" || projection.SchemaVersion != 1 || projection.Environment != expectedEnvironment ||
+		projection.PipelineCooldownSeconds <= 0 || int64(projection.PipelineCooldownSeconds) > maxBFFCooldownSeconds {
+		return 0, errors.New("generated BFF cooldown projection is invalid for the selected environment")
+	}
+	return projection.PipelineCooldownSeconds, nil
 }
 
 func contains(values []string, target string) bool {
@@ -579,6 +649,9 @@ func componentInputs(config EnvironmentConfig, query QueryConfigIdentity, select
 			}
 			if len(config.BFF.PipelineDemoUserIDs) > 0 {
 				bff["pipeline_demo_user_ids"] = config.BFF.PipelineDemoUserIDs
+			}
+			if config.BFF.PipelineCooldownSeconds > 0 {
+				bff["pipeline_cooldown_seconds"] = config.BFF.PipelineCooldownSeconds
 			}
 			components[name] = bff
 		case "worker":
