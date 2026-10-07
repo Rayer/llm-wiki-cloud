@@ -49,6 +49,14 @@ class LocalDevMakefileTests(unittest.TestCase):
             text=True,
         ).stdout
 
+    def test_bff_ci_pinned_pkl_is_discoverable_by_direct_test_children(self):
+        workflow = (REPO / ".github" / "workflows" / "ci.yml").read_text()
+        bff_job = workflow.split("\n  lint:", 1)[0]
+        self.assertIn("- name: Install pinned Pkl CLI", bff_job)
+        self.assertIn("releases/download/0.32.1/pkl-linux-amd64", bff_job)
+        self.assertIn('echo "PKL_BIN=$pkl" >> "$GITHUB_ENV"', bff_job)
+        self.assertIn('echo "$RUNNER_TEMP" >> "$GITHUB_PATH"', bff_job)
+
     def test_local_config_writes_only_public_frontend_urls(self):
         with tempfile.TemporaryDirectory() as tmp:
             frontend = Path(tmp) / "frontend"
