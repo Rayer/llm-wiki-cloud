@@ -20,10 +20,20 @@ REPO = ROOT.parents[1]
 LOCAL_SERVICES = REPO / "scripts" / "local-services.py"
 
 
-def run_partial_start_supervisor(state, root, token, auth_port, bff_port):
+def local_services_module():
     spec = importlib.util.spec_from_file_location("local_services_fixture", LOCAL_SERVICES)
     module = importlib.util.module_from_spec(spec)
     spec.loader.exec_module(module)
+    return module
+
+
+def run_partial_start_supervisor(state, root, token, auth_port, bff_port):
+    module = local_services_module()
+    Path(state).mkdir(parents=True, exist_ok=True)
+    projection = Path(state) / "bff.json"
+    projection.write_text(json.dumps({
+        "schema_version": 1, "environment": "local", "pipeline_cooldown_seconds": 60,
+    }))
 
     def service_command(name, _root, env):
         if name == "auth":
@@ -34,6 +44,7 @@ def run_partial_start_supervisor(state, root, token, auth_port, bff_port):
 
     module.service_command = service_command
     os.environ["LOCAL_CLOUD_REPO_ROOT"] = str(root)
+    os.environ["LOCAL_CLOUD_BFF_CONFIG_PATH"] = str(projection)
     os.environ["AUTH_PORT"] = str(auth_port)
     os.environ["BFF_PORT"] = str(bff_port)
     raise SystemExit(module.daemon(state, token, ["auth", "bff"], startup_timeout=3))
@@ -94,7 +105,7 @@ class LocalDevMakefileTests(unittest.TestCase):
         local_env = (ROOT.parents[1] / "scripts" / "local-cloud-env.sh").read_text()
         self.assertIn('PATH="$state_dir/python/bin:$PATH"', local_env)
         self.assertIn("export LOCAL_CLOUD_WORKER_PATH LOCAL_CLOUD_STATE_DIR LOCAL_CLOUD_REPO_ROOT LOCAL_CLOUD_PYTHON", local_env)
-        self.assertIn("export LOCAL_CLOUD_PIPELINE_CONFIG_DIR LOCAL_CLOUD_PIPELINE_CONFIG_PATH LOCAL_CLOUD_PIPELINE_BINDINGS_PATH PATH", local_env)
+        self.assertIn("export LOCAL_CLOUD_PIPELINE_CONFIG_DIR LOCAL_CLOUD_PIPELINE_CONFIG_PATH LOCAL_CLOUD_PIPELINE_BINDINGS_PATH LOCAL_CLOUD_BFF_CONFIG_PATH PATH", local_env)
         runtime_test = self.make_dry_run("local-synto-runtime-test")
         self.assertIn("go test -tags lwc_local_synto_runtime ./cmd/olw_worker", runtime_test)
         for key in ("LLM_API_KEY", "DEEPSEEK_API_KEY", "SYNTO_API_KEY", "OPENAI_API_KEY", "ANTHROPIC_API_KEY", "GEMINI_API_KEY", "TYPESAFE_API_KEY", "TYPESAFE_JEV_API_KEY", "LWC331_TEST_API_KEY"):
@@ -106,6 +117,45 @@ class LocalDevMakefileTests(unittest.TestCase):
         self.assertIn("local-services.py start auth frontend", support_bff)
         self.assertIn("local-services.py start auth bff", support_frontend)
         self.assertIn("LOCAL_CLOUD_PIPELINE_CONFIG_DIR=", support_frontend)
+
+    def test_generated_cooldown_reaches_only_the_bff_child(self):
+        module = local_services_module()
+        with tempfile.TemporaryDirectory() as tmp:
+            path = Path(tmp) / "bff.json"
+            path.write_text(json.dumps({
+                "schema_version": 1, "environment": "local", "pipeline_cooldown_seconds": 60,
+            }))
+            parent = {"LOCAL_CLOUD_BFF_CONFIG_PATH": str(path), "PIPELINE_COOLDOWN_SECONDS": "777"}
+            bff = module.child_environment("bff", parent)
+            auth = module.child_environment("auth", parent)
+            frontend = module.child_environment("frontend", parent)
+            self.assertEqual(bff["PIPELINE_COOLDOWN_SECONDS"], "60")
+            self.assertEqual(auth["PIPELINE_COOLDOWN_SECONDS"], "777")
+            self.assertEqual(frontend["PIPELINE_COOLDOWN_SECONDS"], "777")
+            path.write_text(json.dumps({
+                "schema_version": 1, "environment": "dev", "pipeline_cooldown_seconds": 600,
+            }))
+            with self.assertRaises(ValueError):
+                module.child_environment("bff", parent)
+
+    def test_local_wrapper_generates_projection_before_bff_start(self):
+        local_env = (REPO / "scripts" / "local-cloud-env.sh").read_text()
+        self.assertIn("pipeline_config prepare --target bff --environment local", local_env)
+        self.assertIn("bff_config.py", local_env)
+        self.assertIn("if [ \"$direct_bff\" = true ]; then", local_env)
+        self.assertIn("export PIPELINE_COOLDOWN_SECONDS", local_env)
+
+    def test_root_config_targets_keep_pipeline_default_and_select_bff(self):
+        default = subprocess.run(
+            ["make", "-n", "config-dev"], cwd=REPO, check=True, capture_output=True, text=True,
+        ).stdout
+        bff = subprocess.run(
+            ["make", "-n", "config-prod", "CAC_TARGET=bff"], cwd=REPO,
+            check=True, capture_output=True, text=True,
+        ).stdout
+        self.assertIn('--target "pipeline"', default)
+        self.assertIn('--target "bff"', bff)
+        self.assertIn('prepare --target "bff" --environment prod', bff)
 
     def test_stop_is_scoped_to_supervisor_metadata(self):
         output = self.make_dry_run("kill-local")

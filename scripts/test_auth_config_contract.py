@@ -40,10 +40,38 @@ ENV = {
 
 @lru_cache(maxsize=2)
 def bff_plan(environment):
-    result = subprocess.run(['go', 'run', './cmd/deploy_config', '--environment', environment,
-                             '--config', '../../deploy/environments/' + environment + '.yaml',
-                             '--components', 'bff'], cwd=ROOT / 'apps/bff', text=True,
-                            capture_output=True, check=True)
+    target, cooldown = ('dev', 600) if environment == 'development' else ('prod', 3600)
+    with tempfile.TemporaryDirectory() as tmp:
+        projection = Path(tmp) / 'bff.json'
+        projection.write_text(json.dumps({
+            'schema_version': 1, 'environment': target,
+            'pipeline_cooldown_seconds': cooldown,
+        }))
+        result = subprocess.run(['go', 'run', './cmd/deploy_config', '--environment', environment,
+                                 '--config', '../../deploy/environments/' + environment + '.yaml',
+                                 '--components', 'bff', '--bff-config', str(projection)],
+                                cwd=ROOT / 'apps/bff', text=True, capture_output=True, check=True)
+    return json.loads(result.stdout)
+
+
+def normalized_plan(environment, components):
+    if 'bff' not in components.split(','):
+        result = subprocess.run(['go', 'run', './cmd/deploy_config', '--environment', environment,
+                                 '--config', '../../deploy/environments/' + environment + '.yaml',
+                                 '--components', components], cwd=ROOT / 'apps/bff', text=True,
+                                capture_output=True, check=True)
+        return json.loads(result.stdout)
+    target, cooldown = ('dev', 600) if environment == 'development' else ('prod', 3600)
+    with tempfile.TemporaryDirectory() as tmp:
+        projection = Path(tmp) / 'bff.json'
+        projection.write_text(json.dumps({
+            'schema_version': 1, 'environment': target,
+            'pipeline_cooldown_seconds': cooldown,
+        }))
+        result = subprocess.run(['go', 'run', './cmd/deploy_config', '--environment', environment,
+                                 '--config', '../../deploy/environments/' + environment + '.yaml',
+                                 '--components', components, '--bff-config', str(projection)],
+                                cwd=ROOT / 'apps/bff', text=True, capture_output=True, check=True)
     return json.loads(result.stdout)
 
 

@@ -182,8 +182,16 @@ file paths to the native worker. If either file is missing or invalid, the
 run reports a configuration error; it does not fetch DEV's GCS TOML, use an
 old project `synto.toml`, upload the local config, or deploy a job. Deployed
 workers without a local scope continue to read their run-start snapshot from
-`pipeline-config/synto.toml` in GCS. Config rendering is explicit and does not
-run automatically during app startup.
+`pipeline-config/synto.toml` in GCS. Pipeline worker config rendering remains
+explicit and does not run automatically during app startup.
+
+The BFF cooldown projection is separate from Pipeline worker configuration.
+`make config-local CAC_TARGET=bff` writes `.build/cac/local/bff.json` from the
+current worktree without requiring a worker key or Job timeout. Managed BFF
+starts (`local-start`, `support-frontend`, and `bff-local`) regenerate and
+validate that projection before launch, then set `PIPELINE_COOLDOWN_SECONDS`
+only in the BFF child process; Auth and Frontend keep their existing
+environment.
 
 Each local generation manifest carries the execution ID in the
 same conditional write that commits it as current. After that write is

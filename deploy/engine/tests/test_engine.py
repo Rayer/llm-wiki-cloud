@@ -22,8 +22,13 @@ import providers
 class Acceptance(unittest.TestCase):
     @classmethod
     def setUpClass(cls):
-        cls.normalized=json.loads(subprocess.check_output(['go','run','./cmd/deploy_config','--environment','development',
-            '--config',str(ROOT/'deploy/environments/development.yaml'),'--components',','.join(engine.ORDER)],cwd=ROOT/'apps/bff',text=True))
+        with tempfile.TemporaryDirectory() as directory:
+            projection=Path(directory)/'bff.json'
+            projection.write_text(json.dumps({'schema_version':1,'environment':'dev',
+                'pipeline_cooldown_seconds':600}))
+            cls.normalized=json.loads(subprocess.check_output(['go','run','./cmd/deploy_config','--environment','development',
+                '--config',str(ROOT/'deploy/environments/development.yaml'),'--components',','.join(engine.ORDER),
+                '--bff-config',str(projection)],cwd=ROOT/'apps/bff',text=True))
 
     def setUp(self):
         self.real_node = shutil.which('node')

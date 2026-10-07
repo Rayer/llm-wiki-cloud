@@ -10,6 +10,7 @@ from pathlib import Path
 import re
 import shutil
 import sys
+import tempfile
 import urllib.parse
 
 from support import ROOT, Breakpoint, digest, read, require, run, structured_cause, write
@@ -105,8 +106,20 @@ def admit(args):
     branch = 'develop' if args.environment == 'development' else 'main'
     cfg = 'deploy/environments/'+args.environment+'.yaml'
     require(run(['git', 'hash-object', cfg]) == run(['git', 'rev-parse', args.source+':'+cfg]), 'dirty-target-config')
-    normalized = json.loads(run(['go', 'run', './cmd/deploy_config', '--environment', args.environment,
-                       '--config', str(ROOT / cfg), '--components', ','.join(selected)], cwd=ROOT / 'apps/bff', timeout=180))
+    normalize_args = ['go', 'run', './cmd/deploy_config', '--environment', args.environment,
+                      '--config', str(ROOT / cfg), '--components', ','.join(selected)]
+    normalize_env = os.environ.copy()
+    normalize_env['LWC_REPOSITORY_ROOT'] = str(ROOT)
+    if 'bff' in selected:
+        target = {'development': 'dev', 'production': 'prod'}[args.environment]
+        with tempfile.TemporaryDirectory(prefix='lwc-bff-cooldown-') as projection_dir:
+            run(['go', 'run', './cmd/pipeline_config', 'prepare', '--target', 'bff',
+                 '--environment', target, '--output', projection_dir],
+                cwd=ROOT / 'apps/bff', env=normalize_env, timeout=180)
+            normalize_args.extend(['--bff-config', str(Path(projection_dir) / 'bff.json')])
+            normalized = json.loads(run(normalize_args, cwd=ROOT / 'apps/bff', env=normalize_env, timeout=180))
+    else:
+        normalized = json.loads(run(normalize_args, cwd=ROOT / 'apps/bff', env=normalize_env, timeout=180))
     identities = {c: source_identity(c, args.source) for c in selected}
     body = {'schema': 3, 'source': args.source, 'branch': branch, 'tag': args.tag,
             'executor_sha': executor_sha, 'normalized': normalized, 'identities': identities,

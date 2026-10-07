@@ -76,6 +76,60 @@ func TestEvaluateExpiredCooldownOmitsCooldownUntil(t *testing.T) {
 	}
 }
 
+func TestEnvironmentCooldownValuesRespectExpiryBoundary(t *testing.T) {
+	for _, seconds := range []int{60, 600, 3600} {
+		t.Run(time.Duration(seconds).String(), func(t *testing.T) {
+			last := time.Date(2026, 7, 10, 12, 0, 0, 0, time.UTC)
+			cooldown := time.Duration(seconds) * time.Second
+			expires := last.Add(cooldown)
+			for _, tc := range []struct {
+				name    string
+				now     time.Time
+				blocked bool
+			}{
+				{"before", expires.Add(-time.Second), true},
+				{"equal", expires, false},
+				{"after", expires.Add(time.Second), false},
+			} {
+				t.Run(tc.name, func(t *testing.T) {
+					got := Evaluate(Input{
+						Now: tc.now, Enforced: true,
+						Limits:    Limits{DailyLimit: 2, Cooldown: cooldown, MinNewRaw: 1},
+						RunsToday: 1, DayKey: DayKeyUTC(tc.now), LastRunAt: last, NewRawFiles: 1,
+					})
+					if got.Allowed == tc.blocked || (tc.blocked && (got.Reason != ReasonCooldown || got.CooldownUntil == nil)) ||
+						(!tc.blocked && (got.Reason != ReasonNone || got.CooldownUntil != nil)) {
+						t.Fatalf("seconds=%d now=%s snapshot=%+v", seconds, tc.now, got)
+					}
+				})
+			}
+		})
+	}
+}
+
+func TestDurationChangesReevaluatePersistedTimestampAcrossUTCDay(t *testing.T) {
+	last := time.Date(2026, 7, 10, 23, 30, 0, 0, time.UTC)
+	now := time.Date(2026, 7, 11, 0, 15, 0, 0, time.UTC)
+	for _, tc := range []struct {
+		seconds int
+		allowed bool
+	}{
+		{60, true}, {600, true}, {3600, false},
+	} {
+		got := Evaluate(Input{
+			Now: now, Enforced: true,
+			Limits:    Limits{DailyLimit: 2, Cooldown: time.Duration(tc.seconds) * time.Second, MinNewRaw: 1},
+			RunsToday: 2, DayKey: DayKeyUTC(last), LastRunAt: last, NewRawFiles: 1,
+		})
+		if got.Allowed != tc.allowed || got.RunsToday != 0 {
+			t.Fatalf("cooldown=%d snapshot=%+v", tc.seconds, got)
+		}
+		if tc.allowed && got.CooldownUntil != nil {
+			t.Fatalf("cooldown=%d retained an expired timestamp: %+v", tc.seconds, got)
+		}
+	}
+}
+
 func TestEvaluateNoNewRaw(t *testing.T) {
 	now := time.Date(2026, 7, 10, 12, 0, 0, 0, time.UTC)
 	got := Evaluate(Input{
