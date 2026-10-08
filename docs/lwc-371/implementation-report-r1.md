@@ -103,3 +103,51 @@ The first root `make test` attempt inherited `FIRESTORE_EMULATOR_HOST=127.0.0.1:
 PR #104 remains OPEN and targets `develop`; URL: https://github.com/Rayer/llm-wiki-cloud/pull/104. After pushing source commit `7a07194d81f17a05380015d5b69429c95d0aa413`, `git ls-remote origin refs/heads/Rayer/LWC-371-implementation-r1` returned that exact SHA, and `gh pr view 104` returned head SHA `7a07194d81f17a05380015d5b69429c95d0aa413`, head branch `Rayer/LWC-371-implementation-r1`, base branch `develop`, state `OPEN`. The report-only follow-up commit and final PR head are read back in the dispatch completion record.
 
 Cloud deployment acceptance is **NOT RUN**. No DEV/Prod provider action, actual Cloud Run job, live GSM payload read/write, IAM/resource change, paid pipeline call, merge, or deployment was performed. The evidence above is offline/local acceptance only.
+
+## PR104 repair r3 — reconciliation race and recovery evidence
+
+This addendum covers the same frozen `lwc371-failure-refund-spec-r1` contract and repairs the three remaining exact-head findings. Runtime remained `gpt-6-luna`, reasoning effort `xhigh`, execution mode `YOLO`, Codex session `01a11845-5e60-73b3-bf4d-c1f271c95d0c`; this was the retained session and worktree. The scoped implementation commit is `cf2f0b36dc9d75c813669b4bb406e2425e746378`; the branch was then normally integrated with current `develop` through `9a16947b9db2e56adf76e47f93a7a6b202b7d926`. The exact tested integration SHA is `8c69d7e7899237b9ee01ce3212c3f05091e9711f`.
+
+### Repair coverage
+
+| Reviewed gap | Repair and observed evidence |
+| --- | --- |
+| Earlier manifest A hid a later execution B's confirmed prepublication failure; a manifest mismatch alone could not safely refund | Shared bounded diagnostic stage classification distinguishes confirmed prepublication absence, committed lease cleanup, and ambiguous publish/receipt stages. The Cloud Run loopback acceptance runs the actual deployed-mode producer for prior successful A and failed B, reconciles B twice without a status request, preserves A's charge, refunds B once, and accepts a same-input retry. It also exercises later actual publication overwriting the manifest while execution-owned receipts preserve committed charges. The existing injected GCS 503 recovery control still passes. |
+| A definite HTTP 403 invoke failure could lose the first refund when the request context was canceled | The handler now uses a bounded recovery context for settlement and durable failure evidence. The loopback handler test cancels the original request when the first settlement write fails, verifies the no-execution marker is persisted, restarts reconciliation, verifies one refund, and accepts the retry. The separate transport-unknown path remains pending. |
+| Native finish could write stale `UNKNOWN` over a background refund and leave the lock unknown | The finish transaction now re-reads the execution inside the transaction and preserves an existing terminal status, reason, and finish time when settling the reservation and lock. The actual native worker/API fixture pauses the actual finish transaction at the loopback Firestore proxy after its Storage read becomes unavailable; the real `RunQuotaReconciler` settles `FAILED` and refunds once without status polling; the held finish then resumes. Durable execution, reservation, quota, and lock assertions confirm the stale writer preserves `FAILED`, the refund identity, and released lock; the same-input retry succeeds in reaching its confirmed failure/refund path. |
+
+Native and Cloud Run status continue to use the existing bounded, owner-scoped diagnostic. Cloud Run settlement requires the diagnostic's exact execution identity; missing or invalid evidence keeps the result unknown. The final native and Cloud Run package tests cover the existing stage/class/message and truthful fallback paths. No queue, provider health check, new platform gate, or live resource was added.
+
+### Commands and results on the tested integration SHA
+
+All emulator-backed tests used only loopback Firestore `127.0.0.1:8585`, fake GCS `http://127.0.0.1:14443`, and project `lwc371-local`; provider-key variables were unset. The root broad test command intentionally ran with emulator variables unset, and the emulator acceptance tests ran separately.
+
+| Command | Exit | Result |
+| --- | ---: | --- |
+| `env -u FIRESTORE_EMULATOR_HOST -u STORAGE_EMULATOR_HOST -u GOOGLE_CLOUD_PROJECT make test` | 0 | 1,543 Go pass events, 91 conditional skips, 0 failures across 55 package summaries; Python contracts 70 + 34 + 19 passed; frontend Node 524/524 and component 295/295 passed. |
+| `env -u LLM_API_KEY -u DEEPSEEK_API_KEY -u SYNTO_API_KEY -u OPENAI_API_KEY -u ANTHROPIC_API_KEY -u GEMINI_API_KEY -u TYPESAFE_API_KEY -u TYPESAFE_JEV_API_KEY -u LWC331_TEST_API_KEY FIRESTORE_EMULATOR_HOST=127.0.0.1:8585 STORAGE_EMULATOR_HOST=http://127.0.0.1:14443 GOOGLE_CLOUD_PROJECT=lwc371-local go test -json ./cmd/olw_worker ./internal/handler/v1 ./cmd/bff ./internal/localpipeline -count=1 -race` from `apps/bff` | 0 | All four packages passed: 1,375 Go pass events, 4 conditional skips, 0 failures. Skips: `TestLocalCitationBrowserServer`, `TestFrozenSuggestedCorpusAcceptsValidMockProvider`, `TestExactSyntoPackExportBridge`, `TestExactSyntoMigratedConfigBridge`. |
+| Named `TestPipelineQuotaCloudRunHandlerEmulator` within the four-package loopback race run | 0 | Passed without skipping (14.59 seconds); exercised actual producer and background reconciliation. |
+| Named `TestLocalPipelineHTTPTriggerRunsWorkerAndReportsSuccessAndFailure` within the four-package loopback race run | 0 | Passed without skipping (40.10 seconds); exercised actual worker, deterministic held finish transaction, background refund, lock release, and same-input retry without status polling. |
+| `make lint typecheck vet build` | 0 | ESLint, TypeScript, `go vet ./...`, `go build ./...`, and Next.js production build passed; all 15 app pages generated. |
+| `make workflow-yaml` | 0 | All four checked workflow YAML files passed the repository contract. |
+| `git diff --check` | 0 | No whitespace errors. |
+
+### Acceptance matrix r3
+
+| AC | Result | Evidence |
+| --- | --- | --- |
+| AC1: successful native and Cloud Run runs charge once | PASS | Actual native worker/API and actual deployed-mode worker fixtures; execution-owned committed publication evidence remains authoritative through later manifest overwrite. |
+| AC2: confirmed failures refund once and same-input retry is accepted | PASS | Actual Cloud Run execution B failure after successful A, actual native child failure, repeated reconciliation, and same-input retry assertions. |
+| AC3: definitive no-execution failure recovers; transport-unknown remains distinct | PASS | Canceled HTTP 403 invoke, bounded durable marker, restart/repeated reconciliation, one refund, and accepted retry; unknown invoke cases remain pending. |
+| AC4: unknown/outage remains conservative and native terminal writes are monotonic | PASS | Existing Cloud Run GCS 503 pending/recovery control plus deterministic actual native finish/background-reconciler barrier; stale finish preserves refunded terminal state and released lock. |
+| AC5: existing bounded diagnostic fields and truthful fallback remain available | PASS | Final backend package tests exercise execution-scoped stage/class/message reads and unavailable fallback; full frontend suite passes. |
+
+The final deterministic native barrier needed two fixture adjustments. An earlier ordering probe timed out because it retried while its synthetic Storage proxy was still blocking; a first held-transaction probe also timed out because a synthetic HTTP 503 exhausted the worker's bounded finish context before Firestore. The final local proxy injects an immediate Storage refusal to make the stale `UNKNOWN` outcome reach the held Firestore transaction; the separately passing Cloud Run fixture retains the real 503/recovery control. These failed probes are recorded here and were not counted as passing evidence.
+
+The root `make smoke` target was not run because its `local-cloud-env.sh` entry path creates `$git_dir/lwc361-local-cloud/jwt-secret`, explicitly outside this dispatch's signing-key authority. No shared local stack, worktree signing key, or other worktree was changed.
+
+### PR and remaining limits
+
+PR #104 remains OPEN and targets `develop`: https://github.com/Rayer/llm-wiki-cloud/pull/104. After the normal fast-forward push, `git ls-remote origin refs/heads/Rayer/LWC-371-implementation-r1` returned `8c69d7e7899237b9ee01ce3212c3f05091e9711f`; `gh pr view 104` returned the same head SHA, head branch `Rayer/LWC-371-implementation-r1`, base branch `develop`, and state `OPEN`. The report-only follow-up commit advances the branch after this source readback; its final remote head is recorded in the dispatch completion message.
+
+Cloud deployment acceptance remains **NOT RUN**. No DEV/Prod provider action, actual Cloud Run job, live GSM payload read/write, IAM/resource change, paid pipeline call, merge, or deployment was performed. Main retains exact-head independent reviews, canonical CI, and normal merge.
