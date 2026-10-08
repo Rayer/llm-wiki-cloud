@@ -20,6 +20,8 @@ import engine
 import providers
 import support
 from support import Breakpoint, digest, read, write
+sys.path.insert(0, str(ROOT / 'scripts'))
+from lwc_auth_test_fixture import write_auth_input_snapshot_fixture
 
 PROJECT = 'llm-wiki-cloud'
 PROJECT_NUMBER = '580854833715'
@@ -134,10 +136,26 @@ class AsyncBuildSubmission(unittest.TestCase):
             [real_go, 'env', 'GOCACHE', 'GOMODCACHE'], text=True).splitlines()
         (self.bin / 'go').write_text(textwrap.dedent(f'''\
             #!/usr/bin/env python3
-            import os, sys
+            import os, subprocess, sys
+            from pathlib import Path
             args=sys.argv[1:]
             if args[:3] == ['run','./cmd/versioncheck','VERSION']:
                 print('1.0.0')
+                raise SystemExit(0)
+            if args[:5] == ['run','./cmd/pipeline_config','prepare','--target','auth'] and '--descriptor' in args:
+                source_args=args.copy()
+                source_args.remove('--descriptor')
+                source_index=source_args.index('--source-sha')
+                source_sha=source_args[source_index+1]
+                del source_args[source_index:source_index+2]
+                output=source_args[source_args.index('--output')+1]
+                target=source_args[source_args.index('--environment')+1]
+                result=subprocess.run([{real_go!r},*source_args],text=True,capture_output=True)
+                sys.stdout.write(result.stdout); sys.stderr.write(result.stderr)
+                if result.returncode: raise SystemExit(result.returncode)
+                sys.path.insert(0,str(Path(os.environ['LWC_REPOSITORY_ROOT'])/'scripts'))
+                from lwc_auth_test_fixture import write_auth_input_snapshot_fixture
+                write_auth_input_snapshot_fixture(output,{{'dev':'development','prod':'production'}}[target],source_sha)
                 raise SystemExit(0)
             os.execv({real_go!r}, [{real_go!r}, *args])
         '''))
@@ -237,7 +255,25 @@ class AsyncBuildSubmission(unittest.TestCase):
         args = SimpleNamespace(environment='development', source=source,
                                components=','.join(selected), tag=tag or 'test-lwc358-'+name,
                                dev_reference=None)
-        plan = engine.admit(args)
+        def admit_command(command, **kwargs):
+            argv = [str(value) for value in command]
+            if (argv[:5] == ['go', 'run', './cmd/pipeline_config', 'prepare', '--target'] and
+                    len(argv) > 5 and argv[5] == 'auth' and '--descriptor' in argv):
+                source_args = list(command)
+                source_args.remove('--descriptor')
+                source_index = source_args.index('--source-sha')
+                source_sha = str(source_args[source_index + 1])
+                del source_args[source_index:source_index + 2]
+                output = Path(str(source_args[source_args.index('--output') + 1]))
+                target = str(source_args[source_args.index('--environment') + 1])
+                support.run(source_args, **kwargs)
+                write_auth_input_snapshot_fixture(
+                    output, {'dev': 'development', 'prod': 'production'}[target], source_sha)
+                return ''
+            return support.run(command, **kwargs)
+
+        with patch.object(engine, 'run', side_effect=admit_command):
+            plan = engine.admit(args)
         directory = self.root / name
         directory.mkdir()
         write(directory/'plan.json', plan)
@@ -307,9 +343,8 @@ class AsyncBuildSubmission(unittest.TestCase):
             captured.clear()
             with self.assertRaises(Breakpoint) as caught:
                 engine.admit(args)
-            self.assertEqual(caught.exception.reason, 'dirty-bff-ssot')
-            self.assertEqual(captured['projection']['pipeline_cooldown_seconds'], 602)
-            self.assertEqual(captured['normalized']['bff']['pipeline_cooldown_seconds'], 602)
+            self.assertEqual(caught.exception.reason, 'dirty-runtime-ssot')
+            self.assertEqual(captured, {}, 'SSOT drift must fail before regenerating a runtime projection')
 
     def scratch_source_commit(self, executor):
         git_dir = self.root / 'retained-source.git'

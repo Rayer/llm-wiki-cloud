@@ -21,7 +21,16 @@ def write_auth_input_fixture(directory, environment, source_sha='c' * 40):
          '--environment', target, '--output', str(directory)],
         cwd=ROOT / 'apps/bff', env=env, text=True, capture_output=True, check=True,
     )
-    source = json.loads((directory / 'auth-source.json').read_text())
+    return write_auth_input_snapshot_fixture(directory, environment, source_sha)
+
+
+def write_auth_input_snapshot_fixture(directory, environment, source_sha='c' * 40, source=None):
+    """Build payload-free numeric Auth refs for tests without Secret Manager access."""
+    directory = Path(directory)
+    directory.mkdir(parents=True, exist_ok=True)
+    target = {'development': 'dev', 'production': 'prod'}[environment]
+    if source is None:
+        source = json.loads((directory / 'auth-source.json').read_text())
     jwt = source['jwt_secret_reference'].rsplit('/versions/', 1)[0] + '/versions/17'
     google_source = source['google']
     google = {
