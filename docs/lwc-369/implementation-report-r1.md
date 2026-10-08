@@ -8,7 +8,7 @@
 - Base SHA: `9a16947b9db2e56adf76e47f93a7a6b202b7d926`.
 - Branch: `Rayer/LWC-369-implementation-r1`.
 - Implementation commit: `362bfdbe30ff1b40a5e185d21147bdaa817e6db4`.
-- PR: pending; push and PR publication remain to do.
+- PR: [#106](https://github.com/Rayer/llm-wiki-cloud/pull/106), open against `develop` (base SHA at creation: `55fa221c91daac4da7f3e7b4b30a642848469df8`).
 - Execution stayed local. No DEV or Prod provider action, GSM payload read/write, IAM/resource operation, paid Pipeline, or LLM inference was run.
 
 ## Acceptance matrix
@@ -59,4 +59,4 @@ The official `.github/workflows/cd.yml` release path uses the deployment engine,
 
 ## Cloud limits and release checkpoint
 
-AC5 remains NOT RUN. No cloud credentials, resources, configuration payloads, or provider state were accessed. Commit `362bfdbe30ff1b40a5e185d21147bdaa817e6db4` contains the implementation and report; push and PR creation remain pending, and no merge or deployment was attempted.
+AC5 remains NOT RUN. No cloud credentials, resources, configuration payloads, or provider state were accessed. Implementation commit `362bfdbe30ff1b40a5e185d21147bdaa817e6db4` is included in PR #106; the branch was pushed and the open PR was read back against `develop`. No merge or deployment was attempted.
