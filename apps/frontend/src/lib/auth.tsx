@@ -11,7 +11,6 @@ import {
   useState,
 } from 'react';
 import {
-  AUTH_URL,
   clearStoredAccessToken,
   clearStoredAuthUser,
   clearStoredDemoSession,
@@ -33,6 +32,7 @@ import {
   type AuthUser,
 } from './auth-core';
 import { configureApiAuth } from './api';
+import { getRuntimeConfig } from './runtime-config';
 
 type RefreshAccessTokenOptions = {
   /** When false, HTTP 401 does not clear session (used by hydrate soft-rotate). Default true. */
@@ -61,7 +61,7 @@ type AuthContextValue = {
 const AuthContext = createContext<AuthContextValue | null>(null);
 
 async function postAuth(path: string, body?: unknown): Promise<unknown> {
-  const response = await fetch(`${AUTH_URL}${path}`, {
+  const response = await fetch(`${getRuntimeConfig().auth_url}${path}`, {
     method: 'POST',
     credentials: 'include',
     headers: body === undefined ? undefined : { 'Content-Type': 'application/json' },
@@ -134,7 +134,7 @@ export function AuthProvider({ children }: { children: ReactNode }) {
     const startedEpoch = sessionEpochRef.current;
 
     try {
-      const response = await fetch(`${AUTH_URL}/api/v1/auth/refresh`, {
+      const response = await fetch(`${getRuntimeConfig().auth_url}/api/v1/auth/refresh`, {
         method: 'POST',
         credentials: 'include',
       });

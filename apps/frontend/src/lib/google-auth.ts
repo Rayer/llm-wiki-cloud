@@ -1,6 +1,6 @@
 'use client';
 
-import { AUTH_URL } from './auth-core';
+import { getRuntimeConfig } from './runtime-config';
 
 export const GOOGLE_CANCELLED_COPY = '已取消使用 Google 登入。';
 
@@ -67,7 +67,7 @@ function errorFromPayload(payload: unknown, status: number): GoogleAuthError {
 }
 
 async function jsonRequest<T>(path: string, init: RequestInit = {}): Promise<T> {
-  const response = await fetch(`${AUTH_URL}${path}`, {
+  const response = await fetch(`${getRuntimeConfig().auth_url}${path}`, {
     ...init,
     credentials: 'include',
   });
@@ -87,7 +87,7 @@ async function authenticatedJson<T>(path: string, token: string, init: RequestIn
 }
 
 export function startGoogleLogin(): void {
-  window.location.assign(`${AUTH_URL}/api/v1/auth/google/login/start`);
+  window.location.assign(`${getRuntimeConfig().auth_url}/api/v1/auth/google/login/start`);
 }
 
 export async function beginGoogleLink(currentPassword: string, token: string): Promise<void> {

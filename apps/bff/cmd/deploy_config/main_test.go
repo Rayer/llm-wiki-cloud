@@ -21,6 +21,182 @@ func repoRoot(t *testing.T) string {
 	return root
 }
 
+func TestFrontendSelectionSeparatesRuntimeEndpointsFromBuildIdentity(t *testing.T) {
+	root := repoRoot(t)
+	for _, test := range []struct {
+		environment string
+		configURL   string
+		apiURL      string
+		authURL     string
+	}{
+		{"development", "https://storage.googleapis.com/llm-wiki-frontend-config-dev/frontend-config.json", "https://llm-wiki-bff-dev-580854833715.asia-east1.run.app", "https://auth.dev.rayer.idv.tw"},
+		{"production", "https://storage.googleapis.com/llm-wiki-frontend-config-prod/frontend-config.json", "https://llm-wiki-bff-580854833715.asia-east1.run.app", "https://auth.rayer.idv.tw"},
+	} {
+		t.Run(test.environment, func(t *testing.T) {
+			config, err := Load(test.environment, filepath.Join(root, "deploy/environments", test.environment+".yaml"), "frontend")
+			if err != nil {
+				t.Fatal(err)
+			}
+			if config.Frontend.ConfigSchemaVersion != 1 || config.Frontend.ConfigURL != test.configURL ||
+				config.Frontend.APIURL != test.apiURL || config.Frontend.AuthURL != test.authURL {
+				t.Fatalf("selected Frontend config = %#v", config.Frontend)
+			}
+			if !reflect.DeepEqual(config.Components["frontend"], map[string]any{
+				"project_name": config.Frontend.ProjectName, "team_slug": config.Frontend.TeamSlug,
+				"repository": config.Frontend.Repository, "root_directory": config.Frontend.RootDirectory,
+				"stable_aliases": config.Frontend.StableAliases, "config_schema_version": 1,
+				"config_url": test.configURL,
+			}) {
+				t.Fatalf("Frontend build target config = %#v", config.Components["frontend"])
+			}
+			planBytes, err := json.Marshal(config)
+			if err != nil {
+				t.Fatal(err)
+			}
+			if strings.Contains(string(planBytes), `"api_url"`) || strings.Contains(string(planBytes), `"auth_url"`) {
+				t.Fatalf("runtime endpoints leaked into normalized build identity: %s", planBytes)
+			}
+
+			output := filepath.Join(t.TempDir(), "nested", "frontend-config.json")
+			if err := writePublicFrontendRuntimeConfig(output, test.environment, config.Frontend.APIURL, config.Frontend.AuthURL); err != nil {
+				t.Fatal(err)
+			}
+			var runtimeConfig PublicFrontendRuntimeConfig
+			if err := json.Unmarshal(mustRead(t, output), &runtimeConfig); err != nil {
+				t.Fatal(err)
+			}
+			if runtimeConfig != (PublicFrontendRuntimeConfig{SchemaVersion: 1, APIURL: test.apiURL, AuthURL: test.authURL}) {
+				t.Fatalf("generated runtime config = %#v", runtimeConfig)
+			}
+		})
+	}
+}
+
+func TestLocalFrontendConfigUsesOnlyLoopbackPorts(t *testing.T) {
+	if !validLocalPort("19080") || validLocalPort("0") || validLocalPort("65536") || validLocalPort("80x") {
+		t.Fatal("local port validation did not enforce the numeric TCP range")
+	}
+	output := filepath.Join(t.TempDir(), "frontend-config.json")
+	if err := writePublicFrontendRuntimeConfig(output, "local", "http://localhost:19080", "http://localhost:19081"); err != nil {
+		t.Fatal(err)
+	}
+	if err := writePublicFrontendRuntimeConfig(output, "local", "https://api.example.test", "http://localhost:19081"); err == nil {
+		t.Fatal("local config unexpectedly accepted a deployed endpoint")
+	}
+}
+
+func TestFrontendPublicConfigNeedsOnlyPublicFrontendInputs(t *testing.T) {
+	root := t.TempDir()
+	configPath := filepath.Join(root, "deploy", "environments", "development.yaml")
+	if err := os.MkdirAll(filepath.Dir(configPath), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(configPath, []byte("frontend:\n  api_url: https://api.example.test\n  auth_url: https://auth.example.test\n"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	output := filepath.Join(root, "public", "frontend-config.json")
+	if err := prepareFrontendRuntimeConfig("development", configPath, output); err != nil {
+		t.Fatalf("frontend-only public config rejected missing unrelated bindings: %v", err)
+	}
+	var got PublicFrontendRuntimeConfig
+	if err := json.Unmarshal(mustRead(t, output), &got); err != nil {
+		t.Fatal(err)
+	}
+	want := PublicFrontendRuntimeConfig{
+		SchemaVersion: 1,
+		APIURL:        "https://api.example.test",
+		AuthURL:       "https://auth.example.test",
+	}
+	if got != want {
+		t.Fatalf("public Frontend config = %#v, want %#v", got, want)
+	}
+
+	for _, missing := range []string{"api_url", "auth_url"} {
+		t.Run("missing_"+missing, func(t *testing.T) {
+			missingConfigPath := configPath
+			body := "frontend:\n"
+			if missing == "api_url" {
+				body += "  auth_url: https://auth.example.test\n"
+			} else {
+				body += "  api_url: https://api.example.test\n"
+			}
+			if err := os.WriteFile(missingConfigPath, []byte(body), 0o600); err != nil {
+				t.Fatal(err)
+			}
+			missingOutput := filepath.Join(root, "public", missing+".json")
+			if err := prepareFrontendRuntimeConfig("development", missingConfigPath, missingOutput); err == nil {
+				t.Fatalf("missing required frontend.%s unexpectedly succeeded", missing)
+			}
+			if _, err := os.Stat(missingOutput); !os.IsNotExist(err) {
+				t.Fatalf("missing frontend.%s wrote output before validation: %v", missing, err)
+			}
+		})
+	}
+}
+
+func TestFrontendPublicConfigCLIUsesOnlyPublicFrontendInputs(t *testing.T) {
+	root := repoRoot(t)
+	temp := t.TempDir()
+	configPath := filepath.Join(temp, "deploy", "environments", "development.yaml")
+	if err := os.MkdirAll(filepath.Dir(configPath), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	configBody := "frontend:\n  api_url: https://api.example.test\n  auth_url: https://auth.example.test\n"
+	if err := os.WriteFile(configPath, []byte(configBody), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	command := func(output string) *exec.Cmd {
+		cmd := exec.Command("go", "run", "./cmd/deploy_config", "--environment", "development",
+			"--config", configPath, "--components", "frontend", "--frontend-config-output", output)
+		cmd.Dir = filepath.Join(root, "apps", "bff")
+		cmd.Env = append(os.Environ(), "LWC_REPOSITORY_ROOT="+root)
+		return cmd
+	}
+	validOutput := filepath.Join(temp, "public", "valid.json")
+	if output, err := command(validOutput).CombinedOutput(); err != nil {
+		t.Fatalf("Frontend-only CLI rejected missing unrelated bindings: %v\n%s", err, output)
+	}
+	var got PublicFrontendRuntimeConfig
+	if err := json.Unmarshal(mustRead(t, validOutput), &got); err != nil {
+		t.Fatal(err)
+	}
+	if got.APIURL != "https://api.example.test" || got.AuthURL != "https://auth.example.test" {
+		t.Fatalf("CLI public Frontend config = %#v", got)
+	}
+
+	if err := os.WriteFile(configPath, []byte("frontend:\n  auth_url: https://auth.example.test\n"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	missingOutput := filepath.Join(temp, "public", "missing-api.json")
+	if output, err := command(missingOutput).CombinedOutput(); err == nil {
+		t.Fatalf("Frontend-only CLI accepted missing frontend.api_url: %s", output)
+	}
+	if _, err := os.Stat(missingOutput); !os.IsNotExist(err) {
+		t.Fatalf("missing required frontend.api_url wrote output: %v", err)
+	}
+}
+
+func TestFrontendPublicOutputDoesNotRelaxDeploymentValidation(t *testing.T) {
+	config, err := decodeConfig(filepath.Join(repoRoot(t), "deploy", "environments", "development.yaml"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	config.Worker.SecretReferences.DeepSeekAPIKey = ""
+	err = validateConfigForSelectedComponents("development", config, false, false)
+	if err == nil || !strings.Contains(err.Error(), "worker.secret_references.deepseek_api_key") {
+		t.Fatalf("normal component validation no longer requires Worker secret binding: %v", err)
+	}
+}
+
+func mustRead(t *testing.T, path string) []byte {
+	t.Helper()
+	data, err := os.ReadFile(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	return data
+}
+
 func TestLoadReviewedEnvironmentsAndQueryIdentity(t *testing.T) {
 	root := repoRoot(t)
 	for _, environment := range []string{"development", "production"} {

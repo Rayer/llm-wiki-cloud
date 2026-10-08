@@ -40,7 +40,7 @@ test('renameProject sends PATCH to the owner project endpoint with strict name J
   try {
     const nextName = await renameProject('project-a', '  Renamed project  ');
 
-    assert.equal(requestedUrl, 'https://llm-wiki-bff-dev-580854833715.asia-east1.run.app/api/v1/projects/project-a');
+    assert.equal(requestedUrl, 'https://api.runtime.test/api/v1/projects/project-a');
     assert.equal(requestedInit.method, 'PATCH');
     assert.equal(requestedInit.credentials, 'include');
     assert.equal(requestedInit.headers?.['Content-Type'], 'application/json');

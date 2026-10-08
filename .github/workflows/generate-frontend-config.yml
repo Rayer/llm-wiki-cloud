@@ -1,0 +1,105 @@
+name: Generate Frontend Public Config
+
+on:
+  workflow_dispatch:
+    inputs:
+      environment:
+        description: Target environment for the public Frontend config artifact
+        required: true
+        type: choice
+        options: [dev, prod]
+
+permissions:
+  contents: read
+
+concurrency:
+  group: frontend-config-generate-${{ inputs.environment }}
+  cancel-in-progress: false
+
+jobs:
+  generate:
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    outputs:
+      artifact_id: ${{ steps.upload.outputs.artifact-id }}
+      source_sha: ${{ steps.checkout_sha.outputs.source_sha }}
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+        with:
+          ref: ${{ github.sha }}
+          persist-credentials: false
+
+      - name: Verify selected source checkout
+        id: checkout_sha
+        env:
+          EXPECTED_SHA: ${{ github.sha }}
+        run: |
+          set -Eeuo pipefail
+          actual_sha="$(git rev-parse --verify HEAD)"
+          [[ "$actual_sha" == "$EXPECTED_SHA" ]]
+          echo "source_sha=$actual_sha" >> "$GITHUB_OUTPUT"
+
+      - uses: actions/setup-go@d35c59abb061a4a6fb18e82ac0862c26744d6ab5 # v5.5.0
+        with:
+          go-version-file: apps/bff/go.mod
+          cache-dependency-path: apps/bff/go.sum
+
+      - name: Install pinned Pkl CLI
+        run: |
+          set -Eeuo pipefail
+          pkl="$RUNNER_TEMP/pkl"
+          curl --fail --silent --show-error --location \
+            https://github.com/apple/pkl/releases/download/0.32.1/pkl-linux-amd64 \
+            --output "$pkl"
+          chmod 0755 "$pkl"
+          "$pkl" --version | grep -E '^Pkl 0\.32\.1([[:space:]]|$)'
+          echo "PKL_BIN=$pkl" >> "$GITHUB_ENV"
+          echo "PKL_CACHE_DIR=$RUNNER_TEMP/pkl-cache" >> "$GITHUB_ENV"
+
+      - name: Generate selected public Frontend config
+        env:
+          TARGET_ENVIRONMENT: ${{ inputs.environment }}
+        run: |
+          set -Eeuo pipefail
+          case "$TARGET_ENVIRONMENT" in
+            dev) make config-dev CONFIG_TARGET=frontend ;;
+            prod) make config-prod CONFIG_TARGET=frontend ;;
+            *) echo "Unsupported Frontend config environment" >&2; exit 1 ;;
+          esac
+
+      - name: Bind public config bytes to source and environment
+        env:
+          TARGET_ENVIRONMENT: ${{ inputs.environment }}
+          SOURCE_SHA: ${{ steps.checkout_sha.outputs.source_sha }}
+        run: |
+          set -Eeuo pipefail
+          python3 scripts/frontend_config_artifacts.py prepare \
+            --environment "$TARGET_ENVIRONMENT" \
+            --source-sha "$SOURCE_SHA" \
+            --config ".build/cac/$TARGET_ENVIRONMENT/frontend-config.json" \
+            --output "$RUNNER_TEMP/frontend-config"
+
+      - name: Upload immutable selected config artifact
+        id: upload
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
+        with:
+          name: frontend-config-${{ inputs.environment }}
+          path: ${{ runner.temp }}/frontend-config/
+          if-no-files-found: error
+          retention-days: 90
+
+      - name: Report artifact ID
+        env:
+          ARTIFACT_ID: ${{ steps.upload.outputs.artifact-id }}
+          SOURCE_SHA: ${{ steps.checkout_sha.outputs.source_sha }}
+          TARGET_ENVIRONMENT: ${{ inputs.environment }}
+        run: |
+          set -Eeuo pipefail
+          [[ "$ARTIFACT_ID" =~ ^[1-9][0-9]*$ ]]
+          {
+            echo "### Frontend config artifact generated"
+            echo
+            echo "- Environment: \`$TARGET_ENVIRONMENT\`"
+            echo "- Source checkout: \`$SOURCE_SHA\`"
+            echo "- Artifact ID: \`$ARTIFACT_ID\`"
+          } >> "$GITHUB_STEP_SUMMARY"

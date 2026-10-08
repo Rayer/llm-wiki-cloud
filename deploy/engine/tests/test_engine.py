@@ -914,7 +914,7 @@ class Acceptance(unittest.TestCase):
         e.restore(['frontend']);self.assertEqual(self.current()['aliases']['wiki.dev.rayer.idv.tw'],'dpl_prior')
         e.deploy(['frontend'],reactivate=True)
         self.assertEqual(count,len([x for x in self.calls('build') if x[0]=='vercel']))
-        e.plan['normalized']['frontend']['api_url']='https://wrong.example'
+        e.plan['normalized']['frontend']['config_url']='https://wrong.example'
         with self.assertRaisesRegex(Breakpoint,'config-incompatible'):e.receipt('frontend')
 
     def test_frontend_prepare_archives_pinned_file_path_map_closure(self):
@@ -960,7 +960,7 @@ class Acceptance(unittest.TestCase):
         self.assertTrue(layout['cwd_prebuilt_output_exists'])
 
     def test_frontend_multipart_output_crlf_survives_api_run_document(self):
-        config={'schema_version':1,'api_url':'https://api.example','auth_url':'https://auth.example'}
+        config={'schema_version':1,'config_url':'https://config.example/frontend-config.json'}
         boundary=b'--lwc-runtime-output'
         body=(boundary+b'\r\nContent-Type: application/json\r\n\r\n'+
               json.dumps(config,separators=(',',':')).encode()+b'\r\n'+boundary+b'--\r\n')
@@ -1150,7 +1150,7 @@ class Acceptance(unittest.TestCase):
                 elif fault=='target':d['target']='production'
                 elif fault=='alias':self.provider['aliases']['wiki.dev.rayer.idv.tw']='dpl_prior'
                 elif fault=='artifact':d['meta']['lwcArtifact']='wrong'
-                else:self.provider['build_config']['api_url']='https://wrong.example'
+                else:self.provider['build_config']['config_url']='https://wrong.example'
                 self.flush()
                 self.assertFalse(e.provider.observe('frontend',e.receipt('frontend')['artifact'],e.state['components']['frontend']['candidate']))
 

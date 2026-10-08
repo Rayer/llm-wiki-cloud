@@ -12,6 +12,7 @@ import (
 	"os"
 	"path/filepath"
 	"regexp"
+	"strconv"
 	"strings"
 
 	runtimeconfig "github.com/rayer/llm-wiki-bff/internal/config"
@@ -20,8 +21,9 @@ import (
 )
 
 const (
-	maxConfigBytes    = 1 << 20
-	maxBFFConfigBytes = 64 << 10
+	maxConfigBytes              = 1 << 20
+	maxBFFConfigBytes           = 64 << 10
+	frontendConfigSchemaVersion = 1
 )
 
 var (
@@ -216,13 +218,99 @@ type ExportJobConfig struct {
 }
 
 type FrontendConfig struct {
-	ProjectName   string   `yaml:"project_name" json:"project_name"`
-	TeamSlug      string   `yaml:"team_slug" json:"team_slug"`
-	Repository    string   `yaml:"repository" json:"repository"`
-	RootDirectory string   `yaml:"root_directory" json:"root_directory"`
-	StableAliases []string `yaml:"stable_aliases" json:"stable_aliases"`
-	APIURL        string   `yaml:"api_url" json:"api_url"`
-	AuthURL       string   `yaml:"auth_url" json:"auth_url"`
+	ProjectName         string   `yaml:"project_name" json:"project_name"`
+	TeamSlug            string   `yaml:"team_slug" json:"team_slug"`
+	Repository          string   `yaml:"repository" json:"repository"`
+	RootDirectory       string   `yaml:"root_directory" json:"root_directory"`
+	StableAliases       []string `yaml:"stable_aliases" json:"stable_aliases"`
+	APIURL              string   `yaml:"api_url" json:"-"`
+	AuthURL             string   `yaml:"auth_url" json:"-"`
+	ConfigSchemaVersion int      `yaml:"-" json:"config_schema_version"`
+	ConfigURL           string   `yaml:"-" json:"config_url"`
+}
+
+type PublicFrontendRuntimeConfig struct {
+	SchemaVersion int    `json:"schema_version"`
+	APIURL        string `json:"api_url"`
+	AuthURL       string `json:"auth_url"`
+}
+
+func frontendConfigURL(environment string) string {
+	suffix := map[string]string{"development": "dev", "production": "prod"}[environment]
+	return "https://storage.googleapis.com/llm-wiki-frontend-config-" + suffix + "/frontend-config.json"
+}
+
+func validLocalPort(value string) bool {
+	if value == "" {
+		return false
+	}
+	for _, digit := range value {
+		if digit < '0' || digit > '9' {
+			return false
+		}
+	}
+	port, err := strconv.Atoi(value)
+	return err == nil && port >= 1 && port <= 65535
+}
+
+func validFrontendRuntimeURL(value, environment string) bool {
+	if value == "" || value != strings.TrimSpace(value) || strings.Contains(value, "#") {
+		return false
+	}
+	parsed, err := url.Parse(value)
+	if err != nil || parsed.Host == "" || parsed.User != nil || parsed.RawQuery != "" || parsed.ForceQuery || parsed.Fragment != "" ||
+		(parsed.Path != "" && parsed.Path != "/") {
+		return false
+	}
+	if environment == "local" {
+		return parsed.Scheme == "http" && (parsed.Hostname() == "localhost" || parsed.Hostname() == "127.0.0.1" || parsed.Hostname() == "::1")
+	}
+	return parsed.Scheme == "https"
+}
+
+func writePublicFrontendRuntimeConfig(output, environment, apiURL, authURL string) error {
+	if output == "" || (environment != "local" && environment != "development" && environment != "production") ||
+		!validFrontendRuntimeURL(apiURL, environment) || !validFrontendRuntimeURL(authURL, environment) {
+		return errors.New("public Frontend runtime config is invalid")
+	}
+	body, err := json.Marshal(PublicFrontendRuntimeConfig{
+		SchemaVersion: frontendConfigSchemaVersion,
+		APIURL:        apiURL,
+		AuthURL:       authURL,
+	})
+	if err != nil {
+		return err
+	}
+	body = append(body, '\n')
+	dir := filepath.Dir(output)
+	if err := os.MkdirAll(dir, 0o755); err != nil {
+		return fmt.Errorf("create output directory: %w", err)
+	}
+	file, err := os.CreateTemp(dir, ".frontend-config-*")
+	if err != nil {
+		return fmt.Errorf("create temporary output: %w", err)
+	}
+	temporary := file.Name()
+	defer os.Remove(temporary)
+	if err := file.Chmod(0o644); err != nil {
+		file.Close()
+		return fmt.Errorf("set output permissions: %w", err)
+	}
+	if _, err := file.Write(body); err != nil {
+		file.Close()
+		return fmt.Errorf("write output: %w", err)
+	}
+	if err := file.Sync(); err != nil {
+		file.Close()
+		return fmt.Errorf("sync output: %w", err)
+	}
+	if err := file.Close(); err != nil {
+		return fmt.Errorf("close output: %w", err)
+	}
+	if err := os.Rename(temporary, output); err != nil {
+		return fmt.Errorf("publish output file: %w", err)
+	}
+	return nil
 }
 
 type QueryConfigIdentity struct {
@@ -255,11 +343,14 @@ type Evidence struct {
 }
 
 func main() {
-	environment := flag.String("environment", "", "fixed environment: development or production")
+	environment := flag.String("environment", "", "fixed environment: local Frontend config, development, or production")
 	configPath := flag.String("config", "", "repository-relative environment YAML path")
 	components := flag.String("components", "", "explicit comma-separated component set")
 	bffInputsPath := flag.String("bff-inputs", "", "nonsecret BFF inputs from pipeline_config prepare --target bff --descriptor")
 	authInputsPath := flag.String("auth-inputs", "", "nonsecret Auth inputs from pipeline_config prepare --target auth --descriptor")
+	frontendConfigOutput := flag.String("frontend-config-output", "", "write selected public Frontend runtime JSON")
+	bffPort := flag.String("bff-port", "8080", "local BFF port for public Frontend config")
+	authPort := flag.String("auth-port", "8081", "local Auth port for public Frontend config")
 	flag.Parse()
 
 	if *environment == "" || *components == "" {
@@ -268,6 +359,32 @@ func main() {
 	selected, err := parseComponents(*components)
 	if err != nil {
 		fail("%v", err)
+	}
+	if *frontendConfigOutput != "" && (len(selected) != 1 || selected[0] != "frontend") {
+		fail("--frontend-config-output requires only frontend in --components")
+	}
+	if *environment == "local" {
+		if len(selected) != 1 || selected[0] != "frontend" || *frontendConfigOutput == "" {
+			fail("local config generation requires frontend and --frontend-config-output")
+		}
+		if !validLocalPort(*bffPort) || !validLocalPort(*authPort) {
+			fail("local BFF and Auth ports must be numeric values from 1 to 65535")
+		}
+		if err := writePublicFrontendRuntimeConfig(*frontendConfigOutput, "local",
+			"http://localhost:"+*bffPort, "http://localhost:"+*authPort); err != nil {
+			fail("write Frontend runtime config: %v", err)
+		}
+		return
+	}
+	if *frontendConfigOutput != "" {
+		if strings.TrimSpace(*bffInputsPath) != "" || strings.TrimSpace(*authInputsPath) != "" {
+			fail("component input descriptors are not accepted for public Frontend config generation")
+		}
+		if err := prepareFrontendRuntimeConfig(*environment, *configPath, *frontendConfigOutput); err != nil {
+			fail("prepare Frontend runtime config: %v", err)
+		}
+		fmt.Printf("prepared Frontend public config environment=%s target=frontend\n", *environment)
+		return
 	}
 	var normalized Normalized
 	switch {
@@ -297,6 +414,31 @@ func main() {
 	if err := encoder.Encode(normalized); err != nil {
 		fail("encode normalized config: %v", err)
 	}
+}
+
+func prepareFrontendRuntimeConfig(environment, configPath, output string) error {
+	if _, ok := allowedEnvironments[environment]; !ok {
+		return fmt.Errorf("environment %q is not allowlisted", environment)
+	}
+	if configPath == "" {
+		configPath = filepath.Join("deploy", "environments", environment+".yaml")
+	}
+	absConfig, err := filepath.Abs(configPath)
+	if err != nil {
+		return fmt.Errorf("resolve config path: %w", err)
+	}
+	absConfig = filepath.Clean(absConfig)
+	repoRoot := filepath.Dir(filepath.Dir(filepath.Dir(absConfig)))
+	expected := filepath.Join(repoRoot, "deploy", "environments", environment+".yaml")
+	if absConfig != expected {
+		return fmt.Errorf("config path must be the fixed %s file", filepath.ToSlash(filepath.Join("deploy", "environments", environment+".yaml")))
+	}
+
+	config, err := decodeConfig(absConfig)
+	if err != nil {
+		return err
+	}
+	return writePublicFrontendRuntimeConfig(output, environment, config.Frontend.APIURL, config.Frontend.AuthURL)
 }
 
 func Load(environment, configPath, components string) (Normalized, error) {
@@ -349,6 +491,8 @@ func loadWithInputs(environment, configPath, components, bffInputsPath, authInpu
 	if err != nil {
 		return Normalized{}, err
 	}
+	config.Frontend.ConfigSchemaVersion = frontendConfigSchemaVersion
+	config.Frontend.ConfigURL = frontendConfigURL(environment)
 	if requireAuthInputs {
 		inputs, err := loadAuthInputDescriptor(authInputsPath, environment)
 		if err != nil {
@@ -994,7 +1138,7 @@ func componentInputs(config EnvironmentConfig, query QueryConfigIdentity, select
 		case "exportjob":
 			components[name] = config.ExportJob
 		case "frontend":
-			components[name] = map[string]any{"project_name": config.Frontend.ProjectName, "team_slug": config.Frontend.TeamSlug, "repository": config.Frontend.Repository, "root_directory": config.Frontend.RootDirectory, "stable_aliases": config.Frontend.StableAliases, "api_url": config.Frontend.APIURL, "auth_url": config.Frontend.AuthURL}
+			components[name] = map[string]any{"project_name": config.Frontend.ProjectName, "team_slug": config.Frontend.TeamSlug, "repository": config.Frontend.Repository, "root_directory": config.Frontend.RootDirectory, "stable_aliases": config.Frontend.StableAliases, "config_schema_version": config.Frontend.ConfigSchemaVersion, "config_url": config.Frontend.ConfigURL}
 		}
 	}
 	return components

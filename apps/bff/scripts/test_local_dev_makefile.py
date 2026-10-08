@@ -74,19 +74,39 @@ class LocalDevMakefileTests(unittest.TestCase):
 
     def test_local_config_writes_only_public_frontend_urls(self):
         with tempfile.TemporaryDirectory() as tmp:
-            frontend = Path(tmp) / "frontend"
+            root = Path(tmp)
+            frontend = root / "frontend"
             frontend.mkdir()
+            config_output = root / "cac"
+            fake_git_bin = root / "bin"
+            fake_git_bin.mkdir()
+            fake_git = fake_git_bin / "git"
+            fake_git.write_text(
+                "#!/bin/sh\n"
+                "[ \"$3\" = \"rev-parse\" ] && [ \"$4\" = \"--absolute-git-dir\" ] || exit 2\n"
+                "printf '%s\\n' \"$LOCAL_CLOUD_TEST_GIT_DIR\"\n",
+                encoding="utf-8",
+            )
+            fake_git.chmod(0o755)
+            environment = os.environ.copy()
+            environment["PATH"] = f"{fake_git_bin}{os.pathsep}{environment['PATH']}"
+            environment["LOCAL_CLOUD_TEST_GIT_DIR"] = str(root / "gitdir")
             subprocess.run(
-                ["make", "local-config", f"FRONTEND_DIR={frontend}", "BFF_PORT=18080", "AUTH_PORT=18081"],
+                ["make", "local-config", f"FRONTEND_DIR={frontend}", f"CAC_OUTPUT_DIR={config_output}",
+                 "BFF_PORT=18080", "AUTH_PORT=18081"],
                 cwd=ROOT,
                 check=True,
                 capture_output=True,
                 text=True,
+                env=environment,
             )
             self.assertEqual(
                 (frontend / ".env.local").read_text(),
-                "NEXT_PUBLIC_API_URL=http://localhost:18080\n"
-                "NEXT_PUBLIC_AUTH_URL=http://localhost:18081\n",
+                "NEXT_PUBLIC_CONFIG_URL=/frontend-config.json\n",
+            )
+            self.assertEqual(
+                (config_output / "local" / "frontend-config.json").read_text(),
+                '{"schema_version":1,"api_url":"http://localhost:18080","auth_url":"http://localhost:18081"}\n',
             )
 
     def test_native_targets_use_worktree_supervisor_and_same_fixture_config(self):

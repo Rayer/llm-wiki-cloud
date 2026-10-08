@@ -21,12 +21,17 @@ on:
       operation:
         type: string
         default: release
+        description: Select normal deployment, Pipeline config-only, or public Frontend config-only publication
       artifact_id:
         type: string
         default: ''
       dev_artifact_id:
         type: string
         default: ''
+      frontend_config_artifact_id:
+        type: string
+        default: ''
+        description: Exact successful artifact ID from Generate Frontend Public Config
       force:
         type: boolean
         default: false
@@ -42,7 +47,7 @@ permissions:
   actions: read
 jobs:
   release:
-    if: inputs.operation != 'diagnose-auth-image' && inputs.operation != 'config-only'
+    if: inputs.operation != 'diagnose-auth-image' && inputs.operation != 'config-only' && inputs.operation != 'frontend-config-only'
     runs-on: ubuntu-latest
     timeout-minutes: 120
     environment: ${{ inputs.environment == 'production' && 'Production' || 'Development' }}
@@ -220,3 +225,129 @@ jobs:
         env:
           TARGET_ENVIRONMENT: ${{ inputs.environment }}
         run: python3 deploy/engine/pipeline_config_only.py --environment "$TARGET_ENVIRONMENT"
+
+  frontend-config-only:
+    if: inputs.operation == 'frontend-config-only'
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    environment: ${{ inputs.environment == 'production' && 'Production' || 'Development' }}
+    permissions:
+      contents: read
+      actions: read
+      id-token: write
+    env:
+      TARGET_ENVIRONMENT: ${{ inputs.environment == 'production' && 'prod' || 'dev' }}
+      FRONTEND_CONFIG_ARTIFACT_ID: ${{ inputs.frontend_config_artifact_id }}
+      EXECUTOR_SHA: ${{ inputs.executor_sha }}
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+        with:
+          ref: ${{ inputs.executor_sha }}
+          persist-credentials: false
+
+      - name: Validate executor checkout
+        run: test "$(git rev-parse HEAD)" = "$EXECUTOR_SHA"
+
+      - name: Inspect exact selected artifact and successful generator run
+        id: inspect
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          set -Eeuo pipefail
+          [[ "$FRONTEND_CONFIG_ARTIFACT_ID" =~ ^[1-9][0-9]*$ ]] || {
+            echo "frontend_config_artifact_id is required for frontend-config-only" >&2
+            exit 1
+          }
+          gh api "repos/$GITHUB_REPOSITORY/actions/artifacts/$FRONTEND_CONFIG_ARTIFACT_ID" \
+            > "$RUNNER_TEMP/frontend-config-artifact-metadata.json"
+          run_id="$(jq -er '.workflow_run.id | select(type == "number" and . > 0) | tostring' \
+            "$RUNNER_TEMP/frontend-config-artifact-metadata.json")"
+          [[ "$run_id" =~ ^[1-9][0-9]*$ ]]
+          gh api "repos/$GITHUB_REPOSITORY/actions/runs/$run_id" \
+            > "$RUNNER_TEMP/frontend-config-run-metadata.json"
+          python3 scripts/frontend_config_artifacts.py inspect \
+            --artifact-metadata "$RUNNER_TEMP/frontend-config-artifact-metadata.json" \
+            --run-metadata "$RUNNER_TEMP/frontend-config-run-metadata.json" \
+            --artifact-id "$FRONTEND_CONFIG_ARTIFACT_ID" \
+            --environment "$TARGET_ENVIRONMENT" >> "$GITHUB_OUTPUT"
+
+      - name: Download exact artifact ID from its generation run
+        uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4.3.0
+        with:
+          artifact-ids: ${{ inputs.frontend_config_artifact_id }}
+          run-id: ${{ steps.inspect.outputs.run_id }}
+          github-token: ${{ github.token }}
+          path: ${{ runner.temp }}/frontend-config
+          merge-multiple: true
+
+      - name: Validate selected artifact metadata and public JSON bytes
+        id: validate_artifact
+        env:
+          SOURCE_SHA: ${{ steps.inspect.outputs.source_sha }}
+        run: |
+          set -Eeuo pipefail
+          config_sha="$(python3 scripts/frontend_config_artifacts.py validate \
+            --directory "$RUNNER_TEMP/frontend-config" \
+            --environment "$TARGET_ENVIRONMENT" \
+            --source-sha "$SOURCE_SHA")"
+          [[ "$config_sha" =~ ^[a-f0-9]{64}$ ]]
+          echo "config_sha256=$config_sha" >> "$GITHUB_OUTPUT"
+
+      - uses: google-github-actions/auth@7c6bc770dae815cd3e89ee6cdf493a5fab2cc093
+        with:
+          project_id: llm-wiki-cloud
+          workload_identity_provider: ${{ secrets.WIF_PROVIDER }}
+          service_account: ${{ secrets.WIF_SERVICE_ACCOUNT }}
+
+      - uses: google-github-actions/setup-gcloud@e427ad8a34f8676edf47cf7d7925499adf3eb74f
+
+      - name: Publish only the selected public config and verify exact readback
+        env:
+          SOURCE_SHA: ${{ steps.inspect.outputs.source_sha }}
+          GENERATION_RUN_ID: ${{ steps.inspect.outputs.run_id }}
+          CONFIG_SHA256: ${{ steps.validate_artifact.outputs.config_sha256 }}
+        run: |
+          set -Eeuo pipefail
+          case "$TARGET_ENVIRONMENT" in
+            dev) object_uri='gs://llm-wiki-frontend-config-dev/frontend-config.json' ;;
+            prod) object_uri='gs://llm-wiki-frontend-config-prod/frontend-config.json' ;;
+            *) echo "Unsupported Frontend config environment" >&2; exit 1 ;;
+          esac
+          config_file="$RUNNER_TEMP/frontend-config/frontend-config.json"
+          gcloud storage cp --cache-control=no-store --content-type=application/json \
+            "$config_file" "$object_uri"
+          generation="$(gcloud storage objects describe "$object_uri" --format='value(generation)')"
+          [[ "$generation" =~ ^[1-9][0-9]*$ ]]
+          mkdir -p "$RUNNER_TEMP/frontend-config-readback"
+          gcloud storage cp "$object_uri" "$RUNNER_TEMP/frontend-config-readback/frontend-config.json"
+          cmp --silent "$config_file" "$RUNNER_TEMP/frontend-config-readback/frontend-config.json"
+          readback_sha="$(sha256sum "$RUNNER_TEMP/frontend-config-readback/frontend-config.json" | cut -d ' ' -f 1)"
+          [[ "$readback_sha" == "$CONFIG_SHA256" ]]
+          jq -n \
+            --arg artifact_id "$FRONTEND_CONFIG_ARTIFACT_ID" \
+            --arg generation_run_id "$GENERATION_RUN_ID" \
+            --arg source_sha "$SOURCE_SHA" \
+            --arg environment "$TARGET_ENVIRONMENT" \
+            --arg object_uri "$object_uri" \
+            --arg object_generation "$generation" \
+            --arg config_sha256 "$readback_sha" \
+            '{artifact_id:$artifact_id,generation_run_id:$generation_run_id,source_sha:$source_sha,environment:$environment,object_uri:$object_uri,object_generation:$object_generation,config_sha256:$config_sha256}' \
+            > "$RUNNER_TEMP/frontend-config-publish-evidence.json"
+          {
+            echo "### Frontend public config published"
+            echo
+            echo "- Environment: \`$TARGET_ENVIRONMENT\`"
+            echo "- Selected artifact ID: \`$FRONTEND_CONFIG_ARTIFACT_ID\`"
+            echo "- Generation run: \`$GENERATION_RUN_ID\`"
+            echo "- Source SHA: \`$SOURCE_SHA\`"
+            echo "- Object generation: \`$generation\`"
+            echo "- Readback SHA-256: \`$readback_sha\`"
+          } >> "$GITHUB_STEP_SUMMARY"
+
+      - name: Retain public config publication evidence
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
+        with:
+          name: frontend-config-publish-${{ inputs.environment }}-${{ github.run_id }}-${{ github.run_attempt }}
+          path: ${{ runner.temp }}/frontend-config-publish-evidence.json
+          if-no-files-found: error
+          retention-days: 90

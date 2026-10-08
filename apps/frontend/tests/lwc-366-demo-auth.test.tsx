@@ -1,5 +1,6 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { cleanup, fireEvent, render, screen, waitFor } from '@testing-library/react';
+import { setRuntimeConfigForTests } from '@/lib/runtime-config';
 
 const configuredAuthOrigin = 'https://auth-lwc366.example.test';
 
@@ -30,7 +31,11 @@ async function mountDemoLoginProbe(onError = vi.fn()) {
 describe('LWC-366 Demo auth', () => {
   beforeEach(() => {
     vi.resetModules();
-    vi.stubEnv('NEXT_PUBLIC_AUTH_URL', configuredAuthOrigin);
+    setRuntimeConfigForTests({
+      schema_version: 1,
+      api_url: 'https://api-lwc366.example.test',
+      auth_url: configuredAuthOrigin,
+    });
     localStorage.clear();
     fetchMock.mockReset();
     vi.stubGlobal('fetch', fetchMock);

@@ -179,10 +179,9 @@ frontend_verify_build_config() {
     "https://api.vercel.com/v6/deployments/${deployment_id}/files/outputs?file=build-config.json&teamId=${VERCEL_TEAM_ID}"); then
     rm -f "$body" "$document"; return 1
   fi
-  if [[ "$status" != 200 ]] || ! python3 "$ROOT/deploy/components/frontend_build_config.py" < "$body" > "$document" || \
-    ! strict_json < "$document" || ! jq -e \
-    --arg api "$(plan_json '.frontend.api_url')" --arg auth "$(plan_json '.frontend.auth_url')" \
-    'type == "object" and keys == ["api_url","auth_url","schema_version"] and .schema_version == 1 and (.api_url|type) == "string" and (.auth_url|type) == "string" and .api_url == $api and .auth_url == $auth' "$document" >/dev/null; then
+  if [[ "$status" != 200 ]] || ! python3 "$ROOT/deploy/components/frontend_build_config.py" \
+    --expected-config-url "$(plan_json '.frontend.config_url')" < "$body" > "$document" || \
+    ! strict_json < "$document"; then
     rm -f "$body" "$document"; return 1
   fi
   FRONTEND_BUILD_CONFIG=$(jq -c . "$document")
@@ -282,10 +281,10 @@ frontend_freeze() {
 }
 
 frontend_mutate() {
-  local api_url auth_url team vercel_environment target deployment_json deployment_id deployment_url candidate_url alias inventory candidates candidate_count reused=0
+  local config_url team vercel_environment target deployment_json deployment_id deployment_url candidate_url alias inventory candidates candidate_count reused=0
   journal_init
   set_mutation_status frontend unknown
-  team=$(plan_json '.frontend.team_slug'); api_url=$(plan_json '.frontend.api_url'); auth_url=$(plan_json '.frontend.auth_url')
+  team=$(plan_json '.frontend.team_slug'); config_url=$(plan_json '.frontend.config_url')
   export VERCEL_ORG_ID="$VERCEL_TEAM_ID"
   if ! validate_frontend_alias_config || ! vercel_project_authority; then
     journal_rejected frontend
@@ -311,7 +310,7 @@ frontend_mutate() {
     vercel_validate_deployment "$deployment_json" "$deployment_id" "$deployment_url" || { journal_rejected frontend; set_mutation_status frontend failed; write_component_result frontend failed '{}' deployment_inspect_mismatch; return 1; }
   else
     (cd "$ROOT/apps/frontend" && npm ci --ignore-scripts >/dev/null)
-    (cd "$ROOT" && NEXT_PUBLIC_API_URL="$api_url" NEXT_PUBLIC_AUTH_URL="$auth_url" timeout --signal=TERM --kill-after=5s 120s vercel pull --yes --environment="$vercel_environment" --scope "$team" --token "${VERCEL_TOKEN:?}" >/dev/null && NEXT_PUBLIC_API_URL="$api_url" NEXT_PUBLIC_AUTH_URL="$auth_url" timeout --signal=TERM --kill-after=5s 300s vercel build --scope "$team" --token "${VERCEL_TOKEN:?}" $([[ "$target" == production ]] && printf '%s' '--prod') >/dev/null)
+    (cd "$ROOT" && NEXT_PUBLIC_CONFIG_URL="$config_url" timeout --signal=TERM --kill-after=5s 120s vercel pull --yes --environment="$vercel_environment" --scope "$team" --token "${VERCEL_TOKEN:?}" >/dev/null && NEXT_PUBLIC_CONFIG_URL="$config_url" timeout --signal=TERM --kill-after=5s 300s vercel build --scope "$team" --token "${VERCEL_TOKEN:?}" $([[ "$target" == production ]] && printf '%s' '--prod') >/dev/null)
     vercel_project_authority || { journal_rejected frontend; die "Vercel project authority changed before frontend deployment"; }
     vercel_verify_frozen_frontend || { journal_rejected frontend; die "frontend alias authority changed from the frozen rollback snapshot"; }
     revalidate_before_provider

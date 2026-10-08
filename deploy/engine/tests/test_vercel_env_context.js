@@ -382,7 +382,7 @@ async function main() {
         input.outputCase === 'prerender-malformed' ? '{malformed' : JSON.stringify(descriptor));
       if (input.outputCase !== 'prerender-missing-fallback') {
         const config = input.outputCase === 'prerender-target-mismatch'
-          ? { ...input.config, api_url: 'https://wrong.invalid' } : input.config;
+          ? { ...input.config, config_url: 'https://wrong.invalid/frontend-config.json' } : input.config;
         fs.writeFileSync(path.join(functions, 'build-config.json.prerender-fallback.body'), JSON.stringify(config));
       }
     }

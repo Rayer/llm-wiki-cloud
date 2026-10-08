@@ -44,7 +44,7 @@ class EngineWorkflowContract(unittest.TestCase):
     def test_single_runtime_authority_stays_in_release_workflow(self):
         s=(ROOT/'.github/workflows/cd.yml').read_text()
         parsed=yaml.safe_load(s)
-        self.assertEqual(set(parsed['jobs']),{'release','pipeline-config-only'})
+        self.assertEqual(set(parsed['jobs']),{'release','pipeline-config-only','frontend-config-only'})
         self.assertEqual(parsed['jobs']['release']['environment'],
                          "${{ inputs.environment == 'production' && 'Production' || 'Development' }}")
         prepare=next(step for step in parsed['jobs']['release']['steps']
@@ -71,6 +71,28 @@ class EngineWorkflowContract(unittest.TestCase):
         self.assertIn('operation: runtime',runtime)
         self.assertEqual(sum(step.get('with',{}).get('operation') == 'runtime'
                              for job in parsed['jobs'].values() for step in job.get('steps',[])),1)
+        frontend=parsed['jobs']['frontend-config-only']
+        self.assertEqual(frontend['if'],"inputs.operation == 'frontend-config-only'")
+        self.assertEqual(frontend['permissions'],{'contents':'read','actions':'read','id-token':'write'})
+        names=[step.get('name',step.get('uses','')) for step in frontend['steps']]
+        inspect=names.index('Inspect exact selected artifact and successful generator run')
+        download=next(index for index,step in enumerate(frontend['steps'])
+                      if step.get('uses','').startswith('actions/download-artifact@'))
+        validate=names.index('Validate selected artifact metadata and public JSON bytes')
+        auth=next(index for index,step in enumerate(frontend['steps'])
+                  if step.get('uses','').startswith('google-github-actions/auth@'))
+        publish=names.index('Publish only the selected public config and verify exact readback')
+        self.assertLess(inspect,download)
+        self.assertLess(download,validate)
+        self.assertLess(validate,auth)
+        self.assertLess(auth,publish)
+        artifact_step=frontend['steps'][download]
+        self.assertIn('artifact-ids',artifact_step['with'])
+        self.assertIn('run-id',artifact_step['with'])
+        self.assertEqual(frontend['env']['FRONTEND_CONFIG_ARTIFACT_ID'],'${{ inputs.frontend_config_artifact_id }}')
+        self.assertFalse(any('make ' in step.get('run','') or 'vercel build' in step.get('run','')
+                             for step in frontend['steps']))
+        self.assertNotIn('VERCEL_TOKEN',frontend['env'])
         entry=(ROOT/'.github/actions/deployment-engine/index.cjs').read_text()
         self.assertIn("'--components',process.env.COMPONENTS",entry)
         for secret in ('VERCEL_TOKEN','VERCEL_PROJECT_ID','VERCEL_TEAM_ID','WIF_PROVIDER','WIF_SERVICE_ACCOUNT'):
@@ -138,7 +160,7 @@ class EngineWorkflowContract(unittest.TestCase):
     def test_pinned_recovery_download_has_effective_github_token(self):
         workflow=yaml.safe_load((ROOT/'.github/workflows/cd.yml').read_text())
         release=workflow['jobs']['release']
-        self.assertEqual(release['if'],"inputs.operation != 'diagnose-auth-image' && inputs.operation != 'config-only'")
+        self.assertEqual(release['if'],"inputs.operation != 'diagnose-auth-image' && inputs.operation != 'config-only' && inputs.operation != 'frontend-config-only'")
         downloads=[step for step in release['steps']
                    if step.get('name') == 'Download pinned ready artifact or checkpoint']
         self.assertEqual(len(downloads),1)
@@ -163,7 +185,7 @@ class EngineWorkflowContract(unittest.TestCase):
         dev_operation=dev_trigger['workflow_dispatch']['inputs']['operation']
         self.assertEqual(dev_operation['type'],'choice')
         self.assertEqual(dev_operation['default'],'release')
-        self.assertEqual(dev_operation['options'],['release','config-only','deploy','rollback','reactivate','tag','readback','diagnose-auth-image'])
+        self.assertEqual(dev_operation['options'],['release','config-only','frontend-config-only','deploy','rollback','reactivate','tag','readback','diagnose-auth-image'])
         self.assertEqual(dev['jobs']['release']['if'],
                          "github.ref == 'refs/heads/develop' && inputs.operation != 'diagnose-auth-image'")
         self.assertEqual(dev['jobs']['release']['with'],{
@@ -171,6 +193,7 @@ class EngineWorkflowContract(unittest.TestCase):
             'executor_sha':'${{ github.sha }}',
             'components':'${{ inputs.components }}','release_tag':'${{ inputs.release_tag }}',
             'artifact_id':'${{ inputs.artifact_id }}','dev_artifact_id':'${{ inputs.dev_artifact_id }}',
+            'frontend_config_artifact_id':'${{ inputs.frontend_config_artifact_id }}',
             'operation':'${{ inputs.operation }}',
             'force':'${{ inputs.force }}',
             'pipeline_run_timeout_seconds':'${{ inputs.pipeline_run_timeout_seconds }}',
@@ -210,10 +233,10 @@ class EngineWorkflowContract(unittest.TestCase):
         self.assertEqual(diagnostic_wrapper['with'],{'source_sha':'${{ inputs.source_sha }}'})
 
         shared=yaml.safe_load((ROOT/'.github/workflows/cd.yml').read_text())
-        self.assertEqual(set(shared['jobs']),{'release','pipeline-config-only'})
+        self.assertEqual(set(shared['jobs']),{'release','pipeline-config-only','frontend-config-only'})
         job=shared['jobs']['release'];steps=job['steps']
         by_name={step.get('name'): (index,step) for index,step in enumerate(steps) if step.get('name')}
-        self.assertEqual(job['if'],"inputs.operation != 'diagnose-auth-image' && inputs.operation != 'config-only'")
+        self.assertEqual(job['if'],"inputs.operation != 'diagnose-auth-image' && inputs.operation != 'config-only' && inputs.operation != 'frontend-config-only'")
         self.assertEqual(job['env']['SOURCE'],'${{ inputs.source_sha }}')
         self.assertEqual(job['env']['EXECUTOR_SHA'],'${{ inputs.executor_sha }}')
         self.assertEqual(job['env']['FORCE'],'${{ inputs.force }}')

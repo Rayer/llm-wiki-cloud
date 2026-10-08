@@ -1,7 +1,7 @@
 'use client';
 
 import { rawFileNameFromSource } from './raw-file-name.ts';
-import { API_URL } from './public-build-config.ts';
+import { getRuntimeConfig } from './runtime-config.ts';
 import { normalizeAnnotationBody, normalizeAnnotationGeneration } from './source-annotation.ts';
 
 export type PipelineDiagnostic = {
@@ -366,7 +366,7 @@ export async function apiFetch(path: string, options: ApiFetchOptions = {}): Pro
     ? options.projectId
     : options.projectId ?? selectedProjectId();
   const { auth, accessToken, epoch: requestEpoch } = await accessTokenOrRefresh();
-  const url = `${API_URL}${toV1Path(path)}`;
+  const url = `${getRuntimeConfig().api_url}${toV1Path(path)}`;
   const init = buildRequestInit({ ...options, projectId, accessToken });
   const response = await fetch(url, init);
 
@@ -1107,7 +1107,7 @@ function sendRawUploadRequest(
 ): Promise<XhrResponse> {
   return new Promise((resolve, reject) => {
     const xhr = new XMLHttpRequest();
-    xhr.open('POST', `${API_URL}${toV1Path('/api/v1/raw/upload')}`);
+    xhr.open('POST', `${getRuntimeConfig().api_url}${toV1Path('/api/v1/raw/upload')}`);
     xhr.withCredentials = true;
 
     for (const [name, value] of Object.entries(buildProjectHeaders(projectId, accessToken))) {
@@ -1399,7 +1399,7 @@ export async function getPublicConfig(options?: { refresh?: boolean }): Promise<
   if (!options?.refresh && publicConfigCache) return publicConfigCache;
 
   try {
-    const response = await fetch(`${API_URL}/api/v1/public/config`, {
+    const response = await fetch(`${getRuntimeConfig().api_url}/api/v1/public/config`, {
       method: 'GET',
       credentials: 'omit',
     });
@@ -1432,7 +1432,7 @@ export async function getBuildInfo(): Promise<BuildInfo> {
   let response: Response;
 
   try {
-    response = await fetch(`${API_URL}/api/v1/public/version`, {
+    response = await fetch(`${getRuntimeConfig().api_url}/api/v1/public/version`, {
       method: 'GET',
       credentials: 'omit',
       cache: 'no-store',

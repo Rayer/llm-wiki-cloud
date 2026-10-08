@@ -1,4 +1,4 @@
-import { AUTH_URL } from './public-build-config.ts';
+import { getRuntimeConfig } from './runtime-config.ts';
 
 export type CLISession = {
   id: string;
@@ -34,7 +34,7 @@ async function cliAuthRequest<T>(
   route: string,
   options: RequestOptions = {},
 ): Promise<T> {
-  const url = `${AUTH_URL.replace(/\/$/, '')}/api/v1/auth/cli${route}`;
+  const url = `${getRuntimeConfig().auth_url}/api/v1/auth/cli${route}`;
   const makeRequest = (token: string) => fetch(url, {
     method: options.method ?? 'GET',
     credentials: 'include',

@@ -31,7 +31,7 @@ afterEach(() => {
 it.each([
   [PrivacyPage, '隱私權政策', '專案內容與 AI 處理'],
   [TermsPage, '服務條款', '你提交的內容'],
-] as const)('renders %s before hydration and with unavailable auth, workspace, API and browser storage', (Page, title, section) => {
+] as const)('renders %s independently from unavailable workspace config, Auth, API and browser storage', (Page, title, section) => {
   const fetch = vi.fn(() => { throw new Error('API unavailable'); });
   vi.stubGlobal('fetch', fetch);
   const storage = vi.spyOn(Storage.prototype, 'getItem').mockImplementation(() => { throw new Error('storage unavailable'); });
@@ -65,6 +65,11 @@ it.each([
   expect(gates.auth).not.toHaveBeenCalled();
   expect(gates.shell).not.toHaveBeenCalled();
 
-  // Negative control: restoring the old wrapping would prevent content rendering.
-  expect(() => renderToStaticMarkup(<RootLayout><WorkspaceLayout>{content}</WorkspaceLayout></RootLayout>)).toThrow('auth bootstrap unavailable');
+  // Workspace startup stays behind its runtime-config loading boundary.
+  const workspaceHtml = renderToStaticMarkup(<RootLayout><WorkspaceLayout>{content}</WorkspaceLayout></RootLayout>);
+  const workspaceDocument = new DOMParser().parseFromString(workspaceHtml, 'text/html');
+  expect(workspaceDocument.querySelector('[role="status"]')?.textContent).toContain('Loading runtime configuration');
+  expect(gates.auth).not.toHaveBeenCalled();
+  expect(gates.shell).not.toHaveBeenCalled();
+  expect(fetch).not.toHaveBeenCalled();
 });

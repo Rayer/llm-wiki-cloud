@@ -254,18 +254,15 @@ test('auth provider delegates auth persistence to the session helper', () => {
   assert.match(authSource, /persistAuthSession\(/);
 });
 
-test('auth endpoints use NEXT_PUBLIC_AUTH_URL while product APIs keep NEXT_PUBLIC_API_URL', () => {
-  assert.ok(
-    authCoreSource.includes(
-      "export { AUTH_URL, API_URL } from './public-build-config.ts';",
-    ),
-  );
-  assert.ok(authSource.includes('${AUTH_URL}${path}'));
-  assert.match(authSource, /\$\{AUTH_URL\}\/api\/v1\/auth\/refresh/);
+test('Auth and product API consumers read the loaded runtime config at call time', () => {
+  assert.doesNotMatch(authCoreSource, /public-build-config|AUTH_URL|API_URL/);
+  assert.ok(authSource.includes("import { getRuntimeConfig } from './runtime-config';"));
+  assert.ok(authSource.includes('${getRuntimeConfig().auth_url}${path}'));
+  assert.match(authSource, /\$\{getRuntimeConfig\(\)\.auth_url\}\/api\/v1\/auth\/refresh/);
   assert.ok(authSource.includes("postAuth('/api/v1/auth/login', { email, password })"));
   assert.ok(authSource.includes("postAuth('/api/v1/auth/register', { email, password })"));
   assert.ok(authSource.includes("postAuth('/api/v1/auth/logout')"));
-  assert.ok(!authSource.includes('${API_URL}/api/v1/auth/'));
-  assert.ok(apiSource.includes("import { API_URL } from './public-build-config.ts'"));
+  assert.ok(apiSource.includes("import { getRuntimeConfig } from './runtime-config.ts'"));
+  assert.ok(apiSource.includes('${getRuntimeConfig().api_url}${toV1Path(path)}'));
   assert.ok(!apiSource.includes('AUTH_URL'));
 });

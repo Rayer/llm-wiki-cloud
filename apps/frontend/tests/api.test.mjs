@@ -95,7 +95,7 @@ test('getBuildInfo reads the unauthenticated no-store public version endpoint', 
   try {
     const buildInfo = await getBuildInfo();
 
-    assert.equal(requestedUrl, 'https://llm-wiki-bff-dev-580854833715.asia-east1.run.app/api/v1/public/version');
+    assert.equal(requestedUrl, 'https://api.runtime.test/api/v1/public/version');
     assert.deepEqual(requestedInit, {
       method: 'GET',
       credentials: 'omit',
@@ -211,7 +211,7 @@ test('getStatus reads latest pipeline execution from the status endpoint', async
   try {
     const status = await getStatus();
 
-    assert.equal(requestedUrl, 'https://llm-wiki-bff-dev-580854833715.asia-east1.run.app/api/v1/status');
+    assert.equal(requestedUrl, 'https://api.runtime.test/api/v1/status');
     assert.equal(status.sourcesCount, 2);
     assert.equal(status.conceptsCount, 3);
     assert.equal(status.lastExecution?.status, 'SUCCEEDED');
@@ -421,7 +421,7 @@ test('getPipelineStatus reads the project scoped pipeline status endpoint', asyn
   try {
     const status = await getPipelineStatus();
 
-    assert.equal(requestedUrl, 'https://llm-wiki-bff-dev-580854833715.asia-east1.run.app/api/v1/pipeline/status');
+    assert.equal(requestedUrl, 'https://api.runtime.test/api/v1/pipeline/status');
     assert.equal(requestedInit.headers.Authorization, 'Bearer jwt-token');
     assert.equal(requestedInit.headers['X-Project-ID'], 'project-1');
     assert.equal(status.last_execution.status, 'SUCCEEDED');
@@ -457,7 +457,7 @@ test('getPipelineLog reads text from the project scoped log URL', async () => {
   try {
     const log = await getPipelineLog('/api/v1/pipeline/log?execution_id=olw-pipeline-abc123', 'project-1');
 
-    assert.equal(requestedUrl, 'https://llm-wiki-bff-dev-580854833715.asia-east1.run.app/api/v1/pipeline/log?execution_id=olw-pipeline-abc123');
+    assert.equal(requestedUrl, 'https://api.runtime.test/api/v1/pipeline/log?execution_id=olw-pipeline-abc123');
     assert.equal(requestedInit.headers.Authorization, 'Bearer jwt-token');
     assert.equal(requestedInit.headers['X-Project-ID'], 'project-1');
     assert.equal(log, 'line 1\nline 2\n');
@@ -504,7 +504,7 @@ test('getRawFiles reads project scoped raw metadata and normalizes file fields',
   try {
     const files = await getRawFiles();
 
-    assert.equal(requestedUrl, 'https://llm-wiki-bff-dev-580854833715.asia-east1.run.app/api/v1/raw');
+    assert.equal(requestedUrl, 'https://api.runtime.test/api/v1/raw');
     assert.equal(requestedInit.headers.Authorization, 'Bearer jwt-token');
     assert.equal(requestedInit.headers['X-Project-ID'], 'project-1');
     assert.deepEqual(files.map(({ name, size, updated, sha256, ingested }) => ({
@@ -562,7 +562,7 @@ test('getRawFilePreview reads project scoped raw text with encoded filename', as
 
     assert.equal(
       requestedUrl,
-      'https://llm-wiki-bff-dev-580854833715.asia-east1.run.app/api/v1/raw/%E8%A8%98%E4%BA%8B%20sample.md?preview=true',
+      'https://api.runtime.test/api/v1/raw/%E8%A8%98%E4%BA%8B%20sample.md?preview=true',
     );
     assert.equal(requestedInit.headers.Authorization, 'Bearer jwt-token');
     assert.equal(requestedInit.headers['X-Project-ID'], 'project-1');
@@ -963,7 +963,7 @@ test('getAdminProjects reads admin projects without project header', async () =>
   try {
     const projects = await getAdminProjects();
 
-    assert.equal(requestedUrl, 'https://llm-wiki-bff-dev-580854833715.asia-east1.run.app/api/v1/admin/projects');
+    assert.equal(requestedUrl, 'https://api.runtime.test/api/v1/admin/projects');
     assert.equal(requestedInit.headers.Authorization, 'Bearer jwt-token');
     assert.equal(requestedInit.headers['X-Project-ID'], undefined);
     assert.deepEqual(projects, [
@@ -1046,10 +1046,10 @@ test('admin project mutations use admin endpoints without project header', async
     assert.deepEqual(
       calls.map((call) => [call.url, call.init.method, call.init.headers['X-Project-ID']]),
       [
-        ['https://llm-wiki-bff-dev-580854833715.asia-east1.run.app/api/v1/admin/projects/project-1', 'PATCH', undefined],
-        ['https://llm-wiki-bff-dev-580854833715.asia-east1.run.app/api/v1/admin/projects/project-1/rebuild-index', 'POST', undefined],
-        ['https://llm-wiki-bff-dev-580854833715.asia-east1.run.app/api/v1/admin/projects/project-1/pipeline', 'POST', undefined],
-        ['https://llm-wiki-bff-dev-580854833715.asia-east1.run.app/api/v1/admin/projects/project-1', 'DELETE', undefined],
+        ['https://api.runtime.test/api/v1/admin/projects/project-1', 'PATCH', undefined],
+        ['https://api.runtime.test/api/v1/admin/projects/project-1/rebuild-index', 'POST', undefined],
+        ['https://api.runtime.test/api/v1/admin/projects/project-1/pipeline', 'POST', undefined],
+        ['https://api.runtime.test/api/v1/admin/projects/project-1', 'DELETE', undefined],
       ],
     );
     assert.equal(calls[0].init.body, JSON.stringify({ name: 'New name' }));
@@ -1110,9 +1110,9 @@ test('getAdminUsers and user mutations use admin endpoints without project heade
     assert.deepEqual(
       calls.map((call) => [call.url, call.init.method, call.init.headers['X-Project-ID']]),
       [
-        ['https://llm-wiki-bff-dev-580854833715.asia-east1.run.app/api/v1/admin/users', undefined, undefined],
-        ['https://llm-wiki-bff-dev-580854833715.asia-east1.run.app/api/v1/admin/users/user-1', 'PATCH', undefined],
-        ['https://llm-wiki-bff-dev-580854833715.asia-east1.run.app/api/v1/admin/users/user-1', 'DELETE', undefined],
+        ['https://api.runtime.test/api/v1/admin/users', undefined, undefined],
+        ['https://api.runtime.test/api/v1/admin/users/user-1', 'PATCH', undefined],
+        ['https://api.runtime.test/api/v1/admin/users/user-1', 'DELETE', undefined],
       ],
     );
     assert.equal(calls[1].init.body, JSON.stringify({ role: 'user' }));

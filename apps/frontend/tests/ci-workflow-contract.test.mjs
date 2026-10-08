@@ -25,11 +25,11 @@ function collectRunBlocks(value, blocks = []) {
 
 test('r2 registered release and recovery workflows use explicit artifact inputs', async () => {
   const files = (await readdir(workflowDirectory)).filter((file) => file.endsWith('.yml')).sort();
-  assert.deepEqual(files, ['cd-auth-image-diagnostic.yml', 'cd.yml', 'ci.yml', 'deploy-dev.yml', 'promote-production.yml', 'provision-exportjob-dev.yml', 'recover-deployment.yml']);
+  assert.deepEqual(files, ['cd-auth-image-diagnostic.yml', 'cd.yml', 'ci.yml', 'deploy-dev.yml', 'generate-frontend-config.yml', 'promote-production.yml', 'provision-exportjob-dev.yml', 'recover-deployment.yml']);
   for (const [file, environment, branch] of [['deploy-dev.yml', 'development', 'develop'], ['promote-production.yml', 'production', 'main']]) {
     const parsed = parseYaml(await workflow(file));
     assert.deepEqual(Object.keys(parsed.on), ['workflow_dispatch']);
-    const expectedInputs = ['components', 'release_tag', 'artifact_id', 'dev_artifact_id'];
+    const expectedInputs = ['components', 'release_tag', 'artifact_id', 'dev_artifact_id', 'frontend_config_artifact_id'];
     if (file === 'deploy-dev.yml') expectedInputs.push('source_sha', 'force', 'operation');
     else expectedInputs.push('operation');
     expectedInputs.push('pipeline_run_timeout_seconds');
@@ -43,13 +43,14 @@ test('r2 registered release and recovery workflows use explicit artifact inputs'
       : '${{ github.sha }}');
     assert.equal(parsed.jobs.release.with.executor_sha, '${{ github.sha }}');
     assert.equal(parsed.jobs.release.secrets, 'inherit');
+    assert.equal(parsed.jobs.release.with.frontend_config_artifact_id, '${{ inputs.frontend_config_artifact_id }}');
     if (file === 'deploy-dev.yml') assert.equal(parsed.jobs.release.with.operation, '${{ inputs.operation }}');
   }
   const deployDev = parseYaml(await workflow('deploy-dev.yml'));
   const operation = deployDev.on.workflow_dispatch.inputs.operation;
   assert.equal(operation.type, 'choice');
   assert.equal(operation.default, 'release');
-  assert.deepEqual(operation.options, ['release', 'config-only', 'deploy', 'rollback', 'reactivate', 'tag', 'readback', 'diagnose-auth-image']);
+  assert.deepEqual(operation.options, ['release', 'config-only', 'frontend-config-only', 'deploy', 'rollback', 'reactivate', 'tag', 'readback', 'diagnose-auth-image']);
   assert.equal(deployDev.on.workflow_dispatch.inputs.source_sha.default, '');
   assert.deepEqual(deployDev.on.workflow_dispatch.inputs.force, { description: 'Explicitly accept duplicate-mutation risk to deploy a new ready attempt past another attempt\'s unresolved target status', type: 'boolean', default: false });
   assert.deepEqual(Object.keys(deployDev.jobs).sort(), ['auth-image-diagnostic', 'main-fast-forward-eligible', 'release']);
@@ -57,6 +58,7 @@ test('r2 registered release and recovery workflows use explicit artifact inputs'
   assert.equal(eligibility.name, 'main-fast-forward-eligible');
   assert.equal(eligibility.needs, 'release');
   assert.ok(eligibility.if.includes("inputs.operation != 'readback'"));
+  assert.ok(eligibility.if.includes("inputs.operation != 'frontend-config-only'"));
   assert.deepEqual(eligibility.permissions, { contents: 'read', actions: 'read', statuses: 'write' });
   assert.equal(eligibility.steps.find((step) => step.name === 'Download this DEV attempt result').with.name,
     'lwc-result-development-${{ github.run_id }}-${{ github.run_attempt }}');
@@ -72,6 +74,12 @@ test('r2 registered release and recovery workflows use explicit artifact inputs'
   assert.doesNotMatch(JSON.stringify(diagnostic), /GH_TOKEN|VERCEL_TOKEN/);
   assert.deepEqual(diagnostic.permissions, { contents: 'read', actions: 'read', 'id-token': 'write' });
   assert.deepEqual(diagnostic.with, { source_sha: '${{ github.sha }}' });
+  const generator = parseYaml(await workflow('generate-frontend-config.yml'));
+  assert.deepEqual(Object.keys(generator.on), ['workflow_dispatch']);
+  assert.deepEqual(generator.on.workflow_dispatch.inputs.environment.options, ['dev', 'prod']);
+  assert.deepEqual(generator.permissions, { contents: 'read' });
+  assert.doesNotMatch(JSON.stringify(generator), /google-github-actions\/auth|id-token|gcloud storage/i);
+  assert.match(JSON.stringify(generator), /CONFIG_TARGET=frontend/);
   const recovery = parseYaml(await workflow('recover-deployment.yml'));
   assert.deepEqual(recovery.on.workflow_dispatch.inputs.operation.options, ['rollback', 'reactivate', 'deploy', 'tag', 'readback', 'diagnose-auth-image']);
   assert.equal(recovery.jobs.recovery.uses, './.github/workflows/cd.yml');
@@ -142,7 +150,7 @@ test('DEV provisioning uses the existing auth identity and preserves hidden evid
 
 test('shared engine has one approval and one serialized runtime authority', async () => {
   const parsed = parseYaml(await workflow('cd.yml'));
-  assert.deepEqual(Object.keys(parsed.jobs), ['release', 'pipeline-config-only']);
+  assert.deepEqual(Object.keys(parsed.jobs), ['release', 'pipeline-config-only', 'frontend-config-only']);
   assert.equal(parsed.concurrency.group, 'lwc-engine-${{ inputs.environment }}');
   assert.equal(parsed.concurrency['cancel-in-progress'], false);
   const job = parsed.jobs.release;
@@ -150,9 +158,21 @@ test('shared engine has one approval and one serialized runtime authority', asyn
   assert.deepEqual(parsed.on.workflow_call.inputs.force, { type: 'boolean', default: false });
   assert.equal(parsed.jobs.release.env.EXECUTOR_SHA, '${{ inputs.executor_sha }}');
   assert.equal(parsed.jobs.release.env.FORCE, '${{ inputs.force }}');
-  assert.equal(job.if, "inputs.operation != 'diagnose-auth-image' && inputs.operation != 'config-only'");
+  assert.equal(job.if, "inputs.operation != 'diagnose-auth-image' && inputs.operation != 'config-only' && inputs.operation != 'frontend-config-only'");
   assert.equal(parsed.jobs['pipeline-config-only'].if, "inputs.operation == 'config-only'");
   assert.equal(parsed.jobs['pipeline-config-only'].permissions['id-token'], 'write');
+  const frontend = parsed.jobs['frontend-config-only'];
+  assert.equal(frontend.if, "inputs.operation == 'frontend-config-only'");
+  assert.deepEqual(frontend.permissions, { contents: 'read', actions: 'read', 'id-token': 'write' });
+  const frontendNames = frontend.steps.map((step) => step.name ?? step.uses ?? '');
+  assert.ok(frontendNames.indexOf('Inspect exact selected artifact and successful generator run') < frontendNames.indexOf('Download exact artifact ID from its generation run'));
+  assert.ok(frontendNames.indexOf('Validate selected artifact metadata and public JSON bytes') < frontendNames.findIndex((name) => name.startsWith('google-github-actions/auth@')));
+  assert.ok(frontendNames.findIndex((name) => name.startsWith('google-github-actions/auth@')) < frontendNames.indexOf('Publish only the selected public config and verify exact readback'));
+  assert.equal(frontend.steps.find((step) => step.uses?.startsWith('actions/download-artifact@')).with['artifact-ids'], '${{ inputs.frontend_config_artifact_id }}');
+  assert.equal(frontend.steps.find((step) => step.uses?.startsWith('actions/download-artifact@')).with['run-id'], '${{ steps.inspect.outputs.run_id }}');
+  assert.equal(frontend.steps.some((step) => /make |vercel build/.test(step.run ?? '')), false);
+  assert.equal(frontend.steps.some((step) => step.uses === './.github/actions/deployment-engine'), false);
+  assert.doesNotMatch(JSON.stringify(frontend), /VERCEL_TOKEN|VERCEL_PROJECT_ID|VERCEL_TEAM_ID/);
   assert.equal(job.environment, "${{ inputs.environment == 'production' && 'Production' || 'Development' }}");
   const steps = job.steps;
   const prepare = steps.findIndex(step => step.with?.operation === 'prepare');
@@ -175,6 +195,16 @@ test('shared engine has one approval and one serialized runtime authority', asyn
   assert.equal(steps[runtime].uses, './.github/actions/deployment-engine');
   assert.equal(job.permissions.contents, 'write');
   assert.equal(job.permissions['id-token'], 'write');
+});
+
+test('frontend CI runs the receipt and exact config artifact contract tests in its existing test job', async () => {
+  const ci = parseYaml(await workflow('ci.yml'));
+  const testJob = ci.jobs.test;
+  assert.equal(testJob.name, 'frontend-test');
+  const contractStep = testJob.steps.find((step) => step.name === 'Validate Frontend receipt and artifact handoff contracts');
+  assert.ok(contractStep);
+  assert.match(contractStep.run, /python3 \.\.\/\.\.\/scripts\/test_frontend_build_config\.py/);
+  assert.match(contractStep.run, /python3 \.\.\/\.\.\/scripts\/test_frontend_config_artifacts\.py/);
 });
 
 test('ready and result artifacts have bounded retention and always retain failure evidence', async () => {

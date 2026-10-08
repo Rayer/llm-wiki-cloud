@@ -83,8 +83,8 @@ test('production workflow invokes the shared engine with fixed authority and DEV
   const workflow = parseYaml(await readFile(workflowPath, 'utf8'));
   const job = workflow.jobs.release;
   assert.equal(workflow.on.push, undefined);
-  assert.deepEqual(Object.keys(workflow.on.workflow_dispatch.inputs), ['components', 'release_tag', 'artifact_id', 'dev_artifact_id', 'operation', 'pipeline_run_timeout_seconds']);
-  assert.deepEqual(workflow.on.workflow_dispatch.inputs.operation.options, ['release', 'config-only']);
+  assert.deepEqual(Object.keys(workflow.on.workflow_dispatch.inputs), ['components', 'release_tag', 'artifact_id', 'dev_artifact_id', 'frontend_config_artifact_id', 'operation', 'pipeline_run_timeout_seconds']);
+  assert.deepEqual(workflow.on.workflow_dispatch.inputs.operation.options, ['release', 'config-only', 'frontend-config-only']);
   assert.equal(workflow.on.workflow_dispatch.inputs.release_tag.required, false);
   assert.equal(job.if, "github.ref == 'refs/heads/main'");
   assert.equal(job.uses, './.github/workflows/cd.yml');
@@ -94,6 +94,7 @@ test('production workflow invokes the shared engine with fixed authority and DEV
     executor_sha: '${{ github.sha }}',
     components: '${{ inputs.components }}', release_tag: '${{ inputs.release_tag }}',
     artifact_id: '${{ inputs.artifact_id }}', dev_artifact_id: '${{ inputs.dev_artifact_id }}',
+    frontend_config_artifact_id: '${{ inputs.frontend_config_artifact_id }}',
     operation: '${{ inputs.operation }}',
     pipeline_run_timeout_seconds: '${{ inputs.pipeline_run_timeout_seconds }}',
   });

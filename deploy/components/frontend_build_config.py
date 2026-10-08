@@ -1,13 +1,16 @@
-"""Extract bounded Vercel output; hash input is JSON bytes sans JSON whitespace.
+"""Extract and validate the bounded Frontend build receipt from Vercel output.
 
 The provider sends multipart framing inside application/octet-stream. Boundaries
-and the extra part CRLF are transport, never part of the config fingerprint.
-Plain public JSON uses exactly the same extraction/hashing contract.
+and the extra part CRLF are transport and are excluded from the receipt bytes.
+The receipt carries only the runtime-config reader schema and bootstrap file URL.
 """
+import argparse
+import json
 import re
 import sys
 from email import policy
 from email.parser import BytesParser
+from urllib.parse import urlsplit
 
 
 def document(body):
@@ -39,15 +42,48 @@ def document(body):
                 or any(value.defects for value in part.values())):
             raise ValueError("JSON part")
         body = part.get_payload(decode=True)
-    # Preserve document bytes (including key order), strip only JSON whitespace.
+    # Preserve document bytes (including key order), strip only transport whitespace.
     body = body.strip(b" \t\r\n")
     if not 0 < len(body) <= 4096:
         raise ValueError("document size")
     return body
 
 
+def _object(pairs):
+    result = {}
+    for key, value in pairs:
+        if key in result:
+            raise ValueError("duplicate JSON key")
+        result[key] = value
+    return result
+
+
+def validate_receipt(body, expected_config_url):
+    receipt = json.loads(body.decode("utf-8"), object_pairs_hook=_object)
+    if not isinstance(receipt, dict) or set(receipt) != {"schema_version", "config_url"}:
+        raise ValueError("receipt fields")
+    if receipt["schema_version"] != 1:
+        raise ValueError("reader schema_version")
+    config_url = receipt["config_url"]
+    if not isinstance(config_url, str) or not config_url or config_url != config_url.strip():
+        raise ValueError("config_url")
+    parsed = urlsplit(config_url)
+    if (parsed.scheme != "https" or not parsed.hostname or parsed.username or parsed.password
+            or parsed.query or parsed.fragment):
+        raise ValueError("config_url")
+    if config_url != expected_config_url:
+        raise ValueError("bootstrap config URL does not match normalized target")
+    return receipt
+
+
 if __name__ == "__main__":
+    parser = argparse.ArgumentParser(description=__doc__)
+    parser.add_argument("--expected-config-url")
+    args = parser.parse_args()
     try:
-        sys.stdout.buffer.write(document(sys.stdin.buffer.read(8193)))
-    except (ValueError, UnicodeError):
+        body = document(sys.stdin.buffer.read(8193))
+        if args.expected_config_url is not None:
+            validate_receipt(body, args.expected_config_url)
+        sys.stdout.buffer.write(body)
+    except (ValueError, UnicodeError, json.JSONDecodeError):
         sys.exit(1)

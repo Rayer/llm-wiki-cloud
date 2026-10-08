@@ -284,7 +284,7 @@ elif tool=='vercel':
             'settings':{'rootDirectory':'apps/frontend'}}))
     elif a[0]=='build':
         p=Path.cwd()/'.vercel/output/static';p.mkdir(parents=True,exist_ok=True)
-        s['build_config']={'schema_version':1,'api_url':os.environ['NEXT_PUBLIC_API_URL'],'auth_url':os.environ['NEXT_PUBLIC_AUTH_URL']}
+        s['build_config']={'schema_version':1,'config_url':os.environ['NEXT_PUBLIC_CONFIG_URL']}
         (p/'build-config.json').write_text(json.dumps(s['build_config']))
         fixture_path=os.environ.get('LWC_TEST_VERCEL_FILE_PATH_MAP_FIXTURE')
         if fixture_path:

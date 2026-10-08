@@ -462,9 +462,9 @@ class Providers:
     def _frontend_config_matches(document, expected):
         return (isinstance(document, dict) and set(document) == set(expected) and
                 type(document.get('schema_version')) is int and
-                document.get('schema_version') == 1 and
-                isinstance(document.get('api_url'), str) and
-                isinstance(document.get('auth_url'), str))
+                document.get('schema_version') == expected.get('schema_version') and
+                isinstance(document.get('config_url'), str) and
+                document.get('config_url') == expected.get('config_url'))
 
     @staticmethod
     def _frontend_build_config(output):
@@ -634,7 +634,7 @@ class Providers:
             else:
                 settings_root = self._root_label(settings['rootDirectory'], cfg['root_directory'])
 
-        expected = {'schema_version': 1, 'api_url': cfg['api_url'], 'auth_url': cfg['auth_url']}
+        expected = {'schema_version': cfg['config_schema_version'], 'config_url': cfg['config_url']}
 
         def candidate(output):
             nonlocal metadata_read_failed
@@ -911,7 +911,7 @@ class Providers:
             self.project(stage='frontend-project-readback',
                          frontend_diagnostic=readback if diagnostic_enabled else None)
             project_root = ROOT / cfg['root_directory']
-            env = dict(os.environ, NEXT_PUBLIC_API_URL=cfg['api_url'], NEXT_PUBLIC_AUTH_URL=cfg['auth_url'],
+            env = dict(os.environ, NEXT_PUBLIC_CONFIG_URL=cfg['config_url'],
                        VERCEL_ORG_ID=os.environ['VERCEL_TEAM_ID'],
                        VERCEL_PROJECT_ID=os.environ['VERCEL_PROJECT_ID'])
             env.pop('NOW_ORG_ID', None)
@@ -944,7 +944,7 @@ class Providers:
                 os.chmod(project_link, project_link_mode)
             output = project_root / '.vercel/output'
             require(output.is_dir(), 'frontend-output-missing')
-            expected = {'schema_version': 1, 'api_url': cfg['api_url'], 'auth_url': cfg['auth_url']}
+            expected = {'schema_version': cfg['config_schema_version'], 'config_url': cfg['config_url']}
             document = self._frontend_build_config(output)
             require(self._frontend_config_matches(document, expected) and document == expected,
                     'frontend-build-config-mismatch')
@@ -1030,7 +1030,8 @@ class Providers:
         else:
             require(artifact['archive'] == 'frontend.tgz', 'invalid-archive-path')
             require(hashlib.sha256((self.directory / 'frontend.tgz').read_bytes()).hexdigest() == artifact['sha256'], 'artifact-unusable')
-            expected = {'schema_version': 1, 'api_url': self.p['frontend']['api_url'], 'auth_url': self.p['frontend']['auth_url']}
+            expected = {'schema_version': self.p['frontend']['config_schema_version'],
+                        'config_url': self.p['frontend']['config_url']}
             require(artifact['config'] == expected and artifact['target'] == ('production' if self.p['environment'] == 'production' else 'preview'), 'artifact-config-incompatible')
             require(artifact['project'] == os.environ['VERCEL_PROJECT_ID'] and artifact['team'] == os.environ['VERCEL_TEAM_ID'], 'artifact-config-incompatible')
 

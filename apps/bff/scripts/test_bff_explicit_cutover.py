@@ -271,7 +271,7 @@ class SharedCDContractTest(unittest.TestCase):
             if path == "deploy-dev.yml":
                 operation = trigger["workflow_dispatch"]["inputs"]["operation"]
                 self.assertEqual(operation["default"], "release")
-                self.assertEqual(operation["options"], ["release", "config-only", "deploy", "rollback", "reactivate", "tag", "readback", "diagnose-auth-image"])
+                self.assertEqual(operation["options"], ["release", "config-only", "frontend-config-only", "deploy", "rollback", "reactivate", "tag", "readback", "diagnose-auth-image"])
                 self.assertEqual(job["with"]["operation"], "${{ inputs.operation }}")
                 self.assertEqual(job["with"]["source_sha"], "${{ inputs.operation == 'release' && (inputs.source_sha || github.sha) || inputs.source_sha }}")
                 self.assertEqual(job["with"]["executor_sha"], "${{ github.sha }}")
@@ -298,7 +298,7 @@ class SharedCDContractTest(unittest.TestCase):
             else:
                 operation = trigger["workflow_dispatch"]["inputs"]["operation"]
                 self.assertEqual(operation["default"], "release")
-                self.assertEqual(operation["options"], ["release", "config-only"])
+                self.assertEqual(operation["options"], ["release", "config-only", "frontend-config-only"])
                 self.assertEqual(job["with"]["source_sha"], "${{ github.sha }}")
                 self.assertEqual(job["with"]["executor_sha"], "${{ github.sha }}")
 
@@ -331,15 +331,32 @@ class SharedCDContractTest(unittest.TestCase):
         self.assertEqual(shared_inputs["executor_sha"], {"required": True, "type": "string"})
         self.assertEqual(shared_inputs["release_tag"], {"required": True, "type": "string"})
         self.assertEqual(shared_inputs["force"], {"type": "boolean", "default": False})
-        self.assertEqual(set(shared["jobs"]), {"release", "pipeline-config-only"})
+        self.assertEqual(set(shared["jobs"]), {"release", "pipeline-config-only", "frontend-config-only"})
         job = shared["jobs"]["release"]
-        self.assertEqual(job["if"], "inputs.operation != 'diagnose-auth-image' && inputs.operation != 'config-only'")
+        self.assertEqual(job["if"], "inputs.operation != 'diagnose-auth-image' && inputs.operation != 'config-only' && inputs.operation != 'frontend-config-only'")
         config_only = shared["jobs"]["pipeline-config-only"]
         self.assertEqual(config_only["if"], "inputs.operation == 'config-only'")
         self.assertEqual(config_only["permissions"], {"contents": "read", "id-token": "write"})
         config_only_delivery = next(step for step in config_only["steps"]
                                     if "pipeline_config_only.py" in step.get("run", ""))
         self.assertNotIn("--image", config_only_delivery["run"])
+        frontend_config = shared["jobs"]["frontend-config-only"]
+        self.assertEqual(frontend_config["if"], "inputs.operation == 'frontend-config-only'")
+        self.assertEqual(frontend_config["permissions"], {"contents": "read", "actions": "read", "id-token": "write"})
+        frontend_steps = frontend_config["steps"]
+        download = next(step for step in frontend_steps if step.get("uses", "").startswith("actions/download-artifact@"))
+        self.assertEqual(download["uses"], "actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093")
+        self.assertEqual(download["with"]["artifact-ids"], "${{ inputs.frontend_config_artifact_id }}")
+        self.assertEqual(download["with"]["run-id"], "${{ steps.inspect.outputs.run_id }}")
+        self.assertTrue(download["with"]["merge-multiple"])
+        validate_artifact = next(i for i, step in enumerate(frontend_steps)
+                                 if step.get("name") == "Validate selected artifact metadata and public JSON bytes")
+        auth = next(i for i, step in enumerate(frontend_steps)
+                    if step.get("uses", "").startswith("google-github-actions/auth@"))
+        publish = next(i for i, step in enumerate(frontend_steps)
+                       if step.get("name") == "Publish only the selected public config and verify exact readback")
+        self.assertLess(validate_artifact, auth)
+        self.assertLess(auth, publish)
         self.assertEqual(shared["concurrency"]["cancel-in-progress"], False)
         self.assertEqual(shared["concurrency"]["group"], "lwc-engine-${{ inputs.environment }}")
         steps = job["steps"]

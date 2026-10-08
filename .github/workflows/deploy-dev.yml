@@ -3,7 +3,7 @@ on:
   workflow_dispatch:
     inputs:
       components:
-        description: Comma-separated selected components; config-only always targets Worker
+        description: Comma-separated selected components; config-only targets Worker and frontend-config-only publishes a public config artifact
         required: false
         type: string
       release_tag:
@@ -18,6 +18,10 @@ on:
         description: Explicit successful DEV result artifact (required for Production containers)
         type: string
         default: ''
+      frontend_config_artifact_id:
+        description: Exact successful public Frontend config artifact ID; required for frontend-config-only
+        type: string
+        default: ''
       source_sha:
         description: Original source SHA for retained Stage 1 resume or recovery; leave blank for a normal release using this workflow's github.sha
         type: string
@@ -27,10 +31,10 @@ on:
         type: boolean
         default: false
       operation:
-        description: Config-only updates Pipeline settings without changing its image
+        description: Config-only updates Pipeline settings; frontend-config-only publishes the selected public Frontend config without rebuilding
         required: true
         type: choice
-        options: [release, config-only, deploy, rollback, reactivate, tag, readback, diagnose-auth-image]
+        options: [release, config-only, frontend-config-only, deploy, rollback, reactivate, tag, readback, diagnose-auth-image]
         default: release
       pipeline_run_timeout_seconds:
         description: Verified existing Worker Job timeout in seconds; required for Pipeline config generation
@@ -53,6 +57,7 @@ jobs:
       release_tag: ${{ inputs.release_tag }}
       artifact_id: ${{ inputs.artifact_id }}
       dev_artifact_id: ${{ inputs.dev_artifact_id }}
+      frontend_config_artifact_id: ${{ inputs.frontend_config_artifact_id }}
       operation: ${{ inputs.operation }}
       force: ${{ inputs.force }}
       pipeline_run_timeout_seconds: ${{ inputs.pipeline_run_timeout_seconds }}
@@ -80,6 +85,7 @@ jobs:
       inputs.components != 'provision-exportjob-dev' &&
       inputs.operation != 'diagnose-auth-image' &&
       inputs.operation != 'config-only' &&
+      inputs.operation != 'frontend-config-only' &&
       inputs.operation != 'readback'
     needs: release
     runs-on: ubuntu-latest
