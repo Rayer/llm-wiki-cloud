@@ -13,6 +13,9 @@ const scriptPath = join(repoRoot, 'deploy/cd.sh');
 const componentScriptPath = join(repoRoot, 'deploy/components/frontend.sh');
 const fixtureDir = join(new URL('.', import.meta.url).pathname, 'fixtures');
 const sourceSha = '0123456789abcdef0123456789abcdef01234567';
+const configURL = (environment) => environment === 'production'
+  ? 'https://config.example.test/prod/frontend-config.json'
+  : 'https://config.example.test/dev/frontend-config.json';
 
 async function lines(path) {
   try {
@@ -33,11 +36,11 @@ async function setup(environment = 'development', scenario = 'success') {
   const production = environment === 'production';
   const aliases = production ? ['wiki.rayer.idv.tw', 'llm-wiki-frontend.vercel.app'] : ['wiki.dev.rayer.idv.tw'];
   const projectName = production ? 'llm-wiki-frontend' : 'llm-wiki-frontend-dev';
+  const bootstrapURL = configURL(environment);
   await writeFile(join(root, 'scenario'), scenario);
   await writeFile(join(root, 'build-config.json'), JSON.stringify({
     schema_version: 1,
-    api_url: production ? 'https://bff.example' : 'https://bff.dev.example',
-    auth_url: production ? 'https://auth.example' : 'https://auth.dev.example',
+    config_url: bootstrapURL,
   }));
   await writeFile(join(root, 'aliases.json'), JSON.stringify(Object.fromEntries(aliases.map((alias, index) => [alias, scenario === 'already-converged' ? 'dpl_frontendnew' : `dpl_old${index}`]))));
   await writeFile(join(root, 'project.json'), JSON.stringify({
@@ -55,8 +58,7 @@ async function setup(environment = 'development', scenario = 'success') {
       frontend: {
         project_name: projectName, team_slug: 'rayer-tung-s-projects', repository: 'Rayer/llm-wiki-cloud',
         root_directory: 'apps/frontend', stable_aliases: aliases,
-        api_url: production ? 'https://bff.example' : 'https://bff.dev.example',
-        auth_url: production ? 'https://auth.example' : 'https://auth.dev.example',
+        config_url: bootstrapURL,
       },
       evidence: { config_fingerprint: 'sha256:fixture' },
     },
@@ -151,7 +153,7 @@ test('reuses a live-shaped existing candidate before any build mutation', async 
   assert.equal((await json(join(fixture.artifactDir, 'journal.json'))).components.frontend.state, 'accepted');
 });
 
-for (const proof of ['missing', 'wrong-auth', 'wrong-api', 'unauthorized', 'forbidden', 'redirect', 'malformed', 'multiple', 'nonjson', 'wrong-mime', 'extra', 'oversize', 'wrong-status', 'transport-failure', 'wrong-schema', 'duplicate-json', 'extra-json']) {
+for (const proof of ['missing', 'wrong-config', 'legacy-receipt', 'unauthorized', 'forbidden', 'redirect', 'malformed', 'multiple', 'nonjson', 'wrong-mime', 'extra', 'oversize', 'wrong-status', 'transport-failure', 'wrong-schema', 'duplicate-json', 'extra-json']) {
   test(`LWC-318 exact-SHA reuse rejects ${proof} build proof before alias writes`, async () => {
     const fixture = await setup('development', 'existing-live-candidate');
     await writeFile(join(fixture.root, 'proof-mode'), proof);
@@ -163,7 +165,7 @@ for (const proof of ['missing', 'wrong-auth', 'wrong-api', 'unauthorized', 'forb
   });
 }
 
-test('LWC-318 protected provider output verified reuse binds observed config and hash to receipt and rechecks it', async () => {
+test('LWC-370 protected provider output verified reuse binds reader receipt and hash and rechecks it', async () => {
   const fixture = await setup('development', 'existing-live-candidate');
   assert.equal((await run(fixture, 'freeze')).code, undefined);
   assert.equal((await run(fixture, 'mutate')).code, undefined);
@@ -178,13 +180,13 @@ test('LWC-318 protected provider output verified reuse binds observed config and
   assert.deepEqual(proofCalls, ['https://api.vercel.com/v6/deployments/dpl_frontendnew/files/outputs?file=build-config.json&teamId=team_frontendtest']);
   await writeFile(join(fixture.root, 'proof-mode'), 'plain');
   assert.equal((await run(fixture, 'reconcile')).code, undefined);
-  await writeFile(join(fixture.root, 'proof-mode'), 'wrong-auth');
+  await writeFile(join(fixture.root, 'proof-mode'), 'wrong-config');
   assert.notEqual((await run(fixture, 'reconcile')).code, undefined);
 });
 
-test('LWC-318 freshly created deployment with wrong effective Auth fails before alias writes', async () => {
+test('LWC-370 freshly created deployment with wrong bootstrap config URL fails before alias writes', async () => {
   const fixture = await setup();
-  await writeFile(join(fixture.root, 'proof-mode'), 'wrong-auth');
+  await writeFile(join(fixture.root, 'proof-mode'), 'wrong-config');
   assert.equal((await run(fixture, 'freeze')).code, undefined);
   assert.notEqual((await run(fixture, 'mutate')).code, undefined);
   assert.equal((await lines(join(fixture.root, 'cli-calls'))).filter((line) => line.startsWith('vercel deploy ')).length, 1);

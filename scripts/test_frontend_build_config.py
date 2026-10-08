@@ -10,7 +10,8 @@ spec = importlib.util.spec_from_file_location(
 parser = importlib.util.module_from_spec(spec)
 spec.loader.exec_module(parser)
 
-DOCUMENT = b'{"schema_version":1,"api_url":"https://llm-wiki-bff-dev-580854833715.asia-east1.run.app","auth_url":"https://auth.dev.rayer.idv.tw"}'
+CONFIG_URL = "https://config.example.test/frontend-config.json"
+DOCUMENT = b'{"schema_version":1,"config_url":"https://config.example.test/frontend-config.json"}'
 
 
 def envelope(body=DOCUMENT, boundary=b"provider-boundary", headers=b"Content-Type: application/json"):
@@ -24,16 +25,33 @@ class FrontendBuildConfigTests(unittest.TestCase):
                         b"x-next-cache-tags: _N_T_/layout,_N_T_/build-config.json/route,_N_T_/build-config.json")
         extracted = parser.document(body)
         self.assertEqual(extracted, DOCUMENT)
+        self.assertEqual(parser.validate_receipt(extracted, CONFIG_URL), {
+            "schema_version": 1, "config_url": CONFIG_URL,
+        })
         self.assertEqual(hashlib.sha256(extracted).hexdigest(),
-                         "bcb67028cae0a0eadaef9da1b8cdfbb293f29679febf3022bfffbd5e72467a98")
+                         hashlib.sha256(DOCUMENT).hexdigest())
 
     def test_observed_document_hash_ignores_envelope_and_surrounding_whitespace(self):
         for body in (DOCUMENT, DOCUMENT + b"\r\n", envelope(), envelope(boundary=b"another-random-boundary")):
             with self.subTest(body=body[:30]):
                 extracted = parser.document(body)
                 self.assertEqual(extracted, DOCUMENT)
-                self.assertEqual(hashlib.sha256(extracted).hexdigest(),
-                                 "bcb67028cae0a0eadaef9da1b8cdfbb293f29679febf3022bfffbd5e72467a98")
+                self.assertEqual(hashlib.sha256(extracted).hexdigest(), hashlib.sha256(DOCUMENT).hexdigest())
+
+    def test_new_receipt_is_only_reader_schema_and_bootstrap_url(self):
+        for body, expected in (
+            (DOCUMENT.replace(b"config_url", b"api_url"), CONFIG_URL),
+            (b'{"schema_version":2,"config_url":"' + CONFIG_URL.encode() + b'"}', CONFIG_URL),
+            (b'{"schema_version":1,"config_url":"http://localhost:3000/frontend-config.json"}',
+             "http://localhost:3000/frontend-config.json"),
+            (b'{"schema_version":1,"config_url":"https://config.example.test/frontend-config.json","api_url":"https://api.example.test"}',
+             CONFIG_URL),
+            (b'{"schema_version":1,"config_url":"https://other.example.test/frontend-config.json"}', CONFIG_URL),
+            (b'{"schema_version":1,"config_url":"https://config.example.test/frontend-config.json","config_url":"https://other.example.test"}', CONFIG_URL),
+        ):
+            with self.subTest(body=body):
+                with self.assertRaises(ValueError):
+                    parser.validate_receipt(body, expected)
 
     def test_rejects_malformed_or_ambiguous_mime(self):
         bodies = [

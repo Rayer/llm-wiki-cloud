@@ -28,7 +28,7 @@ test('getPublicConfig fetches public config without auth or project header', asy
 
     assert.equal(
       requestedUrl,
-      'https://llm-wiki-bff-dev-580854833715.asia-east1.run.app/api/v1/public/config',
+      'https://api.runtime.test/api/v1/public/config',
     );
     assert.equal(requestedInit?.headers?.Authorization, undefined);
     assert.equal(requestedInit?.headers?.['X-Project-ID'], undefined);
@@ -83,12 +83,12 @@ test('getAdminSettings and updateAdminSettings use admin settings endpoint witho
       calls.map((call) => [call.url, call.init?.method, call.init?.headers?.['X-Project-ID']]),
       [
         [
-          'https://llm-wiki-bff-dev-580854833715.asia-east1.run.app/api/v1/admin/settings',
+          'https://api.runtime.test/api/v1/admin/settings',
           undefined,
           undefined,
         ],
         [
-          'https://llm-wiki-bff-dev-580854833715.asia-east1.run.app/api/v1/admin/settings',
+          'https://api.runtime.test/api/v1/admin/settings',
           'PATCH',
           undefined,
         ],

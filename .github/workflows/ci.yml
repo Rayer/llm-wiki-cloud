@@ -100,6 +100,10 @@ jobs:
           cache-dependency-path: apps/frontend/package-lock.json
       - run: npm ci
       - run: npm test
+      - name: Validate Frontend receipt and artifact handoff contracts
+        run: |
+          python3 ../../scripts/test_frontend_build_config.py
+          python3 ../../scripts/test_frontend_config_artifacts.py
 
   frontend-build:
     name: frontend-build

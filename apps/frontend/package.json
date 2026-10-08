@@ -10,7 +10,7 @@
     "lint": "eslint",
     "typecheck": "tsc --noEmit",
     "test": "npm run test:node && npm run test:component",
-    "test:node": "node --experimental-strip-types --test tests/*.test.mjs",
+    "test:node": "node --experimental-strip-types --import ./tests/runtime-config-test-setup.mjs --test tests/*.test.mjs",
     "test:component": "NODE_ENV=test vitest run",
     "test:public-built": "node tests/public-legal-built.mjs"
   },

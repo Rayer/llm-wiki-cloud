@@ -12,6 +12,8 @@ case "${1:-}" in
     event pull
     assert_repo_root
     shift
+    expected_config_url="$(jq -er '.normalized.frontend.config_url' "$PLAN_PATH")"
+    [[ "${NEXT_PUBLIC_CONFIG_URL:-}" == "$expected_config_url" ]] || exit 95
     while (($#)); do
       case "$1" in
         --yes|--environment=*) shift ;;
@@ -27,6 +29,8 @@ case "${1:-}" in
   build)
     event build
     assert_repo_root
+    expected_config_url="$(jq -er '.normalized.frontend.config_url' "$PLAN_PATH")"
+    [[ "${NEXT_PUBLIC_CONFIG_URL:-}" == "$expected_config_url" ]] || exit 95
     [[ "${VERCEL_ORG_ID:-}" == "${VERCEL_TEAM_ID:-}" && -n "${VERCEL_ORG_ID:-}" ]] || exit 95
     [[ -f "$root/vercel-pull" ]] || exit 93
     touch "$root/vercel-build"

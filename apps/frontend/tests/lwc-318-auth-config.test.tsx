@@ -1,26 +1,34 @@
 import { afterEach, expect, it, vi } from 'vitest';
+import { startGoogleLogin, readGoogleCompletionResult } from '../src/lib/google-auth';
+import { clearRuntimeConfigForTests, getRuntimeConfig, loadRuntimeConfig } from '../src/lib/runtime-config';
 
 afterEach(() => {
+  clearRuntimeConfigForTests();
   vi.unstubAllEnvs();
   vi.unstubAllGlobals();
-  vi.resetModules();
 });
 
-for (const override of [undefined, 'https://auth.example', 'https://auth-dev.rayer.idv.tw']) {
-  it(`uses effective Auth origin for navigation and completion: ${override ?? 'fallback'}`, async () => {
-    vi.resetModules();
-    vi.stubEnv('NEXT_PUBLIC_AUTH_URL', override);
-    const expected = override ?? 'https://auth.dev.rayer.idv.tw';
+for (const authURL of ['https://auth-a.example.test', 'https://auth-b.example.test']) {
+  it(`uses the loaded Auth URL at call time: ${authURL}`, async () => {
+    clearRuntimeConfigForTests();
+    const configURL = 'https://config.example.test/frontend-config.json';
+    const config = { schema_version: 1, api_url: 'https://api.example.test', auth_url: authURL };
     const assign = vi.fn();
-    const fetch = vi.fn().mockResolvedValue({ ok: true, json: async () => ({ status: 'cancelled' }) });
-    vi.stubGlobal('window', { location: { assign } });
+    const fetch = vi.fn()
+      .mockResolvedValueOnce({ ok: true, json: async () => config })
+      .mockResolvedValueOnce({ ok: true, json: async () => ({ status: 'cancelled' }) });
+    vi.stubEnv('NEXT_PUBLIC_CONFIG_URL', configURL);
+    vi.stubGlobal('window', { location: { href: 'https://frontend.example.test/', assign } });
     vi.stubGlobal('fetch', fetch);
-    const { AUTH_URL } = await import('../src/lib/auth-core');
-    const { startGoogleLogin, readGoogleCompletionResult } = await import('../src/lib/google-auth');
-    expect(AUTH_URL).toBe(expected);
+
+    expect(fetch).not.toHaveBeenCalled();
+    await loadRuntimeConfig();
+    expect(getRuntimeConfig().auth_url).toBe(authURL);
     startGoogleLogin();
     await readGoogleCompletionResult();
-    expect(assign).toHaveBeenCalledWith(`${expected}/api/v1/auth/google/login/start`);
-    expect(fetch).toHaveBeenCalledWith(`${expected}/api/v1/auth/google/complete`, { credentials: 'include' });
+
+    expect(fetch).toHaveBeenNthCalledWith(1, configURL, expect.objectContaining({ credentials: 'omit', cache: 'no-store' }));
+    expect(fetch).toHaveBeenNthCalledWith(2, `${authURL}/api/v1/auth/google/complete`, { credentials: 'include' });
+    expect(assign).toHaveBeenCalledWith(`${authURL}/api/v1/auth/google/login/start`);
   });
 }

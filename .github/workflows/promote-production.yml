@@ -3,7 +3,7 @@ on:
   workflow_dispatch:
     inputs:
       components:
-        description: Comma-separated selected components; config-only always targets Worker
+        description: Comma-separated selected components; config-only targets Worker and frontend-config-only publishes a public config artifact
         required: false
         type: string
       release_tag:
@@ -18,11 +18,15 @@ on:
         description: Explicit successful DEV result artifact (required for Production containers)
         type: string
         default: ''
+      frontend_config_artifact_id:
+        description: Exact successful public Frontend config artifact ID; required for frontend-config-only
+        type: string
+        default: ''
       operation:
-        description: Config-only updates Pipeline settings without changing its image
+        description: Config-only updates Pipeline settings; frontend-config-only publishes the selected public Frontend config without rebuilding
         required: true
         type: choice
-        options: [release, config-only]
+        options: [release, config-only, frontend-config-only]
         default: release
       pipeline_run_timeout_seconds:
         description: Verified existing Worker Job timeout in seconds; required for Pipeline config generation
@@ -45,5 +49,6 @@ jobs:
       release_tag: ${{ inputs.release_tag }}
       artifact_id: ${{ inputs.artifact_id }}
       dev_artifact_id: ${{ inputs.dev_artifact_id }}
+      frontend_config_artifact_id: ${{ inputs.frontend_config_artifact_id }}
       operation: ${{ inputs.operation }}
       pipeline_run_timeout_seconds: ${{ inputs.pipeline_run_timeout_seconds }}
