@@ -304,4 +304,9 @@ The first test harness invocation exited 1 because the new test referenced a non
 | Application DEV deployment, live provider readback, Secret Manager payload or IAM/resource changes | NOT RUN | Parent retains deployment/provisioning authority; no cloud action was taken by this worker. Existing ready/final IDs and receipts were not rebuilt or altered. |
 | Production deployment, main promotion, merge, paid Pipeline | NOT AUTHORIZED / NOT RUN | Out of this worker's scope. |
 
+### PR and canonical CI checkpoint
+
+- PR [#110](https://github.com/Rayer/llm-wiki-cloud/pull/110) was opened against `develop`. At initial publication, exact head `23cf06b6798150d9bf71798f6ed11e488f62baab` matched `git ls-remote`; exact base was `057b8fd96189f50d6aba4f1fcace5d001304bf54`. The PR body readback matched the reviewed body.
+- Canonical CI run `37781207753` was `in_progress` at readback for that head. `workflow-source-guards` had passed; `bff`, `actionlint/schema`, `frontend-test`, `frontend-typecheck`, `frontend-lint`, and `local-vertical-smoke` were still running or pending. The final report-only push will advance the head; its exact remote readback and current CI state are in the coordinator handoff.
+
 The repair makes the next failure result discriminating and keeps the known Auth component visible; it does not claim that the historical root cause is resolved. PR publication and exact final remote head are owned by the coordinator handoff after this report commit.
