@@ -1203,6 +1203,77 @@ class Acceptance(unittest.TestCase):
         self.assertNotIn('test-only',rendered)
         self.assertNotIn('frontend deploy failed with test-only',rendered)
 
+    def test_auth_materialization_failure_survives_poll_and_compensation(self):
+        e=self.ready(self.make(('exportjob','auth'),name='auth-materialize-cause'))
+        self.auth_config_version.stop()
+        original_run=subprocess.run
+        calls=[]
+
+        def synthetic_subprocess(args, **kwargs):
+            argv=[str(arg) for arg in args]
+            calls.append(argv)
+            if argv[:4]==['go','run','./cmd/pipeline_config','materialize-auth']:
+                return subprocess.CompletedProcess(args,1,'',
+                    'selected secret version could not be accessed\n')
+            return original_run(args, **kwargs)
+
+        stdout=io.StringIO()
+        with patch.dict(os.environ,{'RUNNER_TEMP':str(self.root/'runner-temp')}), \
+             patch.object(engine.Engine,'runtime_guard'), \
+             patch.object(providers.Providers,'gcp_project_number',return_value='580854833715'), \
+             patch('support.subprocess.run',side_effect=synthetic_subprocess), \
+             patch('sys.argv',['engine.py','deploy','--directory',str(e.directory)]), \
+             patch('sys.stdout',stdout):
+            exit_code=engine.main()
+
+        result=read(e.directory/'result.json')
+        state=read(e.state_path)
+        self.assertEqual(exit_code,1)
+        self.assertEqual((result['stage'],result['component'],result['reason']),
+                         ('failed_rolled_back','auth','basic-sanity-mismatch'))
+        self.assertEqual(result['observed']['component_status'],'rolled_back')
+        self.assertEqual(result['last_verified_checkpoint'],state['sequence'])
+        self.assertEqual({c:entry['status'] for c,entry in state['components'].items()},
+                         {'exportjob':'rolled_back','auth':'rolled_back'})
+        self.assertEqual([cause['phase'] for cause in result['causes']],['deploy','poll'])
+        self.assertEqual(result['causes'][0]['stage'],'auth-config-materialize')
+        self.assertEqual(result['causes'][0]['cause']['exception_type'],'ChildProcessError')
+        self.assertEqual(result['causes'][0]['cause']['code'],'child-command-failed')
+        self.assertEqual(result['causes'][0]['cause']['message'],
+                         'selected secret version could not be accessed\n')
+        self.assertEqual(state['components']['auth']['candidate']['auth_config']['status'],'preparing')
+        self.assertEqual(state['components']['auth']['candidate']['auth_config']['publication_status'],
+                         'not_started')
+        self.assertEqual([call[3] for call in calls if call[:3]==['gcloud','secrets','versions']],[])
+        self.assertEqual(json.loads(stdout.getvalue()),result)
+        self.assertNotIn('TEST_ONLY_AUTH_CONFIG_PAYLOAD',stdout.getvalue())
+
+    def test_runtime_action_forwards_auth_materialization_cause(self):
+        e=self.ready(self.make(('exportjob','auth'),name='auth-materialize-action-cause'))
+        go=self.bin/'go'
+        go.unlink()
+        go.write_text('#!/bin/sh\n'
+                      'if [ "$1" = run ] && [ "$2" = ./cmd/pipeline_config ] && [ "$3" = materialize-auth ]; then\n'
+                      '  printf "%s\\n" "selected secret version could not be accessed" >&2\n'
+                      '  exit 1\n'
+                      'fi\n'
+                      'exit 99\n')
+        go.chmod(0o755)
+
+        action,release,_,_=self.invoke_runtime_action(e,None,operation='release',target='development')
+
+        self.assertEqual(action.returncode,1,action.stdout+action.stderr)
+        result=json.loads(action.stdout.strip().splitlines()[-1])
+        retained=read(release/'result.json')
+        state=read(release/'state.json')
+        self.assertEqual(result,retained)
+        self.assertEqual((result['stage'],result['component'],result['reason']),
+                         ('failed_rolled_back','auth','basic-sanity-mismatch'))
+        self.assertEqual(result['causes'][0]['stage'],'auth-config-materialize')
+        self.assertEqual(result['causes'][0]['cause']['code'],'child-command-failed')
+        self.assertEqual(state['components']['auth']['status'],'rolled_back')
+        self.assertEqual(state['components']['exportjob']['status'],'rolled_back')
+
     def test_unusable_receipt_rebuilds_only_affected_component(self):
         e=self.ready(self.make(('auth','worker')))
         r=read(e.directory/'receipts/worker.json');r['identity']['inputs']='invalid'

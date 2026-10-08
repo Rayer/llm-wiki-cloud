@@ -668,12 +668,22 @@ class Engine:
                     if c in ('worker', 'exportjob'):
                         raise Breakpoint('pending-job-mismatch', 'failed', True, 'rollback')
                     require(bool(entry['candidate']), 'mutation-result-unknown')
+                deploy_error = None
                 try:
                     self.provider.deploy(c, artifacts[c], entry['candidate'], self.save)
-                except Breakpoint as deploy_error:
+                except Breakpoint as failure:
+                    deploy_error = failure
                     self.reconcile(c, artifacts[c], entry['candidate'], deploy_error=deploy_error)
                     # No second update. Readback determines known failure vs unknown.
-                self.provider.poll(c, artifacts[c], entry['candidate'])
+                try:
+                    self.provider.poll(c, artifacts[c], entry['candidate'])
+                except Breakpoint as poll_error:
+                    if deploy_error is not None:
+                        poll_error.causes = [
+                            _phase_cause('deploy', deploy_error, deploy_error.stage or 'unknown'),
+                            _phase_cause('poll', poll_error, 'provider-poll'),
+                        ]
+                    raise
                 entry['status'] = 'verified'
                 self.save()
             except (Breakpoint, KeyError, ValueError) as exc:
@@ -683,7 +693,12 @@ class Engine:
                 self.state['status'] = entry['status']
                 self.save()
                 if exc.status != 'unknown':
-                    self.restore(changed, automatic=True)
+                    try:
+                        self.restore(changed, automatic=True)
+                    finally:
+                        self.component = c
+                else:
+                    self.component = c
                 raise exc
         if all(e['status'] == 'verified' for e in self.state['components'].values()) and len(self.state['components']) == len(self.plan['selected']):
             self.state['status'] = 'runtime_success'
