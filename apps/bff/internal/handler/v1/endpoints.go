@@ -926,7 +926,10 @@ func (h *Handler) PipelineRun(c *gin.Context) {
 			if qs := h.effectiveQuotaStore(); qs != nil {
 				if _, settleErr := qs.SettleQuotaReservation(recoveryCtx, reservationID, "FAILED"); settleErr != nil {
 					log.Print("pipeline quota refund failed")
-					if evidenceErr := h.writeConfirmedPipelineInvokeFailure(recoveryCtx, userID, projectID, reservationID); evidenceErr != nil {
+					evidenceCtx, cancelEvidence := context.WithTimeout(context.Background(), 10*time.Second)
+					evidenceErr := h.writeConfirmedPipelineInvokeFailure(evidenceCtx, userID, projectID, reservationID)
+					cancelEvidence()
+					if evidenceErr != nil {
 						log.Print("pipeline invoke failure recovery evidence unavailable")
 					}
 				}

@@ -190,49 +190,56 @@ func TestPipelineQuotaCloudRunHandlerEmulator(t *testing.T) {
 	assertQuotaState(t, ctx, fsClient, userID, invokeProject, 0, pipelinequota.DayKeyUTC(time.Now()))
 	assertQuotaProjectReservation(t, ctx, fsClient, invokeProject, "refunded")
 
-	// A canceled request still records definite no-execution evidence with a
-	// bounded recovery context, then a restarted reconciler refunds it once
-	// Storage is available to read the evidence.
-	const cancelledInvokeProject = "cancelled-invoke-recovery"
-	seedQuotaRaw(t, ctx, quotaClient, storageClient, bucket, scope, userID, cancelledInvokeProject)
-	cancelledContext, cancelCancelledRequest := context.WithCancel(ctx)
-	failedSettlementStore := &cancelFirstQuotaSettlement{pipelineQuotaStore: fsClient, cancel: cancelCancelledRequest}
-	cancelledHandler := New(quotaClient, fsClient, search.NewIndex(), conceptcache.New(), nil, nil)
-	cancelledHandler.SetPipelineQuotaStore(failedSettlementStore)
-	cancelledHandler.SetPipelineQuotaConfig(5, 1, 1, nil)
-	cancelledHandler.metadataTokenURL = "http://run.test/token"
-	cancelledHandler.SetPipelineJobURL("http://run.test/job:run")
-	cancelledHandler.httpClient = &http.Client{Transport: roundTripFunc(func(request *http.Request) (*http.Response, error) {
+	// A definite 403 still records no-execution evidence when the first
+	// settlement consumes its entire recovery deadline. The real GCS emulator
+	// honors the expired context, so the marker requires an independent bound.
+	const definiteInvokeProject = "definite-invoke-recovery"
+	seedQuotaRaw(t, ctx, quotaClient, storageClient, bucket, scope, userID, definiteInvokeProject)
+	failedSettlementStore := &expireFirstQuotaSettlement{pipelineQuotaStore: fsClient}
+	definiteInvokeHandler := New(quotaClient, fsClient, search.NewIndex(), conceptcache.New(), nil, nil)
+	definiteInvokeHandler.SetAccountLookup(func(context.Context, string) (*auth.UserRecord, error) {
+		return &auth.UserRecord{Status: auth.AccountActive, Role: "member"}, nil
+	})
+	definiteInvokeHandler.SetPipelineQuotaStore(failedSettlementStore)
+	definiteInvokeHandler.SetPipelineQuotaConfig(5, 1, 1, nil)
+	definiteInvokeHandler.metadataTokenURL = "http://run.test/token"
+	definiteInvokeHandler.SetPipelineJobURL("http://run.test/job:run")
+	definite403Observed := false
+	definiteInvokeHandler.httpClient = &http.Client{Transport: roundTripFunc(func(request *http.Request) (*http.Response, error) {
 		switch request.URL.Path {
 		case "/token":
 			return testHTTPResponse(http.StatusOK, `{"access_token":"test-token"}`), nil
 		case "/job/executions":
 			return testHTTPResponse(http.StatusOK, `{"executions":[]}`), nil
 		case "/job:run":
+			definite403Observed = true
 			return testHTTPResponse(http.StatusForbidden, `{"error":"synthetic permission denied"}`), nil
 		default:
 			return testHTTPResponse(http.StatusNotFound, `{}`), nil
 		}
 	})}
 	requestRecorder := httptest.NewRecorder()
-	cancelledGinContext, _ := gin.CreateTestContext(requestRecorder)
-	cancelledGinContext.Request = httptest.NewRequest(http.MethodPost, "/api/v1/pipeline/run", nil).WithContext(cancelledContext)
-	cancelledGinContext.Set("userID", userID)
-	cancelledGinContext.Set("projectID", cancelledInvokeProject)
-	cancelledHandler.PipelineRun(cancelledGinContext)
+	definiteInvokeContext, _ := gin.CreateTestContext(requestRecorder)
+	definiteInvokeContext.Request = httptest.NewRequest(http.MethodPost, "/api/v1/pipeline/run", nil).WithContext(ctx)
+	definiteInvokeContext.Set("userID", userID)
+	definiteInvokeContext.Set("projectID", definiteInvokeProject)
+	definiteInvokeHandler.PipelineRun(definiteInvokeContext)
 	if requestRecorder.Code != http.StatusInternalServerError {
-		t.Fatalf("canceled definite invocation status=%d want 500: %s", requestRecorder.Code, requestRecorder.Body.String())
+		t.Fatalf("deadline-expired definite invocation status=%d want 500: %s", requestRecorder.Code, requestRecorder.Body.String())
 	}
-	if cancelledContext.Err() == nil {
-		t.Fatal("synthetic first settlement outage did not cancel the original request context")
+	if !definite403Observed {
+		t.Fatal("definite invoke fixture did not exercise the HTTP 403 response")
 	}
-	cancelledReservation := findQuotaReservation(t, ctx, fsClient, userID, cancelledInvokeProject)
-	if cancelledReservation.ExecutionID != "" || cancelledReservation.SettlementStatus != "pending" {
-		t.Fatalf("canceled invoke reservation=%+v, want pending with no execution before restart", cancelledReservation)
+	if !errors.Is(failedSettlementStore.contextErr, context.DeadlineExceeded) {
+		t.Fatalf("first settlement context error=%v, want deadline exceeded", failedSettlementStore.contextErr)
 	}
-	marker, err := quotaClient.WithScope(userID, cancelledInvokeProject).ReadFileLimited(ctx, "cache/pipeline-"+cancelledReservation.ID+".failure.json", 4<<10+1)
+	definiteInvokeReservation := findQuotaReservation(t, ctx, fsClient, userID, definiteInvokeProject)
+	if definiteInvokeReservation.ExecutionID != "" || definiteInvokeReservation.SettlementStatus != "pending" {
+		t.Fatalf("deadline-expired invoke reservation=%+v, want pending with no execution before restart", definiteInvokeReservation)
+	}
+	marker, err := quotaClient.WithScope(userID, definiteInvokeProject).ReadFileLimited(ctx, "cache/pipeline-"+definiteInvokeReservation.ID+".failure.json", 4<<10+1)
 	if err != nil || len(marker) == 0 {
-		t.Fatalf("canceled invoke recovery marker size=%d err=%v, want durable evidence", len(marker), err)
+		t.Fatalf("deadline-expired invoke recovery marker size=%d err=%v, want durable evidence", len(marker), err)
 	}
 	restartedInvokeHandler := New(quotaClient, fsClient, search.NewIndex(), conceptcache.New(), nil, nil)
 	restartedInvokeHandler.SetPipelineQuotaConfig(5, 1, 1, nil)
@@ -243,18 +250,18 @@ func TestPipelineQuotaCloudRunHandlerEmulator(t *testing.T) {
 	restartedInvokeHandler.SetPipelineJobURL("http://run.test/job:run")
 	restartedInvokeHandler.httpClient = &http.Client{Transport: roundTripFunc(fixture.roundTrip)}
 	if err := restartedInvokeHandler.ReconcilePipelineQuota(ctx); err != nil {
-		t.Fatalf("restart recovery of canceled no-execution invocation: %v", err)
+		t.Fatalf("restart recovery of deadline-expired no-execution invocation: %v", err)
 	}
 	if err := restartedInvokeHandler.ReconcilePipelineQuota(ctx); err != nil {
-		t.Fatalf("repeat canceled no-execution recovery: %v", err)
+		t.Fatalf("repeat deadline-expired no-execution recovery: %v", err)
 	}
-	assertQuotaReservation(t, ctx, fsClient, cancelledReservation.ID, "refunded")
-	assertQuotaState(t, ctx, fsClient, userID, cancelledInvokeProject, 0, pipelinequota.DayKeyUTC(time.Now()))
-	retryCancelledID := triggerQuotaPipeline(t, restartedInvokeHandler, userID, cancelledInvokeProject, http.StatusAccepted)
-	if fixture.reservationID(retryCancelledID) == "" {
-		t.Fatal("same-input retry after canceled invocation refund has no reservation")
+	assertQuotaReservation(t, ctx, fsClient, definiteInvokeReservation.ID, "refunded")
+	assertQuotaState(t, ctx, fsClient, userID, definiteInvokeProject, 0, pipelinequota.DayKeyUTC(time.Now()))
+	retryDefiniteInvokeID := triggerQuotaPipeline(t, restartedInvokeHandler, userID, definiteInvokeProject, http.StatusAccepted)
+	if fixture.reservationID(retryDefiniteInvokeID) == "" {
+		t.Fatal("same-input retry after definite invocation refund has no reservation")
 	}
-	assertQuotaState(t, ctx, fsClient, userID, cancelledInvokeProject, 1, pipelinequota.DayKeyUTC(time.Now()))
+	assertQuotaState(t, ctx, fsClient, userID, definiteInvokeProject, 1, pipelinequota.DayKeyUTC(time.Now()))
 
 	unenforcedProject := "unenforced-run"
 	seedQuotaRaw(t, ctx, quotaClient, storageClient, bucket, scope, userID, unenforcedProject)
@@ -293,12 +300,16 @@ func TestPipelineQuotaCloudRunHandlerEmulator(t *testing.T) {
 		t.Fatalf("create isolated Cloud Run worker emulator bucket: %v", err)
 	}
 	workerBucketAvailable = true
-	configWriter := storageClient.Bucket(workerBucket).Object("pipeline-config/synto.toml").NewWriter(ctx)
-	if _, err := configWriter.Write([]byte("[pipeline]\nauto_approve = true\nauto_commit = false\nauto_maintain = false\nrelation_extraction = false\nrun_timeout_seconds = 15\n")); err != nil {
-		_ = configWriter.Close()
-		t.Fatalf("seed synthetic deployed Pipeline config: %v", err)
+	deployedPipelineConfig := []byte("[pipeline]\nauto_approve = true\nauto_commit = false\nauto_maintain = false\nrelation_extraction = false\nrun_timeout_seconds = 15\n")
+	writeDeployedPipelineConfig := func() error {
+		configWriter := storageClient.Bucket(workerBucket).Object("pipeline-config/synto.toml").NewWriter(ctx)
+		if _, err := configWriter.Write(deployedPipelineConfig); err != nil {
+			_ = configWriter.Close()
+			return err
+		}
+		return configWriter.Close()
 	}
-	if err := configWriter.Close(); err != nil {
+	if err := writeDeployedPipelineConfig(); err != nil {
 		t.Fatalf("commit synthetic deployed Pipeline config: %v", err)
 	}
 	t.Setenv("LOCAL_CLOUD_SCOPE", "")
@@ -378,6 +389,87 @@ func TestPipelineQuotaCloudRunHandlerEmulator(t *testing.T) {
 	proxyHandler.SetPipelineJobURL("http://run.test/job:run")
 	proxyHandler.SetPipelineQuotaConfig(5, 1, 1, nil)
 	proxyHandler.httpClient = &http.Client{Transport: roundTripFunc(fixture.roundTrip)}
+
+	// A later real Cloud Run worker can fail before publication while the
+	// current manifest still belongs to an earlier success. Its own diagnostic
+	// resolves the failure without a status endpoint poll or manifest guessing.
+	const prepublicationProject = "early-config-after-prior-publication"
+	if _, err := deployedQuotaClient.WithScope(userID, prepublicationProject).WriteBytes(ctx, []byte("synthetic early-config input"), "raw/source.md"); err != nil {
+		t.Fatalf("seed early-config worker input: %v", err)
+	}
+	firstPublishedID := triggerQuotaPipeline(t, deployedHandler, userID, prepublicationProject, http.StatusAccepted)
+	firstPublishedReservation := fixture.reservationID(firstPublishedID)
+	if output, err := runCloudRunQuotaFixtureWorker(t, ctx, worker, workerBucket, userID, prepublicationProject, firstPublishedID, storageEndpoint); err != nil {
+		t.Fatalf("run first early-config project publication: %v\n%s", err, output)
+	}
+	fixture.setStatus(firstPublishedID, "SUCCEEDED")
+	if err := proxyHandler.ReconcilePipelineQuota(ctx); err != nil {
+		t.Fatalf("reconcile first early-config project publication: %v", err)
+	}
+	assertQuotaReservation(t, ctx, fsClient, firstPublishedReservation, "charged")
+	time.Sleep(1100 * time.Millisecond)
+
+	configObject := storageClient.Bucket(workerBucket).Object("pipeline-config/synto.toml")
+	configAttrs, err := configObject.Attrs(ctx)
+	if err != nil {
+		t.Fatalf("read disposable worker config generation: %v", err)
+	}
+	if err := configObject.Generation(configAttrs.Generation).Delete(ctx); err != nil {
+		t.Fatalf("remove only disposable worker config for early-failure fixture: %v", err)
+	}
+	earlyFailureID := triggerQuotaPipeline(t, deployedHandler, userID, prepublicationProject, http.StatusAccepted)
+	earlyFailureReservation := fixture.reservationID(earlyFailureID)
+	earlyFailureOutput, earlyFailureErr := runCloudRunQuotaFixtureWorker(t, ctx, worker, workerBucket, userID, prepublicationProject, earlyFailureID, storageEndpoint)
+	if earlyFailureErr == nil || !strings.Contains(string(earlyFailureOutput), "read deployed Pipeline config") {
+		t.Fatalf("early config worker output=%q err=%v, want deployed config read failure", earlyFailureOutput, earlyFailureErr)
+	}
+	if err := writeDeployedPipelineConfig(); err != nil {
+		t.Fatalf("restore disposable worker config after early-failure fixture: %v", err)
+	}
+	var earlyFailureDiagnostic struct {
+		Status      string `json:"status"`
+		Stage       string `json:"stage"`
+		ErrorClass  string `json:"error_class"`
+		ExecutionID string `json:"execution"`
+		Message     string `json:"message"`
+	}
+	diagnosticBytes, err := deployedQuotaClient.WithScope(userID, prepublicationProject).ReadFileLimited(ctx, "cache/pipeline-"+earlyFailureID+".failure.json", 4<<10+1)
+	if err != nil || json.Unmarshal(diagnosticBytes, &earlyFailureDiagnostic) != nil ||
+		earlyFailureDiagnostic.Status != "failed" || earlyFailureDiagnostic.Stage != "synto_config_validation" ||
+		earlyFailureDiagnostic.ErrorClass != "io" || earlyFailureDiagnostic.ExecutionID != earlyFailureID || earlyFailureDiagnostic.Message == "" {
+		t.Fatalf("early failure diagnostic=%+v bytes=%q err=%v, want bounded execution-owned config failure", earlyFailureDiagnostic, diagnosticBytes, err)
+	}
+	firstProjectManifest, _, manifestExists, err := deployedQuotaClient.WithScope(userID, prepublicationProject).CurrentManifest(ctx)
+	if err != nil || !manifestExists || firstProjectManifest.LocalExecutionID != firstPublishedID {
+		t.Fatalf("early failure changed prior manifest: exists=%v execution=%q err=%v", manifestExists, firstProjectManifest.LocalExecutionID, err)
+	}
+	fixture.setStatus(earlyFailureID, "FAILED")
+	if err := proxyHandler.ReconcilePipelineQuota(ctx); err != nil {
+		t.Fatalf("reconcile early config failure: %v", err)
+	}
+	if err := proxyHandler.ReconcilePipelineQuota(ctx); err != nil {
+		t.Fatalf("repeat early config failure reconciliation: %v", err)
+	}
+	assertQuotaReservation(t, ctx, fsClient, firstPublishedReservation, "charged")
+	assertQuotaReservation(t, ctx, fsClient, earlyFailureReservation, "refunded")
+	assertQuotaState(t, ctx, fsClient, userID, prepublicationProject, 1, pipelinequota.DayKeyUTC(time.Now()))
+
+	// Retrying the unchanged input after config recovery publishes normally.
+	retryEarlyFailureID := triggerQuotaPipeline(t, deployedHandler, userID, prepublicationProject, http.StatusAccepted)
+	retryEarlyFailureReservation := fixture.reservationID(retryEarlyFailureID)
+	if output, err := runCloudRunQuotaFixtureWorker(t, ctx, worker, workerBucket, userID, prepublicationProject, retryEarlyFailureID, storageEndpoint); err != nil {
+		t.Fatalf("run same-input early-config retry: %v\n%s", err, output)
+	}
+	fixture.setStatus(retryEarlyFailureID, "SUCCEEDED")
+	if err := proxyHandler.ReconcilePipelineQuota(ctx); err != nil {
+		t.Fatalf("reconcile same-input early-config retry: %v", err)
+	}
+	if err := proxyHandler.ReconcilePipelineQuota(ctx); err != nil {
+		t.Fatalf("repeat same-input early-config retry reconciliation: %v", err)
+	}
+	assertQuotaReservation(t, ctx, fsClient, retryEarlyFailureReservation, "charged")
+	assertQuotaState(t, ctx, fsClient, userID, prepublicationProject, 2, pipelinequota.DayKeyUTC(time.Now()))
+
 	fixture.setStatus(committedID, "FAILED")
 	storageProxy.SetBlocked(true)
 	storageOutageCtx, storageOutageCancel := context.WithTimeout(ctx, 5*time.Second)
@@ -543,6 +635,51 @@ func TestPipelineQuotaCloudRunHandlerEmulator(t *testing.T) {
 		t.Fatalf("refund previous-day run: %v", err)
 	}
 	assertQuotaSnapshot(t, ctx, fsClient, userID, quotaProject, 1, pipelinequota.DayKeyUTC(nextDay), nextDay)
+
+	// Transport ambiguity remains pending and has no confirmed-failure marker.
+	const unknownInvokeProject = "unknown-invoke-recovery"
+	seedQuotaRaw(t, ctx, quotaClient, storageClient, bucket, scope, userID, unknownInvokeProject)
+	unknownInvokeHandler := New(quotaClient, fsClient, search.NewIndex(), conceptcache.New(), nil, nil)
+	unknownInvokeHandler.SetAccountLookup(func(context.Context, string) (*auth.UserRecord, error) {
+		return &auth.UserRecord{Status: auth.AccountActive, Role: "member"}, nil
+	})
+	unknownInvokeHandler.SetPipelineQuotaConfig(5, 1, 1, nil)
+	unknownInvokeHandler.metadataTokenURL = "http://run.test/token"
+	unknownInvokeHandler.SetPipelineJobURL("http://run.test/job:run")
+	transportFailureObserved := false
+	unknownInvokeHandler.httpClient = &http.Client{Transport: roundTripFunc(func(request *http.Request) (*http.Response, error) {
+		switch request.URL.Path {
+		case "/token":
+			return testHTTPResponse(http.StatusOK, `{"access_token":"test-token"}`), nil
+		case "/job/executions":
+			return testHTTPResponse(http.StatusOK, `{"executions":[]}`), nil
+		case "/job:run":
+			transportFailureObserved = true
+			return nil, errors.New("synthetic transport loss after invoke")
+		default:
+			return testHTTPResponse(http.StatusNotFound, `{}`), nil
+		}
+	})}
+	unknownInvokeRecorder := httptest.NewRecorder()
+	unknownInvokeContext, _ := gin.CreateTestContext(unknownInvokeRecorder)
+	unknownInvokeContext.Request = httptest.NewRequest(http.MethodPost, "/api/v1/pipeline/run", nil).WithContext(ctx)
+	unknownInvokeContext.Set("userID", userID)
+	unknownInvokeContext.Set("projectID", unknownInvokeProject)
+	unknownInvokeHandler.PipelineRun(unknownInvokeContext)
+	if unknownInvokeRecorder.Code != http.StatusInternalServerError {
+		t.Fatalf("unknown invocation status=%d want 500: %s", unknownInvokeRecorder.Code, unknownInvokeRecorder.Body.String())
+	}
+	if !transportFailureObserved {
+		t.Fatal("transport-unknown fixture did not exercise invoke transport failure")
+	}
+	unknownInvokeReservation := findQuotaReservation(t, ctx, fsClient, userID, unknownInvokeProject)
+	if unknownInvokeReservation.ExecutionID != "" || unknownInvokeReservation.SettlementStatus != "pending" {
+		t.Fatalf("transport-unknown reservation=%+v, want pending with no execution", unknownInvokeReservation)
+	}
+	if _, err := quotaClient.WithScope(userID, unknownInvokeProject).ReadFileLimited(ctx, "cache/pipeline-"+unknownInvokeReservation.ID+".failure.json", 4<<10+1); !errors.Is(err, storeapi.ErrObjectNotExist) {
+		t.Fatalf("transport-unknown failure marker err=%v, want not found", err)
+	}
+	assertQuotaState(t, ctx, fsClient, userID, unknownInvokeProject, 1, pipelinequota.DayKeyUTC(time.Now()))
 }
 
 func requireLoopbackEmulator(t *testing.T, envName string) bool {
@@ -814,17 +951,16 @@ func findQuotaReservation(t *testing.T, ctx context.Context, client *scopedfires
 	return scopedfirestore.QuotaReservation{}
 }
 
-type cancelFirstQuotaSettlement struct {
+type expireFirstQuotaSettlement struct {
 	pipelineQuotaStore
-	cancel context.CancelFunc
-	failed bool
+	contextErr error
 }
 
-func (s *cancelFirstQuotaSettlement) SettleQuotaReservation(ctx context.Context, reservationID, executionStatus string) (string, error) {
-	if !s.failed {
-		s.failed = true
-		s.cancel()
-		return "", errors.New("synthetic first settlement outage")
+func (s *expireFirstQuotaSettlement) SettleQuotaReservation(ctx context.Context, reservationID, executionStatus string) (string, error) {
+	if s.contextErr == nil {
+		<-ctx.Done()
+		s.contextErr = ctx.Err()
+		return "", s.contextErr
 	}
 	return s.pipelineQuotaStore.SettleQuotaReservation(ctx, reservationID, executionStatus)
 }
