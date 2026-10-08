@@ -1,5 +1,57 @@
 # LWC-370 implementation report (r1)
 
+## Current r3 integration update (2026-10-08)
+
+Status: the exact committed LWC-374 r3 checkpoint is normally merged into this LWC-370 branch, and the affected offline checks pass. PR #108 remains open; the coordinator owns fresh same-final-SHA TPM/reviewer review and canonical CI before any merge. This worker did not merge to `develop` or perform cloud deployment.
+
+### Execution identity and integration
+
+- Model / effort / mode: GPT-6-Luna (`gpt-6-luna`) / xhigh / YOLO; Codex session and thread `01a11a29-d15c-7fc0-9c76-cbf0c764d43d`.
+- Orca runtime / Run / Task / Dispatch / terminal: `8bc79eed-2312-4c07-a306-f91ae8d31716` / `run_ec3a3eca0058` / `task_177a0f044c74` / `ctx_b98dbf4ee68d` / `term_22cddd98-1061-4a48-b360-ab7a5c14a263`.
+- Worktree / branch: `/Users/rayer/orca/workspaces/llm-wiki-cloud/LWC-370-implementation-r1` / `Rayer/LWC-370-implementation-r1`.
+- Starting local and remote PR #108 head: `9c421be6c433022035aa5ed52e0d5cba388351fc`; PR was OPEN against `develop` at base `f62bb530cb968e312b3faad77fe0f1b93b3e447b`. The complete existing PR body was inspected before publication and left unchanged.
+- Incoming LWC-374 source commit: `226a154ed1adc6448bbd3facdd0c1b3ee7a7ad85`, parent `4fde834ac4bd6b20d6bc98b4a450a29739ac82fd`; its exact report checkpoint is `3533a6e6bf87b9b41d236197053b92f7c541b416`. The merge base and source parent matched the expected checkpoints. `git merge-tree --write-tree` predicted tree `2c512b7ffb1d2c080fff47853cdfd42b60700c5c`, equal to the normal merge result.
+- Normal merge commit: `9879852eaa7ead74dbd2ba5950b6c729877a5c4f`, parents `9c421be6c433022035aa5ed52e0d5cba388351fc` and `3533a6e6bf87b9b41d236197053b92f7c541b416`, tree `2c512b7ffb1d2c080fff47853cdfd42b60700c5c`. The incoming delta is limited to `deploy/components/auth_config.py`, `deploy/components/auth_config.sh`, three Auth contract tests, and `docs/lwc-374/implementation-report-r1.md`; no conflict or 370 frontend hunk change occurred.
+- Coordinator checkpoint received 2026-10-08: LWC-374 r3 at `3533a6e6bf87b9b41d236197053b92f7c541b416` has TPM PASS, independent Reviewer PASS receipt `23a05cc4263b9c98fd03def8`, and canonical run `37755548944` with all nine jobs successful. PR #107 was normally merged as `ca078774d1227a4397845864a956e4e302bbed49`; the coordinator reports `develop` has the same tree `532562cb`. Those results are the coordinator's evidence for 374, not a claim that this worker ran those jobs.
+
+### Offline verification
+
+All commands below ran under a macOS `sandbox-exec` profile that denied all inbound and outbound network except loopback. A separate probe confirmed loopback works and an external TCP connection is denied. Test `HOME`, `TMPDIR`, Go cache, Cloud SDK config, and generated config outputs were isolated under `/Users/rayer/.hermes/profiles/lwc-tpm/cache/scratch/implementation-wave/lwc-370-r3-offline`; `CLOUDSDK_CONFIG` pointed there, `GOOGLE_APPLICATION_CREDENTIALS=/dev/null`, and an offline `gcloud` shim failed any unexpected provider call. Tests that need a provider used their explicit fake executable or test transport. Go used the existing local module cache with `GOPROXY=off`; no live provider, GSM, IAM, credential, paid Pipeline, or deployment call ran.
+
+| Command | Workdir | Exit / result |
+| --- | --- | --- |
+| `python3 scripts/test_cd_contract.py` | repository root | 0; 70/70 tests passed. |
+| `python3 -m unittest discover -s ../../scripts -p 'test_*auth_config_contract.py'` | `apps/bff` | 0; 21/21 Auth configuration contract tests passed, zero skips. |
+| `python3 -m unittest discover -s scripts -p 'test_*.py'` | `apps/bff` | 0; canonical BFF suite 119/119 passed, zero skips. |
+| `python3 scripts/test_bff_explicit_cutover.py` | `apps/bff` | 0; 7/7 retained cutover/release/recovery cases passed. |
+| `python3 -m unittest discover -s ../../deploy/engine/tests -p 'test_*.py'` | `apps/bff` | 0 on final attempt; 127/127 passed, zero skips. |
+| `go test ./... -v -count=1 -race` | `apps/bff` | 0; 47 packages passed, 8 had no test files, 1,573 test pass events, 91 environment-dependent skip events, zero failures. Skips are not counted as coverage or passes. |
+| `go test ./cmd/deploy_config -count=1` | `apps/bff` | 0; deploy_config package passed. |
+| `go vet ./...` / `go build ./...` | `apps/bff` | 0 / 0. |
+| `python3 ../../scripts/test_frontend_build_config.py` | `apps/frontend` | 0; 4/4 tests passed. |
+| `python3 ../../scripts/test_frontend_config_artifacts.py` | `apps/frontend` | 0; 9/9 tests passed, including exact pinned downloader, source-A bytes after executor checkout B, no image rebuild, and wrong-environment/missing-artifact rejection before mutation using synthetic local fixtures. |
+| `make config-local CONFIG_TARGET=frontend CAC_OUTPUT_DIR=<owned scratch>/cac`, and corresponding `make config-dev` / `make config-prod` | repository root | 0 / 0 / 0; all three actual Make/CLI calls emitted JSON containing only `api_url`, `auth_url`, and `schema_version`. |
+| `make workflow-yaml` | repository root | 0; all five named workflows parsed. |
+| `python3 -m unittest scripts.test_exportjob_provision_contract deploy.provision.test_exportjob_dev` | repository root | 0; 40/40 tests passed. |
+| `node --test deploy/engine/tests/artifacts.test.cjs` | repository root | 0; 10/10 tests passed. |
+| `node --experimental-strip-types --test tests/ci-workflow-contract.test.mjs` | `apps/frontend` | 0; 6/6 tests passed. |
+| `bash -n scripts/local-vertical-smoke.sh` | repository root | 0. |
+
+Two initial engine-suite attempts exited 1 at `Acceptance.test_auth_stage1_snapshot_refreshes_for_cross_plan_and_production_image_reuse`: that test's `patch.dict(clear=True)` removed the command-line Go cache settings before spawning `go run`, so Go tried to resolve uncached modules from `proxy.golang.org`, which the required OS network sandbox denied. The production code was unchanged; the isolated scratch `HOME` was then given a Go `GOENV` pointing at the already cached modules with `GOPROXY=off`, after which the exact canonical engine discovery passed 127/127. The two red attempts and this resolved harness cause are retained here rather than presented as passes.
+
+The coordinator reports `make test-flash-execution` passed on exact upstream 374 checkpoint `3533a6e6bf87b9b41d236197053b92f7c541b416`; this worker did not execute that command. Canonical CI still must run on PR #108's final new head.
+
+### Acceptance and remaining limits
+
+| Acceptance area | State | Evidence / remaining work |
+| --- | --- | --- |
+| LWC-370 exact artifact selection/flattening, selected source publication after a different executor checkout, no rebuild, and rejection before mutation | PASS locally | 9/9 artifact contract tests with the exact pinned downloader source, controlled artifact client, and OS-denied external network. |
+| Frontend-only public configuration across local/DEV/Production; no private binding output; required endpoint rejection; strict normal Auth/BFF/Worker validation | PASS locally | 4/4 build-config tests, 21 Auth contract tests, three actual Make/CLI outputs, and the existing normal-validator negative/control cases. |
+| Retained BFF cutover, release, recovery, source, executor, eligibility, and permission assertions | PASS locally | BFF canonical 119/119, explicit cutover 7/7, CD contract 70/70, and workflow contract checks; no assertion was deleted or skipped. |
+| LWC-374 r3 Auth source and mode/project mapping fixes | Integrated; parent final review/CI PASS | Exact source/report checkpoint is a parent of merge `9879852`; the coordinator reports both reviews and all nine upstream jobs passing at 374 checkpoint `3533a6e`. No Auth-owned file was edited by this worker. |
+| PR #108 final exact-head readback, fresh same-SHA TPM/reviewer review, canonical CI, and normal merge | PENDING coordinator | Push the report checkpoint, read back exact remote head/base, then coordinator requests both reviews and CI on that resulting head. No develop merge by this worker. |
+| GCS publication/readback, DEV/Production provider deployment, live GSM payload access, IAM/resources/credentials, paid Pipeline, UAT, and cloud verification | NOT RUN | Outside authorized scope; no cloud or deployment acceptance is claimed and status is not Verified. |
+
 ## Current r2 bounded repair addendum (2026-10-08)
 
 Status: the three bounded 370 repairs and offline verification are complete at the integrated source checkpoint. PR #108 remains an implementation checkpoint: this worker has not merged to `develop` or run cloud deployment acceptance; final 370 same-SHA review and canonical CI remain with the coordinator.
