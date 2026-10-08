@@ -405,3 +405,8 @@ All commands ran under the owned-profile `TMPDIR` `/Users/rayer/.hermes/profiles
 | Specific historical cause of DEV run `37796381948` | UNKNOWN | The original stderr/result did not retain it; neither synthetic evidence nor the corrected destination proves the historical trigger. |
 | Parent-owned BFF rollback / formal DEV delivery / live Secret Manager readback | PENDING / NOT RUN BY THIS WORKER | Parent owns the canonical continuation; this worker made no provider action. |
 | Production, IAM/resource/credential changes, main promotion, merge, paid Pipeline | NOT AUTHORIZED / NOT RUN | Out of this task's scope. |
+
+### PR publication checkpoint
+
+- PR [#111](https://github.com/Rayer/llm-wiki-cloud/pull/111) was opened against `develop`. The source/test/report commit at publication was `8567d052d8bc5da1247aa5b3df312571cb8df74f`; exact `git ls-remote` and `gh pr view` readback matched that head and base `109e933f877f52a3e8c4013ed1c796e412a97b25`. The complete PR body readback matched the reviewed body file.
+- Canonical CI run `37858163675` was queued on that publication head. This report-only follow-up advances the PR head; the coordinator handoff records the final exact remote head/base readback and current CI status for the resulting head.
