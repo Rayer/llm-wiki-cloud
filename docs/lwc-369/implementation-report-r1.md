@@ -60,3 +60,46 @@ The official `.github/workflows/cd.yml` release path uses the deployment engine,
 ## Cloud limits and release checkpoint
 
 AC5 remains NOT RUN. No cloud credentials, resources, configuration payloads, or provider state were accessed. Implementation commit `362bfdbe30ff1b40a5e185d21147bdaa817e6db4` is included in PR #106; the branch was pushed and the open PR was read back against `develop`. No merge or deployment was attempted.
+
+## PR #106 canonical CI compatibility repair r2
+
+### Execution identity and source attribution
+
+- Task: `task_6bd30a24d36e`; Dispatch: `ctx_f7be577b3011`.
+- Model / effort: GPT-6-Luna / xhigh; retained YOLO session, Orca terminal `term_a1c5e73c-c9ba-4604-86a3-314a800b72c1`.
+- Worktree / branch: isolated `LWC-369-implementation-r1`; `Rayer/LWC-369-implementation-r1`.
+- Repair base/head before changes: `c6e8ec69c7f95880ee701aa5237fff46ec35a15d`.
+- Tested code commit: `de29df58c9d7077776d4a0a00baac1cdb60f54c6` (the report-only follow-up is committed separately).
+- PR: [#106](https://github.com/Rayer/llm-wiki-cloud/pull/106), open against `develop`, base SHA `55fa221c91daac4da7f3e7b4b30a642848469df8`. Before publication, the complete existing PR body was read back; it matched the summary, verification, limits, and report link recorded above.
+- The reported canonical CI run `37716490331` failed at the repair base in `PipelineConfigContract.test_config_only_uses_real_normalizer_with_controlled_providers` for both development and production. The real `pipeline_config_only.run_config_only` selected `worker`; the normalizer incorrectly required a generated BFF descriptor for that Worker-only projection.
+
+### Repair and acceptance impact
+
+The normalized Worker component consumes Worker fields from the reviewed environment config and does not consume `BFF.RuntimeInputs`; the config-only Pipeline caller uses the Worker job, bucket, and secret binding while preserving the digest-pinned image. The normalizer and engine admission now prepare/apply the generated BFF descriptor only when `bff` is selected. BFF selections still require and strictly validate the descriptor, and a Worker-only plan rejects an unrelated descriptor; no BFF secret resolution, publication, mount, or config-target mutation was added to Pipeline config-only.
+
+| Acceptance | r2 result |
+| --- | --- |
+| AC1–AC4 | Prior local PASS evidence remains in the r1 matrix; this compatibility repair does not change their implementation. |
+| AC5 | NOT RUN; no DEV runtime, provider, GSM, IAM, or resource actions were performed. |
+| Canonical CI for new PR head | Pending main-owned same-SHA TPM/reviewer and canonical CI checkpoints. |
+
+### r2 verification
+
+All commands ran locally in this isolated worktree. Exit 0 denotes a command pass; skips are called out separately.
+
+| Command | Exit | Result |
+| --- | ---: | --- |
+| `PYTHONPATH=deploy/engine/tests:deploy/engine python3 -m unittest test_pipeline_config.PipelineConfigContract.test_config_only_uses_real_normalizer_with_controlled_providers -v` | 0 | 1 named test passed for development and production against the real normalizer and controlled provider fixtures. |
+| `go test ./cmd/deploy_config -count=1` | 0 | Go normalizer tests passed, including Worker-only selection without BFF input and rejection of an unrelated descriptor. |
+| `python3 scripts/test_engine_workflow.py` | 0 | 8 workflow/engine contract tests passed. |
+| `python3 -m unittest discover -s deploy/engine/tests -p 'test_*.py'` | 0 | All 118 deployment-engine tests passed. |
+| `python3 scripts/test_cd_contract.py` | 0 | All 70 deployment contract tests passed. |
+| `go test ./internal/config ./cmd/deploy_config -count=1` | 0 | Both Go packages passed. |
+| `go test ./cmd/pipeline_config -run '^TestRealPklBFFPrepareRendersSchema2ForLocalDevelopmentAndProduction$' -count=1 -v` | 0 | 1 named real-Pkl test and all 3 local/dev/prod subtests passed. |
+| `make test` | 0 | Retained repository suite completed, including Go race tests, 70 CD contracts, 21 auth-config contracts, 19 local Makefile tests, 524 Node tests, and 292 component tests. Local emulator/environment-gated skips are not passes; the prior full-suite record above reports 90 Go test cases and 25 Go subtests skipped with emulator prerequisites unset. |
+| `make lint` | 0 | ESLint passed. |
+| `make typecheck` | 0 | TypeScript check passed. |
+| `make build` | 0 | Go and Next.js production builds passed. |
+| `git diff --check` | 0 | No whitespace errors. |
+
+The code repair was committed as `de29df58c9d7077776d4a0a00baac1cdb60f54c6`; this report is the report-only follow-up so the tested code SHA remains explicit. The dispatched completion records the exact final remote PR head readback. Same-SHA TPM, independent reviewer, and canonical CI remain with main. No PR merge, deployment, or cloud action was attempted.
