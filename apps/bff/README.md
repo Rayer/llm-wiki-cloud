@@ -33,10 +33,12 @@ not run pipeline jobs on Cloud Run.
 From the monorepo root, run `make bootstrap` once, then `make local-start`.
 Bootstrap installs the pinned Synto wheel in a worktree-private Python
 environment used by the BFF's native worker. This creates the default password
-fixture only when missing; it does not reset an existing account. Sign in
-through the normal form with
-`demo@llm-wiki.dev` / `demo123456`. BFF APIs require a formal Bearer token and
-do not accept `X-User-ID` as identity. Default URLs are Frontend
+fixture only when missing; it does not reset an existing account. The admin
+fixture is `admin-local@llm.wiki.dev`; its stable local-only password is stored
+in `deploy/cac/local_fixture.pkl`. The passwordless Demo button uses a separate
+configured Demo account and creates an empty default project when needed. BFF
+APIs require a formal Bearer token and do not accept `X-User-ID` as identity.
+Default URLs are Frontend
 `http://localhost:3000`, BFF `http://localhost:8080`, and Auth
 `http://localhost:8081`; use the `localhost` host for local HTTP and cookies.
 

@@ -912,7 +912,8 @@ class Providers:
             set(expected['env']) == {auth_config.QUERY_PATH},
             c == 'bff' and (self.p['environment'] == 'development' or self.p['auth'].get('google') is None),
             c == 'bff', c == 'bff' and auth_config.PIPELINE_DEMO_USER_IDS in expected['env'],
-            c == 'bff' and (self.p['environment'] == 'development' or self.p['export_job']['enabled']))
+            c == 'bff' and (self.p['environment'] == 'development' or self.p['export_job']['enabled']),
+            c == 'bff' and auth_config.PIPELINE_COOLDOWN_SECONDS in expected['env'])
         return (actual == expected and revision['status']['imageDigest'] == image and
                 revision['spec']['containers'][0]['image'] == image and
                 any(x['type'] == 'Ready' and x['status'] == 'True' for x in revision['status']['conditions']))

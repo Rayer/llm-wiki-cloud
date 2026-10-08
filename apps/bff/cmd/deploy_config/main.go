@@ -18,6 +18,11 @@ import (
 	"gopkg.in/yaml.v3"
 )
 
+const (
+	maxConfigBytes        = 1 << 20
+	maxBFFCooldownSeconds = 9_223_372_036
+)
+
 var (
 	allowedEnvironments                 = map[string]struct{}{"development": {}, "production": {}}
 	allowedComponents                   = []string{"auth", "bff", "worker", "exportjob", "frontend"}
@@ -27,6 +32,8 @@ var (
 	secretVersionPattern                = regexp.MustCompile(`^[1-9][0-9]*$`)
 	profileRuntimeServiceAccountPattern = regexp.MustCompile(`^[a-z][a-z0-9-]{4,28}[a-z0-9]@[a-z0-9.-]+\.iam\.gserviceaccount\.com$`)
 	pipelineDemoUserIDPattern           = regexp.MustCompile(`^[A-Za-z0-9_-]{1,128}$`)
+	demoEmailPattern                    = regexp.MustCompile(`^[^@\s]+@[^@\s]+\.[^@\s]+$`)
+	demoRolePattern                     = regexp.MustCompile(`^[a-z][a-z0-9_-]{0,31}$`)
 )
 
 type EnvironmentConfig struct {
@@ -55,6 +62,8 @@ type AuthConfig struct {
 	MaxInstances          int                  `yaml:"max_instances" json:"max_instances"`
 	FirestoreDatabaseID   string               `yaml:"firestore_database_id" json:"firestore_database_id"`
 	DemoUserID            string               `yaml:"demo_user_id" json:"demo_user_id"`
+	DemoUserEmail         string               `yaml:"demo_user_email" json:"demo_user_email"`
+	DemoUserRole          string               `yaml:"demo_user_role" json:"demo_user_role"`
 	PublicDomain          string               `yaml:"public_domain" json:"public_domain"`
 	AllowedHosts          []string             `yaml:"allowed_hosts" json:"allowed_hosts"`
 	AllowedOrigins        []string             `yaml:"allowed_origins" json:"allowed_origins"`
@@ -67,10 +76,11 @@ type AuthSecretReferences struct {
 
 type BFFConfig struct {
 	ServiceName                  string                  `yaml:"service_name" json:"service_name"`
+	PipelineCooldownSeconds      int                     `yaml:"-" json:"pipeline_cooldown_seconds,omitempty"`
 	RuntimeServiceAccount        string                  `yaml:"runtime_service_account" json:"runtime_service_account"`
 	ProfileRuntimeAudience       string                  `yaml:"profile_runtime_audience" json:"profile_runtime_audience,omitempty"`
 	ProfileRuntimeServiceAccount string                  `yaml:"profile_runtime_service_account" json:"profile_runtime_service_account,omitempty"`
-	PipelineDemoUserIDs          []string                `yaml:"pipeline_demo_user_ids" json:"pipeline_demo_user_ids,omitempty"`
+	PipelineDemoUserIDs          []string                `yaml:"-" json:"pipeline_demo_user_ids,omitempty"`
 	Network                      string                  `yaml:"network" json:"network"`
 	Subnet                       string                  `yaml:"subnet" json:"subnet"`
 	VPCEgress                    string                  `yaml:"vpc_egress" json:"vpc_egress"`
@@ -171,12 +181,25 @@ func main() {
 	environment := flag.String("environment", "", "fixed environment: development or production")
 	configPath := flag.String("config", "", "repository-relative environment YAML path")
 	components := flag.String("components", "", "explicit comma-separated component set")
+	bffConfigPath := flag.String("bff-config", "", "generated BFF cooldown projection from pipeline_config prepare --target bff")
 	flag.Parse()
 
 	if *environment == "" || *components == "" {
 		fail("environment and components are required")
 	}
-	normalized, err := Load(*environment, *configPath, *components)
+	selected, err := parseComponents(*components)
+	if err != nil {
+		fail("%v", err)
+	}
+	var normalized Normalized
+	if contains(selected, "bff") {
+		normalized, err = LoadWithBFFProjection(*environment, *configPath, *components, *bffConfigPath)
+	} else {
+		if *bffConfigPath != "" {
+			fail("--bff-config requires bff in --components")
+		}
+		normalized, err = Load(*environment, *configPath, *components)
+	}
 	if err != nil {
 		fail("%v", err)
 	}
@@ -188,6 +211,14 @@ func main() {
 }
 
 func Load(environment, configPath, components string) (Normalized, error) {
+	return load(environment, configPath, components, "", false)
+}
+
+func LoadWithBFFProjection(environment, configPath, components, bffConfigPath string) (Normalized, error) {
+	return load(environment, configPath, components, bffConfigPath, true)
+}
+
+func load(environment, configPath, components, bffConfigPath string, requireBFFProjection bool) (Normalized, error) {
 	if _, ok := allowedEnvironments[environment]; !ok {
 		return Normalized{}, fmt.Errorf("environment %q is not allowlisted", environment)
 	}
@@ -213,6 +244,9 @@ func Load(environment, configPath, components string) (Normalized, error) {
 	if err != nil {
 		return Normalized{}, err
 	}
+	if config.Auth.DemoUserID != "" {
+		config.BFF.PipelineDemoUserIDs = []string{config.Auth.DemoUserID}
+	}
 	if err := validateConfigForEnvironment(environment, config); err != nil {
 		return Normalized{}, err
 	}
@@ -220,6 +254,19 @@ func Load(environment, configPath, components string) (Normalized, error) {
 		if err := validateProfileRuntimeConfig(environment, config); err != nil {
 			return Normalized{}, err
 		}
+	}
+	if requireBFFProjection && !contains(selected, "bff") {
+		return Normalized{}, errors.New("BFF cooldown projection requires bff in the selected components")
+	}
+	if requireBFFProjection && strings.TrimSpace(bffConfigPath) == "" {
+		return Normalized{}, errors.New("generated BFF cooldown projection is required when bff is selected")
+	}
+	if requireBFFProjection {
+		cooldown, err := loadBFFCooldownProjection(bffConfigPath, environment)
+		if err != nil {
+			return Normalized{}, err
+		}
+		config.BFF.PipelineCooldownSeconds = cooldown
 	}
 	for _, component := range selected {
 		if component == "exportjob" && !config.ExportJob.Enabled {
@@ -256,6 +303,36 @@ func Load(environment, configPath, components string) (Normalized, error) {
 		ConfigFingerprint: "sha256:" + hex.EncodeToString(sum[:]),
 	}
 	return result, nil
+}
+
+func loadBFFCooldownProjection(path, environment string) (int, error) {
+	data, err := os.ReadFile(path)
+	if err != nil {
+		return 0, fmt.Errorf("read generated BFF cooldown projection: %w", err)
+	}
+	if len(data) == 0 || len(data) > maxConfigBytes {
+		return 0, errors.New("generated BFF cooldown projection has an invalid size")
+	}
+	decoder := json.NewDecoder(strings.NewReader(string(data)))
+	decoder.DisallowUnknownFields()
+	var projection struct {
+		SchemaVersion           int    `json:"schema_version"`
+		Environment             string `json:"environment"`
+		PipelineCooldownSeconds int    `json:"pipeline_cooldown_seconds"`
+	}
+	if err := decoder.Decode(&projection); err != nil {
+		return 0, fmt.Errorf("decode generated BFF cooldown projection: %w", err)
+	}
+	var extra any
+	if err := decoder.Decode(&extra); !errors.Is(err, io.EOF) {
+		return 0, errors.New("generated BFF cooldown projection must contain one JSON object")
+	}
+	expectedEnvironment := map[string]string{"development": "dev", "production": "prod"}[environment]
+	if expectedEnvironment == "" || projection.SchemaVersion != 1 || projection.Environment != expectedEnvironment ||
+		projection.PipelineCooldownSeconds <= 0 || int64(projection.PipelineCooldownSeconds) > maxBFFCooldownSeconds {
+		return 0, errors.New("generated BFF cooldown projection is invalid for the selected environment")
+	}
+	return projection.PipelineCooldownSeconds, nil
 }
 
 func contains(values []string, target string) bool {
@@ -327,6 +404,8 @@ func validateConfigForEnvironment(environment string, config EnvironmentConfig) 
 		"auth.service_name":     config.Auth.ServiceName, "auth.runtime_service_account": config.Auth.RuntimeServiceAccount,
 		"auth.network": config.Auth.Network, "auth.subnet": config.Auth.Subnet, "auth.vpc_egress": config.Auth.VPCEgress, "auth.ingress": config.Auth.Ingress,
 		"auth.firestore_database_id": config.Auth.FirestoreDatabaseID, "auth.public_domain": config.Auth.PublicDomain,
+		"auth.demo_user_id": config.Auth.DemoUserID, "auth.demo_user_email": config.Auth.DemoUserEmail,
+		"auth.demo_user_role":        config.Auth.DemoUserRole,
 		"auth.secret_references.jwt": config.Auth.SecretReferences.JWT,
 		"bff.service_name":           config.BFF.ServiceName, "bff.runtime_service_account": config.BFF.RuntimeServiceAccount,
 		"bff.network": config.BFF.Network, "bff.subnet": config.BFF.Subnet, "bff.vpc_egress": config.BFF.VPCEgress, "bff.ingress": config.BFF.Ingress,
@@ -392,8 +471,16 @@ func validateConfigForEnvironment(environment string, config EnvironmentConfig) 
 		config.BFF.Network != "default" || config.BFF.Subnet != "default" || config.BFF.VPCEgress != "private-ranges-only" || config.BFF.Ingress != "all" {
 		return errors.New("service network configuration is not the reviewed Cloud Run definition")
 	}
-	if config.Auth.DemoUserID != "" && !pipelineDemoUserIDPattern.MatchString(config.Auth.DemoUserID) {
+	if !pipelineDemoUserIDPattern.MatchString(config.Auth.DemoUserID) {
 		return errors.New("auth.demo_user_id is invalid")
+	}
+	if config.Auth.DemoUserEmail != strings.TrimSpace(config.Auth.DemoUserEmail) ||
+		!demoEmailPattern.MatchString(config.Auth.DemoUserEmail) ||
+		strings.ToLower(config.Auth.DemoUserEmail) != config.Auth.DemoUserEmail {
+		return errors.New("auth.demo_user_email is invalid")
+	}
+	if !demoRolePattern.MatchString(config.Auth.DemoUserRole) || strings.EqualFold(config.Auth.DemoUserRole, "admin") {
+		return errors.New("auth.demo_user_role must be a non-admin role")
 	}
 	if err := validateStringList("auth.allowed_hosts", config.Auth.AllowedHosts); err != nil {
 		return err
@@ -405,16 +492,11 @@ func validateConfigForEnvironment(environment string, config EnvironmentConfig) 
 		return err
 	}
 	if len(config.BFF.PipelineDemoUserIDs) > 0 {
-		if environment != "development" {
-			return errors.New("bff.pipeline_demo_user_ids is supported only in development")
-		}
 		if err := validateStringList("bff.pipeline_demo_user_ids", config.BFF.PipelineDemoUserIDs); err != nil {
 			return err
 		}
-		for _, id := range config.BFF.PipelineDemoUserIDs {
-			if !pipelineDemoUserIDPattern.MatchString(id) {
-				return errors.New("bff.pipeline_demo_user_ids contains an invalid user ID")
-			}
+		if len(config.BFF.PipelineDemoUserIDs) != 1 || config.BFF.PipelineDemoUserIDs[0] != config.Auth.DemoUserID {
+			return errors.New("bff.pipeline_demo_user_ids must match auth.demo_user_id")
 		}
 	}
 	if err := validateStringList("frontend.stable_aliases", config.Frontend.StableAliases); err != nil {
@@ -551,7 +633,7 @@ func componentInputs(config EnvironmentConfig, query QueryConfigIdentity, select
 	for _, name := range selected {
 		switch name {
 		case "auth":
-			components[name] = map[string]any{"service_name": config.Auth.ServiceName, "runtime_service_account": config.Auth.RuntimeServiceAccount, "network": config.Auth.Network, "subnet": config.Auth.Subnet, "vpc_egress": config.Auth.VPCEgress, "ingress": config.Auth.Ingress, "max_instances": config.Auth.MaxInstances, "public_domain": config.Auth.PublicDomain, "firestore_database_id": config.Auth.FirestoreDatabaseID, "demo_user_id": config.Auth.DemoUserID, "allowed_hosts": config.Auth.AllowedHosts, "allowed_origins": config.Auth.AllowedOrigins, "dev_jwt": false, "secret_references": map[string]any{"jwt": config.Auth.SecretReferences.JWT}}
+			components[name] = map[string]any{"service_name": config.Auth.ServiceName, "runtime_service_account": config.Auth.RuntimeServiceAccount, "network": config.Auth.Network, "subnet": config.Auth.Subnet, "vpc_egress": config.Auth.VPCEgress, "ingress": config.Auth.Ingress, "max_instances": config.Auth.MaxInstances, "public_domain": config.Auth.PublicDomain, "firestore_database_id": config.Auth.FirestoreDatabaseID, "demo_user_id": config.Auth.DemoUserID, "demo_user_email": config.Auth.DemoUserEmail, "demo_user_role": config.Auth.DemoUserRole, "allowed_hosts": config.Auth.AllowedHosts, "allowed_origins": config.Auth.AllowedOrigins, "dev_jwt": false, "secret_references": map[string]any{"jwt": config.Auth.SecretReferences.JWT}}
 			if config.Auth.Google != nil {
 				components[name].(map[string]any)["google"] = config.Auth.Google
 			}
@@ -567,6 +649,9 @@ func componentInputs(config EnvironmentConfig, query QueryConfigIdentity, select
 			}
 			if len(config.BFF.PipelineDemoUserIDs) > 0 {
 				bff["pipeline_demo_user_ids"] = config.BFF.PipelineDemoUserIDs
+			}
+			if config.BFF.PipelineCooldownSeconds > 0 {
+				bff["pipeline_cooldown_seconds"] = config.BFF.PipelineCooldownSeconds
 			}
 			components[name] = bff
 		case "worker":

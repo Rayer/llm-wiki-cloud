@@ -54,6 +54,7 @@ LOCAL_CLOUD_PYTHON="$state_dir/python/bin/python3"
 LOCAL_CLOUD_PIPELINE_CONFIG_DIR="${LOCAL_CLOUD_PIPELINE_CONFIG_DIR:-$repo_root/.build/cac/local}"
 LOCAL_CLOUD_PIPELINE_CONFIG_PATH="$LOCAL_CLOUD_PIPELINE_CONFIG_DIR/synto.toml"
 LOCAL_CLOUD_PIPELINE_BINDINGS_PATH="$LOCAL_CLOUD_PIPELINE_CONFIG_DIR/private-bindings.json"
+LOCAL_CLOUD_BFF_CONFIG_PATH="$LOCAL_CLOUD_PIPELINE_CONFIG_DIR/bff.json"
 LOCAL_CLOUD_SCOPE="$scope"
 LOCAL_CLOUD_JWT_SECRET_FILE="$secret_path"
 PATH="$state_dir/python/bin:$PATH"
@@ -66,9 +67,38 @@ ALLOWED_HOSTS="localhost,127.0.0.1"
 AUTH_SERVICE_URL="http://localhost:$AUTH_PORT"
 NEXT_PUBLIC_API_URL="http://localhost:$BFF_PORT"
 NEXT_PUBLIC_AUTH_URL="http://localhost:$AUTH_PORT"
+unset AUTH_DEMO_USER_ID AUTH_DEMO_USER_EMAIL AUTH_DEMO_USER_ROLE PIPELINE_DEMO_USER_IDS
+local_demo_config="${LOCAL_DEMO_CONFIG_PATH:-$repo_root/.build/cac/local/local_demo.json}"
+if [ -s "$local_demo_config" ]; then
+  if demo_values="$(python3 - "$local_demo_config" <<'PY'
+import json, re, sys
+
+try:
+    demo = json.load(open(sys.argv[1], encoding="utf-8"))
+    user_id, email, role = demo["user_id"], demo["email"], demo["role"]
+    if not re.fullmatch(r"[A-Za-z0-9_-]{1,128}", user_id):
+        raise ValueError()
+    if not re.fullmatch(r"[^@\s]+@[^@\s]+\.[^@\s]+", email):
+        raise ValueError()
+    if not re.fullmatch(r"[a-z][a-z0-9_-]{0,31}", role) or role == "admin":
+        raise ValueError()
+except (OSError, KeyError, TypeError, ValueError, json.JSONDecodeError):
+    sys.exit(1)
+
+print("\t".join((user_id, email, role)))
+PY
+  )"; then
+    IFS=$'\t' read -r AUTH_DEMO_USER_ID AUTH_DEMO_USER_EMAIL AUTH_DEMO_USER_ROLE <<< "$demo_values"
+    PIPELINE_DEMO_USER_IDS="$AUTH_DEMO_USER_ID"
+    export AUTH_DEMO_USER_ID AUTH_DEMO_USER_EMAIL AUTH_DEMO_USER_ROLE PIPELINE_DEMO_USER_IDS
+  else
+    printf 'local Demo identity config unavailable; Demo login will stay disabled\n' >&2
+  fi
+fi
+unset LOCAL_DEMO_CONFIG_PATH local_demo_config demo_values
 export BFF_PORT AUTH_PORT FRONTEND_PORT
 export LOCAL_CLOUD_WORKER_PATH LOCAL_CLOUD_STATE_DIR LOCAL_CLOUD_REPO_ROOT LOCAL_CLOUD_PYTHON
-export LOCAL_CLOUD_PIPELINE_CONFIG_DIR LOCAL_CLOUD_PIPELINE_CONFIG_PATH LOCAL_CLOUD_PIPELINE_BINDINGS_PATH PATH
+export LOCAL_CLOUD_PIPELINE_CONFIG_DIR LOCAL_CLOUD_PIPELINE_CONFIG_PATH LOCAL_CLOUD_PIPELINE_BINDINGS_PATH LOCAL_CLOUD_BFF_CONFIG_PATH PATH
 export LOCAL_CLOUD_SCOPE LOCAL_CLOUD_JWT_SECRET_FILE GCP_PROJECT GOOGLE_CLOUD_PROJECT BUCKET FIRESTORE_DATABASE_ID
 export ALLOWED_ORIGINS ALLOWED_HOSTS AUTH_SERVICE_URL NEXT_PUBLIC_API_URL NEXT_PUBLIC_AUTH_URL
 # Old switches and shared/deployed JWT configuration never flow into local app processes.
@@ -92,6 +122,27 @@ case "${1:-}" in
   --)
     shift
     if [ "$#" -eq 0 ]; then echo "command required after --" >&2; exit 2; fi
+    prepare_bff_projection=false
+    direct_bff=false
+    if [ "$#" -ge 3 ] && [ "$1" = "go" ] && [ "$2" = "run" ] && [ "$3" = "./cmd/bff" ]; then
+      prepare_bff_projection=true
+      direct_bff=true
+    elif [ "$#" -ge 3 ] && [ "$1" = "python3" ] && [ "${2##*/}" = "local-services.py" ] && [ "$3" = "start" ]; then
+      for service in "$@"; do
+        if [ "$service" = "bff" ]; then prepare_bff_projection=true; break; fi
+      done
+    fi
+    if [ "$prepare_bff_projection" = true ]; then
+      (
+        cd "$repo_root/apps/bff"
+        LWC_REPOSITORY_ROOT="$repo_root" go run ./cmd/pipeline_config prepare --target bff --environment local --output "$LOCAL_CLOUD_PIPELINE_CONFIG_DIR"
+      )
+      cooldown_seconds="$(python3 "$repo_root/scripts/bff_config.py" "$LOCAL_CLOUD_BFF_CONFIG_PATH" local)"
+      if [ "$direct_bff" = true ]; then
+        PIPELINE_COOLDOWN_SECONDS="$cooldown_seconds"
+        export PIPELINE_COOLDOWN_SECONDS
+      fi
+    fi
     exec "$@"
     ;;
   *)

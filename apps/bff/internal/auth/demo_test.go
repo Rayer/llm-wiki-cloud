@@ -69,7 +69,7 @@ func TestDemoLoginAcceptsOnlyEmptyRequestAndIssuesConfiguredIdentity(t *testing.
 				Email: "demo@example.test", Role: "editor", AuthVersion: 4,
 			}}
 			sessions := &demoSessionIssuerFixture{}
-			router := newDemoTestRouter(demoLoginHandlerWithIssuer(lookup, "configured-demo-user", "fixture-jwt-key", HostRefreshCookiePolicy(), sessions))
+			router := newDemoTestRouter(demoLoginHandlerWithIssuer(lookup, "configured-demo-user", "demo@example.test", "member", "fixture-jwt-key", HostRefreshCookiePolicy(), sessions))
 			var body io.Reader
 			if test.body != nil {
 				body = bytes.NewReader(test.body)
@@ -112,7 +112,7 @@ func TestDemoLoginRejectsIdentityInputMalformedAndTrailingJSON(t *testing.T) {
 		t.Run(body, func(t *testing.T) {
 			lookup := &demoUserLookupFixture{user: &UserRecord{Email: "demo@example.test"}}
 			sessions := &demoSessionIssuerFixture{}
-			router := newDemoTestRouter(demoLoginHandlerWithIssuer(lookup, "configured-demo-user", "fixture-jwt-key", HostRefreshCookiePolicy(), sessions))
+			router := newDemoTestRouter(demoLoginHandlerWithIssuer(lookup, "configured-demo-user", "demo@example.test", "member", "fixture-jwt-key", HostRefreshCookiePolicy(), sessions))
 			recorder := httptest.NewRecorder()
 			router.ServeHTTP(recorder, httptest.NewRequest(http.MethodPost, "/demo", strings.NewReader(body)))
 			if recorder.Code != http.StatusBadRequest || len(lookup.ids) != 0 || sessions.calls != 0 || len(recorder.Result().Cookies()) != 0 {
@@ -125,7 +125,7 @@ func TestDemoLoginRejectsIdentityInputMalformedAndTrailingJSON(t *testing.T) {
 func TestDemoLoginReturns413ForKnownAndUnknownLengthBodies(t *testing.T) {
 	for _, knownLength := range []bool{true, false} {
 		lookup := &demoUserLookupFixture{user: &UserRecord{Email: "demo@example.test"}}
-		router := newDemoTestRouter(demoLoginHandlerWithIssuer(lookup, "configured-demo-user", "fixture-jwt-key", HostRefreshCookiePolicy(), &demoSessionIssuerFixture{}))
+		router := newDemoTestRouter(demoLoginHandlerWithIssuer(lookup, "configured-demo-user", "demo@example.test", "member", "fixture-jwt-key", HostRefreshCookiePolicy(), &demoSessionIssuerFixture{}))
 		body := strings.Repeat("x", int(MaxRequestBodyBytes)+1)
 		request := httptest.NewRequest(http.MethodPost, "/demo", strings.NewReader(body))
 		if !knownLength {
@@ -147,15 +147,18 @@ func TestDemoLoginFailsClosedForMissingInactiveUnavailableAndSessionErrors(t *te
 		err  error
 		want int
 	}{
-		{name: "missing configured UID", user: &UserRecord{Email: "demo@example.test"}, want: http.StatusServiceUnavailable},
+		{name: "missing configured UID", user: &UserRecord{Email: "demo@example.test", Role: "member"}, want: http.StatusServiceUnavailable},
 		{name: "missing user", uid: "configured-demo-user", want: http.StatusServiceUnavailable},
 		{name: "storage unavailable", uid: "configured-demo-user", err: errors.New("storage unavailable"), want: http.StatusServiceUnavailable},
 		{name: "inactive user", uid: "configured-demo-user", user: &UserRecord{Email: "demo@example.test", Status: AccountSuspended}, want: http.StatusServiceUnavailable},
+		{name: "email mismatch", uid: "configured-demo-user", user: &UserRecord{Email: "other@example.test", Role: "member"}, want: http.StatusServiceUnavailable},
+		{name: "admin user", uid: "configured-demo-user", user: &UserRecord{Email: "demo@example.test", Role: "admin"}, want: http.StatusServiceUnavailable},
+		{name: "missing role", uid: "configured-demo-user", user: &UserRecord{Email: "demo@example.test"}, want: http.StatusServiceUnavailable},
 	} {
 		t.Run(test.name, func(t *testing.T) {
 			lookup := &demoUserLookupFixture{user: test.user, err: test.err}
 			sessions := &demoSessionIssuerFixture{}
-			router := newDemoTestRouter(demoLoginHandlerWithIssuer(lookup, test.uid, "fixture-jwt-key", HostRefreshCookiePolicy(), sessions))
+			router := newDemoTestRouter(demoLoginHandlerWithIssuer(lookup, test.uid, "demo@example.test", "member", "fixture-jwt-key", HostRefreshCookiePolicy(), sessions))
 			recorder := httptest.NewRecorder()
 			router.ServeHTTP(recorder, httptest.NewRequest(http.MethodPost, "/demo", nil))
 			if recorder.Code != test.want || sessions.calls != 0 || len(recorder.Result().Cookies()) != 0 {
@@ -167,16 +170,16 @@ func TestDemoLoginFailsClosedForMissingInactiveUnavailableAndSessionErrors(t *te
 		})
 	}
 
-	lookup := &demoUserLookupFixture{user: &UserRecord{Email: "demo@example.test"}}
+	lookup := &demoUserLookupFixture{user: &UserRecord{Email: "demo@example.test", Role: "member"}}
 	failedSessions := &demoSessionIssuerFixture{err: errors.New("session unavailable")}
-	router := newDemoTestRouter(demoLoginHandlerWithIssuer(lookup, "configured-demo-user", "fixture-jwt-key", HostRefreshCookiePolicy(), failedSessions))
+	router := newDemoTestRouter(demoLoginHandlerWithIssuer(lookup, "configured-demo-user", "demo@example.test", "member", "fixture-jwt-key", HostRefreshCookiePolicy(), failedSessions))
 	recorder := httptest.NewRecorder()
 	router.ServeHTTP(recorder, httptest.NewRequest(http.MethodPost, "/demo", nil))
 	if recorder.Code != http.StatusInternalServerError || len(recorder.Result().Cookies()) != 0 {
 		t.Fatalf("session failure status=%d cookie_count=%d", recorder.Code, len(recorder.Result().Cookies()))
 	}
 
-	router = newDemoTestRouter(DemoLoginHandlerWithRepository(lookup, "configured-demo-user", "fixture-jwt-key", HostRefreshCookiePolicy(), nil))
+	router = newDemoTestRouter(DemoLoginHandlerWithRepository(lookup, "configured-demo-user", "demo@example.test", "member", "fixture-jwt-key", HostRefreshCookiePolicy(), nil))
 	recorder = httptest.NewRecorder()
 	router.ServeHTTP(recorder, httptest.NewRequest(http.MethodPost, "/demo", nil))
 	if recorder.Code != http.StatusInternalServerError || len(recorder.Result().Cookies()) != 0 {
@@ -197,7 +200,7 @@ func TestDemoLoginIssuesDurableSessionWithFirestoreEmulator(t *testing.T) {
 	t.Cleanup(func() { _, _ = userRef.Delete(context.Background()) })
 
 	sessions := NewRefreshSessionAuthorityWithConfig(client, SessionAuthorityConfig{Environment: "lwc-366-demo-fixture"})
-	router := newDemoTestRouter(DemoLoginHandlerWithRepository(NewIdentityRepository(client), userID, "fixture-jwt-key", HostRefreshCookiePolicy(), sessions))
+	router := newDemoTestRouter(DemoLoginHandlerWithRepository(NewIdentityRepository(client), userID, "demo@example.test", "member", "fixture-jwt-key", HostRefreshCookiePolicy(), sessions))
 	recorder := httptest.NewRecorder()
 	router.ServeHTTP(recorder, httptest.NewRequest(http.MethodPost, "/demo", nil).WithContext(ctx))
 	if recorder.Code != http.StatusOK {

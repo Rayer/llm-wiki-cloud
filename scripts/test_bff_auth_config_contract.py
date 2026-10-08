@@ -32,7 +32,9 @@ def production_plan():
             'typesafe_jev_api_key': {'name': 'typesafe-jev-api-key-prod', 'version': '17'},
         },
     })
-    plan['bff'].pop('pipeline_demo_user_ids', None)
+    plan['bff']['pipeline_demo_user_ids'] = [plan['auth']['demo_user_id']]
+    plan['bff']['pipeline_cooldown_seconds'] = 3600
+    plan['components']['bff']['pipeline_cooldown_seconds'] = 3600
     plan['export_job'] = {
         'enabled': True, 'job_name': 'export-job',
         'runtime_service_account': 'lwc-export-worker-prod@llm-wiki-cloud.iam.gserviceaccount.com',
@@ -50,15 +52,7 @@ def production_plan():
 
 
 def reviewed_production_plan():
-    result = subprocess.run(
-        ['go', 'run', './cmd/deploy_config', '--environment', 'production',
-         '--config', '../../deploy/environments/production.yaml',
-         '--components', 'bff,exportjob'],
-        cwd=fixtures.ROOT / 'apps/bff', text=True, capture_output=True,
-    )
-    if result.returncode != 0:
-        raise AssertionError('reviewed Production plan failed to load: ' + result.stderr)
-    return json.loads(result.stdout)
+    return fixtures.normalized_plan('production', 'bff,exportjob')
 
 
 def candidate(environment, plan_override=None):
@@ -69,15 +63,21 @@ def candidate(environment, plan_override=None):
         if entry['name'] in ('GCP_PROJECT', 'FIRESTORE_DATABASE_ID', 'ALLOWED_ORIGINS', 'AUTH_SERVICE_URL', 'DEV_JWT', 'JWT_SECRET')]
     value['spec']['containers'][0]['env'].insert(0, {'name': 'QUERY_STAGE_CONFIG_PATH',
         'value': plan['query_config']['runtime_path']})
+    value['spec']['containers'][0]['env'].append({
+        'name': 'PIPELINE_COOLDOWN_SECONDS',
+        'value': str(plan['bff']['pipeline_cooldown_seconds']),
+    })
     value['metadata']['name'] = plan['bff']['service_name'] + '-00042-test'
     value['spec']['serviceAccountName'] = plan['bff']['runtime_service_account']
     if environment == 'development':
         # Separately approved DEV settings must survive, even when unlike YAML.
         entries = value['spec']['containers'][0]['env']
         for entry in entries:
-            if entry['name'] != 'QUERY_STAGE_CONFIG_PATH' and 'value' in entry:
+            if entry['name'] not in ('QUERY_STAGE_CONFIG_PATH', 'PIPELINE_COOLDOWN_SECONDS') and 'value' in entry:
                 entry['value'] = 'preserved-dev-value'
-        entries[-1]['valueFrom']['secretKeyRef'] = {'name': 'jwt-secret-dev', 'key': '7'}
+        next(entry for entry in entries if entry['name'] == 'JWT_SECRET')['valueFrom']['secretKeyRef'] = {
+            'name': 'jwt-secret-dev', 'key': '7',
+        }
     value['spec']['containers'][0]['env'] += [
         {'name': 'BUCKET', 'value': 'preserved-bucket'},
         {'name': 'DEEPSEEK_API_KEY', 'valueFrom': {'secretKeyRef': {'name': 'deepseek-apikey', 'key': '3'}}},
@@ -97,7 +97,7 @@ def candidate(environment, plan_override=None):
                 plan['gcp']['project_id'], plan['export_job']['location'], plan['export_job']['job_name'])},
             {'name': 'EXPORT_SIGNING_SERVICE_ACCOUNT', 'value': plan['export_job']['signing_service_account']},
         ]
-    if environment == 'development' and plan['bff'].get('pipeline_demo_user_ids'):
+    if plan['bff'].get('pipeline_demo_user_ids'):
         value['spec']['containers'][0]['env'].append({
             'name': 'PIPELINE_DEMO_USER_IDS', 'value': ','.join(plan['bff']['pipeline_demo_user_ids']),
         })
@@ -159,7 +159,55 @@ class BFFQueryConfigTests(unittest.TestCase):
         self.assertIn('EXPORT_JOB_URL=https://run.googleapis.com/v2/projects/llm-wiki-cloud/locations/asia-east1/jobs/export-job:run', result.stdout)
         self.assertIn('EXPORT_SIGNING_SERVICE_ACCOUNT=lwc-export-signer-prod@llm-wiki-cloud.iam.gserviceaccount.com', result.stdout)
         self.assertIn('TYPESAFE_JEV_API_KEY=typesafe-jev-api-key-prod:17', result.stdout)
-        self.assertNotIn('PIPELINE_DEMO_USER_IDS', result.stdout)
+        self.assertIn('PIPELINE_DEMO_USER_IDS=e492f6bdaf1735e12b2de96d', result.stdout)
+
+    def test_cooldown_is_explicit_and_effective_readback_must_match(self):
+        for environment, cooldown in (("development", 600), ("production", 3600)):
+            with self.subTest(environment=environment):
+                plan = fixtures.bff_plan(environment) if environment == "development" else production_plan()
+                value = candidate(environment, plan)
+                result, commands, _ = self.run_shell(value, environment, action="bff_mutate", plan_override=plan)
+                self.assertEqual(result.returncode, 0, result.stderr)
+                update = next(command for command in commands if command[:3] == ["run", "services", "update"])
+                env_arg = update[update.index("--update-env-vars") + 1]
+                self.assertIn("PIPELINE_COOLDOWN_SECONDS=" + str(cooldown), env_arg)
+
+                wrong = copy.deepcopy(value)
+                next(entry for entry in wrong["spec"]["containers"][0]["env"]
+                     if entry["name"] == "PIPELINE_COOLDOWN_SECONDS")["value"] = str(cooldown - 1)
+                rejected, rejected_commands, _ = self.run_shell(
+                    wrong, environment, action="bff_mutate", plan_override=plan,
+                )
+                self.assertNotEqual(rejected.returncode, 0)
+                self.assertFalse(any(command[:3] == ["run", "services", "update-traffic"]
+                                     for command in rejected_commands))
+
+    def test_legacy_plan_leaves_existing_cooldown_unmanaged_in_both_environments(self):
+        for environment, cooldown in (("development", 600), ("production", 3600)):
+            plan = fixtures.bff_plan(environment) if environment == "development" else production_plan()
+            value = candidate(environment, plan)
+            legacy = copy.deepcopy(plan)
+            legacy['bff'].pop('pipeline_cooldown_seconds')
+            legacy['components']['bff'].pop('pipeline_cooldown_seconds')
+            for retained in (False, True):
+                with self.subTest(environment=environment, retained=retained):
+                    runtime = copy.deepcopy(value)
+                    env = runtime['spec']['containers'][0]['env']
+                    if not retained:
+                        env[:] = [entry for entry in env
+                                  if entry['name'] != 'PIPELINE_COOLDOWN_SECONDS']
+                    result, commands, _ = self.run_shell(
+                        runtime, environment, action='bff_mutate', plan_override=legacy,
+                    )
+                    self.assertEqual(result.returncode, 0, result.stderr)
+                    update = next(command for command in commands
+                                  if command[:3] == ['run', 'services', 'update'])
+                    env_arg = update[update.index('--update-env-vars') + 1]
+                    self.assertNotIn('PIPELINE_COOLDOWN_SECONDS=', env_arg)
+                    if retained:
+                        actual = next(entry for entry in runtime['spec']['containers'][0]['env']
+                                      if entry['name'] == 'PIPELINE_COOLDOWN_SECONDS')
+                        self.assertEqual(actual['value'], str(cooldown))
 
     def test_yaml_selection_delivered_and_exact_revision_verified_before_traffic(self):
         for environment in ('development', 'production'):
@@ -177,6 +225,7 @@ class BFFQueryConfigTests(unittest.TestCase):
                 self.assertIn('QUERY_STAGE_CONFIG_PATH=' + path, env_arg)
                 if environment == 'development':
                     self.assertEqual(env_arg, '^|^QUERY_STAGE_CONFIG_PATH=' + path
+                                     + '|PIPELINE_COOLDOWN_SECONDS=' + str(plan['bff']['pipeline_cooldown_seconds'])
                                      + '|PROFILE_RUNTIME_AUDIENCE=' + plan['bff']['profile_runtime_audience']
                                      + '|PROFILE_RUNTIME_SERVICE_ACCOUNT=' + plan['bff']['profile_runtime_service_account']
                                      + '|EXPORT_JOB_URL=https://run.googleapis.com/v2/projects/llm-wiki-cloud/locations/asia-east1/jobs/export-job-dev:run'
@@ -194,7 +243,7 @@ class BFFQueryConfigTests(unittest.TestCase):
                     secrets_arg = update[update.index('--update-secrets') + 1]
                     self.assertIn('JWT_SECRET=jwt-secret-prod:latest', secrets_arg)
                     self.assertIn('TYPESAFE_JEV_API_KEY=typesafe-jev-api-key-prod:17', secrets_arg)
-                    self.assertNotIn('PIPELINE_DEMO_USER_IDS', env_arg)
+                    self.assertIn('PIPELINE_DEMO_USER_IDS=e492f6bdaf1735e12b2de96d', env_arg)
                 self.assertNotIn('--remove-env-vars', update)
                 self.assertFalse(any(arg.startswith(('--clear-', '--set-', '--service-account', '--network', '--subnet')) for arg in update))
                 traffic = next(i for i, c in enumerate(commands) if c[:3] == ['run', 'services', 'update-traffic'])
@@ -239,27 +288,17 @@ class BFFQueryConfigTests(unittest.TestCase):
         self.assertTrue(any(c[:3] == ['run', 'revisions', 'describe'] for c in commands[:traffic]))
         self.assertTrue(any(c[:3] == ['run', 'revisions', 'describe'] for c in commands[traffic + 1:]))
 
-    def test_demo_ids_are_dev_only_optional_and_preserve_unmanaged_values(self):
-        plan = copy.deepcopy(fixtures.bff_plan('development'))
-        self.assertEqual(plan['bff']['pipeline_demo_user_ids'], ['e492f6bdaf1735e12b2de96d'])
-        configured = candidate('development', plan)
-        result, commands, _ = self.run_shell(configured, 'development', action='bff_mutate', plan_override=plan)
-        self.assertEqual(result.returncode, 0, result.stderr)
-        update = next(c for c in commands if c[:3] == ['run', 'services', 'update'])
-        self.assertIn('PIPELINE_DEMO_USER_IDS=e492f6bdaf1735e12b2de96d',
-                      update[update.index('--update-env-vars') + 1])
-
-        plan['bff'].pop('pipeline_demo_user_ids')
-        unconfigured = candidate('development', plan)
-        unconfigured['spec']['containers'][0]['env'].append({
-            'name': 'PIPELINE_DEMO_USER_IDS', 'value': 'preexisting-demo-id',
-        })
-        result, commands, _ = self.run_shell(unconfigured, 'development', action='bff_mutate', plan_override=plan)
-        self.assertEqual(result.returncode, 0, result.stderr)
-        update = next(c for c in commands if c[:3] == ['run', 'services', 'update'])
-        self.assertNotIn('PIPELINE_DEMO_USER_IDS', update[update.index('--update-env-vars') + 1])
-        if '--remove-env-vars' in update:
-            self.assertNotIn('PIPELINE_DEMO_USER_IDS', update[update.index('--remove-env-vars') + 1])
+    def test_demo_ids_for_both_environments_are_derived_from_auth_identity(self):
+        for environment in ('development', 'production'):
+            plan = fixtures.bff_plan(environment) if environment == 'development' else production_plan()
+            demo_id = plan['auth']['demo_user_id']
+            self.assertEqual(plan['bff']['pipeline_demo_user_ids'], [demo_id])
+            result, commands, _ = self.run_shell(candidate(environment, plan), environment,
+                action='bff_mutate', plan_override=plan)
+            self.assertEqual(result.returncode, 0, result.stderr)
+            update = next(c for c in commands if c[:3] == ['run', 'services', 'update'])
+            self.assertIn('PIPELINE_DEMO_USER_IDS=' + demo_id,
+                          update[update.index('--update-env-vars') + 1])
 
     def test_dev_profile_binding_mismatch_blocks_traffic(self):
         plan = profile_runtime_plan()
@@ -355,14 +394,14 @@ class BFFQueryConfigTests(unittest.TestCase):
                         action='bff_mutate', plan_override=plan, final_bad=final_bad)
                     self.assertEqual(result.returncode == 0, not final_bad, result.stderr)
                     update = next(c for c in commands if c[:3] == ['run', 'services', 'update'])
-                    expected_env = '^|^QUERY_STAGE_CONFIG_PATH=' + plan['query_config']['runtime_path']
+                    expected_env = ('^|^QUERY_STAGE_CONFIG_PATH=' + plan['query_config']['runtime_path']
+                                    + '|PIPELINE_COOLDOWN_SECONDS=' + str(plan['bff']['pipeline_cooldown_seconds']))
                     expected_env += ('|PROFILE_RUNTIME_AUDIENCE=' + plan['bff']['profile_runtime_audience']
                                      + '|PROFILE_RUNTIME_SERVICE_ACCOUNT=' + plan['bff']['profile_runtime_service_account']
                                      + '|EXPORT_JOB_URL=https://run.googleapis.com/v2/projects/llm-wiki-cloud/locations/{}/jobs/{}:run'.format(
                                          plan['export_job']['location'], plan['export_job']['job_name'])
                                      + '|EXPORT_SIGNING_SERVICE_ACCOUNT=' + plan['export_job']['signing_service_account'])
-                    if environment == 'development':
-                        expected_env += '|PIPELINE_DEMO_USER_IDS=e492f6bdaf1735e12b2de96d'
+                    expected_env += '|PIPELINE_DEMO_USER_IDS=' + plan['auth']['demo_user_id']
                     self.assertEqual(update[update.index('--update-env-vars') + 1], expected_env)
                     self.assertNotIn('--remove-env-vars', update)
                     self.assertEqual(update[update.index('--update-secrets') + 1],

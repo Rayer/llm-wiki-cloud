@@ -18,6 +18,7 @@ ROOT = HERE.parents[1]
 sys.path.insert(0, str(HERE))
 import engine
 import providers
+import support
 from support import Breakpoint, digest, read, write
 
 PROJECT = 'llm-wiki-cloud'
@@ -188,6 +189,9 @@ class AsyncBuildSubmission(unittest.TestCase):
             'FAKE_STATUSES': json.dumps(['SUCCESS']),
             'FAKE_BUILD_IDS': json.dumps(list(BUILD_IDS)),
         }
+        for key in ('PKL_BIN', 'PKL_CACHE_DIR'):
+            if os.environ.get(key):
+                self.environment[key] = os.environ[key]
 
     def make_plan(self, selected=('auth',), name='release'):
         directory = self.root / name
@@ -238,6 +242,74 @@ class AsyncBuildSubmission(unittest.TestCase):
         directory.mkdir()
         write(directory/'plan.json', plan)
         return directory, plan
+
+    def test_bff_admission_binds_real_projection_to_source_not_executor(self):
+        executor = subprocess.check_output(['git', 'rev-parse', 'HEAD'], cwd=ROOT, text=True).strip()
+        repo = self.root / 'bff-source-admission'
+        cloned = subprocess.run(['git', 'clone', '--shared', '--no-checkout', str(ROOT), str(repo)],
+                                text=True, capture_output=True, timeout=60)
+        self.assertEqual(cloned.returncode, 0, cloned.stdout + cloned.stderr)
+        checkout = subprocess.run(['git', 'checkout', '--detach', executor], cwd=repo,
+                                  text=True, capture_output=True, timeout=60)
+        self.assertEqual(checkout.returncode, 0, checkout.stdout + checkout.stderr)
+        repo = repo.resolve()
+        ssot_path = repo / 'deploy/cac/ssot.pkl'
+        source_bytes = ssot_path.read_bytes()
+        old_value = b'pipelineCooldownSeconds = 600'
+        self.assertEqual(source_bytes.count(old_value), 1)
+        ssot_path.write_bytes(source_bytes.replace(old_value, b'pipelineCooldownSeconds = 601', 1))
+        added = subprocess.run(['git', 'add', 'deploy/cac/ssot.pkl'], cwd=repo,
+                               text=True, capture_output=True, timeout=60)
+        self.assertEqual(added.returncode, 0, added.stdout + added.stderr)
+        tree = subprocess.check_output(['git', 'write-tree'], cwd=repo, text=True).strip()
+        source = subprocess.check_output(
+            ['git', '-c', 'user.name=LWC test fixture', '-c',
+             'user.email=lwc-test@example.invalid', 'commit-tree', tree, '-p', executor,
+             '-m', 'test-only BFF config source'], cwd=repo, text=True).strip()
+        reset = subprocess.run(['git', 'reset', '--mixed', executor], cwd=repo,
+                               text=True, capture_output=True, timeout=60)
+        self.assertEqual(reset.returncode, 0, reset.stdout + reset.stderr)
+        self.assertEqual(subprocess.check_output(['git', 'rev-parse', 'HEAD'], cwd=repo, text=True).strip(),
+                         executor)
+        self.assertNotEqual(source, executor)
+        args = SimpleNamespace(environment='development', source=source, executor_sha=executor,
+                               components='bff', tag='test-lwc373-source-config-identity',
+                               dev_reference=None)
+        captured = {}
+        real_run = support.run
+
+        def record_admission_command(command, **kwargs):
+            kwargs.setdefault('cwd', repo)
+            output = real_run(command, **kwargs)
+            argv = [str(value) for value in command]
+            if argv[:3] == ['go', 'run', './cmd/pipeline_config']:
+                projection_path = Path(argv[argv.index('--output') + 1]) / 'bff.json'
+                captured['projection'] = json.loads(projection_path.read_text())
+            if argv[:3] == ['go', 'run', './cmd/deploy_config']:
+                captured['normalized'] = json.loads(output)
+            return output
+
+        with patch.dict(os.environ, self.environment, clear=True), \
+             patch.object(engine, 'ROOT', repo), patch.object(support, 'ROOT', repo), \
+             patch.object(engine, 'run', side_effect=record_admission_command):
+            plan = engine.admit(args)
+            executor_identity = engine.source_identity('bff', executor)
+            self.assertEqual(plan['source'], source)
+            self.assertEqual(plan['executor_sha'], executor)
+            self.assertEqual(captured['projection']['pipeline_cooldown_seconds'], 601)
+            self.assertEqual(captured['normalized']['bff']['pipeline_cooldown_seconds'], 601)
+            self.assertEqual(plan['identities']['bff'], executor_identity,
+                             'a config-only source change must not force a BFF image rebuild')
+
+            source_ssot = ssot_path.read_bytes()
+            ssot_path.write_bytes(source_ssot.replace(
+                b'pipelineCooldownSeconds = 601', b'pipelineCooldownSeconds = 602', 1))
+            captured.clear()
+            with self.assertRaises(Breakpoint) as caught:
+                engine.admit(args)
+            self.assertEqual(caught.exception.reason, 'dirty-bff-ssot')
+            self.assertEqual(captured['projection']['pipeline_cooldown_seconds'], 602)
+            self.assertEqual(captured['normalized']['bff']['pipeline_cooldown_seconds'], 602)
 
     def scratch_source_commit(self, executor):
         git_dir = self.root / 'retained-source.git'

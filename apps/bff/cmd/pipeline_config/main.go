@@ -58,6 +58,12 @@ type pipelineConfig struct {
 	LLM               llmProfile `json:"llm"`
 }
 
+type bffProjection struct {
+	SchemaVersion           int    `json:"schema_version"`
+	Environment             string `json:"environment"`
+	PipelineCooldownSeconds int    `json:"pipeline_cooldown_seconds"`
+}
+
 type privateBindings struct {
 	Environment string          `json:"environment"`
 	Bindings    []secretBinding `json:"bindings"`
@@ -143,14 +149,15 @@ func googleReader(ctx context.Context) (secretReader, error) {
 
 func main() {
 	if len(os.Args) < 2 || os.Args[1] != "prepare" {
-		fmt.Fprintln(os.Stderr, "usage: pipeline-config prepare --environment local|dev|prod --output DIR")
+		fmt.Fprintln(os.Stderr, "usage: pipeline-config prepare --target pipeline|bff --environment local|dev|prod --output DIR")
 		os.Exit(2)
 	}
 	flags := flag.NewFlagSet("prepare", flag.ExitOnError)
+	target := flags.String("target", "pipeline", "generated target: pipeline or bff")
 	environment := flags.String("environment", "", "selected target environment")
 	output := flags.String("output", "", "generated output directory")
 	_ = flags.Parse(os.Args[2:])
-	if err := runPrepare(context.Background(), *environment, *output, googleReader); err != nil {
+	if err := runPrepareTarget(context.Background(), *target, *environment, *output, googleReader); err != nil {
 		fmt.Fprintln(os.Stderr, err)
 		os.Exit(1)
 	}
@@ -166,25 +173,35 @@ func runTimeoutFromEnvironment() (int, error) {
 }
 
 func runPrepare(ctx context.Context, environment, output string, newReader readerFactory) error {
+	return runPrepareTarget(ctx, "pipeline", environment, output, newReader)
+}
+
+func runPrepareTarget(ctx context.Context, target, environment, output string, newReader readerFactory) error {
+	if target != "pipeline" && target != "bff" {
+		return errors.New("target must be pipeline or bff")
+	}
 	if environment != "local" && environment != "dev" && environment != "prod" {
 		return errors.New("environment must be local, dev, or prod")
 	}
 	if strings.TrimSpace(output) == "" {
 		return errors.New("output directory is required")
 	}
-	timeoutSeconds, err := runTimeoutFromEnvironment()
-	if err != nil {
-		return err
-	}
 	root, err := repositoryRoot()
 	if err != nil {
 		return err
 	}
 	cacheDir := strings.TrimSpace(os.Getenv("PKL_CACHE_DIR"))
-	properties := []string{"--property", "environment=" + environment, "--property", "runTimeoutSeconds=" + strconv.Itoa(timeoutSeconds)}
-	localResource := strings.TrimSpace(os.Getenv("LWC_PIPELINE_LOCAL_SECRET_VERSION_RESOURCE"))
-	if localResource != "" {
-		properties = append(properties, "--property", "localSecretVersionResource="+localResource)
+	properties := []string{"--property", "environment=" + environment, "--property", "target=" + target}
+	if target == "pipeline" {
+		timeoutSeconds, err := runTimeoutFromEnvironment()
+		if err != nil {
+			return err
+		}
+		properties = append(properties, "--property", "runTimeoutSeconds="+strconv.Itoa(timeoutSeconds))
+		localResource := strings.TrimSpace(os.Getenv("LWC_PIPELINE_LOCAL_SECRET_VERSION_RESOURCE"))
+		if localResource != "" {
+			properties = append(properties, "--property", "localSecretVersionResource="+localResource)
+		}
 	}
 	pklArgs := func(propertySet []string, args ...string) []string {
 		all := make([]string, 0, len(args)+len(propertySet)+2)
@@ -204,8 +221,27 @@ func runPrepare(ctx context.Context, environment, output string, newReader reade
 		return fmt.Errorf("evaluate selected Pipeline SSOT: %w: %s", err, strings.TrimSpace(ssotStderr.String()))
 	}
 	var config pipelineConfig
+	if target == "bff" {
+		var fields map[string]json.RawMessage
+		if err := json.Unmarshal(ssotBytes, &fields); err != nil || len(fields) != 3 ||
+			fields["schema_version"] == nil || fields["environment"] == nil || fields["pipeline_cooldown_seconds"] == nil {
+			return errors.New("selected BFF SSOT must contain only the cooldown projection fields")
+		}
+		var projection bffProjection
+		if err := json.Unmarshal(ssotBytes, &projection); err != nil {
+			return fmt.Errorf("decode selected BFF SSOT: %w", err)
+		}
+		if err := validateBFFProjection(projection, environment); err != nil {
+			return err
+		}
+		return writeBFFProjection(output, projection)
+	}
 	if err := json.Unmarshal(ssotBytes, &config); err != nil {
 		return fmt.Errorf("decode selected Pipeline SSOT: %w", err)
+	}
+	timeoutSeconds, err := runTimeoutFromEnvironment()
+	if err != nil {
+		return err
 	}
 	if config.Environment != environment || config.RunTimeoutSeconds != timeoutSeconds ||
 		config.LLM.Provider == "" || config.LLM.Endpoint == "" || config.LLM.Model == "" ||
@@ -300,6 +336,39 @@ func runPrepare(ctx context.Context, environment, output string, newReader reade
 		}
 	}
 	fmt.Printf("prepared Pipeline config environment=%s synto_sha256=%x\n", environment, sha256Sum(tomlBytes))
+	return nil
+}
+
+func validateBFFProjection(projection bffProjection, environment string) error {
+	maxSeconds := int64(^uint64(0)>>1) / int64(time.Second)
+	if projection.SchemaVersion != 1 || projection.Environment != environment ||
+		projection.PipelineCooldownSeconds <= 0 || int64(projection.PipelineCooldownSeconds) > maxSeconds {
+		return errors.New("selected BFF cooldown projection is invalid")
+	}
+	return nil
+}
+
+func writeBFFProjection(output string, projection bffProjection) error {
+	data, err := json.MarshalIndent(projection, "", "  ")
+	if err != nil {
+		return fmt.Errorf("encode BFF cooldown projection: %w", err)
+	}
+	output = filepath.Clean(output)
+	if err := os.MkdirAll(output, 0o755); err != nil {
+		return fmt.Errorf("create output directory: %w", err)
+	}
+	tempDir, err := os.MkdirTemp(output, ".prepare-bff-")
+	if err != nil {
+		return fmt.Errorf("create temporary BFF config directory: %w", err)
+	}
+	defer os.RemoveAll(tempDir)
+	if err := os.WriteFile(filepath.Join(tempDir, "bff.json"), append(data, '\n'), 0o644); err != nil {
+		return fmt.Errorf("write BFF cooldown projection: %w", err)
+	}
+	if err := replaceFile(filepath.Join(tempDir, "bff.json"), filepath.Join(output, "bff.json")); err != nil {
+		return fmt.Errorf("publish BFF cooldown projection: %w", err)
+	}
+	fmt.Printf("prepared BFF config environment=%s pipeline_cooldown_seconds=%d\n", projection.Environment, projection.PipelineCooldownSeconds)
 	return nil
 }
 

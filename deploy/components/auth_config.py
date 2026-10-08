@@ -15,13 +15,15 @@ GOOGLE = {
 }
 BASE = ('GCP_PROJECT', 'FIRESTORE_DATABASE_ID', 'ALLOWED_HOSTS', 'ALLOWED_ORIGINS',
         'AUTH_SERVICE_URL', 'AUTH_SESSION_ENVIRONMENT', 'AUTH_REFRESH_SESSION_MIGRATION',
-        'AUTH_DEMO_USER_ID', 'DEV_JWT')
+        'AUTH_DEMO_USER_ID', 'AUTH_DEMO_USER_EMAIL', 'AUTH_DEMO_USER_ROLE', 'DEV_JWT')
 SECRET = ('JWT_SECRET', 'GOOGLE_CLIENT_SECRET')
 QUERY_PATH = 'QUERY_STAGE_CONFIG_PATH'
 EXPORT_BFF = ('EXPORT_JOB_URL', 'EXPORT_SIGNING_SERVICE_ACCOUNT')
 PROFILE_RUNTIME_BFF = ('PROFILE_RUNTIME_AUDIENCE', 'PROFILE_RUNTIME_SERVICE_ACCOUNT')
 TYPESAFE_JEV_API_KEY = 'TYPESAFE_JEV_API_KEY'
 PIPELINE_DEMO_USER_IDS = 'PIPELINE_DEMO_USER_IDS'
+PIPELINE_COOLDOWN_SECONDS = 'PIPELINE_COOLDOWN_SECONDS'
+MAX_PIPELINE_COOLDOWN_SECONDS = ((1 << 63) - 1) // 1_000_000_000
 
 
 def require(condition):
@@ -55,7 +57,11 @@ def desired(plan, component='auth'):
     require(component in ('auth', 'bff'))
     if component == 'bff':
         bff = plan['bff']
+        cooldown = bff.get('pipeline_cooldown_seconds')
         env = {QUERY_PATH: query_path(plan)}
+        if cooldown is not None:
+            require(type(cooldown) is int and 0 < cooldown <= MAX_PIPELINE_COOLDOWN_SECONDS)
+            env[PIPELINE_COOLDOWN_SECONDS] = str(cooldown)
         secrets = {}
         audience = bff.get('profile_runtime_audience')
         invoker = bff.get('profile_runtime_service_account')
@@ -79,13 +85,10 @@ def desired(plan, component='auth'):
                     plan['gcp']['project_id'], plan['export_job']['location'], plan['export_job']['job_name']),
                 'EXPORT_SIGNING_SERVICE_ACCOUNT': plan['export_job']['signing_service_account'],
             })
-        if plan['environment'] == 'development':
-            demo_ids = bff.get('pipeline_demo_user_ids')
-            if demo_ids is not None:
-                require(isinstance(demo_ids, list) and demo_ids and
-                        all(isinstance(user_id, str) and re.fullmatch(r'[A-Za-z0-9_-]{1,128}', user_id)
-                            for user_id in demo_ids) and len(set(demo_ids)) == len(demo_ids))
-                env[PIPELINE_DEMO_USER_IDS] = ','.join(demo_ids)
+        demo_user_id = plan['auth'].get('demo_user_id')
+        require(isinstance(demo_user_id, str) and re.fullmatch(r'[A-Za-z0-9_-]{1,128}', demo_user_id))
+        require(bff.get('pipeline_demo_user_ids') == [demo_user_id])
+        env[PIPELINE_DEMO_USER_IDS] = demo_user_id
         if plan['environment'] == 'development' or plan['auth'].get('google') is None:
             return {'env': env, 'secrets': secrets, 'service_account': bff['runtime_service_account']}
         secrets['JWT_SECRET'] = {'name': bff['secret_references']['jwt'], 'key': 'latest'}
@@ -99,11 +102,17 @@ def desired(plan, component='auth'):
     auth = plan['auth']
     google = auth['google']
     demo_user_id = auth.get('demo_user_id', '')
-    require(isinstance(demo_user_id, str) and (demo_user_id == '' or re.fullmatch(r'[A-Za-z0-9_-]{1,128}', demo_user_id)))
+    demo_user_email = auth.get('demo_user_email', '')
+    demo_user_role = auth.get('demo_user_role', '')
+    require(isinstance(demo_user_id, str) and re.fullmatch(r'[A-Za-z0-9_-]{1,128}', demo_user_id))
+    require(isinstance(demo_user_email, str) and re.fullmatch(r'[^@\s]+@[^@\s]+\.[^@\s]+', demo_user_email))
+    require(isinstance(demo_user_role, str) and re.fullmatch(r'[a-z][a-z0-9_-]{0,31}', demo_user_role)
+            and demo_user_role != 'admin')
     env = dict(zip(BASE, (
         plan['gcp']['project_id'], auth['firestore_database_id'],
         ','.join(auth['allowed_hosts']), ','.join(auth['allowed_origins']),
-        'https://' + auth['public_domain'], auth['firestore_database_id'], 'disabled', demo_user_id, 'false',
+        'https://' + auth['public_domain'], auth['firestore_database_id'], 'disabled', demo_user_id,
+        demo_user_email, demo_user_role, 'false',
     )))
     secrets = {'JWT_SECRET': {'name': auth['secret_references']['jwt'], 'key': 'latest'}}
     require(type(google['enabled']) is bool)
@@ -116,7 +125,8 @@ def desired(plan, component='auth'):
 
 
 def effective(revision, project, component='auth', query_only=False, selective_bff=False,
-              include_runtime_bindings=False, manage_demo_user_ids=False, manage_export_bindings=False):
+              include_runtime_bindings=False, manage_demo_user_ids=False, manage_export_bindings=False,
+              manage_pipeline_cooldown=False):
     containers = revision['spec']['containers']
     require(len(containers) == 1)
     result = {'env': {}, 'secrets': {}, 'service_account': revision['spec']['serviceAccountName']}
@@ -153,6 +163,11 @@ def effective(revision, project, component='auth', query_only=False, selective_b
             result['env'][name] = entry['value']
         elif component == 'bff' and manage_demo_user_ids and name == PIPELINE_DEMO_USER_IDS:
             require(not query_only and set(entry) == {'name', 'value'} and isinstance(entry['value'], str))
+            result['env'][name] = entry['value']
+        elif component == 'bff' and name == PIPELINE_COOLDOWN_SECONDS and manage_pipeline_cooldown:
+            require(not query_only and set(entry) == {'name', 'value'} and
+                    isinstance(entry['value'], str) and re.fullmatch(r'[1-9][0-9]*', entry['value']) and
+                    int(entry['value']) <= MAX_PIPELINE_COOLDOWN_SECONDS)
             result['env'][name] = entry['value']
         elif ((name in BASE or name in GOOGLE) and not query_only and not selective_bff) or (component == 'bff' and name == QUERY_PATH):
             omitted_empty_demo = name == 'AUTH_DEMO_USER_ID' and set(entry) == {'name'}
@@ -200,7 +215,8 @@ def main():
                        component == 'bff' and (plan['environment'] == 'development' or plan['auth'].get('google') is None),
                        component == 'bff',
                        component == 'bff' and PIPELINE_DEMO_USER_IDS in expected['env'],
-                       component == 'bff' and (plan['environment'] == 'development' or plan['export_job']['enabled']))
+                       component == 'bff' and (plan['environment'] == 'development' or plan['export_job']['enabled']),
+                       component == 'bff' and PIPELINE_COOLDOWN_SECONDS in expected['env'])
     digest = fingerprint(actual)
     if component == 'bff':
         # Pin all retained revision settings, including unrelated env/secrets and

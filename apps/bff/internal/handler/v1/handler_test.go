@@ -1227,6 +1227,7 @@ type stubQuotaStore struct {
 	runsToday    int
 	dayKey       string
 	lastRunAt    time.Time
+	loadCalls    int
 	reserveCalls int
 	refundCalls  int
 	refundErr    error
@@ -1234,6 +1235,7 @@ type stubQuotaStore struct {
 }
 
 func (s *stubQuotaStore) LoadQuotaState(context.Context, string, string) (int, string, time.Time, error) {
+	s.loadCalls++
 	return s.runsToday, s.dayKey, s.lastRunAt, nil
 }
 
@@ -1463,6 +1465,114 @@ func TestPipelineRunBlocksDailyLimit(t *testing.T) {
 	}
 	if stub.refundCalls != 0 {
 		t.Fatalf("refundCalls = %d, want 0", stub.refundCalls)
+	}
+}
+
+func TestPipelineRunBlocksCooldownWithoutInvoke(t *testing.T) {
+	now := time.Now().UTC()
+	stub := &stubQuotaStore{
+		runsToday: 1,
+		dayKey:    pipelinequota.DayKeyUTC(now),
+		lastRunAt: now.Add(-30 * time.Second),
+	}
+	root := t.TempDir()
+	rawDir := filepath.Join(root, "users", "request-user", "projects", "proj-1", "raw")
+	if err := os.MkdirAll(rawDir, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(rawDir, "a.md"), []byte("x"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	var runHits int
+	h := &Handler{
+		store:            localfs.New(root),
+		index:            search.NewIndex(),
+		httpClient:       pipelineRunHTTPClient(t, &runHits),
+		metadataTokenURL: "http://metadata.test/token",
+		cloudRunJobURL:   "https://run.test/run",
+	}
+	h.SetPipelineQuotaConfig(2, 60, 1, nil)
+	h.SetPipelineQuotaStore(stub)
+
+	recorder := httptest.NewRecorder()
+	c, _ := gin.CreateTestContext(recorder)
+	c.Request = httptest.NewRequest(http.MethodPost, "/api/v1/pipeline/run", nil)
+	c.Set("userID", "request-user")
+	c.Set("projectID", "proj-1")
+	h.PipelineRun(c)
+
+	if recorder.Code != http.StatusTooManyRequests {
+		t.Fatalf("status = %d, want %d; body = %s", recorder.Code, http.StatusTooManyRequests, recorder.Body.String())
+	}
+	if runHits != 0 || stub.reserveCalls != 1 || stub.refundCalls != 0 {
+		t.Fatalf("runHits=%d reserveCalls=%d refundCalls=%d, want 0, 1, 0", runHits, stub.reserveCalls, stub.refundCalls)
+	}
+	if stub.runsToday != 1 || stub.lastRunAt.Before(now.Add(-31*time.Second)) ||
+		stub.lastRunAt.After(now.Add(-29*time.Second)) {
+		t.Fatalf("cooldown block mutated quota state runs=%d last_run_at=%s", stub.runsToday, stub.lastRunAt)
+	}
+	var body struct {
+		Quota pipelinequota.Snapshot `json:"quota"`
+	}
+	if err := json.Unmarshal(recorder.Body.Bytes(), &body); err != nil {
+		t.Fatal(err)
+	}
+	if body.Quota.Reason != pipelinequota.ReasonCooldown {
+		t.Fatalf("quota reason=%q, want cooldown", body.Quota.Reason)
+	}
+}
+
+func TestPipelineRunReservesQuotaBeforeInvoke(t *testing.T) {
+	now := time.Now().UTC()
+	stub := &stubQuotaStore{dayKey: pipelinequota.DayKeyUTC(now)}
+	root := t.TempDir()
+	rawDir := filepath.Join(root, "users", "request-user", "projects", "proj-1", "raw")
+	if err := os.MkdirAll(rawDir, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(rawDir, "a.md"), []byte("x"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	var runHits int
+	client := &http.Client{Transport: roundTripFunc(func(r *http.Request) (*http.Response, error) {
+		switch r.URL.Path {
+		case "/token":
+			return testHTTPResponse(http.StatusOK, `{"access_token":"test-token"}`), nil
+		case "/run":
+			runHits++
+			return testHTTPResponse(http.StatusOK, `{"metadata":{"execution":"projects/p/locations/r/jobs/j/executions/e"}}`), nil
+		default:
+			return testHTTPResponse(http.StatusOK, `{"executions":[]}`), nil
+		}
+	})}
+	h := &Handler{
+		store:            localfs.New(root),
+		index:            search.NewIndex(),
+		httpClient:       client,
+		metadataTokenURL: "http://metadata.test/token",
+		cloudRunJobURL:   "https://run.test/run",
+	}
+	h.SetPipelineQuotaConfig(2, 60, 1, nil)
+	h.SetPipelineQuotaStore(stub)
+
+	before := time.Now().UTC()
+	recorder := httptest.NewRecorder()
+	c, _ := gin.CreateTestContext(recorder)
+	c.Request = httptest.NewRequest(http.MethodPost, "/api/v1/pipeline/run", nil)
+	c.Set("userID", "request-user")
+	c.Set("projectID", "proj-1")
+	h.PipelineRun(c)
+	after := time.Now().UTC()
+
+	if recorder.Code != http.StatusAccepted {
+		t.Fatalf("status = %d, want %d; body = %s", recorder.Code, http.StatusAccepted, recorder.Body.String())
+	}
+	if runHits != 1 || stub.reserveCalls != 1 || stub.refundCalls != 0 {
+		t.Fatalf("runHits=%d reserveCalls=%d refundCalls=%d, want 1, 1, 0", runHits, stub.reserveCalls, stub.refundCalls)
+	}
+	if stub.runsToday != 1 || stub.dayKey != pipelinequota.DayKeyUTC(now) ||
+		stub.lastRunAt.Before(before) || stub.lastRunAt.After(after) {
+		t.Fatalf("reserved quota state runs=%d day=%q last_run_at=%s", stub.runsToday, stub.dayKey, stub.lastRunAt)
 	}
 }
 
@@ -1727,6 +1837,45 @@ func TestPipelineStatusIncludesQuota(t *testing.T) {
 	}
 	if !body.Quota.Allowed {
 		t.Fatalf("expected allowed when unenforced, got %+v", body.Quota)
+	}
+}
+
+func TestPipelineStatusQuotaEvaluationDoesNotReserve(t *testing.T) {
+	now := time.Now().UTC()
+	dayKey := pipelinequota.DayKeyUTC(now)
+	lastRunAt := now.Add(-2 * time.Hour)
+	stub := &stubQuotaStore{runsToday: 1, dayKey: dayKey, lastRunAt: lastRunAt}
+	client := &http.Client{Transport: roundTripFunc(func(r *http.Request) (*http.Response, error) {
+		if r.URL.Path == "/token" {
+			return testHTTPResponse(http.StatusOK, `{"access_token":"test-token"}`), nil
+		}
+		return testHTTPResponse(http.StatusOK, `{"executions":[]}`), nil
+	})}
+	h := &Handler{
+		index:            search.NewIndex(),
+		httpClient:       client,
+		metadataTokenURL: "http://metadata.test/token",
+		cloudRunJobURL:   "https://run.googleapis.com/v2/projects/p/locations/r/jobs/j:run",
+	}
+	h.SetPipelineQuotaConfig(2, 60, 1, nil)
+	h.SetPipelineQuotaStore(stub)
+
+	recorder := httptest.NewRecorder()
+	c, _ := gin.CreateTestContext(recorder)
+	c.Request = httptest.NewRequest(http.MethodGet, "/api/v1/pipeline/status", nil)
+	c.Set("userID", "request-user")
+	c.Set("projectID", "proj-1")
+	h.PipelineStatus(c)
+
+	if recorder.Code != http.StatusOK {
+		t.Fatalf("status = %d, want %d; body = %s", recorder.Code, http.StatusOK, recorder.Body.String())
+	}
+	if stub.loadCalls != 1 || stub.reserveCalls != 0 || stub.refundCalls != 0 {
+		t.Fatalf("loadCalls=%d reserveCalls=%d refundCalls=%d, want 1, 0, 0",
+			stub.loadCalls, stub.reserveCalls, stub.refundCalls)
+	}
+	if stub.runsToday != 1 || stub.dayKey != dayKey || !stub.lastRunAt.Equal(lastRunAt) {
+		t.Fatalf("GET mutated quota state runs=%d day=%q last_run_at=%s", stub.runsToday, stub.dayKey, stub.lastRunAt)
 	}
 }
 

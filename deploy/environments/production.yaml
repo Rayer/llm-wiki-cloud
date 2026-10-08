@@ -24,8 +24,10 @@ auth:
   ingress: all
   max_instances: 1
   firestore_database_id: llm-wiki-cloud-prod
-  # Populate only after TPM confirms this environment's existing Demo UID.
-  demo_user_id: ""
+  # Existing Production Demo identity; startup ensure preserves its account data.
+  demo_user_id: "e492f6bdaf1735e12b2de96d"
+  demo_user_email: "demo@llm-wiki.dev"
+  demo_user_role: member
   public_domain: auth.rayer.idv.tw
   allowed_hosts:
     - auth.rayer.idv.tw

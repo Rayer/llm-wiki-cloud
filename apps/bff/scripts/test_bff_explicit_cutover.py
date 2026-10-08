@@ -21,23 +21,32 @@ IMAGE = "asia-east1-docker.pkg.dev/llm-wiki-cloud/cloud-run-images/llm-wiki-bff@
 
 class SharedCDContractTest(unittest.TestCase):
     def normalized(self, environment="development"):
-        result = subprocess.run(
-            [
-                "go",
-                "run",
-                "./cmd/deploy_config",
-                "--environment",
-                environment,
-                "--config",
-                f"../../deploy/environments/{environment}.yaml",
-                "--components",
-                "bff",
-            ],
-            cwd=REPO_ROOT / "apps/bff",
-            capture_output=True,
-            text=True,
-            check=True,
-        )
+        with tempfile.TemporaryDirectory() as directory:
+            projection = Path(directory) / "bff.json"
+            projection.write_text(json.dumps({
+                "schema_version": 1,
+                "environment": "dev" if environment == "development" else "prod",
+                "pipeline_cooldown_seconds": 600 if environment == "development" else 3600,
+            }))
+            result = subprocess.run(
+                [
+                    "go",
+                    "run",
+                    "./cmd/deploy_config",
+                    "--environment",
+                    environment,
+                    "--config",
+                    f"../../deploy/environments/{environment}.yaml",
+                    "--components",
+                    "bff",
+                    "--bff-config",
+                    str(projection),
+                ],
+                cwd=REPO_ROOT / "apps/bff",
+                capture_output=True,
+                text=True,
+                check=True,
+            )
         return json.loads(result.stdout)
 
     def fake_provider(self, directory, normalized, image, account):

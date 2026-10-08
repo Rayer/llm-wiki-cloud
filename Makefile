@@ -1,9 +1,13 @@
 BFF_DIR := apps/bff
 FRONTEND_DIR := apps/frontend
 CAC_OUTPUT_DIR ?= $(CURDIR)/.build/cac
+PKL_BIN ?= $(shell if command -v pkl >/dev/null 2>&1 && pkl --version 2>/dev/null | grep -Eq '^Pkl 0\.32\.1([[:space:]]|$$)'; then command -v pkl; else printf '%s' '$(CURDIR)/.build/tools/pkl'; fi)
+export PKL_BIN
+export PATH := $(dir $(PKL_BIN)):$(PATH)
+CAC_TARGET ?= pipeline
 TEST_ENV := env -u LLM_API_KEY -u DEEPSEEK_API_KEY -u SYNTO_API_KEY -u OPENAI_API_KEY -u ANTHROPIC_API_KEY -u GEMINI_API_KEY -u TYPESAFE_API_KEY -u TYPESAFE_JEV_API_KEY -u LWC331_TEST_API_KEY
 
-.PHONY: all help bootstrap lint typecheck vet test build local-start dev local-stop stop smoke workflow-yaml config-local config-dev config-prod verify
+.PHONY: all help ensure-pkl bootstrap lint typecheck vet test build local-start dev local-stop stop smoke workflow-yaml config-local config-dev config-prod verify
 
 all: verify
 
@@ -12,11 +16,14 @@ help:
 	  'bootstrap      Install app dependencies and write frontend local config' \
 	  'local-start    Start native Auth, BFF, and Frontend against local GCS/Firestore' \
 	  'local-stop     Stop managed local processes for this worktree' \
-	  'config-local   Render local Pipeline TOML and private bindings in this worktree' \
+	  'config-local   Render Pipeline or BFF SSOT output (CAC_TARGET=pipeline|bff)' \
 	  'smoke          Run loopback/auth-boundary and cloud-scope smoke tests' \
 	  'lint typecheck test build vet verify  Run repository checks'
 
-bootstrap:
+ensure-pkl:
+	$(MAKE) -C $(BFF_DIR) ensure-pkl PKL_BIN="$(PKL_BIN)"
+
+bootstrap: ensure-pkl
 	$(MAKE) -C $(BFF_DIR) setup
 
 lint:
@@ -28,7 +35,7 @@ typecheck:
 vet:
 	$(MAKE) -C $(BFF_DIR) vet
 
-test:
+test: ensure-pkl
 	$(TEST_ENV) $(MAKE) -C $(BFF_DIR) test
 	$(TEST_ENV) npm --prefix $(FRONTEND_DIR) test
 
@@ -46,20 +53,20 @@ local-stop:
 
 stop: local-stop
 
-smoke:
+smoke: ensure-pkl
 	bash scripts/local-vertical-smoke.sh
 
 workflow-yaml:
 	ruby -e 'require "yaml"; files=%w[ci.yml cd.yml deploy-dev.yml promote-production.yml]; workflows=files.to_h { |file| [file, YAML.load_file(".github/workflows/"+file)] }; abort "invalid CI workflow" unless workflows["ci.yml"]["jobs"].key?("bff"); abort "invalid config-only workflow branch" unless workflows["cd.yml"]["jobs"].key?("pipeline-config-only") && workflows["cd.yml"]["jobs"]["release"]["if"].include?("config-only"); files.each { |file| puts ".github/workflows/#{file}: valid YAML" }'
 
-config-local:
-	cd $(BFF_DIR) && LWC_REPOSITORY_ROOT="$(CURDIR)" go run ./cmd/pipeline_config prepare --environment local --output "$(CAC_OUTPUT_DIR)/local"
+config-local: ensure-pkl
+	cd $(BFF_DIR) && PKL_BIN="$(PKL_BIN)" LWC_REPOSITORY_ROOT="$(CURDIR)" go run ./cmd/pipeline_config prepare --target "$(CAC_TARGET)" --environment local --output "$(CAC_OUTPUT_DIR)/local"
 
-config-dev:
-	cd $(BFF_DIR) && LWC_REPOSITORY_ROOT="$(CURDIR)" go run ./cmd/pipeline_config prepare --environment dev --output "$(CAC_OUTPUT_DIR)/dev"
+config-dev: ensure-pkl
+	cd $(BFF_DIR) && PKL_BIN="$(PKL_BIN)" LWC_REPOSITORY_ROOT="$(CURDIR)" go run ./cmd/pipeline_config prepare --target "$(CAC_TARGET)" --environment dev --output "$(CAC_OUTPUT_DIR)/dev"
 
-config-prod:
-	cd $(BFF_DIR) && LWC_REPOSITORY_ROOT="$(CURDIR)" go run ./cmd/pipeline_config prepare --environment prod --output "$(CAC_OUTPUT_DIR)/prod"
+config-prod: ensure-pkl
+	cd $(BFF_DIR) && PKL_BIN="$(PKL_BIN)" LWC_REPOSITORY_ROOT="$(CURDIR)" go run ./cmd/pipeline_config prepare --target "$(CAC_TARGET)" --environment prod --output "$(CAC_OUTPUT_DIR)/prod"
 
 verify: bootstrap workflow-yaml lint typecheck vet test build smoke
 	git diff --check

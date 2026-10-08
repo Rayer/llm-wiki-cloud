@@ -90,22 +90,31 @@ class CDContractTests(unittest.TestCase):
 
     def normalized(self, environment):
         components = "auth,bff,worker,exportjob,frontend"
-        result = subprocess.run(
-            [
-                "go",
-                "run",
-                "./cmd/deploy_config",
-                "--environment",
-                environment,
-                "--config",
-                f"../../deploy/environments/{environment}.yaml",
-                "--components",
-                components,
-            ],
-            cwd=ROOT / "apps" / "bff",
-            text=True,
-            capture_output=True,
-        )
+        with tempfile.TemporaryDirectory() as directory:
+            bff_config = Path(directory) / "bff.json"
+            bff_config.write_text(json.dumps({
+                "schema_version": 1,
+                "environment": "dev" if environment == "development" else "prod",
+                "pipeline_cooldown_seconds": 600 if environment == "development" else 3600,
+            }))
+            result = subprocess.run(
+                [
+                    "go",
+                    "run",
+                    "./cmd/deploy_config",
+                    "--environment",
+                    environment,
+                    "--config",
+                    f"../../deploy/environments/{environment}.yaml",
+                    "--components",
+                    components,
+                    "--bff-config",
+                    str(bff_config),
+                ],
+                cwd=ROOT / "apps" / "bff",
+                text=True,
+                capture_output=True,
+            )
         self.assertEqual(result.returncode, 0, result.stderr)
         return json.loads(result.stdout)
 
@@ -1903,8 +1912,10 @@ class CDContractTests(unittest.TestCase):
                 }
             }))
             normalized = json.loads(plan.read_text())['normalized']
-            for key in ('environment', 'query_config', 'components', 'bff', 'export_job'):
+            for key in ('environment', 'query_config', 'components', 'auth', 'bff', 'export_job'):
                 normalized[key] = deepcopy(bff_plan('development')[key])
+            normalized['auth']['service_name'] = 'auth-service'
+            normalized['auth'].pop('google', None)
             normalized['bff']['service_name'] = 'bff-service'
             plan.write_text(json.dumps({'normalized': normalized}))
             prior_bff = bff_candidate('development')
