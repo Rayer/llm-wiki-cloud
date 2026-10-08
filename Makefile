@@ -3,6 +3,7 @@ FRONTEND_DIR := apps/frontend
 LOCAL_ENV := $(BFF_DIR)/../../scripts/local-cloud-env.sh
 CAC_OUTPUT_DIR ?= $(CURDIR)/.build/cac
 CAC_TARGET ?= pipeline
+CONFIG_TARGET ?= $(CAC_TARGET)
 BFF_PORT ?= 8080
 AUTH_PORT ?= 8081
 FRONTEND_PORT ?= 3000
@@ -21,7 +22,7 @@ help:
 	  'bootstrap      Install app dependencies and write frontend local config' \
 	  'local-start    Start native Auth, BFF, and Frontend against local GCS/Firestore' \
 	  'local-stop     Stop managed local processes for this worktree' \
-	  'config-local   Render Pipeline, BFF, or Auth SSOT output (CAC_TARGET=pipeline|bff|auth)' \
+	  'config-local   Render selected Pipeline, BFF, Auth, or Frontend config (CONFIG_TARGET=frontend)' \
 	  'smoke          Run loopback/auth-boundary and cloud-scope smoke tests' \
 	  'lint typecheck test build vet verify  Run repository checks'
 
@@ -62,20 +63,31 @@ smoke: ensure-pkl
 	bash scripts/local-vertical-smoke.sh
 
 workflow-yaml:
-	ruby -e 'require "yaml"; files=%w[ci.yml cd.yml deploy-dev.yml promote-production.yml]; workflows=files.to_h { |file| [file, YAML.load_file(".github/workflows/"+file)] }; abort "invalid CI workflow" unless workflows["ci.yml"]["jobs"].key?("bff"); abort "invalid config-only workflow branch" unless workflows["cd.yml"]["jobs"].key?("pipeline-config-only") && workflows["cd.yml"]["jobs"]["release"]["if"].include?("config-only"); files.each { |file| puts ".github/workflows/#{file}: valid YAML" }'
+	ruby -e 'require "yaml"; files=%w[ci.yml cd.yml deploy-dev.yml promote-production.yml generate-frontend-config.yml]; workflows=files.to_h { |file| [file, YAML.load_file(".github/workflows/"+file)] }; abort "invalid CI workflow" unless workflows["ci.yml"]["jobs"].key?("bff"); abort "invalid config-only workflow branch" unless workflows["cd.yml"]["jobs"].key?("pipeline-config-only") && workflows["cd.yml"]["jobs"]["release"]["if"].include?("config-only"); abort "invalid Frontend config generator" unless workflows["generate-frontend-config.yml"]["jobs"].key?("generate"); files.each { |file| puts ".github/workflows/#{file}: valid YAML" }'
 
+ifeq ($(CONFIG_TARGET),frontend)
+config-local:
+	cd $(BFF_DIR) && go run ./cmd/deploy_config --environment local --components frontend --frontend-config-output "$(abspath $(CAC_OUTPUT_DIR))/local/frontend-config.json" --bff-port "$(BFF_PORT)" --auth-port "$(AUTH_PORT)"
+
+config-dev:
+	cd $(BFF_DIR) && go run ./cmd/deploy_config --environment development --config ../../deploy/environments/development.yaml --components frontend --frontend-config-output "$(abspath $(CAC_OUTPUT_DIR))/dev/frontend-config.json"
+
+config-prod:
+	cd $(BFF_DIR) && go run ./cmd/deploy_config --environment production --config ../../deploy/environments/production.yaml --components frontend --frontend-config-output "$(abspath $(CAC_OUTPUT_DIR))/prod/frontend-config.json"
+else
 config-local: ensure-pkl
-	@if [ "$(CAC_TARGET)" = auth ]; then \
+	@if [ "$(CONFIG_TARGET)" = auth ]; then \
 	  BFF_PORT="$(BFF_PORT)" AUTH_PORT="$(AUTH_PORT)" FRONTEND_PORT="$(FRONTEND_PORT)" "$(LOCAL_ENV)" -- $(MAKE) -C $(BFF_DIR) auth-config-local CAC_OUTPUT_DIR="$(CAC_OUTPUT_DIR)" PKL_BIN="$(PKL_BIN)"; \
 	else \
-	  cd $(BFF_DIR) && PKL_BIN="$(PKL_BIN)" LWC_REPOSITORY_ROOT="$(CURDIR)" go run ./cmd/pipeline_config prepare --target "$(CAC_TARGET)" --environment local --output "$(CAC_OUTPUT_DIR)/local"; \
+	  cd $(BFF_DIR) && PKL_BIN="$(PKL_BIN)" LWC_REPOSITORY_ROOT="$(CURDIR)" go run ./cmd/pipeline_config prepare --target "$(CONFIG_TARGET)" --environment local --output "$(CAC_OUTPUT_DIR)/local"; \
 	fi
 
 config-dev: ensure-pkl
-	cd $(BFF_DIR) && PKL_BIN="$(PKL_BIN)" LWC_REPOSITORY_ROOT="$(CURDIR)" go run ./cmd/pipeline_config prepare --target "$(CAC_TARGET)" --environment dev --output "$(CAC_OUTPUT_DIR)/dev"
+	cd $(BFF_DIR) && PKL_BIN="$(PKL_BIN)" LWC_REPOSITORY_ROOT="$(CURDIR)" go run ./cmd/pipeline_config prepare --target "$(CONFIG_TARGET)" --environment dev --output "$(CAC_OUTPUT_DIR)/dev"
 
 config-prod: ensure-pkl
-	cd $(BFF_DIR) && PKL_BIN="$(PKL_BIN)" LWC_REPOSITORY_ROOT="$(CURDIR)" go run ./cmd/pipeline_config prepare --target "$(CAC_TARGET)" --environment prod --output "$(CAC_OUTPUT_DIR)/prod"
+	cd $(BFF_DIR) && PKL_BIN="$(PKL_BIN)" LWC_REPOSITORY_ROOT="$(CURDIR)" go run ./cmd/pipeline_config prepare --target "$(CONFIG_TARGET)" --environment prod --output "$(CAC_OUTPUT_DIR)/prod"
+endif
 
 verify: bootstrap workflow-yaml lint typecheck vet test build smoke
 	git diff --check

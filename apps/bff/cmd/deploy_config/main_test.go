@@ -21,6 +21,79 @@ func repoRoot(t *testing.T) string {
 	return root
 }
 
+func TestFrontendSelectionSeparatesRuntimeEndpointsFromBuildIdentity(t *testing.T) {
+	root := repoRoot(t)
+	for _, test := range []struct {
+		environment string
+		configURL   string
+		apiURL      string
+		authURL     string
+	}{
+		{"development", "https://storage.googleapis.com/llm-wiki-frontend-config-dev/frontend-config.json", "https://llm-wiki-bff-dev-580854833715.asia-east1.run.app", "https://auth.dev.rayer.idv.tw"},
+		{"production", "https://storage.googleapis.com/llm-wiki-frontend-config-prod/frontend-config.json", "https://llm-wiki-bff-580854833715.asia-east1.run.app", "https://auth.rayer.idv.tw"},
+	} {
+		t.Run(test.environment, func(t *testing.T) {
+			config, err := Load(test.environment, filepath.Join(root, "deploy/environments", test.environment+".yaml"), "frontend")
+			if err != nil {
+				t.Fatal(err)
+			}
+			if config.Frontend.ConfigSchemaVersion != 1 || config.Frontend.ConfigURL != test.configURL ||
+				config.Frontend.APIURL != test.apiURL || config.Frontend.AuthURL != test.authURL {
+				t.Fatalf("selected Frontend config = %#v", config.Frontend)
+			}
+			if !reflect.DeepEqual(config.Components["frontend"], map[string]any{
+				"project_name": config.Frontend.ProjectName, "team_slug": config.Frontend.TeamSlug,
+				"repository": config.Frontend.Repository, "root_directory": config.Frontend.RootDirectory,
+				"stable_aliases": config.Frontend.StableAliases, "config_schema_version": 1,
+				"config_url": test.configURL,
+			}) {
+				t.Fatalf("Frontend build target config = %#v", config.Components["frontend"])
+			}
+			planBytes, err := json.Marshal(config)
+			if err != nil {
+				t.Fatal(err)
+			}
+			if strings.Contains(string(planBytes), `"api_url"`) || strings.Contains(string(planBytes), `"auth_url"`) {
+				t.Fatalf("runtime endpoints leaked into normalized build identity: %s", planBytes)
+			}
+
+			output := filepath.Join(t.TempDir(), "nested", "frontend-config.json")
+			if err := writePublicFrontendRuntimeConfig(output, test.environment, config.Frontend.APIURL, config.Frontend.AuthURL); err != nil {
+				t.Fatal(err)
+			}
+			var runtimeConfig PublicFrontendRuntimeConfig
+			if err := json.Unmarshal(mustRead(t, output), &runtimeConfig); err != nil {
+				t.Fatal(err)
+			}
+			if runtimeConfig != (PublicFrontendRuntimeConfig{SchemaVersion: 1, APIURL: test.apiURL, AuthURL: test.authURL}) {
+				t.Fatalf("generated runtime config = %#v", runtimeConfig)
+			}
+		})
+	}
+}
+
+func TestLocalFrontendConfigUsesOnlyLoopbackPorts(t *testing.T) {
+	if !validLocalPort("19080") || validLocalPort("0") || validLocalPort("65536") || validLocalPort("80x") {
+		t.Fatal("local port validation did not enforce the numeric TCP range")
+	}
+	output := filepath.Join(t.TempDir(), "frontend-config.json")
+	if err := writePublicFrontendRuntimeConfig(output, "local", "http://localhost:19080", "http://localhost:19081"); err != nil {
+		t.Fatal(err)
+	}
+	if err := writePublicFrontendRuntimeConfig(output, "local", "https://api.example.test", "http://localhost:19081"); err == nil {
+		t.Fatal("local config unexpectedly accepted a deployed endpoint")
+	}
+}
+
+func mustRead(t *testing.T, path string) []byte {
+	t.Helper()
+	data, err := os.ReadFile(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	return data
+}
+
 func TestLoadReviewedEnvironmentsAndQueryIdentity(t *testing.T) {
 	root := repoRoot(t)
 	for _, environment := range []string{"development", "production"} {

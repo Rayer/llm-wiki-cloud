@@ -48,6 +48,16 @@ test('local route reads each worktree file request and disables caching', async 
   const responseB = await GET();
   assert.equal(responseB.status, 200);
   assert.deepEqual(await responseB.json(), configB);
+
+  writeFileSync(configPath, JSON.stringify({ schema_version: 1, auth_url: configA.auth_url }));
+  const missingEndpoint = await GET();
+  assert.equal(missingEndpoint.status, 200);
+  assert.deepEqual(await missingEndpoint.json(), { schema_version: 1, auth_url: configA.auth_url });
+
+  writeFileSync(configPath, '{malformed');
+  const malformed = await GET();
+  assert.equal(malformed.status, 200);
+  assert.deepEqual(await malformed.json(), {});
 });
 
 test('local route is unavailable outside Next development mode', async (t) => {

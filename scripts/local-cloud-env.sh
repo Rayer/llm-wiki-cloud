@@ -66,8 +66,7 @@ FIRESTORE_DATABASE_ID="llm-wiki-cloud-local"
 ALLOWED_ORIGINS="http://localhost:$FRONTEND_PORT"
 ALLOWED_HOSTS="localhost,127.0.0.1"
 AUTH_SERVICE_URL="http://localhost:$AUTH_PORT"
-NEXT_PUBLIC_API_URL="http://localhost:$BFF_PORT"
-NEXT_PUBLIC_AUTH_URL="http://localhost:$AUTH_PORT"
+NEXT_PUBLIC_CONFIG_URL="/frontend-config.json"
 unset AUTH_DEMO_USER_ID AUTH_DEMO_USER_EMAIL AUTH_DEMO_USER_ROLE PIPELINE_DEMO_USER_IDS
 local_demo_config="${LOCAL_DEMO_CONFIG_PATH:-$repo_root/.build/cac/local/local_demo.json}"
 if [ -s "$local_demo_config" ]; then
@@ -101,7 +100,7 @@ export BFF_PORT AUTH_PORT FRONTEND_PORT
 export LOCAL_CLOUD_WORKER_PATH LOCAL_CLOUD_STATE_DIR LOCAL_CLOUD_REPO_ROOT LOCAL_CLOUD_PYTHON
 export LOCAL_CLOUD_PIPELINE_CONFIG_DIR LOCAL_CLOUD_PIPELINE_CONFIG_PATH LOCAL_CLOUD_PIPELINE_BINDINGS_PATH LOCAL_CLOUD_BFF_CONFIG_PATH LOCAL_CLOUD_AUTH_CONFIG_PATH PATH
 export LOCAL_CLOUD_SCOPE LOCAL_CLOUD_JWT_SECRET_FILE GCP_PROJECT GOOGLE_CLOUD_PROJECT BUCKET FIRESTORE_DATABASE_ID
-export ALLOWED_ORIGINS ALLOWED_HOSTS AUTH_SERVICE_URL NEXT_PUBLIC_API_URL NEXT_PUBLIC_AUTH_URL
+export ALLOWED_ORIGINS ALLOWED_HOSTS AUTH_SERVICE_URL NEXT_PUBLIC_CONFIG_URL
 # Old switches and shared/deployed JWT configuration never flow into local app processes.
 unset DEV_JWT LOCAL_DATA_DIR JWT_SECRET
 
@@ -116,7 +115,7 @@ case "${1:-}" in
   --configure-frontend)
     frontend_dir="${2:?frontend directory required}"
     mkdir -p "$frontend_dir"
-    (umask 077; printf 'NEXT_PUBLIC_API_URL=%s\nNEXT_PUBLIC_AUTH_URL=%s\n' "$NEXT_PUBLIC_API_URL" "$NEXT_PUBLIC_AUTH_URL" > "$frontend_dir/.env.local")
+    (umask 077; printf 'NEXT_PUBLIC_CONFIG_URL=%s\n' "$NEXT_PUBLIC_CONFIG_URL" > "$frontend_dir/.env.local")
     printf 'configured %s/.env.local for the current worktree\n' "$frontend_dir"
     exit 0
     ;;

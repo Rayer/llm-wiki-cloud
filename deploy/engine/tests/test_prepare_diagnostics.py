@@ -290,7 +290,7 @@ class FrontendPrepareDiagnostics(unittest.TestCase):
                       'frontend': {'profile': 'fake-frontend', 'inputs': 'b' * 64, 'files': []}}
         frontend = {'project_name': 'llm-wiki-frontend-test', 'team_slug': 'test-team',
                     'repository': 'Rayer/llm-wiki-cloud', 'root_directory': 'apps/frontend',
-                    'api_url': 'https://api.test.invalid', 'auth_url': 'https://auth.test.invalid'}
+                    'config_schema_version': 1, 'config_url': 'https://config.test.invalid/frontend-config.json'}
         plan = {'schema': 3, 'source': 'c' * 40, 'branch': 'develop', 'tag': 'offline-diagnostic',
                 'executor_sha': 'e' * 40,
                 'normalized': {'environment': 'development',
@@ -552,10 +552,10 @@ class FrontendPrepareDiagnostics(unittest.TestCase):
                     self.assertEqual(args, ['vercel', 'build', '--scope', 'test-team',
                                             '--token', self.token])
                     if settings_case != 'malformed':
-                        built_config = {'schema_version': 1, 'api_url': cfg['api_url'],
-                                        'auth_url': cfg['auth_url']}
+                        built_config = {'schema_version': cfg['config_schema_version'],
+                                        'config_url': cfg['config_url']}
                         if output_case == 'wrong':
-                            built_config['api_url'] = 'https://wrong.invalid'
+                            built_config['config_url'] = 'https://wrong.invalid/frontend-config.json'
                         resolved = ORIGINAL_SUBPROCESS_RUN(
                             ['node', probe, '--simulate-project-cwd-build'],
                             input=json.dumps({'cwd': str(fake_root / 'apps/frontend'),
@@ -573,8 +573,8 @@ class FrontendPrepareDiagnostics(unittest.TestCase):
                         decoy = fake_root / '.vercel/output/static'
                         decoy.mkdir(parents=True)
                         (decoy / 'build-config.json').write_text(json.dumps({
-                            'schema_version': 1, 'api_url': cfg['api_url'],
-                            'auth_url': cfg['auth_url']}))
+                            'schema_version': cfg['config_schema_version'],
+                            'config_url': cfg['config_url']}))
                     return subprocess.CompletedProcess(
                         args, 0, stdout='DEV_BUILD_SUCCESS_STDOUT_SENTINEL',
                         stderr='DEV_BUILD_SUCCESS_STDERR_SENTINEL')
@@ -709,8 +709,8 @@ class FrontendPrepareDiagnostics(unittest.TestCase):
                                   'settings': {'rootDirectory': 'apps/frontend'}})
                 self.assertEqual(json.loads(
                     outcome['archive_payloads']['.vercel/output/static/build-config.json']), {
-                        'schema_version': 1, 'api_url': 'https://api.test.invalid',
-                        'auth_url': 'https://auth.test.invalid'})
+                        'schema_version': 1,
+                        'config_url': 'https://config.test.invalid/frontend-config.json'})
                 self.assertEqual(outcome['trace'][:4], ['auth-digest', 'frontend-project-readback',
                                                         'frontend-npm-ci', 'frontend-vercel-pull'])
                 self.assertIn('frontend-vercel-build', outcome['trace'])
@@ -731,8 +731,8 @@ class FrontendPrepareDiagnostics(unittest.TestCase):
         self.assertEqual(len(outcome['barrier_calls']), 1)
         self.assertIn('.vercel/project.json', outcome['archive_members'])
         self.assertNotIn('.vercel/output/static/build-config.json', outcome['archive_members'])
-        expected = {'schema_version': 1, 'api_url': 'https://api.test.invalid',
-                    'auth_url': 'https://auth.test.invalid'}
+        expected = {'schema_version': 1,
+                    'config_url': 'https://config.test.invalid/frontend-config.json'}
         self.assertEqual(json.loads(outcome['archive_payloads'][
             '.vercel/output/functions/build-config.json.prerender-fallback.body']), expected)
         descriptor = json.loads(outcome['archive_payloads'][
@@ -1227,8 +1227,8 @@ else:
                                               'projectRoot': str(project_root),
                                               'configuredRoot': 'apps/frontend',
                                               'outputCase': 'valid',
-                                              'config': {'schema_version': 1, 'api_url': cfg['api_url'],
-                                                         'auth_url': cfg['auth_url']}}),
+                                              'config': {'schema_version': cfg['config_schema_version'],
+                                                         'config_url': cfg['config_url']}}),
                             capture_output=True, text=True, check=False,
                             env={'PATH': os.environ.get('PATH', '/usr/bin:/bin'),
                                  'TMPDIR': os.environ.get('TMPDIR', tempfile.gettempdir()),
@@ -1278,7 +1278,7 @@ else:
                 self.assertEqual(archive.extractfile('.vercel/project.json').read(), pulled_link['bytes'])
                 self.assertEqual(json.loads(archive.extractfile(
                     '.vercel/output/static/build-config.json').read()), {
-                        'schema_version': 1, 'api_url': cfg['api_url'], 'auth_url': cfg['auth_url']})
+                        'schema_version': cfg['config_schema_version'], 'config_url': cfg['config_url']})
 
     def test_runtime_deploy_maps_selected_context_before_pinned_cli(self):
         with tempfile.TemporaryDirectory() as work:
@@ -1300,8 +1300,8 @@ else:
                              'fsPath': 'build-config.json.prerender-fallback.body',
                              'contentType': 'application/json'}}))
             (functions / 'build-config.json.prerender-fallback.body').write_text(json.dumps({
-                'schema_version': 1, 'api_url': 'https://api.test.invalid',
-                'auth_url': 'https://auth.test.invalid'}))
+                'schema_version': 1,
+                'config_url': 'https://config.test.invalid/frontend-config.json'}))
             archive = directory / 'frontend.tgz'
             with tarfile.open(archive, 'w:gz') as tar:
                 tar.add(project_file, arcname='.vercel/project.json')
@@ -1337,8 +1337,8 @@ else:
                 self.assertFalse(Path(cwd, '.vercel/output/static/build-config.json').exists())
                 self.assertEqual(json.loads(Path(cwd, '.vercel/output/functions/'
                                                   'build-config.json.prerender-fallback.body').read_text()),
-                                 {'schema_version': 1, 'api_url': 'https://api.test.invalid',
-                                  'auth_url': 'https://auth.test.invalid'})
+                                 {'schema_version': 1,
+                                  'config_url': 'https://config.test.invalid/frontend-config.json'})
                 self.assertTrue(Path(cwd, '.vercel/output/functions/build-config.json.func/'
                                      '___next_launcher.cjs').is_file())
                 baseline = dict(env)

@@ -76,6 +76,7 @@ build:
 	go build ./...
 
 local-config: local-fixture-config
+	$(MAKE) -C ../.. config-local CONFIG_TARGET=frontend CAC_OUTPUT_DIR="$(abspath $(CAC_OUTPUT_DIR))" BFF_PORT="$(BFF_PORT)" AUTH_PORT="$(AUTH_PORT)"
 	BFF_PORT="$(BFF_PORT)" AUTH_PORT="$(AUTH_PORT)" FRONTEND_PORT="$(FRONTEND_PORT)" $(LOCAL_DEMO_CONFIG_ENV) $(LOCAL_ENV) --configure-frontend "$(FRONTEND_DIR)"
 	BFF_PORT="$(BFF_PORT)" AUTH_PORT="$(AUTH_PORT)" FRONTEND_PORT="$(FRONTEND_PORT)" $(LOCAL_DEMO_CONFIG_ENV) $(LOCAL_ENV) --summary
 
