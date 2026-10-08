@@ -156,3 +156,38 @@ Commands ran in this isolated worktree. “Skip” results below remain skips an
 | `git diff --check` | 0 | No whitespace errors. |
 
 The initial explicit-cutover rollback fixture also needed its prior image digest restored after generating the numeric mount; the focused freeze/rollback test and the full Apps BFF discovery then passed. Invoking `make test-flash-execution` at repository root returned 2 because that target exists only in `apps/bff`; the retained CI invocation from `apps/bff` passed. The new implementation is pushed as `c7abda140fe14e211a47d99ead5e6e1970c7fd53`; final-head review and canonical CI remain main-owned. No merge, deployment, or cloud action was performed.
+
+## r4 bounded frozen-AC1/AC2 repair
+
+This repair was performed in the retained `GPT-6-Luna`, `xhigh`, YOLO session and worktree, terminal `term_a1c5e73c-c9ba-4604-86a3-314a800b72c1`, task `task_5e20d237dc03`, dispatch `ctx_79b4ce0aee10`. The formal independent review artifact `/Users/rayer/.hermes/profiles/lwc-tpm/cache/scratch/implementation-wave/369-supervisor-99c8fe67.json` remains a HOLD for its reviewed source `99c8fe674a91be8c6d9be946eeece5b9d0d11cd6`; it independently reproduced both new blockers below. The requested `369-ci-caller-evidence-2bd5b975.md` path was unavailable; I read the matching prior review record at `/Users/rayer/.hermes/profiles/lwc-tpm/cache/scratch/implementation-wave/lwc369-pr-review-2bd5b975.md`, the full formal HOLD, and verified the actual caller paths and regressions locally. The previous three compatibility findings remain fixed and are not counted as the r4 blockers.
+
+| Acceptance | r4 result | Evidence / boundary |
+| --- | --- | --- |
+| AC1: Full schema-2 BFF config from real Pkl prepare for local/dev/prod, selected shared secret references only, and compatibility with existing Pipeline config | PASS locally | BFF `prepare` now forwards the selected `LWC_PIPELINE_LOCAL_SECRET_VERSION_RESOURCE` property to the real Pkl evaluation. The synthetic selected resource is preserved exactly through BFF descriptor, resolver, generated private BFF file, and Pipeline config; no payload appears in descriptor, public Pipeline files, logs, or error text. Existing local Pkl prepare with no selected resource retains the env binding. |
+| AC2: Strict file loader, validation, bounded size, no stale app-environment fallback, and secret-safe errors | PASS locally | Raw JSON schema validation now rejects null/wrong JSON types for root and nested values, including all six independently reproduced scalar fields. Loader tests confirm invalid files yield no runtime config; `auth_session_environment` must be explicit and nonempty. `registration_enabled`, `local`, and `query.legacy` legal nulls and contract-permitted empty optional strings remain accepted. Legacy non-file configuration paths are unchanged. |
+| AC3: Startup and runtime consumers use file config, retaining exact scopes and query/profile/LLM/local JWT behavior | PASS locally, carried from r3 | Full raced Go suite and real-Pkl local/dev/prod prepare passed; no live provider or paid LLM access was used. |
+| AC4: Controlled prepare/publish/pin/reconcile/rollback boundary; no payload in plan/artifacts; uncertain publication is conservative | PASS locally, carried from r3 | Full 119-test deployment-engine discovery and 70 CD contracts passed. Named config-only normalizer contract passed and reported `image_unchanged=true`. |
+| AC5: Authorized DEV non-root readability and numeric mount adoption | NOT RUN | Requires a separately authorized DEV provider action. No DEV/Prod provider operation, live GSM payload access, IAM/resource operation, paid Pipeline, or deployment action was performed. |
+
+### r4 code and verification
+
+Implementation and test changes are committed at source SHA `b6aaf21e877ee0126306ae50580378241b13940c` on `Rayer/LWC-369-implementation-r1`. The PR is #106, targeting `develop` at base `55fa221c91daac4da7f3e7b4b30a642848469df8`; before push its remote head was the prior r3 SHA `99c8fe674a91be8c6d9be946eeece5b9d0d11cd6`. The complete PR body was read before publication. The exact final PR head/base readback is included in the worker completion record; the source/test SHA above identifies the implementation commit.
+
+| Command | Exit | Result |
+| --- | ---: | --- |
+| `go test ./cmd/pipeline_config ./internal/config -count=1` | 0 | Changed Pkl prepare and strict BFF file-loader packages passed. |
+| `go test ./cmd/pipeline_config -run 'TestRealPklBFFPrepareRendersSchema2ForLocalDevelopmentAndProduction|TestRealPklBFFLocalPrepareUsesSelectedSharedSecretVersion' -count=1 -v` | 0 | Real Pkl local/dev/prod subtests and selected synthetic GSM shared-binding test passed. |
+| `python3 -m unittest discover -s scripts -p 'test_*.py'` (cwd `apps/bff`) | 0 | All 118 retained BFF tests passed. |
+| `python3 -m unittest discover -s deploy/engine/tests -p 'test_*.py'` | 1 before implementation commit; 0 after | The precommit run had 9 `dirty-build-input` errors because engine provenance checks require committed source. After committing source SHA `b6aaf21…`, all 119 tests passed; this was not a code assertion failure. |
+| `python3 scripts/test_cd_contract.py` | 0 | All 70 CD contracts passed. |
+| `PYTHONPATH=deploy/engine/tests:deploy/engine python3 -m unittest test_pipeline_config.PipelineConfigContract.test_config_only_uses_real_normalizer_with_controlled_providers -v` | 0 | Named real normalizer config-only case passed; image remained unchanged. |
+| `python3 -m unittest discover -s ../../scripts -p 'test_*auth_config_contract.py'` (cwd `apps/bff`) | 0 | All 21 auth configuration contracts passed. |
+| `python3 scripts/test_engine_workflow.py` | 0 | All 8 workflow/engine contract tests passed. |
+| `env -u LLM_API_KEY -u DEEPSEEK_API_KEY -u SYNTO_API_KEY -u OPENAI_API_KEY -u ANTHROPIC_API_KEY -u GEMINI_API_KEY -u TYPESAFE_API_KEY -u TYPESAFE_JEV_API_KEY -u LWC331_TEST_API_KEY go test ./... -v -count=1 -race` | 0 | 46 Go packages passed; 9 had no test files. Environment-gated local tests reported 90 skipped cases and 25 skipped subtests, including emulator-dependent coverage; skips are not counted as passes. |
+| `go vet ./...`; `go build ./...` (cwd `apps/bff`) | 0 | Go vet and build passed. |
+| `make test-flash-execution` (cwd `apps/bff`) | 0 | Pinned Flash wire contract passed with local synthetic fixtures; no paid provider call. |
+| `make test` (repository root) | 0 | Root suite passed: Go race tests, 70 CD contracts, 21 auth contracts, 19 local Makefile tests, 524 Node tests, and 292 component tests. The same Go run had 90 skipped cases and 25 skipped subtests listed above. |
+| `make lint`; `make typecheck`; `make vet`; `make build` (repository root) | 0 | Frontend lint/typecheck, Go vet, and Go/Next production builds passed. |
+| `git diff --check` | 0 | No whitespace errors. |
+
+The formal HOLD and its original two negative probes remain attributed to the reviewed `99c8fe…` source; local r4 evidence does not relabel that review as PASS. The new source SHA requires same-SHA TPM review, independent reviewer review, and canonical CI, all owned by main. No merge or deployment was attempted.
