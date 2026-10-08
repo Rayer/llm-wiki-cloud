@@ -12,6 +12,8 @@ import tarfile
 import tempfile
 import time
 import urllib.parse
+import urllib.error
+import urllib.request
 import tomllib
 
 from support import (ROOT, Breakpoint, InputShapeError, digest, read, require, run,
@@ -33,6 +35,11 @@ GCP_PROJECT_NUMBER_RE = re.compile(r'^[1-9][0-9]{5,19}$')
 BUILD_STATUSES = {'PENDING', 'QUEUED', 'WORKING', 'SUCCESS', 'FAILURE',
                   'INTERNAL_ERROR', 'TIMEOUT', 'CANCELLED', 'EXPIRED', 'STATUS_UNKNOWN'}
 BUILD_TERMINAL_FAILURES = {'FAILURE', 'INTERNAL_ERROR', 'TIMEOUT', 'CANCELLED', 'EXPIRED'}
+
+
+class _AuthConfigNoRedirectHandler(urllib.request.HTTPRedirectHandler):
+    def redirect_request(self, req, fp, code, msg, headers, newurl):
+        return None
 
 
 class Providers:
@@ -153,6 +160,143 @@ class Providers:
             record['version_resource'] = returned
             save()
             return returned.rsplit('/', 1)[1]
+
+    def prepare_auth_config_version(self, candidate, save):
+        inputs = self.p['auth'].get('runtime_inputs')
+        require(isinstance(inputs, dict), 'auth-runtime-inputs-missing')
+        resource = inputs.get('config_secret_resource')
+        require(isinstance(resource, str) and re.fullmatch(
+            r'projects/[A-Za-z0-9.-]+/secrets/[A-Za-z0-9_-]+', resource),
+            'auth-config-secret-resource-invalid')
+        project_id = self.p['gcp']['project_id']
+        require(resource.split('/')[1] == project_id, 'auth-config-secret-project-mismatch')
+        project_number = self.gcp_project_number()
+        record = candidate.get('auth_config')
+        if record is None:
+            record = {
+                'status': 'preparing', 'publication_status': 'not_started',
+                'config_id': inputs['config_id'], 'secret_resource': resource,
+                'project_id': project_id, 'project_number': project_number,
+                'mount_path': auth_config.AUTH_CONFIG_PATH, 'materialization_schema': 1,
+            }
+            candidate['auth_config'] = record
+            save()
+        require(record.get('config_id') == inputs.get('config_id') and
+                record.get('secret_resource') == resource and
+                record.get('mount_path') == auth_config.AUTH_CONFIG_PATH and
+                record.get('materialization_schema') == 1,
+                'auth-config-checkpoint-identity-mismatch')
+        version_resource = record.get('version_resource')
+        if record.get('status') in ('publishing', 'unconfirmed'):
+            raise Breakpoint('auth-config-publication-unconfirmed', 'unknown', True,
+                             'inspect-retained-checkpoint', stage='auth-config-publish')
+        if record.get('project_id') is None and record.get('project_number') is None:
+            # Migrate a known pre-repair checkpoint without replaying publication.
+            require(record.get('status') in ('preparing', 'published'),
+                    'auth-config-checkpoint-identity-mismatch')
+            record['project_id'] = project_id
+            record['project_number'] = project_number
+            save()
+        require(record.get('project_id') == project_id and
+                record.get('project_number') == project_number,
+                'auth-config-checkpoint-project-mismatch')
+        if record.get('status') == 'published':
+            require(isinstance(version_resource, str) and
+                    re.fullmatch(re.escape(resource) + r'/versions/[1-9][0-9]*', version_resource) and
+                    record.get('publication_status') == 'known',
+                    'auth-config-version-checkpoint-invalid')
+            return version_resource.rsplit('/', 1)[1]
+        require(record.get('status') == 'preparing' and version_resource is None and
+                record.get('publication_status') == 'not_started',
+                'auth-config-version-checkpoint-invalid')
+
+        temp_root = Path(os.environ.get('RUNNER_TEMP') or tempfile.gettempdir()).resolve()
+        require(temp_root != ROOT and ROOT not in temp_root.parents and
+                temp_root != self.directory and self.directory not in temp_root.parents,
+                'auth-config-temp-location-invalid')
+        try:
+            temp_root.mkdir(parents=True, exist_ok=True)
+        except OSError:
+            raise Breakpoint('auth-config-temp-unavailable', 'failed', False,
+                             'inspect-auth-config-prepare', stage='auth-config-materialize') from None
+        with tempfile.TemporaryDirectory(prefix='lwc-auth-runtime-config-', dir=temp_root) as temporary:
+            private = Path(temporary)
+            os.chmod(private, 0o700)
+            inputs_path = private / 'auth-inputs.json'
+            config_path = private / 'auth.json'
+            write(inputs_path, inputs)
+            os.chmod(inputs_path, 0o600)
+            env = dict(os.environ, LWC_REPOSITORY_ROOT=str(ROOT))
+            try:
+                run(['go', 'run', './cmd/pipeline_config', 'materialize-auth',
+                     '--inputs', str(inputs_path), '--output', str(config_path)],
+                    cwd=ROOT / 'apps/bff', env=env, timeout=180, stage='auth-config-materialize')
+                info = config_path.lstat()
+                require(stat.S_ISREG(info.st_mode) and stat.S_IMODE(info.st_mode) == 0o600 and
+                        0 < info.st_size <= 64 * 1024,
+                        'auth-config-file-invalid')
+            except (OSError, KeyError, TypeError, ValueError):
+                raise Breakpoint('auth-config-file-unavailable', 'failed', False,
+                                 'inspect-auth-config-prepare', stage='auth-config-materialize') from None
+
+            record['status'] = 'publishing'
+            record['publication_status'] = 'publishing'
+            save()
+            secret_name = resource.split('/')[3]
+            try:
+                output = run(['gcloud', 'secrets', 'versions', 'add', secret_name,
+                              '--project', self.p['gcp']['project_id'], '--data-file', str(config_path),
+                              '--format=json', '--quiet'], timeout=120, mutation=True,
+                             stage='auth-config-publish')
+            except Breakpoint as exc:
+                record['status'] = 'unconfirmed'
+                record['publication_status'] = 'unknown'
+                save()
+                raise Breakpoint('auth-config-publication-unconfirmed', 'unknown', True,
+                                 'inspect-retained-checkpoint', stage='auth-config-publish',
+                                 exit_code=exc.exit_code, timeout_class=exc.timeout_class) from None
+            try:
+                result = json.loads(output)
+                returned = result.get('name') if isinstance(result, dict) else None
+                match = (re.fullmatch(
+                    r'projects/([A-Za-z0-9.-]+)/secrets/([A-Za-z0-9_-]+)/versions/([1-9][0-9]*)', returned)
+                    if isinstance(returned, str) else None)
+                if (match is None or match.group(1) not in (project_id, project_number) or
+                        match.group(2) != resource.split('/')[3]):
+                    raise ValueError('numeric version resource missing')
+            except (TypeError, ValueError):
+                record['status'] = 'unconfirmed'
+                record['publication_status'] = 'unknown'
+                save()
+                raise Breakpoint('auth-config-publication-unconfirmed', 'unknown', True,
+                                 'inspect-retained-checkpoint', stage='auth-config-publish', exit_code=0) from None
+            record['status'] = 'published'
+            record['publication_status'] = 'known'
+            # Keep checkpoints canonical even when the producer returns the
+            # selected project's legal numeric resource name.
+            record['version_resource'] = resource + '/versions/' + match.group(3)
+            save()
+            return match.group(3)
+
+    def _auth_config_project_number(self, record, inputs, *, allow_legacy=False):
+        project_id = self.p['gcp']['project_id']
+        resource = inputs.get('config_secret_resource')
+        require(isinstance(resource, str) and re.fullmatch(
+            r'projects/[A-Za-z0-9.-]+/secrets/[A-Za-z0-9_-]+', resource) and
+            resource.split('/')[1] == project_id,
+            'auth-config-secret-project-mismatch')
+        project_number = self.gcp_project_number()
+        stored_id = record.get('project_id')
+        stored_number = record.get('project_number')
+        if stored_id is None and stored_number is None and allow_legacy:
+            version_resource = record.get('version_resource')
+            require(isinstance(version_resource, str) and re.fullmatch(
+                re.escape(resource) + r'/versions/[1-9][0-9]*', version_resource),
+                'auth-config-checkpoint-project-mismatch')
+            return project_number
+        require(stored_id == project_id and stored_number == project_number,
+                'auth-config-checkpoint-project-mismatch')
+        return project_number
 
     def pipeline_config_object(self, pipeline_config):
         try:
@@ -921,13 +1065,15 @@ class Providers:
                 any(x.get('type') == 'Ready' and x.get('status') == 'True'
                     for x in revision.get('status', {}).get('conditions', [])))
 
-    def service_template_matches(self, c, raw, revision, image, bff_config_version=None):
+    def service_template_matches(self, c, raw, revision, image, bff_config_version=None,
+                                 auth_config_version=None):
         template = raw['spec']['template']
         metadata = dict(template.get('metadata', {}))
         metadata.setdefault('namespace', revision.get('metadata', {}).get('namespace'))
         effective_template = {'metadata': metadata, 'spec': self.service_template(raw), 'status': revision['status']}
         return (metadata.get('name') == revision['metadata']['name'] and
-                self.service_matches(c, effective_template, image, bff_config_version))
+                self.service_matches(c, effective_template, image, bff_config_version,
+                                     auth_config_version))
 
     def snapshot(self, c):
         if c == 'frontend':
@@ -999,23 +1145,93 @@ class Providers:
                 str(t.get('timeoutSeconds')) == '82800' and t.get('maxRetries') == cfg['max_retries'] and
                 execution.get('parallelism') == cfg['parallelism'] and execution.get('taskCount') == cfg['tasks'])
 
-    def service_matches(self, c, revision, image, bff_config_version=None):
+    def service_matches(self, c, revision, image, bff_config_version=None, auth_config_version=None):
         if c == 'bff' and (not isinstance(bff_config_version, str) or
                            not re.fullmatch(r'[1-9][0-9]*', bff_config_version)):
             return False
-        expected = auth_config.desired(self.p, c, bff_config_version)
+        auth_file_configured = c == 'auth' and isinstance(self.p['auth'].get('runtime_inputs'), dict)
+        if auth_file_configured and (not isinstance(auth_config_version, str) or
+                                     not re.fullmatch(r'[1-9][0-9]*', auth_config_version)):
+            return False
+        expected = auth_config.desired(self.p, c, bff_config_version, auth_config_version)
+        expected_file_resource = expected.get('file_secret', {}).get('resource')
+        project_number = (self.gcp_project_number()
+                          if self._revision_uses_numeric_secret_project(revision) else None)
         try:
             actual = auth_config.effective(revision, self.p['gcp']['project_id'], c,
                 set(expected['env']) == {auth_config.QUERY_PATH},
                 c == 'bff' and (self.p['environment'] == 'development' or self.p['auth'].get('google') is None),
                 c == 'bff', c == 'bff' and auth_config.PIPELINE_DEMO_USER_IDS in expected['env'],
                 c == 'bff' and (self.p['environment'] == 'development' or self.p['export_job']['enabled']),
-                c == 'bff' and auth_config.PIPELINE_COOLDOWN_SECONDS in expected['env'])
+                c == 'bff' and auth_config.PIPELINE_COOLDOWN_SECONDS in expected['env'],
+                auth_file_configured, expected_file_resource, project_number)
         except (KeyError, TypeError, ValueError):
             return False
         return (actual == expected and revision['status']['imageDigest'] == image and
                 revision['spec']['containers'][0]['image'] == image and
                 any(x['type'] == 'Ready' and x['status'] == 'True' for x in revision['status']['conditions']))
+
+    def _revision_uses_numeric_secret_project(self, revision):
+        project_id = self.p['gcp']['project_id']
+        annotations = revision.get('metadata', {}).get('annotations', {})
+        if not isinstance(annotations, dict):
+            annotations = {}
+        bindings = annotations.get('run.googleapis.com/secrets', '')
+        for binding in bindings.split(',') if isinstance(bindings, str) else ():
+            _, separator, resource = binding.partition(':')
+            match = re.fullmatch(r'projects/([A-Za-z0-9.-]+)/secrets/[A-Za-z0-9_-]+', resource)
+            if (separator and match and match.group(1) != project_id and
+                    re.fullmatch(r'[1-9][0-9]{5,19}', match.group(1))):
+                return True
+        volumes = revision.get('spec', {}).get('volumes', [])
+        for volume in volumes if isinstance(volumes, list) else ():
+            secret = volume.get('secret') if isinstance(volume, dict) else None
+            resource = secret.get('secretName') if isinstance(secret, dict) else None
+            match = re.fullmatch(r'projects/([A-Za-z0-9.-]+)/secrets/[A-Za-z0-9_-]+', resource) \
+                if isinstance(resource, str) else None
+            if (match and match.group(1) != project_id and
+                    re.fullmatch(r'[1-9][0-9]{5,19}', match.group(1))):
+                return True
+        return False
+
+    def auth_runtime_config_matches(self, inputs):
+        url = inputs.get('auth_service_url')
+        allowed = inputs.get('allowed_hosts')
+        if not isinstance(url, str) or not isinstance(allowed, list):
+            raise Breakpoint('auth-runtime-config-identity-invalid', 'failed', False,
+                             'inspect-auth-runtime-inputs')
+        parsed = urllib.parse.urlsplit(url)
+        if (parsed.scheme != 'https' or parsed.hostname not in allowed or parsed.username or parsed.password or
+                parsed.port not in (None, 443) or parsed.path not in ('', '/') or parsed.query or parsed.fragment):
+            raise Breakpoint('auth-runtime-config-identity-invalid', 'failed', False,
+                             'inspect-auth-runtime-inputs')
+        endpoint = url.rstrip('/') + '/api/v1/public/version'
+        request = urllib.request.Request(endpoint, headers={'Accept': 'application/json', 'Cache-Control': 'no-cache'})
+        try:
+            opener = urllib.request.build_opener(_AuthConfigNoRedirectHandler())
+            with opener.open(request, timeout=15) as response:
+                final = urllib.parse.urlsplit(response.geturl())
+                if (response.status != 200 or final.scheme != 'https' or final.hostname not in allowed or
+                        final.port not in (None, 443) or final.username or final.password or
+                        final.query or final.fragment):
+                    return False
+                body = response.read(16 * 1024 + 1)
+        except urllib.error.HTTPError as exc:
+            if exc.code in (301, 302, 303, 307, 308, 404, 429, 502, 503, 504):
+                return False
+            raise Breakpoint('auth-runtime-config-identity-unreadable', 'unknown', True,
+                             'reconcile-before-replay') from None
+        except (OSError, TimeoutError, urllib.error.URLError):
+            raise Breakpoint('auth-runtime-config-identity-unreadable', 'unknown', True,
+                             'reconcile-before-replay') from None
+        if len(body) > 16 * 1024:
+            return False
+        try:
+            result = json.loads(body)
+        except (TypeError, ValueError):
+            return False
+        return (isinstance(result, dict) and result.get('config_schema_version') == 1 and
+                result.get('config_id') == inputs.get('config_id'))
 
     def observe(self, c, artifact, candidate, prior=False):
         if c == 'frontend':
@@ -1045,6 +1261,7 @@ class Providers:
                         len(template.get('containers', [])) == 1 and
                         template['containers'][0].get('image') == artifact.get('image'))
             bff_config_version = None
+            auth_config_version = None
             if c == 'bff':
                 record = candidate.get('bff_config') or {}
                 resource = self.p['bff'].get('config_secret_resource')
@@ -1054,9 +1271,37 @@ class Providers:
                         not re.fullmatch(re.escape(resource) + r'/versions/[1-9][0-9]*', version_resource)):
                     return False
                 bff_config_version = version_resource.rsplit('/', 1)[1]
-            return (self.service_matches(c, revision, artifact['image'], bff_config_version) and
-                    self.service_template_matches(c, raw, revision, artifact['image'], bff_config_version) and
-                    (not candidate.get('revision') or candidate['revision'] == revision['metadata']['name']))
+            auth_inputs = self.p['auth'].get('runtime_inputs') if c == 'auth' else None
+            if isinstance(auth_inputs, dict):
+                record = candidate.get('auth_config') or {}
+                resource = auth_inputs.get('config_secret_resource')
+                version_resource = record.get('version_resource')
+                if (record.get('status') != 'published' or record.get('publication_status') != 'known' or
+                        record.get('config_id') != auth_inputs.get('config_id') or
+                        record.get('secret_resource') != resource or
+                        record.get('mount_path') != auth_config.AUTH_CONFIG_PATH or
+                        record.get('materialization_schema') != 1 or
+                        not isinstance(version_resource, str) or
+                        not re.fullmatch(re.escape(resource) + r'/versions/[1-9][0-9]*', version_resource)):
+                    return False
+                try:
+                    project_number = self._auth_config_project_number(record, auth_inputs, allow_legacy=True)
+                except (Breakpoint, KeyError, TypeError, ValueError):
+                    return False
+                if record.get('project_id') is None and record.get('project_number') is None:
+                    record['project_id'] = self.p['gcp']['project_id']
+                    record['project_number'] = project_number
+                auth_config_version = version_resource.rsplit('/', 1)[1]
+            matches = (self.service_matches(c, revision, artifact['image'], bff_config_version,
+                                            auth_config_version) and
+                       self.service_template_matches(c, raw, revision, artifact['image'],
+                                                    bff_config_version, auth_config_version) and
+                       (not candidate.get('revision') or candidate['revision'] == revision['metadata']['name']))
+            if not matches:
+                return False
+            if isinstance(auth_inputs, dict):
+                return self.auth_runtime_config_matches(auth_inputs)
+            return True
         t = self.job_template(raw)
         if len(t['containers']) != 1 or t['containers'][0]['image'] != artifact['image']:
             return False
@@ -1144,21 +1389,28 @@ class Providers:
         args = [kind, 'update', name, '--image', artifact['image']]
         if c in ('auth', 'bff'):
             bff_config_version = None
+            auth_config_version = None
             if c == 'bff':
                 bff_config_version = self.prepare_bff_config_version(candidate, save)
+            else:
+                auth_config_version = self.prepare_auth_config_version(candidate, save)
             if not candidate.get('revision'):
                 config_args = ['python3', ROOT / 'deploy/components/auth_config.py', 'args', self.directory / 'plan.json', c]
                 if c == 'bff':
                     config_args.append(bff_config_version)
+                else:
+                    config_args.append(auth_config_version)
                 flags = run(config_args).splitlines()
                 result = json.loads(self.cloud(c, *args, '--no-traffic', *flags, mutation=True))
                 candidate['revision'] = result['status']['latestCreatedRevisionName']
                 save()
             revision = candidate['revision']
             retained = self.revision(c, revision)
-            require(self.service_matches(c, retained, artifact['image'], bff_config_version), 'candidate-config-not-ready')
+            require(self.service_matches(c, retained, artifact['image'], bff_config_version,
+                                         auth_config_version), 'candidate-config-not-ready')
             raw = self.describe(c)
-            if not self.service_template_matches(c, raw, retained, artifact['image'], bff_config_version):
+            if not self.service_template_matches(c, raw, retained, artifact['image'], bff_config_version,
+                                                 auth_config_version):
                 self.restore_service(c, retained, [{'revisionName': revision, 'percent': 100}])
             else:
                 self.cloud(c, 'services', 'update-traffic', name, '--to-revisions', revision+'=100', mutation=True)
@@ -1177,6 +1429,7 @@ class Providers:
         """Discover accepted creation before allowing continuation; never replay creation."""
         if c in ('auth', 'bff') and not candidate.get('revision'):
             bff_config_version = None
+            auth_config_version = None
             if c == 'bff':
                 record = candidate.get('bff_config') or {}
                 if record.get('status') in ('publishing', 'unconfirmed'):
@@ -1190,9 +1443,35 @@ class Providers:
                         re.fullmatch(re.escape(resource) + r'/versions/[1-9][0-9]*', version_resource),
                         'bff-config-version-checkpoint-invalid')
                 bff_config_version = version_resource.rsplit('/', 1)[1]
+            else:
+                record = candidate.get('auth_config') or {}
+                if record.get('status') in ('publishing', 'unconfirmed') or record.get('publication_status') in ('publishing', 'unknown'):
+                    raise Breakpoint('auth-config-publication-unconfirmed', 'unknown', True,
+                                     'inspect-retained-checkpoint', stage='auth-config-publish')
+                inputs = self.p['auth'].get('runtime_inputs')
+                if not isinstance(inputs, dict):
+                    return
+                resource = inputs.get('config_secret_resource')
+                version_resource = record.get('version_resource')
+                if record.get('status') != 'published' or record.get('publication_status') != 'known':
+                    return
+                require(record.get('config_id') == inputs.get('config_id') and
+                        record.get('secret_resource') == resource and
+                        record.get('mount_path') == auth_config.AUTH_CONFIG_PATH and
+                        record.get('materialization_schema') == 1 and
+                        isinstance(resource, str) and isinstance(version_resource, str) and
+                        re.fullmatch(re.escape(resource) + r'/versions/[1-9][0-9]*', version_resource),
+                        'auth-config-version-checkpoint-invalid')
+                project_number = self._auth_config_project_number(record, inputs, allow_legacy=True)
+                if record.get('project_id') is None and record.get('project_number') is None:
+                    record['project_id'] = self.p['gcp']['project_id']
+                    record['project_number'] = project_number
+                    save()
+                auth_config_version = version_resource.rsplit('/', 1)[1]
             raw = self.describe(c)
             name = raw['status']['latestCreatedRevisionName']
-            if self.service_matches(c, self.revision(c, name), artifact['image'], bff_config_version):
+            if self.service_matches(c, self.revision(c, name), artifact['image'], bff_config_version,
+                                    auth_config_version):
                 candidate['revision'] = name
                 save()
         if c == 'frontend' and not candidate.get('deployment'):

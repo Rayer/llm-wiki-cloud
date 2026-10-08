@@ -2,7 +2,7 @@
 module lwc.pipeline.ssot
 
 environment: "local" | "dev" | "prod" = read("prop:environment")
-target: "pipeline" | "bff" = read?("prop:target") ?? "pipeline"
+target: "pipeline" | "bff" | "auth" = read?("prop:target") ?? "pipeline"
 
 /// Required only when the Pipeline target is selected.
 runTimeoutSeconds: Int? = read?("prop:runTimeoutSeconds")?.toInt()
@@ -106,6 +106,39 @@ class BffConfig {
   config_secret_resource: String
 }
 
+class AuthGoogleConfig {
+  enabled: Boolean
+  client_id: String
+  client_secret_reference: String
+  issuer: String
+  jwks_url: String
+  token_url: String
+  login_redirect_url: String
+  link_redirect_url: String
+  completion_url: String
+}
+
+class AuthConfig {
+  schema_version: Int
+  environment: String
+  target: String
+  gcp_project: String
+  firestore_database_id: String
+  local_cloud_scope: String
+  auth_service_url: String
+  allowed_hosts: Listing<String>
+  allowed_origins: Listing<String>
+  auth_session_environment: String
+  auth_session_migration: "disabled" | "legacy_read_through"
+  registration_enabled: Boolean?
+  auth_demo_user_id: String
+  auth_demo_user_email: String
+  auth_demo_user_role: String
+  jwt_secret_reference: String
+  google: AuthGoogleConfig
+  config_secret_resource: String
+}
+
 local localSecretResource: String? = read?("prop:localSecretVersionResource")
 local localBffScope = read?("prop:bffLocalScope") ?? ""
 local localBffWorkerPath = read?("prop:bffLocalWorkerPath") ?? ""
@@ -116,6 +149,12 @@ local localBffDemoUserIDs = read?("prop:bffLocalDemoUserIDs") ?? ""
 local localBffPort = (read?("prop:bffLocalPort") ?? "8080").toInt()
 local localBffAuthPort = (read?("prop:bffLocalAuthPort") ?? "8081").toInt()
 local localBffFrontendPort = (read?("prop:bffLocalFrontendPort") ?? "3000").toInt()
+local localAuthScope = read?("prop:authLocalScope") ?? ""
+local localAuthJWTSecretFile = read?("prop:authLocalJWTSecretFile") ?? ""
+local localAuthDemoUserID = read?("prop:authLocalDemoUserID") ?? ""
+local localAuthDemoUserEmail = read?("prop:authLocalDemoUserEmail") ?? ""
+local localAuthDemoUserRole = read?("prop:authLocalDemoUserRole") ?? ""
+local localAuthPort = (read?("prop:authLocalAuthPort") ?? "8081").toInt()
 
 local deepseekSecret = new SecretBinding {
   source = "secret-manager"
@@ -371,7 +410,111 @@ local bff = if (environment == "local") localBff
   else if (environment == "dev") devBff
   else prodBff
 
+local localAuth = new AuthConfig {
+  schema_version = 1
+  environment = "local"
+  target = "auth"
+  gcp_project = "llm-wiki-cloud"
+  firestore_database_id = "llm-wiki-cloud-local"
+  local_cloud_scope = localAuthScope
+  auth_service_url = "http://localhost:\(localAuthPort)"
+  allowed_hosts = new Listing { "localhost"; "127.0.0.1" }
+  allowed_origins = new Listing { "http://localhost:\(localBffFrontendPort)" }
+  auth_session_environment = "llm-wiki-cloud-local"
+  auth_session_migration = "disabled"
+  registration_enabled = null
+  auth_demo_user_id = localAuthDemoUserID
+  auth_demo_user_email = localAuthDemoUserEmail
+  auth_demo_user_role = localAuthDemoUserRole
+  jwt_secret_reference = localAuthJWTSecretFile
+  google = new AuthGoogleConfig {
+    enabled = false
+    client_id = ""
+    client_secret_reference = ""
+    issuer = ""
+    jwks_url = ""
+    token_url = ""
+    login_redirect_url = ""
+    link_redirect_url = ""
+    completion_url = ""
+  }
+  config_secret_resource = ""
+}
+
+local devAuth = new AuthConfig {
+  schema_version = 1
+  environment = "dev"
+  target = "auth"
+  gcp_project = "llm-wiki-cloud"
+  firestore_database_id = "llm-wiki-cloud-dev"
+  local_cloud_scope = ""
+  auth_service_url = "https://auth.dev.rayer.idv.tw"
+  allowed_hosts = new Listing { "auth.dev.rayer.idv.tw"; "auth-dev.rayer.idv.tw" }
+  allowed_origins = new Listing {
+    "https://wiki.dev.rayer.idv.tw"
+    "https://llm-wiki-frontend-dev.vercel.app"
+    "http://localhost:3000"
+  }
+  auth_session_environment = "llm-wiki-cloud-dev"
+  auth_session_migration = "disabled"
+  registration_enabled = null
+  auth_demo_user_id = "e492f6bdaf1735e12b2de96d"
+  auth_demo_user_email = "demo@llm-wiki.dev"
+  auth_demo_user_role = "member"
+  jwt_secret_reference = "projects/llm-wiki-cloud/secrets/jwt-secret-dev/versions/latest"
+  google = new AuthGoogleConfig {
+    enabled = true
+    client_id = "580854833715-vo7fg6f7f15g1kkgchk1ulccllbc24qg.apps.googleusercontent.com"
+    client_secret_reference = "projects/llm-wiki-cloud/secrets/google-oauth-client-dev/versions/1"
+    issuer = "https://accounts.google.com"
+    jwks_url = "https://www.googleapis.com/oauth2/v3/certs"
+    token_url = "https://oauth2.googleapis.com/token"
+    login_redirect_url = "https://auth.dev.rayer.idv.tw/api/v1/auth/google/callback"
+    link_redirect_url = "https://auth.dev.rayer.idv.tw/api/v1/auth/google/link/callback"
+    completion_url = "https://wiki.dev.rayer.idv.tw/login"
+  }
+  config_secret_resource = "projects/llm-wiki-cloud/secrets/lwc-auth-app-config-dev"
+}
+
+local prodAuth = new AuthConfig {
+  schema_version = 1
+  environment = "prod"
+  target = "auth"
+  gcp_project = "llm-wiki-cloud"
+  firestore_database_id = "llm-wiki-cloud-prod"
+  local_cloud_scope = ""
+  auth_service_url = "https://auth.rayer.idv.tw"
+  allowed_hosts = new Listing { "auth.rayer.idv.tw" }
+  allowed_origins = new Listing {
+    "https://wiki.rayer.idv.tw"
+    "https://llm-wiki-frontend.vercel.app"
+  }
+  auth_session_environment = "llm-wiki-cloud-prod"
+  auth_session_migration = "disabled"
+  registration_enabled = null
+  auth_demo_user_id = "e492f6bdaf1735e12b2de96d"
+  auth_demo_user_email = "demo@llm-wiki.dev"
+  auth_demo_user_role = "member"
+  jwt_secret_reference = "projects/llm-wiki-cloud/secrets/jwt-secret-prod/versions/latest"
+  google = new AuthGoogleConfig {
+    enabled = true
+    client_id = "580854833715-1b37asap0uocbdcrighjaorflvj2n94m.apps.googleusercontent.com"
+    client_secret_reference = "projects/llm-wiki-cloud/secrets/google-oauth-client-prod/versions/1"
+    issuer = "https://accounts.google.com"
+    jwks_url = "https://www.googleapis.com/oauth2/v3/certs"
+    token_url = "https://oauth2.googleapis.com/token"
+    login_redirect_url = "https://auth.rayer.idv.tw/api/v1/auth/google/callback"
+    link_redirect_url = "https://auth.rayer.idv.tw/api/v1/auth/google/link/callback"
+    completion_url = "https://wiki.rayer.idv.tw/login"
+  }
+  config_secret_resource = "projects/llm-wiki-cloud/secrets/lwc-auth-app-config-prod"
+}
+
+local auth = if (environment == "local") localAuth
+  else if (environment == "dev") devAuth
+  else prodAuth
+
 output {
-  value = if (target == "bff") bff else pipeline
-  renderer = new JsonRenderer {}
+  value = if (target == "auth") auth else if (target == "bff") bff else pipeline
+  renderer = if (target == "auth") new JsonRenderer { omitNullProperties = false } else new JsonRenderer {}
 }

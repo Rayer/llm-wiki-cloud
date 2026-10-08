@@ -1,6 +1,11 @@
 BFF_DIR := apps/bff
 FRONTEND_DIR := apps/frontend
+LOCAL_ENV := $(BFF_DIR)/../../scripts/local-cloud-env.sh
 CAC_OUTPUT_DIR ?= $(CURDIR)/.build/cac
+CAC_TARGET ?= pipeline
+BFF_PORT ?= 8080
+AUTH_PORT ?= 8081
+FRONTEND_PORT ?= 3000
 PKL_BIN ?= $(shell if command -v pkl >/dev/null 2>&1 && pkl --version 2>/dev/null | grep -Eq '^Pkl 0\.32\.1([[:space:]]|$$)'; then command -v pkl; else printf '%s' '$(CURDIR)/.build/tools/pkl'; fi)
 export PKL_BIN
 export PATH := $(dir $(PKL_BIN)):$(PATH)
@@ -16,7 +21,7 @@ help:
 	  'bootstrap      Install app dependencies and write frontend local config' \
 	  'local-start    Start native Auth, BFF, and Frontend against local GCS/Firestore' \
 	  'local-stop     Stop managed local processes for this worktree' \
-	  'config-local   Render Pipeline or BFF SSOT output (CAC_TARGET=pipeline|bff)' \
+	  'config-local   Render Pipeline, BFF, or Auth SSOT output (CAC_TARGET=pipeline|bff|auth)' \
 	  'smoke          Run loopback/auth-boundary and cloud-scope smoke tests' \
 	  'lint typecheck test build vet verify  Run repository checks'
 
@@ -60,7 +65,11 @@ workflow-yaml:
 	ruby -e 'require "yaml"; files=%w[ci.yml cd.yml deploy-dev.yml promote-production.yml]; workflows=files.to_h { |file| [file, YAML.load_file(".github/workflows/"+file)] }; abort "invalid CI workflow" unless workflows["ci.yml"]["jobs"].key?("bff"); abort "invalid config-only workflow branch" unless workflows["cd.yml"]["jobs"].key?("pipeline-config-only") && workflows["cd.yml"]["jobs"]["release"]["if"].include?("config-only"); files.each { |file| puts ".github/workflows/#{file}: valid YAML" }'
 
 config-local: ensure-pkl
-	cd $(BFF_DIR) && PKL_BIN="$(PKL_BIN)" LWC_REPOSITORY_ROOT="$(CURDIR)" go run ./cmd/pipeline_config prepare --target "$(CAC_TARGET)" --environment local --output "$(CAC_OUTPUT_DIR)/local"
+	@if [ "$(CAC_TARGET)" = auth ]; then \
+	  BFF_PORT="$(BFF_PORT)" AUTH_PORT="$(AUTH_PORT)" FRONTEND_PORT="$(FRONTEND_PORT)" "$(LOCAL_ENV)" -- $(MAKE) -C $(BFF_DIR) auth-config-local CAC_OUTPUT_DIR="$(CAC_OUTPUT_DIR)" PKL_BIN="$(PKL_BIN)"; \
+	else \
+	  cd $(BFF_DIR) && PKL_BIN="$(PKL_BIN)" LWC_REPOSITORY_ROOT="$(CURDIR)" go run ./cmd/pipeline_config prepare --target "$(CAC_TARGET)" --environment local --output "$(CAC_OUTPUT_DIR)/local"; \
+	fi
 
 config-dev: ensure-pkl
 	cd $(BFF_DIR) && PKL_BIN="$(PKL_BIN)" LWC_REPOSITORY_ROOT="$(CURDIR)" go run ./cmd/pipeline_config prepare --target "$(CAC_TARGET)" --environment dev --output "$(CAC_OUTPUT_DIR)/dev"

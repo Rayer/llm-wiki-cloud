@@ -20,7 +20,7 @@ SYNTO_ARTIFACT_URL := https://files.pythonhosted.org/packages/4a/e9/41c6b61338d9
 SYNTO_SHA256 := 4bc8dcf14b53f45fac32ce737ecf878f1a46d6d0b010c7decbe6c3b7b10afa77
 TEST_ENV := env -u LLM_API_KEY -u DEEPSEEK_API_KEY -u SYNTO_API_KEY -u OPENAI_API_KEY -u ANTHROPIC_API_KEY -u GEMINI_API_KEY -u TYPESAFE_API_KEY -u TYPESAFE_JEV_API_KEY -u LWC331_TEST_API_KEY
 
-.PHONY: help ensure-pkl docker-build docker-build-export-job docker-push deploy deploy-dev deploy-prod all build-sync setup local-config local-fixture-config local-synto-runtime local-synto-runtime-test local-worker-build local-fixture local-start dev support-bff support-frontend support-pipeline bff-local auth-local frontend-local local-stop kill-local pipeline-test test-flash-execution vet test build
+.PHONY: help ensure-pkl docker-build docker-build-export-job docker-push deploy deploy-dev deploy-prod all build-sync setup local-config local-fixture-config auth-config-local local-synto-runtime local-synto-runtime-test local-worker-build local-fixture local-start dev support-bff support-frontend support-pipeline bff-local auth-local frontend-local local-stop kill-local pipeline-test test-flash-execution vet test build
 
 help:
 	@printf '%s\n' \
@@ -29,6 +29,7 @@ help:
 	  'support-bff        Start Auth + Frontend for a BFF debugger session' \
 	  'support-frontend   Start Auth + BFF for a Frontend debugger session' \
 	  'support-pipeline   Start all apps; use pipeline-test for no-provider worker tests' \
+	  'auth-local         Start Auth with the generated local Auth config file' \
 	  'local-stop         Stop only processes supervised for this worktree' \
 	  'pipeline-test      Run worker tests without calling a paid provider'
 
@@ -77,6 +78,9 @@ build:
 local-config: local-fixture-config
 	BFF_PORT="$(BFF_PORT)" AUTH_PORT="$(AUTH_PORT)" FRONTEND_PORT="$(FRONTEND_PORT)" $(LOCAL_DEMO_CONFIG_ENV) $(LOCAL_ENV) --configure-frontend "$(FRONTEND_DIR)"
 	BFF_PORT="$(BFF_PORT)" AUTH_PORT="$(AUTH_PORT)" FRONTEND_PORT="$(FRONTEND_PORT)" $(LOCAL_DEMO_CONFIG_ENV) $(LOCAL_ENV) --summary
+
+auth-config-local: ensure-pkl
+	LWC_REPOSITORY_ROOT="$(abspath ../..)" go run ./cmd/pipeline_config prepare --target auth --environment local --output "$(CAC_OUTPUT_DIR)/local"
 
 local-fixture-config: ensure-pkl
 	mkdir -p "$(CAC_OUTPUT_DIR)/local"

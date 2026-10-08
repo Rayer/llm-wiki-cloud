@@ -219,17 +219,33 @@ func googleReader(ctx context.Context) (secretReader, error) {
 }
 
 func main() {
+	if len(os.Args) >= 2 && os.Args[1] == "materialize-auth" {
+		flags := flag.NewFlagSet("materialize-auth", flag.ExitOnError)
+		inputs := flags.String("inputs", "", "immutable nonsecret Auth Stage 1 input snapshot")
+		output := flags.String("output", "", "private Auth JSON output path")
+		_ = flags.Parse(os.Args[2:])
+		if strings.TrimSpace(*inputs) == "" || strings.TrimSpace(*output) == "" {
+			fmt.Fprintln(os.Stderr, "usage: pipeline-config materialize-auth --inputs auth-inputs.json --output PRIVATE/auth.json")
+			os.Exit(2)
+		}
+		if err := runMaterializeAuth(context.Background(), *inputs, *output, googleReader); err != nil {
+			fmt.Fprintln(os.Stderr, err)
+			os.Exit(1)
+		}
+		return
+	}
 	if len(os.Args) < 2 || os.Args[1] != "prepare" {
-		fmt.Fprintln(os.Stderr, "usage: pipeline-config prepare --target pipeline|bff --environment local|dev|prod --output DIR")
+		fmt.Fprintln(os.Stderr, "usage: pipeline-config prepare --target pipeline|bff|auth --environment local|dev|prod --output DIR")
 		os.Exit(2)
 	}
 	flags := flag.NewFlagSet("prepare", flag.ExitOnError)
-	target := flags.String("target", "pipeline", "generated target: pipeline or bff")
+	target := flags.String("target", "pipeline", "generated target: pipeline, bff, or auth")
 	environment := flags.String("environment", "", "selected target environment")
 	output := flags.String("output", "", "generated output directory")
-	descriptor := flags.Bool("descriptor", false, "emit the nonsecret BFF input projection for deployment admission")
+	descriptor := flags.Bool("descriptor", false, "emit a nonsecret component input snapshot for deployment admission")
+	sourceSHA := flags.String("source-sha", "", "immutable source commit for Auth runtime configuration")
 	_ = flags.Parse(os.Args[2:])
-	if err := runPrepareTargetMode(context.Background(), *target, *environment, *output, *descriptor, googleReader); err != nil {
+	if err := runPrepareTargetModeAtSource(context.Background(), *target, *environment, *output, *descriptor, *sourceSHA, googleReader); err != nil {
 		fmt.Fprintln(os.Stderr, err)
 		os.Exit(1)
 	}
@@ -253,11 +269,15 @@ func runPrepareTarget(ctx context.Context, target, environment, output string, n
 }
 
 func runPrepareTargetMode(ctx context.Context, target, environment, output string, descriptorOnly bool, newReader readerFactory) error {
-	if target != "pipeline" && target != "bff" {
-		return errors.New("target must be pipeline or bff")
+	return runPrepareTargetModeAtSource(ctx, target, environment, output, descriptorOnly, "", newReader)
+}
+
+func runPrepareTargetModeAtSource(ctx context.Context, target, environment, output string, descriptorOnly bool, sourceSHA string, newReader readerFactory) error {
+	if target != "pipeline" && target != "bff" && target != "auth" {
+		return errors.New("target must be pipeline, bff, or auth")
 	}
-	if descriptorOnly && target != "bff" {
-		return errors.New("--descriptor requires --target bff")
+	if descriptorOnly && target != "bff" && target != "auth" {
+		return errors.New("--descriptor requires --target bff or auth")
 	}
 	if environment != "local" && environment != "dev" && environment != "prod" {
 		return errors.New("environment must be local, dev, or prod")
@@ -267,6 +287,10 @@ func runPrepareTargetMode(ctx context.Context, target, environment, output strin
 	}
 	if target == "bff" {
 		if err := invalidateBFFOutput(output); err != nil {
+			return err
+		}
+	} else if target == "auth" {
+		if err := invalidateAuthOutput(output, environment); err != nil {
 			return err
 		}
 	}
@@ -286,7 +310,7 @@ func runPrepareTargetMode(ctx context.Context, target, environment, output strin
 		if localResource != "" {
 			properties = append(properties, "--property", "localSecretVersionResource="+localResource)
 		}
-	} else {
+	} else if target == "bff" {
 		localResource := strings.TrimSpace(os.Getenv("LWC_PIPELINE_LOCAL_SECRET_VERSION_RESOURCE"))
 		if localResource != "" {
 			properties = append(properties, "--property", "localSecretVersionResource="+localResource)
@@ -300,6 +324,22 @@ func runPrepareTargetMode(ctx context.Context, target, environment, output strin
 			{"bffLocalDemoUserIDs", "PIPELINE_DEMO_USER_IDS", ""},
 			{"bffLocalPort", "BFF_PORT", "8080"},
 			{"bffLocalAuthPort", "AUTH_PORT", "8081"},
+			{"bffLocalFrontendPort", "FRONTEND_PORT", "3000"},
+		} {
+			value := strings.TrimSpace(os.Getenv(property.env))
+			if value == "" {
+				value = property.fallback
+			}
+			properties = append(properties, "--property", property.name+"="+value)
+		}
+	} else {
+		for _, property := range []struct{ name, env, fallback string }{
+			{"authLocalScope", "LOCAL_CLOUD_SCOPE", ""},
+			{"authLocalJWTSecretFile", "LOCAL_CLOUD_JWT_SECRET_FILE", ""},
+			{"authLocalDemoUserID", "AUTH_DEMO_USER_ID", ""},
+			{"authLocalDemoUserEmail", "AUTH_DEMO_USER_EMAIL", ""},
+			{"authLocalDemoUserRole", "AUTH_DEMO_USER_ROLE", ""},
+			{"authLocalAuthPort", "AUTH_PORT", "8081"},
 			{"bffLocalFrontendPort", "FRONTEND_PORT", "3000"},
 		} {
 			value := strings.TrimSpace(os.Getenv(property.env))
@@ -336,6 +376,32 @@ func runPrepareTargetMode(ctx context.Context, target, environment, output strin
 			return writeBFFDescriptor(output, projection)
 		}
 		return prepareBFFRuntimeConfig(ctx, root, output, projection, newReader)
+	}
+	if target == "auth" {
+		projection, err := decodeAuthSourceProjection(ssotBytes, environment)
+		if err != nil {
+			return err
+		}
+		if environment == "local" {
+			if descriptorOnly {
+				return errors.New("--descriptor is only supported for deployed Auth targets")
+			}
+			return prepareAuthLocal(ctx, root, output, projection, sourceSHA)
+		}
+		if descriptorOnly {
+			if sourceSHA == "" {
+				sourceSHA, err = repositorySourceSHA(root)
+				if err != nil {
+					return err
+				}
+			}
+			inputs, err := prepareAuthInputs(ctx, projection, sourceSHA, newReader)
+			if err != nil {
+				return err
+			}
+			return writeAuthInputSnapshot(output, inputs)
+		}
+		return writeAuthSourceProjection(output, projection)
 	}
 	if err := json.Unmarshal(ssotBytes, &config); err != nil {
 		return fmt.Errorf("decode selected Pipeline SSOT: %w", err)
@@ -1003,10 +1069,9 @@ func repositoryRoot() (string, error) {
 			return "", err
 		}
 	}
-	for _, path := range []string{filepath.Join(root, "deploy/cac/ssot.pkl"), filepath.Join(root, "deploy/cac/synto.pkl")} {
-		if _, err := os.Stat(path); err != nil {
-			return "", fmt.Errorf("Pipeline config source is unavailable: %s", path)
-		}
+	path := filepath.Join(root, "deploy/cac/ssot.pkl")
+	if _, err := os.Stat(path); err != nil {
+		return "", fmt.Errorf("config source is unavailable: %s", path)
 	}
 	return root, nil
 }

@@ -8,6 +8,8 @@ import (
 	"reflect"
 	"strings"
 	"testing"
+
+	runtimeconfig "github.com/rayer/llm-wiki-bff/internal/config"
 )
 
 func repoRoot(t *testing.T) string {
@@ -27,7 +29,8 @@ func TestLoadReviewedEnvironmentsAndQueryIdentity(t *testing.T) {
 			cooldown = 3600
 		}
 		bffInputs := writeBFFDescriptorFixture(t, environment, cooldown)
-		config, err := LoadWithBFFInputs(environment, filepath.Join(root, "deploy/environments", environment+".yaml"), "auth,bff,worker,frontend", bffInputs)
+		authInputs := writeAuthInputFixture(t, environment)
+		config, err := LoadWithRuntimeInputs(environment, filepath.Join(root, "deploy/environments", environment+".yaml"), "auth,bff,worker,frontend", bffInputs, authInputs)
 		if err != nil {
 			t.Fatalf("Load(%s): %v", environment, err)
 		}
@@ -144,7 +147,7 @@ func TestGeneratedBFFDescriptorRejectsInvalidInputs(t *testing.T) {
 		if err := os.WriteFile(path, data, 0o600); err != nil {
 			t.Fatal(err)
 		}
-		if _, err := LoadWithBFFInputs("development", configPath, "bff", path); err == nil {
+		if _, err := LoadWithRuntimeInputs("development", configPath, "auth,bff", path, writeAuthInputFixture(t, "development")); err == nil {
 			t.Error("LoadWithBFFInputs accepted invalid descriptor")
 		}
 	}
@@ -184,35 +187,85 @@ func writeBFFDescriptorFixture(t *testing.T, environment string, cooldown int) s
 	return path
 }
 
-func TestAuthDemoIdentityConfigIsRequiredAndRendered(t *testing.T) {
-	root := repoRoot(t)
-	config, err := decodeConfig(filepath.Join(root, "deploy/environments/development.yaml"))
+func authInputFixture(environment string) runtimeconfig.AuthInputSnapshot {
+	target, database, domain, hosts, origins, googleID, googleSecret := "dev", "llm-wiki-cloud-dev", "auth.dev.rayer.idv.tw",
+		[]string{"auth.dev.rayer.idv.tw", "auth-dev.rayer.idv.tw"},
+		[]string{"https://wiki.dev.rayer.idv.tw", "https://llm-wiki-frontend-dev.vercel.app", "http://localhost:3000"},
+		"580854833715-vo7fg6f7f15g1kkgchk1ulccllbc24qg.apps.googleusercontent.com", "google-oauth-client-dev"
+	if environment == "production" {
+		target, database, domain, hosts, origins, googleID, googleSecret = "prod", "llm-wiki-cloud-prod", "auth.rayer.idv.tw",
+			[]string{"auth.rayer.idv.tw"},
+			[]string{"https://wiki.rayer.idv.tw", "https://llm-wiki-frontend.vercel.app"},
+			"580854833715-1b37asap0uocbdcrighjaorflvj2n94m.apps.googleusercontent.com", "google-oauth-client-prod"
+	}
+	inputs := runtimeconfig.AuthInputSnapshot{
+		SchemaVersion: 1, Environment: target, Target: "auth", SourceSHA: strings.Repeat("a", 40),
+		GCPProject: "llm-wiki-cloud", FirestoreDatabaseID: database, AuthServiceURL: "https://" + domain,
+		AllowedHosts: hosts, AllowedOrigins: origins, AuthSessionEnvironment: database,
+		AuthSessionMigration: "disabled", AuthDemoUserID: "e492f6bdaf1735e12b2de96d",
+		AuthDemoUserEmail: "demo@llm-wiki.dev", AuthDemoUserRole: "member",
+		JWTSecretVersion: "projects/llm-wiki-cloud/secrets/jwt-secret-" + target + "/versions/3",
+		Google: runtimeconfig.AuthInputGoogle{
+			Enabled: true, ClientID: googleID,
+			ClientSecretVersion: "projects/llm-wiki-cloud/secrets/" + googleSecret + "/versions/1",
+			Issuer:              "https://accounts.google.com", JWKSURL: "https://www.googleapis.com/oauth2/v3/certs",
+			TokenURL: "https://oauth2.googleapis.com/token", LoginRedirectURL: "https://" + domain + "/api/v1/auth/google/callback",
+			LinkRedirectURL: "https://" + domain + "/api/v1/auth/google/link/callback",
+			CompletionURL:   "https://" + strings.Replace(domain, "auth.", "wiki.", 1) + "/login",
+		},
+		ConfigSecretResource: "projects/llm-wiki-cloud/secrets/lwc-auth-app-config-" + target,
+	}
+	if environment == "production" {
+		inputs.Google.CompletionURL = "https://wiki.rayer.idv.tw/login"
+	}
+	inputs.ConfigID, _ = runtimeconfig.AuthInputConfigID(inputs)
+	return inputs
+}
+
+func writeAuthInputFixture(t *testing.T, environment string) string {
+	t.Helper()
+	inputs := authInputFixture(environment)
+	return writeAuthInputValue(t, inputs)
+}
+
+func writeAuthInputValue(t *testing.T, inputs runtimeconfig.AuthInputSnapshot) string {
+	t.Helper()
+	data, err := json.Marshal(inputs)
 	if err != nil {
 		t.Fatal(err)
 	}
-	if err := validateConfigForEnvironment("development", config); err != nil {
+	path := filepath.Join(t.TempDir(), "auth-inputs.json")
+	if err := os.WriteFile(path, data, 0o600); err != nil {
+		t.Fatal(err)
+	}
+	return path
+}
+
+func TestAuthDemoIdentityConfigIsRequiredAndRendered(t *testing.T) {
+	root := repoRoot(t)
+	configPath := filepath.Join(root, "deploy/environments/development.yaml")
+	inputs := authInputFixture("development")
+	plan, err := LoadWithAuthInputs("development", configPath, "auth", writeAuthInputValue(t, inputs))
+	if err != nil {
 		t.Fatalf("configured Auth Demo identity: %v", err)
 	}
-	configuredID := config.Auth.DemoUserID
-	config.Auth.DemoUserID = ""
-	if err := validateConfigForEnvironment("development", config); err == nil {
-		t.Fatal("missing Auth Demo UID was accepted")
-	}
-	config.Auth.DemoUserID = "bad|uid"
-	if err := validateConfigForEnvironment("development", config); err == nil {
-		t.Fatal("invalid Auth Demo UID was accepted")
-	}
-	config.Auth.DemoUserID = configuredID
-	if err := validateConfigForEnvironment("development", config); err != nil {
-		t.Fatalf("restored Auth Demo identity: %v", err)
-	}
-	input := componentInputs(config, QueryConfigIdentity{}, []string{"auth"})["auth"].(map[string]any)
-	if input["demo_user_id"] != config.Auth.DemoUserID || input["demo_user_email"] != config.Auth.DemoUserEmail || input["demo_user_role"] != config.Auth.DemoUserRole {
+	input := plan.Components["auth"].(map[string]any)
+	if input["demo_user_id"] != inputs.AuthDemoUserID || input["demo_user_email"] != inputs.AuthDemoUserEmail || input["demo_user_role"] != inputs.AuthDemoUserRole {
 		t.Fatalf("Auth component Demo identity = %#v", input)
 	}
-	config.Auth.DemoUserRole = "admin"
-	if err := validateConfigForEnvironment("development", config); err == nil {
-		t.Fatal("admin Demo role was accepted")
+	for name, mutate := range map[string]func(*runtimeconfig.AuthInputSnapshot){
+		"missing UID": func(v *runtimeconfig.AuthInputSnapshot) { v.AuthDemoUserID = "" },
+		"invalid UID": func(v *runtimeconfig.AuthInputSnapshot) { v.AuthDemoUserID = "bad|uid" },
+		"admin role":  func(v *runtimeconfig.AuthInputSnapshot) { v.AuthDemoUserRole = "admin" },
+	} {
+		t.Run(name, func(t *testing.T) {
+			bad := inputs
+			mutate(&bad)
+			bad.ConfigID, _ = runtimeconfig.AuthInputConfigID(bad)
+			if _, err := LoadWithAuthInputs("development", configPath, "auth", writeAuthInputValue(t, bad)); err == nil {
+				t.Fatal("invalid Auth Demo identity was accepted")
+			}
+		})
 	}
 }
 
@@ -237,7 +290,7 @@ func TestPipelineDemoUserIDsMustMatchTheConfiguredAuthIdentity(t *testing.T) {
 		if err := os.WriteFile(path, data, 0o600); err != nil {
 			t.Fatal(err)
 		}
-		if _, err := LoadWithBFFInputs("development", configPath, "bff", path); err == nil {
+		if _, err := LoadWithRuntimeInputs("development", configPath, "auth,bff", path, writeAuthInputFixture(t, "development")); err == nil {
 			t.Fatalf("mismatched or invalid Demo IDs accepted: %#v", ids)
 		}
 	}
@@ -311,7 +364,7 @@ func TestProductionProfileBindingsAreRequiredOnlyForBFFDeployment(t *testing.T) 
 	if err := validateProfileRuntimeConfig("production", unprovisioned); err == nil {
 		t.Fatal("Production accepted missing Profile runtime configuration for BFF deployment")
 	}
-	if _, err := Load("production", filepath.Join(root, "deploy/environments/production.yaml"), "auth"); err != nil {
+	if _, err := LoadWithAuthInputs("production", filepath.Join(root, "deploy/environments/production.yaml"), "auth", writeAuthInputFixture(t, "production")); err != nil {
 		t.Fatalf("Production Auth-only plan remains loadable without BFF input resolution: %v", err)
 	}
 	workerPlan, err := Load("production", filepath.Join(root, "deploy/environments/production.yaml"), "worker")

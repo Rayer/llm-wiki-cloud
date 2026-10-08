@@ -11,11 +11,15 @@ auth_config_managed() {
 }
 
 auth_config_readback() {
-  local mode="$1" revision="$2" image="$3" fingerprint="${4:-}" component="${5:-auth}" expected_version="${6:-}" raw
+  local mode="$1" revision="$2" image="$3" fingerprint="${4:-}" component="${5:-auth}" expected_version="${6:-}" raw config_version
   raw=$(gcloud run revisions describe "$revision" --project "$(plan_json '.gcp.project_id')" --region "$(plan_json '.gcp.region')" --format=json --quiet) || return 2
   if [[ "$component" == bff ]]; then
-    local config_version
     config_version=$(python3 "$ROOT/deploy/components/auth_config.py" version "$PLAN_PATH" bff <<<"$raw") || return 1
+    if [[ -n "$expected_version" && "$config_version" != "$expected_version" ]]; then return 1; fi
+    if [[ -n "$expected_version" ]]; then config_version="$expected_version"; fi
+    python3 "$ROOT/deploy/components/auth_config.py" "$mode" "$PLAN_PATH" "$component" "$revision" "$image" "$fingerprint" "$config_version" <<<"$raw"
+  elif jq -e '(.normalized.auth.runtime_inputs | type) == "object"' "$PLAN_PATH" >/dev/null; then
+    config_version=$(python3 "$ROOT/deploy/components/auth_config.py" version "$PLAN_PATH" auth <<<"$raw") || return 1
     if [[ -n "$expected_version" && "$config_version" != "$expected_version" ]]; then return 1; fi
     if [[ -n "$expected_version" ]]; then config_version="$expected_version"; fi
     python3 "$ROOT/deploy/components/auth_config.py" "$mode" "$PLAN_PATH" "$component" "$revision" "$image" "$fingerprint" "$config_version" <<<"$raw"
