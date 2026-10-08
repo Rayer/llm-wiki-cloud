@@ -921,10 +921,12 @@ func (h *Handler) PipelineRun(c *gin.Context) {
 	executionID, err := h.invokePipelineJobStageWithReservation(ctx, userID, projectID, false, pipelineStageFull, quotaReservationID)
 	if err != nil {
 		if reserved && !errors.Is(err, errPipelineInvocationOutcomeUnknown) {
+			recoveryCtx, cancelRecovery := context.WithTimeout(context.Background(), 10*time.Second)
+			defer cancelRecovery()
 			if qs := h.effectiveQuotaStore(); qs != nil {
-				if _, settleErr := qs.SettleQuotaReservation(ctx, reservationID, "FAILED"); settleErr != nil {
+				if _, settleErr := qs.SettleQuotaReservation(recoveryCtx, reservationID, "FAILED"); settleErr != nil {
 					log.Print("pipeline quota refund failed")
-					if evidenceErr := h.writeConfirmedPipelineInvokeFailure(ctx, userID, projectID, reservationID); evidenceErr != nil {
+					if evidenceErr := h.writeConfirmedPipelineInvokeFailure(recoveryCtx, userID, projectID, reservationID); evidenceErr != nil {
 						log.Print("pipeline invoke failure recovery evidence unavailable")
 					}
 				}
@@ -1554,7 +1556,18 @@ func (h *Handler) cloudRunPublicationOutcome(ctx context.Context, owner *pipelin
 	if !exists || manifest.LocalExecutionID == "" {
 		return pipelinePublicationAbsent
 	}
-	return pipelinePublicationUnknown
+	diagnostic, diagnosticExecution, diagnosticErr := readPipelineFailureDiagnosticWithExecution(ctx, project, executionID)
+	if diagnosticErr != nil || diagnosticExecution != executionID {
+		return pipelinePublicationUnknown
+	}
+	switch pipelinediagnostic.PublicationOutcomeForStage(pipelinediagnostic.Stage(diagnostic.Stage)) {
+	case pipelinediagnostic.PublicationOutcomeAbsent:
+		return pipelinePublicationAbsent
+	case pipelinediagnostic.PublicationOutcomeCommitted:
+		return pipelinePublicationCommitted
+	default:
+		return pipelinePublicationUnknown
+	}
 }
 
 func (h *Handler) cloudRunStatusWithPublicationEvidence(ctx context.Context, owner *pipelineExecutionOwner, executionID string) string {
@@ -1747,16 +1760,21 @@ func readPipelineFailureDiagnostic(ctx context.Context, projectStore store.Store
 	if executionID == "" {
 		return nil, errors.New("invalid execution name")
 	}
+	diagnostic, _, err := readPipelineFailureDiagnosticWithExecution(ctx, projectStore, executionID)
+	return diagnostic, err
+}
+
+func readPipelineFailureDiagnosticWithExecution(ctx context.Context, projectStore store.Store, executionID string) (*handler.PipelineFailureDiagnostic, string, error) {
 	reader, ok := projectStore.(limitedPipelineLogReader)
 	if !ok {
-		return nil, errors.New("bounded pipeline diagnostic reader unavailable")
+		return nil, "", errors.New("bounded pipeline diagnostic reader unavailable")
 	}
 	data, err := reader.ReadFileLimited(ctx, "cache/pipeline-"+executionID+".failure.json", maxPipelineDiagnosticBytes+1)
 	if err != nil {
-		return nil, err
+		return nil, "", err
 	}
 	if len(data) > maxPipelineDiagnosticBytes {
-		return nil, errors.New("diagnostic too large")
+		return nil, "", errors.New("diagnostic too large")
 	}
 	var payload struct {
 		Version    int    `json:"version"`
@@ -1772,50 +1790,50 @@ func readPipelineFailureDiagnostic(ctx context.Context, projectStore store.Store
 	decoder := json.NewDecoder(bytes.NewReader(data))
 	decoder.DisallowUnknownFields()
 	if err := decoder.Decode(&payload); err != nil {
-		return nil, err
+		return nil, "", err
 	}
 	var trailing any
 	if err := decoder.Decode(&trailing); err != io.EOF {
-		return nil, errors.New("diagnostic has trailing data")
+		return nil, "", errors.New("diagnostic has trailing data")
 	}
 	if payload.Version != 1 || payload.Status != "failed" {
-		return nil, errors.New("unsupported diagnostic")
+		return nil, "", errors.New("unsupported diagnostic")
 	}
 	if payload.Execution != "" && payload.Execution != executionID {
-		return nil, errors.New("diagnostic execution mismatch")
+		return nil, "", errors.New("diagnostic execution mismatch")
 	}
 	if len(payload.Message) > 512 {
-		return nil, errors.New("diagnostic message too large")
+		return nil, "", errors.New("diagnostic message too large")
 	}
 	if _, ok := pipelinediagnostic.ValidStages[pipelinediagnostic.Stage(payload.Stage)]; !ok {
-		return nil, errors.New("invalid diagnostic stage")
+		return nil, "", errors.New("invalid diagnostic stage")
 	}
 	if _, ok := pipelinediagnostic.ValidErrorClasses[pipelinediagnostic.ErrorClass(payload.ErrorClass)]; !ok {
-		return nil, errors.New("invalid diagnostic class")
+		return nil, "", errors.New("invalid diagnostic class")
 	}
 	if payload.DetailCode != "" {
 		if payload.Stage != "concept_reconciliation" {
-			return nil, errors.New("invalid diagnostic detail")
+			return nil, "", errors.New("invalid diagnostic detail")
 		}
 		if _, ok := pipelinediagnostic.ValidDetailCodes[pipelinediagnostic.DetailCode(payload.DetailCode)]; !ok {
-			return nil, errors.New("invalid diagnostic detail")
+			return nil, "", errors.New("invalid diagnostic detail")
 		}
 	}
 	if payload.Child != "" {
 		if _, ok := pipelinediagnostic.ValidChildCommands[pipelinediagnostic.ChildCommand(payload.Child)]; !ok {
-			return nil, errors.New("invalid diagnostic child")
+			return nil, "", errors.New("invalid diagnostic child")
 		}
 	} else if payload.ExitCode != nil {
-		return nil, errors.New("diagnostic exit code without child")
+		return nil, "", errors.New("diagnostic exit code without child")
 	}
 	if payload.ExitCode != nil && (*payload.ExitCode < 0 || *payload.ExitCode > 255) {
-		return nil, errors.New("invalid diagnostic exit code")
+		return nil, "", errors.New("invalid diagnostic exit code")
 	}
 	return &handler.PipelineFailureDiagnostic{
 		Version: payload.Version, Status: payload.Status, Stage: payload.Stage,
 		ErrorClass: payload.ErrorClass, DetailCode: payload.DetailCode,
 		Child: payload.Child, ExitCode: payload.ExitCode, Message: payload.Message,
-	}, nil
+	}, payload.Execution, nil
 }
 
 func (h *Handler) fetchCloudRunExecution(ctx context.Context, token, executionID string) (cloudRunExecution, error) {

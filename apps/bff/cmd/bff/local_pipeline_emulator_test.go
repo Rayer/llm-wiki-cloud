@@ -12,6 +12,7 @@ import (
 	"net"
 	"net/http"
 	"net/http/httptest"
+	"net/http/httputil"
 	"net/url"
 	"os"
 	"os/exec"
@@ -90,14 +91,30 @@ func TestLocalPipelineHTTPTriggerRunsWorkerAndReportsSuccessAndFailure(t *testin
 	otherScope := scope + "-retained"
 	managerClosed := false
 	var manager *localpipeline.Manager
+	var reconciliationFS *scopedfirestore.Client
+	var raceStorageClient *gcs.Client
+	var storageProxy *gatedStorageProxy
 	sentinelSeeded := false
 	t.Cleanup(func() {
+		firestoreProxy.SetPaused(false)
+		firestoreProxy.SetBlocked(false)
+		if storageProxy != nil {
+			storageProxy.SetBlocked(false)
+		}
 		cleanupCtx, cleanupCancel := context.WithTimeout(context.Background(), 30*time.Second)
 		defer cleanupCancel()
 		if !managerClosed && manager != nil {
 			if err := manager.Close(cleanupCtx); err != nil {
 				t.Errorf("close native worker manager during cleanup: %v", err)
 			}
+		}
+		if raceStorageClient != nil {
+			if err := raceStorageClient.Close(); err != nil {
+				t.Errorf("close proxy-backed native finish Storage client: %v", err)
+			}
+		}
+		if storageProxy != nil {
+			storageProxy.Close()
 		}
 		if err := deleteLocalPipelineFirestoreScope(cleanupCtx, fsClient.Raw(), scope); err != nil {
 			t.Errorf("delete/read back Firestore local scope: %v", err)
@@ -115,6 +132,11 @@ func TestLocalPipelineHTTPTriggerRunsWorkerAndReportsSuccessAndFailure(t *testin
 		}
 		if err := fsClient.Close(); err != nil {
 			t.Errorf("close Firestore client: %v", err)
+		}
+		if reconciliationFS != nil {
+			if err := reconciliationFS.Close(); err != nil {
+				t.Errorf("close direct reconciliation Firestore client: %v", err)
+			}
 		}
 		if err := cloudClient.Close(); err != nil {
 			t.Errorf("close Storage client: %v", err)
@@ -357,6 +379,132 @@ func TestLocalPipelineHTTPTriggerRunsWorkerAndReportsSuccessAndFailure(t *testin
 		t.Fatalf("same-input retry status=%q reason=%q, want the fixture failure", state, reason)
 	}
 	assertLocalPipelineQuota(t, ctx, fsClient, userID, projectID, executionID, 2, "refunded", lastRunBeforeFailure)
+
+	// Force the native finish writer to hold a stale UNKNOWN result while the
+	// background reconciler confirms the worker's execution-owned prepublish
+	// diagnostic and refunds the reservation.
+	const staleFinishProject = "stale-finish-race"
+	staleFinishStorage := storageClient.WithScope(userID, staleFinishProject)
+	if _, err := staleFinishStorage.WriteBytes(ctx, []byte("initial publication"), "raw/source.md"); err != nil {
+		t.Fatalf("seed stale-finish initial source: %v", err)
+	}
+	initialID := postLocalPipelineRun(t, ctx, server.Client(), server.URL, token, staleFinishProject, http.StatusAccepted)
+	waitNativeExecutionState(t, ctx, fsClient, initialID, "SUCCEEDED")
+	assertLocalPipelineQuota(t, ctx, fsClient, userID, staleFinishProject, initialID, 1, "charged")
+	time.Sleep(1100 * time.Millisecond)
+	storageProxy = newGatedStorageProxy(t, storageEndpoint)
+	t.Setenv("STORAGE_EMULATOR_HOST", storageProxy.URL())
+	raceStorageClient, err = gcs.NewClient(bucket)
+	if err != nil {
+		t.Fatalf("create proxy-backed native finish Storage client: %v", err)
+	}
+	t.Setenv("STORAGE_EMULATOR_HOST", storageEndpoint)
+	manager, err = localpipeline.New(localpipeline.Config{
+		Firestore: fsClient.Raw(), Storage: raceStorageClient, Worker: worker, Stderr: workerStderr,
+		Project: project, Bucket: bucket, Database: database, Scope: scope, WorkDir: t.TempDir(),
+		PipelineConfigPath: generatedConfigPath, PipelineBindingsPath: privateBindingsPath,
+	})
+	if err != nil {
+		t.Fatalf("configure proxy-backed native finish manager: %v", err)
+	}
+	managerClosed = false
+	h.SetLocalPipelineExecutor(manager)
+	if _, err := staleFinishStorage.WriteBytes(ctx, []byte("controlled failure input"), "raw/fixture-outage.md"); err != nil {
+		t.Fatalf("seed stale-finish failure input: %v", err)
+	}
+	staleWorkspace := t.TempDir()
+	t.Setenv("WORKSPACE_DIR", staleWorkspace)
+	failedID := postLocalPipelineRun(t, ctx, server.Client(), server.URL, token, staleFinishProject, http.StatusAccepted)
+	readyPath := filepath.Join(staleWorkspace, "fixture-outage-ready")
+	releasePath := filepath.Join(staleWorkspace, "fixture-outage-release")
+	waitForLocalFixtureFile(t, ctx, readyPath)
+	staleRawObject := localcloud.Scope(scope).ObjectPrefix() + storeapi.ProjectObjectPath(userID, staleFinishProject, "raw/fixture-outage.md")
+	if err := cloudClient.Bucket(bucket).Object(staleRawObject).Delete(ctx); err != nil {
+		t.Fatalf("remove failure marker after native materialization: %v", err)
+	}
+	storageProxy.SetBlocked(true)
+	firestoreProxy.SetPaused(true)
+	if err := os.WriteFile(releasePath, []byte("release"), 0o600); err != nil {
+		t.Fatalf("release controlled native failure: %v", err)
+	}
+	waitForLocalPipelineDiagnostic(t, ctx, staleFinishStorage, failedID)
+	if err := firestoreProxy.WaitPaused(ctx); err != nil {
+		t.Fatalf("wait for actual native finish transaction barrier: %v", err)
+	}
+	t.Setenv("FIRESTORE_EMULATOR_HOST", emulatorHostPort(t, firestoreEndpoint))
+	reconciliationFS, err = scopedfirestore.NewClientWithDatabase(project, database, "", "")
+	if err != nil {
+		t.Fatalf("create direct loopback Firestore reconciler client: %v", err)
+	}
+	t.Setenv("FIRESTORE_EMULATOR_HOST", firestoreProxy.Address())
+	reconciler, err := localpipeline.New(localpipeline.Config{
+		Firestore: reconciliationFS.Raw(), Storage: storageClient, Worker: worker,
+		Project: project, Bucket: bucket, Database: database, Scope: scope, WorkDir: t.TempDir(),
+	})
+	if err != nil {
+		t.Fatalf("configure direct background reconciler: %v", err)
+	}
+	reconcilerCtx, cancelReconciler := context.WithCancel(ctx)
+	reconcilerDone := make(chan struct{})
+	go func() {
+		defer close(reconcilerDone)
+		reconciler.RunQuotaReconciler(reconcilerCtx)
+	}()
+	waitNativeExecutionState(t, ctx, reconciliationFS, failedID, "FAILED")
+	cancelReconciler()
+	<-reconcilerDone
+	assertLocalPipelineQuota(t, ctx, reconciliationFS, userID, staleFinishProject, failedID, 1, "refunded")
+	if running, err := reconciler.Running(ctx, userID, staleFinishProject); err != nil || running {
+		t.Fatalf("reconciled native lock running=%v err=%v, want released", running, err)
+	}
+	failedSnapshot, err := scopedfirestore.Collection(reconciliationFS.Raw(), "executions").Doc(failedID).Get(ctx)
+	if err != nil || failedSnapshot.Data()["status"] != "FAILED" {
+		t.Fatalf("reconciled native execution status=%v err=%v, want FAILED", failedSnapshot.Data()["status"], err)
+	}
+	firestoreProxy.SetPaused(false)
+	raceCloseCtx, raceCloseCancel := context.WithTimeout(context.Background(), 30*time.Second)
+	if err := manager.Close(raceCloseCtx); err != nil {
+		raceCloseCancel()
+		t.Fatalf("wait for stale native finish after background reconciliation: %v", err)
+	}
+	raceCloseCancel()
+	managerClosed = true
+	storageProxy.SetBlocked(false)
+	failedSnapshot, err = scopedfirestore.Collection(reconciliationFS.Raw(), "executions").Doc(failedID).Get(ctx)
+	if err != nil || failedSnapshot.Data()["status"] != "FAILED" {
+		t.Fatalf("resumed stale finish changed reconciled execution status=%v err=%v, want FAILED", failedSnapshot.Data()["status"], err)
+	}
+	assertLocalPipelineQuota(t, ctx, reconciliationFS, userID, staleFinishProject, failedID, 1, "refunded")
+	if running, err := reconciler.Running(ctx, userID, staleFinishProject); err != nil || running {
+		t.Fatalf("resumed stale finish changed reconciled lock running=%v err=%v, want released", running, err)
+	}
+	manager, err = localpipeline.New(localpipeline.Config{
+		Firestore: fsClient.Raw(), Storage: storageClient, Worker: worker, Stderr: workerStderr,
+		Project: project, Bucket: bucket, Database: database, Scope: scope, WorkDir: t.TempDir(),
+		PipelineConfigPath: generatedConfigPath, PipelineBindingsPath: privateBindingsPath,
+	})
+	if err != nil {
+		t.Fatalf("restart native worker manager after stale-finish race: %v", err)
+	}
+	managerClosed = false
+	h.SetLocalPipelineExecutor(manager)
+	if err := os.Remove(readyPath); err != nil && !errors.Is(err, os.ErrNotExist) {
+		t.Fatalf("reset retry readiness signal: %v", err)
+	}
+	if err := os.Remove(releasePath); err != nil && !errors.Is(err, os.ErrNotExist) {
+		t.Fatalf("reset retry release signal: %v", err)
+	}
+	if _, err := staleFinishStorage.WriteBytes(ctx, []byte("same failure input"), "raw/fixture-outage.md"); err != nil {
+		t.Fatalf("restore same failed input for retry: %v", err)
+	}
+	retryFailedID := postLocalPipelineRun(t, ctx, server.Client(), server.URL, token, staleFinishProject, http.StatusAccepted)
+	waitForLocalFixtureFile(t, ctx, readyPath)
+	if err := os.WriteFile(releasePath, []byte("release"), 0o600); err != nil {
+		t.Fatalf("release same-input retry failure: %v", err)
+	}
+	waitForLocalPipelineDiagnostic(t, ctx, staleFinishStorage, retryFailedID)
+	waitNativeExecutionState(t, ctx, reconciliationFS, retryFailedID, "FAILED")
+	assertLocalPipelineQuota(t, ctx, reconciliationFS, userID, staleFinishProject, retryFailedID, 1, "refunded")
 
 	const configFailureProject = "missing-config-project"
 	if _, err := storageClient.WithScope(userID, configFailureProject).WriteBytes(ctx, []byte("A local config failure fixture."), "raw/source.md"); err != nil {
@@ -720,12 +868,50 @@ func loopbackEmulatorEndpoint(t *testing.T, envName string) string {
 }
 
 type gatedTCPProxy struct {
-	listener net.Listener
-	target   string
-	blocked  atomic.Bool
-	mu       sync.Mutex
-	conns    map[net.Conn]struct{}
+	listener      net.Listener
+	target        string
+	blocked       atomic.Bool
+	paused        atomic.Bool
+	mu            sync.Mutex
+	conns         map[net.Conn]struct{}
+	pauseObserved chan struct{}
+	pauseResume   chan struct{}
 }
+
+type gatedStorageProxy struct {
+	server  *httptest.Server
+	proxy   *httputil.ReverseProxy
+	blocked atomic.Bool
+}
+
+func newGatedStorageProxy(t *testing.T, endpoint string) *gatedStorageProxy {
+	t.Helper()
+	target, err := url.Parse(endpoint)
+	if err != nil || target.Scheme == "" || target.Host == "" {
+		t.Fatalf("parse loopback Storage emulator endpoint %q", endpoint)
+	}
+	proxy := httputil.NewSingleHostReverseProxy(target)
+	director := proxy.Director
+	proxy.Director = func(request *http.Request) {
+		director(request)
+		request.Host = target.Host
+	}
+	gate := &gatedStorageProxy{proxy: proxy}
+	gate.server = httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, request *http.Request) {
+		if gate.blocked.Load() {
+			http.Error(w, "synthetic Storage read unavailable", http.StatusForbidden)
+			return
+		}
+		gate.proxy.ServeHTTP(w, request)
+	}))
+	return gate
+}
+
+func (p *gatedStorageProxy) URL() string { return p.server.URL }
+
+func (p *gatedStorageProxy) SetBlocked(blocked bool) { p.blocked.Store(blocked) }
+
+func (p *gatedStorageProxy) Close() { p.server.Close() }
 
 func newGatedTCPProxy(t *testing.T, target string) *gatedTCPProxy {
 	t.Helper()
@@ -757,7 +943,43 @@ func (p *gatedTCPProxy) SetBlocked(blocked bool) {
 	}
 }
 
+func (p *gatedTCPProxy) SetPaused(paused bool) {
+	p.mu.Lock()
+	defer p.mu.Unlock()
+	if paused {
+		if p.paused.Load() {
+			return
+		}
+		p.pauseObserved = make(chan struct{}, 1)
+		p.pauseResume = make(chan struct{})
+		p.paused.Store(true)
+		for conn := range p.conns {
+			_ = conn.Close()
+		}
+		return
+	}
+	if p.paused.Swap(false) && p.pauseResume != nil {
+		close(p.pauseResume)
+	}
+}
+
+func (p *gatedTCPProxy) WaitPaused(ctx context.Context) error {
+	p.mu.Lock()
+	observed := p.pauseObserved
+	p.mu.Unlock()
+	if observed == nil {
+		return errors.New("Firestore proxy pause was not armed")
+	}
+	select {
+	case <-observed:
+		return nil
+	case <-ctx.Done():
+		return ctx.Err()
+	}
+}
+
 func (p *gatedTCPProxy) Close() error {
+	p.SetPaused(false)
 	err := p.listener.Close()
 	p.mu.Lock()
 	for conn := range p.conns {
@@ -780,18 +1002,43 @@ func (p *gatedTCPProxy) accept() {
 			_ = client.Close()
 			continue
 		}
+		if !p.awaitResume(client) {
+			_ = client.Close()
+			continue
+		}
 		upstream, err := net.DialTimeout("tcp", p.target, 2*time.Second)
 		if err != nil {
 			_ = client.Close()
 			continue
 		}
 		p.track(client, upstream)
-		if p.blocked.Load() {
+		if p.blocked.Load() || p.paused.Load() {
 			_ = client.Close()
 			_ = upstream.Close()
 		}
 		go p.forward(client, upstream)
 	}
+}
+
+func (p *gatedTCPProxy) awaitResume(client net.Conn) bool {
+	p.mu.Lock()
+	if !p.paused.Load() {
+		p.mu.Unlock()
+		return true
+	}
+	resume := p.pauseResume
+	observed := p.pauseObserved
+	p.conns[client] = struct{}{}
+	p.mu.Unlock()
+	select {
+	case observed <- struct{}{}:
+	default:
+	}
+	<-resume
+	p.mu.Lock()
+	delete(p.conns, client)
+	p.mu.Unlock()
+	return true
 }
 
 func (p *gatedTCPProxy) track(conns ...net.Conn) {
@@ -870,6 +1117,27 @@ func waitForLocalPipelineDiagnostic(t *testing.T, ctx context.Context, storage *
 		select {
 		case <-ctx.Done():
 			t.Fatalf("native failure diagnostic was not written before timeout: %v", ctx.Err())
+		case <-ticker.C:
+		}
+	}
+}
+
+func waitNativeExecutionState(t *testing.T, ctx context.Context, client *scopedfirestore.Client, executionID, want string) {
+	t.Helper()
+	executionRef := scopedfirestore.Collection(client.Raw(), "executions").Doc(executionID)
+	ticker := time.NewTicker(25 * time.Millisecond)
+	defer ticker.Stop()
+	for {
+		snapshot, err := executionRef.Get(ctx)
+		if err == nil && snapshot.Data()["status"] == want {
+			return
+		}
+		if err != nil && status.Code(err) != codes.NotFound {
+			t.Fatalf("read native execution %s while waiting for %s: %v", executionID, want, err)
+		}
+		select {
+		case <-ctx.Done():
+			t.Fatalf("native execution %s did not reach %s before timeout: %v", executionID, want, ctx.Err())
 		case <-ticker.C:
 		}
 	}

@@ -30,6 +30,7 @@ import (
 	"github.com/rayer/llm-wiki-bff/internal/handler"
 	"github.com/rayer/llm-wiki-bff/internal/pipelinequota"
 	"github.com/rayer/llm-wiki-bff/internal/search"
+	storeapi "github.com/rayer/llm-wiki-bff/internal/storage"
 	"google.golang.org/api/iterator"
 	"google.golang.org/grpc/codes"
 	"google.golang.org/grpc/status"
@@ -189,6 +190,72 @@ func TestPipelineQuotaCloudRunHandlerEmulator(t *testing.T) {
 	assertQuotaState(t, ctx, fsClient, userID, invokeProject, 0, pipelinequota.DayKeyUTC(time.Now()))
 	assertQuotaProjectReservation(t, ctx, fsClient, invokeProject, "refunded")
 
+	// A canceled request still records definite no-execution evidence with a
+	// bounded recovery context, then a restarted reconciler refunds it once
+	// Storage is available to read the evidence.
+	const cancelledInvokeProject = "cancelled-invoke-recovery"
+	seedQuotaRaw(t, ctx, quotaClient, storageClient, bucket, scope, userID, cancelledInvokeProject)
+	cancelledContext, cancelCancelledRequest := context.WithCancel(ctx)
+	failedSettlementStore := &cancelFirstQuotaSettlement{pipelineQuotaStore: fsClient, cancel: cancelCancelledRequest}
+	cancelledHandler := New(quotaClient, fsClient, search.NewIndex(), conceptcache.New(), nil, nil)
+	cancelledHandler.SetPipelineQuotaStore(failedSettlementStore)
+	cancelledHandler.SetPipelineQuotaConfig(5, 1, 1, nil)
+	cancelledHandler.metadataTokenURL = "http://run.test/token"
+	cancelledHandler.SetPipelineJobURL("http://run.test/job:run")
+	cancelledHandler.httpClient = &http.Client{Transport: roundTripFunc(func(request *http.Request) (*http.Response, error) {
+		switch request.URL.Path {
+		case "/token":
+			return testHTTPResponse(http.StatusOK, `{"access_token":"test-token"}`), nil
+		case "/job/executions":
+			return testHTTPResponse(http.StatusOK, `{"executions":[]}`), nil
+		case "/job:run":
+			return testHTTPResponse(http.StatusForbidden, `{"error":"synthetic permission denied"}`), nil
+		default:
+			return testHTTPResponse(http.StatusNotFound, `{}`), nil
+		}
+	})}
+	requestRecorder := httptest.NewRecorder()
+	cancelledGinContext, _ := gin.CreateTestContext(requestRecorder)
+	cancelledGinContext.Request = httptest.NewRequest(http.MethodPost, "/api/v1/pipeline/run", nil).WithContext(cancelledContext)
+	cancelledGinContext.Set("userID", userID)
+	cancelledGinContext.Set("projectID", cancelledInvokeProject)
+	cancelledHandler.PipelineRun(cancelledGinContext)
+	if requestRecorder.Code != http.StatusInternalServerError {
+		t.Fatalf("canceled definite invocation status=%d want 500: %s", requestRecorder.Code, requestRecorder.Body.String())
+	}
+	if cancelledContext.Err() == nil {
+		t.Fatal("synthetic first settlement outage did not cancel the original request context")
+	}
+	cancelledReservation := findQuotaReservation(t, ctx, fsClient, userID, cancelledInvokeProject)
+	if cancelledReservation.ExecutionID != "" || cancelledReservation.SettlementStatus != "pending" {
+		t.Fatalf("canceled invoke reservation=%+v, want pending with no execution before restart", cancelledReservation)
+	}
+	marker, err := quotaClient.WithScope(userID, cancelledInvokeProject).ReadFileLimited(ctx, "cache/pipeline-"+cancelledReservation.ID+".failure.json", 4<<10+1)
+	if err != nil || len(marker) == 0 {
+		t.Fatalf("canceled invoke recovery marker size=%d err=%v, want durable evidence", len(marker), err)
+	}
+	restartedInvokeHandler := New(quotaClient, fsClient, search.NewIndex(), conceptcache.New(), nil, nil)
+	restartedInvokeHandler.SetPipelineQuotaConfig(5, 1, 1, nil)
+	restartedInvokeHandler.SetAccountLookup(func(context.Context, string) (*auth.UserRecord, error) {
+		return &auth.UserRecord{Status: auth.AccountActive, Role: "member"}, nil
+	})
+	restartedInvokeHandler.metadataTokenURL = h.metadataTokenURL
+	restartedInvokeHandler.SetPipelineJobURL("http://run.test/job:run")
+	restartedInvokeHandler.httpClient = &http.Client{Transport: roundTripFunc(fixture.roundTrip)}
+	if err := restartedInvokeHandler.ReconcilePipelineQuota(ctx); err != nil {
+		t.Fatalf("restart recovery of canceled no-execution invocation: %v", err)
+	}
+	if err := restartedInvokeHandler.ReconcilePipelineQuota(ctx); err != nil {
+		t.Fatalf("repeat canceled no-execution recovery: %v", err)
+	}
+	assertQuotaReservation(t, ctx, fsClient, cancelledReservation.ID, "refunded")
+	assertQuotaState(t, ctx, fsClient, userID, cancelledInvokeProject, 0, pipelinequota.DayKeyUTC(time.Now()))
+	retryCancelledID := triggerQuotaPipeline(t, restartedInvokeHandler, userID, cancelledInvokeProject, http.StatusAccepted)
+	if fixture.reservationID(retryCancelledID) == "" {
+		t.Fatal("same-input retry after canceled invocation refund has no reservation")
+	}
+	assertQuotaState(t, ctx, fsClient, userID, cancelledInvokeProject, 1, pipelinequota.DayKeyUTC(time.Now()))
+
 	unenforcedProject := "unenforced-run"
 	seedQuotaRaw(t, ctx, quotaClient, storageClient, bucket, scope, userID, unenforcedProject)
 	unenforcedHandler := New(quotaClient, nil, search.NewIndex(), conceptcache.New(), nil, nil)
@@ -328,6 +395,77 @@ func TestPipelineQuotaCloudRunHandlerEmulator(t *testing.T) {
 	assertQuotaReservation(t, ctx, fsClient, committedReservation, "charged")
 	assertQuotaState(t, ctx, fsClient, userID, committedProject, 1, pipelinequota.DayKeyUTC(time.Now()))
 	assertQuotaPipelineStatus(t, proxyHandler, userID, committedProject, committedID, "SUCCEEDED", "", "charged", 1)
+
+	// A later failed execution must be refunded from its own bounded diagnostic
+	// even while the current manifest remains owned by the preceding success.
+	if _, err := deployedQuotaClient.WithScope(userID, committedProject).WriteBytes(ctx, []byte("synthetic child-failure input"), "raw/fixture-fail.md"); err != nil {
+		t.Fatalf("seed later child-failure input: %v", err)
+	}
+	time.Sleep(1100 * time.Millisecond)
+	failedAfterPriorID := triggerQuotaPipeline(t, deployedHandler, userID, committedProject, http.StatusAccepted)
+	failedAfterPriorReservation := fixture.reservationID(failedAfterPriorID)
+	failedOutput, failedErr := runCloudRunQuotaFixtureWorker(t, ctx, worker, workerBucket, userID, committedProject, failedAfterPriorID, storageEndpoint)
+	if failedErr == nil || !strings.Contains(string(failedOutput), "fixture compile failure") {
+		t.Fatalf("later deployed worker failure output=%q err=%v, want the synthetic child failure", failedOutput, failedErr)
+	}
+	fixture.setStatus(failedAfterPriorID, "FAILED")
+	if err := proxyHandler.ReconcilePipelineQuota(ctx); err != nil {
+		t.Fatalf("reconcile definitive failure after earlier publication: %v", err)
+	}
+	if err := proxyHandler.ReconcilePipelineQuota(ctx); err != nil {
+		t.Fatalf("repeat definitive failure reconciliation: %v", err)
+	}
+	assertQuotaReservation(t, ctx, fsClient, committedReservation, "charged")
+	assertQuotaReservation(t, ctx, fsClient, failedAfterPriorReservation, "refunded")
+	assertQuotaState(t, ctx, fsClient, userID, committedProject, 1, pipelinequota.DayKeyUTC(time.Now()))
+
+	// The same failed input can be retried after that refund, with the same
+	// execution-owned failure evidence and no status endpoint polling.
+	retryAfterPriorID := triggerQuotaPipeline(t, deployedHandler, userID, committedProject, http.StatusAccepted)
+	retryAfterPriorReservation := fixture.reservationID(retryAfterPriorID)
+	retryOutput, retryErr := runCloudRunQuotaFixtureWorker(t, ctx, worker, workerBucket, userID, committedProject, retryAfterPriorID, storageEndpoint)
+	if retryErr == nil || !strings.Contains(string(retryOutput), "fixture compile failure") {
+		t.Fatalf("same-input deployed worker retry output=%q err=%v, want the synthetic child failure", retryOutput, retryErr)
+	}
+	fixture.setStatus(retryAfterPriorID, "FAILED")
+	if err := proxyHandler.ReconcilePipelineQuota(ctx); err != nil {
+		t.Fatalf("reconcile same-input failed retry: %v", err)
+	}
+	if err := proxyHandler.ReconcilePipelineQuota(ctx); err != nil {
+		t.Fatalf("repeat same-input failed retry reconciliation: %v", err)
+	}
+	assertQuotaReservation(t, ctx, fsClient, retryAfterPriorReservation, "refunded")
+	assertQuotaState(t, ctx, fsClient, userID, committedProject, 1, pipelinequota.DayKeyUTC(time.Now()))
+
+	// A committed execution remains charged from its own receipt after a later
+	// actual worker publication overwrites the current manifest.
+	rawFixtureFailure := storeapi.ProjectObjectPath(userID, committedProject, "raw/fixture-fail.md")
+	if err := storageClient.Bucket(workerBucket).Object(rawFixtureFailure).Delete(ctx); err != nil {
+		t.Fatalf("remove synthetic failure input for overwrite fixture: %v", err)
+	}
+	time.Sleep(1100 * time.Millisecond)
+	overwrittenID := triggerQuotaPipeline(t, deployedHandler, userID, committedProject, http.StatusAccepted)
+	overwrittenReservation := fixture.reservationID(overwrittenID)
+	if output, err := runCloudRunQuotaFixtureWorker(t, ctx, worker, workerBucket, userID, committedProject, overwrittenID, storageEndpoint); err != nil {
+		t.Fatalf("run execution that will be overwritten: %v\n%s", err, output)
+	}
+	fixture.setStatus(overwrittenID, "FAILED")
+	time.Sleep(1100 * time.Millisecond)
+	laterPublicationID := triggerQuotaPipeline(t, deployedHandler, userID, committedProject, http.StatusAccepted)
+	laterPublicationReservation := fixture.reservationID(laterPublicationID)
+	if output, err := runCloudRunQuotaFixtureWorker(t, ctx, worker, workerBucket, userID, committedProject, laterPublicationID, storageEndpoint); err != nil {
+		t.Fatalf("run later overwriting worker publication: %v\n%s", err, output)
+	}
+	fixture.setStatus(laterPublicationID, "SUCCEEDED")
+	if err := proxyHandler.ReconcilePipelineQuota(ctx); err != nil {
+		t.Fatalf("reconcile execution-owned receipt after manifest overwrite: %v", err)
+	}
+	if err := proxyHandler.ReconcilePipelineQuota(ctx); err != nil {
+		t.Fatalf("repeat overwritten-publication reconciliation: %v", err)
+	}
+	assertQuotaReservation(t, ctx, fsClient, overwrittenReservation, "charged")
+	assertQuotaReservation(t, ctx, fsClient, laterPublicationReservation, "charged")
+	assertQuotaState(t, ctx, fsClient, userID, committedProject, 3, pipelinequota.DayKeyUTC(time.Now()))
 
 	// A restarted handler recovers a reservation whose execution link was not
 	// persisted, and refuses to associate a different owner's execution.
@@ -482,6 +620,19 @@ func buildLocalCloudPipelineFixtureWorker(t *testing.T, ctx context.Context) str
 		t.Fatalf("build deployed-mode Cloud Run worker fixture: %v\n%s", err, output)
 	}
 	return worker
+}
+
+func runCloudRunQuotaFixtureWorker(t *testing.T, ctx context.Context, worker, bucket, userID, projectID, executionID, storageEndpoint string) ([]byte, error) {
+	t.Helper()
+	command := exec.CommandContext(ctx, worker,
+		"--bucket", bucket, "--user-id", userID, "--project-id", projectID,
+		"--execution-id", executionID, "run", `[["run","--auto-approve"]]`)
+	command.Env = []string{
+		"GOOGLE_CLOUD_PROJECT=llm-wiki-cloud", "GCP_PROJECT=llm-wiki-cloud",
+		"STORAGE_EMULATOR_HOST=" + storageEndpoint, "LOCAL_CLOUD_SCOPE=", "TMPDIR=" + os.TempDir(),
+	}
+	output, err := command.CombinedOutput()
+	return output, err
 }
 
 func deleteQuotaFixtureBucket(ctx context.Context, client *cloudstorage.Client, bucket string) error {
@@ -646,6 +797,36 @@ func assertQuotaProjectReservation(t *testing.T, ctx context.Context, client *sc
 	if got := docs[0].Data()["settlement_status"]; got != want {
 		t.Fatalf("reservation for %s settlement=%v, want %q", projectID, got, want)
 	}
+}
+
+func findQuotaReservation(t *testing.T, ctx context.Context, client *scopedfirestore.Client, userID, projectID string) scopedfirestore.QuotaReservation {
+	t.Helper()
+	reservations, err := client.ListPendingQuotaReservations(ctx)
+	if err != nil {
+		t.Fatalf("list pending quota reservations: %v", err)
+	}
+	for _, reservation := range reservations {
+		if reservation.UserID == userID && reservation.ProjectID == projectID {
+			return reservation
+		}
+	}
+	t.Fatalf("no pending reservation for %s/%s", userID, projectID)
+	return scopedfirestore.QuotaReservation{}
+}
+
+type cancelFirstQuotaSettlement struct {
+	pipelineQuotaStore
+	cancel context.CancelFunc
+	failed bool
+}
+
+func (s *cancelFirstQuotaSettlement) SettleQuotaReservation(ctx context.Context, reservationID, executionStatus string) (string, error) {
+	if !s.failed {
+		s.failed = true
+		s.cancel()
+		return "", errors.New("synthetic first settlement outage")
+	}
+	return s.pipelineQuotaStore.SettleQuotaReservation(ctx, reservationID, executionStatus)
 }
 
 func assertQuotaProjectHasNoReservation(t *testing.T, ctx context.Context, client *scopedfirestore.Client, projectID string) {
