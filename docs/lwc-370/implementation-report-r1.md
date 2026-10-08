@@ -180,3 +180,63 @@ All public JSON, hosts, and artifact metadata used for local tests were syntheti
 | DEV/Production deployment, live GSM, IAM/resources/credentials, paid Pipeline, UAT, and cloud verification | NOT RUN | Outside this worker’s authorized execution scope. Offline/local results do not claim cloud verification or Verified status. |
 
 Historical r1 conclusion at source HEAD `87f9ab84b00d69c9e22e391b43ec7e1823d2c942`: the earlier Frontend implementation and then-current LWC-374 checkpoint were committed with PR #108 open. That checkpoint predates the r2 repair and the current inherited 374 formal HOLD; the current status is recorded in the r2 addendum above.
+
+---
+
+## LWC-370 registered generation entry repair (2026-10-08)
+
+### Status and execution identity
+
+- This bounded repair adds a canonical, read-only generation entry through the already-registered DEV and Production wrappers. It reuses the existing generator job and exact artifact contract; it does not publish config or deploy an application.
+- Model / effort / mode: GPT-6-Luna (`gpt-6-luna`) / xhigh / YOLO. Codex session/thread: `01a11a29-d15c-7fc0-9c76-cbf0c764d43d`.
+- Orca runtime / Run / Task / Dispatch / terminal: `8bc79eed-2312-4c07-a306-f91ae8d31716` / `run_ec3a3eca0058` / `task_bc65c32a29c9` / `ctx_6c899e0b8c14` / `term_22cddd98-1061-4a48-b360-ab7a5c14a263`.
+- Worktree / branch: `/Users/rayer/orca/workspaces/llm-wiki-cloud/LWC-370-implementation-r1` / `Rayer/LWC-370-generation-entry-r1`.
+- Starting `origin/develop` and local HEAD: `4b5f331e15b4fd361b74e18a0351799580eb434e`. Code/test commit: `852ca461f73cf4d5c2e5dfcc02ae263ab68ffce9`.
+- PR #108 was already merged to `develop` before this repair. This repair is a separate branch/PR; PR creation and final remote head/base readback are recorded below after publication.
+
+### Root cause and repair
+
+Owner direction records the original attempt `gh workflow run generate-frontend-config.yml --ref develop environment=dev` returning HTTP 404 because the workflow was absent from the default branch at `8b01fcb385fb43a71f1b82cb0a7dc443c775082a`; a fresh Actions run listing showed no created run. The existing registered wrappers had no read-only generation route, and the artifact inspector accepted only the direct generator workflow path.
+
+- Added `workflow_call` to `.github/workflows/generate-frontend-config.yml`, retaining the existing manual trigger and single generator implementation.
+- Added `frontend-config-generate` to `.github/workflows/deploy-dev.yml` and `.github/workflows/promote-production.yml`. Each fixed-environment job runs only on `develop`, has `contents: read`, calls only the existing generator, and passes no secrets. The DEV and Production release jobs exclude this operation; DEV main-fast-forward eligibility excludes it too.
+- Updated `scripts/frontend_config_artifacts.py` to accept only the direct generator workflow or the exact matching official wrapper path for `dev` or `prod`. It still validates the selected artifact ID, exact artifact name, run identity, `workflow_dispatch` event, completed/success status, source SHA, and environment. Unsupported environments, cross-environment wrappers, and arbitrary workflow paths reject.
+- Expanded generator, metadata, engine-wrapper, and retained BFF workflow tests. No shared CD publication/release/recovery implementation or cloud behavior changed.
+
+### RED-to-GREEN evidence
+
+The new checks were run before implementation to record the original failure shape; none was skipped.
+
+| Pre-implementation command | Exit | Result |
+| --- | ---: | --- |
+| `python3 -m unittest scripts.test_frontend_config_artifacts.FrontendConfigArtifactTests.test_metadata_binds_exact_artifact_to_successful_generator_run_and_source scripts.test_frontend_config_artifacts.FrontendConfigArtifactTests.test_workflows_keep_generation_and_publication_as_separate_exact_artifact_steps` | 1 | 2 tests; 2 errors. The official wrapper provenance was rejected and the reusable workflow trigger was absent. |
+| `python3 -m unittest scripts.test_engine_workflow.EngineWorkflowContract.test_readonly_diagnostic_is_a_separate_fixed_workflow_branch` | 1 | 1 test; 1 failure because the generation operation/guard/job did not exist. |
+| `python3 -m unittest discover -s apps/bff/scripts -p 'test_bff_explicit_cutover.py'` | 1 | 7 tests; 1 retained workflow contract failure for the missing generation route. |
+
+Final local verification used a macOS `sandbox-exec` profile that denied external network access and permitted only localhost sockets for disposable loopback fixtures. A synthetic connection probe confirmed loopback was permitted and the external documentation address `192.0.2.1:443` was denied. All final rows below report zero skips.
+
+| Final command | Exit | Result |
+| --- | ---: | --- |
+| `python3 -m unittest discover -s scripts -p 'test_frontend_config_artifacts.py'` | 0 | 9/9 artifact/generation/metadata cases passed, including exact wrapper provenance, cross-environment/untrusted path rejection, pinned downloader behavior, source-A bytes after checkout-B, and rejection before synthetic mutation. |
+| `python3 -m unittest discover -s scripts -p 'test_engine_workflow.py'` | 0 | 8/8 workflow and permission contract cases passed. |
+| `python3 -m unittest discover -s apps/bff/scripts -p 'test_*.py'` | 0 | 119/119 retained BFF tests passed, including the full wrapper safety suite. |
+| `python3 -m unittest discover -s scripts -p 'test_cd_contract.py'` | 0 | 70/70 retained CD contract tests passed. |
+| `python3 -m unittest discover -s apps/bff/scripts -p 'test_local_dev_makefile.py'` | 0 | 20/20 local fixture and loopback tests passed. |
+| `python3 -m unittest test_bff_explicit_cutover.SharedCDContractTest.test_shared_bff_path_preserves_cutover_safety_boundaries` (with `PYTHONPATH=apps/bff/scripts`) | 0 | 1/1 retained BFF wrapper safety test passed under network denial. |
+| `make workflow-yaml` | 0 | CI, CD, DEV, Production, and generator workflow YAML all parsed successfully. |
+| `git diff --check` | 0 | No whitespace errors. |
+
+An initial sandbox profile blocked shell temporary-file creation and one test fixture's executable-bit setup; those attempts were treated as harness failures, not passes. After narrowing temporary-file allowances to the owned profile scratch plus the per-user shell temp path needed for spawned Bash heredocs and the exact synthetic fixture, the full BFF/CD suites and affected local suites passed with external network still denied. Test fixture/artifact directories used `/Users/rayer/.hermes/profiles/lwc-tpm/cache/scratch/implementation-wave/370-generation-entry-tmp`; repository status contained only the explicitly scoped workflow/helper/test/report files.
+
+### Acceptance matrix and remaining limits
+
+| Acceptance | State | Evidence / limit |
+| --- | --- | --- |
+| Registered wrapper can select DEV public config generation on `develop` | PASS for local workflow contract | Separate `contents: read` call to the existing generator; release and eligibility routes exclude the operation. No Actions run was dispatched. |
+| Registered wrapper can select Production public config generation on `develop` | PASS for local workflow contract | Fixed `prod` input and `contents: read`; the application Production release remains restricted to `main` and excludes generation. No Production application action was run. |
+| Exact artifact/source/environment validation | PASS for local synthetic metadata | Only the direct generator or matching official wrapper path is accepted; latest selection, arbitrary workflow paths, cross-environment provenance, failed runs, wrong IDs, and unsupported environments reject. |
+| Existing exact artifact publication/release/recovery paths | PASS for local contracts | CD contract and BFF retained safety suites passed; those paths were not changed. |
+| GitHub Actions generated artifact ID, public bucket object bytes, public GET/CORS readback, and formal DEV application deployment | NOT RUN | Parent owns review/CI/merge and formal DEV transitions. The repaired workflow was not dispatched. No storage, Google Cloud, GSM, IAM, credential, or paid Pipeline action was used. |
+| Application Production deployment or production provider state | NOT AUTHORIZED / NOT RUN | Out of scope for this worker. No Verified/cloud-acceptance claim is made. |
+
+The historical HTTP 404 is the original live blocker; the local tests prove the new checked-in entry and provenance contract only. Until parent-owned same-SHA review/CI/merge and the authorized formal DEV workflow, there is no generated live artifact or cloud readback to report. The exact PR URL and remote head/base readbacks are appended after publication; the final post-report-push head is also sent to the coordinator.
