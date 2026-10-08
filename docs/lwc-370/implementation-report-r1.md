@@ -253,4 +253,55 @@ The historical HTTP 404 is the original live blocker; the local tests prove the 
 - The initial canonical CI run on that head was `37772406901`. At the readback, `frontend-lint`, `frontend-typecheck`, `actionlint/schema`, and `local-vertical-smoke` were successful; `frontend-test` and `workflow-source-guards` failed on stale operation/guard assertions; `frontend-build` was skipped after the frontend-test failure; `bff` was still in progress. The initial run is not evidence for the corrected head.
 - The failure was isolated to retained test expectations in `apps/frontend/tests/ci-workflow-contract.test.mjs`, `lwc-253-vercel-dev-authority.test.mjs`, and `lwc-258-vercel-production-auth-env.test.mjs`. These tests now assert the new operation, exact read-only generation job, and release/eligibility exclusions. The full frontend suite passes locally after the fixes.
 - GitHub PR automation also created Vercel and security status checks after PR creation. Those automatic checks are not worker-initiated provider commands or a formal application release. No independent review had arrived at the initial readback; the coordinator owns same-final-SHA TPM/reviewer review and fresh canonical CI after the follow-up commits.
-- The test-only correction commit is `d5e297bd9010c00b39a5ed964aa88436bc5cc005`. The following report-only push will advance the PR head again; its exact remote readback and new CI status are sent to the coordinator.
+- The test-only correction commit was `d5e297bd9010c00b39a5ed964aa88436bc5cc005`; the final reviewed PR head was `1dfad211e3128bc5b98c6bfd73f841da7a7b5e93` and was merged into `develop` as `057b8fd96189f50d6aba4f1fcace5d001304bf54`. Post-merge canonical CI run `37761956338` passed all nine jobs. The later formal DEV release attempt and its bounded failure analysis are recorded in the following section.
+
+## LWC-370 DEV failure cause preservation (2026-10-08)
+
+### Status and execution identity
+
+- This bounded corrective repair preserves the original failing component and its bounded, typed materialization failure through the existing poll and automatic compensation path. It does not change deployment status, recovery, checkpoint, exit, or rollback policy.
+- Model / effort / mode: GPT-6-Luna (`gpt-6-luna`) / xhigh / YOLO, same retained Codex session `01a11a29-d15c-7fc0-9c76-cbf0c764d43d`.
+- Orca runtime / Run / Task / Dispatch / terminal: `8bc79eed-2312-4c07-a306-f91ae8d31716` / `run_ec3a3eca0058` / `task_c1e46c152acb` / `ctx_423bcd9500a4` / `term_22cddd98-1061-4a48-b360-ab7a5c14a263`.
+- Worktree / branch: `/Users/rayer/orca/workspaces/llm-wiki-cloud/LWC-370-implementation-r1` / `Rayer/LWC-370-dev-failure-cause-r1`.
+- Starting local and `origin/develop` SHA: `057b8fd96189f50d6aba4f1fcace5d001304bf54`; the worktree was clean before branching. Source/test commit: `f094e302a24c4077d39cad1f8d7cee6eb2758452`.
+- PR publication was pending when this report section was written; the final PR number and remote head are reported in the coordinator handoff.
+
+### Source-backed finding and repair
+
+The saved DEV checkpoint records Auth failed at sequence 18 while Export was verified, then both were restored and verified by sequence 24. Its final result instead names `exportjob` and `basic-sanity-mismatch`, with no failure diagnostic or cause; the Auth candidate remained `preparing` / `not_started` with no version or revision. The supplied incident checkpoint correctly classifies the remote root cause as unknown and the missing destination Auth/BFF Secret containers as an unproven prerequisite observation.
+
+Source inspection explains the loss without claiming the historic trigger. `providers.prepare_auth_config_version` invokes the Go `materialize-auth` command before Secret Manager version publication. Go `auth.go` deliberately returns the generic safe message `selected secret version could not be accessed` for secret-read failures, but `auth-config-materialize` was absent from the engine's structured-cause stage allowlist. If materialization fails, `Engine.deploy` reconciles the still-empty candidate; reconciliation returns without an error, then poll replaces the deployment exception with `basic-sanity-mismatch`. Automatic restore iterates in reverse component order and overwrote `engine.component`, which `Engine.result` then used for the top-level result. The original remote exception was not stored, so the specific historical permission/resource/config cause cannot be reconstructed.
+
+- Added `auth-config-materialize` to the existing bounded structured-cause allowlist, retaining only the fixed exception type/code, stage, exit/timeout metadata, and bounded redacted message.
+- When a deployment exception is followed by a poll failure, the result now carries both typed deployment and poll phases. After compensation, the engine restores the original failed component as the result identity; final stage/status/checkpoint and rollback actions are unchanged.
+- Added a synthetic production-caller regression through actual `Engine.deploy`, Auth materialization invocation, reconcile, poll, restore, and result writing. A second regression invokes the real Node deployment Action entrypoint and checks stdout equals the retained `result.json`. Only the Go subprocess is replaced by a fixed synthetic failure; existing fake gcloud/provider commands handle all other operations.
+- No Go source or Auth/BFF publication code changed. The actual Go `materialize-auth` command was not run locally; no SDK, Secret Manager, ADC, live provider, IAM, resource, credential, paid Pipeline, cloud deployment, or rebuild action was performed.
+
+### RED-to-GREEN and local verification
+
+The first test harness invocation exited 1 because the new test referenced a nonexistent test-module attribute; the fixture reference was corrected before recording the source RED. The corrected pre-fix test exited 1 with `result.component == exportjob` where the production caller regression expected the original `auth` component. After the repair, all following commands exited 0; unittest reported zero skips.
+
+| Command (working directory) | Exit | Result |
+| --- | ---: | --- |
+| `python3 -m unittest test_engine.Acceptance.test_auth_materialization_failure_survives_poll_and_compensation` (`deploy/engine/tests`, before source repair) | 1 | 1 test; expected original Auth component, observed `exportjob`, with final `failed_rolled_back` / `basic-sanity-mismatch` state. |
+| `python3 -m unittest test_engine.Acceptance.test_auth_materialization_failure_survives_poll_and_compensation` (`deploy/engine/tests`, after repair) | 0 | 1/1 passed; exact synthetic command error and component survived compensation; no Auth version add occurred. |
+| `python3 -m unittest test_engine.Acceptance.test_runtime_action_forwards_auth_materialization_cause` (`deploy/engine/tests`) | 0 | 1/1 passed through the actual Node Action; machine result matched retained result JSON. |
+| `python3 -m unittest discover -s ../../deploy/engine/tests -p 'test_*.py'` (`apps/bff`) | 0 | 129/129 engine tests passed, zero skips. |
+| `python3 ../../scripts/test_cd_contract.py` (`apps/bff`) | 0 | 70/70 retained CD contract tests passed. |
+| `python3 -m unittest discover -s ../../scripts -p 'test_*auth_config_contract.py'` (`apps/bff`) | 0 | 21/21 Auth/BFF configuration contract tests passed. |
+| `python3 -m unittest discover -s scripts -p 'test_*.py'` (`apps/bff`) | 0 | 119/119 retained CD safety tests passed. |
+| `go test ./cmd/pipeline_config -count=1` (`apps/bff`) | 0 | Go materializer/config package tests passed; test readers/transports are synthetic or local. |
+| `TMPDIR=/Users/rayer/.hermes/profiles/lwc-tpm/cache/scratch/implementation-wave/370-cause-loss-tmp sandbox-exec -f /Users/rayer/.hermes/profiles/lwc-tpm/cache/scratch/implementation-wave/370-cause-loss-tmp/network-deny.sb python3 -m unittest test_engine.Acceptance.test_auth_materialization_failure_survives_poll_and_compensation test_engine.Acceptance.test_runtime_action_forwards_auth_materialization_cause` (`deploy/engine/tests`) | 0 | 2/2 passed under OS outbound-network denial using the owned profile TMPDIR and synthetic provider/materializer intercepts. A separate sandbox probe confirmed outbound denial. |
+| `git diff --check` | 0 | No whitespace errors. |
+
+### Acceptance and remaining limits
+
+| Acceptance | State | Evidence / limit |
+| --- | --- | --- |
+| Auth remains the reported failed component after automatic restore | PASS offline | Production engine/result regression and actual Action regression; stage remains `failed_rolled_back`, reason remains `basic-sanity-mismatch`, and component status/checkpoint rollback evidence is unchanged. |
+| Bounded useful nonsecret materialization cause reaches the result | PASS offline | Result carries `ChildProcessError` / `child-command-failed`, fixed stage `auth-config-materialize`, exit code, and the Go materializer's generic safe message. Raw provider output and payload are not emitted. |
+| Specific cause of DEV run `37776060581` | UNKNOWN | Original pre-compensation exception was not retained; no offline test can reconstruct it. The observed missing destination Secret containers are not proof of the original cause. |
+| Application DEV deployment, live provider readback, Secret Manager payload or IAM/resource changes | NOT RUN | Parent retains deployment/provisioning authority; no cloud action was taken by this worker. Existing ready/final IDs and receipts were not rebuilt or altered. |
+| Production deployment, main promotion, merge, paid Pipeline | NOT AUTHORIZED / NOT RUN | Out of this worker's scope. |
+
+The repair makes the next failure result discriminating and keeps the known Auth component visible; it does not claim that the historical root cause is resolved. PR publication and exact final remote head are owned by the coordinator handoff after this report commit.
