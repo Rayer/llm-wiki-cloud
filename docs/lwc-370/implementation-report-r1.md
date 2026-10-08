@@ -1,6 +1,58 @@
 # LWC-370 implementation report (r1)
 
-Status: scoped implementation and shared offline integration are committed and PR #108 is open; all named local acceptance and affected CI suites pass at the integrated source checkpoint.
+## Current r2 bounded repair addendum (2026-10-08)
+
+Status: the three bounded 370 repairs and offline verification are complete at the integrated source checkpoint. PR #108 remains an implementation checkpoint: this worker has not merged to `develop` or run cloud deployment acceptance; final 370 same-SHA review and canonical CI remain with the coordinator.
+
+### Execution identity and integration
+
+- Model/effort/session: GPT-6-Luna (`gpt-6-luna`), xhigh, YOLO; Orca Run `run_ec3a3eca0058`, Task `task_8df9931e6da9`, Dispatch `ctx_8f8cfb7812a8`, terminal `term_22cddd98-1061-4a48-b360-ab7a5c14a263`.
+- Worktree/branch: `/Users/rayer/orca/workspaces/llm-wiki-cloud/LWC-370-implementation-r1`, `Rayer/LWC-370-implementation-r1`.
+- 370 repair commit: `eddc3b6278febacee28cc305f794c550db493ddd`; CLI-level regression test commit: `64e25404118bed9baee90c90c1f935524632947f`.
+- Integrated 374 commit: exact `4fde834ac4bd6b20d6bc98b4a450a29739ac82fd`, merged normally after the clean 370 checkpoint. Integration merge commit: `27413f37582c2c254343d8c5d3060a0bb3aa4868`; tree `b2685be12e3d31404297d11d29f1589bb7b73c37`, matching the coordinator's expected tree. The additional CLI test is the only later source-tree commit.
+- PR: [#108](https://github.com/Rayer/llm-wiki-cloud/pull/108), title “feat(frontend): deliver versioned public runtime config (LWC-370)”, base `develop`. Full existing PR body was inspected before publication; it was not edited. Pre-publication readback was OPEN, head `84a5ec906762e6f4e64ab34e4c4b34492be39033`, base `f62bb530cb968e312b3faad77fe0f1b93b3e447b`; the updated code/report checkpoint is being pushed and its exact post-push head/base readback is returned to the coordinator.
+
+### r2 changes
+
+- Set `merge-multiple: true` on the pinned exact-ID `actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093` step so the validated `RUNNER_TEMP/frontend-config` directory receives the selected bundle's files at its root. The artifact ID, generation run ID, metadata/hash/source/environment checks, publication target, and no-rebuild flow remain exact.
+- Added the unchanged pinned `download-artifact.ts` source fixture (SHA-256 `1c67eb1bb4f77a462522341189f433422c4d35a6999d0dea2a1846e6edfedd80`) and a controlled local artifact client. The test runs the actual workflow executor-check, inspect, validate, and publication shell blocks against synthetic metadata and a local object store. It proves selected source A bytes publish after executor checkout B, and wrong-environment or missing-artifact cases stop before a storage mutation.
+- Added a dedicated public Frontend output path to `deploy_config`. It strict-decodes the fixed environment YAML and validates only the public API/Auth endpoints before writing the existing schema. The real CLI and all three Make targets use this path; normal Auth/BFF/Worker `Load` validation remains in place, with a regression asserting the unselected Worker secret reference is still required by the normal validator.
+- Updated the retained BFF workflow assertion for the already-present `frontend-config-only` operation/job while retaining the release, recovery, source, executor, eligibility, and permission assertions.
+
+### Verification at the integrated checkpoint
+
+| Command | Exit | Result |
+| --- | ---: | --- |
+| `python3 -m unittest discover -s scripts -p 'test_*.py'` (from `apps/bff`; `TMPDIR` set to the owned LWC-370 scratch directory) | 0 | 119/119 tests passed, zero skips. Baseline was 119 tests with one retained contract failure; two intermediate assertion mismatches were corrected without deleting or skipping the test. |
+| `python3 scripts/test_bff_explicit_cutover.py` (from `apps/bff`) | 0 | 7/7 retained release/recovery/workflow safety cases passed. |
+| `python3 -m unittest discover -s ../../deploy/engine/tests -p 'test_*.py'` (from `apps/bff`) | 0 | 127/127 retained deployment engine tests passed, zero skips. |
+| `python3 -m unittest discover -s ../../scripts -p 'test_*auth_config_contract.py'` (from `apps/bff`) | 0 | 15/15 Auth configuration contract tests passed. |
+| `go test ./... -v -count=1 -race` (from `apps/bff`) | 0 | 47 Go packages passed; 8 packages had no test files. The run recorded 91 environment-dependent skip events (emulator/local prerequisites were not configured); these are not counted as coverage or passes. Full log: `/Users/rayer/.hermes/profiles/lwc-tpm/cache/scratch/implementation-wave/370-repair-r2/go-race-postmerge.log`. |
+| `go test ./cmd/deploy_config -count=1` (from `apps/bff`, after the CLI subprocess test commit) | 0 | Deploy config package passed, including minimal-public-config CLI success, missing-endpoint rejection, and unchanged normal component validation. |
+| `go vet ./...` / `go build ./...` (from `apps/bff`) | 0 / 0 | Both passed. |
+| `python3 scripts/test_frontend_build_config.py` / `python3 scripts/test_frontend_config_artifacts.py` (from repo root) | 0 / 0 | 4/4 build-config tests and 9/9 artifact handoff tests passed. |
+| `make config-local CONFIG_TARGET=frontend` / `make config-dev CONFIG_TARGET=frontend` / `make config-prod CONFIG_TARGET=frontend` | 0 / 0 / 0 | All actual Make/CLI paths generated local, Development, and Production public config using the worktree's selected `8080`/`8081` local ports and existing environment YAML endpoints. |
+| `make workflow-yaml` (from repo root) | 0 | CI, CD, DEV, Production, and Frontend generator workflow YAML checks passed. |
+| `git diff --check` | 0 | No whitespace errors. |
+
+### Acceptance and limits
+
+| Acceptance area | State | Evidence / remaining work |
+| --- | --- | --- |
+| Pinned exact artifact flattening, source-A-after-checkout-B publication, no rebuild, and pre-mutation wrong-environment/missing-artifact rejection | PASS for offline local flow | Exact pinned downloader source with a controlled client and the actual workflow validation/publication shell; 9/9 artifact tests. No GitHub artifact or cloud storage client was used by the test. |
+| Frontend-only public config output with unrelated private bindings absent; missing required public endpoint rejected | PASS for local CLI/helper | Synthetic minimal-YAML CLI subprocess, missing-endpoint negative, normal validator control, and actual local/dev/prod Make commands. |
+| Retained BFF cutover/release/recovery boundaries | PASS for local suite | Canonical BFF discovery 119/119 and explicit cutover suite 7/7; no safety assertions removed or skipped. |
+| Integrated LWC-374 Auth/engine source | Integrated; inherited formal HOLD remains | Exact committed 374 checkpoint is present and its offline suites passed locally. Coordinator reported independent 374 Reviewer HOLD on exact `4fde834`: standalone `auth_config.main` version/verify/freeze callers omit trusted `project_number` and reject a legal numeric resource; default-mode precedence also mishandles item mode `0`. This is owned by the separate 374 lane; this worker did not edit Auth-owned files and does not claim those findings are cleared. |
+| Final PR #108 same-SHA 370 TPM/reviewer review and canonical CI | PENDING | Coordinator owns same-final-SHA review and canonical CI on the pushed head before any develop merge. |
+| Cloud GCS publication/readback, DEV/Production provider deployment, GSM payload access, IAM/resources/credentials, paid Pipeline, UAT, cloud verification | NOT RUN | Outside this worker's authorized scope; deployment acceptance remains NOT RUN and no Verified claim is made. |
+
+The r1 report below records the earlier Frontend slice. Its local Frontend lint/typecheck/build results are historical at the earlier source checkpoint; r2 did not change Frontend application code. The r2 integrated source and current open 374 review status above take precedence for this repair checkpoint.
+
+---
+
+## Historical r1 implementation checkpoint
+
+Status at the earlier r1 source checkpoint: scoped Frontend implementation and shared offline integration were committed and PR #108 was open; the named local acceptance and affected CI suites recorded below passed at that earlier checkpoint.
 
 ## Execution identity
 
@@ -75,4 +127,4 @@ All public JSON, hosts, and artifact metadata used for local tests were syntheti
 | LWC-374 producer/normalizer/engine integration | PASS for offline/local integration | Exact final checkpoint `12847cd616e73d7ddcaccbdc612245c0c34d7b13` is integrated. Frontend generation, local ports, normalized target identity, engine reuse, Auth contract, and engine admission/resume fixtures pass their named suites. |
 | DEV/Production deployment, live GSM, IAM/resources/credentials, paid Pipeline, UAT, and cloud verification | NOT RUN | Outside this worker’s authorized execution scope. Offline/local results do not claim cloud verification or Verified status. |
 
-The LWC-370 implementation and exact LWC-374 final checkpoint are committed locally at integrated source HEAD `87f9ab84b00d69c9e22e391b43ec7e1823d2c942`; PR #108 is open with the final report-only update committed. TPM review, independent review, canonical CI, merge-to-develop, and deployment remain with the coordinator; cloud deployment acceptance remains NOT RUN.
+Historical r1 conclusion at source HEAD `87f9ab84b00d69c9e22e391b43ec7e1823d2c942`: the earlier Frontend implementation and then-current LWC-374 checkpoint were committed with PR #108 open. That checkpoint predates the r2 repair and the current inherited 374 formal HOLD; the current status is recorded in the r2 addendum above.
