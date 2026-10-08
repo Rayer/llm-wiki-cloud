@@ -6,7 +6,7 @@
 - Model / effort / mode: GPT-6-Luna / xhigh / YOLO.
 - Codex session: `01a11a18-df02-7c80-b905-395dd42ec6f1`.
 - Orca runtime / terminal: `8bc79eed-2312-4c07-a306-f91ae8d31716` / `term_c6b8616c-2a70-4667-9bb5-8b80a3bf5783`.
-- Worktree / branch: `/Users/rayer/orca/workspaces/llm-wiki-cloud/LWC-374-implementation-r1` / `LWC-374-implementation-r1`.
+- Worktree / branch: `/Users/rayer/orca/workspaces/llm-wiki-cloud/LWC-374-implementation-r1` / `Rayer/LWC-374-implementation-r1`.
 - Base: `f62bb530cb968e312b3faad77fe0f1b93b3e447b`.
 - Tested code and fixture commit: `a5763a361b9e453b2cf0df838340a69154c99f8e` (parent `c86101d8c999c5c05db9fdf8798073002bae79b0`).
 - PR: pending creation to `develop`; final remote head/base will be read back after publication.
