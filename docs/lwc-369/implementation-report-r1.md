@@ -103,3 +103,56 @@ All commands ran locally in this isolated worktree. Exit 0 denotes a command pas
 | `git diff --check` | 0 | No whitespace errors. |
 
 The code repair was committed as `de29df58c9d7077776d4a0a00baac1cdb60f54c6`; this report is the report-only follow-up so the tested code SHA remains explicit. The dispatched completion records the exact final remote PR head readback. Same-SHA TPM, independent reviewer, and canonical CI remain with main. No PR merge, deployment, or cloud action was attempted.
+
+## PR #106 bounded compatibility repair r3
+
+### Execution and source attribution
+
+- Task: `task_e649b942a992`; Dispatch: `ctx_3de906e81fc1`; model / effort: GPT-6-Luna / xhigh, retained YOLO session; Orca terminal: `term_a1c5e73c-c9ba-4604-86a3-314a800b72c1`.
+- Worktree / branch: isolated `LWC-369-implementation-r1`; `Rayer/LWC-369-implementation-r1`. Repair base: `2bd5b975e591c945a401ad9d7fd8e7733465aaaa`. Tested implementation commit: `c7abda140fe14e211a47d99ead5e6e1970c7fd53`.
+- PR: [#106](https://github.com/Rayer/llm-wiki-cloud/pull/106), open against `develop` at base `55fa221c91daac4da7f3e7b4b30a642848469df8`. The complete PR body was read before implementation publication. Before this report-only follow-up, the implementation head was read back from both `git ls-remote` and the PR API as `c7abda140fe14e211a47d99ead5e6e1970c7fd53`.
+- The prior canonical CI failure was run `37726191265` at the repair base: retained Apps BFF discovery ran 117 tests and returned 3 errors. The reproduced caller failure was the stale `--bff-config` flag and schema-1 fixture in `apps/bff/scripts/test_bff_explicit_cutover.py`; the current normalizer requires a generated descriptor via `--bff-inputs`. Source evidence is `/Users/rayer/.hermes/workflows/lwc/lwc369-ci-caller-evidence-2bd5b975.md`.
+- Review provenance: `/Users/rayer/.hermes/profiles/lwc-tpm/cache/scratch/implementation-wave/369-review-attempt2-recovered.json` records attempt 2 as `invalid_output`, with no formal review result. Its recovered report said `HOLD`, but the trailing verifier warning means that was recovered evidence, not a formal validated HOLD. It identified three source findings: Worker-only release omitted the nonsecret Firestore database compatibility value; retained BFF safety fixtures were stale; and legacy numeric-version reuse could pair another secret resource with the planned destination.
+
+### Bounded repair
+
+1. Worker-only normalization now copies the already-reviewed `auth.firestore_database_id` into the existing nonsecret BFF compatibility projection consumed by `Providers.deploy`. The actual Worker adapter is exercised for development and production with controlled transport and exact database assertions; the plan has no BFF runtime inputs or BFF secret update. The real config-only caller test still passes with `image_unchanged=true`.
+2. The explicit cutover suite now obtains its normalized plan from real Pkl `pipeline_config prepare --descriptor` output and passes `--bff-inputs`. Its synthetic current revision uses the generated resource and numeric, read-only file mount while retaining readback, secret-redaction, accepted-mutation, freeze, and rollback coverage. The shared `bff-service-before.json` and `bff-revision-before.json` remain legacy retained-revision fixtures for the separate deployment-evidence suite; the new numeric mount is built locally by the explicit cutover test.
+3. Legacy numeric-version lookup now requires the mounted secret resource to equal the plan’s complete destination resource before returning its numeric version. A synthetic different-resource/same-version case fails closed without exposing the resource name; exact resource/version reuse still produces args for the planned numeric mount.
+
+### r3 acceptance matrix
+
+| Repair / acceptance | Result | Evidence |
+| --- | --- | --- |
+| Worker-only normalizer carries the correct nonsecret Firestore database for dev and prod, and actual `Providers.deploy` uses it | PASS | New named engine acceptance test passed both environment subtests with one controlled Worker update and no secret update. |
+| Config-only Pipeline caller keeps the image unchanged and does not require BFF runtime inputs | PASS | `test_config_only_uses_real_normalizer_with_controlled_providers` passed for development and production. |
+| Retained Apps BFF safety suite migrated to generated descriptor and numeric mount | PASS | Exact Apps BFF discovery passed all 118 tests, including cutover readback/redaction, accepted mutation, freeze, and rollback. |
+| Legacy version reuse binds only the exact planned secret resource and numeric version | PASS | New synthetic wrong-resource/same-version control rejected; exact resource was accepted and `args` bound the numeric version to the plan resource. Full CD suite passed 70 tests. |
+| Frozen cloud acceptance AC5 | NOT RUN | No provider, live GSM payload, IAM/resource, paid Pipeline, or deployment action was performed. |
+| Final-head TPM / independent reviewer / canonical CI | PENDING | Main owns these checkpoints for the final PR head; no merge or deploy was attempted. |
+
+### r3 verification
+
+Commands ran in this isolated worktree. “Skip” results below remain skips and are not counted as passing acceptance evidence.
+
+| Command | Exit | Result |
+| --- | ---: | --- |
+| `python3 -m unittest discover -s scripts -p 'test_*.py'` (cwd `apps/bff`) | 0 | 118 tests passed. The first diagnostic run returned 56 failures and 1 error because I temporarily rewrote two shared legacy evidence fixtures; those changes were reverted and the new numeric mount was isolated inside the explicit cutover test before the passing rerun. |
+| `python3 -m unittest discover -s deploy/engine/tests -p 'test_*.py'` | 0 | 119 tests passed, including the new Worker normalizer-to-provider integration test. |
+| `python3 scripts/test_cd_contract.py` | 0 | All 70 CD contracts passed. |
+| `PYTHONPATH=deploy/engine/tests:deploy/engine python3 -m unittest test_engine.Acceptance.test_worker_only_normalizer_drives_real_deploy_with_compatibility_database_scope -v` | 0 | 1 named test passed for development and production. |
+| `PYTHONPATH=deploy/engine/tests:deploy/engine python3 -m unittest test_pipeline_config.PipelineConfigContract.test_config_only_uses_real_normalizer_with_controlled_providers -v` | 0 | 1 named test passed for development and production; image stayed unchanged. |
+| `go test ./cmd/deploy_config -count=1` | 0 | Normalizer tests passed, including Worker-only projection without BFF descriptor. |
+| `go test ./internal/config ./cmd/deploy_config -count=1` | 0 | Both Go packages passed. |
+| `go test ./cmd/pipeline_config -run '^TestRealPklBFFPrepareRendersSchema2ForLocalDevelopmentAndProduction$' -count=1 -v` | 0 | 1 real-Pkl test and all 3 local/dev/prod subtests passed. |
+| `python3 scripts/test_bff_auth_config_contract.py`; `python3 scripts/test_auth_config_contract.py`; `python3 scripts/test_production_auth_config_contract.py`; `python3 scripts/test_engine_workflow.py` | 0 | 3, 9, 9, and 8 tests passed, respectively. |
+| `env -u LLM_API_KEY -u DEEPSEEK_API_KEY -u SYNTO_API_KEY -u OPENAI_API_KEY -u ANTHROPIC_API_KEY -u GEMINI_API_KEY -u TYPESAFE_API_KEY -u TYPESAFE_JEV_API_KEY -u LWC331_TEST_API_KEY go test ./... -v -count=1 -race` | 0 | 46 Go packages passed; 9 packages had no test files. Local environment gates reported 90 skipped test cases and 25 skipped subtests (including 70 emulator checks where `FIRESTORE_EMULATOR_HOST` was unset); skips are not passes. |
+| `make test` | 0 | Full root suite passed: CD 70, auth configuration 21, local Makefile 19, frontend 524, component 292, plus the raced Go suite above. |
+| `make lint` | 0 | Frontend ESLint passed. |
+| `make typecheck` | 0 | TypeScript passed. |
+| `make vet` | 0 | `go vet ./...` passed. |
+| `make build` | 0 | Go and Next.js production builds passed. |
+| `make test-flash-execution` (cwd `apps/bff`, retained CI invocation) | 0 | Pinned Flash wire contract passed using local test fixtures; no paid provider call. |
+| `git diff --check` | 0 | No whitespace errors. |
+
+The initial explicit-cutover rollback fixture also needed its prior image digest restored after generating the numeric mount; the focused freeze/rollback test and the full Apps BFF discovery then passed. Invoking `make test-flash-execution` at repository root returned 2 because that target exists only in `apps/bff`; the retained CI invocation from `apps/bff` passed. The new implementation is pushed as `c7abda140fe14e211a47d99ead5e6e1970c7fd53`; final-head review and canonical CI remain main-owned. No merge, deployment, or cloud action was performed.
