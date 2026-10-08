@@ -48,6 +48,10 @@ var defaultAllowedOrigins = []string{
 
 // Config holds application configuration loaded from config.toml.
 type Config struct {
+	// ConfigID and ConfigSchemaVersion identify the nonsecret Auth document
+	// observed by the Auth version endpoint. BFF leaves them zero-valued.
+	ConfigID                    string
+	ConfigSchemaVersion         int
 	GCPProject                  string
 	Bucket                      string
 	FirestoreDatabaseID         string

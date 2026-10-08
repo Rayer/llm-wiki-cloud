@@ -29,6 +29,15 @@ BFF_CONFIG_DIRECTORY = '/etc/lwc-bff-config'
 BFF_CONFIG_FILE = 'bff.json'
 BFF_CONFIG_PATH = BFF_CONFIG_DIRECTORY + '/' + BFF_CONFIG_FILE
 BFF_SECRET_MODE = 0o444
+AUTH_CONFIG_ENV = 'LWC_APP_CONFIG_PATH'
+AUTH_CONFIG_DIRECTORY = '/var/run/lwc-auth-config'
+AUTH_CONFIG_FILE = 'auth.json'
+AUTH_CONFIG_PATH = AUTH_CONFIG_DIRECTORY + '/' + AUTH_CONFIG_FILE
+AUTH_SECRET_MODE = 0o444
+AUTH_LEGACY_ENV = BASE + tuple(GOOGLE) + (
+    'REGISTRATION_ENABLED', 'LOCAL_CLOUD_SCOPE', 'LOCAL_CLOUD_JWT_SECRET_FILE', 'LOCAL_DATA_DIR',
+)
+AUTH_LEGACY_SECRET_ENV = SECRET
 BFF_LEGACY_ENV = (
     'GCP_PROJECT', 'BUCKET', 'FIRESTORE_DATABASE_ID', 'PIPELINE_JOB_URL', 'AUTH_SERVICE_URL',
     'EXPORT_JOB_URL', 'EXPORT_SIGNING_SERVICE_ACCOUNT', 'ALLOWED_ORIGINS', 'ALLOWED_HOSTS',
@@ -71,7 +80,7 @@ def query_path(plan):
     return query['runtime_path']
 
 
-def desired(plan, component='auth', bff_config_version=None):
+def desired(plan, component='auth', bff_config_version=None, auth_config_version=None):
     require(plan['environment'] in ('development', 'production'))
     require(component in ('auth', 'bff'))
     if component == 'bff':
@@ -93,6 +102,25 @@ def desired(plan, component='auth', bff_config_version=None):
             'service_account': bff['runtime_service_account'],
         }
     auth = plan['auth']
+    inputs = auth.get('runtime_inputs')
+    if isinstance(inputs, dict):
+        resource = inputs.get('config_secret_resource')
+        require(isinstance(resource, str) and SECRET_RESOURCE.fullmatch(resource))
+        require(inputs.get('target') == 'auth' and
+                inputs.get('environment') == {'development': 'dev', 'production': 'prod'}[plan['environment']] and
+                isinstance(inputs.get('config_id'), str) and
+                re.fullmatch(r'sha256:[0-9a-f]{64}', inputs['config_id']) is not None)
+        require(isinstance(auth_config_version, str) and re.fullmatch(r'[1-9][0-9]*', auth_config_version))
+        return {
+            'env': {AUTH_CONFIG_ENV: AUTH_CONFIG_PATH},
+            'secrets': {},
+            'file_secret': {
+                'resource': resource, 'version': auth_config_version,
+                'directory': AUTH_CONFIG_DIRECTORY, 'file': AUTH_CONFIG_FILE,
+                'mode': AUTH_SECRET_MODE,
+            },
+            'service_account': auth['runtime_service_account'],
+        }
     google = auth['google']
     demo_user_id = auth.get('demo_user_id', '')
     demo_user_email = auth.get('demo_user_email', '')
@@ -119,7 +147,7 @@ def desired(plan, component='auth', bff_config_version=None):
 
 def effective(revision, project, component='auth', query_only=False, selective_bff=False,
               include_runtime_bindings=False, manage_demo_user_ids=False, manage_export_bindings=False,
-              manage_pipeline_cooldown=False):
+              manage_pipeline_cooldown=False, managed_auth_file=False):
     containers = revision['spec']['containers']
     require(len(containers) == 1)
     result = {'env': {}, 'secrets': {}, 'service_account': revision['spec']['serviceAccountName']}
@@ -134,6 +162,8 @@ def effective(revision, project, component='auth', query_only=False, selective_b
         name = entry['name']
         require(name not in seen)
         seen.add(name)
+        if component == 'auth' and managed_auth_file and name in AUTH_LEGACY_SECRET_ENV:
+            raise ValueError('unexpected legacy Auth secret binding')
         if component == 'bff' and name in BFF_LEGACY_ENV + BFF_LEGACY_SECRET_ENV:
             raise ValueError('unexpected legacy BFF config binding')
         if ((name in SECRET and not query_only and not selective_bff) or
@@ -164,6 +194,11 @@ def effective(revision, project, component='auth', query_only=False, selective_b
                     isinstance(entry['value'], str) and re.fullmatch(r'[1-9][0-9]*', entry['value']) and
                     int(entry['value']) <= MAX_PIPELINE_COOLDOWN_SECONDS)
             result['env'][name] = entry['value']
+        elif component == 'auth' and managed_auth_file and name in AUTH_LEGACY_ENV:
+            raise ValueError('unexpected legacy Auth config binding')
+        elif component == 'auth' and name == AUTH_CONFIG_ENV:
+            require(set(entry) == {'name', 'value'} and entry.get('value') == AUTH_CONFIG_PATH)
+            result['env'][name] = entry['value']
         elif component == 'bff' and name == BFF_CONFIG_ENV:
             require(set(entry) == {'name', 'value'} and entry.get('value') == BFF_CONFIG_PATH)
             result['env'][name] = entry['value']
@@ -179,15 +214,25 @@ def effective(revision, project, component='auth', query_only=False, selective_b
             raise ValueError('unexpected Google variable')
     if component == 'bff':
         result['file_secret'] = native_bff_file_binding(revision, project)
+    elif component == 'auth' and AUTH_CONFIG_ENV in result['env']:
+        result['file_secret'] = native_auth_file_binding(revision, project)
     return result
 
 
 def native_bff_file_binding(revision, project):
+    return native_file_binding(revision, project, BFF_CONFIG_DIRECTORY, BFF_CONFIG_FILE, BFF_SECRET_MODE)
+
+
+def native_auth_file_binding(revision, project):
+    return native_file_binding(revision, project, AUTH_CONFIG_DIRECTORY, AUTH_CONFIG_FILE, AUTH_SECRET_MODE)
+
+
+def native_file_binding(revision, project, directory, filename, expected_mode):
     spec = revision['spec']
     containers = spec.get('containers', [])
     require(len(containers) == 1)
     mounts = [mount for mount in containers[0].get('volumeMounts', [])
-              if mount.get('mountPath') == BFF_CONFIG_DIRECTORY]
+              if mount.get('mountPath') == directory]
     require(len(mounts) == 1)
     mount = mounts[0]
     require(isinstance(mount.get('name'), str) and mount.get('name') and mount.get('readOnly') is True)
@@ -213,16 +258,16 @@ def native_bff_file_binding(revision, project):
     items = secret.get('items', [])
     require(isinstance(items, list) and len(items) == 1)
     item = items[0]
-    require(isinstance(item, dict) and item.get('path') == BFF_CONFIG_FILE)
+    require(isinstance(item, dict) and item.get('path') == filename)
     version = item.get('key')
     require(isinstance(version, str) and re.fullmatch(r'[1-9][0-9]*', version))
-    mode = item.get('mode', BFF_SECRET_MODE)
-    require(type(mode) is int and mode == BFF_SECRET_MODE)
+    mode = item.get('mode', expected_mode)
+    require(type(mode) is int and mode == expected_mode)
     return {
         'resource': resource,
         'version': version,
-        'directory': BFF_CONFIG_DIRECTORY,
-        'file': BFF_CONFIG_FILE,
+        'directory': directory,
+        'file': filename,
         'mode': mode,
     }
 
@@ -236,28 +281,43 @@ def main():
     with open(path) as stream:
         plan = json.load(stream)['normalized']
     if mode == 'version':
-        require(component == 'bff')
+        require(component in ('auth', 'bff'))
         revision = json.load(sys.stdin)
         revision_name = revision.get('metadata', {}).get('name')
         require(isinstance(revision_name, str) and
-                revision_name.startswith(plan['bff']['service_name'] + '-'))
+                revision_name.startswith(plan[component]['service_name'] + '-'))
         conditions = revision.get('status', {}).get('conditions')
         require(isinstance(conditions, list) and
                 any(isinstance(c, dict) and c.get('type') == 'Ready' and c.get('status') == 'True'
                     for c in conditions))
-        binding = native_bff_file_binding(revision, plan['gcp']['project_id'])
-        expected_resource = desired(plan, 'bff', '1')['file_secret']['resource']
+        binding = (native_bff_file_binding(revision, plan['gcp']['project_id']) if component == 'bff'
+                   else native_auth_file_binding(revision, plan['gcp']['project_id']))
+        if component == 'bff':
+            expected_resource = desired(plan, 'bff', '1')['file_secret']['resource']
+        elif isinstance(plan['auth'].get('runtime_inputs'), dict):
+            expected_resource = desired(plan, 'auth', auth_config_version='1')['file_secret']['resource']
+        else:
+            raise ValueError('Auth file config is not selected')
         require(binding['resource'] == expected_resource)
         print(binding['version'])
         return
     if mode == 'args':
-        expected = desired(plan, component, sys.argv[4] if component == 'bff' else None)
+        bff_version = sys.argv[4] if component == 'bff' and len(sys.argv) > 4 else None
+        auth_version = sys.argv[4] if component == 'auth' and isinstance(plan['auth'].get('runtime_inputs'), dict) and len(sys.argv) > 4 else None
+        expected = desired(plan, component, bff_version, auth_version)
         values = expected['env']
         require(all('\n' not in v and '|' not in v for v in values.values()))
         args = ['--update-env-vars', '^|^' + '|'.join(k + '=' + v for k, v in values.items())]
         if expected['secrets']:
             args += ['--update-secrets', ','.join(k + '=' + v['name'] + ':' + v['key'] for k, v in expected['secrets'].items())]
-        if component == 'auth' and not plan['auth']['google']['enabled']:
+        if component == 'auth' and isinstance(plan['auth'].get('runtime_inputs'), dict):
+            file_secret = expected['file_secret']
+            secret_name = file_secret['resource'].split('/')[3]
+            args += ['--service-account', expected['service_account'], '--update-secrets',
+                     AUTH_CONFIG_PATH + '=' + secret_name + ':' + file_secret['version'],
+                     '--remove-env-vars', ','.join(AUTH_LEGACY_ENV),
+                     '--remove-secrets', ','.join(AUTH_LEGACY_SECRET_ENV)]
+        elif component == 'auth' and not plan['auth']['google']['enabled']:
             args += ['--remove-env-vars', ','.join(GOOGLE), '--remove-secrets', 'GOOGLE_CLIENT_SECRET']
         if component == 'bff':
             file_secret = expected['file_secret']
@@ -269,7 +329,8 @@ def main():
         print('\n'.join(args))
         return
     config_version = sys.argv[7] if component == 'bff' and len(sys.argv) > 7 else None
-    expected = desired(plan, component, config_version)
+    auth_config_version = sys.argv[7] if component == 'auth' and isinstance(plan['auth'].get('runtime_inputs'), dict) and len(sys.argv) > 7 else None
+    expected = desired(plan, component, config_version, auth_config_version)
     revision = json.load(sys.stdin)
     require(revision['metadata']['name'] == sys.argv[4])
     if component == 'bff':
@@ -283,7 +344,8 @@ def main():
                        component == 'bff',
                        component == 'bff' and PIPELINE_DEMO_USER_IDS in expected['env'],
                        component == 'bff' and (plan['environment'] == 'development' or plan['export_job']['enabled']),
-                       component == 'bff' and PIPELINE_COOLDOWN_SECONDS in expected['env'])
+                       component == 'bff' and PIPELINE_COOLDOWN_SECONDS in expected['env'],
+                       component == 'auth' and isinstance(plan['auth'].get('runtime_inputs'), dict))
     digest = fingerprint(actual)
     if component == 'bff':
         # Pin all retained revision settings, including unrelated env/secrets and

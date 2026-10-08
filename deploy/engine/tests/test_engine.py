@@ -19,6 +19,9 @@ sys.path.insert(0,str(HERE))
 import engine
 from support import Breakpoint, ROOT, read, write
 import providers
+sys.path.insert(0, str(ROOT / 'scripts'))
+from lwc_auth_test_fixture import write_auth_input_fixture
+import test_auth_config_contract as auth_contract_fixtures
 
 class Acceptance(unittest.TestCase):
     @classmethod
@@ -30,13 +33,20 @@ class Acceptance(unittest.TestCase):
                     ('production','prod','bff','production_normalized')):
                 descriptor_dir=Path(directory)/target
                 descriptor_dir.mkdir()
+                auth_inputs_path = None
+                if target == 'dev':
+                    auth_inputs_path = write_auth_input_fixture(Path(directory)/'auth', environment, 'c' * 40)
                 subprocess.run(['go','run','./cmd/pipeline_config','prepare','--target','bff','--descriptor',
                     '--environment',target,'--output',str(descriptor_dir)],cwd=ROOT/'apps/bff',env=env,
                     check=True,capture_output=True,text=True)
-                output=subprocess.check_output(['go','run','./cmd/deploy_config','--environment',environment,
+                normalize=['go','run','./cmd/deploy_config','--environment',environment,
                     '--config',str(ROOT/'deploy/environments'/f'{environment}.yaml'),'--components',components,
-                    '--bff-inputs',str(descriptor_dir/'bff-inputs.json')],cwd=ROOT/'apps/bff',env=env,text=True)
+                    '--bff-inputs',str(descriptor_dir/'bff-inputs.json')]
+                if auth_inputs_path is not None:
+                    normalize.extend(['--auth-inputs',str(auth_inputs_path)])
+                output=subprocess.check_output(normalize,cwd=ROOT/'apps/bff',env=env,text=True)
                 setattr(cls,attribute,json.loads(output))
+            cls.production_auth_normalized = auth_contract_fixtures.deployment_plan('production', 'auth')
             cls.worker_only_normalized = {}
             for environment in ('development', 'production'):
                 output = subprocess.check_output(
@@ -78,6 +88,19 @@ class Acceptance(unittest.TestCase):
             return '42'
         self.bff_config_version=patch.object(providers.Providers,'prepare_bff_config_version',test_bff_config_version)
         self.bff_config_version.start();self.addCleanup(self.bff_config_version.stop)
+        def test_auth_config_version(provider,candidate,save):
+            inputs=provider.p['auth']['runtime_inputs']
+            resource=inputs['config_secret_resource']
+            candidate['auth_config']={
+                'status':'published','publication_status':'known','config_id':inputs['config_id'],
+                'secret_resource':resource,'mount_path':providers.auth_config.AUTH_CONFIG_PATH,
+                'materialization_schema':1,'version_resource':resource+'/versions/42'}
+            save()
+            return '42'
+        self.auth_config_version=patch.object(providers.Providers,'prepare_auth_config_version',test_auth_config_version)
+        self.auth_config_version.start();self.addCleanup(self.auth_config_version.stop)
+        self.auth_runtime_identity=patch.object(providers.Providers,'auth_runtime_config_matches',lambda _provider,_inputs: True)
+        self.auth_runtime_identity.start();self.addCleanup(self.auth_runtime_identity.stop)
         self.provider={'resources':{},'revisions':{},'calls':[], 'aliases':{'wiki.dev.rayer.idv.tw':'dpl_prior'},
             'deployments':{'dpl_prior':{'id':'dpl_prior','projectId':'prj_test','teamId':'team_test','readyState':'READY'}}}
         n=self.normalized
@@ -144,11 +167,11 @@ class Acceptance(unittest.TestCase):
     def configure(self,**kw):
         self.provider=self.current();self.provider.update(kw);self.flush()
     def calls(self,verb):return [x for x in self.current()['calls'] if verb in x]
-    def make(self,selected=('worker',),name='release',production=False,tag='test-release',normalized=None):
+    def make(self,selected=('worker',),name='release',production=False,tag='test-release',normalized=None,source_sha='c'*40):
         directory=self.root/name;directory.mkdir()
         n=copy.deepcopy(normalized if normalized is not None else self.normalized)
         n['environment']='production' if production else 'development'
-        p={'schema':3,'id':name,'source':'c'*40,'branch':'main' if production else 'develop','tag':tag,'selected':list(selected),
+        p={'schema':3,'id':name,'source':source_sha,'branch':'main' if production else 'develop','tag':tag,'selected':list(selected),
            'normalized':n,'identities':{c:{'profile':'profile','inputs':'input','files':[]} for c in selected},
            'dev_reference':'explicit-123' if production else None,
            'executor_sha':'e'*40}
@@ -368,12 +391,13 @@ class Acceptance(unittest.TestCase):
                 self.assertEqual(revision['status']['imageDigest'],artifact['image'])
                 self.assertEqual(revision['spec']['containers'][0]['image'],artifact['image'])
                 self.assertEqual(service['status']['traffic'],[{'revisionName':revision_name,'percent':100}])
-                version=(entry['candidate'].get('bff_config',{}).get('version_resource','').rsplit('/',1)[-1]
-                         if c=='bff' else None)
-                self.assertTrue(e.provider.service_matches(c,revision,artifact['image'],version))
-                self.assertTrue(e.provider.service_template_matches(c,service,revision,artifact['image'],version))
+                bff_version=(entry['candidate'].get('bff_config',{}).get('version_resource','').rsplit('/',1)[-1]
+                             if c=='bff' else None)
+                auth_version=(entry['candidate'].get('auth_config',{}).get('version_resource','').rsplit('/',1)[-1]
+                              if c=='auth' else None)
+                self.assertTrue(e.provider.service_matches(c,revision,artifact['image'],bff_version,auth_version))
+                self.assertTrue(e.provider.service_template_matches(c,service,revision,artifact['image'],bff_version,auth_version))
                 self.assertTrue(e.provider.observe(c,artifact,entry['candidate']))
-
                 all_calls=self.current()['calls']
                 updates=[call for call in all_calls
                          if call[:4]==['gcloud','run','services','update'] and service_name in call]
@@ -398,13 +422,213 @@ class Acceptance(unittest.TestCase):
                     'target':revision_name+'=100',
                 }])
                 if c=='bff':
-                    desired=providers.auth_config.desired(e.plan['normalized'],'bff',version)['env']
+                    desired=providers.auth_config.desired(e.plan['normalized'],'bff',bff_version)['env']
                     env_arg=updates[0][updates[0].index('--update-env-vars')+1]
                     for key,value in desired.items():
                         self.assertIn(key+'='+value,env_arg)
                     self.assertIn('--remove-env-vars',updates[0])
-                    self.assertIn('/etc/lwc-bff-config/bff.json=lwc-bff-config-dev:'+version,
+                    self.assertIn('/etc/lwc-bff-config/bff.json=lwc-bff-config-dev:'+bff_version,
                                   updates[0][updates[0].index('--update-secrets')+1])
+
+    def test_auth_native_file_mount_removes_migrated_bindings_and_preserves_unrelated_env(self):
+        name=self.normalized['auth']['service_name']
+        prior=self.provider['revisions'][name+'-prior']
+        prior['spec']['containers'][0]['env']=[
+            {'name':'PRESERVED_RUNTIME_FLAG','value':'keep-me'},
+            {'name':'GCP_PROJECT','value':'legacy-project'},
+            {'name':'AUTH_DEMO_USER_ID','value':'old-user'},
+            {'name':'JWT_SECRET','valueFrom':{'secretKeyRef':{'name':'jwt-secret-dev','key':'latest'}}},
+            {'name':'GOOGLE_CLIENT_SECRET','valueFrom':{'secretKeyRef':{'name':'google-oauth-client-dev','key':'1'}}},
+        ]
+        self.provider['resources'][name]['spec']['template']['spec']=copy.deepcopy(prior['spec'])
+        self.flush()
+
+        e=self.ready(self.make(('auth',),name='auth-file-mount'))
+        e.deploy()
+        entry=e.state['components']['auth']
+        candidate=entry['candidate']
+        revision=e.provider.revision('auth',candidate['revision'])
+        runtime_inputs=e.plan['normalized']['auth']['runtime_inputs']
+        expected=providers.auth_config.desired(e.plan['normalized'],'auth',auth_config_version='42')
+        self.assertEqual(candidate['auth_config']['config_id'],runtime_inputs['config_id'])
+        self.assertEqual(candidate['auth_config']['publication_status'],'known')
+        self.assertEqual(candidate['auth_config']['version_resource'],
+                         runtime_inputs['config_secret_resource']+'/versions/42')
+        self.assertEqual(revision['spec']['containers'][0]['env'],[
+            {'name':'PRESERVED_RUNTIME_FLAG','value':'keep-me'},
+            {'name':'LWC_APP_CONFIG_PATH','value':'/var/run/lwc-auth-config/auth.json'},
+        ])
+        self.assertEqual(revision['spec']['containers'][0]['volumeMounts'],[
+            {'name':'lwc-auth-app-config-dev','mountPath':'/var/run/lwc-auth-config','readOnly':True}])
+        self.assertEqual(revision['spec']['volumes'][0]['secret']['items'],[
+            {'key':'42','path':'auth.json','mode':292}])
+        actual=providers.auth_config.effective(revision,'llm-wiki-cloud','auth',managed_auth_file=True)
+        self.assertEqual(actual,expected)
+        self.assertTrue(e.provider.observe('auth',e.receipt('auth')['artifact'],candidate))
+        self.assertNotIn('payload',candidate['auth_config'])
+
+        wrong=copy.deepcopy(revision)
+        wrong['spec']['volumes'][0]['secret']['items'][0]['key']='41'
+        self.assertFalse(e.provider.service_matches('auth',wrong,e.receipt('auth')['artifact']['image'],
+                                                    auth_config_version='42'))
+
+        unresolved={'revision':None,'auth_config':copy.deepcopy(candidate['auth_config'])}
+        e.provider.reconcile_candidate('auth',e.receipt('auth')['artifact'],unresolved,lambda:None)
+        self.assertEqual(unresolved['revision'],candidate['revision'])
+        ambiguous={'revision':None,'auth_config':{'status':'publishing','publication_status':'publishing'}}
+        with self.assertRaisesRegex(Breakpoint,'auth-config-publication-unconfirmed'):
+            e.provider.reconcile_candidate('auth',e.receipt('auth')['artifact'],ambiguous,lambda:None)
+
+    def test_auth_config_publication_materializes_privately_and_pins_one_known_version(self):
+        self.auth_config_version.stop()
+        e=self.ready(self.make(('auth',),name='auth-stage-two'))
+        provider=e.provider
+        candidate={}
+        saved=[]
+        marker=b'TEST_ONLY_AUTH_CONFIG_PAYLOAD'
+        generated=b'{"schema_version":1,"target":"auth","synthetic_fixture":"TEST_ONLY_AUTH_CONFIG_PAYLOAD"}\n'
+        resource=e.plan['normalized']['auth']['runtime_inputs']['config_secret_resource']
+        calls=[]
+
+        def fake_run(command,**kwargs):
+            calls.append((list(command),kwargs))
+            if command[0]=='go':
+                inputs_path=Path(command[command.index('--inputs')+1])
+                output=Path(command[command.index('--output')+1])
+                self.assertNotIn(ROOT,output.parents)
+                self.assertNotIn(e.directory,output.parents)
+                self.assertEqual(stat.S_IMODE(output.parent.stat().st_mode),0o700)
+                self.assertEqual(stat.S_IMODE(inputs_path.stat().st_mode),0o600)
+                self.assertEqual(json.loads(inputs_path.read_text()),e.plan['normalized']['auth']['runtime_inputs'])
+                output.write_bytes(generated);output.chmod(0o600)
+                return ''
+            self.assertEqual(command[:4],['gcloud','secrets','versions','add'])
+            self.assertEqual(candidate['auth_config']['status'],'publishing')
+            data_path=Path(command[command.index('--data-file')+1])
+            self.assertNotIn(ROOT,data_path.parents)
+            self.assertNotIn(e.directory,data_path.parents)
+            self.assertEqual(stat.S_IMODE(data_path.parent.stat().st_mode),0o700)
+            self.assertEqual(stat.S_IMODE(data_path.stat().st_mode),0o600)
+            self.assertEqual(data_path.read_bytes(),generated)
+            self.assertIn(marker,data_path.read_bytes())
+            self.assertNotIn(marker,json.dumps(candidate).encode())
+            return json.dumps({'name':resource+'/versions/42'})
+
+        with patch.dict(os.environ,{'RUNNER_TEMP':str(self.root/'runner-temp')}):
+            with patch('providers.run',side_effect=fake_run):
+                version=provider.prepare_auth_config_version(candidate,lambda:saved.append(copy.deepcopy(candidate)))
+
+        self.assertEqual(version,'42')
+        self.assertEqual(candidate['auth_config'],{
+            'status':'published','publication_status':'known','config_id':e.plan['normalized']['auth']['runtime_inputs']['config_id'],
+            'secret_resource':resource,'mount_path':'/var/run/lwc-auth-config/auth.json',
+            'materialization_schema':1,'version_resource':resource+'/versions/42'})
+        self.assertEqual([value['auth_config']['publication_status'] for value in saved],
+                         ['not_started','publishing','known'])
+        self.assertEqual(sum(command[0]=='gcloud' for command,_ in calls),1)
+        self.assertNotIn(marker,json.dumps(e.plan).encode())
+        for path in e.directory.rglob('*'):
+            if path.is_file():
+                self.assertNotIn(marker,path.read_bytes())
+
+    def test_auth_config_file_failure_precedes_publication_and_unknown_add_version_is_not_retried(self):
+        self.auth_config_version.stop()
+        e=self.ready(self.make(('auth',),name='auth-stage-two-failures'))
+        provider=e.provider
+        candidate={};calls=[]
+        def no_file(command,**kwargs):
+            calls.append(list(command))
+            return ''
+        with patch.dict(os.environ,{'RUNNER_TEMP':str(self.root/'runner-temp')}):
+            with patch('providers.run',side_effect=no_file):
+                with self.assertRaisesRegex(Breakpoint,'auth-config-file-unavailable'):
+                    provider.prepare_auth_config_version(candidate,lambda:None)
+        self.assertEqual(candidate['auth_config']['status'],'preparing')
+        self.assertFalse(any(command[0]=='gcloud' for command in calls))
+
+        candidate={};calls=[]
+        resource=e.plan['normalized']['auth']['runtime_inputs']['config_secret_resource']
+        def ambiguous_publish(command,**kwargs):
+            calls.append(list(command))
+            if command[0]=='go':
+                output=Path(command[command.index('--output')+1])
+                output.write_text('{"synthetic":"TEST_ONLY_PAYLOAD"}')
+                output.chmod(0o600)
+                return ''
+            raise Breakpoint('command-failed','unknown',True,'inspect-retained-checkpoint')
+        with patch.dict(os.environ,{'RUNNER_TEMP':str(self.root/'runner-temp')}):
+            with patch('providers.run',side_effect=ambiguous_publish):
+                with self.assertRaisesRegex(Breakpoint,'auth-config-publication-unconfirmed'):
+                    provider.prepare_auth_config_version(candidate,lambda:None)
+                with self.assertRaisesRegex(Breakpoint,'auth-config-publication-unconfirmed'):
+                    provider.prepare_auth_config_version(candidate,lambda:None)
+        self.assertEqual(candidate['auth_config']['status'],'unconfirmed')
+        self.assertEqual(candidate['auth_config']['publication_status'],'unknown')
+        self.assertEqual(sum(command[:4]==['gcloud','secrets','versions','add'] for command in calls),1)
+        self.assertIsNone(candidate['auth_config'].get('version_resource'))
+        self.assertEqual(candidate['auth_config']['secret_resource'],resource)
+
+    def test_auth_runtime_version_probe_is_allowlisted_bounded_and_config_id_scoped(self):
+        self.auth_runtime_identity.stop()
+        provider=providers.Providers({'normalized':self.normalized},self.root)
+        inputs=self.normalized['auth']['runtime_inputs']
+        url=inputs['auth_service_url'].rstrip('/')+'/api/v1/public/version'
+        response=unittest.mock.MagicMock(status=200)
+        response.geturl.return_value=url
+        response.read.return_value=json.dumps({'config_schema_version':1,'config_id':inputs['config_id']}).encode()
+        response.__enter__.return_value=response
+        opener=unittest.mock.MagicMock()
+        opener.open.return_value=response
+        with patch('providers.urllib.request.build_opener',return_value=opener) as build_opener:
+            self.assertTrue(provider.auth_runtime_config_matches(inputs))
+            self.assertIsInstance(build_opener.call_args.args[0],providers._AuthConfigNoRedirectHandler)
+            self.assertEqual(opener.open.call_args.args[0].full_url,url)
+            self.assertEqual(opener.open.call_args.kwargs['timeout'],15)
+        response.read.return_value=json.dumps({'config_schema_version':1,'config_id':'sha256:'+'0'*64}).encode()
+        with patch('providers.urllib.request.build_opener',return_value=opener):
+            self.assertFalse(provider.auth_runtime_config_matches(inputs))
+        response.geturl.return_value='https://outside.example/api/v1/public/version'
+        with patch('providers.urllib.request.build_opener',return_value=opener):
+            self.assertFalse(provider.auth_runtime_config_matches(inputs))
+        bad=dict(inputs,auth_service_url='https://outside.example')
+        with patch('providers.urllib.request.build_opener') as build_opener:
+            with self.assertRaisesRegex(Breakpoint,'auth-runtime-config-identity-invalid'):
+                provider.auth_runtime_config_matches(bad)
+            build_opener.assert_not_called()
+        with patch('providers.urllib.request.build_opener') as build_opener:
+            build_opener.return_value.open.side_effect=OSError('offline')
+            with self.assertRaisesRegex(Breakpoint,'auth-runtime-config-identity-unreadable'):
+                provider.auth_runtime_config_matches(inputs)
+
+    def test_auth_stage1_snapshot_refreshes_for_cross_plan_and_production_image_reuse(self):
+        old=self.ready(self.make(('auth',),name='auth-stage1-old'))
+        old_receipt=old.receipt('auth')
+        old_inputs=copy.deepcopy(old_receipt['auth_config_inputs'])
+        initial_builds=len(self.calls('submit'))
+
+        changed_normalized=auth_contract_fixtures.deployment_plan('development','auth',source_sha='d'*40)
+        changed=self.make(('auth',),name='auth-stage1-changed',normalized=changed_normalized,source_sha='d'*40)
+        changed.prepare(reuse=old.directory)
+        changed_inputs=changed.receipt('auth')['auth_config_inputs']
+        self.assertNotEqual(changed_inputs['config_id'],old_inputs['config_id'])
+        self.assertEqual(changed_inputs['source_sha'],'d'*40)
+        self.assertEqual(changed.receipt('auth')['artifact']['image'],old_receipt['artifact']['image'])
+        self.assertEqual(len(self.calls('submit')),initial_builds)
+
+        dev=self.ready(self.make(('auth',),name='auth-stage1-dev-provenance'))
+        dev.deploy()
+        dev_inputs=copy.deepcopy(dev.receipt('auth')['auth_config_inputs'])
+        prod=self.make(('auth',),name='auth-stage1-production',production=True,
+                       normalized=self.production_auth_normalized)
+        builds_before=len(self.calls('submit'))
+        prod.prepare(dev=dev.directory)
+        prod_inputs=prod.receipt('auth')['auth_config_inputs']
+        self.assertEqual(prod_inputs['environment'],'prod')
+        self.assertNotEqual(prod_inputs['config_id'],dev_inputs['config_id'])
+        self.assertTrue(prod_inputs['config_secret_resource'].endswith('-prod'))
+        self.assertIn('/jwt-secret-prod/',prod_inputs['jwt_secret_version'])
+        self.assertEqual(prod.receipt('auth')['artifact']['image'],dev.receipt('auth')['artifact']['image'])
+        self.assertEqual(len(self.calls('submit')),builds_before)
 
     def test_bff_incompatible_receipt_identity_fails_before_provider_mutation(self):
         prepared=self.ready(self.make(('bff',),name='bff-applicability-source'))
@@ -679,14 +903,12 @@ class Acceptance(unittest.TestCase):
                     elif fault=='ready':rev['status']['conditions'][0]['status']='False'
                     elif fault=='env':rev['spec']['containers'][0]['env']=[v for v in rev['spec']['containers'][0]['env'] if 'value' not in v]
                     elif fault=='secret':
-                        if c=='bff':rev['spec']['volumes']=[]
-                        else:rev['spec']['containers'][0]['env']=[v for v in rev['spec']['containers'][0]['env'] if 'valueFrom' not in v]
+                        rev['spec']['volumes']=[]
                     elif fault=='account':rev['spec']['serviceAccountName']='wrong'
                     elif fault=='template':self.provider['resources'][name]['spec']['template']['spec']['containers'][0]['image']='wrong'
                     elif fault=='template-env':template['containers'][0]['env']=[]
                     elif fault=='template-secret':
-                        if c=='bff':template['volumes']=[]
-                        else:template['containers'][0]['env']=[v for v in template['containers'][0].get('env',[]) if 'valueFrom' not in v]
+                        template['volumes']=[]
                     elif fault=='template-account':template['serviceAccountName']='wrong'
                     else:self.provider['resources'][name]['status']['traffic'][0]['percent']=50
                     self.flush()

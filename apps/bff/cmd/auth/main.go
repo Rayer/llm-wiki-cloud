@@ -23,7 +23,7 @@ import (
 )
 
 func main() {
-	cfg, err := config.Load(".")
+	cfg, err := config.LoadAuthFile(strings.TrimSpace(os.Getenv("LWC_APP_CONFIG_PATH")))
 	if err != nil {
 		log.Fatalf("Failed to load config: %v", err)
 	}
@@ -33,7 +33,7 @@ func main() {
 		log.Fatal("local cloud signing key is missing")
 	}
 
-	fsClient, err := firestoreclient.NewClientWithDatabase(cfg.GCPProject, cfg.FirestoreDatabaseID, "", "")
+	fsClient, err := firestoreclient.NewClientWithDatabaseAndScope(cfg.GCPProject, cfg.FirestoreDatabaseID, "", "", cfg.LocalCloudScope)
 	if err != nil {
 		log.Fatalf("Firestore client unavailable: %v", err)
 	}
@@ -50,7 +50,7 @@ func main() {
 
 	settingsStore := syssettings.NewStore(fsClient.Raw(), cfg.RegistrationEnabled)
 
-	provider, err := observability.InitMetrics(context.Background(), observabilityServiceName(os.Getenv("K_SERVICE")), observability.GetProjectID())
+	provider, err := observability.InitMetrics(context.Background(), observabilityServiceName(os.Getenv("K_SERVICE")), cfg.GCPProject)
 	if err != nil {
 		log.Printf("[observability] WARNING: metrics init failed (continuing): %v", err)
 	} else {
@@ -157,9 +157,21 @@ func newProductionRouter(cfg config.Config, localMode bool, fsClient *firestorec
 	r.GET("/api/v1/public/healthz", func(c *gin.Context) {
 		c.Status(http.StatusOK)
 	})
-	r.GET("/api/v1/public/version", buildinfo.Handler())
+	r.GET("/api/v1/public/version", authVersionHandler(cfg))
 
 	return r
+}
+
+func authVersionHandler(cfg config.Config) gin.HandlerFunc {
+	return func(c *gin.Context) {
+		c.Header("Cache-Control", "no-store")
+		info := buildinfo.Current()
+		c.JSON(http.StatusOK, gin.H{
+			"product_version": info.ProductVersion, "commit": info.Commit, "branch": info.Branch,
+			"tag": info.Tag, "image_tag": info.ImageTag, "service": info.Service, "revision": info.Revision,
+			"config_schema_version": cfg.ConfigSchemaVersion, "config_id": cfg.ConfigID,
+		})
+	}
 }
 
 func ensureDemoAccountAtStartup(cfg config.Config, fsClient *firestore.Client) bool {

@@ -157,7 +157,7 @@ elif tool == 'gcloud':
                     k,v=pair.split('=',1);n,key=v.split(':')
                     if k.startswith('/'):
                         directory,file_name=k.rsplit('/',1)
-                        mount_path=directory.rsplit('/',1)[0]
+                        mount_path=directory
                         mounts=container.setdefault('volumeMounts',[])
                         mounts[:]=[mount for mount in mounts if mount.get('mountPath')!=mount_path]
                         mounts.append({'name':n,'mountPath':mount_path,'readOnly':True})

@@ -375,6 +375,12 @@ func rejectDuplicateJSONKeys(data []byte) error {
 	return ensureJSONEOF(decoder)
 }
 
+// RejectDuplicateJSONKeys validates JSON object keys without decoding a
+// particular schema. Producers use it before applying their own strict shape.
+func RejectDuplicateJSONKeys(data []byte) error {
+	return rejectDuplicateJSONKeys(data)
+}
+
 func scanJSONValue(decoder *json.Decoder) error {
 	token, err := decoder.Token()
 	if err != nil {

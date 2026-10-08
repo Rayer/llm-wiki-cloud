@@ -99,7 +99,7 @@ def write_record(path: Path, value: dict) -> None:
 def service_command(name: str, root: Path, env: dict[str, str]) -> tuple[list[str], Path, dict[str, str]]:
     bff = root / "apps" / "bff"
     if name == "auth":
-        return ["go", "run", "./cmd/auth"], bff, env | {"PORT": env["AUTH_PORT"]}
+        return ["go", "run", "./cmd/auth"], bff, env
     if name == "bff":
         return ["go", "run", "./cmd/bff"], bff, env | {"PORT": env["BFF_PORT"]}
     if name == "frontend":
@@ -109,6 +109,25 @@ def service_command(name: str, root: Path, env: dict[str, str]) -> tuple[list[st
 
 def child_environment(name: str, env: dict[str, str]) -> dict[str, str]:
     child_env = env.copy()
+    if name == "auth":
+        path = child_env.get("LOCAL_CLOUD_AUTH_CONFIG_PATH", "")
+        if not Path(path).is_absolute() or not Path(path).is_file():
+            raise ValueError("current-worktree Auth config file is missing or invalid")
+        port = child_env.get("AUTH_PORT", "")
+        if not port.isdecimal() or not 1 <= int(port) <= 65535:
+            raise ValueError("Auth listener port is invalid")
+        child_env["PORT"] = port
+        child_env.pop("LWC_BFF_CONFIG_PATH", None)
+        for key in BFF_CONFIG_ENV:
+            child_env.pop(key, None)
+        for key in tuple(child_env):
+            if key.startswith("LOCAL_CLOUD_"):
+                child_env.pop(key, None)
+            elif key.startswith(("PIPELINE_", "QUERY_", "ANSWER_SYNTHESIS_")):
+                child_env.pop(key, None)
+            elif key.startswith("GOOGLE_") and key not in {"GOOGLE_APPLICATION_CREDENTIALS", "GOOGLE_CLOUD_PROJECT"}:
+                child_env.pop(key, None)
+        child_env["LWC_APP_CONFIG_PATH"] = path
     if name == "bff":
         path = child_env.get("LOCAL_CLOUD_BFF_CONFIG_PATH", "")
         if not Path(path).is_absolute() or not Path(path).is_file():
@@ -216,7 +235,9 @@ def daemon(state: Path, token: str, names: list[str], startup_timeout: float = S
         try:
             child_envs = {name: child_environment(name, os.environ) for name in names}
         except (OSError, TypeError, ValueError, json.JSONDecodeError):
-            write_startup(state, token, "failed", service="bff", reason="current-worktree BFF config file is missing or invalid")
+            failed_service = "auth" if "auth" in names else "bff"
+            write_startup(state, token, "failed", service=failed_service,
+                          reason="current-worktree service config file is missing or invalid")
             return 1
         for name in names:
             child_env = child_envs[name]

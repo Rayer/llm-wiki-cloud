@@ -14,6 +14,7 @@ import (
 	"regexp"
 	"strings"
 
+	runtimeconfig "github.com/rayer/llm-wiki-bff/internal/config"
 	"github.com/rayer/llm-wiki-bff/internal/queryconfig"
 	"gopkg.in/yaml.v3"
 )
@@ -52,22 +53,24 @@ type GCPConfig struct {
 }
 
 type AuthConfig struct {
-	Google                *GoogleConfig        `yaml:"google" json:"google,omitempty"`
-	ServiceName           string               `yaml:"service_name" json:"service_name"`
-	RuntimeServiceAccount string               `yaml:"runtime_service_account" json:"runtime_service_account"`
-	Network               string               `yaml:"network" json:"network"`
-	Subnet                string               `yaml:"subnet" json:"subnet"`
-	VPCEgress             string               `yaml:"vpc_egress" json:"vpc_egress"`
-	Ingress               string               `yaml:"ingress" json:"ingress"`
-	MaxInstances          int                  `yaml:"max_instances" json:"max_instances"`
-	FirestoreDatabaseID   string               `yaml:"firestore_database_id" json:"firestore_database_id"`
-	DemoUserID            string               `yaml:"demo_user_id" json:"demo_user_id"`
-	DemoUserEmail         string               `yaml:"demo_user_email" json:"demo_user_email"`
-	DemoUserRole          string               `yaml:"demo_user_role" json:"demo_user_role"`
-	PublicDomain          string               `yaml:"public_domain" json:"public_domain"`
-	AllowedHosts          []string             `yaml:"allowed_hosts" json:"allowed_hosts"`
-	AllowedOrigins        []string             `yaml:"allowed_origins" json:"allowed_origins"`
-	SecretReferences      AuthSecretReferences `yaml:"secret_references" json:"secret_references"`
+	Google                *GoogleConfig                    `yaml:"google" json:"google,omitempty"`
+	ServiceName           string                           `yaml:"service_name" json:"service_name"`
+	RuntimeServiceAccount string                           `yaml:"runtime_service_account" json:"runtime_service_account"`
+	Network               string                           `yaml:"network" json:"network"`
+	Subnet                string                           `yaml:"subnet" json:"subnet"`
+	VPCEgress             string                           `yaml:"vpc_egress" json:"vpc_egress"`
+	Ingress               string                           `yaml:"ingress" json:"ingress"`
+	MaxInstances          int                              `yaml:"max_instances" json:"max_instances"`
+	FirestoreDatabaseID   string                           `yaml:"firestore_database_id" json:"firestore_database_id"`
+	DemoUserID            string                           `yaml:"demo_user_id" json:"demo_user_id"`
+	DemoUserEmail         string                           `yaml:"demo_user_email" json:"demo_user_email"`
+	DemoUserRole          string                           `yaml:"demo_user_role" json:"demo_user_role"`
+	PublicDomain          string                           `yaml:"public_domain" json:"public_domain"`
+	AllowedHosts          []string                         `yaml:"allowed_hosts" json:"allowed_hosts"`
+	AllowedOrigins        []string                         `yaml:"allowed_origins" json:"allowed_origins"`
+	SecretReferences      AuthSecretReferences             `yaml:"secret_references" json:"secret_references"`
+	RuntimeInputs         *runtimeconfig.AuthInputSnapshot `yaml:"-" json:"runtime_inputs,omitempty"`
+	ConfigSecretResource  string                           `yaml:"-" json:"config_secret_resource,omitempty"`
 }
 
 type AuthSecretReferences struct {
@@ -256,6 +259,7 @@ func main() {
 	configPath := flag.String("config", "", "repository-relative environment YAML path")
 	components := flag.String("components", "", "explicit comma-separated component set")
 	bffInputsPath := flag.String("bff-inputs", "", "nonsecret BFF inputs from pipeline_config prepare --target bff --descriptor")
+	authInputsPath := flag.String("auth-inputs", "", "nonsecret Auth inputs from pipeline_config prepare --target auth --descriptor")
 	flag.Parse()
 
 	if *environment == "" || *components == "" {
@@ -266,11 +270,22 @@ func main() {
 		fail("%v", err)
 	}
 	var normalized Normalized
-	if contains(selected, "bff") {
+	switch {
+	case contains(selected, "bff") && contains(selected, "auth"):
+		normalized, err = LoadWithRuntimeInputs(*environment, *configPath, *components, *bffInputsPath, *authInputsPath)
+	case contains(selected, "bff"):
+		if *authInputsPath != "" {
+			fail("--auth-inputs requires auth in --components")
+		}
 		normalized, err = LoadWithBFFInputs(*environment, *configPath, *components, *bffInputsPath)
-	} else {
+	case contains(selected, "auth"):
 		if *bffInputsPath != "" {
 			fail("--bff-inputs requires bff in --components")
+		}
+		normalized, err = LoadWithAuthInputs(*environment, *configPath, *components, *authInputsPath)
+	default:
+		if *bffInputsPath != "" || *authInputsPath != "" {
+			fail("component input descriptors require their selected component")
 		}
 		normalized, err = Load(*environment, *configPath, *components)
 	}
@@ -285,14 +300,22 @@ func main() {
 }
 
 func Load(environment, configPath, components string) (Normalized, error) {
-	return load(environment, configPath, components, "", false)
+	return loadWithInputs(environment, configPath, components, "", "", false, false)
 }
 
 func LoadWithBFFInputs(environment, configPath, components, bffInputsPath string) (Normalized, error) {
-	return load(environment, configPath, components, bffInputsPath, true)
+	return loadWithInputs(environment, configPath, components, bffInputsPath, "", true, false)
 }
 
-func load(environment, configPath, components, bffInputsPath string, requireBFFInputs bool) (Normalized, error) {
+func LoadWithAuthInputs(environment, configPath, components, authInputsPath string) (Normalized, error) {
+	return loadWithInputs(environment, configPath, components, "", authInputsPath, false, true)
+}
+
+func LoadWithRuntimeInputs(environment, configPath, components, bffInputsPath, authInputsPath string) (Normalized, error) {
+	return loadWithInputs(environment, configPath, components, bffInputsPath, authInputsPath, true, true)
+}
+
+func loadWithInputs(environment, configPath, components, bffInputsPath, authInputsPath string, requireBFFInputs, requireAuthInputs bool) (Normalized, error) {
 	if _, ok := allowedEnvironments[environment]; !ok {
 		return Normalized{}, fmt.Errorf("environment %q is not allowlisted", environment)
 	}
@@ -303,6 +326,10 @@ func load(environment, configPath, components, bffInputsPath string, requireBFFI
 	needsBFFInputs := contains(selected, "bff")
 	if needsBFFInputs != requireBFFInputs {
 		return Normalized{}, errors.New("generated BFF input descriptor must be supplied exactly when bff is selected")
+	}
+	needsAuthInputs := contains(selected, "auth")
+	if needsAuthInputs != (strings.TrimSpace(authInputsPath) != "") {
+		return Normalized{}, errors.New("generated Auth input descriptor must be supplied exactly when auth is selected")
 	}
 	if configPath == "" {
 		configPath = filepath.Join("deploy", "environments", environment+".yaml")
@@ -322,6 +349,15 @@ func load(environment, configPath, components, bffInputsPath string, requireBFFI
 	if err != nil {
 		return Normalized{}, err
 	}
+	if requireAuthInputs {
+		inputs, err := loadAuthInputDescriptor(authInputsPath, environment)
+		if err != nil {
+			return Normalized{}, err
+		}
+		applyAuthInputDescriptor(&config, inputs)
+	} else if strings.TrimSpace(authInputsPath) != "" {
+		return Normalized{}, errors.New("Auth input descriptor requires auth in the selected components")
+	}
 	if contains(selected, "worker") && !contains(selected, "bff") {
 		// The Worker deploy adapter still reads this nonsecret compatibility field.
 		// Preserve its reviewed database scope without preparing unrelated BFF inputs.
@@ -339,7 +375,7 @@ func load(environment, configPath, components, bffInputsPath string, requireBFFI
 	} else if strings.TrimSpace(bffInputsPath) != "" {
 		return Normalized{}, errors.New("BFF input descriptor requires bff in the selected components")
 	}
-	if err := validateConfigForSelection(environment, config, requireBFFInputs); err != nil {
+	if err := validateConfigForSelectedComponents(environment, config, requireBFFInputs, needsAuthInputs); err != nil {
 		return Normalized{}, err
 	}
 	for _, component := range selected {
@@ -437,6 +473,63 @@ func loadBFFInputDescriptor(path, environment string) (BFFSourceProjection, erro
 		return BFFSourceProjection{}, err
 	}
 	return projection, nil
+}
+
+func loadAuthInputDescriptor(path, environment string) (runtimeconfig.AuthInputSnapshot, error) {
+	if strings.TrimSpace(path) == "" {
+		return runtimeconfig.AuthInputSnapshot{}, errors.New("generated Auth input descriptor is required when auth is selected")
+	}
+	info, err := os.Stat(path)
+	if err != nil || !info.Mode().IsRegular() || info.Size() <= 0 || info.Size() > runtimeconfig.MaxAuthConfigBytes {
+		return runtimeconfig.AuthInputSnapshot{}, errors.New("generated Auth input descriptor is unavailable or oversized")
+	}
+	data, err := os.ReadFile(path)
+	if err != nil {
+		return runtimeconfig.AuthInputSnapshot{}, errors.New("generated Auth input descriptor is unavailable")
+	}
+	defer clear(data)
+	inputs, err := runtimeconfig.DecodeAuthInputSnapshot(data)
+	if err != nil {
+		return runtimeconfig.AuthInputSnapshot{}, fmt.Errorf("generated Auth input descriptor is invalid: %w", err)
+	}
+	expected := map[string]string{"development": "dev", "production": "prod"}[environment]
+	if expected == "" || inputs.Environment != expected {
+		return runtimeconfig.AuthInputSnapshot{}, errors.New("generated Auth input descriptor environment does not match the plan")
+	}
+	return inputs, nil
+}
+
+func applyAuthInputDescriptor(config *EnvironmentConfig, inputs runtimeconfig.AuthInputSnapshot) {
+	config.Auth.RuntimeInputs = &inputs
+	config.Auth.FirestoreDatabaseID = inputs.FirestoreDatabaseID
+	config.Auth.DemoUserID = inputs.AuthDemoUserID
+	config.Auth.DemoUserEmail = inputs.AuthDemoUserEmail
+	config.Auth.DemoUserRole = inputs.AuthDemoUserRole
+	config.Auth.AllowedHosts = append([]string(nil), inputs.AllowedHosts...)
+	config.Auth.AllowedOrigins = append([]string(nil), inputs.AllowedOrigins...)
+	if parsed, err := url.Parse(inputs.AuthServiceURL); err == nil {
+		config.Auth.PublicDomain = parsed.Hostname()
+	}
+	jwtParts := strings.Split(inputs.JWTSecretVersion, "/")
+	if len(jwtParts) == 6 {
+		config.Auth.SecretReferences.JWT = jwtParts[3]
+	}
+	config.Auth.ConfigSecretResource = inputs.ConfigSecretResource
+	googleEnabled := inputs.Google.Enabled
+	google := &GoogleConfig{
+		Enabled: &googleEnabled, ClientID: inputs.Google.ClientID,
+		Issuer: inputs.Google.Issuer, JWKSURL: inputs.Google.JWKSURL,
+		TokenURL: inputs.Google.TokenURL, LoginRedirectURL: inputs.Google.LoginRedirectURL,
+		LinkRedirectURL: inputs.Google.LinkRedirectURL, CompletionURL: inputs.Google.CompletionURL,
+	}
+	if googleEnabled {
+		parts := strings.Split(inputs.Google.ClientSecretVersion, "/")
+		if len(parts) == 6 {
+			google.ClientSecretReference = parts[3]
+			google.ClientSecretVersion = parts[5]
+		}
+	}
+	config.Auth.Google = google
 }
 
 func validateBFFDescriptorShape(fields map[string]json.RawMessage) error {
@@ -595,15 +688,16 @@ func validateConfigForEnvironment(environment string, config EnvironmentConfig) 
 }
 
 func validateConfigForSelection(environment string, config EnvironmentConfig, hasBFFInputs bool) error {
+	return validateConfigForSelectedComponents(environment, config, hasBFFInputs, false)
+}
+
+func validateConfigForSelectedComponents(environment string, config EnvironmentConfig, hasBFFInputs, hasAuthInputs bool) error {
 	for name, value := range map[string]string{
 		"gcp.project_id": config.GCP.ProjectID, "gcp.region": config.GCP.Region,
 		"gcp.artifact_registry": config.GCP.ArtifactRegistry,
 		"auth.service_name":     config.Auth.ServiceName, "auth.runtime_service_account": config.Auth.RuntimeServiceAccount,
 		"auth.network": config.Auth.Network, "auth.subnet": config.Auth.Subnet, "auth.vpc_egress": config.Auth.VPCEgress, "auth.ingress": config.Auth.Ingress,
-		"auth.firestore_database_id": config.Auth.FirestoreDatabaseID, "auth.public_domain": config.Auth.PublicDomain,
-		"auth.demo_user_id": config.Auth.DemoUserID, "auth.demo_user_email": config.Auth.DemoUserEmail,
-		"auth.demo_user_role":        config.Auth.DemoUserRole,
-		"auth.secret_references.jwt": config.Auth.SecretReferences.JWT,
+		"auth.firestore_database_id": config.Auth.FirestoreDatabaseID,
 		"bff.service_name":           config.BFF.ServiceName, "bff.runtime_service_account": config.BFF.RuntimeServiceAccount,
 		"bff.network": config.BFF.Network, "bff.subnet": config.BFF.Subnet, "bff.vpc_egress": config.BFF.VPCEgress, "bff.ingress": config.BFF.Ingress,
 		"bff.pipeline_job_name": config.BFF.PipelineJobName, "bff.pipeline_job_location": config.BFF.PipelineJobLocation,
@@ -619,6 +713,21 @@ func validateConfigForSelection(environment string, config EnvironmentConfig, ha
 		}
 		if secretValuePattern.MatchString(value) {
 			return fmt.Errorf("secret-bearing value is not allowed in %s", name)
+		}
+	}
+	if hasAuthInputs {
+		for name, value := range map[string]string{
+			"auth.public_domain": config.Auth.PublicDomain,
+			"auth.demo_user_id":  config.Auth.DemoUserID, "auth.demo_user_email": config.Auth.DemoUserEmail,
+			"auth.demo_user_role":        config.Auth.DemoUserRole,
+			"auth.secret_references.jwt": config.Auth.SecretReferences.JWT,
+		} {
+			if strings.TrimSpace(value) == "" {
+				return fmt.Errorf("missing required field %s", name)
+			}
+			if secretValuePattern.MatchString(value) {
+				return fmt.Errorf("secret-bearing value is not allowed in %s", name)
+			}
 		}
 	}
 	if hasBFFInputs {
@@ -677,22 +786,24 @@ func validateConfigForSelection(environment string, config EnvironmentConfig, ha
 		config.BFF.Network != "default" || config.BFF.Subnet != "default" || config.BFF.VPCEgress != "private-ranges-only" || config.BFF.Ingress != "all" {
 		return errors.New("service network configuration is not the reviewed Cloud Run definition")
 	}
-	if !pipelineDemoUserIDPattern.MatchString(config.Auth.DemoUserID) {
-		return errors.New("auth.demo_user_id is invalid")
-	}
-	if config.Auth.DemoUserEmail != strings.TrimSpace(config.Auth.DemoUserEmail) ||
-		!demoEmailPattern.MatchString(config.Auth.DemoUserEmail) ||
-		strings.ToLower(config.Auth.DemoUserEmail) != config.Auth.DemoUserEmail {
-		return errors.New("auth.demo_user_email is invalid")
-	}
-	if !demoRolePattern.MatchString(config.Auth.DemoUserRole) || strings.EqualFold(config.Auth.DemoUserRole, "admin") {
-		return errors.New("auth.demo_user_role must be a non-admin role")
-	}
-	if err := validateStringList("auth.allowed_hosts", config.Auth.AllowedHosts); err != nil {
-		return err
-	}
-	if err := validateStringList("auth.allowed_origins", config.Auth.AllowedOrigins); err != nil {
-		return err
+	if hasAuthInputs {
+		if !pipelineDemoUserIDPattern.MatchString(config.Auth.DemoUserID) {
+			return errors.New("auth.demo_user_id is invalid")
+		}
+		if config.Auth.DemoUserEmail != strings.TrimSpace(config.Auth.DemoUserEmail) ||
+			!demoEmailPattern.MatchString(config.Auth.DemoUserEmail) ||
+			strings.ToLower(config.Auth.DemoUserEmail) != config.Auth.DemoUserEmail {
+			return errors.New("auth.demo_user_email is invalid")
+		}
+		if !demoRolePattern.MatchString(config.Auth.DemoUserRole) || strings.EqualFold(config.Auth.DemoUserRole, "admin") {
+			return errors.New("auth.demo_user_role must be a non-admin role")
+		}
+		if err := validateStringList("auth.allowed_hosts", config.Auth.AllowedHosts); err != nil {
+			return err
+		}
+		if err := validateStringList("auth.allowed_origins", config.Auth.AllowedOrigins); err != nil {
+			return err
+		}
 	}
 	if hasBFFInputs {
 		if err := validateStringList("bff.allowed_origins", config.BFF.AllowedOrigins); err != nil {
@@ -705,7 +816,10 @@ func validateConfigForSelection(environment string, config EnvironmentConfig, ha
 		}
 	}
 	if hasBFFInputs && (len(config.BFF.PipelineDemoUserIDs) != 1 ||
-		config.BFF.PipelineDemoUserIDs[0] != config.Auth.DemoUserID) {
+		!pipelineDemoUserIDPattern.MatchString(config.BFF.PipelineDemoUserIDs[0])) {
+		return errors.New("BFF Pipeline Demo identity must match the selected Auth Demo identity")
+	}
+	if hasBFFInputs && hasAuthInputs && config.BFF.PipelineDemoUserIDs[0] != config.Auth.DemoUserID {
 		return errors.New("BFF Pipeline Demo identity must match the selected Auth Demo identity")
 	}
 	if err := validateStringList("frontend.stable_aliases", config.Frontend.StableAliases); err != nil {
@@ -731,8 +845,9 @@ func validateConfigForSelection(environment string, config EnvironmentConfig, ha
 	if config.Frontend.TeamSlug != "rayer-tung-s-projects" {
 		return errors.New("frontend team identity is not reviewed")
 	}
-	secretRefs := map[string]string{
-		"auth.jwt": config.Auth.SecretReferences.JWT, "worker.deepseek_api_key": config.Worker.SecretReferences.DeepSeekAPIKey,
+	secretRefs := map[string]string{"worker.deepseek_api_key": config.Worker.SecretReferences.DeepSeekAPIKey}
+	if hasAuthInputs {
+		secretRefs["auth.jwt"] = config.Auth.SecretReferences.JWT
 	}
 	if hasBFFInputs {
 		secretRefs["bff.jwt"] = config.BFF.SecretReferences.JWT
@@ -748,7 +863,7 @@ func validateConfigForSelection(environment string, config EnvironmentConfig, ha
 		if environment == "production" {
 			jwt = "jwt-secret-prod"
 		}
-		if config.Auth.SecretReferences.JWT != jwt || config.Worker.SecretReferences.DeepSeekAPIKey != "deepseek-apikey" {
+		if (hasAuthInputs && config.Auth.SecretReferences.JWT != jwt) || config.Worker.SecretReferences.DeepSeekAPIKey != "deepseek-apikey" {
 			return errors.New("secret references are not the reviewed environment bindings")
 		}
 		if hasBFFInputs && (config.BFF.SecretReferences.JWT != jwt || config.BFF.SecretReferences.DeepSeekAPIKey != "deepseek-apikey") {
@@ -760,7 +875,10 @@ func validateConfigForSelection(environment string, config EnvironmentConfig, ha
 			}
 		}
 	}
-	return validateGoogleDeployment(environment, config, hasBFFInputs)
+	if hasAuthInputs {
+		return validateGoogleDeployment(environment, config, hasBFFInputs)
+	}
+	return nil
 }
 
 func validateProfileRuntimeConfig(environment string, config EnvironmentConfig) error {
@@ -845,7 +963,12 @@ func componentInputs(config EnvironmentConfig, query QueryConfigIdentity, select
 	for _, name := range selected {
 		switch name {
 		case "auth":
-			components[name] = map[string]any{"service_name": config.Auth.ServiceName, "runtime_service_account": config.Auth.RuntimeServiceAccount, "network": config.Auth.Network, "subnet": config.Auth.Subnet, "vpc_egress": config.Auth.VPCEgress, "ingress": config.Auth.Ingress, "max_instances": config.Auth.MaxInstances, "public_domain": config.Auth.PublicDomain, "firestore_database_id": config.Auth.FirestoreDatabaseID, "demo_user_id": config.Auth.DemoUserID, "demo_user_email": config.Auth.DemoUserEmail, "demo_user_role": config.Auth.DemoUserRole, "allowed_hosts": config.Auth.AllowedHosts, "allowed_origins": config.Auth.AllowedOrigins, "dev_jwt": false, "secret_references": map[string]any{"jwt": config.Auth.SecretReferences.JWT}}
+			auth := map[string]any{"service_name": config.Auth.ServiceName, "runtime_service_account": config.Auth.RuntimeServiceAccount, "network": config.Auth.Network, "subnet": config.Auth.Subnet, "vpc_egress": config.Auth.VPCEgress, "ingress": config.Auth.Ingress, "max_instances": config.Auth.MaxInstances, "public_domain": config.Auth.PublicDomain, "firestore_database_id": config.Auth.FirestoreDatabaseID, "demo_user_id": config.Auth.DemoUserID, "demo_user_email": config.Auth.DemoUserEmail, "demo_user_role": config.Auth.DemoUserRole, "allowed_hosts": config.Auth.AllowedHosts, "allowed_origins": config.Auth.AllowedOrigins, "dev_jwt": false, "secret_references": map[string]any{"jwt": config.Auth.SecretReferences.JWT}}
+			if config.Auth.RuntimeInputs != nil {
+				auth["runtime_inputs"] = config.Auth.RuntimeInputs
+				auth["config_secret_resource"] = config.Auth.ConfigSecretResource
+			}
+			components[name] = auth
 			if config.Auth.Google != nil {
 				components[name].(map[string]any)["google"] = config.Auth.Google
 			}

@@ -72,7 +72,9 @@ func TestGoogleDeploymentContract(t *testing.T) {
 			}
 			cfg, err := decodeConfig(path)
 			if err == nil {
-				err = validateConfigForEnvironment("development", cfg)
+				hydrateAuthTestInputs(&cfg, "development")
+				applyGoogleCaseMutation(&cfg, tc)
+				err = validateConfigForSelectedComponents("development", cfg, false, true)
 			}
 			if (err == nil) != tc.valid {
 				t.Fatalf("valid=%v err=%v", tc.valid, err)
@@ -140,7 +142,9 @@ func TestProductionGoogleDeploymentContract(t *testing.T) {
 			}
 			cfg, err := decodeConfig(path)
 			if err == nil {
-				err = validateConfigForEnvironment("production", cfg)
+				hydrateAuthTestInputs(&cfg, "production")
+				applyGoogleCaseMutation(&cfg, tc)
+				err = validateConfigForSelectedComponents("production", cfg, false, true)
 			}
 			if (err == nil) != tc.valid {
 				t.Fatalf("valid=%v err=%v", tc.valid, err)
@@ -151,7 +155,7 @@ func TestProductionGoogleDeploymentContract(t *testing.T) {
 
 func TestGoogleNormalizedPlanAndProductionIsolation(t *testing.T) {
 	root := repoRoot(t)
-	dev, err := Load("development", filepath.Join(root, "deploy/environments/development.yaml"), "auth")
+	dev, err := LoadWithAuthInputs("development", filepath.Join(root, "deploy/environments/development.yaml"), "auth", writeAuthInputFixture(t, "development"))
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -164,7 +168,7 @@ func TestGoogleNormalizedPlanAndProductionIsolation(t *testing.T) {
 	if dev.Components["auth"].(map[string]any)["google"] != dev.Auth.Google {
 		t.Fatal("component plan omitted Google config")
 	}
-	prod, err := Load("production", filepath.Join(root, "deploy/environments/production.yaml"), "auth")
+	prod, err := LoadWithAuthInputs("production", filepath.Join(root, "deploy/environments/production.yaml"), "auth", writeAuthInputFixture(t, "production"))
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -181,8 +185,37 @@ func TestGoogleNormalizedPlanAndProductionIsolation(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
+	hydrateAuthTestInputs(&cfg, "production")
 	cfg.Auth.Google = dev.Auth.Google
-	if err := validateConfigForEnvironment("production", cfg); err == nil {
+	if err := validateConfigForSelectedComponents("production", cfg, false, true); err == nil {
 		t.Fatal("Production accepted DEV Google configuration")
+	}
+}
+
+func hydrateAuthTestInputs(config *EnvironmentConfig, environment string) {
+	google := config.Auth.Google
+	applyAuthInputDescriptor(config, authInputFixture(environment))
+	config.Auth.Google = google
+}
+
+func applyGoogleCaseMutation(config *EnvironmentConfig, testCase struct {
+	block, old, replacement string
+	valid                   bool
+}) {
+	switch testCase.old {
+	case "llm-wiki-cloud-dev":
+		config.Auth.FirestoreDatabaseID = "llm-wiki-cloud-prod"
+	case "llm-wiki-cloud-prod":
+		config.Auth.FirestoreDatabaseID = "llm-wiki-cloud-dev"
+	case "jwt-secret-prod":
+		config.Auth.SecretReferences.JWT = "jwt-secret-dev"
+	case "https://wiki.dev.rayer.idv.tw/login":
+		config.Auth.Google.CompletionURL = testCase.replacement
+	case "https://wiki.rayer.idv.tw/login":
+		config.Auth.Google.CompletionURL = testCase.replacement
+	case "https://wiki.dev.rayer.idv.tw\n":
+		config.Auth.AllowedOrigins = []string{"https://evil.example"}
+	case "https://wiki.rayer.idv.tw\n":
+		config.Auth.AllowedOrigins = []string{"https://evil.example"}
 	}
 }
