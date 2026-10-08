@@ -9,7 +9,7 @@
 - Worktree / branch: `/Users/rayer/orca/workspaces/llm-wiki-cloud/LWC-374-implementation-r1` / `Rayer/LWC-374-implementation-r1`.
 - Base: `f62bb530cb968e312b3faad77fe0f1b93b3e447b`.
 - Tested code and fixture commit: `a5763a361b9e453b2cf0df838340a69154c99f8e` (parent `c86101d8c999c5c05db9fdf8798073002bae79b0`).
-- PR: pending creation to `develop`; final remote head/base will be read back after publication.
+- PR: [#107](https://github.com/Rayer/llm-wiki-cloud/pull/107), open against `develop`. Exact readback at publication: head branch `Rayer/LWC-374-implementation-r1`, head SHA `c7460b7cfc77e821cff7e083a5daf0e72f037e36`, base SHA `f62bb530cb968e312b3faad77fe0f1b93b3e447b`.
 
 ## Implemented
 
@@ -61,4 +61,4 @@ The first full engine discovery run reported 7 failures and 2 errors in 124 test
 
 ## Remaining work
 
-Create the authorized PR to `develop`, read back its exact URL/head/base, and hand the same final PR head to the coordinator for the independent same-SHA TPM/reviewer reviews and canonical CI. Cloud deployment/readback remains `NOT RUN` under the frozen scope.
+The PR is published and its exact URL/head/base were read back above. This report-only commit advances the PR head; the post-update remote head is sent to the coordinator with the completion checkpoint for same-SHA TPM/reviewer reviews and canonical CI. Cloud deployment/readback remains `NOT RUN` under the frozen scope.
