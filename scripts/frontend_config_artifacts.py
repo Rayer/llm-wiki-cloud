@@ -14,6 +14,10 @@ from urllib.parse import urlsplit
 CONFIG_NAME = "frontend-config.json"
 MANIFEST_NAME = "manifest.json"
 GENERATOR_WORKFLOW = ".github/workflows/generate-frontend-config.yml"
+GENERATOR_WRAPPER_WORKFLOWS = {
+    "dev": {".github/workflows/deploy-dev.yml"},
+    "prod": {".github/workflows/promote-production.yml"},
+}
 MANIFEST_KEYS = {"schema_version", "environment", "source_sha", "config_file", "config_sha256"}
 
 
@@ -76,6 +80,8 @@ def prepare_artifact(environment, source_sha, actual_source_sha, config_path, ou
 
 
 def validate_artifact_metadata(metadata, run, artifact_id, environment):
+    if environment not in GENERATOR_WRAPPER_WORKFLOWS:
+        raise ValueError("artifact environment")
     if not re.fullmatch(r"[1-9][0-9]*", str(artifact_id)):
         raise ValueError("artifact ID")
     if not isinstance(metadata, dict) or not isinstance(run, dict):
@@ -94,8 +100,9 @@ def validate_artifact_metadata(metadata, run, artifact_id, environment):
     path = run.get("path")
     if isinstance(path, str):
         path = path.split("@", 1)[0]
+    allowed_workflows = {GENERATOR_WORKFLOW, *GENERATOR_WRAPPER_WORKFLOWS.get(environment, set())}
     if (run.get("event") != "workflow_dispatch" or run.get("status") != "completed" or run.get("conclusion") != "success"
-            or path != GENERATOR_WORKFLOW):
+            or path not in allowed_workflows):
         raise ValueError("generation workflow did not complete successfully")
     source_sha = run.get("head_sha")
     if not isinstance(source_sha, str) or not re.fullmatch(r"[0-9a-f]{40}", source_sha):

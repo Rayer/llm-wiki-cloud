@@ -203,11 +203,23 @@ class FrontendConfigArtifactTests(unittest.TestCase):
     def test_metadata_binds_exact_artifact_to_successful_generator_run_and_source(self):
         identity = artifacts.validate_artifact_metadata(artifact_metadata(), run_metadata(), "72", "dev")
         self.assertEqual(identity, {"run_id": "104", "source_sha": SOURCE_SHA})
+        dev_wrapper_identity = artifacts.validate_artifact_metadata(
+            artifact_metadata(), run_metadata(path=".github/workflows/deploy-dev.yml@refs/heads/develop"), "72", "dev",
+        )
+        self.assertEqual(dev_wrapper_identity, identity)
+        prod_wrapper_identity = artifacts.validate_artifact_metadata(
+            artifact_metadata(environment="prod"),
+            run_metadata(path=".github/workflows/promote-production.yml@refs/heads/develop"), "72", "prod",
+        )
+        self.assertEqual(prod_wrapper_identity, identity)
         cases = [
             (artifact_metadata(environment="prod"), run_metadata(), "72", "dev"),
             (artifact_metadata(expired=True), run_metadata(), "72", "dev"),
             (artifact_metadata(), run_metadata(conclusion="failure"), "72", "dev"),
-            (artifact_metadata(), run_metadata(path=".github/workflows/deploy-dev.yml@refs/heads/main"), "72", "dev"),
+            (artifact_metadata(), run_metadata(path=".github/workflows/promote-production.yml@refs/heads/develop"), "72", "dev"),
+            (artifact_metadata(environment="prod"), run_metadata(path=".github/workflows/deploy-dev.yml@refs/heads/develop"), "72", "prod"),
+            (artifact_metadata(), run_metadata(path=".github/workflows/untrusted.yml@refs/heads/develop"), "72", "dev"),
+            (artifact_metadata(environment="other"), run_metadata(), "72", "other"),
             (artifact_metadata(source_sha="b" * 40), run_metadata(), "72", "dev"),
             (artifact_metadata(), run_metadata(), "73", "dev"),
         ]
@@ -270,6 +282,7 @@ class FrontendConfigArtifactTests(unittest.TestCase):
 
         generator = workflow("generate-frontend-config.yml")
         self.assertEqual(generator["on"]["workflow_dispatch"]["inputs"]["environment"]["options"], ["dev", "prod"])
+        self.assertEqual(generator["on"]["workflow_call"]["inputs"]["environment"], {"required": "true", "type": "string"})
         self.assertEqual(generator["permissions"], {"contents": "read"})
         generator_steps = generator["jobs"]["generate"]["steps"]
         generate_step = next(step for step in generator_steps if step.get("name") == "Generate selected public Frontend config")
@@ -278,10 +291,22 @@ class FrontendConfigArtifactTests(unittest.TestCase):
 
         development = workflow("deploy-dev.yml")
         production = workflow("promote-production.yml")
+        self.assertIn("frontend-config-generate", development["on"]["workflow_dispatch"]["inputs"]["operation"]["options"])
+        self.assertIn("frontend-config-generate", production["on"]["workflow_dispatch"]["inputs"]["operation"]["options"])
         self.assertIn("frontend-config-only", development["on"]["workflow_dispatch"]["inputs"]["operation"]["options"])
         self.assertIn("frontend-config-only", production["on"]["workflow_dispatch"]["inputs"]["operation"]["options"])
         self.assertIn("frontend_config_artifact_id", development["on"]["workflow_dispatch"]["inputs"])
         self.assertIn("frontend_config_artifact_id", production["on"]["workflow_dispatch"]["inputs"])
+        for wrapper, environment in ((development, "dev"), (production, "prod")):
+            generate_job = wrapper["jobs"]["frontend-config-generate"]
+            self.assertEqual(generate_job["if"], "github.ref == 'refs/heads/develop' && inputs.operation == 'frontend-config-generate'")
+            self.assertEqual(generate_job["permissions"], {"contents": "read"})
+            self.assertEqual(generate_job["uses"], "./.github/workflows/generate-frontend-config.yml")
+            self.assertEqual(generate_job["with"], {"environment": environment})
+            self.assertNotIn("secrets", generate_job)
+            self.assertNotIn("id-token", str(generate_job))
+            self.assertIn("inputs.operation != 'frontend-config-generate'", wrapper["jobs"]["release"]["if"])
+        self.assertIn("inputs.operation != 'frontend-config-generate'", development["jobs"]["main-fast-forward-eligible"]["if"])
 
         cd = workflow("cd.yml")
         self.assertIn("frontend-config-only", cd["jobs"]["release"]["if"])

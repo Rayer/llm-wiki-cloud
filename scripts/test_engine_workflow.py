@@ -185,9 +185,9 @@ class EngineWorkflowContract(unittest.TestCase):
         dev_operation=dev_trigger['workflow_dispatch']['inputs']['operation']
         self.assertEqual(dev_operation['type'],'choice')
         self.assertEqual(dev_operation['default'],'release')
-        self.assertEqual(dev_operation['options'],['release','config-only','frontend-config-only','deploy','rollback','reactivate','tag','readback','diagnose-auth-image'])
+        self.assertEqual(dev_operation['options'],['release','config-only','frontend-config-only','frontend-config-generate','deploy','rollback','reactivate','tag','readback','diagnose-auth-image'])
         self.assertEqual(dev['jobs']['release']['if'],
-                         "github.ref == 'refs/heads/develop' && inputs.operation != 'diagnose-auth-image'")
+                         "github.ref == 'refs/heads/develop' && inputs.operation != 'diagnose-auth-image' && inputs.operation != 'frontend-config-generate'")
         self.assertEqual(dev['jobs']['release']['with'],{
             'environment':'development','source_sha':"${{ inputs.operation == 'release' && (inputs.source_sha || github.sha) || inputs.source_sha }}",
             'executor_sha':'${{ github.sha }}',
@@ -208,6 +208,32 @@ class EngineWorkflowContract(unittest.TestCase):
         self.assertNotIn('GH_TOKEN',str(dev_diagnostic))
         self.assertNotIn('VERCEL_TOKEN',str(dev_diagnostic))
         self.assertEqual(dev_diagnostic['with'],{'source_sha':'${{ github.sha }}'})
+
+        generator=dev['jobs']['frontend-config-generate']
+        self.assertEqual(generator['if'],"github.ref == 'refs/heads/develop' && inputs.operation == 'frontend-config-generate'")
+        self.assertEqual(generator['permissions'],{'contents':'read'})
+        self.assertEqual(generator['uses'],'./.github/workflows/generate-frontend-config.yml')
+        self.assertEqual(generator['with'],{'environment':'dev'})
+        self.assertNotIn('secrets',generator)
+        self.assertNotIn('id-token',str(generator))
+        self.assertIn("inputs.operation != 'frontend-config-generate'",dev['jobs']['main-fast-forward-eligible']['if'])
+
+        production=yaml.safe_load((ROOT/'.github/workflows/promote-production.yml').read_text())
+        prod_trigger=production.get('on',production.get(True,{}))
+        self.assertEqual(prod_trigger['workflow_dispatch']['inputs']['operation']['options'],
+                         ['release','config-only','frontend-config-only','frontend-config-generate'])
+        self.assertIn("inputs.operation != 'frontend-config-generate'",production['jobs']['release']['if'])
+        prod_generator=production['jobs']['frontend-config-generate']
+        self.assertEqual(prod_generator['if'],"github.ref == 'refs/heads/develop' && inputs.operation == 'frontend-config-generate'")
+        self.assertEqual(prod_generator['permissions'],{'contents':'read'})
+        self.assertEqual(prod_generator['uses'],'./.github/workflows/generate-frontend-config.yml')
+        self.assertEqual(prod_generator['with'],{'environment':'prod'})
+        self.assertNotIn('secrets',prod_generator)
+        self.assertNotIn('id-token',str(prod_generator))
+
+        generator_workflow=yaml.safe_load((ROOT/'.github/workflows/generate-frontend-config.yml').read_text())
+        self.assertEqual(generator_workflow.get('on',generator_workflow.get(True,{}))['workflow_call']['inputs']['environment'],
+                         {'required':True,'type':'string'})
 
         recovery=yaml.safe_load((ROOT/'.github/workflows/recover-deployment.yml').read_text())
         trigger=recovery.get('on',recovery.get(True,{}))

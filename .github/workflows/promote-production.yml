@@ -23,10 +23,10 @@ on:
         type: string
         default: ''
       operation:
-        description: Config-only updates Pipeline settings; frontend-config-only publishes the selected public Frontend config without rebuilding
+        description: Config-only updates Pipeline settings; frontend-config-only publishes the selected public Frontend config without rebuilding; frontend-config-generate prepares an immutable public config artifact
         required: true
         type: choice
-        options: [release, config-only, frontend-config-only]
+        options: [release, config-only, frontend-config-only, frontend-config-generate]
         default: release
       pipeline_run_timeout_seconds:
         description: Verified existing Worker Job timeout in seconds; required for Pipeline config generation
@@ -38,7 +38,7 @@ permissions:
   id-token: write
 jobs:
   release:
-    if: github.ref == 'refs/heads/main'
+    if: github.ref == 'refs/heads/main' && inputs.operation != 'frontend-config-generate'
     uses: ./.github/workflows/cd.yml
     secrets: inherit
     with:
@@ -52,3 +52,10 @@ jobs:
       frontend_config_artifact_id: ${{ inputs.frontend_config_artifact_id }}
       operation: ${{ inputs.operation }}
       pipeline_run_timeout_seconds: ${{ inputs.pipeline_run_timeout_seconds }}
+  frontend-config-generate:
+    if: github.ref == 'refs/heads/develop' && inputs.operation == 'frontend-config-generate'
+    permissions:
+      contents: read
+    uses: ./.github/workflows/generate-frontend-config.yml
+    with:
+      environment: prod

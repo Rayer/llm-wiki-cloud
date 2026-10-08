@@ -257,21 +257,31 @@ class SharedCDContractTest(unittest.TestCase):
             workflow = yaml.safe_load((workflows / path).read_text())
             trigger = workflow.get("on", workflow.get(True, {}))
             self.assertIn("workflow_dispatch", trigger)
-            expected_jobs = ["auth-image-diagnostic", "main-fast-forward-eligible", "release"] if path == "deploy-dev.yml" else ["release"]
+            expected_jobs = ["auth-image-diagnostic", "frontend-config-generate", "main-fast-forward-eligible", "release"] if path == "deploy-dev.yml" else ["frontend-config-generate", "release"]
             self.assertEqual(sorted(workflow["jobs"]), expected_jobs)
             job = workflow["jobs"]["release"]
             expected_release_guard = f"github.ref == 'refs/heads/{branch}'"
             if path == "deploy-dev.yml":
-                expected_release_guard += " && inputs.operation != 'diagnose-auth-image'"
+                expected_release_guard += " && inputs.operation != 'diagnose-auth-image' && inputs.operation != 'frontend-config-generate'"
+            else:
+                expected_release_guard += " && inputs.operation != 'frontend-config-generate'"
             self.assertEqual(job["if"], expected_release_guard)
             self.assertEqual(job["uses"], "./.github/workflows/cd.yml")
             self.assertEqual(job["with"]["environment"], environment)
+            generate_job = workflow["jobs"]["frontend-config-generate"]
+            generation_environment = "dev" if path == "deploy-dev.yml" else "prod"
+            self.assertEqual(generate_job["if"], "github.ref == 'refs/heads/develop' && inputs.operation == 'frontend-config-generate'")
+            self.assertEqual(generate_job["permissions"], {"contents": "read"})
+            self.assertEqual(generate_job["uses"], "./.github/workflows/generate-frontend-config.yml")
+            self.assertEqual(generate_job["with"], {"environment": generation_environment})
+            self.assertNotIn("secrets", generate_job)
+            self.assertNotIn("id-token", str(generate_job))
             self.assertIn("release_tag", trigger["workflow_dispatch"]["inputs"])
             self.assertFalse(trigger["workflow_dispatch"]["inputs"]["release_tag"]["required"])
             if path == "deploy-dev.yml":
                 operation = trigger["workflow_dispatch"]["inputs"]["operation"]
                 self.assertEqual(operation["default"], "release")
-                self.assertEqual(operation["options"], ["release", "config-only", "frontend-config-only", "deploy", "rollback", "reactivate", "tag", "readback", "diagnose-auth-image"])
+                self.assertEqual(operation["options"], ["release", "config-only", "frontend-config-only", "frontend-config-generate", "deploy", "rollback", "reactivate", "tag", "readback", "diagnose-auth-image"])
                 self.assertEqual(job["with"]["operation"], "${{ inputs.operation }}")
                 self.assertEqual(job["with"]["source_sha"], "${{ inputs.operation == 'release' && (inputs.source_sha || github.sha) || inputs.source_sha }}")
                 self.assertEqual(job["with"]["executor_sha"], "${{ github.sha }}")
@@ -280,6 +290,7 @@ class SharedCDContractTest(unittest.TestCase):
                 self.assertEqual(eligibility["name"], "main-fast-forward-eligible")
                 self.assertEqual(eligibility["needs"], "release")
                 self.assertIn("inputs.operation != 'readback'", eligibility["if"])
+                self.assertIn("inputs.operation != 'frontend-config-generate'", eligibility["if"])
                 self.assertEqual(eligibility["permissions"], {"contents": "read", "actions": "read", "statuses": "write"})
                 self.assertIn("${{ github.run_attempt }}", eligibility["steps"][1]["with"]["name"])
                 diagnostic = workflow["jobs"]["auth-image-diagnostic"]
@@ -298,7 +309,7 @@ class SharedCDContractTest(unittest.TestCase):
             else:
                 operation = trigger["workflow_dispatch"]["inputs"]["operation"]
                 self.assertEqual(operation["default"], "release")
-                self.assertEqual(operation["options"], ["release", "config-only", "frontend-config-only"])
+                self.assertEqual(operation["options"], ["release", "config-only", "frontend-config-only", "frontend-config-generate"])
                 self.assertEqual(job["with"]["source_sha"], "${{ github.sha }}")
                 self.assertEqual(job["with"]["executor_sha"], "${{ github.sha }}")
 
