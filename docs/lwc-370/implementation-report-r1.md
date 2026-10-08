@@ -319,7 +319,7 @@ The r1 repair made the component and generic failure stage visible; neither that
 - Orca runtime / Run / Task / Dispatch / terminal: `8bc79eed-2312-4c07-a306-f91ae8d31716` / `run_ec3a3eca0058` / `task_a1b1c65822a2` / `ctx_eb8ab59bcd44` / `term_22cddd98-1061-4a48-b360-ab7a5c14a263`.
 - Worktree / branch: `/Users/rayer/orca/workspaces/llm-wiki-cloud/LWC-370-implementation-r1` / `Rayer/LWC-370-dev-failure-cause-r1`.
 - Starting local/remote PR head: `7d90f080633cfbd496d6719c722f74a38502c304`; base `origin/develop`: `057b8fd96189f50d6aba4f1fcace5d001304bf54`. The branch was clean before r2.
-- PR [#110](https://github.com/Rayer/llm-wiki-cloud/pull/110) targets `develop`; the r2 source/test commit is recorded in the Git history and the final PR branch head is read back in the worker completion to avoid a self-referential report SHA.
+- PR [#110](https://github.com/Rayer/llm-wiki-cloud/pull/110) targets `develop`; r2 source/test commit `36216ed8fee87b484cb768828f1eb0e0d9e05968` contains the implementation, regressions, and report. A report-only follow-up may advance the branch; the final remote PR head and exact base readback are included in the worker completion.
 - Scope was limited to the Auth SDK diagnostic boundary, Engine compensation cause serialization, test fixtures/regressions, and this report. No live SDK, ADC, GSM payload, provider, IAM, resource, credential, deployment, paid Pipeline, rebuild, merge, or Production action was performed.
 
 ### Reproduced behavior and repair
