@@ -134,6 +134,48 @@ func TestFrontendPublicConfigNeedsOnlyPublicFrontendInputs(t *testing.T) {
 	}
 }
 
+func TestFrontendPublicConfigCLIUsesOnlyPublicFrontendInputs(t *testing.T) {
+	root := repoRoot(t)
+	temp := t.TempDir()
+	configPath := filepath.Join(temp, "deploy", "environments", "development.yaml")
+	if err := os.MkdirAll(filepath.Dir(configPath), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	configBody := "frontend:\n  api_url: https://api.example.test\n  auth_url: https://auth.example.test\n"
+	if err := os.WriteFile(configPath, []byte(configBody), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	command := func(output string) *exec.Cmd {
+		cmd := exec.Command("go", "run", "./cmd/deploy_config", "--environment", "development",
+			"--config", configPath, "--components", "frontend", "--frontend-config-output", output)
+		cmd.Dir = filepath.Join(root, "apps", "bff")
+		cmd.Env = append(os.Environ(), "LWC_REPOSITORY_ROOT="+root)
+		return cmd
+	}
+	validOutput := filepath.Join(temp, "public", "valid.json")
+	if output, err := command(validOutput).CombinedOutput(); err != nil {
+		t.Fatalf("Frontend-only CLI rejected missing unrelated bindings: %v\n%s", err, output)
+	}
+	var got PublicFrontendRuntimeConfig
+	if err := json.Unmarshal(mustRead(t, validOutput), &got); err != nil {
+		t.Fatal(err)
+	}
+	if got.APIURL != "https://api.example.test" || got.AuthURL != "https://auth.example.test" {
+		t.Fatalf("CLI public Frontend config = %#v", got)
+	}
+
+	if err := os.WriteFile(configPath, []byte("frontend:\n  auth_url: https://auth.example.test\n"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	missingOutput := filepath.Join(temp, "public", "missing-api.json")
+	if output, err := command(missingOutput).CombinedOutput(); err == nil {
+		t.Fatalf("Frontend-only CLI accepted missing frontend.api_url: %s", output)
+	}
+	if _, err := os.Stat(missingOutput); !os.IsNotExist(err) {
+		t.Fatalf("missing required frontend.api_url wrote output: %v", err)
+	}
+}
+
 func TestFrontendPublicOutputDoesNotRelaxDeploymentValidation(t *testing.T) {
 	config, err := decodeConfig(filepath.Join(repoRoot(t), "deploy", "environments", "development.yaml"))
 	if err != nil {
