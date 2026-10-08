@@ -24,6 +24,25 @@ TYPESAFE_JEV_API_KEY = 'TYPESAFE_JEV_API_KEY'
 PIPELINE_DEMO_USER_IDS = 'PIPELINE_DEMO_USER_IDS'
 PIPELINE_COOLDOWN_SECONDS = 'PIPELINE_COOLDOWN_SECONDS'
 MAX_PIPELINE_COOLDOWN_SECONDS = ((1 << 63) - 1) // 1_000_000_000
+BFF_CONFIG_ENV = 'LWC_BFF_CONFIG_PATH'
+BFF_CONFIG_DIRECTORY = '/etc/lwc-bff-config'
+BFF_CONFIG_FILE = 'bff.json'
+BFF_CONFIG_PATH = BFF_CONFIG_DIRECTORY + '/' + BFF_CONFIG_FILE
+BFF_SECRET_MODE = 0o444
+BFF_LEGACY_ENV = (
+    'GCP_PROJECT', 'BUCKET', 'FIRESTORE_DATABASE_ID', 'PIPELINE_JOB_URL', 'AUTH_SERVICE_URL',
+    'EXPORT_JOB_URL', 'EXPORT_SIGNING_SERVICE_ACCOUNT', 'ALLOWED_ORIGINS', 'ALLOWED_HOSTS',
+    'PIPELINE_DAILY_LIMIT', 'PIPELINE_COOLDOWN_SECONDS', 'PIPELINE_MIN_NEW_RAW',
+    'PIPELINE_DEMO_USER_IDS', 'AUTH_SESSION_ENVIRONMENT', 'AUTH_REFRESH_SESSION_MIGRATION',
+    'REGISTRATION_ENABLED', 'PROFILE_RUNTIME_AUDIENCE', 'PROFILE_RUNTIME_SERVICE_ACCOUNT',
+    'QUERY_STAGE_CONFIG_PATH', 'QUERY_EXPANSION_MODEL', 'QUERY_EXPANSION_REASONING',
+    'ANSWER_SYNTHESIS_MODEL', 'ANSWER_SYNTHESIS_REASONING', 'QUERY_SELECTION_LIMIT',
+    'QUERY_SELECTION_EXPLORATION_SLOTS', 'QUERY_SELECTION_EVIDENCE_THRESHOLD',
+    'QUERY_EXPANSION_KEYWORDS_PER_ATTEMPT', 'QUERY_EXPANSION_ATTEMPTS',
+    'QUERY_MATCHING_RARE_KEYWORD_MAX_DOCUMENT_FREQUENCY', 'DEV_JWT',
+)
+BFF_LEGACY_SECRET_ENV = ('JWT_SECRET', 'DEEPSEEK_API_KEY', 'TYPESAFE_JEV_API_KEY')
+SECRET_RESOURCE = re.compile(r'^projects/[A-Za-z0-9.-]+/secrets/[A-Za-z0-9_-]+$')
 
 
 def require(condition):
@@ -52,53 +71,27 @@ def query_path(plan):
     return query['runtime_path']
 
 
-def desired(plan, component='auth'):
+def desired(plan, component='auth', bff_config_version=None):
     require(plan['environment'] in ('development', 'production'))
     require(component in ('auth', 'bff'))
     if component == 'bff':
         bff = plan['bff']
-        cooldown = bff.get('pipeline_cooldown_seconds')
-        env = {QUERY_PATH: query_path(plan)}
-        if cooldown is not None:
-            require(type(cooldown) is int and 0 < cooldown <= MAX_PIPELINE_COOLDOWN_SECONDS)
-            env[PIPELINE_COOLDOWN_SECONDS] = str(cooldown)
-        secrets = {}
-        audience = bff.get('profile_runtime_audience')
-        invoker = bff.get('profile_runtime_service_account')
-        ref = bff.get('secret_references', {}).get('typesafe_jev_api_key')
-        if audience is not None or invoker is not None or ref is not None:
-            require(isinstance(audience, str) and audience.startswith('https://')
-                    and not any(c in audience for c in '\n|'))
-            require(isinstance(invoker, str) and re.fullmatch(
-                r'[a-z][a-z0-9-]{4,28}[a-z0-9]@[a-z0-9.-]+\.iam\.gserviceaccount\.com', invoker))
-            require(isinstance(ref, dict) and set(ref) == {'name', 'version'}
-                    and re.fullmatch(r'[A-Za-z0-9][A-Za-z0-9._-]*', ref['name'])
-                    and re.fullmatch(r'[1-9][0-9]*', ref['version']))
-            env.update({
-                'PROFILE_RUNTIME_AUDIENCE': audience,
-                'PROFILE_RUNTIME_SERVICE_ACCOUNT': invoker,
-            })
-            secrets[TYPESAFE_JEV_API_KEY] = {'name': ref['name'], 'key': ref['version']}
-        if plan['export_job']['enabled']:
-            env.update({
-                'EXPORT_JOB_URL': 'https://run.googleapis.com/v2/projects/{}/locations/{}/jobs/{}:run'.format(
-                    plan['gcp']['project_id'], plan['export_job']['location'], plan['export_job']['job_name']),
-                'EXPORT_SIGNING_SERVICE_ACCOUNT': plan['export_job']['signing_service_account'],
-            })
-        demo_user_id = plan['auth'].get('demo_user_id')
-        require(isinstance(demo_user_id, str) and re.fullmatch(r'[A-Za-z0-9_-]{1,128}', demo_user_id))
-        require(bff.get('pipeline_demo_user_ids') == [demo_user_id])
-        env[PIPELINE_DEMO_USER_IDS] = demo_user_id
-        if plan['environment'] == 'development' or plan['auth'].get('google') is None:
-            return {'env': env, 'secrets': secrets, 'service_account': bff['runtime_service_account']}
-        secrets['JWT_SECRET'] = {'name': bff['secret_references']['jwt'], 'key': 'latest'}
-        return {'env': {
-            **env,
-            'GCP_PROJECT': plan['gcp']['project_id'], 'FIRESTORE_DATABASE_ID': bff['firestore_database_id'],
-            'ALLOWED_ORIGINS': ','.join(bff['allowed_origins']), 'AUTH_SERVICE_URL': bff['auth_service_url'],
-            'DEV_JWT': 'false',
-        }, 'secrets': secrets,
-            'service_account': bff['runtime_service_account']}
+        inputs = bff.get('runtime_inputs')
+        require(isinstance(inputs, dict) and isinstance(inputs.get('config_secret_resource'), str)
+                and SECRET_RESOURCE.fullmatch(inputs['config_secret_resource']))
+        require(isinstance(bff_config_version, str) and re.fullmatch(r'[1-9][0-9]*', bff_config_version))
+        return {
+            'env': {BFF_CONFIG_ENV: BFF_CONFIG_PATH},
+            'secrets': {},
+            'file_secret': {
+                'resource': inputs['config_secret_resource'],
+                'version': bff_config_version,
+                'directory': BFF_CONFIG_DIRECTORY,
+                'file': BFF_CONFIG_FILE,
+                'mode': BFF_SECRET_MODE,
+            },
+            'service_account': bff['runtime_service_account'],
+        }
     auth = plan['auth']
     google = auth['google']
     demo_user_id = auth.get('demo_user_id', '')
@@ -141,6 +134,8 @@ def effective(revision, project, component='auth', query_only=False, selective_b
         name = entry['name']
         require(name not in seen)
         seen.add(name)
+        if component == 'bff' and name in BFF_LEGACY_ENV + BFF_LEGACY_SECRET_ENV:
+            raise ValueError('unexpected legacy BFF config binding')
         if ((name in SECRET and not query_only and not selective_bff) or
                 (component == 'bff' and include_runtime_bindings and name == TYPESAFE_JEV_API_KEY)):
             # Reject literal credentials without printing or retaining them.
@@ -169,6 +164,9 @@ def effective(revision, project, component='auth', query_only=False, selective_b
                     isinstance(entry['value'], str) and re.fullmatch(r'[1-9][0-9]*', entry['value']) and
                     int(entry['value']) <= MAX_PIPELINE_COOLDOWN_SECONDS)
             result['env'][name] = entry['value']
+        elif component == 'bff' and name == BFF_CONFIG_ENV:
+            require(set(entry) == {'name', 'value'} and entry.get('value') == BFF_CONFIG_PATH)
+            result['env'][name] = entry['value']
         elif ((name in BASE or name in GOOGLE) and not query_only and not selective_bff) or (component == 'bff' and name == QUERY_PATH):
             omitted_empty_demo = name == 'AUTH_DEMO_USER_ID' and set(entry) == {'name'}
             require(omitted_empty_demo or set(entry) == {'name', 'value'})
@@ -179,7 +177,54 @@ def effective(revision, project, component='auth', query_only=False, selective_b
             raise ValueError('unexpected Profile runtime binding')
         elif name.startswith('GOOGLE_') and not query_only and not selective_bff:
             raise ValueError('unexpected Google variable')
+    if component == 'bff':
+        result['file_secret'] = native_bff_file_binding(revision, project)
     return result
+
+
+def native_bff_file_binding(revision, project):
+    spec = revision['spec']
+    containers = spec.get('containers', [])
+    require(len(containers) == 1)
+    mounts = [mount for mount in containers[0].get('volumeMounts', [])
+              if mount.get('mountPath') == BFF_CONFIG_DIRECTORY]
+    require(len(mounts) == 1)
+    mount = mounts[0]
+    require(isinstance(mount.get('name'), str) and mount.get('name') and mount.get('readOnly') is True)
+    volumes = [volume for volume in spec.get('volumes', []) if volume.get('name') == mount['name']]
+    require(len(volumes) == 1)
+    secret = volumes[0].get('secret')
+    require(isinstance(secret, dict))
+    secret_name = secret.get('secretName')
+    require(isinstance(secret_name, str) and secret_name)
+    aliases = {}
+    annotations = revision.get('metadata', {}).get('annotations', {})
+    for binding in annotations.get('run.googleapis.com/secrets', '').split(','):
+        if binding:
+            try:
+                alias, target = binding.split(':', 1)
+            except ValueError:
+                continue
+            if alias and SECRET_RESOURCE.fullmatch(target) and alias not in aliases:
+                aliases[alias] = target
+    resource = aliases.get(secret_name, secret_name)
+    require(SECRET_RESOURCE.fullmatch(resource) and resource.split('/')[1] in
+            (project, revision['metadata'].get('namespace')))
+    items = secret.get('items', [])
+    require(isinstance(items, list) and len(items) == 1)
+    item = items[0]
+    require(isinstance(item, dict) and item.get('path') == BFF_CONFIG_FILE)
+    version = item.get('key')
+    require(isinstance(version, str) and re.fullmatch(r'[1-9][0-9]*', version))
+    mode = item.get('mode', BFF_SECRET_MODE)
+    require(type(mode) is int and mode == BFF_SECRET_MODE)
+    return {
+        'resource': resource,
+        'version': version,
+        'directory': BFF_CONFIG_DIRECTORY,
+        'file': BFF_CONFIG_FILE,
+        'mode': mode,
+    }
 
 
 def fingerprint(config):
@@ -190,8 +235,21 @@ def main():
     mode, path, component = sys.argv[1:4]
     with open(path) as stream:
         plan = json.load(stream)['normalized']
-    expected = desired(plan, component)
+    if mode == 'version':
+        require(component == 'bff')
+        revision = json.load(sys.stdin)
+        revision_name = revision.get('metadata', {}).get('name')
+        require(isinstance(revision_name, str) and
+                revision_name.startswith(plan['bff']['service_name'] + '-'))
+        conditions = revision.get('status', {}).get('conditions')
+        require(isinstance(conditions, list) and
+                any(isinstance(c, dict) and c.get('type') == 'Ready' and c.get('status') == 'True'
+                    for c in conditions))
+        binding = native_bff_file_binding(revision, plan['gcp']['project_id'])
+        print(binding['version'])
+        return
     if mode == 'args':
+        expected = desired(plan, component, sys.argv[4] if component == 'bff' else None)
         values = expected['env']
         require(all('\n' not in v and '|' not in v for v in values.values()))
         args = ['--update-env-vars', '^|^' + '|'.join(k + '=' + v for k, v in values.items())]
@@ -199,10 +257,17 @@ def main():
             args += ['--update-secrets', ','.join(k + '=' + v['name'] + ':' + v['key'] for k, v in expected['secrets'].items())]
         if component == 'auth' and not plan['auth']['google']['enabled']:
             args += ['--remove-env-vars', ','.join(GOOGLE), '--remove-secrets', 'GOOGLE_CLIENT_SECRET']
-        if component == 'bff' and plan['environment'] == 'development' and not plan['export_job']['enabled']:
-            args += ['--remove-env-vars', ','.join(EXPORT_BFF)]
+        if component == 'bff':
+            file_secret = expected['file_secret']
+            secret_name = file_secret['resource'].split('/')[3]
+            args += ['--service-account', expected['service_account'], '--update-secrets',
+                     BFF_CONFIG_PATH + '=' + secret_name + ':' + file_secret['version'],
+                     '--remove-env-vars', ','.join(BFF_LEGACY_ENV),
+                     '--remove-secrets', ','.join(BFF_LEGACY_SECRET_ENV)]
         print('\n'.join(args))
         return
+    config_version = sys.argv[7] if component == 'bff' and len(sys.argv) > 7 else None
+    expected = desired(plan, component, config_version)
     revision = json.load(sys.stdin)
     require(revision['metadata']['name'] == sys.argv[4])
     if component == 'bff':

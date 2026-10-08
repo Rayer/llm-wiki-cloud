@@ -14,6 +14,7 @@ import (
 	"github.com/rayer/llm-wiki-bff/internal/localcloud"
 	store "github.com/rayer/llm-wiki-bff/internal/storage"
 	"google.golang.org/api/googleapi"
+	"google.golang.org/api/option"
 	"google.golang.org/grpc/codes"
 	"google.golang.org/grpc/status"
 )
@@ -123,6 +124,22 @@ func TestNewScopedClientUsesRequestedPrefixWithoutChangingDefault(t *testing.T) 
 	}
 	if scopedClient.bucket != defaultClient.bucket {
 		t.Fatal("scoped client does not share the default client's bucket handle")
+	}
+}
+
+func TestNewClientWithScopeIgnoresInheritedEnvironmentScope(t *testing.T) {
+	original := newStorageClient
+	t.Cleanup(func() { newStorageClient = original })
+	newStorageClient = func(context.Context, ...option.ClientOption) (*cloudstorage.Client, error) {
+		return &cloudstorage.Client{}, nil
+	}
+	t.Setenv("LOCAL_CLOUD_SCOPE", "inherited-scope")
+	client, err := NewClientWithScope("fixture-bucket", "config-scope")
+	if err != nil {
+		t.Fatalf("NewClientWithScope() error = %v", err)
+	}
+	if got := string(client.localScope); got != "config-scope" {
+		t.Fatalf("GCS local scope = %q, want config-scope", got)
 	}
 }
 

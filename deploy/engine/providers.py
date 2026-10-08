@@ -61,6 +61,99 @@ class Providers:
         require(config['bucket'] == self.p['worker']['bucket'], 'pipeline-config-bucket-mismatch')
         return config
 
+    def prepare_bff_config_version(self, candidate, save):
+        inputs = self.p['bff'].get('runtime_inputs')
+        require(isinstance(inputs, dict), 'bff-runtime-inputs-missing')
+        resource = inputs.get('config_secret_resource')
+        require(isinstance(resource, str) and re.fullmatch(
+            r'projects/[A-Za-z0-9.-]+/secrets/[A-Za-z0-9_-]+', resource),
+            'bff-config-secret-resource-invalid')
+        record = candidate.get('bff_config')
+        if record is None:
+            record = {'status': 'preparing'}
+            candidate['bff_config'] = record
+            save()
+        version_resource = record.get('version_resource')
+        if record.get('status') == 'published':
+            require(isinstance(version_resource, str) and version_resource.startswith(resource + '/versions/') and
+                    re.fullmatch(re.escape(resource) + r'/versions/[1-9][0-9]*', version_resource),
+                    'bff-config-version-checkpoint-invalid')
+            return version_resource.rsplit('/', 1)[1]
+        if record.get('status') in ('publishing', 'unconfirmed'):
+            raise Breakpoint('bff-config-publication-unconfirmed', 'unknown', True,
+                             'inspect-retained-checkpoint', stage='bff-config-publish')
+        require(record.get('status') == 'preparing' and version_resource is None,
+                'bff-config-version-checkpoint-invalid')
+
+        environment = self.p['environment']
+        target = {'development': 'dev', 'production': 'prod'}.get(environment)
+        require(target is not None, 'bff-config-environment-invalid')
+        temp_root = Path(os.environ.get('RUNNER_TEMP') or tempfile.gettempdir()).resolve()
+        require(temp_root != ROOT and ROOT not in temp_root.parents and
+                temp_root != self.directory and self.directory not in temp_root.parents,
+                'bff-config-temp-location-invalid')
+        try:
+            temp_root.mkdir(parents=True, exist_ok=True)
+        except OSError:
+            raise Breakpoint('bff-config-temp-unavailable', 'failed', False,
+                             'inspect-bff-config-prepare', stage='bff-config-prepare') from None
+        with tempfile.TemporaryDirectory(prefix='lwc-bff-runtime-config-', dir=temp_root) as temporary:
+            private = Path(temporary)
+            os.chmod(private, 0o700)
+            descriptor_dir = private / 'descriptor'
+            runtime_dir = private / 'runtime'
+            descriptor_dir.mkdir(mode=0o700)
+            runtime_dir.mkdir(mode=0o700)
+            env = dict(os.environ, LWC_REPOSITORY_ROOT=str(ROOT))
+            command_base = ['go', 'run', './cmd/pipeline_config', 'prepare', '--target', 'bff',
+                            '--environment', target]
+            run(command_base + ['--descriptor', '--output', str(descriptor_dir)],
+                cwd=ROOT / 'apps/bff', env=env, timeout=180, stage='bff-config-prepare')
+            try:
+                descriptor = json.loads((descriptor_dir / 'bff-inputs.json').read_text())
+            except (OSError, TypeError, ValueError):
+                raise Breakpoint('bff-config-descriptor-unreadable', 'failed', False,
+                                 'inspect-bff-config-prepare', stage='bff-config-prepare') from None
+            require(descriptor == inputs, 'bff-config-source-descriptor-mismatch')
+            run(command_base + ['--output', str(runtime_dir)], cwd=ROOT / 'apps/bff',
+                env=env, timeout=180, stage='bff-config-prepare')
+            config_path = runtime_dir / 'bff.json'
+            try:
+                info = config_path.lstat()
+                require(stat.S_ISREG(info.st_mode) and stat.S_IMODE(info.st_mode) == 0o600 and
+                        0 < info.st_size <= 64 * 1024, 'bff-config-file-invalid')
+            except OSError:
+                raise Breakpoint('bff-config-file-unavailable', 'failed', False,
+                                 'inspect-bff-config-prepare', stage='bff-config-prepare') from None
+            record['status'] = 'publishing'
+            save()
+            secret_name = resource.split('/')[3]
+            try:
+                output = run(['gcloud', 'secrets', 'versions', 'add', secret_name,
+                              '--project', self.p['gcp']['project_id'], '--data-file', str(config_path),
+                              '--format=json', '--quiet'], timeout=120, mutation=True,
+                             stage='bff-config-publish')
+            except Breakpoint as exc:
+                record['status'] = 'unconfirmed'
+                save()
+                raise Breakpoint('bff-config-publication-unconfirmed', 'unknown', True,
+                                 'inspect-retained-checkpoint', stage='bff-config-publish',
+                                 exit_code=exc.exit_code, timeout_class=exc.timeout_class) from None
+            try:
+                result = json.loads(output)
+                returned = result.get('name') if isinstance(result, dict) else None
+                if not isinstance(returned, str) or not re.fullmatch(re.escape(resource) + r'/versions/[1-9][0-9]*', returned):
+                    raise ValueError('numeric version resource missing')
+            except (TypeError, ValueError):
+                record['status'] = 'unconfirmed'
+                save()
+                raise Breakpoint('bff-config-publication-unconfirmed', 'unknown', True,
+                                 'inspect-retained-checkpoint', stage='bff-config-publish', exit_code=0) from None
+            record['status'] = 'published'
+            record['version_resource'] = returned
+            save()
+            return returned.rsplit('/', 1)[1]
+
     def pipeline_config_object(self, pipeline_config):
         try:
             return pipeline_config_contract.pipeline_config_uri(pipeline_config['bucket'])
@@ -828,13 +921,13 @@ class Providers:
                 any(x.get('type') == 'Ready' and x.get('status') == 'True'
                     for x in revision.get('status', {}).get('conditions', [])))
 
-    def service_template_matches(self, c, raw, revision, image):
+    def service_template_matches(self, c, raw, revision, image, bff_config_version=None):
         template = raw['spec']['template']
         metadata = dict(template.get('metadata', {}))
         metadata.setdefault('namespace', revision.get('metadata', {}).get('namespace'))
         effective_template = {'metadata': metadata, 'spec': self.service_template(raw), 'status': revision['status']}
         return (metadata.get('name') == revision['metadata']['name'] and
-                self.service_matches(c, effective_template, image))
+                self.service_matches(c, effective_template, image, bff_config_version))
 
     def snapshot(self, c):
         if c == 'frontend':
@@ -906,14 +999,20 @@ class Providers:
                 str(t.get('timeoutSeconds')) == '82800' and t.get('maxRetries') == cfg['max_retries'] and
                 execution.get('parallelism') == cfg['parallelism'] and execution.get('taskCount') == cfg['tasks'])
 
-    def service_matches(self, c, revision, image):
-        expected = auth_config.desired(self.p, c)
-        actual = auth_config.effective(revision, self.p['gcp']['project_id'], c,
-            set(expected['env']) == {auth_config.QUERY_PATH},
-            c == 'bff' and (self.p['environment'] == 'development' or self.p['auth'].get('google') is None),
-            c == 'bff', c == 'bff' and auth_config.PIPELINE_DEMO_USER_IDS in expected['env'],
-            c == 'bff' and (self.p['environment'] == 'development' or self.p['export_job']['enabled']),
-            c == 'bff' and auth_config.PIPELINE_COOLDOWN_SECONDS in expected['env'])
+    def service_matches(self, c, revision, image, bff_config_version=None):
+        if c == 'bff' and (not isinstance(bff_config_version, str) or
+                           not re.fullmatch(r'[1-9][0-9]*', bff_config_version)):
+            return False
+        expected = auth_config.desired(self.p, c, bff_config_version)
+        try:
+            actual = auth_config.effective(revision, self.p['gcp']['project_id'], c,
+                set(expected['env']) == {auth_config.QUERY_PATH},
+                c == 'bff' and (self.p['environment'] == 'development' or self.p['auth'].get('google') is None),
+                c == 'bff', c == 'bff' and auth_config.PIPELINE_DEMO_USER_IDS in expected['env'],
+                c == 'bff' and (self.p['environment'] == 'development' or self.p['export_job']['enabled']),
+                c == 'bff' and auth_config.PIPELINE_COOLDOWN_SECONDS in expected['env'])
+        except (KeyError, TypeError, ValueError):
+            return False
         return (actual == expected and revision['status']['imageDigest'] == image and
                 revision['spec']['containers'][0]['image'] == image and
                 any(x['type'] == 'Ready' and x['status'] == 'True' for x in revision['status']['conditions']))
@@ -945,8 +1044,18 @@ class Providers:
                 return (self.retained_service_image_matches(revision, artifact['revision'], artifact.get('image')) and
                         len(template.get('containers', [])) == 1 and
                         template['containers'][0].get('image') == artifact.get('image'))
-            return (self.service_matches(c, revision, artifact['image']) and
-                    self.service_template_matches(c, raw, revision, artifact['image']) and
+            bff_config_version = None
+            if c == 'bff':
+                record = candidate.get('bff_config') or {}
+                resource = self.p['bff'].get('config_secret_resource')
+                version_resource = record.get('version_resource')
+                if (record.get('status') != 'published' or not isinstance(resource, str) or
+                        not isinstance(version_resource, str) or
+                        not re.fullmatch(re.escape(resource) + r'/versions/[1-9][0-9]*', version_resource)):
+                    return False
+                bff_config_version = version_resource.rsplit('/', 1)[1]
+            return (self.service_matches(c, revision, artifact['image'], bff_config_version) and
+                    self.service_template_matches(c, raw, revision, artifact['image'], bff_config_version) and
                     (not candidate.get('revision') or candidate['revision'] == revision['metadata']['name']))
         t = self.job_template(raw)
         if len(t['containers']) != 1 or t['containers'][0]['image'] != artifact['image']:
@@ -1034,16 +1143,22 @@ class Providers:
         kind, name = self.resource(c)
         args = [kind, 'update', name, '--image', artifact['image']]
         if c in ('auth', 'bff'):
+            bff_config_version = None
+            if c == 'bff':
+                bff_config_version = self.prepare_bff_config_version(candidate, save)
             if not candidate.get('revision'):
-                flags = run(['python3', ROOT / 'deploy/components/auth_config.py', 'args', self.directory / 'plan.json', c]).splitlines()
+                config_args = ['python3', ROOT / 'deploy/components/auth_config.py', 'args', self.directory / 'plan.json', c]
+                if c == 'bff':
+                    config_args.append(bff_config_version)
+                flags = run(config_args).splitlines()
                 result = json.loads(self.cloud(c, *args, '--no-traffic', *flags, mutation=True))
                 candidate['revision'] = result['status']['latestCreatedRevisionName']
                 save()
             revision = candidate['revision']
             retained = self.revision(c, revision)
-            require(self.service_matches(c, retained, artifact['image']), 'candidate-config-not-ready')
+            require(self.service_matches(c, retained, artifact['image'], bff_config_version), 'candidate-config-not-ready')
             raw = self.describe(c)
-            if not self.service_template_matches(c, raw, retained, artifact['image']):
+            if not self.service_template_matches(c, raw, retained, artifact['image'], bff_config_version):
                 self.restore_service(c, retained, [{'revisionName': revision, 'percent': 100}])
             else:
                 self.cloud(c, 'services', 'update-traffic', name, '--to-revisions', revision+'=100', mutation=True)
@@ -1061,9 +1176,23 @@ class Providers:
     def reconcile_candidate(self, c, artifact, candidate, save):
         """Discover accepted creation before allowing continuation; never replay creation."""
         if c in ('auth', 'bff') and not candidate.get('revision'):
+            bff_config_version = None
+            if c == 'bff':
+                record = candidate.get('bff_config') or {}
+                if record.get('status') in ('publishing', 'unconfirmed'):
+                    raise Breakpoint('bff-config-publication-unconfirmed', 'unknown', True,
+                                     'inspect-retained-checkpoint', stage='bff-config-publish')
+                resource = self.p['bff'].get('config_secret_resource')
+                version_resource = record.get('version_resource')
+                if record.get('status') != 'published':
+                    return
+                require(isinstance(resource, str) and isinstance(version_resource, str) and
+                        re.fullmatch(re.escape(resource) + r'/versions/[1-9][0-9]*', version_resource),
+                        'bff-config-version-checkpoint-invalid')
+                bff_config_version = version_resource.rsplit('/', 1)[1]
             raw = self.describe(c)
             name = raw['status']['latestCreatedRevisionName']
-            if self.service_matches(c, self.revision(c, name), artifact['image']):
+            if self.service_matches(c, self.revision(c, name), artifact['image'], bff_config_version):
                 candidate['revision'] = name
                 save()
         if c == 'frontend' and not candidate.get('deployment'):

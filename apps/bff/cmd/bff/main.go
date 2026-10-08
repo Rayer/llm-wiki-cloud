@@ -13,7 +13,6 @@ import (
 	"os"
 	"os/exec"
 	"os/signal"
-	"path/filepath"
 	"strings"
 	"syscall"
 	"time"
@@ -66,7 +65,7 @@ import (
 //	@description				Project identifier header.
 
 func main() {
-	cfg, err := config.Load(".")
+	cfg, err := config.LoadBFFFile(os.Getenv("LWC_BFF_CONFIG_PATH"))
 	if err != nil {
 		log.Fatalf("Failed to load config: %v", err)
 	}
@@ -84,7 +83,7 @@ func main() {
 	if localMode && strings.TrimSpace(cfg.JWTSecret) == "" {
 		log.Fatal("local cloud signing key is missing")
 	}
-	gcsClient, err := gcs.NewClient(cfg.Bucket)
+	gcsClient, err := gcs.NewClientWithScope(cfg.Bucket, cfg.LocalCloudScope)
 	if err != nil {
 		log.Fatalf("Failed to create GCS client: %v", err)
 	}
@@ -93,7 +92,7 @@ func main() {
 	log.Printf("GCS target ready: gs://%s/%s", cfg.Bucket, cfg.LocalCloudScope)
 
 	// Init Firestore client
-	fsClient, err := firestore.NewClientWithDatabase(cfg.GCPProject, cfg.FirestoreDatabaseID, "", "")
+	fsClient, err := firestore.NewClientWithDatabaseAndScope(cfg.GCPProject, cfg.FirestoreDatabaseID, "", "", cfg.LocalCloudScope)
 	if err != nil {
 		log.Fatalf("Failed to create Firestore client: %v", err)
 	}
@@ -124,7 +123,7 @@ func main() {
 	log.Printf("Build identity: commit=%s service=%s revision=%s", build.Commit, build.Service, build.Revision)
 
 	// OpenTelemetry metrics (graceful fallback)
-	provider, err := observability.InitMetrics(context.Background(), observabilityServiceName(os.Getenv("K_SERVICE")), observability.GetProjectID())
+	provider, err := observability.InitMetrics(context.Background(), observabilityServiceName(os.Getenv("K_SERVICE")), cfg.GCPProject)
 	if err != nil {
 		log.Printf("[observability] WARNING: metrics init failed (continuing): %v", err)
 	} else {
@@ -148,13 +147,9 @@ func main() {
 	settingsStore := syssettings.NewStore(fsClient.Raw(), cfg.RegistrationEnabled)
 	var nativeWorker *localpipeline.Manager
 	if localMode {
-		workerPath := strings.TrimSpace(os.Getenv("LOCAL_CLOUD_WORKER_PATH"))
+		workerPath := strings.TrimSpace(cfg.LocalWorkerPath)
 		if workerPath == "" {
 			log.Fatal("LOCAL_CLOUD_WORKER_PATH is required for local cloud pipeline execution")
-		}
-		workerPath, err = filepath.Abs(workerPath)
-		if err != nil {
-			log.Fatalf("resolve local worker path: %v", err)
 		}
 		workerInfo, statErr := os.Stat(workerPath)
 		if statErr != nil || workerInfo.IsDir() || workerInfo.Mode()&0111 == 0 {
@@ -167,8 +162,8 @@ func main() {
 			Firestore: fsClient.Raw(), Storage: gcsClient, Worker: workerPath,
 			Project: cfg.GCPProject, Bucket: cfg.Bucket, Database: cfg.FirestoreDatabaseID,
 			Scope: cfg.LocalCloudScope, WorkDir: ".",
-			PipelineConfigPath:   os.Getenv("LOCAL_CLOUD_PIPELINE_CONFIG_PATH"),
-			PipelineBindingsPath: os.Getenv("LOCAL_CLOUD_PIPELINE_BINDINGS_PATH"),
+			PipelineConfigPath:   cfg.LocalPipelineConfigPath,
+			PipelineBindingsPath: cfg.LocalPipelineBindingsPath,
 		})
 		if err != nil {
 			log.Fatalf("configure local pipeline executor: %v", err)
@@ -256,6 +251,7 @@ func newProductionQueryExecutorWithStageConfig(cfg config.Config, conceptCache *
 		expansionClient := llm.NewClientWithOptions(cfg.DeepSeekAPIKey, llm.ClientOptions{
 			Model: sealed.Stages.QueryExpander.Model, Temperature: &expansionTemperature,
 			Reasoning: llm.Reasoning(sealed.Stages.QueryExpander.Reasoning),
+			BaseURL:   cfg.LLMBaseURL, RequestTimeoutSeconds: cfg.LLMRequestTimeoutSeconds,
 		})
 		if expansionClient == nil {
 			return nil, errors.New("invalid sealed query expansion client configuration")
@@ -264,6 +260,7 @@ func newProductionQueryExecutorWithStageConfig(cfg config.Config, conceptCache *
 		synthesisClient := llm.NewClientWithOptions(cfg.DeepSeekAPIKey, llm.ClientOptions{
 			Model: sealed.Stages.AnswerSynthesizer.Model, Temperature: &synthesisTemperature,
 			Reasoning: llm.Reasoning(sealed.Stages.AnswerSynthesizer.Reasoning),
+			BaseURL:   cfg.LLMBaseURL, RequestTimeoutSeconds: cfg.LLMRequestTimeoutSeconds,
 		})
 		if synthesisClient == nil {
 			return nil, errors.New("invalid sealed query synthesis client configuration")
@@ -276,37 +273,30 @@ func newProductionQueryExecutorWithStageConfig(cfg config.Config, conceptCache *
 		return runtime, nil
 	}
 
-	selectionLimit := cfg.QuerySelectionLimit
-	if selectionLimit == 0 {
-		selectionLimit = config.DefaultQuerySelectionLimit
+	if cfg.QueryStageConfigPath != "" {
+		return nil, errors.New("query stage config path was set without a loaded stage configuration")
 	}
-	explorationSlots := cfg.QuerySelectionExplorationSlots
-	if cfg.QuerySelectionLimit == 0 && explorationSlots == 0 {
-		explorationSlots = config.DefaultQuerySelectionExplorationSlots
+	if cfg.QueryExpansionModel == "" || cfg.QueryExpansionReasoning != config.DefaultQueryExpansionReasoning ||
+		cfg.AnswerSynthesisModel == "" || cfg.AnswerSynthesisReasoning == "" ||
+		cfg.QuerySelectionLimit < 1 || cfg.QuerySelectionEvidenceThreshold < 1 ||
+		cfg.QueryExpansionKeywordsPerAttempt < 1 || cfg.QueryExpansionAttempts < 1 || cfg.QueryMatchingRareKeywordMaxDocumentFrequency < 1 {
+		return nil, errors.New("legacy query configuration is incomplete")
 	}
-	evidenceThreshold := cfg.QuerySelectionEvidenceThreshold
-	evidenceThresholdSet := cfg.QuerySelectionEvidenceThreshold != 0
-	if evidenceThreshold == 0 {
-		evidenceThreshold = config.DefaultQuerySelectionEvidenceThreshold
-	}
-	if cfg.QueryExpansionModel == "" {
-		cfg.QueryExpansionModel = config.DefaultQueryExpansionModel
-	}
-	if cfg.AnswerSynthesisModel == "" {
-		cfg.AnswerSynthesisModel = config.DefaultAnswerSynthesisModel
-	}
-	if cfg.AnswerSynthesisReasoning == "" {
-		cfg.AnswerSynthesisReasoning = config.DefaultAnswerSynthesisReasoning
-	}
-	if cfg.QueryExpansionModel != "" && cfg.QueryExpansionModel != config.DefaultQueryExpansionModel {
+	if cfg.QueryExpansionModel != config.DefaultQueryExpansionModel {
 		return nil, fmt.Errorf("query expansion model must be %s", config.DefaultQueryExpansionModel)
 	}
-	synthesisClient := llm.NewClientWithOptions(cfg.DeepSeekAPIKey, llm.ClientOptions{Model: cfg.AnswerSynthesisModel, Reasoning: cfg.AnswerSynthesisReasoning})
+	synthesisClient := llm.NewClientWithOptions(cfg.DeepSeekAPIKey, llm.ClientOptions{
+		Model: cfg.AnswerSynthesisModel, Reasoning: cfg.AnswerSynthesisReasoning,
+		BaseURL: cfg.LLMBaseURL, RequestTimeoutSeconds: cfg.LLMRequestTimeoutSeconds,
+	})
 	if cfg.DeepSeekAPIKey != "" && synthesisClient == nil {
 		return nil, errors.New("invalid answer synthesis client configuration")
 	}
 	temperature := 0.0
-	expansionClient := llm.NewClientWithOptions(cfg.DeepSeekAPIKey, llm.ClientOptions{Model: cfg.QueryExpansionModel, Temperature: &temperature, Reasoning: config.DefaultQueryExpansionReasoning})
+	expansionClient := llm.NewClientWithOptions(cfg.DeepSeekAPIKey, llm.ClientOptions{
+		Model: cfg.QueryExpansionModel, Temperature: &temperature, Reasoning: config.DefaultQueryExpansionReasoning,
+		BaseURL: cfg.LLMBaseURL, RequestTimeoutSeconds: cfg.LLMRequestTimeoutSeconds,
+	})
 	var expansionProvider queryquality.ChatProvider
 	if expansionClient != nil {
 		expansionProvider = expansionClient
@@ -317,8 +307,8 @@ func newProductionQueryExecutorWithStageConfig(cfg config.Config, conceptCache *
 	}
 	legacy := query.NewService(conceptCache, legacyExpander, synthesisClient)
 	return queryquality.NewProductionExecutor(conceptCache, expansionProvider, legacy, legacy, queryquality.Options{
-		SelectionLimit: selectionLimit, ExplorationSlots: explorationSlots,
-		EvidenceThreshold: evidenceThreshold, EvidenceThresholdSet: evidenceThresholdSet,
+		SelectionLimit: cfg.QuerySelectionLimit, ExplorationSlots: cfg.QuerySelectionExplorationSlots,
+		EvidenceThreshold: cfg.QuerySelectionEvidenceThreshold, EvidenceThresholdSet: true,
 		KeywordsPerAttempt:    cfg.QueryExpansionKeywordsPerAttempt,
 		ExpansionAttempts:     cfg.QueryExpansionAttempts,
 		RareDocumentFrequency: cfg.QueryMatchingRareKeywordMaxDocumentFrequency,

@@ -41,32 +41,13 @@ auth:
 bff:
   service_name: llm-wiki-bff-dev
   runtime_service_account: lwc-bff-dev@llm-wiki-cloud.iam.gserviceaccount.com
-  profile_runtime_audience: https://llm-wiki-bff-dev-a5nkmux6pq-de.a.run.app
-  profile_runtime_service_account: lwc-bff-dev@llm-wiki-cloud.iam.gserviceaccount.com
   network: default
   subnet: default
   vpc_egress: private-ranges-only
   ingress: all
   max_instances: 1
-  bucket: llm-wiki-data-dev
-  firestore_database_id: llm-wiki-cloud-dev
   pipeline_job_name: olw-pipeline-dev
   pipeline_job_location: asia-east1
-  pipeline_job_url: https://run.googleapis.com/v2/projects/llm-wiki-cloud/locations/asia-east1/jobs/olw-pipeline-dev:run
-  auth_service_url: https://auth.dev.rayer.idv.tw
-  allowed_origins:
-    - https://wiki.dev.rayer.idv.tw
-    - https://llm-wiki-frontend-dev.vercel.app
-    - http://localhost:3000
-    - http://127.0.0.1:3000
-  dev_jwt: false
-  query_config: apps/bff/configs/query/dev/query-dev-2026-09-12.1.json
-  secret_references:
-    jwt: jwt-secret-dev
-    deepseek_api_key: deepseek-apikey
-    typesafe_jev_api_key:
-      name: typesafe-jev-api-key-dev
-      version: "1"
 
 worker:
   job_name: olw-pipeline-dev

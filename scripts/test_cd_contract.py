@@ -13,7 +13,7 @@ from copy import deepcopy
 from pathlib import Path
 
 import yaml
-from test_auth_config_contract import bff_plan
+from test_auth_config_contract import bff_plan, deployment_plan
 from test_bff_auth_config_contract import production_plan as synthetic_production_bff_plan
 from test_bff_auth_config_contract import candidate as bff_candidate
 
@@ -90,33 +90,7 @@ class CDContractTests(unittest.TestCase):
 
     def normalized(self, environment):
         components = "auth,bff,worker,exportjob,frontend"
-        with tempfile.TemporaryDirectory() as directory:
-            bff_config = Path(directory) / "bff.json"
-            bff_config.write_text(json.dumps({
-                "schema_version": 1,
-                "environment": "dev" if environment == "development" else "prod",
-                "pipeline_cooldown_seconds": 600 if environment == "development" else 3600,
-            }))
-            result = subprocess.run(
-                [
-                    "go",
-                    "run",
-                    "./cmd/deploy_config",
-                    "--environment",
-                    environment,
-                    "--config",
-                    f"../../deploy/environments/{environment}.yaml",
-                    "--components",
-                    components,
-                    "--bff-config",
-                    str(bff_config),
-                ],
-                cwd=ROOT / "apps" / "bff",
-                text=True,
-                capture_output=True,
-            )
-        self.assertEqual(result.returncode, 0, result.stderr)
-        return json.loads(result.stdout)
+        return deployment_plan(environment, components)
 
     def test_environment_files_have_equal_complete_shape_and_normalize(self):
         development = self.load_config("development")
@@ -1203,7 +1177,6 @@ class CDContractTests(unittest.TestCase):
                     prior['metadata']['name'] = old_revision
                     prior['status']['imageDigest'] = old_image
                     prior['spec']['containers'][0]['image'] = old_image
-                    prior['spec']['containers'][0]['env'][0]['value'] = '/app/configs/query/prior-image-only.json'
                     state['revisions'][old_revision] = prior
                 state_path = root / "state.json"
                 state_path.write_text(json.dumps(state))
@@ -1304,6 +1277,8 @@ class CDContractTests(unittest.TestCase):
                 if component == "bff":
                     self.assertIn("--to-revisions bff-service-revision-1=100", traffic_calls[0])
                     self.assertIn(f"--to-revisions {old_revision}=100", traffic_calls[1])
+                    bff_update = next(call for call in calls if "run services update bff-service" in call)
+                    self.assertIn("--update-secrets /etc/lwc-bff-config/bff.json=lwc-bff-config-prod:42", bff_update)
                     self.assertEqual(current_revision, old_revision)
                     self.assertEqual(current['revisions'][current_revision], prior)
                 else:
@@ -1359,7 +1334,7 @@ class CDContractTests(unittest.TestCase):
                     elif args[:3] == ["run", "revisions", "describe"]:
                         image = {new_image!r} if args[3] == "{component}-new" else {old_image!r}
                         value = {revision_template!r}
-                        value['metadata'] = {{'name': args[3]}}
+                        value.setdefault('metadata', {{}})['name'] = args[3]
                         value['spec']['containers'][0]['image'] = image
                         value['status']['imageDigest'] = image
                         print(json.dumps(value))

@@ -35,13 +35,18 @@ func NewClient(project, userID, projectID string) (*Client, error) {
 // NewClientWithDatabase creates a Firestore client for databaseID. An empty
 // databaseID preserves the default database behavior of NewClient.
 func NewClientWithDatabase(project, databaseID, userID, projectID string) (*Client, error) {
+	return NewClientWithDatabaseAndScope(project, databaseID, userID, projectID, configuredScope())
+}
+
+// NewClientWithDatabaseAndScope selects the local worktree namespace explicitly.
+func NewClientWithDatabaseAndScope(project, databaseID, userID, projectID, rawScope string) (*Client, error) {
 	ctx := context.Background()
 	databaseID = strings.TrimSpace(databaseID)
 	fs, err := newFirestoreClient(ctx, project, databaseID)
 	if err != nil {
 		return nil, fmt.Errorf("firestore client: %w", err)
 	}
-	if err := RegisterLocalScope(fs, configuredScope()); err != nil {
+	if err := RegisterLocalScope(fs, rawScope); err != nil {
 		_ = fs.Close()
 		return nil, fmt.Errorf("local cloud scope: %w", err)
 	}

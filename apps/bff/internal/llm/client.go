@@ -8,6 +8,7 @@ import (
 	"fmt"
 	"io"
 	"net/http"
+	"strings"
 	"time"
 )
 
@@ -120,9 +121,11 @@ type thinking struct {
 }
 
 type ClientOptions struct {
-	Model       string
-	Temperature *float64
-	Reasoning   Reasoning
+	Model                 string
+	Temperature           *float64
+	Reasoning             Reasoning
+	BaseURL               string
+	RequestTimeoutSeconds int
 }
 
 type Reasoning string
@@ -176,10 +179,18 @@ func NewClientWithOptions(apiKey string, options ClientOptions) *Client {
 	if !options.Reasoning.Valid() {
 		return nil
 	}
+	baseURL := strings.TrimRight(options.BaseURL, "/")
+	if baseURL == "" {
+		baseURL = "https://api.deepseek.com"
+	}
+	timeout := options.RequestTimeoutSeconds
+	if timeout <= 0 {
+		timeout = 60
+	}
 	return &Client{
 		apiKey:      apiKey,
-		baseURL:     "https://api.deepseek.com",
-		client:      &http.Client{Timeout: 60 * time.Second},
+		baseURL:     baseURL,
+		client:      &http.Client{Timeout: time.Duration(timeout) * time.Second},
 		model:       options.Model,
 		temperature: options.Temperature,
 		reasoning:   options.Reasoning,
