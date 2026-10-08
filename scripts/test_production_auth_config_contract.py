@@ -23,16 +23,16 @@ def candidate(plan):
     expected = providers.auth_config.desired(plan, 'auth', auth_config_version=VERSION)
     resource = expected['file_secret']['resource']
     alias = resource.split('/')[3]
+    volume_name = 'auth-volume'
     return {
-        'metadata': {'name': REVISION, 'namespace': 'llm-wiki-cloud',
-                     'annotations': {'run.googleapis.com/secrets': alias + ':' + resource}},
+        'metadata': {'name': REVISION, 'namespace': 'llm-wiki-cloud', 'annotations': {}},
         'spec': {
             'serviceAccountName': expected['service_account'],
             'containers': [{'image': IMAGE,
                             'env': [{'name': 'LWC_APP_CONFIG_PATH', 'value': '/var/run/lwc-auth-config/auth.json'}],
-                            'volumeMounts': [{'name': alias, 'mountPath': '/var/run/lwc-auth-config', 'readOnly': True}]}],
-            'volumes': [{'name': alias, 'secret': {'secretName': alias,
-                                                   'items': [{'key': VERSION, 'path': 'auth.json', 'mode': 292}]}}],
+                            'volumeMounts': [{'name': volume_name, 'mountPath': '/var/run/lwc-auth-config'}]}],
+            'volumes': [{'name': volume_name, 'secret': {'secretName': alias,
+                                                         'items': [{'key': VERSION, 'path': 'auth.json'}]}}],
         },
         'status': {'imageDigest': IMAGE, 'conditions': [{'type': 'Ready', 'status': 'True'}]},
     }
@@ -53,7 +53,7 @@ class ProductionAuthConfigContractTests(unittest.TestCase):
         self.assertEqual(self.runtime['target'], 'auth')
         self.assertEqual(self.runtime['environment'], 'prod')
 
-    def test_production_revision_requires_exact_numeric_read_only_file_mount(self):
+    def test_production_revision_accepts_sdk_file_mount_and_checks_managed_config(self):
         self.assertTrue(self.adapter.service_matches('auth', self.revision, IMAGE,
                                                      auth_config_version=VERSION))
         unrelated = copy.deepcopy(self.revision)
@@ -63,8 +63,10 @@ class ProductionAuthConfigContractTests(unittest.TestCase):
 
         tamper = {
             'wrong version': lambda r: r['spec']['volumes'][0]['secret']['items'][0].update(key='18'),
-            'writable mount': lambda r: r['spec']['containers'][0]['volumeMounts'][0].update(readOnly=False),
             'wrong file path': lambda r: r['spec']['volumes'][0]['secret']['items'][0].update(path='other.json'),
+            'wrong secret': lambda r: r['spec']['volumes'][0]['secret'].update(secretName='wrong-secret'),
+            'wrong project': lambda r: r['spec']['volumes'][0]['secret'].update(
+                secretName='projects/another-project/secrets/'+self.runtime['config_secret_resource'].split('/')[-1]),
             'wrong account': lambda r: r['spec'].update(serviceAccountName='wrong@llm-wiki-cloud.iam.gserviceaccount.com'),
             'not ready': lambda r: r['status']['conditions'][0].update(status='False'),
             'legacy environment': lambda r: r['spec']['containers'][0]['env'].append(
@@ -76,6 +78,11 @@ class ProductionAuthConfigContractTests(unittest.TestCase):
                 edit(value)
                 self.assertFalse(self.adapter.service_matches('auth', value, IMAGE,
                                                               auth_config_version=VERSION))
+
+        unused_read_only = copy.deepcopy(self.revision)
+        unused_read_only['spec']['containers'][0]['volumeMounts'][0]['readOnly'] = False
+        self.assertTrue(self.adapter.service_matches('auth', unused_read_only, IMAGE,
+                                                     auth_config_version=VERSION))
 
     def test_production_adapter_args_version_and_verify_use_numeric_secret(self):
         script = fixtures.ROOT / 'deploy/components/auth_config.py'

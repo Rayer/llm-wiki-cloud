@@ -168,11 +168,15 @@ class Providers:
         require(isinstance(resource, str) and re.fullmatch(
             r'projects/[A-Za-z0-9.-]+/secrets/[A-Za-z0-9_-]+', resource),
             'auth-config-secret-resource-invalid')
+        project_id = self.p['gcp']['project_id']
+        require(resource.split('/')[1] == project_id, 'auth-config-secret-project-mismatch')
+        project_number = self.gcp_project_number()
         record = candidate.get('auth_config')
         if record is None:
             record = {
                 'status': 'preparing', 'publication_status': 'not_started',
                 'config_id': inputs['config_id'], 'secret_resource': resource,
+                'project_id': project_id, 'project_number': project_number,
                 'mount_path': auth_config.AUTH_CONFIG_PATH, 'materialization_schema': 1,
             }
             candidate['auth_config'] = record
@@ -183,15 +187,25 @@ class Providers:
                 record.get('materialization_schema') == 1,
                 'auth-config-checkpoint-identity-mismatch')
         version_resource = record.get('version_resource')
+        if record.get('status') in ('publishing', 'unconfirmed'):
+            raise Breakpoint('auth-config-publication-unconfirmed', 'unknown', True,
+                             'inspect-retained-checkpoint', stage='auth-config-publish')
+        if record.get('project_id') is None and record.get('project_number') is None:
+            # Migrate a known pre-repair checkpoint without replaying publication.
+            require(record.get('status') in ('preparing', 'published'),
+                    'auth-config-checkpoint-identity-mismatch')
+            record['project_id'] = project_id
+            record['project_number'] = project_number
+            save()
+        require(record.get('project_id') == project_id and
+                record.get('project_number') == project_number,
+                'auth-config-checkpoint-project-mismatch')
         if record.get('status') == 'published':
             require(isinstance(version_resource, str) and
                     re.fullmatch(re.escape(resource) + r'/versions/[1-9][0-9]*', version_resource) and
                     record.get('publication_status') == 'known',
                     'auth-config-version-checkpoint-invalid')
             return version_resource.rsplit('/', 1)[1]
-        if record.get('status') in ('publishing', 'unconfirmed'):
-            raise Breakpoint('auth-config-publication-unconfirmed', 'unknown', True,
-                             'inspect-retained-checkpoint', stage='auth-config-publish')
         require(record.get('status') == 'preparing' and version_resource is None and
                 record.get('publication_status') == 'not_started',
                 'auth-config-version-checkpoint-invalid')
@@ -244,8 +258,11 @@ class Providers:
             try:
                 result = json.loads(output)
                 returned = result.get('name') if isinstance(result, dict) else None
-                if not isinstance(returned, str) or not re.fullmatch(
-                        re.escape(resource) + r'/versions/[1-9][0-9]*', returned):
+                match = (re.fullmatch(
+                    r'projects/([A-Za-z0-9.-]+)/secrets/([A-Za-z0-9_-]+)/versions/([1-9][0-9]*)', returned)
+                    if isinstance(returned, str) else None)
+                if (match is None or match.group(1) not in (project_id, project_number) or
+                        match.group(2) != resource.split('/')[3]):
                     raise ValueError('numeric version resource missing')
             except (TypeError, ValueError):
                 record['status'] = 'unconfirmed'
@@ -255,9 +272,31 @@ class Providers:
                                  'inspect-retained-checkpoint', stage='auth-config-publish', exit_code=0) from None
             record['status'] = 'published'
             record['publication_status'] = 'known'
-            record['version_resource'] = returned
+            # Keep checkpoints canonical even when the producer returns the
+            # selected project's legal numeric resource name.
+            record['version_resource'] = resource + '/versions/' + match.group(3)
             save()
-            return returned.rsplit('/', 1)[1]
+            return match.group(3)
+
+    def _auth_config_project_number(self, record, inputs, *, allow_legacy=False):
+        project_id = self.p['gcp']['project_id']
+        resource = inputs.get('config_secret_resource')
+        require(isinstance(resource, str) and re.fullmatch(
+            r'projects/[A-Za-z0-9.-]+/secrets/[A-Za-z0-9_-]+', resource) and
+            resource.split('/')[1] == project_id,
+            'auth-config-secret-project-mismatch')
+        project_number = self.gcp_project_number()
+        stored_id = record.get('project_id')
+        stored_number = record.get('project_number')
+        if stored_id is None and stored_number is None and allow_legacy:
+            version_resource = record.get('version_resource')
+            require(isinstance(version_resource, str) and re.fullmatch(
+                re.escape(resource) + r'/versions/[1-9][0-9]*', version_resource),
+                'auth-config-checkpoint-project-mismatch')
+            return project_number
+        require(stored_id == project_id and stored_number == project_number,
+                'auth-config-checkpoint-project-mismatch')
+        return project_number
 
     def pipeline_config_object(self, pipeline_config):
         try:
@@ -1116,6 +1155,9 @@ class Providers:
                                      not re.fullmatch(r'[1-9][0-9]*', auth_config_version)):
             return False
         expected = auth_config.desired(self.p, c, bff_config_version, auth_config_version)
+        expected_file_resource = expected.get('file_secret', {}).get('resource')
+        project_number = (self.gcp_project_number()
+                          if self._revision_uses_numeric_secret_project(revision) else None)
         try:
             actual = auth_config.effective(revision, self.p['gcp']['project_id'], c,
                 set(expected['env']) == {auth_config.QUERY_PATH},
@@ -1123,12 +1165,35 @@ class Providers:
                 c == 'bff', c == 'bff' and auth_config.PIPELINE_DEMO_USER_IDS in expected['env'],
                 c == 'bff' and (self.p['environment'] == 'development' or self.p['export_job']['enabled']),
                 c == 'bff' and auth_config.PIPELINE_COOLDOWN_SECONDS in expected['env'],
-                auth_file_configured)
+                auth_file_configured, expected_file_resource, project_number)
         except (KeyError, TypeError, ValueError):
             return False
         return (actual == expected and revision['status']['imageDigest'] == image and
                 revision['spec']['containers'][0]['image'] == image and
                 any(x['type'] == 'Ready' and x['status'] == 'True' for x in revision['status']['conditions']))
+
+    def _revision_uses_numeric_secret_project(self, revision):
+        project_id = self.p['gcp']['project_id']
+        annotations = revision.get('metadata', {}).get('annotations', {})
+        if not isinstance(annotations, dict):
+            annotations = {}
+        bindings = annotations.get('run.googleapis.com/secrets', '')
+        for binding in bindings.split(',') if isinstance(bindings, str) else ():
+            _, separator, resource = binding.partition(':')
+            match = re.fullmatch(r'projects/([A-Za-z0-9.-]+)/secrets/[A-Za-z0-9_-]+', resource)
+            if (separator and match and match.group(1) != project_id and
+                    re.fullmatch(r'[1-9][0-9]{5,19}', match.group(1))):
+                return True
+        volumes = revision.get('spec', {}).get('volumes', [])
+        for volume in volumes if isinstance(volumes, list) else ():
+            secret = volume.get('secret') if isinstance(volume, dict) else None
+            resource = secret.get('secretName') if isinstance(secret, dict) else None
+            match = re.fullmatch(r'projects/([A-Za-z0-9.-]+)/secrets/[A-Za-z0-9_-]+', resource) \
+                if isinstance(resource, str) else None
+            if (match and match.group(1) != project_id and
+                    re.fullmatch(r'[1-9][0-9]{5,19}', match.group(1))):
+                return True
+        return False
 
     def auth_runtime_config_matches(self, inputs):
         url = inputs.get('auth_service_url')
@@ -1215,9 +1280,18 @@ class Providers:
                 if (record.get('status') != 'published' or record.get('publication_status') != 'known' or
                         record.get('config_id') != auth_inputs.get('config_id') or
                         record.get('secret_resource') != resource or
+                        record.get('mount_path') != auth_config.AUTH_CONFIG_PATH or
+                        record.get('materialization_schema') != 1 or
                         not isinstance(version_resource, str) or
                         not re.fullmatch(re.escape(resource) + r'/versions/[1-9][0-9]*', version_resource)):
                     return False
+                try:
+                    project_number = self._auth_config_project_number(record, auth_inputs, allow_legacy=True)
+                except (Breakpoint, KeyError, TypeError, ValueError):
+                    return False
+                if record.get('project_id') is None and record.get('project_number') is None:
+                    record['project_id'] = self.p['gcp']['project_id']
+                    record['project_number'] = project_number
                 auth_config_version = version_resource.rsplit('/', 1)[1]
             matches = (self.service_matches(c, revision, artifact['image'], bff_config_version,
                                             auth_config_version) and
@@ -1382,9 +1456,18 @@ class Providers:
                 version_resource = record.get('version_resource')
                 if record.get('status') != 'published' or record.get('publication_status') != 'known':
                     return
-                require(isinstance(resource, str) and isinstance(version_resource, str) and
+                require(record.get('config_id') == inputs.get('config_id') and
+                        record.get('secret_resource') == resource and
+                        record.get('mount_path') == auth_config.AUTH_CONFIG_PATH and
+                        record.get('materialization_schema') == 1 and
+                        isinstance(resource, str) and isinstance(version_resource, str) and
                         re.fullmatch(re.escape(resource) + r'/versions/[1-9][0-9]*', version_resource),
                         'auth-config-version-checkpoint-invalid')
+                project_number = self._auth_config_project_number(record, inputs, allow_legacy=True)
+                if record.get('project_id') is None and record.get('project_number') is None:
+                    record['project_id'] = self.p['gcp']['project_id']
+                    record['project_number'] = project_number
+                    save()
                 auth_config_version = version_resource.rsplit('/', 1)[1]
             raw = self.describe(c)
             name = raw['status']['latestCreatedRevisionName']

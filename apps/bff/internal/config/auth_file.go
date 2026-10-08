@@ -15,6 +15,8 @@ import (
 	"strconv"
 	"strings"
 
+	"github.com/spf13/viper"
+
 	"github.com/rayer/llm-wiki-bff/internal/localcloud"
 )
 
@@ -307,6 +309,13 @@ func LoadAuthFile(path string) (Config, error) {
 	clear(data)
 	if err != nil {
 		return Config{}, err
+	}
+	if file.LocalCloudScope != "" {
+		legacyEnv := viper.New()
+		legacyEnv.Set("dev_jwt", os.Getenv("DEV_JWT"))
+		if legacyEnv.GetBool("dev_jwt") || strings.TrimSpace(os.Getenv("LOCAL_DATA_DIR")) != "" {
+			return Config{}, errors.New("local cloud does not allow DEV_JWT or LOCAL_DATA_DIR")
+		}
 	}
 	port := "8080"
 	if override, ok := os.LookupEnv("PORT"); ok && strings.TrimSpace(override) != "" {

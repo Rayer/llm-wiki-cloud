@@ -19,6 +19,32 @@ func validAuthFileForTest() AuthFile {
 	}
 }
 
+func localAuthFileForTest() AuthFile {
+	file := validAuthFileForTest()
+	file.Environment = "local"
+	file.GCPProject = "llm-wiki-cloud"
+	file.FirestoreDatabaseID = "llm-wiki-cloud-local"
+	file.LocalCloudScope = "worktree-0123456789abcdef01234567"
+	file.AuthServiceURL = "http://localhost:8081"
+	file.AllowedHosts = []string{"localhost", "127.0.0.1"}
+	file.AllowedOrigins = []string{"http://localhost:3000"}
+	file.JWTSecret = strings.Repeat("a", 64)
+	return file
+}
+
+func writeAuthFileForTest(t *testing.T, file AuthFile) string {
+	t.Helper()
+	data, err := json.Marshal(file)
+	if err != nil {
+		t.Fatal(err)
+	}
+	path := filepath.Join(t.TempDir(), "auth.json")
+	if err := os.WriteFile(path, data, 0o600); err != nil {
+		t.Fatal(err)
+	}
+	return path
+}
+
 func TestDecodeAuthFileStrictSchemaAndGoogleModes(t *testing.T) {
 	file := validAuthFileForTest()
 	data, err := json.Marshal(file)
@@ -108,6 +134,35 @@ func TestLoadAuthFileUsesFileAuthorityAndPORTException(t *testing.T) {
 		cfg.AuthDemoUserID != file.AuthDemoUserID || cfg.AuthDemoUserEmail != file.AuthDemoUserEmail || cfg.AuthDemoUserRole != file.AuthDemoUserRole {
 		t.Fatalf("loaded config=%+v; file authority or PORT exception was lost", cfg)
 	}
+}
+
+func TestLoadAuthFileRejectsLocalLegacySwitchesBeforeStartup(t *testing.T) {
+	for _, test := range []struct {
+		name  string
+		env   string
+		value string
+	}{
+		{name: "DEV_JWT", env: "DEV_JWT", value: "true"},
+		{name: "LOCAL_DATA_DIR", env: "LOCAL_DATA_DIR", value: "/tmp/legacy-local-data"},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			t.Setenv("DEV_JWT", "")
+			t.Setenv("LOCAL_DATA_DIR", "")
+			t.Setenv(test.env, test.value)
+			if _, err := LoadAuthFile(writeAuthFileForTest(t, localAuthFileForTest())); err == nil ||
+				!strings.Contains(err.Error(), "local cloud does not allow DEV_JWT or LOCAL_DATA_DIR") {
+				t.Fatalf("LoadAuthFile() err = %v, want local legacy-switch rejection before startup", err)
+			}
+		})
+	}
+
+	t.Run("false DEV_JWT preserves the existing boolean parse behavior", func(t *testing.T) {
+		t.Setenv("DEV_JWT", "false")
+		t.Setenv("LOCAL_DATA_DIR", "")
+		if _, err := LoadAuthFile(writeAuthFileForTest(t, localAuthFileForTest())); err != nil {
+			t.Fatalf("LoadAuthFile() with DEV_JWT=false: %v", err)
+		}
+	})
 }
 
 func TestDecodeAuthFileLocalScopeAndKeyContract(t *testing.T) {

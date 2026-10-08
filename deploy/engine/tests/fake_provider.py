@@ -63,6 +63,14 @@ elif tool == 'gcloud':
         project=a[2]
         out={'projectId':project,
              'projectNumber':s.get('gcp_project_numbers',{}).get(project,'580854833715')}
+    elif a[:3] == ['secrets','versions','add'] and len(a) >= 4:
+        secret=a[3]
+        project=flag('--project','llm-wiki-cloud')
+        returned_project=s.get('auth_version_response_project',project)
+        returned_secret=s.get('auth_version_response_secret',secret)
+        returned_version=s.get('auth_version_response_version','42')
+        s['auth_version_adds']=s.get('auth_version_adds',0)+1
+        out=json.dumps({'name':f'projects/{returned_project}/secrets/{returned_secret}/versions/{returned_version}'})
     elif a[:3] == ['artifacts','docker','images']:
         image = a[4]
         out = image.split('@')[-1] if '@' in image else 'sha256:'+'a'*64
@@ -160,10 +168,10 @@ elif tool == 'gcloud':
                         mount_path=directory
                         mounts=container.setdefault('volumeMounts',[])
                         mounts[:]=[mount for mount in mounts if mount.get('mountPath')!=mount_path]
-                        mounts.append({'name':n,'mountPath':mount_path,'readOnly':True})
+                        mounts.append({'name':n,'mountPath':mount_path})
                         volumes=rev['spec'].setdefault('volumes',[])
                         volumes[:]=[volume for volume in volumes if volume.get('name')!=n]
-                        volumes.append({'name':n,'secret':{'secretName':n,'items':[{'key':key,'path':file_name,'mode':292}]}})
+                        volumes.append({'name':n,'secret':{'secretName':n,'items':[{'key':key,'path':file_name}]}})
                         account=flag('--service-account')
                         if account:
                             rev['spec']['serviceAccountName']=account
@@ -171,12 +179,14 @@ elif tool == 'gcloud':
                         for binding in rev['metadata'].get('annotations',{}).get('run.googleapis.com/secrets','').split(','):
                             if ':' in binding:
                                 alias,target=binding.split(':',1)
-                                if alias not in before_secret_names or alias in {entry.get('valueFrom',{}).get('secretKeyRef',{}).get('name') for entry in env.values() if 'valueFrom' in entry}:
+                                if alias != n and (alias not in before_secret_names or alias in {entry.get('valueFrom',{}).get('secretKeyRef',{}).get('name') for entry in env.values() if 'valueFrom' in entry}):
                                     bindings[alias]=target
-                        project=flag('--project','llm-wiki-cloud')
-                        bindings[n]='projects/'+project+'/secrets/'+n
-                        rev['metadata'].setdefault('annotations',{})['run.googleapis.com/secrets']=','.join(
-                            alias+':'+target for alias,target in bindings.items())
+                        annotations=rev['metadata'].setdefault('annotations',{})
+                        if bindings:
+                            annotations['run.googleapis.com/secrets']=','.join(
+                                alias+':'+target for alias,target in bindings.items())
+                        else:
+                            annotations.pop('run.googleapis.com/secrets',None)
                     else:
                         env[k]={'name':k,'valueFrom':{'secretKeyRef':{'name':n,'key':key}}}
             for k in flag('--remove-secrets','').split(','): env.pop(k,None)

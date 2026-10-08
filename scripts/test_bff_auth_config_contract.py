@@ -37,18 +37,18 @@ def candidate(environment, plan_override=None, version=CONFIG_VERSION):
         'metadata': {
             'name': revision_name,
             'namespace': 'llm-wiki-cloud',
-            'annotations': {'run.googleapis.com/secrets': alias + ':' + resource},
+            'annotations': {},
         },
         'spec': {
             'serviceAccountName': plan['bff']['runtime_service_account'],
             'containers': [{
                 'image': image,
                 'env': [{'name': 'LWC_BFF_CONFIG_PATH', 'value': CONFIG_PATH}],
-                'volumeMounts': [{'name': alias, 'mountPath': '/etc/lwc-bff-config', 'readOnly': True}],
+                'volumeMounts': [{'name': 'bff-volume', 'mountPath': '/etc/lwc-bff-config'}],
             }],
-            'volumes': [{'name': alias, 'secret': {
+            'volumes': [{'name': 'bff-volume', 'secret': {
                 'secretName': alias,
-                'items': [{'key': version, 'path': 'bff.json', 'mode': 292}],
+                'items': [{'key': version, 'path': 'bff.json'}],
             }}],
         },
         'status': {
@@ -88,7 +88,7 @@ class BFFConfigFileContractTests(unittest.TestCase):
                 self.assertNotIn('DEEPSEEK_API_KEY=', result.stdout)
                 self.assertNotIn('TYPESAFE_JEV_API_KEY=', result.stdout)
 
-    def test_effective_revision_requires_the_exact_read_only_numeric_file_mount(self):
+    def test_effective_revision_accepts_sdk_file_mount_and_rejects_wrong_identity(self):
         plan = fixtures.bff_plan('development')
         revision = candidate('development', plan)
         verified = self.run_auth_config('verify', plan, revision)
@@ -98,9 +98,10 @@ class BFFConfigFileContractTests(unittest.TestCase):
             'wrong numeric version': lambda value: value['spec']['volumes'][0]['secret']['items'][0].update(key='41'),
             'wrong file mode': lambda value: value['spec']['volumes'][0]['secret']['items'][0].update(mode=384),
             'wrong file name': lambda value: value['spec']['volumes'][0]['secret']['items'][0].update(path='other.json'),
-            'writable mount': lambda value: value['spec']['containers'][0]['volumeMounts'][0].update(readOnly=False),
-            'wrong resource': lambda value: value['metadata']['annotations'].update(
-                {'run.googleapis.com/secrets': 'wrong:projects/llm-wiki-cloud/secrets/wrong'}),
+            'wrong secret': lambda value: value['spec']['volumes'][0]['secret'].update(secretName='wrong-secret'),
+            'wrong resource': lambda value: value['spec']['volumes'][0]['secret'].update(
+                secretName='projects/another-project/secrets/'+
+                fixtures.bff_plan('development')['bff']['runtime_inputs']['config_secret_resource'].split('/')[-1]),
             'missing locator': lambda value: value['spec']['containers'][0].update(env=[]),
             'legacy config environment': lambda value: value['spec']['containers'][0]['env'].append(
                 {'name': 'PIPELINE_COOLDOWN_SECONDS', 'value': '1'}),
@@ -111,6 +112,11 @@ class BFFConfigFileContractTests(unittest.TestCase):
                 mutate(tampered)
                 rejected = self.run_auth_config('verify', plan, tampered)
                 self.assertNotEqual(rejected.returncode, 0)
+
+        unused_read_only = copy.deepcopy(revision)
+        unused_read_only['spec']['containers'][0]['volumeMounts'][0]['readOnly'] = False
+        accepted = self.run_auth_config('verify', plan, unused_read_only)
+        self.assertEqual(accepted.returncode, 0, accepted.stderr)
 
     def test_provider_matching_binds_candidate_to_published_file_version(self):
         import sys

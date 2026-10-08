@@ -13,6 +13,7 @@ GOOGLE = {
     'GOOGLE_LINK_REDIRECT_URL': 'link_redirect_url',
     'GOOGLE_COMPLETION_URL': 'completion_url',
 }
+GOOGLE_PLATFORM_ENV = ('GOOGLE_CLOUD_PROJECT', 'GOOGLE_APPLICATION_CREDENTIALS')
 BASE = ('GCP_PROJECT', 'FIRESTORE_DATABASE_ID', 'ALLOWED_HOSTS', 'ALLOWED_ORIGINS',
         'AUTH_SERVICE_URL', 'AUTH_SESSION_ENVIRONMENT', 'AUTH_REFRESH_SESSION_MIGRATION',
         'AUTH_DEMO_USER_ID', 'AUTH_DEMO_USER_EMAIL', 'AUTH_DEMO_USER_ROLE', 'DEV_JWT')
@@ -147,7 +148,8 @@ def desired(plan, component='auth', bff_config_version=None, auth_config_version
 
 def effective(revision, project, component='auth', query_only=False, selective_bff=False,
               include_runtime_bindings=False, manage_demo_user_ids=False, manage_export_bindings=False,
-              manage_pipeline_cooldown=False, managed_auth_file=False):
+              manage_pipeline_cooldown=False, managed_auth_file=False,
+              expected_file_resource=None, project_number=None):
     containers = revision['spec']['containers']
     require(len(containers) == 1)
     result = {'env': {}, 'secrets': {}, 'service_account': revision['spec']['serviceAccountName']}
@@ -175,9 +177,10 @@ def effective(revision, project, component='auth', query_only=False, selective_b
             if ref['name'] in aliases:
                 parts = aliases[ref['name']].split('/')
                 require(len(parts) == 4 and parts[0] == 'projects' and parts[2] == 'secrets')
-                # The authenticated, project-scoped revision response supplies its
-                # numeric namespace; accept that or the configured project ID.
-                require(parts[1] in (project, revision['metadata'].get('namespace')))
+                allowed_projects = {project}
+                if isinstance(project_number, str) and re.fullmatch(r'[1-9][0-9]{5,19}', project_number):
+                    allowed_projects.add(project_number)
+                require(parts[1] in allowed_projects)
                 ref = {'name': parts[3], 'key': ref['key']}
             result['secrets'][name] = ref
         elif component == 'bff' and include_runtime_bindings and name in PROFILE_RUNTIME_BFF:
@@ -208,26 +211,33 @@ def effective(revision, project, component='auth', query_only=False, selective_b
             value = entry.get('value', '')
             require(isinstance(value, str))
             result['env'][name] = value
+        elif name in GOOGLE_PLATFORM_ENV:
+            require(set(entry) == {'name', 'value'} and isinstance(entry['value'], str))
         elif component == 'bff' and (name in PROFILE_RUNTIME_BFF or name == TYPESAFE_JEV_API_KEY):
             raise ValueError('unexpected Profile runtime binding')
         elif name.startswith('GOOGLE_') and not query_only and not selective_bff:
             raise ValueError('unexpected Google variable')
     if component == 'bff':
-        result['file_secret'] = native_bff_file_binding(revision, project)
+        result['file_secret'] = native_bff_file_binding(
+            revision, project, expected_file_resource, project_number)
     elif component == 'auth' and AUTH_CONFIG_ENV in result['env']:
-        result['file_secret'] = native_auth_file_binding(revision, project)
+        result['file_secret'] = native_auth_file_binding(
+            revision, project, expected_file_resource, project_number)
     return result
 
 
-def native_bff_file_binding(revision, project):
-    return native_file_binding(revision, project, BFF_CONFIG_DIRECTORY, BFF_CONFIG_FILE, BFF_SECRET_MODE)
+def native_bff_file_binding(revision, project, expected_resource=None, project_number=None):
+    return native_file_binding(revision, project, BFF_CONFIG_DIRECTORY, BFF_CONFIG_FILE,
+                               BFF_SECRET_MODE, expected_resource, project_number)
 
 
-def native_auth_file_binding(revision, project):
-    return native_file_binding(revision, project, AUTH_CONFIG_DIRECTORY, AUTH_CONFIG_FILE, AUTH_SECRET_MODE)
+def native_auth_file_binding(revision, project, expected_resource=None, project_number=None):
+    return native_file_binding(revision, project, AUTH_CONFIG_DIRECTORY, AUTH_CONFIG_FILE,
+                               AUTH_SECRET_MODE, expected_resource, project_number)
 
 
-def native_file_binding(revision, project, directory, filename, expected_mode):
+def native_file_binding(revision, project, directory, filename, expected_mode,
+                        expected_resource=None, project_number=None):
     spec = revision['spec']
     containers = spec.get('containers', [])
     require(len(containers) == 1)
@@ -235,26 +245,36 @@ def native_file_binding(revision, project, directory, filename, expected_mode):
               if mount.get('mountPath') == directory]
     require(len(mounts) == 1)
     mount = mounts[0]
-    require(isinstance(mount.get('name'), str) and mount.get('name') and mount.get('readOnly') is True)
+    # Cloud Run treats secret volumes as read-only; its SDK omits readOnly on
+    # the generated VolumeMount, so this unused field is not a binding check.
+    require(isinstance(mount.get('name'), str) and mount.get('name'))
     volumes = [volume for volume in spec.get('volumes', []) if volume.get('name') == mount['name']]
     require(len(volumes) == 1)
     secret = volumes[0].get('secret')
     require(isinstance(secret, dict))
     secret_name = secret.get('secretName')
     require(isinstance(secret_name, str) and secret_name)
+    require(isinstance(expected_resource, str) and SECRET_RESOURCE.fullmatch(expected_resource))
+    expected_parts = expected_resource.split('/')
+    require(expected_parts[1] == project)
     aliases = {}
     annotations = revision.get('metadata', {}).get('annotations', {})
     for binding in annotations.get('run.googleapis.com/secrets', '').split(','):
         if binding:
-            try:
-                alias, target = binding.split(':', 1)
-            except ValueError:
-                continue
-            if alias and SECRET_RESOURCE.fullmatch(target) and alias not in aliases:
-                aliases[alias] = target
+            alias, separator, target = binding.partition(':')
+            require(separator and alias and alias not in aliases and SECRET_RESOURCE.fullmatch(target))
+            aliases[alias] = target
     resource = aliases.get(secret_name, secret_name)
-    require(SECRET_RESOURCE.fullmatch(resource) and resource.split('/')[1] in
-            (project, revision['metadata'].get('namespace')))
+    if not SECRET_RESOURCE.fullmatch(resource):
+        # Cloud Run resolves an unaliased short secret name in the service's
+        # project. Only the configured secret can use this shorthand.
+        require(resource == expected_parts[3])
+        resource = expected_resource
+    resource_parts = resource.split('/')
+    allowed_projects = {project}
+    if isinstance(project_number, str) and re.fullmatch(r'[1-9][0-9]{5,19}', project_number):
+        allowed_projects.add(project_number)
+    require(resource_parts[1] in allowed_projects and resource_parts[3] == expected_parts[3])
     items = secret.get('items', [])
     require(isinstance(items, list) and len(items) == 1)
     item = items[0]
@@ -264,7 +284,7 @@ def native_file_binding(revision, project, directory, filename, expected_mode):
     mode = item.get('mode', expected_mode)
     require(type(mode) is int and mode == expected_mode)
     return {
-        'resource': resource,
+        'resource': expected_resource,
         'version': version,
         'directory': directory,
         'file': filename,
@@ -290,14 +310,15 @@ def main():
         require(isinstance(conditions, list) and
                 any(isinstance(c, dict) and c.get('type') == 'Ready' and c.get('status') == 'True'
                     for c in conditions))
-        binding = (native_bff_file_binding(revision, plan['gcp']['project_id']) if component == 'bff'
-                   else native_auth_file_binding(revision, plan['gcp']['project_id']))
         if component == 'bff':
             expected_resource = desired(plan, 'bff', '1')['file_secret']['resource']
         elif isinstance(plan['auth'].get('runtime_inputs'), dict):
             expected_resource = desired(plan, 'auth', auth_config_version='1')['file_secret']['resource']
         else:
             raise ValueError('Auth file config is not selected')
+        binding = (native_bff_file_binding(revision, plan['gcp']['project_id'], expected_resource)
+                   if component == 'bff' else
+                   native_auth_file_binding(revision, plan['gcp']['project_id'], expected_resource))
         require(binding['resource'] == expected_resource)
         print(binding['version'])
         return
@@ -345,7 +366,8 @@ def main():
                        component == 'bff' and PIPELINE_DEMO_USER_IDS in expected['env'],
                        component == 'bff' and (plan['environment'] == 'development' or plan['export_job']['enabled']),
                        component == 'bff' and PIPELINE_COOLDOWN_SECONDS in expected['env'],
-                       component == 'auth' and isinstance(plan['auth'].get('runtime_inputs'), dict))
+                       component == 'auth' and isinstance(plan['auth'].get('runtime_inputs'), dict),
+                       expected.get('file_secret', {}).get('resource'))
     digest = fingerprint(actual)
     if component == 'bff':
         # Pin all retained revision settings, including unrelated env/secrets and
