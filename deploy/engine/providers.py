@@ -75,6 +75,8 @@ class Providers:
         require(isinstance(resource, str) and re.fullmatch(
             r'projects/[A-Za-z0-9.-]+/secrets/[A-Za-z0-9_-]+', resource),
             'bff-config-secret-resource-invalid')
+        project_id = self.p['gcp']['project_id']
+        require(resource.split('/')[1] == project_id, 'bff-config-secret-project-mismatch')
         record = candidate.get('bff_config')
         if record is None:
             record = {'status': 'preparing'}
@@ -95,6 +97,7 @@ class Providers:
         environment = self.p['environment']
         target = {'development': 'dev', 'production': 'prod'}.get(environment)
         require(target is not None, 'bff-config-environment-invalid')
+        project_number = self.gcp_project_number()
         temp_root = Path(os.environ.get('RUNNER_TEMP') or tempfile.gettempdir()).resolve()
         require(temp_root != ROOT and ROOT not in temp_root.parents and
                 temp_root != self.directory and self.directory not in temp_root.parents,
@@ -132,6 +135,15 @@ class Providers:
             except OSError:
                 raise Breakpoint('bff-config-file-unavailable', 'failed', False,
                                  'inspect-bff-config-prepare', stage='bff-config-prepare') from None
+            try:
+                generated_config = json.loads(config_path.read_text())
+            except (OSError, TypeError, ValueError):
+                generated_config = {}
+            sensitive_values = tuple(
+                generated_config.get(key) for key in
+                ('jwt_secret', 'deepseek_api_key', 'typesafe_api_key')
+                if isinstance(generated_config, dict) and
+                isinstance(generated_config.get(key), str) and generated_config[key])
             record['status'] = 'publishing'
             save()
             secret_name = resource.split('/')[3]
@@ -139,17 +151,22 @@ class Providers:
                 output = run(['gcloud', 'secrets', 'versions', 'add', secret_name,
                               '--project', self.p['gcp']['project_id'], '--data-file', str(config_path),
                               '--format=json', '--quiet'], timeout=120, mutation=True,
-                             stage='bff-config-publish')
+                             stage='bff-config-publish', sensitive_values=sensitive_values)
             except Breakpoint as exc:
                 record['status'] = 'unconfirmed'
                 save()
                 raise Breakpoint('bff-config-publication-unconfirmed', 'unknown', True,
                                  'inspect-retained-checkpoint', stage='bff-config-publish',
-                                 exit_code=exc.exit_code, timeout_class=exc.timeout_class) from None
+                                 exit_code=exc.exit_code, timeout_class=exc.timeout_class,
+                                 cause=exc.cause) from None
             try:
                 result = json.loads(output)
                 returned = result.get('name') if isinstance(result, dict) else None
-                if not isinstance(returned, str) or not re.fullmatch(re.escape(resource) + r'/versions/[1-9][0-9]*', returned):
+                match = (re.fullmatch(
+                    r'projects/([A-Za-z0-9.-]+)/secrets/([A-Za-z0-9_-]+)/versions/([1-9][0-9]*)', returned)
+                    if isinstance(returned, str) else None)
+                if (match is None or match.group(1) not in (project_id, project_number) or
+                        match.group(2) != secret_name):
                     raise ValueError('numeric version resource missing')
             except (TypeError, ValueError):
                 record['status'] = 'unconfirmed'
@@ -157,9 +174,9 @@ class Providers:
                 raise Breakpoint('bff-config-publication-unconfirmed', 'unknown', True,
                                  'inspect-retained-checkpoint', stage='bff-config-publish', exit_code=0) from None
             record['status'] = 'published'
-            record['version_resource'] = returned
+            record['version_resource'] = resource + '/versions/' + match.group(3)
             save()
-            return returned.rsplit('/', 1)[1]
+            return match.group(3)
 
     def prepare_auth_config_version(self, candidate, save):
         inputs = self.p['auth'].get('runtime_inputs')

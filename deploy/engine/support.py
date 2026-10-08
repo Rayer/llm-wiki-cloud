@@ -44,7 +44,7 @@ _CAUSE_STAGES = {
     'frontend-project-readback', 'frontend-npm-ci',
     'frontend-vercel-pull', 'frontend-vercel-build', 'frontend-vercel-deploy',
     'frontend-deployment-reconcile', 'auth-config-materialize', 'pipeline-config-object-read',
-    'pipeline-config-object-delete', 'pipeline-config-prepare',
+    'pipeline-config-object-delete', 'pipeline-config-prepare', 'bff-config-publish',
     'latest-checkpoint', 'unknown',
 }
 _ARTIFACT_CAUSE_PREFIX = 'LWC_ARTIFACT_CAUSE '
@@ -197,10 +197,12 @@ _STAGE_FAILURE = re.compile(
 
 
 def run(args, *, cwd=ROOT, env=None, timeout=30, mutation=False, input=None, stage=None,
-        unknown_on_error=False, return_process=False, preserve_stdout_bytes=False):
+        unknown_on_error=False, return_process=False, preserve_stdout_bytes=False,
+        sensitive_values=()):
     cause_stage = stage in _CAUSE_STAGES - {'unknown'}
     sensitive_values = tuple((env if isinstance(env, dict) else os.environ).get(key, '')
-                             for key in _SENSITIVE_ENVIRONMENT_KEYS)
+                             for key in _SENSITIVE_ENVIRONMENT_KEYS) + tuple(
+                                 value for value in sensitive_values if isinstance(value, str))
     child_input = input.encode('utf-8') if preserve_stdout_bytes and isinstance(input, str) else input
     try:
         result = subprocess.run([str(a) for a in args], cwd=cwd, env=env, input=child_input,

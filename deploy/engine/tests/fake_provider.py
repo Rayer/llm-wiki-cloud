@@ -66,11 +66,23 @@ elif tool == 'gcloud':
     elif a[:3] == ['secrets','versions','add'] and len(a) >= 4:
         secret=a[3]
         project=flag('--project','llm-wiki-cloud')
-        returned_project=s.get('auth_version_response_project',project)
-        returned_secret=s.get('auth_version_response_secret',secret)
-        returned_version=s.get('auth_version_response_version','42')
-        s['auth_version_adds']=s.get('auth_version_adds',0)+1
-        out=json.dumps({'name':f'projects/{returned_project}/secrets/{returned_secret}/versions/{returned_version}'})
+        if secret.startswith('lwc-bff-config-'):
+            returned_project=s.get('bff_version_response_project',project)
+            returned_secret=s.get('bff_version_response_secret',secret)
+            returned_version=s.get('bff_version_response_version','42')
+            s['bff_version_adds']=s.get('bff_version_adds',0)+1
+            if s.get('bff_version_add_failure'):
+                fail=True
+                failure_message=s.get('bff_version_add_error',
+                    'ERROR: (gcloud.secrets.versions.add) 403 Permission denied for selected BFF config\n')
+            else:
+                out=json.dumps({'name':f'projects/{returned_project}/secrets/{returned_secret}/versions/{returned_version}'})
+        else:
+            returned_project=s.get('auth_version_response_project',project)
+            returned_secret=s.get('auth_version_response_secret',secret)
+            returned_version=s.get('auth_version_response_version','42')
+            s['auth_version_adds']=s.get('auth_version_adds',0)+1
+            out=json.dumps({'name':f'projects/{returned_project}/secrets/{returned_secret}/versions/{returned_version}'})
     elif a[:3] == ['artifacts','docker','images']:
         image = a[4]
         out = image.split('@')[-1] if '@' in image else 'sha256:'+'a'*64

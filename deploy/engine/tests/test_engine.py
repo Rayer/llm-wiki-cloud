@@ -205,6 +205,25 @@ class Acceptance(unittest.TestCase):
         )
         go.chmod(0o755)
 
+    def install_bff_prepare_go_helper(self):
+        go=self.bin/'go'
+        go.unlink(missing_ok=True)
+        go.write_text(
+            f'#!{sys.executable}\n'
+            'import os, shutil, sys\n'
+            'args=sys.argv[1:]\n'
+            "if args[:3] != ['run', './cmd/pipeline_config', 'prepare']:\n"
+            '    sys.exit(99)\n'
+            "output = __import__('pathlib').Path(args[args.index('--output') + 1])\n"
+            "if '--descriptor' in args:\n"
+            "    shutil.copyfile(os.environ['LWC_TEST_BFF_DESCRIPTOR'], output / 'bff-inputs.json')\n"
+            'else:\n'
+            "    config = output / 'bff.json'\n"
+            "    config.write_bytes(open(os.environ['LWC_TEST_BFF_CONFIG'], 'rb').read())\n"
+            '    config.chmod(0o600)\n'
+        )
+        go.chmod(0o755)
+
     @staticmethod
     def auth_sdk_http_error_body():
         return json.dumps({'error': {
@@ -1599,6 +1618,7 @@ class Acceptance(unittest.TestCase):
         e=self.ready(self.make(('bff',),name='bff-config-adapter'))
         self.bff_config_version.stop()
         provider=e.provider
+        provider._gcp_project_number=None
         candidate={}
         saved=[]
         marker=b'TEST_ONLY_SYNTHETIC_BFF_CONFIG_PAYLOAD'
@@ -1621,6 +1641,8 @@ class Acceptance(unittest.TestCase):
                     (output/'bff.json').write_bytes(config)
                     (output/'bff.json').chmod(0o600)
                 return ''
+            if command[:3]==['gcloud','projects','describe']:
+                return json.dumps({'projectId':'llm-wiki-cloud','projectNumber':'580854833715'})
             self.assertEqual(command[:4],['gcloud','secrets','versions','add'])
             self.assertEqual(candidate['bff_config']['status'],'publishing')
             data_path=Path(command[command.index('--data-file')+1])
@@ -1640,11 +1662,96 @@ class Acceptance(unittest.TestCase):
         self.assertEqual(version,'42')
         self.assertEqual(candidate['bff_config'],{'status':'published','version_resource':resource+'/versions/42'})
         self.assertEqual([snapshot['bff_config']['status'] for snapshot in saved],['preparing','publishing','published'])
-        self.assertEqual(sum(command[0]=='gcloud' for command,_ in calls),1)
+        self.assertEqual(sum(command[:4]==['gcloud','secrets','versions','add']
+                             for command,_ in calls),1)
+        self.assertLess(next(i for i,(command,_) in enumerate(calls)
+                             if command[:3]==['gcloud','projects','describe']),
+                        next(i for i,(command,_) in enumerate(calls)
+                             if command[:4]==['gcloud','secrets','versions','add']))
         self.assertNotIn(marker,e.plan.read_bytes() if isinstance(e.plan,Path) else json.dumps(e.plan).encode())
         for path in e.directory.rglob('*'):
             if path.is_file():
                 self.assertNotIn(marker,path.read_bytes())
+
+    def test_runtime_action_canonicalizes_numeric_bff_version_for_real_consumer(self):
+        e=self.ready(self.make(('bff',),name='bff-numeric-project-response'))
+        self.bff_config_version.stop()
+        resource=e.plan['normalized']['bff']['runtime_inputs']['config_secret_resource']
+        descriptor=self.root/'bff-inputs.json'
+        descriptor.write_text(json.dumps(e.plan['normalized']['bff']['runtime_inputs']))
+        config=self.root/'bff-runtime-config.json'
+        config.write_text('{"schema_version":2,"target":"bff","synthetic":"TEST_ONLY_BFF_PAYLOAD"}')
+        self.install_bff_prepare_go_helper()
+        self.configure(bff_version_response_project='580854833715')
+
+        action,release,_,_=self.invoke_runtime_action(
+            e,None,operation='release',target='development',
+            extra_env={'LWC_TEST_BFF_DESCRIPTOR':str(descriptor),
+                       'LWC_TEST_BFF_CONFIG':str(config)})
+
+        self.assertEqual(action.returncode,0,action.stdout+action.stderr)
+        result=json.loads(action.stdout.strip().splitlines()[-1])
+        retained=read(release/'result.json')
+        state=read(release/'state.json')
+        provider=self.current()
+        self.assertEqual(result,retained)
+        self.assertEqual(result['status'],'success')
+        candidate=state['components']['bff']['candidate']
+        self.assertEqual(candidate['bff_config'],{
+            'status':'published','version_resource':resource+'/versions/42'})
+        revision=provider['revisions'][candidate['revision']]
+        self.assertEqual(revision['spec']['volumes'][0]['secret']['items'],
+                         [{'key':'42','path':'bff.json'}])
+        self.assertEqual(provider['bff_version_adds'],1)
+        self.assertEqual(state['components']['bff']['status'],'verified')
+        self.assertNotIn('TEST_ONLY_BFF_PAYLOAD',json.dumps(result))
+
+    def test_runtime_action_retains_bounded_bff_publish_cause_as_unknown(self):
+        e=self.ready(self.make(('bff',),name='bff-publication-cause'))
+        self.bff_config_version.stop()
+        descriptor=self.root/'bff-inputs.json'
+        descriptor.write_text(json.dumps(e.plan['normalized']['bff']['runtime_inputs']))
+        config=self.root/'bff-runtime-config.json'
+        config.write_text('{"schema_version":2,"target":"bff",'
+                          '"jwt_secret":"TEST_ONLY_BFF_JWT_SECRET",'
+                          '"deepseek_api_key":"TEST_ONLY_BFF_PRIVATE_KEY",'
+                          '"typesafe_api_key":"TEST_ONLY_BFF_TYPESAFE_KEY"}')
+        self.install_bff_prepare_go_helper()
+        self.configure(
+            bff_version_add_failure=True,
+            bff_version_add_error=('ERROR: (gcloud.secrets.versions.add) 403 Permission denied for selected BFF config '
+                                   'TEST_ONLY_BFF_JWT_SECRET ' + 'x'*700 + '\n'))
+
+        action,release,_,_=self.invoke_runtime_action(
+            e,None,operation='release',target='development',
+            extra_env={'LWC_TEST_BFF_DESCRIPTOR':str(descriptor),
+                       'LWC_TEST_BFF_CONFIG':str(config)})
+
+        self.assertEqual(action.returncode,1,action.stdout+action.stderr)
+        result=json.loads(action.stdout.strip().splitlines()[-1])
+        retained=read(release/'result.json')
+        state=read(release/'state.json')
+        self.assertEqual(result,retained)
+        self.assertEqual((result['status'],result['component'],result['reason']),
+                         ('unknown','bff','provider-result-unreadable'))
+        self.assertTrue(result['mutation_may_have_happened'])
+        self.assertEqual(result['allowed_next_action'],'reconcile-before-replay')
+        self.assertEqual([cause['phase'] for cause in result['causes']],['deploy','reconcile'])
+        publish=result['causes'][0]
+        self.assertEqual((publish['reason'],publish['status'],publish['stage']),
+                         ('bff-config-publication-unconfirmed','unknown','bff-config-publish'))
+        self.assertEqual(publish['cause']['code'],'child-command-failed')
+        self.assertEqual(publish['cause']['stage'],'bff-config-publish')
+        self.assertIn('403 Permission denied for selected BFF config',publish['cause']['message'])
+        self.assertEqual(len(publish['cause']['message']),512)
+        self.assertTrue(publish['cause']['message_truncated'])
+        self.assertNotIn('TEST_ONLY_BFF_JWT_SECRET',publish['cause']['message'])
+        self.assertNotIn('TEST_ONLY_BFF_PRIVATE_KEY',publish['cause']['message'])
+        self.assertNotIn('TEST_ONLY_BFF_JWT_SECRET',action.stdout)
+        self.assertEqual(state['components']['bff']['candidate']['bff_config'],
+                         {'status':'unconfirmed'})
+        self.assertEqual(self.current()['bff_version_adds'],1)
+        self.assertNotIn('TEST_ONLY_BFF_PAYLOAD',json.dumps(result))
 
     def test_bff_config_adapter_unavailable_file_fails_before_publication(self):
         e=self.ready(self.make(('bff',),name='bff-config-missing-file'))
@@ -1666,6 +1773,68 @@ class Acceptance(unittest.TestCase):
         self.assertFalse(any(command[0]=='gcloud' for command in calls))
         self.assertEqual(self.current()['resources'][self.normalized['bff']['service_name']]['status']['traffic'],
                          [{'revisionName':self.normalized['bff']['service_name']+'-prior','percent':100}])
+
+    def test_bff_publication_rejects_wrong_project_secret_and_non_numeric_versions(self):
+        e=self.ready(self.make(('bff',),name='bff-version-response-validation'))
+        self.bff_config_version.stop()
+        provider=e.provider
+        resource=e.plan['normalized']['bff']['runtime_inputs']['config_secret_resource']
+        secret_name=resource.split('/')[-1]
+        for name,returned in (
+                ('wrong project','projects/999999999999/secrets/'+secret_name+'/versions/43'),
+                ('wrong secret','projects/580854833715/secrets/other-secret/versions/43'),
+                ('zero version','projects/580854833715/secrets/'+secret_name+'/versions/0'),
+                ('latest version','projects/580854833715/secrets/'+secret_name+'/versions/latest'),
+                ('nonnumeric version','projects/580854833715/secrets/'+secret_name+'/versions/abc')):
+            with self.subTest(name=name):
+                provider._gcp_project_number=None
+                candidate={};adds=[];saved=[]
+
+                def fake_run(command,**kwargs):
+                    if command[0]=='go':
+                        output=Path(command[command.index('--output')+1])
+                        if '--descriptor' in command:
+                            (output/'bff-inputs.json').write_text(json.dumps(
+                                e.plan['normalized']['bff']['runtime_inputs']))
+                        else:
+                            config=output/'bff.json'
+                            config.write_text('{"synthetic":"TEST_ONLY_BFF_PAYLOAD"}')
+                            config.chmod(0o600)
+                        return ''
+                    if command[:3]==['gcloud','projects','describe']:
+                        return json.dumps({'projectId':'llm-wiki-cloud','projectNumber':'580854833715'})
+                    self.assertEqual(command[:4],['gcloud','secrets','versions','add'])
+                    adds.append(list(command))
+                    return json.dumps({'name':returned})
+
+                with patch.dict(os.environ,{'RUNNER_TEMP':str(self.root/'runner-temp')}):
+                    with patch('providers.run',side_effect=fake_run):
+                        for _ in range(2):
+                            with self.assertRaisesRegex(Breakpoint,'bff-config-publication-unconfirmed'):
+                                provider.prepare_bff_config_version(
+                                    candidate,lambda:saved.append(copy.deepcopy(candidate)))
+                self.assertEqual(candidate['bff_config'],{'status':'unconfirmed'})
+                self.assertEqual(len(adds),1,'unknown publication response must never be retried')
+                self.assertIsNone(candidate['bff_config'].get('version_resource'))
+                self.assertEqual(candidate['bff_config']['status'],'unconfirmed')
+
+    def test_bff_publication_requires_authoritative_configured_project_identity(self):
+        e=self.ready(self.make(('bff',),name='bff-project-identity-required'))
+        self.bff_config_version.stop()
+        provider=e.provider
+        provider._gcp_project_number=None
+        calls=[]
+
+        def wrong_mapping(command,**kwargs):
+            calls.append(list(command))
+            return json.dumps({'projectId':'another-project','projectNumber':'580854833715'})
+
+        with patch('providers.run',side_effect=wrong_mapping):
+            with self.assertRaisesRegex(Breakpoint,'gcp-project-identity-mismatch'):
+                provider.prepare_bff_config_version({},lambda:None)
+        self.assertEqual(len(calls),1)
+        self.assertEqual(calls[0][:3],['gcloud','projects','describe'])
+        self.assertFalse(any(call[:4]==['gcloud','secrets','versions','add'] for call in calls))
 
     def test_bff_config_adapter_uncertain_publication_is_retained_without_retry(self):
         e=self.ready(self.make(('bff',),name='bff-config-interrupted'))
