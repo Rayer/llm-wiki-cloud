@@ -84,9 +84,9 @@ test('production workflow invokes the shared engine with fixed authority and DEV
   const job = workflow.jobs.release;
   assert.equal(workflow.on.push, undefined);
   assert.deepEqual(Object.keys(workflow.on.workflow_dispatch.inputs), ['components', 'release_tag', 'artifact_id', 'dev_artifact_id', 'frontend_config_artifact_id', 'operation', 'pipeline_run_timeout_seconds']);
-  assert.deepEqual(workflow.on.workflow_dispatch.inputs.operation.options, ['release', 'config-only', 'frontend-config-only']);
+  assert.deepEqual(workflow.on.workflow_dispatch.inputs.operation.options, ['release', 'config-only', 'frontend-config-only', 'frontend-config-generate']);
   assert.equal(workflow.on.workflow_dispatch.inputs.release_tag.required, false);
-  assert.equal(job.if, "github.ref == 'refs/heads/main'");
+  assert.equal(job.if, "github.ref == 'refs/heads/main' && inputs.operation != 'frontend-config-generate'");
   assert.equal(job.uses, './.github/workflows/cd.yml');
   assert.equal(job.secrets, 'inherit');
   assert.deepEqual(job.with, {

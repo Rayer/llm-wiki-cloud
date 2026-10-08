@@ -31,10 +31,10 @@ on:
         type: boolean
         default: false
       operation:
-        description: Config-only updates Pipeline settings; frontend-config-only publishes the selected public Frontend config without rebuilding
+        description: Config-only updates Pipeline settings; frontend-config-only publishes the selected public Frontend config without rebuilding; frontend-config-generate prepares an immutable public config artifact
         required: true
         type: choice
-        options: [release, config-only, frontend-config-only, deploy, rollback, reactivate, tag, readback, diagnose-auth-image]
+        options: [release, config-only, frontend-config-only, frontend-config-generate, deploy, rollback, reactivate, tag, readback, diagnose-auth-image]
         default: release
       pipeline_run_timeout_seconds:
         description: Verified existing Worker Job timeout in seconds; required for Pipeline config generation
@@ -46,7 +46,7 @@ permissions:
   id-token: write
 jobs:
   release:
-    if: github.ref == 'refs/heads/develop' && inputs.operation != 'diagnose-auth-image'
+    if: github.ref == 'refs/heads/develop' && inputs.operation != 'diagnose-auth-image' && inputs.operation != 'frontend-config-generate'
     uses: ./.github/workflows/cd.yml
     secrets: inherit
     with:
@@ -61,6 +61,13 @@ jobs:
       operation: ${{ inputs.operation }}
       force: ${{ inputs.force }}
       pipeline_run_timeout_seconds: ${{ inputs.pipeline_run_timeout_seconds }}
+  frontend-config-generate:
+    if: github.ref == 'refs/heads/develop' && inputs.operation == 'frontend-config-generate'
+    permissions:
+      contents: read
+    uses: ./.github/workflows/generate-frontend-config.yml
+    with:
+      environment: dev
   auth-image-diagnostic:
     if: >-
       inputs.operation == 'diagnose-auth-image' &&
@@ -86,6 +93,7 @@ jobs:
       inputs.operation != 'diagnose-auth-image' &&
       inputs.operation != 'config-only' &&
       inputs.operation != 'frontend-config-only' &&
+      inputs.operation != 'frontend-config-generate' &&
       inputs.operation != 'readback'
     needs: release
     runs-on: ubuntu-latest
