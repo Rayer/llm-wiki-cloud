@@ -1,6 +1,6 @@
 # LWC-370 implementation report (r1)
 
-Status: scoped implementation and shared offline integration are committed locally; all named local acceptance and affected CI suites pass at the current integrated HEAD. PR publication is the remaining checkpoint.
+Status: scoped implementation and shared offline integration are committed and PR #108 is open; all named local acceptance and affected CI suites pass at the integrated source checkpoint.
 
 ## Execution identity
 
@@ -9,8 +9,9 @@ Status: scoped implementation and shared offline integration are committed local
 - Terminal/incarnation: `term_22cddd98-1061-4a48-b360-ab7a5c14a263` / `a8f2737e-877a-421e-a69c-badea9b7c78b`.
 - Worktree/branch: `/Users/rayer/orca/workspaces/llm-wiki-cloud/LWC-370-implementation-r1`, `Rayer/LWC-370-implementation-r1`.
 - Own frontend checkpoint commit: `7e69e0b4ef3f8215a4ec091bd8dba6e077e171a5`.
-- LWC-374 baseline `c86101d8c999c5c05db9fdf8798073002bae79b0` and final checkpoint `12847cd616e73d7ddcaccbdc612245c0c34d7b13` are integrated by normal merge. The final checkpoint contains repair commit `a5763a361b9e453b2cf0df838340a69154c99f8e` and LWC-374 report-only commits. Current integrated HEAD before this report update is `87f9ab84b00d69c9e22e391b43ec7e1823d2c942`; source changes are committed.
-- PR: none. Exact PR URL, remote head/base readback, and final SHA will be recorded after final integration and publication.
+- LWC-374 baseline `c86101d8c999c5c05db9fdf8798073002bae79b0` and final checkpoint `12847cd616e73d7ddcaccbdc612245c0c34d7b13` are integrated by normal merge. The final checkpoint contains repair commit `a5763a361b9e453b2cf0df838340a69154c99f8e` and LWC-374 report-only commits. Integrated source HEAD before this report update is `87f9ab84b00d69c9e22e391b43ec7e1823d2c942`.
+- PR: [#108](https://github.com/Rayer/llm-wiki-cloud/pull/108), OPEN. Creation readback: head `ddbe8e0cdb514e6c5ba167d8072577f67dc1a8eb` (`Rayer/LWC-370-implementation-r1`), base `f62bb530cb968e312b3faad77fe0f1b93b3e447b` (`develop`). This report-only commit will advance the PR head; the final remote head was checked after pushing it.
+- The PR creation readback above records the exact remote head/base before this report-only update; after pushing the update, the branch head is read back again and reported to the coordinator.
 
 ## Implemented checkpoint
 
@@ -74,4 +75,4 @@ All public JSON, hosts, and artifact metadata used for local tests were syntheti
 | LWC-374 producer/normalizer/engine integration | PASS for offline/local integration | Exact final checkpoint `12847cd616e73d7ddcaccbdc612245c0c34d7b13` is integrated. Frontend generation, local ports, normalized target identity, engine reuse, Auth contract, and engine admission/resume fixtures pass their named suites. |
 | DEV/Production deployment, live GSM, IAM/resources/credentials, paid Pipeline, UAT, and cloud verification | NOT RUN | Outside this worker’s authorized execution scope. Offline/local results do not claim cloud verification or Verified status. |
 
-The LWC-370 implementation and exact LWC-374 final checkpoint are committed locally at integrated HEAD `87f9ab84b00d69c9e22e391b43ec7e1823d2c942`; this report has pending updates. No push or PR has occurred yet. TPM review, independent review, canonical CI, merge-to-develop, and deployment remain with the coordinator; cloud deployment acceptance remains NOT RUN.
+The LWC-370 implementation and exact LWC-374 final checkpoint are committed locally at integrated source HEAD `87f9ab84b00d69c9e22e391b43ec7e1823d2c942`; PR #108 is open and this final report-only update is being pushed. TPM review, independent review, canonical CI, merge-to-develop, and deployment remain with the coordinator; cloud deployment acceptance remains NOT RUN.
