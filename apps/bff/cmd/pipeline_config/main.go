@@ -287,6 +287,10 @@ func runPrepareTargetMode(ctx context.Context, target, environment, output strin
 			properties = append(properties, "--property", "localSecretVersionResource="+localResource)
 		}
 	} else {
+		localResource := strings.TrimSpace(os.Getenv("LWC_PIPELINE_LOCAL_SECRET_VERSION_RESOURCE"))
+		if localResource != "" {
+			properties = append(properties, "--property", "localSecretVersionResource="+localResource)
+		}
 		for _, property := range []struct{ name, env, fallback string }{
 			{"bffLocalScope", "LOCAL_CLOUD_SCOPE", ""},
 			{"bffLocalWorkerPath", "LOCAL_CLOUD_WORKER_PATH", ""},

@@ -209,6 +209,163 @@ func TestRealPklBFFPrepareRendersSchema2ForLocalDevelopmentAndProduction(t *test
 	}
 }
 
+func TestRealPklBFFLocalPrepareUsesSelectedSharedSecretVersion(t *testing.T) {
+	realPKL := strings.TrimSpace(os.Getenv("PKL_BIN"))
+	if realPKL == "" {
+		var err error
+		realPKL, err = exec.LookPath("pkl")
+		if err != nil {
+			t.Fatalf("Pkl is required for BFF local binding acceptance: %v", err)
+		}
+	}
+	if _, err := os.Stat(realPKL); err != nil {
+		t.Fatalf("configured Pkl binary is unavailable: %v", err)
+	}
+	repoRoot, err := filepath.Abs(filepath.Join("..", "..", "..", ".."))
+	if err != nil {
+		t.Fatal(err)
+	}
+	root := t.TempDir()
+	localRoot := filepath.Join(root, "local")
+	if err := os.MkdirAll(localRoot, 0o700); err != nil {
+		t.Fatal(err)
+	}
+	jwtPath := filepath.Join(localRoot, "synthetic-jwt-key")
+	if err := os.WriteFile(jwtPath, []byte(strings.Repeat("a", 64)+"\n"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	const resource = "projects/llm-wiki-cloud/secrets/lwc369-synthetic-local-selection/versions/17"
+	const payload = "TEST_ONLY_LWC369_SYNTHETIC_SELECTED_PAYLOAD"
+	t.Setenv("LWC_REPOSITORY_ROOT", repoRoot)
+	t.Setenv("PKL_BIN", realPKL)
+	t.Setenv("PKL_CACHE_DIR", "")
+	t.Setenv("LWC_PIPELINE_RUN_TIMEOUT_SECONDS", "82800")
+	t.Setenv("LWC_PIPELINE_LOCAL_SECRET_VERSION_RESOURCE", resource)
+	t.Setenv("LLM_API_KEY", "TEST_ONLY_ENV_FALLBACK_DECOY")
+	t.Setenv("DEEPSEEK_API_KEY", "")
+	t.Setenv("LOCAL_CLOUD_SCOPE", "lwc369-selected-secret-synthetic")
+	t.Setenv("LOCAL_CLOUD_WORKER_PATH", filepath.Join(localRoot, "olw_worker"))
+	t.Setenv("LOCAL_CLOUD_PIPELINE_CONFIG_PATH", filepath.Join(localRoot, "synthetic-synto.toml"))
+	t.Setenv("LOCAL_CLOUD_PIPELINE_BINDINGS_PATH", filepath.Join(localRoot, "synthetic-bindings.json"))
+	t.Setenv("LOCAL_CLOUD_JWT_SECRET_FILE", jwtPath)
+	t.Setenv("PIPELINE_DEMO_USER_IDS", "")
+	t.Setenv("BFF_PORT", "18080")
+	t.Setenv("AUTH_PORT", "18081")
+	t.Setenv("FRONTEND_PORT", "13000")
+
+	descriptorDir := filepath.Join(root, "descriptor")
+	calledResolver := false
+	descriptorLog, err := capturePipelinePrepareStdout(t, func() error {
+		return runPrepareTargetMode(context.Background(), "bff", "local", descriptorDir, true,
+			func(context.Context) (secretReader, error) {
+				calledResolver = true
+				return nil, errors.New("descriptor must not resolve secret payloads")
+			})
+	})
+	if err != nil || calledResolver {
+		t.Fatalf("BFF descriptor prepare initialized a resolver: err=%v called=%t", err, calledResolver)
+	}
+	descriptorBytes, err := os.ReadFile(filepath.Join(descriptorDir, "bff-inputs.json"))
+	if err != nil {
+		t.Fatalf("BFF descriptor was not generated: %v", err)
+	}
+	var descriptor bffSourceProjection
+	if err := json.Unmarshal(descriptorBytes, &descriptor); err != nil {
+		t.Fatalf("BFF descriptor is malformed: %v", err)
+	}
+	if descriptor.DeepSeekAPIKeyReference.Source != "secret-manager" ||
+		descriptor.DeepSeekAPIKeyReference.EnvName != "" ||
+		descriptor.DeepSeekAPIKeyReference.Resource != resource {
+		t.Fatalf("BFF descriptor did not preserve the exact selected shared binding: %#v", descriptor.DeepSeekAPIKeyReference)
+	}
+	if strings.Contains(string(descriptorBytes), payload) || strings.Contains(descriptorLog, payload) {
+		t.Fatal("BFF descriptor or its log contains the synthetic secret payload")
+	}
+
+	bffReader := &fakeSecretReader{value: []byte(payload)}
+	bffOutput := filepath.Join(root, "bff-runtime")
+	bffLog, err := capturePipelinePrepareStdout(t, func() error {
+		return runPrepareTargetMode(context.Background(), "bff", "local", bffOutput, false,
+			func(context.Context) (secretReader, error) { return bffReader, nil })
+	})
+	if err != nil {
+		t.Fatalf("BFF prepare using the selected synthetic GSM resource failed: %v", err)
+	}
+	if len(bffReader.resources) != 1 || bffReader.resources[0] != resource {
+		t.Fatalf("BFF resolver did not receive the exact selected resource: %#v", bffReader.resources)
+	}
+	bffBytes, err := os.ReadFile(filepath.Join(bffOutput, "bff.json"))
+	if err != nil {
+		t.Fatalf("generated BFF runtime file is unavailable: %v", err)
+	}
+	generated, err := runtimeconfig.DecodeBFFFile(bffBytes)
+	if err != nil || generated.DeepSeekAPIKey != payload {
+		t.Fatalf("generated BFF runtime file did not use the selected synthetic payload: err=%v", err)
+	}
+	if strings.Contains(bffLog, payload) {
+		t.Fatal("BFF prepare log contains the synthetic secret payload")
+	}
+
+	pipelineReader := &fakeSecretReader{value: []byte(payload)}
+	pipelineOutput := filepath.Join(root, "pipeline-runtime")
+	pipelineLog, err := capturePipelinePrepareStdout(t, func() error {
+		return runPrepareTarget(context.Background(), "pipeline", "local", pipelineOutput,
+			func(context.Context) (secretReader, error) { return pipelineReader, nil })
+	})
+	if err != nil {
+		t.Fatalf("Pipeline prepare using the selected synthetic GSM resource failed: %v", err)
+	}
+	if len(pipelineReader.resources) != 1 || pipelineReader.resources[0] != resource {
+		t.Fatalf("Pipeline resolver did not receive the exact selected resource: %#v", pipelineReader.resources)
+	}
+	pipelineBytes, err := os.ReadFile(filepath.Join(pipelineOutput, "pipeline.json"))
+	if err != nil || strings.Contains(string(pipelineBytes), payload) {
+		t.Fatalf("Pipeline public config is unavailable or contains the synthetic payload: err=%v", err)
+	}
+	var pipeline struct {
+		Secret secretBinding `json:"secret"`
+	}
+	if err := json.Unmarshal(pipelineBytes, &pipeline); err != nil || pipeline.Secret.Resource != descriptor.DeepSeekAPIKeyReference.Resource {
+		t.Fatalf("Pipeline and BFF did not retain the same selected secret resource: Pipeline=%q err=%v", pipeline.Secret.Resource, err)
+	}
+	syntoBytes, err := os.ReadFile(filepath.Join(pipelineOutput, "synto.toml"))
+	if err != nil || strings.Contains(string(syntoBytes), payload) || strings.Contains(pipelineLog, payload) {
+		t.Fatal("Pipeline public artifacts or log contain the synthetic secret payload")
+	}
+
+	failingReader := &fakeSecretReader{err: errors.New(payload)}
+	failingOutput := filepath.Join(root, "failed-bff")
+	failureLog, failureErr := capturePipelinePrepareStdout(t, func() error {
+		return runPrepareTargetMode(context.Background(), "bff", "local", failingOutput, false,
+			func(context.Context) (secretReader, error) { return failingReader, nil })
+	})
+	if failureErr == nil || strings.Contains(failureErr.Error(), payload) || strings.Contains(failureLog, payload) {
+		t.Fatalf("BFF preparation error or log leaked secret payload: err=%v", failureErr)
+	}
+	if _, err := os.Stat(filepath.Join(failingOutput, "bff.json")); !errors.Is(err, os.ErrNotExist) {
+		t.Fatalf("failed selected-secret prepare left a launchable BFF config: %v", err)
+	}
+}
+
+func capturePipelinePrepareStdout(t *testing.T, run func() error) (string, error) {
+	t.Helper()
+	reader, writer, err := os.Pipe()
+	if err != nil {
+		return "", err
+	}
+	original := os.Stdout
+	os.Stdout = writer
+	runErr := run()
+	_ = writer.Close()
+	os.Stdout = original
+	defer reader.Close()
+	output, readErr := io.ReadAll(reader)
+	if readErr != nil {
+		return "", readErr
+	}
+	return string(output), runErr
+}
+
 func (r *fakeSecretReader) ProjectIdentity(_ context.Context, project string) (projectIdentity, error) {
 	r.identityCalls++
 	if r.identityErr != nil {

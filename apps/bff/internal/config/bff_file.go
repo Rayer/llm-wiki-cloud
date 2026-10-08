@@ -152,6 +152,9 @@ func DecodeBFFFile(data []byte) (BFFFile, error) {
 	if err := validateBFFNestedShapes(fields); err != nil {
 		return BFFFile{}, err
 	}
+	if err := validateBFFJSONTypes(fields); err != nil {
+		return BFFFile{}, err
+	}
 	var file BFFFile
 	decoder := json.NewDecoder(bytes.NewReader(data))
 	decoder.DisallowUnknownFields()
@@ -203,6 +206,152 @@ func validateBFFNestedShapes(fields map[string]json.RawMessage) error {
 		}
 	}
 	return nil
+}
+
+func validateBFFJSONTypes(fields map[string]json.RawMessage) error {
+	for _, field := range []struct {
+		name     string
+		kind     string
+		nullable bool
+	}{
+		{"schema_version", "integer", false},
+		{"environment", "string", false},
+		{"target", "string", false},
+		{"gcp_project", "string", false},
+		{"bucket", "string", false},
+		{"firestore_database_id", "string", false},
+		{"auth_service_url", "string", false},
+		{"pipeline_job_url", "string", false},
+		{"export_job_url", "string", false},
+		{"export_signing_service_account", "string", false},
+		{"allowed_origins", "string_array", false},
+		{"allowed_hosts", "string_array", false},
+		{"pipeline_daily_limit", "integer", false},
+		{"pipeline_cooldown_seconds", "integer", false},
+		{"pipeline_min_new_raw", "integer", false},
+		{"pipeline_demo_user_ids", "string_array", false},
+		{"auth_session_environment", "string", false},
+		{"auth_session_migration", "string", false},
+		{"registration_enabled", "boolean", true},
+		{"jwt_secret", "string", false},
+		{"deepseek_api_key", "string", false},
+		{"typesafe_api_key", "string", false},
+		{"profile_runtime_audience", "string", false},
+		{"profile_runtime_service_account", "string", false},
+		{"llm", "object", false},
+		{"query", "object", false},
+		{"local", "object", true},
+		{"port_default", "integer", false},
+	} {
+		if err := requireBFFJSONType(field.name, fields[field.name], field.kind, field.nullable); err != nil {
+			return err
+		}
+	}
+	var llmFields map[string]json.RawMessage
+	if err := json.Unmarshal(fields["llm"], &llmFields); err != nil {
+		return errors.New("BFF config llm object has invalid types")
+	}
+	for _, field := range []struct{ name, kind string }{
+		{"provider", "string"}, {"base_url", "string"},
+		{"request_timeout_seconds", "integer"}, {"model", "string"},
+	} {
+		if err := requireBFFJSONType("llm."+field.name, llmFields[field.name], field.kind, false); err != nil {
+			return err
+		}
+	}
+	var queryFields map[string]json.RawMessage
+	if err := json.Unmarshal(fields["query"], &queryFields); err != nil {
+		return errors.New("BFF config query object has invalid types")
+	}
+	if err := requireBFFJSONType("query.stage_config_path", queryFields["stage_config_path"], "string", false); err != nil {
+		return err
+	}
+	if err := requireBFFJSONType("query.legacy", queryFields["legacy"], "object", true); err != nil {
+		return err
+	}
+	if !isBFFJSONNull(queryFields["legacy"]) {
+		var legacyFields map[string]json.RawMessage
+		if err := json.Unmarshal(queryFields["legacy"], &legacyFields); err != nil {
+			return errors.New("BFF config legacy query object has invalid types")
+		}
+		for _, field := range []struct{ name, kind string }{
+			{"query_expansion_model", "string"}, {"query_expansion_reasoning", "string"},
+			{"answer_synthesis_model", "string"}, {"answer_synthesis_reasoning", "string"},
+			{"query_selection_limit", "integer"}, {"query_selection_exploration_slots", "integer"},
+			{"query_selection_evidence_threshold", "integer"}, {"query_expansion_keywords_per_attempt", "integer"},
+			{"query_expansion_attempts", "integer"}, {"query_matching_rare_keyword_max_document_frequency", "integer"},
+		} {
+			if err := requireBFFJSONType("query.legacy."+field.name, legacyFields[field.name], field.kind, false); err != nil {
+				return err
+			}
+		}
+	}
+	if !isBFFJSONNull(fields["local"]) {
+		var localFields map[string]json.RawMessage
+		if err := json.Unmarshal(fields["local"], &localFields); err != nil {
+			return errors.New("BFF config local object has invalid types")
+		}
+		for _, field := range []string{"scope", "worker_path", "pipeline_config_path", "pipeline_bindings_path"} {
+			if err := requireBFFJSONType("local."+field, localFields[field], "string", false); err != nil {
+				return err
+			}
+		}
+	}
+	return nil
+}
+
+func requireBFFJSONType(name string, raw json.RawMessage, kind string, nullable bool) error {
+	trimmed := bytes.TrimSpace(raw)
+	if len(trimmed) == 0 {
+		return fmt.Errorf("BFF config field %s has invalid type", name)
+	}
+	if bytes.Equal(trimmed, []byte("null")) {
+		if nullable {
+			return nil
+		}
+		return fmt.Errorf("BFF config field %s cannot be null", name)
+	}
+	invalid := func() error { return fmt.Errorf("BFF config field %s has invalid type", name) }
+	switch kind {
+	case "string":
+		var value string
+		if err := json.Unmarshal(trimmed, &value); err != nil {
+			return invalid()
+		}
+	case "integer":
+		var value int
+		if err := json.Unmarshal(trimmed, &value); err != nil {
+			return invalid()
+		}
+	case "boolean":
+		var value bool
+		if err := json.Unmarshal(trimmed, &value); err != nil {
+			return invalid()
+		}
+	case "string_array":
+		var values []json.RawMessage
+		if err := json.Unmarshal(trimmed, &values); err != nil || values == nil {
+			return invalid()
+		}
+		for index, value := range values {
+			var item string
+			if isBFFJSONNull(value) || json.Unmarshal(value, &item) != nil {
+				return fmt.Errorf("BFF config field %s[%d] has invalid type", name, index)
+			}
+		}
+	case "object":
+		var value map[string]json.RawMessage
+		if err := json.Unmarshal(trimmed, &value); err != nil || value == nil {
+			return invalid()
+		}
+	default:
+		return errors.New("BFF config schema contains an unsupported type")
+	}
+	return nil
+}
+
+func isBFFJSONNull(raw json.RawMessage) bool {
+	return bytes.Equal(bytes.TrimSpace(raw), []byte("null"))
 }
 
 func requireJSONKeys(fields map[string]json.RawMessage, required []string) error {
@@ -293,6 +442,9 @@ func validateBFFFile(file BFFFile) error {
 	}
 	if strings.TrimSpace(file.GCPProject) == "" || strings.TrimSpace(file.Bucket) == "" || strings.TrimSpace(file.FirestoreDatabaseID) == "" {
 		return errors.New("BFF config resource identity is incomplete")
+	}
+	if strings.TrimSpace(file.AuthSessionEnvironment) == "" {
+		return errors.New("BFF config auth_session_environment is invalid")
 	}
 	localMode := file.Environment == "local"
 	if err := validateRuntimeURL(file.AuthServiceURL, localMode); err != nil {
