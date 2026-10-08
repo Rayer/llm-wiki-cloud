@@ -26,6 +26,9 @@ import test_auth_config_contract as auth_contract_fixtures
 class Acceptance(unittest.TestCase):
     @classmethod
     def setUpClass(cls):
+        cls.real_go=shutil.which('go')
+        if not cls.real_go:
+            raise RuntimeError('Go is required for deployment engine acceptance')
         env=dict(os.environ,LWC_REPOSITORY_ROOT=str(ROOT))
         with tempfile.TemporaryDirectory() as directory:
             for environment,target,components,attribute in (
@@ -168,6 +171,48 @@ class Acceptance(unittest.TestCase):
     def configure(self,**kw):
         self.provider=self.current();self.provider.update(kw);self.flush()
     def calls(self,verb):return [x for x in self.current()['calls'] if verb in x]
+
+    def install_auth_materializer_go_helper(self):
+        go=self.bin/'go'
+        go.unlink(missing_ok=True)
+        go.write_text(
+            f'#!{sys.executable}\n'
+            'import os, subprocess, sys\n'
+            'args = sys.argv[1:]\n'
+            "if args[:3] != ['run', './cmd/pipeline_config', 'materialize-auth']:\n"
+            '    sys.exit(99)\n'
+            'def flag(name):\n'
+            '    try:\n'
+            '        return args[args.index(name) + 1]\n'
+            '    except (ValueError, IndexError):\n'
+            '        sys.exit(98)\n'
+            'env = os.environ.copy()\n'
+            "env['LWC_TEST_AUTH_MATERIALIZER_HELPER'] = 'run'\n"
+            "env['LWC_TEST_AUTH_INPUTS'] = flag('--inputs')\n"
+            "env['LWC_TEST_AUTH_OUTPUT'] = flag('--output')\n"
+            "command = [env['LWC_TEST_REAL_GO'], 'test', './cmd/pipeline_config',\n"
+            "           '-run', '^TestMaterializeAuthHelperProcess$', '-count=1', '-v']\n"
+            'result = subprocess.run(command, env=env, text=True, capture_output=True)\n'
+            'for line in result.stdout.splitlines():\n'
+            "    if line.startswith('LWC_TEST_MATERIALIZE_ERROR:'):\n"
+            "        sys.stderr.write(line.split(':', 1)[1] + '\\n')\n"
+            '        sys.exit(1)\n'
+            "    if line == 'LWC_TEST_MATERIALIZE_OK':\n"
+            '        sys.exit(0)\n'
+            'sys.stdout.write(result.stdout)\n'
+            'sys.stderr.write(result.stderr)\n'
+            'sys.exit(result.returncode if result.returncode else 97)\n'
+        )
+        go.chmod(0o755)
+
+    @staticmethod
+    def auth_sdk_http_error_body():
+        return json.dumps({'error': {
+            'code': 403,
+            'message': 'permission denied for selected Secret Manager version',
+            'details': [{'message': 'TEST_ONLY_RAW_SECRET_MANAGER_ERROR_BODY_TOKEN'}],
+        }})
+
     def make(self,selected=('worker',),name='release',production=False,tag='test-release',normalized=None,source_sha='c'*40):
         directory=self.root/name;directory.mkdir()
         n=copy.deepcopy(normalized if normalized is not None else self.normalized)
@@ -1202,6 +1247,154 @@ class Acceptance(unittest.TestCase):
         self.assertIn('line 1 column 2',result['causes'][1]['message'])
         self.assertNotIn('test-only',rendered)
         self.assertNotIn('frontend deploy failed with test-only',rendered)
+
+    def test_auth_materialization_failure_survives_poll_and_compensation(self):
+        e=self.ready(self.make(('exportjob','auth'),name='auth-materialize-cause'))
+        self.auth_config_version.stop()
+        original_run=subprocess.run
+        calls=[]
+
+        def synthetic_subprocess(args, **kwargs):
+            argv=[str(arg) for arg in args]
+            calls.append(argv)
+            if argv[:4]==['go','run','./cmd/pipeline_config','materialize-auth']:
+                return subprocess.CompletedProcess(args,1,'',
+                    'selected secret version could not be accessed\n')
+            return original_run(args, **kwargs)
+
+        stdout=io.StringIO()
+        with patch.dict(os.environ,{'RUNNER_TEMP':str(self.root/'runner-temp')}), \
+             patch.object(engine.Engine,'runtime_guard'), \
+             patch.object(providers.Providers,'gcp_project_number',return_value='580854833715'), \
+             patch('support.subprocess.run',side_effect=synthetic_subprocess), \
+             patch('sys.argv',['engine.py','deploy','--directory',str(e.directory)]), \
+             patch('sys.stdout',stdout):
+            exit_code=engine.main()
+
+        result=read(e.directory/'result.json')
+        state=read(e.state_path)
+        self.assertEqual(exit_code,1)
+        self.assertEqual((result['stage'],result['component'],result['reason']),
+                         ('failed_rolled_back','auth','basic-sanity-mismatch'))
+        self.assertEqual(result['observed']['component_status'],'rolled_back')
+        self.assertEqual(result['last_verified_checkpoint'],state['sequence'])
+        self.assertEqual({c:entry['status'] for c,entry in state['components'].items()},
+                         {'exportjob':'rolled_back','auth':'rolled_back'})
+        self.assertEqual([cause['phase'] for cause in result['causes']],['deploy','poll'])
+        self.assertEqual(result['causes'][0]['stage'],'auth-config-materialize')
+        self.assertEqual(result['causes'][0]['cause']['exception_type'],'ChildProcessError')
+        self.assertEqual(result['causes'][0]['cause']['code'],'child-command-failed')
+        self.assertEqual(result['causes'][0]['cause']['message'],
+                         'selected secret version could not be accessed\n')
+        self.assertEqual(state['components']['auth']['candidate']['auth_config']['status'],'preparing')
+        self.assertEqual(state['components']['auth']['candidate']['auth_config']['publication_status'],
+                         'not_started')
+        self.assertEqual([call[3] for call in calls if call[:3]==['gcloud','secrets','versions']],[])
+        self.assertEqual(json.loads(stdout.getvalue()),result)
+        self.assertNotIn('TEST_ONLY_AUTH_CONFIG_PAYLOAD',stdout.getvalue())
+
+    def test_auth_and_compensation_causes_survive_engine_result(self):
+        e=self.ready(self.make(('exportjob','auth'),name='auth-materialize-compensation-cause'))
+        self.auth_config_version.stop()
+        self.configure(fail_rollback_unapplied=True)
+        self.install_auth_materializer_go_helper()
+
+        with patch.dict(os.environ,{'RUNNER_TEMP':str(self.root/'runner-temp')}), \
+             patch.object(engine.Engine,'runtime_guard'), \
+             patch.object(providers.Providers,'gcp_project_number',return_value='580854833715'), \
+             patch.dict(os.environ,{
+                 'LWC_TEST_REAL_GO':self.real_go,
+                 'LWC_TEST_AUTH_HTTP_STATUS':'403',
+                 'LWC_TEST_AUTH_HTTP_BODY':self.auth_sdk_http_error_body(),
+             }), \
+             patch('sys.argv',['engine.py','deploy','--directory',str(e.directory)]), \
+             patch('sys.stdout',io.StringIO()):
+            exit_code=engine.main()
+
+        result=read(e.directory/'result.json')
+        state=read(e.state_path)
+        self.assertEqual(exit_code,1)
+        self.assertEqual((result['stage'],result['status'],result['component'],result['reason']),
+                         ('recovery_failed','unknown','auth','rollback-not-verified'))
+        self.assertEqual(result['allowed_next_action'],'inspect-retained-checkpoint')
+        self.assertTrue(result['mutation_may_have_happened'])
+        self.assertEqual(result['last_verified_checkpoint'],state['sequence'])
+        self.assertEqual({c:entry['status'] for c,entry in state['components'].items()},
+                         {'exportjob':'rollback_failed','auth':'rolled_back'})
+        self.assertEqual([cause['phase'] for cause in result['causes']],
+                         ['deploy','poll','compensation'])
+        self.assertEqual(result['causes'][0]['stage'],'auth-config-materialize')
+        self.assertEqual(result['causes'][0]['cause']['code'],'child-command-failed')
+        self.assertIn('Google API HTTP 403',result['causes'][0]['cause']['message'])
+        self.assertNotIn('TEST_ONLY_RAW_SECRET_MANAGER_ERROR_BODY_TOKEN',
+                         result['causes'][0]['cause']['message'])
+        self.assertEqual(result['causes'][2]['component'],'exportjob')
+        self.assertEqual(result['causes'][2]['reason'],'basic-sanity-mismatch')
+        self.assertEqual(state['status'],'recovery_failed')
+        self.assertEqual(state['components']['auth']['candidate']['auth_config']['publication_status'],
+                         'not_started')
+
+    def test_runtime_action_forwards_auth_materialization_cause(self):
+        e=self.ready(self.make(('exportjob','auth'),name='auth-materialize-action-cause'))
+        go=self.bin/'go'
+        go.unlink()
+        go.write_text('#!/bin/sh\n'
+                      'if [ "$1" = run ] && [ "$2" = ./cmd/pipeline_config ] && [ "$3" = materialize-auth ]; then\n'
+                      '  printf "%s\\n" "selected secret version could not be accessed" >&2\n'
+                      '  exit 1\n'
+                      'fi\n'
+                      'exit 99\n')
+        go.chmod(0o755)
+
+        action,release,_,_=self.invoke_runtime_action(e,None,operation='release',target='development')
+
+        self.assertEqual(action.returncode,1,action.stdout+action.stderr)
+        result=json.loads(action.stdout.strip().splitlines()[-1])
+        retained=read(release/'result.json')
+        state=read(release/'state.json')
+        self.assertEqual(result,retained)
+        self.assertEqual((result['stage'],result['component'],result['reason']),
+                         ('failed_rolled_back','auth','basic-sanity-mismatch'))
+        self.assertEqual(result['causes'][0]['stage'],'auth-config-materialize')
+        self.assertEqual(result['causes'][0]['cause']['code'],'child-command-failed')
+        self.assertEqual(state['components']['auth']['status'],'rolled_back')
+        self.assertEqual(state['components']['exportjob']['status'],'rolled_back')
+
+    def test_runtime_action_forwards_auth_and_compensation_causes(self):
+        e=self.ready(self.make(('exportjob','auth'),name='auth-materialize-action-compensation-cause'))
+        self.configure(fail_rollback_unapplied=True)
+        self.install_auth_materializer_go_helper()
+        fast_python=self.root/'fast-python';fast_python.mkdir()
+        (fast_python/'sitecustomize.py').write_text('import time\ntime.sleep = lambda *_args, **_kwargs: None\n')
+
+        action,release,_,_=self.invoke_runtime_action(
+            e,None,operation='release',target='development',
+            extra_env={
+                'PYTHONPATH':str(fast_python),
+                'LWC_TEST_REAL_GO':self.real_go,
+                'LWC_TEST_AUTH_HTTP_STATUS':'403',
+                'LWC_TEST_AUTH_HTTP_BODY':self.auth_sdk_http_error_body(),
+            })
+
+        self.assertEqual(action.returncode,1,action.stdout+action.stderr)
+        result=json.loads(action.stdout.strip().splitlines()[-1])
+        retained=read(release/'result.json')
+        state=read(release/'state.json')
+        self.assertEqual(result,retained)
+        self.assertEqual((result['stage'],result['status'],result['component'],result['reason']),
+                         ('recovery_failed','unknown','auth','rollback-not-verified'))
+        self.assertEqual(result['allowed_next_action'],'inspect-retained-checkpoint')
+        self.assertTrue(result['mutation_may_have_happened'])
+        self.assertEqual(result['last_verified_checkpoint'],state['sequence'])
+        self.assertEqual([cause['phase'] for cause in result['causes']],
+                         ['deploy','poll','compensation'])
+        self.assertIn('Google API HTTP 403',result['causes'][0]['cause']['message'])
+        self.assertNotIn('TEST_ONLY_RAW_SECRET_MANAGER_ERROR_BODY_TOKEN',
+                         result['causes'][0]['cause']['message'])
+        self.assertEqual(result['causes'][2]['component'],'exportjob')
+        self.assertEqual(result['causes'][2]['reason'],'basic-sanity-mismatch')
+        self.assertEqual(state['components']['auth']['status'],'rolled_back')
+        self.assertEqual(state['components']['exportjob']['status'],'rollback_failed')
 
     def test_unusable_receipt_rebuilds_only_affected_component(self):
         e=self.ready(self.make(('auth','worker')))

@@ -138,6 +138,7 @@ elif tool == 'gcloud':
                 out=raw
         elif op == 'update':
             raw=s['resources'][name]
+            original_resource=copy.deepcopy(raw)
             image=flag('--image')
             if kind=='services':
                 old=s['revisions'][raw['status']['latestCreatedRevisionName']]
@@ -226,7 +227,10 @@ elif tool == 'gcloud':
                 fail=True
             if s.get('unknown_after') == name:
                 s['unreadable']=True;fail=True
-            if s.get('fail_rollback') and image.endswith('b'*64): fail=True
+            if kind == 'jobs' and s.get('fail_rollback_unapplied') and image.endswith('b'*64):
+                s['resources'][name]=original_resource
+                fail=True
+            elif s.get('fail_rollback') and image.endswith('b'*64): fail=True
 elif tool == 'git':
     if a[0]=='ls-remote':
         if s.get('tag'):out=s['tag']+'\t'+a[-2]

@@ -43,7 +43,7 @@ _CAUSE_TYPES = {
 _CAUSE_STAGES = {
     'frontend-project-readback', 'frontend-npm-ci',
     'frontend-vercel-pull', 'frontend-vercel-build', 'frontend-vercel-deploy',
-    'frontend-deployment-reconcile', 'pipeline-config-object-read',
+    'frontend-deployment-reconcile', 'auth-config-materialize', 'pipeline-config-object-read',
     'pipeline-config-object-delete', 'pipeline-config-prepare',
     'latest-checkpoint', 'unknown',
 }

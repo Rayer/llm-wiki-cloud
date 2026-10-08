@@ -502,7 +502,7 @@ func resolveBindingFromReader(ctx context.Context, reader secretReader, target, 
 	})
 	if err != nil {
 		clear(value)
-		return nil, "", errors.New("selected secret version could not be accessed")
+		return nil, "", fmt.Errorf("selected secret version could not be accessed: %s", err)
 	}
 	return value, resolved, nil
 }

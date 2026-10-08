@@ -595,6 +595,7 @@ class Engine:
         self.state['status'] = 'rolling_back'
         self.save()
         errors = []
+        error_causes = []
         for c in reversed(self.plan['selected']):
             if c not in components:
                 continue
@@ -616,12 +617,17 @@ class Engine:
             except (Breakpoint, KeyError, ValueError) as exc:
                 entry['status'] = 'rollback_unknown' if not isinstance(exc, Breakpoint) or exc.status == 'unknown' else 'rollback_failed'
                 errors.append(c)
+                stage = exc.stage if isinstance(exc, Breakpoint) and exc.stage else 'rollback'
+                cause = _phase_cause('compensation', exc, stage)
+                cause['component'] = c
+                error_causes.append(cause)
             self.save()
         self.state['status'] = 'recovery_failed' if errors else ('failed_rolled_back' if automatic else 'rolled_back')
         self.state['job_data_boundary'] = 'Running Job executions and persistent writes are not reversed.'
         self.save()
         if errors:
-            raise Breakpoint('rollback-not-verified', 'unknown', True, 'inspect-retained-checkpoint')
+            raise Breakpoint('rollback-not-verified', 'unknown', True, 'inspect-retained-checkpoint',
+                             causes=error_causes)
 
     def reconcile(self, c, artifact, candidate, deploy_error=None):
         try:
@@ -668,12 +674,22 @@ class Engine:
                     if c in ('worker', 'exportjob'):
                         raise Breakpoint('pending-job-mismatch', 'failed', True, 'rollback')
                     require(bool(entry['candidate']), 'mutation-result-unknown')
+                deploy_error = None
                 try:
                     self.provider.deploy(c, artifacts[c], entry['candidate'], self.save)
-                except Breakpoint as deploy_error:
+                except Breakpoint as failure:
+                    deploy_error = failure
                     self.reconcile(c, artifacts[c], entry['candidate'], deploy_error=deploy_error)
                     # No second update. Readback determines known failure vs unknown.
-                self.provider.poll(c, artifacts[c], entry['candidate'])
+                try:
+                    self.provider.poll(c, artifacts[c], entry['candidate'])
+                except Breakpoint as poll_error:
+                    if deploy_error is not None:
+                        poll_error.causes = [
+                            _phase_cause('deploy', deploy_error, deploy_error.stage or 'unknown'),
+                            _phase_cause('poll', poll_error, 'provider-poll'),
+                        ]
+                    raise
                 entry['status'] = 'verified'
                 self.save()
             except (Breakpoint, KeyError, ValueError) as exc:
@@ -683,7 +699,19 @@ class Engine:
                 self.state['status'] = entry['status']
                 self.save()
                 if exc.status != 'unknown':
-                    self.restore(changed, automatic=True)
+                    try:
+                        self.restore(changed, automatic=True)
+                    except Breakpoint as rollback_error:
+                        rollback_error.causes = [
+                            *(exc.causes or [_phase_cause('primary', exc, exc.stage or 'unknown')]),
+                            *(rollback_error.causes or [_phase_cause(
+                                'compensation', rollback_error, rollback_error.stage or 'rollback')]),
+                        ]
+                        raise rollback_error from None
+                    finally:
+                        self.component = c
+                else:
+                    self.component = c
                 raise exc
         if all(e['status'] == 'verified' for e in self.state['components'].values()) and len(self.state['components']) == len(self.plan['selected']):
             self.state['status'] = 'runtime_success'

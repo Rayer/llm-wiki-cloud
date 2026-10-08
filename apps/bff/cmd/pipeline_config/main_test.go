@@ -11,6 +11,7 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"strconv"
 	"strings"
 	"testing"
 
@@ -981,6 +982,160 @@ func TestRunPrepareDistinguishesSecretManagerClientInitializationFailure(t *test
 		!strings.Contains(err.Error(), "error type") || strings.Contains(err.Error(), detail) {
 		t.Fatalf("client initialization failure was not safely classified: %v", err)
 	}
+}
+
+func TestRunMaterializeAuthPreservesBoundedSecretManagerSDKDiagnostics(t *testing.T) {
+	inputsPath := authInputsFileForMaterializerTest(t, true)
+	inputsBytes, err := os.ReadFile(inputsPath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	var inputs runtimeconfig.AuthInputSnapshot
+	if err := json.Unmarshal(inputsBytes, &inputs); err != nil {
+		t.Fatal(err)
+	}
+
+	const rawBodyMarker = "TEST_ONLY_RAW_SECRET_MANAGER_ERROR_BODY_TOKEN"
+	longMessage := "Permission denied for the selected Secret Manager version: " + strings.Repeat("x", 700)
+	for _, tc := range []struct {
+		name       string
+		status     int
+		message    string
+		want       string
+		wantAbsent string
+		body       string
+	}{
+		{name: "forbidden", status: http.StatusForbidden, message: longMessage,
+			want:       "Google API HTTP 403: Permission denied for the selected Secret Manager version:",
+			wantAbsent: rawBodyMarker},
+		{name: "missing", status: http.StatusNotFound, message: "selected Secret Manager version does not exist",
+			want:       "Google API HTTP 404: selected Secret Manager version does not exist",
+			wantAbsent: rawBodyMarker},
+		{name: "empty", status: http.StatusOK,
+			want: "payload is empty", wantAbsent: "Google API HTTP",
+			body: fmt.Sprintf(`{"name":%q,"payload":{"data":""}}`, inputs.JWTSecretVersion)},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			body := tc.body
+			if body == "" {
+				response, marshalErr := json.Marshal(map[string]any{
+					"error": map[string]any{
+						"code": tc.status, "message": tc.message,
+						"details": []any{map[string]any{"message": rawBodyMarker}},
+					},
+				})
+				if marshalErr != nil {
+					t.Fatal(marshalErr)
+				}
+				body = string(response)
+			}
+			reader := secretManagerResponseReader(t, inputs.JWTSecretVersion, tc.status, body)
+			output := filepath.Join(t.TempDir(), "auth.json")
+			err := runMaterializeAuth(context.Background(), inputsPath, output,
+				func(context.Context) (secretReader, error) { return reader, nil })
+			if err == nil || !strings.Contains(err.Error(), tc.want) {
+				t.Fatalf("runMaterializeAuth() lost the selected SDK diagnostic: %v", err)
+			}
+			if strings.Contains(err.Error(), tc.wantAbsent) || len(err.Error()) > 900 {
+				t.Fatalf("runMaterializeAuth() exposed unbounded or raw SDK data: %q", err.Error())
+			}
+			if _, statErr := os.Stat(output); !os.IsNotExist(statErr) {
+				t.Fatalf("failed materialization wrote an Auth config: %v", statErr)
+			}
+			if tc.name == "forbidden" && !strings.Contains(err.Error(), "message_truncated=true") {
+				t.Fatalf("long SDK message was not bounded: %q", err.Error())
+			}
+		})
+	}
+}
+
+func TestRunMaterializeAuthWritesPrivateFileAfterSuccessfulSDKAccess(t *testing.T) {
+	inputsPath := authInputsFileForMaterializerTest(t, false)
+	inputsBytes, err := os.ReadFile(inputsPath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	var inputs runtimeconfig.AuthInputSnapshot
+	if err := json.Unmarshal(inputsBytes, &inputs); err != nil {
+		t.Fatal(err)
+	}
+	const syntheticPayload = "TEST_ONLY_AUTH_CREDENTIAL_PAYLOAD"
+	body, err := json.Marshal(map[string]any{
+		"name":    inputs.JWTSecretVersion,
+		"payload": map[string]string{"data": base64.StdEncoding.EncodeToString([]byte(syntheticPayload))},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	reader := secretManagerResponseReader(t, inputs.JWTSecretVersion, http.StatusOK, string(body))
+	output := filepath.Join(t.TempDir(), "auth.json")
+	if err := runMaterializeAuth(context.Background(), inputsPath, output,
+		func(context.Context) (secretReader, error) { return reader, nil }); err != nil {
+		t.Fatalf("runMaterializeAuth() rejected successful synthetic SDK access: %v", err)
+	}
+	fileBytes, err := os.ReadFile(output)
+	if err != nil {
+		t.Fatal(err)
+	}
+	file, err := runtimeconfig.DecodeAuthFile(fileBytes)
+	if err != nil || file.JWTSecret != syntheticPayload {
+		t.Fatalf("successful SDK access did not produce the expected private test fixture: err=%v", err)
+	}
+	info, err := os.Stat(output)
+	if err != nil || info.Mode().Perm() != 0o600 {
+		t.Fatalf("materialized Auth file is not private: err=%v", err)
+	}
+}
+
+func authInputsFileForMaterializerTest(t *testing.T, googleEnabled bool) string {
+	t.Helper()
+	projection := authProjectionForTest("dev")
+	if !googleEnabled {
+		projection.Google = authSourceGoogle{}
+	}
+	inputs, err := prepareAuthInputs(context.Background(), projection, strings.Repeat("d", 40),
+		func(context.Context) (secretReader, error) { return &fakeAuthReader{}, nil })
+	if err != nil {
+		t.Fatal(err)
+	}
+	data, err := json.Marshal(inputs)
+	if err != nil {
+		t.Fatal(err)
+	}
+	path := filepath.Join(t.TempDir(), "auth-inputs.json")
+	if err := os.WriteFile(path, data, 0o600); err != nil {
+		t.Fatal(err)
+	}
+	return path
+}
+
+func TestMaterializeAuthHelperProcess(t *testing.T) {
+	if os.Getenv("LWC_TEST_AUTH_MATERIALIZER_HELPER") != "run" {
+		return
+	}
+	inputsPath := os.Getenv("LWC_TEST_AUTH_INPUTS")
+	output := os.Getenv("LWC_TEST_AUTH_OUTPUT")
+	status, err := strconv.Atoi(os.Getenv("LWC_TEST_AUTH_HTTP_STATUS"))
+	if err != nil || inputsPath == "" || output == "" {
+		t.Fatal("synthetic materializer helper input is invalid")
+	}
+	inputBytes, err := os.ReadFile(inputsPath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	inputs, err := runtimeconfig.DecodeAuthInputSnapshot(inputBytes)
+	if err != nil {
+		t.Fatal(err)
+	}
+	reader := secretManagerResponseReader(t, inputs.JWTSecretVersion, status,
+		os.Getenv("LWC_TEST_AUTH_HTTP_BODY"))
+	err = runMaterializeAuth(context.Background(), inputsPath, output,
+		func(context.Context) (secretReader, error) { return reader, nil })
+	if err != nil {
+		fmt.Printf("LWC_TEST_MATERIALIZE_ERROR:%s\n", err)
+		return
+	}
+	fmt.Println("LWC_TEST_MATERIALIZE_OK")
 }
 
 func secretManagerResponseReader(t *testing.T, resource string, status int, body string) secretReader {
