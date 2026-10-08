@@ -45,6 +45,32 @@ ENV = {
 }
 
 
+def project_mapping_env(directory, project_id, project_number='580854833715',
+                        returned_project_id=None, returned_project_number=None):
+    provider_dir = Path(directory) / 'fake-gcloud-bin'
+    provider_dir.mkdir(exist_ok=True)
+    provider = provider_dir / 'gcloud'
+    provider.write_text('''#!/usr/bin/env python3
+import json, os, sys
+from pathlib import Path
+a = sys.argv[1:]
+if a[:2] != ['projects', 'describe'] or len(a) < 3:
+    sys.exit(9)
+log = os.environ.get('PROJECT_MAPPING_LOG')
+if log:
+    with Path(log).open('a') as stream: stream.write(json.dumps(a) + '\\n')
+print(json.dumps({'projectId': os.environ['FAKE_PROJECT_ID'],
+                  'projectNumber': os.environ['FAKE_PROJECT_NUMBER']}))
+''')
+    provider.chmod(0o755)
+    return {
+        **os.environ,
+        'PATH': str(provider_dir) + ':' + os.environ.get('PATH', ''),
+        'FAKE_PROJECT_ID': returned_project_id or project_id,
+        'FAKE_PROJECT_NUMBER': returned_project_number or project_number,
+    }
+
+
 @lru_cache(maxsize=2)
 def bff_plan(environment):
     return deployment_plan(environment, 'bff')
@@ -190,6 +216,8 @@ elif a[:3] == ['run','jobs','get-iam-policy']:
  print(json.dumps({'bindings':[{'role':'roles/run.jobsExecutorWithOverrides','members':['serviceAccount:' + os.environ['ACCOUNT']]}]}))
 elif a[:2] == ['secrets','describe'] or a[:3] in (['iam','service-accounts','describe'], ['firestore','databases','describe']):
  print('{}')
+elif a[:2] == ['projects','describe']:
+ print(json.dumps({'projectId': os.environ['PROJECT_ID'], 'projectNumber': os.environ['PROJECT_NUMBER']}))
 elif a[:3] == ['run','services','update']:
  print(os.environ['REVISION'])
 elif a[:3] == ['run','services','update-traffic']:
@@ -229,7 +257,9 @@ sleep() { :; }
                    'JOURNAL_PATH': str(path / 'journal.json'), 'ARTIFACT_DIR': str(path / 'artifacts'),
                    'ROLLBACK_PATH': str(path / 'rollback.json'), 'ENVIRONMENT': environment,
                    'SOURCE_SHA': 'b' * 40, 'SOURCE_REF': 'main' if environment == 'production' else 'develop', 'IMAGE': image,
-                   'FIXTURE': str(path), 'REVISION': revision_name, 'ACCOUNT': plan['normalized'][component]['runtime_service_account'], 'FINAL_BAD': str(int(final_bad)), 'SECRET_STATE': secret_state}
+                   'FIXTURE': str(path), 'REVISION': revision_name, 'ACCOUNT': plan['normalized'][component]['runtime_service_account'],
+                   'PROJECT_ID': plan['normalized']['gcp']['project_id'], 'PROJECT_NUMBER': '580854833715',
+                   'FINAL_BAD': str(int(final_bad)), 'SECRET_STATE': secret_state}
             result = subprocess.run(['bash', '-c', script + '\n' + action], env=env, text=True, capture_output=True)
             commands = [json.loads(l) for l in (path / 'commands').read_text().splitlines()] if (path / 'commands').exists() else []
             artifacts = {str(p.relative_to(path)): p.read_text() for p in path.rglob('*.json') if p.name not in ('candidate.json', 'plan.json')}
@@ -330,6 +360,42 @@ sleep() { :; }
         result, commands, _ = self.run_shell(revision(False), action='auth_freeze; sed -i.bak "s/sha256:/sha256:0/" "$ROLLBACK_PATH"; auth_rollback')
         self.assertNotEqual(result.returncode, 0)
         self.assertFalse(any(c[:3] == ['run', 'services', 'update-traffic'] for c in commands))
+
+    def test_auth_shell_freeze_and_rollback_use_trusted_numeric_project_mapping(self):
+        from test_production_auth_config_contract import candidate as auth_file_candidate
+
+        plan = normalized_plan('development', 'auth')
+        plan['auth']['google'] = {'enabled': False}
+        value = auth_file_candidate(plan)
+        value['metadata']['name'] = plan['auth']['service_name'] + '-00042-test'
+        resource = plan['auth']['runtime_inputs']['config_secret_resource']
+        value['spec']['volumes'][0]['secret']['secretName'] = (
+            'projects/580854833715/secrets/' + resource.split('/')[-1])
+
+        result, commands, _ = self.run_shell(
+            value, action='auth_freeze; touch "$FIXTURE/switch-needed"; auth_rollback',
+            component='auth', plan_override=plan)
+        self.assertEqual(result.returncode, 0, result.stderr)
+        mapping_calls = [command for command in commands if command[:2] == ['projects', 'describe']]
+        self.assertGreaterEqual(len(mapping_calls), 4)
+        self.assertTrue(all(command[2] == plan['gcp']['project_id'] for command in mapping_calls))
+
+    def test_bff_shell_freeze_and_rollback_use_trusted_numeric_project_mapping(self):
+        from test_bff_auth_config_contract import candidate as bff_file_candidate
+
+        plan = bff_plan('development')
+        value = bff_file_candidate('development', plan)
+        resource = plan['bff']['runtime_inputs']['config_secret_resource']
+        value['spec']['volumes'][0]['secret']['secretName'] = (
+            'projects/580854833715/secrets/' + resource.split('/')[-1])
+
+        result, commands, _ = self.run_shell(
+            value, action='bff_freeze; touch "$FIXTURE/switch-needed"; bff_rollback',
+            component='bff', plan_override=plan)
+        self.assertEqual(result.returncode, 0, result.stderr)
+        mapping_calls = [command for command in commands if command[:2] == ['projects', 'describe']]
+        self.assertGreaterEqual(len(mapping_calls), 4)
+        self.assertTrue(all(command[2] == plan['gcp']['project_id'] for command in mapping_calls))
 
 
 if __name__ == '__main__':

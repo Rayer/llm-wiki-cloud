@@ -128,3 +128,60 @@ The Go suite's 76 `cmd/auth` and `internal/auth` emulator-gated skip events rema
 ### Remaining work
 
 Push the reviewed report/PR-body update to PR #107 and provide the exact remote head/base readback to the coordinator for same-SHA TPM and independent reviewer review plus canonical CI. The task does not claim a merged or deployed release; cloud deployment and provider readback remain `NOT RUN`.
+
+## Bounded compatibility repair r3
+
+### Execution identity and starting checkpoint
+
+- Frozen ticket: `lwc374-spec-r1`, Owner-authorized bounded r3 continuation for the remaining standalone project mapping and effective permission findings.
+- Model / effort / mode: GPT-6-Luna / xhigh / YOLO; retained Codex session `01a11a18-df02-7c80-b905-395dd42ec6f1`.
+- Orca runtime / terminal / task / dispatch: `8bc79eed-2312-4c07-a306-f91ae8d31716` / `term_c6b8616c-2a70-4667-9bb5-8b80a3bf5783` / `task_3ca9b9e769df` / `ctx_fc11b40af86a`.
+- Worktree / branch: `/Users/rayer/orca/workspaces/llm-wiki-cloud/LWC-374-implementation-r1` / `Rayer/LWC-374-implementation-r1`.
+- Starting local and remote PR head: `4fde834ac4bd6b20d6bc98b4a450a29739ac82fd`; PR #107 is open against `develop`, base `f62bb530cb968e312b3faad77fe0f1b93b3e447b`.
+- Code and causal-test commit: `226a154ed1adc6448bbd3facdd0c1b3ee7a7ad85`, parent `4fde834ac4bd6b20d6bc98b4a450a29739ac82fd`. This is the source SHA tested below; the report update follows as a documentation-only commit.
+- The full independent HOLD receipt `374-supervisor-4fde834a.json`, frozen r1 specification, Demo addendum, and prior report were reviewed. The HOLD identified standalone Auth/BFF readback omitting trusted project number and incorrect `defaultMode`/item `mode` handling. The previously passing Providers publication/recovery/SDK-environment/local-switch fixes were retained without redesign.
+
+### Bounded repair
+
+`auth_config.py` now detects numeric project resource names in the selected revision's native file mount, alias annotation, or secret-key references. Only for those numeric resource paths, it obtains the selected project's identity using `gcloud projects describe <normalized project ID> --format=json --quiet`, requires the returned `projectId` to equal the normalized selection, validates the returned number, and passes that validated number into the same Auth/BFF native binding and effective readback validators. There is no CLI project-number parameter, no inference from revision namespace, and no acceptance of an arbitrary numeric value; project-ID full resource names and same-project short names remain lookup-free.
+
+The shared retained Auth shell readback now obtains the pinned version for Auth file configurations and passes it through verify/freeze/rollback, matching the existing BFF version/readback flow. The tests run the actual retained Auth and BFF freeze/rollback shell entrypoints with a synthetic `gcloud` executable that returns the selected ID/number pair. No production gcloud, CRM, SDK, Secret Manager, or materializer transport ran for r3 tests.
+
+Native file mode validation applies `item.mode` when nonzero, otherwise `secret.defaultMode` when nonzero, otherwise `0444`; it then applies Cloud Run's `0222` umask and requires the effective mode to equal readable nonroot mode `0444`. Both supplied mode values must be JSON integers in `0..0777`; booleans, floats, strings, null, and out-of-range values fail closed. No revision/template/fingerprint gate or image-rollback behavior was added.
+
+### Acceptance matrix
+
+| r3 acceptance area | Result | Evidence and limit |
+| --- | --- | --- |
+| Direct Auth/BFF CLI version, verify, freeze, rollback with numeric project resource | PASS locally | Direct subprocess tests use only fake gcloud identity responses. Both configured project ID and validated number are exercised; mismatched returned ID/number and unrelated numeric project are rejected. |
+| Native secret resource compatibility | PASS locally | Same-project short name, full project-ID name, trusted project-number name, and annotation alias are accepted. Wrong project, secret, numeric version, and path controls fail. Revision namespace alone does not authorize the number. |
+| Effective volume mode semantics | PASS locally | Auth and BFF cover defaultMode `0400` with omitted item mode rejected; defaultMode `0444` with item mode `0` accepted; item mode precedence; defaultMode `0644` masked to `0444`; normal omitted modes; and bool/float/string type rejection. |
+| Retained Auth/BFF shell readback paths | PASS locally | Actual Auth and BFF shell freeze/rollback callers validate numeric project mappings and carry the pinned mount version through readback using synthetic gcloud fixtures. |
+| Earlier canonical Providers publication/recovery and local switch controls | PASS retained from r2 | No provider implementation was changed. The r2 report's local evidence and explicit external-access disclosure remain as recorded; no r3 live calls occurred. |
+| Cloud deployment/provider readback (AC6) | NOT RUN | No live provider, IAM, GSM payload, credential, resource, or deployment action was performed. This remains outside the offline delivery claim and is not a `Verified` claim. |
+
+### Verification log
+
+Direct Auth/BFF and engine Python fixtures ran under macOS `sandbox-exec` with all network denied. The retained BFF Makefile and Go tests ran with a sandbox profile that allowed only localhost loopback because local port-ownership tests bind disposable local sockets; all external networking remained denied.
+
+| Command | Exit / result |
+| --- | --- |
+| `sandbox-exec -p '(version 1) (allow default) (deny network*)' python3 -m unittest discover -s ../../scripts -p 'test_*auth_config_contract.py' -v` (`apps/bff`) | 0; 21 named contract tests passed, no skips. Includes the direct Auth/BFF project mapping, mode precedence, and retained shell caller tests. |
+| `sandbox-exec -p '(version 1) (allow default) (deny network*)' python3 -m unittest discover -s deploy/engine/tests -p 'test_*.py' -v` (repository root) | 0; all 127 engine tests passed. |
+| `sandbox-exec -p '(version 1) (allow default) (deny network*) (allow network-inbound (local ip "localhost:*")) (allow network-outbound (remote ip "localhost:*"))' make -C apps/bff test` | 0; 70 CD contract tests, 21 Auth/BFF contracts, 20 local Makefile tests, and the full Go race suite passed. The 20 local Makefile tests had no skips. |
+| `sandbox-exec` + `go test -json ./... -count=1 -race` (`apps/bff`) | 0; 47 packages passed, 3,039 passing test events, 116 skipped events, zero failures. Skip counts: `cmd/auth` 4, `internal/auth` 72, `cmd/demo_password_rotate` 2, `cmd/bff` 3, `cmd/query_experiment` 1, `internal/exportjob` 4, `internal/handler/v1` 23, `internal/queryconfig` 1, `internal/syssettings` 1, and `cmd/olw_worker` 5. Emulator/opt-in limitations remain as previously described in r2. |
+| `sandbox-exec -p '(version 1) (allow default) (deny network*)' go vet ./...` (`apps/bff`) | 0. |
+| `sandbox-exec -p '(version 1) (allow default) (deny network*)' go build ./...` (`apps/bff`) | 0. |
+| `sandbox-exec -p '(version 1) (allow default) (deny network*)' python3 -m py_compile deploy/components/auth_config.py scripts/test_auth_config_contract.py scripts/test_bff_auth_config_contract.py scripts/test_production_auth_config_contract.py`; `bash -n deploy/components/auth_config.sh`; `git diff --check` | All exit 0. |
+| `sandbox-exec -p '(version 1) (allow default) (deny network*)' make test-flash-execution` (`apps/bff`) | 2; the clean venv found cached `synto==0.7.0` but could not download missing `click>=8.1` while external networking was denied. No external request succeeded; no retry or dependency/network exception was made. The earlier r2 historical pass is retained above and is not presented as an r3 pass. |
+
+### Diagnosed r3 failures and scope limits
+
+- The first r3 Auth/BFF contract run had 5 failures in 21 tests because the new numeric-resource detector read a non-capturing resource regex as though it had capture groups. The detector was corrected to parse the validated resource path; the full 21-test contract suite passed on rerun, including existing alias controls.
+- The first `make -C apps/bff test` attempt used a strict deny-all profile and failed 4 local listener tests with `PermissionError` while binding loopback, with 2 additional preexisting skips. The same full command passed after narrowing the sandbox allowance to `localhost:*` while keeping all external networking denied.
+- `make test-flash-execution` could not resolve its missing pinned test dependency under the network-deny boundary, as detailed above. This is a dependency setup limitation; it is not recorded as a pass.
+- The earlier r2 four HTTP 200 Cloud Resource Manager GETs, the materializer transport-outcome-unknown event, and the argumentless rejected gcloud invocation remain unchanged in the r2 disclosure above. They are historical and were not repeated, rewritten, or treated as r3 test evidence.
+
+### Review and delivery checkpoint
+
+Source commit `226a154ed1adc6448bbd3facdd0c1b3ee7a7ad85` was sent to the coordinator at the local verification checkpoint. After pushing the source and report commits, the exact PR #107 remote head and `develop` base readback will be sent to the coordinator for new same-SHA TPM/reviewer review and canonical CI. No merge, deployment, or automatic state closure was performed.
