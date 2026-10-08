@@ -266,11 +266,11 @@ func main() {
 		fail("%v", err)
 	}
 	var normalized Normalized
-	if contains(selected, "bff") || contains(selected, "worker") {
+	if contains(selected, "bff") {
 		normalized, err = LoadWithBFFInputs(*environment, *configPath, *components, *bffInputsPath)
 	} else {
 		if *bffInputsPath != "" {
-			fail("--bff-inputs requires bff or worker in --components")
+			fail("--bff-inputs requires bff in --components")
 		}
 		normalized, err = Load(*environment, *configPath, *components)
 	}
@@ -300,9 +300,9 @@ func load(environment, configPath, components, bffInputsPath string, requireBFFI
 	if err != nil {
 		return Normalized{}, err
 	}
-	needsBFFInputs := contains(selected, "bff") || contains(selected, "worker")
+	needsBFFInputs := contains(selected, "bff")
 	if needsBFFInputs != requireBFFInputs {
-		return Normalized{}, errors.New("generated BFF input descriptor must be supplied exactly when bff or worker is selected")
+		return Normalized{}, errors.New("generated BFF input descriptor must be supplied exactly when bff is selected")
 	}
 	if configPath == "" {
 		configPath = filepath.Join("deploy", "environments", environment+".yaml")
@@ -324,7 +324,7 @@ func load(environment, configPath, components, bffInputsPath string, requireBFFI
 	}
 	if requireBFFInputs {
 		if strings.TrimSpace(bffInputsPath) == "" {
-			return Normalized{}, errors.New("generated BFF input descriptor is required when bff or worker is selected")
+			return Normalized{}, errors.New("generated BFF input descriptor is required when bff is selected")
 		}
 		inputs, err := loadBFFInputDescriptor(bffInputsPath, environment)
 		if err != nil {
@@ -332,7 +332,7 @@ func load(environment, configPath, components, bffInputsPath string, requireBFFI
 		}
 		applyBFFInputDescriptor(&config, inputs)
 	} else if strings.TrimSpace(bffInputsPath) != "" {
-		return Normalized{}, errors.New("BFF input descriptor requires bff or worker in the selected components")
+		return Normalized{}, errors.New("BFF input descriptor requires bff in the selected components")
 	}
 	if err := validateConfigForSelection(environment, config, requireBFFInputs); err != nil {
 		return Normalized{}, err

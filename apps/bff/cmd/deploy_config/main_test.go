@@ -314,16 +314,21 @@ func TestProductionProfileBindingsAreRequiredOnlyForBFFDeployment(t *testing.T) 
 	if _, err := Load("production", filepath.Join(root, "deploy/environments/production.yaml"), "auth"); err != nil {
 		t.Fatalf("Production Auth-only plan remains loadable without BFF input resolution: %v", err)
 	}
-	if _, err := Load("production", filepath.Join(root, "deploy/environments/production.yaml"), "worker"); err == nil {
-		t.Fatal("Production Worker plan without the generated nonsecret BFF descriptor was accepted")
+	workerPlan, err := Load("production", filepath.Join(root, "deploy/environments/production.yaml"), "worker")
+	if err != nil {
+		t.Fatalf("Production Worker plan must use its own reviewed config without BFF inputs: %v", err)
+	}
+	worker, ok := workerPlan.Components["worker"].(map[string]any)
+	if !ok || worker["secret_references"] == nil || workerPlan.BFF.RuntimeInputs != nil {
+		t.Fatalf("Production Worker-only plan unexpectedly consumed BFF inputs: %#v", workerPlan)
 	}
 	if _, err := LoadWithBFFInputs("production", filepath.Join(root, "deploy/environments/production.yaml"), "bff",
 		writeBFFDescriptorFixture(t, "production", 3600)); err != nil {
 		t.Fatalf("Production BFF plan with generated runtime inputs failed: %v", err)
 	}
 	if _, err := LoadWithBFFInputs("production", filepath.Join(root, "deploy/environments/production.yaml"), "worker",
-		writeBFFDescriptorFixture(t, "production", 3600)); err != nil {
-		t.Fatalf("Production Worker plan with generated BFF database identity failed: %v", err)
+		writeBFFDescriptorFixture(t, "production", 3600)); err == nil {
+		t.Fatal("Production Worker-only plan accepted an unrelated BFF descriptor")
 	}
 }
 

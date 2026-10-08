@@ -12,7 +12,7 @@ class EngineWorkflowContract(unittest.TestCase):
     def test_bff_plan_admission_includes_generated_nonsecret_descriptor(self):
         engine=(ROOT/'deploy/engine/engine.py').read_text()
         config=(ROOT/'apps/bff/cmd/deploy_config/main.go').read_text()
-        self.assertIn("if 'bff' in selected or 'worker' in selected:",engine)
+        self.assertIn("if 'bff' in selected:",engine)
         self.assertIn("'--descriptor'",engine)
         self.assertIn("'--bff-inputs'",engine)
         self.assertIn('LoadWithBFFInputs',config)

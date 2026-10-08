@@ -110,7 +110,7 @@ def admit(args):
                       '--config', str(ROOT / cfg), '--components', ','.join(selected)]
     normalize_env = os.environ.copy()
     normalize_env['LWC_REPOSITORY_ROOT'] = str(ROOT)
-    if 'bff' in selected or 'worker' in selected:
+    if 'bff' in selected:
         target = {'development': 'dev', 'production': 'prod'}[args.environment]
         with tempfile.TemporaryDirectory(prefix='lwc-bff-inputs-') as projection_dir:
             run(['go', 'run', './cmd/pipeline_config', 'prepare', '--target', 'bff', '--descriptor',
