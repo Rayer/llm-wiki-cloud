@@ -55,6 +55,7 @@ LOCAL_CLOUD_PIPELINE_CONFIG_DIR="${LOCAL_CLOUD_PIPELINE_CONFIG_DIR:-$repo_root/.
 LOCAL_CLOUD_PIPELINE_CONFIG_PATH="$LOCAL_CLOUD_PIPELINE_CONFIG_DIR/synto.toml"
 LOCAL_CLOUD_PIPELINE_BINDINGS_PATH="$LOCAL_CLOUD_PIPELINE_CONFIG_DIR/private-bindings.json"
 LOCAL_CLOUD_BFF_CONFIG_PATH="$LOCAL_CLOUD_PIPELINE_CONFIG_DIR/bff.json"
+LOCAL_CLOUD_AUTH_CONFIG_PATH="$LOCAL_CLOUD_PIPELINE_CONFIG_DIR/auth/auth.json"
 LOCAL_CLOUD_SCOPE="$scope"
 LOCAL_CLOUD_JWT_SECRET_FILE="$secret_path"
 PATH="$state_dir/python/bin:$PATH"
@@ -98,7 +99,7 @@ fi
 unset LOCAL_DEMO_CONFIG_PATH local_demo_config demo_values
 export BFF_PORT AUTH_PORT FRONTEND_PORT
 export LOCAL_CLOUD_WORKER_PATH LOCAL_CLOUD_STATE_DIR LOCAL_CLOUD_REPO_ROOT LOCAL_CLOUD_PYTHON
-export LOCAL_CLOUD_PIPELINE_CONFIG_DIR LOCAL_CLOUD_PIPELINE_CONFIG_PATH LOCAL_CLOUD_PIPELINE_BINDINGS_PATH LOCAL_CLOUD_BFF_CONFIG_PATH PATH
+export LOCAL_CLOUD_PIPELINE_CONFIG_DIR LOCAL_CLOUD_PIPELINE_CONFIG_PATH LOCAL_CLOUD_PIPELINE_BINDINGS_PATH LOCAL_CLOUD_BFF_CONFIG_PATH LOCAL_CLOUD_AUTH_CONFIG_PATH PATH
 export LOCAL_CLOUD_SCOPE LOCAL_CLOUD_JWT_SECRET_FILE GCP_PROJECT GOOGLE_CLOUD_PROJECT BUCKET FIRESTORE_DATABASE_ID
 export ALLOWED_ORIGINS ALLOWED_HOSTS AUTH_SERVICE_URL NEXT_PUBLIC_API_URL NEXT_PUBLIC_AUTH_URL
 # Old switches and shared/deployed JWT configuration never flow into local app processes.
@@ -124,13 +125,48 @@ case "${1:-}" in
     if [ "$#" -eq 0 ]; then echo "command required after --" >&2; exit 2; fi
     prepare_bff_projection=false
     direct_bff=false
+    prepare_auth_projection=false
+    direct_auth=false
     if [ "$#" -ge 3 ] && [ "$1" = "go" ] && [ "$2" = "run" ] && [ "$3" = "./cmd/bff" ]; then
       prepare_bff_projection=true
       direct_bff=true
+    elif [ "$#" -ge 3 ] && [ "$1" = "go" ] && [ "$2" = "run" ] && [ "$3" = "./cmd/auth" ]; then
+      prepare_auth_projection=true
+      direct_auth=true
     elif [ "$#" -ge 3 ] && [ "$1" = "python3" ] && [ "${2##*/}" = "local-services.py" ] && [ "$3" = "start" ]; then
       for service in "$@"; do
         if [ "$service" = "bff" ]; then prepare_bff_projection=true; break; fi
       done
+      for service in "$@"; do
+        if [ "$service" = "auth" ]; then prepare_auth_projection=true; break; fi
+      done
+    fi
+    if [ "$prepare_auth_projection" = true ]; then
+      (
+        cd "$repo_root/apps/bff"
+        LWC_REPOSITORY_ROOT="$repo_root" go run ./cmd/pipeline_config prepare --target auth --environment local --output "$LOCAL_CLOUD_PIPELINE_CONFIG_DIR"
+      )
+      export LWC_APP_CONFIG_PATH="$LOCAL_CLOUD_AUTH_CONFIG_PATH"
+      if [ "$direct_auth" = true ]; then
+        unset AUTH_PORT BFF_PORT FRONTEND_PORT GCP_PROJECT BUCKET FIRESTORE_DATABASE_ID
+        unset LOCAL_CLOUD_SCOPE LOCAL_CLOUD_JWT_SECRET_FILE LOCAL_CLOUD_WORKER_PATH
+        unset LOCAL_CLOUD_PIPELINE_CONFIG_PATH LOCAL_CLOUD_PIPELINE_BINDINGS_PATH
+        unset LOCAL_CLOUD_BFF_CONFIG_PATH LOCAL_CLOUD_AUTH_CONFIG_PATH LOCAL_CLOUD_STATE_DIR LOCAL_CLOUD_REPO_ROOT LOCAL_CLOUD_PYTHON
+        unset LWC_BFF_CONFIG_PATH
+        unset LOCAL_CLOUD_PIPELINE_CONFIG_DIR ALLOWED_ORIGINS ALLOWED_HOSTS AUTH_SERVICE_URL
+        unset AUTH_DEMO_USER_ID AUTH_DEMO_USER_EMAIL AUTH_DEMO_USER_ROLE PIPELINE_DEMO_USER_IDS
+        unset PIPELINE_DAILY_LIMIT PIPELINE_COOLDOWN_SECONDS PIPELINE_MIN_NEW_RAW PIPELINE_JOB_URL
+        unset EXPORT_JOB_URL EXPORT_SIGNING_SERVICE_ACCOUNT AUTH_SESSION_ENVIRONMENT AUTH_REFRESH_SESSION_MIGRATION REGISTRATION_ENABLED
+        unset QUERY_STAGE_CONFIG_PATH QUERY_EXPANSION_MODEL QUERY_EXPANSION_REASONING
+        unset ANSWER_SYNTHESIS_MODEL ANSWER_SYNTHESIS_REASONING QUERY_SELECTION_LIMIT
+        unset QUERY_SELECTION_EXPLORATION_SLOTS QUERY_SELECTION_EVIDENCE_THRESHOLD
+        unset QUERY_EXPANSION_KEYWORDS_PER_ATTEMPT QUERY_EXPANSION_ATTEMPTS
+        unset QUERY_MATCHING_RARE_KEYWORD_MAX_DOCUMENT_FREQUENCY
+        unset JWT_SECRET DEEPSEEK_API_KEY LLM_API_KEY TYPESAFE_API_KEY TYPESAFE_JEV_API_KEY
+        unset PROFILE_RUNTIME_AUDIENCE PROFILE_RUNTIME_SERVICE_ACCOUNT DEV_JWT LOCAL_DATA_DIR
+        unset GOOGLE_CLIENT_ID GOOGLE_CLIENT_SECRET GOOGLE_ISSUER GOOGLE_JWKS_URL GOOGLE_TOKEN_URL
+        unset GOOGLE_LOGIN_REDIRECT_URL GOOGLE_LINK_REDIRECT_URL GOOGLE_COMPLETION_URL
+      fi
     fi
     if [ "$prepare_bff_projection" = true ]; then
       (

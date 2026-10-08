@@ -31,13 +31,16 @@ def run_partial_start_supervisor(state, root, token, auth_port, bff_port):
     module = local_services_module()
     Path(state).mkdir(parents=True, exist_ok=True)
     projection = Path(state) / "bff.json"
+    auth_projection = Path(state) / "auth" / "auth.json"
+    auth_projection.parent.mkdir()
+    auth_projection.write_text("{}")
     projection.write_text(json.dumps({
         "schema_version": 1, "environment": "local", "pipeline_cooldown_seconds": 60,
     }))
 
     def service_command(name, _root, env):
         if name == "auth":
-            code = "import os,socket,time; s=socket.socket(); s.setsockopt(socket.SOL_SOCKET,socket.SO_REUSEADDR,1); s.bind(('127.0.0.1',int(os.environ['AUTH_PORT']))); s.listen(); print('ready',flush=True); time.sleep(30)"
+            code = "import os,socket,time; s=socket.socket(); s.setsockopt(socket.SOL_SOCKET,socket.SO_REUSEADDR,1); s.bind(('127.0.0.1',int(os.environ['PORT']))); s.listen(); print('ready',flush=True); time.sleep(30)"
         else:
             code = "raise SystemExit(17)"
         return [sys.executable, "-c", code], root, env
@@ -45,6 +48,7 @@ def run_partial_start_supervisor(state, root, token, auth_port, bff_port):
     module.service_command = service_command
     os.environ["LOCAL_CLOUD_REPO_ROOT"] = str(root)
     os.environ["LOCAL_CLOUD_BFF_CONFIG_PATH"] = str(projection)
+    os.environ["LOCAL_CLOUD_AUTH_CONFIG_PATH"] = str(auth_projection)
     os.environ["AUTH_PORT"] = str(auth_port)
     os.environ["BFF_PORT"] = str(bff_port)
     raise SystemExit(module.daemon(state, token, ["auth", "bff"], startup_timeout=3))
@@ -139,7 +143,7 @@ class LocalDevMakefileTests(unittest.TestCase):
         local_env = (ROOT.parents[1] / "scripts" / "local-cloud-env.sh").read_text()
         self.assertIn('PATH="$state_dir/python/bin:$PATH"', local_env)
         self.assertIn("export LOCAL_CLOUD_WORKER_PATH LOCAL_CLOUD_STATE_DIR LOCAL_CLOUD_REPO_ROOT LOCAL_CLOUD_PYTHON", local_env)
-        self.assertIn("export LOCAL_CLOUD_PIPELINE_CONFIG_DIR LOCAL_CLOUD_PIPELINE_CONFIG_PATH LOCAL_CLOUD_PIPELINE_BINDINGS_PATH LOCAL_CLOUD_BFF_CONFIG_PATH PATH", local_env)
+        self.assertIn("export LOCAL_CLOUD_PIPELINE_CONFIG_DIR LOCAL_CLOUD_PIPELINE_CONFIG_PATH LOCAL_CLOUD_PIPELINE_BINDINGS_PATH LOCAL_CLOUD_BFF_CONFIG_PATH LOCAL_CLOUD_AUTH_CONFIG_PATH PATH", local_env)
         runtime_test = self.make_dry_run("local-synto-runtime-test")
         self.assertIn("go test -tags lwc_local_synto_runtime ./cmd/olw_worker", runtime_test)
         for key in ("LLM_API_KEY", "DEEPSEEK_API_KEY", "SYNTO_API_KEY", "OPENAI_API_KEY", "ANTHROPIC_API_KEY", "GEMINI_API_KEY", "TYPESAFE_API_KEY", "TYPESAFE_JEV_API_KEY", "LWC331_TEST_API_KEY"):
@@ -160,14 +164,37 @@ class LocalDevMakefileTests(unittest.TestCase):
                 "schema_version": 2, "environment": "local", "target": "bff",
                 "pipeline_cooldown_seconds": 60,
             }))
-            parent = {"LOCAL_CLOUD_BFF_CONFIG_PATH": str(path), "PIPELINE_COOLDOWN_SECONDS": "777"}
+            auth_path = Path(tmp) / "auth" / "auth.json"
+            auth_path.parent.mkdir()
+            auth_path.write_text("{}")
+            parent = {"LOCAL_CLOUD_BFF_CONFIG_PATH": str(path), "LOCAL_CLOUD_AUTH_CONFIG_PATH": str(auth_path),
+                      "AUTH_PORT": "18081", "PIPELINE_COOLDOWN_SECONDS": "777",
+                      "GCP_PROJECT": "legacy-project", "AUTH_DEMO_USER_ID": "legacy-user",
+                      "JWT_SECRET": "legacy-secret", "GOOGLE_CLIENT_ID": "legacy-client",
+                      "LWC_BFF_CONFIG_PATH": "/etc/lwc-bff-config/bff.json",
+                      "GOOGLE_CLOUD_PROJECT": "llm-wiki-cloud", "K_SERVICE": "auth", "K_REVISION": "rev-1"}
             bff = module.child_environment("bff", parent)
             auth = module.child_environment("auth", parent)
             frontend = module.child_environment("frontend", parent)
             self.assertEqual(bff["LWC_BFF_CONFIG_PATH"], str(path))
             self.assertNotIn("PIPELINE_COOLDOWN_SECONDS", bff)
-            self.assertEqual(auth["PIPELINE_COOLDOWN_SECONDS"], "777")
+            self.assertNotIn("PIPELINE_COOLDOWN_SECONDS", auth)
             self.assertEqual(frontend["PIPELINE_COOLDOWN_SECONDS"], "777")
+            self.assertEqual(auth["LWC_APP_CONFIG_PATH"], str(auth_path))
+            self.assertEqual(auth["PORT"], "18081")
+            for key in ("AUTH_PORT", "LOCAL_CLOUD_AUTH_CONFIG_PATH", "GCP_PROJECT", "AUTH_DEMO_USER_ID",
+                        "JWT_SECRET", "GOOGLE_CLIENT_ID", "LWC_BFF_CONFIG_PATH"):
+                self.assertNotIn(key, auth)
+            self.assertEqual(auth["GOOGLE_CLOUD_PROJECT"], "llm-wiki-cloud")
+            self.assertEqual(auth["K_SERVICE"], "auth")
+            self.assertEqual(auth["K_REVISION"], "rev-1")
+
+    def test_local_wrapper_prepares_auth_file_before_direct_or_supervised_auth(self):
+        local_env = (REPO / "scripts" / "local-cloud-env.sh").read_text()
+        self.assertIn('prepare_auth_projection=false', local_env)
+        self.assertIn('prepare --target auth --environment local', local_env)
+        self.assertIn('export LWC_APP_CONFIG_PATH="$LOCAL_CLOUD_AUTH_CONFIG_PATH"', local_env)
+        self.assertIn('unset AUTH_DEMO_USER_ID AUTH_DEMO_USER_EMAIL AUTH_DEMO_USER_ROLE PIPELINE_DEMO_USER_IDS', local_env)
 
     def test_local_wrapper_generates_projection_before_bff_start(self):
         local_env = (REPO / "scripts" / "local-cloud-env.sh").read_text()
@@ -184,9 +211,19 @@ class LocalDevMakefileTests(unittest.TestCase):
             ["make", "-n", "config-prod", "CAC_TARGET=bff"], cwd=REPO,
             check=True, capture_output=True, text=True,
         ).stdout
+        auth = subprocess.run(
+            ["make", "-n", "config-local", "CAC_TARGET=auth"], cwd=REPO,
+            check=True, capture_output=True, text=True,
+        ).stdout
         self.assertIn('--target "pipeline"', default)
         self.assertIn('--target "bff"', bff)
         self.assertIn('prepare --target "bff" --environment prod', bff)
+        self.assertIn('auth-config-local', auth)
+        app_auth = subprocess.run(
+            ["make", "-n", "auth-config-local"], cwd=ROOT,
+            check=True, capture_output=True, text=True,
+        ).stdout
+        self.assertIn('prepare --target auth --environment local', app_auth)
 
     def test_stop_is_scoped_to_supervisor_metadata(self):
         output = self.make_dry_run("kill-local")
@@ -353,12 +390,15 @@ class LocalDevMakefileTests(unittest.TestCase):
             root = Path(tmp) / "repo"
             state = Path(tmp) / "state"
             root.mkdir()
+            auth_config = state / "auth" / "auth.json"
+            auth_config.parent.mkdir(parents=True)
+            auth_config.write_text("{}")
             with socket.socket() as probe:
                 probe.bind(("127.0.0.1", 0))
                 auth_port = probe.getsockname()[1]
             module.STARTUP_TIMEOUT_SECONDS = 3
             stderr = io.StringIO()
-            with patch.dict(os.environ, {"LOCAL_CLOUD_REPO_ROOT": str(root), "AUTH_PORT": str(auth_port)}), redirect_stderr(stderr):
+            with patch.dict(os.environ, {"LOCAL_CLOUD_REPO_ROOT": str(root), "LOCAL_CLOUD_AUTH_CONFIG_PATH": str(auth_config), "AUTH_PORT": str(auth_port)}), redirect_stderr(stderr):
                 result = module.start(state, ["auth"])
             self.assertEqual(result, 1)
             self.assertIn("local service auth failed startup", stderr.getvalue())

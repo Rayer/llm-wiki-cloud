@@ -4,18 +4,6 @@ gcp:
   artifact_registry: asia-east1-docker.pkg.dev/llm-wiki-cloud/cloud-run-images
 
 auth:
-  # Verified nonsecret provisioning handles; rollout remains parent/deployer gated.
-  google:
-    enabled: true
-    client_id: 580854833715-1b37asap0uocbdcrighjaorflvj2n94m.apps.googleusercontent.com
-    client_secret_reference: google-oauth-client-prod
-    client_secret_version: "1"
-    issuer: https://accounts.google.com
-    jwks_url: https://www.googleapis.com/oauth2/v3/certs
-    token_url: https://oauth2.googleapis.com/token
-    login_redirect_url: https://auth.rayer.idv.tw/api/v1/auth/google/callback
-    link_redirect_url: https://auth.rayer.idv.tw/api/v1/auth/google/link/callback
-    completion_url: https://wiki.rayer.idv.tw/login
   service_name: llm-wiki-auth
   runtime_service_account: lwc-auth-prod@llm-wiki-cloud.iam.gserviceaccount.com
   network: default
@@ -24,18 +12,6 @@ auth:
   ingress: all
   max_instances: 1
   firestore_database_id: llm-wiki-cloud-prod
-  # Existing Production Demo identity; startup ensure preserves its account data.
-  demo_user_id: "e492f6bdaf1735e12b2de96d"
-  demo_user_email: "demo@llm-wiki.dev"
-  demo_user_role: member
-  public_domain: auth.rayer.idv.tw
-  allowed_hosts:
-    - auth.rayer.idv.tw
-  allowed_origins:
-    - https://wiki.rayer.idv.tw
-    - https://llm-wiki-frontend.vercel.app
-  secret_references:
-    jwt: jwt-secret-prod
 
 bff:
   service_name: llm-wiki-bff

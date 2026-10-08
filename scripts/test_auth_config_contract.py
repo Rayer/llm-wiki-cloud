@@ -5,11 +5,16 @@ from functools import lru_cache
 import json
 import os
 from pathlib import Path
+import shutil
 import subprocess
 import tempfile
 import unittest
 
 ROOT = Path(__file__).resolve().parents[1]
+GO = shutil.which('go') or 'go'
+import sys
+sys.path.insert(0, str(ROOT / 'scripts'))
+from lwc_auth_test_fixture import write_auth_input_fixture
 IMAGE = 'asia-east1-docker.pkg.dev/llm-wiki-cloud/cloud-run-images/llm-wiki-auth@sha256:' + 'a' * 64
 SERVICE = 'llm-wiki-auth-dev'
 REVISION = SERVICE + '-00042-test'
@@ -45,29 +50,28 @@ def bff_plan(environment):
     return deployment_plan(environment, 'bff')
 
 
-def deployment_plan(environment, components):
+def deployment_plan(environment, components, source_sha='c' * 40):
     target = {'development': 'dev', 'production': 'prod'}[environment]
     env = dict(os.environ, LWC_REPOSITORY_ROOT=str(ROOT))
     with tempfile.TemporaryDirectory(prefix='lwc-bff-test-inputs-') as tmp:
-        descriptor_dir = Path(tmp) / 'descriptor'
-        descriptor_dir.mkdir()
-        subprocess.run(['go', 'run', './cmd/pipeline_config', 'prepare', '--target', 'bff',
-                        '--descriptor', '--environment', target, '--output', str(descriptor_dir)],
-                       cwd=ROOT / 'apps/bff', env=env, text=True, capture_output=True, check=True)
-        result = subprocess.run(['go', 'run', './cmd/deploy_config', '--environment', environment,
-                                 '--config', '../../deploy/environments/' + environment + '.yaml',
-                                 '--components', components, '--bff-inputs', str(descriptor_dir / 'bff-inputs.json')],
-                                cwd=ROOT / 'apps/bff', env=env, text=True, capture_output=True, check=True)
+        args = [GO, 'run', './cmd/deploy_config', '--environment', environment,
+                '--config', '../../deploy/environments/' + environment + '.yaml', '--components', components]
+        if 'bff' in components.split(','):
+            descriptor_dir = Path(tmp) / 'bff'
+            descriptor_dir.mkdir()
+            subprocess.run([GO, 'run', './cmd/pipeline_config', 'prepare', '--target', 'bff',
+                            '--descriptor', '--environment', target, '--output', str(descriptor_dir)],
+                           cwd=ROOT / 'apps/bff', env=env, text=True, capture_output=True, check=True)
+            args.extend(['--bff-inputs', str(descriptor_dir / 'bff-inputs.json')])
+        if 'auth' in components.split(','):
+            descriptor_dir = Path(tmp) / 'auth'
+            write_auth_input_fixture(descriptor_dir, environment, source_sha=source_sha)
+            args.extend(['--auth-inputs', str(descriptor_dir / 'auth-inputs.json')])
+        result = subprocess.run(args, cwd=ROOT / 'apps/bff', env=env, text=True, capture_output=True, check=True)
     return json.loads(result.stdout)
 
 
 def normalized_plan(environment, components):
-    if 'bff' not in components.split(','):
-        result = subprocess.run(['go', 'run', './cmd/deploy_config', '--environment', environment,
-                                 '--config', '../../deploy/environments/' + environment + '.yaml',
-                                 '--components', components], cwd=ROOT / 'apps/bff', text=True,
-                                capture_output=True, check=True)
-        return json.loads(result.stdout)
     return deployment_plan(environment, components)
 
 

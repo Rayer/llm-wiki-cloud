@@ -24,34 +24,34 @@ def candidate(component='auth', enabled=True, plan_override=None):
 
 class ProductionConfigContractTests(unittest.TestCase):
     def test_configured_demo_identity_is_exactly_projected_and_read_back(self):
-        config = subprocess.run(
-            ['go', 'run', './cmd/deploy_config', '--environment', 'production',
-             '--config', '../../deploy/environments/production.yaml', '--components', 'auth'],
-            cwd=fixtures.ROOT / 'apps/bff', text=True, capture_output=True, check=True)
-        plan = json.loads(config.stdout)
-        expected = providers.auth_config.desired(plan, 'auth')
-        self.assertEqual(expected['env']['AUTH_DEMO_USER_ID'], 'e492f6bdaf1735e12b2de96d')
-        self.assertEqual(expected['env']['AUTH_DEMO_USER_EMAIL'], 'demo@llm-wiki.dev')
-        self.assertEqual(expected['env']['AUTH_DEMO_USER_ROLE'], 'member')
+        plan = fixtures.normalized_plan('production', 'auth')
+        inputs = plan['auth']['runtime_inputs']
+        self.assertEqual(inputs['auth_demo_user_id'], 'e492f6bdaf1735e12b2de96d')
+        self.assertEqual(inputs['auth_demo_user_email'], 'demo@llm-wiki.dev')
+        self.assertEqual(inputs['auth_demo_user_role'], 'member')
         image = fixtures.IMAGE
         revision_name = 'llm-wiki-auth-00009-rzw'
-        env = [{'name': name, 'value': value} for name, value in expected['env'].items()]
-        env.extend({'name': name, 'valueFrom': {'secretKeyRef': reference}}
-                   for name, reference in expected['secrets'].items())
+        expected = providers.auth_config.desired(plan, 'auth', auth_config_version='17')
+        resource = expected['file_secret']['resource']
+        alias = resource.split('/')[3]
         candidate_revision = {
-            'metadata': {'name': revision_name, 'annotations': {}},
+            'metadata': {'name': revision_name, 'namespace': 'llm-wiki-cloud',
+                         'annotations': {'run.googleapis.com/secrets': alias + ':' + resource}},
             'spec': {'serviceAccountName': expected['service_account'],
-                     'containers': [{'image': image, 'env': env}]},
+                     'containers': [{'image': image,
+                                     'env': [{'name': 'LWC_APP_CONFIG_PATH', 'value': '/var/run/lwc-auth-config/auth.json'}],
+                                     'volumeMounts': [{'name': alias, 'mountPath': '/var/run/lwc-auth-config', 'readOnly': True}]}],
+                     'volumes': [{'name': alias, 'secret': {'secretName': alias,
+                                 'items': [{'key': '17', 'path': 'auth.json', 'mode': 292}]}}]},
             'status': {'imageDigest': image,
                        'conditions': [{'type': 'Ready', 'status': 'True'}]},
         }
         adapter = providers.Providers({'normalized': plan}, fixtures.ROOT)
-        self.assertTrue(adapter.service_matches('auth', candidate_revision, image))
+        self.assertTrue(adapter.service_matches('auth', candidate_revision, image, auth_config_version='17'))
 
         wrong = json.loads(json.dumps(candidate_revision))
-        next(item for item in wrong['spec']['containers'][0]['env']
-             if item['name'] == 'AUTH_DEMO_USER_EMAIL')['value'] = 'other@example.test'
-        self.assertFalse(adapter.service_matches('auth', wrong, image))
+        wrong['spec']['volumes'][0]['secret']['items'][0]['key'] = '18'
+        self.assertFalse(adapter.service_matches('auth', wrong, image, auth_config_version='17'))
 
     def run_shell(self, value, component='auth', **kwargs):
         if component == 'bff' and 'plan_override' not in kwargs:

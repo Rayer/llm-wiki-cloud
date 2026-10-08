@@ -110,17 +110,28 @@ def admit(args):
                       '--config', str(ROOT / cfg), '--components', ','.join(selected)]
     normalize_env = os.environ.copy()
     normalize_env['LWC_REPOSITORY_ROOT'] = str(ROOT)
-    if 'bff' in selected:
-        target = {'development': 'dev', 'production': 'prod'}[args.environment]
-        with tempfile.TemporaryDirectory(prefix='lwc-bff-inputs-') as projection_dir:
-            run(['go', 'run', './cmd/pipeline_config', 'prepare', '--target', 'bff', '--descriptor',
-                 '--environment', target, '--output', projection_dir],
-                cwd=ROOT / 'apps/bff', env=normalize_env, timeout=180)
-            normalize_args.extend(['--bff-inputs', str(Path(projection_dir) / 'bff-inputs.json')])
-            normalized = json.loads(run(normalize_args, cwd=ROOT / 'apps/bff', env=normalize_env, timeout=180))
+    if 'bff' in selected or 'auth' in selected:
         ssot = 'deploy/cac/ssot.pkl'
         require(run(['git', 'hash-object', ssot]) == run(['git', 'rev-parse', args.source+':'+ssot]),
-                'dirty-bff-ssot')
+                'dirty-runtime-ssot')
+        target = {'development': 'dev', 'production': 'prod'}[args.environment]
+        with tempfile.TemporaryDirectory(prefix='lwc-runtime-inputs-') as projection_dir:
+            projection_root = Path(projection_dir)
+            if 'auth' in selected:
+                auth_dir = projection_root / 'auth'
+                auth_dir.mkdir()
+                run(['go', 'run', './cmd/pipeline_config', 'prepare', '--target', 'auth', '--descriptor',
+                     '--environment', target, '--source-sha', args.source, '--output', str(auth_dir)],
+                    cwd=ROOT / 'apps/bff', env=normalize_env, timeout=180)
+                normalize_args.extend(['--auth-inputs', str(auth_dir / 'auth-inputs.json')])
+            if 'bff' in selected:
+                bff_dir = projection_root / 'bff'
+                bff_dir.mkdir()
+                run(['go', 'run', './cmd/pipeline_config', 'prepare', '--target', 'bff', '--descriptor',
+                     '--environment', target, '--output', str(bff_dir)],
+                    cwd=ROOT / 'apps/bff', env=normalize_env, timeout=180)
+                normalize_args.extend(['--bff-inputs', str(bff_dir / 'bff-inputs.json')])
+            normalized = json.loads(run(normalize_args, cwd=ROOT / 'apps/bff', env=normalize_env, timeout=180))
     else:
         normalized = json.loads(run(normalize_args, cwd=ROOT / 'apps/bff', env=normalize_env, timeout=180))
     identities = {c: source_identity(c, args.source) for c in selected}
@@ -134,7 +145,11 @@ def admit(args):
 def engine_fingerprint():
     paths = sorted([* (ROOT / 'deploy/engine').glob('*.py'), ROOT / 'deploy/engine/profiles.json',
                     * (ROOT / 'deploy/components').glob('*.sh'), ROOT / 'deploy/engine/artifacts.cjs', ROOT / '.github/actions/deployment-engine/index.cjs', ROOT / '.github/actions/deployment-engine/action.yml',
-                    * (ROOT / '.github/workflows').glob('*deploy*.yml'), ROOT / '.github/workflows/cd.yml', ROOT / '.github/workflows/promote-production.yml', * (ROOT / 'deploy/components').glob('*.py')])
+                    * (ROOT / '.github/workflows').glob('*deploy*.yml'), ROOT / '.github/workflows/cd.yml', ROOT / '.github/workflows/promote-production.yml', * (ROOT / 'deploy/components').glob('*.py'),
+                    * (ROOT / 'apps/bff/cmd/pipeline_config').glob('*.go'),
+                    * (ROOT / 'apps/bff/cmd/deploy_config').glob('*.go'),
+                    ROOT / 'apps/bff/internal/config/auth_file.go', ROOT / 'apps/bff/internal/config/bff_file.go',
+                    ROOT / 'deploy/cac/ssot.pkl'])
     return digest([[str(p.relative_to(ROOT)), hashlib.sha256(p.read_bytes()).hexdigest()] for p in paths])
 
 
@@ -199,7 +214,40 @@ class Engine:
         return r
 
     def barrier(self):
-        return {c: self.receipt(c)['artifact'] for c in self.plan['selected']}
+        artifacts = {}
+        for c in self.plan['selected']:
+            receipt = self.receipt(c)
+            if c == 'auth' and self.auth_input_snapshot() is not None:
+                require(receipt.get('auth_config_inputs') == self.auth_input_snapshot() and
+                        receipt.get('auth_materialization_schema') == 1,
+                        'artifact-auth-input-snapshot-mismatch')
+            artifacts[c] = receipt['artifact']
+        return artifacts
+
+    def auth_input_snapshot(self):
+        inputs = self.plan['normalized'].get('auth', {}).get('runtime_inputs')
+        if inputs is None:
+            return None
+        require(isinstance(inputs, dict) and inputs.get('schema_version') == 1 and
+                inputs.get('target') == 'auth' and
+                inputs.get('environment') == {'development': 'dev', 'production': 'prod'}.get(
+                    self.plan['normalized'].get('environment')) and
+                inputs.get('source_sha') == self.plan.get('source') and
+                re.fullmatch(r'[0-9a-f]{40}', inputs.get('source_sha', '')) is not None and
+                re.fullmatch(r'sha256:[0-9a-f]{64}', inputs.get('config_id', '')) is not None,
+                'auth-input-snapshot-invalid')
+        return copy.deepcopy(inputs)
+
+    def attach_auth_input_snapshot(self, receipt, *, require_match=False):
+        inputs = self.auth_input_snapshot()
+        if inputs is None:
+            return receipt
+        existing = receipt.get('auth_config_inputs')
+        if require_match:
+            require(existing == inputs, 'artifact-auth-input-snapshot-mismatch')
+        receipt['auth_config_inputs'] = inputs
+        receipt['auth_materialization_schema'] = 1
+        return receipt
 
     @staticmethod
     def safe_build_record(build):
@@ -429,7 +477,10 @@ class Engine:
             if dest.exists():
                 try:
                     if c != 'worker':
-                        self.receipt(c)
+                        existing = self.receipt(c)
+                        if c == 'auth':
+                            existing = self.attach_auth_input_snapshot(existing, require_match=True)
+                            write(dest, existing)
                         continue
                     existing = read(dest)
                     require(existing.get('component') == c and
@@ -476,6 +527,10 @@ class Engine:
             elif c == 'worker':
                 receipt = copy.deepcopy(receipt)
                 receipt['artifact']['pipeline_config'] = self.provider.prepare_pipeline_config()
+            elif c == 'auth':
+                receipt = copy.deepcopy(receipt)
+            if c == 'auth':
+                receipt = self.attach_auth_input_snapshot(receipt)
             self.provider.usable(c, receipt['artifact'])
             write(self.directory / 'receipts/retained' / (digest(receipt)+'.json'), receipt)
             write(dest, receipt)
