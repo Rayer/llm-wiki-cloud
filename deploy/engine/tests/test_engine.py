@@ -6,6 +6,7 @@ import json
 import os
 from pathlib import Path
 import shutil
+import stat
 import subprocess
 import sys
 import tarfile
@@ -22,18 +23,27 @@ import providers
 class Acceptance(unittest.TestCase):
     @classmethod
     def setUpClass(cls):
+        env=dict(os.environ,LWC_REPOSITORY_ROOT=str(ROOT))
         with tempfile.TemporaryDirectory() as directory:
-            projection=Path(directory)/'bff.json'
-            projection.write_text(json.dumps({'schema_version':1,'environment':'dev',
-                'pipeline_cooldown_seconds':600}))
-            cls.normalized=json.loads(subprocess.check_output(['go','run','./cmd/deploy_config','--environment','development',
-                '--config',str(ROOT/'deploy/environments/development.yaml'),'--components',','.join(engine.ORDER),
-                '--bff-config',str(projection)],cwd=ROOT/'apps/bff',text=True))
-            projection.write_text(json.dumps({'schema_version':1,'environment':'prod',
-                'pipeline_cooldown_seconds':3600}))
-            cls.production_normalized=json.loads(subprocess.check_output(['go','run','./cmd/deploy_config',
-                '--environment','production','--config','../../deploy/environments/production.yaml',
-                '--components','bff','--bff-config',str(projection)],cwd=ROOT/'apps/bff',text=True))
+            for environment,target,components,attribute in (
+                    ('development','dev',','.join(engine.ORDER),'normalized'),
+                    ('production','prod','bff','production_normalized')):
+                descriptor_dir=Path(directory)/target
+                descriptor_dir.mkdir()
+                subprocess.run(['go','run','./cmd/pipeline_config','prepare','--target','bff','--descriptor',
+                    '--environment',target,'--output',str(descriptor_dir)],cwd=ROOT/'apps/bff',env=env,
+                    check=True,capture_output=True,text=True)
+                output=subprocess.check_output(['go','run','./cmd/deploy_config','--environment',environment,
+                    '--config',str(ROOT/'deploy/environments'/f'{environment}.yaml'),'--components',components,
+                    '--bff-inputs',str(descriptor_dir/'bff-inputs.json')],cwd=ROOT/'apps/bff',env=env,text=True)
+                setattr(cls,attribute,json.loads(output))
+            cls.worker_only_normalized = {}
+            for environment in ('development', 'production'):
+                output = subprocess.check_output(
+                    ['go', 'run', './cmd/deploy_config', '--environment', environment,
+                     '--config', str(ROOT/'deploy/environments'/f'{environment}.yaml'),
+                     '--components', 'worker'], cwd=ROOT/'apps/bff', env=env, text=True)
+                cls.worker_only_normalized[environment] = json.loads(output)
 
     def setUp(self):
         self.real_node = shutil.which('node')
@@ -60,15 +70,31 @@ class Acceptance(unittest.TestCase):
                               'resource':'projects/llm-wiki-cloud/secrets/deepseek-apikey/versions/latest'}}
         self.pipeline_config=patch.object(providers.Providers,'prepare_pipeline_config',test_pipeline_config)
         self.pipeline_config.start();self.addCleanup(self.pipeline_config.stop)
+        def test_bff_config_version(provider,candidate,save):
+            resource=provider.p['bff']['runtime_inputs']['config_secret_resource']
+            record=candidate.setdefault('bff_config',{})
+            record.update(status='published',version_resource=resource+'/versions/42')
+            save()
+            return '42'
+        self.bff_config_version=patch.object(providers.Providers,'prepare_bff_config_version',test_bff_config_version)
+        self.bff_config_version.start();self.addCleanup(self.bff_config_version.stop)
         self.provider={'resources':{},'revisions':{},'calls':[], 'aliases':{'wiki.dev.rayer.idv.tw':'dpl_prior'},
             'deployments':{'dpl_prior':{'id':'dpl_prior','projectId':'prj_test','teamId':'team_test','readyState':'READY'}}}
         n=self.normalized
         for c in ('auth','bff'):
             name=n[c]['service_name']; rev=name+'-prior'
-            self.provider['revisions'][rev]={'metadata':{'name':rev,'annotations':{}},'spec':{
-                'serviceAccountName':n[c]['runtime_service_account'], 'containers':[{'image':'prior@sha256:'+'b'*64,'env':[]}]},
+            service_spec={'serviceAccountName':n[c]['runtime_service_account'], 'containers':[{'image':'prior@sha256:'+'b'*64,'env':[]}]}
+            annotations={}
+            if c=='bff':
+                resource=n['bff']['runtime_inputs']['config_secret_resource']
+                alias=resource.split('/')[-1]
+                annotations={'run.googleapis.com/secrets':alias+':'+resource}
+                service_spec['containers'][0]['env']=[{'name':'LWC_BFF_CONFIG_PATH','value':'/etc/lwc-bff-config/bff.json'}]
+                service_spec['containers'][0]['volumeMounts']=[{'name':alias,'mountPath':'/etc/lwc-bff-config','readOnly':True}]
+                service_spec['volumes']=[{'name':alias,'secret':{'secretName':alias,'items':[{'key':'17','path':'bff.json','mode':292}]}}]
+            self.provider['revisions'][rev]={'metadata':{'name':rev,'annotations':annotations},'spec':service_spec,
                 'status':{'imageDigest':'prior@sha256:'+'b'*64,'conditions':[{'type':'Ready','status':'True'}]}}
-            self.provider['resources'][name]={'metadata':{'name':name},'spec':{'template':{'spec':copy.deepcopy(self.provider['revisions'][rev]['spec'])}},'status':{
+            self.provider['resources'][name]={'metadata':{'name':name},'spec':{'template':{'metadata':{'annotations':annotations},'spec':copy.deepcopy(self.provider['revisions'][rev]['spec'])}},'status':{
                 'latestCreatedRevisionName':rev,'traffic':[{'revisionName':rev,'percent':100}]}}
         for c in ('worker','exportjob'):
             cfg=n['export_job' if c=='exportjob' else c]; env=[]
@@ -85,6 +111,33 @@ class Acceptance(unittest.TestCase):
             self.provider.setdefault('pipeline_configs', {})[
                 f'gs://{bucket}/pipeline-config/synto.toml'] = '[pipeline]\nrun_timeout_seconds = 82800\n'
         self.flush()
+
+    def test_worker_only_normalizer_drives_real_deploy_with_compatibility_database_scope(self):
+        for environment, database_id, job_name in (
+                ('development', 'llm-wiki-cloud-dev', 'olw-pipeline-dev'),
+                ('production', 'llm-wiki-cloud-prod', 'olw-pipeline')):
+            with self.subTest(environment=environment):
+                normalized = self.worker_only_normalized[environment]
+                self.assertEqual(normalized['selected_components'], ['worker'])
+                self.assertEqual(normalized['bff']['firestore_database_id'], database_id)
+                self.assertNotIn('runtime_inputs', normalized['bff'])
+                self.assertEqual(normalized['worker']['job_name'], job_name)
+
+                calls = []
+                provider = providers.Providers({'id': 'worker-only', 'normalized': normalized}, self.root)
+                provider.cloud = lambda component, *args, mutation=False: calls.append(
+                    (component, args, mutation)) or '{}'
+                image = 'worker@sha256:' + 'b' * 64
+                provider.deploy('worker', {'image': image}, {}, lambda: None)
+
+                self.assertEqual(len(calls), 1)
+                component, args, mutation = calls[0]
+                self.assertEqual(component, 'worker')
+                self.assertTrue(mutation)
+                self.assertEqual(args[:5], ('jobs', 'update', job_name, '--image', image))
+                env_args = args[args.index('--update-env-vars') + 1]
+                self.assertEqual(env_args, '^|^GCP_PROJECT=llm-wiki-cloud|FIRESTORE_DATABASE_ID=' + database_id)
+                self.assertNotIn('--update-secrets', args)
 
     def flush(self):write(self.root/'provider.json',self.provider)
     def current(self):return read(self.root/'provider.json')
@@ -315,8 +368,10 @@ class Acceptance(unittest.TestCase):
                 self.assertEqual(revision['status']['imageDigest'],artifact['image'])
                 self.assertEqual(revision['spec']['containers'][0]['image'],artifact['image'])
                 self.assertEqual(service['status']['traffic'],[{'revisionName':revision_name,'percent':100}])
-                self.assertTrue(e.provider.service_matches(c,revision,artifact['image']))
-                self.assertTrue(e.provider.service_template_matches(c,service,revision,artifact['image']))
+                version=(entry['candidate'].get('bff_config',{}).get('version_resource','').rsplit('/',1)[-1]
+                         if c=='bff' else None)
+                self.assertTrue(e.provider.service_matches(c,revision,artifact['image'],version))
+                self.assertTrue(e.provider.service_template_matches(c,service,revision,artifact['image'],version))
                 self.assertTrue(e.provider.observe(c,artifact,entry['candidate']))
 
                 all_calls=self.current()['calls']
@@ -343,11 +398,13 @@ class Acceptance(unittest.TestCase):
                     'target':revision_name+'=100',
                 }])
                 if c=='bff':
-                    desired=providers.auth_config.desired(e.plan['normalized'],'bff')['env']
+                    desired=providers.auth_config.desired(e.plan['normalized'],'bff',version)['env']
                     env_arg=updates[0][updates[0].index('--update-env-vars')+1]
                     for key,value in desired.items():
                         self.assertIn(key+'='+value,env_arg)
-                    self.assertNotIn('--remove-env-vars',updates[0])
+                    self.assertIn('--remove-env-vars',updates[0])
+                    self.assertIn('/etc/lwc-bff-config/bff.json=lwc-bff-config-dev:'+version,
+                                  updates[0][updates[0].index('--update-secrets')+1])
 
     def test_bff_incompatible_receipt_identity_fails_before_provider_mutation(self):
         prepared=self.ready(self.make(('bff',),name='bff-applicability-source'))
@@ -621,11 +678,15 @@ class Acceptance(unittest.TestCase):
                     elif fault=='specimage':rev['spec']['containers'][0]['image']='wrong'
                     elif fault=='ready':rev['status']['conditions'][0]['status']='False'
                     elif fault=='env':rev['spec']['containers'][0]['env']=[v for v in rev['spec']['containers'][0]['env'] if 'value' not in v]
-                    elif fault=='secret':rev['spec']['containers'][0]['env']=[v for v in rev['spec']['containers'][0]['env'] if 'valueFrom' not in v]
+                    elif fault=='secret':
+                        if c=='bff':rev['spec']['volumes']=[]
+                        else:rev['spec']['containers'][0]['env']=[v for v in rev['spec']['containers'][0]['env'] if 'valueFrom' not in v]
                     elif fault=='account':rev['spec']['serviceAccountName']='wrong'
                     elif fault=='template':self.provider['resources'][name]['spec']['template']['spec']['containers'][0]['image']='wrong'
                     elif fault=='template-env':template['containers'][0]['env']=[]
-                    elif fault=='template-secret':template['containers'][0]['env']=[v for v in template['containers'][0].get('env',[]) if 'valueFrom' not in v]
+                    elif fault=='template-secret':
+                        if c=='bff':template['volumes']=[]
+                        else:template['containers'][0]['env']=[v for v in template['containers'][0].get('env',[]) if 'valueFrom' not in v]
                     elif fault=='template-account':template['serviceAccountName']='wrong'
                     else:self.provider['resources'][name]['status']['traffic'][0]['percent']=50
                     self.flush()
@@ -785,8 +846,12 @@ class Acceptance(unittest.TestCase):
                 self.assertEqual(len(self.calls('build'))+len(self.calls('submit')),build_count)
                 replacement=self.current()['replacements'][-1]
                 self.assertEqual(replacement['spec']['template']['spec'],retained['spec'])
-                self.assertEqual(replacement['spec']['template']['metadata']['annotations'],
-                                 {'autoscaling.knative.dev/maxScale':'3'})
+                expected_annotations={'autoscaling.knative.dev/maxScale':'3'}
+                if c=='bff':
+                    resource=self.normalized['bff']['runtime_inputs']['config_secret_resource']
+                    alias=resource.split('/')[-1]
+                    expected_annotations['run.googleapis.com/secrets']=alias+':'+resource
+                self.assertEqual(replacement['spec']['template']['metadata']['annotations'],expected_annotations)
                 self.assertEqual(replacement['spec']['traffic'],prior['traffic'])
                 self.assertTrue(e.provider.observe(c,prior,{},prior=True))
                 state=self.current()
@@ -894,77 +959,142 @@ class Acceptance(unittest.TestCase):
                 self.assertEqual(replacement['spec']['traffic'],[{'revisionName':revision,'percent':100}])
                 self.assertFalse([a for a in self.current()['calls'][offset:] if 'build' in a or 'submit' in a])
 
-    def test_legacy_bff_retained_plan_without_cooldown_recovers_and_reactivates(self):
-        dev_provenance=None
-        for environment, normalized, cooldown in (
-                ('development',self.normalized,600),
-                ('production',self.production_normalized,3600)):
-            for existing_cooldown in (False,True):
-                with self.subTest(environment=environment,existing_cooldown=existing_cooldown):
-                    if environment=='production' and dev_provenance is None:
-                        dev_provenance=self.ready(self.make(('bff',),name='legacy-bff-dev-provenance'))
-                        dev_provenance.deploy()
+    def test_bff_config_version_is_pinned_and_rollback_retains_the_prior_mount(self):
+        e=self.ready(self.make(('bff',),name='bff-file-version'))
+        service=self.normalized['bff']['service_name']
+        prior=e.provider.revision('bff',service+'-prior')
+        prior_spec=copy.deepcopy(prior['spec'])
+        e.deploy()
+        entry=e.state['components']['bff']
+        candidate=copy.deepcopy(entry['candidate'])
+        artifact=e.receipt('bff')['artifact']
+        revision=e.provider.revision('bff',candidate['revision'])
+        self.assertEqual(candidate['bff_config'],{
+            'status':'published',
+            'version_resource':self.normalized['bff']['config_secret_resource']+'/versions/42',
+        })
+        mount=revision['spec']['containers'][0]['volumeMounts'][0]
+        secret=revision['spec']['volumes'][0]['secret']
+        self.assertEqual(mount,{'name':'lwc-bff-config-dev','mountPath':'/etc/lwc-bff-config','readOnly':True})
+        self.assertEqual(secret['items'],[{'key':'42','path':'bff.json','mode':292}])
+        self.assertTrue(e.provider.service_matches('bff',revision,artifact['image'],'42'))
+        self.assertTrue(e.provider.observe('bff',artifact,candidate))
+        self.assertNotIn('payload',candidate['bff_config'])
 
-                    name='legacy-bff-'+environment+'-'+('retained' if existing_cooldown else 'absent')
-                    initial=self.make(('bff',),name=name,production=environment=='production',
-                                      normalized=normalized if environment=='production' else None)
-                    initial.plan['normalized']['bff'].pop('pipeline_cooldown_seconds')
-                    initial.plan['normalized']['components']['bff'].pop('pipeline_cooldown_seconds')
-                    initial.plan['id']=engine.digest(engine.release_identity(initial.plan))
-                    write(initial.directory/'plan.json',initial.plan)
+        unresolved={'revision':None,'bff_config':copy.deepcopy(candidate['bff_config'])}
+        e.provider.reconcile_candidate('bff',artifact,unresolved,lambda:None)
+        self.assertEqual(unresolved['revision'],candidate['revision'])
+        ambiguous={'revision':None,'bff_config':{'status':'publishing'}}
+        with self.assertRaisesRegex(Breakpoint,'bff-config-publication-unconfirmed'):
+            e.provider.reconcile_candidate('bff',artifact,ambiguous,lambda:None)
 
-                    expected=providers.auth_config.desired(initial.plan['normalized'],'bff')
-                    service=initial.plan['normalized']['bff']['service_name']
-                    revision_name=service+'-legacy-prior'
-                    image='prior@sha256:'+'b'*64
-                    env=[{'name':key,'value':value} for key,value in expected['env'].items()]
-                    env.extend({'name':key,'valueFrom':{'secretKeyRef':reference}}
-                               for key,reference in expected['secrets'].items())
-                    if existing_cooldown:
-                        env.append({'name':providers.auth_config.PIPELINE_COOLDOWN_SECONDS,
-                                    'value':str(cooldown)})
-                    spec={'serviceAccountName':expected['service_account'],
-                          'containers':[{'image':image,'env':env}]}
-                    state=self.current()
-                    state['revisions'][revision_name]={
-                        'metadata':{'name':revision_name,'annotations':{}},'spec':copy.deepcopy(spec),
-                        'status':{'imageDigest':image,'conditions':[{'type':'Ready','status':'True'}]}}
-                    state['resources'][service]={
-                        'metadata':{'name':service},
-                        'spec':{'template':{'metadata':{'name':revision_name,'annotations':{}},
-                                            'spec':copy.deepcopy(spec)}},
-                        'status':{'latestCreatedRevisionName':revision_name,
-                                  'traffic':[{'revisionName':revision_name,'percent':100}]}}
-                    write(self.root/'provider.json',state)
+        e.restore(['bff'])
+        replacement=self.current()['replacements'][-1]
+        self.assertEqual(replacement['spec']['template']['spec'],prior_spec)
+        self.assertEqual(replacement['spec']['traffic'],[{'revisionName':service+'-prior','percent':100}])
+        self.assertEqual(e.provider.revision('bff',service+'-prior')['spec']['volumes'][0]['secret']['items'][0]['key'],'17')
 
-                    e=engine.Engine(initial.directory)
-                    if environment=='production':e.prepare(dev=dev_provenance.directory)
-                    else:e.prepare()
-                    e.deploy()
-                    plan_bytes=(e.directory/'plan.json').read_bytes()
-                    receipt_path=e.directory/'receipts'/'bff.json'
-                    receipt_bytes=receipt_path.read_bytes()
-                    artifact=e.receipt('bff')['artifact']
-                    candidate=copy.deepcopy(e.state['components']['bff']['candidate'])
-                    revision=e.provider.revision('bff',candidate['revision'])
-                    self.assertNotIn(providers.auth_config.PIPELINE_COOLDOWN_SECONDS,
-                                     providers.auth_config.desired(e.plan['normalized'],'bff')['env'])
-                    actual_cooldown=[entry['value'] for entry in revision['spec']['containers'][0].get('env',[])
-                                     if entry['name']==providers.auth_config.PIPELINE_COOLDOWN_SECONDS]
-                    self.assertEqual(actual_cooldown,[str(cooldown)] if existing_cooldown else [])
-                    self.assertTrue(e.provider.service_matches('bff',revision,artifact['image']))
-                    self.assertTrue(e.provider.observe('bff',artifact,candidate))
+    def test_bff_config_adapter_prepares_private_file_and_pins_published_numeric_version(self):
+        e=self.ready(self.make(('bff',),name='bff-config-adapter'))
+        self.bff_config_version.stop()
+        provider=e.provider
+        candidate={}
+        saved=[]
+        marker=b'TEST_ONLY_SYNTHETIC_BFF_CONFIG_PAYLOAD'
+        config=(b'{"schema_version":2,"environment":"dev","target":"bff",'
+                b'"synthetic_fixture":"TEST_ONLY_SYNTHETIC_BFF_CONFIG_PAYLOAD"}\n')
+        resource=self.normalized['bff']['runtime_inputs']['config_secret_resource']
+        calls=[]
 
-                    unresolved={'revision':None}
-                    e.provider.reconcile_candidate('bff',artifact,unresolved,lambda:None)
-                    self.assertEqual(unresolved['revision'],candidate['revision'])
-                    e.restore(['bff'])
-                    builds=len(self.calls('build'))+len(self.calls('submit'))
-                    e.deploy(['bff'],reactivate=True)
-                    self.assertEqual(e.state['status'],'success')
-                    self.assertEqual(builds,len(self.calls('build'))+len(self.calls('submit')))
-                    self.assertEqual((e.directory/'plan.json').read_bytes(),plan_bytes)
-                    self.assertEqual(receipt_path.read_bytes(),receipt_bytes)
+        def fake_run(command,**kwargs):
+            calls.append((list(command),kwargs))
+            if command[0]=='go':
+                output=Path(command[command.index('--output')+1])
+                self.assertNotEqual(output.parent,ROOT)
+                self.assertTrue(ROOT not in output.parents)
+                self.assertEqual(stat.S_IMODE(output.stat().st_mode),0o700)
+                if '--descriptor' in command:
+                    descriptor=self.normalized['bff']['runtime_inputs']
+                    (output/'bff-inputs.json').write_text(json.dumps(descriptor))
+                else:
+                    (output/'bff.json').write_bytes(config)
+                    (output/'bff.json').chmod(0o600)
+                return ''
+            self.assertEqual(command[:4],['gcloud','secrets','versions','add'])
+            self.assertEqual(candidate['bff_config']['status'],'publishing')
+            data_path=Path(command[command.index('--data-file')+1])
+            self.assertTrue(ROOT not in data_path.parents)
+            self.assertTrue(e.directory not in data_path.parents)
+            self.assertEqual(stat.S_IMODE(data_path.parent.stat().st_mode),0o700)
+            self.assertEqual(stat.S_IMODE(data_path.stat().st_mode),0o600)
+            self.assertEqual(data_path.read_bytes(),config)
+            self.assertIn(marker,data_path.read_bytes())
+            self.assertEqual(json.loads(json.dumps(candidate))['bff_config'],{'status':'publishing'})
+            return json.dumps({'name':resource+'/versions/42'})
+
+        with patch.dict(os.environ,{'RUNNER_TEMP':str(self.root/'runner-temp')}):
+            with patch('providers.run',side_effect=fake_run):
+                version=provider.prepare_bff_config_version(candidate,lambda:saved.append(copy.deepcopy(candidate)))
+
+        self.assertEqual(version,'42')
+        self.assertEqual(candidate['bff_config'],{'status':'published','version_resource':resource+'/versions/42'})
+        self.assertEqual([snapshot['bff_config']['status'] for snapshot in saved],['preparing','publishing','published'])
+        self.assertEqual(sum(command[0]=='gcloud' for command,_ in calls),1)
+        self.assertNotIn(marker,e.plan.read_bytes() if isinstance(e.plan,Path) else json.dumps(e.plan).encode())
+        for path in e.directory.rglob('*'):
+            if path.is_file():
+                self.assertNotIn(marker,path.read_bytes())
+
+    def test_bff_config_adapter_unavailable_file_fails_before_publication(self):
+        e=self.ready(self.make(('bff',),name='bff-config-missing-file'))
+        self.bff_config_version.stop()
+        candidate={};calls=[]
+        def fake_run(command,**kwargs):
+            calls.append(list(command))
+            if command[0]=='go' and '--descriptor' in command:
+                output=Path(command[command.index('--output')+1])
+                (output/'bff-inputs.json').write_text(json.dumps(self.normalized['bff']['runtime_inputs']))
+            return ''
+
+        with patch.dict(os.environ,{'RUNNER_TEMP':str(self.root/'runner-temp')}):
+            with patch('providers.run',side_effect=fake_run):
+                with self.assertRaisesRegex(Breakpoint,'bff-config-file-unavailable'):
+                    e.provider.prepare_bff_config_version(candidate,lambda:None)
+
+        self.assertEqual(candidate['bff_config'],{'status':'preparing'})
+        self.assertFalse(any(command[0]=='gcloud' for command in calls))
+        self.assertEqual(self.current()['resources'][self.normalized['bff']['service_name']]['status']['traffic'],
+                         [{'revisionName':self.normalized['bff']['service_name']+'-prior','percent':100}])
+
+    def test_bff_config_adapter_uncertain_publication_is_retained_without_retry(self):
+        e=self.ready(self.make(('bff',),name='bff-config-interrupted'))
+        self.bff_config_version.stop()
+        candidate={};calls=[]
+        def fake_run(command,**kwargs):
+            calls.append(list(command))
+            if command[0]=='go':
+                output=Path(command[command.index('--output')+1])
+                if '--descriptor' in command:
+                    (output/'bff-inputs.json').write_text(json.dumps(self.normalized['bff']['runtime_inputs']))
+                else:
+                    config=output/'bff.json';config.write_text('{"synthetic":"TEST_ONLY_PAYLOAD"}');config.chmod(0o600)
+                return ''
+            raise Breakpoint('command-failed','failed',False,'inspect-command')
+
+        with patch.dict(os.environ,{'RUNNER_TEMP':str(self.root/'runner-temp')}):
+            with patch('providers.run',side_effect=fake_run):
+                with self.assertRaisesRegex(Breakpoint,'bff-config-publication-unconfirmed'):
+                    e.provider.prepare_bff_config_version(candidate,lambda:None)
+                self.assertEqual(candidate['bff_config'],{'status':'unconfirmed'})
+                publish_calls=sum(command[0]=='gcloud' for command in calls)
+                with self.assertRaisesRegex(Breakpoint,'bff-config-publication-unconfirmed'):
+                    e.provider.prepare_bff_config_version(candidate,lambda:None)
+
+        self.assertEqual(sum(command[0]=='gcloud' for command in calls),publish_calls)
+        self.assertEqual(publish_calls,1)
+        self.assertEqual(self.current()['resources'][self.normalized['bff']['service_name']]['status']['traffic'],
+                         [{'revisionName':self.normalized['bff']['service_name']+'-prior','percent':100}])
+        self.assertEqual(candidate['bff_config'],{'status':'unconfirmed'})
 
     def test_retained_annotations_full_chain(self):
         for c in ('auth','bff'):

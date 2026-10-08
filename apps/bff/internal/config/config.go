@@ -56,6 +56,11 @@ type Config struct {
 	ProjectID                   string
 	Port                        string
 	DeepSeekAPIKey              string
+	TypeSafeAPIKey              string
+	LLMProvider                 string
+	LLMBaseURL                  string
+	LLMRequestTimeoutSeconds    int
+	LLMModel                    string
 	QueryExpansionModel         string
 	QueryExpansionReasoning     llm.Reasoning
 	AnswerSynthesisModel        string
@@ -86,7 +91,9 @@ type Config struct {
 
 	// AuthServiceURL is the public URL of the dedicated auth service (LWC-258).
 	// Env: AUTH_SERVICE_URL. Default: https://auth.dev.rayer.idv.tw
-	AuthServiceURL string
+	AuthServiceURL               string
+	ProfileRuntimeAudience       string
+	ProfileRuntimeServiceAccount string
 
 	// AuthSessionEnvironment scopes durable refresh sessions. Env:
 	// AUTH_SESSION_ENVIRONMENT. When unset, routers derive it from the selected
@@ -107,7 +114,10 @@ type Config struct {
 	GoogleCompletionURL    string
 
 	// QueryStageConfigPath selects the immutable external query composition.
-	QueryStageConfigPath string
+	QueryStageConfigPath      string
+	LocalWorkerPath           string
+	LocalPipelineConfigPath   string
+	LocalPipelineBindingsPath string
 
 	// Query retrieval contract. Env: QUERY_SELECTION_LIMIT,
 	// QUERY_SELECTION_EXPLORATION_SLOTS, QUERY_SELECTION_EVIDENCE_THRESHOLD,

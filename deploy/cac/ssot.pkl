@@ -1,20 +1,23 @@
-/// Project-wide settings consumed by the Pipeline target renderer.
+/// Project-wide settings consumed by the Pipeline and BFF target renderers.
 module lwc.pipeline.ssot
 
 environment: "local" | "dev" | "prod" = read("prop:environment")
 target: "pipeline" | "bff" = read?("prop:target") ?? "pipeline"
 
-/// Required until the existing Cloud Run Job timeout has been independently read back.
+/// Required only when the Pipeline target is selected.
 runTimeoutSeconds: Int? = read?("prop:runTimeoutSeconds")?.toInt()
-
-/// Optional explicit SSOT override, used only when a target environment does not
-/// declare its own article cap. Renderer defaults remain in synto.pkl.
 pipelineArticleMaxTokens: Int? = read?("prop:pipelineArticleMaxTokens")?.toInt()
 
 class SecretBinding {
   source: "environment" | "secret-manager"
   target: "DEEPSEEK_API_KEY"
   envName: String?
+  resource: String?
+}
+
+class BffSecretReference {
+  source: "environment" | "secret-manager" | "file"
+  env_name: String?
   resource: String?
 }
 
@@ -39,9 +42,81 @@ class Environments {
   prod: EnvironmentConfig
 }
 
-local localSecretResource: String? = read?("prop:localSecretVersionResource")
+class QueryLegacy {
+  query_expansion_model: String
+  query_expansion_reasoning: String
+  answer_synthesis_model: String
+  answer_synthesis_reasoning: String
+  query_selection_limit: Int
+  query_selection_exploration_slots: Int
+  query_selection_evidence_threshold: Int
+  query_expansion_keywords_per_attempt: Int
+  query_expansion_attempts: Int
+  query_matching_rare_keyword_max_document_frequency: Int
+}
 
-/// The shared LLM authority is defined once; local changes only its binding source.
+class BffLlm {
+  provider: String
+  base_url: String
+  request_timeout_seconds: Int
+  model: String
+}
+
+class LocalBffConfig {
+  scope: String
+  worker_path: String
+  pipeline_config_path: String
+  pipeline_bindings_path: String
+}
+
+class BffQueryConfig {
+  stage_config_path: String
+  legacy: QueryLegacy?
+}
+
+class BffConfig {
+  schema_version: Int
+  environment: String
+  target: String
+  gcp_project: String
+  bucket: String
+  firestore_database_id: String
+  auth_service_url: String
+  pipeline_job_url: String
+  export_job_url: String
+  export_signing_service_account: String
+  allowed_origins: Listing<String>
+  allowed_hosts: Listing<String>
+  pipeline_daily_limit: Int
+  pipeline_cooldown_seconds: Int
+  pipeline_min_new_raw: Int
+  pipeline_demo_user_ids: Listing<String>
+  auth_session_environment: String
+  auth_session_migration: "disabled" | "legacy_read_through"
+  registration_enabled: Boolean?
+  jwt_secret_reference: BffSecretReference
+  deepseek_api_key_reference: BffSecretReference
+  typesafe_api_key_reference: BffSecretReference?
+  profile_runtime_audience: String
+  profile_runtime_service_account: String
+  llm: BffLlm
+  query: BffQueryConfig
+  `local`: LocalBffConfig?
+  port_default: Int
+  config_secret_resource: String
+}
+
+local localSecretResource: String? = read?("prop:localSecretVersionResource")
+local localBffScope = read?("prop:bffLocalScope") ?? ""
+local localBffWorkerPath = read?("prop:bffLocalWorkerPath") ?? ""
+local localBffPipelineConfigPath = read?("prop:bffLocalPipelineConfigPath") ?? ""
+local localBffPipelineBindingsPath = read?("prop:bffLocalPipelineBindingsPath") ?? ""
+local localBffJWTSecretFile = read?("prop:bffLocalJWTSecretFile") ?? ""
+local localBffDemoUserIDs = read?("prop:bffLocalDemoUserIDs") ?? ""
+local localBffPort = (read?("prop:bffLocalPort") ?? "8080").toInt()
+local localBffAuthPort = (read?("prop:bffLocalAuthPort") ?? "8081").toInt()
+local localBffFrontendPort = (read?("prop:bffLocalFrontendPort") ?? "3000").toInt()
+
 local deepseekSecret = new SecretBinding {
   source = "secret-manager"
   target = "DEEPSEEK_API_KEY"
@@ -99,11 +174,202 @@ local pipeline = new {
   llm = selected.llm
 }
 
-local bff = new {
-  schema_version = 1
-  environment = outer.environment
-  pipeline_cooldown_seconds = selected.pipelineCooldownSeconds
+local localJwtSecretReference = new BffSecretReference {
+  source = "file"
+  env_name = null
+  resource = localBffJWTSecretFile
 }
+
+local devJwtSecretReference = new BffSecretReference {
+  source = "secret-manager"
+  env_name = null
+  resource = "projects/llm-wiki-cloud/secrets/jwt-secret-dev/versions/latest"
+}
+
+local prodJwtSecretReference = new BffSecretReference {
+  source = "secret-manager"
+  env_name = null
+  resource = "projects/llm-wiki-cloud/secrets/jwt-secret-prod/versions/latest"
+}
+
+local localDeepSeekSecretReference = new BffSecretReference {
+  source = selected.llm.secret.source
+  env_name = selected.llm.secret.envName
+  resource = selected.llm.secret.resource
+}
+
+local devTypeSafeSecretReference = new BffSecretReference {
+  source = "secret-manager"
+  env_name = null
+  resource = "projects/llm-wiki-cloud/secrets/typesafe-jev-api-key-dev/versions/1"
+}
+
+local prodTypeSafeSecretReference = new BffSecretReference {
+  source = "secret-manager"
+  env_name = null
+  resource = "projects/llm-wiki-cloud/secrets/typesafe-jev-api-key-prod/versions/1"
+}
+
+local localBff = new BffConfig {
+  schema_version = 2
+  environment = "local"
+  target = "bff"
+  gcp_project = "llm-wiki-cloud"
+  bucket = "llm-wiki-cloud-local"
+  firestore_database_id = "llm-wiki-cloud-local"
+  auth_service_url = "http://localhost:\(localBffAuthPort)"
+  pipeline_job_url = "https://run.googleapis.com/v2/projects/llm-wiki-cloud/locations/asia-east1/jobs/olw-pipeline:run"
+  export_job_url = ""
+  export_signing_service_account = ""
+  allowed_origins = new Listing {
+    "http://localhost:\(localBffFrontendPort)"
+  }
+  allowed_hosts = new Listing {
+    "localhost"
+    "127.0.0.1"
+  }
+  pipeline_daily_limit = 2
+  pipeline_cooldown_seconds = selected.pipelineCooldownSeconds
+  pipeline_min_new_raw = 1
+  pipeline_demo_user_ids = if (localBffDemoUserIDs == "") new Listing {} else localBffDemoUserIDs.split(",")
+  auth_session_environment = "llm-wiki-cloud-local"
+  auth_session_migration = "disabled"
+  registration_enabled = null
+  jwt_secret_reference = localJwtSecretReference
+  deepseek_api_key_reference = localDeepSeekSecretReference
+  typesafe_api_key_reference = null
+  profile_runtime_audience = ""
+  profile_runtime_service_account = ""
+  llm = new BffLlm {
+    provider = selected.llm.provider
+    base_url = selected.llm.endpoint
+    request_timeout_seconds = 60
+    model = selected.llm.model
+  }
+  query = new BffQueryConfig {
+    stage_config_path = ""
+    legacy = new QueryLegacy {
+      query_expansion_model = "deepseek-flash"
+      query_expansion_reasoning = "none"
+      answer_synthesis_model = "deepseek-flash"
+      answer_synthesis_reasoning = "none"
+      query_selection_limit = 10
+      query_selection_exploration_slots = 1
+      query_selection_evidence_threshold = 2
+      query_expansion_keywords_per_attempt = 24
+      query_expansion_attempts = 3
+      query_matching_rare_keyword_max_document_frequency = 1
+    }
+  }
+  `local` = new LocalBffConfig {
+    scope = localBffScope
+    worker_path = localBffWorkerPath
+    pipeline_config_path = localBffPipelineConfigPath
+    pipeline_bindings_path = localBffPipelineBindingsPath
+  }
+  port_default = localBffPort
+  config_secret_resource = ""
+}
+
+local devBff = new BffConfig {
+  schema_version = 2
+  environment = "dev"
+  target = "bff"
+  gcp_project = "llm-wiki-cloud"
+  bucket = "llm-wiki-data-dev"
+  firestore_database_id = "llm-wiki-cloud-dev"
+  auth_service_url = "https://auth.dev.rayer.idv.tw"
+  pipeline_job_url = "https://run.googleapis.com/v2/projects/llm-wiki-cloud/locations/asia-east1/jobs/olw-pipeline-dev:run"
+  export_job_url = "https://run.googleapis.com/v2/projects/llm-wiki-cloud/locations/asia-east1/jobs/export-job-dev:run"
+  export_signing_service_account = "lwc-export-signer-dev@llm-wiki-cloud.iam.gserviceaccount.com"
+  allowed_origins = new Listing {
+    "https://wiki.dev.rayer.idv.tw"
+    "https://llm-wiki-frontend-dev.vercel.app"
+    "http://localhost:3000"
+    "http://127.0.0.1:3000"
+  }
+  allowed_hosts = new Listing {}
+  pipeline_daily_limit = 2
+  pipeline_cooldown_seconds = selected.pipelineCooldownSeconds
+  pipeline_min_new_raw = 1
+  pipeline_demo_user_ids = new Listing { "e492f6bdaf1735e12b2de96d" }
+  auth_session_environment = "llm-wiki-cloud-dev"
+  auth_session_migration = "disabled"
+  registration_enabled = null
+  jwt_secret_reference = devJwtSecretReference
+  deepseek_api_key_reference = new BffSecretReference {
+    source = "secret-manager"
+    env_name = null
+    resource = deepseek.secret.resource
+  }
+  typesafe_api_key_reference = devTypeSafeSecretReference
+  profile_runtime_audience = "https://llm-wiki-bff-dev-a5nkmux6pq-de.a.run.app"
+  profile_runtime_service_account = "lwc-bff-dev@llm-wiki-cloud.iam.gserviceaccount.com"
+  llm = new BffLlm {
+    provider = selected.llm.provider
+    base_url = selected.llm.endpoint
+    request_timeout_seconds = 60
+    model = selected.llm.model
+  }
+  query = new BffQueryConfig {
+    stage_config_path = "apps/bff/configs/query/dev/query-dev-2026-09-12.1.json"
+    legacy = null
+  }
+  `local` = null
+  port_default = 8080
+  config_secret_resource = "projects/llm-wiki-cloud/secrets/lwc-bff-config-dev"
+}
+
+local prodBff = new BffConfig {
+  schema_version = 2
+  environment = "prod"
+  target = "bff"
+  gcp_project = "llm-wiki-cloud"
+  bucket = "llm-wiki-data"
+  firestore_database_id = "llm-wiki-cloud-prod"
+  auth_service_url = "https://auth.rayer.idv.tw"
+  pipeline_job_url = "https://run.googleapis.com/v2/projects/llm-wiki-cloud/locations/asia-east1/jobs/olw-pipeline:run"
+  export_job_url = "https://run.googleapis.com/v2/projects/llm-wiki-cloud/locations/asia-east1/jobs/export-job:run"
+  export_signing_service_account = "lwc-export-signer-prod@llm-wiki-cloud.iam.gserviceaccount.com"
+  allowed_origins = new Listing {
+    "https://wiki.rayer.idv.tw"
+    "https://llm-wiki-frontend.vercel.app"
+  }
+  allowed_hosts = new Listing {}
+  pipeline_daily_limit = 2
+  pipeline_cooldown_seconds = selected.pipelineCooldownSeconds
+  pipeline_min_new_raw = 1
+  pipeline_demo_user_ids = new Listing { "e492f6bdaf1735e12b2de96d" }
+  auth_session_environment = "llm-wiki-cloud-prod"
+  auth_session_migration = "disabled"
+  registration_enabled = null
+  jwt_secret_reference = prodJwtSecretReference
+  deepseek_api_key_reference = new BffSecretReference {
+    source = "secret-manager"
+    env_name = null
+    resource = deepseek.secret.resource
+  }
+  typesafe_api_key_reference = prodTypeSafeSecretReference
+  profile_runtime_audience = "https://llm-wiki-bff-a5nkmux6pq-de.a.run.app"
+  profile_runtime_service_account = "lwc-bff-prod@llm-wiki-cloud.iam.gserviceaccount.com"
+  llm = new BffLlm {
+    provider = selected.llm.provider
+    base_url = selected.llm.endpoint
+    request_timeout_seconds = 60
+    model = selected.llm.model
+  }
+  query = new BffQueryConfig {
+    stage_config_path = "apps/bff/configs/query/dev/query-dev-2026-09-12.1.json"
+    legacy = null
+  }
+  `local` = null
+  port_default = 8080
+  config_secret_resource = "projects/llm-wiki-cloud/secrets/lwc-bff-config-prod"
+}
+
+local bff = if (environment == "local") localBff
+  else if (environment == "dev") devBff
+  else prodBff
 
 output {
   value = if (target == "bff") bff else pipeline

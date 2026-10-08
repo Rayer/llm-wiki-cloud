@@ -6,6 +6,7 @@ import (
 	"time"
 
 	cloudfirestore "cloud.google.com/go/firestore"
+	"github.com/rayer/llm-wiki-bff/internal/localcloud"
 	"google.golang.org/protobuf/types/known/timestamppb"
 )
 
@@ -46,6 +47,23 @@ func TestNewClientKeepsDefaultDatabaseSelection(t *testing.T) {
 	}
 	if gotDatabaseID != "" {
 		t.Fatalf("database ID passed to Firestore constructor = %q, want empty default", gotDatabaseID)
+	}
+}
+
+func TestNewClientWithDatabaseAndScopeIgnoresInheritedScope(t *testing.T) {
+	original := newFirestoreClient
+	t.Cleanup(func() { newFirestoreClient = original })
+	newFirestoreClient = func(_ context.Context, _ string, _ string) (*cloudfirestore.Client, error) {
+		return &cloudfirestore.Client{}, nil
+	}
+	t.Setenv("LOCAL_CLOUD_SCOPE", "inherited-scope")
+	client, err := NewClientWithDatabaseAndScope("project", "named-db", "user", "project-id", "config-scope")
+	if err != nil {
+		t.Fatalf("NewClientWithDatabaseAndScope() error = %v", err)
+	}
+	got, ok := clientScopes.Load(client.fs)
+	if !ok || got.(localcloud.Scope) != "config-scope" {
+		t.Fatalf("Firestore local scope = %v, registered=%v; want config-scope", got, ok)
 	}
 }
 

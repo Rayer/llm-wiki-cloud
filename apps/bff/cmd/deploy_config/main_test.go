@@ -3,6 +3,7 @@ package main
 import (
 	"encoding/json"
 	"os"
+	"os/exec"
 	"path/filepath"
 	"reflect"
 	"strings"
@@ -21,7 +22,12 @@ func repoRoot(t *testing.T) string {
 func TestLoadReviewedEnvironmentsAndQueryIdentity(t *testing.T) {
 	root := repoRoot(t)
 	for _, environment := range []string{"development", "production"} {
-		config, err := Load(environment, filepath.Join(root, "deploy/environments", environment+".yaml"), "auth,bff,worker,frontend")
+		cooldown := 600
+		if environment == "production" {
+			cooldown = 3600
+		}
+		bffInputs := writeBFFDescriptorFixture(t, environment, cooldown)
+		config, err := LoadWithBFFInputs(environment, filepath.Join(root, "deploy/environments", environment+".yaml"), "auth,bff,worker,frontend", bffInputs)
 		if err != nil {
 			t.Fatalf("Load(%s): %v", environment, err)
 		}
@@ -78,31 +84,31 @@ func TestLoadReviewedEnvironmentsAndQueryIdentity(t *testing.T) {
 	}
 }
 
-func TestGeneratedBFFCooldownFlowsIntoNormalizedPlanIdentity(t *testing.T) {
+func TestGeneratedBFFInputsFlowIntoNormalizedPlanIdentity(t *testing.T) {
 	root := repoRoot(t)
 	for _, tc := range []struct {
 		environment string
-		projection  bffCooldownFixture
+		cooldown    int
 	}{
-		{"development", bffCooldownFixture{1, "dev", 600}},
-		{"production", bffCooldownFixture{1, "prod", 3600}},
+		{"development", 600},
+		{"production", 3600},
 	} {
-		path := writeBFFCooldownFixture(t, tc.projection)
+		path := writeBFFDescriptorFixture(t, tc.environment, tc.cooldown)
 		configPath := filepath.Join(root, "deploy/environments", tc.environment+".yaml")
-		plan, err := LoadWithBFFProjection(tc.environment, configPath, "bff", path)
+		plan, err := LoadWithBFFInputs(tc.environment, configPath, "bff", path)
 		if err != nil {
-			t.Fatalf("LoadWithBFFProjection(%s): %v", tc.environment, err)
+			t.Fatalf("LoadWithBFFInputs(%s): %v", tc.environment, err)
 		}
 		bff, ok := plan.Components["bff"].(map[string]any)
-		if !ok || plan.BFF.PipelineCooldownSeconds != tc.projection.Cooldown || bff["pipeline_cooldown_seconds"] != tc.projection.Cooldown {
+		if !ok || plan.BFF.PipelineCooldownSeconds != tc.cooldown || bff["pipeline_cooldown_seconds"] != tc.cooldown || plan.BFF.RuntimeInputs == nil {
 			t.Fatalf("%s normalized BFF cooldown=%d component=%#v", tc.environment, plan.BFF.PipelineCooldownSeconds, bff)
 		}
 		if plan.Evidence.ConfigFingerprint == "" {
 			t.Fatalf("%s omitted normalized plan fingerprint", tc.environment)
 		}
 		if tc.environment == "development" {
-			changedPath := writeBFFCooldownFixture(t, bffCooldownFixture{1, "dev", 601})
-			changed, err := LoadWithBFFProjection(tc.environment, configPath, "bff", changedPath)
+			changedPath := writeBFFDescriptorFixture(t, tc.environment, 601)
+			changed, err := LoadWithBFFInputs(tc.environment, configPath, "bff", changedPath)
 			if err != nil {
 				t.Fatal(err)
 			}
@@ -113,39 +119,62 @@ func TestGeneratedBFFCooldownFlowsIntoNormalizedPlanIdentity(t *testing.T) {
 	}
 }
 
-func TestGeneratedBFFCooldownProjectionRejectsInvalidInputs(t *testing.T) {
+func TestGeneratedBFFDescriptorRejectsInvalidInputs(t *testing.T) {
 	root := repoRoot(t)
 	configPath := filepath.Join(root, "deploy/environments/development.yaml")
-	for _, raw := range []string{
-		`{}`,
-		`{"schema_version":1,"environment":"dev"}`,
-		`{"schema_version":2,"environment":"dev","pipeline_cooldown_seconds":600}`,
-		`{"schema_version":1,"environment":"prod","pipeline_cooldown_seconds":600}`,
-		`{"schema_version":1,"environment":"dev","pipeline_cooldown_seconds":0}`,
-		`{"schema_version":1,"environment":"dev","pipeline_cooldown_seconds":1.5}`,
-		`{"schema_version":1,"environment":"dev","pipeline_cooldown_seconds":600,"other":true}`,
-		`{"schema_version":1,"environment":"dev","pipeline_cooldown_seconds":9223372037}`,
+	for _, mutate := range []func(map[string]any){
+		func(value map[string]any) { value["schema_version"] = 1 },
+		func(value map[string]any) { value["environment"] = "prod" },
+		func(value map[string]any) { value["config_secret_resource"] = "projects/llm-wiki-cloud/secrets/wrong" },
 	} {
-		path := filepath.Join(t.TempDir(), "bff.json")
-		if err := os.WriteFile(path, []byte(raw), 0o600); err != nil {
+		path := writeBFFDescriptorFixture(t, "development", 600)
+		data, err := os.ReadFile(path)
+		if err != nil {
 			t.Fatal(err)
 		}
-		if _, err := LoadWithBFFProjection("development", configPath, "bff", path); err == nil {
-			t.Errorf("LoadWithBFFProjection accepted invalid projection %s", raw)
+		var value map[string]any
+		if err := json.Unmarshal(data, &value); err != nil {
+			t.Fatal(err)
+		}
+		mutate(value)
+		data, err = json.Marshal(value)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if err := os.WriteFile(path, data, 0o600); err != nil {
+			t.Fatal(err)
+		}
+		if _, err := LoadWithBFFInputs("development", configPath, "bff", path); err == nil {
+			t.Error("LoadWithBFFInputs accepted invalid descriptor")
 		}
 	}
 }
 
-type bffCooldownFixture struct {
-	SchemaVersion int    `json:"schema_version"`
-	Environment   string `json:"environment"`
-	Cooldown      int    `json:"pipeline_cooldown_seconds"`
-}
-
-func writeBFFCooldownFixture(t *testing.T, fixture bffCooldownFixture) string {
+func writeBFFDescriptorFixture(t *testing.T, environment string, cooldown int) string {
 	t.Helper()
-	path := filepath.Join(t.TempDir(), "bff.json")
-	data, err := json.Marshal(fixture)
+	root := repoRoot(t)
+	directory := t.TempDir()
+	path := filepath.Join(directory, "bff-inputs.json")
+	target := "dev"
+	if environment == "production" {
+		target = "prod"
+	}
+	command := exec.Command("go", "run", "./cmd/pipeline_config", "prepare", "--target", "bff", "--descriptor", "--environment", target, "--output", directory)
+	command.Dir = filepath.Join(root, "apps/bff")
+	command.Env = append(os.Environ(), "LWC_REPOSITORY_ROOT="+root)
+	if output, err := command.CombinedOutput(); err != nil {
+		t.Fatalf("generate BFF descriptor: %v\n%s", err, output)
+	}
+	data, err := os.ReadFile(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	var value map[string]any
+	if err := json.Unmarshal(data, &value); err != nil {
+		t.Fatal(err)
+	}
+	value["pipeline_cooldown_seconds"] = cooldown
+	data, err = json.Marshal(value)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -189,16 +218,26 @@ func TestAuthDemoIdentityConfigIsRequiredAndRendered(t *testing.T) {
 
 func TestPipelineDemoUserIDsMustMatchTheConfiguredAuthIdentity(t *testing.T) {
 	root := repoRoot(t)
-	dev, err := decodeConfig(filepath.Join(root, "deploy/environments/development.yaml"))
-	if err != nil {
-		t.Fatal(err)
-	}
-	if err := validateConfigForEnvironment("development", dev); err != nil {
-		t.Fatalf("valid DEV Demo IDs: %v", err)
-	}
+	configPath := filepath.Join(root, "deploy/environments/development.yaml")
 	for _, ids := range [][]string{{"different-demo"}, {"bad,id"}, {"bad|id"}, {" duplicate ", "duplicate"}, {""}} {
-		dev.BFF.PipelineDemoUserIDs = ids
-		if err := validateConfigForEnvironment("development", dev); err == nil {
+		path := writeBFFDescriptorFixture(t, "development", 600)
+		data, err := os.ReadFile(path)
+		if err != nil {
+			t.Fatal(err)
+		}
+		var descriptor map[string]any
+		if err := json.Unmarshal(data, &descriptor); err != nil {
+			t.Fatal(err)
+		}
+		descriptor["pipeline_demo_user_ids"] = ids
+		data, err = json.Marshal(descriptor)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if err := os.WriteFile(path, data, 0o600); err != nil {
+			t.Fatal(err)
+		}
+		if _, err := LoadWithBFFInputs("development", configPath, "bff", path); err == nil {
 			t.Fatalf("mismatched or invalid Demo IDs accepted: %#v", ids)
 		}
 	}
@@ -213,7 +252,7 @@ func TestProfileRuntimeConfigSupportsBothEnvironmentsAndPinsNumericSecretVersion
 	dev.BFF.ProfileRuntimeAudience = "https://profile-dispatch.dev.example.invalid"
 	dev.BFF.ProfileRuntimeServiceAccount = "lwc-profile-dispatcher-dev@llm-wiki-cloud.iam.gserviceaccount.com"
 	dev.BFF.SecretReferences.TypeSafeJevAPIKey = &VersionedSecretReference{Name: "typesafe-jev-api-key-dev-test", Version: "7"}
-	if err := validateConfigForEnvironment("development", dev); err != nil {
+	if err := validateProfileRuntimeConfig("development", dev); err != nil {
 		t.Fatalf("valid synthetic DEV Profile runtime config: %v", err)
 	}
 	for name, alter := range map[string]func(*EnvironmentConfig){
@@ -235,7 +274,7 @@ func TestProfileRuntimeConfigSupportsBothEnvironmentsAndPinsNumericSecretVersion
 			candidate := dev
 			candidate.BFF.SecretReferences.TypeSafeJevAPIKey = &VersionedSecretReference{Name: "typesafe-jev-api-key-dev-test", Version: "7"}
 			alter(&candidate)
-			if err := validateConfigForEnvironment("development", candidate); err == nil {
+			if err := validateProfileRuntimeConfig("development", candidate); err == nil {
 				t.Fatal("invalid DEV Profile runtime config unexpectedly passed")
 			}
 		})
@@ -247,11 +286,11 @@ func TestProfileRuntimeConfigSupportsBothEnvironmentsAndPinsNumericSecretVersion
 	prod.BFF.ProfileRuntimeAudience = "https://llm-wiki-bff-a5nkmux6pq-de.a.run.app"
 	prod.BFF.ProfileRuntimeServiceAccount = "lwc-bff-prod@llm-wiki-cloud.iam.gserviceaccount.com"
 	prod.BFF.SecretReferences.TypeSafeJevAPIKey = &VersionedSecretReference{Name: "typesafe-jev-api-key-prod", Version: "17"}
-	if err := validateConfigForEnvironment("production", prod); err != nil {
+	if err := validateProfileRuntimeConfig("production", prod); err != nil {
 		t.Fatalf("valid synthetic Production Profile runtime config: %v", err)
 	}
 	prod.BFF.ProfileRuntimeAudience = dev.BFF.ProfileRuntimeAudience
-	if err := validateConfigForEnvironment("production", prod); err == nil {
+	if err := validateProfileRuntimeConfig("production", prod); err == nil {
 		t.Fatal("Production accepted the DEV Profile runtime audience")
 	}
 }
@@ -272,11 +311,25 @@ func TestProductionProfileBindingsAreRequiredOnlyForBFFDeployment(t *testing.T) 
 	if err := validateProfileRuntimeConfig("production", unprovisioned); err == nil {
 		t.Fatal("Production accepted missing Profile runtime configuration for BFF deployment")
 	}
-	if _, err := Load("production", filepath.Join(root, "deploy/environments/production.yaml"), "worker"); err != nil {
-		t.Fatalf("Production Worker plan remains loadable: %v", err)
+	if _, err := Load("production", filepath.Join(root, "deploy/environments/production.yaml"), "auth"); err != nil {
+		t.Fatalf("Production Auth-only plan remains loadable without BFF input resolution: %v", err)
 	}
-	if _, err := Load("production", filepath.Join(root, "deploy/environments/production.yaml"), "bff"); err != nil {
-		t.Fatalf("Production BFF plan with reviewed Profile runtime configuration failed: %v", err)
+	workerPlan, err := Load("production", filepath.Join(root, "deploy/environments/production.yaml"), "worker")
+	if err != nil {
+		t.Fatalf("Production Worker plan must use its own reviewed config without BFF inputs: %v", err)
+	}
+	worker, ok := workerPlan.Components["worker"].(map[string]any)
+	if !ok || worker["secret_references"] == nil || workerPlan.BFF.RuntimeInputs != nil ||
+		workerPlan.BFF.FirestoreDatabaseID != config.Auth.FirestoreDatabaseID {
+		t.Fatalf("Production Worker-only plan unexpectedly consumed BFF inputs: %#v", workerPlan)
+	}
+	if _, err := LoadWithBFFInputs("production", filepath.Join(root, "deploy/environments/production.yaml"), "bff",
+		writeBFFDescriptorFixture(t, "production", 3600)); err != nil {
+		t.Fatalf("Production BFF plan with generated runtime inputs failed: %v", err)
+	}
+	if _, err := LoadWithBFFInputs("production", filepath.Join(root, "deploy/environments/production.yaml"), "worker",
+		writeBFFDescriptorFixture(t, "production", 3600)); err == nil {
+		t.Fatal("Production Worker-only plan accepted an unrelated BFF descriptor")
 	}
 }
 
@@ -332,13 +385,15 @@ func TestExportJobConfigSupportsBothEnvironmentContracts(t *testing.T) {
 	if !ok || !reflect.DeepEqual(exportInput, prod.ExportJob) {
 		t.Fatalf("Production component inputs omitted Export Job config: %#v", productionInputs)
 	}
-	if _, err := Load("development", filepath.Join(root, "deploy/environments/development.yaml"), "bff,exportjob"); err != nil {
+	if _, err := LoadWithBFFInputs("development", filepath.Join(root, "deploy/environments/development.yaml"), "bff,exportjob",
+		writeBFFDescriptorFixture(t, "development", 600)); err != nil {
 		t.Fatalf("provisioned DEV export job selection: %v", err)
 	}
 	if _, err := Load("development", filepath.Join(root, "deploy/environments/development.yaml"), "exportjob"); err == nil {
 		t.Fatal("DEV Export Job deployment unexpectedly bypassed its BFF invocation config")
 	}
-	if _, err := Load("production", filepath.Join(root, "deploy/environments/production.yaml"), "bff,exportjob"); err != nil {
+	if _, err := LoadWithBFFInputs("production", filepath.Join(root, "deploy/environments/production.yaml"), "bff,exportjob",
+		writeBFFDescriptorFixture(t, "production", 3600)); err != nil {
 		t.Fatalf("reviewed Production export job selection: %v", err)
 	}
 	if _, err := Load("production", filepath.Join(root, "deploy/environments/production.yaml"), "exportjob"); err == nil {
@@ -355,8 +410,7 @@ func TestDecodeAndQueryPathValidationFailClosed(t *testing.T) {
 	}
 	for name, replacement := range map[string]string{
 		"unknown key":      "unexpected: value\n",
-		"missing query":    "query_config: \"\"",
-		"wrong type":       "dev_jwt: nope",
+		"wrong type":       "max_instances: nope",
 		"secret value key": "api_token: ghp_not-a-token",
 	} {
 		t.Run(name, func(t *testing.T) {
@@ -365,10 +419,8 @@ func TestDecodeAndQueryPathValidationFailClosed(t *testing.T) {
 			switch name {
 			case "unknown key", "secret value key":
 				text = replacement + text
-			case "missing query":
-				text = strings.Replace(text, "query_config: apps/bff/configs/query/dev/query-dev-2026-09-12.1.json", replacement, 1)
 			case "wrong type":
-				text = strings.Replace(text, "dev_jwt: false", replacement, 1)
+				text = strings.Replace(text, "max_instances: 1", replacement, 1)
 			}
 			if err := os.WriteFile(path, []byte(text), 0o600); err != nil {
 				t.Fatal(err)

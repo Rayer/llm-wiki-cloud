@@ -22,7 +22,7 @@ type GoogleConfig struct {
 	CompletionURL         string `yaml:"completion_url" json:"completion_url"`
 }
 
-func validateGoogleDeployment(environment string, c EnvironmentConfig) error {
+func validateGoogleDeployment(environment string, c EnvironmentConfig, hasBFFInputs bool) error {
 	g := c.Auth.Google
 	if g == nil {
 		return nil
@@ -39,12 +39,15 @@ func validateGoogleDeployment(environment string, c EnvironmentConfig) error {
 		hosts = []string{"auth.rayer.idv.tw"}
 		origins = []string{"https://wiki.rayer.idv.tw", "https://llm-wiki-frontend.vercel.app"}
 		completion = "https://wiki.rayer.idv.tw/login"
-		if c.BFF.ServiceName != "llm-wiki-bff" || c.BFF.FirestoreDatabaseID != database ||
+		if c.BFF.ServiceName != "llm-wiki-bff" ||
 			c.BFF.RuntimeServiceAccount != "lwc-bff-prod@llm-wiki-cloud.iam.gserviceaccount.com" ||
-			c.BFF.AuthServiceURL != "https://"+domain || !reflect.DeepEqual(c.BFF.AllowedOrigins, origins) ||
 			c.Frontend.APIURL != "https://llm-wiki-bff-580854833715.asia-east1.run.app" ||
 			!reflect.DeepEqual(c.Frontend.StableAliases, []string{"wiki.rayer.idv.tw", "llm-wiki-frontend.vercel.app"}) {
-			return errors.New("auth.google requires the reviewed Production BFF and frontend bindings")
+			return errors.New("auth.google requires the reviewed Production service and frontend bindings")
+		}
+		if hasBFFInputs && (c.BFF.FirestoreDatabaseID != database || c.BFF.AuthServiceURL != "https://"+domain ||
+			!reflect.DeepEqual(c.BFF.AllowedOrigins, origins)) {
+			return errors.New("auth.google requires the reviewed Production BFF runtime inputs")
 		}
 		if g.ClientID == "580854833715-vo7fg6f7f15g1kkgchk1ulccllbc24qg.apps.googleusercontent.com" {
 			return errors.New("Production must not reuse the provisioned DEV Google client")

@@ -42,17 +42,22 @@ ENV = {
 
 @lru_cache(maxsize=2)
 def bff_plan(environment):
-    target, cooldown = ('dev', 600) if environment == 'development' else ('prod', 3600)
-    with tempfile.TemporaryDirectory() as tmp:
-        projection = Path(tmp) / 'bff.json'
-        projection.write_text(json.dumps({
-            'schema_version': 1, 'environment': target,
-            'pipeline_cooldown_seconds': cooldown,
-        }))
+    return deployment_plan(environment, 'bff')
+
+
+def deployment_plan(environment, components):
+    target = {'development': 'dev', 'production': 'prod'}[environment]
+    env = dict(os.environ, LWC_REPOSITORY_ROOT=str(ROOT))
+    with tempfile.TemporaryDirectory(prefix='lwc-bff-test-inputs-') as tmp:
+        descriptor_dir = Path(tmp) / 'descriptor'
+        descriptor_dir.mkdir()
+        subprocess.run(['go', 'run', './cmd/pipeline_config', 'prepare', '--target', 'bff',
+                        '--descriptor', '--environment', target, '--output', str(descriptor_dir)],
+                       cwd=ROOT / 'apps/bff', env=env, text=True, capture_output=True, check=True)
         result = subprocess.run(['go', 'run', './cmd/deploy_config', '--environment', environment,
                                  '--config', '../../deploy/environments/' + environment + '.yaml',
-                                 '--components', 'bff', '--bff-config', str(projection)],
-                                cwd=ROOT / 'apps/bff', text=True, capture_output=True, check=True)
+                                 '--components', components, '--bff-inputs', str(descriptor_dir / 'bff-inputs.json')],
+                                cwd=ROOT / 'apps/bff', env=env, text=True, capture_output=True, check=True)
     return json.loads(result.stdout)
 
 
@@ -63,18 +68,7 @@ def normalized_plan(environment, components):
                                  '--components', components], cwd=ROOT / 'apps/bff', text=True,
                                 capture_output=True, check=True)
         return json.loads(result.stdout)
-    target, cooldown = ('dev', 600) if environment == 'development' else ('prod', 3600)
-    with tempfile.TemporaryDirectory() as tmp:
-        projection = Path(tmp) / 'bff.json'
-        projection.write_text(json.dumps({
-            'schema_version': 1, 'environment': target,
-            'pipeline_cooldown_seconds': cooldown,
-        }))
-        result = subprocess.run(['go', 'run', './cmd/deploy_config', '--environment', environment,
-                                 '--config', '../../deploy/environments/' + environment + '.yaml',
-                                 '--components', components, '--bff-config', str(projection)],
-                                cwd=ROOT / 'apps/bff', text=True, capture_output=True, check=True)
-    return json.loads(result.stdout)
+    return deployment_plan(environment, components)
 
 
 def revision(enabled=True):
@@ -106,40 +100,30 @@ def production(value):
 
 
 class AuthConfigContractTests(unittest.TestCase):
-    def test_bff_export_settings_are_removed_when_disabled_and_exact_when_enabled(self):
+    def test_bff_runtime_settings_are_replaced_by_a_versioned_file_mount(self):
         plan = copy.deepcopy(bff_plan('development'))
-        plan['export_job'] = {'enabled': False}
         script = ROOT / 'deploy/components/auth_config.py'
         with tempfile.TemporaryDirectory() as tmp:
             path = Path(tmp) / 'plan.json'
             path.write_text(json.dumps({'normalized': plan}))
-            disabled = subprocess.run(['python3', str(script), 'args', str(path), 'bff'],
+            disabled = subprocess.run(['python3', str(script), 'args', str(path), 'bff', '42'],
                                       text=True, capture_output=True)
             self.assertEqual(disabled.returncode, 0, disabled.stderr)
-            self.assertIn('--remove-env-vars\nEXPORT_JOB_URL,EXPORT_SIGNING_SERVICE_ACCOUNT', disabled.stdout)
-
-            plan['export_job'] = {
-                'enabled': True, 'job_name': 'export-job-dev', 'location': 'asia-east1',
-                'signing_service_account': 'lwc-export-signer-dev@llm-wiki-cloud.iam.gserviceaccount.com',
-            }
-            path.write_text(json.dumps({'normalized': plan}))
-            enabled = subprocess.run(['python3', str(script), 'args', str(path), 'bff'],
-                                     text=True, capture_output=True)
-            self.assertEqual(enabled.returncode, 0, enabled.stderr)
-            self.assertIn('EXPORT_JOB_URL=https://run.googleapis.com/v2/projects/llm-wiki-cloud/locations/asia-east1/jobs/export-job-dev:run', enabled.stdout)
-            self.assertIn('EXPORT_SIGNING_SERVICE_ACCOUNT=lwc-export-signer-dev@llm-wiki-cloud.iam.gserviceaccount.com', enabled.stdout)
+            self.assertIn('--remove-env-vars', disabled.stdout)
+            self.assertIn('EXPORT_JOB_URL', disabled.stdout)
+            self.assertIn('LWC_BFF_CONFIG_PATH=/etc/lwc-bff-config/bff.json', disabled.stdout)
+            self.assertIn('/etc/lwc-bff-config/bff.json=lwc-bff-config-dev:42', disabled.stdout)
 
             from test_bff_auth_config_contract import candidate as bff_candidate
             runtime = bff_candidate('development')
             image = runtime['status']['imageDigest']
             revision_name = runtime['metadata']['name']
             path.write_text(json.dumps({'normalized': plan}))
-            verified = subprocess.run(['python3', str(script), 'verify', str(path), 'bff', revision_name, image, ''],
+            verified = subprocess.run(['python3', str(script), 'verify', str(path), 'bff', revision_name, image, '', '42'],
                                       input=json.dumps(runtime), text=True, capture_output=True)
             self.assertEqual(verified.returncode, 0, verified.stderr)
-            next(entry for entry in runtime['spec']['containers'][0]['env']
-                 if entry['name'] == 'EXPORT_SIGNING_SERVICE_ACCOUNT')['value'] = 'wrong@example.iam.gserviceaccount.com'
-            rejected = subprocess.run(['python3', str(script), 'verify', str(path), 'bff', revision_name, image, ''],
+            runtime['spec']['volumes'][0]['secret']['items'][0]['key'] = '43'
+            rejected = subprocess.run(['python3', str(script), 'verify', str(path), 'bff', revision_name, image, '', '42'],
                                       input=json.dumps(runtime), text=True, capture_output=True)
             self.assertNotEqual(rejected.returncode, 0)
 

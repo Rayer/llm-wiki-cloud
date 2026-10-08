@@ -152,49 +152,29 @@ class LocalDevMakefileTests(unittest.TestCase):
         self.assertIn("local-services.py start auth bff", support_frontend)
         self.assertIn("LOCAL_CLOUD_PIPELINE_CONFIG_DIR=", support_frontend)
 
-    def test_generated_cooldown_reaches_only_the_bff_child(self):
+    def test_bff_child_receives_file_locator_and_ignores_legacy_config_environment(self):
         module = local_services_module()
         with tempfile.TemporaryDirectory() as tmp:
             path = Path(tmp) / "bff.json"
             path.write_text(json.dumps({
-                "schema_version": 1, "environment": "local", "pipeline_cooldown_seconds": 60,
+                "schema_version": 2, "environment": "local", "target": "bff",
+                "pipeline_cooldown_seconds": 60,
             }))
             parent = {"LOCAL_CLOUD_BFF_CONFIG_PATH": str(path), "PIPELINE_COOLDOWN_SECONDS": "777"}
             bff = module.child_environment("bff", parent)
             auth = module.child_environment("auth", parent)
             frontend = module.child_environment("frontend", parent)
-            self.assertEqual(bff["PIPELINE_COOLDOWN_SECONDS"], "60")
+            self.assertEqual(bff["LWC_BFF_CONFIG_PATH"], str(path))
+            self.assertNotIn("PIPELINE_COOLDOWN_SECONDS", bff)
             self.assertEqual(auth["PIPELINE_COOLDOWN_SECONDS"], "777")
             self.assertEqual(frontend["PIPELINE_COOLDOWN_SECONDS"], "777")
-
-            workerless = os.environ.copy()
-            for name in ("LLM_API_KEY", "DEEPSEEK_API_KEY", "LWC_PIPELINE_RUN_TIMEOUT_SECONDS",
-                         "LWC_PIPELINE_LOCAL_SECRET_VERSION_RESOURCE", "GOOGLE_APPLICATION_CREDENTIALS"):
-                workerless.pop(name, None)
-            child = module.child_environment("bff", {
-                **workerless, "LOCAL_CLOUD_BFF_CONFIG_PATH": str(path),
-                "PIPELINE_COOLDOWN_SECONDS": "777",
-            })
-            child["LWC373_CHILD_ENV_TEST"] = "1"
-            result = subprocess.run(
-                ["go", "test", "./internal/handler/v1",
-                 "-run", "^TestLoadedCooldownOverrideReachesQuotaConsumer$", "-count=1"],
-                cwd=ROOT, env=child, capture_output=True, text=True,
-            )
-            self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
-
-            path.write_text(json.dumps({
-                "schema_version": 1, "environment": "dev", "pipeline_cooldown_seconds": 600,
-            }))
-            with self.assertRaises(ValueError):
-                module.child_environment("bff", parent)
 
     def test_local_wrapper_generates_projection_before_bff_start(self):
         local_env = (REPO / "scripts" / "local-cloud-env.sh").read_text()
         self.assertIn("pipeline_config prepare --target bff --environment local", local_env)
-        self.assertIn("bff_config.py", local_env)
         self.assertIn("if [ \"$direct_bff\" = true ]; then", local_env)
-        self.assertIn("export PIPELINE_COOLDOWN_SECONDS", local_env)
+        self.assertIn('export LWC_BFF_CONFIG_PATH="$LOCAL_CLOUD_BFF_CONFIG_PATH"', local_env)
+        self.assertNotIn("export PIPELINE_COOLDOWN_SECONDS", local_env)
 
     def test_root_config_targets_keep_pipeline_default_and_select_bff(self):
         default = subprocess.run(

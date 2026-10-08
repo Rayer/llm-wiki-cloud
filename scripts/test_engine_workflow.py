@@ -9,12 +9,15 @@ import yaml
 ROOT=Path(__file__).resolve().parents[1]
 
 class EngineWorkflowContract(unittest.TestCase):
-    def test_bff_plan_admission_includes_generated_cooldown_projection(self):
+    def test_bff_plan_admission_includes_generated_nonsecret_descriptor(self):
         engine=(ROOT/'deploy/engine/engine.py').read_text()
+        config=(ROOT/'apps/bff/cmd/deploy_config/main.go').read_text()
         self.assertIn("if 'bff' in selected:",engine)
-        self.assertIn("{'development': 'dev', 'production': 'prod'}",engine)
-        self.assertIn("'./cmd/pipeline_config', 'prepare', '--target', 'bff'",engine)
-        self.assertIn("'--bff-config'",engine)
+        self.assertIn("'--descriptor'",engine)
+        self.assertIn("'--bff-inputs'",engine)
+        self.assertIn('LoadWithBFFInputs',config)
+        self.assertIn('generated BFF input descriptor',config)
+        self.assertIn('runtime_inputs',config)
 
     def test_diagnostic_callers_obey_readonly_reusable_workflow_permission_ceiling(self):
         read_only={'contents':'read','actions':'read','id-token':'write'}

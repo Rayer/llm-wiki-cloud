@@ -112,11 +112,11 @@ def admit(args):
     normalize_env['LWC_REPOSITORY_ROOT'] = str(ROOT)
     if 'bff' in selected:
         target = {'development': 'dev', 'production': 'prod'}[args.environment]
-        with tempfile.TemporaryDirectory(prefix='lwc-bff-cooldown-') as projection_dir:
-            run(['go', 'run', './cmd/pipeline_config', 'prepare', '--target', 'bff',
+        with tempfile.TemporaryDirectory(prefix='lwc-bff-inputs-') as projection_dir:
+            run(['go', 'run', './cmd/pipeline_config', 'prepare', '--target', 'bff', '--descriptor',
                  '--environment', target, '--output', projection_dir],
                 cwd=ROOT / 'apps/bff', env=normalize_env, timeout=180)
-            normalize_args.extend(['--bff-config', str(Path(projection_dir) / 'bff.json')])
+            normalize_args.extend(['--bff-inputs', str(Path(projection_dir) / 'bff-inputs.json')])
             normalized = json.loads(run(normalize_args, cwd=ROOT / 'apps/bff', env=normalize_env, timeout=180))
         ssot = 'deploy/cac/ssot.pkl'
         require(run(['git', 'hash-object', ssot]) == run(['git', 'rev-parse', args.source+':'+ssot]),

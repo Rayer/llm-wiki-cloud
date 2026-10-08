@@ -8,6 +8,7 @@ import (
 	"io"
 	"net/http"
 	"net/http/httptest"
+	"strings"
 	"sync/atomic"
 	"testing"
 	"time"
@@ -56,6 +57,36 @@ func TestChatPreCanceledContextMakesNoAttemptOrReceipt(t *testing.T) {
 	}
 	if transport.calls.Load() != 0 || recorder.starts.Load() != 0 {
 		t.Fatalf("attempts=%d receipts=%d, want zero", transport.calls.Load(), recorder.starts.Load())
+	}
+}
+
+func TestClientOptionsPreserveBasePathAndRequestTimeout(t *testing.T) {
+	for _, basePath := range []string{"/gateway/v2", "/compat/v1/"} {
+		t.Run(basePath, func(t *testing.T) {
+			var gotPath string
+			server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+				gotPath = r.URL.Path
+				w.Header().Set("Content-Type", "application/json")
+				_, _ = io.WriteString(w, `{"choices":[{"message":{"content":"ok"}}]}`)
+			}))
+			defer server.Close()
+			client := NewClientWithOptions("fixture-key", ClientOptions{
+				Model: "deepseek-flash", BaseURL: server.URL + basePath, RequestTimeoutSeconds: 7,
+			})
+			if client == nil {
+				t.Fatal("NewClientWithOptions() returned nil")
+			}
+			if client.client.Timeout != 7*time.Second {
+				t.Fatalf("timeout=%s, want 7s", client.client.Timeout)
+			}
+			if _, err := client.Chat(context.Background(), "system", "user"); err != nil {
+				t.Fatalf("Chat() error = %v", err)
+			}
+			wantPath := strings.TrimRight(basePath, "/") + "/chat/completions"
+			if gotPath != wantPath {
+				t.Fatalf("request path=%q, want %q", gotPath, wantPath)
+			}
+		})
 	}
 }
 

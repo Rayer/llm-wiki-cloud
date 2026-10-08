@@ -98,23 +98,34 @@ const legacyLeaseReleaseAttempts = 3
 
 var errBucketObjectLimit = errors.New("bucket object limit exceeded")
 var errBucketByteLimit = errors.New("bucket byte limit exceeded")
+var newStorageClient = storage.NewClient
 
 // NewClient creates a new GCS client for the given bucket.
 func NewClient(bucket string) (*Client, error) {
-	scope, err := localcloud.Parse(os.Getenv("LOCAL_CLOUD_SCOPE"))
+	return NewClientWithScope(bucket, os.Getenv("LOCAL_CLOUD_SCOPE"))
+}
+
+// NewClientWithScope creates a GCS client with an explicitly selected local
+// worktree scope. BFF bootstrap uses this to avoid inheriting ambient scope.
+func NewClientWithScope(bucket, rawScope string) (*Client, error) {
+	scope, err := localcloud.Parse(rawScope)
 	if err != nil {
 		return nil, err
 	}
 	ctx := context.Background()
-	client, err := storage.NewClient(ctx)
+	client, err := newStorageClient(ctx)
 	if err != nil {
 		return nil, fmt.Errorf("storage client: %w", err)
 	}
+	return newClientWithStorageClient(bucket, scope, client), nil
+}
+
+func newClientWithStorageClient(bucket string, scope localcloud.Scope, client *storage.Client) *Client {
 	return &Client{
 		bucket:     client.Bucket(bucket),
 		owner:      &clientOwner{closer: client},
 		localScope: scope,
-	}, nil
+	}
 }
 
 func (c *Client) Close() error {

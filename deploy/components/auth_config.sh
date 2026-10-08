@@ -11,9 +11,26 @@ auth_config_managed() {
 }
 
 auth_config_readback() {
-  local mode="$1" revision="$2" image="$3" fingerprint="${4:-}" component="${5:-auth}" raw
+  local mode="$1" revision="$2" image="$3" fingerprint="${4:-}" component="${5:-auth}" expected_version="${6:-}" raw
   raw=$(gcloud run revisions describe "$revision" --project "$(plan_json '.gcp.project_id')" --region "$(plan_json '.gcp.region')" --format=json --quiet) || return 2
-  python3 "$ROOT/deploy/components/auth_config.py" "$mode" "$PLAN_PATH" "$component" "$revision" "$image" "$fingerprint" <<<"$raw"
+  if [[ "$component" == bff ]]; then
+    local config_version
+    config_version=$(python3 "$ROOT/deploy/components/auth_config.py" version "$PLAN_PATH" bff <<<"$raw") || return 1
+    if [[ -n "$expected_version" && "$config_version" != "$expected_version" ]]; then return 1; fi
+    if [[ -n "$expected_version" ]]; then config_version="$expected_version"; fi
+    python3 "$ROOT/deploy/components/auth_config.py" "$mode" "$PLAN_PATH" "$component" "$revision" "$image" "$fingerprint" "$config_version" <<<"$raw"
+  else
+    python3 "$ROOT/deploy/components/auth_config.py" "$mode" "$PLAN_PATH" "$component" "$revision" "$image" "$fingerprint" <<<"$raw"
+  fi
+}
+
+auth_config_current_bff_config_version() {
+  local project region service service_json revision raw
+  project=$(plan_json '.gcp.project_id'); region=$(plan_json '.gcp.region'); service=$(plan_json '.bff.service_name')
+  service_json=$(gcloud run services describe "$service" --project "$project" --region "$region" --format=json --quiet) || return 1
+  revision=$(jq -er 'if (.status.traffic|type) == "array" and (.status.traffic|length) == 1 and .status.traffic[0].percent == 100 and .status.traffic[0].tag? == null and (.status.traffic[0].revisionName|type) == "string" then .status.traffic[0].revisionName else error("service traffic is not one untagged 100-percent revision") end' <<<"$service_json") || return 1
+  raw=$(gcloud run revisions describe "$revision" --project "$project" --region "$region" --format=json --quiet) || return 1
+  python3 "$ROOT/deploy/components/auth_config.py" version "$PLAN_PATH" bff <<<"$raw"
 }
 
 auth_config_freeze() {
@@ -24,9 +41,14 @@ auth_config_freeze() {
 }
 
 auth_config_mutate() {
-  local image="$1" component="${2:-auth}" revision flags arg
+  local image="$1" component="${2:-auth}" revision flags arg config_version=''
   local -a config_args=()
-  flags=$(python3 "$ROOT/deploy/components/auth_config.py" args "$PLAN_PATH" "$component") || return 1
+  if [[ "$component" == bff ]]; then
+    config_version=$(auth_config_current_bff_config_version) || return 1
+    flags=$(python3 "$ROOT/deploy/components/auth_config.py" args "$PLAN_PATH" "$component" "$config_version") || return 1
+  else
+    flags=$(python3 "$ROOT/deploy/components/auth_config.py" args "$PLAN_PATH" "$component") || return 1
+  fi
   while IFS= read -r arg; do config_args+=("$arg"); done <<<"$flags"
   # Capture the created revision directly, never race a subsequent "latest" lookup.
   if ! revision=$(timeout --signal=TERM --kill-after=5s 600s gcloud run services update "$service" --project "$project" --region "$region" --image "$image" --no-traffic "${config_args[@]}" --format='value(status.latestCreatedRevisionName)' --quiet); then
@@ -34,7 +56,7 @@ auth_config_mutate() {
     return 1
   fi
   [[ "$revision" == "$service-"* && "$revision" =~ ^[a-z0-9-]+$ ]] || { journal_transition "$component" unknown; return 1; }
-  if ! readback_retry auth_config_readback verify "$revision" "$image" "" "$component" > /dev/null; then
+  if ! readback_retry auth_config_readback verify "$revision" "$image" "" "$component" "$config_version" > /dev/null; then
     journal_transition "$component" unknown
     return 1
   fi

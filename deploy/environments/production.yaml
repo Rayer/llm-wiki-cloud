@@ -45,25 +45,8 @@ bff:
   vpc_egress: private-ranges-only
   ingress: all
   max_instances: 1
-  bucket: llm-wiki-data
-  firestore_database_id: llm-wiki-cloud-prod
   pipeline_job_name: olw-pipeline
   pipeline_job_location: asia-east1
-  pipeline_job_url: https://run.googleapis.com/v2/projects/llm-wiki-cloud/locations/asia-east1/jobs/olw-pipeline:run
-  auth_service_url: https://auth.rayer.idv.tw
-  allowed_origins:
-    - https://wiki.rayer.idv.tw
-    - https://llm-wiki-frontend.vercel.app
-  profile_runtime_audience: https://llm-wiki-bff-a5nkmux6pq-de.a.run.app
-  profile_runtime_service_account: lwc-bff-prod@llm-wiki-cloud.iam.gserviceaccount.com
-  dev_jwt: false
-  query_config: apps/bff/configs/query/dev/query-dev-2026-09-12.1.json
-  secret_references:
-    jwt: jwt-secret-prod
-    deepseek_api_key: deepseek-apikey
-    typesafe_jev_api_key:
-      name: typesafe-jev-api-key-prod
-      version: "1"
 
 worker:
   job_name: olw-pipeline

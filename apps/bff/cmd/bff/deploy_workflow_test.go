@@ -69,10 +69,23 @@ func TestBFFWorkflowAndConfigAreValidAndMutationSafe(t *testing.T) {
 		}
 	}
 	for _, environment := range []string{"development", "production"} {
-		contents := readBFFCDFile(t, "deploy/environments/"+environment+".yaml")
-		if !strings.Contains(contents, "query_config: apps/bff/configs/query/dev/query-dev-2026-09-12.1.json") {
-			t.Fatalf("%s does not point to the sealed Query config", environment)
+		contents := []byte(readBFFCDFile(t, "deploy/environments/"+environment+".yaml"))
+		var config map[string]any
+		if err := yaml.Unmarshal(contents, &config); err != nil {
+			t.Fatalf("%s environment config is invalid YAML: %v", environment, err)
 		}
+		bff, ok := config["bff"].(map[string]any)
+		if !ok {
+			t.Fatalf("%s BFF deployment metadata is missing", environment)
+		}
+		for _, removed := range []string{"query_config", "allowed_origins", "firestore_database_id", "secret_references", "profile_runtime_audience"} {
+			if _, present := bff[removed]; present {
+				t.Fatalf("%s still contains BFF application config field %q", environment, removed)
+			}
+		}
+	}
+	if !strings.Contains(readBFFCDFile(t, "deploy/cac/ssot.pkl"), "query-dev-2026-09-12.1.json") {
+		t.Fatal("BFF query config is not sourced from the selected typed SSOT")
 	}
 	script := readBFFCDFile(t, "deploy/cd.sh")
 	if strings.Contains(script, "gcloud projects add-iam-policy-binding") || strings.Contains(script, "gcloud run services set-iam-policy") || strings.Contains(script, "run jobs execute") {

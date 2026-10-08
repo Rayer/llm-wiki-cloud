@@ -15,12 +15,30 @@ import sys
 import tempfile
 import time
 
-sys.path.insert(0, str(Path(__file__).resolve().parent))
-from bff_config import load_projection
-
 SERVICES = {"auth", "bff", "frontend"}
 STARTUP_TIMEOUT_SECONDS = 45
 STOPPING = False
+
+BFF_CONFIG_ENV = {
+    "GCP_PROJECT", "BUCKET", "FIRESTORE_DATABASE_ID", "JWT_SECRET", "DEV_JWT", "LOCAL_DATA_DIR",
+    "LOCAL_CLOUD_SCOPE", "LOCAL_CLOUD_JWT_SECRET_FILE", "LOCAL_CLOUD_WORKER_PATH",
+    "LOCAL_CLOUD_PIPELINE_CONFIG_PATH", "LOCAL_CLOUD_PIPELINE_BINDINGS_PATH",
+    "LOCAL_CLOUD_BFF_CONFIG_PATH", "LOCAL_CLOUD_STATE_DIR", "LOCAL_CLOUD_REPO_ROOT",
+    "LOCAL_CLOUD_PYTHON", "LOCAL_CLOUD_PIPELINE_CONFIG_DIR", "BFF_PORT", "AUTH_PORT", "FRONTEND_PORT",
+    "AUTH_DEMO_USER_ID", "AUTH_DEMO_USER_EMAIL", "AUTH_DEMO_USER_ROLE",
+    "ALLOWED_ORIGINS", "ALLOWED_HOSTS", "AUTH_SERVICE_URL", "AUTH_SESSION_ENVIRONMENT",
+    "AUTH_REFRESH_SESSION_MIGRATION", "REGISTRATION_ENABLED", "PIPELINE_JOB_URL", "EXPORT_JOB_URL",
+    "EXPORT_SIGNING_SERVICE_ACCOUNT", "PIPELINE_DAILY_LIMIT", "PIPELINE_COOLDOWN_SECONDS",
+    "PIPELINE_MIN_NEW_RAW", "PIPELINE_DEMO_USER_IDS", "QUERY_STAGE_CONFIG_PATH",
+    "QUERY_EXPANSION_MODEL", "QUERY_EXPANSION_REASONING", "ANSWER_SYNTHESIS_MODEL",
+    "ANSWER_SYNTHESIS_REASONING", "QUERY_SELECTION_LIMIT", "QUERY_SELECTION_EXPLORATION_SLOTS",
+    "QUERY_SELECTION_EVIDENCE_THRESHOLD", "QUERY_EXPANSION_KEYWORDS_PER_ATTEMPT",
+    "QUERY_EXPANSION_ATTEMPTS", "QUERY_MATCHING_RARE_KEYWORD_MAX_DOCUMENT_FREQUENCY",
+    "DEEPSEEK_API_KEY", "LLM_API_KEY", "TYPESAFE_API_KEY", "TYPESAFE_JEV_API_KEY",
+    "PROFILE_RUNTIME_AUDIENCE", "PROFILE_RUNTIME_SERVICE_ACCOUNT",
+    "GOOGLE_CLIENT_ID", "GOOGLE_CLIENT_SECRET", "GOOGLE_ISSUER", "GOOGLE_JWKS_URL",
+    "GOOGLE_TOKEN_URL", "GOOGLE_LOGIN_REDIRECT_URL", "GOOGLE_LINK_REDIRECT_URL", "GOOGLE_COMPLETION_URL",
+}
 
 
 def record_path(state: Path) -> Path:
@@ -92,8 +110,17 @@ def service_command(name: str, root: Path, env: dict[str, str]) -> tuple[list[st
 def child_environment(name: str, env: dict[str, str]) -> dict[str, str]:
     child_env = env.copy()
     if name == "bff":
-        cooldown = load_projection(child_env.get("LOCAL_CLOUD_BFF_CONFIG_PATH", ""), "local")
-        child_env["PIPELINE_COOLDOWN_SECONDS"] = str(cooldown)
+        path = child_env.get("LOCAL_CLOUD_BFF_CONFIG_PATH", "")
+        if not Path(path).is_absolute() or not Path(path).is_file():
+            raise ValueError("current-worktree BFF config file is missing or invalid")
+        for key in BFF_CONFIG_ENV:
+            child_env.pop(key, None)
+        for key in tuple(child_env):
+            if key.startswith("LOCAL_CLOUD_"):
+                child_env.pop(key, None)
+            elif key.startswith(("PIPELINE_", "QUERY_", "ANSWER_SYNTHESIS_")):
+                child_env.pop(key, None)
+        child_env["LWC_BFF_CONFIG_PATH"] = path
     return child_env
 
 
@@ -189,7 +216,7 @@ def daemon(state: Path, token: str, names: list[str], startup_timeout: float = S
         try:
             child_envs = {name: child_environment(name, os.environ) for name in names}
         except (OSError, TypeError, ValueError, json.JSONDecodeError):
-            write_startup(state, token, "failed", service="bff", reason="current-worktree BFF cooldown projection is missing or invalid")
+            write_startup(state, token, "failed", service="bff", reason="current-worktree BFF config file is missing or invalid")
             return 1
         for name in names:
             child_env = child_envs[name]

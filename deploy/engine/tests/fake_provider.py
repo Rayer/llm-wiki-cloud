@@ -144,6 +144,8 @@ elif tool == 'gcloud':
                 if image:
                     container['image']=image
             env={v['name']:v for v in container.get('env',[])}
+            before_secret_names={entry.get('valueFrom',{}).get('secretKeyRef',{}).get('name')
+                                 for entry in container.get('env',[]) if 'valueFrom' in entry}
             updates=flag('--update-env-vars','')
             if updates:
                 for pair in updates.removeprefix('^|^').split('|'):
@@ -152,21 +154,55 @@ elif tool == 'gcloud':
                 env.pop(k,None)
             for pair in flag('--update-secrets','').split(','):
                 if pair:
-                    k,v=pair.split('=',1);n,key=v.split(':');env[k]={'name':k,'valueFrom':{'secretKeyRef':{'name':n,'key':key}}}
+                    k,v=pair.split('=',1);n,key=v.split(':')
+                    if k.startswith('/'):
+                        directory,file_name=k.rsplit('/',1)
+                        mount_path=directory.rsplit('/',1)[0]
+                        mounts=container.setdefault('volumeMounts',[])
+                        mounts[:]=[mount for mount in mounts if mount.get('mountPath')!=mount_path]
+                        mounts.append({'name':n,'mountPath':mount_path,'readOnly':True})
+                        volumes=rev['spec'].setdefault('volumes',[])
+                        volumes[:]=[volume for volume in volumes if volume.get('name')!=n]
+                        volumes.append({'name':n,'secret':{'secretName':n,'items':[{'key':key,'path':file_name,'mode':292}]}})
+                        account=flag('--service-account')
+                        if account:
+                            rev['spec']['serviceAccountName']=account
+                        bindings={}
+                        for binding in rev['metadata'].get('annotations',{}).get('run.googleapis.com/secrets','').split(','):
+                            if ':' in binding:
+                                alias,target=binding.split(':',1)
+                                if alias not in before_secret_names or alias in {entry.get('valueFrom',{}).get('secretKeyRef',{}).get('name') for entry in env.values() if 'valueFrom' in entry}:
+                                    bindings[alias]=target
+                        project=flag('--project','llm-wiki-cloud')
+                        bindings[n]='projects/'+project+'/secrets/'+n
+                        rev['metadata'].setdefault('annotations',{})['run.googleapis.com/secrets']=','.join(
+                            alias+':'+target for alias,target in bindings.items())
+                    else:
+                        env[k]={'name':k,'valueFrom':{'secretKeyRef':{'name':n,'key':key}}}
             for k in flag('--remove-secrets','').split(','): env.pop(k,None)
             timeout=flag('--task-timeout')
             if timeout:
                 raw['spec']['template']['spec']['template']['spec']['timeoutSeconds']=timeout.removesuffix('s')
             container['env']=list(env.values())
             if kind=='services' and s.get('secret_alias_fixture'):
-                bindings=[]
+                previous={}
+                for binding in rev['metadata'].get('annotations',{}).get('run.googleapis.com/secrets','').split(','):
+                    if ':' in binding:
+                        alias,target=binding.split(':',1);previous[alias]=target
+                bindings={}
                 for entry in container['env']:
                     if 'valueFrom' in entry:
                         ref=entry['valueFrom']['secretKeyRef']
                         alias='candidate-'+entry['name'].lower().replace('_','-')
-                        bindings.append(alias+':projects/'+flag('--project')+'/secrets/'+ref['name'])
+                        bindings[alias]='projects/'+flag('--project')+'/secrets/'+ref['name']
                         ref['name']=alias
-                rev['metadata']['annotations']={'run.googleapis.com/secrets':','.join(bindings),
+                for volume in rev['spec'].get('volumes',[]):
+                    secret=volume.get('secret',{})
+                    alias=secret.get('secretName')
+                    if alias:
+                        bindings[alias]=previous.get(alias,'projects/'+flag('--project')+'/secrets/'+alias)
+                rev['metadata']['annotations']={'run.googleapis.com/secrets':','.join(
+                    alias+':'+target for alias,target in bindings.items()),
                     'autoscaling.knative.dev/maxScale':'7','run.googleapis.com/operation-id':'candidate-controller'}
             if kind=='services':
                 s['revisions'][revision]=rev

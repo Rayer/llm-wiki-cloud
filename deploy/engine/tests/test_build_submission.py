@@ -283,7 +283,7 @@ class AsyncBuildSubmission(unittest.TestCase):
             output = real_run(command, **kwargs)
             argv = [str(value) for value in command]
             if argv[:3] == ['go', 'run', './cmd/pipeline_config']:
-                projection_path = Path(argv[argv.index('--output') + 1]) / 'bff.json'
+                projection_path = Path(argv[argv.index('--output') + 1]) / 'bff-inputs.json'
                 captured['projection'] = json.loads(projection_path.read_text())
             if argv[:3] == ['go', 'run', './cmd/deploy_config']:
                 captured['normalized'] = json.loads(output)

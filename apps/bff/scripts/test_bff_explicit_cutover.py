@@ -17,17 +17,22 @@ import yaml
 REPO_ROOT = Path(__file__).resolve().parents[3]
 SOURCE_SHA = "a" * 40
 IMAGE = "asia-east1-docker.pkg.dev/llm-wiki-cloud/cloud-run-images/llm-wiki-bff@sha256:" + "d" * 64
+sys.path.insert(0, str(REPO_ROOT / "deploy" / "components"))
+import auth_config
 
 
 class SharedCDContractTest(unittest.TestCase):
     def normalized(self, environment="development"):
         with tempfile.TemporaryDirectory() as directory:
-            projection = Path(directory) / "bff.json"
-            projection.write_text(json.dumps({
-                "schema_version": 1,
-                "environment": "dev" if environment == "development" else "prod",
-                "pipeline_cooldown_seconds": 600 if environment == "development" else 3600,
-            }))
+            target = "dev" if environment == "development" else "prod"
+            descriptor_dir = Path(directory) / target
+            descriptor_dir.mkdir()
+            env = dict(os.environ, LWC_REPOSITORY_ROOT=str(REPO_ROOT))
+            subprocess.run(
+                ["go", "run", "./cmd/pipeline_config", "prepare", "--target", "bff",
+                 "--descriptor", "--environment", target, "--output", str(descriptor_dir)],
+                cwd=REPO_ROOT / "apps/bff", env=env, capture_output=True, text=True, check=True,
+            )
             result = subprocess.run(
                 [
                     "go",
@@ -39,52 +44,114 @@ class SharedCDContractTest(unittest.TestCase):
                     f"../../deploy/environments/{environment}.yaml",
                     "--components",
                     "bff",
-                    "--bff-config",
-                    str(projection),
+                    "--bff-inputs",
+                    str(descriptor_dir / "bff-inputs.json"),
                 ],
                 cwd=REPO_ROOT / "apps/bff",
+                env=env,
                 capture_output=True,
                 text=True,
                 check=True,
             )
         return json.loads(result.stdout)
 
-    def fake_provider(self, directory, normalized, image, account):
+    def test_bff_numeric_version_reuse_requires_the_same_secret_resource(self):
+        normalized = self.normalized()
+        expected = auth_config.desired(normalized, "bff", "42")["file_secret"]
+        alias = expected["resource"].split("/")[-1]
+        plan = Path(tempfile.mkdtemp(prefix="lwc-bff-version-pair-")) / "plan.json"
+        self.addCleanup(shutil.rmtree, plan.parent, ignore_errors=True)
+        plan.parent.mkdir(exist_ok=True)
+        plan.write_text(json.dumps({"normalized": normalized}))
+
+        def revision(resource):
+            return {
+                "metadata": {
+                    "name": normalized["bff"]["service_name"] + "-00042-old",
+                    "annotations": {"run.googleapis.com/secrets": f"{alias}:{resource}"},
+                },
+                "spec": {
+                    "serviceAccountName": normalized["bff"]["runtime_service_account"],
+                    "containers": [{
+                        "env": [{"name": auth_config.BFF_CONFIG_ENV,
+                                 "value": auth_config.BFF_CONFIG_PATH}],
+                        "volumeMounts": [{
+                            "name": alias, "mountPath": expected["directory"], "readOnly": True,
+                        }],
+                    }],
+                    "volumes": [{
+                        "name": alias,
+                        "secret": {"secretName": alias, "items": [{
+                            "key": "42", "path": expected["file"], "mode": expected["mode"],
+                        }]},
+                    }],
+                },
+                "status": {"conditions": [{"type": "Ready", "status": "True"}]},
+            }
+
+        command = [sys.executable, str(REPO_ROOT / "deploy/components/auth_config.py"),
+                   "version", str(plan), "bff"]
+        wrong = subprocess.run(
+            command,
+            input=json.dumps(revision("projects/llm-wiki-cloud/secrets/other-bff-config")),
+            capture_output=True, text=True,
+        )
+        self.assertNotEqual(wrong.returncode, 0)
+        self.assertNotIn("other-bff-config", wrong.stdout + wrong.stderr)
+
+        exact = subprocess.run(command, input=json.dumps(revision(expected["resource"])),
+                               capture_output=True, text=True)
+        self.assertEqual(exact.returncode, 0, exact.stderr)
+        self.assertEqual(exact.stdout.strip(), "42")
+        args = subprocess.run(
+            [sys.executable, str(REPO_ROOT / "deploy/components/auth_config.py"),
+             "args", str(plan), "bff", exact.stdout.strip()],
+            capture_output=True, text=True,
+        )
+        self.assertEqual(args.returncode, 0, args.stderr)
+        self.assertIn(auth_config.BFF_CONFIG_PATH + "=" + alias + ":42", args.stdout)
+
+    def fake_provider(self, directory, normalized, image, account, *, legacy_secret_env=False):
         bff = normalized["bff"]
-        env = [
-            {"name": "GCP_PROJECT", "value": normalized["gcp"]["project_id"]},
-            {"name": "BUCKET", "value": bff["bucket"]},
-            {"name": "FIRESTORE_DATABASE_ID", "value": bff["firestore_database_id"]},
-            {"name": "PIPELINE_JOB_URL", "value": bff["pipeline_job_url"]},
-            {"name": "ALLOWED_ORIGINS", "value": ",".join(bff["allowed_origins"])},
-            {"name": "AUTH_SERVICE_URL", "value": bff["auth_service_url"]},
-            {"name": "QUERY_STAGE_CONFIG_PATH", "value": normalized["query_config"]["runtime_path"]},
-            {"name": "DEV_JWT", "value": "false"},
-            {"name": "LWC_SOURCE_COMMIT", "value": SOURCE_SHA},
-            {
-                "name": "JWT_SECRET",
-                "value": "super-secret-value",
-                "valueSource": {"secretKeyRef": {"secret": bff["secret_references"]["jwt"], "version": "latest"}},
-            },
-            {
-                "name": "DEEPSEEK_API_KEY",
-                "value": "another-secret-value",
-                "valueSource": {"secretKeyRef": {"secret": bff["secret_references"]["deepseek_api_key"], "version": "latest"}},
-            },
-        ]
+        expected = auth_config.desired(normalized, "bff", "42")
+        env = [{"name": name, "value": value} for name, value in expected["env"].items()]
+        if legacy_secret_env:
+            env.extend([
+                {"name": "JWT_SECRET", "value": "super-secret-value"},
+                {"name": "DEEPSEEK_API_KEY", "value": "another-secret-value"},
+            ])
+        secret = expected["file_secret"]
+        secret_alias = secret["resource"].split("/")[-1]
         annotations = {
+            "run.googleapis.com/secrets": f"{secret_alias}:{secret['resource']}",
             "run.googleapis.com/network-interfaces": json.dumps([{"network": bff["network"], "subnetwork": bff["subnet"]}]),
             "run.googleapis.com/vpc-access-egress": bff["vpc_egress"],
             "autoscaling.knative.dev/maxScale": str(bff["max_instances"]),
         }
+        spec = {
+            "serviceAccountName": account,
+            "containers": [{
+                "image": image,
+                "env": env,
+                "volumeMounts": [{
+                    "name": secret_alias, "mountPath": secret["directory"], "readOnly": True,
+                }],
+            }],
+            "volumes": [{
+                "name": secret_alias,
+                "secret": {"secretName": secret_alias, "items": [{
+                    "key": secret["version"], "path": secret["file"], "mode": secret["mode"],
+                }]},
+            }],
+        }
         revision = {
-            "metadata": {"annotations": annotations},
-            "spec": {"serviceAccountName": account, "containers": [{"image": image, "env": env}]},
+            "metadata": {"name": "llm-wiki-bff-new", "annotations": annotations},
+            "spec": spec,
             "status": {"imageDigest": image, "conditions": [{"type": "Ready", "status": "True"}]},
         }
         service = {
             "metadata": {"annotations": {"run.googleapis.com/ingress": bff["ingress"]}},
-            "spec": {"template": {"metadata": {"annotations": annotations}, "spec": {"serviceAccountName": account, "containers": [{"env": env}]}}},
+            "spec": {"template": {"metadata": {"annotations": annotations}, "spec": spec}},
             "status": {"traffic": [{"revisionName": "llm-wiki-bff-new", "percent": 100}]},
         }
         fake = textwrap.dedent(
@@ -126,6 +193,7 @@ class SharedCDContractTest(unittest.TestCase):
             normalized,
             IMAGE,
             "wrong@llm-wiki-cloud.iam.gserviceaccount.com",
+            legacy_secret_env=True,
         )
         env = {
             **os.environ,
@@ -325,9 +393,21 @@ class SharedCDContractTest(unittest.TestCase):
             normalized["auth"].pop("google", None)
             plan = directory / "plan.json"
             plan.write_text(json.dumps({"normalized": normalized}))
-            service_before = REPO_ROOT / "apps/bff/scripts/fixtures/bff-service-before.json"
-            revision_before = REPO_ROOT / "apps/bff/scripts/fixtures/bff-revision-before.json"
-            revision_data = json.loads(revision_before.read_text())
+            service_data, revision_data = self.fake_provider(
+                directory, normalized, IMAGE, normalized["bff"]["runtime_service_account"]
+            )
+            prior_image = "asia-east1-docker.pkg.dev/llm-wiki-cloud/cloud-run-images/llm-wiki-bff@sha256:" + "a" * 64
+            revision_name = "llm-wiki-bff-00001-old"
+            revision_data["metadata"]["name"] = revision_name
+            revision_data["spec"]["containers"][0]["image"] = prior_image
+            revision_data["status"]["imageDigest"] = prior_image
+            service_data["spec"]["template"]["spec"]["containers"][0]["image"] = prior_image
+            service_data["status"]["latestReadyRevisionName"] = revision_name
+            service_data["status"]["traffic"] = [{
+                "latestRevision": True, "revisionName": revision_name, "percent": 100,
+            }]
+            service_before = directory / "service-before.json"
+            service_before.write_text(json.dumps(service_data))
             revision_data.setdefault("status", {})["conditions"] = [{"type": "Ready", "status": "True"}]
             revision_ready = directory / "revision-ready.json"
             revision_ready.write_text(json.dumps(revision_data))

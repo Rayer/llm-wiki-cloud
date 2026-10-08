@@ -36,7 +36,7 @@ import (
 )
 
 func TestDefaultProductionQueryCompositionUsesProductionExecutor(t *testing.T) {
-	executor, err := newProductionQueryExecutor(config.Config{}, conceptcache.New())
+	executor, err := newProductionQueryExecutor(legacyProductionConfig(), conceptcache.New())
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -150,7 +150,9 @@ func TestInjectedStageConfigDoesNotReadArtifactAgain(t *testing.T) {
 }
 
 func TestProductionQueryCompositionRejectsNonBaselineModel(t *testing.T) {
-	_, err := newProductionQueryExecutor(config.Config{QueryExpansionModel: "deepseek-chat"}, conceptcache.New())
+	cfg := legacyProductionConfig()
+	cfg.QueryExpansionModel = "deepseek-chat"
+	_, err := newProductionQueryExecutor(cfg, conceptcache.New())
 	if err == nil {
 		t.Fatal("newProductionQueryExecutor() error = nil, want fixed baseline rejection")
 	}
@@ -162,7 +164,7 @@ func TestDefaultProductionQueryCompositionRunsThroughV1QueryPath(t *testing.T) {
 		t.Fatal(err)
 	}
 	conceptCache := conceptcache.New()
-	executor, err := newProductionQueryExecutor(config.Config{}, conceptCache)
+	executor, err := newProductionQueryExecutor(legacyProductionConfig(), conceptCache)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -201,7 +203,10 @@ func TestProductionInvalidStructuredPlanUsesChatLegacyExpansion(t *testing.T) {
 			previousTransport := http.DefaultTransport
 			http.DefaultTransport = transport
 			t.Cleanup(func() { http.DefaultTransport = previousTransport })
-			executor, err := newProductionQueryExecutor(config.Config{DeepSeekAPIKey: "test-key", QueryStageConfigPath: path}, conceptcache.New())
+			cfg := legacyProductionConfig()
+			cfg.DeepSeekAPIKey = "test-key"
+			cfg.QueryStageConfigPath = path
+			executor, err := newProductionQueryExecutor(cfg, conceptcache.New())
 			if err != nil {
 				t.Fatal(err)
 			}
@@ -242,7 +247,9 @@ func TestDefaultProductionQueryCompositionPreservesRequestCancellation(t *testin
 		transport.awaitCompletion(time.Second)
 		http.DefaultTransport = previousTransport
 	}()
-	executor, err := newProductionQueryExecutor(config.Config{DeepSeekAPIKey: "test-key"}, conceptcache.New())
+	cfg := legacyProductionConfig()
+	cfg.DeepSeekAPIKey = "test-key"
+	executor, err := newProductionQueryExecutor(cfg, conceptcache.New())
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -273,13 +280,35 @@ func TestDefaultProductionQueryCompositionPreservesRequestCancellation(t *testin
 	}
 }
 
+func legacyProductionConfig() config.Config {
+	return config.Config{
+		LLMProvider: "deepseek", LLMBaseURL: "https://api.deepseek.com", LLMRequestTimeoutSeconds: 60,
+		LLMModel:            config.DefaultQueryExpansionModel,
+		QueryExpansionModel: config.DefaultQueryExpansionModel, QueryExpansionReasoning: config.DefaultQueryExpansionReasoning,
+		AnswerSynthesisModel: config.DefaultAnswerSynthesisModel, AnswerSynthesisReasoning: config.DefaultAnswerSynthesisReasoning,
+		QuerySelectionLimit:                          config.DefaultQuerySelectionLimit,
+		QuerySelectionExplorationSlots:               config.DefaultQuerySelectionExplorationSlots,
+		QuerySelectionEvidenceThreshold:              1,
+		QueryExpansionKeywordsPerAttempt:             config.DefaultQueryExpansionKeywordsPerAttempt,
+		QueryExpansionAttempts:                       config.DefaultQueryExpansionAttempts,
+		QueryMatchingRareKeywordMaxDocumentFrequency: config.DefaultQueryMatchingRareKeywordMaxDocumentFrequency,
+	}
+}
+
 func TestProductionQueryReportsInsufficientEvidenceWithoutConcepts(t *testing.T) {
 	root := localfs.New(t.TempDir())
 	reader := root.Scope("user", "project")
 	if _, err := reader.WriteBytes(context.Background(), []byte(`{"slug":"generic","title":"Generic","body":"coffee"}`+"\n"), conceptcache.GCSPath); err != nil {
 		t.Fatal(err)
 	}
-	executor, err := newProductionQueryExecutor(config.Config{QuerySelectionEvidenceThreshold: 2}, conceptcache.New())
+	executor, err := newProductionQueryExecutor(config.Config{
+		LLMProvider: "deepseek", LLMBaseURL: "https://api.deepseek.com", LLMRequestTimeoutSeconds: 60,
+		LLMModel:            config.DefaultQueryExpansionModel,
+		QueryExpansionModel: config.DefaultQueryExpansionModel, QueryExpansionReasoning: config.DefaultQueryExpansionReasoning,
+		AnswerSynthesisModel: config.DefaultAnswerSynthesisModel, AnswerSynthesisReasoning: config.DefaultAnswerSynthesisReasoning,
+		QuerySelectionLimit: 10, QuerySelectionExplorationSlots: 1, QuerySelectionEvidenceThreshold: 2,
+		QueryExpansionKeywordsPerAttempt: 24, QueryExpansionAttempts: 3, QueryMatchingRareKeywordMaxDocumentFrequency: 1,
+	}, conceptcache.New())
 	if err != nil {
 		t.Fatal(err)
 	}
