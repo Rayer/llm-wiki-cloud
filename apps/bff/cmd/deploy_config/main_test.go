@@ -85,6 +85,67 @@ func TestLocalFrontendConfigUsesOnlyLoopbackPorts(t *testing.T) {
 	}
 }
 
+func TestFrontendPublicConfigNeedsOnlyPublicFrontendInputs(t *testing.T) {
+	root := t.TempDir()
+	configPath := filepath.Join(root, "deploy", "environments", "development.yaml")
+	if err := os.MkdirAll(filepath.Dir(configPath), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(configPath, []byte("frontend:\n  api_url: https://api.example.test\n  auth_url: https://auth.example.test\n"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	output := filepath.Join(root, "public", "frontend-config.json")
+	if err := prepareFrontendRuntimeConfig("development", configPath, output); err != nil {
+		t.Fatalf("frontend-only public config rejected missing unrelated bindings: %v", err)
+	}
+	var got PublicFrontendRuntimeConfig
+	if err := json.Unmarshal(mustRead(t, output), &got); err != nil {
+		t.Fatal(err)
+	}
+	want := PublicFrontendRuntimeConfig{
+		SchemaVersion: 1,
+		APIURL:        "https://api.example.test",
+		AuthURL:       "https://auth.example.test",
+	}
+	if got != want {
+		t.Fatalf("public Frontend config = %#v, want %#v", got, want)
+	}
+
+	for _, missing := range []string{"api_url", "auth_url"} {
+		t.Run("missing_"+missing, func(t *testing.T) {
+			missingConfigPath := configPath
+			body := "frontend:\n"
+			if missing == "api_url" {
+				body += "  auth_url: https://auth.example.test\n"
+			} else {
+				body += "  api_url: https://api.example.test\n"
+			}
+			if err := os.WriteFile(missingConfigPath, []byte(body), 0o600); err != nil {
+				t.Fatal(err)
+			}
+			missingOutput := filepath.Join(root, "public", missing+".json")
+			if err := prepareFrontendRuntimeConfig("development", missingConfigPath, missingOutput); err == nil {
+				t.Fatalf("missing required frontend.%s unexpectedly succeeded", missing)
+			}
+			if _, err := os.Stat(missingOutput); !os.IsNotExist(err) {
+				t.Fatalf("missing frontend.%s wrote output before validation: %v", missing, err)
+			}
+		})
+	}
+}
+
+func TestFrontendPublicOutputDoesNotRelaxDeploymentValidation(t *testing.T) {
+	config, err := decodeConfig(filepath.Join(repoRoot(t), "deploy", "environments", "development.yaml"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	config.Worker.SecretReferences.DeepSeekAPIKey = ""
+	err = validateConfigForSelectedComponents("development", config, false, false)
+	if err == nil || !strings.Contains(err.Error(), "worker.secret_references.deepseek_api_key") {
+		t.Fatalf("normal component validation no longer requires Worker secret binding: %v", err)
+	}
+}
+
 func mustRead(t *testing.T, path string) []byte {
 	t.Helper()
 	data, err := os.ReadFile(path)

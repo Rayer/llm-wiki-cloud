@@ -376,6 +376,16 @@ func main() {
 		}
 		return
 	}
+	if *frontendConfigOutput != "" {
+		if strings.TrimSpace(*bffInputsPath) != "" || strings.TrimSpace(*authInputsPath) != "" {
+			fail("component input descriptors are not accepted for public Frontend config generation")
+		}
+		if err := prepareFrontendRuntimeConfig(*environment, *configPath, *frontendConfigOutput); err != nil {
+			fail("prepare Frontend runtime config: %v", err)
+		}
+		fmt.Printf("prepared Frontend public config environment=%s target=frontend\n", *environment)
+		return
+	}
 	var normalized Normalized
 	switch {
 	case contains(selected, "bff") && contains(selected, "auth"):
@@ -399,19 +409,36 @@ func main() {
 	if err != nil {
 		fail("%v", err)
 	}
-	if *frontendConfigOutput != "" {
-		if err := writePublicFrontendRuntimeConfig(*frontendConfigOutput, *environment,
-			normalized.Frontend.APIURL, normalized.Frontend.AuthURL); err != nil {
-			fail("write Frontend runtime config: %v", err)
-		}
-		fmt.Printf("prepared Frontend public config environment=%s target=frontend\n", *environment)
-		return
-	}
 	encoder := json.NewEncoder(os.Stdout)
 	encoder.SetEscapeHTML(false)
 	if err := encoder.Encode(normalized); err != nil {
 		fail("encode normalized config: %v", err)
 	}
+}
+
+func prepareFrontendRuntimeConfig(environment, configPath, output string) error {
+	if _, ok := allowedEnvironments[environment]; !ok {
+		return fmt.Errorf("environment %q is not allowlisted", environment)
+	}
+	if configPath == "" {
+		configPath = filepath.Join("deploy", "environments", environment+".yaml")
+	}
+	absConfig, err := filepath.Abs(configPath)
+	if err != nil {
+		return fmt.Errorf("resolve config path: %w", err)
+	}
+	absConfig = filepath.Clean(absConfig)
+	repoRoot := filepath.Dir(filepath.Dir(filepath.Dir(absConfig)))
+	expected := filepath.Join(repoRoot, "deploy", "environments", environment+".yaml")
+	if absConfig != expected {
+		return fmt.Errorf("config path must be the fixed %s file", filepath.ToSlash(filepath.Join("deploy", "environments", environment+".yaml")))
+	}
+
+	config, err := decodeConfig(absConfig)
+	if err != nil {
+		return err
+	}
+	return writePublicFrontendRuntimeConfig(output, environment, config.Frontend.APIURL, config.Frontend.AuthURL)
 }
 
 func Load(environment, configPath, components string) (Normalized, error) {
