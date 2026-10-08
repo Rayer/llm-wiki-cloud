@@ -192,7 +192,7 @@ Historical r1 conclusion at source HEAD `87f9ab84b00d69c9e22e391b43ec7e1823d2c94
 - Orca runtime / Run / Task / Dispatch / terminal: `8bc79eed-2312-4c07-a306-f91ae8d31716` / `run_ec3a3eca0058` / `task_bc65c32a29c9` / `ctx_6c899e0b8c14` / `term_22cddd98-1061-4a48-b360-ab7a5c14a263`.
 - Worktree / branch: `/Users/rayer/orca/workspaces/llm-wiki-cloud/LWC-370-implementation-r1` / `Rayer/LWC-370-generation-entry-r1`.
 - Starting `origin/develop` and local HEAD: `4b5f331e15b4fd361b74e18a0351799580eb434e`. Code/test commit: `852ca461f73cf4d5c2e5dfcc02ae263ab68ffce9`.
-- PR #108 was already merged to `develop` before this repair. This repair is a separate branch/PR; PR creation and final remote head/base readback are recorded below after publication.
+- PR #108 was already merged to `develop` before this repair. New PR [#109](https://github.com/Rayer/llm-wiki-cloud/pull/109) was created against `develop`; its initial head/base readback is recorded below. Follow-up contract-test commits update that head, and the final remote head is reported after the final push.
 
 ### Root cause and repair
 
@@ -223,6 +223,12 @@ Final local verification used a macOS `sandbox-exec` profile that denied externa
 | `python3 -m unittest discover -s scripts -p 'test_cd_contract.py'` | 0 | 70/70 retained CD contract tests passed. |
 | `python3 -m unittest discover -s apps/bff/scripts -p 'test_local_dev_makefile.py'` | 0 | 20/20 local fixture and loopback tests passed. |
 | `python3 -m unittest test_bff_explicit_cutover.SharedCDContractTest.test_shared_bff_path_preserves_cutover_safety_boundaries` (with `PYTHONPATH=apps/bff/scripts`) | 0 | 1/1 retained BFF wrapper safety test passed under network denial. |
+| `python3 -m unittest scripts.test_exportjob_provision_contract deploy.provision.test_exportjob_dev` | 0 | 40/40 workflow-source-guard provisioning tests passed. |
+| `node --test deploy/engine/tests/artifacts.test.cjs` | 0 | 10/10 offline artifact transport tests passed. |
+| `node --experimental-strip-types --test tests/ci-workflow-contract.test.mjs` (from `apps/frontend`) | 0 | 6/6 workflow source guard tests passed, including generation provenance and wrapper isolation. |
+| `bash -n scripts/local-vertical-smoke.sh` | 0 | Smoke script syntax passed. |
+| `npm test` (from `apps/frontend`) | 0 | 527/527 Node tests and 307/307 Vitest component tests passed; zero skips. |
+| `npm run lint` / `npm run typecheck` (from `apps/frontend`) | 0 / 0 | ESLint and TypeScript checks passed. No frontend application source changed, so no local frontend production build was run. |
 | `make workflow-yaml` | 0 | CI, CD, DEV, Production, and generator workflow YAML all parsed successfully. |
 | `git diff --check` | 0 | No whitespace errors. |
 
@@ -239,4 +245,12 @@ An initial sandbox profile blocked shell temporary-file creation and one test fi
 | GitHub Actions generated artifact ID, public bucket object bytes, public GET/CORS readback, and formal DEV application deployment | NOT RUN | Parent owns review/CI/merge and formal DEV transitions. The repaired workflow was not dispatched. No storage, Google Cloud, GSM, IAM, credential, or paid Pipeline action was used. |
 | Application Production deployment or production provider state | NOT AUTHORIZED / NOT RUN | Out of scope for this worker. No Verified/cloud-acceptance claim is made. |
 
-The historical HTTP 404 is the original live blocker; the local tests prove the new checked-in entry and provenance contract only. Until parent-owned same-SHA review/CI/merge and the authorized formal DEV workflow, there is no generated live artifact or cloud readback to report. The exact PR URL and remote head/base readbacks are appended after publication; the final post-report-push head is also sent to the coordinator.
+The historical HTTP 404 is the original live blocker; the local tests prove the new checked-in entry and provenance contract only. Until parent-owned same-SHA review/CI/merge and the authorized formal DEV workflow, there is no generated live artifact or cloud readback to report.
+
+### PR publication and canonical CI checkpoint
+
+- PR [#109](https://github.com/Rayer/llm-wiki-cloud/pull/109) is OPEN against `develop`. Initial publication readback: head branch `Rayer/LWC-370-generation-entry-r1`, head `52acfe8e2434955f938ed414038c46ff73186c07`, base branch `develop`, base SHA `4b5f331e15b4fd361b74e18a0351799580eb434e`; `git ls-remote` matched the head. `gh pr view` returned the reviewed body content with one additional trailing newline.
+- The initial canonical CI run on that head was `37772406901`. At the readback, `frontend-lint`, `frontend-typecheck`, `actionlint/schema`, and `local-vertical-smoke` were successful; `frontend-test` and `workflow-source-guards` failed on stale operation/guard assertions; `frontend-build` was skipped after the frontend-test failure; `bff` was still in progress. The initial run is not evidence for the corrected head.
+- The failure was isolated to retained test expectations in `apps/frontend/tests/ci-workflow-contract.test.mjs`, `lwc-253-vercel-dev-authority.test.mjs`, and `lwc-258-vercel-production-auth-env.test.mjs`. These tests now assert the new operation, exact read-only generation job, and release/eligibility exclusions. The full frontend suite passes locally after the fixes.
+- GitHub PR automation also created Vercel and security status checks after PR creation. Those automatic checks are not worker-initiated provider commands or a formal application release. No independent review had arrived at the initial readback; the coordinator owns same-final-SHA TPM/reviewer review and fresh canonical CI after the follow-up commits.
+- The test-only correction commit is `d5e297bd9010c00b39a5ed964aa88436bc5cc005`. The following report-only push will advance the PR head again; its exact remote readback and new CI status are sent to the coordinator.
