@@ -36,8 +36,8 @@ test('r2 registered release and recovery workflows use explicit artifact inputs'
     assert.deepEqual(Object.keys(parsed.on.workflow_dispatch.inputs), expectedInputs);
     assert.equal(parsed.jobs.release.with.environment, environment);
     assert.equal(parsed.jobs.release.if, file === 'deploy-dev.yml'
-      ? `github.ref == 'refs/heads/${branch}' && inputs.operation != 'diagnose-auth-image'`
-      : `github.ref == 'refs/heads/${branch}'`);
+      ? `github.ref == 'refs/heads/${branch}' && inputs.operation != 'diagnose-auth-image' && inputs.operation != 'frontend-config-generate'`
+      : `github.ref == 'refs/heads/${branch}' && inputs.operation != 'frontend-config-generate'`);
     assert.equal(parsed.jobs.release.with.source_sha, file === 'deploy-dev.yml'
       ? "${{ inputs.operation == 'release' && (inputs.source_sha || github.sha) || inputs.source_sha }}"
       : '${{ github.sha }}');
@@ -45,20 +45,31 @@ test('r2 registered release and recovery workflows use explicit artifact inputs'
     assert.equal(parsed.jobs.release.secrets, 'inherit');
     assert.equal(parsed.jobs.release.with.frontend_config_artifact_id, '${{ inputs.frontend_config_artifact_id }}');
     if (file === 'deploy-dev.yml') assert.equal(parsed.jobs.release.with.operation, '${{ inputs.operation }}');
+    const generation = parsed.jobs['frontend-config-generate'];
+    assert.equal(generation.if, "github.ref == 'refs/heads/develop' && inputs.operation == 'frontend-config-generate'");
+    assert.equal(generation.permissions.contents, 'read');
+    assert.equal(generation.uses, './.github/workflows/generate-frontend-config.yml');
+    assert.deepEqual(generation.with, { environment: file === 'deploy-dev.yml' ? 'dev' : 'prod' });
+    assert.equal(generation.secrets, undefined);
+    assert.doesNotMatch(JSON.stringify(generation), /id-token|secrets/);
   }
   const deployDev = parseYaml(await workflow('deploy-dev.yml'));
   const operation = deployDev.on.workflow_dispatch.inputs.operation;
   assert.equal(operation.type, 'choice');
   assert.equal(operation.default, 'release');
-  assert.deepEqual(operation.options, ['release', 'config-only', 'frontend-config-only', 'deploy', 'rollback', 'reactivate', 'tag', 'readback', 'diagnose-auth-image']);
+  assert.deepEqual(operation.options, ['release', 'config-only', 'frontend-config-only', 'frontend-config-generate', 'deploy', 'rollback', 'reactivate', 'tag', 'readback', 'diagnose-auth-image']);
+  const promoteProduction = parseYaml(await workflow('promote-production.yml'));
+  assert.deepEqual(promoteProduction.on.workflow_dispatch.inputs.operation.options,
+    ['release', 'config-only', 'frontend-config-only', 'frontend-config-generate']);
   assert.equal(deployDev.on.workflow_dispatch.inputs.source_sha.default, '');
   assert.deepEqual(deployDev.on.workflow_dispatch.inputs.force, { description: 'Explicitly accept duplicate-mutation risk to deploy a new ready attempt past another attempt\'s unresolved target status', type: 'boolean', default: false });
-  assert.deepEqual(Object.keys(deployDev.jobs).sort(), ['auth-image-diagnostic', 'main-fast-forward-eligible', 'release']);
+  assert.deepEqual(Object.keys(deployDev.jobs).sort(), ['auth-image-diagnostic', 'frontend-config-generate', 'main-fast-forward-eligible', 'release']);
   const eligibility = deployDev.jobs['main-fast-forward-eligible'];
   assert.equal(eligibility.name, 'main-fast-forward-eligible');
   assert.equal(eligibility.needs, 'release');
   assert.ok(eligibility.if.includes("inputs.operation != 'readback'"));
   assert.ok(eligibility.if.includes("inputs.operation != 'frontend-config-only'"));
+  assert.ok(eligibility.if.includes("inputs.operation != 'frontend-config-generate'"));
   assert.deepEqual(eligibility.permissions, { contents: 'read', actions: 'read', statuses: 'write' });
   assert.equal(eligibility.steps.find((step) => step.name === 'Download this DEV attempt result').with.name,
     'lwc-result-development-${{ github.run_id }}-${{ github.run_attempt }}');
@@ -75,7 +86,8 @@ test('r2 registered release and recovery workflows use explicit artifact inputs'
   assert.deepEqual(diagnostic.permissions, { contents: 'read', actions: 'read', 'id-token': 'write' });
   assert.deepEqual(diagnostic.with, { source_sha: '${{ github.sha }}' });
   const generator = parseYaml(await workflow('generate-frontend-config.yml'));
-  assert.deepEqual(Object.keys(generator.on), ['workflow_dispatch']);
+  assert.deepEqual(Object.keys(generator.on), ['workflow_call', 'workflow_dispatch']);
+  assert.deepEqual(generator.on.workflow_call.inputs.environment, { required: true, type: 'string' });
   assert.deepEqual(generator.on.workflow_dispatch.inputs.environment.options, ['dev', 'prod']);
   assert.deepEqual(generator.permissions, { contents: 'read' });
   assert.doesNotMatch(JSON.stringify(generator), /google-github-actions\/auth|id-token|gcloud storage/i);
