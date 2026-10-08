@@ -4,6 +4,7 @@ import hashlib
 import json
 from pathlib import Path
 import re
+import subprocess
 import sys
 
 GOOGLE = {
@@ -53,11 +54,54 @@ BFF_LEGACY_ENV = (
 )
 BFF_LEGACY_SECRET_ENV = ('JWT_SECRET', 'DEEPSEEK_API_KEY', 'TYPESAFE_JEV_API_KEY')
 SECRET_RESOURCE = re.compile(r'^projects/[A-Za-z0-9.-]+/secrets/[A-Za-z0-9_-]+$')
+GCP_PROJECT_NUMBER = re.compile(r'^[1-9][0-9]{5,19}$')
 
 
 def require(condition):
     if not condition:
         raise ValueError("contract mismatch")
+
+
+def revision_uses_numeric_project_resource(revision):
+    resources = []
+    spec = revision.get('spec', {})
+    for volume in spec.get('volumes', []):
+        secret = volume.get('secret')
+        if isinstance(secret, dict):
+            resources.append(secret.get('secretName'))
+    annotations = revision.get('metadata', {}).get('annotations', {})
+    for binding in annotations.get('run.googleapis.com/secrets', '').split(','):
+        if binding:
+            _, separator, target = binding.partition(':')
+            if separator:
+                resources.append(target)
+    for container in spec.get('containers', []):
+        for entry in container.get('env', []):
+            ref = entry.get('valueFrom', {}).get('secretKeyRef')
+            if isinstance(ref, dict):
+                resources.append(ref.get('name'))
+    for resource in resources:
+        if isinstance(resource, str) and SECRET_RESOURCE.fullmatch(resource):
+            project = resource.split('/')[1]
+            if GCP_PROJECT_NUMBER.fullmatch(project):
+                return True
+    return False
+
+
+def selected_project_number(project_id):
+    require(isinstance(project_id, str) and project_id)
+    result = subprocess.run(
+        ['gcloud', 'projects', 'describe', project_id, '--format=json', '--quiet'],
+        text=True, capture_output=True, check=False)
+    require(result.returncode == 0)
+    identity = json.loads(result.stdout)
+    require(isinstance(identity, dict) and identity.get('projectId') == project_id)
+    number = identity.get('projectNumber')
+    if type(number) is int:
+        require(number > 0)
+        number = str(number)
+    require(isinstance(number, str) and GCP_PROJECT_NUMBER.fullmatch(number))
+    return number
 
 
 def query_path(plan):
@@ -281,8 +325,13 @@ def native_file_binding(revision, project, directory, filename, expected_mode,
     require(isinstance(item, dict) and item.get('path') == filename)
     version = item.get('key')
     require(isinstance(version, str) and re.fullmatch(r'[1-9][0-9]*', version))
-    mode = item.get('mode', expected_mode)
-    require(type(mode) is int and mode == expected_mode)
+    item_mode = item.get('mode', 0)
+    default_mode = secret.get('defaultMode', 0)
+    for declared_mode in (item_mode, default_mode):
+        require(type(declared_mode) is int and 0 <= declared_mode <= 0o777)
+    mode = item_mode or default_mode or expected_mode
+    mode &= ~0o222
+    require(mode == expected_mode)
     return {
         'resource': expected_resource,
         'version': version,
@@ -316,9 +365,13 @@ def main():
             expected_resource = desired(plan, 'auth', auth_config_version='1')['file_secret']['resource']
         else:
             raise ValueError('Auth file config is not selected')
-        binding = (native_bff_file_binding(revision, plan['gcp']['project_id'], expected_resource)
+        project_number = (selected_project_number(plan['gcp']['project_id'])
+                          if revision_uses_numeric_project_resource(revision) else None)
+        binding = (native_bff_file_binding(revision, plan['gcp']['project_id'], expected_resource,
+                                           project_number)
                    if component == 'bff' else
-                   native_auth_file_binding(revision, plan['gcp']['project_id'], expected_resource))
+                   native_auth_file_binding(revision, plan['gcp']['project_id'], expected_resource,
+                                            project_number))
         require(binding['resource'] == expected_resource)
         print(binding['version'])
         return
@@ -359,6 +412,8 @@ def main():
     require(revision['status']['imageDigest'] == sys.argv[5])
     require(revision['spec']['containers'][0]['image'] == sys.argv[5])
     require(any(c['type'] == 'Ready' and c['status'] == 'True' for c in revision['status']['conditions']))
+    project_number = (selected_project_number(plan['gcp']['project_id'])
+                      if revision_uses_numeric_project_resource(revision) else None)
     actual = effective(revision, plan['gcp']['project_id'], component,
                        set(expected['env']) == {QUERY_PATH},
                        component == 'bff' and (plan['environment'] == 'development' or plan['auth'].get('google') is None),
@@ -367,7 +422,7 @@ def main():
                        component == 'bff' and (plan['environment'] == 'development' or plan['export_job']['enabled']),
                        component == 'bff' and PIPELINE_COOLDOWN_SECONDS in expected['env'],
                        component == 'auth' and isinstance(plan['auth'].get('runtime_inputs'), dict),
-                       expected.get('file_secret', {}).get('resource'))
+                       expected.get('file_secret', {}).get('resource'), project_number)
     digest = fingerprint(actual)
     if component == 'bff':
         # Pin all retained revision settings, including unrelated env/secrets and
