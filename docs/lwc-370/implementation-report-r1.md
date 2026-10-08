@@ -1,6 +1,6 @@
 # LWC-370 implementation report (r1)
 
-Status: scoped implementation and offline integration are committed locally; a PR checkpoint can be published while final shared acceptance awaits the coordinator's LWC-374 fixture repair.
+Status: scoped implementation and shared offline integration are committed locally; all named local acceptance and affected CI suites pass at the current integrated HEAD. PR publication is the remaining checkpoint.
 
 ## Execution identity
 
@@ -9,7 +9,7 @@ Status: scoped implementation and offline integration are committed locally; a P
 - Terminal/incarnation: `term_22cddd98-1061-4a48-b360-ab7a5c14a263` / `a8f2737e-877a-421e-a69c-badea9b7c78b`.
 - Worktree/branch: `/Users/rayer/orca/workspaces/llm-wiki-cloud/LWC-370-implementation-r1`, `Rayer/LWC-370-implementation-r1`.
 - Own frontend checkpoint commit: `7e69e0b4ef3f8215a4ec091bd8dba6e077e171a5`.
-- Exact LWC-374 checkpoint integrated by normal merge: `c86101d8c999c5c05db9fdf8798073002bae79b0` (parent `f62bb530cb968e312b3faad77fe0f1b93b3e447b`). Current HEAD is `cb96ee89a35a5270ba33ce20b5dbedd0d1f929f6`, containing the committed LWC-370 implementation and that integration checkpoint. This report has pending documentation updates; source changes are committed.
+- LWC-374 baseline `c86101d8c999c5c05db9fdf8798073002bae79b0` and final checkpoint `12847cd616e73d7ddcaccbdc612245c0c34d7b13` are integrated by normal merge. The final checkpoint contains repair commit `a5763a361b9e453b2cf0df838340a69154c99f8e` and LWC-374 report-only commits. Current integrated HEAD before this report update is `87f9ab84b00d69c9e22e391b43ec7e1823d2c942`; source changes are committed.
 - PR: none. Exact PR URL, remote head/base readback, and final SHA will be recorded after final integration and publication.
 
 ## Implemented checkpoint
@@ -40,9 +40,9 @@ Status: scoped implementation and offline integration are committed locally; a P
 | `python3 -m unittest discover -s deploy/engine/tests -p test_engine.py` | 0 | 51/51 retained engine tests passed with synthetic providers. |
 | `python3 -m unittest discover -s deploy/engine/tests -p test_prepare_diagnostics.py` | 0 | 32/32 prepare and frontend diagnostic tests passed with synthetic providers. |
 | `python3 scripts/test_cd_contract.py` | 0 | Current-head CD workflow contract suite passed 70/70 tests. |
-| `python3 -m unittest discover -s ../../scripts -p 'test_*auth_config_contract.py'` (from `apps/bff`) | 1 | 21 tests ran; the LWC-374-owned production Auth contract fixture currently has 56 failing subcases and 3 errors. Coordinator is repairing the fixture/scripts; no fixture changes were made here. |
-| `python3 -m unittest discover -s deploy/engine/tests` | 1 | 124 tests ran; 7 failures and 2 errors are in LWC-374-owned `test_build_submission.py` admission/resume fixtures. Coordinator owns that repair; no fixture changes were made here. |
-| `go test ./... -v -count=1 -race` (from `apps/bff`) | 0 | All Go packages passed with the race detector enabled. |
+| `python3 -m unittest discover -s ../../scripts -p 'test_*auth_config_contract.py'` (from `apps/bff`) | 0 | Final LWC-374 Auth contract suite passed 15/15 tests. |
+| `python3 -m unittest discover -s deploy/engine/tests` | 0 | Final deployment engine suite passed 124/124 tests after the exact LWC-374 fixture repair was integrated. |
+| `go test ./... -count=1 -race` (from `apps/bff`) | 0 | All Go packages passed with the race detector enabled. |
 | `make config-local CONFIG_TARGET=frontend` | 0 | Generated `.build/cac/local/frontend-config.json` with the selected worktree default ports; the command did not invoke local scope/key setup. |
 | `make config-dev CONFIG_TARGET=frontend` / `make config-prod CONFIG_TARGET=frontend` | 0 / 0 | Generated `.build/cac/dev/frontend-config.json` and `.build/cac/prod/frontend-config.json`; both have exactly the public schema and existing endpoints. |
 | `make config-local CONFIG_TARGET=frontend CAC_OUTPUT_DIR=/tmp/lwc370-cac-validation BFF_PORT=19080 AUTH_PORT=19081` | 0 | Generated exactly the three public fields and used the selected loopback ports. |
@@ -57,7 +57,7 @@ Status: scoped implementation and offline integration are committed locally; a P
 | `node --check apps/frontend/tests/lwc-318-built-config.mjs` | 0 | Node syntax passed. |
 | `git diff --check` | 0 | No whitespace errors. |
 
-Initial frontend-slice runs exposed stale workflow assertions: `npm test` exited 1 with 521/526 Node tests passing and five workflow-contract failures; the first `python3 scripts/test_cd_contract.py` exited 1 with 3/70 workflow-assertion failures. The assertions were updated narrowly, then the complete frontend reruns passed with no skips. Current-head `test_cd_contract.py` is 70/70. The Auth config and engine broad suites still fail in LWC-374-owned fixtures (21 tests with 56 failing subcases/3 errors, and 124 tests with 7 failures/2 errors respectively); coordinator repair is pending, and these results are not reported as passes.
+Initial frontend-slice runs exposed stale workflow assertions: `npm test` exited 1 with 521/526 Node tests passing and five workflow-contract failures; the first `python3 scripts/test_cd_contract.py` exited 1 with 3/70 workflow-assertion failures. The assertions were updated narrowly, then the complete frontend reruns passed with no skips. Before the LWC-374 fixture repair, Auth config and deployment engine suites exposed the owned fixture failures recorded in the checkpoint; after normal integration of exact final checkpoint `12847cd616e73d7ddcaccbdc612245c0c34d7b13`, the current integrated Auth suite is 15/15 and engine suite is 124/124.
 
 All public JSON, hosts, and artifact metadata used for local tests were synthetic. No deployment workflow was dispatched, and no Vercel, GCS, GSM, IAM, credential, or paid Pipeline action was run.
 
@@ -70,8 +70,8 @@ All public JSON, hosts, and artifact metadata used for local tests were syntheti
 | Frontend config artifact metadata, exact-ID selection, success/source/environment/hash checks, no rebuild publication branch, and Make producer | PASS for offline contract | Artifact tests 7/7; local/dev/prod Make targets emitted the expected public fields. Source A after source B and wrong-environment rejection passed with synthetic artifacts. |
 | Static receipt schema and deployment adapter | PASS for offline integration | Receipt contains reader version/config URL; 56/56 adapter cases and 51/51 engine cases pass, including admission, snapshot/restore, and reuse against the new normalized identity. |
 | GCS generation/publication, live object generation, CORS/public GET, and cloud readback | NOT RUN | The workflow code is present, but no DEV/Prod provider action or cloud resource was touched. Bucket/IAM/CORS readiness remains unverified. |
-| LWC-369/LWC-371 compatibility | PASS for scoped offline checks; broad suite pending | Retained engine/frontend and current-head CD contract checks pass; no LWC-371 charging/refund paths were changed. Auth config and full engine suites remain blocked by LWC-374-owned fixtures. |
-| LWC-374 producer/normalizer/engine integration | PASS for scoped offline integration | Exact committed `c86101d8c999c5c05db9fdf8798073002bae79b0` is merged. Frontend generation, local ports, normalized target identity, and engine reuse are covered. LWC-374 owns the still-pending Auth/BFF admission fixture repair and will provide its exact commit for normal integration before final QA. |
+| LWC-369/LWC-371 compatibility | PASS for offline/local checks | Retained engine suite 124/124, frontend suite 527/527 plus 307/307 component tests, and current-head CD contract 70/70 pass; no LWC-371 charging/refund paths were changed. |
+| LWC-374 producer/normalizer/engine integration | PASS for offline/local integration | Exact final checkpoint `12847cd616e73d7ddcaccbdc612245c0c34d7b13` is integrated. Frontend generation, local ports, normalized target identity, engine reuse, Auth contract, and engine admission/resume fixtures pass their named suites. |
 | DEV/Production deployment, live GSM, IAM/resources/credentials, paid Pipeline, UAT, and cloud verification | NOT RUN | Outside this worker’s authorized execution scope. Offline/local results do not claim cloud verification or Verified status. |
 
-The LWC-370 source implementation and exact LWC-374 integration checkpoint are committed locally at HEAD `cb96ee89a35a5270ba33ce20b5dbedd0d1f929f6`; only this report has pending updates. The standalone PR checkpoint is ready; final integrated PR head, TPM review, independent review, canonical CI, merge-to-develop, and deployment have not occurred. The coordinator will provide the exact LWC-374 fixture repair commit for normal integration and final verification.
+The LWC-370 implementation and exact LWC-374 final checkpoint are committed locally at integrated HEAD `87f9ab84b00d69c9e22e391b43ec7e1823d2c942`; this report has pending updates. No push or PR has occurred yet. TPM review, independent review, canonical CI, merge-to-develop, and deployment remain with the coordinator; cloud deployment acceptance remains NOT RUN.
