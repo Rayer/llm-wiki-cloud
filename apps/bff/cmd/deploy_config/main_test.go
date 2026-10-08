@@ -319,7 +319,8 @@ func TestProductionProfileBindingsAreRequiredOnlyForBFFDeployment(t *testing.T) 
 		t.Fatalf("Production Worker plan must use its own reviewed config without BFF inputs: %v", err)
 	}
 	worker, ok := workerPlan.Components["worker"].(map[string]any)
-	if !ok || worker["secret_references"] == nil || workerPlan.BFF.RuntimeInputs != nil {
+	if !ok || worker["secret_references"] == nil || workerPlan.BFF.RuntimeInputs != nil ||
+		workerPlan.BFF.FirestoreDatabaseID != config.Auth.FirestoreDatabaseID {
 		t.Fatalf("Production Worker-only plan unexpectedly consumed BFF inputs: %#v", workerPlan)
 	}
 	if _, err := LoadWithBFFInputs("production", filepath.Join(root, "deploy/environments/production.yaml"), "bff",

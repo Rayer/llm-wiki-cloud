@@ -37,6 +37,13 @@ class Acceptance(unittest.TestCase):
                     '--config',str(ROOT/'deploy/environments'/f'{environment}.yaml'),'--components',components,
                     '--bff-inputs',str(descriptor_dir/'bff-inputs.json')],cwd=ROOT/'apps/bff',env=env,text=True)
                 setattr(cls,attribute,json.loads(output))
+            cls.worker_only_normalized = {}
+            for environment in ('development', 'production'):
+                output = subprocess.check_output(
+                    ['go', 'run', './cmd/deploy_config', '--environment', environment,
+                     '--config', str(ROOT/'deploy/environments'/f'{environment}.yaml'),
+                     '--components', 'worker'], cwd=ROOT/'apps/bff', env=env, text=True)
+                cls.worker_only_normalized[environment] = json.loads(output)
 
     def setUp(self):
         self.real_node = shutil.which('node')
@@ -104,6 +111,33 @@ class Acceptance(unittest.TestCase):
             self.provider.setdefault('pipeline_configs', {})[
                 f'gs://{bucket}/pipeline-config/synto.toml'] = '[pipeline]\nrun_timeout_seconds = 82800\n'
         self.flush()
+
+    def test_worker_only_normalizer_drives_real_deploy_with_compatibility_database_scope(self):
+        for environment, database_id, job_name in (
+                ('development', 'llm-wiki-cloud-dev', 'olw-pipeline-dev'),
+                ('production', 'llm-wiki-cloud-prod', 'olw-pipeline')):
+            with self.subTest(environment=environment):
+                normalized = self.worker_only_normalized[environment]
+                self.assertEqual(normalized['selected_components'], ['worker'])
+                self.assertEqual(normalized['bff']['firestore_database_id'], database_id)
+                self.assertNotIn('runtime_inputs', normalized['bff'])
+                self.assertEqual(normalized['worker']['job_name'], job_name)
+
+                calls = []
+                provider = providers.Providers({'id': 'worker-only', 'normalized': normalized}, self.root)
+                provider.cloud = lambda component, *args, mutation=False: calls.append(
+                    (component, args, mutation)) or '{}'
+                image = 'worker@sha256:' + 'b' * 64
+                provider.deploy('worker', {'image': image}, {}, lambda: None)
+
+                self.assertEqual(len(calls), 1)
+                component, args, mutation = calls[0]
+                self.assertEqual(component, 'worker')
+                self.assertTrue(mutation)
+                self.assertEqual(args[:5], ('jobs', 'update', job_name, '--image', image))
+                env_args = args[args.index('--update-env-vars') + 1]
+                self.assertEqual(env_args, '^|^GCP_PROJECT=llm-wiki-cloud|FIRESTORE_DATABASE_ID=' + database_id)
+                self.assertNotIn('--update-secrets', args)
 
     def flush(self):write(self.root/'provider.json',self.provider)
     def current(self):return read(self.root/'provider.json')

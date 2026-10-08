@@ -322,6 +322,11 @@ func load(environment, configPath, components, bffInputsPath string, requireBFFI
 	if err != nil {
 		return Normalized{}, err
 	}
+	if contains(selected, "worker") && !contains(selected, "bff") {
+		// The Worker deploy adapter still reads this nonsecret compatibility field.
+		// Preserve its reviewed database scope without preparing unrelated BFF inputs.
+		config.BFF.FirestoreDatabaseID = config.Auth.FirestoreDatabaseID
+	}
 	if requireBFFInputs {
 		if strings.TrimSpace(bffInputsPath) == "" {
 			return Normalized{}, errors.New("generated BFF input descriptor is required when bff is selected")

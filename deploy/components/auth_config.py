@@ -246,6 +246,8 @@ def main():
                 any(isinstance(c, dict) and c.get('type') == 'Ready' and c.get('status') == 'True'
                     for c in conditions))
         binding = native_bff_file_binding(revision, plan['gcp']['project_id'])
+        expected_resource = desired(plan, 'bff', '1')['file_secret']['resource']
+        require(binding['resource'] == expected_resource)
         print(binding['version'])
         return
     if mode == 'args':
