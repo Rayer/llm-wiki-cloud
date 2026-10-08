@@ -259,7 +259,7 @@ The historical HTTP 404 is the original live blocker; the local tests prove the 
 
 ### Status and execution identity
 
-- This bounded corrective repair preserves the original failing component and its bounded, typed materialization failure through the existing poll and automatic compensation path. It does not change deployment status, recovery, checkpoint, exit, or rollback policy.
+- The original r1 repair preserved the Auth component and a generic typed materialization failure through successful compensation. Review reproduced two remaining losses: the Go Auth wrapper discarded bounded SDK details, and a failed compensation replaced the original deployment/poll causes; the r2 repair below addresses both without changing deployment, recovery, checkpoint, exit, or rollback policy.
 - Model / effort / mode: GPT-6-Luna (`gpt-6-luna`) / xhigh / YOLO, same retained Codex session `01a11a29-d15c-7fc0-9c76-cbf0c764d43d`.
 - Orca runtime / Run / Task / Dispatch / terminal: `8bc79eed-2312-4c07-a306-f91ae8d31716` / `run_ec3a3eca0058` / `task_c1e46c152acb` / `ctx_423bcd9500a4` / `term_22cddd98-1061-4a48-b360-ab7a5c14a263`.
 - Worktree / branch: `/Users/rayer/orca/workspaces/llm-wiki-cloud/LWC-370-implementation-r1` / `Rayer/LWC-370-dev-failure-cause-r1`.
@@ -270,7 +270,7 @@ The historical HTTP 404 is the original live blocker; the local tests prove the 
 
 The saved DEV checkpoint records Auth failed at sequence 18 while Export was verified, then both were restored and verified by sequence 24. Its final result instead names `exportjob` and `basic-sanity-mismatch`, with no failure diagnostic or cause; the Auth candidate remained `preparing` / `not_started` with no version or revision. The supplied incident checkpoint correctly classifies the remote root cause as unknown and the missing destination Auth/BFF Secret containers as an unproven prerequisite observation.
 
-Source inspection explains the loss without claiming the historic trigger. `providers.prepare_auth_config_version` invokes the Go `materialize-auth` command before Secret Manager version publication. Go `auth.go` deliberately returns the generic safe message `selected secret version could not be accessed` for secret-read failures, but `auth-config-materialize` was absent from the engine's structured-cause stage allowlist. If materialization fails, `Engine.deploy` reconciles the still-empty candidate; reconciliation returns without an error, then poll replaces the deployment exception with `basic-sanity-mismatch`. Automatic restore iterates in reverse component order and overwrote `engine.component`, which `Engine.result` then used for the top-level result. The original remote exception was not stored, so the specific historical permission/resource/config cause cannot be reconstructed.
+Source inspection explains the r1 loss without claiming the historic trigger. `providers.prepare_auth_config_version` invokes the Go `materialize-auth` command before Secret Manager version publication. Go `auth.go` deliberately returned the generic message `selected secret version could not be accessed` for secret-read failures, while `auth-config-materialize` was absent from the engine's structured-cause stage allowlist. If materialization fails, `Engine.deploy` reconciles the still-empty candidate; reconciliation returns without an error, then poll replaces the deployment exception with `basic-sanity-mismatch`. Automatic restore iterates in reverse component order and overwrote `engine.component`, which `Engine.result` then used for the top-level result. The original remote exception was not stored, so the specific historical permission/resource/config cause cannot be reconstructed.
 
 - Added `auth-config-materialize` to the existing bounded structured-cause allowlist, retaining only the fixed exception type/code, stage, exit/timeout metadata, and bounded redacted message.
 - When a deployment exception is followed by a poll failure, the result now carries both typed deployment and poll phases. After compensation, the engine restores the original failed component as the result identity; final stage/status/checkpoint and rollback actions are unchanged.
@@ -299,7 +299,7 @@ The first test harness invocation exited 1 because the new test referenced a non
 | Acceptance | State | Evidence / limit |
 | --- | --- | --- |
 | Auth remains the reported failed component after automatic restore | PASS offline | Production engine/result regression and actual Action regression; stage remains `failed_rolled_back`, reason remains `basic-sanity-mismatch`, and component status/checkpoint rollback evidence is unchanged. |
-| Bounded useful nonsecret materialization cause reaches the result | PASS offline | Result carries `ChildProcessError` / `child-command-failed`, fixed stage `auth-config-materialize`, exit code, and the Go materializer's generic safe message. Raw provider output and payload are not emitted. |
+| Auth component and typed stage attribution through successful compensation | PASS offline | The r1 regression retained `ChildProcessError` / `child-command-failed` and `auth-config-materialize`, but its generic subprocess fixture did not prove SDK detail preservation. The r2 acceptance evidence is below. |
 | Specific cause of DEV run `37776060581` | UNKNOWN | Original pre-compensation exception was not retained; no offline test can reconstruct it. The observed missing destination Secret containers are not proof of the original cause. |
 | Application DEV deployment, live provider readback, Secret Manager payload or IAM/resource changes | NOT RUN | Parent retains deployment/provisioning authority; no cloud action was taken by this worker. Existing ready/final IDs and receipts were not rebuilt or altered. |
 | Production deployment, main promotion, merge, paid Pipeline | NOT AUTHORIZED / NOT RUN | Out of this worker's scope. |
@@ -309,4 +309,56 @@ The first test harness invocation exited 1 because the new test referenced a non
 - PR [#110](https://github.com/Rayer/llm-wiki-cloud/pull/110) was opened against `develop`. At initial publication, exact head `23cf06b6798150d9bf71798f6ed11e488f62baab` matched `git ls-remote`; exact base was `057b8fd96189f50d6aba4f1fcace5d001304bf54`. The PR body readback matched the reviewed body.
 - Canonical CI run `37781207753` was `in_progress` at readback for that head. `workflow-source-guards` had passed; `bff`, `actionlint/schema`, `frontend-test`, `frontend-typecheck`, `frontend-lint`, and `local-vertical-smoke` were still running or pending. The final report-only push will advance the head; its exact remote readback and current CI state are in the coordinator handoff.
 
-The repair makes the next failure result discriminating and keeps the known Auth component visible; it does not claim that the historical root cause is resolved. PR publication and exact final remote head are owned by the coordinator handoff after this report commit.
+The r1 repair made the component and generic failure stage visible; neither that nor the r2 synthetic evidence identifies the historical trigger. PR #110 remains subject to parent-owned same-final-SHA review, canonical CI, merge, and any formal DEV follow-up.
+
+## LWC-370 PR #110 bounded r2 cause retention (2026-10-08)
+
+### Execution identity and scope
+
+- Model / effort / mode: GPT-6-Luna (`gpt-6-luna`) / xhigh / YOLO, same retained Codex session `01a11a29-d15c-7fc0-9c76-cbf0c764d43d`.
+- Orca runtime / Run / Task / Dispatch / terminal: `8bc79eed-2312-4c07-a306-f91ae8d31716` / `run_ec3a3eca0058` / `task_a1b1c65822a2` / `ctx_eb8ab59bcd44` / `term_22cddd98-1061-4a48-b360-ab7a5c14a263`.
+- Worktree / branch: `/Users/rayer/orca/workspaces/llm-wiki-cloud/LWC-370-implementation-r1` / `Rayer/LWC-370-dev-failure-cause-r1`.
+- Starting local/remote PR head: `7d90f080633cfbd496d6719c722f74a38502c304`; base `origin/develop`: `057b8fd96189f50d6aba4f1fcace5d001304bf54`. The branch was clean before r2.
+- PR [#110](https://github.com/Rayer/llm-wiki-cloud/pull/110) targets `develop`; the r2 source/test commit is recorded in the Git history and the final PR branch head is read back in the worker completion to avoid a self-referential report SHA.
+- Scope was limited to the Auth SDK diagnostic boundary, Engine compensation cause serialization, test fixtures/regressions, and this report. No live SDK, ADC, GSM payload, provider, IAM, resource, credential, deployment, paid Pipeline, rebuild, merge, or Production action was performed.
+
+### Reproduced behavior and repair
+
+The read-only reviewer artifacts reproduced both losses: `resolveBindingFromReader` discarded the error already bounded by `googleAPIErrorSummary`, and `Engine.deploy` allowed `rollback-not-verified` to replace the original deployment/poll causes when compensation failed. The historical DEV run remains unknown: its result did not retain the original pre-compensation exception, and the separately observed missing destination Secret containers do not prove the original trigger.
+
+- Go now returns the existing summarized `resolveBinding` error with the stable `selected secret version could not be accessed` prefix. The SDK boundary still omits response details/raw bodies, bounds long messages, and preserves numeric-version and project-identity validation.
+- `Engine.restore` now adds a bounded compensation cause per failed component to the existing `rollback-not-verified` result. `Engine.deploy` carries original deployment/poll causes into that error and restores the original failing component in the result. `recovery_failed`, unknown result status, retained-checkpoint action, state sequence, nonzero exit, and rollback behavior remain unchanged.
+- Go SDK tests use the real generated Secret Manager client with an injected HTTP transport and the actual `runMaterializeAuth` CLI handler. Synthetic 403, 404, empty-payload, and success responses verify bounded diagnostics, raw-details-marker absence, failed-write absence, and private output mode.
+- Engine and Node Action regressions invoke the actual `materialize-auth` command boundary through a test-only Go shim. The shim passes the actual CLI input/output arguments to the real Go handler backed by the synthetic SDK transport; its resulting error then traverses production `Engine.deploy`, reconciliation, polling, compensation, result writing, and the real Node Action. A TEST ONLY export-job fixture makes rollback fail without applying the restore, confirming original causes and compensation diagnostics both survive.
+
+### RED-to-GREEN and local verification
+
+The updated SDK-backed and compensation regressions failed on the pre-r2 code: the 403/404/empty Go cases returned only the generic message, and Engine/Action results contained no `causes` after failed compensation. With the repair restored, the same focused commands passed. All final checks used the owned profile TMPDIR `/Users/rayer/.hermes/profiles/lwc-tpm/cache/scratch/implementation-wave/370-r2-offline-tmp` and Seatbelt profile `/Users/rayer/.hermes/profiles/lwc-tpm/cache/scratch/implementation-wave/lwc-370-r3-offline/offline.sb`, which denies external network and permits localhost sockets; SDK HTTP requests used only the injected in-process transport.
+
+| Command | Exit | Result |
+| --- | ---: | --- |
+| `go test ./cmd/pipeline_config -run 'TestRunMaterializeAuth|TestMaterializeAuthHelperProcess' -count=1` (`apps/bff`, before r2) | 1 | The 403, 404, and empty-payload SDK cases failed because only the generic message survived. |
+| `python3 -m unittest test_engine.Acceptance.test_auth_and_compensation_causes_survive_engine_result test_engine.Acceptance.test_runtime_action_forwards_auth_and_compensation_causes` (`deploy/engine/tests`, before r2) | 1 | Both tests failed because `rollback-not-verified` results had no `causes`. |
+| Same focused Go command, final code | 0 | SDK 403/404/empty cases and successful materialization passed; real SDK adapter, CLI handler, body marker exclusion, message bound, and private file mode verified. |
+| Same focused Python command, final code | 0 | 2/2 Engine/Node Action tests passed; result retained `deploy`, `poll`, and `compensation` causes, Auth top-level component, `recovery_failed`, unknown result status, `inspect-retained-checkpoint`, and per-component rollback statuses. |
+| `python3 -m unittest discover -s ../../deploy/engine/tests -p 'test_*.py'` (`apps/bff`) | 0 | 131/131 Engine tests passed, zero skips. |
+| `python3 ../../scripts/test_cd_contract.py` (`apps/bff`) | 0 | 70/70 CD contract tests passed, zero skips. |
+| `python3 -m unittest discover -s ../../scripts -p 'test_*auth_config_contract.py'` (`apps/bff`) | 0 | 21/21 Auth/BFF contract tests passed, zero skips. |
+| `python3 -m unittest discover -s scripts -p 'test_*.py'` (`apps/bff`) | 0 | 119/119 retained CD safety tests passed, zero skips. |
+| `go vet ./...` (`apps/bff`) | 0 | Go vet passed. |
+| `go test ./... -v -count=1 -race` (`apps/bff`) | 0 | All 47 Go packages passed with race detection; 91 explicit `SKIP` test records remained in the verbose run. |
+| `go build ./...` (`apps/bff`) | 0 | Full Go build passed. |
+| `git diff --check` | 0 | No whitespace errors. |
+
+### Acceptance and remaining limits
+
+| Acceptance | State | Evidence / limit |
+| --- | --- | --- |
+| Selected Auth Secret Manager failure keeps its bounded SDK diagnostic | PASS offline | Actual generated SDK client, in-process synthetic HTTP 403/404 and 200-empty, `runMaterializeAuth`, Engine, and Node Action. Raw response details marker is absent; long API message is truncated by the existing bound; no file is written on failure. |
+| Successful Auth materialization remains private and compatible | PASS offline | Synthetic SDK 200 payload produces a schema-valid config with mode `0600`; numeric version and project identity guards are unchanged. |
+| Failed compensation retains deployment/poll and per-component rollback diagnostics | PASS offline | Engine and real Node Action results contain the existing `deploy`/`poll` causes plus `compensation` for failed `exportjob`; Auth remains the top-level component, and recovery/unknown/inspection states and exit policy are preserved. Existing successful compensation regressions remain in the 131-test suite. |
+| Specific cause of DEV run `37776060581` | UNKNOWN | The original pre-compensation exception was not retained. The offline discriminator does not reconstruct historical stderr or treat missing destination containers as proof. |
+| Application DEV deployment, live provider readback, Secret Manager payload or IAM/resource changes | NOT RUN | Parent owns future formal DEV/provisioning decisions. Existing ready/final IDs and receipts were not rebuilt or altered. |
+| Production deployment, main promotion, merge, paid Pipeline | NOT AUTHORIZED / NOT RUN | Out of scope. PR #110 remains open for parent review and canonical CI. |
+
+The r2 change improves future failure evidence only. It neither resolves the historical DEV root cause nor changes the deployment recovery contract.
