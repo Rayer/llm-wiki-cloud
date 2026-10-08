@@ -97,7 +97,7 @@ func TestEvaluateQuotaUnenforcedWithoutStore(t *testing.T) {
 	h := &Handler{}
 	h.SetPipelineQuotaConfig(2, 3600, 1, []string{"demo-user"})
 
-	snap, reserved, _, err := h.evaluateQuota(t.Context(), "demo-user", "proj", true)
+	snap, reserved, err := h.evaluateQuota(t.Context(), "demo-user", "proj", "")
 	if err != nil {
 		t.Fatalf("evaluateQuota: %v", err)
 	}

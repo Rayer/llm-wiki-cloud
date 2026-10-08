@@ -3600,7 +3600,8 @@ func TestCloudSuccessUsesExactStartAndConcurrentChangesStayDirty(t *testing.T) {
 		writeCloudObject(t, m, prefix+annotation.Path("s1"), cloudAnnotation(t, "annotation-concurrent"))
 		return nil
 	}
-	if err := runCloudWorkerBatch(context.Background(), cloudCfg(), [][]string{{"run"}}, m); err != nil {
+	firstCfg := cloudCfgFor("user-secret", "project-secret", "cloud-generation-1")
+	if err := runCloudWorkerBatch(context.Background(), firstCfg, [][]string{{"run"}}, m); err != nil {
 		t.Fatal(err)
 	}
 	status := cloudStatus(t, m, prefix)
@@ -4128,7 +4129,8 @@ func TestCloudTwoGenerationsReconcileStableSourceAndAnnotation(t *testing.T) {
 		mustWriteFile(t, filepath.Join(vault, "cache", "concepts.jsonl"), []byte(`{"slug":"concept","frontmatter":{"sources":["`+transient+`"]},"sources":["`+transient+`"]}`+"\n"))
 		return nil
 	}
-	if err := runCloudWorkerBatch(context.Background(), cloudCfg(), [][]string{{"run"}}, m); err != nil {
+	secondCfg := cloudCfgFor("user-secret", "project-secret", "cloud-generation-2")
+	if err := runCloudWorkerBatch(context.Background(), secondCfg, [][]string{{"run"}}, m); err != nil {
 		t.Fatal(err)
 	}
 	firstManifest, _, err := m.Read(context.Background(), prefix+generation.ManifestPath, 0, generation.MaxManifestBytes)

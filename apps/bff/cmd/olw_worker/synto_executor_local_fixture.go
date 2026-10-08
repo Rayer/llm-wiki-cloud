@@ -10,6 +10,7 @@ import (
 	"io"
 	"os"
 	"path/filepath"
+	"strings"
 	"time"
 
 	"github.com/rayer/llm-wiki-bff/internal/suggestedqueries"
@@ -26,7 +27,7 @@ func init() {
 	suggestedQueryProvider = func(workerConfig) suggestedqueries.Provider { return nil }
 }
 
-func execLocalCloudFixture(_ context.Context, vault string, command, _ []string, _, _ io.Writer) error {
+func execLocalCloudFixture(ctx context.Context, vault string, command, _ []string, _, _ io.Writer) error {
 	if len(command) == 0 || command[0] != "run" {
 		return errors.New("local pipeline fixture only supports the run command")
 	}
@@ -34,6 +35,45 @@ func execLocalCloudFixture(_ context.Context, vault string, command, _ []string,
 		return errors.New("fixture compile failure")
 	} else if !errors.Is(err, os.ErrNotExist) {
 		return fmt.Errorf("read fixture failure input: %w", err)
+	}
+	if _, err := os.Stat(filepath.Join(vault, "raw", "fixture-timeout.md")); err == nil {
+		timer := time.NewTimer(5 * time.Second)
+		defer timer.Stop()
+		select {
+		case <-ctx.Done():
+			return ctx.Err()
+		case <-timer.C:
+			return context.DeadlineExceeded
+		}
+	} else if !errors.Is(err, os.ErrNotExist) {
+		return fmt.Errorf("read fixture timeout input: %w", err)
+	}
+	if _, err := os.Stat(filepath.Join(vault, "raw", "fixture-outage.md")); err == nil {
+		parent := strings.TrimSpace(os.Getenv("WORKSPACE_DIR"))
+		if parent == "" {
+			parent = filepath.Dir(vault)
+		}
+		ready := filepath.Join(parent, "fixture-outage-ready")
+		release := filepath.Join(parent, "fixture-outage-release")
+		if err := os.WriteFile(ready, []byte("ready"), 0o600); err != nil {
+			return fmt.Errorf("write fixture outage readiness: %w", err)
+		}
+		ticker := time.NewTicker(25 * time.Millisecond)
+		defer ticker.Stop()
+		for {
+			if _, err := os.Stat(release); err == nil {
+				return errors.New("fixture controlled outage failure")
+			} else if !errors.Is(err, os.ErrNotExist) {
+				return fmt.Errorf("read fixture outage release: %w", err)
+			}
+			select {
+			case <-ctx.Done():
+				return ctx.Err()
+			case <-ticker.C:
+			}
+		}
+	} else if !errors.Is(err, os.ErrNotExist) {
+		return fmt.Errorf("read fixture outage input: %w", err)
 	}
 	// Keep a short observable RUNNING window for duplicate-trigger contract tests.
 	time.Sleep(750 * time.Millisecond)

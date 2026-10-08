@@ -446,9 +446,15 @@ func runCloudWorkerBatch(ctx context.Context, cfg workerConfig, commands [][]str
 		return errCloudWorkerConfigInvalid
 	}
 	defer objects.Close()
+	prefix := workerProjectObjectPrefix(cfg)
 	deployedConfig, localAPIKey, runTimeoutSeconds, err := readCloudPipelineInputs(ctx, cfg, objects)
 	if err != nil {
-		return annotateError(errCloudWorkerConfigInvalid, err)
+		failure := newWorkerFailure(ctx, failureStageSyntoConfigValidation, failureClassIO, "", err)
+		primary := annotateError(errCloudWorkerConfigInvalid, failure)
+		if recordErr := writeCloudFailureDiagnostic(ctx, objects, prefix, cfg, failure); recordErr != nil {
+			return errors.Join(primary, recordErr)
+		}
+		return primary
 	}
 	if len(localAPIKey) > 0 {
 		cfg.APIKey = string(localAPIKey)
@@ -459,7 +465,6 @@ func runCloudWorkerBatch(ctx context.Context, cfg workerConfig, commands [][]str
 	runCtx, cancelRun := context.WithTimeout(ctx, time.Duration(runTimeoutSeconds)*time.Second)
 	defer cancelRun()
 	ctx = runCtx
-	prefix := workerProjectObjectPrefix(cfg)
 	lease, err := acquireCloudLease(ctx, objects, prefix, cfg.ExecutionID)
 	if err != nil {
 		return annotateError(errCloudLeaseUnavailable, err)
@@ -1564,9 +1569,6 @@ func writeCloudReceipts(ctx context.Context, objects objectStore, prefix, worksp
 }
 
 func writeLocalPublicationReceipt(ctx context.Context, objects objectStore, prefix string, cfg workerConfig, manifest generation.Manifest, manifestGeneration int64) error {
-	if cfg.LocalCloudScope == "" {
-		return nil
-	}
 	receipt := localcloud.PublicationReceipt{
 		ExecutionID: cfg.ExecutionID, GenerationID: manifest.GenerationID,
 		ManifestGeneration: manifestGeneration,
@@ -1584,9 +1586,6 @@ func writeLocalPublicationReceipt(ctx context.Context, objects objectStore, pref
 }
 
 func localExecutionIDFor(cfg workerConfig) string {
-	if strings.TrimSpace(cfg.LocalCloudScope) == "" {
-		return ""
-	}
 	return cfg.ExecutionID
 }
 func writeCloudFailureReceipts(ctx context.Context, objects objectStore, prefix, workspace string, cfg workerConfig, snapshots []sourceSnapshot, failure error, secrets ...[]string) error {

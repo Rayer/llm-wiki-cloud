@@ -25,14 +25,29 @@ func (s *recompileAllQuotaSpy) LoadQuotaState(context.Context, string, string) (
 	return 0, "", time.Time{}, nil
 }
 
-func (s *recompileAllQuotaSpy) ReserveQuota(context.Context, string, string, pipelinequota.Limits, time.Time, bool, bool, int, int, int) (internalfirestore.QuotaPrev, pipelinequota.Snapshot, bool, error) {
+func (s *recompileAllQuotaSpy) ReserveQuota(context.Context, string, string, string, pipelinequota.Limits, time.Time, bool, bool, int, int, int) (pipelinequota.Snapshot, bool, error) {
 	s.calls.Add(1)
-	return internalfirestore.QuotaPrev{}, pipelinequota.Snapshot{}, false, nil
+	return pipelinequota.Snapshot{}, false, nil
 }
 
-func (s *recompileAllQuotaSpy) RefundQuotaPrev(context.Context, string, string, internalfirestore.QuotaPrev) error {
+func (s *recompileAllQuotaSpy) LinkQuotaReservation(context.Context, string, string) error {
 	s.calls.Add(1)
 	return nil
+}
+
+func (s *recompileAllQuotaSpy) GetQuotaReservation(context.Context, string) (internalfirestore.QuotaReservation, bool, error) {
+	s.calls.Add(1)
+	return internalfirestore.QuotaReservation{}, false, nil
+}
+
+func (s *recompileAllQuotaSpy) ListPendingQuotaReservations(context.Context) ([]internalfirestore.QuotaReservation, error) {
+	s.calls.Add(1)
+	return nil, nil
+}
+
+func (s *recompileAllQuotaSpy) SettleQuotaReservation(context.Context, string, string) (string, error) {
+	s.calls.Add(1)
+	return "not_applicable", nil
 }
 
 func TestRecompileAllCapabilityAndDenialAreScopedAndFailClosed(t *testing.T) {

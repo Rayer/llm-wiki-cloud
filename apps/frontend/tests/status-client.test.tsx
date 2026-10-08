@@ -26,14 +26,14 @@ vi.mock('@/lib/auth', () => ({
 }));
 
 vi.mock('@/lib/i18n', () => ({
-  useT: () => ({ t: (key: string) => key }),
+  useT: () => ({ t: (key: string) => key === 'Pipeline.quotaLine' ? '{runs}/{limit}' : key }),
 }));
 
 vi.mock('@/components/WorkspaceProvider', () => ({
   useWorkspace: () => ({ currentProject: mocks.currentProject }),
 }));
 
-import { normalizeStatus } from '@/lib/api';
+import { normalizeStatus, type PipelineQuota } from '@/lib/api';
 import { StatusClient } from '@/components/StatusClient';
 
 type Execution = {
@@ -42,6 +42,9 @@ type Execution = {
   log_state?: string;
   log_state_reason?: string;
   log_url?: string;
+  diagnostic_state?: string | null;
+  failure_reason?: string | null;
+  quota_settlement?: string | null;
   diagnostic?: Record<string, unknown> | null;
 };
 
@@ -62,13 +65,14 @@ function execution(overrides: Partial<Execution> = {}): Execution {
   };
 }
 
-function status(overrides: Partial<{ sourcesCount: number; conceptsCount: number; rawCount: number; lastExecution: Execution | null }> = {}) {
+function status(overrides: Partial<{ sourcesCount: number; conceptsCount: number; rawCount: number; lastExecution: Execution | null; quota: PipelineQuota | null }> = {}) {
   return {
     sourcesCount: 11,
     conceptsCount: 22,
     rawCount: 33,
     suggestedQueries: [],
     lastExecution: execution(),
+    quota: null,
     raw: {},
     ...overrides,
   };
@@ -215,6 +219,41 @@ describe('StatusClient polling', () => {
     expect(mocks.getStatus).toHaveBeenCalledTimes(1);
     expect(vi.getTimerCount()).toBe(0);
     expect(mocks.getPipelineLog).not.toHaveBeenCalled();
+  });
+
+  it.each(['pending', 'unknown'] as const)('keeps polling a failed execution while quota settlement is %s', async (initialSettlement) => {
+    const quota: PipelineQuota = {
+      enforced: true,
+      allowed: false,
+      runs_today: 1,
+      daily_limit: 2,
+      new_raw_files: 1,
+      min_new_raw: 1,
+      already_running: false,
+    };
+    mocks.getStatus
+      .mockResolvedValueOnce(status({
+        lastExecution: execution({ status: 'FAILED', quota_settlement: initialSettlement }),
+        quota,
+      }))
+      .mockResolvedValueOnce(status({
+        lastExecution: execution({ status: 'FAILED', quota_settlement: 'refunded' }),
+        quota: { ...quota, allowed: true, runs_today: 0 },
+      }));
+
+    await act(async () => { render(<StatusClient />); });
+    expect(screen.getByText(initialSettlement === 'pending'
+      ? 'Pipeline.quotaRefundPending'
+      : 'Pipeline.quotaSettlementUnavailable')).not.toBeNull();
+    expect(screen.getByTestId('status-pipeline-quota').textContent).toContain('1/2');
+    await act(async () => { await vi.advanceTimersByTimeAsync(5000); });
+    expect(mocks.getStatus).toHaveBeenCalledTimes(2);
+    expect(screen.getByText('Pipeline.quotaRefunded')).not.toBeNull();
+    expect(screen.getByTestId('status-pipeline-quota').textContent).toContain('0/2');
+
+    await act(async () => { await vi.advanceTimersByTimeAsync(60000); });
+    expect(mocks.getStatus).toHaveBeenCalledTimes(2);
+    expect(vi.getTimerCount()).toBe(0);
   });
 
   it('cancels a queued poll when switching projects', async () => {
@@ -434,6 +473,26 @@ describe('StatusClient behavior', () => {
     expect(screen.getByRole('heading', { name: 'Pipeline timeline' })).not.toBeNull();
     expect(screen.getByRole('heading', { name: 'Pipeline log' })).not.toBeNull();
     expect(screen.getByRole('button', { name: 'Open pipeline log' })).not.toBeNull();
+  });
+
+  it('normalizes failure detail and quota settlement fields to safe scalar values', () => {
+    const normalized = normalizeStatus({
+      last_execution: {
+        status: 'FAILED',
+        diagnostic_state: { unexpected: true },
+        failure_reason: { credential: 'must not render' },
+        quota_settlement: ['refunded'],
+        diagnostic: { message: 17 },
+      },
+      quota: { runs_today: '1', daily_limit: 2 },
+    });
+
+    expect(normalized.lastExecution?.diagnostic_state).toBeNull();
+    expect(normalized.lastExecution?.failure_reason).toBeNull();
+    expect(normalized.lastExecution?.quota_settlement).toBeNull();
+    expect(normalized.lastExecution?.diagnostic?.message).toBeNull();
+    expect(normalized.quota?.runs_today).toBe(0);
+    expect(normalized.quota?.daily_limit).toBe(2);
   });
 
   it.each([

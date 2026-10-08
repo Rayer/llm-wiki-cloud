@@ -67,7 +67,7 @@ type Handler struct {
 
 // LocalPipelineExecutor runs an actual worker process for native local cloud.
 type LocalPipelineExecutor interface {
-	Start(context.Context, string, string, string, bool) (string, error)
+	Start(context.Context, string, string, string, bool, string) (string, error)
 	Status(context.Context, string, string, string) (*handlerapi.PipelineExecutionResponse, error)
 	Running(context.Context, string, string) (bool, error)
 }

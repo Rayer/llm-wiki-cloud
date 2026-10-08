@@ -8,6 +8,14 @@ const (
 
 type Stage string
 
+type PublicationOutcome uint8
+
+const (
+	PublicationOutcomeUnknown PublicationOutcome = iota
+	PublicationOutcomeAbsent
+	PublicationOutcomeCommitted
+)
+
 const (
 	StageInputMaterialization     Stage = "input_materialization"
 	StageSyntoMigration           Stage = "synto_migration"
@@ -31,6 +39,22 @@ var ValidStages = map[Stage]struct{}{
 	StageSourceReconciliation: {}, StageConceptReconciliation: {},
 	StagePostprocess: {}, StageGenerationPublish: {},
 	StageReceiptRecording: {}, StageLeaseCleanup: {}, StageUnknown: {},
+}
+
+// PublicationOutcomeForStage reports what a worker failure stage proves about
+// publication. Failures before generation publication prove absence; failures
+// while publishing or recording the receipt remain ambiguous.
+func PublicationOutcomeForStage(stage Stage) PublicationOutcome {
+	switch stage {
+	case StageInputMaterialization, StageSyntoMigration, StageSyntoConfigNormalization,
+		StageSyntoConfigValidation, StageSyntoRun, StageSyntoIndexExport,
+		StageSourceReconciliation, StageConceptReconciliation, StagePostprocess:
+		return PublicationOutcomeAbsent
+	case StageLeaseCleanup:
+		return PublicationOutcomeCommitted
+	default:
+		return PublicationOutcomeUnknown
+	}
 }
 
 type ErrorClass string
