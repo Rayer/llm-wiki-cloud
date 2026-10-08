@@ -253,7 +253,7 @@ The historical HTTP 404 is the original live blocker; the local tests prove the 
 - The initial canonical CI run on that head was `37772406901`. At the readback, `frontend-lint`, `frontend-typecheck`, `actionlint/schema`, and `local-vertical-smoke` were successful; `frontend-test` and `workflow-source-guards` failed on stale operation/guard assertions; `frontend-build` was skipped after the frontend-test failure; `bff` was still in progress. The initial run is not evidence for the corrected head.
 - The failure was isolated to retained test expectations in `apps/frontend/tests/ci-workflow-contract.test.mjs`, `lwc-253-vercel-dev-authority.test.mjs`, and `lwc-258-vercel-production-auth-env.test.mjs`. These tests now assert the new operation, exact read-only generation job, and release/eligibility exclusions. The full frontend suite passes locally after the fixes.
 - GitHub PR automation also created Vercel and security status checks after PR creation. Those automatic checks are not worker-initiated provider commands or a formal application release. No independent review had arrived at the initial readback; the coordinator owns same-final-SHA TPM/reviewer review and fresh canonical CI after the follow-up commits.
-- The test-only correction commit was `d5e297bd9010c00b39a5ed964aa88436bc5cc005`; the final reviewed PR head was `1dfad211e3128bc5b98c6bfd73f841da7a7b5e93` and was merged into `develop` as `057b8fd96189f50d6aba4f1fcace5d001304bf54`. Post-merge canonical CI run `37761956338` passed all nine jobs. The later formal DEV release attempt and its bounded failure analysis are recorded in the following section.
+- The test-only correction commit was `d5e297bd9010c00b39a5ed964aa88436bc5cc005`; the final reviewed PR head was `1dfad211e3128bc5b98c6bfd73f841da7a7b5e93` and was merged into `develop` as `057b8fd96189f50d6aba4f1fcace5d001304bf54`. Post-merge canonical CI run `37774785914`, on merged source `057b8fd96189f50d6aba4f1fcace5d001304bf54`, passed all nine jobs. Earlier run `37761956338` was for source `4b5f331e15b4fd361b74e18a0351799580eb434e`; it was not the post-merge run for this PR. The later formal DEV release attempt and its bounded failure analysis are recorded in the following section.
 
 ## LWC-370 DEV failure cause preservation (2026-10-08)
 
@@ -362,3 +362,46 @@ The updated SDK-backed and compensation regressions failed on the pre-r2 code: t
 | Production deployment, main promotion, merge, paid Pipeline | NOT AUTHORIZED / NOT RUN | Out of scope. PR #110 remains open for parent review and canonical CI. |
 
 The r2 change improves future failure evidence only. It neither resolves the historical DEV root cause nor changes the deployment recovery contract.
+
+## LWC-370 BFF project-number response and publication-cause repair (2026-10-09)
+
+### Execution identity and scope
+
+- Model / effort / mode: GPT-6-Luna (`gpt-6-luna`) / xhigh / YOLO, same retained Codex session `01a11a29-d15c-7fc0-9c76-cbf0c764d43d`.
+- Orca runtime / Run / Task / Dispatch / terminal: `8bc79eed-2312-4c07-a306-f91ae8d31716` / `run_ec3a3eca0058` / `task_1a735674d26e` / `ctx_bfba4f1b8a47` / `term_22cddd98-1061-4a48-b360-ab7a5c14a263`.
+- Worktree / branch: `/Users/rayer/orca/workspaces/llm-wiki-cloud/LWC-370-implementation-r1` / `Rayer/LWC-370-bff-project-identity-r3`. The clean branch was created from fresh `origin/develop` at `109e933f877f52a3e8c4013ed1c796e412a97b25`, the merge commit for PR #110.
+- Scope is limited to BFF version response validation and cause preservation, the existing bounded/redaction helper, synthetic provider fixtures and Engine/Action tests, and this report. PR publication and exact remote readback are recorded in the follow-up below. No SDK/ADC, live Secret Manager payload, provider, IAM/resource/credential change, deployment, paid Pipeline, Production action, main promotion, or merge was performed.
+
+### Incident state and source-backed repair
+
+The formal DEV run `37796381948` ended with BFF publication `unconfirmed` / `unknown`, deploy exit 1, and `reconcile-before-replay`; Auth and Export were verified, BFF was unknown, and Worker/Frontend were unstarted. Parent-owned BFF-only canonical rollback run `37856585657` is pending. The original BFF child stderr was not retained, so the historical cause remains unknown; this repair does not assign it a new cause.
+
+`prepare_bff_config_version` previously required `gcloud secrets versions add` to return a resource name using the configured project ID. The existing Auth path and `gcp_project_number()` already establish the safe mapping for the configured project. BFF now resolves that authoritative project number before publication, accepts only the exact configured project ID or its resolved number with the selected secret name and a positive numeric version, and stores the checkpoint in canonical project-ID form. Wrong project, wrong secret, zero/latest/nonnumeric versions remain unconfirmed; an unconfirmed publication is still never replayed.
+
+The shared cause boundary now allows the existing `bff-config-publish` stage. The BFF caller preserves the structured child cause while retaining `unconfirmed` / `unknown` mutation status and the existing inspection action. It supplies the generated file’s three private key values to the existing stderr redactor so a child error cannot echo those values into result evidence; the established 512-character cap remains in force.
+
+### RED-to-GREEN and local verification
+
+All commands ran under the owned-profile `TMPDIR` `/Users/rayer/.hermes/profiles/lwc-tpm/cache/scratch/implementation-wave/370-corrective-offline-tmp` and Seatbelt profile `/Users/rayer/.hermes/profiles/lwc-tpm/cache/scratch/implementation-wave/lwc-370-r3-offline/offline.sb`, which denies external network and permits loopback. Provider/GSM interactions were intercepted by synthetic test transports and the existing fake provider; the Go prepare command in the new Action regressions uses a local synthetic fixture. No live provider command was run.
+
+| Command (working directory) | Exit | Result |
+| --- | ---: | --- |
+| `python3 -m unittest test_engine.Acceptance.test_runtime_action_canonicalizes_numeric_bff_version_for_real_consumer test_engine.Acceptance.test_runtime_action_retains_bounded_bff_publish_cause_as_unknown` (`deploy/engine/tests`, before source repair) | 1 | RED: numeric-project response was left `unconfirmed`; the Action result had no structured publish cause (one assertion failure and one missing-cause error). |
+| `python3 -m unittest test_engine.Acceptance.test_bff_config_adapter_prepares_private_file_and_pins_published_numeric_version test_engine.Acceptance.test_bff_publication_rejects_wrong_project_secret_and_non_numeric_versions test_engine.Acceptance.test_bff_publication_requires_authoritative_configured_project_identity test_engine.Acceptance.test_runtime_action_canonicalizes_numeric_bff_version_for_real_consumer test_engine.Acceptance.test_runtime_action_retains_bounded_bff_publish_cause_as_unknown` (`deploy/engine/tests`, final code) | 0 | 5/5 passed. The Action accepted a numeric-project response, canonicalized its checkpoint, and mounted version `42`; cause output retained bounded 403 detail without private key markers and stayed unknown with one publication attempt. |
+| `python3 -m unittest discover -s ../../deploy/engine/tests -p 'test_*.py'` (`apps/bff`) | 0 | 135/135 deployment-engine tests passed; no skips. |
+| `python3 ../../scripts/test_cd_contract.py` (`apps/bff`) | 0 | 70/70 canonical CD contract tests passed. |
+| `python3 -m unittest discover -s ../../scripts -p 'test_*auth_config_contract.py'` (`apps/bff`) | 0 | 21/21 Auth/BFF config contract tests passed. |
+| `python3 -m unittest discover -s scripts -p 'test_*.py'` (`apps/bff`) | 0 | 119/119 retained CD safety tests passed; no skips. |
+| `git diff --check` | 0 | No whitespace errors. |
+
+### Acceptance and remaining limits
+
+| Acceptance | State | Evidence / limit |
+| --- | --- | --- |
+| Same-project-ID response remains accepted | PASS offline | Existing BFF adapter regression through the real provider method. |
+| Numeric project number maps only to the configured project | PASS offline | Authoritative project lookup, SDK-shaped JSON response, actual Engine/Node Action flow, canonical checkpoint and runtime secret-version consumer. Mismatched project identity is rejected before mutation. |
+| Wrong project/secret, zero/latest/nonnumeric version remains rejected | PASS offline | Synthetic response table; each ambiguous add stays `unconfirmed` and cannot be retried. |
+| BFF publish cause is useful, bounded, redacted, and remains unknown after mutation uncertainty | PASS offline | Actual provider → Engine → Node Action result; 403 diagnostic retained at 512 characters, test-only private key markers absent, and no replay. |
+| Specific historical cause of DEV run `37796381948` | UNKNOWN | The original stderr/result did not retain it; neither synthetic evidence nor the corrected destination proves the historical trigger. |
+| Parent-owned BFF rollback / formal DEV delivery / live Secret Manager readback | PENDING / NOT RUN BY THIS WORKER | Parent owns the canonical continuation; this worker made no provider action. |
+| Production, IAM/resource/credential changes, main promotion, merge, paid Pipeline | NOT AUTHORIZED / NOT RUN | Out of this task's scope. |
