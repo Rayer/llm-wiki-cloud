@@ -64,12 +64,12 @@ var refreshTokenStore = struct {
 // JWTAuth returns a Gin middleware that validates a JWT from the Authorization header.
 // Config-driven: uses cfg.JWTSecret for HS256 verification.
 func JWTAuth(cfg config.Config) gin.HandlerFunc {
-	return jwtAuth(cfg, nil, false, nil, nil)
+	return jwtAuth(cfg, nil, false, nil, nil, http.StatusUnauthorized)
 }
 
 // JWTAuthWithAccountLookup validates current account access on every request.
 func JWTAuthWithAccountLookup(cfg config.Config, lookup AccountLookup) gin.HandlerFunc {
-	return jwtAuth(cfg, lookup, true, nil, nil)
+	return jwtAuth(cfg, lookup, true, nil, nil, http.StatusUnauthorized)
 }
 
 // JWTAuthWithAccountLookupAndSessionVerifier preserves Web token handling and
@@ -80,10 +80,10 @@ func JWTAuthWithAccountLookupAndSessionVerifier(cfg config.Config, lookup Accoun
 	if len(authorizeProject) > 0 {
 		projectAuthorizer = authorizeProject[0]
 	}
-	return jwtAuth(cfg, lookup, true, verifySession, projectAuthorizer)
+	return jwtAuth(cfg, lookup, true, verifySession, projectAuthorizer, http.StatusUnauthorized)
 }
 
-func jwtAuth(cfg config.Config, lookup AccountLookup, enforce bool, verifySession CLIAccessSessionVerifier, authorizeProject ProjectOwnerAuthorizer) gin.HandlerFunc {
+func jwtAuth(cfg config.Config, lookup AccountLookup, enforce bool, verifySession CLIAccessSessionVerifier, authorizeProject ProjectOwnerAuthorizer, webLookupUnavailableStatus int) gin.HandlerFunc {
 	return func(c *gin.Context) {
 		authHeader := c.GetHeader("Authorization")
 
@@ -125,7 +125,7 @@ func jwtAuth(cfg config.Config, lookup AccountLookup, enforce bool, verifySessio
 			}
 			user, err := lookup(c.Request.Context(), claims.Sub)
 			if err != nil {
-				if claims.ClientKind == cliClientKind {
+				if claims.ClientKind == cliClientKind || webLookupUnavailableStatus == http.StatusServiceUnavailable {
 					c.AbortWithStatusJSON(http.StatusServiceUnavailable, gin.H{"error": "account access unavailable"})
 				} else {
 					c.AbortWithStatusJSON(http.StatusUnauthorized, gin.H{"error": "invalid token"})

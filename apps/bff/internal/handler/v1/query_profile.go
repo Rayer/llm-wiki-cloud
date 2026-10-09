@@ -15,21 +15,31 @@ import (
 
 // queryStore resolves active once before any current-generation pin.
 func (h *Handler) queryStore(c *gin.Context) (storage.Store, *query.ProfileSnapshot, error) {
-	if h.profileRepository == nil {
-		s, e := h.GetStore(c)
-		return s, nil, e
+	store, snapshot, err := h.queryStoreFor(c.Request.Context(), c.GetString("userID"), c.GetString("projectID"))
+	if err == nil && store != nil {
+		c.Set(requestPinnedStoreKey, store)
 	}
-	userID, projectID := c.GetString("userID"), c.GetString("projectID")
+	return store, snapshot, err
+}
+
+// queryStoreFor is the transport-independent query scope resolver shared by
+// HTTP and MCP. It always pins the same active profile generation before the
+// executor runs.
+func (h *Handler) queryStoreFor(ctx context.Context, userID, projectID string) (storage.Store, *query.ProfileSnapshot, error) {
+	if h.profileRepository == nil {
+		s, err := h.queryProjectStore(ctx, userID, projectID)
+		return s, nil, err
+	}
 	if userID == "" || projectID == "" {
 		return nil, nil, errors.New("query profile scope unavailable")
 	}
-	state, err := h.profileRepository.GetProfile(c.Request.Context(), userID, projectID)
+	state, err := h.profileRepository.GetProfile(ctx, userID, projectID)
 	if err != nil {
 		return nil, nil, err
 	}
 	if state.Active == nil {
-		s, e := h.GetStore(c)
-		return s, nil, e
+		s, err := h.queryProjectStore(ctx, userID, projectID)
+		return s, nil, err
 	}
 	active := *state.Active
 	candidates, ok := h.profileRepository.(interface {
@@ -38,7 +48,7 @@ func (h *Handler) queryStore(c *gin.Context) (storage.Store, *query.ProfileSnaps
 	if !ok {
 		return nil, nil, errors.New("historical profile candidate reader unavailable")
 	}
-	candidate, err := candidates.GetProfileCandidate(c.Request.Context(), userID, projectID, active.CandidateID)
+	candidate, err := candidates.GetProfileCandidate(ctx, userID, projectID, active.CandidateID)
 	if err != nil {
 		return nil, nil, err
 	}
@@ -59,16 +69,28 @@ func (h *Handler) queryStore(c *gin.Context) (storage.Store, *query.ProfileSnaps
 	if !ok {
 		return nil, nil, errors.New("retained generation pin unavailable")
 	}
-	pinned, manifest, err := pinner.PinQueryGeneration(c.Request.Context(), active.ContentGeneration)
+	pinned, manifest, err := pinner.PinQueryGeneration(ctx, active.ContentGeneration)
 	if err != nil {
 		return nil, nil, err
 	}
-	snapshot, err := query.LoadProfile(c.Request.Context(), h.cache, pinned, manifest, profiletags.ActiveRef{ContentGeneration: active.ContentGeneration, DictionaryRevision: active.DictionaryRevision, TagSetRevision: active.TagSetRevision, QueryRuleRevision: active.QueryRuleRevision}, dictionaryRef, requirementOrder)
+	snapshot, err := query.LoadProfile(ctx, h.cache, pinned, manifest, profiletags.ActiveRef{ContentGeneration: active.ContentGeneration, DictionaryRevision: active.DictionaryRevision, TagSetRevision: active.TagSetRevision, QueryRuleRevision: active.QueryRuleRevision}, dictionaryRef, requirementOrder)
 	if err != nil {
 		return nil, nil, err
 	}
-	c.Set(requestPinnedStoreKey, pinned)
 	return pinned, snapshot, nil
+}
+
+func (h *Handler) queryProjectStore(ctx context.Context, userID, projectID string) (storage.Store, error) {
+	if userID == "" && projectID == "" {
+		return h.store, nil
+	}
+	if userID == "" || projectID == "" {
+		return nil, errors.New("incomplete storage request scope")
+	}
+	if h.store == nil {
+		return nil, errWikiStorageNotConfigured
+	}
+	return pinStore(ctx, h.store.Scope(userID, projectID))
 }
 
 // GetProfileCandidate loads the immutable historical candidate named by a

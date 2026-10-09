@@ -375,6 +375,7 @@ func newProductionRouter(
 	registerPublicRoutes(r, settingsStore, cfg.AuthServiceURL, !localMode)
 	r.POST("/internal/profile/dispatch", productionProfileDispatcher(hV1, cfg).Gin)
 	r.GET("/api/v1/query/config", hV1.QueryConfig)
+	r.Any("/mcp", gin.WrapH(hV1.MCPHandler()))
 
 	// Temporary Stage A compatibility lane for the frontend Auth cutover.
 	var sessions *auth.RefreshSessionAuthority
@@ -436,6 +437,15 @@ func newProductionRouter(
 
 	registerAdminRoutes(r, cfg, hV1, settingsStore)
 
+	projectKeyRoutes := r.Group("/api/v1")
+	projectKeyRoutes.Use(hV1.ProjectKeyManagementAuth(cfg), auth.WebOnly())
+	projectKeyRoutes.GET("/projects/:pid/keys", hV1.ListProjectKeys)
+	projectKeyRoutes.POST("/projects/:pid/keys", hV1.CreateProjectKey)
+	projectKeyRoutes.POST("/projects/:pid/keys/:keyID/revoke", hV1.RevokeProjectKey)
+
+	queryRoutes := r.Group("/api/v1")
+	queryRoutes.POST("/query", hV1.ProjectKeyQueryAuth(cfg), auth.ProjectMiddleware(), hV1.Query)
+
 	v1.Use(auth.ProjectMiddleware())
 	{
 		v1.POST("/pipeline/rebuild-index", hV1.RebuildIndex)
@@ -472,7 +482,6 @@ func newProductionRouter(
 		exportHandler.Register(exportRoutes)
 
 		v1.GET("/index", hV1.Index)
-		v1.POST("/query", hV1.Query)
 		v1.GET("/sources", hV1.ListSources)
 		v1.GET("/sources/:id/annotation", hV1.GetAnnotation)
 		v1.PUT("/sources/:id/annotation", hV1.PutAnnotation)

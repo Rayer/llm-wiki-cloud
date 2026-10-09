@@ -14,6 +14,7 @@ import (
 	"testing"
 
 	"github.com/gin-gonic/gin"
+	"github.com/modelcontextprotocol/go-sdk/mcp"
 	"github.com/rayer/llm-wiki-bff/internal/cache"
 	"github.com/rayer/llm-wiki-bff/internal/generation"
 	"github.com/rayer/llm-wiki-bff/internal/handler"
@@ -309,6 +310,46 @@ func TestProfileQueryProductionPinnedGeneration(t *testing.T) {
 	w := profileQueryRequest(h, "u", `{"q":"coffee","required_tag_ids":["required_place"]}`)
 	if w.Code != 422 {
 		t.Fatalf("required status=%d body=%s", w.Code, w.Body)
+	}
+}
+
+func TestMCPQueryUsesSamePinnedProfileAndSerializedResponseAsHTTP(t *testing.T) {
+	g1, active := profileQueryFixture(t, "u/p", "G1-retained")
+	g2, _ := profileQueryFixture(t, "u/p", "G2-current")
+	scope := &profileQueryStore{retained: map[string]*profileQueryStore{"G1-retained": g1}, latest: g2}
+	root := &profileQueryRoot{scopes: map[string]*profileQueryStore{"u/p": scope}}
+	transport := &profileQueryTransport{}
+	old := http.DefaultTransport
+	http.DefaultTransport = transport
+	t.Cleanup(func() { http.DefaultTransport = old })
+	h := profileQueryHandler(t, cache.New(), root, active)
+
+	httpResponse := profileQueryRequest(h, "u", `{"q":"coffee","mode":"full"}`)
+	if httpResponse.Code != http.StatusOK {
+		t.Fatalf("HTTP Query status=%d body=%s", httpResponse.Code, httpResponse.Body)
+	}
+	ctx := context.WithValue(context.Background(), mcpProjectKeyIdentityContextKey{}, mcpProjectKeyIdentity{
+		userID: "u", projectID: "p", keyID: "fixture-key-id",
+	})
+	mcpResponse, _, err := h.callMCPQuery(ctx, nil, queryProjectInput{Query: "coffee", Mode: "full"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if mcpResponse.IsError || len(mcpResponse.Content) != 1 {
+		t.Fatalf("MCP Query result = %+v", mcpResponse)
+	}
+	text, ok := mcpResponse.Content[0].(*mcp.TextContent)
+	if !ok {
+		t.Fatalf("MCP content type=%T", mcpResponse.Content[0])
+	}
+	if text.Text != strings.TrimSpace(httpResponse.Body.String()) {
+		t.Fatalf("HTTP and MCP QueryResponse differ\nHTTP: %s\nMCP:  %s", httpResponse.Body.String(), text.Text)
+	}
+	if len(scope.pins) != 2 || scope.pins[0] != "G1-retained" || scope.pins[1] != "G1-retained" {
+		t.Fatalf("HTTP/MCP did not each pin the active generation: %v", scope.pins)
+	}
+	if h.profileRepository.(*profileQueryRepository).reads != 2 {
+		t.Fatalf("active profile candidate reads=%d, want 2", h.profileRepository.(*profileQueryRepository).reads)
 	}
 }
 
