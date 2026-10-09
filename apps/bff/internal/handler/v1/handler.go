@@ -26,6 +26,7 @@ type Handler struct {
 	accountLookup        auth.AccountLookup
 	cliSessionVerifier   auth.CLIAccessSessionVerifier
 	cliProjectAuthorizer auth.ProjectOwnerAuthorizer
+	projectKeyService    *auth.ProjectKeyService
 	store                store.RootStore
 	firestore            *firestore.Client
 	index                *search.Index
@@ -97,6 +98,7 @@ func New(wikiStore store.RootStore, fs *firestore.Client, idx *search.Index, cac
 	}
 	if fs != nil && fs.Raw() != nil {
 		h.accountLookup = auth.FirestoreAccountLookup(fs.Raw())
+		h.projectKeyService = auth.NewProjectKeyService(fs.Raw())
 		h.profileRepository = newFirestoreProfileRepository(fs.Raw())
 	}
 	return h
@@ -108,6 +110,14 @@ func (h *Handler) SetAccountLookup(lookup auth.AccountLookup) { h.accountLookup 
 // AccountAuth always requires a signed token and the current account authority.
 func (h *Handler) AccountAuth(cfg config.Config) gin.HandlerFunc {
 	return auth.JWTAuthWithAccountLookupAndSessionVerifier(cfg, h.accountLookup, h.cliSessionVerifier, h.cliProjectAuthorizer)
+}
+
+func (h *Handler) ProjectKeyQueryAuth(cfg config.Config) gin.HandlerFunc {
+	return auth.ProjectKeyOrJWTAuth(h.AccountAuth(cfg), auth.ProjectKeyAuth(h.projectKeyService))
+}
+
+func (h *Handler) ProjectKeyManagementAuth(cfg config.Config) gin.HandlerFunc {
+	return auth.ProjectKeyManagementJWTAuth(cfg, h.accountLookup, h.cliSessionVerifier, h.cliProjectAuthorizer)
 }
 
 func (h *Handler) SetQueryExecutor(executor query.Executor) {

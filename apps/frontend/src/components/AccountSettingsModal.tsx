@@ -1,9 +1,11 @@
 'use client';
 
-import { FormEvent, useEffect, useRef, useState } from 'react';
+import { FormEvent, useCallback, useEffect, useRef, useState } from 'react';
 import { useAuth } from '@/lib/auth';
 import { beginGoogleLink, readGoogleIdentitySummary } from '@/lib/google-auth';
 import { useLocale } from '@/lib/i18n';
+import { useWorkspace } from './WorkspaceProvider';
+import { ProjectKeysSection } from './ProjectKeysSection';
 import {
   listCLISessions,
   listSyncBindings,
@@ -16,6 +18,7 @@ import {
 
 export function AccountSettingsModal({ onClose }: { onClose: () => void }) {
   const { accessToken, refreshAccessToken, user } = useAuth();
+  const { currentProject } = useWorkspace();
   const { t } = useLocale();
   const [linkOpen, setLinkOpen] = useState(false);
   const [password, setPassword] = useState('');
@@ -28,7 +31,13 @@ export function AccountSettingsModal({ onClose }: { onClose: () => void }) {
   const [controlError, setControlError] = useState('');
   const [controlNotice, setControlNotice] = useState('');
   const [busyControl, setBusyControl] = useState('');
+  const [projectKeysResetNonce, setProjectKeysResetNonce] = useState(0);
   const passwordRef = useRef<HTMLInputElement>(null);
+
+  const closeSettings = useCallback(() => {
+    setProjectKeysResetNonce((nonce) => nonce + 1);
+    onClose();
+  }, [onClose]);
 
   useEffect(() => {
     if (!accessToken || !user) return;
@@ -72,11 +81,11 @@ export function AccountSettingsModal({ onClose }: { onClose: () => void }) {
 
   useEffect(() => {
     const onKeyDown = (event: KeyboardEvent) => {
-      if (event.key === 'Escape' && !loading) onClose();
+      if (event.key === 'Escape' && !loading) closeSettings();
     };
     document.addEventListener('keydown', onKeyDown);
     return () => document.removeEventListener('keydown', onKeyDown);
-  }, [loading, onClose]);
+  }, [loading, closeSettings]);
 
   if (!user) return null;
 
@@ -150,7 +159,7 @@ export function AccountSettingsModal({ onClose }: { onClose: () => void }) {
   };
 
   return (
-    <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/80 p-4 backdrop-blur-sm" onMouseDown={onClose}>
+    <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/80 p-4 backdrop-blur-sm" onMouseDown={closeSettings}>
       <div
         role="dialog"
         aria-modal="true"
@@ -163,7 +172,7 @@ export function AccountSettingsModal({ onClose }: { onClose: () => void }) {
             <h2 id="account-settings-title" className="text-2xl font-semibold text-white">{t('AccountSettings.title')}</h2>
             <p className="mt-1 text-sm text-zinc-400">{t('AccountSettings.subtitle')}</p>
           </div>
-          <button type="button" onClick={onClose} className="min-h-11 min-w-11 rounded-md p-2 text-zinc-400 hover:bg-white/10 hover:text-white" aria-label="Close account settings">×</button>
+          <button type="button" onClick={closeSettings} className="min-h-11 min-w-11 rounded-md p-2 text-zinc-400 hover:bg-white/10 hover:text-white" aria-label="Close account settings">×</button>
         </div>
 
         <dl className="mt-6 space-y-4 text-sm">
@@ -197,6 +206,8 @@ export function AccountSettingsModal({ onClose }: { onClose: () => void }) {
             </div>
           </form>
         )}
+
+        <ProjectKeysSection key={`${user.id}:${currentProject?.id ?? 'none'}:${projectKeysResetNonce}`} currentProject={currentProject} accessToken={accessToken} t={t} />
 
         <section className="mt-8 border-t border-white/10 pt-6" aria-labelledby="cli-sessions-title">
           <h3 id="cli-sessions-title" className="text-lg font-semibold text-white">{t('AccountSettings.cliSessions')}</h3>

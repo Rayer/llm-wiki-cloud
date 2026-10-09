@@ -20,6 +20,7 @@ const mocks = vi.hoisted(() => ({
 vi.mock('@/lib/auth', () => ({
   useAuth: () => ({ accessToken: mocks.accessToken, refreshAccessToken: mocks.refreshAccessToken, user: { id: 'owner-1', email: 'owner@example.test' } }),
 }));
+vi.mock('@/components/WorkspaceProvider', () => ({ useWorkspace: () => ({ currentProject: null }) }));
 vi.mock('@/lib/i18n', () => ({ useLocale: () => ({ t: (key: string) => key }) }));
 vi.mock('@/lib/google-auth', () => ({ beginGoogleLink: vi.fn(), readGoogleIdentitySummary: mocks.readGoogleIdentitySummary }));
 vi.mock('@/lib/cli-auth', () => ({

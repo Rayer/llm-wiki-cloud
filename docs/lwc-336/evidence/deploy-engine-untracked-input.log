@@ -1,0 +1,229 @@
+...........EEEEEEEE.........................................................................E...........................................
+======================================================================
+ERROR: test_real_action_cross_plan_unresolved_handle_fails_closed (test_build_submission.AsyncBuildSubmission.test_real_action_cross_plan_unresolved_handle_fails_closed)
+----------------------------------------------------------------------
+Traceback (most recent call last):
+  File "/Users/rayer/orca/workspaces/llm-wiki-cloud/LWC-375-project-key-contract/deploy/engine/tests/test_build_submission.py", line 551, in test_real_action_cross_plan_unresolved_handle_fails_closed
+    retained, plan, first = self.make_action_checkpoint('action-cross-plan')
+                            ~~~~~~~~~~~~~~~~~~~~~~~~~~~^^^^^^^^^^^^^^^^^^^^^
+  File "/Users/rayer/orca/workspaces/llm-wiki-cloud/LWC-375-project-key-contract/deploy/engine/tests/test_build_submission.py", line 384, in make_action_checkpoint
+    directory, plan = self.admitted_plan(name=name, source=source)
+                      ~~~~~~~~~~~~~~~~~~^^^^^^^^^^^^^^^^^^^^^^^^^^
+  File "/Users/rayer/orca/workspaces/llm-wiki-cloud/LWC-375-project-key-contract/deploy/engine/tests/test_build_submission.py", line 276, in admitted_plan
+    plan = engine.admit(args)
+  File "/Users/rayer/orca/workspaces/llm-wiki-cloud/LWC-375-project-key-contract/deploy/engine/engine.py", line 137, in admit
+    identities = {c: source_identity(c, args.source) for c in selected}
+                     ~~~~~~~~~~~~~~~^^^^^^^^^^^^^^^^
+  File "/Users/rayer/orca/workspaces/llm-wiki-cloud/LWC-375-project-key-contract/deploy/engine/engine.py", line 82, in source_identity
+    require(not any((str(Path(p).parent) in package_dirs and p.endswith('.go')) or
+    ~~~~~~~^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+                    any(p == r or p.startswith(r.rstrip('/') + '/') for r in roots) for p in untracked), 'untracked-build-input')
+                    ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+  File "/Users/rayer/orca/workspaces/llm-wiki-cloud/LWC-375-project-key-contract/deploy/engine/support.py", line 168, in require
+    raise Breakpoint(reason)
+support.Breakpoint: untracked-build-input
+
+======================================================================
+ERROR: test_real_action_download_blocks_idless_unknown_without_submit (test_build_submission.AsyncBuildSubmission.test_real_action_download_blocks_idless_unknown_without_submit)
+----------------------------------------------------------------------
+Traceback (most recent call last):
+  File "/Users/rayer/orca/workspaces/llm-wiki-cloud/LWC-375-project-key-contract/deploy/engine/tests/test_build_submission.py", line 523, in test_real_action_download_blocks_idless_unknown_without_submit
+    retained, plan, first = self.make_action_checkpoint(
+                            ~~~~~~~~~~~~~~~~~~~~~~~~~~~^
+        'action-resume-idless',extra={'FAKE_SUBMIT_EXIT':'17'})
+        ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+  File "/Users/rayer/orca/workspaces/llm-wiki-cloud/LWC-375-project-key-contract/deploy/engine/tests/test_build_submission.py", line 384, in make_action_checkpoint
+    directory, plan = self.admitted_plan(name=name, source=source)
+                      ~~~~~~~~~~~~~~~~~~^^^^^^^^^^^^^^^^^^^^^^^^^^
+  File "/Users/rayer/orca/workspaces/llm-wiki-cloud/LWC-375-project-key-contract/deploy/engine/tests/test_build_submission.py", line 276, in admitted_plan
+    plan = engine.admit(args)
+  File "/Users/rayer/orca/workspaces/llm-wiki-cloud/LWC-375-project-key-contract/deploy/engine/engine.py", line 137, in admit
+    identities = {c: source_identity(c, args.source) for c in selected}
+                     ~~~~~~~~~~~~~~~^^^^^^^^^^^^^^^^
+  File "/Users/rayer/orca/workspaces/llm-wiki-cloud/LWC-375-project-key-contract/deploy/engine/engine.py", line 82, in source_identity
+    require(not any((str(Path(p).parent) in package_dirs and p.endswith('.go')) or
+    ~~~~~~~^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+                    any(p == r or p.startswith(r.rstrip('/') + '/') for r in roots) for p in untracked), 'untracked-build-input')
+                    ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+  File "/Users/rayer/orca/workspaces/llm-wiki-cloud/LWC-375-project-key-contract/deploy/engine/support.py", line 168, in require
+    raise Breakpoint(reason)
+support.Breakpoint: untracked-build-input
+
+======================================================================
+ERROR: test_real_action_download_fresh_release_resumes_same_build_id (test_build_submission.AsyncBuildSubmission.test_real_action_download_fresh_release_resumes_same_build_id) (first_status='WORKING')
+----------------------------------------------------------------------
+Traceback (most recent call last):
+  File "/Users/rayer/orca/workspaces/llm-wiki-cloud/LWC-375-project-key-contract/deploy/engine/tests/test_build_submission.py", line 430, in test_real_action_download_fresh_release_resumes_same_build_id
+    retained, plan, first = self.make_action_checkpoint(
+                            ~~~~~~~~~~~~~~~~~~~~~~~~~~~^
+        'action-resume-'+first_status.lower(),statuses=[first_status])
+        ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+  File "/Users/rayer/orca/workspaces/llm-wiki-cloud/LWC-375-project-key-contract/deploy/engine/tests/test_build_submission.py", line 384, in make_action_checkpoint
+    directory, plan = self.admitted_plan(name=name, source=source)
+                      ~~~~~~~~~~~~~~~~~~^^^^^^^^^^^^^^^^^^^^^^^^^^
+  File "/Users/rayer/orca/workspaces/llm-wiki-cloud/LWC-375-project-key-contract/deploy/engine/tests/test_build_submission.py", line 276, in admitted_plan
+    plan = engine.admit(args)
+  File "/Users/rayer/orca/workspaces/llm-wiki-cloud/LWC-375-project-key-contract/deploy/engine/engine.py", line 137, in admit
+    identities = {c: source_identity(c, args.source) for c in selected}
+                     ~~~~~~~~~~~~~~~^^^^^^^^^^^^^^^^
+  File "/Users/rayer/orca/workspaces/llm-wiki-cloud/LWC-375-project-key-contract/deploy/engine/engine.py", line 82, in source_identity
+    require(not any((str(Path(p).parent) in package_dirs and p.endswith('.go')) or
+    ~~~~~~~^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+                    any(p == r or p.startswith(r.rstrip('/') + '/') for r in roots) for p in untracked), 'untracked-build-input')
+                    ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+  File "/Users/rayer/orca/workspaces/llm-wiki-cloud/LWC-375-project-key-contract/deploy/engine/support.py", line 168, in require
+    raise Breakpoint(reason)
+support.Breakpoint: untracked-build-input
+
+======================================================================
+ERROR: test_real_action_download_fresh_release_resumes_same_build_id (test_build_submission.AsyncBuildSubmission.test_real_action_download_fresh_release_resumes_same_build_id) (first_status='STATUS_UNKNOWN')
+----------------------------------------------------------------------
+Traceback (most recent call last):
+  File "/Users/rayer/orca/workspaces/llm-wiki-cloud/LWC-375-project-key-contract/deploy/engine/tests/test_build_submission.py", line 430, in test_real_action_download_fresh_release_resumes_same_build_id
+    retained, plan, first = self.make_action_checkpoint(
+                            ~~~~~~~~~~~~~~~~~~~~~~~~~~~^
+        'action-resume-'+first_status.lower(),statuses=[first_status])
+        ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+  File "/Users/rayer/orca/workspaces/llm-wiki-cloud/LWC-375-project-key-contract/deploy/engine/tests/test_build_submission.py", line 384, in make_action_checkpoint
+    directory, plan = self.admitted_plan(name=name, source=source)
+                      ~~~~~~~~~~~~~~~~~~^^^^^^^^^^^^^^^^^^^^^^^^^^
+  File "/Users/rayer/orca/workspaces/llm-wiki-cloud/LWC-375-project-key-contract/deploy/engine/tests/test_build_submission.py", line 276, in admitted_plan
+    plan = engine.admit(args)
+  File "/Users/rayer/orca/workspaces/llm-wiki-cloud/LWC-375-project-key-contract/deploy/engine/engine.py", line 137, in admit
+    identities = {c: source_identity(c, args.source) for c in selected}
+                     ~~~~~~~~~~~~~~~^^^^^^^^^^^^^^^^
+  File "/Users/rayer/orca/workspaces/llm-wiki-cloud/LWC-375-project-key-contract/deploy/engine/engine.py", line 82, in source_identity
+    require(not any((str(Path(p).parent) in package_dirs and p.endswith('.go')) or
+    ~~~~~~~^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+                    any(p == r or p.startswith(r.rstrip('/') + '/') for r in roots) for p in untracked), 'untracked-build-input')
+                    ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+  File "/Users/rayer/orca/workspaces/llm-wiki-cloud/LWC-375-project-key-contract/deploy/engine/support.py", line 168, in require
+    raise Breakpoint(reason)
+support.Breakpoint: untracked-build-input
+
+======================================================================
+ERROR: test_real_action_download_success_digest_failure_only_retries_digest (test_build_submission.AsyncBuildSubmission.test_real_action_download_success_digest_failure_only_retries_digest)
+----------------------------------------------------------------------
+Traceback (most recent call last):
+  File "/Users/rayer/orca/workspaces/llm-wiki-cloud/LWC-375-project-key-contract/deploy/engine/tests/test_build_submission.py", line 537, in test_real_action_download_success_digest_failure_only_retries_digest
+    retained, plan, first = self.make_action_checkpoint(
+                            ~~~~~~~~~~~~~~~~~~~~~~~~~~~^
+        'action-resume-digest',statuses=['SUCCESS'],extra={'FAKE_TAG_LOOKUP_EXIT':'9'})
+        ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+  File "/Users/rayer/orca/workspaces/llm-wiki-cloud/LWC-375-project-key-contract/deploy/engine/tests/test_build_submission.py", line 384, in make_action_checkpoint
+    directory, plan = self.admitted_plan(name=name, source=source)
+                      ~~~~~~~~~~~~~~~~~~^^^^^^^^^^^^^^^^^^^^^^^^^^
+  File "/Users/rayer/orca/workspaces/llm-wiki-cloud/LWC-375-project-key-contract/deploy/engine/tests/test_build_submission.py", line 276, in admitted_plan
+    plan = engine.admit(args)
+  File "/Users/rayer/orca/workspaces/llm-wiki-cloud/LWC-375-project-key-contract/deploy/engine/engine.py", line 137, in admit
+    identities = {c: source_identity(c, args.source) for c in selected}
+                     ~~~~~~~~~~~~~~~^^^^^^^^^^^^^^^^
+  File "/Users/rayer/orca/workspaces/llm-wiki-cloud/LWC-375-project-key-contract/deploy/engine/engine.py", line 82, in source_identity
+    require(not any((str(Path(p).parent) in package_dirs and p.endswith('.go')) or
+    ~~~~~~~^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+                    any(p == r or p.startswith(r.rstrip('/') + '/') for r in roots) for p in untracked), 'untracked-build-input')
+                    ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+  File "/Users/rayer/orca/workspaces/llm-wiki-cloud/LWC-375-project-key-contract/deploy/engine/support.py", line 168, in require
+    raise Breakpoint(reason)
+support.Breakpoint: untracked-build-input
+
+======================================================================
+ERROR: test_real_action_download_v2_checkpoint_keeps_legacy_id_sequence_and_handle (test_build_submission.AsyncBuildSubmission.test_real_action_download_v2_checkpoint_keeps_legacy_id_sequence_and_handle)
+----------------------------------------------------------------------
+Traceback (most recent call last):
+  File "/Users/rayer/orca/workspaces/llm-wiki-cloud/LWC-375-project-key-contract/deploy/engine/tests/test_build_submission.py", line 448, in test_real_action_download_v2_checkpoint_keeps_legacy_id_sequence_and_handle
+    retained, plan, first = self.make_action_checkpoint(
+                            ~~~~~~~~~~~~~~~~~~~~~~~~~~~^
+        'action-v2-resume',statuses=['WORKING'])
+        ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+  File "/Users/rayer/orca/workspaces/llm-wiki-cloud/LWC-375-project-key-contract/deploy/engine/tests/test_build_submission.py", line 384, in make_action_checkpoint
+    directory, plan = self.admitted_plan(name=name, source=source)
+                      ~~~~~~~~~~~~~~~~~~^^^^^^^^^^^^^^^^^^^^^^^^^^
+  File "/Users/rayer/orca/workspaces/llm-wiki-cloud/LWC-375-project-key-contract/deploy/engine/tests/test_build_submission.py", line 276, in admitted_plan
+    plan = engine.admit(args)
+  File "/Users/rayer/orca/workspaces/llm-wiki-cloud/LWC-375-project-key-contract/deploy/engine/engine.py", line 137, in admit
+    identities = {c: source_identity(c, args.source) for c in selected}
+                     ~~~~~~~~~~~~~~~^^^^^^^^^^^^^^^^
+  File "/Users/rayer/orca/workspaces/llm-wiki-cloud/LWC-375-project-key-contract/deploy/engine/engine.py", line 82, in source_identity
+    require(not any((str(Path(p).parent) in package_dirs and p.endswith('.go')) or
+    ~~~~~~~^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+                    any(p == r or p.startswith(r.rstrip('/') + '/') for r in roots) for p in untracked), 'untracked-build-input')
+                    ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+  File "/Users/rayer/orca/workspaces/llm-wiki-cloud/LWC-375-project-key-contract/deploy/engine/support.py", line 168, in require
+    raise Breakpoint(reason)
+support.Breakpoint: untracked-build-input
+
+======================================================================
+ERROR: test_real_action_terminal_failure_explicit_retry_and_receipt_expansion (test_build_submission.AsyncBuildSubmission.test_real_action_terminal_failure_explicit_retry_and_receipt_expansion)
+----------------------------------------------------------------------
+Traceback (most recent call last):
+  File "/Users/rayer/orca/workspaces/llm-wiki-cloud/LWC-375-project-key-contract/deploy/engine/tests/test_build_submission.py", line 628, in test_real_action_terminal_failure_explicit_retry_and_receipt_expansion
+    terminal, plan, first = self.make_action_checkpoint(
+                            ~~~~~~~~~~~~~~~~~~~~~~~~~~~^
+        'action-terminal-retry',statuses=['FAILURE'])
+        ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+  File "/Users/rayer/orca/workspaces/llm-wiki-cloud/LWC-375-project-key-contract/deploy/engine/tests/test_build_submission.py", line 384, in make_action_checkpoint
+    directory, plan = self.admitted_plan(name=name, source=source)
+                      ~~~~~~~~~~~~~~~~~~^^^^^^^^^^^^^^^^^^^^^^^^^^
+  File "/Users/rayer/orca/workspaces/llm-wiki-cloud/LWC-375-project-key-contract/deploy/engine/tests/test_build_submission.py", line 276, in admitted_plan
+    plan = engine.admit(args)
+  File "/Users/rayer/orca/workspaces/llm-wiki-cloud/LWC-375-project-key-contract/deploy/engine/engine.py", line 137, in admit
+    identities = {c: source_identity(c, args.source) for c in selected}
+                     ~~~~~~~~~~~~~~~^^^^^^^^^^^^^^^^
+  File "/Users/rayer/orca/workspaces/llm-wiki-cloud/LWC-375-project-key-contract/deploy/engine/engine.py", line 82, in source_identity
+    require(not any((str(Path(p).parent) in package_dirs and p.endswith('.go')) or
+    ~~~~~~~^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+                    any(p == r or p.startswith(r.rstrip('/') + '/') for r in roots) for p in untracked), 'untracked-build-input')
+                    ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+  File "/Users/rayer/orca/workspaces/llm-wiki-cloud/LWC-375-project-key-contract/deploy/engine/support.py", line 168, in require
+    raise Breakpoint(reason)
+support.Breakpoint: untracked-build-input
+
+======================================================================
+ERROR: test_registered_dev_release_resumes_legacy_source_with_current_executor (test_build_submission.AsyncBuildSubmission.test_registered_dev_release_resumes_legacy_source_with_current_executor)
+----------------------------------------------------------------------
+Traceback (most recent call last):
+  File "/Users/rayer/orca/workspaces/llm-wiki-cloud/LWC-375-project-key-contract/deploy/engine/tests/test_build_submission.py", line 488, in test_registered_dev_release_resumes_legacy_source_with_current_executor
+    retained, plan, first = self.make_action_checkpoint(
+                            ~~~~~~~~~~~~~~~~~~~~~~~~~~~^
+        'registered-cross-executor-resume',statuses=['WORKING'],source=source,extra=git_env)
+        ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+  File "/Users/rayer/orca/workspaces/llm-wiki-cloud/LWC-375-project-key-contract/deploy/engine/tests/test_build_submission.py", line 384, in make_action_checkpoint
+    directory, plan = self.admitted_plan(name=name, source=source)
+                      ~~~~~~~~~~~~~~~~~~^^^^^^^^^^^^^^^^^^^^^^^^^^
+  File "/Users/rayer/orca/workspaces/llm-wiki-cloud/LWC-375-project-key-contract/deploy/engine/tests/test_build_submission.py", line 276, in admitted_plan
+    plan = engine.admit(args)
+  File "/Users/rayer/orca/workspaces/llm-wiki-cloud/LWC-375-project-key-contract/deploy/engine/engine.py", line 137, in admit
+    identities = {c: source_identity(c, args.source) for c in selected}
+                     ~~~~~~~~~~~~~~~^^^^^^^^^^^^^^^^
+  File "/Users/rayer/orca/workspaces/llm-wiki-cloud/LWC-375-project-key-contract/deploy/engine/engine.py", line 82, in source_identity
+    require(not any((str(Path(p).parent) in package_dirs and p.endswith('.go')) or
+    ~~~~~~~^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+                    any(p == r or p.startswith(r.rstrip('/') + '/') for r in roots) for p in untracked), 'untracked-build-input')
+                    ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+  File "/Users/rayer/orca/workspaces/llm-wiki-cloud/LWC-375-project-key-contract/deploy/engine/support.py", line 168, in require
+    raise Breakpoint(reason)
+support.Breakpoint: untracked-build-input
+
+======================================================================
+ERROR: test_actual_go_inputs_include_embeds_exclude_engine_and_unrelated_packages (test_engine.SourceApplicability.test_actual_go_inputs_include_embeds_exclude_engine_and_unrelated_packages)
+----------------------------------------------------------------------
+Traceback (most recent call last):
+  File "/Users/rayer/orca/workspaces/llm-wiki-cloud/LWC-375-project-key-contract/deploy/engine/tests/test_engine.py", line 1931, in test_actual_go_inputs_include_embeds_exclude_engine_and_unrelated_packages
+    identity=engine.source_identity(c,sha)
+  File "/Users/rayer/orca/workspaces/llm-wiki-cloud/LWC-375-project-key-contract/deploy/engine/engine.py", line 82, in source_identity
+    require(not any((str(Path(p).parent) in package_dirs and p.endswith('.go')) or
+    ~~~~~~~^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+                    any(p == r or p.startswith(r.rstrip('/') + '/') for r in roots) for p in untracked), 'untracked-build-input')
+                    ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+  File "/Users/rayer/orca/workspaces/llm-wiki-cloud/LWC-375-project-key-contract/deploy/engine/support.py", line 168, in require
+    raise Breakpoint(reason)
+support.Breakpoint: untracked-build-input
+
+----------------------------------------------------------------------
+Ran 135 tests in 158.912s
+
+FAILED (errors=9)
+{"allowed_next_action": "reconcile-before-replay", "attempt": "2d4a83f197d3fab23544de7fcf9ca8a1ea20fcc66db71f868e0a815e00589f5b", "builds": {"auth": {"build_id": "12345678-1234-4234-8234-123456789abc", "identity_verified": true, "last_observed_status": "WORKING", "location": "global", "poll_outcome": "deadline", "project_id": "llm-wiki-cloud", "status": "STATUS_UNKNOWN"}}, "candidate": null, "component": "auth", "expected": {"identity": "f48495ced3478226aa78d341416b99e70f074c33159ba80915daf347e6b0a504", "source": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"}, "failure_diagnostic": {"exit_code": null, "stage": "build-status", "timeout_class": "build-poll-deadline"}, "last_verified_checkpoint": 4, "limitations": "Job executions and persistent writes are not reversed by image rollback.", "mutation_may_have_happened": false, "observed": {"component_status": "unstarted"}, "prior": null, "reason": "build-poll-deadline", "release": "test-lwc358-poll-resume", "stage": "prepared", "status": "unknown"}
+Pipeline config-only verified environment=dev sha256=d2a796c1e805cfe57866afad3b716680e46b2d9be0e162a285ee013a10dc3a95 image_unchanged=true
+Pinned resolver baseline=pair-incomplete; runtime-child=linked; resume=single-deploy

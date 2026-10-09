@@ -434,11 +434,8 @@ func (h *Handler) Ready(c *gin.Context) {
 func (h *Handler) Query(c *gin.Context) {
 	gcsClient, profileSnapshot, err := h.queryStore(c)
 	if err != nil {
-		if errors.Is(err, errProfileProjectNotFound) {
-			c.JSON(http.StatusNotFound, handler.ErrorResponse{Error: "project not found"})
-			return
-		}
-		c.JSON(http.StatusInternalServerError, handler.ErrorResponse{Error: "generated data unavailable"})
+		failure := queryStoreFailure(err)
+		c.JSON(failure.status, handler.ErrorResponse{Error: failure.message})
 		return
 	}
 
@@ -460,28 +457,17 @@ func (h *Handler) Query(c *gin.Context) {
 		return
 	}
 
-	executor := h.queryExecutor
-	if executor == nil {
-		c.JSON(http.StatusInternalServerError, handler.ErrorResponse{Error: "generated data unavailable"})
+	response, identity, failure := h.executeQuery(c.Request.Context(), gcsClient, profileSnapshot, query.Request{
+		Query: queryText, Mode: mode, RequiredTagIDs: req.RequiredTagIDs,
+	})
+	if failure != nil {
+		c.JSON(failure.status, handler.ErrorResponse{Error: failure.message})
 		return
 	}
-	result, err := executor.Execute(c.Request.Context(), gcsClient, query.Request{Query: queryText, Mode: mode, RequiredTagIDs: req.RequiredTagIDs, Profile: profileSnapshot})
-	if err != nil {
-		if errors.Is(err, query.ErrUnsupportedRequired) {
-			c.JSON(http.StatusUnprocessableEntity, handler.ErrorResponse{Error: "required Profile condition is unsupported"})
-			return
-		}
-		if errors.Is(err, query.ErrCacheNotConfigured) {
-			c.JSON(http.StatusInternalServerError, handler.ErrorResponse{Error: "concept cache is not configured"})
-			return
-		}
-		c.JSON(http.StatusInternalServerError, handler.ErrorResponse{Error: "generated data unavailable"})
-		return
-	}
-	if identity := result.RuntimeConfigIdentity; identity != nil {
+	if identity != nil {
 		setQueryIdentityHeaders(c, identity)
 	}
-	c.JSON(http.StatusOK, mapQueryResult(result))
+	c.JSON(http.StatusOK, response)
 }
 
 // QueryConfig exposes only the immutable configured runtime identity. It is

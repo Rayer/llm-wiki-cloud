@@ -14,6 +14,9 @@ import { ExportPanel } from '@/components/ExportPanel';
 import type { ExportState } from '@/lib/export-api';
 
 const emptyState = { latest_job: null, current: null, previous: null, eligible: true, rejection_reason: null, next_allowed_at: null };
+const waitForEnabledButton = async (button: HTMLElement) => {
+  await waitFor(() => expect(button).toHaveProperty('disabled', false));
+};
 beforeEach(() => { mocks.currentProject = { id: 'project-a', name: 'Project A' }; mocks.isDemoSession = false; window.localStorage.setItem('locale', 'zh-TW'); mocks.getExportState.mockResolvedValue(emptyState); });
 afterEach(() => { cleanup(); vi.clearAllMocks(); });
 
@@ -30,7 +33,9 @@ describe('LWC-345 export UI fixtures', () => {
     render(<ExportPanel />);
     expect(await screen.findByRole('button', { name: '打包帶走' })).toBeDefined();
     expect(screen.getByRole('button', { name: '下載資料' })).toHaveProperty('disabled', true);
-    fireEvent.click(screen.getByRole('button', { name: '打包帶走' }));
+    const opener = screen.getByRole('button', { name: '打包帶走' });
+    await waitForEnabledButton(opener);
+    fireEvent.click(opener);
     expect(screen.getByRole('dialog')).toBeDefined();
     expect(screen.getByText(/不包含登入憑證/)).toBeDefined();
     expect(screen.getByText(/不會自動 compile/)).toBeDefined();
@@ -104,7 +109,9 @@ describe('LWC-345 export UI fixtures', () => {
     let resolveCreate!: (job: { export_id: string; scope: 'raw-full-metadata'; status: 'queued' }) => void;
     mocks.createExport.mockImplementation(() => new Promise((resolve) => { resolveCreate = resolve; }));
     render(<ExportPanel />);
-    fireEvent.click(await screen.findByRole('button', { name: '打包帶走' }));
+    const opener = await screen.findByRole('button', { name: '打包帶走' });
+    await waitForEnabledButton(opener);
+    fireEvent.click(opener);
     const start = screen.getByRole('button', { name: '開始打包' });
     act(() => { fireEvent.click(start); fireEvent.click(start); });
     expect(mocks.createExport).toHaveBeenCalledTimes(1);
@@ -114,7 +121,9 @@ describe('LWC-345 export UI fixtures', () => {
   it('keeps a create error after its state refresh succeeds', async () => {
     mocks.createExport.mockRejectedValue(new Error('export_rejected:cooldown'));
     render(<ExportPanel />);
-    fireEvent.click(await screen.findByRole('button', { name: '打包帶走' }));
+    const opener = await screen.findByRole('button', { name: '打包帶走' });
+    await waitForEnabledButton(opener);
+    fireEvent.click(opener);
     fireEvent.click(screen.getByRole('button', { name: '開始打包' }));
     await waitFor(() => expect(screen.getAllByRole('alert').some((node) => node.textContent?.includes('export_rejected:cooldown'))).toBe(true));
   });
@@ -123,24 +132,31 @@ describe('LWC-345 export UI fixtures', () => {
     mocks.getExportState.mockResolvedValue({ ...emptyState, current: { export_id: 'exp-d', scope: 'raw', status: 'ready', snapshot_at: null, completed_at: null, expires_at: null, size_bytes: 10, download_available: true } });
     mocks.requestExportDownload.mockRejectedValue(new Error('export_expired'));
     render(<ExportPanel />);
-    fireEvent.click(await screen.findByRole('button', { name: '下載資料' }));
+    const download = await screen.findByRole('button', { name: '下載資料' });
+    await waitForEnabledButton(download);
+    fireEvent.click(download);
     await waitFor(() => expect(screen.getAllByRole('alert').some((node) => node.textContent?.includes('export_expired'))).toBe(true));
   });
 
   it('closes the modal and resets scope when the project changes', async () => {
     const { rerender } = render(<ExportPanel />);
-    fireEvent.click(await screen.findByRole('button', { name: '打包帶走' }));
+    const opener = await screen.findByRole('button', { name: '打包帶走' });
+    await waitForEnabledButton(opener);
+    fireEvent.click(opener);
     fireEvent.click(screen.getByDisplayValue('raw'));
     mocks.currentProject = { id: 'project-b', name: 'Project B' };
     rerender(<ExportPanel />);
     await waitFor(() => expect(screen.queryByRole('dialog')).toBeNull());
-    fireEvent.click(await screen.findByRole('button', { name: '打包帶走' }));
+    const nextOpener = await screen.findByRole('button', { name: '打包帶走' });
+    await waitForEnabledButton(nextOpener);
+    fireEvent.click(nextOpener);
     expect(screen.getByDisplayValue('raw-full-metadata')).toBeDefined();
   });
 
   it('focuses the dialog, closes on Escape, and restores focus to its opener', async () => {
     render(<ExportPanel />);
     const opener = await screen.findByRole('button', { name: '打包帶走' });
+    await waitForEnabledButton(opener);
     opener.focus();
     fireEvent.click(opener);
     await waitFor(() => expect(document.activeElement).toBe(screen.getByDisplayValue('raw-full-metadata')));
