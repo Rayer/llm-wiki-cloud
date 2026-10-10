@@ -1,8 +1,12 @@
 package localfs
 
 import (
+	"bytes"
 	"context"
+	"crypto/sha256"
+	"encoding/hex"
 	"errors"
+	"io"
 	"os"
 	"path/filepath"
 	"sync"
@@ -166,6 +170,83 @@ func TestListRawFilesMissingDirectoryReturnsEmpty(t *testing.T) {
 	}
 	if len(files) != 0 {
 		t.Fatalf("len(files) = %d, want 0", len(files))
+	}
+}
+
+func TestRawSyncStreamsNestedFilesAndUsesGenerationCAS(t *testing.T) {
+	client := New(t.TempDir()).WithScope("u", "p")
+	ctx := context.Background()
+	if _, err := client.WriteBytes(ctx, []byte("attachment"), "raw/topic/files/scan.bin"); err != nil {
+		t.Fatal(err)
+	}
+	files, err := client.ListSyncRawFiles(ctx)
+	if err != nil {
+		t.Fatalf("ListSyncRawFiles() error = %v", err)
+	}
+	if len(files) != 1 || files[0].Path != "topic/files/scan.bin" || files[0].SHA256 != digest([]byte("attachment")) {
+		t.Fatalf("raw sync inventory = %#v", files)
+	}
+	reader, size, err := client.OpenSyncRawFile(ctx, files[0].Path, files[0].Generation)
+	if err != nil {
+		t.Fatalf("OpenSyncRawFile() error = %v", err)
+	}
+	data, err := io.ReadAll(reader)
+	_ = reader.Close()
+	if err != nil || size != int64(len(data)) || string(data) != "attachment" {
+		t.Fatalf("pinned read size=%d data=%q err=%v", size, data, err)
+	}
+
+	updated := []byte("new attachment")
+	updatedDigest := sha256.Sum256(updated)
+	newGeneration, err := client.WriteSyncRawFile(ctx, files[0].Path, bytes.NewReader(updated), files[0].Generation, hex.EncodeToString(updatedDigest[:]))
+	if err != nil {
+		t.Fatalf("WriteSyncRawFile() error = %v", err)
+	}
+	if newGeneration == files[0].Generation {
+		t.Fatal("updated raw file kept the old generation")
+	}
+	if _, err := client.WriteSyncRawFile(ctx, files[0].Path, bytes.NewReader([]byte("stale")), files[0].Generation, digest([]byte("stale"))); !errors.Is(err, store.ErrRawSyncConflict) {
+		t.Fatalf("stale generation error = %v, want ErrRawSyncConflict", err)
+	}
+	if _, err := client.WriteSyncRawFile(ctx, files[0].Path, bytes.NewReader([]byte("bad digest")), newGeneration, digest([]byte("different"))); err == nil {
+		t.Fatal("WriteSyncRawFile accepted a digest mismatch")
+	}
+	reader, _, err = client.OpenSyncRawFile(ctx, files[0].Path, newGeneration)
+	if err != nil {
+		t.Fatalf("open after rejected writes: %v", err)
+	}
+	data, err = io.ReadAll(reader)
+	_ = reader.Close()
+	if err != nil || !bytes.Equal(data, updated) {
+		t.Fatalf("rejected write changed object: %q err=%v", data, err)
+	}
+}
+
+func TestRawSyncRejectsSymlinkInRawTree(t *testing.T) {
+	root := t.TempDir()
+	client := New(root).WithScope("u", "p")
+	if _, err := client.WriteBytes(context.Background(), []byte("x"), "raw/real.txt"); err != nil {
+		t.Fatal(err)
+	}
+	projectRoot := filepath.Join(root, "users", "u", "projects", "p")
+	if err := os.Symlink(filepath.Join(projectRoot, "raw", "real.txt"), filepath.Join(projectRoot, "raw", "linked.txt")); err != nil {
+		t.Skipf("symlink unavailable: %v", err)
+	}
+	if _, err := client.ListSyncRawFiles(context.Background()); err == nil {
+		t.Fatal("ListSyncRawFiles accepted a symlink")
+	}
+}
+
+func TestRawSyncPathValidationRejectsEscapeAndDrivePaths(t *testing.T) {
+	for _, path := range []string{"", ".", "../outside", "/absolute", "C:/outside", "nested/../outside", "nested\\outside", "nested//file.bin"} {
+		if err := store.ValidateRawSyncPath(path); err == nil {
+			t.Errorf("ValidateRawSyncPath(%q) accepted an unsafe path", path)
+		}
+	}
+	for _, path := range []string{"attachment.bin", "nested/files/attachment.bin", "資料/附件.pdf"} {
+		if err := store.ValidateRawSyncPath(path); err != nil {
+			t.Errorf("ValidateRawSyncPath(%q) rejected a canonical path: %v", path, err)
+		}
 	}
 }
 

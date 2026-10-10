@@ -95,7 +95,10 @@ type Config struct {
 
 	// AuthServiceURL is the public URL of the dedicated auth service (LWC-258).
 	// Env: AUTH_SERVICE_URL. Default: https://auth.dev.rayer.idv.tw
-	AuthServiceURL               string
+	AuthServiceURL string
+	// SyncServiceURL is the explicitly configured BFF origin returned by Auth's
+	// trusted CLI sync locator; it is never inferred from the Auth hostname.
+	SyncServiceURL               string
 	ProfileRuntimeAudience       string
 	ProfileRuntimeServiceAccount string
 

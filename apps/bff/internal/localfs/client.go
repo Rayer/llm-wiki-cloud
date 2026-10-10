@@ -91,27 +91,29 @@ func (c *Client) WriteFileIfGeneration(ctx context.Context, data []byte, relPath
 		return 0, err
 	}
 	var next int64
-	err = withConditionalLock(path, func() error {
-		currentData, readErr := os.ReadFile(path)
-		current := int64(0)
-		if readErr == nil {
-			current, readErr = recoverConditionalMeta(path, currentData)
-		}
-		if expected == 0 {
+	err = withRawSyncFileLock(c, relPath, func() error {
+		return withConditionalLock(path, func() error {
+			currentData, readErr := os.ReadFile(path)
+			current := int64(0)
 			if readErr == nil {
+				current, readErr = recoverConditionalMeta(path, currentData)
+			}
+			if expected == 0 {
+				if readErr == nil {
+					return store.ErrGenerationMismatch
+				}
+				if !errors.Is(readErr, os.ErrNotExist) {
+					return readErr
+				}
+			} else if readErr != nil || current != expected {
 				return store.ErrGenerationMismatch
 			}
-			if !errors.Is(readErr, os.ErrNotExist) {
-				return readErr
+			if err := writeFileAtomic(path, data); err != nil {
+				return err
 			}
-		} else if readErr != nil || current != expected {
-			return store.ErrGenerationMismatch
-		}
-		if err := writeFileAtomic(path, data); err != nil {
-			return err
-		}
-		next = current + 1
-		return writeConditionalMeta(path, data, next)
+			next = current + 1
+			return writeConditionalMeta(path, data, next)
+		})
 	})
 	return next, err
 }
@@ -374,7 +376,7 @@ func (c *Client) WriteBytes(ctx context.Context, data []byte, relPath string) (s
 	if err := os.MkdirAll(filepath.Dir(path), 0o755); err != nil {
 		return "", fmt.Errorf("mkdir %s: %w", filepath.Dir(path), err)
 	}
-	if err := os.WriteFile(path, data, 0o644); err != nil {
+	if err := withRawSyncFileLock(c, relPath, func() error { return os.WriteFile(path, data, 0o644) }); err != nil {
 		return "", fmt.Errorf("write %s: %w", relPath, err)
 	}
 	return digest(data), nil
@@ -398,12 +400,17 @@ func (c *Client) WriteBytesAtomic(ctx context.Context, data []byte, tmpPath, fin
 	if err := os.MkdirAll(filepath.Dir(final), 0o755); err != nil {
 		return "", fmt.Errorf("mkdir %s: %w", filepath.Dir(final), err)
 	}
-	if err := os.WriteFile(tmp, data, 0o644); err != nil {
-		return "", fmt.Errorf("write %s: %w", tmpPath, err)
-	}
-	if err := os.Rename(tmp, final); err != nil {
-		_ = os.Remove(tmp)
-		return "", fmt.Errorf("rename %s to %s: %w", tmpPath, finalPath, err)
+	if err := withRawSyncFileLocks(c, []string{tmpPath, finalPath}, func() error {
+		if err := os.WriteFile(tmp, data, 0o644); err != nil {
+			return fmt.Errorf("write %s: %w", tmpPath, err)
+		}
+		if err := os.Rename(tmp, final); err != nil {
+			_ = os.Remove(tmp)
+			return fmt.Errorf("rename %s to %s: %w", tmpPath, finalPath, err)
+		}
+		return nil
+	}); err != nil {
+		return "", err
 	}
 	return digest(data), nil
 }
@@ -612,6 +619,12 @@ func (c *Client) BucketStats(ctx context.Context) (int64, int64, error) {
 		}
 		if ctxErr := ctx.Err(); ctxErr != nil {
 			return ctxErr
+		}
+		if path != root && filepath.Dir(path) == root && strings.HasPrefix(d.Name(), ".lwc-sync-") {
+			if d.IsDir() {
+				return filepath.SkipDir
+			}
+			return nil
 		}
 		if d.IsDir() {
 			return nil

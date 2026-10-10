@@ -27,6 +27,7 @@ func registerUnavailableCLIRoutes(routes *gin.RouterGroup) {
 	routes.POST("/cli/sessions/:id/revoke", unavailable)
 	routes.GET("/cli/projects", unavailable)
 	routes.GET("/cli/bindings", unavailable)
+	routes.GET("/cli/sync-service", unavailable)
 	routes.POST("/cli/bindings", unavailable)
 	routes.POST("/cli/bindings/:projectID/reauthorize", unavailable)
 	routes.DELETE("/cli/bindings/:projectID/:bindingID", unavailable)
@@ -45,6 +46,7 @@ func registerCLIAuthRoutes(routes *gin.RouterGroup, cfg config.Config, fs *fires
 	}
 	service := auth.NewCLIAuthService(fs, sessions, cfg.JWTSecret, verificationOrigin)
 	service.SetSyncBindingAuthority(auth.NewSyncBindingAuthority(fs, environment, cfg.AuthServiceURL))
+	service.SetSyncServiceURL(cfg.SyncServiceURL)
 
 	public := routes.Group("/cli")
 	public.Use(auth.RequestBodyLimit())
@@ -65,6 +67,7 @@ func registerCLIAuthRoutes(routes *gin.RouterGroup, cfg config.Config, fs *fires
 	protected.GET("/status", auth.CLIOnly(), service.StatusHandler())
 	protected.GET("/projects", auth.CLIOnly(), service.ListProjectsHandler())
 	protected.GET("/bindings", service.ListBindingsHandler())
+	protected.GET("/sync-service", auth.CLIOnly(), service.SyncServiceLocatorHandler())
 	protected.POST("/bindings", service.CreateBindingHandler())
 	protected.POST("/bindings/:projectID/reauthorize", service.ReauthorizeBindingHandler())
 	protected.DELETE("/bindings/:projectID/:bindingID", service.RevokeBindingHandler())

@@ -12,7 +12,8 @@ func validAuthFileForTest() AuthFile {
 	return AuthFile{
 		SchemaVersion: 1, Target: "auth", Environment: "dev", ConfigID: "sha256:" + strings.Repeat("a", 64),
 		GCPProject: "llm-wiki-cloud", FirestoreDatabaseID: "llm-wiki-cloud-dev",
-		AuthServiceURL: "https://auth.dev.example.test", AllowedHosts: []string{"auth.dev.example.test"},
+		AuthServiceURL: "https://auth.dev.example.test", SyncServiceURL: "https://bff.dev.example.test",
+		AllowedHosts:   []string{"auth.dev.example.test"},
 		AllowedOrigins: []string{"https://wiki.example.test"}, AuthSessionEnvironment: "llm-wiki-cloud-dev",
 		AuthSessionMigration: "disabled", AuthDemoUserID: "demo-user",
 		AuthDemoUserEmail: "demo@example.test", AuthDemoUserRole: "member", JWTSecret: "synthetic-test-signing-key",
@@ -26,6 +27,7 @@ func localAuthFileForTest() AuthFile {
 	file.FirestoreDatabaseID = "llm-wiki-cloud-local"
 	file.LocalCloudScope = "worktree-0123456789abcdef01234567"
 	file.AuthServiceURL = "http://localhost:8081"
+	file.SyncServiceURL = "http://localhost:8080"
 	file.AllowedHosts = []string{"localhost", "127.0.0.1"}
 	file.AllowedOrigins = []string{"http://localhost:3000"}
 	file.JWTSecret = strings.Repeat("a", 64)
@@ -72,14 +74,15 @@ func TestDecodeAuthFileStrictSchemaAndGoogleModes(t *testing.T) {
 	}
 
 	for name, mutate := range map[string]func(*AuthFile){
-		"wrong schema":             func(f *AuthFile) { f.SchemaVersion = 2 },
-		"missing jwt":              func(f *AuthFile) { f.JWTSecret = "" },
-		"disabled Google residue":  func(f *AuthFile) { f.Google.ClientSecret = "synthetic" },
-		"unsupported session mode": func(f *AuthFile) { f.AuthSessionMigration = "import" },
-		"wildcard host":            func(f *AuthFile) { f.AllowedHosts = []string{"*.example.test"} },
-		"missing Demo email":       func(f *AuthFile) { f.AuthDemoUserEmail = "" },
-		"admin Demo role":          func(f *AuthFile) { f.AuthDemoUserRole = "admin" },
-		"invalid Demo email":       func(f *AuthFile) { f.AuthDemoUserEmail = "not-an-email" },
+		"wrong schema":                func(f *AuthFile) { f.SchemaVersion = 2 },
+		"missing jwt":                 func(f *AuthFile) { f.JWTSecret = "" },
+		"disabled Google residue":     func(f *AuthFile) { f.Google.ClientSecret = "synthetic" },
+		"unsupported session mode":    func(f *AuthFile) { f.AuthSessionMigration = "import" },
+		"wildcard host":               func(f *AuthFile) { f.AllowedHosts = []string{"*.example.test"} },
+		"invalid sync service origin": func(f *AuthFile) { f.SyncServiceURL = "https://bff.example.test/api" },
+		"missing Demo email":          func(f *AuthFile) { f.AuthDemoUserEmail = "" },
+		"admin Demo role":             func(f *AuthFile) { f.AuthDemoUserRole = "admin" },
+		"invalid Demo email":          func(f *AuthFile) { f.AuthDemoUserEmail = "not-an-email" },
 	} {
 		t.Run(name, func(t *testing.T) {
 			bad := validAuthFileForTest()

@@ -38,6 +38,7 @@ type AuthFile struct {
 	FirestoreDatabaseID    string         `json:"firestore_database_id"`
 	LocalCloudScope        string         `json:"local_cloud_scope"`
 	AuthServiceURL         string         `json:"auth_service_url"`
+	SyncServiceURL         string         `json:"sync_service_url"`
 	AllowedHosts           []string       `json:"allowed_hosts"`
 	AllowedOrigins         []string       `json:"allowed_origins"`
 	AuthSessionEnvironment string         `json:"auth_session_environment"`
@@ -74,6 +75,7 @@ type AuthInputSnapshot struct {
 	FirestoreDatabaseID    string          `json:"firestore_database_id"`
 	LocalCloudScope        string          `json:"local_cloud_scope"`
 	AuthServiceURL         string          `json:"auth_service_url"`
+	SyncServiceURL         string          `json:"sync_service_url"`
 	AllowedHosts           []string        `json:"allowed_hosts"`
 	AllowedOrigins         []string        `json:"allowed_origins"`
 	AuthSessionEnvironment string          `json:"auth_session_environment"`
@@ -135,7 +137,7 @@ func DecodeAuthInputSnapshot(data []byte) (AuthInputSnapshot, error) {
 		{"schema_version", "integer"}, {"environment", "string"}, {"target", "string"},
 		{"source_sha", "string"}, {"config_id", "string"}, {"gcp_project", "string"},
 		{"firestore_database_id", "string"}, {"local_cloud_scope", "string"},
-		{"auth_service_url", "string"}, {"allowed_hosts", "string_array"},
+		{"auth_service_url", "string"}, {"sync_service_url", "string"}, {"allowed_hosts", "string_array"},
 		{"allowed_origins", "string_array"}, {"auth_session_environment", "string"},
 		{"auth_session_migration", "string"}, {"auth_demo_user_id", "string"},
 		{"auth_demo_user_email", "string"}, {"auth_demo_user_role", "string"},
@@ -184,7 +186,7 @@ func DecodeAuthInputSnapshot(data []byte) (AuthInputSnapshot, error) {
 
 var authInputSnapshotKeys = []string{
 	"schema_version", "environment", "target", "source_sha", "config_id", "gcp_project",
-	"firestore_database_id", "local_cloud_scope", "auth_service_url", "allowed_hosts", "allowed_origins",
+	"firestore_database_id", "local_cloud_scope", "auth_service_url", "sync_service_url", "allowed_hosts", "allowed_origins",
 	"auth_session_environment", "auth_session_migration", "registration_enabled", "auth_demo_user_id",
 	"auth_demo_user_email", "auth_demo_user_role",
 	"jwt_secret_version", "google", "config_secret_resource",
@@ -255,7 +257,8 @@ func ValidateAuthInputSnapshot(inputs AuthInputSnapshot) error {
 		SchemaVersion: 1, Target: "auth", Environment: inputs.Environment, ConfigID: inputs.ConfigID,
 		GCPProject: inputs.GCPProject, FirestoreDatabaseID: inputs.FirestoreDatabaseID,
 		LocalCloudScope: inputs.LocalCloudScope, AuthServiceURL: inputs.AuthServiceURL,
-		AllowedHosts: inputs.AllowedHosts, AllowedOrigins: inputs.AllowedOrigins,
+		SyncServiceURL: inputs.SyncServiceURL,
+		AllowedHosts:   inputs.AllowedHosts, AllowedOrigins: inputs.AllowedOrigins,
 		AuthSessionEnvironment: inputs.AuthSessionEnvironment, AuthSessionMigration: inputs.AuthSessionMigration,
 		RegistrationEnabled: inputs.RegistrationEnabled, AuthDemoUserID: inputs.AuthDemoUserID,
 		AuthDemoUserEmail: inputs.AuthDemoUserEmail, AuthDemoUserRole: inputs.AuthDemoUserRole,
@@ -280,7 +283,7 @@ func valueWhen(enabled bool, value string) string {
 
 var authFileKeys = []string{
 	"schema_version", "target", "environment", "config_id", "gcp_project", "firestore_database_id",
-	"local_cloud_scope", "auth_service_url", "allowed_hosts", "allowed_origins", "auth_session_environment",
+	"local_cloud_scope", "auth_service_url", "sync_service_url", "allowed_hosts", "allowed_origins", "auth_session_environment",
 	"auth_session_migration", "registration_enabled", "auth_demo_user_id", "auth_demo_user_email",
 	"auth_demo_user_role", "jwt_secret", "google",
 }
@@ -332,7 +335,8 @@ func LoadAuthFile(path string) (Config, error) {
 		ConfigID: file.ConfigID, ConfigSchemaVersion: file.SchemaVersion,
 		GCPProject: file.GCPProject, FirestoreDatabaseID: file.FirestoreDatabaseID,
 		LocalCloudScope: file.LocalCloudScope, Port: port, JWTSecret: file.JWTSecret,
-		AuthServiceURL: file.AuthServiceURL, AllowedHosts: file.AllowedHosts, AllowedOrigins: file.AllowedOrigins,
+		AuthServiceURL: file.AuthServiceURL, SyncServiceURL: file.SyncServiceURL,
+		AllowedHosts: file.AllowedHosts, AllowedOrigins: file.AllowedOrigins,
 		AuthSessionEnvironment: file.AuthSessionEnvironment, AuthSessionMigration: file.AuthSessionMigration,
 		RegistrationEnabled: file.RegistrationEnabled, AuthDemoUserID: file.AuthDemoUserID,
 		AuthDemoUserEmail: file.AuthDemoUserEmail, AuthDemoUserRole: file.AuthDemoUserRole,
@@ -386,6 +390,7 @@ func validateAuthFileTypes(fields map[string]json.RawMessage) error {
 		{"schema_version", "integer", false}, {"target", "string", false}, {"environment", "string", false},
 		{"config_id", "string", false}, {"gcp_project", "string", false}, {"firestore_database_id", "string", false},
 		{"local_cloud_scope", "string", false}, {"auth_service_url", "string", false},
+		{"sync_service_url", "string", false},
 		{"allowed_hosts", "string_array", false}, {"allowed_origins", "string_array", false},
 		{"auth_session_environment", "string", false}, {"auth_session_migration", "string", false},
 		{"registration_enabled", "boolean", true}, {"auth_demo_user_id", "string", false},
@@ -448,6 +453,9 @@ func validateAuthFile(file AuthFile) error {
 	if err := validateRuntimeURL(file.AuthServiceURL, localMode); err != nil {
 		return errors.New("Auth config auth_service_url is invalid")
 	}
+	if err := validateRuntimeOrigin(file.SyncServiceURL, localMode); err != nil {
+		return errors.New("Auth config sync_service_url is invalid")
+	}
 	if file.AllowedHosts == nil || file.AllowedOrigins == nil || len(file.AllowedHosts) == 0 || len(file.AllowedOrigins) == 0 {
 		return errors.New("Auth config allowlists are invalid")
 	}
@@ -494,6 +502,17 @@ func validateAuthFile(file AuthFile) error {
 		google.LoginRedirectURL, google.LinkRedirectURL, google.CompletionURL,
 		GoogleRuntimeValidation{AuthServiceURL: file.AuthServiceURL, AllowedOrigins: file.AllowedOrigins}); err != nil {
 		return fmt.Errorf("Auth config Google settings are invalid: %w", err)
+	}
+	return nil
+}
+
+func validateRuntimeOrigin(raw string, local bool) error {
+	if err := validateRuntimeURL(raw, local); err != nil {
+		return err
+	}
+	u, err := url.Parse(raw)
+	if err != nil || (u.Path != "" && u.Path != "/") {
+		return errors.New("invalid origin")
 	}
 	return nil
 }

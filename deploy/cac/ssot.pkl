@@ -126,6 +126,7 @@ class AuthConfig {
   firestore_database_id: String
   local_cloud_scope: String
   auth_service_url: String
+  sync_service_url: String
   allowed_hosts: Listing<String>
   allowed_origins: Listing<String>
   auth_session_environment: String
@@ -418,6 +419,7 @@ local localAuth = new AuthConfig {
   firestore_database_id = "llm-wiki-cloud-local"
   local_cloud_scope = localAuthScope
   auth_service_url = "http://localhost:\(localAuthPort)"
+  sync_service_url = "http://localhost:\(localBffPort)"
   allowed_hosts = new Listing { "localhost"; "127.0.0.1" }
   allowed_origins = new Listing { "http://localhost:\(localBffFrontendPort)" }
   auth_session_environment = "llm-wiki-cloud-local"
@@ -449,6 +451,7 @@ local devAuth = new AuthConfig {
   firestore_database_id = "llm-wiki-cloud-dev"
   local_cloud_scope = ""
   auth_service_url = "https://auth.dev.rayer.idv.tw"
+  sync_service_url = "https://llm-wiki-bff-dev-580854833715.asia-east1.run.app"
   allowed_hosts = new Listing { "auth.dev.rayer.idv.tw"; "auth-dev.rayer.idv.tw" }
   allowed_origins = new Listing {
     "https://wiki.dev.rayer.idv.tw"
@@ -484,6 +487,7 @@ local prodAuth = new AuthConfig {
   firestore_database_id = "llm-wiki-cloud-prod"
   local_cloud_scope = ""
   auth_service_url = "https://auth.rayer.idv.tw"
+  sync_service_url = "https://llm-wiki-bff-580854833715.asia-east1.run.app"
   allowed_hosts = new Listing { "auth.rayer.idv.tw" }
   allowed_origins = new Listing {
     "https://wiki.rayer.idv.tw"

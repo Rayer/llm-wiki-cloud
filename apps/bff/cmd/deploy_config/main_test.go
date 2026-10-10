@@ -364,19 +364,19 @@ func writeBFFDescriptorFixture(t *testing.T, environment string, cooldown int) s
 }
 
 func authInputFixture(environment string) runtimeconfig.AuthInputSnapshot {
-	target, database, domain, hosts, origins, googleID, googleSecret := "dev", "llm-wiki-cloud-dev", "auth.dev.rayer.idv.tw",
+	target, database, domain, syncServiceURL, hosts, origins, googleID, googleSecret := "dev", "llm-wiki-cloud-dev", "auth.dev.rayer.idv.tw", "https://llm-wiki-bff-dev-580854833715.asia-east1.run.app",
 		[]string{"auth.dev.rayer.idv.tw", "auth-dev.rayer.idv.tw"},
 		[]string{"https://wiki.dev.rayer.idv.tw", "https://llm-wiki-frontend-dev.vercel.app", "http://localhost:3000"},
 		"580854833715-vo7fg6f7f15g1kkgchk1ulccllbc24qg.apps.googleusercontent.com", "google-oauth-client-dev"
 	if environment == "production" {
-		target, database, domain, hosts, origins, googleID, googleSecret = "prod", "llm-wiki-cloud-prod", "auth.rayer.idv.tw",
+		target, database, domain, syncServiceURL, hosts, origins, googleID, googleSecret = "prod", "llm-wiki-cloud-prod", "auth.rayer.idv.tw", "https://llm-wiki-bff-580854833715.asia-east1.run.app",
 			[]string{"auth.rayer.idv.tw"},
 			[]string{"https://wiki.rayer.idv.tw", "https://llm-wiki-frontend.vercel.app"},
 			"580854833715-1b37asap0uocbdcrighjaorflvj2n94m.apps.googleusercontent.com", "google-oauth-client-prod"
 	}
 	inputs := runtimeconfig.AuthInputSnapshot{
 		SchemaVersion: 1, Environment: target, Target: "auth", SourceSHA: strings.Repeat("a", 40),
-		GCPProject: "llm-wiki-cloud", FirestoreDatabaseID: database, AuthServiceURL: "https://" + domain,
+		GCPProject: "llm-wiki-cloud", FirestoreDatabaseID: database, AuthServiceURL: "https://" + domain, SyncServiceURL: syncServiceURL,
 		AllowedHosts: hosts, AllowedOrigins: origins, AuthSessionEnvironment: database,
 		AuthSessionMigration: "disabled", AuthDemoUserID: "e492f6bdaf1735e12b2de96d",
 		AuthDemoUserEmail: "demo@llm-wiki.dev", AuthDemoUserRole: "member",

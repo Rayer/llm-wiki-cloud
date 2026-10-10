@@ -1,10 +1,14 @@
 package gcs
 
 import (
+	"bytes"
 	"context"
+	"crypto/sha256"
+	"encoding/hex"
 	"encoding/json"
 	"errors"
 	"fmt"
+	"io"
 	"strings"
 	"testing"
 
@@ -71,6 +75,43 @@ func TestLocalScopeRootsWriterAndReaderTogether(t *testing.T) {
 	requests, _ := backend.snapshots()
 	if len(requests) == 0 || requests[len(requests)-1].Name != other.prefix()+"/"+relative {
 		t.Fatalf("other scope reads=%#v, want its own object path", requests)
+	}
+}
+
+func TestRawSyncUsesActualDigestAndGenerationCAS(t *testing.T) {
+	client, backend := newMemoryClient()
+	project := client.WithScope("user-a", "project-a")
+	name := project.prefix() + "/raw/nested/attachment.bin"
+	backend.put(name, []byte("original"), 17, map[string]string{"sha256": strings.Repeat("0", 64)})
+	files, err := project.ListSyncRawFiles(context.Background())
+	if err != nil {
+		t.Fatalf("ListSyncRawFiles() error = %v", err)
+	}
+	if len(files) != 1 || files[0].Path != "nested/attachment.bin" || files[0].SHA256 != fmt.Sprintf("%x", sha256.Sum256([]byte("original"))) {
+		t.Fatalf("raw sync listing = %#v", files)
+	}
+	reader, size, err := project.OpenSyncRawFile(context.Background(), files[0].Path, files[0].Generation)
+	if err != nil {
+		t.Fatalf("OpenSyncRawFile() error = %v", err)
+	}
+	data, err := io.ReadAll(reader)
+	_ = reader.Close()
+	if err != nil || size != int64(len(data)) || string(data) != "original" {
+		t.Fatalf("pinned read size=%d data=%q err=%v", size, data, err)
+	}
+
+	updated := []byte("updated")
+	digest := sha256.Sum256(updated)
+	newGeneration, err := project.WriteSyncRawFile(context.Background(), files[0].Path, bytes.NewReader(updated), files[0].Generation, hex.EncodeToString(digest[:]))
+	if err != nil {
+		t.Fatalf("WriteSyncRawFile() error = %v", err)
+	}
+	if _, err := project.WriteSyncRawFile(context.Background(), files[0].Path, bytes.NewReader([]byte("stale")), files[0].Generation, fmt.Sprintf("%x", sha256.Sum256([]byte("stale")))); !errors.Is(err, store.ErrRawSyncConflict) {
+		t.Fatalf("stale write error = %v, want ErrRawSyncConflict", err)
+	}
+	latest, err := project.ListSyncRawFiles(context.Background())
+	if err != nil || len(latest) != 1 || latest[0].Generation != newGeneration || latest[0].SHA256 != hex.EncodeToString(digest[:]) {
+		t.Fatalf("latest inventory = %#v err=%v", latest, err)
 	}
 }
 
