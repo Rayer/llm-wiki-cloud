@@ -57,6 +57,35 @@ func TestQueryGenerationIdentityFailsUnpinnedAndMissingOrInvalidConceptRow(t *te
 	}
 }
 
+func TestPinnedGenerationIDSurvivesMissingConceptsAndCurrentSwitch(t *testing.T) {
+	client, backend := newMemoryClient()
+	seedManifest(t, backend, "generation-one", map[string]backendObject{"cache/id_map.json": {Data: []byte(`{}`), Generation: 101}})
+	pinnedStore, err := client.Pin(context.Background())
+	if err != nil {
+		t.Fatal(err)
+	}
+	pinned := pinnedStore.(*Client)
+	backend.put(projectObject(generation.ManifestPath), manifestBytes(t, "generation-two", map[string]backendObject{"cache/id_map.json": {Data: []byte(`{}`), Generation: 201}}), 8, nil)
+
+	if _, err := pinned.QueryGenerationIdentity(context.Background()); !errors.Is(err, store.ErrQueryGenerationIdentityUnavailable) {
+		t.Fatalf("missing concepts row identity err=%v, want ErrQueryGenerationIdentityUnavailable", err)
+	}
+	if id, ok := pinned.PinnedGenerationID(); !ok || id != "generation-one" {
+		t.Fatalf("pinned generation=%q, ok=%v, want original generation-one", id, ok)
+	}
+	nextStore, err := client.Pin(context.Background())
+	if err != nil {
+		t.Fatal(err)
+	}
+	if id, ok := nextStore.(*Client).PinnedGenerationID(); !ok || id != "generation-two" {
+		t.Fatalf("next pinned generation=%q, ok=%v, want generation-two", id, ok)
+	}
+	_, reads := backend.snapshots()
+	if reads != 2 {
+		t.Fatalf("manifest reads=%d, want one for each of the two pins and none for pinned metadata", reads)
+	}
+}
+
 func TestPinCapturesMissingCurrentManifestProvenanceWithoutReread(t *testing.T) {
 	client, backend := newMemoryClient()
 	pinnedStore, err := client.Pin(context.Background())

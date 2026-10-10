@@ -5,6 +5,7 @@ import { useAuth } from '@/lib/auth';
 import { beginGoogleLink, GoogleAuthError, readGoogleIdentitySummary } from '@/lib/google-auth';
 import { useLocale } from '@/lib/i18n';
 import {
+  CLIAuthError,
   listCLISessions,
   listSyncBindings,
   reauthorizeSyncBinding,
@@ -31,6 +32,11 @@ export function AccountSettingsModal({ onClose }: { onClose: () => void }) {
   const passwordRef = useRef<HTMLInputElement>(null);
 
   const closeSettings = useCallback(() => onClose(), [onClose]);
+  const controlErrorMessage = (requestError: unknown, fallback: string) => (
+    requestError instanceof CLIAuthError && requestError.localReason === 'missing_backend_error'
+      ? fallback
+      : requestError instanceof Error ? requestError.message : fallback
+  );
 
   useEffect(() => {
     if (!accessToken || !user) return;
@@ -115,7 +121,7 @@ export function AccountSettingsModal({ onClose }: { onClose: () => void }) {
       await refreshControlLists();
       setControlNotice(t('AccountSettings.sessionRevoked'));
     } catch (requestError) {
-      setControlError(requestError instanceof Error ? requestError.message : t('AccountSettings.cliSessionRevokeError'));
+      setControlError(controlErrorMessage(requestError, t('AccountSettings.cliSessionRevokeError')));
     } finally {
       setBusyControl('');
     }
@@ -131,7 +137,7 @@ export function AccountSettingsModal({ onClose }: { onClose: () => void }) {
       await refreshControlLists();
       setControlNotice(t('AccountSettings.bindingRevokedNotice'));
     } catch (requestError) {
-      setControlError(requestError instanceof Error ? requestError.message : t('AccountSettings.syncBindingRevokeError'));
+      setControlError(controlErrorMessage(requestError, t('AccountSettings.syncBindingRevokeError')));
     } finally {
       setBusyControl('');
     }
@@ -147,7 +153,7 @@ export function AccountSettingsModal({ onClose }: { onClose: () => void }) {
       await refreshControlLists();
       setControlNotice(t('AccountSettings.bindingReauthorized'));
     } catch (requestError) {
-      setControlError(requestError instanceof Error ? requestError.message : t('AccountSettings.syncBindingReauthorizeError'));
+      setControlError(controlErrorMessage(requestError, t('AccountSettings.syncBindingReauthorizeError')));
     } finally {
       setBusyControl('');
     }

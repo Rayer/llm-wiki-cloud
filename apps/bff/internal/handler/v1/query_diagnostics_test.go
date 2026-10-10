@@ -54,6 +54,7 @@ type generationSwitchRoot struct {
 	pins              int
 	manifestReads     int
 	identityReads     int
+	identityErr       error
 }
 
 func (r *generationSwitchRoot) Scope(string, string) storage.Store {
@@ -81,7 +82,27 @@ type generationSwitchPinnedStore struct {
 
 func (s *generationSwitchPinnedStore) QueryGenerationIdentity(context.Context) (storage.QueryGenerationIdentity, error) {
 	s.root.identityReads++
+	if s.root.identityErr != nil {
+		return storage.QueryGenerationIdentity{}, s.root.identityErr
+	}
 	return storage.QueryGenerationIdentity{ProjectID: "diagnostic-test-project", GenerationID: s.generationID}, nil
+}
+
+func (s *generationSwitchPinnedStore) PinnedGenerationID() (string, bool) {
+	return s.generationID, s.generationID != ""
+}
+
+type identityCheckingFailureExecutor struct{}
+
+func (identityCheckingFailureExecutor) Execute(ctx context.Context, reader cache.Reader, _ query.Request) (query.Result, error) {
+	identityProvider, ok := reader.(storage.QueryGenerationIdentityProvider)
+	if !ok {
+		return query.Result{}, storage.ErrQueryGenerationIdentityUnavailable
+	}
+	if _, err := identityProvider.QueryGenerationIdentity(ctx); err != nil {
+		return query.Result{}, err
+	}
+	return query.Result{}, errors.New("injected failure after query identity validation")
 }
 
 func TestQueryDiagnosticsFinalizeSafelyAndExportActualSpanTree(t *testing.T) {
@@ -238,6 +259,44 @@ func TestQueryDiagnosticsFinalizeSafelyAndExportActualSpanTree(t *testing.T) {
 	if !foundPinnedGeneration {
 		t.Fatalf("pin-switch root span omitted pinned generation: %+v", pinnedRoot.Attributes)
 	}
+
+	logs.Reset()
+	exporter.Reset()
+	missingConceptsStore := &generationSwitchRoot{
+		currentGeneration: "generation-pinned",
+		identityErr:       storage.ErrQueryGenerationIdentityUnavailable,
+	}
+	h = New(missingConceptsStore, nil, nil, nil, nil, nil)
+	h.SetQueryExecutor(identityCheckingFailureExecutor{})
+	missingConceptsFailure := performQueryDiagnosticsRequest(h, `{"q":"local missing concepts fixture"}`)
+	assertQueryProblem(t, missingConceptsFailure, http.StatusInternalServerError, "query_runtime_unavailable")
+	if err := provider.ForceFlush(context.Background()); err != nil {
+		t.Fatal(err)
+	}
+	var missingConceptsSummary map[string]any
+	if err := json.Unmarshal(bytes.TrimSpace(logs.Bytes()), &missingConceptsSummary); err != nil {
+		t.Fatalf("missing-concepts terminal summary is not JSON: %v; %s", err, logs.String())
+	}
+	if missingConceptsSummary["generation_id"] != "generation-pinned" || strings.Contains(logs.String(), "generation-new") {
+		t.Fatalf("missing-concepts failure did not retain the original pinned generation: %s", logs.String())
+	}
+	if missingConceptsStore.currentGeneration != "generation-new" || missingConceptsStore.pins != 1 || missingConceptsStore.manifestReads != 1 || missingConceptsStore.identityReads != 2 {
+		t.Fatalf("missing-concepts pin state current=%q pins=%d manifests=%d identities=%d; want one pin and strict identity rejection", missingConceptsStore.currentGeneration, missingConceptsStore.pins, missingConceptsStore.manifestReads, missingConceptsStore.identityReads)
+	}
+	missingConceptsRoot, ok := findSpan(exporter.GetSpans(), "query.request")
+	if !ok {
+		t.Fatalf("missing-concepts query root span missing: %+v", exporter.GetSpans())
+	}
+	foundMissingConceptsGeneration := false
+	for _, attr := range missingConceptsRoot.Attributes {
+		if string(attr.Key) == "generation_id" && attr.Value.AsString() == "generation-pinned" {
+			foundMissingConceptsGeneration = true
+		}
+	}
+	if !foundMissingConceptsGeneration {
+		t.Fatalf("missing-concepts root span omitted the known pinned generation: %+v", missingConceptsRoot.Attributes)
+	}
+
 	testAuthenticatedMCPQuerySchemaDiagnostics(t, provider, exporter, &logs)
 }
 
@@ -434,6 +493,38 @@ func testAuthenticatedMCPQuerySchemaDiagnostics(t *testing.T, provider *sdktrace
 		})
 	}
 
+	logs.Reset()
+	exporter.Reset()
+	protocolRejected := serveAuthenticatedMCPRequestWithAccept(
+		mcpHandler,
+		`{"jsonrpc":"2.0","id":50,"method":"tools/call","params":{"name":"query_project","arguments":{"q":"ordinary fixture"}}}`,
+		true,
+		"application/json",
+	)
+	if protocolRejected.Code != http.StatusBadRequest {
+		t.Fatalf("SDK Accept rejection status=%d, want 400: %s", protocolRejected.Code, protocolRejected.Body)
+	}
+	if present, isError := mcpToolResultState(protocolRejected.Body.Bytes()); present || isError {
+		t.Fatalf("SDK transport rejection unexpectedly contains a CallToolResult: %s", protocolRejected.Body)
+	}
+	if got := strings.Count(logs.String(), `"msg":"query.terminal"`); got != 1 {
+		t.Fatalf("SDK protocol rejection emitted %d terminal summaries, want one: %s", got, logs.String())
+	}
+	var protocolSummary map[string]any
+	if err := json.Unmarshal(bytes.TrimSpace(logs.Bytes()), &protocolSummary); err != nil {
+		t.Fatalf("SDK protocol rejection summary is not JSON: %v; %s", err, logs.String())
+	}
+	if protocolSummary["stage"] != "mcp_protocol_rejection" || protocolSummary["reason"] != "mcp_protocol_rejected" || protocolSummary["outcome"] != "error" || protocolSummary["mcp_is_error"] != false || protocolSummary["request_status"] != float64(http.StatusBadRequest) {
+		t.Fatalf("SDK protocol rejection summary misreports the actual transport outcome: %+v", protocolSummary)
+	}
+	if err := provider.ForceFlush(context.Background()); err != nil {
+		t.Fatal(err)
+	}
+	spans := exporter.GetSpans()
+	if len(spans) != 1 || spans[0].Name != "query.request" || spans[0].SpanContext.TraceID().String() != protocolSummary["trace_id"] {
+		t.Fatalf("SDK rejection fabricated runtime/provider spans or lost root correlation: summary=%+v spans=%+v", protocolSummary, spans)
+	}
+
 	for _, request := range []string{
 		`{"jsonrpc":"2.0","id":90,"method":"initialize","params":{"protocolVersion":"2025-11-25"}}`,
 		`{"jsonrpc":"2.0","id":91,"method":"tools/list","params":{}}`,
@@ -459,6 +550,19 @@ func serveAuthenticatedMCPRequest(handler http.Handler, body string, authenticat
 	request.Header.Set("Content-Type", "application/json")
 	request.Header.Add("Accept", "application/json")
 	request.Header.Add("Accept", "text/event-stream")
+	request.Header.Set("MCP-Protocol-Version", "2025-11-25")
+	if authenticated {
+		request.Header.Set("Authorization", "Bearer fixture-token")
+	}
+	handler.ServeHTTP(recorder, request)
+	return recorder
+}
+
+func serveAuthenticatedMCPRequestWithAccept(handler http.Handler, body string, authenticated bool, accept string) *httptest.ResponseRecorder {
+	recorder := httptest.NewRecorder()
+	request := httptest.NewRequest(http.MethodPost, "/mcp", strings.NewReader(body))
+	request.Header.Set("Content-Type", "application/json")
+	request.Header.Set("Accept", accept)
 	request.Header.Set("MCP-Protocol-Version", "2025-11-25")
 	if authenticated {
 		request.Header.Set("Authorization", "Bearer fixture-token")

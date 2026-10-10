@@ -134,12 +134,19 @@ func (d *queryDiagnostic) capturePinnedGeneration(ctx context.Context, reader st
 	if d == nil {
 		return
 	}
+	pinnedGenerationID := ""
+	if provider, ok := reader.(interface{ PinnedGenerationID() (string, bool) }); ok {
+		if id, pinned := provider.PinnedGenerationID(); pinned {
+			pinnedGenerationID = id
+			d.setGeneration(id)
+		}
+	}
 	identityProvider, ok := reader.(storage.QueryGenerationIdentityProvider)
 	if !ok {
 		return
 	}
 	identity, err := identityProvider.QueryGenerationIdentity(ctx)
-	if err == nil {
+	if err == nil && pinnedGenerationID == "" {
 		d.setGeneration(identity.GenerationID)
 	}
 }
@@ -267,6 +274,8 @@ func queryFailureFor(stage string, cause error, reader storage.Store) *queryFail
 		failure.reason, failure.code, failure.message = "profile_unavailable", "profile_unavailable", "The active project profile could not be loaded. Try again after the profile is available."
 	case stage == "generation_pin" || stage == "generation_resolution":
 		failure.reason, failure.code, failure.message = "storage_unavailable", "storage_unavailable", "The project's published wiki data is temporarily unavailable. Try again."
+	case stage == "mcp_protocol_rejection":
+		failure.reason, failure.code, failure.message = "mcp_protocol_rejected", "mcp_protocol_rejected", "The MCP request was rejected before a tool result was created."
 	case isProviderCallFailure(cause):
 		failure.reason, failure.code, failure.message = llm.SafeErrorCategory(cause), "query_provider_failed", "The query provider could not complete this search. Try again later."
 	case errors.Is(cause, queryruntime.ErrIdentityUnavailable) || errors.Is(cause, queryruntime.ErrIdentityProviderRequired):
@@ -298,7 +307,6 @@ type mcpQueryObservationKey struct{}
 type mcpQueryObservation struct {
 	mu             sync.Mutex
 	diagnostic     *queryDiagnostic
-	toolError      bool
 	handlerEntered bool
 }
 
@@ -311,30 +319,50 @@ func (o *mcpQueryObservation) start(diagnostic *queryDiagnostic) {
 	o.mu.Unlock()
 }
 
-func (o *mcpQueryObservation) set(diagnostic *queryDiagnostic, toolError bool) {
+func (o *mcpQueryObservation) set(diagnostic *queryDiagnostic) {
 	if o == nil {
 		return
 	}
 	o.mu.Lock()
-	o.diagnostic, o.toolError, o.handlerEntered = diagnostic, toolError, true
+	o.diagnostic, o.handlerEntered = diagnostic, true
 	o.mu.Unlock()
 }
 
-func (o *mcpQueryObservation) finish(status int) bool {
+func (o *mcpQueryObservation) finish(status int, body []byte) bool {
 	if o == nil {
 		return false
 	}
 	o.mu.Lock()
-	diagnostic, toolError, handlerEntered := o.diagnostic, o.toolError, o.handlerEntered
+	diagnostic, handlerEntered := o.diagnostic, o.handlerEntered
 	o.mu.Unlock()
+	resultPresent, toolError := mcpToolResultState(body)
+	validationFailure := false
 	if diagnostic != nil {
-		if !handlerEntered {
+		if !handlerEntered && resultPresent && toolError {
 			diagnostic.fail(queryFailureFor("request_validation", errors.New("MCP input schema validation failed"), nil))
-			toolError = true
+			validationFailure = true
+		} else if !handlerEntered {
+			diagnostic.fail(queryFailureFor("mcp_protocol_rejection", errors.New("MCP SDK rejected the request before a tool result was created"), nil))
 		}
 		diagnostic.finish(status, toolError)
 	}
-	return diagnostic != nil && !handlerEntered
+	return diagnostic != nil && validationFailure
+}
+
+func mcpToolResultState(body []byte) (present, isError bool) {
+	var envelope struct {
+		Result json.RawMessage `json:"result"`
+	}
+	if json.Unmarshal(body, &envelope) != nil || len(envelope.Result) == 0 {
+		return false, false
+	}
+	var result *struct {
+		IsError bool `json:"isError"`
+	}
+	if json.Unmarshal(envelope.Result, &result) != nil || result == nil {
+		return false, false
+	}
+	return true, result.IsError
 }
 
 func mcpQueryObservationFrom(ctx context.Context) *mcpQueryObservation {

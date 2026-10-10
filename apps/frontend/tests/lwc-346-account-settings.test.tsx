@@ -35,13 +35,17 @@ vi.mock('@/lib/google-auth', async () => {
   const actual = await vi.importActual<typeof import('@/lib/google-auth')>('@/lib/google-auth');
   return { ...actual, readGoogleIdentitySummary: mocks.readGoogleIdentitySummary };
 });
-vi.mock('@/lib/cli-auth', () => ({
-  listCLISessions: mocks.listCLISessions,
-  listSyncBindings: mocks.listSyncBindings,
-  revokeCLISession: mocks.revokeCLISession,
-  revokeSyncBinding: mocks.revokeSyncBinding,
-  reauthorizeSyncBinding: mocks.reauthorizeSyncBinding,
-}));
+vi.mock('@/lib/cli-auth', async () => {
+  const actual = await vi.importActual<typeof import('@/lib/cli-auth')>('@/lib/cli-auth');
+  return {
+    ...actual,
+    listCLISessions: mocks.listCLISessions,
+    listSyncBindings: mocks.listSyncBindings,
+    revokeCLISession: mocks.revokeCLISession,
+    revokeSyncBinding: mocks.revokeSyncBinding,
+    reauthorizeSyncBinding: mocks.reauthorizeSyncBinding,
+  };
+});
 
 import { AccountSettingsModal } from '@/components/AccountSettingsModal';
 

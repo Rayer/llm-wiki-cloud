@@ -139,7 +139,7 @@ func (h *Handler) serveAuthenticatedMCP(sdkAuthenticated http.Handler, identity 
 		if status == 0 {
 			status = http.StatusOK
 		}
-		if observation.finish(status) {
+		if observation.finish(status, buffered.body.Bytes()) {
 			buffered.body = bytes.NewBuffer(mcpValidationDiagnosticBody(buffered.body.Bytes(), diagnostic))
 			buffered.header.Del("Content-Length")
 		}
@@ -152,7 +152,7 @@ func (h *Handler) serveAuthenticatedMCP(sdkAuthenticated http.Handler, identity 
 	if status == 0 {
 		status = http.StatusOK
 	}
-	observation.finish(status)
+	observation.finish(status, nil)
 }
 
 const maxMCPDiagnosticProbeBytes = mcp.DefaultMaxRequestBodyBytes
@@ -262,7 +262,7 @@ func (h *Handler) callMCPQuery(ctx context.Context, _ *mcp.CallToolRequest, inpu
 	observation := mcpQueryObservationFrom(ctx)
 	toolIsError := false
 	if observation != nil {
-		observation.set(diagnostic, false)
+		observation.set(diagnostic)
 	} else {
 		defer func() { diagnostic.finish(http.StatusOK, toolIsError) }()
 	}
@@ -271,7 +271,7 @@ func (h *Handler) callMCPQuery(ctx context.Context, _ *mcp.CallToolRequest, inpu
 		diagnostic.fail(failure)
 		toolIsError = true
 		if observation != nil {
-			observation.set(diagnostic, true)
+			observation.set(diagnostic)
 		}
 		return mcpQueryToolError(failure.message, failure.code, diagnostic.id), nil, nil
 	}
@@ -299,7 +299,7 @@ func (h *Handler) callMCPQuery(ctx context.Context, _ *mcp.CallToolRequest, inpu
 		diagnostic.fail(failure)
 		toolIsError = true
 		if observation != nil {
-			observation.set(diagnostic, true)
+			observation.set(diagnostic)
 		}
 		return mcpQueryToolError(failure.message, failure.code, diagnostic.id), nil, nil
 	}
@@ -312,7 +312,7 @@ func (h *Handler) callMCPQuery(ctx context.Context, _ *mcp.CallToolRequest, inpu
 	}
 	diagnostic.succeed(response.Status, response.Reason, diagnostic.receipt.Receipt())
 	if observation != nil {
-		observation.set(diagnostic, false)
+		observation.set(diagnostic)
 	}
 	return &mcp.CallToolResult{
 		Content:           []mcp.Content{&mcp.TextContent{Text: string(data)}},
