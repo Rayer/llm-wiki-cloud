@@ -20,6 +20,7 @@ func TestWriteRawSyncStorageErrorPreservesCommitAndKnownFailureClasses(t *testin
 		want int
 	}{
 		{name: "commit outcome uncertain", err: fmt.Errorf("%w: %w", store.ErrRawSyncCommitUncertain, context.Canceled), want: http.StatusServiceUnavailable},
+		{name: "uncertain commit also reports conflict", err: errors.Join(store.ErrRawSyncCommitUncertain, store.ErrRawSyncConflict), want: http.StatusServiceUnavailable},
 		{name: "precommit validation", err: errors.New("invalid upload digest"), want: http.StatusBadRequest},
 		{name: "generation conflict", err: store.ErrRawSyncConflict, want: http.StatusConflict},
 	} {

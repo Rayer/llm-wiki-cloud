@@ -169,6 +169,11 @@ func (c *Client) WriteSyncRawFile(ctx context.Context, rel string, body io.Reade
 	} else {
 		destination = destination.If(storage.Conditions{GenerationMatch: expected})
 	}
+	// The destination rewrite may commit before a retryable response is lost.
+	// Do not let the SDK retry that conditional commit: a later 412 cannot prove
+	// that an earlier attempt did not publish the destination. Return the
+	// ambiguous result so the CLI can reconcile it with a complete readback.
+	destination = destination.Retryer(storage.WithPolicy(storage.RetryNever))
 	copier := destination.CopierFrom(temporary.Generation(temporaryAttrs.Generation))
 	copier.ContentType = contentTypeForPath("raw/" + rel)
 	copier.Metadata = map[string]string{"sha256": digest}

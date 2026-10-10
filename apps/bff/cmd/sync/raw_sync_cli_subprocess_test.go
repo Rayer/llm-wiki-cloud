@@ -999,7 +999,7 @@ func (f *postCommitRawSyncStore) WriteSyncRawFile(ctx context.Context, path stri
 	if f.postCommitErrorPath == path {
 		f.postCommitErrorPath = ""
 		f.failNextList = f.failReadbackAfterWrite
-		return "", fmt.Errorf("%w: injected backend error after destination commit", store.ErrRawSyncCommitUncertain)
+		return "", errors.Join(store.ErrRawSyncCommitUncertain, store.ErrRawSyncConflict, errors.New("injected post-commit inspection conflict"))
 	}
 	return generation, nil
 }

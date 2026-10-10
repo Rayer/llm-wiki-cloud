@@ -174,10 +174,10 @@ func rawSyncSnapshot(files []store.RawSyncFile) string {
 
 func writeRawSyncStorageError(c *gin.Context, err error) {
 	switch {
-	case errors.Is(err, store.ErrRawSyncConflict), errors.Is(err, store.ErrGenerationMismatch):
-		c.JSON(http.StatusConflict, gin.H{"error": "raw file changed; restart inventory"})
 	case errors.Is(err, store.ErrRawSyncCommitUncertain):
 		c.JSON(http.StatusServiceUnavailable, gin.H{"error": "raw file write outcome is uncertain"})
+	case errors.Is(err, store.ErrRawSyncConflict), errors.Is(err, store.ErrGenerationMismatch):
+		c.JSON(http.StatusConflict, gin.H{"error": "raw file changed; restart inventory"})
 	case errors.Is(err, store.ErrObjectNotExist):
 		c.JSON(http.StatusNotFound, gin.H{"error": "raw file does not exist"})
 	case errors.Is(err, context.Canceled), errors.Is(err, context.DeadlineExceeded):
