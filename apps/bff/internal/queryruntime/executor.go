@@ -135,7 +135,7 @@ func (e *Executor) Execute(ctx context.Context, reader cache.Reader, request que
 	}
 	storageIdentity, err := identityReader.QueryGenerationIdentity(ctx)
 	if err != nil {
-		return query.Result{}, ErrIdentityUnavailable
+		return query.Result{}, fmt.Errorf("%w: %w", ErrIdentityUnavailable, err)
 	}
 	identity := queryconfig.GenerationIdentity{ProjectID: storageIdentity.ProjectID, GenerationID: storageIdentity.GenerationID, ConceptsDigest: storageIdentity.ConceptsDigest}
 	effective, err := e.resolver.Resolve(identity)

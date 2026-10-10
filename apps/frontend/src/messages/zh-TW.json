@@ -377,6 +377,23 @@
     "pipelineDesc": "Pipeline 會執行：",
     "restricted": "Demo 模式不提供此功能"
   },
+  "QueryErrors": {
+    "queryFailure": "無法完成搜尋。請再試一次；若問題持續，請將診斷編號提供給支援人員。",
+    "invalidRequest": "搜尋要求格式不正確。請檢查查詢內容後再試一次。",
+    "publishedGenerationMissing": "此專案尚無已發布的 Wiki 世代。請先執行 Pipeline，再重新搜尋。",
+    "profileUnavailable": "目前無法載入此專案生效中的 Profile，請稍後再試。",
+    "storageUnavailable": "目前無法取得已發布的 Wiki 資料，請稍後再試。",
+    "runtimeUnavailable": "查詢執行環境目前無法使用此專案已發布的資料，請稍後再試。",
+    "providerFailed": "查詢服務目前無法完成搜尋，請稍後再試。",
+    "queryIndexUnavailable": "查詢索引目前無法使用，請稍後再試。",
+    "timedOut": "搜尋花費太久時間，請再試一次。",
+    "canceled": "搜尋已取消，準備好後請重新送出。",
+    "projectNotFound": "找不到此專案。請確認目前選取的專案後再試一次。",
+    "unsupportedProfileCondition": "查詢執行環境不支援 Profile 中的必要條件。請更新 Profile 需求或聯絡支援人員。",
+    "diagnosticId": "診斷編號",
+    "copyDiagnosticId": "複製編號",
+    "diagnosticIdCopied": "已複製"
+  },
   "List": {
     "entriesTitle": "條目",
     "entriesDescription": "從來源內容萃取出的知識條目。",

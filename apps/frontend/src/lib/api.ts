@@ -154,6 +154,18 @@ export class ApiError extends Error {
   }
 }
 
+export class QueryApiError extends ApiError {
+  code: string;
+  diagnosticId?: string;
+
+  constructor(message: string, status: number, code: string, diagnosticId?: string) {
+    super(message, status);
+    this.name = 'QueryApiError';
+    this.code = code;
+    this.diagnosticId = diagnosticId;
+  }
+}
+
 export type ProfileRequirement = { id: string; text: string };
 export type ProfileDerivedRef = {
   revision: string;
@@ -417,8 +429,24 @@ async function postJson<T>(path: string, body: unknown): Promise<T> {
   });
 
   if (!response.ok) {
-    const error = await response.json().catch(() => ({ error: `API request failed (${response.status})` }));
-    throw new Error((error as { error: string }).error);
+    const payload: unknown = await response.json().catch(() => null);
+    const detail = isRecord(payload)
+      ? [payload.detail, payload.error, payload.message]
+        .find((value) => typeof value === 'string' && value.trim())
+      : undefined;
+    const rawCode = isRecord(payload) ? asString(payload.code)?.trim() : undefined;
+    const code = rawCode && /^[a-z][a-z0-9_]{0,63}$/.test(rawCode) ? rawCode : '';
+    const rawDiagnosticId = isRecord(payload) ? asString(payload.diagnostic_id)?.trim() : undefined;
+    const diagnosticId = rawDiagnosticId && /^[A-Za-z0-9_-]{8,100}$/.test(rawDiagnosticId)
+      ? rawDiagnosticId
+      : undefined;
+    const message = typeof detail === 'string' ? detail.trim() : '';
+    throw new QueryApiError(
+      message || 'The query could not be completed. Please try again.',
+      response.status,
+      code,
+      diagnosticId,
+    );
   }
 
   return response.json() as Promise<T>;

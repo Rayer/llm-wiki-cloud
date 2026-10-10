@@ -1,0 +1,343 @@
+TAP version 13
+# Subtest: normalizeStatus drops malformed diagnostic fields and accepts only BFF exit codes
+ok 1 - normalizeStatus drops malformed diagnostic fields and accepts only BFF exit codes
+  ---
+  duration_ms: 1.851583
+  type: 'test'
+  ...
+# Subtest: getBuildInfo reads the unauthenticated no-store public version endpoint
+ok 2 - getBuildInfo reads the unauthenticated no-store public version endpoint
+  ---
+  duration_ms: 17.972042
+  type: 'test'
+  ...
+# Subtest: getBuildInfo rejects an unsuccessful public version response
+ok 3 - getBuildInfo rejects an unsuccessful public version response
+  ---
+  duration_ms: 0.192584
+  type: 'test'
+  ...
+# Subtest: getBuildInfo rejects invalid JSON from the public version endpoint
+ok 4 - getBuildInfo rejects invalid JSON from the public version endpoint
+  ---
+  duration_ms: 0.345083
+  type: 'test'
+  ...
+# Subtest: getBuildInfo rejects build metadata with a missing field
+ok 5 - getBuildInfo rejects build metadata with a missing field
+  ---
+  duration_ms: 0.167
+  type: 'test'
+  ...
+# Subtest: getBuildInfo rejects build metadata with a non-string field
+ok 6 - getBuildInfo rejects build metadata with a non-string field
+  ---
+  duration_ms: 0.112292
+  type: 'test'
+  ...
+# Subtest: getBuildInfo rejects a public version network failure
+ok 7 - getBuildInfo rejects a public version network failure
+  ---
+  duration_ms: 0.054209
+  type: 'test'
+  ...
+# Subtest: buildProjectHeaders scopes authenticated requests to the selected project
+ok 8 - buildProjectHeaders scopes authenticated requests to the selected project
+  ---
+  duration_ms: 0.037625
+  type: 'test'
+  ...
+# Subtest: getStatus reads latest pipeline execution from the status endpoint
+ok 9 - getStatus reads latest pipeline execution from the status endpoint
+  ---
+  duration_ms: 0.418125
+  type: 'test'
+  ...
+# Subtest: searchWiki normalizes Problem Details, legacy errors, and unusable error bodies
+ok 10 - searchWiki normalizes Problem Details, legacy errors, and unusable error bodies
+  ---
+  duration_ms: 0.7555
+  type: 'test'
+  ...
+# Subtest: buildRequestInit includes cookies for refresh-token auth
+ok 11 - buildRequestInit includes cookies for refresh-token auth
+  ---
+  duration_ms: 0.097333
+  type: 'test'
+  ...
+# Subtest: toV1Path upgrades existing API paths without changing callers
+ok 12 - toV1Path upgrades existing API paths without changing callers
+  ---
+  duration_ms: 0.032125
+  type: 'test'
+  ...
+# Subtest: normalizeSearchResponse preserves query expansion keywords
+ok 13 - normalizeSearchResponse preserves query expansion keywords
+  ---
+  duration_ms: 0.156667
+  type: 'test'
+  ...
+# Subtest: normalizeCitation preserves canonical id and ignores invalid path lookup sources
+ok 14 - normalizeCitation preserves canonical id and ignores invalid path lookup sources
+  ---
+  duration_ms: 0.123208
+  type: 'test'
+  ...
+# Subtest: normalizeCitation preserves a safe canonical id without requiring a safe slug
+ok 15 - normalizeCitation preserves a safe canonical id without requiring a safe slug
+  ---
+  duration_ms: 0.04825
+  type: 'test'
+  ...
+# Subtest: normalizeCitation derives slug from a valid same-collection citation path
+ok 16 - normalizeCitation derives slug from a valid same-collection citation path
+  ---
+  duration_ms: 0.0775
+  type: 'test'
+  ...
+# Subtest: normalizeCitation rejects malformed citation paths as lookup sources
+ok 17 - normalizeCitation rejects malformed citation paths as lookup sources
+  ---
+  duration_ms: 0.031166
+  type: 'test'
+  ...
+# Subtest: citation paths reject traversal, encoded separators, controls, and extra segments
+ok 18 - citation paths reject traversal, encoded separators, controls, and extra segments
+  ---
+  duration_ms: 0.053875
+  type: 'test'
+  ...
+# Subtest: citation paths accept one decoded same-collection segment with query or hash
+ok 19 - citation paths accept one decoded same-collection segment with query or hash
+  ---
+  duration_ms: 0.041792
+  type: 'test'
+  ...
+# Subtest: citation route segments reject explicit traversal and API clients fail before fetch
+ok 20 - citation route segments reject explicit traversal and API clients fail before fetch
+  ---
+  duration_ms: 0.140417
+  type: 'test'
+  ...
+# Subtest: triggerPipeline requires a selected project before calling the API
+ok 21 - triggerPipeline requires a selected project before calling the API
+  ---
+  duration_ms: 0.052083
+  type: 'test'
+  ...
+# Subtest: getPipelineStatus reads the project scoped pipeline status endpoint
+ok 22 - getPipelineStatus reads the project scoped pipeline status endpoint
+  ---
+  duration_ms: 0.510417
+  type: 'test'
+  ...
+# Subtest: getPipelineLog reads text from the project scoped log URL
+ok 23 - getPipelineLog reads text from the project scoped log URL
+  ---
+  duration_ms: 0.227125
+  type: 'test'
+  ...
+# Subtest: getRawFiles reads project scoped raw metadata and normalizes file fields
+ok 24 - getRawFiles reads project scoped raw metadata and normalizes file fields
+  ---
+  duration_ms: 0.21025
+  type: 'test'
+  ...
+# Subtest: getRawFilePreview reads project scoped raw text with encoded filename
+ok 25 - getRawFilePreview reads project scoped raw text with encoded filename
+  ---
+  duration_ms: 0.181917
+  type: 'test'
+  ...
+# Subtest: uploadRawFile accepts created and already_exists responses
+ok 26 - uploadRawFile accepts created and already_exists responses
+  ---
+  duration_ms: 0.428541
+  type: 'test'
+  ...
+# Subtest: uploadRawFile uses credentialed XHR, preserves headers/FormData, and emits bounded progress
+ok 27 - uploadRawFile uses credentialed XHR, preserves headers/FormData, and emits bounded progress
+  ---
+  duration_ms: 0.178458
+  type: 'test'
+  ...
+# Subtest: uploadRawFile normalizes network and error responses as ApiError
+ok 28 - uploadRawFile normalizes network and error responses as ApiError
+  ---
+  duration_ms: 1.198416
+  type: 'test'
+  ...
+# Subtest: uploadRawFile refreshes once after 401 and never retries indefinitely
+ok 29 - uploadRawFile refreshes once after 401 and never retries indefinitely
+  ---
+  duration_ms: 0.285875
+  type: 'test'
+  ...
+# Subtest: uploadRawFile maps 409 conflict to ApiError
+ok 30 - uploadRawFile maps 409 conflict to ApiError
+  ---
+  duration_ms: 0.19175
+  type: 'test'
+  ...
+# Subtest: uploadRawFile rejects oversized files before transport
+ok 31 - uploadRawFile rejects oversized files before transport
+  ---
+  duration_ms: 0.66975
+  type: 'test'
+  ...
+# Subtest: getAdminProjects reads admin projects without project header
+ok 32 - getAdminProjects reads admin projects without project header
+  ---
+  duration_ms: 0.203542
+  type: 'test'
+  ...
+# Subtest: getAdminProjects preserves backend status on admin API errors
+ok 33 - getAdminProjects preserves backend status on admin API errors
+  ---
+  duration_ms: 0.09475
+  type: 'test'
+  ...
+# Subtest: admin project mutations use admin endpoints without project header
+ok 34 - admin project mutations use admin endpoints without project header
+  ---
+  duration_ms: 0.236625
+  type: 'test'
+  ...
+# Subtest: getAdminUsers and user mutations use admin endpoints without project header
+ok 35 - getAdminUsers and user mutations use admin endpoints without project header
+  ---
+  duration_ms: 0.263125
+  type: 'test'
+  ...
+# Subtest: apiFetch snapshots epoch before token access can schedule a same-token session transition
+ok 36 - apiFetch snapshots epoch before token access can schedule a same-token session transition
+  ---
+  duration_ms: 0.087709
+  type: 'test'
+  ...
+# Subtest: apiFetch never switches auth providers while an initial response is pending
+ok 37 - apiFetch never switches auth providers while an initial response is pending
+  ---
+  duration_ms: 0.087458
+  type: 'test'
+  ...
+# Subtest: apiFetch does not logout when access token missing and refresh returns null
+ok 38 - apiFetch does not logout when access token missing and refresh returns null
+  ---
+  duration_ms: 0.068583
+  type: 'test'
+  ...
+# Subtest: apiFetch rejects legacy refresh during pre-request when no session epoch getter exists
+ok 39 - apiFetch rejects legacy refresh during pre-request when no session epoch getter exists
+  ---
+  duration_ms: 0.066
+  type: 'test'
+  ...
+# Subtest: apiFetch does not logout on non-401 responses
+ok 40 - apiFetch does not logout on non-401 responses
+  ---
+  duration_ms: 0.043833
+  type: 'test'
+  ...
+# Subtest: apiFetch logs out when response is 401 and refresh returns null
+ok 41 - apiFetch logs out when response is 401 and refresh returns null
+  ---
+  duration_ms: 0.049584
+  type: 'test'
+  ...
+# Subtest: apiFetch retries once after 401 when refresh succeeds
+ok 42 - apiFetch retries once after 401 when refresh succeeds
+  ---
+  duration_ms: 0.082459
+  type: 'test'
+  ...
+# Subtest: apiFetch performs zero unauthorized callback when epoch changes during refresh
+ok 43 - apiFetch performs zero unauthorized callback when epoch changes during refresh
+  ---
+  duration_ms: 5.139166
+  type: 'test'
+  ...
+# Subtest: apiFetch performs zero unauthorized callback when epoch changes during retry
+ok 44 - apiFetch performs zero unauthorized callback when epoch changes during retry
+  ---
+  duration_ms: 1.878625
+  type: 'test'
+  ...
+# Subtest: uploadRawFile performs zero unauthorized callback when epoch changes during refresh
+ok 45 - uploadRawFile performs zero unauthorized callback when epoch changes during refresh
+  ---
+  duration_ms: 1.371
+  type: 'test'
+  ...
+# Subtest: uploadRawFile performs zero unauthorized callback when epoch changes during retry
+ok 46 - uploadRawFile performs zero unauthorized callback when epoch changes during retry
+  ---
+  duration_ms: 1.476625
+  type: 'test'
+  ...
+# Subtest: apiFetch calls unauthorized once when a refreshed retry is still 401
+ok 47 - apiFetch calls unauthorized once when a refreshed retry is still 401
+  ---
+  duration_ms: 0.115416
+  type: 'test'
+  ...
+# Subtest: apiFetch rejects a refresh result owned by an older same-token epoch
+ok 48 - apiFetch rejects a refresh result owned by an older same-token epoch
+  ---
+  duration_ms: 0.062584
+  type: 'test'
+  ...
+# Subtest: uploadRawFile preserves the business 401 for an older same-token refresh result
+ok 49 - uploadRawFile preserves the business 401 for an older same-token refresh result
+  ---
+  duration_ms: 0.096667
+  type: 'test'
+  ...
+# Subtest: apiFetch does not bind a pre-request refresh to a newer same-token epoch
+ok 50 - apiFetch does not bind a pre-request refresh to a newer same-token epoch
+  ---
+  duration_ms: 0.052333
+  type: 'test'
+  ...
+# Subtest: apiFetch does not call unauthorized when a refreshed retry returns 403
+ok 51 - apiFetch does not call unauthorized when a refreshed retry returns 403
+  ---
+  duration_ms: 0.063291
+  type: 'test'
+  ...
+# Subtest: apiFetch rejects a legacy string refresh after same-token epochs advance twice
+ok 52 - apiFetch rejects a legacy string refresh after same-token epochs advance twice
+  ---
+  duration_ms: 0.054791
+  type: 'test'
+  ...
+# Subtest: apiFetch preserves business 401 when malformed refresh result appears after 401 and no epoch getter
+ok 53 - apiFetch preserves business 401 when malformed refresh result appears after 401 and no epoch getter
+  ---
+  duration_ms: 0.04125
+  type: 'test'
+  ...
+# Subtest: uploadRawFile preserves business 401 when a legacy string refresh crosses same-token epochs
+ok 54 - uploadRawFile preserves business 401 when a legacy string refresh crosses same-token epochs
+  ---
+  duration_ms: 0.081542
+  type: 'test'
+  ...
+# Subtest: uploadRawFile preserves business 401 for malformed refresh result after 401 and no epoch getter
+ok 55 - uploadRawFile preserves business 401 for malformed refresh result after 401 and no epoch getter
+  ---
+  duration_ms: 0.069583
+  type: 'test'
+  ...
+1..55
+# tests 55
+# suites 0
+# pass 55
+# fail 0
+# cancelled 0
+# skipped 0
+# todo 0
+# duration_ms 138.376375
+
+command: node --experimental-strip-types --import ./tests/runtime-config-test-setup.mjs --test tests/api.test.mjs
+exit code: 0

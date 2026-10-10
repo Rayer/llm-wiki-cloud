@@ -1,0 +1,14 @@
+ok  	github.com/rayer/llm-wiki-bff/internal/handler/v1	2.953s
+ok  	github.com/rayer/llm-wiki-bff/internal/gcs	(cached)
+ok  	github.com/rayer/llm-wiki-bff/internal/query	(cached)
+ok  	github.com/rayer/llm-wiki-bff/internal/queryruntime	(cached)
+ok  	github.com/rayer/llm-wiki-bff/internal/queryquality	(cached)
+ok  	github.com/rayer/llm-wiki-bff/internal/llm	(cached)
+--- FAIL: TestStdoutTraceExporterWritesCorrelatedStructuredSpans (0.00s)
+    tracing_test.go:48: exported 0 spans, want root and child:
+FAIL
+FAIL	github.com/rayer/llm-wiki-bff/internal/observability	0.500s
+FAIL
+
+command: go test -race ./internal/handler/v1 ./internal/gcs ./internal/query ./internal/queryruntime ./internal/queryquality ./internal/llm ./internal/observability
+exit code: 1

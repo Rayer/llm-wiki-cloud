@@ -1,0 +1,4 @@
+ok  	github.com/rayer/llm-wiki-bff/internal/observability	0.400s
+
+command: go test ./internal/observability -run ^TestActualStorageSDKFailureCannotReachStdoutExporter$ -count=1
+exit code: 0

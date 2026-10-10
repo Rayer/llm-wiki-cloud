@@ -1,0 +1,16 @@
+--- FAIL: TestQueryDiagnosticsFinalizeSafelyAndExportActualSpanTree (0.00s)
+    --- FAIL: TestQueryDiagnosticsFinalizeSafelyAndExportActualSpanTree/empty_q (0.00s)
+        query_diagnostics_test.go:388: MCP schema response status/type=400/"text/plain; charset=utf-8" body=Accept must contain both 'application/json' and 'text/event-stream'
+    --- FAIL: TestQueryDiagnosticsFinalizeSafelyAndExportActualSpanTree/missing_q (0.00s)
+        query_diagnostics_test.go:388: MCP schema response status/type=400/"text/plain; charset=utf-8" body=Accept must contain both 'application/json' and 'text/event-stream'
+    --- FAIL: TestQueryDiagnosticsFinalizeSafelyAndExportActualSpanTree/wrong_q_type (0.00s)
+        query_diagnostics_test.go:388: MCP schema response status/type=400/"text/plain; charset=utf-8" body=Accept must contain both 'application/json' and 'text/event-stream'
+    --- FAIL: TestQueryDiagnosticsFinalizeSafelyAndExportActualSpanTree/invalid_mode (0.00s)
+        query_diagnostics_test.go:388: MCP schema response status/type=400/"text/plain; charset=utf-8" body=Accept must contain both 'application/json' and 'text/event-stream'
+    query_diagnostics_test.go:242: non-Query MCP request created Query diagnostics: status=400 logs= spans=[]
+FAIL
+FAIL	github.com/rayer/llm-wiki-bff/internal/handler/v1	0.597s
+FAIL
+
+command: go test ./internal/handler/v1 -run ^TestQueryDiagnosticsFinalizeSafelyAndExportActualSpanTree$ -count=1
+exit code: 1

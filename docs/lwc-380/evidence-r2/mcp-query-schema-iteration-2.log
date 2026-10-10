@@ -1,0 +1,4 @@
+ok  	github.com/rayer/llm-wiki-bff/internal/handler/v1	0.551s
+
+command: go test ./internal/handler/v1 -run ^TestQueryDiagnosticsFinalizeSafelyAndExportActualSpanTree$ -count=1
+exit code: 0

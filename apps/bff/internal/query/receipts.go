@@ -3,9 +3,8 @@ package query
 import (
 	"context"
 	"crypto/sha256"
-	"encoding/json"
 	"fmt"
-	"log"
+	"log/slog"
 	"net"
 	"net/url"
 	"sort"
@@ -14,6 +13,10 @@ import (
 	"time"
 
 	"github.com/rayer/llm-wiki-bff/internal/llm"
+	"go.opentelemetry.io/otel"
+	"go.opentelemetry.io/otel/attribute"
+	"go.opentelemetry.io/otel/codes"
+	"go.opentelemetry.io/otel/trace"
 )
 
 type Receipt struct {
@@ -160,16 +163,36 @@ type HostCallReceipt struct {
 type receiptKey struct{}
 type stageContextKey struct{}
 type ReceiptRecorder struct {
-	mu         sync.Mutex
-	receipt    Receipt
-	stageIndex map[string]int
-	callSeq    int
+	mu           sync.Mutex
+	receipt      Receipt
+	activeStages map[string]trace.SpanContext
+	rootContext  trace.SpanContext
+	terminal     *TerminalSummary
+	finished     bool
+	callSeq      int
+}
+
+type TerminalSummary struct {
+	DiagnosticID string
+	TraceID      string
+	SpanID       string
+	Service      string
+	Revision     string
+	ProjectID    string
+	GenerationID string
+	Transport    string
+	Stage        string
+	Reason       string
+	Outcome      string
+	Business     string
+	HTTPStatus   int
+	ToolIsError  bool
 }
 
 func WithReceipt(ctx context.Context) (context.Context, *ReceiptRecorder) {
 	mono := time.Now()
 	now := mono.UTC()
-	r := &ReceiptRecorder{stageIndex: make(map[string]int), receipt: Receipt{QueryReceivedAt: now, RunStartedAt: now}}
+	r := &ReceiptRecorder{activeStages: make(map[string]trace.SpanContext), rootContext: trace.SpanFromContext(ctx).SpanContext(), receipt: Receipt{QueryReceivedAt: now, RunStartedAt: now}}
 	r.receipt.runStartedMono = mono
 	return context.WithValue(llm.WithHostCallRecorder(llm.WithCallRecorder(ctx, r), r), receiptKey{}, r), r
 }
@@ -178,16 +201,22 @@ func ReceiptRecorderFromContext(ctx context.Context) *ReceiptRecorder {
 	return r
 }
 func (r *ReceiptRecorder) StartStage(ctx context.Context, name, provider, model, reasoning string) context.Context {
+	ctx, span := otel.Tracer("llm-wiki-bff/query").Start(ctx, "query.stage."+name,
+		trace.WithAttributes(attribute.String("query.stage", name), attribute.String("query.outcome", "in_progress"), attribute.String("query.provider", provider), attribute.String("query.model", model), attribute.String("query.reasoning", reasoning)),
+	)
 	r.mu.Lock()
-	defer r.mu.Unlock()
 	now := time.Now()
 	r.receipt.Stages = append(r.receipt.Stages, StageReceipt{Name: name, StartedAt: now.UTC(), startedMono: now, Provider: provider, Model: model, Reasoning: reasoning})
-	return context.WithValue(llm.WithCallStage(ctx, name), stageContextKey{}, stageKey{name: name, index: len(r.receipt.Stages) - 1})
+	key := stageKey{name: name, index: len(r.receipt.Stages) - 1}
+	r.activeStages[name] = span.SpanContext()
+	r.mu.Unlock()
+	return context.WithValue(llm.WithCallStage(ctx, name), stageContextKey{}, stageKey{name: name, index: key.index, span: span})
 }
 
 type stageKey struct {
 	name  string
 	index int
+	span  trace.Span
 }
 
 func FinishStage(ctx context.Context, outcome string) {
@@ -200,12 +229,20 @@ func FinishStage(ctx context.Context, outcome string) {
 		return
 	}
 	r.mu.Lock()
-	defer r.mu.Unlock()
 	s := &r.receipt.Stages[key.index]
 	now := time.Now()
 	s.FinishedAt = now.UTC()
 	s.ElapsedMS = now.Sub(s.startedMono).Milliseconds()
 	s.Outcome = outcome
+	if active, ok := r.activeStages[key.name]; ok && active.SpanID() == key.span.SpanContext().SpanID() {
+		delete(r.activeStages, key.name)
+	}
+	r.mu.Unlock()
+	key.span.SetAttributes(attribute.String("query.outcome", outcome))
+	if outcome == "failure" || outcome == "provider_error" || outcome == "canceled" || outcome == "timeout" {
+		key.span.SetStatus(codes.Error, outcome)
+	}
+	key.span.End()
 }
 func (r *ReceiptRecorder) StartCall(stageName, model, reasoning string) func(string) {
 	return r.StartCallAt(stageName, model, reasoning, "https://api.deepseek.com")
@@ -245,29 +282,66 @@ func (r *ReceiptRecorder) startHostCallTimed(stageName, scheme, host, provider, 
 	r.callSeq++
 	seq := r.callSeq
 	started := time.Now()
+	parent := r.rootContext
+	if stageParent, ok := r.activeStages[stageName]; ok {
+		parent = stageParent
+	}
 	r.mu.Unlock()
+	parentContext := trace.ContextWithSpanContext(context.Background(), parent)
+	_, span := otel.Tracer("llm-wiki-bff/query").Start(parentContext, "query.host_call",
+		trace.WithAttributes(attribute.String("query.stage", stageName), attribute.String("query.provider", provider), attribute.String("query.model", model), attribute.String("query.reasoning", reasoning)),
+	)
 	return func(outcome string, finishedAt time.Time) {
 		r.mu.Lock()
-		defer r.mu.Unlock()
 		finished := finishedAt
 		if finished.IsZero() {
 			finished = time.Now()
 		}
 		r.receipt.HostCalls = append(r.receipt.HostCalls, HostCallReceipt{Sequence: seq, Stage: stageName, Scheme: scheme, Host: host, StartedAt: started.UTC(), FinishedAt: finished.UTC(), startedMono: started, ElapsedMS: finished.Sub(started).Milliseconds(), Provider: provider, Model: model, Reasoning: reasoning, Outcome: outcome})
+		r.mu.Unlock()
+		span.SetAttributes(attribute.String("query.outcome", outcome))
+		if outcome != "success" {
+			span.SetStatus(codes.Error, outcome)
+		}
+		span.End()
 	}
 }
+
+func (r *ReceiptRecorder) SetTerminal(summary TerminalSummary) {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	copy := summary
+	r.terminal = &copy
+}
+
 func FinishReceipt(r *ReceiptRecorder) {
 	if r == nil {
 		return
 	}
 	r.mu.Lock()
-	defer r.mu.Unlock()
+	if r.finished {
+		r.mu.Unlock()
+		return
+	}
+	r.finished = true
 	now := time.Now()
 	r.receipt.RunFinishedAt = now.UTC()
 	r.receipt.ElapsedMS = now.Sub(r.receipt.runStartedMono).Milliseconds()
 	sort.SliceStable(r.receipt.HostCalls, func(i, j int) bool { return r.receipt.HostCalls[i].Sequence < r.receipt.HostCalls[j].Sequence })
-	data, _ := json.Marshal(r.receipt)
-	log.Printf("query receipt: %s", data)
+	summary := r.terminal
+	r.mu.Unlock()
+	if summary == nil {
+		return
+	}
+	attrs := []slog.Attr{
+		slog.String("stage", summary.Stage), slog.String("reason", summary.Reason), slog.String("outcome", summary.Outcome),
+		slog.String("diagnostic_id", summary.DiagnosticID), slog.String("trace_id", summary.TraceID), slog.String("span_id", summary.SpanID),
+		slog.String("service", summary.Service), slog.String("revision", summary.Revision),
+		slog.String("project_id", summary.ProjectID), slog.String("generation_id", summary.GenerationID),
+		slog.String("transport", summary.Transport), slog.Int("request_status", summary.HTTPStatus),
+		slog.Bool("mcp_is_error", summary.ToolIsError), slog.String("business_outcome", summary.Business),
+	}
+	slog.Default().LogAttrs(context.Background(), slog.LevelInfo, "query.terminal", attrs...)
 }
 func (r *ReceiptRecorder) Receipt() Receipt {
 	r.mu.Lock()
