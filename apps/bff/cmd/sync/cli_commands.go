@@ -20,7 +20,7 @@ func isControlPlaneCommand(args []string) bool {
 		return false
 	}
 	switch args[0] {
-	case "auth", "projects", "bind", "binding":
+	case "auth", "projects", "bind", "binding", "init", "push":
 		return true
 	default:
 		return false
@@ -52,6 +52,10 @@ func runControlPlaneCommand(args []string) error {
 		return runProjects(args[1:])
 	case "bind":
 		return runBind(args[1:])
+	case "init":
+		return runRawInit(args[1:])
+	case "push":
+		return runRawPush(args[1:])
 	case "binding":
 		if len(args) < 2 {
 			return errors.New("usage: lwc-sync binding list|reauthorize|revoke")
@@ -67,7 +71,7 @@ func runControlPlaneCommand(args []string) error {
 			return errors.New("usage: lwc-sync binding list|reauthorize|revoke")
 		}
 	default:
-		return errors.New("usage: lwc-sync auth|projects|bind|binding")
+		return errors.New("usage: lwc-sync auth|projects|bind|binding|init|push")
 	}
 }
 
@@ -221,29 +225,17 @@ func runAuthLogout(args []string) error {
 	if err != nil {
 		return err
 	}
-	serverRevoked := false
-	var networkOrServerErr error
+	var credentials cliLocalCredentials
 	err = store.withLock(func() error {
-		credentials, err := store.loadCredentials()
+		var err error
+		credentials, err = store.loadCredentials()
 		if err != nil {
 			return err
 		}
 		if credentials.AuthHost != origin {
 			return errors.New("local credentials belong to a different auth/control-plane host")
 		}
-		client, err := newCLIAPIClient(origin, &credentials)
-		if err != nil {
-			return err
-		}
-		response, requestErr := client.do(context.Background(), http.MethodPost, "/api/v1/auth/cli/logout", map[string]string{"refresh_token": credentials.RefreshToken}, false)
-		if requestErr != nil {
-			networkOrServerErr = requestErr
-		} else if response.status >= 200 && response.status < 300 {
-			serverRevoked = true
-		} else if response.status != http.StatusUnauthorized && response.status != http.StatusGone && response.status != http.StatusNotFound {
-			networkOrServerErr = cliAPIStatusError{status: response.status}
-		}
-		return store.clearCredentials()
+		return nil
 	})
 	if err != nil {
 		if errors.Is(err, errCLILocalAuthNotFound) {
@@ -252,15 +244,62 @@ func runAuthLogout(args []string) error {
 		}
 		return err
 	}
-	if serverRevoked {
-		fmt.Println("已向伺服器撤銷 CLI session，並清除本機憑證。")
-		return nil
+	client, err := newCLIAPIClient(origin, &credentials)
+	if err != nil {
+		return err
 	}
-	if networkOrServerErr != nil {
-		fmt.Printf("本機憑證已清除；伺服器尚未確認撤銷 session（%v）。\n", networkOrServerErr)
-		return nil
+	response, requestErr := client.do(context.Background(), http.MethodPost, "/api/v1/auth/cli/logout", map[string]string{"refresh_token": credentials.RefreshToken}, false)
+	if requestErr == nil && (response.status == http.StatusUnauthorized || response.status == http.StatusGone) {
+		var current cliLocalCredentials
+		found := false
+		if err := store.withLock(func() error {
+			loaded, err := store.loadCredentials()
+			if errors.Is(err, errCLILocalAuthNotFound) {
+				return nil
+			}
+			if err != nil {
+				return err
+			}
+			current, found = loaded, true
+			return nil
+		}); err != nil {
+			return errors.New("server logout was not confirmed; local CLI credentials were preserved because their current state could not be read")
+		}
+		if found && current.AuthHost == origin && current.SessionID == credentials.SessionID && current.UserID == credentials.UserID &&
+			current.RefreshToken != credentials.RefreshToken {
+			credentials = current
+			client.credentials = &credentials
+			response, requestErr = client.do(context.Background(), http.MethodPost, "/api/v1/auth/cli/logout", map[string]string{"refresh_token": credentials.RefreshToken}, false)
+		}
 	}
-	fmt.Println("本機憑證已清除；伺服器 session 已無效或先前已撤銷。")
+	if requestErr != nil {
+		return fmt.Errorf("server did not confirm CLI session revocation; local credentials were preserved: %w", requestErr)
+	}
+	if response.status < 200 || response.status >= 300 {
+		return fmt.Errorf("server did not confirm CLI session revocation (HTTP %d); local credentials were preserved", response.status)
+	}
+	localCredentialsPreserved := false
+	if err := store.withLock(func() error {
+		current, err := store.loadCredentials()
+		if errors.Is(err, errCLILocalAuthNotFound) {
+			return nil
+		}
+		if err != nil {
+			return err
+		}
+		if current.AuthHost == origin && current.SessionID != "" && current.SessionID == credentials.SessionID {
+			return store.clearCredentials()
+		}
+		localCredentialsPreserved = true
+		return nil
+	}); err != nil {
+		return errors.New("could not safely clear local CLI credentials")
+	}
+	if localCredentialsPreserved {
+		fmt.Println("已向伺服器撤銷 CLI session；本機目前不同的 CLI session 憑證已保留。")
+	} else {
+		fmt.Println("已向伺服器撤銷 CLI session；同一 session 的本機憑證已清除或不存在。")
+	}
 	return nil
 }
 
@@ -534,36 +573,107 @@ func withStoredCredentials(requestedHost string, fn func(*cliAPIClient, *cliLoca
 	if err != nil {
 		return err
 	}
-	return store.withLock(func() error {
+	var credentials cliLocalCredentials
+	if err := store.withLock(func() error {
 		config, err := store.loadConfig()
 		if err != nil || config.AuthHost != origin {
 			return errors.New("configured auth/control-plane host changed; retry the command")
 		}
-		credentials, err := store.loadCredentials()
+		credentials, err = store.loadCredentials()
 		if err != nil {
 			return err
 		}
 		if credentials.AuthHost != origin {
 			return errors.New("local credentials belong to a different auth/control-plane host")
 		}
-		client, err := newCLIAPIClient(origin, &credentials)
-		if err != nil {
-			return err
-		}
-		before := credentials
-		commandErr := fn(client, &credentials)
-		if credentials != before {
-			if err := store.saveCredentials(credentials); err != nil {
-				return errors.New("could not safely save rotated local CLI credentials")
+		return nil
+	}); err != nil {
+		return err
+	}
+	client, err := newCLIAPIClient(origin, &credentials)
+	if err != nil {
+		return err
+	}
+	client.withRefreshLock = store.withRefreshLock
+	client.loadCurrent = func(previous cliLocalCredentials) (cliLocalCredentials, error) {
+		var current cliLocalCredentials
+		err := store.withLock(func() error {
+			loaded, err := store.loadCredentials()
+			if errors.Is(err, errCLILocalAuthNotFound) {
+				return errCLIReauthenticationRequired
 			}
-		}
-		if errors.Is(commandErr, errCLIReauthenticationRequired) {
-			if err := store.clearCredentials(); err != nil {
-				return errors.New("CLI session expired and local credentials could not be cleared")
+			if err != nil {
+				return err
 			}
+			if loaded.AuthHost != origin || loaded.SessionID == "" || loaded.SessionID != previous.SessionID || loaded.UserID != previous.UserID {
+				return errCLIReauthenticationRequired
+			}
+			current = loaded
+			return nil
+		})
+		return current, err
+	}
+	client.persistCredentials = func(previous, rotated cliLocalCredentials) (cliLocalCredentials, error) {
+		var current cliLocalCredentials
+		err := store.withLock(func() error {
+			loaded, err := store.loadCredentials()
+			if err != nil {
+				return errors.New("local CLI credentials changed during refresh; retry the command")
+			}
+			if loaded == previous {
+				if err := store.saveCredentials(rotated); err != nil {
+					return errors.New("could not safely save rotated local CLI credentials")
+				}
+				current = rotated
+				return nil
+			}
+			if loaded.AuthHost != origin || loaded.SessionID == "" || loaded.SessionID != previous.SessionID || loaded.UserID != previous.UserID {
+				return errors.New("local CLI session changed during refresh; retry the command")
+			}
+			current = loaded
+			return nil
+		})
+		return current, err
+	}
+	before := credentials
+	commandErr := fn(client, &credentials)
+	if errors.Is(commandErr, errCLIReauthenticationRequired) {
+		if err := store.withLock(func() error {
+			current, err := store.loadCredentials()
+			if errors.Is(err, errCLILocalAuthNotFound) {
+				return nil
+			}
+			if err != nil {
+				return err
+			}
+			if current == before {
+				return store.clearCredentials()
+			}
+			return nil
+		}); err != nil {
+			return errors.New("CLI session expired and local credentials could not be safely cleared")
 		}
-		return commandErr
-	})
+	}
+	if credentials != before {
+		// Refresh normally persists immediately. This conditional write also
+		// covers future callers that update credentials inside fn.
+		if err := store.withLock(func() error {
+			current, err := store.loadCredentials()
+			if err != nil {
+				return err
+			}
+			if current == credentials {
+				return nil
+			}
+			if current == before {
+				return store.saveCredentials(credentials)
+			}
+			return errors.New("local CLI credentials changed concurrently; refusing to overwrite them")
+		}); err != nil && commandErr == nil {
+			return errors.New("could not safely save rotated local CLI credentials")
+		}
+	}
+	return commandErr
 }
 
 func printJSON(out *os.File, value interface{}) error {

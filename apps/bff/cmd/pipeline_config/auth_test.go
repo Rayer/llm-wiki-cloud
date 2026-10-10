@@ -42,6 +42,7 @@ func authProjectionForTest(environment string) authSourceProjection {
 	projection := authSourceProjection{
 		SchemaVersion: 1, Environment: environment, Target: "auth", GCPProject: "llm-wiki-cloud",
 		FirestoreDatabaseID: "llm-wiki-cloud-" + environment, AuthServiceURL: "https://auth." + environment + ".example.test",
+		SyncServiceURL:         "https://bff." + environment + ".example.test",
 		AllowedHosts:           []string{"auth." + environment + ".example.test"},
 		AllowedOrigins:         []string{"https://wiki." + environment + ".example.test"},
 		AuthSessionEnvironment: "llm-wiki-cloud-" + environment, AuthSessionMigration: "disabled",

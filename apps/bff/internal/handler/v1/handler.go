@@ -26,6 +26,8 @@ type Handler struct {
 	accountLookup        auth.AccountLookup
 	cliSessionVerifier   auth.CLIAccessSessionVerifier
 	cliProjectAuthorizer auth.ProjectOwnerAuthorizer
+	syncBindingAuthority syncBindingChecker
+	syncBindingHost      string
 	projectKeyService    *auth.ProjectKeyService
 	store                store.RootStore
 	firestore            *firestore.Client

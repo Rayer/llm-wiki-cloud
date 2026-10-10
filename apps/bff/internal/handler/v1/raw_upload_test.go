@@ -1,15 +1,23 @@
 package v1
 
 import (
+	"bytes"
 	"context"
 	"crypto/sha256"
+	"encoding/json"
 	"errors"
 	"fmt"
 	"net/http"
+	"net/http/httptest"
+	"net/url"
+	"path/filepath"
 	"strings"
 	"testing"
 
 	"cloud.google.com/go/storage"
+	"github.com/gin-gonic/gin"
+	"github.com/rayer/llm-wiki-bff/internal/auth"
+	"github.com/rayer/llm-wiki-bff/internal/localfs"
 	store "github.com/rayer/llm-wiki-bff/internal/storage"
 )
 
@@ -111,6 +119,146 @@ func TestRawUploadResponseUsesProjectScopedPath(t *testing.T) {
 	}
 	if resp.Status != rawUploadStatusCreated {
 		t.Fatalf("status = %q, want %q", resp.Status, rawUploadStatusCreated)
+	}
+}
+
+func TestRawSyncHandlersPageStableInventoryAndUseGenerationCAS(t *testing.T) {
+	gin.SetMode(gin.TestMode)
+	root := localfs.New(t.TempDir())
+	project := root.WithScope("user-1", "project-1")
+	for i := 0; i < rawSyncPageSize+1; i++ {
+		path := filepath.ToSlash(filepath.Join("raw", "nested", fmt.Sprintf("attachment-%03d.bin", i)))
+		if _, err := project.WriteBytes(context.Background(), []byte(fmt.Sprintf("file-%03d", i)), path); err != nil {
+			t.Fatal(err)
+		}
+	}
+	h := New(root, nil, nil, nil, nil, nil)
+	router := gin.New()
+	router.Use(func(c *gin.Context) {
+		c.Set("userID", "user-1")
+		c.Set("projectID", "project-1")
+		c.Next()
+	})
+	router.GET("/api/v1/sync/raw", h.SyncRawList)
+	router.GET("/api/v1/sync/raw/file", h.SyncRawDownload)
+	router.PUT("/api/v1/sync/raw/file", h.SyncRawUpload)
+
+	first := httptest.NewRecorder()
+	router.ServeHTTP(first, httptest.NewRequest(http.MethodGet, "/api/v1/sync/raw", nil))
+	if first.Code != http.StatusOK {
+		t.Fatalf("first list status=%d body=%s", first.Code, first.Body.String())
+	}
+	var page1 rawSyncListPage
+	if err := json.Unmarshal(first.Body.Bytes(), &page1); err != nil {
+		t.Fatal(err)
+	}
+	if len(page1.Files) != rawSyncPageSize || page1.TotalFiles != rawSyncPageSize+1 || page1.NextPageToken == "" {
+		t.Fatalf("first page metadata = files %d total %d next %q", len(page1.Files), page1.TotalFiles, page1.NextPageToken)
+	}
+
+	secondURL := "/api/v1/sync/raw?page_token=" + url.QueryEscape(page1.NextPageToken)
+	second := httptest.NewRecorder()
+	router.ServeHTTP(second, httptest.NewRequest(http.MethodGet, secondURL, nil))
+	if second.Code != http.StatusOK {
+		t.Fatalf("second list status=%d body=%s", second.Code, second.Body.String())
+	}
+	var page2 rawSyncListPage
+	if err := json.Unmarshal(second.Body.Bytes(), &page2); err != nil {
+		t.Fatal(err)
+	}
+	if len(page2.Files) != 1 || page2.Snapshot != page1.Snapshot || page2.TotalFiles != page1.TotalFiles {
+		t.Fatalf("second page metadata = %#v", page2)
+	}
+
+	if _, err := project.WriteBytes(context.Background(), []byte("changed"), "raw/nested/attachment-000.bin"); err != nil {
+		t.Fatal(err)
+	}
+	stale := httptest.NewRecorder()
+	router.ServeHTTP(stale, httptest.NewRequest(http.MethodGet, secondURL, nil))
+	if stale.Code != http.StatusConflict {
+		t.Fatalf("stale page token status=%d body=%s, want conflict", stale.Code, stale.Body.String())
+	}
+
+	payload := []byte("arbitrary nested attachment")
+	digest := fmt.Sprintf("%x", sha256.Sum256(payload))
+	uploadURL := "/api/v1/sync/raw/file?path=" + url.QueryEscape("incoming/deep/file.bin")
+	upload := httptest.NewRecorder()
+	uploadRequest := httptest.NewRequest(http.MethodPut, uploadURL, bytes.NewReader(payload))
+	uploadRequest.Header.Set("X-Content-SHA256", digest)
+	router.ServeHTTP(upload, uploadRequest)
+	if upload.Code != http.StatusOK {
+		t.Fatalf("upload status=%d body=%s", upload.Code, upload.Body.String())
+	}
+	var writeResult struct {
+		Generation string `json:"generation"`
+	}
+	if err := json.Unmarshal(upload.Body.Bytes(), &writeResult); err != nil || writeResult.Generation == "" {
+		t.Fatalf("upload result=%q err=%v", upload.Body.String(), err)
+	}
+
+	downloadURL := "/api/v1/sync/raw/file?path=" + url.QueryEscape("incoming/deep/file.bin") + "&generation=" + writeResult.Generation
+	download := httptest.NewRecorder()
+	router.ServeHTTP(download, httptest.NewRequest(http.MethodGet, downloadURL, nil))
+	if download.Code != http.StatusOK || !bytes.Equal(download.Body.Bytes(), payload) || download.Header().Get("X-Raw-Generation") != writeResult.Generation {
+		t.Fatalf("download status=%d body=%q headers=%v", download.Code, download.Body.Bytes(), download.Header())
+	}
+
+	staleUpload := httptest.NewRecorder()
+	staleRequest := httptest.NewRequest(http.MethodPut, uploadURL, bytes.NewReader([]byte("stale")))
+	staleRequest.Header.Set("X-Expected-Generation", "1")
+	staleRequest.Header.Set("X-Content-SHA256", fmt.Sprintf("%x", sha256.Sum256([]byte("stale"))))
+	router.ServeHTTP(staleUpload, staleRequest)
+	if staleUpload.Code != http.StatusConflict {
+		t.Fatalf("stale upload status=%d body=%s", staleUpload.Code, staleUpload.Body.String())
+	}
+}
+
+type fakeSyncBindingChecker struct {
+	err                                        error
+	userID, projectID, bindingID, wikiID, host string
+}
+
+func (f *fakeSyncBindingChecker) CheckSyncBinding(_ context.Context, userID, projectID, bindingID, wikiID, host string) error {
+	f.userID, f.projectID, f.bindingID, f.wikiID, f.host = userID, projectID, bindingID, wikiID, host
+	return f.err
+}
+
+func TestRawSyncBindingMiddlewareRechecksAndFailsClosed(t *testing.T) {
+	gin.SetMode(gin.TestMode)
+	checker := &fakeSyncBindingChecker{}
+	h := &Handler{syncBindingAuthority: checker, syncBindingHost: "https://auth.example.test"}
+	router := gin.New()
+	router.Use(func(c *gin.Context) {
+		c.Set("userID", "user-1")
+		c.Set("projectID", "project-1")
+		c.Next()
+	})
+	router.GET("/raw", h.RawSyncBindingAuth(), func(c *gin.Context) { c.Status(http.StatusNoContent) })
+	request := func() *httptest.ResponseRecorder {
+		req := httptest.NewRequest(http.MethodGet, "/raw", nil)
+		req.Header.Set("X-Sync-Binding-ID", "binding-1")
+		req.Header.Set("X-Wiki-ID", "wiki-1")
+		recorder := httptest.NewRecorder()
+		router.ServeHTTP(recorder, req)
+		return recorder
+	}
+	if recorder := request(); recorder.Code != http.StatusNoContent {
+		t.Fatalf("active binding status=%d body=%s", recorder.Code, recorder.Body.String())
+	}
+	if checker.userID != "user-1" || checker.projectID != "project-1" || checker.bindingID != "binding-1" || checker.wikiID != "wiki-1" || checker.host != "https://auth.example.test" {
+		t.Fatalf("binding check arguments = %#v", checker)
+	}
+	checker.err = auth.ErrSyncBindingUnauthorized
+	if recorder := request(); recorder.Code != http.StatusForbidden {
+		t.Fatalf("rejected binding status=%d, want forbidden", recorder.Code)
+	}
+	checker.err = auth.ErrSyncBindingUnavailable
+	if recorder := request(); recorder.Code != http.StatusServiceUnavailable {
+		t.Fatalf("unavailable authority status=%d, want unavailable", recorder.Code)
+	}
+	h.syncBindingAuthority = nil
+	if recorder := request(); recorder.Code != http.StatusServiceUnavailable {
+		t.Fatalf("missing authority status=%d, want unavailable", recorder.Code)
 	}
 }
 

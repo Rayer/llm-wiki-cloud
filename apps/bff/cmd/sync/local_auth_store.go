@@ -15,6 +15,7 @@ const (
 	localConfigFileName    = "config.json"
 	localCredentialsName   = "credentials.json"
 	localLockFileName      = "credentials.lock"
+	localRefreshLockName   = "credentials.refresh.lock"
 )
 
 var errCLILocalAuthNotFound = errors.New("local CLI credentials not found")
@@ -59,6 +60,7 @@ func newLocalAuthStoreAt(dir string) *localAuthStore {
 func (s *localAuthStore) configPath() string      { return filepath.Join(s.dir, localConfigFileName) }
 func (s *localAuthStore) credentialsPath() string { return filepath.Join(s.dir, localCredentialsName) }
 func (s *localAuthStore) lockPath() string        { return filepath.Join(s.dir, localLockFileName) }
+func (s *localAuthStore) refreshLockPath() string { return filepath.Join(s.dir, localRefreshLockName) }
 
 func (s *localAuthStore) ensureDir() error {
 	if s == nil || strings.TrimSpace(s.dir) == "" {
@@ -71,13 +73,21 @@ func (s *localAuthStore) ensureDir() error {
 }
 
 func (s *localAuthStore) withLock(fn func() error) error {
+	return s.withFileLock(s.lockPath(), fn)
+}
+
+func (s *localAuthStore) withRefreshLock(fn func() error) error {
+	return s.withFileLock(s.refreshLockPath(), fn)
+}
+
+func (s *localAuthStore) withFileLock(path string, fn func() error) error {
 	if err := s.ensureDir(); err != nil {
 		return err
 	}
-	if err := rejectSymlink(s.lockPath()); err != nil {
+	if err := rejectSymlink(path); err != nil {
 		return err
 	}
-	lock, err := os.OpenFile(s.lockPath(), os.O_CREATE|os.O_RDWR, 0o600)
+	lock, err := os.OpenFile(path, os.O_CREATE|os.O_RDWR, 0o600)
 	if err != nil {
 		return err
 	}

@@ -3,6 +3,7 @@ package main
 import (
 	"bytes"
 	"context"
+	"encoding/base64"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -20,9 +21,12 @@ const maxCLIResponseBytes = 1 << 20
 var errCLIReauthenticationRequired = errors.New("CLI login is no longer valid; run `lwc-sync auth login`")
 
 type cliAPIClient struct {
-	origin      string
-	httpClient  *http.Client
-	credentials *cliLocalCredentials
+	origin             string
+	httpClient         *http.Client
+	credentials        *cliLocalCredentials
+	loadCurrent        func(cliLocalCredentials) (cliLocalCredentials, error)
+	persistCredentials func(cliLocalCredentials, cliLocalCredentials) (cliLocalCredentials, error)
+	withRefreshLock    func(func() error) error
 }
 
 type cliAPIStatusError struct{ status int }
@@ -123,11 +127,44 @@ func (c *cliAPIClient) refresh(ctx context.Context) error {
 	if c.credentials == nil || strings.TrimSpace(c.credentials.RefreshToken) == "" {
 		return errCLIReauthenticationRequired
 	}
+	refresh := func() error { return c.refreshLocked(ctx) }
+	if c.withRefreshLock != nil {
+		return c.withRefreshLock(refresh)
+	}
+	return refresh()
+}
+
+func (c *cliAPIClient) refreshLocked(ctx context.Context) error {
+	previous := *c.credentials
+	if c.loadCurrent != nil {
+		current, err := c.loadCurrent(previous)
+		if err != nil {
+			return err
+		}
+		if current != previous {
+			if cliAccessTokenUsable(current.AccessToken) {
+				*c.credentials = current
+				return nil
+			}
+			*c.credentials = current
+			previous = current
+		}
+	}
 	response, err := c.do(ctx, http.MethodPost, "/api/v1/auth/cli/refresh", map[string]string{"refresh_token": c.credentials.RefreshToken}, false)
 	if err != nil {
 		return err
 	}
 	if response.status == http.StatusUnauthorized || response.status == http.StatusGone {
+		if c.loadCurrent != nil {
+			current, err := c.loadCurrent(previous)
+			if err != nil && !errors.Is(err, errCLIReauthenticationRequired) {
+				return err
+			}
+			if err == nil && (current.AccessToken != previous.AccessToken || current.RefreshToken != previous.RefreshToken) {
+				*c.credentials = current
+				return nil
+			}
+		}
 		return errCLIReauthenticationRequired
 	}
 	if response.status < 200 || response.status >= 300 {
@@ -139,10 +176,41 @@ func (c *cliAPIClient) refresh(ctx context.Context) error {
 	}
 	rotated.AuthHost = c.origin
 	if rotated.UserID == "" {
-		rotated.UserID = c.credentials.UserID
+		rotated.UserID = previous.UserID
+	}
+	if c.persistCredentials != nil {
+		persisted, err := c.persistCredentials(previous, rotated)
+		if err != nil {
+			return err
+		}
+		rotated = persisted
 	}
 	*c.credentials = rotated
 	return nil
+}
+
+func cliAccessTokenUsable(token string) bool {
+	parts := strings.Split(token, ".")
+	if len(parts) != 3 {
+		return false
+	}
+	payload, err := base64.RawURLEncoding.DecodeString(parts[1])
+	if err != nil {
+		return false
+	}
+	var claims map[string]json.RawMessage
+	if err := json.Unmarshal(payload, &claims); err != nil {
+		return false
+	}
+	encodedExpiry, ok := claims["exp"]
+	if !ok {
+		return false
+	}
+	var expiry int64
+	if err := json.Unmarshal(encodedExpiry, &expiry); err != nil {
+		return false
+	}
+	return time.Now().Unix() < expiry
 }
 
 type cliAPIResponse struct {

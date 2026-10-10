@@ -34,6 +34,7 @@ type authSourceProjection struct {
 	FirestoreDatabaseID    string           `json:"firestore_database_id"`
 	LocalCloudScope        string           `json:"local_cloud_scope"`
 	AuthServiceURL         string           `json:"auth_service_url"`
+	SyncServiceURL         string           `json:"sync_service_url"`
 	AllowedHosts           []string         `json:"allowed_hosts"`
 	AllowedOrigins         []string         `json:"allowed_origins"`
 	AuthSessionEnvironment string           `json:"auth_session_environment"`
@@ -163,7 +164,7 @@ func decodeAuthSourceProjection(data []byte, environment string) (authSourceProj
 	}
 	required := []string{
 		"schema_version", "environment", "target", "gcp_project", "firestore_database_id", "local_cloud_scope",
-		"auth_service_url", "allowed_hosts", "allowed_origins", "auth_session_environment",
+		"auth_service_url", "sync_service_url", "allowed_hosts", "allowed_origins", "auth_session_environment",
 		"auth_session_migration", "registration_enabled", "auth_demo_user_id", "jwt_secret_reference",
 		"auth_demo_user_email", "auth_demo_user_role", "google", "config_secret_resource",
 	}
@@ -209,7 +210,8 @@ func validateAuthSourceProjection(p authSourceProjection, environment string) er
 	file := config.AuthFile{
 		SchemaVersion: 1, Target: "auth", Environment: p.Environment, ConfigID: "sha256:" + strings.Repeat("0", 64),
 		GCPProject: p.GCPProject, FirestoreDatabaseID: p.FirestoreDatabaseID, LocalCloudScope: p.LocalCloudScope,
-		AuthServiceURL: p.AuthServiceURL, AllowedHosts: p.AllowedHosts, AllowedOrigins: p.AllowedOrigins,
+		AuthServiceURL: p.AuthServiceURL, SyncServiceURL: p.SyncServiceURL,
+		AllowedHosts: p.AllowedHosts, AllowedOrigins: p.AllowedOrigins,
 		AuthSessionEnvironment: p.AuthSessionEnvironment, AuthSessionMigration: p.AuthSessionMigration,
 		RegistrationEnabled: p.RegistrationEnabled, AuthDemoUserID: p.AuthDemoUserID,
 		AuthDemoUserEmail: p.AuthDemoUserEmail, AuthDemoUserRole: p.AuthDemoUserRole,
@@ -298,7 +300,8 @@ func prepareAuthInputs(ctx context.Context, projection authSourceProjection, sou
 		SchemaVersion: 1, Environment: projection.Environment, Target: "auth", SourceSHA: sourceSHA,
 		GCPProject: projection.GCPProject, FirestoreDatabaseID: projection.FirestoreDatabaseID,
 		LocalCloudScope: projection.LocalCloudScope, AuthServiceURL: projection.AuthServiceURL,
-		AllowedHosts: projection.AllowedHosts, AllowedOrigins: projection.AllowedOrigins,
+		SyncServiceURL: projection.SyncServiceURL,
+		AllowedHosts:   projection.AllowedHosts, AllowedOrigins: projection.AllowedOrigins,
 		AuthSessionEnvironment: projection.AuthSessionEnvironment, AuthSessionMigration: projection.AuthSessionMigration,
 		RegistrationEnabled: projection.RegistrationEnabled, AuthDemoUserID: projection.AuthDemoUserID,
 		AuthDemoUserEmail: projection.AuthDemoUserEmail, AuthDemoUserRole: projection.AuthDemoUserRole,
@@ -423,7 +426,8 @@ func authFileFromSource(p authSourceProjection, jwt string) config.AuthFile {
 	file := config.AuthFile{
 		SchemaVersion: 1, Target: "auth", Environment: p.Environment, GCPProject: p.GCPProject,
 		FirestoreDatabaseID: p.FirestoreDatabaseID, LocalCloudScope: p.LocalCloudScope,
-		AuthServiceURL: p.AuthServiceURL, AllowedHosts: p.AllowedHosts, AllowedOrigins: p.AllowedOrigins,
+		AuthServiceURL: p.AuthServiceURL, SyncServiceURL: p.SyncServiceURL,
+		AllowedHosts: p.AllowedHosts, AllowedOrigins: p.AllowedOrigins,
 		AuthSessionEnvironment: p.AuthSessionEnvironment, AuthSessionMigration: p.AuthSessionMigration,
 		RegistrationEnabled: p.RegistrationEnabled, AuthDemoUserID: p.AuthDemoUserID,
 		AuthDemoUserEmail: p.AuthDemoUserEmail, AuthDemoUserRole: p.AuthDemoUserRole, JWTSecret: jwt,
@@ -455,7 +459,8 @@ func materializeAuthSnapshot(ctx context.Context, inputs config.AuthInputSnapsho
 		SchemaVersion: 1, Target: "auth", Environment: inputs.Environment, ConfigID: inputs.ConfigID,
 		GCPProject: inputs.GCPProject, FirestoreDatabaseID: inputs.FirestoreDatabaseID,
 		LocalCloudScope: inputs.LocalCloudScope, AuthServiceURL: inputs.AuthServiceURL,
-		AllowedHosts: inputs.AllowedHosts, AllowedOrigins: inputs.AllowedOrigins,
+		SyncServiceURL: inputs.SyncServiceURL,
+		AllowedHosts:   inputs.AllowedHosts, AllowedOrigins: inputs.AllowedOrigins,
 		AuthSessionEnvironment: inputs.AuthSessionEnvironment, AuthSessionMigration: inputs.AuthSessionMigration,
 		RegistrationEnabled: inputs.RegistrationEnabled, AuthDemoUserID: inputs.AuthDemoUserID,
 		AuthDemoUserEmail: inputs.AuthDemoUserEmail, AuthDemoUserRole: inputs.AuthDemoUserRole,

@@ -31,6 +31,7 @@ func TestProductionRouterExposesOnlyAuthPublicSurface(t *testing.T) {
 		http.MethodGet + " /api/v1/auth/cli/projects":                               true,
 		http.MethodGet + " /api/v1/auth/cli/sessions":                               true,
 		http.MethodGet + " /api/v1/auth/cli/status":                                 true,
+		http.MethodGet + " /api/v1/auth/cli/sync-service":                           true,
 		http.MethodGet + " /api/v1/public/healthz":                                  true,
 		http.MethodGet + " /api/v1/public/version":                                  true,
 		http.MethodPost + " /api/v1/auth/cli/bindings":                              true,
