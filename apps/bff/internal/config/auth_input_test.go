@@ -10,7 +10,8 @@ func validAuthInputSnapshotForTest() AuthInputSnapshot {
 	inputs := AuthInputSnapshot{
 		SchemaVersion: 1, Environment: "dev", Target: "auth", SourceSHA: strings.Repeat("b", 40),
 		GCPProject: "llm-wiki-cloud", FirestoreDatabaseID: "llm-wiki-cloud-dev",
-		AuthServiceURL: "https://auth.dev.example.test", AllowedHosts: []string{"auth.dev.example.test"},
+		AuthServiceURL: "https://auth.dev.example.test", SyncServiceURL: "https://bff.dev.example.test",
+		AllowedHosts:   []string{"auth.dev.example.test"},
 		AllowedOrigins: []string{"https://wiki.example.test"}, AuthSessionEnvironment: "llm-wiki-cloud-dev",
 		AuthSessionMigration: "disabled", AuthDemoUserID: "demo-user",
 		AuthDemoUserEmail: "demo@example.test", AuthDemoUserRole: "member",

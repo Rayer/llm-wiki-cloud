@@ -55,6 +55,7 @@ def write_auth_input_snapshot_fixture(directory, environment, source_sha='c' * 4
         'firestore_database_id': source['firestore_database_id'],
         'local_cloud_scope': source['local_cloud_scope'],
         'auth_service_url': source['auth_service_url'],
+        'sync_service_url': source['sync_service_url'],
         'allowed_hosts': source['allowed_hosts'],
         'allowed_origins': source['allowed_origins'],
         'auth_session_environment': source['auth_session_environment'],

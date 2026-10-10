@@ -2,6 +2,7 @@ package main
 
 import (
 	"os"
+	"path/filepath"
 	"strings"
 	"testing"
 )
@@ -51,5 +52,36 @@ func TestVaultBindingRequiresExplicitReauthorizationAndPinsHost(t *testing.T) {
 	}
 	if _, err := prepareVaultBinding(vault, "https://other.example.test", "project-1"); err == nil {
 		t.Fatal("vault binding host was silently changed")
+	}
+}
+
+func TestInitPreparesMissingVaultAndPreservesExistingRawFiles(t *testing.T) {
+	vault := filepath.Join(t.TempDir(), "new", "vault")
+	first, err := prepareVaultForInit(vault, "https://auth.example.test", "project-1")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if info, err := os.Stat(filepath.Join(vault, "raw")); err != nil || !info.IsDir() {
+		t.Fatalf("raw directory info=%v err=%v", info, err)
+	}
+	filePath := filepath.Join(vault, "raw", "nested", "attachment.bin")
+	if err := os.MkdirAll(filepath.Dir(filePath), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filePath, []byte("existing"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	second, err := prepareVaultForInit(vault, "https://auth.example.test", "project-1")
+	if err != nil || second != first {
+		t.Fatalf("repeat init binding=%#v err=%v, want %#v", second, err, first)
+	}
+	if data, err := os.ReadFile(filePath); err != nil || string(data) != "existing" {
+		t.Fatalf("repeat init changed existing raw file: data=%q err=%v", data, err)
+	}
+	if _, err := prepareVaultForInit(vault, "https://other.example.test", "project-1"); err == nil {
+		t.Fatal("init silently changed the bound host")
+	}
+	if _, err := prepareVaultForInit(vault, "https://auth.example.test", "project-2"); err == nil {
+		t.Fatal("init silently changed the bound Project")
 	}
 }

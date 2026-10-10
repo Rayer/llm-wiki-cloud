@@ -97,6 +97,7 @@ type CLIAuthService struct {
 	fs                 *firestore.Client
 	sessions           *RefreshSessionAuthority
 	bindings           *SyncBindingAuthority
+	syncServiceURL     string
 	jwtSecret          string
 	verificationOrigin string
 	now                func() time.Time
@@ -113,6 +114,23 @@ func (s *CLIAuthService) ready() bool {
 // SetSyncBindingAuthority installs the project-scoped binding authority.
 func (s *CLIAuthService) SetSyncBindingAuthority(authority *SyncBindingAuthority) {
 	s.bindings = authority
+}
+
+// SetSyncServiceURL installs the trusted, server-configured BFF origin returned
+// to CLI clients after they authenticate with this Auth service.
+func (s *CLIAuthService) SetSyncServiceURL(origin string) {
+	s.syncServiceURL = strings.TrimSpace(origin)
+}
+
+func (s *CLIAuthService) SyncServiceLocatorHandler() gin.HandlerFunc {
+	return func(c *gin.Context) {
+		if s == nil || strings.TrimSpace(s.syncServiceURL) == "" {
+			c.JSON(http.StatusServiceUnavailable, gin.H{"error": "sync service locator unavailable"})
+			return
+		}
+		c.Header("Cache-Control", "no-store")
+		c.JSON(http.StatusOK, gin.H{"origin": s.syncServiceURL})
+	}
 }
 
 func (s *CLIAuthService) pairingRef(pairingID string) *firestore.DocumentRef {

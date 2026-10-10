@@ -71,6 +71,59 @@ func prepareVaultBinding(vault, authHost, projectID string) (vaultBindingConfig,
 	return result, nil
 }
 
+func prepareVaultForInit(vault, authHost, projectID string) (vaultBindingConfig, error) {
+	authHost, err := normalizeAuthOrigin(authHost)
+	if err != nil || !validVaultID(projectID) {
+		return vaultBindingConfig{}, errors.New("provide a valid auth/control-plane host and Project ID")
+	}
+	vault, err = filepath.Abs(strings.TrimSpace(vault))
+	if err != nil || vault == string(filepath.Separator) {
+		return vaultBindingConfig{}, errors.New("invalid vault path")
+	}
+	if err := os.MkdirAll(vault, 0o755); err != nil {
+		return vaultBindingConfig{}, err
+	}
+	info, err := os.Lstat(vault)
+	if err != nil || info.Mode()&os.ModeSymlink != 0 || !info.IsDir() {
+		return vaultBindingConfig{}, errors.New("vault path must be a real directory")
+	}
+	rawDir := filepath.Join(vault, "raw")
+	if err := os.MkdirAll(rawDir, 0o755); err != nil {
+		return vaultBindingConfig{}, err
+	}
+	rawInfo, err := os.Lstat(rawDir)
+	if err != nil || rawInfo.Mode()&os.ModeSymlink != 0 || !rawInfo.IsDir() {
+		return vaultBindingConfig{}, errors.New("vault raw/ must be a real directory")
+	}
+	var result vaultBindingConfig
+	err = withVaultBindingLock(vault, func() error {
+		existing, err := readVaultBinding(vault)
+		if err == nil {
+			if existing.Host != authHost {
+				return errors.New("vault binding belongs to a different auth/control-plane host")
+			}
+			if existing.ProjectID != projectID {
+				return errors.New("vault is already associated with a different Project ID; use a separate vault or explicitly reauthorize")
+			}
+			result = existing
+			return nil
+		}
+		if !errors.Is(err, os.ErrNotExist) {
+			return err
+		}
+		wikiID, err := newWikiID()
+		if err != nil {
+			return err
+		}
+		result = vaultBindingConfig{Host: authHost, WikiID: wikiID, ProjectID: projectID}
+		return writeVaultBinding(vault, result)
+	})
+	if err != nil {
+		return vaultBindingConfig{}, err
+	}
+	return result, nil
+}
+
 func loadVaultBinding(vault string) (vaultBindingConfig, error) {
 	vault, err := filepath.Abs(strings.TrimSpace(vault))
 	if err != nil {

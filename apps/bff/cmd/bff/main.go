@@ -17,6 +17,7 @@ import (
 	"syscall"
 	"time"
 
+	cloudfirestore "cloud.google.com/go/firestore"
 	"github.com/gin-contrib/cors"
 	"github.com/gin-gonic/gin"
 	swaggerFiles "github.com/swaggo/files"
@@ -368,7 +369,7 @@ func newProductionRouter(
 	r.Use(cors.New(cors.Config{
 		AllowOrigins:     allowOrigins,
 		AllowMethods:     []string{"GET", "POST", "PUT", "PATCH", "DELETE", "OPTIONS"},
-		AllowHeaders:     []string{"Content-Type", "Authorization", "X-Project-ID", "Idempotency-Key"},
+		AllowHeaders:     []string{"Content-Type", "Authorization", "X-Project-ID", "X-Wiki-ID", "X-Sync-Binding-ID", "X-Content-SHA256", "X-Expected-Generation", "Idempotency-Key"},
 		AllowCredentials: true,
 	}))
 
@@ -398,13 +399,7 @@ func newProductionRouter(
 		authRoutes.POST("/logout", auth.LogoutHandlerWithCookiePolicy(cookiePolicy))
 	} else {
 		identityRepository := auth.NewIdentityRepository(fsClient.Raw())
-		sessionEnvironment := strings.TrimSpace(cfg.AuthSessionEnvironment)
-		if sessionEnvironment == "" {
-			sessionEnvironment = strings.TrimSpace(cfg.FirestoreDatabaseID)
-			if sessionEnvironment == "" {
-				sessionEnvironment = "default"
-			}
-		}
+		sessionEnvironment := authSessionEnvironment(cfg)
 		sessions = auth.NewRefreshSessionAuthorityWithConfig(fsClient.Raw(), auth.SessionAuthorityConfig{
 			Environment: sessionEnvironment, Migration: auth.RefreshSessionMigrationMode(cfg.AuthSessionMigration),
 		})
@@ -413,6 +408,12 @@ func newProductionRouter(
 		authRoutes.POST("/refresh", auth.RefreshHandlerWithSessionAuthority(sessions, cfg.JWTSecret, cookiePolicy))
 		authRoutes.POST("/logout", auth.LogoutHandlerWithSessionAuthority(sessions, cfg.JWTSecret, cookiePolicy))
 	}
+	var rawFirestore *cloudfirestore.Client
+	if fsClient != nil {
+		rawFirestore = fsClient.Raw()
+	}
+	hV1.SetSyncBindingAuthority(auth.NewSyncBindingAuthority(rawFirestore, authSessionEnvironment(cfg), cfg.AuthServiceURL))
+	hV1.SetSyncBindingHost(cfg.AuthServiceURL)
 	if fsClient == nil {
 		wireCLIAuthorities(hV1, nil, sessions)
 	} else {
@@ -448,6 +449,12 @@ func newProductionRouter(
 
 	v1.Use(auth.ProjectMiddleware())
 	{
+		syncRaw := v1.Group("/sync/raw")
+		syncRaw.Use(auth.CLIOnly(), hV1.RawSyncBindingAuth())
+		syncRaw.GET("", hV1.SyncRawList)
+		syncRaw.GET("/file", hV1.SyncRawDownload)
+		syncRaw.PUT("/file", hV1.SyncRawUpload)
+
 		v1.POST("/pipeline/rebuild-index", hV1.RebuildIndex)
 		v1.GET("/projects/:pid/recompile-all/capability", hV1.RecompileAllCapability)
 		v1.POST("/projects/:pid/recompile-all", hV1.RecompileAll)
@@ -511,6 +518,17 @@ func newProductionRouter(
 	})
 
 	return r
+}
+
+func authSessionEnvironment(cfg config.Config) string {
+	environment := strings.TrimSpace(cfg.AuthSessionEnvironment)
+	if environment == "" {
+		environment = strings.TrimSpace(cfg.FirestoreDatabaseID)
+	}
+	if environment == "" {
+		environment = "default"
+	}
+	return environment
 }
 
 func newExportHTTPHandler(localMode bool, cfg config.Config, repo exportjob.Repository, projects exportjob.ProjectVerifier, cloudArchives *exportjob.CloudArchiveStore) *exportjob.HTTPHandler {

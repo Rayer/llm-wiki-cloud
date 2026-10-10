@@ -5,6 +5,7 @@ import (
 	"errors"
 	"net/http"
 	"net/http/httptest"
+	"strings"
 	"testing"
 
 	"github.com/gin-gonic/gin"
@@ -106,6 +107,26 @@ func TestCLISessionVerifierErrorClassification(t *testing.T) {
 	}
 	if cliSessionHTTPStatus(errors.New("firestore unavailable")) != http.StatusServiceUnavailable {
 		t.Fatal("unknown verifier errors must fail closed as unavailable")
+	}
+}
+
+func TestSyncServiceLocatorReturnsConfiguredOriginWithoutCaching(t *testing.T) {
+	gin.SetMode(gin.TestMode)
+	service := &CLIAuthService{}
+	service.SetSyncServiceURL("https://bff.example.test")
+	router := gin.New()
+	router.GET("/api/v1/auth/cli/sync-service", service.SyncServiceLocatorHandler())
+	recorder := httptest.NewRecorder()
+	router.ServeHTTP(recorder, httptest.NewRequest(http.MethodGet, "/api/v1/auth/cli/sync-service", nil))
+	if recorder.Code != http.StatusOK || recorder.Header().Get("Cache-Control") != "no-store" || !strings.Contains(recorder.Body.String(), `"origin":"https://bff.example.test"`) {
+		t.Fatalf("locator response status=%d cache=%q body=%s", recorder.Code, recorder.Header().Get("Cache-Control"), recorder.Body.String())
+	}
+
+	service.SetSyncServiceURL("")
+	missing := httptest.NewRecorder()
+	router.ServeHTTP(missing, httptest.NewRequest(http.MethodGet, "/api/v1/auth/cli/sync-service", nil))
+	if missing.Code != http.StatusServiceUnavailable {
+		t.Fatalf("unconfigured locator status=%d, want unavailable", missing.Code)
 	}
 }
 
