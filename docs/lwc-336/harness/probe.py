@@ -389,10 +389,11 @@ def main() -> int:
         )
         failure_wire = json.loads(failure_body).get("result", {})
         failure_wire_text = failure_wire.get("content", [{}])[0].get("text", "")
+        safe_runtime_failure = "The query could not run with the current configuration. Try again later."
         if (failure_status != 200 or failure_wire.get("isError") is not True
-                or failure_wire_text != "generated data unavailable"):
+                or failure_wire_text != safe_runtime_failure):
             raise AssertionError("executor failure did not become a safe MCP isError text result")
-        if safe_failure != "generated data unavailable":
+        if safe_failure != safe_runtime_failure:
             raise AssertionError(f"Hermes did not retain safe tool error text; fields={sorted(executor_failure)}")
         if "credential" in safe_failure.lower() or key in json.dumps(executor_failure):
             raise AssertionError("executor error leaked an internal detail or key")
