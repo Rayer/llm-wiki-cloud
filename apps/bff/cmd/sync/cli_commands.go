@@ -434,6 +434,9 @@ func runBindingRecover(args []string) error {
 	bindingID := flags.String("binding-id", "", "active binding ID shown by binding list")
 	confirm := flags.Bool("confirm-same-vault", false, "confirm this is the original vault for the selected active binding")
 	if err := flags.Parse(args); err != nil {
+		if errors.Is(err, flag.ErrHelp) {
+			return nil
+		}
 		return err
 	}
 	if strings.TrimSpace(*vault) == "" || strings.TrimSpace(*host) == "" || !validVaultID(*projectID) || !validVaultID(*bindingID) {

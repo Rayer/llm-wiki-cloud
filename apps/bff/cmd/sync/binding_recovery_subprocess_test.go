@@ -217,6 +217,20 @@ func TestRawSyncCLIRealSubprocessBindingRecover(t *testing.T) {
 		return authSyncBinding{ID: id, Host: host, WikiID: wikiID, ProjectID: projectID, Status: status}
 	}
 
+	t.Run("help exits successfully without network or vault mutation", func(t *testing.T) {
+		cli := newBindingRecoveryCLI(t, binary, nil, nil)
+		out, err := cli.run("binding", "recover", "--help")
+		if err != nil || !strings.Contains(out, "-confirm-same-vault") || !strings.Contains(out, "-binding-id") {
+			t.Fatalf("recover help error=%v output=%s", err, out)
+		}
+		if requests := cli.fixture.requestSnapshot(); len(requests) != 0 {
+			t.Fatalf("recover help sent network requests: %v", requests)
+		}
+		if _, err := os.Lstat(vaultBindingPath(cli.vault)); !os.IsNotExist(err) {
+			t.Fatalf("recover help wrote metadata: %v", err)
+		}
+	})
+
 	for _, scenario := range []struct {
 		name    string
 		pending bool
