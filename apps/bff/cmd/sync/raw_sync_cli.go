@@ -116,10 +116,16 @@ func runRawInit(args []string) error {
 			if item.ProjectID != binding.ProjectID {
 				continue
 			}
-			if item.WikiID != binding.WikiID || item.Host != binding.Host {
-				return errors.New("server binding belongs to a different wiki or host; review it and run `lwc-sync binding reauthorize` explicitly")
+			if item.Host != binding.Host {
+				return errors.New("server binding belongs to a different auth/control-plane host; review `lwc-sync binding list --host AUTH_ORIGIN` and verify the configured host")
+			}
+			if item.WikiID != binding.WikiID {
+				return errors.New("server binding belongs to a different wiki; " + bindingRecoveryGuidance)
 			}
 			if item.Status != "active" {
+				if binding.BindingID == "" {
+					return errors.New("server binding is not active and this vault has no binding ID to reauthorize; review `lwc-sync binding list --host AUTH_ORIGIN`; recovery requires the original vault's single active binding")
+				}
 				return errors.New("this vault binding is revoked; run `lwc-sync binding reauthorize --vault PATH --project-id ID` after reviewing the account binding")
 			}
 			if binding.BindingID != "" && item.ID != binding.BindingID {
