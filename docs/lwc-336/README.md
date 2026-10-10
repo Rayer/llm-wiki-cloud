@@ -4,14 +4,16 @@ LWC-336 adds a read-only Streamable HTTP MCP endpoint to the existing BFF. The s
 
 ## Access and scope
 
-Create a project key in the Web app under **Account Settings → Project API keys** for the workspace's current project. The key is fixed to that owner and project and grants only Query access. It cannot select another project, request `required_tag_ids`, or call profile, detail, write, admin, or Auth operations.
+Create a project key in the Web app under **Project Settings → External access → Project API keys** for the selected Project. The route remains /profile and the existing Profile editor remains on that page. The key is fixed to that owner and Project and grants only Query access. It cannot select another Project, request required_tag_ids, or call profile, detail, write, admin, or Auth operations. Multi-Project keys are not supported.
 
-The full key appears only in the successful create result. Copy it into the Hermes profile's environment or secret source under `LWC_PROJECT_KEY`; do not save the value in `config.yaml`, a prompt, a URL, repository file, log, or browser storage. The MCP configuration stores only the variable reference:
+The full key appears only once in the successful create result. Check `hermes profile list` and use the active profile marked with *. Copy the key directly into that active profile's .env secret source as `LWC_PROJECT_KEY`; the default profile uses `~/.hermes/.env`. Use a secure local editor or your configured secret source, limit file access to your user, and never put the key in a command argument, `config.yaml`, chat, prompt, URL, repository, log, or browser storage.
+
+The MCP configuration stores only a variable reference. Copy the MCP URL displayed in Project Settings, built from this Web app's runtime BFF API URL plus /mcp; do not guess a hostname or use a URL from a different environment.
 
 ```yaml
 mcp_servers:
-  project-key:
-    url: https://<bff-origin>/mcp
+  llm-wiki:
+    url: "<copy the MCP endpoint shown in Project Settings>"
     transport: streamable-http
     headers:
       Authorization: "Bearer ${LWC_PROJECT_KEY}"
@@ -19,13 +21,17 @@ mcp_servers:
       enabled: false
 ```
 
-Keep the key in Hermes' active profile secret source or environment. This is client configuration; the BFF does not add an app setting or put dynamic key records in CaC. The key is rechecked against current key, account, and project-owner state for every HTTP request.
+Restart Hermes and let it discover the server's MCP tool. Use the tool name shown by discovery; generated wrapper names depend on the configured server name. See the official [Hermes MCP documentation](https://hermes-agent.nousresearch.com/docs/user-guide/features/mcp/) and [secrets and profiles guide](https://hermes-agent.nousresearch.com/docs/user-guide/secrets/).
+
+This is client configuration; the BFF does not add an app setting or put dynamic key records in CaC. The key is rechecked against current key, account, and Project-owner state for every HTTP request.
 
 ## Use and rotation
 
-Hermes discovers `query_project` and passes `q` plus optional `mode` (`wiki` or `full`, default `wiki`). Results keep the HTTP Query JSON fields: `query`, `mode`, `results`, and any present `expand`, `ai_synth`, `citations`, `status`, `reason`, `answer_basis`, `wiki_evidence_status`, and `disclosure_required`. Empty/insufficient results and model-prior disclosure are normal Query results; they are not MCP tool errors. Executor or storage failures return an MCP tool error with safe text.
+Hermes discovers the query_project tool and passes q plus optional mode (wiki or full, default wiki). Results keep the HTTP Query JSON fields: query, mode, results, and any present expand, ai_synth, citations, status, reason, answer_basis, wiki_evidence_status, and disclosure_required. Empty/insufficient results and model-prior disclosure are normal Query results; they are not MCP tool errors. Executor or storage failures return an MCP tool error with safe text. Discovery and a successful MCP call do not prove that the Project has a published generation or that Query found evidence; check the Query response and published generation separately.
 
-There is no refresh operation or fixed expiry. Rotate a key by creating a replacement, updating the Hermes secret value, confirming a query succeeds, then revoking the old key in Account Settings. Revocation takes effect on the next request; a previous MCP session header does not preserve authority.
+There is no refresh operation or fixed expiry. Rotate a key by creating a replacement, updating the active Hermes profile's secret value, restarting Hermes and verifying the new connection, then revoking the old key under Project Settings. Revocation takes effect on the next request; a previous MCP session header does not preserve authority.
+
+Grok web interface support for this key is unverified; this guide does not provide Grok web setup steps.
 
 For a direct Query API client, use the same key and existing HTTP endpoint:
 

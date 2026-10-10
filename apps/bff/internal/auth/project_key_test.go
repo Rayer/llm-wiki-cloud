@@ -105,7 +105,7 @@ func testProjectKeyService(store *memoryProjectKeyStore) *ProjectKeyService {
 		}
 		return ErrProjectPermissionDenied
 	}
-	return newProjectKeyService(store, lookup, authorize)
+	return newProjectKeyService(store, nil, lookup, authorize)
 }
 
 func TestProjectKeyFormatAndCanonicalSecret(t *testing.T) {

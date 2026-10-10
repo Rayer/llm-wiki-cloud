@@ -57,3 +57,39 @@ test('requested frontend components read their copy from the locale hook', async
   assert.match(homeClient, /t\(`Demo\.\$\{item\}`\)/);
   assert.match(homeClient, /t\('Demo\.search'\)/);
 });
+
+test('account settings copy covers both locales and keeps backend messages separate', async () => {
+  const [english, traditionalChinese, shell, modal] = await Promise.all([
+    readJson(new URL('../src/messages/en.json', import.meta.url)),
+    readJson(new URL('../src/messages/zh-TW.json', import.meta.url)),
+    readFile(new URL('../src/components/Shell.tsx', import.meta.url), 'utf8'),
+    readFile(new URL('../src/components/AccountSettingsModal.tsx', import.meta.url), 'utf8'),
+  ]);
+  const keys = [
+    'title',
+    'close',
+    'cliSessionStatusActive',
+    'cliSessionStatusRevoked',
+    'cliSessionStatusExpired',
+    'cliSessionsLoadError',
+    'syncBindingsLoadError',
+    'googleLinkError',
+    'cliSessionRevokeError',
+    'syncBindingRevokeError',
+    'syncBindingReauthorizeError',
+  ];
+
+  for (const key of keys) {
+    assert.equal(typeof english.AccountSettings[key], 'string', `English AccountSettings.${key} is missing`);
+    assert.equal(typeof traditionalChinese.AccountSettings[key], 'string', `Traditional Chinese AccountSettings.${key} is missing`);
+    assert.notEqual(english.AccountSettings[key], `AccountSettings.${key}`);
+    assert.notEqual(traditionalChinese.AccountSettings[key], `AccountSettings.${key}`);
+  }
+
+  assert.match(shell, /t\('AccountSettings\.title'\)/);
+  assert.match(modal, /t\('AccountSettings\.close'\)/);
+  for (const key of keys.slice(2)) assert.match(modal, new RegExp(`t\\('AccountSettings\\.${key}'\\)`));
+  assert.match(modal, /requestError instanceof Error \? requestError\.message/);
+  assert.match(modal, /: session\.status/);
+  assert.match(modal, /: binding\.status/);
+});

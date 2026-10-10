@@ -35,15 +35,19 @@ export type GoogleIdentitySummary = {
   }>;
 };
 
+export type GoogleAuthLocalReason = 'missing_backend_error' | 'link_response_invalid';
+
 export class GoogleAuthError extends Error {
   status: number;
   supportRef: string;
+  localReason?: GoogleAuthLocalReason;
 
-  constructor(message: string, status: number, supportRef = 'unavailable') {
+  constructor(message: string, status: number, supportRef = 'unavailable', localReason?: GoogleAuthLocalReason) {
     super(message);
     this.name = 'GoogleAuthError';
     this.status = status;
     this.supportRef = supportRef;
+    this.localReason = localReason;
   }
 }
 
@@ -62,8 +66,13 @@ function supportReference(value: unknown): string {
 
 function errorFromPayload(payload: unknown, status: number): GoogleAuthError {
   const record = isRecord(payload) ? payload : {};
-  const message = safeString(record.error) || 'Unable to continue with Google sign-in.';
-  return new GoogleAuthError(message, status, supportReference(record.support_ref));
+  const backendMessage = safeString(record.error);
+  return new GoogleAuthError(
+    backendMessage || 'Unable to continue with Google sign-in.',
+    status,
+    supportReference(record.support_ref),
+    backendMessage ? undefined : 'missing_backend_error',
+  );
 }
 
 async function jsonRequest<T>(path: string, init: RequestInit = {}): Promise<T> {
@@ -99,10 +108,17 @@ export async function beginGoogleLink(currentPassword: string, token: string): P
     body: JSON.stringify({ current_password: currentPassword }),
   });
   const authorizationURL = isRecord(payload) ? safeString(payload.authorization_url) : '';
-  if (!authorizationURL) throw new GoogleAuthError('Unable to link this Google account.', 502);
-  const parsed = new URL(authorizationURL);
+  if (!authorizationURL) {
+    throw new GoogleAuthError('Unable to link this Google account.', 502, 'unavailable', 'link_response_invalid');
+  }
+  let parsed: URL;
+  try {
+    parsed = new URL(authorizationURL);
+  } catch {
+    throw new GoogleAuthError('Unable to link this Google account.', 502, 'unavailable', 'link_response_invalid');
+  }
   if (parsed.protocol !== 'https:' || parsed.username || parsed.password || parsed.hash) {
-    throw new GoogleAuthError('Unable to link this Google account.', 502);
+    throw new GoogleAuthError('Unable to link this Google account.', 502, 'unavailable', 'link_response_invalid');
   }
   window.location.assign(authorizationURL);
 }

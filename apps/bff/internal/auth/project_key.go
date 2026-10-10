@@ -50,6 +50,7 @@ var (
 // configured Firestore database. Dynamic keys are data, not application config.
 type ProjectKeyService struct {
 	store     projectKeyStore
+	usage     projectKeyUsageStore
 	lookup    AccountLookup
 	authorize ProjectOwnerAuthorizer
 }
@@ -78,25 +79,28 @@ type ProjectKeyRecord struct {
 
 // ProjectKeyMetadata is safe to return after creation or from later reads.
 type ProjectKeyMetadata struct {
-	KeyID        string     `json:"key_id"`
-	Name         string     `json:"name"`
-	ProjectID    string     `json:"project_id"`
-	Capabilities []string   `json:"capabilities"`
-	State        string     `json:"state"`
-	CreatedAt    time.Time  `json:"created_at"`
-	RevokedAt    *time.Time `json:"revoked_at,omitempty"`
+	KeyID          string     `json:"key_id"`
+	Name           string     `json:"name"`
+	ProjectID      string     `json:"project_id"`
+	Capabilities   []string   `json:"capabilities"`
+	State          string     `json:"state"`
+	CreatedAt      time.Time  `json:"created_at"`
+	RevokedAt      *time.Time `json:"revoked_at,omitempty"`
+	LastUsedAt     *time.Time `json:"last_used_at,omitempty"`
+	LastUsedStatus string     `json:"last_used_status,omitempty"`
 }
 
 func NewProjectKeyService(fs *firestore.Client) *ProjectKeyService {
 	return &ProjectKeyService{
 		store:     firestoreProjectKeyStore{fs: fs},
+		usage:     firestoreProjectKeyUsageStore{fs: fs},
 		lookup:    FirestoreAccountLookup(fs),
 		authorize: FirestoreProjectOwnerAuthorizer(fs),
 	}
 }
 
-func newProjectKeyService(store projectKeyStore, lookup AccountLookup, authorize ProjectOwnerAuthorizer) *ProjectKeyService {
-	return &ProjectKeyService{store: store, lookup: lookup, authorize: authorize}
+func newProjectKeyService(store projectKeyStore, usage projectKeyUsageStore, lookup AccountLookup, authorize ProjectOwnerAuthorizer) *ProjectKeyService {
+	return &ProjectKeyService{store: store, usage: usage, lookup: lookup, authorize: authorize}
 }
 
 func (r ProjectKeyRecord) Metadata() ProjectKeyMetadata {
@@ -359,6 +363,18 @@ func (s *ProjectKeyService) Authenticate(ctx context.Context, token, requestedPr
 		}
 		return ProjectKeyRecord{}, ErrProjectKeyUnavailable
 	}
+	if s.usage != nil {
+		usedAt := time.Now().UTC()
+		usageCtx, cancel := context.WithTimeout(ctx, projectKeyUsageWriteTimeout)
+		_ = s.usage.Record(usageCtx, projectKeyUsageRecord{
+			SchemaVersion: projectKeyUsageSchema,
+			KeyID:         record.KeyID,
+			UserID:        record.UserID,
+			ProjectID:     record.ProjectID,
+			LastUsedAt:    usedAt,
+		})
+		cancel()
+	}
 	return record, nil
 }
 
@@ -386,6 +402,44 @@ func (s *ProjectKeyService) List(ctx context.Context, userID, projectID string) 
 		}
 		return keys[i].CreatedAt.After(keys[j].CreatedAt)
 	})
+	if len(keys) > 0 {
+		keyIDs := make([]string, len(keys))
+		for index := range keys {
+			keyIDs[index] = keys[index].KeyID
+		}
+		usageByKey := map[string]projectKeyUsageStatus(nil)
+		var usageErr error
+		if s.usage == nil {
+			usageErr = errProjectKeyUsageUnavailable
+		} else {
+			usageByKey, usageErr = s.usage.List(ctx, userID, projectID, keyIDs)
+		}
+		for index := range keys {
+			if usageErr != nil {
+				keys[index].LastUsedStatus = projectKeyUsageUnavailable
+				continue
+			}
+			usage, ok := usageByKey[keys[index].KeyID]
+			if !ok {
+				keys[index].LastUsedStatus = projectKeyUsageUnavailable
+				continue
+			}
+			switch usage.Status {
+			case projectKeyUsageAvailable:
+				if usage.LastUsedAt == nil || usage.LastUsedAt.IsZero() {
+					keys[index].LastUsedStatus = projectKeyUsageUnavailable
+					continue
+				}
+				lastUsedAt := usage.LastUsedAt.UTC()
+				keys[index].LastUsedAt = &lastUsedAt
+				keys[index].LastUsedStatus = projectKeyUsageAvailable
+			case projectKeyUsageNoRecord:
+				keys[index].LastUsedStatus = projectKeyUsageNoRecord
+			default:
+				keys[index].LastUsedStatus = projectKeyUsageUnavailable
+			}
+		}
+	}
 	return keys, nil
 }
 

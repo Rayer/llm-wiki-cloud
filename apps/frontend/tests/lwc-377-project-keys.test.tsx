@@ -8,35 +8,12 @@ if (!(React as { act?: (callback: () => unknown) => Promise<unknown> | unknown }
 const { cleanup, fireEvent, render, screen, waitFor } = await import('@testing-library/react');
 const mocks = vi.hoisted(() => ({
   apiFetch: vi.fn(),
-  listCLISessions: vi.fn(),
-  listSyncBindings: vi.fn(),
-  revokeCLISession: vi.fn(),
-  revokeSyncBinding: vi.fn(),
-  reauthorizeSyncBinding: vi.fn(),
-  readGoogleIdentitySummary: vi.fn(),
-  refreshAccessToken: vi.fn(),
   currentProject: { id: 'project-1', name: 'Research' } as { id: string; name: string } | null,
 }));
 
 vi.mock('@/lib/api', () => ({ apiFetch: mocks.apiFetch }));
-vi.mock('@/lib/auth', () => ({
-  useAuth: () => ({ accessToken: 'web-access-token', refreshAccessToken: mocks.refreshAccessToken, user: { id: 'owner-1', email: 'owner@example.test' } }),
-}));
-vi.mock('@/components/WorkspaceProvider', () => ({ useWorkspace: () => ({ currentProject: mocks.currentProject }) }));
-vi.mock('@/lib/i18n', () => {
-  const t = (key: string, params?: Record<string, string>) => params ? `${key}:${Object.values(params).join('|')}` : key;
-  return { useLocale: () => ({ t }) };
-});
-vi.mock('@/lib/google-auth', () => ({ beginGoogleLink: vi.fn(), readGoogleIdentitySummary: mocks.readGoogleIdentitySummary }));
-vi.mock('@/lib/cli-auth', () => ({
-  listCLISessions: mocks.listCLISessions,
-  listSyncBindings: mocks.listSyncBindings,
-  revokeCLISession: mocks.revokeCLISession,
-  revokeSyncBinding: mocks.revokeSyncBinding,
-  reauthorizeSyncBinding: mocks.reauthorizeSyncBinding,
-}));
 
-import { AccountSettingsModal } from '@/components/AccountSettingsModal';
+import { ProjectKeysSection } from '@/components/ProjectKeysSection';
 import type { ProjectKey } from '@/lib/project-keys';
 
 const key: ProjectKey = {
@@ -53,15 +30,28 @@ function response(payload: unknown, status = 200): Response {
   return { ok: status >= 200 && status < 300, status, json: async () => payload } as Response;
 }
 
+function translate(key: string, params?: Record<string, string | number>): string {
+  return params ? `${key}:${Object.values(params).join('|')}` : key;
+}
+
+function renderKeys() {
+  return render(<ProjectKeysSection currentProject={mocks.currentProject} accessToken="web-access-token" t={translate} />);
+}
+
+function ProjectKeysHost({ accountId, sessionEpoch }: { accountId: string; sessionEpoch: number }) {
+  const project = mocks.currentProject;
+  return (
+    <ProjectKeysSection
+      key={`${accountId}:${project?.id ?? 'none'}:${sessionEpoch}`}
+      currentProject={project}
+      accessToken="web-access-token"
+      t={translate}
+    />
+  );
+}
+
 beforeEach(() => {
   mocks.apiFetch.mockReset().mockResolvedValue(response({ keys: [] }));
-  mocks.listCLISessions.mockReset().mockResolvedValue([]);
-  mocks.listSyncBindings.mockReset().mockResolvedValue([]);
-  mocks.revokeCLISession.mockReset().mockResolvedValue(undefined);
-  mocks.revokeSyncBinding.mockReset().mockResolvedValue(undefined);
-  mocks.reauthorizeSyncBinding.mockReset().mockResolvedValue(undefined);
-  mocks.readGoogleIdentitySummary.mockReset().mockResolvedValue({ primary_email: 'owner@example.test', linked_providers: [] });
-  mocks.refreshAccessToken.mockReset().mockResolvedValue('fresh-web-token');
   mocks.currentProject = { id: 'project-1', name: 'Research' };
   vi.stubGlobal('confirm', vi.fn(() => true));
   Object.defineProperty(navigator, 'clipboard', { configurable: true, value: { writeText: vi.fn().mockResolvedValue(undefined) } });
@@ -75,8 +65,24 @@ afterEach(() => {
 });
 
 describe('LWC-377 Project API keys', () => {
+  it('shows known usage states as localized copy and maps malformed states to unavailable', async () => {
+    const keys: ProjectKey[] = [
+      { ...key, key_id: '11111111111111111111111111111111', last_used_at: '2026-10-09T12:30:00Z', last_used_status: 'available' },
+      { ...key, key_id: '22222222222222222222222222222222', last_used_status: 'no_record' },
+      { ...key, key_id: '33333333333333333333333333333333', last_used_status: 'unavailable' },
+      { ...key, key_id: '44444444444444444444444444444444', last_used_status: 'future-status' as unknown as ProjectKey['last_used_status'] },
+    ];
+    mocks.apiFetch.mockResolvedValueOnce(response({ keys }));
+    renderKeys();
+    await waitFor(() => expect(mocks.apiFetch).toHaveBeenCalledTimes(1));
+    expect(screen.getByText(/ProjectSettings\.lastUsed:/)).toBeTruthy();
+    expect(screen.getByText('ProjectSettings.noUsageRecord')).toBeTruthy();
+    expect(screen.getAllByText('ProjectSettings.usageUnavailable')).toHaveLength(2);
+    for (const item of keys) expect(screen.getByText(item.key_id)).toBeTruthy();
+  });
+
   it('loads only metadata for the current Project and creates a show-once secret', async () => {
-    render(<AccountSettingsModal onClose={vi.fn()} />);
+    renderKeys();
     await waitFor(() => expect(mocks.apiFetch).toHaveBeenCalledWith('/api/v1/projects/project-1/keys', { method: 'GET', projectId: 'project-1' }));
     expect(screen.getByText('AccountSettings.projectKeyBoundProject:Research|project-1')).toBeTruthy();
     expect(screen.queryByTestId('project-key-secret')).toBeNull();
@@ -88,8 +94,8 @@ describe('LWC-377 Project API keys', () => {
     expect(mocks.apiFetch).toHaveBeenLastCalledWith('/api/v1/projects/project-1/keys', {
       method: 'POST', projectId: 'project-1', json: true, body: JSON.stringify({ name: 'Indexer' }),
     });
-    expect(screen.getByRole('list').textContent).toContain('Indexer');
-    expect(screen.getByRole('list').textContent).toContain('AccountSettings.projectKeyActive');
+    expect(screen.getByRole('list', { name: 'ProjectSettings.projectKeys' }).textContent).toContain('Indexer');
+    expect(screen.getByRole('list', { name: 'ProjectSettings.projectKeys' }).textContent).toContain('AccountSettings.projectKeyActive');
 
     const copy = navigator.clipboard.writeText as ReturnType<typeof vi.fn>;
     fireEvent.click(screen.getByRole('button', { name: 'AccountSettings.projectKeyCopy' }));
@@ -100,23 +106,28 @@ describe('LWC-377 Project API keys', () => {
 
   it('disables creation when no current Project exists', () => {
     mocks.currentProject = null;
-    render(<AccountSettingsModal onClose={vi.fn()} />);
+    renderKeys();
     expect((screen.getByRole('button', { name: 'AccountSettings.projectKeyCreate' }) as HTMLButtonElement).disabled).toBe(true);
     expect(screen.getByText('AccountSettings.projectKeyNoProject')).toBeTruthy();
     expect(mocks.apiFetch).not.toHaveBeenCalled();
   });
 
-  it('clears the one-time secret when the settings modal closes', async () => {
-    const onClose = vi.fn();
-    render(<AccountSettingsModal onClose={onClose} />);
+  it('clears one-time secrets on account, Project, or session changes and drops late callbacks', async () => {
+    let resolveCreate: ((value: Response) => void) | undefined;
+    const view = render(<ProjectKeysHost accountId="owner-1" sessionEpoch={1} />);
     await waitFor(() => expect(mocks.apiFetch).toHaveBeenCalledTimes(1));
-    fireEvent.change(screen.getByRole('textbox'), { target: { value: 'Close check' } });
-    mocks.apiFetch.mockResolvedValueOnce(response({ key: { ...key, name: 'Close check' }, secret }, 201));
+    fireEvent.change(screen.getByRole('textbox'), { target: { value: 'Context check' } });
+    mocks.apiFetch.mockImplementationOnce(() => new Promise<Response>((resolve) => { resolveCreate = resolve; }));
     fireEvent.click(screen.getByRole('button', { name: 'AccountSettings.projectKeyCreate' }));
-    expect((await screen.findByTestId('project-key-secret')).textContent).toBe(secret);
-    fireEvent.click(screen.getByRole('button', { name: 'Close account settings' }));
-    expect(onClose).toHaveBeenCalledOnce();
-    expect(screen.queryByTestId('project-key-secret')).toBeNull();
+    await waitFor(() => expect(mocks.apiFetch).toHaveBeenCalledWith('/api/v1/projects/project-1/keys', expect.objectContaining({ method: 'POST', projectId: 'project-1' })));
+
+    mocks.currentProject = { id: 'project-2', name: 'Changed project' };
+    view.rerender(<ProjectKeysHost accountId="owner-2" sessionEpoch={2} />);
+    await waitFor(() => expect(mocks.apiFetch).toHaveBeenCalledWith('/api/v1/projects/project-2/keys', { method: 'GET', projectId: 'project-2' }));
+    resolveCreate?.(response({ key: { ...key, name: 'Context check' }, secret }, 201));
+    await waitFor(() => expect(screen.queryByTestId('project-key-secret')).toBeNull());
+    expect(mocks.apiFetch.mock.calls.filter(([, options]) => options?.method === 'POST')).toHaveLength(1);
+    expect(mocks.apiFetch.mock.calls.filter(([, options]) => options?.method === 'GET')).toHaveLength(2);
   });
 
   it('confirms revocation and refreshes the metadata list', async () => {
@@ -125,7 +136,7 @@ describe('LWC-377 Project API keys', () => {
       .mockResolvedValueOnce(response({ keys: [key] }))
       .mockResolvedValueOnce(response({ key: revokedKey }))
       .mockResolvedValueOnce(response({ keys: [revokedKey] }));
-    render(<AccountSettingsModal onClose={vi.fn()} />);
+    renderKeys();
     fireEvent.click(await screen.findByRole('button', { name: 'AccountSettings.projectKeyRevoke' }));
     await waitFor(() => expect(mocks.apiFetch).toHaveBeenCalledWith(
       `/api/v1/projects/project-1/keys/${key.key_id}/revoke`, { method: 'POST', projectId: 'project-1' },
@@ -138,7 +149,7 @@ describe('LWC-377 Project API keys', () => {
   it('reconciles an ambiguous revoke from the refreshed list without retrying the mutation', async () => {
     const revokedKey = { ...key, state: 'revoked' as const, revoked_at: '2026-10-02T00:00:00Z' };
     mocks.apiFetch.mockResolvedValueOnce(response({ keys: [key] }));
-    render(<AccountSettingsModal onClose={vi.fn()} />);
+    renderKeys();
     await waitFor(() => expect(mocks.apiFetch).toHaveBeenCalledTimes(1));
 
     mocks.apiFetch
@@ -156,7 +167,7 @@ describe('LWC-377 Project API keys', () => {
   it('hides stale active-key actions when revoke succeeds but the list read fails', async () => {
     const revokedKey = { ...key, state: 'revoked' as const, revoked_at: '2026-10-02T00:00:00Z' };
     mocks.apiFetch.mockResolvedValueOnce(response({ keys: [key] }));
-    render(<AccountSettingsModal onClose={vi.fn()} />);
+    renderKeys();
     await waitFor(() => expect(mocks.apiFetch).toHaveBeenCalledTimes(1));
 
     mocks.apiFetch
@@ -174,7 +185,7 @@ describe('LWC-377 Project API keys', () => {
 
   it('keeps actions hidden after ambiguous revoke and list failures until explicit refresh succeeds', async () => {
     mocks.apiFetch.mockResolvedValueOnce(response({ keys: [key] }));
-    render(<AccountSettingsModal onClose={vi.fn()} />);
+    renderKeys();
     await waitFor(() => expect(mocks.apiFetch).toHaveBeenCalledTimes(1));
 
     mocks.apiFetch
@@ -196,7 +207,7 @@ describe('LWC-377 Project API keys', () => {
   it('reconciles a lost create response to the newly listed key without showing a secret or retrying', async () => {
     const lateKey = { ...key, key_id: 'fedcba9876543210fedcba9876543210', name: 'Lost response' };
     mocks.apiFetch.mockResolvedValueOnce(response({ keys: [] }));
-    render(<AccountSettingsModal onClose={vi.fn()} />);
+    renderKeys();
     await waitFor(() => expect(mocks.apiFetch).toHaveBeenCalledTimes(1));
     fireEvent.change(screen.getByRole('textbox'), { target: { value: 'Lost response' } });
     mocks.apiFetch
@@ -206,7 +217,7 @@ describe('LWC-377 Project API keys', () => {
     fireEvent.click(screen.getByRole('button', { name: 'AccountSettings.projectKeyCreate' }));
 
     expect((await screen.findByRole('status')).textContent).toContain('AccountSettings.projectKeyUnknownOutcomeNoId:Lost response');
-    expect(screen.getByRole('list').textContent).toContain('Lost response');
+    expect(screen.getByRole('list', { name: 'ProjectSettings.projectKeys' }).textContent).toContain('Lost response');
     expect(screen.getByRole('button', { name: 'AccountSettings.projectKeyRevoke' })).toBeTruthy();
     expect(screen.queryByTestId('project-key-secret')).toBeNull();
     expect(screen.getByRole('status').textContent).not.toContain(lateKey.key_id);
@@ -222,7 +233,7 @@ describe('LWC-377 Project API keys', () => {
       json: async () => { throw new SyntaxError('invalid JSON'); },
     } as unknown as Response;
     mocks.apiFetch.mockResolvedValueOnce(response({ keys: [] }));
-    render(<AccountSettingsModal onClose={vi.fn()} />);
+    renderKeys();
     await waitFor(() => expect(mocks.apiFetch).toHaveBeenCalledTimes(1));
     fireEvent.change(screen.getByRole('textbox'), { target: { value: 'Unreadable response' } });
     mocks.apiFetch
@@ -232,7 +243,7 @@ describe('LWC-377 Project API keys', () => {
     fireEvent.click(screen.getByRole('button', { name: 'AccountSettings.projectKeyCreate' }));
 
     expect((await screen.findByRole('status')).textContent).toContain('AccountSettings.projectKeyUnknownOutcomeNoId:Unreadable response');
-    expect(screen.getByRole('list').textContent).toContain('Unreadable response');
+    expect(screen.getByRole('list', { name: 'ProjectSettings.projectKeys' }).textContent).toContain('Unreadable response');
     expect(screen.queryByTestId('project-key-secret')).toBeNull();
     expect(mocks.apiFetch.mock.calls.filter(([, options]) => options?.method === 'POST')).toHaveLength(1);
     expect(mocks.apiFetch.mock.calls.filter(([, options]) => options?.method === 'GET')).toHaveLength(2);
@@ -242,7 +253,7 @@ describe('LWC-377 Project API keys', () => {
     const existingKey = { ...key, name: 'Existing key' };
     const lateKey = { ...key, key_id: 'fedcba9876543210fedcba9876543210', name: 'Lost response' };
     mocks.apiFetch.mockResolvedValueOnce(response({ keys: [existingKey] }));
-    render(<AccountSettingsModal onClose={vi.fn()} />);
+    renderKeys();
     await waitFor(() => expect(mocks.apiFetch).toHaveBeenCalledTimes(1));
     fireEvent.change(screen.getByRole('textbox'), { target: { value: 'Lost response' } });
     mocks.apiFetch
@@ -254,7 +265,7 @@ describe('LWC-377 Project API keys', () => {
 
     expect((await screen.findByRole('status')).textContent).toContain('AccountSettings.projectKeyUnknownOutcomeNoId:Lost response');
     expect(await screen.findByRole('alert')).toBeTruthy();
-    expect(screen.queryByRole('list')).toBeNull();
+    expect(screen.queryByRole('list', { name: 'ProjectSettings.projectKeys' })).toBeNull();
     expect(screen.queryByRole('button', { name: 'AccountSettings.projectKeyRevoke' })).toBeNull();
     expect((screen.getByRole('button', { name: 'AccountSettings.projectKeyCreate' }) as HTMLButtonElement).disabled).toBe(true);
     expect(screen.queryByTestId('project-key-secret')).toBeNull();
@@ -262,7 +273,7 @@ describe('LWC-377 Project API keys', () => {
     expect(mocks.apiFetch.mock.calls.filter(([, options]) => options?.method === 'POST')).toHaveLength(1);
 
     fireEvent.click(screen.getByRole('button', { name: 'AccountSettings.projectKeysRefresh' }));
-    expect((await screen.findByRole('list')).textContent).toContain('Lost response');
+    expect((await screen.findByRole('list', { name: 'ProjectSettings.projectKeys' })).textContent).toContain('Lost response');
     expect((screen.getByRole('button', { name: 'AccountSettings.projectKeyCreate' }) as HTMLButtonElement).disabled).toBe(false);
     expect(screen.getAllByRole('button', { name: 'AccountSettings.projectKeyRevoke' })).toHaveLength(2);
     expect(mocks.apiFetch.mock.calls.filter(([, options]) => options?.method === 'POST')).toHaveLength(1);
@@ -272,7 +283,7 @@ describe('LWC-377 Project API keys', () => {
   it('does not retry an unknown create and offers delayed-list recovery', async () => {
     const lateKey = { ...key, key_id: 'fedcba9876543210fedcba9876543210', name: 'Late commit' };
     mocks.apiFetch.mockResolvedValueOnce(response({ keys: [] }));
-    render(<AccountSettingsModal onClose={vi.fn()} />);
+    renderKeys();
     await waitFor(() => expect(mocks.apiFetch).toHaveBeenCalledTimes(1));
     fireEvent.change(screen.getByRole('textbox'), { target: { value: 'Late commit' } });
     mocks.apiFetch
@@ -283,7 +294,7 @@ describe('LWC-377 Project API keys', () => {
     expect((await screen.findByRole('status')).textContent).toContain(lateKey.key_id);
     expect(screen.queryByText('Late commit')).toBeNull();
     fireEvent.click(screen.getByRole('button', { name: 'AccountSettings.projectKeysRefresh' }));
-    expect((await screen.findByRole('list')).textContent).toContain('Late commit');
+    expect((await screen.findByRole('list', { name: 'ProjectSettings.projectKeys' })).textContent).toContain('Late commit');
     expect(mocks.apiFetch).toHaveBeenCalledTimes(4);
     expect(mocks.apiFetch.mock.calls.map(([url]) => url)).toEqual([
       '/api/v1/projects/project-1/keys',

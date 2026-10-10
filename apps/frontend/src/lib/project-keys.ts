@@ -8,6 +8,8 @@ export type ProjectKey = {
   state: 'active' | 'revoked';
   created_at: string;
   revoked_at?: string;
+  last_used_at?: string;
+  last_used_status?: 'available' | 'no_record' | 'unavailable';
 };
 
 export type CreatedProjectKey = {

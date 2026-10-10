@@ -8,7 +8,7 @@ if (!(React as { act?: (callback: () => unknown) => Promise<unknown> | unknown }
   });
 }
 
-const { cleanup, render, screen } = await import('@testing-library/react');
+const { cleanup, fireEvent, render, screen, waitFor } = await import('@testing-library/react');
 
 const mocks = vi.hoisted(() => ({
   getProjects: vi.fn(),
@@ -19,6 +19,7 @@ const mocks = vi.hoisted(() => ({
   token: 'auth-token' as string | null,
   user: { id: 'user-1', email: 'owner@example.com', role: 'owner' },
   isDemoSession: false,
+  logout: vi.fn(),
 }));
 
 vi.mock('next/navigation', () => ({
@@ -50,7 +51,7 @@ vi.mock('@/lib/auth', () => ({
     isDemoSession: mocks.isDemoSession,
     login: async () => undefined,
     register: async () => undefined,
-    logout: async () => undefined,
+    logout: mocks.logout,
     refreshAccessToken: async () => mocks.token,
   }),
 }));
@@ -87,6 +88,7 @@ beforeEach(() => {
   mocks.token = 'auth-token';
   mocks.user = { id: 'user-1', email: 'owner@example.com', role: 'owner' };
   mocks.isDemoSession = false;
+  mocks.logout.mockReset().mockResolvedValue(undefined);
   localStorage.setItem('llm-wiki-last-project', 'project-a');
 });
 
@@ -104,15 +106,44 @@ describe('LWC-174 production Shell rename behavior', () => {
     expect(document.getElementById('main-content')).not.toBeNull();
   });
 
-  it('routes Profile from the sidebar and hides it in the trial Demo session', async () => {
+  it('routes Project Settings from the sidebar and hides it in the trial Demo session', async () => {
+    localStorage.setItem('locale', 'en');
     renderShell();
-    expect(await screen.findByRole('link', { name: 'Profile' })).toHaveProperty('href', expect.stringContaining('/profile'));
+    expect(await screen.findByRole('link', { name: 'Project settings' })).toHaveProperty('href', expect.stringContaining('/profile'));
 
     cleanup();
     mocks.isDemoSession = true;
     renderShell();
     await screen.findByRole('button', { name: 'Project Alpha' });
-    expect(screen.queryByRole('link', { name: 'Profile' })).toBeNull();
+    expect(screen.queryByRole('link', { name: 'Project settings' })).toBeNull();
+  });
+
+  it.each([
+    ['en', 'Account settings', 'Sign out', 'Close account settings'],
+    ['zh-TW', '帳號設定', '登出', '關閉帳號設定'],
+  ] as const)('shows localized account actions and opens settings in %s', async (locale, settingsLabel, logoutLabel, closeLabel) => {
+    localStorage.setItem('locale', locale);
+    renderShell();
+
+    const settings = await screen.findByRole('button', { name: settingsLabel });
+    const logout = screen.getByRole('button', { name: logoutLabel });
+    expect(settings.tagName).toBe('BUTTON');
+    expect(logout.tagName).toBe('BUTTON');
+    expect(settings.className).toContain('border border-white/10 bg-white/5');
+    expect(settings.className).toContain('focus-visible:outline');
+    expect(settings.className).toContain('active:bg-white/15');
+    expect(settings.parentElement?.className).toContain('mt-2 flex flex-wrap gap-2');
+
+    fireEvent.click(logout);
+    await waitFor(() => expect(mocks.logout).toHaveBeenCalledOnce());
+
+    settings.focus();
+    expect(document.activeElement).toBe(settings);
+    fireEvent.click(settings);
+    const dialog = await screen.findByRole('dialog', { name: settingsLabel });
+    expect(dialog).not.toBeNull();
+    fireEvent.click(screen.getByRole('button', { name: closeLabel }));
+    await waitFor(() => expect(document.activeElement).toBe(settings));
   });
 
   it('hides rename on the admin route', async () => {

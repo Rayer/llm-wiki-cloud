@@ -4,13 +4,14 @@ import { useState } from 'react';
 import { ProjectRenameModal } from '@/components/ProjectRenameModal';
 import type { Project } from '@/lib/projects';
 import { ProjectProfilePanel } from '@/components/ProjectProfilePanel';
+import { ProjectKeysSection } from '@/components/ProjectKeysSection';
 import { useWorkspace } from '@/components/WorkspaceProvider';
 import { useAuth } from '@/lib/auth';
 import { useT } from '@/lib/i18n';
 
 export default function ProfilePage() {
   const { t } = useT();
-  const { user } = useAuth();
+  const { accessToken, sessionEpoch, user } = useAuth();
   const { hydrated, currentProject, isDemoSession, projectsLoading } = useWorkspace();
 
   if (!hydrated || projectsLoading) {
@@ -32,6 +33,12 @@ export default function ProfilePage() {
       <ProjectProfilePanel
         key={`${user.id}:${currentProject.id}`}
         projectId={currentProject.id}
+      />
+      <ProjectKeysSection
+        key={`${user.id}:${currentProject.id}:${sessionEpoch}`}
+        currentProject={currentProject}
+        accessToken={accessToken}
+        t={t}
       />
     </div>
   );
