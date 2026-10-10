@@ -9,6 +9,8 @@ const mocks = vi.hoisted(() => ({
   currentProject: { id: 'project-a', name: 'Project A' } as { id: string; name: string } | null,
   isDemoSession: false,
   user: { id: 'user-a', email: 'user@example.com' } as { id: string; email: string } | null,
+  accessToken: 'profile-token' as string | null,
+  sessionEpoch: 1,
 }));
 
 vi.mock('@/components/WorkspaceProvider', () => ({
@@ -21,9 +23,14 @@ vi.mock('@/components/WorkspaceProvider', () => ({
   }),
 }));
 
-vi.mock('@/lib/auth', () => ({ useAuth: () => ({ user: mocks.user }) }));
+vi.mock('@/lib/auth', () => ({ useAuth: () => ({ user: mocks.user, accessToken: mocks.accessToken, sessionEpoch: mocks.sessionEpoch }) }));
 vi.mock('@/components/ProjectProfilePanel', () => ({
   ProjectProfilePanel: ({ projectId }: { projectId: string }) => <div data-testid="profile-panel">{projectId}</div>,
+}));
+vi.mock('@/components/ProjectKeysSection', () => ({
+  ProjectKeysSection: ({ currentProject, accessToken }: { currentProject: { id: string }; accessToken: string | null }) => (
+    <div data-testid="project-keys-section" data-project={currentProject.id} data-token={accessToken} />
+  ),
 }));
 
 import ProfilePage from '@/app/(workspace)/profile/page';
@@ -34,6 +41,8 @@ beforeEach(() => {
   mocks.currentProject = { id: 'project-a', name: 'Project A' };
   mocks.isDemoSession = false;
   mocks.user = { id: 'user-a', email: 'user@example.com' };
+  mocks.accessToken = 'profile-token';
+  mocks.sessionEpoch = 1;
   localStorage.setItem('locale', 'en');
 });
 
@@ -48,6 +57,8 @@ describe('LWC-209 Profile route', () => {
 
     expect(screen.getByRole('heading', { name: 'Profile' })).toBeDefined();
     expect(screen.getByTestId('profile-panel').textContent).toBe('project-a');
+    expect(screen.getByTestId('project-keys-section').getAttribute('data-project')).toBe('project-a');
+    expect(screen.getByTestId('project-keys-section').getAttribute('data-token')).toBe('profile-token');
   });
 
   it('does not mount the trial Demo Profile panel', () => {
@@ -56,6 +67,7 @@ describe('LWC-209 Profile route', () => {
 
     expect(screen.getByText('Project Profile is not available in the trial Demo session.')).toBeDefined();
     expect(screen.queryByTestId('profile-panel')).toBeNull();
+    expect(screen.queryByTestId('project-keys-section')).toBeNull();
     expect(screen.queryByRole('button', { name: 'Rename project' })).toBeNull();
   });
 
@@ -88,4 +100,26 @@ it('renames from the Profile page and clears an open rename when the project cha
   fireEvent.click(screen.getByRole('button', { name: 'Rename' }));
   await waitFor(() => expect(mocks.renameProject).toHaveBeenCalledWith('project-b', 'Renamed B'));
   await waitFor(() => expect(screen.queryByRole('dialog')).toBeNull());
+});
+
+it('remounts Project key controls for account, Project, and session changes', () => {
+  const view = render(<ProfilePage />);
+  const initial = screen.getByTestId('project-keys-section');
+  mocks.user = { id: 'user-b', email: 'other@example.com' };
+  view.rerender(<ProfilePage />);
+  const nextAccount = screen.getByTestId('project-keys-section');
+  expect(nextAccount).not.toBe(initial);
+
+  mocks.sessionEpoch = 2;
+  mocks.accessToken = 'replacement-token';
+  view.rerender(<ProfilePage />);
+  const nextSession = screen.getByTestId('project-keys-section');
+  expect(nextSession).not.toBe(nextAccount);
+  expect(nextSession.getAttribute('data-token')).toBe('replacement-token');
+
+  mocks.currentProject = { id: 'project-b', name: 'Project B' };
+  view.rerender(<ProfilePage />);
+  const nextProject = screen.getByTestId('project-keys-section');
+  expect(nextProject).not.toBe(nextSession);
+  expect(nextProject.getAttribute('data-project')).toBe('project-b');
 });

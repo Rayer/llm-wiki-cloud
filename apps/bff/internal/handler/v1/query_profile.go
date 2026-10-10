@@ -28,32 +28,36 @@ func (h *Handler) queryStore(c *gin.Context) (storage.Store, *query.ProfileSnaps
 func (h *Handler) queryStoreFor(ctx context.Context, userID, projectID string) (storage.Store, *query.ProfileSnapshot, error) {
 	if h.profileRepository == nil {
 		s, err := h.queryProjectStore(ctx, userID, projectID)
-		return s, nil, err
+		return s, nil, queryStageFailure("generation_resolution", err)
 	}
 	if userID == "" || projectID == "" {
-		return nil, nil, errors.New("query profile scope unavailable")
+		return nil, nil, queryStageFailure("profile_resolution", errors.New("query profile scope unavailable"))
 	}
-	state, err := h.profileRepository.GetProfile(ctx, userID, projectID)
+	profileCtx, profileSpan := startQueryStage(ctx, "profile.load")
+	state, err := h.profileRepository.GetProfile(profileCtx, userID, projectID)
+	finishQueryStage(profileSpan, err)
 	if err != nil {
-		return nil, nil, err
+		return nil, nil, queryStageFailure("profile_state", err)
 	}
 	if state.Active == nil {
 		s, err := h.queryProjectStore(ctx, userID, projectID)
-		return s, nil, err
+		return s, nil, queryStageFailure("generation_resolution", err)
 	}
 	active := *state.Active
 	candidates, ok := h.profileRepository.(interface {
 		GetProfileCandidate(context.Context, string, string, string) (ProfileCandidate, error)
 	})
 	if !ok {
-		return nil, nil, errors.New("historical profile candidate reader unavailable")
+		return nil, nil, queryStageFailure("profile_candidate", errors.New("historical profile candidate reader unavailable"))
 	}
-	candidate, err := candidates.GetProfileCandidate(ctx, userID, projectID, active.CandidateID)
+	candidateCtx, candidateSpan := startQueryStage(ctx, "profile.candidate")
+	candidate, err := candidates.GetProfileCandidate(candidateCtx, userID, projectID, active.CandidateID)
+	finishQueryStage(candidateSpan, err)
 	if err != nil {
-		return nil, nil, err
+		return nil, nil, queryStageFailure("profile_candidate", err)
 	}
 	if candidate.CandidateID != active.CandidateID || candidate.ContentGeneration != active.ContentGeneration || candidate.Dictionary.Revision != active.DictionaryRevision {
-		return nil, nil, errors.New("active historical candidate mismatch")
+		return nil, nil, queryStageFailure("profile_candidate", errors.New("active historical candidate mismatch"))
 	}
 	ref := candidate.Dictionary
 	dictionaryRef := profileartifacts.DerivedRef{Revision: ref.Revision, InputDigest: ref.InputDigest, ModelVersion: ref.ModelVersion, PromptVersion: ref.PromptVersion, SchemaVersion: ref.SchemaVersion}
@@ -62,20 +66,27 @@ func (h *Handler) queryStoreFor(ctx context.Context, userID, projectID string) (
 		requirementOrder = append(requirementOrder, r.ID)
 	}
 	if h.store == nil {
-		return nil, nil, errors.New("query storage unavailable")
+		return nil, nil, queryStageFailure("generation_pin", errors.New("query storage unavailable"))
 	}
 	scoped := h.store.Scope(userID, projectID)
 	pinner, ok := scoped.(query.GenerationPinner)
 	if !ok {
-		return nil, nil, errors.New("retained generation pin unavailable")
+		return nil, nil, queryStageFailure("generation_pin", errors.New("retained generation pin unavailable"))
 	}
-	pinned, manifest, err := pinner.PinQueryGeneration(ctx, active.ContentGeneration)
+	pinCtx, pinSpan := startQueryStage(ctx, "generation.pin")
+	pinned, manifest, err := pinner.PinQueryGeneration(pinCtx, active.ContentGeneration)
+	finishQueryStage(pinSpan, err)
 	if err != nil {
-		return nil, nil, err
+		return nil, nil, queryStageFailure("generation_pin", err)
 	}
-	snapshot, err := query.LoadProfile(ctx, h.cache, pinned, manifest, profiletags.ActiveRef{ContentGeneration: active.ContentGeneration, DictionaryRevision: active.DictionaryRevision, TagSetRevision: active.TagSetRevision, QueryRuleRevision: active.QueryRuleRevision}, dictionaryRef, requirementOrder)
+	if diagnostic := queryDiagnosticFrom(ctx); diagnostic != nil {
+		diagnostic.setGeneration(manifest.GenerationID)
+	}
+	snapshotCtx, snapshotSpan := startQueryStage(ctx, "profile.snapshot")
+	snapshot, err := query.LoadProfile(snapshotCtx, h.cache, pinned, manifest, profiletags.ActiveRef{ContentGeneration: active.ContentGeneration, DictionaryRevision: active.DictionaryRevision, TagSetRevision: active.TagSetRevision, QueryRuleRevision: active.QueryRuleRevision}, dictionaryRef, requirementOrder)
+	finishQueryStage(snapshotSpan, err)
 	if err != nil {
-		return nil, nil, err
+		return nil, nil, queryStageFailure("profile_snapshot", err)
 	}
 	return pinned, snapshot, nil
 }
@@ -90,7 +101,17 @@ func (h *Handler) queryProjectStore(ctx context.Context, userID, projectID strin
 	if h.store == nil {
 		return nil, errWikiStorageNotConfigured
 	}
-	return pinStore(ctx, h.store.Scope(userID, projectID))
+	pinCtx, pinSpan := startQueryStage(ctx, "generation.resolve_current")
+	pinned, err := pinStore(pinCtx, h.store.Scope(userID, projectID))
+	finishQueryStage(pinSpan, err)
+	if err != nil {
+		return nil, queryStageFailure("generation_resolution", err)
+	}
+	if diagnostic := queryDiagnosticFrom(ctx); diagnostic != nil {
+		diagnostic.capturePinnedGeneration(ctx, pinned)
+		diagnostic.noteCurrentManifest(pinned)
+	}
+	return pinned, nil
 }
 
 // GetProfileCandidate loads the immutable historical candidate named by a

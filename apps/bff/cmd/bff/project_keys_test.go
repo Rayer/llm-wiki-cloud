@@ -3,6 +3,7 @@ package main
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"net/http"
 	"net/http/httptest"
@@ -68,6 +69,9 @@ func TestProjectKeyManagementAndQueryRoutes(t *testing.T) {
 		queryPrefixes = append(queryPrefixes, got)
 		if !strings.Contains(got, userID) {
 			t.Errorf("Query reader escaped user scope: %q", got)
+		}
+		if request.Query == "failing" {
+			return query.Result{}, errors.New("synthetic query failure")
 		}
 		return query.Result{Query: request.Query, Mode: request.Mode}, nil
 	}))
@@ -137,6 +141,15 @@ func TestProjectKeyManagementAndQueryRoutes(t *testing.T) {
 	if strings.Contains(listResponse.Body.String(), created.Secret) || strings.Contains(listResponse.Body.String(), "secret_hash") || strings.Contains(listResponse.Body.String(), `"secret"`) {
 		t.Fatal("list response exposed a key secret or hash")
 	}
+	var initialList struct {
+		Keys []struct {
+			LastUsedAt     *time.Time `json:"last_used_at"`
+			LastUsedStatus string     `json:"last_used_status"`
+		} `json:"keys"`
+	}
+	if err := json.Unmarshal(listResponse.Body.Bytes(), &initialList); err != nil || len(initialList.Keys) != 1 || initialList.Keys[0].LastUsedStatus != "no_record" || initialList.Keys[0].LastUsedAt != nil {
+		t.Fatalf("new key usage metadata = %+v, err=%v; want no_record without a timestamp", initialList, err)
+	}
 	if got := request(http.MethodGet, "/api/v1/projects/other/keys", webToken, "", "").Code; got != http.StatusNotFound {
 		t.Fatalf("foreign project management status=%d, want 404", got)
 	}
@@ -180,16 +193,30 @@ func TestProjectKeyManagementAndQueryRoutes(t *testing.T) {
 	if got := request(http.MethodPost, "/api/v1/query", cli.AccessToken, `{"q":"coffee","mode":"wiki"}`, projectID).Code; got != http.StatusOK {
 		t.Fatalf("existing CLI JWT query status=%d", got)
 	}
+	failedKeyQuery := request(http.MethodPost, "/api/v1/query", created.Secret, `{"q":"failing","mode":"wiki"}`, "")
+	if failedKeyQuery.Code != http.StatusInternalServerError {
+		t.Fatalf("accepted project-key Query with executor failure status=%d, want 500", failedKeyQuery.Code)
+	}
 	if got := keyQuery("another-project").Code; got != http.StatusForbidden {
 		t.Fatalf("cross-project query status=%d, want 403", got)
 	}
-	if queryCount != 4 {
-		t.Fatalf("Query executor called %d times, want 4; cross-project request must be rejected first", queryCount)
+	if queryCount != 5 {
+		t.Fatalf("Query executor called %d times, want 5 including accepted-key Query failure; cross-project request must be rejected first", queryCount)
 	}
 	for i, prefix := range queryPrefixes {
 		if !strings.Contains(prefix, projectID) {
 			t.Fatalf("existing HTTP Query %d did not retain project scope %q: %q", i+1, projectID, prefix)
 		}
+	}
+	usedList := request(http.MethodGet, "/api/v1/projects/"+projectID+"/keys", webToken, "", "")
+	var usedMetadata struct {
+		Keys []struct {
+			LastUsedAt     *time.Time `json:"last_used_at"`
+			LastUsedStatus string     `json:"last_used_status"`
+		} `json:"keys"`
+	}
+	if err := json.Unmarshal(usedList.Body.Bytes(), &usedMetadata); err != nil || len(usedMetadata.Keys) != 1 || usedMetadata.Keys[0].LastUsedStatus != "available" || usedMetadata.Keys[0].LastUsedAt == nil {
+		t.Fatalf("failed Query auth was not recorded as available usage: %+v, err=%v", usedMetadata, err)
 	}
 	for _, path := range []string{"/api/v1/health", "/api/v1/projects"} {
 		if got := request(http.MethodGet, path, created.Secret, "", "").Code; got != http.StatusUnauthorized {
@@ -251,6 +278,15 @@ func TestProjectKeyManagementAndQueryRoutes(t *testing.T) {
 	if initializeResult.Result.ProtocolVersion == "" {
 		t.Fatalf("MCP initialize omitted negotiated protocol version: %s", initialized.Body.String())
 	}
+	listedAfterInitialize := request(http.MethodGet, "/api/v1/projects/"+projectID+"/keys", webToken, "", "")
+	var initializeMetadata struct {
+		Keys []struct {
+			LastUsedStatus string `json:"last_used_status"`
+		} `json:"keys"`
+	}
+	if err := json.Unmarshal(listedAfterInitialize.Body.Bytes(), &initializeMetadata); err != nil || len(initializeMetadata.Keys) != 1 || initializeMetadata.Keys[0].LastUsedStatus != "available" {
+		t.Fatalf("accepted MCP initialize auth not reflected in usage metadata: %+v, err=%v", initializeMetadata, err)
+	}
 	listed := mcpRequest(http.MethodPost, created.Secret, `{"jsonrpc":"2.0","id":2,"method":"tools/list","params":{}}`, "", "fixture-session")
 	if listed.Code != http.StatusOK {
 		t.Fatalf("MCP tools/list status=%d body=%s", listed.Code, listed.Body.String())
@@ -274,7 +310,7 @@ func TestProjectKeyManagementAndQueryRoutes(t *testing.T) {
 	if called.Code != http.StatusOK || strings.Contains(called.Body.String(), `"isError":true`) || !strings.Contains(called.Body.String(), `"query":"coffee"`) {
 		t.Fatalf("MCP query tool call status=%d body=%s", called.Code, called.Body.String())
 	}
-	if queryCount != 5 || len(queryPrefixes) != 5 || !strings.Contains(queryPrefixes[4], projectID) {
+	if queryCount != 6 || len(queryPrefixes) != 6 || !strings.Contains(queryPrefixes[5], projectID) {
 		t.Fatalf("first MCP call used wrong scope/count: calls=%d prefixes=%v", queryCount, queryPrefixes)
 	}
 	otherProject := "archive"
@@ -285,12 +321,32 @@ func TestProjectKeyManagementAndQueryRoutes(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
+	otherInitialized := mcpRequest(http.MethodPost, otherProjectSecret, initBody, "", "")
+	if otherInitialized.Code != http.StatusOK {
+		t.Fatalf("Archive MCP initialize status=%d body=%s", otherInitialized.Code, otherInitialized.Body.String())
+	}
+	archiveList := request(http.MethodGet, "/api/v1/projects/"+otherProject+"/keys", webToken, "", "")
+	var archiveMetadata struct {
+		Keys []struct {
+			LastUsedStatus string `json:"last_used_status"`
+		} `json:"keys"`
+	}
+	if err := json.Unmarshal(archiveList.Body.Bytes(), &archiveMetadata); err != nil || len(archiveMetadata.Keys) != 1 || archiveMetadata.Keys[0].LastUsedStatus != "available" {
+		t.Fatalf("MCP initialize usage metadata = %+v, err=%v", archiveMetadata, err)
+	}
 	crossKeyCall := mcpRequest(http.MethodPost, otherProjectSecret, toolCall, "", "fixture-session")
 	if crossKeyCall.Code != http.StatusOK || strings.Contains(crossKeyCall.Body.String(), `"isError":true`) || !strings.Contains(crossKeyCall.Body.String(), `"query":"coffee"`) {
 		t.Fatalf("MCP second-key tool call status=%d body=%s", crossKeyCall.Code, crossKeyCall.Body.String())
 	}
-	if queryCount != 6 || len(queryPrefixes) != 6 || !strings.Contains(queryPrefixes[5], otherProject) || strings.Contains(queryPrefixes[5], projectID) {
+	if queryCount != 7 || len(queryPrefixes) != 7 || !strings.Contains(queryPrefixes[6], otherProject) || strings.Contains(queryPrefixes[6], projectID) {
 		t.Fatalf("MCP reused prior key scope: calls=%d prefixes=%v", queryCount, queryPrefixes)
+	}
+	failedMCPCall := mcpRequest(http.MethodPost, created.Secret, `{"jsonrpc":"2.0","id":4,"method":"tools/call","params":{"name":"query_project","arguments":{"q":"failing"}}}`, "", "fixture-session")
+	if failedMCPCall.Code != http.StatusOK || !strings.Contains(failedMCPCall.Body.String(), `"isError":true`) {
+		t.Fatalf("accepted MCP Query failure status=%d body=%s", failedMCPCall.Code, failedMCPCall.Body.String())
+	}
+	if queryCount != 8 || len(queryPrefixes) != 8 || !strings.Contains(queryPrefixes[7], projectID) {
+		t.Fatalf("failed MCP Query executor scope/count: calls=%d prefixes=%v", queryCount, queryPrefixes)
 	}
 	if got := mcpRequest(http.MethodPost, otherProjectSecret, toolCall, projectID, "fixture-session").Code; got != http.StatusForbidden {
 		t.Fatalf("MCP mismatched X-Project-ID status=%d, want 403", got)

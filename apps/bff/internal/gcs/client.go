@@ -267,6 +267,14 @@ func (c *Client) ViewToken() string {
 	return c.view.token
 }
 
+// PinnedGenerationID returns only the generation already captured by Pin.
+func (c *Client) PinnedGenerationID() (string, bool) {
+	if c == nil || c.view == nil || c.view.manifest == nil || c.view.manifest.GenerationID == "" {
+		return "", false
+	}
+	return c.view.manifest.GenerationID, true
+}
+
 // QueryGenerationIdentity returns identity from the immutable view captured by
 // Pin. It intentionally does not read the manifest or concepts object.
 func (c *Client) QueryGenerationIdentity(context.Context) (store.QueryGenerationIdentity, error) {

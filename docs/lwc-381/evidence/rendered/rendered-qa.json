@@ -1,0 +1,226 @@
+[
+  {
+    "source_head": "457fefe9ec66e46caf0df91def63ef66d9893300",
+    "viewport": "1280x900",
+    "locale": "en",
+    "route": "/profile",
+    "screenshots": {
+      "projectSettings": "/Users/rayer/orca/workspaces/llm-wiki-cloud/LWC-382-383-account-ui/docs/lwc-381/evidence/rendered/desktop-en-profile.png",
+      "accountSettings": "/Users/rayer/orca/workspaces/llm-wiki-cloud/LWC-382-383-account-ui/docs/lwc-381/evidence/rendered/desktop-en-account-settings.png"
+    },
+    "projectSettingsLink": "/profile",
+    "usageStatesVisible": [
+      "available",
+      "no_record",
+      "unavailable"
+    ],
+    "footer": {
+      "settings": {
+        "x": 56,
+        "y": 792,
+        "width": 120.921875,
+        "height": 44
+      },
+      "logout": {
+        "x": 56,
+        "y": 844,
+        "width": 72.796875,
+        "height": 44
+      },
+      "email": {
+        "x": 56,
+        "y": 764,
+        "width": 131,
+        "height": 20
+      },
+      "actionGroupClass": "mt-2 flex flex-wrap gap-2",
+      "buttonsFit": true,
+      "defaultStyle": {
+        "backgroundColor": "oklab(0.999994 0.0000455678 0.0000200868 / 0.05)",
+        "borderStyle": "solid",
+        "borderWidth": "1px"
+      }
+    },
+    "keyboard": {
+      "tabFocusedSettings": true,
+      "focusVisible": true,
+      "focusOutlineStyle": "solid",
+      "enterOpened": true,
+      "spaceOpened": true,
+      "escapeClosed": true,
+      "escapeRestoredFocus": true,
+      "closeRestoredFocus": true
+    },
+    "mutations": [],
+    "pageErrors": [],
+    "source_manifest_digest": "8d6fd9cde06681b13663bb424d2088315d046851f251911224776e4626e700ce"
+  },
+  {
+    "source_head": "457fefe9ec66e46caf0df91def63ef66d9893300",
+    "viewport": "1280x900",
+    "locale": "zh-TW",
+    "route": "/profile",
+    "screenshots": {
+      "projectSettings": "/Users/rayer/orca/workspaces/llm-wiki-cloud/LWC-382-383-account-ui/docs/lwc-381/evidence/rendered/desktop-zh-TW-profile.png",
+      "accountSettings": "/Users/rayer/orca/workspaces/llm-wiki-cloud/LWC-382-383-account-ui/docs/lwc-381/evidence/rendered/desktop-zh-TW-account-settings.png"
+    },
+    "projectSettingsLink": "/profile",
+    "usageStatesVisible": [
+      "available",
+      "no_record",
+      "unavailable"
+    ],
+    "footer": {
+      "settings": {
+        "x": 56,
+        "y": 792,
+        "width": 74,
+        "height": 44
+      },
+      "logout": {
+        "x": 56,
+        "y": 844,
+        "width": 50,
+        "height": 44
+      },
+      "email": {
+        "x": 56,
+        "y": 764,
+        "width": 131,
+        "height": 20
+      },
+      "actionGroupClass": "mt-2 flex flex-wrap gap-2",
+      "buttonsFit": true,
+      "defaultStyle": {
+        "backgroundColor": "oklab(0.999994 0.0000455678 0.0000200868 / 0.05)",
+        "borderStyle": "solid",
+        "borderWidth": "1px"
+      }
+    },
+    "keyboard": {
+      "tabFocusedSettings": true,
+      "focusVisible": true,
+      "focusOutlineStyle": "solid",
+      "enterOpened": true,
+      "spaceOpened": true,
+      "escapeClosed": true,
+      "escapeRestoredFocus": true,
+      "closeRestoredFocus": true
+    },
+    "mutations": [],
+    "pageErrors": [],
+    "source_manifest_digest": "8d6fd9cde06681b13663bb424d2088315d046851f251911224776e4626e700ce"
+  },
+  {
+    "source_head": "457fefe9ec66e46caf0df91def63ef66d9893300",
+    "viewport": "390x844",
+    "locale": "en",
+    "route": "/profile",
+    "screenshots": {
+      "projectSettings": "/Users/rayer/orca/workspaces/llm-wiki-cloud/LWC-382-383-account-ui/docs/lwc-381/evidence/rendered/mobile-en-profile.png",
+      "accountSettings": "/Users/rayer/orca/workspaces/llm-wiki-cloud/LWC-382-383-account-ui/docs/lwc-381/evidence/rendered/mobile-en-account-settings.png"
+    },
+    "projectSettingsLink": "/profile",
+    "usageStatesVisible": [
+      "available",
+      "no_record",
+      "unavailable"
+    ],
+    "footer": {
+      "settings": {
+        "x": 56,
+        "y": 736,
+        "width": 120.921875,
+        "height": 44
+      },
+      "logout": {
+        "x": 56,
+        "y": 788,
+        "width": 72.796875,
+        "height": 44
+      },
+      "email": {
+        "x": 56,
+        "y": 708,
+        "width": 187,
+        "height": 20
+      },
+      "actionGroupClass": "mt-2 flex flex-wrap gap-2",
+      "buttonsFit": true,
+      "defaultStyle": {
+        "backgroundColor": "oklab(0.999994 0.0000455678 0.0000200868 / 0.05)",
+        "borderStyle": "solid",
+        "borderWidth": "1px"
+      }
+    },
+    "keyboard": {
+      "tabFocusedSettings": true,
+      "focusVisible": true,
+      "focusOutlineStyle": "solid",
+      "enterOpened": true,
+      "spaceOpened": true,
+      "escapeClosed": true,
+      "escapeRestoredFocus": true,
+      "closeRestoredFocus": true
+    },
+    "mutations": [],
+    "pageErrors": [],
+    "source_manifest_digest": "8d6fd9cde06681b13663bb424d2088315d046851f251911224776e4626e700ce"
+  },
+  {
+    "source_head": "457fefe9ec66e46caf0df91def63ef66d9893300",
+    "viewport": "390x844",
+    "locale": "zh-TW",
+    "route": "/profile",
+    "screenshots": {
+      "projectSettings": "/Users/rayer/orca/workspaces/llm-wiki-cloud/LWC-382-383-account-ui/docs/lwc-381/evidence/rendered/mobile-zh-TW-profile.png",
+      "accountSettings": "/Users/rayer/orca/workspaces/llm-wiki-cloud/LWC-382-383-account-ui/docs/lwc-381/evidence/rendered/mobile-zh-TW-account-settings.png"
+    },
+    "projectSettingsLink": "/profile",
+    "usageStatesVisible": [
+      "available",
+      "no_record",
+      "unavailable"
+    ],
+    "footer": {
+      "settings": {
+        "x": 56,
+        "y": 788,
+        "width": 74,
+        "height": 44
+      },
+      "logout": {
+        "x": 138,
+        "y": 788,
+        "width": 50,
+        "height": 44
+      },
+      "email": {
+        "x": 56,
+        "y": 760,
+        "width": 187,
+        "height": 20
+      },
+      "actionGroupClass": "mt-2 flex flex-wrap gap-2",
+      "buttonsFit": true,
+      "defaultStyle": {
+        "backgroundColor": "oklab(0.999994 0.0000455678 0.0000200868 / 0.05)",
+        "borderStyle": "solid",
+        "borderWidth": "1px"
+      }
+    },
+    "keyboard": {
+      "tabFocusedSettings": true,
+      "focusVisible": true,
+      "focusOutlineStyle": "solid",
+      "enterOpened": true,
+      "spaceOpened": true,
+      "escapeClosed": true,
+      "escapeRestoredFocus": true,
+      "closeRestoredFocus": true
+    },
+    "mutations": [],
+    "pageErrors": [],
+    "source_manifest_digest": "8d6fd9cde06681b13663bb424d2088315d046851f251911224776e4626e700ce"
+  }
+]

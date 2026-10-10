@@ -8,6 +8,7 @@ import (
 	"errors"
 	"fmt"
 	"log"
+	"log/slog"
 	"net"
 	"net/http"
 	"os"
@@ -122,6 +123,13 @@ func main() {
 	}
 	build := buildinfo.Current()
 	log.Printf("Build identity: commit=%s service=%s revision=%s", build.Commit, build.Service, build.Revision)
+	slog.SetDefault(slog.New(slog.NewJSONHandler(os.Stdout, nil)))
+	traceProvider, traceErr := observability.InitTraces(build.Service, build.Revision)
+	if traceErr != nil {
+		log.Printf("[observability] WARNING: trace init failed (continuing): %v", traceErr)
+	} else {
+		defer observability.ShutdownTraces(traceProvider)
+	}
 
 	// OpenTelemetry metrics (graceful fallback)
 	provider, err := observability.InitMetrics(context.Background(), observabilityServiceName(os.Getenv("K_SERVICE")), cfg.GCPProject)

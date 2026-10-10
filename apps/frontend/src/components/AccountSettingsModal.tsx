@@ -2,11 +2,10 @@
 
 import { FormEvent, useCallback, useEffect, useRef, useState } from 'react';
 import { useAuth } from '@/lib/auth';
-import { beginGoogleLink, readGoogleIdentitySummary } from '@/lib/google-auth';
+import { beginGoogleLink, GoogleAuthError, readGoogleIdentitySummary } from '@/lib/google-auth';
 import { useLocale } from '@/lib/i18n';
-import { useWorkspace } from './WorkspaceProvider';
-import { ProjectKeysSection } from './ProjectKeysSection';
 import {
+  CLIAuthError,
   listCLISessions,
   listSyncBindings,
   reauthorizeSyncBinding,
@@ -18,7 +17,6 @@ import {
 
 export function AccountSettingsModal({ onClose }: { onClose: () => void }) {
   const { accessToken, refreshAccessToken, user } = useAuth();
-  const { currentProject } = useWorkspace();
   const { t } = useLocale();
   const [linkOpen, setLinkOpen] = useState(false);
   const [password, setPassword] = useState('');
@@ -31,13 +29,14 @@ export function AccountSettingsModal({ onClose }: { onClose: () => void }) {
   const [controlError, setControlError] = useState('');
   const [controlNotice, setControlNotice] = useState('');
   const [busyControl, setBusyControl] = useState('');
-  const [projectKeysResetNonce, setProjectKeysResetNonce] = useState(0);
   const passwordRef = useRef<HTMLInputElement>(null);
 
-  const closeSettings = useCallback(() => {
-    setProjectKeysResetNonce((nonce) => nonce + 1);
-    onClose();
-  }, [onClose]);
+  const closeSettings = useCallback(() => onClose(), [onClose]);
+  const controlErrorMessage = (requestError: unknown, fallback: string) => (
+    requestError instanceof CLIAuthError && requestError.localReason === 'missing_backend_error'
+      ? fallback
+      : requestError instanceof Error ? requestError.message : fallback
+  );
 
   useEffect(() => {
     if (!accessToken || !user) return;
@@ -63,17 +62,17 @@ export function AccountSettingsModal({ onClose }: { onClose: () => void }) {
         const sessions = await listCLISessions(context);
         if (active && accountId === user.id) setCliSessions(sessions);
       } catch {
-        if (active) setControlError('Unable to load CLI sessions.');
+        if (active) setControlError(t('AccountSettings.cliSessionsLoadError'));
       }
       try {
         const bindings = await listSyncBindings(context);
         if (active && accountId === user.id) setSyncBindings(bindings);
       } catch {
-        if (active) setControlError('Unable to load sync bindings.');
+        if (active) setControlError(t('AccountSettings.syncBindingsLoadError'));
       }
     })();
     return () => { active = false; };
-  }, [accessToken, refreshAccessToken, user]);
+  }, [accessToken, refreshAccessToken, t, user]);
 
   useEffect(() => {
     if (linkOpen) passwordRef.current?.focus();
@@ -97,7 +96,9 @@ export function AccountSettingsModal({ onClose }: { onClose: () => void }) {
     try {
       await beginGoogleLink(password, accessToken);
     } catch (linkError) {
-      setError(linkError instanceof Error ? linkError.message : 'Unable to link this Google account.');
+      setError(linkError instanceof GoogleAuthError && linkError.localReason
+        ? t('AccountSettings.googleLinkError')
+        : linkError instanceof Error ? linkError.message : t('AccountSettings.googleLinkError'));
       setPassword('');
       setLoading(false);
     }
@@ -120,7 +121,7 @@ export function AccountSettingsModal({ onClose }: { onClose: () => void }) {
       await refreshControlLists();
       setControlNotice(t('AccountSettings.sessionRevoked'));
     } catch (requestError) {
-      setControlError(requestError instanceof Error ? requestError.message : 'Unable to revoke the CLI session.');
+      setControlError(controlErrorMessage(requestError, t('AccountSettings.cliSessionRevokeError')));
     } finally {
       setBusyControl('');
     }
@@ -136,7 +137,7 @@ export function AccountSettingsModal({ onClose }: { onClose: () => void }) {
       await refreshControlLists();
       setControlNotice(t('AccountSettings.bindingRevokedNotice'));
     } catch (requestError) {
-      setControlError(requestError instanceof Error ? requestError.message : 'Unable to revoke the sync binding.');
+      setControlError(controlErrorMessage(requestError, t('AccountSettings.syncBindingRevokeError')));
     } finally {
       setBusyControl('');
     }
@@ -152,7 +153,7 @@ export function AccountSettingsModal({ onClose }: { onClose: () => void }) {
       await refreshControlLists();
       setControlNotice(t('AccountSettings.bindingReauthorized'));
     } catch (requestError) {
-      setControlError(requestError instanceof Error ? requestError.message : 'Unable to reauthorize the sync binding.');
+      setControlError(controlErrorMessage(requestError, t('AccountSettings.syncBindingReauthorizeError')));
     } finally {
       setBusyControl('');
     }
@@ -172,7 +173,7 @@ export function AccountSettingsModal({ onClose }: { onClose: () => void }) {
             <h2 id="account-settings-title" className="text-2xl font-semibold text-white">{t('AccountSettings.title')}</h2>
             <p className="mt-1 text-sm text-zinc-400">{t('AccountSettings.subtitle')}</p>
           </div>
-          <button type="button" onClick={closeSettings} className="min-h-11 min-w-11 rounded-md p-2 text-zinc-400 hover:bg-white/10 hover:text-white" aria-label="Close account settings">×</button>
+          <button type="button" onClick={closeSettings} className="min-h-11 min-w-11 rounded-md p-2 text-zinc-400 hover:bg-white/10 hover:text-white" aria-label={t('AccountSettings.close')}>×</button>
         </div>
 
         <dl className="mt-6 space-y-4 text-sm">
@@ -207,8 +208,6 @@ export function AccountSettingsModal({ onClose }: { onClose: () => void }) {
           </form>
         )}
 
-        <ProjectKeysSection key={`${user.id}:${currentProject?.id ?? 'none'}:${projectKeysResetNonce}`} currentProject={currentProject} accessToken={accessToken} t={t} />
-
         <section className="mt-8 border-t border-white/10 pt-6" aria-labelledby="cli-sessions-title">
           <h3 id="cli-sessions-title" className="text-lg font-semibold text-white">{t('AccountSettings.cliSessions')}</h3>
           <p className="mt-1 text-sm text-zinc-400">{t('AccountSettings.cliSessionsHint')}</p>
@@ -216,20 +215,29 @@ export function AccountSettingsModal({ onClose }: { onClose: () => void }) {
             <p className="mt-4 rounded-lg border border-white/10 bg-black/20 p-4 text-sm text-zinc-400">{t('AccountSettings.cliSessionsEmpty')}</p>
           ) : (
             <ul className="mt-4 space-y-3">
-              {cliSessions.map((session) => (
-                <li key={session.id} className="flex flex-col gap-3 rounded-lg border border-white/10 bg-black/20 p-4 sm:flex-row sm:items-center sm:justify-between">
-                  <div className="min-w-0 text-sm">
-                    <p className="font-medium text-white">{session.client_name || 'CLI'} <span className="text-zinc-500">· {session.status}</span></p>
-                    <p className="mt-1 break-all font-mono text-xs text-zinc-500">{session.id}</p>
-                    <p className="mt-1 text-xs text-zinc-500">{new Date(session.created_at).toLocaleString()}</p>
-                  </div>
-                  {session.status === 'active' ? (
-                    <button type="button" disabled={Boolean(busyControl)} onClick={() => void handleRevokeSession(session)} className="min-h-11 shrink-0 rounded-lg border border-red-300/20 px-3 py-2 text-sm text-red-200 hover:bg-red-300/10 disabled:opacity-50">
-                      {busyControl === session.id ? t('CLIPairing.processing') : t('AccountSettings.revokeSession')}
-                    </button>
-                  ) : null}
-                </li>
-              ))}
+              {cliSessions.map((session) => {
+                const statusLabel = session.status === 'active'
+                  ? t('AccountSettings.cliSessionStatusActive')
+                  : session.status === 'revoked'
+                    ? t('AccountSettings.cliSessionStatusRevoked')
+                    : session.status === 'expired'
+                      ? t('AccountSettings.cliSessionStatusExpired')
+                      : session.status;
+                return (
+                  <li key={session.id} className="flex flex-col gap-3 rounded-lg border border-white/10 bg-black/20 p-4 sm:flex-row sm:items-center sm:justify-between">
+                    <div className="min-w-0 text-sm">
+                      <p className="font-medium text-white">{session.client_name || 'CLI'} <span className="text-zinc-500">· {statusLabel}</span></p>
+                      <p className="mt-1 break-all font-mono text-xs text-zinc-500">{session.id}</p>
+                      <p className="mt-1 text-xs text-zinc-500">{new Date(session.created_at).toLocaleString()}</p>
+                    </div>
+                    {session.status === 'active' ? (
+                      <button type="button" disabled={Boolean(busyControl)} onClick={() => void handleRevokeSession(session)} className="min-h-11 shrink-0 rounded-lg border border-red-300/20 px-3 py-2 text-sm text-red-200 hover:bg-red-300/10 disabled:opacity-50">
+                        {busyControl === session.id ? t('CLIPairing.processing') : t('AccountSettings.revokeSession')}
+                      </button>
+                    ) : null}
+                  </li>
+                );
+              })}
             </ul>
           )}
         </section>
@@ -245,7 +253,7 @@ export function AccountSettingsModal({ onClose }: { onClose: () => void }) {
                 <li key={binding.project_id} className="rounded-lg border border-white/10 bg-black/20 p-4">
                   <div className="flex flex-col gap-3 sm:flex-row sm:items-start sm:justify-between">
                     <div className="min-w-0 text-sm">
-                      <p className="font-medium text-white">{binding.project_id} <span className="text-zinc-500">· {binding.status === 'active' ? t('AccountSettings.bindingActive') : t('AccountSettings.bindingRevoked')}</span></p>
+                      <p className="font-medium text-white">{binding.project_id} <span className="text-zinc-500">· {binding.status === 'active' ? t('AccountSettings.bindingActive') : binding.status === 'revoked' ? t('AccountSettings.bindingRevoked') : binding.status}</span></p>
                       <p className="mt-1 break-all font-mono text-xs text-zinc-500">{binding.wiki_id} · {binding.binding_id}</p>
                       <p className="mt-1 break-all text-xs text-zinc-500">{binding.host}</p>
                     </div>

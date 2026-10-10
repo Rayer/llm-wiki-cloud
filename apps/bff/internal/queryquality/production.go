@@ -110,8 +110,12 @@ func newProductionExecutorWithQueryServiceConfig(conceptCache *cache.Cache, prov
 }
 
 func (e *ProductionExecutor) Execute(ctx context.Context, reader cache.Reader, request query.Request) (query.Result, error) {
-	receiptCtx, receipt := query.WithReceipt(ctx)
-	defer query.FinishReceipt(receipt)
+	receiptCtx := ctx
+	receipt := query.ReceiptRecorderFromContext(ctx)
+	if receipt == nil {
+		receiptCtx, receipt = query.WithReceipt(ctx)
+		defer query.FinishReceipt(receipt)
+	}
 	identity := e.identity
 	if contextual, ok := query.RuntimeConfigIdentityFromContext(ctx); ok {
 		identity = contextual

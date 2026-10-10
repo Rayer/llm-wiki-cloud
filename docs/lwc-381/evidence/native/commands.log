@@ -1,0 +1,5 @@
+Source base: 457fefe9ec66e46caf0df91def63ef66d9893300
+Candidate digest: 8d6fd9cde06681b13663bb424d2088315d046851f251911224776e4626e700ce
+Build: go test -c -o isolated-scratch/bff-harness.test ./cmd/bff (exit 0; provider API key variables unset)
+Probe: isolated copy of the LWC-336 native probe with this candidate digest, real Hermes registry + production BFF router + Firestore emulator 127.0.0.1:8087 (exit 0)
+Isolation: env allowlist, temporary HOME/HERMES_HOME/TMPDIR, synthetic emulator credentials only, zero model calls, no active Hermes profile or provider requests.

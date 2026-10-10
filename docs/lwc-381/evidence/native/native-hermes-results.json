@@ -1,0 +1,359 @@
+{
+  "probe": {
+    "status": "passed",
+    "source_workspace_head": "457fefe9ec66e46caf0df91def63ef66d9893300",
+    "hermes_source": "/Users/rayer/.hermes/hermes-agent",
+    "hermes_mcp_sdk": "2.0.0",
+    "go_mcp_sdk": "github.com/modelcontextprotocol/go-sdk/mcp v1.8.0",
+    "transport": "Streamable HTTP, JSON responses, stateless server",
+    "negotiated_protocol_version": "2025-11-25",
+    "tool_names": [
+      "mcp__project_key__query_project"
+    ],
+    "tool_schema_properties": [
+      "mode",
+      "q"
+    ],
+    "read_only_hint": true,
+    "sampling_enabled": false,
+    "model_calls": 0,
+    "local_firestore_emulator": "127.0.0.1:8087",
+    "source_manifest_digest": "8d6fd9cde06681b13663bb424d2088315d046851f251911224776e4626e700ce",
+    "ac3_cross_key_same_session_header_current_project": true,
+    "ac3_mismatched_project_header_status": 403,
+    "ac3_pre_revoke_same_client": {
+      "result": "success",
+      "mcp_http_method": "POST",
+      "mcp_http_status": 200
+    },
+    "ac3_existing_client_after_revoke": {
+      "result": "server-rejected",
+      "request_evidence": {
+        "mcp_request_count_before": 35,
+        "mcp_request_count_after": 36,
+        "method": "POST",
+        "status": 401
+      }
+    },
+    "http_mcp_parity": [
+      {
+        "case": "wiki",
+        "same_structured_json": true,
+        "same_text_json": true
+      },
+      {
+        "case": "full",
+        "same_structured_json": true,
+        "same_text_json": true
+      },
+      {
+        "case": "default-wiki",
+        "same_structured_json": true,
+        "same_text_json": true
+      },
+      {
+        "case": "empty-normal",
+        "same_structured_json": true,
+        "same_text_json": true
+      },
+      {
+        "case": "model-prior",
+        "same_structured_json": true,
+        "same_text_json": true
+      }
+    ],
+    "http_lifecycle": [
+      {
+        "method": "POST",
+        "auth": "missing",
+        "status": 401
+      },
+      {
+        "method": "POST",
+        "auth": "wrong",
+        "status": 401
+      },
+      {
+        "method": "GET",
+        "auth": "missing",
+        "status": 401
+      },
+      {
+        "method": "GET",
+        "auth": "wrong",
+        "status": 401
+      },
+      {
+        "method": "DELETE",
+        "auth": "missing",
+        "status": 401
+      },
+      {
+        "method": "DELETE",
+        "auth": "wrong",
+        "status": 401
+      },
+      {
+        "method": "GET",
+        "auth": "accepted",
+        "status": 405
+      },
+      {
+        "method": "DELETE",
+        "auth": "accepted",
+        "status": 405
+      },
+      {
+        "method": "POST",
+        "auth": "accepted",
+        "operation": "initialize",
+        "status": 200,
+        "request_content_type": "application/json",
+        "response_content_type": "application/json",
+        "protocol_version": "2025-11-25",
+        "session_id_issued": false
+      }
+    ]
+  },
+  "calls": [
+    {
+      "case": "wiki",
+      "arguments": {
+        "q": "wiki-normal",
+        "mode": "wiki"
+      },
+      "is_error": false,
+      "structured_fields": [
+        "mode",
+        "query",
+        "results"
+      ],
+      "result_count": 1,
+      "citation_count": null,
+      "disclosure_required": null,
+      "safe_error_text": null
+    },
+    {
+      "case": "full",
+      "arguments": {
+        "q": "full-normal",
+        "mode": "full"
+      },
+      "is_error": false,
+      "structured_fields": [
+        "ai_synth",
+        "citations",
+        "mode",
+        "query",
+        "results"
+      ],
+      "result_count": 1,
+      "citation_count": 1,
+      "disclosure_required": null,
+      "safe_error_text": null
+    },
+    {
+      "case": "default-wiki",
+      "arguments": {
+        "q": "default-mode"
+      },
+      "is_error": false,
+      "structured_fields": [
+        "mode",
+        "query",
+        "results"
+      ],
+      "result_count": 1,
+      "citation_count": null,
+      "disclosure_required": null,
+      "safe_error_text": null
+    },
+    {
+      "case": "empty-normal",
+      "arguments": {
+        "q": "empty"
+      },
+      "is_error": false,
+      "structured_fields": [
+        "mode",
+        "query",
+        "results"
+      ],
+      "result_count": 0,
+      "citation_count": null,
+      "disclosure_required": null,
+      "safe_error_text": null
+    },
+    {
+      "case": "insufficient-normal",
+      "arguments": {
+        "q": "insufficient",
+        "mode": "full"
+      },
+      "is_error": false,
+      "structured_fields": [
+        "mode",
+        "query",
+        "reason",
+        "results",
+        "status"
+      ],
+      "result_count": 0,
+      "citation_count": null,
+      "disclosure_required": null,
+      "safe_error_text": null
+    },
+    {
+      "case": "model-prior",
+      "arguments": {
+        "q": "model-prior",
+        "mode": "full"
+      },
+      "is_error": false,
+      "structured_fields": [
+        "ai_synth",
+        "answer_basis",
+        "citations",
+        "disclosure_required",
+        "mode",
+        "query",
+        "reason",
+        "results",
+        "status",
+        "wiki_evidence_status"
+      ],
+      "result_count": 0,
+      "citation_count": 0,
+      "disclosure_required": true,
+      "safe_error_text": null
+    },
+    {
+      "case": "executor-error",
+      "arguments": {
+        "q": "executor-failure",
+        "mode": "full"
+      },
+      "is_error": true,
+      "structured_fields": [],
+      "result_count": null,
+      "citation_count": null,
+      "disclosure_required": null,
+      "safe_error_text": "generated data unavailable"
+    },
+    {
+      "case": "recovery-after-executor-error",
+      "arguments": {
+        "q": "recovery-after-executor-error"
+      },
+      "is_error": false,
+      "structured_fields": [
+        "mode",
+        "query",
+        "results"
+      ],
+      "result_count": 1,
+      "citation_count": null,
+      "disclosure_required": null,
+      "safe_error_text": null
+    },
+    {
+      "case": "whitespace-query",
+      "arguments": {
+        "q": "   "
+      },
+      "is_error": true,
+      "structured_fields": [],
+      "result_count": null,
+      "citation_count": null,
+      "disclosure_required": null,
+      "safe_error_text": "q field is required"
+    },
+    {
+      "case": "recovery-after-whitespace-query",
+      "arguments": {
+        "q": "recovery-after-whitespace-query"
+      },
+      "is_error": false,
+      "structured_fields": [
+        "mode",
+        "query",
+        "results"
+      ],
+      "result_count": 1,
+      "citation_count": null,
+      "disclosure_required": null,
+      "safe_error_text": null
+    },
+    {
+      "case": "invalid-mode",
+      "arguments": {
+        "q": "wiki-normal",
+        "mode": "invalid"
+      },
+      "is_error": true,
+      "structured_fields": [],
+      "result_count": null,
+      "citation_count": null,
+      "disclosure_required": null,
+      "safe_error_text": "validating \"arguments\": validating root: validating /properties/mode: enum: invalid does not equal any of: [wiki full]"
+    },
+    {
+      "case": "recovery-after-invalid-mode",
+      "arguments": {
+        "q": "recovery-after-invalid-mode"
+      },
+      "is_error": false,
+      "structured_fields": [
+        "mode",
+        "query",
+        "results"
+      ],
+      "result_count": 1,
+      "citation_count": null,
+      "disclosure_required": null,
+      "safe_error_text": null
+    },
+    {
+      "case": "pre-revoke-existing-client",
+      "arguments": {
+        "q": "pre-revoke-health"
+      },
+      "is_error": false,
+      "structured_fields": [
+        "mode",
+        "query",
+        "results"
+      ],
+      "result_count": 1,
+      "citation_count": null,
+      "disclosure_required": null,
+      "safe_error_text": null
+    },
+    {
+      "case": "revoked-existing-client",
+      "arguments": {
+        "q": "wiki-normal"
+      },
+      "is_error": true,
+      "structured_fields": [],
+      "result_count": null,
+      "citation_count": null,
+      "disclosure_required": null,
+      "safe_error_text": "MCP call failed: MCPError: Server returned an error response"
+    }
+  ],
+  "commands": [
+    {
+      "operation": "actual production-router harness",
+      "exit_code": 0
+    },
+    {
+      "operation": "Hermes register_mcp_servers and registry.dispatch",
+      "exit_code": 0
+    },
+    {
+      "operation": "Hermes shutdown_mcp_servers",
+      "exit_code": 0
+    }
+  ]
+}

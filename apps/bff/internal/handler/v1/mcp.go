@@ -1,8 +1,11 @@
 package v1
 
 import (
+	"bytes"
 	"context"
 	"encoding/json"
+	"errors"
+	"io"
 	"net/http"
 	"strings"
 
@@ -11,6 +14,7 @@ import (
 	"github.com/rayer/llm-wiki-bff/internal/auth"
 	"github.com/rayer/llm-wiki-bff/internal/buildinfo"
 	"github.com/rayer/llm-wiki-bff/internal/query"
+	"github.com/rayer/llm-wiki-bff/internal/storage"
 )
 
 type mcpProjectKeyIdentityContextKey struct{}
@@ -61,6 +65,28 @@ var queryProjectOutputSchema = json.RawMessage(`{
 // context. Stateless transport prevents a previous call's identity from being
 // reused by a later key or session header.
 func (h *Handler) MCPHandler() http.Handler {
+	sdkAuthenticated := h.mcpSDKHandler()
+	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		token, ok := mcpBearerToken(r.Header.Get("Authorization"))
+		if !ok {
+			writeMCPProjectKeyError(w, auth.ErrProjectKeyInvalid)
+			return
+		}
+		if h.projectKeyService == nil {
+			writeMCPProjectKeyError(w, auth.ErrProjectKeyUnavailable)
+			return
+		}
+		record, err := h.projectKeyService.Authenticate(r.Context(), token, r.Header.Get("X-Project-ID"))
+		if err != nil {
+			writeMCPProjectKeyError(w, err)
+			return
+		}
+		identity := mcpProjectKeyIdentity{userID: record.UserID, projectID: record.ProjectID, keyID: record.KeyID}
+		h.serveAuthenticatedMCP(sdkAuthenticated, identity, w, r)
+	})
+}
+
+func (h *Handler) mcpSDKHandler() http.Handler {
 	server := mcp.NewServer(&mcp.Implementation{
 		Name:    "llm-wiki-bff",
 		Version: buildinfo.Current().ProductVersion,
@@ -88,26 +114,128 @@ func (h *Handler) MCPHandler() http.Handler {
 		}
 		return &mcpauth.TokenInfo{UserID: identity.keyID}, nil
 	}, &mcpauth.RequireBearerTokenOptions{AllowMissingExpiration: true})(transport)
+	return sdkAuthenticated
+}
 
+func (h *Handler) mcpAuthenticatedHandler(identity mcpProjectKeyIdentity) http.Handler {
+	sdkAuthenticated := h.mcpSDKHandler()
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		token, ok := mcpBearerToken(r.Header.Get("Authorization"))
-		if !ok {
-			writeMCPProjectKeyError(w, auth.ErrProjectKeyInvalid)
-			return
-		}
-		if h.projectKeyService == nil {
-			writeMCPProjectKeyError(w, auth.ErrProjectKeyUnavailable)
-			return
-		}
-		record, err := h.projectKeyService.Authenticate(r.Context(), token, r.Header.Get("X-Project-ID"))
-		if err != nil {
-			writeMCPProjectKeyError(w, err)
-			return
-		}
-		identity := mcpProjectKeyIdentity{userID: record.UserID, projectID: record.ProjectID, keyID: record.KeyID}
-		ctx := context.WithValue(r.Context(), mcpProjectKeyIdentityContextKey{}, identity)
-		sdkAuthenticated.ServeHTTP(w, r.WithContext(ctx))
+		h.serveAuthenticatedMCP(sdkAuthenticated, identity, w, r)
 	})
+}
+
+func (h *Handler) serveAuthenticatedMCP(sdkAuthenticated http.Handler, identity mcpProjectKeyIdentity, w http.ResponseWriter, r *http.Request) {
+	ctx := context.WithValue(r.Context(), mcpProjectKeyIdentityContextKey{}, identity)
+	observation := &mcpQueryObservation{}
+	ctx = context.WithValue(ctx, mcpQueryObservationKey{}, observation)
+	if isMCPQueryProjectCall(r) {
+		var diagnostic *queryDiagnostic
+		ctx, diagnostic = beginQueryDiagnostic(ctx, "mcp", identity.projectID)
+		observation.start(diagnostic)
+		buffered := newMCPQueryResponseWriter()
+		statusWriter := &queryStatusWriter{ResponseWriter: buffered}
+		sdkAuthenticated.ServeHTTP(statusWriter, r.WithContext(ctx))
+		status := statusWriter.status
+		if status == 0 {
+			status = http.StatusOK
+		}
+		if observation.finish(status, buffered.body.Bytes()) {
+			buffered.body = bytes.NewBuffer(mcpValidationDiagnosticBody(buffered.body.Bytes(), diagnostic))
+			buffered.header.Del("Content-Length")
+		}
+		buffered.writeTo(w)
+		return
+	}
+	statusWriter := &queryStatusWriter{ResponseWriter: w}
+	sdkAuthenticated.ServeHTTP(statusWriter, r.WithContext(ctx))
+	status := statusWriter.status
+	if status == 0 {
+		status = http.StatusOK
+	}
+	observation.finish(status, nil)
+}
+
+const maxMCPDiagnosticProbeBytes = mcp.DefaultMaxRequestBodyBytes
+
+func isMCPQueryProjectCall(r *http.Request) bool {
+	if r.Method != http.MethodPost || r.Body == nil {
+		return false
+	}
+	body, err := io.ReadAll(io.LimitReader(r.Body, maxMCPDiagnosticProbeBytes+1))
+	r.Body = io.NopCloser(io.MultiReader(bytes.NewReader(body), r.Body))
+	if err != nil || len(body) > maxMCPDiagnosticProbeBytes {
+		return false
+	}
+	var message struct {
+		Method string `json:"method"`
+		Params struct {
+			Name string `json:"name"`
+		} `json:"params"`
+	}
+	return json.Unmarshal(body, &message) == nil && message.Method == "tools/call" && message.Params.Name == "query_project"
+}
+
+type mcpQueryResponseWriter struct {
+	header http.Header
+	status int
+	body   *bytes.Buffer
+}
+
+func newMCPQueryResponseWriter() *mcpQueryResponseWriter {
+	return &mcpQueryResponseWriter{header: make(http.Header), body: new(bytes.Buffer)}
+}
+
+func (w *mcpQueryResponseWriter) Header() http.Header { return w.header }
+
+func (w *mcpQueryResponseWriter) WriteHeader(status int) {
+	if w.status == 0 {
+		w.status = status
+	}
+}
+
+func (w *mcpQueryResponseWriter) Write(body []byte) (int, error) {
+	if w.status == 0 {
+		w.status = http.StatusOK
+	}
+	return w.body.Write(body)
+}
+
+func (w *mcpQueryResponseWriter) writeTo(dst http.ResponseWriter) {
+	for key, values := range w.header {
+		dst.Header()[key] = append([]string(nil), values...)
+	}
+	status := w.status
+	if status == 0 {
+		status = http.StatusOK
+	}
+	dst.WriteHeader(status)
+	_, _ = dst.Write(w.body.Bytes())
+}
+
+func mcpValidationDiagnosticBody(body []byte, diagnostic *queryDiagnostic) []byte {
+	var message map[string]json.RawMessage
+	if json.Unmarshal(body, &message) != nil {
+		return body
+	}
+	var result map[string]json.RawMessage
+	if json.Unmarshal(message["result"], &result) != nil {
+		return body
+	}
+	var isError bool
+	if json.Unmarshal(result["isError"], &isError) != nil || !isError {
+		return body
+	}
+	failure := queryFailureFor("request_validation", errors.New("MCP input schema validation failed"), nil)
+	textContent, _ := json.Marshal([]map[string]string{{"type": "text", "text": failure.message + " Diagnostic ID: " + diagnostic.id}})
+	structured, _ := json.Marshal(map[string]string{"error": failure.message, "code": failure.code, "diagnostic_id": diagnostic.id})
+	result["content"] = textContent
+	result["structuredContent"] = structured
+	message["result"], _ = json.Marshal(result)
+	encoded, err := json.Marshal(message)
+	if err != nil {
+		return body
+	}
+	return encoded
 }
 
 func mcpBearerToken(header string) (string, bool) {
@@ -126,32 +254,65 @@ func writeMCPProjectKeyError(w http.ResponseWriter, err error) {
 }
 
 func (h *Handler) callMCPQuery(ctx context.Context, _ *mcp.CallToolRequest, input queryProjectInput) (*mcp.CallToolResult, any, error) {
+	identity, identityOK := ctx.Value(mcpProjectKeyIdentityContextKey{}).(mcpProjectKeyIdentity)
+	diagnostic := queryDiagnosticFrom(ctx)
+	if diagnostic == nil {
+		ctx, diagnostic = beginQueryDiagnostic(ctx, "mcp", identity.projectID)
+	}
+	observation := mcpQueryObservationFrom(ctx)
+	toolIsError := false
+	if observation != nil {
+		observation.set(diagnostic)
+	} else {
+		defer func() { diagnostic.finish(http.StatusOK, toolIsError) }()
+	}
+	fail := func(stage string, cause error, reader storage.Store) (*mcp.CallToolResult, any, error) {
+		failure := queryFailureFor(stage, cause, reader)
+		diagnostic.fail(failure)
+		toolIsError = true
+		if observation != nil {
+			observation.set(diagnostic)
+		}
+		return mcpQueryToolError(failure.message, failure.code, diagnostic.id), nil, nil
+	}
 	queryText := strings.TrimSpace(input.Query)
 	if queryText == "" {
-		return mcpQueryToolError("q field is required"), nil, nil
+		return fail("request_validation", errors.New("q field is required"), nil)
 	}
 	mode := input.Mode
 	if mode == "" {
 		mode = "wiki"
 	}
 	if mode != "wiki" && mode != "full" {
-		return mcpQueryToolError("mode must be wiki or full"), nil, nil
+		return fail("request_validation", errors.New("mode must be wiki or full"), nil)
 	}
-	identity, ok := ctx.Value(mcpProjectKeyIdentityContextKey{}).(mcpProjectKeyIdentity)
-	if !ok || identity.userID == "" || identity.projectID == "" {
-		return mcpQueryToolError(auth.ErrProjectKeyUnavailable.Error()), nil, nil
+	if !identityOK || identity.userID == "" || identity.projectID == "" {
+		return fail("scope_resolution", auth.ErrProjectKeyUnavailable, nil)
 	}
+	diagnostic.setStage("generation_resolution")
 	reader, profile, err := h.queryStoreFor(ctx, identity.userID, identity.projectID)
 	if err != nil {
-		return mcpQueryToolError(queryStoreFailure(err).message), nil, nil
+		return fail("profile_resolution", err, reader)
 	}
-	response, _, failure := h.executeQuery(ctx, reader, profile, query.Request{Query: queryText, Mode: mode})
+	response, runtimeIdentity, failure := h.executeQuery(ctx, reader, profile, query.Request{Query: queryText, Mode: mode})
 	if failure != nil {
-		return mcpQueryToolError(failure.message), nil, nil
+		diagnostic.fail(failure)
+		toolIsError = true
+		if observation != nil {
+			observation.set(diagnostic)
+		}
+		return mcpQueryToolError(failure.message, failure.code, diagnostic.id), nil, nil
 	}
 	data, err := json.Marshal(response)
 	if err != nil {
-		return mcpQueryToolError("generated data unavailable"), nil, nil
+		return fail("response_encode", err, reader)
+	}
+	if runtimeIdentity != nil {
+		diagnostic.setGeneration(runtimeIdentity.GenerationID)
+	}
+	diagnostic.succeed(response.Status, response.Reason, diagnostic.receipt.Receipt())
+	if observation != nil {
+		observation.set(diagnostic)
 	}
 	return &mcp.CallToolResult{
 		Content:           []mcp.Content{&mcp.TextContent{Text: string(data)}},
@@ -159,9 +320,10 @@ func (h *Handler) callMCPQuery(ctx context.Context, _ *mcp.CallToolRequest, inpu
 	}, nil, nil
 }
 
-func mcpQueryToolError(message string) *mcp.CallToolResult {
+func mcpQueryToolError(message, code, diagnosticID string) *mcp.CallToolResult {
 	return &mcp.CallToolResult{
-		Content: []mcp.Content{&mcp.TextContent{Text: message}},
-		IsError: true,
+		Content:           []mcp.Content{&mcp.TextContent{Text: message}},
+		StructuredContent: map[string]any{"error": message, "code": code, "diagnostic_id": diagnosticID},
+		IsError:           true,
 	}
 }

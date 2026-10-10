@@ -29,6 +29,18 @@ type RequestOptions = {
   body?: unknown;
 };
 
+export class CLIAuthError extends Error {
+  status: number;
+  localReason?: 'missing_backend_error';
+
+  constructor(message: string, status: number, localReason?: 'missing_backend_error') {
+    super(message);
+    this.name = 'CLIAuthError';
+    this.status = status;
+    this.localReason = localReason;
+  }
+}
+
 async function cliAuthRequest<T>(
   context: AuthContext,
   route: string,
@@ -54,8 +66,9 @@ async function cliAuthRequest<T>(
   const payload: unknown = await response.json().catch(() => null);
   if (!response.ok) {
     const record = payload && typeof payload === 'object' ? payload as Record<string, unknown> : null;
-    const message = record && typeof record.error === 'string' ? record.error : `Auth request failed (${response.status})`;
-    throw new Error(message);
+    const backendMessage = record && typeof record.error === 'string' ? record.error : '';
+    if (backendMessage.trim()) throw new Error(backendMessage);
+    throw new CLIAuthError(`Auth request failed (${response.status})`, response.status, 'missing_backend_error');
   }
   return payload as T;
 }

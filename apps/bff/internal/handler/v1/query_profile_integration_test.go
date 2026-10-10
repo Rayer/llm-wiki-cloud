@@ -410,9 +410,7 @@ func TestProfileQueryProductionRejectsIncompleteArtifacts(t *testing.T) {
 			root := &profileQueryRoot{scopes: map[string]*profileQueryStore{"u/p": {retained: map[string]*profileQueryStore{"G1-retained": g}, latest: g}}}
 			h := profileQueryHandler(t, cache.New(), root, active)
 			w := profileQueryRequest(h, "u", `{"q":"coffee"}`)
-			if w.Code != 500 || !strings.Contains(w.Body.String(), "generated data unavailable") {
-				t.Fatalf("status=%d body=%s", w.Code, w.Body)
-			}
+			assertQueryProblem(t, w, http.StatusInternalServerError, "profile_unavailable")
 			if g.pages+g.lists != 0 {
 				t.Fatal("invalid artifacts triggered scan")
 			}
@@ -493,9 +491,7 @@ func assertRuntimeQuery(t *testing.T, f *runtimeFixture, active bool, title stri
 		t.Fatalf("connected Query status=%d want=%d body=%s", w.Code, status, w.Body)
 	}
 	if status != 200 {
-		if w.Body.String() != `{"error":"generated data unavailable"}` {
-			t.Fatalf("snapshot error: %s", w.Body)
-		}
+		assertQueryProblem(t, w, http.StatusInternalServerError, "profile_unavailable")
 		if len(transport.prompts) != 0 {
 			t.Fatal("unavailable snapshot reached synthesis")
 		}
@@ -512,7 +508,8 @@ func assertRuntimeQuery(t *testing.T, f *runtimeFixture, active bool, title stri
 		t.Fatalf("connected synthesis not pinned: %v", transport.prompts)
 	}
 	w = request(`{"q":"alpha","required_tag_ids":["place"]}`)
-	if w.Code != 422 || w.Body.String() != `{"error":"required Profile condition is unsupported"}` {
+	if w.Code != 422 {
 		t.Fatalf("connected required safe gate: %d %s", w.Code, w.Body)
 	}
+	assertQueryProblem(t, w, http.StatusUnprocessableEntity, "unsupported_profile_condition")
 }

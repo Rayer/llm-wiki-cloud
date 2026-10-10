@@ -1,0 +1,10 @@
+ok  	github.com/rayer/llm-wiki-bff/internal/handler/v1	2.972s
+ok  	github.com/rayer/llm-wiki-bff/internal/gcs	(cached)
+ok  	github.com/rayer/llm-wiki-bff/internal/query	(cached)
+ok  	github.com/rayer/llm-wiki-bff/internal/queryruntime	(cached)
+ok  	github.com/rayer/llm-wiki-bff/internal/queryquality	(cached)
+ok  	github.com/rayer/llm-wiki-bff/internal/llm	(cached)
+ok  	github.com/rayer/llm-wiki-bff/internal/observability	(cached)
+
+command: go test -race ./internal/handler/v1 ./internal/gcs ./internal/query ./internal/queryruntime ./internal/queryquality ./internal/llm ./internal/observability
+exit code: 0

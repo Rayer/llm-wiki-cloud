@@ -169,11 +169,15 @@ func TestMCPQueryTurnsExecutorAndStoreFailuresIntoSafeToolErrors(t *testing.T) {
 				t.Fatalf("failure result = %+v", result)
 			}
 			content, ok := result.Content[0].(*mcp.TextContent)
-			if !ok || content.Text != "generated data unavailable" {
+			if !ok || content.Text == "" {
 				t.Fatalf("unsafe error content = %#v", result.Content)
 			}
-			if result.StructuredContent != nil {
-				t.Fatalf("failure unexpectedly has structured output: %#v", result.StructuredContent)
+			if strings.Contains(content.Text, "credential") || strings.Contains(content.Text, "synthetic") {
+				t.Fatalf("raw failure details leaked through MCP text: %q", content.Text)
+			}
+			structured, ok := result.StructuredContent.(map[string]any)
+			if !ok || structured["error"] != content.Text || structured["code"] == "" || structured["diagnostic_id"] == "" {
+				t.Fatalf("failure diagnostic content = %#v", result.StructuredContent)
 			}
 		})
 	}

@@ -44,6 +44,29 @@ func TestProductionFullNoEvidenceUsesModelPriorFallback(t *testing.T) {
 	}
 }
 
+func TestProductionExecutorReusesAdapterReceiptRecorder(t *testing.T) {
+	executor, err := queryquality.NewStrictProductionExecutorWithQueryServiceConfig(
+		cache.New(), nil, nil, nil, queryquality.DefaultRetrievalProfile(), queryquality.StructuredPlanPromptID, queryquality.DefaultOptions(), query.RuntimeConfigIdentity{},
+	)
+	if err != nil {
+		t.Fatal(err)
+	}
+	ctx, adapterReceipt := query.WithReceipt(context.Background())
+	_, err = executor.Execute(ctx, &jsonlReader{data: []byte(`{"slug":"deploy","title":"Deploy","body":"deploy service"}` + "\n")}, query.Request{Query: "deploy", Mode: "wiki"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	stages := adapterReceipt.Receipt().Stages
+	if len(stages) == 0 {
+		t.Fatal("production executor did not record stages on the adapter-owned receipt")
+	}
+	for _, stage := range stages {
+		if stage.FinishedAt.IsZero() || stage.Outcome == "" {
+			t.Fatalf("adapter receipt contains an unfinished production stage: %+v", stage)
+		}
+	}
+}
+
 type countingProvider struct {
 	mu     sync.Mutex
 	calls  int

@@ -1,6 +1,6 @@
 'use client';
 
-import { useEffect, useState } from 'react';
+import { useEffect, useRef, useState } from 'react';
 import { usePathname } from 'next/navigation';
 import { Search, FileText, Brain, Activity, Menu, X, ChevronUp, Shield, Pencil } from 'lucide-react';
 import { useT } from '@/lib/i18n';
@@ -52,7 +52,14 @@ function ShellContent({ children }: { children: React.ReactNode }) {
   } = useWorkspace();
   const [renameTarget, setRenameTarget] = useState<{ id: string; name: string } | null>(null);
   const [accountSettingsOpen, setAccountSettingsOpen] = useState(false);
+  const accountSettingsTriggerRef = useRef<HTMLButtonElement>(null);
+  const accountSettingsWasOpenRef = useRef(false);
   const [jitAccountId, setJitAccountId] = useState<string | null>(null);
+
+  useEffect(() => {
+    if (accountSettingsWasOpenRef.current && !accountSettingsOpen) accountSettingsTriggerRef.current?.focus();
+    accountSettingsWasOpenRef.current = accountSettingsOpen;
+  }, [accountSettingsOpen]);
 
   useEffect(() => {
     const onGoogleJITCompleted = (event: Event) => {
@@ -244,20 +251,23 @@ function ShellContent({ children }: { children: React.ReactNode }) {
                 <p className="truncate text-sm font-medium text-white">
                   {user?.email ?? 'User'}
                 </p>
-                <button
-                  type="button"
-                  onClick={() => setAccountSettingsOpen(true)}
-                  className="inline-flex min-h-11 items-center text-xs text-zinc-500 transition hover:text-zinc-300"
-                >
-                  Account settings
-                </button>
-                <button
-                  type="button"
-                  onClick={() => void signOut()}
-                  className="inline-flex min-h-11 items-center text-xs text-zinc-500 transition hover:text-zinc-300"
-                >
-                  {t('Shell.logout')}
-                </button>
+                <div className="mt-2 flex flex-wrap gap-2">
+                  <button
+                    ref={accountSettingsTriggerRef}
+                    type="button"
+                    onClick={() => setAccountSettingsOpen(true)}
+                    className="inline-flex min-h-11 items-center rounded-md border border-white/10 bg-white/5 px-3 text-xs font-medium text-zinc-300 transition hover:bg-white/10 hover:text-white active:bg-white/15 focus-visible:outline focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-emerald-400"
+                  >
+                    {t('AccountSettings.title')}
+                  </button>
+                  <button
+                    type="button"
+                    onClick={() => void signOut()}
+                    className="inline-flex min-h-11 items-center rounded-md border border-white/10 bg-white/5 px-3 text-xs font-medium text-zinc-300 transition hover:bg-white/10 hover:text-white active:bg-white/15 focus-visible:outline focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-emerald-400"
+                  >
+                    {t('Shell.logout')}
+                  </button>
+                </div>
               </div>
               <button
                 type="button"

@@ -3,6 +3,7 @@ import test from 'node:test';
 
 import {
   ApiError,
+  QueryApiError,
   apiFetch,
   buildProjectHeaders,
   buildRequestInit,
@@ -27,6 +28,7 @@ import {
   normalizeStatus,
   RAW_UPLOAD_MAX_BYTES,
   safeWikiRouteSegment,
+  searchWiki,
   triggerAdminProjectPipeline,
   toV1Path,
   triggerPipeline,
@@ -216,6 +218,56 @@ test('getStatus reads latest pipeline execution from the status endpoint', async
     assert.equal(status.conceptsCount, 3);
     assert.equal(status.lastExecution?.status, 'SUCCEEDED');
     assert.equal(status.lastExecution?.log_url, '/api/v1/pipeline/log?execution_id=exec-1');
+  } finally {
+    globalThis.fetch = originalFetch;
+  }
+});
+
+test('searchWiki normalizes Problem Details, legacy errors, and unusable error bodies', async () => {
+  configureApiAuth({
+    getAccessToken: () => 'jwt-token',
+    refreshAccessToken: async () => null,
+    onUnauthorized: () => undefined,
+  });
+  globalThis.window = { localStorage: { getItem: () => 'project-1' } };
+  const originalFetch = globalThis.fetch;
+
+  try {
+    globalThis.fetch = async () => Response.json({
+      type: 'urn:lwc:query:failure',
+      title: 'Query failed',
+      status: 503,
+      detail: 'The query provider is temporarily unavailable.',
+      error: 'The query provider is temporarily unavailable.',
+      code: 'query_provider_failed',
+      diagnostic_id: 'f197cbe1-b0e3-4a68-a3eb-47526d98a622',
+    }, { status: 503 });
+    await assert.rejects(
+      () => searchWiki('safe query', 'wiki'),
+      (error) => error instanceof QueryApiError
+        && error.status === 503
+        && error.code === 'query_provider_failed'
+        && error.diagnosticId === 'f197cbe1-b0e3-4a68-a3eb-47526d98a622'
+        && error.message === 'The query provider is temporarily unavailable.',
+    );
+
+    globalThis.fetch = async () => Response.json({ error: 'legacy safe error' }, { status: 500 });
+    await assert.rejects(
+      () => searchWiki('safe query', 'wiki'),
+      (error) => error instanceof QueryApiError && error.status === 500 && error.message === 'legacy safe error',
+    );
+
+    globalThis.fetch = async () => new Response('<html>raw proxy response</html>', { status: 502 });
+    await assert.rejects(
+      () => searchWiki('safe query', 'wiki'),
+      (error) => error instanceof QueryApiError && error.status === 502 && error.message.length > 0 && !error.message.includes('raw proxy response'),
+    );
+
+    globalThis.fetch = async () => new Response(null, { status: 504 });
+    await assert.rejects(
+      () => searchWiki('safe query', 'wiki'),
+      (error) => error instanceof QueryApiError && error.status === 504 && error.message.length > 0,
+    );
   } finally {
     globalThis.fetch = originalFetch;
   }
