@@ -21,6 +21,11 @@ type vaultBindingConfig struct {
 	BindingID string `json:"binding_id"`
 }
 
+type vaultBindingRecoverySnapshot struct {
+	present bool
+	binding vaultBindingConfig
+}
+
 func vaultBindingPath(vault string) string {
 	return filepath.Join(vault, vaultBindingFileName)
 }
@@ -177,6 +182,71 @@ func saveVaultBindingID(vault string, expected vaultBindingConfig, bindingID str
 		current.BindingID = bindingID
 		return writeVaultBinding(vault, current)
 	})
+}
+
+func snapshotVaultBindingForRecovery(vault, host, projectID, bindingID string) (string, vaultBindingRecoverySnapshot, error) {
+	vault, err := filepath.Abs(strings.TrimSpace(vault))
+	if err != nil || vault == string(filepath.Separator) {
+		return "", vaultBindingRecoverySnapshot{}, errors.New("invalid vault path")
+	}
+	info, err := os.Lstat(vault)
+	if err != nil || info.Mode()&os.ModeSymlink != 0 || !info.IsDir() {
+		return "", vaultBindingRecoverySnapshot{}, errors.New("vault path must be an existing real directory")
+	}
+	var snapshot vaultBindingRecoverySnapshot
+	err = withVaultBindingLock(vault, func() error {
+		current, err := readVaultBinding(vault)
+		if errors.Is(err, os.ErrNotExist) {
+			return nil
+		}
+		if err != nil {
+			return err
+		}
+		if current.Host != host {
+			return errors.New("vault binding belongs to a different auth/control-plane host")
+		}
+		if current.ProjectID != projectID {
+			return errors.New("vault binding belongs to a different Project")
+		}
+		if current.BindingID != "" && current.BindingID != bindingID {
+			return errors.New("vault already has a different complete local binding")
+		}
+		snapshot = vaultBindingRecoverySnapshot{present: true, binding: current}
+		return nil
+	})
+	if err != nil {
+		return "", vaultBindingRecoverySnapshot{}, err
+	}
+	return vault, snapshot, nil
+}
+
+func persistRecoveredVaultBinding(vault string, snapshot vaultBindingRecoverySnapshot, recovered vaultBindingConfig) (bool, error) {
+	if recovered.Host == "" || !validVaultID(recovered.WikiID) || !validVaultID(recovered.ProjectID) || !validVaultID(recovered.BindingID) {
+		return false, errors.New("invalid recovered vault binding")
+	}
+	changed := false
+	err := withVaultBindingLock(vault, func() error {
+		current, err := readVaultBinding(vault)
+		if snapshot.present {
+			if err != nil || current != snapshot.binding {
+				return errors.New("vault binding changed while the server request was in progress; review it and retry recovery")
+			}
+			if current == recovered {
+				return nil
+			}
+		} else if !errors.Is(err, os.ErrNotExist) {
+			if err == nil {
+				return errors.New("vault binding appeared while the server request was in progress; review it and retry recovery")
+			}
+			return err
+		}
+		if err := writeVaultBinding(vault, recovered); err != nil {
+			return err
+		}
+		changed = true
+		return nil
+	})
+	return changed, err
 }
 
 func writeVaultBinding(vault string, binding vaultBindingConfig) error {

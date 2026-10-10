@@ -11,6 +11,7 @@ lwc-sync push --vault ~/Wiki
 lwc-sync push --vault ~/Wiki --sync
 lwc-sync bind --vault ~/Wiki --project-id <PROJECT_ID>
 lwc-sync binding list
+lwc-sync binding recover --vault ~/Wiki --host https://auth.example.test --project-id <PROJECT_ID> --binding-id <BINDING_ID> --confirm-same-vault
 lwc-sync binding reauthorize --vault ~/Wiki --project-id <PROJECT_ID>
 lwc-sync binding revoke --project-id <PROJECT_ID> --binding-id <BINDING_ID>
 lwc-sync auth logout
@@ -27,3 +28,5 @@ Vault 根目錄的 `.lwc-sync.json` 只記錄 `host`、`wiki_id`、`project_id`�
 raw sync 每檔最多 10 MiB、每個 raw tree 最多 10,000 個檔案及 512 MiB。symlink、特殊檔案、無法安全表示的路徑和超限檔案會明確拒絕。Auth service 以伺服器設定的 locator 提供 sync data origin；CLI 不猜測 BFF hostname。CLI 僅向該明確 origin 傳送 bearer，拒絕 redirect，並在每個 BFF 請求重新驗證 session、帳號、Project owner 與目前 binding。
 
 `bind` 與 `binding` 命令仍保留供既有流程使用；它們只管理授權，不傳輸檔案。未使用 `auth`、`projects`、`bind`、`binding`、`init` 或 `push` 子命令的舊版直接 GCS sync invocation 仍依原有設定執行。
+
+若本機 `.lwc-sync.json` 遺失或只剩未完成的空 binding ID，但 Auth 仍列出原本 vault 的 active binding，先執行 `lwc-sync binding list --host AUTH_ORIGIN` 核對 Project、Wiki 與 binding ID，再明確執行 `binding recover`。恢復必須帶 `--confirm-same-vault`，只會原子更新本機 metadata，不會建立、撤銷或重新授權 server binding，也不會傳輸 raw 檔案。完整本機 identity 與目前 server binding 不同時，恢復會拒絕覆寫。

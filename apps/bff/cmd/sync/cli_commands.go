@@ -15,6 +15,8 @@ import (
 	"time"
 )
 
+const bindingRecoveryGuidance = "review `lwc-sync binding list --host AUTH_ORIGIN`; only if it shows the original vault's single active binding on this host, run `lwc-sync binding recover --vault PATH --host AUTH_ORIGIN --project-id PROJECT_ID --binding-id BINDING_ID --confirm-same-vault`"
+
 func isControlPlaneCommand(args []string) bool {
 	if len(args) == 0 {
 		return false
@@ -58,17 +60,19 @@ func runControlPlaneCommand(args []string) error {
 		return runRawPush(args[1:])
 	case "binding":
 		if len(args) < 2 {
-			return errors.New("usage: lwc-sync binding list|reauthorize|revoke")
+			return errors.New("usage: lwc-sync binding list|recover|reauthorize|revoke")
 		}
 		switch args[1] {
 		case "list":
 			return runBindingList(args[2:])
+		case "recover":
+			return runBindingRecover(args[2:])
 		case "reauthorize":
 			return runBindingReauthorize(args[2:])
 		case "revoke":
 			return runBindingRevoke(args[2:])
 		default:
-			return errors.New("usage: lwc-sync binding list|reauthorize|revoke")
+			return errors.New("usage: lwc-sync binding list|recover|reauthorize|revoke")
 		}
 	default:
 		return errors.New("usage: lwc-sync auth|projects|bind|binding|init|push")
@@ -422,6 +426,93 @@ func runBindingList(args []string) error {
 	})
 }
 
+func runBindingRecover(args []string) error {
+	flags := flag.NewFlagSet("binding recover", flag.ContinueOnError)
+	host := flags.String("host", "", "Auth/control-plane origin")
+	vault := flags.String("vault", "", "path to the local wiki vault")
+	projectID := flags.String("project-id", "", "Cloud Project ID")
+	bindingID := flags.String("binding-id", "", "active binding ID shown by binding list")
+	confirm := flags.Bool("confirm-same-vault", false, "confirm this is the original vault for the selected active binding")
+	if err := flags.Parse(args); err != nil {
+		return err
+	}
+	if strings.TrimSpace(*vault) == "" || strings.TrimSpace(*host) == "" || !validVaultID(*projectID) || !validVaultID(*bindingID) {
+		return errors.New("usage: lwc-sync binding recover --vault PATH --host AUTH_ORIGIN --project-id PROJECT_ID --binding-id BINDING_ID --confirm-same-vault")
+	}
+	requestedHost, err := normalizeAuthOrigin(*host)
+	if err != nil {
+		return err
+	}
+	if !*confirm {
+		return fmt.Errorf("binding recovery requires explicit --confirm-same-vault after verifying this is the original vault; %s", bindingRecoveryGuidance)
+	}
+	vaultPath, snapshot, err := snapshotVaultBindingForRecovery(*vault, requestedHost, *projectID, *bindingID)
+	if err != nil {
+		return err
+	}
+	var currentBinding authSyncBinding
+	err = withStoredCredentials(requestedHost, func(client *cliAPIClient, _ *cliLocalCredentials) error {
+		var current struct {
+			Bindings []authSyncBinding `json:"bindings"`
+		}
+		if err := client.request(context.Background(), http.MethodGet, "/api/v1/auth/cli/bindings", nil, &current); err != nil {
+			return err
+		}
+		if current.Bindings == nil {
+			return errors.New("Auth service returned an invalid binding list")
+		}
+		projectMatches := 0
+		bindingMatches := 0
+		for _, binding := range current.Bindings {
+			if binding.ProjectID != *projectID {
+				continue
+			}
+			projectMatches++
+			if binding.ID == *bindingID {
+				bindingMatches++
+				currentBinding = binding
+			}
+		}
+		if projectMatches > 1 {
+			return errors.New("current Project binding response is ambiguous; review `lwc-sync binding list` and retry with the unique active binding")
+		}
+		if projectMatches == 0 || bindingMatches == 0 {
+			return errors.New("active server binding was not found for this Project; refresh `lwc-sync binding list --host AUTH_ORIGIN` and verify the binding ID")
+		}
+		if projectMatches != 1 || bindingMatches != 1 || !validVaultID(currentBinding.ID) || !validVaultID(currentBinding.ProjectID) || !validVaultID(currentBinding.WikiID) {
+			return errors.New("Auth service returned an invalid or ambiguous active binding")
+		}
+		serverHost, err := normalizeAuthOrigin(currentBinding.Host)
+		if err != nil || serverHost != requestedHost {
+			return errors.New("active server binding belongs to a different auth/control-plane host")
+		}
+		if currentBinding.Status != "active" {
+			return errors.New("selected server binding is not active; review `lwc-sync binding list` and choose the current active binding")
+		}
+		return nil
+	})
+	if err != nil {
+		return err
+	}
+	recovered := vaultBindingConfig{Host: requestedHost, WikiID: currentBinding.WikiID, ProjectID: currentBinding.ProjectID, BindingID: currentBinding.ID}
+	if snapshot.present && snapshot.binding.BindingID != "" && snapshot.binding != recovered {
+		return errors.New("vault already has a different complete identity; use explicit reauthorization only after reviewing `lwc-sync binding list`")
+	}
+	changed, err := persistRecoveredVaultBinding(vaultPath, snapshot, recovered)
+	if err != nil {
+		if strings.Contains(err.Error(), "changed while the server request was in progress") || strings.Contains(err.Error(), "appeared while the server request was in progress") {
+			return err
+		}
+		return fmt.Errorf("active server binding is unchanged, but could not restore local binding metadata; review it and retry recovery: %w", err)
+	}
+	if changed {
+		fmt.Printf("Recovered active Project %s binding %s in local vault metadata; server binding and raw files were not modified.\n", recovered.ProjectID, recovered.BindingID)
+	} else {
+		fmt.Printf("Vault metadata already matches active Project %s binding %s; no local identity changes were needed.\n", recovered.ProjectID, recovered.BindingID)
+	}
+	return nil
+}
+
 type authSyncBinding struct {
 	ID        string `json:"binding_id"`
 	Host      string `json:"host"`
@@ -443,9 +534,15 @@ func runBindingReauthorize(args []string) error {
 	}
 	binding, err := loadVaultBinding(*vault)
 	if err != nil {
+		if errors.Is(err, os.ErrNotExist) {
+			return fmt.Errorf("vault has no local binding metadata to reauthorize; %s", bindingRecoveryGuidance)
+		}
 		return err
 	}
-	if binding.BindingID == "" || binding.ProjectID != *projectID {
+	if binding.BindingID == "" {
+		return fmt.Errorf("vault has no server binding ID to reauthorize; %s", bindingRecoveryGuidance)
+	}
+	if binding.ProjectID != *projectID {
 		return errors.New("vault has no matching binding to reauthorize")
 	}
 	requestedHost := *host
