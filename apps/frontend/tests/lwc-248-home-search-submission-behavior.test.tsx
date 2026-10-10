@@ -57,7 +57,7 @@ vi.mock('@/components/NavigationBlocker', async () => {
 });
 
 import { HomeClient } from '@/components/HomeClient';
-import type { ApiStatus } from '@/lib/api';
+import { QueryApiError, type ApiStatus } from '@/lib/api';
 
 const SEARCH_RESPONSE = {
   results: [],
@@ -97,6 +97,7 @@ beforeEach(() => {
 afterEach(() => {
   replaceStateSpy.mockRestore();
   cleanup();
+  Object.defineProperty(navigator, 'clipboard', { configurable: true, value: undefined });
   vi.clearAllMocks();
 });
 
@@ -399,5 +400,34 @@ describe('LWC-248 home search submission contract', () => {
     expect(screen.queryByText('The stale wiki response should be ignored.')).toBeNull();
     expect(screen.queryByText(/Searching/)).toBeNull();
     expect(searchButton.disabled).toBe(false);
+  });
+
+  it('shows a localized Query failure and copyable diagnostic ID instead of no-results', async () => {
+    const diagnosticId = 'f197cbe1-b0e3-4a68-a3eb-47526d98a622';
+    const writeText = vi.fn().mockResolvedValue(undefined);
+    replaceStateSpy.mockRestore();
+    window.history.replaceState(null, '', '/');
+    replaceStateSpy = vi.spyOn(window.history, 'replaceState').mockImplementation(() => undefined);
+    Object.defineProperty(navigator, 'clipboard', { configurable: true, value: { writeText } });
+    mocks.searchWiki.mockRejectedValueOnce(new QueryApiError('safe provider detail', 503, 'query_provider_failed', diagnosticId));
+
+    render(<HomeClient />);
+    await waitForInitialSearchState();
+    const queryInput = screen.getByRole('textbox');
+    const { form } = await getFormFromSearchButton();
+    await act(async () => {
+      fireEvent.change(queryInput, { target: { value: 'query with failure' } });
+      fireEvent.submit(form);
+    });
+
+    expect(await screen.findByText('QueryErrors.providerFailed')).toBeTruthy();
+    expect(screen.getByText(diagnosticId)).toBeTruthy();
+    expect(screen.queryByText('Demo.noResults')).toBeNull();
+    await act(async () => {
+      fireEvent.click(screen.getByRole('button', { name: 'QueryErrors.copyDiagnosticId' }));
+    });
+    await waitFor(() => expect(writeText).toHaveBeenCalledWith(diagnosticId));
+    expect(screen.getByRole('button', { name: 'QueryErrors.diagnosticIdCopied' })).toBeTruthy();
+    Object.defineProperty(navigator, 'clipboard', { configurable: true, value: undefined });
   });
 });

@@ -144,10 +144,10 @@ func TestV1QueryMapsSentinelAndGenericErrors(t *testing.T) {
 	for _, test := range []struct {
 		name string
 		err  error
-		body string
+		code string
 	}{
-		{name: "cache", err: query.ErrCacheNotConfigured, body: `{"error":"concept cache is not configured"}`},
-		{name: "generic", err: errors.New("search unavailable"), body: `{"error":"generated data unavailable"}`},
+		{name: "cache", err: query.ErrCacheNotConfigured, code: "query_index_unavailable"},
+		{name: "generic", err: errors.New("search unavailable"), code: "query_runtime_unavailable"},
 	} {
 		t.Run(test.name, func(t *testing.T) {
 			h := New(newQueryAdapterRoot(t), nil, search.NewIndex(), cache.New(), nil, nil)
@@ -158,9 +158,7 @@ func TestV1QueryMapsSentinelAndGenericErrors(t *testing.T) {
 			c.Set("userID", "user")
 			c.Set("projectID", "project")
 			h.Query(c)
-			if recorder.Code != http.StatusInternalServerError || strings.TrimSpace(recorder.Body.String()) != test.body {
-				t.Fatalf("status/body = %d/%s, want 500/%s", recorder.Code, recorder.Body.String(), test.body)
-			}
+			assertQueryProblem(t, recorder, http.StatusInternalServerError, test.code)
 		})
 	}
 }
@@ -174,9 +172,7 @@ func TestV1QueryNilExecutorReturnsGenericError(t *testing.T) {
 	c.Set("userID", "user")
 	c.Set("projectID", "project")
 	h.Query(c)
-	if recorder.Code != http.StatusInternalServerError || strings.TrimSpace(recorder.Body.String()) != `{"error":"generated data unavailable"}` {
-		t.Fatalf("status/body = %d/%s, want 500/generated-data-unavailable", recorder.Code, recorder.Body.String())
-	}
+	assertQueryProblem(t, recorder, http.StatusInternalServerError, "query_runtime_unavailable")
 }
 
 func TestV1QueryRejectsEmptyQueryAfterTrim(t *testing.T) {
@@ -213,9 +209,7 @@ func TestV1QueryStorageFailureWinsBeforeRequestValidation(t *testing.T) {
 			c.Set("userID", test.userID)
 			c.Set("projectID", test.project)
 			h.Query(c)
-			if recorder.Code != http.StatusInternalServerError || strings.TrimSpace(recorder.Body.String()) != `{"error":"generated data unavailable"}` {
-				t.Fatalf("status/body = %d/%s, want 500/generated-data-unavailable", recorder.Code, recorder.Body.String())
-			}
+			assertQueryProblem(t, recorder, http.StatusInternalServerError, "storage_unavailable")
 		})
 	}
 }

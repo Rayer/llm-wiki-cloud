@@ -432,10 +432,15 @@ func (h *Handler) Ready(c *gin.Context) {
 //	@Security		ProjectHeader
 //	@Router			/api/v1/query [post]
 func (h *Handler) Query(c *gin.Context) {
+	ctx, diagnostic := beginQueryDiagnostic(c.Request.Context(), "http", c.GetString("projectID"))
+	c.Request = c.Request.WithContext(ctx)
+	defer func() { diagnostic.finish(c.Writer.Status(), false) }()
+	diagnostic.setStage("generation_resolution")
 	gcsClient, profileSnapshot, err := h.queryStore(c)
 	if err != nil {
 		failure := queryStoreFailure(err)
-		c.JSON(failure.status, handler.ErrorResponse{Error: failure.message})
+		diagnostic.fail(failure)
+		writeQueryProblem(c, failure, diagnostic.id)
 		return
 	}
 
@@ -444,7 +449,9 @@ func (h *Handler) Query(c *gin.Context) {
 		RequiredTagIDs []string `json:"required_tag_ids"`
 	}
 	if err := c.ShouldBindJSON(&req); err != nil {
-		c.JSON(http.StatusBadRequest, handler.ErrorResponse{Error: "invalid JSON: " + err.Error()})
+		failure := queryFailureFor("request_decode", err, gcsClient)
+		diagnostic.fail(failure)
+		writeQueryProblem(c, failure, diagnostic.id)
 		return
 	}
 	queryText := strings.TrimSpace(req.Query)
@@ -453,7 +460,9 @@ func (h *Handler) Query(c *gin.Context) {
 		mode = "wiki"
 	}
 	if queryText == "" {
-		c.JSON(http.StatusBadRequest, handler.ErrorResponse{Error: "q field is required"})
+		failure := queryFailureFor("request_validation", errors.New("q field is required"), gcsClient)
+		diagnostic.fail(failure)
+		writeQueryProblem(c, failure, diagnostic.id)
 		return
 	}
 
@@ -461,12 +470,15 @@ func (h *Handler) Query(c *gin.Context) {
 		Query: queryText, Mode: mode, RequiredTagIDs: req.RequiredTagIDs,
 	})
 	if failure != nil {
-		c.JSON(failure.status, handler.ErrorResponse{Error: failure.message})
+		diagnostic.fail(failure)
+		writeQueryProblem(c, failure, diagnostic.id)
 		return
 	}
 	if identity != nil {
 		setQueryIdentityHeaders(c, identity)
+		diagnostic.setGeneration(identity.GenerationID)
 	}
+	diagnostic.succeed(response.Status, response.Reason, diagnostic.receipt.Receipt())
 	c.JSON(http.StatusOK, response)
 }
 

@@ -12,23 +12,18 @@ import (
 type queryFailure struct {
 	status  int
 	message string
+	code    string
+	stage   string
+	reason  string
+	cause   error
 }
 
 func queryStoreFailure(err error) *queryFailure {
-	if errors.Is(err, errProfileProjectNotFound) {
-		return &queryFailure{status: 404, message: "project not found"}
-	}
-	return &queryFailure{status: 500, message: "generated data unavailable"}
+	return queryFailureFor("profile_resolution", err, nil)
 }
 
-func queryExecutorFailure(err error) *queryFailure {
-	if errors.Is(err, query.ErrUnsupportedRequired) {
-		return &queryFailure{status: 422, message: "required Profile condition is unsupported"}
-	}
-	if errors.Is(err, query.ErrCacheNotConfigured) {
-		return &queryFailure{status: 500, message: "concept cache is not configured"}
-	}
-	return &queryFailure{status: 500, message: "generated data unavailable"}
+func queryExecutorFailure(err error, reader storage.Store) *queryFailure {
+	return queryFailureFor("runtime", err, reader)
 }
 
 // executeQuery is the shared HTTP/MCP consumer path. Both adapters resolve
@@ -36,12 +31,14 @@ func queryExecutorFailure(err error) *queryFailure {
 // privacy-safe QueryResponse projection.
 func (h *Handler) executeQuery(ctx context.Context, reader storage.Store, profile *query.ProfileSnapshot, request query.Request) (handler.QueryResponse, *query.RuntimeConfigIdentity, *queryFailure) {
 	if h.queryExecutor == nil {
-		return handler.QueryResponse{}, nil, &queryFailure{status: 500, message: "generated data unavailable"}
+		return handler.QueryResponse{}, nil, queryFailureFor("runtime", errors.New("query executor is not configured"), reader)
 	}
 	request.Profile = profile
-	result, err := h.queryExecutor.Execute(ctx, reader, request)
+	stageCtx, span := startQueryStage(ctx, "runtime.execute")
+	result, err := h.queryExecutor.Execute(stageCtx, reader, request)
+	finishQueryStage(span, err)
 	if err != nil {
-		return handler.QueryResponse{}, nil, queryExecutorFailure(err)
+		return handler.QueryResponse{}, nil, queryExecutorFailure(queryStageFailure("runtime", err), reader)
 	}
 	return mapQueryResult(result), result.RuntimeConfigIdentity, nil
 }

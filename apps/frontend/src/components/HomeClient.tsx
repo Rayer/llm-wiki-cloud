@@ -13,6 +13,7 @@ import {
   getStatus,
   safeWikiRouteSegment,
   searchWiki,
+  QueryApiError,
   type ApiStatus,
   type Citation,
   type SearchResult,
@@ -59,6 +60,39 @@ type ModalEntry = {
   error: string;
 };
 type SearchMode = 'wiki' | 'full';
+type SearchError = { messageKey: string; diagnosticId?: string };
+
+function searchError(error: unknown): SearchError {
+  const apiError = error instanceof QueryApiError ? error : null;
+  const legacy = apiError?.message.trim().toLowerCase();
+  const legacyKey = legacy === 'q field is required' || legacy?.startsWith('invalid json:')
+    ? 'invalidRequest'
+    : legacy === 'project not found'
+      ? 'projectNotFound'
+      : legacy === 'required profile condition is unsupported'
+        ? 'unsupportedProfileCondition'
+        : legacy === 'concept cache is not configured'
+          ? 'queryIndexUnavailable'
+          : 'queryFailure';
+  const keyByCode: Record<string, string> = {
+    invalid_query: 'invalidRequest',
+    project_not_found: 'projectNotFound',
+    published_generation_missing: 'publishedGenerationMissing',
+    profile_unavailable: 'profileUnavailable',
+    storage_unavailable: 'storageUnavailable',
+    query_runtime_unavailable: 'runtimeUnavailable',
+    runtime_identity_unavailable: 'runtimeUnavailable',
+    query_provider_failed: 'providerFailed',
+    query_index_unavailable: 'queryIndexUnavailable',
+    query_timeout: 'timedOut',
+    query_canceled: 'canceled',
+    unsupported_profile_condition: 'unsupportedProfileCondition',
+  };
+  return {
+    messageKey: `QueryErrors.${apiError ? keyByCode[apiError.code] ?? legacyKey : 'queryFailure'}`,
+    diagnosticId: apiError?.diagnosticId,
+  };
+}
 
 const SUGGESTED_QUERIES_OPEN_KEY = 'llm-wiki:suggested-queries-open';
 
@@ -133,7 +167,8 @@ export function HomeClient() {
   const [expandKeywords, setExpandKeywords] = useState<string[]>([]);
   const [searched, setSearched] = useState(Boolean(initialSearch.q));
   const [loading, setLoading] = useState(Boolean(initialSearch.q));
-  const [error, setError] = useState('');
+  const [error, setError] = useState<SearchError | null>(null);
+  const [diagnosticIdCopied, setDiagnosticIdCopied] = useState(false);
   const [modal, setModal] = useState<ModalEntry | null>(null);
   const [modalLoading, setModalLoading] = useState(false);
   const citationRequestId = useRef(0);
@@ -171,7 +206,8 @@ export function HomeClient() {
         })
         .catch((err: Error) => {
           if (requestId !== searchRequestId.current) return;
-          setError(err instanceof Error ? err.message : 'Search failed');
+          setError(searchError(err));
+          setDiagnosticIdCopied(false);
           setResults([]);
           setAiAnswer('');
           setCitations([]);
@@ -205,7 +241,8 @@ export function HomeClient() {
     setExpandKeywords([]);
     setSearched(false);
     setLoading(false);
-    setError('');
+    setError(null);
+    setDiagnosticIdCopied(false);
     setModal(null);
     setModalLoading(false);
     setSubmittedMode('wiki');
@@ -256,7 +293,8 @@ export function HomeClient() {
     setSubmittedMode(searchMode);
 
     setLoading(true);
-    setError('');
+    setError(null);
+    setDiagnosticIdCopied(false);
     setAiAnswer('');
     setCitations([]);
     setExpandKeywords([]);
@@ -271,7 +309,7 @@ export function HomeClient() {
       setExpandKeywords(response.expand?.keywords ?? []);
     } catch (err) {
       if (requestId !== searchRequestId.current) return;
-      setError(err instanceof Error ? err.message : 'Search failed');
+      setError(searchError(err));
       setResults([]);
       setAiAnswer('');
       setCitations([]);
@@ -282,6 +320,17 @@ export function HomeClient() {
       }
     }
   }, [query]);
+
+  const copyDiagnosticId = async () => {
+    const diagnosticId = error?.diagnosticId;
+    if (!diagnosticId || !navigator.clipboard?.writeText) return;
+    try {
+      await navigator.clipboard.writeText(diagnosticId);
+      setDiagnosticIdCopied(true);
+    } catch {
+      setDiagnosticIdCopied(false);
+    }
+  };
 
   const onSubmit = useCallback(async (event: FormEvent<HTMLFormElement>) => {
     event.preventDefault();
@@ -523,7 +572,17 @@ export function HomeClient() {
           </div>
         ) : null}
         {loading ? <LoadingState label="Searching" /> : null}
-        {error ? <ErrorState message={error} /> : null}
+        {error ? (
+          <ErrorState
+            message={t(error.messageKey)}
+            diagnosticId={error.diagnosticId}
+            copyDiagnosticIdLabel={t('QueryErrors.copyDiagnosticId')}
+            diagnosticIdCopiedLabel={t('QueryErrors.diagnosticIdCopied')}
+            diagnosticIdLabel={t('QueryErrors.diagnosticId')}
+            diagnosticIdCopied={diagnosticIdCopied}
+            onCopyDiagnosticId={copyDiagnosticId}
+          />
+        ) : null}
         {!loading && !error && aiAnswer ? (
           <article className="relative overflow-hidden rounded-[var(--radius-lg)] border border-emerald-400/20 bg-emerald-400/[0.06] p-5 backdrop-blur-sm">
             <div className="absolute inset-y-0 left-0 w-1 bg-gradient-to-b from-emerald-300 to-teal-500" />

@@ -408,6 +408,23 @@
     "pipelineDesc": "The pipeline runs:",
     "restricted": "This feature is not available in demo mode"
   },
+  "QueryErrors": {
+    "queryFailure": "We could not complete your search. Try again; if the issue continues, share the diagnostic ID with support.",
+    "invalidRequest": "The search request is invalid. Check the query and try again.",
+    "publishedGenerationMissing": "This project has no published wiki generation yet. Run the pipeline, then try again.",
+    "profileUnavailable": "The active project profile could not be loaded. Try again when it is available.",
+    "storageUnavailable": "The published wiki data is temporarily unavailable. Try again later.",
+    "runtimeUnavailable": "The query runtime could not use this project's published data. Try again later.",
+    "providerFailed": "The query provider could not complete this search. Try again later.",
+    "queryIndexUnavailable": "The query index is temporarily unavailable. Try again later.",
+    "timedOut": "The search took too long. Try again.",
+    "canceled": "The search was canceled. Submit it again when ready.",
+    "projectNotFound": "This project could not be found. Check the selected project and try again.",
+    "unsupportedProfileCondition": "A required profile condition is not supported by the query runtime. Update the profile requirements or contact support.",
+    "diagnosticId": "Diagnostic ID",
+    "copyDiagnosticId": "Copy ID",
+    "diagnosticIdCopied": "Copied"
+  },
   "List": {
     "entriesTitle": "Entries",
     "entriesDescription": "Knowledge entries distilled from source content.",

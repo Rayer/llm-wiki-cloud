@@ -56,3 +56,22 @@ func TestQueryGenerationIdentityFailsUnpinnedAndMissingOrInvalidConceptRow(t *te
 		t.Fatalf("invalid digest err=%v", err)
 	}
 }
+
+func TestPinCapturesMissingCurrentManifestProvenanceWithoutReread(t *testing.T) {
+	client, backend := newMemoryClient()
+	pinnedStore, err := client.Pin(context.Background())
+	if err != nil {
+		t.Fatal(err)
+	}
+	pinned := pinnedStore.(*Client)
+	if pinned.ViewToken() != "legacy" {
+		t.Fatalf("missing current manifest view token = %q, want legacy provenance", pinned.ViewToken())
+	}
+	if _, err := pinned.QueryGenerationIdentity(context.Background()); !errors.Is(err, store.ErrQueryGenerationUnpinned) {
+		t.Fatalf("legacy view identity error = %v, want ErrQueryGenerationUnpinned", err)
+	}
+	_, reads := backend.snapshots()
+	if reads != 1 {
+		t.Fatalf("missing current manifest reads = %d, want exactly one captured read", reads)
+	}
+}

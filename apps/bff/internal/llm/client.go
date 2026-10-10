@@ -269,7 +269,7 @@ func (c *Client) ChatWithMetadata(ctx context.Context, systemPrompt, userMessage
 	resp, err := c.client.Do(req)
 	if err != nil {
 		finish(callOutcome(ctx, err))
-		return "", "", fmt.Errorf("api call: %w", err)
+		return "", "", fmt.Errorf("api call: %w", &ProviderCallError{Err: err})
 	}
 	defer resp.Body.Close()
 
@@ -283,7 +283,7 @@ func (c *Client) ChatWithMetadata(ctx context.Context, systemPrompt, userMessage
 		} else {
 			finish(callOutcome(ctx, err))
 		}
-		return "", "", fmt.Errorf("read response: %w", err)
+		return "", "", fmt.Errorf("read response: %w", &ProviderCallError{Err: err})
 	}
 	if len(respData) > maxChatResponseBytes {
 		if closeCallAt != nil {
@@ -293,7 +293,7 @@ func (c *Client) ChatWithMetadata(ctx context.Context, systemPrompt, userMessage
 		} else {
 			finish("decode_error")
 		}
-		return "", "", fmt.Errorf("response exceeds %d-byte limit", maxChatResponseBytes)
+		return "", "", &ProviderCallError{Err: errors.New("provider response exceeds size limit")}
 	}
 
 	if resp.StatusCode != 200 {
@@ -304,7 +304,7 @@ func (c *Client) ChatWithMetadata(ctx context.Context, systemPrompt, userMessage
 		} else {
 			finish("provider_error")
 		}
-		return "", "", &HTTPStatusError{StatusCode: resp.StatusCode}
+		return "", "", &ProviderCallError{Err: &HTTPStatusError{StatusCode: resp.StatusCode}}
 	}
 
 	var cr chatResponse
@@ -316,7 +316,7 @@ func (c *Client) ChatWithMetadata(ctx context.Context, systemPrompt, userMessage
 		} else {
 			finish("decode_error")
 		}
-		return "", "", fmt.Errorf("unmarshal: %w", err)
+		return "", "", fmt.Errorf("unmarshal: %w", &ProviderCallError{Err: err})
 	}
 	if len(cr.Choices) == 0 {
 		if closeCallAt != nil {
@@ -326,7 +326,7 @@ func (c *Client) ChatWithMetadata(ctx context.Context, systemPrompt, userMessage
 		} else {
 			finish("decode_error")
 		}
-		return "", "", fmt.Errorf("no choices in response")
+		return "", "", &ProviderCallError{Err: errors.New("provider response has no choices")}
 	}
 	if closeCallAt != nil {
 		f := closeCallAt
@@ -353,6 +353,12 @@ func callOutcome(ctx context.Context, err error) string {
 type HTTPStatusError struct{ StatusCode int }
 
 func (e *HTTPStatusError) Error() string { return fmt.Sprintf("api error %d", e.StatusCode) }
+
+// ProviderCallError marks errors that came from an actual outbound provider call.
+type ProviderCallError struct{ Err error }
+
+func (e *ProviderCallError) Error() string { return "provider call failed" }
+func (e *ProviderCallError) Unwrap() error { return e.Err }
 
 // SafeErrorCategory is suitable for durable experiment receipts.
 func SafeErrorCategory(err error) string {

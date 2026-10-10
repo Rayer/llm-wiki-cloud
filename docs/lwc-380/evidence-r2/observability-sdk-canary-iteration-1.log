@@ -1,0 +1,12 @@
+# github.com/rayer/llm-wiki-bff/internal/observability [github.com/rayer/llm-wiki-bff/internal/observability.test]
+internal/observability/tracing_test.go:14:2: "go.opentelemetry.io/otel/sdk/trace" imported as sdktrace and not used
+internal/observability/tracing_test.go:177:18: cannot use byName["query.request"] (map index expression of type map[string]any) as "go.opentelemetry.io/otel/trace".Span value in assignment: map[string]any does not implement "go.opentelemetry.io/otel/trace".Span (missing method AddEvent)
+internal/observability/tracing_test.go:178:20: cannot use byName["query.storage.read"] (map index expression of type map[string]any) as "go.opentelemetry.io/otel/trace".Span value in assignment: map[string]any does not implement "go.opentelemetry.io/otel/trace".Span (missing method AddEvent)
+internal/observability/tracing_test.go:182:24: cannot index root (variable of interface type "go.opentelemetry.io/otel/trace".Span)
+internal/observability/tracing_test.go:183:26: cannot index child (variable of interface type "go.opentelemetry.io/otel/trace".Span)
+internal/observability/tracing_test.go:184:25: cannot index child (variable of interface type "go.opentelemetry.io/otel/trace".Span)
+FAIL	github.com/rayer/llm-wiki-bff/internal/observability [build failed]
+FAIL
+
+command: go test ./internal/observability -run ^TestActualStorageSDKFailureCannotReachStdoutExporter$ -count=1
+exit code: 1
