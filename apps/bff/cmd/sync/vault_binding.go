@@ -1,6 +1,7 @@
 package main
 
 import (
+	"bytes"
 	"crypto/rand"
 	"encoding/hex"
 	"encoding/json"
@@ -150,10 +151,19 @@ func readVaultBinding(vault string) (vaultBindingConfig, error) {
 		return vaultBindingConfig{}, err
 	}
 	defer f.Close()
-	decoder := json.NewDecoder(io.LimitReader(f, 1<<20))
+	const maxVaultBindingSize = 1 << 20
+	data, err := io.ReadAll(io.LimitReader(f, maxVaultBindingSize+1))
+	if err != nil || len(data) > maxVaultBindingSize {
+		return vaultBindingConfig{}, errors.New("invalid .lwc-sync.json binding file")
+	}
+	decoder := json.NewDecoder(bytes.NewReader(data))
 	decoder.DisallowUnknownFields()
 	var binding vaultBindingConfig
 	if err := decoder.Decode(&binding); err != nil {
+		return vaultBindingConfig{}, errors.New("invalid .lwc-sync.json binding file")
+	}
+	var trailing any
+	if err := decoder.Decode(&trailing); !errors.Is(err, io.EOF) {
 		return vaultBindingConfig{}, errors.New("invalid .lwc-sync.json binding file")
 	}
 	host, err := normalizeAuthOrigin(binding.Host)

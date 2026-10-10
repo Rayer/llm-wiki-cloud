@@ -1,6 +1,7 @@
 package main
 
 import (
+	"bytes"
 	"encoding/json"
 	"net/http"
 	"net/http/httptest"
@@ -307,13 +308,15 @@ func TestRawSyncCLIRealSubprocessBindingRecover(t *testing.T) {
 	})
 
 	for _, scenario := range []struct {
-		name            string
-		local           *vaultBindingConfig
-		bindings        []authSyncBinding
-		body            []byte
-		want            string
-		wantReads       int
-		metadataSymlink bool
+		name              string
+		local             *vaultBindingConfig
+		bindings          []authSyncBinding
+		body              []byte
+		want              string
+		wantReads         int
+		metadataSymlink   bool
+		metadataSuffix    string
+		metadataOverLimit bool
 	}{
 		{name: "unknown binding id", bindings: []authSyncBinding{newServerBinding("", "binding-other", "wiki-original", "project-1", "active")}, want: "active server binding was not found", wantReads: 1},
 		{name: "wrong project", bindings: []authSyncBinding{newServerBinding("", "binding-original", "wiki-original", "project-other", "active")}, want: "active server binding was not found", wantReads: 1},
@@ -327,6 +330,9 @@ func TestRawSyncCLIRealSubprocessBindingRecover(t *testing.T) {
 		{name: "complete local wiki conflict", local: &vaultBindingConfig{Host: "", WikiID: "wiki-other", ProjectID: "project-1", BindingID: "binding-original"}, bindings: []authSyncBinding{newServerBinding("", "binding-original", "wiki-original", "project-1", "active")}, want: "different complete identity", wantReads: 1},
 		{name: "invalid response shape", body: []byte(`{"bindings":"not-an-array"}`), want: "invalid response", wantReads: 1},
 		{name: "malformed local metadata", want: "invalid .lwc-sync.json", wantReads: 0},
+		{name: "malformed local metadata trailer", metadataSuffix: "\nBROKEN", want: "invalid .lwc-sync.json", wantReads: 0},
+		{name: "second local metadata document", metadataSuffix: "\n{}", want: "invalid .lwc-sync.json", wantReads: 0},
+		{name: "oversized local metadata", metadataOverLimit: true, want: "invalid .lwc-sync.json", wantReads: 0},
 		{name: "symlink local metadata", metadataSymlink: true, want: "symlink", wantReads: 0},
 	} {
 		t.Run(scenario.name, func(t *testing.T) {
@@ -341,6 +347,19 @@ func TestRawSyncCLIRealSubprocessBindingRecover(t *testing.T) {
 			}
 			if scenario.name == "malformed local metadata" {
 				if err := os.WriteFile(vaultBindingPath(cli.vault), []byte("{"), 0o600); err != nil {
+					t.Fatal(err)
+				}
+			}
+			if scenario.metadataSuffix != "" || scenario.metadataOverLimit {
+				metadata, err := json.Marshal(vaultBindingConfig{Host: cli.host, WikiID: "wiki-pending", ProjectID: "project-1"})
+				if err != nil {
+					t.Fatal(err)
+				}
+				metadata = append(metadata, scenario.metadataSuffix...)
+				if scenario.metadataOverLimit {
+					metadata = append(metadata, bytes.Repeat([]byte(" "), (1<<20)+1)...)
+				}
+				if err := os.WriteFile(vaultBindingPath(cli.vault), metadata, 0o600); err != nil {
 					t.Fatal(err)
 				}
 			}
@@ -439,9 +458,18 @@ func TestRawSyncCLIRealSubprocessBindingRecover(t *testing.T) {
 		cli.assertRecoveryDidNotMutateServerOrRaw(t)
 	})
 
-	t.Run("exact complete metadata is idempotent", func(t *testing.T) {
+	t.Run("exact complete metadata with trailing whitespace is idempotent", func(t *testing.T) {
 		cli := newBindingRecoveryCLI(t, binary, &vaultBindingConfig{Host: "", WikiID: "wiki-original", ProjectID: "project-1", BindingID: "binding-original"}, []authSyncBinding{newServerBinding("", "binding-original", "wiki-original", "project-1", "active")})
 		cli.fixture.setBindingHosts(cli.host)
+		metadataPath := vaultBindingPath(cli.vault)
+		metadata, err := os.ReadFile(metadataPath)
+		if err != nil {
+			t.Fatal(err)
+		}
+		metadata = append(metadata, []byte(" \n\t")...)
+		if err := os.WriteFile(metadataPath, metadata, 0o600); err != nil {
+			t.Fatal(err)
+		}
 		before, err := os.ReadFile(vaultBindingPath(cli.vault))
 		if err != nil {
 			t.Fatal(err)
