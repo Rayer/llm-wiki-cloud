@@ -111,6 +111,7 @@ type bffSourceProjection struct {
 	Bucket                       string              `json:"bucket"`
 	FirestoreDatabaseID          string              `json:"firestore_database_id"`
 	AuthServiceURL               string              `json:"auth_service_url"`
+	MCPResourceOrigin            string              `json:"mcp_resource_origin"`
 	PipelineJobURL               string              `json:"pipeline_job_url"`
 	ExportJobURL                 string              `json:"export_job_url"`
 	ExportSigningServiceAccount  string              `json:"export_signing_service_account"`
@@ -531,7 +532,7 @@ func decodeBFFSourceProjection(data []byte, environment string) (bffSourceProjec
 	}
 	required := []string{
 		"schema_version", "environment", "target", "gcp_project", "bucket", "firestore_database_id",
-		"auth_service_url", "pipeline_job_url", "export_job_url", "export_signing_service_account",
+		"auth_service_url", "mcp_resource_origin", "pipeline_job_url", "export_job_url", "export_signing_service_account",
 		"allowed_origins", "allowed_hosts", "pipeline_daily_limit", "pipeline_cooldown_seconds",
 		"pipeline_min_new_raw", "pipeline_demo_user_ids", "auth_session_environment", "auth_session_migration",
 		"jwt_secret_reference", "deepseek_api_key_reference", "profile_runtime_audience",
@@ -582,6 +583,9 @@ func validateBFFSourceProjection(p bffSourceProjection, environment string) erro
 	}
 	if err := validateBFFURL(p.AuthServiceURL, environment == "local"); err != nil {
 		return errors.New("selected BFF auth_service_url is invalid")
+	}
+	if err := validateBFFOrigin(p.MCPResourceOrigin, environment == "local"); err != nil {
+		return errors.New("selected BFF mcp_resource_origin is invalid")
 	}
 	if err := validateBFFPipelineURL(p.PipelineJobURL); err != nil {
 		return errors.New("selected BFF pipeline_job_url is invalid")
@@ -684,6 +688,17 @@ func validateBFFURL(raw string, allowLocal bool) error {
 	return errors.New("invalid scheme")
 }
 
+func validateBFFOrigin(raw string, allowLocal bool) error {
+	if err := validateBFFURL(raw, allowLocal); err != nil {
+		return err
+	}
+	u, err := url.Parse(raw)
+	if err != nil || (u.Path != "" && u.Path != "/") || u.RawQuery != "" || strings.HasSuffix(raw, "/") {
+		return errors.New("invalid origin")
+	}
+	return nil
+}
+
 func validateBFFPipelineURL(raw string) error {
 	u, err := url.Parse(raw)
 	if err != nil || u.Scheme != "https" || u.Host != "run.googleapis.com" || u.User != nil || u.RawQuery != "" || u.Fragment != "" {
@@ -764,8 +779,9 @@ func prepareBFFRuntimeConfig(ctx context.Context, root, output string, source bf
 	runtimeFile := runtimeconfig.BFFFile{
 		SchemaVersion: source.SchemaVersion, Environment: source.Environment, Target: source.Target,
 		GCPProject: source.GCPProject, Bucket: source.Bucket, FirestoreDatabaseID: source.FirestoreDatabaseID,
-		AuthServiceURL: source.AuthServiceURL, PipelineJobURL: source.PipelineJobURL,
-		ExportJobURL: source.ExportJobURL, ExportSigningServiceAccount: source.ExportSigningServiceAccount,
+		AuthServiceURL: source.AuthServiceURL, MCPResourceOrigin: source.MCPResourceOrigin,
+		PipelineJobURL: source.PipelineJobURL,
+		ExportJobURL:   source.ExportJobURL, ExportSigningServiceAccount: source.ExportSigningServiceAccount,
 		AllowedOrigins: source.AllowedOrigins, AllowedHosts: source.AllowedHosts,
 		PipelineDailyLimit: source.PipelineDailyLimit, PipelineCooldownSeconds: source.PipelineCooldownSeconds,
 		PipelineMinNewRaw: source.PipelineMinNewRaw, PipelineDemoUserIDs: source.PipelineDemoUserIDs,

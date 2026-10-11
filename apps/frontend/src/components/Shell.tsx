@@ -2,7 +2,7 @@
 
 import { useEffect, useRef, useState } from 'react';
 import { usePathname } from 'next/navigation';
-import { Search, FileText, Brain, Activity, Menu, X, ChevronUp, Shield, Pencil } from 'lucide-react';
+import { Search, FileText, Brain, Activity, Menu, X, ChevronUp, Shield, Pencil, Terminal } from 'lucide-react';
 import { useT } from '@/lib/i18n';
 import { useAuth } from '@/lib/auth';
 import { LoginModal } from './LoginModal';
@@ -87,6 +87,8 @@ function ShellContent({ children }: { children: React.ReactNode }) {
   }[] = [
     { href: '/', label: t('Shell.search'), icon: Search, exact: true },
     ...(!isDemoSession ? [{ href: '/profile', label: t('Shell.profile'), icon: Pencil }] : []),
+    ...(!isDemoSession ? [{ href: '/advanced', label: t('MCPOAuth.nav'), icon: Shield }] : []),
+    ...(!isDemoSession ? [{ href: '/cli', label: t('CLILane.nav'), icon: Terminal }] : []),
     { href: '/sources', label: t('Shell.sources'), icon: FileText, countKey: 'sources' },
     { href: '/concepts', label: t('Shell.concepts'), icon: Brain, countKey: 'concepts' },
     { href: '/status', label: t('Shell.status'), icon: Activity },

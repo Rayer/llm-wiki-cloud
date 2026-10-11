@@ -225,6 +225,9 @@ func TestLoadReviewedEnvironmentsAndQueryIdentity(t *testing.T) {
 		if !ok {
 			t.Fatalf("%s BFF component input omitted: %#v", environment, config.Components["bff"])
 		}
+		if config.BFF.MCPResourceOrigin == "" || bff["mcp_resource_origin"] != config.BFF.MCPResourceOrigin {
+			t.Fatalf("%s BFF component input omitted canonical MCP resource origin: %#v", environment, bff)
+		}
 		if environment == "development" {
 			ref := config.BFF.SecretReferences.TypeSafeJevAPIKey
 			if config.BFF.ProfileRuntimeAudience == "" || config.BFF.ProfileRuntimeServiceAccount == "" || ref == nil ||
@@ -279,7 +282,8 @@ func TestGeneratedBFFInputsFlowIntoNormalizedPlanIdentity(t *testing.T) {
 			t.Fatalf("LoadWithBFFInputs(%s): %v", tc.environment, err)
 		}
 		bff, ok := plan.Components["bff"].(map[string]any)
-		if !ok || plan.BFF.PipelineCooldownSeconds != tc.cooldown || bff["pipeline_cooldown_seconds"] != tc.cooldown || plan.BFF.RuntimeInputs == nil {
+		if !ok || plan.BFF.PipelineCooldownSeconds != tc.cooldown || bff["pipeline_cooldown_seconds"] != tc.cooldown ||
+			plan.BFF.RuntimeInputs == nil || plan.BFF.MCPResourceOrigin == "" || bff["mcp_resource_origin"] != plan.BFF.MCPResourceOrigin {
 			t.Fatalf("%s normalized BFF cooldown=%d component=%#v", tc.environment, plan.BFF.PipelineCooldownSeconds, bff)
 		}
 		if plan.Evidence.ConfigFingerprint == "" {
@@ -293,6 +297,23 @@ func TestGeneratedBFFInputsFlowIntoNormalizedPlanIdentity(t *testing.T) {
 			}
 			if changed.Evidence.ConfigFingerprint == plan.Evidence.ConfigFingerprint {
 				t.Fatal("normalized plan identity ignored the generated BFF cooldown")
+			}
+			invalidOriginPath := writeBFFDescriptorFixture(t, tc.environment, tc.cooldown)
+			data := mustRead(t, invalidOriginPath)
+			var invalid map[string]any
+			if err := json.Unmarshal(data, &invalid); err != nil {
+				t.Fatal(err)
+			}
+			invalid["mcp_resource_origin"] = "http://attacker.example.test"
+			data, err = json.Marshal(invalid)
+			if err != nil {
+				t.Fatal(err)
+			}
+			if err := os.WriteFile(invalidOriginPath, data, 0o600); err != nil {
+				t.Fatal(err)
+			}
+			if _, err := LoadWithBFFInputs(tc.environment, configPath, "bff", invalidOriginPath); err == nil {
+				t.Fatal("normalized plan accepted a non-HTTPS MCP resource origin")
 			}
 		}
 	}

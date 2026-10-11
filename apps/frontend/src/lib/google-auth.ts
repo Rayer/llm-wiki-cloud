@@ -3,6 +3,39 @@
 import { getRuntimeConfig } from './runtime-config';
 
 export const GOOGLE_CANCELLED_COPY = '已取消使用 Google 登入。';
+const googleLoginReturnToKey = 'lwc-google-login-return-to';
+const consentTransactionPattern = /^lwc_mcp_tx_[A-Za-z0-9_-]{43}$/;
+
+function safeConsentReturnTo(value: string, origin: string): string | null {
+  try {
+    const target = new URL(value, origin);
+    const ids = target.searchParams.getAll('transaction_id');
+    if (target.origin !== origin || target.pathname !== '/oauth/consent' || target.hash
+      || target.username || target.password || Array.from(target.searchParams.keys()).length !== 1
+      || ids.length !== 1 || !consentTransactionPattern.test(ids[0])) return null;
+    return `${target.pathname}?transaction_id=${encodeURIComponent(ids[0])}`;
+  } catch {
+    return null;
+  }
+}
+
+function currentConsentReturnTo(): string | null {
+  return safeConsentReturnTo(window.location.href, window.location.origin);
+}
+
+export function consumeGoogleLoginReturnTo(): string {
+  try {
+    const stored = window.sessionStorage.getItem(googleLoginReturnToKey);
+    window.sessionStorage.removeItem(googleLoginReturnToKey);
+    return stored ? safeConsentReturnTo(stored, window.location.origin) ?? '/' : '/';
+  } catch {
+    return '/';
+  }
+}
+
+export function clearGoogleLoginReturnTo(): void {
+  try { window.sessionStorage.removeItem(googleLoginReturnToKey); } catch { /* storage is optional */ }
+}
 
 export type GoogleCompletionResult = {
   status: 'success' | 'cancelled' | 'failure' | 'confirmation_required';
@@ -96,6 +129,13 @@ async function authenticatedJson<T>(path: string, token: string, init: RequestIn
 }
 
 export function startGoogleLogin(): void {
+  try {
+    clearGoogleLoginReturnTo();
+    const returnTo = currentConsentReturnTo();
+    if (returnTo) window.sessionStorage.setItem(googleLoginReturnToKey, returnTo);
+  } catch {
+    // Session storage is optional; the normal post-login landing page remains available.
+  }
   window.location.assign(`${getRuntimeConfig().auth_url}/api/v1/auth/google/login/start`);
 }
 

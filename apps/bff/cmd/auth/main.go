@@ -79,7 +79,7 @@ func newProductionRouter(cfg config.Config, localMode bool, fsClient *firestorec
 
 	r.Use(cors.New(cors.Config{
 		AllowOrigins:     cfg.AllowedOriginsFor(localMode),
-		AllowMethods:     []string{http.MethodGet, http.MethodPost, http.MethodOptions},
+		AllowMethods:     []string{http.MethodGet, http.MethodPost, http.MethodDelete, http.MethodOptions},
 		AllowHeaders:     []string{"Content-Type", "Authorization"},
 		AllowCredentials: true,
 	}))
@@ -153,6 +153,11 @@ func newProductionRouter(cfg config.Config, localMode bool, fsClient *firestorec
 		}
 	}
 	authRoutes.POST("/demo", middleware.NewRateLimiter(10, time.Minute), demoHandler)
+	var rawFirestore *firestore.Client
+	if fsClient != nil {
+		rawFirestore = fsClient.Raw()
+	}
+	auth.RegisterMCPOAuthRoutes(r, authRoutes, cfg, rawFirestore)
 
 	r.GET("/api/v1/public/healthz", func(c *gin.Context) {
 		c.Status(http.StatusOK)

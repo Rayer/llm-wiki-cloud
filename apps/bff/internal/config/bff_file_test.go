@@ -13,7 +13,7 @@ func validBFFFileForTest() BFFFile {
 	return BFFFile{
 		SchemaVersion: 2, Environment: "dev", Target: "bff",
 		GCPProject: "llm-wiki-cloud", Bucket: "llm-wiki-data-dev", FirestoreDatabaseID: "llm-wiki-cloud-dev",
-		AuthServiceURL: "https://auth.dev.example", PipelineJobURL: DefaultPipelineJobURL,
+		AuthServiceURL: "https://auth.dev.example", MCPResourceOrigin: "https://bff.dev.example", PipelineJobURL: DefaultPipelineJobURL,
 		AllowedOrigins: []string{"https://wiki.dev.example"}, AllowedHosts: []string{},
 		PipelineDailyLimit: 2, PipelineCooldownSeconds: 600, PipelineMinNewRaw: 1,
 		PipelineDemoUserIDs: []string{}, AuthSessionEnvironment: "development", AuthSessionMigration: "disabled",
@@ -30,6 +30,7 @@ func validLocalBFFFileForTest() BFFFile {
 	file.Bucket = "llm-wiki-cloud-local"
 	file.FirestoreDatabaseID = "llm-wiki-cloud-local"
 	file.AuthServiceURL = "http://localhost:8081"
+	file.MCPResourceOrigin = "http://localhost:8080"
 	file.AllowedOrigins = []string{"http://localhost:3000"}
 	file.AllowedHosts = []string{"localhost", "127.0.0.1"}
 	file.JWTSecret = strings.Repeat("a", 64)
@@ -165,6 +166,26 @@ func TestDecodeBFFFileRejectsNullAndWrongScalarTypes(t *testing.T) {
 				t.Fatal("DecodeBFFFile() accepted a wrong-typed nullable or array field")
 			}
 		})
+	}
+}
+
+func TestDecodeBFFFileKeepsMCPOriginOptionalForOldRuntimeConfigs(t *testing.T) {
+	file := validBFFFileForTest()
+	file.MCPResourceOrigin = ""
+	decoded, err := DecodeBFFFile(marshalBFFFileForTest(t, file))
+	if err != nil || decoded.MCPResourceOrigin != "" || configFromBFFFile(decoded, "8080").MCPResourceOrigin != "" {
+		t.Fatalf("legacy BFF config with no MCP origin = %+v, err=%v", decoded, err)
+	}
+
+	file.MCPResourceOrigin = "https://bff.dev.example"
+	decoded, err = DecodeBFFFile(marshalBFFFileForTest(t, file))
+	if err != nil || configFromBFFFile(decoded, "8080").MCPResourceOrigin != file.MCPResourceOrigin {
+		t.Fatalf("configured MCP origin did not reach the consumer: %+v, err=%v", decoded, err)
+	}
+
+	file.MCPResourceOrigin = "https://bff.dev.example/api"
+	if _, err := DecodeBFFFile(marshalBFFFileForTest(t, file)); err == nil {
+		t.Fatal("pathful MCP resource origin was accepted")
 	}
 }
 

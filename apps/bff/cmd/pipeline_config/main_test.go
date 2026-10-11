@@ -279,6 +279,9 @@ func TestRealPklBFFLocalPrepareUsesSelectedSharedSecretVersion(t *testing.T) {
 		descriptor.DeepSeekAPIKeyReference.Resource != resource {
 		t.Fatalf("BFF descriptor did not preserve the exact selected shared binding: %#v", descriptor.DeepSeekAPIKeyReference)
 	}
+	if descriptor.MCPResourceOrigin != "http://localhost:18080" {
+		t.Fatalf("BFF descriptor resource origin = %q, want the prepared canonical listener origin", descriptor.MCPResourceOrigin)
+	}
 	if strings.Contains(string(descriptorBytes), payload) || strings.Contains(descriptorLog, payload) {
 		t.Fatal("BFF descriptor or its log contains the synthetic secret payload")
 	}
@@ -302,6 +305,9 @@ func TestRealPklBFFLocalPrepareUsesSelectedSharedSecretVersion(t *testing.T) {
 	generated, err := runtimeconfig.DecodeBFFFile(bffBytes)
 	if err != nil || generated.DeepSeekAPIKey != payload {
 		t.Fatalf("generated BFF runtime file did not use the selected synthetic payload: err=%v", err)
+	}
+	if generated.MCPResourceOrigin != descriptor.MCPResourceOrigin {
+		t.Fatalf("generated BFF runtime origin = %q, want %q", generated.MCPResourceOrigin, descriptor.MCPResourceOrigin)
 	}
 	if strings.Contains(bffLog, payload) {
 		t.Fatal("BFF prepare log contains the synthetic secret payload")
@@ -718,8 +724,9 @@ func localBFFSourceJSON(root, jwtPath string, cooldown int) string {
 	value := map[string]any{
 		"schema_version": 2, "environment": "local", "target": "bff", "gcp_project": "llm-wiki-cloud",
 		"bucket": "llm-wiki-cloud-local", "firestore_database_id": "llm-wiki-cloud-local",
-		"auth_service_url": "http://localhost:8081", "pipeline_job_url": "https://run.googleapis.com/v2/projects/llm-wiki-cloud/locations/asia-east1/jobs/olw-pipeline:run",
-		"export_job_url": "", "export_signing_service_account": "", "allowed_origins": []string{"http://localhost:3000"},
+		"auth_service_url": "http://localhost:8081", "mcp_resource_origin": "http://localhost:18080",
+		"pipeline_job_url": "https://run.googleapis.com/v2/projects/llm-wiki-cloud/locations/asia-east1/jobs/olw-pipeline:run",
+		"export_job_url":   "", "export_signing_service_account": "", "allowed_origins": []string{"http://localhost:3000"},
 		"allowed_hosts": []string{"localhost", "127.0.0.1"}, "pipeline_daily_limit": 2, "pipeline_cooldown_seconds": cooldown,
 		"pipeline_min_new_raw": 1, "pipeline_demo_user_ids": []string{}, "auth_session_environment": "llm-wiki-cloud-local",
 		"auth_session_migration": "disabled", "registration_enabled": nil,

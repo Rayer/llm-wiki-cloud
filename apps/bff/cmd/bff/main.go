@@ -385,6 +385,9 @@ func newProductionRouter(
 	r.POST("/internal/profile/dispatch", productionProfileDispatcher(hV1, cfg).Gin)
 	r.GET("/api/v1/query/config", hV1.QueryConfig)
 	r.Any("/mcp", gin.WrapH(hV1.MCPHandler()))
+	r.Any("/mcp/projects/:projectID", hV1.MCPProjectOAuthHandler(cfg.AuthSessionEnvironment, cfg.MCPResourceOrigin))
+	r.GET("/.well-known/oauth-protected-resource/mcp/projects/:projectID",
+		handlerv1.MCPProjectResourceMetadataHandler(cfg.MCPResourceOrigin, cfg.AuthServiceURL))
 
 	// Temporary Stage A compatibility lane for the frontend Auth cutover.
 	var sessions *auth.RefreshSessionAuthority

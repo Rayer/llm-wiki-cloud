@@ -6,7 +6,9 @@ import { useAuth } from '@/lib/auth';
 import { useLocale } from '@/lib/i18n';
 import {
   cancelGoogleLink,
+  clearGoogleLoginReturnTo,
   confirmGoogleLink,
+  consumeGoogleLoginReturnTo,
   GOOGLE_CANCELLED_COPY,
   GoogleAuthError,
   readGoogleCompletionResult,
@@ -53,12 +55,14 @@ export function GoogleCompletionClient() {
         const [result, session] = await Promise.all([readGoogleCompletionResult(), getHydratedSession()]);
         if (!mountedRef.current || (session && !session.isCurrent())) return;
         if (result.status === 'failure' || result.status === 'cancelled') {
+          clearGoogleLoginReturnTo();
           setError(new GoogleAuthError(result.error || 'Unable to continue with Google sign-in.', 200, result.support_ref));
           setState('failed');
           return;
         }
 
         if (!session) {
+          clearGoogleLoginReturnTo();
           setError(new GoogleAuthError('Unable to continue with Google sign-in.', 502, result.support_ref));
           setState('failed');
           return;
@@ -68,15 +72,17 @@ export function GoogleCompletionClient() {
           if (result.jit_provisioned) {
             window.dispatchEvent(new CustomEvent('lwc-google-jit-completed', { detail: { userId: tokenUserId(token) } }));
           }
-          router.replace('/');
+          router.replace(consumeGoogleLoginReturnTo());
           return;
         }
 
+        clearGoogleLoginReturnTo();
         const completion = await readGoogleLinkCompletion(token);
         if (!mountedRef.current || !session.isCurrent()) return;
         setPending(completion);
         setState('confirming');
       } catch (completionError) {
+        clearGoogleLoginReturnTo();
         if (!mountedRef.current) return;
         const failure = completionError instanceof GoogleAuthError
           ? completionError
