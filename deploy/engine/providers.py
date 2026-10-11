@@ -928,7 +928,13 @@ class Providers:
             self.project(stage='frontend-project-readback',
                          frontend_diagnostic=readback if diagnostic_enabled else None)
             project_root = ROOT / cfg['root_directory']
+            cli_release_metadata_url = ''
+            if self.p.get('environment') == 'development':
+                config_base, separator, suffix = cfg['config_url'].partition('/frontend-config.json')
+                if separator and not suffix:
+                    cli_release_metadata_url = config_base + '/cli/stable/latest.json'
             env = dict(os.environ, NEXT_PUBLIC_CONFIG_URL=cfg['config_url'],
+                       NEXT_PUBLIC_CLI_RELEASE_METADATA_URL=cli_release_metadata_url,
                        VERCEL_ORG_ID=os.environ['VERCEL_TEAM_ID'],
                        VERCEL_PROJECT_ID=os.environ['VERCEL_PROJECT_ID'])
             env.pop('NOW_ORG_ID', None)

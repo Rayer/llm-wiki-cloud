@@ -25,7 +25,7 @@ function collectRunBlocks(value, blocks = []) {
 
 test('r2 registered release and recovery workflows use explicit artifact inputs', async () => {
   const files = (await readdir(workflowDirectory)).filter((file) => file.endsWith('.yml')).sort();
-  assert.deepEqual(files, ['cd-auth-image-diagnostic.yml', 'cd.yml', 'ci.yml', 'deploy-dev.yml', 'generate-frontend-config.yml', 'promote-production.yml', 'provision-exportjob-dev.yml', 'recover-deployment.yml']);
+  assert.deepEqual(files, ['cd-auth-image-diagnostic.yml', 'cd.yml', 'ci.yml', 'cli-release.yml', 'deploy-dev.yml', 'generate-frontend-config.yml', 'promote-production.yml', 'provision-exportjob-dev.yml', 'recover-deployment.yml']);
   for (const [file, environment, branch] of [['deploy-dev.yml', 'development', 'develop'], ['promote-production.yml', 'production', 'main']]) {
     const parsed = parseYaml(await workflow(file));
     assert.deepEqual(Object.keys(parsed.on), ['workflow_dispatch']);

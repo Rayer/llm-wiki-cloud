@@ -102,12 +102,29 @@ class LocalDevMakefileTests(unittest.TestCase):
             )
             self.assertEqual(
                 (frontend / ".env.local").read_text(),
-                "NEXT_PUBLIC_CONFIG_URL=/frontend-config.json\n",
+                "NEXT_PUBLIC_CONFIG_URL=/frontend-config.json\nNEXT_PUBLIC_CLI_RELEASE_METADATA_URL=https://storage.googleapis.com/llm-wiki-frontend-config-dev/cli/stable/latest.json\n",
             )
             self.assertEqual(
                 (config_output / "local" / "frontend-config.json").read_text(),
                 '{"schema_version":1,"api_url":"http://localhost:18080","auth_url":"http://localhost:18081"}\n',
             )
+
+    def test_legacy_deploy_slot_derives_cli_metadata_from_frontend_config(self):
+        result = subprocess.run(
+            ["bash", "-c", 'ROOT="$1"; source "$ROOT/deploy/components/frontend.sh" help; frontend_cli_release_metadata_url "$2"', "_", str(REPO), "https://storage.googleapis.com/llm-wiki-frontend-config-dev/frontend-config.json"],
+            check=True,
+            capture_output=True,
+            text=True,
+        )
+        self.assertEqual(result.stdout.splitlines()[-1], "https://storage.googleapis.com/llm-wiki-frontend-config-dev/cli/stable/latest.json")
+
+        missing_suffix = subprocess.run(
+            ["bash", "-c", 'ROOT="$1"; source "$ROOT/deploy/components/frontend.sh" help; frontend_cli_release_metadata_url "$2"', "_", str(REPO), "https://config.example.test/not-frontend-config.json"],
+            check=True,
+            capture_output=True,
+            text=True,
+        )
+        self.assertEqual(missing_suffix.stdout.splitlines()[-1], "frontend component: preflight|freeze|mutate|reconcile|rollback")
 
     def test_native_targets_use_worktree_supervisor_and_same_fixture_config(self):
         output = self.make_dry_run("local-start", "BFF_PORT=18080")

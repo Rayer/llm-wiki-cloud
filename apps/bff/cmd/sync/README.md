@@ -1,20 +1,53 @@
 # lwc-sync CLI 認證與 raw sync
 
-`lwc-sync` 的認證使用 Auth/control-plane origin，例如：
+解壓後請在 CLI 所在資料夾執行工具。`--version` 是唯一的頂層旗標；它不讀取設定、Vault 或網路：
 
 ```sh
-lwc-sync auth login --host https://auth.example.test
-lwc-sync auth status
-lwc-sync projects
-lwc-sync init --vault ~/Wiki --host https://auth.example.test --project-id <PROJECT_ID>
-lwc-sync push --vault ~/Wiki
-lwc-sync push --vault ~/Wiki --sync
-lwc-sync bind --vault ~/Wiki --project-id <PROJECT_ID>
-lwc-sync binding list
-lwc-sync binding recover --vault ~/Wiki --host https://auth.example.test --project-id <PROJECT_ID> --binding-id <BINDING_ID> --confirm-same-vault
-lwc-sync binding reauthorize --vault ~/Wiki --project-id <PROJECT_ID>
-lwc-sync binding revoke --project-id <PROJECT_ID> --binding-id <BINDING_ID>
-lwc-sync auth logout
+./lwc-sync --version
+```
+
+Windows PowerShell 使用：
+
+```powershell
+.\lwc-sync.exe --version
+```
+
+下載封存檔後，先解壓縮並在解壓資料夾開啟終端機，再執行上方對應平台的 `--version` 命令。
+
+以下命令是帶有明確替換欄位的操作範例，不代表已執行。POSIX shell 請使用絕對 Vault 根目錄；引號中的 `~` 不會展開：
+
+```sh
+AUTH_ORIGIN='<Auth origin for this environment>'
+PROJECT_ID='<current Project ID>'
+WIKI_ROOT='/absolute/path/to/your wiki'
+./lwc-sync auth login --host "$AUTH_ORIGIN" --no-browser
+./lwc-sync auth status
+./lwc-sync projects
+./lwc-sync init --vault "$WIKI_ROOT" --host "$AUTH_ORIGIN" --project-id "$PROJECT_ID"
+./lwc-sync push --vault "$WIKI_ROOT"
+./lwc-sync push --vault "$WIKI_ROOT" --sync
+./lwc-sync binding list --host "$AUTH_ORIGIN"
+./lwc-sync binding recover --vault "$WIKI_ROOT" --host "$AUTH_ORIGIN" --project-id "$PROJECT_ID" --binding-id '<verified binding ID>' --confirm-same-vault
+./lwc-sync binding reauthorize --vault "$WIKI_ROOT" --project-id "$PROJECT_ID"
+./lwc-sync auth logout
+```
+
+Windows PowerShell uses its own quoting:
+
+```powershell
+$AuthOrigin = '<Auth origin for this environment>'
+$ProjectId = '<current Project ID>'
+$WikiRoot = 'C:\Users\your-name\Documents\Your Wiki'
+.\lwc-sync.exe auth login --host $AuthOrigin --no-browser
+.\lwc-sync.exe auth status
+.\lwc-sync.exe projects
+.\lwc-sync.exe init --vault $WikiRoot --host $AuthOrigin --project-id $ProjectId
+.\lwc-sync.exe push --vault $WikiRoot
+.\lwc-sync.exe push --vault $WikiRoot --sync
+.\lwc-sync.exe binding list --host $AuthOrigin
+.\lwc-sync.exe binding recover --vault $WikiRoot --host $AuthOrigin --project-id $ProjectId --binding-id '<verified binding ID>' --confirm-same-vault
+.\lwc-sync.exe binding reauthorize --vault $WikiRoot --project-id $ProjectId
+.\lwc-sync.exe auth logout
 ```
 
 登入會顯示短碼與驗證網址，並嘗試開啟瀏覽器。Headless 環境可加 `--no-browser`，在另一台已登入 Web 的裝置輸入短碼並明確核准。核准後 CLI 才會輪詢取得憑證；核准頁不會自動授權。
@@ -29,4 +62,20 @@ raw sync 每檔最多 10 MiB、每個 raw tree 最多 10,000 個檔案及 512 Mi
 
 `bind` 與 `binding` 命令仍保留供既有流程使用；它們只管理授權，不傳輸檔案。未使用 `auth`、`projects`、`bind`、`binding`、`init` 或 `push` 子命令的舊版直接 GCS sync invocation 仍依原有設定執行。
 
-若本機 `.lwc-sync.json` 遺失或只剩未完成的空 binding ID，但 Auth 仍列出原本 vault 的 active binding，先執行 `lwc-sync binding list --host AUTH_ORIGIN` 核對 Project、Wiki 與 binding ID，再明確執行 `binding recover`。恢復必須帶 `--confirm-same-vault`，只會原子更新本機 metadata，不會建立、撤銷或重新授權 server binding，也不會傳輸 raw 檔案。完整本機 identity 與目前 server binding 不同時，恢復會拒絕覆寫。
+若本機 `.lwc-sync.json` 遺失或只有未完成的 metadata，且 Auth 仍列出原本 Vault 的 active binding，先核對本機 host、Project、Wiki 與 binding ID。只有確認是同一個 Vault 且 identity 相符時才 recover；只有 binding 已撤銷且 identity 相符時才 reauthorize。若 host、Project、Wiki 或 binding 不符，請停止並核對，不要 recover 或重新授權。Recover 必須帶 `--confirm-same-vault`，只會原子更新本機 metadata，不會建立、撤銷或重新授權 server binding，也不會傳輸 raw 檔案。
+
+POSIX shell 的核對與恢復命令（在 CLI 所在資料夾執行）：
+
+```sh
+./lwc-sync binding list --host "$AUTH_ORIGIN"
+./lwc-sync binding recover --vault "$WIKI_ROOT" --host "$AUTH_ORIGIN" --project-id "$PROJECT_ID" --binding-id '<verified binding ID>' --confirm-same-vault
+./lwc-sync binding reauthorize --vault "$WIKI_ROOT" --project-id "$PROJECT_ID"
+```
+
+Windows PowerShell 的對應命令：
+
+```powershell
+.\lwc-sync.exe binding list --host $AuthOrigin
+.\lwc-sync.exe binding recover --vault $WikiRoot --host $AuthOrigin --project-id $ProjectId --binding-id '<verified binding ID>' --confirm-same-vault
+.\lwc-sync.exe binding reauthorize --vault $WikiRoot --project-id $ProjectId
+```

@@ -1,0 +1,265 @@
+name: CLI release
+
+on:
+  push:
+    tags:
+      - 'cli/v*'
+  workflow_dispatch:
+    inputs:
+      publish:
+        description: Publish the selected matching CLI tag to the configured release objects
+        required: true
+        type: boolean
+        default: false
+      source_revision:
+        description: Full Git SHA of the selected branch or cli/v<version> tag; blank uses the selected ref SHA
+        required: false
+        type: string
+        default: ''
+      version:
+        description: Full SemVer for a matching cli/v<version> tag; tag pushes derive this; build-only uses dev
+        required: true
+        type: string
+        default: dev
+      channel:
+        description: Release channel; tag pushes derive this; build-only uses dev
+        required: true
+        type: choice
+        options:
+          - dev
+          - stable
+          - prerelease
+        default: dev
+
+permissions:
+  contents: read
+
+jobs:
+  validate:
+    runs-on: ubuntu-latest
+    outputs:
+      publish: ${{ steps.release.outputs.publish }}
+      version: ${{ steps.release.outputs.version }}
+      channel: ${{ steps.release.outputs.channel }}
+      source_sha: ${{ steps.identity.outputs.source_sha }}
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+        with:
+          fetch-depth: 0
+      - id: release
+        name: Normalize workflow input or release tag identity
+        env:
+          EVENT_NAME: ${{ github.event_name }}
+          EVENT_REF: ${{ github.ref }}
+          EVENT_SHA: ${{ github.sha }}
+          INPUT_PUBLISH: ${{ github.event.inputs.publish }}
+          INPUT_VERSION: ${{ github.event.inputs.version }}
+          INPUT_CHANNEL: ${{ github.event.inputs.channel }}
+          INPUT_SOURCE_REVISION: ${{ github.event.inputs.source_revision }}
+        run: |
+          set -Eeuo pipefail
+          python3 apps/bff/scripts/normalize_cli_release_event.py \
+            --event "$EVENT_NAME" \
+            --ref "$EVENT_REF" \
+            --sha "$EVENT_SHA" \
+            --publish "${INPUT_PUBLISH:-false}" \
+            --version "${INPUT_VERSION:-dev}" \
+            --channel "${INPUT_CHANNEL:-dev}" \
+            --source-revision "${INPUT_SOURCE_REVISION:-}" \
+            --output "$GITHUB_OUTPUT"
+      - id: identity
+        name: Validate source, tag, and channel identity
+        env:
+          PUBLISH: ${{ steps.release.outputs.publish }}
+          RELEASE_VERSION: ${{ steps.release.outputs.version }}
+          RELEASE_CHANNEL: ${{ steps.release.outputs.channel }}
+          SOURCE_REVISION: ${{ steps.release.outputs.source_revision }}
+          GIT_REF: ${{ github.ref }}
+          GITHUB_SHA: ${{ github.sha }}
+        run: python3 apps/bff/scripts/validate_cli_source.py --root "$GITHUB_WORKSPACE" --output "$GITHUB_OUTPUT"
+
+  build:
+    needs: validate
+    runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - target: darwin-arm64
+            goos: darwin
+            goarch: arm64
+            binary: lwc-sync
+          - target: darwin-amd64
+            goos: darwin
+            goarch: amd64
+            binary: lwc-sync
+          - target: windows-amd64
+            goos: windows
+            goarch: amd64
+            binary: lwc-sync.exe
+          - target: linux-amd64
+            goos: linux
+            goarch: amd64
+            binary: lwc-sync
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+        with:
+          ref: ${{ needs.validate.outputs.source_sha }}
+          fetch-depth: 0
+      - uses: actions/setup-go@d35c59abb061a4a6fb18e82ac0862c26744d6ab5 # v5.5.0
+        with:
+          go-version-file: apps/bff/go.mod
+          cache-dependency-path: apps/bff/go.sum
+      - name: Cross-compile CLI
+        env:
+          TARGET: ${{ matrix.target }}
+          GOOS_TARGET: ${{ matrix.goos }}
+          GOARCH_TARGET: ${{ matrix.goarch }}
+          BINARY_NAME: ${{ matrix.binary }}
+          RELEASE_VERSION: ${{ needs.validate.outputs.version }}
+          RELEASE_CHANNEL: ${{ needs.validate.outputs.channel }}
+          SOURCE_SHA: ${{ needs.validate.outputs.source_sha }}
+        run: |
+          set -Eeuo pipefail
+          output="$RUNNER_TEMP/cli-bin/$TARGET/$BINARY_NAME"
+          mkdir -p "$(dirname "$output")"
+          make -C apps/bff build-sync-target GOOS="$GOOS_TARGET" GOARCH="$GOARCH_TARGET" OUTPUT="$output" CLI_VERSION="$RELEASE_VERSION" CLI_COMMIT="$SOURCE_SHA" CLI_CHANNEL="$RELEASE_CHANNEL"
+      - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
+        with:
+          name: cli-bin-${{ matrix.target }}
+          path: ${{ runner.temp }}/cli-bin
+          if-no-files-found: error
+          retention-days: 7
+
+  package:
+    needs: [validate, build]
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+        with:
+          ref: ${{ needs.validate.outputs.source_sha }}
+      - uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4.3.0
+        with:
+          pattern: cli-bin-*
+          path: ${{ runner.temp }}/cli-bin
+          merge-multiple: true
+      - name: Test and package deterministic archives
+        env:
+          RELEASE_VERSION: ${{ needs.validate.outputs.version }}
+          RELEASE_CHANNEL: ${{ needs.validate.outputs.channel }}
+          SOURCE_SHA: ${{ needs.validate.outputs.source_sha }}
+        run: |
+          set -Eeuo pipefail
+          python3 -m unittest discover -s apps/bff/scripts -p 'test_cli_*.py'
+          python3 apps/bff/scripts/package_cli_release.py \
+            --version "$RELEASE_VERSION" \
+            --commit "$SOURCE_SHA" \
+            --channel "$RELEASE_CHANNEL" \
+            --binary-dir "$RUNNER_TEMP/cli-bin" \
+            --readme apps/bff/cmd/sync/README.md \
+            --output-dir "$RUNNER_TEMP/cli-release"
+      - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
+        with:
+          name: cli-release-${{ needs.validate.outputs.version }}
+          path: ${{ runner.temp }}/cli-release/releases/${{ needs.validate.outputs.version }}
+          if-no-files-found: error
+          retention-days: 7
+
+  native-smoke:
+    needs: [validate, build, package]
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - runner: macos-latest
+            target: darwin-arm64
+            goos: darwin
+            goarch: arm64
+          - runner: macos-15-intel
+            target: darwin-amd64
+            goos: darwin
+            goarch: amd64
+          - runner: windows-latest
+            target: windows-amd64
+            goos: windows
+            goarch: amd64
+          - runner: ubuntu-latest
+            target: linux-amd64
+            goos: linux
+            goarch: amd64
+    runs-on: ${{ matrix.runner }}
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+        with:
+          ref: ${{ needs.validate.outputs.source_sha }}
+      - uses: actions/setup-go@d35c59abb061a4a6fb18e82ac0862c26744d6ab5 # v5.5.0
+        with:
+          go-version-file: apps/bff/go.mod
+          cache-dependency-path: apps/bff/go.sum
+      - uses: actions/setup-node@cdca7365b2dadb8aad0a33bc7601856ffabcc48e # v4.3.0
+        with:
+          node-version: 22
+      - uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4.3.0
+        with:
+          name: cli-release-${{ needs.validate.outputs.version }}
+          path: ${{ runner.temp }}/cli-release
+      - name: Extract archive and run the native binary
+        if: runner.os != 'Windows'
+        env:
+          RELEASE_VERSION: ${{ needs.validate.outputs.version }}
+          GOOS_TARGET: ${{ matrix.goos }}
+          GOARCH_TARGET: ${{ matrix.goarch }}
+        run: python3 apps/bff/scripts/smoke_cli_archive.py --release-dir "$RUNNER_TEMP/cli-release" --version "$RELEASE_VERSION" --goos "$GOOS_TARGET" --goarch "$GOARCH_TARGET"
+      - name: Extract archive and run the native Windows binary
+        if: runner.os == 'Windows'
+        shell: pwsh
+        env:
+          RELEASE_VERSION: ${{ needs.validate.outputs.version }}
+          GOOS_TARGET: ${{ matrix.goos }}
+          GOARCH_TARGET: ${{ matrix.goarch }}
+        run: python apps/bff/scripts/smoke_cli_archive.py --release-dir "$env:RUNNER_TEMP/cli-release" --version "$env:RELEASE_VERSION" --goos "$env:GOOS_TARGET" --goarch "$env:GOARCH_TARGET"
+      - name: Execute generated POSIX argv fixture
+        if: runner.os != 'Windows'
+        run: node --experimental-strip-types apps/bff/scripts/test_cli_shell_argv.mjs
+      - name: Execute generated PowerShell argv fixture
+        if: runner.os == 'Windows'
+        shell: pwsh
+        run: node --experimental-strip-types apps/bff/scripts/test_cli_shell_argv.mjs
+
+  publish:
+    if: ${{ needs.validate.outputs.publish == 'true' }}
+    needs: [validate, build, package, native-smoke]
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      id-token: write
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+        with:
+          ref: ${{ needs.validate.outputs.source_sha }}
+      - uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4.3.0
+        with:
+          name: cli-release-${{ needs.validate.outputs.version }}
+          path: ${{ runner.temp }}/cli-release
+      - name: Require configured release resource references
+        env:
+          RELEASE_BUCKET: llm-wiki-frontend-config-dev
+        run: |
+          set -Eeuo pipefail
+          test -n "$RELEASE_BUCKET"
+      - uses: google-github-actions/auth@7c6bc770dae815cd3e89ee6cdf493a5fab2cc093 # v3
+        with:
+          workload_identity_provider: ${{ secrets.WIF_PROVIDER }}
+          service_account: ${{ secrets.WIF_SERVICE_ACCOUNT }}
+      - name: Publish immutable objects and conditionally update stable latest
+        env:
+          RELEASE_BUCKET: llm-wiki-frontend-config-dev
+          RELEASE_PUBLIC_BASE_URL: https://storage.googleapis.com/llm-wiki-frontend-config-dev
+          RELEASE_VERSION: ${{ needs.validate.outputs.version }}
+        run: |
+          set -Eeuo pipefail
+          cd apps/bff
+          go run ./cmd/cli-release-publish \
+            --bucket "$RELEASE_BUCKET" \
+            --public-base-url "$RELEASE_PUBLIC_BASE_URL" \
+            --release-dir "$RUNNER_TEMP/cli-release"
