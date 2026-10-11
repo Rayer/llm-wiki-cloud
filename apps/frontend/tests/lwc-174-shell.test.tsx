@@ -118,6 +118,18 @@ describe('LWC-174 production Shell rename behavior', () => {
     expect(screen.queryByRole('link', { name: 'Project settings' })).toBeNull();
   });
 
+  it('routes CLI setup from the sidebar and hides it in the trial Demo session', async () => {
+    localStorage.setItem('locale', 'en');
+    renderShell();
+    expect(await screen.findByRole('link', { name: 'CLI setup' })).toHaveProperty('href', expect.stringContaining('/cli'));
+
+    cleanup();
+    mocks.isDemoSession = true;
+    renderShell();
+    await screen.findByRole('button', { name: 'Project Alpha' });
+    expect(screen.queryByRole('link', { name: 'CLI setup' })).toBeNull();
+  });
+
   it.each([
     ['en', 'Account settings', 'Sign out', 'Close account settings'],
     ['zh-TW', '帳號設定', '登出', '關閉帳號設定'],
