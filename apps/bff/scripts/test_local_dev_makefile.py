@@ -102,7 +102,7 @@ class LocalDevMakefileTests(unittest.TestCase):
             )
             self.assertEqual(
                 (frontend / ".env.local").read_text(),
-                "NEXT_PUBLIC_CONFIG_URL=/frontend-config.json\n",
+                "NEXT_PUBLIC_CONFIG_URL=/frontend-config.json\nNEXT_PUBLIC_CLI_RELEASE_METADATA_URL=https://storage.googleapis.com/llm-wiki-frontend-config-dev/cli/stable/latest.json\n",
             )
             self.assertEqual(
                 (config_output / "local" / "frontend-config.json").read_text(),

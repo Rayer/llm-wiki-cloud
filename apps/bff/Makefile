@@ -20,7 +20,11 @@ SYNTO_ARTIFACT_URL := https://files.pythonhosted.org/packages/4a/e9/41c6b61338d9
 SYNTO_SHA256 := 4bc8dcf14b53f45fac32ce737ecf878f1a46d6d0b010c7decbe6c3b7b10afa77
 TEST_ENV := env -u LLM_API_KEY -u DEEPSEEK_API_KEY -u SYNTO_API_KEY -u OPENAI_API_KEY -u ANTHROPIC_API_KEY -u GEMINI_API_KEY -u TYPESAFE_API_KEY -u TYPESAFE_JEV_API_KEY -u LWC331_TEST_API_KEY
 
-.PHONY: help ensure-pkl docker-build docker-build-export-job docker-push deploy deploy-dev deploy-prod all build-sync setup local-config local-fixture-config auth-config-local local-synto-runtime local-synto-runtime-test local-worker-build local-fixture local-start dev support-bff support-frontend support-pipeline bff-local auth-local frontend-local local-stop kill-local pipeline-test test-flash-execution vet test build
+.PHONY: help ensure-pkl docker-build docker-build-export-job docker-push deploy deploy-dev deploy-prod all build-sync build-sync-target setup local-config local-fixture-config auth-config-local local-synto-runtime local-synto-runtime-test local-worker-build local-fixture local-start dev support-bff support-frontend support-pipeline bff-local auth-local frontend-local local-stop kill-local pipeline-test test-flash-execution vet test build
+
+CLI_VERSION ?= dev
+CLI_COMMIT ?= $(shell git rev-parse --verify HEAD 2>/dev/null || printf unknown)
+CLI_LDFLAGS = -X main.version=$(CLI_VERSION) -X main.commit=$(CLI_COMMIT)
 
 help:
 	@printf '%s\n' \
@@ -54,7 +58,11 @@ deploy-prod:
 all: docker-build docker-push deploy-dev
 
 build-sync:
-	go build -o lwc-sync ./cmd/sync/
+	go build -ldflags '$(CLI_LDFLAGS)' -o lwc-sync ./cmd/sync/
+
+build-sync-target:
+	@test -n "$(GOOS)" -a -n "$(GOARCH)" -a -n "$(OUTPUT)"
+	CGO_ENABLED=0 GOOS=$(GOOS) GOARCH=$(GOARCH) go build -ldflags '$(CLI_LDFLAGS)' -o "$(OUTPUT)" ./cmd/sync/
 
 ensure-pkl:
 	bash ../../scripts/ensure-pkl.sh "$(PKL_BIN)"

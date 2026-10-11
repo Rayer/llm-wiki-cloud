@@ -281,7 +281,7 @@ frontend_freeze() {
 }
 
 frontend_mutate() {
-  local config_url team vercel_environment target deployment_json deployment_id deployment_url candidate_url alias inventory candidates candidate_count reused=0
+  local config_url team vercel_environment target cli_release_metadata_url deployment_json deployment_id deployment_url candidate_url alias inventory candidates candidate_count reused=0
   journal_init
   set_mutation_status frontend unknown
   team=$(plan_json '.frontend.team_slug'); config_url=$(plan_json '.frontend.config_url')
@@ -293,6 +293,10 @@ frontend_mutate() {
   fi
   revalidate_before_provider
   vercel_environment=$(frontend_vercel_environment); target=$(frontend_deploy_target)
+  cli_release_metadata_url=''
+  if [[ "$target" != "production" ]]; then
+    cli_release_metadata_url='https://storage.googleapis.com/llm-wiki-frontend-config-dev/cli/stable/latest.json'
+  fi
   inventory=$(vercel_get_deployment_inventory) || { journal_rejected frontend; set_mutation_status frontend failed; write_component_result frontend failed '{}' deployment_inventory_unreadable; return 1; }
   candidates=$(vercel_exact_deployment_candidates "$inventory") || { journal_rejected frontend; set_mutation_status frontend failed; write_component_result frontend failed '{}' deployment_inventory_malformed; return 1; }
   candidate_count=$(jq -er 'length' <<<"$candidates")
@@ -310,7 +314,7 @@ frontend_mutate() {
     vercel_validate_deployment "$deployment_json" "$deployment_id" "$deployment_url" || { journal_rejected frontend; set_mutation_status frontend failed; write_component_result frontend failed '{}' deployment_inspect_mismatch; return 1; }
   else
     (cd "$ROOT/apps/frontend" && npm ci --ignore-scripts >/dev/null)
-    (cd "$ROOT" && NEXT_PUBLIC_CONFIG_URL="$config_url" timeout --signal=TERM --kill-after=5s 120s vercel pull --yes --environment="$vercel_environment" --scope "$team" --token "${VERCEL_TOKEN:?}" >/dev/null && NEXT_PUBLIC_CONFIG_URL="$config_url" timeout --signal=TERM --kill-after=5s 300s vercel build --scope "$team" --token "${VERCEL_TOKEN:?}" $([[ "$target" == production ]] && printf '%s' '--prod') >/dev/null)
+    (cd "$ROOT" && NEXT_PUBLIC_CONFIG_URL="$config_url" NEXT_PUBLIC_CLI_RELEASE_METADATA_URL="$cli_release_metadata_url" timeout --signal=TERM --kill-after=5s 120s vercel pull --yes --environment="$vercel_environment" --scope "$team" --token "${VERCEL_TOKEN:?}" >/dev/null && NEXT_PUBLIC_CONFIG_URL="$config_url" NEXT_PUBLIC_CLI_RELEASE_METADATA_URL="$cli_release_metadata_url" timeout --signal=TERM --kill-after=5s 300s vercel build --scope "$team" --token "${VERCEL_TOKEN:?}" $([[ "$target" == production ]] && printf '%s' '--prod') >/dev/null)
     vercel_project_authority || { journal_rejected frontend; die "Vercel project authority changed before frontend deployment"; }
     vercel_verify_frozen_frontend || { journal_rejected frontend; die "frontend alias authority changed from the frozen rollback snapshot"; }
     revalidate_before_provider
