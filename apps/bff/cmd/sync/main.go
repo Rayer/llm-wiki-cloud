@@ -16,6 +16,9 @@ import (
 )
 
 func main() {
+	if handleVersionCommand(os.Args[1:], os.Stdout) {
+		return
+	}
 	if isControlPlaneCommand(os.Args[1:]) {
 		if err := runControlPlaneCommand(os.Args[1:]); err != nil {
 			fmt.Fprintln(os.Stderr, "Error:", err)
