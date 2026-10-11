@@ -82,6 +82,7 @@ class BffConfig {
   bucket: String
   firestore_database_id: String
   auth_service_url: String
+  mcp_resource_origin: String? = null
   pipeline_job_url: String
   export_job_url: String
   export_signing_service_account: String
@@ -150,6 +151,9 @@ local localBffDemoUserIDs = read?("prop:bffLocalDemoUserIDs") ?? ""
 local localBffPort = (read?("prop:bffLocalPort") ?? "8080").toInt()
 local localBffAuthPort = (read?("prop:bffLocalAuthPort") ?? "8081").toInt()
 local localBffFrontendPort = (read?("prop:bffLocalFrontendPort") ?? "3000").toInt()
+local localBffResourceOrigin = "http://localhost:\(localBffPort)"
+local devBffResourceOrigin = "https://llm-wiki-bff-dev-580854833715.asia-east1.run.app"
+local prodBffResourceOrigin = "https://llm-wiki-bff-580854833715.asia-east1.run.app"
 local localAuthScope = read?("prop:authLocalScope") ?? ""
 local localAuthJWTSecretFile = read?("prop:authLocalJWTSecretFile") ?? ""
 local localAuthDemoUserID = read?("prop:authLocalDemoUserID") ?? ""
@@ -258,6 +262,7 @@ local localBff = new BffConfig {
   bucket = "llm-wiki-cloud-local"
   firestore_database_id = "llm-wiki-cloud-local"
   auth_service_url = "http://localhost:\(localBffAuthPort)"
+  mcp_resource_origin = localBffResourceOrigin
   pipeline_job_url = "https://run.googleapis.com/v2/projects/llm-wiki-cloud/locations/asia-east1/jobs/olw-pipeline:run"
   export_job_url = ""
   export_signing_service_account = ""
@@ -319,6 +324,7 @@ local devBff = new BffConfig {
   bucket = "llm-wiki-data-dev"
   firestore_database_id = "llm-wiki-cloud-dev"
   auth_service_url = "https://auth.dev.rayer.idv.tw"
+  mcp_resource_origin = devBffResourceOrigin
   pipeline_job_url = "https://run.googleapis.com/v2/projects/llm-wiki-cloud/locations/asia-east1/jobs/olw-pipeline-dev:run"
   export_job_url = "https://run.googleapis.com/v2/projects/llm-wiki-cloud/locations/asia-east1/jobs/export-job-dev:run"
   export_signing_service_account = "lwc-export-signer-dev@llm-wiki-cloud.iam.gserviceaccount.com"
@@ -368,6 +374,7 @@ local prodBff = new BffConfig {
   bucket = "llm-wiki-data"
   firestore_database_id = "llm-wiki-cloud-prod"
   auth_service_url = "https://auth.rayer.idv.tw"
+  mcp_resource_origin = prodBffResourceOrigin
   pipeline_job_url = "https://run.googleapis.com/v2/projects/llm-wiki-cloud/locations/asia-east1/jobs/olw-pipeline:run"
   export_job_url = "https://run.googleapis.com/v2/projects/llm-wiki-cloud/locations/asia-east1/jobs/export-job:run"
   export_signing_service_account = "lwc-export-signer-prod@llm-wiki-cloud.iam.gserviceaccount.com"
@@ -419,7 +426,7 @@ local localAuth = new AuthConfig {
   firestore_database_id = "llm-wiki-cloud-local"
   local_cloud_scope = localAuthScope
   auth_service_url = "http://localhost:\(localAuthPort)"
-  sync_service_url = "http://localhost:\(localBffPort)"
+  sync_service_url = localBffResourceOrigin
   allowed_hosts = new Listing { "localhost"; "127.0.0.1" }
   allowed_origins = new Listing { "http://localhost:\(localBffFrontendPort)" }
   auth_session_environment = "llm-wiki-cloud-local"
@@ -451,7 +458,7 @@ local devAuth = new AuthConfig {
   firestore_database_id = "llm-wiki-cloud-dev"
   local_cloud_scope = ""
   auth_service_url = "https://auth.dev.rayer.idv.tw"
-  sync_service_url = "https://llm-wiki-bff-dev-580854833715.asia-east1.run.app"
+  sync_service_url = devBffResourceOrigin
   allowed_hosts = new Listing { "auth.dev.rayer.idv.tw"; "auth-dev.rayer.idv.tw" }
   allowed_origins = new Listing {
     "https://wiki.dev.rayer.idv.tw"
@@ -487,7 +494,7 @@ local prodAuth = new AuthConfig {
   firestore_database_id = "llm-wiki-cloud-prod"
   local_cloud_scope = ""
   auth_service_url = "https://auth.rayer.idv.tw"
-  sync_service_url = "https://llm-wiki-bff-580854833715.asia-east1.run.app"
+  sync_service_url = prodBffResourceOrigin
   allowed_hosts = new Listing { "auth.rayer.idv.tw" }
   allowed_origins = new Listing {
     "https://wiki.rayer.idv.tw"

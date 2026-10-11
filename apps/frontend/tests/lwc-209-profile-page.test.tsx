@@ -57,8 +57,8 @@ describe('LWC-209 Profile route', () => {
 
     expect(screen.getByRole('heading', { name: 'Profile' })).toBeDefined();
     expect(screen.getByTestId('profile-panel').textContent).toBe('project-a');
-    expect(screen.getByTestId('project-keys-section').getAttribute('data-project')).toBe('project-a');
-    expect(screen.getByTestId('project-keys-section').getAttribute('data-token')).toBe('profile-token');
+    expect(screen.queryByTestId('project-keys-section')).toBeNull();
+    expect(screen.getByRole('link', { name: 'MCP OAuth and advanced settings' }).getAttribute('href')).toBe('/advanced');
   });
 
   it('does not mount the trial Demo Profile panel', () => {
@@ -100,26 +100,4 @@ it('renames from the Profile page and clears an open rename when the project cha
   fireEvent.click(screen.getByRole('button', { name: 'Rename' }));
   await waitFor(() => expect(mocks.renameProject).toHaveBeenCalledWith('project-b', 'Renamed B'));
   await waitFor(() => expect(screen.queryByRole('dialog')).toBeNull());
-});
-
-it('remounts Project key controls for account, Project, and session changes', () => {
-  const view = render(<ProfilePage />);
-  const initial = screen.getByTestId('project-keys-section');
-  mocks.user = { id: 'user-b', email: 'other@example.com' };
-  view.rerender(<ProfilePage />);
-  const nextAccount = screen.getByTestId('project-keys-section');
-  expect(nextAccount).not.toBe(initial);
-
-  mocks.sessionEpoch = 2;
-  mocks.accessToken = 'replacement-token';
-  view.rerender(<ProfilePage />);
-  const nextSession = screen.getByTestId('project-keys-section');
-  expect(nextSession).not.toBe(nextAccount);
-  expect(nextSession.getAttribute('data-token')).toBe('replacement-token');
-
-  mocks.currentProject = { id: 'project-b', name: 'Project B' };
-  view.rerender(<ProfilePage />);
-  const nextProject = screen.getByTestId('project-keys-section');
-  expect(nextProject).not.toBe(nextSession);
-  expect(nextProject.getAttribute('data-project')).toBe('project-b');
 });

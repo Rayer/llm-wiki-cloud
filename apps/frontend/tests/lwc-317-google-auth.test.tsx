@@ -127,7 +127,7 @@ beforeEach(() => {
   try {
     Object.defineProperty(window, 'location', {
       configurable: true,
-      value: { ...window.location, assign: vi.fn() },
+      value: { ...window.location, href: `${window.location.origin}/`, pathname: '/', search: '', hash: '', assign: vi.fn() },
     });
   } catch {
     // jsdom may expose location as non-configurable; login start remains mocked below.
@@ -140,6 +140,7 @@ afterEach(() => {
   vi.unstubAllGlobals();
   localStorage.clear();
   sessionStorage.clear();
+  window.history.replaceState(null, '', '/');
 });
 
 describe('LWC-317 Google auth production components', () => {
@@ -157,6 +158,27 @@ describe('LWC-317 Google auth production components', () => {
     const actual = await vi.importActual<typeof import('@/lib/google-auth')>('@/lib/google-auth');
     actual.startGoogleLogin();
     expect(window.location.assign).toHaveBeenCalledWith(expect.stringContaining('/api/v1/auth/google/login/start'));
+  });
+
+  it('stores only the validated same-tab consent return address for Google login', async () => {
+    const transactionId = `lwc_mcp_tx_${'A'.repeat(43)}`;
+    Object.assign(window.location, { href: `${window.location.origin}/oauth/consent?transaction_id=${transactionId}` });
+    const actual = await vi.importActual<typeof import('@/lib/google-auth')>('@/lib/google-auth');
+    actual.startGoogleLogin();
+    expect(sessionStorage.getItem('lwc-google-login-return-to')).toBe(`/oauth/consent?transaction_id=${transactionId}`);
+
+    Object.assign(window.location, { href: `${window.location.origin}/oauth/consent?transaction_id=${transactionId}&next=/admin` });
+    actual.startGoogleLogin();
+    expect(sessionStorage.getItem('lwc-google-login-return-to')).toBeNull();
+  });
+
+  it('consumes a valid consent return address once after successful Google login', async () => {
+    const transactionId = `lwc_mcp_tx_${'B'.repeat(43)}`;
+    sessionStorage.setItem('lwc-google-login-return-to', `/oauth/consent?transaction_id=${transactionId}`);
+    mocks.fetch.mockResolvedValueOnce(jsonResponse({ status: 'success', error: '', support_ref: '', jit_provisioned: false }));
+    render(<GoogleCompletionClient />);
+    await waitFor(() => expect(mocks.replace).toHaveBeenCalledWith(`/oauth/consent?transaction_id=${transactionId}`));
+    expect(sessionStorage.getItem('lwc-google-login-return-to')).toBeNull();
   });
 
   it('renders a bounded completion state and refreshes the normal LWC session', async () => {
@@ -193,6 +215,17 @@ describe('LWC-317 Google auth production components', () => {
     expect(mocks.fetch).toHaveBeenCalledTimes(1);
   });
 
+  it('clears the pending consent return address after Google cancellation or failure', async () => {
+    for (const status of ['cancelled', 'failure'] as const) {
+      sessionStorage.setItem('lwc-google-login-return-to', '/oauth/consent?transaction_id=lwc_mcp_tx_AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA');
+      mocks.fetch.mockResolvedValueOnce(jsonResponse({ status, error: 'provider did not complete', support_ref: 'provider-ref-1234', jit_provisioned: false }));
+      const view = render(<GoogleCompletionClient />);
+      await screen.findByRole('alert');
+      expect(sessionStorage.getItem('lwc-google-login-return-to')).toBeNull();
+      view.unmount();
+    }
+  });
+
   it('shows copyable opaque support reference for a non-success completion', async () => {
     mocks.fetch.mockResolvedValueOnce(jsonResponse({ status: 'failure', error: 'backend failure', support_ref: 'backend-ref-1234', jit_provisioned: false }));
     render(<GoogleCompletionClient />);
@@ -215,10 +248,12 @@ describe('LWC-317 Google auth production components', () => {
 
   it('cancels explicit linking through the backend and preserves the current session', async () => {
     mocks.token = 'session-token';
+    sessionStorage.setItem('lwc-google-login-return-to', '/oauth/consent?transaction_id=lwc_mcp_tx_BBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBB');
     mocks.fetch.mockResolvedValueOnce(jsonResponse({ status: 'confirmation_required', error: '', support_ref: '', jit_provisioned: false }));
     mocks.fetch.mockResolvedValueOnce(jsonResponse({ status: 'confirmation_required', confirmation_id: 'opaque-confirmation-id', provider: 'google', provider_email: 'google@example.com', provider_email_verified: true, current_email: 'primary@example.com' }));
     render(<GoogleCompletionClient />);
     await screen.findByText('GoogleCompletion.confirmTitle');
+    expect(sessionStorage.getItem('lwc-google-login-return-to')).toBeNull();
     mocks.fetch.mockResolvedValueOnce(jsonResponse({ status: 'cancelled', error: '已取消使用 Google 登入。', support_ref: 'backend-cancel-ref' }));
     fireEvent.click(screen.getByRole('button', { name: 'GoogleCompletion.cancel' }));
     await waitFor(() => expect(screen.getByText('已取消使用 Google 登入。')).toBeDefined());

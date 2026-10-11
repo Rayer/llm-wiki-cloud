@@ -1,17 +1,17 @@
 'use client';
 
 import { useState } from 'react';
+import Link from 'next/link';
 import { ProjectRenameModal } from '@/components/ProjectRenameModal';
 import type { Project } from '@/lib/projects';
 import { ProjectProfilePanel } from '@/components/ProjectProfilePanel';
-import { ProjectKeysSection } from '@/components/ProjectKeysSection';
 import { useWorkspace } from '@/components/WorkspaceProvider';
 import { useAuth } from '@/lib/auth';
 import { useT } from '@/lib/i18n';
 
 export default function ProfilePage() {
   const { t } = useT();
-  const { accessToken, sessionEpoch, user } = useAuth();
+  const { user } = useAuth();
   const { hydrated, currentProject, isDemoSession, projectsLoading } = useWorkspace();
 
   if (!hydrated || projectsLoading) {
@@ -34,12 +34,9 @@ export default function ProfilePage() {
         key={`${user.id}:${currentProject.id}`}
         projectId={currentProject.id}
       />
-      <ProjectKeysSection
-        key={`${user.id}:${currentProject.id}:${sessionEpoch}`}
-        currentProject={currentProject}
-        accessToken={accessToken}
-        t={t}
-      />
+      <Link href="/advanced" className="inline-flex min-h-11 items-center rounded-lg border border-white/10 px-4 text-sm font-medium text-zinc-200 transition hover:bg-white/5">
+        {t('MCPOAuth.advancedEntry')}
+      </Link>
     </div>
   );
 }

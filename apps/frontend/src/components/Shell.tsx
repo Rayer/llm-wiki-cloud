@@ -87,6 +87,7 @@ function ShellContent({ children }: { children: React.ReactNode }) {
   }[] = [
     { href: '/', label: t('Shell.search'), icon: Search, exact: true },
     ...(!isDemoSession ? [{ href: '/profile', label: t('Shell.profile'), icon: Pencil }] : []),
+    ...(!isDemoSession ? [{ href: '/advanced', label: t('MCPOAuth.nav'), icon: Shield }] : []),
     { href: '/sources', label: t('Shell.sources'), icon: FileText, countKey: 'sources' },
     { href: '/concepts', label: t('Shell.concepts'), icon: Brain, countKey: 'concepts' },
     { href: '/status', label: t('Shell.status'), icon: Activity },

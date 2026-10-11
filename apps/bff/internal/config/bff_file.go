@@ -28,6 +28,7 @@ type BFFFile struct {
 	Bucket                       string    `json:"bucket"`
 	FirestoreDatabaseID          string    `json:"firestore_database_id"`
 	AuthServiceURL               string    `json:"auth_service_url"`
+	MCPResourceOrigin            string    `json:"mcp_resource_origin,omitempty"`
 	PipelineJobURL               string    `json:"pipeline_job_url"`
 	ExportJobURL                 string    `json:"export_job_url"`
 	ExportSigningServiceAccount  string    `json:"export_signing_service_account"`
@@ -146,7 +147,7 @@ func DecodeBFFFile(data []byte) (BFFFile, error) {
 	if err := json.Unmarshal(data, &fields); err != nil || fields == nil {
 		return BFFFile{}, errors.New("BFF config document is malformed")
 	}
-	if err := requireJSONKeys(fields, bffRequiredKeys); err != nil {
+	if err := requireJSONKeysWithOptional(fields, bffRequiredKeys, []string{"mcp_resource_origin"}); err != nil {
 		return BFFFile{}, err
 	}
 	if err := validateBFFNestedShapes(fields); err != nil {
@@ -244,6 +245,11 @@ func validateBFFJSONTypes(fields map[string]json.RawMessage) error {
 		{"port_default", "integer", false},
 	} {
 		if err := requireBFFJSONType(field.name, fields[field.name], field.kind, field.nullable); err != nil {
+			return err
+		}
+	}
+	if raw, ok := fields["mcp_resource_origin"]; ok {
+		if err := requireBFFJSONType("mcp_resource_origin", raw, "string", true); err != nil {
 			return err
 		}
 	}
@@ -366,6 +372,28 @@ func requireJSONKeys(fields map[string]json.RawMessage, required []string) error
 	return nil
 }
 
+func requireJSONKeysWithOptional(fields map[string]json.RawMessage, required, optional []string) error {
+	if len(fields) < len(required) || len(fields) > len(required)+len(optional) {
+		return errors.New("BFF config object has missing or unknown keys")
+	}
+	allowed := make(map[string]struct{}, len(required)+len(optional))
+	for _, key := range required {
+		allowed[key] = struct{}{}
+		if _, ok := fields[key]; !ok {
+			return fmt.Errorf("BFF config is missing %s", key)
+		}
+	}
+	for _, key := range optional {
+		allowed[key] = struct{}{}
+	}
+	for key := range fields {
+		if _, ok := allowed[key]; !ok {
+			return fmt.Errorf("BFF config contains unknown %s", key)
+		}
+	}
+	return nil
+}
+
 func rejectDuplicateJSONKeys(data []byte) error {
 	decoder := json.NewDecoder(bytes.NewReader(data))
 	decoder.UseNumber()
@@ -455,6 +483,11 @@ func validateBFFFile(file BFFFile) error {
 	localMode := file.Environment == "local"
 	if err := validateRuntimeURL(file.AuthServiceURL, localMode); err != nil {
 		return errors.New("BFF config auth_service_url is invalid")
+	}
+	if file.MCPResourceOrigin != "" {
+		if err := validateRuntimeOrigin(file.MCPResourceOrigin, localMode); err != nil {
+			return errors.New("BFF config mcp_resource_origin is invalid")
+		}
 	}
 	if err := validatePipelineJobURL(file.PipelineJobURL); err != nil {
 		return errors.New("BFF config pipeline_job_url is invalid")
@@ -602,6 +635,7 @@ func configFromBFFFile(file BFFFile, port string) Config {
 		PipelineCooldownSeconds: file.PipelineCooldownSeconds, PipelineMinNewRaw: file.PipelineMinNewRaw,
 		PipelineDemoUserIDs: file.PipelineDemoUserIDs, RegistrationEnabled: file.RegistrationEnabled,
 		AuthServiceURL: file.AuthServiceURL, AuthSessionEnvironment: file.AuthSessionEnvironment,
+		MCPResourceOrigin:    file.MCPResourceOrigin,
 		AuthSessionMigration: file.AuthSessionMigration, ProfileRuntimeAudience: file.ProfileRuntimeAudience,
 		ProfileRuntimeServiceAccount: file.ProfileRuntimeServiceAccount,
 	}

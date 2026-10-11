@@ -2,6 +2,9 @@ package main
 
 import (
 	"bytes"
+	"context"
+	"crypto/sha256"
+	"encoding/hex"
 	"encoding/json"
 	"fmt"
 	"net/http"
@@ -25,8 +28,13 @@ func TestProductionRouterExposesOnlyAuthPublicSurface(t *testing.T) {
 	router := newProductionRouter(config.Config{JWTSecret: "test-secret"}, true, nil, &syssettings.FakeStore{Enabled: true}, true)
 
 	want := map[string]bool{
+		http.MethodDelete + " /api/v1/auth/mcp/oauth/grants/:grantID":               true,
 		http.MethodDelete + " /api/v1/auth/cli/bindings/:projectID/:bindingID":      true,
 		http.MethodDelete + " /api/v1/auth/cli/sessions/:id":                        true,
+		http.MethodGet + " /.well-known/oauth-authorization-server":                 true,
+		http.MethodGet + " /api/v1/auth/mcp/oauth/authorize":                        true,
+		http.MethodGet + " /api/v1/auth/mcp/oauth/consent/:transactionID":           true,
+		http.MethodGet + " /api/v1/auth/mcp/oauth/grants":                           true,
 		http.MethodGet + " /api/v1/auth/cli/bindings":                               true,
 		http.MethodGet + " /api/v1/auth/cli/projects":                               true,
 		http.MethodGet + " /api/v1/auth/cli/sessions":                               true,
@@ -48,6 +56,9 @@ func TestProductionRouterExposesOnlyAuthPublicSurface(t *testing.T) {
 		http.MethodPost + " /api/v1/auth/refresh":                                   true,
 		http.MethodPost + " /api/v1/auth/logout":                                    true,
 		http.MethodPost + " /api/v1/auth/demo":                                      true,
+		http.MethodPost + " /api/v1/auth/mcp/oauth/consent/:transactionID/decision": true,
+		http.MethodPost + " /api/v1/auth/mcp/oauth/register":                        true,
+		http.MethodPost + " /api/v1/auth/mcp/oauth/token":                           true,
 	}
 
 	got := make(map[string]bool)
@@ -66,6 +77,102 @@ func TestProductionRouterExposesOnlyAuthPublicSurface(t *testing.T) {
 		if !want[route] {
 			t.Errorf("Auth production router exposed unapproved route %s", route)
 		}
+	}
+}
+
+func TestMCPOAuthBrowserCORSAllowsGrantRevocation(t *testing.T) {
+	gin.SetMode(gin.TestMode)
+	router := newProductionRouter(config.Config{
+		JWTSecret: "cors-test-key", AllowedOrigins: []string{"http://localhost:13000"},
+	}, true, nil, &syssettings.FakeStore{Enabled: true}, true)
+	request := httptest.NewRequest(http.MethodOptions, "http://localhost:18081/api/v1/auth/mcp/oauth/grants/grant-fixture", nil)
+	request.Header.Set("Origin", "http://localhost:13000")
+	request.Header.Set("Access-Control-Request-Method", http.MethodDelete)
+	request.Header.Set("Access-Control-Request-Headers", "authorization")
+	response := httptest.NewRecorder()
+	router.ServeHTTP(response, request)
+	if response.Code != http.StatusNoContent || response.Header().Get("Access-Control-Allow-Origin") != "http://localhost:13000" ||
+		!strings.Contains(response.Header().Get("Access-Control-Allow-Methods"), http.MethodDelete) {
+		t.Fatalf("MCP revoke preflight status=%d origin=%q methods=%q", response.Code,
+			response.Header().Get("Access-Control-Allow-Origin"), response.Header().Get("Access-Control-Allow-Methods"))
+	}
+}
+
+func TestMCPOAuthPublicRoutesLimitBurstsBeforeAdditionalAuthorityWrites(t *testing.T) {
+	if strings.TrimSpace(os.Getenv("FIRESTORE_EMULATOR_HOST")) == "" {
+		t.Skip("FIRESTORE_EMULATOR_HOST is not set")
+	}
+	database := fmt.Sprintf("lwc-389-rate-%d", time.Now().UnixNano())
+	client, err := firestoreclient.NewClientWithDatabaseAndScope("lwc-389-rate-test", database, "", "", "")
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer client.Close()
+	environment := "lwc-389-rate-limit"
+	cfg := config.Config{
+		JWTSecret: "rate-limit-test-key", FirestoreDatabaseID: database, AuthSessionEnvironment: environment,
+		AuthServiceURL: "http://localhost:18081", SyncServiceURL: "http://localhost:18080",
+		AllowedOrigins: []string{"http://localhost:13000"},
+	}
+	router := newProductionRouter(cfg, true, client, &syssettings.FakeStore{Enabled: true}, true)
+	registrationBody := `{"client_name":"Hermes test","redirect_uris":["http://127.0.0.1:43123/oauth/callback"],"token_endpoint_auth_method":"none","grant_types":["authorization_code","refresh_token"],"response_types":["code"],"scope":"mcp:query"}`
+	for index := 0; index < 11; index++ {
+		request := httptest.NewRequest(http.MethodPost, "http://localhost:18081/api/v1/auth/mcp/oauth/register", strings.NewReader(registrationBody))
+		request.Header.Set("Content-Type", "application/json")
+		response := httptest.NewRecorder()
+		router.ServeHTTP(response, request)
+		want := http.StatusCreated
+		if index == 10 {
+			want = http.StatusTooManyRequests
+		}
+		if response.Code != want {
+			t.Fatalf("registration request %d status=%d want=%d body=%s", index+1, response.Code, want, response.Body.String())
+		}
+	}
+	countCollection := func(name string) int {
+		t.Helper()
+		sum := sha256.Sum256([]byte(environment))
+		collection := "mcp_oauth_" + name + "_" + hex.EncodeToString(sum[:6])
+		ctx, cancel := context.WithTimeout(t.Context(), 5*time.Second)
+		defer cancel()
+		docs, err := client.Raw().Collection(collection).Documents(ctx).GetAll()
+		if err != nil {
+			t.Fatalf("read MCP OAuth %s authority count: %v", name, err)
+		}
+		return len(docs)
+	}
+	if count := countCollection("clients"); count != 10 {
+		t.Fatalf("registered client count=%d, want exactly 10 successful requests", count)
+	}
+	for _, endpoint := range []struct {
+		method string
+		path   string
+		body   string
+	}{
+		{method: http.MethodGet, path: "/api/v1/auth/mcp/oauth/authorize"},
+		{method: http.MethodPost, path: "/api/v1/auth/mcp/oauth/token", body: "grant_type=unsupported"},
+	} {
+		for index := 0; index < 11; index++ {
+			request := httptest.NewRequest(endpoint.method, "http://localhost:18081"+endpoint.path, strings.NewReader(endpoint.body))
+			if endpoint.method == http.MethodPost {
+				request.Header.Set("Content-Type", "application/x-www-form-urlencoded")
+			}
+			response := httptest.NewRecorder()
+			router.ServeHTTP(response, request)
+			want := http.StatusUnauthorized
+			if endpoint.method == http.MethodPost {
+				want = http.StatusBadRequest
+			}
+			if index == 10 {
+				want = http.StatusTooManyRequests
+			}
+			if response.Code != want {
+				t.Fatalf("%s %s request %d status=%d want=%d", endpoint.method, endpoint.path, index+1, response.Code, want)
+			}
+		}
+	}
+	if clients, transactions := countCollection("clients"), countCollection("transactions"); clients != 10 || transactions != 0 {
+		t.Fatalf("public route burst wrote unexpected authority records: clients=%d transactions=%d", clients, transactions)
 	}
 }
 
@@ -262,7 +369,7 @@ func TestCLISessionRevokePostPassesExistingCORSPreflightContract(t *testing.T) {
 		request.Header.Set("Access-Control-Request-Method", http.MethodPost)
 		request.Header.Set("Access-Control-Request-Headers", "Authorization, Content-Type")
 		router.ServeHTTP(recorder, request)
-		if recorder.Code != http.StatusNoContent || recorder.Header().Get("Access-Control-Allow-Methods") != "GET,POST,OPTIONS" || recorder.Header().Get("Access-Control-Allow-Origin") != "https://frontend.example" {
+		if recorder.Code != http.StatusNoContent || recorder.Header().Get("Access-Control-Allow-Methods") != "GET,POST,DELETE,OPTIONS" || recorder.Header().Get("Access-Control-Allow-Origin") != "https://frontend.example" {
 			t.Fatalf("revoke preflight for %s status=%d headers=%#v body=%s", path, recorder.Code, recorder.Header(), recorder.Body.String())
 		}
 	}
@@ -569,7 +676,7 @@ func TestAuthLocalHostAllowlistAcceptsLocalhostOnlyInLocalMode(t *testing.T) {
 	}
 }
 
-func TestAuthCORSAllowsOnlyBaselineMethodsAndHeaders(t *testing.T) {
+func TestAuthCORSAllowsConfiguredMethodsAndHeaders(t *testing.T) {
 	gin.SetMode(gin.TestMode)
 	router := newProductionRouter(config.Config{
 		JWTSecret:      "test-secret",
@@ -586,8 +693,8 @@ func TestAuthCORSAllowsOnlyBaselineMethodsAndHeaders(t *testing.T) {
 	if recorder.Code != http.StatusNoContent {
 		t.Fatalf("CORS preflight status = %d, want %d", recorder.Code, http.StatusNoContent)
 	}
-	if got := recorder.Header().Get("Access-Control-Allow-Methods"); got != "GET,POST,OPTIONS" {
-		t.Fatalf("Access-Control-Allow-Methods = %q, want %q", got, "GET,POST,OPTIONS")
+	if got := recorder.Header().Get("Access-Control-Allow-Methods"); got != "GET,POST,DELETE,OPTIONS" {
+		t.Fatalf("Access-Control-Allow-Methods = %q, want %q", got, "GET,POST,DELETE,OPTIONS")
 	}
 	if got := recorder.Header().Get("Access-Control-Allow-Headers"); got != "Content-Type,Authorization" {
 		t.Fatalf("Access-Control-Allow-Headers = %q, want %q", got, "Content-Type,Authorization")
