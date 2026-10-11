@@ -3,6 +3,7 @@
 Date: 2026-10-12
 Branch: `Rayer/LWC-386-387-cli-delivery`
 Source base: `7713976360fe3573c7e36d56ceb2d31daf2751a5`
+Source PR: https://github.com/Rayer/llm-wiki-cloud/pull/116, base `develop`, implementation commit `b73d23cf4c98b14091c78a6f7c2ca52d880835cb`.
 
 ## Frozen scope
 
@@ -23,10 +24,11 @@ The independent frontend loader reads `NEXT_PUBLIC_CLI_RELEASE_METADATA_URL`, us
 - Python and deployment: CLI packaging/source suite (6 tests), `scripts/test_engine_workflow.py`, full `deploy/engine/tests` suite, `apps/bff/scripts/test_local_dev_makefile.py`, and `scripts/test_cd_contract.py` passed; `bash -n scripts/local-cloud-env.sh deploy/components/frontend.sh` passed.
 - Release packaging: cross-compiled and packaged all four target binaries; the extracted native Darwin/arm64 archive returned exactly `lwc-sync dev`. The POSIX shell argv fixture executed the generated command and verified the exact argument vector.
 - Workflow and route: `actionlint` passed for `.github/workflows/cli-release.yml`; the built `/cli` route returned HTTP 200. The frontend component tests exercise the lane and its accordion behavior.
+- PR CI: all checks passed, including BFF, frontend lint/test/typecheck/build, workflow source guards, actionlint/schema, canonical CI, local vertical smoke, and automatic Vercel PR preview checks.
 - Not run locally: native Windows/PowerShell, Linux, and Darwin/amd64 execution (the worker host is Darwin/arm64; `pwsh` is unavailable). Their native smoke/argv checks are present in the manual workflow but that workflow was not dispatched.
 
 ## Publication and remaining gates
 
 No GCS write, credential, IAM, public-access, Production, or release Action was performed. The coordinator verified the existing DEV bucket and frontend-config read/CORS path, but CLI-prefix object write permissions and anonymous reads of newly published CLI objects remain unverified. The existing manual Actions/WIF path requires conditional object creation, readback for idempotent retries, generation-conditioned update of `cli/stable/latest.json`, and anonymous HTTPS/CORS verification for each asset; the coordinator owns any trigger and publication decision.
 
-Source PR: https://github.com/Rayer/llm-wiki-cloud/pull/116, opened against `develop` from implementation commit `b73d23cf4c98b14091c78a6f7c2ca52d880835cb`. This bounded implementation checkpoint does not mark LWC-385/386/387 complete; same-editor review/repair and coordinator-owned merge/DEV remain outstanding.
+No release workflow, Production promotion, or DEV deployment was triggered by this worker. This bounded implementation checkpoint does not mark LWC-385/386/387 complete; same-editor review/repair and coordinator-owned merge/DEV remain outstanding.
