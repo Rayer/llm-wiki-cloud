@@ -68,7 +68,7 @@ build-sync-target: cli-release-source-check
 
 cli-release-source-check:
 	@if [ "$(CLI_VERSION)" = dev ] && [ "$(CLI_CHANNEL)" = dev ]; then exit 0; fi; \
-	PUBLISH=true RELEASE_VERSION="$(CLI_VERSION)" RELEASE_CHANNEL="$(CLI_CHANNEL)" \
+	PYTHONDONTWRITEBYTECODE=1 PUBLISH=true RELEASE_VERSION="$(CLI_VERSION)" RELEASE_CHANNEL="$(CLI_CHANNEL)" \
 	  SOURCE_REVISION="$(CLI_COMMIT)" GIT_REF="$(CLI_GIT_REF)" GITHUB_SHA="$(CLI_COMMIT)" \
 	  python3 ../../apps/bff/scripts/validate_cli_source.py --root ../.. --output /dev/null
 
