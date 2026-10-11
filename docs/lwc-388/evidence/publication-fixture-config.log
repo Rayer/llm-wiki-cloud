@@ -1,0 +1,3 @@
+command=curl -sS http://127.0.0.1:8089/api/v1/public/config
+{"registration_enabled":false,"email_registration_enabled":false,"google_registration_enabled":false,"demo_enabled":false}
+exit=0
