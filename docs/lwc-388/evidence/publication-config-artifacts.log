@@ -1,0 +1,7 @@
+command=python3 ../../scripts/test_frontend_config_artifacts.py
+.........
+----------------------------------------------------------------------
+Ran 9 tests in 1.544s
+
+OK
+exit=0
