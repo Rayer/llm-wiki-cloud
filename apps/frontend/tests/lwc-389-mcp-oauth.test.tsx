@@ -52,7 +52,7 @@ vi.mock('@/lib/mcp-oauth', async () => {
   };
 });
 
-const { cleanup, fireEvent, render, screen, waitFor } = await import('@testing-library/react');
+const { act, cleanup, fireEvent, render, screen, waitFor } = await import('@testing-library/react');
 import { MCPOAuthConsentClient } from '@/components/MCPOAuthConsentClient';
 import AdvancedPage from '@/app/(workspace)/advanced/page';
 import { MCPOAuthApiError } from '@/lib/mcp-oauth';
@@ -68,6 +68,23 @@ const consent = {
   scope: 'mcp:query',
   expires_at: '2026-10-12T02:00:00Z',
 };
+const otherTransactionId = `lwc_mcp_tx_${'D'.repeat(43)}`;
+
+function deferred<T>() {
+  let resolve!: (value: T) => void;
+  let reject!: (reason: unknown) => void;
+  const promise = new Promise<T>((resolvePromise, rejectPromise) => {
+    resolve = resolvePromise;
+    reject = rejectPromise;
+  });
+  return { promise, resolve, reject };
+}
+
+function mockLocationAssign() {
+  const assign = vi.fn();
+  Object.defineProperty(window, 'location', { configurable: true, value: { ...window.location, assign } });
+  return assign;
+}
 
 beforeEach(() => {
   mocks.accessToken = 'web-session-token';
@@ -119,6 +136,102 @@ describe('LWC-389 MCP OAuth frontend', () => {
     expect(screen.getByRole('alert').textContent).toBe('MCPOAuth.expired');
     expect(screen.queryByRole('button', { name: 'MCPOAuth.allow' })).toBeNull();
     expect(screen.getAllByRole('link', { name: 'MCPOAuth.backToAdvanced' }).length).toBeGreaterThan(0);
+  });
+
+  it('ignores a delayed success after the transaction changes', async () => {
+    const pending = deferred<{ redirect_url: string }>();
+    mocks.decideConsent.mockReturnValueOnce(pending.promise);
+    const assign = mockLocationAssign();
+    const { rerender } = render(<MCPOAuthConsentClient transactionId={transactionId} />);
+    await screen.findByText('Hermes Agent');
+    fireEvent.click(screen.getByRole('button', { name: 'MCPOAuth.allow' }));
+    await waitFor(() => expect(mocks.decideConsent).toHaveBeenCalledTimes(1));
+
+    rerender(<MCPOAuthConsentClient transactionId={otherTransactionId} />);
+    await waitFor(() => expect(mocks.readConsent).toHaveBeenCalledTimes(2));
+    await act(async () => {
+      pending.resolve({ redirect_url: 'http://127.0.0.1:4321/oauth/callback?code=opaque&state=opaque' });
+      await pending.promise;
+    });
+
+    expect(assign).not.toHaveBeenCalled();
+  });
+
+  it('ignores a delayed error after the transaction changes', async () => {
+    const pending = deferred<{ redirect_url: string }>();
+    mocks.decideConsent.mockReturnValueOnce(pending.promise);
+    const { rerender } = render(<MCPOAuthConsentClient transactionId={transactionId} />);
+    await screen.findByText('Hermes Agent');
+    fireEvent.click(screen.getByRole('button', { name: 'MCPOAuth.allow' }));
+    await waitFor(() => expect(mocks.decideConsent).toHaveBeenCalledTimes(1));
+
+    rerender(<MCPOAuthConsentClient transactionId={otherTransactionId} />);
+    await screen.findByRole('button', { name: 'MCPOAuth.allow' });
+    await act(async () => {
+      pending.reject(new MCPOAuthApiError('invalid_request', 410));
+      await pending.promise.catch(() => undefined);
+    });
+
+    expect(screen.queryByRole('alert')).toBeNull();
+    expect(screen.getByRole('button', { name: 'MCPOAuth.allow' })).toBeDefined();
+  });
+
+  it('rejects A-to-B-to-A stale decision completion by operation generation', async () => {
+    const pending = deferred<{ redirect_url: string }>();
+    mocks.decideConsent.mockReturnValueOnce(pending.promise);
+    const assign = mockLocationAssign();
+    const { rerender } = render(<MCPOAuthConsentClient transactionId={transactionId} />);
+    await screen.findByText('Hermes Agent');
+    fireEvent.click(screen.getByRole('button', { name: 'MCPOAuth.allow' }));
+    await waitFor(() => expect(mocks.decideConsent).toHaveBeenCalledTimes(1));
+
+    rerender(<MCPOAuthConsentClient transactionId={otherTransactionId} />);
+    rerender(<MCPOAuthConsentClient transactionId={transactionId} />);
+    await waitFor(() => expect(mocks.readConsent).toHaveBeenCalledTimes(3));
+    await screen.findByRole('button', { name: 'MCPOAuth.allow' });
+    await act(async () => {
+      pending.resolve({ redirect_url: 'http://127.0.0.1:4321/oauth/callback?code=opaque&state=opaque' });
+      await pending.promise;
+    });
+
+    expect(assign).not.toHaveBeenCalled();
+  });
+
+  it('ignores a delayed decision after the consent component unmounts', async () => {
+    const pending = deferred<{ redirect_url: string }>();
+    mocks.decideConsent.mockReturnValueOnce(pending.promise);
+    const assign = mockLocationAssign();
+    const { unmount } = render(<MCPOAuthConsentClient transactionId={transactionId} />);
+    await screen.findByText('Hermes Agent');
+    fireEvent.click(screen.getByRole('button', { name: 'MCPOAuth.allow' }));
+    await waitFor(() => expect(mocks.decideConsent).toHaveBeenCalledTimes(1));
+    unmount();
+
+    await act(async () => {
+      pending.resolve({ redirect_url: 'http://127.0.0.1:4321/oauth/callback?code=opaque&state=opaque' });
+      await pending.promise;
+    });
+    expect(assign).not.toHaveBeenCalled();
+  });
+
+  it.each([
+    [410, 'MCPOAuth.expired'],
+    [403, 'MCPOAuth.notAllowed'],
+    [404, 'MCPOAuth.notAllowed'],
+  ])('clears cached consent and restart-blocks after a terminal load error (%i)', async (status, message) => {
+    const { rerender } = render(<MCPOAuthConsentClient transactionId={transactionId} />);
+    await screen.findByText('Hermes Agent');
+
+    mocks.readConsent.mockImplementationOnce(() => new Promise(() => {}));
+    rerender(<MCPOAuthConsentClient transactionId={otherTransactionId} />);
+    await waitFor(() => expect(mocks.readConsent).toHaveBeenCalledTimes(2));
+    mocks.readConsent.mockRejectedValueOnce(new MCPOAuthApiError('invalid_request', Number(status)));
+    rerender(<MCPOAuthConsentClient transactionId={transactionId} />);
+
+    expect((await screen.findByRole('alert')).textContent).toBe(message);
+    expect(screen.queryByRole('button', { name: 'MCPOAuth.allow' })).toBeNull();
+    expect(screen.queryByRole('button', { name: 'MCPOAuth.deny' })).toBeNull();
+    expect(screen.getByRole('link', { name: 'MCPOAuth.backToAdvanced' })).toBeDefined();
   });
 
   it('hides old consent details as soon as the signed-in account context changes', async () => {

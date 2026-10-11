@@ -1,6 +1,6 @@
 'use client';
 
-import { useEffect, useRef, useState } from 'react';
+import { useEffect, useLayoutEffect, useRef, useState } from 'react';
 import Link from 'next/link';
 import { useAuth } from '@/lib/auth';
 import { useWorkspace } from '@/components/WorkspaceProvider';
@@ -26,63 +26,89 @@ export function MCPOAuthConsentClient({ transactionId }: { transactionId: string
   const [busyContextKey, setBusyContextKey] = useState('');
   const [terminalContextKey, setTerminalContextKey] = useState('');
   const requestIdRef = useRef(0);
-  const identityRef = useRef({ userId: user?.id ?? '', sessionEpoch, projectId: currentProject?.id ?? '' });
   const contextKey = `${transactionId}:${user?.id ?? ''}:${sessionEpoch}:${currentProject?.id ?? ''}`;
+  const contextRef = useRef({ key: contextKey, generation: 0 });
+  const mountedRef = useRef(false);
   const visibleDetails = detailsContextKey === contextKey ? details : null;
   const visibleError = errorContextKey === contextKey ? error : '';
   const loading = !visibleDetails && !visibleError;
   const busy = busyContextKey === contextKey;
   const terminal = terminalContextKey === contextKey;
 
+  useLayoutEffect(() => {
+    const current = contextRef.current;
+    if (current.key !== contextKey) {
+      contextRef.current = { key: contextKey, generation: current.generation + 1 };
+    }
+    if (requestIdRef.current > 0) {
+      setDetails(null);
+      setDetailsContextKey('');
+      setError('');
+      setErrorContextKey('');
+      setBusyContextKey('');
+      setTerminalContextKey('');
+    }
+    mountedRef.current = true;
+    return () => {
+      mountedRef.current = false;
+      requestIdRef.current += 1;
+    };
+  }, [accessToken, contextKey, isDemoSession, t, transactionId, user?.id]);
+
   useEffect(() => {
     let active = true;
     const requestId = ++requestIdRef.current;
-    const identity = { userId: user?.id ?? '', sessionEpoch, projectId: currentProject?.id ?? '' };
-    const identityKey = `${transactionId}:${identity.userId}:${identity.sessionEpoch}:${identity.projectId}`;
-    identityRef.current = identity;
+    const identityKey = contextKey;
+    const generation = contextRef.current.generation;
+    const isCurrent = () => active && mountedRef.current && requestId === requestIdRef.current
+      && contextRef.current.key === identityKey && contextRef.current.generation === generation;
     void Promise.resolve().then(async () => {
       if (!transactionPattern.test(transactionId)) throw new Error(t('MCPOAuth.invalidTransaction'));
-      if (!accessToken || !identity.userId || isDemoSession) throw new Error(t('MCPOAuth.signInRequired'));
+      if (!accessToken || !user?.id || isDemoSession) throw new Error(t('MCPOAuth.signInRequired'));
       return readMCPOAuthConsent(transactionId, accessToken);
     }).then((result) => {
-      if (!active || requestId !== requestIdRef.current || identityRef.current.userId !== identity.userId
-        || identityRef.current.sessionEpoch !== identity.sessionEpoch || identityRef.current.projectId !== identity.projectId) return;
+      if (!isCurrent()) return;
       setDetails(result);
       setDetailsContextKey(identityKey);
       setError('');
       setErrorContextKey('');
     }).catch((loadError: unknown) => {
-      if (!active || requestId !== requestIdRef.current) return;
-      setError(loadError instanceof MCPOAuthApiError && loadError.status === 410
+      if (!isCurrent()) return;
+      const status = loadError instanceof MCPOAuthApiError ? loadError.status : 0;
+      setDetails(null);
+      setDetailsContextKey('');
+      setBusyContextKey('');
+      setError(status === 410
         ? t('MCPOAuth.expired')
-        : loadError instanceof MCPOAuthApiError && loadError.status === 403
+        : [403, 404].includes(status)
           ? t('MCPOAuth.notAllowed')
           : loadError instanceof Error && (loadError.message === t('MCPOAuth.invalidTransaction')
             || loadError.message === t('MCPOAuth.signInRequired'))
             ? loadError.message
             : t('MCPOAuth.loadFailed'));
       setErrorContextKey(identityKey);
+      if ([403, 404, 410].includes(status)) setTerminalContextKey(identityKey);
     });
     return () => { active = false; };
-  }, [accessToken, currentProject?.id, isDemoSession, sessionEpoch, t, transactionId, user?.id]);
+  }, [accessToken, contextKey, isDemoSession, t, transactionId, user?.id]);
 
   const decide = async (decision: 'allow' | 'deny') => {
-    if (!accessToken || !visibleDetails || busy || terminal || isDemoSession) return;
-    const identity = { userId: user?.id ?? '', sessionEpoch, projectId: currentProject?.id ?? '' };
+    if (!accessToken || !visibleDetails || busy || loading || terminal || isDemoSession
+      || !mountedRef.current || contextRef.current.key !== contextKey) return;
+    const generation = contextRef.current.generation;
+    const requestId = requestIdRef.current;
+    const isCurrent = () => mountedRef.current && requestId === requestIdRef.current
+      && contextRef.current.key === contextKey && contextRef.current.generation === generation;
     setBusyContextKey(contextKey);
     setError('');
     try {
       const result = await decideMCPOAuthConsent(transactionId, decision, accessToken);
-      const current = identityRef.current;
-      if (current.userId !== identity.userId || current.sessionEpoch !== identity.sessionEpoch
-        || current.projectId !== identity.projectId) return;
+      if (!isCurrent()) return;
       setTerminalContextKey(contextKey);
       if (!isSafeMCPOAuthReturnURL(result.redirect_url)) throw new Error(t('MCPOAuth.invalidReturn'));
       window.location.assign(result.redirect_url);
     } catch (decisionError) {
-      const current = identityRef.current;
-      if (current.userId !== identity.userId || current.sessionEpoch !== identity.sessionEpoch
-        || current.projectId !== identity.projectId) return;
+      if (!isCurrent()) return;
       const message = decisionError instanceof Error && decisionError.message === t('MCPOAuth.invalidReturn')
         ? decisionError.message
         : decisionError instanceof MCPOAuthApiError && decisionError.status === 410
@@ -126,8 +152,8 @@ export function MCPOAuthConsentClient({ transactionId }: { transactionId: string
             <Link href="/advanced" className="mt-6 inline-flex min-h-11 items-center text-sm font-medium text-emerald-300 underline underline-offset-4">{t('MCPOAuth.backToAdvanced')}</Link>
           ) : (
             <div className="mt-6 flex flex-col-reverse gap-3 sm:flex-row sm:justify-end">
-              <button type="button" disabled={busy} onClick={() => void decide('deny')} className="min-h-11 rounded-lg border border-white/10 px-4 py-2.5 text-sm font-medium text-zinc-300 transition hover:bg-white/10 disabled:opacity-50">{busy ? t('MCPOAuth.processing') : t('MCPOAuth.deny')}</button>
-              <button type="button" disabled={busy} onClick={() => void decide('allow')} className="min-h-11 rounded-lg bg-emerald-300 px-4 py-2.5 text-sm font-semibold text-black transition hover:bg-emerald-200 disabled:opacity-50">{busy ? t('MCPOAuth.processing') : t('MCPOAuth.allow')}</button>
+              <button type="button" disabled={busy || loading || terminal} onClick={() => void decide('deny')} className="min-h-11 rounded-lg border border-white/10 px-4 py-2.5 text-sm font-medium text-zinc-300 transition hover:bg-white/10 disabled:opacity-50">{busy ? t('MCPOAuth.processing') : t('MCPOAuth.deny')}</button>
+              <button type="button" disabled={busy || loading || terminal} onClick={() => void decide('allow')} className="min-h-11 rounded-lg bg-emerald-300 px-4 py-2.5 text-sm font-semibold text-black transition hover:bg-emerald-200 disabled:opacity-50">{busy ? t('MCPOAuth.processing') : t('MCPOAuth.allow')}</button>
             </div>
           )}
         </>
