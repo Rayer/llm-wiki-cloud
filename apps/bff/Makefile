@@ -20,10 +20,12 @@ SYNTO_ARTIFACT_URL := https://files.pythonhosted.org/packages/4a/e9/41c6b61338d9
 SYNTO_SHA256 := 4bc8dcf14b53f45fac32ce737ecf878f1a46d6d0b010c7decbe6c3b7b10afa77
 TEST_ENV := env -u LLM_API_KEY -u DEEPSEEK_API_KEY -u SYNTO_API_KEY -u OPENAI_API_KEY -u ANTHROPIC_API_KEY -u GEMINI_API_KEY -u TYPESAFE_API_KEY -u TYPESAFE_JEV_API_KEY -u LWC331_TEST_API_KEY
 
-.PHONY: help ensure-pkl docker-build docker-build-export-job docker-push deploy deploy-dev deploy-prod all build-sync build-sync-target setup local-config local-fixture-config auth-config-local local-synto-runtime local-synto-runtime-test local-worker-build local-fixture local-start dev support-bff support-frontend support-pipeline bff-local auth-local frontend-local local-stop kill-local pipeline-test test-flash-execution vet test build
+.PHONY: help ensure-pkl docker-build docker-build-export-job docker-push deploy deploy-dev deploy-prod all build-sync build-sync-target cli-release-source-check setup local-config local-fixture-config auth-config-local local-synto-runtime local-synto-runtime-test local-worker-build local-fixture local-start dev support-bff support-frontend support-pipeline bff-local auth-local frontend-local local-stop kill-local pipeline-test test-flash-execution vet test build
 
 CLI_VERSION ?= dev
 CLI_COMMIT ?= $(shell git rev-parse --verify HEAD 2>/dev/null || printf unknown)
+CLI_CHANNEL ?= dev
+CLI_GIT_REF ?= $(shell tag=$$(git describe --exact-match --tags HEAD 2>/dev/null || true); if [ -n "$$tag" ]; then printf 'refs/tags/%s' "$$tag"; else git symbolic-ref -q HEAD 2>/dev/null || printf unknown; fi)
 CLI_LDFLAGS = -X main.version=$(CLI_VERSION) -X main.commit=$(CLI_COMMIT)
 
 help:
@@ -57,12 +59,18 @@ deploy-prod:
 
 all: docker-build docker-push deploy-dev
 
-build-sync:
+build-sync: cli-release-source-check
 	go build -ldflags '$(CLI_LDFLAGS)' -o lwc-sync ./cmd/sync/
 
-build-sync-target:
+build-sync-target: cli-release-source-check
 	@test -n "$(GOOS)" -a -n "$(GOARCH)" -a -n "$(OUTPUT)"
 	CGO_ENABLED=0 GOOS=$(GOOS) GOARCH=$(GOARCH) go build -ldflags '$(CLI_LDFLAGS)' -o "$(OUTPUT)" ./cmd/sync/
+
+cli-release-source-check:
+	@if [ "$(CLI_VERSION)" = dev ] && [ "$(CLI_CHANNEL)" = dev ]; then exit 0; fi; \
+	PUBLISH=true RELEASE_VERSION="$(CLI_VERSION)" RELEASE_CHANNEL="$(CLI_CHANNEL)" \
+	  SOURCE_REVISION="$(CLI_COMMIT)" GIT_REF="$(CLI_GIT_REF)" GITHUB_SHA="$(CLI_COMMIT)" \
+	  python3 ../../apps/bff/scripts/validate_cli_source.py --root ../.. --output /dev/null
 
 ensure-pkl:
 	bash ../../scripts/ensure-pkl.sh "$(PKL_BIN)"

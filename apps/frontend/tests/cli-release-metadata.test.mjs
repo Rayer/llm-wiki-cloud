@@ -44,6 +44,31 @@ test('metadata fetch omits credentials and bypasses cached latest data', async (
   }
 });
 
+test('producer-shaped bucket paths load while mismatched paths stay unavailable', async () => {
+  const published = structuredClone(fixture);
+  published.assets = published.assets.map((asset) => ({
+    ...asset,
+    download_url: `https://storage.googleapis.com/llm-wiki-frontend-config-dev/cli/versions/${published.version}/${asset.asset_name}`,
+  }));
+  const original = process.env.NEXT_PUBLIC_CLI_RELEASE_METADATA_URL;
+  process.env.NEXT_PUBLIC_CLI_RELEASE_METADATA_URL = endpoint;
+  try {
+    const valid = await loadCLIReleaseManifest(async () => ({ ok: true, json: async () => published }));
+    assert.equal(valid?.assets.length, 4);
+
+    const wrongBucket = structuredClone(published);
+    wrongBucket.assets[0].download_url = wrongBucket.assets[0].download_url.replace('llm-wiki-frontend-config-dev', 'another-bucket');
+    assert.equal(await loadCLIReleaseManifest(async () => ({ ok: true, json: async () => wrongBucket })), null);
+
+    const wrongPath = structuredClone(published);
+    wrongPath.assets[0].download_url = wrongPath.assets[0].download_url.replace('/cli/versions/', '/cli/other/');
+    assert.equal(await loadCLIReleaseManifest(async () => ({ ok: true, json: async () => wrongPath })), null);
+  } finally {
+    if (original === undefined) delete process.env.NEXT_PUBLIC_CLI_RELEASE_METADATA_URL;
+    else process.env.NEXT_PUBLIC_CLI_RELEASE_METADATA_URL = original;
+  }
+});
+
 test('missing endpoint is a safe unavailable state without a network request', async () => {
   const original = process.env.NEXT_PUBLIC_CLI_RELEASE_METADATA_URL;
   delete process.env.NEXT_PUBLIC_CLI_RELEASE_METADATA_URL;

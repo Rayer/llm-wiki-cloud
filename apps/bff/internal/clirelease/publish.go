@@ -25,8 +25,9 @@ type ObjectStore interface {
 }
 
 type PublicAssetVerifier func(context.Context, string, int64, string) error
+type PublicMetadataVerifier func(context.Context, string, []byte, string) error
 
-func Publish(ctx context.Context, store ObjectStore, manifest Manifest, releaseDir, publicBaseURL string, verify PublicAssetVerifier) error {
+func Publish(ctx context.Context, store ObjectStore, manifest Manifest, releaseDir, publicBaseURL string, verify PublicAssetVerifier, verifyMetadata PublicMetadataVerifier) error {
 	if err := manifest.Validate(); err != nil {
 		return err
 	}
@@ -39,6 +40,9 @@ func Publish(ctx context.Context, store ObjectStore, manifest Manifest, releaseD
 	}
 	if verify == nil {
 		return errors.New("public asset verifier is required")
+	}
+	if verifyMetadata == nil {
+		return errors.New("public metadata verifier is required")
 	}
 	checksums, err := os.ReadFile(path.Join(releaseDir, "checksums.txt"))
 	if err != nil {
@@ -63,10 +67,20 @@ func Publish(ctx context.Context, store ObjectStore, manifest Manifest, releaseD
 	if err := createOrMatch(ctx, store, manifestKey, manifestBytes, "application/json", "public,max-age=31536000,immutable"); err != nil {
 		return err
 	}
+	manifestURL := base + "/" + manifestKey
+	if err := verifyMetadata(ctx, manifestURL, manifestBytes, "public,max-age=31536000,immutable"); err != nil {
+		return fmt.Errorf("verify public version metadata: %w", err)
+	}
 	if manifest.Channel != "stable" {
 		return nil
 	}
-	return updateStableLatest(ctx, store, manifestBytes, manifest.Version)
+	if err := updateStableLatest(ctx, store, manifestBytes, manifest.Version); err != nil {
+		return err
+	}
+	if err := verifyMetadata(ctx, base+"/cli/stable/latest.json", manifestBytes, "no-store"); err != nil {
+		return fmt.Errorf("verify public stable latest metadata: %w", err)
+	}
+	return nil
 }
 
 func makePublishedManifest(ctx context.Context, store ObjectStore, manifest Manifest, releaseDir, base string, verify PublicAssetVerifier) ([]byte, error) {
@@ -205,6 +219,86 @@ func VerifyPublicAsset(ctx context.Context, assetURL string, size int64, wantSHA
 		return errors.New("public download bytes do not match the release archive")
 	}
 	return nil
+}
+
+func VerifyPublicMetadata(ctx context.Context, metadataURL string, expected []byte, expectedCacheControl string) error {
+	const browserOrigin = "https://wiki.dev.rayer.idv.tw"
+	var expectedManifest Manifest
+	if err := json.Unmarshal(expected, &expectedManifest); err != nil {
+		return fmt.Errorf("decode expected metadata: %w", err)
+	}
+	if err := expectedManifest.Validate(); err != nil {
+		return fmt.Errorf("validate expected metadata: %w", err)
+	}
+	request, err := http.NewRequestWithContext(ctx, http.MethodGet, metadataURL, nil)
+	if err != nil {
+		return err
+	}
+	request.Header.Set("User-Agent", "lwc-cli-release-verifier")
+	request.Header.Set("Origin", browserOrigin)
+	client := &http.Client{CheckRedirect: func(_ *http.Request, _ []*http.Request) error { return http.ErrUseLastResponse }}
+	response, err := client.Do(request)
+	if err != nil {
+		return err
+	}
+	defer response.Body.Close()
+	if response.StatusCode != http.StatusOK {
+		return fmt.Errorf("metadata returned HTTP %d", response.StatusCode)
+	}
+	allowOrigin := response.Header.Get("Access-Control-Allow-Origin")
+	if allowOrigin != browserOrigin && allowOrigin != "*" {
+		return errors.New("public metadata does not allow the DEV wiki origin")
+	}
+	if !cacheControlIncludes(response.Header.Get("Cache-Control"), expectedCacheControl) {
+		return fmt.Errorf("public metadata Cache-Control does not include %q", expectedCacheControl)
+	}
+	actual, err := io.ReadAll(io.LimitReader(response.Body, int64(len(expected))+1))
+	if err != nil {
+		return err
+	}
+	if !bytes.Equal(actual, expected) {
+		return errors.New("public metadata bytes do not match the published manifest identity")
+	}
+	var actualManifest Manifest
+	if err := json.Unmarshal(actual, &actualManifest); err != nil {
+		return fmt.Errorf("decode public metadata: %w", err)
+	}
+	if err := actualManifest.Validate(); err != nil {
+		return fmt.Errorf("validate public metadata: %w", err)
+	}
+	if actualManifest.Version != expectedManifest.Version || actualManifest.SourceCommit != expectedManifest.SourceCommit || actualManifest.Channel != expectedManifest.Channel || !equalAssets(actualManifest.Assets, expectedManifest.Assets) {
+		return errors.New("public metadata identity differs from the published manifest")
+	}
+	return nil
+}
+
+func cacheControlIncludes(actual, expected string) bool {
+	actualDirectives := strings.Split(strings.ToLower(actual), ",")
+	for _, expectedDirective := range strings.Split(strings.ToLower(expected), ",") {
+		found := false
+		for _, actualDirective := range actualDirectives {
+			if strings.TrimSpace(actualDirective) == strings.TrimSpace(expectedDirective) {
+				found = true
+				break
+			}
+		}
+		if !found {
+			return false
+		}
+	}
+	return true
+}
+
+func equalAssets(left, right []Asset) bool {
+	if len(left) != len(right) {
+		return false
+	}
+	for index := range left {
+		if left[index] != right[index] {
+			return false
+		}
+	}
+	return true
 }
 
 func sha256Hex(data []byte) string {

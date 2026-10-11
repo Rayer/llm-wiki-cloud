@@ -25,6 +25,12 @@ frontend_expected_aliases() {
   plan_json '.frontend.stable_aliases[]'
 }
 
+frontend_cli_release_metadata_url() {
+  local config_url="$1"
+  [[ "$config_url" == */frontend-config.json ]] || return 0
+  printf '%s/cli/stable/latest.json' "${config_url%/frontend-config.json}"
+}
+
 validate_frontend_alias_config() {
   jq -e '.normalized.frontend.stable_aliases | type == "array" and length > 0 and all(.[]; type == "string" and length > 0)' "$PLAN_PATH" >/dev/null || die "frontend aliases are not a valid normalized allowlist"
 }
@@ -295,7 +301,7 @@ frontend_mutate() {
   vercel_environment=$(frontend_vercel_environment); target=$(frontend_deploy_target)
   cli_release_metadata_url=''
   if [[ "$target" != "production" ]]; then
-    cli_release_metadata_url='https://storage.googleapis.com/llm-wiki-frontend-config-dev/cli/stable/latest.json'
+    cli_release_metadata_url=$(frontend_cli_release_metadata_url "$config_url")
   fi
   inventory=$(vercel_get_deployment_inventory) || { journal_rejected frontend; set_mutation_status frontend failed; write_component_result frontend failed '{}' deployment_inventory_unreadable; return 1; }
   candidates=$(vercel_exact_deployment_candidates "$inventory") || { journal_rejected frontend; set_mutation_status frontend failed; write_component_result frontend failed '{}' deployment_inventory_malformed; return 1; }

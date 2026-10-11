@@ -3,7 +3,7 @@
 Date: 2026-10-12
 Branch: `Rayer/LWC-386-387-cli-delivery`
 Source base: `7713976360fe3573c7e36d56ceb2d31daf2751a5`
-Source PR: https://github.com/Rayer/llm-wiki-cloud/pull/116, base `develop`, implementation commit `b73d23cf4c98b14091c78a6f7c2ca52d880835cb`.
+Source PR: https://github.com/Rayer/llm-wiki-cloud/pull/116, base `develop`. This earlier checkpoint captured implementation commit `b73d23cf4c98b14091c78a6f7c2ca52d880835cb`; the scoped repair head and exact validation record are maintained in the durable repair evidence report.
 
 ## Frozen scope
 
@@ -25,7 +25,7 @@ The independent frontend loader reads `NEXT_PUBLIC_CLI_RELEASE_METADATA_URL`, us
 - Release packaging: cross-compiled and packaged all four target binaries; the extracted native Darwin/arm64 archive returned exactly `lwc-sync dev`. The POSIX shell argv fixture executed the generated command and verified the exact argument vector.
 - Workflow and route: `actionlint` passed for `.github/workflows/cli-release.yml`; the built `/cli` route returned HTTP 200. The frontend component tests exercise the lane and its accordion behavior.
 - PR CI: all checks passed, including BFF, frontend lint/test/typecheck/build, workflow source guards, actionlint/schema, canonical CI, local vertical smoke, and automatic Vercel PR preview checks.
-- Not run locally: native Windows/PowerShell, Linux, and Darwin/amd64 execution (the worker host is Darwin/arm64; `pwsh` is unavailable). Their native smoke/argv checks are present in the manual workflow but that workflow was not dispatched.
+- Native smoke is configured for Darwin/arm64, Darwin/amd64 (`macos-15-intel`), Windows/amd64, and Linux/amd64; the manual workflow was not dispatched in this checkpoint, so none of those workflow-native results are claimed here. The earlier statement that Darwin/amd64 was already configured was inaccurate.
 
 ## Publication and remaining gates
 

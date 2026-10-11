@@ -48,7 +48,7 @@ func run(args []string) error {
 	}
 	defer client.Close()
 	store := clirelease.NewGCSStore(client, *bucket)
-	if err := clirelease.Publish(ctx, store, manifest, *releaseDir, *publicBaseURL, clirelease.VerifyPublicAsset); err != nil {
+	if err := clirelease.Publish(ctx, store, manifest, *releaseDir, *publicBaseURL, clirelease.VerifyPublicAsset, clirelease.VerifyPublicMetadata); err != nil {
 		return err
 	}
 	fmt.Printf("Published %s (%s) to the configured release objects.\n", manifest.Version, manifest.Channel)

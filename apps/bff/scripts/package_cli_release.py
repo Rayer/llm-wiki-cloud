@@ -49,9 +49,9 @@ def package(version: str, commit: str, channel: str, binary_dir: Path, readme_pa
             raise ValueError("dev version requires the dev channel")
     elif not SEMVER.fullmatch(version):
         raise ValueError(f"invalid SemVer: {version}")
-    elif channel == "stable" and "-" in version:
+    elif channel == "stable" and "-" in version.split("+", 1)[0]:
         raise ValueError("stable channel cannot use a prerelease version")
-    elif channel == "prerelease" and "-" not in version:
+    elif channel == "prerelease" and "-" not in version.split("+", 1)[0]:
         raise ValueError("prerelease channel requires a prerelease version")
     elif channel not in {"stable", "prerelease"}:
         raise ValueError(f"unsupported channel: {channel}")

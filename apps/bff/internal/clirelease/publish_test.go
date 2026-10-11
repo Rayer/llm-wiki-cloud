@@ -30,6 +30,8 @@ func newMemoryStore() *memoryStore {
 	return &memoryStore{objects: map[string]memoryObject{}, nextGeneration: 1}
 }
 
+func verifyMetadataOK(context.Context, string, []byte, string) error { return nil }
+
 func (store *memoryStore) Read(_ context.Context, key string) ([]byte, int64, error) {
 	object, ok := store.objects[key]
 	if !ok {
@@ -74,7 +76,7 @@ func TestPublishCreatesVerifiedStableLatestAndRetriesIdentically(t *testing.T) {
 		}
 		return nil
 	}
-	if err := Publish(context.Background(), store, manifest, releaseDir, "https://downloads.example.test", verify); err != nil {
+	if err := Publish(context.Background(), store, manifest, releaseDir, "https://downloads.example.test", verify, verifyMetadataOK); err != nil {
 		t.Fatal(err)
 	}
 	latest := store.objects["cli/stable/latest.json"]
@@ -83,7 +85,7 @@ func TestPublishCreatesVerifiedStableLatestAndRetriesIdentically(t *testing.T) {
 		t.Fatalf("latest = %s, %v", latest.data, err)
 	}
 	objectCount := len(store.objects)
-	if err := Publish(context.Background(), store, manifest, releaseDir, "https://downloads.example.test", verify); err != nil {
+	if err := Publish(context.Background(), store, manifest, releaseDir, "https://downloads.example.test", verify, verifyMetadataOK); err != nil {
 		t.Fatalf("identical retry: %v", err)
 	}
 	if len(store.objects) != objectCount || store.objects["cli/stable/latest.json"].generation != latest.generation {
@@ -100,7 +102,7 @@ func TestPublishPartialFailureNeverChangesLatest(t *testing.T) {
 		}
 		return nil
 	}
-	if err := Publish(context.Background(), store, manifest, releaseDir, "https://downloads.example.test/cli", verify); err == nil {
+	if err := Publish(context.Background(), store, manifest, releaseDir, "https://downloads.example.test/cli", verify, verifyMetadataOK); err == nil {
 		t.Fatal("expected unavailable asset failure")
 	}
 	if _, ok := store.objects["cli/stable/latest.json"]; ok {
@@ -115,7 +117,7 @@ func TestPublishRejectsDifferentBytesForExistingVersionObject(t *testing.T) {
 	store := newMemoryStore()
 	manifest, releaseDir := testRelease(t, "1.2.3", "stable")
 	store.write("cli/versions/1.2.3/"+manifest.Assets[0].AssetName, []byte("other bytes"))
-	err := Publish(context.Background(), store, manifest, releaseDir, "https://downloads.example.test", func(context.Context, string, int64, string) error { return nil })
+	err := Publish(context.Background(), store, manifest, releaseDir, "https://downloads.example.test", func(context.Context, string, int64, string) error { return nil }, verifyMetadataOK)
 	if err == nil || !strings.Contains(err.Error(), "different bytes") {
 		t.Fatalf("expected immutable object conflict, got %v", err)
 	}
@@ -130,7 +132,7 @@ func TestPublishRejectsChecksumsThatDifferFromManifestBeforeWriting(t *testing.T
 	if err := os.WriteFile(filepath.Join(releaseDir, "checksums.txt"), []byte("incorrect\n"), 0o600); err != nil {
 		t.Fatal(err)
 	}
-	err := Publish(context.Background(), store, manifest, releaseDir, "https://downloads.example.test", func(context.Context, string, int64, string) error { return nil })
+	err := Publish(context.Background(), store, manifest, releaseDir, "https://downloads.example.test", func(context.Context, string, int64, string) error { return nil }, verifyMetadataOK)
 	if err == nil || !strings.Contains(err.Error(), "checksums do not match") {
 		t.Fatalf("expected checksum mismatch, got %v", err)
 	}
@@ -143,20 +145,41 @@ func TestPublishKeepsNewerLatestAndPrereleaseOutOfStable(t *testing.T) {
 	store := newMemoryStore()
 	newer, newerDir := testRelease(t, "2.0.0", "stable")
 	verify := func(context.Context, string, int64, string) error { return nil }
-	if err := Publish(context.Background(), store, newer, newerDir, "https://downloads.example.test", verify); err != nil {
+	if err := Publish(context.Background(), store, newer, newerDir, "https://downloads.example.test", verify, verifyMetadataOK); err != nil {
 		t.Fatal(err)
 	}
 	older, olderDir := testRelease(t, "1.9.0", "stable")
-	if err := Publish(context.Background(), store, older, olderDir, "https://downloads.example.test", verify); err == nil {
+	if err := Publish(context.Background(), store, older, olderDir, "https://downloads.example.test", verify, verifyMetadataOK); err == nil {
 		t.Fatal("older stable version unexpectedly published")
 	}
 	prerelease, prereleaseDir := testRelease(t, "2.1.0-rc.1", "prerelease")
 	latestBefore := append([]byte(nil), store.objects["cli/stable/latest.json"].data...)
-	if err := Publish(context.Background(), store, prerelease, prereleaseDir, "https://downloads.example.test", verify); err != nil {
+	if err := Publish(context.Background(), store, prerelease, prereleaseDir, "https://downloads.example.test", verify, verifyMetadataOK); err != nil {
 		t.Fatal(err)
 	}
 	if string(store.objects["cli/stable/latest.json"].data) != string(latestBefore) {
 		t.Fatal("prerelease changed stable latest")
+	}
+}
+
+func TestPublishReportsMetadataReadbackFailureWithoutRollingBackObjects(t *testing.T) {
+	store := newMemoryStore()
+	manifest, releaseDir := testRelease(t, "1.2.3", "stable")
+	verify := func(context.Context, string, int64, string) error { return nil }
+	verifyMetadata := func(_ context.Context, url string, _ []byte, _ string) error {
+		if strings.HasSuffix(url, "/cli/stable/latest.json") {
+			return errors.New("stale public metadata")
+		}
+		return nil
+	}
+	if err := Publish(context.Background(), store, manifest, releaseDir, "https://downloads.example.test", verify, verifyMetadata); err == nil || !strings.Contains(err.Error(), "stale public metadata") {
+		t.Fatalf("expected latest readback failure, got %v", err)
+	}
+	if _, ok := store.objects["cli/versions/1.2.3/manifest.json"]; !ok {
+		t.Fatal("version manifest was removed after a public metadata failure")
+	}
+	if _, ok := store.objects["cli/stable/latest.json"]; !ok {
+		t.Fatal("stable latest was rolled back after a public metadata failure")
 	}
 }
 
@@ -184,16 +207,64 @@ func TestVerifyPublicAssetRequiresDevWikiCORSAndMatchingBytes(t *testing.T) {
 	}
 }
 
+func TestVerifyPublicMetadataRequiresMatchingIdentityCORSAndCache(t *testing.T) {
+	manifest, _ := testRelease(t, "1.2.3", "stable")
+	expected, err := json.Marshal(manifest)
+	if err != nil {
+		t.Fatal(err)
+	}
+	tests := []struct {
+		name    string
+		body    []byte
+		cors    string
+		cache   string
+		wantErr bool
+	}{
+		{name: "valid", body: expected, cors: "https://wiki.dev.rayer.idv.tw", cache: "public, max-age=31536000, immutable"},
+		{name: "stale bytes", body: []byte(`{"version":"1.2.2"}`), cors: "https://wiki.dev.rayer.idv.tw", cache: "public,max-age=31536000,immutable", wantErr: true},
+		{name: "bad identity", body: func() []byte {
+			changed := manifest
+			changed.SourceCommit = strings.Repeat("f", 40)
+			data, _ := json.Marshal(changed)
+			return data
+		}(), cors: "https://wiki.dev.rayer.idv.tw", cache: "public,max-age=31536000,immutable", wantErr: true},
+		{name: "missing cors", body: expected, cache: "public,max-age=31536000,immutable", wantErr: true},
+		{name: "wrong cache", body: expected, cors: "https://wiki.dev.rayer.idv.tw", cache: "no-store", wantErr: true},
+	}
+	for _, test := range tests {
+		t.Run(test.name, func(t *testing.T) {
+			server := httptest.NewServer(http.HandlerFunc(func(writer http.ResponseWriter, request *http.Request) {
+				if request.Header.Get("Origin") != "https://wiki.dev.rayer.idv.tw" {
+					t.Errorf("Origin = %q", request.Header.Get("Origin"))
+				}
+				if test.cors != "" {
+					writer.Header().Set("Access-Control-Allow-Origin", test.cors)
+				}
+				writer.Header().Set("Cache-Control", test.cache)
+				_, _ = writer.Write(test.body)
+			}))
+			defer server.Close()
+			err := VerifyPublicMetadata(context.Background(), server.URL, expected, "public,max-age=31536000,immutable")
+			if test.wantErr && err == nil {
+				t.Fatal("expected public metadata verification failure")
+			}
+			if !test.wantErr && err != nil {
+				t.Fatalf("valid public metadata rejected: %v", err)
+			}
+		})
+	}
+}
+
 func TestPublishGenerationConflictDoesNotOverwriteConcurrentLatest(t *testing.T) {
 	store := newMemoryStore()
 	older, olderDir := testRelease(t, "1.0.0", "stable")
 	verify := func(context.Context, string, int64, string) error { return nil }
-	if err := Publish(context.Background(), store, older, olderDir, "https://downloads.example.test", verify); err != nil {
+	if err := Publish(context.Background(), store, older, olderDir, "https://downloads.example.test", verify, verifyMetadataOK); err != nil {
 		t.Fatal(err)
 	}
 	newer, newerDir := testRelease(t, "1.1.0", "stable")
 	store.failNextUpdate = true
-	if err := Publish(context.Background(), store, newer, newerDir, "https://downloads.example.test", verify); err == nil || !strings.Contains(err.Error(), "generation-conditional") {
+	if err := Publish(context.Background(), store, newer, newerDir, "https://downloads.example.test", verify, verifyMetadataOK); err == nil || !strings.Contains(err.Error(), "generation-conditional") {
 		t.Fatalf("expected generation conflict, got %v", err)
 	}
 	if got := string(store.objects["cli/stable/latest.json"].data); got != "concurrent writer" {

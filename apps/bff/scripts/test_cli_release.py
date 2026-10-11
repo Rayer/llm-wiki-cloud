@@ -44,6 +44,21 @@ class PackageCLIReleaseTests(unittest.TestCase):
             root = Path(temporary)
             self.assertRaises(ValueError, package, "1.0.0-rc.1", "0123456789abcdef0123456789abcdef01234567", "stable", root, root / "README.md", root / "out")
 
+    def test_stable_build_metadata_hyphen_is_not_a_prerelease(self):
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary)
+            binary_dir = root / "bin"
+            for platform, filename in (("darwin-arm64", "lwc-sync"), ("darwin-amd64", "lwc-sync"), ("windows-amd64", "lwc-sync.exe"), ("linux-amd64", "lwc-sync")):
+                directory = binary_dir / platform
+                directory.mkdir(parents=True)
+                (directory / filename).write_bytes(platform.encode())
+            readme = root / "README.md"
+            readme.write_text("CLI guide\n", encoding="utf-8")
+
+            manifest = package("1.2.3+build-test", "0123456789abcdef0123456789abcdef01234567", "stable", binary_dir, readme, root / "out")
+
+            self.assertEqual(manifest["version"], "1.2.3+build-test")
+
 
 if __name__ == "__main__":
     unittest.main()

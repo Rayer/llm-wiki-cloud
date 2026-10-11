@@ -522,6 +522,8 @@ class FrontendPrepareDiagnostics(unittest.TestCase):
                     self.assertEqual(Path(cwd), project_root)
                     self.assertEqual(args, ['vercel', 'pull', '--yes', '--environment=preview',
                                             '--scope', 'test-team', '--token', self.token])
+                    self.assertEqual(env['NEXT_PUBLIC_CONFIG_URL'], instance.plan['normalized']['frontend']['config_url'])
+                    self.assertEqual(env['NEXT_PUBLIC_CLI_RELEASE_METADATA_URL'], 'https://config.test.invalid/cli/stable/latest.json')
                     identity_env = {key: env[key] for key in (
                         'VERCEL_ORG_ID', 'VERCEL_PROJECT_ID', 'VERCEL_TEAM_ID')}
                     resolved = ORIGINAL_SUBPROCESS_RUN(

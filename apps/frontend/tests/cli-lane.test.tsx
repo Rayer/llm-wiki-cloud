@@ -41,12 +41,14 @@ describe('CLI onboarding lane', () => {
 
   it('keeps metadata failure safe and disables root commands until a path is entered', async () => {
     render(<CLILaneClient />);
+    expect(screen.getByText('CLILane.agentNote')).toBeTruthy();
     const cards = screen.getAllByRole('button').filter((button) => button.hasAttribute('aria-expanded'));
     fireEvent.click(cards[0]);
     expect(await screen.findAllByText('CLILane.unavailable')).toHaveLength(4);
     expect(screen.queryAllByRole('link')).toHaveLength(0);
 
     fireEvent.click(cards[2]);
+    expect(screen.getByText('CLILane.recoveryGuidance')).toBeTruthy();
     const rootInput = screen.getByLabelText('CLILane.rootLabel');
     fireEvent.click(screen.getByRole('button', { name: 'CLILane.copy' }));
     expect(mocks.writeText).not.toHaveBeenCalled();

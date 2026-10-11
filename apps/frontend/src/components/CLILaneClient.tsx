@@ -68,6 +68,7 @@ export function CLILaneClient() {
         <p className="font-mono text-xs uppercase tracking-[0.2em] text-emerald-300">{t('CLILane.eyebrow')}</p>
         <h1 className="text-3xl font-semibold tracking-tight text-white sm:text-4xl">{t('CLILane.title')}</h1>
         <p className="max-w-3xl text-sm leading-6 text-zinc-300 sm:text-base">{t('CLILane.intro')}</p>
+        <p className="max-w-3xl text-sm leading-6 text-zinc-400">{t('CLILane.agentNote')}</p>
         <p className="text-sm text-zinc-400">{t('CLILane.projectContext', { project: currentProject?.name ?? t('CLILane.noProject') })}</p>
       </header>
 
@@ -160,6 +161,7 @@ export function CLILaneClient() {
             <p className="mt-2 text-xs leading-5 text-zinc-500">{t('CLILane.rootHint')}</p>
             <p className="mt-4 flex items-start gap-2 text-sm leading-6 text-zinc-300"><Folder aria-hidden="true" className="mt-1 shrink-0 text-emerald-300" size={16} />{t('CLILane.rawScope')}</p>
             <p className="mt-3 text-sm leading-6 text-zinc-400">{t('CLILane.sameInit')}</p>
+            <p className="mt-3 text-sm leading-6 text-zinc-400">{t('CLILane.recoveryGuidance')}</p>
             <CommandLine command={commands.init} label={t('CLILane.copy')} copied={copyStatus === 'init'} onCopy={() => void copy('init', commands.init)} />
             <details className="mt-5 rounded-lg border border-white/10 bg-black/20 p-4">
               <summary className="cursor-pointer text-sm font-medium text-zinc-200">{t('CLILane.obsidianTitle')}</summary>

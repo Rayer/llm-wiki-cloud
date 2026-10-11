@@ -48,7 +48,12 @@ export function validateCLIReleaseManifest(value: unknown, endpoint: string): CL
   if (!Array.isArray(value.assets) || value.assets.length !== expectedTargets.size) {
     throw new Error('Incomplete CLI platform metadata.');
   }
-  const metadataOrigin = new URL(endpoint, typeof window === 'undefined' ? 'http://localhost/' : window.location.href).origin;
+  const metadataURL = new URL(endpoint, typeof window === 'undefined' ? 'http://localhost/' : window.location.href);
+  const metadataOrigin = metadataURL.origin;
+  const metadataPath = metadataURL.pathname;
+  const metadataSuffix = '/cli/stable/latest.json';
+  if (!metadataPath.endsWith(metadataSuffix)) throw new Error('Invalid CLI release metadata endpoint.');
+  const metadataBasePath = metadataPath.slice(0, -metadataSuffix.length);
   const seen = new Set<string>();
   const assets = value.assets.map((entry): CLIReleaseAsset => {
     if (!isRecord(entry) || typeof entry.os !== 'string' || typeof entry.arch !== 'string') {
@@ -68,7 +73,7 @@ export function validateCLIReleaseManifest(value: unknown, endpoint: string): CL
     if (entry.download_url !== undefined) {
       if (typeof entry.download_url !== 'string') throw new Error('Invalid CLI download URL.');
       const parsed = new URL(entry.download_url);
-      const expectedPath = `/cli/versions/${value.version}/${entry.asset_name}`;
+      const expectedPath = `${metadataBasePath}/cli/versions/${value.version}/${entry.asset_name}`;
       if (parsed.protocol !== 'https:' || parsed.origin !== metadataOrigin || parsed.pathname !== expectedPath || parsed.username || parsed.password || parsed.search || parsed.hash) {
         throw new Error('Untrusted CLI download URL.');
       }
