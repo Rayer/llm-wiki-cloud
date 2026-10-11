@@ -1,0 +1,6 @@
+command=npm run lint
+
+> llm-wiki-frontend@0.1.0 lint
+> eslint
+
+exit=0
