@@ -9,13 +9,17 @@ Source PR: https://github.com/Rayer/llm-wiki-cloud/pull/116, base `develop`. Thi
 
 - LWC-385 (`cli-onboarding-ux-r2`): independent four-step CLI onboarding/download component, owned locale namespace, shell-safe command generation, and component tests.
 - LWC-386 (`cli-version-examples-r2`): offline top-level `lwc-sync --version`, build-time version/commit injection, and shell workflow examples; existing raw/auth/binding behavior remains unchanged.
-- LWC-387 (`cli-gcs-distribution-r1`): reproducible four-target packaging, checksum/manifest validation, manual release workflow, and conditional object-store publishing.
+- LWC-387 (`cli-gcs-distribution-r1`): reproducible four-target packaging, checksum/manifest validation, version-tag and manual release workflow entrypoints, and conditional object-store publishing.
 
 ## Shared contract and ownership
 
 `schema_version: 1` metadata contains `version`, full `source_commit`, `channel`, and exactly one asset for `darwin/arm64`, `darwin/amd64`, `windows/amd64`, and `linux/amd64`. Each asset has `os`, `arch`, `asset_name`, `size`, and lowercase `sha256`; `download_url` is omitted until the anonymous HTTPS object readback and DEV-origin CORS check verify the exact bytes. The producer writes immutable objects under `cli/versions/<version>/` and updates `cli/stable/latest.json` only after all four assets, manifest, and checksums are consistent and verified. Prereleases do not update stable latest; an older stable release cannot replace a newer one.
 
 The independent frontend loader reads `NEXT_PUBLIC_CLI_RELEASE_METADATA_URL`, uses `credentials: omit` and `cache: no-store`, and fails closed for missing, invalid, unavailable, or unverified assets. DEV build wiring is limited to `deploy/engine/providers.py`, `deploy/components/frontend.sh`, and `scripts/local-cloud-env.sh`; Production receives an empty CLI metadata URL. No strict runtime-config schema, CaC schema, Profile/MCP panel, or shared Shell/navigation file was edited. The coordinator remains sole editor for the shared `/cli` navigation slot.
+
+## Release entrypoints
+
+`.github/workflows/cli-release.yml` accepts pushes to `cli/v*` tags and manual dispatch. Tag pushes derive the version from the ref, classify stable versus prerelease while ignoring build metadata, and publish only after the shared source/tag/SHA validator and all four native smoke jobs succeed. Manual dispatch still defaults to a nonpublishing `dev` build; manual tag publishing retains its explicit publish/version/channel inputs. The publisher remains restricted to the configured Development bucket and existing workload-identity secrets; no new credential path or publish permission is introduced.
 
 ## Validation
 

@@ -1,10 +1,13 @@
 name: CLI release
 
 on:
+  push:
+    tags:
+      - 'cli/v*'
   workflow_dispatch:
     inputs:
       publish:
-        description: Publish the tagged release to the configured CLI release objects
+        description: Publish the selected matching CLI tag to the configured release objects
         required: true
         type: boolean
         default: false
@@ -14,12 +17,12 @@ on:
         type: string
         default: ''
       version:
-        description: Full SemVer for a matching cli/v<version> tag; build-only uses dev
+        description: Full SemVer for a matching cli/v<version> tag; tag pushes derive this; build-only uses dev
         required: true
         type: string
         default: dev
       channel:
-        description: Release channel; build-only uses dev
+        description: Release channel; tag pushes derive this; build-only uses dev
         required: true
         type: choice
         options:
@@ -35,20 +38,42 @@ jobs:
   validate:
     runs-on: ubuntu-latest
     outputs:
-      version: ${{ steps.identity.outputs.version }}
-      channel: ${{ steps.identity.outputs.channel }}
+      publish: ${{ steps.release.outputs.publish }}
+      version: ${{ steps.release.outputs.version }}
+      channel: ${{ steps.release.outputs.channel }}
       source_sha: ${{ steps.identity.outputs.source_sha }}
     steps:
       - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
         with:
           fetch-depth: 0
+      - id: release
+        name: Normalize workflow input or release tag identity
+        env:
+          EVENT_NAME: ${{ github.event_name }}
+          EVENT_REF: ${{ github.ref }}
+          EVENT_SHA: ${{ github.sha }}
+          INPUT_PUBLISH: ${{ github.event.inputs.publish }}
+          INPUT_VERSION: ${{ github.event.inputs.version }}
+          INPUT_CHANNEL: ${{ github.event.inputs.channel }}
+          INPUT_SOURCE_REVISION: ${{ github.event.inputs.source_revision }}
+        run: |
+          set -Eeuo pipefail
+          python3 apps/bff/scripts/normalize_cli_release_event.py \
+            --event "$EVENT_NAME" \
+            --ref "$EVENT_REF" \
+            --sha "$EVENT_SHA" \
+            --publish "${INPUT_PUBLISH:-false}" \
+            --version "${INPUT_VERSION:-dev}" \
+            --channel "${INPUT_CHANNEL:-dev}" \
+            --source-revision "${INPUT_SOURCE_REVISION:-}" \
+            --output "$GITHUB_OUTPUT"
       - id: identity
         name: Validate source, tag, and channel identity
         env:
-          PUBLISH: ${{ inputs.publish }}
-          RELEASE_VERSION: ${{ inputs.version }}
-          RELEASE_CHANNEL: ${{ inputs.channel }}
-          SOURCE_REVISION: ${{ inputs.source_revision }}
+          PUBLISH: ${{ steps.release.outputs.publish }}
+          RELEASE_VERSION: ${{ steps.release.outputs.version }}
+          RELEASE_CHANNEL: ${{ steps.release.outputs.channel }}
+          SOURCE_REVISION: ${{ steps.release.outputs.source_revision }}
           GIT_REF: ${{ github.ref }}
           GITHUB_SHA: ${{ github.sha }}
         run: python3 apps/bff/scripts/validate_cli_source.py --root "$GITHUB_WORKSPACE" --output "$GITHUB_OUTPUT"
@@ -202,7 +227,7 @@ jobs:
         run: node --experimental-strip-types apps/bff/scripts/test_cli_shell_argv.mjs
 
   publish:
-    if: ${{ inputs.publish }}
+    if: ${{ needs.validate.outputs.publish == 'true' }}
     needs: [validate, build, package, native-smoke]
     runs-on: ubuntu-latest
     permissions:
