@@ -1,0 +1,15 @@
+command=npm run test:component -- tests/lwc-211-profile.test.tsx
+
+> llm-wiki-frontend@0.1.0 test:component
+> NODE_ENV=test vitest run tests/lwc-211-profile.test.tsx
+
+
+ RUN  v4.1.10 /Users/rayer/orca/workspaces/llm-wiki-cloud/LWC-388-profile-ux/apps/frontend
+
+
+ Test Files  1 passed (1)
+      Tests  34 passed (34)
+   Start at  01:49:22
+   Duration  2.76s (transform 139ms, setup 19ms, import 342ms, tests 1.74s, environment 545ms)
+
+exit=0

@@ -17,7 +17,16 @@ import {
   type ProfileState,
 } from '@/lib/api';
 import { useT } from '@/lib/i18n';
+import { ProfileExpectedEffect } from './ProfileExpectedEffect';
+import { ProfileHowItWorks } from './ProfileHowItWorks';
 import { ProfileRequirementsEditor } from './ProfileRequirementsEditor';
+import {
+  newProfileRequirementId,
+  profileTemplateRequirements,
+  ProfileTemplates,
+  type ProfileAdjustmentId,
+  type ProfileTemplateId,
+} from './ProfileTemplates';
 
 function sameRequirements(left: ProfileRequirement[], right: ProfileRequirement[]): boolean {
   return left.length === right.length
@@ -107,6 +116,7 @@ export function ProjectProfilePanel({ projectId }: { projectId: string }) {
   const [bootstrapLoading, setBootstrapLoading] = useState(false);
   const [bootstrapError, setBootstrapError] = useState('');
   const [draft, setDraft] = useState<ProfileRequirement[]>([]);
+  const [selectedTemplate, setSelectedTemplate] = useState<{ projectId: string; id: ProfileTemplateId | null }>(() => ({ projectId, id: null }));
   const [loading, setLoading] = useState(true);
   const [savingScope, setSavingScope] = useState<RequestScope | null>(null);
   const [workingScope, setWorkingScope] = useState<RequestScope | null>(null);
@@ -265,6 +275,7 @@ export function ProjectProfilePanel({ projectId }: { projectId: string }) {
   }, [applyProfile, currentScope, loadBootstrapGuidance, profile, projectId]);
 
   const visibleProfile = profile?.project_id === projectId ? profile : null;
+  const selectedTemplateId = selectedTemplate.projectId === projectId ? selectedTemplate.id : null;
   const bootstrapForCurrentScope = bootstrapScope === currentScope;
   const visibleBootstrapGuidance = bootstrapForCurrentScope ? bootstrapGuidance : null;
   const visibleBootstrapLoading = bootstrapForCurrentScope && bootstrapLoading;
@@ -528,6 +539,7 @@ export function ProjectProfilePanel({ projectId }: { projectId: string }) {
 
       {visibleProfile ? (
         <>
+          <p className="mt-4 text-xs leading-5 text-zinc-500">{t('Profile.localUx.layersDescription')}</p>
           {visibleProfile.active ? (
             <p className="mt-5 text-sm text-emerald-200" role="status">
               {t('Profile.active', { candidateId: visibleProfile.active.candidate_id })}
@@ -535,6 +547,12 @@ export function ProjectProfilePanel({ projectId }: { projectId: string }) {
           ) : (
             <p className="mt-5 text-sm text-zinc-400" role="status">{t('Profile.noActive')}</p>
           )}
+
+          <ProfileHowItWorks />
+
+          {showFirstCompileBootstrap || visibleProfile.candidate ? (
+            <h3 className="mt-5 text-sm font-semibold text-zinc-200">{t('Profile.localUx.systemInterpretationHeading')}</h3>
+          ) : null}
 
           {showFirstCompileBootstrap ? (
             <section className="mt-5 rounded-xl border border-sky-300/20 bg-sky-300/5 p-4" aria-labelledby="profile-bootstrap-heading" aria-busy={visibleBootstrapLoading}>
@@ -743,7 +761,34 @@ export function ProjectProfilePanel({ projectId }: { projectId: string }) {
           <div className="mt-6 border-t border-white/10 pt-5">
             <h3 className="text-sm font-semibold text-white">{t('Profile.originalRequirements')}</h3>
             <p className="mt-1 text-xs leading-5 text-zinc-500">{t('Profile.requirementsDescription')}</p>
-            <p className="mt-2 text-sm leading-6 text-zinc-400">{t('Profile.requirementsPriorities')}</p>
+            <ProfileTemplates
+              requirements={draft}
+              selectedTemplateId={selectedTemplateId}
+              disabled={saving || working}
+              onSelect={(templateId) => setSelectedTemplate({ projectId, id: templateId })}
+              onApplyTemplate={(templateId) => {
+                setDraft(profileTemplateRequirements(templateId, t));
+                setSelectedTemplate({ projectId, id: templateId });
+                setError('');
+                setNotice('');
+              }}
+              onClearRequirements={() => {
+                setDraft([]);
+                setSelectedTemplate({ projectId, id: null });
+                setError('');
+                setNotice('');
+              }}
+              onAddAdjustment={(adjustmentId: ProfileAdjustmentId) => {
+                setDraft((current) => [...current, {
+                  id: newProfileRequirementId(),
+                  text: t(`Profile.localUx.adjustments.${adjustmentId}.requirement`),
+                }]);
+                setError('');
+                setNotice('');
+              }}
+            />
+            <ProfileExpectedEffect selectedTemplateId={selectedTemplateId} requirements={draft} />
+            <p className="mt-4 text-xs leading-5 text-zinc-500">{t('Profile.requirementsPriorities')}</p>
             <p className="mt-2 text-sm leading-6 text-zinc-400">{t('Profile.requirementsExample')}</p>
             <p className="mt-2 text-xs leading-5 text-zinc-500">{t('Profile.queryEffectDelay')}</p>
             <div className="mt-4">

@@ -226,11 +226,14 @@ describe('LWC-211 Project Profile', () => {
   it('saves ordered requirements with the server revision and reports the three-minute pending schedule', async () => {
     render(<ProjectProfilePanel projectId="project-a" />);
 
-    const input = await screen.findByRole('textbox', { name: 'Requirement 1' });
+    const input = await screen.findByRole('textbox', { name: 'Requirement 1' }) as HTMLTextAreaElement;
     expect(screen.getByRole('heading', { name: 'Project priorities (optional)' })).toBeDefined();
     expect(screen.getByText(/tag list and rules preview for Jev concept tagging/)).toBeDefined();
     expect(screen.getByText(/Lifestyle project/)).toBeDefined();
     expect(screen.getByText(/current settings remain in use until the update completes\. Confirm the preview first/)).toBeDefined();
+    expect(input.value).toBe('');
+    expect(screen.getByRole('button', { name: /General knowledge organization/ }).getAttribute('aria-pressed')).toBe('false');
+    expect(mocks.saveProfile).not.toHaveBeenCalled();
     expect(mocks.getProfileBootstrapGuidance).not.toHaveBeenCalled();
     expect(screen.queryByRole('heading', { name: 'First-compile guidance' })).toBeNull();
     fireEvent.change(input, { target: { value: '  invoice source  ' } });
@@ -842,12 +845,186 @@ describe('LWC-211 Project Profile', () => {
     expect(mocks.recompileAll).not.toHaveBeenCalled();
   });
 
+  it('keeps template and adjustment changes local until the user saves', async () => {
+    mocks.getProfile.mockResolvedValue({
+      ...emptyProfile('project-a', 2),
+      requirements: [{ id: 'custom-1', text: 'Keep my original wording.' }],
+    });
+
+    render(<ProjectProfilePanel projectId="project-a" />);
+
+    expect((await screen.findByRole('textbox', { name: 'Requirement 1' }) as HTMLTextAreaElement).value)
+      .toBe('Keep my original wording.');
+    for (const templateName of [
+      'General knowledge organization',
+      'Learning and research',
+      'Work and projects',
+      'Life planning',
+    ]) {
+      expect(screen.getByRole('button', { name: new RegExp(templateName) })).toBeDefined();
+    }
+
+    fireEvent.click(screen.getByRole('button', { name: /Learning and research/ }));
+    expect((screen.getByRole('textbox', { name: 'Requirement 1' }) as HTMLTextAreaElement).value)
+      .toBe('Keep my original wording.');
+    fireEvent.click(screen.getByRole('button', { name: 'Apply to draft' }));
+    expect(screen.getByRole('alert').textContent).toMatch(/Replace the current requirements draft/);
+    fireEvent.click(screen.getByRole('button', { name: 'Keep current draft' }));
+
+    expect((screen.getByRole('textbox', { name: 'Requirement 1' }) as HTMLTextAreaElement).value)
+      .toBe('Keep my original wording.');
+    expect(mocks.saveProfile).not.toHaveBeenCalled();
+
+    fireEvent.click(screen.getByRole('button', { name: 'Add source and evidence' }));
+    expect((screen.getByRole('textbox', { name: 'Requirement 2' }) as HTMLTextAreaElement).value)
+      .toBe('Keep the source and evidence for important claims.');
+    expect(mocks.saveProfile).not.toHaveBeenCalled();
+
+    fireEvent.click(screen.getByRole('button', { name: 'Apply to draft' }));
+    fireEvent.click(screen.getByRole('button', { name: 'Confirm replacement' }));
+    expect((screen.getByRole('textbox', { name: 'Requirement 1' }) as HTMLTextAreaElement).value)
+      .toBe('Highlight core concepts, differences, reasons, and limitations.');
+    expect((screen.getByRole('textbox', { name: 'Requirement 2' }) as HTMLTextAreaElement).value)
+      .toBe('Keep the evidence and source behind each conclusion.');
+    expect(screen.getByText('Static illustration · not generated')).toBeDefined();
+    expect(mocks.saveProfile).not.toHaveBeenCalled();
+
+    fireEvent.click(screen.getByRole('button', { name: 'Add source and evidence' }));
+    fireEvent.change(screen.getByRole('textbox', { name: 'Requirement 1' }), { target: { value: 'My edited research focus.' } });
+    fireEvent.click(screen.getByRole('button', { name: 'Save requirements' }));
+    await waitFor(() => expect(mocks.saveProfile).toHaveBeenCalledWith('project-a', 2, [
+      expect.objectContaining({ id: expect.any(String), text: 'My edited research focus.' }),
+      expect.objectContaining({ text: 'Keep the evidence and source behind each conclusion.' }),
+      expect.objectContaining({ text: 'Keep the source and evidence for important claims.' }),
+    ]));
+  });
+
+  it('requires a clear confirmation before using general settings on a non-empty draft', async () => {
+    mocks.getProfile.mockResolvedValue({
+      ...emptyProfile('project-a', 3),
+      requirements: [{ id: 'custom-1', text: 'A user-written requirement.' }],
+    });
+
+    render(<ProjectProfilePanel projectId="project-a" />);
+    const original = await screen.findByRole('textbox', { name: 'Requirement 1' }) as HTMLTextAreaElement;
+    fireEvent.click(screen.getByRole('button', { name: 'Use general settings' }));
+    expect(screen.getByRole('alert').textContent).toMatch(/Clear all requirements/);
+    expect(original.value).toBe('A user-written requirement.');
+    expect(mocks.saveProfile).not.toHaveBeenCalled();
+
+    fireEvent.click(screen.getByRole('button', { name: 'Clear draft' }));
+    expect((screen.getByRole('textbox', { name: 'Requirement 1' }) as HTMLTextAreaElement).value).toBe('');
+    expect(screen.getByText('No personal requirements; general settings.')).toBeDefined();
+    expect(mocks.saveProfile).not.toHaveBeenCalled();
+  });
+
+  it('keeps the example location fixed while optional Profile modes change only the story', async () => {
+    render(<ProjectProfilePanel projectId="project-a" />);
+    const requirement = await screen.findByRole('textbox', { name: 'Requirement 1' }) as HTMLTextAreaElement;
+    fireEvent.click(screen.getByRole('button', { name: 'How does data become searchable knowledge?' }));
+    expect(screen.queryByRole('radio')).toBeNull();
+
+    const queryStage = screen.getByRole('button', { name: /4\. Search and ask/ });
+    expect(queryStage.tagName).toBe('BUTTON');
+    fireEvent.click(queryStage);
+    expect(queryStage.getAttribute('aria-pressed')).toBe('true');
+    expect(document.activeElement).toBe(screen.getByRole('heading', { name: 'Ask about a place and compare relevant details' }));
+    expect(screen.getByText('Find restaurants in Taipei City’s Da’an District.')).toBeDefined();
+    fireEvent.click(screen.getByRole('button', { name: 'See how Profile affects this step' }));
+    expect((screen.getByRole('radio', { name: 'General example' }) as HTMLInputElement).checked).toBe(true);
+    expect(screen.getByText(/without adding personal preferences/)).toBeDefined();
+
+    fireEvent.click(screen.getByRole('radio', { name: 'Add personal preferences' }));
+    fireEvent.click(screen.getByRole('checkbox', { name: 'Parking availability' }));
+    fireEvent.click(screen.getByRole('checkbox', { name: 'Suitability for children' }));
+    expect(screen.getByText('Find restaurants in Taipei City’s Da’an District.')).toBeDefined();
+    expect(screen.getByText(/Consider Parking availability and Suitability for children/)).toBeDefined();
+
+    fireEvent.click(screen.getByRole('radio', { name: 'General example' }));
+    expect(screen.getByText('Find restaurants in Taipei City’s Da’an District.')).toBeDefined();
+    expect(screen.getByText(/without adding personal preferences/)).toBeDefined();
+    fireEvent.click(screen.getByRole('radio', { name: 'Add personal preferences' }));
+    expect((screen.getByRole('checkbox', { name: 'Parking availability' }) as HTMLInputElement).checked).toBe(true);
+    expect((screen.getByRole('checkbox', { name: 'Suitability for children' }) as HTMLInputElement).checked).toBe(true);
+
+    fireEvent.click(screen.getByRole('button', { name: 'Hide the Profile example' }));
+    fireEvent.click(screen.getByRole('button', { name: 'See how Profile affects this step' }));
+    expect((screen.getByRole('radio', { name: 'Add personal preferences' }) as HTMLInputElement).checked).toBe(true);
+    expect((screen.getByRole('checkbox', { name: 'Parking availability' }) as HTMLInputElement).checked).toBe(true);
+    expect(screen.getByText('Find restaurants in Taipei City’s Da’an District.')).toBeDefined();
+
+    fireEvent.click(screen.getByRole('button', { name: 'Close the product overview' }));
+    expect(screen.queryByRole('button', { name: /4\. Search and ask/ })).toBeNull();
+    fireEvent.click(screen.getByRole('button', { name: 'How does data become searchable knowledge?' }));
+    expect(screen.getByText('Find restaurants in Taipei City’s Da’an District.')).toBeDefined();
+    expect((screen.getByRole('radio', { name: 'Add personal preferences' }) as HTMLInputElement).checked).toBe(true);
+
+    fireEvent.click(screen.getByRole('button', { name: /3\. Knowledge and tags/ }));
+    expect(screen.getByText(/Stroller access remains unknown because it is not mentioned/)).toBeDefined();
+    expect(requirement.value).toBe('');
+    expect(mocks.saveProfile).not.toHaveBeenCalled();
+    expect(mocks.confirmProfileBootstrapGuidance).not.toHaveBeenCalled();
+    expect(mocks.confirmProfileCandidate).not.toHaveBeenCalled();
+  });
+
+  it('shows selected preferences changing the pipeline focus and readable concept example', async () => {
+    render(<ProjectProfilePanel projectId="project-a" />);
+    const requirement = await screen.findByRole('textbox', { name: 'Requirement 1' }) as HTMLTextAreaElement;
+    fireEvent.click(screen.getByRole('button', { name: 'How does data become searchable knowledge?' }));
+    fireEvent.click(screen.getByRole('button', { name: 'See how Profile affects this step' }));
+    fireEvent.click(screen.getByRole('button', { name: /2\. Organize/ }));
+    expect(screen.getByText(/general example, organization keeps the stated place and source facts/)).toBeDefined();
+
+    fireEvent.click(screen.getByRole('radio', { name: 'Add personal preferences' }));
+    fireEvent.click(screen.getByRole('checkbox', { name: 'Parking availability' }));
+    fireEvent.click(screen.getByRole('button', { name: /2\. Organize/ }));
+    expect(screen.getByText(/With Parking availability, this illustration gives more attention/)).toBeDefined();
+    fireEvent.click(screen.getByRole('button', { name: /3\. Knowledge and tags/ }));
+    const parkingConcept = screen.getByText(/Qingting Restaurant serves home-style food/).textContent ?? '';
+    expect(parkingConcept).toContain('Since parking matters in this example');
+    expect(parkingConcept).toContain('Taipei City’s Da’an District');
+    expect(parkingConcept).toContain('Stroller access is not stated');
+
+    fireEvent.click(screen.getByRole('checkbox', { name: 'Suitability for children' }));
+    const bothConcept = screen.getByText(/Qingting Restaurant serves home-style food/).textContent ?? '';
+    expect(bothConcept).toContain('Since parking and suitability for children matter');
+    expect(bothConcept).toContain('paid lot, child seats, and narrow walkway');
+    expect(bothConcept).toContain('Taipei City’s Da’an District');
+    expect(bothConcept).toContain('Stroller access is not stated');
+
+    fireEvent.click(screen.getByRole('checkbox', { name: 'Parking availability' }));
+    const childrenConcept = screen.getByText(/Qingting Restaurant serves home-style food/).textContent ?? '';
+    expect(childrenConcept).toContain('Since suitability for children matters in this example');
+    expect(childrenConcept).not.toContain('Since parking matters');
+    expect(childrenConcept).toContain('Taipei City’s Da’an District');
+    expect(childrenConcept).toContain('Stroller access is not stated');
+
+    fireEvent.click(screen.getByRole('radio', { name: 'General example' }));
+    fireEvent.click(screen.getByRole('button', { name: /2\. Organize/ }));
+    expect(screen.getByText(/general example, organization keeps the stated place and source facts/)).toBeDefined();
+    fireEvent.click(screen.getByRole('button', { name: /3\. Knowledge and tags/ }));
+    expect(screen.getByText(/Qingting Restaurant serves home-style food/).textContent)
+      .toContain('The note mentions a nearby paid parking lot');
+
+    fireEvent.click(screen.getByRole('radio', { name: 'Add personal preferences' }));
+    expect((screen.getByRole('checkbox', { name: 'Parking availability' }) as HTMLInputElement).checked).toBe(false);
+    expect((screen.getByRole('checkbox', { name: 'Suitability for children' }) as HTMLInputElement).checked).toBe(true);
+    expect(screen.getByText(/Since suitability for children matters in this example/)).toBeDefined();
+    expect(requirement.value).toBe('');
+    expect(mocks.saveProfile).not.toHaveBeenCalled();
+    expect(mocks.confirmProfileBootstrapGuidance).not.toHaveBeenCalled();
+  });
+
   it('renders the Profile panel in Traditional Chinese', async () => {
     localStorage.setItem('locale', 'zh-TW');
     render(<ProjectProfilePanel projectId="project-a" />);
 
     expect(await screen.findByRole('heading', { name: '專案重點與優先順序（選填）' })).toBeDefined();
     expect(screen.getByRole('textbox', { name: '需求 1' })).toBeDefined();
+    fireEvent.click(screen.getByRole('button', { name: '資料如何變成可搜尋知識？' }));
+    expect(screen.getByRole('button', { name: /4\. 搜尋與提問/ })).toBeDefined();
+    fireEvent.click(screen.getByRole('button', { name: /4\. 搜尋與提問/ }));
+    expect(screen.getByText('在台北市大安區找餐廳。')).toBeDefined();
     expect(screen.queryByText('Original requirements')).toBeNull();
   });
 });
