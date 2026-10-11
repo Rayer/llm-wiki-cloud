@@ -29,4 +29,4 @@ The independent frontend loader reads `NEXT_PUBLIC_CLI_RELEASE_METADATA_URL`, us
 
 No GCS write, credential, IAM, public-access, Production, or release Action was performed. The coordinator verified the existing DEV bucket and frontend-config read/CORS path, but CLI-prefix object write permissions and anonymous reads of newly published CLI objects remain unverified. The existing manual Actions/WIF path requires conditional object creation, readback for idempotent retries, generation-conditioned update of `cli/stable/latest.json`, and anonymous HTTPS/CORS verification for each asset; the coordinator owns any trigger and publication decision.
 
-Source PR URL: pending branch publication. This bounded implementation checkpoint does not mark LWC-385/386/387 complete; same-editor review/repair and coordinator-owned merge/DEV remain outstanding.
+Source PR: https://github.com/Rayer/llm-wiki-cloud/pull/116, opened against `develop` from implementation commit `b73d23cf4c98b14091c78a6f7c2ca52d880835cb`. This bounded implementation checkpoint does not mark LWC-385/386/387 complete; same-editor review/repair and coordinator-owned merge/DEV remain outstanding.
