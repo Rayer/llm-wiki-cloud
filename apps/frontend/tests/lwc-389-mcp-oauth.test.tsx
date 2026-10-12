@@ -10,7 +10,8 @@ const mocks = vi.hoisted(() => ({
   decideConsent: vi.fn(),
   listGrants: vi.fn(),
   revokeGrant: vi.fn(),
-  resourceURL: vi.fn(() => 'http://localhost:18080/mcp/projects/project-one'),
+  apiFetch: vi.fn(),
+  resourceURL: vi.fn((projectId = 'project-one') => `http://localhost:18080/mcp/projects/${projectId}`),
   safeReturnURL: vi.fn(() => true),
 }));
 
@@ -27,17 +28,14 @@ vi.mock('@/components/WorkspaceProvider', () => ({ useWorkspace: () => ({
   projectsLoading: false,
 }) }));
 
+vi.mock('@/lib/api', () => ({ apiFetch: mocks.apiFetch }));
+
 vi.mock('@/lib/i18n', () => {
   const t = (key: string) => key;
   return { useT: () => ({ t }) };
 });
 
 vi.mock('next/link', () => ({ default: ({ href, children, ...props }: React.AnchorHTMLAttributes<HTMLAnchorElement>) => <a href={href as string} {...props}>{children}</a> }));
-
-vi.mock('@/components/ProjectKeysSection', () => ({ ProjectKeysSection: () => {
-  const [secret, setSecret] = React.useState('');
-  return <label>One-time project key<input aria-label="fake one-time Project key" value={secret} onChange={(event) => setSecret(event.target.value)} /></label>;
-} }));
 
 vi.mock('@/lib/mcp-oauth', async () => {
   const actual = await vi.importActual<typeof import('@/lib/mcp-oauth')>('@/lib/mcp-oauth');
@@ -99,10 +97,16 @@ beforeEach(() => {
     created_at: '2026-10-01T00:00:00Z', expires_at: '2026-10-31T00:00:00Z',
   }]);
   mocks.revokeGrant.mockReset().mockResolvedValue(undefined);
+  mocks.apiFetch.mockReset().mockResolvedValue({ ok: true, status: 200, json: async () => ({ keys: [] }) });
   mocks.safeReturnURL.mockReturnValue(true);
+  Object.defineProperty(navigator, 'clipboard', { configurable: true, value: { writeText: vi.fn().mockResolvedValue(undefined) } });
 });
 
-afterEach(() => { cleanup(); vi.clearAllMocks(); });
+afterEach(() => {
+  cleanup();
+  Object.defineProperty(navigator, 'clipboard', { configurable: true, value: undefined });
+  vi.clearAllMocks();
+});
 
 describe('LWC-389 MCP OAuth frontend', () => {
   it('shows the actual client and Project without deciding until the user acts', async () => {
@@ -246,36 +250,101 @@ describe('LWC-389 MCP OAuth frontend', () => {
 
   it('lists and revokes a project grant, then reads the list back', async () => {
     render(<AdvancedPage />);
+    fireEvent.click(screen.getAllByText('MCPOAuth.grantsTitle')[0].closest('summary')!);
     expect(await screen.findByText('Hermes Agent')).toBeDefined();
     expect(mocks.listGrants).toHaveBeenCalledWith('project-one', 'web-session-token');
     fireEvent.click(screen.getByRole('button', { name: 'MCPOAuth.revoke' }));
     await waitFor(() => expect(mocks.revokeGrant).toHaveBeenCalledWith('grant-one', 'web-session-token'));
     await waitFor(() => expect(screen.getByText('MCPOAuth.grantRevoked')).toBeDefined());
     expect(mocks.listGrants).toHaveBeenCalledTimes(2);
-    expect(screen.getByRole('textbox', { name: 'fake one-time Project key' })).toBeDefined();
+    const manualDisclosure = screen.getByText('MCPOAuth.manualFallback').closest('details')!;
+    fireEvent.click(manualDisclosure.querySelector('summary')!);
+    expect(manualDisclosure.querySelector('input')).toBeDefined();
+  });
+
+  it('shows an actual dynamic Hermes resource, copies its configuration, and keeps copy failures honest', async () => {
+    render(<AdvancedPage />);
+    const config = document.querySelector('code')!;
+    expect(config.textContent).toContain('http://localhost:18080/mcp/projects/project-one');
+    expect(config.textContent).toContain('auth: oauth');
+    expect(config.textContent).toContain('scope: mcp:query');
+    expect(config.textContent).not.toContain('Bearer');
+    const writeText = navigator.clipboard.writeText as ReturnType<typeof vi.fn>;
+    fireEvent.click(screen.getByRole('button', { name: 'MCPOAuth.copyConfig' }));
+    await waitFor(() => expect(writeText).toHaveBeenCalledWith(config.textContent));
+
+    writeText.mockRejectedValueOnce(new Error('clipboard unavailable'));
+    fireEvent.click(screen.getByRole('button', { name: 'MCPOAuth.copied' }));
+    expect(await screen.findByText('MCPOAuth.copyFailed')).toBeDefined();
+  });
+
+  it('keeps a real key-name draft when the manual manager is collapsed and reopened', async () => {
+    render(<AdvancedPage />);
+    const disclosure = screen.getByText('MCPOAuth.manualFallback').closest('details')!;
+    fireEvent.click(disclosure.querySelector('summary')!);
+    const input = disclosure.querySelector('input') as HTMLInputElement;
+    expect(input).toBeDefined();
+    fireEvent.change(input, { target: { value: 'Retained draft' } });
+    fireEvent.click(disclosure.querySelector('summary')!);
+    expect((disclosure.querySelector('input') as HTMLInputElement).value).toBe('Retained draft');
+    fireEvent.click(disclosure.querySelector('summary')!);
+    expect(disclosure.querySelector('input')).toBe(input);
+  });
+
+  it('shows an error and leaves the grant visible when revocation fails', async () => {
+    mocks.revokeGrant.mockRejectedValueOnce(new Error('service unavailable'));
+    render(<AdvancedPage />);
+    fireEvent.click(screen.getAllByText('MCPOAuth.grantsTitle')[0].closest('summary')!);
+    await screen.findByText('Hermes Agent');
+    fireEvent.click(screen.getByRole('button', { name: 'MCPOAuth.revoke' }));
+    expect(await screen.findByRole('alert')).toBeDefined();
+    expect(screen.getByText('MCPOAuth.revokeFailed')).toBeDefined();
+    expect(screen.getByText('Hermes Agent')).toBeDefined();
+    expect(mocks.listGrants).toHaveBeenCalledTimes(1);
+  });
+
+  it('does not show a late revoke result after the signed-in account changes', async () => {
+    const pending = deferred<void>();
+    mocks.revokeGrant.mockReturnValueOnce(pending.promise);
+    const view = render(<AdvancedPage />);
+    fireEvent.click(screen.getAllByText('MCPOAuth.grantsTitle')[0].closest('summary')!);
+    await screen.findByText('Hermes Agent');
+    fireEvent.click(screen.getByRole('button', { name: 'MCPOAuth.revoke' }));
+    await waitFor(() => expect(mocks.revokeGrant).toHaveBeenCalledWith('grant-one', 'web-session-token'));
+
+    mocks.user = { id: 'user-two', email: 'other@example.com' };
+    mocks.sessionEpoch = 2;
+    mocks.accessToken = 'replacement-session-token';
+    view.rerender(<AdvancedPage />);
+    pending.resolve(undefined);
+    await pending.promise;
+    await waitFor(() => expect(screen.queryByText('MCPOAuth.grantRevoked')).toBeNull());
   });
 
   it('remounts Advanced key state across account, session, and Project changes', async () => {
     const view = render(<AdvancedPage />);
-    let secret = await screen.findByRole('textbox', { name: 'fake one-time Project key' }) as HTMLInputElement;
-    fireEvent.change(secret, { target: { value: 'secret-for-user-one' } });
+    const disclosure = screen.getByText('MCPOAuth.manualFallback').closest('details')!;
+    fireEvent.click(disclosure.querySelector('summary')!);
+    let name = disclosure.querySelector('input') as HTMLInputElement;
+    fireEvent.change(name, { target: { value: 'draft-for-user-one' } });
 
     mocks.user = { id: 'user-two', email: 'other@example.com' };
     view.rerender(<AdvancedPage />);
-    secret = await screen.findByRole('textbox', { name: 'fake one-time Project key' }) as HTMLInputElement;
-    expect(secret.value).toBe('');
-    fireEvent.change(secret, { target: { value: 'secret-for-session-one' } });
+    name = disclosure.querySelector('input') as HTMLInputElement;
+    expect(name.value).toBe('');
+    fireEvent.change(name, { target: { value: 'draft-for-session-one' } });
 
     mocks.sessionEpoch = 2;
     mocks.accessToken = 'replacement-session-token';
     view.rerender(<AdvancedPage />);
-    secret = await screen.findByRole('textbox', { name: 'fake one-time Project key' }) as HTMLInputElement;
-    expect(secret.value).toBe('');
-    fireEvent.change(secret, { target: { value: 'secret-for-project-one' } });
+    name = disclosure.querySelector('input') as HTMLInputElement;
+    expect(name.value).toBe('');
+    fireEvent.change(name, { target: { value: 'draft-for-project-one' } });
 
     mocks.project = { id: 'project-two', name: 'Project Two' };
     view.rerender(<AdvancedPage />);
-    secret = await screen.findByRole('textbox', { name: 'fake one-time Project key' }) as HTMLInputElement;
-    expect(secret.value).toBe('');
+    name = disclosure.querySelector('input') as HTMLInputElement;
+    expect(name.value).toBe('');
+    expect(document.querySelector('code')?.textContent).toContain('/mcp/projects/project-two');
   });
 });

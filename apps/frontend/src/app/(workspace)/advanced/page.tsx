@@ -3,6 +3,7 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import Link from 'next/link';
 import { useAuth } from '@/lib/auth';
+import { AgentMcpTabs } from '@/components/AgentMcpTabs';
 import { ProjectKeysSection } from '@/components/ProjectKeysSection';
 import { useWorkspace } from '@/components/WorkspaceProvider';
 import { useT } from '@/lib/i18n';
@@ -22,14 +23,15 @@ export default function AdvancedPage() {
   const [grantsError, setGrantsError] = useState('');
   const [grantsContextKey, setGrantsContextKey] = useState('');
   const [grantsErrorContextKey, setGrantsErrorContextKey] = useState('');
-  const [busyGrant, setBusyGrant] = useState('');
-  const [notice, setNotice] = useState('');
-  const [copied, setCopied] = useState(false);
+  const [busyGrant, setBusyGrant] = useState<{ id: string; contextKey: string } | null>(null);
+  const [notice, setNotice] = useState<{ message: string; contextKey: string } | null>(null);
   const requestIdRef = useRef(0);
   const identityRef = useRef({ projectId: currentProject?.id ?? '', userId: user?.id ?? '', sessionEpoch });
   const contextKey = `${currentProject?.id ?? ''}:${user?.id ?? ''}:${sessionEpoch}`;
   const visibleGrants = grantsContextKey === contextKey ? grants : [];
   const visibleGrantsError = grantsErrorContextKey === contextKey ? grantsError : '';
+  const visibleBusyGrant = busyGrant?.contextKey === contextKey ? busyGrant.id : '';
+  const visibleNotice = notice?.contextKey === contextKey ? notice.message : '';
   const grantsLoading = !visibleGrantsError && grantsContextKey !== contextKey;
 
   const resourceURL = currentProject ? mcpResourceURL(currentProject.id) : '';
@@ -77,27 +79,17 @@ export default function AdvancedPage() {
 
   useEffect(() => { void Promise.resolve().then(() => loadGrants()); }, [loadGrants]);
 
-  const copyConfig = async () => {
-    setNotice('');
-    try {
-      await navigator.clipboard.writeText(configSnippet);
-      setCopied(true);
-      window.setTimeout(() => setCopied(false), 2000);
-    } catch {
-      setNotice(t('MCPOAuth.copyFailed'));
-    }
-  };
-
   const revoke = async (grant: MCPOAuthGrant) => {
-    if (!accessToken || busyGrant || grant.status !== 'active') return;
+    if (!accessToken || busyGrant?.contextKey === contextKey || grant.status !== 'active') return;
     const identity = { ...identityRef.current };
-    setBusyGrant(grant.id);
-    setNotice('');
+    const identityKey = `${identity.projectId}:${identity.userId}:${identity.sessionEpoch}`;
+    setBusyGrant({ id: grant.id, contextKey: identityKey });
+    setNotice(null);
     try {
       await revokeMCPOAuthGrant(grant.id, accessToken);
       if (identityRef.current.projectId !== identity.projectId || identityRef.current.userId !== identity.userId
         || identityRef.current.sessionEpoch !== identity.sessionEpoch) return;
-      setNotice(t('MCPOAuth.grantRevoked'));
+      setNotice({ message: t('MCPOAuth.grantRevoked'), contextKey: identityKey });
       await loadGrants();
     } catch {
       if (identityRef.current.projectId === identity.projectId && identityRef.current.userId === identity.userId
@@ -106,7 +98,7 @@ export default function AdvancedPage() {
         setGrantsErrorContextKey(`${identity.projectId}:${identity.userId}:${identity.sessionEpoch}`);
       }
     } finally {
-      setBusyGrant('');
+      setBusyGrant((current) => current?.contextKey === identityKey ? null : current);
     }
   };
 
@@ -125,60 +117,62 @@ export default function AdvancedPage() {
       <header className="flex flex-wrap items-end justify-between gap-3">
         <div>
           <h1 className="font-serif text-2xl font-medium text-[#eeeae4]">{t('MCPOAuth.advancedTitle')}</h1>
-          <p className="mt-1 break-words text-sm text-zinc-400">{currentProject.name}</p>
+          <p className="mt-1 text-sm text-zinc-400">{t('MCPOAuth.agentMcpIntro')}</p>
+          <p className="mt-2 break-words text-sm text-zinc-200"><span className="text-zinc-400">{t('MCPOAuth.currentProject')}: </span>{currentProject.name}</p>
+          <div className="mt-2 flex flex-wrap gap-2 text-xs">
+            <span className="rounded-full border border-white/10 px-3 py-1 text-zinc-300">{t('MCPOAuth.readOnlyLabel')}</span>
+            <span className="rounded-full border border-white/10 px-3 py-1 text-zinc-300">{t('MCPOAuth.revocableLabel')}</span>
+          </div>
         </div>
         <Link href="/profile" className="inline-flex min-h-11 items-center rounded-lg border border-white/10 px-4 text-sm text-zinc-300 hover:bg-white/5">{t('MCPOAuth.profileLink')}</Link>
       </header>
 
-      <section className="rounded-2xl border border-white/10 bg-[#151515] p-5 sm:p-6" aria-labelledby="mcp-oauth-setup-title">
-        <p className="text-xs font-semibold uppercase tracking-[0.18em] text-emerald-300">{t('MCPOAuth.setupEyebrow')}</p>
-        <h2 id="mcp-oauth-setup-title" className="mt-2 text-lg font-semibold text-white">{t('MCPOAuth.setupTitle')}</h2>
-        <p className="mt-2 text-sm leading-6 text-zinc-400">{t('MCPOAuth.setupIntro')}</p>
-        <dl className="mt-5 grid gap-3 rounded-xl border border-white/8 bg-black/20 p-4 sm:grid-cols-2">
-          <div><dt className="text-xs uppercase tracking-wide text-zinc-500">{t('MCPOAuth.environment')}</dt><dd className="mt-1 text-sm font-medium text-zinc-200">{environmentLabel}</dd></div>
-          <div><dt className="text-xs uppercase tracking-wide text-zinc-500">{t('MCPOAuth.scope')}</dt><dd className="mt-1 font-mono text-sm text-emerald-200">mcp:query</dd></div>
-          <div className="sm:col-span-2"><dt className="text-xs uppercase tracking-wide text-zinc-500">{t('MCPOAuth.resource')}</dt><dd className="mt-1 break-all font-mono text-xs leading-5 text-zinc-200">{resourceURL}</dd></div>
-        </dl>
-        <ol className="mt-5 list-decimal space-y-2 pl-5 text-sm leading-6 text-zinc-300">
-          <li>{t('MCPOAuth.stepOne')}</li><li>{t('MCPOAuth.stepTwo')}</li><li>{t('MCPOAuth.stepThree')}</li>
-        </ol>
-        <pre className="mt-4 overflow-x-auto rounded-lg border border-white/10 bg-black/30 p-4 text-xs leading-5 text-zinc-200"><code>{configSnippet}</code></pre>
-        <div className="mt-3 flex flex-wrap items-center gap-3">
-          <button type="button" onClick={() => void copyConfig()} className="min-h-11 rounded-lg bg-emerald-300 px-4 py-2 text-sm font-semibold text-black hover:bg-emerald-200">{copied ? t('MCPOAuth.copied') : t('MCPOAuth.copyConfig')}</button>
-          <span role="status" className="text-sm text-zinc-400">{notice || t('MCPOAuth.nativeCheck')}</span>
-        </div>
-      </section>
+      <AgentMcpTabs resourceURL={resourceURL} configSnippet={configSnippet} environmentLabel={environmentLabel} t={t} />
 
-      <section className="rounded-2xl border border-white/10 bg-[#151515] p-5 sm:p-6" aria-labelledby="mcp-oauth-grants-title">
-        <div className="flex flex-wrap items-center justify-between gap-3">
-          <div><h2 id="mcp-oauth-grants-title" className="text-lg font-semibold text-white">{t('MCPOAuth.grantsTitle')}</h2><p className="mt-1 text-sm text-zinc-400">{t('MCPOAuth.grantsIntro')}</p></div>
-          <button type="button" onClick={() => void loadGrants()} disabled={grantsLoading} className="min-h-11 rounded-lg border border-white/10 px-4 text-sm text-zinc-200 hover:bg-white/5 disabled:opacity-50">{t('MCPOAuth.refreshGrants')}</button>
-        </div>
-        {grantsLoading ? <p role="status" className="mt-5 text-sm text-zinc-400">{t('MCPOAuth.loading')}</p> : null}
-        {visibleGrantsError ? <p role="alert" className="mt-5 text-sm text-amber-100">{visibleGrantsError}</p> : null}
-        {!grantsLoading && !visibleGrantsError && visibleGrants.length === 0 ? <p className="mt-5 rounded-lg border border-white/8 bg-black/20 p-4 text-sm text-zinc-400">{t('MCPOAuth.noGrants')}</p> : null}
-        <ul className="mt-4 space-y-3">
-          {visibleGrants.map((grant) => (
-            <li key={grant.id} className="rounded-xl border border-white/8 bg-black/20 p-4">
-              <div className="flex flex-wrap items-start justify-between gap-3">
-                <div className="min-w-0">
-                  <p className="break-words font-medium text-white">{grant.client_name}</p>
-                  <p className="mt-1 break-all font-mono text-xs text-zinc-400">{grant.resource}</p>
-                  <p className="mt-2 text-xs text-zinc-400">{grant.scope} · {t(`MCPOAuth.status.${grant.status}`)}</p>
-                  <p className="mt-1 text-xs text-zinc-500">{t('MCPOAuth.expires')}: {new Date(grant.expires_at).toLocaleString()}</p>
+      <details className="rounded-2xl border border-white/10 bg-[#151515]">
+        <summary className="flex min-h-16 cursor-pointer list-none items-center justify-between gap-4 px-5 py-4 focus-visible:outline focus-visible:outline-2 focus-visible:outline-inset focus-visible:outline-emerald-300 sm:px-6">
+          <span className="min-w-0"><span className="block font-semibold text-white">{t('MCPOAuth.grantsTitle')}</span><span className="mt-1 block text-sm text-zinc-400">{t('MCPOAuth.grantsIntro')}</span></span>
+          <span className="flex shrink-0 items-center gap-2">
+            <span className="rounded-full border border-white/10 px-2.5 py-1 text-xs text-zinc-300" aria-label={t('MCPOAuth.grantCount')}>{visibleGrants.length}</span>
+            <span aria-hidden="true" className="text-zinc-400">⌄</span>
+          </span>
+        </summary>
+        <section className="border-t border-white/10 p-5 sm:p-6" aria-labelledby="mcp-oauth-grants-title">
+          <div className="flex flex-wrap items-center justify-between gap-3">
+            <div><h2 id="mcp-oauth-grants-title" className="text-lg font-semibold text-white">{t('MCPOAuth.grantsTitle')}</h2><p className="mt-1 text-sm text-zinc-400">{t('MCPOAuth.grantsIntro')}</p></div>
+            <button type="button" onClick={() => void loadGrants()} disabled={grantsLoading} className="min-h-11 rounded-lg border border-white/10 px-4 text-sm text-zinc-200 hover:bg-white/5 disabled:opacity-50">{t('MCPOAuth.refreshGrants')}</button>
+          </div>
+          {visibleNotice ? <p role="status" className="mt-4 text-sm text-emerald-100">{visibleNotice}</p> : null}
+          {grantsLoading ? <p role="status" className="mt-5 text-sm text-zinc-400">{t('MCPOAuth.loading')}</p> : null}
+          {visibleGrantsError ? <p role="alert" className="mt-5 text-sm text-amber-100">{visibleGrantsError}</p> : null}
+          {!grantsLoading && !visibleGrantsError && visibleGrants.length === 0 ? <p className="mt-5 rounded-lg border border-white/8 bg-black/20 p-4 text-sm text-zinc-400">{t('MCPOAuth.noGrants')}</p> : null}
+          <ul className="mt-4 space-y-3">
+            {visibleGrants.map((grant) => (
+              <li key={grant.id} className="rounded-xl border border-white/8 bg-black/20 p-4">
+                <div className="flex flex-wrap items-start justify-between gap-3">
+                  <div className="min-w-0">
+                    <p className="break-words font-medium text-white">{grant.client_name}</p>
+                    <p className="mt-1 break-all font-mono text-xs text-zinc-400">{grant.resource}</p>
+                    <p className="mt-2 text-xs text-zinc-400">{grant.scope} · {t(`MCPOAuth.status.${grant.status}`)}</p>
+                    <p className="mt-1 text-xs text-zinc-500">{t('MCPOAuth.expires')}: {new Date(grant.expires_at).toLocaleString()}</p>
+                  </div>
+                  {grant.status === 'active' ? <button type="button" disabled={visibleBusyGrant === grant.id} onClick={() => void revoke(grant)} className="min-h-11 shrink-0 rounded-lg border border-red-300/20 px-3 text-sm text-red-100 hover:bg-red-300/10 disabled:opacity-50">{visibleBusyGrant === grant.id ? t('MCPOAuth.processing') : t('MCPOAuth.revoke')}</button> : null}
                 </div>
-                {grant.status === 'active' ? <button type="button" disabled={busyGrant === grant.id} onClick={() => void revoke(grant)} className="min-h-11 shrink-0 rounded-lg border border-red-300/20 px-3 text-sm text-red-100 hover:bg-red-300/10 disabled:opacity-50">{busyGrant === grant.id ? t('MCPOAuth.processing') : t('MCPOAuth.revoke')}</button> : null}
-              </div>
-            </li>
-          ))}
-        </ul>
-      </section>
+              </li>
+            ))}
+          </ul>
+        </section>
+      </details>
 
-      <section className="rounded-2xl border border-white/10 bg-[#151515] p-5 sm:p-6" aria-labelledby="mcp-manual-key-title">
-        <h2 id="mcp-manual-key-title" className="text-lg font-semibold text-white">{t('MCPOAuth.manualFallback')}</h2>
-        <p className="mt-1 text-sm text-zinc-400">{t('MCPOAuth.manualFallbackIntro')}</p>
-        <ProjectKeysSection key={`${user.id}:${currentProject.id}:${sessionEpoch}`} currentProject={currentProject} accessToken={accessToken} t={t} />
-      </section>
+      <details className="rounded-2xl border border-white/10 bg-[#151515]">
+        <summary className="min-h-16 cursor-pointer px-5 py-4 focus-visible:outline focus-visible:outline-2 focus-visible:outline-inset focus-visible:outline-emerald-300 sm:px-6">
+          <span className="block font-semibold text-white">{t('MCPOAuth.manualFallback')}</span>
+          <span className="mt-1 block text-sm text-zinc-400">{t('MCPOAuth.manualFallbackIntro')}</span>
+        </summary>
+        <div className="border-t border-white/10 px-5 pb-5 sm:px-6 sm:pb-6">
+          <ProjectKeysSection key={`${user.id}:${currentProject.id}:${sessionEpoch}`} currentProject={currentProject} accessToken={accessToken} t={t} />
+        </div>
+      </details>
     </div>
   );
 }
