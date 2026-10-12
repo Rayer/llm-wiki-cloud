@@ -44,6 +44,7 @@ type UploadItem = {
 
 type PipelineProjectContext = { projectId: string | null; generation: number };
 type PipelineRequestScope = { projectId: string; contextGeneration: number; requestGeneration: number };
+type PipelineExecutionOwner = { projectId: string; contextGeneration: number };
 
 const UPLOAD_CONCURRENCY = 3;
 const RAW_ACCEPT =
@@ -114,11 +115,13 @@ export function PipelineClient() {
   const { isDemoSession, refreshNavCounts, currentProject } = useWorkspace();
   const projectId = currentProject?.id ?? null;
   const pipelineProjectContextRef = useRef<PipelineProjectContext>({ projectId, generation: 0 });
+  const pipelineExecutionOwnerRef = useRef<PipelineExecutionOwner | null>(null);
   if (pipelineProjectContextRef.current.projectId !== projectId) {
     pipelineProjectContextRef.current = {
       projectId,
       generation: pipelineProjectContextRef.current.generation + 1,
     };
+    pipelineExecutionOwnerRef.current = null;
   }
   const pipelineRequestGenerationRef = useRef(0);
   const pipelineMountedRef = useRef(false);
@@ -144,7 +147,30 @@ export function PipelineClient() {
     if (!isPipelineRequestCurrent(scope)) return;
     try {
       const status = await getPipelineStatus(scope.projectId);
-      if (!isPipelineRequestCurrent(scope) || status.project_id !== scope.projectId) return;
+      const latest = pipelineProjectContextRef.current;
+      if (
+        !pipelineMountedRef.current
+        || latest.projectId !== scope.projectId
+        || latest.generation !== scope.contextGeneration
+        || status.project_id !== scope.projectId
+      ) return;
+      const executionOwner = pipelineExecutionOwnerRef.current;
+      if (
+        executionOwner?.projectId === scope.projectId
+        && executionOwner.contextGeneration === scope.contextGeneration
+      ) {
+        // Generic refreshes can update quota, but only execution-scoped polls own lifecycle evidence.
+        setPipelineStatus((current) => current?.project_id === scope.projectId
+          ? {
+              ...current,
+              ...(status.quota !== undefined ? { quota: status.quota } : {}),
+              ...(status.full_quota !== undefined ? { full_quota: status.full_quota } : {}),
+              ...(status.suggested_queries !== undefined ? { suggested_queries: status.suggested_queries } : {}),
+            }
+          : current);
+        return;
+      }
+      if (pipelineRequestGenerationRef.current !== scope.requestGeneration) return;
       setPipelineStatus(status);
     } catch {
       // Keep the current status when a best-effort refresh fails.
@@ -441,6 +467,7 @@ export function PipelineClient() {
       contextGeneration: context.generation,
       requestGeneration: ++pipelineRequestGenerationRef.current,
     };
+    let latestRequestScope = requestScope;
     setLoading('pipeline');
     try {
       const result = compileMode === 'full'
@@ -451,6 +478,11 @@ export function PipelineClient() {
       if (result.message) addToast(result.message, 'info');
       if (result.status === 'accepted') {
         stopPipelinePolling();
+        latestRequestScope = {
+          ...requestScope,
+          requestGeneration: ++pipelineRequestGenerationRef.current,
+        };
+        pipelineExecutionOwnerRef.current = { projectId, contextGeneration: context.generation };
         setPipelineStatus((prev) => ({
           ...prev,
           project_id: projectId,
@@ -473,10 +505,10 @@ export function PipelineClient() {
             : prev?.full_quota,
         }));
         const pollThisExecution = () => {
-          void pollPipelineStatus(requestScope, result.execution_id);
+          void pollPipelineStatus(latestRequestScope, result.execution_id);
         };
         pipelinePollRef.current = setInterval(pollThisExecution, 5000);
-        void pollPipelineStatus(requestScope, result.execution_id);
+        void pollPipelineStatus(latestRequestScope, result.execution_id);
       }
     } catch (err) {
       // Network / 5xx / stale UI race: show server message.
@@ -484,7 +516,7 @@ export function PipelineClient() {
         addToast(err instanceof Error ? err.message : 'Pipeline trigger failed', 'error');
       }
     } finally {
-      if (isPipelineRequestCurrent(requestScope)) setLoading(null);
+      if (isPipelineRequestCurrent(latestRequestScope)) setLoading(null);
     }
   }, [addToast, compileMode, fullCapability?.allowed, isDemoSession, isPipelineRequestCurrent, pollPipelineStatus, stopPipelinePolling, t]);
 

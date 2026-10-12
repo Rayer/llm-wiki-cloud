@@ -64,3 +64,24 @@
 - 新 source commit 上的 frontend full suite 為 539 Node + 381 component tests PASS；lint、typecheck、Next production build 與兩個 frontend build-config suites 皆 exit 0。391 的五個 Project switch / late-response regression 已一併重跑通過，具體命令與 raw logs 見 [`../lwc-390/report.md`](../lwc-390/report.md) 和 `../lwc-390/evidence/`。
 - LWC-390 browser fixture 使用實際 Profile component + intercepted local transport；26 項 UI/lifecycle/390px 檢查 PASS。此為 local controlled browser receipt，沒有 live BFF/Project API 或 Human UAT。
 - BFF/backend/API/schema 與 quota seam 沒有變更，因此本 successor 未在新 source SHA 重跑 BFF suites；上文 BFF 證據仍準確指向其記錄的原 source snapshot。兩 ticket combined same-head review、PR CI、normal merge 和 formal DEV/QA 由 main 後續處理。
+
+## LWC-391 accepted execution 狀態歸屬修補（2026-10-13）
+
+### 根因與修正
+
+- Parent 在前一個 PR #122 head `56a173a29871f461a11472f1e222aff65adddc1b` 重放 deferred-response 探針：9 個既有 Project/context 案例加 3 個新案例共 10 pass、2 fail、exit 1。兩個失敗都是同 Project 的 upload 或 source-annotation 一般狀態刷新在 full-recompile POST 等待時開始，POST 接受新 execution 後才回傳舊的 `SUCCEEDED`、發布結果與 consumed-guidance，覆蓋畫面上正在執行的新 execution。原始 receipt 與探針保留於 `/Users/rayer/.hermes/workflows/lwc-local/evidence/lwc390391-delivery/parent-56a173a2-refresh-during-post-fail.json` 及 `/Users/rayer/.hermes/workflows/lwc-local/discussions/ux-lanes/profile-review/lwc390391-refresh-during-post-probe.test.tsx`。
+- `PipelineClient` 現在在 accepted execution 後，以既有 Project/context generation 記錄該 Project 的 execution-status owner，並遞增既有 request generation。這會讓 POST 等待期間啟動的一般刷新不能回寫 lifecycle；owner 存續至 Project context 改變，因此後續 upload/annotation 一般刷新只能更新 quota/full quota/suggested queries，execution-scoped polling 繼續獨占 lifecycle evidence。一般刷新仍在 Project、mount 與 response Project ID 驗證後執行；沒有改 API、schema、backend、quota policy 或 polling path。
+- `setPipelineStatus` 的其他寫入路徑已追查：一般共用刷新、execution-scoped poll、初始 Project 載入、accepted 後樂觀 RUNNING 更新，以及 Project 切換的同步清空。poll 和初始載入保留既有 request/context guards；Project 切換會清空新 Project 的 owner，舊 context response 仍不可寫入。
+
+### 回歸測試與驗證
+
+- 新增 `apps/frontend/tests/tpm-391-refresh-during-post.test.tsx` 四個 deferred-response component 案例：upload/annotation 分別於 POST pending 時開始，並分別於 accepted execution 已追蹤時開始。每例都驗證舊 execution guidance 不出現、目前 RUNNING 狀態保留，並確認一般刷新仍更新 quota。原 9 個 `lwc-390-391-project-context.test.tsx` regression 未改動。
+- 影響面 focused command：`cd apps/frontend && NODE_ENV=test npx vitest run tests/lwc-211-profile.test.tsx tests/lwc-390-391-project-context.test.tsx tests/lwc-391-full-recompile.test.tsx tests/tpm-391-refresh-during-post.test.tsx tests/lwc-admin-pipeline-terminal-status.test.tsx tests/lwc-146-main-path-pipelineclient-zh-tw.test.tsx`：exit 0，6 檔／56 tests pass。
+- 完整前端命令：`cd apps/frontend && npm test`：exit 0，539 Node tests、389 component tests；`npm run lint`、`npm run typecheck`、`npm run build` 均 exit 0。CI 的 `python3 scripts/test_frontend_build_config.py`（4 tests）與 `python3 scripts/test_frontend_config_artifacts.py`（9 tests）均 exit 0；`git diff --check` exit 0。
+- 本次程式碼與新增 regression 對 56a 的 unified diff SHA-256 為 `5d9c2a28452beb55df8273f25c1fc34ce981e29624e9ad5f148ec3d1a8b979c1`，此為 source+test diff fingerprint，不是 Git commit SHA。secret-scrubbed raw command logs、exit code 與最終 Git/PR read-back 保存在 `/Users/rayer/.hermes/workflows/lwc-local/evidence/lwc390391-delivery/accepted-refresh-final/`，其子目錄以最終 commit SHA 命名；commit SHA 與 PR head 以發佈後 read-back 為準，避免在同一文件中自我引用。
+- PR #122 在修補前仍是 open、non-draft、base `develop`，branch `Rayer/LWC-390-391-profile-full-recompile` head `56a173a29871f461a11472f1e222aff65adddc1b`。修補前該 SHA 的 GitHub required checks 已讀回全數 pass；這些是舊 head 的狀態，新的 commit 會重新觸發 CI。遠端 develop 為 `14cdc4bd663ec4e7a2ccfbde72f0f919426931c1`，且為目前分支的共同基準。
+
+### 範圍與待辦
+
+- LWC-390 Profile UI、BFF/API/quota/top-k/backend、外部-key 設定、provider、IAM、Production 與真實 Project 均未變更或操作。本次只執行本機 component/frontend gate；沒有執行 BFF、formal DEV、owned QA Project 或 Human UAT，也不把 component tests 當 live BFF E2E。
+- 本次是 source/validation checkpoint。Parent/main612 仍負責同一 SHA 雙重審查、PR CI、正常 develop merge/post-merge CI 與 formal DEV/QA；本 dispatch 不 merge 或 deploy。
