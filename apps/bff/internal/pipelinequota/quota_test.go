@@ -145,6 +145,38 @@ func TestEvaluateNoNewRaw(t *testing.T) {
 	}
 }
 
+func TestEvaluateFullModeSkipsOnlyPendingWorkRequirement(t *testing.T) {
+	now := time.Date(2026, 7, 10, 12, 0, 0, 0, time.UTC)
+	base := Input{
+		Now: now, Enforced: true, Limits: Limits{DailyLimit: 2, Cooldown: time.Hour, MinNewRaw: 1},
+		DayKey: DayKeyUTC(now), NewRawFiles: 0, RawDirtyFiles: 0, AnnotationDirtyFiles: 0,
+	}
+	incremental := Evaluate(base)
+	if incremental.Allowed || incremental.Reason != ReasonNoNewRaw || incremental.NewRawFiles != 0 {
+		t.Fatalf("incremental mode must keep pending-work gate and truthful counts: %+v", incremental)
+	}
+	fullInput := base
+	fullInput.Mode = ModeFull
+	full := Evaluate(fullInput)
+	if !full.Allowed || full.Reason != ReasonNone || full.PendingWork != 0 || full.NewRawFiles != 0 {
+		t.Fatalf("full mode should skip only pending-work gate without fabricating counts: %+v", full)
+	}
+	for name, change := range map[string]func(*Input){
+		"demo":     func(in *Input) { in.IsDemo = true },
+		"running":  func(in *Input) { in.AlreadyRunning = true },
+		"daily":    func(in *Input) { in.RunsToday = 2 },
+		"cooldown": func(in *Input) { in.RunsToday = 1; in.LastRunAt = now.Add(-time.Minute) },
+	} {
+		t.Run(name, func(t *testing.T) {
+			in := fullInput
+			change(&in)
+			if got := Evaluate(in); got.Allowed {
+				t.Fatalf("full mode must retain %s gate: %+v", name, got)
+			}
+		})
+	}
+}
+
 func TestEvaluateAnnotationOnlyBypassesMinimumButNotOtherGates(t *testing.T) {
 	now := time.Date(2026, 7, 10, 12, 0, 0, 0, time.UTC)
 	base := Input{Now: now, Enforced: true, Limits: Limits{DailyLimit: 2, Cooldown: time.Hour, MinNewRaw: 2}, DayKey: DayKeyUTC(now), AnnotationDirtyFiles: 1}

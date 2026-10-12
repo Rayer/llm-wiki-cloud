@@ -6,9 +6,12 @@ import { Surface } from './ui/Surface';
 import { Badge } from './ui/Badge';
 import { ExportPanel } from './ExportPanel';
 import {
+  getRecompileAllCapability,
   getPipelineStatus,
+  recompileAll,
   triggerPipeline,
   uploadRawFile,
+  type RecompileAllCapability,
   type PipelineQuota,
   type PipelineResult,
   type PipelineStatus,
@@ -111,6 +114,8 @@ export function PipelineClient() {
   const [scrapeUrlText, setScrapeUrlText] = useState('');
   const [pipelineResult, setPipelineResult] = useState<PipelineResult | null>(null);
   const [pipelineStatus, setPipelineStatus] = useState<PipelineStatus | null>(null);
+  const [compileMode, setCompileMode] = useState<'incremental' | 'full'>('incremental');
+  const [fullCapability, setFullCapability] = useState<RecompileAllCapability | null>(null);
   const [loading, setLoading] = useState<string | null>(null); // 'pipeline'
   const [toasts, setToasts] = useState<Toast[]>([]);
   const [wipModal, setWipModal] = useState(false);
@@ -135,52 +140,74 @@ export function PipelineClient() {
     }
   }, []);
 
-  const pollPipelineStatus = useCallback(async () => {
+  const pollPipelineStatus = useCallback(async (projectId?: string, executionId?: string) => {
     try {
-      const status = await getPipelineStatus();
+      const scopedProjectId = projectId ?? currentProject?.id;
+      if (!scopedProjectId) return;
+      const status = await getPipelineStatus(scopedProjectId, executionId);
+      if (currentProject?.id !== scopedProjectId || status.project_id !== scopedProjectId) return;
       setPipelineStatus(status);
 
       const executionStatus = status.last_execution?.status;
       if (executionStatus === 'SUCCEEDED' || executionStatus === 'FAILED') {
         stopPipelinePolling();
+        if (status.last_execution?.compile_mode === 'full') {
+          const capability = await getRecompileAllCapability(scopedProjectId).catch(() => null);
+          if (currentProject?.id === scopedProjectId && capability) setFullCapability(capability);
+        }
       }
     } catch (err) {
       stopPipelinePolling();
       addToast(err instanceof Error ? err.message : 'Pipeline status failed', 'error');
     }
-  }, [addToast, stopPipelinePolling]);
+  }, [addToast, currentProject?.id, stopPipelinePolling]);
 
-  useEffect(() => stopPipelinePolling, [stopPipelinePolling]);
+  useEffect(() => stopPipelinePolling, [currentProject?.id, stopPipelinePolling]);
 
   useEffect(() => {
     const refreshAfterAnnotationSave = () => {
-      void getPipelineStatus().then(setPipelineStatus).catch(() => undefined);
+      const projectId = currentProject?.id;
+      if (projectId) {
+        void getPipelineStatus(projectId).then((status) => {
+          if (currentProject?.id === projectId && status.project_id === projectId) setPipelineStatus(status);
+        }).catch(() => undefined);
+      }
     };
     window.addEventListener('source-annotation-saved', refreshAfterAnnotationSave);
     return () => window.removeEventListener('source-annotation-saved', refreshAfterAnnotationSave);
-  }, []);
+  }, [currentProject?.id]);
 
   // Load quota + execution status on mount and when workspace project changes.
   useEffect(() => {
-    if (!currentProject) {
+    const projectId = currentProject?.id;
+    if (!projectId) {
       setPipelineStatus(null);
+      setFullCapability(null);
       return;
     }
 
     let cancelled = false;
+    setPipelineStatus(null);
+    setFullCapability(null);
     void (async () => {
       try {
-        const status = await getPipelineStatus();
-        if (!cancelled) setPipelineStatus(status);
+        const status = await getPipelineStatus(projectId);
+        if (!cancelled && status.project_id === projectId) setPipelineStatus(status);
       } catch {
         // Initial status is best-effort; Run still surfaces trigger errors via toast.
+      }
+      try {
+        const capability = await getRecompileAllCapability(projectId);
+        if (!cancelled) setFullCapability(capability);
+      } catch {
+        if (!cancelled) setFullCapability(null);
       }
     })();
 
     return () => {
       cancelled = true;
     };
-  }, [currentProject]);
+  }, [currentProject?.id]);
 
   const pumpUploadQueue = useCallback(() => {
     const pump = () => {
@@ -339,26 +366,54 @@ export function PipelineClient() {
       return;
     }
 
-    if (!window.localStorage.getItem('llm-wiki-last-project')) {
+    const projectId = currentProject?.id;
+    if (!projectId || window.localStorage.getItem('llm-wiki-last-project') !== projectId) {
       addToast(t('Pipeline.noProject'), 'error');
       return;
     }
 
+    if (compileMode === 'full' && !fullCapability?.allowed) {
+      addToast(t('Pipeline.fullUnavailable'), 'error');
+      return;
+    }
+    if (compileMode === 'full' && !window.confirm(t('Pipeline.fullConfirm'))) return;
+
     setLoading('pipeline');
     try {
-      const result = await triggerPipeline();
+      const result = compileMode === 'full'
+        ? await recompileAll(projectId)
+        : await triggerPipeline();
+      if (currentProject?.id !== projectId) return;
       setPipelineResult(result);
       if (result.message) addToast(result.message, 'info');
       if (result.status === 'accepted') {
         stopPipelinePolling();
         setPipelineStatus((prev) => ({
           ...prev,
-          last_execution: { status: 'RUNNING' },
+          project_id: projectId,
+          last_execution: {
+            status: 'RUNNING',
+            name: result.execution_id ?? null,
+            compile_mode: result.compile_mode ?? compileMode,
+            ...(compileMode === 'full'
+              ? {
+                  publication_outcome: 'unknown',
+                  consumed_guidance: { status: 'unavailable', revision: null },
+                }
+              : {}),
+          },
           quota: prev?.quota
             ? { ...prev.quota, already_running: true, allowed: false }
             : prev?.quota,
+          full_quota: compileMode === 'full' && result.quota
+            ? result.quota
+            : prev?.full_quota,
         }));
-        pipelinePollRef.current = setInterval(pollPipelineStatus, 5000);
+        const pollThisExecution = () => {
+          void pollPipelineStatus(projectId, result.execution_id);
+        };
+        pipelinePollRef.current = setInterval(pollThisExecution, 5000);
+        void pollPipelineStatus(projectId, result.execution_id);
       }
     } catch (err) {
       // Network / 5xx / stale UI race: show server message.
@@ -366,7 +421,7 @@ export function PipelineClient() {
     } finally {
       setLoading(null);
     }
-  }, [addToast, isDemoSession, pollPipelineStatus, stopPipelinePolling, t]);
+  }, [addToast, compileMode, currentProject?.id, fullCapability?.allowed, isDemoSession, pollPipelineStatus, stopPipelinePolling, t]);
 
   const pipelineStatusText = pipelineStatusBadge(pipelineStatus);
   const uploadSummary = useMemo(() => summarizeUploads(uploadItems), [uploadItems]);
@@ -379,7 +434,7 @@ export function PipelineClient() {
   const staleAlreadyRunning =
     pipelineStatus?.quota?.already_running === true && lastExecutionStatus !== 'RUNNING';
   const hasProject = Boolean(currentProject);
-  const quota = pipelineStatus?.quota;
+  const quota = compileMode === 'full' ? fullCapability?.quota : pipelineStatus?.quota;
   const effectiveQuota = useMemo(
     () => (
       staleAlreadyRunning && quota
@@ -388,12 +443,15 @@ export function PipelineClient() {
     ),
     [quota, staleAlreadyRunning],
   );
-  const blocked = isRunBlocked({
+    const blocked = compileMode === 'full' && !fullCapability
+      ? true
+      : (compileMode === 'full' && !fullCapability?.allowed) || isRunBlocked({
     isDemoSession,
     loading: loading === 'pipeline',
     hasProject,
     executionRunning,
     quota: effectiveQuota,
+    requiresNewRaw: compileMode === 'incremental',
   });
   const helper = blockReasonMessage({
     isDemoSession,
@@ -403,6 +461,9 @@ export function PipelineClient() {
     demoMessage: t('Demo.restricted'),
     noProjectMessage: t('Pipeline.noProject'),
   });
+  const blockMessage = compileMode === 'full' && !fullCapability?.allowed && !helper
+    ? t('Pipeline.fullUnavailable')
+    : helper;
   const quotaLine = formatQuotaLine(effectiveQuota, new Date(), {
     quotaLine: t('Pipeline.quotaLine'),
     quotaNotEnforced: t('Pipeline.quotaNotEnforced'),
@@ -414,9 +475,11 @@ export function PipelineClient() {
       { ok: isUnderDailyLimit(effectiveQuota), label: t('Pipeline.prereqDaily') },
       { ok: isCooldownClear(effectiveQuota), label: t('Pipeline.prereqCooldown') },
       { ok: !executionRunning, label: t('Pipeline.prereqRunning') },
-      { ok: hasNewRaw(effectiveQuota), label: t('Pipeline.prereqRaw') },
+      ...(compileMode === 'incremental'
+        ? [{ ok: hasNewRaw(effectiveQuota), label: t('Pipeline.prereqRaw') }]
+        : [{ ok: true, label: t('Pipeline.prereqFull') }]),
     ],
-    [effectiveQuota, executionRunning, isDemoSession, t],
+    [compileMode, effectiveQuota, executionRunning, isDemoSession, t],
   );
 
   return (
@@ -604,15 +667,34 @@ export function PipelineClient() {
               aria-disabled={blocked}
               className="rounded-md bg-white px-4 py-2 text-sm font-semibold text-black transition hover:bg-emerald-200 disabled:cursor-not-allowed disabled:opacity-50"
             >
-              {loading === 'pipeline' ? t('Pipeline.running') : t('Pipeline.runPipeline')}
+              {loading === 'pipeline'
+                ? t('Pipeline.running')
+                : compileMode === 'full' ? t('Pipeline.recompileAll') : t('Pipeline.runPipeline')}
             </button>
           </div>
+          <label className="mt-3 flex flex-wrap items-center gap-2 text-xs text-zinc-300">
+            <span>{t('Pipeline.compileMode')}</span>
+            <select
+              value={compileMode}
+              onChange={(event) => setCompileMode(event.target.value as 'incremental' | 'full')}
+              className="rounded border border-white/10 bg-zinc-900 px-2 py-1 text-white"
+              data-testid="pipeline-compile-mode"
+            >
+              <option value="incremental">{t('Pipeline.incrementalMode')}</option>
+              <option value="full">{t('Pipeline.fullMode')}</option>
+            </select>
+          </label>
+          {compileMode === 'full' ? (
+            <p className="mt-2 rounded border border-amber-300/20 bg-amber-300/[0.06] p-2 text-xs text-amber-100" data-testid="pipeline-full-notice">
+              {t('Pipeline.fullNotice')}
+            </p>
+          ) : null}
           <p className="mt-2 text-xs text-zinc-500" data-testid="pipeline-quota-line">
             {quotaLine}
           </p>
-          {blocked && helper ? (
+          {blocked && blockMessage ? (
             <p className="mt-1 text-xs text-amber-200/90" data-testid="pipeline-block-reason">
-              {helper}
+              {blockMessage}
             </p>
           ) : null}
           <div className="mt-2">
@@ -643,6 +725,26 @@ export function PipelineClient() {
           </div>
           {pipelineResult?.message ? (
             <p className="mt-2 text-xs text-zinc-500">{pipelineResult.message}</p>
+          ) : null}
+          {pipelineStatus?.last_execution?.compile_mode === 'full' ? (
+            <div className="mt-2 space-y-1 rounded border border-white/5 bg-zinc-950/40 p-2 text-xs text-zinc-400" data-testid="pipeline-full-evidence">
+              <p>
+                {t('Pipeline.publicationOutcome')}: {pipelineStatus.last_execution.publication_outcome === 'confirmed_published'
+                  ? t('Pipeline.publicationPublished')
+                  : pipelineStatus.last_execution.publication_outcome === 'confirmed_not_published'
+                    ? t('Pipeline.publicationNotPublished')
+                    : t('Pipeline.publicationUnknown')}
+              </p>
+              <p>
+                {t('Pipeline.consumedGuidance')}: {pipelineStatus.last_execution.consumed_guidance?.status !== 'available'
+                  ? t('Pipeline.guidanceUnavailable')
+                  : pipelineStatus.last_execution.consumed_guidance.kind === 'none'
+                    ? t('Pipeline.guidanceNone')
+                    : `${t(pipelineStatus.last_execution.consumed_guidance.kind === 'bootstrap'
+                      ? 'Pipeline.guidanceBootstrap'
+                      : 'Pipeline.guidanceActive')} ${pipelineStatus.last_execution.consumed_guidance.revision ?? ''}`}
+              </p>
+            </div>
           ) : null}
         </div>
 

@@ -23,5 +23,7 @@ type CompileReceipt struct {
 	CanonicalConceptsDigest   string                                 `firestore:"canonical_concepts_digest"`
 	ManifestGeneration        int64                                  `firestore:"manifest_generation"`
 	ConsumedBootstrapGuidance *profileartifacts.BootstrapGuidanceRef `firestore:"consumed_bootstrap_guidance"`
+	ConsumedGuidanceKind      string                                 `firestore:"consumed_guidance_kind"`
+	ConsumedGuidanceRevision  *string                                `firestore:"consumed_guidance_revision"`
 	CreatedAt                 time.Time                              `firestore:"created_at"`
 }

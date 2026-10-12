@@ -70,6 +70,9 @@ func TestProfileReceiptActualPublisherCallback(t *testing.T) {
 				if receipt.ProfileRevision != 3 || receipt.RequirementsDigest != digest || receipt.ConsumedBootstrapGuidance.ProfileRevision != 3 {
 					t.Fatalf("compile-start pin changed: %+v", receipt)
 				}
+				if receipt.ConsumedGuidanceKind != "bootstrap" || receipt.ConsumedGuidanceRevision == nil || *receipt.ConsumedGuidanceRevision != bootstrap.Revision {
+					t.Fatalf("consumed bootstrap reference=%+v kind=%q", receipt.ConsumedGuidanceRevision, receipt.ConsumedGuidanceKind)
+				}
 				if receipt.UserID != cfg.UserID || receipt.ProjectID != cfg.ProjectID || receipt.ExecutionID != cfg.ExecutionID {
 					t.Fatal("receipt scope mismatch")
 				}
@@ -96,6 +99,47 @@ func TestProfileReceiptActualPublisherCallback(t *testing.T) {
 				}
 			} else if err == nil {
 				t.Fatal("expected failure")
+			}
+		})
+	}
+}
+
+func TestProfileCompileReceiptRecordsActualGuidanceKind(t *testing.T) {
+	manifest := generation.Manifest{Version: generation.Version, GenerationID: "g_abc123", CreatedAt: "2026-10-13T00:00:00Z", InputFingerprint: "synthetic", Files: []generation.File{
+		{Path: "cache/concepts.jsonl", Size: 2, SHA256: profileartifacts.SHA256([]byte("[]")), Generation: 1},
+		{Path: "cache/id_map.json", Size: 2, SHA256: profileartifacts.SHA256([]byte("{}")), Generation: 2},
+	}}
+	digest := profileRequirementsDigest([]profileGuidanceRequirement{{ID: "r1", Text: "clear"}})
+	active := strings.Repeat("a", 64)
+	bootstrap := strings.Repeat("b", 64)
+	for _, tc := range []struct {
+		name     string
+		pin      *profileGuidancePin
+		wantKind string
+		wantRev  *string
+	}{
+		{"active", &profileGuidancePin{ProfileRevision: 2, RequirementsDigest: digest, Revision: active}, "active", &active},
+		{"bootstrap", &profileGuidancePin{ProfileRevision: 2, RequirementsDigest: digest, Revision: bootstrap, BootstrapRef: &profileartifacts.BootstrapGuidanceRef{Revision: bootstrap}}, "bootstrap", &bootstrap},
+		{"none", &profileGuidancePin{ProfileRevision: 2, RequirementsDigest: digest}, "none", nil},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			oldPersist := persistProfileCompileReceipt
+			t.Cleanup(func() { persistProfileCompileReceipt = oldPersist })
+			var got profileruntime.CompileReceipt
+			persistProfileCompileReceipt = func(_ context.Context, receipt profileruntime.CompileReceipt) error {
+				got = receipt
+				return nil
+			}
+			cfg := cloudCfgFor("owner", "project", "execution")
+			cfg.pinnedProfileGuidance = tc.pin
+			if err := recordProfileCompileReceipt(context.Background(), cfg, manifest, 3); err != nil {
+				t.Fatal(err)
+			}
+			if got.ConsumedGuidanceKind != tc.wantKind || (tc.wantRev == nil) != (got.ConsumedGuidanceRevision == nil) {
+				t.Fatalf("consumed guidance kind=%q revision=%v, want %q/%v", got.ConsumedGuidanceKind, got.ConsumedGuidanceRevision, tc.wantKind, tc.wantRev)
+			}
+			if tc.wantRev != nil && *got.ConsumedGuidanceRevision != *tc.wantRev {
+				t.Fatalf("consumed revision=%q, want %q", *got.ConsumedGuidanceRevision, *tc.wantRev)
 			}
 		})
 	}

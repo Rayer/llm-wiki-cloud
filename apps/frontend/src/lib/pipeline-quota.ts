@@ -53,6 +53,7 @@ export function isRunBlocked(opts: {
   hasProject: boolean;
   executionRunning: boolean;
   quota?: PipelineQuota | null;
+  requiresNewRaw?: boolean;
 }): boolean {
   if (opts.isDemoSession) return true;
   if (opts.loading) return true;
@@ -61,7 +62,7 @@ export function isRunBlocked(opts: {
   if (opts.quota?.enforced) {
     if (opts.quota.runs_today >= opts.quota.daily_limit) return true;
     if (formatCooldownRemaining(opts.quota.cooldown_until)) return true;
-    if (opts.quota.new_raw_files < opts.quota.min_new_raw) return true;
+    if (opts.requiresNewRaw !== false && opts.quota.new_raw_files < opts.quota.min_new_raw) return true;
     const staleAlreadyRunning = opts.quota.already_running === true && !opts.executionRunning;
     if (opts.quota.allowed === false && !staleAlreadyRunning) return true;
   }

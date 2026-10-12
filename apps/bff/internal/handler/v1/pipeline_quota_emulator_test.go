@@ -567,7 +567,7 @@ func TestPipelineQuotaCloudRunHandlerEmulator(t *testing.T) {
 	restartedHandler.httpClient = &http.Client{Transport: roundTripFunc(fixture.roundTrip)}
 	recoveryProject := "restart-recovery"
 	recoveryReservation := "lwc371-recovery-reservation"
-	if _, reserved, err := fsClient.ReserveQuota(ctx, recoveryReservation, userID, recoveryProject, h.pipelineLimits(), time.Now().UTC(), false, false, 1, 0, 0); err != nil || !reserved {
+	if _, reserved, err := fsClient.ReserveQuota(ctx, recoveryReservation, userID, recoveryProject, h.pipelineLimits(), time.Now().UTC(), pipelinequota.ModeIncremental, false, false, 1, 0, 0); err != nil || !reserved {
 		t.Fatalf("reserve Cloud Run restart fixture: reserved=%v err=%v", reserved, err)
 	}
 	fixture.addExecution(userID, recoveryProject, recoveryReservation, "FAILED")
@@ -582,7 +582,7 @@ func TestPipelineQuotaCloudRunHandlerEmulator(t *testing.T) {
 
 	ownerProject := "owner-isolation"
 	ownerReservation := "lwc371-owner-isolation-reservation"
-	if _, reserved, err := fsClient.ReserveQuota(ctx, ownerReservation, userID, ownerProject, h.pipelineLimits(), time.Now().UTC(), false, false, 1, 0, 0); err != nil || !reserved {
+	if _, reserved, err := fsClient.ReserveQuota(ctx, ownerReservation, userID, ownerProject, h.pipelineLimits(), time.Now().UTC(), pipelinequota.ModeIncremental, false, false, 1, 0, 0); err != nil || !reserved {
 		t.Fatalf("reserve owner-isolation fixture: reserved=%v err=%v", reserved, err)
 	}
 	fixture.addExecution("different-user", "different-project", ownerReservation, "FAILED")
@@ -603,11 +603,11 @@ func TestPipelineQuotaCloudRunHandlerEmulator(t *testing.T) {
 	quotaLimits := pipelinequota.Limits{DailyLimit: 5, Cooldown: time.Second, MinNewRaw: 1}
 	base := time.Date(2026, 10, 7, 12, 0, 0, 0, time.UTC)
 	quotaProject := "later-run-preserved"
-	if _, reserved, err := fsClient.ReserveQuota(ctx, "same-day-old", userID, quotaProject, quotaLimits, base, false, false, 1, 0, 0); err != nil || !reserved {
+	if _, reserved, err := fsClient.ReserveQuota(ctx, "same-day-old", userID, quotaProject, quotaLimits, base, pipelinequota.ModeIncremental, false, false, 1, 0, 0); err != nil || !reserved {
 		t.Fatalf("reserve first same-day run: reserved=%v err=%v", reserved, err)
 	}
 	later := base.Add(2 * time.Second)
-	if _, reserved, err := fsClient.ReserveQuota(ctx, "same-day-later", userID, quotaProject, quotaLimits, later, false, false, 1, 0, 0); err != nil || !reserved {
+	if _, reserved, err := fsClient.ReserveQuota(ctx, "same-day-later", userID, quotaProject, quotaLimits, later, pipelinequota.ModeIncremental, false, false, 1, 0, 0); err != nil || !reserved {
 		t.Fatalf("reserve later same-day run: reserved=%v err=%v", reserved, err)
 	}
 	if _, err := fsClient.SettleQuotaReservation(ctx, "same-day-old", "FAILED"); err != nil {
@@ -625,10 +625,10 @@ func TestPipelineQuotaCloudRunHandlerEmulator(t *testing.T) {
 	quotaProject = "cross-day-preserved"
 	previousDay := time.Date(2026, 10, 7, 23, 59, 0, 0, time.UTC)
 	nextDay := time.Date(2026, 10, 8, 0, 1, 0, 0, time.UTC)
-	if _, reserved, err := fsClient.ReserveQuota(ctx, "cross-day-old", userID, quotaProject, quotaLimits, previousDay, false, false, 1, 0, 0); err != nil || !reserved {
+	if _, reserved, err := fsClient.ReserveQuota(ctx, "cross-day-old", userID, quotaProject, quotaLimits, previousDay, pipelinequota.ModeIncremental, false, false, 1, 0, 0); err != nil || !reserved {
 		t.Fatalf("reserve previous-day run: reserved=%v err=%v", reserved, err)
 	}
-	if _, reserved, err := fsClient.ReserveQuota(ctx, "cross-day-later", userID, quotaProject, quotaLimits, nextDay, false, false, 1, 0, 0); err != nil || !reserved {
+	if _, reserved, err := fsClient.ReserveQuota(ctx, "cross-day-later", userID, quotaProject, quotaLimits, nextDay, pipelinequota.ModeIncremental, false, false, 1, 0, 0); err != nil || !reserved {
 		t.Fatalf("reserve next-day run: reserved=%v err=%v", reserved, err)
 	}
 	if _, err := fsClient.SettleQuotaReservation(ctx, "cross-day-old", "FAILED"); err != nil {
@@ -680,6 +680,48 @@ func TestPipelineQuotaCloudRunHandlerEmulator(t *testing.T) {
 		t.Fatalf("transport-unknown failure marker err=%v, want not found", err)
 	}
 	assertQuotaState(t, ctx, fsClient, userID, unknownInvokeProject, 1, pipelinequota.DayKeyUTC(time.Now()))
+}
+
+func TestFirestoreReserveQuotaFullModeAndIncrementalRemainDistinct(t *testing.T) {
+	if !requireLoopbackEmulator(t, "FIRESTORE_EMULATOR_HOST") {
+		t.Skip("requires loopback Firestore emulator")
+	}
+	project := "lwc391-quota-mode"
+	database := "(default)"
+	scope := fmt.Sprintf("lwc391-quota-mode-%d", time.Now().UnixNano())
+	userID := "owner-" + fmt.Sprintf("%d", time.Now().UnixNano())
+	t.Setenv("GOOGLE_CLOUD_PROJECT", project)
+	t.Setenv("FIRESTORE_DATABASE_ID", database)
+	t.Setenv("LOCAL_CLOUD_SCOPE", scope)
+	client, err := scopedfirestore.NewClientWithDatabaseAndScope(project, database, "", "", scope)
+	if err != nil {
+		t.Fatalf("create loopback Firestore client: %v", err)
+	}
+	t.Cleanup(func() {
+		ctx := context.Background()
+		_, _ = scopedfirestore.Collection(client.Raw(), "pipeline_quota_reservations").Doc("lwc391-full-reservation").Delete(ctx)
+		_, _ = scopedfirestore.Collection(client.Raw(), "pipeline_quota").Doc(scopedfirestore.QuotaDocID(userID, "full-no-pending")).Delete(ctx)
+		_, _ = scopedfirestore.Collection(client.Raw(), "pipeline_quota").Doc(scopedfirestore.QuotaDocID(userID, "incremental-no-pending")).Delete(ctx)
+		if err := client.Close(); err != nil {
+			t.Errorf("close loopback Firestore client: %v", err)
+		}
+	})
+
+	limits := pipelinequota.Limits{DailyLimit: 2, Cooldown: time.Hour, MinNewRaw: 1}
+	fullProject := "full-no-pending"
+	fullReservation := "lwc391-full-reservation"
+	fullSnapshot, reserved, err := client.ReserveQuota(context.Background(), fullReservation, userID, fullProject, limits, time.Now().UTC(), pipelinequota.ModeFull, false, false, 0, 0, 0)
+	if err != nil || !reserved || fullSnapshot.Allowed || fullSnapshot.Reason != pipelinequota.ReasonCooldown || fullSnapshot.NewRawFiles != 0 || fullSnapshot.PendingWork != 0 {
+		t.Fatalf("full transaction snapshot=%+v reserved=%v err=%v; want accepted reservation, post-reserve cooldown, and real zero counts", fullSnapshot, reserved, err)
+	}
+	incrementalProject := "incremental-no-pending"
+	incrementalSnapshot, reserved, err := client.ReserveQuota(context.Background(), "lwc391-incremental-reservation", userID, incrementalProject, limits, time.Now().UTC(), pipelinequota.ModeIncremental, false, false, 0, 0, 0)
+	if err != nil || reserved || incrementalSnapshot.Allowed || incrementalSnapshot.Reason != pipelinequota.ReasonNoNewRaw || incrementalSnapshot.NewRawFiles != 0 {
+		t.Fatalf("incremental transaction snapshot=%+v reserved=%v err=%v; want no-new-raw block and zero counts", incrementalSnapshot, reserved, err)
+	}
+	if runs, _, _, err := client.LoadQuotaState(context.Background(), userID, incrementalProject); err != nil || runs != 0 {
+		t.Fatalf("incremental no-work request mutated quota runs=%d err=%v", runs, err)
+	}
 }
 
 func requireLoopbackEmulator(t *testing.T, envName string) bool {

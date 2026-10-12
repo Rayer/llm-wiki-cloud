@@ -1,0 +1,5 @@
+COMMAND: make vet
+/Library/Developer/CommandLineTools/usr/bin/make -C apps/bff vet
+go vet ./...
+
+EXIT: 0

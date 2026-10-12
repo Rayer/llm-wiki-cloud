@@ -33,6 +33,7 @@ type pipelineQuotaStore interface {
 		reservationID, userID, projectID string,
 		limits pipelinequota.Limits,
 		now time.Time,
+		mode pipelinequota.ExecutionMode,
 		isDemo, alreadyRunning bool,
 		newRawFiles, rawDirtyFiles, annotationDirtyFiles int,
 	) (snap pipelinequota.Snapshot, reserved bool, err error)
@@ -221,6 +222,15 @@ func (h *Handler) evaluateQuota(
 	userID, projectID string,
 	reservationID string,
 ) (snap pipelinequota.Snapshot, reserved bool, err error) {
+	return h.evaluateQuotaForMode(ctx, userID, projectID, reservationID, pipelinequota.ModeIncremental)
+}
+
+func (h *Handler) evaluateQuotaForMode(
+	ctx context.Context,
+	userID, projectID string,
+	reservationID string,
+	mode pipelinequota.ExecutionMode,
+) (snap pipelinequota.Snapshot, reserved bool, err error) {
 	limits := h.pipelineLimits()
 	now := time.Now().UTC()
 	isDemo := h.isDemoUser(userID)
@@ -240,6 +250,7 @@ func (h *Handler) evaluateQuota(
 		snap = pipelinequota.Evaluate(pipelinequota.Input{
 			Now:                  now,
 			Limits:               limits,
+			Mode:                 mode,
 			IsDemo:               isDemo,
 			AlreadyRunning:       alreadyRunning,
 			NewRawFiles:          newRaw,
@@ -252,7 +263,7 @@ func (h *Handler) evaluateQuota(
 
 	if reservationID != "" {
 		snap, reserved, err = qs.ReserveQuota(
-			ctx, reservationID, userID, projectID, limits, now, isDemo, alreadyRunning, newRaw, rawDirty, annotationDirty,
+			ctx, reservationID, userID, projectID, limits, now, mode, isDemo, alreadyRunning, newRaw, rawDirty, annotationDirty,
 		)
 		if err != nil {
 			return pipelinequota.Snapshot{}, false, err
@@ -267,6 +278,7 @@ func (h *Handler) evaluateQuota(
 	snap = pipelinequota.Evaluate(pipelinequota.Input{
 		Now:                  now,
 		Limits:               limits,
+		Mode:                 mode,
 		IsDemo:               isDemo,
 		AlreadyRunning:       alreadyRunning,
 		RunsToday:            runsToday,

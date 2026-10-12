@@ -348,6 +348,17 @@ func recordProfileCompileReceipt(ctx context.Context, cfg workerConfig, manifest
 		ProfileRevision: pin.ProfileRevision, RequirementsDigest: pin.RequirementsDigest,
 		ContentGeneration: manifest.GenerationID, ManifestSHA256: profileartifacts.SHA256(data), CanonicalConceptsDigest: manifestConceptDigest(manifest), ManifestGeneration: objectGeneration, CreatedAt: time.Now().UTC(),
 	}
+	consumedKind := "none"
+	if pin.BootstrapRef != nil {
+		consumedKind = "bootstrap"
+		revision := pin.BootstrapRef.Revision
+		receipt.ConsumedGuidanceRevision = &revision
+	} else if pin.Revision != "" {
+		consumedKind = "active"
+		revision := pin.Revision
+		receipt.ConsumedGuidanceRevision = &revision
+	}
+	receipt.ConsumedGuidanceKind = consumedKind
 	if pin.BootstrapRef != nil {
 		ref := *pin.BootstrapRef
 		receipt.ConsumedBootstrapGuidance = &ref

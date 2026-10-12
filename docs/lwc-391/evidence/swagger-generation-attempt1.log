@@ -1,0 +1,131 @@
+COMMAND: cd apps/bff && go generate ./cmd/bff
+2026/10/13 00:35:33 Generate swagger docs....
+2026/10/13 00:35:33 Generate general API Info, search dir:./
+2026/10/13 00:35:35 Generating auth.LoginRequest
+2026/10/13 00:35:35 Generating auth.LoginResponse
+2026/10/13 00:35:35 Generating auth.User
+2026/10/13 00:35:35 Generating auth.ErrorResponse
+2026/10/13 00:35:35 Generating auth.RateLimitErrorResponse
+2026/10/13 00:35:35 Generating auth.LogoutResponse
+2026/10/13 00:35:35 Generating auth.RefreshResponse
+2026/10/13 00:35:35 Generating auth.RegisterRequest
+2026/10/13 00:35:35 Generating auth.RegisterResponse
+2026/10/13 00:35:35 Generating buildinfo.Info
+2026/10/13 00:35:35 Generating handler.ScrapeRequest
+2026/10/13 00:35:35 Generating handler.ScrapeResponse
+2026/10/13 00:35:35 Generating handler.ErrorResponse
+2026/10/13 00:35:35 Generating handler.AnnotationResponse
+2026/10/13 00:35:35 Generating handler.AnnotationRequest
+2026/10/13 00:35:35 Generating handler.HealthResponse
+2026/10/13 00:35:35 Generating handler.ProjectResponse
+2026/10/13 00:35:35 Generating v1.renameProjectRequest
+2026/10/13 00:35:35 Generating v1.renameProjectResponse
+2026/10/13 00:35:35 Generating handler.ReadyResponse
+2026/10/13 00:35:35 Generating handler.QueryRequest
+2026/10/13 00:35:35 Generating handler.QueryResponse
+2026/10/13 00:35:35 Generating search.Result
+2026/10/13 00:35:35 Generating llm.ExpandResult
+2026/10/13 00:35:35 Generating search.Citation
+2026/10/13 00:35:35 Generating handler.SourcesListResponse
+2026/10/13 00:35:35 Generating gcs.WikiPage
+2026/10/13 00:35:35 Generating storage.WikiPage
+2026/10/13 00:35:35 Generating handler.SourceDetailResponse
+2026/10/13 00:35:35 Generating handler.ConceptsListResponse
+2026/10/13 00:35:35 Generating handler.ConceptDetailResponse
+2026/10/13 00:35:35 Generating handler.ImportRequest
+2026/10/13 00:35:35 Generating handler.ImportResponse
+2026/10/13 00:35:35 Generating v1.pipelineStatusResponse
+2026/10/13 00:35:35 Generating handler.PipelineExecutionResponse
+2026/10/13 00:35:35 Generating handler.PipelineConsumedGuidanceEvidence
+2026/10/13 00:35:35 Generating handler.PipelineFailureDiagnostic
+2026/10/13 00:35:35 Generating pipelinequota.Snapshot
+2026/10/13 00:35:35 Generating pipelinequota.Reason
+2026/10/13 00:35:35 Generating handler.StatusResponse
+2026/10/13 00:35:35 Generating v1.adminRenameProjectResponse
+2026/10/13 00:35:35 Generating v1.adminPipelineTriggerRequest
+2026/10/13 00:35:35 Generating v1.adminPipelineTriggerResponse
+2026/10/13 00:35:35 Generating v1.adminPipelineStatusResponse
+2026/10/13 00:35:35 json.encoderFunc TypeSpecDef is nil
+2026/10/13 00:35:35 sha3.SHAKE TypeSpecDef is nil
+2026/10/13 00:35:35 cpu.CacheLinePad TypeSpecDef is nil
+2026/10/13 00:35:35 json.ptrEncoder TypeSpecDef is nil
+2026/10/13 00:35:35 atomic.align64 TypeSpecDef is nil
+2026/10/13 00:35:35 mlkem.EncapsulationKey768 TypeSpecDef is nil
+2026/10/13 00:35:35 atomic.Uint64 TypeSpecDef is nil
+2026/10/13 00:35:35 atomic.Bool TypeSpecDef is nil
+2026/10/13 00:35:35 atomic.Int32 TypeSpecDef is nil
+2026/10/13 00:35:35 json.unquotedValue TypeSpecDef is nil
+2026/10/13 00:35:35 ecdh.PrivateKey TypeSpecDef is nil
+2026/10/13 00:35:35 list.Element TypeSpecDef is nil
+2026/10/13 00:35:35 ecdh.Curve TypeSpecDef is nil
+2026/10/13 00:35:35 rand.runtimeSource TypeSpecDef is nil
+2026/10/13 00:35:35 atomic.Pointer TypeSpecDef is nil
+2026/10/13 00:35:35 rand.Zipf TypeSpecDef is nil
+2026/10/13 00:35:35 json.structEncoder TypeSpecDef is nil
+2026/10/13 00:35:35 httpcommon.ServerRequestParam TypeSpecDef is nil
+2026/10/13 00:35:35 rsa.PrivateKey TypeSpecDef is nil
+2026/10/13 00:35:35 json.decodeState TypeSpecDef is nil
+2026/10/13 00:35:35 base64.Encoding TypeSpecDef is nil
+2026/10/13 00:35:35 httpcommon.EncodeHeadersParam TypeSpecDef is nil
+2026/10/13 00:35:35 ecdsa.PrivateKey TypeSpecDef is nil
+2026/10/13 00:35:35 atomic.Uint32 TypeSpecDef is nil
+2026/10/13 00:35:35 atomic.noCopy TypeSpecDef is nil
+2026/10/13 00:35:35 json.condAddrEncoder TypeSpecDef is nil
+2026/10/13 00:35:35 json.encodeState TypeSpecDef is nil
+2026/10/13 00:35:35 ecdsa.PublicKey TypeSpecDef is nil
+2026/10/13 00:35:35 json.field TypeSpecDef is nil
+2026/10/13 00:35:35 json.scanner TypeSpecDef is nil
+2026/10/13 00:35:35 json.arrayEncoder TypeSpecDef is nil
+2026/10/13 00:35:35 sha3.spongeDirection TypeSpecDef is nil
+2026/10/13 00:35:35 mlkem.DecapsulationKey1024 TypeSpecDef is nil
+2026/10/13 00:35:35 ed25519.PrivateKey TypeSpecDef is nil
+2026/10/13 00:35:35 httpcommon.Request TypeSpecDef is nil
+2026/10/13 00:35:35 godebug.Setting TypeSpecDef is nil
+2026/10/13 00:35:35 json.sliceEncoder TypeSpecDef is nil
+2026/10/13 00:35:35 json.mapEncoder TypeSpecDef is nil
+2026/10/13 00:35:35 rand.Rand TypeSpecDef is nil
+2026/10/13 00:35:35 atomic.Uintptr TypeSpecDef is nil
+2026/10/13 00:35:35 json.floatEncoder TypeSpecDef is nil
+2026/10/13 00:35:35 rsa.PublicKey TypeSpecDef is nil
+2026/10/13 00:35:35 ed25519.PublicKey TypeSpecDef is nil
+2026/10/13 00:35:35 rand.Source TypeSpecDef is nil
+2026/10/13 00:35:35 list.List TypeSpecDef is nil
+2026/10/13 00:35:35 json.tagOptions TypeSpecDef is nil
+2026/10/13 00:35:35 aes.KeySizeError TypeSpecDef is nil
+2026/10/13 00:35:35 httpcommon.EncodeHeadersResult TypeSpecDef is nil
+2026/10/13 00:35:35 atomic.Int64 TypeSpecDef is nil
+2026/10/13 00:35:35 httpcommon.ServerRequestResult TypeSpecDef is nil
+2026/10/13 00:35:35 mlkem.EncapsulationKey1024 TypeSpecDef is nil
+2026/10/13 00:35:35 buffer.Buffer TypeSpecDef is nil
+2026/10/13 00:35:35 ecdh.PublicKey TypeSpecDef is nil
+2026/10/13 00:35:35 cpu.option TypeSpecDef is nil
+2026/10/13 00:35:35 mlkem.DecapsulationKey768 TypeSpecDef is nil
+2026/10/13 00:35:35 Generating v1.ProfileState
+2026/10/13 00:35:35 Generating v1.ProfileRequirement
+2026/10/13 00:35:35 Generating v1.ProfileCandidate
+2026/10/13 00:35:35 Generating v1.ProfileDerivedRef
+2026/10/13 00:35:35 Generating v1.ProfilePreview
+2026/10/13 00:35:35 Generating v1.ProfileRequirementAccounting
+2026/10/13 00:35:35 Generating v1.ProfileBootstrapGuidance
+2026/10/13 00:35:35 Generating v1.ProfileBootstrapPreview
+2026/10/13 00:35:35 Generating v1.ProfileActive
+2026/10/13 00:35:35 Generating v1.ProfileJob
+2026/10/13 00:35:35 Generating v1.profilePutRequest
+2026/10/13 00:35:35 Generating v1.profileConflictResponse
+2026/10/13 00:35:35 Generating v1.profileRevisionRequest
+2026/10/13 00:35:35 Generating v1.profileBootstrapGuidanceResponse
+2026/10/13 00:35:35 Generating v1.profileBootstrapConfirmRequest
+2026/10/13 00:35:35 Generating v1.profileGuidanceArtifactResponse
+2026/10/13 00:35:35 Generating v1.profileGuidanceArtifactData
+2026/10/13 00:35:35 Generating v1.recompileAllCapabilityResponse
+2026/10/13 00:35:35 Generating pipelinequota.ExecutionMode
+2026/10/13 00:35:35 Generating v1.recompileAllDenialResponse
+2026/10/13 00:35:35 Generating syssettings.PublicSettings
+2026/10/13 00:35:35 Generating syssettings.Settings
+2026/10/13 00:35:35 Generating syssettings.patchSettingsRequest
+2026/10/13 00:35:35 Generating syssettings.publishAnnouncementRequest
+2026/10/13 00:35:35 create docs.go at docs/docs.go
+2026/10/13 00:35:35 create swagger.json at docs/swagger.json
+2026/10/13 00:35:35 create swagger.yaml at docs/swagger.yaml
+
+EXIT: 0

@@ -7,6 +7,13 @@ import (
 
 type Reason string
 
+type ExecutionMode string
+
+const (
+	ModeIncremental ExecutionMode = "incremental"
+	ModeFull        ExecutionMode = "full"
+)
+
 const (
 	ReasonNone           Reason = ""
 	ReasonDemo           Reason = "demo"
@@ -25,6 +32,7 @@ type Limits struct {
 type Input struct {
 	Now                  time.Time
 	Limits               Limits
+	Mode                 ExecutionMode
 	IsDemo               bool
 	AlreadyRunning       bool
 	RunsToday            int
@@ -128,7 +136,7 @@ func Evaluate(in Input) Snapshot {
 			return block(snap, ReasonCooldown, fmt.Sprintf("Cooldown active; try again in %d minutes", mins))
 		}
 	}
-	if in.NewRawFiles+in.RawDirtyFiles < lim.MinNewRaw && in.AnnotationDirtyFiles == 0 {
+	if in.Mode != ModeFull && in.NewRawFiles+in.RawDirtyFiles < lim.MinNewRaw && in.AnnotationDirtyFiles == 0 {
 		return block(snap, ReasonNoNewRaw, "Upload at least one new or modified raw file before running")
 	}
 	snap.Allowed = true

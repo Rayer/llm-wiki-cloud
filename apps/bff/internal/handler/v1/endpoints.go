@@ -29,6 +29,7 @@ import (
 	"github.com/rayer/llm-wiki-bff/internal/localcloud"
 	"github.com/rayer/llm-wiki-bff/internal/pipelinediagnostic"
 	"github.com/rayer/llm-wiki-bff/internal/pipelinequota"
+	"github.com/rayer/llm-wiki-bff/internal/profileruntime"
 	"github.com/rayer/llm-wiki-bff/internal/query"
 	store "github.com/rayer/llm-wiki-bff/internal/storage"
 	"github.com/rayer/llm-wiki-bff/internal/suggestedqueries"
@@ -887,14 +888,17 @@ func (h *Handler) PipelineRun(c *gin.Context) {
 		c.JSON(http.StatusBadRequest, handler.ErrorResponse{Error: "user is required"})
 		return
 	}
+	h.pipelineRunForMode(c, userID, projectID, pipelinequota.ModeIncremental)
+}
 
+func (h *Handler) pipelineRunForMode(c *gin.Context, userID, projectID string, mode pipelinequota.ExecutionMode) {
 	ctx := c.Request.Context()
 	reservationID, err := newPipelineReservationID()
 	if err != nil {
 		c.JSON(http.StatusInternalServerError, handler.ErrorResponse{Error: pipelineUnavailableMessage})
 		return
 	}
-	snap, reserved, err := h.evaluateQuota(ctx, userID, projectID, reservationID)
+	snap, reserved, err := h.evaluateQuotaForMode(ctx, userID, projectID, reservationID, mode)
 	if err != nil {
 		c.JSON(http.StatusInternalServerError, handler.ErrorResponse{
 			Error: pipelineUnavailableMessage,
@@ -916,7 +920,8 @@ func (h *Handler) PipelineRun(c *gin.Context) {
 	if reserved {
 		quotaReservationID = reservationID
 	}
-	executionID, err := h.invokePipelineJobStageWithReservation(ctx, userID, projectID, false, pipelineStageFull, quotaReservationID)
+	cleanRebuild := mode == pipelinequota.ModeFull
+	executionID, err := h.invokePipelineJobStageWithReservation(ctx, userID, projectID, cleanRebuild, pipelineStageFull, quotaReservationID)
 	if err != nil {
 		if reserved && !errors.Is(err, errPipelineInvocationOutcomeUnknown) {
 			recoveryCtx, cancelRecovery := context.WithTimeout(context.Background(), 10*time.Second)
@@ -957,6 +962,7 @@ func (h *Handler) PipelineRun(c *gin.Context) {
 		"command":      "run",
 		"project_id":   projectID,
 		"execution_id": executionID,
+		"compile_mode": mode,
 		"quota":        snap,
 	})
 }
@@ -1097,6 +1103,7 @@ type pipelineStatusResponse struct {
 	LastExecution    *handler.PipelineExecutionResponse `json:"last_execution"`
 	ProjectID        string                             `json:"project_id"`
 	Quota            *pipelinequota.Snapshot            `json:"quota,omitempty"`
+	FullQuota        *pipelinequota.Snapshot            `json:"full_quota,omitempty"`
 	SuggestedQueries []string                           `json:"suggested_queries"`
 }
 
@@ -1210,13 +1217,22 @@ func (h *Handler) PipelineStatus(c *gin.Context) {
 	}
 	response.LastExecution = lastExecution
 
-	// Evaluate-only quota snapshot for frontend Run-button gating (never mutates).
+	// The original quota remains incremental for existing callers; full mode has
+	// its own read-only snapshot because it does not require pending raw changes.
 	snap, _, err := h.evaluateQuota(ctx, userID, projectID, "")
 	if err != nil {
 		c.JSON(http.StatusInternalServerError, handler.ErrorResponse{Error: pipelineStatusUnavailableMessage})
 		return
 	}
 	response.Quota = &snap
+	if h.localPipeline == nil {
+		fullSnap, _, err := h.evaluateQuotaForMode(ctx, userID, projectID, "", pipelinequota.ModeFull)
+		if err != nil {
+			c.JSON(http.StatusInternalServerError, handler.ErrorResponse{Error: pipelineStatusUnavailableMessage})
+			return
+		}
+		response.FullQuota = &fullSnap
+	}
 	c.JSON(http.StatusOK, response)
 }
 
@@ -1467,11 +1483,9 @@ func (h *Handler) pipelineExecutionStatusWithOwner(ctx context.Context, executio
 		response := newPipelineExecutionResponse(execution)
 		if owner != nil {
 			reservationID := cloudRunExecutionReservationID(execution, owner.userID, owner.projectID)
-			if response.Status == "FAILED" {
-				response.Status = h.cloudRunStatusWithPublicationEvidence(ctx, owner, executionID)
-			}
 			h.attachPipelineDiagnostic(ctx, response, owner)
 			h.attachPipelineQuotaSettlement(ctx, response, owner, reservationID)
+			h.attachPipelineExecutionEvidence(ctx, response, owner, executionID)
 		}
 		return response, nil
 	}
@@ -1492,11 +1506,9 @@ func (h *Handler) pipelineExecutionStatusWithOwner(ctx context.Context, executio
 			if cloudRunExecutionOwnedBy(execution, owner.userID, owner.projectID) {
 				response := newPipelineExecutionResponse(execution)
 				executionID := shortCloudRunExecutionName(execution.Name, true)
-				if response.Status == "FAILED" {
-					response.Status = h.cloudRunStatusWithPublicationEvidence(ctx, owner, executionID)
-				}
 				h.attachPipelineDiagnostic(ctx, response, owner)
 				h.attachPipelineQuotaSettlement(ctx, response, owner, cloudRunExecutionReservationID(execution, owner.userID, owner.projectID))
+				h.attachPipelineExecutionEvidence(ctx, response, owner, executionID)
 				return response, nil
 			}
 		}
@@ -1554,9 +1566,6 @@ func (h *Handler) cloudRunPublicationOutcome(ctx context.Context, owner *pipelin
 	if exists && manifest.LocalExecutionID == executionID {
 		return pipelinePublicationCommitted
 	}
-	if !exists || manifest.LocalExecutionID == "" {
-		return pipelinePublicationAbsent
-	}
 	diagnostic, diagnosticExecution, diagnosticErr := readPipelineFailureDiagnosticWithExecution(ctx, project, executionID)
 	if diagnosticErr != nil || diagnosticExecution != executionID {
 		return pipelinePublicationUnknown
@@ -1582,6 +1591,68 @@ func (h *Handler) cloudRunStatusWithPublicationEvidence(ctx context.Context, own
 		// GCS publication evidence is currently readable; quota stays pending.
 		return "FAILED"
 	}
+}
+
+func (h *Handler) attachPipelineExecutionEvidence(ctx context.Context, response *handler.PipelineExecutionResponse, owner *pipelineExecutionOwner, executionID string) {
+	if response == nil || owner == nil || response.CompileMode != string(pipelinequota.ModeFull) {
+		return
+	}
+	response.PublicationOutcome = "unknown"
+	switch h.cloudRunPublicationOutcome(ctx, owner, executionID) {
+	case pipelinePublicationCommitted:
+		response.PublicationOutcome = "confirmed_published"
+	case pipelinePublicationAbsent:
+		response.PublicationOutcome = "confirmed_not_published"
+	}
+	response.ConsumedGuidance = h.readConsumedGuidanceEvidence(ctx, owner, executionID)
+}
+
+func (h *Handler) readConsumedGuidanceEvidence(ctx context.Context, owner *pipelineExecutionOwner, executionID string) *handler.PipelineConsumedGuidanceEvidence {
+	evidence := &handler.PipelineConsumedGuidanceEvidence{Status: "unavailable", Revision: nil}
+	if h.firestore == nil || h.firestore.Raw() == nil || owner == nil || executionID == "" {
+		return evidence
+	}
+	stateRef := scopedfirestore.Collection(h.firestore.Raw(), "projects").
+		Doc(projectDocID(owner.userID, owner.projectID)).Collection("profile").Doc("state")
+	documents, err := stateRef.Collection(profileruntime.CompileReceiptsCollection).
+		Where("execution_id", "==", executionID).Limit(2).Documents(ctx).GetAll()
+	if err != nil || len(documents) != 1 {
+		return evidence
+	}
+	var receipt profileruntime.CompileReceipt
+	if documents[0].DataTo(&receipt) != nil || receipt.UserID != owner.userID || receipt.ProjectID != owner.projectID ||
+		receipt.ExecutionID != executionID || receipt.ContentGeneration != documents[0].Ref.ID || receipt.ManifestGeneration <= 0 ||
+		!isLowerProfileDigest(receipt.ManifestSHA256) || !isLowerProfileDigest(receipt.CanonicalConceptsDigest) {
+		return evidence
+	}
+	if _, err := generation.ArchivedManifestPath(receipt.ContentGeneration); err != nil {
+		return evidence
+	}
+	evidence.ExecutionID = executionID
+	evidence.ContentGeneration = receipt.ContentGeneration
+	switch receipt.ConsumedGuidanceKind {
+	case "none":
+		if receipt.ConsumedGuidanceRevision != nil || receipt.ConsumedBootstrapGuidance != nil {
+			return &handler.PipelineConsumedGuidanceEvidence{Status: "unavailable", Revision: nil}
+		}
+		evidence.Status, evidence.Kind = "available", "none"
+	case "active":
+		if receipt.ConsumedGuidanceRevision == nil || !isLowerProfileDigest(*receipt.ConsumedGuidanceRevision) || receipt.ConsumedBootstrapGuidance != nil {
+			return &handler.PipelineConsumedGuidanceEvidence{Status: "unavailable", Revision: nil}
+		}
+		revision := *receipt.ConsumedGuidanceRevision
+		evidence.Status, evidence.Kind, evidence.Revision = "available", "active", &revision
+	case "bootstrap":
+		if receipt.ConsumedGuidanceRevision == nil || !isLowerProfileDigest(*receipt.ConsumedGuidanceRevision) || receipt.ConsumedBootstrapGuidance == nil ||
+			receipt.ConsumedBootstrapGuidance.Revision != *receipt.ConsumedGuidanceRevision {
+			return &handler.PipelineConsumedGuidanceEvidence{Status: "unavailable", Revision: nil}
+		}
+		revision := *receipt.ConsumedGuidanceRevision
+		evidence.Status, evidence.Kind, evidence.Revision = "available", "bootstrap", &revision
+	default:
+		return &handler.PipelineConsumedGuidanceEvidence{Status: "unavailable", Revision: nil}
+	}
+	return evidence
 }
 
 func (h *Handler) writeConfirmedPipelineInvokeFailure(ctx context.Context, userID, projectID, reservationID string) error {
@@ -1923,13 +1994,25 @@ func newPipelineExecutionResponse(execution cloudRunExecution) *handler.Pipeline
 		endTime = execution.EndTime
 	}
 	return &handler.PipelineExecutionResponse{
-		Name:      execution.Name,
-		Status:    cloudRunExecutionStatus(execution),
-		StartTime: execution.StartTime,
-		EndTime:   endTime,
-		Duration:  executionDuration(execution.StartTime, endTime),
-		LogURL:    pipelineLogURLForExecution(execution),
+		Name:        execution.Name,
+		Status:      cloudRunExecutionStatus(execution),
+		CompileMode: pipelineExecutionMode(execution),
+		StartTime:   execution.StartTime,
+		EndTime:     endTime,
+		Duration:    executionDuration(execution.StartTime, endTime),
+		LogURL:      pipelineLogURLForExecution(execution),
 	}
+}
+
+func pipelineExecutionMode(execution cloudRunExecution) string {
+	for _, container := range execution.Template.Containers {
+		for _, env := range container.Env {
+			if env.Name == "CLEAN_REBUILD" && strings.EqualFold(strings.TrimSpace(env.Value), "true") {
+				return string(pipelinequota.ModeFull)
+			}
+		}
+	}
+	return string(pipelinequota.ModeIncremental)
 }
 
 func pipelineLogURLForExecution(execution cloudRunExecution) string {

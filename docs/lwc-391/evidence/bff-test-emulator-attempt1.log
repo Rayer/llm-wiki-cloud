@@ -1,0 +1,60 @@
+COMMAND: FIRESTORE_EMULATOR_HOST=127.0.0.1:8585 GOOGLE_CLOUD_PROJECT=lwc391-local-test make -C apps/bff test
+bash ../../scripts/ensure-pkl.sh "/Users/rayer/.local/bin/pkl"
+env -u LLM_API_KEY -u DEEPSEEK_API_KEY -u SYNTO_API_KEY -u OPENAI_API_KEY -u ANTHROPIC_API_KEY -u GEMINI_API_KEY -u TYPESAFE_API_KEY -u TYPESAFE_JEV_API_KEY -u LWC331_TEST_API_KEY python3 ../../scripts/test_cd_contract.py
+......................................................................
+----------------------------------------------------------------------
+Ran 70 tests in 25.038s
+
+OK
+env -u LLM_API_KEY -u DEEPSEEK_API_KEY -u SYNTO_API_KEY -u OPENAI_API_KEY -u ANTHROPIC_API_KEY -u GEMINI_API_KEY -u TYPESAFE_API_KEY -u TYPESAFE_JEV_API_KEY -u LWC331_TEST_API_KEY python3 -m unittest discover -s ../../scripts -p 'test_*auth_config_contract.py'
+.....................
+----------------------------------------------------------------------
+Ran 21 tests in 26.713s
+
+OK
+env -u LLM_API_KEY -u DEEPSEEK_API_KEY -u SYNTO_API_KEY -u OPENAI_API_KEY -u ANTHROPIC_API_KEY -u GEMINI_API_KEY -u TYPESAFE_API_KEY -u TYPESAFE_JEV_API_KEY -u LWC331_TEST_API_KEY python3 ../../apps/bff/scripts/test_local_dev_makefile.py
+.......E.......E.....
+======================================================================
+ERROR: test_local_config_writes_only_public_frontend_urls (__main__.LocalDevMakefileTests.test_local_config_writes_only_public_frontend_urls)
+----------------------------------------------------------------------
+Traceback (most recent call last):
+  File "/Users/rayer/orca/workspaces/llm-wiki-cloud/LWC-390-391-profile-full-recompile/apps/bff/../../apps/bff/scripts/test_local_dev_makefile.py", line 94, in test_local_config_writes_only_public_frontend_urls
+    subprocess.run(
+    ~~~~~~~~~~~~~~^
+        ["make", "local-config", f"FRONTEND_DIR={frontend}", f"CAC_OUTPUT_DIR={config_output}",
+        ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+    ...<5 lines>...
+        env=environment,
+        ^^^^^^^^^^^^^^^^
+    )
+    ^
+  File "/opt/homebrew/Cellar/python@3.14/3.14.6/Frameworks/Python.framework/Versions/3.14/lib/python3.14/subprocess.py", line 578, in run
+    raise CalledProcessError(retcode, process.args,
+                             output=stdout, stderr=stderr)
+subprocess.CalledProcessError: Command '['make', 'local-config', 'FRONTEND_DIR=/var/folders/kw/1ljc0bxn5z32kwz67q3vykw00000gn/T/tmp6baw3o6m/frontend', 'CAC_OUTPUT_DIR=/var/folders/kw/1ljc0bxn5z32kwz67q3vykw00000gn/T/tmp6baw3o6m/cac', 'BFF_PORT=18080', 'AUTH_PORT=18081']' returned non-zero exit status 2.
+
+======================================================================
+ERROR: test_root_config_targets_keep_pipeline_default_and_select_bff (__main__.LocalDevMakefileTests.test_root_config_targets_keep_pipeline_default_and_select_bff)
+----------------------------------------------------------------------
+Traceback (most recent call last):
+  File "/Users/rayer/orca/workspaces/llm-wiki-cloud/LWC-390-391-profile-full-recompile/apps/bff/../../apps/bff/scripts/test_local_dev_makefile.py", line 251, in test_root_config_targets_keep_pipeline_default_and_select_bff
+    auth = subprocess.run(
+           ~~~~~~~~~~~~~~^
+        ["make", "-n", "config-local", "CAC_TARGET=auth"], cwd=REPO,
+        ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+        check=True, capture_output=True, text=True,
+        ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+    ).stdout
+    ^
+  File "/opt/homebrew/Cellar/python@3.14/3.14.6/Frameworks/Python.framework/Versions/3.14/lib/python3.14/subprocess.py", line 578, in run
+    raise CalledProcessError(retcode, process.args,
+                             output=stdout, stderr=stderr)
+subprocess.CalledProcessError: Command '['make', '-n', 'config-local', 'CAC_TARGET=auth']' returned non-zero exit status 2.
+
+----------------------------------------------------------------------
+Ran 21 tests in 1.394s
+
+FAILED (errors=2)
+make: *** [test] Error 1
+
+EXIT: 2

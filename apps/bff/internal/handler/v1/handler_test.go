@@ -1244,6 +1244,7 @@ func (s *stubQuotaStore) ReserveQuota(
 	reservationID, userID, projectID string,
 	limits pipelinequota.Limits,
 	now time.Time,
+	mode pipelinequota.ExecutionMode,
 	isDemo, alreadyRunning bool,
 	newRawFiles, rawDirtyFiles, annotationDirtyFiles int,
 ) (snap pipelinequota.Snapshot, reserved bool, err error) {
@@ -1252,6 +1253,7 @@ func (s *stubQuotaStore) ReserveQuota(
 	pre := pipelinequota.Evaluate(pipelinequota.Input{
 		Now:                  now,
 		Limits:               limits,
+		Mode:                 mode,
 		IsDemo:               isDemo,
 		AlreadyRunning:       alreadyRunning,
 		RunsToday:            s.runsToday,
@@ -1870,9 +1872,16 @@ func TestPipelineStatusQuotaEvaluationDoesNotReserve(t *testing.T) {
 	if recorder.Code != http.StatusOK {
 		t.Fatalf("status = %d, want %d; body = %s", recorder.Code, http.StatusOK, recorder.Body.String())
 	}
-	if stub.loadCalls != 1 || stub.reserveCalls != 0 || stub.refundCalls != 0 {
-		t.Fatalf("loadCalls=%d reserveCalls=%d refundCalls=%d, want 1, 0, 0",
+	if stub.loadCalls != 2 || stub.reserveCalls != 0 || stub.refundCalls != 0 {
+		t.Fatalf("loadCalls=%d reserveCalls=%d refundCalls=%d, want 2 read-only evaluations and no reserve/refund",
 			stub.loadCalls, stub.reserveCalls, stub.refundCalls)
+	}
+	var status pipelineStatusResponse
+	if err := json.Unmarshal(recorder.Body.Bytes(), &status); err != nil {
+		t.Fatalf("decode pipeline status: %v", err)
+	}
+	if status.Quota == nil || status.Quota.Reason != pipelinequota.ReasonNoNewRaw || status.FullQuota == nil || !status.FullQuota.Allowed || status.FullQuota.NewRawFiles != 0 {
+		t.Fatalf("incremental/full quota snapshots = %+v / %+v, want incremental blocked and full allowed with real zero counts", status.Quota, status.FullQuota)
 	}
 	if stub.runsToday != 1 || stub.dayKey != dayKey || !stub.lastRunAt.Equal(lastRunAt) {
 		t.Fatalf("GET mutated quota state runs=%d day=%q last_run_at=%s", stub.runsToday, stub.dayKey, stub.lastRunAt)

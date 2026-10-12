@@ -199,15 +199,53 @@ test('Recompile all reads the server capability and posts only to its dedicated 
   const requests = [];
   globalThis.fetch = async (url, init) => {
     requests.push({ url: String(url), init });
-    return Response.json({ allowed: false, denial_code: 'byok_required' });
+    if (requests.length === 1) {
+      return Response.json({
+        allowed: true,
+        compile_mode: 'full',
+        quota: {
+          enforced: true,
+          allowed: true,
+          runs_today: 0,
+          daily_limit: 2,
+          new_raw_files: 0,
+          min_new_raw: 1,
+          already_running: false,
+        },
+      });
+    }
+    return Response.json({
+      status: 'accepted',
+      compile_mode: 'full',
+      project_id: 'project-a',
+      execution_id: 'full-execution',
+    }, { status: 202 });
   };
 
   try {
     assert.deepEqual(await getRecompileAllCapability('project-a'), {
-      allowed: false,
-      denial_code: 'byok_required',
+      allowed: true,
+      compile_mode: 'full',
+      quota: {
+        enforced: true,
+        allowed: true,
+        reason: undefined,
+        message: undefined,
+        runs_today: 0,
+        daily_limit: 2,
+        cooldown_until: null,
+        next_reset: null,
+        new_raw_files: 0,
+        min_new_raw: 1,
+        already_running: false,
+      },
     });
-    await recompileAll('project-a');
+    assert.deepEqual(await recompileAll('project-a'), {
+      status: 'accepted',
+      compile_mode: 'full',
+      execution_id: 'full-execution',
+      project_id: 'project-a',
+    });
 
     assert.match(requests[0].url, /\/projects\/project-a\/recompile-all\/capability$/);
     assert.equal(requests[0].init.method, undefined);

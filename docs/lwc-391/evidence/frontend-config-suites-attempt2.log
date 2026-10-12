@@ -1,0 +1,13 @@
+COMMAND: python3 scripts/test_frontend_build_config.py && python3 scripts/test_frontend_config_artifacts.py
+....
+----------------------------------------------------------------------
+Ran 4 tests in 0.005s
+
+OK
+.........
+----------------------------------------------------------------------
+Ran 9 tests in 2.815s
+
+OK
+
+EXIT: 0

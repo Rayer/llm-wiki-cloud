@@ -1457,7 +1457,7 @@ const docTemplate = `{
                         "ProjectHeader": []
                     }
                 ],
-                "description": "Rejects the full-project recompile before quota or worker admission until project BYOK is available.",
+                "description": "Starts a quota-gated clean rebuild from raw sources through the existing pipeline worker.",
                 "produces": [
                     "application/json"
                 ],
@@ -1466,6 +1466,13 @@ const docTemplate = `{
                 ],
                 "summary": "Recompile all project content",
                 "responses": {
+                    "202": {
+                        "description": "Accepted",
+                        "schema": {
+                            "type": "object",
+                            "additionalProperties": true
+                        }
+                    },
                     "401": {
                         "description": "Unauthorized",
                         "schema": {
@@ -1480,6 +1487,18 @@ const docTemplate = `{
                     },
                     "404": {
                         "description": "Not Found",
+                        "schema": {
+                            "$ref": "#/definitions/handler.ErrorResponse"
+                        }
+                    },
+                    "409": {
+                        "description": "Conflict",
+                        "schema": {
+                            "$ref": "#/definitions/handler.ErrorResponse"
+                        }
+                    },
+                    "429": {
+                        "description": "Too Many Requests",
                         "schema": {
                             "$ref": "#/definitions/handler.ErrorResponse"
                         }
@@ -1503,7 +1522,7 @@ const docTemplate = `{
                         "ProjectHeader": []
                     }
                 ],
-                "description": "Returns the project's current Recompile all capability. It is denied until project BYOK is available.",
+                "description": "Returns the project's current full-mode pipeline capability and quota snapshot.",
                 "produces": [
                     "application/json"
                 ],
@@ -2872,16 +2891,48 @@ const docTemplate = `{
                 }
             }
         },
+        "handler.PipelineConsumedGuidanceEvidence": {
+            "type": "object",
+            "properties": {
+                "content_generation": {
+                    "type": "string"
+                },
+                "execution_id": {
+                    "type": "string"
+                },
+                "kind": {
+                    "type": "string"
+                },
+                "revision": {
+                    "type": "string"
+                },
+                "status": {
+                    "type": "string"
+                }
+            }
+        },
         "handler.PipelineExecutionResponse": {
             "type": "object",
             "properties": {
+                "compile_mode": {
+                    "type": "string"
+                },
+                "consumed_guidance": {
+                    "$ref": "#/definitions/handler.PipelineConsumedGuidanceEvidence"
+                },
                 "diagnostic": {
                     "$ref": "#/definitions/handler.PipelineFailureDiagnostic"
+                },
+                "diagnostic_state": {
+                    "type": "string"
                 },
                 "duration": {
                     "type": "string"
                 },
                 "end_time": {
+                    "type": "string"
+                },
+                "failure_reason": {
                     "type": "string"
                 },
                 "log_state": {
@@ -2894,6 +2945,12 @@ const docTemplate = `{
                     "type": "string"
                 },
                 "name": {
+                    "type": "string"
+                },
+                "publication_outcome": {
+                    "type": "string"
+                },
+                "quota_settlement": {
                     "type": "string"
                 },
                 "start_time": {
@@ -2918,6 +2975,9 @@ const docTemplate = `{
                 },
                 "exit_code": {
                     "type": "integer"
+                },
+                "message": {
+                    "type": "string"
                 },
                 "stage": {
                     "type": "string"
@@ -3146,6 +3206,9 @@ const docTemplate = `{
                 "locked": {
                     "type": "boolean"
                 },
+                "quota": {
+                    "$ref": "#/definitions/pipelinequota.Snapshot"
+                },
                 "raw_count": {
                     "type": "integer"
                 },
@@ -3197,6 +3260,17 @@ const docTemplate = `{
                     }
                 }
             }
+        },
+        "pipelinequota.ExecutionMode": {
+            "type": "string",
+            "enum": [
+                "incremental",
+                "full"
+            ],
+            "x-enum-varnames": [
+                "ModeIncremental",
+                "ModeFull"
+            ]
         },
         "pipelinequota.Reason": {
             "type": "string",
@@ -3760,6 +3834,9 @@ const docTemplate = `{
         "v1.pipelineStatusResponse": {
             "type": "object",
             "properties": {
+                "full_quota": {
+                    "$ref": "#/definitions/pipelinequota.Snapshot"
+                },
                 "last_execution": {
                     "$ref": "#/definitions/handler.PipelineExecutionResponse"
                 },
@@ -3877,8 +3954,14 @@ const docTemplate = `{
                 "allowed": {
                     "type": "boolean"
                 },
+                "compile_mode": {
+                    "$ref": "#/definitions/pipelinequota.ExecutionMode"
+                },
                 "denial_code": {
                     "type": "string"
+                },
+                "quota": {
+                    "$ref": "#/definitions/pipelinequota.Snapshot"
                 }
             }
         },
