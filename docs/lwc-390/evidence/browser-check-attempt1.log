@@ -1,0 +1,11 @@
+file:///Users/rayer/orca/workspaces/llm-wiki-cloud/LWC-390-391-profile-full-recompile/scripts/lwc390-browser-check.mjs:96
+  if (!clicked) throw new Error(`Button not found: ${label}`);
+                      ^
+
+Error: Button not found: My organization requirements
+    at clickButton (file:///Users/rayer/orca/workspaces/llm-wiki-cloud/LWC-390-391-profile-full-recompile/scripts/lwc390-browser-check.mjs:96:23)
+    at async file:///Users/rayer/orca/workspaces/llm-wiki-cloud/LWC-390-391-profile-full-recompile/scripts/lwc390-browser-check.mjs:177:3
+
+Node.js v22.23.2
+COMMAND=node scripts/lwc390-browser-check.mjs
+EXIT_CODE=1

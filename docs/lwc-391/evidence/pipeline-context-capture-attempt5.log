@@ -1,0 +1,2 @@
+Capture wrapper error after test process: zsh:3: read-only variable: status
+The test output is retained in pipeline-context-attempt5.log; its exit code was not captured.

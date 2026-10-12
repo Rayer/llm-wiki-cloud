@@ -1,0 +1,7 @@
+COMMAND: cd apps/frontend && npm run typecheck
+
+> llm-wiki-frontend@0.1.0 typecheck
+> tsc --noEmit
+
+
+EXIT: 0

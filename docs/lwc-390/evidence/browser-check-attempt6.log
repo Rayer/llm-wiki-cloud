@@ -1,0 +1,11 @@
+file:///Users/rayer/orca/workspaces/llm-wiki-cloud/LWC-390-391-profile-full-recompile/scripts/lwc390-browser-check.mjs:104
+  if (!clicked) throw new Error(`Button not found: ${label}`);
+                      ^
+
+Error: Button not found: 我的整理需求
+    at clickButton (file:///Users/rayer/orca/workspaces/llm-wiki-cloud/LWC-390-391-profile-full-recompile/scripts/lwc390-browser-check.mjs:104:23)
+    at async file:///Users/rayer/orca/workspaces/llm-wiki-cloud/LWC-390-391-profile-full-recompile/scripts/lwc390-browser-check.mjs:227:3
+
+Node.js v22.23.2
+
+EXIT: 1

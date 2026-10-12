@@ -1,0 +1,7 @@
+.........
+----------------------------------------------------------------------
+Ran 9 tests in 1.849s
+
+OK
+COMMAND=python3 scripts/test_frontend_build_config.py && python3 scripts/test_frontend_config_artifacts.py
+EXIT_CODE=0

@@ -1,0 +1,11 @@
+file:///Users/rayer/orca/workspaces/llm-wiki-cloud/LWC-390-391-profile-full-recompile/scripts/lwc390-browser-check.mjs:148
+  if (!condition) throw new Error(`FAIL ${name}${details ? `: ${details}` : ''}`);
+                        ^
+
+Error: FAIL guide comparison uses a single column at mobile width
+    at check (file:///Users/rayer/orca/workspaces/llm-wiki-cloud/LWC-390-391-profile-full-recompile/scripts/lwc390-browser-check.mjs:148:25)
+    at file:///Users/rayer/orca/workspaces/llm-wiki-cloud/LWC-390-391-profile-full-recompile/scripts/lwc390-browser-check.mjs:196:3
+
+Node.js v22.23.2
+COMMAND=node scripts/lwc390-browser-check.mjs
+EXIT_CODE=1

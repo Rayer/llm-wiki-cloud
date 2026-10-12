@@ -1,0 +1,7 @@
+COMMAND: cd apps/frontend && npm run lint
+
+> llm-wiki-frontend@0.1.0 lint
+> eslint
+
+
+EXIT: 0

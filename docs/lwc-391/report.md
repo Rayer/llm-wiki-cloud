@@ -57,3 +57,10 @@
 
 - 遠端 PR CI、same-HEAD 雙 review、正常 develop merge、post-merge CI 與正式 DEV/QA 路徑尚未執行；本報告與 mock/component/emulator 測試不代表 live BFF/Cloud Run、正式 DEV 成功或 Human UAT。
 - 候選 commit/PR head、URL 與遠端 CI 狀態由本 dispatch 的 push/PR read-back 補充回報；本 dispatch 不 merge、不 deploy。
+
+## LWC-390 successor 與 combined source checkpoint（2026-10-13）
+
+- 在保留本報告、b86 source 和原始失敗紀錄的基礎上，LWC-390 Profile settings/guide UI 與 LWC-391 PipelineClient project-context generation repair 完成於 source commit `4d73702d2eeb6836690ca7353977ace51c7789d6`。該 commit 的 exact archive 在 worktree Git metadata `lwc390-391-checkpoints/4d73702d-source.tar.gz`，SHA-256 `5701d996570f9b664d3e37c8778fc9a68d2743957b2b8fbb8097fc4b2274c0f1`。
+- 新 source commit 上的 frontend full suite 為 539 Node + 381 component tests PASS；lint、typecheck、Next production build 與兩個 frontend build-config suites 皆 exit 0。391 的五個 Project switch / late-response regression 已一併重跑通過，具體命令與 raw logs 見 [`../lwc-390/report.md`](../lwc-390/report.md) 和 `../lwc-390/evidence/`。
+- LWC-390 browser fixture 使用實際 Profile component + intercepted local transport；26 項 UI/lifecycle/390px 檢查 PASS。此為 local controlled browser receipt，沒有 live BFF/Project API 或 Human UAT。
+- BFF/backend/API/schema 與 quota seam 沒有變更，因此本 successor 未在新 source SHA 重跑 BFF suites；上文 BFF 證據仍準確指向其記錄的原 source snapshot。兩 ticket combined same-head review、PR CI、normal merge 和 formal DEV/QA 由 main 後續處理。
