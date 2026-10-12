@@ -58,7 +58,7 @@ describe('LWC-209 Profile route', () => {
     expect(screen.getByRole('heading', { name: 'Profile' })).toBeDefined();
     expect(screen.getByTestId('profile-panel').textContent).toBe('project-a');
     expect(screen.queryByTestId('project-keys-section')).toBeNull();
-    expect(screen.getByRole('link', { name: 'MCP OAuth and advanced settings' }).getAttribute('href')).toBe('/advanced');
+    expect(screen.getByRole('link', { name: 'Agent & MCP' }).getAttribute('href')).toBe('/advanced');
   });
 
   it('does not mount the trial Demo Profile panel', () => {
