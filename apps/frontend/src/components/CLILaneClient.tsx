@@ -59,7 +59,7 @@ export function CLILaneClient() {
     ['darwin/amd64', t(platformTranslation['darwin/amd64'])],
     ['windows/amd64', t(platformTranslation['windows/amd64'])],
     ['linux/amd64', t(platformTranslation['linux/amd64'])],
-  ] as const;
+  ].filter(([target]) => shell === 'posix' ? target !== 'windows/amd64' : target === 'windows/amd64');
   const assets = manifest?.assets ?? [];
 
   return (
