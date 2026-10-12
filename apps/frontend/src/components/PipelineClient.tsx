@@ -42,6 +42,9 @@ type UploadItem = {
   result?: RawUploadResult;
 };
 
+type PipelineProjectContext = { projectId: string | null; generation: number };
+type PipelineRequestScope = { projectId: string; contextGeneration: number; requestGeneration: number };
+
 const UPLOAD_CONCURRENCY = 3;
 const RAW_ACCEPT =
   '.md,.txt,.html,.htm,.csv,.json,.xml,.yaml,.yml,.toml,.ini,.cfg,.log,.rst,.org,.tex';
@@ -109,6 +112,23 @@ function hasNewRaw(quota: PipelineQuota | null | undefined): boolean {
 export function PipelineClient() {
   const { t } = useT();
   const { isDemoSession, refreshNavCounts, currentProject } = useWorkspace();
+  const projectId = currentProject?.id ?? null;
+  const pipelineProjectContextRef = useRef<PipelineProjectContext>({ projectId, generation: 0 });
+  if (pipelineProjectContextRef.current.projectId !== projectId) {
+    pipelineProjectContextRef.current = {
+      projectId,
+      generation: pipelineProjectContextRef.current.generation + 1,
+    };
+  }
+  const pipelineRequestGenerationRef = useRef(0);
+  const pipelineMountedRef = useRef(false);
+  const isPipelineRequestCurrent = useCallback((scope: PipelineRequestScope) => {
+    const latest = pipelineProjectContextRef.current;
+    return pipelineMountedRef.current
+      && latest.projectId === scope.projectId
+      && latest.generation === scope.contextGeneration
+      && pipelineRequestGenerationRef.current === scope.requestGeneration;
+  }, []);
   const [fileLabel, setFileLabel] = useState('Choose files');
   const [uploadItems, setUploadItems] = useState<UploadItem[]>([]);
   const [scrapeUrlText, setScrapeUrlText] = useState('');
@@ -140,36 +160,52 @@ export function PipelineClient() {
     }
   }, []);
 
-  const pollPipelineStatus = useCallback(async (projectId?: string, executionId?: string) => {
+  useEffect(() => {
+    pipelineMountedRef.current = true;
+    return () => {
+      pipelineMountedRef.current = false;
+      pipelineRequestGenerationRef.current += 1;
+      stopPipelinePolling();
+    };
+  }, [stopPipelinePolling]);
+
+  const pollPipelineStatus = useCallback(async (scope: PipelineRequestScope, executionId?: string) => {
+    if (!isPipelineRequestCurrent(scope)) return;
     try {
-      const scopedProjectId = projectId ?? currentProject?.id;
-      if (!scopedProjectId) return;
-      const status = await getPipelineStatus(scopedProjectId, executionId);
-      if (currentProject?.id !== scopedProjectId || status.project_id !== scopedProjectId) return;
+      const status = await getPipelineStatus(scope.projectId, executionId);
+      if (!isPipelineRequestCurrent(scope) || status.project_id !== scope.projectId) return;
       setPipelineStatus(status);
 
       const executionStatus = status.last_execution?.status;
       if (executionStatus === 'SUCCEEDED' || executionStatus === 'FAILED') {
         stopPipelinePolling();
         if (status.last_execution?.compile_mode === 'full') {
-          const capability = await getRecompileAllCapability(scopedProjectId).catch(() => null);
-          if (currentProject?.id === scopedProjectId && capability) setFullCapability(capability);
+          const capability = await getRecompileAllCapability(scope.projectId).catch(() => null);
+          if (isPipelineRequestCurrent(scope) && capability) setFullCapability(capability);
         }
       }
     } catch (err) {
+      if (!isPipelineRequestCurrent(scope)) return;
       stopPipelinePolling();
       addToast(err instanceof Error ? err.message : 'Pipeline status failed', 'error');
     }
-  }, [addToast, currentProject?.id, stopPipelinePolling]);
+  }, [addToast, isPipelineRequestCurrent, stopPipelinePolling]);
 
   useEffect(() => stopPipelinePolling, [currentProject?.id, stopPipelinePolling]);
 
   useEffect(() => {
     const refreshAfterAnnotationSave = () => {
-      const projectId = currentProject?.id;
-      if (projectId) {
-        void getPipelineStatus(projectId).then((status) => {
-          if (currentProject?.id === projectId && status.project_id === projectId) setPipelineStatus(status);
+      const context = pipelineProjectContextRef.current;
+      const requestGeneration = pipelineRequestGenerationRef.current;
+      if (context.projectId) {
+        void getPipelineStatus(context.projectId).then((status) => {
+          const latest = pipelineProjectContextRef.current;
+          if (
+            latest.projectId === context.projectId
+            && latest.generation === context.generation
+            && pipelineRequestGenerationRef.current === requestGeneration
+            && status.project_id === context.projectId
+          ) setPipelineStatus(status);
         }).catch(() => undefined);
       }
     };
@@ -179,28 +215,41 @@ export function PipelineClient() {
 
   // Load quota + execution status on mount and when workspace project changes.
   useEffect(() => {
-    const projectId = currentProject?.id;
+    const context = pipelineProjectContextRef.current;
+    const projectId = context.projectId;
+    const requestGeneration = pipelineRequestGenerationRef.current;
+    let cancelled = false;
+    const isCurrentContext = () => {
+      const latest = pipelineProjectContextRef.current;
+      return !cancelled
+        && latest.projectId === context.projectId
+        && latest.generation === context.generation
+        && pipelineRequestGenerationRef.current === requestGeneration;
+    };
     if (!projectId) {
       setPipelineStatus(null);
       setFullCapability(null);
+      setPipelineResult(null);
+      setLoading(null);
       return;
     }
 
-    let cancelled = false;
     setPipelineStatus(null);
     setFullCapability(null);
+    setPipelineResult(null);
+    setLoading(null);
     void (async () => {
       try {
         const status = await getPipelineStatus(projectId);
-        if (!cancelled && status.project_id === projectId) setPipelineStatus(status);
+        if (isCurrentContext() && status.project_id === projectId) setPipelineStatus(status);
       } catch {
         // Initial status is best-effort; Run still surfaces trigger errors via toast.
       }
       try {
         const capability = await getRecompileAllCapability(projectId);
-        if (!cancelled) setFullCapability(capability);
+        if (isCurrentContext()) setFullCapability(capability);
       } catch {
-        if (!cancelled) setFullCapability(null);
+        if (isCurrentContext()) setFullCapability(null);
       }
     })();
 
@@ -366,7 +415,8 @@ export function PipelineClient() {
       return;
     }
 
-    const projectId = currentProject?.id;
+    const context = pipelineProjectContextRef.current;
+    const projectId = context.projectId;
     if (!projectId || window.localStorage.getItem('llm-wiki-last-project') !== projectId) {
       addToast(t('Pipeline.noProject'), 'error');
       return;
@@ -378,12 +428,17 @@ export function PipelineClient() {
     }
     if (compileMode === 'full' && !window.confirm(t('Pipeline.fullConfirm'))) return;
 
+    const requestScope: PipelineRequestScope = {
+      projectId,
+      contextGeneration: context.generation,
+      requestGeneration: ++pipelineRequestGenerationRef.current,
+    };
     setLoading('pipeline');
     try {
       const result = compileMode === 'full'
         ? await recompileAll(projectId)
         : await triggerPipeline();
-      if (currentProject?.id !== projectId) return;
+      if (!isPipelineRequestCurrent(requestScope)) return;
       setPipelineResult(result);
       if (result.message) addToast(result.message, 'info');
       if (result.status === 'accepted') {
@@ -410,18 +465,20 @@ export function PipelineClient() {
             : prev?.full_quota,
         }));
         const pollThisExecution = () => {
-          void pollPipelineStatus(projectId, result.execution_id);
+          void pollPipelineStatus(requestScope, result.execution_id);
         };
         pipelinePollRef.current = setInterval(pollThisExecution, 5000);
-        void pollPipelineStatus(projectId, result.execution_id);
+        void pollPipelineStatus(requestScope, result.execution_id);
       }
     } catch (err) {
       // Network / 5xx / stale UI race: show server message.
-      addToast(err instanceof Error ? err.message : 'Pipeline trigger failed', 'error');
+      if (isPipelineRequestCurrent(requestScope)) {
+        addToast(err instanceof Error ? err.message : 'Pipeline trigger failed', 'error');
+      }
     } finally {
-      setLoading(null);
+      if (isPipelineRequestCurrent(requestScope)) setLoading(null);
     }
-  }, [addToast, compileMode, currentProject?.id, fullCapability?.allowed, isDemoSession, pollPipelineStatus, stopPipelinePolling, t]);
+  }, [addToast, compileMode, fullCapability?.allowed, isDemoSession, isPipelineRequestCurrent, pollPipelineStatus, stopPipelinePolling, t]);
 
   const pipelineStatusText = pipelineStatusBadge(pipelineStatus);
   const uploadSummary = useMemo(() => summarizeUploads(uploadItems), [uploadItems]);

@@ -174,6 +174,28 @@ afterEach(() => {
   vi.clearAllMocks();
 });
 
+type ProfileCard = 'requirements' | 'interpretation' | 'active';
+
+async function openProfileCard(card: ProfileCard) {
+  await act(async () => {
+    await Promise.resolve();
+    await Promise.resolve();
+    await Promise.resolve();
+    await Promise.resolve();
+  });
+  const labels: Record<ProfileCard, string> = localStorage.getItem('locale') === 'zh-TW'
+    ? { requirements: '我的整理需求', interpretation: '系統如何理解我的需求', active: '目前使用的設定' }
+    : { requirements: 'My organization requirements', interpretation: 'How the system understands my requirements', active: 'Settings currently in use' };
+  const button = screen.getByRole('button', { name: labels[card] });
+  if (button.getAttribute('aria-expanded') !== 'true') fireEvent.click(button);
+}
+
+async function renderProfile(projectId = 'project-a', card: ProfileCard | null = 'requirements') {
+  const view = render(<ProjectProfilePanel projectId={projectId} />);
+  if (card) await openProfileCard(card);
+  return view;
+}
+
 describe('LWC-211 Project Profile', () => {
   it('keeps the empty requirement editor mounted and focused after the first character', async () => {
     function RequirementsHarness() {
@@ -224,15 +246,15 @@ describe('LWC-211 Project Profile', () => {
   });
 
   it('saves ordered requirements with the server revision and reports the three-minute pending schedule', async () => {
-    render(<ProjectProfilePanel projectId="project-a" />);
+    await renderProfile('project-a');
 
     const input = await screen.findByRole('textbox', { name: 'Requirement 1' }) as HTMLTextAreaElement;
-    expect(screen.getByRole('heading', { name: 'Project priorities (optional)' })).toBeDefined();
-    expect(screen.getByText(/tag list and rules preview for Jev concept tagging/)).toBeDefined();
-    expect(screen.getByText(/Lifestyle project/)).toBeDefined();
-    expect(screen.getByText(/current settings remain in use until the update completes\. Confirm the preview first/)).toBeDefined();
+    expect(screen.getByRole('button', { name: 'My organization requirements' }).getAttribute('aria-expanded')).toBe('true');
+    expect(screen.getByText(/Requirements remain editable and do not guarantee particular tags or search behavior/)).toBeDefined();
+    expect(screen.getByText(/To apply new requirements to concepts that have already been compiled, run a full recompile/)).toBeDefined();
     expect(input.value).toBe('');
-    expect(screen.getByRole('button', { name: /General knowledge organization/ }).getAttribute('aria-pressed')).toBe('false');
+    expect(screen.getByRole('button', { name: 'Add family example' })).toBeDefined();
+    expect(screen.getByRole('button', { name: 'Add parking example' })).toBeDefined();
     expect(mocks.saveProfile).not.toHaveBeenCalled();
     expect(mocks.getProfileBootstrapGuidance).not.toHaveBeenCalled();
     expect(screen.queryByRole('heading', { name: 'First-compile guidance' })).toBeNull();
@@ -261,7 +283,7 @@ describe('LWC-211 Project Profile', () => {
     mocks.getProfileBootstrapGuidance.mockResolvedValue({ bootstrap_guidance: bootstrapGuidance() });
     mocks.confirmProfileBootstrapGuidance.mockResolvedValue({ bootstrap_guidance: bootstrapGuidance('confirmed') });
 
-    render(<ProjectProfilePanel projectId="project-a" />);
+    await renderProfile('project-a', 'interpretation');
 
     expect(await screen.findByText('Prefer concrete, dated explanations.')).toBeDefined();
     expect(await screen.findByText('Exact immutable instructions.')).toBeDefined();
@@ -270,7 +292,7 @@ describe('LWC-211 Project Profile', () => {
     ) === true)).toBeDefined();
     expect(screen.getByText(/req-1: Compile guidance/)).toBeDefined();
     expect(screen.getByText(/req-2: Limitation/)).toBeDefined();
-    expect(screen.getByText(/No generation-bound Profile is active yet/)).toBeDefined();
+    expect(screen.getAllByText(/No generation-bound Profile is active yet/).length).toBeGreaterThan(0);
     fireEvent.click(screen.getByRole('button', { name: 'Confirm for first compile' }));
 
     await waitFor(() => expect(mocks.confirmProfileBootstrapGuidance).toHaveBeenCalledWith(
@@ -279,7 +301,7 @@ describe('LWC-211 Project Profile', () => {
       1,
       'input-digest-1',
     ));
-    expect(await screen.findByText(/Confirmed for first compile/)).toBeDefined();
+    expect((await screen.findAllByText(/Confirmed for first compile/)).length).toBeGreaterThan(0);
     expect(screen.getByText(/does not start tagging/)).toBeDefined();
     expect(screen.queryByText(/Active profile:/)).toBeNull();
     expect(screen.queryByText(/Tagging work:/)).toBeNull();
@@ -288,11 +310,12 @@ describe('LWC-211 Project Profile', () => {
   it('shows the candidate guidance artifact text and its immutable version metadata', async () => {
     mocks.getProfile.mockResolvedValue(profileWithCandidate());
 
-    render(<ProjectProfilePanel projectId="project-a" />);
+    await renderProfile('project-a', 'active');
 
-    expect(await screen.findByText('Exact immutable instructions.')).toBeDefined();
     expect(await screen.findByText('Active immutable instructions.')).toBeDefined();
     expect(screen.getByRole('heading', { name: 'Active writing guidance' })).toBeDefined();
+    await openProfileCard('interpretation');
+    expect(await screen.findByText('Exact immutable instructions.')).toBeDefined();
     expect(screen.getByRole('heading', { name: 'Candidate writing guidance' })).toBeDefined();
     expect(screen.getByText('guide-2', { selector: 'code' })).toBeDefined();
     expect(screen.getByText((_text, element) => element?.tagName === 'P' && element.textContent?.includes(
@@ -315,7 +338,7 @@ describe('LWC-211 Project Profile', () => {
       job: null,
     });
 
-    render(<ProjectProfilePanel projectId="project-a" />);
+    await renderProfile('project-a', 'active');
 
     expect(await screen.findByText('Active immutable instructions.')).toBeDefined();
     expect(screen.getByRole('heading', { name: 'Active writing guidance' })).toBeDefined();
@@ -338,7 +361,7 @@ describe('LWC-211 Project Profile', () => {
     mocks.confirmProfileBootstrapGuidance.mockReturnValue(delayedConfirmation.promise);
     vi.useFakeTimers();
 
-    render(<ProjectProfilePanel projectId="project-a" />);
+    await renderProfile('project-a', 'interpretation');
     await act(async () => { await Promise.resolve(); await Promise.resolve(); await Promise.resolve(); });
     expect(screen.getByRole('region', { name: 'First-compile guidance' }).getAttribute('aria-busy')).toBe('false');
     fireEvent.click(screen.getByRole('button', { name: 'Confirm for first compile' }));
@@ -351,7 +374,7 @@ describe('LWC-211 Project Profile', () => {
       await delayedConfirmation.promise;
       await Promise.resolve();
     });
-    expect(screen.getByText(/Confirmed for first compile/)).toBeDefined();
+    expect(screen.getAllByText(/Confirmed for first compile/).length).toBeGreaterThan(0);
     expect(screen.getByRole('region', { name: 'First-compile guidance' }).getAttribute('aria-busy')).toBe('false');
 
     await act(async () => {
@@ -359,7 +382,7 @@ describe('LWC-211 Project Profile', () => {
       await delayedRead.promise;
       await Promise.resolve();
     });
-    expect(screen.getByText(/Confirmed for first compile/)).toBeDefined();
+    expect(screen.getAllByText(/Confirmed for first compile/).length).toBeGreaterThan(0);
     expect(screen.queryByRole('button', { name: 'Confirm for first compile' })).toBeNull();
   });
 
@@ -372,9 +395,9 @@ describe('LWC-211 Project Profile', () => {
     mocks.getProfile.mockResolvedValue(profile);
     mocks.getProfileBootstrapGuidance.mockResolvedValue({ bootstrap_guidance: bootstrapGuidance('preview_ready', 1) });
 
-    render(<ProjectProfilePanel projectId="project-a" />);
+    await renderProfile('project-a', 'interpretation');
 
-    expect(await screen.findByText(/first compile is waiting for confirmed bootstrap guidance/i)).toBeDefined();
+    expect((await screen.findAllByText(/first compile is waiting for confirmed bootstrap guidance/i)).length).toBeGreaterThan(0);
     expect(screen.queryByRole('button', { name: 'Confirm for first compile' })).toBeNull();
     expect(mocks.confirmProfileBootstrapGuidance).not.toHaveBeenCalled();
   });
@@ -396,10 +419,11 @@ describe('LWC-211 Project Profile', () => {
       .mockResolvedValueOnce({ bootstrap_guidance: null });
     mocks.confirmProfileBootstrapGuidance.mockRejectedValue(Object.assign(new Error('input digest conflict'), { status: 409 }));
 
-    render(<ProjectProfilePanel projectId="project-a" />);
+    await renderProfile('project-a', 'interpretation');
     fireEvent.click(await screen.findByRole('button', { name: 'Confirm for first compile' }));
 
     expect(await screen.findByText('Bootstrap guidance changed elsewhere. Latest Profile state was reloaded; your requirements draft is kept.')).toBeDefined();
+    await openProfileCard('requirements');
     expect((screen.getByRole('textbox', { name: 'Requirement 1' }) as HTMLInputElement).value).toBe('my saved requirement');
     expect(mocks.getProfileBootstrapGuidance).toHaveBeenCalledTimes(2);
     expect(screen.queryByText(/Confirmed for first compile/)).toBeNull();
@@ -421,11 +445,13 @@ describe('LWC-211 Project Profile', () => {
     mocks.getProfileBootstrapGuidance.mockResolvedValue({ bootstrap_guidance: bootstrapGuidance() });
     mocks.confirmProfileBootstrapGuidance.mockRejectedValue(Object.assign(new Error('digest conflict'), { status: 409 }));
 
-    render(<ProjectProfilePanel projectId="project-a" />);
+    await renderProfile('project-a', 'interpretation');
     fireEvent.click(await screen.findByRole('button', { name: 'Confirm for first compile' }));
 
     expect(await screen.findByText('Bootstrap guidance changed elsewhere. The latest Profile state could not be confirmed; your requirements draft is kept.')).toBeDefined();
+    await openProfileCard('requirements');
     expect((screen.getByRole('textbox', { name: 'Requirement 1' }) as HTMLInputElement).value).toBe('keep my draft');
+    await openProfileCard('interpretation');
     expect(screen.getByRole('button', { name: 'Confirm for first compile' })).toBeDefined();
     expect(screen.queryByText(/Latest Profile state was reloaded/)).toBeNull();
   });
@@ -442,13 +468,13 @@ describe('LWC-211 Project Profile', () => {
       .mockRejectedValueOnce(new Error('temporary network failure'))
       .mockResolvedValueOnce({ bootstrap_guidance: bootstrapGuidance('confirmed') });
 
-    render(<ProjectProfilePanel projectId="project-a" />);
+    await renderProfile('project-a', 'interpretation');
     fireEvent.click(await screen.findByRole('button', { name: 'Confirm for first compile' }));
 
     expect(await screen.findByText(/Guidance confirmation was not confirmed: temporary network failure/)).toBeDefined();
     fireEvent.click(screen.getByRole('button', { name: 'Confirm for first compile' }));
 
-    expect(await screen.findByText(/Confirmed for first compile/)).toBeDefined();
+    expect((await screen.findAllByText(/Confirmed for first compile/)).length).toBeGreaterThan(0);
     expect(mocks.confirmProfileBootstrapGuidance).toHaveBeenCalledTimes(2);
   });
 
@@ -463,14 +489,17 @@ describe('LWC-211 Project Profile', () => {
       .mockResolvedValueOnce({ bootstrap_guidance: bootstrapGuidance() })
       .mockResolvedValueOnce({ bootstrap_guidance: null });
 
-    render(<ProjectProfilePanel projectId="project-a" />);
+    await renderProfile('project-a', 'interpretation');
+    await openProfileCard('requirements');
     const input = await screen.findByRole('textbox', { name: 'Requirement 1' });
     expect(await screen.findByText('Prefer concrete, dated explanations.')).toBeDefined();
     fireEvent.change(input, { target: { value: 'updated requirement' } });
+    await openProfileCard('interpretation');
     expect((screen.getByRole('button', { name: 'Confirm for first compile' }) as HTMLButtonElement).disabled).toBe(true);
+    await openProfileCard('requirements');
     fireEvent.click(screen.getByRole('button', { name: 'Save requirements' }));
 
-    expect(await screen.findByText(/Initial guidance preview is pending Profile derivation/)).toBeDefined();
+    expect((await screen.findAllByText(/Initial guidance preview is pending Profile derivation/)).length).toBeGreaterThan(0);
     expect(screen.queryByText('Prefer concrete, dated explanations.')).toBeNull();
     expect(screen.queryByRole('button', { name: 'Confirm for first compile' })).toBeNull();
     expect(mocks.confirmProfileBootstrapGuidance).not.toHaveBeenCalled();
@@ -488,9 +517,9 @@ describe('LWC-211 Project Profile', () => {
       .mockResolvedValueOnce({ bootstrap_guidance: bootstrapGuidance('preview_ready', 3) });
     vi.useFakeTimers();
 
-    render(<ProjectProfilePanel projectId="project-a" />);
+    await renderProfile('project-a', 'interpretation');
     await act(async () => { await Promise.resolve(); await Promise.resolve(); await Promise.resolve(); });
-    expect(screen.getByText(/Initial guidance preview is pending Profile derivation/)).toBeDefined();
+    expect(screen.getAllByText(/Initial guidance preview is pending Profile derivation/).length).toBeGreaterThan(0);
     await act(async () => { await vi.advanceTimersByTimeAsync(5000); });
 
     expect(screen.getByText('Prefer concrete, dated explanations.')).toBeDefined();
@@ -505,16 +534,16 @@ describe('LWC-211 Project Profile', () => {
       job: { ...profile.job, status: 'scheduled', missing_count: 2, error_code: null },
     });
 
-    render(<ProjectProfilePanel projectId="project-a" />);
+    await renderProfile('project-a', 'interpretation');
 
     expect(await screen.findByText('Added invoice tag')).toBeDefined();
     expect(screen.getByText('Prefer dated invoices')).toBeDefined();
-    expect(screen.getByText(/Active profile: candidate-1/)).toBeDefined();
-    expect(screen.getByText(/Preview awaiting confirmation/)).toBeDefined();
+    expect(screen.getAllByText(/Active profile: candidate-1/).length).toBeGreaterThan(0);
+    expect(screen.getAllByText(/Preview awaiting confirmation/).length).toBeGreaterThan(0);
     fireEvent.click(screen.getByRole('button', { name: 'Retry missing tagging work' }));
 
     await waitFor(() => expect(mocks.retryProfileCandidate).toHaveBeenCalledWith('project-a', 'candidate-2', 6));
-    expect(await screen.findByText(/Tagging work: Scheduled/)).toBeDefined();
+    expect((await screen.findAllByText(/Tagging work: Scheduled/)).length).toBeGreaterThan(0);
   });
 
   it('requires an explicit confirmation and keeps the prior active Profile until tagging completes', async () => {
@@ -526,12 +555,12 @@ describe('LWC-211 Project Profile', () => {
       job: { ...profile.job, status: 'running' },
     });
 
-    render(<ProjectProfilePanel projectId="project-a" />);
+    await renderProfile('project-a', 'interpretation');
     fireEvent.click(await screen.findByRole('button', { name: 'Confirm preview' }));
 
     await waitFor(() => expect(mocks.confirmProfileCandidate).toHaveBeenCalledWith('project-a', 'candidate-2', 6));
-    expect(await screen.findByText(/Preview confirmed; waiting for tagging to finish/)).toBeDefined();
-    expect(screen.getByText(/Active profile: candidate-1/)).toBeDefined();
+    expect((await screen.findAllByText(/Preview confirmed; waiting for tagging to finish/)).length).toBeGreaterThan(0);
+    expect(screen.getAllByText(/Active profile: candidate-1/).length).toBeGreaterThan(0);
   });
 
   it('notifies once when a confirmed candidate becomes active', async () => {
@@ -551,7 +580,7 @@ describe('LWC-211 Project Profile', () => {
       job: { ...profile.job, status: 'ready', missing_count: 0, error_code: null },
     });
 
-    render(<ProjectProfilePanel projectId="project-a" />);
+    await renderProfile('project-a', 'interpretation');
     fireEvent.click(await screen.findByRole('button', { name: 'Confirm preview' }));
 
     expect(await screen.findByText('Profile candidate-2 is now active.')).toBeDefined();
@@ -572,7 +601,7 @@ describe('LWC-211 Project Profile', () => {
       scheduled_for: '2026-09-25T03:05:00Z',
     });
 
-    render(<ProjectProfilePanel projectId="project-a" />);
+    await renderProfile('project-a');
     fireEvent.click(await screen.findByRole('button', { name: 'Retry preview generation' }));
 
     await waitFor(() => expect(mocks.retryProfileDerivation).toHaveBeenCalledWith('project-a', 3));
@@ -603,7 +632,7 @@ describe('LWC-211 Project Profile', () => {
       scheduled_for: '2026-09-25T03:05:00Z',
     });
 
-    render(<ProjectProfilePanel projectId="project-a" />);
+    await renderProfile('project-a');
     expect(await screen.findByText('Profile runtime work exhausted its automatic retries (runtime_retry_exhausted).')).toBeDefined();
     fireEvent.click(await screen.findByRole('button', { name: 'Retry Profile work' }));
 
@@ -625,7 +654,7 @@ describe('LWC-211 Project Profile', () => {
       scheduled_for: '2026-09-25T03:00:00Z',
     }));
 
-    render(<ProjectProfilePanel projectId="project-a" />);
+    await renderProfile('project-a');
     fireEvent.click(await screen.findByRole('button', { name: 'Move requirement 2 up' }));
     fireEvent.click(screen.getByRole('button', { name: 'Remove requirement 2' }));
     fireEvent.click(screen.getByRole('button', { name: 'Save requirements' }));
@@ -646,7 +675,7 @@ describe('LWC-211 Project Profile', () => {
     }).mockResolvedValueOnce(latest);
     mocks.saveProfile.mockRejectedValueOnce(Object.assign(new Error('revision conflict'), { status: 409 }));
 
-    render(<ProjectProfilePanel projectId="project-a" />);
+    await renderProfile('project-a');
     const input = await screen.findByRole('textbox', { name: 'Requirement 1' });
     fireEvent.change(input, { target: { value: 'my draft' } });
     fireEvent.click(screen.getByRole('button', { name: 'Save requirements' }));
@@ -665,9 +694,9 @@ describe('LWC-211 Project Profile', () => {
   it('does not let compile_auto candidates be manually confirmed', async () => {
     mocks.getProfile.mockResolvedValue(profileWithCandidate('compile_auto'));
 
-    render(<ProjectProfilePanel projectId="project-a" />);
+    await renderProfile('project-a', 'interpretation');
 
-    expect(await screen.findByText(/Tags-only update from compile/)).toBeDefined();
+    expect((await screen.findAllByText(/Tags-only update from compile/)).length).toBeGreaterThan(0);
     expect(screen.queryByRole('button', { name: 'Confirm preview' })).toBeNull();
     expect(mocks.confirmProfileCandidate).not.toHaveBeenCalled();
   });
@@ -678,8 +707,9 @@ describe('LWC-211 Project Profile', () => {
       projectId === 'project-a' ? oldRequest.promise : Promise.resolve(emptyProfile(projectId))
     ));
 
-    const view = render(<ProjectProfilePanel projectId="project-a" />);
+    const view = await renderProfile('project-a', null);
     view.rerender(<ProjectProfilePanel projectId="project-b" />);
+    await openProfileCard('requirements');
     oldRequest.resolve({ ...emptyProfile('project-a'), requirements: [{ id: 'stale', text: 'stale project content' }] });
 
     await screen.findByRole('textbox', { name: 'Requirement 1' }).catch(() => undefined);
@@ -699,9 +729,10 @@ describe('LWC-211 Project Profile', () => {
     ));
     mocks.getProfileBootstrapGuidance.mockReturnValue(oldGuidance.promise);
 
-    const view = render(<ProjectProfilePanel projectId="project-a" />);
-    expect(await screen.findByText(/Checking for the initial guidance preview/)).toBeDefined();
+    const view = await renderProfile('project-a', 'interpretation');
+    expect((await screen.findAllByText(/Checking for the initial guidance preview/)).length).toBeGreaterThan(0);
     view.rerender(<ProjectProfilePanel projectId="project-b" />);
+    await openProfileCard('requirements');
     await screen.findByRole('textbox', { name: 'Requirement 1' });
     oldGuidance.resolve({ bootstrap_guidance: bootstrapGuidance('preview_ready', 1) });
 
@@ -725,8 +756,10 @@ describe('LWC-211 Project Profile', () => {
     mocks.confirmProfileBootstrapGuidance.mockReturnValue(deferredConfirmation.promise);
 
     const view = render(<AccountScopedPanel accountId="account-a" />);
+    await openProfileCard('interpretation');
     fireEvent.click(await screen.findByRole('button', { name: 'Confirm for first compile' }));
     view.rerender(<AccountScopedPanel accountId="account-b" />);
+    await openProfileCard('requirements');
     await screen.findByRole('textbox', { name: 'Requirement 1' });
     deferredConfirmation.resolve({ bootstrap_guidance: bootstrapGuidance('confirmed') });
 
@@ -758,15 +791,15 @@ describe('LWC-211 Project Profile', () => {
     mocks.getProfileJob.mockResolvedValue({ ...pending.job, status: 'ready', missing_count: 0, error_code: null });
     vi.useFakeTimers();
 
-    render(<ProjectProfilePanel projectId="project-a" />);
+    await renderProfile('project-a');
     await act(async () => { await Promise.resolve(); await Promise.resolve(); });
-    expect(screen.getByText(/Tagging work: Running/)).toBeDefined();
+    expect(screen.getAllByText(/Tagging work: Running/).length).toBeGreaterThan(0);
 
     await act(async () => { await vi.advanceTimersByTimeAsync(5000); });
-    expect(screen.getByText(/Active profile: candidate-1/)).toBeDefined();
+    expect(screen.getAllByText(/Active profile: candidate-1/).length).toBeGreaterThan(0);
     await act(async () => { await vi.advanceTimersByTimeAsync(5000); });
 
-    expect(screen.getByText(/Active profile: candidate-2/)).toBeDefined();
+    expect(screen.getAllByText(/Active profile: candidate-2/).length).toBeGreaterThan(0);
     expect(screen.getByText('Profile candidate-2 is now active.')).toBeDefined();
     expect(mocks.getProfile).toHaveBeenCalledTimes(3);
   });
@@ -776,10 +809,11 @@ describe('LWC-211 Project Profile', () => {
     mocks.getProfile.mockImplementation((projectId: string) => Promise.resolve(emptyProfile(projectId)));
     mocks.saveProfile.mockReturnValue(deferredSave.promise);
 
-    const view = render(<ProjectProfilePanel projectId="project-a" />);
+    const view = await renderProfile('project-a');
     fireEvent.change(await screen.findByRole('textbox', { name: 'Requirement 1' }), { target: { value: 'stale save' } });
     fireEvent.click(screen.getByRole('button', { name: 'Save requirements' }));
     view.rerender(<ProjectProfilePanel projectId="project-b" />);
+    await openProfileCard('requirements');
     await screen.findByRole('textbox', { name: 'Requirement 1' });
     deferredSave.resolve({ ...emptyProfile('project-a', 1), requirements: [{ id: 'req-a', text: 'stale save' }] });
 
@@ -793,7 +827,7 @@ describe('LWC-211 Project Profile', () => {
     mocks.getProfile.mockImplementation((projectId: string) => Promise.resolve(emptyProfile(projectId)));
     mocks.saveProfile.mockReturnValue(deferredSave.promise);
 
-    const view = render(<ProjectProfilePanel projectId="project-a" />);
+    const view = await renderProfile('project-a');
     fireEvent.change(await screen.findByRole('textbox', { name: 'Requirement 1' }), { target: { value: 'stale save' } });
     fireEvent.click(screen.getByRole('button', { name: 'Save requirements' }));
     view.rerender(<ProjectProfilePanel projectId="project-b" />);
@@ -815,9 +849,10 @@ describe('LWC-211 Project Profile', () => {
     ));
     mocks.confirmProfileCandidate.mockReturnValue(deferredConfirmation.promise);
 
-    const view = render(<ProjectProfilePanel projectId="project-a" />);
+    const view = await renderProfile('project-a', 'interpretation');
     fireEvent.click(await screen.findByRole('button', { name: 'Confirm preview' }));
     view.rerender(<ProjectProfilePanel projectId="project-b" />);
+    await openProfileCard('requirements');
     await screen.findByRole('textbox', { name: 'Requirement 1' });
     deferredConfirmation.resolve({
       ...profileWithCandidate(),
@@ -837,7 +872,7 @@ describe('LWC-211 Project Profile', () => {
   });
 
   it('omits the full-project recompile UI and makes no capability request', async () => {
-    render(<ProjectProfilePanel projectId="project-a" />);
+    await renderProfile('project-a');
 
     await screen.findByRole('textbox', { name: 'Requirement 1' });
     expect(screen.queryByRole('button', { name: /Recompile all/i })).toBeNull();
@@ -845,186 +880,154 @@ describe('LWC-211 Project Profile', () => {
     expect(mocks.recompileAll).not.toHaveBeenCalled();
   });
 
-  it('keeps template and adjustment changes local until the user saves', async () => {
-    mocks.getProfile.mockResolvedValue({
-      ...emptyProfile('project-a', 2),
-      requirements: [{ id: 'custom-1', text: 'Keep my original wording.' }],
-    });
-
+  it('starts with three collapsed settings cards and keeps the full-recompile notice visible', async () => {
     render(<ProjectProfilePanel projectId="project-a" />);
 
-    expect((await screen.findByRole('textbox', { name: 'Requirement 1' }) as HTMLTextAreaElement).value)
-      .toBe('Keep my original wording.');
-    for (const templateName of [
-      'General knowledge organization',
-      'Learning and research',
-      'Work and projects',
-      'Life planning',
-    ]) {
-      expect(screen.getByRole('button', { name: new RegExp(templateName) })).toBeDefined();
+    expect(await screen.findByRole('heading', { name: 'Organization and search preferences' })).toBeDefined();
+    expect(screen.getByText(/To apply new requirements to concepts that have already been compiled, run a full recompile/)).toBeDefined();
+    const requirements = screen.getByRole('button', { name: 'My organization requirements' });
+    const interpretation = screen.getByRole('button', { name: 'How the system understands my requirements' });
+    const active = screen.getByRole('button', { name: 'Settings currently in use' });
+
+    for (const button of [requirements, interpretation, active]) {
+      expect(button.getAttribute('aria-expanded')).toBe('false');
+      expect(button.getAttribute('aria-controls')).toBeTruthy();
     }
+    expect(screen.queryByRole('textbox', { name: 'Requirement 1' })).toBeNull();
 
-    fireEvent.click(screen.getByRole('button', { name: /Learning and research/ }));
+    fireEvent.click(requirements);
+    expect(requirements.getAttribute('aria-expanded')).toBe('true');
+    expect(interpretation.getAttribute('aria-expanded')).toBe('false');
+    expect(active.getAttribute('aria-expanded')).toBe('false');
+    fireEvent.click(requirements);
+    expect(requirements.getAttribute('aria-expanded')).toBe('false');
+    fireEvent.click(interpretation);
+    expect(interpretation.getAttribute('aria-expanded')).toBe('true');
+    expect(screen.getAllByText(/No generation-bound Profile is active yet/).length).toBeGreaterThan(0);
+    expect(screen.queryByText('Prefer concrete, dated explanations.')).toBeNull();
+  });
+
+  it('appends free-text examples without saving or replacing existing draft text', async () => {
+    mocks.getProfile.mockResolvedValue({
+      ...emptyProfile('project-a', 4),
+      requirements: [{ id: 'custom-1', text: 'My own wording stays first.' }],
+    });
+
+    await renderProfile('project-a');
     expect((screen.getByRole('textbox', { name: 'Requirement 1' }) as HTMLTextAreaElement).value)
-      .toBe('Keep my original wording.');
-    fireEvent.click(screen.getByRole('button', { name: 'Apply to draft' }));
-    expect(screen.getByRole('alert').textContent).toMatch(/Replace the current requirements draft/);
-    fireEvent.click(screen.getByRole('button', { name: 'Keep current draft' }));
+      .toBe('My own wording stays first.');
 
+    fireEvent.click(screen.getByRole('button', { name: 'Add family example' }));
     expect((screen.getByRole('textbox', { name: 'Requirement 1' }) as HTMLTextAreaElement).value)
-      .toBe('Keep my original wording.');
-    expect(mocks.saveProfile).not.toHaveBeenCalled();
-
-    fireEvent.click(screen.getByRole('button', { name: 'Add source and evidence' }));
+      .toBe('My own wording stays first.');
     expect((screen.getByRole('textbox', { name: 'Requirement 2' }) as HTMLTextAreaElement).value)
-      .toBe('Keep the source and evidence for important claims.');
-    expect(mocks.saveProfile).not.toHaveBeenCalled();
+      .toContain('child seats, walkway width, and stroller access');
 
-    fireEvent.click(screen.getByRole('button', { name: 'Apply to draft' }));
-    fireEvent.click(screen.getByRole('button', { name: 'Confirm replacement' }));
-    expect((screen.getByRole('textbox', { name: 'Requirement 1' }) as HTMLTextAreaElement).value)
-      .toBe('Highlight core concepts, differences, reasons, and limitations.');
-    expect((screen.getByRole('textbox', { name: 'Requirement 2' }) as HTMLTextAreaElement).value)
-      .toBe('Keep the evidence and source behind each conclusion.');
-    expect(screen.getByText('Static illustration · not generated')).toBeDefined();
-    expect(mocks.saveProfile).not.toHaveBeenCalled();
+    fireEvent.click(screen.getByRole('button', { name: 'Add parking example' }));
+    expect((screen.getByRole('textbox', { name: 'Requirement 3' }) as HTMLTextAreaElement).value)
+      .toContain('parking location, whether it is paid');
 
-    fireEvent.click(screen.getByRole('button', { name: 'Add source and evidence' }));
-    fireEvent.change(screen.getByRole('textbox', { name: 'Requirement 1' }), { target: { value: 'My edited research focus.' } });
+    expect(mocks.saveProfile).not.toHaveBeenCalled();
+    expect(mocks.confirmProfileBootstrapGuidance).not.toHaveBeenCalled();
+    expect(mocks.confirmProfileCandidate).not.toHaveBeenCalled();
+
+    fireEvent.change(screen.getByRole('textbox', { name: 'Requirement 1' }), { target: { value: 'Edited by the user.' } });
     fireEvent.click(screen.getByRole('button', { name: 'Save requirements' }));
-    await waitFor(() => expect(mocks.saveProfile).toHaveBeenCalledWith('project-a', 2, [
-      expect.objectContaining({ id: expect.any(String), text: 'My edited research focus.' }),
-      expect.objectContaining({ text: 'Keep the evidence and source behind each conclusion.' }),
-      expect.objectContaining({ text: 'Keep the source and evidence for important claims.' }),
+    await waitFor(() => expect(mocks.saveProfile).toHaveBeenCalledWith('project-a', 4, [
+      { id: 'custom-1', text: 'Edited by the user.' },
+      expect.objectContaining({ text: expect.stringContaining('child seats, walkway width') }),
+      expect.objectContaining({ text: expect.stringContaining('parking location, whether it is paid') }),
     ]));
   });
 
-  it('requires a clear confirmation before using general settings on a non-empty draft', async () => {
-    mocks.getProfile.mockResolvedValue({
-      ...emptyProfile('project-a', 3),
-      requirements: [{ id: 'custom-1', text: 'A user-written requirement.' }],
-    });
+  it('fills an empty requirement row with an example and does not make an empty draft active', async () => {
+    await renderProfile('project-a');
+    const empty = screen.getByRole('textbox', { name: 'Requirement 1' }) as HTMLTextAreaElement;
+    expect(empty.value).toBe('');
 
-    render(<ProjectProfilePanel projectId="project-a" />);
-    const original = await screen.findByRole('textbox', { name: 'Requirement 1' }) as HTMLTextAreaElement;
-    fireEvent.click(screen.getByRole('button', { name: 'Use general settings' }));
-    expect(screen.getByRole('alert').textContent).toMatch(/Clear all requirements/);
-    expect(original.value).toBe('A user-written requirement.');
+    fireEvent.click(screen.getByRole('button', { name: 'Add parking example' }));
+    expect((screen.getByRole('textbox', { name: 'Requirement 1' }) as HTMLTextAreaElement).value)
+      .toContain('parking location, whether it is paid');
+    expect(screen.getAllByText(/No generation-bound Profile is active yet/).length).toBeGreaterThan(0);
     expect(mocks.saveProfile).not.toHaveBeenCalled();
-
-    fireEvent.click(screen.getByRole('button', { name: 'Clear draft' }));
-    expect((screen.getByRole('textbox', { name: 'Requirement 1' }) as HTMLTextAreaElement).value).toBe('');
-    expect(screen.getByText('No personal requirements; general settings.')).toBeDefined();
-    expect(mocks.saveProfile).not.toHaveBeenCalled();
+    expect(mocks.confirmProfileBootstrapGuidance).not.toHaveBeenCalled();
   });
 
-  it('keeps the example location fixed while optional Profile modes change only the story', async () => {
-    render(<ProjectProfilePanel projectId="project-a" />);
-    const requirement = await screen.findByRole('textbox', { name: 'Requirement 1' }) as HTMLTextAreaElement;
-    fireEvent.click(screen.getByRole('button', { name: 'How does data become searchable knowledge?' }));
+  it('shows the fixed three-screen example and preserves an unsaved draft across guide navigation', async () => {
+    await renderProfile('project-a');
+    const draft = screen.getByRole('textbox', { name: 'Requirement 1' }) as HTMLTextAreaElement;
+    fireEvent.change(draft, { target: { value: 'A local unsaved family note.' } });
+    expect(screen.getByText('Your requirements have unsaved changes.')).toBeDefined();
+
+    fireEvent.click(screen.getByRole('button', { name: 'See an example' }));
+    expect(await screen.findByRole('heading', { name: 'How Profile shapes organization and search' })).toBeDefined();
+    expect(document.activeElement).toBe(screen.getByRole('heading', { name: 'How Profile shapes organization and search' }));
+    expect(screen.getByRole('button', { name: 'Back to settings' })).toBeDefined();
+
+    const conceptStage = screen.getByRole('button', { name: '2. Organized knowledge' });
+    fireEvent.click(conceptStage);
+    expect(document.activeElement).toBe(screen.getByRole('heading', { name: 'The same facts can be organized around different needs' }));
+    expect(screen.getByText(/There is a paid parking lot nearby, about a three-minute walk away/)).toBeDefined();
+    expect(screen.getAllByText(/I often eat out with children/).length).toBeGreaterThan(0);
+    expect(screen.getAllByText(/stroller access has not been confirmed/i).length).toBeGreaterThan(0);
+    expect(screen.getByText('Tags · general information')).toBeDefined();
+    expect(screen.getByText('Tags · preference details and limits')).toBeDefined();
+    expect(screen.queryByRole('checkbox')).toBeNull();
     expect(screen.queryByRole('radio')).toBeNull();
+    expect(mocks.saveProfile).not.toHaveBeenCalled();
 
-    const queryStage = screen.getByRole('button', { name: /4\. Search and ask/ });
-    expect(queryStage.tagName).toBe('BUTTON');
-    fireEvent.click(queryStage);
-    expect(queryStage.getAttribute('aria-pressed')).toBe('true');
-    expect(document.activeElement).toBe(screen.getByRole('heading', { name: 'Ask about a place and compare relevant details' }));
-    expect(screen.getByText('Find restaurants in Taipei City’s Da’an District.')).toBeDefined();
-    fireEvent.click(screen.getByRole('button', { name: 'See how Profile affects this step' }));
-    expect((screen.getByRole('radio', { name: 'General example' }) as HTMLInputElement).checked).toBe(true);
-    expect(screen.getByText(/without adding personal preferences/)).toBeDefined();
+    fireEvent.click(screen.getByRole('button', { name: '3. Search' }));
+    expect(screen.getByText('Find a restaurant in Taipei City’s Da’an District with parking information and child seats.')).toBeDefined();
+    expect(screen.queryByRole('link', { name: /result/i })).toBeNull();
+    fireEvent.click(screen.getByRole('button', { name: 'Set my preferences' }));
 
-    fireEvent.click(screen.getByRole('radio', { name: 'Add personal preferences' }));
-    fireEvent.click(screen.getByRole('checkbox', { name: 'Parking availability' }));
-    fireEvent.click(screen.getByRole('checkbox', { name: 'Suitability for children' }));
-    expect(screen.getByText('Find restaurants in Taipei City’s Da’an District.')).toBeDefined();
-    expect(screen.getByText(/Consider Parking availability and Suitability for children/)).toBeDefined();
-
-    fireEvent.click(screen.getByRole('radio', { name: 'General example' }));
-    expect(screen.getByText('Find restaurants in Taipei City’s Da’an District.')).toBeDefined();
-    expect(screen.getByText(/without adding personal preferences/)).toBeDefined();
-    fireEvent.click(screen.getByRole('radio', { name: 'Add personal preferences' }));
-    expect((screen.getByRole('checkbox', { name: 'Parking availability' }) as HTMLInputElement).checked).toBe(true);
-    expect((screen.getByRole('checkbox', { name: 'Suitability for children' }) as HTMLInputElement).checked).toBe(true);
-
-    fireEvent.click(screen.getByRole('button', { name: 'Hide the Profile example' }));
-    fireEvent.click(screen.getByRole('button', { name: 'See how Profile affects this step' }));
-    expect((screen.getByRole('radio', { name: 'Add personal preferences' }) as HTMLInputElement).checked).toBe(true);
-    expect((screen.getByRole('checkbox', { name: 'Parking availability' }) as HTMLInputElement).checked).toBe(true);
-    expect(screen.getByText('Find restaurants in Taipei City’s Da’an District.')).toBeDefined();
-
-    fireEvent.click(screen.getByRole('button', { name: 'Close the product overview' }));
-    expect(screen.queryByRole('button', { name: /4\. Search and ask/ })).toBeNull();
-    fireEvent.click(screen.getByRole('button', { name: 'How does data become searchable knowledge?' }));
-    expect(screen.getByText('Find restaurants in Taipei City’s Da’an District.')).toBeDefined();
-    expect((screen.getByRole('radio', { name: 'Add personal preferences' }) as HTMLInputElement).checked).toBe(true);
-
-    fireEvent.click(screen.getByRole('button', { name: /3\. Knowledge and tags/ }));
-    expect(screen.getByText(/Stroller access remains unknown because it is not mentioned/)).toBeDefined();
-    expect(requirement.value).toBe('');
+    expect((screen.getByRole('textbox', { name: 'Requirement 1' }) as HTMLTextAreaElement).value)
+      .toBe('A local unsaved family note.');
+    expect(document.activeElement).toBe(screen.getByRole('button', { name: 'My organization requirements' }));
+    expect(screen.getByText('Your requirements have unsaved changes.')).toBeDefined();
     expect(mocks.saveProfile).not.toHaveBeenCalled();
     expect(mocks.confirmProfileBootstrapGuidance).not.toHaveBeenCalled();
     expect(mocks.confirmProfileCandidate).not.toHaveBeenCalled();
   });
 
-  it('shows selected preferences changing the pipeline focus and readable concept example', async () => {
-    render(<ProjectProfilePanel projectId="project-a" />);
-    const requirement = await screen.findByRole('textbox', { name: 'Requirement 1' }) as HTMLTextAreaElement;
-    fireEvent.click(screen.getByRole('button', { name: 'How does data become searchable knowledge?' }));
-    fireEvent.click(screen.getByRole('button', { name: 'See how Profile affects this step' }));
-    fireEvent.click(screen.getByRole('button', { name: /2\. Organize/ }));
-    expect(screen.getByText(/general example, organization keeps the stated place and source facts/)).toBeDefined();
+  it('returns from the guide with prior card state and draft unchanged when using general settings', async () => {
+    await renderProfile('project-a');
+    const draft = screen.getByRole('textbox', { name: 'Requirement 1' }) as HTMLTextAreaElement;
+    fireEvent.change(draft, { target: { value: 'Keep this text unchanged.' } });
+    fireEvent.click(screen.getByRole('button', { name: 'See an example' }));
+    fireEvent.click(screen.getByRole('button', { name: '3. Search' }));
+    fireEvent.click(screen.getByRole('button', { name: 'Use general settings' }));
 
-    fireEvent.click(screen.getByRole('radio', { name: 'Add personal preferences' }));
-    fireEvent.click(screen.getByRole('checkbox', { name: 'Parking availability' }));
-    fireEvent.click(screen.getByRole('button', { name: /2\. Organize/ }));
-    expect(screen.getByText(/With Parking availability, this illustration gives more attention/)).toBeDefined();
-    fireEvent.click(screen.getByRole('button', { name: /3\. Knowledge and tags/ }));
-    const parkingConcept = screen.getByText(/Qingting Restaurant serves home-style food/).textContent ?? '';
-    expect(parkingConcept).toContain('Since parking matters in this example');
-    expect(parkingConcept).toContain('Taipei City’s Da’an District');
-    expect(parkingConcept).toContain('Stroller access is not stated');
-
-    fireEvent.click(screen.getByRole('checkbox', { name: 'Suitability for children' }));
-    const bothConcept = screen.getByText(/Qingting Restaurant serves home-style food/).textContent ?? '';
-    expect(bothConcept).toContain('Since parking and suitability for children matter');
-    expect(bothConcept).toContain('paid lot, child seats, and narrow walkway');
-    expect(bothConcept).toContain('Taipei City’s Da’an District');
-    expect(bothConcept).toContain('Stroller access is not stated');
-
-    fireEvent.click(screen.getByRole('checkbox', { name: 'Parking availability' }));
-    const childrenConcept = screen.getByText(/Qingting Restaurant serves home-style food/).textContent ?? '';
-    expect(childrenConcept).toContain('Since suitability for children matters in this example');
-    expect(childrenConcept).not.toContain('Since parking matters');
-    expect(childrenConcept).toContain('Taipei City’s Da’an District');
-    expect(childrenConcept).toContain('Stroller access is not stated');
-
-    fireEvent.click(screen.getByRole('radio', { name: 'General example' }));
-    fireEvent.click(screen.getByRole('button', { name: /2\. Organize/ }));
-    expect(screen.getByText(/general example, organization keeps the stated place and source facts/)).toBeDefined();
-    fireEvent.click(screen.getByRole('button', { name: /3\. Knowledge and tags/ }));
-    expect(screen.getByText(/Qingting Restaurant serves home-style food/).textContent)
-      .toContain('The note mentions a nearby paid parking lot');
-
-    fireEvent.click(screen.getByRole('radio', { name: 'Add personal preferences' }));
-    expect((screen.getByRole('checkbox', { name: 'Parking availability' }) as HTMLInputElement).checked).toBe(false);
-    expect((screen.getByRole('checkbox', { name: 'Suitability for children' }) as HTMLInputElement).checked).toBe(true);
-    expect(screen.getByText(/Since suitability for children matters in this example/)).toBeDefined();
-    expect(requirement.value).toBe('');
+    expect((screen.getByRole('textbox', { name: 'Requirement 1' }) as HTMLTextAreaElement).value)
+      .toBe('Keep this text unchanged.');
+    expect(screen.getByRole('button', { name: 'My organization requirements' }).getAttribute('aria-expanded'))
+      .toBe('true');
     expect(mocks.saveProfile).not.toHaveBeenCalled();
     expect(mocks.confirmProfileBootstrapGuidance).not.toHaveBeenCalled();
+    expect(mocks.confirmProfileCandidate).not.toHaveBeenCalled();
   });
 
   it('renders the Profile panel in Traditional Chinese', async () => {
     localStorage.setItem('locale', 'zh-TW');
     render(<ProjectProfilePanel projectId="project-a" />);
 
-    expect(await screen.findByRole('heading', { name: '專案重點與優先順序（選填）' })).toBeDefined();
+    expect(await screen.findByRole('heading', { name: '整理與搜尋偏好' })).toBeDefined();
+    expect(screen.getByText(/若要讓先前編譯好的 concept 內容套用新需求，需要全面編譯/)).toBeDefined();
+    expect(screen.getByRole('button', { name: '我的整理需求' }).getAttribute('aria-expanded')).toBe('false');
+    expect(screen.getByRole('button', { name: '系統如何理解我的需求' }).getAttribute('aria-expanded')).toBe('false');
+    expect(screen.getByRole('button', { name: '目前使用的設定' }).getAttribute('aria-expanded')).toBe('false');
+
+    fireEvent.click(screen.getByRole('button', { name: '看一個例子' }));
+    expect(await screen.findByRole('heading', { name: 'Profile 如何影響整理與搜尋' })).toBeDefined();
+    fireEvent.click(screen.getByRole('button', { name: '3. 搜尋' }));
+    expect(screen.getByText('在台北市大安區，找附近有停車資訊、也提供兒童座椅的餐廳。')).toBeDefined();
+    expect(screen.queryByRole('checkbox')).toBeNull();
+    expect(screen.queryByRole('radio')).toBeNull();
+
+    fireEvent.click(screen.getByRole('button', { name: /返回設定/ }));
+    expect(document.activeElement).toBe(screen.getByRole('button', { name: '看一個例子' }));
+    fireEvent.click(screen.getByRole('button', { name: '設定我的偏好' }));
+    expect(screen.getByRole('button', { name: '我的整理需求' }).getAttribute('aria-expanded')).toBe('true');
     expect(screen.getByRole('textbox', { name: '需求 1' })).toBeDefined();
-    fireEvent.click(screen.getByRole('button', { name: '資料如何變成可搜尋知識？' }));
-    expect(screen.getByRole('button', { name: /4\. 搜尋與提問/ })).toBeDefined();
-    fireEvent.click(screen.getByRole('button', { name: /4\. 搜尋與提問/ }));
-    expect(screen.getByText('在台北市大安區找餐廳。')).toBeDefined();
-    expect(screen.queryByText('Original requirements')).toBeNull();
   });
 });

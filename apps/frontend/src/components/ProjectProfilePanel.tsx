@@ -17,15 +17,12 @@ import {
   type ProfileState,
 } from '@/lib/api';
 import { useT } from '@/lib/i18n';
-import { ProfileExpectedEffect } from './ProfileExpectedEffect';
 import { ProfileHowItWorks } from './ProfileHowItWorks';
 import { ProfileRequirementsEditor } from './ProfileRequirementsEditor';
 import {
   newProfileRequirementId,
-  profileTemplateRequirements,
   ProfileTemplates,
-  type ProfileAdjustmentId,
-  type ProfileTemplateId,
+  type ProfileExampleId,
 } from './ProfileTemplates';
 
 function sameRequirements(left: ProfileRequirement[], right: ProfileRequirement[]): boolean {
@@ -107,6 +104,7 @@ function ProfileGuidanceArtifactDetails({ projectId, revision, title }: { projec
 }
 
 type RequestScope = { projectId: string; identity: object };
+type ProfileSettingsCard = 'requirements' | 'interpretation' | 'active';
 
 export function ProjectProfilePanel({ projectId }: { projectId: string }) {
   const { t } = useT();
@@ -116,7 +114,8 @@ export function ProjectProfilePanel({ projectId }: { projectId: string }) {
   const [bootstrapLoading, setBootstrapLoading] = useState(false);
   const [bootstrapError, setBootstrapError] = useState('');
   const [draft, setDraft] = useState<ProfileRequirement[]>([]);
-  const [selectedTemplate, setSelectedTemplate] = useState<{ projectId: string; id: ProfileTemplateId | null }>(() => ({ projectId, id: null }));
+  const [openCard, setOpenCard] = useState<ProfileSettingsCard | null>(null);
+  const [guideOpen, setGuideOpen] = useState(false);
   const [loading, setLoading] = useState(true);
   const [savingScope, setSavingScope] = useState<RequestScope | null>(null);
   const [workingScope, setWorkingScope] = useState<RequestScope | null>(null);
@@ -124,11 +123,23 @@ export function ProjectProfilePanel({ projectId }: { projectId: string }) {
   const [errorProjectId, setErrorProjectId] = useState('');
   const [notice, setNotice] = useState('');
   const profileRef = useRef<ProfileState | null>(null);
+  const guideEntryRef = useRef<HTMLButtonElement>(null);
+  const requirementsCardRef = useRef<HTMLButtonElement>(null);
+  const focusAfterGuideRef = useRef<'guideEntry' | 'requirements' | null>(null);
   const bootstrapRequestRef = useRef(0);
   const loadedRef = useRef(false);
   const currentScope = useMemo<RequestScope>(() => ({ projectId, identity: {} }), [projectId]);
   const currentScopeRef = useRef<RequestScope | null>(null);
   const mountedRef = useRef(false);
+
+  useEffect(() => {
+    if (guideOpen || !focusAfterGuideRef.current) return;
+    const target = focusAfterGuideRef.current === 'requirements'
+      ? requirementsCardRef.current
+      : guideEntryRef.current;
+    target?.focus();
+    focusAfterGuideRef.current = null;
+  }, [guideOpen, openCard]);
 
   useLayoutEffect(() => {
     currentScopeRef.current = currentScope;
@@ -193,6 +204,7 @@ export function ProjectProfilePanel({ projectId }: { projectId: string }) {
 
   useEffect(() => {
     let active = true;
+    focusAfterGuideRef.current = null;
     loadedRef.current = false;
     profileRef.current = null;
     bootstrapRequestRef.current += 1;
@@ -275,7 +287,6 @@ export function ProjectProfilePanel({ projectId }: { projectId: string }) {
   }, [applyProfile, currentScope, loadBootstrapGuidance, profile, projectId]);
 
   const visibleProfile = profile?.project_id === projectId ? profile : null;
-  const selectedTemplateId = selectedTemplate.projectId === projectId ? selectedTemplate.id : null;
   const bootstrapForCurrentScope = bootstrapScope === currentScope;
   const visibleBootstrapGuidance = bootstrapForCurrentScope ? bootstrapGuidance : null;
   const visibleBootstrapLoading = bootstrapForCurrentScope && bootstrapLoading;
@@ -483,12 +494,14 @@ export function ProjectProfilePanel({ projectId }: { projectId: string }) {
     || sameRequirements(draft, visibleProfile?.requirements ?? []);
   const canRetryTagging = visibleProfile?.job
     && (visibleProfile.job.status === 'incomplete' || visibleProfile.job.status === 'retry_wait');
+  const hasUnsavedChanges = Boolean(visibleProfile && !sameRequirements(draft, visibleProfile.requirements));
 
   return (
     <section
-      aria-labelledby="project-profile-heading"
+      aria-labelledby={guideOpen ? 'profile-guide-heading' : 'project-profile-heading'}
       className="rounded-[var(--radius-lg)] border border-white/10 bg-zinc-900/45 p-5 backdrop-blur-sm sm:p-6"
     >
+      <div hidden={guideOpen}>
       <div className="flex flex-wrap items-start justify-between gap-4">
         <div>
           <p className="font-mono text-[11px] uppercase tracking-[0.2em] text-emerald-300/90">{t('Profile.settings')}</p>
@@ -540,20 +553,136 @@ export function ProjectProfilePanel({ projectId }: { projectId: string }) {
       {visibleProfile ? (
         <>
           <p className="mt-4 text-xs leading-5 text-zinc-500">{t('Profile.localUx.layersDescription')}</p>
-          {visibleProfile.active ? (
-            <p className="mt-5 text-sm text-emerald-200" role="status">
-              {t('Profile.active', { candidateId: visibleProfile.active.candidate_id })}
-            </p>
-          ) : (
-            <p className="mt-5 text-sm text-zinc-400" role="status">{t('Profile.noActive')}</p>
-          )}
 
-          <ProfileHowItWorks />
+          <section className="mt-4 rounded-xl border border-amber-200/30 bg-amber-200/[0.08] p-4" aria-labelledby="profile-update-notice-heading">
+            <h3 id="profile-update-notice-heading" className="text-sm font-semibold text-amber-100">{t('Profile.localUx.noticeHeading')}</h3>
+            <p className="mt-1 text-sm leading-6 text-zinc-200">{t('Profile.localUx.noticeBody')}</p>
+          </section>
 
-          {showFirstCompileBootstrap || visibleProfile.candidate ? (
-            <h3 className="mt-5 text-sm font-semibold text-zinc-200">{t('Profile.localUx.systemInterpretationHeading')}</h3>
-          ) : null}
+          <div className="mt-4 space-y-2 rounded-xl border border-white/10 bg-black/15 p-4" aria-live="polite">
+            {visibleProfile.active ? (
+              <p className="text-sm text-emerald-200">{t('Profile.active', { candidateId: visibleProfile.active.candidate_id })}</p>
+            ) : (
+              <p className="text-sm text-zinc-300">{t('Profile.noActive')}</p>
+            )}
+            {hasUnsavedChanges ? (
+              <p className="flex flex-wrap items-center gap-2 text-sm text-amber-100">
+                <span>{t('Profile.localUx.unsavedSummary')}</span>
+                <button type="button" onClick={() => setOpenCard('requirements')} className="min-h-10 rounded-md border border-amber-100/20 px-2.5 text-xs font-medium hover:bg-amber-100/5">
+                  {t('Profile.localUx.reviewRequirements')}
+                </button>
+              </p>
+            ) : null}
+            {saving ? <p className="text-sm text-sky-100">{t('Profile.localUx.savingSummary')}</p> : null}
+            {working ? <p className="text-sm text-sky-100">{t('Profile.localUx.workingSummary')}</p> : null}
+            {visibleProfile.derivation_status === 'pending' ? (
+              <p className="text-sm text-amber-100">
+                {t('Profile.generationScheduledPrefix')}{' '}
+                <time dateTime={visibleProfile.scheduled_for ?? undefined}>{scheduleLabel(visibleProfile.scheduled_for ?? t('Profile.later'))}</time>
+                {t('Profile.generationScheduledSuffix')}
+              </p>
+            ) : null}
+            {visibleProfile.derivation_status === 'failed' ? (
+              <div className="flex flex-wrap items-center gap-3 text-sm text-red-200">
+                <span>
+                  {visibleProfile.derivation_error_code === 'runtime_retry_exhausted'
+                    ? t('Profile.runtimeRetriesExhausted')
+                    : t('Profile.previewGenerationFailed')}
+                  {visibleProfile.derivation_error_code ? ` (${visibleProfile.derivation_error_code})` : ''}.
+                </span>
+                <button
+                  type="button"
+                  disabled={working}
+                  onClick={() => void retryDerivation()}
+                  className="min-h-10 rounded-md border border-white/10 px-3 text-sm text-zinc-200 hover:bg-white/5 disabled:opacity-50"
+                >
+                  {visibleProfile.derivation_error_code === 'runtime_retry_exhausted' ? t('Profile.retryProfileWork') : t('Profile.retryPreviewGeneration')}
+                </button>
+              </div>
+            ) : null}
+            {visibleProfile.job ? (
+              <p className="flex flex-wrap items-center gap-2 text-sm text-zinc-300">
+                <span>{t('Profile.taggingWork', { status: t(`Profile.jobStatus.${visibleProfile.job.status}`) })}</span>
+                {visibleProfile.job.missing_count > 0 ? <span>{t('Profile.itemsIncomplete', { count: visibleProfile.job.missing_count })}</span> : null}
+                {visibleProfile.job.error_code ? <span className="text-amber-200">{visibleProfile.job.error_code}</span> : null}
+                {(visibleProfile.candidate || showFirstCompileBootstrap) ? (
+                  <button type="button" onClick={() => setOpenCard('interpretation')} className="min-h-10 rounded-md border border-white/10 px-2.5 text-xs text-zinc-200 hover:bg-white/5">
+                    {t('Profile.localUx.reviewInterpretation')}
+                  </button>
+                ) : null}
+              </p>
+            ) : null}
+            {showFirstCompileBootstrap ? (
+              <p className="flex flex-wrap items-center gap-2 text-sm text-sky-100">
+                <span>{visibleBootstrapGuidance?.status === 'confirmed'
+                  ? t('Profile.bootstrapConfirmedWithoutTime')
+                  : visibleBootstrapGuidance?.status === 'preview_ready'
+                    ? t('Profile.bootstrapPreviewReady')
+                    : visibleBootstrapLoading
+                      ? t('Profile.bootstrapChecking')
+                      : visibleBootstrapError
+                        ? t('Profile.bootstrapStatusUnavailable')
+                        : visibleProfile.derivation_status === 'pending'
+                          ? t('Profile.bootstrapPending')
+                          : t('Profile.waitingForBootstrap')}</span>
+                <button type="button" onClick={() => setOpenCard('interpretation')} className="min-h-10 rounded-md border border-sky-100/20 px-2.5 text-xs hover:bg-sky-100/5">
+                  {t('Profile.localUx.bootstrapReview')}
+                </button>
+              </p>
+            ) : null}
+            {visibleProfile.candidate ? (
+              <p className="flex flex-wrap items-center gap-2 text-sm text-sky-100">
+                <span>{visibleProfile.candidate.source === 'compile_auto'
+                  ? t('Profile.tagsOnlyUpdate')
+                  : visibleProfile.active?.candidate_id === visibleProfile.candidate.candidate_id
+                    ? t('Profile.previewActive')
+                    : visibleProfile.confirmed_candidate_id === visibleProfile.candidate.candidate_id
+                      ? t('Profile.previewWaitingForTagging')
+                      : t('Profile.previewAwaitingConfirmation')}</span>
+                <button type="button" onClick={() => setOpenCard('interpretation')} className="min-h-10 rounded-md border border-sky-100/20 px-2.5 text-xs hover:bg-sky-100/5">
+                  {t('Profile.localUx.candidateReview')}
+                </button>
+              </p>
+            ) : null}
+            {visibleBootstrapError ? <p className="text-sm text-amber-200" role="alert">{t('Profile.bootstrapReadError', { error: visibleBootstrapError })}</p> : null}
+            {visibleError ? <p className="text-sm text-red-200" role="alert">{visibleError}</p> : null}
+            {visibleNotice ? <p className="text-sm text-emerald-200" role="status">{visibleNotice}</p> : null}
+          </div>
 
+          <div className="mt-4 flex flex-wrap gap-2">
+            <button
+              type="button"
+              onClick={() => setOpenCard('requirements')}
+              className="min-h-11 rounded-lg bg-emerald-300 px-4 text-sm font-semibold text-zinc-950 hover:bg-emerald-200 focus-visible:outline focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-emerald-300"
+            >
+              {t('Profile.localUx.setPreferences')}
+            </button>
+            <button
+              ref={guideEntryRef}
+              type="button"
+              onClick={() => setGuideOpen(true)}
+              className="min-h-11 rounded-lg border border-white/10 px-4 text-sm text-zinc-200 hover:bg-white/5 focus-visible:outline focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-emerald-300"
+            >
+              {t('Profile.localUx.seeExample')}
+            </button>
+          </div>
+
+          <div className="mt-4 flex flex-col gap-3">
+          <section className="order-2 rounded-xl border border-white/10 bg-black/10 p-4" aria-labelledby="profile-interpretation-card-heading">
+            <h3>
+              <button
+                type="button"
+                aria-expanded={openCard === 'interpretation'}
+                aria-controls="profile-interpretation-card"
+                onClick={() => setOpenCard((current) => current === 'interpretation' ? null : 'interpretation')}
+                className="min-h-11 w-full rounded-lg text-left text-base font-semibold text-white focus-visible:outline focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-emerald-300"
+              >
+                <span id="profile-interpretation-card-heading">{t('Profile.localUx.cards.interpretation')}</span>
+                <span aria-hidden="true" className="float-right text-zinc-400">{openCard === 'interpretation' ? '−' : '+'}</span>
+              </button>
+            </h3>
+            <p className="mt-1 text-xs leading-5 text-zinc-400">{t('Profile.localUx.interpretationCardDescription')}</p>
+            <div id="profile-interpretation-card" hidden={openCard !== 'interpretation'}>
           {showFirstCompileBootstrap ? (
             <section className="mt-5 rounded-xl border border-sky-300/20 bg-sky-300/5 p-4" aria-labelledby="profile-bootstrap-heading" aria-busy={visibleBootstrapLoading}>
               <div className="flex flex-wrap items-start justify-between gap-3">
@@ -632,40 +761,6 @@ export function ProjectProfilePanel({ projectId }: { projectId: string }) {
               )}
               {visibleBootstrapError ? <p className="mt-2 text-xs text-amber-200" role="alert">{t('Profile.bootstrapReadError', { error: visibleBootstrapError })}</p> : null}
             </section>
-          ) : null}
-
-          {visibleProfile.active ? (
-            <ProfileGuidanceArtifactDetails
-              projectId={projectId}
-              revision={visibleProfile.active.guidance_revision}
-              title={t('Profile.activeWritingGuidance')}
-            />
-          ) : null}
-
-          {visibleProfile.derivation_status === 'pending' ? (
-            <p className="mt-3 text-sm leading-6 text-amber-100" role="status">
-              {t('Profile.generationScheduledPrefix')}{' '}
-              <time dateTime={visibleProfile.scheduled_for ?? undefined}>{scheduleLabel(visibleProfile.scheduled_for ?? t('Profile.later'))}</time>
-              {t('Profile.generationScheduledSuffix')}
-            </p>
-          ) : null}
-          {visibleProfile.derivation_status === 'failed' ? (
-            <div className="mt-3 flex flex-wrap items-center gap-3" role="status">
-              <p className="text-sm text-red-200">
-                {visibleProfile.derivation_error_code === 'runtime_retry_exhausted'
-                  ? t('Profile.runtimeRetriesExhausted')
-                  : t('Profile.previewGenerationFailed')}
-                {visibleProfile.derivation_error_code ? ` (${visibleProfile.derivation_error_code})` : ''}.
-              </p>
-              <button
-                type="button"
-                disabled={working}
-                onClick={() => void retryDerivation()}
-                className="min-h-10 rounded-md border border-white/10 px-3 text-sm text-zinc-200 hover:bg-white/5 disabled:opacity-50"
-              >
-                {visibleProfile.derivation_error_code === 'runtime_retry_exhausted' ? t('Profile.retryProfileWork') : t('Profile.retryPreviewGeneration')}
-              </button>
-            </div>
           ) : null}
 
           {visibleProfile.candidate ? (
@@ -757,65 +852,120 @@ export function ProjectProfilePanel({ projectId }: { projectId: string }) {
               ) : null}
             </div>
           ) : null}
+            </div>
+          </section>
 
-          <div className="mt-6 border-t border-white/10 pt-5">
-            <h3 className="text-sm font-semibold text-white">{t('Profile.originalRequirements')}</h3>
-            <p className="mt-1 text-xs leading-5 text-zinc-500">{t('Profile.requirementsDescription')}</p>
-            <ProfileTemplates
-              requirements={draft}
-              selectedTemplateId={selectedTemplateId}
-              disabled={saving || working}
-              onSelect={(templateId) => setSelectedTemplate({ projectId, id: templateId })}
-              onApplyTemplate={(templateId) => {
-                setDraft(profileTemplateRequirements(templateId, t));
-                setSelectedTemplate({ projectId, id: templateId });
-                setError('');
-                setNotice('');
-              }}
-              onClearRequirements={() => {
-                setDraft([]);
-                setSelectedTemplate({ projectId, id: null });
-                setError('');
-                setNotice('');
-              }}
-              onAddAdjustment={(adjustmentId: ProfileAdjustmentId) => {
-                setDraft((current) => [...current, {
-                  id: newProfileRequirementId(),
-                  text: t(`Profile.localUx.adjustments.${adjustmentId}.requirement`),
-                }]);
-                setError('');
-                setNotice('');
-              }}
-            />
-            <ProfileExpectedEffect selectedTemplateId={selectedTemplateId} requirements={draft} />
-            <p className="mt-4 text-xs leading-5 text-zinc-500">{t('Profile.requirementsPriorities')}</p>
-            <p className="mt-2 text-sm leading-6 text-zinc-400">{t('Profile.requirementsExample')}</p>
-            <p className="mt-2 text-xs leading-5 text-zinc-500">{t('Profile.queryEffectDelay')}</p>
-            <div className="mt-4">
-              <ProfileRequirementsEditor
-                requirements={draft}
+          <section className="order-1 rounded-xl border border-white/10 bg-black/10 p-4" aria-labelledby="profile-requirements-card-heading">
+            <h3>
+              <button
+                ref={requirementsCardRef}
+                type="button"
+                aria-expanded={openCard === 'requirements'}
+                aria-controls="profile-requirements-card"
+                onClick={() => setOpenCard((current) => current === 'requirements' ? null : 'requirements')}
+                className="min-h-11 w-full rounded-lg text-left text-base font-semibold text-white focus-visible:outline focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-emerald-300"
+              >
+                <span id="profile-requirements-card-heading">{t('Profile.localUx.cards.requirements')}</span>
+                <span aria-hidden="true" className="float-right text-zinc-400">{openCard === 'requirements' ? '−' : '+'}</span>
+              </button>
+            </h3>
+            <p className="mt-1 text-xs leading-5 text-zinc-400">{t('Profile.localUx.requirementsCardDescription')}</p>
+            <div id="profile-requirements-card" hidden={openCard !== 'requirements'}>
+              <p className="mt-3 text-sm leading-6 text-zinc-300">{t('Profile.requirementsDescription')}</p>
+              <div className="mt-4">
+                <ProfileRequirementsEditor
+                  requirements={draft}
+                  disabled={saving || working}
+                  onChange={(next) => {
+                    setDraft(next);
+                    setError('');
+                    setNotice('');
+                  }}
+                />
+              </div>
+              <ProfileTemplates
                 disabled={saving || working}
-                onChange={(next) => {
-                  setDraft(next);
+                onAddExample={(exampleId: ProfileExampleId) => {
+                  const text = t(`Profile.localUx.examples.${exampleId}.text`);
+                  setDraft((current) => {
+                    const emptyIndex = current.findIndex((requirement) => requirement.text.trim() === '');
+                    if (emptyIndex < 0) return [...current, { id: newProfileRequirementId(), text }];
+                    return current.map((requirement, index) => index === emptyIndex ? { ...requirement, text } : requirement);
+                  });
                   setError('');
                   setNotice('');
                 }}
               />
+              <button
+                type="button"
+                disabled={isSavingDisabled}
+                onClick={() => void saveRequirements()}
+                className="mt-4 min-h-11 rounded-lg bg-emerald-300 px-4 text-sm font-semibold text-zinc-950 transition hover:bg-emerald-200 disabled:cursor-not-allowed disabled:opacity-50"
+              >
+                {saving ? t('Profile.saving') : t('Profile.saveRequirements')}
+              </button>
             </div>
-            <button
-              type="button"
-              disabled={isSavingDisabled}
-              onClick={() => void saveRequirements()}
-              className="mt-4 min-h-11 rounded-lg bg-emerald-300 px-4 text-sm font-semibold text-zinc-950 transition hover:bg-emerald-200 disabled:cursor-not-allowed disabled:opacity-50"
-            >
-              {saving ? t('Profile.saving') : t('Profile.saveRequirements')}
-            </button>
+          </section>
+
+          <section className="order-3 rounded-xl border border-white/10 bg-black/10 p-4" aria-labelledby="profile-active-card-heading">
+            <h3>
+              <button
+                type="button"
+                aria-expanded={openCard === 'active'}
+                aria-controls="profile-active-card"
+                onClick={() => setOpenCard((current) => current === 'active' ? null : 'active')}
+                className="min-h-11 w-full rounded-lg text-left text-base font-semibold text-white focus-visible:outline focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-emerald-300"
+              >
+                <span id="profile-active-card-heading">{t('Profile.localUx.cards.active')}</span>
+                <span aria-hidden="true" className="float-right text-zinc-400">{openCard === 'active' ? '−' : '+'}</span>
+              </button>
+            </h3>
+            <p className="mt-1 text-xs leading-5 text-zinc-400">{t('Profile.localUx.activeCardDescription')}</p>
+            <div id="profile-active-card" hidden={openCard !== 'active'}>
+              {visibleProfile.active ? (
+                <>
+                  <p className="mt-3 text-sm text-emerald-200" role="status">
+                    {t('Profile.active', { candidateId: visibleProfile.active.candidate_id })}
+                  </p>
+                  <dl className="mt-3 grid gap-2 text-xs leading-5 text-zinc-300 sm:grid-cols-2">
+                    <div><dt className="text-zinc-500">{t('Profile.localUx.activeGeneration')}</dt><dd className="break-all"><code>{visibleProfile.active.content_generation}</code></dd></div>
+                    <div><dt className="text-zinc-500">{t('Profile.localUx.activeDictionaryRevision')}</dt><dd className="break-all"><code>{visibleProfile.active.dictionary_revision}</code></dd></div>
+                    <div><dt className="text-zinc-500">{t('Profile.localUx.activeTagSetRevision')}</dt><dd className="break-all"><code>{visibleProfile.active.tag_set_revision}</code></dd></div>
+                    <div><dt className="text-zinc-500">{t('Profile.localUx.activeQueryRuleRevision')}</dt><dd className="break-all"><code>{visibleProfile.active.query_rule_revision}</code></dd></div>
+                    <div><dt className="text-zinc-500">{t('Profile.localUx.activeGuidanceRevision')}</dt><dd className="break-all"><code>{visibleProfile.active.guidance_revision}</code></dd></div>
+                  </dl>
+                  <ProfileGuidanceArtifactDetails
+                    projectId={projectId}
+                    revision={visibleProfile.active.guidance_revision}
+                    title={t('Profile.activeWritingGuidance')}
+                  />
+                </>
+              ) : (
+                <p className="mt-3 text-sm text-zinc-300" role="status">{t('Profile.noActive')}</p>
+              )}
+            </div>
+          </section>
           </div>
         </>
       ) : null}
 
-      {visibleError ? <p className="mt-4 text-sm text-red-200" role="alert">{visibleError}</p> : null}
-      {visibleNotice ? <p className="mt-4 text-sm text-emerald-200" role="status" aria-live="polite">{visibleNotice}</p> : null}
+      </div>
+      <ProfileHowItWorks
+        open={guideOpen}
+        onBack={() => {
+          focusAfterGuideRef.current = 'guideEntry';
+          setGuideOpen(false);
+        }}
+        onSetPreferences={() => {
+          focusAfterGuideRef.current = 'requirements';
+          setOpenCard('requirements');
+          setGuideOpen(false);
+        }}
+        onUseGeneralSettings={() => {
+          focusAfterGuideRef.current = 'guideEntry';
+          setGuideOpen(false);
+        }}
+      />
     </section>
   );
 }
