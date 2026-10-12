@@ -46,6 +46,12 @@ type PipelineProjectContext = { projectId: string | null; generation: number };
 type PipelineRequestScope = { projectId: string; contextGeneration: number; requestGeneration: number };
 type PipelineExecutionOwner = { projectId: string; contextGeneration: number };
 
+function isSamePipelineRequestScope(a: PipelineRequestScope, b: PipelineRequestScope): boolean {
+  return a.projectId === b.projectId
+    && a.contextGeneration === b.contextGeneration
+    && a.requestGeneration === b.requestGeneration;
+}
+
 const UPLOAD_CONCURRENCY = 3;
 const RAW_ACCEPT =
   '.md,.txt,.html,.htm,.csv,.json,.xml,.yaml,.yml,.toml,.ini,.cfg,.log,.rst,.org,.tex';
@@ -116,6 +122,7 @@ export function PipelineClient() {
   const projectId = currentProject?.id ?? null;
   const pipelineProjectContextRef = useRef<PipelineProjectContext>({ projectId, generation: 0 });
   const pipelineExecutionOwnerRef = useRef<PipelineExecutionOwner | null>(null);
+  const pipelineTerminalPollScopeRef = useRef<PipelineRequestScope | null>(null);
   const pipelinePollErrorNotifiedRef = useRef(false);
   if (pipelineProjectContextRef.current.projectId !== projectId) {
     pipelineProjectContextRef.current = {
@@ -208,22 +215,35 @@ export function PipelineClient() {
 
   const pollPipelineStatus = useCallback(async (scope: PipelineRequestScope, executionId?: string) => {
     if (!isPipelineRequestCurrent(scope)) return;
+    const terminalScope = pipelineTerminalPollScopeRef.current;
+    if (terminalScope && isSamePipelineRequestScope(terminalScope, scope)) return;
     try {
       const status = await getPipelineStatus(scope.projectId, executionId);
       if (!isPipelineRequestCurrent(scope) || status.project_id !== scope.projectId) return;
+      const currentTerminalScope = pipelineTerminalPollScopeRef.current;
+      if (currentTerminalScope && isSamePipelineRequestScope(currentTerminalScope, scope)) return;
+      const executionStatus = status.last_execution?.status;
+      const isTerminal = executionStatus === 'SUCCEEDED' || executionStatus === 'FAILED';
+      if (isTerminal) {
+        // A later interval tick may already be in flight; it cannot regress this terminal result.
+        pipelineTerminalPollScopeRef.current = scope;
+        stopPipelinePolling();
+      }
       pipelinePollErrorNotifiedRef.current = false;
       setPipelineStatus(status);
 
-      const executionStatus = status.last_execution?.status;
-      if (executionStatus === 'SUCCEEDED' || executionStatus === 'FAILED') {
-        stopPipelinePolling();
+      if (isTerminal) {
         if (status.last_execution?.compile_mode === 'full') {
           const capability = await getRecompileAllCapability(scope.projectId).catch(() => null);
           if (isPipelineRequestCurrent(scope) && capability) setFullCapability(capability);
         }
       }
     } catch (err) {
-      if (!isPipelineRequestCurrent(scope)) return;
+      const currentTerminalScope = pipelineTerminalPollScopeRef.current;
+      if (
+        !isPipelineRequestCurrent(scope)
+        || (currentTerminalScope && isSamePipelineRequestScope(currentTerminalScope, scope))
+      ) return;
       // Keep the execution-scoped interval alive so a transient status failure can recover.
       if (!pipelinePollErrorNotifiedRef.current) {
         pipelinePollErrorNotifiedRef.current = true;
@@ -483,6 +503,7 @@ export function PipelineClient() {
       if (result.message) addToast(result.message, 'info');
       if (result.status === 'accepted') {
         stopPipelinePolling();
+        pipelineTerminalPollScopeRef.current = null;
         pipelinePollErrorNotifiedRef.current = false;
         latestRequestScope = {
           ...requestScope,
