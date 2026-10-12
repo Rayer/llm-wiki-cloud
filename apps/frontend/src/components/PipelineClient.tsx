@@ -116,6 +116,7 @@ export function PipelineClient() {
   const projectId = currentProject?.id ?? null;
   const pipelineProjectContextRef = useRef<PipelineProjectContext>({ projectId, generation: 0 });
   const pipelineExecutionOwnerRef = useRef<PipelineExecutionOwner | null>(null);
+  const pipelinePollErrorNotifiedRef = useRef(false);
   if (pipelineProjectContextRef.current.projectId !== projectId) {
     pipelineProjectContextRef.current = {
       projectId,
@@ -210,6 +211,7 @@ export function PipelineClient() {
     try {
       const status = await getPipelineStatus(scope.projectId, executionId);
       if (!isPipelineRequestCurrent(scope) || status.project_id !== scope.projectId) return;
+      pipelinePollErrorNotifiedRef.current = false;
       setPipelineStatus(status);
 
       const executionStatus = status.last_execution?.status;
@@ -222,8 +224,11 @@ export function PipelineClient() {
       }
     } catch (err) {
       if (!isPipelineRequestCurrent(scope)) return;
-      stopPipelinePolling();
-      addToast(err instanceof Error ? err.message : 'Pipeline status failed', 'error');
+      // Keep the execution-scoped interval alive so a transient status failure can recover.
+      if (!pipelinePollErrorNotifiedRef.current) {
+        pipelinePollErrorNotifiedRef.current = true;
+        addToast(err instanceof Error ? err.message : 'Pipeline status failed', 'error');
+      }
     }
   }, [addToast, isPipelineRequestCurrent, stopPipelinePolling]);
 
@@ -478,6 +483,7 @@ export function PipelineClient() {
       if (result.message) addToast(result.message, 'info');
       if (result.status === 'accepted') {
         stopPipelinePolling();
+        pipelinePollErrorNotifiedRef.current = false;
         latestRequestScope = {
           ...requestScope,
           requestGeneration: ++pipelineRequestGenerationRef.current,
