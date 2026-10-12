@@ -1,0 +1,48 @@
+
+> llm-wiki-frontend@0.1.0 build
+> next build --webpack
+
+▲ Next.js 16.2.7 (webpack)
+
+  Creating an optimized production build ...
+✓ Compiled successfully in 1437ms
+  Running TypeScript ...
+  Finished TypeScript in 2.5s ...
+  Collecting page data using 13 workers ...
+  Generating static pages using 13 workers (0/18) ...
+  Generating static pages using 13 workers (4/18)
+  Generating static pages using 13 workers (8/18)
+  Generating static pages using 13 workers (13/18)
+✓ Generating static pages using 13 workers (18/18) in 159ms
+  Finalizing page optimization ...
+  Collecting build traces ...
+
+Route (app)
+┌ ○ /
+├ ○ /_not-found
+├ ○ /admin
+├ ○ /advanced
+├ ○ /build-config.json
+├ ○ /cli
+├ ƒ /cli-pairing
+├ ○ /concepts
+├ ƒ /concepts/[slug]
+├ ƒ /frontend-config.json
+├ ○ /login
+├ ƒ /oauth/consent
+├ ○ /privacy
+├ ○ /profile
+├ ○ /raw
+├ ○ /sources
+├ ƒ /sources/[slug]
+├ ○ /status
+└ ○ /terms
+
+
+○  (Static)   prerendered as static content
+ƒ  (Dynamic)  server-rendered on demand
+
+
+command: cd apps/frontend && npm run build
+source_sha: 1ab09fb9f97614ae967f7d609249e708a3df4896
+exit_code: 0

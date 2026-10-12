@@ -1,0 +1,13 @@
+
+ RUN  v4.1.10 /Users/rayer/orca/workspaces/llm-wiki-cloud/LWC-390-391-profile-full-recompile/apps/frontend
+
+
+ Test Files  1 passed (1)
+      Tests  9 passed (9)
+   Start at  06:39:37
+   Duration  1.01s (transform 87ms, setup 17ms, import 182ms, tests 307ms, environment 409ms)
+
+
+command: cd apps/frontend && NODE_ENV=test npx vitest run tests/lwc-390-391-project-context.test.tsx
+source_sha: 1ab09fb9f97614ae967f7d609249e708a3df4896
+exit_code: 0
