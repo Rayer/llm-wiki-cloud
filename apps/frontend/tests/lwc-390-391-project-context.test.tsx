@@ -8,6 +8,7 @@ const mocks = vi.hoisted(() => ({
   getRecompileAllCapability: vi.fn(),
   recompileAll: vi.fn(),
   triggerPipeline: vi.fn(),
+  uploadRawFile: vi.fn(),
   refreshNavCounts: vi.fn(),
 }));
 
@@ -17,6 +18,7 @@ vi.mock('@/lib/api', async () => ({
   getRecompileAllCapability: mocks.getRecompileAllCapability,
   recompileAll: mocks.recompileAll,
   triggerPipeline: mocks.triggerPipeline,
+  uploadRawFile: mocks.uploadRawFile,
 }));
 
 vi.mock('@/components/WorkspaceProvider', () => ({
@@ -65,6 +67,25 @@ function status(projectId: string, executionStatus?: 'RUNNING' | 'SUCCEEDED'): P
   };
 }
 
+function statusWithGuidance(projectId: string, revision: string): PipelineStatus {
+  return {
+    project_id: projectId,
+    quota,
+    last_execution: {
+      name: `${projectId}-execution`,
+      status: 'SUCCEEDED',
+      compile_mode: 'full',
+      publication_outcome: 'confirmed_published',
+      consumed_guidance: {
+        status: 'available',
+        kind: 'active',
+        revision,
+        execution_id: `${projectId}-execution`,
+      },
+    },
+  };
+}
+
 async function renderPipeline() {
   const view = render(<PipelineClient />);
   await screen.findByTestId('pipeline-compile-mode');
@@ -90,6 +111,7 @@ beforeEach(() => {
     status: 'accepted', project_id: 'project-a', execution_id: 'execution-a', compile_mode: 'full', quota,
   });
   mocks.triggerPipeline.mockResolvedValue({ status: 'accepted', project_id: 'project-a', execution_id: 'incremental' });
+  mocks.uploadRawFile.mockResolvedValue({ status: 'created' });
 });
 
 afterEach(() => {
@@ -242,4 +264,120 @@ it('does not show an old Project failure after switching context', async () => {
   });
   expect(screen.queryByText('late Project A failure')).toBeNull();
   expect(screen.getByText('Pipeline running...')).toBeDefined();
+});
+
+it('ignores a delayed upload status refresh after switching Projects', async () => {
+  const delayedRefresh = deferred<PipelineStatus>();
+  let projectACalls = 0;
+  mocks.getPipelineStatus.mockImplementation((projectId: string) => {
+    if (projectId === 'project-a' && ++projectACalls === 2) return delayedRefresh.promise;
+    if (projectId === 'project-b') return Promise.resolve(statusWithGuidance(projectId, 'B-CURRENT-REVISION'));
+    return Promise.resolve(status(projectId));
+  });
+  const view = await renderPipeline();
+  await waitFor(() => expect(mocks.getPipelineStatus).toHaveBeenCalledTimes(1));
+
+  fireEvent.change(view.container.querySelector('input[type=file]')!, {
+    target: { files: [new File(['raw'], 'fixture.md', { type: 'text/plain' })] },
+  });
+  await waitFor(() => expect(mocks.getPipelineStatus).toHaveBeenCalledTimes(2));
+  expect(mocks.getPipelineStatus).toHaveBeenLastCalledWith('project-a');
+
+  mocks.currentProject = { id: 'project-b', name: 'Project B' };
+  window.localStorage.setItem('llm-wiki-last-project', 'project-b');
+  view.rerender(<PipelineClient />);
+  expect(await screen.findByText(/B-CURRENT-REVISION/)).toBeDefined();
+
+  await act(async () => {
+    delayedRefresh.resolve(statusWithGuidance('project-a', 'A-UPLOAD-ONLY-REVISION'));
+    await delayedRefresh.promise;
+  });
+  expect(screen.getByText(/B-CURRENT-REVISION/)).toBeDefined();
+  expect(screen.queryByText(/A-UPLOAD-ONLY-REVISION/)).toBeNull();
+});
+
+it('ignores an upload refresh response for a different Project', async () => {
+  const delayedRefresh = deferred<PipelineStatus>();
+  let projectACalls = 0;
+  mocks.getPipelineStatus.mockImplementation((projectId: string) => {
+    if (projectId === 'project-a' && ++projectACalls === 2) return delayedRefresh.promise;
+    return Promise.resolve(status(projectId));
+  });
+  const view = await renderPipeline();
+  await waitFor(() => expect(mocks.getPipelineStatus).toHaveBeenCalledTimes(1));
+
+  fireEvent.change(view.container.querySelector('input[type=file]')!, {
+    target: { files: [new File(['raw'], 'fixture.md', { type: 'text/plain' })] },
+  });
+  await waitFor(() => expect(mocks.getPipelineStatus).toHaveBeenCalledTimes(2));
+  expect(mocks.getPipelineStatus).toHaveBeenLastCalledWith('project-a');
+
+  await act(async () => {
+    delayedRefresh.resolve(statusWithGuidance('project-b', 'MISMATCHED-RESPONSE-REVISION'));
+    await delayedRefresh.promise;
+  });
+  expect(screen.queryByText(/MISMATCHED-RESPONSE-REVISION/)).toBeNull();
+});
+
+it('rejects an old upload refresh after Project A to B to A', async () => {
+  const delayedRefresh = deferred<PipelineStatus>();
+  let projectACalls = 0;
+  mocks.getPipelineStatus.mockImplementation((projectId: string) => {
+    if (projectId === 'project-a') {
+      projectACalls += 1;
+      if (projectACalls === 2) return delayedRefresh.promise;
+      if (projectACalls >= 3) return Promise.resolve(statusWithGuidance(projectId, 'A-CURRENT-REVISION'));
+    }
+    if (projectId === 'project-b') return Promise.resolve(statusWithGuidance(projectId, 'B-CURRENT-REVISION'));
+    return Promise.resolve(status(projectId));
+  });
+  const view = await renderPipeline();
+  await waitFor(() => expect(mocks.getPipelineStatus).toHaveBeenCalledTimes(1));
+
+  fireEvent.change(view.container.querySelector('input[type=file]')!, {
+    target: { files: [new File(['raw'], 'fixture.md', { type: 'text/plain' })] },
+  });
+  await waitFor(() => expect(mocks.getPipelineStatus).toHaveBeenCalledTimes(2));
+
+  mocks.currentProject = { id: 'project-b', name: 'Project B' };
+  window.localStorage.setItem('llm-wiki-last-project', 'project-b');
+  view.rerender(<PipelineClient />);
+  await screen.findByText(/B-CURRENT-REVISION/);
+  mocks.currentProject = { id: 'project-a', name: 'Project A' };
+  window.localStorage.setItem('llm-wiki-last-project', 'project-a');
+  view.rerender(<PipelineClient />);
+  expect(await screen.findByText(/A-CURRENT-REVISION/)).toBeDefined();
+
+  await act(async () => {
+    delayedRefresh.resolve(statusWithGuidance('project-a', 'A-OLD-UPLOAD-REVISION'));
+    await delayedRefresh.promise;
+  });
+  expect(screen.getByText(/A-CURRENT-REVISION/)).toBeDefined();
+  expect(screen.queryByText(/A-OLD-UPLOAD-REVISION/)).toBeNull();
+});
+
+it('does not let a delayed upload refresh replace a newer same-Project execution', async () => {
+  const delayedRefresh = deferred<PipelineStatus>();
+  let projectACalls = 0;
+  mocks.getPipelineStatus.mockImplementation((projectId: string, executionId?: string) => {
+    if (executionId) return Promise.resolve(status(projectId, 'RUNNING'));
+    if (projectId === 'project-a' && ++projectACalls === 2) return delayedRefresh.promise;
+    return Promise.resolve(status(projectId));
+  });
+  const view = await renderPipeline();
+  await waitFor(() => expect(mocks.getPipelineStatus).toHaveBeenCalledTimes(1));
+
+  fireEvent.change(view.container.querySelector('input[type=file]')!, {
+    target: { files: [new File(['raw'], 'fixture.md', { type: 'text/plain' })] },
+  });
+  await waitFor(() => expect(mocks.getPipelineStatus).toHaveBeenCalledTimes(2));
+
+  await startFullRecompile();
+  await screen.findByText('Pipeline running...');
+  await act(async () => {
+    delayedRefresh.resolve(statusWithGuidance('project-a', 'A-OLD-EXECUTION-REVISION'));
+    await delayedRefresh.promise;
+  });
+  expect(screen.getByText('Pipeline running...')).toBeDefined();
+  expect(screen.queryByText(/A-OLD-EXECUTION-REVISION/)).toBeNull();
 });

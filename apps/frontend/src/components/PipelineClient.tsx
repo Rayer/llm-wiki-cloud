@@ -140,6 +140,16 @@ export function PipelineClient() {
   const [toasts, setToasts] = useState<Toast[]>([]);
   const [wipModal, setWipModal] = useState(false);
   const [showPrereq, setShowPrereq] = useState(false);
+  const refreshPipelineStatus = useCallback(async (scope: PipelineRequestScope) => {
+    if (!isPipelineRequestCurrent(scope)) return;
+    try {
+      const status = await getPipelineStatus(scope.projectId);
+      if (!isPipelineRequestCurrent(scope) || status.project_id !== scope.projectId) return;
+      setPipelineStatus(status);
+    } catch {
+      // Keep the current status when a best-effort refresh fails.
+    }
+  }, [isPipelineRequestCurrent]);
   const fileRef = useRef<HTMLInputElement>(null);
   const pipelinePollRef = useRef<ReturnType<typeof setInterval> | null>(null);
   const activeUploadsRef = useRef(0);
@@ -196,22 +206,17 @@ export function PipelineClient() {
   useEffect(() => {
     const refreshAfterAnnotationSave = () => {
       const context = pipelineProjectContextRef.current;
-      const requestGeneration = pipelineRequestGenerationRef.current;
       if (context.projectId) {
-        void getPipelineStatus(context.projectId).then((status) => {
-          const latest = pipelineProjectContextRef.current;
-          if (
-            latest.projectId === context.projectId
-            && latest.generation === context.generation
-            && pipelineRequestGenerationRef.current === requestGeneration
-            && status.project_id === context.projectId
-          ) setPipelineStatus(status);
-        }).catch(() => undefined);
+        void refreshPipelineStatus({
+          projectId: context.projectId,
+          contextGeneration: context.generation,
+          requestGeneration: pipelineRequestGenerationRef.current,
+        });
       }
     };
     window.addEventListener('source-annotation-saved', refreshAfterAnnotationSave);
     return () => window.removeEventListener('source-annotation-saved', refreshAfterAnnotationSave);
-  }, [currentProject?.id]);
+  }, [currentProject?.id, refreshPipelineStatus]);
 
   // Load quota + execution status on mount and when workspace project changes.
   useEffect(() => {
@@ -313,11 +318,14 @@ export function PipelineClient() {
               needsCountRefreshRef.current = false;
               void refreshNavCounts();
               // New raw files may change quota eligibility.
-              void getPipelineStatus()
-                .then((status) => setPipelineStatus(status))
-                .catch(() => {
-                  // Keep prior status on refresh failure after upload.
+              const context = pipelineProjectContextRef.current;
+              if (context.projectId) {
+                void refreshPipelineStatus({
+                  projectId: context.projectId,
+                  contextGeneration: context.generation,
+                  requestGeneration: pipelineRequestGenerationRef.current,
                 });
+              }
             }
             queueMicrotask(pump);
           }
@@ -326,7 +334,7 @@ export function PipelineClient() {
     };
 
     queueMicrotask(pump);
-  }, [refreshNavCounts]);
+  }, [refreshNavCounts, refreshPipelineStatus]);
 
   const enqueueFiles = useCallback(
     (fileList: FileList | File[]) => {
