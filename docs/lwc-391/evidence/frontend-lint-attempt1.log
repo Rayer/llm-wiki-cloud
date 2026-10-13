@@ -1,0 +1,9 @@
+
+> llm-wiki-frontend@0.1.0 lint
+> eslint
+
+
+/Users/rayer/orca/workspaces/llm-wiki-cloud/LWC-390-391-profile-full-recompile/apps/frontend/src/components/PipelineClient.tsx
+  209:6  warning  React Hook useEffect has a missing dependency: 'currentProject'. Either include it or remove the dependency array  react-hooks/exhaustive-deps
+
+✖ 1 problem (0 errors, 1 warning)

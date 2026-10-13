@@ -58,6 +58,7 @@ func (c *Client) ReserveQuota(
 	reservationID, userID, projectID string,
 	limits pipelinequota.Limits,
 	now time.Time,
+	mode pipelinequota.ExecutionMode,
 	isDemo, alreadyRunning bool,
 	newRawFiles, rawDirtyFiles, annotationDirtyFiles int,
 ) (snap pipelinequota.Snapshot, reserved bool, err error) {
@@ -80,6 +81,7 @@ func (c *Client) ReserveQuota(
 
 		pre := pipelinequota.Evaluate(pipelinequota.Input{
 			Now: now, Limits: limits, IsDemo: isDemo, AlreadyRunning: alreadyRunning,
+			Mode:      mode,
 			RunsToday: runsToday, DayKey: dayKey, LastRunAt: lastRunAt,
 			NewRawFiles: newRawFiles, RawDirtyFiles: rawDirtyFiles,
 			AnnotationDirtyFiles: annotationDirtyFiles, Enforced: true,
@@ -109,6 +111,7 @@ func (c *Client) ReserveQuota(
 
 		snap = pipelinequota.Evaluate(pipelinequota.Input{
 			Now: now, Limits: limits, IsDemo: isDemo, AlreadyRunning: alreadyRunning,
+			Mode:      mode,
 			RunsToday: newRuns, DayKey: today, LastRunAt: now,
 			NewRawFiles: newRawFiles, RawDirtyFiles: rawDirtyFiles,
 			AnnotationDirtyFiles: annotationDirtyFiles, Enforced: true,

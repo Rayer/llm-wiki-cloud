@@ -1,0 +1,3269 @@
+
+> llm-wiki-frontend@0.1.0 test
+> npm run test:node && npm run test:component
+
+
+> llm-wiki-frontend@0.1.0 test:node
+> node --experimental-strip-types --import ./tests/runtime-config-test-setup.mjs --test tests/*.test.mjs
+
+TAP version 13
+# Subtest: normalizeStatus drops malformed diagnostic fields and accepts only BFF exit codes
+ok 1 - normalizeStatus drops malformed diagnostic fields and accepts only BFF exit codes
+  ---
+  duration_ms: 4.394292
+  type: 'test'
+  ...
+# Subtest: getBuildInfo reads the unauthenticated no-store public version endpoint
+ok 2 - getBuildInfo reads the unauthenticated no-store public version endpoint
+  ---
+  duration_ms: 55.552291
+  type: 'test'
+  ...
+# Subtest: getBuildInfo rejects an unsuccessful public version response
+ok 3 - getBuildInfo rejects an unsuccessful public version response
+  ---
+  duration_ms: 0.221042
+  type: 'test'
+  ...
+# Subtest: getBuildInfo rejects invalid JSON from the public version endpoint
+ok 4 - getBuildInfo rejects invalid JSON from the public version endpoint
+  ---
+  duration_ms: 0.458958
+  type: 'test'
+  ...
+# Subtest: getBuildInfo rejects build metadata with a missing field
+ok 5 - getBuildInfo rejects build metadata with a missing field
+  ---
+  duration_ms: 0.238458
+  type: 'test'
+  ...
+# Subtest: getBuildInfo rejects build metadata with a non-string field
+ok 6 - getBuildInfo rejects build metadata with a non-string field
+  ---
+  duration_ms: 0.162959
+  type: 'test'
+  ...
+# Subtest: getBuildInfo rejects a public version network failure
+ok 7 - getBuildInfo rejects a public version network failure
+  ---
+  duration_ms: 0.071959
+  type: 'test'
+  ...
+# Subtest: buildProjectHeaders scopes authenticated requests to the selected project
+ok 8 - buildProjectHeaders scopes authenticated requests to the selected project
+  ---
+  duration_ms: 0.05275
+  type: 'test'
+  ...
+# Subtest: getStatus reads latest pipeline execution from the status endpoint
+ok 9 - getStatus reads latest pipeline execution from the status endpoint
+  ---
+  duration_ms: 0.485
+  type: 'test'
+  ...
+# Subtest: searchWiki normalizes Problem Details, legacy errors, and unusable error bodies
+ok 10 - searchWiki normalizes Problem Details, legacy errors, and unusable error bodies
+  ---
+  duration_ms: 14.272459
+  type: 'test'
+  ...
+# Subtest: buildRequestInit includes cookies for refresh-token auth
+ok 11 - buildRequestInit includes cookies for refresh-token auth
+  ---
+  duration_ms: 0.582917
+  type: 'test'
+  ...
+# Subtest: toV1Path upgrades existing API paths without changing callers
+ok 12 - toV1Path upgrades existing API paths without changing callers
+  ---
+  duration_ms: 0.064875
+  type: 'test'
+  ...
+# Subtest: normalizeSearchResponse preserves query expansion keywords
+ok 13 - normalizeSearchResponse preserves query expansion keywords
+  ---
+  duration_ms: 1.022416
+  type: 'test'
+  ...
+# Subtest: normalizeCitation preserves canonical id and ignores invalid path lookup sources
+ok 14 - normalizeCitation preserves canonical id and ignores invalid path lookup sources
+  ---
+  duration_ms: 0.171458
+  type: 'test'
+  ...
+# Subtest: normalizeCitation preserves a safe canonical id without requiring a safe slug
+ok 15 - normalizeCitation preserves a safe canonical id without requiring a safe slug
+  ---
+  duration_ms: 0.067125
+  type: 'test'
+  ...
+# Subtest: normalizeCitation derives slug from a valid same-collection citation path
+ok 16 - normalizeCitation derives slug from a valid same-collection citation path
+  ---
+  duration_ms: 0.091917
+  type: 'test'
+  ...
+# Subtest: normalizeCitation rejects malformed citation paths as lookup sources
+ok 17 - normalizeCitation rejects malformed citation paths as lookup sources
+  ---
+  duration_ms: 0.028667
+  type: 'test'
+  ...
+# Subtest: citation paths reject traversal, encoded separators, controls, and extra segments
+ok 18 - citation paths reject traversal, encoded separators, controls, and extra segments
+  ---
+  duration_ms: 0.054583
+  type: 'test'
+  ...
+# Subtest: citation paths accept one decoded same-collection segment with query or hash
+ok 19 - citation paths accept one decoded same-collection segment with query or hash
+  ---
+  duration_ms: 0.041375
+  type: 'test'
+  ...
+# Subtest: citation route segments reject explicit traversal and API clients fail before fetch
+ok 20 - citation route segments reject explicit traversal and API clients fail before fetch
+  ---
+  duration_ms: 0.19725
+  type: 'test'
+  ...
+# Subtest: triggerPipeline requires a selected project before calling the API
+ok 21 - triggerPipeline requires a selected project before calling the API
+  ---
+  duration_ms: 0.080959
+  type: 'test'
+  ...
+# Subtest: getPipelineStatus reads the project scoped pipeline status endpoint
+ok 22 - getPipelineStatus reads the project scoped pipeline status endpoint
+  ---
+  duration_ms: 0.482583
+  type: 'test'
+  ...
+# Subtest: full recompile capability uses the full-mode quota snapshot for the scoped project
+ok 23 - full recompile capability uses the full-mode quota snapshot for the scoped project
+  ---
+  duration_ms: 0.264416
+  type: 'test'
+  ...
+# Subtest: full recompile validates accepted execution identity and never retries a malformed 202
+ok 24 - full recompile validates accepted execution identity and never retries a malformed 202
+  ---
+  duration_ms: 0.324667
+  type: 'test'
+  ...
+# Subtest: getPipelineLog reads text from the project scoped log URL
+ok 25 - getPipelineLog reads text from the project scoped log URL
+  ---
+  duration_ms: 0.136375
+  type: 'test'
+  ...
+# Subtest: getRawFiles reads project scoped raw metadata and normalizes file fields
+ok 26 - getRawFiles reads project scoped raw metadata and normalizes file fields
+  ---
+  duration_ms: 0.164541
+  type: 'test'
+  ...
+# Subtest: getRawFilePreview reads project scoped raw text with encoded filename
+ok 27 - getRawFilePreview reads project scoped raw text with encoded filename
+  ---
+  duration_ms: 0.132584
+  type: 'test'
+  ...
+# Subtest: uploadRawFile accepts created and already_exists responses
+ok 28 - uploadRawFile accepts created and already_exists responses
+  ---
+  duration_ms: 0.433708
+  type: 'test'
+  ...
+# Subtest: uploadRawFile uses credentialed XHR, preserves headers/FormData, and emits bounded progress
+ok 29 - uploadRawFile uses credentialed XHR, preserves headers/FormData, and emits bounded progress
+  ---
+  duration_ms: 0.196625
+  type: 'test'
+  ...
+# Subtest: uploadRawFile normalizes network and error responses as ApiError
+ok 30 - uploadRawFile normalizes network and error responses as ApiError
+  ---
+  duration_ms: 0.206458
+  type: 'test'
+  ...
+# Subtest: uploadRawFile refreshes once after 401 and never retries indefinitely
+ok 31 - uploadRawFile refreshes once after 401 and never retries indefinitely
+  ---
+  duration_ms: 0.281417
+  type: 'test'
+  ...
+# Subtest: uploadRawFile maps 409 conflict to ApiError
+ok 32 - uploadRawFile maps 409 conflict to ApiError
+  ---
+  duration_ms: 0.196042
+  type: 'test'
+  ...
+# Subtest: uploadRawFile rejects oversized files before transport
+ok 33 - uploadRawFile rejects oversized files before transport
+  ---
+  duration_ms: 0.727375
+  type: 'test'
+  ...
+# Subtest: getAdminProjects reads admin projects without project header
+ok 34 - getAdminProjects reads admin projects without project header
+  ---
+  duration_ms: 0.172375
+  type: 'test'
+  ...
+# Subtest: getAdminProjects preserves backend status on admin API errors
+ok 35 - getAdminProjects preserves backend status on admin API errors
+  ---
+  duration_ms: 0.15775
+  type: 'test'
+  ...
+# Subtest: admin project mutations use admin endpoints without project header
+ok 36 - admin project mutations use admin endpoints without project header
+  ---
+  duration_ms: 0.274292
+  type: 'test'
+  ...
+# Subtest: getAdminUsers and user mutations use admin endpoints without project header
+ok 37 - getAdminUsers and user mutations use admin endpoints without project header
+  ---
+  duration_ms: 0.284416
+  type: 'test'
+  ...
+# Subtest: apiFetch snapshots epoch before token access can schedule a same-token session transition
+ok 38 - apiFetch snapshots epoch before token access can schedule a same-token session transition
+  ---
+  duration_ms: 0.0775
+  type: 'test'
+  ...
+# Subtest: apiFetch never switches auth providers while an initial response is pending
+ok 39 - apiFetch never switches auth providers while an initial response is pending
+  ---
+  duration_ms: 0.081708
+  type: 'test'
+  ...
+# Subtest: apiFetch does not logout when access token missing and refresh returns null
+ok 40 - apiFetch does not logout when access token missing and refresh returns null
+  ---
+  duration_ms: 0.081
+  type: 'test'
+  ...
+# Subtest: apiFetch rejects legacy refresh during pre-request when no session epoch getter exists
+ok 41 - apiFetch rejects legacy refresh during pre-request when no session epoch getter exists
+  ---
+  duration_ms: 0.07275
+  type: 'test'
+  ...
+# Subtest: apiFetch does not logout on non-401 responses
+ok 42 - apiFetch does not logout on non-401 responses
+  ---
+  duration_ms: 0.053667
+  type: 'test'
+  ...
+# Subtest: apiFetch logs out when response is 401 and refresh returns null
+ok 43 - apiFetch logs out when response is 401 and refresh returns null
+  ---
+  duration_ms: 0.06075
+  type: 'test'
+  ...
+# Subtest: apiFetch retries once after 401 when refresh succeeds
+ok 44 - apiFetch retries once after 401 when refresh succeeds
+  ---
+  duration_ms: 0.086541
+  type: 'test'
+  ...
+# Subtest: apiFetch performs zero unauthorized callback when epoch changes during refresh
+ok 45 - apiFetch performs zero unauthorized callback when epoch changes during refresh
+  ---
+  duration_ms: 5.96625
+  type: 'test'
+  ...
+# Subtest: apiFetch performs zero unauthorized callback when epoch changes during retry
+ok 46 - apiFetch performs zero unauthorized callback when epoch changes during retry
+  ---
+  duration_ms: 34.2755
+  type: 'test'
+  ...
+# Subtest: uploadRawFile performs zero unauthorized callback when epoch changes during refresh
+ok 47 - uploadRawFile performs zero unauthorized callback when epoch changes during refresh
+  ---
+  duration_ms: 2.228917
+  type: 'test'
+  ...
+# Subtest: uploadRawFile performs zero unauthorized callback when epoch changes during retry
+ok 48 - uploadRawFile performs zero unauthorized callback when epoch changes during retry
+  ---
+  duration_ms: 4.448208
+  type: 'test'
+  ...
+# Subtest: apiFetch calls unauthorized once when a refreshed retry is still 401
+ok 49 - apiFetch calls unauthorized once when a refreshed retry is still 401
+  ---
+  duration_ms: 0.190333
+  type: 'test'
+  ...
+# Subtest: apiFetch rejects a refresh result owned by an older same-token epoch
+ok 50 - apiFetch rejects a refresh result owned by an older same-token epoch
+  ---
+  duration_ms: 0.077917
+  type: 'test'
+  ...
+# Subtest: uploadRawFile preserves the business 401 for an older same-token refresh result
+ok 51 - uploadRawFile preserves the business 401 for an older same-token refresh result
+  ---
+  duration_ms: 0.143791
+  type: 'test'
+  ...
+# Subtest: apiFetch does not bind a pre-request refresh to a newer same-token epoch
+ok 52 - apiFetch does not bind a pre-request refresh to a newer same-token epoch
+  ---
+  duration_ms: 0.060375
+  type: 'test'
+  ...
+# Subtest: apiFetch does not call unauthorized when a refreshed retry returns 403
+ok 53 - apiFetch does not call unauthorized when a refreshed retry returns 403
+  ---
+  duration_ms: 0.065875
+  type: 'test'
+  ...
+# Subtest: apiFetch rejects a legacy string refresh after same-token epochs advance twice
+ok 54 - apiFetch rejects a legacy string refresh after same-token epochs advance twice
+  ---
+  duration_ms: 0.065042
+  type: 'test'
+  ...
+# Subtest: apiFetch preserves business 401 when malformed refresh result appears after 401 and no epoch getter
+ok 55 - apiFetch preserves business 401 when malformed refresh result appears after 401 and no epoch getter
+  ---
+  duration_ms: 0.048792
+  type: 'test'
+  ...
+# Subtest: uploadRawFile preserves business 401 when a legacy string refresh crosses same-token epochs
+ok 56 - uploadRawFile preserves business 401 when a legacy string refresh crosses same-token epochs
+  ---
+  duration_ms: 0.099583
+  type: 'test'
+  ...
+# Subtest: uploadRawFile preserves business 401 for malformed refresh result after 401 and no epoch getter
+ok 57 - uploadRawFile preserves business 401 for malformed refresh result after 401 and no epoch getter
+  ---
+  duration_ms: 0.081917
+  type: 'test'
+  ...
+# Subtest: normalizeAuthResponse accepts access_token and nested user
+ok 58 - normalizeAuthResponse accepts access_token and nested user
+  ---
+  duration_ms: 17.690709
+  type: 'test'
+  ...
+# Subtest: normalizeAuthResponse preserves user role
+ok 59 - normalizeAuthResponse preserves user role
+  ---
+  duration_ms: 0.204792
+  type: 'test'
+  ...
+# Subtest: normalizeAuthResponse accepts user_id without using email as the user id
+ok 60 - normalizeAuthResponse accepts user_id without using email as the user id
+  ---
+  duration_ms: 0.246333
+  type: 'test'
+  ...
+# Subtest: normalizeRegistrationResponse accepts the BFF 201 registration contract
+ok 61 - normalizeRegistrationResponse accepts the BFF 201 registration contract
+  ---
+  duration_ms: 0.096709
+  type: 'test'
+  ...
+# Subtest: BFF 201 registration persists a non-demo auth session
+ok 62 - BFF 201 registration persists a non-demo auth session
+  ---
+  duration_ms: 0.60875
+  type: 'test'
+  ...
+# Subtest: normalizeRegistrationResponse fails closed for malformed registration payloads
+ok 63 - normalizeRegistrationResponse fails closed for malformed registration payloads
+  ---
+  duration_ms: 4.400417
+  type: 'test'
+  ...
+# Subtest: normalizeAuthResponse rejects a response without an access_token
+ok 64 - normalizeAuthResponse rejects a response without an access_token
+  ---
+  duration_ms: 0.265417
+  type: 'test'
+  ...
+# Subtest: normalizeRefreshResponse accepts access_token without user
+ok 65 - normalizeRefreshResponse accepts access_token without user
+  ---
+  duration_ms: 0.11325
+  type: 'test'
+  ...
+# Subtest: normalizeRefreshResponse preserves user role when present
+ok 66 - normalizeRefreshResponse preserves user role when present
+  ---
+  duration_ms: 0.466
+  type: 'test'
+  ...
+# Subtest: isAuthFailureStatus is true only for 401
+ok 67 - isAuthFailureStatus is true only for 401
+  ---
+  duration_ms: 0.62025
+  type: 'test'
+  ...
+# Subtest: access token storage helpers read write and clear
+ok 68 - access token storage helpers read write and clear
+  ---
+  duration_ms: 0.267209
+  type: 'test'
+  ...
+# Subtest: access token storage helpers tolerate missing storage
+ok 69 - access token storage helpers tolerate missing storage
+  ---
+  duration_ms: 0.087875
+  type: 'test'
+  ...
+# Subtest: auth provider uses isAuthFailureStatus before clearing session on refresh
+ok 70 - auth provider uses isAuthFailureStatus before clearing session on refresh
+  ---
+  duration_ms: 0.128875
+  type: 'test'
+  ...
+# Subtest: auth provider refresh catch path does not always clearSession
+ok 71 - auth provider refresh catch path does not always clearSession
+  ---
+  duration_ms: 0.253459
+  type: 'test'
+  ...
+# Subtest: auth provider hydrate restores stored token then soft-rotates without clearing on failure
+ok 72 - auth provider hydrate restores stored token then soft-rotates without clearing on failure
+  ---
+  duration_ms: 0.222042
+  type: 'test'
+  ...
+# Subtest: auth user storage helpers read write and clear
+ok 73 - auth user storage helpers read write and clear
+  ---
+  duration_ms: 0.137416
+  type: 'test'
+  ...
+# Subtest: auth provider hydrates stored user with token
+ok 74 - auth provider hydrates stored user with token
+  ---
+  duration_ms: 0.070125
+  type: 'test'
+  ...
+# Subtest: auth provider normalizes registration responses into non-demo sessions
+ok 75 - auth provider normalizes registration responses into non-demo sessions
+  ---
+  duration_ms: 0.118333
+  type: 'test'
+  ...
+# Subtest: auth provider delegates auth persistence to the session helper
+ok 76 - auth provider delegates auth persistence to the session helper
+  ---
+  duration_ms: 0.055542
+  type: 'test'
+  ...
+# Subtest: Auth and product API consumers read the loaded runtime config at call time
+ok 77 - Auth and product API consumers read the loaded runtime config at call time
+  ---
+  duration_ms: 0.54975
+  type: 'test'
+  ...
+# Subtest: r2 registered release and recovery workflows use explicit artifact inputs
+ok 78 - r2 registered release and recovery workflows use explicit artifact inputs
+  ---
+  duration_ms: 18.506625
+  type: 'test'
+  ...
+# Subtest: DEV provisioning uses the existing auth identity and preserves hidden evidence
+ok 79 - DEV provisioning uses the existing auth identity and preserves hidden evidence
+  ---
+  duration_ms: 1.559209
+  type: 'test'
+  ...
+# Subtest: shared engine has one approval and one serialized runtime authority
+ok 80 - shared engine has one approval and one serialized runtime authority
+  ---
+  duration_ms: 1.790167
+  type: 'test'
+  ...
+# Subtest: frontend CI runs the receipt and exact config artifact contract tests in its existing test job
+ok 81 - frontend CI runs the receipt and exact config artifact contract tests in its existing test job
+  ---
+  duration_ms: 1.291
+  type: 'test'
+  ...
+# Subtest: ready and result artifacts have bounded retention and always retain failure evidence
+ok 82 - ready and result artifacts have bounded retention and always retain failure evidence
+  ---
+  duration_ms: 16.798667
+  type: 'test'
+  ...
+# Subtest: all shared run blocks are shell-valid and production consumes, not rebuilds, cloud images
+ok 83 - all shared run blocks are shell-valid and production consumes, not rebuilds, cloud images
+  ---
+  duration_ms: 195.021
+  type: 'test'
+  ...
+# Subtest: POSIX and PowerShell examples quote paths for their own shell
+ok 84 - POSIX and PowerShell examples quote paths for their own shell
+  ---
+  duration_ms: 0.667125
+  type: 'test'
+  ...
+# Subtest: empty roots do not produce copyable init or push commands
+ok 85 - empty roots do not produce copyable init or push commands
+  ---
+  duration_ms: 0.054125
+  type: 'test'
+  ...
+# Subtest: root paths must be absolute in the selected shell
+ok 86 - root paths must be absolute in the selected shell
+  ---
+  duration_ms: 0.066333
+  type: 'test'
+  ...
+# Subtest: shared stable fixture validates with unavailable assets when URLs are absent
+ok 87 - shared stable fixture validates with unavailable assets when URLs are absent
+  ---
+  duration_ms: 0.895042
+  type: 'test'
+  ...
+# Subtest: metadata rejects unsupported, duplicate, and off-origin assets
+ok 88 - metadata rejects unsupported, duplicate, and off-origin assets
+  ---
+  duration_ms: 0.350375
+  type: 'test'
+  ...
+# Subtest: metadata fetch omits credentials and bypasses cached latest data
+ok 89 - metadata fetch omits credentials and bypasses cached latest data
+  ---
+  duration_ms: 0.425709
+  type: 'test'
+  ...
+# Subtest: producer-shaped bucket paths load while mismatched paths stay unavailable
+ok 90 - producer-shaped bucket paths load while mismatched paths stay unavailable
+  ---
+  duration_ms: 0.284708
+  type: 'test'
+  ...
+# Subtest: missing endpoint is a safe unavailable state without a network request
+ok 91 - missing endpoint is a safe unavailable state without a network request
+  ---
+  duration_ms: 0.056875
+  type: 'test'
+  ...
+# Subtest: English and Traditional Chinese catalogs expose the same translation keys
+ok 92 - English and Traditional Chinese catalogs expose the same translation keys
+  ---
+  duration_ms: 5.224667
+  type: 'test'
+  ...
+# Subtest: source-count answer badge is translated with a count in every locale
+ok 93 - source-count answer badge is translated with a count in every locale
+  ---
+  duration_ms: 1.961125
+  type: 'test'
+  ...
+# Subtest: requested frontend components read their copy from the locale hook
+ok 94 - requested frontend components read their copy from the locale hook
+  ---
+  duration_ms: 0.673458
+  type: 'test'
+  ...
+# Subtest: account settings copy covers both locales and keeps backend messages separate
+ok 95 - account settings copy covers both locales and keeps backend messages separate
+  ---
+  duration_ms: 2.246542
+  type: 'test'
+  ...
+# Subtest: list client cache is scoped to the current project
+ok 96 - list client cache is scoped to the current project
+  ---
+  duration_ms: 3.050459
+  type: 'test'
+  ...
+# Subtest: DetailClient fetches concept slugs for source and concept entry types
+ok 97 - DetailClient fetches concept slugs for source and concept entry types
+  ---
+  duration_ms: 2.230083
+  type: 'test'
+  ...
+# Subtest: concept detail page passes entryType concept into DetailClient
+ok 98 - concept detail page passes entryType concept into DetailClient
+  ---
+  duration_ms: 0.742584
+  type: 'test'
+  ...
+# Subtest: shell exposes a mobile navigation drawer while preserving desktop sidebar navigation
+ok 99 - shell exposes a mobile navigation drawer while preserving desktop sidebar navigation
+  ---
+  duration_ms: 2.353708
+  type: 'test'
+  ...
+# Subtest: home search controls keep mobile touch targets at least 44px tall
+ok 100 - home search controls keep mobile touch targets at least 44px tall
+  ---
+  duration_ms: 1.344875
+  type: 'test'
+  ...
+# Subtest: home first-run UX avoids generic examples and exposes latest concept previews
+ok 101 - home first-run UX avoids generic examples and exposes latest concept previews
+  ---
+  duration_ms: 7.315458
+  type: 'test'
+  ...
+# Subtest: list empty states guide first-run users by entry type
+ok 102 - list empty states guide first-run users by entry type
+  ---
+  duration_ms: 1.407167
+  type: 'test'
+  ...
+# Subtest: shell keeps the current route highlighted in sidebar navigation
+ok 103 - shell keeps the current route highlighted in sidebar navigation
+  ---
+  duration_ms: 1.010292
+  type: 'test'
+  ...
+# Subtest: entry cards expose type borders and staggered fade-in animation
+ok 104 - entry cards expose type borders and staggered fade-in animation
+  ---
+  duration_ms: 4.514583
+  type: 'test'
+  ...
+# Subtest: home first-run and result cards use staggered entrance polish
+ok 105 - home first-run and result cards use staggered entrance polish
+  ---
+  duration_ms: 2.309583
+  type: 'test'
+  ...
+# Subtest: loading state renders pulse skeleton cards without spinner UI
+ok 106 - loading state renders pulse skeleton cards without spinner UI
+  ---
+  duration_ms: 4.249667
+  type: 'test'
+  ...
+# Subtest: shell provides a global smooth scroll-to-top control
+ok 107 - shell provides a global smooth scroll-to-top control
+  ---
+  duration_ms: 4.000166
+  type: 'test'
+  ...
+# Subtest: status normalization exposes suggested_queries as suggestedQueries
+ok 108 - status normalization exposes suggested_queries as suggestedQueries
+  ---
+  duration_ms: 1.127958
+  type: 'test'
+  ...
+# Subtest: home search placeholder comes from suggested queries before the i18n fallback
+ok 109 - home search placeholder comes from suggested queries before the i18n fallback
+  ---
+  duration_ms: 4.143791
+  type: 'test'
+  ...
+# Subtest: home renders suggested query chips that fill the query from status suggestions
+ok 110 - home renders suggested query chips that fill the query from status suggestions
+  ---
+  duration_ms: 1.566791
+  type: 'test'
+  ...
+# Subtest: zh-TW fallback placeholder is neutral and not the lifestyle demo query
+ok 111 - zh-TW fallback placeholder is neutral and not the lifestyle demo query
+  ---
+  duration_ms: 4.363333
+  type: 'test'
+  ...
+# Subtest: pipeline client supports multi-file raw upload queue
+ok 112 - pipeline client supports multi-file raw upload queue
+  ---
+  duration_ms: 6.618625
+  type: 'test'
+  ...
+# Subtest: pipeline client still polls status after accepted pipeline run
+ok 113 - pipeline client still polls status after accepted pipeline run
+  ---
+  duration_ms: 9.695625
+  type: 'test'
+  ...
+# Subtest: workspace provider owns nav counts and refreshNavCounts
+ok 114 - workspace provider owns nav counts and refreshNavCounts
+  ---
+  duration_ms: 4.096708
+  type: 'test'
+  ...
+# Subtest: shell reads nav counts from workspace instead of local getStatus
+ok 115 - shell reads nav counts from workspace instead of local getStatus
+  ---
+  duration_ms: 0.566292
+  type: 'test'
+  ...
+# Subtest: pipeline client refreshes nav counts after created uploads
+ok 116 - pipeline client refreshes nav counts after created uploads
+  ---
+  duration_ms: 0.453084
+  type: 'test'
+  ...
+# Subtest: home renders query expansion keywords below search results
+ok 117 - home renders query expansion keywords below search results
+  ---
+  duration_ms: 3.937625
+  type: 'test'
+  ...
+# Subtest: LWC-134: wikilink label stays clean before parenthetical annotation
+ok 118 - LWC-134: wikilink label stays clean before parenthetical annotation
+  ---
+  duration_ms: 1.196125
+  type: 'test'
+  ...
+# Subtest: LWC-134: normalizes malformed [[label)]](annotation) before splitting
+ok 119 - LWC-134: normalizes malformed [[label)]](annotation) before splitting
+  ---
+  duration_ms: 0.079542
+  type: 'test'
+  ...
+# Subtest: LWC-134: keeps plain wikilinks without annotations unchanged
+ok 120 - LWC-134: keeps plain wikilinks without annotations unchanged
+  ---
+  duration_ms: 0.099709
+  type: 'test'
+  ...
+# Subtest: LWC-134: modal wikilink resolver keeps annotation parens out of link text
+ok 121 - LWC-134: modal wikilink resolver keeps annotation parens out of link text
+  ---
+  duration_ms: 0.276625
+  type: 'test'
+  ...
+# Subtest: LWC-163: modal wikilink resolver follows canonical wikilink routing
+ok 122 - LWC-163: modal wikilink resolver follows canonical wikilink routing
+  ---
+  duration_ms: 0.160584
+  type: 'test'
+  ...
+# Subtest: LWC-134: HomeClient uses shared wikilink resolver with annotation normalization
+ok 123 - LWC-134: HomeClient uses shared wikilink resolver with annotation normalization
+  ---
+  duration_ms: 4.602958
+  type: 'test'
+  ...
+# Subtest: LWC-135: legacy demo session storage helpers round-trip active flag
+ok 124 - LWC-135: legacy demo session storage helpers round-trip active flag
+  ---
+  duration_ms: 0.623834
+  type: 'test'
+  ...
+# Subtest: LWC-135: auth provider preserves demo restrictions with formal demo login
+ok 125 - LWC-135: auth provider preserves demo restrictions with formal demo login
+  ---
+  duration_ms: 2.518083
+  type: 'test'
+  ...
+# Subtest: LWC-135: login UI uses the formal password flow
+ok 126 - LWC-135: login UI uses the formal password flow
+  ---
+  duration_ms: 1.251
+  type: 'test'
+  ...
+# Subtest: LWC-135: workspace and shell block create project for demo sessions
+ok 127 - LWC-135: workspace and shell block create project for demo sessions
+  ---
+  duration_ms: 2.245209
+  type: 'test'
+  ...
+# Subtest: LWC-135: pipeline client blocks upload and pipeline trigger in demo sessions
+ok 128 - LWC-135: pipeline client blocks upload and pipeline trigger in demo sessions
+  ---
+  duration_ms: 1.053584
+  type: 'test'
+  ...
+# Subtest: LWC-135: locales expose Demo.restricted copy
+ok 129 - LWC-135: locales expose Demo.restricted copy
+  ---
+  duration_ms: 1.730333
+  type: 'test'
+  ...
+# Subtest: LWC-135: demo upload UI is disabled and localStorage backs demo flag
+ok 130 - LWC-135: demo upload UI is disabled and localStorage backs demo flag
+  ---
+  duration_ms: 1.358792
+  type: 'test'
+  ...
+# Subtest: DetailClient renders frontmatter.sources as raw file links
+ok 131 - DetailClient renders frontmatter.sources as raw file links
+  ---
+  duration_ms: 14.663083
+  type: 'test'
+  ...
+# Subtest: RawClient opens and highlights the file named by the raw file query param
+ok 132 - RawClient opens and highlights the file named by the raw file query param
+  ---
+  duration_ms: 0.680875
+  type: 'test'
+  ...
+# Subtest: api.ts defines PipelineQuota and extends status/result types
+ok 133 - api.ts defines PipelineQuota and extends status/result types
+  ---
+  duration_ms: 4.969292
+  type: 'test'
+  ...
+# Subtest: pipeline-quota.ts exports format/block helpers
+ok 134 - pipeline-quota.ts exports format/block helpers
+  ---
+  duration_ms: 1.035917
+  type: 'test'
+  ...
+# Subtest: formatCooldownRemaining returns null for empty, invalid, or past times
+ok 135 - formatCooldownRemaining returns null for empty, invalid, or past times
+  ---
+  duration_ms: 0.368708
+  type: 'test'
+  ...
+# Subtest: formatCooldownRemaining formats minutes and hours
+ok 136 - formatCooldownRemaining formats minutes and hours
+  ---
+  duration_ms: 0.152209
+  type: 'test'
+  ...
+# Subtest: formatQuotaLine handles missing, unenforced, and enforced quota
+ok 137 - formatQuotaLine handles missing, unenforced, and enforced quota
+  ---
+  duration_ms: 0.307958
+  type: 'test'
+  ...
+# Subtest: isRunBlocked covers demo, loading, project, running, and quota denial
+ok 138 - isRunBlocked covers demo, loading, project, running, and quota denial
+  ---
+  duration_ms: 0.176041
+  type: 'test'
+  ...
+# Subtest: blockReasonMessage prefers demo, project, running, then quota message
+ok 139 - blockReasonMessage prefers demo, project, running, then quota message
+  ---
+  duration_ms: 0.474375
+  type: 'test'
+  ...
+# Subtest: PipelineClient wires quota line, disabled Run, status fetch, and checklist
+ok 140 - PipelineClient wires quota line, disabled Run, status fetch, and checklist
+  ---
+  duration_ms: 2.941125
+  type: 'test'
+  ...
+# Subtest: locales expose Pipeline quota copy
+ok 141 - locales expose Pipeline quota copy
+  ---
+  duration_ms: 1.943583
+  type: 'test'
+  ...
+# Subtest: primaryRawFileName prefers sources[0], then source_file (OLW), then slug fallback
+ok 142 - primaryRawFileName prefers sources[0], then source_file (OLW), then slug fallback
+  ---
+  duration_ms: 0.621333
+  type: 'test'
+  ...
+# Subtest: DetailClient shows prominent raw link for source entries using source_file resolution
+ok 143 - DetailClient shows prominent raw link for source entries using source_file resolution
+  ---
+  duration_ms: 2.110292
+  type: 'test'
+  ...
+# Subtest: i18n provides Detail.rawFile labels
+ok 144 - i18n provides Detail.rawFile labels
+  ---
+  duration_ms: 1.588125
+  type: 'test'
+  ...
+# Subtest: sidebar keeps the user panel fixed while nav content scrolls
+ok 145 - sidebar keeps the user panel fixed while nav content scrolls
+  ---
+  duration_ms: 2.129291
+  type: 'test'
+  ...
+# Subtest: LWC-141: developer IDs are hidden in expanded status details instead of the shell footer
+ok 146 - LWC-141: developer IDs are hidden in expanded status details instead of the shell footer
+  ---
+  duration_ms: 14.322
+  type: 'test'
+  ...
+# Subtest: root layout declares Traditional Chinese document language
+ok 147 - root layout declares Traditional Chinese document language
+  ---
+  duration_ms: 39.33975
+  type: 'test'
+  ...
+# Subtest: home latest entry cards omit the blurb when no description exists
+ok 148 - home latest entry cards omit the blurb when no description exists
+  ---
+  duration_ms: 2.283709
+  type: 'test'
+  ...
+# Subtest: concept route remains but user-facing concept copy becomes entries
+ok 149 - concept route remains but user-facing concept copy becomes entries
+  ---
+  duration_ms: 5.617708
+  type: 'test'
+  ...
+# Subtest: main-path chrome strings are i18n-backed in zh-TW
+ok 150 - main-path chrome strings are i18n-backed in zh-TW
+  ---
+  duration_ms: 2.1735
+  type: 'test'
+  ...
+# Subtest: quota line can be formatted with i18n templates
+ok 151 - quota line can be formatted with i18n templates
+  ---
+  duration_ms: 0.401708
+  type: 'test'
+  ...
+# Subtest: terminal executions do not stay blocked solely because quota says already_running
+ok 152 - terminal executions do not stay blocked solely because quota says already_running
+  ---
+  duration_ms: 1.85375
+  type: 'test'
+  ...
+# Subtest: getPublicConfig fetches public config without auth or project header
+ok 153 - getPublicConfig fetches public config without auth or project header
+  ---
+  duration_ms: 44.115833
+  type: 'test'
+  ...
+# Subtest: getPublicConfig caches responses until refresh is requested
+ok 154 - getPublicConfig caches responses until refresh is requested
+  ---
+  duration_ms: 0.289166
+  type: 'test'
+  ...
+# Subtest: getAdminSettings and updateAdminSettings use admin settings endpoint without project header
+ok 155 - getAdminSettings and updateAdminSettings use admin settings endpoint without project header
+  ---
+  duration_ms: 1.056125
+  type: 'test'
+  ...
+# Subtest: LoginModal loads public config and hides signup when registration is disabled
+ok 156 - LoginModal loads public config and hides signup when registration is disabled
+  ---
+  duration_ms: 34.371875
+  type: 'test'
+  ...
+# Subtest: LoginModal fails safe by hiding signup when public config fetch fails
+ok 157 - LoginModal fails safe by hiding signup when public config fetch fails
+  ---
+  duration_ms: 29.073375
+  type: 'test'
+  ...
+# Subtest: RegisterModal shows localized disabled message for registration-disabled errors
+ok 158 - RegisterModal shows localized disabled message for registration-disabled errors
+  ---
+  duration_ms: 0.987125
+  type: 'test'
+  ...
+# Subtest: AdminClient wires registration toggle through admin settings API
+ok 159 - AdminClient wires registration toggle through admin settings API
+  ---
+  duration_ms: 1.101833
+  type: 'test'
+  ...
+# Subtest: registration i18n keys exist in English and Traditional Chinese catalogs
+ok 160 - registration i18n keys exist in English and Traditional Chinese catalogs
+  ---
+  duration_ms: 4.269583
+  type: 'test'
+  ...
+# Subtest: LWC-157: Shell subtitle is translated in both supported locales
+ok 161 - LWC-157: Shell subtitle is translated in both supported locales
+  ---
+  duration_ms: 4.057584
+  type: 'test'
+  ...
+# Subtest: LWC-161: developer details load public build metadata independently and remain collapsed
+ok 162 - LWC-161: developer details load public build metadata independently and remain collapsed
+  ---
+  duration_ms: 4.767667
+  type: 'test'
+  ...
+# Subtest: LWC-161: expanded developer details show only localized allowlisted build fields and diagnostics
+ok 163 - LWC-161: expanded developer details show only localized allowlisted build fields and diagnostics
+  ---
+  duration_ms: 4.814792
+  type: 'test'
+  ...
+# Subtest: translations are pure, memoized by locale, and locale files have exact key parity
+ok 164 - translations are pure, memoized by locale, and locale files have exact key parity
+  ---
+  duration_ms: 45.741083
+  type: 'test'
+  ...
+# Subtest: source lifecycle union preserves pending raw paths without fabricating ids
+ok 165 - source lifecycle union preserves pending raw paths without fabricating ids
+  ---
+  duration_ms: 32.570334
+  type: 'test'
+  ...
+# Subtest: raw preview converts lifecycle raw paths to the basename URL while preserving the display path
+ok 166 - raw preview converts lifecycle raw paths to the basename URL while preserving the display path
+  ---
+  duration_ms: 0.337959
+  type: 'test'
+  ...
+# Subtest: annotation GET and PUT normalize body, generation, and lifecycle metadata
+ok 167 - annotation GET and PUT normalize body, generation, and lifecycle metadata
+  ---
+  duration_ms: 0.432541
+  type: 'test'
+  ...
+# Subtest: annotation state decisions cover normalized no-op, clear, demo, conflict, and metadata behavior
+ok 168 - annotation state decisions cover normalized no-op, clear, demo, conflict, and metadata behavior
+  ---
+  duration_ms: 0.162125
+  type: 'test'
+  ...
+# Subtest: annotation request gate ignores deferred source A completion after source B becomes current
+ok 169 - annotation request gate ignores deferred source A completion after source B becomes current
+  ---
+  duration_ms: 0.104208
+  type: 'test'
+  ...
+# Subtest: a 412 remains a conflict signal and never becomes an automatic overwrite
+ok 170 - a 412 remains a conflict signal and never becomes an automatic overwrite
+  ---
+  duration_ms: 0.258375
+  type: 'test'
+  ...
+# Subtest: navigation decisions guard only ordinary same-tab navigation and leave browser unload semantics intact
+ok 171 - navigation decisions guard only ordinary same-tab navigation and leave browser unload semantics intact
+  ---
+  duration_ms: 0.053791
+  type: 'test'
+  ...
+# Subtest: UI wiring uses provider capture plus guarded programmatic and component navigation paths
+ok 172 - UI wiring uses provider capture plus guarded programmatic and component navigation paths
+  ---
+  duration_ms: 26.635958
+  type: 'test'
+  ...
+# Subtest: renameProject sends PATCH to the owner project endpoint with strict name JSON
+ok 173 - renameProject sends PATCH to the owner project endpoint with strict name JSON
+  ---
+  duration_ms: 65.364666
+  type: 'test'
+  ...
+# Subtest: renameProject rejects unsafe project route segments before fetch
+ok 174 - renameProject rejects unsafe project route segments before fetch
+  ---
+  duration_ms: 4.250208
+  type: 'test'
+  ...
+# Subtest: renameProject preserves 400 and 404 contract failures from the API
+ok 175 - renameProject preserves 400 and 404 contract failures from the API
+  ---
+  duration_ms: 0.478
+  type: 'test'
+  ...
+# Subtest: captures mutation transport status without toggling strict shell error handling
+ok 176 - captures mutation transport status without toggling strict shell error handling
+  ---
+  duration_ms: 26.477917
+  type: 'test'
+  ...
+# Subtest: root directory contract fails closed before alias mutation
+ok 177 - root directory contract fails closed before alias mutation
+  ---
+  duration_ms: 389.770292
+  type: 'test'
+  ...
+# Subtest: promotes exactly both canonical aliases to one deployment and writes normalized evidence
+ok 178 - promotes exactly both canonical aliases to one deployment and writes normalized evidence
+  ---
+  duration_ms: 660.183708
+  type: 'test'
+  ...
+# Subtest: accepts timeout-target when authoritative read-back finds the target
+ok 179 - accepts timeout-target when authoritative read-back finds the target
+  ---
+  duration_ms: 675.70125
+  type: 'test'
+  ...
+# Subtest: accepts conflict-target when authoritative read-back finds the target
+ok 180 - accepts conflict-target when authoritative read-back finds the target
+  ---
+  duration_ms: 674.342959
+  type: 'test'
+  ...
+# Subtest: fails partial mutation when a timeout reads back the old target
+ok 181 - fails partial mutation when a timeout reads back the old target
+  ---
+  duration_ms: 429.934209
+  type: 'test'
+  ...
+# Subtest: fails with sanitized provider status and error code for forbidden wrong-target mutation
+ok 182 - fails with sanitized provider status and error code for forbidden wrong-target mutation
+  ---
+  duration_ms: 435.5145
+  type: 'test'
+  ...
+# Subtest: rejects a malformed 2xx mutation response even when it does not claim the alias
+ok 183 - rejects a malformed 2xx mutation response even when it does not claim the alias
+  ---
+  duration_ms: 412.46875
+  type: 'test'
+  ...
+# Subtest: rejects empty-uid mutation response
+ok 184 - rejects empty-uid mutation response
+  ---
+  duration_ms: 429.663542
+  type: 'test'
+  ...
+# Subtest: rejects malformed-uid mutation response
+ok 185 - rejects malformed-uid mutation response
+  ---
+  duration_ms: 415.19125
+  type: 'test'
+  ...
+# Subtest: rejects unbounded-uid mutation response
+ok 186 - rejects unbounded-uid mutation response
+  ---
+  duration_ms: 397.13175
+  type: 'test'
+  ...
+# Subtest: rejects empty-created mutation response
+ok 187 - rejects empty-created mutation response
+  ---
+  duration_ms: 377.541084
+  type: 'test'
+  ...
+# Subtest: rejects non-iso-created mutation response
+ok 188 - rejects non-iso-created mutation response
+  ---
+  duration_ms: 383.198958
+  type: 'test'
+  ...
+# Subtest: rejects malformed-old-deployment-id mutation response
+ok 189 - rejects malformed-old-deployment-id mutation response
+  ---
+  duration_ms: 382.809125
+  type: 'test'
+  ...
+# Subtest: rejects impossible-created-date mutation response
+ok 190 - rejects impossible-created-date mutation response
+  ---
+  duration_ms: 382.134083
+  type: 'test'
+  ...
+# Subtest: rejects impossible-created-time mutation response
+ok 191 - rejects impossible-created-time mutation response
+  ---
+  duration_ms: 390.424875
+  type: 'test'
+  ...
+# Subtest: rejects an unset originating workflow run id with normalized preflight evidence
+ok 192 - rejects an unset originating workflow run id with normalized preflight evidence
+  ---
+  duration_ms: 253.600458
+  type: 'test'
+  ...
+# Subtest: removes the provider mutation response temp file when interrupted in flight
+ok 193 - removes the provider mutation response temp file when interrupted in flight
+  ---
+  duration_ms: 338.721667
+  type: 'test'
+  ...
+# Subtest: accepts valid-fractional-created mutation response
+ok 194 - accepts valid-fractional-created mutation response
+  ---
+  duration_ms: 591.855
+  type: 'test'
+  ...
+# Subtest: accepts valid-whole-second-created mutation response
+ok 195 - accepts valid-whole-second-created mutation response
+  ---
+  duration_ms: 593.932083
+  type: 'test'
+  ...
+# Subtest: does not follow a mutation redirect and classifies it from exact alias read-back
+ok 196 - does not follow a mutation redirect and classifies it from exact alias read-back
+  ---
+  duration_ms: 386.221833
+  type: 'test'
+  ...
+# Subtest: records a mixed state when the first alias succeeds and the second mutation fails
+ok 197 - records a mixed state when the first alias succeeds and the second mutation fails
+  ---
+  duration_ms: 497.196791
+  type: 'test'
+  ...
+# Subtest: uses exact single-alias endpoint and succeeds on single-endpoint-only provider contract
+ok 198 - uses exact single-alias endpoint and succeeds on single-endpoint-only provider contract
+  ---
+  duration_ms: 588.11425
+  type: 'test'
+  ...
+# Subtest: provider-specific auth propagation rejects wrong, swapped, and placeholder headers before mutation
+ok 199 - provider-specific auth propagation rejects wrong, swapped, and placeholder headers before mutation
+  ---
+  duration_ms: 705.322834
+  type: 'test'
+  ...
+# Subtest: fails closed before mutation when deployment target is not production
+ok 200 - fails closed before mutation when deployment target is not production
+  ---
+  duration_ms: 70.7065
+  type: 'test'
+  ...
+# Subtest: fails closed after mutation when deployment target is no longer production
+ok 201 - fails closed after mutation when deployment target is no longer production
+  ---
+  duration_ms: 550.777125
+  type: 'test'
+  ...
+# Subtest: fails closed before mutation when Vercel repository metadata is missing
+ok 202 - fails closed before mutation when Vercel repository metadata is missing
+  ---
+  duration_ms: 70.41975
+  type: 'test'
+  ...
+# Subtest: fails closed before mutation when Vercel repository metadata is not exact
+ok 203 - fails closed before mutation when Vercel repository metadata is not exact
+  ---
+  duration_ms: 73.237792
+  type: 'test'
+  ...
+# Subtest: fails closed before any provider call when GitHub repository identity is not exact
+ok 204 - fails closed before any provider call when GitHub repository identity is not exact
+  ---
+  duration_ms: 23.742417
+  type: 'test'
+  ...
+# Subtest: preflight freezes both aliases without mutating or fabricating final success
+ok 205 - preflight freezes both aliases without mutating or fabricating final success
+  ---
+  duration_ms: 196.136
+  type: 'test'
+  ...
+# Subtest: promote fails closed on preflight-then-project-root-drift before alias mutation
+ok 206 - promote fails closed on preflight-then-project-root-drift before alias mutation
+  ---
+  duration_ms: 262.340375
+  type: 'test'
+  ...
+# Subtest: promote fails closed on preflight-then-project-link-drift before alias mutation
+ok 207 - promote fails closed on preflight-then-project-link-drift before alias mutation
+  ---
+  duration_ms: 263.591584
+  type: 'test'
+  ...
+# Subtest: promote refuses to run without durable rollback artifact outputs
+ok 208 - promote refuses to run without durable rollback artifact outputs
+  ---
+  duration_ms: 248.164875
+  type: 'test'
+  ...
+# Subtest: promote re-reads both aliases immediately before mutation and aborts on snapshot drift
+ok 209 - promote re-reads both aliases immediately before mutation and aborts on snapshot drift
+  ---
+  duration_ms: 308.326042
+  type: 'test'
+  ...
+# Subtest: rejects a tampered resume context before any provider mutation
+ok 210 - rejects a tampered resume context before any provider mutation
+  ---
+  duration_ms: 220.430625
+  type: 'test'
+  ...
+# Subtest: records actual parseable post-readback values instead of stale preflight claims
+ok 211 - records actual parseable post-readback values instead of stale preflight claims
+  ---
+  duration_ms: 547.449875
+  type: 'test'
+  ...
+# Subtest: records unknown observed deployment values when post-readback is unreadable
+ok 212 - records unknown observed deployment values when post-readback is unreadable
+  ---
+  duration_ms: 514.539375
+  type: 'test'
+  ...
+# Subtest: fails closed when health follows a redirect to a different host
+ok 213 - fails closed when health follows a redirect to a different host
+  ---
+  duration_ms: 572.43875
+  type: 'test'
+  ...
+# Subtest: fails closed with a transport reason when health has no effective host
+ok 214 - fails closed with a transport reason when health has no effective host
+  ---
+  duration_ms: 580.5395
+  type: 'test'
+  ...
+# Subtest: promotion uses Vercel-only credentials after preflight
+ok 215 - promotion uses Vercel-only credentials after preflight
+  ---
+  duration_ms: 578.856708
+  type: 'test'
+  ...
+# Subtest: rejects invalid durable artifact ROLLBACK_ARTIFACT_ID before mutation
+ok 216 - rejects invalid durable artifact ROLLBACK_ARTIFACT_ID before mutation
+  ---
+  duration_ms: 247.041917
+  type: 'test'
+  ...
+# Subtest: rejects invalid durable artifact ROLLBACK_ARTIFACT_URL before mutation
+ok 217 - rejects invalid durable artifact ROLLBACK_ARTIFACT_URL before mutation
+  ---
+  duration_ms: 247.558834
+  type: 'test'
+  ...
+# Subtest: rejects invalid durable artifact ROLLBACK_ARTIFACT_DIGEST before mutation
+ok 218 - rejects invalid durable artifact ROLLBACK_ARTIFACT_DIGEST before mutation
+  ---
+  duration_ms: 247.869375
+  type: 'test'
+  ...
+# Subtest: rejects invalid durable artifact ROLLBACK_ARTIFACT_DIGEST before mutation
+ok 219 - rejects invalid durable artifact ROLLBACK_ARTIFACT_DIGEST before mutation
+  ---
+  duration_ms: 256.5375
+  type: 'test'
+  ...
+# Subtest: rejects invalid durable artifact ROLLBACK_ARTIFACT_DIGEST before mutation
+ok 220 - rejects invalid durable artifact ROLLBACK_ARTIFACT_DIGEST before mutation
+  ---
+  duration_ms: 249.8165
+  type: 'test'
+  ...
+# Subtest: rejects invalid durable artifact ROLLBACK_ARTIFACT_DIGEST before mutation
+ok 221 - rejects invalid durable artifact ROLLBACK_ARTIFACT_DIGEST before mutation
+  ---
+  duration_ms: 250.808542
+  type: 'test'
+  ...
+# Subtest: rejects invalid durable artifact ROLLBACK_ARTIFACT_DIGEST before mutation
+ok 222 - rejects invalid durable artifact ROLLBACK_ARTIFACT_DIGEST before mutation
+  ---
+  duration_ms: 248.765833
+  type: 'test'
+  ...
+# Subtest: rejects API origin overrides without explicit test mode and in GitHub Actions
+ok 223 - rejects API origin overrides without explicit test mode and in GitHub Actions
+  ---
+  duration_ms: 69.391042
+  type: 'test'
+  ...
+# Subtest: fails closed and records causal mixed state for drift-before-first-write
+ok 224 - fails closed and records causal mixed state for drift-before-first-write
+  ---
+  duration_ms: 383.913667
+  type: 'test'
+  ...
+# Subtest: fails closed and records causal mixed state for drift-before-second-write
+ok 225 - fails closed and records causal mixed state for drift-before-second-write
+  ---
+  duration_ms: 487.592958
+  type: 'test'
+  ...
+# Subtest: fails closed and records causal mixed state for drift-after-first-write
+ok 226 - fails closed and records causal mixed state for drift-after-first-write
+  ---
+  duration_ms: 417.969459
+  type: 'test'
+  ...
+# Subtest: frontend aliases use engine retained recovery and read-back with durable checkpoints
+ok 227 - frontend aliases use engine retained recovery and read-back with durable checkpoints
+  ---
+  duration_ms: 6.997084
+  type: 'test'
+  ...
+# Subtest: fails closed before mutation for ci-failure
+ok 228 - fails closed before mutation for ci-failure
+  ---
+  duration_ms: 54.368083
+  type: 'test'
+  ...
+# Subtest: fails closed before mutation for deployment-mismatch
+ok 229 - fails closed before mutation for deployment-mismatch
+  ---
+  duration_ms: 71.763833
+  type: 'test'
+  ...
+# Subtest: fails closed before mutation for source-provider-mismatch
+ok 230 - fails closed before mutation for source-provider-mismatch
+  ---
+  duration_ms: 72.030125
+  type: 'test'
+  ...
+# Subtest: fails closed before mutation for source-ref-mismatch
+ok 231 - fails closed before mutation for source-ref-mismatch
+  ---
+  duration_ms: 71.578292
+  type: 'test'
+  ...
+# Subtest: fails closed before mutation for source-sha-mismatch
+ok 232 - fails closed before mutation for source-sha-mismatch
+  ---
+  duration_ms: 72.3065
+  type: 'test'
+  ...
+# Subtest: fails closed before mutation for not-ready
+ok 233 - fails closed before mutation for not-ready
+  ---
+  duration_ms: 70.611167
+  type: 'test'
+  ...
+# Subtest: fails closed before mutation for missing-alias
+ok 234 - fails closed before mutation for missing-alias
+  ---
+  duration_ms: 104.189792
+  type: 'test'
+  ...
+# Subtest: fails closed before mutation for divergent-alias
+ok 235 - fails closed before mutation for divergent-alias
+  ---
+  duration_ms: 104.10575
+  type: 'test'
+  ...
+# Subtest: fails closed before mutation for alias-project-mismatch
+ok 236 - fails closed before mutation for alias-project-mismatch
+  ---
+  duration_ms: 110.6405
+  type: 'test'
+  ...
+# Subtest: fails closed for an invalid SHA before any provider call
+ok 237 - fails closed for an invalid SHA before any provider call
+  ---
+  duration_ms: 23.272958
+  type: 'test'
+  ...
+# Subtest: fails closed for an invalid immutable deployment ID before any provider call
+ok 238 - fails closed for an invalid immutable deployment ID before any provider call
+  ---
+  duration_ms: 23.238375
+  type: 'test'
+  ...
+# Subtest: marks a partial alias mutation and requires read-back before retry
+ok 239 - marks a partial alias mutation and requires read-back before retry
+  ---
+  duration_ms: 483.710541
+  type: 'test'
+  ...
+# Subtest: fails closed when authoritative post-state diverges
+ok 240 - fails closed when authoritative post-state diverges
+  ---
+  duration_ms: 545.900458
+  type: 'test'
+  ...
+# Subtest: fails closed when either canonical health check is not HTTP 200
+ok 241 - fails closed when either canonical health check is not HTTP 200
+  ---
+  duration_ms: 574.086708
+  type: 'test'
+  ...
+# Subtest: normalizes both canonical evidence slots for preflight failure
+ok 242 - normalizes both canonical evidence slots for preflight failure
+  ---
+  duration_ms: 23.107708
+  type: 'test'
+  ...
+# Subtest: normalizes both canonical evidence slots for provider read failure
+ok 243 - normalizes both canonical evidence slots for provider read failure
+  ---
+  duration_ms: 66.217166
+  type: 'test'
+  ...
+# Subtest: normalizes both canonical evidence slots for first alias read failure
+ok 244 - normalizes both canonical evidence slots for first alias read failure
+  ---
+  duration_ms: 101.252708
+  type: 'test'
+  ...
+# Subtest: normalizes both canonical evidence slots for partial post read-back
+ok 245 - normalizes both canonical evidence slots for partial post read-back
+  ---
+  duration_ms: 388.033917
+  type: 'test'
+  ...
+# Subtest: normalizes both canonical evidence slots for first health failure
+ok 246 - normalizes both canonical evidence slots for first health failure
+  ---
+  duration_ms: 577.694583
+  type: 'test'
+  ...
+# Subtest: Profile API requests bind the URL and X-Project-ID to the explicit project
+ok 247 - Profile API requests bind the URL and X-Project-ID to the explicit project
+  ---
+  duration_ms: 43.366667
+  type: 'test'
+  ...
+# Subtest: Profile writes send expected_revision and keep requirement text unchanged
+ok 248 - Profile writes send expected_revision and keep requirement text unchanged
+  ---
+  duration_ms: 2.439708
+  type: 'test'
+  ...
+# Subtest: bootstrap guidance reads and confirmation use the artifact hash and exact revision/digest contract
+ok 249 - bootstrap guidance reads and confirmation use the artifact hash and exact revision/digest contract
+  ---
+  duration_ms: 1.548042
+  type: 'test'
+  ...
+# Subtest: immutable guidance reads use the content-addressed revision and project scope
+ok 250 - immutable guidance reads use the content-addressed revision and project scope
+  ---
+  duration_ms: 0.699042
+  type: 'test'
+  ...
+# Subtest: Profile API preserves HTTP conflict status and rejects unsafe project IDs before fetch
+ok 251 - Profile API preserves HTTP conflict status and rejects unsafe project IDs before fetch
+  ---
+  duration_ms: 0.470125
+  type: 'test'
+  ...
+# Subtest: Recompile all reads the server capability and posts only to its dedicated endpoint
+ok 252 - Recompile all reads the server capability and posts only to its dedicated endpoint
+  ---
+  duration_ms: 0.387833
+  type: 'test'
+  ...
+# Subtest: LWC-221: force-home marker is one-shot and consumable
+ok 253 - LWC-221: force-home marker is one-shot and consumable
+  ---
+  duration_ms: 0.752542
+  type: 'test'
+  ...
+# Subtest: LWC-221: clearing marker when absent remains a no-op
+ok 254 - LWC-221: clearing marker when absent remains a no-op
+  ---
+  duration_ms: 0.069417
+  type: 'test'
+  ...
+# Subtest: GREEN reuses exact canonical candidate and performs exactly one alias mutation
+ok 255 - GREEN reuses exact canonical candidate and performs exactly one alias mutation
+  ---
+  duration_ms: 2049.821875
+  type: 'test'
+  ...
+# Subtest: root directory contract fails closed before provider mutation
+ok 256 - root directory contract fails closed before provider mutation
+  ---
+  duration_ms: 268.626625
+  type: 'test'
+  ...
+# Subtest: reused candidate final authority reread failure is PREFLIGHT_FAILED with zero writes
+ok 257 - reused candidate final authority reread failure is PREFLIGHT_FAILED with zero writes
+  ---
+  duration_ms: 981.420416
+  type: 'test'
+  ...
+# Subtest: complete alias inventories compare equal across provider order changes
+ok 258 - complete alias inventories compare equal across provider order changes
+  ---
+  duration_ms: 1566.036417
+  type: 'test'
+  ...
+# Subtest: GREEN create-needed performs one create after handoff and one alias mutation
+ok 259 - GREEN create-needed performs one create after handoff and one alias mutation
+  ---
+  duration_ms: 1622.498667
+  type: 'test'
+  ...
+# Subtest: post-create canonical identity drift blocks alias and remains partial
+ok 260 - post-create canonical identity drift blocks alias and remains partial
+  ---
+  duration_ms: 1052.164917
+  type: 'test'
+  ...
+# Subtest: create-needed fails closed when provider returns a non-preview target after creation
+ok 261 - create-needed fails closed when provider returns a non-preview target after creation
+  ---
+  duration_ms: 1019.597958
+  type: 'test'
+  ...
+# Subtest: legacy inspect rejects ownerId-only legacy payloads in old code and validates exact id in patched code
+ok 262 - legacy inspect rejects ownerId-only legacy payloads in old code and validates exact id in patched code
+  ---
+  duration_ms: 428.950625
+  type: 'test'
+  ...
+# Subtest: rejects wrong ticket before any provider mutation
+ok 263 - rejects wrong ticket before any provider mutation
+  ---
+  duration_ms: 37.338291
+  type: 'test'
+  ...
+# Subtest: rejects wrong acknowledgement before any provider mutation
+ok 264 - rejects wrong acknowledgement before any provider mutation
+  ---
+  duration_ms: 36.671583
+  type: 'test'
+  ...
+# Subtest: rejects old project equals canonical before any provider mutation
+ok 265 - rejects old project equals canonical before any provider mutation
+  ---
+  duration_ms: 37.48175
+  type: 'test'
+  ...
+# Subtest: rejects old source SHA format before any provider mutation
+ok 266 - rejects old source SHA format before any provider mutation
+  ---
+  duration_ms: 35.533958
+  type: 'test'
+  ...
+# Subtest: rejects exact CI run variant ci-wrong-path before mutation
+ok 267 - rejects exact CI run variant ci-wrong-path before mutation
+  ---
+  duration_ms: 56.844542
+  type: 'test'
+  ...
+# Subtest: rejects exact CI run variant ci-wrong-event before mutation
+ok 268 - rejects exact CI run variant ci-wrong-event before mutation
+  ---
+  duration_ms: 55.277334
+  type: 'test'
+  ...
+# Subtest: rejects exact CI run variant ci-wrong-ref before mutation
+ok 269 - rejects exact CI run variant ci-wrong-ref before mutation
+  ---
+  duration_ms: 57.200333
+  type: 'test'
+  ...
+# Subtest: rejects exact CI run variant ci-wrong-sha before mutation
+ok 270 - rejects exact CI run variant ci-wrong-sha before mutation
+  ---
+  duration_ms: 55.186417
+  type: 'test'
+  ...
+# Subtest: rejects exact CI run variant ci-running before mutation
+ok 271 - rejects exact CI run variant ci-running before mutation
+  ---
+  duration_ms: 55.747875
+  type: 'test'
+  ...
+# Subtest: rejects exact CI run variant ci-failure before mutation
+ok 272 - rejects exact CI run variant ci-failure before mutation
+  ---
+  duration_ms: 56.834583
+  type: 'test'
+  ...
+# Subtest: rejects exact CI run variant ci-wrong-url before mutation
+ok 273 - rejects exact CI run variant ci-wrong-url before mutation
+  ---
+  duration_ms: 56.47925
+  type: 'test'
+  ...
+# Subtest: rejects exact CI run variant ci-wrong-id before mutation
+ok 274 - rejects exact CI run variant ci-wrong-id before mutation
+  ---
+  duration_ms: 55.701666
+  type: 'test'
+  ...
+# Subtest: rejects missing ci_run_id before provider mutation
+ok 275 - rejects missing ci_run_id before provider mutation
+  ---
+  duration_ms: 36.139791
+  type: 'test'
+  ...
+# Subtest: rejects zero ci_run_id before provider mutation
+ok 276 - rejects zero ci_run_id before provider mutation
+  ---
+  duration_ms: 34.722791
+  type: 'test'
+  ...
+# Subtest: rejects decimal ci_run_id before provider mutation
+ok 277 - rejects decimal ci_run_id before provider mutation
+  ---
+  duration_ms: 35.128458
+  type: 'test'
+  ...
+# Subtest: rejects negative ci_run_id before provider mutation
+ok 278 - rejects negative ci_run_id before provider mutation
+  ---
+  duration_ms: 37.457125
+  type: 'test'
+  ...
+# Subtest: rejects adversarial authority fixture domain-missing with zero mutation
+ok 279 - rejects adversarial authority fixture domain-missing with zero mutation
+  ---
+  duration_ms: 87.036667
+  type: 'test'
+  ...
+# Subtest: rejects adversarial authority fixture domain-duplicate with zero mutation
+ok 280 - rejects adversarial authority fixture domain-duplicate with zero mutation
+  ---
+  duration_ms: 88.533792
+  type: 'test'
+  ...
+# Subtest: rejects adversarial authority fixture legacy-project-mismatch with zero mutation
+ok 281 - rejects adversarial authority fixture legacy-project-mismatch with zero mutation
+  ---
+  duration_ms: 96.822459
+  type: 'test'
+  ...
+# Subtest: rejects adversarial authority fixture legacy-team-mismatch with zero mutation
+ok 282 - rejects adversarial authority fixture legacy-team-mismatch with zero mutation
+  ---
+  duration_ms: 97.803625
+  type: 'test'
+  ...
+# Subtest: rejects adversarial authority fixture old-source-mismatch with zero mutation
+ok 283 - rejects adversarial authority fixture old-source-mismatch with zero mutation
+  ---
+  duration_ms: 141.447083
+  type: 'test'
+  ...
+# Subtest: rejects adversarial authority fixture old-ref-mismatch with zero mutation
+ok 284 - rejects adversarial authority fixture old-ref-mismatch with zero mutation
+  ---
+  duration_ms: 142.083167
+  type: 'test'
+  ...
+# Subtest: rejects adversarial authority fixture old-repo-mismatch with zero mutation
+ok 285 - rejects adversarial authority fixture old-repo-mismatch with zero mutation
+  ---
+  duration_ms: 141.3945
+  type: 'test'
+  ...
+# Subtest: rejects adversarial authority fixture old-state-mismatch with zero mutation
+ok 286 - rejects adversarial authority fixture old-state-mismatch with zero mutation
+  ---
+  duration_ms: 143.302083
+  type: 'test'
+  ...
+# Subtest: rejects adversarial authority fixture old-target-mismatch with zero mutation
+ok 287 - rejects adversarial authority fixture old-target-mismatch with zero mutation
+  ---
+  duration_ms: 151.054125
+  type: 'test'
+  ...
+# Subtest: rejects adversarial authority fixture global-absent with zero mutation
+ok 288 - rejects adversarial authority fixture global-absent with zero mutation
+  ---
+  duration_ms: 149.320292
+  type: 'test'
+  ...
+# Subtest: rejects adversarial authority fixture legacy-missing with zero mutation
+ok 289 - rejects adversarial authority fixture legacy-missing with zero mutation
+  ---
+  duration_ms: 283.969
+  type: 'test'
+  ...
+# Subtest: rejects adversarial authority fixture canonical-inventory-unexpected with zero mutation
+ok 290 - rejects adversarial authority fixture canonical-inventory-unexpected with zero mutation
+  ---
+  duration_ms: 285.206083
+  type: 'test'
+  ...
+# Subtest: rejects adversarial authority fixture third-authority with zero mutation
+ok 291 - rejects adversarial authority fixture third-authority with zero mutation
+  ---
+  duration_ms: 153.257875
+  type: 'test'
+  ...
+# Subtest: rejects adversarial authority fixture duplicate-candidates with zero mutation
+ok 292 - rejects adversarial authority fixture duplicate-candidates with zero mutation
+  ---
+  duration_ms: 331.433959
+  type: 'test'
+  ...
+# Subtest: rejects expected project secret mismatch before provider mutation
+ok 293 - rejects expected project secret mismatch before provider mutation
+  ---
+  duration_ms: 36.273333
+  type: 'test'
+  ...
+# Subtest: rejects expected team secret mismatch before provider mutation
+ok 294 - rejects expected team secret mismatch before provider mutation
+  ---
+  duration_ms: 36.368458
+  type: 'test'
+  ...
+# Subtest: rejects live canonical project mismatch before provider mutation
+ok 295 - rejects live canonical project mismatch before provider mutation
+  ---
+  duration_ms: 77.321334
+  type: 'test'
+  ...
+# Subtest: create_if_missing false blocks a missing candidate without an artifact-dependent mutation
+ok 296 - create_if_missing false blocks a missing candidate without an artifact-dependent mutation
+  ---
+  duration_ms: 330.738125
+  type: 'test'
+  ...
+# Subtest: production-before-create-drift remains zero alias mutation or partial after provider create
+ok 297 - production-before-create-drift remains zero alias mutation or partial after provider create
+  ---
+  duration_ms: 782.266209
+  type: 'test'
+  ...
+# Subtest: post-create-authority-drift remains zero alias mutation or partial after provider create
+ok 298 - post-create-authority-drift remains zero alias mutation or partial after provider create
+  ---
+  duration_ms: 1080.868209
+  type: 'test'
+  ...
+# Subtest: post-mutation production and unrelated inventory drift is PARTIAL_MUTATION
+ok 299 - post-mutation production and unrelated inventory drift is PARTIAL_MUTATION
+  ---
+  duration_ms: 1311.684041
+  type: 'test'
+  ...
+# Subtest: post-mutation unrelated inventory drift is not hidden by the DEV alias setter
+ok 300 - post-mutation unrelated inventory drift is not hidden by the DEV alias setter
+  ---
+  duration_ms: 1330.104875
+  type: 'test'
+  ...
+# Subtest: post-inventory-add is PARTIAL_MUTATION after the alias attempt
+ok 301 - post-inventory-add is PARTIAL_MUTATION after the alias attempt
+  ---
+  duration_ms: 1326.238875
+  type: 'test'
+  ...
+# Subtest: post-inventory-remove is PARTIAL_MUTATION after the alias attempt
+ok 302 - post-inventory-remove is PARTIAL_MUTATION after the alias attempt
+  ---
+  duration_ms: 1341.0585
+  type: 'test'
+  ...
+# Subtest: post-inventory-change is PARTIAL_MUTATION after the alias attempt
+ok 303 - post-inventory-change is PARTIAL_MUTATION after the alias attempt
+  ---
+  duration_ms: 1342.649542
+  type: 'test'
+  ...
+# Subtest: alias CLI failure after provider acceptance is partial and never retried
+ok 304 - alias CLI failure after provider acceptance is partial and never retried
+  ---
+  duration_ms: 1203.54525
+  type: 'test'
+  ...
+# Subtest: post-api-mismatch is PARTIAL_MUTATION after alias mutation
+ok 305 - post-api-mismatch is PARTIAL_MUTATION after alias mutation
+  ---
+  duration_ms: 1365.270292
+  type: 'test'
+  ...
+# Subtest: cli-mismatch is PARTIAL_MUTATION after alias mutation
+ok 306 - cli-mismatch is PARTIAL_MUTATION after alias mutation
+  ---
+  duration_ms: 1369.962625
+  type: 'test'
+  ...
+# Subtest: bad artifact handoff blocks create and alias writes
+ok 307 - bad artifact handoff blocks create and alias writes
+  ---
+  duration_ms: 377.117666
+  type: 'test'
+  ...
+# Subtest: reconciliation rejects invalid ID artifact handoff before every provider write
+ok 308 - reconciliation rejects invalid ID artifact handoff before every provider write
+  ---
+  duration_ms: 374.102667
+  type: 'test'
+  ...
+# Subtest: reconciliation rejects invalid URL artifact handoff before every provider write
+ok 309 - reconciliation rejects invalid URL artifact handoff before every provider write
+  ---
+  duration_ms: 377.950292
+  type: 'test'
+  ...
+# Subtest: reconciliation rejects invalid name artifact handoff before every provider write
+ok 310 - reconciliation rejects invalid name artifact handoff before every provider write
+  ---
+  duration_ms: 375.761833
+  type: 'test'
+  ...
+# Subtest: reconciliation rejects uppercase digest artifact handoff before every provider write
+ok 311 - reconciliation rejects uppercase digest artifact handoff before every provider write
+  ---
+  duration_ms: 373.185292
+  type: 'test'
+  ...
+# Subtest: reconciliation rejects 63-character digest artifact handoff before every provider write
+ok 312 - reconciliation rejects 63-character digest artifact handoff before every provider write
+  ---
+  duration_ms: 376.301667
+  type: 'test'
+  ...
+# Subtest: reconciliation rejects 65-character digest artifact handoff before every provider write
+ok 313 - reconciliation rejects 65-character digest artifact handoff before every provider write
+  ---
+  duration_ms: 378.082125
+  type: 'test'
+  ...
+# Subtest: reconciliation rejects empty digest artifact handoff before every provider write
+ok 314 - reconciliation rejects empty digest artifact handoff before every provider write
+  ---
+  duration_ms: 374.250292
+  type: 'test'
+  ...
+# Subtest: authority drift after preflight is zero-mutation fail-closed
+ok 315 - authority drift after preflight is zero-mutation fail-closed
+  ---
+  duration_ms: 634.190083
+  type: 'test'
+  ...
+# Subtest: complete paginated inventories include required page-two authority records
+ok 316 - complete paginated inventories include required page-two authority records
+  ---
+  duration_ms: 431.318375
+  type: 'test'
+  ...
+# Subtest: reconciliation deployment inventory scenario deployment-page-2-exact is bounded before writes
+ok 317 - reconciliation deployment inventory scenario deployment-page-2-exact is bounded before writes
+  ---
+  duration_ms: 1334.62075
+  type: 'test'
+  ...
+# Subtest: reconciliation deployment inventory scenario deployment-cursor-loop is bounded before writes
+ok 318 - reconciliation deployment inventory scenario deployment-cursor-loop is bounded before writes
+  ---
+  duration_ms: 313.076125
+  type: 'test'
+  ...
+# Subtest: reconciliation deployment inventory scenario deployment-malformed is bounded before writes
+ok 319 - reconciliation deployment inventory scenario deployment-malformed is bounded before writes
+  ---
+  duration_ms: 278.845083
+  type: 'test'
+  ...
+# Subtest: reconciliation deployment inventory scenario deployment-page-max is bounded before writes
+ok 320 - reconciliation deployment inventory scenario deployment-page-max is bounded before writes
+  ---
+  duration_ms: 506.869542
+  type: 'test'
+  ...
+# Subtest: reconciliation deployment inventory scenario deployment-pagination-string is bounded before writes
+ok 321 - reconciliation deployment inventory scenario deployment-pagination-string is bounded before writes
+  ---
+  duration_ms: 279.399166
+  type: 'test'
+  ...
+# Subtest: reconciliation deployment inventory scenario deployment-pagination-bool is bounded before writes
+ok 322 - reconciliation deployment inventory scenario deployment-pagination-bool is bounded before writes
+  ---
+  duration_ms: 271.999125
+  type: 'test'
+  ...
+# Subtest: reconciliation deployment inventory scenario deployment-pagination-object is bounded before writes
+ok 323 - reconciliation deployment inventory scenario deployment-pagination-object is bounded before writes
+  ---
+  duration_ms: 273.983958
+  type: 'test'
+  ...
+# Subtest: reconciliation deployment inventory scenario deployment-pagination-float is bounded before writes
+ok 324 - reconciliation deployment inventory scenario deployment-pagination-float is bounded before writes
+  ---
+  duration_ms: 277.444708
+  type: 'test'
+  ...
+# Subtest: reconciliation deployment inventory scenario deployment-pagination-count-bool is bounded before writes
+ok 325 - reconciliation deployment inventory scenario deployment-pagination-count-bool is bounded before writes
+  ---
+  duration_ms: 277.185708
+  type: 'test'
+  ...
+# Subtest: reconciliation deployment inventory scenario deployment-pagination-count-float is bounded before writes
+ok 326 - reconciliation deployment inventory scenario deployment-pagination-count-float is bounded before writes
+  ---
+  duration_ms: 288.101417
+  type: 'test'
+  ...
+# Subtest: reconciliation deployment inventory scenario deployment-pagination-prev-bool is bounded before writes
+ok 327 - reconciliation deployment inventory scenario deployment-pagination-prev-bool is bounded before writes
+  ---
+  duration_ms: 285.632375
+  type: 'test'
+  ...
+# Subtest: reconciliation deployment inventory scenario deployment-pagination-prev-object is bounded before writes
+ok 328 - reconciliation deployment inventory scenario deployment-pagination-prev-object is bounded before writes
+  ---
+  duration_ms: 273.613458
+  type: 'test'
+  ...
+# Subtest: reconciliation deployment inventory scenario deployment-pagination-negative is bounded before writes
+ok 329 - reconciliation deployment inventory scenario deployment-pagination-negative is bounded before writes
+  ---
+  duration_ms: 278.278542
+  type: 'test'
+  ...
+# Subtest: reconciliation deployment inventory scenario deployment-pagination-missing is bounded before writes
+ok 330 - reconciliation deployment inventory scenario deployment-pagination-missing is bounded before writes
+  ---
+  duration_ms: 274.559333
+  type: 'test'
+  ...
+# Subtest: reconciliation deployment inventory scenario deployment-pagination-malformed is bounded before writes
+ok 331 - reconciliation deployment inventory scenario deployment-pagination-malformed is bounded before writes
+  ---
+  duration_ms: 280.597583
+  type: 'test'
+  ...
+# Subtest: reconciliation deployment inventory scenario duplicate-candidates is bounded before writes
+ok 332 - reconciliation deployment inventory scenario duplicate-candidates is bounded before writes
+  ---
+  duration_ms: 307.403125
+  type: 'test'
+  ...
+# Subtest: alias pagination scenario alias-pagination-string is bounded before writes
+ok 333 - alias pagination scenario alias-pagination-string is bounded before writes
+  ---
+  duration_ms: 220.149292
+  type: 'test'
+  ...
+# Subtest: alias pagination scenario alias-pagination-bool is bounded before writes
+ok 334 - alias pagination scenario alias-pagination-bool is bounded before writes
+  ---
+  duration_ms: 215.362709
+  type: 'test'
+  ...
+# Subtest: alias pagination scenario alias-pagination-object is bounded before writes
+ok 335 - alias pagination scenario alias-pagination-object is bounded before writes
+  ---
+  duration_ms: 213.31575
+  type: 'test'
+  ...
+# Subtest: alias pagination scenario alias-pagination-float is bounded before writes
+ok 336 - alias pagination scenario alias-pagination-float is bounded before writes
+  ---
+  duration_ms: 221.526292
+  type: 'test'
+  ...
+# Subtest: alias pagination scenario alias-pagination-count-bool is bounded before writes
+ok 337 - alias pagination scenario alias-pagination-count-bool is bounded before writes
+  ---
+  duration_ms: 223.807666
+  type: 'test'
+  ...
+# Subtest: alias pagination scenario alias-pagination-count-float is bounded before writes
+ok 338 - alias pagination scenario alias-pagination-count-float is bounded before writes
+  ---
+  duration_ms: 215.4665
+  type: 'test'
+  ...
+# Subtest: alias pagination scenario alias-pagination-prev-bool is bounded before writes
+ok 339 - alias pagination scenario alias-pagination-prev-bool is bounded before writes
+  ---
+  duration_ms: 215.307916
+  type: 'test'
+  ...
+# Subtest: alias pagination scenario alias-pagination-prev-object is bounded before writes
+ok 340 - alias pagination scenario alias-pagination-prev-object is bounded before writes
+  ---
+  duration_ms: 219.812125
+  type: 'test'
+  ...
+# Subtest: alias pagination scenario alias-pagination-negative is bounded before writes
+ok 341 - alias pagination scenario alias-pagination-negative is bounded before writes
+  ---
+  duration_ms: 216.982667
+  type: 'test'
+  ...
+# Subtest: alias pagination scenario alias-pagination-missing is bounded before writes
+ok 342 - alias pagination scenario alias-pagination-missing is bounded before writes
+  ---
+  duration_ms: 219.800208
+  type: 'test'
+  ...
+# Subtest: alias pagination scenario alias-pagination-malformed is bounded before writes
+ok 343 - alias pagination scenario alias-pagination-malformed is bounded before writes
+  ---
+  duration_ms: 214.319833
+  type: 'test'
+  ...
+# Subtest: alias pagination scenario inventory-page-max is bounded before writes
+ok 344 - alias pagination scenario inventory-page-max is bounded before writes
+  ---
+  duration_ms: 594.357292
+  type: 'test'
+  ...
+# Subtest: alias pagination next mutated from number to string fails pagination parsing
+ok 345 - alias pagination next mutated from number to string fails pagination parsing
+  ---
+  duration_ms: 215.159292
+  type: 'test'
+  ...
+# Subtest: alias-cursor-loop is rejected without provider mutation
+ok 346 - alias-cursor-loop is rejected without provider mutation
+  ---
+  duration_ms: 270.535042
+  type: 'test'
+  ...
+# Subtest: alias-malformed is rejected without provider mutation
+ok 347 - alias-malformed is rejected without provider mutation
+  ---
+  duration_ms: 217.12
+  type: 'test'
+  ...
+# Subtest: canonical-alias-present is rejected without provider mutation
+ok 348 - canonical-alias-present is rejected without provider mutation
+  ---
+  duration_ms: 254.131459
+  type: 'test'
+  ...
+# Subtest: legacy-inventory-duplicate is rejected without provider mutation
+ok 349 - legacy-inventory-duplicate is rejected without provider mutation
+  ---
+  duration_ms: 258.21
+  type: 'test'
+  ...
+# Subtest: already-converged is a successful zero-write terminal state
+ok 350 - already-converged is a successful zero-write terminal state
+  ---
+  duration_ms: 723.290375
+  type: 'test'
+  ...
+# Subtest: successful promote evidence carries restored checked-out and remote-develop SHA provenance
+ok 351 - successful promote evidence carries restored checked-out and remote-develop SHA provenance
+  ---
+  duration_ms: 1233.291541
+  type: 'test'
+  ...
+# Subtest: canonical project with a different deployment is delegated to the normal DEV lane
+ok 352 - canonical project with a different deployment is delegated to the normal DEV lane
+  ---
+  duration_ms: 338.212625
+  type: 'test'
+  ...
+# Subtest: create uncertainty is PARTIAL_MUTATION and never retries alias
+ok 353 - create uncertainty is PARTIAL_MUTATION and never retries alias
+  ---
+  duration_ms: 837.067916
+  type: 'test'
+  ...
+# Subtest: create-needed alias failure keeps exact created-deployment evidence
+ok 354 - create-needed alias failure keeps exact created-deployment evidence
+  ---
+  duration_ms: 1255.574375
+  type: 'test'
+  ...
+# Subtest: create-response-missing-id is partial after one create attempt and before alias
+ok 355 - create-response-missing-id is partial after one create attempt and before alias
+  ---
+  duration_ms: 845.6855
+  type: 'test'
+  ...
+# Subtest: create-response-invalid-id is partial after one create attempt and before alias
+ok 356 - create-response-invalid-id is partial after one create attempt and before alias
+  ---
+  duration_ms: 846.802166
+  type: 'test'
+  ...
+# Subtest: create-poll-timeout is partial after one create attempt and before alias
+ok 357 - create-poll-timeout is partial after one create attempt and before alias
+  ---
+  duration_ms: 943.77325
+  type: 'test'
+  ...
+# Subtest: create-terminal-failed is partial after one create attempt and before alias
+ok 358 - create-terminal-failed is partial after one create attempt and before alias
+  ---
+  duration_ms: 888.874291
+  type: 'test'
+  ...
+# Subtest: create-source-mismatch is partial after one create attempt and before alias
+ok 359 - create-source-mismatch is partial after one create attempt and before alias
+  ---
+  duration_ms: 901.868417
+  type: 'test'
+  ...
+# Subtest: create-read-failure is partial after one create attempt and before alias
+ok 360 - create-read-failure is partial after one create attempt and before alias
+  ---
+  duration_ms: 858.898708
+  type: 'test'
+  ...
+# Subtest: create_if_missing="false" is rejected by reconciliation before writes
+ok 361 - create_if_missing="false" is rejected by reconciliation before writes
+  ---
+  duration_ms: 299.870125
+  type: 'test'
+  ...
+# Subtest: create_if_missing="TRUE" is rejected by reconciliation before writes
+ok 362 - create_if_missing="TRUE" is rejected by reconciliation before writes
+  ---
+  duration_ms: 32.114375
+  type: 'test'
+  ...
+# Subtest: create_if_missing="1" is rejected by reconciliation before writes
+ok 363 - create_if_missing="1" is rejected by reconciliation before writes
+  ---
+  duration_ms: 31.885583
+  type: 'test'
+  ...
+# Subtest: create_if_missing="yes" is rejected by reconciliation before writes
+ok 364 - create_if_missing="yes" is rejected by reconciliation before writes
+  ---
+  duration_ms: 32.153833
+  type: 'test'
+  ...
+# Subtest: create_if_missing="" is rejected by reconciliation before writes
+ok 365 - create_if_missing="" is rejected by reconciliation before writes
+  ---
+  duration_ms: 31.940292
+  type: 'test'
+  ...
+# Subtest: create_if_missing="0" is rejected by reconciliation before writes
+ok 366 - create_if_missing="0" is rejected by reconciliation before writes
+  ---
+  duration_ms: 31.803
+  type: 'test'
+  ...
+# Subtest: foreign-project exact-SHA candidate does not suppress canonical create
+ok 367 - foreign-project exact-SHA candidate does not suppress canonical create
+  ---
+  duration_ms: 1437.898375
+  type: 'test'
+  ...
+# Subtest: foreign-project exact-SHA candidate cannot suppress CREATE_NOT_ALLOWED
+ok 368 - foreign-project exact-SHA candidate cannot suppress CREATE_NOT_ALLOWED
+  ---
+  duration_ms: 309.928792
+  type: 'test'
+  ...
+# Subtest: DEV authority uses the protected shared engine and durable selected stage barrier
+ok 369 - DEV authority uses the protected shared engine and durable selected stage barrier
+  ---
+  duration_ms: 3.160083
+  type: 'test'
+  ...
+# Subtest: sourcing the normal helper is library-only and preserves direct evidence naming
+ok 370 - sourcing the normal helper is library-only and preserves direct evidence naming
+  ---
+  duration_ms: 4.642833
+  type: 'test'
+  ...
+# Subtest: fails closed on contradictory DEV alias authority before mutation
+ok 371 - fails closed on contradictory DEV alias authority before mutation
+  ---
+  duration_ms: 404.87575
+  type: 'test'
+  ...
+# Subtest: root directory contract fails closed before provider mutation
+ok 372 - root directory contract fails closed before provider mutation
+  ---
+  duration_ms: 250.712583
+  type: 'test'
+  ...
+# Subtest: rejects the retired Vercel scope slug
+ok 373 - rejects the retired Vercel scope slug
+  ---
+  duration_ms: 23.845416
+  type: 'test'
+  ...
+# Subtest: uses bounded project-scoped alias inventory without the unsupported domain filter
+ok 374 - uses bounded project-scoped alias inventory without the unsupported domain filter
+  ---
+  duration_ms: 688.164208
+  type: 'test'
+  ...
+# Subtest: fails closed before mutation for ci-failure
+ok 375 - fails closed before mutation for ci-failure
+  ---
+  duration_ms: 48.164167
+  type: 'test'
+  ...
+# Subtest: fails closed before mutation for ci-wrong-sha
+ok 376 - fails closed before mutation for ci-wrong-sha
+  ---
+  duration_ms: 47.4765
+  type: 'test'
+  ...
+# Subtest: fails closed before mutation for success
+ok 377 - fails closed before mutation for success
+  ---
+  duration_ms: 24.916916
+  type: 'test'
+  ...
+# Subtest: fails closed before mutation for success
+ok 378 - fails closed before mutation for success
+  ---
+  duration_ms: 30.925709
+  type: 'test'
+  ...
+# Subtest: fails closed before mutation for success
+ok 379 - fails closed before mutation for success
+  ---
+  duration_ms: 26.871583
+  type: 'test'
+  ...
+# Subtest: fails closed before mutation for project-mismatch
+ok 380 - fails closed before mutation for project-mismatch
+  ---
+  duration_ms: 83.806291
+  type: 'test'
+  ...
+# Subtest: fails closed before mutation for team-mismatch
+ok 381 - fails closed before mutation for team-mismatch
+  ---
+  duration_ms: 86.361291
+  type: 'test'
+  ...
+# Subtest: fails closed before mutation for alias-absent
+ok 382 - fails closed before mutation for alias-absent
+  ---
+  duration_ms: 137.404584
+  type: 'test'
+  ...
+# Subtest: fails closed before mutation for alias-divergent
+ok 383 - fails closed before mutation for alias-divergent
+  ---
+  duration_ms: 131.717041
+  type: 'test'
+  ...
+# Subtest: fails closed before mutation for alias-project-mismatch
+ok 384 - fails closed before mutation for alias-project-mismatch
+  ---
+  duration_ms: 137.721083
+  type: 'test'
+  ...
+# Subtest: fails closed before mutation for rollback-freeze-failure
+ok 385 - fails closed before mutation for rollback-freeze-failure
+  ---
+  duration_ms: 113.282042
+  type: 'test'
+  ...
+# Subtest: read-only preflight records a typed create-needed decision without provider mutation
+ok 386 - read-only preflight records a typed create-needed decision without provider mutation
+  ---
+  duration_ms: 567.271708
+  type: 'test'
+  ...
+# Subtest: rejects a wrong-linked repository before any mutation
+ok 387 - rejects a wrong-linked repository before any mutation
+  ---
+  duration_ms: 83.489292
+  type: 'test'
+  ...
+# Subtest: uses the frozen exact repository ID for a linked project deployment
+ok 388 - uses the frozen exact repository ID for a linked project deployment
+  ---
+  duration_ms: 560.953709
+  type: 'test'
+  ...
+# Subtest: rechecks project authority before mutation for root-drift
+ok 389 - rechecks project authority before mutation for root-drift
+  ---
+  duration_ms: 367.537667
+  type: 'test'
+  ...
+# Subtest: rechecks project authority before mutation for link-drift
+ok 390 - rechecks project authority before mutation for link-drift
+  ---
+  duration_ms: 371.20575
+  type: 'test'
+  ...
+# Subtest: creates through historical deployments and counts deployment plus alias mutations
+ok 391 - creates through historical deployments and counts deployment plus alias mutations
+  ---
+  duration_ms: 559.757708
+  type: 'test'
+  ...
+# Subtest: promote without durable artifact handoff performs no provider mutation
+ok 392 - promote without durable artifact handoff performs no provider mutation
+  ---
+  duration_ms: 187.167917
+  type: 'test'
+  ...
+# Subtest: rejects invalid durable artifact digest prefixed-sha256 before mutation
+ok 393 - rejects invalid durable artifact digest prefixed-sha256 before mutation
+  ---
+  duration_ms: 196.144083
+  type: 'test'
+  ...
+# Subtest: rejects invalid durable artifact digest uppercase before mutation
+ok 394 - rejects invalid durable artifact digest uppercase before mutation
+  ---
+  duration_ms: 195.061166
+  type: 'test'
+  ...
+# Subtest: rejects invalid durable artifact digest too-short-63 before mutation
+ok 395 - rejects invalid durable artifact digest too-short-63 before mutation
+  ---
+  duration_ms: 198.126
+  type: 'test'
+  ...
+# Subtest: rejects invalid durable artifact digest too-long-65 before mutation
+ok 396 - rejects invalid durable artifact digest too-long-65 before mutation
+  ---
+  duration_ms: 199.892833
+  type: 'test'
+  ...
+# Subtest: rejects invalid durable artifact digest empty before mutation
+ok 397 - rejects invalid durable artifact digest empty before mutation
+  ---
+  duration_ms: 199.420708
+  type: 'test'
+  ...
+# Subtest: page-one and page-two uid deployments are normalized and reused without deployment creation
+ok 398 - page-one and page-two uid deployments are normalized and reused without deployment creation
+  ---
+  duration_ms: 487.693042
+  type: 'test'
+  ...
+# Subtest: existing candidate source failure remains zero-mutation blocked
+ok 399 - existing candidate source failure remains zero-mutation blocked
+  ---
+  duration_ms: 319.233333
+  type: 'test'
+  ...
+# Subtest: reconciles a partial mutation and records the uncertain state without retrying
+ok 400 - reconciles a partial mutation and records the uncertain state without retrying
+  ---
+  duration_ms: 408.457708
+  type: 'test'
+  ...
+# Subtest: refuses to mutate without a durable rollback artifact handoff
+ok 401 - refuses to mutate without a durable rollback artifact handoff
+  ---
+  duration_ms: 199.415458
+  type: 'test'
+  ...
+# Subtest: fails closed when post-mutation alias or deployment read-back diverges
+ok 402 - fails closed when post-mutation alias or deployment read-back diverges
+  ---
+  duration_ms: 395.558166
+  type: 'test'
+  ...
+# Subtest: classifies create-uncertain as partial mutation and preserves rollback identity
+ok 403 - classifies create-uncertain as partial mutation and preserves rollback identity
+  ---
+  duration_ms: 341.36625
+  type: 'test'
+  ...
+# Subtest: classifies create-poll-timeout as partial mutation and preserves rollback identity
+ok 404 - classifies create-poll-timeout as partial mutation and preserves rollback identity
+  ---
+  duration_ms: 450.210833
+  type: 'test'
+  ...
+# Subtest: classifies create-source-mismatch as partial mutation and preserves rollback identity
+ok 405 - classifies create-source-mismatch as partial mutation and preserves rollback identity
+  ---
+  duration_ms: 403.480625
+  type: 'test'
+  ...
+# Subtest: classifies create-read-failure as partial mutation and preserves rollback identity
+ok 406 - classifies create-read-failure as partial mutation and preserves rollback identity
+  ---
+  duration_ms: 359.920334
+  type: 'test'
+  ...
+# Subtest: DEV workflow invokes the shared engine and isolates the fixed diagnostic reusable workflow
+ok 407 - DEV workflow invokes the shared engine and isolates the fixed diagnostic reusable workflow
+  ---
+  duration_ms: 5.82425
+  type: 'test'
+  ...
+# Subtest: production workflow invokes the shared engine with fixed authority and DEV provenance
+ok 408 - production workflow invokes the shared engine with fixed authority and DEV provenance
+  ---
+  duration_ms: 8.590875
+  type: 'test'
+  ...
+# Subtest: source and safety contract is main-only, production-only, and API-based
+ok 409 - source and safety contract is main-only, production-only, and API-based
+  ---
+  duration_ms: 1.370084
+  type: 'test'
+  ...
+# Subtest: YAML and shell contracts parse
+ok 410 - YAML and shell contracts parse
+  ---
+  duration_ms: 19.489166
+  type: 'test'
+  ...
+# Subtest: preflight is read-only and freezes aliases plus immutable deployment identities
+ok 411 - preflight is read-only and freezes aliases plus immutable deployment identities
+  ---
+  duration_ms: 694.999292
+  type: 'test'
+  ...
+# Subtest: OpenAPI-shaped alias/deployment reads succeed and alias project mismatch fails before writes
+ok 412 - OpenAPI-shaped alias/deployment reads succeed and alias project mismatch fails before writes
+  ---
+  duration_ms: 395.955875
+  type: 'test'
+  ...
+# Subtest: exact env singleton still creates one exact Git-source production deployment
+ok 413 - exact env singleton still creates one exact Git-source production deployment
+  ---
+  duration_ms: 717.536917
+  type: 'test'
+  ...
+# Subtest: teamId scoping is exact on every alias and deployment read
+ok 414 - teamId scoping is exact on every alias and deployment read
+  ---
+  duration_ms: 719.638916
+  type: 'test'
+  ...
+# Subtest: env mutation converges before deployment and rollback remains exact
+ok 415 - env mutation converges before deployment and rollback remains exact
+  ---
+  duration_ms: 1381.048375
+  type: 'test'
+  ...
+# Subtest: wrong project, wrong team, alias/deployment identity, scope, and failed CI are preflight failures with zero writes
+ok 416 - wrong project, wrong team, alias/deployment identity, scope, and failed CI are preflight failures with zero writes
+  ---
+  duration_ms: 1667.085792
+  type: 'test'
+  ...
+# Subtest: deployment create is attempted at most once and all uncertain/failed readbacks are partial
+ok 417 - deployment create is attempted at most once and all uncertain/failed readbacks are partial
+  ---
+  duration_ms: 14340.582208
+  type: 'test'
+  ...
+# Subtest: bounded polling accepts ANALYZING and DEPLOYING before READY
+ok 418 - bounded polling accepts ANALYZING and DEPLOYING before READY
+  ---
+  duration_ms: 1407.133125
+  type: 'test'
+  ...
+# Subtest: READY readback accepts bounded generated routing metadata without canonical routing
+ok 419 - READY readback accepts bounded generated routing metadata without canonical routing
+  ---
+  duration_ms: 2657.698958
+  type: 'test'
+  ...
+# Subtest: create hostname is normalized to an HTTPS deployment URL
+ok 420 - create hostname is normalized to an HTTPS deployment URL
+  ---
+  duration_ms: 1284.27775
+  type: 'test'
+  ...
+# Subtest: create response routing indicators remain optional
+ok 421 - create response routing indicators remain optional
+  ---
+  duration_ms: 1334.819459
+  type: 'test'
+  ...
+# Subtest: freeze read failure and invalid artifact block all provider writes
+ok 422 - freeze read failure and invalid artifact block all provider writes
+  ---
+  duration_ms: 377.4405
+  type: 'test'
+  ...
+# Subtest: accepts raw artifact digest and normalizes evidence to sha256 type
+ok 423 - accepts raw artifact digest and normalizes evidence to sha256 type
+  ---
+  duration_ms: 612.343875
+  type: 'test'
+  ...
+# Subtest: rejects non-raw-lowercase-64-hex artifact digests before provider writes
+ok 424 - rejects non-raw-lowercase-64-hex artifact digests before provider writes
+  ---
+  duration_ms: 1334.633625
+  type: 'test'
+  ...
+# Subtest: mutate rereads the durable freeze and fails closed on pre-mutation drift
+ok 425 - mutate rereads the durable freeze and fails closed on pre-mutation drift
+  ---
+  duration_ms: 411.296167
+  type: 'test'
+  ...
+# Subtest: evidence and provider logs keep tokens and unrelated values out of output
+ok 426 - evidence and provider logs keep tokens and unrelated values out of output
+  ---
+  duration_ms: 623.108542
+  type: 'test'
+  ...
+# Subtest: public config preserves announcement markdown and fails safe when unavailable
+ok 427 - public config preserves announcement markdown and fails safe when unavailable
+  ---
+  duration_ms: 38.820917
+  type: 'test'
+  ...
+# Subtest: admin settings and publish use the direct-publish announcement schema
+ok 428 - admin settings and publish use the direct-publish announcement schema
+  ---
+  duration_ms: 0.563375
+  type: 'test'
+  ...
+# Subtest: publish rejects a successful response with missing or invalid fields
+ok 429 - publish rejects a successful response with missing or invalid fields
+  ---
+  duration_ms: 2.207208
+  type: 'test'
+  ...
+# Subtest: builds once with Vercel prebuilt ordering and keeps immutable ID separate from URL
+ok 430 - builds once with Vercel prebuilt ordering and keeps immutable ID separate from URL
+  ---
+  duration_ms: 1779.603916
+  type: 'test'
+  ...
+# Subtest: reuses a live-shaped existing candidate before any build mutation
+ok 431 - reuses a live-shaped existing candidate before any build mutation
+  ---
+  duration_ms: 726.096208
+  type: 'test'
+  ...
+# Subtest: LWC-318 exact-SHA reuse rejects missing build proof before alias writes
+ok 432 - LWC-318 exact-SHA reuse rejects missing build proof before alias writes
+  ---
+  duration_ms: 416.474
+  type: 'test'
+  ...
+# Subtest: LWC-318 exact-SHA reuse rejects wrong-config build proof before alias writes
+ok 433 - LWC-318 exact-SHA reuse rejects wrong-config build proof before alias writes
+  ---
+  duration_ms: 475.21075
+  type: 'test'
+  ...
+# Subtest: LWC-318 exact-SHA reuse rejects legacy-receipt build proof before alias writes
+ok 434 - LWC-318 exact-SHA reuse rejects legacy-receipt build proof before alias writes
+  ---
+  duration_ms: 462.544375
+  type: 'test'
+  ...
+# Subtest: LWC-318 exact-SHA reuse rejects unauthorized build proof before alias writes
+ok 435 - LWC-318 exact-SHA reuse rejects unauthorized build proof before alias writes
+  ---
+  duration_ms: 406.300875
+  type: 'test'
+  ...
+# Subtest: LWC-318 exact-SHA reuse rejects forbidden build proof before alias writes
+ok 436 - LWC-318 exact-SHA reuse rejects forbidden build proof before alias writes
+  ---
+  duration_ms: 399.522875
+  type: 'test'
+  ...
+# Subtest: LWC-318 exact-SHA reuse rejects redirect build proof before alias writes
+ok 437 - LWC-318 exact-SHA reuse rejects redirect build proof before alias writes
+  ---
+  duration_ms: 372.251041
+  type: 'test'
+  ...
+# Subtest: LWC-318 exact-SHA reuse rejects malformed build proof before alias writes
+ok 438 - LWC-318 exact-SHA reuse rejects malformed build proof before alias writes
+  ---
+  duration_ms: 428.783125
+  type: 'test'
+  ...
+# Subtest: LWC-318 exact-SHA reuse rejects multiple build proof before alias writes
+ok 439 - LWC-318 exact-SHA reuse rejects multiple build proof before alias writes
+  ---
+  duration_ms: 434.068375
+  type: 'test'
+  ...
+# Subtest: LWC-318 exact-SHA reuse rejects nonjson build proof before alias writes
+ok 440 - LWC-318 exact-SHA reuse rejects nonjson build proof before alias writes
+  ---
+  duration_ms: 431.844209
+  type: 'test'
+  ...
+# Subtest: LWC-318 exact-SHA reuse rejects wrong-mime build proof before alias writes
+ok 441 - LWC-318 exact-SHA reuse rejects wrong-mime build proof before alias writes
+  ---
+  duration_ms: 441.683375
+  type: 'test'
+  ...
+# Subtest: LWC-318 exact-SHA reuse rejects extra build proof before alias writes
+ok 442 - LWC-318 exact-SHA reuse rejects extra build proof before alias writes
+  ---
+  duration_ms: 432.010042
+  type: 'test'
+  ...
+# Subtest: LWC-318 exact-SHA reuse rejects oversize build proof before alias writes
+ok 443 - LWC-318 exact-SHA reuse rejects oversize build proof before alias writes
+  ---
+  duration_ms: 426.979792
+  type: 'test'
+  ...
+# Subtest: LWC-318 exact-SHA reuse rejects wrong-status build proof before alias writes
+ok 444 - LWC-318 exact-SHA reuse rejects wrong-status build proof before alias writes
+  ---
+  duration_ms: 367.711333
+  type: 'test'
+  ...
+# Subtest: LWC-318 exact-SHA reuse rejects transport-failure build proof before alias writes
+ok 445 - LWC-318 exact-SHA reuse rejects transport-failure build proof before alias writes
+  ---
+  duration_ms: 365.505166
+  type: 'test'
+  ...
+# Subtest: LWC-318 exact-SHA reuse rejects wrong-schema build proof before alias writes
+ok 446 - LWC-318 exact-SHA reuse rejects wrong-schema build proof before alias writes
+  ---
+  duration_ms: 429.7725
+  type: 'test'
+  ...
+# Subtest: LWC-318 exact-SHA reuse rejects duplicate-json build proof before alias writes
+ok 447 - LWC-318 exact-SHA reuse rejects duplicate-json build proof before alias writes
+  ---
+  duration_ms: 435.373417
+  type: 'test'
+  ...
+# Subtest: LWC-318 exact-SHA reuse rejects extra-json build proof before alias writes
+ok 448 - LWC-318 exact-SHA reuse rejects extra-json build proof before alias writes
+  ---
+  duration_ms: 428.085917
+  type: 'test'
+  ...
+# Subtest: LWC-370 protected provider output verified reuse binds reader receipt and hash and rechecks it
+ok 449 - LWC-370 protected provider output verified reuse binds reader receipt and hash and rechecks it
+  ---
+  duration_ms: 1076.20075
+  type: 'test'
+  ...
+# Subtest: LWC-370 freshly created deployment with wrong bootstrap config URL fails before alias writes
+ok 450 - LWC-370 freshly created deployment with wrong bootstrap config URL fails before alias writes
+  ---
+  duration_ms: 561.849625
+  type: 'test'
+  ...
+# Subtest: LWC-318 reconciliation rejects changed receipt source_sha
+ok 451 - LWC-318 reconciliation rejects changed receipt source_sha
+  ---
+  duration_ms: 861.567958
+  type: 'test'
+  ...
+# Subtest: LWC-318 reconciliation rejects changed receipt target
+ok 452 - LWC-318 reconciliation rejects changed receipt target
+  ---
+  duration_ms: 864.865333
+  type: 'test'
+  ...
+# Subtest: LWC-318 reconciliation rejects changed receipt build_config_sha256
+ok 453 - LWC-318 reconciliation rejects changed receipt build_config_sha256
+  ---
+  duration_ms: 859.389166
+  type: 'test'
+  ...
+# Subtest: LWC-318 reconciliation rejects changed receipt build_config_transport
+ok 454 - LWC-318 reconciliation rejects changed receipt build_config_transport
+  ---
+  duration_ms: 861.450958
+  type: 'test'
+  ...
+# Subtest: LWC-318 reconciliation rejects changed receipt deployment_id
+ok 455 - LWC-318 reconciliation rejects changed receipt deployment_id
+  ---
+  duration_ms: 727.447916
+  type: 'test'
+  ...
+# Subtest: LWC-318 reconciliation rejects changed receipt deployment_url
+ok 456 - LWC-318 reconciliation rejects changed receipt deployment_url
+  ---
+  duration_ms: 726.3705
+  type: 'test'
+  ...
+# Subtest: LWC-318 reconciliation rejects changed receipt build_config
+ok 457 - LWC-318 reconciliation rejects changed receipt build_config
+  ---
+  duration_ms: 863.275542
+  type: 'test'
+  ...
+# Subtest: production already-converged candidate performs no provider write
+ok 458 - production already-converged candidate performs no provider write
+  ---
+  duration_ms: 622.718209
+  type: 'test'
+  ...
+# Subtest: production freeze paginates the complete alias inventory before mutation
+ok 459 - production freeze paginates the complete alias inventory before mutation
+  ---
+  duration_ms: 270.185125
+  type: 'test'
+  ...
+# Subtest: production mutate paginates a live-shaped 100+48 deployment inventory without argv overflow
+ok 460 - production mutate paginates a live-shaped 100+48 deployment inventory without argv overflow
+  ---
+  duration_ms: 1011.113375
+  type: 'test'
+  ...
+# Subtest: duplicate-exact fails closed before provider mutation
+ok 461 - duplicate-exact fails closed before provider mutation
+  ---
+  duration_ms: 315.606584
+  type: 'test'
+  ...
+# Subtest: foreign-candidate fails closed before provider mutation
+ok 462 - foreign-candidate fails closed before provider mutation
+  ---
+  duration_ms: 288.759375
+  type: 'test'
+  ...
+# Subtest: malformed-candidate fails closed before provider mutation
+ok 463 - malformed-candidate fails closed before provider mutation
+  ---
+  duration_ms: 292.278833
+  type: 'test'
+  ...
+# Subtest: missing-uid fails closed before provider mutation
+ok 464 - missing-uid fails closed before provider mutation
+  ---
+  duration_ms: 288.432584
+  type: 'test'
+  ...
+# Subtest: wrong-authority fails closed before provider mutation
+ok 465 - wrong-authority fails closed before provider mutation
+  ---
+  duration_ms: 289.411667
+  type: 'test'
+  ...
+# Subtest: inventory-unreadable fails closed before provider mutation
+ok 466 - inventory-unreadable fails closed before provider mutation
+  ---
+  duration_ms: 261.224958
+  type: 'test'
+  ...
+# Subtest: zero candidate preserves the existing build and create path
+ok 467 - zero candidate preserves the existing build and create path
+  ---
+  duration_ms: 710.417959
+  type: 'test'
+  ...
+# Subtest: production inspect target null is rejected
+ok 468 - production inspect target null is rejected
+  ---
+  duration_ms: 601.855292
+  type: 'test'
+  ...
+# Subtest: freezes exact project and alias authority before any REST mutation
+ok 469 - freezes exact project and alias authority before any REST mutation
+  ---
+  duration_ms: 141.678458
+  type: 'test'
+  ...
+# Subtest: rejects a full alias page without authoritative pagination metadata
+ok 470 - rejects a full alias page without authoritative pagination metadata
+  ---
+  duration_ms: 116.358209
+  type: 'test'
+  ...
+# Subtest: exact wrong-target read-back fails closed without retrying the alias mutation
+ok 471 - exact wrong-target read-back fails closed without retrying the alias mutation
+  ---
+  duration_ms: 571.783666
+  type: 'test'
+  ...
+# Subtest: accepts an ambiguous timeout only when exact alias and project inventory read-back converges
+ok 472 - accepts an ambiguous timeout only when exact alias and project inventory read-back converges
+  ---
+  duration_ms: 627.338958
+  type: 'test'
+  ...
+# Subtest: reconciles a deployment timeout through one exact project inventory candidate without retrying create
+ok 473 - reconciles a deployment timeout through one exact project inventory candidate without retrying create
+  ---
+  duration_ms: 763.371666
+  type: 'test'
+  ...
+# Subtest: rejects a full deployment page without authoritative pagination metadata
+ok 474 - rejects a full deployment page without authoritative pagination metadata
+  ---
+  duration_ms: 496.932375
+  type: 'test'
+  ...
+# Subtest: rejects an arbitrary deployment host after timeout reconciliation
+ok 475 - rejects an arbitrary deployment host after timeout reconciliation
+  ---
+  duration_ms: 521.358417
+  type: 'test'
+  ...
+# Subtest: accepts the canonical deployment host after timeout reconciliation
+ok 476 - accepts the canonical deployment host after timeout reconciliation
+  ---
+  duration_ms: 759.775458
+  type: 'test'
+  ...
+# Subtest: accepts a short terminal alias page without pagination metadata
+ok 477 - accepts a short terminal alias page without pagination metadata
+  ---
+  duration_ms: 133.518084
+  type: 'test'
+  ...
+# Subtest: keeps deploy-timeout-absent unknown after one deployment inventory lookup
+ok 478 - keeps deploy-timeout-absent unknown after one deployment inventory lookup
+  ---
+  duration_ms: 509.095708
+  type: 'test'
+  ...
+# Subtest: keeps deploy-timeout-duplicate unknown after one deployment inventory lookup
+ok 479 - keeps deploy-timeout-duplicate unknown after one deployment inventory lookup
+  ---
+  duration_ms: 487.097125
+  type: 'test'
+  ...
+# Subtest: keeps deploy-timeout-conflicting unknown after one deployment inventory lookup
+ok 480 - keeps deploy-timeout-conflicting unknown after one deployment inventory lookup
+  ---
+  duration_ms: 494.06125
+  type: 'test'
+  ...
+# Subtest: production rollback restores every frozen alias through REST and verifies exact read-back
+ok 481 - production rollback restores every frozen alias through REST and verifies exact read-back
+  ---
+  duration_ms: 1158.72
+  type: 'test'
+  ...
+# Subtest: shared frontend path is REST-only and does not use the invalid npm build shortcut
+ok 482 - shared frontend path is REST-only and does not use the invalid npm build shortcut
+  ---
+  duration_ms: 0.482583
+  type: 'test'
+  ...
+# Subtest: LWC-318 invalid PROOF_ID rejects output request before HTTP
+ok 483 - LWC-318 invalid PROOF_ID rejects output request before HTTP
+  ---
+  duration_ms: 15.372167
+  type: 'test'
+  ...
+# Subtest: LWC-318 invalid VERCEL_TEAM_ID rejects output request before HTTP
+ok 484 - LWC-318 invalid VERCEL_TEAM_ID rejects output request before HTTP
+  ---
+  duration_ms: 15.372083
+  type: 'test'
+  ...
+# Subtest: LWC-318 invalid VERCEL_PROJECT_ID rejects output request before HTTP
+ok 485 - LWC-318 invalid VERCEL_PROJECT_ID rejects output request before HTTP
+  ---
+  duration_ms: 19.654041
+  type: 'test'
+  ...
+# Subtest: LWC-324 public capabilities preserve all four independent method combinations
+ok 486 - LWC-324 public capabilities preserve all four independent method combinations
+  ---
+  duration_ms: 33.187166
+  type: 'test'
+  ...
+# Subtest: LWC-324 missing methods inherit legacy; malformed values and request failures close signup
+ok 487 - LWC-324 missing methods inherit legacy; malformed values and request failures close signup
+  ---
+  duration_ms: 1.301042
+  type: 'test'
+  ...
+# Subtest: public Demo capability requires an explicit true response
+ok 488 - public Demo capability requires an explicit true response
+  ---
+  duration_ms: 2.100084
+  type: 'test'
+  ...
+# Subtest: master off masks true public preferences and stays independent of selected methods
+ok 489 - master off masks true public preferences and stays independent of selected methods
+  ---
+  duration_ms: 0.305042
+  type: 'test'
+  ...
+# Subtest: Admin decodes saved preferences independently of the master, including legacy migration
+ok 490 - Admin decodes saved preferences independently of the master, including legacy migration
+  ---
+  duration_ms: 1.862834
+  type: 'test'
+  ...
+# Subtest: local route reads each worktree file request and disables caching
+ok 491 - local route reads each worktree file request and disables caching
+  ---
+  duration_ms: 39.132583
+  type: 'test'
+  ...
+# Subtest: local route is unavailable outside Next development mode
+ok 492 - local route is unavailable outside Next development mode
+  ---
+  duration_ms: 0.291208
+  type: 'test'
+  ...
+# Subtest: LWC-68: Shell hides create-project control in demo sessions and exposes it for normal sessions
+ok 493 - LWC-68: Shell hides create-project control in demo sessions and exposes it for normal sessions
+  ---
+  duration_ms: 3.379334
+  type: 'test'
+  ...
+# Subtest: shell exposes Admin navigation only for admin users
+ok 494 - shell exposes Admin navigation only for admin users
+  ---
+  duration_ms: 3.01075
+  type: 'test'
+  ...
+# Subtest: shell explicitly allows admin route content without a selected project
+ok 495 - shell explicitly allows admin route content without a selected project
+  ---
+  duration_ms: 1.352042
+  type: 'test'
+  ...
+# Subtest: admin route renders AdminClient
+ok 496 - admin route renders AdminClient
+  ---
+  duration_ms: 0.585792
+  type: 'test'
+  ...
+# Subtest: AdminClient gates access, renders tabs, and loads admin tables
+ok 497 - AdminClient gates access, renders tabs, and loads admin tables
+  ---
+  duration_ms: 1.160625
+  type: 'test'
+  ...
+# Subtest: AdminClient renders the same access-denied surface for backend admin 403s
+ok 498 - AdminClient renders the same access-denied surface for backend admin 403s
+  ---
+  duration_ms: 0.563625
+  type: 'test'
+  ...
+# Subtest: AdminClient wires project and user actions through confirmation modals
+ok 499 - AdminClient wires project and user actions through confirmation modals
+  ---
+  duration_ms: 0.581041
+  type: 'test'
+  ...
+# Subtest: shell keeps Raw Files off primary navigation while retaining the compatibility route
+ok 500 - shell keeps Raw Files off primary navigation while retaining the compatibility route
+  ---
+  duration_ms: 6.712416
+  type: 'test'
+  ...
+# Subtest: raw page renders the RawClient route component
+ok 501 - raw page renders the RawClient route component
+  ---
+  duration_ms: 2.239958
+  type: 'test'
+  ...
+# Subtest: raw client renders metadata table with inline preview entrypoints
+ok 502 - raw client renders metadata table with inline preview entrypoints
+  ---
+  duration_ms: 0.721375
+  type: 'test'
+  ...
+# Subtest: raw client reloads files when the current project changes
+ok 503 - raw client reloads files when the current project changes
+  ---
+  duration_ms: 0.400375
+  type: 'test'
+  ...
+# Subtest: maps only an exact raw citation token to its source bytes
+ok 504 - maps only an exact raw citation token to its source bytes
+  ---
+  duration_ms: 1.320625
+  type: 'test'
+  ...
+# Subtest: rejects escaped, entity-decoded, and backslash-variant bracket tokens
+ok 505 - rejects escaped, entity-decoded, and backslash-variant bracket tokens
+  ---
+  duration_ms: 0.263167
+  type: 'test'
+  ...
+# Subtest: keeps a genuine token mappable beside an ambiguous token
+ok 506 - keeps a genuine token mappable beside an ambiguous token
+  ---
+  duration_ms: 0.079416
+  type: 'test'
+  ...
+# Subtest: parseMarkdownImage ignores optional image title when resolving src
+ok 507 - parseMarkdownImage ignores optional image title when resolving src
+  ---
+  duration_ms: 1.036291
+  type: 'test'
+  ...
+# Subtest: parseMarkdownImage keeps titles with closing parens out of src
+ok 508 - parseMarkdownImage keeps titles with closing parens out of src
+  ---
+  duration_ms: 0.082917
+  type: 'test'
+  ...
+# Subtest: parseMarkdownImage parses plain destination images
+ok 509 - parseMarkdownImage parses plain destination images
+  ---
+  duration_ms: 0.046541
+  type: 'test'
+  ...
+# Subtest: MarkdownView renders internal wikilinks with guarded navigation
+ok 510 - MarkdownView renders internal wikilinks with guarded navigation
+  ---
+  duration_ms: 2.307542
+  type: 'test'
+  ...
+# Subtest: MarkdownView re-parses inline markup inside bold markers
+ok 511 - MarkdownView re-parses inline markup inside bold markers
+  ---
+  duration_ms: 0.885875
+  type: 'test'
+  ...
+# Subtest: MarkdownView normalizes wikilink annotations before inline split
+ok 512 - MarkdownView normalizes wikilink annotations before inline split
+  ---
+  duration_ms: 0.687458
+  type: 'test'
+  ...
+# Subtest: pipeline client polls status after an accepted pipeline run
+ok 513 - pipeline client polls status after an accepted pipeline run
+  ---
+  duration_ms: 1.963042
+  type: 'test'
+  ...
+# Subtest: pipeline client uses Cloud Run uppercase running status
+ok 514 - pipeline client uses Cloud Run uppercase running status
+  ---
+  duration_ms: 0.56075
+  type: 'test'
+  ...
+# Subtest: home status reloads when the current project changes
+ok 515 - home status reloads when the current project changes
+  ---
+  duration_ms: 2.514
+  type: 'test'
+  ...
+# Subtest: selecting a different project navigates to clean home without query
+ok 516 - selecting a different project navigates to clean home without query
+  ---
+  duration_ms: 0.47825
+  type: 'test'
+  ...
+# Subtest: home clears query state when switching between projects
+ok 517 - home clears query state when switching between projects
+  ---
+  duration_ms: 0.438666
+  type: 'test'
+  ...
+# Subtest: shell renders projects with a custom project selector
+ok 518 - shell renders projects with a custom project selector
+  ---
+  duration_ms: 0.683709
+  type: 'test'
+  ...
+# Subtest: shell footer keeps the user account block without raw user or project ids
+ok 519 - shell footer keeps the user account block without raw user or project ids
+  ---
+  duration_ms: 0.37625
+  type: 'test'
+  ...
+# Subtest: normalizeProjects accepts array and wrapped API responses
+ok 520 - normalizeProjects accepts array and wrapped API responses
+  ---
+  duration_ms: 1.036542
+  type: 'test'
+  ...
+# Subtest: normalizeProject accepts a project returned from init-project
+ok 521 - normalizeProject accepts a project returned from init-project
+  ---
+  duration_ms: 0.054875
+  type: 'test'
+  ...
+# Subtest: normalizeProject does not use the project name as the project id
+ok 522 - normalizeProject does not use the project name as the project id
+  ---
+  duration_ms: 0.098916
+  type: 'test'
+  ...
+# Subtest: selectDefaultProject restores the last used project when available
+ok 523 - selectDefaultProject restores the last used project when available
+  ---
+  duration_ms: 0.053208
+  type: 'test'
+  ...
+# Subtest: selectDefaultProject falls back to the first project alphabetically
+ok 524 - selectDefaultProject falls back to the first project alphabetically
+  ---
+  duration_ms: 4.988791
+  type: 'test'
+  ...
+# Subtest: status client wiring keeps log access behind the explicit open handler
+ok 525 - status client wiring keeps log access behind the explicit open handler
+  ---
+  duration_ms: 2.729709
+  type: 'test'
+  ...
+# Subtest: status client recognizes Cloud Run uppercase running status
+ok 526 - status client recognizes Cloud Run uppercase running status
+  ---
+  duration_ms: 0.287042
+  type: 'test'
+  ...
+# Subtest: status wiring reloads by project and keeps metadata loading separate from log opening
+ok 527 - status wiring reloads by project and keeps metadata loading separate from log opening
+  ---
+  duration_ms: 0.33325
+  type: 'test'
+  ...
+# Subtest: pipeline log states gate fetching and expose typed diagnostic rendering
+ok 528 - pipeline log states gate fetching and expose typed diagnostic rendering
+  ---
+  duration_ms: 0.824584
+  type: 'test'
+  ...
+# Subtest: pipeline log availability is fail-closed with finite reason messages
+ok 529 - pipeline log availability is fail-closed with finite reason messages
+  ---
+  duration_ms: 0.825417
+  type: 'test'
+  ...
+# Subtest: pipeline log state distinguishes unopened, loading, loaded-empty, loaded-nonempty, and error
+ok 530 - pipeline log state distinguishes unopened, loading, loaded-empty, loaded-nonempty, and error
+  ---
+  duration_ms: 0.110417
+  type: 'test'
+  ...
+# Subtest: pipeline log rejects stale project and execution requests
+ok 531 - pipeline log rejects stale project and execution requests
+  ---
+  duration_ms: 0.109333
+  type: 'test'
+  ...
+# Subtest: typed diagnostics select only the reported known failed stage
+ok 532 - typed diagnostics select only the reported known failed stage
+  ---
+  duration_ms: 0.140834
+  type: 'test'
+  ...
+# Subtest: resolveWikilink uses canonical collection target while displaying alias
+ok 533 - resolveWikilink uses canonical collection target while displaying alias
+  ---
+  duration_ms: 1.219833
+  type: 'test'
+  ...
+# Subtest: resolveWikilink falls back to section routing for plain slug links
+ok 534 - resolveWikilink falls back to section routing for plain slug links
+  ---
+  duration_ms: 0.143875
+  type: 'test'
+  ...
+# Subtest: resolveWikilink matches canonical id-slug concept targets against plain slugs
+ok 535 - resolveWikilink matches canonical id-slug concept targets against plain slugs
+  ---
+  duration_ms: 0.148875
+  type: 'test'
+  ...
+# Subtest: resolveWikilink recognizes released Synto ULID canonical targets
+ok 536 - resolveWikilink recognizes released Synto ULID canonical targets
+  ---
+  duration_ms: 0.063458
+  type: 'test'
+  ...
+# Subtest: resolveWikilink does not strip invalid ULID-like prefixes
+ok 537 - resolveWikilink does not strip invalid ULID-like prefixes
+  ---
+  duration_ms: 0.139667
+  type: 'test'
+  ...
+# Subtest: resolveWikilink marks missing concept slugs as dead when existingSlugs is provided
+ok 538 - resolveWikilink marks missing concept slugs as dead when existingSlugs is provided
+  ---
+  duration_ms: 0.09725
+  type: 'test'
+  ...
+# Subtest: resolveWikilink keeps links live when existingSlugs is omitted
+ok 539 - resolveWikilink keeps links live when existingSlugs is omitted
+  ---
+  duration_ms: 0.067167
+  type: 'test'
+  ...
+1..539
+# tests 539
+# suites 0
+# pass 539
+# fail 0
+# cancelled 0
+# skipped 0
+# todo 0
+# duration_ms 51446.623208
+
+> llm-wiki-frontend@0.1.0 test:component
+> NODE_ENV=test vitest run
+
+
+ RUN  v4.1.10 /Users/rayer/orca/workspaces/llm-wiki-cloud/LWC-390-391-profile-full-recompile/apps/frontend
+
+Not implemented: navigation to another Document
+Not implemented: navigation to another Document
+
+ Test Files  40 passed (40)
+      Tests  381 passed (381)
+   Start at  01:23:48
+   Duration  4.31s (transform 3.58s, setup 825ms, import 9.37s, tests 16.65s, environment 20.74s)
+
+COMMAND=npm test
+EXIT_CODE=0

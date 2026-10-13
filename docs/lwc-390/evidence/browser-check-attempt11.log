@@ -1,0 +1,31 @@
+PASS desktop has no horizontal overflow — 1280px document / 1280px viewport
+PASS desktop permanent notice is in the initial viewport
+PASS desktop starts with all three cards collapsed — ["false","false","false"]
+PASS Traditional Chinese page title is localized
+PASS the previous active generation remains visible while candidate work is pending
+PASS English notice and card labels render
+PASS example editing leaves mock API write count at zero
+PASS example text is editable in the real requirements editor
+PASS guide has one fixed case with unknown information preserved
+PASS guide stage jump moves keyboard focus to the screen heading
+PASS guide does not show generated result links or selection controls
+PASS desktop guide comparison uses two columns — {"viewport":1280,"className":"mt-3 grid min-w-0 gap-3 sm:grid-cols-2","columns":"436px 436px"}
+PASS query stage preserves the stated Taipei Da’an scope
+PASS teaching flow still has no API writes before save
+PASS guide return preserves the unsaved example draft
+PASS guide comparison uses a single column at mobile width — {"viewport":390,"className":"mt-3 grid min-w-0 gap-3 sm:grid-cols-2","columns":"290px"}
+PASS 390px guide has no horizontal overflow
+PASS second guide return keeps the example draft unchanged
+PASS idle fixture example editing still has no API writes
+PASS only the explicit save sends a mocked API write
+PASS 390px viewport has no horizontal overflow — 390px document / 390px viewport
+PASS 390px initial viewport keeps the permanent notice readable
+PASS 390px initial viewport leaves all settings cards collapsed — ["false","false","false"]
+PASS first-compile guidance is a preview and remains unconfirmed before user action
+PASS confirmation does not activate a generation-bound Profile
+PASS first-compile case remains within 390px viewport — 390px document / 390px viewport
+SCREENSHOT /Users/rayer/orca/workspaces/llm-wiki-cloud/LWC-390-391-profile-full-recompile/docs/lwc-390/evidence/lwc390-profile-desktop.png
+SCREENSHOT /Users/rayer/orca/workspaces/llm-wiki-cloud/LWC-390-391-profile-full-recompile/docs/lwc-390/evidence/lwc390-profile-mobile-390.png
+SCREENSHOT /Users/rayer/orca/workspaces/llm-wiki-cloud/LWC-390-391-profile-full-recompile/docs/lwc-390/evidence/lwc390-guide-mobile-390.png
+
+EXIT: 0

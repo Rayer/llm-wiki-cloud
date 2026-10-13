@@ -1,0 +1,14 @@
+
+> llm-wiki-frontend@0.1.0 test:component
+> NODE_ENV=test vitest run tests/lwc-211-profile.test.tsx tests/lwc-390-391-project-context.test.tsx tests/lwc-391-full-recompile.test.tsx
+
+
+ RUN  v4.1.10 /Users/rayer/orca/workspaces/llm-wiki-cloud/LWC-390-391-profile-full-recompile/apps/frontend
+
+
+ Test Files  3 passed (3)
+      Tests  42 passed (42)
+   Start at  01:20:21
+   Duration  1.89s (transform 244ms, setup 53ms, import 465ms, tests 1.67s, environment 882ms)
+
+EXIT_CODE=0

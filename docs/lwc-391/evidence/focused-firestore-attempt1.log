@@ -1,0 +1,54 @@
+zsh:1: command not found: TestProfileReceiptFirestoreAtomicOutboxAndDuplicate
+zsh:1: command not found: TestRecompileAllUsesFullQuotaAndSharedCleanRebuildAdmission
+zsh:1: command not found: TestProfileReceiptActualPublisherCallback
+zsh:1: command not found: TestProfileCompileReceiptRecordsActualGuidanceKind -count=1 -v\n
+=== RUN   TestFirestoreReserveQuotaFullModeAndIncrementalRemainDistinct
+--- PASS: TestFirestoreReserveQuotaFullModeAndIncrementalRemainDistinct (0.33s)
+=== RUN   TestRecompileAllUsesFullQuotaAndSharedCleanRebuildAdmission
+2026/10/13 00:40:55 pipeline activity unavailable; using lock only
+2026/10/13 00:40:55 pipeline activity unavailable; using lock only
+    recompile_all_test.go:178: recompile status=500 body={"error":"pipeline unavailable"}, want 202
+--- FAIL: TestRecompileAllUsesFullQuotaAndSharedCleanRebuildAdmission (0.01s)
+FAIL
+FAIL	github.com/rayer/llm-wiki-bff/internal/handler/v1	0.918s
+testing: warning: no tests to run
+PASS
+ok  	github.com/rayer/llm-wiki-bff/internal/firestore	0.359s [no tests to run]
+?   	github.com/rayer/llm-wiki-bff/internal/profileruntime	[no test files]
+=== RUN   TestProfileReceiptActualPublisherCallback
+=== RUN   TestProfileReceiptActualPublisherCallback/success
+2026/10/13 00:40:54 worker: pinned Profile guidance revision=aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa
+2026/10/13 00:40:54 [1/1] synto command
+=== RUN   TestProfileReceiptActualPublisherCallback/confirmed_readback
+2026/10/13 00:40:54 worker: pinned Profile guidance revision=aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa
+2026/10/13 00:40:55 [1/1] synto command
+=== RUN   TestProfileReceiptActualPublisherCallback/execution_failure
+2026/10/13 00:40:55 worker: pinned Profile guidance revision=aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa
+2026/10/13 00:40:55 [1/1] synto command
+=== RUN   TestProfileReceiptActualPublisherCallback/ambiguous
+2026/10/13 00:40:55 worker: pinned Profile guidance revision=aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa
+2026/10/13 00:40:55 [1/1] synto command
+=== RUN   TestProfileReceiptActualPublisherCallback/receipt_failure
+2026/10/13 00:40:55 worker: pinned Profile guidance revision=aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa
+2026/10/13 00:40:55 [1/1] synto command
+--- PASS: TestProfileReceiptActualPublisherCallback (0.17s)
+    --- PASS: TestProfileReceiptActualPublisherCallback/success (0.05s)
+    --- PASS: TestProfileReceiptActualPublisherCallback/confirmed_readback (0.04s)
+    --- PASS: TestProfileReceiptActualPublisherCallback/execution_failure (0.02s)
+    --- PASS: TestProfileReceiptActualPublisherCallback/ambiguous (0.04s)
+    --- PASS: TestProfileReceiptActualPublisherCallback/receipt_failure (0.03s)
+=== RUN   TestProfileCompileReceiptRecordsActualGuidanceKind
+=== RUN   TestProfileCompileReceiptRecordsActualGuidanceKind/active
+=== RUN   TestProfileCompileReceiptRecordsActualGuidanceKind/bootstrap
+=== RUN   TestProfileCompileReceiptRecordsActualGuidanceKind/none
+--- PASS: TestProfileCompileReceiptRecordsActualGuidanceKind (0.00s)
+    --- PASS: TestProfileCompileReceiptRecordsActualGuidanceKind/active (0.00s)
+    --- PASS: TestProfileCompileReceiptRecordsActualGuidanceKind/bootstrap (0.00s)
+    --- PASS: TestProfileCompileReceiptRecordsActualGuidanceKind/none (0.00s)
+=== RUN   TestProfileReceiptFirestoreAtomicOutboxAndDuplicate
+--- PASS: TestProfileReceiptFirestoreAtomicOutboxAndDuplicate (0.21s)
+PASS
+ok  	github.com/rayer/llm-wiki-bff/cmd/olw_worker	0.920s
+FAIL
+
+EXIT: 1

@@ -52,6 +52,7 @@ beforeEach(() => {
   vi.stubGlobal('localStorage', storageLike);
   window.localStorage.setItem('locale', 'zh-TW');
   mocks.getPipelineStatus.mockResolvedValue({
+    project_id: 'project-a',
     quota: mockedQuota,
   });
 

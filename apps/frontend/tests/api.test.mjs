@@ -13,6 +13,7 @@ import {
   deleteAdminUser,
   getPipelineLog,
   getPipelineStatus,
+  getRecompileAllCapability,
   getAdminProjects,
   getAdminUsers,
   getBuildInfo,
@@ -32,6 +33,7 @@ import {
   triggerAdminProjectPipeline,
   toV1Path,
   triggerPipeline,
+  recompileAll,
   updateAdminUserRole,
   uploadRawFile,
 } from '../src/lib/api.ts';
@@ -478,6 +480,83 @@ test('getPipelineStatus reads the project scoped pipeline status endpoint', asyn
     assert.equal(requestedInit.headers['X-Project-ID'], 'project-1');
     assert.equal(status.last_execution.status, 'SUCCEEDED');
     assert.equal(status.last_execution.duration, '12s');
+  } finally {
+    globalThis.fetch = originalFetch;
+  }
+});
+
+test('full recompile capability uses the full-mode quota snapshot for the scoped project', async () => {
+  configureApiAuth({
+    getAccessToken: () => 'jwt-token',
+    refreshAccessToken: async () => null,
+    onUnauthorized: () => undefined,
+  });
+  const originalFetch = globalThis.fetch;
+  let requestedUrl = '';
+  let requestedInit;
+  globalThis.fetch = async (url, init) => {
+    requestedUrl = String(url);
+    requestedInit = init;
+    return Response.json({
+      allowed: true,
+      compile_mode: 'full',
+      quota: {
+        enforced: true,
+        allowed: true,
+        runs_today: 0,
+        daily_limit: 2,
+        new_raw_files: 0,
+        min_new_raw: 1,
+        already_running: false,
+      },
+    });
+  };
+  try {
+    const capability = await getRecompileAllCapability('project-1');
+    assert.equal(requestedUrl, 'https://api.runtime.test/api/v1/projects/project-1/recompile-all/capability');
+    assert.equal(requestedInit.headers['X-Project-ID'], 'project-1');
+    assert.equal(capability.compile_mode, 'full');
+    assert.equal(capability.allowed, true);
+    assert.equal(capability.quota.new_raw_files, 0);
+    assert.equal(capability.quota.min_new_raw, 1);
+  } finally {
+    globalThis.fetch = originalFetch;
+  }
+});
+
+test('full recompile validates accepted execution identity and never retries a malformed 202', async () => {
+  configureApiAuth({
+    getAccessToken: () => 'jwt-token',
+    refreshAccessToken: async () => null,
+    onUnauthorized: () => undefined,
+  });
+  const originalFetch = globalThis.fetch;
+  let fetchCount = 0;
+  let requestedInit;
+  globalThis.fetch = async (_url, init) => {
+    fetchCount += 1;
+    requestedInit = init;
+    if (fetchCount === 1) {
+      return Response.json({
+        status: 'accepted',
+        project_id: 'project-1',
+        execution_id: 'full-execution',
+        compile_mode: 'full',
+      }, { status: 202 });
+    }
+    return Response.json({ status: 'accepted', project_id: 'project-1', compile_mode: 'full' }, { status: 202 });
+  };
+  try {
+    const accepted = await recompileAll('project-1');
+    assert.equal(accepted.execution_id, 'full-execution');
+    assert.equal(accepted.compile_mode, 'full');
+    assert.equal(requestedInit.method, 'POST');
+    assert.equal(requestedInit.headers['X-Project-ID'], 'project-1');
+    await assert.rejects(
+      () => recompileAll('project-1'),
+      (error) => error instanceof ApiError && error.status === 502 && /Invalid recompile response/.test(error.message),
+    );
+    assert.equal(fetchCount, 2);
   } finally {
     globalThis.fetch = originalFetch;
   }

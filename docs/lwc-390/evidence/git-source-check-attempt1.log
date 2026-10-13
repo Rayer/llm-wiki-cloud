@@ -1,0 +1,2 @@
+COMMAND: git show --format= --check 4d73702d2eeb6836690ca7353977ace51c7789d6
+EXIT: 0

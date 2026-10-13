@@ -219,18 +219,30 @@ type StatusResponse struct {
 
 // PipelineExecutionResponse is a normalized Cloud Run execution summary.
 type PipelineExecutionResponse struct {
-	Name            string                     `json:"name"`
-	Status          string                     `json:"status"`
-	StartTime       string                     `json:"start_time"`
-	EndTime         string                     `json:"end_time"`
-	Duration        string                     `json:"duration"`
-	LogURL          string                     `json:"log_url,omitempty"`
-	Diagnostic      *PipelineFailureDiagnostic `json:"diagnostic,omitempty"`
-	DiagnosticState string                     `json:"diagnostic_state,omitempty"`
-	FailureReason   string                     `json:"failure_reason,omitempty"`
-	QuotaSettlement string                     `json:"quota_settlement,omitempty"`
-	LogState        string                     `json:"log_state,omitempty"`
-	LogStateReason  string                     `json:"log_state_reason,omitempty"`
+	Name               string                            `json:"name"`
+	Status             string                            `json:"status"`
+	CompileMode        string                            `json:"compile_mode,omitempty"`
+	PublicationOutcome string                            `json:"publication_outcome,omitempty"`
+	ConsumedGuidance   *PipelineConsumedGuidanceEvidence `json:"consumed_guidance,omitempty"`
+	StartTime          string                            `json:"start_time"`
+	EndTime            string                            `json:"end_time"`
+	Duration           string                            `json:"duration"`
+	LogURL             string                            `json:"log_url,omitempty"`
+	Diagnostic         *PipelineFailureDiagnostic        `json:"diagnostic,omitempty"`
+	DiagnosticState    string                            `json:"diagnostic_state,omitempty"`
+	FailureReason      string                            `json:"failure_reason,omitempty"`
+	QuotaSettlement    string                            `json:"quota_settlement,omitempty"`
+	LogState           string                            `json:"log_state,omitempty"`
+	LogStateReason     string                            `json:"log_state_reason,omitempty"`
+}
+
+// PipelineConsumedGuidanceEvidence contains only the non-secret consumed Profile reference.
+type PipelineConsumedGuidanceEvidence struct {
+	Status            string  `json:"status"`
+	ExecutionID       string  `json:"execution_id,omitempty"`
+	ContentGeneration string  `json:"content_generation,omitempty"`
+	Kind              string  `json:"kind,omitempty"`
+	Revision          *string `json:"revision"`
 }
 
 // PipelineFailureDiagnostic is the allowlisted, worker-produced failure

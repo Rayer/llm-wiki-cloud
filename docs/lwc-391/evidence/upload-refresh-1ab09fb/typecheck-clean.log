@@ -1,0 +1,8 @@
+
+> llm-wiki-frontend@0.1.0 typecheck
+> tsc --noEmit
+
+
+command: cd apps/frontend && npm run typecheck
+source_sha: 1ab09fb9f97614ae967f7d609249e708a3df4896
+exit_code: 0

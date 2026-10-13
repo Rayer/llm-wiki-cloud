@@ -1,0 +1,45 @@
+COMMAND: cd apps/bff && FIRESTORE_EMULATOR_HOST=127.0.0.1:8585 go test ./internal/handler/v1 ./cmd/olw_worker -run "TestFirestoreReserveQuotaFullModeAndIncrementalRemainDistinct|TestRecompileAllUsesFullQuotaAndSharedCleanRebuildAdmission|TestProfileReceiptFirestoreAtomicOutboxAndDuplicate|TestProfileReceiptActualPublisherCallback|TestProfileCompileReceiptRecordsActualGuidanceKind" -count=1 -v
+=== RUN   TestFirestoreReserveQuotaFullModeAndIncrementalRemainDistinct
+--- PASS: TestFirestoreReserveQuotaFullModeAndIncrementalRemainDistinct (0.01s)
+=== RUN   TestRecompileAllUsesFullQuotaAndSharedCleanRebuildAdmission
+2026/10/13 00:42:01 pipeline activity unavailable; using lock only
+2026/10/13 00:42:01 pipeline activity unavailable; using lock only
+--- PASS: TestRecompileAllUsesFullQuotaAndSharedCleanRebuildAdmission (0.01s)
+PASS
+ok  	github.com/rayer/llm-wiki-bff/internal/handler/v1	0.398s
+=== RUN   TestProfileReceiptActualPublisherCallback
+=== RUN   TestProfileReceiptActualPublisherCallback/success
+2026/10/13 00:42:01 worker: pinned Profile guidance revision=aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa
+2026/10/13 00:42:01 [1/1] synto command
+=== RUN   TestProfileReceiptActualPublisherCallback/confirmed_readback
+2026/10/13 00:42:01 worker: pinned Profile guidance revision=aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa
+2026/10/13 00:42:01 [1/1] synto command
+=== RUN   TestProfileReceiptActualPublisherCallback/execution_failure
+2026/10/13 00:42:01 worker: pinned Profile guidance revision=aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa
+2026/10/13 00:42:01 [1/1] synto command
+=== RUN   TestProfileReceiptActualPublisherCallback/ambiguous
+2026/10/13 00:42:01 worker: pinned Profile guidance revision=aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa
+2026/10/13 00:42:01 [1/1] synto command
+=== RUN   TestProfileReceiptActualPublisherCallback/receipt_failure
+2026/10/13 00:42:01 worker: pinned Profile guidance revision=aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa
+2026/10/13 00:42:01 [1/1] synto command
+--- PASS: TestProfileReceiptActualPublisherCallback (0.15s)
+    --- PASS: TestProfileReceiptActualPublisherCallback/success (0.04s)
+    --- PASS: TestProfileReceiptActualPublisherCallback/confirmed_readback (0.03s)
+    --- PASS: TestProfileReceiptActualPublisherCallback/execution_failure (0.01s)
+    --- PASS: TestProfileReceiptActualPublisherCallback/ambiguous (0.03s)
+    --- PASS: TestProfileReceiptActualPublisherCallback/receipt_failure (0.03s)
+=== RUN   TestProfileCompileReceiptRecordsActualGuidanceKind
+=== RUN   TestProfileCompileReceiptRecordsActualGuidanceKind/active
+=== RUN   TestProfileCompileReceiptRecordsActualGuidanceKind/bootstrap
+=== RUN   TestProfileCompileReceiptRecordsActualGuidanceKind/none
+--- PASS: TestProfileCompileReceiptRecordsActualGuidanceKind (0.00s)
+    --- PASS: TestProfileCompileReceiptRecordsActualGuidanceKind/active (0.00s)
+    --- PASS: TestProfileCompileReceiptRecordsActualGuidanceKind/bootstrap (0.00s)
+    --- PASS: TestProfileCompileReceiptRecordsActualGuidanceKind/none (0.00s)
+=== RUN   TestProfileReceiptFirestoreAtomicOutboxAndDuplicate
+--- PASS: TestProfileReceiptFirestoreAtomicOutboxAndDuplicate (0.02s)
+PASS
+ok  	github.com/rayer/llm-wiki-bff/cmd/olw_worker	0.504s
+
+EXIT: 0

@@ -1,0 +1,6 @@
+
+> llm-wiki-frontend@0.1.0 typecheck
+> tsc --noEmit
+
+COMMAND=npm run typecheck
+EXIT_CODE=0

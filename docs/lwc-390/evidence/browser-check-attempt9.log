@@ -1,0 +1,12 @@
+Explicit-save diagnostic: {"button":"Save requirements","disabled":false,"fields":["Keep source evidence and leave unmentioned details unknown.","I often eat out with children. When organizing restaurant information, keep details about child seats, walkway width, and stroller access. Mark information that is not mentioned as unknown; do not guess."],"scenario":"active-idle","writes":"0"}
+file:///Users/rayer/orca/workspaces/llm-wiki-cloud/LWC-390-391-profile-full-recompile/scripts/lwc390-browser-check.mjs:148
+  if (!condition) throw new Error(`FAIL ${name}${details ? `: ${details}` : ''}`);
+                        ^
+
+Error: FAIL 390px initial viewport keeps the permanent notice readable
+    at check (file:///Users/rayer/orca/workspaces/llm-wiki-cloud/LWC-390-391-profile-full-recompile/scripts/lwc390-browser-check.mjs:148:25)
+    at file:///Users/rayer/orca/workspaces/llm-wiki-cloud/LWC-390-391-profile-full-recompile/scripts/lwc390-browser-check.mjs:243:3
+
+Node.js v22.23.2
+
+EXIT: 1

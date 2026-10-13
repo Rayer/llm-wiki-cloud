@@ -1,0 +1,11 @@
+file:///Users/rayer/orca/workspaces/llm-wiki-cloud/LWC-390-391-profile-full-recompile/scripts/lwc390-browser-check.mjs:148
+  if (!condition) throw new Error(`FAIL ${name}${details ? `: ${details}` : ''}`);
+                        ^
+
+Error: FAIL desktop guide comparison uses two columns: {"viewport":1280,"className":"mt-3 grid min-w-0 gap-3 sm:grid-cols-2","columns":"436px 436px"}
+    at check (file:///Users/rayer/orca/workspaces/llm-wiki-cloud/LWC-390-391-profile-full-recompile/scripts/lwc390-browser-check.mjs:148:25)
+    at file:///Users/rayer/orca/workspaces/llm-wiki-cloud/LWC-390-391-profile-full-recompile/scripts/lwc390-browser-check.mjs:199:3
+
+Node.js v22.23.2
+COMMAND=node scripts/lwc390-browser-check.mjs
+EXIT_CODE=1

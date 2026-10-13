@@ -222,13 +222,34 @@ definitions:
           type: string
         type: array
     type: object
+  handler.PipelineConsumedGuidanceEvidence:
+    properties:
+      content_generation:
+        type: string
+      execution_id:
+        type: string
+      kind:
+        type: string
+      revision:
+        type: string
+      status:
+        type: string
+    type: object
   handler.PipelineExecutionResponse:
     properties:
+      compile_mode:
+        type: string
+      consumed_guidance:
+        $ref: '#/definitions/handler.PipelineConsumedGuidanceEvidence'
       diagnostic:
         $ref: '#/definitions/handler.PipelineFailureDiagnostic'
+      diagnostic_state:
+        type: string
       duration:
         type: string
       end_time:
+        type: string
+      failure_reason:
         type: string
       log_state:
         type: string
@@ -237,6 +258,10 @@ definitions:
       log_url:
         type: string
       name:
+        type: string
+      publication_outcome:
+        type: string
+      quota_settlement:
         type: string
       start_time:
         type: string
@@ -253,6 +278,8 @@ definitions:
         type: string
       exit_code:
         type: integer
+      message:
+        type: string
       stage:
         type: string
       status:
@@ -402,6 +429,8 @@ definitions:
         type: string
       locked:
         type: boolean
+      quota:
+        $ref: '#/definitions/pipelinequota.Snapshot'
       raw_count:
         type: integer
       running_pipelines:
@@ -436,6 +465,14 @@ definitions:
           type: string
         type: array
     type: object
+  pipelinequota.ExecutionMode:
+    enum:
+    - incremental
+    - full
+    type: string
+    x-enum-varnames:
+    - ModeIncremental
+    - ModeFull
   pipelinequota.Reason:
     enum:
     - ""
@@ -830,6 +867,8 @@ definitions:
     type: object
   v1.pipelineStatusResponse:
     properties:
+      full_quota:
+        $ref: '#/definitions/pipelinequota.Snapshot'
       last_execution:
         $ref: '#/definitions/handler.PipelineExecutionResponse'
       project_id:
@@ -906,8 +945,12 @@ definitions:
     properties:
       allowed:
         type: boolean
+      compile_mode:
+        $ref: '#/definitions/pipelinequota.ExecutionMode'
       denial_code:
         type: string
+      quota:
+        $ref: '#/definitions/pipelinequota.Snapshot'
     type: object
   v1.recompileAllDenialResponse:
     properties:
@@ -1864,11 +1907,16 @@ paths:
       - profile
   /api/v1/projects/{pid}/recompile-all:
     post:
-      description: Rejects the full-project recompile before quota or worker admission
-        until project BYOK is available.
+      description: Starts a quota-gated clean rebuild from raw sources through the
+        existing pipeline worker.
       produces:
       - application/json
       responses:
+        "202":
+          description: Accepted
+          schema:
+            additionalProperties: true
+            type: object
         "401":
           description: Unauthorized
           schema:
@@ -1879,6 +1927,14 @@ paths:
             $ref: '#/definitions/v1.recompileAllDenialResponse'
         "404":
           description: Not Found
+          schema:
+            $ref: '#/definitions/handler.ErrorResponse'
+        "409":
+          description: Conflict
+          schema:
+            $ref: '#/definitions/handler.ErrorResponse'
+        "429":
+          description: Too Many Requests
           schema:
             $ref: '#/definitions/handler.ErrorResponse'
         "500":
@@ -1893,8 +1949,8 @@ paths:
       - profile
   /api/v1/projects/{pid}/recompile-all/capability:
     get:
-      description: Returns the project's current Recompile all capability. It is denied
-        until project BYOK is available.
+      description: Returns the project's current full-mode pipeline capability and
+        quota snapshot.
       produces:
       - application/json
       responses:

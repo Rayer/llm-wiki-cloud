@@ -1,0 +1,8 @@
+COMMAND: env -u GOOGLE_CLOUD_PROJECT FIRESTORE_EMULATOR_HOST=127.0.0.1:8585 python3 apps/bff/scripts/test_local_dev_makefile.py
+.....................
+----------------------------------------------------------------------
+Ran 21 tests in 1.696s
+
+OK
+
+EXIT: 0

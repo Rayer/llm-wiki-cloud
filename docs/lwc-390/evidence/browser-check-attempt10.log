@@ -1,0 +1,11 @@
+file:///Users/rayer/orca/workspaces/llm-wiki-cloud/LWC-390-391-profile-full-recompile/scripts/lwc390-browser-check.mjs:148
+  if (!condition) throw new Error(`FAIL ${name}${details ? `: ${details}` : ''}`);
+                        ^
+
+Error: FAIL confirmation does not activate a generation-bound Profile
+    at check (file:///Users/rayer/orca/workspaces/llm-wiki-cloud/LWC-390-391-profile-full-recompile/scripts/lwc390-browser-check.mjs:148:25)
+    at file:///Users/rayer/orca/workspaces/llm-wiki-cloud/LWC-390-391-profile-full-recompile/scripts/lwc390-browser-check.mjs:256:3
+
+Node.js v22.23.2
+
+EXIT: 1

@@ -1,0 +1,8 @@
+
+> llm-wiki-frontend@0.1.0 typecheck
+> tsc --noEmit
+
+tests/lwc-390-391-project-context.test.tsx(115,7): error TS2353: Object literal may only specify known properties, and 'status' does not exist in type '{ last_execution?: { status: "RUNNING" | "SUCCEEDED"; compile_mode: string; duration: string; publication_outcome: string; consumed_guidance: { status: string; revision: null; }; } | undefined; project_id: string; quota: { ...; }; }'.
+tests/lwc-390-391-project-context.test.tsx(173,7): error TS2353: Object literal may only specify known properties, and 'status' does not exist in type '{ last_execution?: { status: "RUNNING" | "SUCCEEDED"; compile_mode: string; duration: string; publication_outcome: string; consumed_guidance: { status: string; revision: null; }; } | undefined; project_id: string; quota: { ...; }; }'.
+
+EXIT_CODE=2

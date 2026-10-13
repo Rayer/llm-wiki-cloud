@@ -7,13 +7,14 @@ import (
 
 	"github.com/gin-gonic/gin"
 	"github.com/rayer/llm-wiki-bff/internal/auth"
+	"github.com/rayer/llm-wiki-bff/internal/pipelinequota"
 )
 
-const recompileAllDenialByokRequired = "byok_required"
-
 type recompileAllCapabilityResponse struct {
-	Allowed    bool   `json:"allowed"`
-	DenialCode string `json:"denial_code"`
+	Allowed     bool                        `json:"allowed"`
+	DenialCode  string                      `json:"denial_code,omitempty"`
+	CompileMode pipelinequota.ExecutionMode `json:"compile_mode"`
+	Quota       *pipelinequota.Snapshot     `json:"quota,omitempty"`
 }
 
 type recompileAllDenialResponse struct {
@@ -21,12 +22,10 @@ type recompileAllDenialResponse struct {
 	DenialCode string `json:"denial_code"`
 }
 
-// RecompileAllCapability reports whether a project can run the explicit
-// Recompile all action. BYOK storage is not implemented yet, so capability
-// remains fail-closed until that authority exists.
+// RecompileAllCapability reports the project's full-mode pipeline quota.
 //
 //	@Summary		Get Recompile all capability
-//	@Description	Returns the project's current Recompile all capability. It is denied until project BYOK is available.
+//	@Description	Returns the project's current full-mode pipeline capability and quota snapshot.
 //	@Tags			profile
 //	@Produce		json
 //	@Success		200	{object}	recompileAllCapabilityResponse
@@ -37,38 +36,55 @@ type recompileAllDenialResponse struct {
 //	@Security		ProjectHeader
 //	@Router		/api/v1/projects/{pid}/recompile-all/capability [get]
 func (h *Handler) RecompileAllCapability(c *gin.Context) {
-	if _, ok := h.authorizeRecompileAllProject(c, ProjectRead); !ok {
+	project, ok := h.authorizeRecompileAllProject(c, ProjectRead)
+	if !ok {
 		return
 	}
-	c.JSON(http.StatusOK, recompileAllCapabilityResponse{
-		Allowed:    false,
-		DenialCode: recompileAllDenialByokRequired,
-	})
+	response := recompileAllCapabilityResponse{CompileMode: pipelinequota.ModeFull}
+	if h.localPipeline != nil {
+		response.DenialCode = "unsupported_mode"
+		c.JSON(http.StatusOK, response)
+		return
+	}
+	snapshot, _, err := h.evaluateQuotaForMode(c.Request.Context(), project.UserID, project.ProjectID, "", pipelinequota.ModeFull)
+	if err != nil {
+		c.JSON(http.StatusInternalServerError, gin.H{"error": "pipeline status unavailable"})
+		return
+	}
+	response.Allowed = snapshot.Allowed
+	response.Quota = &snapshot
+	if !snapshot.Allowed {
+		response.DenialCode = string(snapshot.Reason)
+	}
+	c.JSON(http.StatusOK, response)
 }
 
-// RecompileAll handles the explicit full-project recompile action. It does
-// not reserve pipeline quota or start a worker while BYOK is unavailable.
-// The existing incremental pipeline route and admin recovery route are separate.
+// RecompileAll starts a full clean rebuild through the shared pipeline admission path.
 //
 //	@Summary		Recompile all project content
-//	@Description	Rejects the full-project recompile before quota or worker admission until project BYOK is available.
+//	@Description	Starts a quota-gated clean rebuild from raw sources through the existing pipeline worker.
 //	@Tags			profile
 //	@Produce		json
-//	@Failure		401	{object}	handler.ErrorResponse
+//	@Success		202	{object} map[string]any
+//	@Failure		401	{object} handler.ErrorResponse
 //	@Failure		403	{object}	recompileAllDenialResponse
 //	@Failure		404	{object}	handler.ErrorResponse
+//	@Failure		409	{object}	handler.ErrorResponse
+//	@Failure		429	{object}	handler.ErrorResponse
 //	@Failure		500	{object}	handler.ErrorResponse
 //	@Security		BearerAuth
 //	@Security		ProjectHeader
 //	@Router		/api/v1/projects/{pid}/recompile-all [post]
 func (h *Handler) RecompileAll(c *gin.Context) {
-	if _, ok := h.authorizeRecompileAllProject(c, ProjectEdit); !ok {
+	project, ok := h.authorizeRecompileAllProject(c, ProjectEdit)
+	if !ok {
 		return
 	}
-	c.JSON(http.StatusForbidden, recompileAllDenialResponse{
-		Error:      recompileAllDenialByokRequired,
-		DenialCode: recompileAllDenialByokRequired,
-	})
+	if h.localPipeline != nil {
+		c.JSON(http.StatusConflict, recompileAllDenialResponse{Error: "full recompile is unavailable in local pipeline mode", DenialCode: "unsupported_mode"})
+		return
+	}
+	h.pipelineRunForMode(c, project.UserID, project.ProjectID, pipelinequota.ModeFull)
 }
 
 func (h *Handler) authorizeRecompileAllProject(c *gin.Context, action ProjectAction) (AuthorizedProject, bool) {

@@ -16,6 +16,15 @@ export type PipelineDiagnostic = {
 export type PipelineExecution = {
   name?: string | null;
   status?: 'RUNNING' | 'SUCCEEDED' | 'FAILED' | string;
+  compile_mode?: 'incremental' | 'full' | string;
+  publication_outcome?: 'confirmed_published' | 'confirmed_not_published' | 'unknown' | string;
+  consumed_guidance?: {
+    status: 'available' | 'unavailable' | string;
+    execution_id?: string;
+    content_generation?: string;
+    kind?: 'none' | 'active' | 'bootstrap' | string;
+    revision: string | null;
+  } | null;
   duration?: string | number | null;
   started_at?: string | null;
   finished_at?: string | null;
@@ -248,7 +257,9 @@ export type ProfileGuidanceArtifactResponse = {
 };
 export type RecompileAllCapability = {
   allowed: boolean;
+  compile_mode: 'full';
   denial_code?: string;
+  quota: PipelineQuota | null;
 };
 
 const LAST_PROJECT_KEY = 'llm-wiki-last-project';
@@ -567,16 +578,22 @@ export async function getRecompileAllCapability(projectId: string): Promise<Reco
   if (!response.ok) {
     throw new ApiError(profileApiError(payload, `Recompile capability request failed (${response.status})`), response.status);
   }
-  if (!isRecord(payload) || typeof payload.allowed !== 'boolean') {
+  if (!isRecord(payload) || typeof payload.allowed !== 'boolean' || payload.compile_mode !== 'full') {
     throw new ApiError('Invalid recompile capability response', 502);
+  }
+  const quota = payload.quota == null ? null : normalizePipelineQuota(payload.quota);
+  if (!quota && payload.denial_code !== 'unsupported_mode') {
+    throw new ApiError('Invalid recompile capability quota', 502);
   }
   return {
     allowed: payload.allowed,
+    compile_mode: 'full',
     ...(asString(payload.denial_code) ? { denial_code: asString(payload.denial_code) } : {}),
+    quota,
   };
 }
 
-export async function recompileAll(projectId: string): Promise<void> {
+export async function recompileAll(projectId: string): Promise<PipelineResult> {
   const projectSegment = profilePathSegment(projectId);
   const response = await apiFetch(`/api/v1/projects/${projectSegment}/recompile-all`, {
     method: 'POST',
@@ -586,6 +603,23 @@ export async function recompileAll(projectId: string): Promise<void> {
     const payload: unknown = await response.json().catch(() => null);
     throw new ApiError(profileApiError(payload, `Recompile all failed (${response.status})`), response.status);
   }
+  const payload: unknown = await response.json().catch(() => null);
+  if (
+    !isRecord(payload)
+    || payload.status !== 'accepted'
+    || payload.compile_mode !== 'full'
+    || payload.project_id !== projectId
+    || !asString(payload.execution_id)
+  ) {
+    throw new ApiError('Invalid recompile response', 502);
+  }
+  return {
+    status: 'accepted',
+    compile_mode: 'full',
+    execution_id: asString(payload.execution_id),
+    project_id: projectId,
+    ...(payload.quota == null ? {} : { quota: normalizePipelineQuota(payload.quota) }),
+  };
 }
 
 function isRecord(value: unknown): value is Record<string, unknown> {
@@ -1089,6 +1123,7 @@ export type PipelineResult = {
   status?: 'accepted' | string;
   execution_id?: string;
   project_id?: string;
+  compile_mode?: 'incremental' | 'full' | string;
   message?: string;
   command?: string;
   quota?: PipelineQuota | null;
@@ -1102,6 +1137,7 @@ export type PipelineStatus = {
   last_execution?: PipelineExecution | null;
   project_id?: string;
   quota?: PipelineQuota | null;
+  full_quota?: PipelineQuota | null;
   suggested_queries?: string[];
 };
 
@@ -1269,8 +1305,11 @@ export async function triggerPipeline(): Promise<PipelineResult> {
   return response.json();
 }
 
-export async function getPipelineStatus(): Promise<PipelineStatus> {
-  return requestJson<PipelineStatus>('/api/v1/pipeline/status');
+export function getPipelineStatus(): Promise<PipelineStatus>;
+export function getPipelineStatus(projectId: string, executionId?: string): Promise<PipelineStatus>;
+export async function getPipelineStatus(projectId?: string, executionId?: string): Promise<PipelineStatus> {
+  const query = executionId ? `?execution_id=${encodeURIComponent(executionId)}` : '';
+  return requestJson<PipelineStatus>(`/api/v1/pipeline/status${query}`, { projectId });
 }
 
 export async function getPipelineLog(logUrl: string, projectId?: string): Promise<string> {

@@ -6,9 +6,12 @@ import { Surface } from './ui/Surface';
 import { Badge } from './ui/Badge';
 import { ExportPanel } from './ExportPanel';
 import {
+  getRecompileAllCapability,
   getPipelineStatus,
+  recompileAll,
   triggerPipeline,
   uploadRawFile,
+  type RecompileAllCapability,
   type PipelineQuota,
   type PipelineResult,
   type PipelineStatus,
@@ -38,6 +41,16 @@ type UploadItem = {
   error?: string;
   result?: RawUploadResult;
 };
+
+type PipelineProjectContext = { projectId: string | null; generation: number };
+type PipelineRequestScope = { projectId: string; contextGeneration: number; requestGeneration: number };
+type PipelineExecutionOwner = { projectId: string; contextGeneration: number };
+
+function isSamePipelineRequestScope(a: PipelineRequestScope, b: PipelineRequestScope): boolean {
+  return a.projectId === b.projectId
+    && a.contextGeneration === b.contextGeneration
+    && a.requestGeneration === b.requestGeneration;
+}
 
 const UPLOAD_CONCURRENCY = 3;
 const RAW_ACCEPT =
@@ -106,15 +119,71 @@ function hasNewRaw(quota: PipelineQuota | null | undefined): boolean {
 export function PipelineClient() {
   const { t } = useT();
   const { isDemoSession, refreshNavCounts, currentProject } = useWorkspace();
+  const projectId = currentProject?.id ?? null;
+  const pipelineProjectContextRef = useRef<PipelineProjectContext>({ projectId, generation: 0 });
+  const pipelineExecutionOwnerRef = useRef<PipelineExecutionOwner | null>(null);
+  const pipelineTerminalPollScopeRef = useRef<PipelineRequestScope | null>(null);
+  const pipelinePollErrorNotifiedRef = useRef(false);
+  if (pipelineProjectContextRef.current.projectId !== projectId) {
+    pipelineProjectContextRef.current = {
+      projectId,
+      generation: pipelineProjectContextRef.current.generation + 1,
+    };
+    pipelineExecutionOwnerRef.current = null;
+  }
+  const pipelineRequestGenerationRef = useRef(0);
+  const pipelineMountedRef = useRef(false);
+  const isPipelineRequestCurrent = useCallback((scope: PipelineRequestScope) => {
+    const latest = pipelineProjectContextRef.current;
+    return pipelineMountedRef.current
+      && latest.projectId === scope.projectId
+      && latest.generation === scope.contextGeneration
+      && pipelineRequestGenerationRef.current === scope.requestGeneration;
+  }, []);
   const [fileLabel, setFileLabel] = useState('Choose files');
   const [uploadItems, setUploadItems] = useState<UploadItem[]>([]);
   const [scrapeUrlText, setScrapeUrlText] = useState('');
   const [pipelineResult, setPipelineResult] = useState<PipelineResult | null>(null);
   const [pipelineStatus, setPipelineStatus] = useState<PipelineStatus | null>(null);
+  const [compileMode, setCompileMode] = useState<'incremental' | 'full'>('incremental');
+  const [fullCapability, setFullCapability] = useState<RecompileAllCapability | null>(null);
   const [loading, setLoading] = useState<string | null>(null); // 'pipeline'
   const [toasts, setToasts] = useState<Toast[]>([]);
   const [wipModal, setWipModal] = useState(false);
   const [showPrereq, setShowPrereq] = useState(false);
+  const refreshPipelineStatus = useCallback(async (scope: PipelineRequestScope) => {
+    if (!isPipelineRequestCurrent(scope)) return;
+    try {
+      const status = await getPipelineStatus(scope.projectId);
+      const latest = pipelineProjectContextRef.current;
+      if (
+        !pipelineMountedRef.current
+        || latest.projectId !== scope.projectId
+        || latest.generation !== scope.contextGeneration
+        || status.project_id !== scope.projectId
+      ) return;
+      const executionOwner = pipelineExecutionOwnerRef.current;
+      if (
+        executionOwner?.projectId === scope.projectId
+        && executionOwner.contextGeneration === scope.contextGeneration
+      ) {
+        // Generic refreshes can update quota, but only execution-scoped polls own lifecycle evidence.
+        setPipelineStatus((current) => current?.project_id === scope.projectId
+          ? {
+              ...current,
+              ...(status.quota !== undefined ? { quota: status.quota } : {}),
+              ...(status.full_quota !== undefined ? { full_quota: status.full_quota } : {}),
+              ...(status.suggested_queries !== undefined ? { suggested_queries: status.suggested_queries } : {}),
+            }
+          : current);
+        return;
+      }
+      if (pipelineRequestGenerationRef.current !== scope.requestGeneration) return;
+      setPipelineStatus(status);
+    } catch {
+      // Keep the current status when a best-effort refresh fails.
+    }
+  }, [isPipelineRequestCurrent]);
   const fileRef = useRef<HTMLInputElement>(null);
   const pipelinePollRef = useRef<ReturnType<typeof setInterval> | null>(null);
   const activeUploadsRef = useRef(0);
@@ -135,52 +204,115 @@ export function PipelineClient() {
     }
   }, []);
 
-  const pollPipelineStatus = useCallback(async () => {
-    try {
-      const status = await getPipelineStatus();
-      setPipelineStatus(status);
+  useEffect(() => {
+    pipelineMountedRef.current = true;
+    return () => {
+      pipelineMountedRef.current = false;
+      pipelineRequestGenerationRef.current += 1;
+      stopPipelinePolling();
+    };
+  }, [stopPipelinePolling]);
 
+  const pollPipelineStatus = useCallback(async (scope: PipelineRequestScope, executionId?: string) => {
+    if (!isPipelineRequestCurrent(scope)) return;
+    const terminalScope = pipelineTerminalPollScopeRef.current;
+    if (terminalScope && isSamePipelineRequestScope(terminalScope, scope)) return;
+    try {
+      const status = await getPipelineStatus(scope.projectId, executionId);
+      if (!isPipelineRequestCurrent(scope) || status.project_id !== scope.projectId) return;
+      const currentTerminalScope = pipelineTerminalPollScopeRef.current;
+      if (currentTerminalScope && isSamePipelineRequestScope(currentTerminalScope, scope)) return;
       const executionStatus = status.last_execution?.status;
-      if (executionStatus === 'SUCCEEDED' || executionStatus === 'FAILED') {
+      const isTerminal = executionStatus === 'SUCCEEDED' || executionStatus === 'FAILED';
+      if (isTerminal) {
+        // A later interval tick may already be in flight; it cannot regress this terminal result.
+        pipelineTerminalPollScopeRef.current = scope;
         stopPipelinePolling();
       }
-    } catch (err) {
-      stopPipelinePolling();
-      addToast(err instanceof Error ? err.message : 'Pipeline status failed', 'error');
-    }
-  }, [addToast, stopPipelinePolling]);
+      pipelinePollErrorNotifiedRef.current = false;
+      setPipelineStatus(status);
 
-  useEffect(() => stopPipelinePolling, [stopPipelinePolling]);
+      if (isTerminal) {
+        if (status.last_execution?.compile_mode === 'full') {
+          const capability = await getRecompileAllCapability(scope.projectId).catch(() => null);
+          if (isPipelineRequestCurrent(scope) && capability) setFullCapability(capability);
+        }
+      }
+    } catch (err) {
+      const currentTerminalScope = pipelineTerminalPollScopeRef.current;
+      if (
+        !isPipelineRequestCurrent(scope)
+        || (currentTerminalScope && isSamePipelineRequestScope(currentTerminalScope, scope))
+      ) return;
+      // Keep the execution-scoped interval alive so a transient status failure can recover.
+      if (!pipelinePollErrorNotifiedRef.current) {
+        pipelinePollErrorNotifiedRef.current = true;
+        addToast(err instanceof Error ? err.message : 'Pipeline status failed', 'error');
+      }
+    }
+  }, [addToast, isPipelineRequestCurrent, stopPipelinePolling]);
+
+  useEffect(() => stopPipelinePolling, [currentProject?.id, stopPipelinePolling]);
 
   useEffect(() => {
     const refreshAfterAnnotationSave = () => {
-      void getPipelineStatus().then(setPipelineStatus).catch(() => undefined);
+      const context = pipelineProjectContextRef.current;
+      if (context.projectId) {
+        void refreshPipelineStatus({
+          projectId: context.projectId,
+          contextGeneration: context.generation,
+          requestGeneration: pipelineRequestGenerationRef.current,
+        });
+      }
     };
     window.addEventListener('source-annotation-saved', refreshAfterAnnotationSave);
     return () => window.removeEventListener('source-annotation-saved', refreshAfterAnnotationSave);
-  }, []);
+  }, [currentProject?.id, refreshPipelineStatus]);
 
   // Load quota + execution status on mount and when workspace project changes.
   useEffect(() => {
-    if (!currentProject) {
+    const context = pipelineProjectContextRef.current;
+    const projectId = context.projectId;
+    const requestGeneration = pipelineRequestGenerationRef.current;
+    let cancelled = false;
+    const isCurrentContext = () => {
+      const latest = pipelineProjectContextRef.current;
+      return !cancelled
+        && latest.projectId === context.projectId
+        && latest.generation === context.generation
+        && pipelineRequestGenerationRef.current === requestGeneration;
+    };
+    if (!projectId) {
       setPipelineStatus(null);
+      setFullCapability(null);
+      setPipelineResult(null);
+      setLoading(null);
       return;
     }
 
-    let cancelled = false;
+    setPipelineStatus(null);
+    setFullCapability(null);
+    setPipelineResult(null);
+    setLoading(null);
     void (async () => {
       try {
-        const status = await getPipelineStatus();
-        if (!cancelled) setPipelineStatus(status);
+        const status = await getPipelineStatus(projectId);
+        if (isCurrentContext() && status.project_id === projectId) setPipelineStatus(status);
       } catch {
         // Initial status is best-effort; Run still surfaces trigger errors via toast.
+      }
+      try {
+        const capability = await getRecompileAllCapability(projectId);
+        if (isCurrentContext()) setFullCapability(capability);
+      } catch {
+        if (isCurrentContext()) setFullCapability(null);
       }
     })();
 
     return () => {
       cancelled = true;
     };
-  }, [currentProject]);
+  }, [currentProject?.id]);
 
   const pumpUploadQueue = useCallback(() => {
     const pump = () => {
@@ -237,11 +369,14 @@ export function PipelineClient() {
               needsCountRefreshRef.current = false;
               void refreshNavCounts();
               // New raw files may change quota eligibility.
-              void getPipelineStatus()
-                .then((status) => setPipelineStatus(status))
-                .catch(() => {
-                  // Keep prior status on refresh failure after upload.
+              const context = pipelineProjectContextRef.current;
+              if (context.projectId) {
+                void refreshPipelineStatus({
+                  projectId: context.projectId,
+                  contextGeneration: context.generation,
+                  requestGeneration: pipelineRequestGenerationRef.current,
                 });
+              }
             }
             queueMicrotask(pump);
           }
@@ -250,7 +385,7 @@ export function PipelineClient() {
     };
 
     queueMicrotask(pump);
-  }, [refreshNavCounts]);
+  }, [refreshNavCounts, refreshPipelineStatus]);
 
   const enqueueFiles = useCallback(
     (fileList: FileList | File[]) => {
@@ -339,34 +474,78 @@ export function PipelineClient() {
       return;
     }
 
-    if (!window.localStorage.getItem('llm-wiki-last-project')) {
+    const context = pipelineProjectContextRef.current;
+    const projectId = context.projectId;
+    if (!projectId || window.localStorage.getItem('llm-wiki-last-project') !== projectId) {
       addToast(t('Pipeline.noProject'), 'error');
       return;
     }
 
+    if (compileMode === 'full' && !fullCapability?.allowed) {
+      addToast(t('Pipeline.fullUnavailable'), 'error');
+      return;
+    }
+    if (compileMode === 'full' && !window.confirm(t('Pipeline.fullConfirm'))) return;
+
+    const requestScope: PipelineRequestScope = {
+      projectId,
+      contextGeneration: context.generation,
+      requestGeneration: ++pipelineRequestGenerationRef.current,
+    };
+    let latestRequestScope = requestScope;
     setLoading('pipeline');
     try {
-      const result = await triggerPipeline();
+      const result = compileMode === 'full'
+        ? await recompileAll(projectId)
+        : await triggerPipeline();
+      if (!isPipelineRequestCurrent(requestScope)) return;
       setPipelineResult(result);
       if (result.message) addToast(result.message, 'info');
       if (result.status === 'accepted') {
         stopPipelinePolling();
+        pipelineTerminalPollScopeRef.current = null;
+        pipelinePollErrorNotifiedRef.current = false;
+        latestRequestScope = {
+          ...requestScope,
+          requestGeneration: ++pipelineRequestGenerationRef.current,
+        };
+        pipelineExecutionOwnerRef.current = { projectId, contextGeneration: context.generation };
         setPipelineStatus((prev) => ({
           ...prev,
-          last_execution: { status: 'RUNNING' },
+          project_id: projectId,
+          last_execution: {
+            status: 'RUNNING',
+            name: result.execution_id ?? null,
+            compile_mode: result.compile_mode ?? compileMode,
+            ...(compileMode === 'full'
+              ? {
+                  publication_outcome: 'unknown',
+                  consumed_guidance: { status: 'unavailable', revision: null },
+                }
+              : {}),
+          },
           quota: prev?.quota
             ? { ...prev.quota, already_running: true, allowed: false }
             : prev?.quota,
+          full_quota: compileMode === 'full' && result.quota
+            ? result.quota
+            : prev?.full_quota,
         }));
-        pipelinePollRef.current = setInterval(pollPipelineStatus, 5000);
+        const pollThisExecution = () => {
+          void pollPipelineStatus(latestRequestScope, result.execution_id);
+        };
+        pipelinePollRef.current = setInterval(pollThisExecution, 5000);
+        void pollPipelineStatus(latestRequestScope, result.execution_id);
       }
     } catch (err) {
       // Network / 5xx / stale UI race: show server message.
-      addToast(err instanceof Error ? err.message : 'Pipeline trigger failed', 'error');
+      if (isPipelineRequestCurrent(requestScope)) {
+        addToast(err instanceof Error ? err.message : 'Pipeline trigger failed', 'error');
+      }
     } finally {
-      setLoading(null);
+      if (isPipelineRequestCurrent(latestRequestScope)) setLoading(null);
     }
-  }, [addToast, isDemoSession, pollPipelineStatus, stopPipelinePolling, t]);
+  }, [addToast, compileMode, fullCapability?.allowed, isDemoSession, isPipelineRequestCurrent, pollPipelineStatus, stopPipelinePolling, t]);
 
   const pipelineStatusText = pipelineStatusBadge(pipelineStatus);
   const uploadSummary = useMemo(() => summarizeUploads(uploadItems), [uploadItems]);
@@ -379,7 +558,7 @@ export function PipelineClient() {
   const staleAlreadyRunning =
     pipelineStatus?.quota?.already_running === true && lastExecutionStatus !== 'RUNNING';
   const hasProject = Boolean(currentProject);
-  const quota = pipelineStatus?.quota;
+  const quota = compileMode === 'full' ? fullCapability?.quota : pipelineStatus?.quota;
   const effectiveQuota = useMemo(
     () => (
       staleAlreadyRunning && quota
@@ -388,12 +567,15 @@ export function PipelineClient() {
     ),
     [quota, staleAlreadyRunning],
   );
-  const blocked = isRunBlocked({
+    const blocked = compileMode === 'full' && !fullCapability
+      ? true
+      : (compileMode === 'full' && !fullCapability?.allowed) || isRunBlocked({
     isDemoSession,
     loading: loading === 'pipeline',
     hasProject,
     executionRunning,
     quota: effectiveQuota,
+    requiresNewRaw: compileMode === 'incremental',
   });
   const helper = blockReasonMessage({
     isDemoSession,
@@ -403,6 +585,9 @@ export function PipelineClient() {
     demoMessage: t('Demo.restricted'),
     noProjectMessage: t('Pipeline.noProject'),
   });
+  const blockMessage = compileMode === 'full' && !fullCapability?.allowed && !helper
+    ? t('Pipeline.fullUnavailable')
+    : helper;
   const quotaLine = formatQuotaLine(effectiveQuota, new Date(), {
     quotaLine: t('Pipeline.quotaLine'),
     quotaNotEnforced: t('Pipeline.quotaNotEnforced'),
@@ -414,9 +599,11 @@ export function PipelineClient() {
       { ok: isUnderDailyLimit(effectiveQuota), label: t('Pipeline.prereqDaily') },
       { ok: isCooldownClear(effectiveQuota), label: t('Pipeline.prereqCooldown') },
       { ok: !executionRunning, label: t('Pipeline.prereqRunning') },
-      { ok: hasNewRaw(effectiveQuota), label: t('Pipeline.prereqRaw') },
+      ...(compileMode === 'incremental'
+        ? [{ ok: hasNewRaw(effectiveQuota), label: t('Pipeline.prereqRaw') }]
+        : [{ ok: true, label: t('Pipeline.prereqFull') }]),
     ],
-    [effectiveQuota, executionRunning, isDemoSession, t],
+    [compileMode, effectiveQuota, executionRunning, isDemoSession, t],
   );
 
   return (
@@ -604,15 +791,34 @@ export function PipelineClient() {
               aria-disabled={blocked}
               className="rounded-md bg-white px-4 py-2 text-sm font-semibold text-black transition hover:bg-emerald-200 disabled:cursor-not-allowed disabled:opacity-50"
             >
-              {loading === 'pipeline' ? t('Pipeline.running') : t('Pipeline.runPipeline')}
+              {loading === 'pipeline'
+                ? t('Pipeline.running')
+                : compileMode === 'full' ? t('Pipeline.recompileAll') : t('Pipeline.runPipeline')}
             </button>
           </div>
+          <label className="mt-3 flex flex-wrap items-center gap-2 text-xs text-zinc-300">
+            <span>{t('Pipeline.compileMode')}</span>
+            <select
+              value={compileMode}
+              onChange={(event) => setCompileMode(event.target.value as 'incremental' | 'full')}
+              className="rounded border border-white/10 bg-zinc-900 px-2 py-1 text-white"
+              data-testid="pipeline-compile-mode"
+            >
+              <option value="incremental">{t('Pipeline.incrementalMode')}</option>
+              <option value="full">{t('Pipeline.fullMode')}</option>
+            </select>
+          </label>
+          {compileMode === 'full' ? (
+            <p className="mt-2 rounded border border-amber-300/20 bg-amber-300/[0.06] p-2 text-xs text-amber-100" data-testid="pipeline-full-notice">
+              {t('Pipeline.fullNotice')}
+            </p>
+          ) : null}
           <p className="mt-2 text-xs text-zinc-500" data-testid="pipeline-quota-line">
             {quotaLine}
           </p>
-          {blocked && helper ? (
+          {blocked && blockMessage ? (
             <p className="mt-1 text-xs text-amber-200/90" data-testid="pipeline-block-reason">
-              {helper}
+              {blockMessage}
             </p>
           ) : null}
           <div className="mt-2">
@@ -643,6 +849,26 @@ export function PipelineClient() {
           </div>
           {pipelineResult?.message ? (
             <p className="mt-2 text-xs text-zinc-500">{pipelineResult.message}</p>
+          ) : null}
+          {pipelineStatus?.last_execution?.compile_mode === 'full' ? (
+            <div className="mt-2 space-y-1 rounded border border-white/5 bg-zinc-950/40 p-2 text-xs text-zinc-400" data-testid="pipeline-full-evidence">
+              <p>
+                {t('Pipeline.publicationOutcome')}: {pipelineStatus.last_execution.publication_outcome === 'confirmed_published'
+                  ? t('Pipeline.publicationPublished')
+                  : pipelineStatus.last_execution.publication_outcome === 'confirmed_not_published'
+                    ? t('Pipeline.publicationNotPublished')
+                    : t('Pipeline.publicationUnknown')}
+              </p>
+              <p>
+                {t('Pipeline.consumedGuidance')}: {pipelineStatus.last_execution.consumed_guidance?.status !== 'available'
+                  ? t('Pipeline.guidanceUnavailable')
+                  : pipelineStatus.last_execution.consumed_guidance.kind === 'none'
+                    ? t('Pipeline.guidanceNone')
+                    : `${t(pipelineStatus.last_execution.consumed_guidance.kind === 'bootstrap'
+                      ? 'Pipeline.guidanceBootstrap'
+                      : 'Pipeline.guidanceActive')} ${pipelineStatus.last_execution.consumed_guidance.revision ?? ''}`}
+              </p>
+            </div>
           ) : null}
         </div>
 

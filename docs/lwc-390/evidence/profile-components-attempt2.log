@@ -1,0 +1,402 @@
+
+> llm-wiki-frontend@0.1.0 test:component
+> NODE_ENV=test vitest run tests/lwc-211-profile.test.tsx tests/lwc-390-391-project-context.test.tsx tests/lwc-391-full-recompile.test.tsx
+
+
+ RUN  v4.1.10 /Users/rayer/orca/workspaces/llm-wiki-cloud/LWC-390-391-profile-full-recompile/apps/frontend
+
+ ❯ tests/lwc-390-391-project-context.test.tsx (5 tests | 1 failed) 251ms
+   × ignores a late Project A poll without stopping Project B polling 53ms
+ ❯ tests/lwc-211-profile.test.tsx (35 tests | 2 failed) 1299ms
+     × shows separate manual preview diffs, keeps the active version visible, and retries only incomplete tagging 24ms
+     × shows the fixed three-screen example and preserves an unsaved draft across guide navigation 46ms
+
+⎯⎯⎯⎯⎯⎯⎯ Failed Tests 3 ⎯⎯⎯⎯⎯⎯⎯
+
+ FAIL  tests/lwc-211-profile.test.tsx > LWC-211 Project Profile > shows separate manual preview diffs, keeps the active version visible, and retries only incomplete tagging
+TestingLibraryElementError: Found multiple elements with the text: /Preview awaiting confirmation/
+
+Here are the matching elements:
+
+Ignored nodes: comments, script, style
+[36m<span>[39m
+  [0mPreview awaiting confirmation.[0m
+[36m</span>[39m
+
+Ignored nodes: comments, script, style
+[36m<p[39m
+  [33mclass[39m=[32m"mt-1 text-xs text-zinc-400"[39m
+[36m>[39m
+  [0mPreview awaiting confirmation.[0m
+[36m</p>[39m
+
+(If this is intentional, then use the `*AllBy*` variant of the query (like `queryAllByText`, `getAllByText`, or `findAllByText`)).
+
+Ignored nodes: comments, script, style
+[36m<body>[39m
+  [36m<div>[39m
+    [36m<section[39m
+      [33maria-labelledby[39m=[32m"project-profile-heading"[39m
+      [33mclass[39m=[32m"rounded-[var(--radius-lg)] border border-white/10 bg-zinc-900/45 p-5 backdrop-blur-sm sm:p-6"[39m
+    [36m>[39m
+      [36m<div>[39m
+        [36m<div[39m
+          [33mclass[39m=[32m"flex flex-wrap items-start justify-between gap-4"[39m
+        [36m>[39m
+          [36m<div>[39m
+            [36m<p[39m
+              [33mclass[39m=[32m"font-mono text-[11px] uppercase tracking-[0.2em] text-emerald-300/90"[39m
+            [36m>[39m
+              [0mProject settings[0m
+            [36m</p>[39m
+            [36m<h2[39m
+              [33mclass[39m=[32m"mt-2 text-xl font-semibold text-white"[39m
+              [33mid[39m=[32m"project-profile-heading"[39m
+            [36m>[39m
+              [0mOrganization and search preferences[0m
+            [36m</h2>[39m
+            [36m<p[39m
+              [33mclass[39m=[32m"mt-2 max-w-3xl text-sm leading-6 text-zinc-400"[39m
+            [36m>[39m
+              [0mTell the system what details to preserve when organizing your information. Review its actual interpretation and active Profile before relying on the change.[0m
+            [36m</p>[39m
+          [36m</div>[39m
+        [36m</div>[39m
+        [36m<p[39m
+          [33mclass[39m=[32m"mt-4 text-xs leading-5 text-zinc-500"[39m
+        [36m>[39m
+          [0mYour editable requirements, the server's interpretation, and the currently active Profile are separate states.[0m
+        [36m</p>[39m
+        [36m<section[39m
+          [33maria-labelledby[39m=[32m"profile-update-notice-heading"[39m
+          [33mclass[39m=[32m"mt-4 rounded-xl border border-amber-200/30 bg-amber-200/[0.08] p-4"[39m
+        [36m>[39m
+          [36m<h3[39m
+            [33mclass[39m=[32m"text-sm font-semibold text-amber-100"[39m
+            [33mid[39m=[32m"profile-update-notice-heading"[39m
+          [36m>[39m
+            [0mWhat changes when you update a Profile?[0m
+          [36m</h3>[39m
+          [36m<p[39m
+            [33mclass[39m=[32m"mt-1 text-sm leading-6 text-zinc-200"[39m
+          [36m>[39m
+            [0mTo apply new requirements to concepts that have already been compiled, run a full recompile. Editing a Profile alone does not rewrite existing articles. Tags can update without a full recompile; their progress is shown separately.[0m
+          [36m</p>[39m
+        [36m</section>[39m
+        [36m<div[39m
+          [33maria-live[39m=[32m"polite"[39m
+          [33mclass[39m=[32m"mt-4 space-y-2 rounded-xl border border-white/10 bg-black/15 p-4"[39m
+        [36m>[39m
+          [36m<p[39m
+            [33mclass[39m=[32m"text-sm text-emerald-200"[39m
+          [36m>[39m
+            [0mActive profile: candidate-1[0m
+          [36m</p>[39m
+          [36m<p[39m
+            [33mclass[39m=[32m"flex flex-wrap items-center gap-2 text-sm text-zinc-300"[39m
+          [36m>[39m
+            [36m<span>[39m
+              [0mTagging work: Incomplete[0m
+            [36m</span>[39m
+            [36m<span>[39m
+              [0m2 items incomplete[0m
+            [36m</span>[39m
+            [36m<span[39m
+              [33mclass[39m=[32m"text-amber-200"[39m
+            [36m>[39m
+              [0mtag_timeout[0m
+            [36m</span>[39m
+            [36m<button[39m
+              [33mclass[39m=[32m"min-h-10 rounded-md border border-white/10 px-2.5 text-xs text-zinc-200 hover:bg-white/5"[39m
+              [33mtype[39m=[32m"button"[39m
+            [36m>[39m
+              [0mReview Profile status[0m
+            [36m</button>[39m
+          [36m</p>[39m
+          [36m<p[39m
+            [33mclass[39m=[32m"flex flex-wrap items-center gap-2 text-sm text-sky-100"[39m
+          [36m>[39m
+            [36m<span>[39m
+              [0mPreview awaiting confirmation.[0m
+            [36m</span>[39m
+            [36m<button[39m
+              [33mclass[39m=[32m"min-h-10 rounded-md border border-sky-100/20 px-2.5 text-xs hover:bg-sky-100/5"[39m
+              [33mtype[39m=[32m"button"[39m
+            [36m>[39m
+              [0mReview the generated preview[0m
+            [36m</button>[39m
+          [36m</p>[39m
+        [36m</div>[39m
+        [36m<div[39m
+          [33mclass[39m=[32m"mt-4 flex flex-wrap gap-2"[39m
+        [36m>[39m
+          [36m<button[39m
+            [33mclass[39m=[32m"min-h-11 rounded-lg bg-emerald-300 px-4 text-sm font-semibold text-zinc-950 hover:bg-emerald-200 focus-visible:outline focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-emerald-300"[39m
+            [33mtype[39m=[32m"button"[39m
+          [36m>[39m
+            [0mSet my preferences[0m
+          [36m</button>[39m
+          [36m<button[39m
+            [33mclass[39m=[32m"min-h-11 rounded-lg border border-white/10 px-4 text-sm text-zinc-200 hover:bg-white/5 focus-visible:outline focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-emerald-300"[39m
+            [33mtype[39m=[32m"button"[39m
+          [36m>[39m
+            [0mSee an example[0m
+          [36m</button>[39m
+        [36m</div>[39m
+        [36m<div[39m
+          [33mclass[39m=[32m"mt-4 flex flex-col gap-3"[39m
+        [36m>[39m
+          [36m<section[39m
+            [33maria-labelledby[39m=[32m"profile-interpretation-card-heading"[39m
+            [33mclass[39m=[32m"order-2 rounded-xl border border-white/10 bg-black/10 p-4"[39m
+          [36m>[39m
+            [36m<h3>[39m
+              [36m<button[39m
+                [33maria-controls[39m=[32m"profile-interpretation-card"[39m
+                [33maria-expanded[39m=[32m"true"[39m
+                [33mclass[39m=[32m"min-h-11 w-full rounded-lg text-left text-base font-semibold text-white focus-visible:outline focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-emerald-300"[39m
+                [33mtype[39m=[32m"button"[39m
+              [36m>[39m
+                [36m<span[39m
+                  [33mid[39m=[32m"profile-interpretation-card-heading"[39m
+                [36m>[39m
+                  [0mHow the system understands my requirements[0m
+                [36m</span>[39m
+                [36m<span[39m
+                  [33maria-hidden[39m=[32m"true"[39m
+                  [33mclass[39m=[32m"float-right text-zinc-400"[39m
+                [36m>[39m
+                  [0m−[0m
+                [36m</span>[39m
+              [36m</button>[39m
+            [36m</h3>[39m
+            [36m<p[39m
+              [33mclass[39m=[32m"mt-1 text-xs leading-5 text-zinc-400"[39m
+            [36m>[39m
+              [0mReview the real server interpretation, its limitations, and any confirmation or retry action.[0m
+            [36m</p>[39m
+ ...
+ ❯ Object.getElementError node_modules/@testing-library/dom/dist/config.js:37:19
+ ❯ getElementError node_modules/@testing-library/dom/dist/query-helpers.js:20:35
+ ❯ getMultipleElementsFoundError node_modules/@testing-library/dom/dist/query-helpers.js:23:10
+ ❯ node_modules/@testing-library/dom/dist/query-helpers.js:55:13
+ ❯ node_modules/@testing-library/dom/dist/query-helpers.js:95:19
+ ❯ tests/lwc-211-profile.test.tsx:542:19
+    540|     expect(screen.getByText('Prefer dated invoices')).toBeDefined();
+    541|     expect(screen.getAllByText(/Active profile: candidate-1/).length).…
+    542|     expect(screen.getByText(/Preview awaiting confirmation/)).toBeDefi…
+       |                   ^
+    543|     fireEvent.click(screen.getByRole('button', { name: 'Retry missing …
+    544|
+
+⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯[1/3]⎯
+
+ FAIL  tests/lwc-211-profile.test.tsx > LWC-211 Project Profile > shows the fixed three-screen example and preserves an unsaved draft across guide navigation
+TestingLibraryElementError: Found multiple elements with the text: /stroller access has not been confirmed/i
+
+Here are the matching elements:
+
+Ignored nodes: comments, script, style
+[36m<p[39m
+  [33mclass[39m=[32m"mt-2 whitespace-pre-line text-sm leading-6 text-zinc-300"[39m
+[36m>[39m
+  [0mQingting Restaurant is in Taipei City’s Da’an District and serves home-style food at about NT$250–400 per person.
+
+A paid parking lot is nearby, about a three-minute walk away. The restaurant has child seats and a narrow walkway; stroller access has not been confirmed.[0m
+[36m</p>[39m
+
+Ignored nodes: comments, script, style
+[36m<p[39m
+  [33mclass[39m=[32m"mt-2 whitespace-pre-line text-sm leading-6 text-zinc-300"[39m
+[36m>[39m
+  [0mFamily dining
+Child seats are available. The walkway is narrow, and stroller access has not been confirmed. A child seat alone does not establish suitability for every family.
+
+Parking
+A paid lot is nearby, about a three-minute walk away. The note does not state the number of spaces or parking rates.
+
+Restaurant basics
+The restaurant is in Taipei City’s Da’an District, serves home-style food, and costs about NT$250–400 per person.[0m
+[36m</p>[39m
+
+(If this is intentional, then use the `*AllBy*` variant of the query (like `queryAllByText`, `getAllByText`, or `findAllByText`)).
+
+Ignored nodes: comments, script, style
+[36m<body>[39m
+  [36m<div>[39m
+    [36m<section[39m
+      [33maria-labelledby[39m=[32m"profile-guide-heading"[39m
+      [33mclass[39m=[32m"rounded-[var(--radius-lg)] border border-white/10 bg-zinc-900/45 p-5 backdrop-blur-sm sm:p-6"[39m
+    [36m>[39m
+      [36m<div[39m
+        [33mhidden[39m=[32m""[39m
+      [36m>[39m
+        [36m<div[39m
+          [33mclass[39m=[32m"flex flex-wrap items-start justify-between gap-4"[39m
+        [36m>[39m
+          [36m<div>[39m
+            [36m<p[39m
+              [33mclass[39m=[32m"font-mono text-[11px] uppercase tracking-[0.2em] text-emerald-300/90"[39m
+            [36m>[39m
+              [0mProject settings[0m
+            [36m</p>[39m
+            [36m<h2[39m
+              [33mclass[39m=[32m"mt-2 text-xl font-semibold text-white"[39m
+              [33mid[39m=[32m"project-profile-heading"[39m
+            [36m>[39m
+              [0mOrganization and search preferences[0m
+            [36m</h2>[39m
+            [36m<p[39m
+              [33mclass[39m=[32m"mt-2 max-w-3xl text-sm leading-6 text-zinc-400"[39m
+            [36m>[39m
+              [0mTell the system what details to preserve when organizing your information. Review its actual interpretation and active Profile before relying on the change.[0m
+            [36m</p>[39m
+          [36m</div>[39m
+        [36m</div>[39m
+        [36m<p[39m
+          [33mclass[39m=[32m"mt-4 text-xs leading-5 text-zinc-500"[39m
+        [36m>[39m
+          [0mYour editable requirements, the server's interpretation, and the currently active Profile are separate states.[0m
+        [36m</p>[39m
+        [36m<section[39m
+          [33maria-labelledby[39m=[32m"profile-update-notice-heading"[39m
+          [33mclass[39m=[32m"mt-4 rounded-xl border border-amber-200/30 bg-amber-200/[0.08] p-4"[39m
+        [36m>[39m
+          [36m<h3[39m
+            [33mclass[39m=[32m"text-sm font-semibold text-amber-100"[39m
+            [33mid[39m=[32m"profile-update-notice-heading"[39m
+          [36m>[39m
+            [0mWhat changes when you update a Profile?[0m
+          [36m</h3>[39m
+          [36m<p[39m
+            [33mclass[39m=[32m"mt-1 text-sm leading-6 text-zinc-200"[39m
+          [36m>[39m
+            [0mTo apply new requirements to concepts that have already been compiled, run a full recompile. Editing a Profile alone does not rewrite existing articles. Tags can update without a full recompile; their progress is shown separately.[0m
+          [36m</p>[39m
+        [36m</section>[39m
+        [36m<div[39m
+          [33maria-live[39m=[32m"polite"[39m
+          [33mclass[39m=[32m"mt-4 space-y-2 rounded-xl border border-white/10 bg-black/15 p-4"[39m
+        [36m>[39m
+          [36m<p[39m
+            [33mclass[39m=[32m"text-sm text-zinc-300"[39m
+          [36m>[39m
+            [0mNo generation-bound Profile is active yet.[0m
+          [36m</p>[39m
+          [36m<p[39m
+            [33mclass[39m=[32m"flex flex-wrap items-center gap-2 text-sm text-amber-100"[39m
+          [36m>[39m
+            [36m<span>[39m
+              [0mYour requirements have unsaved changes.[0m
+            [36m</span>[39m
+            [36m<button[39m
+              [33mclass[39m=[32m"min-h-10 rounded-md border border-amber-100/20 px-2.5 text-xs font-medium hover:bg-amber-100/5"[39m
+              [33mtype[39m=[32m"button"[39m
+            [36m>[39m
+              [0mOpen my requirements[0m
+            [36m</button>[39m
+          [36m</p>[39m
+        [36m</div>[39m
+        [36m<div[39m
+          [33mclass[39m=[32m"mt-4 flex flex-wrap gap-2"[39m
+        [36m>[39m
+          [36m<button[39m
+            [33mclass[39m=[32m"min-h-11 rounded-lg bg-emerald-300 px-4 text-sm font-semibold text-zinc-950 hover:bg-emerald-200 focus-visible:outline focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-emerald-300"[39m
+            [33mtype[39m=[32m"button"[39m
+          [36m>[39m
+            [0mSet my preferences[0m
+          [36m</button>[39m
+          [36m<button[39m
+            [33mclass[39m=[32m"min-h-11 rounded-lg border border-white/10 px-4 text-sm text-zinc-200 hover:bg-white/5 focus-visible:outline focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-emerald-300"[39m
+            [33mtype[39m=[32m"button"[39m
+          [36m>[39m
+            [0mSee an example[0m
+          [36m</button>[39m
+        [36m</div>[39m
+        [36m<div[39m
+          [33mclass[39m=[32m"mt-4 flex flex-col gap-3"[39m
+        [36m>[39m
+          [36m<section[39m
+            [33maria-labelledby[39m=[32m"profile-interpretation-card-heading"[39m
+            [33mclass[39m=[32m"order-2 rounded-xl border border-white/10 bg-black/10 p-4"[39m
+          [36m>[39m
+            [36m<h3>[39m
+              [36m<button[39m
+                [33maria-controls[39m=[32m"profile-interpretation-card"[39m
+                [33maria-expanded[39m=[32m"false"[39m
+                [33mclass[39m=[32m"min-h-11 w-full rounded-lg text-left text-base font-semibold text-white focus-visible:outline focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-emerald-300"[39m
+                [33mtype[39m=[32m"button"[39m
+              [36m>[39m
+                [36m<span[39m
+                  [33mid[39m=[32m"profile-interpretation-card-heading"[39m
+                [36m>[39m
+                  [0mHow the system understands my requirements[0m
+                [36m</span>[39m
+                [36m<span[39m
+                  [33maria-hidden[39m=[32m"true"[39m
+                  [33mclass[39m=[32m"float-right text-zinc-400"[39m
+                [36m>[39m
+                  [0m+[0m
+                [36m</span>[39m
+              [36m</button>[39m
+            [36m</h3>[39m
+            [36m<p[39m
+              [33mclass[39m=[32m"mt-1 text-xs leading-5 text-zinc-400"[39m
+            [36m>[39m
+              [0mReview the real server interpretation, its limitations, and any confirmation or retry action.[0m
+            [36m</p>[39m
+            [36m<div[39m
+              [33mhidden[39m=[32m""[39m
+              [33mid[39m=[32m"profile-interpretation-card"[39m
+            [36m/>[39m
+          [36m</section>[39m
+          [36m<section[39m
+            [33maria-labelledby[39m=[32m"profile-requirements-card-heading"[39m
+            [33mclass[39m=[32m"order-1 rounded-xl border border-white/10 bg-black/10 p-4"[39m
+          [36m>[39m
+            [36m<h3>[39m
+              [36m<button[39m
+                [33maria-controls[39m=[32m"profile-requirements-card"[39m
+                [33maria-expanded[39m=[32m"true"[39m
+                [33mclass[39m=[32m"min-h-11 w-full rounded-lg text-left text-base font-semibold text-white focus-visible:outline focus-visible:out...
+ ❯ Object.getElementError node_modules/@testing-library/dom/dist/config.js:37:19
+ ❯ getElementError node_modules/@testing-library/dom/dist/query-helpers.js:20:35
+ ❯ getMultipleElementsFoundError node_modules/@testing-library/dom/dist/query-helpers.js:23:10
+ ❯ node_modules/@testing-library/dom/dist/query-helpers.js:55:13
+ ❯ node_modules/@testing-library/dom/dist/query-helpers.js:95:19
+ ❯ tests/lwc-211-profile.test.tsx:972:19
+    970|     expect(screen.getByText(/There is a paid parking lot nearby, about…
+    971|     expect(screen.getAllByText(/I often eat out with children/).length…
+    972|     expect(screen.getByText(/stroller access has not been confirmed/i)…
+       |                   ^
+    973|     expect(screen.getByText('Tags · general information')).toBeDefined…
+    974|     expect(screen.getByText('Tags · preference details and limits')).t…
+
+⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯[2/3]⎯
+
+ FAIL  tests/lwc-390-391-project-context.test.tsx > ignores a late Project A poll without stopping Project B polling
+AssertionError: expected [ …(13) ] to have a length of 2 but got 13
+
+- Expected
++ Received
+
+- 2
++ 13
+
+ ❯ tests/lwc-390-391-project-context.test.tsx:158:25
+    156|   });
+    157|   expect(screen.getByText('Pipeline running...')).toBeDefined();
+    158|   expect(pollCallbacks).toHaveLength(2);
+       |                         ^
+    159|   await act(async () => {
+    160|     pollCallbacks[1]?.();
+
+⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯[3/3]⎯
+
+
+ Test Files  2 failed | 1 passed (3)
+      Tests  3 failed | 39 passed (42)
+   Start at  01:19:57
+   Duration  1.89s (transform 302ms, setup 56ms, import 510ms, tests 1.66s, environment 910ms)
+
+EXIT_CODE=1

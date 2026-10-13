@@ -34,7 +34,8 @@ test('api.ts defines PipelineQuota and extends status/result types', async () =>
   assert.match(api, /quota\?: PipelineQuota \| null;/);
   assert.match(api, /project_id\?: string;/);
   assert.match(api, /execution_id\?: string;/);
-  assert.match(api, /export async function getPipelineStatus\(\)/);
+  assert.match(api, /export function getPipelineStatus\(\): Promise<PipelineStatus>/);
+  assert.match(api, /export function getPipelineStatus\(projectId: string, executionId\?: string\)/);
   assert.match(api, /export async function triggerPipeline\(\)/);
 });
 
