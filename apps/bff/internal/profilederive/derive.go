@@ -117,17 +117,17 @@ func (p *Provider) DeriveBootstrap(ctx context.Context, revision int64, requirem
 	}
 	text, model, err := p.client.ChatWithMetadata(ctx, bootstrapSystemPrompt, string(userMessage))
 	if err != nil {
-		return BootstrapResult{}, fmt.Errorf("bootstrap provider call: %w", err)
+		return BootstrapResult{}, withFailureDiagnostic(FailureStageBootstrapProvider, providerFailureClass(err), fmt.Errorf("bootstrap provider call: %w", err))
 	}
 	if !validReturnedModel(model) {
-		return BootstrapResult{}, errors.New("provider_model_unreported")
+		return BootstrapResult{}, withFailureDiagnostic(FailureStageBootstrapModel, FailureClassModelUnreported, errors.New("provider_model_unreported"))
 	}
 	var output BootstrapOutput
 	if err := decodeModelJSON([]byte(text), &output); err != nil {
-		return BootstrapResult{}, fmt.Errorf("invalid bootstrap derivation output: %w", err)
+		return BootstrapResult{}, withFailureDiagnostic(FailureStageBootstrapDecode, FailureClassModelOutputDecodeFailed, fmt.Errorf("invalid bootstrap derivation output: %w", err))
 	}
 	if err := validateAccounting(output.Requirements, requirements, false, output.CompileGuidance, nil); err != nil {
-		return BootstrapResult{}, err
+		return BootstrapResult{}, withFailureDiagnostic(FailureStageBootstrapValidate, FailureClassModelAccountingInvalid, err)
 	}
 	envelope := profileartifacts.BootstrapGuidanceEnvelope{
 		SchemaVersion: profileartifacts.BootstrapGuidanceSchema, ProfileRevision: revision, InputDigest: inputDigest,
@@ -135,7 +135,7 @@ func (p *Provider) DeriveBootstrap(ctx context.Context, revision int64, requirem
 	}
 	data, ref, err := profileartifacts.EncodeBootstrapGuidance(envelope)
 	if err != nil {
-		return BootstrapResult{}, err
+		return BootstrapResult{}, withFailureDiagnostic(FailureStageBootstrapEncode, FailureClassArtifactEncodeFailed, err)
 	}
 	return BootstrapResult{Data: data, Ref: ref, Preview: Preview{GuidanceDiff: output.GuidanceDiff, Requirements: output.Requirements}}, nil
 }
@@ -167,17 +167,17 @@ func (p *Provider) DeriveManual(ctx context.Context, revision int64, requirement
 	}
 	text, model, err := p.client.ChatWithMetadata(ctx, manualSystemPrompt, string(userMessage))
 	if err != nil {
-		return ManualResult{}, fmt.Errorf("manual provider call: %w", err)
+		return ManualResult{}, withFailureDiagnostic(FailureStageManualProvider, providerFailureClass(err), fmt.Errorf("manual provider call: %w", err))
 	}
 	if !validReturnedModel(model) {
-		return ManualResult{}, errors.New("provider_model_unreported")
+		return ManualResult{}, withFailureDiagnostic(FailureStageManualModel, FailureClassModelUnreported, errors.New("provider_model_unreported"))
 	}
 	var output ManualOutput
 	if err := decodeModelJSON([]byte(text), &output); err != nil {
-		return ManualResult{}, fmt.Errorf("invalid manual derivation output: %w", err)
+		return ManualResult{}, withFailureDiagnostic(FailureStageManualDecode, FailureClassModelOutputDecodeFailed, fmt.Errorf("invalid manual derivation output: %w", err))
 	}
 	if err := validateAccounting(output.Requirements, requirements, true, output.CompileGuidance, output.Tags); err != nil {
-		return ManualResult{}, err
+		return ManualResult{}, withFailureDiagnostic(FailureStageManualValidate, FailureClassModelAccountingInvalid, err)
 	}
 	inputDigest := RequirementsDigest(requirements)
 	sortTags(output.Tags, requirements)
@@ -188,7 +188,7 @@ func (p *Provider) DeriveManual(ctx context.Context, revision int64, requirement
 	}
 	dictionaryData, dictionaryRef, err := profileartifacts.EncodeDictionary(dictionary, requirementIDs(requirements))
 	if err != nil {
-		return ManualResult{}, err
+		return ManualResult{}, withFailureDiagnostic(FailureStageManualEncode, FailureClassArtifactEncodeFailed, err)
 	}
 	guidance := profileartifacts.GenerationGuidanceEnvelope{
 		SchemaVersion: profileartifacts.GuidanceSchema, InputDigest: inputDigest, SourceContentGeneration: generation,
@@ -197,7 +197,7 @@ func (p *Provider) DeriveManual(ctx context.Context, revision int64, requirement
 	}
 	guidanceData, guidanceRef, err := profileartifacts.EncodeGuidance(guidance)
 	if err != nil {
-		return ManualResult{}, err
+		return ManualResult{}, withFailureDiagnostic(FailureStageManualEncode, FailureClassArtifactEncodeFailed, err)
 	}
 	preview := Preview{DictionaryDiff: output.DictionaryDiff, GuidanceDiff: output.GuidanceDiff, Requirements: output.Requirements}
 	return ManualResult{DictionaryData: dictionaryData, GuidanceData: guidanceData, DictionaryRef: dictionaryRef, GuidanceRef: guidanceRef, Preview: preview}, nil

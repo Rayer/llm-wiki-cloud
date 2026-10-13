@@ -2,6 +2,7 @@ package profilederive
 
 import (
 	"context"
+	"encoding/json"
 	"errors"
 	"strings"
 	"testing"
@@ -10,16 +11,17 @@ import (
 )
 
 type transitionsStub struct {
-	snapshot       ProfileSnapshot
-	claimed        int
-	bootstrap      *profileartifacts.BootstrapGuidanceRef
-	dictionary     *profileartifacts.DerivedRef
-	guidance       *profileartifacts.DerivedRef
-	mode           string
-	failedDigest   string
-	failureCode    string
-	completeErr    error
-	alreadyRunning bool
+	snapshot          ProfileSnapshot
+	claimed           int
+	bootstrap         *profileartifacts.BootstrapGuidanceRef
+	dictionary        *profileartifacts.DerivedRef
+	guidance          *profileartifacts.DerivedRef
+	mode              string
+	failedDigest      string
+	failureCode       string
+	failureDiagnostic FailureDiagnostic
+	completeErr       error
+	alreadyRunning    bool
 }
 
 func (r *transitionsStub) ClaimProfileDerivation(_ context.Context, _ Attempt) (ProfileSnapshot, error) {
@@ -42,8 +44,8 @@ func (r *transitionsStub) CompleteProfileDerivation(_ context.Context, _ Attempt
 	r.mode, r.dictionary, r.guidance = "manual:"+generation, &dictionary, &guidance
 	return nil
 }
-func (r *transitionsStub) FailProfileDerivation(_ context.Context, _ Attempt, digest, code string) error {
-	r.failedDigest, r.failureCode = digest, code
+func (r *transitionsStub) FailProfileDerivation(_ context.Context, _ Attempt, digest, code string, diagnostic FailureDiagnostic) error {
+	r.failedDigest, r.failureCode, r.failureDiagnostic = digest, code, diagnostic
 	return nil
 }
 
@@ -117,6 +119,36 @@ func TestExecutorBootstrapsBeforeLegacyGenerationWithoutSnapshot(t *testing.T) {
 	envelope, err := profileartifacts.ValidateBootstrapGuidance(data, *result.BootstrapRef)
 	if err != nil || envelope.ProfileRevision != 1 || envelope.InputDigest != RequirementsDigest(requirements) {
 		t.Fatalf("bootstrap object envelope=%+v err=%v", envelope, err)
+	}
+}
+
+func TestExecutorPersistsOnlySanitizedBootstrapFailureDiagnostic(t *testing.T) {
+	const privateRequirement = "private requirement marker"
+	const privateResponse = "private provider response marker"
+	repo := &transitionsStub{snapshot: ProfileSnapshot{Revision: 1, Requirements: []Requirement{{ID: "r1", Text: privateRequirement}}}}
+	content := &contentStub{exists: true, content: PinnedContent{Generation: "legacy-generation"}}
+	provider := NewProvider(&fakeChat{model: "fake-profile-model-v1", text: privateResponse})
+
+	_, runErr := (&Executor{Profiles: repo, Content: content, Artifacts: artifactsStub{newMemoryArtifacts()}, Provider: provider}).Run(
+		context.Background(), Attempt{UserID: "owner", ProjectID: "alpha", Revision: 1, AttemptID: "attempt-failure"})
+	if runErr == nil || runErr.Error() != "Profile derivation failed" {
+		t.Fatalf("failure error = %v, want safe generic error", runErr)
+	}
+	if repo.failureCode != "profile_derivation_failed" {
+		t.Fatalf("legacy error code = %q, want profile_derivation_failed", repo.failureCode)
+	}
+	want := FailureDiagnostic{Stage: FailureStageBootstrapDecode, Class: FailureClassModelOutputDecodeFailed}
+	if repo.failureDiagnostic != want || !repo.failureDiagnostic.Valid() {
+		t.Fatalf("failure diagnostic = %+v, want %+v", repo.failureDiagnostic, want)
+	}
+	encoded, err := json.Marshal(repo.failureDiagnostic)
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, privateValue := range []string{privateRequirement, privateResponse} {
+		if strings.Contains(string(encoded), privateValue) || strings.Contains(runErr.Error(), privateValue) {
+			t.Fatalf("private value entered safe diagnostic: %s", encoded)
+		}
 	}
 }
 

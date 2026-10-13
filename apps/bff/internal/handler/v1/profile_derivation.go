@@ -280,8 +280,8 @@ func (t profileDerivationTransitions) CompleteProfileDerivation(ctx context.Cont
 	return err
 }
 
-func (t profileDerivationTransitions) FailProfileDerivation(ctx context.Context, attempt profilederive.Attempt, digest, errorCode string) error {
-	_, err := t.handler.FailProfileDerivation(ctx, t.userID, t.projectID, attempt.Revision, attempt.AttemptID, digest, errorCode)
+func (t profileDerivationTransitions) FailProfileDerivation(ctx context.Context, attempt profilederive.Attempt, digest, errorCode string, diagnostic profilederive.FailureDiagnostic) error {
+	_, err := t.handler.FailProfileDerivation(ctx, t.userID, t.projectID, attempt.Revision, attempt.AttemptID, digest, errorCode, diagnostic)
 	return err
 }
 

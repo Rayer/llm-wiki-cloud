@@ -3,18 +3,30 @@
 import { useEffect, useRef, useState } from 'react';
 import { ProjectProfilePanel } from '@/components/ProjectProfilePanel';
 import { RuntimeConfigBoundary } from '@/components/RuntimeConfigBoundary';
-import { configureApiAuth, type ProfileState } from '@/lib/api';
+import { configureApiAuth, type ProfileBootstrapGuidance, type ProfileState } from '@/lib/api';
 import { useT } from '@/lib/i18n';
 
 type Scenario = 'active-pending' | 'active-idle' | 'first-compile';
-type FixtureState = { scenario: Scenario; writes: number };
+type FixtureState = {
+  scenario: Scenario;
+  writes: number;
+  profiles: Record<string, ProfileState>;
+  bootstrapGuidance: Record<string, ProfileBootstrapGuidance>;
+};
 type FixtureWindow = Window & { __lwc390Fixture?: FixtureState };
 
-const fixtureState = typeof window === 'undefined'
-  ? { scenario: 'active-pending' as Scenario, writes: 0 }
-  : ((window as FixtureWindow).__lwc390Fixture ??= { scenario: 'active-pending', writes: 0 });
+const fixtureState: FixtureState = typeof window === 'undefined'
+  ? { scenario: 'active-pending' as Scenario, writes: 0, profiles: {}, bootstrapGuidance: {} }
+  : ((window as FixtureWindow).__lwc390Fixture ??= {
+    scenario: 'active-pending',
+    writes: 0,
+    profiles: {},
+    bootstrapGuidance: {},
+  });
 
 if (typeof window !== 'undefined') {
+  fixtureState.profiles ??= {};
+  fixtureState.bootstrapGuidance ??= {};
   window.localStorage.setItem('locale', 'zh-TW');
   configureApiAuth({
     getAccessToken: () => 'fixture-placeholder',
@@ -43,11 +55,12 @@ if (typeof window !== 'undefined') {
 
     const projectId = decodeURIComponent(match[1]);
     const suffix = match[2];
-    const profile = createProfile(projectId, fixtureState.scenario);
+    const profile = fixtureState.profiles[projectId] ?? createProfile(projectId, fixtureState.scenario);
 
     if (method === 'GET' && suffix === '') return json(profile);
     if (method === 'GET' && suffix === '/bootstrap-guidance') {
-      return json({ bootstrap_guidance: fixtureState.scenario === 'first-compile' ? bootstrapGuidance(profile.revision) : null });
+      return json({ bootstrap_guidance: fixtureState.bootstrapGuidance[projectId]
+        ?? (fixtureState.scenario === 'first-compile' ? bootstrapGuidance(profile.revision) : null) });
     }
     if (method === 'GET' && suffix.startsWith('/guidance/')) {
       const revision = decodeURIComponent(suffix.slice('/guidance/'.length));
@@ -67,7 +80,7 @@ if (typeof window !== 'undefined') {
       fixtureState.writes += 1;
       window.dispatchEvent(new CustomEvent('lwc390:mock-write', { detail: fixtureState.writes }));
       const payload = JSON.parse(String(init?.body ?? '{}')) as { expected_revision?: number; requirements?: ProfileState['requirements'] };
-      return json({
+      const savedProfile: ProfileState = {
         ...profile,
         revision: (payload.expected_revision ?? profile.revision) + 1,
         requirements: payload.requirements ?? profile.requirements,
@@ -75,13 +88,22 @@ if (typeof window !== 'undefined') {
         scheduled_for: '2030-01-01T00:00:00Z',
         candidate: null,
         confirmed_candidate_id: null,
-      });
+      };
+      fixtureState.profiles[projectId] = savedProfile;
+      delete fixtureState.bootstrapGuidance[projectId];
+      return json(savedProfile);
     }
     if (method === 'POST' && /\/bootstrap-guidance\/[^/]+\/confirm$/.test(suffix)) {
       fixtureState.writes += 1;
       window.dispatchEvent(new CustomEvent('lwc390:mock-write', { detail: fixtureState.writes }));
       const guidance = bootstrapGuidance(profile.revision);
-      return json({ bootstrap_guidance: { ...guidance, status: 'confirmed', confirmed_at: '2030-01-01T00:00:00Z' } });
+      const confirmedGuidance: ProfileBootstrapGuidance = {
+        ...guidance,
+        status: 'confirmed',
+        confirmed_at: '2030-01-01T00:00:00Z',
+      };
+      fixtureState.bootstrapGuidance[projectId] = confirmedGuidance;
+      return json({ bootstrap_guidance: confirmedGuidance });
     }
 
     throw new Error(`Blocked by the local Profile fixture: ${method} ${url.pathname}`);

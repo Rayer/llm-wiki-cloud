@@ -311,9 +311,11 @@ func TestProfileRuntimeRetriesExhaustAndStaleSave(t *testing.T) {
 func TestProfileRuntimeFinalExecutionExhaustionIsVisible(t *testing.T) {
 	f := newRuntimeFixture(t)
 	state, ref := f.save(t, 0, "write concisely")
-	// The executor returns before it can persist a failure transition when its
-	// generation store is unavailable.
-	f.dispatcher.Handler.store = nil
+	// An invalid synthetic bootstrap response records only fixed diagnostic
+	// labels. The final runtime exhaustion code must preserve that provenance.
+	f.dispatcher.Provider = profilederive.NewProvider(&deterministicFakeProfileProvider{
+		model: "fake-profile-model-v1", text: "synthetic malformed response",
+	})
 	f.clock = f.clock.Add(profileDebounce)
 	for attempt := 1; attempt <= profileruntime.MaxAttempts; attempt++ {
 		f.request(t, "POST", "synthetic-valid-token", 200, 1)
@@ -334,7 +336,10 @@ func TestProfileRuntimeFinalExecutionExhaustionIsVisible(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if work.Pending || work.Status != "exhausted" || state.DerivationStatus == nil || *state.DerivationStatus != profileDerivationFailed || state.DerivationErrorCode == nil || *state.DerivationErrorCode != "runtime_retry_exhausted" || state.ScheduledFor != nil {
+	wantDiagnostic := profilederive.FailureDiagnostic{Stage: profilederive.FailureStageBootstrapDecode, Class: profilederive.FailureClassModelOutputDecodeFailed}
+	if work.Pending || work.Status != "exhausted" || state.DerivationStatus == nil || *state.DerivationStatus != profileDerivationFailed ||
+		state.DerivationErrorCode == nil || *state.DerivationErrorCode != "runtime_retry_exhausted" || state.DerivationDiagnostic == nil ||
+		*state.DerivationDiagnostic != wantDiagnostic || state.ScheduledFor != nil {
 		t.Fatalf("exhausted execution is not visible: work=%+v state=%+v", work, state)
 	}
 }
