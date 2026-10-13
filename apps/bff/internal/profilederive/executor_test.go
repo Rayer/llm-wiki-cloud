@@ -152,6 +152,40 @@ func TestExecutorPersistsOnlySanitizedBootstrapFailureDiagnostic(t *testing.T) {
 	}
 }
 
+func TestExecutorPreservesLegacyCodeAndSafeManualDecodeSubreason(t *testing.T) {
+	const privateField = "private_model_field"
+	const privateValue = "private model value"
+	requirements := []Requirement{{ID: "r1", Text: "write concise"}}
+	repo := &transitionsStub{snapshot: ProfileSnapshot{Revision: 2, Requirements: requirements, HasActive: true}}
+	content := &contentStub{exists: true, content: PinnedContent{
+		Generation: "G2", SourceSnapshotDigest: strings.Repeat("a", 64),
+		IDMap: []byte(`{"concept":{}}`), Concepts: []byte{},
+	}}
+	provider := NewProvider(&fakeChat{
+		model: "fake-manual-model-v1",
+		text:  `{"tags":[],"private_model_field":"private model value","compile_guidance":"Write concise entries.","dictionary_diff":"No tag changes.","guidance_diff":"Kept concise guidance.","requirements":[{"id":"r1","disposition":"compile_guidance","explanation":"Applied to entry writing."}]}`,
+	})
+	_, runErr := (&Executor{Profiles: repo, Content: content, Artifacts: artifactsStub{newMemoryArtifacts()}, Provider: provider}).Run(
+		context.Background(), Attempt{UserID: "owner", ProjectID: "alpha", Revision: 2, AttemptID: "manual-decode-attempt"})
+	if runErr == nil || runErr.Error() != "Profile derivation failed" {
+		t.Fatalf("manual decode failure = %v, want safe generic failure", runErr)
+	}
+	if repo.failureCode != "profile_derivation_failed" {
+		t.Fatalf("legacy error code = %q, want profile_derivation_failed", repo.failureCode)
+	}
+	want := FailureDiagnostic{Stage: FailureStageManualDecode, Class: FailureClassModelOutputDecodeFailed, DecodeReason: DecodeReasonUnknownField}
+	if repo.failureDiagnostic != want || !repo.failureDiagnostic.Valid() {
+		t.Fatalf("manual failure diagnostic = %+v, want %+v", repo.failureDiagnostic, want)
+	}
+	encoded, err := json.Marshal(repo.failureDiagnostic)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if strings.Contains(string(encoded), privateField) || strings.Contains(string(encoded), privateValue) || strings.Contains(runErr.Error(), privateField) || strings.Contains(runErr.Error(), privateValue) {
+		t.Fatalf("private model output entered safe diagnostic/error: %s", encoded)
+	}
+}
+
 func TestExecutorDerivesManualArtifactsFromOnePinnedEmptyConceptSnapshot(t *testing.T) {
 	requirements := []Requirement{{ID: "r1", Text: "write concise"}}
 	repo := &transitionsStub{snapshot: ProfileSnapshot{Revision: 2, Requirements: requirements}}

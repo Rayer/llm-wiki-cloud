@@ -9,9 +9,20 @@ import (
 // FailureDiagnostic contains only fixed labels. It deliberately has no field
 // for user requirements, provider text, response bodies, or error strings.
 type FailureDiagnostic struct {
-	Stage string `json:"stage" firestore:"stage"`
-	Class string `json:"class" firestore:"class"`
+	Stage        string `json:"stage" firestore:"stage"`
+	Class        string `json:"class" firestore:"class"`
+	DecodeReason string `json:"decode_reason,omitempty" firestore:"decode_reason,omitempty"`
 }
+
+const (
+	DecodeReasonInvalidUTF8  = "invalid_utf8"
+	DecodeReasonInvalidJSON  = "invalid_json"
+	DecodeReasonDuplicateKey = "duplicate_key"
+	DecodeReasonUnknownField = "unknown_field"
+	DecodeReasonTypeMismatch = "type_mismatch"
+	DecodeReasonTrailingData = "trailing_data"
+	DecodeReasonOther        = "other"
+)
 
 const (
 	FailureStageRevisionClaim      = "profile_revision_claim"
@@ -60,7 +71,27 @@ const (
 func (d FailureDiagnostic) Valid() bool {
 	_, stageOK := allowedFailureStages[d.Stage]
 	_, classOK := allowedFailureClasses[d.Class]
-	return stageOK && classOK
+	if !stageOK || !classOK {
+		return false
+	}
+	if d.DecodeReason == "" {
+		return true
+	}
+	if d.Stage != FailureStageManualDecode || d.Class != FailureClassModelOutputDecodeFailed {
+		return false
+	}
+	_, reasonOK := allowedDecodeReasons[d.DecodeReason]
+	return reasonOK
+}
+
+var allowedDecodeReasons = map[string]struct{}{
+	DecodeReasonInvalidUTF8:  {},
+	DecodeReasonInvalidJSON:  {},
+	DecodeReasonDuplicateKey: {},
+	DecodeReasonUnknownField: {},
+	DecodeReasonTypeMismatch: {},
+	DecodeReasonTrailingData: {},
+	DecodeReasonOther:        {},
 }
 
 var allowedFailureStages = map[string]struct{}{
@@ -127,6 +158,10 @@ func (e *failureDiagnosticError) Unwrap() error { return e.cause }
 
 func withFailureDiagnostic(stage, class string, cause error) error {
 	diagnostic := FailureDiagnostic{Stage: stage, Class: class}
+	return withFailureDiagnosticValue(diagnostic, cause)
+}
+
+func withFailureDiagnosticValue(diagnostic FailureDiagnostic, cause error) error {
 	if cause == nil || !diagnostic.Valid() {
 		return cause
 	}

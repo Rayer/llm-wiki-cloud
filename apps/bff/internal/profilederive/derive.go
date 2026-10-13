@@ -174,7 +174,7 @@ func (p *Provider) DeriveManual(ctx context.Context, revision int64, requirement
 	}
 	var output ManualOutput
 	if err := decodeModelJSON([]byte(text), &output); err != nil {
-		return ManualResult{}, withFailureDiagnostic(FailureStageManualDecode, FailureClassModelOutputDecodeFailed, fmt.Errorf("invalid manual derivation output: %w", err))
+		return ManualResult{}, withManualDecodeFailure(err)
 	}
 	if err := validateAccounting(output.Requirements, requirements, true, output.CompileGuidance, output.Tags); err != nil {
 		return ManualResult{}, withFailureDiagnostic(FailureStageManualValidate, FailureClassModelAccountingInvalid, err)
@@ -389,7 +389,10 @@ func validReturnedModel(model string) bool {
 
 func decodeModelJSON(data []byte, target any) error {
 	if !utf8.Valid(data) {
-		return errors.New("provider output is not valid UTF-8")
+		return &classifiedModelOutputDecodeError{
+			reason: errModelOutputInvalidUTF8,
+			cause:  errors.New("provider output is not valid UTF-8"),
+		}
 	}
 	if err := rejectDuplicateKeys(data); err != nil {
 		return err
@@ -401,9 +404,9 @@ func decodeModelJSON(data []byte, target any) error {
 	}
 	if _, err := decoder.Token(); err != io.EOF {
 		if err == nil {
-			return errors.New("provider output has trailing data")
+			err = errors.New("provider output has trailing data")
 		}
-		return err
+		return &classifiedModelOutputDecodeError{reason: errModelOutputTrailingData, cause: err}
 	}
 	return nil
 }
@@ -415,9 +418,9 @@ func rejectDuplicateKeys(data []byte) error {
 	}
 	if _, err := decoder.Token(); err != io.EOF {
 		if err == nil {
-			return errors.New("provider output has trailing data")
+			err = errors.New("provider output has trailing data")
 		}
-		return err
+		return &classifiedModelOutputDecodeError{reason: errModelOutputTrailingData, cause: err}
 	}
 	return nil
 }
@@ -444,7 +447,10 @@ func scanJSONValue(decoder *json.Decoder) error {
 				return errors.New("provider output object key is not a string")
 			}
 			if _, duplicate := seen[name]; duplicate {
-				return fmt.Errorf("duplicate provider output key %q", name)
+				return &classifiedModelOutputDecodeError{
+					reason: errModelOutputDuplicateKey,
+					cause:  fmt.Errorf("duplicate provider output key %q", name),
+				}
 			}
 			seen[name] = struct{}{}
 			if err := scanJSONValue(decoder); err != nil {
@@ -468,6 +474,58 @@ func scanJSONValue(decoder *json.Decoder) error {
 
 const bootstrapSystemPrompt = `You derive only compile-time writing guidance from project requirements. Do not invent or assume a content corpus. Consider every ordered requirement and preserve its intent in exactly one accounting row, in the same order: compile_guidance when it affects writing, dictionary_or_query when it is reserved for later tagging/search, both when it affects both, or limitation when it cannot be represented (explain why). Only copy writing or structure instructions into compile_guidance. Never copy Tag detection, query filters, ranking, or provider decision rules into compile_guidance. Return strict JSON with exactly: compile_guidance (string), guidance_diff (string), requirements (array of {id,disposition,explanation}). Include every input requirement ID exactly once. No Markdown fences.`
 
-const manualSystemPrompt = `Derive a Profile dictionary and standalone compile writing guidance from the complete ordered requirements and the supplied canonical active concept context. Do not use prior artifacts. Every requirement must have exactly one ordered accounting row. Include compile_guidance only for writing/structure intent; never put Tag detection, query filtering, ranking, or provider rules in it. Tag/query requirements must be represented by dictionary tags or an explicit limitation. Tags use stable IDs matching [a-z][a-z0-9_]{0,63}, nonempty definition/match_rule/non_match_rule/unknown_rule, applies_to as source then concept, requirement_ids in input order, and query_use preferred or required_candidate. Return strict JSON with exactly: tags, compile_guidance, dictionary_diff, guidance_diff, requirements; each tag uses fields id,definition,applies_to,match_rule,non_match_rule,unknown_rule,requirement_ids,query_use. Include every input requirement ID exactly once in requirements. No Markdown fences.`
+var (
+	errModelOutputInvalidUTF8  = errors.New("provider output is not valid UTF-8")
+	errModelOutputDuplicateKey = errors.New("provider output contains a duplicate key")
+	errModelOutputTrailingData = errors.New("provider output has trailing data")
+)
 
-const compileAutoSystemPrompt = `Derive only a new dictionary for this successful content generation from the complete ordered requirements and supplied canonical active concept context. Writing guidance is intentionally unchanged. Do not reuse prior dictionary rules or invent concepts. Every requirement must have exactly one ordered accounting row; Tag/query intent must be represented by dictionary tags or an explicit limitation, and compile-only intent must remain accounted as compile_guidance without changing writing guidance. Tags use stable IDs matching [a-z][a-z0-9_]{0,63}, nonempty definition/match_rule/non_match_rule/unknown_rule, applies_to as source then concept, requirement_ids in input order, and query_use preferred or required_candidate. Return strict JSON with exactly: tags, dictionary_diff, requirements; each tag uses fields id,definition,applies_to,match_rule,non_match_rule,unknown_rule,requirement_ids,query_use. Include every input requirement ID exactly once in requirements. No Markdown fences.`
+type classifiedModelOutputDecodeError struct {
+	reason error
+	cause  error
+}
+
+func (e *classifiedModelOutputDecodeError) Error() string { return e.cause.Error() }
+func (e *classifiedModelOutputDecodeError) Unwrap() error { return e.cause }
+func (e *classifiedModelOutputDecodeError) Is(target error) bool {
+	return target == e.reason
+}
+
+func withManualDecodeFailure(cause error) error {
+	diagnostic := FailureDiagnostic{
+		Stage:        FailureStageManualDecode,
+		Class:        FailureClassModelOutputDecodeFailed,
+		DecodeReason: manualDecodeReason(cause),
+	}
+	return withFailureDiagnosticValue(diagnostic, fmt.Errorf("invalid manual derivation output: %w", cause))
+}
+
+func manualDecodeReason(err error) string {
+	switch {
+	case errors.Is(err, errModelOutputInvalidUTF8):
+		return DecodeReasonInvalidUTF8
+	case errors.Is(err, errModelOutputDuplicateKey):
+		return DecodeReasonDuplicateKey
+	case errors.Is(err, errModelOutputTrailingData):
+		return DecodeReasonTrailingData
+	}
+	var typeError *json.UnmarshalTypeError
+	if errors.As(err, &typeError) {
+		return DecodeReasonTypeMismatch
+	}
+	var syntaxError *json.SyntaxError
+	if errors.As(err, &syntaxError) {
+		return DecodeReasonInvalidJSON
+	}
+	if errors.Is(err, io.EOF) || errors.Is(err, io.ErrUnexpectedEOF) {
+		return DecodeReasonInvalidJSON
+	}
+	if strings.HasPrefix(err.Error(), "json: unknown field ") {
+		return DecodeReasonUnknownField
+	}
+	return DecodeReasonOther
+}
+
+const manualSystemPrompt = `Derive a Profile dictionary and standalone compile writing guidance from the complete ordered requirements and the supplied canonical active concept context. Do not use prior artifacts. Every requirement must have exactly one accounting row in the same order, shaped as {id: string, disposition: string, explanation: string}; disposition must be exactly compile_guidance, dictionary_or_query, both, or limitation. Include compile_guidance only for writing/structure intent; never put Tag detection, query filtering, ranking, or provider rules in it. Tag/query requirements must be represented by dictionary tags or an explicit limitation. Tags use stable IDs matching [a-z][a-z0-9_]{0,63}, nonempty definition/match_rule/non_match_rule/unknown_rule, applies_to as source then concept, requirement_ids in input order, and query_use preferred or required_candidate. Return one strict JSON object with exactly these fields: tags (array of tag objects), compile_guidance (string), dictionary_diff (string), guidance_diff (string), requirements (array of accounting rows). Each tag object has exactly these fields and types: id (string), definition (string), applies_to (array containing source and/or concept), match_rule (string), non_match_rule (string), unknown_rule (string), requirement_ids (array of input requirement IDs), query_use (preferred or required_candidate). Include every input requirement ID exactly once in requirements. No Markdown fences.`
+
+const compileAutoSystemPrompt = `Derive only a new dictionary for this successful content generation from the complete ordered requirements and supplied canonical active concept context. Writing guidance is intentionally unchanged. Do not reuse prior dictionary rules or invent concepts. Every requirement must have exactly one accounting row in the same order, shaped as {id: string, disposition: string, explanation: string}; disposition must be exactly compile_guidance, dictionary_or_query, both, or limitation. Tag/query intent must be represented by dictionary tags or an explicit limitation, and compile-only intent must remain accounted as compile_guidance without changing writing guidance. Tags use stable IDs matching [a-z][a-z0-9_]{0,63}, nonempty definition/match_rule/non_match_rule/unknown_rule, applies_to as source then concept, requirement_ids in input order, and query_use preferred or required_candidate. Return one strict JSON object with exactly these fields: tags (array of tag objects), dictionary_diff (string), requirements (array of accounting rows). Each tag object has exactly these fields and types: id (string), definition (string), applies_to (array containing source and/or concept), match_rule (string), non_match_rule (string), unknown_rule (string), requirement_ids (array of input requirement IDs), query_use (preferred or required_candidate). Include every input requirement ID exactly once in requirements. No Markdown fences.`
