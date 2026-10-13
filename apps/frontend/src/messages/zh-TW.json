@@ -260,7 +260,7 @@
     "profileLink": "專案 Profile",
     "setupEyebrow": "選擇 AI 工具",
     "setupTitle": "將 AI 工具連線到此專案",
-    "setupIntro": "Hermes 可開啟 LLM Wiki Cloud，讓你登入並明確核准此專案的唯讀查詢權限。",
+    "setupIntro": "每份指引都使用此專案目前的資源網址。儲存用戶端設定不代表已連線。請在用戶端的瀏覽器登入，並在核准前確認帳號、專案及 mcp:query 權限。請勿在聊天中貼上密碼、金鑰或權杖。複製的命令使用 POSIX shell 引號（zsh/bash）；若使用 PowerShell，請參閱官方文件並填入相同網址。",
     "toolsTabList": "AI 工具",
     "toolHermes": "Hermes",
     "toolCodex": "Codex",
@@ -268,17 +268,38 @@
     "toolClaudeCode": "Claude Code",
     "toolOpenClaw": "OpenClaw",
     "hermesPanelTitle": "將 Hermes 連線到此專案",
-    "productNotVerified": "尚未完成產品原生流程驗證",
+    "productNotVerified": "尚未測試 LWC 登入與查詢",
     "technicalDetails": "技術詳細資料",
-    "guidancePreparing": "設定指引準備中",
-    "placeholderDisclaimer": "此處為佔位內容，不代表此用戶端已測試或支援 OAuth。",
     "grantCount": "目前已授權用戶端數量",
     "panel": {
-      "codex": { "title": "Codex", "body": "尚未驗證此用戶端的設定步驟。" },
-      "grok": { "title": "Grok CLI 與網頁版", "body": "Grok CLI 與 Grok 網頁版可能使用不同連線方式；此處尚未驗證任一方式。" },
-      "claude-code": { "title": "Claude Code", "body": "尚未驗證此用戶端的設定步驟。" },
-      "openclaw": { "title": "OpenClaw", "body": "尚未驗證此用戶端的設定步驟。" }
+      "codex": {
+        "title": "Codex CLI、應用程式與 IDE",
+        "body": "請在本機終端機執行這些命令。同一台主機上的 Codex CLI、應用程式與 IDE 共用 MCP 設定；ChatGPT 網頁版使用不同的雲端連接器。完成瀏覽器登入後，可在 Codex 輸入 /mcp 檢查。儲存設定不代表已連上 LLM Wiki Cloud。",
+        "evidence": "已核對官方設定文件與本機安裝的 Codex CLI 說明（0.162.1）。先前使用 0.153.0 的隔離設定寫入測試沒有連線 LWC。原生 LWC OAuth、工具探索與專案 Query：尚未執行。"
+      },
+      "grok": {
+        "title": "Grok CLI 與 xAI Grok Bot",
+        "body": "這是兩種不同的用戶端。CLI 使用本機 Grok Build 設定；雲端 Grok Bot 不會讀取該設定。請依照要設定的用戶端使用下方對應區段。",
+        "cliTitle": "Grok CLI / Grok Build（本機）",
+        "cliBody": "請在終端機執行此命令。在 Grok Build 中開啟 /mcps，選取 llm-wiki，並按 i 開始用戶端的瀏覽器 OAuth 流程。核准前請確認目前帳號、專案及唯讀查詢權限。",
+        "cliEvidence": "已核對官方設定文件與本機安裝的 Grok CLI 1.0.52 說明。隔離設定寫入測試沒有連線 LWC。原生 LWC OAuth、工具探索與專案 Query：尚未執行。",
+        "botTitle": "xAI Grok Bot（雲端，獨立設定）",
+        "botBody": "官方 Team Bot 文件說明可在 Bot 的 Setup → Plugins 中設定 Custom MCP server 與 Remote HTTPS。若你的帳戶介面提供此選項，請使用下方目前的專案網址；公開文件沒有列出實際表單欄位。雲端服務必須能連到這個設定網址。此設定與 Grok CLI 分開。",
+        "botEvidence": "已查閱官方雲端 Bot 文件；本工作階段沒有檢查實際設定表單，也沒有執行 LWC 連線。原生 LWC OAuth、工具探索與專案 Query：尚未執行。"
+      },
+      "claude-code": {
+        "title": "Claude Code",
+        "body": "請在本機終端機執行此份文件記載的 HTTP MCP 命令。啟動 Claude Code，輸入 /mcp 選擇 llm-wiki，並完成用戶端要求的瀏覽器登入。核准前請確認帳號、目前專案及唯讀查詢權限。",
+        "evidence": "已核對 Claude Code 官方設定文件。指南查證環境未安裝 Claude Code，因此不宣稱已檢查本機 CLI 說明或執行階段。原生 LWC OAuth、工具探索與專案 Query：尚未執行。"
+      },
+      "openclaw": {
+        "title": "OpenClaw",
+        "body": "請在 OpenClaw 終端機執行文件記載的命令。儲存設定會使用 Streamable HTTP 與 mcp:query；登入會開始用戶端的瀏覽器 OAuth 流程。最後的 doctor probe 會連線至設定的伺服器，請視為用戶端檢查，不是 LWC 驗收。",
+        "evidence": "已核對 OpenClaw 官方設定與傳輸文件。指南查證環境未安裝 OpenClaw，因此不宣稱已檢查 CLI 說明或執行階段。原生 LWC OAuth、工具探索與專案 Query：尚未執行。"
+      }
     },
+    "officialGuide": "官方設定文件",
+    "resourceUnavailable": "目前未設定有效的專案資源網址，因此無法提供設定命令。",
     "environment": "環境",
     "localEnvironment": "本機開發",
     "configuredEnvironment": "目前設定的部署環境",
@@ -289,8 +310,10 @@
     "stepThree": "核准前請確認用戶端、帳號、專案與唯讀權限。",
     "copyConfig": "複製 Hermes 設定",
     "copied": "已複製",
-    "copyFailed": "無法使用剪貼簿，請選取並複製上方設定。",
-    "nativeCheck": "此設定不包含 API 金鑰或 OAuth 密鑰。",
+    "copyFailed": "無法使用剪貼簿，請選取並複製上方內容。",
+    "copySetup": "複製設定命令",
+    "copyProjectURL": "複製專案網址",
+    "nativeCheck": "設定中不含 API 金鑰或 OAuth 密鑰。儲存設定不代表連線成功；原生 LWC OAuth、工具探索與專案 Query 尚未執行。",
     "grantsTitle": "已授權的 MCP 用戶端",
     "grantsIntro": "檢視或撤銷此專案的 OAuth 存取權。用戶端名稱由 MCP 用戶端自行提供。撤銷後，既有存取權杖也會立即失效。",
     "refreshGrants": "重新載入清單",

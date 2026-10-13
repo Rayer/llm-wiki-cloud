@@ -1,6 +1,6 @@
 'use client';
 
-import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
+import { useCallback, useEffect, useRef, useState } from 'react';
 import Link from 'next/link';
 import { useAuth } from '@/lib/auth';
 import { AgentMcpTabs } from '@/components/AgentMcpTabs';
@@ -35,15 +35,6 @@ export default function AdvancedPage() {
   const grantsLoading = !visibleGrantsError && grantsContextKey !== contextKey;
 
   const resourceURL = currentProject ? mcpResourceURL(currentProject.id) : '';
-  const configSnippet = useMemo(() => resourceURL ? [
-    'mcp_servers:',
-    '  llm_wiki:',
-    `    url: ${JSON.stringify(resourceURL)}`,
-    '    auth: oauth',
-    '    oauth:',
-    '      cimd: false',
-    '      scope: mcp:query',
-  ].join('\n') : '', [resourceURL]);
 
   const loadGrants = useCallback(async () => {
     const requestId = ++requestIdRef.current;
@@ -127,7 +118,7 @@ export default function AdvancedPage() {
         <Link href="/profile" className="inline-flex min-h-11 items-center rounded-lg border border-white/10 px-4 text-sm text-zinc-300 hover:bg-white/5">{t('MCPOAuth.profileLink')}</Link>
       </header>
 
-      <AgentMcpTabs resourceURL={resourceURL} configSnippet={configSnippet} environmentLabel={environmentLabel} t={t} />
+      <AgentMcpTabs resourceURL={resourceURL} environmentLabel={environmentLabel} identityKey={`${contextKey}:${resourceURL}`} t={t} />
 
       <details className="rounded-2xl border border-white/10 bg-[#151515]">
         <summary className="flex min-h-16 cursor-pointer list-none items-center justify-between gap-4 px-5 py-4 focus-visible:outline focus-visible:outline-2 focus-visible:outline-inset focus-visible:outline-emerald-300 sm:px-6">

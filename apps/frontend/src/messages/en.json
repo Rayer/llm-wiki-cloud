@@ -260,7 +260,7 @@
     "profileLink": "Project profile",
     "setupEyebrow": "Choose an AI tool",
     "setupTitle": "Connect an AI tool to this Project",
-    "setupIntro": "Hermes can open LLM Wiki Cloud so you can sign in and explicitly approve read-only Query access for this Project.",
+    "setupIntro": "Every guide uses this Project's current resource URL. Saving client settings does not prove a connection. Sign in in the client's browser and review the account, Project, and mcp:query permission before approving. Never paste passwords, keys, or tokens into chat. Copied commands use POSIX shell quoting (zsh/bash); use the official docs to enter the same URL in PowerShell.",
     "toolsTabList": "AI tools",
     "toolHermes": "Hermes",
     "toolCodex": "Codex",
@@ -268,17 +268,38 @@
     "toolClaudeCode": "Claude Code",
     "toolOpenClaw": "OpenClaw",
     "hermesPanelTitle": "Connect Hermes to this Project",
-    "productNotVerified": "Product flow not yet natively verified",
+    "productNotVerified": "LWC login and query not tested",
     "technicalDetails": "Technical details",
-    "guidancePreparing": "Setup guidance in preparation",
-    "placeholderDisclaimer": "This is a placeholder. It does not mean this client has been tested or is OAuth-compatible.",
     "grantCount": "Current authorized client count",
     "panel": {
-      "codex": { "title": "Codex", "body": "Setup instructions have not been verified for this client yet." },
-      "grok": { "title": "Grok CLI and web", "body": "Grok CLI and Grok web may use different connection paths. Neither path is verified here." },
-      "claude-code": { "title": "Claude Code", "body": "Setup instructions have not been verified for this client yet." },
-      "openclaw": { "title": "OpenClaw", "body": "Setup instructions have not been verified for this client yet." }
+      "codex": {
+        "title": "Codex CLI, app, and IDE",
+        "body": "Run these commands in a local terminal. Codex CLI, app, and IDE on the same host share MCP configuration; ChatGPT web uses a separate cloud connector. Finish the browser sign-in, then check /mcp in Codex. A saved configuration is not proof that LLM Wiki Cloud connected.",
+        "evidence": "Official setup docs and installed Codex CLI help (0.162.1) were checked. An earlier isolated config-save probe used 0.153.0 and did not contact LWC. Native LWC OAuth, tool discovery, and Project Query are NOT RUN."
+      },
+      "grok": {
+        "title": "Grok CLI and xAI Grok Bot",
+        "body": "These are separate clients. The CLI uses local Grok Build configuration; Grok Bot is a cloud service and does not read that configuration. Use the section that matches the client you are setting up.",
+        "cliTitle": "Grok CLI / Grok Build (local)",
+        "cliBody": "Run the command in a terminal. In Grok Build, open /mcps, select llm-wiki, and press i to start the client's browser OAuth flow. Review the current account, Project, and query-only permission before approving.",
+        "cliEvidence": "Official setup docs and installed Grok CLI 1.0.52 help were checked. An isolated config-save probe did not contact LWC. Native LWC OAuth, tool discovery, and Project Query are NOT RUN.",
+        "botTitle": "xAI Grok Bot (cloud, separate)",
+        "botBody": "Official Team Bot docs describe a Custom MCP server using Remote HTTPS in the Bot's Setup → Plugins. Use the current Project URL below if that option is available in your account; the public docs do not document the live form fields. The cloud service must be able to reach this configured URL. This setup is separate from Grok CLI.",
+        "botEvidence": "Official cloud Bot docs were reviewed. Its live setup form and an LWC connection were not inspected or run. Native LWC OAuth, discovery, and Project Query are NOT RUN."
+      },
+      "claude-code": {
+        "title": "Claude Code",
+        "body": "Run this documented HTTP MCP command in a local terminal. Start Claude Code, use /mcp to select llm-wiki, and complete the browser sign-in it requests. Review the account, current Project, and query-only permission before approving.",
+        "evidence": "Official Claude Code setup docs were checked. Claude Code was not installed in the guide-review environment, so no local CLI help or runtime check is claimed. Native LWC OAuth, tool discovery, and Project Query are NOT RUN."
+      },
+      "openclaw": {
+        "title": "OpenClaw",
+        "body": "Run these documented commands in an OpenClaw terminal. The saved definition uses Streamable HTTP and mcp:query; login starts the client's browser OAuth flow. The final doctor probe contacts the configured server, so treat its result as a client check, not LWC acceptance.",
+        "evidence": "Official OpenClaw setup and transport docs were checked. OpenClaw was not installed in the guide-review environment, so no local CLI help or runtime check is claimed. Native LWC OAuth, tool discovery, and Project Query are NOT RUN."
+      }
     },
+    "officialGuide": "Official setup documentation",
+    "resourceUnavailable": "A valid Project resource URL is not configured; setup commands are unavailable.",
     "environment": "Environment",
     "localEnvironment": "Local development",
     "configuredEnvironment": "Configured deployment",
@@ -289,8 +310,10 @@
     "stepThree": "Review the client, account, Project, and read-only permission before approving.",
     "copyConfig": "Copy Hermes config",
     "copied": "Copied",
-    "copyFailed": "Clipboard access failed. Select and copy the config above.",
-    "nativeCheck": "No API key or OAuth secret is included in this config.",
+    "copyFailed": "Clipboard access failed. Select and copy the text above.",
+    "copySetup": "Copy setup commands",
+    "copyProjectURL": "Copy Project URL",
+    "nativeCheck": "No API key or OAuth secret is included. Saving this config does not verify a connection; native LWC OAuth, tool discovery, and Project Query remain NOT RUN.",
     "grantsTitle": "Authorized MCP clients",
     "grantsIntro": "Review or revoke OAuth access for this Project. Names are supplied by the MCP client. Revocation takes effect for existing access tokens.",
     "refreshGrants": "Refresh list",
