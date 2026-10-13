@@ -306,6 +306,7 @@ func prepareProfileRuntimeAttempt(ctx context.Context, repo *firestoreProfileRep
 			history.ErrorCode = nil
 			state.DerivationStatus = stringPtr(profileDerivationPending)
 			state.DerivationErrorCode = nil
+			state.DerivationDiagnostic = nil
 			if err = tx.Set(historyRef, history); err != nil {
 				return err
 			}
@@ -525,6 +526,7 @@ func clearSupersededProfileCompileRetry(ctx context.Context, tx *firestore.Trans
 	state.DerivationStatus = stringPtr(profileDerivationReady)
 	state.ScheduledFor = nil
 	state.DerivationErrorCode = nil
+	state.DerivationDiagnostic = nil
 	state.CompileRetryGeneration = ""
 	return setProfileState(tx, stateRef, state)
 }

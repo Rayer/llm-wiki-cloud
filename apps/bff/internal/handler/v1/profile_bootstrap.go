@@ -206,6 +206,7 @@ func (r *firestoreProfileRepository) ProfileBootstrapDerivationSucceeded(ctx con
 		current.DerivationStatus = stringPtr(profileDerivationReady)
 		current.ScheduledFor = nil
 		current.DerivationErrorCode = nil
+		current.DerivationDiagnostic = nil
 		result = current
 		intent.Status = profileDerivationReady
 		intent.ScheduledFor = nil

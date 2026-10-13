@@ -19,6 +19,7 @@ import (
 	"github.com/gin-gonic/gin"
 	"github.com/rayer/llm-wiki-bff/internal/auth"
 	"github.com/rayer/llm-wiki-bff/internal/profileartifacts"
+	"github.com/rayer/llm-wiki-bff/internal/profilederive"
 	"github.com/rayer/llm-wiki-bff/internal/profileruntime"
 	"google.golang.org/grpc/codes"
 	"google.golang.org/grpc/status"
@@ -163,18 +164,19 @@ type ProfileActive struct {
 
 // ProfileState is the complete API and Firestore projection for one project.
 type ProfileState struct {
-	ProjectID               string                    `json:"project_id" firestore:"project_id" binding:"required"`
-	Revision                int64                     `json:"revision" firestore:"revision" binding:"required"`
-	Requirements            []ProfileRequirement      `json:"requirements" firestore:"requirements" binding:"required"`
-	DerivationStatus        *string                   `json:"derivation_status" firestore:"derivation_status" binding:"required" enums:"pending,ready,failed,superseded"`
-	ScheduledFor            *string                   `json:"scheduled_for" firestore:"scheduled_for" binding:"required"`
-	DerivationErrorCode     *string                   `json:"derivation_error_code" firestore:"derivation_error_code" binding:"required"`
-	Candidate               *ProfileCandidate         `json:"candidate" firestore:"candidate" binding:"required"`
-	BootstrapGuidance       *ProfileBootstrapGuidance `json:"bootstrap_guidance" firestore:"bootstrap_guidance" binding:"required"`
-	ConfirmedCandidateID    *string                   `json:"confirmed_candidate_id" firestore:"confirmed_candidate_id" binding:"required"`
-	Active                  *ProfileActive            `json:"active" firestore:"active" binding:"required"`
-	Job                     *ProfileJob               `json:"job" firestore:"job" binding:"required"`
-	CompileRetryGeneration  string                    `json:"-" firestore:"compile_retry_generation,omitempty"`
+	ProjectID               string                           `json:"project_id" firestore:"project_id" binding:"required"`
+	Revision                int64                            `json:"revision" firestore:"revision" binding:"required"`
+	Requirements            []ProfileRequirement             `json:"requirements" firestore:"requirements" binding:"required"`
+	DerivationStatus        *string                          `json:"derivation_status" firestore:"derivation_status" binding:"required" enums:"pending,ready,failed,superseded"`
+	ScheduledFor            *string                          `json:"scheduled_for" firestore:"scheduled_for" binding:"required"`
+	DerivationErrorCode     *string                          `json:"derivation_error_code" firestore:"derivation_error_code" binding:"required"`
+	DerivationDiagnostic    *profilederive.FailureDiagnostic `json:"derivation_diagnostic" firestore:"derivation_diagnostic" binding:"required"`
+	Candidate               *ProfileCandidate                `json:"candidate" firestore:"candidate" binding:"required"`
+	BootstrapGuidance       *ProfileBootstrapGuidance        `json:"bootstrap_guidance" firestore:"bootstrap_guidance" binding:"required"`
+	ConfirmedCandidateID    *string                          `json:"confirmed_candidate_id" firestore:"confirmed_candidate_id" binding:"required"`
+	Active                  *ProfileActive                   `json:"active" firestore:"active" binding:"required"`
+	Job                     *ProfileJob                      `json:"job" firestore:"job" binding:"required"`
+	CompileRetryGeneration  string                           `json:"-" firestore:"compile_retry_generation,omitempty"`
 	derivationClaimAcquired bool
 }
 
@@ -226,6 +228,7 @@ func saveProfileState(current ProfileState, expected int64, requirements []Profi
 		current.ScheduledFor = stringPtr(now.Add(profileDebounce).Format(time.RFC3339Nano))
 	}
 	current.DerivationErrorCode = nil
+	current.DerivationDiagnostic = nil
 	current.CompileRetryGeneration = ""
 	current.Candidate = nil
 	current.BootstrapGuidance = nil
@@ -254,19 +257,20 @@ func profileRequirementsDigest(requirements []ProfileRequirement) string {
 	return hex.EncodeToString(digest[:])
 }
 
-func failProfileDerivation(current ProfileState, revision int64, digest, errorCode string) (ProfileState, error) {
+func failProfileDerivation(current ProfileState, revision int64, digest, errorCode string, diagnostic profilederive.FailureDiagnostic) (ProfileState, error) {
 	if current.Revision != revision {
 		return ProfileState{}, &profileRevisionConflict{Latest: current.Revision}
 	}
 	if current.Candidate != nil || current.DerivationStatus == nil || *current.DerivationStatus != profileDerivationPending || profileRequirementsDigest(current.Requirements) != digest {
 		return ProfileState{}, errProfileCandidateNotCurrent
 	}
-	if strings.TrimSpace(errorCode) == "" {
+	if strings.TrimSpace(errorCode) == "" || !diagnostic.Valid() {
 		return ProfileState{}, errProfileTransitionInvalid
 	}
 	current.DerivationStatus = stringPtr(profileDerivationFailed)
 	current.ScheduledFor = nil
 	current.DerivationErrorCode = stringPtr(errorCode)
+	current.DerivationDiagnostic = &diagnostic
 	return current, nil
 }
 
@@ -287,6 +291,7 @@ func retryFailedProfileDerivation(current ProfileState, expected int64, now time
 	current.DerivationStatus = stringPtr(profileDerivationPending)
 	current.ScheduledFor = stringPtr(now.Format(time.RFC3339Nano))
 	current.DerivationErrorCode = nil
+	current.DerivationDiagnostic = nil
 	return current, nil
 }
 
@@ -376,6 +381,9 @@ func profileStateFromData(data map[string]interface{}) (ProfileState, error) {
 	var state ProfileState
 	if err := json.Unmarshal(encoded, &state); err != nil {
 		return ProfileState{}, err
+	}
+	if state.DerivationDiagnostic != nil && !state.DerivationDiagnostic.Valid() {
+		return ProfileState{}, errors.New("corrupt Profile derivation diagnostic")
 	}
 	state.CompileRetryGeneration, _ = data["compile_retry_generation"].(string)
 	return state, nil
@@ -778,6 +786,7 @@ func (r *firestoreProfileRepository) retryExhaustedProfileCompile(ctx context.Co
 	current.DerivationStatus = stringPtr(profileDerivationPending)
 	current.ScheduledFor = stringPtr(r.now().Format(time.RFC3339Nano))
 	current.DerivationErrorCode = nil
+	current.DerivationDiagnostic = nil
 	return current, nil
 }
 
@@ -929,6 +938,7 @@ func (r *firestoreProfileRepository) ProfileDerivationSucceeded(ctx context.Cont
 		current.DerivationStatus = stringPtr(profileDerivationReady)
 		current.ScheduledFor = nil
 		current.DerivationErrorCode = nil
+		current.DerivationDiagnostic = nil
 		current.Candidate = &candidate
 		current.Job = &job.ProfileJob
 		result = current
@@ -950,7 +960,7 @@ func (r *firestoreProfileRepository) ProfileDerivationSucceeded(ctx context.Cont
 }
 
 // ProfileDerivationFailed records a retryable worker failure without replacing requirements or active state.
-func (r *firestoreProfileRepository) ProfileDerivationFailed(ctx context.Context, userID, projectID string, revision int64, attemptID, requirementsDigest, errorCode string) (ProfileState, error) {
+func (r *firestoreProfileRepository) ProfileDerivationFailed(ctx context.Context, userID, projectID string, revision int64, attemptID, requirementsDigest, errorCode string, diagnostic profilederive.FailureDiagnostic) (ProfileState, error) {
 	var result ProfileState
 	err := r.client.RunTransaction(ctx, func(ctx context.Context, tx *firestore.Transaction) error {
 		result = ProfileState{}
@@ -976,7 +986,7 @@ func (r *firestoreProfileRepository) ProfileDerivationFailed(ctx context.Context
 		if history.Revision != revision || history.RequirementsDigest != requirementsDigest || history.Status != "running" {
 			return errors.New("profile derivation attempt history status mismatch")
 		}
-		result, err = failProfileDerivation(current, revision, requirementsDigest, errorCode)
+		result, err = failProfileDerivation(current, revision, requirementsDigest, errorCode, diagnostic)
 		if err != nil {
 			return err
 		}
@@ -1241,6 +1251,7 @@ func (r *firestoreProfileRepository) ProfileCompileCandidateReady(ctx context.Co
 		current.DerivationStatus = stringPtr(profileDerivationReady)
 		current.ScheduledFor = nil
 		current.DerivationErrorCode = nil
+		current.DerivationDiagnostic = nil
 		current.CompileRetryGeneration = ""
 		current.Candidate = &candidate
 		current.ConfirmedCandidateID = nil
@@ -1376,6 +1387,7 @@ func (r *firestoreProfileRepository) ProfileBootstrapCompileCandidateReady(ctx c
 		current.DerivationStatus = stringPtr(profileDerivationReady)
 		current.ScheduledFor = nil
 		current.DerivationErrorCode = nil
+		current.DerivationDiagnostic = nil
 		current.CompileRetryGeneration = ""
 		current.Candidate = &candidate
 		current.ConfirmedCandidateID = nil
@@ -1941,7 +1953,7 @@ type profileWorkerRepository interface {
 	ProfileBootstrapDerivationSucceeded(context.Context, string, string, int64, string, string, ProfileBootstrapGuidance) (ProfileState, error)
 	ClaimProfileJob(context.Context, string, string, int64, string, string) (ProfileState, error)
 	ProfileDerivationSucceeded(context.Context, string, string, int64, string, string, string, ProfileDerivedRef, ProfileDerivedRef, ProfilePreview) (ProfileState, error)
-	ProfileDerivationFailed(context.Context, string, string, int64, string, string, string) (ProfileState, error)
+	ProfileDerivationFailed(context.Context, string, string, int64, string, string, string, profilederive.FailureDiagnostic) (ProfileState, error)
 	ProfileJobTransition(context.Context, string, string, int64, string, string, string, int64, string, string, string, bool) (ProfileState, error)
 	ProfileCompileReconcileRequested(context.Context, string, string, string, int64, string) error
 	ProfileCompileCandidateReady(context.Context, string, string, string, int64, string, ProfileDerivedRef, ProfilePreview) (ProfileState, error)
@@ -1976,12 +1988,12 @@ func (h *Handler) CompleteProfileDerivation(ctx context.Context, userID, project
 }
 
 // FailProfileDerivation records a versioned, retryable worker failure.
-func (h *Handler) FailProfileDerivation(ctx context.Context, userID, projectID string, revision int64, attemptID, requirementsDigest, errorCode string) (ProfileState, error) {
+func (h *Handler) FailProfileDerivation(ctx context.Context, userID, projectID string, revision int64, attemptID, requirementsDigest, errorCode string, diagnostic profilederive.FailureDiagnostic) (ProfileState, error) {
 	worker, ok := h.profileRepository.(profileWorkerRepository)
 	if !ok {
 		return ProfileState{}, errors.New("profile worker repository unavailable")
 	}
-	return worker.ProfileDerivationFailed(ctx, userID, projectID, revision, attemptID, requirementsDigest, errorCode)
+	return worker.ProfileDerivationFailed(ctx, userID, projectID, revision, attemptID, requirementsDigest, errorCode, diagnostic)
 }
 
 // TransitionProfileJob updates one scoped job; ready is accepted only with complete coverage.

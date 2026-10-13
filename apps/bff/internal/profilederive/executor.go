@@ -28,7 +28,7 @@ type ProfileTransitions interface {
 	ClaimProfileDerivation(context.Context, Attempt) (ProfileSnapshot, error)
 	CompleteProfileBootstrap(context.Context, Attempt, string, profileartifacts.BootstrapGuidanceRef, Preview) error
 	CompleteProfileDerivation(context.Context, Attempt, string, string, profileartifacts.DerivedRef, profileartifacts.DerivedRef, Preview) error
-	FailProfileDerivation(context.Context, Attempt, string, string) error
+	FailProfileDerivation(context.Context, Attempt, string, string, FailureDiagnostic) error
 }
 
 type ContentSource interface {
@@ -165,13 +165,21 @@ func (e *Executor) Run(ctx context.Context, attempt Attempt) (Result, error) {
 }
 
 func (e *Executor) fail(ctx context.Context, attempt Attempt, requirementsDigest, code string, cause error) error {
-	if err := e.Profiles.FailProfileDerivation(ctx, attempt, requirementsDigest, code); err != nil {
+	diagnostic, ok := FailureDiagnosticFromError(cause)
+	if !ok {
+		diagnostic = failureDiagnosticForCode(code)
+	}
+	if err := e.Profiles.FailProfileDerivation(ctx, attempt, requirementsDigest, code, diagnostic); err != nil {
 		return errors.Join(cause, err)
 	}
 	return cause
 }
 
 func failureCode(err error) string {
+	var diagnosticError *failureDiagnosticError
+	if errors.As(err, &diagnosticError) && diagnosticError.cause != nil {
+		err = diagnosticError.cause
+	}
 	if strings.Contains(err.Error(), "provider_model_unreported") {
 		return "provider_model_unreported"
 	}
@@ -182,4 +190,25 @@ func failureCode(err error) string {
 		return "profile_provider_unavailable"
 	}
 	return "profile_derivation_failed"
+}
+
+func failureDiagnosticForCode(code string) FailureDiagnostic {
+	diagnostic := FailureDiagnostic{Stage: FailureStageUnknown, Class: FailureClassUnknown}
+	switch code {
+	case "profile_revision_stale":
+		diagnostic = FailureDiagnostic{Stage: FailureStageRevisionClaim, Class: FailureClassStaleRevision}
+	case "profile_requirements_invalid":
+		diagnostic = FailureDiagnostic{Stage: FailureStageRequirements, Class: FailureClassInputInvalid}
+	case "profile_generation_unavailable":
+		diagnostic = FailureDiagnostic{Stage: FailureStageContentPin, Class: FailureClassContentUnavailable}
+	case "profile_generation_invalid":
+		diagnostic = FailureDiagnostic{Stage: FailureStageGenerationValidate, Class: FailureClassGenerationInvalid}
+	case "profile_provider_unavailable":
+		diagnostic = FailureDiagnostic{Stage: FailureStageProviderConfig, Class: FailureClassProviderUnavailable}
+	case "profile_artifact_store_unavailable":
+		diagnostic = FailureDiagnostic{Stage: FailureStageArtifactStore, Class: FailureClassArtifactStoreUnavailable}
+	case "profile_artifact_write_failed":
+		diagnostic = FailureDiagnostic{Stage: FailureStageArtifactWrite, Class: FailureClassArtifactWriteFailed}
+	}
+	return diagnostic
 }
