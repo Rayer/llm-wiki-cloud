@@ -135,12 +135,17 @@ func TestFirestoreProfileTransactionsAndTransitions(t *testing.T) {
 	}
 	assertProfileAttemptHistoryStatus(t, ctx, intentRef, attemptID, "running")
 	digest := profileRequirementsDigest(requirements)
-	if _, err := repo.ProfileDerivationFailed(ctx, userID, projectID, 1, attemptID, digest, "temporary_failure"); err != nil {
+	diagnostic := profilederive.FailureDiagnostic{Stage: profilederive.FailureStageBootstrapDecode, Class: profilederive.FailureClassModelOutputDecodeFailed}
+	state, err = repo.ProfileDerivationFailed(ctx, userID, projectID, 1, attemptID, digest, "temporary_failure", diagnostic)
+	if err != nil {
 		t.Fatalf("fail attempt 1: %v", err)
+	}
+	if state.DerivationErrorCode == nil || *state.DerivationErrorCode != "temporary_failure" || state.DerivationDiagnostic == nil || *state.DerivationDiagnostic != diagnostic {
+		t.Fatalf("failure status lost safe diagnostic: %+v", state)
 	}
 	assertProfileAttemptHistoryStatus(t, ctx, intentRef, attemptID, profileDerivationFailed)
 	state, err = repo.RetryProfileDerivation(ctx, userID, projectID, 1)
-	if err != nil || state.DerivationStatus == nil || *state.DerivationStatus != profileDerivationPending {
+	if err != nil || state.DerivationStatus == nil || *state.DerivationStatus != profileDerivationPending || state.DerivationErrorCode != nil || state.DerivationDiagnostic != nil {
 		t.Fatalf("retry attempt 1: state=%+v err=%v", state, err)
 	}
 	secondIntent, err := intentRef.Get(ctx)
@@ -156,7 +161,7 @@ func TestFirestoreProfileTransactionsAndTransitions(t *testing.T) {
 	if err != nil || state.ScheduledFor == nil || *state.ScheduledFor != firstRetrySchedule {
 		t.Fatalf("duplicate derivation retry: state=%+v err=%v", state, err)
 	}
-	if _, err := repo.ProfileDerivationFailed(ctx, userID, projectID, 1, attemptID, digest, "stale_failure"); !errors.Is(err, errProfileCandidateNotCurrent) {
+	if _, err := repo.ProfileDerivationFailed(ctx, userID, projectID, 1, attemptID, digest, "stale_failure", diagnostic); !errors.Is(err, errProfileCandidateNotCurrent) {
 		t.Fatalf("stale attempt failure error = %v", err)
 	}
 	clock = clock.Add(time.Second)
@@ -164,7 +169,7 @@ func TestFirestoreProfileTransactionsAndTransitions(t *testing.T) {
 		t.Fatalf("claim attempt 2: %v", err)
 	}
 	assertProfileAttemptHistoryStatus(t, ctx, intentRef, secondAttemptID, "running")
-	if _, err := repo.ProfileDerivationFailed(ctx, userID, projectID, 1, secondAttemptID, digest, "temporary_failure_again"); err != nil {
+	if _, err := repo.ProfileDerivationFailed(ctx, userID, projectID, 1, secondAttemptID, digest, "temporary_failure_again", diagnostic); err != nil {
 		t.Fatalf("fail attempt 2: %v", err)
 	}
 	assertProfileAttemptHistoryStatus(t, ctx, intentRef, secondAttemptID, profileDerivationFailed)
@@ -200,7 +205,7 @@ func TestFirestoreProfileTransactionsAndTransitions(t *testing.T) {
 		t.Fatalf("complete derivation: state=%+v err=%v", state, err)
 	}
 	assertProfileAttemptHistoryStatus(t, ctx, intentRef, thirdAttemptID, profileDerivationReady)
-	if _, err := repo.ProfileDerivationFailed(ctx, userID, projectID, 1, thirdAttemptID, digest, "stale_after_success"); !errors.Is(err, errProfileCandidateNotCurrent) {
+	if _, err := repo.ProfileDerivationFailed(ctx, userID, projectID, 1, thirdAttemptID, digest, "stale_after_success", diagnostic); !errors.Is(err, errProfileCandidateNotCurrent) {
 		t.Fatalf("completed attempt was allowed to fail later: %v", err)
 	}
 
@@ -529,12 +534,23 @@ func (s *profileDerivationIntegrationStore) WriteFileIfGeneration(_ context.Cont
 type deterministicFakeProfileProvider struct {
 	calls int
 	input string
+	model string
+	text  string
+	err   error
 }
 
 func (p *deterministicFakeProfileProvider) ChatWithMetadata(_ context.Context, _, input string) (string, string, error) {
 	p.calls++
 	p.input = input
-	return `{"compile_guidance":"Write concise source notes.","guidance_diff":"Added concise note guidance.","requirements":[{"id":"r1","disposition":"compile_guidance","explanation":"Applied to future writing."}]}`, "fake-profile-model-v1", nil
+	model := p.model
+	if model == "" {
+		model = "fake-profile-model-v1"
+	}
+	text := p.text
+	if text == "" && p.err == nil {
+		text = `{"compile_guidance":"Write concise source notes.","guidance_diff":"Added concise note guidance.","requirements":[{"id":"r1","disposition":"compile_guidance","explanation":"Applied to future writing."}]}`
+	}
+	return text, model, p.err
 }
 
 func TestRunProfileDerivationPersistsBootstrapWithDeterministicFakeProvider(t *testing.T) {

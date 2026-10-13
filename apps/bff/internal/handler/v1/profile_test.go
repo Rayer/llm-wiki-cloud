@@ -15,6 +15,7 @@ import (
 	"github.com/rayer/llm-wiki-bff/internal/generation"
 	"github.com/rayer/llm-wiki-bff/internal/localfs"
 	"github.com/rayer/llm-wiki-bff/internal/profileartifacts"
+	"github.com/rayer/llm-wiki-bff/internal/profilederive"
 )
 
 func TestProfileCompileSuccessCarriesOnlySuccessfulCommittedManifest(t *testing.T) {
@@ -359,10 +360,57 @@ func TestProfileInitialStateWireIncludesNullFields(t *testing.T) {
 	if recorder.Code != http.StatusOK {
 		t.Fatalf("GET status=%d body=%s", recorder.Code, recorder.Body.String())
 	}
-	for _, field := range []string{`"project_id":"alpha"`, `"revision":0`, `"requirements":[]`, `"derivation_status":null`, `"scheduled_for":null`, `"derivation_error_code":null`, `"candidate":null`, `"bootstrap_guidance":null`, `"confirmed_candidate_id":null`, `"active":null`, `"job":null`} {
+	for _, field := range []string{`"project_id":"alpha"`, `"revision":0`, `"requirements":[]`, `"derivation_status":null`, `"scheduled_for":null`, `"derivation_error_code":null`, `"derivation_diagnostic":null`, `"candidate":null`, `"bootstrap_guidance":null`, `"confirmed_candidate_id":null`, `"active":null`, `"job":null`} {
 		if !strings.Contains(recorder.Body.String(), field) {
 			t.Fatalf("initial state omitted %s: %s", field, recorder.Body.String())
 		}
+	}
+}
+
+func TestProfileFailureDiagnosticWireUsesOnlyFixedLabels(t *testing.T) {
+	gin.SetMode(gin.TestMode)
+	diagnostic := profilederive.FailureDiagnostic{Stage: profilederive.FailureStageBootstrapDecode, Class: profilederive.FailureClassModelOutputDecodeFailed}
+	state := newProfileState("alpha")
+	state.Revision = 2
+	state.Requirements = []ProfileRequirement{{ID: "r1", Text: "private requirement marker"}}
+	state.DerivationStatus = stringPtr(profileDerivationFailed)
+	state.DerivationErrorCode = stringPtr("profile_derivation_failed")
+	state.DerivationDiagnostic = &diagnostic
+	repo := &profileRepositoryStub{state: state}
+	h := New(nil, nil, nil, nil, nil, nil)
+	h.profileRepository = repo
+	recorder := invokeProfileHandler(t, h, http.MethodGet, "alpha", "owner", "alpha", "", h.GetProfile)
+	if recorder.Code != http.StatusOK {
+		t.Fatalf("GET status=%d body=%s", recorder.Code, recorder.Body.String())
+	}
+	var response struct {
+		DerivationErrorCode  string                     `json:"derivation_error_code"`
+		DerivationDiagnostic map[string]json.RawMessage `json:"derivation_diagnostic"`
+	}
+	if err := json.Unmarshal(recorder.Body.Bytes(), &response); err != nil {
+		t.Fatal(err)
+	}
+	if response.DerivationErrorCode != "profile_derivation_failed" || len(response.DerivationDiagnostic) != 2 {
+		t.Fatalf("diagnostic response = %+v", response)
+	}
+	encoded, err := json.Marshal(response.DerivationDiagnostic)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if strings.Contains(string(encoded), "private") || strings.Contains(string(encoded), "response") {
+		t.Fatalf("diagnostic includes unapproved data: %s", encoded)
+	}
+	if string(response.DerivationDiagnostic["stage"]) != `"bootstrap_output_decode"` || string(response.DerivationDiagnostic["class"]) != `"model_output_decode_failed"` {
+		t.Fatalf("unexpected safe diagnostic: %s", encoded)
+	}
+}
+
+func TestProfileStateRejectsUnknownDiagnosticLabels(t *testing.T) {
+	if _, err := profileStateFromData(map[string]interface{}{
+		"project_id": "alpha", "revision": int64(1), "requirements": []interface{}{},
+		"derivation_diagnostic": map[string]interface{}{"stage": "private-input", "class": "provider-secret"},
+	}); err == nil {
+		t.Fatal("invalid diagnostic labels were accepted")
 	}
 }
 
@@ -511,11 +559,13 @@ func TestProfileFailedDerivationRetryWithoutCandidate(t *testing.T) {
 		t.Fatal(err)
 	}
 	digest := profileRequirementsDigest(state.Requirements)
-	failed, err := failProfileDerivation(state, state.Revision, digest, "derivation_unavailable")
+	diagnostic := profilederive.FailureDiagnostic{Stage: profilederive.FailureStageBootstrapDecode, Class: profilederive.FailureClassModelOutputDecodeFailed}
+	failed, err := failProfileDerivation(state, state.Revision, digest, "derivation_unavailable", diagnostic)
 	if err != nil {
 		t.Fatal(err)
 	}
-	if failed.Candidate != nil || failed.Active != nil || failed.DerivationStatus == nil || *failed.DerivationStatus != profileDerivationFailed {
+	if failed.Candidate != nil || failed.Active != nil || failed.DerivationStatus == nil || *failed.DerivationStatus != profileDerivationFailed ||
+		failed.DerivationErrorCode == nil || *failed.DerivationErrorCode != "derivation_unavailable" || failed.DerivationDiagnostic == nil || *failed.DerivationDiagnostic != diagnostic {
 		t.Fatalf("failed first derivation state = %+v", failed)
 	}
 
@@ -524,7 +574,7 @@ func TestProfileFailedDerivationRetryWithoutCandidate(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if retried.Revision != failed.Revision || retried.Candidate != nil || retried.Active != nil || retried.DerivationStatus == nil || *retried.DerivationStatus != profileDerivationPending {
+	if retried.Revision != failed.Revision || retried.Candidate != nil || retried.Active != nil || retried.DerivationStatus == nil || *retried.DerivationStatus != profileDerivationPending || retried.DerivationErrorCode != nil || retried.DerivationDiagnostic != nil {
 		t.Fatalf("retried state = %+v", retried)
 	}
 	if retried.ScheduledFor == nil || *retried.ScheduledFor != now.Format(time.RFC3339Nano) {
