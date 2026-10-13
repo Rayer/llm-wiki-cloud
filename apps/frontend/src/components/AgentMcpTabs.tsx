@@ -5,7 +5,7 @@ import { buildMCPGuideSnippet, isUsableMCPResourceURL, type MCPGuideTarget } fro
 
 type Translate = (key: string, params?: Record<string, string | number>) => string;
 type ToolId = 'hermes' | 'codex' | 'grok' | 'claude-code' | 'openclaw';
-type CopyFeedback = { identityKey: string; generation: number; target: MCPGuideTarget; status: 'copied' | 'error' };
+type CopyFeedback = { identityKey: string; target: MCPGuideTarget; status: 'copied' | 'error' };
 
 const tools: { id: ToolId; labelKey: string }[] = [
   { id: 'hermes', labelKey: 'MCPOAuth.toolHermes' },
@@ -48,6 +48,7 @@ export function AgentMcpTabs({
     if (identityRef.current.key === identityKey) return;
     identityRef.current = { key: identityKey, generation: identityRef.current.generation + 1 };
     copyOperationRef.current += 1;
+    setCopyFeedback(null);
     if (copyTimeoutRef.current !== null) window.clearTimeout(copyTimeoutRef.current);
     copyTimeoutRef.current = null;
   }, [identityKey]);
@@ -88,7 +89,7 @@ export function AgentMcpTabs({
       await navigator.clipboard.writeText(snippet);
       if (identityRef.current.key !== identityKey || identityRef.current.generation !== identity.generation
         || copyOperationRef.current !== operation) return;
-      setCopyFeedback({ identityKey, generation: identity.generation, target, status: 'copied' });
+      setCopyFeedback({ identityKey, target, status: 'copied' });
       copyTimeoutRef.current = window.setTimeout(() => {
         if (identityRef.current.key === identityKey && identityRef.current.generation === identity.generation
           && copyOperationRef.current === operation) setCopyFeedback(null);
@@ -97,7 +98,7 @@ export function AgentMcpTabs({
     } catch {
       if (identityRef.current.key === identityKey && identityRef.current.generation === identity.generation
         && copyOperationRef.current === operation) {
-        setCopyFeedback({ identityKey, generation: identity.generation, target, status: 'error' });
+        setCopyFeedback({ identityKey, target, status: 'error' });
       }
     }
   };
@@ -105,7 +106,6 @@ export function AgentMcpTabs({
   const renderCopyBlock = (target: MCPGuideTarget, buttonKey: string) => {
     const snippet = buildMCPGuideSnippet(target, resourceURL);
     const feedback = copyFeedback?.identityKey === identityKey
-      && copyFeedback.generation === identityRef.current.generation
       && copyFeedback.target === target
       && selectedTool === (target === 'grok-cli' || target === 'grok-bot' ? 'grok' : target)
       ? copyFeedback.status
