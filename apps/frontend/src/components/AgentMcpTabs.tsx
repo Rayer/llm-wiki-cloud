@@ -1,9 +1,11 @@
 'use client';
 
-import { useRef, useState } from 'react';
+import { useEffect, useRef, useState } from 'react';
+import { buildMCPGuideSnippet, isUsableMCPResourceURL, type MCPGuideTarget } from '@/lib/mcp-client-guides';
 
 type Translate = (key: string, params?: Record<string, string | number>) => string;
 type ToolId = 'hermes' | 'codex' | 'grok' | 'claude-code' | 'openclaw';
+type CopyFeedback = { identityKey: string; generation: number; target: MCPGuideTarget; status: 'copied' | 'error' };
 
 const tools: { id: ToolId; labelKey: string }[] = [
   { id: 'hermes', labelKey: 'MCPOAuth.toolHermes' },
@@ -13,24 +15,47 @@ const tools: { id: ToolId; labelKey: string }[] = [
   { id: 'openclaw', labelKey: 'MCPOAuth.toolOpenClaw' },
 ];
 
+const guideSources: Partial<Record<MCPGuideTarget, string>> = {
+  codex: 'https://developers.openai.com/codex/extend/mcp',
+  'grok-cli': 'https://docs.x.ai/build/features/mcp-servers',
+  'grok-bot': 'https://docs.x.ai/grok-bot/team-bots',
+  'claude-code': 'https://code.claude.com/docs/en/mcp-configuration',
+  openclaw: 'https://docs.openclaw.ai/tools/mcp',
+};
+
 function tabId(id: ToolId) { return `agent-mcp-tab-${id}`; }
 function panelId(id: ToolId) { return `agent-mcp-panel-${id}`; }
 
 export function AgentMcpTabs({
   resourceURL,
-  configSnippet,
   environmentLabel,
+  identityKey,
   t,
 }: {
   resourceURL: string;
-  configSnippet: string;
   environmentLabel: string;
+  identityKey: string;
   t: Translate;
 }) {
   const [selectedTool, setSelectedTool] = useState<ToolId>('hermes');
-  const [copied, setCopied] = useState(false);
-  const [copyError, setCopyError] = useState(false);
+  const [copyFeedback, setCopyFeedback] = useState<CopyFeedback | null>(null);
   const tabRefs = useRef<Array<HTMLButtonElement | null>>([]);
+  const identityRef = useRef({ key: identityKey, generation: 0 });
+  const copyOperationRef = useRef(0);
+  const copyTimeoutRef = useRef<number | null>(null);
+
+  useEffect(() => {
+    if (identityRef.current.key === identityKey) return;
+    identityRef.current = { key: identityKey, generation: identityRef.current.generation + 1 };
+    copyOperationRef.current += 1;
+    if (copyTimeoutRef.current !== null) window.clearTimeout(copyTimeoutRef.current);
+    copyTimeoutRef.current = null;
+  }, [identityKey]);
+
+  useEffect(() => () => {
+    copyOperationRef.current += 1;
+    if (copyTimeoutRef.current !== null) window.clearTimeout(copyTimeoutRef.current);
+  }, []);
 
   const selectTool = (index: number, focus: boolean) => {
     const tool = tools[index];
@@ -51,17 +76,81 @@ export function AgentMcpTabs({
     selectTool(nextIndex, true);
   };
 
-  const copyConfig = async () => {
-    setCopyError(false);
+  const copySnippet = async (target: MCPGuideTarget) => {
+    const snippet = buildMCPGuideSnippet(target, resourceURL);
+    const identity = identityRef.current;
+    if (!snippet || identity.key !== identityKey) return;
+    const operation = ++copyOperationRef.current;
+    setCopyFeedback(null);
+    if (copyTimeoutRef.current !== null) window.clearTimeout(copyTimeoutRef.current);
+    copyTimeoutRef.current = null;
     try {
-      await navigator.clipboard.writeText(configSnippet);
-      setCopied(true);
-      window.setTimeout(() => setCopied(false), 2000);
+      await navigator.clipboard.writeText(snippet);
+      if (identityRef.current.key !== identityKey || identityRef.current.generation !== identity.generation
+        || copyOperationRef.current !== operation) return;
+      setCopyFeedback({ identityKey, generation: identity.generation, target, status: 'copied' });
+      copyTimeoutRef.current = window.setTimeout(() => {
+        if (identityRef.current.key === identityKey && identityRef.current.generation === identity.generation
+          && copyOperationRef.current === operation) setCopyFeedback(null);
+        copyTimeoutRef.current = null;
+      }, 2000);
     } catch {
-      setCopied(false);
-      setCopyError(true);
+      if (identityRef.current.key === identityKey && identityRef.current.generation === identity.generation
+        && copyOperationRef.current === operation) {
+        setCopyFeedback({ identityKey, generation: identity.generation, target, status: 'error' });
+      }
     }
   };
+
+  const renderCopyBlock = (target: MCPGuideTarget, buttonKey: string) => {
+    const snippet = buildMCPGuideSnippet(target, resourceURL);
+    const feedback = copyFeedback?.identityKey === identityKey
+      && copyFeedback.generation === identityRef.current.generation
+      && copyFeedback.target === target
+      && selectedTool === (target === 'grok-cli' || target === 'grok-bot' ? 'grok' : target)
+      ? copyFeedback.status
+      : null;
+    return (
+      <div className="mt-4">
+        <pre className="overflow-x-auto rounded-lg border border-white/10 bg-black/30 p-4 text-xs leading-5 text-zinc-200"><code>{snippet || t('MCPOAuth.resourceUnavailable')}</code></pre>
+        <div className="mt-3 flex flex-wrap items-center gap-3">
+          <button type="button" disabled={!snippet} onClick={() => void copySnippet(target)} className="min-h-11 rounded-lg bg-emerald-300 px-4 py-2 text-sm font-semibold text-black hover:bg-emerald-200 disabled:cursor-not-allowed disabled:opacity-50">{feedback === 'copied' ? t('MCPOAuth.copied') : t(buttonKey)}</button>
+          <span role="status" className="text-sm text-zinc-400">{feedback === 'error' ? t('MCPOAuth.copyFailed') : ''}</span>
+        </div>
+      </div>
+    );
+  };
+
+  const renderSource = (target: MCPGuideTarget) => {
+    const href = guideSources[target];
+    if (!href) return null;
+    return <a className="mt-3 inline-block text-sm text-emerald-200 underline decoration-emerald-200/40 underline-offset-4 hover:text-white" href={href} target="_blank" rel="noreferrer">{t('MCPOAuth.officialGuide')}</a>;
+  };
+
+  const renderTechnicalDetails = () => (
+    <details className="mt-4 rounded-lg border border-white/8 bg-black/15 px-4 py-3">
+      <summary className="cursor-pointer text-sm text-zinc-300 focus-visible:outline focus-visible:outline-2 focus-visible:outline-emerald-300">{t('MCPOAuth.technicalDetails')}</summary>
+      <dl className="mt-3 grid gap-3 text-sm sm:grid-cols-2">
+        <div><dt className="text-xs text-zinc-500">{t('MCPOAuth.environment')}</dt><dd className="mt-1 text-zinc-200">{environmentLabel}</dd></div>
+        <div><dt className="text-xs text-zinc-500">{t('MCPOAuth.scope')}</dt><dd className="mt-1 font-mono text-emerald-200">mcp:query</dd></div>
+        <div className="sm:col-span-2"><dt className="text-xs text-zinc-500">{t('MCPOAuth.resource')}</dt><dd className="mt-1 break-all font-mono text-xs leading-5 text-zinc-300">{isUsableMCPResourceURL(resourceURL) ? resourceURL : t('MCPOAuth.resourceUnavailable')}</dd></div>
+      </dl>
+    </details>
+  );
+
+  const renderSingleGuide = (id: Exclude<ToolId, 'hermes' | 'grok'>, target: Extract<MCPGuideTarget, 'codex' | 'claude-code' | 'openclaw'>) => (
+    <div>
+      <div className="flex flex-wrap items-start justify-between gap-3">
+        <h3 className="text-lg font-semibold text-white">{t(`MCPOAuth.panel.${id}.title`)}</h3>
+        <span className="rounded-md border border-amber-300/20 bg-amber-300/5 px-2.5 py-1 text-xs text-amber-100">{t('MCPOAuth.productNotVerified')}</span>
+      </div>
+      <p className="mt-3 text-sm leading-6 text-zinc-300">{t(`MCPOAuth.panel.${id}.body`)}</p>
+      {renderCopyBlock(target, 'MCPOAuth.copySetup')}
+      <p className="mt-3 text-xs leading-5 text-amber-100">{t(`MCPOAuth.panel.${id}.evidence`)}</p>
+      {renderSource(target)}
+      {renderTechnicalDetails()}
+    </div>
+  );
 
   return (
     <section className="overflow-hidden rounded-2xl border border-white/10 bg-[#151515]" aria-labelledby="mcp-oauth-setup-title">
@@ -112,33 +201,36 @@ export function AgentMcpTabs({
                 <li>{t('MCPOAuth.stepTwo')}</li>
                 <li>{t('MCPOAuth.stepThree')}</li>
               </ol>
-              <pre className="mt-4 overflow-x-auto rounded-lg border border-white/10 bg-black/30 p-4 text-xs leading-5 text-zinc-200"><code>{configSnippet}</code></pre>
-              <div className="mt-3 flex flex-wrap items-center gap-3">
-                <button type="button" onClick={() => void copyConfig()} className="min-h-11 rounded-lg bg-emerald-300 px-4 py-2 text-sm font-semibold text-black hover:bg-emerald-200">{copied ? t('MCPOAuth.copied') : t('MCPOAuth.copyConfig')}</button>
-                <span role="status" className="text-sm text-zinc-400">{copyError ? t('MCPOAuth.copyFailed') : t('MCPOAuth.nativeCheck')}</span>
-              </div>
-              <details className="mt-4 rounded-lg border border-white/8 bg-black/15 px-4 py-3">
-                <summary className="cursor-pointer text-sm text-zinc-300 focus-visible:outline focus-visible:outline-2 focus-visible:outline-emerald-300">{t('MCPOAuth.technicalDetails')}</summary>
-                <dl className="mt-3 grid gap-3 text-sm sm:grid-cols-2">
-                  <div><dt className="text-xs text-zinc-500">{t('MCPOAuth.environment')}</dt><dd className="mt-1 text-zinc-200">{environmentLabel}</dd></div>
-                  <div><dt className="text-xs text-zinc-500">{t('MCPOAuth.scope')}</dt><dd className="mt-1 font-mono text-emerald-200">mcp:query</dd></div>
-                  <div className="sm:col-span-2"><dt className="text-xs text-zinc-500">{t('MCPOAuth.resource')}</dt><dd className="mt-1 break-all font-mono text-xs leading-5 text-zinc-300">{resourceURL}</dd></div>
-                </dl>
-              </details>
+              {renderCopyBlock('hermes', 'MCPOAuth.copyConfig')}
+              <p className="mt-3 text-xs leading-5 text-amber-100">{t('MCPOAuth.nativeCheck')}</p>
+              {renderTechnicalDetails()}
             </div>
-          ) : (
+          ) : tool.id === 'grok' ? (
             <div>
               <div className="flex flex-wrap items-start justify-between gap-3">
-                <h3 className="text-lg font-semibold text-white">{t(`MCPOAuth.panel.${tool.id}.title`)}</h3>
-                <span className="rounded-md border border-white/10 px-2.5 py-1 text-xs text-zinc-300">{t('MCPOAuth.guidancePreparing')}</span>
+                <h3 className="text-lg font-semibold text-white">{t('MCPOAuth.panel.grok.title')}</h3>
+                <span className="rounded-md border border-amber-300/20 bg-amber-300/5 px-2.5 py-1 text-xs text-amber-100">{t('MCPOAuth.productNotVerified')}</span>
               </div>
-              <div className="mt-4 rounded-xl border border-dashed border-white/15 bg-black/15 p-5 sm:p-6">
-                <h4 className="font-semibold text-zinc-100">{t('MCPOAuth.guidancePreparing')}</h4>
-                <p className="mt-2 text-sm leading-6 text-zinc-400">{t(`MCPOAuth.panel.${tool.id}.body`)}</p>
-              </div>
-              <p className="mt-3 text-xs leading-5 text-amber-200">{t('MCPOAuth.placeholderDisclaimer')}</p>
+              <p className="mt-3 text-sm leading-6 text-zinc-300">{t('MCPOAuth.panel.grok.body')}</p>
+              <section className="mt-5 rounded-xl border border-white/10 bg-black/15 p-4 sm:p-5" aria-labelledby="grok-cli-guide-title">
+                <h4 id="grok-cli-guide-title" className="font-semibold text-white">{t('MCPOAuth.panel.grok.cliTitle')}</h4>
+                <p className="mt-2 text-sm leading-6 text-zinc-300">{t('MCPOAuth.panel.grok.cliBody')}</p>
+                {renderCopyBlock('grok-cli', 'MCPOAuth.copySetup')}
+                <p className="mt-3 text-xs leading-5 text-amber-100">{t('MCPOAuth.panel.grok.cliEvidence')}</p>
+                {renderSource('grok-cli')}
+              </section>
+              <section className="mt-4 rounded-xl border border-white/10 bg-black/15 p-4 sm:p-5" aria-labelledby="grok-bot-guide-title">
+                <h4 id="grok-bot-guide-title" className="font-semibold text-white">{t('MCPOAuth.panel.grok.botTitle')}</h4>
+                <p className="mt-2 text-sm leading-6 text-zinc-300">{t('MCPOAuth.panel.grok.botBody')}</p>
+                {renderCopyBlock('grok-bot', 'MCPOAuth.copyProjectURL')}
+                <p className="mt-3 text-xs leading-5 text-amber-100">{t('MCPOAuth.panel.grok.botEvidence')}</p>
+                {renderSource('grok-bot')}
+              </section>
+              {renderTechnicalDetails()}
             </div>
-          )}
+          ) : tool.id === 'codex' ? renderSingleGuide('codex', 'codex')
+            : tool.id === 'claude-code' ? renderSingleGuide('claude-code', 'claude-code')
+              : renderSingleGuide('openclaw', 'openclaw')}
         </div>
       ))}
     </section>

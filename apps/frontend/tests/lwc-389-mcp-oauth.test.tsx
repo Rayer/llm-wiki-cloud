@@ -11,7 +11,7 @@ const mocks = vi.hoisted(() => ({
   listGrants: vi.fn(),
   revokeGrant: vi.fn(),
   apiFetch: vi.fn(),
-  resourceURL: vi.fn((projectId = 'project-one') => `http://localhost:18080/mcp/projects/${projectId}`),
+  resourceURL: vi.fn((projectId = 'project-one') => `http://localhost:18080/mcp/projects/${encodeURIComponent(projectId)}`),
   safeReturnURL: vi.fn(() => true),
 }));
 
@@ -50,7 +50,7 @@ vi.mock('@/lib/mcp-oauth', async () => {
   };
 });
 
-const { act, cleanup, fireEvent, render, screen, waitFor } = await import('@testing-library/react');
+const { act, cleanup, fireEvent, render, screen, waitFor, within } = await import('@testing-library/react');
 import { MCPOAuthConsentClient } from '@/components/MCPOAuthConsentClient';
 import AdvancedPage from '@/app/(workspace)/advanced/page';
 import { MCPOAuthApiError } from '@/lib/mcp-oauth';
@@ -276,6 +276,27 @@ describe('LWC-389 MCP OAuth frontend', () => {
     writeText.mockRejectedValueOnce(new Error('clipboard unavailable'));
     fireEvent.click(screen.getByRole('button', { name: 'MCPOAuth.copied' }));
     expect(await screen.findByText('MCPOAuth.copyFailed')).toBeDefined();
+  });
+
+  it('updates guide URLs and clears copied feedback when the selected Project changes', async () => {
+    const firstProjectId = 'project/a & team';
+    mocks.project = { id: firstProjectId, name: 'Project A' };
+    const view = render(<AdvancedPage />);
+    fireEvent.click(screen.getByRole('tab', { name: 'MCPOAuth.toolCodex' }));
+    const firstURL = `http://localhost:18080/mcp/projects/${encodeURIComponent(firstProjectId)}`;
+    const firstCode = within(screen.getByRole('tabpanel')).getByText((_, element) => element?.tagName === 'CODE');
+    expect(firstCode.textContent).toContain(firstURL);
+    fireEvent.click(screen.getByRole('button', { name: 'MCPOAuth.copySetup' }));
+    expect(await screen.findByRole('button', { name: 'MCPOAuth.copied' })).toBeDefined();
+
+    mocks.project = { id: 'project-b', name: 'Project B' };
+    view.rerender(<AdvancedPage />);
+    const secondURL = 'http://localhost:18080/mcp/projects/project-b';
+    const secondCode = within(screen.getByRole('tabpanel')).getByText((_, element) => element?.tagName === 'CODE');
+    expect(secondCode.textContent).toContain(secondURL);
+    expect(secondCode.textContent).not.toContain(firstURL);
+    expect(screen.queryByRole('button', { name: 'MCPOAuth.copied' })).toBeNull();
+    expect(mocks.resourceURL).toHaveBeenLastCalledWith('project-b');
   });
 
   it('keeps a real key-name draft when the manual manager is collapsed and reopened', async () => {
