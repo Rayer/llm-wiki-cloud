@@ -2,9 +2,12 @@ package auth
 
 import (
 	"bytes"
+	"context"
+	"encoding/hex"
 	"encoding/json"
 	"errors"
 	"io"
+	"log"
 	"net/http"
 	"net/url"
 	"strings"
@@ -14,6 +17,7 @@ import (
 	"github.com/gin-gonic/gin"
 	"github.com/rayer/llm-wiki-bff/internal/config"
 	"github.com/rayer/llm-wiki-bff/internal/middleware"
+	"go.opentelemetry.io/otel/trace"
 )
 
 const mcpOAuthRequestLimit = 16 << 10
@@ -56,9 +60,23 @@ func MCPOAuthMetadataHandler(issuer string) gin.HandlerFunc {
 }
 
 func MCPOAuthRegisterHandler(service *MCPOAuthService) gin.HandlerFunc {
+	if service == nil {
+		return mcpOAuthRegisterUnavailableHandler()
+	}
+	return mcpOAuthRegisterHandler(service.RegisterClient)
+}
+
+func mcpOAuthRegisterHandler(registerClient func(context.Context, string, []string) (mcpOAuthClientRecord, error)) gin.HandlerFunc {
 	return func(c *gin.Context) {
 		var request mcpOAuthRegistrationRequest
-		if err := decodeMCPOAuthJSON(c, &request); err != nil || strings.TrimSpace(request.ClientName) == "" {
+		shape, decodeReason := decodeMCPOAuthRegistrationJSON(c, &request)
+		if decodeReason != "" {
+			logMCPOAuthRegistrationRejection(c, decodeReason, request, shape)
+			writeMCPOAuthOAuthError(c, http.StatusBadRequest, "invalid_client_metadata")
+			return
+		}
+		if strings.TrimSpace(request.ClientName) == "" {
+			logMCPOAuthRegistrationRejection(c, "missing_client_name", request, shape)
 			writeMCPOAuthOAuthError(c, http.StatusBadRequest, "invalid_client_metadata")
 			return
 		}
@@ -66,11 +84,13 @@ func MCPOAuthRegisterHandler(service *MCPOAuthService) gin.HandlerFunc {
 			!mcpOAuthSetSupported(request.GrantTypes, "authorization_code", "refresh_token") ||
 			!mcpOAuthSetSupported(request.ResponseTypes, "code") ||
 			(request.Scope != "" && request.Scope != mcpOAuthScope) {
+			logMCPOAuthRegistrationRejection(c, "unsupported_metadata", request, shape)
 			writeMCPOAuthOAuthError(c, http.StatusBadRequest, "invalid_client_metadata")
 			return
 		}
-		client, err := service.RegisterClient(c.Request.Context(), request.ClientName, request.RedirectURIs)
+		client, err := registerClient(c.Request.Context(), request.ClientName, request.RedirectURIs)
 		if err != nil {
+			logMCPOAuthRegistrationRejection(c, mcpOAuthRegistrationServiceReason(request, err), request, shape)
 			writeMCPOAuthServiceError(c, err)
 			return
 		}
@@ -83,6 +103,237 @@ func MCPOAuthRegisterHandler(service *MCPOAuthService) gin.HandlerFunc {
 			"response_types":             []string{"code"}, "scope": mcpOAuthScope,
 		})
 	}
+}
+
+func mcpOAuthRegisterUnavailableHandler() gin.HandlerFunc {
+	return func(c *gin.Context) {
+		logMCPOAuthRegistrationRejection(c, "registration_unavailable", mcpOAuthRegistrationRequest{}, mcpOAuthRegistrationShape{})
+		writeMCPOAuthOAuthError(c, http.StatusServiceUnavailable, "temporarily_unavailable")
+	}
+}
+
+type mcpOAuthRegistrationShape struct {
+	clientNamePresent      bool
+	redirectURIsPresent    bool
+	tokenAuthMethodPresent bool
+	grantTypesPresent      bool
+	responseTypesPresent   bool
+	scopePresent           bool
+	unknownFieldCount      int
+}
+
+func decodeMCPOAuthRegistrationJSON(c *gin.Context, request *mcpOAuthRegistrationRequest) (mcpOAuthRegistrationShape, string) {
+	if c.Request.Body == nil {
+		return mcpOAuthRegistrationShape{}, "empty_body"
+	}
+	body, err := io.ReadAll(io.LimitReader(c.Request.Body, mcpOAuthRequestLimit+1))
+	if err != nil {
+		return mcpOAuthRegistrationShape{}, "body_read_error"
+	}
+	defer clear(body)
+	if len(body) == 0 {
+		return mcpOAuthRegistrationShape{}, "empty_body"
+	}
+	if len(body) > mcpOAuthRequestLimit {
+		return mcpOAuthRegistrationShape{}, "body_too_large"
+	}
+
+	shape, shapeOK := scanMCPOAuthRegistrationShape(body)
+	if !shapeOK {
+		shape = mcpOAuthRegistrationShape{}
+	}
+	decoder := json.NewDecoder(bytes.NewReader(body))
+	if err := decoder.Decode(request); err != nil {
+		return shape, mcpOAuthRegistrationDecodeReason(err)
+	}
+	var extra any
+	if !errors.Is(decoder.Decode(&extra), io.EOF) {
+		return shape, "trailing_data"
+	}
+	return shape, ""
+}
+
+func mcpOAuthRegistrationDecodeReason(err error) string {
+	var typeError *json.UnmarshalTypeError
+	if errors.As(err, &typeError) {
+		if typeError.Field == "" {
+			return "invalid_json_shape"
+		}
+		return "known_field_type"
+	}
+	return "malformed_json"
+}
+
+func scanMCPOAuthRegistrationShape(body []byte) (mcpOAuthRegistrationShape, bool) {
+	decoder := json.NewDecoder(bytes.NewReader(body))
+	decoder.UseNumber()
+	token, err := decoder.Token()
+	if err != nil || token != json.Delim('{') {
+		return mcpOAuthRegistrationShape{}, false
+	}
+	var shape mcpOAuthRegistrationShape
+	for decoder.More() {
+		token, err = decoder.Token()
+		if err != nil {
+			return mcpOAuthRegistrationShape{}, false
+		}
+		field, ok := token.(string)
+		if !ok {
+			return mcpOAuthRegistrationShape{}, false
+		}
+		switch field {
+		case "client_name":
+			shape.clientNamePresent = true
+		case "redirect_uris":
+			shape.redirectURIsPresent = true
+		case "token_endpoint_auth_method":
+			shape.tokenAuthMethodPresent = true
+		case "grant_types":
+			shape.grantTypesPresent = true
+		case "response_types":
+			shape.responseTypesPresent = true
+		case "scope":
+			shape.scopePresent = true
+		default:
+			if shape.unknownFieldCount < 1024 {
+				shape.unknownFieldCount++
+			}
+		}
+		if err := skipMCPOAuthJSONValue(decoder); err != nil {
+			return mcpOAuthRegistrationShape{}, false
+		}
+	}
+	if token, err = decoder.Token(); err != nil || token != json.Delim('}') {
+		return mcpOAuthRegistrationShape{}, false
+	}
+	return shape, true
+}
+
+func skipMCPOAuthJSONValue(decoder *json.Decoder) error {
+	token, err := decoder.Token()
+	if err != nil {
+		return err
+	}
+	delim, ok := token.(json.Delim)
+	if !ok {
+		return nil
+	}
+	switch delim {
+	case '{':
+		for decoder.More() {
+			if _, err := decoder.Token(); err != nil {
+				return err
+			}
+			if err := skipMCPOAuthJSONValue(decoder); err != nil {
+				return err
+			}
+		}
+		_, err := decoder.Token()
+		return err
+	case '[':
+		for decoder.More() {
+			if err := skipMCPOAuthJSONValue(decoder); err != nil {
+				return err
+			}
+		}
+		_, err := decoder.Token()
+		return err
+	default:
+		return errors.New("unexpected JSON delimiter")
+	}
+}
+
+func logMCPOAuthRegistrationRejection(c *gin.Context, reason string, request mcpOAuthRegistrationRequest, shape mcpOAuthRegistrationShape) {
+	log.Printf("mcp_oauth_registration_rejected reason=%s trace_id=%s client_name_present=%t redirect_uris_present=%t redirect_count=%d token_auth_method_present=%t grant_types_present=%t grant_type_count=%d response_types_present=%t response_type_count=%d scope_present=%t unknown_field_count=%d redirect_scheme_category=%s",
+		reason, mcpOAuthRequestTraceID(c), shape.clientNamePresent, shape.redirectURIsPresent,
+		boundedMCPOAuthDiagnosticCount(len(request.RedirectURIs), 32), shape.tokenAuthMethodPresent,
+		shape.grantTypesPresent, boundedMCPOAuthDiagnosticCount(len(request.GrantTypes), 32),
+		shape.responseTypesPresent, boundedMCPOAuthDiagnosticCount(len(request.ResponseTypes), 32),
+		shape.scopePresent, shape.unknownFieldCount, mcpOAuthRedirectSchemeCategory(request.RedirectURIs))
+}
+
+func boundedMCPOAuthDiagnosticCount(value, limit int) int {
+	if value > limit {
+		return limit
+	}
+	return value
+}
+
+func mcpOAuthRequestTraceID(c *gin.Context) string {
+	if c == nil || c.Request == nil {
+		return "none"
+	}
+	spanContext := trace.SpanFromContext(c.Request.Context()).SpanContext()
+	if spanContext.IsValid() {
+		return spanContext.TraceID().String()
+	}
+	traceID, _, _ := strings.Cut(c.GetHeader("X-Cloud-Trace-Context"), "/")
+	if len(traceID) != 32 {
+		return "none"
+	}
+	decoded, err := hex.DecodeString(traceID)
+	if err != nil {
+		return "none"
+	}
+	return hex.EncodeToString(decoded)
+}
+
+func mcpOAuthRegistrationServiceReason(request mcpOAuthRegistrationRequest, err error) string {
+	if errors.Is(err, ErrMCPOAuthUnavailable) {
+		if len(request.RedirectURIs) == 0 || len(request.RedirectURIs) > 12 {
+			return "redirect_count_rejected"
+		}
+		return "registration_unavailable"
+	}
+	if errors.Is(err, ErrMCPOAuthBadRequest) {
+		seen := make(map[string]struct{}, len(request.RedirectURIs))
+		for _, redirectURI := range request.RedirectURIs {
+			if !validMCPOAuthRedirectURI(redirectURI) {
+				return "redirect_rejected"
+			}
+			if _, exists := seen[redirectURI]; exists {
+				return "duplicate_redirect_rejected"
+			}
+			seen[redirectURI] = struct{}{}
+		}
+		return "registration_rejected"
+	}
+	return "registration_error"
+}
+
+func mcpOAuthRedirectSchemeCategory(redirectURIs []string) string {
+	if len(redirectURIs) == 0 {
+		return "none"
+	}
+	category := ""
+	for _, redirectURI := range redirectURIs {
+		parsed, err := url.Parse(redirectURI)
+		current := "invalid"
+		if err == nil && parsed.Scheme != "" {
+			switch strings.ToLower(parsed.Scheme) {
+			case "http":
+				host := strings.ToLower(parsed.Hostname())
+				if host == "localhost" || host == "127.0.0.1" || host == "::1" {
+					current = "http_loopback"
+				} else {
+					current = "http_other"
+				}
+			case "https":
+				current = "https"
+			default:
+				current = "custom"
+			}
+		}
+		if current == "custom" {
+			return current
+		}
+		if category == "" {
+			category = current
+		} else if category != current {
+			category = "mixed"
+		}
+	}
+	return category
 }
 
 func MCPOAuthAuthorizeHandler(service *MCPOAuthService) gin.HandlerFunc {
@@ -314,7 +565,7 @@ func RegisterMCPOAuthRoutes(router *gin.Engine, authRoutes *gin.RouterGroup, cfg
 		unavailable := func(c *gin.Context) {
 			writeMCPOAuthOAuthError(c, http.StatusServiceUnavailable, "temporarily_unavailable")
 		}
-		authRoutes.POST("/mcp/oauth/register", middleware.NewRateLimiter(10, time.Minute), unavailable)
+		authRoutes.POST("/mcp/oauth/register", middleware.NewRateLimiter(10, time.Minute), mcpOAuthRegisterUnavailableHandler())
 		authRoutes.GET("/mcp/oauth/authorize", middleware.NewRateLimiter(10, time.Minute), unavailable)
 		authRoutes.POST("/mcp/oauth/token", middleware.NewRateLimiter(10, time.Minute), unavailable)
 		protected := authRoutes.Group("/mcp/oauth")
