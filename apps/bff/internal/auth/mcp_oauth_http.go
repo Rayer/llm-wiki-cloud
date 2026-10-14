@@ -90,7 +90,7 @@ func mcpOAuthRegisterHandler(registerClient func(context.Context, string, []stri
 		}
 		client, err := registerClient(c.Request.Context(), request.ClientName, request.RedirectURIs)
 		if err != nil {
-			logMCPOAuthRegistrationRejection(c, mcpOAuthRegistrationServiceReason(request, err), request, shape)
+			logMCPOAuthRegistrationRejection(c, mcpOAuthRegistrationServiceReason(err), request, shape)
 			writeMCPOAuthServiceError(c, err)
 			return
 		}
@@ -278,24 +278,11 @@ func mcpOAuthRequestTraceID(c *gin.Context) string {
 	return hex.EncodeToString(decoded)
 }
 
-func mcpOAuthRegistrationServiceReason(request mcpOAuthRegistrationRequest, err error) string {
+func mcpOAuthRegistrationServiceReason(err error) string {
 	if errors.Is(err, ErrMCPOAuthUnavailable) {
-		if len(request.RedirectURIs) == 0 || len(request.RedirectURIs) > 12 {
-			return "redirect_count_rejected"
-		}
 		return "registration_unavailable"
 	}
 	if errors.Is(err, ErrMCPOAuthBadRequest) {
-		seen := make(map[string]struct{}, len(request.RedirectURIs))
-		for _, redirectURI := range request.RedirectURIs {
-			if !validMCPOAuthRedirectURI(redirectURI) {
-				return "redirect_rejected"
-			}
-			if _, exists := seen[redirectURI]; exists {
-				return "duplicate_redirect_rejected"
-			}
-			seen[redirectURI] = struct{}{}
-		}
 		return "registration_rejected"
 	}
 	return "registration_error"

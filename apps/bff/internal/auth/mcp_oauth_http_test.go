@@ -9,6 +9,7 @@ import (
 	"strings"
 	"testing"
 	"time"
+	"unicode/utf8"
 
 	"github.com/gin-gonic/gin"
 )
@@ -51,6 +52,10 @@ func TestMCPOAuthRegisterHandlerPreservesKnownFieldAndJSONPolicies(t *testing.T)
 	registerCalls := 0
 	register := func(_ context.Context, name string, redirects []string) (mcpOAuthClientRecord, error) {
 		registerCalls++
+		name = strings.TrimSpace(name)
+		if utf8.RuneCountInString(name) > 128 || strings.ContainsAny(name, "\r\n\x00") {
+			return mcpOAuthClientRecord{}, ErrMCPOAuthBadRequest
+		}
 		if len(redirects) == 0 || len(redirects) > 12 {
 			return mcpOAuthClientRecord{}, ErrMCPOAuthUnavailable
 		}
@@ -75,6 +80,7 @@ func TestMCPOAuthRegisterHandlerPreservesKnownFieldAndJSONPolicies(t *testing.T)
 		body       string
 		wantStatus int
 		wantReason string
+		wantScheme string
 		wantCalls  int
 	}{
 		{name: "malformed JSON", body: "{", wantStatus: http.StatusBadRequest, wantReason: "malformed_json"},
@@ -86,8 +92,9 @@ func TestMCPOAuthRegisterHandlerPreservesKnownFieldAndJSONPolicies(t *testing.T)
 		{name: "unsupported grant", body: `{"client_name":"Test Client","redirect_uris":["http://127.0.0.1:43123/callback"],"grant_types":["client_credentials"]}`, wantStatus: http.StatusBadRequest, wantReason: "unsupported_metadata"},
 		{name: "unsupported response type", body: `{"client_name":"Test Client","redirect_uris":["http://127.0.0.1:43123/callback"],"response_types":["token"]}`, wantStatus: http.StatusBadRequest, wantReason: "unsupported_metadata"},
 		{name: "unsupported scope", body: `{"client_name":"Test Client","redirect_uris":["http://127.0.0.1:43123/callback"],"scope":"other"}`, wantStatus: http.StatusBadRequest, wantReason: "unsupported_metadata"},
-		{name: "custom redirect scheme", body: `{"client_name":"Test Client","redirect_uris":["cursor://callback/private"]}`, wantStatus: http.StatusBadRequest, wantReason: "redirect_rejected", wantCalls: 1},
-		{name: "duplicate redirect", body: `{"client_name":"Test Client","redirect_uris":["http://127.0.0.1:43123/callback","http://127.0.0.1:43123/callback"]}`, wantStatus: http.StatusBadRequest, wantReason: "duplicate_redirect_rejected", wantCalls: 1},
+		{name: "custom redirect scheme", body: `{"client_name":"Test Client","redirect_uris":["cursor://callback/private"]}`, wantStatus: http.StatusBadRequest, wantReason: "registration_rejected", wantScheme: "custom", wantCalls: 1},
+		{name: "invalid client name precedes custom redirect", body: `{"client_name":"Invalid\nName","redirect_uris":["cursor://callback/private"]}`, wantStatus: http.StatusBadRequest, wantReason: "registration_rejected", wantScheme: "custom", wantCalls: 1},
+		{name: "duplicate redirect", body: `{"client_name":"Test Client","redirect_uris":["http://127.0.0.1:43123/callback","http://127.0.0.1:43123/callback"]}`, wantStatus: http.StatusBadRequest, wantReason: "registration_rejected", wantScheme: "http_loopback", wantCalls: 1},
 		{name: "trailing JSON", body: `{` + base + `}{"private":"TRAILING_SENTINEL"}`, wantStatus: http.StatusBadRequest, wantReason: "trailing_data"},
 		{name: "body limit", body: longBody, wantStatus: http.StatusBadRequest, wantReason: "body_too_large"},
 		{name: "last duplicate known value wins", body: `{"client_name":"First","` + strings.TrimPrefix(base, `"`) + `}`, wantStatus: http.StatusCreated, wantCalls: 1},
@@ -109,6 +116,9 @@ func TestMCPOAuthRegisterHandlerPreservesKnownFieldAndJSONPolicies(t *testing.T)
 			}
 			if test.wantReason != "" && !strings.Contains(output.String(), "reason="+test.wantReason) {
 				t.Fatalf("log %q does not contain fixed reason %q", output.String(), test.wantReason)
+			}
+			if test.wantScheme != "" && !strings.Contains(output.String(), "redirect_scheme_category="+test.wantScheme) {
+				t.Fatalf("log %q does not contain scheme category %q", output.String(), test.wantScheme)
 			}
 			if test.name == "last duplicate known value wins" && !strings.Contains(response.Body.String(), `"client_name":"Test Client"`) {
 				t.Fatalf("duplicate known field behavior changed: %s", response.Body.String())
@@ -139,7 +149,7 @@ func TestMCPOAuthRegisterDiagnosticsAreFiniteAndDoNotLogRequestValues(t *testing
 		}
 	}
 	for _, safe := range []string{
-		"reason=redirect_rejected", "trace_id=0123456789abcdef0123456789abcdef",
+		"reason=registration_rejected", "trace_id=0123456789abcdef0123456789abcdef",
 		"client_name_present=true", "redirect_uris_present=true", "redirect_count=1",
 		"token_auth_method_present=true", "grant_types_present=true", "grant_type_count=2",
 		"response_types_present=true", "response_type_count=1", "scope_present=true",
