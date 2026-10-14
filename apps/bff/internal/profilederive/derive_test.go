@@ -82,6 +82,72 @@ func TestManualDerivationEmitsOnlyValidatedSortedArtifacts(t *testing.T) {
 	if dictionary.Tags[0].RequirementIDs[0] != "r2" || len(result.Preview.Requirements) != 2 || fake.calls != 1 {
 		t.Fatalf("unexpected manual result %+v calls=%d", result.Preview, fake.calls)
 	}
+	for _, contract := range []string{
+		"shaped as {id: string, disposition: string, explanation: string}",
+		"disposition must be exactly compile_guidance, dictionary_or_query, both, or limitation",
+		"tags (array of tag objects), compile_guidance (string), dictionary_diff (string), guidance_diff (string), requirements (array of accounting rows)",
+		"requirements (array of accounting rows)",
+		"id (string), definition (string), applies_to (array containing source and/or concept), match_rule (string), non_match_rule (string), unknown_rule (string), requirement_ids (array of input requirement IDs), query_use (preferred or required_candidate)",
+	} {
+		if !strings.Contains(fake.system, contract) {
+			t.Errorf("manual prompt omitted consumer contract %q", contract)
+		}
+	}
+}
+
+func TestManualDecodeFailuresExposeOnlyFiniteSafeReasonsAndRemainStrict(t *testing.T) {
+	const validManualOutput = `{"tags":[],"compile_guidance":"Write concise entries.","dictionary_diff":"No tag changes.","guidance_diff":"Kept concise guidance.","requirements":[{"id":"r1","disposition":"compile_guidance","explanation":"Applied to entry writing."}]}`
+	tests := []struct {
+		name   string
+		output string
+		reason string
+	}{
+		{name: "invalid UTF-8", output: string(append([]byte(validManualOutput), 0xff)), reason: DecodeReasonInvalidUTF8},
+		{name: "invalid JSON", output: `{"tags":`, reason: DecodeReasonInvalidJSON},
+		{name: "duplicate key", output: strings.Replace(validManualOutput, `"tags":[]`, `"tags":[],"tags":[]`, 1), reason: DecodeReasonDuplicateKey},
+		{name: "unknown private field", output: strings.Replace(validManualOutput, `"tags":[]`, `"tags":[],"private_model_field":"private model value"`, 1), reason: DecodeReasonUnknownField},
+		{name: "wrong field type", output: strings.Replace(validManualOutput, `"tags":[]`, `"tags":"wrong type"`, 1), reason: DecodeReasonTypeMismatch},
+		{name: "trailing JSON", output: validManualOutput + ` {"private_tail":"private tail value"}`, reason: DecodeReasonTrailingData},
+	}
+	for _, test := range tests {
+		t.Run(test.name, func(t *testing.T) {
+			provider := NewProvider(&fakeChat{model: "fake-manual-model-v1", text: test.output})
+			_, err := provider.DeriveManual(context.Background(), 1, []Requirement{{ID: "r1", Text: "write concise"}}, "generation-1", strings.Repeat("a", 64), nil)
+			if err == nil || err.Error() != "Profile derivation failed" {
+				t.Fatalf("manual decode error = %v, want safe generic failure", err)
+			}
+			diagnostic, ok := FailureDiagnosticFromError(err)
+			want := FailureDiagnostic{Stage: FailureStageManualDecode, Class: FailureClassModelOutputDecodeFailed, DecodeReason: test.reason}
+			if !ok || diagnostic != want || !diagnostic.Valid() {
+				t.Fatalf("manual decode diagnostic = %+v, ok=%v; want %+v", diagnostic, ok, want)
+			}
+			encoded, marshalErr := json.Marshal(diagnostic)
+			if marshalErr != nil {
+				t.Fatal(marshalErr)
+			}
+			for _, privateValue := range []string{"private_model_field", "private model value", "private_tail", "private tail value"} {
+				if strings.Contains(string(encoded), privateValue) || strings.Contains(err.Error(), privateValue) {
+					t.Fatalf("private model output entered safe error/diagnostic: %s", encoded)
+				}
+			}
+		})
+	}
+}
+
+func TestManualDecodeReasonIsOptionalAndBoundToManualDecoderFailures(t *testing.T) {
+	legacy := FailureDiagnostic{Stage: FailureStageManualDecode, Class: FailureClassModelOutputDecodeFailed}
+	if !legacy.Valid() {
+		t.Fatal("legacy two-label manual decoder diagnostic must remain valid")
+	}
+	for _, diagnostic := range []FailureDiagnostic{
+		{Stage: FailureStageManualDecode, Class: FailureClassModelOutputDecodeFailed, DecodeReason: "unapproved_reason"},
+		{Stage: FailureStageBootstrapDecode, Class: FailureClassModelOutputDecodeFailed, DecodeReason: DecodeReasonInvalidJSON},
+		{Stage: FailureStageManualValidate, Class: FailureClassModelAccountingInvalid, DecodeReason: DecodeReasonInvalidJSON},
+	} {
+		if diagnostic.Valid() {
+			t.Errorf("unsafe decoder diagnostic accepted: %+v", diagnostic)
+		}
+	}
 }
 
 func TestCompileAutoCreatesDictionaryOnlyAndNeutralUsesNoProvider(t *testing.T) {
@@ -92,6 +158,16 @@ func TestCompileAutoCreatesDictionaryOnlyAndNeutralUsesNoProvider(t *testing.T) 
 	}
 	if len(result.DictionaryData) == 0 || result.DictionaryRef.InputDigest != RequirementsDigest([]Requirement{{ID: "r1", Text: "write concise"}}) || fake.calls != 1 {
 		t.Fatalf("compile-auto result=%+v calls=%d", result, fake.calls)
+	}
+	for _, contract := range []string{
+		"shaped as {id: string, disposition: string, explanation: string}",
+		"disposition must be exactly compile_guidance, dictionary_or_query, both, or limitation",
+		"tags (array of tag objects), dictionary_diff (string), requirements (array of accounting rows)",
+		"id (string), definition (string), applies_to (array containing source and/or concept), match_rule (string), non_match_rule (string), unknown_rule (string), requirement_ids (array of input requirement IDs), query_use (preferred or required_candidate)",
+	} {
+		if !strings.Contains(fake.system, contract) {
+			t.Errorf("compile-auto prompt omitted consumer contract %q", contract)
+		}
 	}
 	neutral, err := DeriveNeutral(4, []Requirement{}, "g4", strings.Repeat("c", 64))
 	if err != nil {

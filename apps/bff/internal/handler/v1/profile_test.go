@@ -405,12 +405,56 @@ func TestProfileFailureDiagnosticWireUsesOnlyFixedLabels(t *testing.T) {
 	}
 }
 
+func TestProfileManualDecoderReasonWireUsesAllowlistedLabel(t *testing.T) {
+	gin.SetMode(gin.TestMode)
+	diagnostic := profilederive.FailureDiagnostic{
+		Stage:        profilederive.FailureStageManualDecode,
+		Class:        profilederive.FailureClassModelOutputDecodeFailed,
+		DecodeReason: profilederive.DecodeReasonUnknownField,
+	}
+	state := newProfileState("alpha")
+	state.Revision = 2
+	state.DerivationStatus = stringPtr(profileDerivationFailed)
+	state.DerivationErrorCode = stringPtr("profile_derivation_failed")
+	state.DerivationDiagnostic = &diagnostic
+	repo := &profileRepositoryStub{state: state}
+	h := New(nil, nil, nil, nil, nil, nil)
+	h.profileRepository = repo
+	recorder := invokeProfileHandler(t, h, http.MethodGet, "alpha", "owner", "alpha", "", h.GetProfile)
+	if recorder.Code != http.StatusOK {
+		t.Fatalf("GET status=%d body=%s", recorder.Code, recorder.Body.String())
+	}
+	var response struct {
+		DerivationErrorCode  string                     `json:"derivation_error_code"`
+		DerivationDiagnostic map[string]json.RawMessage `json:"derivation_diagnostic"`
+	}
+	if err := json.Unmarshal(recorder.Body.Bytes(), &response); err != nil {
+		t.Fatal(err)
+	}
+	if response.DerivationErrorCode != "profile_derivation_failed" || len(response.DerivationDiagnostic) != 3 {
+		t.Fatalf("manual decode diagnostic response = %+v", response)
+	}
+	if string(response.DerivationDiagnostic["stage"]) != `"manual_output_decode"` ||
+		string(response.DerivationDiagnostic["class"]) != `"model_output_decode_failed"` ||
+		string(response.DerivationDiagnostic["decode_reason"]) != `"unknown_field"` {
+		t.Fatalf("unexpected allowlisted decoder diagnostic: %+v", response.DerivationDiagnostic)
+	}
+}
+
 func TestProfileStateRejectsUnknownDiagnosticLabels(t *testing.T) {
 	if _, err := profileStateFromData(map[string]interface{}{
 		"project_id": "alpha", "revision": int64(1), "requirements": []interface{}{},
 		"derivation_diagnostic": map[string]interface{}{"stage": "private-input", "class": "provider-secret"},
 	}); err == nil {
 		t.Fatal("invalid diagnostic labels were accepted")
+	}
+	if _, err := profileStateFromData(map[string]interface{}{
+		"project_id": "alpha", "revision": int64(1), "requirements": []interface{}{},
+		"derivation_diagnostic": map[string]interface{}{
+			"stage": "manual_output_decode", "class": "model_output_decode_failed", "decode_reason": "private-model-field",
+		},
+	}); err == nil {
+		t.Fatal("unapproved decoder reason was accepted")
 	}
 }
 
