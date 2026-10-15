@@ -21,6 +21,9 @@ import (
 	"github.com/rayer/llm-wiki-bff/internal/annotation"
 	"github.com/rayer/llm-wiki-bff/internal/sourcestatus"
 	"github.com/rayer/llm-wiki-bff/internal/suggestedqueries"
+	"go.opentelemetry.io/otel"
+	sdktrace "go.opentelemetry.io/otel/sdk/trace"
+	"go.opentelemetry.io/otel/sdk/trace/tracetest"
 )
 
 type testSuggestedQueryProvider struct {
@@ -692,6 +695,207 @@ func TestSuggestedQueriesCommandRejectsCloudWithLocalRouting(t *testing.T) {
 	if err == nil || !errors.Is(err, errWorkerConfigInvalid) {
 		t.Fatalf("error = %v, want errWorkerConfigInvalid", err)
 	}
+}
+
+func TestWorkerBinaryFailureFlushesAttemptBeforeExit(t *testing.T) {
+	const fixtureEnv = "LWC394_BINARY_FAILURE_FIXTURE"
+	if os.Getenv(fixtureEnv) == "1" {
+		os.Args = []string{"worker", "run", "not-json"}
+		main()
+		return
+	}
+	cmd := exec.Command(os.Args[0], "-test.run=^TestWorkerBinaryFailureFlushesAttemptBeforeExit$")
+	cmd.Env = append(os.Environ(), fixtureEnv+"=1")
+	var stdout, stderr bytes.Buffer
+	cmd.Stdout = &stdout
+	cmd.Stderr = &stderr
+	err := cmd.Run()
+	output := stdout.String() + stderr.String()
+	if err == nil {
+		t.Fatalf("worker binary exited successfully for invalid command: %s", output)
+	}
+	exitErr, ok := err.(*exec.ExitError)
+	if !ok || exitErr.ExitCode() != 1 {
+		t.Fatalf("worker binary error=%v, want exit 1; output=%s", err, output)
+	}
+	if stdout.String() != "worker build_nonce=local\n" {
+		t.Fatalf("worker trace output changed the child stdout protocol: %q", stdout.String())
+	}
+	if !strings.Contains(stderr.String(), `"Name":"pipeline.worker"`) || !strings.Contains(stderr.String(), "worker:") {
+		t.Fatalf("worker failure output lacks flushed attempt span or stable error: %s", output)
+	}
+	if strings.Contains(stderr.String(), `"Name":"pipeline.worker.child"`) || strings.Contains(stderr.String(), `"Key":"pipeline.command_count"`) {
+		t.Fatalf("pre-child validation failure fabricated a child attempt/count: %s", stderr.String())
+	}
+}
+
+func TestCommittedWorkspaceCleanupFailureHasTruthfulWorkerTrace(t *testing.T) {
+	exporter := tracetest.NewInMemoryExporter()
+	provider := sdktrace.NewTracerProvider(sdktrace.WithSpanProcessor(sdktrace.NewSimpleSpanProcessor(exporter)))
+	previous := otel.GetTracerProvider()
+	otel.SetTracerProvider(provider)
+	t.Cleanup(func() {
+		otel.SetTracerProvider(previous)
+		_ = provider.Shutdown(context.Background())
+	})
+	oldHooks := localWorkspaceBatchHooks
+	t.Cleanup(func() { localWorkspaceBatchHooks = oldHooks })
+	hooks := oldHooks
+	workspace := t.TempDir()
+	hooks.acquireVaultLease = func(string, string) (*vaultLease, error) {
+		return &vaultLease{root: t.TempDir(), owner: "test"}, nil
+	}
+	hooks.createWorkspace = func(string, string) (string, error) { return workspace, nil }
+	hooks.recoverInterruptedPublish = func(string) error { return nil }
+	hooks.runPostprocessWithProvider = func(context.Context, string, suggestedqueries.Provider, io.Writer) error { return nil }
+	hooks.syncWorkspaceOutputs = func(string, string, string) error { return nil }
+	hooks.removeWorkspace = func(string) error { return errors.New("injected workspace cleanup failure") }
+	hooks.releaseVaultLease = func(*vaultLease) error { return nil }
+	localWorkspaceBatchHooks = hooks
+
+	vault := t.TempDir()
+	err := runPostprocessCommand(context.Background(), workerConfig{VaultPath: vault, ExecutionID: "cleanup-trace"})
+	if err == nil || !strings.Contains(err.Error(), "cleanup workspace") {
+		t.Fatalf("runPostprocessCommand error=%v, want committed cleanup failure", err)
+	}
+	var workerSpan *tracetest.SpanStub
+	for _, span := range exporter.GetSpans() {
+		if span.Name == "pipeline.worker" {
+			copy := span
+			workerSpan = &copy
+		}
+	}
+	if workerSpan == nil {
+		t.Fatalf("worker attempt span missing: %+v", exporter.GetSpans())
+	}
+	wantPublication := false
+	wantFailure := false
+	for _, attr := range workerSpan.Attributes {
+		if string(attr.Key) == "pipeline.publication.outcome" && attr.Value.AsString() == "committed" {
+			wantPublication = true
+		}
+		if string(attr.Key) == "pipeline.outcome" && attr.Value.AsString() == "failure" {
+			wantFailure = true
+		}
+	}
+	if !wantPublication || !wantFailure {
+		t.Fatalf("worker span attributes=%v, want committed publication and failure exit", workerSpan.Attributes)
+	}
+}
+
+func TestSuggestedQueryTraceSeparatesProviderGuardDecodeAndFallback(t *testing.T) {
+	const canary = "PRIVATE_PROVIDER_OUTPUT_CANARY"
+	for _, tc := range []struct {
+		name           string
+		withCorpus     bool
+		providerOutput string
+		wantProvider   int
+	}{
+		{name: "guard skips provider", wantProvider: 0},
+		{name: "decode failure falls back", withCorpus: true, providerOutput: canary, wantProvider: 1},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			exporter := tracetest.NewInMemoryExporter()
+			provider := sdktrace.NewTracerProvider(sdktrace.WithSpanProcessor(sdktrace.NewSimpleSpanProcessor(exporter)))
+			previous := otel.GetTracerProvider()
+			otel.SetTracerProvider(provider)
+			t.Cleanup(func() {
+				otel.SetTracerProvider(previous)
+				_ = provider.Shutdown(context.Background())
+			})
+			vault := t.TempDir()
+			prior := []byte(`{"version":2,"queries":["last known question"],"candidates":[],"updated_at":"2026-10-01T00:00:00Z"}`)
+			mustWriteFile(t, filepath.Join(vault, "cache", "suggested_queries.json"), prior)
+			if tc.withCorpus {
+				mustWriteFile(t, filepath.Join(vault, "cache", "concepts.jsonl"), []byte(`{"id":"id1","slug":"alpha","title":"Alpha","body":"body"}`+"\n"))
+			}
+			mock := &testSuggestedQueryProvider{raw: tc.providerOutput}
+			if err := writeSuggestedQueriesObserved(context.Background(), vault, mock, nil); err != nil {
+				t.Fatalf("writeSuggestedQueriesObserved() error = %v", err)
+			}
+			if mock.calls != tc.wantProvider {
+				t.Fatalf("provider calls=%d, want %d", mock.calls, tc.wantProvider)
+			}
+			got, err := os.ReadFile(filepath.Join(vault, "cache", "suggested_queries.json"))
+			if err != nil || !bytes.Equal(got, prior) {
+				t.Fatalf("fallback changed last-known-good artifact: bytesEqual=%v err=%v", bytes.Equal(got, prior), err)
+			}
+			var names []string
+			var sawDegraded, sawValidationFailure bool
+			for _, span := range exporter.GetSpans() {
+				names = append(names, span.Name)
+				for _, attr := range span.Attributes {
+					if string(attr.Key) == "pipeline.outcome" && attr.Value.AsString() == "degraded" && span.Name == "pipeline.worker.suggested_queries" {
+						sawDegraded = true
+					}
+					if string(attr.Key) == "pipeline.outcome" && attr.Value.AsString() == "failure" && span.Name == "pipeline.worker.suggested_queries.validate" {
+						sawValidationFailure = true
+					}
+				}
+				if strings.Contains(fmt.Sprintf("%+v", span), canary) {
+					t.Fatalf("raw provider output reached span: %+v", span)
+				}
+			}
+			if !containsString(names, "pipeline.worker.suggested_queries") || !containsString(names, "pipeline.worker.suggested_queries.fallback") {
+				t.Fatalf("logical/fallback spans missing: %v", names)
+			}
+			if tc.wantProvider == 0 && containsString(names, "pipeline.worker.suggested_queries.provider") {
+				t.Fatalf("provider guard emitted a fake call span: %v", names)
+			}
+			if tc.wantProvider == 1 && (!containsString(names, "pipeline.worker.suggested_queries.provider") || !sawValidationFailure || !sawDegraded) {
+				t.Fatalf("provider/decode/fallback outcomes are not distinct: names=%v degraded=%v validationFailure=%v", names, sawDegraded, sawValidationFailure)
+			}
+		})
+	}
+}
+
+func TestNilSuggestedQueryProviderIsSkippedAndFallbackKeepsItsOwnOutcome(t *testing.T) {
+	exporter := tracetest.NewInMemoryExporter()
+	provider := sdktrace.NewTracerProvider(sdktrace.WithSpanProcessor(sdktrace.NewSimpleSpanProcessor(exporter)))
+	previous := otel.GetTracerProvider()
+	otel.SetTracerProvider(provider)
+	t.Cleanup(func() {
+		otel.SetTracerProvider(previous)
+		_ = provider.Shutdown(context.Background())
+	})
+
+	vault := t.TempDir()
+	prior := []byte(`{"version":2,"queries":["last known question"],"candidates":[],"updated_at":"2026-10-01T00:00:00Z"}`)
+	mustWriteFile(t, filepath.Join(vault, "cache", "suggested_queries.json"), prior)
+	if err := writeSuggestedQueriesObserved(context.Background(), vault, nil, nil); err != nil {
+		t.Fatalf("writeSuggestedQueriesObserved() error = %v", err)
+	}
+	got, err := os.ReadFile(filepath.Join(vault, "cache", "suggested_queries.json"))
+	if err != nil || !bytes.Equal(got, prior) {
+		t.Fatalf("fallback changed last-known-good artifact: bytesEqual=%v err=%v", bytes.Equal(got, prior), err)
+	}
+
+	var logicalOutcome, fallbackOutcome string
+	for _, span := range exporter.GetSpans() {
+		for _, attr := range span.Attributes {
+			if string(attr.Key) != "pipeline.outcome" {
+				continue
+			}
+			switch span.Name {
+			case "pipeline.worker.suggested_queries":
+				logicalOutcome = attr.Value.AsString()
+			case "pipeline.worker.suggested_queries.fallback":
+				fallbackOutcome = attr.Value.AsString()
+			}
+		}
+	}
+	if logicalOutcome != "skipped" || fallbackOutcome != "success" {
+		t.Fatalf("nil-provider logical outcome=%q fallback outcome=%q, want skipped/success", logicalOutcome, fallbackOutcome)
+	}
+}
+
+func containsString(values []string, want string) bool {
+	for _, value := range values {
+		if value == want {
+			return true
+		}
+	}
+	return false
 }
 
 func TestWorkerPostprocessDirectPreservesDormantConceptAndEntityMappings(t *testing.T) {

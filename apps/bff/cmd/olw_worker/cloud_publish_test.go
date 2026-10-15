@@ -26,6 +26,9 @@ import (
 	"github.com/rayer/llm-wiki-bff/internal/localpipeline"
 	"github.com/rayer/llm-wiki-bff/internal/sourcestatus"
 	"github.com/rayer/llm-wiki-bff/internal/suggestedqueries"
+	"go.opentelemetry.io/otel"
+	sdktrace "go.opentelemetry.io/otel/sdk/trace"
+	"go.opentelemetry.io/otel/sdk/trace/tracetest"
 	_ "modernc.org/sqlite"
 )
 
@@ -2334,6 +2337,125 @@ func TestCloudSuggestedQueriesStageOnlyPublishesNewChips(t *testing.T) {
 	artifact, err := suggestedqueries.Decode(published)
 	if err != nil || len(artifact.Queries) != 20 || artifact.Queries[0] != "哪些概念值得一起比較？" {
 		t.Fatalf("published chips invalid: err=%v artifact=%#v", err, artifact)
+	}
+}
+
+func TestCloudSuggestedQueriesObservedLifecyclePhases(t *testing.T) {
+	exporter := tracetest.NewInMemoryExporter()
+	provider := sdktrace.NewTracerProvider(sdktrace.WithSpanProcessor(sdktrace.NewSimpleSpanProcessor(exporter)))
+	previous := otel.GetTracerProvider()
+	otel.SetTracerProvider(provider)
+	t.Cleanup(func() {
+		otel.SetTracerProvider(previous)
+		_ = provider.Shutdown(context.Background())
+	})
+
+	m := newMemoryObjects()
+	prefix := "users/user/projects/project/"
+	seedCloudSuggestedQueriesGeneration(t, m, prefix)
+	old := execOLW
+	t.Cleanup(func() { execOLW = old })
+	execOLW = func(context.Context, string, []string, []string, io.Writer, io.Writer) error {
+		t.Fatal("suggested-queries stage must not invoke Synto")
+		return nil
+	}
+	cfg := cloudCfgFor("user", "project", "trace-exec")
+	cfg.SuggestedQueries = true
+	cfg.suggestedQueriesProvider = &testSuggestedQueryProvider{raw: twentySuggestedQueriesRaw("149603e6c035")}
+	if err := runCloudSuggestedQueries(context.Background(), cfg, m); err != nil {
+		t.Fatalf("runCloudSuggestedQueries() error = %v", err)
+	}
+
+	byName := make(map[string]tracetest.SpanStub)
+	for _, span := range exporter.GetSpans() {
+		byName[span.Name] = span
+	}
+	for _, name := range []string{"pipeline.worker.lease", "pipeline.worker.materialize", "pipeline.worker.publish", "pipeline.worker.finalize"} {
+		if _, ok := byName[name]; !ok {
+			t.Errorf("actual suggested-only span %q missing: %v", name, byName)
+		}
+	}
+	for _, name := range []string{"pipeline.worker.publish", "pipeline.worker.finalize"} {
+		var gotOutcome, gotPublication string
+		for _, attr := range byName[name].Attributes {
+			switch string(attr.Key) {
+			case "pipeline.outcome":
+				gotOutcome = attr.Value.AsString()
+			case "pipeline.publication.outcome":
+				gotPublication = attr.Value.AsString()
+			}
+		}
+		if gotOutcome != "success" || gotPublication != "committed" {
+			t.Errorf("%s outcome=%q publication=%q, want success/committed", name, gotOutcome, gotPublication)
+		}
+	}
+}
+
+func TestCloudSuggestedQueriesCommittedLeaseCleanupStillReportsCommitted(t *testing.T) {
+	exporter := tracetest.NewInMemoryExporter()
+	provider := sdktrace.NewTracerProvider(sdktrace.WithSpanProcessor(sdktrace.NewSimpleSpanProcessor(exporter)))
+	previous := otel.GetTracerProvider()
+	otel.SetTracerProvider(provider)
+	t.Cleanup(func() {
+		otel.SetTracerProvider(previous)
+		_ = provider.Shutdown(context.Background())
+	})
+
+	base := newMemoryObjects()
+	prefix := "users/user/projects/project/"
+	seedCloudSuggestedQueriesGeneration(t, base, prefix)
+	store := &leaseDeleteProbe{objectStore: base, failures: 3}
+	old := execOLW
+	t.Cleanup(func() { execOLW = old })
+	execOLW = func(context.Context, string, []string, []string, io.Writer, io.Writer) error {
+		t.Fatal("suggested-queries stage must not invoke Synto")
+		return nil
+	}
+	cfg := cloudCfgFor("user", "project", "trace-cleanup")
+	cfg.SuggestedQueries = true
+	cfg.suggestedQueriesProvider = &testSuggestedQueryProvider{raw: twentySuggestedQueriesRaw("149603e6c035")}
+	err := runCloudSuggestedQueries(context.Background(), cfg, store)
+	if !errors.Is(err, errCloudCommittedCleanup) {
+		t.Fatalf("runCloudSuggestedQueries() error=%v, want committed cleanup failure", err)
+	}
+	if got := cloudSuggestedQueriesPublicationOutcome(err); got != "committed" {
+		t.Fatalf("cloudSuggestedQueriesPublicationOutcome()=%q, want committed", got)
+	}
+	var finalize *tracetest.SpanStub
+	for _, span := range exporter.GetSpans() {
+		if span.Name == "pipeline.worker.finalize" {
+			copy := span
+			finalize = &copy
+		}
+	}
+	if finalize == nil {
+		t.Fatalf("suggested-only finalizer span missing: %+v", exporter.GetSpans())
+	}
+	var gotOutcome, gotPublication string
+	for _, attr := range finalize.Attributes {
+		switch string(attr.Key) {
+		case "pipeline.outcome":
+			gotOutcome = attr.Value.AsString()
+		case "pipeline.publication.outcome":
+			gotPublication = attr.Value.AsString()
+		}
+	}
+	if gotOutcome != "failure" || gotPublication != "committed" {
+		t.Fatalf("finalizer outcome=%q publication=%q, want failure/committed", gotOutcome, gotPublication)
+	}
+}
+
+func seedCloudSuggestedQueriesGeneration(t *testing.T, m *memoryObjects, prefix string) {
+	t.Helper()
+	seedCloudSource(t, m, prefix, "raw-start", "", priorCloudReceipt())
+	workspace := t.TempDir()
+	writeCloudRequiredOutputs(t, workspace)
+	mustWriteFile(t, filepath.Join(workspace, "wiki", "old.md"), []byte("---\nid: 149603e6c035\ntitle: Old\n---\nOld\n"))
+	mustWriteFile(t, filepath.Join(workspace, "cache", "id_map.json"), []byte(`{"concept":{"149603e6c035":"old"},"source":{"s1":"source"},"source_meta":{"s1":{"slug":"source","source_file":"raw/source.md"}},"redirects":{}}`))
+	mustWriteFile(t, filepath.Join(workspace, "cache", "concepts.jsonl"), []byte(`{"id":"149603e6c035","slug":"old","title":"Old","body":"Old","frontmatter":{"id":"149603e6c035","title":"Old"}}`+"\n"))
+	mustWriteFile(t, filepath.Join(workspace, "cache", "suggested_queries.json"), []byte(`{"version":2,"queries":["seed one?","seed two?","seed three?"],"candidates":[{"question":"seed one?","intent/use_case":"comparison","corpus_anchor_concept_ids":["149603e6c035"],"generation":{"model":"fixture","prompt_version":"v1"}},{"question":"seed two?","intent/use_case":"exploration","corpus_anchor_concept_ids":["149603e6c035"],"generation":{"model":"fixture","prompt_version":"v1"}},{"question":"seed three?","intent/use_case":"retrieval","corpus_anchor_concept_ids":["149603e6c035"],"generation":{"model":"fixture","prompt_version":"v1"}}],"updated_at":"2026-07-01T00:00:00Z"}`))
+	if _, _, err := publishCloudGeneration(context.Background(), m, prefix, workspace, nil); err != nil {
+		t.Fatalf("seed publishCloudGeneration() error = %v", err)
 	}
 }
 

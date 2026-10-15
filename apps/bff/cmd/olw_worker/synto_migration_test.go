@@ -18,6 +18,9 @@ import (
 	"github.com/BurntSushi/toml"
 	"github.com/rayer/llm-wiki-bff/internal/generation"
 	"github.com/rayer/llm-wiki-bff/internal/wikiindex"
+	"go.opentelemetry.io/otel"
+	sdktrace "go.opentelemetry.io/otel/sdk/trace"
+	"go.opentelemetry.io/otel/sdk/trace/tracetest"
 )
 
 const expectedSyntoWheelSHA256 = "4bc8dcf14b53f45fac32ce737ecf878f1a46d6d0b010c7decbe6c3b7b10afa77"
@@ -336,6 +339,74 @@ func TestSyntoIndexExportValidationCarriesIndexStateDiagnostic(t *testing.T) {
 	diagnostic := diagnosticForError(err)
 	if diagnostic.Stage != failureStageSyntoIndexExport || diagnostic.ErrorClass != failureClassStateInvalid || diagnostic.Child != "" {
 		t.Fatalf("diagnostic=%+v error=%v", diagnostic, err)
+	}
+}
+
+func TestWorkerObservedSyntoExportIsChildOfExportValidationPhase(t *testing.T) {
+	exporter := tracetest.NewInMemoryExporter()
+	provider := sdktrace.NewTracerProvider(sdktrace.WithSpanProcessor(sdktrace.NewSimpleSpanProcessor(exporter)))
+	previous := otel.GetTracerProvider()
+	otel.SetTracerProvider(provider)
+	t.Cleanup(func() {
+		otel.SetTracerProvider(previous)
+		_ = provider.Shutdown(context.Background())
+	})
+
+	const entity = "01JAZ5N7Y3K8M2Q4R6T9VWXABC"
+	vault := t.TempDir()
+	mustWriteFile(t, filepath.Join(vault, "synto.toml"), []byte("[pipeline]\nauto_commit = false\nauto_maintain = false\nrelation_extraction = false\n"))
+	writeValidSQLiteState(t, filepath.Join(vault, ".synto", "state.db"))
+	for _, dir := range []string{"raw", "wiki", "cache"} {
+		if err := os.MkdirAll(filepath.Join(vault, dir), 0o755); err != nil {
+			t.Fatal(err)
+		}
+	}
+	mustWriteFile(t, filepath.Join(vault, "wiki", "alpha.md"), []byte("---\nid: a3f7b2c01d9d\ntitle: Alpha\n---\nAlpha"))
+	oldExec := execOLW
+	t.Cleanup(func() { execOLW = oldExec })
+	execOLW = func(_ context.Context, _ string, command []string, _ []string, _, _ io.Writer) error {
+		if len(command) > 0 && command[0] == "run" {
+			return nil
+		}
+		if len(command) != 6 || command[0] != "pack" || command[1] != "export" {
+			return fmt.Errorf("unexpected Synto command %v", command)
+		}
+		index := syntoIndexFixture("a3f7b2c01d9d", entity, "alpha", false)
+		concepts := `{"schema_version":1,"concepts":[{"name":"Alpha","entity_id":"` + entity + `","aliases":[],"canonical_article_id":"a3f7b2c01d9d","article_path":"wiki/alpha.md","related_names":[]}]}`
+		mustWriteFile(t, filepath.Join(command[5], "index", "INDEX.json"), []byte(index))
+		mustWriteFile(t, filepath.Join(command[5], "agent", "concepts.json"), []byte(concepts))
+		return nil
+	}
+	if err := runWorkerBatchAtVault(context.Background(), workerConfig{APIKey: "fixture", Postprocess: true, SuppressOutput: true}, [][]string{{"run", "--auto-approve"}}, vault); err != nil {
+		t.Fatalf("runWorkerBatchAtVault() error = %v", err)
+	}
+	var validation, export *tracetest.SpanStub
+	for _, span := range exporter.GetSpans() {
+		copy := span
+		switch span.Name {
+		case "pipeline.worker.export_validate":
+			validation = &copy
+		case "pipeline.worker.export":
+			export = &copy
+		}
+	}
+	if validation == nil || export == nil {
+		t.Fatalf("actual export trace missing validation or child span: %+v", exporter.GetSpans())
+	}
+	if export.Parent.SpanID() != validation.SpanContext.SpanID() {
+		t.Fatalf("export span parent=%s, want actual validation phase %s", export.Parent.SpanID(), validation.SpanContext.SpanID())
+	}
+	for _, span := range []*tracetest.SpanStub{validation, export} {
+		sawSuccess := false
+		for _, attr := range span.Attributes {
+			if string(attr.Key) == "pipeline.outcome" && attr.Value.AsString() == "success" {
+				sawSuccess = true
+				break
+			}
+		}
+		if !sawSuccess {
+			t.Errorf("%s lacks successful outcome: %+v", span.Name, span.Attributes)
+		}
 	}
 }
 

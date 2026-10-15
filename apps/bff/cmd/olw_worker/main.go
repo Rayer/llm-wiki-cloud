@@ -24,6 +24,7 @@ import (
 	"github.com/rayer/llm-wiki-bff/internal/generation"
 	"github.com/rayer/llm-wiki-bff/internal/llm"
 	"github.com/rayer/llm-wiki-bff/internal/localcloud"
+	"github.com/rayer/llm-wiki-bff/internal/observability"
 	"github.com/rayer/llm-wiki-bff/internal/pipelinediagnostic"
 	"github.com/rayer/llm-wiki-bff/internal/rawstatus"
 	"github.com/rayer/llm-wiki-bff/internal/sourcestatus"
@@ -136,7 +137,10 @@ const pipelineLogTruncationMarker = pipelinediagnostic.PipelineLogTruncationMark
 
 func main() {
 	printBuildNonce(os.Stdout)
-	if err := executeWorkerCommand(newRootCommand()); err != nil {
+	provider, _ := observability.InitWorkerTraces(buildNonce)
+	err := executeWorkerCommand(newRootCommand())
+	observability.ShutdownTraces(provider)
+	if err != nil {
 		log.Printf("worker: %s", formatWorkerExitLog(err))
 		os.Exit(1)
 	}
@@ -340,8 +344,17 @@ func fixedArgs(want int) cobra.PositionalArgs {
 	}
 }
 
-func runWorkerBatch(ctx context.Context, cfg workerConfig, rawCommands string) error {
+func runWorkerBatch(ctx context.Context, cfg workerConfig, rawCommands string) (runErr error) {
+	ctx, attempt := observability.StartWorkerSpan(ctx, "pipeline.worker")
+	defer func() { observability.FinishPipelineSpan(attempt, workerTraceOutcome(runErr)) }()
 	cfg = configFromEnvironment(cfg)
+	_, validation := observability.StartWorkerSpan(ctx, "pipeline.worker.validate")
+	validationFinished := false
+	defer func() {
+		if !validationFinished {
+			observability.FinishPipelineSpan(validation, workerTraceOutcome(runErr))
+		}
+	}()
 	if cfg.Bucket != "" {
 		if (cfg.LocalCloudScope == "" && (cfg.PipelineConfigPath != "" || cfg.PipelineBindingsPath != "")) ||
 			(cfg.LocalCloudScope != "" && (cfg.PipelineConfigPath == "" || cfg.PipelineBindingsPath == "")) {
@@ -365,20 +378,32 @@ func runWorkerBatch(ctx context.Context, cfg workerConfig, rawCommands string) e
 	if err := validateWorkerInput(cfg, commands); err != nil {
 		return annotateError(errWorkerInputInvalid, err)
 	}
-	if cfg.Bucket != "" {
-		if cfg.VaultPath != "" || cfg.DataDir != "" || cfg.Workspace {
-			return errWorkerConfigInvalid
-		}
-		return runCloudWorkerBatch(ctx, cfg, commands, newCloudObjectStore(cfg.Bucket))
+	if cfg.Bucket != "" && (cfg.VaultPath != "" || cfg.DataDir != "" || cfg.Workspace) {
+		return errWorkerConfigInvalid
 	}
 	if cfg.PipelineConfigPath == "" && cfg.PipelineBindingsPath != "" {
 		return errWorkerConfigInvalid
+	}
+	observability.FinishPipelineSpan(validation, "success")
+	validationFinished = true
+	if cfg.Bucket != "" {
+		cloudCtx, cloudSpan := observability.StartWorkerSpan(ctx, "pipeline.worker.workspace")
+		err := runCloudWorkerBatch(cloudCtx, cfg, commands, newCloudObjectStore(cfg.Bucket))
+		if errors.Is(err, errCloudCommittedCleanup) || errors.Is(err, errCloudCommittedReceipt) {
+			observability.SetPipelinePublicationOutcome(cloudSpan, "committed")
+		} else if err != nil {
+			observability.SetPipelinePublicationOutcome(cloudSpan, "unknown")
+		}
+		observability.FinishPipelineSpan(cloudSpan, workerTraceOutcome(err))
+		return err
 	}
 	if cfg.PipelineConfigPath != "" {
 		if len(cfg.DeployedSynto) != 0 {
 			return errWorkerConfigInvalid
 		}
+		_, configSpan := observability.StartWorkerSpan(ctx, "pipeline.worker.validate")
 		deployed, localAPIKey, timeoutSeconds, readErr := readLocalPipelineInputs(cfg.PipelineConfigPath, cfg.PipelineBindingsPath)
+		observability.FinishPipelineSpan(configSpan, workerTraceOutcome(readErr))
 		if readErr != nil {
 			return annotateError(errWorkerConfigInvalid, readErr)
 		}
@@ -403,7 +428,23 @@ func runWorkerBatch(ctx context.Context, cfg workerConfig, rawCommands string) e
 	// Generation always runs in the existing private-workspace transaction,
 	// including local invocations. This keeps direct mode from letting Synto
 	// migrate or mutate the mounted/live vault before validation and publish.
-	return runWorkerBatchWorkspace(ctx, cfg, commands, vault)
+	workspaceCtx, workspaceSpan := observability.StartWorkerSpan(ctx, "pipeline.worker.workspace")
+	err = runWorkerBatchWorkspace(workspaceCtx, cfg, commands, vault)
+	observability.FinishPipelineSpan(workspaceSpan, workerTraceOutcome(err))
+	return err
+}
+
+func workerTraceOutcome(err error) string {
+	if err == nil {
+		return "success"
+	}
+	if errors.Is(err, context.DeadlineExceeded) {
+		return "timeout"
+	}
+	if errors.Is(err, context.Canceled) {
+		return "canceled"
+	}
+	return "failure"
 }
 
 func configFromEnvironment(cfg workerConfig) workerConfig {
@@ -491,12 +532,17 @@ func runWorkerBatchAtVault(ctx context.Context, cfg workerConfig, commands [][]s
 		return preserveWorkerFailure(err, failureStageSyntoConfigValidation, failureClassUnknown)
 	}
 
-	runErr = runOLWBatch(ctx, vault, commands, cfg.StopOnError, olwEnv, stdout, stderr)
+	childCtx, childSpan := observability.StartWorkerSpan(ctx, "pipeline.worker.child")
+	runErr = runOLWBatch(childCtx, vault, commands, cfg.StopOnError, olwEnv, stdout, stderr)
+	observability.FinishPipelineSpan(childSpan, workerTraceOutcome(runErr))
 	if runErr != nil {
 		return preserveWorkerFailure(runErr, failureStageSyntoRun, failureClassUnknown)
 	}
 	if cfg.Postprocess {
-		if err := ensureSyntoIndex(ctx, vault, olwEnv, stdout, stderr); err != nil {
+		exportCtx, exportSpan := observability.StartWorkerSpan(ctx, "pipeline.worker.export_validate")
+		err := ensureSyntoIndex(exportCtx, vault, olwEnv, stdout, stderr)
+		observability.FinishPipelineSpan(exportSpan, workerTraceOutcome(err))
+		if err != nil {
 			return preserveWorkerFailure(err, failureStageSyntoIndexExport, failureClassStateInvalid)
 		}
 	}
@@ -504,9 +550,12 @@ func runWorkerBatchAtVault(ctx context.Context, cfg workerConfig, commands [][]s
 		return preserveWorkerFailure(err, failureStageSyntoConfigValidation, failureClassValidation)
 	}
 	if cfg.Postprocess {
-		if err := runPostprocessWithProvider(ctx, vault, suggestedQueryProvider(cfg), stderr); err != nil {
+		postCtx, postSpan := observability.StartWorkerSpan(ctx, "pipeline.worker.postprocess")
+		if err := runPostprocessWithProvider(postCtx, vault, suggestedQueryProvider(cfg), stderr); err != nil {
+			observability.FinishPipelineSpan(postSpan, workerTraceOutcome(err))
 			return preserveWorkerFailure(err, failureStagePostprocess, failureClassIO)
 		}
+		observability.FinishPipelineSpan(postSpan, "success")
 	}
 	return nil
 }
@@ -571,6 +620,13 @@ func (l *localLeaseLifecycle) finish(runErr *error, lease *vaultLease, removeWor
 // runWorkerBatchWorkspace keeps the mounted vault immutable while Synto runs.
 // Receipts are written only after every durable output has been copied back.
 func runWorkerBatchWorkspace(ctx context.Context, cfg workerConfig, commands [][]string, vault string) (runErr error) {
+	ctx, finalizeSpan := observability.StartWorkerSpan(ctx, "pipeline.worker.finalize")
+	workspacePublished := false
+	publicationOutcome := "not_committed"
+	defer func() {
+		observability.SetPipelinePublicationOutcome(finalizeSpan, publicationOutcome)
+		observability.FinishPipelineSpan(finalizeSpan, workerTraceOutcome(runErr))
+	}()
 	if !cfg.Postprocess {
 		workspace, err := localWorkspaceBatchHooks.createWorkspace(cfg.WorkspaceDir, vault)
 		if err != nil {
@@ -582,13 +638,14 @@ func runWorkerBatchWorkspace(ctx context.Context, cfg workerConfig, commands [][
 	if !startsWithFullOLWRun(commands) {
 		return errors.New("workspace mode requires the Synto run command before recording ingestion receipts")
 	}
+	_, leaseSpan := observability.StartWorkerSpan(ctx, "pipeline.worker.lease")
 	lease, err := localWorkspaceBatchHooks.acquireVaultLease(vault, cfg.ExecutionID)
+	observability.FinishPipelineSpan(leaseSpan, workerTraceOutcome(err))
 	if err != nil {
 		return err
 	}
 	workspace := ""
 	terminalAttempted := false
-	workspacePublished := false
 	recordTerminal := func(failure error, published bool) {
 		if failure == nil || terminalAttempted {
 			return
@@ -659,8 +716,15 @@ func runWorkerBatchWorkspace(ctx context.Context, cfg workerConfig, commands [][
 		}
 		return failure
 	}
+	publicationOutcome = "unknown"
+	_, publishSpan := observability.StartWorkerSpan(ctx, "pipeline.worker.publish")
 	if err := localWorkspaceBatchHooks.syncWorkspaceOutputs(workspace, vault, cfg.ExecutionID); err != nil {
 		workspacePublished = publishJournalCommitted(vault)
+		if workspacePublished {
+			publicationOutcome = "committed"
+		}
+		observability.SetPipelinePublicationOutcome(publishSpan, publicationOutcome)
+		observability.FinishPipelineSpan(publishSpan, workerTraceOutcome(err))
 		failureClass := failureClassIO
 		if errors.Is(err, errObjectGenerationConflict) {
 			failureClass = failureClassPublishConflict
@@ -673,13 +737,25 @@ func runWorkerBatchWorkspace(ctx context.Context, cfg workerConfig, commands [][
 		return failure
 	}
 	workspacePublished = true
+	publicationOutcome = "committed"
+	observability.SetPipelinePublicationOutcome(publishSpan, "committed")
 	if err := localWorkspaceBatchHooks.recordSuccess(vault, snapshots, time.Now().UTC()); err != nil {
+		observability.FinishPipelineSpan(publishSpan, workerTraceOutcome(err))
 		return preserveWorkerFailure(err, failureStageReceiptRecording, failureClassRecordingFailure)
 	}
+	observability.FinishPipelineSpan(publishSpan, "success")
 	return nil
 }
 
 func runPostprocessCommand(ctx context.Context, cfg workerConfig) (runErr error) {
+	ctx, attempt := observability.StartWorkerSpan(ctx, "pipeline.worker")
+	var lifecycle *localLeaseLifecycle
+	defer func() {
+		if lifecycle != nil && lifecycle.published {
+			observability.SetPipelinePublicationOutcome(attempt, "committed")
+		}
+		observability.FinishPipelineSpan(attempt, workerTraceOutcome(runErr))
+	}()
 	cfg = configFromEnvironment(cfg)
 	vault, err := resolveVaultPath(cfg)
 	if err != nil {
@@ -689,11 +765,13 @@ func runPostprocessCommand(ctx context.Context, cfg workerConfig) (runErr error)
 	if err != nil {
 		return err
 	}
+	_, leaseSpan := observability.StartWorkerSpan(ctx, "pipeline.worker.lease")
 	lease, err := localWorkspaceBatchHooks.acquireVaultLease(vault, cfg.ExecutionID)
+	observability.FinishPipelineSpan(leaseSpan, workerTraceOutcome(err))
 	if err != nil {
 		return err
 	}
-	lifecycle := &localLeaseLifecycle{vault: vault, cfg: cfg}
+	lifecycle = &localLeaseLifecycle{vault: vault, cfg: cfg}
 	defer func() {
 		lifecycle.finish(&runErr, lease, localWorkspaceBatchHooks.removeWorkspace, localWorkspaceBatchHooks.releaseVaultLease)
 	}()
@@ -705,9 +783,12 @@ func runPostprocessCommand(ctx context.Context, cfg workerConfig) (runErr error)
 	if err != nil {
 		return lifecycle.fail(err, failureStageInputMaterialization, failureClassIO)
 	}
-	if err := localWorkspaceBatchHooks.runPostprocessWithProvider(ctx, workspace, suggestedQueryProvider(cfg), nil); err != nil {
+	postCtx, postSpan := observability.StartWorkerSpan(ctx, "pipeline.worker.postprocess")
+	if err := localWorkspaceBatchHooks.runPostprocessWithProvider(postCtx, workspace, suggestedQueryProvider(cfg), nil); err != nil {
+		observability.FinishPipelineSpan(postSpan, workerTraceOutcome(err))
 		return lifecycle.fail(err, failureStagePostprocess, failureClassIO)
 	}
+	observability.FinishPipelineSpan(postSpan, "success")
 	if err := localWorkspaceBatchHooks.syncWorkspaceOutputs(workspace, vault, cfg.ExecutionID); err != nil {
 		lifecycle.published = publishJournalCommitted(vault)
 		failureClass := failureClassIO
@@ -725,6 +806,14 @@ func runPostprocessCommand(ctx context.Context, cfg workerConfig) (runErr error)
 // and CAS-publishes a complete carry-forward generation. Local mode uses the
 // vault workspace path. It never runs Synto, index rebuild, or reconcile.
 func runSuggestedQueriesCommand(ctx context.Context, cfg workerConfig) (runErr error) {
+	ctx, attempt := observability.StartWorkerSpan(ctx, "pipeline.worker")
+	var lifecycle *localLeaseLifecycle
+	defer func() {
+		if lifecycle != nil && lifecycle.published {
+			observability.SetPipelinePublicationOutcome(attempt, "committed")
+		}
+		observability.FinishPipelineSpan(attempt, workerTraceOutcome(runErr))
+	}()
 	cfg = configFromEnvironment(cfg)
 	if cfg.Bucket != "" {
 		cfg.cloudMode = true
@@ -734,7 +823,11 @@ func runSuggestedQueriesCommand(ctx context.Context, cfg workerConfig) (runErr e
 		if err := validateWorkerConfigBounds(cfg); err != nil {
 			return annotateError(errWorkerInputInvalid, err)
 		}
-		return runCloudSuggestedQueries(ctx, cfg, newCloudObjectStore(cfg.Bucket))
+		workspaceCtx, workspaceSpan := observability.StartWorkerSpan(ctx, "pipeline.worker.workspace")
+		err := runCloudSuggestedQueries(workspaceCtx, cfg, newCloudObjectStore(cfg.Bucket))
+		observability.SetPipelinePublicationOutcome(workspaceSpan, cloudSuggestedQueriesPublicationOutcome(err))
+		observability.FinishPipelineSpan(workspaceSpan, workerTraceOutcome(err))
+		return err
 	}
 	vault, err := resolveVaultPath(cfg)
 	if err != nil {
@@ -744,11 +837,13 @@ func runSuggestedQueriesCommand(ctx context.Context, cfg workerConfig) (runErr e
 	if err != nil {
 		return err
 	}
+	_, leaseSpan := observability.StartWorkerSpan(ctx, "pipeline.worker.lease")
 	lease, err := localWorkspaceBatchHooks.acquireVaultLease(vault, cfg.ExecutionID)
+	observability.FinishPipelineSpan(leaseSpan, workerTraceOutcome(err))
 	if err != nil {
 		return err
 	}
-	lifecycle := &localLeaseLifecycle{vault: vault, cfg: cfg}
+	lifecycle = &localLeaseLifecycle{vault: vault, cfg: cfg}
 	defer func() {
 		lifecycle.finish(&runErr, lease, localWorkspaceBatchHooks.removeWorkspace, localWorkspaceBatchHooks.releaseVaultLease)
 	}()
@@ -760,9 +855,12 @@ func runSuggestedQueriesCommand(ctx context.Context, cfg workerConfig) (runErr e
 	if err != nil {
 		return lifecycle.fail(err, failureStageInputMaterialization, failureClassIO)
 	}
-	if err := localWorkspaceBatchHooks.runSuggestedQueriesStage(ctx, workspace, suggestedQueryProvider(cfg)); err != nil {
+	queryCtx, querySpan := observability.StartWorkerSpan(ctx, "pipeline.worker.suggested_queries")
+	if err := localWorkspaceBatchHooks.runSuggestedQueriesStage(queryCtx, workspace, suggestedQueryProvider(cfg)); err != nil {
+		observability.FinishPipelineSpan(querySpan, workerTraceOutcome(err))
 		return lifecycle.fail(err, failureStagePostprocess, failureClassIO)
 	}
+	observability.FinishPipelineSpan(querySpan, "success")
 	if err := localWorkspaceBatchHooks.syncWorkspaceOutputs(workspace, vault, cfg.ExecutionID); err != nil {
 		lifecycle.published = publishJournalCommitted(vault)
 		failureClass := failureClassIO
@@ -882,11 +980,14 @@ func runOLWBatch(ctx context.Context, vault string, commands [][]string, stopOnE
 		stderr = os.Stderr
 	}
 	var batchErr error
+	attemptedChildCount := 0
 	for i, command := range commands {
 		log.Printf("[%d/%d] synto command", i+1, len(commands))
 		if err := validateSyntoPipelineSafety(filepath.Join(vault, "synto.toml")); err != nil {
 			return newWorkerFailure(ctx, failureStageSyntoConfigValidation, failureClassValidation, "", err)
 		}
+		attemptedChildCount++
+		observability.SetWorkerCommandCount(ctx, attemptedChildCount)
 		if err := execOLW(ctx, vault, command, env, stdout, stderr); err != nil {
 			wrapped := fmt.Errorf("synto command failed: %w", newWorkerFailure(ctx, failureStageSyntoRun, failureClassChildExit, failureChildRun, err))
 			if stopOnError {
@@ -1355,7 +1456,15 @@ func writeSuggestedQueries(ctx context.Context, vault string, provider suggested
 }
 
 // Observation does not alter the worker's last-known-good fallback semantics.
-func writeSuggestedQueriesObserved(ctx context.Context, vault string, provider suggestedqueries.Provider, observe func(string)) error {
+func writeSuggestedQueriesObserved(ctx context.Context, vault string, provider suggestedqueries.Provider, observe func(string)) (resultErr error) {
+	ctx, logicalSpan := observability.StartWorkerSpan(ctx, "pipeline.worker.suggested_queries")
+	logicalOutcome := "success"
+	defer func() {
+		if resultErr != nil && logicalOutcome != "degraded" {
+			logicalOutcome = workerTraceOutcome(resultErr)
+		}
+		observability.FinishPipelineSpan(logicalSpan, logicalOutcome)
+	}()
 	report := func(category string) {
 		if observe != nil {
 			observe(category)
@@ -1364,7 +1473,11 @@ func writeSuggestedQueriesObserved(ctx context.Context, vault string, provider s
 
 	if provider == nil {
 		report("provider_not_configured")
-		return ensureEmptySuggestedQueries(ctx, vault)
+		logicalOutcome = "skipped"
+		fallbackCtx, fallbackSpan := observability.StartWorkerSpan(ctx, "pipeline.worker.suggested_queries.fallback")
+		err := ensureEmptySuggestedQueries(fallbackCtx, vault)
+		observability.FinishPipelineSpan(fallbackSpan, workerTraceOutcome(err))
+		return err
 	}
 	store := fsstore.New(vault)
 	data, err := readBoundedRegularFileWithin(vault, wikiindex.ConceptsJSONLPath)
@@ -1393,10 +1506,17 @@ func writeSuggestedQueriesObserved(ctx context.Context, vault string, provider s
 		PromptVersion: suggestedqueries.PromptVersion,
 	}, time.Now())
 	if err != nil {
+		logicalOutcome = "degraded"
 		category := suggestedFailureCategory(err)
 		report(category)
 		log.Printf("postprocess suggested queries: generation failed; preserving last-known-good artifact: %s", category)
-		return ensureEmptySuggestedQueries(ctx, vault)
+		fallbackCtx, fallbackSpan := observability.StartWorkerSpan(ctx, "pipeline.worker.suggested_queries.fallback")
+		fallbackErr := ensureEmptySuggestedQueries(fallbackCtx, vault)
+		observability.FinishPipelineSpan(fallbackSpan, workerTraceOutcome(fallbackErr))
+		if fallbackErr != nil {
+			logicalOutcome = workerTraceOutcome(fallbackErr)
+		}
+		return fallbackErr
 	}
 
 	payload, err := json.MarshalIndent(artifact, "", "  ")
@@ -1404,6 +1524,7 @@ func writeSuggestedQueriesObserved(ctx context.Context, vault string, provider s
 		return err
 	}
 	if _, err := store.WriteBytesAtomic(ctx, payload, "cache/suggested_queries.json.tmp", suggestedqueries.Path); err != nil {
+		logicalOutcome = "failure"
 		return fmt.Errorf("write suggested queries: %w", err)
 	}
 	return nil

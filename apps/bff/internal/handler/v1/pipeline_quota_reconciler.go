@@ -7,27 +7,47 @@ import (
 	"time"
 
 	"github.com/rayer/llm-wiki-bff/internal/firestore"
+	"github.com/rayer/llm-wiki-bff/internal/observability"
 )
 
 // ReconcilePipelineQuota settles accepted Cloud Run executions independently
 // of user status requests. Local executions settle in the native manager.
-func (h *Handler) ReconcilePipelineQuota(ctx context.Context) error {
+func (h *Handler) ReconcilePipelineQuota(ctx context.Context) (resultErr error) {
+	ctx, root := observability.StartPipelineSpan(ctx, "pipeline.quota.reconcile")
+	ctx, detailBudget := observability.WithPipelineDetailBudget(ctx, 16)
+	processedCount := 0
+	defer func() {
+		observability.SetPipelineCount(root, "pipeline.processed_count", processedCount)
+		observability.SetPipelineCount(root, "pipeline.suppressed_count", detailBudget.Suppressed())
+		observability.FinishPipelineSpan(root, pipelineTraceOutcome(resultErr))
+	}()
 	quotaStore := h.effectiveQuotaStore()
 	if quotaStore == nil || h.localPipeline != nil {
 		return nil
 	}
-	reservations, err := quotaStore.ListPendingQuotaReservations(ctx)
+	listCtx, listSpan := observability.StartPipelineSpan(ctx, "pipeline.quota.list")
+	reservations, err := quotaStore.ListPendingQuotaReservations(listCtx)
+	observability.FinishPipelineSpan(listSpan, pipelineTraceOutcome(err))
 	if err != nil || len(reservations) == 0 {
 		return err
 	}
 	pendingWithoutExecution := make(map[string]firestore.QuotaReservation)
 	needsExecutionLookup := false
 	for _, reservation := range reservations {
+		processedCount++
 		if reservation.ExecutionID != "" {
 			needsExecutionLookup = true
 			continue
 		}
-		confirmedFailure, err := h.hasConfirmedPipelineInvokeFailure(ctx, reservation.UserID, reservation.ProjectID, reservation.ID)
+		lookupCtx, lookupSpan := observability.StartPipelineSpan(ctx, "pipeline.quota.lookup")
+		confirmedFailure, err := h.hasConfirmedPipelineInvokeFailure(lookupCtx, reservation.UserID, reservation.ProjectID, reservation.ID)
+		lookupOutcome := "pending"
+		if err != nil {
+			lookupOutcome = pipelineTraceOutcome(err)
+		} else if confirmedFailure {
+			lookupOutcome = "success"
+		}
+		observability.FinishPipelineSpan(lookupSpan, lookupOutcome)
 		if err != nil {
 			return err
 		}
@@ -50,17 +70,30 @@ func (h *Handler) ReconcilePipelineQuota(ctx context.Context) error {
 		if reservation.ExecutionID == "" {
 			continue
 		}
-		execution, err := h.fetchCloudRunExecution(ctx, token, reservation.ExecutionID)
-		if err != nil {
-			if err == errPipelineExecutionNotFound {
-				continue
+		if err := func() error {
+			lookupCtx, lookupSpan := observability.StartPipelineSpan(ctx, "pipeline.quota.lookup")
+			lookupOutcome := "pending"
+			defer func() { observability.FinishPipelineSpan(lookupSpan, lookupOutcome) }()
+			execution, err := h.fetchCloudRunExecution(lookupCtx, token, reservation.ExecutionID)
+			if err != nil {
+				if err == errPipelineExecutionNotFound {
+					lookupOutcome = "unknown"
+					return nil
+				}
+				lookupOutcome = pipelineTraceOutcome(err)
+				return err
 			}
-			return err
-		}
-		if cloudRunExecutionReservationID(execution, reservation.UserID, reservation.ProjectID) != reservation.ID {
-			continue
-		}
-		if err := h.settleCloudRunQuotaReservation(ctx, quotaStore, reservation, execution); err != nil {
+			if cloudRunExecutionReservationID(execution, reservation.UserID, reservation.ProjectID) != reservation.ID {
+				lookupOutcome = "not_applicable"
+				return nil
+			}
+			outcome, err := h.settleCloudRunQuotaReservation(lookupCtx, quotaStore, reservation, execution)
+			lookupOutcome = outcome
+			if err != nil {
+				return err
+			}
+			return nil
+		}(); err != nil {
 			return err
 		}
 	}
@@ -71,7 +104,9 @@ func (h *Handler) ReconcilePipelineQuota(ctx context.Context) error {
 	pendingByID := pendingWithoutExecution
 	pageToken := ""
 	for {
-		page, err := h.listCloudRunExecutions(ctx, token, pageToken)
+		listCtx, pageSpan := observability.StartPipelineSpan(ctx, "pipeline.quota.list")
+		page, err := h.listCloudRunExecutions(listCtx, token, pageToken)
+		observability.FinishPipelineSpan(pageSpan, pipelineTraceOutcome(err))
 		if err != nil {
 			return err
 		}
@@ -80,11 +115,27 @@ func (h *Handler) ReconcilePipelineQuota(ctx context.Context) error {
 				if cloudRunExecutionReservationID(execution, reservation.UserID, reservation.ProjectID) != reservationID {
 					continue
 				}
-				executionID := shortCloudRunExecutionName(execution.Name, true)
-				if executionID != "" {
-					_ = quotaStore.LinkQuotaReservation(ctx, reservationID, executionID)
-				}
-				if err := h.settleCloudRunQuotaReservation(ctx, quotaStore, reservation, execution); err != nil {
+				if err := func() error {
+					lookupCtx, lookupSpan := observability.StartPipelineSpan(ctx, "pipeline.quota.lookup")
+					lookupOutcome := "pending"
+					defer func() { observability.FinishPipelineSpan(lookupSpan, lookupOutcome) }()
+					executionID := shortCloudRunExecutionName(execution.Name, true)
+					if executionID != "" {
+						linkCtx, linkSpan := observability.StartPipelineSpan(lookupCtx, "pipeline.quota.link")
+						linkErr := quotaStore.LinkQuotaReservation(linkCtx, reservationID, executionID)
+						linkOutcome := "success"
+						if linkErr != nil {
+							linkOutcome = "degraded"
+						}
+						observability.FinishPipelineSpan(linkSpan, linkOutcome)
+					}
+					outcome, err := h.settleCloudRunQuotaReservation(lookupCtx, quotaStore, reservation, execution)
+					lookupOutcome = outcome
+					if err != nil {
+						return err
+					}
+					return nil
+				}(); err != nil {
 					return err
 				}
 				delete(pendingByID, reservationID)
@@ -97,22 +148,32 @@ func (h *Handler) ReconcilePipelineQuota(ctx context.Context) error {
 	}
 }
 
-func (h *Handler) settleCloudRunQuotaReservation(ctx context.Context, quotaStore pipelineQuotaStore, reservation firestore.QuotaReservation, execution cloudRunExecution) error {
+func (h *Handler) settleCloudRunQuotaReservation(ctx context.Context, quotaStore pipelineQuotaStore, reservation firestore.QuotaReservation, execution cloudRunExecution) (outcome string, resultErr error) {
+	outcome = "pending"
 	state := cloudRunExecutionStatus(execution)
 	if state == "FAILED" {
-		publication := h.cloudRunPublicationOutcome(ctx, &pipelineExecutionOwner{userID: reservation.UserID, projectID: reservation.ProjectID}, shortCloudRunExecutionName(execution.Name, true))
+		publication := h.cloudRunQuotaPublicationOutcome(ctx, &pipelineExecutionOwner{userID: reservation.UserID, projectID: reservation.ProjectID}, shortCloudRunExecutionName(execution.Name, true))
 		switch publication {
 		case pipelinePublicationCommitted:
 			state = "SUCCEEDED"
 		case pipelinePublicationUnknown:
-			return nil
+			return "unknown", nil
 		}
 	}
 	if state != "SUCCEEDED" && state != "FAILED" && state != "CANCELLED" {
-		return nil
+		return "pending", nil
 	}
-	_, err := quotaStore.SettleQuotaReservation(ctx, reservation.ID, state)
-	return err
+	settlement, err := quotaStore.SettleQuotaReservation(ctx, reservation.ID, state)
+	if err != nil {
+		return pipelineTraceOutcome(err), err
+	}
+	if settlement == "not_applicable" {
+		return "not_applicable", nil
+	}
+	if settlement == "pending" {
+		return "pending", nil
+	}
+	return "success", nil
 }
 
 func cloudRunExecutionReservationID(execution cloudRunExecution, userID, projectID string) string {

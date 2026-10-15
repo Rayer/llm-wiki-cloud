@@ -4,6 +4,7 @@ import (
 	"bufio"
 	"context"
 	"encoding/json"
+	"errors"
 	"io"
 	"net/http"
 	"strings"
@@ -14,6 +15,7 @@ import (
 	cloudstorage "cloud.google.com/go/storage"
 	"go.opentelemetry.io/otel"
 	"go.opentelemetry.io/otel/attribute"
+	"go.opentelemetry.io/otel/codes"
 	sdktrace "go.opentelemetry.io/otel/sdk/trace"
 	"go.opentelemetry.io/otel/sdk/trace/tracetest"
 	"go.opentelemetry.io/otel/trace"
@@ -71,6 +73,129 @@ func TestStdoutTraceExporterWritesCorrelatedStructuredSpans(t *testing.T) {
 	childParent, _ := childSpan["Parent"].(map[string]any)
 	if rootContext["TraceID"] == "" || rootContext["TraceID"] != childContext["TraceID"] || rootContext["SpanID"] != childParent["SpanID"] {
 		t.Fatalf("exported span relationship lost: root=%v child=%v", rootSpan, childSpan)
+	}
+}
+
+func TestPipelineScopesExportSafeSpansAndBlockUnrelatedSDKPayloads(t *testing.T) {
+	const canary = "PRIVATE_PIPELINE_SDK_CANARY"
+	var output strings.Builder
+	provider, err := newTraceProvider(&output, "lwc-pipeline-test", "revision-test")
+	if err != nil {
+		t.Fatal(err)
+	}
+	recorder := tracetest.NewSpanRecorder()
+	provider.RegisterSpanProcessor(recorder)
+	previous := otel.GetTracerProvider()
+	otel.SetTracerProvider(provider)
+	t.Cleanup(func() {
+		otel.SetTracerProvider(previous)
+		ShutdownTraces(provider)
+	})
+
+	ctx, submit := StartPipelineSpan(context.Background(), "pipeline.submit")
+	_, invoke := StartPipelineSpan(ctx, "pipeline.job.invoke")
+	FinishPipelineSpan(invoke, "accepted")
+	FinishPipelineSpan(submit, "accepted")
+	_, worker := StartWorkerSpan(context.Background(), "pipeline.worker")
+	FinishPipelineSpan(worker, "success")
+	_, query := provider.Tracer(queryInstrumentationScope).Start(context.Background(), "query.request")
+	query.End()
+
+	_, sdk := provider.Tracer("google.golang.org/storage").Start(context.Background(), "storage.request",
+		trace.WithAttributes(attribute.String("object", canary)),
+	)
+	sdk.AddEvent("raw response", trace.WithAttributes(attribute.String("body", canary)))
+	sdk.SetStatus(codes.Error, canary)
+	sdk.End()
+	if err := provider.ForceFlush(context.Background()); err != nil {
+		t.Fatal(err)
+	}
+
+	for _, want := range []string{"pipeline.submit", "pipeline.job.invoke", "pipeline.worker", "query.request"} {
+		if !strings.Contains(output.String(), `"Name":"`+want+`"`) {
+			t.Fatalf("stdout exporter omitted allowlisted span %q: %s", want, output.String())
+		}
+	}
+	if strings.Contains(output.String(), canary) || strings.Contains(output.String(), "storage.request") {
+		t.Fatalf("unrelated SDK span payload reached stdout: %s", output.String())
+	}
+	sawSDKCanary := false
+	for _, span := range recorder.Ended() {
+		if span.InstrumentationScope().Name == "google.golang.org/storage" &&
+			(strings.Contains(span.Status().Description, canary) || len(span.Attributes()) > 0 || len(span.Events()) > 0) {
+			sawSDKCanary = true
+		}
+	}
+	if !sawSDKCanary {
+		t.Fatalf("fixture did not capture the unrelated SDK canary: %+v", recorder.Ended())
+	}
+}
+
+func TestPipelineDetailBudgetSuppressesOnlyObservationDetails(t *testing.T) {
+	exporter := tracetest.NewInMemoryExporter()
+	provider := sdktrace.NewTracerProvider(sdktrace.WithSpanProcessor(sdktrace.NewSimpleSpanProcessor(exporter)))
+	previous := otel.GetTracerProvider()
+	otel.SetTracerProvider(provider)
+	t.Cleanup(func() {
+		otel.SetTracerProvider(previous)
+		_ = provider.Shutdown(context.Background())
+	})
+	ctx, root := StartPipelineSpan(context.Background(), "pipeline.quota.reconcile")
+	ctx, budget := WithPipelineDetailBudget(ctx, 16)
+	for index := 0; index < 21; index++ {
+		name := "pipeline.quota.lookup"
+		if index%3 == 1 {
+			name = "pipeline.recovery.result"
+		} else if index%3 == 2 {
+			name = "pipeline.recovery.transaction"
+		}
+		_, detail := StartPipelineSpan(ctx, name)
+		FinishPipelineSpan(detail, "success")
+	}
+	SetPipelineCount(root, "pipeline.processed_count", 21)
+	SetPipelineCount(root, "pipeline.suppressed_count", budget.Suppressed())
+	FinishPipelineSpan(root, "success")
+	spans := exporter.GetSpans()
+	if len(spans) != 17 || budget.Suppressed() != 5 {
+		t.Fatalf("exported spans=%d suppressed=%d, want root + 16 details and 5 suppressed", len(spans), budget.Suppressed())
+	}
+	for _, span := range spans {
+		if span.Name != "pipeline.quota.reconcile" {
+			continue
+		}
+		attrs := map[string]int{}
+		for _, attr := range span.Attributes {
+			if attr.Value.Type() == attribute.INT64 {
+				attrs[string(attr.Key)] = int(attr.Value.AsInt64())
+			}
+		}
+		if attrs["pipeline.processed_count"] != 21 || attrs["pipeline.suppressed_count"] != 5 {
+			t.Fatalf("reconcile count attributes = %#v", attrs)
+		}
+	}
+}
+
+func TestPipelineSettlementOutcomeUsesFiniteTransactionTruth(t *testing.T) {
+	tests := []struct {
+		settlement string
+		applied    bool
+		err        error
+		want       string
+	}{
+		{settlement: "charged", applied: true, want: "committed"},
+		{settlement: "refunded", applied: true, want: "committed"},
+		{settlement: "charged", want: "retained"},
+		{settlement: "refunded", want: "retained"},
+		{settlement: "pending", want: "pending"},
+		{settlement: "not_applicable", want: "not_applicable"},
+		{settlement: "no_op", want: "no_op"},
+		{settlement: "unrecognized-private-value", want: "unknown"},
+		{settlement: "charged", applied: true, err: errors.New("private transaction detail"), want: "failure"},
+	}
+	for _, tt := range tests {
+		if got := PipelineSettlementOutcome(tt.settlement, tt.applied, tt.err); got != tt.want {
+			t.Errorf("PipelineSettlementOutcome(%q, %t, %v) = %q, want %q", tt.settlement, tt.applied, tt.err, got, tt.want)
+		}
 	}
 }
 

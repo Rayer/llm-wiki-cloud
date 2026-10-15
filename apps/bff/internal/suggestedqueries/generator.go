@@ -14,6 +14,7 @@ import (
 
 	conceptcache "github.com/rayer/llm-wiki-bff/internal/cache"
 	"github.com/rayer/llm-wiki-bff/internal/generation"
+	"github.com/rayer/llm-wiki-bff/internal/observability"
 )
 
 const (
@@ -102,12 +103,23 @@ func Generate(ctx context.Context, provider Provider, description string, entrie
 	if err != nil {
 		return Artifact{}, fmt.Errorf("marshal generation input: %w", err)
 	}
-	raw, err := provider.Chat(ctx, generationSystemPrompt, string(userData))
+	providerCtx, providerSpan := observability.StartWorkerSpan(ctx, "pipeline.worker.suggested_queries.provider")
+	raw, err := provider.Chat(providerCtx, generationSystemPrompt, string(userData))
+	providerOutcome := "success"
+	if err != nil {
+		providerOutcome = "failure"
+	}
+	observability.FinishPipelineSpan(providerSpan, providerOutcome)
 	if err != nil {
 		return Artifact{}, &GenerationError{"provider_failure", fmt.Errorf("generate suggested queries: %w", err)}
 	}
+	validationCtx, validationSpan := observability.StartWorkerSpan(ctx, "pipeline.worker.suggested_queries.validate")
+	_ = validationCtx
+	validationOutcome := "success"
+	defer func() { observability.FinishPipelineSpan(validationSpan, validationOutcome) }()
 	candidates, err := parseProviderCandidates(raw)
 	if err != nil {
+		validationOutcome = "failure"
 		category := "provider_schema_invalid"
 		if errors.Is(err, ErrCandidateCardinality) {
 			category = "candidate_cardinality_invalid"
@@ -118,6 +130,7 @@ func Generate(ctx context.Context, provider Provider, description string, entrie
 		return Artifact{}, &GenerationError{category, err}
 	}
 	if err := validateGeneratedCandidates(candidates, concepts); err != nil {
+		validationOutcome = "failure"
 		var classified *GenerationError
 		if errors.As(err, &classified) {
 			return Artifact{}, err

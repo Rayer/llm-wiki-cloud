@@ -23,6 +23,7 @@ import (
 	fm "github.com/adrg/frontmatter"
 	"github.com/rayer/llm-wiki-bff/internal/annotation"
 	"github.com/rayer/llm-wiki-bff/internal/generation"
+	"github.com/rayer/llm-wiki-bff/internal/observability"
 	"github.com/rayer/llm-wiki-bff/internal/wikiindex"
 	_ "modernc.org/sqlite"
 )
@@ -1053,7 +1054,10 @@ func exportSyntoIndex(ctx context.Context, vault string, env []string, output ..
 	defer os.RemoveAll(exportDir)
 	command := []string{"pack", "export", "--target", "agents", "--out", exportDir}
 	stdout, stderr := syntoOutputWriters(output...)
-	if err := execOLW(ctx, vault, command, env, stdout, stderr); err != nil {
+	exportCtx, exportSpan := observability.StartWorkerSpan(ctx, "pipeline.worker.export")
+	err = execOLW(exportCtx, vault, command, env, stdout, stderr)
+	observability.FinishPipelineSpan(exportSpan, workerTraceOutcome(err))
+	if err != nil {
 		return nil, fmt.Errorf("Synto offline INDEX export failed: %w", newWorkerFailure(ctx, failureStageSyntoIndexExport, failureClassChildExit, failureChildPackExport, err))
 	}
 	data, err := readBoundedRegularFileWithin(exportDir, "index/INDEX.json")

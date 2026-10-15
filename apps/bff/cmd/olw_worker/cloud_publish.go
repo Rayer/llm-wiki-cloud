@@ -28,6 +28,7 @@ import (
 	"github.com/rayer/llm-wiki-bff/internal/annotation"
 	"github.com/rayer/llm-wiki-bff/internal/generation"
 	"github.com/rayer/llm-wiki-bff/internal/localcloud"
+	"github.com/rayer/llm-wiki-bff/internal/observability"
 	"github.com/rayer/llm-wiki-bff/internal/sourcestatus"
 	"github.com/rayer/llm-wiki-bff/internal/storage"
 	"github.com/rayer/llm-wiki-bff/internal/wikiindex"
@@ -333,6 +334,12 @@ func (l *cloudLease) Release(_ context.Context) error {
 // regenerates cache/suggested_queries.json only, and publishes a complete new
 // generation (all other artifacts carry-forwarded from the materialized workspace).
 func runCloudSuggestedQueries(ctx context.Context, cfg workerConfig, objects objectStore) (result error) {
+	ctx, finalizeSpan := observability.StartWorkerSpan(ctx, "pipeline.worker.finalize")
+	publicationOutcome := "not_committed"
+	defer func() {
+		observability.SetPipelinePublicationOutcome(finalizeSpan, publicationOutcome)
+		observability.FinishPipelineSpan(finalizeSpan, workerTraceOutcome(result))
+	}()
 	cfg.cloudMode = true
 	cfg.SuggestedQueries = true
 	if cfg.Bucket == "" || cfg.UserID == "" || cfg.ProjectID == "" {
@@ -343,14 +350,18 @@ func runCloudSuggestedQueries(ctx context.Context, cfg workerConfig, objects obj
 	}
 	defer objects.Close()
 	prefix := workerProjectObjectPrefix(cfg)
-	lease, err := acquireCloudLease(ctx, objects, prefix, cfg.ExecutionID)
+	leaseCtx, leaseSpan := observability.StartWorkerSpan(ctx, "pipeline.worker.lease")
+	lease, err := acquireCloudLease(leaseCtx, objects, prefix, cfg.ExecutionID)
 	if err != nil {
+		observability.FinishPipelineSpan(leaseSpan, workerTraceOutcome(err))
 		return annotateError(errCloudLeaseUnavailable, err)
 	}
+	leaseOutcome := "success"
 	committed := false
 	workspace := ""
 	defer func() {
 		if cleanupErr := lease.Release(ctx); cleanupErr != nil {
+			leaseOutcome = workerTraceOutcome(cleanupErr)
 			if result == nil {
 				if committed {
 					failure := newWorkerFailure(nil, failureStageLeaseCleanup, failureClassIO, "", cleanupErr)
@@ -364,9 +375,12 @@ func runCloudSuggestedQueries(ctx context.Context, cfg workerConfig, objects obj
 				}
 			}
 		}
+		observability.FinishPipelineSpan(leaseSpan, leaseOutcome)
 	}()
+	materializeCtx, materializeSpan := observability.StartWorkerSpan(ctx, "pipeline.worker.materialize")
 	workspace, err = cloudMkdirTemp("/tmp", "olw-cloud-suggest-")
 	if err != nil {
+		observability.FinishPipelineSpan(materializeSpan, workerTraceOutcome(err))
 		failure := newWorkerFailure(ctx, failureStageInputMaterialization, failureClassIO, "", err)
 		primary := annotateError(errCloudWorkspaceUnavailable, err)
 		if recordErr := writeCloudFailureReceipts(ctx, objects, prefix, "", cfg, nil, failure); recordErr != nil {
@@ -377,8 +391,9 @@ func runCloudSuggestedQueries(ctx context.Context, cfg workerConfig, objects obj
 	defer os.RemoveAll(workspace)
 
 	// Suggest-only always needs the current generation (never CLEAN_REBUILD).
-	snapshots, manifestData, manifestAttrs, err := materializeCloudWorkspace(ctx, objects, prefix, workspace, false)
+	snapshots, manifestData, manifestAttrs, err := materializeCloudWorkspace(materializeCtx, objects, prefix, workspace, false)
 	if err != nil {
+		observability.FinishPipelineSpan(materializeSpan, workerTraceOutcome(err))
 		failure := preserveWorkerFailure(err, failureStageInputMaterialization, failureClassUnknown)
 		primary := annotateError(errCloudMaterialization, failure)
 		if recordErr := writeCloudFailureReceipts(ctx, objects, prefix, workspace, cfg, snapshots, failure); recordErr != nil {
@@ -387,6 +402,7 @@ func runCloudSuggestedQueries(ctx context.Context, cfg workerConfig, objects obj
 		return primary
 	}
 	if manifestAttrs.Generation <= 0 || len(manifestData) == 0 {
+		observability.FinishPipelineSpan(materializeSpan, "failure")
 		failure := newWorkerFailure(ctx, failureStageInputMaterialization, failureClassStateInvalid, "", errors.New("suggested-queries requires a committed generation"))
 		primary := annotateError(errCloudMaterialization, failure)
 		if recordErr := writeCloudFailureReceipts(ctx, objects, prefix, workspace, cfg, snapshots, failure); recordErr != nil {
@@ -394,6 +410,7 @@ func runCloudSuggestedQueries(ctx context.Context, cfg workerConfig, objects obj
 		}
 		return primary
 	}
+	observability.FinishPipelineSpan(materializeSpan, "success")
 
 	if err := runSuggestedQueriesStage(ctx, workspace, suggestedQueryProvider(cfg)); err != nil {
 		failure := preserveWorkerFailure(err, failureStagePostprocess, failureClassUnknown)
@@ -404,9 +421,13 @@ func runCloudSuggestedQueries(ctx context.Context, cfg workerConfig, objects obj
 		return primary
 	}
 
+	_, publishSpan := observability.StartWorkerSpan(ctx, "pipeline.worker.publish")
 	publishedManifest, publishedGeneration, err := publishCloudGenerationFromStart(ctx, objects, prefix, workspace, snapshots, manifestData, manifestAttrs, true, true, localExecutionIDFor(cfg))
 	if err != nil {
 		if errors.Is(err, errManifestCommitOutcomeUnknown) {
+			publicationOutcome = "unknown"
+			observability.SetPipelinePublicationOutcome(publishSpan, "unknown")
+			observability.FinishPipelineSpan(publishSpan, workerTraceOutcome(err))
 			if recordErr := recordCloudAmbiguousManifestFailure(ctx, objects, prefix, workspace, cfg); recordErr != nil {
 				return errors.Join(errManifestCommitOutcomeUnknown, recordErr)
 			}
@@ -416,6 +437,8 @@ func runCloudSuggestedQueries(ctx context.Context, cfg workerConfig, objects obj
 		if errors.Is(err, errObjectGenerationConflict) {
 			failureClass = failureClassPublishConflict
 		}
+		observability.SetPipelinePublicationOutcome(publishSpan, "not_committed")
+		observability.FinishPipelineSpan(publishSpan, workerTraceOutcome(err))
 		failure := preserveWorkerFailure(err, failureStageGenerationPublish, failureClass)
 		primary := annotateError(errCloudPipelinePublish, failure)
 		if recordErr := writeCloudFailureReceipts(ctx, objects, prefix, workspace, cfg, snapshots, failure); recordErr != nil {
@@ -424,20 +447,52 @@ func runCloudSuggestedQueries(ctx context.Context, cfg workerConfig, objects obj
 		return primary
 	}
 	committed = true
+	publicationOutcome = "committed"
+	observability.SetPipelinePublicationOutcome(publishSpan, "committed")
 	if err := writeLocalPublicationReceipt(ctx, objects, prefix, cfg, publishedManifest, publishedGeneration); err != nil {
+		observability.FinishPipelineSpan(publishSpan, workerTraceOutcome(err))
 		return annotateError(errCloudCommittedReceipt, err)
 	}
 	if err := writeCloudReceipts(ctx, objects, prefix, workspace, cfg, snapshots); err != nil {
+		observability.FinishPipelineSpan(publishSpan, workerTraceOutcome(err))
 		failure := preserveWorkerFailure(err, failureStageReceiptRecording, failureClassRecordingFailure)
 		if recordErr := writeCloudFailureLogAndDiagnostic(ctx, objects, prefix, workspace, cfg, failure); recordErr != nil {
 			return errors.Join(annotateError(errCloudCommittedReceipt, failure), cloudFailureRecordingError{failureDiagnostic: true})
 		}
 		return annotateError(errCloudCommittedReceipt, failure)
 	}
+	observability.FinishPipelineSpan(publishSpan, "success")
 	return nil
 }
 
+func cloudSuggestedQueriesPublicationOutcome(err error) string {
+	switch {
+	case err == nil, errors.Is(err, errCloudCommittedReceipt), errors.Is(err, errCloudCommittedCleanup):
+		return "committed"
+	case errors.Is(err, errManifestCommitOutcomeUnknown):
+		return "unknown"
+	default:
+		return "not_committed"
+	}
+}
+
 func runCloudWorkerBatch(ctx context.Context, cfg workerConfig, commands [][]string, objects objectStore) (result error) {
+	ctx, finalizeSpan := observability.StartWorkerSpan(ctx, "pipeline.worker.finalize")
+	workspace := ""
+	committed := false
+	workspaceCleanupFailed := false
+	defer func() {
+		if committed {
+			observability.SetPipelinePublicationOutcome(finalizeSpan, "committed")
+		} else {
+			observability.SetPipelinePublicationOutcome(finalizeSpan, "unknown")
+		}
+		outcome := workerTraceOutcome(result)
+		if result == nil && workspaceCleanupFailed {
+			outcome = "degraded"
+		}
+		observability.FinishPipelineSpan(finalizeSpan, outcome)
+	}()
 	cfg.cloudMode = true
 	if err := validateWorkerInput(cfg, commands); err != nil {
 		return annotateError(errCloudWorkerInputInvalid, err)
@@ -447,7 +502,9 @@ func runCloudWorkerBatch(ctx context.Context, cfg workerConfig, commands [][]str
 	}
 	defer objects.Close()
 	prefix := workerProjectObjectPrefix(cfg)
-	deployedConfig, localAPIKey, runTimeoutSeconds, err := readCloudPipelineInputs(ctx, cfg, objects)
+	validateCtx, validateSpan := observability.StartWorkerSpan(ctx, "pipeline.worker.validate")
+	deployedConfig, localAPIKey, runTimeoutSeconds, err := readCloudPipelineInputs(validateCtx, cfg, objects)
+	observability.FinishPipelineSpan(validateSpan, workerTraceOutcome(err))
 	if err != nil {
 		failure := newWorkerFailure(ctx, failureStageSyntoConfigValidation, failureClassIO, "", err)
 		primary := annotateError(errCloudWorkerConfigInvalid, failure)
@@ -465,12 +522,12 @@ func runCloudWorkerBatch(ctx context.Context, cfg workerConfig, commands [][]str
 	runCtx, cancelRun := context.WithTimeout(ctx, time.Duration(runTimeoutSeconds)*time.Second)
 	defer cancelRun()
 	ctx = runCtx
-	lease, err := acquireCloudLease(ctx, objects, prefix, cfg.ExecutionID)
+	leaseCtx, leaseSpan := observability.StartWorkerSpan(ctx, "pipeline.worker.lease")
+	lease, err := acquireCloudLease(leaseCtx, objects, prefix, cfg.ExecutionID)
+	observability.FinishPipelineSpan(leaseSpan, workerTraceOutcome(err))
 	if err != nil {
 		return annotateError(errCloudLeaseUnavailable, err)
 	}
-	committed := false
-	workspace := ""
 	defer func() {
 		releaseCtx, cancelRelease := context.WithTimeout(context.WithoutCancel(ctx), cloudFailureRecordingTimeout)
 		defer cancelRelease()
@@ -489,7 +546,9 @@ func runCloudWorkerBatch(ctx context.Context, cfg workerConfig, commands [][]str
 			}
 		}
 	}()
-	cfg.pinnedProfileGuidance, err = resolveProfileGuidanceAtCompileStart(ctx, cfg, objects)
+	guidanceCtx, guidanceSpan := observability.StartWorkerSpan(ctx, "pipeline.worker.validate")
+	cfg.pinnedProfileGuidance, err = resolveProfileGuidanceAtCompileStart(guidanceCtx, cfg, objects)
+	observability.FinishPipelineSpan(guidanceSpan, workerTraceOutcome(err))
 	if err != nil {
 		failure := newWorkerFailure(ctx, failureStageSyntoConfigValidation, failureClassStateInvalid, "", err)
 		primary := annotateError(errCloudMaterialization, failure)
@@ -518,12 +577,18 @@ func runCloudWorkerBatch(ctx context.Context, cfg workerConfig, commands [][]str
 		}
 		return primary
 	}
-	defer os.RemoveAll(workspace)
+	defer func() {
+		if err := os.RemoveAll(workspace); err != nil {
+			workspaceCleanupFailed = true
+		}
+	}()
 	if cfg.CleanRebuild {
 		log.Printf("worker: clean_rebuild=true; skipping prior generation materialization (raw/annotations retained)")
 	}
-	snapshots, manifestData, manifestAttrs, err := materializeCloudWorkspace(ctx, objects, prefix, workspace, cfg.CleanRebuild)
+	materializeCtx, materializeSpan := observability.StartWorkerSpan(ctx, "pipeline.worker.workspace")
+	snapshots, manifestData, manifestAttrs, err := materializeCloudWorkspace(materializeCtx, objects, prefix, workspace, cfg.CleanRebuild)
 	if err != nil {
+		observability.FinishPipelineSpan(materializeSpan, workerTraceOutcome(err))
 		failure := preserveWorkerFailure(err, failureStageInputMaterialization, failureClassUnknown)
 		primary := annotateError(errCloudMaterialization, failure)
 		if recordErr := writeCloudFailureReceipts(ctx, objects, prefix, workspace, cfg, snapshots, failure); recordErr != nil {
@@ -533,6 +598,7 @@ func runCloudWorkerBatch(ctx context.Context, cfg workerConfig, commands [][]str
 	}
 	startRawInputs, err := captureCloudRawInputs(ctx, workspace, snapshots)
 	if err != nil {
+		observability.FinishPipelineSpan(materializeSpan, workerTraceOutcome(err))
 		failure := preserveWorkerFailure(err, failureStageInputMaterialization, failureClassUnknown)
 		primary := annotateError(errCloudMaterialization, failure)
 		if recordErr := writeCloudFailureReceipts(ctx, objects, prefix, workspace, cfg, snapshots, failure); recordErr != nil {
@@ -544,6 +610,7 @@ func runCloudWorkerBatch(ctx context.Context, cfg workerConfig, commands [][]str
 	// workspace id_map before OLW regenerates transient concept identities.
 	priorConcepts, err := snapshotConcepts(workspace, snapshots)
 	if err != nil {
+		observability.FinishPipelineSpan(materializeSpan, workerTraceOutcome(err))
 		failure := preserveWorkerFailure(err, failureStageInputMaterialization, failureClassUnknown)
 		primary := annotateError(errCloudMaterialization, failure)
 		if recordErr := writeCloudFailureReceipts(ctx, objects, prefix, workspace, cfg, snapshots, failure); recordErr != nil {
@@ -552,6 +619,7 @@ func runCloudWorkerBatch(ctx context.Context, cfg workerConfig, commands [][]str
 		return primary
 	}
 	if err := materializeSnapshots(workspace, snapshots); err != nil {
+		observability.FinishPipelineSpan(materializeSpan, workerTraceOutcome(err))
 		failure := preserveWorkerFailure(err, failureStageInputMaterialization, failureClassUnknown)
 		primary := annotateError(errCloudMaterialization, failure)
 		if recordErr := writeCloudFailureReceipts(ctx, objects, prefix, workspace, cfg, snapshots, failure); recordErr != nil {
@@ -559,6 +627,7 @@ func runCloudWorkerBatch(ctx context.Context, cfg workerConfig, commands [][]str
 		}
 		return primary
 	}
+	observability.FinishPipelineSpan(materializeSpan, "success")
 	cfg.VaultPath = workspace
 	cfg.Workspace = false
 	// Keep SuppressOutput as configured by the caller. Cloud mode always writes
@@ -608,8 +677,11 @@ func runCloudWorkerBatch(ctx context.Context, cfg workerConfig, commands [][]str
 		}
 		return primary
 	}
-	publishedManifest, publishedGeneration, err := publishCloudGenerationFromStart(ctx, objects, prefix, workspace, snapshots, manifestData, manifestAttrs, manifestAttrs.Generation > 0, false, localExecutionIDFor(cfg))
+	publishCtx, publishSpan := observability.StartWorkerSpan(ctx, "pipeline.worker.publish")
+	publishedManifest, publishedGeneration, err := publishCloudGenerationFromStart(publishCtx, objects, prefix, workspace, snapshots, manifestData, manifestAttrs, manifestAttrs.Generation > 0, false, localExecutionIDFor(cfg))
 	if err != nil {
+		observability.SetPipelinePublicationOutcome(publishSpan, "unknown")
+		observability.FinishPipelineSpan(publishSpan, workerTraceOutcome(err))
 		if errors.Is(err, errManifestCommitOutcomeUnknown) {
 			if recordErr := recordCloudAmbiguousManifestFailure(ctx, objects, prefix, workspace, cfg); recordErr != nil {
 				return errors.Join(errManifestCommitOutcomeUnknown, recordErr)
@@ -628,6 +700,8 @@ func runCloudWorkerBatch(ctx context.Context, cfg workerConfig, commands [][]str
 		return primary
 	}
 	committed = true
+	observability.SetPipelinePublicationOutcome(publishSpan, "committed")
+	observability.FinishPipelineSpan(publishSpan, "success")
 	if err := writeLocalPublicationReceipt(ctx, objects, prefix, cfg, publishedManifest, publishedGeneration); err != nil {
 		return annotateError(errCloudCommittedReceipt, err)
 	}
@@ -638,9 +712,12 @@ func runCloudWorkerBatch(ctx context.Context, cfg workerConfig, commands [][]str
 		}
 		return annotateError(errCloudCommittedReceipt, failure)
 	}
-	if err := recordProfileCompileReceipt(ctx, cfg, publishedManifest, publishedGeneration); err != nil {
+	receiptCtx, receiptSpan := observability.StartWorkerSpan(ctx, "pipeline.worker.compile_receipt")
+	if err := recordProfileCompileReceipt(receiptCtx, cfg, publishedManifest, publishedGeneration); err != nil {
+		observability.FinishPipelineSpan(receiptSpan, workerTraceOutcome(err))
 		return annotateError(errCloudCommittedReceipt, err)
 	}
+	observability.FinishPipelineSpan(receiptSpan, "success")
 	return nil
 }
 
