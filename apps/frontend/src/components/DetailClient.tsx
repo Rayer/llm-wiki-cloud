@@ -3,36 +3,39 @@
 import { useCallback, useEffect, useState } from 'react';
 import { ChevronLeft, FileText } from 'lucide-react';
 import { MarkdownView } from './MarkdownView';
-import { ErrorState, LoadingState } from './States';
+import { ErrorState, LoadingState, useDiagnosticIdCopy } from './States';
 import { Badge } from './ui/Badge';
 import { Surface } from './ui/Surface';
-import { getConcepts, type WikiEntry } from '@/lib/api';
+import { ApiError, getConcepts, type WikiEntry } from '@/lib/api';
 import { useT } from '@/lib/i18n';
 import { primaryRawFileName, rawFileNameFromSource } from '@/lib/raw-file-name';
 import { NavigationLink } from './NavigationBlocker';
 import { SourceAnnotationEditor } from './SourceAnnotationEditor';
 import { nextSourceDetailReloadVersion } from '@/lib/source-detail';
 
-export function DetailClient({
-  slug,
-  label,
-  backHref,
-  load,
-  entryType,
-}: {
+type DetailClientProps = {
   slug: string;
   label: string;
   backHref: string;
   load: (slug: string) => Promise<WikiEntry>;
   entryType?: 'source' | 'concept';
-}) {
+};
+
+export function DetailClient(props: DetailClientProps) {
+  return <DetailClientSession key={`${props.entryType ?? ''}:${props.slug}`} {...props} />;
+}
+
+function DetailClientSession({ slug, label, backHref, load, entryType }: DetailClientProps) {
   const { t } = useT();
   const [entry, setEntry] = useState<WikiEntry | null>(null);
   const [existingConceptSlugs, setExistingConceptSlugs] = useState<Set<string> | undefined>();
-  const [loading, setLoading] = useState(true);
-  const [error, setError] = useState('');
   const [reloadVersion, setReloadVersion] = useState(0);
+  const [loadedVersion, setLoadedVersion] = useState<number | null>(null);
+  const loading = loadedVersion !== reloadVersion;
+  const [error, setError] = useState<{ version: number; message: string; diagnosticId?: string } | null>(null);
   const reloadEntry = useCallback(() => setReloadVersion(nextSourceDetailReloadVersion), []);
+  const currentError = error?.version === reloadVersion ? error : null;
+  const { copyDiagnosticId, diagnosticIdCopied } = useDiagnosticIdCopy(currentError, currentError?.diagnosticId);
 
   useEffect(() => {
     let cancelled = false;
@@ -50,11 +53,17 @@ export function DetailClient({
         setEntry(loadedEntry);
         setExistingConceptSlugs(conceptSlugs);
       })
-      .catch((err: Error) => {
-        if (!cancelled) setError(err.message);
+      .catch((err: unknown) => {
+        if (!cancelled) {
+          setError({
+            version: reloadVersion,
+            message: err instanceof Error ? err.message : String(err),
+            diagnosticId: err instanceof ApiError ? err.diagnosticId : undefined,
+          });
+        }
       })
       .finally(() => {
-        if (!cancelled) setLoading(false);
+        if (!cancelled) setLoadedVersion(reloadVersion);
       });
 
     return () => {
@@ -63,7 +72,19 @@ export function DetailClient({
   }, [entryType, load, reloadVersion, slug]);
 
   if (loading) return <LoadingState label={`Loading ${label}`} />;
-  if (error) return <ErrorState message={error} />;
+  if (currentError) {
+    return (
+      <ErrorState
+        message={currentError.message}
+        diagnosticId={currentError.diagnosticId}
+        diagnosticIdLabel={t('QueryErrors.diagnosticId')}
+        copyDiagnosticIdLabel={t('QueryErrors.copyDiagnosticId')}
+        diagnosticIdCopiedLabel={t('QueryErrors.diagnosticIdCopied')}
+        diagnosticIdCopied={diagnosticIdCopied}
+        onCopyDiagnosticId={copyDiagnosticId}
+      />
+    );
+  }
   if (!entry) return <ErrorState message="Entry not found." />;
 
   // LWC-139: prominent raw link on source pages (source_file / sources[0] / slug fallback)
@@ -116,7 +137,7 @@ export function DetailClient({
       {entry.frontmatter ? <Frontmatter data={entry.frontmatter} /> : null}
       <MarkdownView content={entry.content} existingConceptSlugs={existingConceptSlugs} />
       {entryType === 'source' && entry.annotationAllowed && entry.id ? (
-        <SourceAnnotationEditor sourceId={entry.id} onSaved={reloadEntry} />
+        <SourceAnnotationEditor key={entry.id} sourceId={entry.id} onSaved={reloadEntry} />
       ) : null}
     </div>
   );

@@ -77,9 +77,13 @@ function RawClientSession() {
   const openedQueryFileRef = useRef('');
   const listRequestRef = useRef(0);
   const previewRequestRef = useRef(0);
+  const downloadRequestRef = useRef(0);
+  const [downloadError, setDownloadError] = useState<RawPreviewError | null>(null);
   const { copyDiagnosticId, diagnosticIdCopied } = useDiagnosticIdCopy(error, error?.diagnosticId);
   const { copyDiagnosticId: copyPreviewDiagnosticId, diagnosticIdCopied: previewDiagnosticIdCopied } =
     useDiagnosticIdCopy(previewError, previewError?.diagnosticId);
+  const { copyDiagnosticId: copyDownloadDiagnosticId, diagnosticIdCopied: downloadDiagnosticIdCopied } =
+    useDiagnosticIdCopy(downloadError, downloadError?.diagnosticId);
 
   useEffect(() => {
     let cancelled = false;
@@ -107,6 +111,7 @@ function RawClientSession() {
       cancelled = true;
       if (listRequestRef.current === request) listRequestRef.current += 1;
       previewRequestRef.current += 1;
+      downloadRequestRef.current += 1;
     };
   }, [currentProject?.id, token]);
 
@@ -119,9 +124,11 @@ function RawClientSession() {
 
   const openRawPreview = useCallback(async (file: RawFile) => {
     const request = ++previewRequestRef.current;
+    downloadRequestRef.current += 1;
     const kind = rawPreviewKind(file.name);
     setPreview({ file, kind, content: '' });
     setPreviewError(null);
+    setDownloadError(null);
 
     if (kind === 'download') {
       setPreviewLoading(false);
@@ -164,8 +171,10 @@ function RawClientSession() {
 
   const closePreview = useCallback(() => {
     previewRequestRef.current += 1;
+    downloadRequestRef.current += 1;
     setPreview(null);
     setPreviewError(null);
+    setDownloadError(null);
     setPreviewLoading(false);
   }, []);
 
@@ -181,12 +190,12 @@ function RawClientSession() {
   async function downloadRawFile() {
     if (!preview) return;
     const selectedPreview = preview;
-    const request = ++previewRequestRef.current;
-    setPreviewError(null);
+    const request = ++downloadRequestRef.current;
+    setDownloadError(null);
 
     try {
       const content = selectedPreview.content || await getRawFilePreview(selectedPreview.file.name);
-      if (previewRequestRef.current !== request) return;
+      if (downloadRequestRef.current !== request) return;
       const url = window.URL.createObjectURL(new Blob([content], { type: 'text/plain;charset=utf-8' }));
       const link = document.createElement('a');
       link.href = url;
@@ -196,8 +205,8 @@ function RawClientSession() {
       link.remove();
       window.URL.revokeObjectURL(url);
     } catch (err) {
-      if (previewRequestRef.current === request) {
-        setPreviewError({
+      if (downloadRequestRef.current === request) {
+        setDownloadError({
           message: err instanceof Error ? err.message : t('Raw.downloadFailed'),
           diagnosticId: err instanceof ApiError ? err.diagnosticId : undefined,
           fileName: selectedPreview.file.name,
@@ -337,6 +346,17 @@ function RawClientSession() {
                   diagnosticIdCopiedLabel={t('QueryErrors.diagnosticIdCopied')}
                   diagnosticIdCopied={previewDiagnosticIdCopied}
                   onCopyDiagnosticId={copyPreviewDiagnosticId}
+                />
+              ) : null}
+              {downloadError ? (
+                <ErrorState
+                  message={downloadError.message}
+                  diagnosticId={downloadError.diagnosticId}
+                  diagnosticIdLabel={t('QueryErrors.diagnosticId')}
+                  copyDiagnosticIdLabel={t('QueryErrors.copyDiagnosticId')}
+                  diagnosticIdCopiedLabel={t('QueryErrors.diagnosticIdCopied')}
+                  diagnosticIdCopied={downloadDiagnosticIdCopied}
+                  onCopyDiagnosticId={copyDownloadDiagnosticId}
                 />
               ) : null}
               {!previewLoading && !previewError && preview.kind === 'markdown' ? (
