@@ -4,6 +4,7 @@ import (
 	"context"
 	"fmt"
 
+	"github.com/rayer/llm-wiki-bff/internal/observability"
 	"github.com/rayer/llm-wiki-bff/internal/search"
 	"github.com/rayer/llm-wiki-bff/internal/wikiindex"
 )
@@ -78,13 +79,17 @@ func LoadCitationIDMap(ctx context.Context, reader any) (wikiindex.IDMap, error)
 	if !ok {
 		return wikiindex.IDMap{}, fmt.Errorf("citation identity: snapshot cannot read ID map")
 	}
-	data, err := files.ReadFile(ctx, wikiindex.IDMapPath)
+	readCtx, finishRead := observability.StartStorageRead(ctx, "id_map")
+	data, err := files.ReadFile(readCtx, wikiindex.IDMapPath)
 	if err != nil {
+		finishRead(err, "failure", "other")
 		return wikiindex.IDMap{}, fmt.Errorf("citation identity: read ID map: %w", err)
 	}
 	ids, err := wikiindex.DecodeIDMap(data)
 	if err != nil {
+		finishRead(err, "failure", "decode")
 		return wikiindex.IDMap{}, fmt.Errorf("citation identity: decode ID map: %w", err)
 	}
+	finishRead(nil, "success", "none")
 	return ids, nil
 }

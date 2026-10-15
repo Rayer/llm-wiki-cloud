@@ -6,12 +6,19 @@ import (
 	"encoding/hex"
 	"encoding/json"
 	"errors"
+	"fmt"
 	"strings"
 	"sync/atomic"
 	"testing"
 
 	"github.com/rayer/llm-wiki-bff/internal/gcs"
+	"github.com/rayer/llm-wiki-bff/internal/observability"
 	"github.com/rayer/llm-wiki-bff/internal/storage"
+	"go.opentelemetry.io/otel"
+	"go.opentelemetry.io/otel/attribute"
+	sdktrace "go.opentelemetry.io/otel/sdk/trace"
+	"go.opentelemetry.io/otel/sdk/trace/tracetest"
+	"go.opentelemetry.io/otel/trace"
 )
 
 type fakeReader struct {
@@ -23,6 +30,7 @@ type fakeReader struct {
 	listCalls    atomic.Int64
 	readCalls    atomic.Int64
 	readErr      error
+	writeErr     error
 	allowEmpty   bool
 }
 
@@ -54,6 +62,9 @@ func (f *fakeReader) GetPage(_ context.Context, slug, category string) (*gcs.Wik
 }
 
 func (f *fakeReader) WriteBytes(_ context.Context, data []byte, _ string) (string, error) {
+	if f.writeErr != nil {
+		return "", f.writeErr
+	}
 	f.jsonl = string(data)
 	return "ok", nil
 }
@@ -101,6 +112,152 @@ func TestQueryReadsJSONLAndReturnsRankedResults(t *testing.T) {
 			t.Fatalf("result.Snippet is empty")
 		}
 	}
+}
+
+func TestAllWithSourceReportsCacheSourceAndKeepsPersistenceFailureDegraded(t *testing.T) {
+	jsonlReader := &tokenReader{
+		fakeReader: fakeReader{jsonl: makeJSONL([]Entry{{Slug: "jsonl", Title: "JSONL"}})},
+		prefix:     "users/u/projects/jsonl", token: "manifest-jsonl",
+	}
+	jsonlCache := New()
+	entries, source, err := jsonlCache.AllWithSource(context.Background(), jsonlReader)
+	if err != nil || source != "jsonl" || len(entries) != 1 {
+		t.Fatalf("JSONL cache load entries=%+v source=%q err=%v", entries, source, err)
+	}
+	_, source, err = jsonlCache.AllWithSource(context.Background(), jsonlReader)
+	if err != nil || source != "memory" {
+		t.Fatalf("in-memory cache source=%q err=%v, want memory", source, err)
+	}
+
+	exporter := tracetest.NewInMemoryExporter()
+	provider := sdktrace.NewTracerProvider(sdktrace.WithSpanProcessor(sdktrace.NewSimpleSpanProcessor(exporter)))
+	previous := otel.GetTracerProvider()
+	otel.SetTracerProvider(provider)
+	t.Cleanup(func() {
+		otel.SetTracerProvider(previous)
+		_ = provider.Shutdown(context.Background())
+	})
+	rootCtx, root := otel.Tracer("llm-wiki-bff/query").Start(context.Background(), "query.request")
+	phaseCtx, phase := otel.Tracer("llm-wiki-bff/query").Start(rootCtx, "query.stage.cache_load")
+	reader := &tokenReader{
+		fakeReader: fakeReader{
+			readErr:  errors.New("missing optional cache"),
+			writeErr: errors.New("optional persistence unavailable"),
+			concepts: []gcs.WikiPage{{Slug: "fallback", Title: "Fallback"}},
+			pages:    map[string]string{"fallback": "fallback page body"},
+		},
+		prefix: "users/u/projects/fallback", token: "manifest-fallback",
+	}
+	result, source, err := New().AllWithSource(phaseCtx, reader)
+	if err != nil || source != "fallback_rebuild" || len(result) != 1 || result[0].Slug != "fallback" {
+		t.Fatalf("fallback result=%+v source=%q err=%v", result, source, err)
+	}
+	phase.End()
+	root.End()
+
+	var rebuild, storageRead tracetest.SpanStub
+	for _, span := range exporter.GetSpans() {
+		switch span.Name {
+		case "query.cache.rebuild":
+			rebuild = span
+		case "query.storage.read":
+			if span.Parent.SpanID() == phase.SpanContext().SpanID() {
+				storageRead = span
+			}
+		}
+	}
+	if !rebuild.SpanContext.SpanID().IsValid() || !storageRead.SpanContext.SpanID().IsValid() {
+		t.Fatalf("fallback omitted rebuild or storage read span: %+v", exporter.GetSpans())
+	}
+	if rebuild.Parent.SpanID() != phase.SpanContext().SpanID() {
+		t.Fatalf("cache rebuild parent=%s, want actual cache phase %s", rebuild.Parent.SpanID(), phase.SpanContext().SpanID())
+	}
+	attrs := make(map[string]any, len(rebuild.Attributes))
+	for _, attr := range rebuild.Attributes {
+		attrs[string(attr.Key)] = attr.Value.AsInterface()
+	}
+	if attrs["query.outcome"] != "success" || attrs["query.cache.persist_outcome"] != "failure" || attrs["query.corpus.count"] != int64(1) {
+		t.Fatalf("optional persistence failure changed rebuild outcome/count: %v", attrs)
+	}
+}
+
+func TestRepeatedCacheRebuildsOwnIndependentConcurrentDetailBudgets(t *testing.T) {
+	exporter := tracetest.NewInMemoryExporter()
+	provider := sdktrace.NewTracerProvider(sdktrace.WithSpanProcessor(sdktrace.NewSimpleSpanProcessor(exporter)))
+	previous := otel.GetTracerProvider()
+	otel.SetTracerProvider(provider)
+	t.Cleanup(func() {
+		otel.SetTracerProvider(previous)
+		_ = provider.Shutdown(context.Background())
+	})
+
+	const pageCount = 20
+	concepts := make([]gcs.WikiPage, pageCount)
+	pages := make(map[string]string, pageCount)
+	for i := range pageCount {
+		slug := fmt.Sprintf("page-%02d", i)
+		concepts[i] = gcs.WikiPage{Slug: slug, Title: slug}
+		pages[slug] = "fixture body"
+	}
+	reader := &tokenReader{
+		fakeReader: fakeReader{
+			readErr:  errors.New("optional cache missing"),
+			writeErr: errors.New("optional cache persistence failure"),
+			concepts: concepts,
+			pages:    pages,
+		},
+		prefix: "users/u/projects/repeated-rebuild", token: "manifest-r1",
+	}
+	cache := New()
+	rootCtx, root := otel.Tracer("llm-wiki-bff/query").Start(context.Background(), "query.request")
+	phaseCtx, phase := otel.Tracer("llm-wiki-bff/query").Start(rootCtx, "query.stage.cache_load")
+	phaseCtx = observability.WithStorageReadBudget(phaseCtx)
+	_, finishPriorRead := observability.StartStorageRead(phaseCtx, "concept_cache")
+	finishPriorRead(nil, "success", "none")
+	for invocation := 0; invocation < 2; invocation++ {
+		entries, source, err := cache.BuildWithSource(phaseCtx, reader)
+		if err != nil || source != "fallback_rebuild" || len(entries) != pageCount {
+			t.Fatalf("rebuild %d entries=%d source=%q err=%v", invocation, len(entries), source, err)
+		}
+	}
+	phase.End()
+	root.End()
+
+	var rebuilds []tracetest.SpanStub
+	var phaseSpan tracetest.SpanStub
+	detailCounts := make(map[trace.SpanID]int)
+	for _, span := range exporter.GetSpans() {
+		switch span.Name {
+		case "query.cache.rebuild":
+			rebuilds = append(rebuilds, span)
+		case "query.stage.cache_load":
+			phaseSpan = span
+		case "query.storage.read":
+			detailCounts[span.Parent.SpanID()]++
+		}
+	}
+	if len(rebuilds) != 2 || reader.getPageCalls.Load() != 2*pageCount || reader.listCalls.Load() != 2 {
+		t.Fatalf("rebuild spans=%d page reads=%d lists=%d; want 2, %d, 2", len(rebuilds), reader.getPageCalls.Load(), reader.listCalls.Load(), 2*pageCount)
+	}
+	if _, hasOuterSuppressed := findIntAttribute(phaseSpan.Attributes, "query.storage.read.suppressed"); hasOuterSuppressed {
+		t.Fatalf("rebuild overflow was attributed to the earlier cache phase: %+v", phaseSpan.Attributes)
+	}
+	for _, rebuild := range rebuilds {
+		suppressed, found := findIntAttribute(rebuild.Attributes, "query.storage.read.suppressed")
+		corpusCount, hasCorpusCount := findIntAttribute(rebuild.Attributes, "query.corpus.count")
+		if rebuild.Parent.SpanID() != phaseSpan.SpanContext.SpanID() || !found || suppressed != 5 || !hasCorpusCount || corpusCount != pageCount || detailCounts[rebuild.SpanContext.SpanID()] != 16 {
+			t.Fatalf("rebuild budget/count/parent mismatch: span=%+v suppressed=%d found=%v corpus=%d present=%v details=%d", rebuild, suppressed, found, corpusCount, hasCorpusCount, detailCounts[rebuild.SpanContext.SpanID()])
+		}
+	}
+}
+
+func findIntAttribute(attrs []attribute.KeyValue, key string) (int, bool) {
+	for _, attr := range attrs {
+		if string(attr.Key) == key {
+			return int(attr.Value.AsInt64()), true
+		}
+	}
+	return 0, false
 }
 
 func TestPinnedGenerationTokenSeparatesProjectCaches(t *testing.T) {

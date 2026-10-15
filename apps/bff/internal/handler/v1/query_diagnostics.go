@@ -12,6 +12,7 @@ import (
 	"github.com/rayer/llm-wiki-bff/internal/buildinfo"
 	"github.com/rayer/llm-wiki-bff/internal/gcs"
 	"github.com/rayer/llm-wiki-bff/internal/llm"
+	"github.com/rayer/llm-wiki-bff/internal/observability"
 	"github.com/rayer/llm-wiki-bff/internal/query"
 	"github.com/rayer/llm-wiki-bff/internal/queryruntime"
 	"github.com/rayer/llm-wiki-bff/internal/storage"
@@ -56,9 +57,10 @@ func queryStageFailure(stage string, err error) error {
 }
 
 func startQueryStage(ctx context.Context, stage string) (context.Context, trace.Span) {
-	return otel.Tracer("llm-wiki-bff/query").Start(ctx, "query."+stage,
+	ctx, span := otel.Tracer("llm-wiki-bff/query").Start(ctx, "query."+stage,
 		trace.WithAttributes(attribute.String("query.stage", stage)),
 	)
+	return observability.WithStorageReadBudget(ctx), span
 }
 
 func finishQueryStage(span trace.Span, err error) {
@@ -174,12 +176,12 @@ func (d *queryDiagnostic) succeed(responseStatus, responseReason string, receipt
 	outcome, reason := "success", "completed"
 	if responseStatus == "insufficient_evidence" && responseReason == "no_qualified_evidence" {
 		outcome, reason = "no_evidence", "no_qualified_evidence"
-	} else {
-		for _, stage := range receipt.Stages {
-			if stage.Outcome == "fallback" {
-				outcome, reason = "degraded", "deterministic_fallback"
-				break
-			}
+	}
+	degraded := false
+	for _, stage := range receipt.Stages {
+		if stage.Outcome == "fallback" || stage.Outcome == "degraded" {
+			degraded = true
+			break
 		}
 	}
 	d.mu.Lock()
@@ -191,7 +193,11 @@ func (d *queryDiagnostic) succeed(responseStatus, responseReason string, receipt
 		attribute.String("query.code", reason),
 		attribute.String("query.outcome", outcome),
 		attribute.String("query.business_outcome", outcome),
+		attribute.Bool("query.dependency_degraded", degraded),
 	)
+	if degraded {
+		d.span.SetAttributes(attribute.String("query.degradation_reason", "fallback_or_degraded_dependency"))
+	}
 }
 
 func (d *queryDiagnostic) finish(requestStatus int, toolIsError bool) {

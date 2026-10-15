@@ -15,12 +15,17 @@ import (
 	"github.com/rayer/llm-wiki-bff/internal/queryquality"
 	"github.com/rayer/llm-wiki-bff/internal/queryruntime"
 	"github.com/rayer/llm-wiki-bff/internal/storage"
+	"go.opentelemetry.io/otel"
+	sdktrace "go.opentelemetry.io/otel/sdk/trace"
+	"go.opentelemetry.io/otel/sdk/trace/tracetest"
+	"go.opentelemetry.io/otel/trace"
 )
 
 type runtimeReader struct {
-	mu       sync.Mutex
-	identity storage.QueryGenerationIdentity
-	reads    int
+	mu            sync.Mutex
+	identity      storage.QueryGenerationIdentity
+	reads         int
+	identityReads int
 }
 
 func (r *runtimeReader) Prefix() string { return "users/test/projects/" + r.identity.ProjectID }
@@ -38,6 +43,9 @@ func (r *runtimeReader) GetPage(context.Context, string, string) (*gcs.WikiPage,
 	return nil, nil, errors.New("unexpected page read")
 }
 func (r *runtimeReader) QueryGenerationIdentity(context.Context) (storage.QueryGenerationIdentity, error) {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	r.identityReads++
 	return r.identity, nil
 }
 
@@ -113,6 +121,61 @@ func TestRuntimePrebuildsAndRoutesExactAndDefault(t *testing.T) {
 	}
 	if result.RuntimeConfigIdentity.GenerationID != "legacy" {
 		t.Fatalf("default generation=%q", result.RuntimeConfigIdentity.GenerationID)
+	}
+}
+
+func TestRuntimeResolveSpanUsesRequestParentAndReadsPinnedIdentityOnce(t *testing.T) {
+	exporter := tracetest.NewInMemoryExporter()
+	provider := sdktrace.NewTracerProvider(sdktrace.WithSpanProcessor(sdktrace.NewSimpleSpanProcessor(exporter)))
+	previous := otel.GetTracerProvider()
+	otel.SetTracerProvider(provider)
+	t.Cleanup(func() {
+		otel.SetTracerProvider(previous)
+		_ = provider.Shutdown(context.Background())
+	})
+
+	runtime, err := queryruntime.NewExecutor(runtimeConfig(t), cache.New(), &countingProvider{}, &countingLegacy{}, runtimeSynthesizer())
+	if err != nil {
+		t.Fatal(err)
+	}
+	reader := &runtimeReader{identity: storage.QueryGenerationIdentity{ProjectID: "project-a", GenerationID: "generation-7", ConceptsDigest: "sha256:" + strings.Repeat("a", 64)}}
+	rootCtx, root := otel.Tracer("llm-wiki-bff/query").Start(context.Background(), "query.request")
+	if _, err := runtime.Execute(rootCtx, reader, query.Request{Query: "deploy docs", Mode: "wiki"}); err != nil {
+		t.Fatal(err)
+	}
+	root.End()
+
+	var resolve, cacheStage tracetest.SpanStub
+	storageParents := make([]trace.SpanID, 0)
+	for _, span := range exporter.GetSpans() {
+		switch span.Name {
+		case "query.runtime.resolve":
+			resolve = span
+		case "query.stage.cache_load":
+			cacheStage = span
+		case "query.storage.read":
+			storageParents = append(storageParents, span.Parent.SpanID())
+		}
+	}
+	if !resolve.SpanContext.SpanID().IsValid() || !cacheStage.SpanContext.SpanID().IsValid() {
+		t.Fatalf("runtime resolve/cache stage spans missing: %+v", exporter.GetSpans())
+	}
+	if resolve.Parent.SpanID() != root.SpanContext().SpanID() || cacheStage.Parent.SpanID() != root.SpanContext().SpanID() {
+		t.Fatalf("runtime resolution leaked into query work parentage: root=%s resolveParent=%s cacheParent=%s", root.SpanContext().SpanID(), resolve.Parent.SpanID(), cacheStage.Parent.SpanID())
+	}
+	storageReadsUnderResolve := 0
+	for _, parentID := range storageParents {
+		if parentID == resolve.SpanContext.SpanID() {
+			storageReadsUnderResolve++
+		}
+	}
+	if reader.identityReads != 1 || storageReadsUnderResolve != 0 {
+		t.Fatalf("pinned identity reads=%d storage children of resolution=%d, want one local identity lookup and no manifest reread", reader.identityReads, storageReadsUnderResolve)
+	}
+	for _, attr := range resolve.Attributes {
+		if string(attr.Key) == "query.outcome" && attr.Value.AsString() != "success" {
+			t.Fatalf("runtime resolution outcome=%q", attr.Value.AsString())
+		}
 	}
 }
 

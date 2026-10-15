@@ -9,7 +9,12 @@ import (
 
 	"github.com/rayer/llm-wiki-bff/internal/cache"
 	"github.com/rayer/llm-wiki-bff/internal/llm"
+	"github.com/rayer/llm-wiki-bff/internal/observability"
 	"github.com/rayer/llm-wiki-bff/internal/search"
+	"go.opentelemetry.io/otel"
+	"go.opentelemetry.io/otel/attribute"
+	"go.opentelemetry.io/otel/codes"
+	"go.opentelemetry.io/otel/trace"
 )
 
 type runtimeConfigIdentityContextKey struct{}
@@ -195,10 +200,11 @@ func (s *Service) Execute(ctx context.Context, reader cache.Reader, request Requ
 		return Result{}, ErrCacheNotConfigured
 	}
 
-	results, err := s.cache.Search(ctx, reader, searchQuery, 10)
+	results, cacheSource, err := s.cache.SearchWithSource(ctx, reader, searchQuery, 10)
 	if err != nil {
 		return Result{}, err
 	}
+	trace.SpanFromContext(ctx).SetAttributes(attribute.String("query.cache_source", cacheSource), attribute.Int("query.corpus.count", s.cache.EntryCount(reader)))
 	log.Printf("Search query completed: terms=%d results=%d", len(strings.Fields(searchQuery)), len(results))
 
 	response := Result{
@@ -236,6 +242,7 @@ func (s *Service) SynthesizeWithError(ctx context.Context, reader cache.Reader, 
 		if recorder := ReceiptRecorderFromContext(ctx); recorder != nil {
 			synthesisCtx = recorder.StartStage(ctx, "answer_synthesis_model_prior", "deepseek", s.llm.Model(), string(s.llm.Reasoning()))
 		}
+		synthesisCtx = llm.WithCallPurpose(synthesisCtx, "model_prior")
 		answer, err := s.llm.Chat(synthesisCtx, buildModelPriorSystemPrompt(), buildModelPriorUserPrompt(request.Query))
 		if err != nil {
 			FinishStage(synthesisCtx, "failure")
@@ -267,16 +274,21 @@ func (s *Service) SynthesizeWithError(ctx context.Context, reader cache.Reader, 
 	if recorder := ReceiptRecorderFromContext(ctx); recorder != nil {
 		synthesisCtx = recorder.StartStage(ctx, "answer_synthesis", "deepseek", s.llm.Model(), string(s.llm.Reasoning()))
 	}
+	synthesisCtx = llm.WithCallPurpose(synthesisCtx, "evidence_answer")
+	contextCtx, contextSpan := otel.Tracer("llm-wiki-bff/query").Start(synthesisCtx, "query.context.acquire")
+	contextCtx = observability.WithStorageReadBudget(contextCtx)
 	var contexts []string
 	if request.Profile != nil {
-		contexts, err = buildProfileContexts(synthesisCtx, response.Results[:min(10, len(response.Results))], authority, request.Profile)
+		contexts, err = buildProfileContexts(contextCtx, response.Results[:min(10, len(response.Results))], authority, request.Profile)
 	} else {
-		contexts, err = s.buildContexts(synthesisCtx, reader, response.Results[:min(10, len(response.Results))], authority)
+		contexts, err = s.buildContexts(contextCtx, reader, response.Results[:min(10, len(response.Results))], authority)
 	}
 	if err != nil {
+		finishContextAcquire(contextSpan, err, 0)
 		FinishStage(synthesisCtx, "failure")
 		return response, err
 	}
+	finishContextAcquire(contextSpan, nil, len(contexts))
 	if len(contexts) == 0 {
 		FinishStage(synthesisCtx, "success")
 		return response, nil
@@ -301,7 +313,17 @@ func (s *Service) SynthesizeWithError(ctx context.Context, reader cache.Reader, 
 		return response, nil
 	}
 
-	answer, _, _ = authority.Resolve(answer)
+	answer, resolvedCitations, authorizedResults := authority.Resolve(answer)
+	citationOutcome := "none"
+	if len(resolvedCitations) > 0 {
+		citationOutcome = "resolved"
+	}
+	// Zero resolved citations reports only the resolver result; it does not infer a rejection reason.
+	trace.SpanFromContext(synthesisCtx).AddEvent("query.citation.validation", trace.WithAttributes(
+		attribute.String("query.citation.outcome", citationOutcome),
+		attribute.Int("query.citation.resolved_count", len(resolvedCitations)),
+		attribute.Int("query.citation.authorized_result_count", len(authorizedResults)),
+	))
 	FinishStage(synthesisCtx, outcome)
 	response.AISynth = answer
 	response.Citations = authority.IssuedCitations()
@@ -327,7 +349,13 @@ func (s *Service) buildContexts(ctx context.Context, reader cache.Reader, result
 			if err != nil {
 				return nil, err
 			}
-			_, body, err := reader.GetPage(ctx, result.Slug, "sources")
+			readCtx, finishRead := observability.StartStorageRead(ctx, "other")
+			_, body, err := reader.GetPage(readCtx, result.Slug, "sources")
+			if err != nil {
+				finishRead(err, "not_required", "none")
+			} else {
+				finishRead(nil, "not_required", "none")
+			}
 			if err != nil {
 				if ctx.Err() != nil {
 					return nil, ctx.Err()
@@ -413,6 +441,22 @@ func buildModelPriorSystemPrompt() string {
 
 func buildModelPriorUserPrompt(query string) string {
 	return "User question: " + search.NeutralizeCitationReferences(query)
+}
+
+func finishContextAcquire(span trace.Span, err error, count int) {
+	if err != nil {
+		outcome := "failure"
+		if errors.Is(err, context.Canceled) {
+			outcome = "canceled"
+		} else if errors.Is(err, context.DeadlineExceeded) {
+			outcome = "timeout"
+		}
+		span.SetAttributes(attribute.String("query.outcome", outcome), attribute.Int("query.context.count", count))
+		span.SetStatus(codes.Error, outcome)
+	} else {
+		span.SetAttributes(attribute.String("query.outcome", "success"), attribute.Int("query.context.count", count))
+	}
+	span.End()
 }
 
 func min(a, b int) int {

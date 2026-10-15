@@ -9,6 +9,7 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"net/http"
 	"strings"
 	"testing"
 
@@ -16,7 +17,13 @@ import (
 	"github.com/rayer/llm-wiki-bff/internal/generation"
 	"github.com/rayer/llm-wiki-bff/internal/llm"
 	"github.com/rayer/llm-wiki-bff/internal/localcloud"
+	"github.com/rayer/llm-wiki-bff/internal/observability"
 	store "github.com/rayer/llm-wiki-bff/internal/storage"
+	"go.opentelemetry.io/otel"
+	"go.opentelemetry.io/otel/attribute"
+	sdktrace "go.opentelemetry.io/otel/sdk/trace"
+	"go.opentelemetry.io/otel/sdk/trace/tracetest"
+	"go.opentelemetry.io/otel/trace"
 	"google.golang.org/api/googleapi"
 	"google.golang.org/api/option"
 	"google.golang.org/grpc/codes"
@@ -130,6 +137,259 @@ func TestMemoryReaderDoesNotFabricateGCSAttempt(t *testing.T) {
 	}
 	if receipt.finished != 0 || receipt.host != "" {
 		t.Fatalf("memory backend receipt = %#v, want no host attempt", receipt)
+	}
+}
+
+type gcsCanaryRoundTripper struct {
+	body       string
+	statusCode int
+	calls      *int
+}
+
+func (rt gcsCanaryRoundTripper) RoundTrip(req *http.Request) (*http.Response, error) {
+	if rt.calls != nil {
+		*rt.calls++
+	}
+	statusCode := rt.statusCode
+	if statusCode == 0 {
+		statusCode = http.StatusForbidden
+	}
+	status := http.StatusText(statusCode)
+	return &http.Response{
+		StatusCode:    statusCode,
+		Status:        fmt.Sprintf("%d %s", statusCode, status),
+		Header:        http.Header{"Content-Type": []string{"application/octet-stream"}, "Content-Length": []string{fmt.Sprint(len(rt.body))}},
+		ContentLength: int64(len(rt.body)),
+		Body:          io.NopCloser(strings.NewReader(rt.body)),
+		Request:       req,
+	}, nil
+}
+
+type contextGCSHostRecorder struct {
+	parentID trace.SpanID
+	span     trace.Span
+	outcome  string
+}
+
+func (r *contextGCSHostRecorder) StartHostCall(string, string, string) func(string) {
+	return func(string) {}
+}
+
+func (r *contextGCSHostRecorder) StartHostCallContext(ctx context.Context, stage, scheme, host string) func(string) {
+	r.parentID = trace.SpanFromContext(ctx).SpanContext().SpanID()
+	_, r.span = otel.Tracer("llm-wiki-bff/query").Start(ctx, "query.host_call",
+		trace.WithAttributes(
+			attribute.String("query.stage", stage),
+			attribute.String("query.provider", "gcs"),
+			attribute.String("query.scheme", scheme),
+			attribute.String("query.host", host),
+		),
+	)
+	return func(outcome string) {
+		r.outcome = outcome
+		r.span.SetAttributes(attribute.String("query.outcome", outcome))
+		r.span.End()
+	}
+}
+
+func TestActualGCSReadHostCallUsesLogicalReadParent(t *testing.T) {
+	const (
+		objectCanary = "PRIVATE_STORAGE_OBJECT_CANARY"
+		bodyCanary   = "PRIVATE_STORAGE_BODY_CANARY"
+	)
+	exporter := tracetest.NewInMemoryExporter()
+	provider := sdktrace.NewTracerProvider(sdktrace.WithSpanProcessor(sdktrace.NewSimpleSpanProcessor(exporter)))
+	previous := otel.GetTracerProvider()
+	otel.SetTracerProvider(provider)
+	t.Cleanup(func() {
+		otel.SetTracerProvider(previous)
+		_ = provider.Shutdown(context.Background())
+	})
+
+	storageClient, err := cloudstorage.NewClient(context.Background(),
+		option.WithoutAuthentication(),
+		option.WithHTTPClient(&http.Client{Transport: gcsCanaryRoundTripper{body: "<Error><Message>" + bodyCanary + "</Message></Error>"}}),
+	)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer storageClient.Close()
+	client := newClientWithStorageClient("memory-only-bucket", localcloud.Scope(""), storageClient)
+
+	rootCtx, root := otel.Tracer("llm-wiki-bff/query").Start(context.Background(), "query.request")
+	readCtx, finishRead := observability.StartStorageRead(rootCtx, "id_map")
+	recorder := &contextGCSHostRecorder{}
+	readCtx = llm.WithHostCallRecorder(readCtx, recorder)
+	_, readErr := client.ReadRaw(readCtx, objectCanary)
+	finishRead(readErr, "failure", "other")
+	root.End()
+	if readErr == nil {
+		t.Fatal("fake storage transport unexpectedly succeeded")
+	}
+	if recorder.outcome != "provider_error" {
+		t.Fatalf("actual storage host outcome=%q, want provider_error; err=%v", recorder.outcome, readErr)
+	}
+	if recorder.parentID != trace.SpanFromContext(readCtx).SpanContext().SpanID() {
+		t.Fatalf("actual storage host parent=%s, want logical storage read %s", recorder.parentID, trace.SpanFromContext(readCtx).SpanContext().SpanID())
+	}
+
+	queryStorage, queryHost := false, false
+	for _, span := range exporter.GetSpans() {
+		if span.Name == "query.storage.read" {
+			queryStorage = true
+		}
+		if span.Name == "query.host_call" {
+			queryHost = true
+			if span.Parent.SpanID() != recorder.parentID {
+				t.Fatalf("host span parent=%s, want logical storage read %s", span.Parent.SpanID(), recorder.parentID)
+			}
+		}
+		if span.InstrumentationScope.Name == "llm-wiki-bff/query" {
+			for _, attr := range span.Attributes {
+				if strings.Contains(attr.Value.Emit(), objectCanary) || strings.Contains(attr.Value.Emit(), bodyCanary) {
+					t.Fatalf("query span leaked private storage value: %+v", span)
+				}
+			}
+			for _, event := range span.Events {
+				for _, attr := range event.Attributes {
+					if strings.Contains(attr.Value.Emit(), objectCanary) || strings.Contains(attr.Value.Emit(), bodyCanary) {
+						t.Fatalf("query span event leaked private storage value: %+v", span)
+					}
+				}
+			}
+		}
+	}
+	if !queryStorage || !queryHost {
+		t.Fatalf("actual SDK read omitted query storage/host spans: %+v", exporter.GetSpans())
+	}
+}
+
+func TestProfileArtifactReadFileLimitedRecordsActualSDKHost(t *testing.T) {
+	paths := []struct{ role, path string }{
+		{"dictionary", ".lwc/profile/derived/dictionary/v1/" + strings.Repeat("a", 64) + ".json"},
+		{"tag_set", ".lwc/profile/tags/sets/v1/" + strings.Repeat("b", 64) + ".json"},
+		{"query_rules", ".lwc/profile/query/rules/v1/" + strings.Repeat("c", 64) + ".json"},
+	}
+	exporter := tracetest.NewInMemoryExporter()
+	provider := sdktrace.NewTracerProvider(sdktrace.WithSpanProcessor(sdktrace.NewSimpleSpanProcessor(exporter)))
+	previous := otel.GetTracerProvider()
+	otel.SetTracerProvider(provider)
+	t.Cleanup(func() {
+		otel.SetTracerProvider(previous)
+		_ = provider.Shutdown(context.Background())
+	})
+	storageClient, err := cloudstorage.NewClient(context.Background(),
+		option.WithoutAuthentication(),
+		option.WithHTTPClient(&http.Client{Transport: gcsCanaryRoundTripper{body: "<Error><Message>denied</Message></Error>"}}),
+	)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer storageClient.Close()
+	client := newClientWithStorageClient("memory-only-bucket", localcloud.Scope(""), storageClient).WithScope("user", "project")
+	rootCtx, root := otel.Tracer("llm-wiki-bff/query").Start(context.Background(), "query.request")
+	for _, item := range paths {
+		readCtx, finishRead := observability.StartStorageRead(rootCtx, item.role)
+		storageID := trace.SpanFromContext(readCtx).SpanContext().SpanID()
+		recorder := &contextGCSHostRecorder{}
+		readCtx = llm.WithHostCallRecorder(readCtx, recorder)
+		_, readErr := client.ReadFileLimited(readCtx, item.path, 1024)
+		finishRead(readErr, "failure", "other")
+		if readErr == nil || recorder.outcome != "provider_error" || recorder.parentID != storageID {
+			t.Fatalf("%s read error=%v host outcome=%q parent=%s want %s", item.role, readErr, recorder.outcome, recorder.parentID, storageID)
+		}
+	}
+	root.End()
+	seenHosts := 0
+	for _, span := range exporter.GetSpans() {
+		if span.Name == "query.host_call" {
+			seenHosts++
+			if span.Parent.SpanID() == root.SpanContext().SpanID() {
+				t.Fatalf("profile artifact host bypassed its logical read: %+v", span)
+			}
+		}
+	}
+	if seenHosts != len(paths) {
+		t.Fatalf("profile artifact host spans=%d, want %d: %+v", seenHosts, len(paths), exporter.GetSpans())
+	}
+}
+
+func TestProfileArtifactReadFileLimitedSuccessRecordsActualSDKHost(t *testing.T) {
+	paths := []struct{ role, path string }{
+		{"dictionary", ".lwc/profile/derived/dictionary/v1/" + strings.Repeat("a", 64) + ".json"},
+		{"tag_set", ".lwc/profile/tags/sets/v1/" + strings.Repeat("b", 64) + ".json"},
+		{"query_rules", ".lwc/profile/query/rules/v1/" + strings.Repeat("c", 64) + ".json"},
+	}
+	exporter := tracetest.NewInMemoryExporter()
+	provider := sdktrace.NewTracerProvider(sdktrace.WithSpanProcessor(sdktrace.NewSimpleSpanProcessor(exporter)))
+	previous := otel.GetTracerProvider()
+	otel.SetTracerProvider(provider)
+	t.Cleanup(func() {
+		otel.SetTracerProvider(previous)
+		_ = provider.Shutdown(context.Background())
+	})
+	const body = `{"fixture":"ok"}`
+	storageClient, err := cloudstorage.NewClient(context.Background(),
+		option.WithoutAuthentication(),
+		option.WithHTTPClient(&http.Client{Transport: gcsCanaryRoundTripper{statusCode: http.StatusOK, body: body}}),
+	)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer storageClient.Close()
+	client := newClientWithStorageClient("memory-only-bucket", localcloud.Scope(""), storageClient).WithScope("user", "project")
+	rootCtx, root := otel.Tracer("llm-wiki-bff/query").Start(context.Background(), "query.request")
+	for _, item := range paths {
+		readCtx, finishRead := observability.StartStorageRead(rootCtx, item.role)
+		storageID := trace.SpanFromContext(readCtx).SpanContext().SpanID()
+		recorder := &contextGCSHostRecorder{}
+		readCtx = llm.WithHostCallRecorder(readCtx, recorder)
+		data, readErr := client.ReadFileLimited(readCtx, item.path, 1024)
+		finishRead(readErr, "success", "none")
+		if readErr != nil || string(data) != body || recorder.outcome != "success" || recorder.parentID != storageID {
+			t.Fatalf("%s read data=%q error=%v host outcome=%q parent=%s want %s", item.role, data, readErr, recorder.outcome, recorder.parentID, storageID)
+		}
+	}
+	root.End()
+	seenHosts := 0
+	for _, span := range exporter.GetSpans() {
+		if span.Name == "query.host_call" {
+			seenHosts++
+		}
+	}
+	if seenHosts != len(paths) {
+		t.Fatalf("successful profile artifact host spans=%d, want %d: %+v", seenHosts, len(paths), exporter.GetSpans())
+	}
+}
+
+func TestPreCanceledProfileArtifactReadDoesNotFabricateHostCall(t *testing.T) {
+	for _, item := range []struct{ role, path string }{
+		{"dictionary", ".lwc/profile/derived/dictionary/v1/" + strings.Repeat("a", 64) + ".json"},
+		{"tag_set", ".lwc/profile/tags/sets/v1/" + strings.Repeat("b", 64) + ".json"},
+		{"query_rules", ".lwc/profile/query/rules/v1/" + strings.Repeat("c", 64) + ".json"},
+	} {
+		t.Run(item.role, func(t *testing.T) {
+			transportCalls := 0
+			storageClient, err := cloudstorage.NewClient(context.Background(),
+				option.WithoutAuthentication(),
+				option.WithHTTPClient(&http.Client{Transport: gcsCanaryRoundTripper{body: "denied", calls: &transportCalls}}),
+			)
+			if err != nil {
+				t.Fatal(err)
+			}
+			defer storageClient.Close()
+			client := newClientWithStorageClient("memory-only-bucket", localcloud.Scope(""), storageClient).WithScope("user", "project")
+			recorder := &contextGCSHostRecorder{}
+			ctx, cancel := context.WithCancel(llm.WithHostCallRecorder(context.Background(), recorder))
+			cancel()
+			_, readErr := client.ReadFileLimited(ctx, item.path, 1024)
+			if !errors.Is(readErr, context.Canceled) {
+				t.Fatalf("pre-canceled read error=%v, want context.Canceled", readErr)
+			}
+			if transportCalls != 0 || recorder.outcome != "" {
+				t.Fatalf("pre-canceled read fabricated transport/host: transport calls=%d host outcome=%q", transportCalls, recorder.outcome)
+			}
+		})
 	}
 }
 

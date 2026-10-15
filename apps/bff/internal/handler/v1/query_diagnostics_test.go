@@ -6,9 +6,11 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"io"
 	"log/slog"
 	"net/http"
 	"net/http/httptest"
+	"reflect"
 	"strings"
 	"testing"
 
@@ -16,11 +18,13 @@ import (
 	"github.com/google/uuid"
 	"github.com/modelcontextprotocol/go-sdk/mcp"
 	"github.com/rayer/llm-wiki-bff/internal/cache"
+	handlerapi "github.com/rayer/llm-wiki-bff/internal/handler"
 	"github.com/rayer/llm-wiki-bff/internal/llm"
 	"github.com/rayer/llm-wiki-bff/internal/localfs"
 	"github.com/rayer/llm-wiki-bff/internal/query"
 	"github.com/rayer/llm-wiki-bff/internal/storage"
 	"go.opentelemetry.io/otel"
+	"go.opentelemetry.io/otel/codes"
 	sdktrace "go.opentelemetry.io/otel/sdk/trace"
 	"go.opentelemetry.io/otel/sdk/trace/tracetest"
 )
@@ -37,6 +41,18 @@ func (receiptTraceExecutor) Execute(ctx context.Context, _ cache.Reader, request
 	finishCall("success")
 	query.FinishStage(stageCtx, "success")
 	return query.Result{Query: request.Query, Mode: request.Mode}, nil
+}
+
+type fallbackNoEvidenceExecutor struct{}
+
+func (fallbackNoEvidenceExecutor) Execute(ctx context.Context, _ cache.Reader, request query.Request) (query.Result, error) {
+	recorder := query.ReceiptRecorderFromContext(ctx)
+	if recorder == nil {
+		return query.Result{}, errors.New("receipt recorder missing")
+	}
+	stageCtx := recorder.StartStage(ctx, "query_expansion", "deepseek", "deepseek-v4-flash", "none")
+	query.FinishStage(stageCtx, "fallback")
+	return query.Result{Query: request.Query, Mode: request.Mode, Status: "insufficient_evidence", Reason: "no_qualified_evidence"}, nil
 }
 
 type failingTestSpanExporter struct{}
@@ -123,7 +139,8 @@ func TestQueryDiagnosticsFinalizeSafelyAndExportActualSpanTree(t *testing.T) {
 	slog.SetDefault(slog.New(slog.NewJSONHandler(&logs, nil)))
 	defer slog.SetDefault(oldLogger)
 
-	h := New(localfs.New(t.TempDir()), nil, nil, nil, nil, nil)
+	earlyStore := &generationSwitchRoot{currentGeneration: "generation-early"}
+	h := New(earlyStore, nil, nil, nil, nil, nil)
 	h.SetQueryExecutor(receiptTraceExecutor{})
 	const queryCanary = "PRIVATE_QUERY_CANARY"
 	malformed := performQueryDiagnosticsRequest(h, `{"q":"`+queryCanary+`",broken}`)
@@ -145,11 +162,30 @@ func TestQueryDiagnosticsFinalizeSafelyAndExportActualSpanTree(t *testing.T) {
 		t.Fatalf("early summary does not correlate with problem details: %+v", earlySummary)
 	}
 	earlySpans := exporter.GetSpans()
-	if !hasSpan(earlySpans, "query.request") || !hasSpan(earlySpans, "query.generation.resolve_current") {
+	rootSpan, hasRoot := findSpan(earlySpans, "query.request")
+	generationSpan, hasGeneration := findSpan(earlySpans, "query.generation.resolve_current")
+	storageSpan, hasStorage := findSpan(earlySpans, "query.storage.read")
+	if !hasRoot || !hasGeneration {
 		t.Fatalf("early adapter failure did not export root and resolution child spans: %+v", earlySpans)
 	}
-	if len(earlySpans) != 2 {
-		t.Fatalf("early failure fabricated spans: %+v", earlySpans)
+	if len(earlySpans) != 3 || !hasStorage {
+		t.Fatalf("early failure omitted or fabricated generation storage detail: %+v", earlySpans)
+	}
+	if generationSpan.Parent.SpanID() != rootSpan.SpanContext.SpanID() || storageSpan.Parent.SpanID() != generationSpan.SpanContext.SpanID() || storageSpan.SpanContext.TraceID() != rootSpan.SpanContext.TraceID() {
+		t.Fatalf("early failure spans are not parented root→generation→current-manifest-read: root=%+v generation=%+v storage=%+v", rootSpan, generationSpan, storageSpan)
+	}
+	if got := spanStringAttribute(storageSpan.Attributes, "query.object_role"); got != "current_manifest" {
+		t.Fatalf("early current-generation read role=%q, want current_manifest", got)
+	}
+	spanCounts := make(map[string]int, len(earlySpans))
+	for _, span := range earlySpans {
+		spanCounts[span.Name]++
+	}
+	if spanCounts["query.request"] != 1 || spanCounts["query.generation.resolve_current"] != 1 || spanCounts["query.storage.read"] != 1 || len(spanCounts) != 3 {
+		t.Fatalf("early failure emitted unexpected query phases: %+v", spanCounts)
+	}
+	if earlyStore.currentGeneration != "generation-new" || earlyStore.pins != 1 || earlyStore.manifestReads != 1 || earlyStore.identityReads != 1 {
+		t.Fatalf("early current-generation operation counts current=%q pins=%d manifest_reads=%d identity_reads=%d; want one pin/read and one pinned identity", earlyStore.currentGeneration, earlyStore.pins, earlyStore.manifestReads, earlyStore.identityReads)
 	}
 	if !strings.Contains(otelErrors.String(), "controlled local span sink failure") {
 		t.Fatalf("controlled exporter failure did not exercise error handler: %q", otelErrors.String())
@@ -298,6 +334,211 @@ func TestQueryDiagnosticsFinalizeSafelyAndExportActualSpanTree(t *testing.T) {
 	}
 
 	testAuthenticatedMCPQuerySchemaDiagnostics(t, provider, exporter, &logs)
+}
+
+func TestCitationValidationEventPreservesValidAndRejectedQueryBehavior(t *testing.T) {
+	gin.SetMode(gin.TestMode)
+	baseTransport := http.DefaultTransport
+	defer func() { http.DefaultTransport = baseTransport }()
+	baseProvider := otel.GetTracerProvider()
+	defer otel.SetTracerProvider(baseProvider)
+	baseLogger := slog.Default()
+	var logs bytes.Buffer
+	slog.SetDefault(slog.New(slog.NewJSONHandler(&logs, nil)))
+	defer slog.SetDefault(baseLogger)
+
+	testCases := []struct {
+		name               string
+		useIssuedReference bool
+		wantAnswer         string
+		wantOutcome        string
+		wantResolvedCount  int64
+	}{
+		{name: "valid citation", useIssuedReference: true, wantAnswer: "answer [Alpha Coffee]", wantOutcome: "resolved", wantResolvedCount: 1},
+		{name: "rejected capability", wantAnswer: "answer [CITATION-REF_0]", wantOutcome: "none", wantResolvedCount: 0},
+	}
+	var acceptedResponse *handlerapi.QueryResponse
+	var acceptedReads *citationIOCounts
+	for _, tc := range testCases {
+		t.Run(tc.name, func(t *testing.T) {
+			logs.Reset()
+			exporter := tracetest.NewInMemoryExporter()
+			provider := sdktrace.NewTracerProvider(sdktrace.WithSyncer(exporter))
+			otel.SetTracerProvider(provider)
+			t.Cleanup(func() {
+				otel.SetTracerProvider(baseProvider)
+				_ = provider.Shutdown(context.Background())
+			})
+
+			transport := &citationEventHTTPTransport{useIssuedReference: tc.useIssuedReference}
+			http.DefaultTransport = transport
+			root := localfs.New(t.TempDir())
+			scoped := root.Scope("diagnostic-test-user", "diagnostic-test-project")
+			concepts := []byte(`{"slug":"alpha-coffee","title":"Alpha Coffee","body":"coffee and espresso"}` + "\n")
+			if _, err := scoped.WriteBytes(context.Background(), concepts, cache.GCSPath); err != nil {
+				t.Fatal(err)
+			}
+			idMap, err := json.Marshal(map[string]map[string]string{"concept": {"000000000001": "alpha-coffee"}})
+			if err != nil {
+				t.Fatal(err)
+			}
+			if _, err := scoped.WriteBytes(context.Background(), idMap, "cache/id_map.json"); err != nil {
+				t.Fatal(err)
+			}
+
+			reads := &citationIOCounts{}
+			h := New(&citationCountingRoot{RootStore: root, counts: reads}, nil, nil, cache.New(), nil, nil)
+			captured := &citationReceiptCapture{Executor: query.NewService(cache.New(), nil, llm.NewClient("test"))}
+			h.SetQueryExecutor(captured)
+			responseRecorder := performQueryDiagnosticsRequest(h, `{"q":"coffee","mode":"full"}`)
+			if responseRecorder.Code != http.StatusOK {
+				t.Fatalf("query status=%d body=%s", responseRecorder.Code, responseRecorder.Body)
+			}
+			var response handlerapi.QueryResponse
+			if err := json.Unmarshal(responseRecorder.Body.Bytes(), &response); err != nil {
+				t.Fatalf("query response JSON: %v: %s", err, responseRecorder.Body)
+			}
+			if response.Query != "coffee" || response.Mode != "full" || response.AISynth != tc.wantAnswer {
+				t.Fatalf("query response query/mode/answer=%q/%q/%q", response.Query, response.Mode, response.AISynth)
+			}
+			if len(response.Results) != 1 || response.Results[0].Slug != "alpha-coffee" || len(response.Citations) != 1 || response.Citations[0].Slug != "alpha-coffee" {
+				t.Fatalf("query results/citations changed: results=%+v citations=%+v", response.Results, response.Citations)
+			}
+			if transport.calls != 1 || captured.calls != 1 || len(captured.receipt.HostCalls) != 1 || captured.receipt.HostCalls[0].Outcome != "success" {
+				t.Fatalf("provider calls=%d executor calls=%d host receipts=%+v; want one successful actual call", transport.calls, captured.calls, captured.receipt.HostCalls)
+			}
+			synthesisStages := 0
+			for _, stage := range captured.receipt.Stages {
+				if stage.Name == "answer_synthesis" {
+					synthesisStages++
+					if stage.Outcome != "success" {
+						t.Fatalf("synthesis stage outcome=%q", stage.Outcome)
+					}
+				}
+			}
+			if synthesisStages != 1 {
+				t.Fatalf("answer-synthesis stage count=%d, want one", synthesisStages)
+			}
+			if reads.pins != 1 || reads.readFiles+reads.conceptLists+reads.cachedConceptLists+reads.pages == 0 {
+				t.Fatalf("storage operations=%+v; want one current-view pin and actual query reads", *reads)
+			}
+
+			spans := exporter.GetSpans()
+			rootSpan, ok := findSpan(spans, "query.request")
+			if !ok {
+				t.Fatalf("query root missing: %+v", spans)
+			}
+			rootCount := 0
+			validationEventCount := 0
+			var validationEvent sdktrace.Event
+			for _, span := range spans {
+				if span.Name == "query.request" {
+					rootCount++
+				}
+				for _, event := range span.Events {
+					if event.Name == "query.citation.validation" {
+						validationEventCount++
+						validationEvent = event
+						if span.Name != "query.stage.answer_synthesis" || span.SpanContext.TraceID() != rootSpan.SpanContext.TraceID() {
+							t.Fatalf("citation validation event is outside the actual synthesis trace: span=%s event=%+v", span.Name, event)
+						}
+					}
+				}
+			}
+			if rootCount != 1 || validationEventCount != 1 {
+				t.Fatalf("query roots=%d citation validation events=%d spans=%+v", rootCount, validationEventCount, spans)
+			}
+			var eventOutcome string
+			var resolvedCount, authorizedResultCount int64 = -1, -1
+			for _, attr := range validationEvent.Attributes {
+				switch string(attr.Key) {
+				case "query.citation.outcome":
+					eventOutcome = attr.Value.AsString()
+				case "query.citation.resolved_count":
+					resolvedCount = attr.Value.AsInt64()
+				case "query.citation.authorized_result_count":
+					authorizedResultCount = attr.Value.AsInt64()
+				default:
+					t.Fatalf("unexpected citation-validation attribute %q", attr.Key)
+				}
+				if strings.Contains(attr.Value.AsString(), "coffee") || strings.Contains(attr.Value.AsString(), "Alpha Coffee") || strings.Contains(attr.Value.AsString(), "CITATION_REF_") {
+					t.Fatalf("citation-validation event leaked content in %s: %s", attr.Key, attr.Value.AsString())
+				}
+			}
+			if len(validationEvent.Attributes) != 3 || eventOutcome != tc.wantOutcome || resolvedCount != tc.wantResolvedCount || authorizedResultCount != 1 {
+				t.Fatalf("citation-validation event outcome/counts=%q/%d/%d attrs=%+v", eventOutcome, resolvedCount, authorizedResultCount, validationEvent.Attributes)
+			}
+
+			terminalCount := strings.Count(logs.String(), `"msg":"query.terminal"`)
+			var terminal map[string]any
+			for _, line := range strings.Split(strings.TrimSpace(logs.String()), "\n") {
+				var entry map[string]any
+				if json.Unmarshal([]byte(line), &entry) == nil && entry["msg"] == "query.terminal" {
+					terminal = entry
+				}
+			}
+			if terminalCount != 1 || terminal == nil || terminal["outcome"] != "success" || terminal["business_outcome"] != "success" || terminal["request_status"] != float64(http.StatusOK) || terminal["trace_id"] != rootSpan.SpanContext.TraceID().String() || terminal["span_id"] != rootSpan.SpanContext.SpanID().String() {
+				t.Fatalf("query terminal changed or failed to correlate: count=%d terminal=%+v root=%+v logs=%s", terminalCount, terminal, rootSpan, logs.String())
+			}
+
+			if tc.useIssuedReference {
+				copyResponse := response
+				acceptedResponse = &copyResponse
+				copyReads := *reads
+				acceptedReads = &copyReads
+				return
+			}
+			if acceptedResponse == nil || acceptedReads == nil {
+				t.Fatal("valid citation case did not run before the rejected capability case")
+			}
+			if response.Query != acceptedResponse.Query || response.Mode != acceptedResponse.Mode || response.Status != acceptedResponse.Status || response.Reason != acceptedResponse.Reason || !reflect.DeepEqual(response.Results, acceptedResponse.Results) || !reflect.DeepEqual(response.Citations, acceptedResponse.Citations) {
+				t.Fatalf("rejected citation changed query result/citation inventory: valid=%+v rejected=%+v", *acceptedResponse, response)
+			}
+			if *reads != *acceptedReads {
+				t.Fatalf("citation acceptance changed storage operation counts: valid=%+v rejected=%+v", *acceptedReads, *reads)
+			}
+		})
+	}
+}
+
+func TestNoEvidenceBusinessOutcomeRemainsSeparateFromDependencyFallback(t *testing.T) {
+	gin.SetMode(gin.TestMode)
+	exporter := tracetest.NewInMemoryExporter()
+	provider := sdktrace.NewTracerProvider(sdktrace.WithSpanProcessor(sdktrace.NewSimpleSpanProcessor(exporter)))
+	previous := otel.GetTracerProvider()
+	otel.SetTracerProvider(provider)
+	t.Cleanup(func() {
+		otel.SetTracerProvider(previous)
+		_ = provider.Shutdown(context.Background())
+	})
+
+	h := New(localfs.New(t.TempDir()), nil, nil, nil, nil, nil)
+	h.SetQueryExecutor(fallbackNoEvidenceExecutor{})
+	response := performQueryDiagnosticsRequest(h, `{"q":"ordinary local fixture"}`)
+	if response.Code != http.StatusOK {
+		t.Fatalf("fallback query failed: status=%d body=%s", response.Code, response.Body)
+	}
+	var product map[string]any
+	if err := json.Unmarshal(response.Body.Bytes(), &product); err != nil {
+		t.Fatalf("query response is not JSON: %v; %s", err, response.Body)
+	}
+	if product["status"] != "insufficient_evidence" || product["reason"] != "no_qualified_evidence" {
+		t.Fatalf("fallback changed no-evidence product result: %+v", product)
+	}
+	root, ok := findSpan(exporter.GetSpans(), "query.request")
+	if !ok {
+		t.Fatalf("query root span missing: %+v", exporter.GetSpans())
+	}
+	attrs := make(map[string]any, len(root.Attributes))
+	for _, attr := range root.Attributes {
+		attrs[string(attr.Key)] = attr.Value.AsInterface()
+	}
+	if attrs["query.outcome"] != "no_evidence" || attrs["query.business_outcome"] != "no_evidence" || attrs["query.dependency_degraded"] != true || attrs["query.degradation_reason"] != "fallback_or_degraded_dependency" {
+		t.Fatalf("fallback and business outcome were conflated: root attrs=%v status=%+v", attrs, root.Status)
+	}
+	if root.Status.Code != codes.Unset {
+		t.Fatalf("no-evidence result with degraded dependency was marked as transport failure: %+v", root.Status)
+	}
 }
 
 func TestQueryFailureClassifierRequiresProviderSeamAndManifestProvenance(t *testing.T) {
@@ -583,4 +824,136 @@ func findSpan(spans tracetest.SpanStubs, name string) (tracetest.SpanStub, bool)
 		}
 	}
 	return tracetest.SpanStub{}, false
+}
+
+type citationIOCounts struct {
+	pins               int
+	readFiles          int
+	conceptLists       int
+	cachedConceptLists int
+	pages              int
+}
+
+type citationCountingRoot struct {
+	storage.RootStore
+	counts *citationIOCounts
+}
+
+func (r *citationCountingRoot) Scope(userID, projectID string) storage.Store {
+	return &citationCountingStore{Store: r.RootStore.Scope(userID, projectID), counts: r.counts}
+}
+
+type citationCountingStore struct {
+	storage.Store
+	counts *citationIOCounts
+}
+
+func (s *citationCountingStore) Pin(ctx context.Context) (storage.Store, error) {
+	s.counts.pins++
+	pinner, ok := s.Store.(storage.ViewPinner)
+	if !ok {
+		return s, nil
+	}
+	pinned, err := pinner.Pin(ctx)
+	if err != nil {
+		return nil, err
+	}
+	return &citationCountingStore{Store: pinned, counts: s.counts}, nil
+}
+
+func (s *citationCountingStore) ReadFile(ctx context.Context, path string) ([]byte, error) {
+	s.counts.readFiles++
+	return s.Store.ReadFile(ctx, path)
+}
+
+func (s *citationCountingStore) ListConcepts(ctx context.Context, includeDrafts bool) ([]storage.WikiPage, error) {
+	s.counts.conceptLists++
+	return s.Store.ListConcepts(ctx, includeDrafts)
+}
+
+func (s *citationCountingStore) ListConceptsFromCache(ctx context.Context) ([]storage.WikiPage, error) {
+	s.counts.cachedConceptLists++
+	return s.Store.ListConceptsFromCache(ctx)
+}
+
+func (s *citationCountingStore) GetPage(ctx context.Context, slug, category string) (*storage.WikiPage, []byte, error) {
+	s.counts.pages++
+	return s.Store.GetPage(ctx, slug, category)
+}
+
+func (s *citationCountingStore) QueryGenerationIdentity(ctx context.Context) (storage.QueryGenerationIdentity, error) {
+	provider, ok := s.Store.(storage.QueryGenerationIdentityProvider)
+	if !ok {
+		return storage.QueryGenerationIdentity{}, storage.ErrQueryGenerationIdentityUnavailable
+	}
+	return provider.QueryGenerationIdentity(ctx)
+}
+
+func (s *citationCountingStore) ViewToken() string {
+	provider, ok := s.Store.(storage.ViewToken)
+	if !ok {
+		return ""
+	}
+	return provider.ViewToken()
+}
+
+type citationReceiptCapture struct {
+	query.Executor
+	calls   int
+	receipt query.Receipt
+}
+
+func (e *citationReceiptCapture) Execute(ctx context.Context, reader cache.Reader, request query.Request) (query.Result, error) {
+	e.calls++
+	result, err := e.Executor.Execute(ctx, reader, request)
+	if recorder := query.ReceiptRecorderFromContext(ctx); recorder != nil {
+		e.receipt = recorder.Receipt()
+	}
+	return result, err
+}
+
+type citationEventHTTPTransport struct {
+	useIssuedReference bool
+	calls              int
+}
+
+func (t *citationEventHTTPTransport) RoundTrip(request *http.Request) (*http.Response, error) {
+	t.calls++
+	body, err := io.ReadAll(request.Body)
+	if err != nil {
+		return nil, err
+	}
+	var prompt struct {
+		Messages []struct {
+			Role    string `json:"role"`
+			Content string `json:"content"`
+		} `json:"messages"`
+	}
+	if err := json.Unmarshal(body, &prompt); err != nil {
+		return nil, err
+	}
+	answer := "answer [CITATION_REF_0]"
+	if t.useIssuedReference {
+		var userPrompt string
+		for _, message := range prompt.Messages {
+			if message.Role == "user" {
+				userPrompt = message.Content
+				break
+			}
+		}
+		start := strings.Index(userPrompt, "[CITATION_REF_")
+		if start < 0 {
+			return nil, errors.New("issued citation capability missing from fake prompt")
+		}
+		end := strings.IndexByte(userPrompt[start:], ']')
+		if end < 0 {
+			return nil, errors.New("issued citation capability is malformed in fake prompt")
+		}
+		answer = "answer " + userPrompt[start:start+end+1]
+	}
+	responseBody, err := json.Marshal(map[string]any{"choices": []any{map[string]any{"message": map[string]string{"content": answer}}}})
+	if err != nil {
+		return nil, err
+	}
+	return &http.Response{StatusCode: http.StatusOK, Header: make(http.Header), Body: io.NopCloser(strings.NewReader(string(responseBody))), Request: request}, nil
 }

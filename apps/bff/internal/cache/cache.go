@@ -20,8 +20,12 @@ import (
 	fm "github.com/adrg/frontmatter"
 	"github.com/rayer/llm-wiki-bff/internal/gcs"
 	"github.com/rayer/llm-wiki-bff/internal/generation"
+	"github.com/rayer/llm-wiki-bff/internal/observability"
 	"github.com/rayer/llm-wiki-bff/internal/search"
 	"github.com/rayer/llm-wiki-bff/internal/storage"
+	"go.opentelemetry.io/otel"
+	"go.opentelemetry.io/otel/attribute"
+	"go.opentelemetry.io/otel/codes"
 )
 
 // GCSPath is the persisted JSONL concept cache written by the pipeline.
@@ -67,6 +71,7 @@ type projectCache struct {
 	entries       []Entry
 	bySlug        map[string]Entry
 	canonicalData []byte
+	source        string
 }
 
 // Cache stores independent concept sets for each user/project GCS prefix.
@@ -108,8 +113,49 @@ func (c *Cache) Build(ctx context.Context, reader conceptReader) ([]Entry, error
 	return c.buildFromPages(ctx, reader)
 }
 
-func (c *Cache) buildFromPages(ctx context.Context, reader conceptReader) ([]Entry, error) {
-	concepts, err := reader.ListConcepts(ctx, false)
+func (c *Cache) BuildWithSource(ctx context.Context, reader conceptReader) ([]Entry, string, error) {
+	if reader == nil {
+		return nil, "none", fmt.Errorf("concept cache reader is nil")
+	}
+	if err := c.loadJSONL(ctx, reader); err == nil {
+		if project, ok := c.project(reader); ok {
+			return cloneEntries(project.entries), "jsonl", nil
+		}
+	} else if errors.Is(err, context.Canceled) || errors.Is(err, context.DeadlineExceeded) {
+		return nil, "none", err
+	}
+	entries, err := c.buildFromPages(ctx, reader)
+	if err != nil {
+		return nil, "none", err
+	}
+	return entries, "fallback_rebuild", nil
+}
+
+func (c *Cache) buildFromPages(ctx context.Context, reader conceptReader) (entries []Entry, resultErr error) {
+	rebuildCtx, rebuildSpan := otel.Tracer("llm-wiki-bff/query").Start(ctx, "query.cache.rebuild")
+	rebuildCtx = observability.WithStorageReadBudget(rebuildCtx)
+	persistOutcome := "not_attempted"
+	defer func() {
+		outcome := "success"
+		if resultErr != nil {
+			outcome = "failure"
+			if errors.Is(resultErr, context.Canceled) {
+				outcome = "canceled"
+			} else if errors.Is(resultErr, context.DeadlineExceeded) {
+				outcome = "timeout"
+			}
+			rebuildSpan.SetStatus(codes.Error, outcome)
+		}
+		rebuildSpan.SetAttributes(attribute.String("query.outcome", outcome), attribute.String("query.cache.persist_outcome", persistOutcome))
+		rebuildSpan.End()
+	}()
+	listCtx, finishList := observability.StartStorageRead(rebuildCtx, "other")
+	concepts, err := reader.ListConcepts(listCtx, false)
+	if err != nil {
+		finishList(err, "not_required", "none")
+	} else {
+		finishList(nil, "not_required", "none")
+	}
 	if err != nil {
 		if errors.Is(err, context.Canceled) || errors.Is(err, context.DeadlineExceeded) {
 			return nil, err
@@ -133,8 +179,10 @@ func (c *Cache) buildFromPages(ctx context.Context, reader conceptReader) ([]Ent
 			sem <- struct{}{}
 			defer func() { <-sem }()
 
-			page, data, err := reader.GetPage(ctx, concept.Slug, "concepts")
+			readCtx, finishRead := observability.StartStorageRead(rebuildCtx, "concept_page")
+			page, data, err := reader.GetPage(readCtx, concept.Slug, "concepts")
 			if err != nil {
+				finishRead(err, "not_required", "none")
 				results <- buildResult{err: err}
 				return
 			}
@@ -142,14 +190,16 @@ func (c *Cache) buildFromPages(ctx context.Context, reader conceptReader) ([]Ent
 			if page != nil && page.Title != "" {
 				titleFallback = page.Title
 			}
-			results <- buildResult{entry: parseEntry(concept.Slug, titleFallback, string(data))}
+			entry := parseEntry(concept.Slug, titleFallback, string(data))
+			finishRead(nil, "success", "decode")
+			results <- buildResult{entry: entry}
 		}()
 	}
 
 	wg.Wait()
 	close(results)
 
-	entries := make([]Entry, 0, len(concepts))
+	entries = make([]Entry, 0, len(concepts))
 	for result := range results {
 		if errors.Is(result.err, context.Canceled) || errors.Is(result.err, context.DeadlineExceeded) {
 			return nil, result.err
@@ -161,6 +211,7 @@ func (c *Cache) buildFromPages(ctx context.Context, reader conceptReader) ([]Ent
 	if len(concepts) > 0 && len(entries) == 0 {
 		return nil, fmt.Errorf("failed to read any of %d concepts", len(concepts))
 	}
+	rebuildSpan.SetAttributes(attribute.Int("query.corpus.count", len(entries)))
 
 	sort.Slice(entries, func(i, j int) bool {
 		return entries[i].Slug < entries[j].Slug
@@ -171,13 +222,18 @@ func (c *Cache) buildFromPages(ctx context.Context, reader conceptReader) ([]Ent
 	}
 
 	c.mu.Lock()
-	c.projects[prefixForReader(reader)] = projectCache{entries: entries, bySlug: bySlug}
+	c.projects[prefixForReader(reader)] = projectCache{entries: entries, bySlug: bySlug, source: "fallback_rebuild"}
 	c.mu.Unlock()
 
 	if writer, ok := reader.(interface {
 		WriteBytes(context.Context, []byte, string) (string, error)
 	}); ok {
-		_, _ = writer.WriteBytes(ctx, marshalJSONL(entries), GCSPath)
+		_, writeErr := writer.WriteBytes(rebuildCtx, marshalJSONL(entries), GCSPath)
+		if writeErr != nil {
+			persistOutcome = "failure"
+		} else {
+			persistOutcome = "success"
+		}
 	}
 
 	return cloneEntries(entries), nil
@@ -206,14 +262,24 @@ func (c *Cache) Prefixes() []string {
 // JSONL or built on first use with a 10-second timeout, then results are
 // sampled without replacement using match score as the weight.
 func (c *Cache) Search(ctx context.Context, reader conceptReader, query string, limit int) ([]search.Result, error) {
+	results, _, err := c.SearchWithSource(ctx, reader, query, limit)
+	return results, err
+}
+
+func (c *Cache) SearchWithSource(ctx context.Context, reader conceptReader, query string, limit int) ([]search.Result, string, error) {
 	project, ok := c.project(reader)
+	source := "memory"
 	if !ok {
 		if err := c.loadJSONL(ctx, reader); err != nil {
 			buildCtx, cancel := context.WithTimeout(ctx, 10*time.Second)
 			defer cancel()
-			if _, err := c.Build(buildCtx, reader); err != nil {
-				return nil, fmt.Errorf("concept cache build for %q: %w", prefixForReader(reader), err)
+			var buildErr error
+			_, source, buildErr = c.BuildWithSource(buildCtx, reader)
+			if buildErr != nil {
+				return nil, "none", fmt.Errorf("concept cache build for %q: %w", prefixForReader(reader), buildErr)
 			}
+		} else {
+			source = "jsonl"
 		}
 		project, _ = c.project(reader)
 	}
@@ -223,7 +289,7 @@ func (c *Cache) Search(ctx context.Context, reader conceptReader, query string, 
 	}
 	words := strings.Fields(strings.ToLower(query))
 	if len(words) == 0 {
-		return []search.Result{}, nil
+		return []search.Result{}, source, nil
 	}
 
 	type candidate struct {
@@ -255,7 +321,7 @@ func (c *Cache) Search(ctx context.Context, reader conceptReader, query string, 
 		for i, candidate := range candidates {
 			results[i] = candidate.result
 		}
-		return results, nil
+		return results, source, nil
 	}
 
 	results := make([]search.Result, 0, limit)
@@ -278,7 +344,7 @@ func (c *Cache) Search(ctx context.Context, reader conceptReader, query string, 
 		results = append(results, candidates[selected].result)
 		candidates = append(candidates[:selected], candidates[selected+1:]...)
 	}
-	return results, nil
+	return results, source, nil
 }
 
 // Query loads a persisted JSONL cache when available, then searches it.
@@ -293,17 +359,22 @@ func (c *Cache) Query(ctx context.Context, reader conceptReader, query string, l
 
 // All returns all cached entries, building or loading the cache on first use.
 func (c *Cache) All(ctx context.Context, reader conceptReader) ([]Entry, error) {
+	entries, _, err := c.AllWithSource(ctx, reader)
+	return entries, err
+}
+
+func (c *Cache) AllWithSource(ctx context.Context, reader conceptReader) ([]Entry, string, error) {
 	if project, ok := c.project(reader); ok {
-		return cloneEntries(project.entries), nil
+		return cloneEntries(project.entries), "memory", nil
 	}
 	if err := c.loadJSONL(ctx, reader); err == nil {
 		if project, ok := c.project(reader); ok {
-			return cloneEntries(project.entries), nil
+			return cloneEntries(project.entries), "jsonl", nil
 		}
 	} else if errors.Is(err, context.Canceled) || errors.Is(err, context.DeadlineExceeded) {
-		return nil, err
+		return nil, "none", err
 	}
-	return c.Build(ctx, reader)
+	return c.BuildWithSource(ctx, reader)
 }
 
 // PinnedCanonicalSnapshot reads the canonical corpus only from a non-legacy,
@@ -335,11 +406,13 @@ func (c *Cache) PinnedCanonicalSnapshot(ctx context.Context, reader Reader) (Pin
 	}
 
 	key := pinnedSnapshotKey(reader, identity)
+	readCtx, finishRead := observability.StartStorageRead(ctx, "concept_cache")
 	c.snapshotMu.Lock()
 	defer c.snapshotMu.Unlock()
 	c.mu.RLock()
 	if snapshot, ok := c.pinnedSnapshots[key]; ok {
 		c.mu.RUnlock()
+		finishRead(nil, "success", "none")
 		return clonePinnedSnapshot(snapshot), nil
 	}
 	var data []byte
@@ -350,16 +423,19 @@ func (c *Cache) PinnedCanonicalSnapshot(ctx context.Context, reader Reader) (Pin
 	}
 	c.mu.RUnlock()
 	if data == nil {
-		data, err = fileReader.ReadFile(ctx, GCSPath)
+		data, err = fileReader.ReadFile(readCtx, GCSPath)
 		if err != nil {
+			finishRead(err, "failure", "other")
 			return PinnedCanonicalSnapshot{}, fmt.Errorf("read pinned canonical concepts JSONL: %w", err)
 		}
 	}
 	if got := manifestFileDigest(data); got != identity.ConceptsDigest {
+		finishRead(errors.New("concept cache digest mismatch"), "failure", "digest")
 		return PinnedCanonicalSnapshot{}, errors.New("pinned canonical concepts digest mismatch")
 	}
 	items, err := parseCanonicalEntries(data)
 	if err != nil {
+		finishRead(err, "failure", "decode")
 		return PinnedCanonicalSnapshot{}, fmt.Errorf("parse pinned canonical concepts JSONL: %w", err)
 	}
 	snapshot := PinnedCanonicalSnapshot{Identity: identity, Entries: items}
@@ -375,9 +451,10 @@ func (c *Cache) PinnedCanonicalSnapshot(ctx context.Context, reader Reader) (Pin
 	}
 	c.pinnedSnapshots[key] = clonePinnedSnapshot(snapshot)
 	if prefix := prefixForReader(reader); prefix != "" && len(entries) > 0 {
-		c.projects[prefix] = projectCache{entries: entries, bySlug: bySlug, canonicalData: append([]byte(nil), data...)}
+		c.projects[prefix] = projectCache{entries: entries, bySlug: bySlug, canonicalData: append([]byte(nil), data...), source: "snapshot"}
 	}
 	c.mu.Unlock()
+	finishRead(nil, "success", "none")
 	return clonePinnedSnapshot(snapshot), nil
 }
 
@@ -392,6 +469,15 @@ func (c *Cache) Entry(reader conceptReader, slug string) (Entry, bool) {
 		return Entry{}, false
 	}
 	return cloneEntry(entry), true
+}
+
+// EntryCount returns the size of an already-loaded project cache.
+func (c *Cache) EntryCount(reader conceptReader) int {
+	project, ok := c.project(reader)
+	if !ok {
+		return 0
+	}
+	return len(project.entries)
 }
 
 func (c *Cache) project(reader conceptReader) (projectCache, bool) {
@@ -411,24 +497,30 @@ func (c *Cache) loadJSONL(ctx context.Context, reader conceptReader) error {
 	if !ok {
 		return fmt.Errorf("concept cache reader cannot read JSONL")
 	}
-	data, err := fileReader.ReadFile(ctx, GCSPath)
+	readCtx, finishRead := observability.StartStorageRead(ctx, "concept_cache")
+	data, err := fileReader.ReadFile(readCtx, GCSPath)
 	if err != nil {
+		finishRead(err, "not_required", "none")
 		return err
 	}
 	entries, err := unmarshalJSONL(data)
 	if err != nil {
+		finishRead(err, "failure", "decode")
 		return err
 	}
 	if len(entries) == 0 {
-		return fmt.Errorf("concept cache JSONL is empty")
+		err = fmt.Errorf("concept cache JSONL is empty")
+		finishRead(err, "failure", "coverage")
+		return err
 	}
 	bySlug := make(map[string]Entry, len(entries))
 	for _, entry := range entries {
 		bySlug[entry.Slug] = entry
 	}
 	c.mu.Lock()
-	c.projects[prefixForReader(reader)] = projectCache{entries: entries, bySlug: bySlug, canonicalData: append([]byte(nil), data...)}
+	c.projects[prefixForReader(reader)] = projectCache{entries: entries, bySlug: bySlug, canonicalData: append([]byte(nil), data...), source: "jsonl"}
 	c.mu.Unlock()
+	finishRead(nil, "success", "none")
 	return nil
 }
 
