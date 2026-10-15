@@ -136,6 +136,12 @@ func TestRawSyncCLIRealSubprocessInitPushAndPushSync(t *testing.T) {
 	if strings.Contains(lastStdout+lastStderr, "lwc-sync observation") {
 		t.Fatalf("pre-admission help initialized the observer: stdout=%q stderr=%q", lastStdout, lastStderr)
 	}
+	if out, err := run("--version"); err != nil {
+		t.Fatalf("version command failed: %v\n%s", err, out)
+	}
+	if !strings.HasPrefix(strings.TrimSpace(lastStdout), "lwc-sync ") || strings.Contains(lastStdout+lastStderr, "lwc-sync observation") {
+		t.Fatalf("version command initialized the observer or changed output: stdout=%q stderr=%q", lastStdout, lastStderr)
+	}
 	fixture.mu.Lock()
 	if fixture.dataRequests != 0 || fixture.bindingCreates != 0 || fixture.refreshes != 0 {
 		fixture.mu.Unlock()
@@ -271,6 +277,9 @@ func TestRawSyncCLIRealSubprocessInitPushAndPushSync(t *testing.T) {
 	if out, err := run("push", "--vault", root, "--sync"); err == nil {
 		t.Fatalf("push --sync accepted an incomplete download: %s", out)
 	}
+	if !strings.Contains(lastStderr, "outcome=partial") || !strings.Contains(lastStderr, "download_errors=1") || !strings.Contains(lastStderr, "failed=1") {
+		t.Fatalf("partial download failure was not represented by its actual stage and final count: %q", lastStderr)
+	}
 	if _, err := os.Lstat(filepath.Join(root, "raw", "corrupt-download.bin")); !os.IsNotExist(err) {
 		t.Fatalf("incomplete download published a local file: err=%v", err)
 	}
@@ -340,6 +349,9 @@ func TestRawSyncCLIRealSubprocessInitPushAndPushSync(t *testing.T) {
 	if out, err := run("push", "--vault", root); err != nil {
 		t.Fatalf("push did not reconcile a lost upload response by digest: %v\n%s", err, out)
 	}
+	if !strings.Contains(lastStderr, "outcome=success") || !strings.Contains(lastStderr, "verification_readback_calls=1") || !strings.Contains(lastStderr, "readback_calls=1") {
+		t.Fatalf("ambiguous committed upload did not report its real verification readback: %q", lastStderr)
+	}
 	fixture.mu.Lock()
 	lostResponseStored := string(fixture.data["lost-response.bin"])
 	fixture.mu.Unlock()
@@ -406,11 +418,23 @@ func TestRawSyncCLIRealSubprocessInitPushAndPushSync(t *testing.T) {
 	}
 
 	fixture.mu.Lock()
+	fixture.mode = "cancel-list"
+	fixture.mu.Unlock()
+	if out, err := run("push", "--vault", root); err == nil {
+		t.Fatalf("push accepted a server-cancelled list transport: %s", out)
+	}
+	if strings.Contains(lastStdout, "lwc-sync observation") || !strings.Contains(lastStderr, "outcome=error") || !strings.Contains(lastStderr, "remote_inventory_errors=1") || strings.Contains(lastStderr, "diagnostic_id=") {
+		t.Fatalf("cancelled transport did not produce one bounded error observation on stderr: stdout=%q stderr=%q", lastStdout, lastStderr)
+	}
+	fixture.mu.Lock()
 	fixture.mode = "forbidden"
 	refreshesBefore403 := fixture.refreshes
 	fixture.mu.Unlock()
 	if out, err := run("push", "--vault", root); err == nil {
 		t.Fatalf("push accepted HTTP 403: %s", out)
+	}
+	if strings.Contains(lastStdout, "diagnostic_id=fixtureRemoteID123") || !strings.Contains(lastStderr, "Sync data service returned HTTP 403") || !strings.Contains(lastStderr, "diagnostic_id=fixtureRemoteID123") || strings.Contains(lastStderr, "private-body-canary") {
+		t.Fatalf("validated server correlation was not confined to the stderr summary: stdout=%q stderr=%q", lastStdout, lastStderr)
 	}
 	fixture.mu.Lock()
 	if fixture.refreshes != refreshesBefore403 {
@@ -1199,9 +1223,25 @@ func (f *rawSyncProcessFixture) serveData(w http.ResponseWriter, r *http.Request
 		}
 	}
 	mode := f.mode
+	if mode == "cancel-list" && r.URL.Path == cliRawListRoute {
+		f.mu.Unlock()
+		hijacker, ok := w.(http.Hijacker)
+		if !ok {
+			w.WriteHeader(http.StatusInternalServerError)
+			_, _ = io.WriteString(w, "fixture transport cancellation unsupported")
+			return
+		}
+		connection, _, err := hijacker.Hijack()
+		if err != nil {
+			return
+		}
+		_ = connection.Close()
+		return
+	}
 	if mode == "forbidden" && r.URL.Path == cliRawListRoute {
 		f.mu.Unlock()
 		w.WriteHeader(http.StatusForbidden)
+		_, _ = io.WriteString(w, `{"diagnostic_id":"fixtureRemoteID123","message":"private-body-canary"}`)
 		return
 	}
 	if mode == "redirect" && r.URL.Path == cliRawListRoute {

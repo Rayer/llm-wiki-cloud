@@ -195,18 +195,13 @@ func (o *rawSyncObservation) recordError(err error) {
 	if o == nil || err == nil {
 		return
 	}
+	diagnosticID := ""
 	var diagnostic interface{ DiagnosticID() string }
-	if errors.As(err, &diagnostic) {
-		o.setDiagnosticID(diagnostic.DiagnosticID())
-	}
-}
-
-func (o *rawSyncObservation) setDiagnosticID(id string) {
-	if o == nil || !validRemoteDiagnosticID(id) {
-		return
+	if errors.As(err, &diagnostic) && validRemoteDiagnosticID(diagnostic.DiagnosticID()) {
+		diagnosticID = diagnostic.DiagnosticID()
 	}
 	o.mu.Lock()
-	o.diagnosticID = id
+	o.diagnosticID = diagnosticID
 	o.mu.Unlock()
 }
 

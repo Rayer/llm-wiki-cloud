@@ -33,7 +33,7 @@ func TestCLIStatusErrorRetainsOnlyValidatedDiagnosticMetadata(t *testing.T) {
 		{name: "valid", body: `{"diagnostic_id":"Diag_123-ABC","message":"body-token-canary"}`, wantID: "Diag_123-ABC", wantStatus: true, wantMessage: "Auth service returned HTTP 502"},
 		{name: "missing", body: `{"message":"body-token-canary"}`, wantStatus: true, wantMessage: "Auth service returned HTTP 502"},
 		{name: "invalid characters", body: `{"diagnostic_id":"invalid/id"}`, wantStatus: true, wantMessage: "Auth service returned HTTP 502"},
-		{name: "control characters", body: `{"diagnostic_id":"line\\nfeed_123"}`, wantStatus: true, wantMessage: "Auth service returned HTTP 502"},
+		{name: "control characters", body: `{"diagnostic_id":"line\nfeed_123"}`, wantStatus: true, wantMessage: "Auth service returned HTTP 502"},
 		{name: "oversized id", body: large, wantStatus: true, wantMessage: "Auth service returned HTTP 502"},
 		{name: "non JSON", body: "diagnostic_id=Diag_123-ABC body-token-canary", wantStatus: true, wantMessage: "Auth service returned HTTP 502"},
 		{name: "oversized body", body: tooLarge, wantMessage: "Auth service response was unavailable or too large"},
@@ -175,6 +175,35 @@ func TestSyncListingDiagnosticIDUsesAlreadyReadErrorBody(t *testing.T) {
 	observer.finish(err)
 	if !strings.Contains(stderr.String(), "diagnostic_id=remote_list_123") || !strings.Contains(stderr.String(), "sync_requests=1") || !strings.Contains(stderr.String(), "remote_list_pages=1") || strings.Contains(stderr.String(), "private-body-canary") {
 		t.Fatalf("summary failed to reuse only safe listing metadata: %q", stderr.String())
+	}
+}
+
+func TestRawSyncObservationDoesNotCarryDiagnosticIDAcrossErrors(t *testing.T) {
+	tests := []struct {
+		name       string
+		currentErr error
+		wantID     string
+	}{
+		{name: "current error has no ID", currentErr: errors.New("local verification failed")},
+		{name: "current ID is invalid", currentErr: syncDataStatusError{status: http.StatusBadGateway, diagnosticID: "bad/id"}},
+		{name: "current error owns its ID", currentErr: syncDataStatusError{status: http.StatusBadGateway, diagnosticID: "current-id_123"}, wantID: "current-id_123"},
+	}
+	for _, test := range tests {
+		t.Run(test.name, func(t *testing.T) {
+			observer := newRawSyncObservation()
+			var stderr bytes.Buffer
+			observer.writer = &stderr
+			observer.recordError(syncDataStatusError{status: http.StatusServiceUnavailable, diagnosticID: "previous-id_123"})
+			observer.recordError(test.currentErr)
+			observer.finish(test.currentErr)
+			if test.wantID == "" {
+				if strings.Contains(stderr.String(), "diagnostic_id=") {
+					t.Fatalf("summary retained a stale or invalid ID: %q", stderr.String())
+				}
+			} else if !strings.Contains(stderr.String(), "diagnostic_id="+test.wantID) || strings.Contains(stderr.String(), "previous-id_123") {
+				t.Fatalf("summary did not retain only the current error ID: %q", stderr.String())
+			}
+		})
 	}
 }
 
