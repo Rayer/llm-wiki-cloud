@@ -14,6 +14,7 @@ import (
 
 	"github.com/gin-gonic/gin"
 	"github.com/rayer/llm-wiki-bff/internal/auth"
+	"github.com/rayer/llm-wiki-bff/internal/observability"
 	store "github.com/rayer/llm-wiki-bff/internal/storage"
 )
 
@@ -37,22 +38,28 @@ func (h *Handler) SetSyncBindingAuthority(authority *auth.SyncBindingAuthority) 
 // RawSyncBindingAuth rechecks the current binding for every raw sync request.
 func (h *Handler) RawSyncBindingAuth() gin.HandlerFunc {
 	return func(c *gin.Context) {
+		phaseCtx, authorizeSpan := observability.StartDataPhase(c.Request.Context(), "authorize")
+		c.Request = c.Request.WithContext(phaseCtx)
 		if h.syncBindingAuthority == nil {
+			observability.FinishDataSpan(authorizeSpan, "failure")
 			c.AbortWithStatusJSON(http.StatusServiceUnavailable, gin.H{"error": "sync binding authority unavailable"})
 			return
 		}
 		err := h.syncBindingAuthority.CheckSyncBinding(
-			c.Request.Context(), c.GetString("userID"), c.GetString("projectID"),
+			phaseCtx, c.GetString("userID"), c.GetString("projectID"),
 			c.GetHeader("X-Sync-Binding-ID"), c.GetHeader("X-Wiki-ID"), h.syncBindingHost,
 		)
 		if errors.Is(err, auth.ErrSyncBindingUnauthorized) {
+			observability.FinishDataSpan(authorizeSpan, "rejected")
 			c.AbortWithStatusJSON(http.StatusForbidden, gin.H{"error": "sync binding is not active for this Project"})
 			return
 		}
 		if err != nil {
+			observability.FinishDataSpan(authorizeSpan, observability.DataErrorOutcome(err))
 			c.AbortWithStatusJSON(http.StatusServiceUnavailable, gin.H{"error": "sync binding authority unavailable"})
 			return
 		}
+		observability.FinishDataSpan(authorizeSpan, "success")
 		c.Next()
 	}
 }
@@ -66,31 +73,43 @@ func (h *Handler) SyncRawList(c *gin.Context) {
 	if !ok {
 		return
 	}
-	files, err := rawStore.ListSyncRawFiles(c.Request.Context())
+	readCtx, readSpan := observability.StartDataPhase(c.Request.Context(), "read")
+	files, err := rawStore.ListSyncRawFiles(readCtx)
 	if err != nil {
+		outcome := observability.DataErrorOutcome(err)
+		observability.FinishDataSpan(readSpan, outcome)
+		observability.SetDataOperationOutcome(c.Request.Context(), outcome)
 		c.JSON(http.StatusInternalServerError, gin.H{"error": "could not list raw files"})
 		return
 	}
+	observability.SetDataCount(readSpan, "items", int64(len(files)))
+	observability.FinishDataSpan(readSpan, "success")
 	snapshot := rawSyncSnapshot(files)
 	offset := 0
+	_, inputSpan := observability.StartDataPhase(c.Request.Context(), "input")
 	if token := c.Query("page_token"); token != "" {
 		decoded, err := base64.RawURLEncoding.DecodeString(token)
 		if err != nil {
+			observability.FinishDataSpan(inputSpan, "rejected")
 			c.JSON(http.StatusBadRequest, gin.H{"error": "invalid page token"})
 			return
 		}
 		parts := strings.Split(string(decoded), ":")
 		if len(parts) != 2 || parts[0] != snapshot {
+			observability.FinishDataSpan(inputSpan, "precondition_failed")
+			observability.SetDataOperationOutcome(c.Request.Context(), "precondition_failed")
 			c.JSON(http.StatusConflict, gin.H{"error": "raw listing changed; restart inventory"})
 			return
 		}
 		value, err := strconv.Atoi(parts[1])
 		if err != nil || value < 0 || value > len(files) || value%rawSyncPageSize != 0 {
+			observability.FinishDataSpan(inputSpan, "rejected")
 			c.JSON(http.StatusBadRequest, gin.H{"error": "invalid page token"})
 			return
 		}
 		offset = value
 	}
+	observability.FinishDataSpan(inputSpan, "success")
 	end := min(offset+rawSyncPageSize, len(files))
 	page := rawSyncListPage{Files: files[offset:end], TotalFiles: len(files), Snapshot: snapshot}
 	if end < len(files) {
@@ -105,26 +124,41 @@ func (h *Handler) SyncRawDownload(c *gin.Context) {
 	if !ok {
 		return
 	}
+	_, inputSpan := observability.StartDataPhase(c.Request.Context(), "input")
 	path := c.Query("path")
 	generation := c.Query("generation")
 	if store.ValidateRawSyncPath(path) != nil || generation == "" {
+		observability.FinishDataSpan(inputSpan, "rejected")
 		c.JSON(http.StatusBadRequest, gin.H{"error": "a valid raw path and generation are required"})
 		return
 	}
-	reader, size, err := rawStore.OpenSyncRawFile(c.Request.Context(), path, generation)
+	observability.FinishDataSpan(inputSpan, "success")
+	readCtx, readSpan := observability.StartDataPhase(c.Request.Context(), "read")
+	reader, size, err := rawStore.OpenSyncRawFile(readCtx, path, generation)
 	if err != nil {
+		outcome := observability.DataErrorOutcome(err)
+		observability.FinishDataSpan(readSpan, outcome)
+		observability.SetDataOperationOutcome(c.Request.Context(), outcome)
 		writeRawSyncStorageError(c, err)
 		return
 	}
+	observability.SetDataCount(readSpan, "bytes", size)
+	observability.FinishDataSpan(readSpan, "success")
 	defer reader.Close()
 	c.Header("Cache-Control", "no-store")
 	c.Header("X-Raw-Generation", generation)
 	c.Header("Content-Length", strconv.FormatInt(size, 10))
 	c.Status(http.StatusOK)
-	if _, err := io.Copy(c.Writer, reader); err != nil {
+	transferCtx, transferSpan := observability.StartDataPhase(c.Request.Context(), "transfer")
+	_, err = io.Copy(c.Writer, reader)
+	if err != nil {
+		observability.FinishDataSpan(transferSpan, "transfer_failure")
+		observability.SetDataOperationOutcome(transferCtx, "transfer_failure")
 		// The client verifies the pinned digest before publishing its temp file.
 		return
 	}
+	observability.SetDataCount(transferSpan, "bytes", size)
+	observability.FinishDataSpan(transferSpan, "success")
 }
 
 func (h *Handler) SyncRawUpload(c *gin.Context) {
@@ -135,15 +169,29 @@ func (h *Handler) SyncRawUpload(c *gin.Context) {
 	path := c.Query("path")
 	sha256 := strings.ToLower(strings.TrimSpace(c.GetHeader("X-Content-SHA256")))
 	expectedGeneration := strings.TrimSpace(c.GetHeader("X-Expected-Generation"))
+	_, inputSpan := observability.StartDataPhase(c.Request.Context(), "input")
 	if store.ValidateRawSyncPath(path) != nil || !store.ValidRawSyncSHA256(sha256) {
+		observability.FinishDataSpan(inputSpan, "rejected")
 		c.JSON(http.StatusBadRequest, gin.H{"error": "a valid raw path and SHA-256 are required"})
 		return
 	}
-	generation, err := rawStore.WriteSyncRawFile(c.Request.Context(), path, c.Request.Body, expectedGeneration, sha256)
+	observability.FinishDataSpan(inputSpan, "success")
+	writeCtx, writeSpan := observability.StartDataPhase(c.Request.Context(), "write")
+	generation, err := rawStore.WriteSyncRawFile(writeCtx, path, c.Request.Body, expectedGeneration, sha256)
 	if err != nil {
+		outcome := observability.DataErrorOutcome(err)
+		if errors.Is(err, store.ErrRawSyncConflict) || errors.Is(err, store.ErrGenerationMismatch) {
+			outcome = "precondition_failed"
+		} else if errors.Is(err, store.ErrRawSyncCommitUncertain) {
+			outcome = "unknown"
+		}
+		observability.FinishDataSpan(writeSpan, outcome)
+		observability.SetDataOperationOutcome(c.Request.Context(), outcome)
 		writeRawSyncStorageError(c, err)
 		return
 	}
+	observability.FinishDataSpan(writeSpan, "committed")
+	observability.SetDataOperationOutcome(c.Request.Context(), "committed")
 	c.Header("Cache-Control", "no-store")
 	c.JSON(http.StatusOK, gin.H{"generation": generation, "sha256": sha256})
 }

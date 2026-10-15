@@ -370,6 +370,7 @@ func newProductionRouter(
 ) *gin.Engine {
 	r := gin.Default()
 	r.Use(observability.AuthHTTPMiddleware())
+	r.Use(observability.DataOperationMiddleware())
 	r.Use(middleware.SecurityHeaders(true))
 
 	// OpenTelemetry latency middleware (per-endpoint)

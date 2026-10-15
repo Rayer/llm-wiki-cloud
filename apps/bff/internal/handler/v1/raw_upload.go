@@ -16,6 +16,7 @@ import (
 	"cloud.google.com/go/storage"
 	"github.com/gin-gonic/gin"
 	"github.com/rayer/llm-wiki-bff/internal/handler"
+	"github.com/rayer/llm-wiki-bff/internal/observability"
 	store "github.com/rayer/llm-wiki-bff/internal/storage"
 	"google.golang.org/grpc/codes"
 	"google.golang.org/grpc/status"
@@ -70,8 +71,11 @@ func (h *Handler) RawUpload(c *gin.Context) {
 		return
 	}
 
+	loadCtx, loadSpan := observability.StartDataPhase(c.Request.Context(), "load")
+	c.Request = c.Request.WithContext(loadCtx)
 	ready, err := h.rawUploadProjectReady(c, userID, projectID)
 	if err != nil {
+		observability.FinishDataSpan(loadSpan, observability.DataErrorOutcome(err))
 		if status.Code(err) == codes.NotFound {
 			c.JSON(http.StatusNotFound, handler.ErrorResponse{Error: "project not found"})
 			return
@@ -79,19 +83,24 @@ func (h *Handler) RawUpload(c *gin.Context) {
 		c.JSON(http.StatusInternalServerError, handler.ErrorResponse{Error: "raw upload unavailable"})
 		return
 	}
+	observability.FinishDataSpan(loadSpan, "success")
 	if !ready {
 		c.JSON(http.StatusServiceUnavailable, handler.ErrorResponse{Error: "project not ready"})
 		return
 	}
 
+	inputCtx, inputSpan := observability.StartDataPhase(loadCtx, "input")
+	c.Request = c.Request.WithContext(inputCtx)
 	c.Request.Body = http.MaxBytesReader(c.Writer, c.Request.Body, maxRawUploadRequestSize)
 	file, header, err := c.Request.FormFile("file")
 	if err != nil {
 		var maxBytesErr *http.MaxBytesError
 		if errors.As(err, &maxBytesErr) || strings.Contains(strings.ToLower(err.Error()), "request body too large") {
+			observability.FinishDataSpan(inputSpan, "rejected")
 			c.JSON(http.StatusRequestEntityTooLarge, handler.ErrorResponse{Error: "file too large (max 5 MiB)"})
 			return
 		}
+		observability.FinishDataSpan(inputSpan, "rejected")
 		c.JSON(http.StatusBadRequest, handler.ErrorResponse{Error: "file field is required"})
 		return
 	}
@@ -105,12 +114,18 @@ func (h *Handler) RawUpload(c *gin.Context) {
 		filename = header.Filename
 	}
 	if err := validateRawUploadFilename(filename); err != nil {
+		observability.FinishDataSpan(inputSpan, "rejected")
 		c.JSON(http.StatusBadRequest, handler.ErrorResponse{Error: err.Error()})
 		return
 	}
 
 	data, size, digest, err := readRawUploadBody(file)
 	if err != nil {
+		outcome := "rejected"
+		if !errors.Is(err, errRawUploadTooLarge) && !errors.Is(err, errRawUploadEmptyFile) {
+			outcome = observability.DataErrorOutcome(err)
+		}
+		observability.FinishDataSpan(inputSpan, outcome)
 		switch {
 		case errors.Is(err, errRawUploadTooLarge):
 			c.JSON(http.StatusRequestEntityTooLarge, handler.ErrorResponse{Error: "file too large (max 5 MiB)"})
@@ -121,6 +136,8 @@ func (h *Handler) RawUpload(c *gin.Context) {
 		}
 		return
 	}
+	observability.SetDataCount(inputSpan, "bytes", size)
+	observability.FinishDataSpan(inputSpan, "success")
 
 	wikiStore, err := h.GetGCSClient(c)
 	if err != nil {
@@ -128,24 +145,32 @@ func (h *Handler) RawUpload(c *gin.Context) {
 		return
 	}
 	relPath := rawUploadRelativePath(filename)
-	existingDigest, exists, err := resolveExistingRawDigest(c.Request.Context(), wikiStore, relPath)
+	readCtx, readSpan := observability.StartDataPhase(c.Request.Context(), "read")
+	existingDigest, exists, err := resolveExistingRawDigest(readCtx, wikiStore, relPath)
 	if err != nil {
+		observability.FinishDataSpan(readSpan, observability.DataErrorOutcome(err))
 		c.JSON(http.StatusInternalServerError, handler.ErrorResponse{Error: "raw upload unavailable"})
 		return
 	}
+	observability.FinishDataSpan(readSpan, "success")
 	statusCode, uploadStatus, write := rawUploadDecision(exists, existingDigest, digest, rawUploadOverwrite(c))
 	if !write {
 		if statusCode == http.StatusConflict {
 			c.JSON(http.StatusConflict, handler.ErrorResponse{Error: rawUploadConflictErrorMessage})
 		} else {
+			observability.SetDataOperationOutcome(c.Request.Context(), "no_op")
 			c.JSON(statusCode, newRawUploadResponse(userID, projectID, filename, size, digest, uploadStatus))
 		}
 		return
 	}
-	if _, err := wikiStore.WriteBytes(c.Request.Context(), data, relPath); err != nil {
+	writeCtx, writeSpan := observability.StartDataPhase(c.Request.Context(), "write")
+	if _, err := wikiStore.WriteBytes(writeCtx, data, relPath); err != nil {
+		observability.FinishDataSpan(writeSpan, observability.DataErrorOutcome(err))
 		c.JSON(http.StatusInternalServerError, handler.ErrorResponse{Error: "raw upload unavailable"})
 		return
 	}
+	observability.FinishDataSpan(writeSpan, "committed")
+	observability.SetDataOperationOutcome(c.Request.Context(), "committed")
 
 	c.JSON(statusCode, newRawUploadResponse(userID, projectID, filename, size, digest, uploadStatus))
 }

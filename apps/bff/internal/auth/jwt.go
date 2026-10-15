@@ -14,6 +14,7 @@ import (
 	"github.com/gin-gonic/gin"
 	"github.com/golang-jwt/jwt/v5"
 	"github.com/rayer/llm-wiki-bff/internal/config"
+	"github.com/rayer/llm-wiki-bff/internal/observability"
 )
 
 // Claims is the JWT claims structure for HS256 tokens.
@@ -85,6 +86,25 @@ func JWTAuthWithAccountLookupAndSessionVerifier(cfg config.Config, lookup Accoun
 
 func jwtAuth(cfg config.Config, lookup AccountLookup, enforce bool, verifySession CLIAccessSessionVerifier, authorizeProject ProjectOwnerAuthorizer, webLookupUnavailableStatus int) gin.HandlerFunc {
 	return func(c *gin.Context) {
+		phaseCtx, authorizeSpan := observability.StartDataPhase(c.Request.Context(), "authorize")
+		c.Request = c.Request.WithContext(phaseCtx)
+		authorizeActive := authorizeSpan.IsRecording()
+		finishAuthorize := func(outcome string) {
+			if authorizeActive {
+				observability.FinishDataSpan(authorizeSpan, outcome)
+				authorizeActive = false
+			}
+		}
+		defer func() {
+			if authorizeActive {
+				outcome := "rejected"
+				if c.Writer.Status() >= http.StatusInternalServerError {
+					outcome = "failure"
+				}
+				finishAuthorize(outcome)
+			}
+		}()
+
 		authHeader := c.GetHeader("Authorization")
 
 		// Production / normal mode: require Bearer token
@@ -180,6 +200,7 @@ func jwtAuth(cfg config.Config, lookup AccountLookup, enforce bool, verifySessio
 		if claims.ClientKind == cliClientKind {
 			c.Set("sessionID", claims.SessionID)
 		}
+		finishAuthorize("success")
 		c.Next()
 	}
 }
@@ -199,10 +220,14 @@ func WebOnly() gin.HandlerFunc {
 // CLIOnly limits an endpoint to a session-verified CLI credential.
 func CLIOnly() gin.HandlerFunc {
 	return func(c *gin.Context) {
+		phaseCtx, authorizeSpan := observability.StartDataPhase(c.Request.Context(), "authorize")
+		c.Request = c.Request.WithContext(phaseCtx)
 		if c.GetString("clientKind") != cliClientKind {
+			observability.FinishDataSpan(authorizeSpan, "rejected")
 			c.AbortWithStatusJSON(http.StatusForbidden, gin.H{"error": "CLI authentication required"})
 			return
 		}
+		observability.FinishDataSpan(authorizeSpan, "success")
 		c.Next()
 	}
 }

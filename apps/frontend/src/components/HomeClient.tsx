@@ -154,7 +154,7 @@ function entryDetailHref(entry: ModalEntry): string | null {
 
 export function HomeClient() {
   const { t } = useT();
-  const { currentProject } = useWorkspace();
+  const { currentProject, token } = useWorkspace();
   const [initialSearch] = useState(() => readSearchParams());
   const [query, setQuery] = useState(initialSearch.q);
   const [mode, setMode] = useState<SearchMode>(initialSearch.mode);
@@ -173,6 +173,12 @@ export function HomeClient() {
   const [modalLoading, setModalLoading] = useState(false);
   const citationRequestId = useRef(0);
   const searchRequestId = useRef(0);
+  const searchErrorRef = useRef(error);
+  const identityRef = useRef({ projectId: currentProject?.id, token });
+  useEffect(() => {
+    searchErrorRef.current = error;
+    identityRef.current = { projectId: currentProject?.id, token };
+  }, [currentProject?.id, error, token]);
   const previousProjectIdRef = useRef<string | undefined>(currentProject?.id);
   const sampledProjectIdRef = useRef<string | undefined>(undefined);
   const hasSampledQueriesRef = useRef(false);
@@ -324,10 +330,24 @@ export function HomeClient() {
   const copyDiagnosticId = async () => {
     const diagnosticId = error?.diagnosticId;
     if (!diagnosticId || !navigator.clipboard?.writeText) return;
+    const requestId = searchRequestId.current;
+    const identity = identityRef.current;
     try {
       await navigator.clipboard.writeText(diagnosticId);
+      if (
+        requestId !== searchRequestId.current
+        || identity.projectId !== identityRef.current.projectId
+        || identity.token !== identityRef.current.token
+        || searchErrorRef.current?.diagnosticId !== diagnosticId
+      ) return;
       setDiagnosticIdCopied(true);
     } catch {
+      if (
+        requestId !== searchRequestId.current
+        || identity.projectId !== identityRef.current.projectId
+        || identity.token !== identityRef.current.token
+        || searchErrorRef.current?.diagnosticId !== diagnosticId
+      ) return;
       setDiagnosticIdCopied(false);
     }
   };

@@ -1,7 +1,10 @@
 import { afterEach, describe, expect, it, vi } from 'vitest';
 
 const { apiFetch } = vi.hoisted(() => ({ apiFetch: vi.fn() }));
-vi.mock('@/lib/api', () => ({ apiFetch }));
+vi.mock('@/lib/api', async () => {
+  const actual = await vi.importActual<typeof import('@/lib/api')>('@/lib/api');
+  return { ...actual, apiFetch };
+});
 import { createExport, getExportState, getExportStatus, requestExportDownload } from '@/lib/export-api';
 
 afterEach(() => vi.clearAllMocks());
@@ -24,5 +27,40 @@ describe('LWC-344 export API fixture contract', () => {
     const result = await requestExportDownload('p', 'a/b');
     expect(apiFetch).toHaveBeenLastCalledWith('/api/v1/exports/a%2Fb/download', { method: 'POST', projectId: 'p', json: false, body: undefined, signal: undefined });
     expect(result.signed_url).toBe('https://storage.example/file');
+  });
+
+  it('preserves Export error_message priority and only attaches valid server diagnostic IDs', async () => {
+    let bodyReads = 0;
+    apiFetch.mockResolvedValue({
+      ok: false,
+      status: 503,
+      json: async () => {
+        bodyReads += 1;
+        return {
+          error_message: 'export primary message',
+          reason: 'lower priority reason',
+          error: 'last priority error',
+          diagnostic_id: 'export_help-123',
+        };
+      },
+    });
+
+    await expect(getExportState('project-a')).rejects.toMatchObject({
+      message: 'export primary message',
+      status: 503,
+      diagnosticId: 'export_help-123',
+    });
+    expect(bodyReads).toBe(1);
+
+    apiFetch.mockResolvedValue({
+      ok: false,
+      status: 502,
+      json: async () => ({ reason: 'export reason', diagnostic_id: 'invalid/id' }),
+    });
+    await expect(getExportState('project-a')).rejects.toMatchObject({
+      message: 'export reason',
+      status: 502,
+      diagnosticId: undefined,
+    });
   });
 });

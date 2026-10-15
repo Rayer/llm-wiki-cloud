@@ -10,6 +10,7 @@ if (!(globalThis as { IS_REACT_ACT_ENVIRONMENT?: boolean }).IS_REACT_ACT_ENVIRON
 
 const mocks = vi.hoisted(() => ({
   currentProject: { id: 'project-a', name: 'Project A' },
+  token: 'session-a',
   getConcepts: vi.fn(),
   getProfile: vi.fn(),
   getStatus: vi.fn(),
@@ -32,7 +33,7 @@ vi.mock('@/lib/i18n', () => ({
 }));
 
 vi.mock('@/components/WorkspaceProvider', () => ({
-  useWorkspace: () => ({ currentProject: mocks.currentProject }),
+  useWorkspace: () => ({ currentProject: mocks.currentProject, token: mocks.token }),
 }));
 
 vi.mock('@/components/NavigationBlocker', async () => {
@@ -88,6 +89,7 @@ function deferred<T>() {
 
 beforeEach(() => {
   mocks.currentProject = { id: 'project-a', name: 'Project A' };
+  mocks.token = 'session-a';
   mocks.getStatus.mockResolvedValue(status());
   mocks.getConcepts.mockResolvedValue([]);
   mocks.searchWiki.mockResolvedValue(SEARCH_RESPONSE);
@@ -429,5 +431,69 @@ describe('LWC-248 home search submission contract', () => {
     await waitFor(() => expect(writeText).toHaveBeenCalledWith(diagnosticId));
     expect(screen.getByRole('button', { name: 'QueryErrors.diagnosticIdCopied' })).toBeTruthy();
     Object.defineProperty(navigator, 'clipboard', { configurable: true, value: undefined });
+  });
+
+  it('keeps a Query error without a copy affordance when the server ID is absent', async () => {
+    const writeText = vi.fn();
+    Object.defineProperty(navigator, 'clipboard', { configurable: true, value: { writeText } });
+    mocks.searchWiki.mockRejectedValueOnce(new QueryApiError('safe provider detail', 503, 'query_provider_failed'));
+
+    render(<HomeClient />);
+    await waitForInitialSearchState();
+    const queryInput = screen.getByRole('textbox');
+    const { form } = await getFormFromSearchButton();
+    await act(async () => {
+      fireEvent.change(queryInput, { target: { value: 'query without diagnostic ID' } });
+      fireEvent.submit(form);
+    });
+
+    expect(await screen.findByText('QueryErrors.providerFailed')).toBeTruthy();
+    expect(screen.queryByText('Demo.noResults')).toBeNull();
+    expect(screen.queryByRole('button', { name: 'QueryErrors.copyDiagnosticId' })).toBeNull();
+    expect(screen.queryByText('QueryErrors.diagnosticId')).toBeNull();
+    expect(writeText).not.toHaveBeenCalled();
+    Object.defineProperty(navigator, 'clipboard', { configurable: true, value: undefined });
+  });
+
+  it('does not apply a pending diagnostic copy to a newer request, Project, or session', async () => {
+    const firstID = 'first_help-123';
+    const nextID = 'next_help-456';
+    let resolveCopy!: () => void;
+    const pendingCopy = new Promise<void>((resolve) => { resolveCopy = resolve; });
+    const writeText = vi.fn().mockReturnValue(pendingCopy);
+    Object.defineProperty(navigator, 'clipboard', { configurable: true, value: { writeText } });
+    mocks.searchWiki
+      .mockRejectedValueOnce(new QueryApiError('first error', 503, 'query_provider_failed', firstID))
+      .mockRejectedValueOnce(new QueryApiError('next error', 503, 'query_provider_failed', nextID));
+
+    const { rerender } = render(<HomeClient />);
+    await waitForInitialSearchState();
+    const queryInput = screen.getByRole('textbox');
+    const { form } = await getFormFromSearchButton();
+    await act(async () => {
+      fireEvent.change(queryInput, { target: { value: 'first request' } });
+      fireEvent.submit(form);
+    });
+    expect(await screen.findByText(firstID)).toBeTruthy();
+    await act(async () => {
+      fireEvent.click(screen.getByRole('button', { name: 'QueryErrors.copyDiagnosticId' }));
+    });
+    expect(writeText).toHaveBeenCalledWith(firstID);
+
+    mocks.currentProject = { id: 'project-b', name: 'Project B' };
+    mocks.token = 'session-b';
+    rerender(<HomeClient />);
+    await act(async () => {
+      fireEvent.change(screen.getByRole('textbox'), { target: { value: 'next request' } });
+      fireEvent.submit((await getFormFromSearchButton()).form);
+    });
+    expect(await screen.findByText(nextID)).toBeTruthy();
+
+    await act(async () => {
+      resolveCopy();
+      await pendingCopy;
+    });
+    expect(screen.getByRole('button', { name: 'QueryErrors.copyDiagnosticId' })).toBeTruthy();
+    expect(screen.queryByRole('button', { name: 'QueryErrors.diagnosticIdCopied' })).toBeNull();
   });
 });
