@@ -484,6 +484,143 @@ func TestRawSyncCLIRealSubprocessInitPushAndPushSync(t *testing.T) {
 	}
 }
 
+func TestRawSyncCLIClosedStderrPipeKeepsSuccessfulPushSuccessful(t *testing.T) {
+	fixture := &rawSyncProcessFixture{files: make(map[string]store.RawSyncFile), data: make(map[string][]byte), nextGeneration: 1}
+	var requestMu sync.Mutex
+	var requestPaths []string
+	recordRequest := func(path string) {
+		requestMu.Lock()
+		requestPaths = append(requestPaths, path)
+		requestMu.Unlock()
+	}
+	dataServer := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		recordRequest(r.URL.Path)
+		fixture.serveData(w, r, "")
+	}))
+	defer dataServer.Close()
+	authServer := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		recordRequest(r.URL.Path)
+		fixture.serveAuth(w, r, dataServer.URL)
+	}))
+	defer authServer.Close()
+
+	vault := t.TempDir()
+	if err := os.MkdirAll(filepath.Join(vault, "raw"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	writeTestJSON(t, vaultBindingPath(vault), vaultBindingConfig{Host: authServer.URL, WikiID: "wiki-1", ProjectID: "project-1", BindingID: "binding-1"})
+	configRoot := filepath.Join(t.TempDir(), "config")
+	storeDir := filepath.Join(configRoot, localAuthDirectoryName)
+	if err := os.MkdirAll(storeDir, 0o700); err != nil {
+		t.Fatal(err)
+	}
+	writeTestJSON(t, filepath.Join(storeDir, localConfigFileName), cliLocalConfig{AuthHost: authServer.URL})
+	writeTestJSON(t, filepath.Join(storeDir, localCredentialsName), cliLocalCredentials{
+		AuthHost: authServer.URL, AccessToken: "access-token-1", RefreshToken: "refresh-token-1",
+		SessionID: "session-1", UserID: "user-1", Role: "user", AuthVersion: 1,
+	})
+
+	binary := filepath.Join(t.TempDir(), "lwc-sync")
+	build := exec.Command("go", "build", "-o", binary, ".")
+	if output, err := build.CombinedOutput(); err != nil {
+		t.Fatalf("build CLI: %v\n%s", err, output)
+	}
+	newCommand := func(stderr io.Writer) *exec.Cmd {
+		command := exec.Command(binary, "push", "--vault", vault)
+		command.Env = append(os.Environ(), "XDG_CONFIG_HOME="+configRoot, "LWC_SYNC_AUTH_HOST="+authServer.URL)
+		command.Stderr = stderr
+		return command
+	}
+	resetRequests := func() {
+		requestMu.Lock()
+		requestPaths = nil
+		requestMu.Unlock()
+	}
+	assertTwoRequests := func(label string) {
+		t.Helper()
+		requestMu.Lock()
+		got := strings.Join(requestPaths, "\n")
+		requestMu.Unlock()
+		if want := "/api/v1/auth/cli/sync-service\n" + cliRawListRoute; got != want {
+			t.Fatalf("%s request paths=%q, want exactly %q", label, got, want)
+		}
+		fixture.mu.Lock()
+		dataRequests := fixture.dataRequests
+		fixture.mu.Unlock()
+		if dataRequests != 1 {
+			t.Fatalf("%s data requests=%d, want one raw list request", label, dataRequests)
+		}
+	}
+
+	resetRequests()
+	var normalStderr bytes.Buffer
+	normal := newCommand(&normalStderr)
+	var normalStdout bytes.Buffer
+	normal.Stdout = &normalStdout
+	if err := normal.Run(); err != nil {
+		t.Fatalf("push with normal stderr failed: %v\nstdout=%q\nstderr=%q", err, normalStdout.String(), normalStderr.String())
+	}
+	const wantStdout = "Added: 0  Updated: 0  Skipped: 0  Downloaded: 0  Failed: 0\n"
+	if normalStdout.String() != wantStdout || strings.Count(normalStderr.String(), "lwc-sync observation") != 1 || !strings.Contains(normalStderr.String(), "outcome=success") {
+		t.Fatalf("normal push output changed: stdout=%q stderr=%q", normalStdout.String(), normalStderr.String())
+	}
+	assertTwoRequests("normal stderr")
+
+	resetRequests()
+	fixture.mu.Lock()
+	fixture.dataRequests = 0
+	fixture.mu.Unlock()
+	fileStderr, err := os.CreateTemp(t.TempDir(), "stderr-")
+	if err != nil {
+		t.Fatal(err)
+	}
+	fileCommand := newCommand(fileStderr)
+	var fileStdout bytes.Buffer
+	fileCommand.Stdout = &fileStdout
+	if err := fileCommand.Run(); err != nil {
+		_ = fileStderr.Close()
+		t.Fatalf("push with file stderr failed: %v\nstdout=%q", err, fileStdout.String())
+	}
+	if err := fileStderr.Close(); err != nil {
+		t.Fatal(err)
+	}
+	fileStderrBytes, err := os.ReadFile(fileStderr.Name())
+	if err != nil {
+		t.Fatal(err)
+	}
+	if fileStdout.String() != normalStdout.String() || strings.Count(string(fileStderrBytes), "lwc-sync observation") != 1 || !strings.Contains(string(fileStderrBytes), "outcome=success") {
+		t.Fatalf("file stderr output changed: stdout=%q stderr=%q", fileStdout.String(), fileStderrBytes)
+	}
+	assertTwoRequests("file stderr")
+
+	resetRequests()
+	fixture.mu.Lock()
+	fixture.dataRequests = 0
+	fixture.mu.Unlock()
+	pipeReader, pipeWriter, err := os.Pipe()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := pipeReader.Close(); err != nil {
+		_ = pipeWriter.Close()
+		t.Fatal(err)
+	}
+	closed := newCommand(pipeWriter)
+	var closedStdout bytes.Buffer
+	closed.Stdout = &closedStdout
+	closedErr := closed.Run()
+	if err := pipeWriter.Close(); err != nil {
+		t.Fatal(err)
+	}
+	if closedErr != nil {
+		t.Fatalf("successful push failed with closed stderr pipe: %v\nstdout=%q", closedErr, closedStdout.String())
+	}
+	if closedStdout.String() != normalStdout.String() {
+		t.Fatalf("closed-pipe stdout=%q, normal stdout=%q", closedStdout.String(), normalStdout.String())
+	}
+	assertTwoRequests("closed stderr pipe")
+}
+
 func TestRawSyncFailedShrinksDoNotFundGrowth(t *testing.T) {
 	fixture := &rawSyncProcessFixture{files: make(map[string]store.RawSyncFile), data: make(map[string][]byte), nextGeneration: 1000}
 	dataServer := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {

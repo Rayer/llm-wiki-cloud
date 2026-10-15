@@ -6,7 +6,6 @@ import (
 	"errors"
 	"fmt"
 	"io"
-	"os"
 	"strings"
 	"sync"
 	"time"
@@ -70,7 +69,6 @@ type rawSyncObservation struct {
 func newRawSyncObservation() *rawSyncObservation {
 	return &rawSyncObservation{
 		started: time.Now(),
-		writer:  os.Stderr,
 		stages:  make(map[rawSyncObservationStage]rawSyncObservedStage),
 	}
 }
@@ -264,6 +262,10 @@ func (o *rawSyncObservation) finish(err error) {
 		fmt.Fprintf(&line, " diagnostic_id=%s", diagnosticID)
 	}
 	line.WriteByte('\n')
+	if writer == nil {
+		writeRawSyncObservation(line.String())
+		return
+	}
 	_, _ = io.WriteString(writer, line.String())
 }
 
