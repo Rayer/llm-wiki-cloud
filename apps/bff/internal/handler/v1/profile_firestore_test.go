@@ -8,6 +8,7 @@ import (
 	"net/url"
 	"os"
 	"strings"
+	"sync/atomic"
 	"testing"
 	"time"
 
@@ -15,9 +16,13 @@ import (
 	internalfirestore "github.com/rayer/llm-wiki-bff/internal/firestore"
 	"github.com/rayer/llm-wiki-bff/internal/gcs"
 	"github.com/rayer/llm-wiki-bff/internal/localfs"
+	"github.com/rayer/llm-wiki-bff/internal/observability"
 	"github.com/rayer/llm-wiki-bff/internal/profileartifacts"
 	"github.com/rayer/llm-wiki-bff/internal/profilederive"
 	store "github.com/rayer/llm-wiki-bff/internal/storage"
+	"go.opentelemetry.io/otel"
+	sdktrace "go.opentelemetry.io/otel/sdk/trace"
+	"go.opentelemetry.io/otel/sdk/trace/tracetest"
 	"google.golang.org/api/option"
 )
 
@@ -214,7 +219,7 @@ func TestFirestoreProfileTransactionsAndTransitions(t *testing.T) {
 		t.Fatalf("claim tagging job: %v", err)
 	}
 	state, err = repo.ProfileJobTransition(ctx, userID, projectID, 1, candidateID, jobID, profileJobReady, 0, "", "tags-1", "rules-1", true)
-	if err != nil || state.Active != nil || state.Job == nil || state.Job.Status != profileJobReady {
+	if err != nil || state.Active != nil || state.Job == nil || state.Job.Status != profileJobReady || state.observationOutcome != "not_active" || state.activeOutcome != "not_active" {
 		t.Fatalf("ready before confirm: state=%+v err=%v", state, err)
 	}
 	state, err = repo.ConfirmProfileCandidate(ctx, userID, projectID, candidateID, 1)
@@ -226,7 +231,7 @@ func TestFirestoreProfileTransactionsAndTransitions(t *testing.T) {
 		t.Fatalf("duplicate confirm regressed active/job: state=%+v err=%v", state, err)
 	}
 	state, err = repo.ProfileJobTransition(ctx, userID, projectID, 1, candidateID, jobID, profileJobReady, 0, "", "tags-1", "rules-1", true)
-	if err != nil || state.Active == nil || state.Job.Status != profileJobReady {
+	if err != nil || state.Active == nil || state.Job.Status != profileJobReady || state.observationOutcome != "committed" || state.activeOutcome != "committed" {
 		t.Fatalf("duplicate ready transition regressed active/job: state=%+v err=%v", state, err)
 	}
 
@@ -235,8 +240,12 @@ func TestFirestoreProfileTransactionsAndTransitions(t *testing.T) {
 	}
 	compileDictionary := ProfileDerivedRef{Revision: "dictionary-2", InputDigest: digest, ModelVersion: "m2", PromptVersion: "p2", SchemaVersion: "s2"}
 	state, err = repo.ProfileCompileCandidateReady(ctx, userID, projectID, "g2", 1, digest, compileDictionary, ProfilePreview{DictionaryDiff: "tag diff", GuidanceDiff: "must be ignored"})
-	if err != nil || state.Candidate == nil || state.Candidate.Source != "compile_auto" || state.Candidate.Guidance.Revision != "guidance-1" || state.Candidate.Preview.GuidanceDiff != "" || state.Job == nil {
+	if err != nil || state.Candidate == nil || state.Candidate.Source != "compile_auto" || state.Candidate.Guidance.Revision != "guidance-1" || state.Candidate.Preview.GuidanceDiff != "" || state.Job == nil || state.observationOutcome != "committed" {
 		t.Fatalf("compile-auto candidate changed guidance: state=%+v err=%v", state, err)
+	}
+	existingCandidate, err := repo.ProfileCompileCandidateReady(ctx, userID, projectID, "g2", 1, digest, compileDictionary, ProfilePreview{})
+	if err != nil || existingCandidate.observationOutcome != "existing" || existingCandidate.Candidate == nil || existingCandidate.Candidate.CandidateID != state.Candidate.CandidateID {
+		t.Fatalf("existing compile candidate result=%+v err=%v", existingCandidate, err)
 	}
 	compileJobID, compileCandidateID := state.Job.JobID, state.Candidate.CandidateID
 	if _, err := repo.ClaimProfileJob(ctx, userID, projectID, 1, compileCandidateID, compileJobID); err != nil {
@@ -245,6 +254,63 @@ func TestFirestoreProfileTransactionsAndTransitions(t *testing.T) {
 	state, err = repo.ProfileJobTransition(ctx, userID, projectID, 1, compileCandidateID, compileJobID, profileJobReady, 0, "", "tags-2", "rules-2", true)
 	if err != nil || state.Active == nil || state.Active.CandidateID != compileCandidateID || state.Active.GuidanceRevision != "guidance-1" {
 		t.Fatalf("compile-auto activation: state=%+v err=%v", state, err)
+	}
+
+	if err := repo.ProfileCompileReconcileRequested(ctx, userID, projectID, "g4", 1, digest); err != nil {
+		t.Fatalf("schedule callback-abort fixture: %v", err)
+	}
+	// Abort after the update callback staged its writes but before RunTransaction sends Commit.
+	var completedCallbacks atomic.Int32
+	outerAbortErr := errors.New("synthetic outer Profile callback abort")
+	failingRepo := newFirestoreProfileRepository(repo.client)
+	failingRepo.now = func() time.Time { return clock }
+	failingRepo.runCompileCandidateTransaction = func(ctx context.Context, update func(context.Context, *firestore.Transaction) error) error {
+		return repo.client.RunTransaction(ctx, func(ctx context.Context, tx *firestore.Transaction) error {
+			if err := update(ctx, tx); err != nil {
+				return err
+			}
+			completedCallbacks.Add(1)
+			return outerAbortErr
+		})
+	}
+	traces := tracetest.NewInMemoryExporter()
+	traceProvider := sdktrace.NewTracerProvider(sdktrace.WithSyncer(traces))
+	previousTraceProvider := otel.GetTracerProvider()
+	otel.SetTracerProvider(traceProvider)
+	t.Cleanup(func() {
+		otel.SetTracerProvider(previousTraceProvider)
+		_ = traceProvider.Shutdown(context.Background())
+	})
+	compileCtx, compileSpan := observability.StartProfileSpan(ctx, "profile.compile")
+	commitCtx, commitSpan := observability.StartProfileSpan(compileCtx, "profile.compile.commit")
+	abortedState, transactionErr := failingRepo.ProfileCompileCandidateReady(commitCtx, userID, projectID, "g4", 1, digest, compileDictionary, ProfilePreview{})
+	transactionOutcome := profileCandidateCommitOutcome(abortedState, transactionErr)
+	observability.SetProfileOutcome(commitSpan, "profile.commit.outcome", transactionOutcome)
+	observability.SetProfileOutcome(commitSpan, "profile.candidate.outcome", transactionOutcome)
+	observability.FinishProfileSpan(commitSpan, transactionOutcome)
+	rootOutcome := profileCompileRootOutcome(abortedState, transactionErr)
+	observability.SetProfileOutcome(compileSpan, "profile.candidate.outcome", rootOutcome)
+	observability.FinishProfileSpan(compileSpan, rootOutcome)
+	if !errors.Is(transactionErr, outerAbortErr) || completedCallbacks.Load() != 1 || abortedState.observationOutcome != "committed" || abortedState.Candidate == nil || abortedState.Candidate.ContentGeneration != "g4" {
+		t.Fatalf("callback-abort-before-Commit state=%+v error=%v callbacks=%d", abortedState, transactionErr, completedCallbacks.Load())
+	}
+	traceOutcomes := map[string]map[string]string{}
+	for _, span := range traces.GetSpans() {
+		traceOutcomes[span.Name] = map[string]string{}
+		for _, attribute := range span.Attributes {
+			if attribute.Key == "profile.candidate.outcome" || attribute.Key == "profile.commit.outcome" {
+				traceOutcomes[span.Name][string(attribute.Key)] = attribute.Value.AsString()
+			}
+		}
+	}
+	if traceOutcomes["profile.compile"]["profile.candidate.outcome"] != "unknown" ||
+		traceOutcomes["profile.compile.commit"]["profile.commit.outcome"] != "unknown" ||
+		traceOutcomes["profile.compile.commit"]["profile.candidate.outcome"] != "unknown" {
+		t.Fatalf("callback-abort-before-Commit spans = %#v, want root and child unknown", traceOutcomes)
+	}
+	persistedAfterAbort, err := repo.GetProfile(ctx, userID, projectID)
+	if err != nil || persistedAfterAbort.Candidate == nil || persistedAfterAbort.Candidate.CandidateID != compileCandidateID || persistedAfterAbort.Candidate.ContentGeneration != "g2" {
+		t.Fatalf("callback abort changed persisted Profile: state=%+v err=%v", persistedAfterAbort, err)
 	}
 
 	if err := repo.ProfileCompileReconcileRequested(ctx, userID, projectID, "g3", 1, digest); err != nil {
@@ -256,7 +322,8 @@ func TestFirestoreProfileTransactionsAndTransitions(t *testing.T) {
 		t.Fatalf("save during compile lost active tuple: state=%+v err=%v", state, err)
 	}
 	nextDigest := profileRequirementsDigest(nextRequirements)
-	if _, err := repo.ProfileCompileCandidateReady(ctx, userID, projectID, "g3", 1, digest, compileDictionary, ProfilePreview{}); !errors.As(err, &conflict) || conflict.Latest != 2 {
+	staleResult, err := repo.ProfileCompileCandidateReady(ctx, userID, projectID, "g3", 1, digest, compileDictionary, ProfilePreview{})
+	if !errors.As(err, &conflict) || conflict.Latest != 2 || staleResult.observationOutcome != "superseded" {
 		t.Fatalf("stale compile result error = %v, want latest revision 2", err)
 	}
 	reconcileSnapshot, err := profileCompileReconcileRef(projectRef.Collection("profile").Doc("state"), "g3").Get(ctx)
@@ -268,7 +335,7 @@ func TestFirestoreProfileTransactionsAndTransitions(t *testing.T) {
 	}
 	nextCompileDictionary := ProfileDerivedRef{Revision: "dictionary-3", InputDigest: nextDigest, ModelVersion: "m3", PromptVersion: "p3", SchemaVersion: "s3"}
 	state, err = repo.ProfileCompileCandidateReady(ctx, userID, projectID, "g3", 2, nextDigest, nextCompileDictionary, ProfilePreview{DictionaryDiff: "next tags", GuidanceDiff: "ignored"})
-	if err != nil || state.Candidate != nil || state.Job != nil || state.DerivationStatus == nil || *state.DerivationStatus != profileDerivationPending || state.Active == nil || state.Active.CandidateID != compileCandidateID {
+	if err != nil || state.Candidate != nil || state.Job != nil || state.DerivationStatus == nil || *state.DerivationStatus != profileDerivationPending || state.Active == nil || state.Active.CandidateID != compileCandidateID || state.observationOutcome != "waiting_manual" {
 		t.Fatalf("compile must wait for current manual derivation: state=%+v err=%v", state, err)
 	}
 	reconcileSnapshot, err = profileCompileReconcileRef(projectRef.Collection("profile").Doc("state"), "g3").Get(ctx)
@@ -713,12 +780,12 @@ func TestFirestorePromotesConfirmedBootstrapAfterFirstCompile(t *testing.T) {
 	}
 	state, err = repo.ProfileBootstrapCompileCandidateReady(ctx, userID, projectID, "G1", state.Revision, digest, &bootstrapRef, dictionary, guidance, preview)
 	if err != nil || state.Candidate == nil || state.Candidate.Source != "compile_auto" || state.Candidate.ContentGeneration != "G1" ||
-		state.Candidate.Guidance.Revision != guidance.Revision || state.Candidate.Preview.GuidanceDiff != "" || state.Job == nil || state.Active != nil {
+		state.Candidate.Guidance.Revision != guidance.Revision || state.Candidate.Preview.GuidanceDiff != "" || state.Job == nil || state.Active != nil || state.observationOutcome != "committed" {
 		t.Fatalf("first generation candidate=%+v job=%+v active=%+v err=%v", state.Candidate, state.Job, state.Active, err)
 	}
 	candidateID := state.Candidate.CandidateID
 	state, err = repo.ProfileBootstrapCompileCandidateReady(ctx, userID, projectID, "G1", state.Revision, digest, &bootstrapRef, dictionary, guidance, preview)
-	if err != nil || state.Candidate == nil || state.Candidate.CandidateID != candidateID {
+	if err != nil || state.Candidate == nil || state.Candidate.CandidateID != candidateID || state.observationOutcome != "existing" {
 		t.Fatalf("repeated first-generation reconcile was not idempotent: candidate=%+v err=%v", state.Candidate, err)
 	}
 	state, err = repo.SaveProfile(ctx, userID, projectID, state.Revision, []ProfileRequirement{{ID: "r1", Text: "changed while compile was running"}})

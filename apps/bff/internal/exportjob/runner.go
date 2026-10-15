@@ -16,6 +16,7 @@ import (
 	"cloud.google.com/go/firestore"
 	"cloud.google.com/go/storage"
 	"github.com/rayer/llm-wiki-bff/internal/generation"
+	"github.com/rayer/llm-wiki-bff/internal/observability"
 	"google.golang.org/api/iterator"
 	"google.golang.org/grpc/codes"
 	"google.golang.org/grpc/status"
@@ -36,29 +37,81 @@ type exportSource struct {
 
 // RunExport claims one queued job, snapshots its project objects by GCS
 // generation, streams the ZIP to GCS, verifies it, and only then makes it ready.
-func RunExport(ctx context.Context, repo Repository, archives *CloudArchiveStore, userID, projectID string, job Job, fs *firestore.Client) error {
+func RunExport(ctx context.Context, repo Repository, archives *CloudArchiveStore, userID, projectID string, job Job, fs *firestore.Client) (resultErr error) {
+	ctx, workerSpan := observability.StartExportSpan(ctx, "export.worker")
+	observability.SetExportOutcome(workerSpan, "export.publication.outcome", "not_applicable")
+	defer func() {
+		outcome := "success"
+		if resultErr != nil {
+			outcome = "failure"
+		}
+		observability.FinishExportSpan(workerSpan, outcome)
+	}()
 	if repo == nil || archives == nil {
 		return errors.New("export worker unavailable")
 	}
-	if err := repo.MarkRunning(ctx, userID, projectID, job.ExportID); err != nil {
+	if err := runExportPhase(ctx, "export.worker.mark_running", func(ctx context.Context) error {
+		return repo.MarkRunning(ctx, userID, projectID, job.ExportID)
+	}); err != nil {
 		return err
 	}
 	workCtx, cancel := context.WithTimeout(ctx, HardTimeout)
 	defer cancel()
 	source := exportSource{client: archives.client, bucket: archives.bucket, fs: fs}
-	snapshotAt, files, err := source.files(workCtx, userID, projectID, job.Scope)
+	var snapshotAt time.Time
+	var files []FileSource
+	err := runExportPhase(workCtx, "export.worker.inventory", func(ctx context.Context) error {
+		var err error
+		snapshotAt, files, err = source.files(ctx, userID, projectID, job.Scope)
+		observability.SetExportCount(workerSpan, "export.file_count", len(files))
+		redacted := 0
+		for _, file := range files {
+			redacted += len(file.RedactedFields)
+		}
+		observability.SetExportCount(workerSpan, "export.redacted_field_count", redacted)
+		return err
+	})
 	if err == nil {
 		var completed time.Time
 		var size int64
-		completed, size, err = archives.writeAndPublish(workCtx, userID, projectID, job, snapshotAt, files)
+		err = runExportPhase(workCtx, "export.worker.archive", func(ctx context.Context) error {
+			var publishErr error
+			completed, size, publishErr = archives.writeAndPublish(ctx, userID, projectID, job, snapshotAt, files)
+			return publishErr
+		})
 		if err == nil {
-			err = repo.Complete(workCtx, userID, projectID, job.ExportID, snapshotAt, completed, size)
+			observability.SetExportOutcome(workerSpan, "export.publication.outcome", "committed")
+			observability.SetExportCount(workerSpan, "export.archive_bytes", int(size))
+			err = runExportPhase(workCtx, "export.worker.complete", func(ctx context.Context) error {
+				return repo.Complete(ctx, userID, projectID, job.ExportID, snapshotAt, completed, size)
+			})
+			if err == nil {
+				observability.SetExportOutcome(workerSpan, "export.job.outcome", "committed")
+			} else {
+				observability.SetExportOutcome(workerSpan, "export.job.outcome", "unknown")
+			}
+		} else {
+			observability.SetExportOutcome(workerSpan, "export.publication.outcome", "unknown")
 		}
 	}
 	if err != nil {
-		failCtx, failCancel := context.WithTimeout(context.Background(), 10*time.Second)
+		failCtx, failCancel := context.WithTimeout(context.WithoutCancel(ctx), 10*time.Second)
 		defer failCancel()
-		_ = repo.Fail(failCtx, userID, projectID, job.ExportID, "worker_failure", "Export could not be completed. You can try again.")
+		var failResult FailResult
+		failErr := runExportPhase(failCtx, "export.worker.fail", func(ctx context.Context) error {
+			var err error
+			failResult, err = repo.Fail(ctx, userID, projectID, job.ExportID, "worker_failure", "Export could not be completed. You can try again.")
+			return err
+		})
+		if failErr == nil {
+			outcome := "no_op"
+			if failResult.Changed {
+				outcome = "committed"
+			}
+			observability.SetExportOutcome(workerSpan, "export.job.outcome", outcome)
+		} else {
+			observability.SetExportOutcome(workerSpan, "export.job.outcome", "unknown")
+		}
 		return err
 	}
 	return nil

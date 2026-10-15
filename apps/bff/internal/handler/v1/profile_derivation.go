@@ -11,6 +11,7 @@ import (
 
 	"github.com/rayer/llm-wiki-bff/internal/gcs"
 	"github.com/rayer/llm-wiki-bff/internal/generation"
+	"github.com/rayer/llm-wiki-bff/internal/observability"
 	"github.com/rayer/llm-wiki-bff/internal/profileartifacts"
 	"github.com/rayer/llm-wiki-bff/internal/profilederive"
 	store "github.com/rayer/llm-wiki-bff/internal/storage"
@@ -114,7 +115,13 @@ func (h *Handler) RunProfileDerivation(ctx context.Context, userID, projectID st
 // and the worker's compile-start guidance pin; this is not an HTTP input.
 // Existing active Profiles get a dictionary-only candidate; first-generation
 // promotion requires the exact confirmed bootstrap ref consumed by the batch.
-func (h *Handler) RunProfileCompileDerivation(ctx context.Context, userID, projectID string, success ProfileCompileSuccess, revision int64, requirementsDigest string, provider *profilederive.Provider) (ProfileState, error) {
+func (h *Handler) RunProfileCompileDerivation(ctx context.Context, userID, projectID string, success ProfileCompileSuccess, revision int64, requirementsDigest string, provider *profilederive.Provider) (result ProfileState, resultErr error) {
+	ctx, compileSpan := observability.StartProfileSpan(ctx, "profile.compile")
+	defer func() {
+		outcome := profileCompileRootOutcome(result, resultErr)
+		observability.SetProfileOutcome(compileSpan, "profile.candidate.outcome", outcome)
+		observability.FinishProfileSpan(compileSpan, outcome)
+	}()
 	project, err := h.AuthorizeProject(ctx, userID, projectID, ProjectEdit)
 	if err != nil {
 		return ProfileState{}, err
@@ -144,6 +151,8 @@ func (h *Handler) RunProfileCompileDerivation(ctx context.Context, userID, proje
 		return ProfileState{}, errors.New("successful compile result is not the current committed generation")
 	}
 	if c := state.Candidate; c != nil && c.Source == "compile_auto" && c.BaseRevision == revision && c.ContentGeneration == generationID && c.RequirementsDigest == currentDigest {
+		state.observationOutcome = "existing"
+		observability.SetProfileOutcome(compileSpan, "profile.candidate.outcome", "existing")
 		return state, nil
 	}
 	if len(state.Requirements) == 0 {
@@ -151,6 +160,8 @@ func (h *Handler) RunProfileCompileDerivation(ctx context.Context, userID, proje
 			return ProfileState{}, errProfileBootstrapNotCurrent
 		}
 		if state.Active == nil {
+			state.observationOutcome = "no_op"
+			observability.SetProfileOutcome(compileSpan, "profile.candidate.outcome", "no_op")
 			return state, nil
 		}
 	}
@@ -197,7 +208,10 @@ func (h *Handler) RunProfileCompileDerivation(ctx context.Context, userID, proje
 		err = neutralErr
 		derived = profilederive.CompileAutoResult{DictionaryRef: neutral.DictionaryRef, DictionaryData: neutral.DictionaryData, Preview: neutral.Preview}
 	} else {
-		derived, err = provider.DeriveCompileAuto(ctx, revision, requirements, generationID, conceptsDigest, concepts)
+		providerCtx, providerSpan := observability.StartProfileSpan(ctx, "profile.compile.provider")
+		derived, err = provider.DeriveCompileAuto(providerCtx, revision, requirements, generationID, conceptsDigest, concepts)
+		observability.SetProfileOutcome(providerSpan, "profile.provider.outcome", map[bool]string{true: "failure", false: "success"}[err != nil])
+		observability.FinishProfileSpan(providerSpan, map[bool]string{true: "failure", false: "success"}[err != nil])
 	}
 	if err != nil {
 		return ProfileState{}, err
@@ -206,12 +220,22 @@ func (h *Handler) RunProfileCompileDerivation(ctx context.Context, userID, proje
 	if !ok {
 		return ProfileState{}, errors.New("create-only Profile artifact store unavailable")
 	}
-	if err := profileartifacts.WriteDictionary(ctx, objects, derived.DictionaryRef, derived.DictionaryData); err != nil {
-		return ProfileState{}, err
+	artifactCtx, artifactSpan := observability.StartProfileSpan(ctx, "profile.compile.artifact_write")
+	writeErr := profileartifacts.WriteDictionary(artifactCtx, objects, derived.DictionaryRef, derived.DictionaryData)
+	observability.SetProfileOutcome(artifactSpan, "profile.artifact.outcome", map[bool]string{true: "failure", false: "success"}[writeErr != nil])
+	observability.FinishProfileSpan(artifactSpan, map[bool]string{true: "failure", false: "success"}[writeErr != nil])
+	if writeErr != nil {
+		return ProfileState{}, writeErr
 	}
 	preview := ProfilePreview{DictionaryDiff: derived.Preview.DictionaryDiff, Requirements: profileAccountingFromDeriver(derived.Preview.Requirements)}
 	if state.Active != nil {
-		return h.CompleteProfileCompileCandidate(ctx, project.UserID, project.ProjectID, generationID, revision, currentDigest, profileDerivedRefFromArtifact(derived.DictionaryRef), preview)
+		commitCtx, commitSpan := observability.StartProfileSpan(ctx, "profile.compile.commit")
+		committed, commitErr := h.CompleteProfileCompileCandidate(commitCtx, project.UserID, project.ProjectID, generationID, revision, currentDigest, profileDerivedRefFromArtifact(derived.DictionaryRef), preview)
+		commitOutcome := profileCandidateCommitOutcome(committed, commitErr)
+		observability.SetProfileOutcome(commitSpan, "profile.commit.outcome", commitOutcome)
+		observability.SetProfileOutcome(commitSpan, "profile.candidate.outcome", commitOutcome)
+		observability.FinishProfileSpan(commitSpan, commitOutcome)
+		return committed, commitErr
 	}
 	bootstrapRef := *success.consumedBootstrapGuidance
 	bootstrapData, err := objects.ReadFileLimited(ctx, profileartifacts.BootstrapObjectPath(bootstrapRef.Revision), profileartifacts.MaxArtifactBytes)
@@ -231,11 +255,50 @@ func (h *Handler) RunProfileCompileDerivation(ctx context.Context, userID, proje
 	if err != nil {
 		return ProfileState{}, err
 	}
-	if err := profileartifacts.WriteGuidance(ctx, objects, guidanceRef, guidanceData); err != nil {
-		return ProfileState{}, err
+	artifactCtx, artifactSpan = observability.StartProfileSpan(ctx, "profile.compile.artifact_write")
+	writeErr = profileartifacts.WriteGuidance(artifactCtx, objects, guidanceRef, guidanceData)
+	observability.SetProfileOutcome(artifactSpan, "profile.artifact.outcome", map[bool]string{true: "failure", false: "success"}[writeErr != nil])
+	observability.FinishProfileSpan(artifactSpan, map[bool]string{true: "failure", false: "success"}[writeErr != nil])
+	if writeErr != nil {
+		return ProfileState{}, writeErr
 	}
-	return h.CompleteProfileBootstrapCompileCandidate(ctx, project.UserID, project.ProjectID, success, revision, currentDigest,
+	commitCtx, commitSpan := observability.StartProfileSpan(ctx, "profile.compile.commit")
+	committed, commitErr := h.CompleteProfileBootstrapCompileCandidate(commitCtx, project.UserID, project.ProjectID, success, revision, currentDigest,
 		profileDerivedRefFromArtifact(derived.DictionaryRef), profileDerivedRefFromArtifact(guidanceRef), preview)
+	commitOutcome := profileCandidateCommitOutcome(committed, commitErr)
+	observability.SetProfileOutcome(commitSpan, "profile.commit.outcome", commitOutcome)
+	observability.SetProfileOutcome(commitSpan, "profile.candidate.outcome", commitOutcome)
+	observability.FinishProfileSpan(commitSpan, commitOutcome)
+	return committed, commitErr
+}
+
+func profileCandidateCommitOutcome(state ProfileState, err error) string {
+	if err != nil {
+		if state.observationOutcome == "superseded" {
+			return "superseded"
+		}
+		return "unknown"
+	}
+	if state.observationOutcome == "" {
+		return "committed"
+	}
+	return state.observationOutcome
+}
+
+func profileCompileRootOutcome(state ProfileState, err error) string {
+	if err == nil {
+		if state.observationOutcome == "" {
+			return "success"
+		}
+		return state.observationOutcome
+	}
+	if state.observationOutcome == "superseded" {
+		return "superseded"
+	}
+	if state.observationOutcome != "" {
+		return "unknown"
+	}
+	return "failure"
 }
 
 type profileDerivationTransitions struct {

@@ -178,6 +178,8 @@ type ProfileState struct {
 	Job                     *ProfileJob                      `json:"job" firestore:"job" binding:"required"`
 	CompileRetryGeneration  string                           `json:"-" firestore:"compile_retry_generation,omitempty"`
 	derivationClaimAcquired bool
+	observationOutcome      string
+	activeOutcome           string
 }
 
 type profileRevisionConflict struct{ Latest int64 }
@@ -195,12 +197,20 @@ type profileRepository interface {
 }
 
 type firestoreProfileRepository struct {
-	client *firestore.Client
-	now    func() time.Time
+	client                         *firestore.Client
+	now                            func() time.Time
+	runCompileCandidateTransaction func(context.Context, func(context.Context, *firestore.Transaction) error) error
 }
 
 func newFirestoreProfileRepository(client *firestore.Client) *firestoreProfileRepository {
 	return &firestoreProfileRepository{client: client, now: time.Now}
+}
+
+func (r *firestoreProfileRepository) runCompileCandidateTx(ctx context.Context, update func(context.Context, *firestore.Transaction) error) error {
+	if r.runCompileCandidateTransaction != nil {
+		return r.runCompileCandidateTransaction(ctx, update)
+	}
+	return r.client.RunTransaction(ctx, update)
 }
 
 func newProfileState(projectID string) ProfileState {
@@ -1043,6 +1053,8 @@ func (r *firestoreProfileRepository) ProfileJobTransition(ctx context.Context, u
 					return err
 				}
 			}
+			current.observationOutcome = "superseded"
+			current.activeOutcome = "not_active"
 			result = current
 			return nil
 		}
@@ -1064,8 +1076,10 @@ func (r *firestoreProfileRepository) ProfileJobTransition(ctx context.Context, u
 		job.Status, job.MissingCount, job.ErrorCode = nextStatus, missingCount, nullableString(errorCode)
 		job.TagSetRevision, job.QueryRuleRevision = tagSetRevision, queryRuleRevision
 		job.CoverageComplete = coverageComplete
+		activeCommitted := false
 		if nextStatus == profileJobReady && current.Candidate != nil && activateProfileState(&current, *current.Candidate, job) {
 			// The active pointer and ready state commit together.
+			activeCommitted = true
 		} else if nextStatus == profileJobReady && current.ConfirmedCandidateID != nil || nextStatus == profileJobReady && current.Candidate != nil && current.Candidate.Source == "compile_auto" {
 			job.Status = profileJobIncomplete
 			job.ErrorCode = stringPtr("active_conflict")
@@ -1074,6 +1088,16 @@ func (r *firestoreProfileRepository) ProfileJobTransition(ctx context.Context, u
 			return err
 		}
 		current.Job = &job.ProfileJob
+		if activeCommitted {
+			current.observationOutcome = "committed"
+			current.activeOutcome = "committed"
+		} else if nextStatus == profileJobReady {
+			current.observationOutcome = "not_active"
+			current.activeOutcome = "not_active"
+		} else {
+			current.observationOutcome = "no_op"
+			current.activeOutcome = "not_active"
+		}
 		result = current
 		return setProfileState(tx, stateRef, result)
 	})
@@ -1130,7 +1154,7 @@ func (r *firestoreProfileRepository) ProfileCompileCandidateReady(ctx context.Co
 	jobRef := stateRef.Collection("jobs").NewDoc()
 	var result ProfileState
 	var stale, waitingManual, empty bool
-	err := r.client.RunTransaction(ctx, func(ctx context.Context, tx *firestore.Transaction) error {
+	err := r.runCompileCandidateTx(ctx, func(ctx context.Context, tx *firestore.Transaction) error {
 		result = ProfileState{}
 		stale, waitingManual, empty = false, false, false
 		_, stateRef, err := r.authorizeTransaction(ctx, tx, userID, projectID, ProjectEdit)
@@ -1151,6 +1175,7 @@ func (r *firestoreProfileRepository) ProfileCompileCandidateReady(ctx context.Co
 			if err := tx.Set(reconcileRef, reconcile); err != nil {
 				return err
 			}
+			current.observationOutcome = "no_op"
 			result, empty = current, true
 			return nil
 		}
@@ -1164,6 +1189,7 @@ func (r *firestoreProfileRepository) ProfileCompileCandidateReady(ctx context.Co
 			if err := tx.Set(reconcileRef, reconcile); err != nil {
 				return err
 			}
+			current.observationOutcome = "superseded"
 			result, stale = current, true
 			return nil
 		}
@@ -1171,6 +1197,7 @@ func (r *firestoreProfileRepository) ProfileCompileCandidateReady(ctx context.Co
 			return errProfileTransitionInvalid
 		}
 		if current.Candidate != nil && current.Candidate.Source == "compile_auto" && current.Candidate.BaseRevision == revision && current.Candidate.ContentGeneration == generation && current.Candidate.RequirementsDigest == currentDigest {
+			current.observationOutcome = "existing"
 			result = current
 			return nil
 		}
@@ -1184,6 +1211,7 @@ func (r *firestoreProfileRepository) ProfileCompileCandidateReady(ctx context.Co
 			if err := tx.Set(reconcileRef, reconcile); err != nil {
 				return err
 			}
+			current.observationOutcome = "waiting_manual"
 			result, waitingManual = current, true
 			return nil
 		}
@@ -1256,6 +1284,7 @@ func (r *firestoreProfileRepository) ProfileCompileCandidateReady(ctx context.Co
 		current.Candidate = &candidate
 		current.ConfirmedCandidateID = nil
 		current.Job = &job.ProfileJob
+		current.observationOutcome = "committed"
 		result = current
 		reconcile.Status = "candidate_ready"
 		reconcile.CandidateID = stringPtr(candidate.CandidateID)
@@ -1289,7 +1318,7 @@ func (r *firestoreProfileRepository) ProfileBootstrapCompileCandidateReady(ctx c
 	jobRef := stateRef.Collection("jobs").NewDoc()
 	var result ProfileState
 	var stale, empty bool
-	err := r.client.RunTransaction(ctx, func(ctx context.Context, tx *firestore.Transaction) error {
+	err := r.runCompileCandidateTx(ctx, func(ctx context.Context, tx *firestore.Transaction) error {
 		result = ProfileState{}
 		stale, empty = false, false
 		_, stateRef, err := r.authorizeTransaction(ctx, tx, userID, projectID, ProjectEdit)
@@ -1310,6 +1339,7 @@ func (r *firestoreProfileRepository) ProfileBootstrapCompileCandidateReady(ctx c
 			if err := tx.Set(reconcileRef, reconcile); err != nil {
 				return err
 			}
+			current.observationOutcome = "no_op"
 			result, empty = current, true
 			return nil
 		}
@@ -1323,6 +1353,7 @@ func (r *firestoreProfileRepository) ProfileBootstrapCompileCandidateReady(ctx c
 			if err := tx.Set(reconcileRef, reconcile); err != nil {
 				return err
 			}
+			current.observationOutcome = "superseded"
 			result, stale = current, true
 			return nil
 		}
@@ -1335,6 +1366,7 @@ func (r *firestoreProfileRepository) ProfileBootstrapCompileCandidateReady(ctx c
 		}
 		if current.Candidate != nil && current.Candidate.Source == "compile_auto" && current.Candidate.BaseRevision == revision &&
 			current.Candidate.ContentGeneration == generation && current.Candidate.RequirementsDigest == currentDigest {
+			current.observationOutcome = "existing"
 			result = current
 			return nil
 		}
@@ -1392,6 +1424,7 @@ func (r *firestoreProfileRepository) ProfileBootstrapCompileCandidateReady(ctx c
 		current.Candidate = &candidate
 		current.ConfirmedCandidateID = nil
 		current.Job = &job.ProfileJob
+		current.observationOutcome = "committed"
 		result = current
 		reconcile.Status = "candidate_ready"
 		reconcile.CandidateID = stringPtr(candidate.CandidateID)

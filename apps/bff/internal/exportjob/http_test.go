@@ -10,6 +10,10 @@ import (
 	"time"
 
 	"github.com/gin-gonic/gin"
+	"go.opentelemetry.io/otel"
+	"go.opentelemetry.io/otel/attribute"
+	sdktrace "go.opentelemetry.io/otel/sdk/trace"
+	"go.opentelemetry.io/otel/sdk/trace/tracetest"
 )
 
 type testRepository struct {
@@ -54,7 +58,9 @@ func (r *testRepository) Snapshot(context.Context, string, string) (Snapshot, er
 	return r.state, nil
 }
 func (r *testRepository) MarkRunning(context.Context, string, string, string) error { return nil }
-func (r *testRepository) Fail(_ context.Context, _, _, _, _, _ string) error        { return nil }
+func (r *testRepository) Fail(_ context.Context, _, _, _, _, _ string) (FailResult, error) {
+	return FailResult{Changed: true, Status: StatusFailed}, nil
+}
 func (r *testRepository) Complete(context.Context, string, string, string, time.Time, time.Time, int64) error {
 	return nil
 }
@@ -181,6 +187,117 @@ func TestDownloadCapsSignedURLAtCustomTimeExpiry(t *testing.T) {
 	}
 	if strings.ContainsAny(archives.filename, "/\\") {
 		t.Fatalf("filename is not safe: %q", archives.filename)
+	}
+}
+
+func TestDownloadReturnsSignedURLWithoutExportingItToSpans(t *testing.T) {
+	const signedURL = "https://signed.example/archive"
+	exporter := tracetest.NewInMemoryExporter()
+	provider := sdktrace.NewTracerProvider(sdktrace.WithSyncer(exporter))
+	previous := otel.GetTracerProvider()
+	otel.SetTracerProvider(provider)
+	t.Cleanup(func() {
+		otel.SetTracerProvider(previous)
+		_ = provider.Shutdown(context.Background())
+	})
+	now := time.Date(2026, 9, 26, 23, 55, 0, 0, time.UTC)
+	snapshotAt := now.Add(-time.Hour)
+	completedAt := now.Add(-30 * time.Minute)
+	size := int64(12)
+	repo := newTestRepository()
+	repo.jobs["private-export-id"] = Job{ExportID: "private-export-id", Scope: ScopeRaw, Status: StatusReady, CreatedAt: snapshotAt, SnapshotAt: &snapshotAt, CompletedAt: &completedAt, SizeBytes: &size}
+	archives := &testArchiveStore{info: map[string]ArchiveInfo{"private-export-id": {Size: size, CustomTime: completedAt}}}
+	h := NewHTTPHandler(repo, testProjectVerifier{name: "Project"}, archives, &testStarter{})
+	h.now = func() time.Time { return now }
+	r := newHTTPTestRouter(h)
+	response := httptest.NewRecorder()
+	r.ServeHTTP(response, httptest.NewRequest(http.MethodPost, "/api/v1/exports/private-export-id/download", nil))
+	if response.Code != http.StatusOK || !strings.Contains(response.Body.String(), signedURL) {
+		t.Fatalf("download response = %d %s", response.Code, response.Body.String())
+	}
+	seenRoot, seenURLPhase := false, false
+	for _, span := range exporter.GetSpans() {
+		if span.Name == "export.request" {
+			seenRoot = true
+		}
+		if span.Name == "export.download_url" {
+			seenURLPhase = true
+		}
+		if strings.Contains(span.Name, signedURL) {
+			t.Fatal("signed URL used as span name")
+		}
+		for _, attr := range span.Attributes {
+			if attr.Value.Type() == attribute.STRING && strings.Contains(attr.Value.AsString(), signedURL) {
+				t.Fatal("signed URL reached span attributes")
+			}
+		}
+	}
+	if !seenRoot || !seenURLPhase {
+		t.Fatalf("missing request/download URL spans: root=%t url=%t", seenRoot, seenURLPhase)
+	}
+}
+
+func TestExportHTTPPhasesRemainChildrenOfRequestAcrossEntrypoints(t *testing.T) {
+	exporter := tracetest.NewSpanRecorder()
+	provider := sdktrace.NewTracerProvider(sdktrace.WithSpanProcessor(exporter))
+	previous := otel.GetTracerProvider()
+	otel.SetTracerProvider(provider)
+	t.Cleanup(func() {
+		otel.SetTracerProvider(previous)
+		_ = provider.Shutdown(context.Background())
+	})
+	now := time.Date(2026, 10, 1, 12, 0, 0, 0, time.UTC)
+	completedAt := now.Add(-time.Minute)
+	snapshotAt := now.Add(-time.Hour)
+	size := int64(16)
+	repo := newTestRepository()
+	repo.jobs["ready-a"] = Job{ExportID: "ready-a", Scope: ScopeRaw, Status: StatusReady, CreatedAt: snapshotAt, SnapshotAt: &snapshotAt, CompletedAt: &completedAt, SizeBytes: &size}
+	archives := &testArchiveStore{info: map[string]ArchiveInfo{"ready-a": {Size: size, CustomTime: completedAt}}}
+	h := NewHTTPHandler(repo, testProjectVerifier{name: "Project"}, archives, &testStarter{})
+	h.now = func() time.Time { return now }
+	router := newHTTPTestRouter(h)
+	cases := []struct {
+		name, method, path, body string
+		wantStatus               int
+		phases                   []string
+	}{
+		{name: "create", method: http.MethodPost, path: "/api/v1/exports", body: `{"scope":"raw"}`, wantStatus: http.StatusAccepted, phases: []string{"export.admission", "export.start"}},
+		{name: "list", method: http.MethodGet, path: "/api/v1/exports", wantStatus: http.StatusOK, phases: []string{"export.status"}},
+		{name: "status", method: http.MethodGet, path: "/api/v1/exports/ready-a/status", wantStatus: http.StatusOK, phases: []string{"export.status"}},
+		{name: "download", method: http.MethodPost, path: "/api/v1/exports/ready-a/download", wantStatus: http.StatusOK, phases: []string{"export.status", "export.download_url"}},
+	}
+	for _, test := range cases {
+		t.Run(test.name, func(t *testing.T) {
+			before := len(exporter.Ended())
+			request := httptest.NewRequest(test.method, test.path, strings.NewReader(test.body))
+			request.Header.Set("Content-Type", "application/json")
+			response := httptest.NewRecorder()
+			router.ServeHTTP(response, request)
+			if response.Code != test.wantStatus {
+				t.Fatalf("response status=%d body=%s, want %d", response.Code, response.Body.String(), test.wantStatus)
+			}
+			spans := exporter.Ended()[before:]
+			byName := map[string]sdktrace.ReadOnlySpan{}
+			for _, span := range spans {
+				byName[span.Name()] = span
+			}
+			root, authorize := byName["export.request"], byName["export.authorize"]
+			if root == nil || authorize == nil || authorize.Parent().SpanID() != root.SpanContext().SpanID() {
+				t.Fatalf("request/authorize span parent missing: %+v", byName)
+			}
+			if authorize.EndTime().After(root.EndTime()) {
+				t.Fatalf("authorize ended after request: authorize=%s request=%s", authorize.EndTime(), root.EndTime())
+			}
+			for _, name := range test.phases {
+				phase := byName[name]
+				if phase == nil || phase.Parent().SpanID() != root.SpanContext().SpanID() {
+					t.Fatalf("phase %s is not a request child: %+v", name, phase)
+				}
+				if phase.StartTime().Before(authorize.EndTime()) {
+					t.Fatalf("phase %s started before authorize ended", name)
+				}
+			}
+		})
 	}
 }
 

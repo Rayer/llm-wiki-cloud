@@ -25,6 +25,10 @@ type FileSource struct {
 // Source bytes are never buffered as a whole; the manifest records a digest of
 // each exact byte stream copied into the archive.
 func WriteArchive(ctx context.Context, dst io.Writer, meta ExportMeta, files []FileSource) error {
+	return writeArchive(ctx, dst, meta, files, nil)
+}
+
+func writeArchive(ctx context.Context, dst io.Writer, meta ExportMeta, files []FileSource, observeZipClose func(func() error) error) error {
 	if dst == nil || meta.FormatVersion != 1 || !validSegment(meta.ExportID) || !validSegment(meta.ProjectID) || !meta.Scope.Valid() || meta.SnapshotAt.IsZero() {
 		return errors.New("invalid export metadata")
 	}
@@ -97,8 +101,15 @@ func WriteArchive(ctx context.Context, dst io.Writer, meta ExportMeta, files []F
 	if _, err := entry.Write(manifestBytes); err != nil {
 		return fmt.Errorf("write export metadata: %w", err)
 	}
-	if err := w.Close(); err != nil {
-		return fmt.Errorf("finish export archive: %w", err)
+	closeZip := w.Close
+	var closeErr error
+	if observeZipClose == nil {
+		closeErr = closeZip()
+	} else {
+		closeErr = observeZipClose(closeZip)
+	}
+	if closeErr != nil {
+		return fmt.Errorf("finish export archive: %w", closeErr)
 	}
 	return nil
 }

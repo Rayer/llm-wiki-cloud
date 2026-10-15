@@ -6,6 +6,7 @@ import (
 	"net/http"
 
 	"github.com/gin-gonic/gin"
+	"github.com/rayer/llm-wiki-bff/internal/observability"
 )
 
 // MaxRequestBodyBytes is the maximum body accepted by an Auth request.
@@ -32,6 +33,7 @@ func CompatibilityBodyLimit() gin.HandlerFunc {
 func requestBodyLimit(oversizedStatus int) gin.HandlerFunc {
 	return func(c *gin.Context) {
 		if c.Request.Body == nil {
+			observability.RecordAuthGuard(c.Request.Context(), "body", "skipped")
 			c.Next()
 			return
 		}
@@ -40,24 +42,29 @@ func requestBodyLimit(oversizedStatus int) gin.HandlerFunc {
 			c.Request.Body = http.MaxBytesReader(c.Writer, c.Request.Body, MaxRequestBodyBytes)
 		}
 		if c.Request.ContentLength > MaxRequestBodyBytes && oversizedStatus != 0 {
+			observability.RecordAuthGuard(c.Request.Context(), "body", "rejected")
 			c.AbortWithStatus(oversizedStatus)
 			return
 		}
 		if oversizedStatus == 0 || c.Request.ContentLength > 0 {
+			observability.RecordAuthGuard(c.Request.Context(), "body", "passed")
 			c.Next()
 			return
 		}
 
 		body, err := io.ReadAll(io.LimitReader(c.Request.Body, MaxRequestBodyBytes+1))
 		if err != nil {
+			observability.RecordAuthGuard(c.Request.Context(), "body", "rejected")
 			c.AbortWithStatus(http.StatusBadRequest)
 			return
 		}
 		if int64(len(body)) > MaxRequestBodyBytes {
+			observability.RecordAuthGuard(c.Request.Context(), "body", "rejected")
 			c.AbortWithStatus(oversizedStatus)
 			return
 		}
 		c.Request.Body = io.NopCloser(bytes.NewReader(body))
+		observability.RecordAuthGuard(c.Request.Context(), "body", "passed")
 		c.Next()
 	}
 }

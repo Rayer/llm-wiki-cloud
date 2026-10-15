@@ -4,12 +4,20 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
+	"net/http"
+	"net/http/httptest"
 	"strings"
 	"testing"
 
 	"github.com/rayer/llm-wiki-bff/internal/cache"
+	"github.com/rayer/llm-wiki-bff/internal/llm"
+	"github.com/rayer/llm-wiki-bff/internal/observability"
 	"github.com/rayer/llm-wiki-bff/internal/profileartifacts"
 	"github.com/rayer/llm-wiki-bff/internal/wikiindex"
+	"go.opentelemetry.io/otel"
+	"go.opentelemetry.io/otel/attribute"
+	sdktrace "go.opentelemetry.io/otel/sdk/trace"
+	"go.opentelemetry.io/otel/sdk/trace/tracetest"
 )
 
 type fakeChat struct {
@@ -47,6 +55,84 @@ func TestDeriveBootstrapPreservesAllRequirementsAndReturnedModel(t *testing.T) {
 	}
 	if len(result.Preview.Requirements) != len(requirements) || result.Preview.Requirements[1].Disposition != "dictionary_or_query" {
 		t.Fatalf("preview did not account for ordered requirements: %+v", result.Preview)
+	}
+}
+
+func TestDeriveRealLLMProviderActionAndDecodePhases(t *testing.T) {
+	const output = `{"compile_guidance":"Write concise entries.","guidance_diff":"Added guidance.","requirements":[{"id":"r1","disposition":"compile_guidance","explanation":"Applied to writing."}]}`
+	for _, test := range []struct {
+		name, body string
+		wantErr    bool
+		wantPhase  string
+	}{
+		{name: "valid response", body: output, wantPhase: "success"},
+		{name: "http 200 invalid envelope", body: "PRIVATE_PROVIDER_BODY_CANARY", wantErr: true, wantPhase: "failure"},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+				w.Header().Set("Content-Type", "application/json")
+				if test.name == "http 200 invalid envelope" {
+					_, _ = w.Write([]byte(test.body))
+					return
+				}
+				_ = json.NewEncoder(w).Encode(map[string]any{
+					"model":   "provider-model-v1",
+					"choices": []any{map[string]any{"message": map[string]string{"content": test.body}}},
+				})
+			}))
+			defer server.Close()
+			exporter := tracetest.NewSpanRecorder()
+			traceProvider := sdktrace.NewTracerProvider(sdktrace.WithSpanProcessor(exporter))
+			previous := otel.GetTracerProvider()
+			otel.SetTracerProvider(traceProvider)
+			t.Cleanup(func() {
+				otel.SetTracerProvider(previous)
+				_ = traceProvider.Shutdown(context.Background())
+			})
+			client := llm.NewClientWithOptions("synthetic-key", llm.ClientOptions{Model: "deepseek-flash", BaseURL: server.URL})
+			if client == nil {
+				t.Fatal("local HTTP test client unavailable")
+			}
+			providerCtx, providerSpan := observability.StartProfileSpan(context.Background(), "profile.derive.provider")
+			_, err := NewProvider(client).DeriveBootstrap(providerCtx, 1, []Requirement{{ID: "r1", Text: "private requirement text"}})
+			outcome := "success"
+			if err != nil {
+				outcome = "failure"
+			}
+			observability.FinishProfileSpan(providerSpan, outcome)
+			if (err != nil) != test.wantErr {
+				t.Fatalf("derive error=%v wantErr=%t", err, test.wantErr)
+			}
+			byName := map[string]sdktrace.ReadOnlySpan{}
+			for _, span := range exporter.Ended() {
+				byName[span.Name()] = span
+				for _, attr := range span.Attributes() {
+					if attr.Value.Type() == attribute.STRING && (strings.Contains(attr.Value.AsString(), "PRIVATE_PROVIDER_BODY_CANARY") || strings.Contains(attr.Value.AsString(), "private requirement text")) {
+						t.Fatal("provider body or Profile text reached span attributes")
+					}
+				}
+			}
+			providerCall := byName["profile.derive.provider_call"]
+			if providerCall == nil || providerCall.Parent().SpanID() != providerSpan.SpanContext().SpanID() {
+				t.Fatalf("missing or incorrectly parented logical provider call: %+v", providerCall)
+			}
+			providerCallOutcome := ""
+			for _, attr := range providerCall.Attributes() {
+				if string(attr.Key) == "profile.provider.outcome" {
+					providerCallOutcome = attr.Value.AsString()
+				}
+			}
+			if providerCallOutcome != test.wantPhase {
+				t.Fatalf("logical provider action outcome=%q want %q", providerCallOutcome, test.wantPhase)
+			}
+			if !test.wantErr {
+				for _, name := range []string{"profile.derive.model", "profile.derive.output_decode", "profile.derive.accounting", "profile.derive.artifact_encode"} {
+					if byName[name] == nil {
+						t.Fatalf("successful derivation omitted %s phase", name)
+					}
+				}
+			}
+		})
 	}
 }
 

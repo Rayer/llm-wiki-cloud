@@ -2,6 +2,7 @@ package auth
 
 import (
 	"bytes"
+	"context"
 	"crypto/rand"
 	"crypto/rsa"
 	"encoding/base64"
@@ -17,6 +18,11 @@ import (
 
 	"github.com/gin-gonic/gin"
 	"github.com/golang-jwt/jwt/v5"
+	"github.com/rayer/llm-wiki-bff/internal/observability"
+	"go.opentelemetry.io/otel"
+	"go.opentelemetry.io/otel/attribute"
+	sdktrace "go.opentelemetry.io/otel/sdk/trace"
+	"go.opentelemetry.io/otel/sdk/trace/tracetest"
 )
 
 func TestGoogleOAuthConfigRejectsIncompleteProviderConfiguration(t *testing.T) {
@@ -199,6 +205,62 @@ func TestGoogleOAuthTokenExchangeUsesStoredPKCEAndDoesNotRetry(t *testing.T) {
 	}
 	if form.Get("code_verifier") != "verifier" || form.Get("redirect_uri") != "https://auth.example.test/login" || form.Get("client_secret") != "secret" {
 		t.Fatalf("token exchange form = %v", form)
+	}
+}
+
+func TestGoogleHTTP200InvalidTokenPayloadIsLogicalDecodeFailure(t *testing.T) {
+	const privatePayload = "PRIVATE_INVALID_OAUTH_PAYLOAD"
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		w.WriteHeader(http.StatusOK)
+		_, _ = io.WriteString(w, `{"error":"`+privatePayload+`"}`)
+	}))
+	defer server.Close()
+	exporter := tracetest.NewInMemoryExporter()
+	provider := sdktrace.NewTracerProvider(sdktrace.WithSyncer(exporter))
+	previous := otel.GetTracerProvider()
+	otel.SetTracerProvider(provider)
+	t.Cleanup(func() {
+		otel.SetTracerProvider(previous)
+		_ = provider.Shutdown(context.Background())
+	})
+	service := NewGoogleOAuthService(GoogleConfig{ClientID: "client", ClientSecret: "secret", TokenURL: server.URL}, nil, nil, nil, "secret")
+	service.client = server.Client()
+	callbackCtx, callbackSpan := observability.StartAuthSpan(t.Context(), "auth.google.login_callback")
+	_, exchangeErr := service.exchangeCode(callbackCtx, oauthTransaction{PKCEVerifier: "verifier", RedirectURL: "https://auth.example.test/callback"}, "code")
+	observability.FinishAuthSpan(callbackSpan, "failure")
+	if exchangeErr == nil {
+		t.Fatal("HTTP 200 without an ID token was accepted")
+	}
+	got := map[string]string{}
+	spans := map[string]tracetest.SpanStub{}
+	for _, span := range exporter.GetSpans() {
+		spans[span.Name] = span
+		outcome := ""
+		for _, attr := range span.Attributes {
+			if attr.Key == "auth.outcome" && attr.Value.Type() == attribute.STRING {
+				outcome = attr.Value.AsString()
+			}
+			if attr.Value.Type() == attribute.STRING && strings.Contains(attr.Value.AsString(), privatePayload) {
+				t.Fatal("raw provider payload reached an Auth span")
+			}
+		}
+		got[span.Name] = outcome
+	}
+	if got["auth.google.token_exchange"] != "success" || got["auth.google.token_decode"] != "failure" {
+		t.Fatalf("OAuth phase outcomes = %#v, want transport success and logical decode failure", got)
+	}
+	callback, callbackOK := spans["auth.google.login_callback"]
+	transport, transportOK := spans["auth.google.token_exchange"]
+	decode, decodeOK := spans["auth.google.token_decode"]
+	if !callbackOK || !transportOK || !decodeOK {
+		t.Fatalf("OAuth spans missing callback=%t transport=%t decode=%t", callbackOK, transportOK, decodeOK)
+	}
+	wantParent := callback.SpanContext.SpanID()
+	if transport.Parent.SpanID() != wantParent || decode.Parent.SpanID() != wantParent {
+		t.Fatalf("OAuth phase parents callback=%s transport=%s decode=%s, want both phases under callback", wantParent, transport.Parent.SpanID(), decode.Parent.SpanID())
+	}
+	if !decode.StartTime.After(transport.EndTime) {
+		t.Fatalf("decode start %v must follow transport end %v", decode.StartTime, transport.EndTime)
 	}
 }
 

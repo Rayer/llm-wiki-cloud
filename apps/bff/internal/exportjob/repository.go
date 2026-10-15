@@ -33,8 +33,13 @@ type Repository interface {
 	Get(context.Context, string, string, string) (Job, error)
 	Snapshot(context.Context, string, string) (Snapshot, error)
 	MarkRunning(context.Context, string, string, string) error
-	Fail(context.Context, string, string, string, string, string) error
+	Fail(context.Context, string, string, string, string, string) (FailResult, error)
 	Complete(context.Context, string, string, string, time.Time, time.Time, int64) error
+}
+
+type FailResult struct {
+	Changed bool
+	Status  Status
 }
 
 type ProjectVerifier interface {

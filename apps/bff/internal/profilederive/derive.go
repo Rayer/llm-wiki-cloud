@@ -14,6 +14,7 @@ import (
 	"unicode"
 	"unicode/utf8"
 
+	"github.com/rayer/llm-wiki-bff/internal/observability"
 	"github.com/rayer/llm-wiki-bff/internal/profileartifacts"
 )
 
@@ -115,25 +116,38 @@ func (p *Provider) DeriveBootstrap(ctx context.Context, revision int64, requirem
 	if err != nil {
 		return BootstrapResult{}, err
 	}
-	text, model, err := p.client.ChatWithMetadata(ctx, bootstrapSystemPrompt, string(userMessage))
+	text, model, err := chatWithProviderSpan(ctx, p.client, bootstrapSystemPrompt, string(userMessage))
 	if err != nil {
 		return BootstrapResult{}, withFailureDiagnostic(FailureStageBootstrapProvider, providerFailureClass(err), fmt.Errorf("bootstrap provider call: %w", err))
 	}
-	if !validReturnedModel(model) {
+	if err := observeProfilePhase(ctx, "profile.derive.model", func() error {
+		if !validReturnedModel(model) {
+			return errors.New("provider_model_unreported")
+		}
+		return nil
+	}); err != nil {
 		return BootstrapResult{}, withFailureDiagnostic(FailureStageBootstrapModel, FailureClassModelUnreported, errors.New("provider_model_unreported"))
 	}
 	var output BootstrapOutput
-	if err := decodeModelJSON([]byte(text), &output); err != nil {
+	if err := observeProfilePhase(ctx, "profile.derive.output_decode", func() error { return decodeModelJSON([]byte(text), &output) }); err != nil {
 		return BootstrapResult{}, withFailureDiagnostic(FailureStageBootstrapDecode, FailureClassModelOutputDecodeFailed, fmt.Errorf("invalid bootstrap derivation output: %w", err))
 	}
-	if err := validateAccounting(output.Requirements, requirements, false, output.CompileGuidance, nil); err != nil {
+	if err := observeProfilePhase(ctx, "profile.derive.accounting", func() error {
+		return validateAccounting(output.Requirements, requirements, false, output.CompileGuidance, nil)
+	}); err != nil {
 		return BootstrapResult{}, withFailureDiagnostic(FailureStageBootstrapValidate, FailureClassModelAccountingInvalid, err)
 	}
 	envelope := profileartifacts.BootstrapGuidanceEnvelope{
 		SchemaVersion: profileartifacts.BootstrapGuidanceSchema, ProfileRevision: revision, InputDigest: inputDigest,
 		ModelVersion: model, PromptVersion: BootstrapPromptVersion, CompileGuidance: output.CompileGuidance,
 	}
-	data, ref, err := profileartifacts.EncodeBootstrapGuidance(envelope)
+	var data []byte
+	var ref profileartifacts.BootstrapGuidanceRef
+	err = observeProfilePhase(ctx, "profile.derive.artifact_encode", func() error {
+		var encodeErr error
+		data, ref, encodeErr = profileartifacts.EncodeBootstrapGuidance(envelope)
+		return encodeErr
+	})
 	if err != nil {
 		return BootstrapResult{}, withFailureDiagnostic(FailureStageBootstrapEncode, FailureClassArtifactEncodeFailed, err)
 	}
@@ -165,18 +179,25 @@ func (p *Provider) DeriveManual(ctx context.Context, revision int64, requirement
 	if err != nil {
 		return ManualResult{}, err
 	}
-	text, model, err := p.client.ChatWithMetadata(ctx, manualSystemPrompt, string(userMessage))
+	text, model, err := chatWithProviderSpan(ctx, p.client, manualSystemPrompt, string(userMessage))
 	if err != nil {
 		return ManualResult{}, withFailureDiagnostic(FailureStageManualProvider, providerFailureClass(err), fmt.Errorf("manual provider call: %w", err))
 	}
-	if !validReturnedModel(model) {
+	if err := observeProfilePhase(ctx, "profile.derive.model", func() error {
+		if !validReturnedModel(model) {
+			return errors.New("provider_model_unreported")
+		}
+		return nil
+	}); err != nil {
 		return ManualResult{}, withFailureDiagnostic(FailureStageManualModel, FailureClassModelUnreported, errors.New("provider_model_unreported"))
 	}
 	var output ManualOutput
-	if err := decodeModelJSON([]byte(text), &output); err != nil {
+	if err := observeProfilePhase(ctx, "profile.derive.output_decode", func() error { return decodeModelJSON([]byte(text), &output) }); err != nil {
 		return ManualResult{}, withManualDecodeFailure(err)
 	}
-	if err := validateAccounting(output.Requirements, requirements, true, output.CompileGuidance, output.Tags); err != nil {
+	if err := observeProfilePhase(ctx, "profile.derive.accounting", func() error {
+		return validateAccounting(output.Requirements, requirements, true, output.CompileGuidance, output.Tags)
+	}); err != nil {
 		return ManualResult{}, withFailureDiagnostic(FailureStageManualValidate, FailureClassModelAccountingInvalid, err)
 	}
 	inputDigest := RequirementsDigest(requirements)
@@ -186,16 +207,23 @@ func (p *Provider) DeriveManual(ctx context.Context, revision int64, requirement
 		CanonicalConceptsDigest: conceptsDigest, ModelVersion: model, PromptVersion: ManualPromptVersion,
 		Tags: output.Tags,
 	}
-	dictionaryData, dictionaryRef, err := profileartifacts.EncodeDictionary(dictionary, requirementIDs(requirements))
-	if err != nil {
-		return ManualResult{}, withFailureDiagnostic(FailureStageManualEncode, FailureClassArtifactEncodeFailed, err)
-	}
 	guidance := profileartifacts.GenerationGuidanceEnvelope{
 		SchemaVersion: profileartifacts.GuidanceSchema, InputDigest: inputDigest, SourceContentGeneration: generation,
 		CanonicalConceptsDigest: conceptsDigest, ModelVersion: model, PromptVersion: ManualPromptVersion,
 		CompileGuidance: output.CompileGuidance,
 	}
-	guidanceData, guidanceRef, err := profileartifacts.EncodeGuidance(guidance)
+	var dictionaryData, guidanceData []byte
+	var dictionaryRef profileartifacts.DerivedRef
+	var guidanceRef profileartifacts.DerivedRef
+	err = observeProfilePhase(ctx, "profile.derive.artifact_encode", func() error {
+		var encodeErr error
+		dictionaryData, dictionaryRef, encodeErr = profileartifacts.EncodeDictionary(dictionary, requirementIDs(requirements))
+		if encodeErr != nil {
+			return encodeErr
+		}
+		guidanceData, guidanceRef, encodeErr = profileartifacts.EncodeGuidance(guidance)
+		return encodeErr
+	})
 	if err != nil {
 		return ManualResult{}, withFailureDiagnostic(FailureStageManualEncode, FailureClassArtifactEncodeFailed, err)
 	}
@@ -232,18 +260,25 @@ func (p *Provider) DeriveCompileAuto(ctx context.Context, revision int64, requir
 	if err != nil {
 		return CompileAutoResult{}, err
 	}
-	text, model, err := p.client.ChatWithMetadata(ctx, compileAutoSystemPrompt, string(userMessage))
+	text, model, err := chatWithProviderSpan(ctx, p.client, compileAutoSystemPrompt, string(userMessage))
 	if err != nil {
 		return CompileAutoResult{}, fmt.Errorf("compile-auto provider call: %w", err)
 	}
-	if !validReturnedModel(model) {
+	if err := observeProfilePhase(ctx, "profile.derive.model", func() error {
+		if !validReturnedModel(model) {
+			return errors.New("provider_model_unreported")
+		}
+		return nil
+	}); err != nil {
 		return CompileAutoResult{}, errors.New("provider_model_unreported")
 	}
 	var output DictionaryOutput
-	if err := decodeModelJSON([]byte(text), &output); err != nil {
+	if err := observeProfilePhase(ctx, "profile.derive.output_decode", func() error { return decodeModelJSON([]byte(text), &output) }); err != nil {
 		return CompileAutoResult{}, fmt.Errorf("invalid compile-auto derivation output: %w", err)
 	}
-	if err := validateAccounting(output.Requirements, requirements, true, "compile guidance is intentionally unchanged", output.Tags); err != nil {
+	if err := observeProfilePhase(ctx, "profile.derive.accounting", func() error {
+		return validateAccounting(output.Requirements, requirements, true, "compile guidance is intentionally unchanged", output.Tags)
+	}); err != nil {
 		return CompileAutoResult{}, err
 	}
 	sortTags(output.Tags, requirements)
@@ -251,7 +286,13 @@ func (p *Provider) DeriveCompileAuto(ctx context.Context, revision int64, requir
 		SchemaVersion: profileartifacts.DictionarySchema, InputDigest: RequirementsDigest(requirements), ContentGeneration: generation,
 		CanonicalConceptsDigest: conceptsDigest, ModelVersion: model, PromptVersion: CompileAutoPromptVersion, Tags: output.Tags,
 	}
-	data, ref, err := profileartifacts.EncodeDictionary(envelope, requirementIDs(requirements))
+	var data []byte
+	var ref profileartifacts.DerivedRef
+	err = observeProfilePhase(ctx, "profile.derive.artifact_encode", func() error {
+		var encodeErr error
+		data, ref, encodeErr = profileartifacts.EncodeDictionary(envelope, requirementIDs(requirements))
+		return encodeErr
+	})
 	if err != nil {
 		return CompileAutoResult{}, err
 	}
@@ -409,6 +450,42 @@ func decodeModelJSON(data []byte, target any) error {
 		return &classifiedModelOutputDecodeError{reason: errModelOutputTrailingData, cause: err}
 	}
 	return nil
+}
+
+func observeProfilePhase(ctx context.Context, name string, run func() error) error {
+	_, span := observability.StartProfileSpan(ctx, name)
+	err := run()
+	outcome := "success"
+	if err != nil {
+		outcome = "failure"
+	}
+	stage := "unknown"
+	switch name {
+	case "profile.derive.model":
+		stage = "model"
+	case "profile.derive.output_decode":
+		stage = "output_decode"
+	case "profile.derive.accounting":
+		stage = "accounting"
+	case "profile.derive.artifact_encode":
+		stage = "artifact_encode"
+	}
+	observability.SetProfileStage(span, stage, outcome)
+	observability.SetProfileOutcome(span, "profile.provider.outcome", outcome)
+	observability.FinishProfileSpan(span, outcome)
+	return err
+}
+
+func chatWithProviderSpan(ctx context.Context, client ChatClient, systemPrompt, userMessage string) (string, string, error) {
+	callCtx, span := observability.StartProfileSpan(ctx, "profile.derive.provider_call")
+	text, model, err := client.ChatWithMetadata(callCtx, systemPrompt, userMessage)
+	outcome := "success"
+	if err != nil {
+		outcome = "failure"
+	}
+	observability.SetProfileOutcome(span, "profile.provider.outcome", outcome)
+	observability.FinishProfileSpan(span, outcome)
+	return text, model, err
 }
 
 func rejectDuplicateKeys(data []byte) error {

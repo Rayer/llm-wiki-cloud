@@ -11,6 +11,7 @@ import (
 	"strings"
 	"time"
 
+	"github.com/rayer/llm-wiki-bff/internal/observability"
 	"github.com/rayer/llm-wiki-bff/internal/profileartifacts"
 )
 
@@ -64,18 +65,36 @@ func (e *JevEvaluator) Evaluate(ctx context.Context, item Item, tag Tag, policy 
 	}
 	request.Header.Set("Authorization", "Bearer "+e.APIKey)
 	request.Header.Set("Content-Type", "application/json")
+	_, transportSpan := observability.StartProfileSpan(ctx, "profile.tag.transport")
+	finishTransport := func(outcome string) {
+		observability.SetProfileStage(transportSpan, "transport", outcome)
+		observability.SetProfileOutcome(transportSpan, "profile.provider.outcome", outcome)
+		observability.SetProfileProviderHost(transportSpan, "typesafe_systemone", request.URL.Scheme)
+		observability.FinishProfileSpan(transportSpan, outcome)
+	}
 	response, err := e.Client.Do(request)
 	if err != nil {
+		finishTransport("failure")
 		return Evaluation{}, errors.New("Jev provider transport failed")
 	}
 	defer response.Body.Close()
 	if response.StatusCode != http.StatusOK {
+		finishTransport("failure")
 		return Evaluation{}, errors.New("Jev provider request failed")
 	}
 	raw, err := io.ReadAll(io.LimitReader(response.Body, profileartifacts.MaxArtifactBytes+1))
 	if err != nil || len(raw) > profileartifacts.MaxArtifactBytes {
+		finishTransport("failure")
 		return Evaluation{}, errors.New("Jev response exceeds limit")
 	}
+	finishTransport("success")
+	_, decodeSpan := observability.StartProfileSpan(ctx, "profile.tag.decode")
+	decodeOutcome := "failure"
+	defer func() {
+		observability.SetProfileStage(decodeSpan, "decode", decodeOutcome)
+		observability.SetProfileOutcome(decodeSpan, "profile.provider.outcome", decodeOutcome)
+		observability.FinishProfileSpan(decodeSpan, decodeOutcome)
+	}()
 	// Validate duplicate keys and UTF-8 before decoding the provider envelope.
 	var envelope map[string]json.RawMessage
 	if err = StrictDecode(raw, &envelope); err != nil {
@@ -83,6 +102,7 @@ func (e *JevEvaluator) Evaluate(ctx context.Context, item Item, tag Tag, policy 
 	}
 	var model string
 	if json.Unmarshal(envelope["model"], &model) != nil || strings.TrimSpace(model) == "" {
+		observability.SetProfileStage(decodeSpan, "model", "failure")
 		return Evaluation{}, errors.New("Jev returned model missing")
 	}
 	accepted := false
@@ -92,19 +112,23 @@ func (e *JevEvaluator) Evaluate(ctx context.Context, item Item, tag Tag, policy 
 		}
 	}
 	if !accepted {
+		observability.SetProfileStage(decodeSpan, "model", "failure")
 		return Evaluation{}, errors.New("Jev returned model rejected")
 	}
+	observability.SetProfileStage(decodeSpan, "model", "success")
 	var answers map[string]struct {
 		Type string   `json:"type"`
 		Noul *float64 `json:"noul"`
 	}
 	if json.Unmarshal(envelope["answers"], &answers) != nil || len(answers) != 3 {
+		observability.SetProfileStage(decodeSpan, "answers", "failure")
 		return Evaluation{}, errors.New("invalid Jev answer set")
 	}
 	scores := map[string]float64{}
 	for _, key := range []string{"applicable", "known", "match"} {
 		a, ok := answers[key]
 		if !ok || a.Type != "noul" || a.Noul == nil || math.IsNaN(*a.Noul) || math.IsInf(*a.Noul, 0) || *a.Noul < 0 || *a.Noul > 1 {
+			observability.SetProfileStage(decodeSpan, "answers", "failure")
 			return Evaluation{}, errors.New("invalid Jev probability")
 		}
 		scores[key] = *a.Noul
@@ -121,5 +145,7 @@ func (e *JevEvaluator) Evaluate(ctx context.Context, item Item, tag Tag, policy 
 	}
 	// These thresholds preserve the bounded experiment policy, not calibration.
 	// Scores are never copied into the optional calibrated confidence field.
+	observability.SetProfileStage(decodeSpan, "answers", "success")
+	decodeOutcome = "success"
 	return Evaluation{Judgment: judgment, ReturnedModel: model, Evidence: "Independent record evaluation under " + JevPromptVersion}, nil
 }

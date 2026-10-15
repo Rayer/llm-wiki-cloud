@@ -4,8 +4,14 @@ import (
 	"bytes"
 	"context"
 	"errors"
+	"fmt"
 	"strings"
 	"testing"
+
+	"go.opentelemetry.io/otel"
+	"go.opentelemetry.io/otel/attribute"
+	sdktrace "go.opentelemetry.io/otel/sdk/trace"
+	"go.opentelemetry.io/otel/sdk/trace/tracetest"
 )
 
 // All evaluator responses in this file are synthetic fakes, not provider evidence.
@@ -199,6 +205,48 @@ func TestMissingRetriesAndCrossReferences(t *testing.T) {
 		t.Fatal("accepted changed bytes")
 	}
 }
+
+func TestObservationDetailBudgetDoesNotChangeTagProviderWork(t *testing.T) {
+	exporter := tracetest.NewInMemoryExporter()
+	provider := sdktrace.NewTracerProvider(sdktrace.WithSyncer(exporter))
+	previous := otel.GetTracerProvider()
+	otel.SetTracerProvider(provider)
+	t.Cleanup(func() {
+		otel.SetTracerProvider(previous)
+		_ = provider.Shutdown(context.Background())
+	})
+	in := fixture()
+	in.Inventory.Items = make([]Item, 24)
+	for i := range in.Inventory.Items {
+		in.Inventory.Items[i] = Item{Kind: Source, StableID: fmt.Sprintf("source-%02d", i), Content: []byte(fmt.Sprintf("body-%02d", i))}
+	}
+	evaluator := &fakeEvaluator{}
+	result, err := Build(context.Background(), memoryStore{}, evaluator, in)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(evaluator.calls) != 24 || result.Set.CompletedCount != 24 || result.Set.MissingCount != 0 {
+		t.Fatalf("observer budget changed provider work: calls=%d result=%+v", len(evaluator.calls), result.Set)
+	}
+	spans := exporter.GetSpans()
+	details, suppressed := 0, -1
+	for _, span := range spans {
+		if span.Name == "profile.tag.evaluate" {
+			details++
+		}
+		if span.Name == "profile.tag.build" {
+			for _, attr := range span.Attributes {
+				if attr.Key == "profile.suppressed_count" && attr.Value.Type() == attribute.INT64 {
+					suppressed = int(attr.Value.AsInt64())
+				}
+			}
+		}
+	}
+	if details != 16 || suppressed != 8 {
+		t.Fatalf("detail spans=%d suppressed=%d, want 16 and 8", details, suppressed)
+	}
+}
+
 func TestPolicyChangesRuleDigest(t *testing.T) {
 	in := fixture()
 	tag := in.Dictionary.Tags[0]

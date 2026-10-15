@@ -153,3 +153,29 @@ func TestFirestoreCompleteMaintainsCurrentPreviousAndDeadline(t *testing.T) {
 		t.Fatalf("Complete at deadline error=%v, want ErrJobDeadlineExceeded", err)
 	}
 }
+
+func TestFirestoreFailReportsNewCommitAndTerminalNoop(t *testing.T) {
+	fs := exportEmulator(t)
+	repo := NewFirestoreRepository(fs)
+	ctx := context.Background()
+	userID, projectID := "fail-result-user", "fail-result-project"
+	job, _, err := repo.Admit(ctx, userID, projectID, ScopeRaw, "fail-result-key", time.Now().UTC())
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := repo.MarkRunning(ctx, userID, projectID, job.ExportID); err != nil {
+		t.Fatal(err)
+	}
+	first, err := repo.Fail(ctx, userID, projectID, job.ExportID, "worker_failure", "safe failure")
+	if err != nil || !first.Changed || first.Status != StatusFailed {
+		t.Fatalf("first Fail result=%+v error=%v", first, err)
+	}
+	second, err := repo.Fail(ctx, userID, projectID, job.ExportID, "worker_failure", "safe failure")
+	if err != nil || second.Changed || second.Status != StatusFailed {
+		t.Fatalf("terminal Fail result=%+v error=%v", second, err)
+	}
+	stored, err := repo.Get(ctx, userID, projectID, job.ExportID)
+	if err != nil || stored.Status != StatusFailed {
+		t.Fatalf("stored terminal job=%+v error=%v", stored, err)
+	}
+}
