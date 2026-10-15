@@ -24,16 +24,22 @@ type cliAPIClient struct {
 	origin             string
 	httpClient         *http.Client
 	credentials        *cliLocalCredentials
+	observer           *rawSyncObservation
 	loadCurrent        func(cliLocalCredentials) (cliLocalCredentials, error)
 	persistCredentials func(cliLocalCredentials, cliLocalCredentials) (cliLocalCredentials, error)
 	withRefreshLock    func(func() error) error
 }
 
-type cliAPIStatusError struct{ status int }
+type cliAPIStatusError struct {
+	status       int
+	diagnosticID string
+}
 
 func (e cliAPIStatusError) Error() string {
 	return fmt.Sprintf("Auth service returned HTTP %d", e.status)
 }
+
+func (e cliAPIStatusError) DiagnosticID() string { return e.diagnosticID }
 
 func newCLIAPIClient(origin string, credentials *cliLocalCredentials) (*cliAPIClient, error) {
 	origin, err := normalizeAuthOrigin(origin)
@@ -113,7 +119,7 @@ func (c *cliAPIClient) request(ctx context.Context, method, route string, input,
 		if response.status == http.StatusUnauthorized && c.credentials != nil && c.credentials.RefreshToken != "" {
 			return errCLIReauthenticationRequired
 		}
-		return cliAPIStatusError{status: response.status}
+		return cliAPIStatusError{status: response.status, diagnosticID: response.diagnosticID}
 	}
 	if output != nil && len(response.body) > 0 {
 		if err := json.Unmarshal(response.body, output); err != nil {
@@ -168,7 +174,7 @@ func (c *cliAPIClient) refreshLocked(ctx context.Context) error {
 		return errCLIReauthenticationRequired
 	}
 	if response.status < 200 || response.status >= 300 {
-		return cliAPIStatusError{status: response.status}
+		return cliAPIStatusError{status: response.status, diagnosticID: response.diagnosticID}
 	}
 	var rotated cliLocalCredentials
 	if err := json.Unmarshal(response.body, &rotated); err != nil || rotated.AccessToken == "" || rotated.RefreshToken == "" || rotated.SessionID == "" {
@@ -214,8 +220,9 @@ func cliAccessTokenUsable(token string) bool {
 }
 
 type cliAPIResponse struct {
-	status int
-	body   []byte
+	status       int
+	body         []byte
+	diagnosticID string
 }
 
 func (c *cliAPIClient) do(ctx context.Context, method, route string, input interface{}, authenticated bool) (cliAPIResponse, error) {
@@ -245,6 +252,9 @@ func (c *cliAPIClient) do(ctx context.Context, method, route string, input inter
 		}
 		request.Header.Set("Authorization", "Bearer "+c.credentials.AccessToken)
 	}
+	if c.observer != nil {
+		c.observer.recordAuthRequest(route == "/api/v1/auth/cli/refresh")
+	}
 	response, err := c.httpClient.Do(request)
 	if err != nil {
 		return cliAPIResponse{}, errors.New("could not reach the configured Auth/control-plane host")
@@ -254,7 +264,11 @@ func (c *cliAPIClient) do(ctx context.Context, method, route string, input inter
 	if err != nil || len(data) > maxCLIResponseBytes {
 		return cliAPIResponse{}, errors.New("Auth service response was unavailable or too large")
 	}
-	return cliAPIResponse{status: response.StatusCode, body: data}, nil
+	diagnosticID := ""
+	if response.StatusCode < 200 || response.StatusCode >= 300 {
+		diagnosticID = parseRemoteDiagnosticID(data)
+	}
+	return cliAPIResponse{status: response.StatusCode, body: data, diagnosticID: diagnosticID}, nil
 }
 
 func apiRouteURL(origin, route string) (string, error) {
