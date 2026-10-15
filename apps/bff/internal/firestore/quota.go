@@ -8,6 +8,7 @@ import (
 	"time"
 
 	"cloud.google.com/go/firestore"
+	"github.com/rayer/llm-wiki-bff/internal/observability"
 	"github.com/rayer/llm-wiki-bff/internal/pipelinequota"
 	"google.golang.org/grpc/codes"
 	"google.golang.org/grpc/status"
@@ -171,12 +172,18 @@ func ListPendingQuotaReservationsFromFirestore(ctx context.Context, fs *firestor
 // SettleQuotaReservation applies a confirmed terminal result. Replays are
 // idempotent because the reservation state and any refund share one transaction.
 func (c *Client) SettleQuotaReservation(ctx context.Context, reservationID, executionStatus string) (string, error) {
+	ctx, span := observability.StartPipelineSpan(ctx, "pipeline.quota.settle")
 	var settlement string
 	err := c.fs.RunTransaction(ctx, func(ctx context.Context, tx *firestore.Transaction) error {
 		var err error
 		settlement, err = SettleQuotaReservationInTransaction(ctx, tx, c.fs, reservationID, executionStatus)
 		return err
 	})
+	outcome := "success"
+	if err != nil {
+		outcome = "failure"
+	}
+	observability.FinishPipelineSpan(span, outcome)
 	return settlement, err
 }
 

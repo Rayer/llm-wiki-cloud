@@ -25,6 +25,7 @@ import (
 	"github.com/rayer/llm-wiki-bff/internal/generation"
 	handlerapi "github.com/rayer/llm-wiki-bff/internal/handler"
 	"github.com/rayer/llm-wiki-bff/internal/localcloud"
+	"github.com/rayer/llm-wiki-bff/internal/observability"
 	"github.com/rayer/llm-wiki-bff/internal/pipelinediagnostic"
 	storeapi "github.com/rayer/llm-wiki-bff/internal/storage"
 	"google.golang.org/grpc/codes"
@@ -84,12 +85,21 @@ func New(cfg Config) (*Manager, error) {
 
 // ReconcileInterrupted marks prior RUNNING records unknown. A restarted BFF
 // cannot infer publication from a child exit that it did not observe.
-func (m *Manager) ReconcileInterrupted(ctx context.Context) error {
+func (m *Manager) ReconcileInterrupted(ctx context.Context) (resultErr error) {
+	ctx, span := observability.StartPipelineSpan(ctx, "pipeline.recovery")
+	ctx, detailBudget := observability.WithPipelineDetailBudget(ctx, 16)
+	processedCount := 0
+	defer func() {
+		observability.SetPipelineCount(span, "pipeline.processed_count", processedCount)
+		observability.SetPipelineCount(span, "pipeline.suppressed_count", detailBudget.Suppressed())
+		observability.FinishPipelineSpan(span, localPipelineTraceOutcome(resultErr))
+	}()
 	locks, err := scopedfirestore.Collection(m.cfg.Firestore, "local_pipeline_locks").Where("status", "==", "RUNNING").Documents(ctx).GetAll()
 	if err != nil {
 		return err
 	}
 	for _, lock := range locks {
+		processedCount++
 		data := lock.Data()
 		executionID, _ := data["execution_id"].(string)
 		if executionID == "" {
@@ -121,7 +131,8 @@ func (m *Manager) ReconcileInterrupted(ctx context.Context) error {
 }
 
 func (m *Manager) persistRecoveredExecution(ctx context.Context, executionRef, lockRef *cloudfirestore.DocumentRef, executionID, reservationID, state, reason string) error {
-	return m.cfg.Firestore.RunTransaction(ctx, func(ctx context.Context, tx *cloudfirestore.Transaction) error {
+	txCtx, txSpan := observability.StartPipelineSpan(ctx, "pipeline.recovery.transaction")
+	err := m.cfg.Firestore.RunTransaction(txCtx, func(ctx context.Context, tx *cloudfirestore.Transaction) error {
 		execution, err := tx.Get(executionRef)
 		if status.Code(err) == codes.NotFound {
 			return nil
@@ -159,9 +170,19 @@ func (m *Manager) persistRecoveredExecution(ctx context.Context, executionRef, l
 		}
 		return nil
 	})
+	observability.FinishPipelineSpan(txSpan, localPipelineTraceOutcome(err))
+	return err
 }
 
-func (m *Manager) ReconcilePendingQuotaSettlements(ctx context.Context) error {
+func (m *Manager) ReconcilePendingQuotaSettlements(ctx context.Context) (resultErr error) {
+	ctx, span := observability.StartPipelineSpan(ctx, "pipeline.recovery.lookup")
+	ctx, detailBudget := observability.WithPipelineDetailBudget(ctx, 16)
+	processedCount := 0
+	defer func() {
+		observability.SetPipelineCount(span, "pipeline.processed_count", processedCount)
+		observability.SetPipelineCount(span, "pipeline.suppressed_count", detailBudget.Suppressed())
+		observability.FinishPipelineSpan(span, localPipelineTraceOutcome(resultErr))
+	}()
 	if err := m.retryPendingResults(ctx); err != nil {
 		return err
 	}
@@ -171,17 +192,21 @@ func (m *Manager) ReconcilePendingQuotaSettlements(ctx context.Context) error {
 	}
 	executions := scopedfirestore.Collection(m.cfg.Firestore, "executions")
 	for _, reservation := range reservations {
+		processedCount++
 		if reservation.ExecutionID == "" {
 			confirmedFailure, err := m.hasConfirmedInvokeFailure(ctx, reservation)
 			if err != nil {
 				return err
 			}
 			if confirmedFailure {
-				if err := m.cfg.Firestore.RunTransaction(ctx, func(ctx context.Context, tx *cloudfirestore.Transaction) error {
+				txCtx, txSpan := observability.StartPipelineSpan(ctx, "pipeline.recovery.transaction")
+				txErr := m.cfg.Firestore.RunTransaction(txCtx, func(ctx context.Context, tx *cloudfirestore.Transaction) error {
 					_, err := scopedfirestore.SettleQuotaReservationInTransaction(ctx, tx, m.cfg.Firestore, reservation.ID, "FAILED")
 					return err
-				}); err != nil {
-					return err
+				})
+				observability.FinishPipelineSpan(txSpan, localPipelineTraceOutcome(txErr))
+				if txErr != nil {
+					return txErr
 				}
 			}
 			continue
@@ -209,7 +234,8 @@ func (m *Manager) ReconcilePendingQuotaSettlements(ctx context.Context) error {
 				continue
 			}
 		}
-		if err := m.cfg.Firestore.RunTransaction(ctx, func(ctx context.Context, tx *cloudfirestore.Transaction) error {
+		txCtx, txSpan := observability.StartPipelineSpan(ctx, "pipeline.recovery.transaction")
+		txErr := m.cfg.Firestore.RunTransaction(txCtx, func(ctx context.Context, tx *cloudfirestore.Transaction) error {
 			current, err := tx.Get(snapshot.Ref)
 			if err != nil {
 				return err
@@ -250,8 +276,10 @@ func (m *Manager) ReconcilePendingQuotaSettlements(ctx context.Context) error {
 				return tx.Update(lockRef, []cloudfirestore.Update{{Path: "status", Value: state}, {Path: "updated_at", Value: time.Now().UTC()}})
 			}
 			return nil
-		}); err != nil {
-			return err
+		})
+		observability.FinishPipelineSpan(txSpan, localPipelineTraceOutcome(txErr))
+		if txErr != nil {
+			return txErr
 		}
 	}
 	return nil
@@ -645,11 +673,21 @@ func (m *Manager) wait(p *process, executionID, userID, projectID, beforeID, res
 	close(p.done)
 }
 
-func (m *Manager) finish(ctx context.Context, result processResult) error {
+func (m *Manager) finish(ctx context.Context, result processResult) (resultErr error) {
+	ctx, root := observability.StartPipelineSpan(ctx, "pipeline.recovery")
+	defer func() { observability.FinishPipelineSpan(root, localPipelineTraceOutcome(resultErr)) }()
 	storage := m.cfg.Storage.WithScope(result.userID, result.projectID)
-	manifest, _, exists, manifestErr := storage.CurrentManifest(ctx)
-	receiptData, receiptErr := storage.ReadLocalPublicationReceipt(ctx, result.executionID)
+	lookupCtx, lookupSpan := observability.StartPipelineSpan(ctx, "pipeline.recovery.lookup")
+	manifest, _, exists, manifestErr := storage.CurrentManifest(lookupCtx)
+	receiptData, receiptErr := storage.ReadLocalPublicationReceipt(lookupCtx, result.executionID)
 	statusValue, reason := ResolvePublicationOutcome(result.executionID, result.beforeID, manifest, exists, result.childSucceeded, result.childErr, manifestErr, receiptData, receiptErr)
+	lookupOutcome := "success"
+	if statusValue == "UNKNOWN" {
+		lookupOutcome = "unknown"
+	} else if manifestErr != nil && receiptErr != nil && !errors.Is(receiptErr, cloudstorage.ErrObjectNotExist) {
+		lookupOutcome = "failure"
+	}
+	observability.FinishPipelineSpan(lookupSpan, lookupOutcome)
 	if result.spawnFailed {
 		statusValue = "FAILED"
 		reason = "native worker could not be started"
@@ -660,7 +698,8 @@ func (m *Manager) finish(ctx context.Context, result processResult) error {
 	finished := time.Now().UTC()
 	executionRef := scopedfirestore.Collection(m.cfg.Firestore, "executions").Doc(result.executionID)
 	lockRef := scopedfirestore.Collection(m.cfg.Firestore, "local_pipeline_locks").Doc(result.userID + "__" + result.projectID)
-	if err := m.cfg.Firestore.RunTransaction(ctx, func(ctx context.Context, tx *cloudfirestore.Transaction) error {
+	txCtx, txSpan := observability.StartPipelineSpan(ctx, "pipeline.recovery.transaction")
+	txErr := m.cfg.Firestore.RunTransaction(txCtx, func(ctx context.Context, tx *cloudfirestore.Transaction) error {
 		execution, err := tx.Get(executionRef)
 		if err != nil {
 			return err
@@ -700,14 +739,29 @@ func (m *Manager) finish(ctx context.Context, result processResult) error {
 			return nil
 		}
 		return tx.Update(lockRef, []cloudfirestore.Update{{Path: "status", Value: transactionStatus}, {Path: "updated_at", Value: transactionFinished}})
-	}); err != nil {
+	})
+	observability.FinishPipelineSpan(txSpan, localPipelineTraceOutcome(txErr))
+	if txErr != nil {
 		// Keep this diagnostic free of subprocess output, which can contain user
 		// content. The observed result remains in memory and in the execution record
 		// for the native reconciler to retry without status polling.
 		fmt.Fprintf(os.Stderr, "local pipeline result write failed for %s\n", result.executionID)
-		return err
+		return txErr
 	}
 	return nil
+}
+
+func localPipelineTraceOutcome(err error) string {
+	if err == nil {
+		return "success"
+	}
+	if errors.Is(err, context.DeadlineExceeded) {
+		return "timeout"
+	}
+	if errors.Is(err, context.Canceled) {
+		return "canceled"
+	}
+	return "failure"
 }
 
 func isTerminalExecutionStatus(status string) bool {

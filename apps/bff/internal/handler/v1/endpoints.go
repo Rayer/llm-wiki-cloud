@@ -27,6 +27,7 @@ import (
 	"github.com/rayer/llm-wiki-bff/internal/generation"
 	"github.com/rayer/llm-wiki-bff/internal/handler"
 	"github.com/rayer/llm-wiki-bff/internal/localcloud"
+	"github.com/rayer/llm-wiki-bff/internal/observability"
 	"github.com/rayer/llm-wiki-bff/internal/pipelinediagnostic"
 	"github.com/rayer/llm-wiki-bff/internal/pipelinequota"
 	"github.com/rayer/llm-wiki-bff/internal/profileruntime"
@@ -892,13 +893,18 @@ func (h *Handler) PipelineRun(c *gin.Context) {
 }
 
 func (h *Handler) pipelineRunForMode(c *gin.Context, userID, projectID string, mode pipelinequota.ExecutionMode) {
-	ctx := c.Request.Context()
+	ctx, root := observability.StartPipelineSpan(c.Request.Context(), "pipeline.submit")
+	c.Request = c.Request.WithContext(ctx)
+	rootOutcome := "failure"
+	defer func() { observability.FinishPipelineSpan(root, rootOutcome) }()
 	reservationID, err := newPipelineReservationID()
 	if err != nil {
 		c.JSON(http.StatusInternalServerError, handler.ErrorResponse{Error: pipelineUnavailableMessage})
 		return
 	}
-	snap, reserved, err := h.evaluateQuotaForMode(ctx, userID, projectID, reservationID, mode)
+	evaluateCtx, evaluateSpan := observability.StartPipelineSpan(ctx, "pipeline.quota.evaluate")
+	snap, reserved, err := h.evaluateQuotaForMode(evaluateCtx, userID, projectID, reservationID, mode)
+	observability.FinishPipelineSpan(evaluateSpan, pipelineTraceOutcome(err))
 	if err != nil {
 		c.JSON(http.StatusInternalServerError, handler.ErrorResponse{
 			Error: pipelineUnavailableMessage,
@@ -923,11 +929,16 @@ func (h *Handler) pipelineRunForMode(c *gin.Context, userID, projectID string, m
 	cleanRebuild := mode == pipelinequota.ModeFull
 	executionID, err := h.invokePipelineJobStageWithReservation(ctx, userID, projectID, cleanRebuild, pipelineStageFull, quotaReservationID)
 	if err != nil {
+		if errors.Is(err, errPipelineInvocationOutcomeUnknown) {
+			rootOutcome = "pending"
+		}
 		if reserved && !errors.Is(err, errPipelineInvocationOutcomeUnknown) {
 			recoveryCtx, cancelRecovery := context.WithTimeout(context.Background(), 10*time.Second)
 			defer cancelRecovery()
 			if qs := h.effectiveQuotaStore(); qs != nil {
-				if _, settleErr := qs.SettleQuotaReservation(recoveryCtx, reservationID, "FAILED"); settleErr != nil {
+				recoveryCtx, recoverySpan := observability.StartPipelineSpan(recoveryCtx, "pipeline.invoke.recovery")
+				_, settleErr := qs.SettleQuotaReservation(recoveryCtx, reservationID, "FAILED")
+				if settleErr != nil {
 					log.Print("pipeline quota refund failed")
 					evidenceCtx, cancelEvidence := context.WithTimeout(context.Background(), 10*time.Second)
 					evidenceErr := h.writeConfirmedPipelineInvokeFailure(evidenceCtx, userID, projectID, reservationID)
@@ -936,6 +947,7 @@ func (h *Handler) pipelineRunForMode(c *gin.Context, userID, projectID string, m
 						log.Print("pipeline invoke failure recovery evidence unavailable")
 					}
 				}
+				observability.FinishPipelineSpan(recoverySpan, pipelineTraceOutcome(settleErr))
 			}
 		}
 		if errors.Is(err, auth.ErrAccountInactive) {
@@ -949,11 +961,16 @@ func (h *Handler) pipelineRunForMode(c *gin.Context, userID, projectID string, m
 	}
 	if reserved && h.localPipeline == nil {
 		if qs := h.effectiveQuotaStore(); qs != nil {
-			if linkErr := qs.LinkQuotaReservation(ctx, reservationID, executionID); linkErr != nil {
+			linkCtx, linkSpan := observability.StartPipelineSpan(ctx, "pipeline.reservation.link")
+			linkErr := qs.LinkQuotaReservation(linkCtx, reservationID, executionID)
+			linkOutcome := "success"
+			if linkErr != nil {
+				linkOutcome = "degraded"
 				// The ID is also present in the Cloud Run execution environment, so
 				// background reconciliation can repair this link after a transient write failure.
 				log.Print("pipeline quota reservation link pending reconciliation")
 			}
+			observability.FinishPipelineSpan(linkSpan, linkOutcome)
 		}
 	}
 
@@ -965,6 +982,20 @@ func (h *Handler) pipelineRunForMode(c *gin.Context, userID, projectID string, m
 		"compile_mode": mode,
 		"quota":        snap,
 	})
+	rootOutcome = "accepted"
+}
+
+func pipelineTraceOutcome(err error) string {
+	if err == nil {
+		return "success"
+	}
+	if errors.Is(err, context.DeadlineExceeded) {
+		return "timeout"
+	}
+	if errors.Is(err, context.Canceled) {
+		return "canceled"
+	}
+	return "failure"
 }
 
 // Pipeline stage identifiers for Cloud Run job overrides. TASK_TYPE stays
@@ -991,10 +1022,22 @@ func (h *Handler) invokePipelineJobStage(ctx context.Context, userID, projectID 
 }
 
 func (h *Handler) invokePipelineJobStageWithReservation(ctx context.Context, userID, projectID string, cleanRebuild bool, stage, reservationID string) (executionID string, err error) {
+	ctx, invokeSpan := observability.StartPipelineSpan(ctx, "pipeline.job.invoke")
+	defer func() {
+		outcome := pipelineTraceOutcome(err)
+		if err == nil {
+			outcome = "accepted"
+		} else if errors.Is(err, errPipelineInvocationOutcomeUnknown) {
+			outcome = "pending"
+		}
+		observability.FinishPipelineSpan(invokeSpan, outcome)
+	}()
 	// This is the admission boundary, shared by user and admin triggers. A job
 	// admitted before suspension may finish; workers/publication remain unchanged.
 	if h.accountLookup != nil {
-		user, lookupErr := h.accountLookup(ctx, userID)
+		admissionCtx, admissionSpan := observability.StartPipelineSpan(ctx, "pipeline.admission")
+		user, lookupErr := h.accountLookup(admissionCtx, userID)
+		observability.FinishPipelineSpan(admissionSpan, pipelineTraceOutcome(lookupErr))
 		if lookupErr != nil {
 			return "", auth.ErrAccountUnavailable
 		}
@@ -1189,7 +1232,10 @@ func (h *Handler) PipelineStatus(c *gin.Context) {
 		return
 	}
 
-	ctx := c.Request.Context()
+	ctx, root := observability.StartPipelineSpan(c.Request.Context(), "pipeline.status")
+	c.Request = c.Request.WithContext(ctx)
+	rootOutcome := "failure"
+	defer func() { observability.FinishPipelineSpan(root, rootOutcome) }()
 	executionID := strings.TrimSpace(c.Query("execution_id"))
 	if executionID != "" {
 		var err error
@@ -1206,7 +1252,9 @@ func (h *Handler) PipelineStatus(c *gin.Context) {
 		c.JSON(http.StatusInternalServerError, handler.ErrorResponse{Error: pipelineStatusUnavailableMessage})
 		return
 	}
-	lastExecution, err := h.pipelineExecutionStatusForOwner(ctx, executionID, userID, projectID)
+	lookupCtx, lookupSpan := observability.StartPipelineSpan(ctx, "pipeline.status.lookup")
+	lastExecution, err := h.pipelineExecutionStatusForOwner(lookupCtx, executionID, userID, projectID)
+	observability.FinishPipelineSpan(lookupSpan, pipelineTraceOutcome(err))
 	if err != nil {
 		if errors.Is(err, errPipelineExecutionNotFound) {
 			c.JSON(http.StatusNotFound, handler.ErrorResponse{Error: errPipelineExecutionNotFound.Error()})
@@ -1234,6 +1282,7 @@ func (h *Handler) PipelineStatus(c *gin.Context) {
 		response.FullQuota = &fullSnap
 	}
 	c.JSON(http.StatusOK, response)
+	rootOutcome = "success"
 }
 
 // RebuildIndex handles POST /api/v1/pipeline/rebuild-index.
@@ -1535,7 +1584,25 @@ const (
 	pipelinePublicationCommitted
 )
 
-func (h *Handler) cloudRunPublicationOutcome(ctx context.Context, owner *pipelineExecutionOwner, executionID string) pipelinePublicationOutcome {
+func (h *Handler) cloudRunPublicationOutcome(ctx context.Context, owner *pipelineExecutionOwner, executionID string) (outcome pipelinePublicationOutcome) {
+	return h.cloudRunPublicationOutcomeWithSpan(ctx, owner, executionID, "pipeline.status.publication")
+}
+
+func (h *Handler) cloudRunQuotaPublicationOutcome(ctx context.Context, owner *pipelineExecutionOwner, executionID string) pipelinePublicationOutcome {
+	return h.cloudRunPublicationOutcomeWithSpan(ctx, owner, executionID, "pipeline.quota.publication")
+}
+
+func (h *Handler) cloudRunPublicationOutcomeWithSpan(ctx context.Context, owner *pipelineExecutionOwner, executionID, spanName string) (outcome pipelinePublicationOutcome) {
+	ctx, span := observability.StartPipelineSpan(ctx, spanName)
+	defer func() {
+		label := "unknown"
+		if outcome == pipelinePublicationCommitted {
+			label = "committed"
+		} else if outcome == pipelinePublicationAbsent {
+			label = "not_committed"
+		}
+		observability.FinishPipelineSpan(span, label)
+	}()
 	if h.store == nil || owner == nil || executionID == "" {
 		return pipelinePublicationUnknown
 	}
@@ -1780,8 +1847,12 @@ func (h *Handler) attachPipelineDiagnostic(ctx context.Context, response *handle
 }
 
 func (h *Handler) attachPipelineQuotaSettlement(ctx context.Context, response *handler.PipelineExecutionResponse, owner *pipelineExecutionOwner, reservationID string) {
+	ctx, span := observability.StartPipelineSpan(ctx, "pipeline.status.settlement")
+	outcome := "unknown"
+	defer func() { observability.FinishPipelineSpan(span, outcome) }()
 	response.QuotaSettlement = "not_applicable"
 	if reservationID == "" {
+		outcome = "not_applicable"
 		return
 	}
 	quotaStore := h.effectiveQuotaStore()
@@ -1795,6 +1866,7 @@ func (h *Handler) attachPipelineQuotaSettlement(ctx context.Context, response *h
 		return
 	}
 	response.QuotaSettlement = reservation.SettlementStatus
+	outcome = "success"
 }
 
 // pipelineLogStatter is intentionally optional so the main storage contract

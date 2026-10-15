@@ -11,6 +11,7 @@ import (
 
 	"github.com/gin-gonic/gin"
 	"github.com/rayer/llm-wiki-bff/internal/firestore"
+	"github.com/rayer/llm-wiki-bff/internal/observability"
 	"github.com/rayer/llm-wiki-bff/internal/pipelinequota"
 	"google.golang.org/grpc/codes"
 	"google.golang.org/grpc/status"
@@ -262,9 +263,11 @@ func (h *Handler) evaluateQuotaForMode(
 	}
 
 	if reservationID != "" {
+		reserveCtx, reserveSpan := observability.StartPipelineSpan(ctx, "pipeline.quota.reserve")
 		snap, reserved, err = qs.ReserveQuota(
-			ctx, reservationID, userID, projectID, limits, now, mode, isDemo, alreadyRunning, newRaw, rawDirty, annotationDirty,
+			reserveCtx, reservationID, userID, projectID, limits, now, mode, isDemo, alreadyRunning, newRaw, rawDirty, annotationDirty,
 		)
+		observability.FinishPipelineSpan(reserveSpan, pipelineTraceOutcome(err))
 		if err != nil {
 			return pipelinequota.Snapshot{}, false, err
 		}

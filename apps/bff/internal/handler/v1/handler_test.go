@@ -32,6 +32,11 @@ import (
 	"github.com/rayer/llm-wiki-bff/internal/search"
 	store "github.com/rayer/llm-wiki-bff/internal/storage"
 	"github.com/rayer/llm-wiki-bff/internal/suggestedqueries"
+	"go.opentelemetry.io/otel"
+	"go.opentelemetry.io/otel/attribute"
+	"go.opentelemetry.io/otel/codes"
+	sdktrace "go.opentelemetry.io/otel/sdk/trace"
+	"go.opentelemetry.io/otel/sdk/trace/tracetest"
 )
 
 func TestGetGCSClientUsesRequestContextIdentity(t *testing.T) {
@@ -688,6 +693,253 @@ func TestPipelineRunExecutesCloudRunJob(t *testing.T) {
 	}
 }
 
+func TestPipelineRunTraceEndsAtAcceptedResponse(t *testing.T) {
+	exporter := tracetest.NewInMemoryExporter()
+	provider := sdktrace.NewTracerProvider(sdktrace.WithSpanProcessor(sdktrace.NewSimpleSpanProcessor(exporter)))
+	previous := otel.GetTracerProvider()
+	otel.SetTracerProvider(provider)
+	t.Cleanup(func() {
+		otel.SetTracerProvider(previous)
+		_ = provider.Shutdown(context.Background())
+	})
+	client := &http.Client{Transport: roundTripFunc(func(r *http.Request) (*http.Response, error) {
+		switch r.URL.Path {
+		case "/token":
+			return testHTTPResponse(http.StatusOK, `{"access_token":"test-token"}`), nil
+		case "/run":
+			return testHTTPResponse(http.StatusOK, `{"metadata":{"execution":"projects/p/locations/r/jobs/j/executions/e"}}`), nil
+		default:
+			return testHTTPResponse(http.StatusOK, `{"executions":[]}`), nil
+		}
+	})}
+	h := &Handler{index: search.NewIndex(), httpClient: client, metadataTokenURL: "http://metadata.test/token", cloudRunJobURL: "https://run.test/run"}
+	recorder := httptest.NewRecorder()
+	c, _ := gin.CreateTestContext(recorder)
+	c.Request = httptest.NewRequest(http.MethodPost, "/api/v1/pipeline/run", nil)
+	c.Set("userID", "request-user")
+	c.Set("projectID", "demo")
+	h.PipelineRun(c)
+	if recorder.Code != http.StatusAccepted {
+		t.Fatalf("status=%d body=%s, want accepted", recorder.Code, recorder.Body.String())
+	}
+	spans := exporter.GetSpans()
+	byName := make(map[string]tracetest.SpanStub, len(spans))
+	for _, span := range spans {
+		byName[span.Name] = span
+	}
+	root, rootOK := byName["pipeline.submit"]
+	evaluate, evaluateOK := byName["pipeline.quota.evaluate"]
+	invoke, invokeOK := byName["pipeline.job.invoke"]
+	if !rootOK || !evaluateOK || !invokeOK {
+		t.Fatalf("span names=%v, want submit/evaluate/invoke: %+v", byName, spans)
+	}
+	if root.Status.Code != codes.Unset || evaluate.Parent.SpanID() != root.SpanContext.SpanID() || invoke.Parent.SpanID() != root.SpanContext.SpanID() {
+		t.Fatalf("submit span relationship/status invalid: root=%+v evaluate=%+v invoke=%+v", root, evaluate, invoke)
+	}
+	if !hasPipelineTraceAttribute(root.Attributes, "pipeline.outcome", "accepted") || !hasPipelineTraceAttribute(invoke.Attributes, "pipeline.outcome", "accepted") {
+		t.Fatalf("accepted response did not remain distinct from worker completion: root=%+v invoke=%+v", root.Attributes, invoke.Attributes)
+	}
+	if _, claimedWorker := byName["pipeline.worker"]; claimedWorker {
+		t.Fatal("submit request emitted a worker completion span")
+	}
+}
+
+func TestPipelineRunUnknownInvocationTraceKeepsReservationPending(t *testing.T) {
+	exporter := tracetest.NewInMemoryExporter()
+	provider := sdktrace.NewTracerProvider(sdktrace.WithSpanProcessor(sdktrace.NewSimpleSpanProcessor(exporter)))
+	previous := otel.GetTracerProvider()
+	otel.SetTracerProvider(provider)
+	t.Cleanup(func() {
+		otel.SetTracerProvider(previous)
+		_ = provider.Shutdown(context.Background())
+	})
+	now := time.Now().UTC()
+	quotaStore := &stubQuotaStore{dayKey: pipelinequota.DayKeyUTC(now)}
+	root := t.TempDir()
+	rawDir := filepath.Join(root, "users", "request-user", "projects", "project", "raw")
+	if err := os.MkdirAll(rawDir, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(rawDir, "a.md"), []byte("x"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	client := &http.Client{Transport: roundTripFunc(func(r *http.Request) (*http.Response, error) {
+		switch r.URL.Path {
+		case "/token":
+			return testHTTPResponse(http.StatusOK, `{"access_token":"test-token"}`), nil
+		case "/run":
+			return nil, errors.New("transport unavailable")
+		default:
+			return testHTTPResponse(http.StatusOK, `{"executions":[]}`), nil
+		}
+	})}
+	h := &Handler{store: localfs.New(root), index: search.NewIndex(), httpClient: client,
+		metadataTokenURL: "http://metadata.test/token", cloudRunJobURL: "https://run.test/run"}
+	h.SetPipelineQuotaConfig(2, 60, 1, nil)
+	h.SetPipelineQuotaStore(quotaStore)
+	recorder := httptest.NewRecorder()
+	c, _ := gin.CreateTestContext(recorder)
+	c.Request = httptest.NewRequest(http.MethodPost, "/api/v1/pipeline/run", nil)
+	c.Set("userID", "request-user")
+	c.Set("projectID", "project")
+	h.PipelineRun(c)
+	if recorder.Code != http.StatusInternalServerError {
+		t.Fatalf("status=%d, want 500: %s", recorder.Code, recorder.Body.String())
+	}
+	if quotaStore.runsToday != 1 || len(quotaStore.reservations) != 1 {
+		t.Fatalf("unknown invoke reservation was refunded or lost: runs=%d reservations=%+v", quotaStore.runsToday, quotaStore.reservations)
+	}
+	for _, reservation := range quotaStore.reservations {
+		if reservation.SettlementStatus != "pending" || reservation.ExecutionID != "" {
+			t.Fatalf("unknown invocation changed reservation: %+v", reservation)
+		}
+	}
+	spans := exporter.GetSpans()
+	byName := make(map[string]tracetest.SpanStub, len(spans))
+	for _, span := range spans {
+		byName[span.Name] = span
+	}
+	if !hasPipelineTraceAttribute(byName["pipeline.submit"].Attributes, "pipeline.outcome", "pending") ||
+		!hasPipelineTraceAttribute(byName["pipeline.job.invoke"].Attributes, "pipeline.outcome", "pending") {
+		t.Fatalf("unknown invocation trace does not remain pending: %+v", byName)
+	}
+}
+
+func TestPipelineRunReservationLinkFailureIsObservationOnly(t *testing.T) {
+	exporter := tracetest.NewInMemoryExporter()
+	provider := sdktrace.NewTracerProvider(sdktrace.WithSpanProcessor(sdktrace.NewSimpleSpanProcessor(exporter)))
+	previous := otel.GetTracerProvider()
+	otel.SetTracerProvider(provider)
+	t.Cleanup(func() {
+		otel.SetTracerProvider(previous)
+		_ = provider.Shutdown(context.Background())
+	})
+	now := time.Now().UTC()
+	quotaStore := &stubQuotaStore{dayKey: pipelinequota.DayKeyUTC(now), linkErr: errors.New("link unavailable")}
+	root := t.TempDir()
+	rawDir := filepath.Join(root, "users", "request-user", "projects", "project", "raw")
+	if err := os.MkdirAll(rawDir, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(rawDir, "a.md"), []byte("x"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	h := &Handler{store: localfs.New(root), index: search.NewIndex(), httpClient: pipelineRunHTTPClient(t, nil),
+		metadataTokenURL: "http://metadata.test/token", cloudRunJobURL: "https://run.test/run"}
+	h.SetPipelineQuotaConfig(2, 60, 1, nil)
+	h.SetPipelineQuotaStore(quotaStore)
+	recorder := httptest.NewRecorder()
+	c, _ := gin.CreateTestContext(recorder)
+	c.Request = httptest.NewRequest(http.MethodPost, "/api/v1/pipeline/run", nil)
+	c.Set("userID", "request-user")
+	c.Set("projectID", "project")
+	h.PipelineRun(c)
+	if recorder.Code != http.StatusAccepted || quotaStore.runsToday != 1 || quotaStore.refundCalls != 0 {
+		t.Fatalf("link failure changed accepted request/quota result: status=%d runs=%d settlements=%d body=%s", recorder.Code, quotaStore.runsToday, quotaStore.refundCalls, recorder.Body.String())
+	}
+	var sawDegraded bool
+	for _, span := range exporter.GetSpans() {
+		if span.Name == "pipeline.reservation.link" && hasPipelineTraceAttribute(span.Attributes, "pipeline.outcome", "degraded") {
+			sawDegraded = true
+		}
+	}
+	if !sawDegraded {
+		t.Fatalf("link failure was not recorded as degraded: %+v", exporter.GetSpans())
+	}
+}
+
+func hasPipelineTraceAttribute(attrs []attribute.KeyValue, key, want string) bool {
+	for _, attr := range attrs {
+		if string(attr.Key) == key && attr.Value.AsString() == want {
+			return true
+		}
+	}
+	return false
+}
+
+func TestQuotaReconcileDetailBudgetDoesNotCapActualProcessing(t *testing.T) {
+	exporter := tracetest.NewInMemoryExporter()
+	provider := sdktrace.NewTracerProvider(sdktrace.WithSpanProcessor(sdktrace.NewSimpleSpanProcessor(exporter)))
+	previous := otel.GetTracerProvider()
+	otel.SetTracerProvider(provider)
+	t.Cleanup(func() {
+		otel.SetTracerProvider(previous)
+		_ = provider.Shutdown(context.Background())
+	})
+	const reservationCount = 21
+	quotaStore := &stubQuotaStore{reservations: make(map[string]firestore.QuotaReservation, reservationCount)}
+	for i := 0; i < reservationCount; i++ {
+		reservationID := fmt.Sprintf("reservation-%02d", i)
+		executionID := fmt.Sprintf("execution-%02d", i)
+		quotaStore.reservations[reservationID] = firestore.QuotaReservation{
+			ID: reservationID, UserID: "user", ProjectID: "project", ExecutionID: executionID, SettlementStatus: "pending",
+		}
+	}
+	client := &http.Client{Transport: roundTripFunc(func(r *http.Request) (*http.Response, error) {
+		if r.URL.Path == "/token" {
+			return testHTTPResponse(http.StatusOK, `{"access_token":"test-token"}`), nil
+		}
+		if strings.HasPrefix(r.URL.Path, "/run/executions/") {
+			executionID := strings.TrimPrefix(r.URL.Path, "/run/executions/")
+			reservationID := strings.Replace(executionID, "execution-", "reservation-", 1)
+			execution := cloudRunExecution{
+				Name:             "projects/p/locations/r/jobs/j/executions/" + executionID,
+				CompletionStatus: "SUCCEEDED",
+				Template: cloudRunExecutionTemplate{Containers: []cloudRunContainer{{Env: []cloudRunEnv{
+					{Name: "USER_ID", Value: "user"}, {Name: "PROJECT_ID", Value: "project"},
+					{Name: "TASK_TYPE", Value: "pipeline"}, {Name: pipelineReservationEnvName, Value: reservationID},
+				}}}},
+			}
+			body, err := json.Marshal(execution)
+			if err != nil {
+				t.Fatal(err)
+			}
+			return testHTTPResponse(http.StatusOK, string(body)), nil
+		}
+		return testHTTPResponse(http.StatusNotFound, `not found`), nil
+	})}
+	h := &Handler{httpClient: client, metadataTokenURL: "http://metadata.test/token", cloudRunJobURL: "https://run.test/run"}
+	h.SetPipelineQuotaStore(quotaStore)
+	if err := h.ReconcilePipelineQuota(context.Background()); err != nil {
+		t.Fatalf("ReconcilePipelineQuota() error = %v", err)
+	}
+	if quotaStore.refundCalls != reservationCount {
+		t.Fatalf("settlement calls=%d, want all %d reservations processed", quotaStore.refundCalls, reservationCount)
+	}
+	for id, reservation := range quotaStore.reservations {
+		if reservation.SettlementStatus != "charged" {
+			t.Fatalf("reservation %s status=%q, want charged", id, reservation.SettlementStatus)
+		}
+	}
+	var root *tracetest.SpanStub
+	detailCount := 0
+	for _, span := range exporter.GetSpans() {
+		if span.Name == "pipeline.quota.reconcile" {
+			copy := span
+			root = &copy
+		}
+		if span.Name == "pipeline.quota.lookup" {
+			detailCount++
+		}
+	}
+	if root == nil || detailCount != 16 || !hasPipelineTraceAttribute(root.Attributes, "pipeline.outcome", "success") {
+		t.Fatalf("root=%+v detail spans=%d, want successful root and 16 details", root, detailCount)
+	}
+	if !hasPipelineTraceCount(root.Attributes, "pipeline.processed_count", reservationCount) ||
+		!hasPipelineTraceCount(root.Attributes, "pipeline.suppressed_count", reservationCount-16) {
+		t.Fatalf("reconciliation root lacks processed/suppressed counts: %+v", root.Attributes)
+	}
+}
+
+func hasPipelineTraceCount(attrs []attribute.KeyValue, key string, want int) bool {
+	for _, attr := range attrs {
+		if string(attr.Key) == key && attr.Value.AsInt64() == int64(want) {
+			return true
+		}
+	}
+	return false
+}
+
 func TestPipelineRunDefaultsCommandAndUser(t *testing.T) {
 	var runRequest struct {
 		Overrides struct {
@@ -1231,6 +1483,7 @@ type stubQuotaStore struct {
 	reserveCalls int
 	refundCalls  int
 	refundErr    error
+	linkErr      error
 	reservations map[string]firestore.QuotaReservation
 }
 
@@ -1296,6 +1549,9 @@ func (s *stubQuotaStore) ReserveQuota(
 }
 
 func (s *stubQuotaStore) LinkQuotaReservation(_ context.Context, reservationID, executionID string) error {
+	if s.linkErr != nil {
+		return s.linkErr
+	}
 	reservation := s.reservations[reservationID]
 	reservation.ExecutionID = executionID
 	s.reservations[reservationID] = reservation
