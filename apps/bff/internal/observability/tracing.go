@@ -66,11 +66,12 @@ var pipelineSpanNames = map[string]struct{}{
 	"pipeline.job.invoke": {}, "pipeline.reservation.link": {}, "pipeline.invoke.recovery": {},
 	"pipeline.status": {}, "pipeline.status.lookup": {}, "pipeline.status.publication": {}, "pipeline.status.settlement": {},
 	"pipeline.quota.reconcile": {}, "pipeline.quota.list": {}, "pipeline.quota.lookup": {}, "pipeline.quota.publication": {},
-	"pipeline.quota.link": {}, "pipeline.quota.settle": {}, "pipeline.recovery": {}, "pipeline.recovery.lookup": {},
+	"pipeline.quota.link": {}, "pipeline.quota.settle": {}, "pipeline.recovery": {}, "pipeline.recovery.result": {}, "pipeline.recovery.lookup": {},
 	"pipeline.recovery.transaction": {}, "pipeline.worker": {}, "pipeline.worker.validate": {}, "pipeline.worker.lease": {},
-	"pipeline.worker.workspace": {}, "pipeline.worker.child": {}, "pipeline.worker.postprocess": {},
+	"pipeline.worker.workspace": {}, "pipeline.worker.materialize": {}, "pipeline.worker.child": {}, "pipeline.worker.postprocess": {},
 	"pipeline.worker.suggested_queries": {}, "pipeline.worker.suggested_queries.provider": {},
 	"pipeline.worker.suggested_queries.validate": {}, "pipeline.worker.suggested_queries.fallback": {},
+	"pipeline.worker.export_validate": {}, "pipeline.worker.export": {},
 	"pipeline.worker.publish": {}, "pipeline.worker.finalize": {}, "pipeline.worker.compile_receipt": {},
 }
 
@@ -153,6 +154,80 @@ func SetPipelinePublicationOutcome(span trace.Span, outcome string) {
 	}
 }
 
+// SetPipelineSettlementOutcome records only a finite result from an actual
+// quota settlement transaction. Transaction errors take precedence over any
+// value observed inside a retried closure.
+func SetPipelineSettlementOutcome(span trace.Span, settlement string, applied bool, err error) {
+	if span == nil || !span.IsRecording() {
+		return
+	}
+	span.SetAttributes(attribute.String("pipeline.settlement.outcome", PipelineSettlementOutcome(settlement, applied, err)))
+}
+
+// PipelineSettlementOutcome maps provider-independent settlement state to a
+// finite label so recovery spans can share the result without exposing raw data.
+func PipelineSettlementOutcome(settlement string, applied bool, err error) string {
+	outcome := "unknown"
+	switch {
+	case err != nil:
+		outcome = "failure"
+	case applied:
+		outcome = "committed"
+	default:
+		switch settlement {
+		case "charged", "refunded":
+			outcome = "retained"
+		case "pending":
+			outcome = "pending"
+		case "not_applicable":
+			outcome = "not_applicable"
+		case "no_op":
+			outcome = "no_op"
+		}
+	}
+	return outcome
+}
+
+// SetPipelineRecoveryTransactionOutcome records whether an outer recovery
+// transaction actually updated its record after RunTransaction returned.
+func SetPipelineRecoveryTransactionOutcome(span trace.Span, outcome string, err error) {
+	if span == nil || !span.IsRecording() {
+		return
+	}
+	if err != nil {
+		outcome = "failure"
+	}
+	switch outcome {
+	case "committed", "retained", "no_op", "pending", "not_applicable", "failure", "unknown":
+	default:
+		outcome = "unknown"
+	}
+	span.SetAttributes(attribute.String("pipeline.recovery.transaction.outcome", outcome))
+}
+
+// SetPipelineRecoveryStatus maps persisted terminal states to finite values.
+func SetPipelineRecoveryStatus(span trace.Span, status string) {
+	if span == nil || !span.IsRecording() {
+		return
+	}
+	var outcome string
+	switch status {
+	case "SUCCEEDED":
+		outcome = "success"
+	case "FAILED":
+		outcome = "failure"
+	case "CANCELLED":
+		outcome = "canceled"
+	case "UNKNOWN":
+		outcome = "unknown"
+	case "RUNNING", "PENDING":
+		outcome = "pending"
+	default:
+		outcome = "other"
+	}
+	span.SetAttributes(attribute.String("pipeline.recovery.status", outcome))
+}
+
 type PipelineDetailBudget struct {
 	mu         sync.Mutex
 	limit      int
@@ -164,11 +239,11 @@ type pipelineDetailBudgetKey struct{}
 
 var pipelineDetailSpanNames = map[string]struct{}{
 	"pipeline.quota.lookup": {}, "pipeline.quota.publication": {}, "pipeline.quota.link": {}, "pipeline.quota.settle": {},
-	"pipeline.recovery.transaction": {},
+	"pipeline.recovery.result": {}, "pipeline.recovery.lookup": {}, "pipeline.recovery.transaction": {},
 }
 
-// WithPipelineDetailBudget limits reservation-level OTel details for one
-// reconciliation sweep without changing the work performed by that sweep.
+// WithPipelineDetailBudget limits reservation/result-level OTel details for
+// one reconciliation sweep without changing the work performed by that sweep.
 func WithPipelineDetailBudget(ctx context.Context, limit int) (context.Context, *PipelineDetailBudget) {
 	if existing, ok := ctx.Value(pipelineDetailBudgetKey{}).(*PipelineDetailBudget); ok && existing != nil {
 		return ctx, existing

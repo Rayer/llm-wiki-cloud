@@ -539,7 +539,10 @@ func runWorkerBatchAtVault(ctx context.Context, cfg workerConfig, commands [][]s
 		return preserveWorkerFailure(runErr, failureStageSyntoRun, failureClassUnknown)
 	}
 	if cfg.Postprocess {
-		if err := ensureSyntoIndex(ctx, vault, olwEnv, stdout, stderr); err != nil {
+		exportCtx, exportSpan := observability.StartWorkerSpan(ctx, "pipeline.worker.export_validate")
+		err := ensureSyntoIndex(exportCtx, vault, olwEnv, stdout, stderr)
+		observability.FinishPipelineSpan(exportSpan, workerTraceOutcome(err))
+		if err != nil {
 			return preserveWorkerFailure(err, failureStageSyntoIndexExport, failureClassStateInvalid)
 		}
 	}
@@ -822,6 +825,7 @@ func runSuggestedQueriesCommand(ctx context.Context, cfg workerConfig) (runErr e
 		}
 		workspaceCtx, workspaceSpan := observability.StartWorkerSpan(ctx, "pipeline.worker.workspace")
 		err := runCloudSuggestedQueries(workspaceCtx, cfg, newCloudObjectStore(cfg.Bucket))
+		observability.SetPipelinePublicationOutcome(workspaceSpan, cloudSuggestedQueriesPublicationOutcome(err))
 		observability.FinishPipelineSpan(workspaceSpan, workerTraceOutcome(err))
 		return err
 	}
@@ -1469,6 +1473,7 @@ func writeSuggestedQueriesObserved(ctx context.Context, vault string, provider s
 
 	if provider == nil {
 		report("provider_not_configured")
+		logicalOutcome = "skipped"
 		fallbackCtx, fallbackSpan := observability.StartWorkerSpan(ctx, "pipeline.worker.suggested_queries.fallback")
 		err := ensureEmptySuggestedQueries(fallbackCtx, vault)
 		observability.FinishPipelineSpan(fallbackSpan, workerTraceOutcome(err))

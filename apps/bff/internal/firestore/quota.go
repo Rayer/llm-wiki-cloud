@@ -174,15 +174,17 @@ func ListPendingQuotaReservationsFromFirestore(ctx context.Context, fs *firestor
 func (c *Client) SettleQuotaReservation(ctx context.Context, reservationID, executionStatus string) (string, error) {
 	ctx, span := observability.StartPipelineSpan(ctx, "pipeline.quota.settle")
 	var settlement string
+	var applied bool
 	err := c.fs.RunTransaction(ctx, func(ctx context.Context, tx *firestore.Transaction) error {
 		var err error
-		settlement, err = SettleQuotaReservationInTransaction(ctx, tx, c.fs, reservationID, executionStatus)
+		settlement, applied, err = SettleQuotaReservationInTransactionWithResult(ctx, tx, c.fs, reservationID, executionStatus)
 		return err
 	})
 	outcome := "success"
 	if err != nil {
 		outcome = "failure"
 	}
+	observability.SetPipelineSettlementOutcome(span, settlement, applied, err)
 	observability.FinishPipelineSpan(span, outcome)
 	return settlement, err
 }
@@ -190,20 +192,29 @@ func (c *Client) SettleQuotaReservation(ctx context.Context, reservationID, exec
 // SettleQuotaReservationInTransaction lets the local execution writer commit
 // terminal execution state and its quota settlement atomically.
 func SettleQuotaReservationInTransaction(ctx context.Context, tx *firestore.Transaction, fs *firestore.Client, reservationID, executionStatus string) (string, error) {
+	settlement, _, err := SettleQuotaReservationInTransactionWithResult(ctx, tx, fs, reservationID, executionStatus)
+	return settlement, err
+}
+
+// SettleQuotaReservationInTransactionWithResult reports whether this closure
+// staged a new reservation settlement. Callers must use that result only after
+// the outer RunTransaction returns successfully, because Firestore may retry
+// this closure.
+func SettleQuotaReservationInTransactionWithResult(ctx context.Context, tx *firestore.Transaction, fs *firestore.Client, reservationID, executionStatus string) (string, bool, error) {
 	if strings.TrimSpace(reservationID) == "" {
-		return "not_applicable", nil
+		return "not_applicable", false, nil
 	}
 	reservationRef := Collection(fs, pipelineQuotaReservationCollection).Doc(reservationID)
 	reservationSnapshot, err := tx.Get(reservationRef)
 	if status.Code(err) == codes.NotFound {
-		return "not_applicable", nil
+		return "not_applicable", false, nil
 	}
 	if err != nil {
-		return "", err
+		return "", false, err
 	}
 	reservation := quotaReservationFromData(reservationID, reservationSnapshot.Data())
 	if reservation.SettlementStatus != "pending" {
-		return reservation.SettlementStatus, nil
+		return reservation.SettlementStatus, false, nil
 	}
 
 	switch strings.ToUpper(strings.TrimSpace(executionStatus)) {
@@ -214,14 +225,14 @@ func SettleQuotaReservationInTransaction(ctx context.Context, tx *firestore.Tran
 			{Path: "outcome", Value: strings.ToUpper(strings.TrimSpace(executionStatus))},
 			{Path: "settled_at", Value: time.Now().UTC()},
 		}); err != nil {
-			return "", err
+			return "", false, err
 		}
-		return settlement, nil
+		return settlement, true, nil
 	case "FAILED":
 		quotaRef := Collection(fs, pipelineQuotaCollection).Doc(QuotaDocID(reservation.UserID, reservation.ProjectID))
 		quotaSnapshot, err := tx.Get(quotaRef)
 		if err != nil {
-			return "", err
+			return "", false, err
 		}
 		data := quotaSnapshot.Data()
 		runsToday, dayKey, lastRunAt := quotaStateFromData(data)
@@ -239,7 +250,7 @@ func SettleQuotaReservationInTransaction(ctx context.Context, tx *firestore.Tran
 		if len(updates) > 0 {
 			updates = append(updates, firestore.Update{Path: "updated_at", Value: time.Now().UTC()})
 			if err := tx.Update(quotaRef, updates); err != nil {
-				return "", err
+				return "", false, err
 			}
 		}
 		if err := tx.Update(reservationRef, []firestore.Update{
@@ -247,11 +258,11 @@ func SettleQuotaReservationInTransaction(ctx context.Context, tx *firestore.Tran
 			{Path: "outcome", Value: "FAILED"},
 			{Path: "settled_at", Value: time.Now().UTC()},
 		}); err != nil {
-			return "", err
+			return "", false, err
 		}
-		return "refunded", nil
+		return "refunded", true, nil
 	default:
-		return "pending", nil
+		return "pending", false, nil
 	}
 }
 

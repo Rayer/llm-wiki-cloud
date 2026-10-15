@@ -4,6 +4,7 @@ import (
 	"bufio"
 	"context"
 	"encoding/json"
+	"errors"
 	"io"
 	"net/http"
 	"strings"
@@ -142,7 +143,13 @@ func TestPipelineDetailBudgetSuppressesOnlyObservationDetails(t *testing.T) {
 	ctx, root := StartPipelineSpan(context.Background(), "pipeline.quota.reconcile")
 	ctx, budget := WithPipelineDetailBudget(ctx, 16)
 	for index := 0; index < 21; index++ {
-		_, detail := StartPipelineSpan(ctx, "pipeline.quota.lookup")
+		name := "pipeline.quota.lookup"
+		if index%3 == 1 {
+			name = "pipeline.recovery.result"
+		} else if index%3 == 2 {
+			name = "pipeline.recovery.transaction"
+		}
+		_, detail := StartPipelineSpan(ctx, name)
 		FinishPipelineSpan(detail, "success")
 	}
 	SetPipelineCount(root, "pipeline.processed_count", 21)
@@ -164,6 +171,30 @@ func TestPipelineDetailBudgetSuppressesOnlyObservationDetails(t *testing.T) {
 		}
 		if attrs["pipeline.processed_count"] != 21 || attrs["pipeline.suppressed_count"] != 5 {
 			t.Fatalf("reconcile count attributes = %#v", attrs)
+		}
+	}
+}
+
+func TestPipelineSettlementOutcomeUsesFiniteTransactionTruth(t *testing.T) {
+	tests := []struct {
+		settlement string
+		applied    bool
+		err        error
+		want       string
+	}{
+		{settlement: "charged", applied: true, want: "committed"},
+		{settlement: "refunded", applied: true, want: "committed"},
+		{settlement: "charged", want: "retained"},
+		{settlement: "refunded", want: "retained"},
+		{settlement: "pending", want: "pending"},
+		{settlement: "not_applicable", want: "not_applicable"},
+		{settlement: "no_op", want: "no_op"},
+		{settlement: "unrecognized-private-value", want: "unknown"},
+		{settlement: "charged", applied: true, err: errors.New("private transaction detail"), want: "failure"},
+	}
+	for _, tt := range tests {
+		if got := PipelineSettlementOutcome(tt.settlement, tt.applied, tt.err); got != tt.want {
+			t.Errorf("PipelineSettlementOutcome(%q, %t, %v) = %q, want %q", tt.settlement, tt.applied, tt.err, got, tt.want)
 		}
 	}
 }

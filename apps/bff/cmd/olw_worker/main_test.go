@@ -849,6 +849,46 @@ func TestSuggestedQueryTraceSeparatesProviderGuardDecodeAndFallback(t *testing.T
 	}
 }
 
+func TestNilSuggestedQueryProviderIsSkippedAndFallbackKeepsItsOwnOutcome(t *testing.T) {
+	exporter := tracetest.NewInMemoryExporter()
+	provider := sdktrace.NewTracerProvider(sdktrace.WithSpanProcessor(sdktrace.NewSimpleSpanProcessor(exporter)))
+	previous := otel.GetTracerProvider()
+	otel.SetTracerProvider(provider)
+	t.Cleanup(func() {
+		otel.SetTracerProvider(previous)
+		_ = provider.Shutdown(context.Background())
+	})
+
+	vault := t.TempDir()
+	prior := []byte(`{"version":2,"queries":["last known question"],"candidates":[],"updated_at":"2026-10-01T00:00:00Z"}`)
+	mustWriteFile(t, filepath.Join(vault, "cache", "suggested_queries.json"), prior)
+	if err := writeSuggestedQueriesObserved(context.Background(), vault, nil, nil); err != nil {
+		t.Fatalf("writeSuggestedQueriesObserved() error = %v", err)
+	}
+	got, err := os.ReadFile(filepath.Join(vault, "cache", "suggested_queries.json"))
+	if err != nil || !bytes.Equal(got, prior) {
+		t.Fatalf("fallback changed last-known-good artifact: bytesEqual=%v err=%v", bytes.Equal(got, prior), err)
+	}
+
+	var logicalOutcome, fallbackOutcome string
+	for _, span := range exporter.GetSpans() {
+		for _, attr := range span.Attributes {
+			if string(attr.Key) != "pipeline.outcome" {
+				continue
+			}
+			switch span.Name {
+			case "pipeline.worker.suggested_queries":
+				logicalOutcome = attr.Value.AsString()
+			case "pipeline.worker.suggested_queries.fallback":
+				fallbackOutcome = attr.Value.AsString()
+			}
+		}
+	}
+	if logicalOutcome != "skipped" || fallbackOutcome != "success" {
+		t.Fatalf("nil-provider logical outcome=%q fallback outcome=%q, want skipped/success", logicalOutcome, fallbackOutcome)
+	}
+}
+
 func containsString(values []string, want string) bool {
 	for _, value := range values {
 		if value == want {
