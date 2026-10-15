@@ -1217,7 +1217,7 @@ func (s *GoogleOAuthService) exchangeCode(ctx context.Context, transaction oauth
 		return "", errors.New("provider token response invalid")
 	}
 	observability.FinishAuthSpan(exchangeSpan, "success")
-	_, decodeSpan := observability.StartAuthSpan(exchangeCtx, "auth.google.token_decode")
+	_, decodeSpan := observability.StartAuthSpan(requestCtx, "auth.google.token_decode")
 	var payload struct {
 		IDToken string `json:"id_token"`
 	}

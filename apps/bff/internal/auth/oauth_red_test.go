@@ -18,6 +18,7 @@ import (
 
 	"github.com/gin-gonic/gin"
 	"github.com/golang-jwt/jwt/v5"
+	"github.com/rayer/llm-wiki-bff/internal/observability"
 	"go.opentelemetry.io/otel"
 	"go.opentelemetry.io/otel/attribute"
 	sdktrace "go.opentelemetry.io/otel/sdk/trace"
@@ -224,11 +225,16 @@ func TestGoogleHTTP200InvalidTokenPayloadIsLogicalDecodeFailure(t *testing.T) {
 	})
 	service := NewGoogleOAuthService(GoogleConfig{ClientID: "client", ClientSecret: "secret", TokenURL: server.URL}, nil, nil, nil, "secret")
 	service.client = server.Client()
-	if _, err := service.exchangeCode(t.Context(), oauthTransaction{PKCEVerifier: "verifier", RedirectURL: "https://auth.example.test/callback"}, "code"); err == nil {
+	callbackCtx, callbackSpan := observability.StartAuthSpan(t.Context(), "auth.google.login_callback")
+	_, exchangeErr := service.exchangeCode(callbackCtx, oauthTransaction{PKCEVerifier: "verifier", RedirectURL: "https://auth.example.test/callback"}, "code")
+	observability.FinishAuthSpan(callbackSpan, "failure")
+	if exchangeErr == nil {
 		t.Fatal("HTTP 200 without an ID token was accepted")
 	}
 	got := map[string]string{}
+	spans := map[string]tracetest.SpanStub{}
 	for _, span := range exporter.GetSpans() {
+		spans[span.Name] = span
 		outcome := ""
 		for _, attr := range span.Attributes {
 			if attr.Key == "auth.outcome" && attr.Value.Type() == attribute.STRING {
@@ -242,6 +248,19 @@ func TestGoogleHTTP200InvalidTokenPayloadIsLogicalDecodeFailure(t *testing.T) {
 	}
 	if got["auth.google.token_exchange"] != "success" || got["auth.google.token_decode"] != "failure" {
 		t.Fatalf("OAuth phase outcomes = %#v, want transport success and logical decode failure", got)
+	}
+	callback, callbackOK := spans["auth.google.login_callback"]
+	transport, transportOK := spans["auth.google.token_exchange"]
+	decode, decodeOK := spans["auth.google.token_decode"]
+	if !callbackOK || !transportOK || !decodeOK {
+		t.Fatalf("OAuth spans missing callback=%t transport=%t decode=%t", callbackOK, transportOK, decodeOK)
+	}
+	wantParent := callback.SpanContext.SpanID()
+	if transport.Parent.SpanID() != wantParent || decode.Parent.SpanID() != wantParent {
+		t.Fatalf("OAuth phase parents callback=%s transport=%s decode=%s, want both phases under callback", wantParent, transport.Parent.SpanID(), decode.Parent.SpanID())
+	}
+	if !decode.StartTime.After(transport.EndTime) {
+		t.Fatalf("decode start %v must follow transport end %v", decode.StartTime, transport.EndTime)
 	}
 }
 
