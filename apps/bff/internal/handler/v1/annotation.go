@@ -26,19 +26,19 @@ func (h *Handler) annotationTarget(c *gin.Context) (store.Store, store.Condition
 	s, err := h.GetStore(c)
 	if err != nil {
 		observability.FinishDataSpan(loadSpan, observability.DataErrorOutcome(err))
-		c.JSON(500, handler.ErrorResponse{Error: generatedDataUnavailableMessage})
+		observability.WriteDataJSON(c, 500, handler.ErrorResponse{Error: generatedDataUnavailableMessage})
 		return nil, nil, "", "", false
 	}
 	w, ok := s.(store.ConditionalWriter)
 	if !ok {
 		observability.FinishDataSpan(loadSpan, "failure")
-		c.JSON(500, handler.ErrorResponse{Error: "annotation storage is not configured"})
+		observability.WriteDataJSON(c, 500, handler.ErrorResponse{Error: "annotation storage is not configured"})
 		return nil, nil, "", "", false
 	}
 	dual, err := h.getIDRoutingMap(c.Request.Context(), s)
 	if err != nil {
 		observability.FinishDataSpan(loadSpan, observability.DataErrorOutcome(err))
-		c.JSON(500, handler.ErrorResponse{Error: generatedDataUnavailableMessage})
+		observability.WriteDataJSON(c, 500, handler.ErrorResponse{Error: generatedDataUnavailableMessage})
 		return nil, nil, "", "", false
 	}
 	observability.FinishDataSpan(loadSpan, "success")
@@ -46,13 +46,13 @@ func (h *Handler) annotationTarget(c *gin.Context) (store.Store, store.Condition
 	id := strings.TrimSpace(c.Param("id"))
 	if !annotation.ValidSourceID(id) {
 		observability.FinishDataSpan(validateSpan, "rejected")
-		c.JSON(404, handler.ErrorResponse{Error: "source not found"})
+		observability.WriteDataJSON(c, 404, handler.ErrorResponse{Error: "source not found"})
 		return nil, nil, "", "", false
 	}
 	entry, ok := dual.byID[id]
 	if !ok || entry.Type != "source" {
 		observability.FinishDataSpan(validateSpan, "rejected")
-		c.JSON(404, handler.ErrorResponse{Error: "source not found"})
+		observability.WriteDataJSON(c, 404, handler.ErrorResponse{Error: "source not found"})
 		return nil, nil, "", "", false
 	}
 	observability.FinishDataSpan(validateSpan, "success")
@@ -60,7 +60,7 @@ func (h *Handler) annotationTarget(c *gin.Context) (store.Store, store.Condition
 	_, data, err := s.GetPage(readCtx, entry.Slug, "sources")
 	if err != nil {
 		observability.FinishDataSpan(readSpan, observability.DataErrorOutcome(err))
-		c.JSON(409, handler.ErrorResponse{Error: "source mapping is unavailable"})
+		observability.WriteDataJSON(c, 409, handler.ErrorResponse{Error: "source mapping is unavailable"})
 		return nil, nil, "", "", false
 	}
 	fm, _ := parseFrontmatter(string(data))
@@ -68,12 +68,12 @@ func (h *Handler) annotationTarget(c *gin.Context) (store.Store, store.Condition
 	raw = strings.TrimSpace(raw)
 	if !store.SafeRawPath(raw) {
 		observability.FinishDataSpan(readSpan, "rejected")
-		c.JSON(409, handler.ErrorResponse{Error: "source raw mapping is unsafe"})
+		observability.WriteDataJSON(c, 409, handler.ErrorResponse{Error: "source raw mapping is unsafe"})
 		return nil, nil, "", "", false
 	}
 	if _, err := s.ReadFile(readCtx, raw); err != nil {
 		observability.FinishDataSpan(readSpan, observability.DataErrorOutcome(err))
-		c.JSON(409, handler.ErrorResponse{Error: "source raw mapping is unavailable"})
+		observability.WriteDataJSON(c, 409, handler.ErrorResponse{Error: "source raw mapping is unavailable"})
 		return nil, nil, "", "", false
 	}
 	observability.FinishDataSpan(readSpan, "success")
@@ -144,19 +144,19 @@ func (h *Handler) PutAnnotation(c *gin.Context) {
 	var req handler.AnnotationRequest
 	if err := decodeStrictAnnotationRequest(c, &req); err != nil {
 		observability.FinishDataSpan(inputSpan, "rejected")
-		c.JSON(400, handler.ErrorResponse{Error: "invalid annotation request"})
+		observability.WriteDataJSON(c, 400, handler.ErrorResponse{Error: "invalid annotation request"})
 		return
 	}
 	expected, err := strconv.ParseInt(req.ExpectedGeneration, 10, 64)
 	if err != nil || expected < 0 {
 		observability.FinishDataSpan(inputSpan, "rejected")
-		c.JSON(400, handler.ErrorResponse{Error: "expected_generation is required"})
+		observability.WriteDataJSON(c, 400, handler.ErrorResponse{Error: "expected_generation is required"})
 		return
 	}
 	body := annotation.Normalize(req.Body)
 	if len([]byte(body)) > maxAnnotationBytes {
 		observability.FinishDataSpan(inputSpan, "rejected")
-		c.JSON(413, handler.ErrorResponse{Error: "annotation body exceeds 16 KiB"})
+		observability.WriteDataJSON(c, 413, handler.ErrorResponse{Error: "annotation body exceeds 16 KiB"})
 		return
 	}
 	observability.FinishDataSpan(inputSpan, "success")
@@ -168,7 +168,7 @@ func (h *Handler) PutAnnotation(c *gin.Context) {
 			_, conditionSpan := observability.StartDataPhase(c.Request.Context(), "validate")
 			observability.FinishDataSpan(conditionSpan, "precondition_failed")
 			observability.SetDataOperationOutcome(c.Request.Context(), "precondition_failed")
-			c.JSON(412, handler.ErrorResponse{Error: "annotation generation mismatch"})
+			observability.WriteDataJSON(c, 412, handler.ErrorResponse{Error: "annotation generation mismatch"})
 			return
 		}
 		var prior annotation.Object
@@ -185,7 +185,7 @@ func (h *Handler) PutAnnotation(c *gin.Context) {
 		outcome := observability.DataErrorOutcome(readErr)
 		observability.FinishDataSpan(readSpan, outcome)
 		observability.SetDataOperationOutcome(c.Request.Context(), outcome)
-		c.JSON(500, handler.ErrorResponse{Error: generatedDataUnavailableMessage})
+		observability.WriteDataJSON(c, 500, handler.ErrorResponse{Error: generatedDataUnavailableMessage})
 		return
 	}
 	object := annotation.Object{Version: 1, SourceID: id, RawPath: raw, Body: body, SHA256: annotation.Digest(body), UpdatedAt: time.Now().UTC().Format(time.RFC3339), UpdatedBy: c.GetString("userID")}
@@ -200,9 +200,9 @@ func (h *Handler) PutAnnotation(c *gin.Context) {
 		observability.FinishDataSpan(writeSpan, outcome)
 		observability.SetDataOperationOutcome(c.Request.Context(), outcome)
 		if errors.Is(err, store.ErrGenerationMismatch) {
-			c.JSON(412, handler.ErrorResponse{Error: "annotation generation mismatch"})
+			observability.WriteDataJSON(c, 412, handler.ErrorResponse{Error: "annotation generation mismatch"})
 		} else {
-			c.JSON(500, handler.ErrorResponse{Error: generatedDataUnavailableMessage})
+			observability.WriteDataJSON(c, 500, handler.ErrorResponse{Error: generatedDataUnavailableMessage})
 		}
 		return
 	}
@@ -291,12 +291,17 @@ func (h *Handler) writeAnnotationResponse(c *gin.Context, s store.Store, id, raw
 	c.Request = c.Request.WithContext(responseCtx)
 	response, err := h.annotationResponse(c, s, id, raw, object, generation)
 	if err != nil {
-		observability.FinishDataSpan(responseSpan, "response_failure")
 		observability.SetDataOperationOutcome(c.Request.Context(), "response_failure")
 		c.JSON(500, handler.ErrorResponse{Error: generatedDataUnavailableMessage})
+		observability.FinishDataSpan(responseSpan, "response_failure")
 		return
 	}
+	renderErrorsBefore := len(c.Errors)
 	c.JSON(200, response)
+	if len(c.Errors) > renderErrorsBefore {
+		observability.FinishDataSpan(responseSpan, "response_failure")
+		return
+	}
 	observability.FinishDataSpan(responseSpan, "success")
 }
 

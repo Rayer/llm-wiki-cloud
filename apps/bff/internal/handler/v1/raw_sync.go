@@ -172,7 +172,7 @@ func (h *Handler) SyncRawUpload(c *gin.Context) {
 	_, inputSpan := observability.StartDataPhase(c.Request.Context(), "input")
 	if store.ValidateRawSyncPath(path) != nil || !store.ValidRawSyncSHA256(sha256) {
 		observability.FinishDataSpan(inputSpan, "rejected")
-		c.JSON(http.StatusBadRequest, gin.H{"error": "a valid raw path and SHA-256 are required"})
+		observability.WriteDataJSON(c, http.StatusBadRequest, gin.H{"error": "a valid raw path and SHA-256 are required"})
 		return
 	}
 	observability.FinishDataSpan(inputSpan, "success")
@@ -193,20 +193,20 @@ func (h *Handler) SyncRawUpload(c *gin.Context) {
 	observability.FinishDataSpan(writeSpan, "committed")
 	observability.SetDataOperationOutcome(c.Request.Context(), "committed")
 	c.Header("Cache-Control", "no-store")
-	c.JSON(http.StatusOK, gin.H{"generation": generation, "sha256": sha256})
+	observability.WriteDataJSON(c, http.StatusOK, gin.H{"generation": generation, "sha256": sha256})
 }
 
 func (h *Handler) rawSyncStore(c *gin.Context) (store.RawSyncStore, bool) {
 	userID, projectID := strings.TrimSpace(c.GetString("userID")), strings.TrimSpace(c.GetString("projectID"))
 	if h.store == nil || userID == "" || projectID == "" {
-		c.JSON(http.StatusServiceUnavailable, gin.H{"error": "raw sync storage unavailable"})
+		observability.WriteDataJSON(c, http.StatusServiceUnavailable, gin.H{"error": "raw sync storage unavailable"})
 		return nil, false
 	}
 	// Raw objects are outside generated wiki snapshots, so scope the current
 	// Project store directly instead of pinning a compiled generation.
 	rawStore, ok := h.store.Scope(userID, projectID).(store.RawSyncStore)
 	if !ok {
-		c.JSON(http.StatusServiceUnavailable, gin.H{"error": "raw sync storage unavailable"})
+		observability.WriteDataJSON(c, http.StatusServiceUnavailable, gin.H{"error": "raw sync storage unavailable"})
 		return nil, false
 	}
 	return rawStore, true
@@ -223,14 +223,14 @@ func rawSyncSnapshot(files []store.RawSyncFile) string {
 func writeRawSyncStorageError(c *gin.Context, err error) {
 	switch {
 	case errors.Is(err, store.ErrRawSyncCommitUncertain):
-		c.JSON(http.StatusServiceUnavailable, gin.H{"error": "raw file write outcome is uncertain"})
+		observability.WriteDataJSON(c, http.StatusServiceUnavailable, gin.H{"error": "raw file write outcome is uncertain"})
 	case errors.Is(err, store.ErrRawSyncConflict), errors.Is(err, store.ErrGenerationMismatch):
-		c.JSON(http.StatusConflict, gin.H{"error": "raw file changed; restart inventory"})
+		observability.WriteDataJSON(c, http.StatusConflict, gin.H{"error": "raw file changed; restart inventory"})
 	case errors.Is(err, store.ErrObjectNotExist):
-		c.JSON(http.StatusNotFound, gin.H{"error": "raw file does not exist"})
+		observability.WriteDataJSON(c, http.StatusNotFound, gin.H{"error": "raw file does not exist"})
 	case errors.Is(err, context.Canceled), errors.Is(err, context.DeadlineExceeded):
-		c.JSON(http.StatusRequestTimeout, gin.H{"error": "raw sync request was interrupted"})
+		observability.WriteDataJSON(c, http.StatusRequestTimeout, gin.H{"error": "raw sync request was interrupted"})
 	default:
-		c.JSON(http.StatusBadRequest, gin.H{"error": "raw file could not be transferred"})
+		observability.WriteDataJSON(c, http.StatusBadRequest, gin.H{"error": "raw file could not be transferred"})
 	}
 }

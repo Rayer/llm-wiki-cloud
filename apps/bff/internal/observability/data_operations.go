@@ -95,6 +95,38 @@ func dataStateFromContext(ctx context.Context) *dataOperationState {
 	return state
 }
 
+func selectedMutationOperation(operation string) bool {
+	switch operation {
+	case "annotation.write", "raw.upload", "raw_sync.write":
+		return true
+	default:
+		return false
+	}
+}
+
+// WriteDataJSON records the actual JSON response work for selected mutations.
+// It leaves Gin's status, body, and render errors untouched while safely
+// distinguishing response failures from the logical mutation outcome.
+func WriteDataJSON(c *gin.Context, status int, value any) {
+	if c.Request == nil {
+		c.JSON(status, value)
+		return
+	}
+	state := dataStateFromContext(c.Request.Context())
+	if state == nil || !selectedMutationOperation(state.operation) {
+		c.JSON(status, value)
+		return
+	}
+	_, responseSpan := StartDataPhase(c.Request.Context(), "response")
+	renderErrorsBefore := len(c.Errors)
+	c.JSON(status, value)
+	outcome := "success"
+	if len(c.Errors) > renderErrorsBefore {
+		outcome = "response_failure"
+	}
+	FinishDataSpan(responseSpan, outcome)
+}
+
 // StartDataPhase records a fixed phase only when it belongs to a mapped I4
 // request. The returned context preserves the operation parent for real SDK
 // child spans.

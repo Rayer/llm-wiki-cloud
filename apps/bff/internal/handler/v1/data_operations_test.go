@@ -307,6 +307,67 @@ func TestDataTracedAnnotationCommitNoopAndPreconditionOutcomes(t *testing.T) {
 	}
 }
 
+func TestDataTracedAnnotationJSONWriterFailurePreservesCommit(t *testing.T) {
+	gin.SetMode(gin.TestMode)
+	recorder := newDataSpanRecorder(t)
+	root := t.TempDir()
+	writeAnnotationFixture(t, root, "user", "project")
+	h := New(localfs.New(root), nil, search.NewIndex(), conceptcache.New(), nil, nil)
+	router := gin.New()
+	router.Use(observability.DataOperationMiddleware())
+	renderErrors := 0
+	router.Use(func(c *gin.Context) {
+		c.Set("userID", "user")
+		c.Set("projectID", "project")
+		c.Next()
+		renderErrors = len(c.Errors)
+	})
+	router.PUT("/api/v1/sources/:id/annotation", h.PutAnnotation)
+
+	const body = "PRIVATE_ANNOTATION_RESPONSE_BODY_CANARY"
+	const writerError = "PRIVATE_ANNOTATION_JSON_WRITER_FAILURE_CANARY"
+	payload, err := json.Marshal(handler.AnnotationRequest{Body: body, ExpectedGeneration: "0"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	response := &dataFailingJSONWriter{ResponseRecorder: httptest.NewRecorder(), err: errors.New(writerError)}
+	router.ServeHTTP(response, httptest.NewRequest(http.MethodPut, "/api/v1/sources/s1/annotation", bytes.NewReader(payload)))
+	if response.attempts != 1 || renderErrors != 1 || response.Code != http.StatusOK || response.Header().Get("Content-Type") != "application/json; charset=utf-8" {
+		t.Fatalf("annotation JSON response changed: attempts=%d errors=%d status=%d headers=%v", response.attempts, renderErrors, response.Code, response.Header())
+	}
+	var attempted handler.AnnotationResponse
+	if err := json.Unmarshal(response.attempted, &attempted); err != nil || attempted.Body != body {
+		t.Fatalf("annotation response payload changed: body=%q err=%v", response.attempted, err)
+	}
+	persisted, _, err := localfs.New(root).Scope("user", "project").(store.ConditionalWriter).ReadFileWithGeneration(context.Background(), "cache/annotations/s1.json")
+	if err != nil || !bytes.Contains(persisted, []byte(body)) {
+		t.Fatalf("annotation commit was not preserved: err=%v data=%q", err, persisted)
+	}
+
+	spans := recorder.Ended()
+	operation, phases := dataOperationSpans(t, spans)
+	if value, ok := dataSpanAttribute(operation, "bff.outcome"); !ok || value.AsString() != "committed" {
+		t.Fatalf("annotation operation commit truth changed: %v", value)
+	}
+	if value, ok := dataSpanAttribute(phases["bff.data.write"], "bff.outcome"); !ok || value.AsString() != "committed" {
+		t.Fatalf("annotation write commit truth changed: %v", value)
+	}
+	if value, ok := dataSpanAttribute(phases["bff.data.response"], "bff.outcome"); !ok || value.AsString() != "response_failure" {
+		t.Fatalf("annotation response failure was not recorded: %v", value)
+	}
+	responseSpans := 0
+	for _, span := range spans {
+		if span.Name() == "bff.data.response" {
+			responseSpans++
+		}
+	}
+	if responseSpans != 1 {
+		t.Fatalf("annotation JSON response emitted %d response spans, want one", responseSpans)
+	}
+	assertSpanPayloadOmits(t, spans, body)
+	assertSpanPayloadOmits(t, spans, writerError)
+}
+
 func TestDataTracedConceptProjectionFailureFinalizesResponseAndOperation(t *testing.T) {
 	gin.SetMode(gin.TestMode)
 	recorder := newDataSpanRecorder(t)
@@ -449,6 +510,94 @@ func TestDataTracedRawSyncRejectCancelCommitAndTransferFailure(t *testing.T) {
 	}
 	assertSpanPayloadOmits(t, failingRecorder.Ended(), "PRIVATE_TRANSFER_PREFIX_CANARY")
 	assertSpanPayloadOmits(t, failingRecorder.Ended(), "PRIVATE_RAW_PROVIDER_ERROR_CANARY")
+}
+
+func TestDataTracedRawSyncCommittedJSONWriterFailurePreservesCommit(t *testing.T) {
+	gin.SetMode(gin.TestMode)
+	recorder := newDataSpanRecorder(t)
+	fs := localfs.New(t.TempDir())
+	h := New(fs, nil, nil, nil, nil, nil)
+	router := gin.New()
+	router.Use(observability.DataOperationMiddleware())
+	renderErrors := 0
+	router.Use(func(c *gin.Context) {
+		c.Set("userID", "user")
+		c.Set("projectID", "project")
+		c.Next()
+		renderErrors = len(c.Errors)
+	})
+	router.PUT("/api/v1/sync/raw/file", h.SyncRawUpload)
+
+	const path = "nested/note.bin"
+	const writerError = "PRIVATE_SYNTHETIC_JSON_WRITER_FAILURE_CANARY"
+	payload := []byte("PRIVATE_RAW_JSON_RESPONSE_BODY_CANARY")
+	digest := fmt.Sprintf("%x", sha256.Sum256(payload))
+	request := httptest.NewRequest(http.MethodPut, "/api/v1/sync/raw/file?path="+url.QueryEscape(path), bytes.NewReader(payload))
+	request.Header.Set("X-Content-SHA256", digest)
+	response := &dataFailingJSONWriter{ResponseRecorder: httptest.NewRecorder(), err: errors.New(writerError)}
+	router.ServeHTTP(response, request)
+
+	if response.attempts != 1 || renderErrors != 1 {
+		t.Fatalf("JSON writer failure was not observed exactly once: attempts=%d render errors=%d", response.attempts, renderErrors)
+	}
+	if response.Code != http.StatusOK || response.Body.Len() != 0 || response.Header().Get("Cache-Control") != "no-store" || response.Header().Get("Content-Type") != "application/json; charset=utf-8" {
+		t.Fatalf("business response changed: status=%d body=%q headers=%v", response.Code, response.Body.Bytes(), response.Header())
+	}
+
+	rawStore := fs.Scope("user", "project").(store.RawSyncStore)
+	files, err := rawStore.ListSyncRawFiles(context.Background())
+	if err != nil || len(files) != 1 {
+		t.Fatalf("committed object count=%d err=%v, want one committed file", len(files), err)
+	}
+	file := files[0]
+	if file.Path != path || file.Size != int64(len(payload)) || file.SHA256 != digest || file.Generation == "" {
+		t.Fatalf("committed object metadata changed: %+v", file)
+	}
+	reader, size, err := rawStore.OpenSyncRawFile(context.Background(), path, file.Generation)
+	if err != nil {
+		t.Fatalf("read committed object: %v", err)
+	}
+	persisted, readErr := io.ReadAll(reader)
+	closeErr := reader.Close()
+	if readErr != nil || closeErr != nil || size != int64(len(payload)) || !bytes.Equal(persisted, payload) {
+		t.Fatalf("persisted object changed: size=%d bytes=%q read err=%v close err=%v", size, persisted, readErr, closeErr)
+	}
+	wantJSON, err := json.Marshal(gin.H{"generation": file.Generation, "sha256": digest})
+	if err != nil || !bytes.Equal(response.attempted, wantJSON) {
+		t.Fatalf("response JSON changed: attempted=%q want=%q err=%v", response.attempted, wantJSON, err)
+	}
+
+	spans := recorder.Ended()
+	root, phases := dataOperationSpans(t, spans)
+	if value, ok := dataSpanAttribute(root, "bff.outcome"); !ok || value.AsString() != "committed" {
+		t.Fatalf("operation commit truth changed: %v", value)
+	}
+	if value, ok := dataSpanAttribute(phases["bff.data.write"], "bff.outcome"); !ok || value.AsString() != "committed" {
+		t.Fatalf("write commit truth changed: %v", value)
+	}
+	if value, ok := dataSpanAttribute(phases["bff.data.response"], "bff.outcome"); !ok || value.AsString() != "response_failure" {
+		t.Fatalf("response failure was not separately recorded: %v", value)
+	}
+	if len(phases) != 3 || phases["bff.data.input"] == nil {
+		t.Fatalf("unexpected phases after response failure: %v", phases)
+	}
+	assertSpanPayloadOmits(t, spans, writerError)
+	assertSpanPayloadOmits(t, spans, path)
+	assertSpanPayloadOmits(t, spans, digest)
+	assertSpanPayloadOmits(t, spans, string(payload))
+}
+
+type dataFailingJSONWriter struct {
+	*httptest.ResponseRecorder
+	err       error
+	attempts  int
+	attempted []byte
+}
+
+func (w *dataFailingJSONWriter) Write(p []byte) (int, error) {
+	w.attempts++
+	w.attempted = append(w.attempted, p...)
+	return 0, w.err
 }
 
 type rawSyncReadFailureRoot struct{ *localfs.Client }

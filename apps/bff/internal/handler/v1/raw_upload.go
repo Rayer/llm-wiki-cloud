@@ -55,19 +55,19 @@ func (h *Handler) RawUpload(c *gin.Context) {
 	userID := strings.TrimSpace(c.GetString("userID"))
 	projectID := strings.TrimSpace(c.GetString("projectID"))
 	if userID == "" {
-		c.JSON(http.StatusUnauthorized, handler.ErrorResponse{Error: "user not authenticated"})
+		observability.WriteDataJSON(c, http.StatusUnauthorized, handler.ErrorResponse{Error: "user not authenticated"})
 		return
 	}
 	if projectID == "" {
-		c.JSON(http.StatusBadRequest, handler.ErrorResponse{Error: "project ID is required"})
+		observability.WriteDataJSON(c, http.StatusBadRequest, handler.ErrorResponse{Error: "project ID is required"})
 		return
 	}
 	if h.isDemoUser(userID) {
-		c.JSON(http.StatusForbidden, handler.ErrorResponse{Error: "demo users cannot upload raw files"})
+		observability.WriteDataJSON(c, http.StatusForbidden, handler.ErrorResponse{Error: "demo users cannot upload raw files"})
 		return
 	}
 	if h.firestore == nil || h.firestore.Raw() == nil {
-		c.JSON(http.StatusInternalServerError, handler.ErrorResponse{Error: "Firestore client is not configured"})
+		observability.WriteDataJSON(c, http.StatusInternalServerError, handler.ErrorResponse{Error: "Firestore client is not configured"})
 		return
 	}
 
@@ -77,15 +77,15 @@ func (h *Handler) RawUpload(c *gin.Context) {
 	if err != nil {
 		observability.FinishDataSpan(loadSpan, observability.DataErrorOutcome(err))
 		if status.Code(err) == codes.NotFound {
-			c.JSON(http.StatusNotFound, handler.ErrorResponse{Error: "project not found"})
+			observability.WriteDataJSON(c, http.StatusNotFound, handler.ErrorResponse{Error: "project not found"})
 			return
 		}
-		c.JSON(http.StatusInternalServerError, handler.ErrorResponse{Error: "raw upload unavailable"})
+		observability.WriteDataJSON(c, http.StatusInternalServerError, handler.ErrorResponse{Error: "raw upload unavailable"})
 		return
 	}
 	observability.FinishDataSpan(loadSpan, "success")
 	if !ready {
-		c.JSON(http.StatusServiceUnavailable, handler.ErrorResponse{Error: "project not ready"})
+		observability.WriteDataJSON(c, http.StatusServiceUnavailable, handler.ErrorResponse{Error: "project not ready"})
 		return
 	}
 
@@ -97,11 +97,11 @@ func (h *Handler) RawUpload(c *gin.Context) {
 		var maxBytesErr *http.MaxBytesError
 		if errors.As(err, &maxBytesErr) || strings.Contains(strings.ToLower(err.Error()), "request body too large") {
 			observability.FinishDataSpan(inputSpan, "rejected")
-			c.JSON(http.StatusRequestEntityTooLarge, handler.ErrorResponse{Error: "file too large (max 5 MiB)"})
+			observability.WriteDataJSON(c, http.StatusRequestEntityTooLarge, handler.ErrorResponse{Error: "file too large (max 5 MiB)"})
 			return
 		}
 		observability.FinishDataSpan(inputSpan, "rejected")
-		c.JSON(http.StatusBadRequest, handler.ErrorResponse{Error: "file field is required"})
+		observability.WriteDataJSON(c, http.StatusBadRequest, handler.ErrorResponse{Error: "file field is required"})
 		return
 	}
 	defer file.Close()
@@ -115,7 +115,7 @@ func (h *Handler) RawUpload(c *gin.Context) {
 	}
 	if err := validateRawUploadFilename(filename); err != nil {
 		observability.FinishDataSpan(inputSpan, "rejected")
-		c.JSON(http.StatusBadRequest, handler.ErrorResponse{Error: err.Error()})
+		observability.WriteDataJSON(c, http.StatusBadRequest, handler.ErrorResponse{Error: err.Error()})
 		return
 	}
 
@@ -128,11 +128,11 @@ func (h *Handler) RawUpload(c *gin.Context) {
 		observability.FinishDataSpan(inputSpan, outcome)
 		switch {
 		case errors.Is(err, errRawUploadTooLarge):
-			c.JSON(http.StatusRequestEntityTooLarge, handler.ErrorResponse{Error: "file too large (max 5 MiB)"})
+			observability.WriteDataJSON(c, http.StatusRequestEntityTooLarge, handler.ErrorResponse{Error: "file too large (max 5 MiB)"})
 		case errors.Is(err, errRawUploadEmptyFile):
-			c.JSON(http.StatusBadRequest, handler.ErrorResponse{Error: "empty file"})
+			observability.WriteDataJSON(c, http.StatusBadRequest, handler.ErrorResponse{Error: "empty file"})
 		default:
-			c.JSON(http.StatusInternalServerError, handler.ErrorResponse{Error: "raw upload unavailable"})
+			observability.WriteDataJSON(c, http.StatusInternalServerError, handler.ErrorResponse{Error: "raw upload unavailable"})
 		}
 		return
 	}
@@ -141,7 +141,7 @@ func (h *Handler) RawUpload(c *gin.Context) {
 
 	wikiStore, err := h.GetGCSClient(c)
 	if err != nil {
-		c.JSON(http.StatusInternalServerError, handler.ErrorResponse{Error: "raw upload unavailable"})
+		observability.WriteDataJSON(c, http.StatusInternalServerError, handler.ErrorResponse{Error: "raw upload unavailable"})
 		return
 	}
 	relPath := rawUploadRelativePath(filename)
@@ -149,30 +149,30 @@ func (h *Handler) RawUpload(c *gin.Context) {
 	existingDigest, exists, err := resolveExistingRawDigest(readCtx, wikiStore, relPath)
 	if err != nil {
 		observability.FinishDataSpan(readSpan, observability.DataErrorOutcome(err))
-		c.JSON(http.StatusInternalServerError, handler.ErrorResponse{Error: "raw upload unavailable"})
+		observability.WriteDataJSON(c, http.StatusInternalServerError, handler.ErrorResponse{Error: "raw upload unavailable"})
 		return
 	}
 	observability.FinishDataSpan(readSpan, "success")
 	statusCode, uploadStatus, write := rawUploadDecision(exists, existingDigest, digest, rawUploadOverwrite(c))
 	if !write {
 		if statusCode == http.StatusConflict {
-			c.JSON(http.StatusConflict, handler.ErrorResponse{Error: rawUploadConflictErrorMessage})
+			observability.WriteDataJSON(c, http.StatusConflict, handler.ErrorResponse{Error: rawUploadConflictErrorMessage})
 		} else {
 			observability.SetDataOperationOutcome(c.Request.Context(), "no_op")
-			c.JSON(statusCode, newRawUploadResponse(userID, projectID, filename, size, digest, uploadStatus))
+			observability.WriteDataJSON(c, statusCode, newRawUploadResponse(userID, projectID, filename, size, digest, uploadStatus))
 		}
 		return
 	}
 	writeCtx, writeSpan := observability.StartDataPhase(c.Request.Context(), "write")
 	if _, err := wikiStore.WriteBytes(writeCtx, data, relPath); err != nil {
 		observability.FinishDataSpan(writeSpan, observability.DataErrorOutcome(err))
-		c.JSON(http.StatusInternalServerError, handler.ErrorResponse{Error: "raw upload unavailable"})
+		observability.WriteDataJSON(c, http.StatusInternalServerError, handler.ErrorResponse{Error: "raw upload unavailable"})
 		return
 	}
 	observability.FinishDataSpan(writeSpan, "committed")
 	observability.SetDataOperationOutcome(c.Request.Context(), "committed")
 
-	c.JSON(statusCode, newRawUploadResponse(userID, projectID, filename, size, digest, uploadStatus))
+	observability.WriteDataJSON(c, statusCode, newRawUploadResponse(userID, projectID, filename, size, digest, uploadStatus))
 }
 
 func rawUploadOverwrite(c *gin.Context) bool {
