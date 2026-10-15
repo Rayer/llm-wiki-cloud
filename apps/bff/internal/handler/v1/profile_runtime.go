@@ -4,14 +4,15 @@ import (
 	"context"
 	"errors"
 	"fmt"
-	"github.com/rayer/llm-wiki-bff/internal/auth"
-	scopedfirestore "github.com/rayer/llm-wiki-bff/internal/firestore"
 	"net/http"
 	"strings"
 	"time"
 
 	"cloud.google.com/go/firestore"
 	"github.com/gin-gonic/gin"
+	"github.com/rayer/llm-wiki-bff/internal/auth"
+	scopedfirestore "github.com/rayer/llm-wiki-bff/internal/firestore"
+	"github.com/rayer/llm-wiki-bff/internal/observability"
 	"github.com/rayer/llm-wiki-bff/internal/profilederive"
 	"github.com/rayer/llm-wiki-bff/internal/profileruntime"
 	"github.com/rayer/llm-wiki-bff/internal/profiletags"
@@ -84,16 +85,23 @@ type ProfileDispatcher struct {
 }
 
 func (d *ProfileDispatcher) ServeHTTP(w http.ResponseWriter, r *http.Request) {
+	ctx, span := observability.StartProfileSpan(r.Context(), "profile.dispatch")
+	outcome := "success"
+	defer func() { observability.FinishProfileSpan(span, outcome) }()
+	r = r.WithContext(ctx)
 	if r.Method != http.MethodPost {
+		outcome = "rejected"
 		w.WriteHeader(http.StatusMethodNotAllowed)
 		return
 	}
 	if d.Audience == "" || d.ServiceAccount == "" {
+		outcome = "failure"
 		http.Error(w, "Profile runtime is not configured", 503)
 		return
 	}
 	bearer := r.Header.Get("Authorization")
 	if !strings.HasPrefix(bearer, "Bearer ") || strings.TrimSpace(strings.TrimPrefix(bearer, "Bearer ")) == "" {
+		outcome = "rejected"
 		http.Error(w, "unauthorized", 401)
 		return
 	}
@@ -103,6 +111,7 @@ func (d *ProfileDispatcher) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	}
 	payload, err := validate(r.Context(), strings.TrimPrefix(bearer, "Bearer "), d.Audience)
 	if err != nil || payload == nil || payload.Audience != d.Audience || payload.Claims["email"] != d.ServiceAccount || payload.Claims["email_verified"] != true {
+		outcome = "rejected"
 		http.Error(w, "unauthorized", 401)
 		return
 	}
@@ -110,6 +119,7 @@ func (d *ProfileDispatcher) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	defer cancel()
 	count, err := d.Dispatch(ctx, 8)
 	if err != nil {
+		outcome = "failure"
 		http.Error(w, "Profile dispatch unavailable", 503)
 		return
 	}
@@ -120,7 +130,16 @@ func (d *ProfileDispatcher) Gin(c *gin.Context) { d.ServeHTTP(c.Writer, c.Reques
 
 // Dispatch reads only due work. Pending work remains durable across crashes;
 // a lease expiry allows bounded recovery and fences every Profile transaction.
-func (d *ProfileDispatcher) Dispatch(ctx context.Context, limit int) (int, error) {
+func (d *ProfileDispatcher) Dispatch(ctx context.Context, limit int) (processed int, resultErr error) {
+	ctx, dispatchSpan := observability.StartProfileSpan(ctx, "profile.dispatch.sweep")
+	defer func() {
+		observability.SetProfileCount(dispatchSpan, "profile.processed_count", processed)
+		outcome := "success"
+		if resultErr != nil {
+			outcome = "failure"
+		}
+		observability.FinishProfileSpan(dispatchSpan, outcome)
+	}()
 	repo, ok := d.Handler.profileRepository.(*firestoreProfileRepository)
 	if !ok || limit < 1 || limit > 100 {
 		return 0, errors.New("Profile dispatcher repository unavailable")
@@ -136,7 +155,18 @@ func (d *ProfileDispatcher) Dispatch(ctx context.Context, limit int) (int, error
 		if err != nil {
 			return count, err
 		}
-		work, claimed, err := d.claim(ctx, repo, snapshot.Ref)
+		claimCtx, claimSpan := observability.StartProfileSpan(ctx, "profile.claim")
+		work, claimed, err := d.claim(claimCtx, repo, snapshot.Ref)
+		claimOutcome := "success"
+		if err != nil {
+			claimOutcome = "failure"
+		} else if claimed {
+			claimOutcome = "committed"
+		} else {
+			claimOutcome = "no_op"
+		}
+		observability.SetProfileOutcome(claimSpan, "profile.claim.outcome", claimOutcome)
+		observability.FinishProfileSpan(claimSpan, map[bool]string{true: "failure", false: "success"}[err != nil])
 		if err != nil {
 			return count, err
 		}
@@ -144,9 +174,33 @@ func (d *ProfileDispatcher) Dispatch(ctx context.Context, limit int) (int, error
 			continue
 		}
 		lease := profileRuntimeLease{snapshot.Ref, work.Token, work.UserID, work.ProjectID}
-		runctx := context.WithValue(ctx, profileRuntimeLeaseKey{}, lease)
-		err = d.execute(runctx, repo, work)
-		if finishErr := d.finish(ctx, repo, snapshot.Ref, work, err); finishErr != nil {
+		attemptCtx, attemptSpan := observability.StartProfileSpan(observability.WithoutTraceParent(ctx), "profile.work")
+		observability.SetProfileCount(attemptSpan, "profile.attempt_number", work.Attempts)
+		runctx := context.WithValue(attemptCtx, profileRuntimeLeaseKey{}, lease)
+		executeCtx, executeSpan := observability.StartProfileSpan(runctx, "profile.execute")
+		executeErr := d.execute(executeCtx, repo, work)
+		executeOutcome := "success"
+		if executeErr != nil {
+			executeOutcome = "failure"
+		}
+		observability.SetProfileOutcome(attemptSpan, "profile.execution.outcome", executeOutcome)
+		observability.FinishProfileSpan(executeSpan, executeOutcome)
+		finishCtx, finishSpan := observability.StartProfileSpan(attemptCtx, "profile.finish")
+		finishStatus, finishErr := d.finish(finishCtx, repo, snapshot.Ref, work, executeErr)
+		if finishErr == nil {
+			observability.SetProfileOutcome(attemptSpan, "profile.commit.outcome", "committed")
+			observability.SetProfileStatus(attemptSpan, finishStatus)
+			observability.SetProfileStatus(finishSpan, finishStatus)
+		} else {
+			observability.SetProfileOutcome(attemptSpan, "profile.commit.outcome", "unknown")
+		}
+		finishOutcome := "success"
+		if finishErr != nil {
+			finishOutcome = "failure"
+		}
+		observability.FinishProfileSpan(finishSpan, finishOutcome)
+		observability.FinishProfileSpan(attemptSpan, finishOutcome)
+		if finishErr != nil {
 			return count, finishErr
 		}
 		count++
@@ -195,8 +249,10 @@ func (d *ProfileDispatcher) claim(ctx context.Context, repo *firestoreProfileRep
 func validProfileRuntimeIdentity(w profileruntime.Work) bool {
 	return auth.ValidPathSegment(w.UserID) && auth.ValidPathSegment(w.ProjectID) && auth.ValidPathSegment(w.ID) && w.Revision > 0 && (w.Kind == "derive" || w.Kind == "tag" || w.Kind == "compile")
 }
-func (d *ProfileDispatcher) finish(ctx context.Context, repo *firestoreProfileRepository, ref *firestore.DocumentRef, claimed profileruntime.Work, cause error) error {
-	return repo.client.RunTransaction(ctx, func(ctx context.Context, tx *firestore.Transaction) error {
+func (d *ProfileDispatcher) finish(ctx context.Context, repo *firestoreProfileRepository, ref *firestore.DocumentRef, claimed profileruntime.Work, cause error) (string, error) {
+	settledStatus := "unknown"
+	err := repo.client.RunTransaction(ctx, func(ctx context.Context, tx *firestore.Transaction) error {
+		settledStatus = "unknown"
 		snapshot, err := tx.Get(ref)
 		if err != nil {
 			return err
@@ -236,8 +292,16 @@ func (d *ProfileDispatcher) finish(ctx context.Context, repo *firestoreProfileRe
 			w.Status = "retry_wait"
 			w.Due = repo.now().Add(time.Duration(w.Attempts) * time.Minute)
 		}
-		return tx.Set(ref, w)
+		if err := tx.Set(ref, w); err != nil {
+			return err
+		}
+		settledStatus = w.Status
+		return nil
 	})
+	if err != nil {
+		return "unknown", err
+	}
+	return settledStatus, nil
 }
 func (d *ProfileDispatcher) execute(ctx context.Context, repo *firestoreProfileRepository, w profileruntime.Work) error {
 	if _, err := d.Handler.AuthorizeProject(ctx, w.UserID, w.ProjectID, ProjectEdit); err != nil {

@@ -8,6 +8,10 @@ import (
 	"testing"
 
 	"github.com/rayer/llm-wiki-bff/internal/profileartifacts"
+	"go.opentelemetry.io/otel"
+	"go.opentelemetry.io/otel/attribute"
+	sdktrace "go.opentelemetry.io/otel/sdk/trace"
+	"go.opentelemetry.io/otel/sdk/trace/tracetest"
 )
 
 type transitionsStub struct {
@@ -281,5 +285,38 @@ func TestExecutorDuplicateRunningAttemptDoesNotCallProviderAgain(t *testing.T) {
 	result, err := (&Executor{Profiles: repo, Content: content, Artifacts: artifactsStub{objects}, Provider: NewProvider(providerClient)}).Run(context.Background(), Attempt{UserID: "owner", ProjectID: "alpha", Revision: 6, AttemptID: "running-attempt"})
 	if err != nil || result.Mode != "already_running" || providerClient.calls != 0 || content.called != 0 || len(objects.files) != 0 {
 		t.Fatalf("duplicate execution result=%+v err=%v provider_calls=%d content_reads=%d objects=%d", result, err, providerClient.calls, content.called, len(objects.files))
+	}
+}
+
+func TestExecutorObservationSeparatesArtifactWriteFromCommitFailure(t *testing.T) {
+	const privateCommitError = "PRIVATE_PROFILE_COMMIT_CANARY"
+	exporter := tracetest.NewInMemoryExporter()
+	provider := sdktrace.NewTracerProvider(sdktrace.WithSyncer(exporter))
+	previous := otel.GetTracerProvider()
+	otel.SetTracerProvider(provider)
+	t.Cleanup(func() {
+		otel.SetTracerProvider(previous)
+		_ = provider.Shutdown(context.Background())
+	})
+	repo := &transitionsStub{snapshot: ProfileSnapshot{Revision: 1}, completeErr: errors.New(privateCommitError)}
+	content := &contentStub{exists: true, content: PinnedContent{Generation: "generation-1"}}
+	executor := &Executor{Profiles: repo, Content: content, Artifacts: artifactsStub{newMemoryArtifacts()}}
+	_, err := executor.Run(context.Background(), Attempt{UserID: "user", ProjectID: "project", Revision: 1, AttemptID: "attempt"})
+	if err == nil || !strings.Contains(err.Error(), privateCommitError) {
+		t.Fatalf("executor commit error = %v", err)
+	}
+	outcomes := map[string]string{}
+	for _, span := range exporter.GetSpans() {
+		for _, attr := range span.Attributes {
+			if attr.Value.Type() == attribute.STRING {
+				if strings.Contains(attr.Value.AsString(), privateCommitError) {
+					t.Fatal("raw transaction error reached Profile span")
+				}
+				outcomes[span.Name+":"+string(attr.Key)] = attr.Value.AsString()
+			}
+		}
+	}
+	if outcomes["profile.derive.artifact_write:profile.artifact.outcome"] != "success" || outcomes["profile.derive.commit:profile.commit.outcome"] != "unknown" {
+		t.Fatalf("artifact/commit observations = %#v", outcomes)
 	}
 }

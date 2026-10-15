@@ -15,6 +15,10 @@ import (
 	"time"
 
 	"github.com/gin-gonic/gin"
+	"go.opentelemetry.io/otel"
+	"go.opentelemetry.io/otel/attribute"
+	sdktrace "go.opentelemetry.io/otel/sdk/trace"
+	"go.opentelemetry.io/otel/sdk/trace/tracetest"
 	"golang.org/x/crypto/bcrypt"
 
 	"github.com/rayer/llm-wiki-bff/internal/auth"
@@ -77,6 +81,147 @@ func TestProductionRouterExposesOnlyAuthPublicSurface(t *testing.T) {
 		if !want[route] {
 			t.Errorf("Auth production router exposed unapproved route %s", route)
 		}
+	}
+}
+
+func TestProductionRouterCapturesRejectedHostBeforeGuard(t *testing.T) {
+	gin.SetMode(gin.TestMode)
+	recorder := tracetest.NewSpanRecorder()
+	provider := sdktrace.NewTracerProvider(sdktrace.WithSpanProcessor(recorder))
+	previous := otel.GetTracerProvider()
+	otel.SetTracerProvider(provider)
+	t.Cleanup(func() {
+		otel.SetTracerProvider(previous)
+		_ = provider.Shutdown(context.Background())
+	})
+	router := newProductionRouter(config.Config{JWTSecret: "test-secret", AllowedHosts: []string{"auth.example.test"}, AllowedOrigins: []string{"https://frontend.example"}}, false, nil, &syssettings.FakeStore{Enabled: true}, true)
+	request := httptest.NewRequest(http.MethodPost, "/api/v1/auth/login", strings.NewReader(`{}`))
+	request.Host = "rejected.example.test"
+	response := httptest.NewRecorder()
+	router.ServeHTTP(response, request)
+	if response.Code != http.StatusBadRequest {
+		t.Fatalf("host guard status = %d, want %d", response.Code, http.StatusBadRequest)
+	}
+	for _, span := range recorder.Ended() {
+		if span.InstrumentationScope().Name != "llm-wiki-auth/operations" || span.Name() != "auth.login" {
+			continue
+		}
+		attrs := map[string]string{}
+		for _, attr := range span.Attributes() {
+			if attr.Value.Type() == attribute.STRING {
+				attrs[string(attr.Key)] = attr.Value.AsString()
+			}
+		}
+		if attrs["auth.guard.stage"] != "host" || attrs["auth.guard.outcome"] != "rejected" {
+			t.Fatalf("host guard span attributes = %#v", attrs)
+		}
+		return
+	}
+	t.Fatal("production Auth router did not capture the early host rejection")
+}
+
+func TestProductionRouterCapturesOversizedBodyGuardOutcome(t *testing.T) {
+	const bodyCanary = "PRIVATE_AUTH_BODY_CANARY"
+	gin.SetMode(gin.TestMode)
+	recorder := tracetest.NewSpanRecorder()
+	provider := sdktrace.NewTracerProvider(sdktrace.WithSpanProcessor(recorder))
+	previous := otel.GetTracerProvider()
+	otel.SetTracerProvider(provider)
+	t.Cleanup(func() {
+		otel.SetTracerProvider(previous)
+		_ = provider.Shutdown(context.Background())
+	})
+	router := newProductionRouter(config.Config{JWTSecret: "test-secret", AllowedHosts: []string{"auth.example.test"}, AllowedOrigins: []string{"https://frontend.example"}}, false, nil, &syssettings.FakeStore{Enabled: true}, true)
+	body := bytes.Repeat([]byte(bodyCanary), int(auth.MaxRequestBodyBytes/int64(len(bodyCanary))+1))
+	request := httptest.NewRequest(http.MethodPost, "/api/v1/auth/register", bytes.NewReader(body))
+	request.Host = "auth.example.test"
+	response := httptest.NewRecorder()
+	router.ServeHTTP(response, request)
+	if response.Code != http.StatusBadRequest {
+		t.Fatalf("body guard status = %d, want %d", response.Code, http.StatusBadRequest)
+	}
+	for _, span := range recorder.Ended() {
+		if span.InstrumentationScope().Name != "llm-wiki-auth/operations" || span.Name() != "auth.register" {
+			continue
+		}
+		attrs := map[string]string{}
+		for _, attr := range span.Attributes() {
+			if attr.Value.Type() == attribute.STRING {
+				attrs[string(attr.Key)] = attr.Value.AsString()
+				if strings.Contains(attr.Value.AsString(), bodyCanary) {
+					t.Fatal("raw Auth request body reached span attributes")
+				}
+			}
+		}
+		if attrs["auth.guard.host.outcome"] != "passed" || attrs["auth.guard.body.outcome"] != "rejected" {
+			t.Fatalf("body guard span attributes = %#v", attrs)
+		}
+		return
+	}
+	t.Fatal("production Auth router did not capture the oversized body guard")
+}
+
+func TestProductionRouterUsesRegisteredActionRootsAndMCPTokenClassification(t *testing.T) {
+	gin.SetMode(gin.TestMode)
+	recorder := tracetest.NewSpanRecorder()
+	provider := sdktrace.NewTracerProvider(sdktrace.WithSpanProcessor(recorder))
+	previous := otel.GetTracerProvider()
+	otel.SetTracerProvider(provider)
+	t.Cleanup(func() {
+		otel.SetTracerProvider(previous)
+		_ = provider.Shutdown(context.Background())
+	})
+	router := newProductionRouter(config.Config{
+		JWTSecret: "test-secret", AllowedHosts: []string{"auth.example.test"}, AllowedOrigins: []string{"https://frontend.example"},
+	}, false, nil, &syssettings.FakeStore{Enabled: true}, true)
+	requests := []struct {
+		method, path, wantSpan, wantOperation string
+	}{
+		{http.MethodPost, "/api/v1/auth/login", "auth.login", "login"},
+		{http.MethodPost, "/api/v1/auth/register", "auth.register", "register"},
+		{http.MethodPost, "/api/v1/auth/refresh", "auth.refresh", "refresh"},
+		{http.MethodPost, "/api/v1/auth/logout", "auth.logout", "logout"},
+		{http.MethodPost, "/api/v1/auth/cli/pairing/start", "auth.pairing", "pairing_start"},
+		{http.MethodPost, "/api/v1/auth/cli/pairing/poll", "auth.pairing", "pairing_poll"},
+		{http.MethodGet, "/api/v1/auth/cli/sessions", "auth.session", "session_list"},
+		{http.MethodDelete, "/api/v1/auth/cli/sessions/session-canary", "auth.session", "session_revoke"},
+		{http.MethodGet, "/api/v1/auth/cli/bindings", "auth.binding", "binding_list"},
+		{http.MethodPost, "/api/v1/auth/cli/bindings", "auth.binding", "binding_create"},
+		{http.MethodPost, "/api/v1/auth/mcp/oauth/register", "auth.mcp.register", "mcp_register"},
+		{http.MethodGet, "/api/v1/auth/mcp/oauth/authorize", "auth.mcp.authorize", "mcp_authorize"},
+		{http.MethodPost, "/api/v1/auth/mcp/oauth/token", "auth.mcp.token", "mcp_token"},
+		{http.MethodGet, "/api/v1/auth/mcp/oauth/consent/transaction-canary", "auth.mcp.consent", "mcp_consent_read"},
+		{http.MethodPost, "/api/v1/auth/mcp/oauth/consent/transaction-canary/decision", "auth.mcp.consent", "mcp_consent_decision"},
+		{http.MethodGet, "/api/v1/auth/mcp/oauth/grants", "auth.mcp.grants", "mcp_grants_list"},
+		{http.MethodDelete, "/api/v1/auth/mcp/oauth/grants/grant-canary", "auth.mcp.grants", "mcp_grants_revoke"},
+	}
+	for _, test := range requests {
+		t.Run(test.method+" "+test.path, func(t *testing.T) {
+			before := len(recorder.Ended())
+			request := httptest.NewRequest(test.method, "http://auth.example.test"+test.path, strings.NewReader(`{}`))
+			response := httptest.NewRecorder()
+			router.ServeHTTP(response, request)
+			spans := recorder.Ended()
+			for _, span := range spans[before:] {
+				if span.InstrumentationScope().Name != "llm-wiki-auth/operations" || span.Name() != test.wantSpan {
+					continue
+				}
+				attrs := map[string]string{}
+				for _, attr := range span.Attributes() {
+					if attr.Value.Type() == attribute.STRING {
+						attrs[string(attr.Key)] = attr.Value.AsString()
+					}
+				}
+				if attrs["auth.operation"] != test.wantOperation {
+					t.Fatalf("registered route %q operation = %q, want %q", test.path, attrs["auth.operation"], test.wantOperation)
+				}
+				if strings.Contains(span.Name(), "canary") || strings.Contains(attrs["auth.operation"], "canary") {
+					t.Fatalf("route value reached action identity: name=%q attrs=%#v", span.Name(), attrs)
+				}
+				return
+			}
+			t.Fatalf("registered route %s did not emit %s with operation %q; status=%d spans=%#v", test.method, test.wantSpan, test.wantOperation, response.Code, spans[before:])
+		})
 	}
 }
 

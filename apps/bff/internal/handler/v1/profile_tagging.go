@@ -10,6 +10,7 @@ import (
 
 	"github.com/rayer/llm-wiki-bff/internal/gcs"
 	"github.com/rayer/llm-wiki-bff/internal/generation"
+	"github.com/rayer/llm-wiki-bff/internal/observability"
 	"github.com/rayer/llm-wiki-bff/internal/profileartifacts"
 	"github.com/rayer/llm-wiki-bff/internal/profilederive"
 	"github.com/rayer/llm-wiki-bff/internal/profiletags"
@@ -67,20 +68,35 @@ func (h *Handler) RunProfileTagging(ctx context.Context, userID, projectID strin
 
 type profileTagInputLoader func(context.Context, string) (profiletags.Inventory, profiletags.Store, error)
 
-func (h *Handler) runProfileTagging(ctx context.Context, userID, projectID string, revision int64, candidateID, jobID string, evaluator profiletags.Evaluator, policy profiletags.ProviderPolicy, load profileTagInputLoader) error {
-	state, err := h.ClaimProfileJob(ctx, userID, projectID, revision, candidateID, jobID)
+func (h *Handler) runProfileTagging(ctx context.Context, userID, projectID string, revision int64, candidateID, jobID string, evaluator profiletags.Evaluator, policy profiletags.ProviderPolicy, load profileTagInputLoader) (resultErr error) {
+	ctx, jobSpan := observability.StartProfileSpan(ctx, "profile.tag.job")
+	defer func() {
+		outcome := "success"
+		if resultErr != nil {
+			outcome = "failure"
+		}
+		observability.FinishProfileSpan(jobSpan, outcome)
+	}()
+	claimCtx, claimSpan := observability.StartProfileSpan(ctx, "profile.claim")
+	state, err := h.ClaimProfileJob(claimCtx, userID, projectID, revision, candidateID, jobID)
+	observability.SetProfileOutcome(claimSpan, "profile.claim.outcome", map[bool]string{true: "failure", false: "committed"}[err != nil])
+	observability.FinishProfileSpan(claimSpan, map[bool]string{true: "failure", false: "success"}[err != nil])
 	if err != nil {
 		return err
 	}
 	fail := func(code string, missing int64, cause error) error {
-		_, transitionErr := h.TransitionProfileJob(ctx, userID, projectID, revision, candidateID, jobID, profileJobIncomplete, missing, code, "", "", false)
+		commitCtx, commitSpan := observability.StartProfileSpan(ctx, "profile.tag.commit")
+		_, transitionErr := h.TransitionProfileJob(commitCtx, userID, projectID, revision, candidateID, jobID, profileJobIncomplete, missing, code, "", "", false)
+		observability.FinishProfileSpan(commitSpan, map[bool]string{true: "failure", false: "success"}[transitionErr != nil])
 		return errors.Join(cause, transitionErr)
 	}
 	c := state.Candidate
 	if c == nil || state.Revision != revision || c.BaseRevision != revision || c.CandidateID != candidateID || c.RequirementsDigest != profileRequirementsDigest(state.Requirements) || c.Dictionary.InputDigest != c.RequirementsDigest || state.Job == nil || state.Job.JobID != jobID || state.Job.CandidateID != candidateID || state.Job.ContentGeneration != c.ContentGeneration || state.Job.Status != profileJobRunning {
 		return fail("invalid_candidate", 0, errProfileCandidateNotCurrent)
 	}
-	inventory, objects, err := load(ctx, c.ContentGeneration)
+	inventoryCtx, inventorySpan := observability.StartProfileSpan(ctx, "profile.tag.inventory")
+	inventory, objects, err := load(inventoryCtx, c.ContentGeneration)
+	observability.FinishProfileSpan(inventorySpan, map[bool]string{true: "failure", false: "success"}[err != nil])
 	if err != nil {
 		return fail("inventory_invalid", 0, err)
 	}
@@ -117,6 +133,9 @@ func (h *Handler) runProfileTagging(ctx context.Context, userID, projectID strin
 		}
 	}
 	result, err := profiletags.Build(ctx, objects, evaluator, input)
+	observability.SetProfileCount(jobSpan, "profile.expected_count", result.Set.ExpectedCount)
+	observability.SetProfileCount(jobSpan, "profile.completed_count", result.Set.CompletedCount)
+	observability.SetProfileCount(jobSpan, "profile.missing_count", result.Set.MissingCount)
 	if err != nil {
 		return fail("tagging_failed", 0, err)
 	}
@@ -130,21 +149,30 @@ func (h *Handler) runProfileTagging(ctx context.Context, userID, projectID strin
 	if err := ctx.Err(); err != nil {
 		return err
 	}
-	completed, err := h.TransitionProfileJob(ctx, userID, projectID, revision, candidateID, jobID, profileJobReady, 0, "", result.SetRevision, result.RulesRevision, true)
+	commitCtx, commitSpan := observability.StartProfileSpan(ctx, "profile.tag.commit")
+	completed, err := h.TransitionProfileJob(commitCtx, userID, projectID, revision, candidateID, jobID, profileJobReady, 0, "", result.SetRevision, result.RulesRevision, true)
 	if err != nil {
 		// Resolve an ambiguous commit only against the exact tuple we validated.
 		current, readErr := h.profileRepository.GetProfile(ctx, userID, projectID)
 		if readErr == nil && current.Active != nil {
 			a := current.Active
 			if a.CandidateID == candidateID && a.ContentGeneration == active.ContentGeneration && a.DictionaryRevision == active.DictionaryRevision && a.TagSetRevision == active.TagSetRevision && a.QueryRuleRevision == active.QueryRuleRevision && a.GuidanceRevision == c.Guidance.Revision {
+				observability.SetProfileOutcome(commitSpan, "profile.commit.outcome", "committed")
+				observability.FinishProfileSpan(commitSpan, "success")
 				return nil
 			}
 		}
+		observability.SetProfileOutcome(commitSpan, "profile.commit.outcome", "unknown")
+		observability.FinishProfileSpan(commitSpan, "failure")
 		return err
 	}
 	if completed.Revision != revision || completed.Candidate == nil || completed.Candidate.CandidateID != candidateID || completed.Job == nil || completed.Job.JobID != jobID || completed.Job.Status != profileJobReady {
+		observability.SetProfileOutcome(commitSpan, "profile.commit.outcome", "unknown")
+		observability.FinishProfileSpan(commitSpan, "failure")
 		return errors.New("Profile tagging completion superseded or conflicted")
 	}
+	observability.SetProfileOutcome(commitSpan, "profile.commit.outcome", "committed")
+	observability.FinishProfileSpan(commitSpan, "success")
 	return nil
 }
 

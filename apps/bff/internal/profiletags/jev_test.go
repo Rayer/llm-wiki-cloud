@@ -9,6 +9,12 @@ import (
 	"net/http/httptest"
 	"strings"
 	"testing"
+
+	"github.com/rayer/llm-wiki-bff/internal/observability"
+	"go.opentelemetry.io/otel"
+	"go.opentelemetry.io/otel/attribute"
+	sdktrace "go.opentelemetry.io/otel/sdk/trace"
+	"go.opentelemetry.io/otel/sdk/trace/tracetest"
 )
 
 func TestJevHTTPTransportUsesIndependentExactInputAndFailsClosed(t *testing.T) {
@@ -87,5 +93,47 @@ func TestJevTransportDoesNotReturnProviderBodyOrKey(t *testing.T) {
 	_, err := e.Evaluate(context.Background(), Item{Kind: Source, StableID: "s", Content: []byte("s")}, Tag{}, ProviderPolicy{PromptVersion: JevPromptVersion})
 	if err == nil || strings.Contains(err.Error(), "secret") {
 		t.Fatalf("unsafe error: %v", err)
+	}
+}
+
+func TestJevObservationSeparatesHTTPTransportFromLogicalDecode(t *testing.T) {
+	const privatePayload = "PRIVATE_JEV_RESPONSE_CANARY"
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		w.WriteHeader(http.StatusOK)
+		_, _ = io.WriteString(w, privatePayload)
+	}))
+	defer server.Close()
+	exporter := tracetest.NewInMemoryExporter()
+	provider := sdktrace.NewTracerProvider(sdktrace.WithSyncer(exporter))
+	previous := otel.GetTracerProvider()
+	otel.SetTracerProvider(provider)
+	t.Cleanup(func() {
+		otel.SetTracerProvider(previous)
+		_ = provider.Shutdown(context.Background())
+	})
+	evaluator := NewJevEvaluator("synthetic-key")
+	evaluator.Endpoint = server.URL
+	evaluator.Client = server.Client()
+	ctx, span := observability.StartProfileSpan(context.Background(), "profile.tag.evaluate")
+	_, err := evaluator.Evaluate(ctx, Item{Kind: Source, StableID: "private-id", Content: []byte("private record")}, Tag{ID: "private-tag"}, ProviderPolicy{ConfiguredModel: "jev-latest", AcceptedReturnedModels: []string{"jev-1.13.0"}, PromptVersion: JevPromptVersion})
+	if err == nil || strings.Contains(err.Error(), privatePayload) {
+		t.Fatalf("provider decode error = %v", err)
+	}
+	observability.FinishProfileSpan(span, "failure")
+	spans := exporter.GetSpans()
+	if len(spans) != 1 || spans[0].Name != "profile.tag.evaluate" {
+		t.Fatalf("unexpected provider spans: %+v", spans)
+	}
+	attrs := map[string]string{}
+	for _, attr := range spans[0].Attributes {
+		if attr.Value.Type() == attribute.STRING {
+			attrs[string(attr.Key)] = attr.Value.AsString()
+			if strings.Contains(attr.Value.AsString(), privatePayload) || strings.Contains(attr.Value.AsString(), "private-id") || strings.Contains(attr.Value.AsString(), "private record") {
+				t.Fatal("private provider or record data reached the Profile span")
+			}
+		}
+	}
+	if attrs["profile.provider.transport.outcome"] != "success" || attrs["profile.provider.decode.outcome"] != "failure" {
+		t.Fatalf("provider stage outcomes = %#v", attrs)
 	}
 }

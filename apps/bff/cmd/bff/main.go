@@ -350,9 +350,11 @@ func localAuthHostAllowlist(cfg config.Config) gin.HandlerFunc {
 			host = parsed
 		}
 		if _, ok := allowed[host]; !ok {
+			observability.RecordAuthGuard(c.Request.Context(), "host", "rejected")
 			c.AbortWithStatusJSON(http.StatusBadRequest, gin.H{"error": "invalid Host header"})
 			return
 		}
+		observability.RecordAuthGuard(c.Request.Context(), "host", "passed")
 		c.Next()
 	}
 }
@@ -367,6 +369,7 @@ func newProductionRouter(
 	rawScrapeFactory rawScrapeHandlerFactory,
 ) *gin.Engine {
 	r := gin.Default()
+	r.Use(observability.AuthHTTPMiddleware())
 	r.Use(middleware.SecurityHeaders(true))
 
 	// OpenTelemetry latency middleware (per-endpoint)
@@ -374,12 +377,12 @@ func newProductionRouter(
 
 	// CORS — must be BEFORE routes
 	allowOrigins := cfg.AllowedOriginsFor(localMode)
-	r.Use(cors.New(cors.Config{
+	r.Use(observability.AuthCORSObserver(cors.New(cors.Config{
 		AllowOrigins:     allowOrigins,
 		AllowMethods:     []string{"GET", "POST", "PUT", "PATCH", "DELETE", "OPTIONS"},
 		AllowHeaders:     []string{"Content-Type", "Authorization", "X-Project-ID", "X-Wiki-ID", "X-Sync-Binding-ID", "X-Content-SHA256", "X-Expected-Generation", "Idempotency-Key"},
 		AllowCredentials: true,
-	}))
+	})))
 
 	registerPublicRoutes(r, settingsStore, cfg.AuthServiceURL, !localMode)
 	r.POST("/internal/profile/dispatch", productionProfileDispatcher(hV1, cfg).Gin)

@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"strings"
 
+	"github.com/rayer/llm-wiki-bff/internal/observability"
 	"github.com/rayer/llm-wiki-bff/internal/profileartifacts"
 	"github.com/rayer/llm-wiki-bff/internal/wikiindex"
 )
@@ -60,12 +61,29 @@ type Executor struct {
 	Provider  *Provider
 }
 
-func (e *Executor) Run(ctx context.Context, attempt Attempt) (Result, error) {
+func (e *Executor) Run(ctx context.Context, attempt Attempt) (result Result, resultErr error) {
+	ctx, runSpan := observability.StartProfileSpan(ctx, "profile.derive")
+	defer func() {
+		outcome := "success"
+		if resultErr != nil {
+			outcome = "failure"
+		}
+		observability.FinishProfileSpan(runSpan, outcome)
+	}()
 	if e == nil || e.Profiles == nil || e.Content == nil || e.Artifacts == nil ||
 		strings.TrimSpace(attempt.UserID) == "" || strings.TrimSpace(attempt.ProjectID) == "" || attempt.Revision < 1 || attempt.AttemptID == "" {
 		return Result{}, errors.New("invalid Profile derivation executor input")
 	}
-	profile, err := e.Profiles.ClaimProfileDerivation(ctx, attempt)
+	claimCtx, claimSpan := observability.StartProfileSpan(ctx, "profile.derive.claim")
+	profile, err := e.Profiles.ClaimProfileDerivation(claimCtx, attempt)
+	claimOutcome := "committed"
+	if err != nil {
+		claimOutcome = "failure"
+	} else if !profile.Claimed {
+		claimOutcome = "no_op"
+	}
+	observability.SetProfileOutcome(claimSpan, "profile.claim.outcome", claimOutcome)
+	observability.FinishProfileSpan(claimSpan, map[bool]string{true: "failure", false: "success"}[err != nil])
 	if err != nil {
 		return Result{}, err
 	}
@@ -80,7 +98,9 @@ func (e *Executor) Run(ctx context.Context, attempt Attempt) (Result, error) {
 		return Result{}, e.fail(ctx, attempt, inputDigest, "profile_requirements_invalid", err)
 	}
 	needsConcepts := len(profile.Requirements) > 0 || profile.HasActive
-	content, generationExists, err := e.Content.PinCurrentProfileContent(ctx, attempt, needsConcepts, profile.HasActive)
+	contentCtx, contentSpan := observability.StartProfileSpan(ctx, "profile.derive.content_pin")
+	content, generationExists, err := e.Content.PinCurrentProfileContent(contentCtx, attempt, needsConcepts, profile.HasActive)
+	observability.FinishProfileSpan(contentSpan, map[bool]string{true: "failure", false: "success"}[err != nil])
 	if err != nil {
 		return Result{}, e.fail(ctx, attempt, inputDigest, "profile_generation_unavailable", err)
 	}
@@ -94,7 +114,10 @@ func (e *Executor) Run(ctx context.Context, attempt Attempt) (Result, error) {
 		if e.Provider == nil {
 			return Result{}, e.fail(ctx, attempt, inputDigest, "profile_provider_unavailable", errors.New("Profile derivation provider is not configured"))
 		}
-		derived, err := e.Provider.DeriveBootstrap(ctx, profile.Revision, profile.Requirements)
+		providerCtx, providerSpan := observability.StartProfileSpan(ctx, "profile.derive.provider")
+		derived, err := e.Provider.DeriveBootstrap(providerCtx, profile.Revision, profile.Requirements)
+		observability.SetProfileOutcome(providerSpan, "profile.provider.outcome", map[bool]string{true: "failure", false: "success"}[err != nil])
+		observability.FinishProfileSpan(providerSpan, map[bool]string{true: "failure", false: "success"}[err != nil])
 		if err != nil {
 			return Result{}, e.fail(ctx, attempt, inputDigest, failureCode(err), err)
 		}
@@ -102,11 +125,23 @@ func (e *Executor) Run(ctx context.Context, attempt Attempt) (Result, error) {
 		if err != nil {
 			return Result{}, e.fail(ctx, attempt, inputDigest, "profile_artifact_store_unavailable", err)
 		}
-		if err := profileartifacts.WriteBootstrapGuidance(ctx, objects, derived.Ref, derived.Data); err != nil {
-			return Result{}, e.fail(ctx, attempt, inputDigest, "profile_artifact_write_failed", err)
+		artifactCtx, artifactSpan := observability.StartProfileSpan(ctx, "profile.derive.artifact_write")
+		writeErr := profileartifacts.WriteBootstrapGuidance(artifactCtx, objects, derived.Ref, derived.Data)
+		observability.SetProfileOutcome(artifactSpan, "profile.artifact.outcome", map[bool]string{true: "failure", false: "success"}[writeErr != nil])
+		observability.FinishProfileSpan(artifactSpan, map[bool]string{true: "failure", false: "success"}[writeErr != nil])
+		if writeErr != nil {
+			return Result{}, e.fail(ctx, attempt, inputDigest, "profile_artifact_write_failed", writeErr)
 		}
-		if err := e.Profiles.CompleteProfileBootstrap(ctx, attempt, inputDigest, derived.Ref, derived.Preview); err != nil {
-			return Result{}, err
+		commitCtx, commitSpan := observability.StartProfileSpan(ctx, "profile.derive.commit")
+		commitErr := e.Profiles.CompleteProfileBootstrap(commitCtx, attempt, inputDigest, derived.Ref, derived.Preview)
+		commitOutcome := "committed"
+		if commitErr != nil {
+			commitOutcome = "unknown"
+		}
+		observability.SetProfileOutcome(commitSpan, "profile.commit.outcome", commitOutcome)
+		observability.FinishProfileSpan(commitSpan, map[bool]string{true: "failure", false: "success"}[commitErr != nil])
+		if commitErr != nil {
+			return Result{}, commitErr
 		}
 		return Result{Mode: "bootstrap_guidance", BootstrapRef: &derived.Ref}, nil
 	}
@@ -134,32 +169,59 @@ func (e *Executor) Run(ctx context.Context, attempt Attempt) (Result, error) {
 		if err != nil {
 			return Result{}, e.fail(ctx, attempt, inputDigest, "profile_derivation_failed", err)
 		}
-		if err := profileartifacts.WriteDictionary(ctx, objects, derived.DictionaryRef, derived.DictionaryData); err != nil {
-			return Result{}, e.fail(ctx, attempt, inputDigest, "profile_artifact_write_failed", err)
+		artifactCtx, artifactSpan := observability.StartProfileSpan(ctx, "profile.derive.artifact_write")
+		writeErr := profileartifacts.WriteDictionary(artifactCtx, objects, derived.DictionaryRef, derived.DictionaryData)
+		if writeErr == nil {
+			writeErr = profileartifacts.WriteGuidance(artifactCtx, objects, derived.GuidanceRef, derived.GuidanceData)
 		}
-		if err := profileartifacts.WriteGuidance(ctx, objects, derived.GuidanceRef, derived.GuidanceData); err != nil {
-			return Result{}, e.fail(ctx, attempt, inputDigest, "profile_artifact_write_failed", err)
+		observability.SetProfileOutcome(artifactSpan, "profile.artifact.outcome", map[bool]string{true: "failure", false: "success"}[writeErr != nil])
+		observability.FinishProfileSpan(artifactSpan, map[bool]string{true: "failure", false: "success"}[writeErr != nil])
+		if writeErr != nil {
+			return Result{}, e.fail(ctx, attempt, inputDigest, "profile_artifact_write_failed", writeErr)
 		}
-		if err := e.Profiles.CompleteProfileDerivation(ctx, attempt, inputDigest, content.Generation, derived.DictionaryRef, derived.GuidanceRef, derived.Preview); err != nil {
-			return Result{}, err
+		commitCtx, commitSpan := observability.StartProfileSpan(ctx, "profile.derive.commit")
+		commitErr := e.Profiles.CompleteProfileDerivation(commitCtx, attempt, inputDigest, content.Generation, derived.DictionaryRef, derived.GuidanceRef, derived.Preview)
+		commitOutcome := "committed"
+		if commitErr != nil {
+			commitOutcome = "unknown"
+		}
+		observability.SetProfileOutcome(commitSpan, "profile.commit.outcome", commitOutcome)
+		observability.FinishProfileSpan(commitSpan, map[bool]string{true: "failure", false: "success"}[commitErr != nil])
+		if commitErr != nil {
+			return Result{}, commitErr
 		}
 		return Result{Mode: "neutral_manual", DictionaryRef: &derived.DictionaryRef, GuidanceRef: &derived.GuidanceRef}, nil
 	}
 	if e.Provider == nil {
 		return Result{}, e.fail(ctx, attempt, inputDigest, "profile_provider_unavailable", errors.New("Profile derivation provider is not configured"))
 	}
-	derived, err := e.Provider.DeriveManual(ctx, profile.Revision, profile.Requirements, content.Generation, conceptsDigest, concepts)
+	providerCtx, providerSpan := observability.StartProfileSpan(ctx, "profile.derive.provider")
+	derived, err := e.Provider.DeriveManual(providerCtx, profile.Revision, profile.Requirements, content.Generation, conceptsDigest, concepts)
+	observability.SetProfileOutcome(providerSpan, "profile.provider.outcome", map[bool]string{true: "failure", false: "success"}[err != nil])
+	observability.FinishProfileSpan(providerSpan, map[bool]string{true: "failure", false: "success"}[err != nil])
 	if err != nil {
 		return Result{}, e.fail(ctx, attempt, inputDigest, failureCode(err), err)
 	}
-	if err := profileartifacts.WriteDictionary(ctx, objects, derived.DictionaryRef, derived.DictionaryData); err != nil {
-		return Result{}, e.fail(ctx, attempt, inputDigest, "profile_artifact_write_failed", err)
+	artifactCtx, artifactSpan := observability.StartProfileSpan(ctx, "profile.derive.artifact_write")
+	writeErr := profileartifacts.WriteDictionary(artifactCtx, objects, derived.DictionaryRef, derived.DictionaryData)
+	if writeErr == nil {
+		writeErr = profileartifacts.WriteGuidance(artifactCtx, objects, derived.GuidanceRef, derived.GuidanceData)
 	}
-	if err := profileartifacts.WriteGuidance(ctx, objects, derived.GuidanceRef, derived.GuidanceData); err != nil {
-		return Result{}, e.fail(ctx, attempt, inputDigest, "profile_artifact_write_failed", err)
+	observability.SetProfileOutcome(artifactSpan, "profile.artifact.outcome", map[bool]string{true: "failure", false: "success"}[writeErr != nil])
+	observability.FinishProfileSpan(artifactSpan, map[bool]string{true: "failure", false: "success"}[writeErr != nil])
+	if writeErr != nil {
+		return Result{}, e.fail(ctx, attempt, inputDigest, "profile_artifact_write_failed", writeErr)
 	}
-	if err := e.Profiles.CompleteProfileDerivation(ctx, attempt, inputDigest, content.Generation, derived.DictionaryRef, derived.GuidanceRef, derived.Preview); err != nil {
-		return Result{}, err
+	commitCtx, commitSpan := observability.StartProfileSpan(ctx, "profile.derive.commit")
+	commitErr := e.Profiles.CompleteProfileDerivation(commitCtx, attempt, inputDigest, content.Generation, derived.DictionaryRef, derived.GuidanceRef, derived.Preview)
+	commitOutcome := "committed"
+	if commitErr != nil {
+		commitOutcome = "unknown"
+	}
+	observability.SetProfileOutcome(commitSpan, "profile.commit.outcome", commitOutcome)
+	observability.FinishProfileSpan(commitSpan, map[bool]string{true: "failure", false: "success"}[commitErr != nil])
+	if commitErr != nil {
+		return Result{}, commitErr
 	}
 	return Result{Mode: "manual", DictionaryRef: &derived.DictionaryRef, GuidanceRef: &derived.GuidanceRef}, nil
 }
@@ -169,7 +231,15 @@ func (e *Executor) fail(ctx context.Context, attempt Attempt, requirementsDigest
 	if !ok {
 		diagnostic = failureDiagnosticForCode(code)
 	}
-	if err := e.Profiles.FailProfileDerivation(ctx, attempt, requirementsDigest, code, diagnostic); err != nil {
+	commitCtx, commitSpan := observability.StartProfileSpan(ctx, "profile.derive.commit")
+	err := e.Profiles.FailProfileDerivation(commitCtx, attempt, requirementsDigest, code, diagnostic)
+	commitOutcome := "committed"
+	if err != nil {
+		commitOutcome = "unknown"
+	}
+	observability.SetProfileOutcome(commitSpan, "profile.commit.outcome", commitOutcome)
+	observability.FinishProfileSpan(commitSpan, map[bool]string{true: "failure", false: "success"}[err != nil])
+	if err != nil {
 		return errors.Join(cause, err)
 	}
 	return cause

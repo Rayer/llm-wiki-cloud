@@ -10,6 +10,7 @@ import (
 	"unicode"
 
 	"github.com/gin-gonic/gin"
+	"github.com/rayer/llm-wiki-bff/internal/observability"
 	store "github.com/rayer/llm-wiki-bff/internal/storage"
 )
 
@@ -40,6 +41,7 @@ func (h *HTTPHandler) Register(routes gin.IRoutes) {
 }
 
 func (h *HTTPHandler) Create(c *gin.Context) {
+	defer startExportRequest(c)()
 	userID, projectID, _, ok := h.authorize(c)
 	if !ok {
 		return
@@ -59,7 +61,18 @@ func (h *HTTPHandler) Create(c *gin.Context) {
 		c.JSON(http.StatusServiceUnavailable, gin.H{"error": "export_unavailable"})
 		return
 	}
-	job, replayed, err := h.repo.Admit(c.Request.Context(), userID, projectID, request.Scope, idempotencyKey, h.now().UTC())
+	admitCtx, admitSpan := observability.StartExportSpan(c.Request.Context(), "export.admission")
+	job, replayed, err := h.repo.Admit(admitCtx, userID, projectID, request.Scope, idempotencyKey, h.now().UTC())
+	admitOutcome := "success"
+	if err != nil {
+		admitOutcome = "failure"
+		var denied *AdmissionError
+		if errors.As(err, &denied) || errors.Is(err, ErrIdempotencyConflict) {
+			admitOutcome = "rejected"
+		}
+	}
+	observability.SetExportOutcome(admitSpan, "export.phase.outcome", admitOutcome)
+	observability.FinishExportSpan(admitSpan, admitOutcome)
 	if err != nil {
 		var denied *AdmissionError
 		if errors.As(err, &denied) {
@@ -74,17 +87,29 @@ func (h *HTTPHandler) Create(c *gin.Context) {
 		return
 	}
 	if !replayed {
-		if err := h.starter.Start(c.Request.Context(), userID, projectID, job); err != nil {
-			_ = h.repo.Fail(context.WithoutCancel(c.Request.Context()), userID, projectID, job.ExportID, "job_start_failed", "Export could not be started. You can try again.")
+		startCtx, startSpan := observability.StartExportSpan(c.Request.Context(), "export.start")
+		startErr := h.starter.Start(startCtx, userID, projectID, job)
+		if startErr != nil {
+			failErr := runExportPhase(context.WithoutCancel(c.Request.Context()), "export.worker.fail", func(ctx context.Context) error {
+				return h.repo.Fail(ctx, userID, projectID, job.ExportID, "job_start_failed", "Export could not be started. You can try again.")
+			})
+			if failErr != nil {
+				observability.SetExportOutcome(startSpan, "export.job.outcome", "unknown")
+			} else {
+				observability.SetExportOutcome(startSpan, "export.job.outcome", "committed")
+			}
+			observability.FinishExportSpan(startSpan, "failure")
 			c.JSON(http.StatusServiceUnavailable, gin.H{"error": "export_unavailable"})
 			return
 		}
+		observability.FinishExportSpan(startSpan, "success")
 	}
 	job = h.publicJob(job, userID, projectID, c.Request.Context())
 	c.JSON(http.StatusAccepted, job)
 }
 
 func (h *HTTPHandler) List(c *gin.Context) {
+	defer startExportRequest(c)()
 	userID, projectID, _, ok := h.authorize(c)
 	if !ok {
 		return
@@ -93,7 +118,9 @@ func (h *HTTPHandler) List(c *gin.Context) {
 		c.JSON(http.StatusServiceUnavailable, gin.H{"error": "export_unavailable"})
 		return
 	}
-	snapshot, err := h.repo.Snapshot(c.Request.Context(), userID, projectID)
+	statusCtx, statusSpan := observability.StartExportSpan(c.Request.Context(), "export.status")
+	snapshot, err := h.repo.Snapshot(statusCtx, userID, projectID)
+	observability.FinishExportSpan(statusSpan, map[bool]string{true: "failure", false: "success"}[err != nil])
 	if err != nil {
 		c.JSON(http.StatusServiceUnavailable, gin.H{"error": "export_unavailable"})
 		return
@@ -129,6 +156,7 @@ func (h *HTTPHandler) List(c *gin.Context) {
 }
 
 func (h *HTTPHandler) Status(c *gin.Context) {
+	defer startExportRequest(c)()
 	userID, projectID, _, ok := h.authorize(c)
 	if !ok {
 		return
@@ -137,7 +165,9 @@ func (h *HTTPHandler) Status(c *gin.Context) {
 		c.JSON(http.StatusServiceUnavailable, gin.H{"error": "export_unavailable"})
 		return
 	}
-	job, err := h.repo.Get(c.Request.Context(), userID, projectID, c.Param("exportID"))
+	statusCtx, statusSpan := observability.StartExportSpan(c.Request.Context(), "export.status")
+	job, err := h.repo.Get(statusCtx, userID, projectID, c.Param("exportID"))
+	observability.FinishExportSpan(statusSpan, map[bool]string{true: "failure", false: "success"}[err != nil])
 	if err != nil {
 		h.jobReadError(c, err)
 		return
@@ -147,11 +177,14 @@ func (h *HTTPHandler) Status(c *gin.Context) {
 }
 
 func (h *HTTPHandler) Download(c *gin.Context) {
+	defer startExportRequest(c)()
 	userID, projectID, projectName, ok := h.authorize(c)
 	if !ok {
 		return
 	}
-	job, err := h.repo.Get(c.Request.Context(), userID, projectID, c.Param("exportID"))
+	statusCtx, statusSpan := observability.StartExportSpan(c.Request.Context(), "export.status")
+	job, err := h.repo.Get(statusCtx, userID, projectID, c.Param("exportID"))
+	observability.FinishExportSpan(statusSpan, map[bool]string{true: "failure", false: "success"}[err != nil])
 	if err != nil {
 		h.jobReadError(c, err)
 		return
@@ -188,7 +221,13 @@ func (h *HTTPHandler) Download(c *gin.Context) {
 		urlExpiry = expiresAt
 	}
 	filename := formatFilename(projectName, job.Scope, job.SnapshotAt, job.ExportID)
-	signedURL, err := h.archives.Sign(c.Request.Context(), userID, projectID, job.ExportID, urlExpiry, filename)
+	urlCtx, urlSpan := observability.StartExportSpan(c.Request.Context(), "export.download_url")
+	signedURL, err := h.archives.Sign(urlCtx, userID, projectID, job.ExportID, urlExpiry, filename)
+	urlOutcome := "success"
+	if err != nil || signedURL == "" {
+		urlOutcome = "failure"
+	}
+	observability.FinishExportSpan(urlSpan, urlOutcome)
 	if err != nil || signedURL == "" {
 		c.JSON(http.StatusServiceUnavailable, gin.H{"error": "export_unavailable"})
 		return
@@ -197,22 +236,30 @@ func (h *HTTPHandler) Download(c *gin.Context) {
 }
 
 func (h *HTTPHandler) authorize(c *gin.Context) (string, string, string, bool) {
+	authorizeCtx, authorizeSpan := observability.StartExportSpan(c.Request.Context(), "export.authorize")
+	c.Request = c.Request.WithContext(authorizeCtx)
+	outcome := "success"
+	defer func() { observability.FinishExportSpan(authorizeSpan, outcome) }()
 	userID := strings.TrimSpace(c.GetString("userID"))
 	projectID := strings.TrimSpace(c.GetString("projectID"))
 	if userID == "" || projectID == "" {
+		outcome = "rejected"
 		c.JSON(http.StatusUnauthorized, gin.H{"error": "unauthenticated"})
 		return "", "", "", false
 	}
 	if h.projects == nil {
+		outcome = "failure"
 		c.JSON(http.StatusServiceUnavailable, gin.H{"error": "export_unavailable"})
 		return "", "", "", false
 	}
 	name, err := h.projects.VerifyProject(c.Request.Context(), userID, projectID)
 	if errors.Is(err, ErrProjectMissing) {
+		outcome = "rejected"
 		c.JSON(http.StatusNotFound, gin.H{"error": "project_or_export_not_found"})
 		return "", "", "", false
 	}
 	if err != nil {
+		outcome = "failure"
 		c.JSON(http.StatusServiceUnavailable, gin.H{"error": "export_unavailable"})
 		return "", "", "", false
 	}

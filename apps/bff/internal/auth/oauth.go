@@ -25,6 +25,7 @@ import (
 	"github.com/gin-gonic/gin"
 	"github.com/golang-jwt/jwt/v5"
 	appconfig "github.com/rayer/llm-wiki-bff/internal/config"
+	"github.com/rayer/llm-wiki-bff/internal/observability"
 	"golang.org/x/crypto/bcrypt"
 	"google.golang.org/api/iterator"
 )
@@ -443,7 +444,13 @@ func (s *GoogleOAuthService) CallbackHandler(routeKind OAuthFlowKind) gin.Handle
 			writeOAuthFailure(c.Writer, http.StatusBadRequest, oauthOutcomeInvalidRequest, kind)
 			return
 		}
-		transactionID, transaction, err := s.consumeTransaction(c.Request.Context(), state, browserCookie.Value, kind)
+		transactionCtx, transactionSpan := observability.StartAuthSpan(c.Request.Context(), "auth.transaction")
+		transactionID, transaction, err := s.consumeTransaction(transactionCtx, state, browserCookie.Value, kind)
+		transactionOutcome := "success"
+		if err != nil {
+			transactionOutcome = "rejected"
+		}
+		observability.FinishAuthSpan(transactionSpan, transactionOutcome)
 		if err != nil {
 			if transactionID != "" && subtle.ConstantTimeCompare([]byte(transaction.BrowserHash), []byte(hashOAuthValue(browserCookie.Value))) == 1 {
 				s.redirectOAuthFailure(c, browserCookie.Value, kind, oauthConsumeOutcome(err))
@@ -473,6 +480,15 @@ func (s *GoogleOAuthService) CallbackHandler(routeKind OAuthFlowKind) gin.Handle
 			s.redirectOAuthFailure(c, browserCookie.Value, kind, oauthOutcomeTokenInvalid)
 			return
 		}
+		identityCtx, identitySpan := observability.StartAuthSpan(c.Request.Context(), "auth.google.identity_commit")
+		defer func() {
+			outcome := "success"
+			if c.Writer.Status() >= 400 {
+				outcome = "failure"
+			}
+			observability.FinishAuthSpan(identitySpan, outcome)
+		}()
+		c.Request = c.Request.WithContext(identityCtx)
 		if kind == OAuthFlowLink {
 			s.completeLinkCallback(c, browserCookie.Value, transactionID, transaction, claims)
 			return
@@ -506,11 +522,17 @@ func (s *GoogleOAuthService) linkDecisionHandler(confirmed bool) gin.HandlerFunc
 		}
 		var result oauthCompletionResponse
 		var err error
+		transactionCtx, transactionSpan := observability.StartAuthSpan(c.Request.Context(), "auth.transaction")
 		if confirmed {
-			result, err = s.confirmLink(c.Request.Context(), userID, req.ConfirmationID)
+			result, err = s.confirmLink(transactionCtx, userID, req.ConfirmationID)
 		} else {
-			result, err = s.cancelLink(c.Request.Context(), userID, req.ConfirmationID)
+			result, err = s.cancelLink(transactionCtx, userID, req.ConfirmationID)
 		}
+		transactionOutcome := "success"
+		if err != nil {
+			transactionOutcome = "failure"
+		}
+		observability.FinishAuthSpan(transactionSpan, transactionOutcome)
 		if err != nil {
 			code, outcome := oauthLinkStatus(err)
 			writeOAuthFailure(c.Writer, code, outcome, OAuthFlowLink)
@@ -730,11 +752,19 @@ func (s *GoogleOAuthService) completeLoginCallback(c *gin.Context, browserValue 
 		return
 	}
 	userID := generateUserID()
-	if err := s.repo.ProvisionExternalUser(c.Request.Context(), ExternalUserProvisioning{
+	transactionCtx, transactionSpan := observability.StartAuthSpan(c.Request.Context(), "auth.transaction")
+	transactionErr := s.repo.ProvisionExternalUser(transactionCtx, ExternalUserProvisioning{
 		UserID: userID, DisplayEmail: strings.TrimSpace(claims.Email), CanonicalEmail: CanonicalizeEmail(claims.Email),
 		EmailVerified: true, Provider: googleProvider, Issuer: claims.Issuer, Subject: claims.Subject,
 		ProviderEmail: strings.TrimSpace(claims.Email), ProviderEmailVerified: claims.EmailVerified, ProjectID: defaultProjectID,
-	}); err != nil {
+	})
+	transactionOutcome := "success"
+	if transactionErr != nil {
+		transactionOutcome = "failure"
+	}
+	observability.FinishAuthSpan(transactionSpan, transactionOutcome)
+	if transactionErr != nil {
+		err := transactionErr
 		if errors.Is(err, ErrCanonicalEmailConflict) {
 			s.redirectOAuthFailure(c, browserValue, OAuthFlowLogin, oauthOutcomeCanonicalConflict)
 			return
@@ -785,7 +815,8 @@ func (s *GoogleOAuthService) completeLinkCallback(c *gin.Context, browserValue, 
 		ProviderEmail: providerEmail, ProviderVerified: claims.EmailVerified, CurrentEmail: user.Email,
 		PasswordProofHash: transaction.PasswordProofHash, Status: oauthStatusActive, CreatedAt: now, ExpiresAt: now.Add(oauthTransactionTTL),
 	}
-	if err := s.fs.RunTransaction(c.Request.Context(), func(ctx context.Context, tx *firestore.Transaction) error {
+	transactionCtx, transactionSpan := observability.StartAuthSpan(c.Request.Context(), "auth.transaction")
+	transactionErr := s.fs.RunTransaction(transactionCtx, func(ctx context.Context, tx *firestore.Transaction) error {
 		identityRef := scopedfirestore.Collection(s.fs, ExternalIdentitiesCollection).Doc(externalIdentityDocumentID(googleProvider, claims.Issuer, claims.Subject))
 		identitySnapshot, err := optionalTransactionGet(tx, identityRef)
 		if err != nil {
@@ -795,8 +826,14 @@ func (s *GoogleOAuthService) completeLinkCallback(c *gin.Context, browserValue, 
 			return ErrExternalIdentityConflict
 		}
 		return tx.Create(scopedfirestore.Collection(s.fs, oauthPendingLinksCollection).Doc(confirmationID), pending)
-	}); err != nil {
-		if errors.Is(err, ErrExternalIdentityConflict) {
+	})
+	transactionOutcome := "success"
+	if transactionErr != nil {
+		transactionOutcome = "failure"
+	}
+	observability.FinishAuthSpan(transactionSpan, transactionOutcome)
+	if transactionErr != nil {
+		if errors.Is(transactionErr, ErrExternalIdentityConflict) {
 			s.redirectOAuthFailure(c, browserValue, OAuthFlowLink, oauthOutcomeLinkConflict)
 			return
 		}
@@ -813,7 +850,13 @@ func (s *GoogleOAuthService) issueSession(c *gin.Context, browserValue, userID s
 		s.redirectOAuthFailure(c, browserValue, OAuthFlowLogin, oauthOutcomeInvalidRequest)
 		return
 	}
-	refreshToken, err := issueRefreshSession(c.Request.Context(), s.sessions, userID, user.Role, s.jwtSecret, user.AuthVersion)
+	transactionCtx, transactionSpan := observability.StartAuthSpan(c.Request.Context(), "auth.transaction")
+	refreshToken, err := issueRefreshSession(transactionCtx, s.sessions, userID, user.Role, s.jwtSecret, user.AuthVersion)
+	transactionOutcome := "success"
+	if err != nil {
+		transactionOutcome = "failure"
+	}
+	observability.FinishAuthSpan(transactionSpan, transactionOutcome)
 	if err != nil {
 		s.redirectOAuthFailure(c, browserValue, OAuthFlowLogin, oauthOutcomeUnavailable)
 		return
@@ -1131,24 +1174,33 @@ func (s *GoogleOAuthService) exchangeCode(ctx context.Context, transaction oauth
 		return "", err
 	}
 	request.Header.Set("Content-Type", "application/x-www-form-urlencoded")
+	exchangeCtx, exchangeSpan := observability.StartAuthSpan(requestCtx, "auth.google.token_exchange")
+	request = request.WithContext(exchangeCtx)
 	response, err := s.client.Do(request)
 	if err != nil {
+		observability.FinishAuthSpan(exchangeSpan, "failure")
 		return "", err
 	}
 	defer response.Body.Close()
 	if response.StatusCode < 200 || response.StatusCode >= 300 {
+		observability.FinishAuthSpan(exchangeSpan, "failure")
 		return "", errors.New("provider token exchange failed")
 	}
 	data, err := io.ReadAll(io.LimitReader(response.Body, maxOAuthBodyBytes+1))
 	if err != nil || len(data) > maxOAuthBodyBytes {
+		observability.FinishAuthSpan(exchangeSpan, "failure")
 		return "", errors.New("provider token response invalid")
 	}
+	observability.FinishAuthSpan(exchangeSpan, "success")
+	_, decodeSpan := observability.StartAuthSpan(exchangeCtx, "auth.google.token_decode")
 	var payload struct {
 		IDToken string `json:"id_token"`
 	}
 	if err := json.Unmarshal(data, &payload); err != nil || strings.TrimSpace(payload.IDToken) == "" {
+		observability.FinishAuthSpan(decodeSpan, "failure")
 		return "", errors.New("provider token response invalid")
 	}
+	observability.FinishAuthSpan(decodeSpan, "success")
 	return payload.IDToken, nil
 }
 
@@ -1385,6 +1437,10 @@ func boundedOAuthHTTPClient() *http.Client {
 }
 
 func (v *googleOIDCVerifier) Verify(ctx context.Context, tokenString, nonce string) (*googleClaims, error) {
+	verifyCtx, verifySpan := observability.StartAuthSpan(ctx, "auth.google.claims_validate")
+	ctx = verifyCtx
+	verifyOutcome := "failure"
+	defer func() { observability.FinishAuthSpan(verifySpan, verifyOutcome) }()
 	if strings.TrimSpace(tokenString) == "" || len(tokenString) > maxOIDCTokenBytes {
 		return nil, errors.New("invalid token")
 	}
@@ -1414,7 +1470,11 @@ func (v *googleOIDCVerifier) Verify(ctx context.Context, tokenString, nonce stri
 	if err != nil || parsed == nil || !parsed.Valid {
 		return nil, errors.New("invalid token")
 	}
-	return validateGoogleClaims(claims, v.cfg, nonce, v.now().UTC())
+	result, err := validateGoogleClaims(claims, v.cfg, nonce, v.now().UTC())
+	if err == nil {
+		verifyOutcome = "success"
+	}
+	return result, err
 }
 
 func (v *googleOIDCVerifier) keyFor(ctx context.Context, kid string) (*rsa.PublicKey, error) {
@@ -1466,8 +1526,16 @@ func (v *googleOIDCVerifier) keyFor(ctx context.Context, kid string) (*rsa.Publi
 	return key, nil
 }
 
-func (v *googleOIDCVerifier) fetchKeys(ctx context.Context) (map[string]*rsa.PublicKey, time.Time, time.Time, error) {
-	requestCtx, cancel := context.WithTimeout(ctx, oauthHTTPTimeout)
+func (v *googleOIDCVerifier) fetchKeys(ctx context.Context) (keysResult map[string]*rsa.PublicKey, fetchedResult, freshResult time.Time, resultErr error) {
+	requestCtx, span := observability.StartAuthSpan(ctx, "auth.google.jwks_fetch")
+	defer func() {
+		outcome := "success"
+		if resultErr != nil {
+			outcome = "failure"
+		}
+		observability.FinishAuthSpan(span, outcome)
+	}()
+	requestCtx, cancel := context.WithTimeout(requestCtx, oauthHTTPTimeout)
 	defer cancel()
 	request, err := http.NewRequestWithContext(requestCtx, http.MethodGet, v.cfg.JWKSURL, nil)
 	if err != nil {

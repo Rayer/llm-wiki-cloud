@@ -7,6 +7,7 @@ import (
 	"time"
 
 	"github.com/gin-gonic/gin"
+	"github.com/rayer/llm-wiki-bff/internal/observability"
 )
 
 const (
@@ -70,6 +71,7 @@ func NewRateLimiter(limit int, window time.Duration) gin.HandlerFunc {
 
 		if len(entry.requests) >= limit {
 			entry.mu.Unlock()
+			observability.RecordAuthGuard(c.Request.Context(), "rate", "rejected")
 			c.Header("Retry-After", strconv.Itoa(rateLimitRetryAfter))
 			c.AbortWithStatusJSON(http.StatusTooManyRequests, gin.H{
 				"error":       "rate_limit_exceeded",
@@ -79,6 +81,7 @@ func NewRateLimiter(limit int, window time.Duration) gin.HandlerFunc {
 		}
 		entry.requests = append(entry.requests, now)
 		entry.mu.Unlock()
+		observability.RecordAuthGuard(c.Request.Context(), "rate", "passed")
 		c.Next()
 	}
 }

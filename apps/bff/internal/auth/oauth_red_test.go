@@ -2,6 +2,7 @@ package auth
 
 import (
 	"bytes"
+	"context"
 	"crypto/rand"
 	"crypto/rsa"
 	"encoding/base64"
@@ -17,6 +18,10 @@ import (
 
 	"github.com/gin-gonic/gin"
 	"github.com/golang-jwt/jwt/v5"
+	"go.opentelemetry.io/otel"
+	"go.opentelemetry.io/otel/attribute"
+	sdktrace "go.opentelemetry.io/otel/sdk/trace"
+	"go.opentelemetry.io/otel/sdk/trace/tracetest"
 )
 
 func TestGoogleOAuthConfigRejectsIncompleteProviderConfiguration(t *testing.T) {
@@ -199,6 +204,44 @@ func TestGoogleOAuthTokenExchangeUsesStoredPKCEAndDoesNotRetry(t *testing.T) {
 	}
 	if form.Get("code_verifier") != "verifier" || form.Get("redirect_uri") != "https://auth.example.test/login" || form.Get("client_secret") != "secret" {
 		t.Fatalf("token exchange form = %v", form)
+	}
+}
+
+func TestGoogleHTTP200InvalidTokenPayloadIsLogicalDecodeFailure(t *testing.T) {
+	const privatePayload = "PRIVATE_INVALID_OAUTH_PAYLOAD"
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		w.WriteHeader(http.StatusOK)
+		_, _ = io.WriteString(w, `{"error":"`+privatePayload+`"}`)
+	}))
+	defer server.Close()
+	exporter := tracetest.NewInMemoryExporter()
+	provider := sdktrace.NewTracerProvider(sdktrace.WithSyncer(exporter))
+	previous := otel.GetTracerProvider()
+	otel.SetTracerProvider(provider)
+	t.Cleanup(func() {
+		otel.SetTracerProvider(previous)
+		_ = provider.Shutdown(context.Background())
+	})
+	service := NewGoogleOAuthService(GoogleConfig{ClientID: "client", ClientSecret: "secret", TokenURL: server.URL}, nil, nil, nil, "secret")
+	service.client = server.Client()
+	if _, err := service.exchangeCode(t.Context(), oauthTransaction{PKCEVerifier: "verifier", RedirectURL: "https://auth.example.test/callback"}, "code"); err == nil {
+		t.Fatal("HTTP 200 without an ID token was accepted")
+	}
+	got := map[string]string{}
+	for _, span := range exporter.GetSpans() {
+		outcome := ""
+		for _, attr := range span.Attributes {
+			if attr.Key == "auth.outcome" && attr.Value.Type() == attribute.STRING {
+				outcome = attr.Value.AsString()
+			}
+			if attr.Value.Type() == attribute.STRING && strings.Contains(attr.Value.AsString(), privatePayload) {
+				t.Fatal("raw provider payload reached an Auth span")
+			}
+		}
+		got[span.Name] = outcome
+	}
+	if got["auth.google.token_exchange"] != "success" || got["auth.google.token_decode"] != "failure" {
+		t.Fatalf("OAuth phase outcomes = %#v, want transport success and logical decode failure", got)
 	}
 }
 

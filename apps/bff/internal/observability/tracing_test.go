@@ -7,12 +7,14 @@ import (
 	"errors"
 	"io"
 	"net/http"
+	"net/http/httptest"
 	"strings"
 	"sync"
 	"testing"
 	"time"
 
 	cloudstorage "cloud.google.com/go/storage"
+	"github.com/gin-gonic/gin"
 	"go.opentelemetry.io/otel"
 	"go.opentelemetry.io/otel/attribute"
 	"go.opentelemetry.io/otel/codes"
@@ -100,6 +102,15 @@ func TestPipelineScopesExportSafeSpansAndBlockUnrelatedSDKPayloads(t *testing.T)
 	FinishPipelineSpan(worker, "success")
 	_, query := provider.Tracer(queryInstrumentationScope).Start(context.Background(), "query.request")
 	query.End()
+	_, authSpan := StartAuthSpan(context.Background(), "auth.request")
+	FinishAuthSpan(authSpan, "rejected")
+	_, profileSpan := StartProfileSpan(context.Background(), "profile.dispatch")
+	FinishProfileSpan(profileSpan, "success")
+	_, exportSpan := StartExportSpan(context.Background(), "export.worker")
+	FinishExportSpan(exportSpan, "success")
+	_, unapprovedAuth := provider.Tracer(authInstrumentationScope).Start(context.Background(), canary,
+		trace.WithAttributes(attribute.String("payload", canary)))
+	unapprovedAuth.End()
 
 	_, sdk := provider.Tracer("google.golang.org/storage").Start(context.Background(), "storage.request",
 		trace.WithAttributes(attribute.String("object", canary)),
@@ -111,7 +122,7 @@ func TestPipelineScopesExportSafeSpansAndBlockUnrelatedSDKPayloads(t *testing.T)
 		t.Fatal(err)
 	}
 
-	for _, want := range []string{"pipeline.submit", "pipeline.job.invoke", "pipeline.worker", "query.request"} {
+	for _, want := range []string{"pipeline.submit", "pipeline.job.invoke", "pipeline.worker", "query.request", "auth.request", "profile.dispatch", "export.worker"} {
 		if !strings.Contains(output.String(), `"Name":"`+want+`"`) {
 			t.Fatalf("stdout exporter omitted allowlisted span %q: %s", want, output.String())
 		}
@@ -128,6 +139,83 @@ func TestPipelineScopesExportSafeSpansAndBlockUnrelatedSDKPayloads(t *testing.T)
 	}
 	if !sawSDKCanary {
 		t.Fatalf("fixture did not capture the unrelated SDK canary: %+v", recorder.Ended())
+	}
+}
+
+func TestAuthMiddlewareCapturesPreGuardRejectWithoutPathData(t *testing.T) {
+	const projectID = "PRIVATE_PROJECT_ID_CANARY"
+	gin.SetMode(gin.TestMode)
+	recorder := tracetest.NewSpanRecorder()
+	provider := sdktrace.NewTracerProvider(sdktrace.WithSpanProcessor(recorder))
+	previous := otel.GetTracerProvider()
+	otel.SetTracerProvider(provider)
+	t.Cleanup(func() {
+		otel.SetTracerProvider(previous)
+		_ = provider.Shutdown(context.Background())
+	})
+	router := gin.New()
+	router.Use(AuthHTTPMiddleware())
+	router.GET("/mcp/projects/:projectID", func(c *gin.Context) { c.AbortWithStatus(http.StatusForbidden) })
+	request := httptest.NewRequest(http.MethodGet, "/mcp/projects/"+projectID, nil)
+	response := httptest.NewRecorder()
+	router.ServeHTTP(response, request)
+	if response.Code != http.StatusForbidden {
+		t.Fatalf("guard status = %d, want %d", response.Code, http.StatusForbidden)
+	}
+	var root sdktrace.ReadOnlySpan
+	for _, span := range recorder.Ended() {
+		if span.InstrumentationScope().Name == authInstrumentationScope && span.Name() == "auth.mcp.resource" {
+			root = span
+		}
+	}
+	if root == nil {
+		t.Fatal("early resource guard rejection was not captured")
+	}
+	attrs := map[string]string{}
+	for _, attr := range root.Attributes() {
+		attrs[string(attr.Key)] = attr.Value.AsString()
+	}
+	if attrs["auth.operation"] != "mcp_resource" || attrs["auth.guard.stage"] != "authentication" || attrs["auth.guard.outcome"] != "rejected" {
+		t.Fatalf("auth guard attributes = %#v", attrs)
+	}
+	if strings.Contains(root.Name(), projectID) {
+		t.Fatal("raw project identifier reached the Auth span name")
+	}
+	for _, value := range attrs {
+		if strings.Contains(value, projectID) {
+			t.Fatal("raw project identifier reached the Auth span attributes")
+		}
+	}
+}
+
+func TestProfileAttemptStartsIndependentTraceAndPreservesContextValues(t *testing.T) {
+	recorder := tracetest.NewSpanRecorder()
+	provider := sdktrace.NewTracerProvider(sdktrace.WithSpanProcessor(recorder))
+	previous := otel.GetTracerProvider()
+	otel.SetTracerProvider(provider)
+	t.Cleanup(func() {
+		otel.SetTracerProvider(previous)
+		_ = provider.Shutdown(context.Background())
+	})
+	base := context.WithValue(context.Background(), struct{}{}, "lease-value")
+	requestCtx, requestSpan := StartProfileSpan(base, "profile.dispatch")
+	attemptCtx, attemptSpan := StartProfileSpan(WithoutTraceParent(requestCtx), "profile.work")
+	if got := attemptCtx.Value(struct{}{}); got != "lease-value" {
+		t.Fatalf("attempt context lost dispatcher value: %v", got)
+	}
+	FinishProfileSpan(attemptSpan, "success")
+	FinishProfileSpan(requestSpan, "success")
+	var request, attempt sdktrace.ReadOnlySpan
+	for _, span := range recorder.Ended() {
+		switch span.Name() {
+		case "profile.dispatch":
+			request = span
+		case "profile.work":
+			attempt = span
+		}
+	}
+	if request == nil || attempt == nil || request.SpanContext().TraceID() == attempt.SpanContext().TraceID() || attempt.Parent().IsValid() {
+		t.Fatalf("attempt trace inherited dispatch parent: request=%v attempt=%v", request, attempt)
 	}
 }
 

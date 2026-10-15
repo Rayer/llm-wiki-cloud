@@ -2,6 +2,7 @@ package main
 
 import (
 	"context"
+	"fmt"
 	"log"
 	"net"
 	"net/http"
@@ -23,19 +24,33 @@ import (
 )
 
 func main() {
+	if err := run(); err != nil {
+		log.Printf("auth service failed: %v", err)
+		os.Exit(1)
+	}
+}
+
+func run() error {
+	build := buildinfo.Current()
+	traceProvider, traceErr := observability.InitTraces("lwc-auth", build.Revision)
+	if traceErr != nil {
+		log.Printf("[observability] WARNING: trace init failed (continuing): %v", traceErr)
+	} else {
+		defer observability.ShutdownTraces(traceProvider)
+	}
 	cfg, err := config.LoadAuthFile(strings.TrimSpace(os.Getenv("LWC_APP_CONFIG_PATH")))
 	if err != nil {
-		log.Fatalf("Failed to load config: %v", err)
+		return fmt.Errorf("failed to load config: %w", err)
 	}
 
 	localMode := cfg.LocalCloudScope != ""
 	if localMode && strings.TrimSpace(cfg.JWTSecret) == "" {
-		log.Fatal("local cloud signing key is missing")
+		return fmt.Errorf("local cloud signing key is missing")
 	}
 
 	fsClient, err := firestoreclient.NewClientWithDatabaseAndScope(cfg.GCPProject, cfg.FirestoreDatabaseID, "", "", cfg.LocalCloudScope)
 	if err != nil {
-		log.Fatalf("Firestore client unavailable: %v", err)
+		return fmt.Errorf("Firestore client unavailable: %w", err)
 	}
 	if localMode {
 		ctx, cancel := context.WithTimeout(context.Background(), 15*time.Second)
@@ -43,7 +58,7 @@ func main() {
 		cancel()
 		if err != nil {
 			_ = fsClient.Close()
-			log.Fatalf("local Firestore target is unavailable: %v", err)
+			return fmt.Errorf("local Firestore target is unavailable: %w", err)
 		}
 	}
 	demoReady := ensureDemoAccountAtStartup(cfg, fsClient.Raw())
@@ -68,21 +83,22 @@ func main() {
 		listenHost = "127.0.0.1:"
 	}
 	log.Printf("Auth service listening on %s%s", listenHost, cfg.Port)
-	log.Fatal(r.Run(listenHost + cfg.Port))
+	return r.Run(listenHost + cfg.Port)
 }
 
 func newProductionRouter(cfg config.Config, localMode bool, fsClient *firestoreclient.Client, settingsStore syssettings.RegistrationGate, demoReady bool) *gin.Engine {
 	r := gin.Default()
+	r.Use(observability.AuthHTTPMiddleware())
 	r.Use(authHostAllowlist(cfg, localMode))
 	r.Use(middleware.SecurityHeaders(true))
 	r.Use(middleware.LatencyMiddleware())
 
-	r.Use(cors.New(cors.Config{
+	r.Use(observability.AuthCORSObserver(cors.New(cors.Config{
 		AllowOrigins:     cfg.AllowedOriginsFor(localMode),
 		AllowMethods:     []string{http.MethodGet, http.MethodPost, http.MethodDelete, http.MethodOptions},
 		AllowHeaders:     []string{"Content-Type", "Authorization"},
 		AllowCredentials: true,
-	}))
+	})))
 
 	authRoutes := r.Group("/api/v1/auth")
 	authRoutes.Use(auth.RequestBodyLimit())
@@ -202,13 +218,16 @@ func authHostAllowlist(cfg config.Config, localMode bool) gin.HandlerFunc {
 	return func(c *gin.Context) {
 		host := requestHost(c.Request.Host)
 		if (!localMode && isLocalHost(host)) || host == "" {
+			observability.RecordAuthGuard(c.Request.Context(), "host", "rejected")
 			c.AbortWithStatusJSON(http.StatusBadRequest, gin.H{"error": "invalid Host header"})
 			return
 		}
 		if _, ok := allowed[host]; !ok {
+			observability.RecordAuthGuard(c.Request.Context(), "host", "rejected")
 			c.AbortWithStatusJSON(http.StatusBadRequest, gin.H{"error": "invalid Host header"})
 			return
 		}
+		observability.RecordAuthGuard(c.Request.Context(), "host", "passed")
 		c.Next()
 	}
 }

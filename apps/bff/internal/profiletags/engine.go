@@ -6,6 +6,8 @@ import (
 	"errors"
 	"fmt"
 	"sort"
+
+	"github.com/rayer/llm-wiki-bff/internal/observability"
 )
 
 // Store is a Project-scoped immutable object store. Create must reject a different existing body.
@@ -179,7 +181,26 @@ func validDecision(d Decision, p ProviderPolicy) bool {
 }
 
 // Build evaluates only keys lacking a validated prior decision. It writes no set on incomplete coverage.
-func Build(ctx context.Context, s Store, e Evaluator, in Input) (Result, error) {
+func Build(ctx context.Context, s Store, e Evaluator, in Input) (result Result, resultErr error) {
+	ctx, span := observability.StartProfileSpan(ctx, "profile.tag.build")
+	ctx, detailBudget := observability.WithProfileDetailBudget(ctx, 16)
+	observability.SetProfileCount(span, "profile.item_count", len(in.Inventory.Items))
+	observability.SetProfileCount(span, "profile.tag_count", len(in.Dictionary.Tags))
+	providerAttempts := 0
+	defer func() {
+		observability.SetProfileCount(span, "profile.expected_count", result.Set.ExpectedCount)
+		observability.SetProfileCount(span, "profile.completed_count", result.Set.CompletedCount)
+		observability.SetProfileCount(span, "profile.missing_count", result.Set.MissingCount)
+		observability.SetProfileCount(span, "profile.provider_attempt_count", providerAttempts)
+		observability.SetProfileCount(span, "profile.suppressed_count", detailBudget.Suppressed())
+		outcome := "success"
+		if resultErr != nil {
+			outcome = "failure"
+		} else if result.Set.MissingCount > 0 {
+			outcome = "degraded"
+		}
+		observability.FinishProfileSpan(span, outcome)
+	}()
 	if s == nil || e == nil {
 		return Result{}, errors.New("store/evaluator required")
 	}
@@ -249,7 +270,15 @@ func Build(ctx context.Context, s Store, e Evaluator, in Input) (Result, error) 
 					if err := ctx.Err(); err != nil {
 						return Result{}, err
 					}
-					eval, err := e.Evaluate(ctx, i, t, in.Provider)
+					evalCtx, evaluateSpan := observability.StartProfileSpan(ctx, "profile.tag.evaluate")
+					providerAttempts++
+					eval, err := e.Evaluate(evalCtx, i, t, in.Provider)
+					evaluateOutcome := "success"
+					if err != nil {
+						evaluateOutcome = "failure"
+					}
+					observability.SetProfileOutcome(evaluateSpan, "profile.provider.outcome", evaluateOutcome)
+					observability.FinishProfileSpan(evaluateSpan, evaluateOutcome)
 					if err != nil {
 						if attempt == in.MaxAttempts-1 {
 							out.Missing = append(out.Missing, Failure{i.Kind, i.StableID, t.ID, "provider_error"})
@@ -288,22 +317,33 @@ func Build(ctx context.Context, s Store, e Evaluator, in Input) (Result, error) 
 	if out.Set.MissingCount > 0 {
 		return out, nil
 	}
+	artifactCtx, artifactSpan := observability.StartProfileSpan(ctx, "profile.tag.artifact_write")
 	var err error
-	out.SetRevision, err = save(ctx, s, ".lwc/profile/tags/sets/v1/", out.Set)
+	out.SetRevision, err = save(artifactCtx, s, ".lwc/profile/tags/sets/v1/", out.Set)
 	if err != nil {
+		observability.SetProfileOutcome(artifactSpan, "profile.artifact.outcome", "failure")
+		observability.FinishProfileSpan(artifactSpan, "failure")
 		return Result{}, err
 	}
 	out.Rules, err = makeRules(in, out.SetRevision)
 	if err != nil {
+		observability.SetProfileOutcome(artifactSpan, "profile.artifact.outcome", "failure")
+		observability.FinishProfileSpan(artifactSpan, "failure")
 		return Result{}, err
 	}
-	out.RulesRevision, err = save(ctx, s, ".lwc/profile/query/rules/v1/", out.Rules)
+	out.RulesRevision, err = save(artifactCtx, s, ".lwc/profile/query/rules/v1/", out.Rules)
 	if err != nil {
+		observability.SetProfileOutcome(artifactSpan, "profile.artifact.outcome", "failure")
+		observability.FinishProfileSpan(artifactSpan, "failure")
 		return Result{}, err
 	}
-	if _, err = ValidatePublication(ctx, s, ActiveRef{in.Inventory.ContentGeneration, in.Dictionary.Revision, out.SetRevision, out.RulesRevision}, in.Inventory, in.Dictionary, in.Provider, in.Quality); err != nil {
+	if _, err = ValidatePublication(artifactCtx, s, ActiveRef{in.Inventory.ContentGeneration, in.Dictionary.Revision, out.SetRevision, out.RulesRevision}, in.Inventory, in.Dictionary, in.Provider, in.Quality); err != nil {
+		observability.SetProfileOutcome(artifactSpan, "profile.artifact.outcome", "failure")
+		observability.FinishProfileSpan(artifactSpan, "failure")
 		return Result{}, fmt.Errorf("readback: %w", err)
 	}
+	observability.SetProfileOutcome(artifactSpan, "profile.artifact.outcome", "committed")
+	observability.FinishProfileSpan(artifactSpan, "success")
 	return out, nil
 }
 func makeRules(in Input, setRevision string) (QueryRules, error) {

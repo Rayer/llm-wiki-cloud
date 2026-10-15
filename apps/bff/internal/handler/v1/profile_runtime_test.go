@@ -247,15 +247,15 @@ func TestProfileRuntimeCrashRecoveryFencesOldLease(t *testing.T) {
 	if err = prepareProfileRuntimeAttempt(oldctx, f.repo, old); !errors.Is(err, errProfileRuntimeLease) {
 		t.Fatalf("old execution not fenced: %v", err)
 	}
-	if err = f.dispatcher.finish(f.ctx, f.repo, ref, old, nil); !errors.Is(err, errProfileRuntimeLease) {
-		t.Fatalf("old finish not fenced: %v", err)
+	if status, finishErr := f.dispatcher.finish(f.ctx, f.repo, ref, old, nil); !errors.Is(finishErr, errProfileRuntimeLease) || status != "unknown" {
+		t.Fatalf("old finish not fenced: status=%q err=%v", status, finishErr)
 	}
 	newctx := context.WithValue(f.ctx, profileRuntimeLeaseKey{}, profileRuntimeLease{ref, replacement.Token, replacement.UserID, replacement.ProjectID})
 	if err = f.dispatcher.execute(newctx, f.repo, replacement); err != nil {
 		t.Fatal(err)
 	}
-	if err = f.dispatcher.finish(f.ctx, f.repo, ref, replacement, nil); err != nil {
-		t.Fatal(err)
+	if status, finishErr := f.dispatcher.finish(f.ctx, f.repo, ref, replacement, nil); finishErr != nil || status != "complete" {
+		t.Fatalf("finish status=%q err=%v, want committed complete", status, finishErr)
 	}
 	if w := f.work(t, ref); w.Status != "complete" || w.Pending {
 		t.Fatalf("recovered work %+v", w)
@@ -577,8 +577,8 @@ func TestProfileRuntimeSupersededCompileRetryClearsOnlyMatchingState(t *testing.
 	if _, err := workRef.Set(f.ctx, work); err != nil {
 		t.Fatal(err)
 	}
-	if err := f.dispatcher.finish(f.ctx, f.repo, workRef, work, errProfileCandidateNotCurrent); err != nil {
-		t.Fatal(err)
+	if status, err := f.dispatcher.finish(f.ctx, f.repo, workRef, work, errProfileCandidateNotCurrent); err != nil || status != "superseded" {
+		t.Fatalf("finish status=%q err=%v, want committed superseded", status, err)
 	}
 	work = f.work(t, workRef)
 	current, err := f.repo.GetProfile(f.ctx, f.user, f.project)

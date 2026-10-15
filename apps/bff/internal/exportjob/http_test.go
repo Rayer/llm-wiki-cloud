@@ -10,6 +10,10 @@ import (
 	"time"
 
 	"github.com/gin-gonic/gin"
+	"go.opentelemetry.io/otel"
+	"go.opentelemetry.io/otel/attribute"
+	sdktrace "go.opentelemetry.io/otel/sdk/trace"
+	"go.opentelemetry.io/otel/sdk/trace/tracetest"
 )
 
 type testRepository struct {
@@ -181,6 +185,53 @@ func TestDownloadCapsSignedURLAtCustomTimeExpiry(t *testing.T) {
 	}
 	if strings.ContainsAny(archives.filename, "/\\") {
 		t.Fatalf("filename is not safe: %q", archives.filename)
+	}
+}
+
+func TestDownloadReturnsSignedURLWithoutExportingItToSpans(t *testing.T) {
+	const signedURL = "https://signed.example/archive"
+	exporter := tracetest.NewInMemoryExporter()
+	provider := sdktrace.NewTracerProvider(sdktrace.WithSyncer(exporter))
+	previous := otel.GetTracerProvider()
+	otel.SetTracerProvider(provider)
+	t.Cleanup(func() {
+		otel.SetTracerProvider(previous)
+		_ = provider.Shutdown(context.Background())
+	})
+	now := time.Date(2026, 9, 26, 23, 55, 0, 0, time.UTC)
+	snapshotAt := now.Add(-time.Hour)
+	completedAt := now.Add(-30 * time.Minute)
+	size := int64(12)
+	repo := newTestRepository()
+	repo.jobs["private-export-id"] = Job{ExportID: "private-export-id", Scope: ScopeRaw, Status: StatusReady, CreatedAt: snapshotAt, SnapshotAt: &snapshotAt, CompletedAt: &completedAt, SizeBytes: &size}
+	archives := &testArchiveStore{info: map[string]ArchiveInfo{"private-export-id": {Size: size, CustomTime: completedAt}}}
+	h := NewHTTPHandler(repo, testProjectVerifier{name: "Project"}, archives, &testStarter{})
+	h.now = func() time.Time { return now }
+	r := newHTTPTestRouter(h)
+	response := httptest.NewRecorder()
+	r.ServeHTTP(response, httptest.NewRequest(http.MethodPost, "/api/v1/exports/private-export-id/download", nil))
+	if response.Code != http.StatusOK || !strings.Contains(response.Body.String(), signedURL) {
+		t.Fatalf("download response = %d %s", response.Code, response.Body.String())
+	}
+	seenRoot, seenURLPhase := false, false
+	for _, span := range exporter.GetSpans() {
+		if span.Name == "export.request" {
+			seenRoot = true
+		}
+		if span.Name == "export.download_url" {
+			seenURLPhase = true
+		}
+		if strings.Contains(span.Name, signedURL) {
+			t.Fatal("signed URL used as span name")
+		}
+		for _, attr := range span.Attributes {
+			if attr.Value.Type() == attribute.STRING && strings.Contains(attr.Value.AsString(), signedURL) {
+				t.Fatal("signed URL reached span attributes")
+			}
+		}
+	}
+	if !seenRoot || !seenURLPhase {
+		t.Fatalf("missing request/download URL spans: root=%t url=%t", seenRoot, seenURLPhase)
 	}
 }
 

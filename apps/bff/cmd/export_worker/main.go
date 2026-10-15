@@ -8,7 +8,9 @@ import (
 	"strings"
 
 	"cloud.google.com/go/firestore"
+	"github.com/rayer/llm-wiki-bff/internal/buildinfo"
 	"github.com/rayer/llm-wiki-bff/internal/exportjob"
+	"github.com/rayer/llm-wiki-bff/internal/observability"
 )
 
 func main() {
@@ -19,6 +21,13 @@ func main() {
 }
 
 func run() error {
+	build := buildinfo.Current()
+	traceProvider, traceErr := observability.InitExportWorkerTraces(build.Revision)
+	if traceErr != nil {
+		log.Printf("[observability] WARNING: export trace init failed (continuing): %v", traceErr)
+	} else {
+		defer observability.ShutdownTraces(traceProvider)
+	}
 	ctx, cancel := context.WithTimeout(context.Background(), exportjob.HardTimeout)
 	defer cancel()
 	userID, projectID, exportID := strings.TrimSpace(os.Getenv("EXPORT_USER_ID")), strings.TrimSpace(os.Getenv("EXPORT_PROJECT_ID")), strings.TrimSpace(os.Getenv("EXPORT_ID"))
