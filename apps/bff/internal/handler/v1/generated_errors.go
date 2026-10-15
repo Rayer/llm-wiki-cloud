@@ -7,6 +7,7 @@ import (
 	cloudstorage "cloud.google.com/go/storage"
 	"github.com/gin-gonic/gin"
 	"github.com/rayer/llm-wiki-bff/internal/handler"
+	"github.com/rayer/llm-wiki-bff/internal/observability"
 	internalstorage "github.com/rayer/llm-wiki-bff/internal/storage"
 )
 
@@ -20,12 +21,12 @@ const (
 
 func writeGeneratedReadError(c *gin.Context, err error, notFoundMessage string) {
 	if errors.Is(err, internalstorage.ErrDeclaredObjectUnavailable) {
-		c.JSON(http.StatusInternalServerError, handler.ErrorResponse{Error: generatedDataUnavailableMessage})
+		observability.WriteDataJSON(c, http.StatusInternalServerError, handler.ErrorResponse{Error: generatedDataUnavailableMessage})
 		return
 	}
 	if errors.Is(err, internalstorage.ErrObjectNotExist) || errors.Is(err, cloudstorage.ErrObjectNotExist) {
-		c.JSON(http.StatusNotFound, handler.ErrorResponse{Error: notFoundMessage})
+		observability.WriteDataJSON(c, http.StatusNotFound, handler.ErrorResponse{Error: notFoundMessage})
 		return
 	}
-	c.JSON(http.StatusInternalServerError, handler.ErrorResponse{Error: generatedDataUnavailableMessage})
+	observability.WriteDataJSON(c, http.StatusInternalServerError, handler.ErrorResponse{Error: generatedDataUnavailableMessage})
 }

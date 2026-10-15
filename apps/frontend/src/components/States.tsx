@@ -1,6 +1,31 @@
+import { useLayoutEffect, useRef, useState } from 'react';
 import { Inbox } from 'lucide-react';
 import { Skeleton, SkeletonLines } from './ui/Skeleton';
 import { Surface } from './ui/Surface';
+
+export function useDiagnosticIdCopy(owner: object | null, diagnosticId?: string) {
+  const [copiedOwner, setCopiedOwner] = useState<object | null>(null);
+  const ownerRef = useRef(owner);
+
+  useLayoutEffect(() => {
+    ownerRef.current = owner;
+    return () => {
+      if (ownerRef.current === owner) ownerRef.current = null;
+    };
+  }, [owner]);
+
+  const copyDiagnosticId = async () => {
+    if (!owner || !diagnosticId || !navigator.clipboard?.writeText) return;
+    try {
+      await navigator.clipboard.writeText(diagnosticId);
+    } catch {
+      return;
+    }
+    if (ownerRef.current === owner) setCopiedOwner(owner);
+  };
+
+  return { copyDiagnosticId, diagnosticIdCopied: owner !== null && copiedOwner === owner };
+}
 
 export function LoadingState({ label = 'Loading wiki data' }: { label?: string }) {
   return (

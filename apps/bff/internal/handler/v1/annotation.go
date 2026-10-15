@@ -107,7 +107,7 @@ func (h *Handler) GetAnnotation(c *gin.Context) {
 		outcome := observability.DataErrorOutcome(err)
 		observability.FinishDataSpan(readSpan, outcome)
 		observability.SetDataOperationOutcome(c.Request.Context(), outcome)
-		c.JSON(500, handler.ErrorResponse{Error: generatedDataUnavailableMessage})
+		observability.WriteDataJSON(c, 500, handler.ErrorResponse{Error: generatedDataUnavailableMessage})
 		return
 	}
 	observability.FinishDataSpan(readSpan, "success")
@@ -115,7 +115,7 @@ func (h *Handler) GetAnnotation(c *gin.Context) {
 	var object annotation.Object
 	if !utf8.Valid(data) || json.Unmarshal(data, &object) != nil || object.Validate(id, raw) != nil {
 		observability.FinishDataSpan(validateSpan, "failure")
-		c.JSON(500, handler.ErrorResponse{Error: "invalid annotation"})
+		observability.WriteDataJSON(c, 500, handler.ErrorResponse{Error: "invalid annotation"})
 		return
 	}
 	observability.FinishDataSpan(validateSpan, "success")
@@ -292,17 +292,10 @@ func (h *Handler) writeAnnotationResponse(c *gin.Context, s store.Store, id, raw
 	response, err := h.annotationResponse(c, s, id, raw, object, generation)
 	if err != nil {
 		observability.SetDataOperationOutcome(c.Request.Context(), "response_failure")
-		c.JSON(500, handler.ErrorResponse{Error: generatedDataUnavailableMessage})
-		observability.FinishDataSpan(responseSpan, "response_failure")
+		observability.WriteDataFailureJSONInSpan(c, responseSpan, 500, handler.ErrorResponse{Error: generatedDataUnavailableMessage})
 		return
 	}
-	renderErrorsBefore := len(c.Errors)
-	c.JSON(200, response)
-	if len(c.Errors) > renderErrorsBefore {
-		observability.FinishDataSpan(responseSpan, "response_failure")
-		return
-	}
-	observability.FinishDataSpan(responseSpan, "success")
+	observability.WriteDataJSONInSpan(c, responseSpan, 200, response)
 }
 
 func (h *Handler) annotationResponse(c *gin.Context, s store.Store, id, raw string, object annotation.Object, generation int64) (handler.AnnotationResponse, error) {

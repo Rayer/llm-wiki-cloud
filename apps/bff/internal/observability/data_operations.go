@@ -95,36 +95,89 @@ func dataStateFromContext(ctx context.Context) *dataOperationState {
 	return state
 }
 
-func selectedMutationOperation(operation string) bool {
+func selectedReadOperation(operation string) bool {
 	switch operation {
-	case "annotation.write", "raw.upload", "raw_sync.write":
+	case "project.list", "source.list", "source.read", "concept.list", "concept.read",
+		"annotation.read", "raw.list", "raw.preview", "raw_sync.list", "raw_sync.read":
 		return true
 	default:
 		return false
 	}
 }
 
-// WriteDataJSON records the actual JSON response work for selected mutations.
-// It leaves Gin's status, body, and render errors untouched while safely
-// distinguishing response failures from the logical mutation outcome.
+// WriteDataJSON records the actual JSON response work for a mapped data
+// operation. A read response failure also becomes the root outcome when no
+// earlier logical outcome was recorded; mutation commit outcomes stay intact.
 func WriteDataJSON(c *gin.Context, status int, value any) {
 	if c.Request == nil {
 		c.JSON(status, value)
 		return
 	}
-	state := dataStateFromContext(c.Request.Context())
-	if state == nil || !selectedMutationOperation(state.operation) {
+	if dataStateFromContext(c.Request.Context()) == nil {
 		c.JSON(status, value)
 		return
 	}
 	_, responseSpan := StartDataPhase(c.Request.Context(), "response")
+	WriteDataJSONInSpan(c, responseSpan, status, value)
+}
+
+// WriteDataJSONInSpan writes JSON inside an already-open response phase.
+func WriteDataJSONInSpan(c *gin.Context, responseSpan trace.Span, status int, value any) {
 	renderErrorsBefore := len(c.Errors)
 	c.JSON(status, value)
+	finishDataResponse(c, responseSpan, renderErrorsBefore)
+}
+
+// WriteDataFailureJSONInSpan keeps an already-known response construction
+// failure on the phase while writing its existing public error response.
+func WriteDataFailureJSONInSpan(c *gin.Context, responseSpan trace.Span, status int, value any) {
+	c.JSON(status, value)
+	FinishDataSpan(responseSpan, "response_failure")
+	markReadResponseFailure(c)
+}
+
+// WriteDataBytes writes a byte response inside its own response phase.
+func WriteDataBytes(c *gin.Context, status int, contentType string, data []byte) {
+	if c.Request == nil || dataStateFromContext(c.Request.Context()) == nil {
+		c.Data(status, contentType, data)
+		return
+	}
+	_, responseSpan := StartDataPhase(c.Request.Context(), "response")
+	WriteDataBytesInSpan(c, responseSpan, status, contentType, data)
+}
+
+// WriteDataBytesInSpan writes bytes inside an already-open response phase.
+func WriteDataBytesInSpan(c *gin.Context, responseSpan trace.Span, status int, contentType string, data []byte) {
+	renderErrorsBefore := len(c.Errors)
+	c.Data(status, contentType, data)
+	finishDataResponse(c, responseSpan, renderErrorsBefore)
+}
+
+func finishDataResponse(c *gin.Context, responseSpan trace.Span, renderErrorsBefore int) {
 	outcome := "success"
 	if len(c.Errors) > renderErrorsBefore {
 		outcome = "response_failure"
 	}
 	FinishDataSpan(responseSpan, outcome)
+	if outcome != "response_failure" || c.Request == nil {
+		return
+	}
+	markReadResponseFailure(c)
+}
+
+func markReadResponseFailure(c *gin.Context) {
+	if c.Request == nil {
+		return
+	}
+	state := dataStateFromContext(c.Request.Context())
+	if state == nil || !selectedReadOperation(state.operation) {
+		return
+	}
+	state.mu.Lock()
+	if state.outcome == "" {
+		state.outcome = "response_failure"
+	}
+	state.mu.Unlock()
 }
 
 // StartDataPhase records a fixed phase only when it belongs to a mapped I4

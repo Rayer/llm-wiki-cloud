@@ -79,7 +79,7 @@ func (h *Handler) SyncRawList(c *gin.Context) {
 		outcome := observability.DataErrorOutcome(err)
 		observability.FinishDataSpan(readSpan, outcome)
 		observability.SetDataOperationOutcome(c.Request.Context(), outcome)
-		c.JSON(http.StatusInternalServerError, gin.H{"error": "could not list raw files"})
+		observability.WriteDataJSON(c, http.StatusInternalServerError, gin.H{"error": "could not list raw files"})
 		return
 	}
 	observability.SetDataCount(readSpan, "items", int64(len(files)))
@@ -91,20 +91,20 @@ func (h *Handler) SyncRawList(c *gin.Context) {
 		decoded, err := base64.RawURLEncoding.DecodeString(token)
 		if err != nil {
 			observability.FinishDataSpan(inputSpan, "rejected")
-			c.JSON(http.StatusBadRequest, gin.H{"error": "invalid page token"})
+			observability.WriteDataJSON(c, http.StatusBadRequest, gin.H{"error": "invalid page token"})
 			return
 		}
 		parts := strings.Split(string(decoded), ":")
 		if len(parts) != 2 || parts[0] != snapshot {
 			observability.FinishDataSpan(inputSpan, "precondition_failed")
 			observability.SetDataOperationOutcome(c.Request.Context(), "precondition_failed")
-			c.JSON(http.StatusConflict, gin.H{"error": "raw listing changed; restart inventory"})
+			observability.WriteDataJSON(c, http.StatusConflict, gin.H{"error": "raw listing changed; restart inventory"})
 			return
 		}
 		value, err := strconv.Atoi(parts[1])
 		if err != nil || value < 0 || value > len(files) || value%rawSyncPageSize != 0 {
 			observability.FinishDataSpan(inputSpan, "rejected")
-			c.JSON(http.StatusBadRequest, gin.H{"error": "invalid page token"})
+			observability.WriteDataJSON(c, http.StatusBadRequest, gin.H{"error": "invalid page token"})
 			return
 		}
 		offset = value
@@ -116,7 +116,7 @@ func (h *Handler) SyncRawList(c *gin.Context) {
 		page.NextPageToken = base64.RawURLEncoding.EncodeToString([]byte(fmt.Sprintf("%s:%d", snapshot, end)))
 	}
 	c.Header("Cache-Control", "no-store")
-	c.JSON(http.StatusOK, page)
+	observability.WriteDataJSON(c, http.StatusOK, page)
 }
 
 func (h *Handler) SyncRawDownload(c *gin.Context) {
@@ -129,7 +129,7 @@ func (h *Handler) SyncRawDownload(c *gin.Context) {
 	generation := c.Query("generation")
 	if store.ValidateRawSyncPath(path) != nil || generation == "" {
 		observability.FinishDataSpan(inputSpan, "rejected")
-		c.JSON(http.StatusBadRequest, gin.H{"error": "a valid raw path and generation are required"})
+		observability.WriteDataJSON(c, http.StatusBadRequest, gin.H{"error": "a valid raw path and generation are required"})
 		return
 	}
 	observability.FinishDataSpan(inputSpan, "success")

@@ -138,7 +138,7 @@ func readIndexJSON(ctx context.Context, reader indexReader) ([]byte, error) {
 func (h *Handler) ListProjects(c *gin.Context) {
 	userID := c.GetString("userID")
 	if strings.TrimSpace(userID) == "" {
-		c.JSON(http.StatusUnauthorized, handler.ErrorResponse{Error: "user not authenticated"})
+		observability.WriteDataJSON(c, http.StatusUnauthorized, handler.ErrorResponse{Error: "user not authenticated"})
 		return
 	}
 	if h.firestore != nil && h.firestore.Raw() != nil {
@@ -151,16 +151,16 @@ func (h *Handler) ListProjects(c *gin.Context) {
 			observability.FinishDataSpan(span, "success")
 		}
 		if err != nil {
-			c.JSON(http.StatusInternalServerError, handler.ErrorResponse{Error: "projects unavailable"})
+			observability.WriteDataJSON(c, http.StatusInternalServerError, handler.ErrorResponse{Error: "projects unavailable"})
 			return
 		}
 		if len(resp) > 0 {
-			c.JSON(http.StatusOK, resp)
+			observability.WriteDataJSON(c, http.StatusOK, resp)
 			return
 		}
 	}
 	if h.store == nil {
-		c.JSON(http.StatusInternalServerError, handler.ErrorResponse{Error: "wiki storage is not configured"})
+		observability.WriteDataJSON(c, http.StatusInternalServerError, handler.ErrorResponse{Error: "wiki storage is not configured"})
 		return
 	}
 
@@ -173,7 +173,7 @@ func (h *Handler) ListProjects(c *gin.Context) {
 		observability.FinishDataSpan(span, "success")
 	}
 	if err != nil {
-		c.JSON(http.StatusInternalServerError, handler.ErrorResponse{Error: "projects unavailable"})
+		observability.WriteDataJSON(c, http.StatusInternalServerError, handler.ErrorResponse{Error: "projects unavailable"})
 		return
 	}
 
@@ -202,7 +202,7 @@ func (h *Handler) ListProjects(c *gin.Context) {
 		})
 	}
 
-	c.JSON(http.StatusOK, resp)
+	observability.WriteDataJSON(c, http.StatusOK, resp)
 }
 
 // RenameProject handles PATCH /api/v1/projects/{projectID} for the owner.
@@ -535,30 +535,30 @@ func (h *Handler) ListSources(c *gin.Context) {
 
 	gcsClient, err := h.GetGCSClient(c)
 	if err != nil {
-		c.JSON(http.StatusInternalServerError, handler.ErrorResponse{Error: "generated data unavailable"})
+		observability.WriteDataJSON(c, http.StatusInternalServerError, handler.ErrorResponse{Error: "generated data unavailable"})
 		return
 	}
 
 	sources, err := listSourcesCacheFirst(ctx, gcsClient)
 	if err != nil {
-		c.JSON(http.StatusInternalServerError, handler.ErrorResponse{Error: "generated data unavailable"})
+		observability.WriteDataJSON(c, http.StatusInternalServerError, handler.ErrorResponse{Error: "generated data unavailable"})
 		return
 	}
 	if err := addWikiPageIDsFromIDMap(ctx, gcsClient, sources, "source"); err != nil {
-		c.JSON(http.StatusInternalServerError, handler.ErrorResponse{Error: "generated data unavailable"})
+		observability.WriteDataJSON(c, http.StatusInternalServerError, handler.ErrorResponse{Error: "generated data unavailable"})
 		return
 	}
 	if missingSourceRawPath(sources) {
 		key := viewCacheKey(gcsClient)
 		if err := h.hydrateLegacySourceMetadata(ctx, gcsClient, sources, key); err != nil {
-			c.JSON(http.StatusInternalServerError, handler.ErrorResponse{Error: "generated data unavailable"})
+			observability.WriteDataJSON(c, http.StatusInternalServerError, handler.ErrorResponse{Error: "generated data unavailable"})
 			return
 		}
 	}
 	validateCtx, validateSpan := observability.StartDataPhase(ctx, "validate")
 	if sources, _, err = sourceLifecycle(validateCtx, gcsClient, sources); err != nil {
 		observability.FinishDataSpan(validateSpan, observability.DataErrorOutcome(err))
-		c.JSON(http.StatusInternalServerError, handler.ErrorResponse{Error: "generated data unavailable"})
+		observability.WriteDataJSON(c, http.StatusInternalServerError, handler.ErrorResponse{Error: "generated data unavailable"})
 		return
 	}
 	observability.SetDataCount(validateSpan, "items", int64(len(sources)))
@@ -567,7 +567,7 @@ func (h *Handler) ListSources(c *gin.Context) {
 		sources = []gcs.WikiPage{}
 	}
 
-	c.JSON(http.StatusOK, handler.SourcesListResponse{Sources: sources, Count: len(sources)})
+	observability.WriteDataJSON(c, http.StatusOK, handler.SourcesListResponse{Sources: sources, Count: len(sources)})
 }
 
 // hydrateLegacySourceMetadata shares the one-per-project fallback for id maps
@@ -776,7 +776,7 @@ func mergeWikiPageIDs(pages []gcs.WikiPage, entries map[string]string) {
 func (h *Handler) GetSource(c *gin.Context) {
 	gcsClient, err := h.GetGCSClient(c)
 	if err != nil {
-		c.JSON(http.StatusInternalServerError, handler.ErrorResponse{Error: generatedDataUnavailableMessage})
+		observability.WriteDataJSON(c, http.StatusInternalServerError, handler.ErrorResponse{Error: generatedDataUnavailableMessage})
 		return
 	}
 
@@ -805,17 +805,16 @@ func (h *Handler) GetSource(c *gin.Context) {
 
 	response, err := h.sourceDetailResponse(c, gcsClient, *page, data)
 	if err != nil {
-		observability.FinishDataSpan(responseSpan, "response_failure")
-		observability.SetDataOperationOutcome(c.Request.Context(), "response_failure")
 		if isFrontmatterSerializeError(err) {
+			observability.SetDataOperationOutcome(c.Request.Context(), "response_failure")
 			writeFrontmatterSerializeError(c, err)
+			observability.FinishDataSpan(responseSpan, "response_failure")
 			return
 		}
-		c.JSON(http.StatusInternalServerError, handler.ErrorResponse{Error: "generated data unavailable"})
+		observability.WriteDataFailureJSONInSpan(c, responseSpan, http.StatusInternalServerError, handler.ErrorResponse{Error: "generated data unavailable"})
 		return
 	}
-	writeJSON(c, http.StatusOK, response)
-	observability.FinishDataSpan(responseSpan, "success")
+	writeJSONInDataResponse(c, responseSpan, http.StatusOK, response)
 }
 
 // ListConcepts handles GET /api/v1/concepts using the request's GCS scope.
@@ -838,24 +837,24 @@ func (h *Handler) ListConcepts(c *gin.Context) {
 	includeDrafts, err := strconv.ParseBool(c.DefaultQuery("include_drafts", "false"))
 	if err != nil {
 		observability.FinishDataSpan(inputSpan, "rejected")
-		c.JSON(http.StatusBadRequest, handler.ErrorResponse{Error: "include_drafts must be a boolean"})
+		observability.WriteDataJSON(c, http.StatusBadRequest, handler.ErrorResponse{Error: "include_drafts must be a boolean"})
 		return
 	}
 	observability.FinishDataSpan(inputSpan, "success")
 
 	gcsClient, err := h.GetGCSClient(c)
 	if err != nil {
-		c.JSON(http.StatusInternalServerError, handler.ErrorResponse{Error: "generated data unavailable"})
+		observability.WriteDataJSON(c, http.StatusInternalServerError, handler.ErrorResponse{Error: "generated data unavailable"})
 		return
 	}
 
 	concepts, err := listConceptsCacheFirst(ctx, gcsClient, includeDrafts)
 	if err != nil {
-		c.JSON(http.StatusInternalServerError, handler.ErrorResponse{Error: "generated data unavailable"})
+		observability.WriteDataJSON(c, http.StatusInternalServerError, handler.ErrorResponse{Error: "generated data unavailable"})
 		return
 	}
 	if err := addWikiPageIDsFromIDMap(ctx, gcsClient, concepts, "concept"); err != nil {
-		c.JSON(http.StatusInternalServerError, handler.ErrorResponse{Error: "generated data unavailable"})
+		observability.WriteDataJSON(c, http.StatusInternalServerError, handler.ErrorResponse{Error: "generated data unavailable"})
 		return
 	}
 	if concepts == nil {
@@ -864,8 +863,7 @@ func (h *Handler) ListConcepts(c *gin.Context) {
 
 	_, responseSpan := observability.StartDataPhase(ctx, "response")
 	observability.SetDataCount(responseSpan, "items", int64(len(concepts)))
-	c.JSON(http.StatusOK, handler.ConceptsListResponse{Concepts: concepts, Count: len(concepts)})
-	observability.FinishDataSpan(responseSpan, "success")
+	observability.WriteDataJSONInSpan(c, responseSpan, http.StatusOK, handler.ConceptsListResponse{Concepts: concepts, Count: len(concepts)})
 }
 
 // GetConcept handles GET /api/v1/concepts/:slug using the request's GCS scope.
@@ -884,7 +882,7 @@ func (h *Handler) ListConcepts(c *gin.Context) {
 func (h *Handler) GetConcept(c *gin.Context) {
 	gcsClient, err := h.GetGCSClient(c)
 	if err != nil {
-		c.JSON(http.StatusInternalServerError, handler.ErrorResponse{Error: "generated data unavailable"})
+		observability.WriteDataJSON(c, http.StatusInternalServerError, handler.ErrorResponse{Error: "generated data unavailable"})
 		return
 	}
 
@@ -919,12 +917,12 @@ func (h *Handler) GetConcept(c *gin.Context) {
 
 	frontmatter, body, err := parseFrontmatterJSON(string(data))
 	if err != nil {
-		observability.FinishDataSpan(responseSpan, "response_failure")
 		observability.SetDataOperationOutcome(c.Request.Context(), "response_failure")
 		writeFrontmatterSerializeError(c, err)
+		observability.FinishDataSpan(responseSpan, "response_failure")
 		return
 	}
-	writeJSON(c, http.StatusOK, handler.ConceptDetailResponse{
+	writeJSONInDataResponse(c, responseSpan, http.StatusOK, handler.ConceptDetailResponse{
 		Slug:        slug,
 		ID:          page.ID,
 		Title:       slug,
@@ -934,7 +932,6 @@ func (h *Handler) GetConcept(c *gin.Context) {
 		Body:        body,
 		Raw:         string(data),
 	})
-	observability.FinishDataSpan(responseSpan, "success")
 }
 
 // Import handles POST /api/v1/import.

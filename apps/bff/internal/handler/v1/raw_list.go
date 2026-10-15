@@ -24,7 +24,7 @@ func (h *Handler) RawList(c *gin.Context) {
 	wikiStore, err := h.GetStore(c)
 	if err != nil {
 		observability.FinishDataSpan(loadSpan, observability.DataErrorOutcome(err))
-		c.JSON(http.StatusInternalServerError, handler.ErrorResponse{Error: generatedDataUnavailableMessage})
+		observability.WriteDataJSON(c, http.StatusInternalServerError, handler.ErrorResponse{Error: generatedDataUnavailableMessage})
 		return
 	}
 	observability.FinishDataSpan(loadSpan, "success")
@@ -32,7 +32,7 @@ func (h *Handler) RawList(c *gin.Context) {
 	files, err := wikiStore.ListRawFiles(readCtx)
 	if err != nil {
 		observability.FinishDataSpan(readSpan, observability.DataErrorOutcome(err))
-		c.JSON(http.StatusInternalServerError, handler.ErrorResponse{Error: generatedDataUnavailableMessage})
+		observability.WriteDataJSON(c, http.StatusInternalServerError, handler.ErrorResponse{Error: generatedDataUnavailableMessage})
 		return
 	}
 	observability.SetDataCount(readSpan, "items", int64(len(files)))
@@ -44,7 +44,7 @@ func (h *Handler) RawList(c *gin.Context) {
 	if err != nil {
 		if !errors.Is(err, storage.ErrObjectNotExist) {
 			observability.FinishDataSpan(readSpan, observability.DataErrorOutcome(err))
-			c.JSON(http.StatusInternalServerError, handler.ErrorResponse{Error: generatedDataUnavailableMessage})
+			observability.WriteDataJSON(c, http.StatusInternalServerError, handler.ErrorResponse{Error: generatedDataUnavailableMessage})
 			return
 		}
 		observability.FinishDataSpan(readSpan, "success")
@@ -52,12 +52,12 @@ func (h *Handler) RawList(c *gin.Context) {
 		observability.FinishDataSpan(readSpan, "success")
 		artifact, err = rawstatus.Decode(data)
 		if err != nil {
-			c.JSON(http.StatusInternalServerError, handler.ErrorResponse{Error: generatedDataUnavailableMessage})
+			observability.WriteDataJSON(c, http.StatusInternalServerError, handler.ErrorResponse{Error: generatedDataUnavailableMessage})
 			return
 		}
 	}
 
-	c.JSON(http.StatusOK, rawListResponse{Files: rawstatus.Apply(files, artifact)})
+	observability.WriteDataJSON(c, http.StatusOK, rawListResponse{Files: rawstatus.Apply(files, artifact)})
 }
 
 func (h *Handler) RawPreview(c *gin.Context) {
@@ -65,7 +65,7 @@ func (h *Handler) RawPreview(c *gin.Context) {
 	filename := c.Param("filename")
 	if err := validateRawUploadFilename(filename); err != nil {
 		observability.FinishDataSpan(inputSpan, "rejected")
-		c.JSON(http.StatusBadRequest, handler.ErrorResponse{Error: err.Error()})
+		observability.WriteDataJSON(c, http.StatusBadRequest, handler.ErrorResponse{Error: err.Error()})
 		return
 	}
 	observability.FinishDataSpan(inputSpan, "success")
@@ -75,7 +75,7 @@ func (h *Handler) RawPreview(c *gin.Context) {
 	wikiStore, err := h.GetStore(c)
 	if err != nil {
 		observability.FinishDataSpan(loadSpan, observability.DataErrorOutcome(err))
-		c.JSON(http.StatusInternalServerError, handler.ErrorResponse{Error: "raw file unavailable"})
+		observability.WriteDataJSON(c, http.StatusInternalServerError, handler.ErrorResponse{Error: "raw file unavailable"})
 		return
 	}
 	observability.FinishDataSpan(loadSpan, "success")
@@ -85,16 +85,16 @@ func (h *Handler) RawPreview(c *gin.Context) {
 	if err != nil {
 		observability.FinishDataSpan(readSpan, observability.DataErrorOutcome(err))
 		if errors.Is(err, storage.ErrObjectNotExist) {
-			c.JSON(http.StatusNotFound, handler.ErrorResponse{Error: "raw file not found"})
+			observability.WriteDataJSON(c, http.StatusNotFound, handler.ErrorResponse{Error: "raw file not found"})
 			return
 		}
-		c.JSON(http.StatusInternalServerError, handler.ErrorResponse{Error: "raw file unavailable"})
+		observability.WriteDataJSON(c, http.StatusInternalServerError, handler.ErrorResponse{Error: "raw file unavailable"})
 		return
 	}
 	observability.SetDataCount(readSpan, "bytes", int64(len(data)))
 	observability.FinishDataSpan(readSpan, "success")
 
-	c.Data(http.StatusOK, rawPreviewContentType(filename), data)
+	observability.WriteDataBytes(c, http.StatusOK, rawPreviewContentType(filename), data)
 }
 
 func rawPreviewContentType(filename string) string {

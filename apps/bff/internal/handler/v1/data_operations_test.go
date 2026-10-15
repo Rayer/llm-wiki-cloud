@@ -174,6 +174,95 @@ func TestDataTracedConceptListPreservesCachedResponseAndOneRoot(t *testing.T) {
 	}
 }
 
+func TestDataTracedConceptListJSONWriterFailureMarksReadAndResponseFailure(t *testing.T) {
+	gin.SetMode(gin.TestMode)
+	recorder := newDataSpanRecorder(t)
+	root := t.TempDir()
+	project := filepath.Join(root, "users", "user", "projects", "project", "cache")
+	if err := os.MkdirAll(project, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(project, "concepts.jsonl"), []byte(`{"slug":"alpha","title":"PRIVATE_READ_RESPONSE_BODY_CANARY"}`+"\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(project, "id_map.json"), []byte(`{"concept":{"concept-1":"alpha"}}`), 0o644); err != nil {
+		t.Fatal(err)
+	}
+
+	h := New(localfs.New(root), nil, search.NewIndex(), conceptcache.New(), nil, nil)
+	router := gin.New()
+	router.Use(observability.DataOperationMiddleware())
+	renderErrors := 0
+	router.Use(func(c *gin.Context) {
+		c.Set("userID", "user")
+		c.Set("projectID", "project")
+		c.Next()
+		renderErrors = len(c.Errors)
+	})
+	router.GET("/api/v1/concepts", h.ListConcepts)
+	const writerError = "PRIVATE_READ_JSON_WRITER_ERROR_CANARY"
+	response := &dataFailingJSONWriter{ResponseRecorder: httptest.NewRecorder(), err: errors.New(writerError)}
+	router.ServeHTTP(response, httptest.NewRequest(http.MethodGet, "/api/v1/concepts", nil))
+	if response.attempts != 1 || renderErrors != 1 || response.Code != http.StatusOK || response.Body.Len() != 0 || response.Header().Get("Content-Type") != "application/json; charset=utf-8" {
+		t.Fatalf("read response changed: attempts=%d errors=%d status=%d body=%q headers=%v", response.attempts, renderErrors, response.Code, response.Body.Bytes(), response.Header())
+	}
+	if !bytes.Contains(response.attempted, []byte("PRIVATE_READ_RESPONSE_BODY_CANARY")) {
+		t.Fatalf("real response payload was not attempted: %q", response.attempted)
+	}
+
+	spans := recorder.Ended()
+	operation, phases := dataOperationSpans(t, spans)
+	if value, ok := dataSpanAttribute(operation, "bff.outcome"); !ok || value.AsString() != "response_failure" {
+		t.Fatalf("read operation outcome = %v, want response_failure", value)
+	}
+	if value, ok := dataSpanAttribute(phases["bff.data.response"], "bff.outcome"); !ok || value.AsString() != "response_failure" {
+		t.Fatalf("response phase outcome = %v, want response_failure", value)
+	}
+	if phases["bff.data.read"] == nil || phases["bff.data.cache"] == nil || phases["bff.data.input"] == nil {
+		t.Fatalf("actual list phases are missing: %v", phases)
+	}
+	assertSpanPayloadOmits(t, spans, "PRIVATE_READ_RESPONSE_BODY_CANARY")
+	assertSpanPayloadOmits(t, spans, writerError)
+}
+
+func TestDataTracedRawPreviewByteWriterFailureMarksReadAndResponseFailure(t *testing.T) {
+	gin.SetMode(gin.TestMode)
+	recorder := newDataSpanRecorder(t)
+	root := t.TempDir()
+	mustWriteHandlerFile(t, root, "users/user/projects/project/raw/seed.md", "PRIVATE_RAW_PREVIEW_BODY_CANARY")
+	h := New(localfs.New(root), nil, search.NewIndex(), nil, nil, nil)
+	router := gin.New()
+	router.Use(observability.DataOperationMiddleware())
+	router.Use(func(c *gin.Context) {
+		c.Set("userID", "user")
+		c.Set("projectID", "project")
+		c.Next()
+	})
+	router.GET("/api/v1/raw/:filename", h.RawPreview)
+	const writerError = "PRIVATE_RAW_PREVIEW_WRITER_ERROR_CANARY"
+	response := &dataFailingJSONWriter{ResponseRecorder: httptest.NewRecorder(), err: errors.New(writerError)}
+	router.ServeHTTP(response, httptest.NewRequest(http.MethodGet, "/api/v1/raw/seed.md?preview=true", nil))
+	if response.attempts != 1 || response.Code != http.StatusOK || response.Body.Len() != 0 || response.Header().Get("Content-Type") != "text/markdown; charset=utf-8" {
+		t.Fatalf("raw preview response changed: attempts=%d status=%d body=%q headers=%v", response.attempts, response.Code, response.Body.Bytes(), response.Header())
+	}
+	if string(response.attempted) != "PRIVATE_RAW_PREVIEW_BODY_CANARY" {
+		t.Fatalf("raw preview bytes attempted = %q", response.attempted)
+	}
+	spans := recorder.Ended()
+	operation, phases := dataOperationSpans(t, spans)
+	if value, ok := dataSpanAttribute(operation, "bff.outcome"); !ok || value.AsString() != "response_failure" {
+		t.Fatalf("raw preview operation outcome = %v, want response_failure", value)
+	}
+	if value, ok := dataSpanAttribute(phases["bff.data.response"], "bff.outcome"); !ok || value.AsString() != "response_failure" {
+		t.Fatalf("raw preview response phase outcome = %v, want response_failure", value)
+	}
+	if phases["bff.data.read"] == nil {
+		t.Fatalf("raw preview read phase is missing: %v", phases)
+	}
+	assertSpanPayloadOmits(t, spans, "PRIVATE_RAW_PREVIEW_BODY_CANARY")
+	assertSpanPayloadOmits(t, spans, writerError)
+}
+
 func TestDataTracedImportValidationAndPlaceholderNeverRecordURLOrCommit(t *testing.T) {
 	gin.SetMode(gin.TestMode)
 	recorder := newDataSpanRecorder(t)

@@ -223,7 +223,7 @@ func (h *Handler) handleIDRoutedPage(c *gin.Context, gcsClient store.Store, curr
 			status = http.StatusNotFound
 			message = "id map not found"
 		}
-		c.JSON(status, handler.ErrorResponse{Error: message})
+		observability.WriteDataJSON(c, status, handler.ErrorResponse{Error: message})
 		return true
 	}
 	observability.FinishDataSpan(loadSpan, "success")
@@ -241,7 +241,7 @@ func (h *Handler) handleIDRoutedPage(c *gin.Context, gcsClient store.Store, curr
 			}
 		}
 		observability.FinishDataSpan(validateSpan, "rejected")
-		c.JSON(http.StatusNotFound, handler.ErrorResponse{Error: "id not found: " + id})
+		observability.WriteDataJSON(c, http.StatusNotFound, handler.ErrorResponse{Error: "id not found: " + id})
 		return true
 	}
 	if target, ok := canonicalIDRoute(currentType, idSlug, dual); ok {
@@ -269,28 +269,27 @@ func (h *Handler) handleIDRoutedPage(c *gin.Context, gcsClient store.Store, curr
 		page.ID = entry.ID
 		response, err := h.sourceDetailResponse(c, gcsClient, *page, data)
 		if err != nil {
-			observability.FinishDataSpan(responseSpan, "response_failure")
 			observability.SetDataOperationOutcome(c.Request.Context(), "response_failure")
 			if isFrontmatterSerializeError(err) {
 				writeFrontmatterSerializeError(c, err)
+				observability.FinishDataSpan(responseSpan, "response_failure")
 				return true
 			}
-			c.JSON(http.StatusInternalServerError, handler.ErrorResponse{Error: generatedDataUnavailableMessage})
+			observability.WriteDataFailureJSONInSpan(c, responseSpan, http.StatusInternalServerError, handler.ErrorResponse{Error: generatedDataUnavailableMessage})
 			return true
 		}
-		writeJSON(c, http.StatusOK, response)
-		observability.FinishDataSpan(responseSpan, "success")
+		writeJSONInDataResponse(c, responseSpan, http.StatusOK, response)
 		return true
 	}
 
 	frontmatter, body, err := parseFrontmatterJSON(string(data))
 	if err != nil {
-		observability.FinishDataSpan(responseSpan, "response_failure")
 		observability.SetDataOperationOutcome(c.Request.Context(), "response_failure")
 		writeFrontmatterSerializeError(c, err)
+		observability.FinishDataSpan(responseSpan, "response_failure")
 		return true
 	}
-	writeJSON(c, http.StatusOK, handler.ConceptDetailResponse{
+	writeJSONInDataResponse(c, responseSpan, http.StatusOK, handler.ConceptDetailResponse{
 		ID:          entry.ID,
 		Slug:        entry.Slug,
 		Title:       entry.Slug,
@@ -300,7 +299,6 @@ func (h *Handler) handleIDRoutedPage(c *gin.Context, gcsClient store.Store, curr
 		Body:        body,
 		Raw:         string(data),
 	})
-	observability.FinishDataSpan(responseSpan, "success")
 	return true
 }
 
