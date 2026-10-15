@@ -142,6 +142,131 @@ func TestPipelineScopesExportSafeSpansAndBlockUnrelatedSDKPayloads(t *testing.T)
 	}
 }
 
+func TestDataRouteInventoryIsFiniteAndExcludesOtherBFFFamilies(t *testing.T) {
+	want := map[string]string{
+		"GET /api/v1/projects":               "project.list",
+		"GET /api/v1/sources":                "source.list",
+		"GET /api/v1/sources/:id":            "source.read",
+		"GET /api/v1/concepts":               "concept.list",
+		"GET /api/v1/concepts/:id":           "concept.read",
+		"GET /api/v1/sources/:id/annotation": "annotation.read",
+		"PUT /api/v1/sources/:id/annotation": "annotation.write",
+		"GET /api/v1/raw":                    "raw.list",
+		"GET /api/v1/raw/:filename":          "raw.preview",
+		"POST /api/v1/raw/upload":            "raw.upload",
+		"GET /api/v1/sync/raw":               "raw_sync.list",
+		"GET /api/v1/sync/raw/file":          "raw_sync.read",
+		"PUT /api/v1/sync/raw/file":          "raw_sync.write",
+		"POST /api/v1/import":                "import.validate",
+	}
+	if len(dataOperations) != len(want) {
+		t.Fatalf("mapped operation count = %d, want %d", len(dataOperations), len(want))
+	}
+	for route, operation := range want {
+		if got := DataOperationForRoute(strings.SplitN(route, " ", 2)[0], strings.SplitN(route, " ", 2)[1]); got != operation {
+			t.Errorf("DataOperationForRoute(%q) = %q, want %q", route, got, operation)
+		}
+	}
+	for _, route := range []string{
+		"GET /api/v1/health", "GET /api/v1/ready", "GET /api/v1/index", "GET /api/v1/status",
+		"GET /api/v1/metrics", "POST /api/v1/query", "POST /api/v1/pipeline/run",
+		"GET /api/v1/projects/:pid/profile", "GET /api/v1/projects/:pid/exports",
+		"GET /api/v1/admin/projects", "POST /api/v1/raw/scrape",
+	} {
+		parts := strings.SplitN(route, " ", 2)
+		if got := DataOperationForRoute(parts[0], parts[1]); got != "" {
+			t.Errorf("out-of-scope route %q mapped to %q", route, got)
+		}
+	}
+}
+
+func TestDataOperationCapturesGuardRejectWithFiniteAttributes(t *testing.T) {
+	const privatePath = "PRIVATE_DATA_SOURCE_ID_CANARY"
+	gin.SetMode(gin.TestMode)
+	recorder := tracetest.NewSpanRecorder()
+	provider := sdktrace.NewTracerProvider(sdktrace.WithSpanProcessor(recorder))
+	previous := otel.GetTracerProvider()
+	otel.SetTracerProvider(provider)
+	t.Cleanup(func() {
+		otel.SetTracerProvider(previous)
+		_ = provider.Shutdown(context.Background())
+	})
+	router := gin.New()
+	router.Use(DataOperationMiddleware())
+	router.GET("/api/v1/sources/:id", func(c *gin.Context) {
+		c.AbortWithStatus(http.StatusForbidden)
+	})
+	request := httptest.NewRequest(http.MethodGet, "/api/v1/sources/"+privatePath, nil)
+	response := httptest.NewRecorder()
+	router.ServeHTTP(response, request)
+	if response.Code != http.StatusForbidden {
+		t.Fatalf("guard status = %d, want %d", response.Code, http.StatusForbidden)
+	}
+	var root sdktrace.ReadOnlySpan
+	for _, span := range recorder.Ended() {
+		if span.InstrumentationScope().Name == dataInstrumentationScope && span.Name() == "bff.data.operation" {
+			root = span
+		}
+	}
+	if root == nil {
+		t.Fatalf("mapped pre-handler guard reject was not recorded: %+v", recorder.Ended())
+	}
+	attrs := map[string]string{}
+	for _, attr := range root.Attributes() {
+		attrs[string(attr.Key)] = attr.Value.AsString()
+	}
+	if attrs["bff.operation"] != "source.read" || attrs["bff.outcome"] != "rejected" {
+		t.Fatalf("root attributes = %#v", attrs)
+	}
+	if strings.Contains(root.Name(), privatePath) || strings.Contains(strings.Join(attrsToStrings(root.Attributes()), " "), privatePath) {
+		t.Fatalf("raw route path reached data span: %+v", root)
+	}
+}
+
+func TestDataScopeSDKExportDropsPrivateAttributesEventsAndStatusText(t *testing.T) {
+	const canary = "PRIVATE_DATA_SDK_CANARY"
+	var output strings.Builder
+	provider, err := newTraceProvider(&output, "lwc-data-test", "revision-test")
+	if err != nil {
+		t.Fatal(err)
+	}
+	ctx, span := provider.Tracer(dataInstrumentationScope).Start(context.Background(), "bff.data.operation",
+		trace.WithAttributes(
+			attribute.String("bff.operation", "source.list"),
+			attribute.String("bff.outcome", "success"),
+			attribute.Int64("bff.count.items", 3),
+			attribute.String("raw.path", canary),
+		),
+	)
+	_ = ctx
+	span.AddEvent(canary, trace.WithAttributes(attribute.String("body", canary)))
+	span.SetStatus(codes.Error, canary)
+	span.End()
+	if err := provider.ForceFlush(context.Background()); err != nil {
+		t.Fatal(err)
+	}
+	serialized := output.String()
+	if strings.Contains(serialized, canary) || strings.Contains(serialized, "raw.path") {
+		t.Fatalf("unsafe data-scope payload reached exporter: %s", serialized)
+	}
+	for _, safe := range []string{`"Name":"bff.data.operation"`, `"bff.operation"`, `"source.list"`, `"bff.outcome"`, `"bff.count.items"`} {
+		if !strings.Contains(serialized, safe) {
+			t.Fatalf("allowlisted data detail %q missing from exporter: %s", safe, serialized)
+		}
+	}
+	if strings.Contains(serialized, `"Description":"`+canary) {
+		t.Fatalf("raw status description reached exporter: %s", serialized)
+	}
+}
+
+func attrsToStrings(attrs []attribute.KeyValue) []string {
+	values := make([]string, 0, len(attrs))
+	for _, attr := range attrs {
+		values = append(values, attr.Value.AsString())
+	}
+	return values
+}
+
 func TestAuthMiddlewareCapturesPreGuardRejectWithoutPathData(t *testing.T) {
 	const projectID = "PRIVATE_PROJECT_ID_CANARY"
 	gin.SetMode(gin.TestMode)

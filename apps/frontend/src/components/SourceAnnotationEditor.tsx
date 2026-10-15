@@ -4,6 +4,7 @@ import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import { ApiError, getSourceAnnotation, updateSourceAnnotation, type SourceAnnotation } from '@/lib/api';
 import { useT } from '@/lib/i18n';
 import { annotationClearDecision, annotationDirtyMetadata, annotationErrorKey, annotationLifecycleKey, annotationLoadDecision, annotationSaveDecision, createAnnotationRequestGate, isAnnotationDirty } from '@/lib/source-annotation';
+import { useDiagnosticIdCopy } from './States';
 import { useWorkspace } from './WorkspaceProvider';
 import { useNavigationBlocker } from './NavigationBlocker';
 import { Surface } from './ui/Surface';
@@ -19,8 +20,13 @@ export function SourceAnnotationEditor({ sourceId, onSaved }: { sourceId: string
   const [saving, setSaving] = useState(false);
   const [disabledReason, setDisabledReason] = useState<'readOnly' | 'unavailable' | 'locked' | null>(null);
   const [error, setError] = useState<'loadFailed' | 'saveFailed' | null>(null);
+  const [diagnosticIssue, setDiagnosticIssue] = useState<{ diagnosticId: string } | null>(null);
   const [conflict, setConflict] = useState(false);
   const requestGate = useRef(createAnnotationRequestGate());
+  const { copyDiagnosticId, diagnosticIdCopied } = useDiagnosticIdCopy(
+    diagnosticIssue,
+    diagnosticIssue?.diagnosticId,
+  );
 
   const load = useCallback(async () => {
     const request = requestGate.current.begin();
@@ -28,6 +34,7 @@ export function SourceAnnotationEditor({ sourceId, onSaved }: { sourceId: string
     setLoading(true);
     setSaving(false);
     setError(null);
+    setDiagnosticIssue(null);
     setConflict(false);
     setDisabledReason(null);
     if (annotationLoadDecision(isDemoSession) === 'skip') {
@@ -40,6 +47,8 @@ export function SourceAnnotationEditor({ sourceId, onSaved }: { sourceId: string
       setState({ ...annotation, draft: annotation.body });
     } catch (cause) {
       if (!requestGate.current.isCurrent(request)) return;
+      const diagnosticId = cause instanceof ApiError ? cause.diagnosticId : undefined;
+      setDiagnosticIssue(diagnosticId ? { diagnosticId } : null);
       const reason = cause instanceof ApiError ? annotationErrorKey(cause.status) : null;
       if (reason) {
         setDisabledReason(reason);
@@ -77,6 +86,7 @@ export function SourceAnnotationEditor({ sourceId, onSaved }: { sourceId: string
     const request = requestGate.current.begin();
     setSaving(true);
     setError(null);
+    setDiagnosticIssue(null);
     setConflict(false);
     try {
       const annotation = await updateSourceAnnotation(sourceId, body, state.expectedGeneration);
@@ -87,6 +97,8 @@ export function SourceAnnotationEditor({ sourceId, onSaved }: { sourceId: string
       onSaved?.();
     } catch (cause) {
       if (!requestGate.current.isCurrent(request)) return;
+      const diagnosticId = cause instanceof ApiError ? cause.diagnosticId : undefined;
+      setDiagnosticIssue(diagnosticId ? { diagnosticId } : null);
       if (cause instanceof ApiError && cause.status === 412) {
         setConflict(true);
       } else if (cause instanceof ApiError && annotationErrorKey(cause.status)) {
@@ -122,6 +134,19 @@ export function SourceAnnotationEditor({ sourceId, onSaved }: { sourceId: string
         </div>
       ) : null}
       {conflict ? <div role="alert" className="mt-3 flex flex-wrap items-center gap-3 text-sm text-amber-100"><span>{t('Annotation.conflict')}</span><button type="button" onClick={() => void load()} className="underline">{t('Annotation.reload')}</button></div> : null}
+      {diagnosticIssue ? (
+        <div className="mt-3 flex flex-wrap items-center gap-3 text-sm text-red-200">
+          <span>{t('QueryErrors.diagnosticId')}</span>
+          <code className="select-all rounded bg-black/20 px-2 py-1">{diagnosticIssue.diagnosticId}</code>
+          <button
+            type="button"
+            className="min-h-11 rounded border border-red-100/20 px-3 text-xs hover:bg-white/10"
+            onClick={() => { void copyDiagnosticId(); }}
+          >
+            {diagnosticIdCopied ? t('QueryErrors.diagnosticIdCopied') : t('QueryErrors.copyDiagnosticId')}
+          </button>
+        </div>
+      ) : null}
       {state && !disabledReason && !isDemoSession ? (
         <>
           <label htmlFor="source-annotation" className="mt-4 block text-sm font-medium text-zinc-200">{t('Annotation.label')}</label>

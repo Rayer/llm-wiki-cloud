@@ -12,6 +12,7 @@ import (
 
 	"cloud.google.com/go/firestore"
 	"github.com/gin-gonic/gin"
+	"github.com/rayer/llm-wiki-bff/internal/observability"
 	"google.golang.org/api/iterator"
 	"google.golang.org/grpc/codes"
 	"google.golang.org/grpc/status"
@@ -193,13 +194,17 @@ func projectFromFirestoreDocument(userID, docID string, data map[string]interfac
 // Returns 400 if the header is missing or invalid.
 func ProjectMiddleware() gin.HandlerFunc {
 	return func(c *gin.Context) {
+		phaseCtx, authorizeSpan := observability.StartDataPhase(c.Request.Context(), "authorize")
+		c.Request = c.Request.WithContext(phaseCtx)
 		project := strings.TrimSpace(c.GetHeader("X-Project-ID"))
 		if !ValidPathSegment(project) {
+			observability.FinishDataSpan(authorizeSpan, "rejected")
 			c.AbortWithStatusJSON(http.StatusBadRequest, gin.H{"error": "invalid X-Project-ID header"})
 			return
 		}
 
 		c.Set("projectID", project)
+		observability.FinishDataSpan(authorizeSpan, "success")
 		c.Next()
 	}
 }

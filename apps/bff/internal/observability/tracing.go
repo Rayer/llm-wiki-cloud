@@ -77,6 +77,7 @@ const workerInstrumentationScope = "llm-wiki-worker/pipeline"
 const authInstrumentationScope = "llm-wiki-auth/operations"
 const profileInstrumentationScope = "llm-wiki-bff/profile"
 const exportInstrumentationScope = "llm-wiki-export/operations"
+const dataInstrumentationScope = "llm-wiki-bff/data"
 
 var authSpanNames = stringSet(
 	"auth.request", "auth.google.token_exchange", "auth.google.token_decode", "auth.google.jwks_fetch",
@@ -854,6 +855,10 @@ func (p querySpanExportProcessor) OnStart(ctx context.Context, span sdktrace.Rea
 
 func (p querySpanExportProcessor) OnEnd(span sdktrace.ReadOnlySpan) {
 	if allowedSpan(span.InstrumentationScope().Name, span.Name()) {
+		if span.InstrumentationScope().Name == dataInstrumentationScope {
+			p.next.OnEnd(dataSafeSpan{ReadOnlySpan: span})
+			return
+		}
 		p.next.OnEnd(span)
 	}
 }
@@ -868,7 +873,8 @@ func (p querySpanExportProcessor) ForceFlush(ctx context.Context) error {
 
 func allowedInstrumentationScope(name string) bool {
 	return name == queryInstrumentationScope || name == pipelineInstrumentationScope || name == workerInstrumentationScope ||
-		name == authInstrumentationScope || name == profileInstrumentationScope || name == exportInstrumentationScope
+		name == authInstrumentationScope || name == profileInstrumentationScope || name == exportInstrumentationScope ||
+		name == dataInstrumentationScope
 }
 
 func allowedSpan(scope, name string) bool {
@@ -881,6 +887,9 @@ func allowedSpan(scope, name string) bool {
 		return ok
 	case exportInstrumentationScope:
 		_, ok := exportSpanNames[name]
+		return ok
+	case dataInstrumentationScope:
+		_, ok := dataSpanNames[name]
 		return ok
 	default:
 		return allowedInstrumentationScope(scope)

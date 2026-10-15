@@ -7,6 +7,7 @@ import remarkGfm from 'remark-gfm';
 import type { Content, PhrasingContent, Root, Text } from 'mdast';
 import {
   citationPathSegment,
+  ApiError,
   getConcept,
   getConcepts,
   getSource,
@@ -22,7 +23,7 @@ import {
 import { useT } from '@/lib/i18n';
 import { getExactRawCitationRange } from '@/lib/markdown-citations';
 import { resolveWikilinksInMarkdown } from '@/lib/markdown-inline';
-import { EmptyState, ErrorState, LoadingState } from './States';
+import { EmptyState, ErrorState, LoadingState, useDiagnosticIdCopy } from './States';
 import { useWorkspace } from './WorkspaceProvider';
 import { Badge } from './ui/Badge';
 import { Surface } from './ui/Surface';
@@ -58,6 +59,7 @@ type ModalEntry = {
   lookup: string;
   label: string;
   error: string;
+  diagnosticId?: string;
 };
 type SearchMode = 'wiki' | 'full';
 type SearchError = { messageKey: string; diagnosticId?: string };
@@ -154,7 +156,7 @@ function entryDetailHref(entry: ModalEntry): string | null {
 
 export function HomeClient() {
   const { t } = useT();
-  const { currentProject } = useWorkspace();
+  const { currentProject, token } = useWorkspace();
   const [initialSearch] = useState(() => readSearchParams());
   const [query, setQuery] = useState(initialSearch.q);
   const [mode, setMode] = useState<SearchMode>(initialSearch.mode);
@@ -171,8 +173,16 @@ export function HomeClient() {
   const [diagnosticIdCopied, setDiagnosticIdCopied] = useState(false);
   const [modal, setModal] = useState<ModalEntry | null>(null);
   const [modalLoading, setModalLoading] = useState(false);
+  const { copyDiagnosticId: copyCitationDiagnosticId, diagnosticIdCopied: citationDiagnosticIdCopied } =
+    useDiagnosticIdCopy(modal, modal?.diagnosticId);
   const citationRequestId = useRef(0);
   const searchRequestId = useRef(0);
+  const searchErrorRef = useRef(error);
+  const identityRef = useRef({ projectId: currentProject?.id, token });
+  useEffect(() => {
+    searchErrorRef.current = error;
+    identityRef.current = { projectId: currentProject?.id, token };
+  }, [currentProject?.id, error, token]);
   const previousProjectIdRef = useRef<string | undefined>(currentProject?.id);
   const sampledProjectIdRef = useRef<string | undefined>(undefined);
   const hasSampledQueriesRef = useRef(false);
@@ -324,10 +334,24 @@ export function HomeClient() {
   const copyDiagnosticId = async () => {
     const diagnosticId = error?.diagnosticId;
     if (!diagnosticId || !navigator.clipboard?.writeText) return;
+    const requestId = searchRequestId.current;
+    const identity = identityRef.current;
     try {
       await navigator.clipboard.writeText(diagnosticId);
+      if (
+        requestId !== searchRequestId.current
+        || identity.projectId !== identityRef.current.projectId
+        || identity.token !== identityRef.current.token
+        || searchErrorRef.current?.diagnosticId !== diagnosticId
+      ) return;
       setDiagnosticIdCopied(true);
     } catch {
+      if (
+        requestId !== searchRequestId.current
+        || identity.projectId !== identityRef.current.projectId
+        || identity.token !== identityRef.current.token
+        || searchErrorRef.current?.diagnosticId !== diagnosticId
+      ) return;
       setDiagnosticIdCopied(false);
     }
   };
@@ -402,7 +426,11 @@ export function HomeClient() {
       const message = err instanceof Error && err.message.trim()
         ? err.message
         : t('Detail.citationLoadFailed');
-      setModal((current) => (current ? { ...current, error: message } : null));
+      setModal((current) => (current ? {
+        ...current,
+        error: message,
+        diagnosticId: err instanceof ApiError ? err.diagnosticId : undefined,
+      } : null));
     } finally {
       if (requestId === citationRequestId.current) {
         setModalLoading(false);
@@ -722,6 +750,19 @@ export function HomeClient() {
             ) : modal?.error ? (
               <div className="rounded-md border border-amber-300/30 bg-amber-500/10 p-4">
                 <p role="alert" className="text-sm text-amber-100">{modal.error}</p>
+                {modal.diagnosticId ? (
+                  <div className="mt-3 flex flex-wrap items-center gap-3 text-sm text-amber-100">
+                    <span>{t('QueryErrors.diagnosticId')}</span>
+                    <code className="select-all rounded bg-black/20 px-2 py-1">{modal.diagnosticId}</code>
+                    <button
+                      type="button"
+                      className="min-h-11 rounded border border-amber-100/20 px-3 text-xs hover:bg-white/10"
+                      onClick={() => { void copyCitationDiagnosticId(); }}
+                    >
+                      {citationDiagnosticIdCopied ? t('QueryErrors.diagnosticIdCopied') : t('QueryErrors.copyDiagnosticId')}
+                    </button>
+                  </div>
+                ) : null}
                 <button
                   type="button"
                   className="mt-3 rounded-md border border-amber-300/40 px-3 py-2 text-sm text-amber-100"

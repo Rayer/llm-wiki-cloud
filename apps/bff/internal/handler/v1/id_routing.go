@@ -12,6 +12,7 @@ import (
 	"cloud.google.com/go/storage"
 	"github.com/gin-gonic/gin"
 	"github.com/rayer/llm-wiki-bff/internal/handler"
+	"github.com/rayer/llm-wiki-bff/internal/observability"
 	store "github.com/rayer/llm-wiki-bff/internal/storage"
 	"github.com/rayer/llm-wiki-bff/internal/wikiindex"
 )
@@ -212,64 +213,83 @@ func (h *Handler) handleIDRoutedPage(c *gin.Context, gcsClient store.Store, curr
 		return false
 	}
 
-	dual, err := h.getIDRoutingMap(c.Request.Context(), gcsClient)
+	loadCtx, loadSpan := observability.StartDataPhase(c.Request.Context(), "load")
+	dual, err := h.getIDRoutingMap(loadCtx, gcsClient)
 	if err != nil {
+		observability.FinishDataSpan(loadSpan, observability.DataErrorOutcome(err))
 		status := http.StatusInternalServerError
 		message := "generated data unavailable"
 		if errors.Is(err, errIDMapNotFound) {
 			status = http.StatusNotFound
 			message = "id map not found"
 		}
-		c.JSON(status, handler.ErrorResponse{Error: message})
+		observability.WriteDataJSON(c, status, handler.ErrorResponse{Error: message})
 		return true
 	}
+	observability.FinishDataSpan(loadSpan, "success")
 
+	_, validateSpan := observability.StartDataPhase(c.Request.Context(), "validate")
 	id, _, _ := idFromPathValue(idSlug)
 	entry, ok := dual.byID[id]
 	if !ok {
 		if targetID, redirected := dual.idRedirect[id]; redirected {
 			if target, targetExists := dual.byID[targetID]; targetExists {
+				observability.FinishDataSpan(validateSpan, "redirected")
+				observability.SetDataOperationOutcome(c.Request.Context(), "redirected")
 				c.Redirect(idRouteRedirectStatus, requestRelativeIDRoute(c, "/"+routePrefix(target.Type)+"/"+url.PathEscape(entryIDSlug(target))))
 				return true
 			}
 		}
-		c.JSON(http.StatusNotFound, handler.ErrorResponse{Error: "id not found: " + id})
+		observability.FinishDataSpan(validateSpan, "rejected")
+		observability.WriteDataJSON(c, http.StatusNotFound, handler.ErrorResponse{Error: "id not found: " + id})
 		return true
 	}
 	if target, ok := canonicalIDRoute(currentType, idSlug, dual); ok {
+		observability.FinishDataSpan(validateSpan, "redirected")
+		observability.SetDataOperationOutcome(c.Request.Context(), "redirected")
 		c.Redirect(idRouteRedirectStatus, requestRelativeIDRoute(c, target))
 		return true
 	}
+	observability.FinishDataSpan(validateSpan, "success")
 
 	category := routePrefix(entry.Type)
-	page, data, err := gcsClient.GetPage(c.Request.Context(), entry.Slug, category)
+	readCtx, readSpan := observability.StartDataPhase(c.Request.Context(), "read")
+	page, data, err := gcsClient.GetPage(readCtx, entry.Slug, category)
 	if err != nil {
+		observability.FinishDataSpan(readSpan, observability.DataErrorOutcome(err))
 		writeGeneratedReadError(c, err, entry.Type+" not found: "+entry.Slug)
 		return true
 	}
+	observability.FinishDataSpan(readSpan, "success")
 	data = []byte(rewriteWikilinks(string(data), dual))
+	responseCtx, responseSpan := observability.StartDataPhase(c.Request.Context(), "response")
+	c.Request = c.Request.WithContext(responseCtx)
 
 	if entry.Type == "source" {
 		page.ID = entry.ID
 		response, err := h.sourceDetailResponse(c, gcsClient, *page, data)
 		if err != nil {
+			observability.SetDataOperationOutcome(c.Request.Context(), "response_failure")
 			if isFrontmatterSerializeError(err) {
 				writeFrontmatterSerializeError(c, err)
+				observability.FinishDataSpan(responseSpan, "response_failure")
 				return true
 			}
-			c.JSON(http.StatusInternalServerError, handler.ErrorResponse{Error: generatedDataUnavailableMessage})
+			observability.WriteDataFailureJSONInSpan(c, responseSpan, http.StatusInternalServerError, handler.ErrorResponse{Error: generatedDataUnavailableMessage})
 			return true
 		}
-		writeJSON(c, http.StatusOK, response)
+		writeJSONInDataResponse(c, responseSpan, http.StatusOK, response)
 		return true
 	}
 
 	frontmatter, body, err := parseFrontmatterJSON(string(data))
 	if err != nil {
+		observability.SetDataOperationOutcome(c.Request.Context(), "response_failure")
 		writeFrontmatterSerializeError(c, err)
+		observability.FinishDataSpan(responseSpan, "response_failure")
 		return true
 	}
-	writeJSON(c, http.StatusOK, handler.ConceptDetailResponse{
+	writeJSONInDataResponse(c, responseSpan, http.StatusOK, handler.ConceptDetailResponse{
 		ID:          entry.ID,
 		Slug:        entry.Slug,
 		Title:       entry.Slug,

@@ -2,50 +2,51 @@
 
 import { useEffect, useMemo, useState } from 'react';
 import { EntryCard } from './EntryCard';
-import { EmptyState, ErrorState, LoadingState } from './States';
+import { EmptyState, ErrorState, LoadingState, useDiagnosticIdCopy } from './States';
 import { useWorkspace } from './WorkspaceProvider';
-import type { WikiEntry } from '@/lib/api';
+import { ApiError, type WikiEntry } from '@/lib/api';
 import { useT } from '@/lib/i18n';
 
 // Client-side cache: avoids re-fetching on every navigation.
 // Cleared on page refresh; BFF remains stateless.
 const clientCache = new Map<string, WikiEntry[]>();
 
-export function ListClient({
-  title,
-  description,
-  load,
-  basePath,
-  entryType,
-}: {
+type ListError = { message: string; diagnosticId?: string };
+
+type ListClientProps = {
   title: string;
   description: string;
   load: () => Promise<WikiEntry[]>;
   basePath: string;
   entryType?: 'source' | 'concept';
-}) {
+};
+
+export function ListClient(props: ListClientProps) {
+  const { currentProject, token } = useWorkspace();
+  const identityKey = JSON.stringify([currentProject?.id ?? 'no-project', token, props.basePath]);
+  return <ListClientSession key={identityKey} {...props} />;
+}
+
+function ListClientSession({
+  title,
+  description,
+  load,
+  basePath,
+  entryType,
+}: ListClientProps) {
   const { t } = useT();
   const { currentProject } = useWorkspace();
   const cacheKey = `${currentProject?.id ?? 'no-project'}:${basePath}`;
-  const [entries, setEntries] = useState<WikiEntry[]>(clientCache.get(cacheKey) ?? []);
-  const [loading, setLoading] = useState(!clientCache.has(cacheKey));
-  const [error, setError] = useState('');
+  const [entries, setEntries] = useState<WikiEntry[]>(() => clientCache.get(cacheKey) ?? []);
+  const [loading, setLoading] = useState(() => !clientCache.has(cacheKey));
+  const [error, setError] = useState<ListError | null>(null);
   const [search, setSearch] = useState('');
+  const { copyDiagnosticId, diagnosticIdCopied } = useDiagnosticIdCopy(error, error?.diagnosticId);
 
   useEffect(() => {
     let ignore = false;
     const cachedEntries = clientCache.get(cacheKey);
-    if (cachedEntries) {
-      // eslint-disable-next-line react-hooks/set-state-in-effect -- hydrate cached list on project/path change
-      setEntries(cachedEntries);
-      setLoading(false);
-      setError('');
-      return;
-    }
-
-    setEntries([]);
-    setLoading(true);
-    setError('');
+    if (cachedEntries) return () => { ignore = true; };
     load()
       .then((data) => {
         if (ignore) return;
@@ -53,20 +54,25 @@ export function ListClient({
         if (data.length === 0) clientCache.delete(cacheKey);  // don't cache empty
         else clientCache.set(cacheKey, data);
         setEntries(data);
+        setError(null);
       })
-      .catch((err: Error) => {
+      .catch((cause: unknown) => {
+        const err = cause instanceof Error ? cause : new Error(String(cause));
         console.error(`[ListClient] ${basePath} failed:`, err);
         clientCache.delete(cacheKey);  // clear on error
-        if (!ignore) setError(err.message);
+        if (!ignore) {
+          setError({
+            message: err.message,
+            diagnosticId: cause instanceof ApiError ? cause.diagnosticId : undefined,
+          });
+        }
       })
       .finally(() => {
         if (!ignore) setLoading(false);
       });
 
-    return () => {
-      ignore = true;
-    };
-  }, [load, basePath, cacheKey, currentProject]);
+    return () => { ignore = true; };
+  }, [load, basePath, cacheKey]);
 
   const filtered = useMemo(() => {
     const q = search.trim().toLowerCase();
@@ -114,7 +120,17 @@ export function ListClient({
       </div>
 
       {loading ? <LoadingState /> : null}
-      {error ? <ErrorState message={error} /> : null}
+      {error ? (
+        <ErrorState
+          message={error.message}
+          diagnosticId={error.diagnosticId}
+          diagnosticIdLabel={t('QueryErrors.diagnosticId')}
+          copyDiagnosticIdLabel={t('QueryErrors.copyDiagnosticId')}
+          diagnosticIdCopiedLabel={t('QueryErrors.diagnosticIdCopied')}
+          diagnosticIdCopied={diagnosticIdCopied}
+          onCopyDiagnosticId={copyDiagnosticId}
+        />
+      ) : null}
       {!loading && !error && filtered.length === 0 ? (
         <EmptyState message={emptyMessage} />
       ) : null}

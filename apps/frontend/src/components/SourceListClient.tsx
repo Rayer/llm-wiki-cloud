@@ -2,11 +2,11 @@
 
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import { Eye, X } from 'lucide-react';
-import { getRawFilePreview, getSources, type SourceListItem } from '@/lib/api';
+import { ApiError, getRawFilePreview, getSources, type SourceListItem } from '@/lib/api';
 import { useT } from '@/lib/i18n';
 import { Badge } from './ui/Badge';
 import { Surface } from './ui/Surface';
-import { EmptyState, ErrorState, LoadingState } from './States';
+import { EmptyState, ErrorState, LoadingState, useDiagnosticIdCopy } from './States';
 import { useWorkspace } from './WorkspaceProvider';
 import { NavigationLink } from './NavigationBlocker';
 import { rawFileNameFromSource } from '@/lib/raw-file-name';
@@ -19,55 +19,82 @@ const lifecycleVariant: Record<SourceListItem['lifecycle'], 'muted' | 'published
   error: 'draft',
 };
 
+type SourceListError = { message: string; diagnosticId?: string };
+type PreviewError = SourceListError & { path: string };
+
 export function SourceListClient() {
+  const { currentProject, token } = useWorkspace();
+  const identityKey = JSON.stringify([currentProject?.id ?? 'no-project', token]);
+  return <SourceListSession key={identityKey} />;
+}
+
+function SourceListSession() {
   const { t } = useT();
-  const { currentProject } = useWorkspace();
+  const { currentProject, token } = useWorkspace();
   const [sources, setSources] = useState<SourceListItem[]>([]);
   const [loading, setLoading] = useState(true);
-  const [error, setError] = useState('');
+  const [error, setError] = useState<SourceListError | null>(null);
   const [search, setSearch] = useState('');
   const [preview, setPreview] = useState<{ path: string; content: string } | null>(null);
   const [previewLoading, setPreviewLoading] = useState(false);
-  const [previewError, setPreviewError] = useState('');
+  const [previewError, setPreviewError] = useState<PreviewError | null>(null);
   const previewTriggerRef = useRef<HTMLButtonElement | null>(null);
   const closeButtonRef = useRef<HTMLButtonElement | null>(null);
+  const previewRequestRef = useRef(0);
+  const { copyDiagnosticId, diagnosticIdCopied } = useDiagnosticIdCopy(error, error?.diagnosticId);
+  const { copyDiagnosticId: copyPreviewDiagnosticId, diagnosticIdCopied: previewDiagnosticIdCopied } =
+    useDiagnosticIdCopy(previewError, previewError?.diagnosticId);
 
   useEffect(() => {
     let cancelled = false;
-    void Promise.resolve()
-      .then(() => {
-        setLoading(true);
-        setError('');
-        return getSources();
-      })
+    getSources()
       .then((data) => {
-        if (!cancelled) setSources(data);
+        if (cancelled) return;
+        setSources(data);
+        setError(null);
       })
-      .catch((cause: Error) => {
-        if (!cancelled) setError(cause.message);
+      .catch((cause: unknown) => {
+        if (!cancelled) setError({
+          message: cause instanceof Error ? cause.message : String(cause),
+          diagnosticId: cause instanceof ApiError ? cause.diagnosticId : undefined,
+        });
       })
       .finally(() => {
         if (!cancelled) setLoading(false);
       });
-    return () => { cancelled = true; };
-  }, [currentProject]);
+    return () => {
+      cancelled = true;
+      previewRequestRef.current += 1;
+    };
+  }, [currentProject?.id, token]);
 
   const openRawPreview = useCallback(async (rawPath: string) => {
+    const request = ++previewRequestRef.current;
     setPreview({ path: rawPath, content: '' });
     setPreviewLoading(true);
-    setPreviewError('');
+    setPreviewError(null);
     try {
       const content = await getRawFilePreview(rawFileNameFromSource(rawPath));
-      setPreview((current) => current?.path === rawPath ? { ...current, content } : current);
+      if (previewRequestRef.current === request) {
+        setPreview((current) => current?.path === rawPath ? { ...current, content } : current);
+      }
     } catch (cause) {
-      setPreviewError(cause instanceof Error ? cause.message : t('Raw.loadPreviewFailed'));
+      if (previewRequestRef.current === request) {
+        setPreviewError({
+          message: cause instanceof Error ? cause.message : t('Raw.loadPreviewFailed'),
+          diagnosticId: cause instanceof ApiError ? cause.diagnosticId : undefined,
+          path: rawPath,
+        });
+      }
     } finally {
-      setPreviewLoading(false);
+      if (previewRequestRef.current === request) setPreviewLoading(false);
     }
   }, [t]);
 
   const closePreview = useCallback(() => {
+    previewRequestRef.current += 1;
     setPreview(null);
+    setPreviewError(null);
     queueMicrotask(() => previewTriggerRef.current?.focus());
   }, []);
 
@@ -105,7 +132,17 @@ export function SourceListClient() {
       />
 
       {loading ? <LoadingState label={t('Source.loading')} /> : null}
-      {error ? <ErrorState message={error} /> : null}
+      {error ? (
+        <ErrorState
+          message={error.message}
+          diagnosticId={error.diagnosticId}
+          diagnosticIdLabel={t('QueryErrors.diagnosticId')}
+          copyDiagnosticIdLabel={t('QueryErrors.copyDiagnosticId')}
+          diagnosticIdCopiedLabel={t('QueryErrors.diagnosticIdCopied')}
+          diagnosticIdCopied={diagnosticIdCopied}
+          onCopyDiagnosticId={copyDiagnosticId}
+        />
+      ) : null}
       {!loading && !error && filtered.length === 0 ? <EmptyState message={t('List.noSources')} /> : null}
 
       <div className="grid gap-4 md:grid-cols-2">
@@ -160,7 +197,17 @@ export function SourceListClient() {
             </div>
             <div className="min-h-0 flex-1 overflow-auto p-4">
               {previewLoading ? <LoadingState label={t('Raw.loadingPreview')} /> : null}
-              {previewError ? <ErrorState message={previewError} /> : null}
+              {previewError ? (
+                <ErrorState
+                  message={previewError.message}
+                  diagnosticId={previewError.diagnosticId}
+                  diagnosticIdLabel={t('QueryErrors.diagnosticId')}
+                  copyDiagnosticIdLabel={t('QueryErrors.copyDiagnosticId')}
+                  diagnosticIdCopiedLabel={t('QueryErrors.diagnosticIdCopied')}
+                  diagnosticIdCopied={previewDiagnosticIdCopied}
+                  onCopyDiagnosticId={copyPreviewDiagnosticId}
+                />
+              ) : null}
               {!previewLoading && !previewError ? <pre className="whitespace-pre-wrap break-words text-sm text-zinc-200">{preview.content}</pre> : null}
             </div>
           </Surface>

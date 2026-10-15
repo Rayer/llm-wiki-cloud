@@ -18,7 +18,10 @@ import {
   getAdminUsers,
   getBuildInfo,
   getConcept,
+  getConcepts,
   getSource,
+  getSources,
+  getSourceAnnotation,
   normalizeCitation,
   getRawFilePreview,
   getRawFiles,
@@ -36,6 +39,7 @@ import {
   recompileAll,
   updateAdminUserRole,
   uploadRawFile,
+  updateSourceAnnotation,
 } from '../src/lib/api.ts';
 
 const buildInfoPayload = {
@@ -258,6 +262,27 @@ test('searchWiki normalizes Problem Details, legacy errors, and unusable error b
       () => searchWiki('safe query', 'wiki'),
       (error) => error instanceof QueryApiError && error.status === 500 && error.message === 'legacy safe error',
     );
+
+    globalThis.fetch = async () => Response.json({
+      detail: 'preferred query detail',
+      error: 'lower priority error',
+      message: 'last priority message',
+      diagnostic_id: 'help_case-123',
+    }, { status: 400 });
+    await assert.rejects(
+      () => searchWiki('safe query', 'wiki'),
+      (error) => error instanceof QueryApiError
+        && error.message === 'preferred query detail'
+        && error.diagnosticId === 'help_case-123',
+    );
+
+    for (const diagnosticId of ['bad/id', 'short', 'a'.repeat(101), null, '   ']) {
+      globalThis.fetch = async () => Response.json({ error: 'safe error', diagnostic_id: diagnosticId }, { status: 400 });
+      await assert.rejects(
+        () => searchWiki('safe query', 'wiki'),
+        (error) => error instanceof QueryApiError && error.message === 'safe error' && error.diagnosticId === undefined,
+      );
+    }
 
     globalThis.fetch = async () => new Response('<html>raw proxy response</html>', { status: 502 });
     await assert.rejects(
@@ -703,6 +728,62 @@ test('getRawFilePreview reads project scoped raw text with encoded filename', as
   }
 });
 
+test('owned API error helpers preserve valid server diagnostic IDs without changing messages or calls', async () => {
+  configureApiAuth({
+    getAccessToken: () => 'jwt-token',
+    refreshAccessToken: async () => null,
+    onUnauthorized: () => undefined,
+  });
+  globalThis.window = { localStorage: { getItem: () => 'project-1' } };
+
+  const operations = [
+    { name: 'source.list', run: () => getSources(), message: 'API request failed (502)', path: '/api/v1/sources' },
+    { name: 'source.read', run: () => getSource('source-1'), message: 'API request failed (502)', path: '/api/v1/sources/source-1' },
+    { name: 'concept.list', run: () => getConcepts(), message: 'API request failed (502)', path: '/api/v1/concepts' },
+    { name: 'concept.read', run: () => getConcept('concept-1'), message: 'API request failed (502)', path: '/api/v1/concepts/concept-1' },
+    { name: 'raw.list', run: () => getRawFiles(), message: 'API request failed (502)', path: '/api/v1/raw' },
+    { name: 'raw.preview', run: () => getRawFilePreview('note.md'), message: 'Raw preview request failed (502)', path: '/api/v1/raw/note.md?preview=true' },
+    { name: 'annotation.read', run: () => getSourceAnnotation('source-1'), message: 'Annotation request failed (502)', path: '/api/v1/sources/source-1/annotation' },
+    { name: 'annotation.write', run: () => updateSourceAnnotation('source-1', 'safe body', 'generation-1'), message: 'Annotation update failed (502)', path: '/api/v1/sources/source-1/annotation' },
+  ];
+  const originalFetch = globalThis.fetch;
+  let fetchCount = 0;
+  let requestedUrl = '';
+  globalThis.fetch = async (url) => {
+    fetchCount += 1;
+    requestedUrl = String(url);
+    return Response.json({ error: 'existing safe server error', diagnostic_id: 'server_help_123' }, { status: 502 });
+  };
+
+  try {
+    for (const operation of operations) {
+      fetchCount = 0;
+      await assert.rejects(
+        () => operation.run(),
+        (error) => error instanceof ApiError
+          && error.status === 502
+          && error.message === operation.message
+          && error.diagnosticId === 'server_help_123',
+        operation.name,
+      );
+      assert.equal(fetchCount, 1, `${operation.name} must make one HTTP call`);
+      assert.equal(new URL(requestedUrl).pathname + new URL(requestedUrl).search, operation.path);
+    }
+
+    globalThis.fetch = async () => new Response('<html>proxy detail</html>', { status: 502 });
+    await assert.rejects(
+      () => getSources(),
+      (error) => error instanceof ApiError
+        && error.status === 502
+        && error.message === 'API request failed (502)'
+        && error.diagnosticId === undefined
+        && !error.message.includes('proxy detail'),
+    );
+  } finally {
+    globalThis.fetch = originalFetch;
+  }
+});
+
 test('uploadRawFile accepts created and already_exists responses', async () => {
   configureApiAuth({
     getAccessToken: () => 'jwt-token',
@@ -854,7 +935,7 @@ test('uploadRawFile normalizes network and error responses as ApiError', async (
     (xhr) => xhr.onerror(),
     (xhr) => {
       xhr.status = 409;
-      xhr.responseText = JSON.stringify({ error: 'filename already exists with different content' });
+      xhr.responseText = JSON.stringify({ error: 'filename already exists with different content', diagnostic_id: 'upload_help-123' });
       xhr.onload();
     },
   ];
@@ -879,7 +960,52 @@ test('uploadRawFile normalizes network and error responses as ApiError', async (
       () => uploadRawFile(new File(['x'], 'conflict.md')),
       (err) => err instanceof ApiError
         && err.status === 409
-        && err.message === 'filename already exists with different content',
+        && err.message === 'filename already exists with different content'
+        && err.diagnosticId === 'upload_help-123',
+    );
+  } finally {
+    globalThis.XMLHttpRequest = originalXHR;
+  }
+});
+
+test('uploadRawFile keeps endpoint message priority and drops malformed diagnostic IDs', async () => {
+  configureApiAuth({
+    getAccessToken: () => 'jwt-token',
+    refreshAccessToken: async () => null,
+    onUnauthorized: () => undefined,
+  });
+  globalThis.window = { localStorage: { getItem: () => 'project-1' } };
+  const originalXHR = globalThis.XMLHttpRequest;
+  const bodies = [
+    JSON.stringify({ error: 'upload error', detail: 'lower detail', message: 'last message', diagnostic_id: 'bad/id' }),
+    '<html>proxy error</html>',
+  ];
+  class FakeXMLHttpRequest {
+    constructor() { this.upload = {}; }
+    open() {}
+    setRequestHeader() {}
+    send() {
+      this.status = bodies.length === 2 ? 400 : 502;
+      this.responseText = bodies.shift();
+      this.onload();
+    }
+  }
+
+  try {
+    globalThis.XMLHttpRequest = FakeXMLHttpRequest;
+    await assert.rejects(
+      () => uploadRawFile(new File(['x'], 'priority.md')),
+      (error) => error instanceof ApiError
+        && error.status === 400
+        && error.message === 'upload error'
+        && error.diagnosticId === undefined,
+    );
+    await assert.rejects(
+      () => uploadRawFile(new File(['x'], 'non-json.md')),
+      (error) => error instanceof ApiError
+        && error.status === 502
+        && error.message === 'Upload failed'
+        && error.diagnosticId === undefined,
     );
   } finally {
     globalThis.XMLHttpRequest = originalXHR;

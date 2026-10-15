@@ -3,11 +3,11 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import { Download, X } from 'lucide-react';
 import { useSearchParams } from 'next/navigation';
-import { getRawFilePreview, getRawFiles, type RawFile } from '@/lib/api';
+import { ApiError, getRawFilePreview, getRawFiles, type RawFile } from '@/lib/api';
 import { Badge } from './ui/Badge';
 import { MarkdownView } from './MarkdownView';
 import { Surface } from './ui/Surface';
-import { EmptyState, ErrorState, LoadingState } from './States';
+import { EmptyState, ErrorState, LoadingState, useDiagnosticIdCopy } from './States';
 import { useWorkspace } from './WorkspaceProvider';
 import { useT } from '@/lib/i18n';
 
@@ -18,6 +18,9 @@ type RawPreview = {
   kind: RawPreviewKind;
   content: string;
 };
+
+type RawClientError = { message: string; diagnosticId?: string };
+type RawPreviewError = RawClientError & { fileName: string };
 
 function formatBytes(bytes: number) {
   if (!Number.isFinite(bytes) || bytes <= 0) return '0 B';
@@ -56,37 +59,61 @@ function sanitizeRawHtml(html: string) {
 }
 
 export function RawClient() {
+  const { currentProject, token } = useWorkspace();
+  const identityKey = JSON.stringify([currentProject?.id ?? 'no-project', token]);
+  return <RawClientSession key={identityKey} />;
+}
+
+function RawClientSession() {
   const { t } = useT();
-  const { currentProject } = useWorkspace();
+  const { currentProject, token } = useWorkspace();
   const searchParams = useSearchParams();
   const [files, setFiles] = useState<RawFile[]>([]);
   const [loading, setLoading] = useState(true);
-  const [error, setError] = useState('');
+  const [error, setError] = useState<RawClientError | null>(null);
   const [preview, setPreview] = useState<RawPreview | null>(null);
   const [previewLoading, setPreviewLoading] = useState(false);
-  const [previewError, setPreviewError] = useState('');
+  const [previewError, setPreviewError] = useState<RawPreviewError | null>(null);
   const openedQueryFileRef = useRef('');
+  const listRequestRef = useRef(0);
+  const previewRequestRef = useRef(0);
+  const downloadRequestRef = useRef(0);
+  const [downloadError, setDownloadError] = useState<RawPreviewError | null>(null);
+  const { copyDiagnosticId, diagnosticIdCopied } = useDiagnosticIdCopy(error, error?.diagnosticId);
+  const { copyDiagnosticId: copyPreviewDiagnosticId, diagnosticIdCopied: previewDiagnosticIdCopied } =
+    useDiagnosticIdCopy(previewError, previewError?.diagnosticId);
+  const { copyDiagnosticId: copyDownloadDiagnosticId, diagnosticIdCopied: downloadDiagnosticIdCopied } =
+    useDiagnosticIdCopy(downloadError, downloadError?.diagnosticId);
 
   useEffect(() => {
     let cancelled = false;
+    const request = ++listRequestRef.current;
     openedQueryFileRef.current = '';
 
     getRawFiles()
       .then((data) => {
-        if (cancelled) return;
+        if (cancelled || listRequestRef.current !== request) return;
         setFiles(data);
       })
-      .catch((err: Error) => {
-        if (!cancelled) setError(err.message);
+      .catch((cause: unknown) => {
+        if (!cancelled && listRequestRef.current === request) {
+          setError({
+            message: cause instanceof Error ? cause.message : String(cause),
+            diagnosticId: cause instanceof ApiError ? cause.diagnosticId : undefined,
+          });
+        }
       })
       .finally(() => {
-        if (!cancelled) setLoading(false);
+        if (!cancelled && listRequestRef.current === request) setLoading(false);
       });
 
     return () => {
       cancelled = true;
+      if (listRequestRef.current === request) listRequestRef.current += 1;
+      previewRequestRef.current += 1;
+      downloadRequestRef.current += 1;
     };
-  }, [currentProject]);
+  }, [currentProject?.id, token]);
 
   const sortedFiles = useMemo(
     () => [...files].sort((a, b) => a.name.localeCompare(b.name)),
@@ -96,9 +123,12 @@ export function RawClient() {
   const highlightedFile = searchParams.get('file') ?? '';
 
   const openRawPreview = useCallback(async (file: RawFile) => {
+    const request = ++previewRequestRef.current;
+    downloadRequestRef.current += 1;
     const kind = rawPreviewKind(file.name);
     setPreview({ file, kind, content: '' });
-    setPreviewError('');
+    setPreviewError(null);
+    setDownloadError(null);
 
     if (kind === 'download') {
       setPreviewLoading(false);
@@ -108,13 +138,19 @@ export function RawClient() {
     setPreviewLoading(true);
     try {
       const content = await getRawFilePreview(file.name);
-      setPreview((current) => (
-        current?.file.name === file.name ? { ...current, content } : current
-      ));
+      if (previewRequestRef.current === request) {
+        setPreview((current) => current?.file.name === file.name ? { ...current, content } : current);
+      }
     } catch (err) {
-      setPreviewError(err instanceof Error ? err.message : t('Raw.loadPreviewFailed'));
+      if (previewRequestRef.current === request) {
+        setPreviewError({
+          message: err instanceof Error ? err.message : t('Raw.loadPreviewFailed'),
+          diagnosticId: err instanceof ApiError ? err.diagnosticId : undefined,
+          fileName: file.name,
+        });
+      }
     } finally {
-      setPreviewLoading(false);
+      if (previewRequestRef.current === request) setPreviewLoading(false);
     }
   }, [t]);
 
@@ -133,31 +169,49 @@ export function RawClient() {
     return () => window.clearTimeout(timer);
   }, [error, files, highlightedFile, loading, openRawPreview]);
 
+  const closePreview = useCallback(() => {
+    previewRequestRef.current += 1;
+    downloadRequestRef.current += 1;
+    setPreview(null);
+    setPreviewError(null);
+    setDownloadError(null);
+    setPreviewLoading(false);
+  }, []);
+
   useEffect(() => {
     if (!preview) return;
     const handler = (event: KeyboardEvent) => {
-      if (event.key === 'Escape') setPreview(null);
+      if (event.key === 'Escape') closePreview();
     };
     window.addEventListener('keydown', handler);
     return () => window.removeEventListener('keydown', handler);
-  }, [preview]);
+  }, [closePreview, preview]);
 
   async function downloadRawFile() {
     if (!preview) return;
-    setPreviewError('');
+    const selectedPreview = preview;
+    const request = ++downloadRequestRef.current;
+    setDownloadError(null);
 
     try {
-      const content = preview.content || await getRawFilePreview(preview.file.name);
+      const content = selectedPreview.content || await getRawFilePreview(selectedPreview.file.name);
+      if (downloadRequestRef.current !== request) return;
       const url = window.URL.createObjectURL(new Blob([content], { type: 'text/plain;charset=utf-8' }));
       const link = document.createElement('a');
       link.href = url;
-      link.download = preview.file.name;
+      link.download = selectedPreview.file.name;
       document.body.appendChild(link);
       link.click();
       link.remove();
       window.URL.revokeObjectURL(url);
     } catch (err) {
-      setPreviewError(err instanceof Error ? err.message : t('Raw.downloadFailed'));
+      if (downloadRequestRef.current === request) {
+        setDownloadError({
+          message: err instanceof Error ? err.message : t('Raw.downloadFailed'),
+          diagnosticId: err instanceof ApiError ? err.diagnosticId : undefined,
+          fileName: selectedPreview.file.name,
+        });
+      }
     }
   }
 
@@ -173,7 +227,17 @@ export function RawClient() {
       </header>
 
       {loading ? <LoadingState label={t('Raw.loading')} /> : null}
-      {error ? <ErrorState message={error} /> : null}
+      {error ? (
+        <ErrorState
+          message={error.message}
+          diagnosticId={error.diagnosticId}
+          diagnosticIdLabel={t('QueryErrors.diagnosticId')}
+          copyDiagnosticIdLabel={t('QueryErrors.copyDiagnosticId')}
+          diagnosticIdCopiedLabel={t('QueryErrors.diagnosticIdCopied')}
+          diagnosticIdCopied={diagnosticIdCopied}
+          onCopyDiagnosticId={copyDiagnosticId}
+        />
+      ) : null}
       {!loading && !error && sortedFiles.length === 0 ? (
         <EmptyState message={t('Raw.empty')} />
       ) : null}
@@ -246,7 +310,7 @@ export function RawClient() {
       {preview ? (
         <div
           className="fixed inset-0 z-50 flex items-center justify-center bg-black/70 p-4 backdrop-blur-sm"
-          onClick={() => setPreview(null)}
+          onClick={closePreview}
         >
           <Surface
             variant="elevated"
@@ -262,7 +326,7 @@ export function RawClient() {
               </div>
               <button
                 type="button"
-                onClick={() => setPreview(null)}
+                onClick={closePreview}
                 className="rounded-md p-2 text-zinc-400 transition hover:bg-white/10 hover:text-white"
                 aria-label={t('Raw.close')}
                 title={t('Raw.close')}
@@ -273,7 +337,28 @@ export function RawClient() {
 
             <div className="min-h-0 flex-1 overflow-auto p-4">
               {previewLoading ? <LoadingState label={t('Raw.loadingPreview')} /> : null}
-              {previewError ? <ErrorState message={previewError} /> : null}
+              {previewError ? (
+                <ErrorState
+                  message={previewError.message}
+                  diagnosticId={previewError.diagnosticId}
+                  diagnosticIdLabel={t('QueryErrors.diagnosticId')}
+                  copyDiagnosticIdLabel={t('QueryErrors.copyDiagnosticId')}
+                  diagnosticIdCopiedLabel={t('QueryErrors.diagnosticIdCopied')}
+                  diagnosticIdCopied={previewDiagnosticIdCopied}
+                  onCopyDiagnosticId={copyPreviewDiagnosticId}
+                />
+              ) : null}
+              {downloadError ? (
+                <ErrorState
+                  message={downloadError.message}
+                  diagnosticId={downloadError.diagnosticId}
+                  diagnosticIdLabel={t('QueryErrors.diagnosticId')}
+                  copyDiagnosticIdLabel={t('QueryErrors.copyDiagnosticId')}
+                  diagnosticIdCopiedLabel={t('QueryErrors.diagnosticIdCopied')}
+                  diagnosticIdCopied={downloadDiagnosticIdCopied}
+                  onCopyDiagnosticId={copyDownloadDiagnosticId}
+                />
+              ) : null}
               {!previewLoading && !previewError && preview.kind === 'markdown' ? (
                 <div className="rounded-md border border-white/10 bg-black/20 p-4">
                   <MarkdownView content={preview.content} />

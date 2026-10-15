@@ -10,7 +10,9 @@ import (
 	"github.com/gin-gonic/gin"
 	"github.com/rayer/llm-wiki-bff/internal/handler"
 	"github.com/rayer/llm-wiki-bff/internal/jsonutil"
+	"github.com/rayer/llm-wiki-bff/internal/observability"
 	"github.com/rayer/llm-wiki-bff/internal/search"
+	"go.opentelemetry.io/otel/trace"
 )
 
 func buildSystemPrompt(mode string) string {
@@ -89,6 +91,17 @@ func writeJSON(c *gin.Context, status int, payload interface{}) {
 		return
 	}
 	c.Data(status, "application/json; charset=utf-8", data)
+}
+
+func writeJSONInDataResponse(c *gin.Context, responseSpan trace.Span, status int, payload interface{}) {
+	data, err := json.Marshal(payload)
+	if err != nil {
+		log.Printf("response serialization failed: %v", err)
+		observability.SetDataOperationOutcome(c.Request.Context(), "response_failure")
+		observability.WriteDataFailureJSONInSpan(c, responseSpan, http.StatusInternalServerError, handler.ErrorResponse{Error: "response serialization failed"})
+		return
+	}
+	observability.WriteDataBytesInSpan(c, responseSpan, status, "application/json; charset=utf-8", data)
 }
 
 func writeFrontmatterSerializeError(c *gin.Context, err error) {

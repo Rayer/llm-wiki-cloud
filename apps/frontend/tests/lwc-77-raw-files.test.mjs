@@ -59,9 +59,9 @@ test('raw client reloads files when the current project changes', async () => {
   );
 
   assert.match(client, /import \{ useWorkspace \} from '\.\/WorkspaceProvider';/);
-  assert.match(client, /const \{\s*currentProject\s*\} = useWorkspace\(\);/s);
+  assert.match(client, /const \{\s*currentProject\s*,\s*token\s*\} = useWorkspace\(\);/s);
   assert.match(
     client,
-    /useEffect\(\(\) => \{[\s\S]*?getRawFiles\(\)[\s\S]*?\}, \[currentProject\]\);/,
+    /useEffect\(\(\) => \{[\s\S]*?getRawFiles\(\)[\s\S]*?\}, \[currentProject\?\.id, token\]\);/,
   );
 });

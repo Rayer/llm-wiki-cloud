@@ -155,24 +155,34 @@ export type BuildInfo = {
 
 export class ApiError extends Error {
   status: number;
+  diagnosticId?: string;
 
-  constructor(message: string, status: number) {
+  constructor(message: string, status: number, diagnosticId?: string) {
     super(message);
     this.name = 'ApiError';
     this.status = status;
+    this.diagnosticId = normalizeDiagnosticId(diagnosticId);
   }
 }
 
 export class QueryApiError extends ApiError {
   code: string;
-  diagnosticId?: string;
 
   constructor(message: string, status: number, code: string, diagnosticId?: string) {
-    super(message, status);
+    super(message, status, diagnosticId);
     this.name = 'QueryApiError';
     this.code = code;
-    this.diagnosticId = diagnosticId;
   }
+}
+
+function normalizeDiagnosticId(value: unknown): string | undefined {
+  if (typeof value !== 'string') return undefined;
+  const normalized = value.trim();
+  return /^[A-Za-z0-9_-]{8,100}$/.test(normalized) ? normalized : undefined;
+}
+
+export function diagnosticIdFromPayload(payload: unknown): string | undefined {
+  return isRecord(payload) ? normalizeDiagnosticId(payload.diagnostic_id) : undefined;
 }
 
 export type ProfileRequirement = { id: string; text: string };
@@ -426,7 +436,12 @@ async function requestJson<T>(path: string, options: Pick<ApiFetchOptions, 'proj
   const response = await apiFetch(path, options);
 
   if (!response.ok) {
-    throw new ApiError(`API request failed (${response.status})`, response.status);
+    const payload: unknown = await response.json().catch(() => null);
+    throw new ApiError(
+      `API request failed (${response.status})`,
+      response.status,
+      diagnosticIdFromPayload(payload),
+    );
   }
 
   return response.json() as Promise<T>;
@@ -447,10 +462,7 @@ async function postJson<T>(path: string, body: unknown): Promise<T> {
       : undefined;
     const rawCode = isRecord(payload) ? asString(payload.code)?.trim() : undefined;
     const code = rawCode && /^[a-z][a-z0-9_]{0,63}$/.test(rawCode) ? rawCode : '';
-    const rawDiagnosticId = isRecord(payload) ? asString(payload.diagnostic_id)?.trim() : undefined;
-    const diagnosticId = rawDiagnosticId && /^[A-Za-z0-9_-]{8,100}$/.test(rawDiagnosticId)
-      ? rawDiagnosticId
-      : undefined;
+    const diagnosticId = diagnosticIdFromPayload(payload);
     const message = typeof detail === 'string' ? detail.trim() : '';
     throw new QueryApiError(
       message || 'The query could not be completed. Please try again.',
@@ -1020,7 +1032,12 @@ export async function getRawFilePreview(filename: string): Promise<string> {
   const response = await apiFetch(`/api/v1/raw/${encodeURIComponent(rawFileName)}?preview=true`);
 
   if (!response.ok) {
-    throw new ApiError(`Raw preview request failed (${response.status})`, response.status);
+    const payload: unknown = await response.json().catch(() => null);
+    throw new ApiError(
+      `Raw preview request failed (${response.status})`,
+      response.status,
+      diagnosticIdFromPayload(payload),
+    );
   }
 
   return response.text();
@@ -1041,7 +1058,12 @@ export async function getSource(slug: string) {
 export async function getSourceAnnotation(sourceId: string): Promise<SourceAnnotation> {
   const response = await apiFetch(`/api/v1/sources/${encodeURIComponent(sourceId)}/annotation`);
   if (!response.ok) {
-    throw new ApiError(`Annotation request failed (${response.status})`, response.status);
+    const payload: unknown = await response.json().catch(() => null);
+    throw new ApiError(
+      `Annotation request failed (${response.status})`,
+      response.status,
+      diagnosticIdFromPayload(payload),
+    );
   }
   return normalizeAnnotation(await response.json());
 }
@@ -1057,7 +1079,12 @@ export async function updateSourceAnnotation(
     body: JSON.stringify({ body: normalizeAnnotationBody(body), expected_generation: String(expectedGeneration) }),
   });
   if (!response.ok) {
-    throw new ApiError(`Annotation update failed (${response.status})`, response.status);
+    const payload: unknown = await response.json().catch(() => null);
+    throw new ApiError(
+      `Annotation update failed (${response.status})`,
+      response.status,
+      diagnosticIdFromPayload(payload),
+    );
   }
   return normalizeAnnotation(await response.json());
 }
@@ -1163,6 +1190,10 @@ function uploadErrorMessage(body: unknown): string {
   return asString(body.error) ?? asString(body.detail) ?? asString(body.message) ?? 'Upload failed';
 }
 
+function uploadApiError(body: unknown, status: number): ApiError {
+  return new ApiError(uploadErrorMessage(body), status, diagnosticIdFromPayload(body));
+}
+
 function sendRawUploadRequest(
   formData: FormData,
   projectId: string,
@@ -1227,22 +1258,22 @@ export async function uploadRawFile(
     const refreshed = await auth.refreshAccessToken();
     const refreshedOperation = asRefreshResult(refreshed);
     if (apiAuthConfig !== auth) return Promise.reject(
-      new ApiError(uploadErrorMessage(await response.json().catch(() => undefined)), response.status),
+      uploadApiError(await response.json().catch(() => undefined), response.status),
     );
     if (refreshed === null) {
       if ((auth.getSessionEpoch?.() ?? 0) !== requestEpoch) {
         return Promise.reject(
-          new ApiError(uploadErrorMessage(await response.json().catch(() => undefined)), response.status),
+          uploadApiError(await response.json().catch(() => undefined), response.status),
         );
       }
       auth.onUnauthorized(accessToken, requestEpoch);
     } else if (refreshedOperation === null) {
       return Promise.reject(
-        new ApiError(uploadErrorMessage(await response.json().catch(() => undefined)), response.status),
+        uploadApiError(await response.json().catch(() => undefined), response.status),
       );
     } else if ((auth.getSessionEpoch?.() ?? 0) !== refreshedOperation.epoch) {
       return Promise.reject(
-        new ApiError(uploadErrorMessage(await response.json().catch(() => undefined)), response.status),
+        uploadApiError(await response.json().catch(() => undefined), response.status),
       );
     }
     if (refreshedOperation) {
@@ -1264,7 +1295,7 @@ export async function uploadRawFile(
 
   if (!response.ok) {
     const body = await response.json().catch(() => undefined);
-    throw new ApiError(uploadErrorMessage(body), response.status);
+    throw uploadApiError(body, response.status);
   }
 
   reportProgress(100);

@@ -138,28 +138,42 @@ func readIndexJSON(ctx context.Context, reader indexReader) ([]byte, error) {
 func (h *Handler) ListProjects(c *gin.Context) {
 	userID := c.GetString("userID")
 	if strings.TrimSpace(userID) == "" {
-		c.JSON(http.StatusUnauthorized, handler.ErrorResponse{Error: "user not authenticated"})
+		observability.WriteDataJSON(c, http.StatusUnauthorized, handler.ErrorResponse{Error: "user not authenticated"})
 		return
 	}
 	if h.firestore != nil && h.firestore.Raw() != nil {
-		resp, err := h.listFirestoreProjects(c.Request.Context(), userID)
+		ctx, span := observability.StartDataPhase(c.Request.Context(), "load")
+		resp, err := h.listFirestoreProjects(ctx, userID)
 		if err != nil {
-			c.JSON(http.StatusInternalServerError, handler.ErrorResponse{Error: "projects unavailable"})
+			observability.FinishDataSpan(span, observability.DataErrorOutcome(err))
+		} else {
+			observability.SetDataCount(span, "items", int64(len(resp)))
+			observability.FinishDataSpan(span, "success")
+		}
+		if err != nil {
+			observability.WriteDataJSON(c, http.StatusInternalServerError, handler.ErrorResponse{Error: "projects unavailable"})
 			return
 		}
 		if len(resp) > 0 {
-			c.JSON(http.StatusOK, resp)
+			observability.WriteDataJSON(c, http.StatusOK, resp)
 			return
 		}
 	}
 	if h.store == nil {
-		c.JSON(http.StatusInternalServerError, handler.ErrorResponse{Error: "wiki storage is not configured"})
+		observability.WriteDataJSON(c, http.StatusInternalServerError, handler.ErrorResponse{Error: "wiki storage is not configured"})
 		return
 	}
 
-	projects, err := h.store.ListProjects(c.Request.Context(), userID)
+	ctx, span := observability.StartDataPhase(c.Request.Context(), "read")
+	projects, err := h.store.ListProjects(ctx, userID)
 	if err != nil {
-		c.JSON(http.StatusInternalServerError, handler.ErrorResponse{Error: "projects unavailable"})
+		observability.FinishDataSpan(span, observability.DataErrorOutcome(err))
+	} else {
+		observability.SetDataCount(span, "items", int64(len(projects)))
+		observability.FinishDataSpan(span, "success")
+	}
+	if err != nil {
+		observability.WriteDataJSON(c, http.StatusInternalServerError, handler.ErrorResponse{Error: "projects unavailable"})
 		return
 	}
 
@@ -188,7 +202,7 @@ func (h *Handler) ListProjects(c *gin.Context) {
 		})
 	}
 
-	c.JSON(http.StatusOK, resp)
+	observability.WriteDataJSON(c, http.StatusOK, resp)
 }
 
 // RenameProject handles PATCH /api/v1/projects/{projectID} for the owner.
@@ -521,35 +535,39 @@ func (h *Handler) ListSources(c *gin.Context) {
 
 	gcsClient, err := h.GetGCSClient(c)
 	if err != nil {
-		c.JSON(http.StatusInternalServerError, handler.ErrorResponse{Error: "generated data unavailable"})
+		observability.WriteDataJSON(c, http.StatusInternalServerError, handler.ErrorResponse{Error: "generated data unavailable"})
 		return
 	}
 
 	sources, err := listSourcesCacheFirst(ctx, gcsClient)
 	if err != nil {
-		c.JSON(http.StatusInternalServerError, handler.ErrorResponse{Error: "generated data unavailable"})
+		observability.WriteDataJSON(c, http.StatusInternalServerError, handler.ErrorResponse{Error: "generated data unavailable"})
 		return
 	}
 	if err := addWikiPageIDsFromIDMap(ctx, gcsClient, sources, "source"); err != nil {
-		c.JSON(http.StatusInternalServerError, handler.ErrorResponse{Error: "generated data unavailable"})
+		observability.WriteDataJSON(c, http.StatusInternalServerError, handler.ErrorResponse{Error: "generated data unavailable"})
 		return
 	}
 	if missingSourceRawPath(sources) {
 		key := viewCacheKey(gcsClient)
 		if err := h.hydrateLegacySourceMetadata(ctx, gcsClient, sources, key); err != nil {
-			c.JSON(http.StatusInternalServerError, handler.ErrorResponse{Error: "generated data unavailable"})
+			observability.WriteDataJSON(c, http.StatusInternalServerError, handler.ErrorResponse{Error: "generated data unavailable"})
 			return
 		}
 	}
-	if sources, _, err = sourceLifecycle(ctx, gcsClient, sources); err != nil {
-		c.JSON(http.StatusInternalServerError, handler.ErrorResponse{Error: "generated data unavailable"})
+	validateCtx, validateSpan := observability.StartDataPhase(ctx, "validate")
+	if sources, _, err = sourceLifecycle(validateCtx, gcsClient, sources); err != nil {
+		observability.FinishDataSpan(validateSpan, observability.DataErrorOutcome(err))
+		observability.WriteDataJSON(c, http.StatusInternalServerError, handler.ErrorResponse{Error: "generated data unavailable"})
 		return
 	}
+	observability.SetDataCount(validateSpan, "items", int64(len(sources)))
+	observability.FinishDataSpan(validateSpan, "success")
 	if sources == nil {
 		sources = []gcs.WikiPage{}
 	}
 
-	c.JSON(http.StatusOK, handler.SourcesListResponse{Sources: sources, Count: len(sources)})
+	observability.WriteDataJSON(c, http.StatusOK, handler.SourcesListResponse{Sources: sources, Count: len(sources)})
 }
 
 // hydrateLegacySourceMetadata shares the one-per-project fallback for id maps
@@ -557,13 +575,22 @@ func (h *Handler) ListSources(c *gin.Context) {
 // use it so a legacy project never re-scans source Markdown on every request.
 func (h *Handler) hydrateLegacySourceMetadata(ctx context.Context, reader sourceListReader, sources []gcs.WikiPage, key string) error {
 	legacy := h.listCacheGet(key).legacySourceMeta
+	_, cacheSpan := observability.StartDataPhase(ctx, "cache")
+	observability.SetDataCacheHit(cacheSpan, len(legacy) > 0)
 	if len(legacy) == 0 {
-		listed, err := reader.ListSources(ctx)
+		observability.FinishDataSpan(cacheSpan, "cache_miss")
+		readCtx, readSpan := observability.StartDataPhase(ctx, "read")
+		listed, err := reader.ListSources(readCtx)
 		if err != nil {
+			observability.FinishDataSpan(readSpan, observability.DataErrorOutcome(err))
 			return err
 		}
+		observability.SetDataCount(readSpan, "items", int64(len(listed)))
+		observability.FinishDataSpan(readSpan, "success")
 		legacy = listed
 		h.listCacheSet(key, func(cache *cachedLists) { cache.legacySourceMeta = cloneWikiPages(listed) })
+	} else {
+		observability.FinishDataSpan(cacheSpan, "cache_hit")
 	}
 	hydrateSourceMetadata(sources, legacy)
 	return nil
@@ -589,35 +616,69 @@ type conceptListReader interface {
 }
 
 func listSourcesCacheFirst(ctx context.Context, reader sourceListReader) ([]gcs.WikiPage, error) {
-	sources, err := reader.ListSourcesFromCache(ctx)
+	cacheCtx, cacheSpan := observability.StartDataPhase(ctx, "cache")
+	sources, err := reader.ListSourcesFromCache(cacheCtx)
 	if err == nil {
+		observability.SetDataCacheHit(cacheSpan, true)
+		observability.SetDataCount(cacheSpan, "items", int64(len(sources)))
+		observability.FinishDataSpan(cacheSpan, "cache_hit")
 		return sources, nil
 	}
 	if errors.Is(err, storage.ErrObjectNotExist) {
-		return reader.ListSources(ctx)
+		observability.SetDataCacheHit(cacheSpan, false)
+		observability.FinishDataSpan(cacheSpan, "cache_miss")
+		readCtx, readSpan := observability.StartDataPhase(ctx, "read")
+		sources, err := reader.ListSources(readCtx)
+		if err != nil {
+			observability.FinishDataSpan(readSpan, observability.DataErrorOutcome(err))
+			return nil, err
+		}
+		observability.SetDataCount(readSpan, "items", int64(len(sources)))
+		observability.FinishDataSpan(readSpan, "success")
+		return sources, nil
 	}
+	observability.FinishDataSpan(cacheSpan, observability.DataErrorOutcome(err))
 	return nil, err
 }
 
 func listConceptsCacheFirst(ctx context.Context, reader conceptListReader, includeDrafts bool) ([]gcs.WikiPage, error) {
-	concepts, err := reader.ListConceptsFromCache(ctx)
+	cacheCtx, cacheSpan := observability.StartDataPhase(ctx, "cache")
+	concepts, err := reader.ListConceptsFromCache(cacheCtx)
 	if err == nil {
+		observability.SetDataCacheHit(cacheSpan, true)
+		observability.SetDataCount(cacheSpan, "items", int64(len(concepts)))
+		observability.FinishDataSpan(cacheSpan, "cache_hit")
 		return concepts, nil
 	}
 	if errors.Is(err, storage.ErrObjectNotExist) {
-		return reader.ListConcepts(ctx, includeDrafts)
+		observability.SetDataCacheHit(cacheSpan, false)
+		observability.FinishDataSpan(cacheSpan, "cache_miss")
+		readCtx, readSpan := observability.StartDataPhase(ctx, "read")
+		concepts, err := reader.ListConcepts(readCtx, includeDrafts)
+		if err != nil {
+			observability.FinishDataSpan(readSpan, observability.DataErrorOutcome(err))
+			return nil, err
+		}
+		observability.SetDataCount(readSpan, "items", int64(len(concepts)))
+		observability.FinishDataSpan(readSpan, "success")
+		return concepts, nil
 	}
+	observability.FinishDataSpan(cacheSpan, observability.DataErrorOutcome(err))
 	return nil, err
 }
 
 func addWikiPageIDsFromIDMap(ctx context.Context, reader indexReader, pages []gcs.WikiPage, pageType string) error {
-	data, err := reader.ReadFile(ctx, idMapPath)
+	readCtx, readSpan := observability.StartDataPhase(ctx, "read")
+	data, err := reader.ReadFile(readCtx, idMapPath)
 	if err != nil {
 		if errors.Is(err, storage.ErrObjectNotExist) {
+			observability.FinishDataSpan(readSpan, "success")
 			return nil
 		}
+		observability.FinishDataSpan(readSpan, observability.DataErrorOutcome(err))
 		return fmt.Errorf("read id map: %w", err)
 	}
+	observability.FinishDataSpan(readSpan, "success")
 
 	source, err := wikiindex.DecodeIDMap(data)
 	if err != nil {
@@ -715,7 +776,7 @@ func mergeWikiPageIDs(pages []gcs.WikiPage, entries map[string]string) {
 func (h *Handler) GetSource(c *gin.Context) {
 	gcsClient, err := h.GetGCSClient(c)
 	if err != nil {
-		c.JSON(http.StatusInternalServerError, handler.ErrorResponse{Error: generatedDataUnavailableMessage})
+		observability.WriteDataJSON(c, http.StatusInternalServerError, handler.ErrorResponse{Error: generatedDataUnavailableMessage})
 		return
 	}
 
@@ -724,27 +785,36 @@ func (h *Handler) GetSource(c *gin.Context) {
 	if h.handleIDRoutedPage(c, gcsClient, "source", slug) {
 		return
 	}
-	page, data, err := gcsClient.GetPage(c.Request.Context(), slug, "sources")
+	readCtx, readSpan := observability.StartDataPhase(c.Request.Context(), "read")
+	page, data, err := gcsClient.GetPage(readCtx, slug, "sources")
 	if err != nil {
+		observability.FinishDataSpan(readSpan, observability.DataErrorOutcome(err))
 		writeGeneratedReadError(c, err, "source not found: "+slug)
 		return
 	}
+	observability.FinishDataSpan(readSpan, "success")
+	responseCtx, responseSpan := observability.StartDataPhase(c.Request.Context(), "response")
+	c.Request = c.Request.WithContext(responseCtx)
 	if rewritten, ok := h.rewriteMarkdownForResponse(c, gcsClient, data); ok {
 		data = rewritten
 	} else {
+		observability.FinishDataSpan(responseSpan, "response_failure")
+		observability.SetDataOperationOutcome(c.Request.Context(), "response_failure")
 		return
 	}
 
 	response, err := h.sourceDetailResponse(c, gcsClient, *page, data)
 	if err != nil {
 		if isFrontmatterSerializeError(err) {
+			observability.SetDataOperationOutcome(c.Request.Context(), "response_failure")
 			writeFrontmatterSerializeError(c, err)
+			observability.FinishDataSpan(responseSpan, "response_failure")
 			return
 		}
-		c.JSON(http.StatusInternalServerError, handler.ErrorResponse{Error: "generated data unavailable"})
+		observability.WriteDataFailureJSONInSpan(c, responseSpan, http.StatusInternalServerError, handler.ErrorResponse{Error: "generated data unavailable"})
 		return
 	}
-	writeJSON(c, http.StatusOK, response)
+	writeJSONInDataResponse(c, responseSpan, http.StatusOK, response)
 }
 
 // ListConcepts handles GET /api/v1/concepts using the request's GCS scope.
@@ -763,32 +833,37 @@ func (h *Handler) GetSource(c *gin.Context) {
 func (h *Handler) ListConcepts(c *gin.Context) {
 	ctx := c.Request.Context()
 
+	_, inputSpan := observability.StartDataPhase(ctx, "input")
 	includeDrafts, err := strconv.ParseBool(c.DefaultQuery("include_drafts", "false"))
 	if err != nil {
-		c.JSON(http.StatusBadRequest, handler.ErrorResponse{Error: "include_drafts must be a boolean"})
+		observability.FinishDataSpan(inputSpan, "rejected")
+		observability.WriteDataJSON(c, http.StatusBadRequest, handler.ErrorResponse{Error: "include_drafts must be a boolean"})
 		return
 	}
+	observability.FinishDataSpan(inputSpan, "success")
 
 	gcsClient, err := h.GetGCSClient(c)
 	if err != nil {
-		c.JSON(http.StatusInternalServerError, handler.ErrorResponse{Error: "generated data unavailable"})
+		observability.WriteDataJSON(c, http.StatusInternalServerError, handler.ErrorResponse{Error: "generated data unavailable"})
 		return
 	}
 
 	concepts, err := listConceptsCacheFirst(ctx, gcsClient, includeDrafts)
 	if err != nil {
-		c.JSON(http.StatusInternalServerError, handler.ErrorResponse{Error: "generated data unavailable"})
+		observability.WriteDataJSON(c, http.StatusInternalServerError, handler.ErrorResponse{Error: "generated data unavailable"})
 		return
 	}
 	if err := addWikiPageIDsFromIDMap(ctx, gcsClient, concepts, "concept"); err != nil {
-		c.JSON(http.StatusInternalServerError, handler.ErrorResponse{Error: "generated data unavailable"})
+		observability.WriteDataJSON(c, http.StatusInternalServerError, handler.ErrorResponse{Error: "generated data unavailable"})
 		return
 	}
 	if concepts == nil {
 		concepts = []gcs.WikiPage{}
 	}
 
-	c.JSON(http.StatusOK, handler.ConceptsListResponse{Concepts: concepts, Count: len(concepts)})
+	_, responseSpan := observability.StartDataPhase(ctx, "response")
+	observability.SetDataCount(responseSpan, "items", int64(len(concepts)))
+	observability.WriteDataJSONInSpan(c, responseSpan, http.StatusOK, handler.ConceptsListResponse{Concepts: concepts, Count: len(concepts)})
 }
 
 // GetConcept handles GET /api/v1/concepts/:slug using the request's GCS scope.
@@ -807,7 +882,7 @@ func (h *Handler) ListConcepts(c *gin.Context) {
 func (h *Handler) GetConcept(c *gin.Context) {
 	gcsClient, err := h.GetGCSClient(c)
 	if err != nil {
-		c.JSON(http.StatusInternalServerError, handler.ErrorResponse{Error: "generated data unavailable"})
+		observability.WriteDataJSON(c, http.StatusInternalServerError, handler.ErrorResponse{Error: "generated data unavailable"})
 		return
 	}
 
@@ -816,11 +891,16 @@ func (h *Handler) GetConcept(c *gin.Context) {
 	if h.handleIDRoutedPage(c, gcsClient, "concept", slug) {
 		return
 	}
-	page, data, err := gcsClient.GetPage(c.Request.Context(), slug, "concepts")
+	readCtx, readSpan := observability.StartDataPhase(c.Request.Context(), "read")
+	page, data, err := gcsClient.GetPage(readCtx, slug, "concepts")
 	if err != nil {
+		observability.FinishDataSpan(readSpan, observability.DataErrorOutcome(err))
 		writeGeneratedReadError(c, err, "concept not found: "+slug)
 		return
 	}
+	observability.FinishDataSpan(readSpan, "success")
+	responseCtx, responseSpan := observability.StartDataPhase(c.Request.Context(), "response")
+	c.Request = c.Request.WithContext(responseCtx)
 	// Set ID from id_map
 	if page.ID == "" {
 		pages := []gcs.WikiPage{*page}
@@ -830,15 +910,19 @@ func (h *Handler) GetConcept(c *gin.Context) {
 	if rewritten, ok := h.rewriteMarkdownForResponse(c, gcsClient, data); ok {
 		data = rewritten
 	} else {
+		observability.FinishDataSpan(responseSpan, "response_failure")
+		observability.SetDataOperationOutcome(c.Request.Context(), "response_failure")
 		return
 	}
 
 	frontmatter, body, err := parseFrontmatterJSON(string(data))
 	if err != nil {
+		observability.SetDataOperationOutcome(c.Request.Context(), "response_failure")
 		writeFrontmatterSerializeError(c, err)
+		observability.FinishDataSpan(responseSpan, "response_failure")
 		return
 	}
-	writeJSON(c, http.StatusOK, handler.ConceptDetailResponse{
+	writeJSONInDataResponse(c, responseSpan, http.StatusOK, handler.ConceptDetailResponse{
 		Slug:        slug,
 		ID:          page.ID,
 		Title:       slug,
@@ -864,12 +948,20 @@ func (h *Handler) GetConcept(c *gin.Context) {
 //	@Security		ProjectHeader
 //	@Router			/api/v1/import [post]
 func (h *Handler) Import(c *gin.Context) {
+	inputCtx, inputSpan := observability.StartDataPhase(c.Request.Context(), "input")
 	var req handler.ImportRequest
 	if err := c.ShouldBindJSON(&req); err != nil {
+		observability.FinishDataSpan(inputSpan, "rejected")
 		c.JSON(http.StatusBadRequest, handler.ErrorResponse{Error: "urls array is required"})
 		return
 	}
+	observability.SetDataCount(inputSpan, "items", int64(len(req.URLs)))
+	observability.FinishDataSpan(inputSpan, "success")
 
+	_, placeholderSpan := observability.StartDataPhase(inputCtx, "placeholder")
+	observability.SetDataCount(placeholderSpan, "items", int64(len(req.URLs)))
+	observability.FinishDataSpan(placeholderSpan, "placeholder")
+	observability.SetDataOperationOutcome(inputCtx, "placeholder")
 	c.JSON(http.StatusOK, handler.ImportResponse{
 		Message:  "Bookmark import — Phase 2 (not yet implemented)",
 		Received: len(req.URLs),

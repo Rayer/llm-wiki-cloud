@@ -1,4 +1,4 @@
-import { apiFetch } from './api';
+import { apiFetch, diagnosticIdFromPayload } from './api';
 
 export type ExportScope = 'raw' | 'raw-full' | 'raw-full-metadata';
 export type ExportJobStatus = 'queued' | 'running' | 'ready' | 'failed' | 'expired';
@@ -58,6 +58,7 @@ async function exportJson<T>(path: string, projectId: string, options: { method?
     throw Object.assign(new Error(message || `Export request failed (${response.status})`), {
       status: response.status,
       payload,
+      diagnosticId: diagnosticIdFromPayload(payload),
     });
   }
   return payload as T;
