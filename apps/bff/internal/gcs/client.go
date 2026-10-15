@@ -506,14 +506,17 @@ func (c *Client) ReadFileLimited(ctx context.Context, relPath string, limit int6
 		if expected > 0 {
 			object = object.Generation(expected)
 		}
+		finish := startGCSCall(ctx)
 		r, err := object.NewReader(ctx)
 		if err != nil {
+			finish(finishGCSCall(ctx, err))
 			if objectNotFound(err) {
 				return nil, store.ErrObjectNotExist
 			}
 			return nil, fmt.Errorf("read %s: %w", path, err)
 		}
 		data, readErr := io.ReadAll(io.LimitReader(r, limit))
+		finish(finishGCSCall(ctx, readErr))
 		closeErr := r.Close()
 		if readErr != nil {
 			return nil, readErr

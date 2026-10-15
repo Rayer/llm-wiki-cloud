@@ -28,9 +28,19 @@ type timedCallRecorder interface {
 	StartCallAtTimed(stage, model, reasoning, rawURL string) func(string, time.Time)
 }
 
+type contextualCallRecorder interface {
+	StartCallAtContext(context.Context, string, string, string, string) func(string, string, time.Time)
+}
+
 type recorderKey struct{}
 type stageKey struct{}
 type hostRecorderKey struct{}
+type callPurposeKey struct{}
+type callAttemptIndexKey struct{}
+
+type ContextHostCallRecorder interface {
+	StartHostCallContext(context.Context, string, string, string) func(string)
+}
 
 func WithCallRecorder(ctx context.Context, recorder CallRecorder) context.Context {
 	return context.WithValue(ctx, recorderKey{}, recorder)
@@ -52,6 +62,32 @@ func WithCallStage(ctx context.Context, stage string) context.Context {
 func CallStage(ctx context.Context) string {
 	stage, _ := ctx.Value(stageKey{}).(string)
 	return stage
+}
+
+func WithCallPurpose(ctx context.Context, purpose string) context.Context {
+	switch purpose {
+	case "expansion", "evidence_answer", "model_prior":
+		return context.WithValue(ctx, callPurposeKey{}, purpose)
+	default:
+		return ctx
+	}
+}
+
+func CallPurpose(ctx context.Context) string {
+	purpose, _ := ctx.Value(callPurposeKey{}).(string)
+	return purpose
+}
+
+func WithCallAttemptIndex(ctx context.Context, index int) context.Context {
+	if index < 0 {
+		return ctx
+	}
+	return context.WithValue(ctx, callAttemptIndexKey{}, index)
+}
+
+func CallAttemptIndex(ctx context.Context) (int, bool) {
+	index, ok := ctx.Value(callAttemptIndexKey{}).(int)
+	return index, ok
 }
 
 // Client calls the DeepSeek API (OpenAI-compatible endpoint).
@@ -209,7 +245,14 @@ func (c *Client) Chat(ctx context.Context, systemPrompt, userMessage string) (st
 func (c *Client) ChatWithMetadata(ctx context.Context, systemPrompt, userMessage string) (string, string, error) {
 	var closeCall func(string)
 	var closeCallAt func(string, time.Time)
+	var closeContextCall func(string, string, time.Time)
 	finish := func(outcome string) {
+		if closeContextCall != nil {
+			finish := closeContextCall
+			closeContextCall = nil
+			finish(outcome, outcome, time.Now())
+			return
+		}
 		if closeCallAt != nil {
 			f := closeCallAt
 			closeCallAt = nil
@@ -221,6 +264,21 @@ func (c *Client) ChatWithMetadata(ctx context.Context, systemPrompt, userMessage
 			closeCall = nil
 			f(outcome)
 		}
+	}
+	finishObserved := func(receiptOutcome, transportOutcome string, at time.Time) {
+		if closeContextCall != nil {
+			f := closeContextCall
+			closeContextCall = nil
+			f(receiptOutcome, transportOutcome, at)
+			return
+		}
+		if closeCallAt != nil {
+			f := closeCallAt
+			closeCallAt = nil
+			f(receiptOutcome, at)
+			return
+		}
+		finish(receiptOutcome)
 	}
 	defer func() { finish("success") }()
 	body := chatRequest{
@@ -258,7 +316,9 @@ func (c *Client) ChatWithMetadata(ctx context.Context, systemPrompt, userMessage
 	}
 	if recorder, ok := ctx.Value(recorderKey{}).(CallRecorder); ok {
 		stage := CallStage(ctx)
-		if timed, ok := recorder.(timedCallRecorder); ok {
+		if contextual, ok := recorder.(contextualCallRecorder); ok {
+			closeContextCall = contextual.StartCallAtContext(ctx, stage, c.model, string(c.reasoning), req.URL.String())
+		} else if timed, ok := recorder.(timedCallRecorder); ok {
 			closeCallAt = timed.StartCallAtTimed(stage, c.model, string(c.reasoning), req.URL.String())
 		} else if withURL, ok := recorder.(callURLRecorder); ok {
 			closeCall = withURL.StartCallAt(stage, c.model, string(c.reasoning), req.URL.String())
@@ -276,65 +336,33 @@ func (c *Client) ChatWithMetadata(ctx context.Context, systemPrompt, userMessage
 	respData, err := io.ReadAll(io.LimitReader(resp.Body, maxChatResponseBytes+1))
 	networkFinished := time.Now()
 	if err != nil {
-		if closeCallAt != nil {
-			f := closeCallAt
-			closeCallAt = nil
-			f(callOutcome(ctx, err), networkFinished)
-		} else {
-			finish(callOutcome(ctx, err))
-		}
+		finishObserved(callOutcome(ctx, err), callOutcome(ctx, err), networkFinished)
 		return "", "", fmt.Errorf("read response: %w", &ProviderCallError{Err: err})
 	}
 	if len(respData) > maxChatResponseBytes {
-		if closeCallAt != nil {
-			f := closeCallAt
-			closeCallAt = nil
-			f("decode_error", networkFinished)
-		} else {
-			finish("decode_error")
+		transportOutcome := "success"
+		if resp.StatusCode != http.StatusOK {
+			transportOutcome = "provider_error"
 		}
+		finishObserved("decode_error", transportOutcome, networkFinished)
 		return "", "", &ProviderCallError{Err: errors.New("provider response exceeds size limit")}
 	}
 
 	if resp.StatusCode != 200 {
-		if closeCallAt != nil {
-			f := closeCallAt
-			closeCallAt = nil
-			f("provider_error", networkFinished)
-		} else {
-			finish("provider_error")
-		}
+		finishObserved("provider_error", "provider_error", networkFinished)
 		return "", "", &ProviderCallError{Err: &HTTPStatusError{StatusCode: resp.StatusCode}}
 	}
 
 	var cr chatResponse
 	if err := json.Unmarshal(respData, &cr); err != nil {
-		if closeCallAt != nil {
-			f := closeCallAt
-			closeCallAt = nil
-			f("decode_error", networkFinished)
-		} else {
-			finish("decode_error")
-		}
+		finishObserved("decode_error", "success", networkFinished)
 		return "", "", fmt.Errorf("unmarshal: %w", &ProviderCallError{Err: err})
 	}
 	if len(cr.Choices) == 0 {
-		if closeCallAt != nil {
-			f := closeCallAt
-			closeCallAt = nil
-			f("decode_error", networkFinished)
-		} else {
-			finish("decode_error")
-		}
+		finishObserved("decode_error", "success", networkFinished)
 		return "", "", &ProviderCallError{Err: errors.New("provider response has no choices")}
 	}
-	if closeCallAt != nil {
-		f := closeCallAt
-		closeCallAt = nil
-		f("success", networkFinished)
-	} else {
-		finish("success")
-	}
+	finishObserved("success", "success", networkFinished)
 
 	return cr.Choices[0].Message.Content, cr.Model, nil
 }

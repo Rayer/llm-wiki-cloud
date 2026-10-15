@@ -13,6 +13,9 @@ import (
 	"github.com/rayer/llm-wiki-bff/internal/queryconfig"
 	"github.com/rayer/llm-wiki-bff/internal/queryquality"
 	"github.com/rayer/llm-wiki-bff/internal/storage"
+	"go.opentelemetry.io/otel"
+	"go.opentelemetry.io/otel/attribute"
+	"go.opentelemetry.io/otel/codes"
 )
 
 var ErrIdentityProviderRequired = errors.New("query runtime identity provider required")
@@ -129,17 +132,35 @@ func (e *Executor) Execute(ctx context.Context, reader cache.Reader, request que
 	if e == nil || e.resolver == nil {
 		return query.Result{}, ErrIdentityUnavailable
 	}
+	resolveCtx, resolveSpan := otel.Tracer("llm-wiki-bff/query").Start(ctx, "query.runtime.resolve")
+	finishResolve := func(err error) {
+		outcome := "success"
+		if err != nil {
+			outcome = "failure"
+			if errors.Is(err, context.Canceled) {
+				outcome = "canceled"
+			} else if errors.Is(err, context.DeadlineExceeded) {
+				outcome = "timeout"
+			}
+			resolveSpan.SetStatus(codes.Error, outcome)
+		}
+		resolveSpan.SetAttributes(attribute.String("query.outcome", outcome))
+		resolveSpan.End()
+	}
 	identityReader, ok := reader.(storage.QueryGenerationIdentityProvider)
 	if !ok || identityReader == nil {
+		finishResolve(ErrIdentityProviderRequired)
 		return query.Result{}, ErrIdentityProviderRequired
 	}
-	storageIdentity, err := identityReader.QueryGenerationIdentity(ctx)
+	storageIdentity, err := identityReader.QueryGenerationIdentity(resolveCtx)
 	if err != nil {
+		finishResolve(err)
 		return query.Result{}, fmt.Errorf("%w: %w", ErrIdentityUnavailable, err)
 	}
 	identity := queryconfig.GenerationIdentity{ProjectID: storageIdentity.ProjectID, GenerationID: storageIdentity.GenerationID, ConceptsDigest: storageIdentity.ConceptsDigest}
 	effective, err := e.resolver.Resolve(identity)
 	if err != nil {
+		finishResolve(err)
 		return query.Result{}, err
 	}
 	service, ok := e.services[effective.EffectiveConfigDigest]
@@ -147,8 +168,10 @@ func (e *Executor) Execute(ctx context.Context, reader cache.Reader, request que
 		service, ok = e.compositionServices[serviceKey(effective)]
 	}
 	if !ok {
+		finishResolve(ErrIdentityUnavailable)
 		return query.Result{}, ErrIdentityUnavailable
 	}
+	finishResolve(nil)
 	result, err := service.Execute(query.WithRuntimeConfigIdentity(ctx, effective.RuntimeConfigIdentity()), reader, request)
 	if err != nil {
 		return query.Result{}, err

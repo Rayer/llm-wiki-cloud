@@ -2,6 +2,7 @@ package v1
 
 import (
 	"bytes"
+	cloudstorage "cloud.google.com/go/storage"
 	"context"
 	"encoding/json"
 	"errors"
@@ -26,6 +27,11 @@ import (
 	"github.com/rayer/llm-wiki-bff/internal/sourcestatus"
 	"github.com/rayer/llm-wiki-bff/internal/storage"
 	"github.com/rayer/llm-wiki-bff/internal/wikiindex"
+	"go.opentelemetry.io/otel"
+	"go.opentelemetry.io/otel/attribute"
+	sdktrace "go.opentelemetry.io/otel/sdk/trace"
+	"go.opentelemetry.io/otel/sdk/trace/tracetest"
+	"google.golang.org/api/option"
 )
 
 // These object-store, evaluator, and HTTP responses are synthetic test evidence;
@@ -44,6 +50,41 @@ type profileQueryStore struct {
 	retained      map[string]*profileQueryStore
 	latest        *profileQueryStore
 	pins          []string
+}
+
+type sdkDictionaryProfileStore struct {
+	*profileQueryStore
+	bucket *cloudstorage.BucketHandle
+}
+
+func (s *sdkDictionaryProfileStore) ReadFileLimited(ctx context.Context, path string, limit int64) ([]byte, error) {
+	if path != profileartifacts.DictionaryObjectPath(s.dictionaryRef.Revision) {
+		return s.profileQueryStore.ReadFileLimited(ctx, path, limit)
+	}
+	finish := func(string) {}
+	if recorder := llm.HostCallRecorderFromContext(ctx); recorder != nil {
+		if contextual, ok := recorder.(llm.ContextHostCallRecorder); ok {
+			finish = contextual.StartHostCallContext(ctx, llm.CallStage(ctx), "https", "storage.googleapis.com")
+		} else {
+			finish = recorder.StartHostCall(llm.CallStage(ctx), "https", "storage.googleapis.com")
+		}
+	}
+	reader, err := s.bucket.Object(s.prefix + "/" + path).NewReader(ctx)
+	if err != nil {
+		finish("provider_error")
+		return nil, err
+	}
+	data, err := io.ReadAll(io.LimitReader(reader, limit))
+	if err != nil {
+		finish("provider_error")
+		_ = reader.Close()
+		return nil, err
+	}
+	finish("success")
+	if err := reader.Close(); err != nil {
+		return nil, err
+	}
+	return data, nil
 }
 
 func (s *profileQueryStore) Prefix() string    { return s.prefix }
@@ -311,6 +352,198 @@ func TestProfileQueryProductionPinnedGeneration(t *testing.T) {
 	if w.Code != 422 {
 		t.Fatalf("required status=%d body=%s", w.Code, w.Body)
 	}
+}
+
+func TestProfileCandidateVerificationSpanParentsRequestAndEndsBeforePin(t *testing.T) {
+	exporter := tracetest.NewInMemoryExporter()
+	provider := sdktrace.NewTracerProvider(sdktrace.WithSpanProcessor(sdktrace.NewSimpleSpanProcessor(exporter)))
+	previousProvider := otel.GetTracerProvider()
+	otel.SetTracerProvider(provider)
+	t.Cleanup(func() {
+		otel.SetTracerProvider(previousProvider)
+		_ = provider.Shutdown(context.Background())
+	})
+
+	transport := &profileQueryTransport{}
+	previousTransport := http.DefaultTransport
+	http.DefaultTransport = transport
+	t.Cleanup(func() { http.DefaultTransport = previousTransport })
+	generationStore, active := profileQueryFixture(t, "u/p", "G1-retained")
+	scope := &profileQueryStore{retained: map[string]*profileQueryStore{"G1-retained": generationStore}, latest: generationStore}
+	rootStore := &profileQueryRoot{scopes: map[string]*profileQueryStore{"u/p": scope}}
+	h := profileQueryHandler(t, cache.New(), rootStore, active)
+	response := profileQueryRequest(h, "u", `{"q":"coffee","mode":"wiki"}`)
+	if response.Code != http.StatusOK {
+		t.Fatalf("profile query status=%d body=%s", response.Code, response.Body)
+	}
+	spans := exporter.GetSpans()
+	root, rootOK := findSpan(spans, "query.request")
+	candidate, candidateOK := findSpan(spans, "query.profile.candidate")
+	pin, pinOK := findSpan(spans, "query.generation.pin")
+	if !rootOK || !candidateOK || !pinOK {
+		t.Fatalf("profile trace missing root/candidate/pin: %+v", spans)
+	}
+	if candidate.Parent.SpanID() != root.SpanContext.SpanID() || candidate.EndTime.After(pin.StartTime) {
+		t.Fatalf("candidate span parent/lifetime did not cover active tuple validation: root=%+v candidate=%+v pin=%+v", root, candidate, pin)
+	}
+	if got := spanStringAttribute(candidate.Attributes, "query.outcome"); got != "success" {
+		t.Fatalf("candidate validation outcome=%q, want success", got)
+	}
+	if generationStore.reads[cache.GCSPath] != 1 || h.profileRepository.(*profileQueryRepository).reads != 1 {
+		t.Fatalf("profile reads=%d candidate reads=%d, want one pinned corpus and one active tuple", generationStore.reads[cache.GCSPath], h.profileRepository.(*profileQueryRepository).reads)
+	}
+
+	exporter.Reset()
+	badStore, badActive := profileQueryFixture(t, "u/p", "G1-retained")
+	badRoot := &profileQueryRoot{scopes: map[string]*profileQueryStore{"u/p": {retained: map[string]*profileQueryStore{"G1-retained": badStore}, latest: badStore}}}
+	badHandler := profileQueryHandler(t, cache.New(), badRoot, badActive)
+	badHandler.profileRepository.(*profileQueryRepository).candidate.ContentGeneration = "wrong-generation"
+	failed := profileQueryRequest(badHandler, "u", `{"q":"coffee","mode":"wiki"}`)
+	if failed.Code != http.StatusInternalServerError {
+		t.Fatalf("mismatched active tuple status=%d body=%s", failed.Code, failed.Body)
+	}
+	spans = exporter.GetSpans()
+	candidate, candidateOK = findSpan(spans, "query.profile.candidate")
+	if !candidateOK || spanStringAttribute(candidate.Attributes, "query.outcome") != "failure" || hasSpan(spans, "query.generation.pin") {
+		t.Fatalf("mismatched active tuple did not close candidate before stopping pin: %+v", spans)
+	}
+}
+
+func TestProfileSourceInventorySpanEndsOnConceptIdentityMismatch(t *testing.T) {
+	storeFixture, active := profileQueryFixture(t, "u/p", "G1-retained")
+	var ids wikiindex.IDMap
+	if err := json.Unmarshal(storeFixture.objects["cache/id_map.json"], &ids); err != nil {
+		t.Fatal(err)
+	}
+	const stableID = "01ARZ3NDEKTSV4RRFFQ69G5FAV"
+	ids.Concept[stableID] = "wrong-slug"
+	updatedIDMap, err := json.Marshal(ids)
+	if err != nil {
+		t.Fatal(err)
+	}
+	storeFixture.objects["cache/id_map.json"] = updatedIDMap
+	storeFixture.snapshot.IDMapDigest = generation.Digest(updatedIDMap)
+	_, snapshotDigest, err := generation.EncodeSourceSnapshot(storeFixture.snapshot)
+	if err != nil {
+		t.Fatal(err)
+	}
+	storeFixture.manifest.SourceSnapshotDigest = snapshotDigest
+	for index, file := range storeFixture.manifest.Files {
+		if file.Path == "cache/id_map.json" {
+			file.Size = int64(len(updatedIDMap))
+			file.SHA256 = generation.Digest(updatedIDMap)
+			storeFixture.manifest.Files[index] = file
+		}
+	}
+
+	exporter := tracetest.NewInMemoryExporter()
+	provider := sdktrace.NewTracerProvider(sdktrace.WithSpanProcessor(sdktrace.NewSimpleSpanProcessor(exporter)))
+	previous := otel.GetTracerProvider()
+	otel.SetTracerProvider(provider)
+	t.Cleanup(func() {
+		otel.SetTracerProvider(previous)
+		_ = provider.Shutdown(context.Background())
+	})
+	ctx, root := otel.Tracer("llm-wiki-bff/query").Start(context.Background(), "query.request")
+	_, err = query.LoadProfile(ctx, cache.New(), storeFixture, storeFixture.manifest,
+		profiletags.ActiveRef{ContentGeneration: active.ContentGeneration, DictionaryRevision: active.DictionaryRevision, TagSetRevision: active.TagSetRevision, QueryRuleRevision: active.QueryRuleRevision},
+		storeFixture.dictionaryRef, []string{"r1"})
+	root.End()
+	if err == nil || err.Error() != "profile concept identity mismatch" {
+		t.Fatalf("LoadProfile() error=%v, want concept identity mismatch", err)
+	}
+	var idMapSpan, sourceSpan tracetest.SpanStub
+	for _, span := range exporter.GetSpans() {
+		if span.Name != "query.storage.read" {
+			continue
+		}
+		switch spanStringAttribute(span.Attributes, "query.object_role") {
+		case "id_map":
+			idMapSpan = span
+		case "source_inventory":
+			sourceSpan = span
+		}
+	}
+	if !idMapSpan.SpanContext.SpanID().IsValid() || !sourceSpan.SpanContext.SpanID().IsValid() {
+		t.Fatalf("identity rejection omitted read spans: %+v", exporter.GetSpans())
+	}
+	if spanStringAttribute(idMapSpan.Attributes, "query.outcome") != "success" || spanStringAttribute(sourceSpan.Attributes, "query.outcome") != "failure" || spanStringAttribute(sourceSpan.Attributes, "query.validation_reason") != "identity" {
+		t.Fatalf("identity validation span outcomes are wrong: id_map=%+v source_inventory=%+v", idMapSpan, sourceSpan)
+	}
+}
+
+type invalidDictionaryRoundTripper struct{}
+
+func (invalidDictionaryRoundTripper) RoundTrip(req *http.Request) (*http.Response, error) {
+	const body = `{"invalid":true}`
+	return &http.Response{
+		StatusCode: http.StatusOK, Status: "200 OK",
+		Header:        http.Header{"Content-Type": []string{"application/octet-stream"}, "Content-Length": []string{fmt.Sprint(len(body))}},
+		ContentLength: int64(len(body)), Body: io.NopCloser(strings.NewReader(body)), Request: req,
+	}, nil
+}
+
+func TestActualSDKDictionaryReadSuccessRemainsDistinctFromValidationFailure(t *testing.T) {
+	storeFixture, active := profileQueryFixture(t, "users/u/projects/p", "G1-retained")
+	storageClient, err := cloudstorage.NewClient(context.Background(),
+		option.WithoutAuthentication(),
+		option.WithHTTPClient(&http.Client{Transport: invalidDictionaryRoundTripper{}}),
+	)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer storageClient.Close()
+	reader := &sdkDictionaryProfileStore{profileQueryStore: storeFixture, bucket: storageClient.Bucket("memory-only-bucket")}
+
+	exporter := tracetest.NewInMemoryExporter()
+	provider := sdktrace.NewTracerProvider(sdktrace.WithSpanProcessor(sdktrace.NewSimpleSpanProcessor(exporter)))
+	previous := otel.GetTracerProvider()
+	otel.SetTracerProvider(provider)
+	t.Cleanup(func() {
+		otel.SetTracerProvider(previous)
+		_ = provider.Shutdown(context.Background())
+	})
+	rootCtx, root := otel.Tracer("llm-wiki-bff/query").Start(context.Background(), "query.request")
+	ctx, recorder := query.WithReceipt(rootCtx)
+	stageCtx := recorder.StartStage(ctx, "profile_snapshot", "", "", "")
+	_, err = query.LoadProfile(stageCtx, cache.New(), reader, storeFixture.manifest,
+		profiletags.ActiveRef{ContentGeneration: active.ContentGeneration, DictionaryRevision: active.DictionaryRevision, TagSetRevision: active.TagSetRevision, QueryRuleRevision: active.QueryRuleRevision},
+		storeFixture.dictionaryRef, []string{"r1"})
+	query.FinishStage(stageCtx, "failure")
+	root.End()
+	if err == nil {
+		t.Fatal("corrupt actual SDK dictionary unexpectedly validated")
+	}
+	receipt := recorder.Receipt()
+	if len(receipt.HostCalls) != 1 || receipt.HostCalls[0].Outcome != "success" || receipt.HostCalls[0].Host != "storage.googleapis.com" {
+		t.Fatalf("successful storage transport receipt=%+v, want one safe successful host call", receipt.HostCalls)
+	}
+	var dictionarySpan, hostSpan tracetest.SpanStub
+	for _, span := range exporter.GetSpans() {
+		switch span.Name {
+		case "query.storage.read":
+			if spanStringAttribute(span.Attributes, "query.object_role") == "dictionary" {
+				dictionarySpan = span
+			}
+		case "query.host_call":
+			hostSpan = span
+		}
+	}
+	if !dictionarySpan.SpanContext.SpanID().IsValid() || !hostSpan.SpanContext.SpanID().IsValid() {
+		t.Fatalf("actual SDK verification trace missing dictionary/host: %+v", exporter.GetSpans())
+	}
+	if spanStringAttribute(hostSpan.Attributes, "query.outcome") != "success" || spanStringAttribute(dictionarySpan.Attributes, "query.outcome") != "failure" || spanStringAttribute(dictionarySpan.Attributes, "query.validation_reason") != "decode" || hostSpan.Parent.SpanID() != dictionarySpan.SpanContext.SpanID() {
+		t.Fatalf("transport and validation outcomes/parent were conflated: host=%+v dictionary=%+v", hostSpan, dictionarySpan)
+	}
+}
+
+func spanStringAttribute(attrs []attribute.KeyValue, key string) string {
+	for _, attr := range attrs {
+		if string(attr.Key) == key {
+			return attr.Value.AsString()
+		}
+	}
+	return ""
 }
 
 func TestMCPQueryUsesSamePinnedProfileAndSerializedResponseAsHTTP(t *testing.T) {

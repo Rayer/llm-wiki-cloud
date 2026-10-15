@@ -8,6 +8,7 @@ import (
 	"strings"
 
 	"github.com/gin-gonic/gin"
+	"github.com/rayer/llm-wiki-bff/internal/observability"
 	"github.com/rayer/llm-wiki-bff/internal/profiletags"
 	"github.com/rayer/llm-wiki-bff/internal/query"
 	"github.com/rayer/llm-wiki-bff/internal/storage"
@@ -52,13 +53,16 @@ func (h *Handler) queryStoreFor(ctx context.Context, userID, projectID string) (
 	}
 	candidateCtx, candidateSpan := startQueryStage(ctx, "profile.candidate")
 	candidate, err := candidates.GetProfileCandidate(candidateCtx, userID, projectID, active.CandidateID)
-	finishQueryStage(candidateSpan, err)
 	if err != nil {
+		finishQueryStage(candidateSpan, err)
 		return nil, nil, queryStageFailure("profile_candidate", err)
 	}
 	if candidate.CandidateID != active.CandidateID || candidate.ContentGeneration != active.ContentGeneration || candidate.Dictionary.Revision != active.DictionaryRevision {
-		return nil, nil, queryStageFailure("profile_candidate", errors.New("active historical candidate mismatch"))
+		err = errors.New("active historical candidate mismatch")
+		finishQueryStage(candidateSpan, err)
+		return nil, nil, queryStageFailure("profile_candidate", err)
 	}
+	finishQueryStage(candidateSpan, nil)
 	ref := candidate.Dictionary
 	dictionaryRef := profileartifacts.DerivedRef{Revision: ref.Revision, InputDigest: ref.InputDigest, ModelVersion: ref.ModelVersion, PromptVersion: ref.PromptVersion, SchemaVersion: ref.SchemaVersion}
 	requirementOrder := make([]string, 0, len(candidate.Preview.Requirements))
@@ -74,7 +78,13 @@ func (h *Handler) queryStoreFor(ctx context.Context, userID, projectID string) (
 		return nil, nil, queryStageFailure("generation_pin", errors.New("retained generation pin unavailable"))
 	}
 	pinCtx, pinSpan := startQueryStage(ctx, "generation.pin")
-	pinned, manifest, err := pinner.PinQueryGeneration(pinCtx, active.ContentGeneration)
+	readCtx, finishRead := observability.StartStorageRead(pinCtx, "retained_manifest")
+	pinned, manifest, err := pinner.PinQueryGeneration(readCtx, active.ContentGeneration)
+	if err != nil {
+		finishRead(err, "failure", "generation")
+	} else {
+		finishRead(nil, "success", "none")
+	}
 	finishQueryStage(pinSpan, err)
 	if err != nil {
 		return nil, nil, queryStageFailure("generation_pin", err)
@@ -102,7 +112,13 @@ func (h *Handler) queryProjectStore(ctx context.Context, userID, projectID strin
 		return nil, errWikiStorageNotConfigured
 	}
 	pinCtx, pinSpan := startQueryStage(ctx, "generation.resolve_current")
-	pinned, err := pinStore(pinCtx, h.store.Scope(userID, projectID))
+	readCtx, finishRead := observability.StartStorageRead(pinCtx, "current_manifest")
+	pinned, err := pinStore(readCtx, h.store.Scope(userID, projectID))
+	if err != nil {
+		finishRead(err, "failure", "generation")
+	} else {
+		finishRead(nil, "success", "none")
+	}
 	finishQueryStage(pinSpan, err)
 	if err != nil {
 		return nil, queryStageFailure("generation_resolution", err)

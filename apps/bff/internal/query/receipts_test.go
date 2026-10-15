@@ -7,6 +7,11 @@ import (
 	"strings"
 	"testing"
 	"time"
+
+	"github.com/rayer/llm-wiki-bff/internal/llm"
+	"go.opentelemetry.io/otel"
+	sdktrace "go.opentelemetry.io/otel/sdk/trace"
+	"go.opentelemetry.io/otel/sdk/trace/tracetest"
 )
 
 func TestReceiptRecordsDistinctStagesCallsAndRedactsSensitiveValues(t *testing.T) {
@@ -75,6 +80,66 @@ func TestTimedHostReceiptEndsAtNetworkBoundary(t *testing.T) {
 	got := recorder.Receipt()
 	if len(got.HostCalls) != 1 || got.HostCalls[0].Outcome != "decode_error" || !got.HostCalls[0].FinishedAt.Equal(networkFinished.UTC()) {
 		t.Fatalf("timed host receipt = %#v", got.HostCalls)
+	}
+}
+
+func TestContextAwareHostUsesCallerParentAndSeparatesTransportFromReceiptOutcome(t *testing.T) {
+	exporter := tracetest.NewInMemoryExporter()
+	provider := sdktrace.NewTracerProvider(sdktrace.WithSpanProcessor(sdktrace.NewSimpleSpanProcessor(exporter)))
+	previous := otel.GetTracerProvider()
+	otel.SetTracerProvider(provider)
+	t.Cleanup(func() {
+		otel.SetTracerProvider(previous)
+		_ = provider.Shutdown(context.Background())
+	})
+
+	rootCtx, root := otel.Tracer("llm-wiki-bff/query").Start(context.Background(), "query.request")
+	ctx, recorder := WithReceipt(rootCtx)
+	stageCtx := recorder.StartStage(ctx, "query_expansion", "deepseek", "safe-model", "none")
+	stageCtx = llm.WithCallAttemptIndex(llm.WithCallPurpose(stageCtx, "expansion"), 0)
+	finish := recorder.StartCallAtContext(stageCtx, "query_expansion", "safe-model", "none", "https://api.deepseek.com/chat/completions")
+	time.Sleep(time.Millisecond)
+	networkFinished := time.Now()
+	finish("decode_error", "success", networkFinished)
+	FinishStage(stageCtx, "fallback")
+	root.End()
+
+	receipt := recorder.Receipt()
+	if len(receipt.HostCalls) != 1 || receipt.HostCalls[0].Outcome != "decode_error" || !receipt.HostCalls[0].FinishedAt.Equal(networkFinished.UTC()) {
+		t.Fatalf("legacy receipt outcome/time changed: %+v", receipt.HostCalls)
+	}
+	var stage, host tracetest.SpanStub
+	for _, span := range exporter.GetSpans() {
+		switch span.Name {
+		case "query.stage.query_expansion":
+			stage = span
+		case "query.host_call":
+			host = span
+		}
+	}
+	if stage.SpanContext.SpanID().IsValid() == false || host.SpanContext.SpanID().IsValid() == false {
+		t.Fatalf("stage or host span missing: %+v", exporter.GetSpans())
+	}
+	if host.Parent.SpanID() != stage.SpanContext.SpanID() {
+		t.Fatalf("host parent=%s, want actual caller stage %s", host.Parent.SpanID(), stage.SpanContext.SpanID())
+	}
+	if !host.EndTime.Equal(networkFinished) {
+		t.Fatalf("host span ended at %s, want captured transport end %s", host.EndTime, networkFinished)
+	}
+	var outcome, purpose string
+	var attemptIndex int64 = -1
+	for _, attr := range host.Attributes {
+		switch string(attr.Key) {
+		case "query.outcome":
+			outcome = attr.Value.AsString()
+		case "query.llm_purpose":
+			purpose = attr.Value.AsString()
+		case "query.attempt_index":
+			attemptIndex = attr.Value.AsInt64()
+		}
+	}
+	if outcome != "success" || purpose != "expansion" || attemptIndex != 0 {
+		t.Fatalf("host attrs outcome=%q purpose=%q attempt_index=%d", outcome, purpose, attemptIndex)
 	}
 }
 

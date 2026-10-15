@@ -18,6 +18,10 @@ import (
 	"github.com/rayer/llm-wiki-bff/internal/llm"
 	"github.com/rayer/llm-wiki-bff/internal/query"
 	"github.com/rayer/llm-wiki-bff/internal/search"
+	"go.opentelemetry.io/otel"
+	"go.opentelemetry.io/otel/attribute"
+	"go.opentelemetry.io/otel/codes"
+	oteltrace "go.opentelemetry.io/otel/trace"
 	"golang.org/x/text/unicode/norm"
 )
 
@@ -551,9 +555,6 @@ func (e parallelQueryExpander) ExpandWithTrace(ctx context.Context, request Expa
 		outcome := <-outcomes
 		results[outcome.index] = outcome.value
 	}
-	if err := ctx.Err(); err != nil {
-		return QueryPlan{}, ExpansionInfo{}, err
-	}
 	info := ExpansionInfo{RequestedAttempts: len(results), KeywordsPerAttempt: e.options.KeywordsPerAttempt, AttemptOutcomes: make([]ExpansionAttemptInfo, 0, len(results))}
 	successes := make([]indexedPlan, 0, len(results))
 	for index, result := range results {
@@ -574,6 +575,9 @@ func (e parallelQueryExpander) ExpandWithTrace(ctx context.Context, request Expa
 			diagnostic = expansionDiagnostic(result.err, result.info.FallbackReason)
 		}
 		info.AttemptOutcomes = append(info.AttemptOutcomes, ExpansionAttemptInfo{AttemptIndex: index + 1, Outcome: outcome, Diagnostic: diagnostic})
+	}
+	if err := ctx.Err(); err != nil {
+		return QueryPlan{}, info, err
 	}
 	if len(successes) == 0 {
 		if e.fallback == nil {
@@ -627,12 +631,42 @@ type indexedPlan struct {
 }
 
 func (e parallelQueryExpander) expandOne(ctx context.Context, request ExpansionRequest) parallelExpansionResult {
-	if traced, ok := e.expander.(TracedQueryExpander); ok {
-		plan, info, err := traced.ExpandWithTrace(ctx, request)
-		return parallelExpansionResult{plan: plan, info: info, err: err}
+	index := request.Attempt - 1
+	if index < 0 {
+		index = 0
 	}
-	plan, err := e.expander.Expand(ctx, request)
-	return parallelExpansionResult{plan: plan, err: err}
+	attemptCtx, span := otel.Tracer("llm-wiki-bff/query").Start(ctx, "query.expansion.attempt",
+		oteltrace.WithAttributes(attribute.String("query.llm_purpose", "expansion"), attribute.Int("query.attempt_index", index), attribute.String("query.outcome", "in_progress")),
+	)
+	attemptCtx = llm.WithCallAttemptIndex(llm.WithCallPurpose(attemptCtx, "expansion"), index)
+	finish := func(result parallelExpansionResult) parallelExpansionResult {
+		outcome := "success"
+		attemptOutcome := "success"
+		if result.err != nil {
+			outcome = "failure"
+			attemptOutcome = "provider_failed"
+			if errors.Is(result.err, context.Canceled) {
+				outcome = "canceled"
+				attemptOutcome = "canceled"
+			} else if errors.Is(result.err, context.DeadlineExceeded) {
+				outcome = "timeout"
+				attemptOutcome = "timeout"
+			}
+			span.SetStatus(codes.Error, outcome)
+			span.SetAttributes(attribute.String("query.expansion.attempt_diagnostic", expansionDiagnostic(result.err, result.info.FallbackReason)))
+		} else if result.info.Source == "deterministic-fallback" {
+			attemptOutcome = "fallback"
+		}
+		span.SetAttributes(attribute.String("query.outcome", outcome), attribute.String("query.expansion.attempt_outcome", attemptOutcome))
+		span.End()
+		return result
+	}
+	if traced, ok := e.expander.(TracedQueryExpander); ok {
+		plan, info, err := traced.ExpandWithTrace(attemptCtx, request)
+		return finish(parallelExpansionResult{plan: plan, info: info, err: err})
+	}
+	plan, err := e.expander.Expand(attemptCtx, request)
+	return finish(parallelExpansionResult{plan: plan, err: err})
 }
 
 func aggregatePlans(rawQuery string, attempts []indexedPlan) QueryPlan {
@@ -1227,14 +1261,17 @@ func (s *QueryRetrievalPipeline) execute(ctx context.Context, reader cache.Reade
 		cacheCtx = recorder.StartStage(ctx, "cache_load", "", "", "")
 	}
 	var entries []cache.Entry
+	cacheSource := "snapshot"
 	var err error
 	if request.Profile != nil {
 		for _, item := range request.Profile.Corpus.Entries {
 			entries = append(entries, item.Entry)
 		}
 	} else {
-		entries, err = s.cache.All(cacheCtx, reader)
+		entries, cacheSource, err = s.cache.AllWithSource(cacheCtx, reader)
 	}
+	traceSpanCache := oteltrace.SpanFromContext(cacheCtx)
+	traceSpanCache.SetAttributes(attribute.String("query.cache_source", cacheSource), attribute.Int("query.corpus.count", len(entries)))
 	query.FinishStage(cacheCtx, map[bool]string{true: "failure", false: "success"}[err != nil])
 	if err != nil {
 		if errors.Is(err, context.Canceled) || errors.Is(err, context.DeadlineExceeded) {
@@ -1259,6 +1296,12 @@ func (s *QueryRetrievalPipeline) execute(ctx context.Context, reader cache.Reade
 	} else {
 		plan, err = s.queryExpander.Expand(stageCtx, requestWithPolicy)
 	}
+	oteltrace.SpanFromContext(stageCtx).SetAttributes(
+		attribute.Int("query.expansion.attempted_count", max(info.RequestedAttempts, 0)),
+		attribute.Int("query.expansion.succeeded_count", max(info.SuccessfulAttempts, 0)),
+		attribute.Int("query.expansion.failed_count", max(info.ProviderFailedAttempts, 0)),
+		attribute.Int("query.expansion.fallback_count", max(info.FallbackCount, 0)),
+	)
 	if err != nil {
 		query.FinishStage(stageCtx, "failure")
 		appendTraceStage(trace, StageTrace{Name: "expansion", Outcome: "failure", ElapsedMS: elapsedSince(started), FallbackReason: "expansion_failure"})
@@ -1351,6 +1394,15 @@ func (s *QueryRetrievalPipeline) execute(ctx context.Context, reader cache.Reade
 			eligible.Candidates[i].Score += scores[eligible.Candidates[i].Slug]
 		}
 	}
+	matchSpan := oteltrace.SpanFromContext(matchCtx)
+	matchSpan.SetAttributes(
+		attribute.Int("query.candidate_count", len(eligible.Candidates)),
+		attribute.Int("query.eligible_count", EligibleCount(eligible.Candidates)),
+		attribute.Int("query.qualified_count", QualifiedCount(eligible.Candidates)),
+	)
+	for reason, count := range rejectionHistogram(eligible.Candidates) {
+		matchSpan.SetAttributes(attribute.Int("query.rejection."+reason, count))
+	}
 	appendTraceStage(trace, StageTrace{Name: "matching", Outcome: "success", ElapsedMS: elapsedSince(started), InputCount: len(entries), OutputCount: QualifiedCount(eligible.Candidates), TotalCount: len(eligible.Candidates), Candidates: eligible.Candidates, EvidenceThreshold: resolvedEvidenceThreshold(s.options)})
 	query.FinishStage(matchCtx, "success")
 
@@ -1382,6 +1434,11 @@ func (s *QueryRetrievalPipeline) execute(ctx context.Context, reader cache.Reade
 		}
 		return query.Result{}, fmt.Errorf("query-retrieval selection failed: %w", err)
 	}
+	selectedCountValue := selectedCount(selected.Selected)
+	oteltrace.SpanFromContext(selectionCtx).SetAttributes(
+		attribute.Int("query.selected_count", selectedCountValue),
+		attribute.Int("query.omitted_count", max(len(eligible.Candidates)-selectedCountValue, 0)),
+	)
 	appendTraceStage(trace, StageTrace{Name: "selection", Outcome: "success", ElapsedMS: elapsedSince(started), InputCount: len(eligible.Candidates), OutputCount: selectedCount(selected.Selected), TotalCount: len(selected.Selected), Decisions: selected.Selected, EvidenceThreshold: resolvedEvidenceThreshold(s.options)})
 	query.FinishStage(selectionCtx, "success")
 	if replay != nil {
@@ -1398,6 +1455,32 @@ func (s *QueryRetrievalPipeline) execute(ctx context.Context, reader cache.Reade
 	}
 	status, reason := ResultStatus(len(results))
 	return query.Result{Query: request.Query, Mode: request.Mode, Results: results, Expand: expandFromPlan(plan), Status: status, Reason: reason}, nil
+}
+
+func rejectionHistogram(candidates []CandidateEvidence) map[string]int {
+	counts := make(map[string]int)
+	for _, candidate := range candidates {
+		if !candidate.Eligible {
+			counts[finiteDecisionReason(candidate.Rejection)]++
+		} else if !candidate.Qualified {
+			counts[finiteDecisionReason(candidate.QualificationReason)]++
+		}
+	}
+	return counts
+}
+
+func finiteDecisionReason(reason string) string {
+	switch reason {
+	case "excluded_criterion_matched", "hard_ineligible", "exact_identity_evidence", "unresolved_semantic_evidence",
+		"keyword_consensus", "local_keyword_consensus", "rare_discriminative_lexical", "evidence_below_threshold",
+		"fallback_single_attempt", "legacy_threshold_zero", "evidence_threshold_met",
+		"semantic_required_not_matched", "semantic_required_unresolved":
+		return reason
+	case "required_entity_not_matched", "required_name_not_matched", "required_entity-name_not_matched", "required_venue-name_not_matched":
+		return "required_not_matched"
+	default:
+		return "other"
+	}
 }
 
 func providerIdentity(expander QueryExpander) (string, string, string) {

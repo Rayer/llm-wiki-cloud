@@ -8,11 +8,14 @@ import (
 
 	"github.com/rayer/llm-wiki-bff/internal/cache"
 	"github.com/rayer/llm-wiki-bff/internal/generation"
+	"github.com/rayer/llm-wiki-bff/internal/observability"
 	"github.com/rayer/llm-wiki-bff/internal/profileartifacts"
 	"github.com/rayer/llm-wiki-bff/internal/profiletags"
 	"github.com/rayer/llm-wiki-bff/internal/search"
 	"github.com/rayer/llm-wiki-bff/internal/storage"
 	"github.com/rayer/llm-wiki-bff/internal/wikiindex"
+	"go.opentelemetry.io/otel/attribute"
+	"go.opentelemetry.io/otel/trace"
 )
 
 // GenerationPinner must resolve the retained archive, never the latest manifest.
@@ -30,10 +33,28 @@ type ProfileSnapshot struct {
 type limitedProfileReader interface {
 	ReadFileLimited(context.Context, string, int64) ([]byte, error)
 }
-type readOnlyTags struct{ limitedProfileReader }
+type tagRead struct {
+	finish func(error, string, string)
+	err    error
+}
+type tagReadState struct{ reads []tagRead }
+type readOnlyTags struct {
+	limitedProfileReader
+	state *tagReadState
+}
 
 func (s readOnlyTags) Read(ctx context.Context, name string, limit int) ([]byte, error) {
-	return s.ReadFileLimited(ctx, name, int64(limit))
+	role := "other"
+	switch {
+	case strings.HasPrefix(name, ".lwc/profile/tags/sets/"):
+		role = "tag_set"
+	case strings.HasPrefix(name, ".lwc/profile/query/rules/"):
+		role = "query_rules"
+	}
+	readCtx, finish := observability.StartStorageRead(ctx, role)
+	data, err := s.ReadFileLimited(readCtx, name, int64(limit))
+	s.state.reads = append(s.state.reads, tagRead{finish: finish, err: err})
+	return data, err
 }
 func (s readOnlyTags) Create(context.Context, string, []byte) error {
 	return errors.New("query artifact store is read only")
@@ -56,61 +77,78 @@ func LoadProfile(ctx context.Context, c *cache.Cache, reader storage.Store, mani
 	if corpus.Identity.GenerationID != active.ContentGeneration {
 		return nil, errors.New("profile corpus generation mismatch")
 	}
-	idBytes, err := reader.ReadFile(ctx, "cache/id_map.json")
+	idReadCtx, finishIDMap := observability.StartStorageRead(ctx, "id_map")
+	idBytes, err := reader.ReadFile(idReadCtx, "cache/id_map.json")
 	if err != nil {
+		finishIDMap(err, "failure", "other")
 		return nil, err
 	}
 	idFile, ok := manifest.File("cache/id_map.json")
 	if !ok || generation.Digest(idBytes) != idFile.SHA256 {
+		finishIDMap(errors.New("id map digest mismatch"), "failure", "digest")
 		return nil, errors.New("profile ID map digest mismatch")
 	}
 	ids, err := wikiindex.DecodeIDMap(idBytes)
 	if err != nil {
+		finishIDMap(err, "failure", "decode")
 		return nil, err
 	}
 	if ids.Source == nil || len(ids.Concept) != len(corpus.Entries) {
+		finishIDMap(errors.New("id map coverage mismatch"), "failure", "coverage")
 		return nil, errors.New("profile canonical inventory incomplete")
 	}
+	finishIDMap(nil, "success", "none")
 	sourceReader, ok := reader.(interface {
 		ReadSourceSnapshot(context.Context) (generation.SourceSnapshotManifest, error)
 	})
 	if !ok {
 		return nil, errors.New("retained source snapshots unavailable")
 	}
-	sources, err := sourceReader.ReadSourceSnapshot(ctx)
+	sourceCtx, finishSourceInventory := observability.StartStorageRead(ctx, "source_inventory")
+	sources, err := sourceReader.ReadSourceSnapshot(sourceCtx)
 	if err != nil {
+		finishSourceInventory(err, "failure", "other")
 		return nil, err
 	}
 	if sources.ContentGeneration != active.ContentGeneration || sources.IDMapDigest != idFile.SHA256 || len(sources.Rows) != len(ids.Source) {
+		finishSourceInventory(errors.New("source inventory coverage mismatch"), "failure", "coverage")
 		return nil, errors.New("profile source inventory mismatch")
 	}
 	index := profiletags.InventoryIndex{ContentGeneration: active.ContentGeneration, ConceptsDigest: strings.TrimPrefix(corpus.Identity.ConceptsDigest, "sha256:"), IDMapDigest: idFile.SHA256, SourceSnapshotDigest: manifest.SourceSnapshotDigest}
 	for _, item := range corpus.Entries {
 		if ids.Concept[item.StableID] != item.Entry.Slug || !wikiindex.ValidSyntoEntityID(item.StableID) {
+			finishSourceInventory(errors.New("concept inventory identity mismatch"), "failure", "identity")
 			return nil, errors.New("profile concept identity mismatch")
 		}
 		index.Items = append(index.Items, profiletags.ItemRef{Kind: profiletags.Concept, StableID: item.StableID, ContentDigest: item.ContentDigest})
 	}
 	for _, row := range sources.Rows {
 		if _, ok := ids.Source[row.StableID]; !ok || (ids.SourceMeta[row.StableID].SourceFile != "" && ids.SourceMeta[row.StableID].SourceFile != row.RawPath) {
+			finishSourceInventory(errors.New("source inventory identity mismatch"), "failure", "identity")
 			return nil, errors.New("profile source identity mismatch")
 		}
 		index.Items = append(index.Items, profiletags.ItemRef{Kind: profiletags.Source, StableID: row.StableID, ContentDigest: row.ContentDigest})
 	}
+	finishSourceInventory(nil, "success", "none")
 	if !profileartifacts.IsSHA256(active.DictionaryRevision) {
 		return nil, errors.New("invalid dictionary revision")
 	}
-	data, err := limited.ReadFileLimited(ctx, profileartifacts.DictionaryObjectPath(active.DictionaryRevision), profileartifacts.MaxArtifactBytes)
+	dictionaryCtx, finishDictionary := observability.StartStorageRead(ctx, "dictionary")
+	data, err := limited.ReadFileLimited(dictionaryCtx, profileartifacts.DictionaryObjectPath(active.DictionaryRevision), profileartifacts.MaxArtifactBytes)
 	if err != nil {
+		finishDictionary(err, "failure", "other")
 		return nil, err
 	}
 	if dictionaryRef.Revision != active.DictionaryRevision {
+		finishDictionary(errors.New("dictionary identity mismatch"), "failure", "identity")
 		return nil, errors.New("active dictionary reference mismatch")
 	}
 	envelope, err := profileartifacts.ValidateDictionary(data, dictionaryRef, active.ContentGeneration, index.ConceptsDigest, requirementOrder)
 	if err != nil {
+		finishDictionary(err, "failure", "decode")
 		return nil, fmt.Errorf("profile dictionary: %w", err)
 	}
+	finishDictionary(nil, "success", "none")
 	dictionary := profiletags.Dictionary{Revision: active.DictionaryRevision}
 	for _, tag := range envelope.Tags {
 		t := profiletags.Tag{ID: tag.ID, Definition: tag.Definition, MatchRule: tag.MatchRule, NonMatchRule: tag.NonMatchRule, UnknownRule: tag.UnknownRule, QueryUse: tag.QueryUse}
@@ -119,10 +157,27 @@ func LoadProfile(ctx context.Context, c *cache.Cache, reader storage.Store, mani
 		}
 		dictionary.Tags = append(dictionary.Tags, t)
 	}
-	bundle, err := profiletags.ReadBundle(ctx, readOnlyTags{limited}, active, index, dictionary)
+	tagReads := &tagReadState{}
+	bundle, err := profiletags.ReadBundle(ctx, readOnlyTags{limitedProfileReader: limited, state: tagReads}, active, index, dictionary)
+	for _, read := range tagReads.reads {
+		verificationErr, verification, reason := read.err, "success", "none"
+		if err != nil {
+			verificationErr, verification, reason = errors.New("profile artifact validation failed"), "failure", "other"
+		}
+		if read.err != nil {
+			verificationErr, verification, reason = read.err, "failure", "other"
+		}
+		read.finish(verificationErr, verification, reason)
+	}
 	if err != nil {
 		return nil, err
 	}
+	trace.SpanFromContext(ctx).SetAttributes(
+		attribute.Int("query.corpus.count", len(corpus.Entries)),
+		attribute.Int("query.source_inventory.count", len(sources.Rows)),
+		attribute.Int("query.tag_set.count", len(bundle.Set.Rows)),
+		attribute.Int("query.query_rules.count", len(bundle.Rules.Rules)),
+	)
 	return &ProfileSnapshot{Active: active, Corpus: corpus, Bundle: bundle, IDMap: ids}, nil
 }
 

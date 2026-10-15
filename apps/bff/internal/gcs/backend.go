@@ -15,7 +15,13 @@ import (
 )
 
 func startGCSCall(ctx context.Context) func(string) {
+	if ctx.Err() != nil {
+		return func(string) {}
+	}
 	if recorder := llm.HostCallRecorderFromContext(ctx); recorder != nil {
+		if contextual, ok := recorder.(llm.ContextHostCallRecorder); ok {
+			return contextual.StartHostCallContext(ctx, llm.CallStage(ctx), "https", "storage.googleapis.com")
+		}
 		return recorder.StartHostCall(llm.CallStage(ctx), "https", "storage.googleapis.com")
 	}
 	return func(string) {}

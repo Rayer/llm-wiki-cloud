@@ -13,6 +13,7 @@ import (
 	"time"
 
 	"github.com/rayer/llm-wiki-bff/internal/llm"
+	"github.com/rayer/llm-wiki-bff/internal/observability"
 	"go.opentelemetry.io/otel"
 	"go.opentelemetry.io/otel/attribute"
 	"go.opentelemetry.io/otel/codes"
@@ -201,8 +202,20 @@ func ReceiptRecorderFromContext(ctx context.Context) *ReceiptRecorder {
 	return r
 }
 func (r *ReceiptRecorder) StartStage(ctx context.Context, name, provider, model, reasoning string) context.Context {
+	stageAttributes := []attribute.KeyValue{
+		attribute.String("query.stage", name), attribute.String("query.outcome", "in_progress"),
+		attribute.String("query.provider", provider), attribute.String("query.model", model), attribute.String("query.reasoning", reasoning),
+	}
+	switch name {
+	case "query_expansion":
+		stageAttributes = append(stageAttributes, attribute.String("query.llm_purpose", "expansion"))
+	case "answer_synthesis":
+		stageAttributes = append(stageAttributes, attribute.String("query.llm_purpose", "evidence_answer"))
+	case "answer_synthesis_model_prior":
+		stageAttributes = append(stageAttributes, attribute.String("query.llm_purpose", "model_prior"))
+	}
 	ctx, span := otel.Tracer("llm-wiki-bff/query").Start(ctx, "query.stage."+name,
-		trace.WithAttributes(attribute.String("query.stage", name), attribute.String("query.outcome", "in_progress"), attribute.String("query.provider", provider), attribute.String("query.model", model), attribute.String("query.reasoning", reasoning)),
+		trace.WithAttributes(stageAttributes...),
 	)
 	r.mu.Lock()
 	now := time.Now()
@@ -210,7 +223,8 @@ func (r *ReceiptRecorder) StartStage(ctx context.Context, name, provider, model,
 	key := stageKey{name: name, index: len(r.receipt.Stages) - 1}
 	r.activeStages[name] = span.SpanContext()
 	r.mu.Unlock()
-	return context.WithValue(llm.WithCallStage(ctx, name), stageContextKey{}, stageKey{name: name, index: key.index, span: span})
+	ctx = observability.WithStorageReadBudget(llm.WithCallStage(ctx, name))
+	return context.WithValue(ctx, stageContextKey{}, stageKey{name: name, index: key.index, span: span})
 }
 
 type stageKey struct {
@@ -264,8 +278,21 @@ func (r *ReceiptRecorder) StartCallAtTimed(stageName, model, reasoning, rawURL s
 	return r.startHostCallTimed(stageName, u.Scheme, u.Hostname(), "deepseek", model, reasoning)
 }
 
+func (r *ReceiptRecorder) StartCallAtContext(ctx context.Context, stageName, model, reasoning, rawURL string) func(string, string, time.Time) {
+	u, err := url.Parse(rawURL)
+	if err != nil || u.Scheme == "" || u.Hostname() == "" {
+		return func(string, string, time.Time) {}
+	}
+	return r.startHostCallWithContext(ctx, stageName, u.Scheme, u.Hostname(), "deepseek", model, reasoning)
+}
+
 func (r *ReceiptRecorder) StartHostCall(stage, scheme, host string) func(string) {
 	return r.startHostCall(stage, scheme, host, "gcs", "", "")
+}
+
+func (r *ReceiptRecorder) StartHostCallContext(ctx context.Context, stage, scheme, host string) func(string) {
+	finish := r.startHostCallWithContext(ctx, stage, scheme, host, "gcs", "", "")
+	return func(outcome string) { finish(outcome, outcome, time.Now()) }
 }
 
 func (r *ReceiptRecorder) startHostCall(stageName, scheme, host, provider, model, reasoning string) func(string) {
@@ -274,36 +301,56 @@ func (r *ReceiptRecorder) startHostCall(stageName, scheme, host, provider, model
 }
 
 func (r *ReceiptRecorder) startHostCallTimed(stageName, scheme, host, provider, model, reasoning string) func(string, time.Time) {
+	parentCtx := context.Background()
+	r.mu.Lock()
+	parent := r.rootContext
+	if stageParent, ok := r.activeStages[stageName]; ok {
+		parent = stageParent
+	}
+	r.mu.Unlock()
+	parentCtx = trace.ContextWithSpanContext(parentCtx, parent)
+	finish := r.startHostCallOnContext(parentCtx, stageName, scheme, host, provider, model, reasoning)
+	return func(outcome string, finishedAt time.Time) { finish(outcome, outcome, finishedAt) }
+}
+
+func (r *ReceiptRecorder) startHostCallWithContext(ctx context.Context, stageName, scheme, host, provider, model, reasoning string) func(string, string, time.Time) {
+	return r.startHostCallOnContext(ctx, stageName, scheme, host, provider, model, reasoning)
+}
+
+func (r *ReceiptRecorder) startHostCallOnContext(ctx context.Context, stageName, scheme, host, provider, model, reasoning string) func(string, string, time.Time) {
 	if net.ParseIP(host) != nil {
-		return func(string, time.Time) {}
+		return func(string, string, time.Time) {}
 	}
 	host = strings.ToLower(strings.TrimSuffix(host, "."))
 	r.mu.Lock()
 	r.callSeq++
 	seq := r.callSeq
 	started := time.Now()
-	parent := r.rootContext
-	if stageParent, ok := r.activeStages[stageName]; ok {
-		parent = stageParent
-	}
 	r.mu.Unlock()
-	parentContext := trace.ContextWithSpanContext(context.Background(), parent)
-	_, span := otel.Tracer("llm-wiki-bff/query").Start(parentContext, "query.host_call",
-		trace.WithAttributes(attribute.String("query.stage", stageName), attribute.String("query.provider", provider), attribute.String("query.model", model), attribute.String("query.reasoning", reasoning)),
-	)
-	return func(outcome string, finishedAt time.Time) {
+	attrs := []attribute.KeyValue{
+		attribute.String("query.stage", stageName), attribute.String("query.provider", provider),
+		attribute.String("query.model", model), attribute.String("query.reasoning", reasoning),
+	}
+	if purpose := llm.CallPurpose(ctx); purpose != "" {
+		attrs = append(attrs, attribute.String("query.llm_purpose", purpose))
+	}
+	if index, ok := llm.CallAttemptIndex(ctx); ok {
+		attrs = append(attrs, attribute.Int("query.attempt_index", index))
+	}
+	_, span := otel.Tracer("llm-wiki-bff/query").Start(ctx, "query.host_call", trace.WithAttributes(attrs...))
+	return func(receiptOutcome, transportOutcome string, finishedAt time.Time) {
 		r.mu.Lock()
 		finished := finishedAt
 		if finished.IsZero() {
 			finished = time.Now()
 		}
-		r.receipt.HostCalls = append(r.receipt.HostCalls, HostCallReceipt{Sequence: seq, Stage: stageName, Scheme: scheme, Host: host, StartedAt: started.UTC(), FinishedAt: finished.UTC(), startedMono: started, ElapsedMS: finished.Sub(started).Milliseconds(), Provider: provider, Model: model, Reasoning: reasoning, Outcome: outcome})
+		r.receipt.HostCalls = append(r.receipt.HostCalls, HostCallReceipt{Sequence: seq, Stage: stageName, Scheme: scheme, Host: host, StartedAt: started.UTC(), FinishedAt: finished.UTC(), startedMono: started, ElapsedMS: finished.Sub(started).Milliseconds(), Provider: provider, Model: model, Reasoning: reasoning, Outcome: receiptOutcome})
 		r.mu.Unlock()
-		span.SetAttributes(attribute.String("query.outcome", outcome))
-		if outcome != "success" {
-			span.SetStatus(codes.Error, outcome)
+		span.SetAttributes(attribute.String("query.outcome", transportOutcome))
+		if transportOutcome != "success" {
+			span.SetStatus(codes.Error, transportOutcome)
 		}
-		span.End()
+		span.End(trace.WithTimestamp(finished))
 	}
 }
 
