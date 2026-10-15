@@ -70,6 +70,7 @@ type profileTagInputLoader func(context.Context, string) (profiletags.Inventory,
 
 func (h *Handler) runProfileTagging(ctx context.Context, userID, projectID string, revision int64, candidateID, jobID string, evaluator profiletags.Evaluator, policy profiletags.ProviderPolicy, load profileTagInputLoader) (resultErr error) {
 	ctx, jobSpan := observability.StartProfileSpan(ctx, "profile.tag.job")
+	observability.SetProfileWorkKind(jobSpan, "tag")
 	defer func() {
 		outcome := "success"
 		if resultErr != nil {
@@ -158,6 +159,7 @@ func (h *Handler) runProfileTagging(ctx context.Context, userID, projectID strin
 			a := current.Active
 			if a.CandidateID == candidateID && a.ContentGeneration == active.ContentGeneration && a.DictionaryRevision == active.DictionaryRevision && a.TagSetRevision == active.TagSetRevision && a.QueryRuleRevision == active.QueryRuleRevision && a.GuidanceRevision == c.Guidance.Revision {
 				observability.SetProfileOutcome(commitSpan, "profile.commit.outcome", "committed")
+				observability.SetProfileOutcome(commitSpan, "profile.active.outcome", "committed")
 				observability.FinishProfileSpan(commitSpan, "success")
 				return nil
 			}
@@ -168,11 +170,23 @@ func (h *Handler) runProfileTagging(ctx context.Context, userID, projectID strin
 	}
 	if completed.Revision != revision || completed.Candidate == nil || completed.Candidate.CandidateID != candidateID || completed.Job == nil || completed.Job.JobID != jobID || completed.Job.Status != profileJobReady {
 		observability.SetProfileOutcome(commitSpan, "profile.commit.outcome", "unknown")
+		observability.SetProfileOutcome(commitSpan, "profile.active.outcome", completed.activeOutcome)
 		observability.FinishProfileSpan(commitSpan, "failure")
 		return errors.New("Profile tagging completion superseded or conflicted")
 	}
-	observability.SetProfileOutcome(commitSpan, "profile.commit.outcome", "committed")
-	observability.FinishProfileSpan(commitSpan, "success")
+	activeCommitted := completed.Active != nil && completed.Active.CandidateID == candidateID &&
+		completed.Active.ContentGeneration == active.ContentGeneration && completed.Active.DictionaryRevision == active.DictionaryRevision &&
+		completed.Active.TagSetRevision == active.TagSetRevision && completed.Active.QueryRuleRevision == active.QueryRuleRevision &&
+		completed.Active.GuidanceRevision == c.Guidance.Revision
+	if activeCommitted {
+		observability.SetProfileOutcome(commitSpan, "profile.commit.outcome", "committed")
+		observability.SetProfileOutcome(commitSpan, "profile.active.outcome", "committed")
+		observability.FinishProfileSpan(commitSpan, "success")
+	} else {
+		observability.SetProfileOutcome(commitSpan, "profile.commit.outcome", "not_active")
+		observability.SetProfileOutcome(commitSpan, "profile.active.outcome", "not_active")
+		observability.FinishProfileSpan(commitSpan, "not_active")
+	}
 	return nil
 }
 

@@ -91,12 +91,18 @@ func (h *HTTPHandler) Create(c *gin.Context) {
 		startErr := h.starter.Start(startCtx, userID, projectID, job)
 		if startErr != nil {
 			failErr := runExportPhase(context.WithoutCancel(c.Request.Context()), "export.worker.fail", func(ctx context.Context) error {
-				return h.repo.Fail(ctx, userID, projectID, job.ExportID, "job_start_failed", "Export could not be started. You can try again.")
+				result, err := h.repo.Fail(ctx, userID, projectID, job.ExportID, "job_start_failed", "Export could not be started. You can try again.")
+				if err == nil {
+					if result.Changed {
+						observability.SetExportOutcome(startSpan, "export.job.outcome", "committed")
+					} else {
+						observability.SetExportOutcome(startSpan, "export.job.outcome", "no_op")
+					}
+				}
+				return err
 			})
 			if failErr != nil {
 				observability.SetExportOutcome(startSpan, "export.job.outcome", "unknown")
-			} else {
-				observability.SetExportOutcome(startSpan, "export.job.outcome", "committed")
 			}
 			observability.FinishExportSpan(startSpan, "failure")
 			c.JSON(http.StatusServiceUnavailable, gin.H{"error": "export_unavailable"})
@@ -237,7 +243,6 @@ func (h *HTTPHandler) Download(c *gin.Context) {
 
 func (h *HTTPHandler) authorize(c *gin.Context) (string, string, string, bool) {
 	authorizeCtx, authorizeSpan := observability.StartExportSpan(c.Request.Context(), "export.authorize")
-	c.Request = c.Request.WithContext(authorizeCtx)
 	outcome := "success"
 	defer func() { observability.FinishExportSpan(authorizeSpan, outcome) }()
 	userID := strings.TrimSpace(c.GetString("userID"))
@@ -252,7 +257,7 @@ func (h *HTTPHandler) authorize(c *gin.Context) (string, string, string, bool) {
 		c.JSON(http.StatusServiceUnavailable, gin.H{"error": "export_unavailable"})
 		return "", "", "", false
 	}
-	name, err := h.projects.VerifyProject(c.Request.Context(), userID, projectID)
+	name, err := h.projects.VerifyProject(authorizeCtx, userID, projectID)
 	if errors.Is(err, ErrProjectMissing) {
 		outcome = "rejected"
 		c.JSON(http.StatusNotFound, gin.H{"error": "project_or_export_not_found"})

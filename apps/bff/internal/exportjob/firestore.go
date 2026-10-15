@@ -237,17 +237,21 @@ func (r *FirestoreRepository) MarkRunning(ctx context.Context, userID, projectID
 	})
 }
 
-func (r *FirestoreRepository) Fail(ctx context.Context, userID, projectID, exportID, errorCode, errorMessage string) error {
+func (r *FirestoreRepository) Fail(ctx context.Context, userID, projectID, exportID, errorCode, errorMessage string) (FailResult, error) {
 	stateRef := scopedfirestore.Collection(r.fs, stateCollection).Doc(ownerID(userID, projectID))
 	jobRef := r.jobRef(userID, projectID, exportID)
 	errorCode = safeErrorCode(errorCode)
 	errorMessage = safeErrorMessage(errorMessage)
-	return r.fs.RunTransaction(ctx, func(ctx context.Context, tx *firestore.Transaction) error {
+	var result FailResult
+	err := r.fs.RunTransaction(ctx, func(ctx context.Context, tx *firestore.Transaction) error {
+		result = FailResult{}
 		jobSnap, err := tx.Get(jobRef)
 		if err != nil {
 			return err
 		}
-		if jobFromData(jobSnap.Data()).Status == StatusReady || jobFromData(jobSnap.Data()).Status == StatusFailed {
+		jobStatus := jobFromData(jobSnap.Data()).Status
+		if jobStatus == StatusReady || jobStatus == StatusFailed {
+			result.Status = jobStatus
 			return nil
 		}
 		stateSnap, stateErr := tx.Get(stateRef)
@@ -263,10 +267,17 @@ func (r *FirestoreRepository) Fail(ctx context.Context, userID, projectID, expor
 			delete(state, "active_job_id")
 			state["latest_job_id"] = exportID
 			state["updated_at"] = time.Now().UTC()
-			return tx.Set(stateRef, state)
+			if err := tx.Set(stateRef, state); err != nil {
+				return err
+			}
 		}
+		result = FailResult{Changed: true, Status: StatusFailed}
 		return nil
 	})
+	if err != nil {
+		return FailResult{}, err
+	}
+	return result, nil
 }
 
 func (r *FirestoreRepository) Complete(ctx context.Context, userID, projectID, exportID string, snapshotAt, completedAt time.Time, size int64) error {

@@ -166,6 +166,8 @@ func (d *ProfileDispatcher) Dispatch(ctx context.Context, limit int) (processed 
 			claimOutcome = "no_op"
 		}
 		observability.SetProfileOutcome(claimSpan, "profile.claim.outcome", claimOutcome)
+		observability.SetProfileStatus(claimSpan, work.Status)
+		observability.SetProfileWorkKind(claimSpan, work.Kind)
 		observability.FinishProfileSpan(claimSpan, map[bool]string{true: "failure", false: "success"}[err != nil])
 		if err != nil {
 			return count, err
@@ -176,6 +178,7 @@ func (d *ProfileDispatcher) Dispatch(ctx context.Context, limit int) (processed 
 		lease := profileRuntimeLease{snapshot.Ref, work.Token, work.UserID, work.ProjectID}
 		attemptCtx, attemptSpan := observability.StartProfileSpan(observability.WithoutTraceParent(ctx), "profile.work")
 		observability.SetProfileCount(attemptSpan, "profile.attempt_number", work.Attempts)
+		observability.SetProfileWorkKind(attemptSpan, work.Kind)
 		runctx := context.WithValue(attemptCtx, profileRuntimeLeaseKey{}, lease)
 		executeCtx, executeSpan := observability.StartProfileSpan(runctx, "profile.execute")
 		executeErr := d.execute(executeCtx, repo, work)
@@ -188,18 +191,26 @@ func (d *ProfileDispatcher) Dispatch(ctx context.Context, limit int) (processed 
 		finishCtx, finishSpan := observability.StartProfileSpan(attemptCtx, "profile.finish")
 		finishStatus, finishErr := d.finish(finishCtx, repo, snapshot.Ref, work, executeErr)
 		if finishErr == nil {
-			observability.SetProfileOutcome(attemptSpan, "profile.commit.outcome", "committed")
+			commitOutcome := "committed"
+			attemptOutcome := "success"
+			if finishStatus != "complete" {
+				commitOutcome, attemptOutcome = "no_op", "no_op"
+				if finishStatus == "retry_wait" {
+					commitOutcome = "not_committed"
+				}
+			}
+			observability.SetProfileOutcome(attemptSpan, "profile.commit.outcome", commitOutcome)
+			observability.SetProfileOutcome(attemptSpan, "profile.execution.outcome", executeOutcome)
 			observability.SetProfileStatus(attemptSpan, finishStatus)
 			observability.SetProfileStatus(finishSpan, finishStatus)
+			observability.FinishProfileSpan(finishSpan, attemptOutcome)
+			observability.FinishProfileSpan(attemptSpan, attemptOutcome)
 		} else {
 			observability.SetProfileOutcome(attemptSpan, "profile.commit.outcome", "unknown")
+			observability.SetProfileStatus(finishSpan, finishStatus)
+			observability.FinishProfileSpan(finishSpan, "failure")
+			observability.FinishProfileSpan(attemptSpan, "failure")
 		}
-		finishOutcome := "success"
-		if finishErr != nil {
-			finishOutcome = "failure"
-		}
-		observability.FinishProfileSpan(finishSpan, finishOutcome)
-		observability.FinishProfileSpan(attemptSpan, finishOutcome)
 		if finishErr != nil {
 			return count, finishErr
 		}

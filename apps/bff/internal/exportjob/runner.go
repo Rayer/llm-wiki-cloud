@@ -95,13 +95,20 @@ func RunExport(ctx context.Context, repo Repository, archives *CloudArchiveStore
 		}
 	}
 	if err != nil {
-		failCtx, failCancel := context.WithTimeout(context.Background(), 10*time.Second)
+		failCtx, failCancel := context.WithTimeout(context.WithoutCancel(ctx), 10*time.Second)
 		defer failCancel()
+		var failResult FailResult
 		failErr := runExportPhase(failCtx, "export.worker.fail", func(ctx context.Context) error {
-			return repo.Fail(ctx, userID, projectID, job.ExportID, "worker_failure", "Export could not be completed. You can try again.")
+			var err error
+			failResult, err = repo.Fail(ctx, userID, projectID, job.ExportID, "worker_failure", "Export could not be completed. You can try again.")
+			return err
 		})
 		if failErr == nil {
-			observability.SetExportOutcome(workerSpan, "export.job.outcome", "committed")
+			outcome := "no_op"
+			if failResult.Changed {
+				outcome = "committed"
+			}
+			observability.SetExportOutcome(workerSpan, "export.job.outcome", outcome)
 		} else {
 			observability.SetExportOutcome(workerSpan, "export.job.outcome", "unknown")
 		}

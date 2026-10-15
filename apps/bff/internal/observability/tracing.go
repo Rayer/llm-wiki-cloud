@@ -93,14 +93,15 @@ var authSpanNames = stringSet(
 var profileSpanNames = stringSet(
 	"profile.dispatch", "profile.dispatch.sweep", "profile.work", "profile.claim", "profile.execute", "profile.finish",
 	"profile.derive", "profile.derive.claim", "profile.derive.content_pin", "profile.derive.provider",
-	"profile.derive.artifact_write", "profile.derive.commit", "profile.compile", "profile.compile.provider",
+	"profile.derive.model", "profile.derive.output_decode",
+	"profile.derive.accounting", "profile.derive.artifact_encode", "profile.derive.provider_call", "profile.derive.artifact_write", "profile.derive.commit", "profile.compile", "profile.compile.provider",
 	"profile.compile.artifact_write", "profile.compile.commit", "profile.tag.build", "profile.tag.evaluate",
 	"profile.tag.transport", "profile.tag.decode", "profile.tag.job", "profile.tag.inventory", "profile.tag.artifact_write", "profile.tag.commit",
 )
 var exportSpanNames = stringSet(
 	"export.request", "export.admission", "export.start", "export.status", "export.download_url", "export.authorize",
 	"export.worker", "export.worker.mark_running", "export.worker.inventory", "export.worker.archive",
-	"export.worker.zip_close", "export.worker.temp_verify", "export.worker.ready_copy",
+	"export.worker.zip_close", "export.worker.upload_close", "export.worker.temp_verify", "export.worker.ready_copy",
 	"export.worker.ready_verify", "export.worker.complete", "export.worker.fail",
 	"export.worker.ready_attributes",
 )
@@ -130,6 +131,7 @@ var pipelineSpanNames = map[string]struct{}{
 var pipelineOutcomeValues = map[string]struct{}{
 	"success": {}, "failure": {}, "canceled": {}, "timeout": {}, "accepted": {}, "pending": {},
 	"skipped": {}, "unknown": {}, "degraded": {}, "committed": {}, "not_committed": {}, "not_applicable": {}, "rejected": {}, "no_op": {},
+	"confirmation_required": {}, "existing": {}, "waiting_manual": {}, "superseded": {}, "not_active": {},
 }
 
 // StartPipelineSpan starts one allowlisted BFF Pipeline operation or phase.
@@ -176,7 +178,11 @@ func StartAuthSpan(ctx context.Context, name string) (context.Context, trace.Spa
 
 func StartProfileSpan(ctx context.Context, name string) (context.Context, trace.Span) {
 	if _, detail := profileDetailSpanNames[name]; detail {
-		if budget, ok := ctx.Value(profileDetailBudgetKey{}).(*ProfileDetailBudget); ok && budget != nil && !budget.take() {
+		if name == "profile.tag.evaluate" {
+			if budget, ok := ctx.Value(profileDetailBudgetKey{}).(*ProfileDetailBudget); ok && budget != nil && !budget.take() {
+				return context.WithValue(ctx, profileDetailSuppressedKey{}, true), trace.SpanFromContext(context.Background())
+			}
+		} else if suppressed, _ := ctx.Value(profileDetailSuppressedKey{}).(bool); suppressed {
 			return ctx, trace.SpanFromContext(context.Background())
 		}
 	}
@@ -261,14 +267,15 @@ func SetProfileOutcome(span trace.Span, key, outcome string) {
 		outcome = "unknown"
 	}
 	switch key {
-	case "profile.claim.outcome", "profile.execution.outcome", "profile.commit.outcome", "profile.provider.outcome", "profile.artifact.outcome":
+	case "profile.claim.outcome", "profile.execution.outcome", "profile.commit.outcome", "profile.provider.outcome", "profile.artifact.outcome",
+		"profile.model.outcome", "profile.decode.outcome", "profile.validation.outcome", "profile.active.outcome", "profile.candidate.outcome":
 		span.SetAttributes(attribute.String(key, outcome))
 	}
 }
 
 func SetProfileStage(span trace.Span, stage, outcome string) {
 	switch stage {
-	case "transport", "decode", "model", "answers", "validation":
+	case "transport", "decode", "model", "answers", "validation", "output_decode", "accounting", "artifact_encode":
 	default:
 		return
 	}
@@ -282,13 +289,40 @@ func SetProfileStage(span trace.Span, stage, outcome string) {
 
 func SetProfileStatus(span trace.Span, status string) {
 	switch status {
-	case "running", "complete", "waiting_manual", "superseded", "exhausted", "retry_wait", "invalid", "unknown":
+	case "pending", "scheduled", "running", "complete", "waiting_manual", "superseded", "exhausted", "retry_wait", "invalid", "incomplete", "ready", "failed", "unknown":
 	default:
 		status = "unknown"
 	}
 	if span != nil && span.IsRecording() {
 		span.SetAttributes(attribute.String("profile.work.status", status))
 	}
+}
+
+func SetProfileWorkKind(span trace.Span, kind string) {
+	if span == nil || !span.IsRecording() {
+		return
+	}
+	switch kind {
+	case "derive", "tag", "compile":
+		span.SetAttributes(attribute.String("profile.work.kind", kind))
+	}
+}
+
+func SetProfileProviderHost(span trace.Span, provider, scheme string) {
+	if span == nil || !span.IsRecording() {
+		return
+	}
+	switch provider {
+	case "deepseek", "typesafe_systemone":
+	default:
+		return
+	}
+	switch scheme {
+	case "http", "https":
+	default:
+		scheme = "other"
+	}
+	span.SetAttributes(attribute.String("profile.provider", provider), attribute.String("profile.provider.scheme", scheme))
 }
 
 func SetProfileCount(span trace.Span, key string, count int) {
@@ -324,11 +358,22 @@ func SetExportCount(span trace.Span, key string, count int) {
 	}
 }
 
+func SetExportUploadTarget(span trace.Span, target string) {
+	if span == nil || !span.IsRecording() {
+		return
+	}
+	switch target {
+	case "temporary", "ready":
+		span.SetAttributes(attribute.String("export.upload.target", target))
+	}
+}
+
 type ProfileDetailBudget struct {
 	mu                         sync.Mutex
 	limit, started, suppressed int
 }
 type profileDetailBudgetKey struct{}
+type profileDetailSuppressedKey struct{}
 
 var profileDetailSpanNames = stringSet("profile.tag.evaluate", "profile.tag.transport", "profile.tag.decode")
 
@@ -365,9 +410,10 @@ func (b *ProfileDetailBudget) Suppressed() int {
 
 type authGuardStateKey struct{}
 type authGuardState struct {
-	mu       sync.Mutex
-	recorded bool
-	outcome  string
+	mu             sync.Mutex
+	recorded       bool
+	outcome        string
+	requestOutcome string
 }
 
 // RecordAuthGuard records a guard result only when the current request owns an
@@ -385,6 +431,34 @@ func RecordAuthGuard(ctx context.Context, stage, outcome string) {
 	SetAuthGuardOutcome(trace.SpanFromContext(ctx), stage, outcome)
 	state.recorded = true
 	state.outcome = outcome
+}
+
+// RecordAuthRequestOutcome keeps an explicit callback result on the owning
+// request so redirects can report their logical result independently of HTTP.
+func RecordAuthRequestOutcome(ctx context.Context, outcome string) {
+	switch outcome {
+	case "success", "failure", "rejected", "cancelled", "confirmation_required":
+	default:
+		outcome = "unknown"
+	}
+	state, ok := ctx.Value(authGuardStateKey{}).(*authGuardState)
+	if !ok || state == nil {
+		return
+	}
+	state.mu.Lock()
+	state.requestOutcome = outcome
+	state.mu.Unlock()
+}
+
+// AuthRequestOutcome returns the finite callback result recorded on a request.
+func AuthRequestOutcome(ctx context.Context) string {
+	state, ok := ctx.Value(authGuardStateKey{}).(*authGuardState)
+	if !ok || state == nil {
+		return ""
+	}
+	state.mu.Lock()
+	defer state.mu.Unlock()
+	return state.requestOutcome
 }
 
 // AuthCORSObserver observes the standard CORS middleware's decision without
@@ -427,6 +501,7 @@ func AuthHTTPMiddleware() gin.HandlerFunc {
 		state.mu.Lock()
 		recorded := state.recorded
 		previousOutcome := state.outcome
+		requestOutcome := state.requestOutcome
 		state.mu.Unlock()
 		if !recorded || (status >= 400 && (previousOutcome == "passed" || previousOutcome == "skipped")) {
 			outcome := "passed"
@@ -441,10 +516,13 @@ func AuthHTTPMiddleware() gin.HandlerFunc {
 			}
 			RecordAuthGuard(ctx, stage, outcome)
 		}
-		outcome := "success"
+		outcome := requestOutcome
+		if outcome == "" {
+			outcome = "success"
+		}
 		if status >= 500 {
 			outcome = "failure"
-		} else if status >= 400 {
+		} else if status >= 400 && requestOutcome == "" {
 			outcome = "rejected"
 		}
 		FinishAuthSpan(span, outcome)

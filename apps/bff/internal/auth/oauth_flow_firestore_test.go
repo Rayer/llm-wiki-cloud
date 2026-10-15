@@ -22,6 +22,10 @@ import (
 	"github.com/gin-gonic/gin"
 	"github.com/golang-jwt/jwt/v5"
 	"github.com/rayer/llm-wiki-bff/internal/config"
+	"github.com/rayer/llm-wiki-bff/internal/observability"
+	"go.opentelemetry.io/otel"
+	sdktrace "go.opentelemetry.io/otel/sdk/trace"
+	"go.opentelemetry.io/otel/sdk/trace/tracetest"
 	"golang.org/x/crypto/bcrypt"
 	"google.golang.org/api/iterator"
 )
@@ -135,12 +139,50 @@ func seedOAuthTransaction(t *testing.T, service *GoogleOAuthService, state, brow
 func oauthCallbackRequest(t *testing.T, service *GoogleOAuthService, state, browser, code string, kind OAuthFlowKind) (*httptest.ResponseRecorder, *http.Request) {
 	t.Helper()
 	router := gin.New()
-	router.GET("/callback", service.CallbackHandler(kind))
+	router.Use(observability.AuthHTTPMiddleware())
+	callbackURL, err := url.Parse(service.redirectURL(kind))
+	if err != nil {
+		t.Fatal(err)
+	}
+	callbackPath := callbackURL.Path
+	router.GET(callbackPath, service.CallbackHandler(kind))
 	recorder := httptest.NewRecorder()
-	request := httptest.NewRequest(http.MethodGet, "/callback?state="+url.QueryEscape(state)+"&code="+url.QueryEscape(code), nil)
+	request := httptest.NewRequest(http.MethodGet, callbackPath+"?state="+url.QueryEscape(state)+"&code="+url.QueryEscape(code), nil)
 	request.AddCookie(&http.Cookie{Name: oauthCookieName, Value: browser})
 	router.ServeHTTP(recorder, request)
 	return recorder, request
+}
+
+func oauthTraceExporter(t *testing.T) *tracetest.InMemoryExporter {
+	t.Helper()
+	exporter := tracetest.NewInMemoryExporter()
+	provider := sdktrace.NewTracerProvider(sdktrace.WithSyncer(exporter))
+	previous := otel.GetTracerProvider()
+	otel.SetTracerProvider(provider)
+	t.Cleanup(func() {
+		otel.SetTracerProvider(previous)
+		_ = provider.Shutdown(context.Background())
+	})
+	return exporter
+}
+
+func assertOAuthCallbackOutcomes(t *testing.T, exporter *tracetest.InMemoryExporter, before int, rootName, want string) {
+	t.Helper()
+	spans := exporter.GetSpans()
+	if before > len(spans) {
+		t.Fatalf("invalid trace span offset %d of %d", before, len(spans))
+	}
+	got := map[string]string{}
+	for _, span := range spans[before:] {
+		for _, attr := range span.Attributes {
+			if attr.Key == "auth.outcome" {
+				got[span.Name] = attr.Value.AsString()
+			}
+		}
+	}
+	if got[rootName] != want || got["auth.google.identity_commit"] != want {
+		t.Fatalf("OAuth logical outcomes = %#v, want %s and identity_commit %q", got, rootName, want)
+	}
 }
 
 func transactionForState(t *testing.T, client *firestore.Client, state string) (string, oauthTransaction) {
@@ -204,7 +246,10 @@ func TestGoogleOAuthLoginCallbackJITProvisionAndReplayWithFakeProvider(t *testin
 	provider.tokens[code] = fakeGoogleToken{nonce: transaction.Nonce, subject: "login-subject-g2", email: "jit.g2@example.test", emailVerified: true}
 	provider.mu.Unlock()
 
+	exporter := oauthTraceExporter(t)
+	beforeSpans := len(exporter.GetSpans())
 	recorder, request := oauthCallbackRequest(t, service, state, browser, code, OAuthFlowLogin)
+	assertOAuthCallbackOutcomes(t, exporter, beforeSpans, "auth.google.login_callback", "success")
 	if recorder.Code != http.StatusFound || recorder.Header().Get("Location") != service.cfg.CompletionURL {
 		t.Fatalf("callback status = %d, body = %s", recorder.Code, recorder.Body.String())
 	}
@@ -254,7 +299,7 @@ func TestGoogleOAuthLoginCallbackJITProvisionAndReplayWithFakeProvider(t *testin
 	replayReq := request.Clone(request.Context())
 	replayReq.Header = request.Header.Clone()
 	replayRouter := gin.New()
-	replayRouter.GET("/callback", service.CallbackHandler(OAuthFlowLogin))
+	replayRouter.GET(request.URL.Path, service.CallbackHandler(OAuthFlowLogin))
 	replayRouter.ServeHTTP(replay, replayReq)
 	if replay.Code != http.StatusFound || provider.callCount() != 1 {
 		t.Fatalf("replay status=%d provider_calls=%d body=%s", replay.Code, provider.callCount(), replay.Body.String())
@@ -644,7 +689,10 @@ func TestGoogleOAuthLinkStartCallbackCancelAndConfirmWithFreshProof(t *testing.T
 	provider.mu.Lock()
 	provider.tokens["cancel-code-g2"] = fakeGoogleToken{nonce: transaction.Nonce, subject: "cancel-subject-g2", email: "cancel.g2@example.test", emailVerified: true}
 	provider.mu.Unlock()
+	exporter := oauthTraceExporter(t)
+	beforeSpans := len(exporter.GetSpans())
 	cancelCallback, _ := oauthCallbackRequest(t, service, state, oauthCookie.Value, "cancel-code-g2", OAuthFlowLink)
+	assertOAuthCallbackOutcomes(t, exporter, beforeSpans, "auth.google.link_callback", "confirmation_required")
 	if cancelCallback.Code != http.StatusFound || cancelCallback.Header().Get("Location") != service.cfg.CompletionURL {
 		t.Fatalf("cancel callback status=%d body=%s", cancelCallback.Code, cancelCallback.Body.String())
 	}
@@ -764,7 +812,17 @@ func TestGoogleOAuthLoginFailureBranchesWriteNoIdentityBoundary(t *testing.T) {
 			provider.mu.Lock()
 			provider.tokens[code] = fakeGoogleToken{nonce: transaction.Nonce, subject: test.providerSub, email: test.email, emailVerified: test.emailVerified}
 			provider.mu.Unlock()
+			var exporter *tracetest.InMemoryExporter
+			beforeSpans := 0
+			if test.name == "registration disabled" {
+				exporter = oauthTraceExporter(t)
+				beforeSpans = len(exporter.GetSpans())
+			}
 			recorder, _ := oauthCallbackRequest(t, service, state, browser, code, OAuthFlowLogin)
+			if test.name == "registration disabled" {
+				// Capture the actual callback and its identity child, including the 302.
+				assertOAuthCallbackOutcomes(t, exporter, beforeSpans, "auth.google.login_callback", "rejected")
+			}
 			// The fixed response intentionally does not contain the internal outcome.
 			if recorder.Code != test.wantStatus {
 				t.Fatalf("status=%d body=%s", recorder.Code, recorder.Body.String())

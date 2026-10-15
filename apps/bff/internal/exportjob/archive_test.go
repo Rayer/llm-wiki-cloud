@@ -7,10 +7,18 @@ import (
 	"crypto/sha256"
 	"encoding/hex"
 	"encoding/json"
+	"errors"
 	"io"
 	"strings"
 	"testing"
 	"time"
+
+	"github.com/rayer/llm-wiki-bff/internal/observability"
+	"go.opentelemetry.io/otel"
+	"go.opentelemetry.io/otel/attribute"
+	"go.opentelemetry.io/otel/codes"
+	sdktrace "go.opentelemetry.io/otel/sdk/trace"
+	"go.opentelemetry.io/otel/sdk/trace/tracetest"
 )
 
 func TestWriteArchiveStreamsFilesAndIncludesManifest(t *testing.T) {
@@ -91,6 +99,86 @@ func TestSafeArchivePathRejectsTraversalRootAndControls(t *testing.T) {
 		if safeArchivePath(value) {
 			t.Errorf("safeArchivePath(%q) = true, want false", value)
 		}
+	}
+}
+
+type failCentralDirectoryWriter struct{ bytes.Buffer }
+
+func (w *failCentralDirectoryWriter) Write(data []byte) (int, error) {
+	if bytes.Contains(data, []byte("PK\x01\x02")) {
+		return 0, errors.New("injected ZIP finalization failure")
+	}
+	return w.Buffer.Write(data)
+}
+
+func TestZipCloseSpanWrapsActualCentralDirectoryFinalization(t *testing.T) {
+	exporter := tracetest.NewSpanRecorder()
+	provider := sdktrace.NewTracerProvider(sdktrace.WithSpanProcessor(exporter))
+	previous := otel.GetTracerProvider()
+	otel.SetTracerProvider(provider)
+	t.Cleanup(func() {
+		otel.SetTracerProvider(previous)
+		_ = provider.Shutdown(context.Background())
+	})
+	ctx, workerSpan := observability.StartExportSpan(context.Background(), "export.worker")
+	writer := &failCentralDirectoryWriter{}
+	archiveErr := runExportPhase(ctx, "export.worker.archive", func(ctx context.Context) error {
+		return writeObservedArchive(ctx, writer, ExportMeta{FormatVersion: 1, ExportID: "export-a", ProjectID: "project-a", SnapshotAt: time.Now().UTC(), Scope: ScopeRaw}, []FileSource{{
+			Path: "raw/input.txt", Open: func(context.Context) (io.ReadCloser, error) { return io.NopCloser(strings.NewReader("body")), nil },
+		}})
+	})
+	observability.FinishExportSpan(workerSpan, "failure")
+	if archiveErr == nil || !strings.Contains(archiveErr.Error(), "injected ZIP finalization failure") {
+		t.Fatalf("archive error=%v, want actual zip close failure", archiveErr)
+	}
+	var archiveSpan, zipCloseSpan sdktrace.ReadOnlySpan
+	for _, span := range exporter.Ended() {
+		if span.Name() == "export.worker.archive" {
+			archiveSpan = span
+		}
+		if span.Name() == "export.worker.zip_close" {
+			zipCloseSpan = span
+		}
+	}
+	if archiveSpan == nil || zipCloseSpan == nil || zipCloseSpan.Parent().SpanID() != archiveSpan.SpanContext().SpanID() || zipCloseSpan.Status().Code != codes.Error {
+		t.Fatalf("ZIP close failure was not observed at real boundary: archive=%+v zip_close=%+v", archiveSpan, zipCloseSpan)
+	}
+}
+
+func TestUploadCloseSpanSeparatesStorageTargetsAndErrors(t *testing.T) {
+	exporter := tracetest.NewSpanRecorder()
+	provider := sdktrace.NewTracerProvider(sdktrace.WithSpanProcessor(exporter))
+	previous := otel.GetTracerProvider()
+	otel.SetTracerProvider(provider)
+	t.Cleanup(func() {
+		otel.SetTracerProvider(previous)
+		_ = provider.Shutdown(context.Background())
+	})
+	ctx, workerSpan := observability.StartExportSpan(context.Background(), "export.worker")
+	closeFailure := errors.New("injected upload close failure")
+	if err := runUploadClose(ctx, "temporary", func() error { return closeFailure }); !errors.Is(err, closeFailure) {
+		t.Fatalf("temporary upload close error=%v", err)
+	}
+	if err := runUploadClose(ctx, "ready", func() error { return nil }); err != nil {
+		t.Fatalf("ready upload close error=%v", err)
+	}
+	observability.FinishExportSpan(workerSpan, "failure")
+	seen := map[string]bool{}
+	for _, span := range exporter.Ended() {
+		if span.Name() != "export.worker.upload_close" {
+			continue
+		}
+		attrs := map[string]string{}
+		for _, attr := range span.Attributes() {
+			if attr.Value.Type() == attribute.STRING {
+				attrs[string(attr.Key)] = attr.Value.AsString()
+			}
+		}
+		key := attrs["export.upload.target"] + ":" + attrs["export.phase.outcome"]
+		seen[key] = true
+	}
+	if !seen["temporary:failure"] || !seen["ready:success"] {
+		t.Fatalf("upload close target/outcome spans=%v", seen)
 	}
 }
 

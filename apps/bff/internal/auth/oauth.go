@@ -482,9 +482,9 @@ func (s *GoogleOAuthService) CallbackHandler(routeKind OAuthFlowKind) gin.Handle
 		}
 		identityCtx, identitySpan := observability.StartAuthSpan(c.Request.Context(), "auth.google.identity_commit")
 		defer func() {
-			outcome := "success"
-			if c.Writer.Status() >= 400 {
-				outcome = "failure"
+			outcome := observability.AuthRequestOutcome(identityCtx)
+			if outcome == "" {
+				outcome = "success"
 			}
 			observability.FinishAuthSpan(identitySpan, outcome)
 		}()
@@ -874,16 +874,19 @@ func (s *GoogleOAuthService) redirectOAuthFailure(c *gin.Context, browserValue s
 
 func (s *GoogleOAuthService) redirectOAuthResult(c *gin.Context, browserValue string, kind OAuthFlowKind, status string, outcome oauthOutcome, jitProvisioned bool, refreshToken string) {
 	if s == nil || s.fs == nil || browserValue == "" {
+		observability.RecordAuthRequestOutcome(c.Request.Context(), "failure")
 		writeOAuthFailure(c.Writer, http.StatusServiceUnavailable, oauthOutcomeUnavailable, kind)
 		return
 	}
 	completionURL, err := s.fixedCompletionURL()
 	if err != nil {
+		observability.RecordAuthRequestOutcome(c.Request.Context(), "failure")
 		writeOAuthFailure(c.Writer, http.StatusServiceUnavailable, oauthOutcomeUnavailable, kind)
 		return
 	}
 	resultID, err := randomOpaqueValue(24)
 	if err != nil {
+		observability.RecordAuthRequestOutcome(c.Request.Context(), "failure")
 		writeOAuthFailure(c.Writer, http.StatusInternalServerError, oauthOutcomeUnavailable, kind)
 		return
 	}
@@ -898,9 +901,11 @@ func (s *GoogleOAuthService) redirectOAuthResult(c *gin.Context, browserValue st
 		JITProvisioned: jitProvisioned, CreatedAt: now, ExpiresAt: now.Add(oauthCompletionTTL),
 	}
 	if _, err := scopedfirestore.Collection(s.fs, oauthCompletionsCollection).Doc(resultID).Create(c.Request.Context(), result); err != nil {
+		observability.RecordAuthRequestOutcome(c.Request.Context(), "failure")
 		writeOAuthFailure(c.Writer, http.StatusServiceUnavailable, oauthOutcomeUnavailable, kind)
 		return
 	}
+	observability.RecordAuthRequestOutcome(c.Request.Context(), oauthTraceOutcome(status, outcome))
 	log.Printf(`{"event":"auth_oauth","provider":"google","flow_kind":%q,"outcome":%q,"support_ref":%q,"timestamp":%q}`, boundedFlowKind(kind), outcome, supportRef, time.Now().UTC().Format(time.RFC3339))
 	setOAuthCompletionCookie(c, resultID, int(oauthCompletionTTL.Seconds()))
 	c.Header("Cache-Control", "no-store")
@@ -908,6 +913,26 @@ func (s *GoogleOAuthService) redirectOAuthResult(c *gin.Context, browserValue st
 		setRefreshTokenCookieWithPolicy(c, refreshToken, int(refreshTokenTTL.Seconds()), HostRefreshCookiePolicy())
 	}
 	c.Redirect(http.StatusFound, completionURL)
+}
+
+func oauthTraceOutcome(status string, reason oauthOutcome) string {
+	switch status {
+	case "success":
+		return "success"
+	case "confirmation_required":
+		return "confirmation_required"
+	case "cancelled":
+		return "cancelled"
+	case "failure":
+		switch reason {
+		case oauthOutcomeUnavailable, oauthOutcomeProvider:
+			return "failure"
+		default:
+			return "rejected"
+		}
+	default:
+		return "unknown"
+	}
 }
 
 func (s *GoogleOAuthService) fixedCompletionURL() (string, error) {

@@ -28,8 +28,8 @@ func (*localExportAdmissionProbe) Snapshot(context.Context, string, string) (exp
 func (*localExportAdmissionProbe) MarkRunning(context.Context, string, string, string) error {
 	return nil
 }
-func (*localExportAdmissionProbe) Fail(context.Context, string, string, string, string, string) error {
-	return nil
+func (*localExportAdmissionProbe) Fail(context.Context, string, string, string, string, string) (exportjob.FailResult, error) {
+	return exportjob.FailResult{}, nil
 }
 func (*localExportAdmissionProbe) Complete(context.Context, string, string, string, time.Time, time.Time, int64) error {
 	return nil

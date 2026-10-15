@@ -118,10 +118,8 @@ func (h *Handler) RunProfileDerivation(ctx context.Context, userID, projectID st
 func (h *Handler) RunProfileCompileDerivation(ctx context.Context, userID, projectID string, success ProfileCompileSuccess, revision int64, requirementsDigest string, provider *profilederive.Provider) (result ProfileState, resultErr error) {
 	ctx, compileSpan := observability.StartProfileSpan(ctx, "profile.compile")
 	defer func() {
-		outcome := "success"
-		if resultErr != nil {
-			outcome = "failure"
-		}
+		outcome := profileCompileRootOutcome(result, resultErr)
+		observability.SetProfileOutcome(compileSpan, "profile.candidate.outcome", outcome)
 		observability.FinishProfileSpan(compileSpan, outcome)
 	}()
 	project, err := h.AuthorizeProject(ctx, userID, projectID, ProjectEdit)
@@ -153,6 +151,8 @@ func (h *Handler) RunProfileCompileDerivation(ctx context.Context, userID, proje
 		return ProfileState{}, errors.New("successful compile result is not the current committed generation")
 	}
 	if c := state.Candidate; c != nil && c.Source == "compile_auto" && c.BaseRevision == revision && c.ContentGeneration == generationID && c.RequirementsDigest == currentDigest {
+		state.observationOutcome = "existing"
+		observability.SetProfileOutcome(compileSpan, "profile.candidate.outcome", "existing")
 		return state, nil
 	}
 	if len(state.Requirements) == 0 {
@@ -160,6 +160,8 @@ func (h *Handler) RunProfileCompileDerivation(ctx context.Context, userID, proje
 			return ProfileState{}, errProfileBootstrapNotCurrent
 		}
 		if state.Active == nil {
+			state.observationOutcome = "no_op"
+			observability.SetProfileOutcome(compileSpan, "profile.candidate.outcome", "no_op")
 			return state, nil
 		}
 	}
@@ -229,12 +231,10 @@ func (h *Handler) RunProfileCompileDerivation(ctx context.Context, userID, proje
 	if state.Active != nil {
 		commitCtx, commitSpan := observability.StartProfileSpan(ctx, "profile.compile.commit")
 		committed, commitErr := h.CompleteProfileCompileCandidate(commitCtx, project.UserID, project.ProjectID, generationID, revision, currentDigest, profileDerivedRefFromArtifact(derived.DictionaryRef), preview)
-		commitOutcome := "committed"
-		if commitErr != nil {
-			commitOutcome = "unknown"
-		}
+		commitOutcome := profileCandidateCommitOutcome(committed, commitErr)
 		observability.SetProfileOutcome(commitSpan, "profile.commit.outcome", commitOutcome)
-		observability.FinishProfileSpan(commitSpan, map[bool]string{true: "failure", false: "success"}[commitErr != nil])
+		observability.SetProfileOutcome(commitSpan, "profile.candidate.outcome", commitOutcome)
+		observability.FinishProfileSpan(commitSpan, commitOutcome)
 		return committed, commitErr
 	}
 	bootstrapRef := *success.consumedBootstrapGuidance
@@ -265,13 +265,40 @@ func (h *Handler) RunProfileCompileDerivation(ctx context.Context, userID, proje
 	commitCtx, commitSpan := observability.StartProfileSpan(ctx, "profile.compile.commit")
 	committed, commitErr := h.CompleteProfileBootstrapCompileCandidate(commitCtx, project.UserID, project.ProjectID, success, revision, currentDigest,
 		profileDerivedRefFromArtifact(derived.DictionaryRef), profileDerivedRefFromArtifact(guidanceRef), preview)
-	commitOutcome := "committed"
-	if commitErr != nil {
-		commitOutcome = "unknown"
-	}
+	commitOutcome := profileCandidateCommitOutcome(committed, commitErr)
 	observability.SetProfileOutcome(commitSpan, "profile.commit.outcome", commitOutcome)
-	observability.FinishProfileSpan(commitSpan, map[bool]string{true: "failure", false: "success"}[commitErr != nil])
+	observability.SetProfileOutcome(commitSpan, "profile.candidate.outcome", commitOutcome)
+	observability.FinishProfileSpan(commitSpan, commitOutcome)
 	return committed, commitErr
+}
+
+func profileCandidateCommitOutcome(state ProfileState, err error) string {
+	if err != nil {
+		if state.observationOutcome == "superseded" {
+			return "superseded"
+		}
+		return "unknown"
+	}
+	if state.observationOutcome == "" {
+		return "committed"
+	}
+	return state.observationOutcome
+}
+
+func profileCompileRootOutcome(state ProfileState, err error) string {
+	if err == nil {
+		if state.observationOutcome == "" {
+			return "success"
+		}
+		return state.observationOutcome
+	}
+	if state.observationOutcome == "superseded" {
+		return "superseded"
+	}
+	if state.observationOutcome != "" {
+		return "unknown"
+	}
+	return "failure"
 }
 
 type profileDerivationTransitions struct {

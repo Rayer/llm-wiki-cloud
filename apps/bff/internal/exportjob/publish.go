@@ -9,6 +9,7 @@ import (
 	"time"
 
 	"cloud.google.com/go/storage"
+	"github.com/rayer/llm-wiki-bff/internal/observability"
 )
 
 func (s *CloudArchiveStore) writeAndPublish(ctx context.Context, userID, projectID string, job Job, snapshotAt time.Time, files []FileSource) (time.Time, int64, error) {
@@ -32,11 +33,9 @@ func (s *CloudArchiveStore) writeAndPublish(ctx context.Context, userID, project
 	meta := ExportMeta{FormatVersion: 1, ExportID: job.ExportID, ProjectID: projectID, SnapshotAt: snapshotAt, Scope: job.Scope}
 	uploadChecksum := crc32.New(crc32.MakeTable(crc32.Castagnoli))
 	writeErr := runExportPhase(ctx, "export.worker.archive", func(ctx context.Context) error {
-		return WriteArchive(ctx, io.MultiWriter(writer, uploadChecksum), meta, files)
+		return writeObservedArchive(ctx, io.MultiWriter(writer, uploadChecksum), meta, files)
 	})
-	closeErr := runExportPhase(ctx, "export.worker.zip_close", func(context.Context) error {
-		return writer.Close()
-	})
+	closeErr := runUploadClose(ctx, "temporary", writer.Close)
 	if err := errors.Join(writeErr, closeErr); err != nil {
 		_ = tmp.Delete(context.WithoutCancel(ctx))
 		return time.Time{}, 0, err
@@ -77,7 +76,7 @@ func (s *CloudArchiveStore) writeAndPublish(ctx context.Context, userID, project
 		ready.Metadata = metadata
 		_, copyErr := io.Copy(io.MultiWriter(ready, readyChecksum), tmpReader)
 		readCloseErr := tmpReader.Close()
-		readyCloseErr := ready.Close()
+		readyCloseErr := runUploadClose(ctx, "ready", ready.Close)
 		return errors.Join(copyErr, readCloseErr, readyCloseErr)
 	}); err != nil {
 		return time.Time{}, 0, err
@@ -98,6 +97,25 @@ func (s *CloudArchiveStore) writeAndPublish(ctx context.Context, userID, project
 	}
 	_ = tmp.Generation(tmpAttrs.Generation).Delete(ctx)
 	return readyAttrs.CustomTime.UTC(), readyAttrs.Size, nil
+}
+
+func writeObservedArchive(ctx context.Context, dst io.Writer, meta ExportMeta, files []FileSource) error {
+	return writeArchive(ctx, dst, meta, files, func(closeZip func() error) error {
+		return runExportPhase(ctx, "export.worker.zip_close", func(context.Context) error { return closeZip() })
+	})
+}
+
+func runUploadClose(ctx context.Context, target string, closeUpload func() error) error {
+	_, span := observability.StartExportSpan(ctx, "export.worker.upload_close")
+	observability.SetExportUploadTarget(span, target)
+	err := closeUpload()
+	outcome := "success"
+	if err != nil {
+		outcome = "failure"
+	}
+	observability.SetExportOutcome(span, "export.phase.outcome", outcome)
+	observability.FinishExportSpan(span, outcome)
+	return err
 }
 
 func verifyUploadedArchive(ctx context.Context, object *storage.ObjectHandle, expectedSize int64, expectedChecksum uint32) error {
