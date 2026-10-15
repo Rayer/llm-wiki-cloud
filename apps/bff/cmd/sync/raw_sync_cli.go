@@ -35,6 +35,7 @@ type syncDataAPIClient struct {
 	origin     string
 	httpClient *http.Client
 	authClient *cliAPIClient
+	observer   *rawSyncObservation
 	binding    vaultBindingConfig
 }
 
@@ -44,11 +45,16 @@ type syncAPIResponse struct {
 	body   io.ReadCloser
 }
 
-type syncDataStatusError struct{ status int }
+type syncDataStatusError struct {
+	status       int
+	diagnosticID string
+}
 
 func (e syncDataStatusError) Error() string {
 	return fmt.Sprintf("Sync data service returned HTTP %d", e.status)
 }
+
+func (e syncDataStatusError) DiagnosticID() string { return e.diagnosticID }
 
 type remoteRawPage struct {
 	Files         []store.RawSyncFile `json:"files"`
@@ -177,46 +183,69 @@ func runRawPush(args []string) error {
 	if binding.BindingID == "" {
 		return errors.New("this vault has no active sync binding; run `lwc-sync init` or `lwc-sync binding reauthorize`")
 	}
-	return withStoredCredentials(binding.Host, func(authClient *cliAPIClient, _ *cliLocalCredentials) error {
-		local, err := scanLocalRawFiles(context.Background(), *vault)
+	observer := newRawSyncObservation()
+	commandErr := withStoredCredentials(binding.Host, func(authClient *cliAPIClient, _ *cliLocalCredentials) error {
+		authClient.observer = observer
+		local, err := observer.scanLocalRawFiles(context.Background(), *vault)
 		if err != nil {
 			return err
 		}
 		defer local.Close()
 		var locator syncServiceLocator
 		if err := authClient.request(context.Background(), http.MethodGet, "/api/v1/auth/cli/sync-service", nil, &locator); err != nil {
+			observer.recordError(err)
 			return err
 		}
 		dataClient, err := newSyncDataAPIClient(locator.Origin, authClient, binding)
 		if err != nil {
 			return err
 		}
-		remote, err := dataClient.listAll(context.Background())
+		dataClient.observer = observer
+		observer.recordRemoteList(false)
+		var remote map[string]store.RawSyncFile
+		err = observer.measure(rawSyncStageRemote, func() error {
+			var listErr error
+			remote, listErr = dataClient.listAll(context.Background())
+			return listErr
+		})
 		if err != nil {
+			observer.recordError(err)
 			return err
 		}
 		result := rawPushResult{failed: make([]string, 0)}
-		if err := validateRawSyncUnion(local.Files, remote); err != nil {
+		var capacityCount int
+		var capacityBytes int64
+		var uploadFiles []localRawFile
+		if err := observer.measure(rawSyncStageDiff, func() error {
+			if err := validateRawSyncUnion(local.Files, remote); err != nil {
+				return err
+			}
+			var usageErr error
+			capacityCount, capacityBytes, usageErr = rawSyncRemoteUsage(remote)
+			if usageErr != nil {
+				return usageErr
+			}
+			uploadFiles = append([]localRawFile(nil), local.Files...)
+			sort.SliceStable(uploadFiles, func(i, j int) bool {
+				left, leftExists := remote[uploadFiles[i].Path]
+				right, rightExists := remote[uploadFiles[j].Path]
+				leftShrinks := leftExists && uploadFiles[i].Size < left.Size
+				rightShrinks := rightExists && uploadFiles[j].Size < right.Size
+				return leftShrinks && !rightShrinks
+			})
+			return nil
+		}); err != nil {
 			return err
 		}
-		capacityCount, capacityBytes, err := rawSyncRemoteUsage(remote)
-		if err != nil {
-			return err
-		}
-		uploadFiles := append([]localRawFile(nil), local.Files...)
-		sort.SliceStable(uploadFiles, func(i, j int) bool {
-			left, leftExists := remote[uploadFiles[i].Path]
-			right, rightExists := remote[uploadFiles[j].Path]
-			leftShrinks := leftExists && uploadFiles[i].Size < left.Size
-			rightShrinks := rightExists && uploadFiles[j].Size < right.Size
-			return leftShrinks && !rightShrinks
-		})
 		for _, file := range uploadFiles {
-			if err := verifyLocalRawFile(local, file); err != nil {
+			if err := observer.measure(rawSyncStageDiff, func() error {
+				return verifyLocalRawFileObserved(local, file, observer)
+			}); err != nil {
 				result.failed = append(result.failed, file.Path+": local source changed after inventory")
 				fmt.Printf("failed %s\n", file.Path)
 				continue
 			}
+			observer.recordComparedFile()
 			remoteFile, exists := remote[file.Path]
 			if exists && remoteFile.SHA256 == file.SHA256 {
 				result.skipped++
@@ -238,11 +267,20 @@ func runRawPush(args []string) error {
 			if exists {
 				file.Generation = remoteFile.Generation
 			}
-			err := dataClient.uploadFile(context.Background(), local, file)
+			err := observer.measure(rawSyncStageUpload, func() error {
+				return dataClient.uploadFile(context.Background(), local, file)
+			})
 			capacityReconciled := false
 			if err != nil && isAmbiguousTransfer(err) {
-				readback, readErr := dataClient.listAll(context.Background())
+				observer.recordRemoteList(true)
+				var readback map[string]store.RawSyncFile
+				readErr := observer.measure(rawSyncStageReadback, func() error {
+					var listErr error
+					readback, listErr = dataClient.listAll(context.Background())
+					return listErr
+				})
 				if readErr != nil {
+					observer.recordError(readErr)
 					capacityCount, capacityBytes = reserveRawSyncPossibleUsage(capacityCount, capacityBytes, exists, remoteFile.Size, file.Size)
 					result.failed = append(result.failed, file.Path+": ambiguous upload response; capacity was reserved and remaining writes stopped")
 					fmt.Printf("failed %s\n", file.Path)
@@ -266,6 +304,7 @@ func runRawPush(args []string) error {
 				}
 			}
 			if err != nil {
+				observer.recordError(err)
 				result.failed = append(result.failed, file.Path+": "+err.Error())
 				fmt.Printf("failed %s\n", file.Path)
 				continue
@@ -275,7 +314,9 @@ func runRawPush(args []string) error {
 			if !capacityReconciled {
 				capacityCount, capacityBytes = nextCount, nextBytes+file.Size
 			}
-			if err := verifyLocalRawFile(local, file); err != nil {
+			if err := observer.measure(rawSyncStageUpload, func() error {
+				return verifyLocalRawFileObserved(local, file, observer)
+			}); err != nil {
 				result.failed = append(result.failed, file.Path+": local source changed during upload")
 				fmt.Printf("failed %s\n", file.Path)
 				continue
@@ -289,7 +330,7 @@ func runRawPush(args []string) error {
 			}
 		}
 		if *pushAndSync && len(result.failed) == 0 {
-			freshLocal, err := scanLocalRawFiles(context.Background(), *vault)
+			freshLocal, err := observer.scanLocalRawFiles(context.Background(), *vault)
 			if err == nil {
 				defer freshLocal.Close()
 			}
@@ -300,8 +341,15 @@ func runRawPush(args []string) error {
 				result.failed = append(result.failed, "local inventory changed: "+err.Error())
 			}
 			if len(result.failed) == 0 {
-				freshRemote, err := dataClient.listAll(context.Background())
+				observer.recordRemoteList(false)
+				var freshRemote map[string]store.RawSyncFile
+				err := observer.measure(rawSyncStageRemote, func() error {
+					var listErr error
+					freshRemote, listErr = dataClient.listAll(context.Background())
+					return listErr
+				})
 				if err != nil {
+					observer.recordError(err)
 					result.failed = append(result.failed, "remote inventory: "+err.Error())
 				} else {
 					localPaths := make(map[string]struct{}, len(local.Files))
@@ -318,7 +366,10 @@ func runRawPush(args []string) error {
 						if _, exists := localPaths[path]; exists {
 							continue
 						}
-						if err := dataClient.downloadFile(context.Background(), *vault, file); err != nil {
+						if err := observer.measure(rawSyncStageDownload, func() error {
+							return dataClient.downloadFile(context.Background(), *vault, file)
+						}); err != nil {
+							observer.recordError(err)
 							result.failed = append(result.failed, path+": "+err.Error())
 							fmt.Printf("failed %s\n", path)
 							continue
@@ -331,6 +382,7 @@ func runRawPush(args []string) error {
 		} else if *pushAndSync && len(result.failed) > 0 {
 			fmt.Println("pull skipped because one or more local uploads failed")
 		}
+		observer.setResult(result)
 		fmt.Printf("Added: %d  Updated: %d  Skipped: %d  Downloaded: %d  Failed: %d\n", result.added, result.updated, result.skipped, result.downloaded, len(result.failed))
 		if len(result.failed) > 0 {
 			for _, failure := range result.failed {
@@ -340,6 +392,8 @@ func runRawPush(args []string) error {
 		}
 		return nil
 	})
+	observer.finish(commandErr)
+	return commandErr
 }
 
 func reserveRawSyncPossibleUsage(count int, total int64, exists bool, previousSize, candidateSize int64) (int, int64) {
@@ -400,6 +454,9 @@ func (c *syncDataAPIClient) request(ctx context.Context, method, route string, b
 				request.Header.Add(key, value)
 			}
 		}
+		if c.observer != nil {
+			c.observer.recordSyncRequest(method, route)
+		}
 		response, err := c.httpClient.Do(request)
 		if err != nil {
 			if method == http.MethodPut {
@@ -436,6 +493,9 @@ func (c *syncDataAPIClient) listAll(ctx context.Context) (map[string]store.RawSy
 		if len(query) > 0 {
 			route += "?" + query.Encode()
 		}
+		if c.observer != nil {
+			c.observer.recordRemoteListPage()
+		}
 		response, err := c.request(ctx, http.MethodGet, route, nil, nil)
 		if err != nil {
 			return nil, err
@@ -446,7 +506,7 @@ func (c *syncDataAPIClient) listAll(ctx context.Context) (map[string]store.RawSy
 			return nil, errors.New("sync service returned an incomplete listing page")
 		}
 		if response.status < 200 || response.status >= 300 {
-			return nil, syncDataStatusError{status: response.status}
+			return nil, syncDataStatusError{status: response.status, diagnosticID: parseRemoteDiagnosticID(data)}
 		}
 		var page remoteRawPage
 		if err := json.Unmarshal(data, &page); err != nil || len(page.Files) > cliRawPageSize || len(page.Snapshot) != 64 || page.TotalFiles < 0 || page.TotalFiles > store.MaxRawSyncFiles {
@@ -501,7 +561,7 @@ func (c *syncDataAPIClient) uploadFile(ctx context.Context, inventory *localRawI
 	if file.Generation != "" {
 		headers.Set("X-Expected-Generation", file.Generation)
 	}
-	bodyFactory := func() (io.ReadCloser, error) { return openVerifiedLocalRawFile(inventory, file) }
+	bodyFactory := func() (io.ReadCloser, error) { return openVerifiedLocalRawFileObserved(inventory, file, c.observer) }
 	response, err := c.request(ctx, http.MethodPut, cliRawFileRoute+"?"+query.Encode(), bodyFactory, headers)
 	if err != nil {
 		return err
@@ -594,6 +654,13 @@ func syncAPIURL(origin, route string) (string, error) {
 }
 
 func scanLocalRawFiles(ctx context.Context, vault string) (*localRawInventory, error) {
+	return scanLocalRawFilesObserved(ctx, vault, nil)
+}
+
+func scanLocalRawFilesObserved(ctx context.Context, vault string, observer *rawSyncObservation) (*localRawInventory, error) {
+	if observer != nil {
+		observer.recordInventoryPass()
+	}
 	vault, err := filepath.Abs(strings.TrimSpace(vault))
 	if err != nil {
 		return nil, errors.New("invalid vault path")
@@ -617,7 +684,7 @@ func scanLocalRawFiles(ctx context.Context, vault string) (*localRawInventory, e
 		return nil, errors.New("vault raw/ changed while it was opened")
 	}
 	inventory := &localRawInventory{RootPath: rawDir, Root: root, RootInfo: rootInfo, Files: make([]localRawFile, 0)}
-	if err := scanLocalRawDirectory(ctx, inventory, "."); err != nil {
+	if err := scanLocalRawDirectory(ctx, inventory, ".", observer); err != nil {
 		_ = inventory.Close()
 		return nil, err
 	}
@@ -625,7 +692,7 @@ func scanLocalRawFiles(ctx context.Context, vault string) (*localRawInventory, e
 	return inventory, nil
 }
 
-func scanLocalRawDirectory(ctx context.Context, inventory *localRawInventory, directory string) error {
+func scanLocalRawDirectory(ctx context.Context, inventory *localRawInventory, directory string, observer *rawSyncObservation) error {
 	if err := ctx.Err(); err != nil {
 		return err
 	}
@@ -669,7 +736,7 @@ func scanLocalRawDirectory(ctx context.Context, inventory *localRawInventory, di
 			if statErr != nil || closeErr != nil || !os.SameFile(info, childInfo) {
 				return errors.New("raw directory changed during inventory; rerun the command")
 			}
-			if err := scanLocalRawDirectory(ctx, inventory, rel); err != nil {
+			if err := scanLocalRawDirectory(ctx, inventory, rel, observer); err != nil {
 				return err
 			}
 			continue
@@ -686,6 +753,9 @@ func scanLocalRawDirectory(ctx context.Context, inventory *localRawInventory, di
 		}
 		hasher := sha256.New()
 		count, copyErr := io.Copy(hasher, io.LimitReader(file, store.MaxRawSyncFileBytes+1))
+		if observer != nil {
+			observer.recordInventoryHash(count)
+		}
 		after, statErr := file.Stat()
 		pathInfo, pathErr := inventory.Root.Lstat(filepath.FromSlash(rel))
 		closeErr := file.Close()
@@ -775,8 +845,15 @@ func validateLocalRawRoot(inventory *localRawInventory) error {
 }
 
 func verifyOpenLocalRawFile(inventory *localRawInventory, file localRawFile, opened *os.File, before os.FileInfo) error {
+	return verifyOpenLocalRawFileObserved(inventory, file, opened, before, nil)
+}
+
+func verifyOpenLocalRawFileObserved(inventory *localRawInventory, file localRawFile, opened *os.File, before os.FileInfo, observer *rawSyncObservation) error {
 	hasher := sha256.New()
 	count, copyErr := io.Copy(hasher, io.LimitReader(opened, store.MaxRawSyncFileBytes+1))
+	if observer != nil {
+		observer.recordVerificationHash(count)
+	}
 	after, statErr := opened.Stat()
 	pathInfo, pathErr := inventory.Root.Lstat(filepath.FromSlash(file.Path))
 	parentsErr := validateLocalRawParents(inventory.Root, file.Path)
@@ -788,20 +865,28 @@ func verifyOpenLocalRawFile(inventory *localRawInventory, file localRawFile, ope
 }
 
 func verifyLocalRawFile(inventory *localRawInventory, file localRawFile) error {
+	return verifyLocalRawFileObserved(inventory, file, nil)
+}
+
+func verifyLocalRawFileObserved(inventory *localRawInventory, file localRawFile, observer *rawSyncObservation) error {
 	opened, before, err := openLocalRawSource(inventory, file.Path, file.SourceInfo)
 	if err != nil {
 		return err
 	}
 	defer opened.Close()
-	return verifyOpenLocalRawFile(inventory, file, opened, before)
+	return verifyOpenLocalRawFileObserved(inventory, file, opened, before, observer)
 }
 
 func openVerifiedLocalRawFile(inventory *localRawInventory, file localRawFile) (*os.File, error) {
+	return openVerifiedLocalRawFileObserved(inventory, file, nil)
+}
+
+func openVerifiedLocalRawFileObserved(inventory *localRawInventory, file localRawFile, observer *rawSyncObservation) (*os.File, error) {
 	opened, before, err := openLocalRawSource(inventory, file.Path, file.SourceInfo)
 	if err != nil {
 		return nil, err
 	}
-	if err := verifyOpenLocalRawFile(inventory, file, opened, before); err != nil {
+	if err := verifyOpenLocalRawFileObserved(inventory, file, opened, before, observer); err != nil {
 		_ = opened.Close()
 		return nil, err
 	}

@@ -30,41 +30,45 @@ import (
 )
 
 type rawSyncProcessFixture struct {
-	mu                    sync.Mutex
-	files                 map[string]store.RawSyncFile
-	data                  map[string][]byte
-	nextGeneration        int64
-	force401              bool
-	mode                  string
-	loseCreateResponse    bool
-	mutateLocalPath       string
-	conflictPath          string
-	conflictData          []byte
-	dropUploadPath        string
-	failListAfterDropPath string
-	failNextListRead      bool
-	readbackListFailures  int
-	mutateAfterCommitPath string
-	mutateAfterCommitFile string
-	mutateAfterCommitData []byte
-	mutateAfterCommitErr  string
-	createLocalPath       string
-	createLocalData       []byte
-	truncateDownloadPath  string
-	moveLocalParent       string
-	moveParentTarget      string
-	moveParentError       string
-	rejectUploadPath      string
-	dropBeforeCommitPath  string
-	rotateOnLocator       bool
-	rotateStore           *localAuthStore
-	rotatedCredentials    cliLocalCredentials
-	bindingCreates        int
-	refreshes             int
-	dataRequests          int
-	uploadAttempts        int
-	redirects             int
-	bindings              []authSyncBinding
+	mu                            sync.Mutex
+	files                         map[string]store.RawSyncFile
+	data                          map[string][]byte
+	nextGeneration                int64
+	force401                      bool
+	mode                          string
+	loseCreateResponse            bool
+	mutateLocalPath               string
+	conflictPath                  string
+	conflictData                  []byte
+	dropUploadPath                string
+	failListAfterDropPath         string
+	failNextListRead              bool
+	readbackListFailures          int
+	mutateAfterCommitPath         string
+	mutateAfterCommitFile         string
+	mutateAfterCommitData         []byte
+	mutateAfterCommitErr          string
+	createLocalPath               string
+	createLocalData               []byte
+	truncateDownloadPath          string
+	moveLocalParent               string
+	moveParentTarget              string
+	moveParentError               string
+	credentialsPath               string
+	changeCredentialsOnUploadPath string
+	replacementCredentials        cliLocalCredentials
+	credentialsChangeErr          string
+	rejectUploadPath              string
+	dropBeforeCommitPath          string
+	rotateOnLocator               bool
+	rotateStore                   *localAuthStore
+	rotatedCredentials            cliLocalCredentials
+	bindingCreates                int
+	refreshes                     int
+	dataRequests                  int
+	uploadAttempts                int
+	redirects                     int
+	bindings                      []authSyncBinding
 }
 
 func TestRawSyncCLIRealSubprocessInitPushAndPushSync(t *testing.T) {
@@ -115,12 +119,29 @@ func TestRawSyncCLIRealSubprocessInitPushAndPushSync(t *testing.T) {
 	if output, err := build.CombinedOutput(); err != nil {
 		t.Fatalf("build CLI: %v\n%s", err, output)
 	}
+	var lastStdout, lastStderr string
 	run := func(args ...string) (string, error) {
 		command := exec.Command(binary, args...)
 		command.Env = append(os.Environ(), "XDG_CONFIG_HOME="+configRoot, "LWC_SYNC_AUTH_HOST="+authServer.URL)
-		output, err := command.CombinedOutput()
-		return string(output), err
+		var stdout, stderr bytes.Buffer
+		command.Stdout = &stdout
+		command.Stderr = &stderr
+		err := command.Run()
+		lastStdout, lastStderr = stdout.String(), stderr.String()
+		return lastStdout + lastStderr, err
 	}
+	if _, err := run("push", "--help"); err == nil {
+		t.Fatal("push --help unexpectedly returned success")
+	}
+	if strings.Contains(lastStdout+lastStderr, "lwc-sync observation") {
+		t.Fatalf("pre-admission help initialized the observer: stdout=%q stderr=%q", lastStdout, lastStderr)
+	}
+	fixture.mu.Lock()
+	if fixture.dataRequests != 0 || fixture.bindingCreates != 0 || fixture.refreshes != 0 {
+		fixture.mu.Unlock()
+		t.Fatal("push --help performed fixture network work")
+	}
+	fixture.mu.Unlock()
 
 	if out, err := run("init", "--vault", root, "--host", authServer.URL, "--project-id", "project-1"); err == nil {
 		t.Fatalf("init unexpectedly accepted a lost create response: %s", out)
@@ -150,6 +171,29 @@ func TestRawSyncCLIRealSubprocessInitPushAndPushSync(t *testing.T) {
 
 	if out, err := run("push", "--vault", root); err != nil {
 		t.Fatalf("push failed: %v\n%s", err, out)
+	}
+	if !strings.Contains(lastStdout, "Added: 1  Updated: 0  Skipped: 0  Downloaded: 0  Failed: 0") || strings.Contains(lastStdout, "lwc-sync observation") {
+		t.Fatalf("push stdout compatibility changed: %q", lastStdout)
+	}
+	if strings.Count(lastStderr, "lwc-sync observation") != 1 || !strings.Contains(lastStderr, "outcome=success") || !strings.Contains(lastStderr, "inventory_scan_hash_calls=1") || !strings.Contains(lastStderr, "remote_inventory_calls=1") || !strings.Contains(lastStderr, "upload_attempts=1") || strings.Contains(lastStderr, "download_calls=") {
+		t.Fatalf("push observation did not report only actual stages: %q", lastStderr)
+	}
+	for _, private := range []string{root, "project-1", "access-token-1", "private wiki file", "nested/attachments/note.txt"} {
+		if strings.Contains(lastStderr, private) {
+			t.Fatalf("observation leaked private or path value %q: %s", private, lastStderr)
+		}
+	}
+	for i := 0; i < 128; i++ {
+		path := filepath.Join(root, "raw", fmt.Sprintf("many-%03d.bin", i))
+		if err := os.WriteFile(path, []byte(fmt.Sprintf("synthetic-%03d", i)), 0o644); err != nil {
+			t.Fatal(err)
+		}
+	}
+	if _, err := run("push", "--vault", root); err != nil {
+		t.Fatalf("push with many synthetic files failed: %v\n%s", err, lastStdout+lastStderr)
+	}
+	if strings.Count(lastStderr, "lwc-sync observation") != 1 || len(lastStderr) > 2000 || strings.Contains(lastStderr, "many-000") || !strings.Contains(lastStderr, "upload_attempts=128") {
+		t.Fatalf("many-file observation was not bounded or counted actual transfers: %d bytes, %q", len(lastStderr), lastStderr)
 	}
 	fixture.mu.Lock()
 	if fixture.refreshes != 1 {
@@ -195,6 +239,12 @@ func TestRawSyncCLIRealSubprocessInitPushAndPushSync(t *testing.T) {
 
 	if out, err := run("push", "--vault", root, "--sync"); err != nil {
 		t.Fatalf("push --sync failed: %v\n%s", err, out)
+	}
+	if !strings.Contains(lastStdout, "Added: 0  Updated: 0  Skipped: 130  Downloaded: 1  Failed: 0") || strings.Contains(lastStdout, "lwc-sync observation") {
+		t.Fatalf("all-skipped push --sync stdout changed: %q", lastStdout)
+	}
+	if !strings.Contains(lastStderr, "outcome=success") || !strings.Contains(lastStderr, "inventory_scan_hash_calls=2") || !strings.Contains(lastStderr, "remote_inventory_calls=2") || !strings.Contains(lastStderr, "upload_attempts=0") || !strings.Contains(lastStderr, "download_attempts=1") || !strings.Contains(lastStderr, "download_calls=1") || strings.Contains(lastStderr, "upload_calls=") {
+		t.Fatalf("all-skipped push --sync observation missed actual second scan/pull: %q", lastStderr)
 	}
 	if data, err := os.ReadFile(filepath.Join(root, "raw", "remote-only", "attachments", "photo.bin")); err != nil || string(data) != "cloud bytes" {
 		t.Fatalf("remote-only file was not downloaded: data=%q err=%v", data, err)
@@ -373,6 +423,40 @@ func TestRawSyncCLIRealSubprocessInitPushAndPushSync(t *testing.T) {
 	}
 	if redirectHits.Load() != 0 {
 		t.Fatalf("cross-origin redirect target received %d requests", redirectHits.Load())
+	}
+
+	outerFailurePath := filepath.Join(root, "raw", "outer-finalization-failure.bin")
+	if err := os.WriteFile(outerFailurePath, []byte("synthetic outer failure"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	writeTestJSON(t, filepath.Join(storeDir, localCredentialsName), cliLocalCredentials{
+		AuthHost: authServer.URL, AccessToken: "access-token-1", RefreshToken: "refresh-token-1",
+		SessionID: "session-1", UserID: "user-1", Role: "user", AuthVersion: 1,
+	})
+	fixture.mu.Lock()
+	fixture.mode = ""
+	fixture.force401 = true
+	fixture.credentialsPath = filepath.Join(storeDir, localCredentialsName)
+	fixture.changeCredentialsOnUploadPath = "outer-finalization-failure.bin"
+	fixture.replacementCredentials = cliLocalCredentials{
+		AuthHost: authServer.URL, AccessToken: "synthetic-access-canary", RefreshToken: "synthetic-refresh-canary",
+		SessionID: "synthetic-new-session", UserID: "synthetic-user", Role: "user", AuthVersion: 1,
+	}
+	fixture.mu.Unlock()
+	if _, err := run("push", "--vault", root); err == nil {
+		t.Fatalf("push ignored outer credential finalization failure: stdout=%q stderr=%q", lastStdout, lastStderr)
+	}
+	if !strings.Contains(lastStdout, "Added: 1") || !strings.Contains(lastStdout, "Failed: 0") || strings.Contains(lastStdout, "lwc-sync observation") {
+		t.Fatalf("outer failure changed already-completed stdout business counts: %q", lastStdout)
+	}
+	if !strings.Contains(lastStderr, "lwc-sync observation operation=push outcome=error") || !strings.Contains(lastStderr, "refresh_requests=1") || strings.Contains(lastStderr, "synthetic-access-canary") || strings.Contains(lastStderr, "synthetic-refresh-canary") {
+		t.Fatalf("operation summary ignored outer finalization or leaked credential canaries: %q", lastStderr)
+	}
+	fixture.mu.Lock()
+	credentialsChangeErr := fixture.credentialsChangeErr
+	fixture.mu.Unlock()
+	if credentialsChangeErr != "" {
+		t.Fatalf("could not mutate only the synthetic test credentials for outer failure case: %s", credentialsChangeErr)
 	}
 }
 
@@ -1274,11 +1358,28 @@ func (f *rawSyncProcessFixture) serveData(w http.ResponseWriter, r *http.Request
 				f.mutateAfterCommitFile = ""
 				f.mutateAfterCommitData = nil
 			}
+			changeCredentials := f.changeCredentialsOnUploadPath == path
+			credentialsPath := f.credentialsPath
+			replacementCredentials := f.replacementCredentials
+			if changeCredentials {
+				f.changeCredentialsOnUploadPath = ""
+			}
 			f.mu.Unlock()
 			if mutateLocalPath != "" {
 				if err := os.WriteFile(mutateLocalPath, mutateLocalData, 0o644); err != nil {
 					f.mu.Lock()
 					f.mutateAfterCommitErr = err.Error()
+					f.mu.Unlock()
+				}
+			}
+			if changeCredentials {
+				data, marshalErr := json.Marshal(replacementCredentials)
+				if marshalErr == nil {
+					marshalErr = os.WriteFile(credentialsPath, data, 0o600)
+				}
+				if marshalErr != nil {
+					f.mu.Lock()
+					f.credentialsChangeErr = marshalErr.Error()
 					f.mu.Unlock()
 				}
 			}
