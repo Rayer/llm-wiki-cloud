@@ -37,10 +37,22 @@ type Capture struct {
 type LinkIdentity struct{ TraceID, SpanID string }
 
 type SpanIdentity struct {
-	Scope, Name, TraceID, SpanID, ParentTraceID, ParentSpanID string
-	Links                                                     []LinkIdentity
-	Attributes                                                map[string]string
+	ServiceName, Scope, Name, TraceID, SpanID, ParentTraceID, ParentSpanID string
+	Links                                                                  []LinkIdentity
+	Attributes                                                             map[string]string
 }
+
+type identityProcessor struct {
+	capture     *Capture
+	serviceName string
+}
+
+func (p identityProcessor) OnStart(context.Context, sdktrace.ReadWriteSpan) {}
+func (p identityProcessor) OnEnd(span sdktrace.ReadOnlySpan) {
+	p.capture.recordIdentity(span, p.serviceName)
+}
+func (identityProcessor) Shutdown(context.Context) error   { return nil }
+func (identityProcessor) ForceFlush(context.Context) error { return nil }
 
 func New(t testing.TB) *Capture {
 	t.Helper()
@@ -99,7 +111,7 @@ func (c *Capture) Provider(t testing.TB, service, revision, project string) *sdk
 			t.Fatal("Cloud Trace QA requires the approved endpoint and explicit synthetic project/revision")
 		}
 		var err error
-		provider, err = observability.InitTracesWithProjectAndProcessors(service, revision, project, c)
+		provider, err = observability.InitTracesWithProjectAndProcessors(service, revision, project, identityProcessor{capture: c, serviceName: service})
 		if err != nil {
 			t.Fatal("initialize Cloud Trace QA exporter")
 		}
@@ -108,7 +120,7 @@ func (c *Capture) Provider(t testing.TB, service, revision, project string) *sdk
 		if err != nil {
 			t.Fatal("create loopback OTLP exporter")
 		}
-		provider, err = observability.NewFilteredTraceProvider(io.Discard, service, revision, project, exporter, c)
+		provider, err = observability.NewFilteredTraceProvider(io.Discard, service, revision, project, exporter, identityProcessor{capture: c, serviceName: service})
 		if err != nil {
 			t.Fatal("create filtered test trace provider")
 		}
@@ -155,9 +167,13 @@ func (c *Capture) Endpoint() string { return c.server.URL + "/v1/traces" }
 func (c *Capture) OnStart(context.Context, sdktrace.ReadWriteSpan) {}
 
 func (c *Capture) OnEnd(span sdktrace.ReadOnlySpan) {
+	c.recordIdentity(span, "")
+}
+
+func (c *Capture) recordIdentity(span sdktrace.ReadOnlySpan, serviceName string) {
 	ctx, parent := span.SpanContext(), span.Parent()
 	item := SpanIdentity{
-		Scope: span.InstrumentationScope().Name, Name: span.Name(),
+		ServiceName: serviceName, Scope: span.InstrumentationScope().Name, Name: span.Name(),
 		TraceID: ctx.TraceID().String(), SpanID: ctx.SpanID().String(), Attributes: make(map[string]string),
 	}
 	if parent.IsValid() {
@@ -204,8 +220,8 @@ func (c *Capture) LogIdentities(t testing.TB, caseID string) {
 		for _, link := range item.Links {
 			links = append(links, link.TraceID+"/"+link.SpanID)
 		}
-		t.Logf("OTLP_QA_SPAN case=%s trace_id=%s span_id=%s parent_trace_id=%s parent_span_id=%s scope=%s name=%s links=%s",
-			caseID, item.TraceID, item.SpanID, item.ParentTraceID, item.ParentSpanID, item.Scope, item.Name, strings.Join(links, ","))
+		t.Logf("OTLP_QA_SPAN case=%s trace_id=%s span_id=%s parent_trace_id=%s parent_span_id=%s service_name=%s scope=%s name=%s links=%s",
+			caseID, item.TraceID, item.SpanID, item.ParentTraceID, item.ParentSpanID, item.ServiceName, item.Scope, item.Name, strings.Join(links, ","))
 	}
 }
 

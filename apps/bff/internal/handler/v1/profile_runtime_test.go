@@ -141,8 +141,8 @@ func TestOTLPCaptureProfileDispatcherActualClaimAndWork(t *testing.T) {
 		for _, link := range item.Links {
 			links = append(links, link.TraceID+"/"+link.SpanID)
 		}
-		t.Logf("OTLP_QA_SPAN case=UC5 trace_id=%s span_id=%s parent_trace_id=%s parent_span_id=%s scope=%s name=%s links=%s",
-			item.TraceID, item.SpanID, item.ParentTraceID, item.ParentSpanID, item.Scope, item.Name, strings.Join(links, ","))
+		t.Logf("OTLP_QA_SPAN case=UC5 trace_id=%s span_id=%s parent_trace_id=%s parent_span_id=%s service_name=%s scope=%s name=%s links=%s",
+			item.TraceID, item.SpanID, item.ParentTraceID, item.ParentSpanID, item.ServiceName, item.Scope, item.Name, strings.Join(links, ","))
 	}
 	t.Logf("OTLP_QA_CASE=UC5 profile_dispatch_trace_id=%s profile_parent_span_id=%s expected_span=profile.dispatch outcome=success http_status=%d", traceID, parentID, response.Code)
 	if otlpfixture.CloudMode() {

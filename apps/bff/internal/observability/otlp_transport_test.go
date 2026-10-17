@@ -15,7 +15,6 @@ import (
 
 	"github.com/rayer/llm-wiki-bff/internal/observability"
 	"github.com/rayer/llm-wiki-bff/internal/observability/otlpfixture"
-	"go.opentelemetry.io/otel"
 	"go.opentelemetry.io/otel/propagation"
 	"go.opentelemetry.io/otel/trace"
 	tracev1 "go.opentelemetry.io/proto/otlp/trace/v1"
@@ -30,7 +29,11 @@ func TestOTLPTransportUseCaseRealHTTPAndConcurrentIsolation(t *testing.T) {
 	if otlpfixture.CloudMode() {
 		project = os.Getenv("LWC_OTLP_QA_PROJECT")
 	}
-	provider := capture.Provider(t, "lwc-qa-http-fixture", "local-fixture", project)
+	const serviceAName, serviceBName = "lwc-qa-uc2-a", "lwc-qa-uc2-b"
+	providerA := capture.Provider(t, serviceAName, "local-fixture", project)
+	providerB := capture.Provider(t, serviceBName, "local-fixture", project)
+	tracerA := providerA.Tracer("llm-wiki-bff/query")
+	tracerB := providerB.Tracer("llm-wiki-bff/query")
 	const count = 24
 	type outcome struct {
 		parentID, rootID, clientID, serverParentID string
@@ -44,7 +47,7 @@ func TestOTLPTransportUseCaseRealHTTPAndConcurrentIsolation(t *testing.T) {
 		}
 		ctx := observability.ExtractTraceContext(r.Context(), propagation.HeaderCarrier(r.Header))
 		parentID := trace.SpanContextFromContext(ctx).SpanID().String()
-		_, span := otel.Tracer("llm-wiki-bff/query").Start(ctx, "query.http.server")
+		_, span := tracerB.Start(ctx, "query.http.server")
 		defer span.End()
 		w.Header().Set("X-QA-Trace-ID", span.SpanContext().TraceID().String())
 		w.Header().Set("X-QA-Parent-ID", parentID)
@@ -56,8 +59,8 @@ func TestOTLPTransportUseCaseRealHTTPAndConcurrentIsolation(t *testing.T) {
 		ctx := observability.ExtractTraceContext(r.Context(), propagation.HeaderCarrier(r.Header))
 		incoming := trace.SpanContextFromContext(ctx)
 		ctx = context.WithValue(ctx, localContextKey{}, "request-context-preserved")
-		rootCtx, root := otel.Tracer("llm-wiki-bff/query").Start(ctx, "query.request")
-		clientCtx, clientSpan := otel.Tracer("llm-wiki-bff/query").Start(rootCtx, "query.http.client")
+		rootCtx, root := tracerA.Start(ctx, "query.request")
+		clientCtx, clientSpan := tracerA.Start(rootCtx, "query.http.client")
 		if clientCtx.Value(localContextKey{}) != "request-context-preserved" {
 			clientSpan.End()
 			root.End()
@@ -137,7 +140,37 @@ func TestOTLPTransportUseCaseRealHTTPAndConcurrentIsolation(t *testing.T) {
 	for err := range requestErrs {
 		t.Error(err)
 	}
-	capture.Flush(t, provider)
+	capture.Flush(t, providerA)
+	capture.Flush(t, providerB)
+	identities := capture.Identities()
+	if len(identities) != count*3 {
+		t.Fatalf("captured span identities=%d, want %d", len(identities), count*3)
+	}
+	servicesByTrace := make(map[string]map[string]string, count)
+	for _, item := range identities {
+		wantService := serviceAName
+		if item.Name == "query.http.server" {
+			wantService = serviceBName
+		} else if item.Name != "query.request" && item.Name != "query.http.client" {
+			t.Fatalf("unexpected UC2 span name %q", item.Name)
+		}
+		if item.ServiceName != wantService {
+			t.Fatalf("span %s attributed to service %q, want %q", item.Name, item.ServiceName, wantService)
+		}
+		if servicesByTrace[item.TraceID] == nil {
+			servicesByTrace[item.TraceID] = make(map[string]string, 3)
+		}
+		if _, duplicate := servicesByTrace[item.TraceID][item.Name]; duplicate {
+			t.Fatalf("duplicate captured span %q for trace %s", item.Name, item.TraceID)
+		}
+		servicesByTrace[item.TraceID][item.Name] = item.ServiceName
+	}
+	for traceID := range inputParents {
+		if got := servicesByTrace[traceID]; len(got) != 3 || got["query.request"] != serviceAName ||
+			got["query.http.client"] != serviceAName || got["query.http.server"] != serviceBName {
+			t.Fatalf("trace %s service identities=%v", traceID, got)
+		}
+	}
 	capture.LogIdentities(t, "UC2")
 	t.Logf("OTLP_QA_CASE=UC2 count=%d expected_spans_per_trace=3", count)
 	if otlpfixture.CloudMode() {
@@ -148,6 +181,7 @@ func TestOTLPTransportUseCaseRealHTTPAndConcurrentIsolation(t *testing.T) {
 	}
 
 	spansByTrace := make(map[string]map[string]*tracev1.Span, count)
+	resourceServicesByTrace := make(map[string]map[string]string, count)
 	var encoded bytes.Buffer
 	for _, request := range capture.Requests() {
 		data, err := proto.Marshal(request)
@@ -156,6 +190,18 @@ func TestOTLPTransportUseCaseRealHTTPAndConcurrentIsolation(t *testing.T) {
 		}
 		encoded.Write(data)
 		for _, resource := range request.ResourceSpans {
+			serviceName := ""
+			if resource.Resource != nil {
+				for _, attr := range resource.Resource.Attributes {
+					if attr.Key == "service.name" {
+						serviceName = attr.Value.GetStringValue()
+						break
+					}
+				}
+			}
+			if serviceName != serviceAName && serviceName != serviceBName {
+				t.Fatalf("unexpected UC2 OTLP resource service.name %q", serviceName)
+			}
 			for _, scope := range resource.ScopeSpans {
 				for _, span := range scope.Spans {
 					traceID := hex.EncodeToString(span.TraceId)
@@ -166,6 +212,10 @@ func TestOTLPTransportUseCaseRealHTTPAndConcurrentIsolation(t *testing.T) {
 						t.Fatalf("duplicate span %q for trace %s", span.Name, traceID)
 					}
 					spansByTrace[traceID][span.Name] = span
+					if resourceServicesByTrace[traceID] == nil {
+						resourceServicesByTrace[traceID] = make(map[string]string, 3)
+					}
+					resourceServicesByTrace[traceID][span.Name] = serviceName
 				}
 			}
 		}
@@ -185,6 +235,10 @@ func TestOTLPTransportUseCaseRealHTTPAndConcurrentIsolation(t *testing.T) {
 		if hex.EncodeToString(root.ParentSpanId) != parentID || !bytes.Equal(clientSpan.ParentSpanId, root.SpanId) ||
 			!bytes.Equal(serverSpan.ParentSpanId, clientSpan.SpanId) || bytes.Equal(root.SpanId, clientSpan.SpanId) || bytes.Equal(clientSpan.SpanId, serverSpan.SpanId) {
 			t.Fatalf("trace %s parent/span IDs do not match the real A-to-B sequence: root=%+v client=%+v server=%+v", traceID, root, clientSpan, serverSpan)
+		}
+		services := resourceServicesByTrace[traceID]
+		if len(services) != 3 || services["query.request"] != serviceAName || services["query.http.client"] != serviceAName || services["query.http.server"] != serviceBName {
+			t.Fatalf("trace %s OTLP resource service identities=%v", traceID, services)
 		}
 		outcome := outcomes[traceID]
 		if outcome.parentID != parentID || outcome.rootID != hex.EncodeToString(root.SpanId) ||

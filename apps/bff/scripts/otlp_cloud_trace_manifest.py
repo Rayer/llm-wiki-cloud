@@ -18,7 +18,7 @@ CASE_FIELDS = {
 }
 SPAN_FIELDS = {
     "case", "trace_id", "span_id", "parent_trace_id", "parent_span_id",
-    "scope", "name", "links",
+    "service_name", "scope", "name", "links",
 }
 
 
@@ -71,7 +71,8 @@ def parse(log_dir):
                 require_span_id(item["span_id"], "span_id")
                 require_trace_id(item["parent_trace_id"], "parent_trace_id") if item["parent_trace_id"] else None
                 require_span_id(item["parent_span_id"], "parent_span_id")
-                if not re.fullmatch(r"[a-z0-9._/-]+", item["scope"]) or not re.fullmatch(r"[a-z0-9._-]+", item["name"]):
+                if not re.fullmatch(r"[a-z0-9._-]+", item["service_name"]) or \
+                        not re.fullmatch(r"[a-z0-9._/-]+", item["scope"]) or not re.fullmatch(r"[a-z0-9._-]+", item["name"]):
                     raise ValueError("span name or scope is not a fixed identifier")
                 if item["links"]:
                     for link in item["links"].split(","):
@@ -164,6 +165,9 @@ def parse(log_dir):
         if root is None or client is None or server is None or not root["parent_span_id"] or \
                 client["parent_span_id"] != root["span_id"] or server["parent_span_id"] != client["span_id"]:
             raise ValueError(f"UC2 transport span parents are invalid for {trace_id}")
+        if root["service_name"] != "lwc-qa-uc2-a" or client["service_name"] != "lwc-qa-uc2-a" or \
+                server["service_name"] != "lwc-qa-uc2-b":
+            raise ValueError(f"UC2 span service identities are invalid for {trace_id}")
     for line in cases:
         yield {"type": "case", **line, "span_count": span_counts[line["case"]]}
     for line in spans:

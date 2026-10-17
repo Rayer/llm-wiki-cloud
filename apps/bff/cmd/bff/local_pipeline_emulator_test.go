@@ -347,16 +347,16 @@ func TestLocalPipelineHTTPTriggerRunsWorkerAndReportsSuccessAndFailure(t *testin
 		workerSpan.Links[0].TraceID != traceID || workerSpan.Links[0].SpanID != invokeSpan.SpanID {
 		t.Fatalf("actual native worker attempt did not form an independent linked root from the real Manager invocation: invocation=%+v worker=%+v", invokeSpan, workerSpan)
 	}
-	t.Logf("OTLP_QA_SPAN case=UC5 trace_id=%s span_id=%s parent_trace_id=%s parent_span_id=%s scope=%s name=%s links=",
-		submitSpan.TraceID, submitSpan.SpanID, submitSpan.ParentTraceID, submitSpan.ParentSpanID, submitSpan.Scope, submitSpan.Name)
-	t.Logf("OTLP_QA_SPAN case=UC5 trace_id=%s span_id=%s parent_trace_id=%s parent_span_id=%s scope=%s name=%s links=",
-		invokeSpan.TraceID, invokeSpan.SpanID, invokeSpan.ParentTraceID, invokeSpan.ParentSpanID, invokeSpan.Scope, invokeSpan.Name)
+	t.Logf("OTLP_QA_SPAN case=UC5 trace_id=%s span_id=%s parent_trace_id=%s parent_span_id=%s service_name=%s scope=%s name=%s links=",
+		submitSpan.TraceID, submitSpan.SpanID, submitSpan.ParentTraceID, submitSpan.ParentSpanID, submitSpan.ServiceName, submitSpan.Scope, submitSpan.Name)
+	t.Logf("OTLP_QA_SPAN case=UC5 trace_id=%s span_id=%s parent_trace_id=%s parent_span_id=%s service_name=%s scope=%s name=%s links=",
+		invokeSpan.TraceID, invokeSpan.SpanID, invokeSpan.ParentTraceID, invokeSpan.ParentSpanID, invokeSpan.ServiceName, invokeSpan.Scope, invokeSpan.Name)
 	links := make([]string, 0, len(workerSpan.Links))
 	for _, link := range workerSpan.Links {
 		links = append(links, link.TraceID+"/"+link.SpanID)
 	}
-	t.Logf("OTLP_QA_SPAN case=UC5 trace_id=%s span_id=%s parent_trace_id=%s parent_span_id=%s scope=%s name=%s links=%s",
-		workerSpan.TraceID, workerSpan.SpanID, "", workerSpan.ParentSpanID, workerSpan.Scope, workerSpan.Name, strings.Join(links, ","))
+	t.Logf("OTLP_QA_SPAN case=UC5 trace_id=%s span_id=%s parent_trace_id=%s parent_span_id=%s service_name=%s scope=%s name=%s links=%s",
+		workerSpan.TraceID, workerSpan.SpanID, "", workerSpan.ParentSpanID, workerSpan.ServiceName, workerSpan.Scope, workerSpan.Name, strings.Join(links, ","))
 	t.Logf("OTLP_QA_CASE=UC5 worker_attempt_trace_id=%s worker_link_trace_id=%s worker_link_span_id=%s submit_span_id=%s http_parent_span_id=%s expected_span=pipeline.worker outcome=success http_status=%d",
 		workerSpan.TraceID, traceID, invokeSpan.SpanID, submitSpan.SpanID, parentID, http.StatusAccepted)
 	if !otlpfixture.CloudMode() {
@@ -824,7 +824,7 @@ func localPipelineWorkerTraceIdentities(t *testing.T, path string) []otlpfixture
 			}
 			fields[key] = value
 		}
-		if len(fields) != 8 || fields["case"] != "UC5" || fields["scope"] != "llm-wiki-worker/pipeline" {
+		if len(fields) != 9 || fields["case"] != "UC5" || fields["service_name"] != "lwc-worker" || fields["scope"] != "llm-wiki-worker/pipeline" {
 			t.Fatalf("native-worker trace identity did not use the fixed test schema")
 		}
 		if fields["name"] != "pipeline.worker" {
@@ -839,7 +839,7 @@ func localPipelineWorkerTraceIdentities(t *testing.T, path string) []otlpfixture
 		}
 		identity := otlpfixture.SpanIdentity{
 			TraceID: traceID, SpanID: spanID, ParentTraceID: fields["parent_trace_id"],
-			ParentSpanID: fields["parent_span_id"], Scope: fields["scope"], Name: fields["name"],
+			ParentSpanID: fields["parent_span_id"], ServiceName: fields["service_name"], Scope: fields["scope"], Name: fields["name"],
 		}
 		if parent := identity.ParentSpanID; parent != "" {
 			if decoded, err := hex.DecodeString(parent); err != nil || len(decoded) != 8 {

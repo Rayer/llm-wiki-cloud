@@ -61,7 +61,7 @@ func (workerTraceIdentityLogger) OnEnd(span sdktrace.ReadOnlySpan) {
 	for _, link := range span.Links() {
 		links = append(links, link.SpanContext.TraceID().String()+"/"+link.SpanContext.SpanID().String())
 	}
-	_, _ = fmt.Fprintf(os.Stderr, "OTLP_QA_SPAN case=UC5 trace_id=%s span_id=%s parent_trace_id=%s parent_span_id=%s scope=%s name=%s links=%s\n",
+	_, _ = fmt.Fprintf(os.Stderr, "OTLP_QA_SPAN case=UC5 trace_id=%s span_id=%s parent_trace_id=%s parent_span_id=%s service_name=lwc-worker scope=%s name=%s links=%s\n",
 		spanContext.TraceID(), spanContext.SpanID(), parentTraceID, parentSpanID, span.InstrumentationScope().Name, span.Name(), strings.Join(links, ","))
 }
 
