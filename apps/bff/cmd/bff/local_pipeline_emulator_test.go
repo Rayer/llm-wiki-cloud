@@ -27,6 +27,7 @@ import (
 	cloudfirestore "cloud.google.com/go/firestore"
 	cloudstorage "cloud.google.com/go/storage"
 	"github.com/gin-gonic/gin"
+	"github.com/google/uuid"
 	"github.com/rayer/llm-wiki-bff/internal/annotation"
 	"github.com/rayer/llm-wiki-bff/internal/auth"
 	"github.com/rayer/llm-wiki-bff/internal/cache"
@@ -305,7 +306,10 @@ func TestLocalPipelineHTTPTriggerRunsWorkerAndReportsSuccessAndFailure(t *testin
 		t.Fatalf("seed first scoped raw input: %v", err)
 	}
 	traceID, parentID, traceParent := otlpfixture.NewParent(t)
-	executionID := postLocalPipelineRun(t, ctx, server.Client(), server.URL, token, projectID, http.StatusAccepted, traceParent)
+	executionID, requestID := postLocalPipelineRunWithRequestID(t, ctx, server.Client(), server.URL, token, projectID, http.StatusAccepted, traceParent)
+	if uuid.Validate(requestID) != nil {
+		t.Fatalf("actual pipeline trigger returned invalid server request ID %q", requestID)
+	}
 	postLocalPipelineRun(t, ctx, server.Client(), server.URL, token, projectID, http.StatusConflict)
 	state, reason := waitLocalPipelineStatus(t, ctx, server.Client(), server.URL, token, projectID, executionID)
 	if state != "SUCCEEDED" || reason != "" {
@@ -316,15 +320,20 @@ func TestLocalPipelineHTTPTriggerRunsWorkerAndReportsSuccessAndFailure(t *testin
 		t.Fatalf("successful worker status=%q reason=%q; actual worker stderr=%q (read error: %v)", state, reason, stderr, readErr)
 	}
 	capture.Flush(t, provider)
-	var submitSpan otlpfixture.SpanIdentity
+	var httpSpan, submitSpan otlpfixture.SpanIdentity
 	for _, item := range capture.Identities() {
+		if item.Name == "http.request" && item.TraceID == traceID && item.Attributes["request.id"] == requestID {
+			httpSpan = item
+		}
 		if item.Name == "pipeline.submit" && item.TraceID == traceID {
 			submitSpan = item
-			break
 		}
 	}
-	if submitSpan.Name == "" || submitSpan.ParentSpanID != parentID {
-		t.Fatal("actual pipeline submission span did not preserve the synthetic HTTP parent")
+	if httpSpan.Name == "" || httpSpan.ParentSpanID != parentID {
+		t.Fatal("actual BFF request span did not preserve the synthetic HTTP parent")
+	}
+	if submitSpan.Name == "" || submitSpan.ParentSpanID != httpSpan.SpanID || submitSpan.Attributes["request.id"] != requestID {
+		t.Fatal("actual pipeline submission span did not inherit the request lifecycle span and ID")
 	}
 	var invokeSpan otlpfixture.SpanIdentity
 	for _, item := range capture.Identities() {
@@ -333,8 +342,12 @@ func TestLocalPipelineHTTPTriggerRunsWorkerAndReportsSuccessAndFailure(t *testin
 			break
 		}
 	}
-	if invokeSpan.Name == "" {
+	if invokeSpan.Name == "" || invokeSpan.Attributes["request.id"] != requestID {
 		t.Fatal("actual Manager invocation span was not a child of the pipeline submission")
+	}
+	execution, err := scopedfirestore.Collection(fsClient.Raw(), "executions").Doc(executionID).Get(ctx)
+	if err != nil || execution.Data()["request_id"] != requestID {
+		t.Fatalf("actual execution did not persist its originating request ID: err=%v", err)
 	}
 	var workerSpan otlpfixture.SpanIdentity
 	for _, item := range localPipelineWorkerTraceIdentities(t, workerStderrPath) {
@@ -343,7 +356,7 @@ func TestLocalPipelineHTTPTriggerRunsWorkerAndReportsSuccessAndFailure(t *testin
 			break
 		}
 	}
-	if workerSpan.Name == "" || workerSpan.ParentSpanID != "" || workerSpan.TraceID == traceID || len(workerSpan.Links) != 1 ||
+	if workerSpan.Name == "" || workerSpan.ParentSpanID != "" || workerSpan.TraceID == traceID || workerSpan.Attributes["request.id"] != requestID || len(workerSpan.Links) != 1 ||
 		workerSpan.Links[0].TraceID != traceID || workerSpan.Links[0].SpanID != invokeSpan.SpanID {
 		t.Fatalf("actual native worker attempt did not form an independent linked root from the real Manager invocation: invocation=%+v worker=%+v", invokeSpan, workerSpan)
 	}
@@ -769,6 +782,11 @@ func readLocalPipelineWorkerStderr(t *testing.T, file *os.File, path string) str
 }
 
 func postLocalPipelineRun(t *testing.T, ctx context.Context, client *http.Client, baseURL, token, projectID string, wantStatus int, traceparent ...string) string {
+	executionID, _ := postLocalPipelineRunWithRequestID(t, ctx, client, baseURL, token, projectID, wantStatus, traceparent...)
+	return executionID
+}
+
+func postLocalPipelineRunWithRequestID(t *testing.T, ctx context.Context, client *http.Client, baseURL, token, projectID string, wantStatus int, traceparent ...string) (string, string) {
 	t.Helper()
 	request, err := http.NewRequestWithContext(ctx, http.MethodPost, baseURL+"/api/v1/pipeline/run", bytes.NewReader([]byte(`{}`)))
 	if err != nil {
@@ -789,8 +807,12 @@ func postLocalPipelineRun(t *testing.T, ctx context.Context, client *http.Client
 	if response.StatusCode != wantStatus {
 		t.Fatalf("pipeline trigger status=%d body=%s, want %d", response.StatusCode, data, wantStatus)
 	}
+	requestID := response.Header.Get("X-Request-ID")
+	if uuid.Validate(requestID) != nil {
+		t.Fatalf("pipeline trigger returned invalid server request ID")
+	}
 	if wantStatus != http.StatusAccepted {
-		return ""
+		return "", requestID
 	}
 	var payload struct {
 		ExecutionID string `json:"execution_id"`
@@ -798,7 +820,7 @@ func postLocalPipelineRun(t *testing.T, ctx context.Context, client *http.Client
 	if err := json.Unmarshal(data, &payload); err != nil || payload.ExecutionID == "" {
 		t.Fatalf("pipeline trigger response has no execution ID: %s (%v)", data, err)
 	}
-	return payload.ExecutionID
+	return payload.ExecutionID, requestID
 }
 
 func localPipelineWorkerTraceIdentities(t *testing.T, path string) []otlpfixture.SpanIdentity {
@@ -824,7 +846,7 @@ func localPipelineWorkerTraceIdentities(t *testing.T, path string) []otlpfixture
 			}
 			fields[key] = value
 		}
-		if len(fields) != 9 || fields["case"] != "UC5" || fields["service_name"] != "lwc-worker" || fields["scope"] != "llm-wiki-worker/pipeline" {
+		if len(fields) != 10 || fields["case"] != "UC5" || fields["service_name"] != "lwc-worker" || fields["scope"] != "llm-wiki-worker/pipeline" {
 			t.Fatalf("native-worker trace identity did not use the fixed test schema")
 		}
 		if fields["name"] != "pipeline.worker" {
@@ -840,6 +862,7 @@ func localPipelineWorkerTraceIdentities(t *testing.T, path string) []otlpfixture
 		identity := otlpfixture.SpanIdentity{
 			TraceID: traceID, SpanID: spanID, ParentTraceID: fields["parent_trace_id"],
 			ParentSpanID: fields["parent_span_id"], ServiceName: fields["service_name"], Scope: fields["scope"], Name: fields["name"],
+			Attributes: map[string]string{"request.id": fields["request_id"]},
 		}
 		if parent := identity.ParentSpanID; parent != "" {
 			if decoded, err := hex.DecodeString(parent); err != nil || len(decoded) != 8 {
@@ -1033,6 +1056,9 @@ type gatedStorageProxy struct {
 
 func newGatedStorageProxy(t *testing.T, endpoint string) *gatedStorageProxy {
 	t.Helper()
+	if !strings.Contains(endpoint, "://") {
+		endpoint = "http://" + endpoint
+	}
 	target, err := url.Parse(endpoint)
 	if err != nil || target.Scheme == "" || target.Host == "" {
 		t.Fatalf("parse loopback Storage emulator endpoint %q", endpoint)
