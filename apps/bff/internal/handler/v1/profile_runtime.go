@@ -176,7 +176,7 @@ func (d *ProfileDispatcher) Dispatch(ctx context.Context, limit int) (processed 
 			continue
 		}
 		lease := profileRuntimeLease{snapshot.Ref, work.Token, work.UserID, work.ProjectID}
-		attemptCtx, attemptSpan := observability.StartProfileSpan(observability.WithoutTraceParent(ctx), "profile.work")
+		attemptCtx, attemptSpan := observability.StartProfileWorkSpan(claimCtx)
 		observability.SetProfileCount(attemptSpan, "profile.attempt_number", work.Attempts)
 		observability.SetProfileWorkKind(attemptSpan, work.Kind)
 		runctx := context.WithValue(attemptCtx, profileRuntimeLeaseKey{}, lease)

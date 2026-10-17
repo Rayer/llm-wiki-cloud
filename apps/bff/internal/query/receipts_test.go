@@ -1,8 +1,10 @@
 package query
 
 import (
+	"bytes"
 	"context"
 	"encoding/json"
+	"log/slog"
 	"reflect"
 	"strings"
 	"testing"
@@ -13,6 +15,30 @@ import (
 	sdktrace "go.opentelemetry.io/otel/sdk/trace"
 	"go.opentelemetry.io/otel/sdk/trace/tracetest"
 )
+
+func TestQueryTerminalLogCorrelatesCloudTraceWithRuntimeProjectAndSDKContext(t *testing.T) {
+	var output bytes.Buffer
+	previous := slog.Default()
+	slog.SetDefault(slog.New(slog.NewJSONHandler(&output, nil)))
+	t.Cleanup(func() { slog.SetDefault(previous) })
+	_, recorder := WithReceipt(context.Background())
+	recorder.SetTerminal(TerminalSummary{
+		TraceID: "11111111111111111111111111111111", SpanID: "2222222222222222", TraceSampled: true,
+		CloudProjectID: "runtime-project", ProjectID: "selected-user-project",
+	})
+	FinishReceipt(recorder)
+	var entry map[string]any
+	if err := json.Unmarshal(output.Bytes(), &entry); err != nil {
+		t.Fatalf("decode structured query log: %v", err)
+	}
+	if entry["logging.googleapis.com/trace"] != "projects/runtime-project/traces/11111111111111111111111111111111" ||
+		entry["logging.googleapis.com/spanId"] != "2222222222222222" || entry["logging.googleapis.com/trace_sampled"] != true {
+		t.Fatalf("Cloud Logging correlation fields = %#v", entry)
+	}
+	if entry["project_id"] != "selected-user-project" {
+		t.Fatalf("existing selected project diagnostic changed: %#v", entry["project_id"])
+	}
+}
 
 func TestReceiptRecordsDistinctStagesCallsAndRedactsSensitiveValues(t *testing.T) {
 	ctx, recorder := WithReceipt(context.Background())

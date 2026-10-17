@@ -10,6 +10,7 @@ import (
 	"strings"
 	"testing"
 
+	"go.opentelemetry.io/otel/trace"
 	"golang.org/x/oauth2"
 	_ "modernc.org/sqlite"
 )
@@ -148,22 +149,30 @@ func TestRedactSQLiteSecretsRemovesSecretTablesAndColumns(t *testing.T) {
 func TestCloudRunStarterSendsOnlyBoundedJobIdentity(t *testing.T) {
 	starter := NewCloudRunJobStarter("https://run.googleapis.com/v2/projects/p/locations/r/jobs/export:run")
 	starter.tokenSource = oauth2.StaticTokenSource(&oauth2.Token{AccessToken: "test-access"})
+	traceID, _ := trace.TraceIDFromHex("aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa")
+	parentID, _ := trace.SpanIDFromHex("bbbbbbbbbbbbbbbb")
+	parent := trace.NewSpanContext(trace.SpanContextConfig{TraceID: traceID, SpanID: parentID, TraceFlags: trace.FlagsSampled, Remote: true})
+	traceParent := "00-" + traceID.String() + "-" + parentID.String() + "-01"
 	starter.client = &http.Client{Transport: roundTripFunc(func(request *http.Request) (*http.Response, error) {
-		if request.Method != http.MethodPost || request.Header.Get("Authorization") != "Bearer test-access" {
+		if request.Method != http.MethodPost || request.Header.Get("Authorization") != "Bearer test-access" || request.Header.Get("traceparent") != "" || request.Header.Get("tracestate") != "" || request.Header.Get("baggage") != "" {
 			t.Fatalf("job request method/auth = %s / %q", request.Method, request.Header.Get("Authorization"))
 		}
 		body, err := io.ReadAll(request.Body)
 		if err != nil {
 			t.Fatal(err)
 		}
-		for _, expected := range []string{`"name":"EXPORT_USER_ID","value":"user-1"`, `"name":"EXPORT_PROJECT_ID","value":"project-1"`, `"name":"EXPORT_ID","value":"export-1"`, `"name":"EXPORT_SCOPE","value":"raw-full"`} {
+		for _, expected := range []string{`"name":"EXPORT_USER_ID","value":"user-1"`, `"name":"EXPORT_PROJECT_ID","value":"project-1"`, `"name":"EXPORT_ID","value":"export-1"`, `"name":"EXPORT_SCOPE","value":"raw-full"`, `"name":"LWC_TRACEPARENT","value":"` + traceParent + `"`} {
 			if !strings.Contains(string(body), expected) {
 				t.Fatalf("job overrides missing %s: %s", expected, body)
 			}
 		}
+		if strings.Contains(string(body), "tracestate") || strings.Contains(string(body), "baggage") {
+			t.Fatalf("private propagation data crossed the job override: %s", body)
+		}
 		return &http.Response{StatusCode: http.StatusOK, Header: make(http.Header), Body: io.NopCloser(strings.NewReader(`{}`))}, nil
 	})}
-	if err := starter.Start(t.Context(), "user-1", "project-1", Job{ExportID: "export-1", Scope: ScopeRawFull}); err != nil {
+	ctx := trace.ContextWithRemoteSpanContext(t.Context(), parent)
+	if err := starter.Start(ctx, "user-1", "project-1", Job{ExportID: "export-1", Scope: ScopeRawFull}); err != nil {
 		t.Fatal(err)
 	}
 }

@@ -1127,8 +1127,14 @@ class Providers:
         # Only fields this profile changes are retained. No plaintext credentials.
         prior = {'image': container['image']}
         if c == 'worker':
-            prior['env'] = [x for x in container.get('env', []) if x['name'] in ('GCP_PROJECT', 'FIRESTORE_DATABASE_ID')]
+            prior['env'] = [x for x in container.get('env', []) if x['name'] in (
+                'GCP_PROJECT', 'FIRESTORE_DATABASE_ID', auth_config.OTLP_ENDPOINT_ENV)]
             require(all(set(x) == {'name', 'value'} and isinstance(x['value'], str) for x in prior['env']), 'unrepresentable-job-env')
+            require(len({x['name'] for x in prior['env']}) == len(prior['env']), 'unrepresentable-job-env')
+            prior_otlp = next((x['value'] for x in prior['env']
+                               if x['name'] == auth_config.OTLP_ENDPOINT_ENV), None)
+            require(prior_otlp in (None, auth_config.OTLP_ENDPOINT) if self.p['environment'] == 'development'
+                    else prior_otlp is None, 'incompatible-prior-worker-otlp-endpoint')
             try:
                 prior['api_key_binding'] = pipeline_config_contract.job_secret_binding(
                     container, self.p['gcp']['project_id'])
@@ -1155,17 +1161,35 @@ class Providers:
             except (KeyError, TypeError, ValueError, tomllib.TOMLDecodeError):
                 raise Breakpoint('unrepresentable-prior-pipeline-config') from None
         else:
-            require(self.export_matches(raw), 'prior-export-config-incompatible')
+            require(self.export_matches(raw, allow_unconfigured_dev=True), 'prior-export-config-incompatible')
+            env = self.job_template(raw)['containers'][0].get('env', [])
+            prior['otlp_endpoint'] = next((x['value'] for x in env
+                                           if x.get('name') == auth_config.OTLP_ENDPOINT_ENV), None)
         return prior
 
-    def export_matches(self, raw):
+    def export_matches(self, raw, allow_unconfigured_dev=False, expected_endpoint=...):
         t = self.job_template(raw)
         cfg = self.p['export_job']
-        env = {x['name']: x.get('value') for x in t['containers'][0].get('env', [])}
+        entries = t['containers'][0].get('env', [])
+        names = [x.get('name') for x in entries]
+        if len(names) != len(set(names)):
+            return False
+        env = {x['name']: x.get('value') for x in entries}
+        endpoint = env.get(auth_config.OTLP_ENDPOINT_ENV)
+        if expected_endpoint is ...:
+            if self.p['environment'] == 'development':
+                valid_endpoint = endpoint == auth_config.OTLP_ENDPOINT
+                if allow_unconfigured_dev:
+                    valid_endpoint = valid_endpoint or endpoint is None
+            else:
+                valid_endpoint = endpoint is None
+        else:
+            valid_endpoint = endpoint == expected_endpoint
         execution = raw['spec']['template']['spec']
         return (t.get('serviceAccountName') == cfg['runtime_service_account'] and
                 all(env.get(k) == v for k, v in {'GCP_PROJECT': self.p['gcp']['project_id'], 'BUCKET': cfg['bucket'],
                     'FIRESTORE_DATABASE_ID': cfg['firestore_database_id'], 'EXPORT_SIGNING_SERVICE_ACCOUNT': cfg['signing_service_account']}.items()) and
+                valid_endpoint and
                 str(t.get('timeoutSeconds')) == '82800' and t.get('maxRetries') == cfg['max_retries'] and
                 execution.get('parallelism') == cfg['parallelism'] and execution.get('taskCount') == cfg['tasks'])
 
@@ -1330,10 +1354,14 @@ class Providers:
         if len(t['containers']) != 1 or t['containers'][0]['image'] != artifact['image']:
             return False
         if c == 'exportjob':
-            return self.export_matches(raw)
-        env = [x for x in t['containers'][0].get('env', []) if x['name'] in ('GCP_PROJECT', 'FIRESTORE_DATABASE_ID')]
-        expected = artifact['env'] if prior else [{'name': 'GCP_PROJECT', 'value': self.p['gcp']['project_id']},
-                           {'name': 'FIRESTORE_DATABASE_ID', 'value': self.p['bff']['firestore_database_id']}]
+            return self.export_matches(raw, expected_endpoint=artifact.get('otlp_endpoint')) if prior else self.export_matches(raw)
+        env = [x for x in t['containers'][0].get('env', []) if x['name'] in (
+            'GCP_PROJECT', 'FIRESTORE_DATABASE_ID', auth_config.OTLP_ENDPOINT_ENV)]
+        expected = artifact['env'] if prior else [
+            {'name': 'GCP_PROJECT', 'value': self.p['gcp']['project_id']},
+            {'name': 'FIRESTORE_DATABASE_ID', 'value': self.p['bff']['firestore_database_id']},
+            *([{'name': auth_config.OTLP_ENDPOINT_ENV, 'value': auth_config.OTLP_ENDPOINT}]
+              if self.p['environment'] == 'development' else [])]
         if sorted(env, key=lambda x:x['name']) != sorted(expected, key=lambda x:x['name']):
             return False
         if c != 'worker':
@@ -1441,12 +1469,22 @@ class Providers:
         else:
             if c == 'worker':
                 pipeline_config = artifact.get('pipeline_config')
-                args += ['--update-env-vars', '^|^GCP_PROJECT='+self.p['gcp']['project_id']+'|FIRESTORE_DATABASE_ID='+self.p['bff']['firestore_database_id']]
+                endpoint_args = ('|'+auth_config.OTLP_ENDPOINT_ENV+'='+auth_config.OTLP_ENDPOINT
+                                 if self.p['environment'] == 'development' else '')
+                args += ['--update-env-vars', '^|^GCP_PROJECT='+self.p['gcp']['project_id']+
+                         '|FIRESTORE_DATABASE_ID='+self.p['bff']['firestore_database_id']+endpoint_args]
+                if self.p['environment'] == 'production':
+                    args += ['--remove-env-vars', auth_config.OTLP_ENDPOINT_ENV]
                 if pipeline_config is not None:
                     self.upload_pipeline_config(pipeline_config)
                     key, value = pipeline_config_contract.secret_cli_binding(pipeline_config['secret'])
                     args += ['--update-secrets', key+'='+value,
                              '--task-timeout', str(pipeline_config['timeout_seconds'])+'s']
+            elif c == 'exportjob':
+                if self.p['environment'] == 'development':
+                    args += ['--update-env-vars', '^|^'+auth_config.OTLP_ENDPOINT_ENV+'='+auth_config.OTLP_ENDPOINT]
+                else:
+                    args += ['--remove-env-vars', auth_config.OTLP_ENDPOINT_ENV]
             self.cloud(c, *args, mutation=True)
 
     def reconcile_candidate(self, c, artifact, candidate, save):
@@ -1544,7 +1582,7 @@ class Providers:
                 require(all('|' not in v and '\n' not in v for v in env.values()), 'unrepresentable-prior-env')
                 if env:
                     args += ['--update-env-vars', '^|^'+'|'.join(k+'='+v for k,v in env.items())]
-                missing = set(('GCP_PROJECT', 'FIRESTORE_DATABASE_ID')) - env.keys()
+                missing = set(('GCP_PROJECT', 'FIRESTORE_DATABASE_ID', auth_config.OTLP_ENDPOINT_ENV)) - env.keys()
                 if missing:
                     args += ['--remove-env-vars', ','.join(sorted(missing))]
                 if prior.get('pipeline_config_absent') is True:
@@ -1558,4 +1596,10 @@ class Providers:
                 else:
                     args += ['--remove-secrets', 'DEEPSEEK_API_KEY']
                 args += ['--task-timeout', str(prior['timeout_seconds'])+'s']
+            elif c == 'exportjob':
+                prior_endpoint = prior.get('otlp_endpoint')
+                if prior_endpoint is None:
+                    args += ['--remove-env-vars', auth_config.OTLP_ENDPOINT_ENV]
+                else:
+                    args += ['--update-env-vars', '^|^'+auth_config.OTLP_ENDPOINT_ENV+'='+prior_endpoint]
             self.cloud(c, *args, mutation=True)

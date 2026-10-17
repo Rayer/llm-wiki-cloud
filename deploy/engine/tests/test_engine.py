@@ -163,7 +163,10 @@ class Acceptance(unittest.TestCase):
                 self.assertTrue(mutation)
                 self.assertEqual(args[:5], ('jobs', 'update', job_name, '--image', image))
                 env_args = args[args.index('--update-env-vars') + 1]
-                self.assertEqual(env_args, '^|^GCP_PROJECT=llm-wiki-cloud|FIRESTORE_DATABASE_ID=' + database_id)
+                expected_env = '^|^GCP_PROJECT=llm-wiki-cloud|FIRESTORE_DATABASE_ID=' + database_id
+                if environment == 'development':
+                    expected_env += '|OTEL_EXPORTER_OTLP_ENDPOINT=https://telemetry.googleapis.com'
+                self.assertEqual(env_args, expected_env)
                 self.assertNotIn('--update-secrets', args)
 
     def flush(self):write(self.root/'provider.json',self.provider)
@@ -528,6 +531,7 @@ class Acceptance(unittest.TestCase):
             {'name':'GOOGLE_CLOUD_PROJECT','value':'llm-wiki-cloud'},
             {'name':'GOOGLE_APPLICATION_CREDENTIALS','value':'/var/run/secrets/google/adc.json'},
             {'name':'LWC_APP_CONFIG_PATH','value':'/var/run/lwc-auth-config/auth.json'},
+            {'name':'OTEL_EXPORTER_OTLP_ENDPOINT','value':'https://telemetry.googleapis.com'},
         ])
         self.assertEqual(revision['spec']['containers'][0]['volumeMounts'],[
             {'name':'lwc-auth-app-config-dev','mountPath':'/var/run/lwc-auth-config'}])
@@ -1069,6 +1073,29 @@ class Acceptance(unittest.TestCase):
         self.assertNotIn(uri, self.current()['pipeline_configs'])
         self.assertTrue(e.provider.observe('worker', prior, {}, prior=True))
         e.provider.delete_pipeline_config_object({'bucket': self.normalized['worker']['bucket']})
+
+    def test_dev_worker_and_exportjob_otlp_transition_and_rollback_preserve_absence(self):
+        e = self.ready(self.make(('exportjob', 'worker'), name='dev-otlp-transition'))
+        e.snapshot()
+        for component in ('worker', 'exportjob'):
+            with self.subTest(component=component):
+                prior = e.state['components'][component]['prior']
+                if component == 'worker':
+                    self.assertNotIn('OTEL_EXPORTER_OTLP_ENDPOINT', [x['name'] for x in prior['env']])
+                else:
+                    self.assertIsNone(prior['otlp_endpoint'])
+                artifact = e.receipt(component)['artifact']
+                e.provider.deploy(component, artifact, {}, lambda: None)
+                resource_name = self.normalized['worker' if component == 'worker' else 'export_job']['job_name']
+                raw = self.current()['resources'][resource_name]
+                env = {x['name']: x.get('value') for x in providers.Providers.job_template(raw)['containers'][0]['env']}
+                self.assertEqual(env.get('OTEL_EXPORTER_OTLP_ENDPOINT'), 'https://telemetry.googleapis.com')
+                self.assertTrue(e.provider.observe(component, artifact, {}, prior=False))
+                e.provider.rollback(component, prior)
+                raw = self.current()['resources'][resource_name]
+                env = {x['name']: x.get('value') for x in providers.Providers.job_template(raw)['containers'][0]['env']}
+                self.assertNotIn('OTEL_EXPORTER_OTLP_ENDPOINT', env)
+                self.assertTrue(e.provider.observe(component, prior, {}, prior=True))
 
     def test_worker_snapshot_accepts_legacy_config_absence_message(self):
         e = self.ready(self.make(name='legacy-config-absence'))

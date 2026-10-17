@@ -12,6 +12,7 @@ import (
 	"time"
 
 	"cloud.google.com/go/storage"
+	"github.com/rayer/llm-wiki-bff/internal/observability"
 	"golang.org/x/oauth2"
 	"golang.org/x/oauth2/google"
 	"google.golang.org/api/iamcredentials/v1"
@@ -137,12 +138,16 @@ func (s *CloudRunJobStarter) Start(ctx context.Context, userID, projectID string
 	if err != nil {
 		return errors.New("export job is unavailable")
 	}
-	payload, err := json.Marshal(map[string]any{"overrides": map[string]any{"containerOverrides": []any{map[string]any{"env": []any{
+	env := []any{
 		map[string]string{"name": "EXPORT_USER_ID", "value": userID},
 		map[string]string{"name": "EXPORT_PROJECT_ID", "value": projectID},
 		map[string]string{"name": "EXPORT_ID", "value": job.ExportID},
 		map[string]string{"name": "EXPORT_SCOPE", "value": string(job.Scope)},
-	}}}}})
+	}
+	if traceParent := observability.TraceParentFromContext(ctx); traceParent != "" {
+		env = append(env, map[string]string{"name": "LWC_TRACEPARENT", "value": traceParent})
+	}
+	payload, err := json.Marshal(map[string]any{"overrides": map[string]any{"containerOverrides": []any{map[string]any{"env": env}}}})
 	if err != nil {
 		return errors.New("export job is unavailable")
 	}

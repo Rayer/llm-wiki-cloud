@@ -2445,7 +2445,11 @@ class ArchitectureAuthorityTests(unittest.TestCase):
             self.assertEqual(frozen.returncode, 0, frozen.stdout + frozen.stderr)
             self.assertEqual(json.loads(rollback.read_text())["handles"]["worker"], {
                 "image": old_image,
-                "profile_env": {"GCP_PROJECT": {"present": False}, "FIRESTORE_DATABASE_ID": {"present": False}},
+                "profile_env": {
+                    "GCP_PROJECT": {"present": False},
+                    "FIRESTORE_DATABASE_ID": {"present": False},
+                    "OTEL_EXPORTER_OTLP_ENDPOINT": {"present": False},
+                },
             })
             current = json.loads(state.read_text())
             container = current["spec"]["template"]["spec"]["template"]["spec"]["containers"][0]
@@ -2842,7 +2846,10 @@ class ArchitectureAuthorityTests(unittest.TestCase):
             frozen = subprocess.run(["bash", str(ROOT / "deploy/components/exportjob.sh"), "freeze"],
                                     env=env, text=True, capture_output=True)
             self.assertEqual(frozen.returncode, 0, frozen.stdout + frozen.stderr)
-            self.assertEqual(json.loads((root / "rollback.json").read_text())["handles"]["exportjob"], {"image": old_image})
+            self.assertEqual(json.loads((root / "rollback.json").read_text())["handles"]["exportjob"], {
+                "image": old_image,
+                "env": {"present": False},
+            })
             current = json.loads(state.read_text())
             current["template"]["template"]["containers"][0]["image"] = new_image
             state.write_text(json.dumps(current))

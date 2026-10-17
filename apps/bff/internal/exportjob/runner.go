@@ -38,7 +38,7 @@ type exportSource struct {
 // RunExport claims one queued job, snapshots its project objects by GCS
 // generation, streams the ZIP to GCS, verifies it, and only then makes it ready.
 func RunExport(ctx context.Context, repo Repository, archives *CloudArchiveStore, userID, projectID string, job Job, fs *firestore.Client) (resultErr error) {
-	ctx, workerSpan := observability.StartExportSpan(ctx, "export.worker")
+	ctx, workerSpan := observability.StartExportAttemptSpan(ctx, "export.worker")
 	observability.SetExportOutcome(workerSpan, "export.publication.outcome", "not_applicable")
 	defer func() {
 		outcome := "success"

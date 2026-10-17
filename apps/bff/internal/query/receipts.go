@@ -174,20 +174,22 @@ type ReceiptRecorder struct {
 }
 
 type TerminalSummary struct {
-	DiagnosticID string
-	TraceID      string
-	SpanID       string
-	Service      string
-	Revision     string
-	ProjectID    string
-	GenerationID string
-	Transport    string
-	Stage        string
-	Reason       string
-	Outcome      string
-	Business     string
-	HTTPStatus   int
-	ToolIsError  bool
+	DiagnosticID   string
+	TraceID        string
+	SpanID         string
+	TraceSampled   bool
+	Service        string
+	Revision       string
+	CloudProjectID string
+	ProjectID      string
+	GenerationID   string
+	Transport      string
+	Stage          string
+	Reason         string
+	Outcome        string
+	Business       string
+	HTTPStatus     int
+	ToolIsError    bool
 }
 
 func WithReceipt(ctx context.Context) (context.Context, *ReceiptRecorder) {
@@ -387,6 +389,13 @@ func FinishReceipt(r *ReceiptRecorder) {
 		slog.String("project_id", summary.ProjectID), slog.String("generation_id", summary.GenerationID),
 		slog.String("transport", summary.Transport), slog.Int("request_status", summary.HTTPStatus),
 		slog.Bool("mcp_is_error", summary.ToolIsError), slog.String("business_outcome", summary.Business),
+	}
+	if summary.TraceID != "" && summary.SpanID != "" && summary.CloudProjectID != "" {
+		attrs = append(attrs,
+			slog.String("logging.googleapis.com/trace", "projects/"+summary.CloudProjectID+"/traces/"+summary.TraceID),
+			slog.String("logging.googleapis.com/spanId", summary.SpanID),
+			slog.Bool("logging.googleapis.com/trace_sampled", summary.TraceSampled),
+		)
 	}
 	slog.Default().LogAttrs(context.Background(), slog.LevelInfo, "query.terminal", attrs...)
 }

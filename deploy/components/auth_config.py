@@ -23,6 +23,8 @@ QUERY_PATH = 'QUERY_STAGE_CONFIG_PATH'
 EXPORT_BFF = ('EXPORT_JOB_URL', 'EXPORT_SIGNING_SERVICE_ACCOUNT')
 PROFILE_RUNTIME_BFF = ('PROFILE_RUNTIME_AUDIENCE', 'PROFILE_RUNTIME_SERVICE_ACCOUNT')
 TYPESAFE_JEV_API_KEY = 'TYPESAFE_JEV_API_KEY'
+OTLP_ENDPOINT_ENV = 'OTEL_EXPORTER_OTLP_ENDPOINT'
+OTLP_ENDPOINT = 'https://telemetry.googleapis.com'
 PIPELINE_DEMO_USER_IDS = 'PIPELINE_DEMO_USER_IDS'
 PIPELINE_COOLDOWN_SECONDS = 'PIPELINE_COOLDOWN_SECONDS'
 MAX_PIPELINE_COOLDOWN_SECONDS = ((1 << 63) - 1) // 1_000_000_000
@@ -134,8 +136,11 @@ def desired(plan, component='auth', bff_config_version=None, auth_config_version
         require(isinstance(inputs, dict) and isinstance(inputs.get('config_secret_resource'), str)
                 and SECRET_RESOURCE.fullmatch(inputs['config_secret_resource']))
         require(isinstance(bff_config_version, str) and re.fullmatch(r'[1-9][0-9]*', bff_config_version))
+        env = {BFF_CONFIG_ENV: BFF_CONFIG_PATH}
+        if plan['environment'] == 'development':
+            env[OTLP_ENDPOINT_ENV] = OTLP_ENDPOINT
         return {
-            'env': {BFF_CONFIG_ENV: BFF_CONFIG_PATH},
+            'env': env,
             'secrets': {},
             'file_secret': {
                 'resource': inputs['config_secret_resource'],
@@ -156,8 +161,11 @@ def desired(plan, component='auth', bff_config_version=None, auth_config_version
                 isinstance(inputs.get('config_id'), str) and
                 re.fullmatch(r'sha256:[0-9a-f]{64}', inputs['config_id']) is not None)
         require(isinstance(auth_config_version, str) and re.fullmatch(r'[1-9][0-9]*', auth_config_version))
+        env = {AUTH_CONFIG_ENV: AUTH_CONFIG_PATH}
+        if plan['environment'] == 'development':
+            env[OTLP_ENDPOINT_ENV] = OTLP_ENDPOINT
         return {
-            'env': {AUTH_CONFIG_ENV: AUTH_CONFIG_PATH},
+            'env': env,
             'secrets': {},
             'file_secret': {
                 'resource': resource, 'version': auth_config_version,
@@ -187,6 +195,8 @@ def desired(plan, component='auth', bff_config_version=None, auth_config_version
         secrets['GOOGLE_CLIENT_SECRET'] = {
             'name': google['client_secret_reference'], 'key': google['client_secret_version'],
         }
+    if plan['environment'] == 'development':
+        env[OTLP_ENDPOINT_ENV] = OTLP_ENDPOINT
     return {'env': env, 'secrets': secrets, 'service_account': auth['runtime_service_account']}
 
 
@@ -248,6 +258,9 @@ def effective(revision, project, component='auth', query_only=False, selective_b
             result['env'][name] = entry['value']
         elif component == 'bff' and name == BFF_CONFIG_ENV:
             require(set(entry) == {'name', 'value'} and entry.get('value') == BFF_CONFIG_PATH)
+            result['env'][name] = entry['value']
+        elif name == OTLP_ENDPOINT_ENV:
+            require(set(entry) == {'name', 'value'} and entry.get('value') == OTLP_ENDPOINT)
             result['env'][name] = entry['value']
         elif ((name in BASE or name in GOOGLE) and not query_only and not selective_bff) or (component == 'bff' and name == QUERY_PATH):
             omitted_empty_demo = name == 'AUTH_DEMO_USER_ID' and set(entry) == {'name'}

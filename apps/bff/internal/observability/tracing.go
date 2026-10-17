@@ -22,7 +22,19 @@ import (
 
 // InitTraces installs an offline-safe stdout exporter for request spans.
 func InitTraces(service, revision string) (*sdktrace.TracerProvider, error) {
-	provider, err := newTraceProvider(os.Stdout, service, revision)
+	return InitTracesWithProject(service, revision, strings.TrimSpace(os.Getenv("GCP_PROJECT")))
+}
+
+func InitTracesWithProject(service, revision, project string) (*sdktrace.TracerProvider, error) {
+	return InitTracesWithProjectAndProcessors(service, revision, project)
+}
+
+// InitTracesWithProjectAndProcessors is an internal QA hook for processors
+// that must observe exactly the spans permitted by the shared export filter.
+func InitTracesWithProjectAndProcessors(service, revision, project string, additional ...sdktrace.SpanProcessor) (*sdktrace.TracerProvider, error) {
+	InstallTracePropagator()
+	setRuntimeProjectID(project)
+	provider, err := newRuntimeTraceProvider(os.Stdout, service, revision, project, additional...)
 	if err != nil {
 		return nil, err
 	}
@@ -33,7 +45,10 @@ func InitTraces(service, revision string) (*sdktrace.TracerProvider, error) {
 // InitWorkerTraces installs the worker's offline-safe exporter on stderr so
 // child stdout remains the existing exactly-once pipeline log stream.
 func InitWorkerTraces(revision string) (*sdktrace.TracerProvider, error) {
-	provider, err := newTraceProvider(os.Stderr, "lwc-worker", revision)
+	InstallTracePropagator()
+	project := strings.TrimSpace(os.Getenv("GCP_PROJECT"))
+	setRuntimeProjectID(project)
+	provider, err := newRuntimeTraceProvider(os.Stderr, "lwc-worker", revision, project)
 	if err != nil {
 		return nil, err
 	}
@@ -44,7 +59,10 @@ func InitWorkerTraces(revision string) (*sdktrace.TracerProvider, error) {
 // InitExportWorkerTraces writes bounded export-worker spans to stderr, keeping
 // the existing stdout contract available to the worker's caller.
 func InitExportWorkerTraces(revision string) (*sdktrace.TracerProvider, error) {
-	provider, err := newTraceProvider(os.Stderr, "lwc-export-worker", revision)
+	InstallTracePropagator()
+	project := strings.TrimSpace(os.Getenv("GCP_PROJECT"))
+	setRuntimeProjectID(project)
+	provider, err := newRuntimeTraceProvider(os.Stderr, "lwc-export-worker", revision, project)
 	if err != nil {
 		return nil, err
 	}
@@ -53,17 +71,94 @@ func InitExportWorkerTraces(revision string) (*sdktrace.TracerProvider, error) {
 }
 
 func newTraceProvider(writer io.Writer, service, revision string) (*sdktrace.TracerProvider, error) {
+	return newTraceProviderWithOTLP(writer, service, revision, "", nil)
+}
+
+// NewFilteredTraceProvider constructs the same privacy-filtered dual-export
+// pipeline used by runtime initialization. Internal test fixtures supply a
+// loopback OTLP exporter here so they exercise the production filter and SDK
+// pipeline without credentials or a provider call.
+func NewFilteredTraceProvider(writer io.Writer, service, revision, project string, otlp sdktrace.SpanExporter, additional ...sdktrace.SpanProcessor) (*sdktrace.TracerProvider, error) {
+	if otlp != nil {
+		otlp = safeTraceExporter{SpanExporter: otlp}
+	}
+	return newTraceProviderWithOTLP(writer, service, revision, project, otlp, additional...)
+}
+
+func newRuntimeTraceProvider(writer io.Writer, service, revision, project string, additional ...sdktrace.SpanProcessor) (*sdktrace.TracerProvider, error) {
+	exporter, err := newRuntimeCloudTraceExporter()
+	if err != nil {
+		// Export remains optional; never expose credential or endpoint details.
+		io.WriteString(os.Stderr, "[observability] WARNING: trace exporter unavailable\n")
+	}
+	return newTraceProviderWithOTLP(writer, service, revision, project, exporter, additional...)
+}
+
+func newTraceProviderWithOTLP(writer io.Writer, service, revision, project string, otlp sdktrace.SpanExporter, additional ...sdktrace.SpanProcessor) (*sdktrace.TracerProvider, error) {
 	exporter, err := stdouttrace.New(stdouttrace.WithWriter(writer))
 	if err != nil {
 		return nil, err
 	}
+	processors := []sdktrace.SpanProcessor{
+		sdktrace.NewBatchSpanProcessor(exporter,
+			sdktrace.WithMaxQueueSize(512),
+			sdktrace.WithMaxExportBatchSize(64),
+			sdktrace.WithBatchTimeout(time.Second),
+			sdktrace.WithExportTimeout(traceExportTimeout)),
+	}
+	if otlp != nil {
+		processors = append(processors, sdktrace.NewBatchSpanProcessor(otlp,
+			sdktrace.WithMaxQueueSize(512),
+			sdktrace.WithMaxExportBatchSize(64),
+			sdktrace.WithBatchTimeout(time.Second),
+			sdktrace.WithExportTimeout(traceExportTimeout)))
+	}
+	processors = append(processors, additional...)
+	attrs := []attribute.KeyValue{
+		attribute.String("service.name", service),
+		attribute.String("service.revision", revision),
+	}
+	if strings.TrimSpace(project) != "" {
+		attrs = append(attrs, attribute.String("gcp.project_id", strings.TrimSpace(project)))
+	}
 	return sdktrace.NewTracerProvider(
-		sdktrace.WithSpanProcessor(querySpanExportProcessor{next: sdktrace.NewBatchSpanProcessor(exporter)}),
-		sdktrace.WithResource(resource.NewSchemaless(
-			attribute.String("service.name", service),
-			attribute.String("service.revision", revision),
-		)),
+		sdktrace.WithSpanProcessor(querySpanExportProcessor{next: spanProcessorFanout(processors)}),
+		sdktrace.WithResource(resource.NewSchemaless(attrs...)),
 	), nil
+}
+
+type spanProcessorFanout []sdktrace.SpanProcessor
+
+func (f spanProcessorFanout) OnStart(ctx context.Context, span sdktrace.ReadWriteSpan) {
+	for _, processor := range f {
+		processor.OnStart(ctx, span)
+	}
+}
+
+func (f spanProcessorFanout) OnEnd(span sdktrace.ReadOnlySpan) {
+	for _, processor := range f {
+		processor.OnEnd(span)
+	}
+}
+
+func (f spanProcessorFanout) Shutdown(ctx context.Context) error {
+	var errs []error
+	for _, processor := range f {
+		if err := processor.Shutdown(ctx); err != nil {
+			errs = append(errs, err)
+		}
+	}
+	return errors.Join(errs...)
+}
+
+func (f spanProcessorFanout) ForceFlush(ctx context.Context) error {
+	var errs []error
+	for _, processor := range f {
+		if err := processor.ForceFlush(ctx); err != nil {
+			errs = append(errs, err)
+		}
+	}
+	return errors.Join(errs...)
 }
 
 // querySpanExportProcessor keeps the stdout contract scoped to BFF-owned
@@ -855,11 +950,12 @@ func (p querySpanExportProcessor) OnStart(ctx context.Context, span sdktrace.Rea
 
 func (p querySpanExportProcessor) OnEnd(span sdktrace.ReadOnlySpan) {
 	if allowedSpan(span.InstrumentationScope().Name, span.Name()) {
+		safe := privacySafeSpan{ReadOnlySpan: span}
 		if span.InstrumentationScope().Name == dataInstrumentationScope {
-			p.next.OnEnd(dataSafeSpan{ReadOnlySpan: span})
+			p.next.OnEnd(dataSafeSpan{ReadOnlySpan: safe})
 			return
 		}
-		p.next.OnEnd(span)
+		p.next.OnEnd(safe)
 	}
 }
 

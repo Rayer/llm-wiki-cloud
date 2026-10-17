@@ -702,7 +702,7 @@ func (m *Manager) Start(ctx context.Context, userID, projectID, stage string, cl
 		return "", err
 	}
 
-	cmd := newWorkerCommand(m.cfg, executionID, userID, projectID, stage, cleanRebuild, os.Environ())
+	cmd := newWorkerCommand(m.cfg, executionID, userID, projectID, stage, cleanRebuild, os.Environ(), observability.TraceParentFromContext(ctx))
 	p := &process{cmd: cmd, done: make(chan struct{})}
 	if err := m.startProcess(executionID, p, cmd.Start); err != nil {
 		result := processResult{executionID: executionID, userID: userID, projectID: projectID, beforeID: beforeID, reservationID: reservationID, spawnFailed: true, childErr: err}
@@ -1041,14 +1041,14 @@ func workerArgs(stage string) []string {
 	return []string{"run", `[["run","--auto-approve"]]`}
 }
 
-func newWorkerCommand(cfg Config, executionID, userID, projectID, stage string, cleanRebuild bool, parentEnv []string) *exec.Cmd {
+func newWorkerCommand(cfg Config, executionID, userID, projectID, stage string, cleanRebuild bool, parentEnv []string, traceParent ...string) *exec.Cmd {
 	args := workerArgs(stage)
 	if cfg.PipelineConfigPath != "" {
 		args = append(args, "--pipeline-config", cfg.PipelineConfigPath, "--pipeline-private-bindings", cfg.PipelineBindingsPath)
 	}
 	cmd := exec.Command(cfg.Worker, args...)
 	cmd.Dir = cfg.WorkDir
-	cmd.Env = workerEnvironment(parentEnv, map[string]string{
+	overrides := map[string]string{
 		"GCP_PROJECT":           cfg.Project,
 		"GOOGLE_CLOUD_PROJECT":  cfg.Project,
 		"BUCKET":                cfg.Bucket,
@@ -1058,7 +1058,11 @@ func newWorkerCommand(cfg Config, executionID, userID, projectID, stage string, 
 		"PROJECT_ID":            projectID,
 		"EXECUTION_ID":          executionID,
 		"CLEAN_REBUILD":         fmt.Sprintf("%t", cleanRebuild),
-	})
+	}
+	if len(traceParent) > 0 && traceParent[0] != "" {
+		overrides["LWC_TRACEPARENT"] = traceParent[0]
+	}
+	cmd.Env = workerEnvironment(parentEnv, overrides)
 	cmd.Stdout = io.Discard
 	cmd.Stderr = cfg.Stderr
 	if cmd.Stderr == nil {

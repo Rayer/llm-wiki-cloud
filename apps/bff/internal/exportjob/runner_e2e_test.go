@@ -31,13 +31,23 @@ import (
 	"cloud.google.com/go/storage"
 	"github.com/gin-gonic/gin"
 	"github.com/rayer/llm-wiki-bff/internal/generation"
+	"github.com/rayer/llm-wiki-bff/internal/observability"
+	"github.com/rayer/llm-wiki-bff/internal/observability/otlpfixture"
+	tracev1 "go.opentelemetry.io/proto/otlp/trace/v1"
 	"google.golang.org/api/option"
+	"google.golang.org/protobuf/proto"
 	_ "modernc.org/sqlite"
 )
 
 func TestHTTPToRunnerPublishesDigestVerifiedCanonicalArchiveLocally(t *testing.T) {
 	ctx := context.Background()
 	fs := exportEmulator(t)
+	capture := otlpfixture.New(t)
+	qaProject := "synthetic-project"
+	if otlpfixture.CloudMode() {
+		qaProject = os.Getenv("LWC_OTLP_QA_PROJECT")
+	}
+	provider := capture.Provider(t, "lwc-qa-export-fixture", "local-fixture", qaProject)
 	storageAPI := newFakeStorageAPI()
 	storageServer := httptest.NewServer(storageAPI)
 	t.Cleanup(storageServer.Close)
@@ -103,6 +113,7 @@ func TestHTTPToRunnerPublishesDigestVerifiedCanonicalArchiveLocally(t *testing.T
 	handler := NewHTTPHandler(repo, NewFirestoreProjectVerifier(fs), archives, starter)
 	gin.SetMode(gin.TestMode)
 	router := gin.New()
+	router.Use(observability.TraceContextMiddleware())
 	api := router.Group("/api/v1")
 	api.Use(func(c *gin.Context) {
 		c.Set("userID", userID)
@@ -113,6 +124,8 @@ func TestHTTPToRunnerPublishesDigestVerifiedCanonicalArchiveLocally(t *testing.T
 	create := httptest.NewRecorder()
 	createRequest := httptest.NewRequest(http.MethodPost, "/api/v1/exports", strings.NewReader(`{"scope":"raw-full-metadata"}`))
 	createRequest.Header.Set("Content-Type", "application/json")
+	traceID, parentID, traceParent := otlpfixture.NewParent(t)
+	createRequest.Header.Set("traceparent", traceParent)
 	router.ServeHTTP(create, createRequest)
 	if create.Code != http.StatusAccepted {
 		t.Fatalf("API create status=%d body=%s runner error=%v requests=%v", create.Code, create.Body.String(), starter.err, storageAPI.requests)
@@ -183,6 +196,160 @@ func TestHTTPToRunnerPublishesDigestVerifiedCanonicalArchiveLocally(t *testing.T
 	}
 	archiveDigest := sha256.Sum256(archiveBytes)
 	t.Logf("local provider simulation: archive bytes=%d sha256=%x; every ZIP entry matched export-meta.json digests", len(archiveBytes), archiveDigest)
+	capture.Flush(t, provider)
+	capture.LogIdentities(t, "UC6")
+	t.Logf("OTLP_QA_CASE=UC6 trace_id=%s parent_span_id=%s expected_spans=export.request,export.start,export.worker", traceID, parentID)
+	if otlpfixture.CloudMode() {
+		return
+	}
+	var requestSpan, startSpan, workerSpan *tracev1.Span
+	var encoded bytes.Buffer
+	for _, batch := range capture.Requests() {
+		data, err := proto.Marshal(batch)
+		if err != nil {
+			t.Fatal(err)
+		}
+		encoded.Write(data)
+		for _, resource := range batch.ResourceSpans {
+			for _, scope := range resource.ScopeSpans {
+				for _, span := range scope.Spans {
+					switch span.Name {
+					case "export.request":
+						if hex.EncodeToString(span.TraceId) == traceID && hex.EncodeToString(span.ParentSpanId) == parentID {
+							requestSpan = span
+						}
+					case "export.start":
+						if hex.EncodeToString(span.TraceId) == traceID {
+							startSpan = span
+						}
+					case "export.worker":
+						if len(span.ParentSpanId) == 0 && len(span.Links) == 1 && hex.EncodeToString(span.Links[0].TraceId) == traceID {
+							workerSpan = span
+						}
+					}
+				}
+			}
+		}
+	}
+	if requestSpan == nil || hex.EncodeToString(requestSpan.TraceId) != traceID || hex.EncodeToString(requestSpan.ParentSpanId) != parentID ||
+		startSpan == nil || !bytes.Equal(startSpan.ParentSpanId, requestSpan.SpanId) ||
+		workerSpan == nil || len(workerSpan.ParentSpanId) != 0 || len(workerSpan.Links) != 1 ||
+		!bytes.Equal(workerSpan.Links[0].TraceId, startSpan.TraceId) || !bytes.Equal(workerSpan.Links[0].SpanId, startSpan.SpanId) ||
+		len(workerSpan.Links[0].Attributes) != 0 {
+		t.Fatalf("export request/start/worker causal chain is wrong: request=%+v start=%+v worker=%+v", requestSpan, startSpan, workerSpan)
+	}
+	if bytes.Contains(encoded.Bytes(), stateMarker) || bytes.Contains(encoded.Bytes(), envReference) {
+		t.Fatal("exporter protobuf retained a credential canary from the synthetic archive")
+	}
+}
+
+func TestOTLPCaptureExportHTTPToRunnerLocalSyntheticObjectStore(t *testing.T) {
+	ctx := context.Background()
+	capture := otlpfixture.New(t)
+	qaProject := "synthetic-project"
+	if otlpfixture.CloudMode() {
+		qaProject = os.Getenv("LWC_OTLP_QA_PROJECT")
+	}
+	provider := capture.Provider(t, "lwc-qa-export-fixture", "local-fixture", qaProject)
+	storageAPI := newFakeStorageAPI()
+	storageServer := httptest.NewServer(storageAPI)
+	t.Cleanup(storageServer.Close)
+	storageClient, err := storage.NewClient(ctx, option.WithEndpoint(storageServer.URL+"/storage/v1/"), option.WithoutAuthentication(), option.WithHTTPClient(storageServer.Client()))
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = storageClient.Close() })
+
+	const bucket, userID, projectID = "lwc398-local-export", "synthetic-user", "synthetic-project"
+	prefix := "users/" + userID + "/projects/" + projectID + "/"
+	storageAPI.put(prefix+"raw/source.txt", []byte("synthetic source"), 1)
+	storageAPI.put(prefix+"wiki/fixture.md", []byte("# Synthetic fixture"), 2)
+	repo := newTestRepository()
+	cloud := &CloudArchiveStore{client: storageClient, bucket: bucket}
+	archives := fakePublishedArchiveStore{cloud: cloud}
+	starter := &localRunExportStarter{repo: repo, cloud: cloud}
+	handler := NewHTTPHandler(repo, testProjectVerifier{name: "Synthetic Fixture"}, archives, starter)
+	gin.SetMode(gin.TestMode)
+	router := gin.New()
+	router.Use(observability.TraceContextMiddleware())
+	api := router.Group("/api/v1")
+	api.Use(func(c *gin.Context) {
+		c.Set("userID", userID)
+		c.Set("projectID", projectID)
+		c.Next()
+	})
+	handler.Register(api)
+	traceID, parentID, traceParent := otlpfixture.NewParent(t)
+	request := httptest.NewRequest(http.MethodPost, "/api/v1/exports", strings.NewReader(`{"scope":"raw-full"}`))
+	request.Header.Set("Content-Type", "application/json")
+	request.Header.Set("traceparent", traceParent)
+	response := httptest.NewRecorder()
+	router.ServeHTTP(response, request)
+	if response.Code != http.StatusAccepted || starter.err != nil {
+		t.Fatalf("synthetic export create status=%d body=%s runner=%v", response.Code, response.Body.String(), starter.err)
+	}
+	job := repo.jobs["export-1"]
+	archiveName, err := ReadyObject(userID, projectID, job.ExportID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	archiveBytes := storageAPI.get(archiveName)
+	if len(archiveBytes) == 0 {
+		t.Fatal("local export runner did not publish its synthetic archive")
+	}
+	capture.Flush(t, provider)
+	capture.LogIdentities(t, "UC6")
+	t.Logf("OTLP_QA_CASE=UC6 trace_id=%s parent_span_id=%s expected_http_status=202", traceID, parentID)
+	for _, identity := range capture.Identities() {
+		if strings.HasPrefix(identity.Scope, "cloud.google.com/go") {
+			t.Fatalf("excluded Google SDK span crossed the production filter into QA identity capture: %s/%s", identity.Scope, identity.Name)
+		}
+	}
+	for _, batch := range capture.Requests() {
+		for _, resource := range batch.ResourceSpans {
+			for _, scope := range resource.ScopeSpans {
+				if strings.HasPrefix(scope.Scope.Name, "cloud.google.com/go") {
+					t.Fatalf("excluded Google SDK span crossed the production filter into OTLP: %s", scope.Scope.Name)
+				}
+			}
+		}
+	}
+	if otlpfixture.CloudMode() {
+		return
+	}
+	var requestSpan, startSpan, workerSpan *tracev1.Span
+	var encoded bytes.Buffer
+	for _, batch := range capture.Requests() {
+		data, err := proto.Marshal(batch)
+		if err != nil {
+			t.Fatal(err)
+		}
+		encoded.Write(data)
+		for _, resource := range batch.ResourceSpans {
+			for _, scope := range resource.ScopeSpans {
+				for _, span := range scope.Spans {
+					switch span.Name {
+					case "export.request":
+						requestSpan = span
+					case "export.start":
+						startSpan = span
+					case "export.worker":
+						workerSpan = span
+					}
+				}
+			}
+		}
+	}
+	if requestSpan == nil || hex.EncodeToString(requestSpan.TraceId) != traceID || hex.EncodeToString(requestSpan.ParentSpanId) != parentID ||
+		startSpan == nil || !bytes.Equal(startSpan.ParentSpanId, requestSpan.SpanId) ||
+		workerSpan == nil || len(workerSpan.ParentSpanId) != 0 || len(workerSpan.Links) != 1 ||
+		!bytes.Equal(workerSpan.Links[0].TraceId, startSpan.TraceId) || !bytes.Equal(workerSpan.Links[0].SpanId, startSpan.SpanId) ||
+		len(workerSpan.Links[0].Attributes) != 0 {
+		t.Fatalf("export request/start/worker causal chain is wrong: request=%+v start=%+v worker=%+v", requestSpan, startSpan, workerSpan)
+	}
+	if bytes.Contains(encoded.Bytes(), []byte("Synthetic Fixture")) || bytes.Contains(encoded.Bytes(), []byte("synthetic source")) {
+		t.Fatal("exporter protobuf contains synthetic project content")
+	}
 }
 
 func exportStateFixture(t *testing.T) string {

@@ -33,6 +33,7 @@ def candidate(environment, plan_override=None, version=CONFIG_VERSION):
     image_name = 'llm-wiki-bff'
     image = 'asia-east1-docker.pkg.dev/llm-wiki-cloud/cloud-run-images/' + image_name + '@sha256:' + 'c' * 64
     alias = secret_name
+    environment = fixtures.auth_config.desired(plan, 'bff', version)['env']
     return {
         'metadata': {
             'name': revision_name,
@@ -43,7 +44,7 @@ def candidate(environment, plan_override=None, version=CONFIG_VERSION):
             'serviceAccountName': plan['bff']['runtime_service_account'],
             'containers': [{
                 'image': image,
-                'env': [{'name': 'LWC_BFF_CONFIG_PATH', 'value': CONFIG_PATH}],
+                'env': [{'name': name, 'value': value} for name, value in environment.items()],
                 'volumeMounts': [{'name': 'bff-volume', 'mountPath': '/etc/lwc-bff-config'}],
             }],
             'volumes': [{'name': 'bff-volume', 'secret': {
