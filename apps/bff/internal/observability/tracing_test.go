@@ -78,6 +78,64 @@ func TestStdoutTraceExporterWritesCorrelatedStructuredSpans(t *testing.T) {
 	}
 }
 
+func TestRuntimeTraceSamplingPolicyRecordsUnsampledParentsOnlyWhenExplicitlyEnabled(t *testing.T) {
+	traceID, err := trace.TraceIDFromHex("11111111111111111111111111111111")
+	if err != nil {
+		t.Fatal(err)
+	}
+	parentID, err := trace.SpanIDFromHex("2222222222222222")
+	if err != nil {
+		t.Fatal(err)
+	}
+	remoteContext := func(sampled bool) context.Context {
+		flags := trace.TraceFlags(0)
+		if sampled {
+			flags = trace.FlagsSampled
+		}
+		parent := trace.NewSpanContext(trace.SpanContextConfig{
+			TraceID: traceID, SpanID: parentID, TraceFlags: flags, Remote: true,
+		})
+		return trace.ContextWithRemoteSpanContext(context.Background(), parent)
+	}
+
+	t.Setenv("LWC_DEV_FULL_TRACE_SAMPLING", "1")
+	devRecorder := tracetest.NewSpanRecorder()
+	devProvider, err := newRuntimeTraceProvider(io.Discard, "lwc-bff-test", "revision-test", "synthetic-project", devRecorder)
+	if err != nil {
+		t.Fatal(err)
+	}
+	devCtx, devSpan := devProvider.Tracer(queryInstrumentationScope).Start(remoteContext(false), "query.request")
+	devSpan.End()
+	devEnded := devRecorder.Ended()
+	if len(devEnded) != 1 || !devSpan.SpanContext().IsSampled() || devSpan.SpanContext().TraceID() != traceID ||
+		devEnded[0].Parent().SpanID() != parentID || trace.SpanContextFromContext(devCtx).TraceID() != traceID {
+		t.Fatalf("explicit DEV sampling lost the unsampled incoming trace/parent: span=%+v ended=%+v", devSpan.SpanContext(), devEnded)
+	}
+	if err := devProvider.Shutdown(context.Background()); err != nil {
+		t.Fatal(err)
+	}
+
+	t.Setenv("LWC_DEV_FULL_TRACE_SAMPLING", "")
+	defaultRecorder := tracetest.NewSpanRecorder()
+	defaultProvider, err := newRuntimeTraceProvider(io.Discard, "lwc-bff-test", "revision-test", "synthetic-project", defaultRecorder)
+	if err != nil {
+		t.Fatal(err)
+	}
+	_, unsampled := defaultProvider.Tracer(queryInstrumentationScope).Start(remoteContext(false), "query.request")
+	unsampled.End()
+	if got := len(defaultRecorder.Ended()); got != 0 {
+		t.Fatalf("default provider recorded an unsampled remote parent, got %d spans", got)
+	}
+	_, sampled := defaultProvider.Tracer(queryInstrumentationScope).Start(remoteContext(true), "query.request")
+	sampled.End()
+	if got := defaultRecorder.Ended(); len(got) != 1 || !got[0].SpanContext().IsSampled() || got[0].Parent().SpanID() != parentID {
+		t.Fatalf("default provider changed sampled-parent behavior: %+v", got)
+	}
+	if err := defaultProvider.Shutdown(context.Background()); err != nil {
+		t.Fatal(err)
+	}
+}
+
 func TestPipelineScopesExportSafeSpansAndBlockUnrelatedSDKPayloads(t *testing.T) {
 	const canary = "PRIVATE_PIPELINE_SDK_CANARY"
 	var output strings.Builder

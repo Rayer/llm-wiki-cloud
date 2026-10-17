@@ -27,7 +27,8 @@ worker_profile_env_handle() {
       elif (($matches[0]|has("value")) and (($matches[0].value|type) == "string")) then {present:true,value:$matches[0].value}
       else error("invalid Worker setting") end;
     {GCP_PROJECT:setting("GCP_PROJECT"),FIRESTORE_DATABASE_ID:setting("FIRESTORE_DATABASE_ID"),
-     OTEL_EXPORTER_OTLP_ENDPOINT:setting("OTEL_EXPORTER_OTLP_ENDPOINT")}
+     OTEL_EXPORTER_OTLP_ENDPOINT:setting("OTEL_EXPORTER_OTLP_ENDPOINT"),
+     LWC_DEV_FULL_TRACE_SAMPLING:setting("LWC_DEV_FULL_TRACE_SAMPLING")}
   ' <<<"$job_json"
 }
 
@@ -35,7 +36,7 @@ worker_profile_env_args_from_handle() {
   local env_handle="$1" name entry present value payload='' removals=''
   local -a updates=()
   WORKER_PROFILE_ENV_ARGS=()
-  for name in GCP_PROJECT FIRESTORE_DATABASE_ID OTEL_EXPORTER_OTLP_ENDPOINT; do
+  for name in GCP_PROJECT FIRESTORE_DATABASE_ID OTEL_EXPORTER_OTLP_ENDPOINT LWC_DEV_FULL_TRACE_SAMPLING; do
     entry=$(jq -cer --arg name "$name" '.[$name] | select(type == "object" and (.present|type) == "boolean")' <<<"$env_handle") || return 1
     present=$(jq -r '.present' <<<"$entry")
     if [[ "$present" == true ]]; then
@@ -61,8 +62,10 @@ worker_profile_env_readback() {
   observed=$(worker_profile_env_handle) || return 2
   jq -e --arg project "$project" --arg database "$database" --arg environment "$environment" \
     '.GCP_PROJECT == {present:true,value:$project} and .FIRESTORE_DATABASE_ID == {present:true,value:$database} and
-     (if $environment == "development" then .OTEL_EXPORTER_OTLP_ENDPOINT == {present:true,value:"https://telemetry.googleapis.com"}
-      else .OTEL_EXPORTER_OTLP_ENDPOINT == {present:false} end)' \
+     (if $environment == "development" then
+        .OTEL_EXPORTER_OTLP_ENDPOINT == {present:true,value:"https://telemetry.googleapis.com"} and
+        .LWC_DEV_FULL_TRACE_SAMPLING == {present:true,value:"1"}
+      else .OTEL_EXPORTER_OTLP_ENDPOINT == {present:false} and .LWC_DEV_FULL_TRACE_SAMPLING == {present:false} end)' \
     <<<"$observed" >/dev/null
 }
 
@@ -71,9 +74,11 @@ worker_profile_env_prior_allowed() {
   environment=${ENVIRONMENT:-production}
   jq -e --arg environment "$environment" '
     if $environment == "development" then
-      .OTEL_EXPORTER_OTLP_ENDPOINT == {present:false} or
-      .OTEL_EXPORTER_OTLP_ENDPOINT == {present:true,value:"https://telemetry.googleapis.com"}
-    else .OTEL_EXPORTER_OTLP_ENDPOINT == {present:false} end
+      (.OTEL_EXPORTER_OTLP_ENDPOINT == {present:false} or
+       .OTEL_EXPORTER_OTLP_ENDPOINT == {present:true,value:"https://telemetry.googleapis.com"}) and
+      (.LWC_DEV_FULL_TRACE_SAMPLING == {present:false} or
+       .LWC_DEV_FULL_TRACE_SAMPLING == {present:true,value:"1"})
+    else .OTEL_EXPORTER_OTLP_ENDPOINT == {present:false} and .LWC_DEV_FULL_TRACE_SAMPLING == {present:false} end
   ' <<<"$handle" >/dev/null
 }
 
@@ -137,14 +142,14 @@ worker_mutate() {
   environment=${ENVIRONMENT:-production}
   endpoint_args=''
   if [[ "$environment" == development ]]; then
-    endpoint_args='|OTEL_EXPORTER_OTLP_ENDPOINT=https://telemetry.googleapis.com'
+    endpoint_args='|OTEL_EXPORTER_OTLP_ENDPOINT=https://telemetry.googleapis.com|LWC_DEV_FULL_TRACE_SAMPLING=1'
   fi
   if [[ "$environment" == development ]]; then
     if timeout --signal=TERM --kill-after=5s 600s gcloud run jobs update "$job" --project "$project" --region "$region" --image "$image" \
       --update-env-vars "^|^GCP_PROJECT=$project|FIRESTORE_DATABASE_ID=$database$endpoint_args" --quiet >/dev/null; then :; else update_status=$?; fi
   else
     if timeout --signal=TERM --kill-after=5s 600s gcloud run jobs update "$job" --project "$project" --region "$region" --image "$image" \
-      --update-env-vars "^|^GCP_PROJECT=$project|FIRESTORE_DATABASE_ID=$database" --remove-env-vars OTEL_EXPORTER_OTLP_ENDPOINT --quiet >/dev/null; then :; else update_status=$?; fi
+      --update-env-vars "^|^GCP_PROJECT=$project|FIRESTORE_DATABASE_ID=$database" --remove-env-vars OTEL_EXPORTER_OTLP_ENDPOINT,LWC_DEV_FULL_TRACE_SAMPLING --quiet >/dev/null; then :; else update_status=$?; fi
   fi
   if [[ "$update_status" -ne 0 ]]; then
     if ! worker_verify "$image"; then

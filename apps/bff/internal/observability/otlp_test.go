@@ -113,6 +113,70 @@ func TestOTLPCaptureUsesFilteredGateAndSanitizesPropagationPayloads(t *testing.T
 	}
 }
 
+func TestOTLPExportRecordsUnsampledRemoteParentWithDevFullPolicy(t *testing.T) {
+	const traceStateCanary = "PRIVATE_UNSAMPLED_TRACESTATE_CANARY"
+	t.Setenv("LWC_DEV_FULL_TRACE_SAMPLING", "1")
+	var encoded []byte
+	var request tracepb.ExportTraceServiceRequest
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		var err error
+		encoded, err = io.ReadAll(r.Body)
+		if err != nil {
+			t.Errorf("read OTLP body: %v", err)
+			w.WriteHeader(http.StatusBadRequest)
+			return
+		}
+		if err := proto.Unmarshal(encoded, &request); err != nil {
+			t.Errorf("decode OTLP protobuf: %v", err)
+			w.WriteHeader(http.StatusBadRequest)
+			return
+		}
+		w.WriteHeader(http.StatusOK)
+	}))
+	defer server.Close()
+
+	exporter, err := newOTLPHTTPExporter(context.Background(), server.URL+"/v1/traces", &http.Client{Timeout: time.Second})
+	if err != nil {
+		t.Fatal("create OTLP exporter")
+	}
+	provider, err := newTraceProviderWithOTLP(io.Discard, "lwc-qa-unsampled", "source-test", "synthetic-project", exporter)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer ShutdownTraces(provider)
+
+	traceID, _ := trace.TraceIDFromHex("11111111111111111111111111111111")
+	parentID, _ := trace.SpanIDFromHex("2222222222222222")
+	state, err := trace.ParseTraceState("vendor=" + traceStateCanary)
+	if err != nil {
+		t.Fatal(err)
+	}
+	parent := trace.NewSpanContext(trace.SpanContextConfig{
+		TraceID: traceID, SpanID: parentID, TraceState: state, Remote: true,
+	})
+	ctx := trace.ContextWithRemoteSpanContext(context.Background(), parent)
+	_, span := provider.Tracer(queryInstrumentationScope).Start(ctx, "query.request")
+	if !span.SpanContext().IsSampled() || span.SpanContext().TraceID() != traceID {
+		t.Fatalf("DEV sampling changed incoming trace identity or sampled state: span=%+v", span.SpanContext())
+	}
+	span.End()
+	flushCtx, cancel := context.WithTimeout(context.Background(), time.Second)
+	defer cancel()
+	if err := provider.ForceFlush(flushCtx); err != nil {
+		t.Fatalf("flush OTLP spans: %v", err)
+	}
+	if strings.Contains(string(encoded), traceStateCanary) {
+		t.Fatal("valid incoming trace state crossed the OTLP privacy boundary")
+	}
+	if len(request.ResourceSpans) != 1 || len(request.ResourceSpans[0].ScopeSpans) != 1 || len(request.ResourceSpans[0].ScopeSpans[0].Spans) != 1 {
+		t.Fatalf("OTLP export did not contain exactly one sampled Query span: %+v", request.ResourceSpans)
+	}
+	got := request.ResourceSpans[0].ScopeSpans[0].Spans[0]
+	if got.Name != "query.request" || !bytes.Equal(got.TraceId, traceID[:]) || !bytes.Equal(got.ParentSpanId, parentID[:]) || got.TraceState != "" {
+		t.Fatalf("OTLP span lost incoming identity/parent or leaked trace state: %+v", got)
+	}
+}
+
 func TestAsyncExporterErrorIsOpaqueAtOtelHandle(t *testing.T) {
 	const canary = "PRIVATE_EXPORTER_RESPONSE_CANARY"
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {

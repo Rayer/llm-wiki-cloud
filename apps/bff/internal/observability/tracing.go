@@ -121,10 +121,16 @@ func newTraceProviderWithOTLP(writer io.Writer, service, revision, project strin
 	if strings.TrimSpace(project) != "" {
 		attrs = append(attrs, attribute.String("gcp.project_id", strings.TrimSpace(project)))
 	}
-	return sdktrace.NewTracerProvider(
+	options := []sdktrace.TracerProviderOption{
 		sdktrace.WithSpanProcessor(querySpanExportProcessor{next: spanProcessorFanout(processors)}),
 		sdktrace.WithResource(resource.NewSchemaless(attrs...)),
-	), nil
+	}
+	if os.Getenv(devFullTraceSamplingEnv) == "1" {
+		// DEV deliberately records every privacy-approved application span,
+		// including children of valid remote parents whose sampled flag is unset.
+		options = append(options, sdktrace.WithSampler(sdktrace.AlwaysSample()))
+	}
+	return sdktrace.NewTracerProvider(options...), nil
 }
 
 type spanProcessorFanout []sdktrace.SpanProcessor
@@ -173,6 +179,10 @@ const authInstrumentationScope = "llm-wiki-auth/operations"
 const profileInstrumentationScope = "llm-wiki-bff/profile"
 const exportInstrumentationScope = "llm-wiki-export/operations"
 const dataInstrumentationScope = "llm-wiki-bff/data"
+
+// devFullTraceSamplingEnv is set only by the canonical development runtime
+// config. Production and offline defaults retain the SDK's parent-based policy.
+const devFullTraceSamplingEnv = "LWC_DEV_FULL_TRACE_SAMPLING"
 
 var authSpanNames = stringSet(
 	"auth.request", "auth.google.token_exchange", "auth.google.token_decode", "auth.google.jwks_fetch",
