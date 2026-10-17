@@ -11,8 +11,9 @@ SPAN_ID = re.compile(r"^[0-9a-f]{16}$")
 CASES = {f"UC{i}" for i in range(1, 7)}
 CASE_FIELDS = {
     "case", "name", "trace_id", "parent_id", "parent_span_id", "expected_span",
-    "outcome", "count", "expected_spans_per_trace", "worker_trace_id",
-    "worker_parent_span_id", "profile_dispatch_trace_id", "profile_parent_span_id",
+    "outcome", "count", "expected_spans_per_trace", "worker_attempt_trace_id",
+    "worker_link_trace_id", "worker_link_span_id", "submit_span_id", "http_parent_span_id",
+    "profile_dispatch_trace_id", "profile_parent_span_id",
     "expected_http_status", "expected_spans", "http_status",
 }
 SPAN_FIELDS = {
@@ -54,10 +55,10 @@ def parse(log_dir):
                 item["case"] = case
                 if set(item) - CASE_FIELDS:
                     raise ValueError("unexpected QA case field")
-                for name in ("trace_id", "worker_trace_id", "profile_dispatch_trace_id"):
+                for name in ("trace_id", "worker_attempt_trace_id", "worker_link_trace_id", "profile_dispatch_trace_id"):
                     if item.get(name):
                         require_trace_id(item[name], name)
-                for name in ("parent_id", "parent_span_id", "worker_parent_span_id", "profile_parent_span_id"):
+                for name in ("parent_id", "parent_span_id", "worker_link_span_id", "submit_span_id", "http_parent_span_id", "profile_parent_span_id"):
                     require_span_id(item.get(name, ""), name)
                 cases.append(item)
             if "OTLP_QA_SPAN " in line:
@@ -99,7 +100,7 @@ def parse(log_dir):
         "UC2": {"query.request", "query.http.client", "query.http.server"},
         "UC3": {"query.request"},
         "UC4": {"query.request"},
-        "UC5": {"pipeline.worker", "profile.dispatch", "profile.work"},
+        "UC5": {"pipeline.worker", "profile.dispatch", "profile.dispatch.sweep", "profile.claim", "profile.work"},
         "UC6": {"export.request", "export.start", "export.worker"},
     }
     for case, required in required_names.items():
@@ -114,18 +115,32 @@ def parse(log_dir):
         item = next((row for row in cases if row["case"] == case), None)
         if item is None:
             raise ValueError(f"{case} result record is missing")
+        expected_outcome = "success" if case == "UC3" else "degraded"
+        if item.get("outcome") != expected_outcome or item.get("http_status") != "200":
+            raise ValueError(f"{case} Query outcome or HTTP status is incorrect")
         root = next((span for span in by_case[case] if span["trace_id"] == item.get("trace_id") and span["name"] == item.get("expected_span")), None)
         if root is None or root["parent_span_id"] != item.get("parent_span_id"):
             raise ValueError(f"{case} query root is not parented to its synthetic request")
-    worker_case = next((row for row in cases if row["case"] == "UC5"), None)
-    worker = next((span for span in by_case["UC5"] if span["name"] == "pipeline.worker"), None)
-    claim = next((span for span in by_case["UC5"] if span["name"] == "profile.dispatch"), None)
+    worker_case = next((row for row in cases if row["case"] == "UC5" and row.get("expected_span") == "pipeline.worker"), None)
+    profile_case = next((row for row in cases if row["case"] == "UC5" and row.get("expected_span") == "profile.dispatch"), None)
+    worker = next((span for span in by_case["UC5"] if span["name"] == "pipeline.worker" and span["trace_id"] == (worker_case or {}).get("worker_attempt_trace_id")), None)
+    submit = next((span for span in by_case["UC5"] if span["name"] == "pipeline.submit" and span["trace_id"] == (worker_case or {}).get("worker_link_trace_id") and span["span_id"] == (worker_case or {}).get("submit_span_id")), None)
+    invoke = next((span for span in by_case["UC5"] if span["name"] == "pipeline.job.invoke" and span["trace_id"] == (worker_case or {}).get("worker_link_trace_id") and span["span_id"] == (worker_case or {}).get("worker_link_span_id")), None)
+    dispatch = next((span for span in by_case["UC5"] if span["name"] == "profile.dispatch" and span["trace_id"] == (profile_case or {}).get("profile_dispatch_trace_id")), None)
+    sweep = next((span for span in by_case["UC5"] if span["name"] == "profile.dispatch.sweep" and span["trace_id"] == (profile_case or {}).get("profile_dispatch_trace_id")), None)
+    claim = next((span for span in by_case["UC5"] if span["name"] == "profile.claim" and span["trace_id"] == (profile_case or {}).get("profile_dispatch_trace_id")), None)
     profile = next((span for span in by_case["UC5"] if span["name"] == "profile.work"), None)
-    if worker_case is None or worker is None or claim is None or profile is None:
+    if worker_case is None or profile_case is None or worker is None or submit is None or invoke is None or dispatch is None or sweep is None or claim is None or profile is None:
         raise ValueError("UC5 async span identities are incomplete")
-    if worker["parent_span_id"] or f"{worker_case.get('worker_trace_id')}/{worker_case.get('worker_parent_span_id')}" not in worker["links"].split(","):
-        raise ValueError("UC5 worker root does not link to the real submission span")
-    if claim["trace_id"] != worker_case.get("profile_dispatch_trace_id") or claim["parent_span_id"] != worker_case.get("profile_parent_span_id"):
+    if worker_case.get("outcome") != "success" or worker_case.get("http_status") != "202" or \
+            worker["parent_span_id"] or worker["trace_id"] == worker_case.get("worker_link_trace_id") or \
+            f"{worker_case.get('worker_link_trace_id')}/{worker_case.get('worker_link_span_id')}" not in worker["links"].split(","):
+        raise ValueError("UC5 worker root does not link to the actual pipeline invocation span")
+    if submit["parent_span_id"] != worker_case.get("http_parent_span_id") or invoke["parent_span_id"] != submit["span_id"]:
+        raise ValueError("UC5 pipeline submission and invocation do not preserve the HTTP parent chain")
+    if profile_case.get("outcome") != "success" or profile_case.get("http_status") != "200" or \
+            dispatch["parent_span_id"] != profile_case.get("profile_parent_span_id") or sweep["parent_span_id"] != dispatch["span_id"] or \
+            claim["parent_span_id"] != sweep["span_id"]:
         raise ValueError("UC5 profile dispatch parent does not match its synthetic request")
     if profile["parent_span_id"] or f"{claim['trace_id']}/{claim['span_id']}" not in profile["links"].split(","):
         raise ValueError("UC5 Profile work root does not link to the actual claim span")

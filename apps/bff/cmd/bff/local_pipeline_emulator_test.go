@@ -38,6 +38,7 @@ import (
 	handlerv1 "github.com/rayer/llm-wiki-bff/internal/handler/v1"
 	"github.com/rayer/llm-wiki-bff/internal/localcloud"
 	"github.com/rayer/llm-wiki-bff/internal/localpipeline"
+	"github.com/rayer/llm-wiki-bff/internal/observability/otlpfixture"
 	"github.com/rayer/llm-wiki-bff/internal/sourcestatus"
 	storeapi "github.com/rayer/llm-wiki-bff/internal/storage"
 	"github.com/rayer/llm-wiki-bff/internal/syssettings"
@@ -63,13 +64,22 @@ func TestLocalPipelineHTTPTriggerRunsWorkerAndReportsSuccessAndFailure(t *testin
 		project  = "llm-wiki-cloud"
 		bucket   = "llm-wiki-cloud-local"
 		database = "llm-wiki-cloud-local"
-		userID   = "lwc361-test-user"
 		secret   = "test-only-local-pipeline-signing-secret"
 	)
+	userID := "lwc398-test-user-" + localPipelineTestNonce(t)
 	scope := "lwc361-test-" + localPipelineTestNonce(t)
 	t.Setenv("GOOGLE_CLOUD_PROJECT", project)
 	t.Setenv("LOCAL_CLOUD_SCOPE", scope)
 	t.Setenv("FIRESTORE_DATABASE_ID", database)
+	capture := otlpfixture.New(t)
+	qaProject := "synthetic-project"
+	if otlpfixture.CloudMode() {
+		qaProject = os.Getenv("LWC_OTLP_QA_PROJECT")
+		t.Setenv("LWC_OTLP_TEST_ENDPOINT", "")
+	} else {
+		t.Setenv("LWC_OTLP_TEST_ENDPOINT", capture.Endpoint())
+	}
+	provider := capture.Provider(t, "lwc-qa-pipeline-fixture", "local-fixture", qaProject)
 	ctx, cancel := context.WithTimeout(context.Background(), 2*time.Minute)
 	defer cancel()
 
@@ -194,7 +204,11 @@ func TestLocalPipelineHTTPTriggerRunsWorkerAndReportsSuccessAndFailure(t *testin
 		t.Fatal("resolve BFF module path")
 	}
 	moduleRoot := filepath.Clean(filepath.Join(filepath.Dir(sourceFile), "../.."))
-	build := exec.CommandContext(ctx, "go", "build", "-tags", "lwc_local_pipeline_fixture", "-o", worker, "./cmd/olw_worker")
+	workerRevision := strings.TrimSpace(os.Getenv("LWC_OTLP_QA_REVISION"))
+	if workerRevision == "" {
+		workerRevision = "local-fixture"
+	}
+	build := exec.CommandContext(ctx, "go", "build", "-tags", "lwc_local_pipeline_fixture", "-ldflags", "-X main.buildNonce="+workerRevision, "-o", worker, "./cmd/olw_worker")
 	build.Dir = moduleRoot
 	if output, err := build.CombinedOutput(); err != nil {
 		t.Fatalf("build tagged local pipeline worker: %v\n%s", err, output)
@@ -290,7 +304,8 @@ func TestLocalPipelineHTTPTriggerRunsWorkerAndReportsSuccessAndFailure(t *testin
 	if _, err := projectStorage.WriteBytes(ctx, []byte("First local pipeline source."), "raw/source.md"); err != nil {
 		t.Fatalf("seed first scoped raw input: %v", err)
 	}
-	executionID := postLocalPipelineRun(t, ctx, server.Client(), server.URL, token, projectID, http.StatusAccepted)
+	traceID, parentID, traceParent := otlpfixture.NewParent(t)
+	executionID := postLocalPipelineRun(t, ctx, server.Client(), server.URL, token, projectID, http.StatusAccepted, traceParent)
 	postLocalPipelineRun(t, ctx, server.Client(), server.URL, token, projectID, http.StatusConflict)
 	state, reason := waitLocalPipelineStatus(t, ctx, server.Client(), server.URL, token, projectID, executionID)
 	if state != "SUCCEEDED" || reason != "" {
@@ -299,6 +314,62 @@ func TestLocalPipelineHTTPTriggerRunsWorkerAndReportsSuccessAndFailure(t *testin
 		}
 		stderr, readErr := os.ReadFile(workerStderrPath)
 		t.Fatalf("successful worker status=%q reason=%q; actual worker stderr=%q (read error: %v)", state, reason, stderr, readErr)
+	}
+	capture.Flush(t, provider)
+	var submitSpan otlpfixture.SpanIdentity
+	for _, item := range capture.Identities() {
+		if item.Name == "pipeline.submit" && item.TraceID == traceID {
+			submitSpan = item
+			break
+		}
+	}
+	if submitSpan.Name == "" || submitSpan.ParentSpanID != parentID {
+		t.Fatal("actual pipeline submission span did not preserve the synthetic HTTP parent")
+	}
+	var invokeSpan otlpfixture.SpanIdentity
+	for _, item := range capture.Identities() {
+		if item.Name == "pipeline.job.invoke" && item.TraceID == traceID && item.ParentSpanID == submitSpan.SpanID {
+			invokeSpan = item
+			break
+		}
+	}
+	if invokeSpan.Name == "" {
+		t.Fatal("actual Manager invocation span was not a child of the pipeline submission")
+	}
+	var workerSpan otlpfixture.SpanIdentity
+	for _, item := range localPipelineWorkerTraceIdentities(t, workerStderrPath) {
+		if item.Name == "pipeline.worker" {
+			workerSpan = item
+			break
+		}
+	}
+	if workerSpan.Name == "" || workerSpan.ParentSpanID != "" || workerSpan.TraceID == traceID || len(workerSpan.Links) != 1 ||
+		workerSpan.Links[0].TraceID != traceID || workerSpan.Links[0].SpanID != invokeSpan.SpanID {
+		t.Fatalf("actual native worker attempt did not form an independent linked root from the real Manager invocation: invocation=%+v worker=%+v", invokeSpan, workerSpan)
+	}
+	t.Logf("OTLP_QA_SPAN case=UC5 trace_id=%s span_id=%s parent_trace_id=%s parent_span_id=%s scope=%s name=%s links=",
+		submitSpan.TraceID, submitSpan.SpanID, submitSpan.ParentTraceID, submitSpan.ParentSpanID, submitSpan.Scope, submitSpan.Name)
+	t.Logf("OTLP_QA_SPAN case=UC5 trace_id=%s span_id=%s parent_trace_id=%s parent_span_id=%s scope=%s name=%s links=",
+		invokeSpan.TraceID, invokeSpan.SpanID, invokeSpan.ParentTraceID, invokeSpan.ParentSpanID, invokeSpan.Scope, invokeSpan.Name)
+	links := make([]string, 0, len(workerSpan.Links))
+	for _, link := range workerSpan.Links {
+		links = append(links, link.TraceID+"/"+link.SpanID)
+	}
+	t.Logf("OTLP_QA_SPAN case=UC5 trace_id=%s span_id=%s parent_trace_id=%s parent_span_id=%s scope=%s name=%s links=%s",
+		workerSpan.TraceID, workerSpan.SpanID, "", workerSpan.ParentSpanID, workerSpan.Scope, workerSpan.Name, strings.Join(links, ","))
+	t.Logf("OTLP_QA_CASE=UC5 worker_attempt_trace_id=%s worker_link_trace_id=%s worker_link_span_id=%s submit_span_id=%s http_parent_span_id=%s expected_span=pipeline.worker outcome=success http_status=%d",
+		workerSpan.TraceID, traceID, invokeSpan.SpanID, submitSpan.SpanID, parentID, http.StatusAccepted)
+	if !otlpfixture.CloudMode() {
+		foundWorkerExport := false
+		for _, span := range capture.Spans() {
+			if span.Name == "pipeline.worker" && hex.EncodeToString(span.TraceId) == workerSpan.TraceID {
+				foundWorkerExport = len(span.ParentSpanId) == 0 && len(span.Links) == 1 &&
+					hex.EncodeToString(span.Links[0].TraceId) == traceID && hex.EncodeToString(span.Links[0].SpanId) == invokeSpan.SpanID
+			}
+		}
+		if !foundWorkerExport {
+			t.Fatal("actual worker span/link did not cross the filtered OTLP protobuf exporter")
+		}
 	}
 	assertLocalPipelineQuota(t, ctx, fsClient, userID, projectID, executionID, 1, "charged")
 	manifest1, _, exists, err := projectStorage.CurrentManifest(ctx)
@@ -697,7 +768,7 @@ func readLocalPipelineWorkerStderr(t *testing.T, file *os.File, path string) str
 	return string(data)
 }
 
-func postLocalPipelineRun(t *testing.T, ctx context.Context, client *http.Client, baseURL, token, projectID string, wantStatus int) string {
+func postLocalPipelineRun(t *testing.T, ctx context.Context, client *http.Client, baseURL, token, projectID string, wantStatus int, traceparent ...string) string {
 	t.Helper()
 	request, err := http.NewRequestWithContext(ctx, http.MethodPost, baseURL+"/api/v1/pipeline/run", bytes.NewReader([]byte(`{}`)))
 	if err != nil {
@@ -706,6 +777,9 @@ func postLocalPipelineRun(t *testing.T, ctx context.Context, client *http.Client
 	request.Header.Set("Authorization", "Bearer "+token)
 	request.Header.Set("X-Project-ID", projectID)
 	request.Header.Set("Content-Type", "application/json")
+	if len(traceparent) > 0 && traceparent[0] != "" {
+		request.Header.Set("traceparent", traceparent[0])
+	}
 	response, err := client.Do(request)
 	if err != nil {
 		t.Fatalf("trigger local pipeline for %s: %v", projectID, err)
@@ -725,6 +799,79 @@ func postLocalPipelineRun(t *testing.T, ctx context.Context, client *http.Client
 		t.Fatalf("pipeline trigger response has no execution ID: %s (%v)", data, err)
 	}
 	return payload.ExecutionID
+}
+
+func localPipelineWorkerTraceIdentities(t *testing.T, path string) []otlpfixture.SpanIdentity {
+	t.Helper()
+	data, err := os.ReadFile(path)
+	if err != nil {
+		t.Fatalf("read bounded native-worker trace identity stderr: %v", err)
+	}
+	var identities []otlpfixture.SpanIdentity
+	for _, line := range strings.Split(string(data), "\n") {
+		line = strings.TrimSpace(line)
+		if !strings.HasPrefix(line, "OTLP_QA_SPAN case=UC5 ") {
+			continue
+		}
+		fields := make(map[string]string, 8)
+		for _, field := range strings.Fields(strings.TrimPrefix(line, "OTLP_QA_SPAN ")) {
+			key, value, ok := strings.Cut(field, "=")
+			if !ok || key == "" {
+				t.Fatalf("native-worker trace identity has malformed fixed fields")
+			}
+			if _, exists := fields[key]; exists {
+				t.Fatalf("native-worker trace identity repeated a field")
+			}
+			fields[key] = value
+		}
+		if len(fields) != 8 || fields["case"] != "UC5" || fields["scope"] != "llm-wiki-worker/pipeline" {
+			t.Fatalf("native-worker trace identity did not use the fixed test schema")
+		}
+		if fields["name"] != "pipeline.worker" {
+			continue
+		}
+		traceID, spanID := fields["trace_id"], fields["span_id"]
+		if decoded, err := hex.DecodeString(traceID); err != nil || len(decoded) != 16 {
+			t.Fatalf("native-worker trace identity had an invalid trace ID")
+		}
+		if decoded, err := hex.DecodeString(spanID); err != nil || len(decoded) != 8 {
+			t.Fatalf("native-worker trace identity had an invalid span ID")
+		}
+		identity := otlpfixture.SpanIdentity{
+			TraceID: traceID, SpanID: spanID, ParentTraceID: fields["parent_trace_id"],
+			ParentSpanID: fields["parent_span_id"], Scope: fields["scope"], Name: fields["name"],
+		}
+		if parent := identity.ParentSpanID; parent != "" {
+			if decoded, err := hex.DecodeString(parent); err != nil || len(decoded) != 8 {
+				t.Fatalf("native-worker trace identity had an invalid parent span ID")
+			}
+		}
+		if parent := identity.ParentTraceID; parent != "" {
+			if decoded, err := hex.DecodeString(parent); err != nil || len(decoded) != 16 {
+				t.Fatalf("native-worker trace identity had an invalid parent trace ID")
+			}
+		}
+		if links := fields["links"]; links != "" {
+			for _, raw := range strings.Split(links, ",") {
+				linkTraceID, linkSpanID, ok := strings.Cut(raw, "/")
+				if !ok {
+					t.Fatalf("native-worker trace identity had an invalid link")
+				}
+				if decoded, err := hex.DecodeString(linkTraceID); err != nil || len(decoded) != 16 {
+					t.Fatalf("native-worker trace identity had an invalid linked trace ID")
+				}
+				if decoded, err := hex.DecodeString(linkSpanID); err != nil || len(decoded) != 8 {
+					t.Fatalf("native-worker trace identity had an invalid linked span ID")
+				}
+				identity.Links = append(identity.Links, otlpfixture.LinkIdentity{TraceID: linkTraceID, SpanID: linkSpanID})
+			}
+		}
+		identities = append(identities, identity)
+	}
+	if len(identities) == 0 {
+		t.Fatal("native-worker did not emit any fixed-schema trace identity on stderr")
+	}
+	return identities
 }
 
 func assertLocalPipelineHistoricalSource(t *testing.T, ctx context.Context, storage *gcs.Client, snapshotDigest string, wantRaw []byte, wantDigest string) generation.SourceSnapshotRow {

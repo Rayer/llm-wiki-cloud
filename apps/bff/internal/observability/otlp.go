@@ -19,6 +19,7 @@ import (
 const (
 	OTLPEndpointEnv        = "OTEL_EXPORTER_OTLP_ENDPOINT"
 	cloudTraceOTLPEndpoint = "https://telemetry.googleapis.com"
+	cloudTraceOTLPTraceURL = "https://telemetry.googleapis.com/v1/traces"
 	traceExportTimeout     = 2 * time.Second
 	maxOTLPRequestBytes    = 1 << 20
 )
@@ -100,20 +101,15 @@ func newCloudTraceExporter(ctx context.Context, endpoint string, source oauth2.T
 		}
 		client = newOAuthHTTPClient(source)
 	}
-	return newOTLPHTTPExporter(ctx, cloudTraceOTLPEndpoint, client)
+	return newOTLPHTTPExporter(ctx, cloudTraceOTLPTraceURL, client)
 }
 
 func newOTLPHTTPExporter(ctx context.Context, endpoint string, client *http.Client) (sdktrace.SpanExporter, error) {
-	var endpointOption otlptracehttp.Option
-	if endpoint == cloudTraceOTLPEndpoint {
-		// WithEndpoint uses HTTPS and appends the protocol's /v1/traces path.
-		endpointOption = otlptracehttp.WithEndpoint("telemetry.googleapis.com")
-	} else {
-		// Tests use a loopback server and supply its complete request path.
-		endpointOption = otlptracehttp.WithEndpointURL(endpoint)
-	}
 	exporter, err := otlptracehttp.New(ctx,
-		endpointOption,
+		// WithEndpointURL pins scheme, host, and path after SDK environment
+		// defaults have been loaded, so ambient traces-specific overrides cannot
+		// change the OAuth-bearing request destination.
+		otlptracehttp.WithEndpointURL(endpoint),
 		otlptracehttp.WithHTTPClient(client),
 		otlptracehttp.WithHeaders(map[string]string{}),
 		otlptracehttp.WithMaxRequestSize(maxOTLPRequestBytes),
@@ -126,6 +122,9 @@ func newOTLPHTTPExporter(ctx context.Context, endpoint string, client *http.Clie
 }
 
 func newRuntimeCloudTraceExporter() (sdktrace.SpanExporter, error) {
+	if exporter, configured, err := fixtureTraceExporterFromEnvironment(context.Background()); configured || err != nil {
+		return exporter, err
+	}
 	endpoint := strings.TrimSpace(os.Getenv(OTLPEndpointEnv))
 	if endpoint == "" {
 		return nil, nil

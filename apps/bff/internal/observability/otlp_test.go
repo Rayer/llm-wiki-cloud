@@ -14,6 +14,8 @@ import (
 	"go.opentelemetry.io/otel"
 	"go.opentelemetry.io/otel/attribute"
 	"go.opentelemetry.io/otel/codes"
+	sdktrace "go.opentelemetry.io/otel/sdk/trace"
+	"go.opentelemetry.io/otel/sdk/trace/tracetest"
 	"go.opentelemetry.io/otel/trace"
 	tracepb "go.opentelemetry.io/proto/otlp/collector/trace/v1"
 	"golang.org/x/oauth2"
@@ -144,6 +146,54 @@ func TestAsyncExporterErrorIsOpaqueAtOtelHandle(t *testing.T) {
 	case <-time.After(3 * time.Second):
 		t.Fatal("batch exporter error was not handled")
 	}
+}
+
+func TestCloudTraceExporterPinsHTTPSAndTracePathAgainstAmbientOverrides(t *testing.T) {
+	for _, tc := range []struct {
+		name, key, value string
+	}{
+		{name: "traces endpoint", key: "OTEL_EXPORTER_OTLP_TRACES_ENDPOINT", value: "http://unused.invalid/private-path"},
+		{name: "insecure", key: "OTEL_EXPORTER_OTLP_INSECURE", value: "true"},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			t.Setenv(OTLPEndpointEnv, cloudTraceOTLPEndpoint)
+			t.Setenv(tc.key, tc.value)
+			var gotURL, gotAuthorization string
+			client := newOAuthHTTPClient(oauth2.StaticTokenSource(&oauth2.Token{AccessToken: "synthetic-review-token"}))
+			client.Transport.(*oauth2.Transport).Base = ambientProbeTransport(func(request *http.Request) (*http.Response, error) {
+				gotURL = request.URL.String()
+				gotAuthorization = request.Header.Get("Authorization")
+				return &http.Response{StatusCode: http.StatusOK, Header: make(http.Header), Body: io.NopCloser(strings.NewReader(""))}, nil
+			})
+			exporter, err := newCloudTraceExporter(context.Background(), cloudTraceOTLPEndpoint, nil, client)
+			if err != nil {
+				t.Fatal("create Cloud Trace exporter")
+			}
+			defer exporter.Shutdown(context.Background())
+			recorder := tracetest.NewSpanRecorder()
+			provider := sdktrace.NewTracerProvider(sdktrace.WithSpanProcessor(recorder))
+			defer provider.Shutdown(context.Background())
+			_, span := provider.Tracer(queryInstrumentationScope).Start(context.Background(), "query.request")
+			span.End()
+			ctx, cancel := context.WithTimeout(context.Background(), time.Second)
+			defer cancel()
+			if err := exporter.ExportSpans(ctx, recorder.Ended()); err != nil {
+				t.Fatal("export synthetic span")
+			}
+			if gotURL != cloudTraceOTLPTraceURL {
+				t.Errorf("ambient %s changed approved destination: %s", tc.key, gotURL)
+			}
+			if gotAuthorization != "Bearer synthetic-review-token" {
+				t.Error("OAuth authorization was not attached to the pinned request")
+			}
+		})
+	}
+}
+
+type ambientProbeTransport func(*http.Request) (*http.Response, error)
+
+func (f ambientProbeTransport) RoundTrip(request *http.Request) (*http.Response, error) {
+	return f(request)
 }
 
 type testTokenSource struct {

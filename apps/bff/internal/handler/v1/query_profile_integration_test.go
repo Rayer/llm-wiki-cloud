@@ -269,6 +269,10 @@ func (f *profileQueryTransport) RoundTrip(r *http.Request) (*http.Response, erro
 	return &http.Response{StatusCode: 200, Header: make(http.Header), Body: io.NopCloser(bytes.NewReader(out))}, nil
 }
 func profileQueryHandler(t *testing.T, cc *cache.Cache, root *profileQueryRoot, active *ProfileActive) *Handler {
+	return profileQueryHandlerWithClient(t, cc, root, active, llm.NewClient("synthetic-no-network"))
+}
+
+func profileQueryHandlerWithClient(t *testing.T, cc *cache.Cache, root *profileQueryRoot, active *ProfileActive, client *llm.Client) *Handler {
 	t.Helper()
 	repo := &profileQueryRepository{profileRepositoryStub: &profileRepositoryStub{state: ProfileState{ProjectID: "p", Active: active, Candidate: &ProfileCandidate{CandidateID: "new-G2-candidate", ContentGeneration: "G2-current"}}}}
 	if active != nil {
@@ -280,7 +284,7 @@ func profileQueryHandler(t *testing.T, cc *cache.Cache, root *profileQueryRoot, 
 		}
 	}
 	h := &Handler{store: root, cache: cc, profileRepository: repo}
-	executor, e := queryquality.NewStrictProductionExecutorWithQueryServiceConfig(cc, nil, nil, query.NewService(cc, nil, llm.NewClient("synthetic-no-network")), queryquality.DefaultRetrievalProfile(), queryquality.StructuredPlanPromptID, queryquality.DefaultOptions(), query.RuntimeConfigIdentity{})
+	executor, e := queryquality.NewStrictProductionExecutorWithQueryServiceConfig(cc, nil, nil, query.NewService(cc, nil, client), queryquality.DefaultRetrievalProfile(), queryquality.StructuredPlanPromptID, queryquality.DefaultOptions(), query.RuntimeConfigIdentity{})
 	if e != nil {
 		t.Fatal(e)
 	}

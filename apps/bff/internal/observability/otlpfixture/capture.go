@@ -39,6 +39,7 @@ type LinkIdentity struct{ TraceID, SpanID string }
 type SpanIdentity struct {
 	Scope, Name, TraceID, SpanID, ParentTraceID, ParentSpanID string
 	Links                                                     []LinkIdentity
+	Attributes                                                map[string]string
 }
 
 func New(t testing.TB) *Capture {
@@ -149,19 +150,27 @@ func (c *Capture) Requests() []*tracepb.ExportTraceServiceRequest {
 	return result
 }
 
+func (c *Capture) Endpoint() string { return c.server.URL + "/v1/traces" }
+
 func (c *Capture) OnStart(context.Context, sdktrace.ReadWriteSpan) {}
 
 func (c *Capture) OnEnd(span sdktrace.ReadOnlySpan) {
 	ctx, parent := span.SpanContext(), span.Parent()
 	item := SpanIdentity{
 		Scope: span.InstrumentationScope().Name, Name: span.Name(),
-		TraceID: ctx.TraceID().String(), SpanID: ctx.SpanID().String(),
+		TraceID: ctx.TraceID().String(), SpanID: ctx.SpanID().String(), Attributes: make(map[string]string),
 	}
 	if parent.IsValid() {
 		item.ParentTraceID, item.ParentSpanID = parent.TraceID().String(), parent.SpanID().String()
 	}
 	for _, link := range span.Links() {
 		item.Links = append(item.Links, LinkIdentity{TraceID: link.SpanContext.TraceID().String(), SpanID: link.SpanContext.SpanID().String()})
+	}
+	for _, attr := range span.Attributes() {
+		switch string(attr.Key) {
+		case "query.outcome", "query.business_outcome", "query.dependency_degraded", "query.degradation_reason", "query.stage", "http.response.status_code":
+			item.Attributes[string(attr.Key)] = attr.Value.Emit()
+		}
 	}
 	c.mu.Lock()
 	c.ids = append(c.ids, item)
@@ -177,6 +186,13 @@ func (c *Capture) Identities() []SpanIdentity {
 	result := append([]SpanIdentity(nil), c.ids...)
 	for i := range result {
 		result[i].Links = append([]LinkIdentity(nil), result[i].Links...)
+		if result[i].Attributes != nil {
+			attributes := make(map[string]string, len(result[i].Attributes))
+			for key, value := range result[i].Attributes {
+				attributes[key] = value
+			}
+			result[i].Attributes = attributes
+		}
 	}
 	return result
 }

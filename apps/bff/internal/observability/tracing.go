@@ -48,7 +48,7 @@ func InitWorkerTraces(revision string) (*sdktrace.TracerProvider, error) {
 	InstallTracePropagator()
 	project := strings.TrimSpace(os.Getenv("GCP_PROJECT"))
 	setRuntimeProjectID(project)
-	provider, err := newRuntimeTraceProvider(os.Stderr, "lwc-worker", revision, project)
+	provider, err := newRuntimeTraceProvider(os.Stderr, "lwc-worker", revision, project, workerFixtureTraceProcessors()...)
 	if err != nil {
 		return nil, err
 	}
