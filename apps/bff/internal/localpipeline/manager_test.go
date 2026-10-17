@@ -41,11 +41,12 @@ func TestNativeWorkerCommandCrossesRealProcessBoundaryWithScopedEnvironment(t *t
 	output := filepath.Join(tmp, "boundary.json")
 	configPath := filepath.Join(tmp, "rendered Pipeline config", "synto.toml")
 	bindingsPath := filepath.Join(tmp, "rendered Pipeline config", "private-bindings.json")
-	script := "#!" + python + "\nimport json,os,sys\njson.dump({'args':sys.argv[1:],'cwd':os.getcwd(),'env':{k:os.environ.get(k) for k in ['GCP_PROJECT','GOOGLE_CLOUD_PROJECT','BUCKET','FIRESTORE_DATABASE_ID','LOCAL_CLOUD_SCOPE','USER_ID','PROJECT_ID','EXECUTION_ID','CLEAN_REBUILD','KEEP_FROM_BFF']}},open(os.environ['PROBE_OUTPUT'],'w'))\n"
+	script := "#!" + python + "\nimport json,os,sys\njson.dump({'args':sys.argv[1:],'cwd':os.getcwd(),'env':{k:os.environ.get(k) for k in ['GCP_PROJECT','GOOGLE_CLOUD_PROJECT','BUCKET','FIRESTORE_DATABASE_ID','LOCAL_CLOUD_SCOPE','USER_ID','PROJECT_ID','EXECUTION_ID','CLEAN_REBUILD','KEEP_FROM_BFF','LWC_TRACEPARENT']}},open(os.environ['PROBE_OUTPUT'],'w'))\n"
 	if err := os.WriteFile(worker, []byte(script), 0o700); err != nil {
 		t.Fatal(err)
 	}
-	cmd := newWorkerCommand(Config{Worker: worker, WorkDir: tmp, Project: "llm-wiki-cloud", Bucket: "llm-wiki-cloud-local", Database: "llm-wiki-cloud-local", Scope: "worktree-one", PipelineConfigPath: configPath, PipelineBindingsPath: bindingsPath}, "local-execution-1", "user-a", "project-a", "full", false, []string{"PATH=" + os.Getenv("PATH"), "KEEP_FROM_BFF=preserved"})
+	traceParent := "00-aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa-bbbbbbbbbbbbbbbb-01"
+	cmd := newWorkerCommand(Config{Worker: worker, WorkDir: tmp, Project: "llm-wiki-cloud", Bucket: "llm-wiki-cloud-local", Database: "llm-wiki-cloud-local", Scope: "worktree-one", PipelineConfigPath: configPath, PipelineBindingsPath: bindingsPath}, "local-execution-1", "user-a", "project-a", "full", false, []string{"PATH=" + os.Getenv("PATH"), "KEEP_FROM_BFF=preserved"}, traceParent)
 	cmd.Env = append(cmd.Env, "PROBE_OUTPUT="+output)
 	if err := cmd.Run(); err != nil {
 		t.Fatalf("run native worker fixture: %v", err)
@@ -75,6 +76,7 @@ func TestNativeWorkerCommandCrossesRealProcessBoundaryWithScopedEnvironment(t *t
 		"BUCKET": "llm-wiki-cloud-local", "FIRESTORE_DATABASE_ID": "llm-wiki-cloud-local",
 		"LOCAL_CLOUD_SCOPE": "worktree-one", "USER_ID": "user-a", "PROJECT_ID": "project-a",
 		"EXECUTION_ID": "local-execution-1", "CLEAN_REBUILD": "false", "KEEP_FROM_BFF": "preserved",
+		"LWC_TRACEPARENT": traceParent,
 	}
 	for key, value := range wantEnv {
 		if observed.Env[key] != value {

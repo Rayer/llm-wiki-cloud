@@ -2,6 +2,7 @@ package v1
 
 import (
 	"context"
+	"encoding/hex"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -18,8 +19,11 @@ import (
 	internalfirestore "github.com/rayer/llm-wiki-bff/internal/firestore"
 	"github.com/rayer/llm-wiki-bff/internal/llm"
 	"github.com/rayer/llm-wiki-bff/internal/localfs"
+	"github.com/rayer/llm-wiki-bff/internal/observability"
+	"github.com/rayer/llm-wiki-bff/internal/observability/otlpfixture"
 	"github.com/rayer/llm-wiki-bff/internal/profilederive"
 	"github.com/rayer/llm-wiki-bff/internal/profileruntime"
+	"go.opentelemetry.io/otel/propagation"
 	"google.golang.org/api/idtoken"
 )
 
@@ -38,8 +42,10 @@ func newRuntimeFixture(t *testing.T) *runtimeFixture {
 	if endpoint == "" {
 		t.Skip("FIRESTORE_EMULATOR_HOST is not set")
 	}
-	if endpoint != "127.0.0.1:8585" {
-		t.Fatalf("these tests require loopback emulator 127.0.0.1:8585, got %q", endpoint)
+	host, port, splitErr := net.SplitHostPort(endpoint)
+	ip := net.ParseIP(strings.Trim(host, "[]"))
+	if splitErr != nil || port == "" || (!strings.EqualFold(host, "localhost") && (ip == nil || !ip.IsLoopback())) {
+		t.Fatalf("these tests require a loopback Firestore emulator, got %q", endpoint)
 	}
 	connection, err := net.DialTimeout("tcp", endpoint, time.Second)
 	if err != nil {
@@ -71,6 +77,83 @@ func newRuntimeFixture(t *testing.T) *runtimeFixture {
 		return &idtoken.Payload{Audience: audience, Claims: map[string]interface{}{"email": f.dispatcher.ServiceAccount, "email_verified": true}}, nil
 	}
 	return f
+}
+
+func TestOTLPCaptureProfileDispatcherActualClaimAndWork(t *testing.T) {
+	capture := otlpfixture.New(t)
+	project := "synthetic-project"
+	if otlpfixture.CloudMode() {
+		project = os.Getenv("LWC_OTLP_QA_PROJECT")
+	}
+	provider := capture.Provider(t, "lwc-qa-profile-fixture", "local-fixture", project)
+	f := newRuntimeFixture(t)
+	_, workRef := f.save(t, 0, "keep synthetic profile guidance concise")
+	f.clock = f.clock.Add(3 * time.Minute)
+	traceID, parentID, traceParent := otlpfixture.NewParent(t)
+	request := httptest.NewRequest(http.MethodPost, "https://runtime.invalid/dispatch", nil)
+	request.Header.Set("Authorization", "Bearer synthetic-valid-token")
+	request.Header.Set("traceparent", traceParent)
+	request = request.WithContext(observability.ExtractTraceContext(request.Context(), propagation.HeaderCarrier(request.Header)))
+	response := httptest.NewRecorder()
+	f.dispatcher.ServeHTTP(response, request)
+	if response.Code != http.StatusOK || !strings.Contains(response.Body.String(), `"processed":1`) {
+		t.Fatalf("actual ProfileDispatcher status=%d, want one processed synthetic work item", response.Code)
+	}
+	work := f.work(t, workRef)
+	if work.Pending || work.Status != "complete" || work.Attempts != 1 {
+		t.Fatalf("actual ProfileDispatcher did not finish one claimed item: status=%q pending=%t attempts=%d", work.Status, work.Pending, work.Attempts)
+	}
+	capture.Flush(t, provider)
+	identities := capture.Identities()
+	find := func(name, wantedTraceID string) (otlpfixture.SpanIdentity, bool) {
+		for _, item := range identities {
+			if item.Name == name && item.TraceID == wantedTraceID {
+				return item, true
+			}
+		}
+		return otlpfixture.SpanIdentity{}, false
+	}
+	dispatch, ok := find("profile.dispatch", traceID)
+	if !ok || dispatch.ParentSpanID != parentID {
+		t.Fatal("actual ProfileDispatcher root did not preserve its incoming synthetic parent")
+	}
+	sweep, ok := find("profile.dispatch.sweep", traceID)
+	if !ok || sweep.ParentSpanID != dispatch.SpanID {
+		t.Fatal("actual Profile sweep was not a child of its request")
+	}
+	claim, ok := find("profile.claim", traceID)
+	if !ok || claim.ParentSpanID != sweep.SpanID {
+		t.Fatal("actual Profile claim was not a child of the real sweep")
+	}
+	var workSpan otlpfixture.SpanIdentity
+	for _, item := range identities {
+		if item.Name == "profile.work" {
+			workSpan = item
+			break
+		}
+	}
+	if workSpan.Name == "" || workSpan.ParentSpanID != "" || workSpan.TraceID == traceID || len(workSpan.Links) != 1 ||
+		workSpan.Links[0].TraceID != traceID || workSpan.Links[0].SpanID != claim.SpanID {
+		t.Fatal("actual claimed Profile attempt did not use an independent root linked to its real claim")
+	}
+	for _, item := range []otlpfixture.SpanIdentity{dispatch, sweep, claim, workSpan} {
+		links := make([]string, 0, len(item.Links))
+		for _, link := range item.Links {
+			links = append(links, link.TraceID+"/"+link.SpanID)
+		}
+		t.Logf("OTLP_QA_SPAN case=UC5 trace_id=%s span_id=%s parent_trace_id=%s parent_span_id=%s service_name=%s scope=%s name=%s links=%s",
+			item.TraceID, item.SpanID, item.ParentTraceID, item.ParentSpanID, item.ServiceName, item.Scope, item.Name, strings.Join(links, ","))
+	}
+	t.Logf("OTLP_QA_CASE=UC5 profile_dispatch_trace_id=%s profile_parent_span_id=%s expected_span=profile.dispatch outcome=success http_status=%d", traceID, parentID, response.Code)
+	if otlpfixture.CloudMode() {
+		return
+	}
+	for _, span := range capture.Spans() {
+		if span.Name == "profile.work" && hex.EncodeToString(span.TraceId) == workSpan.TraceID &&
+			(len(span.Links) != 1 || hex.EncodeToString(span.Links[0].SpanId) != claim.SpanID) {
+			t.Fatal("actual Profile work OTLP span did not preserve the claim link")
+		}
+	}
 }
 
 func (f *runtimeFixture) save(t *testing.T, revision int64, text string) (ProfileState, *firestore.DocumentRef) {

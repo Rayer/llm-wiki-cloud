@@ -124,9 +124,9 @@ func main() {
 	build := buildinfo.Current()
 	log.Printf("Build identity: commit=%s service=%s revision=%s", build.Commit, build.Service, build.Revision)
 	slog.SetDefault(slog.New(slog.NewJSONHandler(os.Stdout, nil)))
-	traceProvider, traceErr := observability.InitTraces(build.Service, build.Revision)
+	traceProvider, traceErr := observability.InitTracesWithProject(build.Service, build.Revision, cfg.GCPProject)
 	if traceErr != nil {
-		log.Printf("[observability] WARNING: trace init failed (continuing): %v", traceErr)
+		log.Printf("[observability] WARNING: trace init failed (continuing)")
 	} else {
 		defer observability.ShutdownTraces(traceProvider)
 	}
@@ -369,6 +369,7 @@ func newProductionRouter(
 	rawScrapeFactory rawScrapeHandlerFactory,
 ) *gin.Engine {
 	r := gin.Default()
+	r.Use(observability.TraceContextMiddleware())
 	r.Use(observability.AuthHTTPMiddleware())
 	r.Use(observability.DataOperationMiddleware())
 	r.Use(middleware.SecurityHeaders(true))

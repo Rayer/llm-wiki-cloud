@@ -32,15 +32,15 @@ func main() {
 
 func run() error {
 	build := buildinfo.Current()
-	traceProvider, traceErr := observability.InitTraces("lwc-auth", build.Revision)
-	if traceErr != nil {
-		log.Printf("[observability] WARNING: trace init failed (continuing): %v", traceErr)
-	} else {
-		defer observability.ShutdownTraces(traceProvider)
-	}
 	cfg, err := config.LoadAuthFile(strings.TrimSpace(os.Getenv("LWC_APP_CONFIG_PATH")))
 	if err != nil {
 		return fmt.Errorf("failed to load config: %w", err)
+	}
+	traceProvider, traceErr := observability.InitTracesWithProject("lwc-auth", build.Revision, cfg.GCPProject)
+	if traceErr != nil {
+		log.Printf("[observability] WARNING: trace init failed (continuing)")
+	} else {
+		defer observability.ShutdownTraces(traceProvider)
 	}
 
 	localMode := cfg.LocalCloudScope != ""
@@ -88,6 +88,7 @@ func run() error {
 
 func newProductionRouter(cfg config.Config, localMode bool, fsClient *firestoreclient.Client, settingsStore syssettings.RegistrationGate, demoReady bool) *gin.Engine {
 	r := gin.Default()
+	r.Use(observability.TraceContextMiddleware())
 	r.Use(observability.AuthHTTPMiddleware())
 	r.Use(authHostAllowlist(cfg, localMode))
 	r.Use(middleware.SecurityHeaders(true))

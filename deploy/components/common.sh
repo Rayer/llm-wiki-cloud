@@ -442,19 +442,43 @@ exportjob_runtime_matches() {
   timeout=$(plan_json '.export_job.job_timeout'); retries=$(plan_json '.export_job.max_retries')
   parallelism=$(plan_json '.export_job.parallelism'); tasks=$(plan_json '.export_job.tasks')
   jq -e --arg account "$account" --arg bucket "$bucket" --arg database "$database" --arg project "$project" --arg signer "$signer" \
-    --arg timeout "$timeout" --argjson retries "$retries" --argjson parallelism "$parallelism" --argjson tasks "$tasks" '
+    --arg timeout "$timeout" --argjson retries "$retries" --argjson parallelism "$parallelism" --argjson tasks "$tasks" \
+    --arg environment "$(plan_json '.environment')" '
     def execution: (.template // .spec.template.spec // .spec.template // {});
     def template: (.template.template // .spec.template.spec.template.spec // .spec.template.spec.template // .spec.template // {});
     def containers: (template.containers // []);
-    def env: (containers[0].env // [] | map({key:.name,value:.value}) | from_entries);
+    def env_entries: (containers[0].env // []);
+    def env: (env_entries | map({key:.name,value:.value}) | from_entries);
+    def otlp_allowed:
+      [env_entries[] | select(.name == "OTEL_EXPORTER_OTLP_ENDPOINT")] as $matches |
+      if ($matches|length) > 1 then false
+      elif $environment == "development" then
+        ($matches|length) == 0 or $matches[0].value == "https://telemetry.googleapis.com"
+      else ($matches|length) == 0 end;
     def service_account: (template.serviceAccount // template.serviceAccountName);
     def timeout_value: (template.timeout // template.timeoutSeconds);
     type == "object" and (containers|type == "array" and length == 1) and
     service_account == $account and env.GCP_PROJECT == $project and env.BUCKET == $bucket and
     env.FIRESTORE_DATABASE_ID == $database and env.EXPORT_SIGNING_SERVICE_ACCOUNT == $signer and
+    otlp_allowed and
     execution.parallelism == $parallelism and execution.taskCount == $tasks and
     template.maxRetries == $retries and
     (timeout_value == $timeout or timeout_value == "82800s" or timeout_value == "82800" or timeout_value == 82800)
+  ' <<<"$job_json" >/dev/null
+}
+
+exportjob_otlp_desired_matches() {
+  local job_json="$1" environment expected
+  environment=$(plan_json '.environment')
+  expected=''
+  [[ "$environment" != development ]] || expected='https://telemetry.googleapis.com'
+  jq -e --arg expected "$expected" '
+    (.template.template.containers // .spec.template.spec.template.spec.containers // .spec.template.spec.containers // []) as $containers |
+    if ($containers|type) != "array" or ($containers|length) != 1 then false else
+      [($containers[0].env // [])[] | select(.name == "OTEL_EXPORTER_OTLP_ENDPOINT")] as $matches |
+      if $expected == "" then ($matches|length) == 0
+      else ($matches|length) == 1 and $matches[0] == {name:"OTEL_EXPORTER_OTLP_ENDPOINT",value:$expected} end
+    end
   ' <<<"$job_json" >/dev/null
 }
 

@@ -52,6 +52,38 @@ exportjob_json_image() {
     | if type == "array" and length == 1 and (.[0].image|type) == "string" then .[0].image else error("Export image missing") end' <<<"$1"
 }
 
+exportjob_otlp_handle() {
+  jq -ce '
+    (.template.template.containers // .spec.template.spec.template.spec.containers // .spec.template.spec.containers // []) as $containers |
+    if ($containers|type) != "array" or ($containers|length) != 1 then error("Export container is missing") else $containers[0] end |
+    [(.env // [])[] | select(.name == "OTEL_EXPORTER_OTLP_ENDPOINT")] as $matches |
+    if ($matches|length) > 1 then error("duplicate Export OTLP setting")
+    elif ($matches|length) == 0 then {present:false}
+    elif (($matches[0]|has("value")) and (($matches[0].value|type) == "string")) then {present:true,value:$matches[0].value}
+    else error("invalid Export OTLP setting") end
+  ' <<<"$1"
+}
+
+exportjob_otlp_args_from_handle() {
+  local handle="$1" present value
+  EXPORTJOB_OTLP_ARGS=()
+  present=$(jq -er '.present | if type == "boolean" then tostring else error("invalid Export OTLP presence") end' <<<"$handle") || return 1
+  if [[ "$present" == true ]]; then
+    value=$(jq -er '.value | select(type == "string")' <<<"$handle") || return 1
+    [[ "$value" == https://telemetry.googleapis.com ]] || return 1
+    EXPORTJOB_OTLP_ARGS+=(--update-env-vars "^|^OTEL_EXPORTER_OTLP_ENDPOINT=$value")
+  else
+    EXPORTJOB_OTLP_ARGS+=(--remove-env-vars OTEL_EXPORTER_OTLP_ENDPOINT)
+  fi
+}
+
+exportjob_otlp_matches_handle() {
+  local expected="$1" current observed
+  current=$(exportjob_describe) || return 2
+  observed=$(exportjob_otlp_handle "$current") || return 2
+  jq -e --argjson expected "$expected" '. == $expected' <<<"$observed" >/dev/null
+}
+
 exportjob_preflight() {
   local project account job region current status
   project=$(plan_json '.gcp.project_id'); account=$(plan_json '.export_job.runtime_service_account')
@@ -68,12 +100,14 @@ exportjob_preflight() {
 }
 
 exportjob_freeze() {
-  local current status image labels
+  local current status image labels env_handle
   if current=$(exportjob_describe); then
     exportjob_runtime_matches "$current" || die "export job runtime identity or environment disagrees with the reviewed config"
     image=$(exportjob_json_image "$current") || die "export job image handle is unavailable"
     validate_image_value exportjob "$image"
-    freeze_store exportjob "$(jq -n --arg image "$image" '{image:$image}')"
+    env_handle=$(exportjob_otlp_handle "$current") || die "Export OTLP environment rollback handle is unavailable"
+    exportjob_otlp_args_from_handle "$env_handle" || die "Export OTLP environment rollback handle is invalid"
+    freeze_store exportjob "$(jq -n --arg image "$image" --argjson env "$env_handle" '{image:$image,env:$env}')"
   else
     status=$?
     [[ "$ENVIRONMENT" == production && "$status" -eq 44 ]] || die "export job rollback handle is unavailable"
@@ -140,6 +174,7 @@ exportjob_create_production() {
 
 exportjob_mutate() {
   local image job project region update_status=0
+  local -a endpoint_args=()
   journal_init
   if [[ "$ENVIRONMENT" == production ]]; then
     if ! image=$(image_for exportjob); then
@@ -152,7 +187,7 @@ exportjob_mutate() {
       exportjob_create_production "$image"
       return
     fi
-    if current=$(exportjob_image_readback "$image"); then
+    if current=$(exportjob_image_readback "$image") && exportjob_otlp_desired_matches "$(exportjob_describe)"; then
       journal_rejected exportjob
       write_component_result exportjob success "$current" verified_noop
       return 0
@@ -169,7 +204,13 @@ exportjob_mutate() {
   revalidate_before_provider
   if ! jq -e '.components.exportjob? != null' "$JOURNAL_PATH" >/dev/null; then journal_pending exportjob; fi
   validate_image_value exportjob "$image"
-  if timeout --signal=TERM --kill-after=5s 600s gcloud run jobs update "$job" --project "$project" --region "$region" --image "$image" --quiet >/dev/null; then :; else update_status=$?; fi
+  if [[ "$ENVIRONMENT" == development ]]; then
+    endpoint_args+=(--update-env-vars '^|^OTEL_EXPORTER_OTLP_ENDPOINT=https://telemetry.googleapis.com')
+  else
+    endpoint_args+=(--remove-env-vars OTEL_EXPORTER_OTLP_ENDPOINT)
+  fi
+  if timeout --signal=TERM --kill-after=5s 600s gcloud run jobs update "$job" --project "$project" --region "$region" --image "$image" \
+    "${endpoint_args[@]}" --quiet >/dev/null; then :; else update_status=$?; fi
   if [[ "$update_status" -ne 0 ]] && ! exportjob_image_readback "$image"; then journal_transition exportjob unknown; die "export job image mutation did not converge (status=$update_status)"; fi
   [[ "$ENVIRONMENT" == production ]] && mutation_accepted exportjob
   readback_retry exportjob_verify "$image" || { journal_transition exportjob unknown; die "export job image/config read-back did not converge"; }
@@ -179,8 +220,9 @@ exportjob_verify() {
   local image="$1" observed status current
   EXPORTJOB_READBACK=''; EXPORTJOB_READBACK_RESULT=unknown
   if observed=$(exportjob_image_readback "$image"); then
+    current=$(exportjob_describe) || { EXPORTJOB_READBACK_RESULT=unknown; return 1; }
+    if ! exportjob_otlp_desired_matches "$current"; then EXPORTJOB_READBACK_RESULT=failed; return 1; fi
     if [[ "$ENVIRONMENT" == production ]] && jq -e '.handles.exportjob.absent == true' "$ROLLBACK_PATH" >/dev/null; then
-      current=$(exportjob_describe) || { EXPORTJOB_READBACK_RESULT=unknown; return 1; }
       if ! exportjob_bootstrap_marker_matches "$current"; then EXPORTJOB_READBACK_RESULT=failed; return 1; fi
     fi
     EXPORTJOB_READBACK="$observed"; EXPORTJOB_READBACK_RESULT=success; return 0
@@ -197,7 +239,7 @@ exportjob_reconcile() {
 }
 
 exportjob_rollback() {
-  local image job project region observed update_status=0 readback_status=0 current status
+  local image job project region observed update_status=0 readback_status=0 current status env_handle
   project=$(plan_json '.gcp.project_id'); region=$(plan_json '.export_job.location'); job=$(plan_json '.export_job.job_name')
   if jq -e '.handles.exportjob.absent == true' "$ROLLBACK_PATH" >/dev/null; then
     image=$(image_for exportjob) || { write_rollback_result exportjob failed '{}'; return 1; }
@@ -225,9 +267,14 @@ exportjob_rollback() {
   fi
   image=$(jq -er '.handles.exportjob.image' "$ROLLBACK_PATH") || { write_rollback_result exportjob failed '{}'; return 1; }
   validate_image_value exportjob "$image" || { write_rollback_result exportjob failed '{}'; return 1; }
-  if observed=$(exportjob_image_readback "$image"); then write_rollback_result exportjob success "$observed" verified_noop; return 0; else readback_status=$?; fi
-  if timeout --signal=TERM --kill-after=5s 600s gcloud run jobs update "$job" --project "$project" --region "$region" --image "$image" --quiet >/dev/null; then :; else update_status=$?; fi
-  if observed=$(exportjob_image_readback "$image"); then write_rollback_result exportjob success "$observed"; else
+  env_handle=$(jq -cer '.handles.exportjob.env | select(type == "object")' "$ROLLBACK_PATH") || { write_rollback_result exportjob failed '{}'; return 1; }
+  exportjob_otlp_args_from_handle "$env_handle" || { write_rollback_result exportjob failed '{}'; return 1; }
+  if observed=$(exportjob_image_readback "$image") && exportjob_otlp_matches_handle "$env_handle"; then
+    write_rollback_result exportjob success "$observed" verified_noop; return 0
+  else readback_status=$?; fi
+  if timeout --signal=TERM --kill-after=5s 600s gcloud run jobs update "$job" --project "$project" --region "$region" --image "$image" \
+    "${EXPORTJOB_OTLP_ARGS[@]}" --quiet >/dev/null; then :; else update_status=$?; fi
+  if observed=$(exportjob_image_readback "$image") && exportjob_otlp_matches_handle "$env_handle"; then write_rollback_result exportjob success "$observed"; else
     readback_status=$?
     if [[ "$update_status" -ne 0 || "$readback_status" -eq 2 ]]; then write_rollback_result exportjob unknown '{}'; return 2; fi
     write_rollback_result exportjob failed '{}'; return 1

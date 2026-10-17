@@ -218,6 +218,7 @@ func (d *queryDiagnostic) finish(requestStatus int, toolIsError bool) {
 	build := buildinfo.Current()
 	summary := query.TerminalSummary{
 		DiagnosticID: d.id, TraceID: spanContext.TraceID().String(), SpanID: spanContext.SpanID().String(),
+		TraceSampled: spanContext.IsSampled(), CloudProjectID: observability.RuntimeProjectID(),
 		Service: build.Service, Revision: build.Revision, ProjectID: d.projectID, GenerationID: d.generationID,
 		Transport: d.transport, Stage: d.stage, Reason: d.reason, Outcome: d.outcome, Business: d.business,
 		HTTPStatus: requestStatus, ToolIsError: toolIsError,

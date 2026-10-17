@@ -324,7 +324,7 @@ func TestProfileAttemptStartsIndependentTraceAndPreservesContextValues(t *testin
 	})
 	base := context.WithValue(context.Background(), struct{}{}, "lease-value")
 	requestCtx, requestSpan := StartProfileSpan(base, "profile.dispatch")
-	attemptCtx, attemptSpan := StartProfileSpan(WithoutTraceParent(requestCtx), "profile.work")
+	attemptCtx, attemptSpan := StartProfileWorkSpan(requestCtx)
 	if got := attemptCtx.Value(struct{}{}); got != "lease-value" {
 		t.Fatalf("attempt context lost dispatcher value: %v", got)
 	}
@@ -339,7 +339,9 @@ func TestProfileAttemptStartsIndependentTraceAndPreservesContextValues(t *testin
 			attempt = span
 		}
 	}
-	if request == nil || attempt == nil || request.SpanContext().TraceID() == attempt.SpanContext().TraceID() || attempt.Parent().IsValid() {
+	if request == nil || attempt == nil || request.SpanContext().TraceID() == attempt.SpanContext().TraceID() || attempt.Parent().IsValid() ||
+		len(attempt.Links()) != 1 || attempt.Links()[0].SpanContext.TraceID() != request.SpanContext().TraceID() ||
+		attempt.Links()[0].SpanContext.SpanID() != request.SpanContext().SpanID() {
 		t.Fatalf("attempt trace inherited dispatch parent: request=%v attempt=%v", request, attempt)
 	}
 }

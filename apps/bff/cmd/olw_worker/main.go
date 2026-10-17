@@ -345,7 +345,8 @@ func fixedArgs(want int) cobra.PositionalArgs {
 }
 
 func runWorkerBatch(ctx context.Context, cfg workerConfig, rawCommands string) (runErr error) {
-	ctx, attempt := observability.StartWorkerSpan(ctx, "pipeline.worker")
+	ctx = observability.ExtractWorkerTraceContext(ctx, os.Getenv("LWC_TRACEPARENT"))
+	ctx, attempt := observability.StartWorkerAttemptSpan(ctx, "pipeline.worker")
 	defer func() { observability.FinishPipelineSpan(attempt, workerTraceOutcome(runErr)) }()
 	cfg = configFromEnvironment(cfg)
 	_, validation := observability.StartWorkerSpan(ctx, "pipeline.worker.validate")
@@ -748,7 +749,8 @@ func runWorkerBatchWorkspace(ctx context.Context, cfg workerConfig, commands [][
 }
 
 func runPostprocessCommand(ctx context.Context, cfg workerConfig) (runErr error) {
-	ctx, attempt := observability.StartWorkerSpan(ctx, "pipeline.worker")
+	ctx = observability.ExtractWorkerTraceContext(ctx, os.Getenv("LWC_TRACEPARENT"))
+	ctx, attempt := observability.StartWorkerAttemptSpan(ctx, "pipeline.worker")
 	var lifecycle *localLeaseLifecycle
 	defer func() {
 		if lifecycle != nil && lifecycle.published {
@@ -806,7 +808,8 @@ func runPostprocessCommand(ctx context.Context, cfg workerConfig) (runErr error)
 // and CAS-publishes a complete carry-forward generation. Local mode uses the
 // vault workspace path. It never runs Synto, index rebuild, or reconcile.
 func runSuggestedQueriesCommand(ctx context.Context, cfg workerConfig) (runErr error) {
-	ctx, attempt := observability.StartWorkerSpan(ctx, "pipeline.worker")
+	ctx = observability.ExtractWorkerTraceContext(ctx, os.Getenv("LWC_TRACEPARENT"))
+	ctx, attempt := observability.StartWorkerAttemptSpan(ctx, "pipeline.worker")
 	var lifecycle *localLeaseLifecycle
 	defer func() {
 		if lifecycle != nil && lifecycle.published {

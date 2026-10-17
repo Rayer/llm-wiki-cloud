@@ -26,7 +26,8 @@ worker_profile_env_handle() {
       elif ($matches|length) == 0 then {present:false}
       elif (($matches[0]|has("value")) and (($matches[0].value|type) == "string")) then {present:true,value:$matches[0].value}
       else error("invalid Worker setting") end;
-    {GCP_PROJECT:setting("GCP_PROJECT"),FIRESTORE_DATABASE_ID:setting("FIRESTORE_DATABASE_ID")}
+    {GCP_PROJECT:setting("GCP_PROJECT"),FIRESTORE_DATABASE_ID:setting("FIRESTORE_DATABASE_ID"),
+     OTEL_EXPORTER_OTLP_ENDPOINT:setting("OTEL_EXPORTER_OTLP_ENDPOINT")}
   ' <<<"$job_json"
 }
 
@@ -34,7 +35,7 @@ worker_profile_env_args_from_handle() {
   local env_handle="$1" name entry present value payload='' removals=''
   local -a updates=()
   WORKER_PROFILE_ENV_ARGS=()
-  for name in GCP_PROJECT FIRESTORE_DATABASE_ID; do
+  for name in GCP_PROJECT FIRESTORE_DATABASE_ID OTEL_EXPORTER_OTLP_ENDPOINT; do
     entry=$(jq -cer --arg name "$name" '.[$name] | select(type == "object" and (.present|type) == "boolean")' <<<"$env_handle") || return 1
     present=$(jq -r '.present' <<<"$entry")
     if [[ "$present" == true ]]; then
@@ -54,12 +55,26 @@ worker_profile_env_args_from_handle() {
 }
 
 worker_profile_env_readback() {
-  local observed project database
+  local observed project database environment
   project=$(plan_json '.gcp.project_id'); database=$(plan_json '.bff.firestore_database_id')
+  environment=${ENVIRONMENT:-production}
   observed=$(worker_profile_env_handle) || return 2
-  jq -e --arg project "$project" --arg database "$database" \
-    '.GCP_PROJECT == {present:true,value:$project} and .FIRESTORE_DATABASE_ID == {present:true,value:$database}' \
+  jq -e --arg project "$project" --arg database "$database" --arg environment "$environment" \
+    '.GCP_PROJECT == {present:true,value:$project} and .FIRESTORE_DATABASE_ID == {present:true,value:$database} and
+     (if $environment == "development" then .OTEL_EXPORTER_OTLP_ENDPOINT == {present:true,value:"https://telemetry.googleapis.com"}
+      else .OTEL_EXPORTER_OTLP_ENDPOINT == {present:false} end)' \
     <<<"$observed" >/dev/null
+}
+
+worker_profile_env_prior_allowed() {
+  local handle="$1" environment
+  environment=${ENVIRONMENT:-production}
+  jq -e --arg environment "$environment" '
+    if $environment == "development" then
+      .OTEL_EXPORTER_OTLP_ENDPOINT == {present:false} or
+      .OTEL_EXPORTER_OTLP_ENDPOINT == {present:true,value:"https://telemetry.googleapis.com"}
+    else .OTEL_EXPORTER_OTLP_ENDPOINT == {present:false} end
+  ' <<<"$handle" >/dev/null
 }
 
 worker_profile_env_matches_handle() {
@@ -72,6 +87,7 @@ worker_freeze() {
   local image profile_env
   image=$(worker_image_handle) || die "Worker effective image handle is unavailable or mutable"
   profile_env=$(worker_profile_env_handle) || die "Worker Profile environment rollback handle is unavailable"
+  worker_profile_env_prior_allowed "$profile_env" || die "Worker Profile OTLP environment is not a recognized prior state"
   worker_profile_env_args_from_handle "$profile_env" || die "Worker Profile environment rollback handle is invalid"
   freeze_store worker "$(jq -n --arg image "$image" --argjson profile_env "$profile_env" '{image:$image,profile_env:$profile_env}')"
 }
@@ -91,7 +107,7 @@ worker_build_image() {
 }
 
 worker_mutate() {
-  local image job project region database update_status=0
+  local image job project region database environment endpoint_args='' update_status=0
   journal_init
   if [[ "$ENVIRONMENT" == production ]]; then
     if ! image=$(image_for worker); then
@@ -118,8 +134,18 @@ worker_mutate() {
   if ! jq -e '.components.worker? != null' "$JOURNAL_PATH" >/dev/null; then journal_pending worker; fi
   validate_image_value worker "$image"
   database=$(plan_json '.bff.firestore_database_id')
-  if timeout --signal=TERM --kill-after=5s 600s gcloud run jobs update "$job" --project "$project" --region "$region" --image "$image" \
-    --update-env-vars "^|^GCP_PROJECT=$project|FIRESTORE_DATABASE_ID=$database" --quiet >/dev/null; then :; else update_status=$?; fi
+  environment=${ENVIRONMENT:-production}
+  endpoint_args=''
+  if [[ "$environment" == development ]]; then
+    endpoint_args='|OTEL_EXPORTER_OTLP_ENDPOINT=https://telemetry.googleapis.com'
+  fi
+  if [[ "$environment" == development ]]; then
+    if timeout --signal=TERM --kill-after=5s 600s gcloud run jobs update "$job" --project "$project" --region "$region" --image "$image" \
+      --update-env-vars "^|^GCP_PROJECT=$project|FIRESTORE_DATABASE_ID=$database$endpoint_args" --quiet >/dev/null; then :; else update_status=$?; fi
+  else
+    if timeout --signal=TERM --kill-after=5s 600s gcloud run jobs update "$job" --project "$project" --region "$region" --image "$image" \
+      --update-env-vars "^|^GCP_PROJECT=$project|FIRESTORE_DATABASE_ID=$database" --remove-env-vars OTEL_EXPORTER_OTLP_ENDPOINT --quiet >/dev/null; then :; else update_status=$?; fi
+  fi
   if [[ "$update_status" -ne 0 ]]; then
     if ! worker_verify "$image"; then
       journal_transition worker unknown
