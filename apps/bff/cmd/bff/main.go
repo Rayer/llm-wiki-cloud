@@ -367,9 +367,9 @@ func newProductionRouter(
 	hV1 *handlerv1.Handler,
 	settingsStore syssettings.RegistrationGate,
 	rawScrapeFactory rawScrapeHandlerFactory,
-) *gin.Engine {
+) *observability.RequestLifecycleRouter {
 	r := gin.Default()
-	r.Use(observability.TraceContextMiddleware())
+	r.Use(observability.RequestLifecycleMiddleware())
 	r.Use(observability.AuthHTTPMiddleware())
 	r.Use(observability.DataOperationMiddleware())
 	r.Use(middleware.SecurityHeaders(true))
@@ -383,6 +383,7 @@ func newProductionRouter(
 		AllowOrigins:     allowOrigins,
 		AllowMethods:     []string{"GET", "POST", "PUT", "PATCH", "DELETE", "OPTIONS"},
 		AllowHeaders:     []string{"Content-Type", "Authorization", "X-Project-ID", "X-Wiki-ID", "X-Sync-Binding-ID", "X-Content-SHA256", "X-Expected-Generation", "Idempotency-Key"},
+		ExposeHeaders:    []string{"X-Request-ID"},
 		AllowCredentials: true,
 	})))
 
@@ -533,7 +534,7 @@ func newProductionRouter(
 		}
 	})
 
-	return r
+	return observability.WrapRequestLifecycleRouter(r)
 }
 
 func authSessionEnvironment(cfg config.Config) string {

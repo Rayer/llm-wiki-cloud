@@ -57,6 +57,7 @@ vi.mock('@/lib/auth', () => ({
 }));
 
 import { Shell } from '@/components/Shell';
+import { recordRequestIDHeader } from '@/lib/request-ids';
 
 function apiStatus() {
   return {
@@ -99,6 +100,24 @@ afterEach(() => {
 });
 
 describe('LWC-174 production Shell rename behavior', () => {
+  it('shows and copies the actual server response request ID in the shared shell', async () => {
+    const requestID = '123e4567-e89b-12d3-a456-426614174099';
+    const clipboard = Object.getOwnPropertyDescriptor(navigator, 'clipboard');
+    const writeText = vi.fn().mockResolvedValue(undefined);
+    Object.defineProperty(navigator, 'clipboard', { configurable: true, value: { writeText } });
+    try {
+      recordRequestIDHeader(requestID, 503);
+      renderShell();
+      expect(await screen.findByText(requestID)).toBeTruthy();
+      expect(screen.getByText('HTTP 狀態: 503')).toBeTruthy();
+      fireEvent.click(screen.getByRole('button', { name: '複製編號' }));
+      await waitFor(() => expect(writeText).toHaveBeenCalledWith(requestID));
+    } finally {
+      if (clipboard) Object.defineProperty(navigator, 'clipboard', clipboard);
+      else Reflect.deleteProperty(navigator, 'clipboard');
+    }
+  });
+
   it('exposes a skip link to main content', async () => {
     renderShell();
     const skip = await screen.findByRole('link', { name: '跳到主要內容' });

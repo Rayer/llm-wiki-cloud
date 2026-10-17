@@ -1,6 +1,7 @@
 'use client';
 
 import { getRuntimeConfig } from './runtime-config';
+import { recordRequestResponse } from './request-ids';
 
 export const GOOGLE_CANCELLED_COPY = '已取消使用 Google 登入。';
 const googleLoginReturnToKey = 'lwc-google-login-return-to';
@@ -113,6 +114,7 @@ async function jsonRequest<T>(path: string, init: RequestInit = {}): Promise<T> 
     ...init,
     credentials: 'include',
   });
+  recordRequestResponse(response);
   const payload: unknown = await response.json().catch(() => null);
   if (!response.ok) throw errorFromPayload(payload, response.status);
   return payload as T;

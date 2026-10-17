@@ -64,10 +64,10 @@ type process struct {
 }
 
 type processResult struct {
-	executionID, userID, projectID, beforeID, reservationID string
-	childSucceeded                                          bool
-	spawnFailed                                             bool
-	childErr                                                error
+	executionID, userID, projectID, beforeID, reservationID, requestID string
+	childSucceeded                                                     bool
+	spawnFailed                                                        bool
+	childErr                                                           error
 }
 
 func New(cfg Config) (*Manager, error) {
@@ -101,6 +101,7 @@ func (m *Manager) ReconcileInterrupted(ctx context.Context) (resultErr error) {
 	for _, lock := range locks {
 		processedCount++
 		data := lock.Data()
+		requestCtx := observability.WithRequestID(observability.WithoutRequestID(ctx), stringValue(data["request_id"]))
 		executionID, _ := data["execution_id"].(string)
 		if executionID == "" {
 			continue
@@ -108,6 +109,9 @@ func (m *Manager) ReconcileInterrupted(ctx context.Context) (resultErr error) {
 		ref := scopedfirestore.Collection(m.cfg.Firestore, "executions").Doc(executionID)
 		execution, err := ref.Get(ctx)
 		if status.Code(err) == codes.NotFound {
+			_, recoverySpan := observability.StartPipelineSpan(requestCtx, "pipeline.recovery.result")
+			observability.SetPipelineRecoveryStatus(recoverySpan, "UNKNOWN")
+			observability.FinishPipelineSpan(recoverySpan, "unknown")
 			if _, err := lock.Ref.Update(ctx, []cloudfirestore.Update{{Path: "status", Value: "UNKNOWN"}, {Path: "updated_at", Value: time.Now().UTC()}}); err != nil {
 				return err
 			}
@@ -116,14 +120,17 @@ func (m *Manager) ReconcileInterrupted(ctx context.Context) (resultErr error) {
 		if err != nil {
 			return err
 		}
-		state, reason, err := m.resolveInterruptedOutcome(ctx, executionID, execution.Data())
+		if storedID := stringValue(execution.Data()["request_id"]); storedID != "" {
+			requestCtx = observability.WithRequestID(requestCtx, storedID)
+		}
+		state, reason, err := m.resolveInterruptedOutcome(requestCtx, executionID, execution.Data())
 		if err != nil {
 			return err
 		}
 		if state == "UNKNOWN" && reason == "" {
 			reason = "BFF restarted before the worker result could be confirmed"
 		}
-		if err := m.persistRecoveredExecution(ctx, ref, lock.Ref, executionID, stringValue(execution.Data()["quota_reservation_id"]), state, reason); err != nil {
+		if err := m.persistRecoveredExecution(requestCtx, ref, lock.Ref, executionID, stringValue(execution.Data()["quota_reservation_id"]), state, reason); err != nil {
 			return err
 		}
 	}
@@ -676,7 +683,11 @@ func (m *Manager) Start(ctx context.Context, userID, projectID, stage string, cl
 				return errors.New("local pipeline quota reservation is unavailable")
 			}
 		}
-		if err := tx.Set(lockRef, map[string]any{"user_id": userID, "project_id": projectID, "execution_id": executionID, "status": "RUNNING", "updated_at": started}); err != nil {
+		lockRecord := map[string]any{"user_id": userID, "project_id": projectID, "execution_id": executionID, "status": "RUNNING", "updated_at": started}
+		if requestID := observability.RequestIDFromContext(ctx); requestID != "" {
+			lockRecord["request_id"] = requestID
+		}
+		if err := tx.Set(lockRef, lockRecord); err != nil {
 			return err
 		}
 		quotaSettlement := "not_applicable"
@@ -690,6 +701,9 @@ func (m *Manager) Start(ctx context.Context, userID, projectID, stage string, cl
 			"manifest_generation_before": beforeID,
 			"quota_reservation_id":       reservationID, "quota_settlement": quotaSettlement,
 		}
+		if requestID := observability.RequestIDFromContext(ctx); requestID != "" {
+			execution["request_id"] = requestID
+		}
 		if err := tx.Create(executionRef, execution); err != nil {
 			return err
 		}
@@ -702,10 +716,11 @@ func (m *Manager) Start(ctx context.Context, userID, projectID, stage string, cl
 		return "", err
 	}
 
-	cmd := newWorkerCommand(m.cfg, executionID, userID, projectID, stage, cleanRebuild, os.Environ(), observability.TraceParentFromContext(ctx))
+	requestID := observability.RequestIDFromContext(ctx)
+	cmd := newWorkerCommand(m.cfg, executionID, userID, projectID, stage, cleanRebuild, os.Environ(), observability.TraceParentFromContext(ctx), requestID)
 	p := &process{cmd: cmd, done: make(chan struct{})}
 	if err := m.startProcess(executionID, p, cmd.Start); err != nil {
-		result := processResult{executionID: executionID, userID: userID, projectID: projectID, beforeID: beforeID, reservationID: reservationID, spawnFailed: true, childErr: err}
+		result := processResult{executionID: executionID, userID: userID, projectID: projectID, beforeID: beforeID, reservationID: reservationID, requestID: requestID, spawnFailed: true, childErr: err}
 		m.savePendingResult(result)
 		finishCtx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
 		finishErr := m.finish(finishCtx, result)
@@ -715,13 +730,13 @@ func (m *Manager) Start(ctx context.Context, userID, projectID, stage string, cl
 		}
 		return "", fmt.Errorf("start local worker: %w", err)
 	}
-	go m.wait(p, executionID, userID, projectID, beforeID, reservationID)
+	go m.wait(p, executionID, userID, projectID, beforeID, reservationID, requestID)
 	return executionID, nil
 }
 
-func (m *Manager) wait(p *process, executionID, userID, projectID, beforeID, reservationID string) {
+func (m *Manager) wait(p *process, executionID, userID, projectID, beforeID, reservationID, requestID string) {
 	err := p.cmd.Wait()
-	result := processResult{executionID: executionID, userID: userID, projectID: projectID, beforeID: beforeID, reservationID: reservationID, childSucceeded: err == nil, childErr: err}
+	result := processResult{executionID: executionID, userID: userID, projectID: projectID, beforeID: beforeID, reservationID: reservationID, requestID: requestID, childSucceeded: err == nil, childErr: err}
 	m.savePendingResult(result)
 	ctx, cancel := context.WithTimeout(context.Background(), 20*time.Second)
 	defer cancel()
@@ -735,6 +750,7 @@ func (m *Manager) wait(p *process, executionID, userID, projectID, beforeID, res
 }
 
 func (m *Manager) finish(ctx context.Context, result processResult) (resultErr error) {
+	ctx = observability.WithRequestID(observability.WithoutRequestID(ctx), result.requestID)
 	ctx, root := observability.StartPipelineSpan(ctx, "pipeline.recovery.result")
 	defer func() { observability.FinishPipelineSpan(root, localPipelineTraceOutcome(resultErr)) }()
 	storage := m.cfg.Storage.WithScope(result.userID, result.projectID)
@@ -1041,7 +1057,7 @@ func workerArgs(stage string) []string {
 	return []string{"run", `[["run","--auto-approve"]]`}
 }
 
-func newWorkerCommand(cfg Config, executionID, userID, projectID, stage string, cleanRebuild bool, parentEnv []string, traceParent ...string) *exec.Cmd {
+func newWorkerCommand(cfg Config, executionID, userID, projectID, stage string, cleanRebuild bool, parentEnv []string, traceParent, requestID string) *exec.Cmd {
 	args := workerArgs(stage)
 	if cfg.PipelineConfigPath != "" {
 		args = append(args, "--pipeline-config", cfg.PipelineConfigPath, "--pipeline-private-bindings", cfg.PipelineBindingsPath)
@@ -1058,9 +1074,10 @@ func newWorkerCommand(cfg Config, executionID, userID, projectID, stage string, 
 		"PROJECT_ID":            projectID,
 		"EXECUTION_ID":          executionID,
 		"CLEAN_REBUILD":         fmt.Sprintf("%t", cleanRebuild),
-	}
-	if len(traceParent) > 0 && traceParent[0] != "" {
-		overrides["LWC_TRACEPARENT"] = traceParent[0]
+		// Always replace inherited carrier values, including with empty values,
+		// so a worker cannot accidentally inherit another request's origin.
+		"LWC_TRACEPARENT": traceParent,
+		"LWC_REQUEST_ID":  requestID,
 	}
 	cmd.Env = workerEnvironment(parentEnv, overrides)
 	cmd.Stdout = io.Discard

@@ -10,6 +10,7 @@ import (
 	"strings"
 	"testing"
 
+	"github.com/rayer/llm-wiki-bff/internal/observability"
 	"go.opentelemetry.io/otel/trace"
 	"golang.org/x/oauth2"
 	_ "modernc.org/sqlite"
@@ -161,7 +162,7 @@ func TestCloudRunStarterSendsOnlyBoundedJobIdentity(t *testing.T) {
 		if err != nil {
 			t.Fatal(err)
 		}
-		for _, expected := range []string{`"name":"EXPORT_USER_ID","value":"user-1"`, `"name":"EXPORT_PROJECT_ID","value":"project-1"`, `"name":"EXPORT_ID","value":"export-1"`, `"name":"EXPORT_SCOPE","value":"raw-full"`, `"name":"LWC_TRACEPARENT","value":"` + traceParent + `"`} {
+		for _, expected := range []string{`"name":"EXPORT_USER_ID","value":"user-1"`, `"name":"EXPORT_PROJECT_ID","value":"project-1"`, `"name":"EXPORT_ID","value":"export-1"`, `"name":"EXPORT_SCOPE","value":"raw-full"`, `"name":"LWC_TRACEPARENT","value":"` + traceParent + `"`, `"name":"LWC_REQUEST_ID","value":"123e4567-e89b-12d3-a456-426614174000"`} {
 			if !strings.Contains(string(body), expected) {
 				t.Fatalf("job overrides missing %s: %s", expected, body)
 			}
@@ -171,7 +172,7 @@ func TestCloudRunStarterSendsOnlyBoundedJobIdentity(t *testing.T) {
 		}
 		return &http.Response{StatusCode: http.StatusOK, Header: make(http.Header), Body: io.NopCloser(strings.NewReader(`{}`))}, nil
 	})}
-	ctx := trace.ContextWithRemoteSpanContext(t.Context(), parent)
+	ctx := observability.WithRequestID(trace.ContextWithRemoteSpanContext(t.Context(), parent), "123e4567-e89b-12d3-a456-426614174000")
 	if err := starter.Start(ctx, "user-1", "project-1", Job{ExportID: "export-1", Scope: ScopeRawFull}); err != nil {
 		t.Fatal(err)
 	}

@@ -15,6 +15,7 @@ import (
 	"time"
 
 	"github.com/gin-gonic/gin"
+	"github.com/google/uuid"
 	"go.opentelemetry.io/otel"
 	"go.opentelemetry.io/otel/attribute"
 	sdktrace "go.opentelemetry.io/otel/sdk/trace"
@@ -24,6 +25,7 @@ import (
 	"github.com/rayer/llm-wiki-bff/internal/auth"
 	"github.com/rayer/llm-wiki-bff/internal/config"
 	firestoreclient "github.com/rayer/llm-wiki-bff/internal/firestore"
+	"github.com/rayer/llm-wiki-bff/internal/observability/otlpfixture"
 	"github.com/rayer/llm-wiki-bff/internal/syssettings"
 )
 
@@ -80,6 +82,106 @@ func TestProductionRouterExposesOnlyAuthPublicSurface(t *testing.T) {
 	for route := range got {
 		if !want[route] {
 			t.Errorf("Auth production router exposed unapproved route %s", route)
+		}
+	}
+}
+
+func TestProductionRouterReturnsFreshRequestIDsAndExposesThemToCORS(t *testing.T) {
+	gin.SetMode(gin.TestMode)
+	router := newProductionRouter(config.Config{JWTSecret: "test-secret", AllowedOrigins: []string{"https://frontend.example"}}, true, nil,
+		&syssettings.FakeStore{Enabled: true}, true)
+	serve := func(method, path string) *httptest.ResponseRecorder {
+		req := httptest.NewRequest(method, "http://localhost"+path, nil)
+		req.Header.Set("X-Request-ID", "caller-controlled-id")
+		req.Header.Set("Origin", "https://frontend.example")
+		if method == http.MethodOptions {
+			req.Header.Set("Access-Control-Request-Method", http.MethodGet)
+		}
+		response := httptest.NewRecorder()
+		router.ServeHTTP(response, req)
+		id := response.Header().Get("X-Request-ID")
+		if uuid.Validate(id) != nil || id == "caller-controlled-id" {
+			t.Fatalf("%s %s returned non-server request ID %q (status %d)", method, path, id, response.Code)
+		}
+		return response
+	}
+	health := serve(http.MethodGet, "/api/v1/public/healthz")
+	if !strings.EqualFold(health.Header().Get("Access-Control-Expose-Headers"), "X-Request-ID") {
+		t.Fatalf("Auth CORS does not expose the response request ID: %v", health.Header())
+	}
+	if fallback := serve(http.MethodGet, "/private/fallback"); fallback.Code != http.StatusNotFound {
+		t.Fatalf("fallback status=%d, want 404", fallback.Code)
+	}
+	if preflight := serve(http.MethodOptions, "/api/v1/public/healthz"); preflight.Code < 200 || preflight.Code >= 300 {
+		t.Fatalf("preflight status=%d, want successful CORS control response", preflight.Code)
+	}
+}
+
+func TestProductionRouterCoversAutomaticRedirectsWithOneIncomingRoot(t *testing.T) {
+	gin.SetMode(gin.TestMode)
+	recorder := tracetest.NewSpanRecorder()
+	provider := sdktrace.NewTracerProvider(sdktrace.WithSpanProcessor(recorder))
+	previous := otel.GetTracerProvider()
+	otel.SetTracerProvider(provider)
+	t.Cleanup(func() {
+		otel.SetTracerProvider(previous)
+		_ = provider.Shutdown(context.Background())
+	})
+	router := newProductionRouter(config.Config{JWTSecret: "test-secret"}, true, nil, &syssettings.FakeStore{Enabled: true}, true)
+	for _, test := range []struct {
+		path, wantLocation string
+		status             int
+	}{
+		{path: "/api/v1/public/version", status: http.StatusOK},
+		{path: "/api/v1/public/version/", wantLocation: "/api/v1/public/version", status: http.StatusMovedPermanently},
+	} {
+		traceID, parentID, traceParent := otlpfixture.NewParent(t)
+		baselineRequest := httptest.NewRequest(http.MethodGet, test.path, nil)
+		baselineRequest.Host = "localhost"
+		baseline := httptest.NewRecorder()
+		router.Engine.ServeHTTP(baseline, baselineRequest)
+		request := httptest.NewRequest(http.MethodGet, test.path, nil)
+		request.Host = "localhost"
+		request.Header.Set("traceparent", traceParent)
+		request.Header.Set("X-Request-ID", "caller-controlled-id")
+		response := httptest.NewRecorder()
+		router.ServeHTTP(response, request)
+		requestID := response.Header().Get("X-Request-ID")
+		if uuid.Validate(requestID) != nil || requestID == "caller-controlled-id" {
+			t.Fatalf("%s returned invalid request ID %q", test.path, requestID)
+		}
+		if response.Code != test.status || response.Header().Get("Location") != test.wantLocation {
+			t.Fatalf("%s response status=%d location=%q, want %d and %q", test.path, response.Code, response.Header().Get("Location"), test.status, test.wantLocation)
+		}
+		if response.Code != baseline.Code || response.Header().Get("Location") != baseline.Header().Get("Location") || response.Body.String() != baseline.Body.String() {
+			t.Fatalf("%s lifecycle wrapper changed Gin response: wrapped=%d/%q/%q baseline=%d/%q/%q", test.path, response.Code, response.Header().Get("Location"), response.Body.String(), baseline.Code, baseline.Header().Get("Location"), baseline.Body.String())
+		}
+		matches := 0
+		for _, span := range recorder.Ended() {
+			if span.Name() != "http.request" || span.InstrumentationScope().Name != "llm-wiki-http/request" {
+				continue
+			}
+			attrs := make(map[string]attribute.Value)
+			for _, item := range span.Attributes() {
+				attrs[string(item.Key)] = item.Value
+			}
+			if attrs["request.id"].AsString() != requestID {
+				continue
+			}
+			matches++
+			if span.SpanContext().TraceID().String() != traceID || span.Parent().SpanID().String() != parentID || attrs["http.response.status_code"].AsInt64() != int64(test.status) {
+				t.Fatalf("%s lifecycle root lost its incoming parent or actual status", test.path)
+			}
+			wantRoute := "control.redirect"
+			if test.wantLocation == "" {
+				wantRoute = "/api/v1/public/version"
+			}
+			if attrs["http.route"].AsString() != wantRoute || attrs["request.phase"].AsString() != "terminal" {
+				t.Fatalf("%s lifecycle attributes route=%q phase=%q", test.path, attrs["http.route"].AsString(), attrs["request.phase"].AsString())
+			}
+		}
+		if matches != 1 {
+			t.Fatalf("%s emitted %d lifecycle roots for request %s, want exactly one", test.path, matches, requestID)
 		}
 	}
 }

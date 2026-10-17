@@ -151,6 +151,12 @@ func StartProfileWorkSpan(ctx context.Context) (context.Context, trace.Span) {
 	return startLinkedRoot(ctx, profileInstrumentationScope, "profile.work")
 }
 
+// StartProfileWorkTerminalSpan records a durable Work outcome that was settled
+// without claiming another execution attempt.
+func StartProfileWorkTerminalSpan(ctx context.Context) (context.Context, trace.Span) {
+	return startLinkedRoot(ctx, profileInstrumentationScope, "profile.work.terminal")
+}
+
 func startLinkedRoot(ctx context.Context, scope, name string) (context.Context, trace.Span) {
 	parent := trace.SpanContextFromContext(ctx)
 	root := WithoutTraceParent(ctx)
@@ -158,7 +164,9 @@ func startLinkedRoot(ctx context.Context, scope, name string) (context.Context, 
 	if parent.IsValid() {
 		options = append(options, trace.WithLinks(trace.Link{SpanContext: parent}))
 	}
-	return otel.Tracer(scope).Start(root, name, options...)
+	root, span := otel.Tracer(scope).Start(root, name, options...)
+	SetRequestIDAttribute(span, RequestIDFromContext(ctx))
+	return root, span
 }
 
 var _ propagation.TextMapPropagator = traceContextPropagator{}

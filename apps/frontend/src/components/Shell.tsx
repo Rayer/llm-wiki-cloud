@@ -15,6 +15,7 @@ import { ProjectSelect } from './ui/ProjectSelect';
 import { CommandPalette, useCommandPalette } from './ui/CommandPalette';
 import { NavigationBlockerProvider, NavigationLink } from './NavigationBlocker';
 import { AccountSettingsModal } from './AccountSettingsModal';
+import { RequestIDPanel } from './RequestIDPanel';
 
 export function Shell({ children }: { children: React.ReactNode }) {
   return (
@@ -285,6 +286,9 @@ function ShellContent({ children }: { children: React.ReactNode }) {
       ) : null}
 
       <main id="main-content" className="min-w-0 flex-1">
+        <div className="mx-auto max-w-6xl px-4 pt-4 sm:px-6 lg:px-10">
+          <RequestIDPanel />
+        </div>
         {!hydrated ? (
           <div className="flex min-h-screen items-center justify-center text-sm text-zinc-500">
             {t('Shell.loading')}

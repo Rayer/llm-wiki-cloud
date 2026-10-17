@@ -1171,9 +1171,8 @@ func (h *Handler) invokePipelineJobStageWithReservation(ctx context.Context, use
 		// Worker treats only explicit true as clean rebuild; omitted means false.
 		env = append(env, gin.H{"name": "CLEAN_REBUILD", "value": "true"})
 	}
-	if traceParent := observability.TraceParentFromContext(ctx); traceParent != "" {
-		env = append(env, gin.H{"name": "LWC_TRACEPARENT", "value": traceParent})
-	}
+	env = append(env, gin.H{"name": "LWC_TRACEPARENT", "value": observability.TraceParentFromContext(ctx)})
+	env = append(env, gin.H{"name": "LWC_REQUEST_ID", "value": observability.RequestIDFromContext(ctx)})
 	body, err := json.Marshal(gin.H{
 		"overrides": gin.H{
 			"containerOverrides": []gin.H{

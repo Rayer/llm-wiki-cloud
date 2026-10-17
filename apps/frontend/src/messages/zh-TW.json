@@ -246,6 +246,11 @@
     "signOut": "登出",
     "logout": "登出",
     "demoDisabled": "Demo 模式 — 無法新增專案",
+    "requestIDs": "最近的請求編號",
+    "requestIDsEmpty": "尚無伺服器請求編號。",
+    "requestIDStatus": "HTTP 狀態",
+    "copyRequestID": "複製編號",
+    "requestIDCopied": "已複製",
     "ok": "確定",
     "cancel": "取消"
   },

@@ -41,12 +41,13 @@ func TestNativeWorkerCommandCrossesRealProcessBoundaryWithScopedEnvironment(t *t
 	output := filepath.Join(tmp, "boundary.json")
 	configPath := filepath.Join(tmp, "rendered Pipeline config", "synto.toml")
 	bindingsPath := filepath.Join(tmp, "rendered Pipeline config", "private-bindings.json")
-	script := "#!" + python + "\nimport json,os,sys\njson.dump({'args':sys.argv[1:],'cwd':os.getcwd(),'env':{k:os.environ.get(k) for k in ['GCP_PROJECT','GOOGLE_CLOUD_PROJECT','BUCKET','FIRESTORE_DATABASE_ID','LOCAL_CLOUD_SCOPE','USER_ID','PROJECT_ID','EXECUTION_ID','CLEAN_REBUILD','KEEP_FROM_BFF','LWC_TRACEPARENT']}},open(os.environ['PROBE_OUTPUT'],'w'))\n"
+	script := "#!" + python + "\nimport json,os,sys\njson.dump({'args':sys.argv[1:],'cwd':os.getcwd(),'env':{k:os.environ.get(k) for k in ['GCP_PROJECT','GOOGLE_CLOUD_PROJECT','BUCKET','FIRESTORE_DATABASE_ID','LOCAL_CLOUD_SCOPE','USER_ID','PROJECT_ID','EXECUTION_ID','CLEAN_REBUILD','KEEP_FROM_BFF','LWC_TRACEPARENT','LWC_REQUEST_ID']}},open(os.environ['PROBE_OUTPUT'],'w'))\n"
 	if err := os.WriteFile(worker, []byte(script), 0o700); err != nil {
 		t.Fatal(err)
 	}
 	traceParent := "00-aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa-bbbbbbbbbbbbbbbb-01"
-	cmd := newWorkerCommand(Config{Worker: worker, WorkDir: tmp, Project: "llm-wiki-cloud", Bucket: "llm-wiki-cloud-local", Database: "llm-wiki-cloud-local", Scope: "worktree-one", PipelineConfigPath: configPath, PipelineBindingsPath: bindingsPath}, "local-execution-1", "user-a", "project-a", "full", false, []string{"PATH=" + os.Getenv("PATH"), "KEEP_FROM_BFF=preserved"}, traceParent)
+	requestID := "123e4567-e89b-12d3-a456-426614174000"
+	cmd := newWorkerCommand(Config{Worker: worker, WorkDir: tmp, Project: "llm-wiki-cloud", Bucket: "llm-wiki-cloud-local", Database: "llm-wiki-cloud-local", Scope: "worktree-one", PipelineConfigPath: configPath, PipelineBindingsPath: bindingsPath}, "local-execution-1", "user-a", "project-a", "full", false, []string{"PATH=" + os.Getenv("PATH"), "KEEP_FROM_BFF=preserved"}, traceParent, requestID)
 	cmd.Env = append(cmd.Env, "PROBE_OUTPUT="+output)
 	if err := cmd.Run(); err != nil {
 		t.Fatalf("run native worker fixture: %v", err)
@@ -77,11 +78,28 @@ func TestNativeWorkerCommandCrossesRealProcessBoundaryWithScopedEnvironment(t *t
 		"LOCAL_CLOUD_SCOPE": "worktree-one", "USER_ID": "user-a", "PROJECT_ID": "project-a",
 		"EXECUTION_ID": "local-execution-1", "CLEAN_REBUILD": "false", "KEEP_FROM_BFF": "preserved",
 		"LWC_TRACEPARENT": traceParent,
+		"LWC_REQUEST_ID":  requestID,
 	}
 	for key, value := range wantEnv {
 		if observed.Env[key] != value {
 			t.Errorf("worker environment %s=%q, want %q", key, observed.Env[key], value)
 		}
+	}
+}
+
+func TestNativeWorkerCommandClearsInheritedRequestCarrierWhenOriginIsAbsent(t *testing.T) {
+	cmd := newWorkerCommand(Config{Worker: "/fixture/worker", WorkDir: t.TempDir()},
+		"execution", "user", "project", "full", false,
+		[]string{"PATH=" + os.Getenv("PATH"), "LWC_TRACEPARENT=stale-trace", "LWC_REQUEST_ID=stale-request"}, "", "")
+	env := make(map[string]string)
+	for _, item := range cmd.Env {
+		key, value, ok := strings.Cut(item, "=")
+		if ok {
+			env[key] = value
+		}
+	}
+	if env["LWC_TRACEPARENT"] != "" || env["LWC_REQUEST_ID"] != "" {
+		t.Fatalf("worker inherited an unrelated request carrier: traceparent=%q request_id=%q", env["LWC_TRACEPARENT"], env["LWC_REQUEST_ID"])
 	}
 }
 

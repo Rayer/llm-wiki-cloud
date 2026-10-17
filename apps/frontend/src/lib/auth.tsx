@@ -33,6 +33,7 @@ import {
 } from './auth-core';
 import { configureApiAuth } from './api';
 import { getRuntimeConfig } from './runtime-config';
+import { recordRequestResponse } from './request-ids';
 
 type RefreshAccessTokenOptions = {
   /** When false, HTTP 401 does not clear session (used by hydrate soft-rotate). Default true. */
@@ -67,6 +68,7 @@ async function postAuth(path: string, body?: unknown): Promise<unknown> {
     headers: body === undefined ? undefined : { 'Content-Type': 'application/json' },
     body: body === undefined ? undefined : JSON.stringify(body),
   });
+  recordRequestResponse(response);
   const payload: unknown = await response.json().catch(() => null);
 
   if (!response.ok) {
@@ -138,6 +140,7 @@ export function AuthProvider({ children }: { children: ReactNode }) {
         method: 'POST',
         credentials: 'include',
       });
+      recordRequestResponse(response);
       const payload: unknown = await response.json().catch(() => null);
       if (providerGenerationRef.current !== startedProviderGeneration) return null;
 
