@@ -2305,6 +2305,38 @@ class ArchitectureAuthorityTests(unittest.TestCase):
         self.assertNotIn("consume_dev_images", frontend)
         self.assertNotRegex(frontend, r"image_for (auth|bff|worker)")
 
+    def test_exportjob_full_sampling_handle_is_opt_in_and_rollback_complete(self):
+        with tempfile.TemporaryDirectory() as directory:
+            plan = Path(directory) / "plan.json"
+            plan.write_text(json.dumps({"normalized": {"environment": "development"}}))
+            base = {"template": {"template": {"containers": [{"name": "export", "env": []}]}}}
+            enabled = deepcopy(base)
+            enabled["template"]["template"]["containers"][0]["env"] = [
+                {"name": "OTEL_EXPORTER_OTLP_ENDPOINT", "value": "https://telemetry.googleapis.com"},
+                {"name": "LWC_DEV_FULL_TRACE_SAMPLING", "value": "1"},
+            ]
+            script = textwrap.dedent(f"""
+                source {str(ROOT / 'deploy/components/exportjob.sh')!r} help
+                handle=$(exportjob_otlp_handle "$JOB_JSON")
+                exportjob_otlp_args_from_handle "$handle"
+                printf '%s\\n' "${{EXPORTJOB_OTLP_ARGS[@]}}"
+                if exportjob_otlp_desired_matches "$JOB_JSON"; then echo desired-match; else echo desired-mismatch; fi
+            """)
+            env = {**os.environ, "ROOT": str(ROOT), "PLAN_PATH": str(plan),
+                   "JOB_JSON": json.dumps(enabled)}
+            result = subprocess.run(["bash", "-c", script], env=env, text=True, capture_output=True)
+            self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
+            self.assertIn("--update-env-vars", result.stdout)
+            self.assertIn("OTEL_EXPORTER_OTLP_ENDPOINT=https://telemetry.googleapis.com|LWC_DEV_FULL_TRACE_SAMPLING=1", result.stdout)
+            self.assertIn("desired-match", result.stdout)
+
+            env["JOB_JSON"] = json.dumps(base)
+            absent = subprocess.run(["bash", "-c", script], env=env, text=True, capture_output=True)
+            self.assertEqual(absent.returncode, 0, absent.stdout + absent.stderr)
+            self.assertIn("--remove-env-vars", absent.stdout)
+            self.assertIn("OTEL_EXPORTER_OTLP_ENDPOINT,LWC_DEV_FULL_TRACE_SAMPLING", absent.stdout)
+            self.assertIn("desired-mismatch", absent.stdout)
+
     def test_export_job_runtime_readback_requires_exact_service_account_and_environment(self):
         config = {
             "runtime_service_account": "export-worker@example.iam.gserviceaccount.com",
@@ -2449,6 +2481,7 @@ class ArchitectureAuthorityTests(unittest.TestCase):
                     "GCP_PROJECT": {"present": False},
                     "FIRESTORE_DATABASE_ID": {"present": False},
                     "OTEL_EXPORTER_OTLP_ENDPOINT": {"present": False},
+                    "LWC_DEV_FULL_TRACE_SAMPLING": {"present": False},
                 },
             })
             current = json.loads(state.read_text())
@@ -2559,6 +2592,10 @@ class ArchitectureAuthorityTests(unittest.TestCase):
                     runtime_update = next(call for call in calls if call.startswith("run jobs update") and "b" * 64 in call)
                     self.assertIn("GCP_PROJECT=llm-wiki-cloud", runtime_update)
                     self.assertIn(f"FIRESTORE_DATABASE_ID={database}", runtime_update)
+                    if environment == "development":
+                        self.assertIn("LWC_DEV_FULL_TRACE_SAMPLING=1", runtime_update)
+                    else:
+                        self.assertIn("OTEL_EXPORTER_OTLP_ENDPOINT,LWC_DEV_FULL_TRACE_SAMPLING", runtime_update)
                     self.assertNotIn("--set-env-vars", runtime_update)
                     self.assertNotIn("UNRELATED=preserve-me", runtime_update)
 
@@ -2848,7 +2885,10 @@ class ArchitectureAuthorityTests(unittest.TestCase):
             self.assertEqual(frozen.returncode, 0, frozen.stdout + frozen.stderr)
             self.assertEqual(json.loads((root / "rollback.json").read_text())["handles"]["exportjob"], {
                 "image": old_image,
-                "env": {"present": False},
+                "env": {
+                    "OTEL_EXPORTER_OTLP_ENDPOINT": {"present": False},
+                    "LWC_DEV_FULL_TRACE_SAMPLING": {"present": False},
+                },
             })
             current = json.loads(state.read_text())
             current["template"]["template"]["containers"][0]["image"] = new_image

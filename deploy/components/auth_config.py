@@ -25,6 +25,7 @@ PROFILE_RUNTIME_BFF = ('PROFILE_RUNTIME_AUDIENCE', 'PROFILE_RUNTIME_SERVICE_ACCO
 TYPESAFE_JEV_API_KEY = 'TYPESAFE_JEV_API_KEY'
 OTLP_ENDPOINT_ENV = 'OTEL_EXPORTER_OTLP_ENDPOINT'
 OTLP_ENDPOINT = 'https://telemetry.googleapis.com'
+DEV_FULL_TRACE_SAMPLING_ENV = 'LWC_DEV_FULL_TRACE_SAMPLING'
 PIPELINE_DEMO_USER_IDS = 'PIPELINE_DEMO_USER_IDS'
 PIPELINE_COOLDOWN_SECONDS = 'PIPELINE_COOLDOWN_SECONDS'
 MAX_PIPELINE_COOLDOWN_SECONDS = ((1 << 63) - 1) // 1_000_000_000
@@ -139,6 +140,7 @@ def desired(plan, component='auth', bff_config_version=None, auth_config_version
         env = {BFF_CONFIG_ENV: BFF_CONFIG_PATH}
         if plan['environment'] == 'development':
             env[OTLP_ENDPOINT_ENV] = OTLP_ENDPOINT
+            env[DEV_FULL_TRACE_SAMPLING_ENV] = '1'
         return {
             'env': env,
             'secrets': {},
@@ -164,6 +166,7 @@ def desired(plan, component='auth', bff_config_version=None, auth_config_version
         env = {AUTH_CONFIG_ENV: AUTH_CONFIG_PATH}
         if plan['environment'] == 'development':
             env[OTLP_ENDPOINT_ENV] = OTLP_ENDPOINT
+            env[DEV_FULL_TRACE_SAMPLING_ENV] = '1'
         return {
             'env': env,
             'secrets': {},
@@ -197,6 +200,7 @@ def desired(plan, component='auth', bff_config_version=None, auth_config_version
         }
     if plan['environment'] == 'development':
         env[OTLP_ENDPOINT_ENV] = OTLP_ENDPOINT
+        env[DEV_FULL_TRACE_SAMPLING_ENV] = '1'
     return {'env': env, 'secrets': secrets, 'service_account': auth['runtime_service_account']}
 
 
@@ -261,6 +265,9 @@ def effective(revision, project, component='auth', query_only=False, selective_b
             result['env'][name] = entry['value']
         elif name == OTLP_ENDPOINT_ENV:
             require(set(entry) == {'name', 'value'} and entry.get('value') == OTLP_ENDPOINT)
+            result['env'][name] = entry['value']
+        elif name == DEV_FULL_TRACE_SAMPLING_ENV:
+            require(set(entry) == {'name', 'value'} and entry.get('value') == '1')
             result['env'][name] = entry['value']
         elif ((name in BASE or name in GOOGLE) and not query_only and not selective_bff) or (component == 'bff' and name == QUERY_PATH):
             omitted_empty_demo = name == 'AUTH_DEMO_USER_ID' and set(entry) == {'name'}
@@ -395,6 +402,7 @@ def main():
         values = expected['env']
         require(all('\n' not in v and '|' not in v for v in values.values()))
         args = ['--update-env-vars', '^|^' + '|'.join(k + '=' + v for k, v in values.items())]
+        remove_env = []
         if expected['secrets']:
             args += ['--update-secrets', ','.join(k + '=' + v['name'] + ':' + v['key'] for k, v in expected['secrets'].items())]
         if component == 'auth' and isinstance(plan['auth'].get('runtime_inputs'), dict):
@@ -402,17 +410,22 @@ def main():
             secret_name = file_secret['resource'].split('/')[3]
             args += ['--service-account', expected['service_account'], '--update-secrets',
                      AUTH_CONFIG_PATH + '=' + secret_name + ':' + file_secret['version'],
-                     '--remove-env-vars', ','.join(AUTH_LEGACY_ENV),
                      '--remove-secrets', ','.join(AUTH_LEGACY_SECRET_ENV)]
+            remove_env.extend(AUTH_LEGACY_ENV)
         elif component == 'auth' and not plan['auth']['google']['enabled']:
-            args += ['--remove-env-vars', ','.join(GOOGLE), '--remove-secrets', 'GOOGLE_CLIENT_SECRET']
+            remove_env.extend(GOOGLE)
+            args += ['--remove-secrets', 'GOOGLE_CLIENT_SECRET']
         if component == 'bff':
             file_secret = expected['file_secret']
             secret_name = file_secret['resource'].split('/')[3]
             args += ['--service-account', expected['service_account'], '--update-secrets',
                      BFF_CONFIG_PATH + '=' + secret_name + ':' + file_secret['version'],
-                     '--remove-env-vars', ','.join(BFF_LEGACY_ENV),
                      '--remove-secrets', ','.join(BFF_LEGACY_SECRET_ENV)]
+            remove_env.extend(BFF_LEGACY_ENV)
+        if plan['environment'] == 'production':
+            remove_env.extend((OTLP_ENDPOINT_ENV, DEV_FULL_TRACE_SAMPLING_ENV))
+        if remove_env:
+            args += ['--remove-env-vars', ','.join(dict.fromkeys(remove_env))]
         print('\n'.join(args))
         return
     config_version = sys.argv[7] if component == 'bff' and len(sys.argv) > 7 else None

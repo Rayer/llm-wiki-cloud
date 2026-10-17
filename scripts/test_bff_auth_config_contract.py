@@ -123,6 +123,21 @@ class BFFConfigFileContractTests(unittest.TestCase):
         accepted = self.run_auth_config('verify', plan, unused_read_only)
         self.assertEqual(accepted.returncode, 0, accepted.stderr)
 
+    def test_production_bff_rejects_development_full_sampling_flag(self):
+        plan = production_plan()
+        runtime = candidate('production', plan)
+        script = fixtures.ROOT / 'deploy/components/auth_config.py'
+        with tempfile.TemporaryDirectory() as directory:
+            path = Path(directory) / 'plan.json'
+            path.write_text(json.dumps({'normalized': plan}))
+            runtime['spec']['containers'][0]['env'].append(
+                {'name': 'LWC_DEV_FULL_TRACE_SAMPLING', 'value': '1'})
+            result = subprocess.run(
+                ['python3', str(script), 'verify', str(path), 'bff', runtime['metadata']['name'],
+                 runtime['status']['imageDigest'], '', CONFIG_VERSION],
+                input=json.dumps(runtime), text=True, capture_output=True)
+        self.assertNotEqual(result.returncode, 0)
+
     def test_file_mode_precedence_uses_cloud_run_effective_nonroot_mode(self):
         plan = fixtures.bff_plan('development')
         baseline = candidate('development', plan)

@@ -85,6 +85,8 @@ class ProductionAuthConfigContractTests(unittest.TestCase):
             'not ready': lambda r: r['status']['conditions'][0].update(status='False'),
             'legacy environment': lambda r: r['spec']['containers'][0]['env'].append(
                 {'name': 'JWT_SECRET', 'valueFrom': {'secretKeyRef': {'name': 'jwt-secret-prod', 'key': 'latest'}}}),
+            'development sampling enabled in production': lambda r: r['spec']['containers'][0]['env'].append(
+                {'name': 'LWC_DEV_FULL_TRACE_SAMPLING', 'value': '1'}),
         }
         for name, edit in tamper.items():
             with self.subTest(name=name):
@@ -110,6 +112,7 @@ class ProductionAuthConfigContractTests(unittest.TestCase):
             self.assertIn('/var/run/lwc-auth-config/auth.json=', args.stdout)
             self.assertIn(':' + VERSION, args.stdout)
             self.assertIn('--remove-env-vars', args.stdout)
+            self.assertIn('LWC_DEV_FULL_TRACE_SAMPLING', args.stdout)
             self.assertIn('--remove-secrets', args.stdout)
             self.assertNotIn(self.runtime['config_id'], args.stdout)
 

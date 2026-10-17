@@ -34,6 +34,7 @@ GOOGLE = {
 ENV = {
     'DEV_JWT': 'false', 'GCP_PROJECT': 'llm-wiki-cloud', 'FIRESTORE_DATABASE_ID': 'llm-wiki-cloud-dev',
     'OTEL_EXPORTER_OTLP_ENDPOINT': 'https://telemetry.googleapis.com',
+    'LWC_DEV_FULL_TRACE_SAMPLING': '1',
     'ALLOWED_HOSTS': 'auth.dev.rayer.idv.tw,auth-dev.rayer.idv.tw',
     'ALLOWED_ORIGINS': 'https://wiki.dev.rayer.idv.tw,https://llm-wiki-frontend-dev.vercel.app,http://localhost:3000',
     'AUTH_SERVICE_URL': 'https://auth.dev.rayer.idv.tw', 'AUTH_SESSION_ENVIRONMENT': 'llm-wiki-cloud-dev',
@@ -129,18 +130,29 @@ def production(value):
         ('123456-test.apps.googleusercontent.com', '580854833715-1b37asap0uocbdcrighjaorflvj2n94m.apps.googleusercontent.com'),
     ):
         text = text.replace(old, new)
-    return json.loads(text)
+    result = json.loads(text)
+    for container in result.get('spec', {}).get('containers', []):
+        container['env'] = [entry for entry in container.get('env', [])
+                            if entry.get('name') != 'LWC_DEV_FULL_TRACE_SAMPLING']
+    return result
 
 
 class AuthConfigContractTests(unittest.TestCase):
-    def test_otlp_endpoint_is_enabled_only_by_development_runtime_contract(self):
+    def test_otlp_and_full_sampling_are_enabled_only_by_development_runtime_contract(self):
         for component in ('auth', 'bff'):
             development = deployment_plan('development', component)
             production_plan = deployment_plan('production', component)
             self.assertEqual(auth_config.desired(development, component, '42' if component == 'bff' else None,
                                                  '42' if component == 'auth' else None)['env'].get(
                                                      auth_config.OTLP_ENDPOINT_ENV), auth_config.OTLP_ENDPOINT)
+            self.assertEqual(auth_config.desired(development, component, '42' if component == 'bff' else None,
+                                                 '42' if component == 'auth' else None)['env'].get(
+                                                     auth_config.DEV_FULL_TRACE_SAMPLING_ENV), '1')
             self.assertNotIn(auth_config.OTLP_ENDPOINT_ENV,
+                             auth_config.desired(production_plan, component,
+                                 '42' if component == 'bff' else None,
+                                 '42' if component == 'auth' else None)['env'])
+            self.assertNotIn(auth_config.DEV_FULL_TRACE_SAMPLING_ENV,
                              auth_config.desired(production_plan, component,
                                  '42' if component == 'bff' else None,
                                  '42' if component == 'auth' else None)['env'])

@@ -56,32 +56,56 @@ exportjob_otlp_handle() {
   jq -ce '
     (.template.template.containers // .spec.template.spec.template.spec.containers // .spec.template.spec.containers // []) as $containers |
     if ($containers|type) != "array" or ($containers|length) != 1 then error("Export container is missing") else $containers[0] end |
-    [(.env // [])[] | select(.name == "OTEL_EXPORTER_OTLP_ENDPOINT")] as $matches |
-    if ($matches|length) > 1 then error("duplicate Export OTLP setting")
-    elif ($matches|length) == 0 then {present:false}
-    elif (($matches[0]|has("value")) and (($matches[0].value|type) == "string")) then {present:true,value:$matches[0].value}
-    else error("invalid Export OTLP setting") end
+    (.env // []) as $env |
+    def setting($name):
+      [$env[] | select(.name == $name)] as $matches |
+      if ($matches|length) > 1 then error("duplicate Export environment setting")
+      elif ($matches|length) == 0 then {present:false}
+      elif (($matches[0]|has("value")) and (($matches[0].value|type) == "string")) then {present:true,value:$matches[0].value}
+      else error("invalid Export environment setting") end;
+    {OTEL_EXPORTER_OTLP_ENDPOINT:setting("OTEL_EXPORTER_OTLP_ENDPOINT"),
+     LWC_DEV_FULL_TRACE_SAMPLING:setting("LWC_DEV_FULL_TRACE_SAMPLING")}
   ' <<<"$1"
 }
 
 exportjob_otlp_args_from_handle() {
-  local handle="$1" present value
+  local handle="$1" normalized present value name updates='' removals=''
+  local -a values=()
   EXPORTJOB_OTLP_ARGS=()
-  present=$(jq -er '.present | if type == "boolean" then tostring else error("invalid Export OTLP presence") end' <<<"$handle") || return 1
-  if [[ "$present" == true ]]; then
-    value=$(jq -er '.value | select(type == "string")' <<<"$handle") || return 1
-    [[ "$value" == https://telemetry.googleapis.com ]] || return 1
-    EXPORTJOB_OTLP_ARGS+=(--update-env-vars "^|^OTEL_EXPORTER_OTLP_ENDPOINT=$value")
+  if jq -e 'has("present") and (.present|type == "boolean")' <<<"$handle" >/dev/null; then
+    normalized=$(jq -cn --argjson endpoint "$handle" '{OTEL_EXPORTER_OTLP_ENDPOINT:$endpoint,LWC_DEV_FULL_TRACE_SAMPLING:{present:false}}') || return 1
   else
-    EXPORTJOB_OTLP_ARGS+=(--remove-env-vars OTEL_EXPORTER_OTLP_ENDPOINT)
+    normalized="$handle"
   fi
+  for name in OTEL_EXPORTER_OTLP_ENDPOINT LWC_DEV_FULL_TRACE_SAMPLING; do
+    present=$(jq -er --arg name "$name" '.[$name].present | if type == "boolean" then tostring else error("invalid Export environment presence") end' <<<"$normalized") || return 1
+    if [[ "$present" == true ]]; then
+      value=$(jq -er --arg name "$name" '.[$name].value | select(type == "string")' <<<"$normalized") || return 1
+      if [[ "$name" == OTEL_EXPORTER_OTLP_ENDPOINT ]]; then [[ "$value" == https://telemetry.googleapis.com ]] || return 1
+      else [[ "$value" == 1 ]] || return 1; fi
+      values+=("$name=$value")
+    else
+      removals="${removals:+$removals,}$name"
+    fi
+  done
+  if ((${#values[@]})); then
+    updates="${values[0]}"
+    for value in "${values[@]:1}"; do updates+="|$value"; done
+    EXPORTJOB_OTLP_ARGS+=(--update-env-vars "^|^$updates")
+  fi
+  [[ -z "$removals" ]] || EXPORTJOB_OTLP_ARGS+=(--remove-env-vars "$removals")
 }
 
 exportjob_otlp_matches_handle() {
-  local expected="$1" current observed
+  local expected="$1" current observed normalized
   current=$(exportjob_describe) || return 2
   observed=$(exportjob_otlp_handle "$current") || return 2
-  jq -e --argjson expected "$expected" '. == $expected' <<<"$observed" >/dev/null
+  if jq -e 'has("present") and (.present|type == "boolean")' <<<"$expected" >/dev/null; then
+    normalized=$(jq -cn --argjson endpoint "$expected" '{OTEL_EXPORTER_OTLP_ENDPOINT:$endpoint,LWC_DEV_FULL_TRACE_SAMPLING:{present:false}}') || return 2
+  else
+    normalized="$expected"
+  fi
+  jq -e --argjson expected "$normalized" '. == $expected' <<<"$observed" >/dev/null
 }
 
 exportjob_preflight() {
@@ -205,9 +229,9 @@ exportjob_mutate() {
   if ! jq -e '.components.exportjob? != null' "$JOURNAL_PATH" >/dev/null; then journal_pending exportjob; fi
   validate_image_value exportjob "$image"
   if [[ "$ENVIRONMENT" == development ]]; then
-    endpoint_args+=(--update-env-vars '^|^OTEL_EXPORTER_OTLP_ENDPOINT=https://telemetry.googleapis.com')
+    endpoint_args+=(--update-env-vars '^|^OTEL_EXPORTER_OTLP_ENDPOINT=https://telemetry.googleapis.com|LWC_DEV_FULL_TRACE_SAMPLING=1')
   else
-    endpoint_args+=(--remove-env-vars OTEL_EXPORTER_OTLP_ENDPOINT)
+    endpoint_args+=(--remove-env-vars OTEL_EXPORTER_OTLP_ENDPOINT,LWC_DEV_FULL_TRACE_SAMPLING)
   fi
   if timeout --signal=TERM --kill-after=5s 600s gcloud run jobs update "$job" --project "$project" --region "$region" --image "$image" \
     "${endpoint_args[@]}" --quiet >/dev/null; then :; else update_status=$?; fi

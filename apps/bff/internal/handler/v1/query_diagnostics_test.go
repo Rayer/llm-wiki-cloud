@@ -21,6 +21,7 @@ import (
 	handlerapi "github.com/rayer/llm-wiki-bff/internal/handler"
 	"github.com/rayer/llm-wiki-bff/internal/llm"
 	"github.com/rayer/llm-wiki-bff/internal/localfs"
+	"github.com/rayer/llm-wiki-bff/internal/observability"
 	"github.com/rayer/llm-wiki-bff/internal/query"
 	"github.com/rayer/llm-wiki-bff/internal/storage"
 	"go.opentelemetry.io/otel"
@@ -625,6 +626,113 @@ func TestMCPQueryFailureThroughSDKRemainsSafeToolError(t *testing.T) {
 	structured, ok := result.StructuredContent.(map[string]any)
 	if !ok || structured["error"] != textContent.Text || structured["code"] == "" || structured["diagnostic_id"] == "" {
 		t.Fatalf("SDK structured failure diagnostics missing: %#v", result.StructuredContent)
+	}
+}
+
+func TestDevFullSamplingKeepsRealQueryErrorCorrelatedForUnsampledIngress(t *testing.T) {
+	gin.SetMode(gin.TestMode)
+	t.Setenv("LWC_DEV_FULL_TRACE_SAMPLING", "1")
+	exporter := tracetest.NewInMemoryExporter()
+	provider, err := observability.NewFilteredTraceProvider(
+		io.Discard, "lwc-bff-test", "revision-test", "synthetic-project", nil,
+		sdktrace.NewSimpleSpanProcessor(exporter),
+	)
+	if err != nil {
+		t.Fatal(err)
+	}
+	previousProvider := otel.GetTracerProvider()
+	otel.SetTracerProvider(provider)
+	t.Cleanup(func() {
+		otel.SetTracerProvider(previousProvider)
+		observability.ShutdownTraces(provider)
+	})
+
+	var logs bytes.Buffer
+	previousLogger := slog.Default()
+	slog.SetDefault(slog.New(slog.NewJSONHandler(&logs, nil)))
+	t.Cleanup(func() { slog.SetDefault(previousLogger) })
+
+	handler := New(localfs.New(t.TempDir()), nil, nil, nil, nil, nil)
+	router := gin.New()
+	router.POST("/api/v1/query", observability.TraceContextMiddleware(), handler.Query)
+	cases := []struct {
+		name, headerName, headerValue, traceID, parentID string
+	}{
+		{
+			name:        "unsampled W3C",
+			headerName:  "traceparent",
+			headerValue: "00-11111111111111111111111111111111-2222222222222222-00",
+			traceID:     "11111111111111111111111111111111", parentID: "2222222222222222",
+		},
+		{
+			name:        "unsampled Google",
+			headerName:  "X-Cloud-Trace-Context",
+			headerValue: "33333333333333333333333333333333/42;o=0",
+			traceID:     "33333333333333333333333333333333", parentID: "000000000000002a",
+		},
+		{
+			name:        "sampled W3C control",
+			headerName:  "traceparent",
+			headerValue: "00-44444444444444444444444444444444-5555555555555555-01",
+			traceID:     "44444444444444444444444444444444", parentID: "5555555555555555",
+		},
+		{
+			name:        "malformed W3C",
+			headerName:  "traceparent",
+			headerValue: "00-zzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzz-2222222222222222-00",
+		},
+		{name: "missing carrier"},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			exporter.Reset()
+			logs.Reset()
+			request := httptest.NewRequest(http.MethodPost, "/api/v1/query", strings.NewReader(`{"q":"PRIVATE_QUERY_CANARY"}`))
+			request.Header.Set("Content-Type", "application/json")
+			if tc.headerName != "" {
+				request.Header.Set(tc.headerName, tc.headerValue)
+			}
+			response := httptest.NewRecorder()
+			router.ServeHTTP(response, request)
+			problem := assertQueryProblem(t, response, http.StatusInternalServerError, "query_index_unavailable")
+			if strings.Contains(response.Body.String(), "PRIVATE_QUERY_CANARY") || strings.Contains(logs.String(), "PRIVATE_QUERY_CANARY") {
+				t.Fatalf("query canary leaked to response or terminal log: %s %s", response.Body, logs.String())
+			}
+			if got := strings.Count(logs.String(), `"msg":"query.terminal"`); got != 1 {
+				t.Fatalf("terminal bridge wrote %d summaries, want one: %s", got, logs.String())
+			}
+			var summary map[string]any
+			if err := json.Unmarshal(bytes.TrimSpace(logs.Bytes()), &summary); err != nil {
+				t.Fatalf("terminal summary is not JSON: %v; %s", err, logs.String())
+			}
+			root, ok := findSpan(exporter.GetSpans(), "query.request")
+			if !ok {
+				t.Fatalf("actual Query handler error produced no recorded root span: %+v", exporter.GetSpans())
+			}
+			if !root.SpanContext.IsSampled() || root.Status.Code != codes.Error || root.Status.Description != "error" {
+				t.Fatalf("recorded root sample/status = %t/%+v, want sampled query error: %+v", root.SpanContext.IsSampled(), root.Status, root)
+			}
+			if tc.traceID != "" {
+				if root.SpanContext.TraceID().String() != tc.traceID || root.Parent.SpanID().String() != tc.parentID {
+					t.Fatalf("root lost incoming trace/parent for %s: trace=%s parent=%s", tc.name, root.SpanContext.TraceID(), root.Parent.SpanID())
+				}
+			} else if root.Parent.IsValid() {
+				t.Fatalf("invalid/missing carrier created a parent for %s: %+v", tc.name, root.Parent)
+			}
+			attrs := make(map[string]any, len(root.Attributes))
+			for _, attr := range root.Attributes {
+				attrs[string(attr.Key)] = attr.Value.AsInterface()
+			}
+			if attrs["diagnostic_id"] != problem.DiagnosticID || attrs["query.stage"] != "runtime" ||
+				attrs["query.reason"] != "query_index_unavailable" || attrs["query.outcome"] != "error" {
+				t.Fatalf("root diagnostic fields do not identify the real handler failure: %v", attrs)
+			}
+			if summary["diagnostic_id"] != problem.DiagnosticID || summary["trace_id"] != root.SpanContext.TraceID().String() ||
+				summary["span_id"] != root.SpanContext.SpanID().String() || summary["stage"] != "runtime" ||
+				summary["reason"] != "query_index_unavailable" || summary["outcome"] != "error" {
+				t.Fatalf("terminal summary does not bridge response ID to recorded root error: summary=%+v root=%+v", summary, root)
+			}
+		})
 	}
 }
 

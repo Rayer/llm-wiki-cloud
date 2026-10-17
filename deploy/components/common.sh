@@ -451,10 +451,12 @@ exportjob_runtime_matches() {
     def env: (env_entries | map({key:.name,value:.value}) | from_entries);
     def otlp_allowed:
       [env_entries[] | select(.name == "OTEL_EXPORTER_OTLP_ENDPOINT")] as $matches |
-      if ($matches|length) > 1 then false
+      [env_entries[] | select(.name == "LWC_DEV_FULL_TRACE_SAMPLING")] as $sampling |
+      if ($matches|length) > 1 or ($sampling|length) > 1 then false
       elif $environment == "development" then
-        ($matches|length) == 0 or $matches[0].value == "https://telemetry.googleapis.com"
-      else ($matches|length) == 0 end;
+        (($matches|length) == 0 or $matches[0].value == "https://telemetry.googleapis.com") and
+        (($sampling|length) == 0 or $sampling[0].value == "1")
+      else ($matches|length) == 0 and ($sampling|length) == 0 end;
     def service_account: (template.serviceAccount // template.serviceAccountName);
     def timeout_value: (template.timeout // template.timeoutSeconds);
     type == "object" and (containers|type == "array" and length == 1) and
@@ -470,14 +472,16 @@ exportjob_runtime_matches() {
 exportjob_otlp_desired_matches() {
   local job_json="$1" environment expected
   environment=$(plan_json '.environment')
-  expected=''
-  [[ "$environment" != development ]] || expected='https://telemetry.googleapis.com'
-  jq -e --arg expected "$expected" '
+  expected='{}'
+  if [[ "$environment" == development ]]; then
+    expected='{"OTEL_EXPORTER_OTLP_ENDPOINT":"https://telemetry.googleapis.com","LWC_DEV_FULL_TRACE_SAMPLING":"1"}'
+  fi
+  jq -e --argjson expected "$expected" '
     (.template.template.containers // .spec.template.spec.template.spec.containers // .spec.template.spec.containers // []) as $containers |
     if ($containers|type) != "array" or ($containers|length) != 1 then false else
-      [($containers[0].env // [])[] | select(.name == "OTEL_EXPORTER_OTLP_ENDPOINT")] as $matches |
-      if $expected == "" then ($matches|length) == 0
-      else ($matches|length) == 1 and $matches[0] == {name:"OTEL_EXPORTER_OTLP_ENDPOINT",value:$expected} end
+      [($containers[0].env // [])[] | select(.name == "OTEL_EXPORTER_OTLP_ENDPOINT" or .name == "LWC_DEV_FULL_TRACE_SAMPLING")] as $matches |
+      ($matches | map({key:.name,value:.value}) | from_entries) == $expected and
+      ($matches | length) == ($expected | length)
     end
   ' <<<"$job_json" >/dev/null
 }
