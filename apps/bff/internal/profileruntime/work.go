@@ -21,6 +21,7 @@ type Work struct {
 	Kind        string    `firestore:"kind"`
 	Revision    int64     `firestore:"revision"`
 	ID          string    `firestore:"id"`
+	RequestID   string    `firestore:"request_id,omitempty" json:"-"`
 	CandidateID string    `firestore:"candidate_id"`
 	Due         time.Time `firestore:"due"`
 	Pending     bool      `firestore:"pending"`

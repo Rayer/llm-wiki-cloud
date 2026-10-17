@@ -1,4 +1,5 @@
 import { getRuntimeConfig } from './runtime-config.ts';
+import { recordRequestResponse } from './request-ids.ts';
 
 export type CLISession = {
   id: string;
@@ -47,7 +48,7 @@ async function cliAuthRequest<T>(
   options: RequestOptions = {},
 ): Promise<T> {
   const url = `${getRuntimeConfig().auth_url}/api/v1/auth/cli${route}`;
-  const makeRequest = (token: string) => fetch(url, {
+  const makeRequest = async (token: string) => recordRequestResponse(await fetch(url, {
     method: options.method ?? 'GET',
     credentials: 'include',
     headers: {
@@ -56,7 +57,7 @@ async function cliAuthRequest<T>(
     },
     body: options.body === undefined ? undefined : JSON.stringify(options.body),
     redirect: 'error',
-  });
+  }));
 
   let response = await makeRequest(context.accessToken);
   if (response.status === 401) {

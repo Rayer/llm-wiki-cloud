@@ -25,6 +25,7 @@ import (
 	"github.com/rayer/llm-wiki-bff/internal/query"
 	"github.com/rayer/llm-wiki-bff/internal/storage"
 	"go.opentelemetry.io/otel"
+	"go.opentelemetry.io/otel/attribute"
 	"go.opentelemetry.io/otel/codes"
 	sdktrace "go.opentelemetry.io/otel/sdk/trace"
 	"go.opentelemetry.io/otel/sdk/trace/tracetest"
@@ -629,6 +630,196 @@ func TestMCPQueryFailureThroughSDKRemainsSafeToolError(t *testing.T) {
 	}
 }
 
+func TestMCPBatchKeepsEnvelopeAndDistinctPerCallRequestIDs(t *testing.T) {
+	gin.SetMode(gin.TestMode)
+	exporter := tracetest.NewInMemoryExporter()
+	provider := sdktrace.NewTracerProvider(sdktrace.WithSpanProcessor(sdktrace.NewSimpleSpanProcessor(exporter)))
+	previousProvider := otel.GetTracerProvider()
+	otel.SetTracerProvider(provider)
+	t.Cleanup(func() {
+		otel.SetTracerProvider(previousProvider)
+		_ = provider.Shutdown(context.Background())
+	})
+	previousLogger := slog.Default()
+	var logs bytes.Buffer
+	slog.SetDefault(slog.New(slog.NewJSONHandler(&logs, nil)))
+	t.Cleanup(func() { slog.SetDefault(previousLogger) })
+
+	h := New(localfs.New(t.TempDir()), nil, nil, nil, nil, nil)
+	identity := mcpProjectKeyIdentity{userID: "fixture-user", projectID: "fixture-project", keyID: "fixture-key"}
+	router := gin.New()
+	router.Use(observability.RequestLifecycleMiddleware())
+	router.POST("/mcp", gin.WrapH(h.mcpAuthenticatedHandler(identity)))
+	body := `[{"jsonrpc":"2.0","id":101,"method":"tools/call","params":{"name":"query_project","arguments":{"q":"first synthetic batch call"}}},{"jsonrpc":"2.0","id":102,"method":"tools/call","params":{"name":"query_project","arguments":{"q":"second synthetic batch call"}}}]`
+	request := httptest.NewRequest(http.MethodPost, "/mcp", strings.NewReader(body))
+	request.Header.Set("Content-Type", "application/json")
+	request.Header.Set("Accept", "application/json, text/event-stream")
+	request.Header.Set("MCP-Protocol-Version", "2025-03-26")
+	request.Header.Set("Authorization", "Bearer fixture-token")
+	request.Header.Set("X-Request-ID", "caller-controlled-id")
+	response := httptest.NewRecorder()
+	router.ServeHTTP(response, request)
+	if response.Code != http.StatusOK {
+		t.Fatalf("legacy-version MCP batch status=%d body=%s", response.Code, response.Body)
+	}
+	envelopeID := response.Header().Get("X-Request-ID")
+	if uuid.Validate(envelopeID) != nil || envelopeID == "caller-controlled-id" {
+		t.Fatalf("batch response lacks server-owned HTTP envelope ID: %q", envelopeID)
+	}
+	var batch []struct {
+		ID     int `json:"id"`
+		Result struct {
+			Meta       map[string]string `json:"_meta"`
+			IsError    bool              `json:"isError"`
+			Structured map[string]any    `json:"structuredContent"`
+		} `json:"result"`
+	}
+	if err := json.Unmarshal(response.Body.Bytes(), &batch); err != nil {
+		t.Fatalf("MCP batch response is not JSON: %v: %s", err, response.Body)
+	}
+	if len(batch) != 2 {
+		t.Fatalf("MCP batch response count changed: %+v", batch)
+	}
+	responseIDs := map[int]bool{}
+	callIDs := map[string]bool{}
+	for _, item := range batch {
+		if (item.ID != 101 && item.ID != 102) || responseIDs[item.ID] {
+			t.Fatalf("MCP batch response IDs changed: %+v", batch)
+		}
+		responseIDs[item.ID] = true
+		id := item.Result.Meta["request_id"]
+		if uuid.Validate(id) != nil || callIDs[id] || !item.Result.IsError || item.Result.Structured["diagnostic_id"] != id {
+			t.Fatalf("MCP batch call did not retain its own diagnostic request ID: %+v", item)
+		}
+		callIDs[id] = true
+	}
+	if len(callIDs) != 2 || strings.Count(logs.String(), `"msg":"query.terminal"`) != 2 || strings.Count(logs.String(), `"msg":"http.request.terminal"`) != 1 {
+		t.Fatalf("MCP batch did not emit one terminal per tool call plus one envelope: %s", logs.String())
+	}
+	if err := provider.ForceFlush(context.Background()); err != nil {
+		t.Fatal(err)
+	}
+	var httpRootID, httpRootSpanID string
+	var httpSpanCount, envelopeMCP, callMCP, queryCount int
+	seenMCPIDs := make(map[string]bool)
+	mcpSpanByRequestID := make(map[string]string)
+	spans := exporter.GetSpans()
+	spanAttributes := func(span tracetest.SpanStub) map[string]string {
+		attrs := make(map[string]string, len(span.Attributes))
+		for _, attr := range span.Attributes {
+			if attr.Value.Type() == attribute.STRING {
+				attrs[string(attr.Key)] = attr.Value.AsString()
+			}
+		}
+		return attrs
+	}
+	for _, span := range spans {
+		if span.Name == "http.request" {
+			attrs := spanAttributes(span)
+			httpRootID = attrs["request.id"]
+			httpRootSpanID = span.SpanContext.SpanID().String()
+			httpSpanCount++
+		}
+	}
+	var querySpans []tracetest.SpanStub
+	for _, span := range spans {
+		attrs := spanAttributes(span)
+		switch span.Name {
+		case "mcp.request":
+			if attrs["request.envelope_id"] != envelopeID || attrs["request.id"] == "" {
+				t.Fatalf("MCP call lost its HTTP envelope association: %v", attrs)
+			}
+			if span.Parent.SpanID().String() != httpRootSpanID {
+				t.Fatalf("MCP call is not parented to the HTTP envelope: span=%+v", span)
+			}
+			if attrs["mcp.operation"] == "tools/call" {
+				if seenMCPIDs[attrs["request.id"]] {
+					t.Fatalf("MCP batch reused call ID %q", attrs["request.id"])
+				}
+				seenMCPIDs[attrs["request.id"]] = true
+				mcpSpanByRequestID[attrs["request.id"]] = span.SpanContext.SpanID().String()
+				callMCP++
+			}
+			envelopeMCP++
+		case "query.request":
+			requestID := attrs["request.id"]
+			querySpans = append(querySpans, span)
+			if requestID == "" || attrs["diagnostic_id"] != requestID {
+				t.Fatalf("Query diagnostic lost its request ID: attrs=%v span=%+v", attrs, span)
+			}
+			queryCount++
+		}
+	}
+	if httpRootID != envelopeID || httpSpanCount != 1 || envelopeMCP != 2 || callMCP != 2 || queryCount != 2 || len(seenMCPIDs) != 2 {
+		t.Fatalf("batch span tree lost envelope/per-call correlation: http=%q envelope=%q httpSpans=%d mcp=%d calls=%d queries=%d ids=%v", httpRootID, envelopeID, httpSpanCount, envelopeMCP, callMCP, queryCount, seenMCPIDs)
+	}
+	for _, span := range spans {
+		if span.Name == "mcp.request" && span.Parent.SpanID().String() != httpRootSpanID {
+			t.Fatalf("MCP call is not parented to the HTTP envelope: span=%+v", span)
+		}
+	}
+	for _, span := range querySpans {
+		requestID := spanAttributes(span)["request.id"]
+		if span.Parent.SpanID().String() != mcpSpanByRequestID[requestID] {
+			t.Fatalf("Query diagnostic is not parented to its MCP call: attrs=%v span=%+v", spanAttributes(span), span)
+		}
+	}
+}
+
+func TestMCPProtocolDecodeFailureIsFiniteWithoutLoggingBody(t *testing.T) {
+	gin.SetMode(gin.TestMode)
+	exporter := tracetest.NewInMemoryExporter()
+	provider := sdktrace.NewTracerProvider(sdktrace.WithSpanProcessor(sdktrace.NewSimpleSpanProcessor(exporter)))
+	previousProvider := otel.GetTracerProvider()
+	otel.SetTracerProvider(provider)
+	t.Cleanup(func() {
+		otel.SetTracerProvider(previousProvider)
+		_ = provider.Shutdown(context.Background())
+	})
+	previousLogger := slog.Default()
+	var logs bytes.Buffer
+	slog.SetDefault(slog.New(slog.NewJSONHandler(&logs, nil)))
+	t.Cleanup(func() { slog.SetDefault(previousLogger) })
+
+	h := New(localfs.New(t.TempDir()), nil, nil, nil, nil, nil)
+	identity := mcpProjectKeyIdentity{userID: "fixture-user", projectID: "fixture-project", keyID: "fixture-key"}
+	router := gin.New()
+	router.Use(observability.RequestLifecycleMiddleware())
+	router.POST("/mcp", gin.WrapH(h.mcpAuthenticatedHandler(identity)))
+	body := `{"jsonrpc":"2.0","id":17,"method":"tools/call","params":17,"private":"PRIVATE_PROTOCOL_CANARY"}`
+	request := httptest.NewRequest(http.MethodPost, "/mcp", strings.NewReader(body))
+	request.Header.Set("Content-Type", "application/json")
+	request.Header.Set("Accept", "application/json, text/event-stream")
+	request.Header.Set("MCP-Protocol-Version", "2025-03-26")
+	request.Header.Set("Authorization", "Bearer fixture-token")
+	response := httptest.NewRecorder()
+	router.ServeHTTP(response, request)
+	if response.Code != http.StatusOK || !strings.Contains(response.Body.String(), `"error"`) {
+		t.Fatalf("pinned SDK protocol error wire behavior changed: status=%d body=%s", response.Code, response.Body)
+	}
+	requestID := response.Header().Get("X-Request-ID")
+	if uuid.Validate(requestID) != nil {
+		t.Fatalf("protocol error response lost its envelope request ID: %q", requestID)
+	}
+	if err := provider.ForceFlush(context.Background()); err != nil {
+		t.Fatal(err)
+	}
+	spans := exporter.GetSpans()
+	if len(spans) != 1 || spans[0].Name != "http.request" {
+		t.Fatalf("pre-receiving protocol failure fabricated or lost an SDK call span: %+v", spans)
+	}
+	attrs := make(map[string]any, len(spans[0].Attributes))
+	for _, attr := range spans[0].Attributes {
+		attrs[string(attr.Key)] = attr.Value.AsInterface()
+	}
+	if attrs["request.id"] != requestID || attrs["http.response.status_code"] != int64(http.StatusOK) || attrs["request.phase"] != "terminal" || attrs["request.outcome"] != "protocol_error" {
+		t.Fatalf("protocol failure was reported as a successful HTTP exchange: %v", attrs)
+	}
+	if strings.Contains(logs.String(), "PRIVATE_PROTOCOL_CANARY") || strings.Contains(logs.String(), "unmarshaling") || strings.Contains(logs.String(), "fixture-token") || strings.Count(logs.String(), `"msg":"http.request.terminal"`) != 1 {
+		t.Fatalf("protocol fallback logged body/error/token data or missed its terminal: %s", logs.String())
+	}
+}
+
 func TestDevFullSamplingKeepsRealQueryErrorCorrelatedForUnsampledIngress(t *testing.T) {
 	gin.SetMode(gin.TestMode)
 	t.Setenv("LWC_DEV_FULL_TRACE_SAMPLING", "1")
@@ -783,6 +974,7 @@ func testAuthenticatedMCPQuerySchemaDiagnostics(t *testing.T, provider *sdktrace
 		{name: "wrong q type", arguments: `{"q":{"secret":"` + schemaCanary + `"}}`},
 		{name: "invalid mode", arguments: `{"q":"ordinary fixture","mode":"PRIVATE_MODE_CANARY"}`},
 	}
+	seenRequestIDs := make(map[string]bool, len(requests))
 	for i, tc := range requests {
 		t.Run(tc.name, func(t *testing.T) {
 			logs.Reset()
@@ -799,6 +991,7 @@ func testAuthenticatedMCPQuerySchemaDiagnostics(t *testing.T, provider *sdktrace
 						Text string `json:"text"`
 					} `json:"content"`
 					StructuredContent map[string]string `json:"structuredContent"`
+					Meta              map[string]string `json:"_meta"`
 					IsError           bool              `json:"isError"`
 				} `json:"result"`
 			}
@@ -816,6 +1009,11 @@ func testAuthenticatedMCPQuerySchemaDiagnostics(t *testing.T, provider *sdktrace
 			if result.StructuredContent["code"] != "invalid_query" || !strings.Contains(result.Content[0].Text, "Diagnostic ID: "+diagnosticID) {
 				t.Fatalf("MCP text/structured diagnostic mismatch: %+v", result)
 			}
+			requestID := result.Meta["request_id"]
+			if uuid.Validate(requestID) != nil || seenRequestIDs[requestID] || requestID != diagnosticID {
+				t.Fatalf("MCP call did not expose its distinct canonical per-call ID: meta=%v diagnostic=%q seen=%v", result.Meta, diagnosticID, seenRequestIDs)
+			}
+			seenRequestIDs[requestID] = true
 			if strings.Contains(response.Body.String(), schemaCanary) || strings.Contains(response.Body.String(), "PRIVATE_MODE_CANARY") || strings.Contains(logs.String(), schemaCanary) {
 				t.Fatalf("raw invalid arguments leaked through MCP or terminal summary: response=%s logs=%s", response.Body, logs.String())
 			}
@@ -833,45 +1031,57 @@ func testAuthenticatedMCPQuerySchemaDiagnostics(t *testing.T, provider *sdktrace
 				t.Fatal(err)
 			}
 			spans := exporter.GetSpans()
-			if len(spans) != 1 || spans[0].Name != "query.request" {
-				t.Fatalf("schema failure fabricated runtime/provider spans or lost root: %+v", spans)
+			queryRoot, hasQueryRoot := findSpan(spans, "query.request")
+			mcpRoot, hasMCPRoot := findSpan(spans, "mcp.request")
+			if len(spans) != 2 || !hasQueryRoot || !hasMCPRoot || queryRoot.Parent.SpanID() != mcpRoot.SpanContext.SpanID() {
+				t.Fatalf("schema failure lost its actual MCP→Query observation tree or fabricated runtime/provider spans: %+v", spans)
 			}
-			if spans[0].SpanContext.TraceID().String() != summary["trace_id"] {
-				t.Fatalf("MCP root and terminal trace IDs differ: span=%s summary=%v", spans[0].SpanContext.TraceID(), summary)
+			if queryRoot.SpanContext.TraceID().String() != summary["trace_id"] || mcpRoot.SpanContext.TraceID() != queryRoot.SpanContext.TraceID() {
+				t.Fatalf("MCP root, Query diagnostic, and terminal trace IDs differ: mcp=%s query=%s summary=%v", mcpRoot.SpanContext.TraceID(), queryRoot.SpanContext.TraceID(), summary)
 			}
 		})
 	}
 
 	logs.Reset()
 	exporter.Reset()
-	protocolRejected := serveAuthenticatedMCPRequestWithAccept(
-		mcpHandler,
-		`{"jsonrpc":"2.0","id":50,"method":"tools/call","params":{"name":"query_project","arguments":{"q":"ordinary fixture"}}}`,
-		true,
-		"application/json",
-	)
+	protocolRouter := gin.New()
+	protocolRouter.Use(observability.RequestLifecycleMiddleware())
+	protocolRouter.POST("/mcp", gin.WrapH(mcpHandler))
+	protocolRequest := httptest.NewRequest(http.MethodPost, "/mcp",
+		strings.NewReader(`{"jsonrpc":"2.0","id":50,"method":"tools/call","params":{"name":"query_project","arguments":{"q":"ordinary fixture"}}}`))
+	protocolRequest.Header.Set("Content-Type", "application/json")
+	protocolRequest.Header.Set("Accept", "application/json")
+	protocolRequest.Header.Set("MCP-Protocol-Version", "2025-11-25")
+	protocolRequest.Header.Set("Authorization", "Bearer fixture-token")
+	protocolRequest.Header.Set("X-Request-ID", "caller-controlled-id")
+	protocolRejected := httptest.NewRecorder()
+	protocolRouter.ServeHTTP(protocolRejected, protocolRequest)
 	if protocolRejected.Code != http.StatusBadRequest {
 		t.Fatalf("SDK Accept rejection status=%d, want 400: %s", protocolRejected.Code, protocolRejected.Body)
 	}
 	if present, isError := mcpToolResultState(protocolRejected.Body.Bytes()); present || isError {
 		t.Fatalf("SDK transport rejection unexpectedly contains a CallToolResult: %s", protocolRejected.Body)
 	}
-	if got := strings.Count(logs.String(), `"msg":"query.terminal"`); got != 1 {
-		t.Fatalf("SDK protocol rejection emitted %d terminal summaries, want one: %s", got, logs.String())
+	if got := strings.Count(logs.String(), `"msg":"query.terminal"`); got != 0 {
+		t.Fatalf("SDK protocol rejection fabricated %d Query terminal summaries: %s", got, logs.String())
+	}
+	if got := strings.Count(logs.String(), `"msg":"http.request.terminal"`); got != 1 {
+		t.Fatalf("SDK protocol rejection emitted %d enclosing HTTP terminal summaries, want one: %s", got, logs.String())
 	}
 	var protocolSummary map[string]any
 	if err := json.Unmarshal(bytes.TrimSpace(logs.Bytes()), &protocolSummary); err != nil {
 		t.Fatalf("SDK protocol rejection summary is not JSON: %v; %s", err, logs.String())
 	}
-	if protocolSummary["stage"] != "mcp_protocol_rejection" || protocolSummary["reason"] != "mcp_protocol_rejected" || protocolSummary["outcome"] != "error" || protocolSummary["mcp_is_error"] != false || protocolSummary["request_status"] != float64(http.StatusBadRequest) {
-		t.Fatalf("SDK protocol rejection summary misreports the actual transport outcome: %+v", protocolSummary)
+	requestID, ok := protocolRejected.Header()[http.CanonicalHeaderKey("X-Request-ID")]
+	if !ok || len(requestID) != 1 || uuid.Validate(requestID[0]) != nil || requestID[0] == "caller-controlled-id" || protocolSummary["request_id"] != requestID[0] || protocolSummary["status_code"] != float64(http.StatusBadRequest) {
+		t.Fatalf("SDK protocol rejection did not retain a server-owned envelope request ID and real HTTP outcome: header=%v summary=%+v", protocolRejected.Header(), protocolSummary)
 	}
 	if err := provider.ForceFlush(context.Background()); err != nil {
 		t.Fatal(err)
 	}
 	spans := exporter.GetSpans()
-	if len(spans) != 1 || spans[0].Name != "query.request" || spans[0].SpanContext.TraceID().String() != protocolSummary["trace_id"] {
-		t.Fatalf("SDK rejection fabricated runtime/provider spans or lost root correlation: summary=%+v spans=%+v", protocolSummary, spans)
+	if len(spans) != 1 || spans[0].Name != "http.request" || spans[0].SpanContext.TraceID().String() != protocolSummary["trace_id"] {
+		t.Fatalf("SDK rejection fabricated Query spans or lost enclosing request correlation: summary=%+v spans=%+v", protocolSummary, spans)
 	}
 
 	for _, request := range []string{
@@ -881,7 +1091,7 @@ func testAuthenticatedMCPQuerySchemaDiagnostics(t *testing.T, provider *sdktrace
 		logs.Reset()
 		exporter.Reset()
 		response := serveAuthenticatedMCPRequest(mcpHandler, request, true)
-		if response.Code != http.StatusOK || strings.Contains(logs.String(), `"msg":"query.terminal"`) || len(exporter.GetSpans()) != 0 {
+		if response.Code != http.StatusOK || strings.Contains(logs.String(), `"msg":"query.terminal"`) || !strings.Contains(logs.String(), `"msg":"mcp.request.terminal"`) || !hasSpan(exporter.GetSpans(), "mcp.request") {
 			t.Fatalf("non-Query MCP request created Query diagnostics: status=%d logs=%s spans=%+v", response.Code, logs.String(), exporter.GetSpans())
 		}
 	}

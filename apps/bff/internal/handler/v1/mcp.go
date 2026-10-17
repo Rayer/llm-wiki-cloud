@@ -5,14 +5,17 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
-	"io"
+	"log/slog"
+	"mime"
 	"net/http"
 	"strings"
 
+	"github.com/google/uuid"
 	mcpauth "github.com/modelcontextprotocol/go-sdk/auth"
 	"github.com/modelcontextprotocol/go-sdk/mcp"
 	"github.com/rayer/llm-wiki-bff/internal/auth"
 	"github.com/rayer/llm-wiki-bff/internal/buildinfo"
+	"github.com/rayer/llm-wiki-bff/internal/observability"
 	"github.com/rayer/llm-wiki-bff/internal/query"
 	"github.com/rayer/llm-wiki-bff/internal/storage"
 )
@@ -91,6 +94,7 @@ func (h *Handler) mcpSDKHandler() http.Handler {
 		Name:    "llm-wiki-bff",
 		Version: buildinfo.Current().ProductVersion,
 	}, nil)
+	server.AddReceivingMiddleware(mcpRequestObservationMiddleware)
 	mcp.AddTool[queryProjectInput, any](server, &mcp.Tool{
 		Name:         "query_project",
 		Title:        "Query this project",
@@ -126,116 +130,146 @@ func (h *Handler) mcpAuthenticatedHandler(identity mcpProjectKeyIdentity) http.H
 
 func (h *Handler) serveAuthenticatedMCP(sdkAuthenticated http.Handler, identity mcpProjectKeyIdentity, w http.ResponseWriter, r *http.Request) {
 	ctx := context.WithValue(r.Context(), mcpProjectKeyIdentityContextKey{}, identity)
-	observation := &mcpQueryObservation{}
-	ctx = context.WithValue(ctx, mcpQueryObservationKey{}, observation)
-	if isMCPQueryProjectCall(r) {
+	observed := &mcpResponseObservationWriter{ResponseWriter: w}
+	sdkAuthenticated.ServeHTTP(observed, r.WithContext(ctx))
+	if observed.hasProtocolError() {
+		// The pinned SDK may turn a parameter decode failure into a JSON-RPC
+		// error response before AddReceivingMiddleware runs. Classify only the
+		// protocol envelope; never retain or log its message/data fields.
+		observability.MarkRequestProtocolError(ctx)
+	}
+}
+
+const maxMCPProtocolResponseObservation = 64 << 10
+
+type mcpResponseObservationWriter struct {
+	http.ResponseWriter
+	body     bytes.Buffer
+	complete bool
+}
+
+func (w *mcpResponseObservationWriter) Write(p []byte) (int, error) {
+	n, err := w.ResponseWriter.Write(p)
+	mediaType, _, mediaTypeErr := mime.ParseMediaType(w.Header().Get("Content-Type"))
+	if mediaTypeErr != nil || mediaType != "application/json" {
+		w.complete = true
+		w.body.Reset()
+		return n, err
+	}
+	if !w.complete && w.body.Len()+n <= maxMCPProtocolResponseObservation {
+		_, _ = w.body.Write(p[:n])
+	} else {
+		w.complete = true
+		w.body.Reset()
+	}
+	return n, err
+}
+
+func (w *mcpResponseObservationWriter) Unwrap() http.ResponseWriter { return w.ResponseWriter }
+
+func (w *mcpResponseObservationWriter) FlushError() error {
+	if flusher, ok := w.ResponseWriter.(interface{ FlushError() error }); ok {
+		return flusher.FlushError()
+	}
+	if flusher, ok := w.ResponseWriter.(http.Flusher); ok {
+		flusher.Flush()
+		return nil
+	}
+	return http.ErrNotSupported
+}
+
+func (w *mcpResponseObservationWriter) Flush() { _ = w.FlushError() }
+
+func (w *mcpResponseObservationWriter) hasProtocolError() bool {
+	if w.complete || w.body.Len() == 0 {
+		return false
+	}
+	mediaType, _, err := mime.ParseMediaType(w.Header().Get("Content-Type"))
+	if err != nil || mediaType != "application/json" {
+		return false
+	}
+	type protocolResponse struct {
+		Error *struct{} `json:"error"`
+	}
+	var single protocolResponse
+	if json.Unmarshal(w.body.Bytes(), &single) == nil && single.Error != nil {
+		return true
+	}
+	var batch []protocolResponse
+	if json.Unmarshal(w.body.Bytes(), &batch) != nil {
+		return false
+	}
+	for _, item := range batch {
+		if item.Error != nil {
+			return true
+		}
+	}
+	return false
+}
+
+func mcpRequestObservationMiddleware(next mcp.MethodHandler) mcp.MethodHandler {
+	return func(ctx context.Context, method string, request mcp.Request) (mcp.Result, error) {
+		envelopeID := observability.RequestIDFromContext(ctx)
+		requestID := uuid.NewString()
+		if strings.HasPrefix(method, "notifications/") && envelopeID != "" {
+			requestID = envelopeID
+		}
+		ctx = observability.WithRequestID(ctx, requestID)
+		ctx, span, operation := observability.StartMCPRequestSpan(ctx, method, requestID, envelopeID)
+		identity, _ := ctx.Value(mcpProjectKeyIdentityContextKey{}).(mcpProjectKeyIdentity)
+
 		var diagnostic *queryDiagnostic
-		ctx, diagnostic = beginQueryDiagnostic(ctx, "mcp", identity.projectID)
-		observation.start(diagnostic)
-		buffered := newMCPQueryResponseWriter()
-		statusWriter := &queryStatusWriter{ResponseWriter: buffered}
-		sdkAuthenticated.ServeHTTP(statusWriter, r.WithContext(ctx))
-		status := statusWriter.status
-		if status == 0 {
-			status = http.StatusOK
+		var observation *mcpQueryObservation
+		if call, ok := request.(*mcp.CallToolRequest); ok && call.Params.Name == "query_project" {
+			ctx, diagnostic = beginQueryDiagnostic(ctx, "mcp", identity.projectID)
+			observation = &mcpQueryObservation{}
+			observation.start(diagnostic)
+			ctx = context.WithValue(ctx, mcpQueryObservationKey{}, observation)
 		}
-		if observation.finish(status, buffered.body.Bytes()) {
-			buffered.body = bytes.NewBuffer(mcpValidationDiagnosticBody(buffered.body.Bytes(), diagnostic))
-			buffered.header.Del("Content-Length")
+
+		result, err := next(ctx, method, request)
+		toolError := false
+		callResult, isToolResult := result.(*mcp.CallToolResult)
+		if isToolResult {
+			toolError = callResult.IsError
 		}
-		buffered.writeTo(w)
-		return
-	}
-	statusWriter := &queryStatusWriter{ResponseWriter: w}
-	sdkAuthenticated.ServeHTTP(statusWriter, r.WithContext(ctx))
-	status := statusWriter.status
-	if status == 0 {
-		status = http.StatusOK
-	}
-	observation.finish(status, nil)
-}
+		if observation != nil {
+			validationFailure := observation.finishResult(http.StatusOK, result != nil, toolError)
+			if validationFailure && isToolResult {
+				failure := queryFailureFor("request_validation", errors.New("MCP input schema validation failed"), nil)
+				callResult.Content = []mcp.Content{&mcp.TextContent{Text: failure.message + " Diagnostic ID: " + diagnostic.id}}
+				callResult.StructuredContent = map[string]any{"error": failure.message, "code": failure.code, "diagnostic_id": diagnostic.id}
+			}
+		}
+		if result != nil {
+			metadata := result.GetMeta()
+			withRequestID := make(map[string]any, len(metadata)+1)
+			for key, value := range metadata {
+				withRequestID[key] = value
+			}
+			withRequestID["request_id"] = requestID
+			result.SetMeta(withRequestID)
+		}
 
-const maxMCPDiagnosticProbeBytes = mcp.DefaultMaxRequestBodyBytes
-
-func isMCPQueryProjectCall(r *http.Request) bool {
-	if r.Method != http.MethodPost || r.Body == nil {
-		return false
+		outcome := "success"
+		if err != nil || toolError {
+			outcome = "error"
+		}
+		observability.FinishMCPRequestSpan(span, outcome)
+		spanContext := span.SpanContext()
+		if observation == nil {
+			slog.InfoContext(ctx, "mcp.request.terminal",
+				"request_id", requestID,
+				"envelope_request_id", envelopeID,
+				"trace_id", spanContext.TraceID().String(),
+				"span_id", spanContext.SpanID().String(),
+				"operation", operation,
+				"phase", "terminal",
+				"outcome", outcome,
+			)
+		}
+		return result, err
 	}
-	body, err := io.ReadAll(io.LimitReader(r.Body, maxMCPDiagnosticProbeBytes+1))
-	r.Body = io.NopCloser(io.MultiReader(bytes.NewReader(body), r.Body))
-	if err != nil || len(body) > maxMCPDiagnosticProbeBytes {
-		return false
-	}
-	var message struct {
-		Method string `json:"method"`
-		Params struct {
-			Name string `json:"name"`
-		} `json:"params"`
-	}
-	return json.Unmarshal(body, &message) == nil && message.Method == "tools/call" && message.Params.Name == "query_project"
-}
-
-type mcpQueryResponseWriter struct {
-	header http.Header
-	status int
-	body   *bytes.Buffer
-}
-
-func newMCPQueryResponseWriter() *mcpQueryResponseWriter {
-	return &mcpQueryResponseWriter{header: make(http.Header), body: new(bytes.Buffer)}
-}
-
-func (w *mcpQueryResponseWriter) Header() http.Header { return w.header }
-
-func (w *mcpQueryResponseWriter) WriteHeader(status int) {
-	if w.status == 0 {
-		w.status = status
-	}
-}
-
-func (w *mcpQueryResponseWriter) Write(body []byte) (int, error) {
-	if w.status == 0 {
-		w.status = http.StatusOK
-	}
-	return w.body.Write(body)
-}
-
-func (w *mcpQueryResponseWriter) writeTo(dst http.ResponseWriter) {
-	for key, values := range w.header {
-		dst.Header()[key] = append([]string(nil), values...)
-	}
-	status := w.status
-	if status == 0 {
-		status = http.StatusOK
-	}
-	dst.WriteHeader(status)
-	_, _ = dst.Write(w.body.Bytes())
-}
-
-func mcpValidationDiagnosticBody(body []byte, diagnostic *queryDiagnostic) []byte {
-	var message map[string]json.RawMessage
-	if json.Unmarshal(body, &message) != nil {
-		return body
-	}
-	var result map[string]json.RawMessage
-	if json.Unmarshal(message["result"], &result) != nil {
-		return body
-	}
-	var isError bool
-	if json.Unmarshal(result["isError"], &isError) != nil || !isError {
-		return body
-	}
-	failure := queryFailureFor("request_validation", errors.New("MCP input schema validation failed"), nil)
-	textContent, _ := json.Marshal([]map[string]string{{"type": "text", "text": failure.message + " Diagnostic ID: " + diagnostic.id}})
-	structured, _ := json.Marshal(map[string]string{"error": failure.message, "code": failure.code, "diagnostic_id": diagnostic.id})
-	result["content"] = textContent
-	result["structuredContent"] = structured
-	message["result"], _ = json.Marshal(result)
-	encoded, err := json.Marshal(message)
-	if err != nil {
-		return body
-	}
-	return encoded
 }
 
 func mcpBearerToken(header string) (string, bool) {

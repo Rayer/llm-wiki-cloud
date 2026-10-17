@@ -15,6 +15,7 @@ import (
 	"time"
 
 	"github.com/gin-gonic/gin"
+	"github.com/google/uuid"
 	"go.opentelemetry.io/otel"
 	"go.opentelemetry.io/otel/attribute"
 	sdktrace "go.opentelemetry.io/otel/sdk/trace"
@@ -81,6 +82,37 @@ func TestProductionRouterExposesOnlyAuthPublicSurface(t *testing.T) {
 		if !want[route] {
 			t.Errorf("Auth production router exposed unapproved route %s", route)
 		}
+	}
+}
+
+func TestProductionRouterReturnsFreshRequestIDsAndExposesThemToCORS(t *testing.T) {
+	gin.SetMode(gin.TestMode)
+	router := newProductionRouter(config.Config{JWTSecret: "test-secret", AllowedOrigins: []string{"https://frontend.example"}}, true, nil,
+		&syssettings.FakeStore{Enabled: true}, true)
+	serve := func(method, path string) *httptest.ResponseRecorder {
+		req := httptest.NewRequest(method, "http://localhost"+path, nil)
+		req.Header.Set("X-Request-ID", "caller-controlled-id")
+		req.Header.Set("Origin", "https://frontend.example")
+		if method == http.MethodOptions {
+			req.Header.Set("Access-Control-Request-Method", http.MethodGet)
+		}
+		response := httptest.NewRecorder()
+		router.ServeHTTP(response, req)
+		id := response.Header().Get("X-Request-ID")
+		if uuid.Validate(id) != nil || id == "caller-controlled-id" {
+			t.Fatalf("%s %s returned non-server request ID %q (status %d)", method, path, id, response.Code)
+		}
+		return response
+	}
+	health := serve(http.MethodGet, "/api/v1/public/healthz")
+	if !strings.EqualFold(health.Header().Get("Access-Control-Expose-Headers"), "X-Request-ID") {
+		t.Fatalf("Auth CORS does not expose the response request ID: %v", health.Header())
+	}
+	if fallback := serve(http.MethodGet, "/private/fallback"); fallback.Code != http.StatusNotFound {
+		t.Fatalf("fallback status=%d, want 404", fallback.Code)
+	}
+	if preflight := serve(http.MethodOptions, "/api/v1/public/healthz"); preflight.Code < 200 || preflight.Code >= 300 {
+		t.Fatalf("preflight status=%d, want successful CORS control response", preflight.Code)
 	}
 }
 

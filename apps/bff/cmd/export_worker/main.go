@@ -31,6 +31,7 @@ func run() error {
 	ctx, cancel := context.WithTimeout(context.Background(), exportjob.HardTimeout)
 	defer cancel()
 	ctx = observability.ExtractWorkerTraceContext(ctx, os.Getenv("LWC_TRACEPARENT"))
+	ctx = observability.WithRequestID(observability.WithoutRequestID(ctx), os.Getenv("LWC_REQUEST_ID"))
 	userID, projectID, exportID := strings.TrimSpace(os.Getenv("EXPORT_USER_ID")), strings.TrimSpace(os.Getenv("EXPORT_PROJECT_ID")), strings.TrimSpace(os.Getenv("EXPORT_ID"))
 	scope := exportjob.Scope(strings.TrimSpace(os.Getenv("EXPORT_SCOPE")))
 	project := strings.TrimSpace(os.Getenv("GCP_PROJECT"))

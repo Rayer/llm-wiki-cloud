@@ -88,7 +88,7 @@ func run() error {
 
 func newProductionRouter(cfg config.Config, localMode bool, fsClient *firestoreclient.Client, settingsStore syssettings.RegistrationGate, demoReady bool) *gin.Engine {
 	r := gin.Default()
-	r.Use(observability.TraceContextMiddleware())
+	r.Use(observability.RequestLifecycleMiddleware())
 	r.Use(observability.AuthHTTPMiddleware())
 	r.Use(authHostAllowlist(cfg, localMode))
 	r.Use(middleware.SecurityHeaders(true))
@@ -98,6 +98,7 @@ func newProductionRouter(cfg config.Config, localMode bool, fsClient *firestorec
 		AllowOrigins:     cfg.AllowedOriginsFor(localMode),
 		AllowMethods:     []string{http.MethodGet, http.MethodPost, http.MethodDelete, http.MethodOptions},
 		AllowHeaders:     []string{"Content-Type", "Authorization"},
+		ExposeHeaders:    []string{"X-Request-ID"},
 		AllowCredentials: true,
 	})))
 

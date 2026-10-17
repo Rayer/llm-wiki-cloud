@@ -346,6 +346,7 @@ func fixedArgs(want int) cobra.PositionalArgs {
 
 func runWorkerBatch(ctx context.Context, cfg workerConfig, rawCommands string) (runErr error) {
 	ctx = observability.ExtractWorkerTraceContext(ctx, os.Getenv("LWC_TRACEPARENT"))
+	ctx = observability.WithRequestID(observability.WithoutRequestID(ctx), os.Getenv("LWC_REQUEST_ID"))
 	ctx, attempt := observability.StartWorkerAttemptSpan(ctx, "pipeline.worker")
 	defer func() { observability.FinishPipelineSpan(attempt, workerTraceOutcome(runErr)) }()
 	cfg = configFromEnvironment(cfg)
@@ -750,6 +751,7 @@ func runWorkerBatchWorkspace(ctx context.Context, cfg workerConfig, commands [][
 
 func runPostprocessCommand(ctx context.Context, cfg workerConfig) (runErr error) {
 	ctx = observability.ExtractWorkerTraceContext(ctx, os.Getenv("LWC_TRACEPARENT"))
+	ctx = observability.WithRequestID(observability.WithoutRequestID(ctx), os.Getenv("LWC_REQUEST_ID"))
 	ctx, attempt := observability.StartWorkerAttemptSpan(ctx, "pipeline.worker")
 	var lifecycle *localLeaseLifecycle
 	defer func() {
@@ -809,6 +811,7 @@ func runPostprocessCommand(ctx context.Context, cfg workerConfig) (runErr error)
 // vault workspace path. It never runs Synto, index rebuild, or reconcile.
 func runSuggestedQueriesCommand(ctx context.Context, cfg workerConfig) (runErr error) {
 	ctx = observability.ExtractWorkerTraceContext(ctx, os.Getenv("LWC_TRACEPARENT"))
+	ctx = observability.WithRequestID(observability.WithoutRequestID(ctx), os.Getenv("LWC_REQUEST_ID"))
 	ctx, attempt := observability.StartWorkerAttemptSpan(ctx, "pipeline.worker")
 	var lifecycle *localLeaseLifecycle
 	defer func() {

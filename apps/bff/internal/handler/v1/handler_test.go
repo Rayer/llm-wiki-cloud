@@ -27,6 +27,7 @@ import (
 	"github.com/rayer/llm-wiki-bff/internal/gcs"
 	"github.com/rayer/llm-wiki-bff/internal/handler"
 	"github.com/rayer/llm-wiki-bff/internal/localfs"
+	"github.com/rayer/llm-wiki-bff/internal/observability"
 	"github.com/rayer/llm-wiki-bff/internal/pipelinediagnostic"
 	"github.com/rayer/llm-wiki-bff/internal/pipelinequota"
 	"github.com/rayer/llm-wiki-bff/internal/search"
@@ -648,6 +649,7 @@ func TestPipelineRunExecutesCloudRunJob(t *testing.T) {
 	c, _ := gin.CreateTestContext(recorder)
 	// Project comes from ProjectMiddleware context (X-Project-ID), not request body.
 	c.Request = httptest.NewRequest(http.MethodPost, "/api/v1/pipeline/run", nil)
+	c.Request = c.Request.WithContext(observability.WithRequestID(c.Request.Context(), "123e4567-e89b-12d3-a456-426614174000"))
 	c.Set("userID", "request-user")
 	c.Set("projectID", "demo")
 
@@ -683,6 +685,8 @@ func TestPipelineRunExecutesCloudRunJob(t *testing.T) {
 						map[string]any{"name": "PROJECT_ID", "value": "demo"},
 						map[string]any{"name": "TASK_TYPE", "value": "pipeline"},
 						map[string]any{"name": "PIPELINE_STAGE", "value": "full"},
+						map[string]any{"name": "LWC_TRACEPARENT", "value": ""},
+						map[string]any{"name": "LWC_REQUEST_ID", "value": "123e4567-e89b-12d3-a456-426614174000"},
 					},
 				},
 			},
@@ -1007,6 +1011,9 @@ func TestPipelineRunDefaultsCommandAndUser(t *testing.T) {
 	}
 	if len(override.Env) < 4 || override.Env[3].Name != "PIPELINE_STAGE" || override.Env[3].Value != "full" {
 		t.Fatalf("PIPELINE_STAGE env = %#v, want full", override.Env)
+	}
+	if len(override.Env) < 6 || override.Env[4].Name != "LWC_TRACEPARENT" || override.Env[4].Value != "" || override.Env[5].Name != "LWC_REQUEST_ID" || override.Env[5].Value != "" {
+		t.Fatalf("worker request carrier overrides = %#v, want explicit empty values for an uncorrelated request", override.Env)
 	}
 }
 

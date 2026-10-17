@@ -158,7 +158,9 @@ func startLinkedRoot(ctx context.Context, scope, name string) (context.Context, 
 	if parent.IsValid() {
 		options = append(options, trace.WithLinks(trace.Link{SpanContext: parent}))
 	}
-	return otel.Tracer(scope).Start(root, name, options...)
+	root, span := otel.Tracer(scope).Start(root, name, options...)
+	SetRequestIDAttribute(span, RequestIDFromContext(ctx))
+	return root, span
 }
 
 var _ propagation.TextMapPropagator = traceContextPropagator{}

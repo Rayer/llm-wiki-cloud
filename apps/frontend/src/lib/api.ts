@@ -3,6 +3,7 @@
 import { rawFileNameFromSource } from './raw-file-name.ts';
 import { getRuntimeConfig } from './runtime-config.ts';
 import { normalizeAnnotationBody, normalizeAnnotationGeneration } from './source-annotation.ts';
+import { recordRequestIDHeader, recordRequestResponse } from './request-ids.ts';
 
 export type PipelineDiagnostic = {
 	stage?: string | null;
@@ -156,20 +157,22 @@ export type BuildInfo = {
 export class ApiError extends Error {
   status: number;
   diagnosticId?: string;
+  requestId?: string;
 
-  constructor(message: string, status: number, diagnosticId?: string) {
+  constructor(message: string, status: number, diagnosticId?: string, requestId?: string | null) {
     super(message);
     this.name = 'ApiError';
     this.status = status;
     this.diagnosticId = normalizeDiagnosticId(diagnosticId);
+    this.requestId = normalizeRequestId(requestId);
   }
 }
 
 export class QueryApiError extends ApiError {
   code: string;
 
-  constructor(message: string, status: number, code: string, diagnosticId?: string) {
-    super(message, status, diagnosticId);
+  constructor(message: string, status: number, code: string, diagnosticId?: string, requestId?: string | null) {
+    super(message, status, diagnosticId, requestId);
     this.name = 'QueryApiError';
     this.code = code;
   }
@@ -179,6 +182,14 @@ function normalizeDiagnosticId(value: unknown): string | undefined {
   if (typeof value !== 'string') return undefined;
   const normalized = value.trim();
   return /^[A-Za-z0-9_-]{8,100}$/.test(normalized) ? normalized : undefined;
+}
+
+function normalizeRequestId(value: unknown): string | undefined {
+  if (typeof value !== 'string') return undefined;
+  const normalized = value.trim();
+  return /^[0-9a-f]{8}-[0-9a-f]{4}-[1-8][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i.test(normalized)
+    ? normalized
+    : undefined;
 }
 
 export function diagnosticIdFromPayload(payload: unknown): string | undefined {
@@ -401,7 +412,7 @@ export async function apiFetch(path: string, options: ApiFetchOptions = {}): Pro
   const { auth, accessToken, epoch: requestEpoch } = await accessTokenOrRefresh();
   const url = `${getRuntimeConfig().api_url}${toV1Path(path)}`;
   const init = buildRequestInit({ ...options, projectId, accessToken });
-  const response = await fetch(url, init);
+  const response = recordRequestResponse(await fetch(url, init));
 
   if (response.status !== 401) return response;
   if (apiAuthConfig !== auth || (auth.getSessionEpoch?.() ?? 0) !== requestEpoch) return response;
@@ -417,11 +428,11 @@ export async function apiFetch(path: string, options: ApiFetchOptions = {}): Pro
   if (refreshedOperation === null) return response;
   if ((auth.getSessionEpoch?.() ?? 0) !== refreshedOperation.epoch) return response;
 
-  const retriedResponse = await fetch(url, buildRequestInit({
+  const retriedResponse = recordRequestResponse(await fetch(url, buildRequestInit({
     ...options,
     projectId,
     accessToken: refreshedOperation.accessToken,
-  }));
+  })));
   if (
     retriedResponse.status === 401
     && apiAuthConfig === auth
@@ -441,6 +452,7 @@ async function requestJson<T>(path: string, options: Pick<ApiFetchOptions, 'proj
       `API request failed (${response.status})`,
       response.status,
       diagnosticIdFromPayload(payload),
+      response.headers.get('X-Request-ID'),
     );
   }
 
@@ -469,6 +481,7 @@ async function postJson<T>(path: string, body: unknown): Promise<T> {
       response.status,
       code,
       diagnosticId,
+      response.headers.get('X-Request-ID'),
     );
   }
 
@@ -507,7 +520,7 @@ async function profileRequest<T>(projectId: string, suffix = '', options: {
   });
   const payload: unknown = await response.json().catch(() => null);
   if (!response.ok) {
-    throw new ApiError(profileApiError(payload, `Profile request failed (${response.status})`), response.status);
+    throw new ApiError(profileApiError(payload, `Profile request failed (${response.status})`), response.status, undefined, response.headers.get('X-Request-ID'));
   }
   return payload as T;
 }
@@ -588,7 +601,7 @@ export async function getRecompileAllCapability(projectId: string): Promise<Reco
   const response = await apiFetch(`/api/v1/projects/${projectSegment}/recompile-all/capability`, { projectId });
   const payload: unknown = await response.json().catch(() => null);
   if (!response.ok) {
-    throw new ApiError(profileApiError(payload, `Recompile capability request failed (${response.status})`), response.status);
+    throw new ApiError(profileApiError(payload, `Recompile capability request failed (${response.status})`), response.status, undefined, response.headers.get('X-Request-ID'));
   }
   if (!isRecord(payload) || typeof payload.allowed !== 'boolean' || payload.compile_mode !== 'full') {
     throw new ApiError('Invalid recompile capability response', 502);
@@ -613,7 +626,7 @@ export async function recompileAll(projectId: string): Promise<PipelineResult> {
   });
   if (!response.ok) {
     const payload: unknown = await response.json().catch(() => null);
-    throw new ApiError(profileApiError(payload, `Recompile all failed (${response.status})`), response.status);
+    throw new ApiError(profileApiError(payload, `Recompile all failed (${response.status})`), response.status, undefined, response.headers.get('X-Request-ID'));
   }
   const payload: unknown = await response.json().catch(() => null);
   if (
@@ -1037,6 +1050,7 @@ export async function getRawFilePreview(filename: string): Promise<string> {
       `Raw preview request failed (${response.status})`,
       response.status,
       diagnosticIdFromPayload(payload),
+      response.headers.get('X-Request-ID'),
     );
   }
 
@@ -1063,6 +1077,7 @@ export async function getSourceAnnotation(sourceId: string): Promise<SourceAnnot
       `Annotation request failed (${response.status})`,
       response.status,
       diagnosticIdFromPayload(payload),
+      response.headers.get('X-Request-ID'),
     );
   }
   return normalizeAnnotation(await response.json());
@@ -1084,6 +1099,7 @@ export async function updateSourceAnnotation(
       `Annotation update failed (${response.status})`,
       response.status,
       diagnosticIdFromPayload(payload),
+      response.headers.get('X-Request-ID'),
     );
   }
   return normalizeAnnotation(await response.json());
@@ -1171,15 +1187,21 @@ export type PipelineStatus = {
 type XhrResponse = {
   status: number;
   ok: boolean;
+  requestId: string | null;
   text: () => Promise<string>;
   json: () => Promise<unknown>;
 };
 
 function xhrResponse(xhr: XMLHttpRequest): XhrResponse {
   const body = xhr.responseText ?? '';
+  const requestId = typeof xhr.getResponseHeader === 'function'
+    ? xhr.getResponseHeader('X-Request-ID')
+    : null;
+  recordRequestIDHeader(requestId, xhr.status);
   return {
     status: xhr.status,
     ok: xhr.status >= 200 && xhr.status < 300,
+    requestId,
     text: async () => body,
     json: async () => JSON.parse(body),
   };
@@ -1190,8 +1212,8 @@ function uploadErrorMessage(body: unknown): string {
   return asString(body.error) ?? asString(body.detail) ?? asString(body.message) ?? 'Upload failed';
 }
 
-function uploadApiError(body: unknown, status: number): ApiError {
-  return new ApiError(uploadErrorMessage(body), status, diagnosticIdFromPayload(body));
+function uploadApiError(body: unknown, status: number, requestId?: string | null): ApiError {
+  return new ApiError(uploadErrorMessage(body), status, diagnosticIdFromPayload(body), requestId);
 }
 
 function sendRawUploadRequest(
@@ -1258,22 +1280,22 @@ export async function uploadRawFile(
     const refreshed = await auth.refreshAccessToken();
     const refreshedOperation = asRefreshResult(refreshed);
     if (apiAuthConfig !== auth) return Promise.reject(
-      uploadApiError(await response.json().catch(() => undefined), response.status),
+      uploadApiError(await response.json().catch(() => undefined), response.status, response.requestId),
     );
     if (refreshed === null) {
       if ((auth.getSessionEpoch?.() ?? 0) !== requestEpoch) {
         return Promise.reject(
-          uploadApiError(await response.json().catch(() => undefined), response.status),
+          uploadApiError(await response.json().catch(() => undefined), response.status, response.requestId),
         );
       }
       auth.onUnauthorized(accessToken, requestEpoch);
     } else if (refreshedOperation === null) {
       return Promise.reject(
-        uploadApiError(await response.json().catch(() => undefined), response.status),
+        uploadApiError(await response.json().catch(() => undefined), response.status, response.requestId),
       );
     } else if ((auth.getSessionEpoch?.() ?? 0) !== refreshedOperation.epoch) {
       return Promise.reject(
-        uploadApiError(await response.json().catch(() => undefined), response.status),
+        uploadApiError(await response.json().catch(() => undefined), response.status, response.requestId),
       );
     }
     if (refreshedOperation) {
@@ -1295,7 +1317,7 @@ export async function uploadRawFile(
 
   if (!response.ok) {
     const body = await response.json().catch(() => undefined);
-    throw uploadApiError(body, response.status);
+    throw uploadApiError(body, response.status, response.requestId);
   }
 
   reportProgress(100);
@@ -1369,6 +1391,8 @@ async function adminJson(path: string, options: Omit<ApiFetchOptions, 'requirePr
     throw new ApiError(
       (error as { error?: string }).error ?? `API request failed (${response.status})`,
       response.status,
+      undefined,
+      response.headers.get('X-Request-ID'),
     );
   }
   return response.json().catch(() => ({}));
@@ -1501,6 +1525,7 @@ export async function getPublicConfig(options?: { refresh?: boolean }): Promise<
       method: 'GET',
       credentials: 'omit',
     });
+    recordRequestResponse(response);
     if (!response.ok) {
       const closed = registrationCapabilities({});
       publicConfigCache = closed;
@@ -1535,13 +1560,14 @@ export async function getBuildInfo(): Promise<BuildInfo> {
       credentials: 'omit',
       cache: 'no-store',
     });
+    recordRequestResponse(response);
   } catch (error) {
     const message = error instanceof Error ? error.message : 'unknown network error';
     throw new Error(`Build info request failed: ${message}`);
   }
 
   if (!response.ok) {
-    throw new ApiError(`Build info request failed (${response.status})`, response.status);
+    throw new ApiError(`Build info request failed (${response.status})`, response.status, undefined, response.headers.get('X-Request-ID'));
   }
 
   let payload: unknown;

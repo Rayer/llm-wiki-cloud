@@ -1,6 +1,7 @@
 'use client';
 
 import { getRuntimeConfig } from './runtime-config';
+import { recordRequestResponse } from './request-ids';
 
 export type MCPOAuthConsent = {
   transaction_id: string;
@@ -42,6 +43,7 @@ async function request<T>(path: string, accessToken: string, init: RequestInit =
       ...(init.headers ?? {}),
     },
   });
+  recordRequestResponse(response);
   if (response.status === 204) return undefined as T;
   const payload: unknown = await response.json().catch(() => null);
   if (!response.ok) {

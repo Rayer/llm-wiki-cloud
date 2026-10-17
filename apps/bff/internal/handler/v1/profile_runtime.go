@@ -52,7 +52,7 @@ func validateProfileRuntimeLease(ctx context.Context, tx *firestore.Transaction,
 	}
 	return nil
 }
-func enqueueProfileDerivation(tx *firestore.Transaction, client *firestore.Client, userID, projectID string, intent profileDerivationIntent) error {
+func enqueueProfileDerivation(ctx context.Context, tx *firestore.Transaction, client *firestore.Client, userID, projectID string, intent profileDerivationIntent) error {
 	if intent.ScheduledFor == nil {
 		return errors.New("missing derivation schedule")
 	}
@@ -60,9 +60,9 @@ func enqueueProfileDerivation(tx *firestore.Transaction, client *firestore.Clien
 	if err != nil {
 		return err
 	}
-	return profileruntime.Enqueue(tx, client, profileruntime.Work{UserID: userID, ProjectID: projectID, Kind: "derive", Revision: intent.Revision, ID: intent.AttemptID, Due: due})
+	return profileruntime.Enqueue(tx, client, profileruntime.Work{UserID: userID, ProjectID: projectID, Kind: "derive", Revision: intent.Revision, ID: intent.AttemptID, RequestID: observability.RequestIDFromContext(ctx), Due: due})
 }
-func enqueueProfileTagging(tx *firestore.Transaction, client *firestore.Client, userID, projectID string, revision int64, job storedProfileJob) error {
+func enqueueProfileTagging(ctx context.Context, tx *firestore.Transaction, client *firestore.Client, userID, projectID string, revision int64, job storedProfileJob) error {
 	if job.ScheduledFor == nil {
 		return errors.New("missing tagging schedule")
 	}
@@ -70,7 +70,7 @@ func enqueueProfileTagging(tx *firestore.Transaction, client *firestore.Client, 
 	if err != nil {
 		return err
 	}
-	return profileruntime.Enqueue(tx, client, profileruntime.Work{UserID: userID, ProjectID: projectID, Kind: "tag", Revision: revision, ID: job.JobID, CandidateID: job.CandidateID, Due: due})
+	return profileruntime.Enqueue(tx, client, profileruntime.Work{UserID: userID, ProjectID: projectID, Kind: "tag", Revision: revision, ID: job.JobID, CandidateID: job.CandidateID, RequestID: observability.RequestIDFromContext(ctx), Due: due})
 }
 
 // ProfileDispatcher is invoked by an external durable scheduler. It never
@@ -176,7 +176,8 @@ func (d *ProfileDispatcher) Dispatch(ctx context.Context, limit int) (processed 
 			continue
 		}
 		lease := profileRuntimeLease{snapshot.Ref, work.Token, work.UserID, work.ProjectID}
-		attemptCtx, attemptSpan := observability.StartProfileWorkSpan(claimCtx)
+		workCtx := observability.WithRequestID(observability.WithoutRequestID(claimCtx), work.RequestID)
+		attemptCtx, attemptSpan := observability.StartProfileWorkSpan(workCtx)
 		observability.SetProfileCount(attemptSpan, "profile.attempt_number", work.Attempts)
 		observability.SetProfileWorkKind(attemptSpan, work.Kind)
 		runctx := context.WithValue(attemptCtx, profileRuntimeLeaseKey{}, lease)

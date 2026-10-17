@@ -18,6 +18,7 @@ import (
 	"cloud.google.com/go/firestore"
 	"github.com/gin-gonic/gin"
 	"github.com/rayer/llm-wiki-bff/internal/auth"
+	"github.com/rayer/llm-wiki-bff/internal/observability"
 	"github.com/rayer/llm-wiki-bff/internal/profileartifacts"
 	"github.com/rayer/llm-wiki-bff/internal/profilederive"
 	"github.com/rayer/llm-wiki-bff/internal/profileruntime"
@@ -499,7 +500,7 @@ func (r *firestoreProfileRepository) SaveProfile(ctx context.Context, userID, pr
 		if err := tx.Create(attemptRef, intent); err != nil {
 			return err
 		}
-		if err := enqueueProfileDerivation(tx, r.client, userID, projectID, intent); err != nil {
+		if err := enqueueProfileDerivation(ctx, tx, r.client, userID, projectID, intent); err != nil {
 			return err
 		}
 		if err := tx.Set(intentRef, intent); err != nil {
@@ -561,7 +562,7 @@ func (r *firestoreProfileRepository) ConfirmProfileCandidate(ctx context.Context
 			storedJob.ErrorCode = nil
 			storedJob.ScheduledFor = stringPtr(r.now().Format(time.RFC3339Nano))
 			current.Job = &storedJob.ProfileJob
-			if err := enqueueProfileTagging(tx, r.client, userID, projectID, current.Revision, storedJob); err != nil {
+			if err := enqueueProfileTagging(ctx, tx, r.client, userID, projectID, current.Revision, storedJob); err != nil {
 				return err
 			}
 			if err := tx.Set(jobRef, profileJobData(storedJob)); err != nil {
@@ -619,7 +620,7 @@ func (r *firestoreProfileRepository) RetryProfileTagging(ctx context.Context, us
 		job.Status = profileJobScheduled
 		job.ErrorCode = nil
 		job.ScheduledFor = stringPtr(r.now().Format(time.RFC3339Nano))
-		if err := enqueueProfileTagging(tx, r.client, userID, projectID, current.Revision, job); err != nil {
+		if err := enqueueProfileTagging(ctx, tx, r.client, userID, projectID, current.Revision, job); err != nil {
 			return err
 		}
 		if err := tx.Set(jobRef, profileJobData(job)); err != nil {
@@ -736,7 +737,7 @@ func (r *firestoreProfileRepository) RetryProfileDerivation(ctx context.Context,
 		if err := tx.Create(attemptRef, intent); err != nil {
 			return err
 		}
-		if err := enqueueProfileDerivation(tx, r.client, userID, projectID, intent); err != nil {
+		if err := enqueueProfileDerivation(ctx, tx, r.client, userID, projectID, intent); err != nil {
 			return err
 		}
 		if err := tx.Set(intentRef, intent); err != nil {
@@ -790,6 +791,7 @@ func (r *firestoreProfileRepository) retryExhaustedProfileCompile(ctx context.Co
 	work.Token = ""
 	work.LeaseUntil = time.Time{}
 	work.Due = r.now()
+	work.RequestID = observability.RequestIDFromContext(ctx)
 	if err := profileruntime.Enqueue(tx, r.client, work); err != nil {
 		return ProfileState{}, err
 	}
@@ -942,7 +944,7 @@ func (r *firestoreProfileRepository) ProfileDerivationSucceeded(ctx context.Cont
 		if err := tx.Create(jobRef, profileJobData(job)); err != nil {
 			return err
 		}
-		if err := enqueueProfileTagging(tx, r.client, userID, projectID, revision, job); err != nil {
+		if err := enqueueProfileTagging(ctx, tx, r.client, userID, projectID, revision, job); err != nil {
 			return err
 		}
 		current.DerivationStatus = stringPtr(profileDerivationReady)
@@ -1266,7 +1268,7 @@ func (r *firestoreProfileRepository) ProfileCompileCandidateReady(ctx context.Co
 		if err := tx.Create(jobRef, profileJobData(job)); err != nil {
 			return err
 		}
-		if err := enqueueProfileTagging(tx, r.client, userID, projectID, revision, job); err != nil {
+		if err := enqueueProfileTagging(ctx, tx, r.client, userID, projectID, revision, job); err != nil {
 			return err
 		}
 		if oldJobRef != nil && oldJob.Status != profileJobSuperseded {
@@ -1406,7 +1408,7 @@ func (r *firestoreProfileRepository) ProfileBootstrapCompileCandidateReady(ctx c
 		if err := tx.Create(jobRef, profileJobData(job)); err != nil {
 			return err
 		}
-		if err := enqueueProfileTagging(tx, r.client, userID, projectID, revision, job); err != nil {
+		if err := enqueueProfileTagging(ctx, tx, r.client, userID, projectID, revision, job); err != nil {
 			return err
 		}
 		if oldJobRef != nil && oldJob.Status != profileJobSuperseded {

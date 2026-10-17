@@ -144,9 +144,8 @@ func (s *CloudRunJobStarter) Start(ctx context.Context, userID, projectID string
 		map[string]string{"name": "EXPORT_ID", "value": job.ExportID},
 		map[string]string{"name": "EXPORT_SCOPE", "value": string(job.Scope)},
 	}
-	if traceParent := observability.TraceParentFromContext(ctx); traceParent != "" {
-		env = append(env, map[string]string{"name": "LWC_TRACEPARENT", "value": traceParent})
-	}
+	env = append(env, map[string]string{"name": "LWC_TRACEPARENT", "value": observability.TraceParentFromContext(ctx)})
+	env = append(env, map[string]string{"name": "LWC_REQUEST_ID", "value": observability.RequestIDFromContext(ctx)})
 	payload, err := json.Marshal(map[string]any{"overrides": map[string]any{"containerOverrides": []any{map[string]any{"env": env}}}})
 	if err != nil {
 		return errors.New("export job is unavailable")

@@ -1,3 +1,5 @@
+import { recordRequestResponse } from './request-ids.ts';
+
 export type RuntimeConfig = {
   schema_version: 1;
   api_url: string;
@@ -129,7 +131,8 @@ async function fetchRuntimeConfig(): Promise<RuntimeConfig> {
     credentials: 'omit',
     cache: 'no-store',
     signal: controller.signal,
-  }).then(async (response) => {
+  }).then(async (unobservedResponse) => {
+    const response = recordRequestResponse(unobservedResponse);
     if (!response.ok) {
       throw new RuntimeConfigError(`Runtime config load failed (HTTP ${response.status}).`, 'load');
     }

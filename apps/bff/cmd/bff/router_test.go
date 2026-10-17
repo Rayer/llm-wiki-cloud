@@ -4,6 +4,8 @@ import (
 	"bytes"
 	"context"
 	"fmt"
+	"io"
+	"log/slog"
 	"net/http"
 	"net/http/httptest"
 	"os"
@@ -12,11 +14,15 @@ import (
 	"time"
 
 	"github.com/gin-gonic/gin"
+	"github.com/google/uuid"
 	"github.com/rayer/llm-wiki-bff/internal/auth"
 	"github.com/rayer/llm-wiki-bff/internal/config"
 	"github.com/rayer/llm-wiki-bff/internal/firestore"
 	handlerv1 "github.com/rayer/llm-wiki-bff/internal/handler/v1"
 	"github.com/rayer/llm-wiki-bff/internal/syssettings"
+	"go.opentelemetry.io/otel"
+	sdktrace "go.opentelemetry.io/otel/sdk/trace"
+	"go.opentelemetry.io/otel/sdk/trace/tracetest"
 )
 
 func TestProductionRouterKeepsAuthCompatibilityLane(t *testing.T) {
@@ -119,6 +125,95 @@ func TestProductionRouterKeepsAuthCompatibilityLane(t *testing.T) {
 	}
 	if got := serveGet(router, "/api/v1/query/config").Code; got != http.StatusServiceUnavailable {
 		t.Fatalf("legacy public query config status=%d, want %d", got, http.StatusServiceUnavailable)
+	}
+}
+
+func TestProductionRouterReturnsFreshRequestIDsForSuccessAndControlResponses(t *testing.T) {
+	gin.SetMode(gin.TestMode)
+	router := newProductionRouter(config.Config{JWTSecret: "test-secret", AllowedOrigins: []string{"https://frontend.example"}}, true,
+		nil, nil, handlerv1.New(nil, nil, nil, nil, nil, nil), &syssettings.FakeStore{Enabled: true}, nil)
+	serve := func(method, path string) *httptest.ResponseRecorder {
+		req := httptest.NewRequest(method, "http://localhost"+path, nil)
+		req.Header.Set("X-Request-ID", "caller-controlled-id")
+		req.Header.Set("Origin", "https://frontend.example")
+		if method == http.MethodOptions {
+			req.Header.Set("Access-Control-Request-Method", http.MethodGet)
+		}
+		response := httptest.NewRecorder()
+		router.ServeHTTP(response, req)
+		id := response.Header().Get("X-Request-ID")
+		if uuid.Validate(id) != nil || id == "caller-controlled-id" {
+			t.Fatalf("%s %s returned non-server request ID %q (status %d)", method, path, id, response.Code)
+		}
+		return response
+	}
+
+	first := serve(http.MethodGet, "/api/v1/public/version")
+	second := serve(http.MethodGet, "/api/v1/public/version")
+	if !strings.EqualFold(first.Header().Get("Access-Control-Expose-Headers"), "X-Request-ID") {
+		t.Fatalf("BFF CORS does not expose the response request ID: %v", first.Header())
+	}
+	if first.Header().Get("X-Request-ID") == second.Header().Get("X-Request-ID") {
+		t.Fatal("separate API exchanges reused the same request ID")
+	}
+	if fallback := serve(http.MethodGet, "/private/fallback"); fallback.Code != http.StatusNotFound {
+		t.Fatalf("fallback status=%d, want 404", fallback.Code)
+	}
+	if preflight := serve(http.MethodOptions, "/api/v1/public/version"); preflight.Code < 200 || preflight.Code >= 300 {
+		t.Fatalf("preflight status=%d, want successful CORS control response", preflight.Code)
+	}
+}
+
+func TestProductionRouterFinalizesPanicsBeforeGinRecovery(t *testing.T) {
+	gin.SetMode(gin.TestMode)
+	previousGinWriter, previousGinErrorWriter := gin.DefaultWriter, gin.DefaultErrorWriter
+	gin.DefaultWriter, gin.DefaultErrorWriter = io.Discard, io.Discard
+	t.Cleanup(func() { gin.DefaultWriter, gin.DefaultErrorWriter = previousGinWriter, previousGinErrorWriter })
+	previousProvider := otel.GetTracerProvider()
+	recorder := tracetest.NewSpanRecorder()
+	provider := sdktrace.NewTracerProvider(sdktrace.WithSpanProcessor(recorder))
+	otel.SetTracerProvider(provider)
+	t.Cleanup(func() {
+		otel.SetTracerProvider(previousProvider)
+		_ = provider.Shutdown(context.Background())
+	})
+	previousLogger := slog.Default()
+	var logs bytes.Buffer
+	slog.SetDefault(slog.New(slog.NewJSONHandler(&logs, nil)))
+	t.Cleanup(func() { slog.SetDefault(previousLogger) })
+
+	router := newProductionRouter(config.Config{JWTSecret: "test-secret"}, true,
+		nil, nil, handlerv1.New(nil, nil, nil, nil, nil, nil), &syssettings.FakeStore{Enabled: true}, nil)
+	// Add a test-only route to the real production router so Gin's existing
+	// Recovery middleware exercises the same request lifecycle chain.
+	router.GET("/test/request-lifecycle-panic", func(*gin.Context) { panic("PRIVATE_PANIC_CANARY") })
+	response := httptest.NewRecorder()
+	router.ServeHTTP(response, httptest.NewRequest(http.MethodGet, "http://localhost/test/request-lifecycle-panic", nil))
+	requestID := response.Header().Get("X-Request-ID")
+	if response.Code != http.StatusInternalServerError || uuid.Validate(requestID) != nil || strings.Contains(response.Body.String(), "PRIVATE_PANIC_CANARY") {
+		t.Fatalf("production-router recovery response changed or lost request ID: status=%d headers=%v body=%s", response.Code, response.Header(), response.Body)
+	}
+	spans := recorder.Ended()
+	if len(spans) != 1 || spans[0].Name() != "http.request" {
+		t.Fatalf("production-router panic did not finalize exactly one HTTP root: %+v", spans)
+	}
+	var statusCode int64
+	var requestOutcome, phase string
+	for _, attr := range spans[0].Attributes() {
+		switch string(attr.Key) {
+		case "http.response.status_code":
+			statusCode = attr.Value.AsInt64()
+		case "request.outcome":
+			requestOutcome = attr.Value.AsString()
+		case "request.phase":
+			phase = attr.Value.AsString()
+		}
+	}
+	if statusCode != http.StatusInternalServerError || requestOutcome != "failure" || phase != "terminal" {
+		t.Fatalf("production-router panic root lost truthful failure terminal: status=%d outcome=%q phase=%q", statusCode, requestOutcome, phase)
+	}
+	if strings.Contains(logs.String(), "PRIVATE_PANIC_CANARY") || strings.Count(logs.String(), `"msg":"http.request.terminal"`) != 1 || !strings.Contains(logs.String(), `"status_code":500`) || !strings.Contains(logs.String(), `"outcome":"failure"`) {
+		t.Fatalf("production-router panic terminal missing, duplicated, or leaked panic text: %s", logs.String())
 	}
 }
 

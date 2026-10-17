@@ -258,7 +258,9 @@ func StartPipelineSpan(ctx context.Context, name string) (context.Context, trace
 			budget.mu.Unlock()
 		}
 	}
-	return otel.Tracer(pipelineInstrumentationScope).Start(ctx, name)
+	ctx, span := otel.Tracer(pipelineInstrumentationScope).Start(ctx, name)
+	SetRequestIDAttribute(span, RequestIDFromContext(ctx))
+	return ctx, span
 }
 
 // StartWorkerSpan starts one allowlisted worker operation or phase.
@@ -266,14 +268,18 @@ func StartWorkerSpan(ctx context.Context, name string) (context.Context, trace.S
 	if _, ok := pipelineSpanNames[name]; !ok {
 		return ctx, trace.SpanFromContext(context.Background())
 	}
-	return otel.Tracer(workerInstrumentationScope).Start(ctx, name)
+	ctx, span := otel.Tracer(workerInstrumentationScope).Start(ctx, name)
+	SetRequestIDAttribute(span, RequestIDFromContext(ctx))
+	return ctx, span
 }
 
 func startScopedSpan(ctx context.Context, scope string, allow map[string]struct{}, name string) (context.Context, trace.Span) {
 	if _, ok := allow[name]; !ok {
 		return ctx, trace.SpanFromContext(context.Background())
 	}
-	return otel.Tracer(scope).Start(ctx, name)
+	ctx, span := otel.Tracer(scope).Start(ctx, name)
+	SetRequestIDAttribute(span, RequestIDFromContext(ctx))
+	return ctx, span
 }
 
 // StartAuthSpan, StartProfileSpan and StartExportSpan accept fixed names only;
@@ -980,11 +986,13 @@ func (p querySpanExportProcessor) ForceFlush(ctx context.Context) error {
 func allowedInstrumentationScope(name string) bool {
 	return name == queryInstrumentationScope || name == pipelineInstrumentationScope || name == workerInstrumentationScope ||
 		name == authInstrumentationScope || name == profileInstrumentationScope || name == exportInstrumentationScope ||
-		name == dataInstrumentationScope
+		name == dataInstrumentationScope || name == requestInstrumentationScope
 }
 
 func allowedSpan(scope, name string) bool {
 	switch scope {
+	case requestInstrumentationScope:
+		return name == "http.request" || name == "mcp.request"
 	case authInstrumentationScope:
 		_, ok := authSpanNames[name]
 		return ok

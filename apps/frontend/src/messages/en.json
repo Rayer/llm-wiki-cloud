@@ -246,6 +246,11 @@
     "signOut": "Sign Out",
     "logout": "Sign out",
     "demoDisabled": "Demo mode — new projects disabled",
+    "requestIDs": "Recent request IDs",
+    "requestIDsEmpty": "No server request IDs yet.",
+    "requestIDStatus": "HTTP status",
+    "copyRequestID": "Copy ID",
+    "requestIDCopied": "Copied",
     "ok": "OK",
     "cancel": "Cancel"
   },

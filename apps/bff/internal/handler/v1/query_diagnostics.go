@@ -75,10 +75,15 @@ func finishQueryStage(span trace.Span, err error) {
 
 func beginQueryDiagnostic(ctx context.Context, transport, projectID string) (context.Context, *queryDiagnostic) {
 	build := buildinfo.Current()
-	id := uuid.NewString()
+	id := observability.RequestIDFromContext(ctx)
+	if id == "" {
+		id = uuid.NewString()
+		ctx = observability.WithRequestID(ctx, id)
+	}
 	ctx, span := otel.Tracer("llm-wiki-bff/query").Start(ctx, "query.request",
 		trace.WithAttributes(
 			attribute.String("diagnostic_id", id),
+			attribute.String("request.id", id),
 			attribute.String("service", build.Service),
 			attribute.String("revision", build.Revision),
 			attribute.String("project_id", projectID),
@@ -336,13 +341,17 @@ func (o *mcpQueryObservation) set(diagnostic *queryDiagnostic) {
 }
 
 func (o *mcpQueryObservation) finish(status int, body []byte) bool {
+	resultPresent, toolError := mcpToolResultState(body)
+	return o.finishResult(status, resultPresent, toolError)
+}
+
+func (o *mcpQueryObservation) finishResult(status int, resultPresent, toolError bool) bool {
 	if o == nil {
 		return false
 	}
 	o.mu.Lock()
 	diagnostic, handlerEntered := o.diagnostic, o.handlerEntered
 	o.mu.Unlock()
-	resultPresent, toolError := mcpToolResultState(body)
 	validationFailure := false
 	if diagnostic != nil {
 		if !handlerEntered && resultPresent && toolError {
@@ -376,30 +385,3 @@ func mcpQueryObservationFrom(ctx context.Context) *mcpQueryObservation {
 	observation, _ := ctx.Value(mcpQueryObservationKey{}).(*mcpQueryObservation)
 	return observation
 }
-
-type queryStatusWriter struct {
-	http.ResponseWriter
-	status int
-}
-
-func (w *queryStatusWriter) WriteHeader(status int) {
-	if w.status == 0 {
-		w.status = status
-	}
-	w.ResponseWriter.WriteHeader(status)
-}
-
-func (w *queryStatusWriter) Write(data []byte) (int, error) {
-	if w.status == 0 {
-		w.WriteHeader(http.StatusOK)
-	}
-	return w.ResponseWriter.Write(data)
-}
-
-func (w *queryStatusWriter) Flush() {
-	if flusher, ok := w.ResponseWriter.(http.Flusher); ok {
-		flusher.Flush()
-	}
-}
-
-func (w *queryStatusWriter) Unwrap() http.ResponseWriter { return w.ResponseWriter }

@@ -87,6 +87,8 @@ func TestOTLPCaptureProfileDispatcherActualClaimAndWork(t *testing.T) {
 	}
 	provider := capture.Provider(t, "lwc-qa-profile-fixture", "local-fixture", project)
 	f := newRuntimeFixture(t)
+	const originRequestID = "123e4567-e89b-12d3-a456-426614174000"
+	f.ctx = observability.WithRequestID(f.ctx, originRequestID)
 	_, workRef := f.save(t, 0, "keep synthetic profile guidance concise")
 	f.clock = f.clock.Add(3 * time.Minute)
 	traceID, parentID, traceParent := otlpfixture.NewParent(t)
@@ -100,7 +102,7 @@ func TestOTLPCaptureProfileDispatcherActualClaimAndWork(t *testing.T) {
 		t.Fatalf("actual ProfileDispatcher status=%d, want one processed synthetic work item", response.Code)
 	}
 	work := f.work(t, workRef)
-	if work.Pending || work.Status != "complete" || work.Attempts != 1 {
+	if work.Pending || work.Status != "complete" || work.Attempts != 1 || work.RequestID != originRequestID {
 		t.Fatalf("actual ProfileDispatcher did not finish one claimed item: status=%q pending=%t attempts=%d", work.Status, work.Pending, work.Attempts)
 	}
 	capture.Flush(t, provider)
@@ -133,7 +135,7 @@ func TestOTLPCaptureProfileDispatcherActualClaimAndWork(t *testing.T) {
 		}
 	}
 	if workSpan.Name == "" || workSpan.ParentSpanID != "" || workSpan.TraceID == traceID || len(workSpan.Links) != 1 ||
-		workSpan.Links[0].TraceID != traceID || workSpan.Links[0].SpanID != claim.SpanID {
+		workSpan.Links[0].TraceID != traceID || workSpan.Links[0].SpanID != claim.SpanID || workSpan.Attributes["request.id"] != originRequestID {
 		t.Fatal("actual claimed Profile attempt did not use an independent root linked to its real claim")
 	}
 	for _, item := range []otlpfixture.SpanIdentity{dispatch, sweep, claim, workSpan} {

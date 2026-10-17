@@ -41,6 +41,7 @@ import {
   uploadRawFile,
   updateSourceAnnotation,
 } from '../src/lib/api.ts';
+import { recentRequestSnapshot } from '../src/lib/request-ids.ts';
 
 const buildInfoPayload = {
   product_version: '1.2.3',
@@ -189,6 +190,44 @@ test('buildProjectHeaders scopes authenticated requests to the selected project'
   });
 });
 
+test('apiFetch records initial and replay response IDs as separate server exchanges', async () => {
+  let sessionEpoch = 3;
+  configureApiAuth({
+    getAccessToken: () => 'stale-token',
+    getSessionEpoch: () => sessionEpoch,
+    refreshAccessToken: async () => {
+      sessionEpoch = 4;
+      return { accessToken: 'fresh-token', epoch: 4 };
+    },
+    onUnauthorized: () => undefined,
+  });
+  globalThis.window = { localStorage: { getItem: () => 'project-1' } };
+  const originalFetch = globalThis.fetch;
+  const requests = [];
+  globalThis.fetch = async (url, init) => {
+    requests.push({ url: String(url), init });
+    if (requests.length === 1) {
+      return new Response('{}', { status: 401, headers: { 'X-Request-ID': '123e4567-e89b-12d3-a456-426614174011' } });
+    }
+    return new Response('{}', { status: 200, headers: { 'X-Request-ID': '123e4567-e89b-12d3-a456-426614174012' } });
+  };
+
+  try {
+    const response = await apiFetch('/api/v1/status');
+    assert.equal(response.status, 200);
+    assert.equal(requests.length, 2);
+    assert.equal(requests[0].init.headers['X-Request-ID'], undefined);
+    assert.equal(requests[1].init.headers['X-Request-ID'], undefined);
+    const captured = recentRequestSnapshot().filter(({ id }) => id.endsWith('4011') || id.endsWith('4012'));
+    assert.deepEqual(captured.map(({ id, status }) => [id, status]), [
+      ['123e4567-e89b-12d3-a456-426614174012', 200],
+      ['123e4567-e89b-12d3-a456-426614174011', 401],
+    ]);
+  } finally {
+    globalThis.fetch = originalFetch;
+  }
+});
+
 test('getStatus reads latest pipeline execution from the status endpoint', async () => {
   configureApiAuth({
     getAccessToken: () => 'jwt-token',
@@ -247,13 +286,14 @@ test('searchWiki normalizes Problem Details, legacy errors, and unusable error b
       error: 'The query provider is temporarily unavailable.',
       code: 'query_provider_failed',
       diagnostic_id: 'f197cbe1-b0e3-4a68-a3eb-47526d98a622',
-    }, { status: 503 });
+    }, { status: 503, headers: { 'X-Request-ID': '123e4567-e89b-12d3-a456-426614174013' } });
     await assert.rejects(
       () => searchWiki('safe query', 'wiki'),
       (error) => error instanceof QueryApiError
         && error.status === 503
         && error.code === 'query_provider_failed'
         && error.diagnosticId === 'f197cbe1-b0e3-4a68-a3eb-47526d98a622'
+        && error.requestId === '123e4567-e89b-12d3-a456-426614174013'
         && error.message === 'The query provider is temporarily unavailable.',
     );
 
@@ -752,7 +792,10 @@ test('owned API error helpers preserve valid server diagnostic IDs without chang
   globalThis.fetch = async (url) => {
     fetchCount += 1;
     requestedUrl = String(url);
-    return Response.json({ error: 'existing safe server error', diagnostic_id: 'server_help_123' }, { status: 502 });
+    return Response.json({ error: 'existing safe server error', diagnostic_id: 'server_help_123' }, {
+      status: 502,
+      headers: { 'X-Request-ID': '123e4567-e89b-12d3-a456-426614174015' },
+    });
   };
 
   try {
@@ -763,7 +806,8 @@ test('owned API error helpers preserve valid server diagnostic IDs without chang
         (error) => error instanceof ApiError
           && error.status === 502
           && error.message === operation.message
-          && error.diagnosticId === 'server_help_123',
+          && error.diagnosticId === 'server_help_123'
+          && error.requestId === '123e4567-e89b-12d3-a456-426614174015',
         operation.name,
       );
       assert.equal(fetchCount, 1, `${operation.name} must make one HTTP call`);
@@ -814,6 +858,10 @@ test('uploadRawFile accepts created and already_exists responses', async () => {
       this.url = url;
     }
 
+    getResponseHeader(name) {
+      return this.responseHeaders?.[name] ?? null;
+    }
+
     setRequestHeader(name, value) {
       this.headers[name] = value;
     }
@@ -823,9 +871,10 @@ test('uploadRawFile accepts created and already_exists responses', async () => {
       FakeXMLHttpRequest.scenarios.shift()(this);
     }
 
-    respond(status, body) {
+    respond(status, body, requestId = null) {
       this.status = status;
       this.responseText = JSON.stringify(body);
+      this.responseHeaders = requestId ? { 'X-Request-ID': requestId } : {};
       this.onload();
     }
   }
@@ -838,12 +887,13 @@ test('uploadRawFile accepts created and already_exists responses', async () => {
       bytes: 5,
       sha256: 'abc',
       status: 'created',
-    }));
+    }, '123e4567-e89b-12d3-a456-426614174016'));
 
     const created = await uploadRawFile(file);
     assert.equal(created.status, 'created');
     assert.equal(created.filename, 'note.md');
     assert.equal(created.sha256, 'abc');
+    assert.equal(recentRequestSnapshot().some(({ id, status }) => id === '123e4567-e89b-12d3-a456-426614174016' && status === 201), true);
 
     FakeXMLHttpRequest.scenarios.push((xhr) => xhr.respond(200, {
       filename: 'note.md',
@@ -1151,6 +1201,9 @@ test('uploadRawFile maps 409 conflict to ApiError', async () => {
     constructor() {
       this.upload = {};
     }
+    getResponseHeader(name) {
+      return name === 'X-Request-ID' ? '123e4567-e89b-12d3-a456-426614174017' : null;
+    }
     open() {}
     setRequestHeader() {}
     send() {
@@ -1167,6 +1220,7 @@ test('uploadRawFile maps 409 conflict to ApiError', async () => {
       (err) => {
         assert.equal(err instanceof ApiError, true);
         assert.equal(err.status, 409);
+        assert.equal(err.requestId, '123e4567-e89b-12d3-a456-426614174017');
         assert.match(err.message, /already exists with different content/);
         return true;
       },
