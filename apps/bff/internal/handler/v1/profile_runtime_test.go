@@ -158,6 +158,115 @@ func TestOTLPCaptureProfileDispatcherActualClaimAndWork(t *testing.T) {
 	}
 }
 
+func TestOTLPCaptureExhaustedProfileWorkUsesOriginWithoutAnotherAttempt(t *testing.T) {
+	capture := otlpfixture.New(t)
+	project := "synthetic-project"
+	if otlpfixture.CloudMode() {
+		project = os.Getenv("LWC_OTLP_QA_PROJECT")
+	}
+	provider := capture.Provider(t, "lwc-qa-profile-fixture", "local-fixture", project)
+	f := newRuntimeFixture(t)
+	const schedulerRequestID = "8b838d6b-65c8-4e27-9983-6b9cbca4f962"
+	origins := []string{
+		"123e4567-e89b-12d3-a456-426614174001",
+		"123e4567-e89b-12d3-a456-426614174002",
+		"",
+	}
+	refs := make([]*firestore.DocumentRef, 0, len(origins))
+	prior := f.ctx
+	for i, origin := range origins {
+		f.project = fmt.Sprintf("runtime-exhausted-%d", i)
+		f.ctx = observability.WithoutRequestID(prior)
+		if origin != "" {
+			f.ctx = observability.WithRequestID(f.ctx, origin)
+		}
+		if _, err := f.repo.client.Collection("projects").Doc(projectDocID(f.user, f.project)).Set(f.ctx, map[string]interface{}{"user_id": f.user, "project_id": f.project, "status": "ready"}); err != nil {
+			t.Fatal(err)
+		}
+		_, ref := f.save(t, 0, "synthetic exhausted work")
+		leaseUntil := f.clock.Add(-time.Minute)
+		if _, err := ref.Update(f.ctx, []firestore.Update{
+			{Path: "attempts", Value: profileruntime.MaxAttempts},
+			{Path: "token", Value: fmt.Sprintf("expired-lease-%d", i)},
+			{Path: "lease_until", Value: leaseUntil},
+			{Path: "due", Value: leaseUntil},
+			{Path: "status", Value: "running"},
+		}); err != nil {
+			t.Fatal(err)
+		}
+		refs = append(refs, ref)
+	}
+	processed, err := f.dispatcher.Dispatch(observability.WithRequestID(prior, schedulerRequestID), 10)
+	if err != nil || processed != 0 {
+		t.Fatalf("exhausted-only dispatch processed=%d err=%v; terminal settlement must not count as an execution attempt", processed, err)
+	}
+	for i, ref := range refs {
+		work := f.work(t, ref)
+		if work.Pending || work.Status != "exhausted" || work.Attempts != profileruntime.MaxAttempts || work.Token != fmt.Sprintf("expired-lease-%d", i) || !work.LeaseUntil.Equal(f.clock.Add(-time.Minute)) {
+			t.Fatalf("exhaustion changed queue/lease state beyond committed terminal: %+v", work)
+		}
+		if work.RequestID != origins[i] {
+			t.Fatalf("work %d origin=%q, want %q", i, work.RequestID, origins[i])
+		}
+	}
+	capture.Flush(t, provider)
+	identities := capture.Identities()
+	claims := make(map[string]otlpfixture.SpanIdentity)
+	terminals := make([]otlpfixture.SpanIdentity, 0, len(origins))
+	attemptSpans := 0
+	for _, span := range identities {
+		switch span.Name {
+		case "profile.claim":
+			if span.Attributes["profile.work.status"] != "exhausted" || span.Attributes["profile.claim.outcome"] != "committed" || span.Attributes["profile.work.kind"] != "derive" {
+				t.Fatalf("claim did not report committed exhaustion: %+v", span)
+			}
+			claims[span.SpanID] = span
+		case "profile.work.terminal":
+			terminals = append(terminals, span)
+		case "profile.work", "profile.execute", "profile.finish":
+			attemptSpans++
+		}
+	}
+	if len(claims) != len(origins) || len(terminals) != len(origins) || attemptSpans != 0 {
+		t.Fatalf("actual exhausted dispatch spans: claims=%d terminals=%d attempts=%d", len(claims), len(terminals), attemptSpans)
+	}
+	seenOrigins := map[string]bool{}
+	legacyTerminal := 0
+	for _, terminal := range terminals {
+		if terminal.ParentSpanID != "" || len(terminal.Links) != 1 || terminal.Attributes["profile.work.status"] != "exhausted" || terminal.Attributes["profile.claim.outcome"] != "committed" || terminal.Attributes["profile.work.kind"] != "derive" {
+			t.Fatalf("terminal is not an independent committed exhaustion linked to Work claim: %+v", terminal)
+		}
+		claim, ok := claims[terminal.Links[0].SpanID]
+		if !ok || claim.TraceID != terminal.Links[0].TraceID {
+			t.Fatalf("terminal link/origin does not identify its actual claim: terminal=%+v claim=%+v", terminal, claim)
+		}
+		requestID := terminal.Attributes["request.id"]
+		if requestID != "" && claim.Attributes["request.id"] != requestID {
+			t.Fatalf("terminal origin %q differs from linked claim origin %q", requestID, claim.Attributes["request.id"])
+		}
+		if requestID == "" {
+			legacyTerminal++
+		} else {
+			if !containsString(origins[:2], requestID) || seenOrigins[requestID] {
+				t.Fatalf("unexpected or duplicate terminal origin %q", requestID)
+			}
+			seenOrigins[requestID] = true
+		}
+	}
+	if len(seenOrigins) != 2 || legacyTerminal != 1 {
+		t.Fatalf("terminal origins=%v legacy=%d; want both real origins and one originless legacy record", seenOrigins, legacyTerminal)
+	}
+}
+
+func containsString(values []string, wanted string) bool {
+	for _, value := range values {
+		if value == wanted {
+			return true
+		}
+	}
+	return false
+}
+
 func (f *runtimeFixture) save(t *testing.T, revision int64, text string) (ProfileState, *firestore.DocumentRef) {
 	t.Helper()
 	state, err := f.repo.SaveProfile(f.ctx, f.user, f.project, revision, []ProfileRequirement{{ID: "r1", Text: text}})

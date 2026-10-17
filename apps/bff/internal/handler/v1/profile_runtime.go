@@ -162,8 +162,21 @@ func (d *ProfileDispatcher) Dispatch(ctx context.Context, limit int) (processed 
 			claimOutcome = "failure"
 		} else if claimed {
 			claimOutcome = "committed"
+		} else if work.Status == "exhausted" {
+			claimOutcome = "committed"
 		} else {
 			claimOutcome = "no_op"
+		}
+		if err == nil {
+			observability.SetRequestIDAttribute(claimSpan, work.RequestID)
+			if !claimed && work.Status == "exhausted" {
+				terminalCtx := observability.WithRequestID(observability.WithoutRequestID(claimCtx), work.RequestID)
+				_, terminalSpan := observability.StartProfileWorkTerminalSpan(terminalCtx)
+				observability.SetProfileOutcome(terminalSpan, "profile.claim.outcome", "committed")
+				observability.SetProfileStatus(terminalSpan, work.Status)
+				observability.SetProfileWorkKind(terminalSpan, work.Kind)
+				observability.FinishProfileSpan(terminalSpan, "failure")
+			}
 		}
 		observability.SetProfileOutcome(claimSpan, "profile.claim.outcome", claimOutcome)
 		observability.SetProfileStatus(claimSpan, work.Status)

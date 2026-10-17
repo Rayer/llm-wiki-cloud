@@ -197,7 +197,7 @@ var authSpanNames = stringSet(
 	"auth.mcp.resource", "auth.transaction",
 )
 var profileSpanNames = stringSet(
-	"profile.dispatch", "profile.dispatch.sweep", "profile.work", "profile.claim", "profile.execute", "profile.finish",
+	"profile.dispatch", "profile.dispatch.sweep", "profile.work", "profile.work.terminal", "profile.claim", "profile.execute", "profile.finish",
 	"profile.derive", "profile.derive.claim", "profile.derive.content_pin", "profile.derive.provider",
 	"profile.derive.model", "profile.derive.output_decode",
 	"profile.derive.accounting", "profile.derive.artifact_encode", "profile.derive.provider_call", "profile.derive.artifact_write", "profile.derive.commit", "profile.compile", "profile.compile.provider",

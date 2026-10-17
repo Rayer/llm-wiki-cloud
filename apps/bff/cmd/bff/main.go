@@ -367,7 +367,7 @@ func newProductionRouter(
 	hV1 *handlerv1.Handler,
 	settingsStore syssettings.RegistrationGate,
 	rawScrapeFactory rawScrapeHandlerFactory,
-) *gin.Engine {
+) *observability.RequestLifecycleRouter {
 	r := gin.Default()
 	r.Use(observability.RequestLifecycleMiddleware())
 	r.Use(observability.AuthHTTPMiddleware())
@@ -534,7 +534,7 @@ func newProductionRouter(
 		}
 	})
 
-	return r
+	return observability.WrapRequestLifecycleRouter(r)
 }
 
 func authSessionEnvironment(cfg config.Config) string {

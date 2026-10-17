@@ -184,7 +184,8 @@ func (c *Capture) recordIdentity(span sdktrace.ReadOnlySpan, serviceName string)
 	}
 	for _, attr := range span.Attributes() {
 		switch string(attr.Key) {
-		case "request.id", "query.outcome", "query.business_outcome", "query.dependency_degraded", "query.degradation_reason", "query.stage", "http.response.status_code":
+		case "request.id", "query.outcome", "query.business_outcome", "query.dependency_degraded", "query.degradation_reason", "query.stage", "http.response.status_code",
+			"profile.claim.outcome", "profile.work.kind", "profile.work.status":
 			item.Attributes[string(attr.Key)] = attr.Value.Emit()
 		}
 	}

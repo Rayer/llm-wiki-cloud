@@ -151,6 +151,12 @@ func StartProfileWorkSpan(ctx context.Context) (context.Context, trace.Span) {
 	return startLinkedRoot(ctx, profileInstrumentationScope, "profile.work")
 }
 
+// StartProfileWorkTerminalSpan records a durable Work outcome that was settled
+// without claiming another execution attempt.
+func StartProfileWorkTerminalSpan(ctx context.Context) (context.Context, trace.Span) {
+	return startLinkedRoot(ctx, profileInstrumentationScope, "profile.work.terminal")
+}
+
 func startLinkedRoot(ctx context.Context, scope, name string) (context.Context, trace.Span) {
 	parent := trace.SpanContextFromContext(ctx)
 	root := WithoutTraceParent(ctx)

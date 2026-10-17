@@ -8,6 +8,8 @@ import (
 	"log/slog"
 	"net/http"
 	"net/http/httptest"
+	"net/http/httptrace"
+	"net/textproto"
 	"strings"
 	"testing"
 
@@ -148,5 +150,55 @@ func TestRequestLifecycleFinalizesBeforeGinRecovery(t *testing.T) {
 	}
 	if strings.Contains(logs.String(), "PRIVATE_PANIC_CANARY") || strings.Count(logs.String(), `"msg":"http.request.terminal"`) != 1 || !strings.Contains(logs.String(), `"status_code":500`) || !strings.Contains(logs.String(), `"outcome":"failure"`) {
 		t.Fatalf("panic terminal was missing, duplicated, or leaked panic content: %s", logs.String())
+	}
+}
+
+func TestRequestLifecycleBoundaryPreservesInformationalAndFlushedResponses(t *testing.T) {
+	flusherAvailable := make(chan bool, 1)
+	server := httptest.NewServer(RequestLifecycleHandler(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		w.WriteHeader(http.StatusEarlyHints)
+		w.Header().Set("X-Stream-Mode", "preserved")
+		if flusher, ok := w.(http.Flusher); ok {
+			flusherAvailable <- true
+			flusher.Flush()
+		} else {
+			flusherAvailable <- false
+			return
+		}
+		_, _ = io.WriteString(w, "streamed-response")
+	})))
+	defer server.Close()
+	client := server.Client()
+	earlyHints := make(chan struct{}, 1)
+	request, err := http.NewRequest(http.MethodGet, server.URL, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	request = request.WithContext(httptrace.WithClientTrace(request.Context(), &httptrace.ClientTrace{
+		Got1xxResponse: func(code int, _ textproto.MIMEHeader) error {
+			if code == http.StatusEarlyHints {
+				earlyHints <- struct{}{}
+			}
+			return nil
+		},
+	}))
+	response, err := client.Do(request)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer response.Body.Close()
+	body, err := io.ReadAll(response.Body)
+	if err != nil {
+		t.Fatal(err)
+	}
+	sawEarlyHints := false
+	select {
+	case <-earlyHints:
+		sawEarlyHints = true
+	default:
+	}
+	flusher := <-flusherAvailable
+	if !flusher || !sawEarlyHints || response.StatusCode != http.StatusOK || string(body) != "streamed-response" || uuid.Validate(response.Header.Get(requestIDHeader)) != nil {
+		t.Fatalf("lifecycle wrapper changed informational/stream response: flusher=%t early_hints=%t status=%d body=%q headers=%v", flusher, sawEarlyHints, response.StatusCode, body, response.Header)
 	}
 }

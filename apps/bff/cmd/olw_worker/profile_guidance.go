@@ -14,6 +14,7 @@ import (
 	"time"
 
 	"github.com/rayer/llm-wiki-bff/internal/generation"
+	"github.com/rayer/llm-wiki-bff/internal/observability"
 	"github.com/rayer/llm-wiki-bff/internal/profileruntime"
 	"unicode/utf8"
 
@@ -403,7 +404,7 @@ func writeProfileCompileReceipt(ctx context.Context, receipt profileruntime.Comp
 		if err := tx.Create(ref, receipt); err != nil {
 			return err
 		}
-		return profileruntime.Enqueue(tx, client, profileruntime.Work{UserID: receipt.UserID, ProjectID: receipt.ProjectID, Kind: "compile", Revision: receipt.ProfileRevision, ID: receipt.ContentGeneration, Due: receipt.CreatedAt})
+		return profileruntime.Enqueue(tx, client, profileruntime.Work{UserID: receipt.UserID, ProjectID: receipt.ProjectID, Kind: "compile", Revision: receipt.ProfileRevision, ID: receipt.ContentGeneration, RequestID: observability.RequestIDFromContext(ctx), Due: receipt.CreatedAt})
 	})
 }
 

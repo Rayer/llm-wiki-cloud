@@ -86,7 +86,7 @@ func run() error {
 	return r.Run(listenHost + cfg.Port)
 }
 
-func newProductionRouter(cfg config.Config, localMode bool, fsClient *firestoreclient.Client, settingsStore syssettings.RegistrationGate, demoReady bool) *gin.Engine {
+func newProductionRouter(cfg config.Config, localMode bool, fsClient *firestoreclient.Client, settingsStore syssettings.RegistrationGate, demoReady bool) *observability.RequestLifecycleRouter {
 	r := gin.Default()
 	r.Use(observability.RequestLifecycleMiddleware())
 	r.Use(observability.AuthHTTPMiddleware())
@@ -182,7 +182,7 @@ func newProductionRouter(cfg config.Config, localMode bool, fsClient *firestorec
 	})
 	r.GET("/api/v1/public/version", authVersionHandler(cfg))
 
-	return r
+	return observability.WrapRequestLifecycleRouter(r)
 }
 
 func authVersionHandler(cfg config.Config) gin.HandlerFunc {

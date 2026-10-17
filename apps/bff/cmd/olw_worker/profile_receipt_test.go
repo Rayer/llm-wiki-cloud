@@ -14,6 +14,7 @@ import (
 	"time"
 
 	"github.com/rayer/llm-wiki-bff/internal/generation"
+	"github.com/rayer/llm-wiki-bff/internal/observability"
 	"github.com/rayer/llm-wiki-bff/internal/profileartifacts"
 	"github.com/rayer/llm-wiki-bff/internal/profileruntime"
 )
@@ -161,6 +162,8 @@ func TestProfileReceiptFirestoreAtomicOutboxAndDuplicate(t *testing.T) {
 	t.Setenv("FIRESTORE_DATABASE_ID", "profile-receipt-test")
 	ctx, cancel := context.WithTimeout(context.Background(), 20*time.Second)
 	defer cancel()
+	const originRequestID = "123e4567-e89b-12d3-a456-426614174000"
+	ctx = observability.WithRequestID(ctx, originRequestID)
 	manifest := generation.Manifest{Version: generation.Version, GenerationID: "generation-receipt", CreatedAt: "2026-09-25T00:00:00Z", InputFingerprint: "synthetic", Files: []generation.File{
 		{Path: "cache/concepts.jsonl", Size: 0, SHA256: profileartifacts.SHA256(nil), Generation: 1},
 		{Path: "cache/id_map.json", Size: 2, SHA256: profileartifacts.SHA256([]byte("{}")), Generation: 2},
@@ -192,7 +195,7 @@ func TestProfileReceiptFirestoreAtomicOutboxAndDuplicate(t *testing.T) {
 	if err = snap.DataTo(&queued); err != nil {
 		t.Fatal(err)
 	}
-	if !queued.Pending || queued.Revision != 1 || !queued.Due.Equal(receipt.CreatedAt.Truncate(time.Microsecond)) {
+	if !queued.Pending || queued.Revision != 1 || queued.RequestID != originRequestID || !queued.Due.Equal(receipt.CreatedAt.Truncate(time.Microsecond)) {
 		t.Fatalf("unexpected queue: %+v", queued)
 	}
 	if _, err = workRef.Update(ctx, []firestore.Update{{Path: "attempts", Value: 2}, {Path: "token", Value: "already-claimed"}}); err != nil {
@@ -212,5 +215,82 @@ func TestProfileReceiptFirestoreAtomicOutboxAndDuplicate(t *testing.T) {
 	receipt.ManifestGeneration++
 	if err = writeProfileCompileReceipt(ctx, receipt); err == nil {
 		t.Fatal("conflicting receipt accepted")
+	}
+}
+
+func TestProfileReceiptActualPublisherPersistsOriginRequestID(t *testing.T) {
+	endpoint := os.Getenv("FIRESTORE_EMULATOR_HOST")
+	if endpoint == "" {
+		t.Skip("local Firestore emulator required")
+	}
+	if endpoint != "127.0.0.1:8585" {
+		t.Fatalf("only the owned loopback Firestore emulator is allowed, got %q", endpoint)
+	}
+	conn, err := net.DialTimeout("tcp", endpoint, time.Second)
+	if err != nil {
+		t.Fatal(err)
+	}
+	conn.Close()
+
+	projectID := fmt.Sprintf("receipt-origin-%d", time.Now().UnixNano())
+	t.Setenv("GOOGLE_CLOUD_PROJECT", projectID)
+	t.Setenv("FIRESTORE_DATABASE_ID", "profile-receipt-origin-test")
+	oldResolver, oldExec, oldPersist := resolveProfileGuidanceAtCompileStart, execOLW, persistProfileCompileReceipt
+	t.Cleanup(func() {
+		resolveProfileGuidanceAtCompileStart, execOLW, persistProfileCompileReceipt = oldResolver, oldExec, oldPersist
+	})
+	objects := newMemoryObjects()
+	prefix := "users/user/projects/project/"
+	seedCloudSource(t, objects, prefix, "raw-start", "", priorCloudReceipt())
+	cfg := cloudCfgFor("user", "project", "profile-receipt-origin")
+	cfg.SuggestedQueries = false
+	digest := profileRequirementsDigest([]profileGuidanceRequirement{{ID: "r1", Text: "clear writing"}})
+	bootstrap := profileartifacts.BootstrapGuidanceRef{Revision: strings.Repeat("a", 64), ProfileRevision: 3, InputDigest: digest, ModelVersion: "synthetic", PromptVersion: "synthetic", SchemaVersion: profileartifacts.BootstrapGuidanceSchema}
+	pin := &profileGuidancePin{ProfileRevision: 3, RequirementsDigest: digest, Revision: bootstrap.Revision, BootstrapRef: &bootstrap}
+	resolveProfileGuidanceAtCompileStart = func(context.Context, workerConfig, objectStore) (*profileGuidancePin, error) { return pin, nil }
+	execOLW = func(_ context.Context, vault string, _ []string, _ []string, _, _ io.Writer) error {
+		writeCloudRequiredOutputs(t, vault)
+		return nil
+	}
+	const originRequestID = "2f1d9a28-56b2-4ac1-b354-b6e99a653114"
+	persistProfileCompileReceipt = func(ctx context.Context, receipt profileruntime.CompileReceipt) error {
+		if got := observability.RequestIDFromContext(ctx); got != originRequestID {
+			t.Fatalf("actual publisher callback request ID=%q, want %q", got, originRequestID)
+		}
+		return writeProfileCompileReceipt(ctx, receipt)
+	}
+	ctx, cancel := context.WithTimeout(observability.WithRequestID(context.Background(), originRequestID), 30*time.Second)
+	defer cancel()
+	if err := runCloudWorkerBatch(ctx, cfg, [][]string{{"run"}}, objects); err != nil {
+		t.Fatal(err)
+	}
+	client, err := newProfileFirestoreClient(ctx, projectID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer client.Close()
+	receipts, err := client.Collection("projects").Doc(cfg.UserID + "_" + cfg.ProjectID).
+		Collection("profile").Doc("state").Collection(profileruntime.CompileReceiptsCollection).Documents(ctx).GetAll()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(receipts) != 1 {
+		t.Fatalf("actual publisher persisted %d compile receipts, want one", len(receipts))
+	}
+	var receipt profileruntime.CompileReceipt
+	if err := receipts[0].DataTo(&receipt); err != nil {
+		t.Fatal(err)
+	}
+	work := profileruntime.Work{UserID: cfg.UserID, ProjectID: cfg.ProjectID, Kind: "compile", ID: receipt.ContentGeneration}
+	snapshot, err := client.Collection(profileruntime.WorkCollection).Doc(profileruntime.WorkID(work)).Get(ctx)
+	if err != nil {
+		t.Fatal(err)
+	}
+	var queued profileruntime.Work
+	if err := snapshot.DataTo(&queued); err != nil {
+		t.Fatal(err)
+	}
+	if queued.RequestID != originRequestID || !queued.Pending || queued.Status != "pending" {
+		t.Fatalf("actual publisher outbox lost origin or changed queue status: %+v", queued)
 	}
 }
