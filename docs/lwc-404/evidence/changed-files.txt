@@ -1,0 +1,55 @@
+ M apps/frontend/src/app/(workspace)/advanced/page.tsx
+ M apps/frontend/src/components/CLILaneClient.tsx
+ M apps/frontend/src/components/DetailClient.tsx
+ M apps/frontend/src/components/ExportPanel.tsx
+ M apps/frontend/src/components/HomeClient.tsx
+ M apps/frontend/src/components/ListClient.tsx
+ M apps/frontend/src/components/ProjectKeysSection.tsx
+ M apps/frontend/src/components/RawClient.tsx
+ M apps/frontend/src/components/Shell.tsx
+ M apps/frontend/src/components/SourceAnnotationEditor.tsx
+ M apps/frontend/src/components/SourceListClient.tsx
+ M apps/frontend/src/components/States.tsx
+ M apps/frontend/src/lib/api.ts
+ M apps/frontend/src/lib/export-api.ts
+ M apps/frontend/src/messages/en.json
+ M apps/frontend/src/messages/zh-TW.json
+ M apps/frontend/tests/api.test.mjs
+ M apps/frontend/tests/cli-lane.test.tsx
+ M apps/frontend/tests/lwc-174-shell.test.tsx
+ M apps/frontend/tests/lwc-248-home-search-submission-behavior.test.tsx
+ M apps/frontend/tests/lwc-345-export-api.test.tsx
+ M apps/frontend/tests/lwc-377-project-keys.test.tsx
+ M apps/frontend/tests/lwc-396-pr130-diagnostic-consumers.test.tsx
+ M apps/frontend/tests/lwc-396-pr130-owned-presenters.test.tsx
+?? apps/frontend/tests/lwc-403-export-request-id.test.tsx
+?? apps/frontend/tests/lwc-403-request-id-errors.test.tsx
+?? apps/frontend/tests/lwc-404-beta-heading.test.tsx
+?? docs/lwc-403/evidence/lane-c-checkpoint.md
+?? docs/lwc-404/evidence/changed-files.txt
+?? docs/lwc-404/evidence/lane-d-checkpoint.md
+?? docs/lwc-404/evidence/screenshots/agent-mcp-project-keys-en-1280.png
+?? docs/lwc-404/evidence/screenshots/agent-mcp-project-keys-en-375.png
+?? docs/lwc-404/evidence/screenshots/agent-mcp-project-keys-en-chrome-1280.png
+?? docs/lwc-404/evidence/screenshots/agent-mcp-project-keys-en-chrome-375.png
+?? docs/lwc-404/evidence/screenshots/agent-mcp-project-keys-zh-TW-1280.png
+?? docs/lwc-404/evidence/screenshots/agent-mcp-project-keys-zh-TW-375.png
+?? docs/lwc-404/evidence/screenshots/agent-mcp-project-keys-zh-tw-chrome-1280.png
+?? docs/lwc-404/evidence/screenshots/agent-mcp-project-keys-zh-tw-chrome-375.png
+?? docs/lwc-404/evidence/screenshots/cli-en-1280.png
+?? docs/lwc-404/evidence/screenshots/cli-en-375.png
+?? docs/lwc-404/evidence/screenshots/cli-en-chrome-1280.png
+?? docs/lwc-404/evidence/screenshots/cli-en-chrome-375.png
+?? docs/lwc-404/evidence/screenshots/cli-zh-TW-1280.png
+?? docs/lwc-404/evidence/screenshots/cli-zh-TW-375.png
+?? docs/lwc-404/evidence/screenshots/cli-zh-tw-chrome-1280.png
+?? docs/lwc-404/evidence/screenshots/cli-zh-tw-chrome-375.png
+?? docs/lwc-404/evidence/screenshots/mobile-nav-en-375.png
+?? docs/lwc-404/evidence/screenshots/mobile-nav-en-expanded-375.png
+?? docs/lwc-404/evidence/screenshots/mobile-nav-en-open-375.png
+?? docs/lwc-404/evidence/screenshots/mobile-nav-en-open-chrome-375.png
+?? docs/lwc-404/evidence/screenshots/mobile-nav-en-safari-missing-drawer-375.png
+?? docs/lwc-404/evidence/screenshots/mobile-nav-zh-TW-375.png
+?? docs/lwc-404/evidence/screenshots/mobile-nav-zh-TW-open-375.png
+?? docs/lwc-404/evidence/screenshots/mobile-nav-zh-tw-open-chrome-375.png
+?? docs/lwc-404/evidence/screenshots/mobile-nav-zh-tw-safari-missing-drawer-375.png

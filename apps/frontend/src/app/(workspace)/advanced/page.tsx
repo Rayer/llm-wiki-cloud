@@ -5,6 +5,7 @@ import Link from 'next/link';
 import { useAuth } from '@/lib/auth';
 import { AgentMcpTabs } from '@/components/AgentMcpTabs';
 import { ProjectKeysSection } from '@/components/ProjectKeysSection';
+import { Badge } from '@/components/ui/Badge';
 import { useWorkspace } from '@/components/WorkspaceProvider';
 import { useT } from '@/lib/i18n';
 import {
@@ -107,7 +108,10 @@ export default function AdvancedPage() {
     <div className="space-y-6">
       <header className="flex flex-wrap items-end justify-between gap-3">
         <div>
-          <h1 className="font-serif text-2xl font-medium text-[#eeeae4]">{t('MCPOAuth.advancedTitle')}</h1>
+          <h1 aria-label={`${t('MCPOAuth.advancedTitle')} ${t('Shell.betaBadge')}`} className="flex flex-wrap items-center gap-x-3 gap-y-2 font-serif text-2xl font-medium text-[#eeeae4]">
+            <span>{t('MCPOAuth.advancedTitle')}</span>
+            <Badge variant="accent">{t('Shell.betaBadge')}</Badge>
+          </h1>
           <p className="mt-1 text-sm text-zinc-400">{t('MCPOAuth.agentMcpIntro')}</p>
           <p className="mt-2 break-words text-sm text-zinc-200"><span className="text-zinc-400">{t('MCPOAuth.currentProject')}: </span>{currentProject.name}</p>
           <div className="mt-2 flex flex-wrap gap-2 text-xs">

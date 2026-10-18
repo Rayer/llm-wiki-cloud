@@ -2,7 +2,7 @@
 
 import { useEffect, useMemo, useState } from 'react';
 import { EntryCard } from './EntryCard';
-import { EmptyState, ErrorState, LoadingState, useDiagnosticIdCopy } from './States';
+import { EmptyState, ErrorState, LoadingState, useErrorIdCopy } from './States';
 import { useWorkspace } from './WorkspaceProvider';
 import { ApiError, type WikiEntry } from '@/lib/api';
 import { useT } from '@/lib/i18n';
@@ -11,7 +11,7 @@ import { useT } from '@/lib/i18n';
 // Cleared on page refresh; BFF remains stateless.
 const clientCache = new Map<string, WikiEntry[]>();
 
-type ListError = { message: string; diagnosticId?: string };
+type ListError = { message: string; requestId?: string; diagnosticId?: string };
 
 type ListClientProps = {
   title: string;
@@ -41,7 +41,7 @@ function ListClientSession({
   const [loading, setLoading] = useState(() => !clientCache.has(cacheKey));
   const [error, setError] = useState<ListError | null>(null);
   const [search, setSearch] = useState('');
-  const { copyDiagnosticId, diagnosticIdCopied } = useDiagnosticIdCopy(error, error?.diagnosticId);
+  const { copyErrorId, errorIdCopied } = useErrorIdCopy(error, error?.requestId, error?.diagnosticId);
 
   useEffect(() => {
     let ignore = false;
@@ -63,6 +63,7 @@ function ListClientSession({
         if (!ignore) {
           setError({
             message: err.message,
+            requestId: cause instanceof ApiError ? cause.requestId : undefined,
             diagnosticId: cause instanceof ApiError ? cause.diagnosticId : undefined,
           });
         }
@@ -123,12 +124,14 @@ function ListClientSession({
       {error ? (
         <ErrorState
           message={error.message}
+          requestId={error.requestId}
           diagnosticId={error.diagnosticId}
+          requestIdLabel={t('QueryErrors.requestId')}
           diagnosticIdLabel={t('QueryErrors.diagnosticId')}
-          copyDiagnosticIdLabel={t('QueryErrors.copyDiagnosticId')}
-          diagnosticIdCopiedLabel={t('QueryErrors.diagnosticIdCopied')}
-          diagnosticIdCopied={diagnosticIdCopied}
-          onCopyDiagnosticId={copyDiagnosticId}
+          copyErrorIdLabel={t('QueryErrors.copyDiagnosticId')}
+          errorIdCopiedLabel={t('QueryErrors.diagnosticIdCopied')}
+          errorIdCopied={errorIdCopied}
+          onCopyErrorId={copyErrorId}
         />
       ) : null}
       {!loading && !error && filtered.length === 0 ? (

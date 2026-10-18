@@ -29,11 +29,12 @@ describe('LWC-344 export API fixture contract', () => {
     expect(result.signed_url).toBe('https://storage.example/file');
   });
 
-  it('preserves Export error_message priority and only attaches valid server diagnostic IDs', async () => {
+  it('preserves Export error priority and both normalized server IDs', async () => {
     let bodyReads = 0;
     apiFetch.mockResolvedValue({
       ok: false,
       status: 503,
+      headers: { get: (name: string) => name === 'X-Request-ID' ? '123e4567-e89b-42d3-a456-426614174005' : null },
       json: async () => {
         bodyReads += 1;
         return {
@@ -49,18 +50,21 @@ describe('LWC-344 export API fixture contract', () => {
       message: 'export primary message',
       status: 503,
       diagnosticId: 'export_help-123',
+      requestId: '123e4567-e89b-42d3-a456-426614174005',
     });
     expect(bodyReads).toBe(1);
 
     apiFetch.mockResolvedValue({
       ok: false,
       status: 502,
+      headers: { get: () => 'invalid request id' },
       json: async () => ({ reason: 'export reason', diagnostic_id: 'invalid/id' }),
     });
     await expect(getExportState('project-a')).rejects.toMatchObject({
       message: 'export reason',
       status: 502,
       diagnosticId: undefined,
+      requestId: undefined,
     });
   });
 });

@@ -140,13 +140,31 @@ describe('LWC-174 production Shell rename behavior', () => {
   it('routes CLI setup from the sidebar and hides it in the trial Demo session', async () => {
     localStorage.setItem('locale', 'en');
     renderShell();
-    expect(await screen.findByRole('link', { name: 'CLI setup' })).toHaveProperty('href', expect.stringContaining('/cli'));
+    expect(await screen.findByRole('link', { name: 'CLI setup Beta' })).toHaveProperty('href', expect.stringContaining('/cli'));
 
     cleanup();
     mocks.isDemoSession = true;
     renderShell();
     await screen.findByRole('button', { name: 'Project Alpha' });
-    expect(screen.queryByRole('link', { name: 'CLI setup' })).toBeNull();
+    expect(screen.queryByRole('link', { name: /CLI setup/ })).toBeNull();
+  });
+
+  it.each([
+    ['en', 'Primary navigation', 'CLI setup'],
+    ['zh-TW', '主要導覽', 'CLI 設定'],
+  ] as const)('shows localized Beta badges in desktop and expanded mobile navigation for %s', async (locale, navigationLabel, cliLabel) => {
+    localStorage.setItem('locale', locale);
+    renderShell();
+
+    const navigation = await screen.findByRole('navigation', { name: navigationLabel });
+    expect(screen.getByRole('link', { name: 'Agent & MCP Beta' }).getAttribute('href')).toBe('/advanced');
+    expect(screen.getByRole('link', { name: `${cliLabel} Beta` }).getAttribute('href')).toBe('/cli');
+
+    const toggle = screen.getByRole('button', { name: locale === 'en' ? 'Open navigation' : '開啟導覽' });
+    fireEvent.click(toggle);
+    expect(toggle.getAttribute('aria-expanded')).toBe('true');
+    expect(navigation.querySelectorAll('a').length).toBeGreaterThan(0);
+    expect(screen.getAllByText('Beta')).toHaveLength(2);
   });
 
   it.each([

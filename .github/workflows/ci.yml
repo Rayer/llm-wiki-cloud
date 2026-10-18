@@ -40,8 +40,11 @@ jobs:
         run: |
           python3 ../../scripts/test_cd_contract.py
           python3 -m unittest discover -s ../../deploy/engine/tests -p 'test_*.py'
-      - name: Validate Auth and Production BFF configuration delivery
-        run: python3 -m unittest discover -s ../../scripts -p 'test_*auth_config_contract.py'
+      - name: Validate repository Python contract suites
+        run: |
+          python3 -m unittest discover -s ../../scripts -p 'test_*auth_config_contract.py'
+          python3 -m unittest discover -s ../../scripts -p 'test_trace_lookup.py'
+          python3 -m unittest discover -s ../../scripts -p 'test_request_id_trace.py'
       - name: Run retained legacy CD safety suites
         run: python3 -m unittest discover -s scripts -p 'test_*.py'
       - name: Go vet

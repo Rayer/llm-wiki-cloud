@@ -6,7 +6,7 @@ import { ApiError, getRawFilePreview, getSources, type SourceListItem } from '@/
 import { useT } from '@/lib/i18n';
 import { Badge } from './ui/Badge';
 import { Surface } from './ui/Surface';
-import { EmptyState, ErrorState, LoadingState, useDiagnosticIdCopy } from './States';
+import { EmptyState, ErrorState, LoadingState, useErrorIdCopy } from './States';
 import { useWorkspace } from './WorkspaceProvider';
 import { NavigationLink } from './NavigationBlocker';
 import { rawFileNameFromSource } from '@/lib/raw-file-name';
@@ -19,7 +19,7 @@ const lifecycleVariant: Record<SourceListItem['lifecycle'], 'muted' | 'published
   error: 'draft',
 };
 
-type SourceListError = { message: string; diagnosticId?: string };
+type SourceListError = { message: string; requestId?: string; diagnosticId?: string };
 type PreviewError = SourceListError & { path: string };
 
 export function SourceListClient() {
@@ -41,9 +41,9 @@ function SourceListSession() {
   const previewTriggerRef = useRef<HTMLButtonElement | null>(null);
   const closeButtonRef = useRef<HTMLButtonElement | null>(null);
   const previewRequestRef = useRef(0);
-  const { copyDiagnosticId, diagnosticIdCopied } = useDiagnosticIdCopy(error, error?.diagnosticId);
-  const { copyDiagnosticId: copyPreviewDiagnosticId, diagnosticIdCopied: previewDiagnosticIdCopied } =
-    useDiagnosticIdCopy(previewError, previewError?.diagnosticId);
+  const { copyErrorId, errorIdCopied } = useErrorIdCopy(error, error?.requestId, error?.diagnosticId);
+  const { copyErrorId: copyPreviewErrorId, errorIdCopied: previewErrorIdCopied } =
+    useErrorIdCopy(previewError, previewError?.requestId, previewError?.diagnosticId);
 
   useEffect(() => {
     let cancelled = false;
@@ -56,6 +56,7 @@ function SourceListSession() {
       .catch((cause: unknown) => {
         if (!cancelled) setError({
           message: cause instanceof Error ? cause.message : String(cause),
+          requestId: cause instanceof ApiError ? cause.requestId : undefined,
           diagnosticId: cause instanceof ApiError ? cause.diagnosticId : undefined,
         });
       })
@@ -82,6 +83,7 @@ function SourceListSession() {
       if (previewRequestRef.current === request) {
         setPreviewError({
           message: cause instanceof Error ? cause.message : t('Raw.loadPreviewFailed'),
+          requestId: cause instanceof ApiError ? cause.requestId : undefined,
           diagnosticId: cause instanceof ApiError ? cause.diagnosticId : undefined,
           path: rawPath,
         });
@@ -135,12 +137,14 @@ function SourceListSession() {
       {error ? (
         <ErrorState
           message={error.message}
+          requestId={error.requestId}
           diagnosticId={error.diagnosticId}
+          requestIdLabel={t('QueryErrors.requestId')}
           diagnosticIdLabel={t('QueryErrors.diagnosticId')}
-          copyDiagnosticIdLabel={t('QueryErrors.copyDiagnosticId')}
-          diagnosticIdCopiedLabel={t('QueryErrors.diagnosticIdCopied')}
-          diagnosticIdCopied={diagnosticIdCopied}
-          onCopyDiagnosticId={copyDiagnosticId}
+          copyErrorIdLabel={t('QueryErrors.copyDiagnosticId')}
+          errorIdCopiedLabel={t('QueryErrors.diagnosticIdCopied')}
+          errorIdCopied={errorIdCopied}
+          onCopyErrorId={copyErrorId}
         />
       ) : null}
       {!loading && !error && filtered.length === 0 ? <EmptyState message={t('List.noSources')} /> : null}
@@ -200,12 +204,14 @@ function SourceListSession() {
               {previewError ? (
                 <ErrorState
                   message={previewError.message}
+                  requestId={previewError.requestId}
                   diagnosticId={previewError.diagnosticId}
+                  requestIdLabel={t('QueryErrors.requestId')}
                   diagnosticIdLabel={t('QueryErrors.diagnosticId')}
-                  copyDiagnosticIdLabel={t('QueryErrors.copyDiagnosticId')}
-                  diagnosticIdCopiedLabel={t('QueryErrors.diagnosticIdCopied')}
-                  diagnosticIdCopied={previewDiagnosticIdCopied}
-                  onCopyDiagnosticId={copyPreviewDiagnosticId}
+                  copyErrorIdLabel={t('QueryErrors.copyDiagnosticId')}
+                  errorIdCopiedLabel={t('QueryErrors.diagnosticIdCopied')}
+                  errorIdCopied={previewErrorIdCopied}
+                  onCopyErrorId={copyPreviewErrorId}
                 />
               ) : null}
               {!previewLoading && !previewError ? <pre className="whitespace-pre-wrap break-words text-sm text-zinc-200">{preview.content}</pre> : null}

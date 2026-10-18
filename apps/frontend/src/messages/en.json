@@ -229,6 +229,7 @@
   "Shell": {
     "brand": "LLM Wiki Cloud",
     "subtitle": "Explore your knowledge base",
+    "betaBadge": "Beta",
     "navigation": "Primary navigation",
     "openNavigation": "Open navigation",
     "closeNavigation": "Close navigation",
@@ -640,6 +641,7 @@
     "canceled": "The search was canceled. Submit it again when ready.",
     "projectNotFound": "This project could not be found. Check the selected project and try again.",
     "unsupportedProfileCondition": "A required profile condition is not supported by the query runtime. Update the profile requirements or contact support.",
+    "requestId": "Request ID",
     "diagnosticId": "Diagnostic ID",
     "copyDiagnosticId": "Copy ID",
     "diagnosticIdCopied": "Copied"
@@ -791,7 +793,7 @@
     "nav": "CLI setup",
     "eyebrow": "Command-line sync",
     "title": "Connect your wiki with the CLI",
-    "intro": "Download the CLI, approve sign-in in the Web app, connect your existing wiki folder, then push files from raw/.",
+    "intro": "Sync your local wiki’s raw/ folder to the cloud. After syncing, return to the web app and compile before searching. The CLI does not read content from other folders.",
   "agentNote": "A person or agent with local command-execution ability can follow these steps; this page does not run commands on your computer.",
     "projectContext": "Current project: {project}",
     "noProject": "No project selected",

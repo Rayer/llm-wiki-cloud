@@ -184,7 +184,7 @@ function normalizeDiagnosticId(value: unknown): string | undefined {
   return /^[A-Za-z0-9_-]{8,100}$/.test(normalized) ? normalized : undefined;
 }
 
-function normalizeRequestId(value: unknown): string | undefined {
+export function normalizeRequestId(value: unknown): string | undefined {
   if (typeof value !== 'string') return undefined;
   const normalized = value.trim();
   return /^[0-9a-f]{8}-[0-9a-f]{4}-[1-8][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i.test(normalized)

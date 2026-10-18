@@ -7,7 +7,7 @@ import { ApiError, getRawFilePreview, getRawFiles, type RawFile } from '@/lib/ap
 import { Badge } from './ui/Badge';
 import { MarkdownView } from './MarkdownView';
 import { Surface } from './ui/Surface';
-import { EmptyState, ErrorState, LoadingState, useDiagnosticIdCopy } from './States';
+import { EmptyState, ErrorState, LoadingState, useErrorIdCopy } from './States';
 import { useWorkspace } from './WorkspaceProvider';
 import { useT } from '@/lib/i18n';
 
@@ -19,7 +19,7 @@ type RawPreview = {
   content: string;
 };
 
-type RawClientError = { message: string; diagnosticId?: string };
+type RawClientError = { message: string; requestId?: string; diagnosticId?: string };
 type RawPreviewError = RawClientError & { fileName: string };
 
 function formatBytes(bytes: number) {
@@ -79,11 +79,11 @@ function RawClientSession() {
   const previewRequestRef = useRef(0);
   const downloadRequestRef = useRef(0);
   const [downloadError, setDownloadError] = useState<RawPreviewError | null>(null);
-  const { copyDiagnosticId, diagnosticIdCopied } = useDiagnosticIdCopy(error, error?.diagnosticId);
-  const { copyDiagnosticId: copyPreviewDiagnosticId, diagnosticIdCopied: previewDiagnosticIdCopied } =
-    useDiagnosticIdCopy(previewError, previewError?.diagnosticId);
-  const { copyDiagnosticId: copyDownloadDiagnosticId, diagnosticIdCopied: downloadDiagnosticIdCopied } =
-    useDiagnosticIdCopy(downloadError, downloadError?.diagnosticId);
+  const { copyErrorId, errorIdCopied } = useErrorIdCopy(error, error?.requestId, error?.diagnosticId);
+  const { copyErrorId: copyPreviewErrorId, errorIdCopied: previewErrorIdCopied } =
+    useErrorIdCopy(previewError, previewError?.requestId, previewError?.diagnosticId);
+  const { copyErrorId: copyDownloadErrorId, errorIdCopied: downloadErrorIdCopied } =
+    useErrorIdCopy(downloadError, downloadError?.requestId, downloadError?.diagnosticId);
 
   useEffect(() => {
     let cancelled = false;
@@ -99,6 +99,7 @@ function RawClientSession() {
         if (!cancelled && listRequestRef.current === request) {
           setError({
             message: cause instanceof Error ? cause.message : String(cause),
+            requestId: cause instanceof ApiError ? cause.requestId : undefined,
             diagnosticId: cause instanceof ApiError ? cause.diagnosticId : undefined,
           });
         }
@@ -145,6 +146,7 @@ function RawClientSession() {
       if (previewRequestRef.current === request) {
         setPreviewError({
           message: err instanceof Error ? err.message : t('Raw.loadPreviewFailed'),
+          requestId: err instanceof ApiError ? err.requestId : undefined,
           diagnosticId: err instanceof ApiError ? err.diagnosticId : undefined,
           fileName: file.name,
         });
@@ -208,6 +210,7 @@ function RawClientSession() {
       if (downloadRequestRef.current === request) {
         setDownloadError({
           message: err instanceof Error ? err.message : t('Raw.downloadFailed'),
+          requestId: err instanceof ApiError ? err.requestId : undefined,
           diagnosticId: err instanceof ApiError ? err.diagnosticId : undefined,
           fileName: selectedPreview.file.name,
         });
@@ -230,12 +233,14 @@ function RawClientSession() {
       {error ? (
         <ErrorState
           message={error.message}
+          requestId={error.requestId}
           diagnosticId={error.diagnosticId}
+          requestIdLabel={t('QueryErrors.requestId')}
           diagnosticIdLabel={t('QueryErrors.diagnosticId')}
-          copyDiagnosticIdLabel={t('QueryErrors.copyDiagnosticId')}
-          diagnosticIdCopiedLabel={t('QueryErrors.diagnosticIdCopied')}
-          diagnosticIdCopied={diagnosticIdCopied}
-          onCopyDiagnosticId={copyDiagnosticId}
+          copyErrorIdLabel={t('QueryErrors.copyDiagnosticId')}
+          errorIdCopiedLabel={t('QueryErrors.diagnosticIdCopied')}
+          errorIdCopied={errorIdCopied}
+          onCopyErrorId={copyErrorId}
         />
       ) : null}
       {!loading && !error && sortedFiles.length === 0 ? (
@@ -340,23 +345,27 @@ function RawClientSession() {
               {previewError ? (
                 <ErrorState
                   message={previewError.message}
+                  requestId={previewError.requestId}
                   diagnosticId={previewError.diagnosticId}
+                  requestIdLabel={t('QueryErrors.requestId')}
                   diagnosticIdLabel={t('QueryErrors.diagnosticId')}
-                  copyDiagnosticIdLabel={t('QueryErrors.copyDiagnosticId')}
-                  diagnosticIdCopiedLabel={t('QueryErrors.diagnosticIdCopied')}
-                  diagnosticIdCopied={previewDiagnosticIdCopied}
-                  onCopyDiagnosticId={copyPreviewDiagnosticId}
+                  copyErrorIdLabel={t('QueryErrors.copyDiagnosticId')}
+                  errorIdCopiedLabel={t('QueryErrors.diagnosticIdCopied')}
+                  errorIdCopied={previewErrorIdCopied}
+                  onCopyErrorId={copyPreviewErrorId}
                 />
               ) : null}
               {downloadError ? (
                 <ErrorState
                   message={downloadError.message}
+                  requestId={downloadError.requestId}
                   diagnosticId={downloadError.diagnosticId}
+                  requestIdLabel={t('QueryErrors.requestId')}
                   diagnosticIdLabel={t('QueryErrors.diagnosticId')}
-                  copyDiagnosticIdLabel={t('QueryErrors.copyDiagnosticId')}
-                  diagnosticIdCopiedLabel={t('QueryErrors.diagnosticIdCopied')}
-                  diagnosticIdCopied={downloadDiagnosticIdCopied}
-                  onCopyDiagnosticId={copyDownloadDiagnosticId}
+                  copyErrorIdLabel={t('QueryErrors.copyDiagnosticId')}
+                  errorIdCopiedLabel={t('QueryErrors.diagnosticIdCopied')}
+                  errorIdCopied={downloadErrorIdCopied}
+                  onCopyErrorId={copyDownloadErrorId}
                 />
               ) : null}
               {!previewLoading && !previewError && preview.kind === 'markdown' ? (

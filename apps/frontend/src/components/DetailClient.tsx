@@ -3,7 +3,7 @@
 import { useCallback, useEffect, useState } from 'react';
 import { ChevronLeft, FileText } from 'lucide-react';
 import { MarkdownView } from './MarkdownView';
-import { ErrorState, LoadingState, useDiagnosticIdCopy } from './States';
+import { ErrorState, LoadingState, useErrorIdCopy } from './States';
 import { Badge } from './ui/Badge';
 import { Surface } from './ui/Surface';
 import { ApiError, getConcepts, type WikiEntry } from '@/lib/api';
@@ -32,10 +32,10 @@ function DetailClientSession({ slug, label, backHref, load, entryType }: DetailC
   const [reloadVersion, setReloadVersion] = useState(0);
   const [loadedVersion, setLoadedVersion] = useState<number | null>(null);
   const loading = loadedVersion !== reloadVersion;
-  const [error, setError] = useState<{ version: number; message: string; diagnosticId?: string } | null>(null);
+  const [error, setError] = useState<{ version: number; message: string; requestId?: string; diagnosticId?: string } | null>(null);
   const reloadEntry = useCallback(() => setReloadVersion(nextSourceDetailReloadVersion), []);
   const currentError = error?.version === reloadVersion ? error : null;
-  const { copyDiagnosticId, diagnosticIdCopied } = useDiagnosticIdCopy(currentError, currentError?.diagnosticId);
+  const { copyErrorId, errorIdCopied } = useErrorIdCopy(currentError, currentError?.requestId, currentError?.diagnosticId);
 
   useEffect(() => {
     let cancelled = false;
@@ -58,6 +58,7 @@ function DetailClientSession({ slug, label, backHref, load, entryType }: DetailC
           setError({
             version: reloadVersion,
             message: err instanceof Error ? err.message : String(err),
+            requestId: err instanceof ApiError ? err.requestId : undefined,
             diagnosticId: err instanceof ApiError ? err.diagnosticId : undefined,
           });
         }
@@ -76,12 +77,14 @@ function DetailClientSession({ slug, label, backHref, load, entryType }: DetailC
     return (
       <ErrorState
         message={currentError.message}
+          requestId={currentError.requestId}
         diagnosticId={currentError.diagnosticId}
+          requestIdLabel={t('QueryErrors.requestId')}
         diagnosticIdLabel={t('QueryErrors.diagnosticId')}
-        copyDiagnosticIdLabel={t('QueryErrors.copyDiagnosticId')}
-        diagnosticIdCopiedLabel={t('QueryErrors.diagnosticIdCopied')}
-        diagnosticIdCopied={diagnosticIdCopied}
-        onCopyDiagnosticId={copyDiagnosticId}
+          copyErrorIdLabel={t('QueryErrors.copyDiagnosticId')}
+          errorIdCopiedLabel={t('QueryErrors.diagnosticIdCopied')}
+          errorIdCopied={errorIdCopied}
+          onCopyErrorId={copyErrorId}
       />
     );
   }

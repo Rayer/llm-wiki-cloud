@@ -76,6 +76,20 @@ afterEach(() => {
 });
 
 describe('CLI onboarding lane', () => {
+  it.each([
+    ['zh-TW', '用 CLI 連接你的 Wiki', '將本機 wiki 的 raw/ 資料夾同步到雲端。同步後，請回到 Web 執行編譯，完成後即可搜尋。CLI 不會讀取其他資料夾的內容。'],
+    ['en', 'Connect your wiki with the CLI', 'Sync your local wiki’s raw/ folder to the cloud. After syncing, return to the web app and compile before searching. The CLI does not read content from other folders.'],
+  ] as const)('shows the localized Beta heading and scope explanation in %s before the steps', (locale, title, intro) => {
+    localStorage.setItem('locale', locale);
+    const { container } = render(<CLILaneClient />);
+
+    expect(screen.getByRole('heading', { level: 1, name: `${title} Beta` })).toBeTruthy();
+    const introParagraph = screen.getByText(intro);
+    const firstStepHeading = screen.getByRole('heading', { name: locale === 'en' ? /Download the CLI/ : /下載 CLI/ });
+    expect(introParagraph.compareDocumentPosition(firstStepHeading) & Node.DOCUMENT_POSITION_FOLLOWING).toBeTruthy();
+    expect(container.querySelectorAll('header h1 .ring-1')).toHaveLength(1);
+  });
+
   it('starts with four closed cards and opens only the selected card', () => {
     render(<CLILaneClient />);
     const cards = screen.getAllByRole('button').filter((button) => button.hasAttribute('aria-expanded'));

@@ -1,0 +1,51 @@
+{
+  "schema": "lwc-request-id-probe-responses-v1",
+  "rest_404": {
+    "status": 404,
+    "headers": {"x-request-id": "0a123e45-6789-4abc-8def-0123456789ab"},
+    "body": null
+  },
+  "mcp_tool_error": {
+    "status": 200,
+    "headers": {"x-request-id": "1a123e45-6789-4abc-8def-0123456789ab"},
+    "body": {
+      "jsonrpc": "2.0",
+      "id": 402,
+      "result": {
+        "_meta": {"request_id": "2a123e45-6789-4abc-8def-0123456789ab"},
+        "isError": true,
+        "structuredContent": {
+          "error": "sanitized expected tool validation error",
+          "code": "invalid_request",
+          "diagnostic_id": "2a123e45-6789-4abc-8def-0123456789ab"
+        }
+      }
+    }
+  },
+  "query_success": {
+    "status": 200,
+    "headers": {"x-request-id": "3a123e45-6789-4abc-8def-0123456789ab"},
+    "body": {
+      "query": "請依據來源標記 LWC399-HARBOR-LIBRARY-SYNTHETIC，回答港灣圖書館星期四幾點關門？請使用 24 小時制。",
+      "mode": "full",
+      "ai_synth": "港灣圖書館星期四於 20:00 關門。",
+      "results": [
+        {
+          "id": "01JAZ5N7Y3K8M2Q4R6T9VWXABC",
+          "slug": "lwc399-harbor-library-synthetic",
+          "title": "LWC399 合成驗收：港灣圖書館",
+          "type": "source"
+        }
+      ],
+      "citations": [
+        {
+          "id": "01JAZ5N7Y3K8M2Q4R6T9VWXABC",
+          "text": "LWC399 合成驗收：港灣圖書館",
+          "slug": "lwc399-harbor-library-synthetic",
+          "type": "source",
+          "path": "/sources/01JAZ5N7Y3K8M2Q4R6T9VWXABC-lwc399-harbor-library-synthetic"
+        }
+      ]
+    }
+  }
+}

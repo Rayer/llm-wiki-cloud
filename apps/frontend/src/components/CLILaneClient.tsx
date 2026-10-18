@@ -7,6 +7,7 @@ import { useWorkspace } from '@/components/WorkspaceProvider';
 import { getRuntimeConfig } from '@/lib/runtime-config';
 import { createCLICommands, type CLIShell } from '@/lib/cli-command';
 import { loadCLIReleaseManifest, type CLIReleaseManifest } from '@/lib/cli-release-metadata';
+import { Badge } from '@/components/ui/Badge';
 
 const platformTranslation: Record<string, string> = {
   'darwin/arm64': 'CLILane.platformDarwinArm64',
@@ -66,7 +67,10 @@ export function CLILaneClient() {
     <div className="mx-auto w-full max-w-4xl space-y-7 px-4 py-8 sm:px-6 lg:py-12">
       <header className="space-y-3">
         <p className="font-mono text-xs uppercase tracking-[0.2em] text-emerald-300">{t('CLILane.eyebrow')}</p>
-        <h1 className="text-3xl font-semibold tracking-tight text-white sm:text-4xl">{t('CLILane.title')}</h1>
+        <h1 aria-label={`${t('CLILane.title')} ${t('Shell.betaBadge')}`} className="flex flex-wrap items-center gap-x-3 gap-y-2 text-3xl font-semibold tracking-tight text-white sm:text-4xl">
+          <span>{t('CLILane.title')}</span>
+          <Badge variant="accent">{t('Shell.betaBadge')}</Badge>
+        </h1>
         <p className="max-w-3xl text-sm leading-6 text-zinc-300 sm:text-base">{t('CLILane.intro')}</p>
         <p className="max-w-3xl text-sm leading-6 text-zinc-400">{t('CLILane.agentNote')}</p>
         <p className="text-sm text-zinc-400">{t('CLILane.projectContext', { project: currentProject?.name ?? t('CLILane.noProject') })}</p>
