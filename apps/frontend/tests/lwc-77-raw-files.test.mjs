@@ -52,7 +52,7 @@ test('raw client renders metadata table with inline preview entrypoints', async 
   assert.match(client, /rawPreviewKind\(file\.name\)/);
 });
 
-test('raw client reloads files when the current project changes', async () => {
+test('raw client fences and reloads files when project or session identity changes', async () => {
   const client = await readFile(
     new URL('../src/components/RawClient.tsx', import.meta.url),
     'utf8',
@@ -60,8 +60,12 @@ test('raw client reloads files when the current project changes', async () => {
 
   assert.match(client, /import \{ useWorkspace \} from '\.\/WorkspaceProvider';/);
   assert.match(client, /const \{\s*currentProject\s*,\s*token\s*\} = useWorkspace\(\);/s);
+  assert.match(client, /const currentProjectId = currentProject\?\.id;/);
+  assert.match(client, /const refreshRawFiles = useCallback\(async \(\) =>/);
+  assert.match(client, /getRawFiles\(currentProjectId\)/);
+  assert.match(client, /getRawFilePreview\(file\.name, currentProjectId\)/);
   assert.match(
     client,
-    /useEffect\(\(\) => \{[\s\S]*?getRawFiles\(\)[\s\S]*?\}, \[currentProject\?\.id, token\]\);/,
+    /useEffect\(\(\) => \{[\s\S]*?refreshRawFiles\(\)[\s\S]*?listRequestRef\.current \+= 1;[\s\S]*?\}, \[currentProjectId, refreshRawFiles, token\]\);/,
   );
 });

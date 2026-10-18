@@ -71,14 +71,14 @@ test('LWC-135: workspace and shell block create project for demo sessions', asyn
 });
 
 test('LWC-135: pipeline client blocks upload and pipeline trigger in demo sessions', async () => {
-  const pipelineClient = await readFile(
-    new URL('../src/components/PipelineClient.tsx', import.meta.url),
-    'utf8',
-  );
+  const [pipelineClient, uploadPanel] = await Promise.all([
+    readFile(new URL('../src/components/PipelineClient.tsx', import.meta.url), 'utf8'),
+    readFile(new URL('../src/components/RawUploadPanel.tsx', import.meta.url), 'utf8'),
+  ]);
 
   assert.match(pipelineClient, /isDemoSession/);
-  assert.match(pipelineClient, /t\('Demo\.restricted'\)/);
-  assert.match(pipelineClient, /enqueueFiles[\s\S]*?isDemoSession/);
+  assert.match(pipelineClient, /onBlocked=\{\(\) => addToast\(t\('Demo\.restricted'/);
+  assert.match(uploadPanel, /if \(isDemoSession\)[\s\S]*?onBlocked\?\.\(\)/);
   assert.match(pipelineClient, /handleRunPipeline[\s\S]*?isDemoSession/);
 });
 
@@ -93,13 +93,15 @@ test('LWC-135: locales expose Demo.restricted copy', async () => {
 });
 
 test('LWC-135: demo upload UI is disabled and localStorage backs demo flag', async () => {
-  const [pipelineClient, auth] = await Promise.all([
+  const [pipelineClient, uploadPanel, auth] = await Promise.all([
     readFile(new URL('../src/components/PipelineClient.tsx', import.meta.url), 'utf8'),
+    readFile(new URL('../src/components/RawUploadPanel.tsx', import.meta.url), 'utf8'),
     readFile(new URL('../src/lib/auth.tsx', import.meta.url), 'utf8'),
   ]);
 
-  assert.match(pipelineClient, /disabled=\{isDemoSession \|\| uploading\}/);
-  assert.match(pipelineClient, /htmlFor=\{isDemoSession \? undefined : 'raw-file-upload'\}/);
+  assert.match(uploadPanel, /disabled=\{isDemoSession \|\| uploading\}/);
+  assert.match(uploadPanel, /aria-disabled=\{isDemoSession \|\| undefined\}/);
+  assert.match(pipelineClient, /onBlocked=/);
   assert.match(auth, /persistAuthSession\(\s*typeof window !== 'undefined' \? window\.localStorage/);
   assert.match(auth, /setIsDemoSession\(readStoredDemoSession\(storage\)\)/);
   assert.doesNotMatch(auth, /demo@llm-wiki\.dev/);

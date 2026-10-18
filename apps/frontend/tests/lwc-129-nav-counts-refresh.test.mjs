@@ -27,13 +27,14 @@ test('shell reads nav counts from workspace instead of local getStatus', async (
 });
 
 test('pipeline client refreshes nav counts after created uploads', async () => {
-  const pipeline = await readFile(
-    new URL('../src/components/PipelineClient.tsx', import.meta.url),
-    'utf8',
-  );
+  const [pipeline, uploadPanel] = await Promise.all([
+    readFile(new URL('../src/components/PipelineClient.tsx', import.meta.url), 'utf8'),
+    readFile(new URL('../src/components/RawUploadPanel.tsx', import.meta.url), 'utf8'),
+  ]);
 
-  assert.match(pipeline, /refreshNavCounts/);
-  assert.match(pipeline, /needsCountRefreshRef/);
-  assert.match(pipeline, /result\.status === 'created'/);
-  assert.match(pipeline, /void refreshNavCounts\(\)/);
+  assert.match(pipeline, /onQueueSettled=\{handleUploadQueueSettled\}/);
+  assert.match(pipeline, /handleUploadQueueSettled[\s\S]*?refreshPipelineStatus/);
+  assert.match(uploadPanel, /needsCountRefreshRef/);
+  assert.match(uploadPanel, /result\.status === 'created'/);
+  assert.match(uploadPanel, /void refreshNavCounts\(\)/);
 });

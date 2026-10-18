@@ -157,6 +157,8 @@ describe('LWC-174 production Shell rename behavior', () => {
     renderShell();
 
     const navigation = await screen.findByRole('navigation', { name: navigationLabel });
+    const home = screen.getByRole('link', { name: locale === 'en' ? 'Home' : '主頁' });
+    expect(home.getAttribute('href')).toBe('/');
     expect(screen.getByRole('link', { name: 'Agent & MCP Beta' }).getAttribute('href')).toBe('/advanced');
     expect(screen.getByRole('link', { name: `${cliLabel} Beta` }).getAttribute('href')).toBe('/cli');
 

@@ -1,7 +1,7 @@
 'use client';
 
-import { FormEvent, useCallback, useEffect, useMemo, useRef, useState } from 'react';
-import { FileUp, Link2, Cog, Loader2, Construction, RotateCcw } from 'lucide-react';
+import { FormEvent, useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState } from 'react';
+import { Link2, Cog, Loader2, Construction } from 'lucide-react';
 import { Surface } from './ui/Surface';
 import { Badge } from './ui/Badge';
 import { ExportPanel } from './ExportPanel';
@@ -10,12 +10,10 @@ import {
   getPipelineStatus,
   recompileAll,
   triggerPipeline,
-  uploadRawFile,
   type RecompileAllCapability,
   type PipelineQuota,
   type PipelineResult,
   type PipelineStatus,
-  type RawUploadResult,
 } from '@/lib/api';
 import {
   blockReasonMessage,
@@ -24,22 +22,12 @@ import {
 } from '@/lib/pipeline-quota';
 import { useT } from '@/lib/i18n';
 import { useWorkspace } from './WorkspaceProvider';
+import { RawUploadPanel, type RawUploadsSettled } from './RawUploadPanel';
 
 type Toast = {
   id: number;
   message: string;
   type: 'success' | 'error' | 'info';
-};
-
-type UploadItemStatus = 'queued' | 'uploading' | 'created' | 'already_exists' | 'failed';
-
-type UploadItem = {
-  id: string;
-  file: File;
-  status: UploadItemStatus;
-  progress: number;
-  error?: string;
-  result?: RawUploadResult;
 };
 
 type PipelineProjectContext = { projectId: string | null; generation: number };
@@ -52,12 +40,7 @@ function isSamePipelineRequestScope(a: PipelineRequestScope, b: PipelineRequestS
     && a.requestGeneration === b.requestGeneration;
 }
 
-const UPLOAD_CONCURRENCY = 3;
-const RAW_ACCEPT =
-  '.md,.txt,.html,.htm,.csv,.json,.xml,.yaml,.yml,.toml,.ini,.cfg,.log,.rst,.org,.tex';
-
 let toastId = 0;
-let uploadItemId = 0;
 
 function pipelineStatusBadge(status: PipelineStatus | null): string | null {
   const executionStatus = status?.last_execution?.status;
@@ -68,35 +51,6 @@ function pipelineStatusBadge(status: PipelineStatus | null): string | null {
   if (executionStatus === 'FAILED') return `Pipeline failed (${duration})`;
 
   return null;
-}
-
-function uploadStatusLabel(status: UploadItemStatus): string {
-  switch (status) {
-    case 'queued':
-      return 'Queued';
-    case 'uploading':
-      return 'Uploading';
-    case 'created':
-      return 'Created';
-    case 'already_exists':
-      return 'Already exists';
-    case 'failed':
-      return 'Failed';
-  }
-}
-
-function summarizeUploads(items: UploadItem[]): string {
-  const created = items.filter((i) => i.status === 'created').length;
-  const existing = items.filter((i) => i.status === 'already_exists').length;
-  const failed = items.filter((i) => i.status === 'failed').length;
-  const pending = items.filter((i) => i.status === 'queued' || i.status === 'uploading').length;
-  const parts = [
-    `${created} created`,
-    `${existing} already exists`,
-    `${failed} failed`,
-  ];
-  if (pending > 0) parts.push(`${pending} in progress`);
-  return parts.join(', ');
 }
 
 function isCooldownClear(quota: PipelineQuota | null | undefined, now = new Date()): boolean {
@@ -118,19 +72,21 @@ function hasNewRaw(quota: PipelineQuota | null | undefined): boolean {
 
 export function PipelineClient() {
   const { t } = useT();
-  const { isDemoSession, refreshNavCounts, currentProject } = useWorkspace();
+  const { isDemoSession, currentProject, token } = useWorkspace();
   const projectId = currentProject?.id ?? null;
   const pipelineProjectContextRef = useRef<PipelineProjectContext>({ projectId, generation: 0 });
   const pipelineExecutionOwnerRef = useRef<PipelineExecutionOwner | null>(null);
   const pipelineTerminalPollScopeRef = useRef<PipelineRequestScope | null>(null);
   const pipelinePollErrorNotifiedRef = useRef(false);
-  if (pipelineProjectContextRef.current.projectId !== projectId) {
-    pipelineProjectContextRef.current = {
-      projectId,
-      generation: pipelineProjectContextRef.current.generation + 1,
-    };
-    pipelineExecutionOwnerRef.current = null;
-  }
+  useLayoutEffect(() => {
+    if (pipelineProjectContextRef.current.projectId !== projectId) {
+      pipelineProjectContextRef.current = {
+        projectId,
+        generation: pipelineProjectContextRef.current.generation + 1,
+      };
+      pipelineExecutionOwnerRef.current = null;
+    }
+  }, [projectId]);
   const pipelineRequestGenerationRef = useRef(0);
   const pipelineMountedRef = useRef(false);
   const isPipelineRequestCurrent = useCallback((scope: PipelineRequestScope) => {
@@ -140,8 +96,6 @@ export function PipelineClient() {
       && latest.generation === scope.contextGeneration
       && pipelineRequestGenerationRef.current === scope.requestGeneration;
   }, []);
-  const [fileLabel, setFileLabel] = useState('Choose files');
-  const [uploadItems, setUploadItems] = useState<UploadItem[]>([]);
   const [scrapeUrlText, setScrapeUrlText] = useState('');
   const [pipelineResult, setPipelineResult] = useState<PipelineResult | null>(null);
   const [pipelineStatus, setPipelineStatus] = useState<PipelineStatus | null>(null);
@@ -184,12 +138,21 @@ export function PipelineClient() {
       // Keep the current status when a best-effort refresh fails.
     }
   }, [isPipelineRequestCurrent]);
-  const fileRef = useRef<HTMLInputElement>(null);
+
+  const handleUploadQueueSettled = useCallback(({ created }: RawUploadsSettled) => {
+    if (!created) return;
+    // New raw files may change quota eligibility.
+    const context = pipelineProjectContextRef.current;
+    if (context.projectId) {
+      void refreshPipelineStatus({
+        projectId: context.projectId,
+        contextGeneration: context.generation,
+        requestGeneration: pipelineRequestGenerationRef.current,
+      });
+    }
+  }, [refreshPipelineStatus]);
+
   const pipelinePollRef = useRef<ReturnType<typeof setInterval> | null>(null);
-  const activeUploadsRef = useRef(0);
-  // Source of truth for the in-flight queue (state is a mirror for render).
-  const uploadItemsRef = useRef<UploadItem[]>([]);
-  const needsCountRefreshRef = useRef(false);
 
   const addToast = useCallback((message: string, type: Toast['type']) => {
     const id = ++toastId;
@@ -314,154 +277,6 @@ export function PipelineClient() {
     };
   }, [currentProject?.id]);
 
-  const pumpUploadQueue = useCallback(() => {
-    const pump = () => {
-      while (activeUploadsRef.current < UPLOAD_CONCURRENCY) {
-        const next = uploadItemsRef.current.find((item) => item.status === 'queued');
-        if (!next) break;
-
-        // Claim immediately on the ref so the same item is not double-started
-        // before React state flushes.
-        activeUploadsRef.current += 1;
-        uploadItemsRef.current = uploadItemsRef.current.map((item) =>
-          item.id === next.id
-            ? { ...item, status: 'uploading', progress: 0, error: undefined }
-            : item,
-        );
-        setUploadItems(uploadItemsRef.current);
-
-        void (async () => {
-          try {
-            const result = await uploadRawFile(next.file, (progress) => {
-              const current = uploadItemsRef.current.find((item) => item.id === next.id);
-              if (!current || current.status !== 'uploading' || current.progress === progress) return;
-              uploadItemsRef.current = uploadItemsRef.current.map((item) =>
-                item.id === next.id ? { ...item, progress } : item,
-              );
-              setUploadItems(uploadItemsRef.current);
-            });
-            if (result.status === 'created') {
-              needsCountRefreshRef.current = true;
-            }
-            uploadItemsRef.current = uploadItemsRef.current.map((item) =>
-              item.id === next.id
-                ? { ...item, status: result.status, progress: 100, result, error: undefined }
-                : item,
-            );
-            setUploadItems(uploadItemsRef.current);
-          } catch (err) {
-            uploadItemsRef.current = uploadItemsRef.current.map((item) =>
-              item.id === next.id
-                ? {
-                    ...item,
-                    status: 'failed',
-                    error: err instanceof Error ? err.message : 'Upload failed',
-                  }
-                : item,
-            );
-            setUploadItems(uploadItemsRef.current);
-          } finally {
-            activeUploadsRef.current = Math.max(0, activeUploadsRef.current - 1);
-            const stillBusy = uploadItemsRef.current.some(
-              (item) => item.status === 'queued' || item.status === 'uploading',
-            );
-            if (!stillBusy && needsCountRefreshRef.current) {
-              needsCountRefreshRef.current = false;
-              void refreshNavCounts();
-              // New raw files may change quota eligibility.
-              const context = pipelineProjectContextRef.current;
-              if (context.projectId) {
-                void refreshPipelineStatus({
-                  projectId: context.projectId,
-                  contextGeneration: context.generation,
-                  requestGeneration: pipelineRequestGenerationRef.current,
-                });
-              }
-            }
-            queueMicrotask(pump);
-          }
-        })();
-      }
-    };
-
-    queueMicrotask(pump);
-  }, [refreshNavCounts, refreshPipelineStatus]);
-
-  const enqueueFiles = useCallback(
-    (fileList: FileList | File[]) => {
-      if (isDemoSession) {
-        addToast(t('Demo.restricted'), 'info');
-        return;
-      }
-
-      const files = Array.from(fileList);
-      if (files.length === 0) return;
-
-      const knownNames = new Set(uploadItemsRef.current.map((item) => item.file.name));
-      const next: UploadItem[] = [...uploadItemsRef.current];
-
-      for (const file of files) {
-        if (knownNames.has(file.name)) {
-          next.push({
-            id: `upload-${++uploadItemId}`,
-            file,
-            status: 'failed',
-            progress: 0,
-            error: 'duplicate filename in batch (first file wins)',
-          });
-          continue;
-        }
-        knownNames.add(file.name);
-        next.push({
-          id: `upload-${++uploadItemId}`,
-          file,
-          status: 'queued',
-          progress: 0,
-        });
-      }
-
-      uploadItemsRef.current = next;
-      setUploadItems(next);
-      setFileLabel(files.length === 1 ? files[0].name : `${files.length} files selected`);
-      pumpUploadQueue();
-    },
-    [addToast, isDemoSession, pumpUploadQueue, t],
-  );
-
-  // When items transition to queued (retry or enqueue), ensure workers run.
-  useEffect(() => {
-    if (uploadItems.some((item) => item.status === 'queued')) {
-      pumpUploadQueue();
-    }
-  }, [uploadItems, pumpUploadQueue]);
-
-  const handleFileChange = useCallback(() => {
-    const files = fileRef.current?.files;
-    if (!files?.length) {
-      setFileLabel('Choose files');
-      return;
-    }
-    enqueueFiles(files);
-    if (fileRef.current) fileRef.current.value = '';
-  }, [enqueueFiles]);
-
-  const handleRetry = useCallback(
-    (id: string) => {
-      if (isDemoSession) {
-        addToast(t('Demo.restricted'), 'info');
-        return;
-      }
-      uploadItemsRef.current = uploadItemsRef.current.map((item) =>
-        item.id === id && item.status === 'failed'
-          ? { ...item, status: 'queued', progress: 0, error: undefined }
-          : item,
-      );
-      setUploadItems(uploadItemsRef.current);
-      pumpUploadQueue();
-    },
-    [addToast, isDemoSession, pumpUploadQueue, t],
-  );
-
   const handleScrape = useCallback(async (event: FormEvent) => {
     event.preventDefault();
     setWipModal(true);
@@ -548,10 +363,6 @@ export function PipelineClient() {
   }, [addToast, compileMode, fullCapability?.allowed, isDemoSession, isPipelineRequestCurrent, pollPipelineStatus, stopPipelinePolling, t]);
 
   const pipelineStatusText = pipelineStatusBadge(pipelineStatus);
-  const uploadSummary = useMemo(() => summarizeUploads(uploadItems), [uploadItems]);
-  const uploading = uploadItems.some(
-    (item) => item.status === 'queued' || item.status === 'uploading',
-  );
 
   const lastExecutionStatus = pipelineStatus?.last_execution?.status;
   const executionRunning = lastExecutionStatus === 'RUNNING';
@@ -615,139 +426,13 @@ export function PipelineClient() {
         </p>
 
         <div className="mt-4 grid gap-4 sm:grid-cols-2">
-          {/* File Upload */}
-          <div className="rounded-[var(--radius-md)] border border-white/10 bg-zinc-950/50 p-4">
-            <h3 className="flex items-center gap-2 text-sm font-semibold text-zinc-300">
-              <FileUp className="size-4 text-emerald-400" /> {t('Pipeline.uploadFiles')}
-            </h3>
-            <p className="mt-1 text-xs text-zinc-500">
-              {t('Pipeline.uploadHint')}
-            </p>
-            <div className="mt-3 flex gap-2">
-              <input
-                ref={fileRef}
-                type="file"
-                accept={RAW_ACCEPT}
-                multiple
-                onChange={handleFileChange}
-                className="hidden"
-                id="raw-file-upload"
-                disabled={isDemoSession || uploading}
-              />
-              <label
-                htmlFor={isDemoSession ? undefined : 'raw-file-upload'}
-                aria-disabled={isDemoSession || undefined}
-                title={isDemoSession ? t('Demo.restricted') : undefined}
-                onClick={
-                  isDemoSession
-                    ? (e) => {
-                        e.preventDefault();
-                        addToast(t('Demo.restricted'), 'info');
-                      }
-                    : undefined
-                }
-                className={`flex-1 rounded-md border border-white/10 bg-black/30 px-3 py-2 text-sm text-zinc-400 truncate ${
-                  isDemoSession
-                    ? 'cursor-not-allowed opacity-50'
-                    : 'cursor-pointer transition hover:border-zinc-500 hover:text-zinc-200'
-                }`}
-              >
-                {isDemoSession ? t('Demo.restricted') : fileLabel}
-              </label>
-              <label
-                htmlFor={isDemoSession ? undefined : 'raw-file-upload'}
-                aria-disabled={isDemoSession || undefined}
-                title={isDemoSession ? t('Demo.restricted') : undefined}
-                onClick={
-                  isDemoSession
-                    ? (e) => {
-                        e.preventDefault();
-                        addToast(t('Demo.restricted'), 'info');
-                      }
-                    : undefined
-                }
-                className={`inline-flex items-center justify-center rounded-md bg-emerald-600 px-4 py-2 text-sm font-semibold text-white ${
-                  isDemoSession || uploading
-                    ? 'cursor-not-allowed opacity-50'
-                    : 'cursor-pointer transition hover:bg-emerald-500'
-                }`}
-              >
-                {uploading ? <Loader2 className="size-4 animate-spin" /> : t('Pipeline.select')}
-              </label>
-            </div>
-
-            {uploadItems.length > 0 ? (
-              <div className="mt-3 space-y-2">
-                <p className="text-xs text-zinc-500" data-testid="upload-summary">
-                  {uploadSummary}
-                </p>
-                <ul className="max-h-48 space-y-1.5 overflow-y-auto">
-                  {uploadItems.map((item) => (
-                    <li
-                      key={item.id}
-                      className="flex items-start justify-between gap-2 rounded-md border border-white/5 bg-black/20 px-2.5 py-1.5 text-xs"
-                    >
-                      <div className="min-w-0 flex-1">
-                        <p className="truncate font-medium text-zinc-200" title={item.file.name}>
-                          {item.file.name}
-                        </p>
-                        <div
-                          className="mt-1 h-1.5 overflow-hidden rounded-full bg-white/10"
-                          role="progressbar"
-                          aria-label={`${item.file.name}: ${uploadStatusLabel(item.status)} ${item.progress}%`}
-                          aria-valuemin={0}
-                          aria-valuemax={100}
-                          aria-valuenow={item.progress}
-                        >
-                          <div
-                            className="h-full rounded-full bg-emerald-400 transition-[width]"
-                            style={{ width: `${item.progress}%` }}
-                          />
-                        </div>
-                        <p className="mt-0.5 text-zinc-500">
-                          {uploadStatusLabel(item.status)} · {item.progress}%
-                        </p>
-                        {item.error ? (
-                          <p className="mt-0.5 text-red-300/90">{item.error}</p>
-                        ) : null}
-                      </div>
-                      <div className="flex shrink-0 items-center gap-1.5">
-                        <Badge
-                          variant={
-                            item.status === 'failed'
-                              ? 'draft'
-                              : item.status === 'created' || item.status === 'already_exists'
-                                ? 'accent'
-                                : 'muted'
-                          }
-                        >
-                          {item.status === 'uploading' ? (
-                            <span className="inline-flex items-center gap-1">
-                              <Loader2 className="size-3 animate-spin" />
-                              {uploadStatusLabel(item.status)}
-                            </span>
-                          ) : (
-                            uploadStatusLabel(item.status)
-                          )}
-                        </Badge>
-                        {item.status === 'failed' ? (
-                          <button
-                            type="button"
-                            onClick={() => handleRetry(item.id)}
-                            className="rounded p-1 text-zinc-400 transition hover:bg-white/10 hover:text-white"
-                            aria-label={`Retry ${item.file.name}`}
-                            title="Retry"
-                          >
-                            <RotateCcw className="size-3.5" />
-                          </button>
-                        ) : null}
-                      </div>
-                    </li>
-                  ))}
-                </ul>
-              </div>
-            ) : null}
-          </div>
+          <RawUploadPanel
+            key={JSON.stringify([projectId, token])}
+            title={t('Pipeline.uploadFiles')}
+            hint={t('Pipeline.uploadHint')}
+            onBlocked={() => addToast(t('Demo.restricted'), 'info')}
+            onQueueSettled={handleUploadQueueSettled}
+          />
 
           {/* URL Scrape */}
           <div className="rounded-[var(--radius-md)] border border-white/10 bg-zinc-950/50 p-4">

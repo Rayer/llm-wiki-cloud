@@ -8,12 +8,16 @@ const mocks = vi.hoisted(() => ({
   renameProject: vi.fn(),
   getStatus: vi.fn(),
   replace: vi.fn(),
+  push: vi.fn(),
   token: 'auth-token' as string | null,
+  user: { id: 'user-1', email: 'owner@example.com', role: 'owner' } as { id: string; email: string; role: string } | null,
+  sessionEpoch: 1,
 }));
 
 vi.mock('next/navigation', () => ({
   useRouter: () => ({
     replace: mocks.replace,
+    push: mocks.push,
   }),
 }));
 
@@ -39,10 +43,11 @@ vi.mock('@/lib/auth', () => ({
   useAuth: () => ({
     accessToken: mocks.token,
     access_token: mocks.token,
-    user: { id: 'user-1', email: 'owner@example.com', role: 'owner' },
+    user: mocks.user,
     hydrated: true,
     isAuthenticated: true,
     isDemoSession: false,
+    sessionEpoch: mocks.sessionEpoch,
     login: async () => undefined,
     register: async () => undefined,
     logout: async () => undefined,
@@ -59,11 +64,13 @@ vi.mock('@/components/NavigationBlocker', () => ({
 }));
 
 import { WorkspaceProvider, useWorkspace } from '@/components/WorkspaceProvider';
+import { NewProjectModal } from '@/components/NewProjectModal';
 
 function ProjectStateProbe() {
   const {
     projects, currentProject, projectsLoading, projectsError,
-    addProject, renameProject, refreshProjects,
+    addProject, renameProject, refreshProjects, profileOnboarding, openNewProject,
+    markProfileOnboardingPresented, selectProject,
   } = useWorkspace();
   const [result, setResult] = useState('');
 
@@ -77,7 +84,14 @@ function ProjectStateProbe() {
       <p data-testid="result">{result}</p>
       <p data-testid="projects-loading">{String(projectsLoading)}</p>
       <p data-testid="projects-error">{projectsError}</p>
-      <button type="button" onClick={async () => setResult((await addProject('Stale Add')).id)}>
+      <p data-testid="profile-onboarding-project">{profileOnboarding?.projectId ?? ''}</p>
+      <button type="button" onClick={async () => {
+        try {
+          setResult((await addProject('Stale Add')).id);
+        } catch (error) {
+          setResult(error instanceof Error ? error.message : 'create failed');
+        }
+      }}>
         add project
       </button>
       <button
@@ -118,6 +132,24 @@ function ProjectStateProbe() {
       <button type="button" onClick={() => void refreshProjects()}>
         refresh projects
       </button>
+      <button type="button" onClick={() => setResult(String(profileOnboarding
+        ? markProfileOnboardingPresented(profileOnboarding.ownerId, profileOnboarding.projectId, profileOnboarding.sessionEpoch)
+        : false))}>
+        mark profile onboarding
+      </button>
+      <button type="button" onClick={() => selectProject('project-b')}>
+        select project B
+      </button>
+      <button type="button" onClick={() => selectProject('project-a')}>
+        select project A
+      </button>
+      <button type="button" onClick={() => selectProject('created')}>
+        select created project
+      </button>
+      <button type="button" onClick={openNewProject}>
+        open new project
+      </button>
+      <NewProjectModal />
     </div>
   );
 }
@@ -135,6 +167,8 @@ function apiStatus() {
 
 beforeEach(() => {
   mocks.token = 'auth-token';
+  mocks.user = { id: 'user-1', email: 'owner@example.com', role: 'owner' };
+  mocks.sessionEpoch = 1;
   mocks.getProjects.mockResolvedValue([
     { id: 'project-a', name: 'Project Alpha' },
     { id: 'project-b', name: 'Project Beta' },
@@ -143,12 +177,16 @@ beforeEach(() => {
   mocks.createProject.mockResolvedValue({ id: 'created', name: 'Created' });
   mocks.getStatus.mockResolvedValue(apiStatus());
   localStorage.setItem('llm-wiki-last-project', 'project-a');
+  localStorage.setItem('locale', 'en');
+  mocks.push.mockReset();
 });
 
 afterEach(() => {
   cleanup();
   vi.clearAllMocks();
+  vi.restoreAllMocks();
   localStorage.clear();
+  sessionStorage.clear();
 });
 
 describe('LWC-174 WorkspaceProvider rename behavior', () => {
@@ -411,5 +449,130 @@ describe('LWC-174 WorkspaceProvider rename behavior', () => {
     resolveFirst('First Rename');
     await waitFor(() => expect(screen.getByTestId('project-name-project-a').textContent).toBe('First Rename'));
     expect(screen.getByTestId('project-name-project-b').textContent).toBe('Other Rename');
+  });
+
+  it('keeps a successful create and its selected Project when local storage writes fail', async () => {
+    const originalSetItem = Storage.prototype.setItem;
+    mocks.createProject.mockResolvedValue({ id: 'created', name: 'Created' });
+    render(<WorkspaceProvider><ProjectStateProbe /></WorkspaceProvider>);
+    await screen.findByTestId('project-name-project-a');
+    vi.spyOn(Storage.prototype, 'setItem').mockImplementation(function (this: Storage, key, value) {
+      if (
+        key === 'llm-wiki-last-project'
+        || key === 'llm-wiki-profile-onboarding-pending'
+        || key.startsWith('llm-wiki-profile-onboarding-presented:')
+      ) {
+        throw new Error('storage disabled');
+      }
+      return originalSetItem.call(this, key, value);
+    });
+
+    fireEvent.click(screen.getByRole('button', { name: 'add project' }));
+    await waitFor(() => expect(screen.getByTestId('current-project-id').textContent).toBe('created'));
+    expect(screen.getByTestId('projects-error').textContent).toBe('');
+    expect(screen.getByTestId('profile-onboarding-project').textContent).toBe('created');
+
+    fireEvent.click(screen.getByRole('button', { name: 'mark profile onboarding' }));
+    await waitFor(() => expect(screen.getByTestId('result').textContent).toBe('true'));
+    expect(screen.getByTestId('profile-onboarding-project').textContent).toBe('');
+    fireEvent.click(screen.getByRole('button', { name: 'select project A' }));
+    fireEvent.click(screen.getByRole('button', { name: 'select project B' }));
+    fireEvent.click(screen.getByRole('button', { name: 'select created project' }));
+    fireEvent.click(screen.getByRole('button', { name: 'mark profile onboarding' }));
+    await waitFor(() => expect(screen.getByTestId('result').textContent).toBe('false'));
+    expect(mocks.createProject).toHaveBeenCalledOnce();
+  });
+
+  it('completes the create modal flow after a local selection-storage failure without creating twice', async () => {
+    const originalSetItem = Storage.prototype.setItem;
+    mocks.createProject.mockResolvedValue({ id: 'created', name: 'Created' });
+    render(<WorkspaceProvider><ProjectStateProbe /></WorkspaceProvider>);
+    await screen.findByTestId('project-name-project-a');
+    vi.spyOn(Storage.prototype, 'setItem').mockImplementation(function (this: Storage, key, value) {
+      if (key === 'llm-wiki-last-project') throw new Error('storage disabled');
+      return originalSetItem.call(this, key, value);
+    });
+
+    fireEvent.click(screen.getByRole('button', { name: 'open new project' }));
+    fireEvent.change(screen.getByRole('textbox', { name: 'Project name' }), { target: { value: 'Created' } });
+    fireEvent.click(screen.getByRole('button', { name: 'Create project' }));
+
+    await waitFor(() => expect(mocks.push).toHaveBeenCalledWith('/profile'));
+    expect(mocks.createProject).toHaveBeenCalledOnce();
+    expect(screen.getByTestId('current-project-id').textContent).toBe('created');
+    expect(screen.getByTestId('profile-onboarding-project').textContent).toBe('created');
+    expect(screen.queryByRole('alert')).toBeNull();
+  });
+
+  it('loads and selects projects when reading the last Project from storage throws', async () => {
+    const originalGetItem = Storage.prototype.getItem;
+    mocks.getProjects.mockResolvedValue([
+      { id: 'project-b', name: 'Project Beta' },
+      { id: 'project-a', name: 'Project Alpha' },
+    ]);
+    vi.spyOn(Storage.prototype, 'getItem').mockImplementation(function (this: Storage, key) {
+      if (key === 'llm-wiki-last-project') throw new Error('storage disabled');
+      return originalGetItem.call(this, key);
+    });
+
+    render(<WorkspaceProvider><ProjectStateProbe /></WorkspaceProvider>);
+    await screen.findByTestId('project-name-project-b');
+
+    expect(screen.getByTestId('current-project-id').textContent).toBe('project-a');
+    expect(screen.getByTestId('projects-error').textContent).toBe('');
+  });
+
+  it('does not set onboarding intent when the server rejects project creation', async () => {
+    mocks.createProject.mockRejectedValue(new Error('create rejected'));
+    render(<WorkspaceProvider><ProjectStateProbe /></WorkspaceProvider>);
+    await screen.findByTestId('project-name-project-a');
+    fireEvent.click(screen.getByRole('button', { name: 'add project' }));
+
+    await waitFor(() => expect(screen.getByTestId('result').textContent).toBe('create rejected'));
+    expect(screen.getByTestId('profile-onboarding-project').textContent).toBe('');
+    expect(screen.getByTestId('current-project-id').textContent).toBe('project-a');
+  });
+
+  it('clears pending onboarding when the account changes', async () => {
+    mocks.createProject.mockResolvedValue({ id: 'created', name: 'Created' });
+    const view = render(<WorkspaceProvider><ProjectStateProbe /></WorkspaceProvider>);
+    await screen.findByTestId('project-name-project-a');
+    fireEvent.click(screen.getByRole('button', { name: 'add project' }));
+    await waitFor(() => expect(screen.getByTestId('profile-onboarding-project').textContent).toBe('created'));
+
+    mocks.user = { id: 'user-2', email: 'other@example.com', role: 'owner' };
+    mocks.sessionEpoch = 2;
+    view.rerender(<WorkspaceProvider><ProjectStateProbe /></WorkspaceProvider>);
+    await waitFor(() => expect(screen.getByTestId('profile-onboarding-project').textContent).toBe(''));
+    expect(sessionStorage.getItem('llm-wiki-profile-onboarding-pending')).toBeNull();
+  });
+
+  it('keeps the presented record across provider remount and project A to B to A selection', async () => {
+    mocks.user = { id: 'user-remount', email: 'remount@example.com', role: 'owner' };
+    mocks.createProject.mockResolvedValue({ id: 'created', name: 'Created' });
+    mocks.getProjects.mockResolvedValue([
+      { id: 'project-a', name: 'Project Alpha' },
+      { id: 'project-b', name: 'Project Beta' },
+      { id: 'created', name: 'Created' },
+    ]);
+    const view = render(<WorkspaceProvider><ProjectStateProbe /></WorkspaceProvider>);
+    await screen.findByTestId('project-name-project-a');
+    fireEvent.click(screen.getByRole('button', { name: 'add project' }));
+    await waitFor(() => expect(screen.getByTestId('profile-onboarding-project').textContent).toBe('created'));
+    fireEvent.click(screen.getByRole('button', { name: 'mark profile onboarding' }));
+    await waitFor(() => expect(screen.getByTestId('result').textContent).toBe('true'));
+    expect(localStorage.getItem('llm-wiki-profile-onboarding-presented:user-remount:created')).toBe('1');
+    fireEvent.click(screen.getByRole('button', { name: 'select project A' }));
+    fireEvent.click(screen.getByRole('button', { name: 'select project B' }));
+    fireEvent.click(screen.getByRole('button', { name: 'select created project' }));
+    expect(screen.getByTestId('profile-onboarding-project').textContent).toBe('');
+
+    view.unmount();
+    render(<WorkspaceProvider><ProjectStateProbe /></WorkspaceProvider>);
+    await screen.findByTestId('project-name-created');
+    expect(screen.getByTestId('current-project-id').textContent).toBe('created');
+    expect(screen.getByTestId('profile-onboarding-project').textContent).toBe('');
+    fireEvent.click(screen.getByRole('button', { name: 'mark profile onboarding' }));
+    expect(screen.getByTestId('result').textContent).toBe('false');
   });
 });

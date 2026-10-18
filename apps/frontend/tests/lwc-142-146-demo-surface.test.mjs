@@ -59,9 +59,10 @@ test('concept route remains but user-facing concept copy becomes entries', async
 });
 
 test('main-path chrome strings are i18n-backed in zh-TW', async () => {
-  const [homeClient, pipelineClient, rawClient, listClient, commandPalette, zhTW] = await Promise.all([
+  const [homeClient, pipelineClient, rawUploadPanel, rawClient, listClient, commandPalette, zhTW] = await Promise.all([
     readFile(new URL('../src/components/HomeClient.tsx', import.meta.url), 'utf8'),
     readFile(new URL('../src/components/PipelineClient.tsx', import.meta.url), 'utf8'),
+    readFile(new URL('../src/components/RawUploadPanel.tsx', import.meta.url), 'utf8'),
     readFile(new URL('../src/components/RawClient.tsx', import.meta.url), 'utf8'),
     readFile(new URL('../src/components/ListClient.tsx', import.meta.url), 'utf8'),
     readFile(new URL('../src/components/ui/CommandPalette.tsx', import.meta.url), 'utf8'),
@@ -80,7 +81,7 @@ test('main-path chrome strings are i18n-backed in zh-TW', async () => {
   assert.match(pipelineClient, /t\('Pipeline\.scrapeHint'\)/);
   assert.match(pipelineClient, /t\('Pipeline\.runDescription'\)/);
   assert.match(pipelineClient, /t\('Pipeline\.pipelineStages'\)/);
-  assert.match(pipelineClient, /t\('Pipeline\.select'\)/);
+  assert.match(rawUploadPanel, /t\('Pipeline\.select'\)/);
   assert.match(pipelineClient, /t\('Pipeline\.quotaLine'\)/);
   assert.match(rawClient, /useT\(\)/);
   assert.match(listClient, /placeholder=\{t\('List\.searchPlaceholder'/);

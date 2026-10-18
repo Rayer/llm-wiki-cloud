@@ -10,11 +10,13 @@ const stages: StageId[] = ['source', 'concepts', 'query'];
 
 export function ProfileHowItWorks({
   open,
+  mode = 'settings',
   onBack,
   onSetPreferences,
   onUseGeneralSettings,
 }: {
   open: boolean;
+  mode?: 'settings' | 'creation';
   onBack: () => void;
   onSetPreferences: () => void;
   onUseGeneralSettings: () => void;
@@ -58,7 +60,7 @@ export function ProfileHowItWorks({
           onClick={onBack}
           className="min-h-11 min-w-11 rounded-lg border border-white/10 px-3 text-sm text-zinc-200 hover:bg-white/5 focus-visible:outline focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-emerald-300"
         >
-          <span aria-hidden="true" className="mr-2">←</span>{t(`${prefix}.backToSettings`)}
+          <span aria-hidden="true" className="mr-2">←</span>{t(`${prefix}.${mode === 'creation' ? 'backToCreation' : 'backToSettings'}`)}
         </button>
         <div className="mt-4">
           <p className="font-mono text-[11px] uppercase tracking-[0.2em] text-emerald-300/90">{t(`${prefix}.eyebrow`)}</p>
@@ -136,22 +138,24 @@ export function ProfileHowItWorks({
               <h4 className="text-sm font-semibold text-amber-100">{t(`${prefix}.updateHeading`)}</h4>
               <p className="mt-2 text-sm leading-6 text-zinc-300">{t(`${prefix}.updateBody`)}</p>
             </div>
-            <div className="mt-4 flex flex-wrap gap-2">
-              <button
-                type="button"
-                onClick={onSetPreferences}
-                className="min-h-11 rounded-lg bg-emerald-300 px-4 text-sm font-semibold text-zinc-950 hover:bg-emerald-200 focus-visible:outline focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-emerald-300"
-              >
-                {t(`${prefix}.setPreferences`)}
-              </button>
-              <button
-                type="button"
-                onClick={onUseGeneralSettings}
-                className="min-h-11 rounded-lg border border-white/10 px-4 text-sm text-zinc-200 hover:bg-white/5 focus-visible:outline focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-emerald-300"
-              >
-                {t(`${prefix}.useGeneralSettings`)}
-              </button>
-            </div>
+            {mode === 'settings' ? (
+              <div className="mt-4 flex flex-wrap gap-2">
+                <button
+                  type="button"
+                  onClick={onSetPreferences}
+                  className="min-h-11 rounded-lg bg-emerald-300 px-4 text-sm font-semibold text-zinc-950 hover:bg-emerald-200 focus-visible:outline focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-emerald-300"
+                >
+                  {t(`${prefix}.setPreferences`)}
+                </button>
+                <button
+                  type="button"
+                  onClick={onUseGeneralSettings}
+                  className="min-h-11 rounded-lg border border-white/10 px-4 text-sm text-zinc-200 hover:bg-white/5 focus-visible:outline focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-emerald-300"
+                >
+                  {t(`${prefix}.useGeneralSettings`)}
+                </button>
+              </div>
+            ) : null}
           </>
         ) : null}
 

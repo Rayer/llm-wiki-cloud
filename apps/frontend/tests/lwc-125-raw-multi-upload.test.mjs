@@ -2,19 +2,20 @@ import assert from 'node:assert/strict';
 import { readFile } from 'node:fs/promises';
 import test from 'node:test';
 
-test('pipeline client supports multi-file raw upload queue', async () => {
-  const source = await readFile(
-    new URL('../src/components/PipelineClient.tsx', import.meta.url),
-    'utf8',
-  );
+test('Home and Raw share the multi-file raw upload queue', async () => {
+  const [pipeline, uploadPanel] = await Promise.all([
+    readFile(new URL('../src/components/PipelineClient.tsx', import.meta.url), 'utf8'),
+    readFile(new URL('../src/components/RawUploadPanel.tsx', import.meta.url), 'utf8'),
+  ]);
 
-  assert.match(source, /multiple/);
-  assert.match(source, /UPLOAD_CONCURRENCY\s*=\s*3/);
-  assert.match(source, /already_exists/);
-  assert.match(source, /upload-summary/);
-  assert.match(source, /duplicate filename in batch/);
-  assert.match(source, /Retry/);
-  assert.match(source, /uploadRawFile/);
+  assert.match(pipeline, /<RawUploadPanel/);
+  assert.match(uploadPanel, /multiple/);
+  assert.match(uploadPanel, /UPLOAD_CONCURRENCY\s*=\s*3/);
+  assert.match(uploadPanel, /already_exists/);
+  assert.match(uploadPanel, /upload-summary/);
+  assert.match(uploadPanel, /duplicate filename in batch/);
+  assert.match(uploadPanel, /Retry/);
+  assert.match(uploadPanel, /uploadRawFile/);
 });
 
 test('pipeline client still polls status after accepted pipeline run', async () => {

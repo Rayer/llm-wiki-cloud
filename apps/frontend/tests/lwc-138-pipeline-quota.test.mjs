@@ -152,10 +152,10 @@ test('blockReasonMessage prefers demo, project, running, then quota message', ()
 });
 
 test('PipelineClient wires quota line, disabled Run, status fetch, and checklist', async () => {
-  const pipelineClient = await readFile(
-    new URL('../src/components/PipelineClient.tsx', import.meta.url),
-    'utf8',
-  );
+  const [pipelineClient, rawUploadPanel] = await Promise.all([
+    readFile(new URL('../src/components/PipelineClient.tsx', import.meta.url), 'utf8'),
+    readFile(new URL('../src/components/RawUploadPanel.tsx', import.meta.url), 'utf8'),
+  ]);
 
   assert.match(pipelineClient, /from '@\/lib\/pipeline-quota'/);
   assert.match(pipelineClient, /formatQuotaLine/);
@@ -169,8 +169,10 @@ test('PipelineClient wires quota line, disabled Run, status fetch, and checklist
   assert.match(pipelineClient, /useState\(false\)/);
   assert.match(pipelineClient, /already_running/);
   assert.match(pipelineClient, /currentProject/);
-  // After upload created: refresh status once in addition to nav counts.
-  assert.match(pipelineClient, /needsCountRefreshRef[\s\S]*?getPipelineStatus/);
+  // The shared upload panel reports created files so Home can refresh quota status.
+  assert.match(pipelineClient, /onQueueSettled=\{handleUploadQueueSettled\}/);
+  assert.match(pipelineClient, /handleUploadQueueSettled[\s\S]*?refreshPipelineStatus/);
+  assert.match(rawUploadPanel, /result\.status === 'created'/);
   // Demo early-return remains belt-and-suspenders on click.
   assert.match(pipelineClient, /handleRunPipeline[\s\S]*?isDemoSession/);
   // Toast path for API/race errors.

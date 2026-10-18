@@ -31,6 +31,7 @@ export function SourceListClient() {
 function SourceListSession() {
   const { t } = useT();
   const { currentProject, token } = useWorkspace();
+  const currentProjectId = currentProject?.id;
   const [sources, setSources] = useState<SourceListItem[]>([]);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<SourceListError | null>(null);
@@ -47,7 +48,7 @@ function SourceListSession() {
 
   useEffect(() => {
     let cancelled = false;
-    getSources()
+    getSources(currentProjectId)
       .then((data) => {
         if (cancelled) return;
         setSources(data);
@@ -67,7 +68,7 @@ function SourceListSession() {
       cancelled = true;
       previewRequestRef.current += 1;
     };
-  }, [currentProject?.id, token]);
+  }, [currentProjectId, token]);
 
   const openRawPreview = useCallback(async (rawPath: string) => {
     const request = ++previewRequestRef.current;
@@ -75,7 +76,7 @@ function SourceListSession() {
     setPreviewLoading(true);
     setPreviewError(null);
     try {
-      const content = await getRawFilePreview(rawFileNameFromSource(rawPath));
+      const content = await getRawFilePreview(rawFileNameFromSource(rawPath), currentProjectId);
       if (previewRequestRef.current === request) {
         setPreview((current) => current?.path === rawPath ? { ...current, content } : current);
       }
@@ -91,7 +92,7 @@ function SourceListSession() {
     } finally {
       if (previewRequestRef.current === request) setPreviewLoading(false);
     }
-  }, [t]);
+  }, [currentProjectId, t]);
 
   const closePreview = useCallback(() => {
     previewRequestRef.current += 1;

@@ -234,6 +234,7 @@
     "openNavigation": "開啟導覽",
     "closeNavigation": "關閉導覽",
     "skipToContent": "跳到主要內容",
+    "home": "主頁",
     "search": "搜尋",
     "profile": "專案設定",
     "sources": "來源",
@@ -254,6 +255,21 @@
     "requestIDCopied": "已複製",
     "ok": "確定",
     "cancel": "取消"
+  },
+  "NewProject": {
+    "title": "建立專案",
+    "description": "每個專案是一個獨立的知識工作空間。建立後可選擇設定整理與搜尋偏好，也可以直接加入資料。",
+    "createdDescription": "專案已建立。你可以前往設定調整選填偏好或加入資料。",
+    "name": "專案名稱",
+    "namePlaceholder": "產品研究",
+    "learnAboutPreferences": "了解專案設定方式",
+    "create": "建立專案",
+    "creating": "建立中…",
+    "openSettings": "開啟專案設定",
+    "opening": "開啟中…",
+    "close": "關閉建立專案視窗",
+    "navigationFailed": "專案已建立，但無法開啟設定。可以重試，不會再次建立專案。{error}",
+    "requestFailed": "無法完成要求。"
   },
   "MCPOAuth": {
     "nav": "Agent & MCP",
@@ -429,6 +445,11 @@
       "systemInterpretationHeading": "系統解讀",
       "noticeHeading": "修改 Profile 後，既有文章會如何更新？",
       "noticeBody": "若要讓先前編譯好的 concept 內容套用新需求，需要全面編譯。只修改 Profile 不會自動重寫既有文章。Tags 的更新不需要先做全面編譯；其更新與生效進度會另外顯示。",
+      "newProjectIntroHeading": "整理與搜尋偏好（選填）",
+      "newProjectIntroBody": "可以先看一下這個專案的整理方式。這是選填設定；你可以稍後調整，不修改或儲存也能直接加入資料。",
+      "newProjectIntroReview": "查看本頁設定",
+      "newProjectIntroAddData": "先加入資料",
+      "newProjectIntroClose": "關閉選填設定提示",
       "setPreferences": "設定我的偏好",
       "seeExample": "看一個例子",
       "cards": {
@@ -470,6 +491,7 @@
       "guide": {
         "eyebrow": "PROFILE 示意",
         "backToSettings": "返回設定",
+        "backToCreation": "返回建立專案",
         "heading": "Profile 如何影響整理與搜尋",
         "intro": "透過同一個固定例子，從來源筆記看到搜尋問題。這是教學示意，不是專案活動或生成結果。",
         "fixedExampleLabel": "預先撰寫的示例 · 非 AI 生成、非即時專案資料",
@@ -685,6 +707,7 @@
     "runDescription": "啟動 OLW pipeline 以整理、編譯並上架知識條目。",
     "pipelineStages": "ingest（分析原始筆記）→ compile（綜合 wiki 條目）→ lint（品質檢查）→ publish（自動核准）。",
     "select": "選擇",
+    "selectFiles": "選擇檔案",
     "quotaLine": "今日執行：{runs}/{limit} · 冷卻：{cooldown} · 新檔案：{newFiles}",
     "quotaNotEnforced": "未啟用配額限制",
     "cooldownClear": "無",
@@ -725,6 +748,8 @@
   "Raw": {
     "title": "原文檔案",
     "description": "等待 Pipeline 處理或已處理的專案來源檔案。",
+      "uploadTitle": "加入原文檔案",
+      "uploadHint": "可選擇一個或多個支援格式的檔案（最多同時上傳 3 個）。檔案會先列為待處理；請前往主頁執行 Pipeline，再整理與搜尋內容。",
     "loading": "正在載入原文檔案",
     "empty": "尚無原文檔案。請先上傳內容再執行 Pipeline。",
     "name": "名稱",

@@ -37,6 +37,7 @@ export function CommandPalette({
     placeholder: string;
     navigate: string;
     projects: string;
+    home: string;
     search: string;
     sources: string;
     concepts: string;
@@ -64,7 +65,7 @@ export function CommandPalette({
     const nav: CommandItem[] = [
       {
         id: 'nav-search',
-        label: labels.search,
+        label: labels.home,
         group: labels.navigate,
         icon: <Search className="size-4" />,
         action: () => { if (confirmNavigation()) router.push('/'); },

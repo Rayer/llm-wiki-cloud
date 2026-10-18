@@ -10,6 +10,7 @@ import { Surface } from './ui/Surface';
 import { EmptyState, ErrorState, LoadingState, useErrorIdCopy } from './States';
 import { useWorkspace } from './WorkspaceProvider';
 import { useT } from '@/lib/i18n';
+import { RawUploadPanel } from './RawUploadPanel';
 
 type RawPreviewKind = 'markdown' | 'html' | 'download';
 
@@ -67,6 +68,7 @@ export function RawClient() {
 function RawClientSession() {
   const { t } = useT();
   const { currentProject, token } = useWorkspace();
+  const currentProjectId = currentProject?.id;
   const searchParams = useSearchParams();
   const [files, setFiles] = useState<RawFile[]>([]);
   const [loading, setLoading] = useState(true);
@@ -85,36 +87,42 @@ function RawClientSession() {
   const { copyErrorId: copyDownloadErrorId, errorIdCopied: downloadErrorIdCopied } =
     useErrorIdCopy(downloadError, downloadError?.requestId, downloadError?.diagnosticId);
 
-  useEffect(() => {
-    let cancelled = false;
+  const refreshRawFiles = useCallback(async () => {
     const request = ++listRequestRef.current;
-    openedQueryFileRef.current = '';
 
-    getRawFiles()
-      .then((data) => {
-        if (cancelled || listRequestRef.current !== request) return;
-        setFiles(data);
-      })
-      .catch((cause: unknown) => {
-        if (!cancelled && listRequestRef.current === request) {
-          setError({
-            message: cause instanceof Error ? cause.message : String(cause),
-            requestId: cause instanceof ApiError ? cause.requestId : undefined,
-            diagnosticId: cause instanceof ApiError ? cause.diagnosticId : undefined,
-          });
-        }
-      })
-      .finally(() => {
-        if (!cancelled && listRequestRef.current === request) setLoading(false);
-      });
+    try {
+      const data = await getRawFiles(currentProjectId);
+      if (listRequestRef.current !== request) return;
+      setError(null);
+      setFiles(data);
+    } catch (cause: unknown) {
+      if (listRequestRef.current === request) {
+        setError({
+          message: cause instanceof Error ? cause.message : String(cause),
+          requestId: cause instanceof ApiError ? cause.requestId : undefined,
+          diagnosticId: cause instanceof ApiError ? cause.diagnosticId : undefined,
+        });
+      }
+    } finally {
+      if (listRequestRef.current === request) setLoading(false);
+    }
+  }, [currentProjectId]);
+
+  const handleUploadsSettled = useCallback(() => {
+    void refreshRawFiles();
+  }, [refreshRawFiles]);
+
+  useEffect(() => {
+    openedQueryFileRef.current = '';
+    const timer = window.setTimeout(() => void refreshRawFiles(), 0);
 
     return () => {
-      cancelled = true;
-      if (listRequestRef.current === request) listRequestRef.current += 1;
+      window.clearTimeout(timer);
+      listRequestRef.current += 1;
       previewRequestRef.current += 1;
       downloadRequestRef.current += 1;
     };
-  }, [currentProject?.id, token]);
+  }, [currentProjectId, refreshRawFiles, token]);
 
   const sortedFiles = useMemo(
     () => [...files].sort((a, b) => a.name.localeCompare(b.name)),
@@ -138,7 +146,7 @@ function RawClientSession() {
 
     setPreviewLoading(true);
     try {
-      const content = await getRawFilePreview(file.name);
+      const content = await getRawFilePreview(file.name, currentProjectId);
       if (previewRequestRef.current === request) {
         setPreview((current) => current?.file.name === file.name ? { ...current, content } : current);
       }
@@ -154,7 +162,7 @@ function RawClientSession() {
     } finally {
       if (previewRequestRef.current === request) setPreviewLoading(false);
     }
-  }, [t]);
+  }, [currentProjectId, t]);
 
   useEffect(() => {
     if (!highlightedFile || loading || error || openedQueryFileRef.current === highlightedFile) {
@@ -192,11 +200,12 @@ function RawClientSession() {
   async function downloadRawFile() {
     if (!preview) return;
     const selectedPreview = preview;
+    const projectId = currentProject?.id;
     const request = ++downloadRequestRef.current;
     setDownloadError(null);
 
     try {
-      const content = selectedPreview.content || await getRawFilePreview(selectedPreview.file.name);
+      const content = selectedPreview.content || await getRawFilePreview(selectedPreview.file.name, projectId);
       if (downloadRequestRef.current !== request) return;
       const url = window.URL.createObjectURL(new Blob([content], { type: 'text/plain;charset=utf-8' }));
       const link = document.createElement('a');
@@ -228,6 +237,15 @@ function RawClientSession() {
           {t('Raw.description')}
         </p>
       </header>
+
+      {currentProject ? (
+        <RawUploadPanel
+          key={JSON.stringify([currentProject.id, token])}
+          title={t('Raw.uploadTitle')}
+          hint={t('Raw.uploadHint')}
+          onQueueSettled={handleUploadsSettled}
+        />
+      ) : null}
 
       {loading ? <LoadingState label={t('Raw.loading')} /> : null}
       {error ? (
