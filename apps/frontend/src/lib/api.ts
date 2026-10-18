@@ -1035,14 +1035,14 @@ export async function getStatus(projectId?: string) {
   return normalizeStatus(await requestJson<unknown>('/api/v1/status', { projectId }));
 }
 
-export async function getRawFiles() {
-  return extractNamedArray(await requestJson<unknown>('/api/v1/raw'), ['files', 'items', 'results', 'data'])
+export async function getRawFiles(projectId?: string) {
+  return extractNamedArray(await requestJson<unknown>('/api/v1/raw', { projectId }), ['files', 'items', 'results', 'data'])
     .map(normalizeRawFile);
 }
 
-export async function getRawFilePreview(filename: string): Promise<string> {
+export async function getRawFilePreview(filename: string, projectId?: string): Promise<string> {
   const rawFileName = rawFileNameFromSource(filename);
-  const response = await apiFetch(`/api/v1/raw/${encodeURIComponent(rawFileName)}?preview=true`);
+  const response = await apiFetch(`/api/v1/raw/${encodeURIComponent(rawFileName)}?preview=true`, { projectId });
 
   if (!response.ok) {
     const payload: unknown = await response.json().catch(() => null);
@@ -1057,8 +1057,8 @@ export async function getRawFilePreview(filename: string): Promise<string> {
   return response.text();
 }
 
-export async function getSources() {
-  return extractArray(await requestJson<unknown>('/api/v1/sources')).map(normalizeSourceListItem);
+export async function getSources(projectId?: string) {
+  return extractArray(await requestJson<unknown>('/api/v1/sources', { projectId })).map(normalizeSourceListItem);
 }
 
 export async function getSource(slug: string) {
@@ -1246,6 +1246,7 @@ function sendRawUploadRequest(
 export async function uploadRawFile(
   file: File,
   onProgress?: RawUploadProgressCallback,
+  explicitProjectId?: string,
 ): Promise<RawUploadResult> {
   if (file.size > RAW_UPLOAD_MAX_BYTES) {
     throw new Error('file too large (max 5 MiB)');
@@ -1254,7 +1255,7 @@ export async function uploadRawFile(
     throw new Error('empty file');
   }
 
-  const projectId = selectedProjectId();
+  const projectId = explicitProjectId ?? selectedProjectId();
   const { auth, accessToken, epoch: requestEpoch } = await accessTokenOrRefresh();
   const formData = new FormData();
   formData.append('file', file);

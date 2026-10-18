@@ -11,6 +11,15 @@ if (!(React as { act?: (callback: () => unknown) => Promise<unknown> | unknown }
 
 const { act, cleanup, fireEvent, render, screen, waitFor } = await import('@testing-library/react');
 
+vi.mock('next/navigation', () => ({ useRouter: () => ({ push: vi.fn(), replace: vi.fn() }) }));
+vi.mock('@/lib/auth', () => ({ useAuth: () => ({ user: { id: 'profile-owner' }, sessionEpoch: 1 }) }));
+vi.mock('@/components/WorkspaceProvider', () => ({
+  useWorkspace: () => ({ profileOnboarding: null, markProfileOnboardingPresented: () => false }),
+}));
+vi.mock('@/components/NavigationBlocker', () => ({
+  useNavigationBlocker: () => ({ confirmNavigation: () => true, setBlocked: vi.fn() }),
+}));
+
 const mocks = vi.hoisted(() => ({
   getProfile: vi.fn(),
   getProfileBootstrapGuidance: vi.fn(),

@@ -87,7 +87,7 @@ function ShellContent({ children }: { children: React.ReactNode }) {
     countKey?: NavCountKey;
     beta?: boolean;
   }[] = [
-    { href: '/', label: t('Shell.search'), icon: Search, exact: true },
+    { href: '/', label: t('Shell.home'), icon: Search, exact: true },
     ...(!isDemoSession ? [{ href: '/profile', label: t('Shell.profile'), icon: Pencil }] : []),
     ...(!isDemoSession ? [{ href: '/advanced', label: t('MCPOAuth.nav'), icon: Shield, beta: true }] : []),
     ...(!isDemoSession ? [{ href: '/cli', label: t('CLILane.nav'), icon: Terminal, beta: true }] : []),
@@ -355,6 +355,7 @@ function ShellContent({ children }: { children: React.ReactNode }) {
             placeholder: t('Command.placeholder'),
             navigate: t('Command.navigate'),
             projects: t('Shell.projects'),
+            home: t('Shell.home'),
             search: t('Shell.search'),
             sources: t('Shell.sources'),
             concepts: t('Shell.concepts'),

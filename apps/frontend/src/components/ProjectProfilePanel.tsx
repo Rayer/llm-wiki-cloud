@@ -1,6 +1,7 @@
 'use client';
 
 import { useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState } from 'react';
+import { useRouter } from 'next/navigation';
 import {
   confirmProfileCandidate,
   confirmProfileBootstrapGuidance,
@@ -17,6 +18,9 @@ import {
   type ProfileState,
 } from '@/lib/api';
 import { useT } from '@/lib/i18n';
+import { useAuth } from '@/lib/auth';
+import { useWorkspace } from './WorkspaceProvider';
+import { useNavigationBlocker } from './NavigationBlocker';
 import { ProfileHowItWorks } from './ProfileHowItWorks';
 import { ProfileRequirementsEditor } from './ProfileRequirementsEditor';
 import {
@@ -103,11 +107,15 @@ function ProfileGuidanceArtifactDetails({ projectId, revision, title }: { projec
   );
 }
 
-type RequestScope = { projectId: string; identity: object };
+type RequestScope = { projectId: string; ownerId: string; sessionEpoch: number; identity: object };
 type ProfileSettingsCard = 'requirements' | 'interpretation' | 'active';
 
 export function ProjectProfilePanel({ projectId }: { projectId: string }) {
+  const router = useRouter();
   const { t } = useT();
+  const { user, sessionEpoch } = useAuth();
+  const { profileOnboarding, markProfileOnboardingPresented } = useWorkspace();
+  const { confirmNavigation, setBlocked } = useNavigationBlocker();
   const [profile, setProfile] = useState<ProfileState | null>(null);
   const [bootstrapGuidance, setBootstrapGuidance] = useState<ProfileBootstrapGuidance | null>(null);
   const [bootstrapScope, setBootstrapScope] = useState<RequestScope | null>(null);
@@ -122,13 +130,17 @@ export function ProjectProfilePanel({ projectId }: { projectId: string }) {
   const [error, setError] = useState('');
   const [errorProjectId, setErrorProjectId] = useState('');
   const [notice, setNotice] = useState('');
+  const [introVisibleFor, setIntroVisibleFor] = useState('');
   const profileRef = useRef<ProfileState | null>(null);
   const guideEntryRef = useRef<HTMLButtonElement>(null);
   const requirementsCardRef = useRef<HTMLButtonElement>(null);
   const focusAfterGuideRef = useRef<'guideEntry' | 'requirements' | null>(null);
   const bootstrapRequestRef = useRef(0);
   const loadedRef = useRef(false);
-  const currentScope = useMemo<RequestScope>(() => ({ projectId, identity: {} }), [projectId]);
+  const currentScope = useMemo<RequestScope>(
+    () => ({ projectId, ownerId: user?.id ?? '', sessionEpoch, identity: {} }),
+    [projectId, sessionEpoch, user?.id],
+  );
   const currentScopeRef = useRef<RequestScope | null>(null);
   const mountedRef = useRef(false);
 
@@ -495,6 +507,42 @@ export function ProjectProfilePanel({ projectId }: { projectId: string }) {
   const canRetryTagging = visibleProfile?.job
     && (visibleProfile.job.status === 'incomplete' || visibleProfile.job.status === 'retry_wait');
   const hasUnsavedChanges = Boolean(visibleProfile && !sameRequirements(draft, visibleProfile.requirements));
+  useEffect(() => {
+    setBlocked(hasUnsavedChanges);
+    return () => setBlocked(false);
+  }, [hasUnsavedChanges, projectId, sessionEpoch, setBlocked]);
+  const introOwnerId = user?.id ?? '';
+  const introKey = `${introOwnerId}:${projectId}:${sessionEpoch}`;
+  const introIsPending = Boolean(
+    visibleProfile
+    && !profileLoading
+    && profileOnboarding?.ownerId === introOwnerId
+    && profileOnboarding.projectId === projectId
+    && profileOnboarding.sessionEpoch === sessionEpoch,
+  );
+
+  useLayoutEffect(() => {
+    if (!introIsPending) return;
+    if (markProfileOnboardingPresented(introOwnerId, projectId, sessionEpoch)) {
+      // eslint-disable-next-line react-hooks/set-state-in-effect -- reveal notice after the loaded Profile is committed
+      setIntroVisibleFor(introKey);
+    }
+  }, [introIsPending, introKey, introOwnerId, markProfileOnboardingPresented, projectId, sessionEpoch]);
+
+  const showNewProjectIntro = introVisibleFor === introKey;
+
+  function reviewSettingsFromIntro() {
+    setIntroVisibleFor('');
+    setOpenCard('requirements');
+    requirementsCardRef.current?.scrollIntoView?.({ behavior: 'smooth', block: 'nearest' });
+    requirementsCardRef.current?.focus();
+  }
+
+  function addDataFromIntro() {
+    if (!confirmNavigation()) return;
+    setIntroVisibleFor('');
+    router.push('/raw');
+  }
 
   return (
     <section
@@ -552,6 +600,45 @@ export function ProjectProfilePanel({ projectId }: { projectId: string }) {
 
       {visibleProfile ? (
         <>
+          {showNewProjectIntro ? (
+            <section className="mt-4 rounded-xl border border-emerald-200/25 bg-emerald-200/[0.06] p-4" aria-labelledby="new-project-profile-intro-heading">
+              <div className="flex items-start justify-between gap-3">
+                <div className="min-w-0">
+                  <h3 id="new-project-profile-intro-heading" className="text-sm font-semibold text-emerald-50">
+                    {t('Profile.localUx.newProjectIntroHeading')}
+                  </h3>
+                  <p className="mt-1 text-sm leading-6 text-zinc-200">
+                    {t('Profile.localUx.newProjectIntroBody')}
+                  </p>
+                </div>
+                <button
+                  type="button"
+                  onClick={() => setIntroVisibleFor('')}
+                  className="min-h-11 min-w-11 rounded-lg border border-white/10 px-3 text-zinc-300 hover:bg-white/5 focus-visible:outline focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-emerald-300"
+                  aria-label={t('Profile.localUx.newProjectIntroClose')}
+                >
+                  ×
+                </button>
+              </div>
+              <div className="mt-3 flex flex-wrap gap-2">
+                <button
+                  type="button"
+                  onClick={reviewSettingsFromIntro}
+                  className="min-h-11 rounded-lg bg-emerald-300 px-4 text-sm font-semibold text-zinc-950 hover:bg-emerald-200 focus-visible:outline focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-emerald-300"
+                >
+                  {t('Profile.localUx.newProjectIntroReview')}
+                </button>
+                <button
+                  type="button"
+                  onClick={addDataFromIntro}
+                  className="min-h-11 rounded-lg border border-emerald-100/30 px-4 text-sm font-semibold text-emerald-50 hover:bg-emerald-100/5 focus-visible:outline focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-emerald-300"
+                >
+                  {t('Profile.localUx.newProjectIntroAddData')}
+                </button>
+              </div>
+            </section>
+          ) : null}
+
           <p className="mt-4 text-xs leading-5 text-zinc-500">{t('Profile.localUx.layersDescription')}</p>
 
           <section className="mt-4 rounded-xl border border-amber-200/30 bg-amber-200/[0.08] p-4" aria-labelledby="profile-update-notice-heading">

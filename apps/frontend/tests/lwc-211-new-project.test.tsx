@@ -14,10 +14,8 @@ const mocks = vi.hoisted(() => ({
   addProject: vi.fn(),
   closeNewProject: vi.fn(),
   confirmNavigation: vi.fn(),
-  getProfile: vi.fn(),
-  saveProfile: vi.fn(),
   push: vi.fn(),
-  user: { id: 'user-1' },
+  user: { id: 'user-1' } as { id: string } | null,
   sessionEpoch: 1,
   open: true,
 }));
@@ -35,29 +33,10 @@ vi.mock('@/lib/auth', () => ({ useAuth: () => ({ sessionEpoch: mocks.sessionEpoc
 vi.mock('@/components/NavigationBlocker', () => ({
   useNavigationBlocker: () => ({ confirmNavigation: mocks.confirmNavigation }),
 }));
-vi.mock('@/lib/api', async () => {
-  const actual = await vi.importActual<typeof import('@/lib/api')>('@/lib/api');
-  return { ...actual, getProfile: mocks.getProfile, saveProfile: mocks.saveProfile };
-});
 
 import { NewProjectModal } from '@/components/NewProjectModal';
 
 const newProject = { id: 'project-new', name: 'Research' };
-
-function emptyProfile(requirements: { id: string; text: string }[] = []) {
-  return {
-    project_id: 'project-new',
-    revision: requirements.length ? 1 : 0,
-    requirements,
-    derivation_status: requirements.length ? 'pending' : null,
-    scheduled_for: requirements.length ? '2026-09-25T03:00:00Z' : null,
-    derivation_error_code: null,
-    candidate: null,
-    confirmed_candidate_id: null,
-    active: null,
-    job: null,
-  };
-}
 
 function deferred<T>() {
   let resolve!: (value: T) => void;
@@ -66,12 +45,10 @@ function deferred<T>() {
 }
 
 beforeEach(() => {
-  window.localStorage.setItem('locale', 'en');
+  localStorage.setItem('locale', 'en');
   mocks.addProject.mockResolvedValue(newProject);
   mocks.closeNewProject.mockReset();
   mocks.confirmNavigation.mockReturnValue(true);
-  mocks.getProfile.mockResolvedValue(emptyProfile());
-  mocks.saveProfile.mockResolvedValue(emptyProfile());
   mocks.push.mockReset();
   mocks.user = { id: 'user-1' };
   mocks.sessionEpoch = 1;
@@ -83,122 +60,117 @@ afterEach(() => {
   vi.clearAllMocks();
 });
 
-describe('LWC-211 project creation Profile requirements', () => {
-  it('accepts all blank optional Profile fields without submitting Profile work', async () => {
+describe('LWC-406 project creation', () => {
+  it.each([
+    ['en', 'Create project', 'Project name', 'Learn how project settings work', 'Back to project creation'],
+    ['zh-TW', '建立專案', '專案名稱', '了解專案設定方式', '返回建立專案'],
+  ] as const)('reuses the Profile explanation and preserves the project name in %s', async (locale, title, nameLabel, helpLabel, backLabel) => {
+    localStorage.setItem('locale', locale);
+    render(<NewProjectModal />);
+    fireEvent.change(screen.getByRole('textbox', { name: nameLabel }), { target: { value: 'Café research' } });
+
+    expect(screen.getByRole('dialog', { name: title })).toBeDefined();
+    expect(screen.queryByRole('textbox', { name: /Requirement/ })).toBeNull();
+    expect(screen.getByText(locale === 'en'
+      ? 'Each project is a separate knowledge workspace. After you create it, you can set optional organization and search preferences, or add data directly.'
+      : '每個專案是一個獨立的知識工作空間。建立後可選擇設定整理與搜尋偏好，也可以直接加入資料。')).toBeDefined();
+
+    fireEvent.click(screen.getByRole('button', { name: helpLabel }));
+    expect(screen.getByRole('heading', { name: locale === 'en' ? 'How Profile shapes organization and search' : 'Profile 如何影響整理與搜尋' })).toBeDefined();
+    expect(screen.queryByRole('button', { name: locale === 'en' ? 'Set my preferences' : '設定我的偏好' })).toBeNull();
+    fireEvent.click(screen.getByRole('button', { name: backLabel }));
+
+    expect((screen.getByRole('textbox', { name: nameLabel }) as HTMLInputElement).value).toBe('Café research');
+    expect(mocks.addProject).not.toHaveBeenCalled();
+    expect(mocks.push).not.toHaveBeenCalled();
+  });
+
+  it('creates without Profile reads or saves and navigates to the Profile page', async () => {
     render(<NewProjectModal />);
     fireEvent.change(screen.getByRole('textbox', { name: 'Project name' }), { target: { value: 'Research' } });
-    expect((screen.getByRole('textbox', { name: 'Requirement 1' }) as HTMLTextAreaElement).value).toBe('');
     fireEvent.click(screen.getByRole('button', { name: 'Create project' }));
 
     await waitFor(() => expect(mocks.addProject).toHaveBeenCalledTimes(1));
-    expect(mocks.saveProfile).not.toHaveBeenCalled();
+    expect(mocks.addProject).toHaveBeenCalledWith('Research');
+    expect(mocks.push).toHaveBeenCalledWith('/profile');
     expect(mocks.closeNewProject).toHaveBeenCalledTimes(1);
-    expect(mocks.push).toHaveBeenCalledWith('/');
   });
 
-  it('preserves explicit blank requirement text, IDs, and order in a mixed initial list', async () => {
+  it('keeps the name and error after a create failure without navigating', async () => {
+    mocks.addProject.mockRejectedValueOnce(new Error('name already exists'));
     render(<NewProjectModal />);
     fireEvent.change(screen.getByRole('textbox', { name: 'Project name' }), { target: { value: 'Research' } });
-    fireEvent.click(screen.getByRole('button', { name: 'Add requirement' }));
-    fireEvent.click(screen.getByRole('button', { name: 'Add requirement' }));
-    fireEvent.change(screen.getByRole('textbox', { name: 'Requirement 2' }), { target: { value: 'Invoices' } });
     fireEvent.click(screen.getByRole('button', { name: 'Create project' }));
 
-    await waitFor(() => expect(mocks.saveProfile).toHaveBeenCalledTimes(1));
-    const [projectId, expectedRevision, requirements] = mocks.saveProfile.mock.calls[0];
-    expect(projectId).toBe('project-new');
-    expect(expectedRevision).toBe(0);
-    expect(requirements).toHaveLength(2);
-    expect(requirements[0]).toEqual({ id: expect.any(String), text: '' });
-    expect(requirements[1]).toEqual({ id: expect.any(String), text: 'Invoices' });
-    expect(requirements[0].id).not.toBe(requirements[1].id);
+    expect(await screen.findByRole('alert')).toHaveProperty('textContent', 'name already exists');
+    expect((screen.getByRole('textbox', { name: 'Project name' }) as HTMLInputElement).value).toBe('Research');
+    expect(mocks.push).not.toHaveBeenCalled();
   });
 
-  it('keeps the draft and retries the existing project after an ambiguous Profile save failure', async () => {
-    mocks.saveProfile.mockRejectedValueOnce(new Error('temporary network failure'));
-    mocks.getProfile.mockImplementation(async () => emptyProfile(mocks.saveProfile.mock.calls[0]?.[2] ?? []));
+  it('retries navigation for the created project without sending a second create', async () => {
+    mocks.push.mockImplementationOnce(() => { throw new Error('transition unavailable'); });
     render(<NewProjectModal />);
     fireEvent.change(screen.getByRole('textbox', { name: 'Project name' }), { target: { value: 'Research' } });
-    const requirement = screen.getByRole('textbox', { name: 'Requirement 1' });
-    fireEvent.change(requirement, { target: { value: 'invoice source' } });
     fireEvent.click(screen.getByRole('button', { name: 'Create project' }));
 
-    expect(await screen.findByText(/Project created, but Profile save was not confirmed/i)).toBeDefined();
-    expect((screen.getByRole('textbox', { name: 'Requirement 1' }) as HTMLTextAreaElement).value).toBe('invoice source');
-    expect(screen.getByRole('button', { name: 'Retry Profile save' })).toBeDefined();
-    fireEvent.click(screen.getByRole('button', { name: 'Retry Profile save' }));
+    expect(await screen.findByRole('button', { name: 'Open project settings' })).toBeDefined();
+    expect(screen.getByRole('alert').textContent).toContain('Project created');
+    fireEvent.click(screen.getByRole('button', { name: 'Open project settings' }));
 
-    await waitFor(() => expect(mocks.closeNewProject).toHaveBeenCalledTimes(1));
+    await waitFor(() => expect(mocks.push).toHaveBeenCalledTimes(2));
     expect(mocks.addProject).toHaveBeenCalledTimes(1);
-    expect(mocks.saveProfile).toHaveBeenCalledTimes(1);
-    expect(mocks.getProfile).toHaveBeenCalledWith('project-new');
+    expect(mocks.push).toHaveBeenLastCalledWith('/profile');
   });
 
-  it('does not save, restore, close, or navigate after an account switch during project creation', async () => {
+  it('honors the existing dirty-navigation guard before creating', async () => {
+    mocks.confirmNavigation.mockReturnValue(false);
+    render(<NewProjectModal />);
+    fireEvent.change(screen.getByRole('textbox', { name: 'Project name' }), { target: { value: 'Research' } });
+    fireEvent.click(screen.getByRole('button', { name: 'Create project' }));
+
+    expect(mocks.confirmNavigation).toHaveBeenCalledOnce();
+    expect(mocks.addProject).not.toHaveBeenCalled();
+    expect(mocks.push).not.toHaveBeenCalled();
+  });
+
+  it('ignores a late create after the session changes', async () => {
     const pendingCreate = deferred<typeof newProject>();
     mocks.addProject.mockReturnValue(pendingCreate.promise);
     const view = render(<NewProjectModal />);
     fireEvent.change(screen.getByRole('textbox', { name: 'Project name' }), { target: { value: 'Research' } });
-    fireEvent.change(screen.getByRole('textbox', { name: 'Requirement 1' }), { target: { value: 'invoice source' } });
     fireEvent.click(screen.getByRole('button', { name: 'Create project' }));
 
     mocks.user = { id: 'user-2' };
     mocks.sessionEpoch = 2;
-    view.rerender(<NewProjectModal />);
-    pendingCreate.resolve(newProject);
-
-    await waitFor(() => expect(mocks.addProject).toHaveBeenCalledTimes(1));
-    expect(mocks.saveProfile).not.toHaveBeenCalled();
-    expect(mocks.closeNewProject).not.toHaveBeenCalled();
-    expect(mocks.push).not.toHaveBeenCalled();
-    expect((screen.getByRole('textbox', { name: 'Requirement 1' }) as HTMLTextAreaElement).value).toBe('');
-  });
-
-  it('does not finish an old Profile save after the authenticated session changes', async () => {
-    const pendingSave = deferred<ReturnType<typeof emptyProfile>>();
-    mocks.saveProfile.mockReturnValue(pendingSave.promise);
-    const view = render(<NewProjectModal />);
-    fireEvent.change(screen.getByRole('textbox', { name: 'Project name' }), { target: { value: 'Research' } });
-    fireEvent.change(screen.getByRole('textbox', { name: 'Requirement 1' }), { target: { value: 'invoice source' } });
-    fireEvent.click(screen.getByRole('button', { name: 'Create project' }));
-    await waitFor(() => expect(mocks.saveProfile).toHaveBeenCalledTimes(1));
-
-    mocks.user = { id: 'user-2' };
-    mocks.sessionEpoch = 2;
-    view.rerender(<NewProjectModal />);
-    pendingSave.resolve(emptyProfile([{ id: 'req-old', text: 'invoice source' }]));
-
-    await waitFor(() => expect(mocks.saveProfile).toHaveBeenCalledTimes(1));
-    expect(mocks.getProfile).not.toHaveBeenCalled();
-    expect(mocks.closeNewProject).not.toHaveBeenCalled();
-    expect(mocks.push).not.toHaveBeenCalled();
-    expect(screen.queryByText(/Project created, but Profile save/)).toBeNull();
-    expect((screen.getByRole('textbox', { name: 'Requirement 1' }) as HTMLTextAreaElement).value).toBe('');
-  });
-
-  it('invalidates a pending save when the modal closes and reopens in a new lifetime', async () => {
-    const pendingSave = deferred<ReturnType<typeof emptyProfile>>();
-    mocks.saveProfile.mockReturnValue(pendingSave.promise);
-    const view = render(<NewProjectModal />);
-    fireEvent.change(screen.getByRole('textbox', { name: 'Project name' }), { target: { value: 'Research' } });
-    fireEvent.change(screen.getByRole('textbox', { name: 'Requirement 1' }), { target: { value: 'invoice source' } });
-    fireEvent.click(screen.getByRole('button', { name: 'Create project' }));
-    await waitFor(() => expect(mocks.saveProfile).toHaveBeenCalledTimes(1));
-
-    mocks.open = false;
-    view.rerender(<NewProjectModal />);
-    expect(screen.queryByRole('dialog', { name: 'Create project' })).toBeNull();
-    mocks.open = true;
     view.rerender(<NewProjectModal />);
     await act(async () => {
-      pendingSave.resolve(emptyProfile([{ id: 'req-old', text: 'invoice source' }]));
+      pendingCreate.resolve(newProject);
       await Promise.resolve();
     });
 
-    expect(screen.getByRole('button', { name: 'Retry Profile save' })).toBeDefined();
-    expect((screen.getByRole('textbox', { name: 'Requirement 1' }) as HTMLTextAreaElement).value).toBe('invoice source');
-    expect(mocks.addProject).toHaveBeenCalledTimes(1);
-    expect(mocks.closeNewProject).not.toHaveBeenCalled();
+    expect(mocks.addProject).toHaveBeenCalledOnce();
     expect(mocks.push).not.toHaveBeenCalled();
+    expect(screen.queryByRole('alert')).toBeNull();
+  });
+
+  it('ignores a late create after the modal is closed and reopened', async () => {
+    const pendingCreate = deferred<typeof newProject>();
+    mocks.addProject.mockReturnValue(pendingCreate.promise);
+    const view = render(<NewProjectModal />);
+    fireEvent.change(screen.getByRole('textbox', { name: 'Project name' }), { target: { value: 'Research' } });
+    fireEvent.click(screen.getByRole('button', { name: 'Create project' }));
+
+    mocks.open = false;
+    view.rerender(<NewProjectModal />);
+    mocks.open = true;
+    view.rerender(<NewProjectModal />);
+    await act(async () => {
+      pendingCreate.resolve(newProject);
+      await Promise.resolve();
+    });
+
+    expect(mocks.addProject).toHaveBeenCalledOnce();
+    expect(mocks.push).not.toHaveBeenCalled();
+    expect((screen.getByRole('textbox', { name: 'Project name' }) as HTMLInputElement).value).toBe('Research');
   });
 });

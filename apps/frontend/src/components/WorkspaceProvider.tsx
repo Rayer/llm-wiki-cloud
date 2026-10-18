@@ -6,6 +6,7 @@ import {
   useCallback,
   useContext,
   useEffect,
+  useLayoutEffect,
   useMemo,
   useRef,
   useState,
@@ -35,6 +36,81 @@ export type NavCounts = {
   concepts: number | null;
 };
 
+type ProfileOnboardingIntent = {
+  ownerId: string;
+  projectId: string;
+  sessionEpoch: number;
+};
+
+const PROFILE_ONBOARDING_PENDING_KEY = 'llm-wiki-profile-onboarding-pending';
+const profileOnboardingPresentedMemory = new Set<string>();
+
+function profileOnboardingPresentedKey(ownerId: string, projectId: string): string {
+  return `llm-wiki-profile-onboarding-presented:${encodeURIComponent(ownerId)}:${encodeURIComponent(projectId)}`;
+}
+
+function readLastProjectId(): string | null {
+  try {
+    return window.localStorage.getItem(LAST_PROJECT_KEY);
+  } catch {
+    return null;
+  }
+}
+
+function writeLastProjectId(projectId: string | null): void {
+  try {
+    if (projectId) window.localStorage.setItem(LAST_PROJECT_KEY, projectId);
+    else window.localStorage.removeItem(LAST_PROJECT_KEY);
+  } catch {
+    // Project selection remains usable when browser storage is unavailable.
+  }
+}
+
+function clearPendingProfileOnboarding(): void {
+  try {
+    window.sessionStorage.removeItem(PROFILE_ONBOARDING_PENDING_KEY);
+  } catch {
+    // The in-memory intent remains scoped to the current provider session.
+  }
+}
+
+function writePendingProfileOnboarding(intent: ProfileOnboardingIntent): void {
+  try {
+    window.sessionStorage.setItem(
+      PROFILE_ONBOARDING_PENDING_KEY,
+      JSON.stringify({ ownerId: intent.ownerId, projectId: intent.projectId }),
+    );
+  } catch {
+    // The in-memory intent covers this tab when session storage is restricted.
+  }
+}
+
+function readPendingProfileOnboarding(ownerId: string, sessionEpoch: number): ProfileOnboardingIntent | null {
+  try {
+    const value: unknown = JSON.parse(window.sessionStorage.getItem(PROFILE_ONBOARDING_PENDING_KEY) ?? 'null');
+    if (
+      value && typeof value === 'object'
+      && 'ownerId' in value && value.ownerId === ownerId
+      && 'projectId' in value && typeof value.projectId === 'string' && value.projectId
+    ) {
+      return { ownerId, projectId: value.projectId, sessionEpoch };
+    }
+  } catch {
+    // A missing or blocked session store does not affect project loading.
+  }
+  return null;
+}
+
+function profileOnboardingWasPresented(ownerId: string, projectId: string): boolean {
+  const key = profileOnboardingPresentedKey(ownerId, projectId);
+  if (profileOnboardingPresentedMemory.has(key)) return true;
+  try {
+    return window.localStorage.getItem(key) === '1';
+  } catch {
+    return false;
+  }
+}
+
 const emptyNavCounts: NavCounts = {
   sources: null,
   concepts: null,
@@ -62,6 +138,8 @@ type WorkspaceContextValue = {
   isDemoSession: boolean;
   loginOpen: boolean;
   newProjectOpen: boolean;
+  profileOnboarding: ProfileOnboardingIntent | null;
+  markProfileOnboardingPresented: (ownerId: string, projectId: string, sessionEpoch: number) => boolean;
   /** Live status counts for sidebar badges; null fields mean unavailable / no project. */
   navCounts: NavCounts;
   refreshNavCounts: () => Promise<void>;
@@ -98,10 +176,17 @@ export function WorkspaceProvider({ children }: { children: ReactNode }) {
   const [projectsLoading, setProjectsLoading] = useState(false);
   const [projectsError, setProjectsError] = useState('');
   const [newProjectOpen, setNewProjectOpen] = useState(false);
+  const [profileOnboarding, setProfileOnboarding] = useState<ProfileOnboardingIntent | null>(null);
   const [navCounts, setNavCounts] = useState<NavCounts>(emptyNavCounts);
+  const requestIdentityRef = useRef({ projectId: currentProject?.id ?? null, token, sessionEpoch });
   const projectStateActiveRef = useRef(false);
   const projectListGenerationRef = useRef(0);
   const renameGenerationByProjectRef = useRef(new Map<string, number>());
+  const profileOnboardingOwnerRef = useRef<string | null>(null);
+
+  useLayoutEffect(() => {
+    requestIdentityRef.current = { projectId: currentProject?.id ?? null, token, sessionEpoch };
+  }, [currentProject?.id, sessionEpoch, token]);
 
   useEffect(() => {
     const renameGenerations = renameGenerationByProjectRef.current;
@@ -113,10 +198,40 @@ export function WorkspaceProvider({ children }: { children: ReactNode }) {
     };
   }, [sessionEpoch, token]);
 
+  useEffect(() => {
+    if (!hydrated) return;
+    const ownerId = token ? user?.id ?? '' : '';
+    const previousOwnerId = profileOnboardingOwnerRef.current;
+    if (previousOwnerId !== null && previousOwnerId !== ownerId) {
+      setProfileOnboarding(null);
+      clearPendingProfileOnboarding();
+    }
+    profileOnboardingOwnerRef.current = ownerId;
+    if (!ownerId) {
+      // eslint-disable-next-line react-hooks/set-state-in-effect -- auth loss must clear a pending notice immediately
+      setProfileOnboarding(null);
+      clearPendingProfileOnboarding();
+      return;
+    }
+    const restored = readPendingProfileOnboarding(ownerId, sessionEpoch);
+    setProfileOnboarding((current) => {
+      if (current?.ownerId === ownerId) return { ...current, sessionEpoch };
+      return restored;
+    });
+  }, [hydrated, sessionEpoch, token, user?.id]);
+
   const refreshNavCounts = useCallback(async () => {
     if (!token || !currentProject) return;
+    const requestIdentity = requestIdentityRef.current;
+    const projectId = currentProject.id;
     try {
-      const status = await getStatus();
+      const status = await getStatus(projectId);
+      if (
+        requestIdentityRef.current !== requestIdentity
+        || requestIdentity.projectId !== projectId
+        || requestIdentity.token !== token
+        || requestIdentity.sessionEpoch !== sessionEpoch
+      ) return;
       setNavCounts({
         sources: status.sourcesCount,
         concepts: status.conceptsCount,
@@ -124,7 +239,7 @@ export function WorkspaceProvider({ children }: { children: ReactNode }) {
     } catch {
       // Keep previous badge values on refresh failure (LWC-129).
     }
-  }, [token, currentProject]);
+  }, [token, currentProject, sessionEpoch]);
 
   const loadProjects = useCallback(async () => {
     const startedGeneration = ++projectListGenerationRef.current;
@@ -141,17 +256,10 @@ export function WorkspaceProvider({ children }: { children: ReactNode }) {
     try {
       const nextProjects = await getProjects();
       if (!ownsState()) return;
-      const selected = selectDefaultProject(
-        nextProjects,
-        window.localStorage.getItem(LAST_PROJECT_KEY),
-      );
+      const selected = selectDefaultProject(nextProjects, readLastProjectId());
       setProjects(nextProjects);
       setCurrentProject(selected);
-      if (selected) {
-        window.localStorage.setItem(LAST_PROJECT_KEY, selected.id);
-      } else {
-        window.localStorage.removeItem(LAST_PROJECT_KEY);
-      }
+      writeLastProjectId(selected?.id ?? null);
     } catch (error) {
       if (!ownsState()) return;
       setProjects([]);
@@ -175,13 +283,19 @@ export function WorkspaceProvider({ children }: { children: ReactNode }) {
   const signOut = useCallback(async () => {
     if (!confirmNavigation()) return;
     await logout();
-    clearForceHomeRedirect(typeof window !== 'undefined' ? window.localStorage : null);
-    window.localStorage.removeItem(LAST_PROJECT_KEY);
+    try {
+      clearForceHomeRedirect(typeof window !== 'undefined' ? window.localStorage : null);
+    } catch {
+      // Storage cleanup must not interrupt a completed sign out.
+    }
+    writeLastProjectId(null);
+    clearPendingProfileOnboarding();
     setProjects([]);
     setCurrentProject(null);
     setProjectsLoading(false);
     setProjectsError('');
     setNewProjectOpen(false);
+    setProfileOnboarding(null);
     setNavCounts(emptyNavCounts);
   }, [confirmNavigation, logout]);
 
@@ -191,7 +305,7 @@ export function WorkspaceProvider({ children }: { children: ReactNode }) {
     // Same project: keep current route/query as-is.
     if (selected.id === currentProject?.id) return;
     if (!confirmNavigation()) return;
-    window.localStorage.setItem(LAST_PROJECT_KEY, selected.id);
+    writeLastProjectId(selected.id);
     setCurrentProject(selected);
     // Concept/source/detail routes and home search query belong to the previous
     // project — always land on a clean home after switching.
@@ -204,24 +318,63 @@ export function WorkspaceProvider({ children }: { children: ReactNode }) {
     const startedListGeneration = projectListGenerationRef.current;
     const operationEpoch = sessionEpoch;
     const operationToken = token;
+    const operationOwnerId = user?.id ?? '';
     const project = await createProject(name);
     if (
       !projectStateActiveRef.current
       || projectListGenerationRef.current !== startedListGeneration
       || sessionEpoch !== operationEpoch
       || token !== operationToken
+      || (user?.id ?? '') !== operationOwnerId
     ) return project;
     projectListGenerationRef.current += 1;
+    const intent = user?.id ? { ownerId: user.id, projectId: project.id, sessionEpoch } : null;
+    if (intent) {
+      setProfileOnboarding(intent);
+      writePendingProfileOnboarding(intent);
+    }
     setProjectsLoading(false);
     setProjects((current) => {
       const withoutDuplicate = current.filter((item) => item.id !== project.id);
       return [...withoutDuplicate, project];
     });
-    window.localStorage.setItem(LAST_PROJECT_KEY, project.id);
+    writeLastProjectId(project.id);
     setCurrentProject(project);
     setProjectsError('');
     return project;
-  }, [isDemoSession, sessionEpoch, token]);
+  }, [isDemoSession, sessionEpoch, token, user]);
+
+  const markProfileOnboardingPresented = useCallback((ownerId: string, projectId: string, expectedSessionEpoch: number) => {
+    const intent = profileOnboarding;
+    if (
+      !token
+      || isDemoSession
+      || !user?.id
+      || user.id !== ownerId
+      || currentProject?.id !== projectId
+      || sessionEpoch !== expectedSessionEpoch
+      || intent?.ownerId !== ownerId
+      || intent.projectId !== projectId
+      || intent.sessionEpoch !== expectedSessionEpoch
+    ) return false;
+
+    if (profileOnboardingWasPresented(ownerId, projectId)) {
+      setProfileOnboarding(null);
+      clearPendingProfileOnboarding();
+      return false;
+    }
+
+    const key = profileOnboardingPresentedKey(ownerId, projectId);
+    profileOnboardingPresentedMemory.add(key);
+    try {
+      window.localStorage.setItem(key, '1');
+    } catch {
+      // The module memory prevents repeat prompts for this tab lifetime.
+    }
+    setProfileOnboarding(null);
+    clearPendingProfileOnboarding();
+    return true;
+  }, [currentProject?.id, isDemoSession, profileOnboarding, sessionEpoch, token, user]);
 
   const renameProject = useCallback(async (projectId: string, name: string) => {
     if (!token) throw new Error('Please log in to rename projects.');
@@ -278,9 +431,10 @@ export function WorkspaceProvider({ children }: { children: ReactNode }) {
     }
 
     let ignore = false;
-    void getStatus()
+    const requestIdentity = requestIdentityRef.current;
+    void getStatus(currentProject.id)
       .then((status) => {
-        if (ignore) return;
+        if (ignore || requestIdentityRef.current !== requestIdentity) return;
         setNavCounts({
           sources: status.sourcesCount,
           concepts: status.conceptsCount,
@@ -293,7 +447,7 @@ export function WorkspaceProvider({ children }: { children: ReactNode }) {
     return () => {
       ignore = true;
     };
-  }, [token, currentProject]);
+  }, [token, currentProject, sessionEpoch]);
 
   // Derive displayed counts so logout / no-project never shows stale badges
   // without a synchronous setState in the load effect (LWC-133-friendly).
@@ -311,6 +465,8 @@ export function WorkspaceProvider({ children }: { children: ReactNode }) {
     isDemoSession,
     loginOpen: hydrated && !token,
     newProjectOpen,
+    profileOnboarding,
+    markProfileOnboardingPresented,
     navCounts: displayedNavCounts,
     refreshNavCounts,
     signIn,
@@ -334,6 +490,8 @@ export function WorkspaceProvider({ children }: { children: ReactNode }) {
     hydrated,
     isDemoSession,
     newProjectOpen,
+    profileOnboarding,
+    markProfileOnboardingPresented,
     projects,
     projectsError,
     refreshNavCounts,
