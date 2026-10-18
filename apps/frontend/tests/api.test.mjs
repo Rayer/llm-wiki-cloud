@@ -228,6 +228,93 @@ test('apiFetch records initial and replay response IDs as separate server exchan
   }
 });
 
+test('API errors keep normalized request and diagnostic IDs independent', async () => {
+  const originalFetch = globalThis.fetch;
+  const originalWindow = globalThis.window;
+  configureApiAuth({
+    getAccessToken: () => 'jwt-token',
+    refreshAccessToken: async () => null,
+    onUnauthorized: () => undefined,
+  });
+  globalThis.window = { localStorage: { getItem: () => 'project-1' } };
+
+  try {
+    const cases = [
+      {
+        requestId: '123e4567-e89b-42d3-a456-426614174001',
+        diagnosticId: 'diagnostic_help-123',
+      },
+      { requestId: '123e4567-e89b-42d3-a456-426614174002' },
+      { diagnosticId: 'diagnostic_help-456' },
+      {},
+    ];
+
+    for (const { requestId, diagnosticId } of cases) {
+      globalThis.fetch = async () => Response.json({
+        error: 'synthetic request failure',
+        ...(diagnosticId ? { diagnostic_id: diagnosticId } : {}),
+      }, {
+        status: 502,
+        headers: requestId ? { 'X-Request-ID': requestId } : {},
+      });
+
+      await assert.rejects(() => getRawFiles(), (error) => {
+        assert.ok(error instanceof ApiError);
+        assert.equal(error.requestId, requestId);
+        assert.equal(error.diagnosticId, diagnosticId);
+        return true;
+      });
+    }
+  } finally {
+    globalThis.fetch = originalFetch;
+    if (originalWindow === undefined) delete globalThis.window;
+    else globalThis.window = originalWindow;
+  }
+});
+
+test('API error from an auth replay uses that response request ID', async () => {
+  const originalFetch = globalThis.fetch;
+  const originalWindow = globalThis.window;
+  let sessionEpoch = 3;
+  configureApiAuth({
+    getAccessToken: () => 'stale-token',
+    getSessionEpoch: () => sessionEpoch,
+    refreshAccessToken: async () => {
+      sessionEpoch = 4;
+      return { accessToken: 'fresh-token', epoch: 4 };
+    },
+    onUnauthorized: () => undefined,
+  });
+  globalThis.window = { localStorage: { getItem: () => 'project-1' } };
+  let calls = 0;
+  globalThis.fetch = async () => {
+    calls += 1;
+    return calls === 1
+      ? Response.json({ error: 'expired session', diagnostic_id: 'initial_help-123' }, {
+        status: 401,
+        headers: { 'X-Request-ID': '123e4567-e89b-42d3-a456-426614174003' },
+      })
+      : Response.json({ error: 'replayed failure', diagnostic_id: 'replay_help-456' }, {
+        status: 503,
+        headers: { 'X-Request-ID': '123e4567-e89b-42d3-a456-426614174004' },
+      });
+  };
+
+  try {
+    await assert.rejects(() => getRawFiles(), (error) => {
+      assert.ok(error instanceof ApiError);
+      assert.equal(error.requestId, '123e4567-e89b-42d3-a456-426614174004');
+      assert.equal(error.diagnosticId, 'replay_help-456');
+      return true;
+    });
+    assert.equal(calls, 2);
+  } finally {
+    globalThis.fetch = originalFetch;
+    if (originalWindow === undefined) delete globalThis.window;
+    else globalThis.window = originalWindow;
+  }
+});
+
 test('getStatus reads latest pipeline execution from the status endpoint', async () => {
   configureApiAuth({
     getAccessToken: () => 'jwt-token',

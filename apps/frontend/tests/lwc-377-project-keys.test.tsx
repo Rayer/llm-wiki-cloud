@@ -65,6 +65,12 @@ afterEach(() => {
 });
 
 describe('LWC-377 Project API keys', () => {
+  it('labels the Project keys section Beta without labeling the parent Project heading', () => {
+    renderKeys();
+    expect(screen.getByRole('heading', { level: 3, name: 'ProjectSettings.projectKeys Shell.betaBadge' })).toBeTruthy();
+    expect(screen.getByRole('heading', { level: 2, name: 'ProjectSettings.externalAccess' })).toBeTruthy();
+  });
+
   it('shows known usage states as localized copy and maps malformed states to unavailable', async () => {
     const keys: ProjectKey[] = [
       { ...key, key_id: '11111111111111111111111111111111', last_used_at: '2026-10-09T12:30:00Z', last_used_status: 'available' },

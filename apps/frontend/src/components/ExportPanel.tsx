@@ -5,9 +5,10 @@ import { Download, Package, X } from 'lucide-react';
 import { useWorkspace } from './WorkspaceProvider';
 import { Surface } from './ui/Surface';
 import { useT } from '@/lib/i18n';
+import { ErrorIdDetails, useErrorIdCopy } from './States';
 import {
   createExport, getExportState, requestExportDownload,
-  type ExportArchive, type ExportJob, type ExportScope, type ExportState,
+  type ExportApiError, type ExportArchive, type ExportJob, type ExportScope, type ExportState,
 } from '@/lib/export-api';
 
 const initialState: ExportState = {
@@ -16,6 +17,17 @@ const initialState: ExportState = {
 const scopes: ExportScope[] = ['raw', 'raw-full', 'raw-full-metadata'];
 const inProgress = (job?: ExportJob | null) => job?.status === 'queued' || job?.status === 'running';
 const MAX_TIMER_DELAY = 2_147_483_647;
+
+type ExportActionError = Pick<ExportApiError, 'requestId' | 'diagnosticId'> & { message: string };
+
+function exportActionError(error: unknown, fallback: string): ExportActionError {
+  const cause = error instanceof Error ? error as ExportApiError : null;
+  return {
+    message: cause?.message || fallback,
+    requestId: cause?.requestId,
+    diagnosticId: cause?.diagnosticId,
+  };
+}
 
 function formatBytes(bytes: number | null, locale: string): string {
   if (bytes === null || !Number.isFinite(bytes) || bytes < 0) return '—';
@@ -44,7 +56,7 @@ export function ExportPanel() {
   const [modalOpen, setModalOpen] = useState(false);
   const [scope, setScope] = useState<ExportScope>('raw-full-metadata');
   const [submitting, setSubmitting] = useState(false);
-  const [actionError, setActionError] = useState('');
+  const [actionError, setActionError] = useState<ExportActionError | null>(null);
   const generationRef = useRef(0);
   const dataProjectIdRef = useRef<string | null>(null);
   const creatingRef = useRef(false);
@@ -52,6 +64,11 @@ export function ExportPanel() {
   const dialogRef = useRef<HTMLElement>(null);
   const modalOpenerRef = useRef<HTMLElement | null>(null);
   const modalWasOpenRef = useRef(false);
+  const { copyErrorId, errorIdCopied } = useErrorIdCopy(
+    actionError,
+    actionError?.requestId,
+    actionError?.diagnosticId,
+  );
 
   const refresh = useCallback(async (targetProjectId: string, generation: number, signal?: AbortSignal) => {
     try {
@@ -66,7 +83,7 @@ export function ExportPanel() {
         if (dataProjectIdRef.current !== targetProjectId) setData(initialState);
         dataProjectIdRef.current = targetProjectId;
         setDataProjectId(targetProjectId);
-        setActionError(error instanceof Error ? error.message : t('Export.loadFailed'));
+        setActionError(exportActionError(error, t('Export.loadFailed')));
       }
     }
   }, [t]);
@@ -90,7 +107,7 @@ export function ExportPanel() {
     previousProjectIdRef.current = projectId;
     setModalOpen(false);
     setScope('raw-full-metadata');
-    setActionError('');
+    setActionError(null);
   }, [projectId]);
 
   useEffect(() => {
@@ -165,7 +182,7 @@ export function ExportPanel() {
 
   const openModal = (opener: HTMLElement) => {
     modalOpenerRef.current = opener;
-    setActionError('');
+    setActionError(null);
     setModalOpen(true);
   };
 
@@ -174,7 +191,7 @@ export function ExportPanel() {
     creatingRef.current = true;
     setSubmitting(true);
     const generation = generationRef.current;
-    setActionError('');
+    setActionError(null);
     try {
       const job = await createExport(projectId, scope);
       if (generationRef.current !== generation) return;
@@ -183,7 +200,7 @@ export function ExportPanel() {
       await refresh(projectId, generation);
     } catch (error) {
       if (generationRef.current === generation) {
-        setActionError(error instanceof Error ? error.message : t('Export.createFailed'));
+        setActionError(exportActionError(error, t('Export.createFailed')));
         await refresh(projectId, generation);
       }
     } finally {
@@ -195,13 +212,13 @@ export function ExportPanel() {
   const download = async (archive: ExportArchive) => {
     if (!projectId || !archive.download_available) return;
     const generation = generationRef.current;
-    setActionError('');
+    setActionError(null);
     try {
       const result = await requestExportDownload(projectId, archive.export_id);
       if (generationRef.current === generation) window.location.assign(result.signed_url);
     } catch (error) {
       if (generationRef.current === generation) {
-        setActionError(error instanceof Error ? error.message : t('Export.downloadFailed'));
+        setActionError(exportActionError(error, t('Export.downloadFailed')));
         await refresh(projectId, generation);
       }
     }
@@ -256,14 +273,40 @@ export function ExportPanel() {
         {index === 1 && <button type="button" disabled={!archive.download_available} onClick={() => void download(archive)} className="justify-self-start text-sm text-emerald-300 underline disabled:opacity-40">{t('Export.downloadPrevious')}</button>}
       </dl>)}
       {currentData.next_allowed_at && !active && <p className="text-sm text-zinc-400">{t('Export.nextAllowed', { time: formatTime(currentData.next_allowed_at, locale) })}</p>}
-      {actionError && <p className="text-sm text-red-300" role="alert">{actionError}</p>}
+      {actionError ? <div>
+        <p className="text-sm text-red-300" role="alert">{actionError.message}</p>
+        <ErrorIdDetails
+          requestId={actionError.requestId}
+          diagnosticId={actionError.diagnosticId}
+          requestIdLabel={t('QueryErrors.requestId')}
+          diagnosticIdLabel={t('QueryErrors.diagnosticId')}
+          copyErrorIdLabel={t('QueryErrors.copyDiagnosticId')}
+          errorIdCopiedLabel={t('QueryErrors.diagnosticIdCopied')}
+          errorIdCopied={errorIdCopied}
+          onCopyErrorId={copyErrorId}
+          className="mt-2 flex flex-wrap items-center gap-3 text-sm text-red-200"
+        />
+      </div> : null}
       {modalOpen && <div className="fixed inset-0 z-50 grid place-items-center bg-black/70 p-4" onMouseDown={(event) => { if (event.target === event.currentTarget) setModalOpen(false); }}>
         <section ref={dialogRef} role="dialog" aria-modal="true" aria-labelledby="export-dialog-title" className="max-h-[90vh] w-full max-w-xl overflow-y-auto rounded-2xl border border-white/10 bg-zinc-900 p-6 shadow-2xl">
           <div className="flex items-start justify-between gap-4"><div><h3 id="export-dialog-title" className="text-lg font-semibold text-white">{t('Export.modalTitle')}</h3><p className="mt-1 text-sm text-zinc-400">{t('Export.modalDescription')}</p></div><button type="button" aria-label={t('Export.close')} onClick={() => setModalOpen(false)} className="rounded p-1 text-zinc-400 hover:bg-white/10"><X size={18} /></button></div>
           <fieldset className="mt-5 space-y-2"><legend className="mb-2 text-sm font-medium text-zinc-200">{t('Export.scope')}</legend>{scopes.map((option) => <label key={option} className="flex cursor-pointer gap-3 rounded-lg border border-white/10 p-3 text-sm hover:bg-white/5"><input type="radio" name="export-scope" value={option} checked={scope === option} onChange={() => setScope(option)} /><span><span className="block font-medium text-zinc-100">{t(`Export.scope_${option}`)}</span><span className="mt-1 block text-zinc-400">{t(`Export.scopeDescription_${option}`)}</span></span></label>)}</fieldset>
           <ul className="mt-4 list-disc space-y-1 pl-5 text-sm text-zinc-400"><li>{t('Export.excludesSecrets')}</li><li>{t('Export.noCompile')}</li><li>{t('Export.noRestore')}</li></ul>
           {blockReason && <p className="mt-4 text-sm text-amber-300" role="status">{blockReason}</p>}
-          {actionError && <p className="mt-3 text-sm text-red-300" role="alert">{actionError}</p>}
+          {actionError ? <div className="mt-3">
+            <p className="text-sm text-red-300" role="alert">{actionError.message}</p>
+            <ErrorIdDetails
+              requestId={actionError.requestId}
+              diagnosticId={actionError.diagnosticId}
+              requestIdLabel={t('QueryErrors.requestId')}
+              diagnosticIdLabel={t('QueryErrors.diagnosticId')}
+              copyErrorIdLabel={t('QueryErrors.copyDiagnosticId')}
+              errorIdCopiedLabel={t('QueryErrors.diagnosticIdCopied')}
+              errorIdCopied={errorIdCopied}
+              onCopyErrorId={copyErrorId}
+              className="mt-2 flex flex-wrap items-center gap-3 text-sm text-red-200"
+            />
+          </div> : null}
           <div className="mt-6 flex justify-end gap-2"><button type="button" onClick={() => setModalOpen(false)} className="rounded-lg border border-white/15 px-4 py-2 text-sm text-zinc-200">{t('Export.cancel')}</button><button type="button" disabled={!currentData.eligible || submitting} onClick={() => void startExport()} className="rounded-lg bg-emerald-400 px-4 py-2 text-sm font-semibold text-zinc-950 disabled:cursor-not-allowed disabled:opacity-40">{submitting ? t('Export.preparing') : t('Export.start')}</button></div>
         </section>
       </div>}

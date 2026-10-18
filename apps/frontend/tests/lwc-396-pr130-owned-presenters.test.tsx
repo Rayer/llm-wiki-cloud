@@ -50,11 +50,11 @@ function setProject(id: string) {
   window.localStorage.setItem('llm-wiki-last-project', id);
 }
 
-function errorResponse(diagnosticId: string | undefined, status = 502) {
+function errorResponse(diagnosticId: string | undefined, status = 502, requestId?: string) {
   return Response.json({
     error: 'existing safe server error',
     ...(diagnosticId ? { diagnostic_id: diagnosticId } : {}),
-  }, { status });
+  }, { status, headers: requestId ? { 'X-Request-ID': requestId } : {} });
 }
 
 function deferred<T>() {
@@ -121,10 +121,11 @@ it('keeps a pending preview alive through a failed download and ignores that dow
 
 it.each(['source', 'concept'] as const)('renders and copies a real %s.read diagnostic ID in DetailClient', async (kind) => {
   const diagnosticId = `${kind}_detail_help_123`;
+  const requestId = '123e4567-e89b-42d3-a456-426614174010';
   const fetchMock = vi.fn(async (input: string | URL | Request) => (
     String(input).endsWith('/concepts')
       ? Response.json([])
-      : errorResponse(diagnosticId)
+      : errorResponse(diagnosticId, 502, requestId)
   ));
   const writeText = vi.fn().mockResolvedValue(undefined);
   vi.stubGlobal('fetch', fetchMock);
@@ -141,21 +142,29 @@ it.each(['source', 'concept'] as const)('renders and copies a real %s.read diagn
   );
 
   expect(await screen.findByText('API request failed (502)')).toBeTruthy();
-  expect(screen.getByText(diagnosticId)).toBeTruthy();
+  expect(screen.getByText(requestId)).toBeTruthy();
+  expect(screen.getByText('QueryErrors.requestId')).toBeTruthy();
+  expect(screen.queryByText(diagnosticId)).toBeNull();
   expect(fetchMock).toHaveBeenCalledTimes(2);
   fireEvent.click(screen.getByRole('button', { name: 'QueryErrors.copyDiagnosticId' }));
-  await waitFor(() => expect(writeText).toHaveBeenCalledWith(diagnosticId));
+  await waitFor(() => expect(writeText).toHaveBeenCalledWith(requestId));
   expect(await screen.findByRole('button', { name: 'QueryErrors.diagnosticIdCopied' })).toBeTruthy();
 });
 
 it('drops invalid detail IDs and prevents delayed copy feedback after the slug changes', async () => {
   const firstId = 'first_detail_help_123';
   const secondId = 'second_detail_help_456';
+  const firstRequestId = '123e4567-e89b-42d3-a456-426614174011';
+  const secondRequestId = '123e4567-e89b-42d3-a456-426614174012';
   const fetchMock = vi.fn(async (input: string | URL | Request) => {
     const url = String(input);
     if (url.endsWith('/concepts')) return Response.json([]);
     if (url.endsWith('/sources/invalid')) return errorResponse('bad/id');
-    return errorResponse(url.endsWith('/sources/first') ? firstId : secondId);
+    return errorResponse(
+      url.endsWith('/sources/first') ? firstId : secondId,
+      502,
+      url.endsWith('/sources/first') ? firstRequestId : secondRequestId,
+    );
   });
   let resolveWrite!: () => void;
   const writeText = vi.fn(() => new Promise<void>((resolve) => { resolveWrite = resolve; }));
@@ -172,33 +181,36 @@ it('drops invalid detail IDs and prevents delayed copy feedback after the slug c
   mounted.rerender(
     <DetailClient slug="first" label="Sources" backHref="/sources" load={getSource} entryType="source" />,
   );
-  expect(await screen.findByText(firstId)).toBeTruthy();
+  expect(await screen.findByText(firstRequestId)).toBeTruthy();
   fireEvent.click(screen.getByRole('button', { name: 'QueryErrors.copyDiagnosticId' }));
-  await waitFor(() => expect(writeText).toHaveBeenCalledWith(firstId));
+  await waitFor(() => expect(writeText).toHaveBeenCalledWith(firstRequestId));
 
   mounted.rerender(
     <DetailClient slug="second" label="Sources" backHref="/sources" load={getSource} entryType="source" />,
   );
   expect(screen.queryByText(firstId)).toBeNull();
-  expect(await screen.findByText(secondId)).toBeTruthy();
+  expect(await screen.findByText(secondRequestId)).toBeTruthy();
   await act(async () => resolveWrite());
   expect(screen.queryByRole('button', { name: 'QueryErrors.diagnosticIdCopied' })).toBeNull();
-  expect(screen.getByText(secondId)).toBeTruthy();
+  expect(screen.getByText(secondRequestId)).toBeTruthy();
 });
 
 it('preserves annotation load error and copies its optional server ID', async () => {
   const diagnosticId = 'annotation_load_help_123';
-  const fetchMock = vi.fn().mockResolvedValue(errorResponse(diagnosticId));
+  const requestId = '123e4567-e89b-42d3-a456-426614174013';
+  const fetchMock = vi.fn().mockResolvedValue(errorResponse(diagnosticId, 502, requestId));
   const writeText = vi.fn().mockResolvedValue(undefined);
   vi.stubGlobal('fetch', fetchMock);
   Object.defineProperty(navigator, 'clipboard', { configurable: true, value: { writeText } });
 
   render(<SourceAnnotationEditor sourceId="source-1" />);
   expect(await screen.findByText('Annotation.loadFailed')).toBeTruthy();
-  expect(screen.getByText(diagnosticId)).toBeTruthy();
+  expect(screen.getByText(requestId)).toBeTruthy();
+  expect(screen.getByText('QueryErrors.requestId')).toBeTruthy();
+  expect(screen.queryByText(diagnosticId)).toBeNull();
   expect(screen.getByRole('button', { name: 'Annotation.retry' })).toBeTruthy();
   fireEvent.click(screen.getByRole('button', { name: 'QueryErrors.copyDiagnosticId' }));
-  await waitFor(() => expect(writeText).toHaveBeenCalledWith(diagnosticId));
+  await waitFor(() => expect(writeText).toHaveBeenCalledWith(requestId));
 });
 
 it('keeps annotation conflict and draft behavior while exposing its optional server ID', async () => {
@@ -244,7 +256,8 @@ async function searchForSourceCitation() {
 
 it('shows and copies only the real source citation read ID in its own modal error', async () => {
   const diagnosticId = 'citation_source_help_123';
-  const fetchMock = homeFetch(errorResponse(diagnosticId));
+  const requestId = '123e4567-e89b-42d3-a456-426614174014';
+  const fetchMock = homeFetch(errorResponse(diagnosticId, 502, requestId));
   const writeText = vi.fn().mockResolvedValue(undefined);
   vi.stubGlobal('fetch', fetchMock);
   Object.defineProperty(navigator, 'clipboard', { configurable: true, value: { writeText } });
@@ -252,9 +265,10 @@ it('shows and copies only the real source citation read ID in its own modal erro
 
   const dialog = await searchForSourceCitation();
   expect(await screen.findByText('API request failed (502)')).toBeTruthy();
-  expect(dialog.querySelector('code')?.textContent).toBe(diagnosticId);
+  expect(dialog.querySelector('code')?.textContent).toBe(requestId);
+  expect(within(dialog).getByText('QueryErrors.requestId')).toBeTruthy();
   fireEvent.click(within(dialog).getByRole('button', { name: 'QueryErrors.copyDiagnosticId' }));
-  await waitFor(() => expect(writeText).toHaveBeenCalledWith(diagnosticId));
+  await waitFor(() => expect(writeText).toHaveBeenCalledWith(requestId));
   expect(await within(dialog).findByRole('button', { name: 'QueryErrors.diagnosticIdCopied' })).toBeTruthy();
 });
 
@@ -289,7 +303,8 @@ it('ignores a late citation read error after the project changes', async () => {
 
 it('does not mark a citation ID copied after its project identity changes', async () => {
   const diagnosticId = 'citation_copy_help_123';
-  const fetchMock = homeFetch(errorResponse(diagnosticId));
+  const requestId = '123e4567-e89b-42d3-a456-426614174015';
+  const fetchMock = homeFetch(errorResponse(diagnosticId, 502, requestId));
   let resolveWrite!: () => void;
   const writeText = vi.fn(() => new Promise<void>((resolve) => { resolveWrite = resolve; }));
   vi.stubGlobal('fetch', fetchMock);
@@ -297,9 +312,9 @@ it('does not mark a citation ID copied after its project identity changes', asyn
   const mounted = render(<HomeClient />);
 
   const dialog = await searchForSourceCitation();
-  expect(await within(dialog).findByText(diagnosticId)).toBeTruthy();
+  expect(await within(dialog).findByText(requestId)).toBeTruthy();
   fireEvent.click(within(dialog).getByRole('button', { name: 'QueryErrors.copyDiagnosticId' }));
-  await waitFor(() => expect(writeText).toHaveBeenCalledWith(diagnosticId));
+  await waitFor(() => expect(writeText).toHaveBeenCalledWith(requestId));
 
   setProject('project-b');
   mounted.rerender(<HomeClient />);

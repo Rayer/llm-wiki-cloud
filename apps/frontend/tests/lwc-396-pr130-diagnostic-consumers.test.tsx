@@ -21,8 +21,11 @@ function consumer(kind: 'source' | 'concept') {
     : <ListClient title="Concepts" description="Concept list" load={getConcepts} basePath="/concepts" entryType="concept" />;
 }
 
-function errorResponse(diagnosticId?: string) {
-  return Response.json({ error: 'safe server error', ...(diagnosticId ? { diagnostic_id: diagnosticId } : {}) }, { status: 502 });
+function errorResponse(diagnosticId?: string, requestId?: string) {
+  return Response.json({ error: 'safe server error', ...(diagnosticId ? { diagnostic_id: diagnosticId } : {}) }, {
+    status: 502,
+    headers: requestId ? { 'X-Request-ID': requestId } : {},
+  });
 }
 
 function configureAuth() {
@@ -51,24 +54,28 @@ describe('LWC-396 actual list error consumers', () => {
   it('displays and copies the backend ID through both real API helpers', async () => {
     const sourceId = 'source_help_123';
     const conceptId = 'concept_help_456';
+    const sourceRequestId = '123e4567-e89b-42d3-a456-426614174007';
     const fetchMock = vi.fn()
-      .mockResolvedValueOnce(errorResponse(sourceId))
+      .mockResolvedValueOnce(errorResponse(sourceId, sourceRequestId))
       .mockResolvedValueOnce(errorResponse(conceptId));
     const writeText = vi.fn().mockResolvedValue(undefined);
     vi.stubGlobal('fetch', fetchMock);
     Object.defineProperty(navigator, 'clipboard', { configurable: true, value: { writeText } });
 
     const source = render(consumer('source'));
-    expect(await screen.findByText(sourceId)).toBeTruthy();
+    expect(await screen.findByText(sourceRequestId)).toBeTruthy();
+    expect(screen.getByText('QueryErrors.requestId')).toBeTruthy();
+    expect(screen.queryByText(sourceId)).toBeNull();
     expect(screen.getByText('API request failed (502)')).toBeTruthy();
     expect(screen.queryByText('List.noSources')).toBeNull();
     fireEvent.click(screen.getByRole('button', { name: 'QueryErrors.copyDiagnosticId' }));
-    await waitFor(() => expect(writeText).toHaveBeenCalledWith(sourceId));
+    await waitFor(() => expect(writeText).toHaveBeenCalledWith(sourceRequestId));
     expect(await screen.findByRole('button', { name: 'QueryErrors.diagnosticIdCopied' })).toBeTruthy();
     source.unmount();
 
     render(consumer('concept'));
     expect(await screen.findByText(conceptId)).toBeTruthy();
+    expect(screen.getByText('QueryErrors.diagnosticId')).toBeTruthy();
     expect(screen.getByText('API request failed (502)')).toBeTruthy();
     expect(screen.queryByText('List.noConcepts')).toBeNull();
     fireEvent.click(screen.getByRole('button', { name: 'QueryErrors.copyDiagnosticId' }));
@@ -79,9 +86,10 @@ describe('LWC-396 actual list error consumers', () => {
 
   it('displays and copies the original SourceListClient raw-preview diagnostic ID', async () => {
     const diagnosticId = 'preview_help_123';
+    const requestId = '123e4567-e89b-42d3-a456-426614174008';
     const fetchMock = vi.fn()
       .mockResolvedValueOnce(Response.json([{ id: 'source-one', slug: 'source-one', title: 'Synthetic source', raw_path: 'fixture.txt', lifecycle: 'synced' }]))
-      .mockResolvedValueOnce(errorResponse(diagnosticId));
+      .mockResolvedValueOnce(errorResponse(diagnosticId, requestId));
     const writeText = vi.fn().mockResolvedValue(undefined);
     vi.stubGlobal('fetch', fetchMock);
     Object.defineProperty(navigator, 'clipboard', { configurable: true, value: { writeText } });
@@ -90,17 +98,20 @@ describe('LWC-396 actual list error consumers', () => {
     fireEvent.click(await screen.findByRole('button', { name: 'Source.previewRawAria' }));
     const dialog = await screen.findByRole('dialog');
     expect(await within(dialog).findByText('Raw preview request failed (502)')).toBeTruthy();
-    expect(within(dialog).getByText(diagnosticId)).toBeTruthy();
+    expect(within(dialog).getByText(requestId)).toBeTruthy();
+    expect(within(dialog).getByText('QueryErrors.requestId')).toBeTruthy();
+    expect(within(dialog).queryByText(diagnosticId)).toBeNull();
     fireEvent.click(within(dialog).getByRole('button', { name: 'QueryErrors.copyDiagnosticId' }));
-    await waitFor(() => expect(writeText).toHaveBeenCalledWith(diagnosticId));
+    await waitFor(() => expect(writeText).toHaveBeenCalledWith(requestId));
     expect(fetchMock).toHaveBeenCalledTimes(2);
   });
 
   it('displays and copies IDs through the RawClient list and preview helpers', async () => {
     const listId = 'raw_list_help_123';
     const previewId = 'raw_preview_help_456';
+    const listRequestId = '123e4567-e89b-42d3-a456-426614174009';
     const fetchMock = vi.fn()
-      .mockResolvedValueOnce(errorResponse(listId))
+      .mockResolvedValueOnce(errorResponse(listId, listRequestId))
       .mockResolvedValueOnce(Response.json({ files: [{ name: 'fixture.md', size: 12, updated: '', sha256: '', ingested: false }] }))
       .mockResolvedValueOnce(errorResponse(previewId));
     const writeText = vi.fn().mockResolvedValue(undefined);
@@ -108,9 +119,10 @@ describe('LWC-396 actual list error consumers', () => {
     Object.defineProperty(navigator, 'clipboard', { configurable: true, value: { writeText } });
 
     const list = render(<RawClient />);
-    expect(await screen.findByText(listId)).toBeTruthy();
+    expect(await screen.findByText(listRequestId)).toBeTruthy();
+    expect(screen.getByText('QueryErrors.requestId')).toBeTruthy();
     fireEvent.click(screen.getByRole('button', { name: 'QueryErrors.copyDiagnosticId' }));
-    await waitFor(() => expect(writeText).toHaveBeenCalledWith(listId));
+    await waitFor(() => expect(writeText).toHaveBeenCalledWith(listRequestId));
     list.unmount();
 
     render(<RawClient />);

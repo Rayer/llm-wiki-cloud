@@ -31,6 +31,7 @@ const mocks = vi.hoisted(() => ({
   getPipelineStatus: vi.fn(),
   refreshNavCounts: vi.fn(async () => undefined),
   uploadRawFile: vi.fn(),
+  translate: (key: string) => key,
 }));
 
 vi.mock('@/lib/api', async () => {
@@ -43,7 +44,7 @@ vi.mock('@/lib/api', async () => {
 });
 
 vi.mock('@/lib/i18n', () => ({
-  useT: () => ({ t: (key: string) => key }),
+  useT: () => ({ t: mocks.translate }),
 }));
 
 vi.mock('@/components/WorkspaceProvider', () => ({

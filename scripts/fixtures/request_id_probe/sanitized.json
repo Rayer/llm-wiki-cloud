@@ -1,0 +1,11 @@
+{
+  "schema": "lwc-request-id-probe-fixture-v2",
+  "expected_source_marker": "LWC399-HARBOR-LIBRARY-SYNTHETIC",
+  "source_title": "LWC399 合成驗收：港灣圖書館",
+  "source_fact": "Thursday hours are 10:00–20:00; Sunday is closed.",
+  "query": "請依據來源標記 LWC399-HARBOR-LIBRARY-SYNTHETIC，回答港灣圖書館星期四幾點關門？請使用 24 小時制。",
+  "mode": "full",
+  "expected_answer_contains": "20:00",
+  "expected_citation_title": "LWC399 合成驗收：港灣圖書館",
+  "expected_citation_type": "source"
+}

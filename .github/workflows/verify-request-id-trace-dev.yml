@@ -1,0 +1,80 @@
+name: Verify DEV request ID to trace
+
+on:
+  workflow_dispatch:
+    inputs:
+      enable_pipeline:
+        description: Run one pipeline in the statically allowlisted isolated QA project
+        required: false
+        type: boolean
+        default: false
+
+permissions:
+  contents: read
+
+jobs:
+  guard:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Require the development branch
+        env:
+          DISPATCH_REF: ${{ github.ref }}
+        run: |
+          if [[ "$DISPATCH_REF" != "refs/heads/develop" ]]; then
+            echo "This workflow only runs from refs/heads/develop." >&2
+            exit 1
+          fi
+
+  probe:
+    needs: guard
+    if: needs.guard.result == 'success'
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    environment: Development
+    permissions:
+      contents: read
+      id-token: write
+    env:
+      LWC_DEV_REQUEST_ID_PROBE_PROJECT_ID: ${{ vars.LWC_DEV_REQUEST_ID_PROBE_PROJECT_ID }}
+      LWC_DEV_REQUEST_ID_PROBE_PROJECT_KEY: ${{ secrets.LWC_DEV_REQUEST_ID_PROBE_PROJECT_KEY }}
+      LWC_DEV_PIPELINE_QA_PROJECT: ${{ vars.LWC_DEV_PIPELINE_QA_PROJECT }}
+      LWC_DEV_REQUEST_ID_PROBE_PIPELINE_USER_TOKEN: ${{ secrets.LWC_DEV_REQUEST_ID_PROBE_PIPELINE_USER_TOKEN }}
+      WIF_PROVIDER: ${{ secrets.WIF_PROVIDER }}
+      WIF_SERVICE_ACCOUNT: ${{ secrets.WIF_SERVICE_ACCOUNT }}
+      ENABLE_PIPELINE: ${{ inputs.enable_pipeline }}
+    steps:
+      - name: Checkout dispatched DEV source
+        uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+        with:
+          ref: ${{ github.sha }}
+          fetch-depth: 1
+          persist-credentials: false
+
+      - name: Authenticate with the existing Development WIF identity
+        uses: google-github-actions/auth@7c6bc770dae815cd3e89ee6cdf493a5fab2cc093 # v3
+        with:
+          project_id: llm-wiki-cloud
+          workload_identity_provider: ${{ secrets.WIF_PROVIDER }}
+          service_account: ${{ secrets.WIF_SERVICE_ACCOUNT }}
+
+      - name: Set up gcloud for the shared read-only lookup core
+        uses: google-github-actions/setup-gcloud@e427ad8a34f8676edf47cf7d7925499adf3eb74f # v2.1.4
+
+      - name: Run the shared local/Actions probe command
+        run: |
+          set -Eeuo pipefail
+          artifact="$RUNNER_TEMP/lwc402-request-id-probe.json"
+          args=(python3 scripts/verify_request_id_trace.py --artifact "$artifact")
+          if [[ "$ENABLE_PIPELINE" == "true" ]]; then
+            args+=(--enable-pipeline)
+          fi
+          "${args[@]}"
+
+      - name: Retain sanitized probe evidence
+        if: always()
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
+        with:
+          name: request-id-trace-dev-${{ github.sha }}-${{ github.run_id }}-${{ github.run_attempt }}
+          path: ${{ runner.temp }}/lwc402-request-id-probe.json
+          if-no-files-found: error
+          retention-days: 30

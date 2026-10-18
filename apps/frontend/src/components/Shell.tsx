@@ -85,11 +85,12 @@ function ShellContent({ children }: { children: React.ReactNode }) {
     icon: typeof Search;
     exact?: boolean;
     countKey?: NavCountKey;
+    beta?: boolean;
   }[] = [
     { href: '/', label: t('Shell.search'), icon: Search, exact: true },
     ...(!isDemoSession ? [{ href: '/profile', label: t('Shell.profile'), icon: Pencil }] : []),
-    ...(!isDemoSession ? [{ href: '/advanced', label: t('MCPOAuth.nav'), icon: Shield }] : []),
-    ...(!isDemoSession ? [{ href: '/cli', label: t('CLILane.nav'), icon: Terminal }] : []),
+    ...(!isDemoSession ? [{ href: '/advanced', label: t('MCPOAuth.nav'), icon: Shield, beta: true }] : []),
+    ...(!isDemoSession ? [{ href: '/cli', label: t('CLILane.nav'), icon: Terminal, beta: true }] : []),
     { href: '/sources', label: t('Shell.sources'), icon: FileText, countKey: 'sources' },
     { href: '/concepts', label: t('Shell.concepts'), icon: Brain, countKey: 'concepts' },
     { href: '/status', label: t('Shell.status'), icon: Activity },
@@ -194,6 +195,7 @@ function ShellContent({ children }: { children: React.ReactNode }) {
                   <NavigationLink
                     key={item.href}
                     href={item.href}
+                    aria-label={item.beta ? `${item.label} ${t('Shell.betaBadge')}` : undefined}
                     className={`relative flex min-h-11 items-center gap-3 rounded-lg px-3 py-2.5 text-sm font-medium transition ${
                       active
                         ? 'bg-white/8 text-white'
@@ -205,6 +207,7 @@ function ShellContent({ children }: { children: React.ReactNode }) {
                     ) : null}
                     <Icon className={`size-4 shrink-0 ${active ? 'text-emerald-400' : 'text-zinc-500'}`} />
                     <span className="min-w-0 flex-1 truncate">{item.label}</span>
+                    {item.beta ? <Badge variant="accent" className="shrink-0 px-1.5 py-0 text-[10px]">{t('Shell.betaBadge')}</Badge> : null}
                     {count !== null ? (
                       <Badge variant="muted" className="ml-auto shrink-0 tabular-nums">
                         {count}

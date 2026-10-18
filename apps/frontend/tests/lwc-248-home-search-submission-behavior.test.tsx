@@ -456,15 +456,17 @@ describe('LWC-248 home search submission contract', () => {
   });
 
   it('does not apply a pending diagnostic copy to a newer request, Project, or session', async () => {
-    const firstID = 'first_help-123';
-    const nextID = 'next_help-456';
+    const firstDiagnosticID = 'first_help-123';
+    const nextDiagnosticID = 'next_help-456';
+    const firstRequestID = '123e4567-e89b-42d3-a456-426614174016';
+    const nextRequestID = '123e4567-e89b-42d3-a456-426614174017';
     let resolveCopy!: () => void;
     const pendingCopy = new Promise<void>((resolve) => { resolveCopy = resolve; });
     const writeText = vi.fn().mockReturnValue(pendingCopy);
     Object.defineProperty(navigator, 'clipboard', { configurable: true, value: { writeText } });
     mocks.searchWiki
-      .mockRejectedValueOnce(new QueryApiError('first error', 503, 'query_provider_failed', firstID))
-      .mockRejectedValueOnce(new QueryApiError('next error', 503, 'query_provider_failed', nextID));
+      .mockRejectedValueOnce(new QueryApiError('first error', 503, 'query_provider_failed', firstDiagnosticID, firstRequestID))
+      .mockRejectedValueOnce(new QueryApiError('next error', 503, 'query_provider_failed', nextDiagnosticID, nextRequestID));
 
     const { rerender } = render(<HomeClient />);
     await waitForInitialSearchState();
@@ -474,11 +476,11 @@ describe('LWC-248 home search submission contract', () => {
       fireEvent.change(queryInput, { target: { value: 'first request' } });
       fireEvent.submit(form);
     });
-    expect(await screen.findByText(firstID)).toBeTruthy();
+    expect(await screen.findByText(firstRequestID)).toBeTruthy();
     await act(async () => {
       fireEvent.click(screen.getByRole('button', { name: 'QueryErrors.copyDiagnosticId' }));
     });
-    expect(writeText).toHaveBeenCalledWith(firstID);
+    expect(writeText).toHaveBeenCalledWith(firstRequestID);
 
     mocks.currentProject = { id: 'project-b', name: 'Project B' };
     mocks.token = 'session-b';
@@ -487,7 +489,7 @@ describe('LWC-248 home search submission contract', () => {
       fireEvent.change(screen.getByRole('textbox'), { target: { value: 'next request' } });
       fireEvent.submit((await getFormFromSearchButton()).form);
     });
-    expect(await screen.findByText(nextID)).toBeTruthy();
+    expect(await screen.findByText(nextRequestID)).toBeTruthy();
 
     await act(async () => {
       resolveCopy();

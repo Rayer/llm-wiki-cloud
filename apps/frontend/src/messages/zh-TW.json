@@ -229,6 +229,7 @@
   "Shell": {
     "brand": "LLM Wiki Cloud",
     "subtitle": "探索你的知識庫",
+    "betaBadge": "Beta",
     "navigation": "主要導覽",
     "openNavigation": "開啟導覽",
     "closeNavigation": "關閉導覽",
@@ -640,6 +641,7 @@
     "canceled": "搜尋已取消，準備好後請重新送出。",
     "projectNotFound": "找不到此專案。請確認目前選取的專案後再試一次。",
     "unsupportedProfileCondition": "查詢執行環境不支援 Profile 中的必要條件。請更新 Profile 需求或聯絡支援人員。",
+    "requestId": "請求 ID",
     "diagnosticId": "診斷編號",
     "copyDiagnosticId": "複製編號",
     "diagnosticIdCopied": "已複製"
@@ -791,7 +793,7 @@
     "nav": "CLI 設定",
     "eyebrow": "命令列同步",
     "title": "用 CLI 連接你的 Wiki",
-    "intro": "下載 CLI、在 Web 核准登入、連接既有 Wiki 資料夾，再推送 raw/ 中的檔案。",
+    "intro": "將本機 wiki 的 raw/ 資料夾同步到雲端。同步後，請回到 Web 執行編譯，完成後即可搜尋。CLI 不會讀取其他資料夾的內容。",
   "agentNote": "具備在本機執行命令能力的人或 agent 都可依照這些步驟操作；此頁不會在你的電腦上執行命令。",
     "projectContext": "目前專案：{project}",
     "noProject": "尚未選擇專案",

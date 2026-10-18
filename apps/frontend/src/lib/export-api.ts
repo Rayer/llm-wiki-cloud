@@ -1,4 +1,4 @@
-import { apiFetch, diagnosticIdFromPayload } from './api';
+import { apiFetch, diagnosticIdFromPayload, normalizeRequestId } from './api';
 
 export type ExportScope = 'raw' | 'raw-full' | 'raw-full-metadata';
 export type ExportJobStatus = 'queued' | 'running' | 'ready' | 'failed' | 'expired';
@@ -38,6 +38,13 @@ export type ExportDownload = {
   filename: string;
 };
 
+export type ExportApiError = Error & {
+  status: number;
+  payload: unknown;
+  diagnosticId?: string;
+  requestId?: string;
+};
+
 async function exportJson<T>(path: string, projectId: string, options: { method?: string; body?: unknown; signal?: AbortSignal } = {}): Promise<T> {
   const response = await apiFetch(path, {
     method: options.method,
@@ -59,7 +66,8 @@ async function exportJson<T>(path: string, projectId: string, options: { method?
       status: response.status,
       payload,
       diagnosticId: diagnosticIdFromPayload(payload),
-    });
+      requestId: normalizeRequestId(response.headers.get('X-Request-ID')),
+    }) as ExportApiError;
   }
   return payload as T;
 }

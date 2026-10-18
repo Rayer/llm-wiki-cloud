@@ -23,7 +23,7 @@ import {
 import { useT } from '@/lib/i18n';
 import { getExactRawCitationRange } from '@/lib/markdown-citations';
 import { resolveWikilinksInMarkdown } from '@/lib/markdown-inline';
-import { EmptyState, ErrorState, LoadingState, useDiagnosticIdCopy } from './States';
+import { displayErrorId, EmptyState, ErrorIdDetails, ErrorState, LoadingState, useErrorIdCopy } from './States';
 import { useWorkspace } from './WorkspaceProvider';
 import { Badge } from './ui/Badge';
 import { Surface } from './ui/Surface';
@@ -59,10 +59,11 @@ type ModalEntry = {
   lookup: string;
   label: string;
   error: string;
+  requestId?: string;
   diagnosticId?: string;
 };
 type SearchMode = 'wiki' | 'full';
-type SearchError = { messageKey: string; diagnosticId?: string };
+type SearchError = { messageKey: string; requestId?: string; diagnosticId?: string };
 
 function searchError(error: unknown): SearchError {
   const apiError = error instanceof QueryApiError ? error : null;
@@ -92,6 +93,7 @@ function searchError(error: unknown): SearchError {
   };
   return {
     messageKey: `QueryErrors.${apiError ? keyByCode[apiError.code] ?? legacyKey : 'queryFailure'}`,
+    requestId: apiError?.requestId,
     diagnosticId: apiError?.diagnosticId,
   };
 }
@@ -170,11 +172,11 @@ export function HomeClient() {
   const [searched, setSearched] = useState(Boolean(initialSearch.q));
   const [loading, setLoading] = useState(Boolean(initialSearch.q));
   const [error, setError] = useState<SearchError | null>(null);
-  const [diagnosticIdCopied, setDiagnosticIdCopied] = useState(false);
+  const [errorIdCopied, setErrorIdCopied] = useState(false);
   const [modal, setModal] = useState<ModalEntry | null>(null);
   const [modalLoading, setModalLoading] = useState(false);
-  const { copyDiagnosticId: copyCitationDiagnosticId, diagnosticIdCopied: citationDiagnosticIdCopied } =
-    useDiagnosticIdCopy(modal, modal?.diagnosticId);
+  const { copyErrorId: copyCitationErrorId, errorIdCopied: citationErrorIdCopied } =
+    useErrorIdCopy(modal, modal?.requestId, modal?.diagnosticId);
   const citationRequestId = useRef(0);
   const searchRequestId = useRef(0);
   const searchErrorRef = useRef(error);
@@ -217,7 +219,7 @@ export function HomeClient() {
         .catch((err: Error) => {
           if (requestId !== searchRequestId.current) return;
           setError(searchError(err));
-          setDiagnosticIdCopied(false);
+          setErrorIdCopied(false);
           setResults([]);
           setAiAnswer('');
           setCitations([]);
@@ -252,7 +254,7 @@ export function HomeClient() {
     setSearched(false);
     setLoading(false);
     setError(null);
-    setDiagnosticIdCopied(false);
+    setErrorIdCopied(false);
     setModal(null);
     setModalLoading(false);
     setSubmittedMode('wiki');
@@ -304,7 +306,7 @@ export function HomeClient() {
 
     setLoading(true);
     setError(null);
-    setDiagnosticIdCopied(false);
+    setErrorIdCopied(false);
     setAiAnswer('');
     setCitations([]);
     setExpandKeywords([]);
@@ -331,28 +333,26 @@ export function HomeClient() {
     }
   }, [query]);
 
-  const copyDiagnosticId = async () => {
-    const diagnosticId = error?.diagnosticId;
-    if (!diagnosticId || !navigator.clipboard?.writeText) return;
+  const copyErrorId = async () => {
+    const errorId = displayErrorId(error?.requestId, error?.diagnosticId);
+    if (!errorId || !navigator.clipboard?.writeText) return;
     const requestId = searchRequestId.current;
     const identity = identityRef.current;
+    const isCurrentError = () => {
+      const currentErrorId = displayErrorId(searchErrorRef.current?.requestId, searchErrorRef.current?.diagnosticId);
+      return requestId === searchRequestId.current
+        && identity.projectId === identityRef.current.projectId
+        && identity.token === identityRef.current.token
+        && currentErrorId?.value === errorId.value
+        && currentErrorId.kind === errorId.kind;
+    };
     try {
-      await navigator.clipboard.writeText(diagnosticId);
-      if (
-        requestId !== searchRequestId.current
-        || identity.projectId !== identityRef.current.projectId
-        || identity.token !== identityRef.current.token
-        || searchErrorRef.current?.diagnosticId !== diagnosticId
-      ) return;
-      setDiagnosticIdCopied(true);
+      await navigator.clipboard.writeText(errorId.value);
+      if (!isCurrentError()) return;
+      setErrorIdCopied(true);
     } catch {
-      if (
-        requestId !== searchRequestId.current
-        || identity.projectId !== identityRef.current.projectId
-        || identity.token !== identityRef.current.token
-        || searchErrorRef.current?.diagnosticId !== diagnosticId
-      ) return;
-      setDiagnosticIdCopied(false);
+      if (!isCurrentError()) return;
+      setErrorIdCopied(false);
     }
   };
 
@@ -429,6 +429,7 @@ export function HomeClient() {
       setModal((current) => (current ? {
         ...current,
         error: message,
+        requestId: err instanceof ApiError ? err.requestId : undefined,
         diagnosticId: err instanceof ApiError ? err.diagnosticId : undefined,
       } : null));
     } finally {
@@ -603,12 +604,14 @@ export function HomeClient() {
         {error ? (
           <ErrorState
             message={t(error.messageKey)}
+            requestId={error.requestId}
             diagnosticId={error.diagnosticId}
-            copyDiagnosticIdLabel={t('QueryErrors.copyDiagnosticId')}
-            diagnosticIdCopiedLabel={t('QueryErrors.diagnosticIdCopied')}
+            requestIdLabel={t('QueryErrors.requestId')}
             diagnosticIdLabel={t('QueryErrors.diagnosticId')}
-            diagnosticIdCopied={diagnosticIdCopied}
-            onCopyDiagnosticId={copyDiagnosticId}
+            copyErrorIdLabel={t('QueryErrors.copyDiagnosticId')}
+            errorIdCopiedLabel={t('QueryErrors.diagnosticIdCopied')}
+            errorIdCopied={errorIdCopied}
+            onCopyErrorId={copyErrorId}
           />
         ) : null}
         {!loading && !error && aiAnswer ? (
@@ -750,19 +753,17 @@ export function HomeClient() {
             ) : modal?.error ? (
               <div className="rounded-md border border-amber-300/30 bg-amber-500/10 p-4">
                 <p role="alert" className="text-sm text-amber-100">{modal.error}</p>
-                {modal.diagnosticId ? (
-                  <div className="mt-3 flex flex-wrap items-center gap-3 text-sm text-amber-100">
-                    <span>{t('QueryErrors.diagnosticId')}</span>
-                    <code className="select-all rounded bg-black/20 px-2 py-1">{modal.diagnosticId}</code>
-                    <button
-                      type="button"
-                      className="min-h-11 rounded border border-amber-100/20 px-3 text-xs hover:bg-white/10"
-                      onClick={() => { void copyCitationDiagnosticId(); }}
-                    >
-                      {citationDiagnosticIdCopied ? t('QueryErrors.diagnosticIdCopied') : t('QueryErrors.copyDiagnosticId')}
-                    </button>
-                  </div>
-                ) : null}
+                <ErrorIdDetails
+                  requestId={modal.requestId}
+                  diagnosticId={modal.diagnosticId}
+                  requestIdLabel={t('QueryErrors.requestId')}
+                  diagnosticIdLabel={t('QueryErrors.diagnosticId')}
+                  copyErrorIdLabel={t('QueryErrors.copyDiagnosticId')}
+                  errorIdCopiedLabel={t('QueryErrors.diagnosticIdCopied')}
+                  errorIdCopied={citationErrorIdCopied}
+                  onCopyErrorId={copyCitationErrorId}
+                  className="mt-3 flex flex-wrap items-center gap-3 text-sm text-amber-100"
+                />
                 <button
                   type="button"
                   className="mt-3 rounded-md border border-amber-300/40 px-3 py-2 text-sm text-amber-100"

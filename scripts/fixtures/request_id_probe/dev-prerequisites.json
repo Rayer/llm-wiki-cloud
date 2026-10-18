@@ -1,0 +1,16 @@
+{
+  "schema": "lwc-request-id-probe-dev-prerequisites-v1",
+  "environment": "development",
+  "base_host": "llm-wiki-bff-dev-580854833715.asia-east1.run.app",
+  "query_project_id": null,
+  "pipeline_project_id": null,
+  "fixture_project_id": null,
+  "fixture_readiness": "not_verified",
+  "fixture_marker": "LWC399-HARBOR-LIBRARY-SYNTHETIC",
+  "fixture_source": "B-harbor-library-fixture-source.md",
+  "historical_project_id_for_reference_only": "75ce0901c17b",
+  "historical_project_readiness": "not_verified",
+  "pipeline_enabled_by_default": false,
+  "native_link_verification": "manual_console_check_required",
+  "live_readiness": "not_configured"
+}

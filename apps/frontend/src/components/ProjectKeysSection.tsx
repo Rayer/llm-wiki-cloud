@@ -4,6 +4,7 @@ import { FormEvent, useEffect, useState } from 'react';
 import type { Project } from '@/lib/projects';
 import { createProjectKey, listProjectKeys, ProjectKeyApiError, revokeProjectKey, type ProjectKey } from '@/lib/project-keys';
 import { getRuntimeConfig } from '@/lib/runtime-config';
+import { Badge } from '@/components/ui/Badge';
 
 type Translate = (key: string, params?: Record<string, string | number>) => string;
 
@@ -181,7 +182,10 @@ export function ProjectKeysSection({
       <h2 id="project-settings-external-access" className="text-xl font-semibold text-white">{t('ProjectSettings.externalAccess')}</h2>
       <section className="mt-5" aria-labelledby="project-keys-title">
       <div className="flex flex-wrap items-center justify-between gap-3">
-        <h3 id="project-keys-title" className="text-lg font-semibold text-white">{t('ProjectSettings.projectKeys')}</h3>
+        <h3 id="project-keys-title" aria-label={`${t('ProjectSettings.projectKeys')} ${t('Shell.betaBadge')}`} className="flex flex-wrap items-center gap-2 text-lg font-semibold text-white">
+          <span>{t('ProjectSettings.projectKeys')}</span>
+          <Badge variant="accent">{t('Shell.betaBadge')}</Badge>
+        </h3>
         <button type="button" disabled={!projectId || !accessToken || projectKeyBusy} onClick={() => void handleRefreshProjectKeys()} className="min-h-11 rounded-lg border border-white/15 px-3 py-2 text-sm text-zinc-200 hover:bg-white/10 disabled:opacity-50">{t('AccountSettings.projectKeysRefresh')}</button>
       </div>
       <p className="mt-1 text-sm leading-6 text-zinc-400">{t('AccountSettings.projectKeysHint')}</p>
