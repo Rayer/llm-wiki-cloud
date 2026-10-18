@@ -1,6 +1,6 @@
 # LWC-404 lane D local implementation checkpoint
 
-Baseline: `4e1d6cb3cc89548ca7dc49924d95c64ddc97c723`  
+Baseline: `4e1d6cb3cc89548ca7dc49924d95c64ddc97c723`
 Status: local implementation and evidence ready for Main review; source remains uncommitted. This is not ticket verification, merge, PR publication, or deployment.
 
 ## Implementation

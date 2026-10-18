@@ -1,7 +1,7 @@
 # LWC-402 local checkpoint — blocked by shared LWC-401 core HOLD
 
-Task: `task_ef39b1e77ff2` / dispatch `ctx_f56a60527e44`  
-Baseline: `4e1d6cb3cc89548ca7dc49924d95c64ddc97c723`  
+Task: `task_ef39b1e77ff2` / dispatch `ctx_f56a60527e44`
+Baseline: `4e1d6cb3cc89548ca7dc49924d95c64ddc97c723`
 Disposition: **B partial draft; not accepted or complete. Live suite NOT RUN.**
 
 ## Handoff and stop point
