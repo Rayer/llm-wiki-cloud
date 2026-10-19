@@ -8,7 +8,7 @@ if (!(React as { act?: (callback: () => unknown) => Promise<unknown> | unknown }
   });
 }
 
-const { act, cleanup, fireEvent, render, screen, waitFor } = await import('@testing-library/react');
+const { act, cleanup, fireEvent, render, screen, waitFor, within } = await import('@testing-library/react');
 
 const mocks = vi.hoisted(() => ({
   addProject: vi.fn(),
@@ -83,6 +83,65 @@ describe('LWC-406 project creation', () => {
     expect((screen.getByRole('textbox', { name: nameLabel }) as HTMLInputElement).value).toBe('Café research');
     expect(mocks.addProject).not.toHaveBeenCalled();
     expect(mocks.push).not.toHaveBeenCalled();
+  });
+
+  it.each([
+    ['en', 'x', 'Close create project dialog', 'Project name', 'Learn how project settings work'],
+    ['en', 'escape', 'Close create project dialog', 'Project name', 'Learn how project settings work'],
+    ['en', 'backdrop', 'Close create project dialog', 'Project name', 'Learn how project settings work'],
+    ['zh-TW', 'x', '關閉建立專案視窗', '專案名稱', '了解專案設定方式'],
+    ['zh-TW', 'escape', '關閉建立專案視窗', '專案名稱', '了解專案設定方式'],
+    ['zh-TW', 'backdrop', '關閉建立專案視窗', '專案名稱', '了解專案設定方式'],
+  ] as const)('reopens creation in %s after a %s close', async (locale, closeMethod, closeLabel, nameLabel, helpLabel) => {
+    localStorage.setItem('locale', locale);
+    const view = render(<NewProjectModal />);
+    fireEvent.change(screen.getByRole('textbox', { name: nameLabel }), { target: { value: 'Café research' } });
+    fireEvent.click(screen.getByRole('button', { name: helpLabel }));
+    const stages = within(screen.getByRole('navigation')).getAllByRole('button');
+    fireEvent.click(stages[2]);
+    expect(stages[2].getAttribute('aria-current')).toBe('step');
+
+    if (closeMethod === 'x') {
+      fireEvent.click(screen.getByRole('button', { name: closeLabel }));
+    } else if (closeMethod === 'escape') {
+      fireEvent.keyDown(window, { key: 'Escape' });
+    } else {
+      fireEvent.mouseDown(screen.getByRole('dialog').parentElement!);
+    }
+
+    expect(mocks.closeNewProject).toHaveBeenCalledOnce();
+    mocks.open = false;
+    view.rerender(<NewProjectModal />);
+    expect(screen.queryByRole('dialog')).toBeNull();
+    mocks.open = true;
+    view.rerender(<NewProjectModal />);
+
+    const nameInput = screen.getByRole('textbox', { name: nameLabel });
+    await waitFor(() => expect(document.activeElement).toBe(nameInput));
+    expect((nameInput as HTMLInputElement).value).toBe('Café research');
+    fireEvent.click(screen.getByRole('button', { name: helpLabel }));
+    expect(within(screen.getByRole('navigation')).getAllByRole('button')[0].getAttribute('aria-current')).toBe('step');
+    expect(mocks.addProject).not.toHaveBeenCalled();
+    expect(mocks.push).not.toHaveBeenCalled();
+  });
+
+  it('keeps a created project available for navigation retry after close and reopen', async () => {
+    mocks.push.mockImplementationOnce(() => { throw new Error('transition unavailable'); });
+    const view = render(<NewProjectModal />);
+    fireEvent.change(screen.getByRole('textbox', { name: 'Project name' }), { target: { value: 'Research' } });
+    fireEvent.click(screen.getByRole('button', { name: 'Create project' }));
+    expect(await screen.findByRole('button', { name: 'Open project settings' })).toBeDefined();
+
+    fireEvent.click(screen.getByRole('button', { name: 'Close create project dialog' }));
+    mocks.open = false;
+    view.rerender(<NewProjectModal />);
+    mocks.open = true;
+    view.rerender(<NewProjectModal />);
+
+    expect(screen.getByRole('textbox', { name: 'Project name' })).toHaveProperty('disabled', true);
+    fireEvent.click(screen.getByRole('button', { name: 'Open project settings' }));
+    await waitFor(() => expect(mocks.push).toHaveBeenCalledTimes(2));
+    expect(mocks.addProject).toHaveBeenCalledOnce();
   });
 
   it('creates without Profile reads or saves and navigates to the Profile page', async () => {

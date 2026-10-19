@@ -1,6 +1,6 @@
 'use client';
 
-import { FormEvent, useEffect, useLayoutEffect, useMemo, useRef, useState } from 'react';
+import { FormEvent, useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState } from 'react';
 import { useRouter } from 'next/navigation';
 import { useAuth } from '@/lib/auth';
 import { useT } from '@/lib/i18n';
@@ -31,6 +31,11 @@ export function NewProjectModal() {
   const currentScopeRef = useRef<CreateScope | null>(null);
   const previousOwnerId = useRef(`${ownerId}:${sessionEpoch}`);
   const loading = loadingScope === currentScope;
+  const closeDialog = useCallback(() => {
+    if (loading) return;
+    setHelpOpen(false);
+    closeNewProject();
+  }, [closeNewProject, loading]);
 
   useLayoutEffect(() => {
     currentScopeRef.current = currentScope;
@@ -56,11 +61,11 @@ export function NewProjectModal() {
   useEffect(() => {
     if (!newProjectOpen) return;
     const handleKeyDown = (event: KeyboardEvent) => {
-      if (event.key === 'Escape' && !loading) closeNewProject();
+      if (event.key === 'Escape') closeDialog();
     };
     window.addEventListener('keydown', handleKeyDown);
     return () => window.removeEventListener('keydown', handleKeyDown);
-  }, [closeNewProject, loading, newProjectOpen]);
+  }, [closeDialog, newProjectOpen]);
 
   useEffect(() => {
     if (!helpOpen && newProjectOpen) nameInputRef.current?.focus();
@@ -101,12 +106,12 @@ export function NewProjectModal() {
   return (
     <div
       className="fixed inset-0 z-50 flex items-center justify-center bg-black/75 p-4 backdrop-blur-sm"
-      onMouseDown={() => {
-        if (!loading) closeNewProject();
-      }}
+      onMouseDown={closeDialog}
     >
       <div
-        className="max-h-[calc(100dvh-2rem)] w-full max-w-md overflow-y-auto rounded-2xl border border-white/10 bg-[#151515] p-6 shadow-2xl"
+        className={`w-full rounded-2xl border border-white/10 bg-[#151515] p-6 shadow-2xl ${helpOpen
+          ? 'flex h-[calc(100dvh-2rem)] max-h-[54rem] max-w-4xl flex-col overflow-hidden'
+          : 'max-h-[calc(100dvh-2rem)] max-w-md overflow-y-auto'}`}
         role="dialog"
         aria-modal="true"
         aria-labelledby="new-project-title"
@@ -123,7 +128,7 @@ export function NewProjectModal() {
           </div>
           <button
             type="button"
-            onClick={closeNewProject}
+            onClick={closeDialog}
             disabled={loading}
             className="rounded-md p-2 text-zinc-400 transition hover:bg-white/10 hover:text-white"
             aria-label={t('NewProject.close')}
@@ -161,7 +166,7 @@ export function NewProjectModal() {
           <div className="flex justify-end gap-3">
             <button
               type="button"
-              onClick={closeNewProject}
+              onClick={closeDialog}
               disabled={loading}
               className="rounded-lg px-4 py-2.5 text-sm font-medium text-zinc-300 transition hover:bg-white/10 hover:text-white"
             >
@@ -179,15 +184,17 @@ export function NewProjectModal() {
           </div>
         </form>
 
-        <ProfileHowItWorks
-          open={helpOpen}
-          mode="creation"
-          onBack={() => {
-            setHelpOpen(false);
-          }}
-          onSetPreferences={() => undefined}
-          onUseGeneralSettings={() => undefined}
-        />
+        <div className={helpOpen ? 'min-h-0 flex-1 overflow-y-auto overscroll-contain' : 'hidden'}>
+          <ProfileHowItWorks
+            open={helpOpen}
+            mode="creation"
+            onBack={() => {
+              setHelpOpen(false);
+            }}
+            onSetPreferences={() => undefined}
+            onUseGeneralSettings={() => undefined}
+          />
+        </div>
       </div>
     </div>
   );
