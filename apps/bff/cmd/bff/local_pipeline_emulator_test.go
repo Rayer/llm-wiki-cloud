@@ -496,7 +496,11 @@ func TestLocalPipelineHTTPTriggerRunsWorkerAndReportsSuccessAndFailure(t *testin
 	if _, err := scheduledStorage.ReadLocalPublicationReceipt(ctx, scheduledExecutionID); err != nil {
 		t.Fatalf("scheduled publication receipt readback: %v", err)
 	}
-	sourceSnapshot, err := scheduledStorage.ReadSourceSnapshot(ctx)
+	pinnedScheduledStorage, _, err := scheduledStorage.PinQueryGeneration(ctx, scheduledManifest.GenerationID)
+	if err != nil {
+		t.Fatalf("pin scheduled source generation for query readback: %v", err)
+	}
+	sourceSnapshot, err := pinnedScheduledStorage.ReadSourceSnapshot(ctx)
 	if err != nil {
 		t.Fatalf("scheduled source snapshot readback: %v", err)
 	}
@@ -527,6 +531,44 @@ func TestLocalPipelineHTTPTriggerRunsWorkerAndReportsSuccessAndFailure(t *testin
 	}
 	if !receiptFound {
 		t.Fatalf("scheduled source receipts did not mark only the consumed input: %+v", sourceReceiptArtifact.Sources)
+	}
+	sourceRequest, err := http.NewRequestWithContext(ctx, http.MethodGet, server.URL+"/api/v1/sources", nil)
+	if err != nil {
+		t.Fatalf("create scheduled source readback request: %v", err)
+	}
+	sourceRequest.Header.Set("Authorization", "Bearer "+token)
+	sourceRequest.Header.Set("X-Project-ID", scheduledProject)
+	sourceResponse, err := server.Client().Do(sourceRequest)
+	if err != nil {
+		t.Fatalf("read newly published source through owner API: %v", err)
+	}
+	var sourceList handlerapi.SourcesListResponse
+	sourceDecodeErr := json.NewDecoder(io.LimitReader(sourceResponse.Body, 1<<20)).Decode(&sourceList)
+	_ = sourceResponse.Body.Close()
+	var scheduledSourceSlug string
+	for _, source := range sourceList.Sources {
+		if source.RawPath == "raw/lwc413-e2e-source.md" {
+			scheduledSourceSlug = source.Slug
+		}
+	}
+	if sourceResponse.StatusCode != http.StatusOK || sourceDecodeErr != nil || scheduledSourceSlug == "" {
+		t.Fatalf("scheduled source API readback status=%d decodeErr=%v sources=%+v", sourceResponse.StatusCode, sourceDecodeErr, sourceList.Sources)
+	}
+	sourceDetailRequest, err := http.NewRequestWithContext(ctx, http.MethodGet, server.URL+"/api/v1/sources/"+url.PathEscape(scheduledSourceSlug), nil)
+	if err != nil {
+		t.Fatalf("create scheduled source detail request: %v", err)
+	}
+	sourceDetailRequest.Header.Set("Authorization", "Bearer "+token)
+	sourceDetailRequest.Header.Set("X-Project-ID", scheduledProject)
+	sourceDetailResponse, err := server.Client().Do(sourceDetailRequest)
+	if err != nil {
+		t.Fatalf("read newly published source detail: %v", err)
+	}
+	var sourceDetail handlerapi.SourceDetailResponse
+	sourceDetailDecodeErr := json.NewDecoder(io.LimitReader(sourceDetailResponse.Body, 1<<20)).Decode(&sourceDetail)
+	_ = sourceDetailResponse.Body.Close()
+	if sourceDetailResponse.StatusCode != http.StatusOK || sourceDetailDecodeErr != nil || !strings.Contains(sourceDetail.Body, "LWC413_CAUSAL_E2E:") {
+		t.Fatalf("scheduled source detail status=%d decodeErr=%v response=%+v", sourceDetailResponse.StatusCode, sourceDetailDecodeErr, sourceDetail)
 	}
 	manualRuns, _, _, err := fsClient.LoadQuotaState(ctx, userID, scheduledProject)
 	if err != nil || manualRuns != 0 {
