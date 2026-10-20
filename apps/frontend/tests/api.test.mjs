@@ -33,6 +33,8 @@ import {
   RAW_UPLOAD_MAX_BYTES,
   safeWikiRouteSegment,
   searchWiki,
+  scrapeUrl,
+  confirmScrape,
   triggerAdminProjectPipeline,
   toV1Path,
   triggerPipeline,
@@ -188,6 +190,68 @@ test('buildProjectHeaders scopes authenticated requests to the selected project'
     'Content-Type': 'application/json',
     'X-Project-ID': 'project-1',
   });
+});
+
+test('scrapeUrl sends URL and caller tags only to the selected Project and parses a structured conflict body', async () => {
+  configureApiAuth({
+    getAccessToken: () => 'jwt-token',
+    refreshAccessToken: async () => null,
+    onUnauthorized: () => undefined,
+  });
+  globalThis.window = { localStorage: { getItem: () => 'project-1' } };
+  const originalFetch = globalThis.fetch;
+  let requestedUrl = '';
+  let requestedInit;
+  const conflict = {
+    status: 'conflict',
+    message: 'candidate changed',
+    preview: {
+      title: 'Example', source_url: 'https://example.com/article', markdown: '# Example',
+      metadata: { title: 'Example' }, candidate_sha256: 'candidate-sha', provider: 'deepseek-fetch',
+    },
+  };
+  globalThis.fetch = async (url, init) => {
+    requestedUrl = String(url);
+    requestedInit = init;
+    return Response.json(conflict, { status: 409 });
+  };
+
+  try {
+    const result = await scrapeUrl('https://example.com/article', 'project-1', ['source', 'research']);
+    assert.deepEqual(result, conflict);
+    assert.equal(requestedUrl, 'https://api.runtime.test/api/v1/raw/scrape');
+    assert.equal(requestedInit.method, 'POST');
+    assert.equal(new Headers(requestedInit.headers).get('authorization'), 'Bearer jwt-token');
+    assert.equal(new Headers(requestedInit.headers).get('x-project-id'), 'project-1');
+    assert.deepEqual(JSON.parse(requestedInit.body), {
+      url: 'https://example.com/article', tags: ['source', 'research'],
+    });
+  } finally {
+    globalThis.fetch = originalFetch;
+  }
+});
+
+test('confirmScrape submits only the bound confirmation reference and parses stale result bodies', async () => {
+  configureApiAuth({
+    getAccessToken: () => 'jwt-token',
+    refreshAccessToken: async () => null,
+    onUnauthorized: () => undefined,
+  });
+  globalThis.window = { localStorage: { getItem: () => 'project-1' } };
+  const originalFetch = globalThis.fetch;
+  let requestedInit;
+  const stale = { status: 'rejected', message: 'confirmation is stale' };
+  globalThis.fetch = async (_url, init) => {
+    requestedInit = init;
+    return Response.json(stale, { status: 422 });
+  };
+
+  try {
+    assert.deepEqual(await confirmScrape('opaque-reference', 'project-1'), stale);
+    assert.deepEqual(JSON.parse(requestedInit.body), { confirmation_ref: 'opaque-reference' });
+  } finally {
+    globalThis.fetch = originalFetch;
+  }
 });
 
 test('apiFetch records initial and replay response IDs as separate server exchanges', async () => {

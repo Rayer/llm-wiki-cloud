@@ -2205,7 +2205,7 @@ const docTemplate = `{
                         "ProjectHeader": []
                     }
                 ],
-                "description": "Scrape a URL into markdown and save it under the scoped raw store.",
+                "description": "Fetches a public URL, checks the candidate, and saves only a usable page or an explicitly confirmed preview under the authenticated Project.",
                 "consumes": [
                     "application/json"
                 ],
@@ -2215,10 +2215,10 @@ const docTemplate = `{
                 "tags": [
                     "raw"
                 ],
-                "summary": "Scrape URL content into raw markdown",
+                "summary": "Fetch and quality-check URL content into raw markdown",
                 "parameters": [
                     {
-                        "description": "URL and optional filename",
+                        "description": "URL and optional source tags, or a confirmation reference",
                         "name": "request",
                         "in": "body",
                         "required": true,
@@ -2246,6 +2246,24 @@ const docTemplate = `{
                             "$ref": "#/definitions/handler.ErrorResponse"
                         }
                     },
+                    "409": {
+                        "description": "Conflict",
+                        "schema": {
+                            "$ref": "#/definitions/handler.ScrapeResponse"
+                        }
+                    },
+                    "413": {
+                        "description": "Request Entity Too Large",
+                        "schema": {
+                            "$ref": "#/definitions/handler.ErrorResponse"
+                        }
+                    },
+                    "422": {
+                        "description": "Unprocessable Entity",
+                        "schema": {
+                            "$ref": "#/definitions/handler.ScrapeResponse"
+                        }
+                    },
                     "500": {
                         "description": "Internal Server Error",
                         "schema": {
@@ -2255,7 +2273,7 @@ const docTemplate = `{
                     "503": {
                         "description": "Service Unavailable",
                         "schema": {
-                            "$ref": "#/definitions/handler.ErrorResponse"
+                            "$ref": "#/definitions/handler.ScrapeResponse"
                         }
                     }
                 }
@@ -3081,13 +3099,15 @@ const docTemplate = `{
         },
         "handler.ScrapeRequest": {
             "type": "object",
-            "required": [
-                "url"
-            ],
             "properties": {
-                "filename": {
-                    "description": "optional; derived from URL title if empty",
+                "confirmation_ref": {
                     "type": "string"
+                },
+                "tags": {
+                    "type": "array",
+                    "items": {
+                        "type": "string"
+                    }
                 },
                 "url": {
                     "type": "string"
@@ -3097,23 +3117,29 @@ const docTemplate = `{
         "handler.ScrapeResponse": {
             "type": "object",
             "properties": {
-                "bytes": {
-                    "type": "integer"
-                },
-                "digest": {
+                "confirmation_ref": {
                     "type": "string"
                 },
-                "filename": {
+                "expires_at": {
                     "type": "string"
                 },
                 "message": {
                     "type": "string"
                 },
-                "path": {
+                "preview": {
+                    "$ref": "#/definitions/urlintake.CandidatePreview"
+                },
+                "processing_status": {
                     "type": "string"
                 },
-                "title": {
+                "retry_after_seconds": {
+                    "type": "integer"
+                },
+                "status": {
                     "type": "string"
+                },
+                "storage": {
+                    "$ref": "#/definitions/urlintake.StorageOutcome"
                 }
             }
         },
@@ -3447,6 +3473,53 @@ const docTemplate = `{
             ],
             "properties": {
                 "announcement_markdown": {
+                    "type": "string"
+                }
+            }
+        },
+        "urlintake.CandidatePreview": {
+            "type": "object",
+            "properties": {
+                "candidate_sha256": {
+                    "type": "string"
+                },
+                "markdown": {
+                    "type": "string"
+                },
+                "metadata": {
+                    "type": "object",
+                    "additionalProperties": {}
+                },
+                "provider": {
+                    "type": "string"
+                },
+                "provider_truncated": {
+                    "type": "boolean"
+                },
+                "reason": {
+                    "type": "string"
+                },
+                "source_url": {
+                    "type": "string"
+                },
+                "title": {
+                    "type": "string"
+                },
+                "warning": {
+                    "type": "string"
+                }
+            }
+        },
+        "urlintake.StorageOutcome": {
+            "type": "object",
+            "properties": {
+                "path": {
+                    "type": "string"
+                },
+                "sha256": {
+                    "type": "string"
+                },
+                "status": {
                     "type": "string"
                 }
             }
