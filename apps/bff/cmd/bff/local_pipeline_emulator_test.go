@@ -8,6 +8,7 @@ import (
 	"encoding/hex"
 	"encoding/json"
 	"errors"
+	"fmt"
 	"io"
 	"mime/multipart"
 	"net"
@@ -501,31 +502,31 @@ func TestLocalPipelineHTTPTriggerRunsWorkerAndReportsSuccessAndFailure(t *testin
 	}
 	wantRawDigest := fmt.Sprintf("%x", sha256.Sum256(rawBody))
 	var sourceRow *generation.SourceSnapshotRow
-	for i := range sourceSnapshot.Sources {
-		if sourceSnapshot.Sources[i].RawPath == "raw/lwc413-e2e-source.md" {
-			sourceRow = &sourceSnapshot.Sources[i]
+	for i := range sourceSnapshot.Rows {
+		if sourceSnapshot.Rows[i].RawPath == "raw/lwc413-e2e-source.md" {
+			sourceRow = &sourceSnapshot.Rows[i]
 			break
 		}
 	}
 	if sourceRow == nil || sourceRow.ContentDigest != wantRawDigest {
 		t.Fatalf("scheduled consumed-source snapshot row=%+v; want start-time raw digest %s", sourceRow, wantRawDigest)
 	}
-	statusBytes, err := scheduledStorage.ReadFile(ctx, sourcestatus.Path)
+	sourceReceiptBytes, err := scheduledStorage.ReadFile(ctx, sourcestatus.Path)
 	if err != nil {
 		t.Fatalf("scheduled source receipt readback: %v", err)
 	}
-	statusArtifact, err := sourcestatus.Decode(statusBytes)
+	sourceReceiptArtifact, err := sourcestatus.Decode(sourceReceiptBytes)
 	if err != nil {
 		t.Fatalf("decode scheduled source receipt: %v", err)
 	}
 	var receiptFound bool
-	for _, receipt := range statusArtifact.Sources {
+	for _, receipt := range sourceReceiptArtifact.Sources {
 		if receipt.RawPath == "raw/lwc413-e2e-source.md" && receipt.LastIngestedRawSHA256 == wantRawDigest && receipt.LastIngestFingerprint != "" {
 			receiptFound = true
 		}
 	}
 	if !receiptFound {
-		t.Fatalf("scheduled source receipts did not mark only the consumed input: %+v", statusArtifact.Sources)
+		t.Fatalf("scheduled source receipts did not mark only the consumed input: %+v", sourceReceiptArtifact.Sources)
 	}
 	manualRuns, _, _, err := fsClient.LoadQuotaState(ctx, userID, scheduledProject)
 	if err != nil || manualRuns != 0 {
