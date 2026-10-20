@@ -36,6 +36,7 @@ const maxBFFConfigBytes = 64 << 10
 var secretResourcePattern = regexp.MustCompile(`^projects/[A-Za-z0-9.-]+/secrets/[A-Za-z0-9_-]+/versions/(?:[1-9][0-9]*|latest)$`)
 var resolvedSecretResourcePattern = regexp.MustCompile(`^projects/[A-Za-z0-9.-]+/secrets/[A-Za-z0-9_-]+/versions/[1-9][0-9]*$`)
 var projectNumberPattern = regexp.MustCompile(`^[1-9][0-9]{5,19}$`)
+var pipelineScheduleServiceAccountPattern = regexp.MustCompile(`^[a-z][a-z0-9-]{4,28}[a-z0-9]@[a-z0-9.-]+\.iam\.gserviceaccount\.com$`)
 
 var (
 	errProjectIdentityUnavailable = errors.New("Cloud Resource Manager response omitted canonical project identity")
@@ -103,6 +104,13 @@ type bffLocal struct {
 	PipelineBindingsPath string `json:"pipeline_bindings_path"`
 }
 
+type bffPipelineSchedule struct {
+	Cron           string `json:"cron"`
+	Timezone       string `json:"timezone"`
+	Audience       string `json:"audience"`
+	ServiceAccount string `json:"service_account"`
+}
+
 type bffSourceProjection struct {
 	SchemaVersion                int                 `json:"schema_version"`
 	Environment                  string              `json:"environment"`
@@ -129,6 +137,7 @@ type bffSourceProjection struct {
 	TypeSafeAPIKeyReference      *bffSecretReference `json:"typesafe_api_key_reference"`
 	ProfileRuntimeAudience       string              `json:"profile_runtime_audience"`
 	ProfileRuntimeServiceAccount string              `json:"profile_runtime_service_account"`
+	PipelineSchedule             bffPipelineSchedule `json:"pipeline_schedule"`
 	LLM                          bffLLM              `json:"llm"`
 	Query                        bffQuery            `json:"query"`
 	Local                        *bffLocal           `json:"local"`
@@ -536,7 +545,7 @@ func decodeBFFSourceProjection(data []byte, environment string) (bffSourceProjec
 		"allowed_origins", "allowed_hosts", "pipeline_daily_limit", "pipeline_cooldown_seconds",
 		"pipeline_min_new_raw", "pipeline_demo_user_ids", "auth_session_environment", "auth_session_migration",
 		"jwt_secret_reference", "deepseek_api_key_reference", "profile_runtime_audience",
-		"profile_runtime_service_account", "llm", "query", "port_default", "config_secret_resource",
+		"profile_runtime_service_account", "pipeline_schedule", "llm", "query", "port_default", "config_secret_resource",
 	}
 	if len(fields) < len(required)+1 || len(fields) > len(required)+3 {
 		return bffSourceProjection{}, errors.New("selected BFF SSOT has an invalid shape")
@@ -574,6 +583,10 @@ func validateBFFSourceProjection(p bffSourceProjection, environment string) erro
 		strings.TrimSpace(p.FirestoreDatabaseID) == "" || p.PipelineDailyLimit <= 0 ||
 		p.PipelineCooldownSeconds <= 0 || int64(p.PipelineCooldownSeconds) > maxSeconds ||
 		p.PipelineMinNewRaw <= 0 || len(p.AllowedOrigins) == 0 || p.PipelineDemoUserIDs == nil ||
+		p.PipelineSchedule.Cron != "0 * * * *" || p.PipelineSchedule.Timezone != "UTC" ||
+		(p.PipelineSchedule.Audience == "") != (p.PipelineSchedule.ServiceAccount == "") ||
+		(p.PipelineSchedule.Audience != "" && (!validBFFScheduleAudience(p.PipelineSchedule.Audience) ||
+			!pipelineScheduleServiceAccountPattern.MatchString(p.PipelineSchedule.ServiceAccount))) ||
 		p.AuthSessionEnvironment == "" || (p.AuthSessionMigration != "disabled" && p.AuthSessionMigration != "legacy_read_through") ||
 		p.PortDefault < 1 || p.PortDefault > 65535 || p.LLM.Provider != "deepseek" ||
 		p.LLM.RequestTimeoutSeconds <= 0 || int64(p.LLM.RequestTimeoutSeconds) > maxSeconds ||
@@ -647,6 +660,12 @@ func validateBFFSourceProjection(p bffSourceProjection, environment string) erro
 		return errors.New("selected BFF legacy query config is invalid")
 	}
 	return nil
+}
+
+func validBFFScheduleAudience(value string) bool {
+	parsed, err := url.Parse(value)
+	return err == nil && value == strings.TrimSpace(value) && parsed.Scheme == "https" && parsed.Host != "" &&
+		parsed.User == nil && (parsed.Path == "" || parsed.Path == "/") && parsed.RawQuery == "" && !parsed.ForceQuery && parsed.Fragment == ""
 }
 
 func validateBFFSecretReference(name string, ref bffSecretReference, environment string) error {
@@ -789,6 +808,10 @@ func prepareBFFRuntimeConfig(ctx context.Context, root, output string, source bf
 		RegistrationEnabled: source.RegistrationEnabled, JWTSecret: string(jwt), DeepSeekAPIKey: string(deepseek),
 		TypeSafeAPIKey: string(typesafe), ProfileRuntimeAudience: source.ProfileRuntimeAudience,
 		ProfileRuntimeServiceAccount: source.ProfileRuntimeServiceAccount,
+		PipelineSchedule: runtimeconfig.BFFPipelineSchedule{
+			Cron: source.PipelineSchedule.Cron, Timezone: source.PipelineSchedule.Timezone,
+			Audience: source.PipelineSchedule.Audience, ServiceAccount: source.PipelineSchedule.ServiceAccount,
+		},
 		LLM: runtimeconfig.BFFLLM{Provider: source.LLM.Provider, BaseURL: baseURL,
 			RequestTimeoutSeconds: source.LLM.RequestTimeoutSeconds, Model: source.LLM.Model},
 		Query: runtimeconfig.BFFQuery{StageConfigPath: query.StageConfigPath}, PortDefault: source.PortDefault,

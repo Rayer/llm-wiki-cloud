@@ -269,3 +269,33 @@ func TestCountNewRawFiles(t *testing.T) {
 		t.Fatalf("first run n=%d", n)
 	}
 }
+
+func TestScheduledDailyEntitlementIsSeparateFromManualQuota(t *testing.T) {
+	now := time.Date(2026, 10, 21, 12, 0, 0, 0, time.UTC)
+	base := Input{
+		Now: now, Enforced: true, Trigger: TriggerScheduledDaily, Mode: ModeIncremental,
+		Limits:    Limits{DailyLimit: 2, Cooldown: time.Hour, MinNewRaw: 1},
+		RunsToday: 2, DayKey: DayKeyUTC(now), LastRunAt: now.Add(-2 * time.Hour), NewRawFiles: 1,
+	}
+	if got := Evaluate(base); !got.Allowed || got.RunsToday != 2 {
+		t.Fatalf("exhausted manual quota should not deny the scheduled entitlement: %+v", got)
+	}
+
+	used := base
+	used.ScheduledUsed = true
+	if got := Evaluate(used); got.Allowed || got.Reason != ReasonEntitlementUsed {
+		t.Fatalf("same-day scheduled attempt should deny a second invocation: %+v", got)
+	}
+
+	cooling := base
+	cooling.LastRunAt = now.Add(-30 * time.Minute)
+	if got := Evaluate(cooling); got.Allowed || got.Reason != ReasonCooldown {
+		t.Fatalf("scheduled work must retain the shared cooldown: %+v", got)
+	}
+
+	manual := base
+	manual.Trigger = TriggerManual
+	if got := Evaluate(manual); got.Allowed || got.Reason != ReasonDailyLimit {
+		t.Fatalf("manual daily limit behavior changed: %+v", got)
+	}
+}

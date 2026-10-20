@@ -66,6 +66,12 @@ type Handler struct {
 
 	// Optional injectable quota backend for tests; nil → use firestore when available.
 	quotaStore pipelineQuotaStore
+
+	pipelineScheduleCron         string
+	pipelineScheduleTimezone     string
+	scheduledPipelineAudience    string
+	scheduledPipelineServiceAcct string
+	scheduledPipelineValidator   scheduledIdentityValidator
 }
 
 // LocalPipelineExecutor runs an actual worker process for native local cloud.

@@ -8,6 +8,7 @@ import (
 type Reason string
 
 type ExecutionMode string
+type Trigger string
 
 const (
 	ModeIncremental ExecutionMode = "incremental"
@@ -15,12 +16,19 @@ const (
 )
 
 const (
-	ReasonNone           Reason = ""
-	ReasonDemo           Reason = "demo"
-	ReasonDailyLimit     Reason = "daily_limit"
-	ReasonCooldown       Reason = "cooldown"
-	ReasonAlreadyRunning Reason = "already_running"
-	ReasonNoNewRaw       Reason = "no_new_raw"
+	TriggerManual         Trigger = "manual"
+	TriggerScheduledDaily Trigger = "scheduled_daily"
+	TriggerAdmin          Trigger = "admin"
+)
+
+const (
+	ReasonNone            Reason = ""
+	ReasonDemo            Reason = "demo"
+	ReasonDailyLimit      Reason = "daily_limit"
+	ReasonCooldown        Reason = "cooldown"
+	ReasonAlreadyRunning  Reason = "already_running"
+	ReasonNoNewRaw        Reason = "no_new_raw"
+	ReasonEntitlementUsed Reason = "scheduled_daily_used"
 )
 
 type Limits struct {
@@ -33,8 +41,10 @@ type Input struct {
 	Now                  time.Time
 	Limits               Limits
 	Mode                 ExecutionMode
+	Trigger              Trigger
 	IsDemo               bool
 	AlreadyRunning       bool
+	ScheduledUsed        bool
 	RunsToday            int
 	DayKey               string // UTC YYYY-MM-DD stored on doc
 	LastRunAt            time.Time
@@ -123,10 +133,13 @@ func Evaluate(in Input) Snapshot {
 	if in.AlreadyRunning {
 		return block(snap, ReasonAlreadyRunning, "A pipeline is already running for this project")
 	}
-	if runs >= lim.DailyLimit {
+	if in.Trigger == TriggerScheduledDaily && in.ScheduledUsed {
+		return block(snap, ReasonEntitlementUsed, "The scheduled daily run has already been used")
+	}
+	if in.Trigger != TriggerScheduledDaily && runs >= lim.DailyLimit {
 		return block(snap, ReasonDailyLimit, fmt.Sprintf("Daily limit reached (%d/%d)", runs, lim.DailyLimit))
 	}
-	if !in.LastRunAt.IsZero() {
+	if in.Trigger != TriggerAdmin && !in.LastRunAt.IsZero() {
 		until := in.LastRunAt.UTC().Add(lim.Cooldown)
 		// Only expose cooldown_until while the cooldown is still active.
 		// A past timestamp is contract noise for clients (FE already treats ms≤0 as clear).
@@ -136,7 +149,7 @@ func Evaluate(in Input) Snapshot {
 			return block(snap, ReasonCooldown, fmt.Sprintf("Cooldown active; try again in %d minutes", mins))
 		}
 	}
-	if in.Mode != ModeFull && in.NewRawFiles+in.RawDirtyFiles < lim.MinNewRaw && in.AnnotationDirtyFiles == 0 {
+	if in.Trigger != TriggerAdmin && in.Mode != ModeFull && in.NewRawFiles+in.RawDirtyFiles < lim.MinNewRaw && in.AnnotationDirtyFiles == 0 {
 		return block(snap, ReasonNoNewRaw, "Upload at least one new or modified raw file before running")
 	}
 	snap.Allowed = true

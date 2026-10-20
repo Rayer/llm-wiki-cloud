@@ -44,6 +44,19 @@ type pipelineQuotaStore interface {
 	SettleQuotaReservation(ctx context.Context, reservationID, executionStatus string) (string, error)
 }
 
+type scheduledPipelineQuotaStore interface {
+	ReserveScheduledQuota(ctx context.Context, reservationID, userID, projectID string, limits pipelinequota.Limits, now time.Time, mode pipelinequota.ExecutionMode, isDemo, alreadyRunning bool, newRawFiles, rawDirtyFiles, annotationDirtyFiles int) (pipelinequota.Snapshot, bool, error)
+	RecordScheduledPipelineCheck(ctx context.Context, status firestore.ScheduledPipelineStatus) error
+	RecordScheduledPipelineAttempt(ctx context.Context, userID, projectID, dayKey, reservationID, executionID, result string, attemptedAt time.Time) error
+	LoadScheduledPipelineStatus(ctx context.Context, userID, projectID string, now time.Time) (firestore.ScheduledPipelineStatus, error)
+}
+
+type pipelineAdmissionStore interface {
+	PipelineAdmissionActive(ctx context.Context, userID, projectID string) (bool, error)
+	ReserveAdminPipelineAdmission(ctx context.Context, reservationID, userID, projectID string, now time.Time, alreadyRunning bool) (bool, error)
+	ReleaseQuotaReservation(ctx context.Context, reservationID string) error
+}
+
 func (h *Handler) effectiveQuotaStore() pipelineQuotaStore {
 	if h.quotaStore != nil {
 		return h.quotaStore
@@ -123,6 +136,17 @@ func (h *Handler) pendingWorkForProject(ctx context.Context, userID, projectID s
 // Cloud Run execution in RUNNING. All-terminal owned history overrides a stale
 // Firestore lock (LWC-144).
 func (h *Handler) isPipelineRunning(ctx context.Context, userID, projectID string) (bool, error) {
+	if store, ok := h.effectiveQuotaStore().(interface {
+		PipelineAdmissionActive(context.Context, string, string) (bool, error)
+	}); ok {
+		active, err := store.PipelineAdmissionActive(ctx, userID, projectID)
+		if err != nil {
+			return false, err
+		}
+		if active {
+			return true, nil
+		}
+	}
 	if h.localPipeline != nil {
 		return h.localPipeline.Running(ctx, userID, projectID)
 	}

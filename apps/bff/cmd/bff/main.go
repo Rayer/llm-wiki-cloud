@@ -153,6 +153,8 @@ func main() {
 		cfg.PipelineMinNewRaw,
 		cfg.PipelineDemoUserIDs,
 	)
+	hV1.SetScheduledPipelineConfig(cfg.PipelineScheduleCron, cfg.PipelineScheduleTimezone,
+		cfg.ScheduledPipelineAudience, cfg.ScheduledPipelineServiceAccount)
 	settingsStore := syssettings.NewStore(fsClient.Raw(), cfg.RegistrationEnabled)
 	var nativeWorker *localpipeline.Manager
 	if localMode {
@@ -389,6 +391,7 @@ func newProductionRouter(
 
 	registerPublicRoutes(r, settingsStore, cfg.AuthServiceURL, !localMode)
 	r.POST("/internal/profile/dispatch", productionProfileDispatcher(hV1, cfg).Gin)
+	r.POST("/internal/pipeline/schedule", hV1.ScheduledPipeline)
 	r.GET("/api/v1/query/config", hV1.QueryConfig)
 	r.Any("/mcp", gin.WrapH(hV1.MCPHandler()))
 	r.Any("/mcp/projects/:projectID", hV1.MCPProjectOAuthHandler(cfg.AuthSessionEnvironment, cfg.MCPResourceOrigin))

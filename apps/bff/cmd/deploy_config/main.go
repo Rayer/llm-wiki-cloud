@@ -146,6 +146,13 @@ type BFFLocal struct {
 	PipelineBindingsPath string `json:"pipeline_bindings_path"`
 }
 
+type BFFPipelineSchedule struct {
+	Cron           string `json:"cron"`
+	Timezone       string `json:"timezone"`
+	Audience       string `json:"audience"`
+	ServiceAccount string `json:"service_account"`
+}
+
 type BFFSourceProjection struct {
 	SchemaVersion                int                 `json:"schema_version"`
 	Environment                  string              `json:"environment"`
@@ -172,6 +179,7 @@ type BFFSourceProjection struct {
 	TypeSafeAPIKeyReference      *BFFSecretReference `json:"typesafe_api_key_reference"`
 	ProfileRuntimeAudience       string              `json:"profile_runtime_audience"`
 	ProfileRuntimeServiceAccount string              `json:"profile_runtime_service_account"`
+	PipelineSchedule             BFFPipelineSchedule `json:"pipeline_schedule"`
 	LLM                          BFFLLM              `json:"llm"`
 	Query                        BFFQuery            `json:"query"`
 	Local                        *BFFLocal           `json:"local"`
@@ -581,7 +589,7 @@ func loadBFFInputDescriptor(path, environment string) (BFFSourceProjection, erro
 		"allowed_hosts", "pipeline_daily_limit", "pipeline_cooldown_seconds", "pipeline_min_new_raw", "pipeline_demo_user_ids",
 		"auth_session_environment", "auth_session_migration", "registration_enabled", "jwt_secret_reference",
 		"deepseek_api_key_reference", "typesafe_api_key_reference", "profile_runtime_audience", "profile_runtime_service_account",
-		"llm", "query", "local", "port_default", "config_secret_resource"}
+		"pipeline_schedule", "llm", "query", "local", "port_default", "config_secret_resource"}
 	if len(fields) != len(required) {
 		return BFFSourceProjection{}, errors.New("generated BFF input descriptor has an invalid shape")
 	}
@@ -617,6 +625,11 @@ func loadBFFInputDescriptor(path, environment string) (BFFSourceProjection, erro
 	if len(projection.AllowedOrigins) == 0 || projection.AllowedHosts == nil || projection.LLM.Provider != "deepseek" ||
 		projection.LLM.RequestTimeoutSeconds < 1 || projection.LLM.Model == "" || projection.LLM.BaseURL == "" {
 		return BFFSourceProjection{}, errors.New("generated BFF input descriptor is incomplete")
+	}
+	if projection.PipelineSchedule.Cron != "0 * * * *" || projection.PipelineSchedule.Timezone != "UTC" ||
+		(projection.PipelineSchedule.Audience == "") != (projection.PipelineSchedule.ServiceAccount == "") ||
+		(projection.PipelineSchedule.Audience != "" && (!validProfileRuntimeAudience(projection.PipelineSchedule.Audience) || !validProfileRuntimeServiceAccount(projection.PipelineSchedule.ServiceAccount))) {
+		return BFFSourceProjection{}, errors.New("generated BFF schedule configuration is invalid")
 	}
 	if err := validateBFFDescriptorSecrets(projection, expectedEnvironment); err != nil {
 		return BFFSourceProjection{}, err
@@ -695,6 +708,7 @@ func validateBFFDescriptorShape(fields map[string]json.RawMessage) error {
 		return true
 	}
 	if !exact(fields["llm"], "provider", "base_url", "request_timeout_seconds", "model") ||
+		!exact(fields["pipeline_schedule"], "cron", "timezone", "audience", "service_account") ||
 		!exact(fields["query"], "stage_config_path", "legacy") ||
 		!exact(fields["jwt_secret_reference"], "source", "env_name", "resource") ||
 		!exact(fields["deepseek_api_key_reference"], "source", "env_name", "resource") ||
@@ -1129,6 +1143,9 @@ func componentInputs(config EnvironmentConfig, query QueryConfigIdentity, select
 				secretReferences["typesafe_jev_api_key"] = config.BFF.SecretReferences.TypeSafeJevAPIKey
 			}
 			bff := map[string]any{"service_name": config.BFF.ServiceName, "runtime_service_account": config.BFF.RuntimeServiceAccount, "network": config.BFF.Network, "subnet": config.BFF.Subnet, "vpc_egress": config.BFF.VPCEgress, "ingress": config.BFF.Ingress, "max_instances": config.BFF.MaxInstances, "bucket": config.BFF.Bucket, "firestore_database_id": config.BFF.FirestoreDatabaseID, "pipeline_job_name": config.BFF.PipelineJobName, "pipeline_job_location": config.BFF.PipelineJobLocation, "pipeline_job_url": config.BFF.PipelineJobURL, "auth_service_url": config.BFF.AuthServiceURL, "mcp_resource_origin": config.BFF.MCPResourceOrigin, "allowed_origins": config.BFF.AllowedOrigins, "dev_jwt": false, "query_config": query, "secret_references": secretReferences, "config_secret_resource": config.BFF.ConfigSecretResource, "pipeline_daily_limit": config.BFF.PipelineDailyLimit, "pipeline_min_new_raw": config.BFF.PipelineMinNewRaw, "runtime_inputs": config.BFF.RuntimeInputs}
+			if config.BFF.RuntimeInputs != nil {
+				bff["pipeline_schedule"] = config.BFF.RuntimeInputs.PipelineSchedule
+			}
 			if config.BFF.ProfileRuntimeAudience != "" {
 				bff["profile_runtime_audience"] = config.BFF.ProfileRuntimeAudience
 				bff["profile_runtime_service_account"] = config.BFF.ProfileRuntimeServiceAccount

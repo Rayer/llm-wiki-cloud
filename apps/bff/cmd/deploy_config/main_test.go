@@ -286,6 +286,10 @@ func TestGeneratedBFFInputsFlowIntoNormalizedPlanIdentity(t *testing.T) {
 			plan.BFF.RuntimeInputs == nil || plan.BFF.MCPResourceOrigin == "" || bff["mcp_resource_origin"] != plan.BFF.MCPResourceOrigin {
 			t.Fatalf("%s normalized BFF cooldown=%d component=%#v", tc.environment, plan.BFF.PipelineCooldownSeconds, bff)
 		}
+		if schedule, ok := bff["pipeline_schedule"].(BFFPipelineSchedule); !ok ||
+			schedule.Cron != "0 * * * *" || schedule.Timezone != "UTC" {
+			t.Fatalf("%s normalized plan lost the authoritative hourly UTC schedule: %#v", tc.environment, bff["pipeline_schedule"])
+		}
 		if plan.Evidence.ConfigFingerprint == "" {
 			t.Fatalf("%s omitted normalized plan fingerprint", tc.environment)
 		}

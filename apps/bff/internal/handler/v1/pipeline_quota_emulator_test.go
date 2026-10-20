@@ -28,9 +28,11 @@ import (
 	scopedfirestore "github.com/rayer/llm-wiki-bff/internal/firestore"
 	"github.com/rayer/llm-wiki-bff/internal/gcs"
 	"github.com/rayer/llm-wiki-bff/internal/handler"
+	"github.com/rayer/llm-wiki-bff/internal/localfs"
 	"github.com/rayer/llm-wiki-bff/internal/pipelinequota"
 	"github.com/rayer/llm-wiki-bff/internal/search"
 	storeapi "github.com/rayer/llm-wiki-bff/internal/storage"
+	"google.golang.org/api/idtoken"
 	"google.golang.org/api/iterator"
 	"google.golang.org/grpc/codes"
 	"google.golang.org/grpc/status"
@@ -724,6 +726,247 @@ func TestFirestoreReserveQuotaFullModeAndIncrementalRemainDistinct(t *testing.T)
 	}
 }
 
+func TestScheduledPipelineSweepAdmissionAndReconciliationEmulator(t *testing.T) {
+	if !requireLoopbackEmulator(t, "FIRESTORE_EMULATOR_HOST") {
+		t.Skip("requires loopback Firestore emulator")
+	}
+	const (
+		project  = "llm-wiki-cloud"
+		database = "(default)"
+		userID   = "lwc413-scheduled-owner"
+	)
+	scope := fmt.Sprintf("lwc413-scheduled-%d", time.Now().UnixNano())
+	t.Setenv("GOOGLE_CLOUD_PROJECT", project)
+	t.Setenv("FIRESTORE_DATABASE_ID", database)
+	t.Setenv("LOCAL_CLOUD_SCOPE", scope)
+	fsClient, err := scopedfirestore.NewClientWithDatabaseAndScope(project, database, "", "", scope)
+	if err != nil {
+		t.Fatalf("create loopback Firestore client: %v", err)
+	}
+	ctx, cancel := context.WithTimeout(context.Background(), 45*time.Second)
+	defer cancel()
+	t.Cleanup(func() {
+		cleanupCtx, cleanupCancel := context.WithTimeout(context.Background(), 10*time.Second)
+		defer cleanupCancel()
+		if err := deletePipelineQuotaFirestoreScope(cleanupCtx, fsClient.Raw(), scope); err != nil {
+			t.Errorf("clean scheduled pipeline emulator scope: %v", err)
+		}
+		if err := fsClient.Close(); err != nil {
+			t.Errorf("close loopback Firestore client: %v", err)
+		}
+	})
+
+	projectCollection := scopedfirestore.Collection(fsClient.Raw(), "projects")
+	batch := fsClient.Raw().Batch()
+	for index := 0; index < scheduledPipelinePageSize; index++ {
+		batch.Set(projectCollection.Doc(fmt.Sprintf("a%03d", index)), map[string]interface{}{"status": "suspended"})
+	}
+	if _, err := batch.Commit(ctx); err != nil {
+		t.Fatalf("seed first page of non-ready projects: %v", err)
+	}
+	projectIDs := []string{"a-source", "b-no-work", "c-unknown"}
+	for _, projectID := range projectIDs {
+		_, err := projectCollection.Doc(userID+"_"+projectID).Set(ctx, map[string]interface{}{
+			"user_id": userID, "project_id": projectID, "status": "ready",
+		})
+		if err != nil {
+			t.Fatalf("seed ready project %s: %v", projectID, err)
+		}
+	}
+	localStore := localfs.New(t.TempDir())
+	for _, projectID := range []string{"a-source", "c-unknown"} {
+		if _, err := localStore.WithScope(userID, projectID).WriteBytes(ctx, []byte("pending source"), "raw/source.md"); err != nil {
+			t.Fatalf("seed local source %s: %v", projectID, err)
+		}
+	}
+	now := time.Date(2026, 10, 20, 23, 55, 0, 0, time.UTC)
+	_, err = scopedfirestore.Collection(fsClient.Raw(), "pipeline_quota").Doc(scopedfirestore.QuotaDocID(userID, "a-source")).Set(ctx, map[string]interface{}{
+		"user_id": userID, "project_id": "a-source", "runs_today": int64(2),
+		"day_key": pipelinequota.DayKeyUTC(now), "last_run_at": now.Add(-2 * time.Hour),
+	})
+	if err != nil {
+		t.Fatalf("seed exhausted manual quota: %v", err)
+	}
+
+	fixture := newQuotaCloudRunFixture()
+	fixture.projectsWithInvokeError = map[string]bool{}
+	fixture.loseResponseProjects["c-unknown"] = true
+	h := New(localStore, fsClient, search.NewIndex(), conceptcache.New(), nil, nil)
+	h.SetAccountLookup(func(context.Context, string) (*auth.UserRecord, error) {
+		return &auth.UserRecord{Status: auth.AccountActive, Role: "member"}, nil
+	})
+	h.SetPipelineJobURL("http://run.test/job:run")
+	h.SetPipelineQuotaConfig(2, 3600, 1, nil)
+	h.SetScheduledPipelineConfig("0 * * * *", "UTC", "https://bff.example", "lwc413-scheduler@llm-wiki-cloud.iam.gserviceaccount.com")
+	h.metadataTokenURL = "http://run.test/token"
+	h.httpClient = &http.Client{Transport: roundTripFunc(fixture.roundTrip)}
+
+	first, err := h.RunScheduledPipelineSweep(ctx, now)
+	if err != nil || first.Scanned != scheduledPipelinePageSize+len(projectIDs) || first.Accepted != 1 || first.Skipped != 1 || first.Unavailable != 1 {
+		t.Fatalf("first sweep=%+v err=%v; want all pages scanned, one accepted, one no-work skip, and one unknown invoke", first, err)
+	}
+	fixture.mu.Lock()
+	invokeCount := fixture.next
+	requests := append([]map[string]string(nil), fixture.requests...)
+	fixture.mu.Unlock()
+	if invokeCount != 2 || len(requests) != 2 || requests[0][pipelineStageEnvName] != pipelineStageFull || requests[0]["CLEAN_REBUILD"] != "" || requests[0]["PIPELINE_RESERVATION_ID"] == "" {
+		t.Fatalf("Cloud Run invocation count/env = %d/%v; want two provider requests with incremental (no clean rebuild) reservation", invokeCount, requests)
+	}
+	manualRuns, manualDay, _, err := fsClient.LoadQuotaState(ctx, userID, "a-source")
+	if err != nil || manualRuns != 2 || manualDay != pipelinequota.DayKeyUTC(now) {
+		t.Fatalf("scheduled start changed manual daily bucket to %d/%q err=%v", manualRuns, manualDay, err)
+	}
+	statusNoWork, err := fsClient.LoadScheduledPipelineStatus(ctx, userID, "b-no-work", now)
+	if err != nil || statusNoWork.SkipReason != "no_work" || statusNoWork.BudgetUsed {
+		t.Fatalf("no-work check=%+v err=%v; want no entitlement consumed", statusNoWork, err)
+	}
+
+	firstExecutionID := "fixture-execution-1"
+	firstReservationID := fixture.reservationID(firstExecutionID)
+	firstReservation, exists, err := fsClient.GetQuotaReservation(ctx, firstReservationID)
+	if err != nil || !exists || firstReservation.Trigger != pipelinequota.TriggerScheduledDaily || firstReservation.BudgetClass != "scheduled_daily" || firstReservation.ExecutionID != firstExecutionID {
+		t.Fatalf("scheduled reservation=%+v exists=%t err=%v", firstReservation, exists, err)
+	}
+	fixture.setStatus(firstExecutionID, "FAILED")
+	settlement, err := fsClient.SettleQuotaReservation(ctx, firstReservationID, "FAILED")
+	if err != nil || settlement != "charged" {
+		t.Fatalf("scheduled failed attempt settlement=%q err=%v; want charged daily entitlement", settlement, err)
+	}
+	failedStatus, err := fsClient.LoadScheduledPipelineStatus(ctx, userID, "a-source", now)
+	if err != nil || !failedStatus.BudgetUsed || failedStatus.LastResult != "FAILED" || failedStatus.LastExecutionID != firstExecutionID {
+		t.Fatalf("failed scheduled status=%+v err=%v", failedStatus, err)
+	}
+
+	if _, err := localStore.WithScope(userID, "b-no-work").WriteBytes(ctx, []byte("now pending"), "raw/new.md"); err != nil {
+		t.Fatalf("add raw after no-work skip: %v", err)
+	}
+	second, err := h.RunScheduledPipelineSweep(ctx, now.Add(3*time.Minute))
+	if err != nil || second.Accepted != 1 || second.Skipped != 2 || second.Unavailable != 0 {
+		t.Fatalf("second sweep=%+v err=%v; want only the newly eligible project invoked", second, err)
+	}
+	fixture.mu.Lock()
+	invokeCount = fixture.next
+	fixture.mu.Unlock()
+	if invokeCount != 3 {
+		t.Fatalf("same-day failed and unknown attempts were reinvoked; provider invocation count=%d, want 3 total", invokeCount)
+	}
+	failedStatus, err = fsClient.LoadScheduledPipelineStatus(ctx, userID, "a-source", now)
+	if err != nil || failedStatus.SkipReason != "daily_entitlement_used" {
+		t.Fatalf("same-day failed attempt status=%+v err=%v", failedStatus, err)
+	}
+	unknownReservationID := fixture.reservationID("fixture-execution-2")
+	unknownReservation, exists, err := fsClient.GetQuotaReservation(ctx, unknownReservationID)
+	if err != nil || !exists || unknownReservation.ExecutionID != "" || unknownReservation.SettlementStatus != "pending" {
+		t.Fatalf("lost-response reservation=%+v exists=%t err=%v", unknownReservation, exists, err)
+	}
+	if err := h.ReconcilePipelineQuota(ctx); err != nil {
+		t.Fatalf("reconcile accepted invocation with lost response: %v", err)
+	}
+	unknownReservation, exists, err = fsClient.GetQuotaReservation(ctx, unknownReservationID)
+	if err != nil || !exists || unknownReservation.ExecutionID != "fixture-execution-2" || unknownReservation.SettlementStatus != "pending" {
+		t.Fatalf("reconciled lost-response reservation=%+v exists=%t err=%v", unknownReservation, exists, err)
+	}
+
+	dayTwo := now.Add(24 * time.Hour)
+	third, err := h.RunScheduledPipelineSweep(ctx, dayTwo)
+	if err != nil || third.Accepted != 1 || third.Skipped != 2 {
+		t.Fatalf("UTC rollover sweep=%+v err=%v; want one new-day attempt and two older running/unknown claims skipped", third, err)
+	}
+	fixture.mu.Lock()
+	invokeCount = fixture.next
+	fixture.mu.Unlock()
+	if invokeCount != 4 {
+		t.Fatalf("UTC rollover invoked %d times; want one current-day grant after prior failed/unknown attempts", invokeCount)
+	}
+	unknownStatus, err := fsClient.LoadScheduledPipelineStatus(ctx, userID, "c-unknown", dayTwo)
+	if err != nil || unknownStatus.SkipReason != "busy" || unknownStatus.BudgetUsed {
+		t.Fatalf("cross-midnight unknown claim status=%+v err=%v", unknownStatus, err)
+	}
+	manualRuns, _, _, err = fsClient.LoadQuotaState(ctx, userID, "a-source")
+	if err != nil || manualRuns != 2 {
+		t.Fatalf("scheduled reservations changed manual daily usage after rollover: %d err=%v", manualRuns, err)
+	}
+
+	raceProject := "d-admission-race"
+	start := make(chan struct{})
+	type reserveResult struct {
+		snapshot pipelinequota.Snapshot
+		reserved bool
+		err      error
+	}
+	results := make(chan reserveResult, 2)
+	go func() {
+		<-start
+		snapshot, reserved, err := fsClient.ReserveQuota(ctx, "manual-race-reservation", userID, raceProject, h.pipelineLimits(), dayTwo, pipelinequota.ModeFull, false, false, 1, 0, 0)
+		results <- reserveResult{snapshot: snapshot, reserved: reserved, err: err}
+	}()
+	go func() {
+		<-start
+		snapshot, reserved, err := fsClient.ReserveScheduledQuota(ctx, scopedfirestore.ScheduledPipelineBudgetID(userID, raceProject, pipelinequota.DayKeyUTC(dayTwo)), userID, raceProject, h.pipelineLimits(), dayTwo, pipelinequota.ModeIncremental, false, false, 1, 0, 0)
+		results <- reserveResult{snapshot: snapshot, reserved: reserved, err: err}
+	}()
+	close(start)
+	firstRace, secondRace := <-results, <-results
+	if firstRace.err != nil || secondRace.err != nil || firstRace.reserved == secondRace.reserved {
+		t.Fatalf("manual/full versus scheduled transaction race: first=%+v second=%+v; want exactly one winner", firstRace, secondRace)
+	}
+	if active, err := fsClient.PipelineAdmissionActive(ctx, userID, raceProject); err != nil || !active {
+		t.Fatalf("shared admission claim active=%t err=%v after exactly one race winner", active, err)
+	}
+
+	manualProject := "e-manual-refund-control"
+	previousLastRun := dayTwo.Add(-3 * time.Hour)
+	_, err = scopedfirestore.Collection(fsClient.Raw(), "pipeline_quota").Doc(scopedfirestore.QuotaDocID(userID, manualProject)).Set(ctx, map[string]interface{}{
+		"user_id": userID, "project_id": manualProject, "runs_today": int64(1),
+		"day_key": pipelinequota.DayKeyUTC(dayTwo), "last_run_at": previousLastRun,
+	})
+	if err != nil {
+		t.Fatalf("seed manual refund control: %v", err)
+	}
+	manualSnapshot, manualReserved, err := fsClient.ReserveQuota(ctx, "manual-refund-control", userID, manualProject, h.pipelineLimits(), dayTwo, pipelinequota.ModeIncremental, false, false, 1, 0, 0)
+	if err != nil || !manualReserved {
+		t.Fatalf("manual control reservation=%+v reserved=%t err=%v", manualSnapshot, manualReserved, err)
+	}
+	manualSettlement, err := fsClient.SettleQuotaReservation(ctx, "manual-refund-control", "FAILED")
+	manualRuns, _, lastRunAt, loadErr := fsClient.LoadQuotaState(ctx, userID, manualProject)
+	if err != nil || loadErr != nil || manualSettlement != "refunded" || manualRuns != 1 || !lastRunAt.Equal(previousLastRun) {
+		t.Fatalf("manual failure regression settlement=%q runs=%d lastRun=%s err=%v loadErr=%v", manualSettlement, manualRuns, lastRunAt, err, loadErr)
+	}
+}
+
+func TestScheduledPipelineEntrypointRejectsUnauthenticatedCaller(t *testing.T) {
+	h := New(nil, nil, nil, nil, nil, nil)
+	const audience = "https://bff.example"
+	const serviceAccount = "lwc413-scheduler@llm-wiki-cloud.iam.gserviceaccount.com"
+	h.SetScheduledPipelineConfig("0 * * * *", "UTC", audience, serviceAccount)
+	recorder := httptest.NewRecorder()
+	ctx, _ := gin.CreateTestContext(recorder)
+	ctx.Request = httptest.NewRequest(http.MethodPost, "/internal/pipeline/schedule", strings.NewReader(`{"user_id":"attacker","trigger":"scheduled_daily"}`))
+	h.ScheduledPipeline(ctx)
+	if recorder.Code != http.StatusUnauthorized {
+		t.Fatalf("unauthenticated scheduled call status=%d body=%s; want 401", recorder.Code, recorder.Body.String())
+	}
+
+	validatorCalled := false
+	h.SetScheduledPipelineIdentityValidator(func(_ context.Context, _, gotAudience string) (*idtoken.Payload, error) {
+		validatorCalled = true
+		if gotAudience != audience {
+			t.Errorf("token validator audience=%q, want %q", gotAudience, audience)
+		}
+		return &idtoken.Payload{Audience: audience, Claims: map[string]interface{}{
+			"email": "untrusted@llm-wiki-cloud.iam.gserviceaccount.com", "email_verified": true,
+		}}, nil
+	})
+	recorder = httptest.NewRecorder()
+	ctx, _ = gin.CreateTestContext(recorder)
+	ctx.Request = httptest.NewRequest(http.MethodPost, "/internal/pipeline/schedule", nil)
+	ctx.Request.Header.Set("Authorization", "Bearer fixture-token")
+	h.ScheduledPipeline(ctx)
+	if !validatorCalled || recorder.Code != http.StatusUnauthorized {
+		t.Fatalf("wrong scheduler identity called=%t status=%d body=%s; want verifier call and 401", validatorCalled, recorder.Code, recorder.Body.String())
+	}
+}
+
 func requireLoopbackEmulator(t *testing.T, envName string) bool {
 	t.Helper()
 	raw := strings.TrimSpace(os.Getenv(envName))
@@ -1019,7 +1262,9 @@ type quotaCloudRunFixture struct {
 	mu                      sync.Mutex
 	next                    int
 	executions              map[string]*quotaCloudRunExecution
+	requests                []map[string]string
 	projectsWithInvokeError map[string]bool
+	loseResponseProjects    map[string]bool
 	executionUnavailable    map[string]bool
 }
 
@@ -1035,6 +1280,7 @@ func newQuotaCloudRunFixture() *quotaCloudRunFixture {
 	return &quotaCloudRunFixture{
 		executions:              make(map[string]*quotaCloudRunExecution),
 		projectsWithInvokeError: map[string]bool{"invoke-failure": true},
+		loseResponseProjects:    make(map[string]bool),
 		executionUnavailable:    make(map[string]bool),
 	}
 }
@@ -1092,10 +1338,16 @@ func (f *quotaCloudRunFixture) roundTrip(request *http.Request) (*http.Response,
 		for _, variable := range payload.Overrides.Containers[0].Env {
 			env[variable.Name] = variable.Value
 		}
+		f.mu.Lock()
+		f.requests = append(f.requests, env)
+		f.mu.Unlock()
 		if f.projectsWithInvokeError[env["PROJECT_ID"]] {
 			return testHTTPResponse(http.StatusForbidden, `{"error":"fixture invoke rejected"}`), nil
 		}
 		executionID := f.addExecution(env["USER_ID"], env["PROJECT_ID"], env["PIPELINE_RESERVATION_ID"], "RUNNING")
+		if f.loseResponseProjects[env["PROJECT_ID"]] {
+			return nil, errors.New("fixture accepted invocation but lost response")
+		}
 		return testHTTPResponse(http.StatusOK, fmt.Sprintf(`{"metadata":{"execution":"projects/test/locations/local/jobs/job/executions/%s"}}`, executionID)), nil
 	}
 	if request.Method == http.MethodGet && request.URL.Path == "/job/executions" {
@@ -1141,7 +1393,7 @@ func (f *quotaCloudRunFixture) apiExecution(execution *quotaCloudRunExecution) m
 func deletePipelineQuotaFirestoreScope(ctx context.Context, client *cloudfirestore.Client, scope string) error {
 	root := client.Collection("local_scopes").Doc(scope)
 	var failures []error
-	collections := []string{"pipeline_quota", "pipeline_quota_reservations", "locks", "executions"}
+	collections := []string{"pipeline_quota", "pipeline_quota_reservations", "pipeline_scheduled_daily", "pipeline_scheduled_status", "projects", "locks", "executions"}
 	for _, name := range collections {
 		docs, err := root.Collection(name).Documents(ctx).GetAll()
 		if err != nil {

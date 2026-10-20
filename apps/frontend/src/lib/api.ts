@@ -46,6 +46,7 @@ export type ApiStatus = {
   suggestedQueries: string[];
 	lastExecution?: PipelineExecution | null;
 	quota?: PipelineQuota | null;
+	scheduledPipeline?: ScheduledPipelineStatus | null;
 	raw: Record<string, unknown>;
 };
 
@@ -1013,7 +1014,30 @@ export function normalizeStatus(payload: unknown): ApiStatus {
     suggestedQueries,
     lastExecution,
     quota: normalizePipelineQuota(record.quota),
+	scheduledPipeline: normalizeScheduledPipelineStatus(record.scheduled_pipeline),
     raw: record,
+  };
+}
+
+function normalizeScheduledPipelineStatus(value: unknown): ScheduledPipelineStatus | null {
+  if (!isRecord(value)) return null;
+  return {
+    availability: asString(value.availability) ?? 'unavailable',
+    schedule: asString(value.schedule) ?? '',
+    timezone: asString(value.timezone) ?? '',
+    last_check_at: asString(value.last_check_at) ?? null,
+    next_check_at: asString(value.next_check_at) ?? null,
+    skip_reason: asString(value.skip_reason) ?? '',
+    pending_work: firstNumber(value, ['pending_work']) ?? 0,
+    new_raw_files: firstNumber(value, ['new_raw_files']) ?? 0,
+    raw_dirty_files: firstNumber(value, ['raw_dirty_files']) ?? 0,
+    annotation_dirty_files: firstNumber(value, ['annotation_dirty_files']) ?? 0,
+    day_key: asString(value.day_key) ?? '',
+    budget_used: asBoolean(value.budget_used) ?? false,
+    last_attempt_at: asString(value.last_attempt_at) ?? null,
+    last_attempt_id: asString(value.last_attempt_id) ?? null,
+    last_execution_id: asString(value.last_execution_id) ?? null,
+    last_result: asString(value.last_result) ?? null,
   };
 }
 
@@ -1162,6 +1186,25 @@ export type PipelineQuota = {
   already_running: boolean;
 };
 
+export type ScheduledPipelineStatus = {
+  availability: string;
+  schedule: string;
+  timezone: string;
+  last_check_at: string | null;
+  next_check_at: string | null;
+  skip_reason: string;
+  pending_work: number;
+  new_raw_files: number;
+  raw_dirty_files: number;
+  annotation_dirty_files: number;
+  day_key: string;
+  budget_used: boolean;
+  last_attempt_at: string | null;
+  last_attempt_id: string | null;
+  last_execution_id: string | null;
+  last_result: string | null;
+};
+
 export type PipelineResult = {
   status?: 'accepted' | string;
   execution_id?: string;
@@ -1181,6 +1224,7 @@ export type PipelineStatus = {
   project_id?: string;
   quota?: PipelineQuota | null;
   full_quota?: PipelineQuota | null;
+  scheduled_pipeline?: ScheduledPipelineStatus | null;
   suggested_queries?: string[];
 };
 

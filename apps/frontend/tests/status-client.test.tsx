@@ -33,7 +33,7 @@ vi.mock('@/components/WorkspaceProvider', () => ({
   useWorkspace: () => ({ currentProject: mocks.currentProject }),
 }));
 
-import { normalizeStatus, type PipelineQuota } from '@/lib/api';
+import { normalizeStatus, type PipelineQuota, type ScheduledPipelineStatus } from '@/lib/api';
 import { StatusClient } from '@/components/StatusClient';
 
 type Execution = {
@@ -65,7 +65,7 @@ function execution(overrides: Partial<Execution> = {}): Execution {
   };
 }
 
-function status(overrides: Partial<{ sourcesCount: number; conceptsCount: number; rawCount: number; lastExecution: Execution | null; quota: PipelineQuota | null }> = {}) {
+function status(overrides: Partial<{ sourcesCount: number; conceptsCount: number; rawCount: number; lastExecution: Execution | null; quota: PipelineQuota | null; scheduledPipeline: ScheduledPipelineStatus | null }> = {}) {
   return {
     sourcesCount: 11,
     conceptsCount: 22,
@@ -73,6 +73,7 @@ function status(overrides: Partial<{ sourcesCount: number; conceptsCount: number
     suggestedQueries: [],
     lastExecution: execution(),
     quota: null,
+    scheduledPipeline: null,
     raw: {},
     ...overrides,
   };
@@ -493,6 +494,39 @@ describe('StatusClient behavior', () => {
     expect(normalized.lastExecution?.diagnostic?.message).toBeNull();
     expect(normalized.quota?.runs_today).toBe(0);
     expect(normalized.quota?.daily_limit).toBe(2);
+  });
+
+  it('normalizes and renders owner-scoped scheduled pipeline evidence', async () => {
+    const normalized = normalizeStatus({
+      scheduled_pipeline: {
+        availability: 'available',
+        schedule: '0 * * * *',
+        timezone: 'UTC',
+        last_check_at: '2026-10-21T03:00:00Z',
+        next_check_at: '2026-10-21T04:00:00Z',
+        skip_reason: 'busy',
+        pending_work: 3,
+        new_raw_files: 1,
+        raw_dirty_files: 1,
+        annotation_dirty_files: 1,
+        day_key: '2026-10-21',
+        budget_used: true,
+        last_attempt_at: '2026-10-21T02:00:00Z',
+        last_attempt_id: 'scheduled-attempt',
+        last_execution_id: 'execution-scheduled',
+        last_result: 'FAILED',
+      },
+    });
+    expect(normalized.scheduledPipeline?.pending_work).toBe(3);
+    expect(normalized.scheduledPipeline?.budget_used).toBe(true);
+    mocks.getStatus.mockResolvedValue(normalized);
+
+    render(<StatusClient />);
+    const panel = await screen.findByTestId('status-scheduled-pipeline');
+    expect(panel.textContent).toContain('Pipeline.scheduledTitle');
+    expect(panel.textContent).toContain('busy');
+    expect(panel.textContent).toContain('execution-scheduled');
+    expect(panel.textContent).toContain('FAILED');
   });
 
   it.each([

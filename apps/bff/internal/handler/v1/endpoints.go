@@ -1237,11 +1237,12 @@ type cloudRunJobRunResponse struct {
 }
 
 type pipelineStatusResponse struct {
-	LastExecution    *handler.PipelineExecutionResponse `json:"last_execution"`
-	ProjectID        string                             `json:"project_id"`
-	Quota            *pipelinequota.Snapshot            `json:"quota,omitempty"`
-	FullQuota        *pipelinequota.Snapshot            `json:"full_quota,omitempty"`
-	SuggestedQueries []string                           `json:"suggested_queries"`
+	LastExecution     *handler.PipelineExecutionResponse       `json:"last_execution"`
+	ProjectID         string                                   `json:"project_id"`
+	Quota             *pipelinequota.Snapshot                  `json:"quota,omitempty"`
+	FullQuota         *pipelinequota.Snapshot                  `json:"full_quota,omitempty"`
+	ScheduledPipeline *scopedfirestore.ScheduledPipelineStatus `json:"scheduled_pipeline,omitempty"`
+	SuggestedQueries  []string                                 `json:"suggested_queries"`
 }
 
 type adminPipelineTriggerRequest struct {
@@ -1367,6 +1368,7 @@ func (h *Handler) PipelineStatus(c *gin.Context) {
 		return
 	}
 	response.Quota = &snap
+	response.ScheduledPipeline = h.scheduledPipelineStatus(ctx, userID, projectID, time.Now().UTC())
 	if h.localPipeline == nil {
 		fullSnap, _, err := h.evaluateQuotaForMode(ctx, userID, projectID, "", pipelinequota.ModeFull)
 		if err != nil {
@@ -2397,6 +2399,7 @@ func (h *Handler) Status(c *gin.Context) {
 			resp.Quota = &quota
 		}
 	}
+	resp.ScheduledPipeline = h.scheduledPipelineStatus(ctx, userID, projectID, time.Now().UTC())
 
 	if h.firestore != nil {
 		lock, err := h.firestore.GetStatus(ctx)
@@ -3350,14 +3353,45 @@ func (h *Handler) AdminPipelineTrigger(c *gin.Context) {
 		return
 	}
 
-	executionID, err := h.invokePipelineJobStage(ctx, uid, pid, req.CleanRebuild, stage)
+	reservationID := ""
+	if admission, ok := h.effectiveQuotaStore().(pipelineAdmissionStore); ok {
+		reservationID, err = newPipelineReservationID()
+		if err != nil {
+			c.JSON(http.StatusInternalServerError, handler.ErrorResponse{Error: pipelineUnavailableMessage})
+			return
+		}
+		reserved, reserveErr := admission.ReserveAdminPipelineAdmission(ctx, reservationID, uid, pid, time.Now().UTC(), false)
+		if reserveErr != nil {
+			c.JSON(http.StatusInternalServerError, handler.ErrorResponse{Error: pipelineUnavailableMessage})
+			return
+		}
+		if !reserved {
+			c.JSON(http.StatusConflict, handler.ErrorResponse{Error: "pipeline is already running"})
+			return
+		}
+	}
+	executionID, err := h.invokePipelineJobStageWithReservation(ctx, uid, pid, req.CleanRebuild, stage, reservationID)
 	if err != nil {
+		if reservationID != "" && !errors.Is(err, errPipelineInvocationOutcomeUnknown) {
+			if admission, ok := h.effectiveQuotaStore().(pipelineAdmissionStore); ok {
+				if releaseErr := admission.ReleaseQuotaReservation(context.Background(), reservationID); releaseErr != nil {
+					log.Print("admin pipeline admission release pending reconciliation")
+				}
+			}
+		}
 		if errors.Is(err, auth.ErrAccountInactive) {
 			c.JSON(http.StatusForbidden, handler.ErrorResponse{Error: err.Error()})
 			return
 		}
 		c.JSON(http.StatusInternalServerError, handler.ErrorResponse{Error: pipelineUnavailableMessage})
 		return
+	}
+	if reservationID != "" && h.localPipeline == nil {
+		if qs := h.effectiveQuotaStore(); qs != nil {
+			if linkErr := qs.LinkQuotaReservation(ctx, reservationID, executionID); linkErr != nil {
+				log.Print("admin pipeline admission link pending reconciliation")
+			}
+		}
 	}
 	if req.CleanRebuild {
 		log.Print("admin pipeline triggered clean_rebuild=true")

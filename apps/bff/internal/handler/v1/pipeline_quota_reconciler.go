@@ -2,6 +2,7 @@ package v1
 
 import (
 	"context"
+	"errors"
 	"log"
 	"strings"
 	"time"
@@ -52,7 +53,13 @@ func (h *Handler) ReconcilePipelineQuota(ctx context.Context) (resultErr error) 
 			return err
 		}
 		if confirmedFailure {
-			if _, err := quotaStore.SettleQuotaReservation(ctx, reservation.ID, "FAILED"); err != nil {
+			if admission, ok := quotaStore.(interface {
+				ReleaseQuotaReservation(context.Context, string) error
+			}); ok {
+				if err := admission.ReleaseQuotaReservation(ctx, reservation.ID); err != nil {
+					return err
+				}
+			} else if _, err := quotaStore.SettleQuotaReservation(ctx, reservation.ID, "FAILED"); err != nil {
 				return err
 			}
 			continue
@@ -128,6 +135,12 @@ func (h *Handler) ReconcilePipelineQuota(ctx context.Context) (resultErr error) 
 							linkOutcome = "degraded"
 						}
 						observability.FinishPipelineSpan(linkSpan, linkOutcome)
+						if linkErr != nil {
+							return linkErr
+						}
+					} else {
+						lookupOutcome = "unknown"
+						return errors.New("matched pipeline execution has no stable execution ID")
 					}
 					outcome, err := h.settleCloudRunQuotaReservation(lookupCtx, quotaStore, reservation, execution)
 					lookupOutcome = outcome

@@ -21,35 +21,36 @@ import (
 const MaxBFFConfigBytes = 64 << 10
 
 type BFFFile struct {
-	SchemaVersion                int       `json:"schema_version"`
-	Environment                  string    `json:"environment"`
-	Target                       string    `json:"target"`
-	GCPProject                   string    `json:"gcp_project"`
-	Bucket                       string    `json:"bucket"`
-	FirestoreDatabaseID          string    `json:"firestore_database_id"`
-	AuthServiceURL               string    `json:"auth_service_url"`
-	MCPResourceOrigin            string    `json:"mcp_resource_origin,omitempty"`
-	PipelineJobURL               string    `json:"pipeline_job_url"`
-	ExportJobURL                 string    `json:"export_job_url"`
-	ExportSigningServiceAccount  string    `json:"export_signing_service_account"`
-	AllowedOrigins               []string  `json:"allowed_origins"`
-	AllowedHosts                 []string  `json:"allowed_hosts"`
-	PipelineDailyLimit           int       `json:"pipeline_daily_limit"`
-	PipelineCooldownSeconds      int       `json:"pipeline_cooldown_seconds"`
-	PipelineMinNewRaw            int       `json:"pipeline_min_new_raw"`
-	PipelineDemoUserIDs          []string  `json:"pipeline_demo_user_ids"`
-	AuthSessionEnvironment       string    `json:"auth_session_environment"`
-	AuthSessionMigration         string    `json:"auth_session_migration"`
-	RegistrationEnabled          *bool     `json:"registration_enabled"`
-	JWTSecret                    string    `json:"jwt_secret"`
-	DeepSeekAPIKey               string    `json:"deepseek_api_key"`
-	TypeSafeAPIKey               string    `json:"typesafe_api_key"`
-	ProfileRuntimeAudience       string    `json:"profile_runtime_audience"`
-	ProfileRuntimeServiceAccount string    `json:"profile_runtime_service_account"`
-	LLM                          BFFLLM    `json:"llm"`
-	Query                        BFFQuery  `json:"query"`
-	Local                        *BFFLocal `json:"local"`
-	PortDefault                  int       `json:"port_default"`
+	SchemaVersion                int                 `json:"schema_version"`
+	Environment                  string              `json:"environment"`
+	Target                       string              `json:"target"`
+	GCPProject                   string              `json:"gcp_project"`
+	Bucket                       string              `json:"bucket"`
+	FirestoreDatabaseID          string              `json:"firestore_database_id"`
+	AuthServiceURL               string              `json:"auth_service_url"`
+	MCPResourceOrigin            string              `json:"mcp_resource_origin,omitempty"`
+	PipelineJobURL               string              `json:"pipeline_job_url"`
+	ExportJobURL                 string              `json:"export_job_url"`
+	ExportSigningServiceAccount  string              `json:"export_signing_service_account"`
+	AllowedOrigins               []string            `json:"allowed_origins"`
+	AllowedHosts                 []string            `json:"allowed_hosts"`
+	PipelineDailyLimit           int                 `json:"pipeline_daily_limit"`
+	PipelineCooldownSeconds      int                 `json:"pipeline_cooldown_seconds"`
+	PipelineMinNewRaw            int                 `json:"pipeline_min_new_raw"`
+	PipelineDemoUserIDs          []string            `json:"pipeline_demo_user_ids"`
+	AuthSessionEnvironment       string              `json:"auth_session_environment"`
+	AuthSessionMigration         string              `json:"auth_session_migration"`
+	RegistrationEnabled          *bool               `json:"registration_enabled"`
+	JWTSecret                    string              `json:"jwt_secret"`
+	DeepSeekAPIKey               string              `json:"deepseek_api_key"`
+	TypeSafeAPIKey               string              `json:"typesafe_api_key"`
+	ProfileRuntimeAudience       string              `json:"profile_runtime_audience"`
+	ProfileRuntimeServiceAccount string              `json:"profile_runtime_service_account"`
+	PipelineSchedule             BFFPipelineSchedule `json:"pipeline_schedule"`
+	LLM                          BFFLLM              `json:"llm"`
+	Query                        BFFQuery            `json:"query"`
+	Local                        *BFFLocal           `json:"local"`
+	PortDefault                  int                 `json:"port_default"`
 }
 
 type BFFLLM struct {
@@ -77,6 +78,13 @@ type BFFQueryLegacy struct {
 	QueryMatchingRareKeywordMaxDocumentFrequency int    `json:"query_matching_rare_keyword_max_document_frequency"`
 }
 
+type BFFPipelineSchedule struct {
+	Cron           string `json:"cron"`
+	Timezone       string `json:"timezone"`
+	Audience       string `json:"audience"`
+	ServiceAccount string `json:"service_account"`
+}
+
 type BFFLocal struct {
 	Scope                string `json:"scope"`
 	WorkerPath           string `json:"worker_path"`
@@ -93,7 +101,7 @@ var bffRequiredKeys = []string{
 	"allowed_origins", "allowed_hosts", "pipeline_daily_limit", "pipeline_cooldown_seconds",
 	"pipeline_min_new_raw", "pipeline_demo_user_ids", "auth_session_environment", "auth_session_migration",
 	"registration_enabled", "jwt_secret", "deepseek_api_key", "typesafe_api_key", "profile_runtime_audience",
-	"profile_runtime_service_account", "llm", "query", "local", "port_default",
+	"profile_runtime_service_account", "pipeline_schedule", "llm", "query", "local", "port_default",
 }
 
 // LoadBFFFile reads the required mounted BFF configuration. The file locator is
@@ -172,9 +180,13 @@ func DecodeBFFFile(data []byte) (BFFFile, error) {
 }
 
 func validateBFFNestedShapes(fields map[string]json.RawMessage) error {
-	var llmFields, queryFields map[string]json.RawMessage
-	if json.Unmarshal(fields["llm"], &llmFields) != nil || json.Unmarshal(fields["query"], &queryFields) != nil || llmFields == nil || queryFields == nil {
-		return errors.New("BFF config llm or query object is invalid")
+	var llmFields, queryFields, scheduleFields map[string]json.RawMessage
+	if json.Unmarshal(fields["llm"], &llmFields) != nil || json.Unmarshal(fields["query"], &queryFields) != nil ||
+		json.Unmarshal(fields["pipeline_schedule"], &scheduleFields) != nil || llmFields == nil || queryFields == nil || scheduleFields == nil {
+		return errors.New("BFF config llm, query, or pipeline_schedule object is invalid")
+	}
+	if err := requireJSONKeys(scheduleFields, []string{"cron", "timezone", "audience", "service_account"}); err != nil {
+		return errors.New("BFF config pipeline_schedule object has missing or unknown keys")
 	}
 	if err := requireJSONKeys(llmFields, []string{"provider", "base_url", "request_timeout_seconds", "model"}); err != nil {
 		return errors.New("BFF config llm object has missing or unknown keys")
@@ -239,6 +251,7 @@ func validateBFFJSONTypes(fields map[string]json.RawMessage) error {
 		{"typesafe_api_key", "string", false},
 		{"profile_runtime_audience", "string", false},
 		{"profile_runtime_service_account", "string", false},
+		{"pipeline_schedule", "object", false},
 		{"llm", "object", false},
 		{"query", "object", false},
 		{"local", "object", true},
@@ -250,6 +263,15 @@ func validateBFFJSONTypes(fields map[string]json.RawMessage) error {
 	}
 	if raw, ok := fields["mcp_resource_origin"]; ok {
 		if err := requireBFFJSONType("mcp_resource_origin", raw, "string", true); err != nil {
+			return err
+		}
+	}
+	var scheduleFields map[string]json.RawMessage
+	if err := json.Unmarshal(fields["pipeline_schedule"], &scheduleFields); err != nil {
+		return errors.New("BFF config pipeline_schedule object has invalid types")
+	}
+	for _, field := range []string{"cron", "timezone", "audience", "service_account"} {
+		if err := requireBFFJSONType("pipeline_schedule."+field, scheduleFields[field], "string", false); err != nil {
 			return err
 		}
 	}
@@ -477,6 +499,18 @@ func validateBFFFile(file BFFFile) error {
 	if strings.TrimSpace(file.GCPProject) == "" || strings.TrimSpace(file.Bucket) == "" || strings.TrimSpace(file.FirestoreDatabaseID) == "" {
 		return errors.New("BFF config resource identity is incomplete")
 	}
+	if file.PipelineSchedule.Cron != "0 * * * *" || file.PipelineSchedule.Timezone != "UTC" ||
+		(file.PipelineSchedule.Audience == "") != (file.PipelineSchedule.ServiceAccount == "") {
+		return errors.New("BFF config pipeline schedule is invalid")
+	}
+	if file.PipelineSchedule.Audience != "" {
+		audience, err := url.Parse(file.PipelineSchedule.Audience)
+		if err != nil || audience.Scheme != "https" || audience.Host == "" || audience.User != nil ||
+			(audience.Path != "" && audience.Path != "/") || audience.RawQuery != "" || audience.ForceQuery || audience.Fragment != "" ||
+			!regexp.MustCompile(`^[a-z][a-z0-9-]{4,28}[a-z0-9]@[a-z0-9.-]+\.iam\.gserviceaccount\.com$`).MatchString(file.PipelineSchedule.ServiceAccount) {
+			return errors.New("BFF config pipeline schedule identity is invalid")
+		}
+	}
 	if strings.TrimSpace(file.AuthSessionEnvironment) == "" {
 		return errors.New("BFF config auth_session_environment is invalid")
 	}
@@ -638,6 +672,8 @@ func configFromBFFFile(file BFFFile, port string) Config {
 		MCPResourceOrigin:    file.MCPResourceOrigin,
 		AuthSessionMigration: file.AuthSessionMigration, ProfileRuntimeAudience: file.ProfileRuntimeAudience,
 		ProfileRuntimeServiceAccount: file.ProfileRuntimeServiceAccount,
+		PipelineScheduleCron:         file.PipelineSchedule.Cron, PipelineScheduleTimezone: file.PipelineSchedule.Timezone,
+		ScheduledPipelineAudience: file.PipelineSchedule.Audience, ScheduledPipelineServiceAccount: file.PipelineSchedule.ServiceAccount,
 	}
 	if file.Local != nil {
 		cfg.LocalWorkerPath = file.Local.WorkerPath

@@ -5,7 +5,7 @@ vi.mock('@/lib/api', async () => ({ ...await vi.importActual<typeof import('@/li
 vi.mock('@/components/WorkspaceProvider', () => ({ useWorkspace: () => ({ currentProject: { id: 'project-a' }, isDemoSession: false, refreshNavCounts: vi.fn() }) }));
 import { PipelineClient } from '@/components/PipelineClient';
 const quota = { enforced: true, allowed: true, runs_today: 0, daily_limit: 2, new_raw_files: 1, min_new_raw: 1, already_running: false };
-const status = (state: string) => ({ project_id: 'project-a', quota, full_quota: quota, last_execution: { name: 'execution-1', status: state, duration: '1m', compile_mode: 'full', publication_outcome: state === 'SUCCEEDED' ? 'confirmed_published' : 'unknown', consumed_guidance: state === 'SUCCEEDED' ? { status: 'available', kind: 'active', revision: 'ACTUAL-G1', execution_id: 'execution-1' } : { status: 'unavailable', revision: null } } });
+const status = (state: string) => ({ project_id: 'project-a', quota, full_quota: quota, scheduled_pipeline: { availability: 'available', schedule: '0 * * * *', timezone: 'UTC', next_check_at: '2026-10-21T02:00:00Z', last_check_at: '2026-10-21T01:00:00Z', skip_reason: 'busy', pending_work: 2, new_raw_files: 1, raw_dirty_files: 1, annotation_dirty_files: 0, day_key: '2026-10-21', budget_used: false, last_attempt_at: null, last_attempt_id: '', last_execution_id: '', last_result: '' }, last_execution: { name: 'execution-1', status: state, duration: '1m', compile_mode: 'full', publication_outcome: state === 'SUCCEEDED' ? 'confirmed_published' : 'unknown', consumed_guidance: state === 'SUCCEEDED' ? { status: 'available', kind: 'active', revision: 'ACTUAL-G1', execution_id: 'execution-1' } : { status: 'unavailable', revision: null } } });
 let intervals: Map<number, () => void>;
 beforeEach(() => {
   window.localStorage.setItem('locale', 'zh-TW');
@@ -31,6 +31,10 @@ async function tick() { await act(async () => { for (const cb of [...intervals.v
 
 it('original owner recovery oracle using retained interval driver, with guidance and no second POST', async () => {
   await start();
+  const scheduled = screen.getByTestId('pipeline-scheduled-pipeline');
+  expect(scheduled.textContent).toContain('0 * * * *');
+  expect(scheduled.textContent).toContain('2026-10-21');
+  expect(scheduled.textContent).toContain('2');
   m.status.mockRejectedValueOnce(new Error('temporary status outage'));
   await tick();
   await screen.findByText('temporary status outage');
