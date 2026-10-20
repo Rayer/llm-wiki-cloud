@@ -207,6 +207,9 @@ func (s *Service) Import(ctx context.Context, verified ActorProject, request Imp
 	if err != nil {
 		return Result{Status: "conflict", Message: "The existing raw metadata could not be refreshed safely; no file was changed."}, nil
 	}
+	if len(data) > MaxCandidateBytes {
+		return Result{Status: "rejected", Message: "The merged raw content exceeds the supported size; no file was changed."}, nil
+	}
 	digest := digestString(data)
 	preview := CandidatePreview{
 		Title: title, SourceURL: request.URL, Markdown: string(data),

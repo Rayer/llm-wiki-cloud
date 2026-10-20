@@ -101,8 +101,9 @@ func TestURLIntakeGCSAdapterIdentityLifecycleAndProjectIsolation(t *testing.T) {
 	if _, _, err := projectB.ReadFileWithGeneration(ctx, identityPath); err != nil {
 		t.Fatalf("Project B identity is missing: %v", err)
 	}
-	if _, err := projectB.ReadFile(ctx, created.Storage.Path); !errors.Is(err, storage.ErrObjectNotExist) {
-		t.Fatalf("Project B unexpectedly read Project A raw: %v", err)
+	projectBRaw, err := projectB.ReadFile(ctx, created.Storage.Path)
+	if err != nil || !bytesContains(projectBRaw, []byte("Project B body")) || bytesContains(projectBRaw, []byte("Updated body.")) {
+		t.Fatalf("Project B raw crossed scope: %q, %v", projectBRaw, err)
 	}
 }
 
