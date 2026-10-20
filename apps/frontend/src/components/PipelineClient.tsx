@@ -6,6 +6,7 @@ import { Surface } from './ui/Surface';
 import { Badge } from './ui/Badge';
 import { ExportPanel } from './ExportPanel';
 import {
+  ApiError,
   getRecompileAllCapability,
   getPipelineStatus,
   scrapeUrl,
@@ -36,6 +37,12 @@ type Toast = {
 type PipelineProjectContext = { projectId: string | null; generation: number };
 type PipelineRequestScope = { projectId: string; contextGeneration: number; requestGeneration: number };
 type PipelineExecutionOwner = { projectId: string; contextGeneration: number };
+
+function scrapeErrorMessageKey(error: unknown): 'Pipeline.urlUncertain' | 'Pipeline.urlUnavailable' {
+  return error instanceof ApiError && (error.status === 0 || (error.status >= 500 && error.status < 600))
+    ? 'Pipeline.urlUncertain'
+    : 'Pipeline.urlUnavailable';
+}
 
 function isSamePipelineRequestScope(a: PipelineRequestScope, b: PipelineRequestScope): boolean {
   return a.projectId === b.projectId
@@ -316,8 +323,8 @@ export function PipelineClient() {
           requestGeneration: pipelineRequestGenerationRef.current,
         });
       }
-    } catch {
-      if (isCurrent()) setScrapeError(t('Pipeline.urlUnavailable'));
+    } catch (error) {
+      if (isCurrent()) setScrapeError(t(scrapeErrorMessageKey(error)));
     } finally {
       if (isCurrent()) setScrapeLoading(false);
     }
@@ -348,8 +355,8 @@ export function PipelineClient() {
           requestGeneration: pipelineRequestGenerationRef.current,
         });
       }
-    } catch {
-      if (isCurrent()) setScrapeError(t('Pipeline.urlUnavailable'));
+    } catch (error) {
+      if (isCurrent()) setScrapeError(t(scrapeErrorMessageKey(error)));
     } finally {
       if (isCurrent()) setScrapeLoading(false);
     }

@@ -403,6 +403,8 @@ type ApiFetchOptions = {
   body?: BodyInit;
   requireProject?: boolean;
   signal?: AbortSignal;
+  onRequestDispatched?: () => void;
+  onResponseReceived?: (response: Response) => void;
 };
 
 export async function apiFetch(path: string, options: ApiFetchOptions = {}): Promise<Response> {
@@ -412,7 +414,9 @@ export async function apiFetch(path: string, options: ApiFetchOptions = {}): Pro
   const { auth, accessToken, epoch: requestEpoch } = await accessTokenOrRefresh();
   const url = `${getRuntimeConfig().api_url}${toV1Path(path)}`;
   const init = buildRequestInit({ ...options, projectId, accessToken });
+  options.onRequestDispatched?.();
   const response = recordRequestResponse(await fetch(url, init));
+  options.onResponseReceived?.(response);
 
   if (response.status !== 401) return response;
   if (apiAuthConfig !== auth || (auth.getSessionEpoch?.() ?? 0) !== requestEpoch) return response;
@@ -428,11 +432,13 @@ export async function apiFetch(path: string, options: ApiFetchOptions = {}): Pro
   if (refreshedOperation === null) return response;
   if ((auth.getSessionEpoch?.() ?? 0) !== refreshedOperation.epoch) return response;
 
+  options.onRequestDispatched?.();
   const retriedResponse = recordRequestResponse(await fetch(url, buildRequestInit({
     ...options,
     projectId,
     accessToken: refreshedOperation.accessToken,
   })));
+  options.onResponseReceived?.(retriedResponse);
   if (
     retriedResponse.status === 401
     && apiAuthConfig === auth
@@ -1360,23 +1366,51 @@ export async function uploadRawFile(
 }
 
 async function postScrapeRequest(body: Record<string, unknown>, projectId?: string): Promise<ScrapeResult> {
-  const response = await apiFetch('/api/v1/raw/scrape', {
-    method: 'POST',
-    json: true,
-    projectId,
-    body: JSON.stringify(body),
-  });
+  const requestState: { dispatched: boolean; pending: boolean; response: Response | null } = {
+    dispatched: false,
+    pending: false,
+    response: null,
+  };
+  let response: Response;
+  try {
+    response = await apiFetch('/api/v1/raw/scrape', {
+      method: 'POST',
+      json: true,
+      projectId,
+      body: JSON.stringify(body),
+      onRequestDispatched: () => {
+        requestState.dispatched = true;
+        requestState.pending = true;
+        requestState.response = null;
+      },
+      onResponseReceived: (received) => {
+        requestState.pending = false;
+        requestState.response = received;
+      },
+    });
+  } catch (error) {
+    const { dispatched, pending, response: lastResponse } = requestState;
+    if (!dispatched) throw error;
+    if (!pending && lastResponse && lastResponse.status >= 400 && lastResponse.status < 500) {
+      throw new ApiError('URL intake was rejected before storage.', lastResponse.status, undefined, lastResponse.headers.get('X-Request-ID'));
+    }
+    throw new ApiError('URL intake response was lost; check raw/ before retrying.', 0);
+  }
   const payload: unknown = await response.json().catch(() => null);
-  if (payload && typeof payload === 'object' && 'status' in payload && 'message' in payload) {
+  const structuredResult = payload && typeof payload === 'object' && 'status' in payload && 'message' in payload;
+  if (structuredResult && (response.ok || (response.status >= 400 && response.status < 500))) {
     return payload as ScrapeResult;
   }
   if (!response.ok) {
     const message = payload && typeof payload === 'object' && 'error' in payload && typeof payload.error === 'string'
       ? payload.error
       : 'URL intake failed';
-    throw new Error(message);
+    if (response.status >= 400 && response.status < 500) {
+      throw new ApiError(message, response.status, undefined, response.headers.get('X-Request-ID'));
+    }
+    throw new ApiError('URL intake response was lost; check raw/ before retrying.', 0, undefined, response.headers.get('X-Request-ID'));
   }
-  throw new Error('URL intake returned an invalid response');
+  throw new ApiError('URL intake returned an invalid response; check raw/ before retrying.', 0, undefined, response.headers.get('X-Request-ID'));
 }
 
 export async function scrapeUrl(url: string, projectId?: string, tags?: string[]): Promise<ScrapeResult> {

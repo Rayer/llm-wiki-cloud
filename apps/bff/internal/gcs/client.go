@@ -727,6 +727,12 @@ func canonicalReadPath(relPath string) bool {
 	if store.SafeRawPath(relPath) || relPath == "cache/source_status.json" {
 		return true
 	}
+	const identityPrefix = "cache/raw_url_identity/v1/"
+	if strings.HasPrefix(relPath, identityPrefix) && strings.HasSuffix(relPath, ".json") {
+		digest := strings.TrimSuffix(strings.TrimPrefix(relPath, identityPrefix), ".json")
+		decoded, err := hex.DecodeString(digest)
+		return err == nil && len(decoded) == sha256.Size && strings.ToLower(digest) == digest && path.Clean(relPath) == relPath
+	}
 	if strings.HasPrefix(relPath, "cache/annotations/") && strings.HasSuffix(relPath, ".json") {
 		sourceID := strings.TrimSuffix(strings.TrimPrefix(relPath, "cache/annotations/"), ".json")
 		return annotation.ValidSourceID(sourceID)
