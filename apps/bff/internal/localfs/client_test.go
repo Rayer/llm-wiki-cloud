@@ -13,6 +13,7 @@ import (
 	"testing"
 
 	"cloud.google.com/go/storage"
+	"github.com/rayer/llm-wiki-bff/internal/rawintake"
 	store "github.com/rayer/llm-wiki-bff/internal/storage"
 )
 
@@ -563,6 +564,76 @@ func TestStatFileIsScopedAndMetadataOnly(t *testing.T) {
 	}
 	if _, err := New(root).WithScope("u", "other").StatFile(context.Background(), "cache/pipeline-run.log"); !errors.Is(err, storage.ErrObjectNotExist) {
 		t.Fatalf("foreign StatFile error = %v, want object not exist", err)
+	}
+}
+
+func TestConditionalRawIntakeKeepsSidecarsOutsideRawTree(t *testing.T) {
+	root := t.TempDir()
+	client := New(root).WithScope("u", "p")
+	ctx := context.Background()
+
+	rootResult, err := rawintake.Commit(ctx, client, "root.md", []byte("root exact bytes\n"), false)
+	if err != nil {
+		t.Fatal(err)
+	}
+	nestedResult, err := rawintake.Commit(ctx, client, "topic/note.md", []byte("nested exact bytes\n"), false)
+	if err != nil {
+		t.Fatal(err)
+	}
+	noopResult, err := rawintake.Commit(ctx, client, "topic/note.md", []byte("nested exact bytes\n"), false)
+	if err != nil {
+		t.Fatal(err)
+	}
+	overwriteResult, err := rawintake.Commit(ctx, client, "topic/note.md", []byte("replacement exact bytes\n"), true)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if rootResult.Status != rawintake.StatusCreated || nestedResult.Status != rawintake.StatusCreated || noopResult.Status != rawintake.StatusAlreadyExists || overwriteResult.Status != rawintake.StatusReplaced {
+		t.Fatalf("commit outcomes root=%s nested=%s no_op=%s overwrite=%s", rootResult.Status, nestedResult.Status, noopResult.Status, overwriteResult.Status)
+	}
+	content, err := client.ReadFile(ctx, "raw/topic/note.md")
+	if err != nil || string(content) != "replacement exact bytes\n" {
+		t.Fatalf("nested readback=%q err=%v", content, err)
+	}
+
+	rawFiles, err := client.ListRawFiles(ctx)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(rawFiles) != 2 || rawFiles[0].Name != "root.md" || rawFiles[1].Name != "topic/note.md" {
+		t.Fatalf("RawList inventory=%#v", rawFiles)
+	}
+	syncFiles, err := client.ListSyncRawFiles(ctx)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(syncFiles) != 2 || syncFiles[0].Path != "root.md" || syncFiles[1].Path != "topic/note.md" {
+		t.Fatalf("CLI sync inventory=%#v", syncFiles)
+	}
+
+	vault := filepath.Join(root, "users", "u", "projects", "p")
+	rawDir := filepath.Join(vault, "raw")
+	var physical []string
+	if err := filepath.WalkDir(rawDir, func(path string, entry os.DirEntry, walkErr error) error {
+		if walkErr != nil {
+			return walkErr
+		}
+		if !entry.IsDir() {
+			rel, err := filepath.Rel(rawDir, path)
+			if err != nil {
+				return err
+			}
+			physical = append(physical, filepath.ToSlash(rel))
+		}
+		return nil
+	}); err != nil {
+		t.Fatal(err)
+	}
+	if len(physical) != 2 || physical[0] != "root.md" || physical[1] != "topic/note.md" {
+		t.Fatalf("physical raw tree=%q", physical)
+	}
+	if within(rawDir, filepath.Join(root, ".lwc-localfs-conditional", "u", "p")) {
+		t.Fatal("conditional metadata unexpectedly resides in the user raw namespace")
 	}
 }
 
