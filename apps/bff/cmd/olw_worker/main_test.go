@@ -966,6 +966,30 @@ func TestRunPostprocessWritesEmptyRawStatusWhenStateDBMissing(t *testing.T) {
 	}
 }
 
+func TestListVaultRawFilesRecursesAndKeepsDuplicateBasenamesAndLegalSidecarSuffixes(t *testing.T) {
+	vault := t.TempDir()
+	mustWriteFile(t, filepath.Join(vault, "raw", "same.md"), []byte("root"))
+	mustWriteFile(t, filepath.Join(vault, "raw", "same.md.meta"), []byte("root legal metadata suffix"))
+	mustWriteFile(t, filepath.Join(vault, "raw", "same.md.lock"), []byte("root legal lock suffix"))
+	mustWriteFile(t, filepath.Join(vault, "raw", "topic", "same.md"), []byte("nested"))
+	mustWriteFile(t, filepath.Join(vault, "raw", "topic", "same.md.meta"), []byte("nested legal metadata suffix"))
+	mustWriteFile(t, filepath.Join(vault, "raw", "topic", "same.md.lock"), []byte("nested legal lock suffix"))
+
+	files, err := listVaultRawFiles(context.Background(), vault)
+	if err != nil {
+		t.Fatalf("listVaultRawFiles() error = %v", err)
+	}
+	wantPaths := []string{"raw/same.md", "raw/same.md.lock", "raw/same.md.meta", "raw/topic/same.md", "raw/topic/same.md.lock", "raw/topic/same.md.meta"}
+	if len(files) != len(wantPaths) {
+		t.Fatalf("raw files = %#v", files)
+	}
+	for i, path := range wantPaths {
+		if files[i].Path != path {
+			t.Fatalf("raw files[%d]=%#v, want path %q", i, files[i], path)
+		}
+	}
+}
+
 func envMap(env []string) map[string]string {
 	out := make(map[string]string, len(env))
 	for _, entry := range env {
@@ -1103,6 +1127,33 @@ func TestWorkspaceRejectsDuplicateMappedRawPath(t *testing.T) {
 	err := runWorkerBatch(context.Background(), workerConfig{VaultPath: vault, APIKey: "secret", Workspace: true, WorkspaceDir: t.TempDir(), Postprocess: true}, `[["run"]]`)
 	if err == nil || !strings.Contains(err.Error(), "duplicate source mapping") {
 		t.Fatalf("error=%v", err)
+	}
+}
+
+func TestSnapshotSourcesAcceptsNestedRawMapping(t *testing.T) {
+	vault := t.TempDir()
+	mustWriteFile(t, filepath.Join(vault, "raw", "topic", "記事.md"), []byte("nested source"))
+	mustWriteFile(t, filepath.Join(vault, "cache", "id_map.json"), []byte(`{"source_meta":{"s1":{"source_file":"raw/topic/記事.md"}}}`))
+
+	snapshots, err := snapshotSources(vault)
+	if err != nil {
+		t.Fatalf("snapshotSources() error = %v", err)
+	}
+	if len(snapshots) != 1 || snapshots[0].RawPath != "raw/topic/記事.md" || string(snapshots[0].RawBytes) != "nested source" {
+		t.Fatalf("snapshotSources() = %#v", snapshots)
+	}
+
+	workspace, err := createWorkspace(t.TempDir(), vault)
+	if err != nil {
+		t.Fatalf("createWorkspace() error = %v", err)
+	}
+	defer os.RemoveAll(workspace)
+	if err := materializeSnapshots(workspace, snapshots); err != nil {
+		t.Fatalf("materializeSnapshots() error = %v", err)
+	}
+	data, err := os.ReadFile(filepath.Join(workspace, "raw", "topic", "記事.md"))
+	if err != nil || string(data) != "nested source" {
+		t.Fatalf("materialized nested source = %q, %v", data, err)
 	}
 }
 

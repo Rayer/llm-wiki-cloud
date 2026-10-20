@@ -238,7 +238,7 @@ func TestDataTracedRawPreviewByteWriterFailureMarksReadAndResponseFailure(t *tes
 		c.Set("projectID", "project")
 		c.Next()
 	})
-	router.GET("/api/v1/raw/:filename", h.RawPreview)
+	router.GET("/api/v1/raw/*path", h.RawPreview)
 	const writerError = "PRIVATE_RAW_PREVIEW_WRITER_ERROR_CANARY"
 	response := &dataFailingJSONWriter{ResponseRecorder: httptest.NewRecorder(), err: errors.New(writerError)}
 	router.ServeHTTP(response, httptest.NewRequest(http.MethodGet, "/api/v1/raw/seed.md?preview=true", nil))

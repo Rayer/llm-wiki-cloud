@@ -46,7 +46,7 @@ const uploadedFile: RawFile = {
 
 const createdResult: RawUploadResult = {
   filename: uploadedFile.name,
-  path: 'users/synthetic-owner/projects/project-a/raw/onboarding.md',
+  path: 'raw/onboarding.md',
   bytes: uploadedFile.size,
   sha256: uploadedFile.sha256,
   status: 'created',
@@ -89,16 +89,41 @@ it('uploads through the shared queue, reads the new Raw entry back, and previews
   await screen.findByText('Created');
   await waitFor(() => expect(mocks.getRawFiles).toHaveBeenCalledTimes(2));
   expect(mocks.uploadRawFile).toHaveBeenCalledTimes(1);
-  expect(mocks.uploadRawFile).toHaveBeenCalledWith(file, expect.any(Function), 'project-a');
+  expect(mocks.uploadRawFile).toHaveBeenCalledWith(file, expect.any(Function), 'project-a', '');
   expect(mocks.refreshNavCounts).toHaveBeenCalledTimes(1);
   expect(mocks.triggerPipeline).not.toHaveBeenCalled();
   expect(await screen.findByRole('button', { name: 'Raw.previewAria' })).toBeDefined();
   expect(screen.getByText('42 B')).toBeDefined();
   expect(screen.getByText('actual-fixture-digest')).toBeDefined();
+  expect(screen.getByText('raw/onboarding.md')).toBeDefined();
 
   fireEvent.click(screen.getByRole('button', { name: 'Raw.previewAria' }));
   expect(await screen.findByText('Synthetic content stored by the local fixture.')).toBeDefined();
   expect(mocks.getRawFilePreview).toHaveBeenCalledWith(uploadedFile.name, 'project-a');
+});
+
+it.each(['topic', 'topic/nested'])('uploads and reads back a file in raw/%s', async (directory) => {
+  const listedFile = { ...uploadedFile, name: `${directory}/${uploadedFile.name}` };
+  mocks.getRawFiles.mockResolvedValueOnce([]).mockResolvedValueOnce([listedFile]);
+  mocks.uploadRawFile.mockResolvedValue({
+    ...createdResult,
+    path: `raw/${directory}/${uploadedFile.name}`,
+  });
+  render(<RawClient />);
+  const file = new File(['Nested content'], uploadedFile.name, { type: 'text/markdown' });
+
+  fireEvent.change(screen.getByLabelText('Raw.destinationDirectory'), { target: { value: directory } });
+  await act(async () => {
+    fireEvent.change(uploadInput(), { target: { files: [file] } });
+  });
+
+  expect(await screen.findByText('Created')).toBeDefined();
+  expect(mocks.uploadRawFile).toHaveBeenCalledWith(file, expect.any(Function), 'project-a', directory);
+  expect(screen.getByText(`raw/${directory}/${uploadedFile.name}`)).toBeDefined();
+  const previewButton = await screen.findByRole('button', { name: 'Raw.previewAria' });
+  fireEvent.click(previewButton);
+  await screen.findByText('Synthetic content stored by the local fixture.');
+  expect(mocks.getRawFilePreview).toHaveBeenCalledWith(listedFile.name, 'project-a');
 });
 
 it('keeps an upload conflict visible and retries the file through the same uploader', async () => {
@@ -146,7 +171,7 @@ it('keeps a late upload from Project A out of the Project B list after switching
   expect(screen.getByText('project-b.md')).toBeDefined();
 
   await act(async () => {
-    resolveUpload({ ...createdResult, path: 'users/synthetic-owner/projects/project-a/raw/onboarding.md' });
+    resolveUpload(createdResult);
     await pendingUpload;
   });
   expect(screen.getByText('project-b.md')).toBeDefined();

@@ -3,6 +3,7 @@ package v1
 import (
 	"errors"
 	"net/http"
+	"path"
 	"path/filepath"
 	"strings"
 	"time"
@@ -12,6 +13,7 @@ import (
 	"github.com/rayer/llm-wiki-bff/internal/handler"
 	"github.com/rayer/llm-wiki-bff/internal/observability"
 	"github.com/rayer/llm-wiki-bff/internal/rawstatus"
+	store "github.com/rayer/llm-wiki-bff/internal/storage"
 )
 
 type rawListResponse struct {
@@ -62,8 +64,8 @@ func (h *Handler) RawList(c *gin.Context) {
 
 func (h *Handler) RawPreview(c *gin.Context) {
 	_, inputSpan := observability.StartDataPhase(c.Request.Context(), "input")
-	filename := c.Param("filename")
-	if err := validateRawUploadFilename(filename); err != nil {
+	relativePath := strings.TrimPrefix(c.Param("path"), "/")
+	if err := validateRawUploadPath(relativePath); err != nil {
 		observability.FinishDataSpan(inputSpan, "rejected")
 		observability.WriteDataJSON(c, http.StatusBadRequest, handler.ErrorResponse{Error: err.Error()})
 		return
@@ -81,7 +83,7 @@ func (h *Handler) RawPreview(c *gin.Context) {
 	observability.FinishDataSpan(loadSpan, "success")
 
 	readCtx, readSpan := observability.StartDataPhase(c.Request.Context(), "read")
-	data, err := wikiStore.ReadFile(readCtx, rawUploadRelativePath(filename))
+	data, err := wikiStore.ReadFile(readCtx, "raw/"+relativePath)
 	if err != nil {
 		observability.FinishDataSpan(readSpan, observability.DataErrorOutcome(err))
 		if errors.Is(err, storage.ErrObjectNotExist) {
@@ -94,7 +96,14 @@ func (h *Handler) RawPreview(c *gin.Context) {
 	observability.SetDataCount(readSpan, "bytes", int64(len(data)))
 	observability.FinishDataSpan(readSpan, "success")
 
-	observability.WriteDataBytes(c, http.StatusOK, rawPreviewContentType(filename), data)
+	observability.WriteDataBytes(c, http.StatusOK, rawPreviewContentType(relativePath), data)
+}
+
+func validateRawUploadPath(relativePath string) error {
+	if err := store.ValidateRawSyncPath(relativePath); err != nil {
+		return errors.New("invalid raw-relative path")
+	}
+	return validateRawUploadFilename(path.Base(relativePath))
 }
 
 func rawPreviewContentType(filename string) string {

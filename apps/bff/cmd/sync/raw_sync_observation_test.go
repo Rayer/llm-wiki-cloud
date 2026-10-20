@@ -230,6 +230,41 @@ func (b *rawSyncCountingBody) Read(p []byte) (int, error) {
 
 func (*rawSyncCountingBody) Close() error { return nil }
 
+func TestScanLocalRawFilesKeepsLegalMetaAndLockNames(t *testing.T) {
+	vault := t.TempDir()
+	for path, body := range map[string]string{
+		"root.md":             "root",
+		"root.md.meta":        "root legal metadata suffix",
+		"root.md.lock":        "root legal lock suffix",
+		"nested/note.md":      "nested",
+		"nested/note.md.meta": "nested legal metadata suffix",
+		"nested/note.md.lock": "nested legal lock suffix",
+	} {
+		fullPath := filepath.Join(vault, "raw", filepath.FromSlash(path))
+		if err := os.MkdirAll(filepath.Dir(fullPath), 0o755); err != nil {
+			t.Fatal(err)
+		}
+		if err := os.WriteFile(fullPath, []byte(body), 0o644); err != nil {
+			t.Fatal(err)
+		}
+	}
+
+	inventory, err := scanLocalRawFiles(context.Background(), vault)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer inventory.Close()
+	wantPaths := []string{"nested/note.md", "nested/note.md.lock", "nested/note.md.meta", "root.md", "root.md.lock", "root.md.meta"}
+	if len(inventory.Files) != len(wantPaths) {
+		t.Fatalf("CLI raw inventory=%#v", inventory.Files)
+	}
+	for i, path := range wantPaths {
+		if inventory.Files[i].Path != path {
+			t.Fatalf("CLI raw inventory[%d]=%#v, want path %q", i, inventory.Files[i], path)
+		}
+	}
+}
+
 func TestSyncTransfersDoNotReadErrorBodiesAndKeepSuccessPayloadRaw(t *testing.T) {
 	vault := t.TempDir()
 	if err := os.MkdirAll(filepath.Join(vault, "raw"), 0o755); err != nil {
