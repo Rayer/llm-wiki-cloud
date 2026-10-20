@@ -1033,7 +1033,7 @@ func (h *Handler) pipelineRunForMode(c *gin.Context, userID, projectID string, m
 				if settleErr != nil {
 					log.Print("pipeline quota refund failed")
 					evidenceCtx, cancelEvidence := context.WithTimeout(context.Background(), 10*time.Second)
-					evidenceErr := h.writeConfirmedPipelineInvokeFailure(evidenceCtx, userID, projectID, reservationID)
+					evidenceErr := h.writeConfirmedPipelineInvokeFailure(evidenceCtx, userID, projectID, reservationID, "")
 					cancelEvidence()
 					if evidenceErr != nil {
 						log.Print("pipeline invoke failure recovery evidence unavailable")
@@ -1844,19 +1844,20 @@ func (h *Handler) readConsumedGuidanceEvidence(ctx context.Context, owner *pipel
 	return evidence
 }
 
-func (h *Handler) writeConfirmedPipelineInvokeFailure(ctx context.Context, userID, projectID, reservationID string) error {
+func (h *Handler) writeConfirmedPipelineInvokeFailure(ctx context.Context, userID, projectID, reservationID, attemptID string) error {
 	if h.store == nil || userID == "" || projectID == "" || reservationID == "" {
 		return errors.New("pipeline recovery storage unavailable")
 	}
 	evidence := struct {
 		Version    int    `json:"version"`
 		Status     string `json:"status"`
+		AttemptID  string `json:"attempt_id"`
 		Stage      string `json:"stage"`
 		ErrorClass string `json:"error_class"`
 		Execution  string `json:"execution"`
 		Message    string `json:"message"`
 	}{
-		Version: 1, Status: "failed", Stage: string(pipelinediagnostic.StageUnknown),
+		Version: 1, Status: "failed", AttemptID: strings.TrimSpace(attemptID), Stage: string(pipelinediagnostic.StageUnknown),
 		ErrorClass: string(pipelinediagnostic.ErrorClassUnknown), Execution: reservationID,
 		Message: "pipeline invocation failed before an execution was accepted",
 	}
@@ -1868,15 +1869,15 @@ func (h *Handler) writeConfirmedPipelineInvokeFailure(ctx context.Context, userI
 	return err
 }
 
-func (h *Handler) hasConfirmedPipelineInvokeFailure(ctx context.Context, userID, projectID, reservationID string) (bool, error) {
-	if h.store == nil || userID == "" || projectID == "" || reservationID == "" {
+func (h *Handler) hasConfirmedPipelineInvokeFailure(ctx context.Context, reservation scopedfirestore.QuotaReservation) (bool, error) {
+	if h.store == nil || reservation.UserID == "" || reservation.ProjectID == "" || reservation.ID == "" {
 		return false, nil
 	}
-	reader, ok := h.store.Scope(userID, projectID).(limitedPipelineLogReader)
+	reader, ok := h.store.Scope(reservation.UserID, reservation.ProjectID).(limitedPipelineLogReader)
 	if !ok {
 		return false, nil
 	}
-	data, err := reader.ReadFileLimited(ctx, "cache/pipeline-"+reservationID+".failure.json", maxPipelineDiagnosticBytes+1)
+	data, err := reader.ReadFileLimited(ctx, "cache/pipeline-"+reservation.ID+".failure.json", maxPipelineDiagnosticBytes+1)
 	if errors.Is(err, store.ErrObjectNotExist) || errors.Is(err, storage.ErrObjectNotExist) {
 		return false, nil
 	}
@@ -1889,6 +1890,7 @@ func (h *Handler) hasConfirmedPipelineInvokeFailure(ctx context.Context, userID,
 	var evidence struct {
 		Version    int    `json:"version"`
 		Status     string `json:"status"`
+		AttemptID  string `json:"attempt_id"`
 		Stage      string `json:"stage"`
 		ErrorClass string `json:"error_class"`
 		Execution  string `json:"execution"`
@@ -1905,8 +1907,11 @@ func (h *Handler) hasConfirmedPipelineInvokeFailure(ctx context.Context, userID,
 	}
 	_, validStage := pipelinediagnostic.ValidStages[pipelinediagnostic.Stage(evidence.Stage)]
 	_, validClass := pipelinediagnostic.ValidErrorClasses[pipelinediagnostic.ErrorClass(evidence.ErrorClass)]
-	return evidence.Version == 1 && evidence.Status == "failed" && evidence.Execution == reservationID &&
-		evidence.Message == "pipeline invocation failed before an execution was accepted" && validStage && validClass, nil
+	if reservation.Trigger == pipelinequota.TriggerScheduledDaily && reservation.AttemptID == "" {
+		return false, nil
+	}
+	return evidence.Version == 1 && evidence.Status == "failed" && evidence.Execution == reservation.ID &&
+		evidence.AttemptID == reservation.AttemptID && evidence.Message == "pipeline invocation failed before an execution was accepted" && validStage && validClass, nil
 }
 
 func (h *Handler) attachPipelineDiagnostic(ctx context.Context, response *handler.PipelineExecutionResponse, owner *pipelineExecutionOwner) {

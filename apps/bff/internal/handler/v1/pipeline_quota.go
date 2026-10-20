@@ -46,6 +46,7 @@ type pipelineQuotaStore interface {
 
 type scheduledPipelineQuotaStore interface {
 	ReserveScheduledQuota(ctx context.Context, reservationID, userID, projectID string, limits pipelinequota.Limits, now time.Time, mode pipelinequota.ExecutionMode, isDemo, alreadyRunning bool, newRawFiles, rawDirtyFiles, annotationDirtyFiles int) (pipelinequota.Snapshot, bool, error)
+	ReserveScheduledQuotaWithAttempt(ctx context.Context, reservationID, attemptID, userID, projectID string, limits pipelinequota.Limits, now time.Time, mode pipelinequota.ExecutionMode, isDemo, alreadyRunning bool, newRawFiles, rawDirtyFiles, annotationDirtyFiles int) (pipelinequota.Snapshot, bool, error)
 	RecordScheduledPipelineCheck(ctx context.Context, status firestore.ScheduledPipelineStatus) error
 	RecordScheduledPipelineAttempt(ctx context.Context, userID, projectID, dayKey, reservationID, executionID, result string, attemptedAt time.Time) error
 	LoadScheduledPipelineStatus(ctx context.Context, userID, projectID string, now time.Time) (firestore.ScheduledPipelineStatus, error)
@@ -55,6 +56,7 @@ type pipelineAdmissionStore interface {
 	PipelineAdmissionActive(ctx context.Context, userID, projectID string) (bool, error)
 	ReserveAdminPipelineAdmission(ctx context.Context, reservationID, userID, projectID string, now time.Time, alreadyRunning bool) (bool, error)
 	ReleaseQuotaReservation(ctx context.Context, reservationID string) error
+	ReleaseQuotaReservationIfAttempt(ctx context.Context, reservationID, attemptID string) (bool, error)
 }
 
 func (h *Handler) effectiveQuotaStore() pipelineQuotaStore {

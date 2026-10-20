@@ -2,6 +2,7 @@ package firestore
 
 import (
 	"context"
+	"crypto/rand"
 	"crypto/sha256"
 	"encoding/hex"
 	"errors"
@@ -27,6 +28,7 @@ const (
 // fields are changed in the same transaction that applies a refund.
 type QuotaReservation struct {
 	ID                string
+	AttemptID         string
 	UserID            string
 	ProjectID         string
 	ExecutionID       string
@@ -171,7 +173,7 @@ func (c *Client) ReserveQuota(
 	newRawFiles, rawDirtyFiles, annotationDirtyFiles int,
 ) (snap pipelinequota.Snapshot, reserved bool, err error) {
 	return c.reservePipelineQuota(ctx, reservationID, userID, projectID, limits, now, mode,
-		pipelinequota.TriggerManual, "manual", isDemo, alreadyRunning,
+		pipelinequota.TriggerManual, "manual", "", isDemo, alreadyRunning,
 		newRawFiles, rawDirtyFiles, annotationDirtyFiles)
 }
 
@@ -186,8 +188,32 @@ func (c *Client) ReserveScheduledQuota(
 	isDemo, alreadyRunning bool,
 	newRawFiles, rawDirtyFiles, annotationDirtyFiles int,
 ) (snap pipelinequota.Snapshot, reserved bool, err error) {
+	attemptID, err := newQuotaReservationAttemptID()
+	if err != nil {
+		return pipelinequota.Snapshot{}, false, err
+	}
+	return c.ReserveScheduledQuotaWithAttempt(ctx, reservationID, attemptID, userID, projectID, limits, now,
+		mode, isDemo, alreadyRunning, newRawFiles, rawDirtyFiles, annotationDirtyFiles)
+}
+
+// ReserveScheduledQuotaWithAttempt stores a fresh invocation incarnation beside
+// the stable Project/day reservation ID so stale recovery evidence cannot own a
+// later same-day attempt.
+func (c *Client) ReserveScheduledQuotaWithAttempt(
+	ctx context.Context,
+	reservationID, attemptID, userID, projectID string,
+	limits pipelinequota.Limits,
+	now time.Time,
+	mode pipelinequota.ExecutionMode,
+	isDemo, alreadyRunning bool,
+	newRawFiles, rawDirtyFiles, annotationDirtyFiles int,
+) (snap pipelinequota.Snapshot, reserved bool, err error) {
+	attemptID = strings.TrimSpace(attemptID)
+	if attemptID == "" {
+		return pipelinequota.Snapshot{}, false, errors.New("invalid pipeline quota attempt ID")
+	}
 	return c.reservePipelineQuota(ctx, reservationID, userID, projectID, limits, now, mode,
-		pipelinequota.TriggerScheduledDaily, "scheduled_daily", isDemo, alreadyRunning,
+		pipelinequota.TriggerScheduledDaily, "scheduled_daily", attemptID, isDemo, alreadyRunning,
 		newRawFiles, rawDirtyFiles, annotationDirtyFiles)
 }
 
@@ -199,6 +225,7 @@ func (c *Client) reservePipelineQuota(
 	mode pipelinequota.ExecutionMode,
 	trigger pipelinequota.Trigger,
 	budgetClass string,
+	attemptID string,
 	isDemo, alreadyRunning bool,
 	newRawFiles, rawDirtyFiles, annotationDirtyFiles int,
 ) (snap pipelinequota.Snapshot, reserved bool, err error) {
@@ -273,6 +300,9 @@ func (c *Client) reservePipelineQuota(
 			"trigger":              string(trigger), "budget_class": budgetClass,
 			"settlement_status": "pending", "outcome": "",
 			"execution_id": "", "created_at": now,
+		}
+		if trigger == pipelinequota.TriggerScheduledDaily {
+			reservationData["attempt_id"] = attemptID
 		}
 		if trigger == pipelinequota.TriggerScheduledDaily && existingBudget != nil && existingBudget.Exists() {
 			if err := tx.Set(reservationRef, reservationData); err != nil {
@@ -391,28 +421,54 @@ func (c *Client) ReserveAdminPipelineAdmission(ctx context.Context, reservationI
 // accepted, returning its manual or scheduled budget and shared Project claim.
 func (c *Client) ReleaseQuotaReservation(ctx context.Context, reservationID string) error {
 	return c.fs.RunTransaction(ctx, func(ctx context.Context, tx *firestore.Transaction) error {
-		return ReleaseQuotaReservationInTransaction(ctx, tx, c.fs, reservationID)
+		_, err := releaseQuotaReservationInTransaction(ctx, tx, c.fs, reservationID, "")
+		return err
 	})
 }
 
+// ReleaseQuotaReservationIfAttempt releases only the exact reservation
+// incarnation observed by the caller. A delayed reconciler for an earlier
+// same-day attempt becomes a no-op after the stable reservation ID is reused.
+func (c *Client) ReleaseQuotaReservationIfAttempt(ctx context.Context, reservationID, attemptID string) (bool, error) {
+	attemptID = strings.TrimSpace(attemptID)
+	if attemptID == "" {
+		return false, errors.New("pipeline quota attempt ID is required")
+	}
+	released := false
+	err := c.fs.RunTransaction(ctx, func(ctx context.Context, tx *firestore.Transaction) error {
+		var err error
+		released, err = releaseQuotaReservationInTransaction(ctx, tx, c.fs, reservationID, attemptID)
+		return err
+	})
+	return released, err
+}
+
 func ReleaseQuotaReservationInTransaction(ctx context.Context, tx *firestore.Transaction, fs *firestore.Client, reservationID string) error {
+	_, err := releaseQuotaReservationInTransaction(ctx, tx, fs, reservationID, "")
+	return err
+}
+
+func releaseQuotaReservationInTransaction(ctx context.Context, tx *firestore.Transaction, fs *firestore.Client, reservationID, expectedAttemptID string) (bool, error) {
 	reservationRef := Collection(fs, pipelineQuotaReservationCollection).Doc(reservationID)
 	reservationSnapshot, err := tx.Get(reservationRef)
 	if status.Code(err) == codes.NotFound {
-		return nil
+		return false, nil
 	}
 	if err != nil {
-		return err
+		return false, err
 	}
 	reservation := quotaReservationFromData(reservationID, reservationSnapshot.Data())
+	if expectedAttemptID != "" && reservation.AttemptID != expectedAttemptID {
+		return false, nil
+	}
 	if reservation.SettlementStatus != "pending" || reservation.ExecutionID != "" {
-		return errors.New("pipeline reservation is not confirmed uninvoked")
+		return false, errors.New("pipeline reservation is not confirmed uninvoked")
 	}
 	now := time.Now().UTC()
 	quotaRef := Collection(fs, pipelineQuotaCollection).Doc(QuotaDocID(reservation.UserID, reservation.ProjectID))
 	quotaData, err := readQuotaDataTx(tx, quotaRef)
 	if err != nil {
-		return err
+		return false, err
 	}
 	reservationUpdates := []firestore.Update{
 		{Path: "settlement_status", Value: "released"},
@@ -436,7 +492,7 @@ func ReleaseQuotaReservationInTransaction(ctx context.Context, tx *firestore.Tra
 	} else if reservation.BudgetClass == "scheduled_daily" {
 		budgetRef := Collection(fs, pipelineScheduledDailyCollection).Doc(reservationID)
 		if err := tx.Set(budgetRef, map[string]interface{}{"used": false, "result": "not_invoked", "updated_at": now}, firestore.MergeAll); err != nil {
-			return err
+			return false, err
 		}
 		if sameQuotaTime(lastRunAt, reservation.ReservedAt) {
 			// The shared cooldown clock is restored only when no later run has advanced it.
@@ -454,13 +510,13 @@ func ReleaseQuotaReservationInTransaction(ctx context.Context, tx *firestore.Tra
 	if len(quotaUpdates) > 0 {
 		quotaUpdates = append(quotaUpdates, firestore.Update{Path: "updated_at", Value: now})
 		if err := tx.Update(quotaRef, quotaUpdates); err != nil {
-			return err
+			return false, err
 		}
 	}
 	if err := tx.Update(reservationRef, reservationUpdates); err != nil {
-		return err
+		return false, err
 	}
-	return nil
+	return true, nil
 }
 
 func (c *Client) GetQuotaReservation(ctx context.Context, reservationID string) (QuotaReservation, bool, error) {
@@ -623,6 +679,7 @@ func SettleQuotaReservationInTransactionWithResult(ctx context.Context, tx *fire
 func quotaReservationFromData(id string, data map[string]interface{}) QuotaReservation {
 	reservation := QuotaReservation{ID: id, SettlementStatus: "pending"}
 	reservation.UserID, _ = data["user_id"].(string)
+	reservation.AttemptID, _ = data["attempt_id"].(string)
 	reservation.ProjectID, _ = data["project_id"].(string)
 	reservation.ExecutionID, _ = data["execution_id"].(string)
 	reservation.DayKey, _ = data["day_key"].(string)
@@ -644,6 +701,14 @@ func quotaReservationFromData(id string, data map[string]interface{}) QuotaReser
 		reservation.PreviousLastRunAt = normalizeQuotaTime(t)
 	}
 	return reservation
+}
+
+func newQuotaReservationAttemptID() (string, error) {
+	var raw [16]byte
+	if _, err := rand.Read(raw[:]); err != nil {
+		return "", err
+	}
+	return "pa-" + hex.EncodeToString(raw[:]), nil
 }
 
 func sameQuotaTime(a, b time.Time) bool {

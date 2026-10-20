@@ -212,7 +212,14 @@ func (h *Handler) runScheduledProject(ctx context.Context, qs scheduledPipelineQ
 	}
 	dayKey := pipelinequota.DayKeyUTC(now)
 	reservationID := scopedfirestore.ScheduledPipelineBudgetID(userID, projectID, dayKey)
-	snapshot, reserved, err := qs.ReserveScheduledQuota(ctx, reservationID, userID, projectID,
+	attemptID, err := newPipelineReservationID()
+	if err != nil {
+		if !h.recordScheduledCheckOK(ctx, statusStore, userID, projectID, now, "unavailable", pending, newRaw, rawDirty, annotationDirty) {
+			return false, false, true
+		}
+		return false, false, true
+	}
+	snapshot, reserved, err := qs.ReserveScheduledQuotaWithAttempt(ctx, reservationID, attemptID, userID, projectID,
 		h.pipelineLimits(), now, pipelinequota.ModeIncremental, false, false, newRaw, rawDirty, annotationDirty)
 	if err != nil {
 		if !h.recordScheduledCheckOK(ctx, statusStore, userID, projectID, now, "unavailable", pending, newRaw, rawDirty, annotationDirty) {
@@ -236,10 +243,10 @@ func (h *Handler) runScheduledProject(ctx context.Context, qs scheduledPipelineQ
 	if err := h.recordScheduledCheck(ctx, statusStore, userID, projectID, now, "", pending, newRaw, rawDirty, annotationDirty); err != nil {
 		admission := h.effectiveQuotaStore().(pipelineAdmissionStore)
 		releaseCtx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
-		releaseErr := admission.ReleaseQuotaReservation(releaseCtx, reservationID)
+		_, releaseErr := admission.ReleaseQuotaReservationIfAttempt(releaseCtx, reservationID, attemptID)
 		cancel()
 		if releaseErr != nil {
-			if evidenceErr := h.persistScheduledNotInvokedEvidence(userID, projectID, reservationID); evidenceErr != nil {
+			if evidenceErr := h.persistScheduledNotInvokedEvidence(userID, projectID, reservationID, attemptID); evidenceErr != nil {
 				log.Print("scheduled pipeline recovery evidence unavailable")
 			}
 		}
@@ -255,12 +262,15 @@ func (h *Handler) runScheduledProject(ctx context.Context, qs scheduledPipelineQ
 		}
 		admission := h.effectiveQuotaStore().(pipelineAdmissionStore)
 		releaseCtx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
-		releaseErr := admission.ReleaseQuotaReservation(releaseCtx, reservationID)
+		released, releaseErr := admission.ReleaseQuotaReservationIfAttempt(releaseCtx, reservationID, attemptID)
 		cancel()
 		if releaseErr != nil {
-			if evidenceErr := h.persistScheduledNotInvokedEvidence(userID, projectID, reservationID); evidenceErr != nil {
+			if evidenceErr := h.persistScheduledNotInvokedEvidence(userID, projectID, reservationID, attemptID); evidenceErr != nil {
 				log.Print("scheduled pipeline recovery evidence unavailable")
 			}
+			return false, false, true
+		}
+		if !released {
 			return false, false, true
 		}
 		reason := "unavailable"
@@ -324,10 +334,10 @@ func (h *Handler) recordScheduledCheckOK(ctx context.Context, qs scheduledPipeli
 	return h.recordScheduledCheck(ctx, qs, userID, projectID, now, reason, pending, newRaw, rawDirty, annotationDirty) == nil
 }
 
-func (h *Handler) persistScheduledNotInvokedEvidence(userID, projectID, reservationID string) error {
+func (h *Handler) persistScheduledNotInvokedEvidence(userID, projectID, reservationID, attemptID string) error {
 	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
 	defer cancel()
-	return h.writeConfirmedPipelineInvokeFailure(ctx, userID, projectID, reservationID)
+	return h.writeConfirmedPipelineInvokeFailure(ctx, userID, projectID, reservationID, attemptID)
 }
 
 func (h *Handler) isScheduledPipelineRunning(ctx context.Context, userID, projectID string) (bool, error) {

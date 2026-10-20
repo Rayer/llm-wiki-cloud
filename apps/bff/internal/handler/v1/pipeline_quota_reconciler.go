@@ -9,6 +9,7 @@ import (
 
 	"github.com/rayer/llm-wiki-bff/internal/firestore"
 	"github.com/rayer/llm-wiki-bff/internal/observability"
+	"github.com/rayer/llm-wiki-bff/internal/pipelinequota"
 )
 
 // ReconcilePipelineQuota settles accepted Cloud Run executions independently
@@ -41,7 +42,7 @@ func (h *Handler) ReconcilePipelineQuota(ctx context.Context) (resultErr error) 
 			continue
 		}
 		lookupCtx, lookupSpan := observability.StartPipelineSpan(ctx, "pipeline.quota.lookup")
-		confirmedFailure, err := h.hasConfirmedPipelineInvokeFailure(lookupCtx, reservation.UserID, reservation.ProjectID, reservation.ID)
+		confirmedFailure, err := h.hasConfirmedPipelineInvokeFailure(lookupCtx, reservation)
 		lookupOutcome := "pending"
 		if err != nil {
 			lookupOutcome = pipelineTraceOutcome(err)
@@ -53,6 +54,18 @@ func (h *Handler) ReconcilePipelineQuota(ctx context.Context) (resultErr error) 
 			return err
 		}
 		if confirmedFailure {
+			if reservation.Trigger == pipelinequota.TriggerScheduledDaily {
+				admission, ok := quotaStore.(interface {
+					ReleaseQuotaReservationIfAttempt(context.Context, string, string) (bool, error)
+				})
+				if !ok {
+					return errors.New("scheduled quota store does not support attempt-bound release")
+				}
+				if _, err := admission.ReleaseQuotaReservationIfAttempt(ctx, reservation.ID, reservation.AttemptID); err != nil {
+					return err
+				}
+				continue
+			}
 			if admission, ok := quotaStore.(interface {
 				ReleaseQuotaReservation(context.Context, string) error
 			}); ok {
