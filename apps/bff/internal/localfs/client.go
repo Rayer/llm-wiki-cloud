@@ -49,6 +49,10 @@ func (c *Client) conditionalSidecarPaths(relPath string) (string, string, error)
 	if err != nil {
 		return "", "", err
 	}
+	cleanRel = filepath.ToSlash(cleanRel)
+	if !strings.HasPrefix(cleanRel, "raw/") {
+		return objectPath + ".meta", objectPath + ".lock", nil
+	}
 	root, err := filepath.Abs(c.root)
 	if err != nil {
 		return "", "", err
@@ -57,7 +61,7 @@ func (c *Client) conditionalSidecarPaths(relPath string) (string, string, error)
 	if err := ensureSidecarDirectory(root, dir); err != nil {
 		return "", "", err
 	}
-	key := digest([]byte(filepath.ToSlash(cleanRel)))
+	key := digest([]byte(cleanRel))
 	base := filepath.Join(dir, key)
 	return base + ".meta", base + ".lock", nil
 }
