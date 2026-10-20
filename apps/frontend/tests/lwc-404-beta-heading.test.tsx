@@ -45,7 +45,7 @@ describe('LWC-404 Agent & MCP Beta heading', () => {
 
     expect(screen.getByRole('heading', { level: 1, name: heading })).toBeTruthy();
     expect(screen.getByText(locale === 'en'
-      ? "Connect AI tools to this Project's knowledge. Access is read-only and can be revoked at any time."
-      : '連結 AI 工具以讀取此專案知識。權限僅限唯讀查詢，且可隨時撤銷。')).toBeTruthy();
+      ? "Connect AI tools to read this Project's knowledge and, with explicit consent, add new raw sources. Access can be revoked at any time."
+      : '連結 AI 工具以讀取此專案知識；經明確授權後也可新增 raw 來源。存取權可隨時撤銷。')).toBeTruthy();
   });
 });
