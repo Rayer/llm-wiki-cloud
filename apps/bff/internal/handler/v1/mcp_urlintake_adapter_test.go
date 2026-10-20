@@ -5,6 +5,7 @@ import (
 	"crypto/sha256"
 	"encoding/hex"
 	"errors"
+	"fmt"
 	"net/netip"
 	"strings"
 	"testing"
@@ -109,6 +110,50 @@ func TestMCPURLIntakeAdapterConfirmsExactCandidateWithoutRefetch(t *testing.T) {
 	stored, err := root.WithScope("actor-one", "project-one").ReadFile(context.Background(), confirmed.Path)
 	if err != nil || string(stored) != preview.Preview || confirmed.SHA256 != digestMCPURLTest(stored) {
 		t.Fatalf("confirmed bytes differ from reviewed candidate: err=%v bytes=%q", err, stored)
+	}
+}
+
+func TestMCPURLImportToolCallPreservesTruncationBeforeExactConfirmation(t *testing.T) {
+	fetches := 0
+	truncated := true
+	fetcher := mcpURLIntakeFetcher(func(context.Context, string) (urlintake.Page, error) {
+		fetches++
+		return urlintake.Page{Title: "Truncated candidate", Markdown: "# Truncated candidate\n\nVisible prefix.", Truncated: &truncated}, nil
+	})
+	evaluator := mcpURLIntakeEvaluator(func(context.Context, urlintake.QualityInput) (urlintake.QualityEvaluation, error) {
+		return urlintake.QualityEvaluation{ShellProbability: .42, ContentProbability: .61, ReturnedModel: "jev-1.13.0"}, nil
+	})
+	adapter, root := newMCPURLIntakeAdapterTest(t, fetcher, evaluator)
+	h := New(nil, nil, nil, nil, nil, nil)
+	h.SetMCPURLImportService(adapter)
+	identity := mcpProjectKeyIdentity{userID: "actor-one", projectID: "project-one", keyID: "grant-write", capabilities: []string{mcpQueryCapability, mcpRawWriteCapability}}
+
+	review := serveMCPRequest(t, h, identity, mcpToolCallBody(1, "import_url", `{"url":"https://example.test/truncated"}`))
+	reviewPayload := mcpStructuredResult(t, review)
+	if reviewPayload["status"] != "needs_confirmation" || reviewPayload["provider_truncated"] != true ||
+		reviewPayload["warning"] != "The Fetch provider explicitly marked this content as truncated." ||
+		reviewPayload["reason"] != "The page could not be classified as clearly substantive and complete." ||
+		!strings.Contains(fmt.Sprint(reviewPayload["message"]), "explicitly marked this content as truncated") ||
+		reviewPayload["processing_status"] != "not_started" {
+		t.Fatalf("MCP review omitted the shared service completeness details: %#v", reviewPayload)
+	}
+	confirmationRef, _ := reviewPayload["confirmation_ref"].(string)
+	if confirmationRef == "" || fetches != 1 {
+		t.Fatalf("review returned no confirmation or fetched unexpected number of times: ref=%q fetches=%d", confirmationRef, fetches)
+	}
+	if files, err := root.WithScope("actor-one", "project-one").ListRawFiles(context.Background()); err != nil || len(files) != 0 {
+		t.Fatalf("unconfirmed truncated candidate wrote raw data: files=%v err=%v", files, err)
+	}
+
+	confirmed := serveMCPRequest(t, h, identity, mcpToolCallBody(2, "import_url", fmt.Sprintf(`{"confirmation_ref":%q}`, confirmationRef)))
+	confirmedPayload := mcpStructuredResult(t, confirmed)
+	path, _ := confirmedPayload["path"].(string)
+	if confirmedPayload["status"] != "created" || path == "" || confirmedPayload["processing_status"] != "not_started" || fetches != 1 {
+		t.Fatalf("confirmation did not commit the exact reviewed candidate without refetch: payload=%#v fetches=%d", confirmedPayload, fetches)
+	}
+	stored, err := root.WithScope("actor-one", "project-one").ReadFile(context.Background(), path)
+	if err != nil || !strings.Contains(string(stored), "Visible prefix.") || !strings.Contains(string(stored), "Truncated candidate") {
+		t.Fatalf("confirmed truncated candidate readback failed: path=%q err=%v", path, err)
 	}
 }
 

@@ -77,6 +77,54 @@ func TestMCPURLImportSchemasExposeOnlyURLOrBoundConfirmation(t *testing.T) {
 	if !strings.Contains(string(output.Properties["commit_status"]), `"uncertain"`) {
 		t.Fatal("import_url output schema omits uncertain commit status")
 	}
+	for _, field := range []string{"warning", "reason", "provider_truncated"} {
+		if output.Properties[field] == nil {
+			t.Fatalf("import_url output schema omits confirmation detail %q", field)
+		}
+	}
+}
+
+func TestMCPURLImportEarlyFailuresHaveCompleteNotStartedOutput(t *testing.T) {
+	writeIdentity := mcpProjectKeyIdentity{userID: "verified-user", projectID: "verified-project", capabilities: []string{mcpQueryCapability, mcpRawWriteCapability}}
+	queryOnly := writeIdentity
+	queryOnly.capabilities = []string{mcpQueryCapability}
+
+	withIdentity := func(identity mcpProjectKeyIdentity) context.Context {
+		return context.WithValue(context.Background(), mcpProjectKeyIdentityContextKey{}, identity)
+	}
+	serviceError := &fakeMCPURLImportService{importErr: errors.New("private service error")}
+	serviceFailureHandler := New(nil, nil, nil, nil, nil, nil)
+	serviceFailureHandler.SetMCPURLImportService(serviceError)
+
+	tests := []struct {
+		name    string
+		h       *Handler
+		ctx     context.Context
+		input   mcpURLImportInput
+		status  string
+		message string
+	}{
+		{name: "missing verified identity", h: New(nil, nil, nil, nil, nil, nil), ctx: context.Background(), input: mcpURLImportInput{URL: "https://example.test/article"}, status: "unavailable", message: "The authorized Project is unavailable."},
+		{name: "query only grant", h: New(nil, nil, nil, nil, nil, nil), ctx: withIdentity(queryOnly), input: mcpURLImportInput{URL: "https://example.test/article"}, status: "rejected", message: "This grant does not include raw write permission."},
+		{name: "missing shared service", h: New(nil, nil, nil, nil, nil, nil), ctx: withIdentity(writeIdentity), input: mcpURLImportInput{URL: "https://example.test/article"}, status: "unavailable", message: "URL import is unavailable."},
+		{name: "oversized request", h: serviceFailureHandler, ctx: withIdentity(writeIdentity), input: mcpURLImportInput{URL: strings.Repeat("x", 8193)}, status: "rejected", message: "The URL import request exceeds its allowed size."},
+		{name: "ambiguous URL and reference", h: serviceFailureHandler, ctx: withIdentity(writeIdentity), input: mcpURLImportInput{URL: "https://example.test/article", ConfirmationRef: "ref"}, status: "rejected", message: "Provide either url with optional tags, or confirmation_ref by itself."},
+		{name: "oversized tag", h: serviceFailureHandler, ctx: withIdentity(writeIdentity), input: mcpURLImportInput{URL: "https://example.test/article", Tags: []string{strings.Repeat("x", 257)}}, status: "rejected", message: "A source tag exceeds its allowed size."},
+		{name: "service error", h: serviceFailureHandler, ctx: withIdentity(writeIdentity), input: mcpURLImportInput{URL: "https://example.test/article"}, status: "unavailable", message: "URL import is unavailable."},
+	}
+	for _, test := range tests {
+		t.Run(test.name, func(t *testing.T) {
+			result, _, err := test.h.callMCPURLImport(test.ctx, nil, test.input)
+			if err != nil || result == nil || !result.IsError {
+				t.Fatalf("early failure result=%+v err=%v", result, err)
+			}
+			payload, ok := result.StructuredContent.(map[string]any)
+			if !ok || len(payload) != 3 || payload["status"] != test.status ||
+				payload["processing_status"] != "not_started" || payload["message"] != test.message {
+				t.Fatalf("early failure structured output = %#v", payload)
+			}
+		})
+	}
 }
 
 func TestMCPURLImportToolListRequiresExplicitWriteConsent(t *testing.T) {
