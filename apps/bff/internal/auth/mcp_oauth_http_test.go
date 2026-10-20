@@ -14,6 +14,18 @@ import (
 	"github.com/gin-gonic/gin"
 )
 
+func TestMCPOAuthMetadataAdvertisesRawWriteScope(t *testing.T) {
+	gin.SetMode(gin.TestMode)
+	router := gin.New()
+	router.GET("/.well-known/oauth-authorization-server", MCPOAuthMetadataHandler("https://auth.example.test"))
+	response := httptest.NewRecorder()
+	router.ServeHTTP(response, httptest.NewRequest(http.MethodGet, "http://attacker.example.test/.well-known/oauth-authorization-server", nil))
+	if response.Code != http.StatusOK || !strings.Contains(response.Body.String(), `"mcp:query"`) ||
+		!strings.Contains(response.Body.String(), `"mcp:raw:write"`) {
+		t.Fatalf("OAuth metadata status=%d body=%s", response.Code, response.Body.String())
+	}
+}
+
 func TestMCPOAuthRegisterHandlerIgnoresUnknownMetadata(t *testing.T) {
 	gin.SetMode(gin.TestMode)
 	type registration struct {
@@ -92,6 +104,7 @@ func TestMCPOAuthRegisterHandlerPreservesKnownFieldAndJSONPolicies(t *testing.T)
 		{name: "unsupported grant", body: `{"client_name":"Test Client","redirect_uris":["http://127.0.0.1:43123/callback"],"grant_types":["client_credentials"]}`, wantStatus: http.StatusBadRequest, wantReason: "unsupported_metadata"},
 		{name: "unsupported response type", body: `{"client_name":"Test Client","redirect_uris":["http://127.0.0.1:43123/callback"],"response_types":["token"]}`, wantStatus: http.StatusBadRequest, wantReason: "unsupported_metadata"},
 		{name: "unsupported scope", body: `{"client_name":"Test Client","redirect_uris":["http://127.0.0.1:43123/callback"],"scope":"other"}`, wantStatus: http.StatusBadRequest, wantReason: "unsupported_metadata"},
+		{name: "supported query and raw scope", body: `{"client_name":"Test Client","redirect_uris":["http://127.0.0.1:43123/callback"],"scope":"mcp:query mcp:raw:write"}`, wantStatus: http.StatusCreated, wantCalls: 1},
 		{name: "custom redirect scheme", body: `{"client_name":"Test Client","redirect_uris":["cursor://callback/private"]}`, wantStatus: http.StatusBadRequest, wantReason: "registration_rejected", wantScheme: "custom", wantCalls: 1},
 		{name: "invalid client name precedes custom redirect", body: `{"client_name":"Invalid\nName","redirect_uris":["cursor://callback/private"]}`, wantStatus: http.StatusBadRequest, wantReason: "registration_rejected", wantScheme: "custom", wantCalls: 1},
 		{name: "duplicate redirect", body: `{"client_name":"Test Client","redirect_uris":["http://127.0.0.1:43123/callback","http://127.0.0.1:43123/callback"]}`, wantStatus: http.StatusBadRequest, wantReason: "registration_rejected", wantScheme: "http_loopback", wantCalls: 1},
@@ -122,6 +135,9 @@ func TestMCPOAuthRegisterHandlerPreservesKnownFieldAndJSONPolicies(t *testing.T)
 			}
 			if test.name == "last duplicate known value wins" && !strings.Contains(response.Body.String(), `"client_name":"Test Client"`) {
 				t.Fatalf("duplicate known field behavior changed: %s", response.Body.String())
+			}
+			if test.name == "supported query and raw scope" && !strings.Contains(response.Body.String(), `"scope":"mcp:query mcp:raw:write"`) {
+				t.Fatalf("write scope was not returned by registration: %s", response.Body.String())
 			}
 		})
 	}

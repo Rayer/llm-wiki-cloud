@@ -23,10 +23,16 @@ import (
 type mcpProjectKeyIdentityContextKey struct{}
 
 type mcpProjectKeyIdentity struct {
-	userID    string
-	projectID string
-	keyID     string
+	userID       string
+	projectID    string
+	keyID        string
+	capabilities []string
 }
+
+const (
+	mcpQueryCapability    = "mcp:query"
+	mcpRawWriteCapability = "mcp:raw:write"
+)
 
 type queryProjectInput struct {
 	Query string `json:"q"`
@@ -68,7 +74,6 @@ var queryProjectOutputSchema = json.RawMessage(`{
 // context. Stateless transport prevents a previous call's identity from being
 // reused by a later key or session header.
 func (h *Handler) MCPHandler() http.Handler {
-	sdkAuthenticated := h.mcpSDKHandler()
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		token, ok := mcpBearerToken(r.Header.Get("Authorization"))
 		if !ok {
@@ -84,8 +89,11 @@ func (h *Handler) MCPHandler() http.Handler {
 			writeMCPProjectKeyError(w, err)
 			return
 		}
-		identity := mcpProjectKeyIdentity{userID: record.UserID, projectID: record.ProjectID, keyID: record.KeyID}
-		h.serveAuthenticatedMCP(sdkAuthenticated, identity, w, r)
+		identity := mcpProjectKeyIdentity{
+			userID: record.UserID, projectID: record.ProjectID, keyID: record.KeyID,
+			capabilities: []string{mcpQueryCapability},
+		}
+		h.serveAuthenticatedMCP(h.mcpSDKHandler(), identity, w, r)
 	})
 }
 

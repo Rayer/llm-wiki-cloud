@@ -54,7 +54,7 @@ func MCPOAuthMetadataHandler(issuer string) gin.HandlerFunc {
 			"grant_types_supported":                 []string{"authorization_code", "refresh_token"},
 			"code_challenge_methods_supported":      []string{"S256"},
 			"token_endpoint_auth_methods_supported": []string{"none"},
-			"scopes_supported":                      []string{mcpOAuthScope},
+			"scopes_supported":                      []string{mcpOAuthScope, mcpOAuthRawWriteScope},
 		})
 	}
 }
@@ -80,10 +80,11 @@ func mcpOAuthRegisterHandler(registerClient func(context.Context, string, []stri
 			writeMCPOAuthOAuthError(c, http.StatusBadRequest, "invalid_client_metadata")
 			return
 		}
+		requestedScope, _, supportedScope := normalizeMCPOAuthScope(request.Scope)
 		if request.TokenEndpointAuthMethod != "" && request.TokenEndpointAuthMethod != "none" ||
 			!mcpOAuthSetSupported(request.GrantTypes, "authorization_code", "refresh_token") ||
 			!mcpOAuthSetSupported(request.ResponseTypes, "code") ||
-			(request.Scope != "" && request.Scope != mcpOAuthScope) {
+			!supportedScope {
 			logMCPOAuthRegistrationRejection(c, "unsupported_metadata", request, shape)
 			writeMCPOAuthOAuthError(c, http.StatusBadRequest, "invalid_client_metadata")
 			return
@@ -100,7 +101,7 @@ func mcpOAuthRegisterHandler(registerClient func(context.Context, string, []stri
 			"client_name": client.ClientName, "redirect_uris": client.RedirectURIs,
 			"token_endpoint_auth_method": "none",
 			"grant_types":                []string{"authorization_code", "refresh_token"},
-			"response_types":             []string{"code"}, "scope": mcpOAuthScope,
+			"response_types":             []string{"code"}, "scope": requestedScope,
 		})
 	}
 }

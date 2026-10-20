@@ -15,6 +15,41 @@ import (
 	"google.golang.org/api/iterator"
 )
 
+func TestMCPOAuthScopeIsExplicitAndCapabilityBound(t *testing.T) {
+	for _, test := range []struct {
+		name         string
+		requested    string
+		wantScope    string
+		wantCaps     []string
+		wantAccepted bool
+	}{
+		{name: "default query scope", requested: "", wantScope: mcpOAuthScope, wantCaps: []string{mcpOAuthScope}, wantAccepted: true},
+		{name: "legacy query scope", requested: mcpOAuthScope, wantScope: mcpOAuthScope, wantCaps: []string{mcpOAuthScope}, wantAccepted: true},
+		{name: "query and write", requested: mcpOAuthScope + " " + mcpOAuthRawWriteScope, wantScope: mcpOAuthScope + " " + mcpOAuthRawWriteScope, wantCaps: []string{mcpOAuthScope, mcpOAuthRawWriteScope}, wantAccepted: true},
+		{name: "normalizes requested order", requested: mcpOAuthRawWriteScope + " " + mcpOAuthScope, wantScope: mcpOAuthScope + " " + mcpOAuthRawWriteScope, wantCaps: []string{mcpOAuthScope, mcpOAuthRawWriteScope}, wantAccepted: true},
+		{name: "write without query", requested: mcpOAuthRawWriteScope, wantAccepted: false},
+		{name: "duplicate query", requested: mcpOAuthScope + " " + mcpOAuthScope, wantAccepted: false},
+		{name: "unknown scope", requested: mcpOAuthScope + " mcp:admin", wantAccepted: false},
+		{name: "noncanonical spacing", requested: mcpOAuthScope + "  " + mcpOAuthRawWriteScope, wantAccepted: false},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			gotScope, gotCapabilities, ok := normalizeMCPOAuthScope(test.requested)
+			if ok != test.wantAccepted {
+				t.Fatalf("accepted=%t, want %t", ok, test.wantAccepted)
+			}
+			if !ok {
+				return
+			}
+			if gotScope != test.wantScope || strings.Join(gotCapabilities, "|") != strings.Join(test.wantCaps, "|") {
+				t.Fatalf("scope=%q capabilities=%v, want %q and %v", gotScope, gotCapabilities, test.wantScope, test.wantCaps)
+			}
+			if !isCanonicalMCPOAuthScope(gotScope) {
+				t.Fatalf("normalized scope %q is not canonical", gotScope)
+			}
+		})
+	}
+}
+
 func TestMCPOAuthFirestoreFlowBindsProjectAndRotatesRefreshTokens(t *testing.T) {
 	_, fs := newIdentityEmulatorRepository(t)
 	defer fs.Close()
@@ -64,7 +99,8 @@ func TestMCPOAuthFirestoreFlowBindsProjectAndRotatesRefreshTokens(t *testing.T) 
 	challengeBytes := sha256.Sum256([]byte(verifier))
 	challenge := base64.RawURLEncoding.EncodeToString(challengeBytes[:])
 	resource := service.ResourceURL(projectID)
-	consentURL, err := service.BeginAuthorization(ctx, client.ClientID, client.RedirectURIs[0], "code", challenge, "S256", "fixture-state", resource, mcpOAuthScope)
+	writeScope := mcpOAuthScope + " " + mcpOAuthRawWriteScope
+	consentURL, err := service.BeginAuthorization(ctx, client.ClientID, client.RedirectURIs[0], "code", challenge, "S256", "fixture-state", resource, writeScope)
 	if err != nil {
 		t.Fatalf("begin authorization: %v", err)
 	}
@@ -74,7 +110,7 @@ func TestMCPOAuthFirestoreFlowBindsProjectAndRotatesRefreshTokens(t *testing.T) 
 	}
 	transactionID := parsedConsent.Query().Get("transaction_id")
 	details, err := service.ConsentDetails(ctx, userID, transactionID)
-	if err != nil || details.ProjectName != "OAuth fixture project" || details.Scope != mcpOAuthScope {
+	if err != nil || details.ProjectName != "OAuth fixture project" || details.Scope != writeScope {
 		t.Fatalf("consent details = %+v, err=%v", details, err)
 	}
 	decision, err := service.DecideConsent(ctx, userID, 0, transactionID, true)
@@ -87,7 +123,7 @@ func TestMCPOAuthFirestoreFlowBindsProjectAndRotatesRefreshTokens(t *testing.T) 
 	}
 	code := callback.Query().Get("code")
 	tokens, err := service.ExchangeCode(ctx, client.ClientID, code, client.RedirectURIs[0], verifier, resource)
-	if err != nil || tokens.AccessToken == "" || tokens.RefreshToken == "" {
+	if err != nil || tokens.AccessToken == "" || tokens.RefreshToken == "" || tokens.Scope != writeScope {
 		t.Fatalf("exchange authorization code: response=%+v err=%v", tokens, err)
 	}
 	if _, err := service.ExchangeCode(ctx, client.ClientID, code, client.RedirectURIs[0], verifier, resource); !errors.Is(err, ErrMCPOAuthInvalid) {
@@ -97,16 +133,17 @@ func TestMCPOAuthFirestoreFlowBindsProjectAndRotatesRefreshTokens(t *testing.T) 
 	authority := NewMCPGrantAuthority(fs, environment, "https://bff.example.test")
 	authority.SetClock(func() time.Time { return clock })
 	identity, err := authority.AuthenticateAccessToken(ctx, tokens.AccessToken, projectID, resource)
-	if err != nil || identity.UserID != userID || identity.ProjectID != projectID {
+	if err != nil || identity.UserID != userID || identity.ProjectID != projectID ||
+		identity.Scope != writeScope || strings.Join(identity.Capabilities, " ") != writeScope {
 		t.Fatalf("authenticate project access token: identity=%+v err=%v", identity, err)
 	}
 
 	rotated, err := service.Refresh(ctx, client.ClientID, tokens.RefreshToken, resource)
-	if err != nil {
+	if err != nil || rotated.Scope != writeScope {
 		t.Fatalf("rotate refresh token: %v", err)
 	}
 	retried, err := service.Refresh(ctx, client.ClientID, tokens.RefreshToken, resource)
-	if err != nil || retried.AccessToken != rotated.AccessToken || retried.RefreshToken != rotated.RefreshToken {
+	if err != nil || retried.AccessToken != rotated.AccessToken || retried.RefreshToken != rotated.RefreshToken || retried.Scope != writeScope {
 		t.Fatalf("same-token retry did not return same successor pair: first=%+v retry=%+v err=%v", rotated, retried, err)
 	}
 

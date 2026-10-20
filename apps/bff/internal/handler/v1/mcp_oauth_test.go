@@ -53,6 +53,10 @@ func TestMCPProjectOAuthUsesConfiguredResourceMetadata(t *testing.T) {
 		metadata["authorization_servers"].([]any)[0] != "http://localhost:8081" {
 		t.Fatalf("metadata used request Host or omitted the configured issuer: %#v", metadata)
 	}
+	scopes, ok := metadata["scopes_supported"].([]any)
+	if !ok || len(scopes) != 2 || scopes[0] != mcpQueryCapability || scopes[1] != mcpRawWriteCapability {
+		t.Fatalf("resource metadata scopes = %#v, want query and raw write", metadata["scopes_supported"])
+	}
 
 	challengeResponse := httptest.NewRecorder()
 	challengeRequest := httptest.NewRequest(http.MethodPost, "/mcp/projects/project-1", nil)
