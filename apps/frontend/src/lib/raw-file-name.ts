@@ -1,7 +1,25 @@
-/** Strip leading `raw/` from a frontmatter source path. */
+/** Strip leading `raw/` from a frontmatter source path while keeping subdirectories. */
 export function rawFileNameFromSource(source: string): string {
-  const path = source.replace(/^raw\//, '').trim().replace(/\\/g, '/');
-  return path.split('/').filter(Boolean).at(-1) ?? '';
+  const path = source;
+  return path.startsWith('raw/') ? path.slice('raw/'.length) : path;
+}
+
+export function isValidRawRelativePath(value: string): boolean {
+  if (!value || new TextEncoder().encode(value).byteLength > 1024 || value.startsWith('/') || value.includes('\\')) {
+    return false;
+  }
+  if (/[\u0000-\u001f\u007f-\u009f]/u.test(value) || (value.length >= 2 && value[1] === ':')) {
+    return false;
+  }
+  if (value.split('/').some((segment) => segment === '' || segment === '.' || segment === '..')) {
+    return false;
+  }
+  try {
+    encodeURIComponent(value);
+    return true;
+  } catch {
+    return false;
+  }
 }
 
 function asNonEmptyString(value: unknown): string | null {

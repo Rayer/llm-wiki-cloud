@@ -727,6 +727,12 @@ func canonicalReadPath(relPath string) bool {
 	if store.SafeRawPath(relPath) || relPath == "cache/source_status.json" {
 		return true
 	}
+	const identityPrefix = "cache/raw_url_identity/v1/"
+	if strings.HasPrefix(relPath, identityPrefix) && strings.HasSuffix(relPath, ".json") {
+		digest := strings.TrimSuffix(strings.TrimPrefix(relPath, identityPrefix), ".json")
+		decoded, err := hex.DecodeString(digest)
+		return err == nil && len(decoded) == sha256.Size && strings.ToLower(digest) == digest && path.Clean(relPath) == relPath
+	}
 	if strings.HasPrefix(relPath, "cache/annotations/") && strings.HasSuffix(relPath, ".json") {
 		sourceID := strings.TrimSuffix(strings.TrimPrefix(relPath, "cache/annotations/"), ".json")
 		return annotation.ValidSourceID(sourceID)
@@ -769,8 +775,16 @@ func (c *Client) WriteFileIfGeneration(ctx context.Context, data []byte, relPath
 		}
 		_ = json.Unmarshal(data, &annotationMeta)
 		metadata := map[string]string(nil)
+		if strings.HasPrefix(relPath, "raw/") {
+			metadata = map[string]string{"sha256": fmt.Sprintf("%x", sha256.Sum256(data))}
+		}
 		if annotationMeta.SHA256 != "" {
-			metadata = map[string]string{"ann_sha256": annotationMeta.SHA256, "raw_path": annotationMeta.RawPath, "has_annotation": fmt.Sprintf("%t", annotationMeta.Body != "")}
+			if metadata == nil {
+				metadata = make(map[string]string)
+			}
+			metadata["ann_sha256"] = annotationMeta.SHA256
+			metadata["raw_path"] = annotationMeta.RawPath
+			metadata["has_annotation"] = fmt.Sprintf("%t", annotationMeta.Body != "")
 		}
 		attrs, err := writer.writeObject(ctx, fmt.Sprintf("%s/%s", writer.prefix(), relPath), data, contentTypeForPath(relPath), metadata, createOrGenerationCondition(expected))
 		if err != nil {
@@ -902,13 +916,13 @@ func (c *Client) ListRawFiles(ctx context.Context) ([]store.RawFile, error) {
 	}
 	files := make([]store.RawFile, 0)
 	for _, attrs := range objects {
-		name, ok := c.rawFileNameFromObject(attrs.Name)
+		rel, ok := c.rawFileNameFromObject(attrs.Name)
 		if !ok {
 			continue
 		}
 		files = append(files, store.RawFile{
-			Name:    name,
-			Path:    "raw/" + name,
+			Name:    rel,
+			Path:    "raw/" + rel,
 			Size:    attrs.Size,
 			Updated: attrs.Updated.UTC(),
 			SHA256:  attrs.Metadata["sha256"],
@@ -926,7 +940,7 @@ func (c *Client) rawFileNameFromObject(objectName string) (string, bool) {
 		return "", false
 	}
 	name := strings.TrimPrefix(objectName, prefix)
-	if name == "" || strings.Contains(name, "/") {
+	if store.ValidateRawSyncPath(name) != nil {
 		return "", false
 	}
 	return name, true

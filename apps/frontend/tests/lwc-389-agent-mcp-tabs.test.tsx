@@ -139,7 +139,7 @@ describe('LWC-389 Agent & MCP client guides', () => {
     expect(codex).toContain("'\\''");
     expect(openclaw).toContain("'\\''");
     expect(openclaw).toContain('"transport":"streamable-http"');
-    expect(openclaw).toContain('"scope":"mcp:query"');
+    expect(openclaw).toContain('"scope":"mcp:query mcp:raw:write"');
     const shellArg = (command: string, prefix: string) => {
       const argument = command.split('\n')[0].slice(prefix.length);
       return spawnSync('/bin/sh', ['-c', `set -- ${argument}; printf '%s' "$1"`], { encoding: 'utf8' });
@@ -155,7 +155,7 @@ describe('LWC-389 Agent & MCP client guides', () => {
       url: urlWithQuote,
       transport: 'streamable-http',
       auth: 'oauth',
-      oauth: { scope: 'mcp:query' },
+      oauth: { scope: 'mcp:query mcp:raw:write' },
     });
     expect(buildMCPGuideSnippet('grok-cli', resourceURLA)).toMatch(/^grok mcp add --transport http llm-wiki /);
     expect(buildMCPGuideSnippet('grok-bot', resourceURLA)).toBe(resourceURLA);

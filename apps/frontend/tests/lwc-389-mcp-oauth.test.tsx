@@ -121,6 +121,15 @@ describe('LWC-389 MCP OAuth frontend', () => {
     expect(screen.getByRole('button', { name: 'MCPOAuth.deny' })).toBeDefined();
   });
 
+  it('explains the exact raw write permission when the client requests it', async () => {
+    mocks.readConsent.mockResolvedValueOnce({ ...consent, scope: 'mcp:query mcp:raw:write' });
+    render(<MCPOAuthConsentClient transactionId={transactionId} />);
+    expect(await screen.findByText('mcp:query mcp:raw:write')).toBeDefined();
+    expect(screen.getByText('MCPOAuth.queryAndRawWrite')).toBeDefined();
+    expect(screen.queryByText('MCPOAuth.queryOnly')).toBeNull();
+    expect(mocks.decideConsent).not.toHaveBeenCalled();
+  });
+
   it('posts an explicit denial and validates the Hermes callback before redirecting', async () => {
     const assign = vi.fn();
     Object.defineProperty(window, 'location', { configurable: true, value: { ...window.location, assign } });
@@ -267,7 +276,7 @@ describe('LWC-389 MCP OAuth frontend', () => {
     const config = document.querySelector('code')!;
     expect(config.textContent).toContain('http://localhost:18080/mcp/projects/project-one');
     expect(config.textContent).toContain('auth: oauth');
-    expect(config.textContent).toContain('scope: mcp:query');
+    expect(config.textContent).toContain('scope: "mcp:query mcp:raw:write"');
     expect(config.textContent).not.toContain('Bearer');
     const writeText = navigator.clipboard.writeText as ReturnType<typeof vi.fn>;
     fireEvent.click(screen.getByRole('button', { name: 'MCPOAuth.copyConfig' }));

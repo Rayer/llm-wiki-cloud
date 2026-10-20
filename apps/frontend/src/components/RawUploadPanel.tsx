@@ -7,18 +7,19 @@ import { useT } from '@/lib/i18n';
 import { useWorkspace } from './WorkspaceProvider';
 import { Badge } from './ui/Badge';
 
-type UploadItemStatus = 'queued' | 'uploading' | 'created' | 'already_exists' | 'failed';
+type UploadItemStatus = 'queued' | 'uploading' | 'created' | 'already_exists' | 'replaced' | 'failed';
 
 type UploadItem = {
   id: string;
   file: File;
+  destinationDirectory: string;
   status: UploadItemStatus;
   progress: number;
   error?: string;
   result?: RawUploadResult;
 };
 
-export type RawUploadsSettled = { created: boolean };
+export type RawUploadsSettled = { changed: boolean };
 
 type RawUploadPanelProps = {
   title: string;
@@ -44,6 +45,8 @@ function uploadStatusLabel(status: UploadItemStatus): string {
       return 'Created';
     case 'already_exists':
       return 'Already exists';
+    case 'replaced':
+      return 'Replaced';
     case 'failed':
       return 'Failed';
   }
@@ -52,13 +55,15 @@ function uploadStatusLabel(status: UploadItemStatus): string {
 function summarizeUploads(items: UploadItem[]): string {
   const created = items.filter((item) => item.status === 'created').length;
   const existing = items.filter((item) => item.status === 'already_exists').length;
+  const replaced = items.filter((item) => item.status === 'replaced').length;
   const failed = items.filter((item) => item.status === 'failed').length;
   const pending = items.filter((item) => item.status === 'queued' || item.status === 'uploading').length;
   const parts = [
     `${created} created`,
     `${existing} already exists`,
-    `${failed} failed`,
   ];
+  if (replaced > 0) parts.push(`${replaced} replaced`);
+  parts.push(`${failed} failed`);
   if (pending > 0) parts.push(`${pending} in progress`);
   return parts.join(', ');
 }
@@ -77,9 +82,11 @@ export function RawUploadPanel({
   const activeUploadsRef = useRef(0);
   const uploadItemsRef = useRef<UploadItem[]>([]);
   const needsCountRefreshRef = useRef(false);
+  const needsChangeRefreshRef = useRef(false);
   const needsListRefreshRef = useRef(false);
   const onQueueSettledRef = useRef(onQueueSettled);
   const [fileLabel, setFileLabel] = useState(t('Pipeline.selectFiles'));
+  const [destinationDirectory, setDestinationDirectory] = useState('');
   const [uploadItems, setUploadItems] = useState<UploadItem[]>([]);
 
   onQueueSettledRef.current = onQueueSettled;
@@ -117,9 +124,10 @@ export function RawUploadPanel({
                 item.id === next.id ? { ...item, progress } : item,
               );
               setUploadItems(uploadItemsRef.current);
-            }, projectId);
+            }, projectId, next.destinationDirectory);
             if (!mountedRef.current) return;
             if (result.status === 'created') needsCountRefreshRef.current = true;
+            if (result.status === 'created' || result.status === 'replaced') needsChangeRefreshRef.current = true;
             needsListRefreshRef.current = true;
             uploadItemsRef.current = uploadItemsRef.current.map((item) =>
               item.id === next.id
@@ -147,11 +155,13 @@ export function RawUploadPanel({
             );
             if (!stillBusy) {
               const created = needsCountRefreshRef.current;
+              const changed = needsChangeRefreshRef.current;
               const succeeded = needsListRefreshRef.current;
               needsCountRefreshRef.current = false;
+              needsChangeRefreshRef.current = false;
               needsListRefreshRef.current = false;
               if (created) void refreshNavCounts();
-              if (succeeded) onQueueSettledRef.current?.({ created });
+              if (succeeded) onQueueSettledRef.current?.({ changed });
             }
             queueMicrotask(pump);
           }
@@ -171,23 +181,26 @@ export function RawUploadPanel({
     const files = Array.from(fileList);
     if (files.length === 0) return;
 
-    const knownNames = new Set(uploadItemsRef.current.map((item) => item.file.name));
+    const knownNames = new Set(uploadItemsRef.current.map((item) => `${item.destinationDirectory}/${item.file.name}`));
     const next = [...uploadItemsRef.current];
     for (const file of files) {
-      if (knownNames.has(file.name)) {
+      const destination = `${destinationDirectory}/${file.name}`;
+      if (knownNames.has(destination)) {
         next.push({
           id: `upload-${++uploadItemId}`,
           file,
+          destinationDirectory,
           status: 'failed',
           progress: 0,
           error: 'duplicate filename in batch (first file wins)',
         });
         continue;
       }
-      knownNames.add(file.name);
+      knownNames.add(destination);
       next.push({
         id: `upload-${++uploadItemId}`,
         file,
+        destinationDirectory,
         status: 'queued',
         progress: 0,
       });
@@ -197,7 +210,7 @@ export function RawUploadPanel({
     setUploadItems(next);
     setFileLabel(files.length === 1 ? files[0].name : `${files.length} files selected`);
     pumpUploadQueue();
-  }, [isDemoSession, onBlocked, pumpUploadQueue]);
+  }, [destinationDirectory, isDemoSession, onBlocked, pumpUploadQueue]);
 
   useEffect(() => {
     if (uploadItems.some((item) => item.status === 'queued')) pumpUploadQueue();
@@ -236,6 +249,24 @@ export function RawUploadPanel({
         <FileUp className="size-4 text-emerald-400" /> {title}
       </h2>
       <p id={`${inputId}-hint`} className="mt-1 text-xs text-zinc-500">{hint}</p>
+      <div className="mt-3">
+        <label htmlFor={`${inputId}-destination`} className="mb-1 block text-xs font-medium text-zinc-300">
+          {t('Raw.destinationDirectory')}
+        </label>
+        <input
+          id={`${inputId}-destination`}
+          type="text"
+          value={destinationDirectory}
+          onChange={(event) => setDestinationDirectory(event.target.value)}
+          placeholder="topic/subtopic"
+          disabled={uploading || isDemoSession}
+          aria-describedby={`${inputId}-destination-hint`}
+          className="w-full rounded-md border border-white/10 bg-black/30 px-3 py-2 text-sm text-white outline-none transition placeholder:text-zinc-500 focus:border-emerald-300 focus-visible:outline focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-emerald-400 disabled:opacity-50"
+        />
+        <p id={`${inputId}-destination-hint`} className="mt-1 text-xs text-zinc-500">
+          {t('Raw.destinationDirectoryHint')}
+        </p>
+      </div>
       <div className="mt-3 flex min-w-0 flex-col gap-2 sm:flex-row">
         <input
           ref={fileRef}
@@ -279,6 +310,7 @@ export function RawUploadPanel({
               <li key={item.id} className="flex items-start justify-between gap-2 rounded-md border border-white/5 bg-black/20 px-2.5 py-1.5 text-xs">
                 <div className="min-w-0 flex-1">
                   <p className="truncate font-medium text-zinc-200" title={item.file.name}>{item.file.name}</p>
+                  {item.result ? <p className="truncate text-zinc-400" title={item.result.path} data-testid="upload-path">{item.result.path}</p> : null}
                   <div
                     className="mt-1 h-1.5 overflow-hidden rounded-full bg-white/10"
                     role="progressbar"
@@ -294,7 +326,7 @@ export function RawUploadPanel({
                 </div>
                 <div className="flex shrink-0 items-center gap-1.5">
                   <Badge
-                    variant={item.status === 'failed' ? 'draft' : item.status === 'created' || item.status === 'already_exists' ? 'accent' : 'muted'}
+                    variant={item.status === 'failed' ? 'draft' : item.status === 'created' || item.status === 'already_exists' || item.status === 'replaced' ? 'accent' : 'muted'}
                   >
                     {item.status === 'uploading' ? (
                       <span className="inline-flex items-center gap-1"><Loader2 className="size-3 animate-spin" />{uploadStatusLabel(item.status)}</span>

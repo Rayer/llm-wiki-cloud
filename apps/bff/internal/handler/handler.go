@@ -18,6 +18,7 @@ import (
 	"github.com/rayer/llm-wiki-bff/internal/llm"
 	"github.com/rayer/llm-wiki-bff/internal/query"
 	"github.com/rayer/llm-wiki-bff/internal/search"
+	"github.com/rayer/llm-wiki-bff/internal/urlintake"
 )
 
 // Handler holds all dependencies for API handlers.
@@ -30,11 +31,18 @@ type Handler struct {
 	index     *search.Index
 	llm       *llm.Client
 	expander  *llm.QueryExpander
+	urlIntake *urlintake.Service
 }
 
 // New creates a Handler with the given dependencies.
 func New(gcs *gcs.Client, fs *firestore.Client, idx *search.Index, llmClient *llm.Client, expander *llm.QueryExpander) *Handler {
 	return &Handler{gcs: gcs, firestore: fs, index: idx, llm: llmClient, expander: expander}
+}
+
+// NewWithURLIntake creates a Handler whose URL endpoint delegates to the shared
+// intake service used by other authenticated adapters such as MCP.
+func NewWithURLIntake(gcs *gcs.Client, fs *firestore.Client, intake *urlintake.Service) *Handler {
+	return &Handler{gcs: gcs, firestore: fs, urlIntake: intake}
 }
 
 // ═══════════════ QUERY ═══════════════

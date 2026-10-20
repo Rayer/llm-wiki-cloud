@@ -36,17 +36,75 @@ type conditionalMeta struct {
 	HasAnnotation bool      `json:"has_annotation"`
 }
 
-func conditionalMetaPath(path string) string { return path + ".meta" }
-func conditionalLockPath(path string) string { return path + ".lock" }
+func (c *Client) conditionalSidecarPaths(relPath string) (string, string, error) {
+	projectRoot, err := c.projectRoot()
+	if err != nil {
+		return "", "", err
+	}
+	objectPath, err := c.fullPath(relPath)
+	if err != nil {
+		return "", "", err
+	}
+	cleanRel, err := filepath.Rel(projectRoot, objectPath)
+	if err != nil {
+		return "", "", err
+	}
+	cleanRel = filepath.ToSlash(cleanRel)
+	if !strings.HasPrefix(cleanRel, "raw/") {
+		return objectPath + ".meta", objectPath + ".lock", nil
+	}
+	root, err := filepath.Abs(c.root)
+	if err != nil {
+		return "", "", err
+	}
+	dir := filepath.Join(root, ".lwc-localfs-conditional", c.userID, c.projectID)
+	if err := ensureSidecarDirectory(root, dir); err != nil {
+		return "", "", err
+	}
+	key := digest([]byte(cleanRel))
+	base := filepath.Join(dir, key)
+	return base + ".meta", base + ".lock", nil
+}
+
+func ensureSidecarDirectory(root, target string) error {
+	root, err := filepath.Abs(root)
+	if err != nil {
+		return err
+	}
+	target, err = filepath.Abs(target)
+	if err != nil || !within(root, target) {
+		return errors.New("conditional metadata path is invalid")
+	}
+	info, err := os.Lstat(root)
+	if err != nil || info.Mode()&os.ModeSymlink != 0 || !info.IsDir() {
+		return errors.New("conditional metadata root is invalid")
+	}
+	rel, err := filepath.Rel(root, target)
+	if err != nil {
+		return err
+	}
+	current := root
+	for _, segment := range strings.Split(rel, string(filepath.Separator)) {
+		current = filepath.Join(current, segment)
+		if err := os.Mkdir(current, 0o700); err != nil && !errors.Is(err, os.ErrExist) {
+			return err
+		}
+		info, err := os.Lstat(current)
+		if err != nil || info.Mode()&os.ModeSymlink != 0 || !info.IsDir() {
+			return errors.New("conditional metadata path is invalid")
+		}
+	}
+	return nil
+}
 
 // withConditionalLock serializes conditional operations across processes. flock
 // is advisory, which is sufficient because every local conditional operation
 // takes this lock before inspecting either the object or its sidecar.
-func withConditionalLock(path string, fn func() error) error {
-	if err := os.MkdirAll(filepath.Dir(path), 0o755); err != nil {
+func withConditionalLock(lockPath string, fn func() error) error {
+	if err := os.MkdirAll(filepath.Dir(lockPath), 0o700); err != nil {
 		return err
 	}
-	lock, err := os.OpenFile(conditionalLockPath(path), os.O_CREATE|os.O_RDWR, 0o644)
+	lock, err := os.OpenFile(lockPath, os.O_CREATE|os.O_RDWR, 0o600)
 	if err != nil {
 		return err
 	}
@@ -63,9 +121,13 @@ func (c *Client) ReadFileWithGeneration(ctx context.Context, relPath string) ([]
 	if err != nil {
 		return nil, 0, err
 	}
+	metaPath, lockPath, err := c.conditionalSidecarPaths(relPath)
+	if err != nil {
+		return nil, 0, err
+	}
 	var data []byte
 	var generation int64
-	err = withConditionalLock(path, func() error {
+	err = withConditionalLock(lockPath, func() error {
 		if err := ctx.Err(); err != nil {
 			return err
 		}
@@ -76,7 +138,7 @@ func (c *Client) ReadFileWithGeneration(ctx context.Context, relPath string) ([]
 		if err != nil {
 			return fmt.Errorf("read %s: %w", relPath, err)
 		}
-		generation, err = recoverConditionalMeta(path, data)
+		generation, err = recoverConditionalMeta(metaPath, data)
 		return err
 	})
 	return data, generation, err
@@ -87,16 +149,20 @@ func (c *Client) WriteFileIfGeneration(ctx context.Context, data []byte, relPath
 	if err != nil {
 		return 0, err
 	}
+	metaPath, lockPath, err := c.conditionalSidecarPaths(relPath)
+	if err != nil {
+		return 0, err
+	}
 	if err := os.MkdirAll(filepath.Dir(path), 0o755); err != nil {
 		return 0, err
 	}
 	var next int64
 	err = withRawSyncFileLock(c, relPath, func() error {
-		return withConditionalLock(path, func() error {
+		return withConditionalLock(lockPath, func() error {
 			currentData, readErr := os.ReadFile(path)
 			current := int64(0)
 			if readErr == nil {
-				current, readErr = recoverConditionalMeta(path, currentData)
+				current, readErr = recoverConditionalMeta(metaPath, currentData)
 			}
 			if expected == 0 {
 				if readErr == nil {
@@ -112,15 +178,15 @@ func (c *Client) WriteFileIfGeneration(ctx context.Context, data []byte, relPath
 				return err
 			}
 			next = current + 1
-			return writeConditionalMeta(path, data, next)
+			return writeConditionalMeta(metaPath, data, next)
 		})
 	})
 	return next, err
 }
 
-func recoverConditionalMeta(path string, data []byte) (int64, error) {
+func recoverConditionalMeta(metaPath string, data []byte) (int64, error) {
 	contentSHA := digest(data)
-	meta, valid := readConditionalMeta(path)
+	meta, valid := readConditionalMeta(metaPath)
 	if valid && meta.ContentSHA256 == contentSHA {
 		return meta.Generation, nil
 	}
@@ -128,14 +194,14 @@ func recoverConditionalMeta(path string, data []byte) (int64, error) {
 	if valid {
 		next = meta.Generation + 1
 	}
-	if err := writeConditionalMeta(path, data, next); err != nil {
+	if err := writeConditionalMeta(metaPath, data, next); err != nil {
 		return 0, err
 	}
 	return next, nil
 }
 
-func readConditionalMeta(path string) (conditionalMeta, bool) {
-	data, err := os.ReadFile(conditionalMetaPath(path))
+func readConditionalMeta(metaPath string) (conditionalMeta, bool) {
+	data, err := os.ReadFile(metaPath)
 	if err == nil {
 		var meta conditionalMeta
 		if json.Unmarshal(data, &meta) == nil && meta.Generation > 0 {
@@ -145,7 +211,7 @@ func readConditionalMeta(path string) (conditionalMeta, bool) {
 	return conditionalMeta{}, false
 }
 
-func writeConditionalMeta(path string, data []byte, generation int64) error {
+func writeConditionalMeta(metaPath string, data []byte, generation int64) error {
 	meta := conditionalMeta{Generation: generation, Updated: time.Now().UTC(), ContentSHA256: digest(data)}
 	var annotationMeta struct {
 		SHA256  string `json:"ann_sha256"`
@@ -161,7 +227,7 @@ func writeConditionalMeta(path string, data []byte, generation int64) error {
 	if err != nil {
 		return err
 	}
-	return writeFileAtomic(conditionalMetaPath(path), encoded)
+	return writeFileAtomic(metaPath, encoded)
 }
 
 func writeFileAtomic(path string, data []byte) error {
@@ -215,17 +281,22 @@ func (c *Client) ListObjectMeta(ctx context.Context, prefix string) ([]store.Obj
 			continue
 		}
 		path := filepath.Join(dir, name)
+		relPath := filepath.ToSlash(filepath.Join(prefix, name))
+		metaPath, lockPath, err := c.conditionalSidecarPaths(relPath)
+		if err != nil {
+			return nil, err
+		}
 		var sidecar conditionalMeta
-		err = withConditionalLock(path, func() error {
+		err = withConditionalLock(lockPath, func() error {
 			data, err := os.ReadFile(path)
 			if err != nil {
 				return err
 			}
-			generation, err := recoverConditionalMeta(path, data)
+			generation, err := recoverConditionalMeta(metaPath, data)
 			if err != nil {
 				return err
 			}
-			sidecar, _ = readConditionalMeta(path)
+			sidecar, _ = readConditionalMeta(metaPath)
 			sidecar.Generation = generation
 			return nil
 		})
@@ -564,38 +635,60 @@ func (c *Client) ListRawFiles(ctx context.Context) ([]store.RawFile, error) {
 	if err != nil {
 		return nil, err
 	}
-	entries, err := os.ReadDir(fullDir)
-	if err != nil {
+	if info, err := os.Lstat(fullDir); err != nil {
 		if errors.Is(err, os.ErrNotExist) {
 			return []store.RawFile{}, nil
 		}
 		return nil, fmt.Errorf("list raw files: %w", err)
+	} else if info.Mode()&os.ModeSymlink != 0 || !info.IsDir() {
+		return nil, errors.New("raw path must be a real directory")
 	}
 
-	files := make([]store.RawFile, 0, len(entries))
-	for _, entry := range entries {
-		if entry.IsDir() {
-			continue
+	files := make([]store.RawFile, 0)
+	err = filepath.WalkDir(fullDir, func(filePath string, entry os.DirEntry, walkErr error) error {
+		if walkErr != nil {
+			return walkErr
+		}
+		if err := ctx.Err(); err != nil {
+			return err
+		}
+		if filePath == fullDir || entry.IsDir() {
+			return nil
+		}
+		if entry.Type()&os.ModeSymlink != 0 {
+			return fmt.Errorf("raw tree contains a symlink: %s", entry.Name())
 		}
 		info, err := entry.Info()
 		if err != nil {
-			return nil, fmt.Errorf("stat raw/%s: %w", entry.Name(), err)
+			return err
 		}
 		if !info.Mode().IsRegular() {
-			continue
+			return nil
 		}
-		rel := filepath.ToSlash(filepath.Join("raw", entry.Name()))
-		sha256, err := c.GetMetaSHA256(ctx, rel)
+		rel, err := filepath.Rel(fullDir, filePath)
 		if err != nil {
-			return nil, err
+			return err
+		}
+		rel = filepath.ToSlash(rel)
+		if err := store.ValidateRawSyncPath(rel); err != nil {
+			return err
+		}
+		rawPath := "raw/" + rel
+		sha256, err := c.GetMetaSHA256(ctx, rawPath)
+		if err != nil {
+			return err
 		}
 		files = append(files, store.RawFile{
-			Name:    entry.Name(),
-			Path:    rel,
+			Name:    rel,
+			Path:    rawPath,
 			Size:    info.Size(),
 			Updated: info.ModTime().UTC(),
 			SHA256:  sha256,
 		})
+		return nil
+	})
+	if err != nil {
+		return nil, fmt.Errorf("list raw files: %w", err)
 	}
 	sort.Slice(files, func(i, j int) bool {
 		return files[i].Name < files[j].Name

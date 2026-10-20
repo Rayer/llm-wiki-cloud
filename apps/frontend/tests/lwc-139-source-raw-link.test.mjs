@@ -2,7 +2,7 @@ import assert from 'node:assert/strict';
 import { readFile } from 'node:fs/promises';
 import test from 'node:test';
 
-import { primaryRawFileName } from '../src/lib/raw-file-name.ts';
+import { isValidRawRelativePath, primaryRawFileName } from '../src/lib/raw-file-name.ts';
 
 test('primaryRawFileName prefers sources[0], then source_file (OLW), then slug fallback', () => {
   assert.equal(
@@ -20,6 +20,8 @@ test('primaryRawFileName prefers sources[0], then source_file (OLW), then slug f
     'from-array.md',
   );
   assert.equal(primaryRawFileName({ source: 'raw/singular.md' }), 'singular.md');
+  assert.equal(primaryRawFileName({ source_file: 'raw/topic/note.md' }), 'topic/note.md');
+  assert.equal(primaryRawFileName({ source_file: 'raw/raw/note.md' }), 'raw/note.md');
   assert.equal(primaryRawFileName({}), null);
   assert.equal(primaryRawFileName(undefined), null);
   assert.equal(
@@ -30,6 +32,15 @@ test('primaryRawFileName prefers sources[0], then source_file (OLW), then slug f
     primaryRawFileName({ source_file: 'raw/real.md' }, { slugFallback: 'my-source' }),
     'real.md',
   );
+});
+
+test('raw relative path validation preserves nested Unicode and rejects unsafe input', () => {
+  assert.equal(isValidRawRelativePath('topic/公園.md'), true);
+  assert.equal(isValidRawRelativePath('raw/topic.md'), true);
+  assert.equal(isValidRawRelativePath('../topic.md'), false);
+  assert.equal(isValidRawRelativePath('topic\\note.md'), false);
+  assert.equal(isValidRawRelativePath('topic/\u0000note.md'), false);
+  assert.equal(isValidRawRelativePath(`${'a'.repeat(1024)}.md`), false);
 });
 
 test('DetailClient shows prominent raw link for source entries using source_file resolution', async () => {

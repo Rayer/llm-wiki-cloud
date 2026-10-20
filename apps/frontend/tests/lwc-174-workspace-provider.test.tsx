@@ -65,6 +65,12 @@ vi.mock('@/components/NavigationBlocker', () => ({
 
 import { WorkspaceProvider, useWorkspace } from '@/components/WorkspaceProvider';
 import { NewProjectModal } from '@/components/NewProjectModal';
+import {
+  clearCompletedQueryResults,
+  getCompletedQueryResult,
+  replaceQueryHistoryUrl,
+  saveCompletedQueryResult,
+} from '@/lib/query-result-history';
 
 function ProjectStateProbe() {
   const {
@@ -166,6 +172,8 @@ function apiStatus() {
 }
 
 beforeEach(() => {
+  clearCompletedQueryResults();
+  window.history.replaceState(null, '', '/');
   mocks.token = 'auth-token';
   mocks.user = { id: 'user-1', email: 'owner@example.com', role: 'owner' };
   mocks.sessionEpoch = 1;
@@ -183,10 +191,71 @@ beforeEach(() => {
 
 afterEach(() => {
   cleanup();
+  clearCompletedQueryResults();
+  window.history.replaceState(null, '', '/');
   vi.clearAllMocks();
   vi.restoreAllMocks();
   localStorage.clear();
   sessionStorage.clear();
+});
+
+it('keeps the completed Query snapshot through token refresh and clears it on Project switch or logout', async () => {
+  const entryId = replaceQueryHistoryUrl('/?q=history+result', true);
+  expect(entryId).toBeTruthy();
+  saveCompletedQueryResult({
+    entryId: entryId as string,
+    ownerId: 'user-1',
+    projectId: 'project-a',
+    query: 'history result',
+    mode: 'wiki',
+    results: [],
+    aiAnswer: 'Saved account result',
+    citations: [],
+    expandKeywords: [],
+  });
+
+  const rendered = render(
+    <WorkspaceProvider>
+      <ProjectStateProbe />
+    </WorkspaceProvider>,
+  );
+  await waitFor(() => expect(screen.getByTestId('current-project-id').textContent).toBe('project-a'));
+  expect(getCompletedQueryResult(entryId as string)?.aiAnswer).toBe('Saved account result');
+
+  mocks.token = 'rotated-auth-token';
+  rendered.rerender(
+    <WorkspaceProvider>
+      <ProjectStateProbe />
+    </WorkspaceProvider>,
+  );
+  await waitFor(() => expect(mocks.getProjects).toHaveBeenCalledTimes(2));
+  expect(getCompletedQueryResult(entryId as string)?.aiAnswer).toBe('Saved account result');
+
+  fireEvent.click(screen.getByRole('button', { name: 'select project B' }));
+  await waitFor(() => expect(screen.getByTestId('current-project-id').textContent).toBe('project-b'));
+  expect(getCompletedQueryResult(entryId as string)).toBeNull();
+
+  saveCompletedQueryResult({
+    entryId: entryId as string,
+    ownerId: 'user-1',
+    projectId: 'project-b',
+    query: 'history result',
+    mode: 'wiki',
+    results: [],
+    aiAnswer: 'Project B result',
+    citations: [],
+    expandKeywords: [],
+  });
+  expect(getCompletedQueryResult(entryId as string)?.aiAnswer).toBe('Project B result');
+
+  mocks.token = null;
+  mocks.user = null;
+  rendered.rerender(
+    <WorkspaceProvider>
+      <ProjectStateProbe />
+    </WorkspaceProvider>,
+  );
+  await waitFor(() => expect(getCompletedQueryResult(entryId as string)).toBeNull());
 });
 
 describe('LWC-174 WorkspaceProvider rename behavior', () => {

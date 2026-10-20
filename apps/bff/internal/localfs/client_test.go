@@ -5,6 +5,7 @@ import (
 	"context"
 	"crypto/sha256"
 	"encoding/hex"
+	"encoding/json"
 	"errors"
 	"io"
 	"os"
@@ -13,6 +14,7 @@ import (
 	"testing"
 
 	"cloud.google.com/go/storage"
+	"github.com/rayer/llm-wiki-bff/internal/rawintake"
 	store "github.com/rayer/llm-wiki-bff/internal/storage"
 )
 
@@ -140,7 +142,7 @@ func TestWritesStatsAndDigest(t *testing.T) {
 	}
 }
 
-func TestListRawFilesReturnsDirectRawMetadata(t *testing.T) {
+func TestListRawFilesReturnsNestedRawMetadata(t *testing.T) {
 	root := t.TempDir()
 	mustWrite(t, root, "users/u/projects/p/raw/beta.md", "beta")
 	mustWrite(t, root, "users/u/projects/p/raw/alpha.txt", "alpha")
@@ -152,14 +154,17 @@ func TestListRawFilesReturnsDirectRawMetadata(t *testing.T) {
 		t.Fatalf("ListRawFiles() error = %v", err)
 	}
 
-	if len(files) != 2 {
-		t.Fatalf("len(files) = %d, want 2: %#v", len(files), files)
+	if len(files) != 3 {
+		t.Fatalf("len(files) = %d, want 3: %#v", len(files), files)
 	}
 	if files[0].Name != "alpha.txt" || files[0].Path != "raw/alpha.txt" || files[0].Size != int64(len("alpha")) || files[0].SHA256 == "" || files[0].Updated.IsZero() {
 		t.Fatalf("files[0] = %#v", files[0])
 	}
 	if files[1].Name != "beta.md" || files[1].Path != "raw/beta.md" || files[1].Size != int64(len("beta")) || files[1].SHA256 == "" || files[1].Updated.IsZero() {
 		t.Fatalf("files[1] = %#v", files[1])
+	}
+	if files[2].Name != "nested/ignored.md" || files[2].Path != "raw/nested/ignored.md" || files[2].Size != int64(len("ignored")) || files[2].SHA256 == "" || files[2].Updated.IsZero() {
+		t.Fatalf("files[2] = %#v", files[2])
 	}
 }
 
@@ -560,6 +565,163 @@ func TestStatFileIsScopedAndMetadataOnly(t *testing.T) {
 	}
 	if _, err := New(root).WithScope("u", "other").StatFile(context.Background(), "cache/pipeline-run.log"); !errors.Is(err, storage.ErrObjectNotExist) {
 		t.Fatalf("foreign StatFile error = %v, want object not exist", err)
+	}
+}
+
+func TestConditionalRawIntakeKeepsSidecarsOutsideRawTree(t *testing.T) {
+	root := t.TempDir()
+	client := New(root).WithScope("u", "p")
+	ctx := context.Background()
+
+	rootResult, err := rawintake.Commit(ctx, client, "root.md", []byte("root exact bytes\n"), false)
+	if err != nil {
+		t.Fatal(err)
+	}
+	nestedResult, err := rawintake.Commit(ctx, client, "topic/note.md", []byte("nested exact bytes\n"), false)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	legalFiles := map[string][]byte{
+		"root.md.meta":       []byte("legal root metadata name\n"),
+		"root.md.lock":       []byte("legal root lock name\n"),
+		"topic/note.md.meta": []byte("legal nested metadata name\n"),
+		"topic/note.md.lock": []byte("legal nested lock name\n"),
+	}
+	for path, data := range legalFiles {
+		if _, err := client.WriteSyncRawFile(ctx, path, bytes.NewReader(data), "", digest(data)); err != nil {
+			t.Fatalf("WriteSyncRawFile(%q): %v", path, err)
+		}
+		stored, err := client.ReadFile(ctx, "raw/"+path)
+		if err != nil || !bytes.Equal(stored, data) {
+			t.Fatalf("raw readback %q=%q err=%v", path, stored, err)
+		}
+	}
+	noopResult, err := rawintake.Commit(ctx, client, "topic/note.md", []byte("nested exact bytes\n"), false)
+	if err != nil {
+		t.Fatal(err)
+	}
+	overwriteResult, err := rawintake.Commit(ctx, client, "topic/note.md", []byte("replacement exact bytes\n"), true)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if rootResult.Status != rawintake.StatusCreated || nestedResult.Status != rawintake.StatusCreated || noopResult.Status != rawintake.StatusAlreadyExists || overwriteResult.Status != rawintake.StatusReplaced {
+		t.Fatalf("commit outcomes root=%s nested=%s no_op=%s overwrite=%s", rootResult.Status, nestedResult.Status, noopResult.Status, overwriteResult.Status)
+	}
+	content, err := client.ReadFile(ctx, "raw/topic/note.md")
+	if err != nil || string(content) != "replacement exact bytes\n" {
+		t.Fatalf("nested readback=%q err=%v", content, err)
+	}
+
+	rawFiles, err := client.ListRawFiles(ctx)
+	if err != nil {
+		t.Fatal(err)
+	}
+	wantPaths := []string{"root.md", "root.md.lock", "root.md.meta", "topic/note.md", "topic/note.md.lock", "topic/note.md.meta"}
+	if len(rawFiles) != len(wantPaths) {
+		t.Fatalf("RawList inventory=%#v", rawFiles)
+	}
+	for i, path := range wantPaths {
+		if rawFiles[i].Name != path || rawFiles[i].Path != "raw/"+path {
+			t.Fatalf("RawList[%d]=%#v, want %q", i, rawFiles[i], path)
+		}
+	}
+	syncFiles, err := client.ListSyncRawFiles(ctx)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(syncFiles) != len(wantPaths) {
+		t.Fatalf("CLI sync inventory=%#v", syncFiles)
+	}
+	for i, path := range wantPaths {
+		if syncFiles[i].Path != path {
+			t.Fatalf("CLI sync inventory[%d]=%#v, want %q", i, syncFiles[i], path)
+		}
+	}
+
+	vault := filepath.Join(root, "users", "u", "projects", "p")
+	rawDir := filepath.Join(vault, "raw")
+	var physical []string
+	if err := filepath.WalkDir(rawDir, func(path string, entry os.DirEntry, walkErr error) error {
+		if walkErr != nil {
+			return walkErr
+		}
+		if !entry.IsDir() {
+			rel, err := filepath.Rel(rawDir, path)
+			if err != nil {
+				return err
+			}
+			physical = append(physical, filepath.ToSlash(rel))
+		}
+		return nil
+	}); err != nil {
+		t.Fatal(err)
+	}
+	if len(physical) != len(wantPaths) {
+		t.Fatalf("physical raw tree=%q", physical)
+	}
+	for i, path := range wantPaths {
+		if physical[i] != path {
+			t.Fatalf("physical raw file[%d]=%q, want %q", i, physical[i], path)
+		}
+	}
+	if within(rawDir, filepath.Join(root, ".lwc-localfs-conditional", "u", "p")) {
+		t.Fatal("conditional metadata unexpectedly resides in the user raw namespace")
+	}
+}
+
+func TestConditionalAnnotationRetainsLegacyGenerationAfterUpgrade(t *testing.T) {
+	root := t.TempDir()
+	client := New(root).WithScope("u", "p")
+	ctx := context.Background()
+	path := "cache/annotations/id.json"
+	fullPath, err := client.fullPath(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := os.MkdirAll(filepath.Dir(fullPath), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	data := []byte("two")
+	if err := os.WriteFile(fullPath, data, 0o644); err != nil {
+		t.Fatal(err)
+	}
+	metaPath, lockPath, err := client.conditionalSidecarPaths(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if metaPath != fullPath+".meta" || lockPath != fullPath+".lock" {
+		t.Fatalf("non-raw sidecars meta=%q lock=%q, want legacy paths %q and %q", metaPath, lockPath, fullPath+".meta", fullPath+".lock")
+	}
+	legacyMeta, err := json.Marshal(conditionalMeta{Generation: 2, ContentSHA256: digest(data)})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(metaPath, legacyMeta, 0o644); err != nil {
+		t.Fatal(err)
+	}
+
+	readback, generation, err := client.ReadFileWithGeneration(ctx, path)
+	if err != nil || generation != 2 || !bytes.Equal(readback, data) {
+		t.Fatalf("legacy readback=%q generation=%d err=%v, want original generation 2", readback, generation, err)
+	}
+	if _, err := client.WriteFileIfGeneration(ctx, []byte("stale overwrite"), path, 1); !errors.Is(err, store.ErrGenerationMismatch) {
+		t.Fatalf("stale generation write error=%v, want mismatch", err)
+	}
+	readback, err = client.ReadFile(ctx, path)
+	if err != nil || !bytes.Equal(readback, data) {
+		t.Fatalf("stale write changed content to %q, err=%v", readback, err)
+	}
+	next, err := client.WriteFileIfGeneration(ctx, []byte("three"), path, 2)
+	if err != nil || next != 3 {
+		t.Fatalf("newest generation write returned generation=%d err=%v, want generation 3", next, err)
+	}
+	readback, generation, err = client.ReadFileWithGeneration(ctx, path)
+	if err != nil || generation != 3 || string(readback) != "three" {
+		t.Fatalf("latest readback=%q generation=%d err=%v, want three at generation 3", readback, generation, err)
+	}
+	if _, err := os.Stat(lockPath); err != nil {
+		t.Fatalf("legacy lock path was not used: %v", err)
 	}
 }
 

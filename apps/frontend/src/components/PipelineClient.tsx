@@ -1,16 +1,20 @@
 'use client';
 
 import { FormEvent, useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState } from 'react';
-import { Link2, Cog, Loader2, Construction } from 'lucide-react';
+import { Link2, Cog, Loader2 } from 'lucide-react';
 import { Surface } from './ui/Surface';
 import { Badge } from './ui/Badge';
 import { ExportPanel } from './ExportPanel';
 import {
+  ApiError,
   getRecompileAllCapability,
   getPipelineStatus,
+  scrapeUrl,
+  confirmScrape,
   recompileAll,
   triggerPipeline,
   type RecompileAllCapability,
+  type ScrapeResult,
   type PipelineQuota,
   type PipelineResult,
   type PipelineStatus,
@@ -33,6 +37,12 @@ type Toast = {
 type PipelineProjectContext = { projectId: string | null; generation: number };
 type PipelineRequestScope = { projectId: string; contextGeneration: number; requestGeneration: number };
 type PipelineExecutionOwner = { projectId: string; contextGeneration: number };
+
+function scrapeErrorMessageKey(error: unknown): 'Pipeline.urlUncertain' | 'Pipeline.urlUnavailable' {
+  return error instanceof ApiError && (error.status === 0 || (error.status >= 500 && error.status < 600))
+    ? 'Pipeline.urlUncertain'
+    : 'Pipeline.urlUnavailable';
+}
 
 function isSamePipelineRequestScope(a: PipelineRequestScope, b: PipelineRequestScope): boolean {
   return a.projectId === b.projectId
@@ -75,6 +85,10 @@ export function PipelineClient() {
   const { isDemoSession, currentProject, token } = useWorkspace();
   const projectId = currentProject?.id ?? null;
   const pipelineProjectContextRef = useRef<PipelineProjectContext>({ projectId, generation: 0 });
+  const scrapeRequestGenerationRef = useRef(0);
+  const [scrapeLoading, setScrapeLoading] = useState(false);
+  const [scrapeError, setScrapeError] = useState<string | null>(null);
+  const [scrapeResult, setScrapeResult] = useState<ScrapeResult | null>(null);
   const pipelineExecutionOwnerRef = useRef<PipelineExecutionOwner | null>(null);
   const pipelineTerminalPollScopeRef = useRef<PipelineRequestScope | null>(null);
   const pipelinePollErrorNotifiedRef = useRef(false);
@@ -85,6 +99,10 @@ export function PipelineClient() {
         generation: pipelineProjectContextRef.current.generation + 1,
       };
       pipelineExecutionOwnerRef.current = null;
+      scrapeRequestGenerationRef.current += 1;
+      setScrapeLoading(false);
+      setScrapeError(null);
+      setScrapeResult(null);
     }
   }, [projectId]);
   const pipelineRequestGenerationRef = useRef(0);
@@ -103,7 +121,6 @@ export function PipelineClient() {
   const [fullCapability, setFullCapability] = useState<RecompileAllCapability | null>(null);
   const [loading, setLoading] = useState<string | null>(null); // 'pipeline'
   const [toasts, setToasts] = useState<Toast[]>([]);
-  const [wipModal, setWipModal] = useState(false);
   const [showPrereq, setShowPrereq] = useState(false);
   const refreshPipelineStatus = useCallback(async (scope: PipelineRequestScope) => {
     if (!isPipelineRequestCurrent(scope)) return;
@@ -140,8 +157,8 @@ export function PipelineClient() {
     }
   }, [isPipelineRequestCurrent]);
 
-  const handleUploadQueueSettled = useCallback(({ created }: RawUploadsSettled) => {
-    if (!created) return;
+  const handleUploadQueueSettled = useCallback(({ changed }: RawUploadsSettled) => {
+    if (!changed) return;
     // New raw files may change quota eligibility.
     const context = pipelineProjectContextRef.current;
     if (context.projectId) {
@@ -280,8 +297,71 @@ export function PipelineClient() {
 
   const handleScrape = useCallback(async (event: FormEvent) => {
     event.preventDefault();
-    setWipModal(true);
-  }, []);
+    const context = pipelineProjectContextRef.current;
+    if (!context.projectId || window.localStorage.getItem('llm-wiki-last-project') !== context.projectId) {
+      addToast(t('Pipeline.noProject'), 'error');
+      return;
+    }
+    const requestGeneration = ++scrapeRequestGenerationRef.current;
+    const isCurrent = () => {
+      const latest = pipelineProjectContextRef.current;
+      return pipelineMountedRef.current
+        && latest.projectId === context.projectId
+        && latest.generation === context.generation
+        && scrapeRequestGenerationRef.current === requestGeneration;
+    };
+    setScrapeLoading(true);
+    setScrapeError(null);
+    setScrapeResult(null);
+    try {
+      const result = await scrapeUrl(scrapeUrlText, context.projectId);
+      if (!isCurrent()) return;
+      setScrapeResult(result);
+      if (result.status === 'stored') {
+        void refreshPipelineStatus({
+          projectId: context.projectId,
+          contextGeneration: context.generation,
+          requestGeneration: pipelineRequestGenerationRef.current,
+        });
+      }
+    } catch (error) {
+      if (isCurrent()) setScrapeError(t(scrapeErrorMessageKey(error)));
+    } finally {
+      if (isCurrent()) setScrapeLoading(false);
+    }
+  }, [addToast, refreshPipelineStatus, scrapeUrlText, setScrapeError, setScrapeLoading, setScrapeResult, t]);
+
+  const handleConfirmScrape = useCallback(async () => {
+    const reference = scrapeResult?.confirmation_ref;
+    const context = pipelineProjectContextRef.current;
+    if (!reference || !context.projectId) return;
+    const requestGeneration = ++scrapeRequestGenerationRef.current;
+    const isCurrent = () => {
+      const latest = pipelineProjectContextRef.current;
+      return pipelineMountedRef.current
+        && latest.projectId === context.projectId
+        && latest.generation === context.generation
+        && scrapeRequestGenerationRef.current === requestGeneration;
+    };
+    setScrapeLoading(true);
+    setScrapeError(null);
+    try {
+      const result = await confirmScrape(reference, context.projectId);
+      if (!isCurrent()) return;
+      setScrapeResult(result);
+      if (result.status === 'stored') {
+        void refreshPipelineStatus({
+          projectId: context.projectId,
+          contextGeneration: context.generation,
+          requestGeneration: pipelineRequestGenerationRef.current,
+        });
+      }
+    } catch (error) {
+      if (isCurrent()) setScrapeError(t(scrapeErrorMessageKey(error)));
+    } finally {
+      if (isCurrent()) setScrapeLoading(false);
+    }
+  }, [refreshPipelineStatus, scrapeResult?.confirmation_ref, setScrapeError, setScrapeLoading, setScrapeResult, t]);
 
   const handleRunPipeline = useCallback(async () => {
     // Belt-and-suspenders: button is disabled for known blocks; toast only if click races through.
@@ -441,6 +521,7 @@ export function PipelineClient() {
               <Link2 className="size-4 text-blue-400" /> {t('Pipeline.scrapeUrl')}
             </h3>
             <p className="mt-1 text-xs text-zinc-500">{t('Pipeline.scrapeHint')}</p>
+            <p className="mt-1 text-xs text-zinc-500">{t('Pipeline.urlManualCapture')}</p>
             <form onSubmit={handleScrape} className="mt-3 flex gap-2">
               <input
                 type="url"
@@ -451,12 +532,71 @@ export function PipelineClient() {
               />
               <button
                 type="submit"
-                disabled={loading === 'scrape'}
+                disabled={scrapeLoading || !projectId}
                 className="inline-flex items-center justify-center rounded-md bg-emerald-600 px-4 py-2 text-sm font-semibold text-white transition hover:bg-emerald-500 disabled:opacity-50"
               >
-                {loading === 'scrape' ? <Loader2 className="size-4 animate-spin" /> : t('Pipeline.scrape')}
+                {scrapeLoading ? <Loader2 className="size-4 animate-spin" /> : t('Pipeline.scrape')}
               </button>
             </form>
+            {scrapeError ? (
+              <p role="alert" className="mt-3 text-sm text-amber-300">{scrapeError}</p>
+            ) : null}
+            {scrapeResult ? (
+              <div aria-live="polite" className="mt-3 space-y-3 rounded-md border border-white/10 bg-black/30 p-3">
+                <p className="text-sm font-medium text-zinc-200">
+                  {scrapeResult.status === 'stored'
+                    ? scrapeResult.storage?.status === 'already_exists'
+                      ? t('Pipeline.urlAlreadySaved')
+                      : t('Pipeline.urlSaved')
+                    : scrapeResult.status === 'needs_confirmation'
+                      ? t('Pipeline.urlNeedsConfirmation')
+                      : scrapeResult.status === 'rejected'
+                        ? t('Pipeline.urlRejected')
+                        : scrapeResult.status === 'conflict'
+                          ? t('Pipeline.urlConflict')
+                          : scrapeResult.status === 'uncertain'
+                            ? t('Pipeline.urlUncertain')
+                            : t('Pipeline.urlUnavailable')}
+                </p>
+                {scrapeResult.status === 'needs_confirmation' ? (
+                  <p className="text-xs text-amber-200">{t('Pipeline.urlConfirmationNotice')}</p>
+                ) : null}
+                {scrapeResult.status === 'stored' ? (
+                  <p className="text-xs text-zinc-400">{t('Pipeline.urlProcessingSeparate')}</p>
+                ) : null}
+                {scrapeResult.status === 'stored' && scrapeResult.storage ? (
+                  <p className="break-all text-xs text-zinc-400">
+                    {t('Pipeline.urlStoragePath')}: {scrapeResult.storage.path} · {t('Pipeline.urlStorageOutcome')}: {scrapeResult.storage.status}
+                  </p>
+                ) : null}
+                {scrapeResult.preview ? (
+                  <div className="space-y-2 border-t border-white/10 pt-3">
+                    <div className="flex flex-wrap items-baseline justify-between gap-2">
+                      <h4 className="text-sm font-semibold text-white">{scrapeResult.preview.title}</h4>
+                      <span className="text-[11px] text-zinc-500">{t('Pipeline.urlCandidateDigest')}: {scrapeResult.preview.candidate_sha256}</span>
+                    </div>
+                    <p className="break-all text-xs text-zinc-400">{scrapeResult.preview.source_url}</p>
+                    {scrapeResult.status === 'needs_confirmation' && scrapeResult.preview.reason ? (
+                      <p className="text-xs text-amber-200">{scrapeResult.preview.reason}</p>
+                    ) : null}
+                    {scrapeResult.preview.warning ? (
+                      <p className="text-xs text-amber-200">{scrapeResult.preview.warning}</p>
+                    ) : null}
+                    <pre className="max-h-64 overflow-auto whitespace-pre-wrap break-words rounded border border-white/10 bg-black/40 p-3 text-xs leading-relaxed text-zinc-300">{scrapeResult.preview.markdown}</pre>
+                  </div>
+                ) : null}
+                {scrapeResult.status === 'needs_confirmation' && scrapeResult.confirmation_ref ? (
+                  <button
+                    type="button"
+                    onClick={handleConfirmScrape}
+                    disabled={scrapeLoading}
+                    className="rounded-md bg-amber-500 px-3 py-2 text-sm font-semibold text-black transition hover:bg-amber-400 disabled:opacity-50"
+                  >
+                    {scrapeLoading ? <Loader2 className="size-4 animate-spin" /> : t('Pipeline.urlConfirmCandidate')}
+                  </button>
+                ) : null}
+              </div>
+            ) : null}
           </div>
         </div>
 
@@ -640,34 +780,6 @@ export function PipelineClient() {
         ))}
       </div>
 
-      {/* WIP Modal */}
-      {wipModal ? (
-        <div
-          className="fixed inset-0 z-50 flex items-center justify-center bg-black/70 p-4 backdrop-blur-sm"
-          onClick={() => setWipModal(false)}
-        >
-          <div
-            className="relative rounded-xl border border-white/10 bg-[#151515] p-8 shadow-2xl max-w-sm w-full text-center"
-            onClick={(e) => e.stopPropagation()}
-          >
-            <button
-              onClick={() => setWipModal(false)}
-              className="absolute right-4 top-4 rounded-md p-1 text-zinc-400 transition hover:bg-white/10 hover:text-white"
-              aria-label="Close"
-            >
-              <svg xmlns="http://www.w3.org/2000/svg" width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
-                <line x1="18" y1="6" x2="6" y2="18"/>
-                <line x1="6" y1="6" x2="18" y2="18"/>
-              </svg>
-            </button>
-            <Construction className="mx-auto mb-4 size-10 text-amber-400" />
-            <h2 className="text-xl font-semibold text-white mb-2">功能實作中</h2>
-            <p className="text-sm text-zinc-400">
-              This feature is under development and will be available soon.
-            </p>
-          </div>
-        </div>
-      ) : null}
     </>
   );
 }
