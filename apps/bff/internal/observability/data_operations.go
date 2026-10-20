@@ -29,7 +29,7 @@ var dataOperations = map[string]string{
 	"GET /api/v1/sources/:id/annotation": "annotation.read",
 	"PUT /api/v1/sources/:id/annotation": "annotation.write",
 	"GET /api/v1/raw":                    "raw.list",
-	"GET /api/v1/raw/:filename":          "raw.preview",
+	"GET /api/v1/raw/*path":              "raw.preview",
 	"POST /api/v1/raw/upload":            "raw.upload",
 	"GET /api/v1/sync/raw":               "raw_sync.list",
 	"GET /api/v1/sync/raw/file":          "raw_sync.read",

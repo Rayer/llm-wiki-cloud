@@ -45,7 +45,7 @@ func TestObjectRelativePathRejectsProjectDirectoryMarker(t *testing.T) {
 	}
 }
 
-func TestRawFileNameFromObjectKeepsDirectRawChildren(t *testing.T) {
+func TestRawFileNameFromObjectKeepsNestedRawRelativePath(t *testing.T) {
 	client := &Client{userID: "u1", projectID: "p1"}
 
 	name, ok := client.rawFileNameFromObject("users/u1/projects/p1/raw/article.md")
@@ -55,14 +55,20 @@ func TestRawFileNameFromObjectKeepsDirectRawChildren(t *testing.T) {
 	if name != "article.md" {
 		t.Fatalf("name = %q, want article.md", name)
 	}
+
+	name, ok = client.rawFileNameFromObject("users/u1/projects/p1/raw/topic/note.md")
+	if !ok || name != "topic/note.md" {
+		t.Fatalf("nested raw name = %q, %v; want topic/note.md, true", name, ok)
+	}
 }
 
-func TestRawFileNameFromObjectRejectsNestedAndMarkers(t *testing.T) {
+func TestRawFileNameFromObjectRejectsUnsafePathsAndMarkers(t *testing.T) {
 	client := &Client{userID: "u1", projectID: "p1"}
 
 	tests := []string{
 		"users/u1/projects/p1/raw/",
-		"users/u1/projects/p1/raw/nested/article.md",
+		"users/u1/projects/p1/raw/nested/../article.md",
+		"users/u1/projects/p1/raw/nested//article.md",
 		"users/u1/projects/p1/wiki/article.md",
 		"users/u2/projects/p1/raw/article.md",
 	}
@@ -70,6 +76,21 @@ func TestRawFileNameFromObjectRejectsNestedAndMarkers(t *testing.T) {
 		if name, ok := client.rawFileNameFromObject(objectName); ok {
 			t.Fatalf("rawFileNameFromObject(%q) = %q, true; want false", objectName, name)
 		}
+	}
+}
+
+func TestListRawFilesReturnsNestedPathsAndDuplicateBasenames(t *testing.T) {
+	client, backend := newMemoryClient()
+	project := client.WithScope("u1", "p1")
+	backend.put(project.prefix()+"/raw/same.md", []byte("root"), 1, map[string]string{"sha256": "root-digest"})
+	backend.put(project.prefix()+"/raw/topic/same.md", []byte("nested"), 2, map[string]string{"sha256": "nested-digest"})
+
+	files, err := project.ListRawFiles(context.Background())
+	if err != nil {
+		t.Fatalf("ListRawFiles() error = %v", err)
+	}
+	if len(files) != 2 || files[0].Name != "same.md" || files[0].Path != "raw/same.md" || files[1].Name != "topic/same.md" || files[1].Path != "raw/topic/same.md" {
+		t.Fatalf("raw files = %#v", files)
 	}
 }
 

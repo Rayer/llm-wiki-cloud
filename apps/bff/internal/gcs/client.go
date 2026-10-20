@@ -769,8 +769,16 @@ func (c *Client) WriteFileIfGeneration(ctx context.Context, data []byte, relPath
 		}
 		_ = json.Unmarshal(data, &annotationMeta)
 		metadata := map[string]string(nil)
+		if strings.HasPrefix(relPath, "raw/") {
+			metadata = map[string]string{"sha256": fmt.Sprintf("%x", sha256.Sum256(data))}
+		}
 		if annotationMeta.SHA256 != "" {
-			metadata = map[string]string{"ann_sha256": annotationMeta.SHA256, "raw_path": annotationMeta.RawPath, "has_annotation": fmt.Sprintf("%t", annotationMeta.Body != "")}
+			if metadata == nil {
+				metadata = make(map[string]string)
+			}
+			metadata["ann_sha256"] = annotationMeta.SHA256
+			metadata["raw_path"] = annotationMeta.RawPath
+			metadata["has_annotation"] = fmt.Sprintf("%t", annotationMeta.Body != "")
 		}
 		attrs, err := writer.writeObject(ctx, fmt.Sprintf("%s/%s", writer.prefix(), relPath), data, contentTypeForPath(relPath), metadata, createOrGenerationCondition(expected))
 		if err != nil {
@@ -902,13 +910,13 @@ func (c *Client) ListRawFiles(ctx context.Context) ([]store.RawFile, error) {
 	}
 	files := make([]store.RawFile, 0)
 	for _, attrs := range objects {
-		name, ok := c.rawFileNameFromObject(attrs.Name)
+		rel, ok := c.rawFileNameFromObject(attrs.Name)
 		if !ok {
 			continue
 		}
 		files = append(files, store.RawFile{
-			Name:    name,
-			Path:    "raw/" + name,
+			Name:    rel,
+			Path:    "raw/" + rel,
 			Size:    attrs.Size,
 			Updated: attrs.Updated.UTC(),
 			SHA256:  attrs.Metadata["sha256"],
@@ -926,7 +934,7 @@ func (c *Client) rawFileNameFromObject(objectName string) (string, bool) {
 		return "", false
 	}
 	name := strings.TrimPrefix(objectName, prefix)
-	if name == "" || strings.Contains(name, "/") {
+	if store.ValidateRawSyncPath(name) != nil {
 		return "", false
 	}
 	return name, true

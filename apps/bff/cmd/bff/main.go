@@ -518,7 +518,7 @@ func newProductionRouter(
 		v1.GET("/pipeline/log", hV1.PipelineLog)
 		registerRawScrapeRoute(v1, gcsClient, fsClient, rawScrapeFactory)
 		v1.GET("/raw", hV1.RawList)
-		v1.GET("/raw/:filename", hV1.RawPreview)
+		v1.GET("/raw/*path", hV1.RawPreview)
 		v1.POST("/raw/upload", hV1.RawUpload)
 		v1.GET("/status", hV1.Status)
 		v1.GET("/metrics", hV1.PrometheusMetrics)

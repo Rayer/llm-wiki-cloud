@@ -139,8 +139,8 @@ export function PipelineClient() {
     }
   }, [isPipelineRequestCurrent]);
 
-  const handleUploadQueueSettled = useCallback(({ created }: RawUploadsSettled) => {
-    if (!created) return;
+  const handleUploadQueueSettled = useCallback(({ changed }: RawUploadsSettled) => {
+    if (!changed) return;
     // New raw files may change quota eligibility.
     const context = pipelineProjectContextRef.current;
     if (context.projectId) {

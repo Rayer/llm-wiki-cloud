@@ -180,6 +180,8 @@ describe('LWC-370 runtime config', () => {
     const navigation: string[] = [];
     let xhrURL = '';
     let xhrMethod = '';
+    let xhrStatus = 201;
+    let xhrBody = JSON.stringify({ filename: 'note.txt', path: 'raw/note.txt', bytes: 1, sha256: 'fixture', status: 'created' });
     vi.stubGlobal('window', {
       location: {
         href: 'https://frontend.example.test/',
@@ -210,8 +212,8 @@ describe('LWC-370 runtime config', () => {
     });
     vi.stubGlobal('fetch', fetchMock);
     class SyntheticXMLHttpRequest {
-      status = 201;
-      responseText = JSON.stringify({ filename: 'note.txt', path: 'raw/note.txt', bytes: 1, sha256: 'fixture', status: 'created' });
+      status = xhrStatus;
+      responseText = xhrBody;
       upload = {};
       onload?: () => void;
       onerror?: () => void;
@@ -261,6 +263,14 @@ describe('LWC-370 runtime config', () => {
       expect(navigation).toContain('https://accounts.example.test/link');
       expect(xhrMethod).toBe('POST');
       expect(xhrURL).toBe(`${config.api_url}/api/v1/raw/upload`);
+      await uploadRawFile(new File(['x'], 'nested.txt'), undefined, undefined, 'topic/nested');
+      expect(xhrURL).toBe(`${config.api_url}/api/v1/raw/upload?dir=topic%2Fnested`);
+      xhrStatus = 200;
+      xhrBody = JSON.stringify({ filename: 'note.txt', path: 'raw/note.txt', bytes: 1, sha256: 'fixture', status: 'replaced' });
+      const replaced = await uploadRawFile(new File(['x'], 'note.txt'));
+      expect(replaced.status).toBe('replaced');
+      xhrStatus = 201;
+      xhrBody = JSON.stringify({ filename: 'note.txt', path: 'raw/note.txt', bytes: 1, sha256: 'fixture', status: 'created' });
     }
 
     expect(fetchMock.mock.calls.filter(([url]) => url === configURL)).toHaveLength(2);
