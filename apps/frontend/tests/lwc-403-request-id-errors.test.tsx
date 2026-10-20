@@ -14,7 +14,10 @@ const workspace = vi.hoisted(() => ({
 
 vi.mock('@/components/WorkspaceProvider', () => ({ useWorkspace: () => workspace }));
 vi.mock('@/lib/i18n', () => ({ useT: () => ({ t: (key: string) => key }) }));
-vi.mock('next/navigation', () => ({ useSearchParams: () => new URLSearchParams() }));
+vi.mock('next/navigation', () => ({
+  usePathname: () => '/',
+  useSearchParams: () => new URLSearchParams(),
+}));
 vi.mock('@/components/NavigationBlocker', () => ({
   NavigationLink: ({ href, children }: { href: string; children: React.ReactNode }) => <a href={href}>{children}</a>,
   useNavigationBlocker: () => ({

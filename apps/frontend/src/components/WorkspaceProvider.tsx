@@ -21,6 +21,7 @@ import {
   consumeForceHomeRedirect,
 } from '@/lib/auth-core';
 import { getStatus } from '@/lib/api';
+import { clearCompletedQueryResults } from '@/lib/query-result-history';
 import {
   createProject,
   renameProject as renameProjectRequest,
@@ -183,6 +184,10 @@ export function WorkspaceProvider({ children }: { children: ReactNode }) {
   const projectListGenerationRef = useRef(0);
   const renameGenerationByProjectRef = useRef(new Map<string, number>());
   const profileOnboardingOwnerRef = useRef<string | null>(null);
+  const queryResultScopeRef = useRef({
+    ownerId: token ? user?.id ?? null : null,
+    projectId: currentProject?.id ?? null,
+  });
 
   useLayoutEffect(() => {
     requestIdentityRef.current = { projectId: currentProject?.id ?? null, token, sessionEpoch };
@@ -197,6 +202,22 @@ export function WorkspaceProvider({ children }: { children: ReactNode }) {
       renameGenerations.clear();
     };
   }, [sessionEpoch, token]);
+
+  useEffect(() => {
+    const previous = queryResultScopeRef.current;
+    const next = {
+      ownerId: token ? user?.id ?? null : null,
+      projectId: currentProject?.id ?? null,
+    };
+    if (
+      !token
+      || (previous.ownerId !== null && previous.ownerId !== next.ownerId)
+      || (previous.projectId !== null && previous.projectId !== next.projectId)
+    ) {
+      clearCompletedQueryResults();
+    }
+    queryResultScopeRef.current = next;
+  }, [currentProject?.id, token, user?.id]);
 
   useEffect(() => {
     if (!hydrated) return;
