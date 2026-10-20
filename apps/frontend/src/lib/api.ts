@@ -403,6 +403,8 @@ type ApiFetchOptions = {
   body?: BodyInit;
   requireProject?: boolean;
   signal?: AbortSignal;
+  onRequestDispatched?: () => void;
+  onResponseReceived?: (response: Response) => void;
 };
 
 export async function apiFetch(path: string, options: ApiFetchOptions = {}): Promise<Response> {
@@ -412,7 +414,9 @@ export async function apiFetch(path: string, options: ApiFetchOptions = {}): Pro
   const { auth, accessToken, epoch: requestEpoch } = await accessTokenOrRefresh();
   const url = `${getRuntimeConfig().api_url}${toV1Path(path)}`;
   const init = buildRequestInit({ ...options, projectId, accessToken });
+  options.onRequestDispatched?.();
   const response = recordRequestResponse(await fetch(url, init));
+  options.onResponseReceived?.(response);
 
   if (response.status !== 401) return response;
   if (apiAuthConfig !== auth || (auth.getSessionEpoch?.() ?? 0) !== requestEpoch) return response;
@@ -428,11 +432,13 @@ export async function apiFetch(path: string, options: ApiFetchOptions = {}): Pro
   if (refreshedOperation === null) return response;
   if ((auth.getSessionEpoch?.() ?? 0) !== refreshedOperation.epoch) return response;
 
+  options.onRequestDispatched?.();
   const retriedResponse = recordRequestResponse(await fetch(url, buildRequestInit({
     ...options,
     projectId,
     accessToken: refreshedOperation.accessToken,
   })));
+  options.onResponseReceived?.(retriedResponse);
   if (
     retriedResponse.status === 401
     && apiAuthConfig === auth
@@ -1142,13 +1148,29 @@ export type RawUploadProgressCallback = (progress: number) => void;
 
 export const RAW_UPLOAD_MAX_BYTES = 5 << 20;
 
-export type ScrapeResult = {
-  message: string;
-  filename: string;
-  path: string;
+export type ScrapeStatus = 'stored' | 'needs_confirmation' | 'rejected' | 'conflict' | 'unavailable' | 'uncertain';
+
+export type ScrapeCandidatePreview = {
   title: string;
-  digest: string;
-  bytes: number;
+  source_url: string;
+  markdown: string;
+  metadata: Record<string, unknown>;
+  candidate_sha256: string;
+  reason?: string;
+  warning?: string;
+  provider: string;
+  provider_truncated?: boolean;
+};
+
+export type ScrapeResult = {
+  status: ScrapeStatus;
+  message: string;
+  confirmation_ref?: string;
+  expires_at?: string;
+  retry_after_seconds?: number;
+  preview?: ScrapeCandidatePreview;
+  storage?: { path: string; sha256: string; status: RawUploadStatus };
+  processing_status?: 'not_started' | string;
 };
 
 export type PipelineQuota = {
@@ -1343,17 +1365,60 @@ export async function uploadRawFile(
   };
 }
 
-export async function scrapeUrl(url: string, filename?: string): Promise<ScrapeResult> {
-  const response = await apiFetch('/api/v1/raw/scrape', {
-    method: 'POST',
-    json: true,
-    body: JSON.stringify({ url, filename }),
-  });
-  if (!response.ok) {
-    const error = await response.json().catch(() => ({ error: 'Scrape failed' }));
-    throw new Error((error as { error: string }).error);
+async function postScrapeRequest(body: Record<string, unknown>, projectId?: string): Promise<ScrapeResult> {
+  const requestState: { dispatched: boolean; pending: boolean; response: Response | null } = {
+    dispatched: false,
+    pending: false,
+    response: null,
+  };
+  let response: Response;
+  try {
+    response = await apiFetch('/api/v1/raw/scrape', {
+      method: 'POST',
+      json: true,
+      projectId,
+      body: JSON.stringify(body),
+      onRequestDispatched: () => {
+        requestState.dispatched = true;
+        requestState.pending = true;
+        requestState.response = null;
+      },
+      onResponseReceived: (received) => {
+        requestState.pending = false;
+        requestState.response = received;
+      },
+    });
+  } catch (error) {
+    const { dispatched, pending, response: lastResponse } = requestState;
+    if (!dispatched) throw error;
+    if (!pending && lastResponse && lastResponse.status >= 400 && lastResponse.status < 500) {
+      throw new ApiError('URL intake was rejected before storage.', lastResponse.status, undefined, lastResponse.headers.get('X-Request-ID'));
+    }
+    throw new ApiError('URL intake response was lost; check raw/ before retrying.', 0);
   }
-  return response.json();
+  const payload: unknown = await response.json().catch(() => null);
+  const structuredResult = payload && typeof payload === 'object' && 'status' in payload && 'message' in payload;
+  if (structuredResult && (response.ok || (response.status >= 400 && response.status < 500))) {
+    return payload as ScrapeResult;
+  }
+  if (!response.ok) {
+    const message = payload && typeof payload === 'object' && 'error' in payload && typeof payload.error === 'string'
+      ? payload.error
+      : 'URL intake failed';
+    if (response.status >= 400 && response.status < 500) {
+      throw new ApiError(message, response.status, undefined, response.headers.get('X-Request-ID'));
+    }
+    throw new ApiError('URL intake response was lost; check raw/ before retrying.', 0, undefined, response.headers.get('X-Request-ID'));
+  }
+  throw new ApiError('URL intake returned an invalid response; check raw/ before retrying.', 0, undefined, response.headers.get('X-Request-ID'));
+}
+
+export async function scrapeUrl(url: string, projectId?: string, tags?: string[]): Promise<ScrapeResult> {
+  return postScrapeRequest({ url, ...(tags?.length ? { tags } : {}) }, projectId);
+}
+
+export async function confirmScrape(confirmationRef: string, projectId?: string): Promise<ScrapeResult> {
+  return postScrapeRequest({ confirmation_ref: confirmationRef }, projectId);
 }
 
 export async function triggerPipeline(): Promise<PipelineResult> {
