@@ -500,7 +500,13 @@ func TestLocalPipelineHTTPTriggerRunsWorkerAndReportsSuccessAndFailure(t *testin
 	if err != nil {
 		t.Fatalf("pin scheduled source generation for query readback: %v", err)
 	}
-	sourceSnapshot, err := pinnedScheduledStorage.ReadSourceSnapshot(ctx)
+	sourceSnapshotReader, ok := pinnedScheduledStorage.(interface {
+		ReadSourceSnapshot(context.Context) (generation.SourceSnapshotManifest, error)
+	})
+	if !ok {
+		t.Fatal("pinned scheduled storage does not expose its source snapshot reader")
+	}
+	sourceSnapshot, err := sourceSnapshotReader.ReadSourceSnapshot(ctx)
 	if err != nil {
 		t.Fatalf("scheduled source snapshot readback: %v", err)
 	}
