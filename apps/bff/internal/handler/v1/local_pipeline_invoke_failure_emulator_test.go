@@ -180,10 +180,44 @@ func TestHandlerFailureMarkerRecoversThroughNativeQuotaReconciler(t *testing.T) 
 	if err != nil {
 		t.Fatalf("create native manager: %v", err)
 	}
-	for pass := 1; pass <= 2; pass++ {
-		if err := manager.ReconcilePendingQuotaSettlements(ctx); err != nil {
-			t.Fatalf("native recovery pass %d: %v", pass, err)
+	// cmd/bff starts this native loop in local mode; let its first pass perform
+	// the actual producer-to-consumer recovery, then repeat reconciliation to
+	// verify idempotency.
+	reconcilerCtx, cancelReconciler := context.WithCancel(ctx)
+	reconcilerDone := make(chan struct{})
+	go func() {
+		manager.RunQuotaReconciler(reconcilerCtx)
+		close(reconcilerDone)
+	}()
+	deadline := time.NewTimer(10 * time.Second)
+	defer deadline.Stop()
+	for {
+		recovered, found, err := fsClient.GetQuotaReservation(ctx, manualReservation.ID)
+		if err != nil {
+			cancelReconciler()
+			t.Fatalf("read reservation during native loop: %v", err)
 		}
+		if found && recovered.SettlementStatus == "refunded" {
+			break
+		}
+		select {
+		case <-deadline.C:
+			cancelReconciler()
+			t.Fatalf("native RunQuotaReconciler did not refund reservation; latest=%+v", recovered)
+		case <-time.After(10 * time.Millisecond):
+		case <-ctx.Done():
+			cancelReconciler()
+			t.Fatalf("test context ended before native recovery: %v", ctx.Err())
+		}
+	}
+	cancelReconciler()
+	select {
+	case <-reconcilerDone:
+	case <-time.After(5 * time.Second):
+		t.Fatal("native RunQuotaReconciler did not stop after cancellation")
+	}
+	if err := manager.ReconcilePendingQuotaSettlements(ctx); err != nil {
+		t.Fatalf("repeat native settlement recovery: %v", err)
 	}
 	recovered, found, err := fsClient.GetQuotaReservation(ctx, manualReservation.ID)
 	if err != nil || !found || recovered.SettlementStatus != "refunded" || recovered.Outcome != "FAILED" {
