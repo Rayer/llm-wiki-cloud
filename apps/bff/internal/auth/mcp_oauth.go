@@ -29,6 +29,7 @@ import (
 
 const (
 	mcpOAuthScope         = "mcp:query"
+	mcpOAuthRawWriteScope = "mcp:raw:write"
 	mcpOAuthCodePrefix    = "lwc_mcp_code_"
 	mcpOAuthAccessPrefix  = "lwc_mcp_at_"
 	mcpOAuthRefreshPrefix = "lwc_mcp_rt_"
@@ -75,12 +76,13 @@ type MCPGrantAuthority struct {
 }
 
 type MCPOAuthIdentity struct {
-	UserID    string
-	ProjectID string
-	GrantID   string
-	ClientID  string
-	Resource  string
-	Scope     string
+	UserID       string
+	ProjectID    string
+	GrantID      string
+	ClientID     string
+	Resource     string
+	Scope        string
+	Capabilities []string
 }
 
 type MCPOAuthTokenResponse struct {
@@ -484,12 +486,11 @@ func (s *MCPOAuthService) BeginAuthorization(ctx context.Context, clientID, redi
 	if !validResource {
 		return "", ErrMCPOAuthDenied
 	}
-	if scope == "" {
-		scope = mcpOAuthScope
-	}
-	if scope != mcpOAuthScope {
+	normalizedScope, _, supported := normalizeMCPOAuthScope(scope)
+	if !supported {
 		return "", ErrMCPOAuthUnsupported
 	}
+	scope = normalizedScope
 	transactionID, err := generateMCPOpaque("lwc_mcp_tx_")
 	if err != nil {
 		return "", ErrMCPOAuthUnavailable
@@ -522,7 +523,7 @@ func (s *MCPOAuthService) ConsentDetails(ctx context.Context, userID, transactio
 	}
 	var tx mcpOAuthTransactionRecord
 	if mcpOAuthDecode(snapshot.Data(), &tx) != nil || tx.SchemaVersion != mcpOAuthRecordSchema ||
-		tx.Environment != s.environment || tx.TransactionIDHash != txHash {
+		tx.Environment != s.environment || tx.TransactionIDHash != txHash || !isCanonicalMCPOAuthScope(tx.Scope) {
 		return MCPOAuthConsentDetails{}, ErrMCPOAuthUnavailable
 	}
 	if tx.Status != "pending" {
@@ -628,7 +629,7 @@ func (s *MCPOAuthService) DecideConsent(ctx context.Context, userID string, auth
 			return nil
 		}
 		if project.ID != request.ProjectID || request.Resource != s.ResourceURL(project.ID) ||
-			request.Scope != mcpOAuthScope || !validMCPCodeChallenge(request.CodeChallenge) {
+			!isCanonicalMCPOAuthScope(request.Scope) || !validMCPCodeChallenge(request.CodeChallenge) {
 			return ErrMCPOAuthDenied
 		}
 		codeRecord := mcpOAuthCodeRecord{
@@ -681,7 +682,7 @@ func (s *MCPOAuthService) ExchangeCode(ctx context.Context, clientID, code, redi
 		return MCPOAuthTokenResponse{}, ErrMCPOAuthInvalid
 	}
 	if initial.ClientID != clientID || initial.RedirectURI != redirectURI ||
-		initial.Resource != resource || initial.Scope != mcpOAuthScope ||
+		initial.Resource != resource || !isCanonicalMCPOAuthScope(initial.Scope) ||
 		!verifyMCPCodeVerifier(initial.CodeChallenge, verifier) ||
 		resource != s.ResourceURL(initial.ProjectID) {
 		return MCPOAuthTokenResponse{}, ErrMCPOAuthInvalid
@@ -702,7 +703,7 @@ func (s *MCPOAuthService) ExchangeCode(ctx context.Context, clientID, code, redi
 	response := MCPOAuthTokenResponse{
 		AccessToken: accessToken, TokenType: "Bearer",
 		ExpiresIn: int(mcpOAuthAccessTTL.Seconds()), RefreshToken: refreshToken,
-		Scope: mcpOAuthScope,
+		Scope: initial.Scope,
 	}
 	accessHash, refreshHash := mcpOAuthHash(accessToken), mcpOAuthHash(refreshToken)
 	grantRef := s.collection("grants").Doc(grantID)
@@ -720,7 +721,7 @@ func (s *MCPOAuthService) ExchangeCode(ctx context.Context, clientID, code, redi
 			return ErrMCPOAuthReplay
 		}
 		if record.ClientID != clientID || record.RedirectURI != redirectURI ||
-			record.Resource != resource || record.Scope != mcpOAuthScope ||
+			record.Resource != resource || !isCanonicalMCPOAuthScope(record.Scope) || record.Scope != initial.Scope ||
 			!verifyMCPCodeVerifier(record.CodeChallenge, verifier) ||
 			record.Resource != s.ResourceURL(record.ProjectID) || !now.Before(record.ExpiresAt) {
 			return ErrMCPOAuthInvalid
@@ -812,9 +813,23 @@ func (s *MCPOAuthService) Refresh(ctx context.Context, clientID, refreshToken, r
 	}
 	now := s.now()
 	nextAccessHash, nextRefreshHash := mcpOAuthHash(nextAccess), mcpOAuthHash(nextRefresh)
+	// The grant's persisted scope is the authority for every rotated token.
+	grantSnapshot, err := s.collection("grants").Doc(initial.GrantID).Get(ctx)
+	if err != nil {
+		if status.Code(err) == codes.NotFound {
+			return MCPOAuthTokenResponse{}, ErrMCPOAuthInvalid
+		}
+		return MCPOAuthTokenResponse{}, ErrMCPOAuthUnavailable
+	}
+	var initialGrant mcpOAuthGrantRecord
+	if mcpOAuthDecode(grantSnapshot.Data(), &initialGrant) != nil ||
+		initialGrant.SchemaVersion != mcpOAuthRecordSchema || initialGrant.Environment != s.environment ||
+		initialGrant.GrantID != initial.GrantID || !isCanonicalMCPOAuthScope(initialGrant.Scope) {
+		return MCPOAuthTokenResponse{}, ErrMCPOAuthInvalid
+	}
 	nextResponse := MCPOAuthTokenResponse{
 		AccessToken: nextAccess, TokenType: "Bearer", ExpiresIn: int(mcpOAuthAccessTTL.Seconds()),
-		RefreshToken: nextRefresh, Scope: mcpOAuthScope,
+		RefreshToken: nextRefresh, Scope: initialGrant.Scope,
 	}
 	retryResult := mcpOAuthRefreshResult{TokenResponse: nextResponse, ExpiresAt: initial.ExpiresAt}
 	encryptedRetry, err := s.encryptRefreshRetry(retryResult)
@@ -831,7 +846,7 @@ func (s *MCPOAuthService) Refresh(ctx context.Context, clientID, refreshToken, r
 		var currentToken mcpOAuthRefreshRecord
 		if mcpOAuthDecode(refreshSnapshot.Data(), &currentToken) != nil ||
 			currentToken.SchemaVersion != mcpOAuthRecordSchema || currentToken.Environment != s.environment ||
-			currentToken.TokenHash != refreshHash {
+			currentToken.TokenHash != refreshHash || currentToken.GrantID != initial.GrantID {
 			return ErrMCPOAuthUnavailable
 		}
 		grantRef := s.collection("grants").Doc(currentToken.GrantID)
@@ -858,8 +873,8 @@ func (s *MCPOAuthService) Refresh(ctx context.Context, clientID, refreshToken, r
 		if err != nil {
 			return err
 		}
-		if project.ID != grant.ProjectID || grant.Resource != resource ||
-			resource != s.ResourceURL(grant.ProjectID) || grant.Scope != mcpOAuthScope ||
+		if project.ID != grant.ProjectID || grant.Resource != resource || grant.Scope != initialGrant.Scope ||
+			resource != s.ResourceURL(grant.ProjectID) || !isCanonicalMCPOAuthScope(grant.Scope) ||
 			grant.ClientID != clientID {
 			return ErrMCPOAuthInvalid
 		}
@@ -961,6 +976,9 @@ func (s *MCPOAuthService) ListGrants(ctx context.Context, userID, projectID stri
 		var grant mcpOAuthGrantRecord
 		if mcpOAuthDecode(doc.Data(), &grant) != nil || grant.SchemaVersion != mcpOAuthRecordSchema ||
 			grant.Environment != s.environment || grant.GrantID != doc.Ref.ID || grant.UserID != userID {
+			return nil, ErrMCPOAuthUnavailable
+		}
+		if !isCanonicalMCPOAuthScope(grant.Scope) {
 			return nil, ErrMCPOAuthUnavailable
 		}
 		if grant.ProjectID != projectID {
@@ -1068,8 +1086,9 @@ func (a *MCPGrantAuthority) AuthenticateAccessToken(ctx context.Context, token, 
 		grant.GrantID != access.GrantID {
 		return MCPOAuthIdentity{}, ErrMCPOAuthUnavailable
 	}
+	capabilities, supportedScope := canonicalMCPOAuthCapabilities(grant.Scope)
 	if grant.Status != "active" || !a.now().Before(grant.ExpiresAt) ||
-		grant.ProjectID != projectID || grant.Scope != mcpOAuthScope ||
+		grant.ProjectID != projectID || !supportedScope ||
 		grant.Resource != resource || resource != a.resourceOrigin+"/mcp/projects/"+projectID {
 		return MCPOAuthIdentity{}, ErrMCPOAuthDenied
 	}
@@ -1088,7 +1107,7 @@ func (a *MCPGrantAuthority) AuthenticateAccessToken(ctx context.Context, token, 
 	}
 	return MCPOAuthIdentity{
 		UserID: grant.UserID, ProjectID: grant.ProjectID, GrantID: grant.GrantID,
-		ClientID: grant.ClientID, Resource: grant.Resource, Scope: grant.Scope,
+		ClientID: grant.ClientID, Resource: grant.Resource, Scope: grant.Scope, Capabilities: capabilities,
 	}, nil
 }
 
@@ -1253,7 +1272,7 @@ func (s *MCPOAuthService) decryptRefreshRetry(encoded string) (mcpOAuthRefreshRe
 	if json.Unmarshal(plain, &result) != nil ||
 		!validMCPOpaque(result.TokenResponse.AccessToken, mcpOAuthAccessPrefix) ||
 		!validMCPOpaque(result.TokenResponse.RefreshToken, mcpOAuthRefreshPrefix) ||
-		result.TokenResponse.TokenType != "Bearer" || result.TokenResponse.Scope != mcpOAuthScope {
+		result.TokenResponse.TokenType != "Bearer" || !isCanonicalMCPOAuthScope(result.TokenResponse.Scope) {
 		return mcpOAuthRefreshResult{}, ErrMCPOAuthInvalid
 	}
 	return result, nil
@@ -1284,6 +1303,52 @@ func containsString(values []string, expected string) bool {
 		}
 	}
 	return false
+}
+
+func normalizeMCPOAuthScope(scope string) (string, []string, bool) {
+	if scope == "" {
+		return mcpOAuthScope, []string{mcpOAuthScope}, true
+	}
+	if strings.TrimSpace(scope) != scope || strings.ContainsAny(scope, "\t\r\n") {
+		return "", nil, false
+	}
+	parts := strings.Split(scope, " ")
+	if len(parts) == 0 || len(parts) > 2 {
+		return "", nil, false
+	}
+	seen := make(map[string]struct{}, len(parts))
+	for _, part := range parts {
+		if part == "" || (part != mcpOAuthScope && part != mcpOAuthRawWriteScope) {
+			return "", nil, false
+		}
+		if _, exists := seen[part]; exists {
+			return "", nil, false
+		}
+		seen[part] = struct{}{}
+	}
+	if _, query := seen[mcpOAuthScope]; !query {
+		return "", nil, false
+	}
+	if _, write := seen[mcpOAuthRawWriteScope]; write {
+		return mcpOAuthScope + " " + mcpOAuthRawWriteScope,
+			[]string{mcpOAuthScope, mcpOAuthRawWriteScope}, true
+	}
+	return mcpOAuthScope, []string{mcpOAuthScope}, true
+}
+
+func isCanonicalMCPOAuthScope(scope string) bool {
+	normalized, _, ok := normalizeMCPOAuthScope(scope)
+	return ok && normalized == scope
+}
+
+func canonicalMCPOAuthCapabilities(scope string) ([]string, bool) {
+	if !isCanonicalMCPOAuthScope(scope) {
+		return nil, false
+	}
+	if scope == mcpOAuthScope {
+		return []string{mcpOAuthScope}, true
+	}
+	return []string{mcpOAuthScope, mcpOAuthRawWriteScope}, true
 }
 
 func oauthRedirectWithCode(raw, code, state string) string {

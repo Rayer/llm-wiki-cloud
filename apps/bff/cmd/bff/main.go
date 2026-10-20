@@ -198,6 +198,7 @@ func main() {
 		},
 		urlintake.DefaultQualityThresholds,
 	)
+	hV1.SetMCPURLImportService(handlerv1.NewURLIntakeMCPAdapter(intakeService))
 	rawFactory := func(scopedClient *gcs.Client, fsClient *firestore.Client) rawScrapeHandler {
 		return handlerraw.NewWithURLIntake(scopedClient, fsClient, intakeService)
 	}

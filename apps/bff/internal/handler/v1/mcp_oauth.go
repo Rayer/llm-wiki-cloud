@@ -18,7 +18,6 @@ func (h *Handler) MCPProjectOAuthHandler(environment, resourceOrigin string) gin
 		rawFirestore = h.firestore.Raw()
 	}
 	authority := auth.NewMCPGrantAuthority(rawFirestore, environment, resourceOrigin)
-	sdk := h.mcpSDKHandler()
 	return func(c *gin.Context) {
 		projectID := c.Param("projectID")
 		if !auth.ValidPathSegment(projectID) || strings.Contains(projectID, "/") {
@@ -49,8 +48,9 @@ func (h *Handler) MCPProjectOAuthHandler(environment, resourceOrigin string) gin
 		}
 		requestIdentity := mcpProjectKeyIdentity{
 			userID: identity.UserID, projectID: identity.ProjectID, keyID: identity.GrantID,
+			capabilities: identity.Capabilities,
 		}
-		h.serveAuthenticatedMCP(sdk, requestIdentity, c.Writer, c.Request)
+		h.serveAuthenticatedMCP(h.mcpSDKHandler(requestIdentity.capabilities), requestIdentity, c.Writer, c.Request)
 	}
 }
 
@@ -71,7 +71,7 @@ func MCPProjectResourceMetadataHandler(resourceOrigin, authorizationServer strin
 		c.JSON(http.StatusOK, gin.H{
 			"resource":                 resourceOrigin + "/mcp/projects/" + projectID,
 			"authorization_servers":    []string{authorizationServer},
-			"scopes_supported":         []string{"mcp:query"},
+			"scopes_supported":         []string{mcpQueryCapability, mcpRawWriteCapability},
 			"bearer_methods_supported": []string{"header"},
 		})
 	}
