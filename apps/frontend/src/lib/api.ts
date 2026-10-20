@@ -1142,13 +1142,29 @@ export type RawUploadProgressCallback = (progress: number) => void;
 
 export const RAW_UPLOAD_MAX_BYTES = 5 << 20;
 
-export type ScrapeResult = {
-  message: string;
-  filename: string;
-  path: string;
+export type ScrapeStatus = 'stored' | 'needs_confirmation' | 'rejected' | 'conflict' | 'unavailable' | 'uncertain';
+
+export type ScrapeCandidatePreview = {
   title: string;
-  digest: string;
-  bytes: number;
+  source_url: string;
+  markdown: string;
+  metadata: Record<string, unknown>;
+  candidate_sha256: string;
+  reason?: string;
+  warning?: string;
+  provider: string;
+  provider_truncated?: boolean;
+};
+
+export type ScrapeResult = {
+  status: ScrapeStatus;
+  message: string;
+  confirmation_ref?: string;
+  expires_at?: string;
+  retry_after_seconds?: number;
+  preview?: ScrapeCandidatePreview;
+  storage?: { path: string; sha256: string; status: RawUploadStatus };
+  processing_status?: 'not_started' | string;
 };
 
 export type PipelineQuota = {
@@ -1343,17 +1359,32 @@ export async function uploadRawFile(
   };
 }
 
-export async function scrapeUrl(url: string, filename?: string): Promise<ScrapeResult> {
+async function postScrapeRequest(body: Record<string, unknown>, projectId?: string): Promise<ScrapeResult> {
   const response = await apiFetch('/api/v1/raw/scrape', {
     method: 'POST',
     json: true,
-    body: JSON.stringify({ url, filename }),
+    projectId,
+    body: JSON.stringify(body),
   });
-  if (!response.ok) {
-    const error = await response.json().catch(() => ({ error: 'Scrape failed' }));
-    throw new Error((error as { error: string }).error);
+  const payload: unknown = await response.json().catch(() => null);
+  if (payload && typeof payload === 'object' && 'status' in payload && 'message' in payload) {
+    return payload as ScrapeResult;
   }
-  return response.json();
+  if (!response.ok) {
+    const message = payload && typeof payload === 'object' && 'error' in payload && typeof payload.error === 'string'
+      ? payload.error
+      : 'URL intake failed';
+    throw new Error(message);
+  }
+  throw new Error('URL intake returned an invalid response');
+}
+
+export async function scrapeUrl(url: string, projectId?: string, tags?: string[]): Promise<ScrapeResult> {
+  return postScrapeRequest({ url, ...(tags?.length ? { tags } : {}) }, projectId);
+}
+
+export async function confirmScrape(confirmationRef: string, projectId?: string): Promise<ScrapeResult> {
+  return postScrapeRequest({ confirmation_ref: confirmationRef }, projectId);
 }
 
 export async function triggerPipeline(): Promise<PipelineResult> {
