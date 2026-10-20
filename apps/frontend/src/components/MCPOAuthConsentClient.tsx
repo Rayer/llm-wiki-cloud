@@ -34,6 +34,7 @@ export function MCPOAuthConsentClient({ transactionId }: { transactionId: string
   const loading = !visibleDetails && !visibleError;
   const busy = busyContextKey === contextKey;
   const terminal = terminalContextKey === contextKey;
+  const rawWriteRequested = visibleDetails?.scope.split(/\s+/).includes('mcp:raw:write') ?? false;
 
   useLayoutEffect(() => {
     const current = contextRef.current;
@@ -147,7 +148,7 @@ export function MCPOAuthConsentClient({ transactionId }: { transactionId: string
             <div className="sm:col-span-2"><dt className="text-xs uppercase tracking-wide text-zinc-500">{t('MCPOAuth.expires')}</dt><dd className="mt-1 text-sm text-zinc-300">{new Date(visibleDetails.expires_at).toLocaleString()}</dd></div>
           </dl>
           <p className="mt-3 text-xs leading-5 text-zinc-500">{t('MCPOAuth.clientUnverified')}</p>
-          <p className="mt-4 rounded-lg border border-emerald-300/10 bg-emerald-300/5 p-3 text-xs leading-5 text-zinc-300">{t('MCPOAuth.queryOnly')}</p>
+          <p className="mt-4 rounded-lg border border-emerald-300/10 bg-emerald-300/5 p-3 text-xs leading-5 text-zinc-300">{t(rawWriteRequested ? 'MCPOAuth.queryAndRawWrite' : 'MCPOAuth.queryOnly')}</p>
           {terminal ? (
             <Link href="/advanced" className="mt-6 inline-flex min-h-11 items-center text-sm font-medium text-emerald-300 underline underline-offset-4">{t('MCPOAuth.backToAdvanced')}</Link>
           ) : (

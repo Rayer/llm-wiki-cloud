@@ -127,12 +127,12 @@ export function AgentMcpTabs({
     return <a className="mt-3 inline-block text-sm text-emerald-200 underline decoration-emerald-200/40 underline-offset-4 hover:text-white" href={href} target="_blank" rel="noreferrer">{t('MCPOAuth.officialGuide')}</a>;
   };
 
-  const renderTechnicalDetails = () => (
+  const renderTechnicalDetails = (scope: string) => (
     <details className="mt-4 rounded-lg border border-white/8 bg-black/15 px-4 py-3">
       <summary className="cursor-pointer text-sm text-zinc-300 focus-visible:outline focus-visible:outline-2 focus-visible:outline-emerald-300">{t('MCPOAuth.technicalDetails')}</summary>
       <dl className="mt-3 grid gap-3 text-sm sm:grid-cols-2">
         <div><dt className="text-xs text-zinc-500">{t('MCPOAuth.environment')}</dt><dd className="mt-1 text-zinc-200">{environmentLabel}</dd></div>
-        <div><dt className="text-xs text-zinc-500">{t('MCPOAuth.scope')}</dt><dd className="mt-1 font-mono text-emerald-200">mcp:query</dd></div>
+        <div><dt className="text-xs text-zinc-500">{t('MCPOAuth.scope')}</dt><dd className="mt-1 font-mono text-emerald-200">{scope}</dd></div>
         <div className="sm:col-span-2"><dt className="text-xs text-zinc-500">{t('MCPOAuth.resource')}</dt><dd className="mt-1 break-all font-mono text-xs leading-5 text-zinc-300">{isUsableMCPResourceURL(resourceURL) ? resourceURL : t('MCPOAuth.resourceUnavailable')}</dd></div>
       </dl>
     </details>
@@ -148,7 +148,7 @@ export function AgentMcpTabs({
       {renderCopyBlock(target, 'MCPOAuth.copySetup')}
       <p className="mt-3 text-xs leading-5 text-amber-100">{t(`MCPOAuth.panel.${id}.evidence`)}</p>
       {renderSource(target)}
-      {renderTechnicalDetails()}
+      {renderTechnicalDetails(target === 'claude-code' ? 'mcp:query' : 'mcp:query mcp:raw:write')}
     </div>
   );
 
@@ -203,7 +203,7 @@ export function AgentMcpTabs({
               </ol>
               {renderCopyBlock('hermes', 'MCPOAuth.copyConfig')}
               <p className="mt-3 text-xs leading-5 text-amber-100">{t('MCPOAuth.nativeCheck')}</p>
-              {renderTechnicalDetails()}
+              {renderTechnicalDetails('mcp:query mcp:raw:write')}
             </div>
           ) : tool.id === 'grok' ? (
             <div>
@@ -226,7 +226,7 @@ export function AgentMcpTabs({
                 <p className="mt-3 text-xs leading-5 text-amber-100">{t('MCPOAuth.panel.grok.botEvidence')}</p>
                 {renderSource('grok-bot')}
               </section>
-              {renderTechnicalDetails()}
+              {renderTechnicalDetails('mcp:query')}
             </div>
           ) : tool.id === 'codex' ? renderSingleGuide('codex', 'codex')
             : tool.id === 'claude-code' ? renderSingleGuide('claude-code', 'claude-code')

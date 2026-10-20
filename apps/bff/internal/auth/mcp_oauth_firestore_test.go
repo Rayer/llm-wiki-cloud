@@ -137,6 +137,10 @@ func TestMCPOAuthFirestoreFlowBindsProjectAndRotatesRefreshTokens(t *testing.T) 
 		identity.Scope != writeScope || strings.Join(identity.Capabilities, " ") != writeScope {
 		t.Fatalf("authenticate project access token: identity=%+v err=%v", identity, err)
 	}
+	clock = clock.Add(mcpOAuthAccessTTL + time.Second)
+	if _, err := authority.AuthenticateAccessToken(ctx, tokens.AccessToken, projectID, resource); !errors.Is(err, ErrMCPOAuthExpired) {
+		t.Fatalf("expired project access token error = %v, want expired", err)
+	}
 
 	rotated, err := service.Refresh(ctx, client.ClientID, tokens.RefreshToken, resource)
 	if err != nil || rotated.Scope != writeScope {

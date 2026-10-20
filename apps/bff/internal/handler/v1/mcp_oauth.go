@@ -50,7 +50,7 @@ func (h *Handler) MCPProjectOAuthHandler(environment, resourceOrigin string) gin
 			userID: identity.UserID, projectID: identity.ProjectID, keyID: identity.GrantID,
 			capabilities: identity.Capabilities,
 		}
-		h.serveAuthenticatedMCP(h.mcpSDKHandler(), requestIdentity, c.Writer, c.Request)
+		h.serveAuthenticatedMCP(h.mcpSDKHandler(requestIdentity.capabilities), requestIdentity, c.Writer, c.Request)
 	}
 }
 

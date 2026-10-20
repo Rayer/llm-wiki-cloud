@@ -29,12 +29,12 @@ export function buildMCPGuideSnippet(target: MCPGuideTarget, resourceURL: string
         '    auth: oauth',
         '    oauth:',
         '      cimd: false',
-        '      scope: mcp:query',
+        '      scope: "mcp:query mcp:raw:write"',
       ].join('\n');
     case 'codex':
       return [
         `codex mcp add llm-wiki --url ${shellQuote(resourceURL)}`,
-        'codex mcp login llm-wiki --scopes mcp:query --oauth-client-registration dcr',
+        'codex mcp login llm-wiki --scopes mcp:query,mcp:raw:write --oauth-client-registration dcr',
       ].join('\n');
     case 'grok-cli':
       return `grok mcp add --transport http llm-wiki ${shellQuote(resourceURL)}`;
@@ -47,7 +47,7 @@ export function buildMCPGuideSnippet(target: MCPGuideTarget, resourceURL: string
         url: resourceURL,
         transport: 'streamable-http',
         auth: 'oauth',
-        oauth: { scope: 'mcp:query' },
+        oauth: { scope: 'mcp:query mcp:raw:write' },
       });
       return [
         `openclaw mcp set llm-wiki ${shellQuote(definition)}`,

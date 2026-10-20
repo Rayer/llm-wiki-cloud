@@ -93,11 +93,11 @@ func (h *Handler) MCPHandler() http.Handler {
 			userID: record.UserID, projectID: record.ProjectID, keyID: record.KeyID,
 			capabilities: []string{mcpQueryCapability},
 		}
-		h.serveAuthenticatedMCP(h.mcpSDKHandler(), identity, w, r)
+		h.serveAuthenticatedMCP(h.mcpSDKHandler(identity.capabilities), identity, w, r)
 	})
 }
 
-func (h *Handler) mcpSDKHandler() http.Handler {
+func (h *Handler) mcpSDKHandler(capabilities []string) http.Handler {
 	server := mcp.NewServer(&mcp.Implementation{
 		Name:    "llm-wiki-bff",
 		Version: buildinfo.Current().ProductVersion,
@@ -111,6 +111,15 @@ func (h *Handler) mcpSDKHandler() http.Handler {
 		InputSchema:  queryProjectInputSchema,
 		OutputSchema: queryProjectOutputSchema,
 	}, h.callMCPQuery)
+	if hasMCPCapability(capabilities, mcpQueryCapability) && hasMCPCapability(capabilities, mcpRawWriteCapability) {
+		mcp.AddTool[addRawInput, any](server, &mcp.Tool{
+			Name:        "add_raw",
+			Title:       "Add a raw Markdown source",
+			Description: mcpAddRawToolDescription,
+			Annotations: &mcp.ToolAnnotations{ReadOnlyHint: false, DestructiveHint: boolHint(false), IdempotentHint: true, OpenWorldHint: boolHint(false)},
+			InputSchema: addRawInputSchema, OutputSchema: addRawOutputSchema,
+		}, h.callMCPAddRaw)
+	}
 
 	transport := mcp.NewStreamableHTTPHandler(func(*http.Request) *mcp.Server {
 		return server
@@ -130,7 +139,7 @@ func (h *Handler) mcpSDKHandler() http.Handler {
 }
 
 func (h *Handler) mcpAuthenticatedHandler(identity mcpProjectKeyIdentity) http.Handler {
-	sdkAuthenticated := h.mcpSDKHandler()
+	sdkAuthenticated := h.mcpSDKHandler(identity.capabilities)
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		h.serveAuthenticatedMCP(sdkAuthenticated, identity, w, r)
 	})
@@ -238,6 +247,10 @@ func mcpRequestObservationMiddleware(next mcp.MethodHandler) mcp.MethodHandler {
 		result, err := next(ctx, method, request)
 		toolError := false
 		callResult, isToolResult := result.(*mcp.CallToolResult)
+		if isToolResult && callResult == nil {
+			result = nil
+			isToolResult = false
+		}
 		if isToolResult {
 			toolError = callResult.IsError
 		}
