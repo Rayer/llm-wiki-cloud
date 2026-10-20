@@ -966,17 +966,27 @@ func TestRunPostprocessWritesEmptyRawStatusWhenStateDBMissing(t *testing.T) {
 	}
 }
 
-func TestListVaultRawFilesRecursesAndKeepsDuplicateBasenames(t *testing.T) {
+func TestListVaultRawFilesRecursesAndKeepsDuplicateBasenamesAndLegalSidecarSuffixes(t *testing.T) {
 	vault := t.TempDir()
 	mustWriteFile(t, filepath.Join(vault, "raw", "same.md"), []byte("root"))
+	mustWriteFile(t, filepath.Join(vault, "raw", "same.md.meta"), []byte("root legal metadata suffix"))
+	mustWriteFile(t, filepath.Join(vault, "raw", "same.md.lock"), []byte("root legal lock suffix"))
 	mustWriteFile(t, filepath.Join(vault, "raw", "topic", "same.md"), []byte("nested"))
+	mustWriteFile(t, filepath.Join(vault, "raw", "topic", "same.md.meta"), []byte("nested legal metadata suffix"))
+	mustWriteFile(t, filepath.Join(vault, "raw", "topic", "same.md.lock"), []byte("nested legal lock suffix"))
 
 	files, err := listVaultRawFiles(context.Background(), vault)
 	if err != nil {
 		t.Fatalf("listVaultRawFiles() error = %v", err)
 	}
-	if len(files) != 2 || files[0].Name != "same.md" || files[0].Path != "raw/same.md" || files[1].Name != "topic/same.md" || files[1].Path != "raw/topic/same.md" {
+	wantPaths := []string{"raw/same.md", "raw/same.md.lock", "raw/same.md.meta", "raw/topic/same.md", "raw/topic/same.md.lock", "raw/topic/same.md.meta"}
+	if len(files) != len(wantPaths) {
 		t.Fatalf("raw files = %#v", files)
+	}
+	for i, path := range wantPaths {
+		if files[i].Path != path {
+			t.Fatalf("raw files[%d]=%#v, want path %q", i, files[i], path)
+		}
 	}
 }
 

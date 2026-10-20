@@ -5,6 +5,7 @@ import (
 	"context"
 	"crypto/sha256"
 	"encoding/hex"
+	"encoding/json"
 	"errors"
 	"io"
 	"os"
@@ -580,6 +581,22 @@ func TestConditionalRawIntakeKeepsSidecarsOutsideRawTree(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
+
+	legalFiles := map[string][]byte{
+		"root.md.meta":       []byte("legal root metadata name\n"),
+		"root.md.lock":       []byte("legal root lock name\n"),
+		"topic/note.md.meta": []byte("legal nested metadata name\n"),
+		"topic/note.md.lock": []byte("legal nested lock name\n"),
+	}
+	for path, data := range legalFiles {
+		if _, err := client.WriteSyncRawFile(ctx, path, bytes.NewReader(data), "", digest(data)); err != nil {
+			t.Fatalf("WriteSyncRawFile(%q): %v", path, err)
+		}
+		stored, err := client.ReadFile(ctx, "raw/"+path)
+		if err != nil || !bytes.Equal(stored, data) {
+			t.Fatalf("raw readback %q=%q err=%v", path, stored, err)
+		}
+	}
 	noopResult, err := rawintake.Commit(ctx, client, "topic/note.md", []byte("nested exact bytes\n"), false)
 	if err != nil {
 		t.Fatal(err)
@@ -600,15 +617,26 @@ func TestConditionalRawIntakeKeepsSidecarsOutsideRawTree(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if len(rawFiles) != 2 || rawFiles[0].Name != "root.md" || rawFiles[1].Name != "topic/note.md" {
+	wantPaths := []string{"root.md", "root.md.lock", "root.md.meta", "topic/note.md", "topic/note.md.lock", "topic/note.md.meta"}
+	if len(rawFiles) != len(wantPaths) {
 		t.Fatalf("RawList inventory=%#v", rawFiles)
+	}
+	for i, path := range wantPaths {
+		if rawFiles[i].Name != path || rawFiles[i].Path != "raw/"+path {
+			t.Fatalf("RawList[%d]=%#v, want %q", i, rawFiles[i], path)
+		}
 	}
 	syncFiles, err := client.ListSyncRawFiles(ctx)
 	if err != nil {
 		t.Fatal(err)
 	}
-	if len(syncFiles) != 2 || syncFiles[0].Path != "root.md" || syncFiles[1].Path != "topic/note.md" {
+	if len(syncFiles) != len(wantPaths) {
 		t.Fatalf("CLI sync inventory=%#v", syncFiles)
+	}
+	for i, path := range wantPaths {
+		if syncFiles[i].Path != path {
+			t.Fatalf("CLI sync inventory[%d]=%#v, want %q", i, syncFiles[i], path)
+		}
 	}
 
 	vault := filepath.Join(root, "users", "u", "projects", "p")
@@ -629,11 +657,71 @@ func TestConditionalRawIntakeKeepsSidecarsOutsideRawTree(t *testing.T) {
 	}); err != nil {
 		t.Fatal(err)
 	}
-	if len(physical) != 2 || physical[0] != "root.md" || physical[1] != "topic/note.md" {
+	if len(physical) != len(wantPaths) {
 		t.Fatalf("physical raw tree=%q", physical)
+	}
+	for i, path := range wantPaths {
+		if physical[i] != path {
+			t.Fatalf("physical raw file[%d]=%q, want %q", i, physical[i], path)
+		}
 	}
 	if within(rawDir, filepath.Join(root, ".lwc-localfs-conditional", "u", "p")) {
 		t.Fatal("conditional metadata unexpectedly resides in the user raw namespace")
+	}
+}
+
+func TestConditionalAnnotationRetainsLegacyGenerationAfterUpgrade(t *testing.T) {
+	root := t.TempDir()
+	client := New(root).WithScope("u", "p")
+	ctx := context.Background()
+	path := "cache/annotations/id.json"
+	fullPath, err := client.fullPath(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := os.MkdirAll(filepath.Dir(fullPath), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	data := []byte("two")
+	if err := os.WriteFile(fullPath, data, 0o644); err != nil {
+		t.Fatal(err)
+	}
+	metaPath, lockPath, err := client.conditionalSidecarPaths(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if metaPath != fullPath+".meta" || lockPath != fullPath+".lock" {
+		t.Fatalf("non-raw sidecars meta=%q lock=%q, want legacy paths %q and %q", metaPath, lockPath, fullPath+".meta", fullPath+".lock")
+	}
+	legacyMeta, err := json.Marshal(conditionalMeta{Generation: 2, ContentSHA256: digest(data)})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(metaPath, legacyMeta, 0o644); err != nil {
+		t.Fatal(err)
+	}
+
+	readback, generation, err := client.ReadFileWithGeneration(ctx, path)
+	if err != nil || generation != 2 || !bytes.Equal(readback, data) {
+		t.Fatalf("legacy readback=%q generation=%d err=%v, want original generation 2", readback, generation, err)
+	}
+	if _, err := client.WriteFileIfGeneration(ctx, []byte("stale overwrite"), path, 1); !errors.Is(err, store.ErrGenerationMismatch) {
+		t.Fatalf("stale generation write error=%v, want mismatch", err)
+	}
+	readback, err = client.ReadFile(ctx, path)
+	if err != nil || !bytes.Equal(readback, data) {
+		t.Fatalf("stale write changed content to %q, err=%v", readback, err)
+	}
+	next, err := client.WriteFileIfGeneration(ctx, []byte("three"), path, 2)
+	if err != nil || next != 3 {
+		t.Fatalf("newest generation write returned generation=%d err=%v, want generation 3", next, err)
+	}
+	readback, generation, err = client.ReadFileWithGeneration(ctx, path)
+	if err != nil || generation != 3 || string(readback) != "three" {
+		t.Fatalf("latest readback=%q generation=%d err=%v, want three at generation 3", readback, generation, err)
+	}
+	if _, err := os.Stat(lockPath); err != nil {
+		t.Fatalf("legacy lock path was not used: %v", err)
 	}
 }
 
