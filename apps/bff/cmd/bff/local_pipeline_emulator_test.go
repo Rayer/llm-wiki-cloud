@@ -452,7 +452,7 @@ func TestLocalPipelineHTTPTriggerRunsWorkerAndReportsSuccessAndFailure(t *testin
 		if tokenValue != "fixture-scheduler-token" || gotAudience != scheduledAudience {
 			return nil, errors.New("scheduled identity fixture mismatch")
 		}
-		return &idtoken.Payload{Audience: scheduledAudience, Claims: map[string]interface{}{
+		return &idtoken.Payload{Issuer: "https://accounts.google.com", Audience: scheduledAudience, Claims: map[string]interface{}{
 			"email": scheduledServiceAccount, "email_verified": true,
 		}}, nil
 	})
@@ -538,6 +538,11 @@ func TestLocalPipelineHTTPTriggerRunsWorkerAndReportsSuccessAndFailure(t *testin
 	if !receiptFound {
 		t.Fatalf("scheduled source receipts did not mark only the consumed input: %+v", sourceReceiptArtifact.Sources)
 	}
+	publishedConceptPage, err := pinnedScheduledStorage.ReadFile(ctx, "wiki/alpha.md")
+	if err != nil || !bytes.Contains(publishedConceptPage, rawBody) {
+		t.Fatalf("pinned scheduled concept page did not contain the exact newly consumed raw bytes: err=%v page=%q", err, publishedConceptPage)
+	}
+	conceptPageDigest := sha256.Sum256(publishedConceptPage)
 	sourceRequest, err := http.NewRequestWithContext(ctx, http.MethodGet, server.URL+"/api/v1/sources", nil)
 	if err != nil {
 		t.Fatalf("create scheduled source readback request: %v", err)
@@ -606,23 +611,38 @@ func TestLocalPipelineHTTPTriggerRunsWorkerAndReportsSuccessAndFailure(t *testin
 	}
 
 	queryCache := cache.New()
-	queryExecutor, err := queryquality.NewStrictProductionExecutorWithQueryServiceConfig(queryCache, nil, nil, query.NewService(queryCache, nil, llm.NewClient("local-fixture-no-network")), queryquality.DefaultRetrievalProfile(), queryquality.StructuredPlanPromptID, queryquality.DefaultOptions(), query.RuntimeConfigIdentity{})
+	var queryModelCalls atomic.Int64
+	modelServer := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		queryModelCalls.Add(1)
+		response, err := (localPipelineCitationTransport{}).RoundTrip(r)
+		if err != nil {
+			http.Error(w, err.Error(), http.StatusBadRequest)
+			return
+		}
+		defer response.Body.Close()
+		for name, values := range response.Header {
+			for _, value := range values {
+				w.Header().Add(name, value)
+			}
+		}
+		w.WriteHeader(response.StatusCode)
+		_, _ = io.Copy(w, response.Body)
+	}))
+	defer modelServer.Close()
+	queryExecutor, err := queryquality.NewStrictProductionExecutorWithQueryServiceConfig(queryCache, nil, nil, query.NewService(queryCache, nil, llm.NewClientWithOptions("local-fixture-no-network", llm.ClientOptions{Model: "deepseek-flash", BaseURL: modelServer.URL})), queryquality.DefaultRetrievalProfile(), queryquality.StructuredPlanPromptID, queryquality.DefaultOptions(), query.RuntimeConfigIdentity{})
 	if err != nil {
 		t.Fatalf("configure production Query executor fixture: %v", err)
 	}
-	h.SetQueryExecutor(queryExecutor)
-	priorDefaultTransport := http.DefaultTransport
-	http.DefaultTransport = localPipelineCitationTransport{}
+	queryExecutorCapture := &localPipelineQueryExecutorCapture{next: queryExecutor}
+	h.SetQueryExecutor(queryExecutorCapture)
 	queryRequest, err := http.NewRequestWithContext(ctx, http.MethodPost, server.URL+"/api/v1/query", strings.NewReader(`{"q":"rare blue lantern","mode":"wiki"}`))
 	if err != nil {
-		http.DefaultTransport = priorDefaultTransport
 		t.Fatalf("create scheduled source Query request: %v", err)
 	}
 	queryRequest.Header.Set("Authorization", "Bearer "+token)
 	queryRequest.Header.Set("X-Project-ID", scheduledProject)
 	queryRequest.Header.Set("Content-Type", "application/json")
 	queryResponse, err := server.Client().Do(queryRequest)
-	http.DefaultTransport = priorDefaultTransport
 	if err != nil {
 		t.Fatalf("query newly published scheduled source: %v", err)
 	}
@@ -630,17 +650,23 @@ func TestLocalPipelineHTTPTriggerRunsWorkerAndReportsSuccessAndFailure(t *testin
 	queryDecodeErr := json.NewDecoder(io.LimitReader(queryResponse.Body, 1<<20)).Decode(&queryResult)
 	_ = queryResponse.Body.Close()
 	if queryResponse.StatusCode != http.StatusOK || queryDecodeErr != nil {
-		t.Fatalf("scheduled source Query status=%d decodeErr=%v body=%+v", queryResponse.StatusCode, queryDecodeErr, queryResult)
+		t.Fatalf("scheduled source Query status=%d decodeErr=%v executorErr=%v body=%+v", queryResponse.StatusCode, queryDecodeErr, queryExecutorCapture.err, queryResult)
 	}
-	var citedScheduledContent bool
+	var citedScheduledConcept, returnedScheduledConcept bool
 	for _, citation := range queryResult.Citations {
-		if citation.Slug == "alpha" || citation.Slug == "lwc413-e2e-source" {
-			citedScheduledContent = true
+		if citation.Type == "concept" && citation.Slug == "alpha" && citation.ID != "" && citation.Path == "/concepts/"+citation.ID+"-alpha" && bytes.Contains(publishedConceptPage, []byte("id: "+citation.ID)) {
+			citedScheduledConcept = true
 		}
 	}
-	if !citedScheduledContent {
-		t.Fatalf("scheduled source Query did not cite the newly published generation: results=%+v citations=%+v answer=%q", queryResult.Results, queryResult.Citations, queryResult.AISynth)
+	for _, result := range queryResult.Results {
+		if result.Type == "concept" && result.Slug == "alpha" {
+			returnedScheduledConcept = true
+		}
 	}
+	if !citedScheduledConcept || !returnedScheduledConcept || strings.TrimSpace(queryResult.AISynth) == "" || !strings.Contains(strings.ToLower(queryResult.AISynth), "newly published raw article") || queryModelCalls.Load() == 0 {
+		t.Fatalf("scheduled source Query did not answer from and cite the concept page containing the newly published raw bytes: result=%t citation=%t model_calls=%d results=%+v citations=%+v answer=%q", returnedScheduledConcept, citedScheduledConcept, queryModelCalls.Load(), queryResult.Results, queryResult.Citations, queryResult.AISynth)
+	}
+	t.Logf("SCHEDULED_QUERY_EVIDENCE status=%d execution_id=%s generation_id=%s source_id=%s source_slug=%s raw_sha256=%s concept_page_sha256=%x model_adapter=loopback-openai-compatible model_calls=%d results=%+v citations=%+v answer=%q", queryResponse.StatusCode, scheduledExecutionID, scheduledManifest.GenerationID, sourceRow.StableID, scheduledSourceSlug, wantRawDigest, conceptPageDigest, queryModelCalls.Load(), queryResult.Results, queryResult.Citations, queryResult.AISynth)
 
 	time.Sleep(1100 * time.Millisecond) // satisfy the configured test cooldown
 	if _, err := projectStorage.WriteBytes(ctx, []byte("Incremental local pipeline source."), "raw/incremental.md"); err != nil {
@@ -1644,6 +1670,17 @@ func verifyLocalPipelineRetainedSentinels(ctx context.Context, fs *cloudfirestor
 }
 
 type localPipelineCitationTransport struct{}
+
+type localPipelineQueryExecutorCapture struct {
+	next query.Executor
+	err  error
+}
+
+func (c *localPipelineQueryExecutorCapture) Execute(ctx context.Context, reader cache.Reader, request query.Request) (query.Result, error) {
+	result, err := c.next.Execute(ctx, reader, request)
+	c.err = err
+	return result, err
+}
 
 func (localPipelineCitationTransport) RoundTrip(request *http.Request) (*http.Response, error) {
 	requestBody, err := io.ReadAll(request.Body)

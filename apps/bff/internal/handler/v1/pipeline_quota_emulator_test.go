@@ -304,7 +304,7 @@ func TestPipelineQuotaCloudRunHandlerEmulator(t *testing.T) {
 		t.Fatalf("admin pipeline trigger returned %d, want 202: %s", adminRecorder.Code, adminRecorder.Body.String())
 	}
 	assertQuotaState(t, ctx, fsClient, adminUser, adminProject, 0, "")
-	assertQuotaProjectHasNoReservation(t, ctx, fsClient, adminProject)
+	assertAdminPipelineReservation(t, ctx, fsClient, adminProject)
 
 	// A valid execution publication receipt is authoritative even when Cloud
 	// Run reports a cleanup exit failure. Build and run the actual deployed-mode
@@ -354,6 +354,27 @@ func TestPipelineQuotaCloudRunHandlerEmulator(t *testing.T) {
 	committedID := triggerQuotaPipeline(t, deployedHandler, userID, committedProject, http.StatusAccepted)
 	committedReservation := fixture.reservationID(committedID)
 	worker := buildLocalCloudPipelineFixtureWorker(t, ctx)
+	runConfirmedWorkerFailure := func(projectID, executionID string) {
+		t.Helper()
+		projectStore := deployedQuotaClient.WithScope(userID, projectID)
+		if _, err := projectStore.WriteBytes(ctx, []byte("synthetic child-failure input"), "raw/fixture-fail.md"); err != nil {
+			t.Fatalf("seed deployed worker failure input for %s: %v", projectID, err)
+		}
+		output, err := runCloudRunQuotaFixtureWorker(t, ctx, worker, workerBucket, userID, projectID, executionID, storageEndpoint)
+		if err == nil || !strings.Contains(string(output), "fixture compile failure") {
+			t.Fatalf("run deployed worker failure for %s: output=%q err=%v", projectID, output, err)
+		}
+		data, err := projectStore.ReadFileLimited(ctx, "cache/pipeline-"+executionID+".failure.json", 4<<10+1)
+		var diagnostic struct {
+			Status    string `json:"status"`
+			Stage     string `json:"stage"`
+			Error     string `json:"error_class"`
+			Execution string `json:"execution"`
+		}
+		if err != nil || json.Unmarshal(data, &diagnostic) != nil || diagnostic.Status != "failed" || diagnostic.Stage != "synto_run" || diagnostic.Error != "unknown" || diagnostic.Execution != executionID {
+			t.Fatalf("deployed worker failure evidence for %s: diagnostic=%+v bytes=%q err=%v", projectID, diagnostic, data, err)
+		}
+	}
 	workerCommand := exec.CommandContext(ctx, worker,
 		"--bucket", workerBucket, "--user-id", userID, "--project-id", committedProject,
 		"--execution-id", committedID, "run", `[["run","--auto-approve"]]`)
@@ -501,7 +522,9 @@ func TestPipelineQuotaCloudRunHandlerEmulator(t *testing.T) {
 	}
 	assertQuotaReservation(t, ctx, fsClient, committedReservation, "charged")
 	assertQuotaState(t, ctx, fsClient, userID, committedProject, 1, pipelinequota.DayKeyUTC(time.Now()))
-	assertQuotaPipelineStatus(t, proxyHandler, userID, committedProject, committedID, "SUCCEEDED", "", "charged", 1)
+	// Provider process status stays distinct from the independently verified
+	// publication receipt that keeps this execution charged.
+	assertQuotaPipelineStatus(t, proxyHandler, userID, committedProject, committedID, "FAILED", "", "charged", 1)
 
 	// A later failed execution must be refunded from its own bounded diagnostic
 	// even while the current manifest remains owned by the preceding success.
@@ -557,6 +580,10 @@ func TestPipelineQuotaCloudRunHandlerEmulator(t *testing.T) {
 		t.Fatalf("run execution that will be overwritten: %v\n%s", err, output)
 	}
 	fixture.setStatus(overwrittenID, "FAILED")
+	if err := proxyHandler.ReconcilePipelineQuota(ctx); err != nil {
+		t.Fatalf("settle committed execution before admitting the later overwrite: %v", err)
+	}
+	assertQuotaReservation(t, ctx, fsClient, overwrittenReservation, "charged")
 	time.Sleep(1100 * time.Millisecond)
 	laterPublicationID := triggerQuotaPipeline(t, deployedHandler, userID, committedProject, http.StatusAccepted)
 	laterPublicationReservation := fixture.reservationID(laterPublicationID)
@@ -576,7 +603,7 @@ func TestPipelineQuotaCloudRunHandlerEmulator(t *testing.T) {
 
 	// A restarted handler recovers a reservation whose execution link was not
 	// persisted, and refuses to associate a different owner's execution.
-	restartedHandler := New(quotaClient, fsClient, search.NewIndex(), conceptcache.New(), nil, nil)
+	restartedHandler := New(deployedQuotaClient, fsClient, search.NewIndex(), conceptcache.New(), nil, nil)
 	restartedHandler.metadataTokenURL = h.metadataTokenURL
 	restartedHandler.SetPipelineJobURL("http://run.test/job:run")
 	restartedHandler.httpClient = &http.Client{Transport: roundTripFunc(fixture.roundTrip)}
@@ -585,7 +612,8 @@ func TestPipelineQuotaCloudRunHandlerEmulator(t *testing.T) {
 	if _, reserved, err := fsClient.ReserveQuota(ctx, recoveryReservation, userID, recoveryProject, h.pipelineLimits(), time.Now().UTC(), pipelinequota.ModeIncremental, false, false, 1, 0, 0); err != nil || !reserved {
 		t.Fatalf("reserve Cloud Run restart fixture: reserved=%v err=%v", reserved, err)
 	}
-	fixture.addExecution(userID, recoveryProject, recoveryReservation, "FAILED")
+	recoveryExecutionID := fixture.addExecution(userID, recoveryProject, recoveryReservation, "FAILED")
+	runConfirmedWorkerFailure(recoveryProject, recoveryExecutionID)
 	if err := restartedHandler.ReconcilePipelineQuota(ctx); err != nil {
 		t.Fatalf("recover unlinked failed execution after restart: %v", err)
 	}
@@ -606,15 +634,17 @@ func TestPipelineQuotaCloudRunHandlerEmulator(t *testing.T) {
 	}
 	assertQuotaReservation(t, ctx, fsClient, ownerReservation, "pending")
 	assertQuotaState(t, ctx, fsClient, userID, ownerProject, 1, pipelinequota.DayKeyUTC(time.Now()))
-	fixture.addExecution(userID, ownerProject, ownerReservation, "FAILED")
+	ownerExecutionID := fixture.addExecution(userID, ownerProject, ownerReservation, "FAILED")
+	runConfirmedWorkerFailure(ownerProject, ownerExecutionID)
 	if err := restartedHandler.ReconcilePipelineQuota(ctx); err != nil {
 		t.Fatalf("reconcile matching owner execution: %v", err)
 	}
 	assertQuotaReservation(t, ctx, fsClient, ownerReservation, "refunded")
 	assertQuotaState(t, ctx, fsClient, userID, ownerProject, 0, pipelinequota.DayKeyUTC(time.Now()))
 
-	// A failed reservation settled after later same-day and cross-day runs must
-	// never overwrite the later run's credit count or cooldown timestamp.
+	// A pending shared claim blocks a later reservation. After settling that
+	// failed claim, a later run can start; replaying the old settlement must not
+	// overwrite the later run's credit count or cooldown timestamp.
 	quotaLimits := pipelinequota.Limits{DailyLimit: 5, Cooldown: time.Second, MinNewRaw: 1}
 	base := time.Date(2026, 10, 7, 12, 0, 0, 0, time.UTC)
 	quotaProject := "later-run-preserved"
@@ -622,13 +652,15 @@ func TestPipelineQuotaCloudRunHandlerEmulator(t *testing.T) {
 		t.Fatalf("reserve first same-day run: reserved=%v err=%v", reserved, err)
 	}
 	later := base.Add(2 * time.Second)
-	if _, reserved, err := fsClient.ReserveQuota(ctx, "same-day-later", userID, quotaProject, quotaLimits, later, pipelinequota.ModeIncremental, false, false, 1, 0, 0); err != nil || !reserved {
-		t.Fatalf("reserve later same-day run: reserved=%v err=%v", reserved, err)
+	if _, reserved, err := fsClient.ReserveQuota(ctx, "same-day-later", userID, quotaProject, quotaLimits, later, pipelinequota.ModeIncremental, false, false, 1, 0, 0); err != nil || reserved {
+		t.Fatalf("pending same-day reservation did not block later admission: reserved=%v err=%v", reserved, err)
 	}
-	if _, err := fsClient.SettleQuotaReservation(ctx, "same-day-old", "FAILED"); err != nil {
+	if settlement, err := fsClient.SettleQuotaReservation(ctx, "same-day-old", "FAILED"); err != nil || settlement != "refunded" {
 		t.Fatalf("refund failed earlier same-day run: %v", err)
 	}
-	assertQuotaSnapshot(t, ctx, fsClient, userID, quotaProject, 1, pipelinequota.DayKeyUTC(base), later)
+	if _, reserved, err := fsClient.ReserveQuota(ctx, "same-day-later", userID, quotaProject, quotaLimits, later, pipelinequota.ModeIncremental, false, false, 1, 0, 0); err != nil || !reserved {
+		t.Fatalf("reserve later same-day run after old failure settlement: reserved=%v err=%v", reserved, err)
+	}
 	if _, err := fsClient.SettleQuotaReservation(ctx, "same-day-old", "FAILED"); err != nil {
 		t.Fatalf("repeat earlier same-day refund: %v", err)
 	}
@@ -643,11 +675,17 @@ func TestPipelineQuotaCloudRunHandlerEmulator(t *testing.T) {
 	if _, reserved, err := fsClient.ReserveQuota(ctx, "cross-day-old", userID, quotaProject, quotaLimits, previousDay, pipelinequota.ModeIncremental, false, false, 1, 0, 0); err != nil || !reserved {
 		t.Fatalf("reserve previous-day run: reserved=%v err=%v", reserved, err)
 	}
+	if _, reserved, err := fsClient.ReserveQuota(ctx, "cross-day-later", userID, quotaProject, quotaLimits, nextDay, pipelinequota.ModeIncremental, false, false, 1, 0, 0); err != nil || reserved {
+		t.Fatalf("pending previous-day reservation did not block next-day admission: reserved=%v err=%v", reserved, err)
+	}
+	if settlement, err := fsClient.SettleQuotaReservation(ctx, "cross-day-old", "FAILED"); err != nil || settlement != "refunded" {
+		t.Fatalf("refund previous-day run: %v", err)
+	}
 	if _, reserved, err := fsClient.ReserveQuota(ctx, "cross-day-later", userID, quotaProject, quotaLimits, nextDay, pipelinequota.ModeIncremental, false, false, 1, 0, 0); err != nil || !reserved {
-		t.Fatalf("reserve next-day run: reserved=%v err=%v", reserved, err)
+		t.Fatalf("reserve next-day run after old failure settlement: reserved=%v err=%v", reserved, err)
 	}
 	if _, err := fsClient.SettleQuotaReservation(ctx, "cross-day-old", "FAILED"); err != nil {
-		t.Fatalf("refund previous-day run: %v", err)
+		t.Fatalf("repeat previous-day refund after next-day run: %v", err)
 	}
 	assertQuotaSnapshot(t, ctx, fsClient, userID, quotaProject, 1, pipelinequota.DayKeyUTC(nextDay), nextDay)
 
@@ -1268,6 +1306,24 @@ func assertQuotaProjectHasNoReservation(t *testing.T, ctx context.Context, clien
 	docs, err := scopedfirestore.Collection(client.Raw(), "pipeline_quota_reservations").Where("project_id", "==", projectID).Documents(ctx).GetAll()
 	if err != nil || len(docs) != 0 {
 		t.Fatalf("reservations for %s: count=%d err=%v, want none", projectID, len(docs), err)
+	}
+}
+
+func assertAdminPipelineReservation(t *testing.T, ctx context.Context, client *scopedfirestore.Client, projectID string) {
+	t.Helper()
+	docs, err := scopedfirestore.Collection(client.Raw(), "pipeline_quota_reservations").Where("project_id", "==", projectID).Documents(ctx).GetAll()
+	if err != nil || len(docs) != 1 {
+		t.Fatalf("admin reservations for %s: count=%d err=%v, want one shared admission claim", projectID, len(docs), err)
+	}
+	data := docs[0].Data()
+	if got := data["trigger"]; got != string(pipelinequota.TriggerAdmin) {
+		t.Fatalf("admin reservation trigger=%v, want %q", got, pipelinequota.TriggerAdmin)
+	}
+	if got := data["budget_class"]; got != "none" {
+		t.Fatalf("admin reservation budget_class=%v, want none", got)
+	}
+	if got, _ := data["execution_id"].(string); strings.TrimSpace(got) == "" {
+		t.Fatal("admin admission reservation has no linked execution ID")
 	}
 }
 

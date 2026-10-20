@@ -91,7 +91,7 @@ func execLocalCloudFixture(ctx context.Context, vault string, command, _ []strin
 	// citations without changing the other worker fixture scenarios.
 	if raw, err := os.ReadFile(filepath.Join(vault, "raw", "lwc413-e2e-source.md")); err == nil && strings.HasPrefix(string(raw), "LWC413_CAUSAL_E2E:") {
 		rawPath := "raw/lwc413-e2e-source.md"
-		sourceID, slug := "lwc413-source", "lwc413-e2e-source"
+		sourceID, slug := "a5d9e3f1a028", "lwc413-e2e-source"
 		contentHash := fmt.Sprintf("%x", sha256.Sum256(raw))
 		index := fmt.Sprintf(`{"schema_version":1,"pack":{"id":"fixture","name":"fixture","version":"0","language":["en"],"capabilities":["articles","concepts"]},"articles":[{"id":"article","entity_id":"01JAZ5N7Y3K8M2Q4R6T9VWXAC8","name":"alpha","path":"wiki/alpha.md","summary":null,"tags":[],"aliases":[],"confidence":"high"}],"terms":[],"papers":[],"sources":[{"id":"%s","title":"Scheduled causal source","source_type":"raw"}],"source_concepts":[{"source_path":"%s","content_hash":"%s","concepts":[{"name":"alpha","entity_id":"01JAZ5N7Y3K8M2Q4R6T9VWXAC8"}]}],"synthesis":[],"stats":{"article_count":1,"draft_count":0,"concept_count":1,"alias_count":0,"knowledge_item_count":0,"source_count":1,"source_segment_count":0,"failed_note_count":0,"failed_concept_count":0}}`, rawPath, rawPath, contentHash)
 		for path, content := range map[string]string{
