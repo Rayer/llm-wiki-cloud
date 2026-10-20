@@ -448,6 +448,16 @@ func ReleaseQuotaReservationInTransaction(ctx context.Context, tx *firestore.Tra
 	return err
 }
 
+// ReleaseQuotaReservationIfAttemptInTransaction releases only the exact
+// scheduled reservation incarnation observed by a recovery marker.
+func ReleaseQuotaReservationIfAttemptInTransaction(ctx context.Context, tx *firestore.Transaction, fs *firestore.Client, reservationID, attemptID string) (bool, error) {
+	attemptID = strings.TrimSpace(attemptID)
+	if attemptID == "" {
+		return false, errors.New("pipeline quota attempt ID is required")
+	}
+	return releaseQuotaReservationInTransaction(ctx, tx, fs, reservationID, attemptID)
+}
+
 func releaseQuotaReservationInTransaction(ctx context.Context, tx *firestore.Transaction, fs *firestore.Client, reservationID, expectedAttemptID string) (bool, error) {
 	reservationRef := Collection(fs, pipelineQuotaReservationCollection).Doc(reservationID)
 	reservationSnapshot, err := tx.Get(reservationRef)

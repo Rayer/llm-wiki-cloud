@@ -1848,18 +1848,10 @@ func (h *Handler) writeConfirmedPipelineInvokeFailure(ctx context.Context, userI
 	if h.store == nil || userID == "" || projectID == "" || reservationID == "" {
 		return errors.New("pipeline recovery storage unavailable")
 	}
-	evidence := struct {
-		Version    int    `json:"version"`
-		Status     string `json:"status"`
-		AttemptID  string `json:"attempt_id"`
-		Stage      string `json:"stage"`
-		ErrorClass string `json:"error_class"`
-		Execution  string `json:"execution"`
-		Message    string `json:"message"`
-	}{
-		Version: 1, Status: "failed", AttemptID: strings.TrimSpace(attemptID), Stage: string(pipelinediagnostic.StageUnknown),
-		ErrorClass: string(pipelinediagnostic.ErrorClassUnknown), Execution: reservationID,
-		Message: "pipeline invocation failed before an execution was accepted",
+	evidence := pipelinediagnostic.ConfirmedInvokeFailure{
+		Version: 1, Status: "failed", AttemptID: strings.TrimSpace(attemptID), Stage: pipelinediagnostic.StageUnknown,
+		ErrorClass: pipelinediagnostic.ErrorClassUnknown, Execution: reservationID,
+		Message: pipelinediagnostic.ConfirmedInvokeFailureMessage,
 	}
 	data, err := json.Marshal(evidence)
 	if err != nil {
@@ -1887,31 +1879,11 @@ func (h *Handler) hasConfirmedPipelineInvokeFailure(ctx context.Context, reserva
 	if len(data) > maxPipelineDiagnosticBytes {
 		return false, nil
 	}
-	var evidence struct {
-		Version    int    `json:"version"`
-		Status     string `json:"status"`
-		AttemptID  string `json:"attempt_id"`
-		Stage      string `json:"stage"`
-		ErrorClass string `json:"error_class"`
-		Execution  string `json:"execution"`
-		Message    string `json:"message"`
-	}
-	decoder := json.NewDecoder(bytes.NewReader(data))
-	decoder.DisallowUnknownFields()
-	if err := decoder.Decode(&evidence); err != nil {
+	evidence, err := pipelinediagnostic.DecodeConfirmedInvokeFailure(data)
+	if err != nil {
 		return false, nil
 	}
-	var trailing any
-	if err := decoder.Decode(&trailing); err != io.EOF {
-		return false, nil
-	}
-	_, validStage := pipelinediagnostic.ValidStages[pipelinediagnostic.Stage(evidence.Stage)]
-	_, validClass := pipelinediagnostic.ValidErrorClasses[pipelinediagnostic.ErrorClass(evidence.ErrorClass)]
-	if reservation.Trigger == pipelinequota.TriggerScheduledDaily && reservation.AttemptID == "" {
-		return false, nil
-	}
-	return evidence.Version == 1 && evidence.Status == "failed" && evidence.Execution == reservation.ID &&
-		evidence.AttemptID == reservation.AttemptID && evidence.Message == "pipeline invocation failed before an execution was accepted" && validStage && validClass, nil
+	return evidence.Confirms(reservation.ID, reservation.AttemptID, reservation.Trigger == pipelinequota.TriggerScheduledDaily), nil
 }
 
 func (h *Handler) attachPipelineDiagnostic(ctx context.Context, response *handler.PipelineExecutionResponse, owner *pipelineExecutionOwner) {
