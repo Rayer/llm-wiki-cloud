@@ -650,6 +650,10 @@
     "pipelineDesc": "The pipeline runs:",
     "restricted": "This feature is not available in demo mode"
   },
+  "QueryResults": {
+    "resultUnavailable": "This saved result is no longer available. Search again to get a new result.",
+    "searchAgain": "Search again"
+  },
   "QueryErrors": {
     "queryFailure": "We could not complete your search. Try again; if the issue continues, share the diagnostic ID with support.",
     "invalidRequest": "The search request is invalid. Check the query and try again.",
