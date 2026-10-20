@@ -254,6 +254,98 @@ test('confirmScrape submits only the bound confirmation reference and parses sta
   }
 });
 
+test('scrapeUrl marks a dispatched request transport failure as an unknown outcome without retrying', async () => {
+  configureApiAuth({
+    getAccessToken: () => 'jwt-token',
+    refreshAccessToken: async () => null,
+    onUnauthorized: () => undefined,
+  });
+  globalThis.window = { localStorage: { getItem: () => 'project-1' } };
+  const originalFetch = globalThis.fetch;
+  let requests = 0;
+  globalThis.fetch = async () => {
+    requests++;
+    throw new TypeError('Failed to fetch');
+  };
+
+  try {
+    await assert.rejects(
+      () => scrapeUrl('https://example.com/article', 'project-1'),
+      (error) => error instanceof ApiError && error.status === 0,
+    );
+    assert.equal(requests, 1);
+  } finally {
+    globalThis.fetch = originalFetch;
+  }
+});
+
+test('confirmScrape marks an invalid success response as an unknown outcome', async () => {
+  configureApiAuth({
+    getAccessToken: () => 'jwt-token',
+    refreshAccessToken: async () => null,
+    onUnauthorized: () => undefined,
+  });
+  globalThis.window = { localStorage: { getItem: () => 'project-1' } };
+  const originalFetch = globalThis.fetch;
+  globalThis.fetch = async () => new Response('not-json', { status: 200 });
+
+  try {
+    await assert.rejects(
+      () => confirmScrape('opaque-reference', 'project-1'),
+      (error) => error instanceof ApiError && error.status === 0,
+    );
+  } finally {
+    globalThis.fetch = originalFetch;
+  }
+});
+
+test('scrapeUrl preserves an explicit precommit validation response', async () => {
+  configureApiAuth({
+    getAccessToken: () => 'jwt-token',
+    refreshAccessToken: async () => null,
+    onUnauthorized: () => undefined,
+  });
+  globalThis.window = { localStorage: { getItem: () => 'project-1' } };
+  const originalFetch = globalThis.fetch;
+  let requests = 0;
+  globalThis.fetch = async () => {
+    requests++;
+    return Response.json({ error: 'invalid URL' }, { status: 422 });
+  };
+
+  try {
+    await assert.rejects(
+      () => scrapeUrl('https://example.com/article', 'project-1'),
+      (error) => error instanceof ApiError && error.status === 422 && /invalid URL/.test(error.message),
+    );
+    assert.equal(requests, 1);
+  } finally {
+    globalThis.fetch = originalFetch;
+  }
+});
+
+test('scrapeUrl keeps auth rejection before request dispatch definitive', async () => {
+  configureApiAuth({
+    getAccessToken: () => null,
+    refreshAccessToken: async () => null,
+    onUnauthorized: () => undefined,
+  });
+  globalThis.window = { localStorage: { getItem: () => 'project-1' } };
+  const originalFetch = globalThis.fetch;
+  let requests = 0;
+  globalThis.fetch = async () => {
+    requests++;
+    return Response.json({ status: 'stored', message: 'unexpected' });
+  };
+
+  try {
+    await assert.rejects(() => scrapeUrl('https://example.com/article', 'project-1'), /Authentication required/);
+    assert.equal(requests, 0);
+  } finally {
+    globalThis.fetch = originalFetch;
+  }
+});
+
 test('apiFetch records initial and replay response IDs as separate server exchanges', async () => {
   let sessionEpoch = 3;
   configureApiAuth({

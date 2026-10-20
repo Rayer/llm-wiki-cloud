@@ -1,6 +1,6 @@
 import { afterEach, beforeEach, expect, it, vi } from 'vitest';
 import { cleanup, fireEvent, render, screen, waitFor } from '@testing-library/react';
-import type { ScrapeResult } from '@/lib/api';
+import { ApiError, type ScrapeResult } from '@/lib/api';
 
 const mocks = vi.hoisted(() => ({
   currentProject: { id: 'project-a', name: 'Project A' } as { id: string; name: string } | null,
@@ -138,4 +138,40 @@ it('discards a late URL result after the selected Project changes', async () => 
   await waitFor(() => expect(mocks.getPipelineStatus).toHaveBeenCalledWith('project-b'));
   expect(screen.queryByText('Example article')).toBeNull();
   expect(mocks.scrapeUrl).toHaveBeenCalledWith('https://example.com/article', 'project-a');
+});
+
+it('reports an unknown URL import outcome after a transport failure without retrying', async () => {
+  let serverCommitted = false;
+  mocks.scrapeUrl.mockImplementation(async () => {
+    serverCommitted = true;
+    throw new ApiError('response lost after commit', 0);
+  });
+  render(<PipelineClient />);
+  submitUrl();
+
+  expect((await screen.findByRole('alert')).textContent).toBe('Pipeline.urlUncertain');
+  expect(serverCommitted).toBe(true);
+  expect(mocks.scrapeUrl).toHaveBeenCalledTimes(1);
+});
+
+it('reports an unknown URL confirmation outcome after a transport failure without refetching', async () => {
+  mocks.scrapeUrl.mockResolvedValueOnce(uncertain);
+  mocks.confirmScrape.mockRejectedValueOnce(new ApiError('response lost after commit', 0));
+  render(<PipelineClient />);
+  submitUrl();
+  await screen.findByText('Pipeline.urlNeedsConfirmation');
+  fireEvent.click(screen.getByRole('button', { name: 'Pipeline.urlConfirmCandidate' }));
+
+  expect((await screen.findByRole('alert')).textContent).toBe('Pipeline.urlUncertain');
+  expect(mocks.confirmScrape).toHaveBeenCalledTimes(1);
+  expect(mocks.scrapeUrl).toHaveBeenCalledTimes(1);
+});
+
+it('keeps a definitive precommit rejection on the unavailable guidance', async () => {
+  mocks.scrapeUrl.mockRejectedValueOnce(new ApiError('invalid request', 422));
+  render(<PipelineClient />);
+  submitUrl();
+
+  expect((await screen.findByRole('alert')).textContent).toBe('Pipeline.urlUnavailable');
+  expect(mocks.scrapeUrl).toHaveBeenCalledTimes(1);
 });
