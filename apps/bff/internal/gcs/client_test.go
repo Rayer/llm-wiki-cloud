@@ -122,6 +122,24 @@ func TestRawSyncUsesActualDigestAndGenerationCAS(t *testing.T) {
 	}
 }
 
+func TestConditionalRawWritePersistsDigestForListing(t *testing.T) {
+	client, _ := newMemoryClient()
+	project := client.WithScope("user-a", "project-a")
+	content := []byte("nested raw content")
+	if _, err := project.WriteFileIfGeneration(context.Background(), content, "raw/topic/note.md", 0); err != nil {
+		t.Fatalf("WriteFileIfGeneration() error = %v", err)
+	}
+
+	files, err := project.ListRawFiles(context.Background())
+	if err != nil {
+		t.Fatalf("ListRawFiles() error = %v", err)
+	}
+	wantDigest := fmt.Sprintf("%x", sha256.Sum256(content))
+	if len(files) != 1 || files[0].Name != "topic/note.md" || files[0].Path != "raw/topic/note.md" || files[0].SHA256 != wantDigest {
+		t.Fatalf("raw files = %#v, want nested entry with digest %q", files, wantDigest)
+	}
+}
+
 func (r *gcsHostReceipt) StartHostCall(stage, scheme, host string) func(string) {
 	r.stage, r.scheme, r.host = stage, scheme, host
 	return func(string) { r.finished++ }

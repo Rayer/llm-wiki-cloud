@@ -6,6 +6,7 @@ import (
 	"io"
 	"path"
 	"strings"
+	"unicode"
 	"unicode/utf8"
 )
 
@@ -40,8 +41,13 @@ type RawSyncStore interface {
 
 func ValidateRawSyncPath(value string) error {
 	if value == "" || len(value) > MaxRawSyncPathBytes || !utf8.ValidString(value) ||
-		strings.ContainsAny(value, "\\\x00\r\n") || strings.HasPrefix(value, "/") || path.Clean(value) != value {
+		strings.ContainsAny(value, "\\") || strings.HasPrefix(value, "/") || path.Clean(value) != value {
 		return errors.New("invalid raw-relative path")
+	}
+	for _, r := range value {
+		if unicode.IsControl(r) {
+			return errors.New("invalid raw-relative path")
+		}
 	}
 	if len(value) >= 2 && value[1] == ':' {
 		return errors.New("invalid raw-relative path")

@@ -1,6 +1,6 @@
 'use client';
 
-import { rawFileNameFromSource } from './raw-file-name.ts';
+import { isValidRawRelativePath } from './raw-file-name.ts';
 import { getRuntimeConfig } from './runtime-config.ts';
 import { normalizeAnnotationBody, normalizeAnnotationGeneration } from './source-annotation.ts';
 import { recordRequestIDHeader, recordRequestResponse } from './request-ids.ts';
@@ -1041,8 +1041,11 @@ export async function getRawFiles(projectId?: string) {
 }
 
 export async function getRawFilePreview(filename: string, projectId?: string): Promise<string> {
-  const rawFileName = rawFileNameFromSource(filename);
-  const response = await apiFetch(`/api/v1/raw/${encodeURIComponent(rawFileName)}?preview=true`, { projectId });
+  if (!isValidRawRelativePath(filename)) {
+    throw new ApiError('Invalid raw-relative path', 400);
+  }
+  const rawPath = filename.split('/').map(encodeURIComponent).join('/');
+  const response = await apiFetch(`/api/v1/raw/${rawPath}?preview=true`, { projectId });
 
   if (!response.ok) {
     const payload: unknown = await response.json().catch(() => null);
@@ -1125,7 +1128,7 @@ export async function searchWiki(query: string, mode: 'wiki' | 'full') {
 
 // ── Raw content management ──
 
-export type RawUploadStatus = 'created' | 'already_exists';
+export type RawUploadStatus = 'created' | 'already_exists' | 'replaced';
 
 export type RawUploadResult = {
   filename: string;
@@ -1220,11 +1223,13 @@ function sendRawUploadRequest(
   formData: FormData,
   projectId: string,
   accessToken: string,
+  directory: string,
   reportProgress: (progress: number) => void,
 ): Promise<XhrResponse> {
   return new Promise((resolve, reject) => {
     const xhr = new XMLHttpRequest();
-    xhr.open('POST', `${getRuntimeConfig().api_url}${toV1Path('/api/v1/raw/upload')}`);
+    const directoryQuery = directory === '' ? '' : `?dir=${encodeURIComponent(directory)}`;
+    xhr.open('POST', `${getRuntimeConfig().api_url}${toV1Path('/api/v1/raw/upload')}${directoryQuery}`);
     xhr.withCredentials = true;
 
     for (const [name, value] of Object.entries(buildProjectHeaders(projectId, accessToken))) {
@@ -1247,6 +1252,7 @@ export async function uploadRawFile(
   file: File,
   onProgress?: RawUploadProgressCallback,
   explicitProjectId?: string,
+  directory = '',
 ): Promise<RawUploadResult> {
   if (file.size > RAW_UPLOAD_MAX_BYTES) {
     throw new Error('file too large (max 5 MiB)');
@@ -1271,6 +1277,7 @@ export async function uploadRawFile(
     formData,
     projectId,
     accessToken,
+    directory,
     reportProgress,
   );
   if (
@@ -1304,6 +1311,7 @@ export async function uploadRawFile(
         formData,
         projectId,
         refreshedOperation.accessToken,
+        directory,
         reportProgress,
       );
       if (
@@ -1323,13 +1331,15 @@ export async function uploadRawFile(
 
   reportProgress(100);
   const body = (await response.json()) as Partial<RawUploadResult> & Record<string, unknown>;
-  const status = body.status === 'already_exists' ? 'already_exists' : 'created';
+  const status = body.status === 'already_exists' || body.status === 'replaced'
+    ? body.status
+    : response.status === 200 ? 'already_exists' : 'created';
   return {
     filename: typeof body.filename === 'string' ? body.filename : file.name,
     path: typeof body.path === 'string' ? body.path : '',
     bytes: typeof body.bytes === 'number' ? body.bytes : file.size,
     sha256: typeof body.sha256 === 'string' ? body.sha256 : '',
-    status: response.status === 200 ? 'already_exists' : status,
+    status,
   };
 }
 

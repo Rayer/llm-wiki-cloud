@@ -140,7 +140,7 @@ func TestWritesStatsAndDigest(t *testing.T) {
 	}
 }
 
-func TestListRawFilesReturnsDirectRawMetadata(t *testing.T) {
+func TestListRawFilesReturnsNestedRawMetadata(t *testing.T) {
 	root := t.TempDir()
 	mustWrite(t, root, "users/u/projects/p/raw/beta.md", "beta")
 	mustWrite(t, root, "users/u/projects/p/raw/alpha.txt", "alpha")
@@ -152,14 +152,17 @@ func TestListRawFilesReturnsDirectRawMetadata(t *testing.T) {
 		t.Fatalf("ListRawFiles() error = %v", err)
 	}
 
-	if len(files) != 2 {
-		t.Fatalf("len(files) = %d, want 2: %#v", len(files), files)
+	if len(files) != 3 {
+		t.Fatalf("len(files) = %d, want 3: %#v", len(files), files)
 	}
 	if files[0].Name != "alpha.txt" || files[0].Path != "raw/alpha.txt" || files[0].Size != int64(len("alpha")) || files[0].SHA256 == "" || files[0].Updated.IsZero() {
 		t.Fatalf("files[0] = %#v", files[0])
 	}
 	if files[1].Name != "beta.md" || files[1].Path != "raw/beta.md" || files[1].Size != int64(len("beta")) || files[1].SHA256 == "" || files[1].Updated.IsZero() {
 		t.Fatalf("files[1] = %#v", files[1])
+	}
+	if files[2].Name != "nested/ignored.md" || files[2].Path != "raw/nested/ignored.md" || files[2].Size != int64(len("ignored")) || files[2].SHA256 == "" || files[2].Updated.IsZero() {
+		t.Fatalf("files[2] = %#v", files[2])
 	}
 }
 

@@ -2,21 +2,20 @@ package v1
 
 import (
 	"bytes"
-	"context"
 	"crypto/sha256"
 	"errors"
 	"fmt"
-	scopedfirestore "github.com/rayer/llm-wiki-bff/internal/firestore"
 	"hash"
 	"io"
 	"net/http"
 	"regexp"
 	"strings"
 
-	"cloud.google.com/go/storage"
 	"github.com/gin-gonic/gin"
+	scopedfirestore "github.com/rayer/llm-wiki-bff/internal/firestore"
 	"github.com/rayer/llm-wiki-bff/internal/handler"
 	"github.com/rayer/llm-wiki-bff/internal/observability"
+	"github.com/rayer/llm-wiki-bff/internal/rawintake"
 	store "github.com/rayer/llm-wiki-bff/internal/storage"
 	"google.golang.org/grpc/codes"
 	"google.golang.org/grpc/status"
@@ -25,13 +24,9 @@ import (
 const (
 	maxRawUploadSize              = 5 << 20
 	maxRawUploadRequestSize       = maxRawUploadSize + (1 << 20)
-	rawUploadRelativeDir          = "raw"
 	rawUploadReadyStatus          = "ready"
 	rawUploadMarkdownSuffix       = ".md"
 	rawUploadMaxFilenameBytes     = 512
-	rawUploadStatusCreated        = "created"
-	rawUploadStatusAlreadyExists  = "already_exists"
-	rawUploadStatusReplaced       = "replaced"
 	rawUploadConflictErrorMessage = "filename already exists with different content"
 )
 
@@ -118,8 +113,14 @@ func (h *Handler) RawUpload(c *gin.Context) {
 		observability.WriteDataJSON(c, http.StatusBadRequest, handler.ErrorResponse{Error: err.Error()})
 		return
 	}
+	relativePath, err := rawintake.Destination(c.Query("dir"), filename)
+	if err != nil {
+		observability.FinishDataSpan(inputSpan, "rejected")
+		observability.WriteDataJSON(c, http.StatusBadRequest, handler.ErrorResponse{Error: "invalid raw-relative path"})
+		return
+	}
 
-	data, size, digest, err := readRawUploadBody(file)
+	data, size, _, err := readRawUploadBody(file)
 	if err != nil {
 		outcome := "rejected"
 		if !errors.Is(err, errRawUploadTooLarge) && !errors.Is(err, errRawUploadEmptyFile) {
@@ -144,52 +145,48 @@ func (h *Handler) RawUpload(c *gin.Context) {
 		observability.WriteDataJSON(c, http.StatusInternalServerError, handler.ErrorResponse{Error: "raw upload unavailable"})
 		return
 	}
-	relPath := rawUploadRelativePath(filename)
-	readCtx, readSpan := observability.StartDataPhase(c.Request.Context(), "read")
-	existingDigest, exists, err := resolveExistingRawDigest(readCtx, wikiStore, relPath)
-	if err != nil {
-		observability.FinishDataSpan(readSpan, observability.DataErrorOutcome(err))
-		observability.WriteDataJSON(c, http.StatusInternalServerError, handler.ErrorResponse{Error: "raw upload unavailable"})
-		return
-	}
-	observability.FinishDataSpan(readSpan, "success")
-	statusCode, uploadStatus, write := rawUploadDecision(exists, existingDigest, digest, rawUploadOverwrite(c))
-	if !write {
-		if statusCode == http.StatusConflict {
-			observability.WriteDataJSON(c, http.StatusConflict, handler.ErrorResponse{Error: rawUploadConflictErrorMessage})
-		} else {
-			observability.SetDataOperationOutcome(c.Request.Context(), "no_op")
-			observability.WriteDataJSON(c, statusCode, newRawUploadResponse(userID, projectID, filename, size, digest, uploadStatus))
-		}
+	conditionalWriter, ok := wikiStore.(store.ConditionalWriter)
+	if !ok {
+		observability.SetDataOperationOutcome(c.Request.Context(), "failure")
+		observability.WriteDataJSON(c, http.StatusServiceUnavailable, handler.ErrorResponse{Error: "raw upload unavailable"})
 		return
 	}
 	writeCtx, writeSpan := observability.StartDataPhase(c.Request.Context(), "write")
-	if _, err := wikiStore.WriteBytes(writeCtx, data, relPath); err != nil {
+	result, err := rawintake.Commit(writeCtx, conditionalWriter, relativePath, data, rawUploadOverwrite(c))
+	if err != nil {
+		if errors.Is(err, rawintake.ErrConflict) {
+			observability.FinishDataSpan(writeSpan, "precondition_failed")
+			observability.SetDataOperationOutcome(writeCtx, "precondition_failed")
+			observability.WriteDataJSON(c, http.StatusConflict, handler.ErrorResponse{Error: rawUploadConflictErrorMessage})
+			return
+		}
+		if errors.Is(err, rawintake.ErrCommitUncertain) {
+			observability.FinishDataSpan(writeSpan, "unknown")
+			observability.SetDataOperationOutcome(writeCtx, "unknown")
+			observability.WriteDataJSON(c, http.StatusServiceUnavailable, handler.ErrorResponse{Error: "raw upload outcome is uncertain; refresh the raw list before retrying"})
+			return
+		}
 		observability.FinishDataSpan(writeSpan, observability.DataErrorOutcome(err))
 		observability.WriteDataJSON(c, http.StatusInternalServerError, handler.ErrorResponse{Error: "raw upload unavailable"})
 		return
 	}
-	observability.FinishDataSpan(writeSpan, "committed")
-	observability.SetDataOperationOutcome(c.Request.Context(), "committed")
+	statusCode := http.StatusCreated
+	if result.Status != rawintake.StatusCreated {
+		statusCode = http.StatusOK
+	}
+	if result.Status == rawintake.StatusAlreadyExists {
+		observability.FinishDataSpan(writeSpan, "success")
+		observability.SetDataOperationOutcome(writeCtx, "no_op")
+	} else {
+		observability.FinishDataSpan(writeSpan, "committed")
+		observability.SetDataOperationOutcome(writeCtx, "committed")
+	}
 
-	observability.WriteDataJSON(c, statusCode, newRawUploadResponse(userID, projectID, filename, size, digest, uploadStatus))
+	observability.WriteDataJSON(c, statusCode, newRawUploadResponse(filename, size, result))
 }
 
 func rawUploadOverwrite(c *gin.Context) bool {
 	return c.PostForm("overwrite") == "true" || c.Query("overwrite") == "true"
-}
-
-func rawUploadDecision(exists bool, existingDigest, digest string, overwrite bool) (statusCode int, uploadStatus string, write bool) {
-	if !exists {
-		return http.StatusCreated, rawUploadStatusCreated, true
-	}
-	if existingDigest == digest {
-		return http.StatusOK, rawUploadStatusAlreadyExists, false
-	}
-	if overwrite {
-		return http.StatusOK, rawUploadStatusReplaced, true
-	}
-	return http.StatusConflict, "", false
 }
 
 func (h *Handler) rawUploadProjectReady(c *gin.Context, userID, projectID string) (bool, error) {
@@ -256,39 +253,12 @@ func copyRawUploadBody(dst *bytes.Buffer, hasher hash.Hash, src io.Reader) (int6
 	}
 }
 
-func rawUploadRelativePath(filename string) string {
-	return rawUploadRelativeDir + "/" + filename
-}
-
-// resolveExistingRawDigest returns the existing object digest and whether the
-// object exists. Prefer metadata SHA256; fall back to reading file bytes when
-// metadata is missing (legacy GCS objects) or when the store hashes on read.
-func resolveExistingRawDigest(ctx context.Context, wikiStore store.Store, relPath string) (string, bool, error) {
-	meta, err := wikiStore.GetMetaSHA256(ctx, relPath)
-	if err != nil {
-		return "", false, err
-	}
-	if meta != "" {
-		return meta, true, nil
-	}
-
-	data, err := wikiStore.ReadFile(ctx, relPath)
-	if err != nil {
-		if errors.Is(err, storage.ErrObjectNotExist) {
-			return "", false, nil
-		}
-		return "", false, err
-	}
-	sum := sha256.Sum256(data)
-	return fmt.Sprintf("%x", sum), true, nil
-}
-
-func newRawUploadResponse(userID, projectID, filename string, bytes int64, digest, uploadStatus string) rawUploadResponse {
+func newRawUploadResponse(filename string, bytes int64, result rawintake.Result) rawUploadResponse {
 	return rawUploadResponse{
 		Filename: filename,
-		Path:     store.ProjectObjectPath(userID, projectID, rawUploadRelativePath(filename)),
+		Path:     result.Path,
 		Bytes:    bytes,
-		SHA256:   digest,
-		Status:   uploadStatus,
+		SHA256:   result.SHA256,
+		Status:   string(result.Status),
 	}
 }

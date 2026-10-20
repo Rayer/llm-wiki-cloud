@@ -78,10 +78,11 @@ test('source lifecycle union preserves pending raw paths without fabricating ids
   }
 });
 
-test('raw preview converts lifecycle raw paths to the basename URL while preserving the display path', async () => {
+test('raw preview preserves nested lifecycle paths in the URL', async () => {
   configureProject();
   assert.equal(rawFileNameFromSource('raw/foo.md'), 'foo.md');
-  assert.equal(rawFileNameFromSource('raw/folder/foo.md'), 'foo.md');
+  assert.equal(rawFileNameFromSource('raw/folder/foo.md'), 'folder/foo.md');
+  assert.equal(rawFileNameFromSource('raw/raw/foo.md'), 'raw/foo.md');
   const originalFetch = globalThis.fetch;
   let requestedUrl = '';
   globalThis.fetch = async (url) => {
@@ -89,12 +90,15 @@ test('raw preview converts lifecycle raw paths to the basename URL while preserv
     return new Response('# Raw\n');
   };
   try {
+    await getRawFilePreview('folder/foo.md');
+    assert.match(requestedUrl, /\/api\/v1\/raw\/folder\/foo\.md\?preview=true$/);
+    assert.doesNotMatch(requestedUrl, /folder%2Ffoo\.md/);
     await getRawFilePreview('raw/foo.md');
-    assert.match(requestedUrl, /\/api\/v1\/raw\/foo\.md\?preview=true$/);
-    assert.doesNotMatch(requestedUrl, /raw%2Ffoo\.md/);
+    assert.match(requestedUrl, /\/api\/v1\/raw\/raw\/foo\.md\?preview=true$/);
   } finally {
     globalThis.fetch = originalFetch;
   }
+  await assert.rejects(getRawFilePreview('../foo.md'), { status: 400 });
 });
 
 test('annotation GET and PUT normalize body, generation, and lifecycle metadata', async () => {

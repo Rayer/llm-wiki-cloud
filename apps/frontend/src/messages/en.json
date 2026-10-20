@@ -750,6 +750,8 @@
     "description": "Project source files waiting for or already processed by the pipeline.",
       "uploadTitle": "Add raw files",
       "uploadHint": "Select one or more supported files (up to 3 uploads at a time). Files remain pending until you run the Pipeline from Home.",
+    "destinationDirectory": "Destination directory under raw/ (optional)",
+    "destinationDirectoryHint": "Leave blank to save files directly in raw/.",
     "loading": "Loading raw files",
     "empty": "No raw files yet. Upload content before running the pipeline.",
     "name": "Name",
