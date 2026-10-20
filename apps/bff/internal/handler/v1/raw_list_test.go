@@ -48,6 +48,38 @@ func TestRawListReturnsFilesWithIngestedFromArtifact(t *testing.T) {
 	}
 }
 
+func TestRawListReturnsNestedFilesWithDistinctBasenamesAndStatus(t *testing.T) {
+	root := t.TempDir()
+	mustWriteHandlerFile(t, root, "users/request-user/projects/demo/raw/same.md", "root")
+	mustWriteHandlerFile(t, root, "users/request-user/projects/demo/raw/topic/same.md", "nested")
+	mustWriteHandlerFile(t, root, "users/request-user/projects/demo/cache/raw_status.json", `{"version":1,"files":{"topic/same.md":{"path":"raw/topic/same.md","olw_status":"ingested"}}}`)
+
+	h := New(localfs.New(root), nil, search.NewIndex(), nil, nil, nil)
+	recorder := httptest.NewRecorder()
+	c, _ := gin.CreateTestContext(recorder)
+	c.Request = httptest.NewRequest(http.MethodGet, "/api/v1/raw", nil)
+	c.Set("userID", "request-user")
+	c.Set("projectID", "demo")
+
+	h.RawList(c)
+
+	if recorder.Code != http.StatusOK {
+		t.Fatalf("status = %d body=%s", recorder.Code, recorder.Body.String())
+	}
+	var body struct {
+		Files []struct {
+			Name     string `json:"name"`
+			Ingested bool   `json:"ingested"`
+		} `json:"files"`
+	}
+	if err := json.Unmarshal(recorder.Body.Bytes(), &body); err != nil {
+		t.Fatal(err)
+	}
+	if len(body.Files) != 2 || body.Files[0].Name != "same.md" || body.Files[1].Name != "topic/same.md" || body.Files[0].Ingested || !body.Files[1].Ingested {
+		t.Fatalf("body = %#v", body)
+	}
+}
+
 func TestRawListMissingStatusMarksAllUningested(t *testing.T) {
 	root := t.TempDir()
 	mustWriteHandlerFile(t, root, "users/request-user/projects/demo/raw/seed.md", "seed")
@@ -104,7 +136,7 @@ func TestRawPreviewReturnsMarkdownTextContent(t *testing.T) {
 	recorder := httptest.NewRecorder()
 	c, _ := gin.CreateTestContext(recorder)
 	c.Request = httptest.NewRequest(http.MethodGet, "/api/v1/raw/seed.md?preview=true", nil)
-	c.Params = gin.Params{{Key: "filename", Value: "seed.md"}}
+	c.Params = gin.Params{{Key: "path", Value: "/seed.md"}}
 	c.Set("userID", "request-user")
 	c.Set("projectID", "demo")
 
@@ -121,12 +153,35 @@ func TestRawPreviewReturnsMarkdownTextContent(t *testing.T) {
 	}
 }
 
+func TestRawPreviewReadsNestedMarkdownPath(t *testing.T) {
+	root := t.TempDir()
+	mustWriteHandlerFile(t, root, "users/request-user/projects/demo/raw/topic/note.md", "# Nested\n")
+
+	h := New(localfs.New(root), nil, search.NewIndex(), nil, nil, nil)
+	router := gin.New()
+	router.Use(func(c *gin.Context) {
+		c.Set("userID", "request-user")
+		c.Set("projectID", "demo")
+		c.Next()
+	})
+	router.GET("/api/v1/raw/*path", h.RawPreview)
+	recorder := httptest.NewRecorder()
+	router.ServeHTTP(recorder, httptest.NewRequest(http.MethodGet, "/api/v1/raw/topic/note.md?preview=true", nil))
+
+	if recorder.Code != http.StatusOK || recorder.Body.String() != "# Nested\n" {
+		t.Fatalf("status=%d body=%q", recorder.Code, recorder.Body.String())
+	}
+	if got := recorder.Header().Get("Content-Type"); got != "text/markdown; charset=utf-8" {
+		t.Fatalf("Content-Type = %q, want markdown text", got)
+	}
+}
+
 func TestRawPreviewRejectsUnsafeFilename(t *testing.T) {
 	h := New(localfs.New(t.TempDir()), nil, search.NewIndex(), nil, nil, nil)
 	recorder := httptest.NewRecorder()
 	c, _ := gin.CreateTestContext(recorder)
 	c.Request = httptest.NewRequest(http.MethodGet, "/api/v1/raw/../secret.md?preview=true", nil)
-	c.Params = gin.Params{{Key: "filename", Value: "../secret.md"}}
+	c.Params = gin.Params{{Key: "path", Value: "/../secret.md"}}
 	c.Set("userID", "request-user")
 	c.Set("projectID", "demo")
 
@@ -134,6 +189,17 @@ func TestRawPreviewRejectsUnsafeFilename(t *testing.T) {
 
 	if recorder.Code != http.StatusBadRequest {
 		t.Fatalf("status = %d body=%s", recorder.Code, recorder.Body.String())
+	}
+}
+
+func TestValidateRawUploadPathRejectsUnsafeDirectoryAndAllowsUnicode(t *testing.T) {
+	if err := validateRawUploadPath("topic/記事.md"); err != nil {
+		t.Fatalf("valid nested Unicode path rejected: %v", err)
+	}
+	for _, path := range []string{"../note.md", "topic/../note.md", "topic\\note.md", "topic\x00/note.md", "topic/nope.exe"} {
+		if err := validateRawUploadPath(path); err == nil {
+			t.Errorf("validateRawUploadPath(%q) unexpectedly succeeded", path)
+		}
 	}
 }
 

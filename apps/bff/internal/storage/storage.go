@@ -82,7 +82,7 @@ type MarkdownFile struct {
 	Data []byte
 }
 
-// RawFile is a direct file under a project's raw/ directory.
+// RawFile is a file under a project's raw/ directory; Name is relative to raw/.
 type RawFile struct {
 	Name    string
 	Path    string

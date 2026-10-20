@@ -564,38 +564,60 @@ func (c *Client) ListRawFiles(ctx context.Context) ([]store.RawFile, error) {
 	if err != nil {
 		return nil, err
 	}
-	entries, err := os.ReadDir(fullDir)
-	if err != nil {
+	if info, err := os.Lstat(fullDir); err != nil {
 		if errors.Is(err, os.ErrNotExist) {
 			return []store.RawFile{}, nil
 		}
 		return nil, fmt.Errorf("list raw files: %w", err)
+	} else if info.Mode()&os.ModeSymlink != 0 || !info.IsDir() {
+		return nil, errors.New("raw path must be a real directory")
 	}
 
-	files := make([]store.RawFile, 0, len(entries))
-	for _, entry := range entries {
-		if entry.IsDir() {
-			continue
+	files := make([]store.RawFile, 0)
+	err = filepath.WalkDir(fullDir, func(filePath string, entry os.DirEntry, walkErr error) error {
+		if walkErr != nil {
+			return walkErr
+		}
+		if err := ctx.Err(); err != nil {
+			return err
+		}
+		if filePath == fullDir || entry.IsDir() {
+			return nil
+		}
+		if entry.Type()&os.ModeSymlink != 0 {
+			return fmt.Errorf("raw tree contains a symlink: %s", entry.Name())
 		}
 		info, err := entry.Info()
 		if err != nil {
-			return nil, fmt.Errorf("stat raw/%s: %w", entry.Name(), err)
+			return err
 		}
 		if !info.Mode().IsRegular() {
-			continue
+			return nil
 		}
-		rel := filepath.ToSlash(filepath.Join("raw", entry.Name()))
-		sha256, err := c.GetMetaSHA256(ctx, rel)
+		rel, err := filepath.Rel(fullDir, filePath)
 		if err != nil {
-			return nil, err
+			return err
+		}
+		rel = filepath.ToSlash(rel)
+		if err := store.ValidateRawSyncPath(rel); err != nil {
+			return err
+		}
+		rawPath := "raw/" + rel
+		sha256, err := c.GetMetaSHA256(ctx, rawPath)
+		if err != nil {
+			return err
 		}
 		files = append(files, store.RawFile{
-			Name:    entry.Name(),
-			Path:    rel,
+			Name:    rel,
+			Path:    rawPath,
 			Size:    info.Size(),
 			Updated: info.ModTime().UTC(),
 			SHA256:  sha256,
 		})
+		return nil
+	})
+	if err != nil {
+		return nil, fmt.Errorf("list raw files: %w", err)
 	}
 	sort.Slice(files, func(i, j int) bool {
 		return files[i].Name < files[j].Name
