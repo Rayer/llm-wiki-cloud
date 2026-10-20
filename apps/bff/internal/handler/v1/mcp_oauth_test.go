@@ -21,6 +21,7 @@ import (
 	internalfirestore "github.com/rayer/llm-wiki-bff/internal/firestore"
 	"github.com/rayer/llm-wiki-bff/internal/localfs"
 	"github.com/rayer/llm-wiki-bff/internal/query"
+	"github.com/rayer/llm-wiki-bff/internal/urlintake"
 )
 
 type countingMCPQueryExecutor struct{ calls int }
@@ -138,15 +139,22 @@ func TestMCPProjectOAuthRejectsConflictingProjectHeaderBeforeSDK(t *testing.T) {
 	handler := New(root, fs, nil, nil, nil, nil)
 	executor := &countingMCPQueryExecutor{}
 	handler.SetQueryExecutor(executor)
-	urlImporter := &fakeMCPURLImportService{importResult: MCPURLImportResult{
-		Status: "needs_confirmation", SourceURL: "https://example.test/oauth-article",
-		Title: "OAuth candidate", Preview: "Candidate excerpt", ConfirmationRef: "oauth-confirmation-ref",
-	}}
-	urlImporter.confirmResult = MCPURLImportResult{
-		Status: "updated", Path: "raw/oauth-article.md", SHA256: strings.Repeat("a", 64),
-		SourceURL: "https://example.test/oauth-article", Title: "OAuth candidate", Preview: "Candidate excerpt",
-	}
-	handler.SetMCPURLImportService(urlImporter)
+	fetchCalls := 0
+	intakeService := urlintake.NewService(
+		mcpURLIntakeFetcher(func(context.Context, string) (urlintake.Page, error) {
+			fetchCalls++
+			return urlintake.Page{Title: "OAuth candidate", Markdown: "# OAuth candidate\n\nCandidate excerpt"}, nil
+		}),
+		mcpURLIntakeEvaluator(func(context.Context, urlintake.QualityInput) (urlintake.QualityEvaluation, error) {
+			return urlintake.QualityEvaluation{ShellProbability: .42, ContentProbability: .61, ReturnedModel: "jev-1.13.0"}, nil
+		}),
+		func(actor urlintake.ActorProject) (urlintake.ProjectStore, error) {
+			return root.WithScope(actor.ActorID, actor.ProjectID), nil
+		},
+		urlintake.DefaultQualityThresholds,
+	)
+	intakeService.Resolver = mcpURLIntakeResolver{}
+	handler.SetMCPURLImportService(NewURLIntakeMCPAdapter(intakeService))
 	gin.SetMode(gin.TestMode)
 	router := gin.New()
 	router.Any("/mcp/projects/:projectID", handler.MCPProjectOAuthHandler(environment, resourceOrigin))
@@ -230,15 +238,17 @@ func TestMCPProjectOAuthRejectsConflictingProjectHeaderBeforeSDK(t *testing.T) {
 	if importResponse.Code != http.StatusOK || json.Unmarshal(importResponse.Body.Bytes(), &importWire) != nil {
 		t.Fatalf("OAuth import_url status=%d body=%s", importResponse.Code, importResponse.Body.String())
 	}
-	if payload := mcpStructuredResult(t, importWire); payload["status"] != "needs_confirmation" || payload["confirmation_ref"] != "oauth-confirmation-ref" {
-		t.Fatalf("OAuth import_url result=%#v", payload)
+	importPayload := mcpStructuredResult(t, importWire)
+	confirmationRef, hasConfirmationRef := importPayload["confirmation_ref"].(string)
+	if importPayload["status"] != "needs_confirmation" || !hasConfirmationRef || confirmationRef == "" ||
+		importPayload["source_url"] != "https://example.test/oauth-article?tracking=private" || fetchCalls != 1 {
+		t.Fatalf("OAuth import_url did not return the shared service review candidate: payload=%#v fetch calls=%d", importPayload, fetchCalls)
 	}
-	if urlImporter.importCalls != 1 || urlImporter.importActor != (MCPURLImportActorProject{UserID: userID, ProjectID: projectID}) ||
-		urlImporter.importRequest.URL != "https://example.test/oauth-article?tracking=private" || strings.Join(urlImporter.importRequest.Tags, ",") != "reading" {
-		t.Fatalf("OAuth import_url did not receive verified grant identity and arguments: %+v", urlImporter)
+	if files, err := root.Scope(userID, projectID).ListRawFiles(context.Background()); err != nil || len(files) != 1 {
+		t.Fatalf("unconfirmed OAuth URL candidate touched raw storage or add_raw file count changed: files=%v err=%v", files, err)
 	}
 	confirmRequest := httptest.NewRequest(http.MethodPost, "/mcp/projects/"+projectID,
-		strings.NewReader(mcpToolCallBody(27, "import_url", `{"confirmation_ref":"oauth-confirmation-ref"}`)))
+		strings.NewReader(mcpToolCallBody(27, "import_url", fmt.Sprintf(`{"confirmation_ref":%q}`, confirmationRef))))
 	confirmRequest.Header.Set("Authorization", "Bearer "+tokens.AccessToken)
 	confirmRequest.Header.Set("Content-Type", "application/json")
 	confirmRequest.Header.Add("Accept", "application/json")
@@ -250,12 +260,14 @@ func TestMCPProjectOAuthRejectsConflictingProjectHeaderBeforeSDK(t *testing.T) {
 	if confirmResponse.Code != http.StatusOK || json.Unmarshal(confirmResponse.Body.Bytes(), &confirmWire) != nil {
 		t.Fatalf("OAuth import_url confirmation status=%d body=%s", confirmResponse.Code, confirmResponse.Body.String())
 	}
-	if payload := mcpStructuredResult(t, confirmWire); payload["status"] != "updated" || payload["path"] != "raw/oauth-article.md" {
-		t.Fatalf("OAuth import_url confirmation result=%#v", payload)
+	confirmedPayload := mcpStructuredResult(t, confirmWire)
+	path, hasPath := confirmedPayload["path"].(string)
+	if confirmedPayload["status"] != "created" || !hasPath || !strings.HasPrefix(path, "raw/") ||
+		fetchCalls != 1 || confirmedPayload["source_url"] != "https://example.test/oauth-article?tracking=private" {
+		t.Fatalf("OAuth import_url confirmation did not commit the shared candidate without refetch: payload=%#v fetch calls=%d", confirmedPayload, fetchCalls)
 	}
-	if urlImporter.importCalls != 1 || urlImporter.confirmCalls != 1 || urlImporter.confirmRef != "oauth-confirmation-ref" ||
-		urlImporter.confirmActor != (MCPURLImportActorProject{UserID: userID, ProjectID: projectID}) {
-		t.Fatalf("OAuth confirmation did not use verified grant identity and exact reference: %+v", urlImporter)
+	if data, err := root.Scope(userID, projectID).ReadFile(context.Background(), path); err != nil || !strings.Contains(string(data), "Candidate excerpt") {
+		t.Fatalf("OAuth import_url confirmation did not persist scoped candidate: path=%q err=%v", path, err)
 	}
 
 	readOnlyClient, err := service.RegisterClient(ctx, "Hermes query-only test", []string{"http://127.0.0.1:43124/callback"})
@@ -355,8 +367,8 @@ func TestMCPProjectOAuthRejectsConflictingProjectHeaderBeforeSDK(t *testing.T) {
 	}
 	protocolError, denied = deniedImportWire["error"].(map[string]any)
 	if deniedImportResponse.Code != http.StatusOK || !denied || protocolError["code"] != float64(-32602) ||
-		urlImporter.importCalls != 1 || urlImporter.confirmCalls != 1 {
-		t.Fatalf("query-only import_url was not denied before service call: status=%d response=%#v importer=%+v", deniedImportResponse.Code, deniedImportWire, urlImporter)
+		fetchCalls != 1 {
+		t.Fatalf("query-only import_url was not denied before service call: status=%d response=%#v fetch calls=%d", deniedImportResponse.Code, deniedImportWire, fetchCalls)
 	}
 
 	grants, err := service.ListGrants(ctx, userID, projectID)

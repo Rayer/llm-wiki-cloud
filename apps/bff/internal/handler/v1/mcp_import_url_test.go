@@ -58,8 +58,9 @@ func TestMCPURLImportSchemasExposeOnlyURLOrBoundConfirmation(t *testing.T) {
 			t.Fatalf("import_url unexpectedly accepts %q", forbidden)
 		}
 	}
-	if !strings.Contains(mcpImportURLToolDescription, "does not refetch") || !strings.Contains(mcpImportURLToolDescription, "untrusted source data") {
-		t.Fatal("import_url description must disclose exact-candidate confirmation and data handling")
+	if !strings.Contains(mcpImportURLToolDescription, "does not refetch") || !strings.Contains(mcpImportURLToolDescription, "untrusted source data") ||
+		!strings.Contains(mcpImportURLToolDescription, "inspect Project raw sources before retrying") {
+		t.Fatal("import_url description must disclose confirmation, data handling, and uncertain-write recovery")
 	}
 
 	var output struct {
@@ -72,6 +73,9 @@ func TestMCPURLImportSchemasExposeOnlyURLOrBoundConfirmation(t *testing.T) {
 		if !strings.Contains(string(output.Properties["status"]), `"`+status+`"`) {
 			t.Fatalf("import_url output schema omits status %q", status)
 		}
+	}
+	if !strings.Contains(string(output.Properties["commit_status"]), `"uncertain"`) {
+		t.Fatal("import_url output schema omits uncertain commit status")
 	}
 }
 
@@ -199,5 +203,19 @@ func TestMCPURLImportDoesNotExposeServiceErrorDetailsOrInvalidCommitPath(t *test
 	payload, ok := result.StructuredContent.(map[string]any)
 	if !ok || payload["status"] != "unavailable" {
 		t.Fatalf("invalid service path was presented as committed: %#v", payload)
+	}
+
+	service.importResult = MCPURLImportResult{
+		Status: "uncertain", CommitStatus: "uncertain", SourceURL: "https://example.test/article?tracking=private",
+		Title: "Candidate", Preview: "Bounded candidate preview",
+	}
+	result, _, err = h.callMCPURLImport(ctx, nil, mcpURLImportInput{URL: "https://example.test/article?tracking=private"})
+	if err != nil || !result.IsError {
+		t.Fatalf("uncertain service result=%+v err=%v", result, err)
+	}
+	text = result.Content[0].(*mcp.TextContent).Text
+	if !strings.Contains(text, `"status":"unavailable"`) || !strings.Contains(text, `"commit_status":"uncertain"`) ||
+		!strings.Contains(text, "Review the Project raw sources before retrying") || strings.Contains(text, "tracking=private") {
+		t.Fatalf("uncertain save outcome was not represented safely: %q", text)
 	}
 }
