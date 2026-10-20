@@ -204,19 +204,20 @@ type ImportResponse struct {
 
 // StatusResponse is the response for a status endpoint.
 type StatusResponse struct {
-	SourcesCount      int                                      `json:"sources_count"`
-	ConceptsCount     int                                      `json:"concepts_count"`
-	RawCount          int                                      `json:"raw_count"`
-	IndexSources      int                                      `json:"index_sources"`
-	IndexConcepts     int                                      `json:"index_concepts"`
-	SuggestedQueries  []string                                 `json:"suggested_queries"`
-	RunningPipelines  int                                      `json:"running_pipelines"`
-	LastExecution     *PipelineExecutionResponse               `json:"last_execution,omitempty"`
-	Quota             *pipelinequota.Snapshot                  `json:"quota,omitempty"`
-	ScheduledPipeline *scopedfirestore.ScheduledPipelineStatus `json:"scheduled_pipeline,omitempty"`
-	Locked            bool                                     `json:"locked,omitempty"`
-	LockWorker        string                                   `json:"lock_worker,omitempty"`
-	LockExpiry        string                                   `json:"lock_expiry,omitempty"`
+	SourcesCount       int                                      `json:"sources_count"`
+	ConceptsCount      int                                      `json:"concepts_count"`
+	RawCount           int                                      `json:"raw_count"`
+	IndexSources       int                                      `json:"index_sources"`
+	IndexConcepts      int                                      `json:"index_concepts"`
+	SuggestedQueries   []string                                 `json:"suggested_queries"`
+	RunningPipelines   int                                      `json:"running_pipelines"`
+	LastExecution      *PipelineExecutionResponse               `json:"last_execution,omitempty"`
+	ScheduledExecution *PipelineExecutionResponse               `json:"scheduled_execution,omitempty"`
+	Quota              *pipelinequota.Snapshot                  `json:"quota,omitempty"`
+	ScheduledPipeline  *scopedfirestore.ScheduledPipelineStatus `json:"scheduled_pipeline,omitempty"`
+	Locked             bool                                     `json:"locked,omitempty"`
+	LockWorker         string                                   `json:"lock_worker,omitempty"`
+	LockExpiry         string                                   `json:"lock_expiry,omitempty"`
 }
 
 // PipelineExecutionResponse is a normalized Cloud Run execution summary.

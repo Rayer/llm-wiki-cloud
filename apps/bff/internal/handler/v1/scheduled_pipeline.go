@@ -3,6 +3,7 @@ package v1
 import (
 	"context"
 	"errors"
+	"log"
 	"net/http"
 	"strings"
 	"time"
@@ -11,6 +12,7 @@ import (
 	"github.com/gin-gonic/gin"
 	"github.com/rayer/llm-wiki-bff/internal/auth"
 	scopedfirestore "github.com/rayer/llm-wiki-bff/internal/firestore"
+	"github.com/rayer/llm-wiki-bff/internal/handler"
 	"github.com/rayer/llm-wiki-bff/internal/pipelinequota"
 	"google.golang.org/api/idtoken"
 	"google.golang.org/grpc/codes"
@@ -18,6 +20,15 @@ import (
 )
 
 const scheduledPipelinePageSize = 100
+
+func trustedScheduledPipelineIssuer(issuer string) bool {
+	switch strings.TrimSpace(issuer) {
+	case "accounts.google.com", "https://accounts.google.com":
+		return true
+	default:
+		return false
+	}
+}
 
 type scheduledIdentityValidator func(context.Context, string, string) (*idtoken.Payload, error)
 
@@ -66,6 +77,7 @@ func (h *Handler) ScheduledPipeline(c *gin.Context) {
 	}
 	payload, err := validate(c.Request.Context(), strings.TrimSpace(parts[1]), h.scheduledPipelineAudience)
 	if err != nil || payload == nil || payload.Audience != h.scheduledPipelineAudience ||
+		!trustedScheduledPipelineIssuer(payload.Issuer) ||
 		payload.Claims["email"] != h.scheduledPipelineServiceAcct || payload.Claims["email_verified"] != true {
 		c.JSON(http.StatusUnauthorized, gin.H{"error": "unauthorized"})
 		return
@@ -224,8 +236,13 @@ func (h *Handler) runScheduledProject(ctx context.Context, qs scheduledPipelineQ
 	if err := h.recordScheduledCheck(ctx, statusStore, userID, projectID, now, "", pending, newRaw, rawDirty, annotationDirty); err != nil {
 		admission := h.effectiveQuotaStore().(pipelineAdmissionStore)
 		releaseCtx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
-		_ = admission.ReleaseQuotaReservation(releaseCtx, reservationID)
+		releaseErr := admission.ReleaseQuotaReservation(releaseCtx, reservationID)
 		cancel()
+		if releaseErr != nil {
+			if evidenceErr := h.persistScheduledNotInvokedEvidence(userID, projectID, reservationID); evidenceErr != nil {
+				log.Print("scheduled pipeline recovery evidence unavailable")
+			}
+		}
 		return false, false, true
 	}
 	executionID, err := h.invokePipelineJobStageWithReservation(ctx, userID, projectID, false, pipelineStageFull, reservationID)
@@ -241,8 +258,8 @@ func (h *Handler) runScheduledProject(ctx context.Context, qs scheduledPipelineQ
 		releaseErr := admission.ReleaseQuotaReservation(releaseCtx, reservationID)
 		cancel()
 		if releaseErr != nil {
-			if attemptErr := qs.RecordScheduledPipelineAttempt(ctx, userID, projectID, dayKey, reservationID, "", "unknown", now); attemptErr != nil {
-				h.recordScheduledCheckOK(ctx, statusStore, userID, projectID, now, "unavailable", pending, newRaw, rawDirty, annotationDirty)
+			if evidenceErr := h.persistScheduledNotInvokedEvidence(userID, projectID, reservationID); evidenceErr != nil {
+				log.Print("scheduled pipeline recovery evidence unavailable")
 			}
 			return false, false, true
 		}
@@ -307,6 +324,12 @@ func (h *Handler) recordScheduledCheckOK(ctx context.Context, qs scheduledPipeli
 	return h.recordScheduledCheck(ctx, qs, userID, projectID, now, reason, pending, newRaw, rawDirty, annotationDirty) == nil
 }
 
+func (h *Handler) persistScheduledNotInvokedEvidence(userID, projectID, reservationID string) error {
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancel()
+	return h.writeConfirmedPipelineInvokeFailure(ctx, userID, projectID, reservationID)
+}
+
 func (h *Handler) isScheduledPipelineRunning(ctx context.Context, userID, projectID string) (bool, error) {
 	if admission, ok := h.effectiveQuotaStore().(interface {
 		PipelineAdmissionActive(context.Context, string, string) (bool, error)
@@ -331,16 +354,15 @@ func (h *Handler) isScheduledPipelineRunning(ctx context.Context, userID, projec
 }
 
 func (h *Handler) scheduledPipelineStatus(ctx context.Context, userID, projectID string, now time.Time) *scopedfirestore.ScheduledPipelineStatus {
-	if h.pipelineScheduleCron == "" || h.pipelineScheduleTimezone == "" {
-		return nil
-	}
+	configured := h.scheduledPipelineConfigured()
 	result := &scopedfirestore.ScheduledPipelineStatus{
 		Availability: "unavailable", UserID: userID, ProjectID: projectID,
-		Schedule: h.pipelineScheduleCron, Timezone: h.pipelineScheduleTimezone,
+		Schedule: strings.TrimSpace(h.pipelineScheduleCron), Timezone: strings.TrimSpace(h.pipelineScheduleTimezone),
 		DayKey: pipelinequota.DayKeyUTC(now), SkipReason: "unavailable",
 	}
-	nextCheck := nextScheduledPipelineCheck(now, h.pipelineScheduleTimezone)
-	result.NextCheckAt = &nextCheck
+	if !configured {
+		result.Availability, result.SkipReason = "disabled", "disabled"
+	}
 	store, ok := h.effectiveQuotaStore().(scheduledPipelineQuotaStore)
 	if !ok {
 		return result
@@ -349,19 +371,60 @@ func (h *Handler) scheduledPipelineStatus(ctx context.Context, userID, projectID
 	if err != nil {
 		return result
 	}
+	loaded.Schedule = strings.TrimSpace(h.pipelineScheduleCron)
+	loaded.Timezone = strings.TrimSpace(h.pipelineScheduleTimezone)
+	if !configured {
+		loaded.Availability, loaded.SkipReason, loaded.NextCheckAt = "disabled", "disabled", nil
+		return &loaded
+	}
 	newRaw, rawDirty, annotationDirty, err := h.pendingWorkForProject(ctx, userID, projectID)
 	if err != nil {
-		return result
+		loaded.Availability, loaded.SkipReason, loaded.NextCheckAt = "unavailable", "unavailable", nil
+		return &loaded
 	}
-	loaded.Availability = "available"
-	loaded.Schedule = h.pipelineScheduleCron
-	loaded.Timezone = h.pipelineScheduleTimezone
-	loaded.NextCheckAt = &nextCheck
 	loaded.PendingWork = newRaw + rawDirty + annotationDirty
 	loaded.NewRawFiles = newRaw
 	loaded.RawDirtyFiles = rawDirty
 	loaded.AnnotationDirtyFiles = annotationDirty
+	if loaded.LastCheckAt == nil {
+		loaded.Availability, loaded.SkipReason, loaded.NextCheckAt = "not_checked", "not_checked", nil
+	} else {
+		nextCheck := nextScheduledPipelineCheck(now, h.pipelineScheduleTimezone)
+		loaded.Availability = "available"
+		loaded.NextCheckAt = &nextCheck
+	}
 	return &loaded
+}
+
+func (h *Handler) scheduledPipelineConfigured() bool {
+	if strings.TrimSpace(h.pipelineScheduleCron) == "" || strings.TrimSpace(h.pipelineScheduleTimezone) == "" ||
+		strings.TrimSpace(h.scheduledPipelineAudience) == "" || strings.TrimSpace(h.scheduledPipelineServiceAcct) == "" {
+		return false
+	}
+	_, err := time.LoadLocation(h.pipelineScheduleTimezone)
+	return err == nil
+}
+
+func (h *Handler) scheduledPipelineExecutionStatus(ctx context.Context, userID, projectID string, scheduled *scopedfirestore.ScheduledPipelineStatus) *handler.PipelineExecutionResponse {
+	if scheduled == nil || strings.TrimSpace(scheduled.LastAttemptID) == "" || strings.TrimSpace(scheduled.LastExecutionID) == "" {
+		return nil
+	}
+	quotaStore := h.effectiveQuotaStore()
+	if quotaStore == nil {
+		return nil
+	}
+	reservation, found, err := quotaStore.GetQuotaReservation(ctx, scheduled.LastAttemptID)
+	if err != nil || !found || reservation.UserID != userID || reservation.ProjectID != projectID ||
+		reservation.Trigger != pipelinequota.TriggerScheduledDaily || reservation.BudgetClass != "scheduled_daily" ||
+		(reservation.ExecutionID != "" && reservation.ExecutionID != scheduled.LastExecutionID) {
+		return nil
+	}
+	response, err := h.pipelineExecutionStatusForOwner(ctx, scheduled.LastExecutionID, userID, projectID)
+	if err != nil || response == nil {
+		return nil
+	}
+	h.attachExactPipelineExecutionEvidence(ctx, response, &pipelineExecutionOwner{userID: userID, projectID: projectID}, scheduled.LastExecutionID)
+	return response
 }
 
 func nextScheduledPipelineCheck(now time.Time, timezone string) time.Time {

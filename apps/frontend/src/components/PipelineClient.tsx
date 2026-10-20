@@ -522,6 +522,10 @@ export function PipelineClient() {
                   </p>
                   <p>{t('Pipeline.scheduledReason')}: {scheduledReasonText(pipelineStatus.scheduled_pipeline.skip_reason, t)}</p>
                 </>
+              ) : pipelineStatus.scheduled_pipeline.availability === 'disabled' ? (
+                <p>{t('Pipeline.scheduledDisabled')}</p>
+              ) : pipelineStatus.scheduled_pipeline.availability === 'not_checked' ? (
+                <p>{t('Pipeline.scheduledNotChecked')}</p>
               ) : (
                 <p>{t('Pipeline.scheduledUnavailable')}</p>
               )}
@@ -533,6 +537,17 @@ export function PipelineClient() {
               </p>
               {pipelineStatus.scheduled_pipeline.last_execution_id ? (
                 <p className="break-all">{t('Pipeline.scheduledExecution')}: {pipelineStatus.scheduled_pipeline.last_execution_id}</p>
+              ) : null}
+              {pipelineStatus.scheduled_execution ? (
+                <div className="border-t border-white/5 pt-1" data-testid="pipeline-scheduled-execution-evidence">
+                  <p>{t('Pipeline.scheduledExecutionStatus')}: {pipelineStatus.scheduled_execution.status}</p>
+                  <p>{t('Pipeline.scheduledPublication')}: {pipelineStatus.scheduled_execution.publication_outcome ?? t('Pipeline.scheduledEvidenceUnavailable')}</p>
+                  <p>{t('Pipeline.scheduledGuidance')}: {pipelineStatus.scheduled_execution.consumed_guidance?.status === 'available'
+                    ? `${pipelineStatus.scheduled_execution.consumed_guidance.kind ?? 'unknown'}${pipelineStatus.scheduled_execution.consumed_guidance.revision ? ` · ${pipelineStatus.scheduled_execution.consumed_guidance.revision}` : ''}${pipelineStatus.scheduled_execution.consumed_guidance.content_generation ? ` · ${pipelineStatus.scheduled_execution.consumed_guidance.content_generation}` : ''}`
+                    : t('Pipeline.scheduledEvidenceUnavailable')}</p>
+                </div>
+              ) : pipelineStatus.scheduled_pipeline.last_execution_id ? (
+                <p>{t('Pipeline.scheduledEvidenceUnavailable')}</p>
               ) : null}
             </section>
           ) : null}

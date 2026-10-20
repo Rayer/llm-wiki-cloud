@@ -45,6 +45,7 @@ export type ApiStatus = {
   rawCount: number;
   suggestedQueries: string[];
 	lastExecution?: PipelineExecution | null;
+	scheduledExecution?: PipelineExecution | null;
 	quota?: PipelineQuota | null;
 	scheduledPipeline?: ScheduledPipelineStatus | null;
 	raw: Record<string, unknown>;
@@ -1005,6 +1006,7 @@ export function normalizeStatus(payload: unknown): ApiStatus {
     firstNumber(record, ['rawCount', 'raw_count', 'filesCount', 'files_count']) ?? 0;
 
   const lastExecution = normalizePipelineExecution(record.last_execution);
+  const scheduledExecution = normalizePipelineExecution(record.scheduled_execution);
   const suggestedQueries = stringArray(record.suggested_queries ?? record.suggestedQueries);
 
   return {
@@ -1013,6 +1015,7 @@ export function normalizeStatus(payload: unknown): ApiStatus {
     rawCount,
     suggestedQueries,
     lastExecution,
+    scheduledExecution,
     quota: normalizePipelineQuota(record.quota),
 	scheduledPipeline: normalizeScheduledPipelineStatus(record.scheduled_pipeline),
     raw: record,
@@ -1225,6 +1228,7 @@ export type PipelineStatus = {
   quota?: PipelineQuota | null;
   full_quota?: PipelineQuota | null;
   scheduled_pipeline?: ScheduledPipelineStatus | null;
+  scheduled_execution?: PipelineExecution | null;
   suggested_queries?: string[];
 };
 

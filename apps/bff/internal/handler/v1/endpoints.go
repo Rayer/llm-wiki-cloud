@@ -1113,6 +1113,20 @@ func (h *Handler) invokePipelineJobStage(ctx context.Context, userID, projectID 
 	return h.invokePipelineJobStageWithReservation(ctx, userID, projectID, cleanRebuild, stage, "")
 }
 
+func confirmedPipelineInvocationRejection(statusCode int) bool {
+	switch statusCode {
+	case http.StatusBadRequest, http.StatusUnauthorized, http.StatusForbidden,
+		http.StatusNotFound, http.StatusMethodNotAllowed, http.StatusGone,
+		http.StatusRequestEntityTooLarge, http.StatusUnsupportedMediaType,
+		http.StatusUnprocessableEntity:
+		return true
+	default:
+		// Timeouts, throttling, conflicts, redirects, and server errors can be
+		// produced after the request crossed the provider's admission boundary.
+		return false
+	}
+}
+
 func (h *Handler) invokePipelineJobStageWithReservation(ctx context.Context, userID, projectID string, cleanRebuild bool, stage, reservationID string) (executionID string, err error) {
 	ctx, invokeSpan := observability.StartPipelineSpan(ctx, "pipeline.job.invoke")
 	defer func() {
@@ -1205,7 +1219,10 @@ func (h *Handler) invokePipelineJobStageWithReservation(ctx context.Context, use
 		return "", fmt.Errorf("%w: %v", errPipelineInvocationOutcomeUnknown, err)
 	}
 	if resp.StatusCode < http.StatusOK || resp.StatusCode >= http.StatusMultipleChoices {
-		return "", fmt.Errorf("%s", string(responseBody))
+		if confirmedPipelineInvocationRejection(resp.StatusCode) {
+			return "", fmt.Errorf("pipeline invocation was rejected with HTTP status %d", resp.StatusCode)
+		}
+		return "", fmt.Errorf("%w: Cloud Run returned HTTP status %d", errPipelineInvocationOutcomeUnknown, resp.StatusCode)
 	}
 	executionID, err = cloudRunExecutionIDFromRunResponse(responseBody)
 	if err != nil {
@@ -1237,12 +1254,13 @@ type cloudRunJobRunResponse struct {
 }
 
 type pipelineStatusResponse struct {
-	LastExecution     *handler.PipelineExecutionResponse       `json:"last_execution"`
-	ProjectID         string                                   `json:"project_id"`
-	Quota             *pipelinequota.Snapshot                  `json:"quota,omitempty"`
-	FullQuota         *pipelinequota.Snapshot                  `json:"full_quota,omitempty"`
-	ScheduledPipeline *scopedfirestore.ScheduledPipelineStatus `json:"scheduled_pipeline,omitempty"`
-	SuggestedQueries  []string                                 `json:"suggested_queries"`
+	LastExecution      *handler.PipelineExecutionResponse       `json:"last_execution"`
+	ScheduledExecution *handler.PipelineExecutionResponse       `json:"scheduled_execution,omitempty"`
+	ProjectID          string                                   `json:"project_id"`
+	Quota              *pipelinequota.Snapshot                  `json:"quota,omitempty"`
+	FullQuota          *pipelinequota.Snapshot                  `json:"full_quota,omitempty"`
+	ScheduledPipeline  *scopedfirestore.ScheduledPipelineStatus `json:"scheduled_pipeline,omitempty"`
+	SuggestedQueries   []string                                 `json:"suggested_queries"`
 }
 
 type adminPipelineTriggerRequest struct {
@@ -1369,6 +1387,7 @@ func (h *Handler) PipelineStatus(c *gin.Context) {
 	}
 	response.Quota = &snap
 	response.ScheduledPipeline = h.scheduledPipelineStatus(ctx, userID, projectID, time.Now().UTC())
+	response.ScheduledExecution = h.scheduledPipelineExecutionStatus(ctx, userID, projectID, response.ScheduledPipeline)
 	if h.localPipeline == nil {
 		fullSnap, _, err := h.evaluateQuotaForMode(ctx, userID, projectID, "", pipelinequota.ModeFull)
 		if err != nil {
@@ -1758,6 +1777,13 @@ func (h *Handler) cloudRunStatusWithPublicationEvidence(ctx context.Context, own
 
 func (h *Handler) attachPipelineExecutionEvidence(ctx context.Context, response *handler.PipelineExecutionResponse, owner *pipelineExecutionOwner, executionID string) {
 	if response == nil || owner == nil || response.CompileMode != string(pipelinequota.ModeFull) {
+		return
+	}
+	h.attachExactPipelineExecutionEvidence(ctx, response, owner, executionID)
+}
+
+func (h *Handler) attachExactPipelineExecutionEvidence(ctx context.Context, response *handler.PipelineExecutionResponse, owner *pipelineExecutionOwner, executionID string) {
+	if response == nil || owner == nil || executionID == "" {
 		return
 	}
 	response.PublicationOutcome = "unknown"
@@ -2400,6 +2426,7 @@ func (h *Handler) Status(c *gin.Context) {
 		}
 	}
 	resp.ScheduledPipeline = h.scheduledPipelineStatus(ctx, userID, projectID, time.Now().UTC())
+	resp.ScheduledExecution = h.scheduledPipelineExecutionStatus(ctx, userID, projectID, resp.ScheduledPipeline)
 
 	if h.firestore != nil {
 		lock, err := h.firestore.GetStatus(ctx)

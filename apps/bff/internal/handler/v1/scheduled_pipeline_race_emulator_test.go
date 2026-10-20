@@ -72,7 +72,7 @@ func TestConcurrentScheduledManualAndFullEntrypointsHaveOneProviderInvoke(t *tes
 		if token != "fixture-token" || audience != "https://bff.example" {
 			return nil, fmt.Errorf("scheduled identity fixture mismatch")
 		}
-		return &idtoken.Payload{Audience: audience, Claims: map[string]interface{}{
+		return &idtoken.Payload{Issuer: "https://accounts.google.com", Audience: audience, Claims: map[string]interface{}{
 			"email": "lwc413-scheduler@llm-wiki-cloud.iam.gserviceaccount.com", "email_verified": true,
 		}}, nil
 	})

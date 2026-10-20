@@ -516,9 +516,24 @@ describe('StatusClient behavior', () => {
         last_execution_id: 'execution-scheduled',
         last_result: 'FAILED',
       },
+      scheduled_execution: {
+        name: 'execution-scheduled',
+        status: 'FAILED',
+        compile_mode: 'incremental',
+        publication_outcome: 'confirmed_not_published',
+        consumed_guidance: {
+          status: 'available',
+          execution_id: 'execution-scheduled',
+          content_generation: 'generation-scheduled',
+          kind: 'active',
+          revision: 'c'.repeat(64),
+        },
+      },
     });
     expect(normalized.scheduledPipeline?.pending_work).toBe(3);
     expect(normalized.scheduledPipeline?.budget_used).toBe(true);
+    expect(normalized.scheduledExecution?.publication_outcome).toBe('confirmed_not_published');
+    expect(normalized.scheduledExecution?.consumed_guidance?.content_generation).toBe('generation-scheduled');
     mocks.getStatus.mockResolvedValue(normalized);
 
     render(<StatusClient />);
@@ -527,6 +542,66 @@ describe('StatusClient behavior', () => {
     expect(panel.textContent).toContain('busy');
     expect(panel.textContent).toContain('execution-scheduled');
     expect(panel.textContent).toContain('FAILED');
+    expect(panel.textContent).toContain('confirmed_not_published');
+    expect(panel.textContent).toContain('generation-scheduled');
+  });
+
+  it('does not imply an accepted run or future check while automatic scheduling is disabled', async () => {
+    const normalized = normalizeStatus({
+      scheduled_pipeline: {
+        availability: 'disabled',
+        schedule: '',
+        timezone: '',
+        last_check_at: null,
+        next_check_at: null,
+        skip_reason: 'disabled',
+        pending_work: 0,
+        new_raw_files: 0,
+        raw_dirty_files: 0,
+        annotation_dirty_files: 0,
+        day_key: '2026-10-21',
+        budget_used: false,
+        last_attempt_at: null,
+        last_attempt_id: null,
+        last_execution_id: null,
+        last_result: null,
+      },
+    });
+    mocks.getStatus.mockResolvedValue(normalized);
+
+    render(<StatusClient />);
+    const panel = await screen.findByTestId('status-scheduled-pipeline');
+    expect(panel.textContent).toContain('Pipeline.scheduledDisabled');
+    expect(panel.textContent).not.toContain('Pipeline.scheduledNextCheck');
+    expect(panel.textContent).not.toContain('invocation accepted');
+  });
+
+  it('labels exact execution evidence unavailable when the recorded attempt cannot be read', async () => {
+    const normalized = normalizeStatus({
+      scheduled_pipeline: {
+        availability: 'available',
+        schedule: '0 * * * *',
+        timezone: 'UTC',
+        last_check_at: '2026-10-21T03:00:00Z',
+        next_check_at: '2026-10-21T04:00:00Z',
+        skip_reason: '',
+        pending_work: 1,
+        new_raw_files: 1,
+        raw_dirty_files: 0,
+        annotation_dirty_files: 0,
+        day_key: '2026-10-21',
+        budget_used: true,
+        last_attempt_at: '2026-10-21T03:00:00Z',
+        last_attempt_id: 'scheduled-attempt',
+        last_execution_id: 'execution-scheduled',
+        last_result: 'accepted',
+      },
+    });
+    mocks.getStatus.mockResolvedValue(normalized);
+
+    render(<StatusClient />);
+    const panel = await screen.findByTestId('status-scheduled-pipeline');
+    expect(panel.textContent).toContain('Pipeline.scheduledEvidenceUnavailable');
   });
 
   it.each([
