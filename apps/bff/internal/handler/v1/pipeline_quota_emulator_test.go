@@ -171,6 +171,19 @@ func TestPipelineQuotaCloudRunHandlerEmulator(t *testing.T) {
 	assertQuotaState(t, ctx, fsClient, userID, failedProject, 1, pipelinequota.DayKeyUTC(time.Now()))
 	fixture.setExecutionUnavailable(failedID, false)
 	fixture.setStatus(failedID, "FAILED")
+	failureReceipt, err := json.Marshal(struct {
+		Version    int    `json:"version"`
+		Status     string `json:"status"`
+		Stage      string `json:"stage"`
+		ErrorClass string `json:"error_class"`
+		Execution  string `json:"execution"`
+	}{Version: 1, Status: "failed", Stage: "synto_run", ErrorClass: "child_exit", Execution: failedID})
+	if err != nil {
+		t.Fatalf("marshal confirmed pre-publication failure receipt: %v", err)
+	}
+	if _, err := quotaClient.WithScope(userID, failedProject).WriteBytes(ctx, failureReceipt, "cache/pipeline-"+failedID+".failure.json"); err != nil {
+		t.Fatalf("write confirmed pre-publication failure receipt: %v", err)
+	}
 	if err := h.ReconcilePipelineQuota(ctx); err != nil {
 		t.Fatalf("reconcile confirmed failure: %v", err)
 	}
@@ -257,11 +270,11 @@ func TestPipelineQuotaCloudRunHandlerEmulator(t *testing.T) {
 	if err := restartedInvokeHandler.ReconcilePipelineQuota(ctx); err != nil {
 		t.Fatalf("repeat deadline-expired no-execution recovery: %v", err)
 	}
-	assertQuotaReservation(t, ctx, fsClient, definiteInvokeReservation.ID, "refunded")
+	assertQuotaReservation(t, ctx, fsClient, definiteInvokeReservation.ID, "released")
 	assertQuotaState(t, ctx, fsClient, userID, definiteInvokeProject, 0, pipelinequota.DayKeyUTC(time.Now()))
 	retryDefiniteInvokeID := triggerQuotaPipeline(t, restartedInvokeHandler, userID, definiteInvokeProject, http.StatusAccepted)
 	if fixture.reservationID(retryDefiniteInvokeID) == "" {
-		t.Fatal("same-input retry after definite invocation refund has no reservation")
+		t.Fatal("same-input retry after confirmed no-invocation release has no reservation")
 	}
 	assertQuotaState(t, ctx, fsClient, userID, definiteInvokeProject, 1, pipelinequota.DayKeyUTC(time.Now()))
 
