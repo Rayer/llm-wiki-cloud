@@ -1,6 +1,7 @@
 'use client';
 
-import { FormEvent, useCallback, useEffect, useRef, useState, useSyncExternalStore } from 'react';
+import { FormEvent, useCallback, useEffect, useLayoutEffect, useRef, useState, useSyncExternalStore } from 'react';
+import { usePathname, useSearchParams } from 'next/navigation';
 import { ChevronDown } from 'lucide-react';
 import ReactMarkdown from 'react-markdown';
 import remarkGfm from 'remark-gfm';
@@ -23,30 +24,61 @@ import {
 import { useT } from '@/lib/i18n';
 import { getExactRawCitationRange } from '@/lib/markdown-citations';
 import { resolveWikilinksInMarkdown } from '@/lib/markdown-inline';
+import { LAST_PROJECT_KEY } from '@/lib/projects';
+import {
+  ensureQueryHistoryEntry,
+  getCompletedQueryResult,
+  isCurrentQueryHistoryEntry,
+  readQueryHistoryEntry,
+  replaceQueryHistoryUrl,
+  saveCompletedQueryResult,
+  type CompletedQueryResult,
+  type QueryHistoryEntry,
+} from '@/lib/query-result-history';
 import { displayErrorId, EmptyState, ErrorIdDetails, ErrorState, LoadingState, useErrorIdCopy } from './States';
 import { useWorkspace } from './WorkspaceProvider';
 import { Badge } from './ui/Badge';
 import { Surface } from './ui/Surface';
 import { NavigationLink } from './NavigationBlocker';
 
-function readSearchParams(): { q: string; mode: 'wiki' | 'full' } {
-  if (typeof window === 'undefined') return { q: '', mode: 'wiki' };
+function readSearchParams(): { q: string; mode: 'wiki' | 'full'; historyEntry: QueryHistoryEntry } {
+  if (typeof window === 'undefined') {
+    return { q: '', mode: 'wiki', historyEntry: { entryId: null, isCurrentDocument: false } };
+  }
   const params = new URLSearchParams(window.location.search);
   const modeParam = params.get('mode');
   return {
     q: params.get('q') ?? '',
     mode: modeParam === 'full' ? 'full' : 'wiki',
+    historyEntry: readQueryHistoryEntry(),
   };
 }
 
-function syncUrl(q: string, mode: 'wiki' | 'full') {
-  if (typeof window === 'undefined') return;
+function syncUrl(q: string, mode: 'wiki' | 'full'): string | null {
+  if (typeof window === 'undefined') return null;
   const params = new URLSearchParams();
   if (q) params.set('q', q);
   if (mode !== 'wiki') params.set('mode', mode);
   const search = params.toString();
   const url = window.location.pathname + (search ? `?${search}` : '');
-  window.history.replaceState(null, '', url);
+  return replaceQueryHistoryUrl(url, Boolean(q));
+}
+
+type SearchIdentity = { ownerId: string | null; projectId: string | null; authenticated: boolean };
+
+function selectedProjectId(projectId: string | undefined): string | null {
+  if (projectId) return projectId;
+  try {
+    return window.localStorage.getItem(LAST_PROJECT_KEY);
+  } catch {
+    return null;
+  }
+}
+
+function sameSearchIdentity(left: SearchIdentity, right: SearchIdentity): boolean {
+  return left.ownerId === right.ownerId
+    && left.projectId === right.projectId
+    && left.authenticated === right.authenticated;
 }
 
 type ModalEntry = {
@@ -158,19 +190,46 @@ function entryDetailHref(entry: ModalEntry): string | null {
 
 export function HomeClient() {
   const { t } = useT();
-  const { currentProject, token } = useWorkspace();
+  const pathname = usePathname();
+  const searchParams = useSearchParams();
+  const routeSearch = searchParams?.toString() ?? '';
+  const routeLocation = `${pathname ?? ''}?${routeSearch}`;
+  const { currentProject, token, user, hydrated, projectsLoading } = useWorkspace();
   const [initialSearch] = useState(() => readSearchParams());
-  const [query, setQuery] = useState(initialSearch.q);
-  const [mode, setMode] = useState<SearchMode>(initialSearch.mode);
-  const [submittedMode, setSubmittedMode] = useState<SearchMode>(initialSearch.mode);
+  const historyResult = initialSearch.historyEntry.entryId && initialSearch.historyEntry.isCurrentDocument
+    ? getCompletedQueryResult(initialSearch.historyEntry.entryId)
+    : null;
+  const initialIdentity: SearchIdentity = {
+    ownerId: user?.id ?? null,
+    projectId: selectedProjectId(currentProject?.id),
+    authenticated: Boolean(token),
+  };
+  const restoredResult = historyResult
+    && initialSearch.q === historyResult.query
+    && initialSearch.mode === historyResult.mode
+    && initialIdentity.authenticated
+    && initialIdentity.ownerId === historyResult.ownerId
+    && initialIdentity.projectId === historyResult.projectId
+    ? historyResult
+    : null;
+  const historyRestoreMiss = Boolean(
+    initialSearch.q
+    && initialSearch.historyEntry.entryId
+    && initialSearch.historyEntry.isCurrentDocument
+    && !restoredResult,
+  );
+  const [query, setQuery] = useState(restoredResult?.query ?? initialSearch.q);
+  const [mode, setMode] = useState<SearchMode>(restoredResult?.mode ?? initialSearch.mode);
+  const [submittedMode, setSubmittedMode] = useState<SearchMode>(restoredResult?.mode ?? initialSearch.mode);
   const [status, setStatus] = useState<ApiStatus | null>(null);
   const [statusError, setStatusError] = useState('');
-  const [results, setResults] = useState<SearchResult[]>([]);
-  const [aiAnswer, setAiAnswer] = useState('');
-  const [citations, setCitations] = useState<Citation[]>([]);
-  const [expandKeywords, setExpandKeywords] = useState<string[]>([]);
+  const [results, setResults] = useState<SearchResult[]>(restoredResult?.results ?? []);
+  const [aiAnswer, setAiAnswer] = useState(restoredResult?.aiAnswer ?? '');
+  const [citations, setCitations] = useState<Citation[]>(restoredResult?.citations ?? []);
+  const [expandKeywords, setExpandKeywords] = useState<string[]>(restoredResult?.expandKeywords ?? []);
   const [searched, setSearched] = useState(Boolean(initialSearch.q));
-  const [loading, setLoading] = useState(Boolean(initialSearch.q));
+  const [loading, setLoading] = useState(Boolean(initialSearch.q && !restoredResult && !historyRestoreMiss));
+  const [resultUnavailable, setResultUnavailable] = useState(historyRestoreMiss);
   const [error, setError] = useState<SearchError | null>(null);
   const [errorIdCopied, setErrorIdCopied] = useState(false);
   const [modal, setModal] = useState<ModalEntry | null>(null);
@@ -179,12 +238,26 @@ export function HomeClient() {
     useErrorIdCopy(modal, modal?.requestId, modal?.diagnosticId);
   const citationRequestId = useRef(0);
   const searchRequestId = useRef(0);
+  const initialUrlSearchStartedRef = useRef(false);
+  const initialUrlSearchCancelledRef = useRef(false);
+  const mountedRef = useRef(false);
+  const searchInFlightRef = useRef(false);
+  const queryEntryIdRef = useRef(restoredResult?.entryId ?? null);
+  const routeLocationRef = useRef(routeLocation);
   const searchErrorRef = useRef(error);
-  const identityRef = useRef({ projectId: currentProject?.id, token });
+  const identityRef = useRef({ ...initialIdentity, token });
+  const previousAuthOwnerRef = useRef<string | null>(token ? user?.id ?? null : null);
+  useLayoutEffect(() => {
+    identityRef.current = {
+      ownerId: user?.id ?? null,
+      projectId: selectedProjectId(currentProject?.id),
+      authenticated: Boolean(token),
+      token,
+    };
+  }, [currentProject?.id, token, user?.id]);
   useEffect(() => {
     searchErrorRef.current = error;
-    identityRef.current = { projectId: currentProject?.id, token };
-  }, [currentProject?.id, error, token]);
+  }, [error]);
   const previousProjectIdRef = useRef<string | undefined>(currentProject?.id);
   const sampledProjectIdRef = useRef<string | undefined>(undefined);
   const hasSampledQueriesRef = useRef(false);
@@ -197,39 +270,277 @@ export function HomeClient() {
   const [latestConcepts, setLatestConcepts] = useState<WikiEntry[]>([]);
   const [searchButtonCue, setSearchButtonCue] = useState<0 | 1 | 2>(0);
 
+  const isCurrentSearch = useCallback((requestId: number, identity: SearchIdentity, entryId: string | null) => (
+    requestId === searchRequestId.current
+    && mountedRef.current
+    && sameSearchIdentity(identity, identityRef.current)
+    && Boolean(entryId && isCurrentQueryHistoryEntry(entryId))
+  ), []);
+
+  const applyCompletedResult = useCallback((completed: CompletedQueryResult) => {
+    setQuery(completed.query);
+    setMode(completed.mode);
+    setSubmittedMode(completed.mode);
+    setResults(completed.results);
+    setAiAnswer(completed.aiAnswer);
+    setCitations(completed.citations);
+    setExpandKeywords(completed.expandKeywords);
+    setSearched(true);
+    setLoading(false);
+    setResultUnavailable(false);
+    setError(null);
+    setErrorIdCopied(false);
+    queryEntryIdRef.current = completed.entryId;
+  }, []);
+
+  const applyRestoreMiss = useCallback((q: string, searchMode: SearchMode, entryId: string | null) => {
+    searchRequestId.current += 1;
+    searchInFlightRef.current = false;
+    setQuery(q);
+    setMode(searchMode);
+    setSubmittedMode(searchMode);
+    setResults([]);
+    setAiAnswer('');
+    setCitations([]);
+    setExpandKeywords([]);
+    setSearched(true);
+    setLoading(false);
+    setResultUnavailable(true);
+    setError(null);
+    setErrorIdCopied(false);
+    queryEntryIdRef.current = entryId;
+  }, []);
+
+  const runUrlSearch = useCallback((q: string, searchMode: SearchMode, entryId: string | null) => {
+    if (!entryId) return;
+    queryEntryIdRef.current = entryId;
+    const requestId = ++searchRequestId.current;
+    const identity: SearchIdentity = {
+      ownerId: identityRef.current.ownerId,
+      projectId: identityRef.current.projectId,
+      authenticated: identityRef.current.authenticated,
+    };
+    setQuery(q);
+    setMode(searchMode);
+    setSubmittedMode(searchMode);
+    setSearched(true);
+    setLoading(true);
+    setResultUnavailable(false);
+    setError(null);
+    setErrorIdCopied(false);
+    setResults([]);
+    setAiAnswer('');
+    setCitations([]);
+    setExpandKeywords([]);
+
+    searchWiki(q, searchMode)
+      .then((response) => {
+        if (!isCurrentSearch(requestId, identity, entryId)) return;
+        const completed: CompletedQueryResult = {
+          entryId,
+          ownerId: identity.ownerId ?? '',
+          projectId: identity.projectId ?? '',
+          query: q,
+          mode: searchMode,
+          results: response.results,
+          aiAnswer: response.aiAnswer,
+          citations: response.citations,
+          expandKeywords: response.expand?.keywords ?? [],
+        };
+        setResults(response.results);
+        setAiAnswer(response.aiAnswer);
+        setCitations(response.citations);
+        setExpandKeywords(response.expand?.keywords ?? []);
+        if (identity.authenticated && identity.ownerId && identity.projectId) {
+          saveCompletedQueryResult(completed);
+        }
+      })
+      .catch((err: Error) => {
+        if (!isCurrentSearch(requestId, identity, entryId)) return;
+        setError(searchError(err));
+        setResults([]);
+        setAiAnswer('');
+        setCitations([]);
+        setExpandKeywords([]);
+      })
+      .finally(() => {
+        if (isCurrentSearch(requestId, identity, entryId)) setLoading(false);
+      });
+  }, [isCurrentSearch]);
+
   const toggleSuggestedQueries = useCallback(() => {
     const next = localStorage.getItem(SUGGESTED_QUERIES_OPEN_KEY) === '0';
     localStorage.setItem(SUGGESTED_QUERIES_OPEN_KEY, next ? '1' : '0');
     window.dispatchEvent(new Event('llm-wiki:suggested-queries-open'));
   }, []);
 
-  // Restore search from URL on mount (back-button support).
   useEffect(() => {
-    if (initialSearch.q) {
-      const requestId = ++searchRequestId.current;
-      searchWiki(initialSearch.q, initialSearch.mode)
-        .then((response) => {
-          if (requestId !== searchRequestId.current) return;
-          setSubmittedMode(initialSearch.mode);
-          setResults(response.results);
-          setAiAnswer(response.aiAnswer);
-          setCitations(response.citations);
-          setExpandKeywords(response.expand?.keywords ?? []);
-        })
-        .catch((err: Error) => {
-          if (requestId !== searchRequestId.current) return;
-          setError(searchError(err));
-          setErrorIdCopied(false);
-          setResults([]);
-          setAiAnswer('');
-          setCitations([]);
-          setExpandKeywords([]);
-        })
-        .finally(() => {
-          if (requestId === searchRequestId.current) setLoading(false);
-        });
+    mountedRef.current = true;
+    return () => {
+      mountedRef.current = false;
+    };
+  }, []);
+
+  // App Router can preserve this client component across a detail round trip.
+  // Reconcile the actual URL/history entry whenever the route changes so a
+  // Back navigation restores its own result or reports a safe restore miss.
+  useEffect(() => {
+    if (routeLocationRef.current === routeLocation) return;
+    if (pathname !== '/') {
+      routeLocationRef.current = routeLocation;
+      return;
     }
-  }, [initialSearch.q, initialSearch.mode]);
+    if (!hydrated || projectsLoading || !currentProject) return;
+
+    routeLocationRef.current = routeLocation;
+    const next = readSearchParams();
+    if (!next.q) {
+      searchRequestId.current += 1;
+      searchInFlightRef.current = false;
+      queryEntryIdRef.current = null;
+      setQuery('');
+      setMode('wiki');
+      setSubmittedMode('wiki');
+      setResults([]);
+      setAiAnswer('');
+      setCitations([]);
+      setExpandKeywords([]);
+      setSearched(false);
+      setLoading(false);
+      setResultUnavailable(false);
+      setError(null);
+      return;
+    }
+
+    if (next.historyEntry.isCurrentDocument && next.historyEntry.entryId) {
+      if (next.historyEntry.entryId === queryEntryIdRef.current) return;
+      const completed = getCompletedQueryResult(next.historyEntry.entryId);
+      const identity = identityRef.current;
+      if (
+        completed
+        && completed.query === next.q
+        && completed.mode === next.mode
+        && identity.authenticated
+        && completed.ownerId === identity.ownerId
+        && completed.projectId === identity.projectId
+      ) {
+        applyCompletedResult(completed);
+      } else {
+        applyRestoreMiss(next.q, next.mode, next.historyEntry.entryId);
+      }
+      return;
+    }
+
+    const entryId = ensureQueryHistoryEntry();
+    runUrlSearch(next.q, next.mode, entryId);
+  }, [
+    applyCompletedResult,
+    applyRestoreMiss,
+    currentProject,
+    hydrated,
+    pathname,
+    projectsLoading,
+    routeLocation,
+    runUrlSearch,
+  ]);
+
+  // Initial URL queries remain fresh on direct entry and reload, after auth and Project loading.
+  useEffect(() => {
+    if (
+      !initialSearch.q
+      || restoredResult
+      || historyRestoreMiss
+      || initialUrlSearchStartedRef.current
+      || initialUrlSearchCancelledRef.current
+      || !hydrated
+      || !token
+      || projectsLoading
+      || !currentProject
+    ) return;
+
+    initialUrlSearchStartedRef.current = true;
+    const entryId = ensureQueryHistoryEntry();
+    queryEntryIdRef.current = entryId;
+    const requestId = ++searchRequestId.current;
+    const identity: SearchIdentity = {
+      ownerId: identityRef.current.ownerId,
+      projectId: identityRef.current.projectId,
+      authenticated: identityRef.current.authenticated,
+    };
+    searchWiki(initialSearch.q, initialSearch.mode)
+      .then((response) => {
+        if (!isCurrentSearch(requestId, identity, entryId)) return;
+        setSubmittedMode(initialSearch.mode);
+        setResults(response.results);
+        setAiAnswer(response.aiAnswer);
+        setCitations(response.citations);
+        setExpandKeywords(response.expand?.keywords ?? []);
+        if (entryId && identity.authenticated && identity.ownerId && identity.projectId) {
+          const completed: CompletedQueryResult = {
+            entryId,
+            ownerId: identity.ownerId,
+            projectId: identity.projectId,
+            query: initialSearch.q,
+            mode: initialSearch.mode,
+            results: response.results,
+            aiAnswer: response.aiAnswer,
+            citations: response.citations,
+            expandKeywords: response.expand?.keywords ?? [],
+          };
+          saveCompletedQueryResult(completed);
+        }
+      })
+      .catch((err: Error) => {
+        if (!isCurrentSearch(requestId, identity, entryId)) return;
+        setError(searchError(err));
+        setErrorIdCopied(false);
+        setResults([]);
+        setAiAnswer('');
+        setCitations([]);
+        setExpandKeywords([]);
+      })
+      .finally(() => {
+        if (isCurrentSearch(requestId, identity, entryId)) setLoading(false);
+      });
+  }, [
+    historyRestoreMiss,
+    hydrated,
+    initialSearch.mode,
+    initialSearch.q,
+    isCurrentSearch,
+    currentProject,
+    projectsLoading,
+    restoredResult,
+    token,
+  ]);
+
+  useEffect(() => {
+    const ownerId = token ? user?.id ?? null : null;
+    const previousOwnerId = previousAuthOwnerRef.current;
+    previousAuthOwnerRef.current = ownerId;
+    if (previousOwnerId === null || previousOwnerId === ownerId) return;
+
+    initialUrlSearchCancelledRef.current = true;
+    searchRequestId.current += 1;
+    searchInFlightRef.current = false;
+    citationRequestId.current += 1;
+    setQuery('');
+    setMode('wiki');
+    setResults([]);
+    setAiAnswer('');
+    setCitations([]);
+    setExpandKeywords([]);
+    setSearched(false);
+    setLoading(false);
+    setResultUnavailable(false);
+    setError(null);
+    setErrorIdCopied(false);
+    setModal(null);
+    setModalLoading(false);
+    setSubmittedMode('wiki');
+    queryEntryIdRef.current = null;
+    syncUrl('', 'wiki');
+  }, [token, user?.id]);
 
   // Drop previous project's query/results when the active project changes.
   // Skip initial hydrate (null → first project) so deep-linked /?q= is preserved.
@@ -245,6 +556,8 @@ export function HomeClient() {
     setStatus(null);
     citationRequestId.current += 1;
     searchRequestId.current += 1;
+    searchInFlightRef.current = false;
+    initialUrlSearchCancelledRef.current = true;
     setQuery('');
     setMode('wiki');
     setResults([]);
@@ -253,11 +566,13 @@ export function HomeClient() {
     setExpandKeywords([]);
     setSearched(false);
     setLoading(false);
+    setResultUnavailable(false);
     setError(null);
     setErrorIdCopied(false);
     setModal(null);
     setModalLoading(false);
     setSubmittedMode('wiki');
+    queryEntryIdRef.current = null;
     syncUrl('', 'wiki');
   }, [currentProject?.id]);
 
@@ -298,13 +613,21 @@ export function HomeClient() {
 
   const handleSearch = useCallback(async (searchMode: SearchMode, rawQuery = query) => {
     const trimmed = rawQuery.trim();
-    if (!trimmed) return;
+    if (!trimmed || searchInFlightRef.current) return;
+    searchInFlightRef.current = true;
     const requestId = ++searchRequestId.current;
 
-    syncUrl(trimmed, searchMode);
+    const entryId = syncUrl(trimmed, searchMode);
+    queryEntryIdRef.current = entryId;
+    const identity: SearchIdentity = {
+      ownerId: identityRef.current.ownerId,
+      projectId: identityRef.current.projectId,
+      authenticated: identityRef.current.authenticated,
+    };
     setSubmittedMode(searchMode);
 
     setLoading(true);
+    setResultUnavailable(false);
     setError(null);
     setErrorIdCopied(false);
     setAiAnswer('');
@@ -314,24 +637,39 @@ export function HomeClient() {
 
     try {
       const response = await searchWiki(trimmed, searchMode);
-      if (requestId !== searchRequestId.current) return;
+      if (!isCurrentSearch(requestId, identity, entryId)) return;
       setResults(response.results);
       setAiAnswer(response.aiAnswer);
       setCitations(response.citations);
       setExpandKeywords(response.expand?.keywords ?? []);
+      if (entryId && identity.authenticated && identity.ownerId && identity.projectId) {
+        const completed: CompletedQueryResult = {
+          entryId,
+          ownerId: identity.ownerId,
+          projectId: identity.projectId,
+          query: trimmed,
+          mode: searchMode,
+          results: response.results,
+          aiAnswer: response.aiAnswer,
+          citations: response.citations,
+          expandKeywords: response.expand?.keywords ?? [],
+        };
+        saveCompletedQueryResult(completed);
+      }
     } catch (err) {
-      if (requestId !== searchRequestId.current) return;
+      if (!isCurrentSearch(requestId, identity, entryId)) return;
       setError(searchError(err));
       setResults([]);
       setAiAnswer('');
       setCitations([]);
       setExpandKeywords([]);
     } finally {
-      if (requestId === searchRequestId.current) {
+      if (isCurrentSearch(requestId, identity, entryId)) {
         setLoading(false);
+        searchInFlightRef.current = false;
       }
     }
-  }, [query]);
+  }, [isCurrentSearch, query]);
 
   const copyErrorId = async () => {
     const errorId = displayErrorId(error?.requestId, error?.diagnosticId);
@@ -614,6 +952,18 @@ export function HomeClient() {
             onCopyErrorId={copyErrorId}
           />
         ) : null}
+        {!loading && resultUnavailable ? (
+          <div role="alert" className="rounded-md border border-amber-300/30 bg-amber-500/10 p-4">
+            <p className="text-sm text-amber-100">{t('QueryResults.resultUnavailable')}</p>
+            <button
+              type="button"
+              className="mt-3 rounded-md border border-amber-300/40 px-3 py-2 text-sm text-amber-100"
+              onClick={() => { void handleSearch(mode, query); }}
+            >
+              {t('QueryResults.searchAgain')}
+            </button>
+          </div>
+        ) : null}
         {!loading && !error && aiAnswer ? (
           <article className="relative overflow-hidden rounded-[var(--radius-lg)] border border-emerald-400/20 bg-emerald-400/[0.06] p-5 backdrop-blur-sm">
             <div className="absolute inset-y-0 left-0 w-1 bg-gradient-to-b from-emerald-300 to-teal-500" />
@@ -666,7 +1016,7 @@ export function HomeClient() {
             </div>
           </article>
         ) : null}
-        {!loading && !error && searched && results.length === 0 ? (
+        {!loading && !error && !resultUnavailable && searched && results.length === 0 ? (
           <EmptyState message={t('Demo.noResults')} />
         ) : null}
         <div className="grid gap-4 md:grid-cols-2">

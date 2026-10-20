@@ -22,7 +22,10 @@ vi.mock('@/lib/api', async () => {
   return { ...actual, searchWiki: mocks.searchWiki };
 });
 vi.mock('@/lib/i18n', () => ({ useT: () => ({ t: (key: string) => key }) }));
-vi.mock('next/navigation', () => ({ useSearchParams: () => new URLSearchParams() }));
+vi.mock('next/navigation', () => ({
+  usePathname: () => '/',
+  useSearchParams: () => new URLSearchParams(),
+}));
 vi.mock('@/components/NavigationBlocker', () => ({
   NavigationLink: ({ href, children, onClick }: {
     href: string;

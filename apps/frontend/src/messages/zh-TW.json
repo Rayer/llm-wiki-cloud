@@ -651,6 +651,10 @@
     "pipelineDesc": "Pipeline 會執行：",
     "restricted": "Demo 模式不提供此功能"
   },
+  "QueryResults": {
+    "resultUnavailable": "已儲存的搜尋結果已無法使用。請重新搜尋以取得新結果。",
+    "searchAgain": "重新搜尋"
+  },
   "QueryErrors": {
     "queryFailure": "無法完成搜尋。請再試一次；若問題持續，請將診斷編號提供給支援人員。",
     "invalidRequest": "搜尋要求格式不正確。請檢查查詢內容後再試一次。",

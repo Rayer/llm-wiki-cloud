@@ -4,7 +4,6 @@ import (
 	"bytes"
 	"context"
 	"errors"
-	"fmt"
 	"net/netip"
 	"strings"
 	"sync/atomic"
@@ -254,6 +253,50 @@ func TestServiceProviderOutageAndExplicitTruncationNeverAutoSave(t *testing.T) {
 	}
 }
 
+func TestServiceRejectsMergedCandidateOverSizeBeforeCreate(t *testing.T) {
+	largeMarkdown := strings.Repeat("x", MaxCandidateBytes-32)
+	service, store := newTestService(t, fetcherFunc(func(context.Context, string) (Page, error) {
+		return Page{Title: "Near Limit", Markdown: largeMarkdown}, nil
+	}), evaluatorFunc(usableEvaluator))
+	if len(largeMarkdown) > MaxCandidateBytes {
+		t.Fatal("create fixture exceeds the Fetch candidate limit")
+	}
+	result, err := service.Import(context.Background(), ActorProject{"actor-1", "project-1"}, ImportRequest{URL: "https://example.com/near-limit"})
+	files, listErr := markdownRawFiles(store)
+	if err != nil || result.Status != "rejected" || listErr != nil || len(files) != 0 {
+		t.Fatalf("near-limit create = %#v, %v; raw files=%#v listErr=%v", result, err, files, listErr)
+	}
+}
+
+func TestServiceRejectsOversizeRefreshPreservingExistingRaw(t *testing.T) {
+	const sourceURL = "https://example.com/large-refresh"
+	service, store := newTestService(t, fetcherFunc(func(context.Context, string) (Page, error) {
+		return Page{Title: "Large Refresh", Markdown: strings.Repeat("n", MaxCandidateBytes-1024)}, nil
+	}), evaluatorFunc(usableEvaluator))
+	old := []byte("---\ntitle: Large Refresh\nsource: " + sourceURL + "\ncreated: 2020-01-01\nprivate_note: " + strings.Repeat("m", 16*1024) + "\n---\nold body\n")
+	if len(old) >= MaxCandidateBytes {
+		t.Fatal("refresh fixture exceeds the persistence limit")
+	}
+	relativePath := safeTitleFilename("Large Refresh")
+	if _, err := rawintake.Commit(context.Background(), store, relativePath, old, false); err != nil {
+		t.Fatal(err)
+	}
+	identity := digestString([]byte(sourceURL))
+	if _, err := reserveIdentity(context.Background(), store, identity, relativePath); err != nil {
+		t.Fatal(err)
+	}
+	pageMarkdown := strings.Repeat("n", MaxCandidateBytes-1024)
+	merged, _, err := MergeRawMarkdown(old, SourceMetadata{Title: "Large Refresh", SourceURL: sourceURL}, pageMarkdown, service.now())
+	if err != nil || len(pageMarkdown) > MaxCandidateBytes || len(merged) <= MaxCandidateBytes {
+		t.Fatalf("refresh fixture lengths: markdown=%d merged=%d err=%v", len(pageMarkdown), len(merged), err)
+	}
+	result, err := service.Import(context.Background(), ActorProject{"actor-1", "project-1"}, ImportRequest{URL: sourceURL})
+	current, readErr := store.ReadFile(context.Background(), "raw/"+relativePath)
+	if err != nil || result.Status != "rejected" || readErr != nil || !bytes.Equal(current, old) {
+		t.Fatalf("oversize refresh = %#v, %v; prior raw changed=%t readErr=%v", result, err, !bytes.Equal(current, old), readErr)
+	}
+}
+
 func TestServiceRejectsEmptyBodyAndClearlyClassifiedShellWithoutWriting(t *testing.T) {
 	service, store := newTestService(t, fetcherFunc(func(context.Context, string) (Page, error) {
 		return Page{Title: "Empty", Markdown: "  \n"}, nil
@@ -308,21 +351,51 @@ func TestServiceResolvesConcurrentSameURLToOnePath(t *testing.T) {
 		}()
 	}
 	close(start)
-	var statuses []string
+	var resultsGot []Result
 	for range 2 {
 		result := <-results
 		err := <-errorsOut
 		if err != nil {
 			t.Fatal(err)
 		}
-		statuses = append(statuses, result.Status)
+		resultsGot = append(resultsGot, result)
 	}
 	files, err := markdownRawFiles(store)
 	if err != nil || len(files) != 1 {
 		t.Fatalf("concurrent raw files = %#v, %v", files, err)
 	}
-	if fmt.Sprint(statuses) != "[stored conflict]" && fmt.Sprint(statuses) != "[conflict stored]" {
-		t.Fatalf("concurrent statuses = %v", statuses)
+	created, alreadyExists, conflicts := 0, 0, 0
+	var path, digest string
+	for _, result := range resultsGot {
+		switch result.Status {
+		case "stored":
+			if result.Storage == nil {
+				t.Fatalf("stored concurrent result has no storage outcome: %#v", result)
+			}
+			if path == "" {
+				path, digest = result.Storage.Path, result.Storage.SHA256
+			} else if result.Storage.Path != path || result.Storage.SHA256 != digest {
+				t.Fatalf("concurrent imports diverged: %#v", resultsGot)
+			}
+			switch result.Storage.Status {
+			case string(rawintake.StatusCreated):
+				created++
+			case string(rawintake.StatusAlreadyExists):
+				alreadyExists++
+			default:
+				t.Fatalf("unexpected concurrent storage outcome: %#v", result.Storage)
+			}
+		case "conflict":
+			conflicts++
+		default:
+			t.Fatalf("unexpected concurrent result: %#v", result)
+		}
+	}
+	if created != 1 || (alreadyExists != 1 && conflicts != 1) || alreadyExists+conflicts != 1 {
+		t.Fatalf("concurrent results = %#v; want one create and one identical no-op or conflict", resultsGot)
+	}
+	if path != files[0].Path {
+		t.Fatalf("concurrent path = %q, raw file = %q", path, files[0].Path)
 	}
 }
 

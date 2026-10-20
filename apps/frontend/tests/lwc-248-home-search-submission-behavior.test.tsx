@@ -11,6 +11,9 @@ if (!(globalThis as { IS_REACT_ACT_ENVIRONMENT?: boolean }).IS_REACT_ACT_ENVIRON
 const mocks = vi.hoisted(() => ({
   currentProject: { id: 'project-a', name: 'Project A' },
   token: 'session-a',
+  user: { id: 'account-a' },
+  hydrated: true,
+  projectsLoading: false,
   getConcepts: vi.fn(),
   getProfile: vi.fn(),
   getStatus: vi.fn(),
@@ -32,8 +35,19 @@ vi.mock('@/lib/i18n', () => ({
   useT: () => ({ t: (key: string) => key }),
 }));
 
+vi.mock('next/navigation', () => ({
+  usePathname: () => window.location.pathname,
+  useSearchParams: () => new URLSearchParams(window.location.search),
+}));
+
 vi.mock('@/components/WorkspaceProvider', () => ({
-  useWorkspace: () => ({ currentProject: mocks.currentProject, token: mocks.token }),
+  useWorkspace: () => ({
+    currentProject: mocks.currentProject,
+    token: mocks.token,
+    user: mocks.user,
+    hydrated: mocks.hydrated,
+    projectsLoading: mocks.projectsLoading,
+  }),
 }));
 
 vi.mock('@/components/NavigationBlocker', async () => {
@@ -59,6 +73,7 @@ vi.mock('@/components/NavigationBlocker', async () => {
 
 import { HomeClient } from '@/components/HomeClient';
 import { QueryApiError, type ApiStatus } from '@/lib/api';
+import { clearCompletedQueryResults } from '@/lib/query-result-history';
 
 const SEARCH_RESPONSE = {
   results: [],
@@ -88,12 +103,18 @@ function deferred<T>() {
 }
 
 beforeEach(() => {
+  vi.resetAllMocks();
+  clearCompletedQueryResults();
+  window.history.replaceState(null, '', '/');
   mocks.currentProject = { id: 'project-a', name: 'Project A' };
   mocks.token = 'session-a';
+  mocks.user = { id: 'account-a' };
+  mocks.hydrated = true;
+  mocks.projectsLoading = false;
   mocks.getStatus.mockResolvedValue(status());
   mocks.getConcepts.mockResolvedValue([]);
   mocks.searchWiki.mockResolvedValue(SEARCH_RESPONSE);
-  replaceStateSpy = vi.spyOn(window.history, 'replaceState').mockImplementation(() => undefined);
+  replaceStateSpy = vi.spyOn(window.history, 'replaceState');
 });
 
 afterEach(() => {
@@ -199,7 +220,7 @@ describe('LWC-248 home search submission contract', () => {
     expect(mocks.searchWiki).toHaveBeenCalledTimes(1);
     expect(mocks.searchWiki).toHaveBeenCalledWith('topic beta', 'full');
     expect(replaceStateSpy).toHaveBeenCalledTimes(1);
-    expect(replaceStateSpy).toHaveBeenCalledWith(null, '', '/?q=topic+beta&mode=full');
+    expect(replaceStateSpy).toHaveBeenCalledWith(expect.objectContaining({ __lwc342QueryEntryId: expect.any(String) }), '', '/?q=topic+beta&mode=full');
   });
 
   it('preserves submitted mode in result badge until a new explicit search starts', async () => {
@@ -239,7 +260,7 @@ describe('LWC-248 home search submission contract', () => {
     expect(mocks.searchWiki).toHaveBeenNthCalledWith(2, 'topic epsilon', 'full');
     expect(screen.getByText('full mode')).toBeDefined();
     expect(replaceStateSpy).toHaveBeenCalledTimes(2);
-    expect(replaceStateSpy).toHaveBeenCalledWith(null, '', '/?q=topic+epsilon&mode=full');
+    expect(replaceStateSpy).toHaveBeenCalledWith(expect.objectContaining({ __lwc342QueryEntryId: expect.any(String) }), '', '/?q=topic+epsilon&mode=full');
   });
 
   it('submits the form (Enter-equivalent) exactly once with one URL sync', async () => {
@@ -256,7 +277,7 @@ describe('LWC-248 home search submission contract', () => {
     expect(mocks.searchWiki).toHaveBeenCalledTimes(1);
     expect(mocks.searchWiki).toHaveBeenCalledWith('topic gamma', 'wiki');
     expect(replaceStateSpy).toHaveBeenCalledTimes(1);
-    expect(replaceStateSpy).toHaveBeenCalledWith(null, '', '/?q=topic+gamma');
+    expect(replaceStateSpy).toHaveBeenCalledWith(expect.objectContaining({ __lwc342QueryEntryId: expect.any(String) }), '', '/?q=topic+gamma');
   });
 
   it('restarts the Search-button cue with repeated chip clicks without submitting or stealing focus', async () => {
@@ -365,7 +386,7 @@ describe('LWC-248 home search submission contract', () => {
 
     replaceStateSpy.mockRestore();
     window.history.replaceState(null, '', '/?q=deep%20travel');
-    replaceStateSpy = vi.spyOn(window.history, 'replaceState').mockImplementation(() => undefined);
+    replaceStateSpy = vi.spyOn(window.history, 'replaceState');
     mocks.searchWiki.mockReturnValue(deepWiki.promise);
 
     const { rerender } = render(<HomeClient />);
@@ -381,7 +402,7 @@ describe('LWC-248 home search submission contract', () => {
     });
     await waitFor(() => expect(queryInput.value).toBe(''));
     expect(searchButton.disabled).toBe(false);
-    expect(replaceStateSpy).toHaveBeenCalledWith(null, '', '/');
+    expect(replaceStateSpy).toHaveBeenCalledWith(expect.any(Object), '', '/');
 
     await act(async () => {
       deepWiki.resolve({
@@ -409,7 +430,7 @@ describe('LWC-248 home search submission contract', () => {
     const writeText = vi.fn().mockResolvedValue(undefined);
     replaceStateSpy.mockRestore();
     window.history.replaceState(null, '', '/');
-    replaceStateSpy = vi.spyOn(window.history, 'replaceState').mockImplementation(() => undefined);
+    replaceStateSpy = vi.spyOn(window.history, 'replaceState');
     Object.defineProperty(navigator, 'clipboard', { configurable: true, value: { writeText } });
     mocks.searchWiki.mockRejectedValueOnce(new QueryApiError('safe provider detail', 503, 'query_provider_failed', diagnosticId));
 
@@ -497,5 +518,115 @@ describe('LWC-248 home search submission contract', () => {
     });
     expect(screen.getByRole('button', { name: 'QueryErrors.copyDiagnosticId' })).toBeTruthy();
     expect(screen.queryByRole('button', { name: 'QueryErrors.diagnosticIdCopied' })).toBeNull();
+  });
+});
+
+describe('LWC-342 completed query history restoration', () => {
+  it.each(['wiki', 'full'] as const)('restores the exact %s result through browser Back and resubmits distinctly', async (searchMode) => {
+    const firstResponse = {
+      results: [{ id: 'first-result', slug: 'first-result', title: 'First result', type: 'concept', excerpt: 'first excerpt', content: '' }],
+      aiAnswer: 'First answer from this submission.',
+      citations: [{ text: 'First citation', type: 'source', slug: 'source-one', id: 'source-one', path: 'source-one.md' }],
+      expand: { keywords: ['first keyword'] },
+    };
+    const secondResponse = {
+      results: [{ id: 'second-result', slug: 'second-result', title: 'Second result', type: 'concept', excerpt: 'second excerpt', content: '' }],
+      aiAnswer: 'Different answer from the resubmission.',
+      citations: [{ text: 'Second citation', type: 'source', slug: 'source-two', id: 'source-two', path: 'source-two.md' }],
+      expand: { keywords: ['second keyword'] },
+    };
+    mocks.searchWiki
+      .mockResolvedValueOnce(firstResponse)
+      .mockResolvedValueOnce(secondResponse);
+
+    const firstPage = render(<HomeClient />);
+    await waitForInitialSearchState();
+    const queryInput = screen.getByRole('textbox');
+    const form = (await getFormFromSearchButton()).form;
+    await act(async () => {
+      fireEvent.change(queryInput, { target: { value: 'same question' } });
+    });
+    if (searchMode === 'full') {
+      await act(async () => {
+        fireEvent.click(screen.getByRole('button', { name: 'Demo.full' }));
+      });
+    }
+    await act(async () => {
+      fireEvent.submit(form);
+    });
+    expect(await screen.findByText('First answer from this submission.')).toBeTruthy();
+    expect(mocks.searchWiki).toHaveBeenCalledTimes(1);
+
+    window.history.pushState({}, '', '/concepts/first-result');
+    firstPage.unmount();
+    window.history.back();
+    await waitFor(() => expect(window.location.pathname).toBe('/'));
+
+    const restoredPage = render(<HomeClient />);
+    expect(await screen.findByText('First answer from this submission.')).toBeTruthy();
+    expect(screen.getByRole('textbox')).toHaveProperty('value', 'same question');
+    expect(screen.getByText(`${searchMode} mode`)).toBeTruthy();
+    expect(screen.getByText('First citation')).toBeTruthy();
+    expect(screen.getByText(/first keyword/)).toBeTruthy();
+    expect(mocks.searchWiki).toHaveBeenCalledTimes(1);
+
+    await act(async () => {
+      fireEvent.submit((await getFormFromSearchButton()).form);
+    });
+    expect(await screen.findByText('Different answer from the resubmission.')).toBeTruthy();
+    expect(mocks.searchWiki).toHaveBeenCalledTimes(2);
+    expect(mocks.searchWiki).toHaveBeenNthCalledWith(2, 'same question', searchMode);
+
+    window.history.pushState({}, '', '/sources/source-two');
+    restoredPage.unmount();
+    window.history.back();
+    await waitFor(() => expect(window.location.pathname).toBe('/'));
+    render(<HomeClient />);
+
+    expect(await screen.findByText('Different answer from the resubmission.')).toBeTruthy();
+    expect(screen.getByText('Second citation')).toBeTruthy();
+    expect(screen.getByText(/second keyword/)).toBeTruthy();
+    expect(mocks.searchWiki).toHaveBeenCalledTimes(2);
+  });
+
+  it('restores a completed empty result and keeps a restore miss query-free until explicit retry', async () => {
+    mocks.searchWiki.mockResolvedValueOnce({ results: [], aiAnswer: '', citations: [], expand: { keywords: [] } });
+    const firstPage = render(<HomeClient />);
+    await waitForInitialSearchState();
+    const input = screen.getByRole('textbox');
+    await act(async () => {
+      fireEvent.change(input, { target: { value: 'empty answer' } });
+      fireEvent.submit((await getFormFromSearchButton()).form);
+    });
+    expect(await screen.findByText('Demo.noResults')).toBeTruthy();
+
+    window.history.pushState({}, '', '/sources/empty-result');
+    firstPage.unmount();
+    window.history.back();
+    await waitFor(() => expect(window.location.pathname).toBe('/'));
+    render(<HomeClient />);
+    expect(await screen.findByText('Demo.noResults')).toBeTruthy();
+    expect(mocks.searchWiki).toHaveBeenCalledTimes(1);
+
+    window.history.pushState({}, '', '/sources/empty-result');
+    clearCompletedQueryResults();
+    cleanup();
+    window.history.back();
+    await waitFor(() => expect(window.location.pathname).toBe('/'));
+    render(<HomeClient />);
+    expect(await screen.findByText('QueryResults.resultUnavailable')).toBeTruthy();
+    expect(screen.queryByText('Demo.noResults')).toBeNull();
+    expect(mocks.searchWiki).toHaveBeenCalledTimes(1);
+
+    mocks.searchWiki.mockResolvedValueOnce({
+      results: [{ id: 'retry-result', slug: 'retry-result', title: 'Retry result', type: 'concept', excerpt: 'retry', content: '' }],
+      aiAnswer: 'Retry result answer.',
+      citations: [],
+    });
+    await act(async () => {
+      fireEvent.click(screen.getByRole('button', { name: 'QueryResults.searchAgain' }));
+    });
+    expect(await screen.findByText('Retry result answer.')).toBeTruthy();
+    expect(mocks.searchWiki).toHaveBeenCalledTimes(2);
   });
 });
