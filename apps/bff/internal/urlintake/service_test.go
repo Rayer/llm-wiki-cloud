@@ -4,7 +4,6 @@ import (
 	"bytes"
 	"context"
 	"errors"
-	"fmt"
 	"net/netip"
 	"strings"
 	"sync/atomic"
@@ -308,21 +307,51 @@ func TestServiceResolvesConcurrentSameURLToOnePath(t *testing.T) {
 		}()
 	}
 	close(start)
-	var statuses []string
+	var resultsGot []Result
 	for range 2 {
 		result := <-results
 		err := <-errorsOut
 		if err != nil {
 			t.Fatal(err)
 		}
-		statuses = append(statuses, result.Status)
+		resultsGot = append(resultsGot, result)
 	}
 	files, err := markdownRawFiles(store)
 	if err != nil || len(files) != 1 {
 		t.Fatalf("concurrent raw files = %#v, %v", files, err)
 	}
-	if fmt.Sprint(statuses) != "[stored conflict]" && fmt.Sprint(statuses) != "[conflict stored]" {
-		t.Fatalf("concurrent statuses = %v", statuses)
+	created, alreadyExists, conflicts := 0, 0, 0
+	var path, digest string
+	for _, result := range resultsGot {
+		switch result.Status {
+		case "stored":
+			if result.Storage == nil {
+				t.Fatalf("stored concurrent result has no storage outcome: %#v", result)
+			}
+			if path == "" {
+				path, digest = result.Storage.Path, result.Storage.SHA256
+			} else if result.Storage.Path != path || result.Storage.SHA256 != digest {
+				t.Fatalf("concurrent imports diverged: %#v", resultsGot)
+			}
+			switch result.Storage.Status {
+			case string(rawintake.StatusCreated):
+				created++
+			case string(rawintake.StatusAlreadyExists):
+				alreadyExists++
+			default:
+				t.Fatalf("unexpected concurrent storage outcome: %#v", result.Storage)
+			}
+		case "conflict":
+			conflicts++
+		default:
+			t.Fatalf("unexpected concurrent result: %#v", result)
+		}
+	}
+	if created != 1 || (alreadyExists != 1 && conflicts != 1) || alreadyExists+conflicts != 1 {
+		t.Fatalf("concurrent results = %#v; want one create and one identical no-op or conflict", resultsGot)
+	}
+	if path != files[0].Path {
+		t.Fatalf("concurrent path = %q, raw file = %q", path, files[0].Path)
 	}
 }
 
