@@ -157,11 +157,11 @@ export function PipelineClient() {
     }
   }, [isPipelineRequestCurrent]);
 
-  const handleUploadQueueSettled = useCallback(({ changed }: RawUploadsSettled) => {
+  const handleUploadQueueSettled = useCallback(({ changed, projectId }: RawUploadsSettled) => {
     if (!changed) return;
     // New raw files may change quota eligibility.
     const context = pipelineProjectContextRef.current;
-    if (context.projectId) {
+    if (context.projectId === projectId) {
       void refreshPipelineStatus({
         projectId: context.projectId,
         contextGeneration: context.generation,
@@ -508,7 +508,7 @@ export function PipelineClient() {
 
         <div className="mt-4 grid gap-4 sm:grid-cols-2">
           <RawUploadPanel
-            key={JSON.stringify([projectId, token])}
+            key={token ?? 'no-session'}
             title={t('Pipeline.uploadFiles')}
             hint={t('Pipeline.uploadHint')}
             onBlocked={() => addToast(t('Demo.restricted'), 'info')}

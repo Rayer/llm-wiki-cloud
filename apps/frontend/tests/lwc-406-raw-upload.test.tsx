@@ -141,7 +141,7 @@ it('keeps an upload conflict visible and retries the file through the same uploa
   expect(mocks.uploadRawFile).toHaveBeenCalledTimes(2);
 });
 
-it('keeps a late upload from Project A out of the Project B list after switching session context', async () => {
+it('keeps a late Project A upload pinned and out of the Project B list after switching Projects', async () => {
   let resolveUpload!: (result: RawUploadResult) => void;
   const pendingUpload = new Promise<RawUploadResult>((resolve) => {
     resolveUpload = resolve;
@@ -158,7 +158,6 @@ it('keeps a late upload from Project A out of the Project B list after switching
   await waitFor(() => expect(mocks.uploadRawFile).toHaveBeenCalledTimes(1));
 
   mocks.currentProject = { id: 'project-b', name: 'Project B' };
-  mocks.token = 'session-b';
   window.localStorage.setItem('llm-wiki-last-project', 'project-b');
   view.rerender(<RawClient />);
   expect(await screen.findByRole('button', { name: 'Raw.previewAria' })).toBeDefined();
@@ -169,7 +168,39 @@ it('keeps a late upload from Project A out of the Project B list after switching
     await pendingUpload;
   });
   expect(screen.getByText('project-b.md')).toBeDefined();
+  expect(screen.getByText('Created')).toBeDefined();
+  expect(screen.getByText('RawUpload.projectLabel')).toBeDefined();
+  expect(screen.queryByRole('row', { name: new RegExp(uploadedFile.name) })).toBeNull();
+  expect(mocks.getRawFiles).toHaveBeenCalledTimes(2);
+  expect(mocks.refreshNavCounts).not.toHaveBeenCalled();
+});
+
+it('clears queued upload state when the authenticated session changes', async () => {
+  let resolveUpload!: (result: RawUploadResult) => void;
+  const pendingUpload = new Promise<RawUploadResult>((resolve) => {
+    resolveUpload = resolve;
+  });
+  mocks.uploadRawFile.mockReturnValue(pendingUpload);
+  mocks.getRawFiles
+    .mockResolvedValueOnce([])
+    .mockResolvedValueOnce([{ ...uploadedFile, name: 'project-b.md' }]);
+  const view = render(<RawClient />);
+  const file = new File(['A content'], uploadedFile.name, { type: 'text/markdown' });
+  await act(async () => fireEvent.change(uploadInput(), { target: { files: [file] } }));
+  await waitFor(() => expect(mocks.uploadRawFile).toHaveBeenCalledTimes(1));
+
+  mocks.currentProject = { id: 'project-b', name: 'Project B' };
+  mocks.token = 'session-b';
+  window.localStorage.setItem('llm-wiki-last-project', 'project-b');
+  view.rerender(<RawClient />);
+  expect(await screen.findByText('project-b.md')).toBeDefined();
+
+  await act(async () => {
+    resolveUpload(createdResult);
+    await pendingUpload;
+  });
   expect(screen.queryByText(uploadedFile.name)).toBeNull();
+  expect(screen.getByText('project-b.md')).toBeDefined();
   expect(mocks.getRawFiles).toHaveBeenCalledTimes(2);
   expect(mocks.refreshNavCounts).not.toHaveBeenCalled();
 });
