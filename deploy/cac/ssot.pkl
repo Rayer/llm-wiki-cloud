@@ -74,6 +74,13 @@ class BffQueryConfig {
   legacy: QueryLegacy?
 }
 
+class PipelineScheduleConfig {
+  cron: String
+  timezone: String
+  audience: String
+  service_account: String
+}
+
 class BffConfig {
   schema_version: Int
   environment: String
@@ -100,6 +107,7 @@ class BffConfig {
   typesafe_api_key_reference: BffSecretReference?
   profile_runtime_audience: String
   profile_runtime_service_account: String
+  pipeline_schedule: PipelineScheduleConfig
   llm: BffLlm
   query: BffQueryConfig
   `local`: LocalBffConfig?
@@ -254,6 +262,13 @@ local prodTypeSafeSecretReference = new BffSecretReference {
   resource = "projects/llm-wiki-cloud/secrets/typesafe-jev-api-key-prod/versions/1"
 }
 
+local pipelineSchedule = new PipelineScheduleConfig {
+  cron = "0 * * * *"
+  timezone = "UTC"
+  audience = ""
+  service_account = ""
+}
+
 local localBff = new BffConfig {
   schema_version = 2
   environment = "local"
@@ -285,6 +300,7 @@ local localBff = new BffConfig {
   typesafe_api_key_reference = null
   profile_runtime_audience = ""
   profile_runtime_service_account = ""
+  pipeline_schedule = pipelineSchedule
   llm = new BffLlm {
     provider = selected.llm.provider
     base_url = selected.llm.endpoint
@@ -351,6 +367,7 @@ local devBff = new BffConfig {
   typesafe_api_key_reference = devTypeSafeSecretReference
   profile_runtime_audience = "https://llm-wiki-bff-dev-a5nkmux6pq-de.a.run.app"
   profile_runtime_service_account = "lwc-bff-dev@llm-wiki-cloud.iam.gserviceaccount.com"
+  pipeline_schedule = pipelineSchedule
   llm = new BffLlm {
     provider = selected.llm.provider
     base_url = selected.llm.endpoint
@@ -399,6 +416,7 @@ local prodBff = new BffConfig {
   typesafe_api_key_reference = prodTypeSafeSecretReference
   profile_runtime_audience = "https://llm-wiki-bff-a5nkmux6pq-de.a.run.app"
   profile_runtime_service_account = "lwc-bff-prod@llm-wiki-cloud.iam.gserviceaccount.com"
+  pipeline_schedule = pipelineSchedule
   llm = new BffLlm {
     provider = selected.llm.provider
     base_url = selected.llm.endpoint

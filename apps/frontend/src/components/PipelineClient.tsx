@@ -81,7 +81,7 @@ function hasNewRaw(quota: PipelineQuota | null | undefined): boolean {
 }
 
 export function PipelineClient() {
-  const { t } = useT();
+  const { t, locale } = useT();
   const { isDemoSession, currentProject, token } = useWorkspace();
   const projectId = currentProject?.id ?? null;
   const pipelineProjectContextRef = useRef<PipelineProjectContext>({ projectId, generation: 0 });
@@ -144,6 +144,7 @@ export function PipelineClient() {
               ...current,
               ...(status.quota !== undefined ? { quota: status.quota } : {}),
               ...(status.full_quota !== undefined ? { full_quota: status.full_quota } : {}),
+              ...(status.scheduled_pipeline !== undefined ? { scheduled_pipeline: status.scheduled_pipeline } : {}),
               ...(status.suggested_queries !== undefined ? { suggested_queries: status.suggested_queries } : {}),
             }
           : current);
@@ -641,6 +642,55 @@ export function PipelineClient() {
           <p className="mt-2 text-xs text-zinc-500" data-testid="pipeline-quota-line">
             {quotaLine}
           </p>
+          {pipelineStatus?.scheduled_pipeline ? (
+            <section className="mt-2 space-y-1 rounded border border-white/5 bg-zinc-950/40 p-2 text-xs text-zinc-400" data-testid="pipeline-scheduled-pipeline">
+              <h4 className="font-medium text-zinc-200">{t('Pipeline.scheduledTitle')}</h4>
+              <p>{t('Pipeline.scheduledDescription')}</p>
+              <p>{t('Pipeline.scheduledProfileNote')}</p>
+              <p>
+                {t('Pipeline.scheduledSchedule')}: <span className="font-mono">{pipelineStatus.scheduled_pipeline.schedule}</span> · {pipelineStatus.scheduled_pipeline.timezone}
+                {pipelineStatus.scheduled_pipeline.next_check_at ? ` · ${t('Pipeline.scheduledNextCheck')}: ${formatScheduledTime(pipelineStatus.scheduled_pipeline.next_check_at, pipelineStatus.scheduled_pipeline.timezone, locale)}` : ''}
+              </p>
+              {pipelineStatus.scheduled_pipeline.availability === 'available' ? (
+                <>
+                  <p>
+                    {t('Pipeline.scheduledPending')}: {pipelineStatus.scheduled_pipeline.pending_work} · {t('Pipeline.scheduledNewRaw')}: {pipelineStatus.scheduled_pipeline.new_raw_files} · {t('Pipeline.scheduledRawDirty')}: {pipelineStatus.scheduled_pipeline.raw_dirty_files} · {t('Pipeline.scheduledAnnotationDirty')}: {pipelineStatus.scheduled_pipeline.annotation_dirty_files}
+                  </p>
+                  <p>
+                    {t('Pipeline.scheduledBudget')}: {pipelineStatus.scheduled_pipeline.budget_used ? t('Pipeline.scheduledUsed') : t('Pipeline.scheduledAvailable')}
+                    {pipelineStatus.scheduled_pipeline.day_key ? ` · ${pipelineStatus.scheduled_pipeline.day_key} UTC` : ''}
+                  </p>
+                  <p>{t('Pipeline.scheduledReason')}: {scheduledReasonText(pipelineStatus.scheduled_pipeline.skip_reason, t)}</p>
+                </>
+              ) : pipelineStatus.scheduled_pipeline.availability === 'disabled' ? (
+                <p>{t('Pipeline.scheduledDisabled')}</p>
+              ) : pipelineStatus.scheduled_pipeline.availability === 'not_checked' ? (
+                <p>{t('Pipeline.scheduledNotChecked')}</p>
+              ) : (
+                <p>{t('Pipeline.scheduledUnavailable')}</p>
+              )}
+              <p>
+                {t('Pipeline.scheduledLastAttempt')}: {pipelineStatus.scheduled_pipeline.last_attempt_at
+                  ? formatScheduledTime(pipelineStatus.scheduled_pipeline.last_attempt_at, pipelineStatus.scheduled_pipeline.timezone, locale)
+                  : t('Pipeline.scheduledNoAttempt')}
+                {pipelineStatus.scheduled_pipeline.last_result ? ` · ${pipelineStatus.scheduled_pipeline.last_result}` : ''}
+              </p>
+              {pipelineStatus.scheduled_pipeline.last_execution_id ? (
+                <p className="break-all">{t('Pipeline.scheduledExecution')}: {pipelineStatus.scheduled_pipeline.last_execution_id}</p>
+              ) : null}
+              {pipelineStatus.scheduled_execution ? (
+                <div className="border-t border-white/5 pt-1" data-testid="pipeline-scheduled-execution-evidence">
+                  <p>{t('Pipeline.scheduledExecutionStatus')}: {pipelineStatus.scheduled_execution.status}</p>
+                  <p>{t('Pipeline.scheduledPublication')}: {pipelineStatus.scheduled_execution.publication_outcome ?? t('Pipeline.scheduledEvidenceUnavailable')}</p>
+                  <p>{t('Pipeline.scheduledGuidance')}: {pipelineStatus.scheduled_execution.consumed_guidance?.status === 'available'
+                    ? `${pipelineStatus.scheduled_execution.consumed_guidance.kind ?? 'unknown'}${pipelineStatus.scheduled_execution.consumed_guidance.revision ? ` · ${pipelineStatus.scheduled_execution.consumed_guidance.revision}` : ''}${pipelineStatus.scheduled_execution.consumed_guidance.content_generation ? ` · ${pipelineStatus.scheduled_execution.consumed_guidance.content_generation}` : ''}`
+                    : t('Pipeline.scheduledEvidenceUnavailable')}</p>
+                </div>
+              ) : pipelineStatus.scheduled_pipeline.last_execution_id ? (
+                <p>{t('Pipeline.scheduledEvidenceUnavailable')}</p>
+              ) : null}
+            </section>
+          ) : null}
           {blocked && blockMessage ? (
             <p className="mt-1 text-xs text-amber-200/90" data-testid="pipeline-block-reason">
               {blockMessage}
@@ -732,4 +782,19 @@ export function PipelineClient() {
 
     </>
   );
+}
+
+function formatScheduledTime(value: string, timezone: string, locale: string): string {
+  const date = new Date(value);
+  if (Number.isNaN(date.getTime())) return value;
+  return date.toLocaleString(locale === 'zh-TW' ? 'zh-TW' : 'en-US', {
+    timeZone: timezone || 'UTC', dateStyle: 'medium', timeStyle: 'short',
+  });
+}
+
+function scheduledReasonText(reason: string, t: (key: string) => string): string {
+  if (!reason) return t('Pipeline.scheduledReasonNone');
+  const key = `Pipeline.scheduledSkip.${reason}`;
+  const translated = t(key);
+  return translated === key ? reason : translated;
 }

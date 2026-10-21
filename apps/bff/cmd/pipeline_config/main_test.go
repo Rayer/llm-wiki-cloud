@@ -152,6 +152,10 @@ func TestRealPklBFFPrepareRendersSchema2ForLocalDevelopmentAndProduction(t *test
 				generated.PipelineCooldownSeconds != tc.cooldown {
 				t.Fatalf("prepared BFF identity or cooldown is incorrect for %s", tc.environment)
 			}
+			if generated.PipelineSchedule.Cron != "0 * * * *" || generated.PipelineSchedule.Timezone != "UTC" ||
+				generated.PipelineSchedule.Audience != "" || generated.PipelineSchedule.ServiceAccount != "" {
+				t.Fatalf("prepared BFF schedule is not the frozen hourly UTC configuration for %s: %+v", tc.environment, generated.PipelineSchedule)
+			}
 			if generated.LLM.Provider != "deepseek" || generated.LLM.BaseURL != "https://api.deepseek.com" ||
 				generated.LLM.RequestTimeoutSeconds != 60 || generated.LLM.Model != "deepseek-flash" {
 				t.Fatalf("prepared BFF LLM connection options are incorrect for %s", tc.environment)
@@ -282,6 +286,10 @@ func TestRealPklBFFLocalPrepareUsesSelectedSharedSecretVersion(t *testing.T) {
 	if descriptor.MCPResourceOrigin != "http://localhost:18080" {
 		t.Fatalf("BFF descriptor resource origin = %q, want the prepared canonical listener origin", descriptor.MCPResourceOrigin)
 	}
+	if descriptor.PipelineSchedule.Cron != "0 * * * *" || descriptor.PipelineSchedule.Timezone != "UTC" ||
+		descriptor.PipelineSchedule.Audience != "" || descriptor.PipelineSchedule.ServiceAccount != "" {
+		t.Fatalf("BFF descriptor schedule is not the frozen hourly UTC configuration: %+v", descriptor.PipelineSchedule)
+	}
 	if strings.Contains(string(descriptorBytes), payload) || strings.Contains(descriptorLog, payload) {
 		t.Fatal("BFF descriptor or its log contains the synthetic secret payload")
 	}
@@ -308,6 +316,11 @@ func TestRealPklBFFLocalPrepareUsesSelectedSharedSecretVersion(t *testing.T) {
 	}
 	if generated.MCPResourceOrigin != descriptor.MCPResourceOrigin {
 		t.Fatalf("generated BFF runtime origin = %q, want %q", generated.MCPResourceOrigin, descriptor.MCPResourceOrigin)
+	}
+	if generated.PipelineSchedule != (runtimeconfig.BFFPipelineSchedule{
+		Cron: "0 * * * *", Timezone: "UTC",
+	}) {
+		t.Fatalf("generated BFF runtime schedule = %+v, want the selected shared hourly UTC schedule", generated.PipelineSchedule)
 	}
 	if strings.Contains(bffLog, payload) {
 		t.Fatal("BFF prepare log contains the synthetic secret payload")
@@ -733,7 +746,8 @@ func localBFFSourceJSON(root, jwtPath string, cooldown int) string {
 		"jwt_secret_reference":       map[string]any{"source": "file", "resource": jwtPath},
 		"deepseek_api_key_reference": map[string]any{"source": "environment", "env_name": "LLM_API_KEY"},
 		"profile_runtime_audience":   "", "profile_runtime_service_account": "",
-		"llm": map[string]any{"provider": "deepseek", "base_url": "https://api.deepseek.com/v1/", "request_timeout_seconds": 60, "model": "deepseek-flash"},
+		"pipeline_schedule": map[string]any{"cron": "0 * * * *", "timezone": "UTC", "audience": "", "service_account": ""},
+		"llm":               map[string]any{"provider": "deepseek", "base_url": "https://api.deepseek.com/v1/", "request_timeout_seconds": 60, "model": "deepseek-flash"},
 		"query": map[string]any{"stage_config_path": "", "legacy": map[string]any{
 			"query_expansion_model": "deepseek-flash", "query_expansion_reasoning": "none", "answer_synthesis_model": "deepseek-flash",
 			"answer_synthesis_reasoning": "none", "query_selection_limit": 10, "query_selection_exploration_slots": 1,

@@ -2,12 +2,14 @@ package v1
 
 import (
 	"context"
+	"errors"
 	"log"
 	"strings"
 	"time"
 
 	"github.com/rayer/llm-wiki-bff/internal/firestore"
 	"github.com/rayer/llm-wiki-bff/internal/observability"
+	"github.com/rayer/llm-wiki-bff/internal/pipelinequota"
 )
 
 // ReconcilePipelineQuota settles accepted Cloud Run executions independently
@@ -40,7 +42,7 @@ func (h *Handler) ReconcilePipelineQuota(ctx context.Context) (resultErr error) 
 			continue
 		}
 		lookupCtx, lookupSpan := observability.StartPipelineSpan(ctx, "pipeline.quota.lookup")
-		confirmedFailure, err := h.hasConfirmedPipelineInvokeFailure(lookupCtx, reservation.UserID, reservation.ProjectID, reservation.ID)
+		confirmedFailure, err := h.hasConfirmedPipelineInvokeFailure(lookupCtx, reservation)
 		lookupOutcome := "pending"
 		if err != nil {
 			lookupOutcome = pipelineTraceOutcome(err)
@@ -52,7 +54,25 @@ func (h *Handler) ReconcilePipelineQuota(ctx context.Context) (resultErr error) 
 			return err
 		}
 		if confirmedFailure {
-			if _, err := quotaStore.SettleQuotaReservation(ctx, reservation.ID, "FAILED"); err != nil {
+			if reservation.Trigger == pipelinequota.TriggerScheduledDaily {
+				admission, ok := quotaStore.(interface {
+					ReleaseQuotaReservationIfAttempt(context.Context, string, string) (bool, error)
+				})
+				if !ok {
+					return errors.New("scheduled quota store does not support attempt-bound release")
+				}
+				if _, err := admission.ReleaseQuotaReservationIfAttempt(ctx, reservation.ID, reservation.AttemptID); err != nil {
+					return err
+				}
+				continue
+			}
+			if admission, ok := quotaStore.(interface {
+				ReleaseQuotaReservation(context.Context, string) error
+			}); ok {
+				if err := admission.ReleaseQuotaReservation(ctx, reservation.ID); err != nil {
+					return err
+				}
+			} else if _, err := quotaStore.SettleQuotaReservation(ctx, reservation.ID, "FAILED"); err != nil {
 				return err
 			}
 			continue
@@ -128,6 +148,12 @@ func (h *Handler) ReconcilePipelineQuota(ctx context.Context) (resultErr error) 
 							linkOutcome = "degraded"
 						}
 						observability.FinishPipelineSpan(linkSpan, linkOutcome)
+						if linkErr != nil {
+							return linkErr
+						}
+					} else {
+						lookupOutcome = "unknown"
+						return errors.New("matched pipeline execution has no stable execution ID")
 					}
 					outcome, err := h.settleCloudRunQuotaReservation(lookupCtx, quotaStore, reservation, execution)
 					lookupOutcome = outcome

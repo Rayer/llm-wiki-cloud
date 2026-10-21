@@ -42,7 +42,7 @@ type StatusScope = {
 };
 
 export function StatusClient() {
-  const { t } = useT();
+  const { t, locale } = useT();
   const { user } = useAuth();
   const { currentProject } = useWorkspace();
   const projectId = currentProject?.id ?? null;
@@ -232,6 +232,62 @@ export function StatusClient() {
               })}
             </p>
           ) : null}
+          {status.scheduledPipeline ? (
+            <section className="space-y-1 rounded-lg border border-white/10 bg-zinc-900/40 p-3 text-xs text-zinc-400" data-testid="status-scheduled-pipeline">
+              <h2 className="font-medium text-zinc-200">{t('Pipeline.scheduledTitle')}</h2>
+                <p>{t('Pipeline.scheduledDescription')}</p>
+              <p>{t('Pipeline.scheduledProfileNote')}</p>
+              <p>
+                {t('Pipeline.scheduledSchedule')}: <span className="font-mono">{status.scheduledPipeline.schedule}</span> · {status.scheduledPipeline.timezone}
+                {status.scheduledPipeline.next_check_at ? ` · ${t('Pipeline.scheduledNextCheck')}: ${formatScheduledTime(status.scheduledPipeline.next_check_at, status.scheduledPipeline.timezone, locale)}` : ''}
+              </p>
+              <p>
+                {t('Pipeline.scheduledLastCheck')}: {status.scheduledPipeline.last_check_at
+                  ? formatScheduledTime(status.scheduledPipeline.last_check_at, status.scheduledPipeline.timezone, locale)
+                  : t('Pipeline.scheduledNoCheck')}
+              </p>
+              {status.scheduledPipeline.availability === 'available' ? (
+                <>
+                  <p>
+                    {t('Pipeline.scheduledPending')}: {status.scheduledPipeline.pending_work} · {t('Pipeline.scheduledNewRaw')}: {status.scheduledPipeline.new_raw_files} · {t('Pipeline.scheduledRawDirty')}: {status.scheduledPipeline.raw_dirty_files} · {t('Pipeline.scheduledAnnotationDirty')}: {status.scheduledPipeline.annotation_dirty_files}
+                  </p>
+                  <p>
+                    {t('Pipeline.scheduledBudget')}: {status.scheduledPipeline.budget_used
+                      ? t('Pipeline.scheduledUsed')
+                      : t('Pipeline.scheduledAvailable')}
+                    {status.scheduledPipeline.day_key ? ` · ${status.scheduledPipeline.day_key} UTC` : ''}
+                  </p>
+                  <p>{t('Pipeline.scheduledReason')}: {scheduledReasonText(status.scheduledPipeline.skip_reason, t)}</p>
+                </>
+              ) : status.scheduledPipeline.availability === 'disabled' ? (
+                <p>{t('Pipeline.scheduledDisabled')}</p>
+              ) : status.scheduledPipeline.availability === 'not_checked' ? (
+                <p>{t('Pipeline.scheduledNotChecked')}</p>
+              ) : (
+                <p>{t('Pipeline.scheduledUnavailable')}</p>
+              )}
+              <p>
+                {t('Pipeline.scheduledLastAttempt')}: {status.scheduledPipeline.last_attempt_at
+                  ? formatScheduledTime(status.scheduledPipeline.last_attempt_at, status.scheduledPipeline.timezone, locale)
+                  : t('Pipeline.scheduledNoAttempt')}
+                {status.scheduledPipeline.last_result ? ` · ${status.scheduledPipeline.last_result}` : ''}
+              </p>
+              {status.scheduledPipeline.last_execution_id ? (
+                <p className="break-all">{t('Pipeline.scheduledExecution')}: {status.scheduledPipeline.last_execution_id}</p>
+              ) : null}
+              {status.scheduledExecution ? (
+                <div className="border-t border-white/5 pt-1" data-testid="status-scheduled-execution-evidence">
+                  <p>{t('Pipeline.scheduledExecutionStatus')}: {status.scheduledExecution.status}</p>
+                  <p>{t('Pipeline.scheduledPublication')}: {status.scheduledExecution.publication_outcome ?? t('Pipeline.scheduledEvidenceUnavailable')}</p>
+                  <p>{t('Pipeline.scheduledGuidance')}: {status.scheduledExecution.consumed_guidance?.status === 'available'
+                    ? `${status.scheduledExecution.consumed_guidance.kind ?? 'unknown'}${status.scheduledExecution.consumed_guidance.revision ? ` · ${status.scheduledExecution.consumed_guidance.revision}` : ''}${status.scheduledExecution.consumed_guidance.content_generation ? ` · ${status.scheduledExecution.consumed_guidance.content_generation}` : ''}`
+                    : t('Pipeline.scheduledEvidenceUnavailable')}</p>
+                </div>
+              ) : status.scheduledPipeline.last_execution_id ? (
+                <p>{t('Pipeline.scheduledEvidenceUnavailable')}</p>
+              ) : null}
+            </section>
+          ) : null}
           <PipelineLogPanel
             logState={logState}
             execution={status.lastExecution}
@@ -255,6 +311,21 @@ export function StatusClient() {
       />
     </div>
   );
+}
+
+function formatScheduledTime(value: string, timezone: string, locale: string): string {
+  const date = new Date(value);
+  if (Number.isNaN(date.getTime())) return value;
+  return date.toLocaleString(locale === 'zh-TW' ? 'zh-TW' : 'en-US', {
+    timeZone: timezone || 'UTC', dateStyle: 'medium', timeStyle: 'short',
+  });
+}
+
+function scheduledReasonText(reason: string, t: (key: string) => string): string {
+  if (!reason) return t('Pipeline.scheduledReasonNone');
+  const key = `Pipeline.scheduledSkip.${reason}`;
+  const translated = t(key);
+  return translated === key ? reason : translated;
 }
 
 function DeveloperDetails({

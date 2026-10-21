@@ -18,8 +18,9 @@ func validBFFFileForTest() BFFFile {
 		PipelineDailyLimit: 2, PipelineCooldownSeconds: 600, PipelineMinNewRaw: 1,
 		PipelineDemoUserIDs: []string{}, AuthSessionEnvironment: "development", AuthSessionMigration: "disabled",
 		RegistrationEnabled: &enabled, JWTSecret: "fixture-jwt-secret", DeepSeekAPIKey: "fixture-deepseek-key",
-		LLM:   BFFLLM{Provider: "deepseek", BaseURL: "https://api.deepseek.com", RequestTimeoutSeconds: 60, Model: "deepseek-flash"},
-		Query: BFFQuery{StageConfigPath: "/app/configs/query/dev/query.json"}, PortDefault: 8080,
+		PipelineSchedule: BFFPipelineSchedule{Cron: "0 * * * *", Timezone: "UTC"},
+		LLM:              BFFLLM{Provider: "deepseek", BaseURL: "https://api.deepseek.com", RequestTimeoutSeconds: 60, Model: "deepseek-flash"},
+		Query:            BFFQuery{StageConfigPath: "/app/configs/query/dev/query.json"}, PortDefault: 8080,
 	}
 }
 
@@ -110,6 +111,10 @@ func TestDecodeBFFFileRejectsNullAndWrongScalarTypes(t *testing.T) {
 		{name: "deepseek_api_key", path: []string{"deepseek_api_key"}, kind: "string", data: cloudData},
 		{name: "typesafe_api_key", path: []string{"typesafe_api_key"}, kind: "string", data: cloudData},
 		{name: "profile_runtime_audience", path: []string{"profile_runtime_audience"}, kind: "string", data: cloudData},
+		{name: "pipeline_schedule.cron", path: []string{"pipeline_schedule", "cron"}, kind: "string", data: cloudData},
+		{name: "pipeline_schedule.timezone", path: []string{"pipeline_schedule", "timezone"}, kind: "string", data: cloudData},
+		{name: "pipeline_schedule.audience", path: []string{"pipeline_schedule", "audience"}, kind: "string", data: cloudData},
+		{name: "pipeline_schedule.service_account", path: []string{"pipeline_schedule", "service_account"}, kind: "string", data: cloudData},
 		{name: "profile_runtime_service_account", path: []string{"profile_runtime_service_account"}, kind: "string", data: cloudData},
 		{name: "port_default", path: []string{"port_default"}, kind: "integer", data: cloudData},
 		{name: "llm.provider", path: []string{"llm", "provider"}, kind: "string", data: cloudData},
@@ -282,8 +287,9 @@ func TestDecodeBFFFileAcceptsFrozenSchemaAndPreservesSSOTValues(t *testing.T) {
 	if err != nil {
 		t.Fatalf("DecodeBFFFile() error = %v", err)
 	}
-	if got.PipelineCooldownSeconds != 600 || got.LLM.RequestTimeoutSeconds != 60 || got.Query.StageConfigPath != "/app/configs/query/dev/query.json" {
-		t.Fatalf("decoded config lost selected values: cooldown=%d timeout=%d query=%q", got.PipelineCooldownSeconds, got.LLM.RequestTimeoutSeconds, got.Query.StageConfigPath)
+	if got.PipelineCooldownSeconds != 600 || got.LLM.RequestTimeoutSeconds != 60 || got.Query.StageConfigPath != "/app/configs/query/dev/query.json" ||
+		got.PipelineSchedule.Cron != "0 * * * *" || got.PipelineSchedule.Timezone != "UTC" {
+		t.Fatalf("decoded config lost selected values: cooldown=%d timeout=%d query=%q schedule=%q %q", got.PipelineCooldownSeconds, got.LLM.RequestTimeoutSeconds, got.Query.StageConfigPath, got.PipelineSchedule.Cron, got.PipelineSchedule.Timezone)
 	}
 }
 

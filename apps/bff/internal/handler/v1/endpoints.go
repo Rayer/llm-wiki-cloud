@@ -1033,7 +1033,7 @@ func (h *Handler) pipelineRunForMode(c *gin.Context, userID, projectID string, m
 				if settleErr != nil {
 					log.Print("pipeline quota refund failed")
 					evidenceCtx, cancelEvidence := context.WithTimeout(context.Background(), 10*time.Second)
-					evidenceErr := h.writeConfirmedPipelineInvokeFailure(evidenceCtx, userID, projectID, reservationID)
+					evidenceErr := h.writeConfirmedPipelineInvokeFailure(evidenceCtx, userID, projectID, reservationID, "")
 					cancelEvidence()
 					if evidenceErr != nil {
 						log.Print("pipeline invoke failure recovery evidence unavailable")
@@ -1111,6 +1111,20 @@ func (h *Handler) invokePipelineJob(ctx context.Context, userID, projectID strin
 
 func (h *Handler) invokePipelineJobStage(ctx context.Context, userID, projectID string, cleanRebuild bool, stage string) (executionID string, err error) {
 	return h.invokePipelineJobStageWithReservation(ctx, userID, projectID, cleanRebuild, stage, "")
+}
+
+func confirmedPipelineInvocationRejection(statusCode int) bool {
+	switch statusCode {
+	case http.StatusBadRequest, http.StatusUnauthorized, http.StatusForbidden,
+		http.StatusNotFound, http.StatusMethodNotAllowed, http.StatusGone,
+		http.StatusRequestEntityTooLarge, http.StatusUnsupportedMediaType,
+		http.StatusUnprocessableEntity:
+		return true
+	default:
+		// Timeouts, throttling, conflicts, redirects, and server errors can be
+		// produced after the request crossed the provider's admission boundary.
+		return false
+	}
 }
 
 func (h *Handler) invokePipelineJobStageWithReservation(ctx context.Context, userID, projectID string, cleanRebuild bool, stage, reservationID string) (executionID string, err error) {
@@ -1205,7 +1219,10 @@ func (h *Handler) invokePipelineJobStageWithReservation(ctx context.Context, use
 		return "", fmt.Errorf("%w: %v", errPipelineInvocationOutcomeUnknown, err)
 	}
 	if resp.StatusCode < http.StatusOK || resp.StatusCode >= http.StatusMultipleChoices {
-		return "", fmt.Errorf("%s", string(responseBody))
+		if confirmedPipelineInvocationRejection(resp.StatusCode) {
+			return "", fmt.Errorf("pipeline invocation was rejected with HTTP status %d", resp.StatusCode)
+		}
+		return "", fmt.Errorf("%w: Cloud Run returned HTTP status %d", errPipelineInvocationOutcomeUnknown, resp.StatusCode)
 	}
 	executionID, err = cloudRunExecutionIDFromRunResponse(responseBody)
 	if err != nil {
@@ -1237,11 +1254,13 @@ type cloudRunJobRunResponse struct {
 }
 
 type pipelineStatusResponse struct {
-	LastExecution    *handler.PipelineExecutionResponse `json:"last_execution"`
-	ProjectID        string                             `json:"project_id"`
-	Quota            *pipelinequota.Snapshot            `json:"quota,omitempty"`
-	FullQuota        *pipelinequota.Snapshot            `json:"full_quota,omitempty"`
-	SuggestedQueries []string                           `json:"suggested_queries"`
+	LastExecution      *handler.PipelineExecutionResponse       `json:"last_execution"`
+	ScheduledExecution *handler.PipelineExecutionResponse       `json:"scheduled_execution,omitempty"`
+	ProjectID          string                                   `json:"project_id"`
+	Quota              *pipelinequota.Snapshot                  `json:"quota,omitempty"`
+	FullQuota          *pipelinequota.Snapshot                  `json:"full_quota,omitempty"`
+	ScheduledPipeline  *scopedfirestore.ScheduledPipelineStatus `json:"scheduled_pipeline,omitempty"`
+	SuggestedQueries   []string                                 `json:"suggested_queries"`
 }
 
 type adminPipelineTriggerRequest struct {
@@ -1367,6 +1386,8 @@ func (h *Handler) PipelineStatus(c *gin.Context) {
 		return
 	}
 	response.Quota = &snap
+	response.ScheduledPipeline = h.scheduledPipelineStatus(ctx, userID, projectID, time.Now().UTC())
+	response.ScheduledExecution = h.scheduledPipelineExecutionStatus(ctx, userID, projectID, response.ScheduledPipeline)
 	if h.localPipeline == nil {
 		fullSnap, _, err := h.evaluateQuotaForMode(ctx, userID, projectID, "", pipelinequota.ModeFull)
 		if err != nil {
@@ -1758,6 +1779,13 @@ func (h *Handler) attachPipelineExecutionEvidence(ctx context.Context, response 
 	if response == nil || owner == nil || response.CompileMode != string(pipelinequota.ModeFull) {
 		return
 	}
+	h.attachExactPipelineExecutionEvidence(ctx, response, owner, executionID)
+}
+
+func (h *Handler) attachExactPipelineExecutionEvidence(ctx context.Context, response *handler.PipelineExecutionResponse, owner *pipelineExecutionOwner, executionID string) {
+	if response == nil || owner == nil || executionID == "" {
+		return
+	}
 	response.PublicationOutcome = "unknown"
 	switch h.cloudRunPublicationOutcome(ctx, owner, executionID) {
 	case pipelinePublicationCommitted:
@@ -1816,21 +1844,14 @@ func (h *Handler) readConsumedGuidanceEvidence(ctx context.Context, owner *pipel
 	return evidence
 }
 
-func (h *Handler) writeConfirmedPipelineInvokeFailure(ctx context.Context, userID, projectID, reservationID string) error {
+func (h *Handler) writeConfirmedPipelineInvokeFailure(ctx context.Context, userID, projectID, reservationID, attemptID string) error {
 	if h.store == nil || userID == "" || projectID == "" || reservationID == "" {
 		return errors.New("pipeline recovery storage unavailable")
 	}
-	evidence := struct {
-		Version    int    `json:"version"`
-		Status     string `json:"status"`
-		Stage      string `json:"stage"`
-		ErrorClass string `json:"error_class"`
-		Execution  string `json:"execution"`
-		Message    string `json:"message"`
-	}{
-		Version: 1, Status: "failed", Stage: string(pipelinediagnostic.StageUnknown),
-		ErrorClass: string(pipelinediagnostic.ErrorClassUnknown), Execution: reservationID,
-		Message: "pipeline invocation failed before an execution was accepted",
+	evidence := pipelinediagnostic.ConfirmedInvokeFailure{
+		Version: 1, Status: "failed", AttemptID: strings.TrimSpace(attemptID), Stage: pipelinediagnostic.StageUnknown,
+		ErrorClass: pipelinediagnostic.ErrorClassUnknown, Execution: reservationID,
+		Message: pipelinediagnostic.ConfirmedInvokeFailureMessage,
 	}
 	data, err := json.Marshal(evidence)
 	if err != nil {
@@ -1840,15 +1861,15 @@ func (h *Handler) writeConfirmedPipelineInvokeFailure(ctx context.Context, userI
 	return err
 }
 
-func (h *Handler) hasConfirmedPipelineInvokeFailure(ctx context.Context, userID, projectID, reservationID string) (bool, error) {
-	if h.store == nil || userID == "" || projectID == "" || reservationID == "" {
+func (h *Handler) hasConfirmedPipelineInvokeFailure(ctx context.Context, reservation scopedfirestore.QuotaReservation) (bool, error) {
+	if h.store == nil || reservation.UserID == "" || reservation.ProjectID == "" || reservation.ID == "" {
 		return false, nil
 	}
-	reader, ok := h.store.Scope(userID, projectID).(limitedPipelineLogReader)
+	reader, ok := h.store.Scope(reservation.UserID, reservation.ProjectID).(limitedPipelineLogReader)
 	if !ok {
 		return false, nil
 	}
-	data, err := reader.ReadFileLimited(ctx, "cache/pipeline-"+reservationID+".failure.json", maxPipelineDiagnosticBytes+1)
+	data, err := reader.ReadFileLimited(ctx, "cache/pipeline-"+reservation.ID+".failure.json", maxPipelineDiagnosticBytes+1)
 	if errors.Is(err, store.ErrObjectNotExist) || errors.Is(err, storage.ErrObjectNotExist) {
 		return false, nil
 	}
@@ -1858,27 +1879,11 @@ func (h *Handler) hasConfirmedPipelineInvokeFailure(ctx context.Context, userID,
 	if len(data) > maxPipelineDiagnosticBytes {
 		return false, nil
 	}
-	var evidence struct {
-		Version    int    `json:"version"`
-		Status     string `json:"status"`
-		Stage      string `json:"stage"`
-		ErrorClass string `json:"error_class"`
-		Execution  string `json:"execution"`
-		Message    string `json:"message"`
-	}
-	decoder := json.NewDecoder(bytes.NewReader(data))
-	decoder.DisallowUnknownFields()
-	if err := decoder.Decode(&evidence); err != nil {
+	evidence, err := pipelinediagnostic.DecodeConfirmedInvokeFailure(data)
+	if err != nil {
 		return false, nil
 	}
-	var trailing any
-	if err := decoder.Decode(&trailing); err != io.EOF {
-		return false, nil
-	}
-	_, validStage := pipelinediagnostic.ValidStages[pipelinediagnostic.Stage(evidence.Stage)]
-	_, validClass := pipelinediagnostic.ValidErrorClasses[pipelinediagnostic.ErrorClass(evidence.ErrorClass)]
-	return evidence.Version == 1 && evidence.Status == "failed" && evidence.Execution == reservationID &&
-		evidence.Message == "pipeline invocation failed before an execution was accepted" && validStage && validClass, nil
+	return evidence.Confirms(reservation.ID, reservation.AttemptID, reservation.Trigger == pipelinequota.TriggerScheduledDaily), nil
 }
 
 func (h *Handler) attachPipelineDiagnostic(ctx context.Context, response *handler.PipelineExecutionResponse, owner *pipelineExecutionOwner) {
@@ -2397,6 +2402,8 @@ func (h *Handler) Status(c *gin.Context) {
 			resp.Quota = &quota
 		}
 	}
+	resp.ScheduledPipeline = h.scheduledPipelineStatus(ctx, userID, projectID, time.Now().UTC())
+	resp.ScheduledExecution = h.scheduledPipelineExecutionStatus(ctx, userID, projectID, resp.ScheduledPipeline)
 
 	if h.firestore != nil {
 		lock, err := h.firestore.GetStatus(ctx)
@@ -3350,14 +3357,45 @@ func (h *Handler) AdminPipelineTrigger(c *gin.Context) {
 		return
 	}
 
-	executionID, err := h.invokePipelineJobStage(ctx, uid, pid, req.CleanRebuild, stage)
+	reservationID := ""
+	if admission, ok := h.effectiveQuotaStore().(pipelineAdmissionStore); ok {
+		reservationID, err = newPipelineReservationID()
+		if err != nil {
+			c.JSON(http.StatusInternalServerError, handler.ErrorResponse{Error: pipelineUnavailableMessage})
+			return
+		}
+		reserved, reserveErr := admission.ReserveAdminPipelineAdmission(ctx, reservationID, uid, pid, time.Now().UTC(), false)
+		if reserveErr != nil {
+			c.JSON(http.StatusInternalServerError, handler.ErrorResponse{Error: pipelineUnavailableMessage})
+			return
+		}
+		if !reserved {
+			c.JSON(http.StatusConflict, handler.ErrorResponse{Error: "pipeline is already running"})
+			return
+		}
+	}
+	executionID, err := h.invokePipelineJobStageWithReservation(ctx, uid, pid, req.CleanRebuild, stage, reservationID)
 	if err != nil {
+		if reservationID != "" && !errors.Is(err, errPipelineInvocationOutcomeUnknown) {
+			if admission, ok := h.effectiveQuotaStore().(pipelineAdmissionStore); ok {
+				if releaseErr := admission.ReleaseQuotaReservation(context.Background(), reservationID); releaseErr != nil {
+					log.Print("admin pipeline admission release pending reconciliation")
+				}
+			}
+		}
 		if errors.Is(err, auth.ErrAccountInactive) {
 			c.JSON(http.StatusForbidden, handler.ErrorResponse{Error: err.Error()})
 			return
 		}
 		c.JSON(http.StatusInternalServerError, handler.ErrorResponse{Error: pipelineUnavailableMessage})
 		return
+	}
+	if reservationID != "" && h.localPipeline == nil {
+		if qs := h.effectiveQuotaStore(); qs != nil {
+			if linkErr := qs.LinkQuotaReservation(ctx, reservationID, executionID); linkErr != nil {
+				log.Print("admin pipeline admission link pending reconciliation")
+			}
+		}
 	}
 	if req.CleanRebuild {
 		log.Print("admin pipeline triggered clean_rebuild=true")

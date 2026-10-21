@@ -27,6 +27,7 @@ import (
 	"github.com/rayer/llm-wiki-bff/internal/localcloud"
 	"github.com/rayer/llm-wiki-bff/internal/observability"
 	"github.com/rayer/llm-wiki-bff/internal/pipelinediagnostic"
+	"github.com/rayer/llm-wiki-bff/internal/pipelinequota"
 	storeapi "github.com/rayer/llm-wiki-bff/internal/storage"
 	"google.golang.org/grpc/codes"
 	"google.golang.org/grpc/status"
@@ -246,6 +247,19 @@ func (m *Manager) ReconcilePendingQuotaSettlements(ctx context.Context) (resultE
 				txCtx, txSpan := observability.StartPipelineSpan(itemCtx, "pipeline.recovery.transaction")
 				transactionOutcome = "unknown"
 				txErr := m.cfg.Firestore.RunTransaction(txCtx, func(ctx context.Context, tx *cloudfirestore.Transaction) error {
+					if reservation.Trigger == pipelinequota.TriggerScheduledDaily {
+						released, err := scopedfirestore.ReleaseQuotaReservationIfAttemptInTransaction(ctx, tx, m.cfg.Firestore, reservation.ID, reservation.AttemptID)
+						if err != nil {
+							return err
+						}
+						settlement, applied = "released", released
+						if released {
+							transactionOutcome = "committed"
+						} else {
+							transactionOutcome, settlement, applied = "no_op", "no_op", false
+						}
+						return nil
+					}
 					settlement, applied, err = scopedfirestore.SettleQuotaReservationInTransactionWithResult(ctx, tx, m.cfg.Firestore, reservation.ID, "FAILED")
 					return err
 				})
@@ -612,27 +626,11 @@ func (m *Manager) hasConfirmedInvokeFailure(ctx context.Context, reservation sco
 	if len(data) > 4<<10 {
 		return false, nil
 	}
-	var evidence struct {
-		Version    int    `json:"version"`
-		Status     string `json:"status"`
-		Stage      string `json:"stage"`
-		ErrorClass string `json:"error_class"`
-		Execution  string `json:"execution"`
-		Message    string `json:"message"`
-	}
-	decoder := json.NewDecoder(bytes.NewReader(data))
-	decoder.DisallowUnknownFields()
-	if err := decoder.Decode(&evidence); err != nil {
+	evidence, err := pipelinediagnostic.DecodeConfirmedInvokeFailure(data)
+	if err != nil {
 		return false, nil
 	}
-	var trailing any
-	if err := decoder.Decode(&trailing); err != io.EOF {
-		return false, nil
-	}
-	_, validStage := pipelinediagnostic.ValidStages[pipelinediagnostic.Stage(evidence.Stage)]
-	_, validClass := pipelinediagnostic.ValidErrorClasses[pipelinediagnostic.ErrorClass(evidence.ErrorClass)]
-	return evidence.Version == 1 && evidence.Status == "failed" && evidence.Execution == reservation.ID &&
-		validStage && validClass && evidence.Message == "pipeline invocation failed before an execution was accepted", nil
+	return evidence.Confirms(reservation.ID, reservation.AttemptID, reservation.Trigger == pipelinequota.TriggerScheduledDaily), nil
 }
 
 func (m *Manager) Start(ctx context.Context, userID, projectID, stage string, cleanRebuild bool, reservationID string) (string, error) {

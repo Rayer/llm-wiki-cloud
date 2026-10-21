@@ -102,9 +102,13 @@ type Config struct {
 	MCPResourceOrigin string
 	// SyncServiceURL is the explicitly configured BFF origin returned by Auth's
 	// trusted CLI sync locator; it is never inferred from the Auth hostname.
-	SyncServiceURL               string
-	ProfileRuntimeAudience       string
-	ProfileRuntimeServiceAccount string
+	SyncServiceURL                  string
+	ProfileRuntimeAudience          string
+	ProfileRuntimeServiceAccount    string
+	PipelineScheduleCron            string
+	PipelineScheduleTimezone        string
+	ScheduledPipelineAudience       string
+	ScheduledPipelineServiceAccount string
 
 	// AuthSessionEnvironment scopes durable refresh sessions. Env:
 	// AUTH_SESSION_ENVIRONMENT. When unset, routers derive it from the selected

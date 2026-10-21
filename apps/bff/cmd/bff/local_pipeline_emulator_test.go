@@ -8,7 +8,9 @@ import (
 	"encoding/hex"
 	"encoding/json"
 	"errors"
+	"fmt"
 	"io"
+	"mime/multipart"
 	"net"
 	"net/http"
 	"net/http/httptest"
@@ -37,12 +39,17 @@ import (
 	"github.com/rayer/llm-wiki-bff/internal/generation"
 	handlerapi "github.com/rayer/llm-wiki-bff/internal/handler"
 	handlerv1 "github.com/rayer/llm-wiki-bff/internal/handler/v1"
+	"github.com/rayer/llm-wiki-bff/internal/llm"
 	"github.com/rayer/llm-wiki-bff/internal/localcloud"
 	"github.com/rayer/llm-wiki-bff/internal/localpipeline"
 	"github.com/rayer/llm-wiki-bff/internal/observability/otlpfixture"
+	"github.com/rayer/llm-wiki-bff/internal/pipelinequota"
+	"github.com/rayer/llm-wiki-bff/internal/query"
+	"github.com/rayer/llm-wiki-bff/internal/queryquality"
 	"github.com/rayer/llm-wiki-bff/internal/sourcestatus"
 	storeapi "github.com/rayer/llm-wiki-bff/internal/storage"
 	"github.com/rayer/llm-wiki-bff/internal/syssettings"
+	"google.golang.org/api/idtoken"
 	"google.golang.org/api/iterator"
 	"google.golang.org/grpc/codes"
 	"google.golang.org/grpc/status"
@@ -400,6 +407,266 @@ func TestLocalPipelineHTTPTriggerRunsWorkerAndReportsSuccessAndFailure(t *testin
 	if err != nil || !bytes.Contains(page, []byte("Alpha fixture output")) {
 		t.Fatalf("published page readback=%q err=%v", page, err)
 	}
+
+	// Exercise the protected scheduled entrypoint from supported raw intake
+	// through the actual worker subprocess, generation/receipt readback, status
+	// API, and production Query executor with an intercepted model transport.
+	const scheduledProject = "scheduled-causal-e2e"
+	const scheduledAudience = "http://scheduler.fixture.local/internal/pipeline/schedule"
+	const scheduledServiceAccount = "scheduler-fixture@llm-wiki-cloud.invalid"
+	scheduledProjectDoc := scopedfirestore.Collection(fsClient.Raw(), "projects").Doc(userID + "_" + scheduledProject)
+	if _, err := scheduledProjectDoc.Set(ctx, map[string]interface{}{"user_id": userID, "project_id": scheduledProject, "status": "ready"}); err != nil {
+		t.Fatalf("seed one ready scheduled Project: %v", err)
+	}
+	rawBody := []byte("LWC413_CAUSAL_E2E: rare blue lantern proves this raw article reached publication.")
+	var uploadBody bytes.Buffer
+	uploadWriter := multipart.NewWriter(&uploadBody)
+	filePart, err := uploadWriter.CreateFormFile("file", "lwc413-e2e-source.md")
+	if err != nil {
+		t.Fatalf("create scheduled source intake part: %v", err)
+	}
+	if _, err := filePart.Write(rawBody); err != nil {
+		t.Fatalf("write scheduled source intake body: %v", err)
+	}
+	if err := uploadWriter.Close(); err != nil {
+		t.Fatalf("close scheduled source intake form: %v", err)
+	}
+	intakeRequest, err := http.NewRequestWithContext(ctx, http.MethodPost, server.URL+"/api/v1/raw/upload", &uploadBody)
+	if err != nil {
+		t.Fatalf("create scheduled source intake request: %v", err)
+	}
+	intakeRequest.Header.Set("Authorization", "Bearer "+token)
+	intakeRequest.Header.Set("X-Project-ID", scheduledProject)
+	intakeRequest.Header.Set("Content-Type", uploadWriter.FormDataContentType())
+	intakeResponse, err := server.Client().Do(intakeRequest)
+	if err != nil {
+		t.Fatalf("submit scheduled source through raw intake: %v", err)
+	}
+	intakeResult, _ := io.ReadAll(io.LimitReader(intakeResponse.Body, 1<<20))
+	_ = intakeResponse.Body.Close()
+	if intakeResponse.StatusCode != http.StatusCreated || !bytes.Contains(intakeResult, []byte(`"status":"created"`)) {
+		t.Fatalf("scheduled raw intake status=%d body=%s, want created", intakeResponse.StatusCode, intakeResult)
+	}
+	h.SetScheduledPipelineConfig("0 * * * *", "UTC", scheduledAudience, scheduledServiceAccount)
+	h.SetScheduledPipelineIdentityValidator(func(_ context.Context, tokenValue, gotAudience string) (*idtoken.Payload, error) {
+		if tokenValue != "fixture-scheduler-token" || gotAudience != scheduledAudience {
+			return nil, errors.New("scheduled identity fixture mismatch")
+		}
+		return &idtoken.Payload{Issuer: "https://accounts.google.com", Audience: scheduledAudience, Claims: map[string]interface{}{
+			"email": scheduledServiceAccount, "email_verified": true,
+		}}, nil
+	})
+	scheduleRequest, err := http.NewRequestWithContext(ctx, http.MethodPost, server.URL+"/internal/pipeline/schedule", nil)
+	if err != nil {
+		t.Fatalf("create scheduled entrypoint request: %v", err)
+	}
+	scheduleRequest.Header.Set("Authorization", "Bearer fixture-scheduler-token")
+	scheduleResponse, err := server.Client().Do(scheduleRequest)
+	if err != nil {
+		t.Fatalf("call actual scheduled entrypoint: %v", err)
+	}
+	var sweep struct {
+		Scanned     int `json:"scanned"`
+		Accepted    int `json:"accepted"`
+		Skipped     int `json:"skipped"`
+		Unavailable int `json:"unavailable"`
+	}
+	scheduleDecodeErr := json.NewDecoder(io.LimitReader(scheduleResponse.Body, 1<<20)).Decode(&sweep)
+	_ = scheduleResponse.Body.Close()
+	if scheduleResponse.StatusCode != http.StatusOK || scheduleDecodeErr != nil || sweep.Scanned != 1 || sweep.Accepted != 1 || sweep.Skipped != 0 || sweep.Unavailable != 0 {
+		t.Fatalf("actual scheduled sweep status=%d result=%+v decodeErr=%v; want one accepted Project", scheduleResponse.StatusCode, sweep, scheduleDecodeErr)
+	}
+	scheduledStatus, err := fsClient.LoadScheduledPipelineStatus(ctx, userID, scheduledProject, time.Now().UTC())
+	if err != nil || scheduledStatus.LastExecutionID == "" {
+		t.Fatalf("scheduled execution link=%q err=%v", scheduledStatus.LastExecutionID, err)
+	}
+	scheduledExecutionID := scheduledStatus.LastExecutionID
+	state, reason = waitLocalPipelineStatus(t, ctx, server.Client(), server.URL, token, scheduledProject, scheduledExecutionID)
+	if state != "SUCCEEDED" || reason != "" {
+		t.Fatalf("scheduled native worker status=%q reason=%q; worker stderr=%q", state, reason, readLocalPipelineWorkerStderr(t, workerStderr, workerStderrPath))
+	}
+	scheduledStorage := storageClient.WithScope(userID, scheduledProject)
+	scheduledManifest, _, scheduledManifestExists, err := scheduledStorage.CurrentManifest(ctx)
+	if err != nil || !scheduledManifestExists || scheduledManifest.LocalExecutionID != scheduledExecutionID {
+		t.Fatalf("scheduled manifest exists=%v execution=%q err=%v; want exact worker publication", scheduledManifestExists, scheduledManifest.LocalExecutionID, err)
+	}
+	if _, ok := scheduledManifest.File("wiki/sources/lwc413-e2e-source.md"); !ok {
+		t.Fatalf("scheduled manifest %q omitted the newly consumed source page", scheduledManifest.GenerationID)
+	}
+	if _, err := scheduledStorage.ReadLocalPublicationReceipt(ctx, scheduledExecutionID); err != nil {
+		t.Fatalf("scheduled publication receipt readback: %v", err)
+	}
+	pinnedScheduledStorage, _, err := scheduledStorage.PinQueryGeneration(ctx, scheduledManifest.GenerationID)
+	if err != nil {
+		t.Fatalf("pin scheduled source generation for query readback: %v", err)
+	}
+	sourceSnapshotReader, ok := pinnedScheduledStorage.(interface {
+		ReadSourceSnapshot(context.Context) (generation.SourceSnapshotManifest, error)
+	})
+	if !ok {
+		t.Fatal("pinned scheduled storage does not expose its source snapshot reader")
+	}
+	sourceSnapshot, err := sourceSnapshotReader.ReadSourceSnapshot(ctx)
+	if err != nil {
+		t.Fatalf("scheduled source snapshot readback: %v", err)
+	}
+	wantRawDigest := fmt.Sprintf("%x", sha256.Sum256(rawBody))
+	var sourceRow *generation.SourceSnapshotRow
+	for i := range sourceSnapshot.Rows {
+		if sourceSnapshot.Rows[i].RawPath == "raw/lwc413-e2e-source.md" {
+			sourceRow = &sourceSnapshot.Rows[i]
+			break
+		}
+	}
+	if sourceRow == nil || sourceRow.ContentDigest != wantRawDigest {
+		t.Fatalf("scheduled consumed-source snapshot row=%+v; want start-time raw digest %s", sourceRow, wantRawDigest)
+	}
+	sourceReceiptBytes, err := scheduledStorage.ReadFile(ctx, sourcestatus.Path)
+	if err != nil {
+		t.Fatalf("scheduled source receipt readback: %v", err)
+	}
+	sourceReceiptArtifact, err := sourcestatus.Decode(sourceReceiptBytes)
+	if err != nil {
+		t.Fatalf("decode scheduled source receipt: %v", err)
+	}
+	var receiptFound bool
+	for _, receipt := range sourceReceiptArtifact.Sources {
+		if receipt.RawPath == "raw/lwc413-e2e-source.md" && receipt.LastIngestedRawSHA256 == wantRawDigest && receipt.LastIngestFingerprint != "" {
+			receiptFound = true
+		}
+	}
+	if !receiptFound {
+		t.Fatalf("scheduled source receipts did not mark only the consumed input: %+v", sourceReceiptArtifact.Sources)
+	}
+	publishedConceptPage, err := pinnedScheduledStorage.ReadFile(ctx, "wiki/alpha.md")
+	if err != nil || !bytes.Contains(publishedConceptPage, rawBody) {
+		t.Fatalf("pinned scheduled concept page did not contain the exact newly consumed raw bytes: err=%v page=%q", err, publishedConceptPage)
+	}
+	conceptPageDigest := sha256.Sum256(publishedConceptPage)
+	sourceRequest, err := http.NewRequestWithContext(ctx, http.MethodGet, server.URL+"/api/v1/sources", nil)
+	if err != nil {
+		t.Fatalf("create scheduled source readback request: %v", err)
+	}
+	sourceRequest.Header.Set("Authorization", "Bearer "+token)
+	sourceRequest.Header.Set("X-Project-ID", scheduledProject)
+	sourceResponse, err := server.Client().Do(sourceRequest)
+	if err != nil {
+		t.Fatalf("read newly published source through owner API: %v", err)
+	}
+	var sourceList handlerapi.SourcesListResponse
+	sourceDecodeErr := json.NewDecoder(io.LimitReader(sourceResponse.Body, 1<<20)).Decode(&sourceList)
+	_ = sourceResponse.Body.Close()
+	var scheduledSourceSlug string
+	for _, source := range sourceList.Sources {
+		if source.RawPath == "raw/lwc413-e2e-source.md" {
+			scheduledSourceSlug = source.Slug
+		}
+	}
+	if sourceResponse.StatusCode != http.StatusOK || sourceDecodeErr != nil || scheduledSourceSlug == "" {
+		t.Fatalf("scheduled source API readback status=%d decodeErr=%v sources=%+v", sourceResponse.StatusCode, sourceDecodeErr, sourceList.Sources)
+	}
+	sourceDetailRequest, err := http.NewRequestWithContext(ctx, http.MethodGet, server.URL+"/api/v1/sources/"+url.PathEscape(scheduledSourceSlug), nil)
+	if err != nil {
+		t.Fatalf("create scheduled source detail request: %v", err)
+	}
+	sourceDetailRequest.Header.Set("Authorization", "Bearer "+token)
+	sourceDetailRequest.Header.Set("X-Project-ID", scheduledProject)
+	sourceDetailResponse, err := server.Client().Do(sourceDetailRequest)
+	if err != nil {
+		t.Fatalf("read newly published source detail: %v", err)
+	}
+	var sourceDetail handlerapi.SourceDetailResponse
+	sourceDetailDecodeErr := json.NewDecoder(io.LimitReader(sourceDetailResponse.Body, 1<<20)).Decode(&sourceDetail)
+	_ = sourceDetailResponse.Body.Close()
+	if sourceDetailResponse.StatusCode != http.StatusOK || sourceDetailDecodeErr != nil || !strings.Contains(sourceDetail.Body, "LWC413_CAUSAL_E2E:") {
+		t.Fatalf("scheduled source detail status=%d decodeErr=%v response=%+v", sourceDetailResponse.StatusCode, sourceDetailDecodeErr, sourceDetail)
+	}
+	manualRuns, _, _, err := fsClient.LoadQuotaState(ctx, userID, scheduledProject)
+	if err != nil || manualRuns != 0 {
+		t.Fatalf("scheduled worker changed manual daily count to %d err=%v", manualRuns, err)
+	}
+	scheduledReservationID := scopedfirestore.ScheduledPipelineBudgetID(userID, scheduledProject, pipelinequota.DayKeyUTC(time.Now().UTC()))
+	scheduledReservation, exists, err := fsClient.GetQuotaReservation(ctx, scheduledReservationID)
+	if err != nil || !exists || scheduledReservation.ExecutionID != scheduledExecutionID || scheduledReservation.SettlementStatus != "charged" || scheduledReservation.BudgetClass != "scheduled_daily" {
+		t.Fatalf("scheduled reservation=%+v exists=%t err=%v; want charged, linked daily entitlement", scheduledReservation, exists, err)
+	}
+	statusRequest, err := http.NewRequestWithContext(ctx, http.MethodGet, server.URL+"/api/v1/pipeline/status", nil)
+	if err != nil {
+		t.Fatalf("create scheduled pipeline status request: %v", err)
+	}
+	statusRequest.Header.Set("Authorization", "Bearer "+token)
+	statusRequest.Header.Set("X-Project-ID", scheduledProject)
+	statusResponse, err := server.Client().Do(statusRequest)
+	if err != nil {
+		t.Fatalf("read scheduled pipeline status surface: %v", err)
+	}
+	var statusPayload struct {
+		LastExecution     *handlerapi.PipelineExecutionResponse    `json:"last_execution"`
+		ScheduledPipeline *scopedfirestore.ScheduledPipelineStatus `json:"scheduled_pipeline"`
+	}
+	statusDecodeErr := json.NewDecoder(io.LimitReader(statusResponse.Body, 1<<20)).Decode(&statusPayload)
+	_ = statusResponse.Body.Close()
+	if statusResponse.StatusCode != http.StatusOK || statusDecodeErr != nil || statusPayload.LastExecution == nil || statusPayload.LastExecution.Status != "SUCCEEDED" || statusPayload.ScheduledPipeline == nil || !statusPayload.ScheduledPipeline.BudgetUsed {
+		t.Fatalf("scheduled status API status=%d execution=%+v scheduled=%+v decodeErr=%v", statusResponse.StatusCode, statusPayload.LastExecution, statusPayload.ScheduledPipeline, statusDecodeErr)
+	}
+
+	queryCache := cache.New()
+	var queryModelCalls atomic.Int64
+	modelServer := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		queryModelCalls.Add(1)
+		response, err := (localPipelineCitationTransport{}).RoundTrip(r)
+		if err != nil {
+			http.Error(w, err.Error(), http.StatusBadRequest)
+			return
+		}
+		defer response.Body.Close()
+		for name, values := range response.Header {
+			for _, value := range values {
+				w.Header().Add(name, value)
+			}
+		}
+		w.WriteHeader(response.StatusCode)
+		_, _ = io.Copy(w, response.Body)
+	}))
+	defer modelServer.Close()
+	queryExecutor, err := queryquality.NewStrictProductionExecutorWithQueryServiceConfig(queryCache, nil, nil, query.NewService(queryCache, nil, llm.NewClientWithOptions("local-fixture-no-network", llm.ClientOptions{Model: "deepseek-flash", BaseURL: modelServer.URL})), queryquality.DefaultRetrievalProfile(), queryquality.StructuredPlanPromptID, queryquality.DefaultOptions(), query.RuntimeConfigIdentity{})
+	if err != nil {
+		t.Fatalf("configure production Query executor fixture: %v", err)
+	}
+	queryExecutorCapture := &localPipelineQueryExecutorCapture{next: queryExecutor}
+	h.SetQueryExecutor(queryExecutorCapture)
+	queryRequest, err := http.NewRequestWithContext(ctx, http.MethodPost, server.URL+"/api/v1/query", strings.NewReader(`{"q":"rare blue lantern","mode":"wiki"}`))
+	if err != nil {
+		t.Fatalf("create scheduled source Query request: %v", err)
+	}
+	queryRequest.Header.Set("Authorization", "Bearer "+token)
+	queryRequest.Header.Set("X-Project-ID", scheduledProject)
+	queryRequest.Header.Set("Content-Type", "application/json")
+	queryResponse, err := server.Client().Do(queryRequest)
+	if err != nil {
+		t.Fatalf("query newly published scheduled source: %v", err)
+	}
+	var queryResult handlerapi.QueryResponse
+	queryDecodeErr := json.NewDecoder(io.LimitReader(queryResponse.Body, 1<<20)).Decode(&queryResult)
+	_ = queryResponse.Body.Close()
+	if queryResponse.StatusCode != http.StatusOK || queryDecodeErr != nil {
+		t.Fatalf("scheduled source Query status=%d decodeErr=%v executorErr=%v body=%+v", queryResponse.StatusCode, queryDecodeErr, queryExecutorCapture.err, queryResult)
+	}
+	var citedScheduledConcept, returnedScheduledConcept bool
+	for _, citation := range queryResult.Citations {
+		if citation.Type == "concept" && citation.Slug == "alpha" && citation.ID != "" && citation.Path == "/concepts/"+citation.ID+"-alpha" && bytes.Contains(publishedConceptPage, []byte("id: "+citation.ID)) {
+			citedScheduledConcept = true
+		}
+	}
+	for _, result := range queryResult.Results {
+		if result.Type == "concept" && result.Slug == "alpha" {
+			returnedScheduledConcept = true
+		}
+	}
+	if !citedScheduledConcept || !returnedScheduledConcept || strings.TrimSpace(queryResult.AISynth) == "" || !strings.Contains(strings.ToLower(queryResult.AISynth), "newly published raw article") || queryModelCalls.Load() == 0 {
+		t.Fatalf("scheduled source Query did not answer from and cite the concept page containing the newly published raw bytes: result=%t citation=%t model_calls=%d results=%+v citations=%+v answer=%q", returnedScheduledConcept, citedScheduledConcept, queryModelCalls.Load(), queryResult.Results, queryResult.Citations, queryResult.AISynth)
+	}
+	t.Logf("SCHEDULED_QUERY_EVIDENCE status=%d execution_id=%s generation_id=%s source_id=%s source_slug=%s raw_sha256=%s concept_page_sha256=%x model_adapter=loopback-openai-compatible model_calls=%d results=%+v citations=%+v answer=%q", queryResponse.StatusCode, scheduledExecutionID, scheduledManifest.GenerationID, sourceRow.StableID, scheduledSourceSlug, wantRawDigest, conceptPageDigest, queryModelCalls.Load(), queryResult.Results, queryResult.Citations, queryResult.AISynth)
 
 	time.Sleep(1100 * time.Millisecond) // satisfy the configured test cooldown
 	if _, err := projectStorage.WriteBytes(ctx, []byte("Incremental local pipeline source."), "raw/incremental.md"); err != nil {
@@ -1400,4 +1667,60 @@ func verifyLocalPipelineRetainedSentinels(ctx context.Context, fs *cloudfirestor
 		return errors.New("other-scope Storage sentinel changed")
 	}
 	return nil
+}
+
+type localPipelineCitationTransport struct{}
+
+type localPipelineQueryExecutorCapture struct {
+	next query.Executor
+	err  error
+}
+
+func (c *localPipelineQueryExecutorCapture) Execute(ctx context.Context, reader cache.Reader, request query.Request) (query.Result, error) {
+	result, err := c.next.Execute(ctx, reader, request)
+	c.err = err
+	return result, err
+}
+
+func (localPipelineCitationTransport) RoundTrip(request *http.Request) (*http.Response, error) {
+	requestBody, err := io.ReadAll(request.Body)
+	if err != nil {
+		return nil, err
+	}
+	var payload struct {
+		Messages []struct {
+			Role    string `json:"role"`
+			Content string `json:"content"`
+		} `json:"messages"`
+	}
+	if err := json.Unmarshal(requestBody, &payload); err != nil {
+		return nil, fmt.Errorf("decode local Query model request: %w", err)
+	}
+	var prompt string
+	for _, message := range payload.Messages {
+		if message.Role == "user" {
+			prompt = message.Content
+		}
+	}
+	start := strings.Index(prompt, "[CITATION_REF_")
+	if start < 0 {
+		return nil, errors.New("local Query model request has no server-issued citation")
+	}
+	end := strings.IndexByte(prompt[start:], ']')
+	if end < 0 {
+		return nil, errors.New("local Query model request has an invalid citation token")
+	}
+	token := prompt[start : start+end+1]
+	responseBody, err := json.Marshal(map[string]any{"choices": []any{
+		map[string]any{"message": map[string]string{"content": "The newly published raw article contains the requested detail " + token}},
+	}})
+	if err != nil {
+		return nil, err
+	}
+	return &http.Response{
+		StatusCode: http.StatusOK,
+		Header:     http.Header{"Content-Type": []string{"application/json"}},
+		Body:       io.NopCloser(bytes.NewReader(responseBody)),
+		Request:    request,
+	}, nil
 }
