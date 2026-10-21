@@ -1,6 +1,6 @@
 'use client';
 
-import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
+import { useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState } from 'react';
 import { Download, X } from 'lucide-react';
 import { useSearchParams } from 'next/navigation';
 import { ApiError, getRawFilePreview, getRawFiles, type RawFile } from '@/lib/api';
@@ -10,7 +10,7 @@ import { Surface } from './ui/Surface';
 import { EmptyState, ErrorState, LoadingState, useErrorIdCopy } from './States';
 import { useWorkspace } from './WorkspaceProvider';
 import { useT } from '@/lib/i18n';
-import { RawUploadPanel } from './RawUploadPanel';
+import { RawUploadPanel, type RawUploadsSettled } from './RawUploadPanel';
 
 type RawPreviewKind = 'markdown' | 'html' | 'download';
 
@@ -60,8 +60,8 @@ function sanitizeRawHtml(html: string) {
 }
 
 export function RawClient() {
-  const { currentProject, token } = useWorkspace();
-  const identityKey = JSON.stringify([currentProject?.id ?? 'no-project', token]);
+  const { token } = useWorkspace();
+  const identityKey = token ?? 'no-session';
   return <RawClientSession key={identityKey} />;
 }
 
@@ -87,6 +87,23 @@ function RawClientSession() {
   const { copyErrorId: copyDownloadErrorId, errorIdCopied: downloadErrorIdCopied } =
     useErrorIdCopy(downloadError, downloadError?.requestId, downloadError?.diagnosticId);
 
+  const previousProjectIdRef = useRef(currentProjectId);
+  useLayoutEffect(() => {
+    if (previousProjectIdRef.current === currentProjectId) return;
+    previousProjectIdRef.current = currentProjectId;
+    listRequestRef.current += 1;
+    previewRequestRef.current += 1;
+    downloadRequestRef.current += 1;
+    openedQueryFileRef.current = '';
+    setFiles([]);
+    setLoading(true);
+    setError(null);
+    setPreview(null);
+    setPreviewLoading(false);
+    setPreviewError(null);
+    setDownloadError(null);
+  }, [currentProjectId]);
+
   const refreshRawFiles = useCallback(async () => {
     const request = ++listRequestRef.current;
 
@@ -108,9 +125,10 @@ function RawClientSession() {
     }
   }, [currentProjectId]);
 
-  const handleUploadsSettled = useCallback(() => {
+  const handleUploadsSettled = useCallback(({ projectId }: RawUploadsSettled) => {
+    if (projectId !== currentProjectId) return;
     void refreshRawFiles();
-  }, [refreshRawFiles]);
+  }, [currentProjectId, refreshRawFiles]);
 
   useEffect(() => {
     openedQueryFileRef.current = '';
@@ -240,7 +258,7 @@ function RawClientSession() {
 
       {currentProject ? (
         <RawUploadPanel
-          key={JSON.stringify([currentProject.id, token])}
+          key={token ?? 'no-session'}
           title={t('Raw.uploadTitle')}
           hint={t('Raw.uploadHint')}
           onQueueSettled={handleUploadsSettled}

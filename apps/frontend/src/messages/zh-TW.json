@@ -823,6 +823,28 @@
     "loadPreviewFailed": "無法載入原文預覽",
     "downloadFailed": "無法下載原文檔案"
   },
+  "RawUpload": {
+    "chooseFolder": "選擇資料夾",
+    "folderHint": "請先檢查資料夾內容並確認，上傳才會開始。檔案會放在 raw/<檔名>；資料夾路徑僅在本機顯示。",
+    "folderUnsupportedBrowser": "此瀏覽器不支援資料夾選取。請使用「選擇檔案」改為多選檔案。",
+    "emptyFolder": "沒有取得任何檔案，未上傳任何內容。",
+    "emptyFile": "無法上傳空檔案。",
+    "fileTooLarge": "檔案超過 5 MiB 上傳上限。",
+    "unsupportedFile": "此檔名或格式不符合 Web 上傳規則。",
+    "filenameTooLong": "檔名超過 512 位元組上限。",
+    "selectionSummary": "已選 {count} 個 · 共 {bytes}",
+    "selectAllEligible": "全選可上傳檔案",
+    "clearSelection": "清除選取",
+    "basenameCollision": "已選檔案有相同目的檔名。每個目的檔名請只保留一個檔案。",
+    "collisionForFile": "此目的檔名已被選取多次。",
+    "candidateList": "資料夾上傳候選檔案",
+    "selectCandidate": "選取 {path}",
+    "destination": "目的地：raw/{filename}",
+    "importIntoProject": "匯入至 {project}（{id}）的 raw 根目錄。",
+    "cancel": "取消",
+    "confirmImport": "確認匯入",
+    "projectLabel": "專案：{project}（{id}）"
+  },
   "ComingSoon": {
     "title": "Coming Soon"
   },

@@ -823,6 +823,28 @@
     "loadPreviewFailed": "Failed to load raw preview",
     "downloadFailed": "Failed to download raw file"
   },
+  "RawUpload": {
+    "chooseFolder": "Choose folder",
+    "folderHint": "Review folder contents and confirm before anything is uploaded. Files go to raw/<filename>; folder paths stay local.",
+    "folderUnsupportedBrowser": "Folder selection is unavailable in this browser. Use Select files to choose multiple files instead.",
+    "emptyFolder": "No files were returned. Nothing was uploaded.",
+    "emptyFile": "Empty files cannot be uploaded.",
+    "fileTooLarge": "This file exceeds the 5 MiB upload limit.",
+    "unsupportedFile": "This filename or file type is not accepted by Web upload.",
+    "filenameTooLong": "The filename exceeds the 512-byte limit.",
+    "selectionSummary": "{count} selected · {bytes} total",
+    "selectAllEligible": "Select all eligible",
+    "clearSelection": "Clear selection",
+    "basenameCollision": "Selected files share a destination filename. Deselect all but one file for each destination.",
+    "collisionForFile": "Destination filename is selected more than once.",
+    "candidateList": "Folder upload candidates",
+    "selectCandidate": "Select {path}",
+    "destination": "Destination: raw/{filename}",
+    "importIntoProject": "Import into {project} ({id}) at the raw root.",
+    "cancel": "Cancel",
+    "confirmImport": "Confirm import",
+    "projectLabel": "Project: {project} ({id})"
+  },
   "ComingSoon": {
     "title": "Coming Soon"
   },
