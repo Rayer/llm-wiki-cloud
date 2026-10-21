@@ -1124,6 +1124,13 @@ func readPipelineProfileIntentSnapshot(ctx context.Context, tx *firestore.Transa
 	stateRef := Collection(client, "projects").Doc(userID + "_" + projectID).Collection("profile").Doc("state")
 	snapshot, err := tx.Get(stateRef)
 	if status.Code(err) == codes.NotFound {
+		digestBytes, err := json.Marshal(result.Requirements)
+		if err != nil {
+			return result, err
+		}
+		digest := sha256.Sum256(digestBytes)
+		result.RequirementsDigest = hex.EncodeToString(digest[:])
+		result.GuidanceKind = "none"
 		return result, nil
 	}
 	if err != nil {

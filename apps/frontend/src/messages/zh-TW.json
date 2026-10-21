@@ -806,6 +806,7 @@
     "intentSucceeded": "Pipeline 已完成",
     "intentFailed": "Pipeline 需要處理",
     "intentCancelled": "Pipeline 已取消",
+    "statusReadFailed": "無法讀取 Pipeline 狀態，系統會自動重試；已接受的執行仍可能在進行中。",
     "savedProfileSnapshot": "已儲存的 Profile 快照",
     "preparedGuidance": "準備使用的指引來源",
     "sourceProfileRevision": "來源 Profile 版本",

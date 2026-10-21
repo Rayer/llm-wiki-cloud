@@ -806,6 +806,7 @@
     "intentSucceeded": "Pipeline complete",
     "intentFailed": "Pipeline needs attention",
     "intentCancelled": "Pipeline cancelled",
+    "statusReadFailed": "Pipeline status could not be read. Retrying automatically; an accepted run may still be active.",
     "savedProfileSnapshot": "Saved Profile snapshot",
     "preparedGuidance": "Prepared guidance source",
     "sourceProfileRevision": "source Profile revision",

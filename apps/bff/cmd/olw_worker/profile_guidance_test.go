@@ -17,7 +17,9 @@ import (
 	"time"
 
 	"cloud.google.com/go/firestore"
+	scopedfirestore "github.com/rayer/llm-wiki-bff/internal/firestore"
 	"github.com/rayer/llm-wiki-bff/internal/generation"
+	"github.com/rayer/llm-wiki-bff/internal/pipelinequota"
 	"github.com/rayer/llm-wiki-bff/internal/profileartifacts"
 	"google.golang.org/api/option"
 )
@@ -580,6 +582,70 @@ func TestReadPipelineIntentUsesFrozenGuidanceAfterProfileEdit(t *testing.T) {
 				t.Fatalf("bootstrap reference presence=%v for %s", pin.BootstrapRef != nil, tc.kind)
 			}
 		})
+	}
+}
+
+func TestPipelineIntentWithoutProfileIsAdmittedAndReadableByWorker(t *testing.T) {
+	endpoint := strings.TrimSpace(os.Getenv("FIRESTORE_EMULATOR_HOST"))
+	if endpoint == "" {
+		t.Skip("FIRESTORE_EMULATOR_HOST is not set")
+	}
+	parsed, err := url.Parse("http://" + endpoint)
+	if err != nil || parsed.Host == "" {
+		t.Fatal("invalid Firestore emulator host")
+	}
+	if host, _, err := net.SplitHostPort(parsed.Host); err != nil || (host != "127.0.0.1" && host != "localhost" && host != "::1") {
+		t.Fatalf("Firestore emulator must use loopback, got %q", parsed.Host)
+	}
+
+	unique := fmt.Sprintf("%d", time.Now().UnixNano())
+	cloudProject := "lwc415-no-profile-" + unique
+	userID, projectID := "owner-"+unique, "project-"+unique
+	scope := "lwc415-no-profile-" + unique
+	t.Setenv("GOOGLE_CLOUD_PROJECT", cloudProject)
+	t.Setenv("LOCAL_CLOUD_SCOPE", scope)
+	client, err := scopedfirestore.NewClientWithDatabaseAndScope(cloudProject, "", userID, projectID, scope)
+	if err != nil {
+		t.Fatalf("create scoped Firestore emulator client: %v", err)
+	}
+
+	ctx, cancel := context.WithTimeout(context.Background(), 20*time.Second)
+	defer cancel()
+	reservationID := "intent-" + unique
+	reservationRef := scopedfirestore.Collection(client.Raw(), "pipeline_quota_reservations").Doc(reservationID)
+	quotaRef := scopedfirestore.Collection(client.Raw(), "pipeline_quota").Doc(scopedfirestore.QuotaDocID(userID, projectID))
+	t.Cleanup(func() {
+		for _, ref := range []*firestore.DocumentRef{reservationRef, quotaRef} {
+			if _, err := ref.Delete(context.Background()); err != nil {
+				t.Errorf("delete owned intent fixture %s: %v", ref.Path, err)
+			}
+		}
+		if err := client.Close(); err != nil {
+			t.Errorf("close scoped Firestore emulator client: %v", err)
+		}
+	})
+
+	_, reserved, err := client.ReserveQuotaForPipelineIntent(ctx, reservationID, userID, projectID,
+		pipelinequota.Limits{DailyLimit: 5, Cooldown: time.Hour, MinNewRaw: 1}, time.Now().UTC(),
+		pipelinequota.ModeIncremental, false, false, 1, 0, 0)
+	if err != nil || !reserved {
+		t.Fatalf("admit Pipeline without Profile: reserved=%t err=%v", reserved, err)
+	}
+	intent, exists, err := client.GetPipelineIntent(ctx, userID, projectID, reservationID)
+	wantDigest := profileRequirementsDigest([]profileGuidanceRequirement{})
+	if err != nil || !exists || intent.IntentStatus != "ready" || intent.ProfileRevision != 0 ||
+		len(intent.ProfileRequirements) != 0 || intent.RequirementsDigest != wantDigest || intent.ConsumedGuidanceKind != "none" {
+		t.Fatalf("admitted no-Profile intent=%+v exists=%t err=%v", intent, exists, err)
+	}
+
+	_, claimed, err := client.BeginPipelineIntentInvocation(ctx, reservationID, reservationID, userID, projectID)
+	if err != nil || !claimed {
+		t.Fatalf("claim admitted intent: claimed=%t err=%v", claimed, err)
+	}
+	cfg := workerConfig{UserID: userID, ProjectID: projectID, PipelineReservationID: reservationID}
+	pin, found, err := readPipelineIntentGuidance(ctx, client.Raw(), cfg, &profileGuidanceObjectStore{objects: map[string][]byte{}})
+	if err != nil || !found || pin != nil {
+		t.Fatalf("Worker read of admitted no-Profile intent: pin=%+v found=%t err=%v", pin, found, err)
 	}
 }
 
