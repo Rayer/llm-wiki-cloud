@@ -21,7 +21,6 @@ import (
 	internalfirestore "github.com/rayer/llm-wiki-bff/internal/firestore"
 	"github.com/rayer/llm-wiki-bff/internal/localfs"
 	"github.com/rayer/llm-wiki-bff/internal/query"
-	"github.com/rayer/llm-wiki-bff/internal/urlintake"
 )
 
 type countingMCPQueryExecutor struct{ calls int }
@@ -139,22 +138,6 @@ func TestMCPProjectOAuthRejectsConflictingProjectHeaderBeforeSDK(t *testing.T) {
 	handler := New(root, fs, nil, nil, nil, nil)
 	executor := &countingMCPQueryExecutor{}
 	handler.SetQueryExecutor(executor)
-	fetchCalls := 0
-	intakeService := urlintake.NewService(
-		mcpURLIntakeFetcher(func(context.Context, string) (urlintake.Page, error) {
-			fetchCalls++
-			return urlintake.Page{Title: "OAuth candidate", Markdown: "# OAuth candidate\n\nCandidate excerpt"}, nil
-		}),
-		mcpURLIntakeEvaluator(func(context.Context, urlintake.QualityInput) (urlintake.QualityEvaluation, error) {
-			return urlintake.QualityEvaluation{ShellProbability: .42, ContentProbability: .61, ReturnedModel: "jev-1.13.0"}, nil
-		}),
-		func(actor urlintake.ActorProject) (urlintake.ProjectStore, error) {
-			return root.WithScope(actor.ActorID, actor.ProjectID), nil
-		},
-		urlintake.DefaultQualityThresholds,
-	)
-	intakeService.Resolver = mcpURLIntakeResolver{}
-	handler.SetMCPURLImportService(NewURLIntakeMCPAdapter(intakeService))
 	gin.SetMode(gin.TestMode)
 	router := gin.New()
 	router.Any("/mcp/projects/:projectID", handler.MCPProjectOAuthHandler(environment, resourceOrigin))
@@ -225,49 +208,57 @@ func TestMCPProjectOAuthRejectsConflictingProjectHeaderBeforeSDK(t *testing.T) {
 	} else if frontmatter, body, err := parseFrontmatterJSON(string(data)); err != nil || body != "# OAuth source" || frontmatter["created"] == nil {
 		t.Fatalf("OAuth add_raw bytes/frontmatter = %#v %q err=%v", frontmatter, body, err)
 	}
-	importRequest := httptest.NewRequest(http.MethodPost, "/mcp/projects/"+projectID,
-		strings.NewReader(mcpToolCallBody(26, "import_url", `{"url":"https://example.test/oauth-article?tracking=private","tags":["reading"]}`)))
-	importRequest.Header.Set("Authorization", "Bearer "+tokens.AccessToken)
-	importRequest.Header.Set("Content-Type", "application/json")
-	importRequest.Header.Add("Accept", "application/json")
-	importRequest.Header.Add("Accept", "text/event-stream")
-	importRequest.Header.Set("MCP-Protocol-Version", "2025-11-25")
-	importResponse := httptest.NewRecorder()
-	router.ServeHTTP(importResponse, importRequest)
-	var importWire map[string]any
-	if importResponse.Code != http.StatusOK || json.Unmarshal(importResponse.Body.Bytes(), &importWire) != nil {
-		t.Fatalf("OAuth import_url status=%d body=%s", importResponse.Code, importResponse.Body.String())
+	beforeLegacy, err := root.Scope(userID, projectID).ReadFile(context.Background(), "raw/oauth-source.md")
+	if err != nil {
+		t.Fatalf("read raw bytes before legacy call: %v", err)
 	}
-	importPayload := mcpStructuredResult(t, importWire)
-	confirmationRef, hasConfirmationRef := importPayload["confirmation_ref"].(string)
-	if importPayload["status"] != "needs_confirmation" || !hasConfirmationRef || confirmationRef == "" ||
-		importPayload["source_url"] != "https://example.test/oauth-article?tracking=private" || fetchCalls != 1 {
-		t.Fatalf("OAuth import_url did not return the shared service review candidate: payload=%#v fetch calls=%d", importPayload, fetchCalls)
+	writerListRequest := httptest.NewRequest(http.MethodPost, "/mcp/projects/"+projectID,
+		strings.NewReader(`{"jsonrpc":"2.0","id":25,"method":"tools/list","params":{}}`))
+	writerListRequest.Header.Set("Authorization", "Bearer "+tokens.AccessToken)
+	writerListRequest.Header.Set("Content-Type", "application/json")
+	writerListRequest.Header.Add("Accept", "application/json")
+	writerListRequest.Header.Add("Accept", "text/event-stream")
+	writerListRequest.Header.Set("MCP-Protocol-Version", "2025-11-25")
+	writerListResponse := httptest.NewRecorder()
+	router.ServeHTTP(writerListResponse, writerListRequest)
+	var writerListWire map[string]any
+	if writerListResponse.Code != http.StatusOK || json.Unmarshal(writerListResponse.Body.Bytes(), &writerListWire) != nil {
+		t.Fatalf("raw-write tools/list status=%d body=%s", writerListResponse.Code, writerListResponse.Body.String())
+	}
+	writerTools, ok := writerListWire["result"].(map[string]any)["tools"].([]any)
+	if !ok {
+		t.Fatalf("raw-write tools/list response=%#v", writerListWire)
+	}
+	writerNames := make(map[string]bool, len(writerTools))
+	for _, item := range writerTools {
+		writerNames[item.(map[string]any)["name"].(string)] = true
+	}
+	if len(writerNames) != 2 || !writerNames["query_project"] || !writerNames["add_raw"] || writerNames["import_url"] {
+		t.Fatalf("OAuth raw-write discovery = %v, want query_project and add_raw only", writerNames)
+	}
+
+	legacyRequest := httptest.NewRequest(http.MethodPost, "/mcp/projects/"+projectID,
+		strings.NewReader(mcpToolCallBody(26, "import_url", `{"url":"https://example.test/oauth-article"}`)))
+	legacyRequest.Header.Set("Authorization", "Bearer "+tokens.AccessToken)
+	legacyRequest.Header.Set("Content-Type", "application/json")
+	legacyRequest.Header.Add("Accept", "application/json")
+	legacyRequest.Header.Add("Accept", "text/event-stream")
+	legacyRequest.Header.Set("MCP-Protocol-Version", "2025-11-25")
+	legacyResponse := httptest.NewRecorder()
+	router.ServeHTTP(legacyResponse, legacyRequest)
+	var legacyWire map[string]any
+	if legacyResponse.Code != http.StatusOK || json.Unmarshal(legacyResponse.Body.Bytes(), &legacyWire) != nil {
+		t.Fatalf("OAuth legacy import_url status=%d body=%s", legacyResponse.Code, legacyResponse.Body.String())
+	}
+	protocolError, ok := legacyWire["error"].(map[string]any)
+	if !ok || protocolError["code"] != float64(-32602) {
+		t.Fatalf("OAuth legacy import_url call was not rejected as unavailable: %#v", legacyWire)
 	}
 	if files, err := root.Scope(userID, projectID).ListRawFiles(context.Background()); err != nil || len(files) != 1 {
-		t.Fatalf("unconfirmed OAuth URL candidate touched raw storage or add_raw file count changed: files=%v err=%v", files, err)
+		t.Fatalf("OAuth legacy import_url call mutated raw: files=%v err=%v", files, err)
 	}
-	confirmRequest := httptest.NewRequest(http.MethodPost, "/mcp/projects/"+projectID,
-		strings.NewReader(mcpToolCallBody(27, "import_url", fmt.Sprintf(`{"confirmation_ref":%q}`, confirmationRef))))
-	confirmRequest.Header.Set("Authorization", "Bearer "+tokens.AccessToken)
-	confirmRequest.Header.Set("Content-Type", "application/json")
-	confirmRequest.Header.Add("Accept", "application/json")
-	confirmRequest.Header.Add("Accept", "text/event-stream")
-	confirmRequest.Header.Set("MCP-Protocol-Version", "2025-11-25")
-	confirmResponse := httptest.NewRecorder()
-	router.ServeHTTP(confirmResponse, confirmRequest)
-	var confirmWire map[string]any
-	if confirmResponse.Code != http.StatusOK || json.Unmarshal(confirmResponse.Body.Bytes(), &confirmWire) != nil {
-		t.Fatalf("OAuth import_url confirmation status=%d body=%s", confirmResponse.Code, confirmResponse.Body.String())
-	}
-	confirmedPayload := mcpStructuredResult(t, confirmWire)
-	path, hasPath := confirmedPayload["path"].(string)
-	if confirmedPayload["status"] != "created" || !hasPath || !strings.HasPrefix(path, "raw/") ||
-		fetchCalls != 1 || confirmedPayload["source_url"] != "https://example.test/oauth-article?tracking=private" {
-		t.Fatalf("OAuth import_url confirmation did not commit the shared candidate without refetch: payload=%#v fetch calls=%d", confirmedPayload, fetchCalls)
-	}
-	if data, err := root.Scope(userID, projectID).ReadFile(context.Background(), path); err != nil || !strings.Contains(string(data), "Candidate excerpt") {
-		t.Fatalf("OAuth import_url confirmation did not persist scoped candidate: path=%q err=%v", path, err)
+	if data, err := root.Scope(userID, projectID).ReadFile(context.Background(), "raw/oauth-source.md"); err != nil || string(data) != string(beforeLegacy) {
+		t.Fatalf("OAuth legacy import_url call changed add_raw bytes: %q err=%v", data, err)
 	}
 
 	readOnlyClient, err := service.RegisterClient(ctx, "Hermes query-only test", []string{"http://127.0.0.1:43124/callback"})
@@ -352,25 +343,6 @@ func TestMCPProjectOAuthRejectsConflictingProjectHeaderBeforeSDK(t *testing.T) {
 	if _, err := root.Scope(userID, projectID).ReadFile(context.Background(), "raw/denied.md"); err == nil {
 		t.Fatal("query-only grant wrote a raw source")
 	}
-	deniedImport := httptest.NewRequest(http.MethodPost, "/mcp/projects/"+projectID,
-		strings.NewReader(mcpToolCallBody(28, "import_url", `{"url":"https://example.test/denied"}`)))
-	deniedImport.Header.Set("Authorization", "Bearer "+readOnlyTokens.AccessToken)
-	deniedImport.Header.Set("Content-Type", "application/json")
-	deniedImport.Header.Add("Accept", "application/json")
-	deniedImport.Header.Add("Accept", "text/event-stream")
-	deniedImport.Header.Set("MCP-Protocol-Version", "2025-11-25")
-	deniedImportResponse := httptest.NewRecorder()
-	router.ServeHTTP(deniedImportResponse, deniedImport)
-	var deniedImportWire map[string]any
-	if err := json.Unmarshal(deniedImportResponse.Body.Bytes(), &deniedImportWire); err != nil {
-		t.Fatalf("decode query-only import_url response: %v", err)
-	}
-	protocolError, denied = deniedImportWire["error"].(map[string]any)
-	if deniedImportResponse.Code != http.StatusOK || !denied || protocolError["code"] != float64(-32602) ||
-		fetchCalls != 1 {
-		t.Fatalf("query-only import_url was not denied before service call: status=%d response=%#v fetch calls=%d", deniedImportResponse.Code, deniedImportWire, fetchCalls)
-	}
-
 	grants, err := service.ListGrants(ctx, userID, projectID)
 	if err != nil || len(grants) != 2 {
 		t.Fatalf("list grants before revoke: grants=%+v err=%v", grants, err)
