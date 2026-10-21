@@ -584,6 +584,7 @@ export function PipelineClient() {
   const pipelineIntentPending = ['preparing', 'ready', 'invoking', 'invocation_unknown', 'compiling'].includes(
     pipelineStatus?.pipeline_intent?.status ?? '',
   );
+  const pipelineStatusReadFailed = Boolean(projectId && pipelineStatusReadFailedProjectId === projectId);
   const effectiveQuota = useMemo(
     () => (
       staleAlreadyRunning && quota
@@ -592,7 +593,7 @@ export function PipelineClient() {
     ),
     [quota, staleAlreadyRunning],
   );
-  const blocked = pipelineIntentPending || (compileMode === 'full' && !fullCapability
+  const blocked = pipelineIntentPending || pipelineStatusReadFailed || (compileMode === 'full' && !fullCapability
       ? true
       : (compileMode === 'full' && !fullCapability?.allowed) || isRunBlocked({
     isDemoSession,
@@ -745,9 +746,9 @@ export function PipelineClient() {
             <button
               type="button"
               onClick={handleRunPipeline}
-              disabled={blocked || pipelineStatusReadFailedProjectId === projectId}
-              title={pipelineStatusReadFailedProjectId === projectId ? t('Pipeline.statusReadFailed') : helper || undefined}
-              aria-disabled={blocked || pipelineStatusReadFailedProjectId === projectId}
+              disabled={blocked}
+              title={pipelineStatusReadFailed ? t('Pipeline.statusReadFailed') : helper || undefined}
+              aria-disabled={blocked}
               className="rounded-md bg-white px-4 py-2 text-sm font-semibold text-black transition hover:bg-emerald-200 disabled:cursor-not-allowed disabled:opacity-50"
             >
               {loading === 'pipeline'
@@ -775,7 +776,7 @@ export function PipelineClient() {
           <p className="mt-2 text-xs text-zinc-500" data-testid="pipeline-quota-line">
             {quotaLine}
           </p>
-          {pipelineStatusReadFailedProjectId === projectId ? (
+          {pipelineStatusReadFailed ? (
             <p className="mt-2 text-xs text-amber-200/90" data-testid="pipeline-status-read-failed" role="status">
               {t('Pipeline.statusReadFailed')}
             </p>

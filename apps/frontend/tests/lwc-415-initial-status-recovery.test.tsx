@@ -90,10 +90,13 @@ async function tickPipelinePoll() {
 it('shows an initial read failure, resumes the same intent and tracks its terminal state without posting again', async () => {
   let initialReads = 0;
   let executionReads = 0;
+  const delayedCompile = deferred<PipelineStatus>();
   mocks.getPipelineStatus.mockImplementation((projectId: string, executionId?: string, intentId?: string) => {
     if (executionId || intentId) {
       executionReads += 1;
-      return Promise.resolve(intentStatus(projectId, executionReads === 1 ? 'compiling' : 'succeeded'));
+      return executionReads === 1
+        ? delayedCompile.promise
+        : Promise.resolve(intentStatus(projectId, 'succeeded'));
     }
     initialReads += 1;
     if (initialReads === 1) return Promise.reject(new Error('temporary status outage'));
@@ -108,9 +111,14 @@ it('shows an initial read failure, resumes the same intent and tracks its termin
   await waitFor(() => expect(intervals.size).toBe(1));
 
   await tickPipelinePoll();
-  await screen.findByText('Pipeline compiling…');
+  await screen.findByText('Preparing saved Profile guidance…');
   expect(screen.queryByTestId('pipeline-status-read-failed')).toBeNull();
   expect(mocks.getPipelineStatus).toHaveBeenCalledWith('project-a', 'execution-project-a', 'intent-project-a');
+  await act(async () => {
+    delayedCompile.resolve(intentStatus('project-a', 'compiling'));
+    await delayedCompile.promise;
+  });
+  await screen.findByText('Pipeline compiling…');
 
   await tickPipelinePoll();
   await screen.findByText('Pipeline complete');
