@@ -803,8 +803,6 @@
     "description": "等待 Pipeline 處理或已處理的專案來源檔案。",
       "uploadTitle": "加入原文檔案",
       "uploadHint": "可選擇一個或多個支援格式的檔案（最多同時上傳 3 個）。檔案會先列為待處理；請前往主頁執行 Pipeline，再整理與搜尋內容。",
-    "destinationDirectory": "raw/ 下的目標資料夾（選填）",
-    "destinationDirectoryHint": "留空會直接儲存至 raw/。",
     "loading": "正在載入原文檔案",
     "empty": "尚無原文檔案。請先上傳內容再執行 Pipeline。",
     "name": "名稱",

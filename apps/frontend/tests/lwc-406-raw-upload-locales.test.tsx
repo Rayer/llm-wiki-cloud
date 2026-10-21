@@ -20,13 +20,14 @@ afterEach(() => {
 });
 
 it.each([
-  ['en', 'Select files', 'Destination directory under raw/ (optional)'],
-  ['zh-TW', '選擇檔案', 'raw/ 下的目標資料夾（選填）'],
-])('shows localized upload labels from the real catalog for %s', (locale, fileLabel, directoryLabel) => {
+  ['en', 'Select files'],
+  ['zh-TW', '選擇檔案'],
+])('shows the localized root upload control from the real catalog for %s', (locale, fileLabel) => {
   window.localStorage.setItem('locale', locale);
 
   render(<RawUploadPanel title="Upload" hint="Hint" inputId={`locale-${locale}`} />);
 
   expect(screen.getByText(fileLabel)).toBeDefined();
-  expect(screen.getByLabelText(directoryLabel)).toBeDefined();
+  expect(document.querySelector<HTMLInputElement>(`#locale-${locale}`)?.multiple).toBe(true);
+  expect(document.querySelector('input[type="text"]')).toBeNull();
 });

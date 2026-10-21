@@ -6,15 +6,18 @@ import (
 	"crypto/sha256"
 	"encoding/json"
 	"fmt"
+	"mime/multipart"
 	"net/http"
 	"net/http/httptest"
 	"net/url"
 	"path/filepath"
 	"strings"
 	"testing"
+	"time"
 
 	"github.com/gin-gonic/gin"
 	"github.com/rayer/llm-wiki-bff/internal/auth"
+	scopedfirestore "github.com/rayer/llm-wiki-bff/internal/firestore"
 	"github.com/rayer/llm-wiki-bff/internal/localfs"
 	"github.com/rayer/llm-wiki-bff/internal/rawintake"
 )
@@ -80,13 +83,13 @@ func TestReadRawUploadBodyRejectsEmptyAndOversizeFiles(t *testing.T) {
 
 func TestRawUploadResponseUsesRelativeRawPath(t *testing.T) {
 	resp := newRawUploadResponse("note.md", 12, rawintake.Result{
-		Path: "raw/topic/note.md", SHA256: "abc123", Status: rawintake.StatusCreated,
+		Path: "raw/note.md", SHA256: "abc123", Status: rawintake.StatusCreated,
 	})
 
 	if resp.Filename != "note.md" {
 		t.Fatalf("filename = %q, want note.md", resp.Filename)
 	}
-	if resp.Path != "raw/topic/note.md" {
+	if resp.Path != "raw/note.md" {
 		t.Fatalf("path = %q", resp.Path)
 	}
 	if resp.Bytes != 12 || resp.SHA256 != "abc123" {
@@ -94,6 +97,103 @@ func TestRawUploadResponseUsesRelativeRawPath(t *testing.T) {
 	}
 	if resp.Status != string(rawintake.StatusCreated) {
 		t.Fatalf("status = %q, want %q", resp.Status, rawintake.StatusCreated)
+	}
+}
+
+func TestRawUploadRejectsNonEmptyDirectoryWithoutWriting(t *testing.T) {
+	gin.SetMode(gin.TestMode)
+	root := localfs.New(t.TempDir())
+	h := New(root, nil, nil, nil, nil, nil)
+	router := gin.New()
+	router.Use(func(c *gin.Context) {
+		c.Set("userID", "user-1")
+		c.Set("projectID", "project-1")
+		c.Next()
+	})
+	router.POST("/api/v1/raw/upload", h.RawUpload)
+
+	for _, path := range []string{"?dir=topic", "?dir=&dir=topic"} {
+		recorder := httptest.NewRecorder()
+		router.ServeHTTP(recorder, httptest.NewRequest(http.MethodPost, "/api/v1/raw/upload"+path, nil))
+		if recorder.Code != http.StatusBadRequest || !strings.Contains(recorder.Body.String(), "destination directories are not supported") {
+			t.Fatalf("request %q status=%d body=%s; want directory rejection", path, recorder.Code, recorder.Body.String())
+		}
+		files, err := root.WithScope("user-1", "project-1").ListRawFiles(context.Background())
+		if err != nil || len(files) != 0 {
+			t.Fatalf("request %q stored raw files=%#v err=%v; want no root or nested write", path, files, err)
+		}
+	}
+
+	unauthenticated := httptest.NewRecorder()
+	ctx, _ := gin.CreateTestContext(unauthenticated)
+	ctx.Request = httptest.NewRequest(http.MethodPost, "/api/v1/raw/upload?dir=topic", nil)
+	h.RawUpload(ctx)
+	if unauthenticated.Code != http.StatusUnauthorized {
+		t.Fatalf("missing identity status=%d body=%s; want auth rejection before directory validation", unauthenticated.Code, unauthenticated.Body.String())
+	}
+}
+
+func TestRawUploadStoresRootFileBytesThroughRoute(t *testing.T) {
+	if !requireLoopbackEmulator(t, "FIRESTORE_EMULATOR_HOST") {
+		t.Skip("requires loopback Firestore emulator")
+	}
+
+	const firestoreProject = "llm-wiki-cloud"
+	scope := fmt.Sprintf("lwc126-raw-upload-%d", time.Now().UnixNano())
+	t.Setenv("LOCAL_CLOUD_SCOPE", scope)
+	fsClient, err := scopedfirestore.NewClientWithDatabaseAndScope(firestoreProject, "(default)", "", "", scope)
+	if err != nil {
+		t.Fatalf("create local Firestore client: %v", err)
+	}
+	t.Cleanup(func() { _ = fsClient.Close() })
+
+	const userID, projectID = "lwc126-root-owner", "root-only"
+	projectRef := scopedfirestore.Collection(fsClient.Raw(), "projects").Doc(projectDocID(userID, projectID))
+	if _, err := projectRef.Set(context.Background(), map[string]any{"user_id": userID, "project_id": projectID, "status": rawUploadReadyStatus}); err != nil {
+		t.Fatalf("seed disposable ready Project: %v", err)
+	}
+	t.Cleanup(func() { _, _ = projectRef.Delete(context.Background()) })
+
+	root := localfs.New(t.TempDir())
+	h := New(root, fsClient, nil, nil, nil, nil)
+	router := gin.New()
+	router.Use(func(c *gin.Context) {
+		c.Set("userID", userID)
+		c.Set("projectID", projectID)
+		c.Next()
+	})
+	router.POST("/api/v1/raw/upload", h.RawUpload)
+
+	want := []byte("# root upload bytes\nUnicode metadata: 台北\n")
+	var body bytes.Buffer
+	form := multipart.NewWriter(&body)
+	filePart, err := form.CreateFormFile("file", "root.md")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := filePart.Write(want); err != nil {
+		t.Fatal(err)
+	}
+	if err := form.Close(); err != nil {
+		t.Fatal(err)
+	}
+	req := httptest.NewRequest(http.MethodPost, "/api/v1/raw/upload", &body)
+	req.Header.Set("Content-Type", form.FormDataContentType())
+	recorder := httptest.NewRecorder()
+	router.ServeHTTP(recorder, req)
+	if recorder.Code != http.StatusCreated {
+		t.Fatalf("root upload status=%d body=%s", recorder.Code, recorder.Body.String())
+	}
+	var response rawUploadResponse
+	if err := json.Unmarshal(recorder.Body.Bytes(), &response); err != nil {
+		t.Fatalf("decode upload response %q: %v", recorder.Body.String(), err)
+	}
+	if response.Path != "raw/root.md" || response.Filename != "root.md" || response.Bytes != int64(len(want)) || response.Status != string(rawintake.StatusCreated) {
+		t.Fatalf("upload response = %+v; want root path, exact byte count and created status", response)
+	}
+	stored, err := root.WithScope(userID, projectID).ReadFile(context.Background(), response.Path)
+	if err != nil || !bytes.Equal(stored, want) {
+		t.Fatalf("stored root bytes=%q err=%v; want %q", stored, err, want)
 	}
 }
 

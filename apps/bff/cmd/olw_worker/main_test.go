@@ -948,6 +948,7 @@ func TestWorkerPostprocessWorkspacePreservesDormantConceptAndEntityMappings(t *t
 func TestRunPostprocessWritesEmptyRawStatusWhenStateDBMissing(t *testing.T) {
 	vault := t.TempDir()
 	mustWriteFile(t, filepath.Join(vault, "raw", "seed.md"), []byte("seed"))
+	mustWriteFile(t, filepath.Join(vault, "raw", "topic", "nested.md"), []byte("nested raw remains stored"))
 	mustWriteFile(t, filepath.Join(vault, "wiki", "alpha.md"), []byte("---\nid: concept-id\ntitle: Alpha\n---\nAlpha"))
 
 	if err := runPostprocess(context.Background(), vault); err != nil {
@@ -964,9 +965,12 @@ func TestRunPostprocessWritesEmptyRawStatusWhenStateDBMissing(t *testing.T) {
 	if !strings.Contains(string(data), `"file_count": 1`) {
 		t.Fatalf("raw_status.json = %s, want file_count 1 for seed.md", data)
 	}
+	if strings.Contains(string(data), "topic/nested.md") {
+		t.Fatalf("raw_status.json = %s, nested raw must not be admitted as consumed", data)
+	}
 }
 
-func TestListVaultRawFilesRecursesAndKeepsDuplicateBasenamesAndLegalSidecarSuffixes(t *testing.T) {
+func TestListVaultRawFilesKeepsRootFilesAndLegalSidecarSuffixesOnly(t *testing.T) {
 	vault := t.TempDir()
 	mustWriteFile(t, filepath.Join(vault, "raw", "same.md"), []byte("root"))
 	mustWriteFile(t, filepath.Join(vault, "raw", "same.md.meta"), []byte("root legal metadata suffix"))
@@ -979,7 +983,7 @@ func TestListVaultRawFilesRecursesAndKeepsDuplicateBasenamesAndLegalSidecarSuffi
 	if err != nil {
 		t.Fatalf("listVaultRawFiles() error = %v", err)
 	}
-	wantPaths := []string{"raw/same.md", "raw/same.md.lock", "raw/same.md.meta", "raw/topic/same.md", "raw/topic/same.md.lock", "raw/topic/same.md.meta"}
+	wantPaths := []string{"raw/same.md", "raw/same.md.lock", "raw/same.md.meta"}
 	if len(files) != len(wantPaths) {
 		t.Fatalf("raw files = %#v", files)
 	}
@@ -987,6 +991,26 @@ func TestListVaultRawFilesRecursesAndKeepsDuplicateBasenamesAndLegalSidecarSuffi
 		if files[i].Path != path {
 			t.Fatalf("raw files[%d]=%#v, want path %q", i, files[i], path)
 		}
+	}
+	if data, err := os.ReadFile(filepath.Join(vault, "raw", "topic", "same.md")); err != nil || string(data) != "nested" {
+		t.Fatalf("nested raw after inventory = %q, %v; inventory must not delete it", data, err)
+	}
+}
+
+func TestCaptureCloudRawInputsDoesNotAdmitNestedRaw(t *testing.T) {
+	vault := t.TempDir()
+	mustWriteFile(t, filepath.Join(vault, "raw", "root.md"), []byte("root input"))
+	mustWriteFile(t, filepath.Join(vault, "raw", "topic", "nested.md"), []byte("nested input"))
+
+	inputs, err := captureCloudRawInputs(context.Background(), vault, nil)
+	if err != nil {
+		t.Fatalf("captureCloudRawInputs() error = %v", err)
+	}
+	if len(inputs) != 1 || string(inputs["raw/root.md"]) != "root input" {
+		t.Fatalf("captured raw inputs = %#v, want root input only", inputs)
+	}
+	if data, err := os.ReadFile(filepath.Join(vault, "raw", "topic", "nested.md")); err != nil || string(data) != "nested input" {
+		t.Fatalf("nested raw after input capture = %q, %v; capture must not delete it", data, err)
 	}
 }
 
@@ -1130,30 +1154,17 @@ func TestWorkspaceRejectsDuplicateMappedRawPath(t *testing.T) {
 	}
 }
 
-func TestSnapshotSourcesAcceptsNestedRawMapping(t *testing.T) {
+func TestSnapshotSourcesRejectsNestedRawMapping(t *testing.T) {
 	vault := t.TempDir()
 	mustWriteFile(t, filepath.Join(vault, "raw", "topic", "記事.md"), []byte("nested source"))
 	mustWriteFile(t, filepath.Join(vault, "cache", "id_map.json"), []byte(`{"source_meta":{"s1":{"source_file":"raw/topic/記事.md"}}}`))
 
-	snapshots, err := snapshotSources(vault)
-	if err != nil {
-		t.Fatalf("snapshotSources() error = %v", err)
+	if snapshots, err := snapshotSources(vault); err == nil || len(snapshots) != 0 || !strings.Contains(err.Error(), "unsafe source mapping") {
+		t.Fatalf("snapshotSources() = %#v, %v; want nested mapping rejected before materialization", snapshots, err)
 	}
-	if len(snapshots) != 1 || snapshots[0].RawPath != "raw/topic/記事.md" || string(snapshots[0].RawBytes) != "nested source" {
-		t.Fatalf("snapshotSources() = %#v", snapshots)
-	}
-
-	workspace, err := createWorkspace(t.TempDir(), vault)
-	if err != nil {
-		t.Fatalf("createWorkspace() error = %v", err)
-	}
-	defer os.RemoveAll(workspace)
-	if err := materializeSnapshots(workspace, snapshots); err != nil {
-		t.Fatalf("materializeSnapshots() error = %v", err)
-	}
-	data, err := os.ReadFile(filepath.Join(workspace, "raw", "topic", "記事.md"))
+	data, err := os.ReadFile(filepath.Join(vault, "raw", "topic", "記事.md"))
 	if err != nil || string(data) != "nested source" {
-		t.Fatalf("materialized nested source = %q, %v", data, err)
+		t.Fatalf("nested raw after snapshot rejection = %q, %v; existing raw must remain untouched", data, err)
 	}
 }
 
