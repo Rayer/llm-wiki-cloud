@@ -1648,39 +1648,36 @@ func listVaultRawFiles(ctx context.Context, vault string) ([]storage.RawFile, er
 	} else if info.Mode()&os.ModeSymlink != 0 || !info.IsDir() {
 		return nil, errors.New("raw path must be a real directory")
 	}
-	files := make([]storage.RawFile, 0)
-	err := filepath.WalkDir(rawDir, func(path string, entry os.DirEntry, walkErr error) error {
-		if walkErr != nil {
-			return walkErr
-		}
+	entries, err := os.ReadDir(rawDir)
+	if err != nil {
+		return nil, err
+	}
+	files := make([]storage.RawFile, 0, len(entries))
+	for _, entry := range entries {
 		if err := ctx.Err(); err != nil {
-			return err
+			return nil, err
 		}
-		if path == rawDir || entry.IsDir() {
-			return nil
+		if entry.IsDir() {
+			continue
 		}
 		if entry.Type()&os.ModeSymlink != 0 {
-			return fmt.Errorf("raw tree contains a symlink: %s", entry.Name())
+			return nil, fmt.Errorf("raw directory contains a symlink: %s", entry.Name())
 		}
 		info, err := entry.Info()
 		if err != nil {
-			return err
+			return nil, err
 		}
 		if !info.Mode().IsRegular() {
-			return nil
+			continue
 		}
-		rel, err := filepath.Rel(rawDir, path)
-		if err != nil {
-			return err
-		}
-		rel = filepath.ToSlash(rel)
+		rel := entry.Name()
 		if err := storage.ValidateRawSyncPath(rel); err != nil {
-			return err
+			return nil, err
 		}
 		rawPath := filepath.ToSlash(filepath.Join("raw", rel))
-		data, err := os.ReadFile(path)
+		data, err := os.ReadFile(filepath.Join(rawDir, entry.Name()))
 		if err != nil {
-			return err
+			return nil, err
 		}
 		sum := sha256.Sum256(data)
 		files = append(files, storage.RawFile{
@@ -1690,10 +1687,6 @@ func listVaultRawFiles(ctx context.Context, vault string) ([]storage.RawFile, er
 			Updated: info.ModTime().UTC(),
 			SHA256:  fmt.Sprintf("%x", sum[:]),
 		})
-		return nil
-	})
-	if err != nil {
-		return nil, err
 	}
 	sort.Slice(files, func(i, j int) bool {
 		return files[i].Name < files[j].Name
@@ -1870,7 +1863,7 @@ func safeMappedRawPath(rawPath string) bool {
 		return false
 	}
 	name := strings.TrimPrefix(rawPath, "raw/")
-	return storage.ValidateRawSyncPath(name) == nil
+	return !strings.Contains(name, "/") && storage.ValidateRawSyncPath(name) == nil
 }
 
 func readAnnotation(vault, sourceID, rawPath string) (annotation.Object, error) {

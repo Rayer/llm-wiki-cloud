@@ -263,8 +263,6 @@ describe('LWC-370 runtime config', () => {
       expect(navigation).toContain('https://accounts.example.test/link');
       expect(xhrMethod).toBe('POST');
       expect(xhrURL).toBe(`${config.api_url}/api/v1/raw/upload`);
-      await uploadRawFile(new File(['x'], 'nested.txt'), undefined, undefined, 'topic/nested');
-      expect(xhrURL).toBe(`${config.api_url}/api/v1/raw/upload?dir=topic%2Fnested`);
       xhrStatus = 200;
       xhrBody = JSON.stringify({ filename: 'note.txt', path: 'raw/note.txt', bytes: 1, sha256: 'fixture', status: 'replaced' });
       const replaced = await uploadRawFile(new File(['x'], 'note.txt'));

@@ -89,7 +89,7 @@ it('uploads through the shared queue, reads the new Raw entry back, and previews
   await screen.findByText('Created');
   await waitFor(() => expect(mocks.getRawFiles).toHaveBeenCalledTimes(2));
   expect(mocks.uploadRawFile).toHaveBeenCalledTimes(1);
-  expect(mocks.uploadRawFile).toHaveBeenCalledWith(file, expect.any(Function), 'project-a', '');
+  expect(mocks.uploadRawFile).toHaveBeenCalledWith(file, expect.any(Function), 'project-a');
   expect(mocks.refreshNavCounts).toHaveBeenCalledTimes(1);
   expect(mocks.triggerPipeline).not.toHaveBeenCalled();
   expect(await screen.findByRole('button', { name: 'Raw.previewAria' })).toBeDefined();
@@ -102,28 +102,22 @@ it('uploads through the shared queue, reads the new Raw entry back, and previews
   expect(mocks.getRawFilePreview).toHaveBeenCalledWith(uploadedFile.name, 'project-a');
 });
 
-it.each(['topic', 'topic/nested'])('uploads and reads back a file in raw/%s', async (directory) => {
-  const listedFile = { ...uploadedFile, name: `${directory}/${uploadedFile.name}` };
-  mocks.getRawFiles.mockResolvedValueOnce([]).mockResolvedValueOnce([listedFile]);
-  mocks.uploadRawFile.mockResolvedValue({
-    ...createdResult,
-    path: `raw/${directory}/${uploadedFile.name}`,
-  });
+it('keeps multiple-file selection and queues every file at the raw root without a destination control', async () => {
+  const secondFile: RawFile = { ...uploadedFile, name: 'second.md', sha256: 'second-fixture-digest' };
+  mocks.getRawFiles.mockResolvedValueOnce([]).mockResolvedValueOnce([uploadedFile, secondFile]);
   render(<RawClient />);
-  const file = new File(['Nested content'], uploadedFile.name, { type: 'text/markdown' });
+  const firstUpload = new File(['First root content'], uploadedFile.name, { type: 'text/markdown' });
+  const secondUpload = new File(['Second root content'], secondFile.name, { type: 'text/markdown' });
 
-  fireEvent.change(screen.getByLabelText('Raw.destinationDirectory'), { target: { value: directory } });
   await act(async () => {
-    fireEvent.change(uploadInput(), { target: { files: [file] } });
+    fireEvent.change(uploadInput(), { target: { files: [firstUpload, secondUpload] } });
   });
 
-  expect(await screen.findByText('Created')).toBeDefined();
-  expect(mocks.uploadRawFile).toHaveBeenCalledWith(file, expect.any(Function), 'project-a', directory);
-  expect(screen.getByText(`raw/${directory}/${uploadedFile.name}`)).toBeDefined();
-  const previewButton = await screen.findByRole('button', { name: 'Raw.previewAria' });
-  fireEvent.click(previewButton);
-  await screen.findByText('Synthetic content stored by the local fixture.');
-  expect(mocks.getRawFilePreview).toHaveBeenCalledWith(listedFile.name, 'project-a');
+  expect(await screen.findByText('2 created, 0 already exists, 0 failed')).toBeDefined();
+  await waitFor(() => expect(mocks.uploadRawFile).toHaveBeenCalledTimes(2));
+  expect(mocks.uploadRawFile).toHaveBeenNthCalledWith(1, firstUpload, expect.any(Function), 'project-a');
+  expect(mocks.uploadRawFile).toHaveBeenNthCalledWith(2, secondUpload, expect.any(Function), 'project-a');
+  expect(screen.queryByLabelText(/destination directory/i)).toBeNull();
 });
 
 it('keeps an upload conflict visible and retries the file through the same uploader', async () => {

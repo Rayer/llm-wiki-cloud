@@ -61,6 +61,10 @@ func (h *Handler) RawUpload(c *gin.Context) {
 		observability.WriteDataJSON(c, http.StatusForbidden, handler.ErrorResponse{Error: "demo users cannot upload raw files"})
 		return
 	}
+	if rawUploadHasDestinationDirectory(c) {
+		observability.WriteDataJSON(c, http.StatusBadRequest, handler.ErrorResponse{Error: "raw upload destination directories are not supported"})
+		return
+	}
 	if h.firestore == nil || h.firestore.Raw() == nil {
 		observability.WriteDataJSON(c, http.StatusInternalServerError, handler.ErrorResponse{Error: "Firestore client is not configured"})
 		return
@@ -113,8 +117,8 @@ func (h *Handler) RawUpload(c *gin.Context) {
 		observability.WriteDataJSON(c, http.StatusBadRequest, handler.ErrorResponse{Error: err.Error()})
 		return
 	}
-	relativePath, err := rawintake.Destination(c.Query("dir"), filename)
-	if err != nil {
+	relativePath := filename
+	if err := store.ValidateRawSyncPath(relativePath); err != nil {
 		observability.FinishDataSpan(inputSpan, "rejected")
 		observability.WriteDataJSON(c, http.StatusBadRequest, handler.ErrorResponse{Error: "invalid raw-relative path"})
 		return
@@ -187,6 +191,18 @@ func (h *Handler) RawUpload(c *gin.Context) {
 
 func rawUploadOverwrite(c *gin.Context) bool {
 	return c.PostForm("overwrite") == "true" || c.Query("overwrite") == "true"
+}
+
+func rawUploadHasDestinationDirectory(c *gin.Context) bool {
+	if c.Request == nil || c.Request.URL == nil {
+		return false
+	}
+	for _, directory := range c.Request.URL.Query()["dir"] {
+		if directory != "" {
+			return true
+		}
+	}
+	return false
 }
 
 func (h *Handler) rawUploadProjectReady(c *gin.Context, userID, projectID string) (bool, error) {

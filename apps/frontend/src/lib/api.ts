@@ -1293,13 +1293,11 @@ function sendRawUploadRequest(
   formData: FormData,
   projectId: string,
   accessToken: string,
-  directory: string,
   reportProgress: (progress: number) => void,
 ): Promise<XhrResponse> {
   return new Promise((resolve, reject) => {
     const xhr = new XMLHttpRequest();
-    const directoryQuery = directory === '' ? '' : `?dir=${encodeURIComponent(directory)}`;
-    xhr.open('POST', `${getRuntimeConfig().api_url}${toV1Path('/api/v1/raw/upload')}${directoryQuery}`);
+    xhr.open('POST', `${getRuntimeConfig().api_url}${toV1Path('/api/v1/raw/upload')}`);
     xhr.withCredentials = true;
 
     for (const [name, value] of Object.entries(buildProjectHeaders(projectId, accessToken))) {
@@ -1322,7 +1320,6 @@ export async function uploadRawFile(
   file: File,
   onProgress?: RawUploadProgressCallback,
   explicitProjectId?: string,
-  directory = '',
 ): Promise<RawUploadResult> {
   if (file.size > RAW_UPLOAD_MAX_BYTES) {
     throw new Error('file too large (max 5 MiB)');
@@ -1347,7 +1344,6 @@ export async function uploadRawFile(
     formData,
     projectId,
     accessToken,
-    directory,
     reportProgress,
   );
   if (
@@ -1381,7 +1377,6 @@ export async function uploadRawFile(
         formData,
         projectId,
         refreshedOperation.accessToken,
-        directory,
         reportProgress,
       );
       if (
