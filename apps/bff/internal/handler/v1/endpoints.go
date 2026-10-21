@@ -984,7 +984,51 @@ func (h *Handler) PipelineRun(c *gin.Context) {
 	h.pipelineRunForMode(c, userID, projectID, pipelinequota.ModeIncremental)
 }
 
+func (h *Handler) PipelineRetry(c *gin.Context) {
+	userID := strings.TrimSpace(c.GetString("userID"))
+	projectID := strings.TrimSpace(c.GetString("projectID"))
+	if userID == "" {
+		c.JSON(http.StatusUnauthorized, handler.ErrorResponse{Error: "user not authenticated"})
+		return
+	}
+	if projectID == "" {
+		c.JSON(http.StatusBadRequest, handler.ErrorResponse{Error: "project is required"})
+		return
+	}
+	var request struct {
+		IntentID string `json:"intent_id"`
+	}
+	if err := json.NewDecoder(io.LimitReader(c.Request.Body, 4096)).Decode(&request); err != nil || !auth.ValidPathSegment(strings.TrimSpace(request.IntentID)) {
+		c.JSON(http.StatusBadRequest, handler.ErrorResponse{Error: "invalid Pipeline intent ID"})
+		return
+	}
+	request.IntentID = strings.TrimSpace(request.IntentID)
+	intentStore, ok := h.effectiveQuotaStore().(pipelineIntentQuotaStore)
+	if !ok {
+		c.JSON(http.StatusServiceUnavailable, handler.ErrorResponse{Error: pipelineUnavailableMessage})
+		return
+	}
+	prior, exists, err := intentStore.GetPipelineIntent(c.Request.Context(), userID, projectID, request.IntentID)
+	if err != nil {
+		c.JSON(http.StatusInternalServerError, handler.ErrorResponse{Error: pipelineStatusUnavailableMessage})
+		return
+	}
+	if !exists {
+		c.JSON(http.StatusNotFound, handler.ErrorResponse{Error: "Pipeline intent not found"})
+		return
+	}
+	if prior.IntentStatus != "failed" {
+		c.JSON(http.StatusConflict, handler.ErrorResponse{Error: "Only a confirmed failed Pipeline run can be retried"})
+		return
+	}
+	h.pipelineRunForModeWithSource(c, userID, projectID, prior.CompileMode, prior.ID)
+}
+
 func (h *Handler) pipelineRunForMode(c *gin.Context, userID, projectID string, mode pipelinequota.ExecutionMode) {
+	h.pipelineRunForModeWithSource(c, userID, projectID, mode, "")
+}
+
+func (h *Handler) pipelineRunForModeWithSource(c *gin.Context, userID, projectID string, mode pipelinequota.ExecutionMode, sourceIntentID string) {
 	ctx, root := observability.StartPipelineSpan(c.Request.Context(), "pipeline.submit")
 	c.Request = c.Request.WithContext(ctx)
 	rootOutcome := "failure"
@@ -995,7 +1039,25 @@ func (h *Handler) pipelineRunForMode(c *gin.Context, userID, projectID string, m
 		return
 	}
 	evaluateCtx, evaluateSpan := observability.StartPipelineSpan(ctx, "pipeline.quota.evaluate")
-	snap, reserved, err := h.evaluateQuotaForMode(evaluateCtx, userID, projectID, reservationID, mode)
+	var intentStore pipelineIntentQuotaStore
+	if candidate, ok := h.effectiveQuotaStore().(pipelineIntentQuotaStore); ok {
+		intentStore = candidate
+	}
+	if sourceIntentID != "" && intentStore == nil {
+		c.JSON(http.StatusServiceUnavailable, handler.ErrorResponse{Error: pipelineUnavailableMessage})
+		return
+	}
+	var snap pipelinequota.Snapshot
+	var reserved bool
+	if intentStore != nil {
+		if sourceIntentID == "" {
+			snap, reserved, err = h.reservePipelineIntent(evaluateCtx, userID, projectID, reservationID, mode, intentStore)
+		} else {
+			snap, reserved, err = h.reservePipelineIntentRetry(evaluateCtx, userID, projectID, reservationID, sourceIntentID, mode, intentStore)
+		}
+	} else {
+		snap, reserved, err = h.evaluateQuotaForMode(evaluateCtx, userID, projectID, reservationID, mode)
+	}
 	observability.FinishPipelineSpan(evaluateSpan, pipelineTraceOutcome(err))
 	if err != nil {
 		c.JSON(http.StatusInternalServerError, handler.ErrorResponse{
@@ -1011,6 +1073,49 @@ func (h *Handler) pipelineRunForMode(c *gin.Context, userID, projectID string, m
 			"error": fmt.Sprintf("pipeline blocked: %s", snap.Reason),
 			"quota": snap,
 		})
+		return
+	}
+	if intentStore != nil && reserved {
+		reservation, exists, readErr := intentStore.GetPipelineIntent(ctx, userID, projectID, reservationID)
+		if readErr != nil || !exists {
+			log.Print("accepted pipeline intent readback pending reconciliation")
+			c.JSON(http.StatusAccepted, gin.H{
+				"status": "accepted", "command": "run", "project_id": projectID,
+				"intent_id": reservationID, "intent_status": "unknown", "compile_mode": mode, "quota": snap,
+			})
+			rootOutcome = "pending"
+			return
+		}
+		if workErr := h.ensurePipelineIntentWork(ctx, reservation); workErr != nil {
+			log.Print("accepted pipeline intent scheduling pending reconciliation")
+		}
+		executionID := ""
+		intentStatus := reservation.IntentStatus
+		if reservation.IntentStatus == "ready" {
+			executionID, intentStatus, err = h.startPipelineIntent(ctx, intentStore, reservation)
+			if err != nil {
+				log.Print("accepted pipeline intent continuation pending reconciliation")
+			}
+		}
+		message := ""
+		if intentStatus == "preparing" {
+			message = "Preparing Profile guidance; the Pipeline will continue automatically."
+		} else if intentStatus == "invocation_unknown" || intentStatus == "invoking" {
+			message = "Checking whether the Pipeline started. Return later to see the result."
+		} else if intentStatus == "failed" {
+			latest, found, statusErr := intentStore.GetPipelineIntent(ctx, userID, projectID, reservationID)
+			if statusErr == nil && found {
+				message = latest.IntentErrorMessage
+			}
+		} else if intentStatus == "compiling" {
+			message = "Pipeline started."
+		}
+		c.JSON(http.StatusAccepted, gin.H{
+			"status": "accepted", "command": "run", "project_id": projectID,
+			"execution_id": executionID, "intent_id": reservationID, "intent_status": intentStatus,
+			"compile_mode": mode, "quota": snap, "message": message,
+		})
+		rootOutcome = "accepted"
 		return
 	}
 
@@ -1255,6 +1360,7 @@ type cloudRunJobRunResponse struct {
 
 type pipelineStatusResponse struct {
 	LastExecution      *handler.PipelineExecutionResponse       `json:"last_execution"`
+	PipelineIntent     *handler.PipelineIntentStatus            `json:"pipeline_intent,omitempty"`
 	ScheduledExecution *handler.PipelineExecutionResponse       `json:"scheduled_execution,omitempty"`
 	ProjectID          string                                   `json:"project_id"`
 	Quota              *pipelinequota.Snapshot                  `json:"quota,omitempty"`
@@ -1359,22 +1465,53 @@ func (h *Handler) PipelineStatus(c *gin.Context) {
 		}
 	}
 	response := pipelineStatusResponse{ProjectID: projectID}
+	intentID := strings.TrimSpace(c.Query("intent_id"))
+	if intentID != "" && !auth.ValidPathSegment(intentID) {
+		c.JSON(http.StatusBadRequest, handler.ErrorResponse{Error: "invalid Pipeline intent ID"})
+		return
+	}
+	if intentStore, ok := h.effectiveQuotaStore().(pipelineIntentQuotaStore); ok {
+		intent, exists, intentErr := intentStore.GetPipelineIntent(ctx, userID, projectID, intentID)
+		if intentErr != nil {
+			c.JSON(http.StatusInternalServerError, handler.ErrorResponse{Error: pipelineStatusUnavailableMessage})
+			return
+		}
+		if intentID != "" && !exists {
+			c.JSON(http.StatusNotFound, handler.ErrorResponse{Error: "Pipeline intent not found"})
+			return
+		}
+		if exists {
+			response.PipelineIntent = pipelineIntentStatusDTO(intent)
+		}
+	}
+	skipExecutionLookup := false
+	if response.PipelineIntent != nil && executionID == "" {
+		if response.PipelineIntent.ExecutionID != "" {
+			executionID = response.PipelineIntent.ExecutionID
+		} else {
+			skipExecutionLookup = true
+		}
+	}
 	var suggestedErr error
 	response.SuggestedQueries, suggestedErr = h.loadSuggestedQueries(ctx, c)
 	if suggestedErr != nil {
 		c.JSON(http.StatusInternalServerError, handler.ErrorResponse{Error: pipelineStatusUnavailableMessage})
 		return
 	}
-	lookupCtx, lookupSpan := observability.StartPipelineSpan(ctx, "pipeline.status.lookup")
-	lastExecution, err := h.pipelineExecutionStatusForOwner(lookupCtx, executionID, userID, projectID)
-	observability.FinishPipelineSpan(lookupSpan, pipelineTraceOutcome(err))
-	if err != nil {
-		if errors.Is(err, errPipelineExecutionNotFound) {
-			c.JSON(http.StatusNotFound, handler.ErrorResponse{Error: errPipelineExecutionNotFound.Error()})
+	var lastExecution *handler.PipelineExecutionResponse
+	if !skipExecutionLookup {
+		lookupCtx, lookupSpan := observability.StartPipelineSpan(ctx, "pipeline.status.lookup")
+		var lookupErr error
+		lastExecution, lookupErr = h.pipelineExecutionStatusForOwner(lookupCtx, executionID, userID, projectID)
+		observability.FinishPipelineSpan(lookupSpan, pipelineTraceOutcome(lookupErr))
+		if lookupErr != nil {
+			if errors.Is(lookupErr, errPipelineExecutionNotFound) {
+				c.JSON(http.StatusNotFound, handler.ErrorResponse{Error: errPipelineExecutionNotFound.Error()})
+				return
+			}
+			c.JSON(http.StatusInternalServerError, handler.ErrorResponse{Error: pipelineStatusUnavailableMessage})
 			return
 		}
-		c.JSON(http.StatusInternalServerError, handler.ErrorResponse{Error: pipelineStatusUnavailableMessage})
-		return
 	}
 	response.LastExecution = lastExecution
 
@@ -1819,21 +1956,36 @@ func (h *Handler) readConsumedGuidanceEvidence(ctx context.Context, owner *pipel
 	}
 	evidence.ExecutionID = executionID
 	evidence.ContentGeneration = receipt.ContentGeneration
+	evidence.SavedProfileRevision = receipt.ProfileRevision
+	evidence.SavedProfileInputDigest = receipt.RequirementsDigest
+	evidence.SourceProfileRevision = receipt.ConsumedGuidanceSourceRevision
+	evidence.SourceContentGeneration = receipt.ConsumedGuidanceSourceContentGeneration
+	evidence.SourceCandidateID = receipt.ConsumedGuidanceSourceCandidateID
+	evidence.SourceProfileInputDigest = receipt.ConsumedGuidanceInputDigest
+	evidence.SourceModelVersion = receipt.ConsumedGuidanceModelVersion
+	evidence.SourcePromptVersion = receipt.ConsumedGuidancePromptVersion
+	evidence.SourceSchemaVersion = receipt.ConsumedGuidanceSchemaVersion
+	evidence.SourceStatus = receipt.ConsumedGuidanceStatus
 	switch receipt.ConsumedGuidanceKind {
 	case "none":
-		if receipt.ConsumedGuidanceRevision != nil || receipt.ConsumedBootstrapGuidance != nil {
+		if receipt.ConsumedGuidanceRevision != nil || receipt.ConsumedBootstrapGuidance != nil || receipt.ConsumedActiveGuidance != nil {
 			return &handler.PipelineConsumedGuidanceEvidence{Status: "unavailable", Revision: nil}
 		}
 		evidence.Status, evidence.Kind = "available", "none"
 	case "active":
-		if receipt.ConsumedGuidanceRevision == nil || !isLowerProfileDigest(*receipt.ConsumedGuidanceRevision) || receipt.ConsumedBootstrapGuidance != nil {
+		if receipt.ConsumedGuidanceRevision == nil || !isLowerProfileDigest(*receipt.ConsumedGuidanceRevision) || receipt.ConsumedBootstrapGuidance != nil ||
+			(receipt.ConsumedActiveGuidance != nil && (receipt.ConsumedActiveGuidance.Revision != *receipt.ConsumedGuidanceRevision ||
+				receipt.ConsumedActiveGuidance.InputDigest != receipt.ConsumedGuidanceInputDigest ||
+				receipt.ConsumedActiveGuidance.ModelVersion != receipt.ConsumedGuidanceModelVersion ||
+				receipt.ConsumedActiveGuidance.PromptVersion != receipt.ConsumedGuidancePromptVersion ||
+				receipt.ConsumedActiveGuidance.SchemaVersion != receipt.ConsumedGuidanceSchemaVersion)) {
 			return &handler.PipelineConsumedGuidanceEvidence{Status: "unavailable", Revision: nil}
 		}
 		revision := *receipt.ConsumedGuidanceRevision
 		evidence.Status, evidence.Kind, evidence.Revision = "available", "active", &revision
 	case "bootstrap":
 		if receipt.ConsumedGuidanceRevision == nil || !isLowerProfileDigest(*receipt.ConsumedGuidanceRevision) || receipt.ConsumedBootstrapGuidance == nil ||
-			receipt.ConsumedBootstrapGuidance.Revision != *receipt.ConsumedGuidanceRevision {
+			receipt.ConsumedBootstrapGuidance.Revision != *receipt.ConsumedGuidanceRevision || receipt.ConsumedActiveGuidance != nil {
 			return &handler.PipelineConsumedGuidanceEvidence{Status: "unavailable", Revision: nil}
 		}
 		revision := *receipt.ConsumedGuidanceRevision

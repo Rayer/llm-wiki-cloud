@@ -24,7 +24,7 @@ func (h *Handler) ReconcilePipelineQuota(ctx context.Context) (resultErr error) 
 		observability.FinishPipelineSpan(root, pipelineTraceOutcome(resultErr))
 	}()
 	quotaStore := h.effectiveQuotaStore()
-	if quotaStore == nil || h.localPipeline != nil {
+	if quotaStore == nil {
 		return nil
 	}
 	listCtx, listSpan := observability.StartPipelineSpan(ctx, "pipeline.quota.list")
@@ -32,6 +32,16 @@ func (h *Handler) ReconcilePipelineQuota(ctx context.Context) (resultErr error) 
 	observability.FinishPipelineSpan(listSpan, pipelineTraceOutcome(err))
 	if err != nil || len(reservations) == 0 {
 		return err
+	}
+	for _, reservation := range reservations {
+		if reservation.IntentStatus == "preparing" || reservation.IntentStatus == "ready" {
+			if err := h.ensurePipelineIntentWork(ctx, reservation); err != nil {
+				return err
+			}
+		}
+	}
+	if h.localPipeline != nil {
+		return nil
 	}
 	pendingWithoutExecution := make(map[string]firestore.QuotaReservation)
 	needsExecutionLookup := false
@@ -54,6 +64,17 @@ func (h *Handler) ReconcilePipelineQuota(ctx context.Context) (resultErr error) 
 			return err
 		}
 		if confirmedFailure {
+			if reservation.IntentStatus != "" {
+				intentStore, ok := quotaStore.(pipelineIntentQuotaStore)
+				if !ok {
+					return errors.New("pipeline intent store unavailable for confirmed invoke failure")
+				}
+				if err := intentStore.FailPipelineIntent(ctx, reservation.ID, reservation.AttemptID, reservation.UserID, reservation.ProjectID,
+					reservation.IntentStatus, "pipeline_invocation", "pipeline_invoke_failed", "Pipeline did not start. Retry this run when service is available."); err != nil {
+					return err
+				}
+				continue
+			}
 			if reservation.Trigger == pipelinequota.TriggerScheduledDaily {
 				admission, ok := quotaStore.(interface {
 					ReleaseQuotaReservationIfAttempt(context.Context, string, string) (bool, error)

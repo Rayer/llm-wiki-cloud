@@ -17,7 +17,9 @@ import (
 	"time"
 
 	"cloud.google.com/go/firestore"
+	scopedfirestore "github.com/rayer/llm-wiki-bff/internal/firestore"
 	"github.com/rayer/llm-wiki-bff/internal/generation"
+	"github.com/rayer/llm-wiki-bff/internal/pipelinequota"
 	"github.com/rayer/llm-wiki-bff/internal/profileartifacts"
 	"google.golang.org/api/option"
 )
@@ -471,6 +473,179 @@ func TestReadActiveProfileGuidancePinsImmutableReference(t *testing.T) {
 	objects.objects[name] = []byte(mutated)
 	if _, err := readActiveProfileGuidance(ctx, client, cfg, objects); err == nil || !strings.Contains(err.Error(), "reference mismatch") {
 		t.Fatalf("mutated guidance object err=%v, want fail-closed reference mismatch", err)
+	}
+}
+
+func TestReadPipelineIntentUsesFrozenGuidanceAfterProfileEdit(t *testing.T) {
+	endpoint := strings.TrimSpace(os.Getenv("FIRESTORE_EMULATOR_HOST"))
+	if endpoint == "" {
+		t.Skip("FIRESTORE_EMULATOR_HOST is not set")
+	}
+	parsed, err := url.Parse("http://" + endpoint)
+	if err != nil || parsed.Host == "" {
+		t.Fatal("invalid Firestore emulator host")
+	}
+	if host, _, err := net.SplitHostPort(parsed.Host); err != nil || (host != "127.0.0.1" && host != "localhost" && host != "::1") {
+		t.Fatalf("Firestore emulator must use loopback, got %q", parsed.Host)
+	}
+	ctx, cancel := context.WithTimeout(context.Background(), 20*time.Second)
+	defer cancel()
+	client, err := firestore.NewClient(ctx, fmt.Sprintf("lwc415-intent-%d", time.Now().UnixNano()), option.WithEndpoint(endpoint), option.WithoutAuthentication())
+	if err != nil {
+		t.Fatalf("create Firestore emulator client: %v", err)
+	}
+	defer client.Close()
+
+	cfg := workerConfig{UserID: "owner", ProjectID: fmt.Sprintf("p%d", time.Now().UnixNano()), PipelineReservationID: "intent-1"}
+	stateRef := client.Collection("projects").Doc(cfg.UserID + "_" + cfg.ProjectID).Collection("profile").Doc("state")
+	objects := &profileGuidanceObjectStore{objects: map[string][]byte{}}
+
+	for _, tc := range []struct {
+		name string
+		kind string
+	}{
+		{name: "active V1 while saved Profile is V2", kind: "active"},
+		{name: "accepted preview bootstrap V1 after Profile edit", kind: "bootstrap"},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			cfg.PipelineReservationID = "intent-" + tc.kind
+			reservationRef := client.Collection("pipeline_quota_reservations").Doc(cfg.PipelineReservationID)
+			requirementsV1 := []profileGuidanceRequirement{{ID: "r1", Text: "saved V1"}}
+			digestV1 := profileRequirementsDigest(requirementsV1)
+			content, guidanceRevision, sourceRevision, sourceGeneration, candidateID, statusValue := "", "", int64(1), "active-content-v1", "candidate-v1", "active"
+			var bootstrapRef *profileartifacts.BootstrapGuidanceRef
+			var activeRef *profileGuidanceRef
+			if tc.kind == "active" {
+				artifact, ref, err := profileartifacts.EncodeGuidance(profileartifacts.GenerationGuidanceEnvelope{
+					SchemaVersion: profileartifacts.GuidanceSchema, InputDigest: digestV1,
+					SourceContentGeneration: sourceGeneration, CanonicalConceptsDigest: strings.Repeat("2", 64),
+					ModelVersion: "model-v1", PromptVersion: "prompt-v1", CompileGuidance: "Use active V1 guidance.",
+				})
+				if err != nil {
+					t.Fatal(err)
+				}
+				guidanceRevision, content = ref.Revision, "Use active V1 guidance."
+				activeRef = &profileGuidanceRef{Revision: ref.Revision, InputDigest: ref.InputDigest, ModelVersion: ref.ModelVersion, PromptVersion: ref.PromptVersion, SchemaVersion: ref.SchemaVersion}
+				objects.objects[fmt.Sprintf("users/%s/projects/%s/%s", cfg.UserID, cfg.ProjectID, profileartifacts.GuidanceObjectPath(ref.Revision))] = artifact
+			} else {
+				artifact, ref, err := profileartifacts.EncodeBootstrapGuidance(profileartifacts.BootstrapGuidanceEnvelope{
+					SchemaVersion: profileartifacts.BootstrapGuidanceSchema, ProfileRevision: 1,
+					InputDigest: digestV1, ModelVersion: "model-v1", PromptVersion: "prompt-v1",
+					CompileGuidance: "Use preview-ready bootstrap V1 guidance.",
+				})
+				if err != nil {
+					t.Fatal(err)
+				}
+				guidanceRevision, content, sourceRevision, sourceGeneration, candidateID, statusValue = ref.Revision, "Use preview-ready bootstrap V1 guidance.", 1, "", "", "prepared"
+				bootstrapRef = &ref
+				objects.objects[fmt.Sprintf("users/%s/projects/%s/%s", cfg.UserID, cfg.ProjectID, profileartifacts.BootstrapObjectPath(ref.Revision))] = artifact
+			}
+			if _, err := stateRef.Set(ctx, map[string]interface{}{
+				"project_id": cfg.ProjectID, "revision": int64(2),
+				"requirements":       []interface{}{map[string]interface{}{"id": "r2", "text": "later V2"}},
+				"bootstrap_guidance": map[string]interface{}{"status": "pending", "profile_revision": int64(2)},
+			}); err != nil {
+				t.Fatalf("seed newer Profile state: %v", err)
+			}
+			reservation := map[string]interface{}{
+				"user_id": cfg.UserID, "project_id": cfg.ProjectID, "attempt_id": cfg.PipelineReservationID,
+				"settlement_status": "pending", "intent_status": "invoking", "intent_mode": "incremental",
+				"profile_revision": int64(1), "profile_requirements": []interface{}{map[string]interface{}{"id": "r1", "text": "saved V1"}},
+				"requirements_digest": digestV1, "consumed_guidance_kind": tc.kind,
+				"consumed_guidance_status": statusValue, "consumed_guidance_revision": guidanceRevision,
+				"consumed_guidance_source_revision": sourceRevision, "consumed_guidance_input_digest": digestV1,
+				"consumed_guidance_model_version": "model-v1", "consumed_guidance_prompt_version": "prompt-v1",
+				"consumed_guidance_schema_version": map[bool]string{true: profileartifacts.BootstrapGuidanceSchema, false: profileartifacts.GuidanceSchema}[tc.kind == "bootstrap"],
+				"active_candidate_id":              candidateID, "active_content_generation": sourceGeneration,
+			}
+			if activeRef != nil {
+				reservation["consumed_active_guidance"] = *activeRef
+			}
+			if bootstrapRef != nil {
+				reservation["consumed_bootstrap_guidance"] = *bootstrapRef
+			}
+			if _, err := reservationRef.Set(ctx, reservation); err != nil {
+				t.Fatalf("seed Pipeline intent snapshot: %v", err)
+			}
+			objects.reads = nil
+			pin, err := readActiveProfileGuidance(ctx, client, cfg, objects)
+			if err != nil {
+				t.Fatalf("read frozen Pipeline guidance: %v", err)
+			}
+			if pin == nil || pin.ProfileRevision != 1 || pin.RequirementsDigest != digestV1 || pin.Revision != guidanceRevision || pin.Content != content {
+				t.Fatalf("Pipeline guidance pin=%+v, want saved V1 snapshot %s", pin, guidanceRevision)
+			}
+			if pin.SourceProfileRevision != sourceRevision || pin.SourceContentGeneration != sourceGeneration || pin.SourceCandidateID != candidateID {
+				t.Fatalf("Pipeline guidance source metadata=%+v, want revision=%d generation=%q candidate=%q", pin, sourceRevision, sourceGeneration, candidateID)
+			}
+			if (pin.BootstrapRef != nil) != (tc.kind == "bootstrap") {
+				t.Fatalf("bootstrap reference presence=%v for %s", pin.BootstrapRef != nil, tc.kind)
+			}
+		})
+	}
+}
+
+func TestPipelineIntentWithoutProfileIsAdmittedAndReadableByWorker(t *testing.T) {
+	endpoint := strings.TrimSpace(os.Getenv("FIRESTORE_EMULATOR_HOST"))
+	if endpoint == "" {
+		t.Skip("FIRESTORE_EMULATOR_HOST is not set")
+	}
+	parsed, err := url.Parse("http://" + endpoint)
+	if err != nil || parsed.Host == "" {
+		t.Fatal("invalid Firestore emulator host")
+	}
+	if host, _, err := net.SplitHostPort(parsed.Host); err != nil || (host != "127.0.0.1" && host != "localhost" && host != "::1") {
+		t.Fatalf("Firestore emulator must use loopback, got %q", parsed.Host)
+	}
+
+	unique := fmt.Sprintf("%d", time.Now().UnixNano())
+	cloudProject := "lwc415-no-profile-" + unique
+	userID, projectID := "owner-"+unique, "project-"+unique
+	scope := "lwc415-no-profile-" + unique
+	t.Setenv("GOOGLE_CLOUD_PROJECT", cloudProject)
+	t.Setenv("LOCAL_CLOUD_SCOPE", scope)
+	client, err := scopedfirestore.NewClientWithDatabaseAndScope(cloudProject, "", userID, projectID, scope)
+	if err != nil {
+		t.Fatalf("create scoped Firestore emulator client: %v", err)
+	}
+
+	ctx, cancel := context.WithTimeout(context.Background(), 20*time.Second)
+	defer cancel()
+	reservationID := "intent-" + unique
+	reservationRef := scopedfirestore.Collection(client.Raw(), "pipeline_quota_reservations").Doc(reservationID)
+	quotaRef := scopedfirestore.Collection(client.Raw(), "pipeline_quota").Doc(scopedfirestore.QuotaDocID(userID, projectID))
+	t.Cleanup(func() {
+		for _, ref := range []*firestore.DocumentRef{reservationRef, quotaRef} {
+			if _, err := ref.Delete(context.Background()); err != nil {
+				t.Errorf("delete owned intent fixture %s: %v", ref.Path, err)
+			}
+		}
+		if err := client.Close(); err != nil {
+			t.Errorf("close scoped Firestore emulator client: %v", err)
+		}
+	})
+
+	_, reserved, err := client.ReserveQuotaForPipelineIntent(ctx, reservationID, userID, projectID,
+		pipelinequota.Limits{DailyLimit: 5, Cooldown: time.Hour, MinNewRaw: 1}, time.Now().UTC(),
+		pipelinequota.ModeIncremental, false, false, 1, 0, 0)
+	if err != nil || !reserved {
+		t.Fatalf("admit Pipeline without Profile: reserved=%t err=%v", reserved, err)
+	}
+	intent, exists, err := client.GetPipelineIntent(ctx, userID, projectID, reservationID)
+	wantDigest := profileRequirementsDigest([]profileGuidanceRequirement{})
+	if err != nil || !exists || intent.IntentStatus != "ready" || intent.ProfileRevision != 0 ||
+		len(intent.ProfileRequirements) != 0 || intent.RequirementsDigest != wantDigest || intent.ConsumedGuidanceKind != "none" {
+		t.Fatalf("admitted no-Profile intent=%+v exists=%t err=%v", intent, exists, err)
+	}
+
+	_, claimed, err := client.BeginPipelineIntentInvocation(ctx, reservationID, reservationID, userID, projectID)
+	if err != nil || !claimed {
+		t.Fatalf("claim admitted intent: claimed=%t err=%v", claimed, err)
+	}
+	cfg := workerConfig{UserID: userID, ProjectID: projectID, PipelineReservationID: reservationID}
+	pin, found, err := readPipelineIntentGuidance(ctx, client.Raw(), cfg, &profileGuidanceObjectStore{objects: map[string][]byte{}})
+	if err != nil || !found || pin != nil {
+		t.Fatalf("Worker read of admitted no-Profile intent: pin=%+v found=%t err=%v", pin, found, err)
 	}
 }
 

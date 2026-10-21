@@ -272,7 +272,13 @@ func (d *ProfileDispatcher) claim(ctx context.Context, repo *firestoreProfileRep
 	return work, claimed, err
 }
 func validProfileRuntimeIdentity(w profileruntime.Work) bool {
-	return auth.ValidPathSegment(w.UserID) && auth.ValidPathSegment(w.ProjectID) && auth.ValidPathSegment(w.ID) && w.Revision > 0 && (w.Kind == "derive" || w.Kind == "tag" || w.Kind == "compile")
+	if !auth.ValidPathSegment(w.UserID) || !auth.ValidPathSegment(w.ProjectID) || !auth.ValidPathSegment(w.ID) {
+		return false
+	}
+	if w.Kind == "pipeline" {
+		return w.Revision >= 0
+	}
+	return w.Revision > 0 && (w.Kind == "derive" || w.Kind == "tag" || w.Kind == "compile")
 }
 func (d *ProfileDispatcher) finish(ctx context.Context, repo *firestoreProfileRepository, ref *firestore.DocumentRef, claimed profileruntime.Work, cause error) (string, error) {
 	settledStatus := "unknown"
@@ -331,6 +337,9 @@ func (d *ProfileDispatcher) finish(ctx context.Context, repo *firestoreProfileRe
 func (d *ProfileDispatcher) execute(ctx context.Context, repo *firestoreProfileRepository, w profileruntime.Work) error {
 	if _, err := d.Handler.AuthorizeProject(ctx, w.UserID, w.ProjectID, ProjectEdit); err != nil {
 		return err
+	}
+	if w.Kind == "pipeline" {
+		return d.executePipelineIntent(ctx, repo, w)
 	}
 	if w.Kind == "compile" {
 		state, err := repo.GetProfile(ctx, w.UserID, w.ProjectID)
@@ -461,7 +470,7 @@ func (d *ProfileDispatcher) executeCompile(ctx context.Context, repo *firestoreP
 	if generationSnapshot.Manifest.GenerationID != w.ID || generationSnapshot.ManifestGeneration != receipt.ManifestGeneration || generationSnapshot.ManifestSHA256 != receipt.ManifestSHA256 || !listed || concepts.SHA256 != receipt.CanonicalConceptsDigest {
 		return errProfileCandidateNotCurrent
 	}
-	success, err := NewProfileCompileSuccess(generationSnapshot.Manifest, receipt.ManifestGeneration, nil, receipt.ConsumedBootstrapGuidance)
+	success, err := NewProfileCompileSuccess(generationSnapshot.Manifest, receipt.ManifestGeneration, nil, receipt.ConsumedBootstrapGuidance, receipt.PipelineReservationID)
 	if err != nil {
 		return err
 	}

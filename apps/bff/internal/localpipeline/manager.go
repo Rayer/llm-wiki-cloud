@@ -660,7 +660,9 @@ func (m *Manager) Start(ctx context.Context, userID, projectID, stage string, cl
 	if exists {
 		beforeID = manifest.GenerationID
 	}
+	intentReservation := false
 	err = m.cfg.Firestore.RunTransaction(ctx, func(ctx context.Context, tx *cloudfirestore.Transaction) error {
+		intentReservation = false
 		lock, getErr := tx.Get(lockRef)
 		if getErr == nil {
 			lockData := lock.Data()
@@ -680,6 +682,8 @@ func (m *Manager) Start(ctx context.Context, userID, projectID, stage string, cl
 			if data["user_id"] != userID || data["project_id"] != projectID || data["settlement_status"] != "pending" {
 				return errors.New("local pipeline quota reservation is unavailable")
 			}
+			intentMode, _ := data["intent_mode"].(string)
+			intentReservation = intentMode != ""
 		}
 		lockRecord := map[string]any{"user_id": userID, "project_id": projectID, "execution_id": executionID, "status": "RUNNING", "updated_at": started}
 		if requestID := observability.RequestIDFromContext(ctx); requestID != "" {
@@ -706,7 +710,11 @@ func (m *Manager) Start(ctx context.Context, userID, projectID, stage string, cl
 			return err
 		}
 		if reservationID != "" {
-			return tx.Update(reservationRef, []cloudfirestore.Update{{Path: "execution_id", Value: executionID}, {Path: "updated_at", Value: started}})
+			updates := []cloudfirestore.Update{{Path: "execution_id", Value: executionID}, {Path: "updated_at", Value: started}}
+			if intentReservation {
+				updates = append(updates, cloudfirestore.Update{Path: "intent_status", Value: "compiling"}, cloudfirestore.Update{Path: "intent_updated_at", Value: started})
+			}
+			return tx.Update(reservationRef, updates)
 		}
 		return nil
 	})
@@ -715,7 +723,7 @@ func (m *Manager) Start(ctx context.Context, userID, projectID, stage string, cl
 	}
 
 	requestID := observability.RequestIDFromContext(ctx)
-	cmd := newWorkerCommand(m.cfg, executionID, userID, projectID, stage, cleanRebuild, os.Environ(), observability.TraceParentFromContext(ctx), requestID)
+	cmd := newWorkerCommand(m.cfg, executionID, userID, projectID, stage, cleanRebuild, reservationID, os.Environ(), observability.TraceParentFromContext(ctx), requestID)
 	p := &process{cmd: cmd, done: make(chan struct{})}
 	if err := m.startProcess(executionID, p, cmd.Start); err != nil {
 		result := processResult{executionID: executionID, userID: userID, projectID: projectID, beforeID: beforeID, reservationID: reservationID, requestID: requestID, spawnFailed: true, childErr: err}
@@ -1055,7 +1063,7 @@ func workerArgs(stage string) []string {
 	return []string{"run", `[["run","--auto-approve"]]`}
 }
 
-func newWorkerCommand(cfg Config, executionID, userID, projectID, stage string, cleanRebuild bool, parentEnv []string, traceParent, requestID string) *exec.Cmd {
+func newWorkerCommand(cfg Config, executionID, userID, projectID, stage string, cleanRebuild bool, reservationID string, parentEnv []string, traceParent, requestID string) *exec.Cmd {
 	args := workerArgs(stage)
 	if cfg.PipelineConfigPath != "" {
 		args = append(args, "--pipeline-config", cfg.PipelineConfigPath, "--pipeline-private-bindings", cfg.PipelineBindingsPath)
@@ -1063,15 +1071,16 @@ func newWorkerCommand(cfg Config, executionID, userID, projectID, stage string, 
 	cmd := exec.Command(cfg.Worker, args...)
 	cmd.Dir = cfg.WorkDir
 	overrides := map[string]string{
-		"GCP_PROJECT":           cfg.Project,
-		"GOOGLE_CLOUD_PROJECT":  cfg.Project,
-		"BUCKET":                cfg.Bucket,
-		"FIRESTORE_DATABASE_ID": cfg.Database,
-		"LOCAL_CLOUD_SCOPE":     cfg.Scope,
-		"USER_ID":               userID,
-		"PROJECT_ID":            projectID,
-		"EXECUTION_ID":          executionID,
-		"CLEAN_REBUILD":         fmt.Sprintf("%t", cleanRebuild),
+		"GCP_PROJECT":             cfg.Project,
+		"GOOGLE_CLOUD_PROJECT":    cfg.Project,
+		"BUCKET":                  cfg.Bucket,
+		"FIRESTORE_DATABASE_ID":   cfg.Database,
+		"LOCAL_CLOUD_SCOPE":       cfg.Scope,
+		"USER_ID":                 userID,
+		"PROJECT_ID":              projectID,
+		"EXECUTION_ID":            executionID,
+		"PIPELINE_RESERVATION_ID": reservationID,
+		"CLEAN_REBUILD":           fmt.Sprintf("%t", cleanRebuild),
 		// Always replace inherited carrier values, including with empty values,
 		// so a worker cannot accidentally inherit another request's origin.
 		"LWC_TRACEPARENT": traceParent,
