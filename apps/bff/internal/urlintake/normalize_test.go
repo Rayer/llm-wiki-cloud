@@ -9,3 +9,11 @@ func TestNormalizeMarkdownOnlyChangesKnownStructure(t *testing.T) {
 		t.Fatalf("NormalizeMarkdown() = %q, want %q", got, want)
 	}
 }
+
+func TestNormalizeMarkdownPreservesIndentedCodeAndFenceLength(t *testing.T) {
+	input := "    Skip to content\n    \\# literal indented code\n\n````md\n```\n\\# literal fenced code\n````\n\n\\# outside code\n"
+	want := "    Skip to content\n    \\# literal indented code\n\n````md\n```\n\\# literal fenced code\n````\n\n# outside code\n"
+	if got := NormalizeMarkdown(input); got != want {
+		t.Fatalf("NormalizeMarkdown() = %q, want %q", got, want)
+	}
+}

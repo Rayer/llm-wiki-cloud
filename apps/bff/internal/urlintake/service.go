@@ -329,7 +329,10 @@ func (s *Service) Accept(ctx context.Context, verified ActorProject, id, revisio
 		return Result{Status: "unavailable", Message: manualAlternative}, nil
 	}
 	op, err := readCandidate(ctx, store, id)
-	if err != nil || op.Receipt.ActorID != verified.ActorID || op.Receipt.ProjectID != verified.ProjectID || !op.Receipt.ExpiresAt.After(s.now()) {
+	if err != nil {
+		return candidateReadFailure(id, err), nil
+	}
+	if op.Receipt.ActorID != verified.ActorID || op.Receipt.ProjectID != verified.ProjectID || !op.Receipt.ExpiresAt.After(s.now()) {
 		return Result{Status: "rejected", Message: ErrConfirmationStale.Error()}, nil
 	}
 	if op.Receipt.Revision != revision || !validCandidateTitle(title) {
@@ -366,7 +369,7 @@ func (s *Service) Accept(ctx context.Context, verified ActorProject, id, revisio
 			if errors.Is(err, storage.ErrGenerationMismatch) {
 				return s.resolveOperation(ctx, store, id, verified, title)
 			}
-			return Result{Status: "uncertain", Message: "The save decision was recorded but its status is uncertain; check save status before retrying."}, nil
+			return candidateUncertain(id, "The save decision was recorded but its status is uncertain; check save status before retrying."), nil
 		}
 		op.Receipt = receipt
 	} else if op.Receipt.AcceptedTitle != title {
@@ -385,14 +388,17 @@ func (s *Service) Reject(ctx context.Context, verified ActorProject, id, revisio
 		return Result{Status: "unavailable", Message: manualAlternative}, nil
 	}
 	op, err := readCandidate(ctx, store, id)
-	if err != nil || op.Receipt.ActorID != verified.ActorID || op.Receipt.ProjectID != verified.ProjectID || op.Receipt.Revision != revision || !op.Receipt.ExpiresAt.After(s.now()) {
+	if err != nil {
+		return candidateReadFailure(id, err), nil
+	}
+	if op.Receipt.ActorID != verified.ActorID || op.Receipt.ProjectID != verified.ProjectID || op.Receipt.Revision != revision || !op.Receipt.ExpiresAt.After(s.now()) {
 		return Result{Status: "rejected", Message: ErrConfirmationStale.Error()}, nil
 	}
 	if (op.Receipt.State == "accepted" || op.Receipt.State == "conflict") && op.Receipt.Result != nil {
 		return *op.Receipt.Result, nil
 	}
 	if op.Receipt.State == "accepting" {
-		return Result{Status: "uncertain", Message: "The save is in progress; check save status."}, nil
+		return candidateUncertain(id, "The save is in progress; check save status."), nil
 	}
 	if op.Receipt.State == "rejected" {
 		return Result{Status: "rejected", Message: "Candidate declined."}, nil
@@ -403,7 +409,7 @@ func (s *Service) Reject(ctx context.Context, verified ActorProject, id, revisio
 		if errors.Is(err, storage.ErrGenerationMismatch) {
 			return s.Resolve(ctx, verified, id)
 		}
-		return Result{Status: "uncertain", Message: "The decline result is uncertain; check candidate status."}, nil
+		return candidateUncertain(id, "The decline result is uncertain; check candidate status."), nil
 	}
 	return Result{Status: "rejected", Message: "Candidate declined."}, nil
 }
@@ -422,7 +428,10 @@ func (s *Service) Resolve(ctx context.Context, verified ActorProject, id string)
 
 func (s *Service) resolveOperation(ctx context.Context, store ProjectStore, id string, verified ActorProject, title string) (Result, error) {
 	op, err := readCandidate(ctx, store, id)
-	if err != nil || op.Receipt.ActorID != verified.ActorID || op.Receipt.ProjectID != verified.ProjectID || !op.Receipt.ExpiresAt.After(s.now()) {
+	if err != nil {
+		return candidateReadFailure(id, err), nil
+	}
+	if op.Receipt.ActorID != verified.ActorID || op.Receipt.ProjectID != verified.ProjectID || !op.Receipt.ExpiresAt.After(s.now()) {
 		return Result{Status: "rejected", Message: ErrConfirmationStale.Error()}, nil
 	}
 	switch op.Receipt.State {
@@ -440,7 +449,18 @@ func (s *Service) resolveOperation(ctx context.Context, store ProjectStore, id s
 	case "prepared":
 		return Result{Status: "preview", Message: "Candidate is ready for review.", ConfirmationRef: id, CandidateID: id, CandidateRevision: op.Receipt.Revision, ExpiresAt: op.Receipt.ExpiresAt.Format(time.RFC3339), Preview: &op.Receipt.Preview}, nil
 	}
-	return Result{Status: "uncertain", Message: "The save result is uncertain; check again."}, nil
+	return candidateUncertain(id, "The save result is uncertain; check again."), nil
+}
+
+func candidateReadFailure(id string, err error) Result {
+	if errors.Is(err, storage.ErrObjectNotExist) || errors.Is(err, cloudstorage.ErrObjectNotExist) || errors.Is(err, ErrConfirmationStale) {
+		return Result{Status: "rejected", Message: ErrConfirmationStale.Error()}
+	}
+	return candidateUncertain(id, "Could not read the save status; check again before retrying.")
+}
+
+func candidateUncertain(id, message string) Result {
+	return Result{Status: "uncertain", Message: message, CandidateID: id}
 }
 
 func (s *Service) finishAccepted(ctx context.Context, store ProjectStore, id string, verified ActorProject, receipt candidateReceipt) (Result, error) {
@@ -449,11 +469,11 @@ func (s *Service) finishAccepted(ctx context.Context, store ProjectStore, id str
 		existing: receipt.Existing, data: receipt.Data, digest: receipt.Digest, preview: receipt.Preview, expiresAt: receipt.ExpiresAt}
 	result, err := s.commit(ctx, store, prepared)
 	if err != nil || (result.Status != "stored" && result.Status != "conflict" && result.Status != "rejected") {
-		return Result{Status: "uncertain", Message: "The save result is uncertain; check save status before retrying."}, nil
+		return candidateUncertain(id, "The save result is uncertain; check save status before retrying."), nil
 	}
 	op, readErr := readCandidate(ctx, store, id)
 	if readErr != nil {
-		return Result{Status: "uncertain", Message: "Saved article status is uncertain; check save status."}, nil
+		return candidateUncertain(id, "Saved article status is uncertain; check save status."), nil
 	}
 	if op.Receipt.State == "accepting" && op.Receipt.AcceptedTitle == receipt.AcceptedTitle {
 		op.Receipt.State = map[bool]string{true: "accepted", false: "conflict"}[result.Status == "stored"]
@@ -463,7 +483,7 @@ func (s *Service) finishAccepted(ctx context.Context, store ProjectStore, id str
 			if latestErr == nil && latest.Receipt.Result != nil && (latest.Receipt.State == "accepted" || latest.Receipt.State == "conflict") {
 				return *latest.Receipt.Result, nil
 			}
-			return Result{Status: "uncertain", Message: "The article may be saved; check save status before retrying."}, nil
+			return candidateUncertain(id, "The article may be saved; check save status before retrying."), nil
 		}
 	}
 	return result, nil

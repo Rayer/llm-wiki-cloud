@@ -26,6 +26,18 @@ func (f evaluatorFunc) Evaluate(ctx context.Context, input QualityInput) (Qualit
 	return f(ctx, input)
 }
 
+type candidateReadFaultStore struct {
+	ProjectStore
+	failNextCandidateRead atomic.Bool
+}
+
+func (s *candidateReadFaultStore) ReadFileWithGeneration(ctx context.Context, path string) ([]byte, int64, error) {
+	if strings.HasPrefix(path, candidateObjectPrefix) && s.failNextCandidateRead.CompareAndSwap(true, false) {
+		return nil, 0, errors.New("temporary candidate receipt read outage")
+	}
+	return s.ProjectStore.ReadFileWithGeneration(ctx, path)
+}
+
 func newTestService(t *testing.T, fetcher Fetcher, evaluator QualityEvaluator) (*Service, *localfs.Client) {
 	t.Helper()
 	store := localfs.New(t.TempDir()).WithScope("actor-1", "project-1")
@@ -256,6 +268,85 @@ func TestPreparedCandidateDeclineAcceptRaceHasOneTerminalOutcome(t *testing.T) {
 	}
 	if terminal.Status == "rejected" && len(files) != 0 {
 		t.Fatalf("declined race wrote raw files: %#v", files)
+	}
+}
+
+func TestCandidateReceiptReadOutageRemainsUncertainAndRecoverable(t *testing.T) {
+	root := t.TempDir()
+	scope := ActorProject{"actor-1", "project-1"}
+	rawStore := localfs.New(root).WithScope(scope.ActorID, scope.ProjectID)
+	store := &candidateReadFaultStore{ProjectStore: rawStore}
+	factory := func(got ActorProject) (ProjectStore, error) {
+		if got != scope {
+			return nil, ErrInvalidScope
+		}
+		return store, nil
+	}
+	var fetches atomic.Int32
+	service := NewService(fetcherFunc(func(context.Context, string) (Page, error) {
+		fetches.Add(1)
+		return Page{Title: "Review", Markdown: "# Review\n\nExact candidate body."}, nil
+	}), evaluatorFunc(usableEvaluator), factory, DefaultQualityThresholds)
+	service.Resolver = resolverStub{netip.MustParseAddr("93.184.216.34")}
+
+	prepared, err := service.Prepare(context.Background(), scope, ImportRequest{URL: "https://example.com/read-failure-accept"})
+	if err != nil || prepared.Status != "preview" {
+		t.Fatalf("prepare = %#v err=%v", prepared, err)
+	}
+	store.failNextCandidateRead.Store(true)
+	uncertain, err := service.Accept(context.Background(), scope, prepared.CandidateID, prepared.CandidateRevision, prepared.Preview.Title)
+	if err != nil || uncertain.Status != "uncertain" || uncertain.CandidateID != prepared.CandidateID {
+		t.Fatalf("accept read outage = %#v err=%v; want candidate-bound uncertain", uncertain, err)
+	}
+	files, err := markdownRawFiles(rawStore)
+	if err != nil || len(files) != 0 {
+		t.Fatalf("uncertain accept wrote raw: files=%#v err=%v", files, err)
+	}
+	resolvedPreview, err := service.Resolve(context.Background(), scope, prepared.CandidateID)
+	if err != nil || resolvedPreview.Status != "preview" || resolvedPreview.CandidateID != prepared.CandidateID {
+		t.Fatalf("recover prepared candidate = %#v err=%v", resolvedPreview, err)
+	}
+	stored, err := service.Accept(context.Background(), scope, prepared.CandidateID, prepared.CandidateRevision, prepared.Preview.Title)
+	if err != nil || stored.Status != "stored" || stored.Storage == nil {
+		t.Fatalf("accept after read recovery = %#v err=%v", stored, err)
+	}
+	store.failNextCandidateRead.Store(true)
+	uncertain, err = service.Resolve(context.Background(), scope, prepared.CandidateID)
+	if err != nil || uncertain.Status != "uncertain" || uncertain.CandidateID != prepared.CandidateID {
+		t.Fatalf("resolve read outage = %#v err=%v; want candidate-bound uncertain", uncertain, err)
+	}
+	resolved, err := service.Resolve(context.Background(), scope, prepared.CandidateID)
+	if err != nil || resolved.Status != "stored" || resolved.Storage == nil || resolved.Storage.Path != stored.Storage.Path || resolved.Storage.SHA256 != stored.Storage.SHA256 {
+		t.Fatalf("recover stored candidate = %#v err=%v", resolved, err)
+	}
+	if fetches.Load() != 1 {
+		t.Fatalf("provider fetch count=%d; status recovery must not refetch", fetches.Load())
+	}
+
+	declineCandidate, err := service.Prepare(context.Background(), scope, ImportRequest{URL: "https://example.com/read-failure-reject"})
+	if err != nil || declineCandidate.Status != "preview" {
+		t.Fatalf("prepare decline candidate = %#v err=%v", declineCandidate, err)
+	}
+	store.failNextCandidateRead.Store(true)
+	uncertain, err = service.Reject(context.Background(), scope, declineCandidate.CandidateID, declineCandidate.CandidateRevision)
+	if err != nil || uncertain.Status != "uncertain" || uncertain.CandidateID != declineCandidate.CandidateID {
+		t.Fatalf("reject read outage = %#v err=%v; want candidate-bound uncertain", uncertain, err)
+	}
+	resolvedPreview, err = service.Resolve(context.Background(), scope, declineCandidate.CandidateID)
+	if err != nil || resolvedPreview.Status != "preview" {
+		t.Fatalf("recover candidate after reject read outage = %#v err=%v", resolvedPreview, err)
+	}
+	declined, err := service.Reject(context.Background(), scope, declineCandidate.CandidateID, declineCandidate.CandidateRevision)
+	if err != nil || declined.Status != "rejected" {
+		t.Fatalf("reject after read recovery = %#v err=%v", declined, err)
+	}
+	missing, err := service.Resolve(context.Background(), scope, strings.Repeat("a", 64))
+	if err != nil || missing.Status != "rejected" {
+		t.Fatalf("missing candidate = %#v err=%v; want definitive rejection", missing, err)
+	}
+	files, err = markdownRawFiles(rawStore)
+	if err != nil || len(files) != 1 || files[0].Path != stored.Storage.Path {
+		t.Fatalf("terminal candidate writes = %#v err=%v; want only accepted path %q", files, err, stored.Storage.Path)
 	}
 }
 

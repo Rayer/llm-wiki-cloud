@@ -9,27 +9,27 @@ import (
 func NormalizeMarkdown(markdown string) string {
 	lines := strings.SplitAfter(markdown, "\n")
 	var out strings.Builder
-	fence := byte(0)
+	var fence markdownFence
 	for _, line := range lines {
 		content := strings.TrimSuffix(line, "\n")
-		trimmed := strings.TrimSpace(content)
-		if fence != 0 {
+		if fence.char != 0 {
 			out.WriteString(line)
-			if strings.HasPrefix(trimmed, string(fence)+string(fence)+string(fence)) {
-				fence = 0
+			if closesMarkdownFence(content, fence) {
+				fence = markdownFence{}
 			}
-			continue
-		}
-		if strings.HasPrefix(trimmed, "```") || strings.HasPrefix(trimmed, "~~~") {
-			fence = trimmed[0]
-			out.WriteString(line)
-			continue
-		}
-		if isProviderChrome(trimmed) {
 			continue
 		}
 		if leadingIndent(content) >= 4 {
 			out.WriteString(line)
+			continue
+		}
+		if opened, ok := openMarkdownFence(content); ok {
+			fence = opened
+			out.WriteString(line)
+			continue
+		}
+		trimmed := strings.TrimSpace(content)
+		if isProviderChrome(trimmed) {
 			continue
 		}
 		out.WriteString(unescapeStructuralPrefix(content))
@@ -38,6 +38,46 @@ func NormalizeMarkdown(markdown string) string {
 		}
 	}
 	return out.String()
+}
+
+type markdownFence struct {
+	char   byte
+	length int
+}
+
+func openMarkdownFence(line string) (markdownFence, bool) {
+	indent := 0
+	for indent < len(line) && line[indent] == ' ' {
+		indent++
+	}
+	if indent > 3 || indent == len(line) || (line[indent] != '`' && line[indent] != '~') {
+		return markdownFence{}, false
+	}
+	char := line[indent]
+	end := indent
+	for end < len(line) && line[end] == char {
+		end++
+	}
+	length := end - indent
+	if length < 3 || (char == '`' && strings.Contains(line[end:], "`")) {
+		return markdownFence{}, false
+	}
+	return markdownFence{char: char, length: length}, true
+}
+
+func closesMarkdownFence(line string, fence markdownFence) bool {
+	indent := 0
+	for indent < len(line) && line[indent] == ' ' {
+		indent++
+	}
+	if indent > 3 || indent == len(line) || line[indent] != fence.char {
+		return false
+	}
+	end := indent
+	for end < len(line) && line[end] == fence.char {
+		end++
+	}
+	return end-indent >= fence.length && strings.TrimSpace(line[end:]) == ""
 }
 
 func isProviderChrome(line string) bool {
