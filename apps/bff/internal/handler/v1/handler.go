@@ -29,7 +29,6 @@ type Handler struct {
 	syncBindingAuthority syncBindingChecker
 	syncBindingHost      string
 	projectKeyService    *auth.ProjectKeyService
-	mcpURLImportService  MCPURLImportService
 	store                store.RootStore
 	firestore            *firestore.Client
 	index                *search.Index
@@ -131,13 +130,6 @@ func (h *Handler) ProjectKeyManagementAuth(cfg config.Config) gin.HandlerFunc {
 
 func (h *Handler) SetQueryExecutor(executor query.Executor) {
 	h.queryExecutor = executor
-}
-
-// SetMCPURLImportService supplies the shared URL intake operation used by
-// consented MCP clients. URL fetching, quality checks, identity resolution,
-// and confirmation semantics remain owned by that shared service.
-func (h *Handler) SetMCPURLImportService(service MCPURLImportService) {
-	h.mcpURLImportService = service
 }
 
 func (h *Handler) SetLocalPipelineExecutor(executor LocalPipelineExecutor) {
