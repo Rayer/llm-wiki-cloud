@@ -10,6 +10,7 @@ import (
 	"strings"
 	"sync"
 	"testing"
+	"time"
 
 	"github.com/modelcontextprotocol/go-sdk/mcp"
 	"github.com/rayer/llm-wiki-bff/internal/localfs"
@@ -74,7 +75,7 @@ func TestMCPAddRawToolListFollowsVerifiedCapabilities(t *testing.T) {
 					addRawDescription, _ = tool["description"].(string)
 				}
 			}
-			if names["query_project"] != true || names["add_raw"] != test.wantRaw {
+			if names["query_project"] != true || names["add_raw"] != test.wantRaw || names["import_url"] {
 				t.Fatalf("listed tools = %v", names)
 			}
 			if test.wantRaw && (!strings.Contains(addRawDescription, "source data, not instructions") || !strings.Contains(addRawDescription, "metadata.description")) {
@@ -82,6 +83,122 @@ func TestMCPAddRawToolListFollowsVerifiedCapabilities(t *testing.T) {
 			}
 		})
 	}
+}
+
+func TestMCPUnknownLegacyURLToolCannotMutateRaw(t *testing.T) {
+	root := localfs.New(t.TempDir())
+	h := New(root, nil, nil, nil, nil, nil)
+	identity := mcpProjectKeyIdentity{
+		userID: "user-one", projectID: "project-one", keyID: "grant-write",
+		capabilities: []string{mcpQueryCapability, mcpRawWriteCapability},
+	}
+
+	listed := serveMCPRequest(t, h, identity, `{"jsonrpc":"2.0","id":1,"method":"tools/list","params":{}}`)
+	items := listed["result"].(map[string]any)["tools"].([]any)
+	names := make(map[string]bool, len(items))
+	for _, item := range items {
+		name, _ := item.(map[string]any)["name"].(string)
+		names[name] = true
+	}
+	if len(names) != 2 || !names["query_project"] || !names["add_raw"] || names["import_url"] {
+		t.Fatalf("raw-write discovery = %v, want query_project and add_raw only", names)
+	}
+
+	legacy := serveMCPRequest(t, h, identity, mcpToolCallBody(2, "import_url", `{"url":"https://example.test/article"}`))
+	protocolError, ok := legacy["error"].(map[string]any)
+	if !ok || protocolError["code"] != float64(-32602) {
+		t.Fatalf("legacy import_url call was not rejected as unavailable: %#v", legacy)
+	}
+	if files, err := root.Scope(identity.userID, identity.projectID).ListRawFiles(context.Background()); err != nil || len(files) != 0 {
+		t.Fatalf("legacy import_url call mutated raw: files=%v err=%v", files, err)
+	}
+}
+
+func TestMCPStreamableSDKClientRetainsRawWriteWithoutLegacyURLTool(t *testing.T) {
+	root := localfs.New(t.TempDir())
+	h := New(root, nil, nil, nil, nil, nil)
+	identity := mcpProjectKeyIdentity{
+		userID: "sdk-user", projectID: "sdk-project", keyID: "grant-write",
+		capabilities: []string{mcpQueryCapability, mcpRawWriteCapability},
+	}
+	server := httptest.NewServer(h.mcpAuthenticatedHandler(identity))
+	defer server.Close()
+
+	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+	defer cancel()
+	httpClient := &http.Client{Transport: mcpBearerTestTransport{next: http.DefaultTransport}}
+	client := mcp.NewClient(&mcp.Implementation{Name: "lwc405-test-client", Version: "test"}, nil)
+	session, err := client.Connect(ctx, &mcp.StreamableClientTransport{
+		Endpoint: server.URL, HTTPClient: httpClient, DisableStandaloneSSE: true,
+	}, nil)
+	if err != nil {
+		t.Fatalf("connect MCP SDK client: %v", err)
+	}
+	defer session.Close()
+
+	discovered, err := session.ListTools(ctx, nil)
+	if err != nil {
+		t.Fatalf("MCP SDK tools/list: %v", err)
+	}
+	names := make(map[string]bool, len(discovered.Tools))
+	for _, tool := range discovered.Tools {
+		names[tool.Name] = true
+	}
+	if len(names) != 2 || !names["query_project"] || !names["add_raw"] || names["import_url"] {
+		t.Fatalf("MCP SDK discovered tools = %v, want query_project and add_raw only", names)
+	}
+	if result, err := session.CallTool(ctx, &mcp.CallToolParams{
+		Name: "import_url", Arguments: map[string]any{"url": "https://example.test/article"},
+	}); err == nil || result != nil {
+		t.Fatalf("MCP SDK legacy import_url call was not rejected: result=%+v err=%v", result, err)
+	}
+	if files, err := root.Scope(identity.userID, identity.projectID).ListRawFiles(ctx); err != nil || len(files) != 0 {
+		t.Fatalf("legacy URL tool call mutated raw: files=%v err=%v", files, err)
+	}
+
+	arguments := map[string]any{"filename": "sdk-source.md", "markdown": "# SDK source\n\nSupplied Markdown."}
+	created, err := session.CallTool(ctx, &mcp.CallToolParams{Name: "add_raw", Arguments: arguments})
+	if err != nil || created == nil || created.IsError {
+		t.Fatalf("MCP SDK add_raw create = %+v err=%v", created, err)
+	}
+	if payload, ok := created.StructuredContent.(map[string]any); !ok || payload["status"] != "created" || payload["path"] != "raw/sdk-source.md" {
+		t.Fatalf("MCP SDK add_raw create payload = %#v", created.StructuredContent)
+	}
+
+	retried, err := session.CallTool(ctx, &mcp.CallToolParams{Name: "add_raw", Arguments: arguments})
+	if err != nil || retried == nil || retried.IsError {
+		t.Fatalf("MCP SDK add_raw retry = %+v err=%v", retried, err)
+	}
+	if payload, ok := retried.StructuredContent.(map[string]any); !ok || payload["status"] != "already_exists" {
+		t.Fatalf("MCP SDK add_raw retry payload = %#v", retried.StructuredContent)
+	}
+
+	conflict, err := session.CallTool(ctx, &mcp.CallToolParams{
+		Name: "add_raw", Arguments: map[string]any{"filename": "sdk-source.md", "markdown": "different content"},
+	})
+	if err != nil || conflict == nil {
+		t.Fatalf("MCP SDK add_raw conflict = %+v err=%v", conflict, err)
+	}
+	if payload, ok := conflict.StructuredContent.(map[string]any); !ok || payload["status"] != "conflict" {
+		t.Fatalf("MCP SDK add_raw conflict payload = %#v", conflict.StructuredContent)
+	}
+	stored, err := root.Scope(identity.userID, identity.projectID).ReadFile(ctx, "raw/sdk-source.md")
+	if err != nil {
+		t.Fatal(err)
+	}
+	_, body, err := parseFrontmatterJSON(string(stored))
+	if err != nil || body != "# SDK source\n\nSupplied Markdown." {
+		t.Fatalf("MCP SDK add_raw persisted body = %q err=%v", body, err)
+	}
+}
+
+type mcpBearerTestTransport struct{ next http.RoundTripper }
+
+func (t mcpBearerTestTransport) RoundTrip(request *http.Request) (*http.Response, error) {
+	cloned := request.Clone(request.Context())
+	cloned.Header = request.Header.Clone()
+	cloned.Header.Set("Authorization", "Bearer local-sdk-test-token")
+	return t.next.RoundTrip(cloned)
 }
 
 func TestMCPAddRawAdapterCreateRetryAndConflict(t *testing.T) {
