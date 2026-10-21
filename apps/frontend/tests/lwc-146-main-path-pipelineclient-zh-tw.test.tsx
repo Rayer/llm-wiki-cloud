@@ -78,7 +78,7 @@ describe('LWC-146: main-path zh-TW pipeline content', () => {
       screen.getByText('可同時上傳多個檔案到 raw/ 目錄（最多 3 檔同時上傳）。'),
     ).toBeDefined();
     expect(screen.getByRole('heading', { name: '擷取 URL' })).toBeDefined();
-    expect(screen.getByText('抓取網頁內容並存為原文資料。')).toBeDefined();
+    expect(screen.getByText('先抓取並預覽網頁，再決定是否儲存為原文資料。')).toBeDefined();
     expect(screen.getByText('選擇')).toBeDefined();
     expect(screen.getByRole('button', { name: '執行 Pipeline' })).toBeDefined();
     expect(

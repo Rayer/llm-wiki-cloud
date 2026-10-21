@@ -100,7 +100,7 @@ test('main-path chrome strings are i18n-backed in zh-TW', async () => {
     zhTW.Pipeline.uploadHint,
     '可同時上傳多個檔案到 raw/ 目錄（最多 3 檔同時上傳）。',
   );
-  assert.equal(zhTW.Pipeline.scrapeHint, '抓取網頁內容並存為原文資料。');
+  assert.equal(zhTW.Pipeline.scrapeHint, '先抓取並預覽網頁，再決定是否儲存為原文資料。');
   assert.equal(zhTW.Pipeline.runDescription, '啟動 OLW pipeline 以整理、編譯並上架知識條目。');
   assert.equal(
     zhTW.Pipeline.pipelineStages,

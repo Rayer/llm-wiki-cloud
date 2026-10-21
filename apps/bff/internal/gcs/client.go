@@ -733,6 +733,12 @@ func canonicalReadPath(relPath string) bool {
 		decoded, err := hex.DecodeString(digest)
 		return err == nil && len(decoded) == sha256.Size && strings.ToLower(digest) == digest && path.Clean(relPath) == relPath
 	}
+	const candidatePrefix = "cache/raw_url_candidate/v1/"
+	if strings.HasPrefix(relPath, candidatePrefix) && strings.HasSuffix(relPath, ".json") {
+		id := strings.TrimSuffix(strings.TrimPrefix(relPath, candidatePrefix), ".json")
+		decoded, err := hex.DecodeString(id)
+		return err == nil && len(decoded) == sha256.Size && strings.ToLower(id) == id && path.Clean(relPath) == relPath
+	}
 	if strings.HasPrefix(relPath, "cache/annotations/") && strings.HasSuffix(relPath, ".json") {
 		sourceID := strings.TrimSuffix(strings.TrimPrefix(relPath, "cache/annotations/"), ".json")
 		return annotation.ValidSourceID(sourceID)
@@ -766,6 +772,9 @@ func objectNotFound(err error) bool {
 }
 
 func (c *Client) WriteFileIfGeneration(ctx context.Context, data []byte, relPath string, expected int64) (int64, error) {
+	if generationNamespacePath(relPath) && !generation.GenerationOwned(relPath) && !canonicalReadPath(relPath) {
+		return 0, store.ErrDeclaredObjectUnavailable
+	}
 	var result int64
 	err := c.withGenerationWriteLease(ctx, []string{relPath}, func(writer *Client) error {
 		var annotationMeta struct {

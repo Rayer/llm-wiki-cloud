@@ -2,6 +2,7 @@ package gcs
 
 import (
 	"bytes"
+	cloudstorage "cloud.google.com/go/storage"
 	"context"
 	"crypto/sha256"
 	"errors"
@@ -169,6 +170,54 @@ func TestURLIntakeGCSAdapterConcurrentIdentityAndUnknownCacheDenial(t *testing.T
 		if _, _, err := project.ReadFileWithGeneration(ctx, unknown); !errors.Is(err, storage.ErrDeclaredObjectUnavailable) {
 			t.Errorf("unknown cache path %q error = %v, want ErrDeclaredObjectUnavailable", unknown, err)
 		}
+	}
+}
+
+func TestURLIntakeGCSAdapterDurableCandidateLifecycle(t *testing.T) {
+	client, _ := newMemoryClient()
+	ctx := context.Background()
+	scope := urlintake.ActorProject{ActorID: "user", ProjectID: "candidate-project"}
+	page := urlintake.Page{Title: "Candidate article", Markdown: "# Candidate article\n\nExact candidate body."}
+	service := newGCSURLIntakeService(client, &urlIntakeFixtureFetcher{pages: []urlintake.Page{page}})
+	prepared, err := service.Prepare(ctx, scope, urlintake.ImportRequest{URL: "https://example.com/candidate"})
+	if err != nil || prepared.Status != "preview" || prepared.CandidateID == "" || prepared.CandidateRevision == "" {
+		t.Fatalf("GCS prepare = %#v err=%v", prepared, err)
+	}
+	project := client.WithScope(scope.ActorID, scope.ProjectID)
+	candidatePath := "cache/raw_url_candidate/v1/" + prepared.CandidateID + ".json"
+	if _, _, err := project.ReadFileWithGeneration(ctx, candidatePath); err != nil {
+		t.Fatalf("candidate receipt is not readable through GCS adapter: %v", err)
+	}
+	if _, err := project.ListRawFiles(ctx); err != nil {
+		t.Fatal(err)
+	}
+	files, err := project.ListRawFiles(ctx)
+	if err != nil || len(files) != 0 {
+		t.Fatalf("prepare wrote raw files: %#v err=%v", files, err)
+	}
+	secondService := newGCSURLIntakeService(client, &urlIntakeFixtureFetcher{pages: []urlintake.Page{page}})
+	stored, err := secondService.Accept(ctx, scope, prepared.CandidateID, prepared.CandidateRevision, "Reviewed candidate")
+	if err != nil || stored.Status != "stored" || stored.Storage == nil || stored.Storage.SHA256 != prepared.Preview.CandidateSHA256 {
+		// The title edit changes frontmatter and therefore the final digest.
+		if err != nil || stored.Status != "stored" || stored.Storage == nil {
+			t.Fatalf("GCS accept = %#v err=%v", stored, err)
+		}
+	}
+	raw, err := project.ReadFile(ctx, stored.Storage.Path)
+	if err != nil || !bytesContains(raw, []byte("Reviewed candidate")) || !bytesContains(raw, []byte("Exact candidate body.")) {
+		t.Fatalf("GCS accepted candidate bytes = %q err=%v", raw, err)
+	}
+	other := client.WithScope(scope.ActorID, "other-project")
+	if _, err := secondService.Resolve(ctx, urlintake.ActorProject{ActorID: scope.ActorID, ProjectID: "other-project"}, prepared.CandidateID); err != nil {
+		t.Fatalf("cross-Project lookup returned an internal error: %v", err)
+	} else if _, _, err := other.ReadFileWithGeneration(ctx, candidatePath); !errors.Is(err, cloudstorage.ErrObjectNotExist) {
+		t.Fatalf("candidate receipt crossed project scope: %v", err)
+	}
+	if _, _, err := project.ReadFileWithGeneration(ctx, "cache/raw_url_candidate/v1/not-a-digest.json"); !errors.Is(err, storage.ErrDeclaredObjectUnavailable) {
+		t.Fatalf("unknown candidate cache key was not denied: %v", err)
+	}
+	if _, err := project.WriteFileIfGeneration(ctx, []byte("unapproved"), "cache/raw_url_candidate/v1/not-a-digest.json", 0); !errors.Is(err, storage.ErrDeclaredObjectUnavailable) {
+		t.Fatalf("unknown candidate cache key write was not denied: %v", err)
 	}
 }
 
