@@ -37,7 +37,8 @@ func (f intakeTestEvaluator) Evaluate(ctx context.Context, input urlintake.Quali
 
 func TestScrapeRawConfirmationUsesVerifiedProjectAndStoredCandidate(t *testing.T) {
 	gin.SetMode(gin.TestMode)
-	store := localfs.New(t.TempDir()).WithScope("actor-1", "project-1")
+	root := t.TempDir()
+	store := localfs.New(root).WithScope("actor-1", "project-1")
 	var fetchCalls atomic.Int32
 	service := urlintake.NewService(
 		intakeTestFetcher(func(context.Context, string) (urlintake.Page, error) {
@@ -48,10 +49,10 @@ func TestScrapeRawConfirmationUsesVerifiedProjectAndStoredCandidate(t *testing.T
 			return urlintake.QualityEvaluation{ShellProbability: .5, ContentProbability: .5}, nil
 		}),
 		func(scope urlintake.ActorProject) (urlintake.ProjectStore, error) {
-			if scope != (urlintake.ActorProject{ActorID: "actor-1", ProjectID: "project-1"}) {
+			if scope.ActorID != "actor-1" || (scope.ProjectID != "project-1" && scope.ProjectID != "project-2") {
 				t.Fatalf("store scope = %#v", scope)
 			}
-			return store, nil
+			return localfs.New(root).WithScope(scope.ActorID, scope.ProjectID), nil
 		},
 		urlintake.DefaultQualityThresholds,
 	)
@@ -67,10 +68,10 @@ func TestScrapeRawConfirmationUsesVerifiedProjectAndStoredCandidate(t *testing.T
 	if err := json.Unmarshal(previewResponse.Body.Bytes(), &preview); err != nil {
 		t.Fatal(err)
 	}
-	if preview.Status != "needs_confirmation" || preview.Preview == nil || preview.ConfirmationRef == "" {
+	if preview.Status != "preview" || preview.Preview == nil || preview.CandidateID == "" || preview.CandidateRevision == "" {
 		t.Fatalf("preview response = %#v", preview)
 	}
-	if preview.Preview.Markdown != "---\ncreated: \"2026-10-21\"\nsource: https://example.com/article\ntitle: Example Article\n---\n# Example Article\n\nReadable article body.\n" {
+	if preview.Preview.Markdown != "# Example Article\n\nReadable article body.\n" {
 		t.Fatalf("candidate preview Markdown = %q", preview.Preview.Markdown)
 	}
 	files, err := store.ListRawFiles(context.Background())
@@ -84,7 +85,8 @@ func TestScrapeRawConfirmationUsesVerifiedProjectAndStoredCandidate(t *testing.T
 		t.Fatalf("unconfirmed candidate wrote raw files: %#v, %v", files, err)
 	}
 
-	wrongProject := callScrapeRaw(t, h, "actor-1", "project-2", `{"confirmation_ref":"`+preview.ConfirmationRef+`"}`)
+	acceptBody := `{"candidate_id":"` + preview.CandidateID + `","candidate_revision":"` + preview.CandidateRevision + `","title":"Example Article"}`
+	wrongProject := callScrapeAction(t, h, "actor-1", "project-2", acceptBody, h.AcceptScrape)
 	if wrongProject.Code != http.StatusUnprocessableEntity {
 		t.Fatalf("wrong-project confirmation HTTP status = %d, body=%s", wrongProject.Code, wrongProject.Body.String())
 	}
@@ -92,7 +94,7 @@ func TestScrapeRawConfirmationUsesVerifiedProjectAndStoredCandidate(t *testing.T
 		t.Fatalf("fetch calls after wrong-project confirmation = %d, want 1", fetchCalls.Load())
 	}
 
-	confirmed := callScrapeRaw(t, h, "actor-1", "project-1", `{"confirmation_ref":"`+preview.ConfirmationRef+`"}`)
+	confirmed := callScrapeAction(t, h, "actor-1", "project-1", acceptBody, h.AcceptScrape)
 	if confirmed.Code != http.StatusOK {
 		t.Fatalf("confirmation HTTP status = %d, body=%s", confirmed.Code, confirmed.Body.String())
 	}
@@ -113,6 +115,10 @@ func TestScrapeRawConfirmationUsesVerifiedProjectAndStoredCandidate(t *testing.T
 }
 
 func callScrapeRaw(t *testing.T, h *Handler, actorID, projectID, body string) *httptest.ResponseRecorder {
+	return callScrapeAction(t, h, actorID, projectID, body, h.ScrapeRaw)
+}
+
+func callScrapeAction(t *testing.T, h *Handler, actorID, projectID, body string, action func(*gin.Context)) *httptest.ResponseRecorder {
 	t.Helper()
 	recorder := httptest.NewRecorder()
 	request := httptest.NewRequest(http.MethodPost, "/api/v1/raw/scrape", bytes.NewBufferString(body))
@@ -121,6 +127,6 @@ func callScrapeRaw(t *testing.T, h *Handler, actorID, projectID, body string) *h
 	context.Request = request
 	context.Set("userID", actorID)
 	context.Set("projectID", projectID)
-	h.ScrapeRaw(context)
+	action(context)
 	return recorder
 }

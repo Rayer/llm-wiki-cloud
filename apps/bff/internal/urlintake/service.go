@@ -26,6 +26,7 @@ import (
 const (
 	ConfirmationTTL       = 15 * time.Minute
 	identityObjectPrefix  = "cache/raw_url_identity/v1/"
+	candidateObjectPrefix = "cache/raw_url_candidate/v1/"
 	maxIdentityCASRetries = 8
 )
 
@@ -83,6 +84,8 @@ type Result struct {
 	Status            string            `json:"status"`
 	Message           string            `json:"message"`
 	ConfirmationRef   string            `json:"confirmation_ref,omitempty"`
+	CandidateID       string            `json:"candidate_id,omitempty"`
+	CandidateRevision string            `json:"candidate_revision,omitempty"`
 	ExpiresAt         string            `json:"expires_at,omitempty"`
 	RetryAfterSeconds int64             `json:"retry_after_seconds,omitempty"`
 	Preview           *CandidatePreview `json:"preview,omitempty"`
@@ -121,6 +124,31 @@ type candidate struct {
 	expiresAt          time.Time
 }
 
+type candidateReceipt struct {
+	Version            int              `json:"version"`
+	ActorID            string           `json:"actor_id"`
+	ProjectID          string           `json:"project_id"`
+	OriginalURL        string           `json:"original_url"`
+	NormalizedURL      string           `json:"normalized_url"`
+	IdentitySHA256     string           `json:"identity_sha256"`
+	RelativePath       string           `json:"relative_path"`
+	ExpectedGeneration int64            `json:"expected_generation"`
+	Existing           bool             `json:"existing"`
+	Data               []byte           `json:"data"`
+	Digest             string           `json:"digest"`
+	Revision           string           `json:"revision"`
+	Preview            CandidatePreview `json:"preview"`
+	ExpiresAt          time.Time        `json:"expires_at"`
+	State              string           `json:"state"`
+	AcceptedTitle      string           `json:"accepted_title,omitempty"`
+	Result             *Result          `json:"result,omitempty"`
+}
+
+type candidateOperation struct {
+	Receipt    candidateReceipt
+	Generation int64
+}
+
 type rawTarget struct {
 	relativePath string
 	data         []byte
@@ -148,6 +176,15 @@ func NewService(fetcher Fetcher, evaluator QualityEvaluator, stores StoreFactory
 // Import must receive identity and Project resolved by the Web/CLI/MCP auth
 // adapter. The model-facing request contains only URL and optional source tags.
 func (s *Service) Import(ctx context.Context, verified ActorProject, request ImportRequest) (Result, error) {
+	return s.intake(ctx, verified, request, false)
+}
+
+// Prepare creates a durable, project-scoped URL candidate without modifying raw/.
+func (s *Service) Prepare(ctx context.Context, verified ActorProject, request ImportRequest) (Result, error) {
+	return s.intake(ctx, verified, request, true)
+}
+
+func (s *Service) intake(ctx context.Context, verified ActorProject, request ImportRequest, prepare bool) (Result, error) {
 	if s == nil {
 		return Result{Status: "unavailable", Message: manualAlternative}, nil
 	}
@@ -187,6 +224,7 @@ func (s *Service) Import(ctx context.Context, verified ActorProject, request Imp
 	if err != nil {
 		return failureResult(err), nil
 	}
+	page.Markdown = NormalizeMarkdown(page.Markdown)
 	if len(page.Markdown) > MaxCandidateBytes {
 		return Result{Status: "rejected", Message: "The fetched content exceeds the supported size."}, nil
 	}
@@ -211,8 +249,13 @@ func (s *Service) Import(ctx context.Context, verified ActorProject, request Imp
 		return Result{Status: "rejected", Message: "The merged raw content exceeds the supported size; no file was changed."}, nil
 	}
 	digest := digestString(data)
+	_, previewBody, _, _ := parseRawFrontmatter(data)
+	previewMarkdown := string(data)
+	if prepare {
+		previewMarkdown = string(previewBody)
+	}
 	preview := CandidatePreview{
-		Title: title, SourceURL: request.URL, Markdown: string(data),
+		Title: title, SourceURL: request.URL, Markdown: previewMarkdown,
 		Metadata: previewMetadata(data), CandidateSHA256: digest,
 		Provider: DeepSeekFetchProvider, ProviderTruncated: page.Truncated,
 	}
@@ -242,6 +285,20 @@ func (s *Service) Import(ctx context.Context, verified ActorProject, request Imp
 	}
 	if needsConfirmation {
 		preview.Reason = "The page could not be classified as clearly substantive and complete."
+	}
+	if prepare {
+		ref, expiresAt, err := s.saveCandidate(ctx, store, verified, &candidate{
+			scope: verified, originalURL: request.URL, normalizedURL: normalizedURL,
+			identitySHA256: identityDigest, relativePath: target.relativePath,
+			expectedGeneration: target.generation, existing: target.exists,
+			data: data, digest: digest, preview: preview,
+		})
+		if err != nil {
+			return Result{Status: "unavailable", Message: manualAlternative}, nil
+		}
+		return Result{Status: "preview", Message: "Review the rendered candidate before saving.", ConfirmationRef: ref, CandidateID: ref, CandidateRevision: digest, ExpiresAt: expiresAt.Format(time.RFC3339), Preview: &preview}, nil
+	}
+	if needsConfirmation {
 		ref, expiresAt, err := s.saveConfirmation(&candidate{
 			scope: verified, originalURL: request.URL, normalizedURL: normalizedURL,
 			identitySHA256: identityDigest, relativePath: target.relativePath,
@@ -260,6 +317,220 @@ func (s *Service) Import(ctx context.Context, verified ActorProject, request Imp
 		data: data, digest: digest, preview: preview,
 	}
 	return s.commit(ctx, store, prepared)
+}
+
+// Accept commits exactly the immutable prepared bytes, binding the first accepted title.
+func (s *Service) Accept(ctx context.Context, verified ActorProject, id, revision, title string) (Result, error) {
+	if s == nil || s.Stores == nil || !validCandidateID(id) || strings.TrimSpace(verified.ActorID) == "" || strings.TrimSpace(verified.ProjectID) == "" {
+		return Result{Status: "rejected", Message: ErrConfirmationStale.Error()}, nil
+	}
+	store, err := s.Stores(verified)
+	if err != nil || store == nil {
+		return Result{Status: "unavailable", Message: manualAlternative}, nil
+	}
+	op, err := readCandidate(ctx, store, id)
+	if err != nil || op.Receipt.ActorID != verified.ActorID || op.Receipt.ProjectID != verified.ProjectID || !op.Receipt.ExpiresAt.After(s.now()) {
+		return Result{Status: "rejected", Message: ErrConfirmationStale.Error()}, nil
+	}
+	if op.Receipt.Revision != revision || !validCandidateTitle(title) {
+		return Result{Status: "rejected", Message: ErrConfirmationStale.Error()}, nil
+	}
+	title = strings.TrimSpace(title)
+	if (op.Receipt.State == "accepted" || op.Receipt.State == "conflict") && op.Receipt.Result != nil {
+		if op.Receipt.AcceptedTitle != title {
+			return Result{Status: "conflict", Message: "The candidate was already accepted with a different title."}, nil
+		}
+		return *op.Receipt.Result, nil
+	}
+	if op.Receipt.State == "rejected" || op.Receipt.State == "expired" {
+		return Result{Status: "rejected", Message: ErrConfirmationStale.Error()}, nil
+	}
+	if op.Receipt.State == "prepared" {
+		receipt := op.Receipt
+		_, body, _, parseErr := parseRawFrontmatter(receipt.Data)
+		if parseErr != nil {
+			return Result{Status: "conflict", Message: ErrConfirmationStale.Error()}, nil
+		}
+		updated, _, mergeErr := MergeRawMarkdown(receipt.Data, SourceMetadata{Title: title}, string(body), s.now())
+		if mergeErr != nil || len(updated) > MaxCandidateBytes {
+			return Result{Status: "rejected", Message: "The edited title makes the saved article exceed the supported size."}, nil
+		}
+		receipt.Data = updated
+		receipt.Digest = digestString(updated)
+		receipt.Preview.Title = title
+		receipt.Preview.CandidateSHA256 = receipt.Digest
+		receipt.Preview.Metadata = previewMetadata(updated)
+		receipt.AcceptedTitle = title
+		receipt.State = "accepting"
+		if err := writeCandidate(ctx, store, id, receipt, op.Generation); err != nil {
+			if errors.Is(err, storage.ErrGenerationMismatch) {
+				return s.resolveOperation(ctx, store, id, verified, title)
+			}
+			return Result{Status: "uncertain", Message: "The save decision was recorded but its status is uncertain; check save status before retrying."}, nil
+		}
+		op.Receipt = receipt
+	} else if op.Receipt.AcceptedTitle != title {
+		return Result{Status: "conflict", Message: "The candidate was already accepted with a different title."}, nil
+	}
+	return s.finishAccepted(ctx, store, id, verified, op.Receipt)
+}
+
+// Reject atomically declines a prepared candidate. A competing accept/reject has one winner.
+func (s *Service) Reject(ctx context.Context, verified ActorProject, id, revision string) (Result, error) {
+	if s == nil || s.Stores == nil || !validCandidateID(id) {
+		return Result{Status: "rejected", Message: ErrConfirmationStale.Error()}, nil
+	}
+	store, err := s.Stores(verified)
+	if err != nil || store == nil {
+		return Result{Status: "unavailable", Message: manualAlternative}, nil
+	}
+	op, err := readCandidate(ctx, store, id)
+	if err != nil || op.Receipt.ActorID != verified.ActorID || op.Receipt.ProjectID != verified.ProjectID || op.Receipt.Revision != revision || !op.Receipt.ExpiresAt.After(s.now()) {
+		return Result{Status: "rejected", Message: ErrConfirmationStale.Error()}, nil
+	}
+	if (op.Receipt.State == "accepted" || op.Receipt.State == "conflict") && op.Receipt.Result != nil {
+		return *op.Receipt.Result, nil
+	}
+	if op.Receipt.State == "accepting" {
+		return Result{Status: "uncertain", Message: "The save is in progress; check save status."}, nil
+	}
+	if op.Receipt.State == "rejected" {
+		return Result{Status: "rejected", Message: "Candidate declined."}, nil
+	}
+	receipt := op.Receipt
+	receipt.State = "rejected"
+	if err := writeCandidate(ctx, store, id, receipt, op.Generation); err != nil {
+		if errors.Is(err, storage.ErrGenerationMismatch) {
+			return s.Resolve(ctx, verified, id)
+		}
+		return Result{Status: "uncertain", Message: "The decline result is uncertain; check candidate status."}, nil
+	}
+	return Result{Status: "rejected", Message: "Candidate declined."}, nil
+}
+
+// Resolve returns the durable result or resumes only the already accepted exact candidate.
+func (s *Service) Resolve(ctx context.Context, verified ActorProject, id string) (Result, error) {
+	if s == nil || s.Stores == nil || !validCandidateID(id) {
+		return Result{Status: "rejected", Message: ErrConfirmationStale.Error()}, nil
+	}
+	store, err := s.Stores(verified)
+	if err != nil || store == nil {
+		return Result{Status: "unavailable", Message: manualAlternative}, nil
+	}
+	return s.resolveOperation(ctx, store, id, verified, "")
+}
+
+func (s *Service) resolveOperation(ctx context.Context, store ProjectStore, id string, verified ActorProject, title string) (Result, error) {
+	op, err := readCandidate(ctx, store, id)
+	if err != nil || op.Receipt.ActorID != verified.ActorID || op.Receipt.ProjectID != verified.ProjectID || !op.Receipt.ExpiresAt.After(s.now()) {
+		return Result{Status: "rejected", Message: ErrConfirmationStale.Error()}, nil
+	}
+	switch op.Receipt.State {
+	case "accepted", "conflict":
+		if op.Receipt.Result != nil {
+			return *op.Receipt.Result, nil
+		}
+	case "rejected", "expired":
+		return Result{Status: "rejected", Message: "Candidate was declined or expired."}, nil
+	case "accepting":
+		if title != "" && title != op.Receipt.AcceptedTitle {
+			return Result{Status: "conflict", Message: "The candidate was accepted with a different title."}, nil
+		}
+		return s.finishAccepted(ctx, store, id, verified, op.Receipt)
+	case "prepared":
+		return Result{Status: "preview", Message: "Candidate is ready for review.", ConfirmationRef: id, CandidateID: id, CandidateRevision: op.Receipt.Revision, ExpiresAt: op.Receipt.ExpiresAt.Format(time.RFC3339), Preview: &op.Receipt.Preview}, nil
+	}
+	return Result{Status: "uncertain", Message: "The save result is uncertain; check again."}, nil
+}
+
+func (s *Service) finishAccepted(ctx context.Context, store ProjectStore, id string, verified ActorProject, receipt candidateReceipt) (Result, error) {
+	prepared := &candidate{scope: verified, originalURL: receipt.OriginalURL, normalizedURL: receipt.NormalizedURL,
+		identitySHA256: receipt.IdentitySHA256, relativePath: receipt.RelativePath, expectedGeneration: receipt.ExpectedGeneration,
+		existing: receipt.Existing, data: receipt.Data, digest: receipt.Digest, preview: receipt.Preview, expiresAt: receipt.ExpiresAt}
+	result, err := s.commit(ctx, store, prepared)
+	if err != nil || (result.Status != "stored" && result.Status != "conflict" && result.Status != "rejected") {
+		return Result{Status: "uncertain", Message: "The save result is uncertain; check save status before retrying."}, nil
+	}
+	op, readErr := readCandidate(ctx, store, id)
+	if readErr != nil {
+		return Result{Status: "uncertain", Message: "Saved article status is uncertain; check save status."}, nil
+	}
+	if op.Receipt.State == "accepting" && op.Receipt.AcceptedTitle == receipt.AcceptedTitle {
+		op.Receipt.State = map[bool]string{true: "accepted", false: "conflict"}[result.Status == "stored"]
+		op.Receipt.Result = &result
+		if writeErr := writeCandidate(ctx, store, id, op.Receipt, op.Generation); writeErr != nil {
+			latest, latestErr := readCandidate(ctx, store, id)
+			if latestErr == nil && latest.Receipt.Result != nil && (latest.Receipt.State == "accepted" || latest.Receipt.State == "conflict") {
+				return *latest.Receipt.Result, nil
+			}
+			return Result{Status: "uncertain", Message: "The article may be saved; check save status before retrying."}, nil
+		}
+	}
+	return result, nil
+}
+
+func validCandidateTitle(title string) bool {
+	title = strings.TrimSpace(title)
+	return title != "" && utf8.RuneCountInString(title) <= 200 && !strings.ContainsAny(title, "\x00\r\n")
+}
+
+func validCandidateID(id string) bool {
+	decoded, err := hex.DecodeString(id)
+	return err == nil && len(decoded) == 32 && strings.ToLower(id) == id
+}
+
+func candidateObjectPath(id string) string { return candidateObjectPrefix + id + ".json" }
+
+func (s *Service) saveCandidate(ctx context.Context, store ProjectStore, scope ActorProject, prepared *candidate) (string, time.Time, error) {
+	for attempt := 0; attempt < 3; attempt++ {
+		rawID := make([]byte, 32)
+		if _, err := rand.Read(rawID); err != nil {
+			return "", time.Time{}, err
+		}
+		id := hex.EncodeToString(rawID)
+		receipt := receiptFromCandidate(scope, prepared, s.now().Add(ConfirmationTTL))
+		if err := writeCandidate(ctx, store, id, receipt, 0); err == nil {
+			return id, receipt.ExpiresAt, nil
+		} else if !errors.Is(err, storage.ErrGenerationMismatch) {
+			return "", time.Time{}, err
+		}
+	}
+	return "", time.Time{}, ErrURLConflict
+}
+
+func receiptFromCandidate(scope ActorProject, c *candidate, expires time.Time) candidateReceipt {
+	return candidateReceipt{Version: 1, ActorID: scope.ActorID, ProjectID: scope.ProjectID, OriginalURL: c.originalURL,
+		NormalizedURL: c.normalizedURL, IdentitySHA256: c.identitySHA256, RelativePath: c.relativePath,
+		ExpectedGeneration: c.expectedGeneration, Existing: c.existing, Data: append([]byte(nil), c.data...), Digest: c.digest,
+		Preview: c.preview, ExpiresAt: expires.UTC(), State: "prepared", Revision: c.digest}
+}
+
+func readCandidate(ctx context.Context, store ProjectStore, id string) (candidateOperation, error) {
+	data, generation, err := store.ReadFileWithGeneration(ctx, candidateObjectPath(id))
+	if err != nil {
+		return candidateOperation{}, err
+	}
+	var receipt candidateReceipt
+	decoder := json.NewDecoder(bytes.NewReader(data))
+	if err := decoder.Decode(&receipt); err != nil || decoder.Decode(new(any)) != io.EOF || receipt.Version != 1 || receipt.Digest != digestString(receipt.Data) {
+		return candidateOperation{}, ErrConfirmationStale
+	}
+	if err := validateRelativeRawPath(receipt.RelativePath); err != nil {
+		return candidateOperation{}, ErrConfirmationStale
+	}
+	return candidateOperation{Receipt: receipt, Generation: generation}, nil
+}
+
+func writeCandidate(ctx context.Context, store ProjectStore, id string, receipt candidateReceipt, expected int64) error {
+	if !validCandidateID(id) {
+		return ErrConfirmationStale
+	}
+	data, err := json.Marshal(receipt)
+	if err != nil {
+		return err
+	}
+	_, err = store.WriteFileIfGeneration(ctx, data, candidateObjectPath(id), expected)
+	return err
 }
 
 // Confirm commits the exact stored candidate without fetching its URL again.
@@ -742,6 +1013,9 @@ func (s *Service) commit(ctx context.Context, store ProjectStore, prepared *cand
 				prepared.relativePath = reserved
 				continue
 			}
+			if bytes.Equal(current, prepared.data) {
+				return storedResult(rawintake.Result{Path: "raw/" + prepared.relativePath, SHA256: prepared.digest, Status: rawintake.StatusAlreadyExists}, &prepared.preview), nil
+			}
 			if generation != prepared.expectedGeneration {
 				return Result{Status: "conflict", Message: ErrConfirmationStale.Error(), Preview: &prepared.preview}, nil
 			}
@@ -758,6 +1032,12 @@ func (s *Service) commit(ctx context.Context, store ProjectStore, prepared *cand
 					return storedResult(rawintake.Result{Path: "raw/" + prepared.relativePath, SHA256: prepared.digest, Status: rawintake.StatusAlreadyExists}, &prepared.preview), nil
 				}
 				return Result{Status: "uncertain", Message: "The storage result is uncertain. Check the raw path before retrying.", Preview: &prepared.preview}, nil
+			}
+			if errors.Is(commitErr, rawintake.ErrConflict) {
+				readback, _, readbackExists, readErr := readRaw(ctx, store, prepared.relativePath)
+				if readErr == nil && readbackExists && bytes.Equal(readback, prepared.data) {
+					return storedResult(rawintake.Result{Path: "raw/" + prepared.relativePath, SHA256: prepared.digest, Status: rawintake.StatusAlreadyExists}, &prepared.preview), nil
+				}
 			}
 			if errors.Is(commitErr, rawintake.ErrConflict) && attempt == 0 && !prepared.existing && prepared.expectedGeneration == 0 {
 				readback, _, readbackExists, readErr := readRaw(ctx, store, prepared.relativePath)

@@ -9,7 +9,9 @@ const mocks = vi.hoisted(() => ({
   getPipelineStatus: vi.fn(),
   getRecompileAllCapability: vi.fn(),
   scrapeUrl: vi.fn(),
-  confirmScrape: vi.fn(),
+  acceptScrapeCandidate: vi.fn(),
+  rejectScrapeCandidate: vi.fn(),
+  resolveScrapeCandidate: vi.fn(),
   triggerPipeline: vi.fn(),
 }));
 
@@ -18,7 +20,9 @@ vi.mock('@/lib/api', async () => ({
   getPipelineStatus: mocks.getPipelineStatus,
   getRecompileAllCapability: mocks.getRecompileAllCapability,
   scrapeUrl: mocks.scrapeUrl,
-  confirmScrape: mocks.confirmScrape,
+  acceptScrapeCandidate: mocks.acceptScrapeCandidate,
+  rejectScrapeCandidate: mocks.rejectScrapeCandidate,
+  resolveScrapeCandidate: mocks.resolveScrapeCandidate,
   triggerPipeline: mocks.triggerPipeline,
 }));
 
@@ -39,7 +43,7 @@ import { PipelineClient } from '@/components/PipelineClient';
 const preview = {
   title: 'Example article',
   source_url: 'https://example.com/article',
-  markdown: '---\ntitle: Example article\nsource: https://example.com/article\ncreated: 2026-10-21\n---\n# Example article\nReadable body.',
+  markdown: '# Example article\n\nReadable body.',
   metadata: { title: 'Example article', source: 'https://example.com/article', created: '2026-10-21' },
   candidate_sha256: 'candidate-digest',
   provider: 'deepseek-fetch',
@@ -54,9 +58,10 @@ const stored: ScrapeResult = {
 };
 
 const uncertain: ScrapeResult = {
-  status: 'needs_confirmation',
-  message: 'review candidate',
-  confirmation_ref: 'opaque-confirmation-ref',
+  status: 'preview',
+  message: 'Review the rendered candidate before saving.',
+  candidate_id: 'opaque-candidate-id',
+  candidate_revision: 'opaque-candidate-revision',
   expires_at: '2026-10-21T02:00:00Z',
   preview: { ...preview, reason: 'classification was uncertain' },
 };
@@ -74,8 +79,10 @@ beforeEach(() => {
   mocks.isDemoSession = false;
   mocks.getPipelineStatus.mockImplementation(async (projectId: string) => ({ project_id: projectId, quota: null }));
   mocks.getRecompileAllCapability.mockResolvedValue({ allowed: false, compile_mode: 'full', quota: null });
-  mocks.scrapeUrl.mockResolvedValue(stored);
-  mocks.confirmScrape.mockResolvedValue(stored);
+  mocks.scrapeUrl.mockResolvedValue(uncertain);
+  mocks.acceptScrapeCandidate.mockResolvedValue(stored);
+  mocks.rejectScrapeCandidate.mockResolvedValue({ status: 'rejected', message: 'Candidate declined.' });
+  mocks.resolveScrapeCandidate.mockResolvedValue(stored);
   window.localStorage.setItem('locale', 'en');
   window.localStorage.setItem('llm-wiki-last-project', 'project-a');
 });
@@ -85,40 +92,43 @@ afterEach(() => {
   vi.clearAllMocks();
 });
 
-it('submits a public URL to the selected Project and shows the saved preview and exact storage outcome without running Pipeline', async () => {
+it('renders a public URL candidate, binds the edited title, and links to the exact saved raw file without running Pipeline', async () => {
   render(<PipelineClient />);
   submitUrl();
 
-  expect(await screen.findByText('Pipeline.urlSaved')).toBeDefined();
-  const bodyPreview = screen.getByText((_text, element) => element?.tagName === 'PRE');
-  expect(bodyPreview.textContent).toContain('Readable body.');
-  const storageOutcome = screen.getByText((_text, element) => element?.tagName === 'P' && Boolean(element.textContent?.includes('raw/Example-article.md')));
-  expect(storageOutcome.textContent).toContain('created');
-  expect(screen.getByText(/title: Example article/)).toBeDefined();
-  expect(screen.queryByRole('button', { name: 'Pipeline.urlConfirmCandidate' })).toBeNull();
+  expect(await screen.findByRole('dialog')).toBeDefined();
+  expect(screen.getByText('Readable body.')).toBeDefined();
+  const title = screen.getByLabelText('Pipeline.urlTitleLabel') as HTMLInputElement;
+  fireEvent.change(title, { target: { value: 'Edited title' } });
+  fireEvent.click(screen.getByRole('button', { name: 'Pipeline.urlConfirmCandidate' }));
+
+  expect(await screen.findByText('saved')).toBeDefined();
+  expect(screen.getByRole('link', { name: /Pipeline.urlRawArticle: raw\/Example-article\.md/ }).getAttribute('href'))
+    .toBe('/raw?file=raw%2FExample-article.md');
+  expect(screen.getByText('Pipeline.urlProcessingSeparate')).toBeDefined();
+  await waitFor(() => expect(mocks.acceptScrapeCandidate).toHaveBeenCalledWith('opaque-candidate-id', 'opaque-candidate-revision', 'Edited title', 'project-a'));
   await waitFor(() => expect(mocks.scrapeUrl).toHaveBeenCalledWith('https://example.com/article', 'project-a'));
-  await waitFor(() => expect(mocks.getPipelineStatus).toHaveBeenCalledTimes(2));
   expect(mocks.triggerPipeline).not.toHaveBeenCalled();
 });
 
-it('shows uncertain content without a saved path and confirms only the bound candidate reference', async () => {
-  mocks.scrapeUrl.mockResolvedValueOnce(uncertain);
-  mocks.confirmScrape.mockResolvedValueOnce({
-    ...stored,
-    storage: { path: 'raw/Example-article.md', sha256: 'stored-digest', status: 'replaced' },
+it('resolves an uncertain accept outcome from the same candidate without refetching', async () => {
+  mocks.acceptScrapeCandidate.mockResolvedValueOnce({ status: 'uncertain', message: 'Save status is uncertain.', candidate_id: 'opaque-candidate-id', candidate_revision: 'opaque-candidate-revision' });
+  mocks.resolveScrapeCandidate.mockResolvedValueOnce({
+    ...stored, storage: { path: 'raw/Example-article.md', sha256: 'stored-digest', status: 'replaced' },
   });
   render(<PipelineClient />);
   submitUrl();
 
-  expect(await screen.findByText('Pipeline.urlNeedsConfirmation')).toBeDefined();
-  expect(screen.getByText('Pipeline.urlConfirmationNotice')).toBeDefined();
+  expect(await screen.findByRole('dialog')).toBeDefined();
   expect(screen.getByText('classification was uncertain')).toBeDefined();
   expect(screen.queryByText((_text, element) => element?.tagName === 'P' && Boolean(element.textContent?.includes('raw/Example-article.md')))).toBeNull();
   fireEvent.click(screen.getByRole('button', { name: 'Pipeline.urlConfirmCandidate' }));
 
-  expect(await screen.findByText('Pipeline.urlSaved')).toBeDefined();
-  expect(await screen.findByText(/replaced/)).toBeDefined();
-  await waitFor(() => expect(mocks.confirmScrape).toHaveBeenCalledWith('opaque-confirmation-ref', 'project-a'));
+  expect(await screen.findByRole('button', { name: 'Pipeline.urlCheckSaveStatus' })).toBeDefined();
+  fireEvent.click(screen.getByRole('button', { name: 'Pipeline.urlCheckSaveStatus' }));
+  expect(await screen.findByText('saved')).toBeDefined();
+  await waitFor(() => expect(mocks.resolveScrapeCandidate).toHaveBeenCalledWith('opaque-candidate-id', 'project-a'));
+  await waitFor(() => expect(mocks.acceptScrapeCandidate).toHaveBeenCalledWith('opaque-candidate-id', 'opaque-candidate-revision', 'Example article', 'project-a'));
   expect(mocks.scrapeUrl).toHaveBeenCalledTimes(1);
   expect(mocks.triggerPipeline).not.toHaveBeenCalled();
 });
@@ -133,37 +143,34 @@ it('discards a late URL result after the selected Project changes', async () => 
   mocks.currentProject = { id: 'project-b', name: 'Project B' };
   window.localStorage.setItem('llm-wiki-last-project', 'project-b');
   view.rerender(<PipelineClient />);
-  resolveScrape(stored);
+  resolveScrape(uncertain);
 
   await waitFor(() => expect(mocks.getPipelineStatus).toHaveBeenCalledWith('project-b'));
   expect(screen.queryByText('Example article')).toBeNull();
   expect(mocks.scrapeUrl).toHaveBeenCalledWith('https://example.com/article', 'project-a');
+  await waitFor(() => expect(mocks.rejectScrapeCandidate).toHaveBeenCalledWith('opaque-candidate-id', 'opaque-candidate-revision', 'project-a'));
 });
 
-it('reports an unknown URL import outcome after a transport failure without retrying', async () => {
-  let serverCommitted = false;
+it('reports a definitive URL preview failure without claiming raw storage is uncertain', async () => {
   mocks.scrapeUrl.mockImplementation(async () => {
-    serverCommitted = true;
     throw new ApiError('response lost after commit', 0);
   });
   render(<PipelineClient />);
   submitUrl();
 
-  expect((await screen.findByRole('alert')).textContent).toBe('Pipeline.urlUncertain');
-  expect(serverCommitted).toBe(true);
+  expect((await screen.findByRole('alert')).textContent).toBe('Pipeline.urlPreviewUnavailable');
   expect(mocks.scrapeUrl).toHaveBeenCalledTimes(1);
 });
 
-it('reports an unknown URL confirmation outcome after a transport failure without refetching', async () => {
-  mocks.scrapeUrl.mockResolvedValueOnce(uncertain);
-  mocks.confirmScrape.mockRejectedValueOnce(new ApiError('response lost after commit', 0));
+it('reports an uncertain accept outcome and offers status resolution without refetching', async () => {
+  mocks.acceptScrapeCandidate.mockResolvedValueOnce({ status: 'uncertain', message: 'Save status is uncertain.', candidate_id: 'opaque-candidate-id', candidate_revision: 'opaque-candidate-revision' });
   render(<PipelineClient />);
   submitUrl();
-  await screen.findByText('Pipeline.urlNeedsConfirmation');
+  await screen.findByRole('button', { name: 'Pipeline.urlConfirmCandidate' });
   fireEvent.click(screen.getByRole('button', { name: 'Pipeline.urlConfirmCandidate' }));
 
-  expect((await screen.findByRole('alert')).textContent).toBe('Pipeline.urlUncertain');
-  expect(mocks.confirmScrape).toHaveBeenCalledTimes(1);
+  expect(await screen.findByRole('button', { name: 'Pipeline.urlCheckSaveStatus' })).toBeDefined();
+  expect(mocks.acceptScrapeCandidate).toHaveBeenCalledTimes(1);
   expect(mocks.scrapeUrl).toHaveBeenCalledTimes(1);
 });
 
@@ -172,6 +179,6 @@ it('keeps a definitive precommit rejection on the unavailable guidance', async (
   render(<PipelineClient />);
   submitUrl();
 
-  expect((await screen.findByRole('alert')).textContent).toBe('Pipeline.urlUnavailable');
+  expect((await screen.findByRole('alert')).textContent).toBe('Pipeline.urlPreviewUnavailable');
   expect(mocks.scrapeUrl).toHaveBeenCalledTimes(1);
 });

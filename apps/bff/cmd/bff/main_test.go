@@ -803,6 +803,10 @@ func (rawScrapeTestHandler) ScrapeRaw(c *gin.Context) {
 	c.JSON(http.StatusBadRequest, handlerraw.ErrorResponse{Error: "fake raw scrape handler"})
 }
 
+func (rawScrapeTestHandler) AcceptScrape(c *gin.Context)  { c.Status(http.StatusNoContent) }
+func (rawScrapeTestHandler) RejectScrape(c *gin.Context)  { c.Status(http.StatusNoContent) }
+func (rawScrapeTestHandler) ResolveScrape(c *gin.Context) { c.Status(http.StatusNoContent) }
+
 func readSwaggerDocument(t *testing.T) struct {
 	Paths map[string]map[string]json.RawMessage `json:"paths"`
 } {

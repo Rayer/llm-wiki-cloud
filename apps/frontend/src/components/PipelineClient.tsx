@@ -10,7 +10,9 @@ import {
   getRecompileAllCapability,
   getPipelineStatus,
   scrapeUrl,
-  confirmScrape,
+  acceptScrapeCandidate,
+  rejectScrapeCandidate,
+  resolveScrapeCandidate,
   recompileAll,
   triggerPipeline,
   type RecompileAllCapability,
@@ -27,6 +29,7 @@ import {
 import { useT } from '@/lib/i18n';
 import { useWorkspace } from './WorkspaceProvider';
 import { RawUploadPanel, type RawUploadsSettled } from './RawUploadPanel';
+import { UrlPreviewDialog } from './UrlPreviewDialog';
 
 type Toast = {
   id: number;
@@ -89,6 +92,7 @@ export function PipelineClient() {
   const [scrapeLoading, setScrapeLoading] = useState(false);
   const [scrapeError, setScrapeError] = useState<string | null>(null);
   const [scrapeResult, setScrapeResult] = useState<ScrapeResult | null>(null);
+  const [scrapeModalOpen, setScrapeModalOpen] = useState(false);
   const pipelineExecutionOwnerRef = useRef<PipelineExecutionOwner | null>(null);
   const pipelineTerminalPollScopeRef = useRef<PipelineRequestScope | null>(null);
   const pipelinePollErrorNotifiedRef = useRef(false);
@@ -103,6 +107,7 @@ export function PipelineClient() {
       setScrapeLoading(false);
       setScrapeError(null);
       setScrapeResult(null);
+      setScrapeModalOpen(false);
     }
   }, [projectId]);
   const pipelineRequestGenerationRef = useRef(0);
@@ -313,28 +318,26 @@ export function PipelineClient() {
     setScrapeLoading(true);
     setScrapeError(null);
     setScrapeResult(null);
+    setScrapeModalOpen(true);
     try {
       const result = await scrapeUrl(scrapeUrlText, context.projectId);
-      if (!isCurrent()) return;
-      setScrapeResult(result);
-      if (result.status === 'stored') {
-        void refreshPipelineStatus({
-          projectId: context.projectId,
-          contextGeneration: context.generation,
-          requestGeneration: pipelineRequestGenerationRef.current,
-        });
+      if (!isCurrent()) {
+        if (result.candidate_id && result.candidate_revision) void rejectScrapeCandidate(result.candidate_id, result.candidate_revision, context.projectId);
+        return;
       }
-    } catch (error) {
-      if (isCurrent()) setScrapeError(t(scrapeErrorMessageKey(error)));
+      setScrapeResult(result);
+    } catch {
+      if (isCurrent()) setScrapeError(t('Pipeline.urlPreviewUnavailable'));
     } finally {
       if (isCurrent()) setScrapeLoading(false);
     }
-  }, [addToast, refreshPipelineStatus, scrapeUrlText, setScrapeError, setScrapeLoading, setScrapeResult, t]);
+  }, [addToast, scrapeUrlText, setScrapeError, setScrapeLoading, setScrapeResult, t]);
 
-  const handleConfirmScrape = useCallback(async () => {
-    const reference = scrapeResult?.confirmation_ref;
+  const handleAcceptScrape = useCallback(async (title: string) => {
+    const candidateId = scrapeResult?.candidate_id;
+    const revision = scrapeResult?.candidate_revision;
     const context = pipelineProjectContextRef.current;
-    if (!reference || !context.projectId) return;
+    if (!candidateId || !revision || !context.projectId) return;
     const requestGeneration = ++scrapeRequestGenerationRef.current;
     const isCurrent = () => {
       const latest = pipelineProjectContextRef.current;
@@ -346,7 +349,7 @@ export function PipelineClient() {
     setScrapeLoading(true);
     setScrapeError(null);
     try {
-      const result = await confirmScrape(reference, context.projectId);
+      const result = await acceptScrapeCandidate(candidateId, revision, title, context.projectId);
       if (!isCurrent()) return;
       setScrapeResult(result);
       if (result.status === 'stored') {
@@ -361,7 +364,53 @@ export function PipelineClient() {
     } finally {
       if (isCurrent()) setScrapeLoading(false);
     }
-  }, [refreshPipelineStatus, scrapeResult?.confirmation_ref, setScrapeError, setScrapeLoading, setScrapeResult, t]);
+  }, [refreshPipelineStatus, scrapeResult?.candidate_id, scrapeResult?.candidate_revision, setScrapeError, setScrapeLoading, setScrapeResult, t]);
+
+  const handleResolveScrape = useCallback(async () => {
+    const candidateId = scrapeResult?.candidate_id;
+    const context = pipelineProjectContextRef.current;
+    if (!candidateId || !context.projectId) return;
+    const requestGeneration = ++scrapeRequestGenerationRef.current;
+    const isCurrent = () => {
+      const latest = pipelineProjectContextRef.current;
+      return pipelineMountedRef.current && latest.projectId === context.projectId && latest.generation === context.generation && scrapeRequestGenerationRef.current === requestGeneration;
+    };
+    setScrapeLoading(true);
+    setScrapeError(null);
+    try {
+      const result = await resolveScrapeCandidate(candidateId, context.projectId);
+      if (isCurrent()) setScrapeResult(result);
+    } catch (error) {
+      if (isCurrent()) setScrapeError(t(scrapeErrorMessageKey(error)));
+    } finally {
+      if (isCurrent()) setScrapeLoading(false);
+    }
+  }, [scrapeResult?.candidate_id, setScrapeError, setScrapeLoading, setScrapeResult, t]);
+
+  const handleDeclineScrape = useCallback(async () => {
+    const candidateId = scrapeResult?.candidate_id;
+    const revision = scrapeResult?.candidate_revision;
+    const context = pipelineProjectContextRef.current;
+    if (!candidateId || !revision || !context.projectId) { setScrapeModalOpen(false); return; }
+    setScrapeLoading(true);
+    setScrapeError(null);
+    try {
+      const result = await rejectScrapeCandidate(candidateId, revision, context.projectId);
+      setScrapeResult(result);
+      if (result.status === 'rejected') setScrapeModalOpen(false);
+    } catch (error) {
+      setScrapeError(t(scrapeErrorMessageKey(error)));
+    } finally {
+      setScrapeLoading(false);
+    }
+  }, [scrapeResult?.candidate_id, scrapeResult?.candidate_revision, setScrapeError, setScrapeLoading, setScrapeResult, t]);
+
+  const handleCloseScrape = useCallback(() => {
+    if (scrapeLoading) return;
+    if (scrapeResult?.status === 'preview') { void handleDeclineScrape(); return; }
+    setScrapeModalOpen(false);
+    setScrapeError(null);
+  }, [handleDeclineScrape, scrapeLoading, scrapeResult?.status]);
 
   const handleRunPipeline = useCallback(async () => {
     // Belt-and-suspenders: button is disabled for known blocks; toast only if click races through.
@@ -538,65 +587,6 @@ export function PipelineClient() {
                 {scrapeLoading ? <Loader2 className="size-4 animate-spin" /> : t('Pipeline.scrape')}
               </button>
             </form>
-            {scrapeError ? (
-              <p role="alert" className="mt-3 text-sm text-amber-300">{scrapeError}</p>
-            ) : null}
-            {scrapeResult ? (
-              <div aria-live="polite" className="mt-3 space-y-3 rounded-md border border-white/10 bg-black/30 p-3">
-                <p className="text-sm font-medium text-zinc-200">
-                  {scrapeResult.status === 'stored'
-                    ? scrapeResult.storage?.status === 'already_exists'
-                      ? t('Pipeline.urlAlreadySaved')
-                      : t('Pipeline.urlSaved')
-                    : scrapeResult.status === 'needs_confirmation'
-                      ? t('Pipeline.urlNeedsConfirmation')
-                      : scrapeResult.status === 'rejected'
-                        ? t('Pipeline.urlRejected')
-                        : scrapeResult.status === 'conflict'
-                          ? t('Pipeline.urlConflict')
-                          : scrapeResult.status === 'uncertain'
-                            ? t('Pipeline.urlUncertain')
-                            : t('Pipeline.urlUnavailable')}
-                </p>
-                {scrapeResult.status === 'needs_confirmation' ? (
-                  <p className="text-xs text-amber-200">{t('Pipeline.urlConfirmationNotice')}</p>
-                ) : null}
-                {scrapeResult.status === 'stored' ? (
-                  <p className="text-xs text-zinc-400">{t('Pipeline.urlProcessingSeparate')}</p>
-                ) : null}
-                {scrapeResult.status === 'stored' && scrapeResult.storage ? (
-                  <p className="break-all text-xs text-zinc-400">
-                    {t('Pipeline.urlStoragePath')}: {scrapeResult.storage.path} · {t('Pipeline.urlStorageOutcome')}: {scrapeResult.storage.status}
-                  </p>
-                ) : null}
-                {scrapeResult.preview ? (
-                  <div className="space-y-2 border-t border-white/10 pt-3">
-                    <div className="flex flex-wrap items-baseline justify-between gap-2">
-                      <h4 className="text-sm font-semibold text-white">{scrapeResult.preview.title}</h4>
-                      <span className="text-[11px] text-zinc-500">{t('Pipeline.urlCandidateDigest')}: {scrapeResult.preview.candidate_sha256}</span>
-                    </div>
-                    <p className="break-all text-xs text-zinc-400">{scrapeResult.preview.source_url}</p>
-                    {scrapeResult.status === 'needs_confirmation' && scrapeResult.preview.reason ? (
-                      <p className="text-xs text-amber-200">{scrapeResult.preview.reason}</p>
-                    ) : null}
-                    {scrapeResult.preview.warning ? (
-                      <p className="text-xs text-amber-200">{scrapeResult.preview.warning}</p>
-                    ) : null}
-                    <pre className="max-h-64 overflow-auto whitespace-pre-wrap break-words rounded border border-white/10 bg-black/40 p-3 text-xs leading-relaxed text-zinc-300">{scrapeResult.preview.markdown}</pre>
-                  </div>
-                ) : null}
-                {scrapeResult.status === 'needs_confirmation' && scrapeResult.confirmation_ref ? (
-                  <button
-                    type="button"
-                    onClick={handleConfirmScrape}
-                    disabled={scrapeLoading}
-                    className="rounded-md bg-amber-500 px-3 py-2 text-sm font-semibold text-black transition hover:bg-amber-400 disabled:opacity-50"
-                  >
-                    {scrapeLoading ? <Loader2 className="size-4 animate-spin" /> : t('Pipeline.urlConfirmCandidate')}
-                  </button>
-                ) : null}
-              </div>
-            ) : null}
           </div>
         </div>
 
@@ -761,6 +751,27 @@ export function PipelineClient() {
 
         <ExportPanel />
       </Surface>
+
+      {scrapeModalOpen ? (
+        <UrlPreviewDialog
+          key={scrapeResult?.candidate_id ?? 'url-preview-preparing'}
+          result={scrapeResult}
+          loading={scrapeLoading}
+          error={scrapeError}
+          labels={{
+            heading: t('Pipeline.urlPreviewTitle'), title: t('Pipeline.urlTitleLabel'),
+            save: t('Pipeline.urlConfirmCandidate'), decline: t('Pipeline.urlDeclineCandidate'),
+            close: t('Pipeline.urlClosePreview'), checkStatus: t('Pipeline.urlCheckSaveStatus'),
+            manualCapture: t('Pipeline.urlManualCapture'), processingSeparate: t('Pipeline.urlProcessingSeparate'),
+            rawArticle: t('Pipeline.urlRawArticle'), created: t('Pipeline.urlCreated'), updated: t('Pipeline.urlUpdated'),
+            unchanged: t('Pipeline.urlUnchanged'), digest: t('Pipeline.urlCandidateDigest'), loading: t('Pipeline.urlPreviewLoading'),
+          }}
+          onAccept={handleAcceptScrape}
+          onDecline={handleDeclineScrape}
+          onResolve={handleResolveScrape}
+          onClose={handleCloseScrape}
+        />
+      ) : null}
 
       {/* Toast notifications */}
       <div className="fixed bottom-4 right-4 z-50 flex flex-col gap-2">

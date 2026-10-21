@@ -6,6 +6,7 @@ import (
 	"errors"
 	"net/netip"
 	"strings"
+	"sync"
 	"sync/atomic"
 	"testing"
 	"time"
@@ -141,6 +142,191 @@ func TestServiceConfirmationCommitsExactCandidateWithoutRefetch(t *testing.T) {
 	data, err := store.ReadFile(context.Background(), confirmed.Storage.Path)
 	if err != nil || string(data) != preview.Preview.Markdown || digestString(data) != preview.Preview.CandidateSHA256 {
 		t.Fatalf("confirmed bytes do not match reviewed candidate: err=%v", err)
+	}
+}
+
+func TestPreparedCandidateIsDurableExactTitleBoundAndCrossInstance(t *testing.T) {
+	root := t.TempDir()
+	scope := ActorProject{"actor-1", "project-1"}
+	var fetches atomic.Int32
+	factory := func(scope ActorProject) (ProjectStore, error) {
+		if strings.TrimSpace(scope.ActorID) == "" || strings.TrimSpace(scope.ProjectID) == "" {
+			return nil, ErrInvalidScope
+		}
+		return localfs.New(root).WithScope(scope.ActorID, scope.ProjectID), nil
+	}
+	fetcher := fetcherFunc(func(context.Context, string) (Page, error) {
+		fetches.Add(1)
+		return Page{Title: "Fetched title", Markdown: "\\# Original heading\n\nKeep `\\# inline` and [this](https://example.com).\n"}, nil
+	})
+	serviceA := NewService(fetcher, evaluatorFunc(usableEvaluator), factory, DefaultQualityThresholds)
+	serviceA.Resolver = resolverStub{netip.MustParseAddr("93.184.216.34")}
+	prepared, err := serviceA.Prepare(context.Background(), scope, ImportRequest{URL: "https://example.com/article"})
+	if err != nil || prepared.Status != "preview" || prepared.CandidateID == "" || prepared.CandidateRevision == "" || prepared.Preview == nil {
+		t.Fatalf("prepared = %#v err=%v", prepared, err)
+	}
+	if !strings.HasPrefix(prepared.Preview.Markdown, "# Original heading") || !strings.Contains(prepared.Preview.Markdown, "`\\# inline`") || !strings.Contains(prepared.Preview.Markdown, "[this](https://example.com)") {
+		t.Fatalf("normalized preview lost content/intentional escapes: %q", prepared.Preview.Markdown)
+	}
+	files, err := markdownRawFiles(localfs.New(root).WithScope(scope.ActorID, scope.ProjectID))
+	if err != nil || len(files) != 0 {
+		t.Fatalf("prepare wrote raw content: %#v err=%v", files, err)
+	}
+
+	serviceB := NewService(fetcher, evaluatorFunc(usableEvaluator), factory, DefaultQualityThresholds)
+	serviceB.Now = serviceA.Now
+	stored, err := serviceB.Accept(context.Background(), scope, prepared.CandidateID, prepared.CandidateRevision, "Edited safe title")
+	if err != nil || stored.Status != "stored" || stored.Storage == nil {
+		t.Fatalf("accept = %#v err=%v", stored, err)
+	}
+	if fetches.Load() != 1 {
+		t.Fatalf("fetches=%d; accepting must not refetch", fetches.Load())
+	}
+	raw, err := localfs.New(root).WithScope(scope.ActorID, scope.ProjectID).ReadFile(context.Background(), stored.Storage.Path)
+	if err != nil || digestString(raw) != stored.Storage.SHA256 || strings.Contains(string(raw), "Fetched title") || !strings.Contains(string(raw), "Edited safe title") || !strings.Contains(string(raw), "# Original heading") {
+		t.Fatalf("saved bytes/title/digest mismatch: %v", err)
+	}
+	replayed, err := serviceA.Accept(context.Background(), scope, prepared.CandidateID, prepared.CandidateRevision, "Edited safe title")
+	if err != nil || replayed.Storage == nil || replayed.Storage.Path != stored.Storage.Path || replayed.Storage.SHA256 != stored.Storage.SHA256 {
+		t.Fatalf("duplicate accept did not return original durable result: %#v err=%v", replayed, err)
+	}
+	resolved, err := serviceA.Resolve(context.Background(), scope, prepared.CandidateID)
+	if err != nil || resolved.Storage == nil || resolved.Storage.SHA256 != stored.Storage.SHA256 {
+		t.Fatalf("resolve = %#v err=%v", resolved, err)
+	}
+	otherProject, err := serviceA.Resolve(context.Background(), ActorProject{"actor-1", "project-2"}, prepared.CandidateID)
+	if err != nil || otherProject.Status != "rejected" {
+		t.Fatalf("cross-Project candidate resolution = %#v err=%v", otherProject, err)
+	}
+}
+
+func TestPreparedCandidateDeclineAcceptRaceHasOneTerminalOutcome(t *testing.T) {
+	root := t.TempDir()
+	factory := func(scope ActorProject) (ProjectStore, error) {
+		return localfs.New(root).WithScope(scope.ActorID, scope.ProjectID), nil
+	}
+	scope := ActorProject{"actor-1", "project-1"}
+	fetcher := fetcherFunc(func(context.Context, string) (Page, error) {
+		return Page{Title: "Race", Markdown: "# Race\n\nCandidate body."}, nil
+	})
+	newService := func() *Service {
+		service := NewService(fetcher, evaluatorFunc(usableEvaluator), factory, DefaultQualityThresholds)
+		service.Resolver = resolverStub{netip.MustParseAddr("93.184.216.34")}
+		return service
+	}
+	first, second := newService(), newService()
+	prepared, err := first.Prepare(context.Background(), scope, ImportRequest{URL: "https://example.com/race"})
+	if err != nil || prepared.CandidateID == "" {
+		t.Fatalf("prepare = %#v err=%v", prepared, err)
+	}
+	start := make(chan struct{})
+	results := make(chan Result, 2)
+	var wg sync.WaitGroup
+	wg.Add(2)
+	go func() {
+		defer wg.Done()
+		<-start
+		result, _ := first.Accept(context.Background(), scope, prepared.CandidateID, prepared.CandidateRevision, "Race")
+		results <- result
+	}()
+	go func() {
+		defer wg.Done()
+		<-start
+		result, _ := second.Reject(context.Background(), scope, prepared.CandidateID, prepared.CandidateRevision)
+		results <- result
+	}()
+	close(start)
+	wg.Wait()
+	close(results)
+	for result := range results {
+		if result.Status != "stored" && result.Status != "rejected" && result.Status != "uncertain" {
+			t.Fatalf("race returned unexpected result: %#v", result)
+		}
+	}
+	terminal, err := first.Resolve(context.Background(), scope, prepared.CandidateID)
+	if err != nil || (terminal.Status != "stored" && terminal.Status != "rejected") {
+		t.Fatalf("race terminal = %#v err=%v", terminal, err)
+	}
+	files, err := markdownRawFiles(localfs.New(root).WithScope(scope.ActorID, scope.ProjectID))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if terminal.Status == "stored" && len(files) != 1 {
+		t.Fatalf("accepted race wrote %d raw files", len(files))
+	}
+	if terminal.Status == "rejected" && len(files) != 0 {
+		t.Fatalf("declined race wrote raw files: %#v", files)
+	}
+}
+
+func TestPreparedURLFlowRefreshesStableIdentityAndNoOpsIdenticalBytes(t *testing.T) {
+	root := t.TempDir()
+	scope := ActorProject{"actor-1", "project-1"}
+	storeFactory := func(scope ActorProject) (ProjectStore, error) {
+		return localfs.New(root).WithScope(scope.ActorID, scope.ProjectID), nil
+	}
+	pages := []Page{{Title: "Stable URL", Markdown: "\\# Stable URL\n\nfirst body"}, {Title: "Stable URL", Markdown: "\\# Stable URL\n\nsecond body"}, {Title: "Stable URL", Markdown: "\\# Stable URL\n\nsecond body"}}
+	var calls atomic.Int32
+	fetcher := fetcherFunc(func(context.Context, string) (Page, error) { return pages[min(int(calls.Add(1))-1, len(pages)-1)], nil })
+	service := NewService(fetcher, evaluatorFunc(usableEvaluator), storeFactory, DefaultQualityThresholds)
+	service.Resolver = resolverStub{netip.MustParseAddr("93.184.216.34")}
+	accept := func() Result {
+		prepared, err := service.Prepare(context.Background(), scope, ImportRequest{URL: "https://example.com/stable"})
+		if err != nil || prepared.Status != "preview" {
+			t.Fatalf("prepare = %#v err=%v", prepared, err)
+		}
+		stored, err := service.Accept(context.Background(), scope, prepared.CandidateID, prepared.CandidateRevision, prepared.Preview.Title)
+		if err != nil || stored.Status != "stored" {
+			t.Fatalf("accept = %#v err=%v", stored, err)
+		}
+		if stored.Storage == nil || stored.Storage.SHA256 != prepared.Preview.CandidateSHA256 {
+			t.Fatalf("accepted bytes differ from preview candidate: %#v vs %#v", stored.Storage, prepared.Preview)
+		}
+		return stored
+	}
+	created := accept()
+	refreshed := accept()
+	unchanged := accept()
+	if created.Storage.Status != "created" || refreshed.Storage.Status != "replaced" || unchanged.Storage.Status != "already_exists" || created.Storage.Path != refreshed.Storage.Path || refreshed.Storage.Path != unchanged.Storage.Path {
+		t.Fatalf("prepared URL lifecycle create/refresh/no-op = %#v / %#v / %#v", created.Storage, refreshed.Storage, unchanged.Storage)
+	}
+	data, err := localfs.New(root).WithScope(scope.ActorID, scope.ProjectID).ReadFile(context.Background(), created.Storage.Path)
+	if err != nil || !bytes.Contains(data, []byte("second body")) || bytes.Contains(data, []byte("first body")) {
+		t.Fatalf("refreshed bytes=%q err=%v", data, err)
+	}
+}
+
+func TestEditedTitleSizeLimitRejectsBeforeChangingExistingRaw(t *testing.T) {
+	const sourceURL = "https://example.com/size-boundary"
+	var pageBody string
+	service, store := newTestService(t, fetcherFunc(func(context.Context, string) (Page, error) {
+		return Page{Title: "X", Markdown: pageBody}, nil
+	}), evaluatorFunc(usableEvaluator))
+	old := []byte("---\ntitle: Previous\nsource: " + sourceURL + "\ncreated: 2020-01-01\nprivate_note: " + strings.Repeat("m", 16*1024) + "\n---\nold body\n")
+	relativePath := safeTitleFilename("Previous")
+	if _, err := rawintake.Commit(context.Background(), store, relativePath, old, false); err != nil {
+		t.Fatal(err)
+	}
+	identity := digestString([]byte(sourceURL))
+	if _, err := reserveIdentity(context.Background(), store, identity, relativePath); err != nil {
+		t.Fatal(err)
+	}
+	empty, _, err := MergeRawMarkdown(old, SourceMetadata{Title: "X", SourceURL: sourceURL}, "", service.now())
+	if err != nil {
+		t.Fatal(err)
+	}
+	pageBody = strings.Repeat("x", MaxCandidateBytes-len(empty)-20)
+	prepared, err := service.Prepare(context.Background(), ActorProject{"actor-1", "project-1"}, ImportRequest{URL: sourceURL})
+	if err != nil || prepared.Status != "preview" || len(prepared.Preview.Markdown) == 0 {
+		t.Fatalf("near-boundary prepare = %#v err=%v", prepared, err)
+	}
+	if len(prepared.Preview.Markdown)+len(empty) > MaxCandidateBytes {
+		t.Fatalf("fixture candidate exceeds max: body=%d frontmatter=%d", len(prepared.Preview.Markdown), len(empty))
+	}
+	result, err := service.Accept(context.Background(), ActorProject{"actor-1", "project-1"}, prepared.CandidateID, prepared.CandidateRevision, strings.Repeat("T", 200))
+	current, readErr := store.ReadFile(context.Background(), "raw/"+relativePath)
+	if err != nil || result.Status != "rejected" || readErr != nil || !bytes.Equal(current, old) {
+		t.Fatalf("oversize edited title result=%#v err=%v oldChanged=%t readErr=%v", result, err, !bytes.Equal(current, old), readErr)
 	}
 }
 

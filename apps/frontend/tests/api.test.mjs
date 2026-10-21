@@ -35,6 +35,7 @@ import {
   searchWiki,
   scrapeUrl,
   confirmScrape,
+  acceptScrapeCandidate,
   triggerAdminProjectPipeline,
   toV1Path,
   triggerPipeline,
@@ -294,6 +295,31 @@ test('confirmScrape marks an invalid success response as an unknown outcome', as
       () => confirmScrape('opaque-reference', 'project-1'),
       (error) => error instanceof ApiError && error.status === 0,
     );
+  } finally {
+    globalThis.fetch = originalFetch;
+  }
+});
+
+test('acceptScrapeCandidate returns a candidate-bound uncertain result after response loss without retrying', async () => {
+  configureApiAuth({
+    getAccessToken: () => 'jwt-token',
+    refreshAccessToken: async () => null,
+    onUnauthorized: () => undefined,
+  });
+  globalThis.window = { localStorage: { getItem: () => 'project-1' } };
+  const originalFetch = globalThis.fetch;
+  let requests = 0;
+  globalThis.fetch = async () => {
+    requests++;
+    throw new TypeError('Failed to fetch');
+  };
+
+  try {
+    const result = await acceptScrapeCandidate('candidate-id', 'candidate-revision', 'Edited title', 'project-1');
+    assert.equal(result.status, 'uncertain');
+    assert.equal(result.candidate_id, 'candidate-id');
+    assert.equal(result.candidate_revision, 'candidate-revision');
+    assert.equal(requests, 1);
   } finally {
     globalThis.fetch = originalFetch;
   }

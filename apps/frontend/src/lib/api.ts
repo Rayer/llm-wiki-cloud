@@ -1175,7 +1175,7 @@ export type RawUploadProgressCallback = (progress: number) => void;
 
 export const RAW_UPLOAD_MAX_BYTES = 5 << 20;
 
-export type ScrapeStatus = 'stored' | 'needs_confirmation' | 'rejected' | 'conflict' | 'unavailable' | 'uncertain';
+export type ScrapeStatus = 'preview' | 'stored' | 'needs_confirmation' | 'rejected' | 'conflict' | 'unavailable' | 'uncertain';
 
 export type ScrapeCandidatePreview = {
   title: string;
@@ -1193,6 +1193,8 @@ export type ScrapeResult = {
   status: ScrapeStatus;
   message: string;
   confirmation_ref?: string;
+  candidate_id?: string;
+  candidate_revision?: string;
   expires_at?: string;
   retry_after_seconds?: number;
   preview?: ScrapeCandidatePreview;
@@ -1457,7 +1459,66 @@ async function postScrapeRequest(body: Record<string, unknown>, projectId?: stri
 }
 
 export async function scrapeUrl(url: string, projectId?: string, tags?: string[]): Promise<ScrapeResult> {
-  return postScrapeRequest({ url, ...(tags?.length ? { tags } : {}) }, projectId);
+  return postCandidateRequest('/api/v1/raw/scrape', { url, ...(tags?.length ? { tags } : {}) }, projectId, 'prepare');
+}
+
+export async function acceptScrapeCandidate(candidateId: string, candidateRevision: string, title: string, projectId?: string): Promise<ScrapeResult> {
+  return postCandidateRequest('/api/v1/raw/scrape/accept', { candidate_id: candidateId, candidate_revision: candidateRevision, title }, projectId, 'commit', {
+    candidate_id: candidateId, candidate_revision: candidateRevision,
+  });
+}
+
+export async function rejectScrapeCandidate(candidateId: string, candidateRevision: string, projectId?: string): Promise<ScrapeResult> {
+  return postCandidateRequest('/api/v1/raw/scrape/reject', { candidate_id: candidateId, candidate_revision: candidateRevision }, projectId, 'reject');
+}
+
+export async function resolveScrapeCandidate(candidateId: string, projectId?: string): Promise<ScrapeResult> {
+  return postCandidateRequest('/api/v1/raw/scrape/resolve', { candidate_id: candidateId }, projectId, 'resolve', { candidate_id: candidateId });
+}
+
+async function postCandidateRequest(
+  endpoint: string,
+  body: Record<string, unknown>,
+  projectId: string | undefined,
+  action: 'prepare' | 'commit' | 'reject' | 'resolve',
+  identity: Pick<ScrapeResult, 'candidate_id' | 'candidate_revision'> = {},
+): Promise<ScrapeResult> {
+  const state: { dispatched: boolean; pending: boolean; response: Response | null } = { dispatched: false, pending: false, response: null };
+  let response: Response;
+  try {
+    response = await apiFetch(endpoint, {
+      method: 'POST', json: true, projectId, body: JSON.stringify(body),
+      onRequestDispatched: () => { state.dispatched = true; state.pending = true; state.response = null; },
+      onResponseReceived: (received) => { state.pending = false; state.response = received; },
+    });
+  } catch (error) {
+    const known = state.response;
+    if (known && known.status >= 400 && known.status < 500) throw error;
+    if (action === 'prepare') {
+      if (!state.dispatched) throw error;
+      throw new ApiError('URL preview response was lost; no raw article was saved.', 0);
+    }
+    if (!state.dispatched) throw error;
+    if (action === 'commit' || action === 'resolve') {
+      return { status: 'uncertain', message: 'Save status is uncertain. Check save status before retrying.', ...identity };
+    }
+    throw error;
+  }
+  const payload: unknown = await response.json().catch(() => null);
+  if (payload && typeof payload === 'object' && 'status' in payload && 'message' in payload) {
+    return { ...identity, ...(payload as ScrapeResult) };
+  }
+  if (!response.ok && response.status >= 400 && response.status < 500) {
+    const message = payload && typeof payload === 'object' && 'error' in payload && typeof payload.error === 'string' ? payload.error : 'URL intake request was rejected';
+    throw new ApiError(message, response.status, undefined, response.headers.get('X-Request-ID'));
+  }
+  if (action === 'commit' || action === 'resolve') {
+    return { status: 'uncertain', message: 'Save status is uncertain. Check save status before retrying.', ...identity };
+  }
+  if (action === 'prepare') {
+    return { status: 'unavailable', message: 'The preview could not be prepared. No article was saved; try again or use manual capture.' };
+  }
+  return { status: 'uncertain', message: 'Decline status is uncertain. Check candidate status.', ...identity };
 }
 
 export async function confirmScrape(confirmationRef: string, projectId?: string): Promise<ScrapeResult> {

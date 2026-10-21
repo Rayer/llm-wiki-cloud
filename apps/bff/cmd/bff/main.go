@@ -349,6 +349,9 @@ func newProductionQueryExecutorWithStageConfig(cfg config.Config, conceptCache *
 
 type rawScrapeHandler interface {
 	ScrapeRaw(*gin.Context)
+	AcceptScrape(*gin.Context)
+	RejectScrape(*gin.Context)
+	ResolveScrape(*gin.Context)
 }
 
 type rawScrapeHandlerFactory func(scopedClient *gcs.Client, fsClient *firestore.Client) rawScrapeHandler
@@ -618,7 +621,7 @@ func registerRawScrapeRoute(v1 *gin.RouterGroup, gcsClient *gcs.Client, fsClient
 	if rawScrapeFactory == nil {
 		rawScrapeFactory = defaultRawScrapeHandlerFactory
 	}
-	v1.POST("/raw/scrape", func(c *gin.Context) {
+	handlerForRequest := func(c *gin.Context, invoke func(rawScrapeHandler, *gin.Context)) {
 		if gcsClient == nil {
 			c.JSON(http.StatusServiceUnavailable, handlerraw.ErrorResponse{Error: "storage client is not configured"})
 			return
@@ -636,6 +639,18 @@ func registerRawScrapeRoute(v1 *gin.RouterGroup, gcsClient *gcs.Client, fsClient
 		}
 
 		rawScrapeHandler := rawScrapeFactory(gcsClient.WithScope(userID, projectID), fsClient)
-		rawScrapeHandler.ScrapeRaw(c)
+		invoke(rawScrapeHandler, c)
+	}
+	v1.POST("/raw/scrape", func(c *gin.Context) {
+		handlerForRequest(c, func(h rawScrapeHandler, c *gin.Context) { h.ScrapeRaw(c) })
+	})
+	v1.POST("/raw/scrape/accept", func(c *gin.Context) {
+		handlerForRequest(c, func(h rawScrapeHandler, c *gin.Context) { h.AcceptScrape(c) })
+	})
+	v1.POST("/raw/scrape/reject", func(c *gin.Context) {
+		handlerForRequest(c, func(h rawScrapeHandler, c *gin.Context) { h.RejectScrape(c) })
+	})
+	v1.POST("/raw/scrape/resolve", func(c *gin.Context) {
+		handlerForRequest(c, func(h rawScrapeHandler, c *gin.Context) { h.ResolveScrape(c) })
 	})
 }
