@@ -45,14 +45,21 @@ const defaultProfileVaultSchema = "# Vault Schema\n\n" +
 	"Use `[[Article Title]]` wikilinks between notes.\n"
 
 type profileGuidancePin struct {
-	ProfileRevision      int64
-	RequirementsDigest   string
-	Revision             string
-	SchemaVersion        string
-	Content              string
-	BootstrapRef         *profileartifacts.BootstrapGuidanceRef
-	BootstrapStatus      string
-	BootstrapConfirmedAt string
+	ProfileRevision         int64
+	RequirementsDigest      string
+	Revision                string
+	SchemaVersion           string
+	Content                 string
+	BootstrapRef            *profileartifacts.BootstrapGuidanceRef
+	BootstrapStatus         string
+	BootstrapConfirmedAt    string
+	SourceProfileRevision   int64
+	SourceContentGeneration string
+	SourceCandidateID       string
+	SourceInputDigest       string
+	SourceModelVersion      string
+	SourcePromptVersion     string
+	SourceSchemaVersion     string
 }
 
 type profileGuidanceRef struct {
@@ -99,6 +106,7 @@ type profileGuidanceRequirement struct {
 type profileGuidanceCandidate struct {
 	CandidateID        string             `firestore:"candidate_id"`
 	Source             string             `firestore:"source"`
+	BaseRevision       int64              `firestore:"base_revision"`
 	ContentGeneration  string             `firestore:"content_generation"`
 	RequirementsDigest string             `firestore:"requirements_digest"`
 	Guidance           profileGuidanceRef `firestore:"guidance"`
@@ -129,6 +137,11 @@ func pinActiveProfileGuidance(ctx context.Context, cfg workerConfig, objects obj
 func readActiveProfileGuidance(ctx context.Context, client *firestore.Client, cfg workerConfig, objects objectStore) (*profileGuidancePin, error) {
 	if client == nil || objects == nil || !auth.ValidPathSegment(cfg.UserID) || !auth.ValidPathSegment(cfg.ProjectID) {
 		return nil, errors.New("invalid Profile guidance reader input")
+	}
+	if cfg.PipelineReservationID != "" {
+		if pin, handled, err := readPipelineIntentGuidance(ctx, client, cfg, objects); handled || err != nil {
+			return pin, err
+		}
 	}
 	projectID := cfg.UserID + "_" + cfg.ProjectID
 	stateRef := scopedfirestore.Collection(client, "projects").Doc(projectID).Collection("profile").Doc("state")
@@ -187,7 +200,126 @@ func readActiveProfileGuidance(ctx context.Context, client *firestore.Client, cf
 	if err != nil {
 		return nil, err
 	}
-	return &profileGuidancePin{ProfileRevision: state.Revision, RequirementsDigest: profileRequirementsDigest(state.Requirements), Revision: ref.Revision, SchemaVersion: envelope.SchemaVersion, Content: envelope.CompileGuidance}, nil
+	return &profileGuidancePin{
+		ProfileRevision: state.Revision, RequirementsDigest: profileRequirementsDigest(state.Requirements),
+		Revision: ref.Revision, SchemaVersion: envelope.SchemaVersion, Content: envelope.CompileGuidance, BootstrapStatus: "active",
+		SourceProfileRevision:   candidate.BaseRevision,
+		SourceContentGeneration: candidate.ContentGeneration, SourceCandidateID: candidate.CandidateID,
+		SourceInputDigest: ref.InputDigest, SourceModelVersion: ref.ModelVersion,
+		SourcePromptVersion: ref.PromptVersion, SourceSchemaVersion: ref.SchemaVersion,
+	}, nil
+}
+
+type storedPipelineProfileIntent struct {
+	UserID                         string                                 `firestore:"user_id"`
+	ProjectID                      string                                 `firestore:"project_id"`
+	AttemptID                      string                                 `firestore:"attempt_id"`
+	IntentStatus                   string                                 `firestore:"intent_status"`
+	IntentMode                     string                                 `firestore:"intent_mode"`
+	SettlementStatus               string                                 `firestore:"settlement_status"`
+	ProfileRevision                int64                                  `firestore:"profile_revision"`
+	ProfileRequirements            []profileGuidanceRequirement           `firestore:"profile_requirements"`
+	RequirementsDigest             string                                 `firestore:"requirements_digest"`
+	ConsumedGuidanceKind           string                                 `firestore:"consumed_guidance_kind"`
+	ConsumedGuidanceStatus         string                                 `firestore:"consumed_guidance_status"`
+	ConsumedGuidanceRevision       string                                 `firestore:"consumed_guidance_revision"`
+	ConsumedGuidanceSourceRevision int64                                  `firestore:"consumed_guidance_source_revision"`
+	ConsumedGuidanceInputDigest    string                                 `firestore:"consumed_guidance_input_digest"`
+	ConsumedGuidanceModelVersion   string                                 `firestore:"consumed_guidance_model_version"`
+	ConsumedGuidancePromptVersion  string                                 `firestore:"consumed_guidance_prompt_version"`
+	ConsumedGuidanceSchemaVersion  string                                 `firestore:"consumed_guidance_schema_version"`
+	ConsumedActiveGuidance         profileGuidanceRef                     `firestore:"consumed_active_guidance"`
+	ConsumedBootstrapGuidance      *profileartifacts.BootstrapGuidanceRef `firestore:"consumed_bootstrap_guidance"`
+	ActiveCandidateID              string                                 `firestore:"active_candidate_id"`
+	ActiveContentGeneration        string                                 `firestore:"active_content_generation"`
+}
+
+func readPipelineIntentGuidance(ctx context.Context, client *firestore.Client, cfg workerConfig, objects objectStore) (*profileGuidancePin, bool, error) {
+	reservationRef := scopedfirestore.Collection(client, "pipeline_quota_reservations").Doc(cfg.PipelineReservationID)
+	snapshot, err := reservationRef.Get(ctx)
+	if status.Code(err) == codes.NotFound {
+		return nil, false, nil
+	}
+	if err != nil {
+		return nil, true, fmt.Errorf("read Pipeline Profile snapshot: %w", err)
+	}
+	var reservation storedPipelineProfileIntent
+	if err := snapshot.DataTo(&reservation); err != nil {
+		return nil, true, fmt.Errorf("decode Pipeline Profile snapshot: %w", err)
+	}
+	if reservation.IntentMode == "" {
+		return nil, false, nil
+	}
+	if reservation.UserID != cfg.UserID || reservation.ProjectID != cfg.ProjectID || reservation.AttemptID != cfg.PipelineReservationID ||
+		(reservation.IntentStatus != "invoking" && reservation.IntentStatus != "invocation_unknown" && reservation.IntentStatus != "compiling") ||
+		reservation.SettlementStatus != "pending" || reservation.ProfileRevision < 0 ||
+		!isLowerSHA256(reservation.RequirementsDigest) || profileRequirementsDigest(reservation.ProfileRequirements) != reservation.RequirementsDigest {
+		return nil, true, errors.New("Pipeline Profile snapshot is incomplete or no longer owned by this run")
+	}
+	if reservation.ProfileRevision == 0 {
+		if len(reservation.ProfileRequirements) != 0 || reservation.ConsumedGuidanceKind != "none" {
+			return nil, true, errors.New("Pipeline Profile snapshot has invalid empty Profile evidence")
+		}
+		return nil, true, nil
+	}
+	pin := &profileGuidancePin{
+		ProfileRevision: reservation.ProfileRevision, RequirementsDigest: reservation.RequirementsDigest,
+		BootstrapStatus:         reservation.ConsumedGuidanceStatus,
+		SourceProfileRevision:   reservation.ConsumedGuidanceSourceRevision,
+		SourceContentGeneration: reservation.ActiveContentGeneration,
+		SourceCandidateID:       reservation.ActiveCandidateID,
+		SourceInputDigest:       reservation.ConsumedGuidanceInputDigest,
+		SourceModelVersion:      reservation.ConsumedGuidanceModelVersion,
+		SourcePromptVersion:     reservation.ConsumedGuidancePromptVersion,
+		SourceSchemaVersion:     reservation.ConsumedGuidanceSchemaVersion,
+	}
+	switch reservation.ConsumedGuidanceKind {
+	case "none":
+		if len(reservation.ProfileRequirements) != 0 || reservation.ConsumedGuidanceRevision != "" {
+			return nil, true, errors.New("Pipeline Profile snapshot is missing guidance for saved requirements")
+		}
+	case "active":
+		ref := reservation.ConsumedActiveGuidance
+		if len(reservation.ProfileRequirements) == 0 || ref.Revision == "" || ref.Revision != reservation.ConsumedGuidanceRevision ||
+			ref.InputDigest != reservation.ConsumedGuidanceInputDigest || ref.ModelVersion != reservation.ConsumedGuidanceModelVersion ||
+			ref.PromptVersion != reservation.ConsumedGuidancePromptVersion || ref.SchemaVersion != reservation.ConsumedGuidanceSchemaVersion ||
+			!profileartifacts.IsSHA256(ref.Revision) || !profileartifacts.IsSHA256(ref.InputDigest) ||
+			ref.SchemaVersion != profileGuidanceSchemaVersion || reservation.ActiveCandidateID == "" ||
+			reservation.ActiveContentGeneration == "" || reservation.ConsumedGuidanceSourceRevision < 1 {
+			return nil, true, errors.New("Pipeline active guidance snapshot is incomplete")
+		}
+		data, _, err := objects.Read(ctx, workerProjectObjectPrefix(cfg)+profileartifacts.GuidanceObjectPath(ref.Revision), 0, profileGuidanceReadLimit)
+		if err != nil {
+			return nil, true, fmt.Errorf("read pinned active Profile guidance artifact: %w", err)
+		}
+		envelope, err := validateProfileGuidanceArtifact(data, ref)
+		if err != nil {
+			return nil, true, err
+		}
+		pin.Revision, pin.SchemaVersion, pin.Content = ref.Revision, envelope.SchemaVersion, envelope.CompileGuidance
+	case "bootstrap":
+		ref := reservation.ConsumedBootstrapGuidance
+		if ref == nil || len(reservation.ProfileRequirements) == 0 || ref.Revision != reservation.ConsumedGuidanceRevision ||
+			ref.ProfileRevision != reservation.ProfileRevision || ref.InputDigest != reservation.RequirementsDigest ||
+			ref.InputDigest != reservation.ConsumedGuidanceInputDigest || ref.ModelVersion != reservation.ConsumedGuidanceModelVersion ||
+			ref.PromptVersion != reservation.ConsumedGuidancePromptVersion || ref.SchemaVersion != reservation.ConsumedGuidanceSchemaVersion {
+			return nil, true, errors.New("Pipeline bootstrap guidance snapshot is incomplete")
+		}
+		data, _, err := objects.Read(ctx, workerProjectObjectPrefix(cfg)+profileartifacts.BootstrapObjectPath(ref.Revision), 0, profileGuidanceReadLimit)
+		if err != nil {
+			return nil, true, fmt.Errorf("read pinned bootstrap Profile guidance artifact: %w", err)
+		}
+		envelope, err := profileartifacts.ValidateBootstrapGuidance(data, *ref)
+		if err != nil {
+			return nil, true, fmt.Errorf("validate pinned bootstrap Profile guidance artifact: %w", err)
+		}
+		refCopy := *ref
+		pin.BootstrapRef = &refCopy
+		pin.Revision, pin.SchemaVersion, pin.Content = ref.Revision, envelope.SchemaVersion, envelope.CompileGuidance
+	default:
+		return nil, true, errors.New("Pipeline Profile snapshot has an unknown guidance source")
+	}
+	return pin, true, nil
 }
 
 func readConfirmedBootstrapProfileGuidance(ctx context.Context, state profileGuidanceState, cfg workerConfig, objects objectStore) (*profileGuidancePin, error) {
@@ -223,6 +355,9 @@ func readConfirmedBootstrapProfileGuidance(ctx context.Context, state profileGui
 		ProfileRevision: state.Revision, RequirementsDigest: bootstrap.InputDigest,
 		Revision: bootstrap.Revision, SchemaVersion: envelope.SchemaVersion, Content: envelope.CompileGuidance,
 		BootstrapRef: &ref, BootstrapStatus: bootstrap.Status, BootstrapConfirmedAt: *bootstrap.ConfirmedAt,
+		SourceProfileRevision: bootstrap.ProfileRevision, SourceInputDigest: bootstrap.InputDigest,
+		SourceModelVersion: bootstrap.ModelVersion, SourcePromptVersion: bootstrap.PromptVersion,
+		SourceSchemaVersion: bootstrap.SchemaVersion,
 	}, nil
 }
 
@@ -345,7 +480,7 @@ func recordProfileCompileReceipt(ctx context.Context, cfg workerConfig, manifest
 		return err
 	}
 	receipt := profileruntime.CompileReceipt{
-		UserID: cfg.UserID, ProjectID: cfg.ProjectID, ExecutionID: cfg.ExecutionID,
+		UserID: cfg.UserID, ProjectID: cfg.ProjectID, ExecutionID: cfg.ExecutionID, PipelineReservationID: cfg.PipelineReservationID,
 		ProfileRevision: pin.ProfileRevision, RequirementsDigest: pin.RequirementsDigest,
 		ContentGeneration: manifest.GenerationID, ManifestSHA256: profileartifacts.SHA256(data), CanonicalConceptsDigest: manifestConceptDigest(manifest), ManifestGeneration: objectGeneration, CreatedAt: time.Now().UTC(),
 	}
@@ -363,7 +498,21 @@ func recordProfileCompileReceipt(ctx context.Context, cfg workerConfig, manifest
 	if pin.BootstrapRef != nil {
 		ref := *pin.BootstrapRef
 		receipt.ConsumedBootstrapGuidance = &ref
+	} else if pin.Revision != "" {
+		receipt.ConsumedActiveGuidance = &profileartifacts.DerivedRef{
+			Revision: pin.Revision, InputDigest: pin.SourceInputDigest,
+			ModelVersion: pin.SourceModelVersion, PromptVersion: pin.SourcePromptVersion,
+			SchemaVersion: pin.SourceSchemaVersion,
+		}
 	}
+	receipt.ConsumedGuidanceStatus = pin.BootstrapStatus
+	receipt.ConsumedGuidanceSourceRevision = pin.SourceProfileRevision
+	receipt.ConsumedGuidanceSourceContentGeneration = pin.SourceContentGeneration
+	receipt.ConsumedGuidanceSourceCandidateID = pin.SourceCandidateID
+	receipt.ConsumedGuidanceInputDigest = pin.SourceInputDigest
+	receipt.ConsumedGuidanceModelVersion = pin.SourceModelVersion
+	receipt.ConsumedGuidancePromptVersion = pin.SourcePromptVersion
+	receipt.ConsumedGuidanceSchemaVersion = pin.SourceSchemaVersion
 	return persistProfileCompileReceipt(ctx, receipt)
 }
 

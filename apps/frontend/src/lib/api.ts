@@ -25,6 +25,16 @@ export type PipelineExecution = {
     content_generation?: string;
     kind?: 'none' | 'active' | 'bootstrap' | string;
     revision: string | null;
+    saved_profile_revision?: number;
+    saved_profile_input_digest?: string;
+    source_profile_revision?: number;
+    source_profile_input_digest?: string;
+    source_model_version?: string;
+    source_prompt_version?: string;
+    source_schema_version?: string;
+    source_candidate_id?: string;
+    source_content_generation?: string;
+    source_status?: string;
   } | null;
   duration?: string | number | null;
   started_at?: string | null;
@@ -642,14 +652,16 @@ export async function recompileAll(projectId: string): Promise<PipelineResult> {
     || payload.status !== 'accepted'
     || payload.compile_mode !== 'full'
     || payload.project_id !== projectId
-    || !asString(payload.execution_id)
+    || (!asString(payload.execution_id) && !asString(payload.intent_id))
   ) {
     throw new ApiError('Invalid recompile response', 502);
   }
   return {
     status: 'accepted',
     compile_mode: 'full',
-    execution_id: asString(payload.execution_id),
+    ...(asString(payload.execution_id) ? { execution_id: asString(payload.execution_id) } : {}),
+    ...(asString(payload.intent_id) ? { intent_id: asString(payload.intent_id) } : {}),
+    ...(asString(payload.intent_status) ? { intent_status: asString(payload.intent_status) } : {}),
     project_id: projectId,
     ...(payload.quota == null ? {} : { quota: normalizePipelineQuota(payload.quota) }),
   };
@@ -1236,6 +1248,8 @@ export type ScheduledPipelineStatus = {
 export type PipelineResult = {
   status?: 'accepted' | string;
   execution_id?: string;
+  intent_id?: string;
+  intent_status?: string;
   project_id?: string;
   compile_mode?: 'incremental' | 'full' | string;
   message?: string;
@@ -1247,8 +1261,37 @@ export type PipelineResult = {
 
 export type AdminPipelineResult = PipelineResult & { stage?: string };
 
+export type PipelinePreparedGuidance = {
+  kind: 'active' | 'bootstrap' | string;
+  status?: string;
+  revision?: string;
+  source_profile_revision?: number;
+  source_input_digest?: string;
+  model_version?: string;
+  prompt_version?: string;
+  schema_version?: string;
+  candidate_id?: string;
+  content_generation?: string;
+};
+
+export type PipelineIntentStatus = {
+  id: string;
+  status: string;
+  compile_mode: 'incremental' | 'full' | string;
+  execution_id?: string;
+  saved_profile_revision?: number;
+  saved_profile_input_digest?: string;
+  prepared_guidance?: PipelinePreparedGuidance | null;
+  error_stage?: string;
+  error_code?: string;
+  error_message?: string;
+  created_at?: string;
+  updated_at?: string;
+};
+
 export type PipelineStatus = {
   last_execution?: PipelineExecution | null;
+  pipeline_intent?: PipelineIntentStatus | null;
   project_id?: string;
   quota?: PipelineQuota | null;
   full_quota?: PipelineQuota | null;
@@ -1477,11 +1520,40 @@ export async function triggerPipeline(): Promise<PipelineResult> {
   return response.json();
 }
 
+export async function retryPipeline(intentId: string, projectId: string): Promise<PipelineResult> {
+  const response = await apiFetch('/api/v1/pipeline/retry', {
+    method: 'POST',
+    json: true,
+    body: JSON.stringify({ intent_id: intentId }),
+    projectId,
+  });
+  const payload: unknown = await response.json().catch(() => null);
+  if (!response.ok) {
+    throw new ApiError(profileApiError(payload, `Pipeline retry failed (${response.status})`), response.status, undefined, response.headers.get('X-Request-ID'));
+  }
+  if (!isRecord(payload) || payload.status !== 'accepted' || !asString(payload.intent_id)) {
+    throw new ApiError('Invalid Pipeline retry response', 502);
+  }
+  return {
+    status: 'accepted',
+    intent_id: asString(payload.intent_id),
+    intent_status: asString(payload.intent_status),
+    execution_id: asString(payload.execution_id),
+    project_id: asString(payload.project_id),
+    compile_mode: asString(payload.compile_mode),
+    ...(payload.quota == null ? {} : { quota: normalizePipelineQuota(payload.quota) }),
+  };
+}
+
 export function getPipelineStatus(): Promise<PipelineStatus>;
 export function getPipelineStatus(projectId: string, executionId?: string): Promise<PipelineStatus>;
-export async function getPipelineStatus(projectId?: string, executionId?: string): Promise<PipelineStatus> {
-  const query = executionId ? `?execution_id=${encodeURIComponent(executionId)}` : '';
-  return requestJson<PipelineStatus>(`/api/v1/pipeline/status${query}`, { projectId });
+export function getPipelineStatus(projectId: string, executionId?: string, intentId?: string): Promise<PipelineStatus>;
+export async function getPipelineStatus(projectId?: string, executionId?: string, intentId?: string): Promise<PipelineStatus> {
+  const query = new URLSearchParams();
+  if (executionId) query.set('execution_id', executionId);
+  if (intentId) query.set('intent_id', intentId);
+  const suffix = query.size > 0 ? `?${query.toString()}` : '';
+  return requestJson<PipelineStatus>(`/api/v1/pipeline/status${suffix}`, { projectId });
 }
 
 export async function getPipelineLog(logUrl: string, projectId?: string): Promise<string> {

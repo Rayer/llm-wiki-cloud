@@ -9,6 +9,7 @@ import {
   ApiError,
   getRecompileAllCapability,
   getPipelineStatus,
+  retryPipeline,
   scrapeUrl,
   confirmScrape,
   recompileAll,
@@ -16,6 +17,7 @@ import {
   type RecompileAllCapability,
   type ScrapeResult,
   type PipelineQuota,
+  type PipelineIntentStatus,
   type PipelineResult,
   type PipelineStatus,
 } from '@/lib/api';
@@ -80,6 +82,10 @@ function hasNewRaw(quota: PipelineQuota | null | undefined): boolean {
   return quota.new_raw_files >= quota.min_new_raw;
 }
 
+function isPendingPipelineIntent(intent: PipelineIntentStatus | null | undefined): intent is PipelineIntentStatus {
+  return Boolean(intent && ['preparing', 'ready', 'invoking', 'invocation_unknown', 'compiling'].includes(intent.status));
+}
+
 export function PipelineClient() {
   const { t, locale } = useT();
   const { isDemoSession, currentProject, token } = useWorkspace();
@@ -89,6 +95,7 @@ export function PipelineClient() {
   const [scrapeLoading, setScrapeLoading] = useState(false);
   const [scrapeError, setScrapeError] = useState<string | null>(null);
   const [scrapeResult, setScrapeResult] = useState<ScrapeResult | null>(null);
+  const [pipelineStatusReadFailedProjectId, setPipelineStatusReadFailedProjectId] = useState<string | null>(null);
   const pipelineExecutionOwnerRef = useRef<PipelineExecutionOwner | null>(null);
   const pipelineTerminalPollScopeRef = useRef<PipelineRequestScope | null>(null);
   const pipelinePollErrorNotifiedRef = useRef(false);
@@ -99,6 +106,7 @@ export function PipelineClient() {
         generation: pipelineProjectContextRef.current.generation + 1,
       };
       pipelineExecutionOwnerRef.current = null;
+      setPipelineStatusReadFailedProjectId(null);
       scrapeRequestGenerationRef.current += 1;
       setScrapeLoading(false);
       setScrapeError(null);
@@ -120,6 +128,7 @@ export function PipelineClient() {
   const [compileMode, setCompileMode] = useState<'incremental' | 'full'>('incremental');
   const [fullCapability, setFullCapability] = useState<RecompileAllCapability | null>(null);
   const [loading, setLoading] = useState<string | null>(null); // 'pipeline'
+  const [retryingPipeline, setRetryingPipeline] = useState(false);
   const [toasts, setToasts] = useState<Toast[]>([]);
   const [showPrereq, setShowPrereq] = useState(false);
   const refreshPipelineStatus = useCallback(async (scope: PipelineRequestScope) => {
@@ -133,6 +142,7 @@ export function PipelineClient() {
         || latest.generation !== scope.contextGeneration
         || status.project_id !== scope.projectId
       ) return;
+      setPipelineStatusReadFailedProjectId(null);
       const executionOwner = pipelineExecutionOwnerRef.current;
       if (
         executionOwner?.projectId === scope.projectId
@@ -194,23 +204,31 @@ export function PipelineClient() {
     };
   }, [stopPipelinePolling]);
 
-  const pollPipelineStatus = useCallback(async (scope: PipelineRequestScope, executionId?: string) => {
+  const pollPipelineStatus = useCallback(async (scope: PipelineRequestScope, executionId?: string, intentId?: string) => {
     if (!isPipelineRequestCurrent(scope)) return;
     const terminalScope = pipelineTerminalPollScopeRef.current;
     if (terminalScope && isSamePipelineRequestScope(terminalScope, scope)) return;
     try {
-      const status = await getPipelineStatus(scope.projectId, executionId);
+      const status = intentId
+        ? await getPipelineStatus(scope.projectId, executionId, intentId)
+        : executionId
+          ? await getPipelineStatus(scope.projectId, executionId)
+          : await getPipelineStatus(scope.projectId);
       if (!isPipelineRequestCurrent(scope) || status.project_id !== scope.projectId) return;
       const currentTerminalScope = pipelineTerminalPollScopeRef.current;
       if (currentTerminalScope && isSamePipelineRequestScope(currentTerminalScope, scope)) return;
       const executionStatus = status.last_execution?.status;
-      const isTerminal = executionStatus === 'SUCCEEDED' || executionStatus === 'FAILED';
+      const intentStatus = status.pipeline_intent?.status;
+      const isTerminal = intentStatus
+        ? intentStatus === 'succeeded' || intentStatus === 'failed' || intentStatus === 'cancelled'
+        : executionStatus === 'SUCCEEDED' || executionStatus === 'FAILED';
       if (isTerminal) {
         // A later interval tick may already be in flight; it cannot regress this terminal result.
         pipelineTerminalPollScopeRef.current = scope;
         stopPipelinePolling();
       }
       pipelinePollErrorNotifiedRef.current = false;
+      setPipelineStatusReadFailedProjectId(null);
       setPipelineStatus(status);
 
       if (isTerminal) {
@@ -265,6 +283,7 @@ export function PipelineClient() {
     };
     if (!projectId) {
       setPipelineStatus(null);
+      setPipelineStatusReadFailedProjectId(null);
       setFullCapability(null);
       setPipelineResult(null);
       setLoading(null);
@@ -272,15 +291,68 @@ export function PipelineClient() {
     }
 
     setPipelineStatus(null);
+    setPipelineStatusReadFailedProjectId(null);
     setFullCapability(null);
     setPipelineResult(null);
     setLoading(null);
     void (async () => {
+      let resumableIntent: PipelineIntentStatus | null = null;
+      const resumeIntent = (intent: PipelineIntentStatus) => {
+        if (!isCurrentContext()) return;
+        const resumedScope: PipelineRequestScope = {
+          projectId,
+          contextGeneration: context.generation,
+          requestGeneration: ++pipelineRequestGenerationRef.current,
+        };
+        stopPipelinePolling();
+        pipelineTerminalPollScopeRef.current = null;
+        pipelineExecutionOwnerRef.current = { projectId, contextGeneration: context.generation };
+        const poll = () => void pollPipelineStatus(resumedScope, intent.execution_id, intent.id);
+        pipelinePollRef.current = setInterval(poll, 5000);
+        poll();
+      };
+      let initialStatusReadFailed = false;
+      let recoveryReadInFlight = false;
+      const retryInitialStatus = async () => {
+        if (!isCurrentContext() || recoveryReadInFlight) return;
+        recoveryReadInFlight = true;
+        try {
+          const status = await getPipelineStatus(projectId);
+          if (!isCurrentContext()) return;
+          if (status.project_id !== projectId) {
+            setPipelineStatusReadFailedProjectId(projectId);
+            return;
+          }
+          setPipelineStatus(status);
+          setPipelineStatusReadFailedProjectId(null);
+          stopPipelinePolling();
+          if (isPendingPipelineIntent(status.pipeline_intent)) resumeIntent(status.pipeline_intent);
+        } catch {
+          if (isCurrentContext()) setPipelineStatusReadFailedProjectId(projectId);
+        } finally {
+          recoveryReadInFlight = false;
+        }
+      };
       try {
         const status = await getPipelineStatus(projectId);
-        if (isCurrentContext() && status.project_id === projectId) setPipelineStatus(status);
+        if (isCurrentContext()) {
+          if (status.project_id === projectId) {
+            setPipelineStatus(status);
+            setPipelineStatusReadFailedProjectId(null);
+            resumableIntent = status.pipeline_intent ?? null;
+          } else {
+            initialStatusReadFailed = true;
+            setPipelineStatusReadFailedProjectId(projectId);
+          }
+        }
       } catch {
-        // Initial status is best-effort; Run still surfaces trigger errors via toast.
+        if (isCurrentContext()) {
+          initialStatusReadFailed = true;
+          setPipelineStatusReadFailedProjectId(projectId);
+        }
+      }
+      if (initialStatusReadFailed && isCurrentContext()) {
+        pipelinePollRef.current = setInterval(() => void retryInitialStatus(), 5000);
       }
       try {
         const capability = await getRecompileAllCapability(projectId);
@@ -288,12 +360,16 @@ export function PipelineClient() {
       } catch {
         if (isCurrentContext()) setFullCapability(null);
       }
+      if (isCurrentContext() && isPendingPipelineIntent(resumableIntent)) {
+        resumeIntent(resumableIntent);
+      }
     })();
 
     return () => {
       cancelled = true;
+      stopPipelinePolling();
     };
-  }, [currentProject?.id]);
+  }, [currentProject?.id, pollPipelineStatus, stopPipelinePolling]);
 
   const handleScrape = useCallback(async (event: FormEvent) => {
     event.preventDefault();
@@ -409,17 +485,14 @@ export function PipelineClient() {
         setPipelineStatus((prev) => ({
           ...prev,
           project_id: projectId,
-          last_execution: {
-            status: 'RUNNING',
-            name: result.execution_id ?? null,
-            compile_mode: result.compile_mode ?? compileMode,
-            ...(compileMode === 'full'
-              ? {
-                  publication_outcome: 'unknown',
-                  consumed_guidance: { status: 'unavailable', revision: null },
-                }
-              : {}),
-          },
+          ...(result.intent_id ? {
+            pipeline_intent: {
+              id: result.intent_id,
+              status: result.intent_status ?? 'preparing',
+              compile_mode: result.compile_mode ?? compileMode,
+              ...(result.execution_id ? { execution_id: result.execution_id } : {}),
+            },
+          } : {}),
           quota: prev?.quota
             ? { ...prev.quota, already_running: true, allowed: false }
             : prev?.quota,
@@ -428,10 +501,10 @@ export function PipelineClient() {
             : prev?.full_quota,
         }));
         const pollThisExecution = () => {
-          void pollPipelineStatus(latestRequestScope, result.execution_id);
+          void pollPipelineStatus(latestRequestScope, result.execution_id, result.intent_id);
         };
         pipelinePollRef.current = setInterval(pollThisExecution, 5000);
-        void pollPipelineStatus(latestRequestScope, result.execution_id);
+        void pollPipelineStatus(latestRequestScope, result.execution_id, result.intent_id);
       }
     } catch (err) {
       // Network / 5xx / stale UI race: show server message.
@@ -443,7 +516,64 @@ export function PipelineClient() {
     }
   }, [addToast, compileMode, fullCapability?.allowed, isDemoSession, isPipelineRequestCurrent, pollPipelineStatus, stopPipelinePolling, t]);
 
-  const pipelineStatusText = pipelineStatusBadge(pipelineStatus);
+  const handleRetryPipeline = useCallback(async () => {
+    const context = pipelineProjectContextRef.current;
+    const projectId = context.projectId;
+    const intent = pipelineStatus?.pipeline_intent;
+    if (!projectId || !intent?.id || intent.status !== 'failed') return;
+    const requestScope: PipelineRequestScope = {
+      projectId,
+      contextGeneration: context.generation,
+      requestGeneration: ++pipelineRequestGenerationRef.current,
+    };
+    let latestRequestScope = requestScope;
+    setRetryingPipeline(true);
+    try {
+      const result = await retryPipeline(intent.id, projectId);
+      if (!isPipelineRequestCurrent(requestScope)) return;
+      setPipelineResult(result);
+      stopPipelinePolling();
+      pipelineTerminalPollScopeRef.current = null;
+      pipelinePollErrorNotifiedRef.current = false;
+      latestRequestScope = { ...requestScope, requestGeneration: ++pipelineRequestGenerationRef.current };
+      pipelineExecutionOwnerRef.current = { projectId, contextGeneration: context.generation };
+      setPipelineStatus((prev) => ({
+        ...prev,
+        project_id: projectId,
+        ...(result.intent_id ? {
+          pipeline_intent: {
+            id: result.intent_id,
+            status: result.intent_status ?? 'preparing',
+            compile_mode: result.compile_mode ?? intent.compile_mode,
+            ...(result.execution_id ? { execution_id: result.execution_id } : {}),
+          },
+        } : {}),
+        quota: result.quota ?? prev?.quota,
+      }));
+      const poll = () => void pollPipelineStatus(latestRequestScope, result.execution_id, result.intent_id);
+      pipelinePollRef.current = setInterval(poll, 5000);
+      poll();
+    } catch (err) {
+      if (isPipelineRequestCurrent(requestScope)) addToast(err instanceof Error ? err.message : t('Pipeline.retryFailed'), 'error');
+    } finally {
+      if (isPipelineRequestCurrent(latestRequestScope)) setRetryingPipeline(false);
+    }
+  }, [addToast, isPipelineRequestCurrent, pipelineStatus?.pipeline_intent, pollPipelineStatus, stopPipelinePolling, t]);
+
+  const pipelineIntentLabel = (() => {
+    switch (pipelineStatus?.pipeline_intent?.status) {
+      case 'preparing': return t('Pipeline.intentPreparing');
+      case 'ready': return t('Pipeline.intentReady');
+      case 'invoking': return t('Pipeline.intentInvoking');
+      case 'invocation_unknown': return t('Pipeline.intentUnknown');
+      case 'compiling': return t('Pipeline.intentCompiling');
+      case 'succeeded': return t('Pipeline.intentSucceeded');
+      case 'failed': return t('Pipeline.intentFailed');
+      case 'cancelled': return t('Pipeline.intentCancelled');
+      default: return null;
+    }
+  })();
+  const pipelineStatusText = pipelineIntentLabel ?? pipelineStatusBadge(pipelineStatus);
 
   const lastExecutionStatus = pipelineStatus?.last_execution?.status;
   const executionRunning = lastExecutionStatus === 'RUNNING';
@@ -451,6 +581,10 @@ export function PipelineClient() {
     pipelineStatus?.quota?.already_running === true && lastExecutionStatus !== 'RUNNING';
   const hasProject = Boolean(currentProject);
   const quota = compileMode === 'full' ? fullCapability?.quota : pipelineStatus?.quota;
+  const pipelineIntentPending = ['preparing', 'ready', 'invoking', 'invocation_unknown', 'compiling'].includes(
+    pipelineStatus?.pipeline_intent?.status ?? '',
+  );
+  const pipelineStatusReadFailed = Boolean(projectId && pipelineStatusReadFailedProjectId === projectId);
   const effectiveQuota = useMemo(
     () => (
       staleAlreadyRunning && quota
@@ -459,7 +593,7 @@ export function PipelineClient() {
     ),
     [quota, staleAlreadyRunning],
   );
-    const blocked = compileMode === 'full' && !fullCapability
+  const blocked = pipelineIntentPending || pipelineStatusReadFailed || (compileMode === 'full' && !fullCapability
       ? true
       : (compileMode === 'full' && !fullCapability?.allowed) || isRunBlocked({
     isDemoSession,
@@ -468,7 +602,7 @@ export function PipelineClient() {
     executionRunning,
     quota: effectiveQuota,
     requiresNewRaw: compileMode === 'incremental',
-  });
+  }));
   const helper = blockReasonMessage({
     isDemoSession,
     hasProject,
@@ -613,7 +747,7 @@ export function PipelineClient() {
               type="button"
               onClick={handleRunPipeline}
               disabled={blocked}
-              title={helper || undefined}
+              title={pipelineStatusReadFailed ? t('Pipeline.statusReadFailed') : helper || undefined}
               aria-disabled={blocked}
               className="rounded-md bg-white px-4 py-2 text-sm font-semibold text-black transition hover:bg-emerald-200 disabled:cursor-not-allowed disabled:opacity-50"
             >
@@ -642,6 +776,11 @@ export function PipelineClient() {
           <p className="mt-2 text-xs text-zinc-500" data-testid="pipeline-quota-line">
             {quotaLine}
           </p>
+          {pipelineStatusReadFailed ? (
+            <p className="mt-2 text-xs text-amber-200/90" data-testid="pipeline-status-read-failed" role="status">
+              {t('Pipeline.statusReadFailed')}
+            </p>
+          ) : null}
           {pipelineStatus?.scheduled_pipeline ? (
             <section className="mt-2 space-y-1 rounded border border-white/5 bg-zinc-950/40 p-2 text-xs text-zinc-400" data-testid="pipeline-scheduled-pipeline">
               <h4 className="font-medium text-zinc-200">{t('Pipeline.scheduledTitle')}</h4>
@@ -725,6 +864,51 @@ export function PipelineClient() {
           {pipelineResult?.message ? (
             <p className="mt-2 text-xs text-zinc-500">{pipelineResult.message}</p>
           ) : null}
+          {pipelineStatus?.pipeline_intent ? (
+            <div className="mt-2 space-y-1 rounded border border-white/5 bg-zinc-950/40 p-2 text-xs text-zinc-400" data-testid="pipeline-intent-status">
+              <p>{t('Pipeline.intentStatus')}: {pipelineIntentLabel ?? pipelineStatus.pipeline_intent.status}</p>
+              {pipelineStatus.pipeline_intent.saved_profile_revision !== undefined ? (
+                <p className="break-all">
+                  {t('Pipeline.savedProfileSnapshot')}: v{pipelineStatus.pipeline_intent.saved_profile_revision}
+                  {pipelineStatus.pipeline_intent.saved_profile_input_digest ? ` · ${pipelineStatus.pipeline_intent.saved_profile_input_digest}` : ''}
+                </p>
+              ) : null}
+              {pipelineStatus.pipeline_intent.prepared_guidance ? (
+                <p className="break-all">
+                  {t('Pipeline.preparedGuidance')}: {pipelineStatus.pipeline_intent.prepared_guidance.kind}
+                  {pipelineStatus.pipeline_intent.prepared_guidance.revision ? ` · ${pipelineStatus.pipeline_intent.prepared_guidance.revision}` : ''}
+                  {pipelineStatus.pipeline_intent.prepared_guidance.source_profile_revision !== undefined
+                    ? ` · ${t('Pipeline.sourceProfileRevision')} ${pipelineStatus.pipeline_intent.prepared_guidance.source_profile_revision}` : ''}
+                  {pipelineStatus.pipeline_intent.prepared_guidance.source_input_digest
+                    ? ` · ${pipelineStatus.pipeline_intent.prepared_guidance.source_input_digest}` : ''}
+                </p>
+              ) : null}
+              {pipelineStatus.last_execution?.compile_mode !== 'full' && pipelineStatus.last_execution?.consumed_guidance?.status === 'available' ? (
+                <p className="break-all">
+                  {t('Pipeline.consumedGuidance')}: {pipelineStatus.last_execution.consumed_guidance.kind}
+                  {pipelineStatus.last_execution.consumed_guidance.revision ? ` · ${pipelineStatus.last_execution.consumed_guidance.revision}` : ''}
+                  {pipelineStatus.last_execution.consumed_guidance.source_profile_revision !== undefined
+                    ? ` · ${t('Pipeline.sourceProfileRevision')} ${pipelineStatus.last_execution.consumed_guidance.source_profile_revision}` : ''}
+                  {pipelineStatus.last_execution.consumed_guidance.source_content_generation
+                    ? ` · ${pipelineStatus.last_execution.consumed_guidance.source_content_generation}` : ''}
+                </p>
+              ) : null}
+              {pipelineStatus.pipeline_intent.error_message ? (
+                <p className="text-amber-200/90" role="alert">{pipelineStatus.pipeline_intent.error_message}</p>
+              ) : null}
+              {pipelineStatus.pipeline_intent.status === 'failed' ? (
+                <button
+                  type="button"
+                  onClick={() => void handleRetryPipeline()}
+                  disabled={retryingPipeline}
+                  className="mt-1 rounded border border-white/10 px-2 py-1 font-medium text-zinc-200 transition hover:bg-white/5 disabled:opacity-50"
+                  data-testid="pipeline-retry"
+                >
+                  {retryingPipeline ? t('Pipeline.intentRetrying') : t('Pipeline.intentRetry')}
+                </button>
+              ) : null}
+            </div>
+          ) : null}
           {pipelineStatus?.last_execution?.compile_mode === 'full' ? (
             <div className="mt-2 space-y-1 rounded border border-white/5 bg-zinc-950/40 p-2 text-xs text-zinc-400" data-testid="pipeline-full-evidence">
               <p>
@@ -743,6 +927,24 @@ export function PipelineClient() {
                       ? 'Pipeline.guidanceBootstrap'
                       : 'Pipeline.guidanceActive')} ${pipelineStatus.last_execution.consumed_guidance.revision ?? ''}`}
               </p>
+              {pipelineStatus.last_execution.consumed_guidance?.status === 'available' ? (
+                <p className="break-all">
+                  {pipelineStatus.last_execution.consumed_guidance.source_profile_revision !== undefined
+                    ? `${t('Pipeline.sourceProfileRevision')} ${pipelineStatus.last_execution.consumed_guidance.source_profile_revision}` : ''}
+                  {pipelineStatus.last_execution.consumed_guidance.source_content_generation
+                    ? ` · ${pipelineStatus.last_execution.consumed_guidance.source_content_generation}` : ''}
+                  {pipelineStatus.last_execution.consumed_guidance.source_candidate_id
+                    ? ` · ${pipelineStatus.last_execution.consumed_guidance.source_candidate_id}` : ''}
+                  {pipelineStatus.last_execution.consumed_guidance.source_profile_input_digest
+                    ? ` · ${pipelineStatus.last_execution.consumed_guidance.source_profile_input_digest}` : ''}
+                  {pipelineStatus.last_execution.consumed_guidance.source_model_version
+                    ? ` · ${pipelineStatus.last_execution.consumed_guidance.source_model_version}` : ''}
+                  {pipelineStatus.last_execution.consumed_guidance.source_prompt_version
+                    ? ` · ${pipelineStatus.last_execution.consumed_guidance.source_prompt_version}` : ''}
+                  {pipelineStatus.last_execution.consumed_guidance.source_schema_version
+                    ? ` · ${pipelineStatus.last_execution.consumed_guidance.source_schema_version}` : ''}
+                </p>
+              ) : null}
             </div>
           ) : null}
         </div>

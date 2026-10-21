@@ -3,6 +3,7 @@ package handler
 import (
 	"encoding/json"
 	"errors"
+	"time"
 
 	scopedfirestore "github.com/rayer/llm-wiki-bff/internal/firestore"
 	"github.com/rayer/llm-wiki-bff/internal/gcs"
@@ -241,11 +242,51 @@ type PipelineExecutionResponse struct {
 
 // PipelineConsumedGuidanceEvidence contains only the non-secret consumed Profile reference.
 type PipelineConsumedGuidanceEvidence struct {
-	Status            string  `json:"status"`
-	ExecutionID       string  `json:"execution_id,omitempty"`
-	ContentGeneration string  `json:"content_generation,omitempty"`
-	Kind              string  `json:"kind,omitempty"`
-	Revision          *string `json:"revision"`
+	Status                   string  `json:"status"`
+	ExecutionID              string  `json:"execution_id,omitempty"`
+	ContentGeneration        string  `json:"content_generation,omitempty"`
+	Kind                     string  `json:"kind,omitempty"`
+	Revision                 *string `json:"revision"`
+	SavedProfileRevision     int64   `json:"saved_profile_revision,omitempty"`
+	SavedProfileInputDigest  string  `json:"saved_profile_input_digest,omitempty"`
+	SourceProfileRevision    int64   `json:"source_profile_revision,omitempty"`
+	SourceProfileInputDigest string  `json:"source_profile_input_digest,omitempty"`
+	SourceModelVersion       string  `json:"source_model_version,omitempty"`
+	SourcePromptVersion      string  `json:"source_prompt_version,omitempty"`
+	SourceSchemaVersion      string  `json:"source_schema_version,omitempty"`
+	SourceCandidateID        string  `json:"source_candidate_id,omitempty"`
+	SourceContentGeneration  string  `json:"source_content_generation,omitempty"`
+	SourceStatus             string  `json:"source_status,omitempty"`
+}
+
+// PipelineIntentStatus describes the saved input and prepared source for an accepted run.
+// PreparedGuidance is an expected source; ConsumedGuidance on the execution is worker receipt evidence.
+type PipelineIntentStatus struct {
+	ID                      string                    `json:"id"`
+	Status                  string                    `json:"status"`
+	CompileMode             string                    `json:"compile_mode"`
+	ExecutionID             string                    `json:"execution_id,omitempty"`
+	SavedProfileRevision    int64                     `json:"saved_profile_revision"`
+	SavedProfileInputDigest string                    `json:"saved_profile_input_digest"`
+	PreparedGuidance        *PipelinePreparedGuidance `json:"prepared_guidance,omitempty"`
+	ErrorStage              string                    `json:"error_stage,omitempty"`
+	ErrorCode               string                    `json:"error_code,omitempty"`
+	ErrorMessage            string                    `json:"error_message,omitempty"`
+	CreatedAt               *time.Time                `json:"created_at,omitempty"`
+	UpdatedAt               *time.Time                `json:"updated_at,omitempty"`
+}
+
+type PipelinePreparedGuidance struct {
+	Kind                  string `json:"kind"`
+	Status                string `json:"status,omitempty"`
+	Revision              string `json:"revision,omitempty"`
+	SourceProfileRevision int64  `json:"source_profile_revision,omitempty"`
+	SourceInputDigest     string `json:"source_input_digest,omitempty"`
+	ModelVersion          string `json:"model_version,omitempty"`
+	PromptVersion         string `json:"prompt_version,omitempty"`
+	SchemaVersion         string `json:"schema_version,omitempty"`
+	CandidateID           string `json:"candidate_id,omitempty"`
+	ContentGeneration     string `json:"content_generation,omitempty"`
 }
 
 // PipelineFailureDiagnostic is the allowlisted, worker-produced failure
