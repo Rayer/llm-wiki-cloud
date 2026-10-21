@@ -1310,9 +1310,19 @@ func (r *firestoreProfileRepository) ProfileCompileCandidateReady(ctx context.Co
 // ProfileBootstrapCompileCandidateReady promotes confirmed generation-free
 // writing guidance into the first generation-bound compile candidate. It is
 // valid only before any active Profile tuple exists.
-func (r *firestoreProfileRepository) ProfileBootstrapCompileCandidateReady(ctx context.Context, userID, projectID, generation string, revision int64, requirementsDigest string, consumedBootstrapRef *profileartifacts.BootstrapGuidanceRef, dictionary, guidance ProfileDerivedRef, preview ProfilePreview) (ProfileState, error) {
+func (r *firestoreProfileRepository) ProfileBootstrapCompileCandidateReady(ctx context.Context, userID, projectID, generation string, revision int64, requirementsDigest string, consumedBootstrapRef *profileartifacts.BootstrapGuidanceRef, dictionary, guidance ProfileDerivedRef, preview ProfilePreview, pipelineReservationIDs ...string) (ProfileState, error) {
 	if r == nil || r.client == nil || strings.TrimSpace(generation) == "" {
 		return ProfileState{}, errProfileTransitionInvalid
+	}
+	if len(pipelineReservationIDs) > 1 {
+		return ProfileState{}, errProfileTransitionInvalid
+	}
+	pipelineReservationID := ""
+	if len(pipelineReservationIDs) == 1 {
+		pipelineReservationID = strings.TrimSpace(pipelineReservationIDs[0])
+		if pipelineReservationID != "" && !auth.ValidPathSegment(pipelineReservationID) {
+			return ProfileState{}, errProfileTransitionInvalid
+		}
 	}
 	_, stateRef := r.profileRefs(userID, projectID)
 	reconcileRef := profileCompileReconcileRef(stateRef, generation)
@@ -1359,7 +1369,14 @@ func (r *firestoreProfileRepository) ProfileBootstrapCompileCandidateReady(ctx c
 			result, stale = current, true
 			return nil
 		}
-		if current.Active != nil || !profileBootstrapRefMatches(current.BootstrapGuidance, consumedBootstrapRef, revision, currentDigest) ||
+		bootstrapMatches := profileBootstrapRefMatches(current.BootstrapGuidance, consumedBootstrapRef, revision, currentDigest)
+		if !bootstrapMatches && pipelineReservationID != "" {
+			bootstrapMatches, err = profileBootstrapIntentRefMatchesTx(tx, r.client, pipelineReservationID, userID, projectID, revision, currentDigest, current.BootstrapGuidance, consumedBootstrapRef)
+			if err != nil {
+				return err
+			}
+		}
+		if current.Active != nil || !bootstrapMatches ||
 			!isLowerProfileDigest(dictionary.Revision) || dictionary.InputDigest != currentDigest || dictionary.SchemaVersion != "profile.dictionary.v1" ||
 			strings.TrimSpace(dictionary.ModelVersion) == "" || strings.TrimSpace(dictionary.PromptVersion) == "" ||
 			!isLowerProfileDigest(guidance.Revision) || guidance.InputDigest != currentDigest || guidance.SchemaVersion != "profile.guidance.v1" ||
@@ -1468,6 +1485,49 @@ func profileBootstrapRefMatches(bootstrap *ProfileBootstrapGuidance, consumed *p
 	return *consumed == expected && expected.SchemaVersion == profileartifacts.BootstrapGuidanceSchema &&
 		isLowerProfileDigest(expected.Revision) && isLowerProfileDigest(expected.InputDigest) &&
 		strings.TrimSpace(expected.ModelVersion) != "" && strings.TrimSpace(expected.PromptVersion) != ""
+}
+
+func profileBootstrapIntentRefMatchesTx(tx *firestore.Transaction, client *firestore.Client, reservationID, userID, projectID string, revision int64, digest string, current *ProfileBootstrapGuidance, consumed *profileartifacts.BootstrapGuidanceRef) (bool, error) {
+	if current == nil || consumed == nil || current.Status != profileBootstrapPreviewReady ||
+		current.ProfileRevision != revision || current.InputDigest != digest {
+		return false, nil
+	}
+	expected := profileartifacts.BootstrapGuidanceRef{
+		Revision: current.Revision, ProfileRevision: current.ProfileRevision, InputDigest: current.InputDigest,
+		ModelVersion: current.ModelVersion, PromptVersion: current.PromptVersion, SchemaVersion: current.SchemaVersion,
+	}
+	if *consumed != expected || !isLowerProfileDigest(expected.Revision) || !isLowerProfileDigest(expected.InputDigest) ||
+		expected.SchemaVersion != profileartifacts.BootstrapGuidanceSchema || strings.TrimSpace(expected.ModelVersion) == "" || strings.TrimSpace(expected.PromptVersion) == "" {
+		return false, nil
+	}
+	ref := scopedfirestore.Collection(client, "pipeline_quota_reservations").Doc(reservationID)
+	snapshot, err := tx.Get(ref)
+	if status.Code(err) == codes.NotFound {
+		return false, nil
+	}
+	if err != nil {
+		return false, err
+	}
+	var intent struct {
+		UserID                    string                                 `firestore:"user_id"`
+		ProjectID                 string                                 `firestore:"project_id"`
+		AttemptID                 string                                 `firestore:"attempt_id"`
+		IntentMode                string                                 `firestore:"intent_mode"`
+		IntentStatus              string                                 `firestore:"intent_status"`
+		SettlementStatus          string                                 `firestore:"settlement_status"`
+		ProfileRevision           int64                                  `firestore:"profile_revision"`
+		RequirementsDigest        string                                 `firestore:"requirements_digest"`
+		ConsumedGuidanceKind      string                                 `firestore:"consumed_guidance_kind"`
+		ConsumedBootstrapGuidance *profileartifacts.BootstrapGuidanceRef `firestore:"consumed_bootstrap_guidance"`
+	}
+	if err := snapshot.DataTo(&intent); err != nil {
+		return false, err
+	}
+	return intent.UserID == userID && intent.ProjectID == projectID && intent.AttemptID == reservationID && intent.IntentMode != "" &&
+		(intent.IntentStatus == "invoking" || intent.IntentStatus == "invocation_unknown" || intent.IntentStatus == "compiling" || intent.IntentStatus == "succeeded") &&
+		(intent.SettlementStatus == "pending" || intent.SettlementStatus == "charged") &&
+		intent.ProfileRevision == revision && intent.RequirementsDigest == digest && intent.ConsumedGuidanceKind == "bootstrap" &&
+		intent.ConsumedBootstrapGuidance != nil && *intent.ConsumedBootstrapGuidance == expected, nil
 }
 
 func profileCompileReconcileRef(stateRef *firestore.DocumentRef, generation string) *firestore.DocumentRef {
@@ -1992,7 +2052,7 @@ type profileWorkerRepository interface {
 	ProfileJobTransition(context.Context, string, string, int64, string, string, string, int64, string, string, string, bool) (ProfileState, error)
 	ProfileCompileReconcileRequested(context.Context, string, string, string, int64, string) error
 	ProfileCompileCandidateReady(context.Context, string, string, string, int64, string, ProfileDerivedRef, ProfilePreview) (ProfileState, error)
-	ProfileBootstrapCompileCandidateReady(context.Context, string, string, string, int64, string, *profileartifacts.BootstrapGuidanceRef, ProfileDerivedRef, ProfileDerivedRef, ProfilePreview) (ProfileState, error)
+	ProfileBootstrapCompileCandidateReady(context.Context, string, string, string, int64, string, *profileartifacts.BootstrapGuidanceRef, ProfileDerivedRef, ProfileDerivedRef, ProfilePreview, ...string) (ProfileState, error)
 }
 
 // ClaimProfileDerivation starts one due server-scheduled derivation attempt.
@@ -2068,5 +2128,5 @@ func (h *Handler) CompleteProfileBootstrapCompileCandidate(ctx context.Context, 
 	if err := success.validate(); err != nil {
 		return ProfileState{}, err
 	}
-	return worker.ProfileBootstrapCompileCandidateReady(ctx, userID, projectID, success.manifest.GenerationID, revision, requirementsDigest, success.consumedBootstrapGuidance, dictionary, guidance, preview)
+	return worker.ProfileBootstrapCompileCandidateReady(ctx, userID, projectID, success.manifest.GenerationID, revision, requirementsDigest, success.consumedBootstrapGuidance, dictionary, guidance, preview, success.pipelineReservationID)
 }

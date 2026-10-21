@@ -219,6 +219,7 @@ func main() {
 	defer stopSignal()
 	if localMode && nativeWorker != nil {
 		go nativeWorker.RunQuotaReconciler(stop)
+		go hV1.RunPipelineQuotaReconciler(stop)
 	} else {
 		go hV1.RunPipelineQuotaReconciler(stop)
 	}
@@ -533,6 +534,7 @@ func newProductionRouter(
 		v1.GET("/concepts/:id", hV1.GetConcept)
 		v1.POST("/import", hV1.Import)
 		v1.POST("/pipeline/run", hV1.PipelineRun)
+		v1.POST("/pipeline/retry", hV1.PipelineRetry)
 		v1.GET("/pipeline/status", hV1.PipelineStatus)
 		v1.GET("/pipeline/log", hV1.PipelineLog)
 		registerRawScrapeRoute(v1, gcsClient, fsClient, rawScrapeFactory)

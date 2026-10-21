@@ -2,12 +2,12 @@ package v1
 
 import (
 	"context"
+	"encoding/json"
 	"errors"
 	"fmt"
 	"net/http"
 	"net/http/httptest"
 	"strings"
-	"sync"
 	"testing"
 	"time"
 
@@ -21,25 +21,7 @@ import (
 	"github.com/rayer/llm-wiki-bff/internal/localpipeline"
 	"github.com/rayer/llm-wiki-bff/internal/pipelinequota"
 	"github.com/rayer/llm-wiki-bff/internal/search"
-	"google.golang.org/api/iterator"
 )
-
-type failFirstInvokeSettlement struct {
-	*scopedfirestore.Client
-	mu        sync.Mutex
-	failFirst bool
-}
-
-func (s *failFirstInvokeSettlement) SettleQuotaReservation(ctx context.Context, reservationID, executionStatus string) (string, error) {
-	s.mu.Lock()
-	fail := s.failFirst
-	s.failFirst = false
-	s.mu.Unlock()
-	if fail {
-		return "", errors.New("fixture first settlement failure")
-	}
-	return s.Client.SettleQuotaReservation(ctx, reservationID, executionStatus)
-}
 
 type definitePreinvokeFailure struct {
 	startCalls             int
@@ -59,7 +41,7 @@ func (*definitePreinvokeFailure) Running(context.Context, string, string) (bool,
 	return false, nil
 }
 
-func TestHandlerFailureMarkerRecoversThroughNativeQuotaReconciler(t *testing.T) {
+func TestPipelineIntentFailureAndScheduledMarkerRecoveryRemainFenced(t *testing.T) {
 	if !requireLoopbackEmulator(t, "FIRESTORE_EMULATOR_HOST") || !requireLoopbackEmulator(t, "STORAGE_EMULATOR_HOST") {
 		t.Skip("requires loopback Firestore and Storage emulators")
 	}
@@ -120,14 +102,13 @@ func TestHandlerFailureMarkerRecoversThroughNativeQuotaReconciler(t *testing.T) 
 	if _, err := storeRoot.WithScope(userID, projectID).WriteBytes(ctx, []byte("# Pending source\n\nFixture input."), "raw/source.md"); err != nil {
 		t.Fatalf("write local raw fixture: %v", err)
 	}
-	settlements := &failFirstInvokeSettlement{Client: fsClient, failFirst: true}
 	pipeline := &definitePreinvokeFailure{}
 	h := New(storeRoot, fsClient, search.NewIndex(), conceptcache.New(), nil, nil)
 	h.SetAccountLookup(func(context.Context, string) (*auth.UserRecord, error) {
 		return &auth.UserRecord{Status: auth.AccountActive, Role: "member"}, nil
 	})
 	h.SetPipelineQuotaConfig(2, 60, 1, nil)
-	h.SetPipelineQuotaStore(settlements)
+	h.SetPipelineQuotaStore(fsClient)
 	h.SetLocalPipelineExecutor(pipeline)
 	if h.localPipeline != pipeline {
 		t.Fatal("handler local pipeline test seam was not configured")
@@ -139,39 +120,37 @@ func TestHandlerFailureMarkerRecoversThroughNativeQuotaReconciler(t *testing.T) 
 	c.Set("userID", userID)
 	c.Set("projectID", projectID)
 	h.PipelineRun(c)
-	if recorder.Code != http.StatusInternalServerError {
-		t.Fatalf("pre-invoke failure status=%d body=%s", recorder.Code, recorder.Body.String())
+	if recorder.Code != http.StatusAccepted {
+		t.Fatalf("pre-invoke failure status=%d body=%s; want accepted durable intent", recorder.Code, recorder.Body.String())
 	}
 	if pipeline.startCalls != 1 || pipeline.acceptedExecutionCount != 0 {
 		t.Fatalf("native invocation counter start=%d accepted=%d; want one definite rejection and zero accepted executions", pipeline.startCalls, pipeline.acceptedExecutionCount)
 	}
-	pending, err := fsClient.ListPendingQuotaReservations(ctx)
-	if err != nil || len(pending) != 1 {
-		t.Fatalf("pending reservation count=%d err=%v; want marker-backed pending reservation", len(pending), err)
+	var response struct {
+		Status       string `json:"status"`
+		IntentID     string `json:"intent_id"`
+		IntentStatus string `json:"intent_status"`
+		Message      string `json:"message"`
 	}
-	manualReservation := pending[0]
-	if manualReservation.UserID != userID || manualReservation.ProjectID != projectID || manualReservation.ExecutionID != "" {
-		t.Fatalf("manual reservation after failed first settlement=%+v", manualReservation)
+	if err := json.Unmarshal(recorder.Body.Bytes(), &response); err != nil {
+		t.Fatalf("decode accepted Pipeline intent: %v", err)
 	}
-	marker, err := storeRoot.WithScope(userID, projectID).ReadFileLimited(ctx, "cache/pipeline-"+manualReservation.ID+".failure.json", 4<<10+1)
-	if err != nil || len(marker) == 0 {
-		objects := storageClient.Bucket(bucket).Objects(ctx, &cloudstorage.Query{Prefix: "local_scopes/" + scope + "/"})
-		var names []string
-		for {
-			attrs, listErr := objects.Next()
-			if listErr == iterator.Done {
-				break
-			}
-			if listErr != nil {
-				names = append(names, "list-error:"+listErr.Error())
-				break
-			}
-			names = append(names, attrs.Name)
-		}
-		t.Fatalf("handler producer marker bytes=%d err=%v objects=%v", len(marker), err, names)
+	if response.Status != "accepted" || response.IntentID == "" || response.IntentStatus != "failed" || response.Message == "" {
+		t.Fatalf("accepted Pipeline response=%+v; want a persisted actionable failure", response)
 	}
-	if strings.Contains(string(marker), `"attempt_id"`) {
-		t.Fatalf("manual marker must retain legacy wire shape: %s", marker)
+	manualReservation, found, err := fsClient.GetQuotaReservation(ctx, response.IntentID)
+	if err != nil || !found || manualReservation.UserID != userID || manualReservation.ProjectID != projectID ||
+		manualReservation.ExecutionID != "" || manualReservation.IntentStatus != "failed" ||
+		manualReservation.SettlementStatus != "released" || manualReservation.IntentErrorMessage == "" {
+		t.Fatalf("persisted pre-invoke failure reservation=%+v found=%t err=%v", manualReservation, found, err)
+	}
+	runsToday, _, _, err := fsClient.LoadQuotaState(ctx, userID, projectID)
+	if err != nil || runsToday != 0 {
+		t.Fatalf("failed intent quota runs_today=%d err=%v; want release to zero", runsToday, err)
+	}
+	active, err := fsClient.PipelineAdmissionActive(ctx, userID, projectID)
+	if err != nil || active {
+		t.Fatalf("failed intent project claim active=%t err=%v; want released", active, err)
 	}
 
 	manager, err := localpipeline.New(localpipeline.Config{
@@ -180,68 +159,11 @@ func TestHandlerFailureMarkerRecoversThroughNativeQuotaReconciler(t *testing.T) 
 	if err != nil {
 		t.Fatalf("create native manager: %v", err)
 	}
-	// cmd/bff starts this native loop in local mode; let its first pass perform
-	// the actual producer-to-consumer recovery, then repeat reconciliation to
-	// verify idempotency.
-	reconcilerCtx, cancelReconciler := context.WithCancel(ctx)
-	reconcilerDone := make(chan struct{})
-	go func() {
-		manager.RunQuotaReconciler(reconcilerCtx)
-		close(reconcilerDone)
-	}()
-	deadline := time.NewTimer(10 * time.Second)
-	defer deadline.Stop()
-	for {
-		recovered, found, err := fsClient.GetQuotaReservation(ctx, manualReservation.ID)
-		if err != nil {
-			cancelReconciler()
-			t.Fatalf("read reservation during native loop: %v", err)
-		}
-		if found && recovered.SettlementStatus == "refunded" {
-			break
-		}
-		select {
-		case <-deadline.C:
-			cancelReconciler()
-			t.Fatalf("native RunQuotaReconciler did not refund reservation; latest=%+v", recovered)
-		case <-time.After(10 * time.Millisecond):
-		case <-ctx.Done():
-			cancelReconciler()
-			t.Fatalf("test context ended before native recovery: %v", ctx.Err())
-		}
-	}
-	cancelReconciler()
-	select {
-	case <-reconcilerDone:
-	case <-time.After(5 * time.Second):
-		t.Fatal("native RunQuotaReconciler did not stop after cancellation")
-	}
 	if err := manager.ReconcilePendingQuotaSettlements(ctx); err != nil {
-		t.Fatalf("repeat native settlement recovery: %v", err)
+		t.Fatalf("idempotent quota reconciliation after confirmed failure: %v", err)
 	}
-	recovered, found, err := fsClient.GetQuotaReservation(ctx, manualReservation.ID)
-	if err != nil || !found || recovered.SettlementStatus != "refunded" || recovered.Outcome != "FAILED" {
-		t.Fatalf("native recovery reservation=%+v found=%t err=%v; want refunded", recovered, found, err)
-	}
-	runsToday, _, _, err := fsClient.LoadQuotaState(ctx, userID, projectID)
-	if err != nil || runsToday != 0 {
-		t.Fatalf("manual runs_today=%d err=%v; want refund to zero", runsToday, err)
-	}
-	active, err := fsClient.PipelineAdmissionActive(ctx, userID, projectID)
-	if err != nil || active {
-		t.Fatalf("manual project claim active=%t err=%v; want released", active, err)
-	}
-	executions, err := scopedfirestore.Collection(fsClient.Raw(), "executions").Documents(ctx).GetAll()
-	if err != nil {
-		t.Fatalf("read local execution counter: %v", err)
-	}
-	for _, execution := range executions {
-		if execution.Data()["quota_reservation_id"] == manualReservation.ID {
-			t.Fatalf("rejected manual invocation unexpectedly created execution %s", execution.Ref.ID)
-		}
-	}
-	if again, err := fsClient.ListPendingQuotaReservations(ctx); err != nil || len(again) != 0 {
-		t.Fatalf("pending reservations after manual recovery=%+v err=%v; want none", again, err)
+	if again, stillFound, err := fsClient.GetQuotaReservation(ctx, response.IntentID); err != nil || !stillFound || again.SettlementStatus != "released" || again.IntentStatus != "failed" {
+		t.Fatalf("repeated reconciliation changed failed intent=%+v found=%t err=%v", again, stillFound, err)
 	}
 
 	const scheduledProject = "scheduled-stale-marker"

@@ -796,7 +796,22 @@
     "guidanceUnavailable": "This execution's guidance version is not available yet",
     "guidanceNone": "No Profile guidance was recorded",
     "guidanceActive": "Active Profile guidance",
-    "guidanceBootstrap": "Confirmed bootstrap guidance"
+    "guidanceBootstrap": "Bootstrap guidance",
+    "intentStatus": "Run state",
+    "intentPreparing": "Preparing saved Profile guidance…",
+    "intentReady": "Ready to start…",
+    "intentInvoking": "Starting Pipeline…",
+    "intentUnknown": "Checking whether Pipeline started…",
+    "intentCompiling": "Pipeline compiling…",
+    "intentSucceeded": "Pipeline complete",
+    "intentFailed": "Pipeline needs attention",
+    "intentCancelled": "Pipeline cancelled",
+    "savedProfileSnapshot": "Saved Profile snapshot",
+    "preparedGuidance": "Prepared guidance source",
+    "sourceProfileRevision": "source Profile revision",
+    "intentRetry": "Retry this run",
+    "intentRetrying": "Retrying…",
+    "retryFailed": "Pipeline retry failed"
   },
   "Raw": {
     "title": "Raw files",

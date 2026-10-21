@@ -36,23 +36,24 @@ import (
 )
 
 type workerConfig struct {
-	VaultPath            string
-	Bucket               string
-	DataDir              string
-	UserID               string
-	ProjectID            string
-	LocalCloudScope      string
-	ExecutionID          string
-	APIKey               string
-	InitVault            bool
-	Postprocess          bool
-	StopOnError          bool
-	Workspace            bool
-	WorkspaceDir         string
-	PipelineConfigPath   string
-	PipelineBindingsPath string
-	SuppressOutput       bool
-	SuggestedQueries     bool
+	VaultPath             string
+	Bucket                string
+	DataDir               string
+	UserID                string
+	ProjectID             string
+	LocalCloudScope       string
+	ExecutionID           string
+	PipelineReservationID string
+	APIKey                string
+	InitVault             bool
+	Postprocess           bool
+	StopOnError           bool
+	Workspace             bool
+	WorkspaceDir          string
+	PipelineConfigPath    string
+	PipelineBindingsPath  string
+	SuppressOutput        bool
+	SuggestedQueries      bool
 	// CleanRebuild skips materializing prior generation outputs (wiki/.synto/
 	// cache artifacts) so Synto cold-starts from raw only. Default false.
 	CleanRebuild             bool
@@ -477,6 +478,9 @@ func configFromEnvironment(cfg workerConfig) workerConfig {
 	}
 	if cfg.ExecutionID == "" && !cfg.executionIDSet {
 		cfg.ExecutionID = envOr("EXECUTION_ID", envOr("CLOUD_RUN_EXECUTION", ""))
+	}
+	if cfg.PipelineReservationID == "" {
+		cfg.PipelineReservationID = envOr("PIPELINE_RESERVATION_ID", "")
 	}
 	if cfg.APIKey == "" && !cfg.apiKeySet {
 		cfg.APIKey = envOr("LLM_API_KEY", envOr("DEEPSEEK_API_KEY", ""))

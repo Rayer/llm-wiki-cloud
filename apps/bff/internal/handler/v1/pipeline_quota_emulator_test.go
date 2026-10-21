@@ -30,6 +30,7 @@ import (
 	"github.com/rayer/llm-wiki-bff/internal/handler"
 	"github.com/rayer/llm-wiki-bff/internal/localfs"
 	"github.com/rayer/llm-wiki-bff/internal/pipelinequota"
+	"github.com/rayer/llm-wiki-bff/internal/profileartifacts"
 	"github.com/rayer/llm-wiki-bff/internal/search"
 	storeapi "github.com/rayer/llm-wiki-bff/internal/storage"
 	"google.golang.org/api/idtoken"
@@ -198,12 +199,20 @@ func TestPipelineQuotaCloudRunHandlerEmulator(t *testing.T) {
 	assertQuotaState(t, ctx, fsClient, userID, failedProject, 1, pipelinequota.DayKeyUTC(time.Now()))
 
 	// A provider-confirmed failed invoke is a definite failure and refunds its
-	// reservation in the request path.
+	// reservation in the accepted intent path, with the failure persisted for
+	// status polling and the shared project claim released.
 	invokeProject := "invoke-failure"
 	seedQuotaRaw(t, ctx, quotaClient, storageClient, bucket, scope, userID, invokeProject)
-	triggerQuotaPipeline(t, h, userID, invokeProject, http.StatusInternalServerError)
+	failedIntent := triggerQuotaPipelineIntent(t, h, userID, invokeProject)
+	if failedIntent.IntentStatus != "failed" || failedIntent.IntentID == "" || failedIntent.ExecutionID != "" || failedIntent.Message == "" {
+		t.Fatalf("definite invoke failure intent=%+v; want actionable failed intent without execution", failedIntent)
+	}
 	assertQuotaState(t, ctx, fsClient, userID, invokeProject, 0, pipelinequota.DayKeyUTC(time.Now()))
-	assertQuotaProjectReservation(t, ctx, fsClient, invokeProject, "refunded")
+	assertQuotaProjectReservation(t, ctx, fsClient, invokeProject, "released")
+	failedIntentReservation, exists, err := fsClient.GetQuotaReservation(ctx, failedIntent.IntentID)
+	if err != nil || !exists || failedIntentReservation.IntentStatus != "failed" || failedIntentReservation.SettlementStatus != "released" || failedIntentReservation.IntentErrorMessage != failedIntent.Message {
+		t.Fatalf("definite invoke failure was not durably settled: reservation=%+v exists=%t err=%v", failedIntentReservation, exists, err)
+	}
 
 	// A definite 403 still records no-execution evidence when the first
 	// settlement consumes its entire recovery deadline. The real GCS emulator
@@ -719,14 +728,24 @@ func TestPipelineQuotaCloudRunHandlerEmulator(t *testing.T) {
 	unknownInvokeContext.Set("userID", userID)
 	unknownInvokeContext.Set("projectID", unknownInvokeProject)
 	unknownInvokeHandler.PipelineRun(unknownInvokeContext)
-	if unknownInvokeRecorder.Code != http.StatusInternalServerError {
-		t.Fatalf("unknown invocation status=%d want 500: %s", unknownInvokeRecorder.Code, unknownInvokeRecorder.Body.String())
+	if unknownInvokeRecorder.Code != http.StatusAccepted {
+		t.Fatalf("unknown invocation status=%d want accepted intent: %s", unknownInvokeRecorder.Code, unknownInvokeRecorder.Body.String())
+	}
+	var unknownIntent struct {
+		IntentID     string `json:"intent_id"`
+		IntentStatus string `json:"intent_status"`
+		Message      string `json:"message"`
+	}
+	if err := json.Unmarshal(unknownInvokeRecorder.Body.Bytes(), &unknownIntent); err != nil || unknownIntent.IntentID == "" ||
+		unknownIntent.IntentStatus != "invocation_unknown" || unknownIntent.Message == "" {
+		t.Fatalf("unknown invocation response=%+v err=%v; want durable unknown status", unknownIntent, err)
 	}
 	if !transportFailureObserved {
 		t.Fatal("transport-unknown fixture did not exercise invoke transport failure")
 	}
 	unknownInvokeReservation := findQuotaReservation(t, ctx, fsClient, userID, unknownInvokeProject)
-	if unknownInvokeReservation.ExecutionID != "" || unknownInvokeReservation.SettlementStatus != "pending" {
+	if unknownInvokeReservation.ID != unknownIntent.IntentID || unknownInvokeReservation.ExecutionID != "" ||
+		unknownInvokeReservation.IntentStatus != "invocation_unknown" || unknownInvokeReservation.SettlementStatus != "pending" {
 		t.Fatalf("transport-unknown reservation=%+v, want pending with no execution", unknownInvokeReservation)
 	}
 	if _, err := quotaClient.WithScope(userID, unknownInvokeProject).ReadFileLimited(ctx, "cache/pipeline-"+unknownInvokeReservation.ID+".failure.json", 4<<10+1); !errors.Is(err, storeapi.ErrObjectNotExist) {
@@ -774,6 +793,138 @@ func TestFirestoreReserveQuotaFullModeAndIncrementalRemainDistinct(t *testing.T)
 	}
 	if runs, _, _, err := client.LoadQuotaState(context.Background(), userID, incrementalProject); err != nil || runs != 0 {
 		t.Fatalf("incremental no-work request mutated quota runs=%d err=%v", runs, err)
+	}
+}
+
+func TestPipelineIntentFreezesInputAndRetryUsesSameSnapshot(t *testing.T) {
+	if !requireLoopbackEmulator(t, "FIRESTORE_EMULATOR_HOST") {
+		t.Skip("requires loopback Firestore emulator")
+	}
+	const project, database = "llm-wiki-cloud", "llm-wiki-cloud-local"
+	unique := fmt.Sprintf("%d", time.Now().UnixNano())
+	userID, projectID := "lwc415-intent-user-"+unique, "project-"+unique
+	scope := "lwc415-intent-" + unique
+	t.Setenv("GOOGLE_CLOUD_PROJECT", project)
+	t.Setenv("FIRESTORE_DATABASE_ID", database)
+	t.Setenv("LOCAL_CLOUD_SCOPE", scope)
+	client, err := scopedfirestore.NewClientWithDatabaseAndScope(project, database, "", "", scope)
+	if err != nil {
+		t.Fatalf("create loopback Firestore client: %v", err)
+	}
+	ctx, cancel := context.WithTimeout(context.Background(), 20*time.Second)
+	defer cancel()
+	firstID, retryID := "pr-"+unique, "pr-retry-"+unique
+	profileRef := scopedfirestore.Collection(client.Raw(), "projects").Doc(userID + "_" + projectID).Collection("profile").Doc("state")
+	t.Cleanup(func() {
+		for _, ref := range []*cloudfirestore.DocumentRef{
+			profileRef,
+			scopedfirestore.Collection(client.Raw(), "pipeline_quota").Doc(scopedfirestore.QuotaDocID(userID, projectID)),
+			scopedfirestore.Collection(client.Raw(), "pipeline_quota_reservations").Doc(firstID),
+			scopedfirestore.Collection(client.Raw(), "pipeline_quota_reservations").Doc(retryID),
+		} {
+			if _, err := ref.Delete(context.Background()); err != nil && status.Code(err) != codes.NotFound {
+				t.Errorf("delete owned intent fixture %s: %v", ref.Path, err)
+			}
+		}
+		if err := client.Close(); err != nil {
+			t.Errorf("close Firestore client: %v", err)
+		}
+	})
+
+	requirementsV1 := []ProfileRequirement{{ID: "r1", Text: "saved Profile V1"}}
+	digestV1 := profileRequirementsDigest(requirementsV1)
+	if _, err := profileRef.Set(ctx, map[string]interface{}{
+		"project_id": projectID, "revision": int64(1),
+		"requirements": []interface{}{map[string]interface{}{"id": "r1", "text": "saved Profile V1"}},
+	}); err != nil {
+		t.Fatalf("seed saved Profile V1: %v", err)
+	}
+	limits := pipelinequota.Limits{DailyLimit: 5, Cooldown: time.Hour, MinNewRaw: 1}
+	_, reserved, err := client.ReserveQuotaForPipelineIntent(ctx, firstID, userID, projectID, limits, time.Now().UTC(), pipelinequota.ModeIncremental, false, false, 1, 0, 0)
+	if err != nil || !reserved {
+		t.Fatalf("reserve first intent: reserved=%t err=%v", reserved, err)
+	}
+	first, exists, err := client.GetPipelineIntent(ctx, userID, projectID, firstID)
+	if err != nil || !exists || first.IntentStatus != "preparing" || first.ProfileRevision != 1 || first.RequirementsDigest != digestV1 {
+		t.Fatalf("first intent=%+v exists=%t err=%v; want preparing V1 snapshot", first, exists, err)
+	}
+	if _, err := profileRef.Set(ctx, map[string]interface{}{
+		"project_id": projectID, "revision": int64(2),
+		"requirements":       []interface{}{map[string]interface{}{"id": "r2", "text": "newer Profile V2"}},
+		"bootstrap_guidance": map[string]interface{}{"status": "pending", "profile_revision": int64(2)},
+	}); err != nil {
+		t.Fatalf("save newer Profile V2: %v", err)
+	}
+	guidanceData, guidanceRef, err := profileartifacts.EncodeBootstrapGuidance(profileartifacts.BootstrapGuidanceEnvelope{
+		SchemaVersion: profileartifacts.BootstrapGuidanceSchema, ProfileRevision: 1, InputDigest: digestV1,
+		ModelVersion: "controlled-provider-model", PromptVersion: "profile.bootstrap.v1", CompileGuidance: "Prepared from saved V1.",
+	})
+	if err != nil || len(guidanceData) == 0 {
+		t.Fatalf("encode V1 run-bound guidance: ref=%+v err=%v", guidanceRef, err)
+	}
+	completed, err := client.CompletePipelineIntentPreparation(ctx, firstID, firstID, userID, projectID, guidanceRef)
+	if err != nil || !completed {
+		t.Fatalf("complete first intent preparation: completed=%t err=%v", completed, err)
+	}
+	updated, exists, err := client.GetPipelineIntent(ctx, userID, projectID, firstID)
+	if err != nil || !exists || updated.IntentStatus != "ready" || updated.ProfileRevision != 1 || updated.RequirementsDigest != digestV1 || updated.ConsumedBootstrapGuidance == nil || *updated.ConsumedBootstrapGuidance != guidanceRef {
+		t.Fatalf("prepared intent=%+v exists=%t err=%v; want V1 guidance pinned after V2 save", updated, exists, err)
+	}
+	profileState, err := profileRef.Get(ctx)
+	if err != nil {
+		t.Fatalf("read Profile after run-bound preparation: %v", err)
+	}
+	profileData := profileState.Data()
+	revision, hasRevision := profileData["revision"].(int64)
+	bootstrap, hasBootstrap := profileData["bootstrap_guidance"].(map[string]interface{})
+	if !hasRevision || revision != 2 || !hasBootstrap || bootstrap["status"] != "pending" {
+		t.Fatalf("preparation overwrote newer Profile state: data=%v err=%v", profileState.Data(), err)
+	}
+
+	start := make(chan struct{})
+	started := make(chan bool, 2)
+	startErr := make(chan error, 2)
+	for range 2 {
+		go func() {
+			<-start
+			_, claimed, claimErr := client.BeginPipelineIntentInvocation(ctx, firstID, firstID, userID, projectID)
+			started <- claimed
+			startErr <- claimErr
+		}()
+	}
+	close(start)
+	winners := 0
+	for range 2 {
+		if err := <-startErr; err != nil {
+			t.Fatalf("claim intent invocation: %v", err)
+		}
+		if <-started {
+			winners++
+		}
+	}
+	if winners != 1 {
+		t.Fatalf("concurrent ready intent invocation winners=%d, want exactly one", winners)
+	}
+	if err := client.MarkPipelineIntentInvocationUnknown(ctx, firstID, firstID, userID, projectID); err != nil {
+		t.Fatalf("record ambiguous invocation: %v", err)
+	}
+	if err := client.FailPipelineIntent(ctx, firstID, firstID, userID, projectID, "invocation_unknown", "pipeline_invocation", "confirmed_not_started", "not started"); err != nil {
+		t.Fatalf("settle confirmed non-invocation: %v", err)
+	}
+	if err := client.FailPipelineIntent(ctx, firstID, firstID, userID, projectID, "invocation_unknown", "pipeline_invocation", "confirmed_not_started", "not started"); err != nil {
+		t.Fatalf("repeat idempotent non-invocation settlement: %v", err)
+	}
+	failed, exists, err := client.GetPipelineIntent(ctx, userID, projectID, firstID)
+	if err != nil || !exists || failed.IntentStatus != "failed" || failed.SettlementStatus != "released" {
+		t.Fatalf("confirmed failed intent=%+v exists=%t err=%v", failed, exists, err)
+	}
+	_, reserved, err = client.ReserveQuotaForPipelineIntentRetry(ctx, retryID, firstID, userID, projectID, limits, time.Now().UTC(), pipelinequota.ModeIncremental, false, false, 1, 0, 0)
+	if err != nil || !reserved {
+		t.Fatalf("reserve retry from frozen intent: reserved=%t err=%v", reserved, err)
+	}
+	retried, exists, err := client.GetPipelineIntent(ctx, userID, projectID, retryID)
+	if err != nil || !exists || retried.AttemptID != retryID || retried.IntentStatus != "ready" || retried.ProfileRevision != 1 || retried.RequirementsDigest != digestV1 || retried.ConsumedBootstrapGuidance == nil || *retried.ConsumedBootstrapGuidance != guidanceRef {
+		t.Fatalf("retry intent=%+v exists=%t err=%v; want distinct attempt with V1 snapshot and guidance", retried, exists, err)
 	}
 }
 
@@ -1173,25 +1324,40 @@ func (p *quotaStorageProxy) SetBlocked(blocked bool) {
 
 func triggerQuotaPipeline(t *testing.T, h *Handler, userID, projectID string, wantStatus int) string {
 	t.Helper()
+	result := triggerQuotaPipelineIntent(t, h, userID, projectID)
+	if wantStatus != http.StatusAccepted {
+		t.Fatalf("triggerQuotaPipeline only accepts status 202, got expected %d", wantStatus)
+	}
+	if result.ExecutionID == "" {
+		t.Fatalf("pipeline trigger for %s returned no execution ID: intent=%+v", projectID, result)
+	}
+	return result.ExecutionID
+}
+
+type pipelineTriggerResult struct {
+	Status       string `json:"status"`
+	ExecutionID  string `json:"execution_id"`
+	IntentID     string `json:"intent_id"`
+	IntentStatus string `json:"intent_status"`
+	Message      string `json:"message"`
+}
+
+func triggerQuotaPipelineIntent(t *testing.T, h *Handler, userID, projectID string) pipelineTriggerResult {
+	t.Helper()
 	recorder := httptest.NewRecorder()
 	c, _ := gin.CreateTestContext(recorder)
 	c.Request = httptest.NewRequest(http.MethodPost, "/api/v1/pipeline/run", nil)
 	c.Set("userID", userID)
 	c.Set("projectID", projectID)
 	h.PipelineRun(c)
-	if recorder.Code != wantStatus {
-		t.Fatalf("pipeline trigger for %s returned %d, want %d: %s", projectID, recorder.Code, wantStatus, recorder.Body.String())
+	if recorder.Code != http.StatusAccepted {
+		t.Fatalf("pipeline trigger for %s returned %d, want %d: %s", projectID, recorder.Code, http.StatusAccepted, recorder.Body.String())
 	}
-	if wantStatus != http.StatusAccepted {
-		return ""
+	var payload pipelineTriggerResult
+	if err := json.Unmarshal(recorder.Body.Bytes(), &payload); err != nil {
+		t.Fatalf("decode Pipeline trigger response for %s: %v (%s)", projectID, err, recorder.Body.String())
 	}
-	var payload struct {
-		ExecutionID string `json:"execution_id"`
-	}
-	if err := json.Unmarshal(recorder.Body.Bytes(), &payload); err != nil || payload.ExecutionID == "" {
-		t.Fatalf("pipeline trigger for %s returned no execution ID: %s (%v)", projectID, recorder.Body.String(), err)
-	}
-	return payload.ExecutionID
+	return payload
 }
 
 func assertQuotaPipelineStatus(t *testing.T, h *Handler, userID, projectID, executionID, wantState, wantReason, wantSettlement string, wantRuns int) {

@@ -474,6 +474,115 @@ func TestReadActiveProfileGuidancePinsImmutableReference(t *testing.T) {
 	}
 }
 
+func TestReadPipelineIntentUsesFrozenGuidanceAfterProfileEdit(t *testing.T) {
+	endpoint := strings.TrimSpace(os.Getenv("FIRESTORE_EMULATOR_HOST"))
+	if endpoint == "" {
+		t.Skip("FIRESTORE_EMULATOR_HOST is not set")
+	}
+	parsed, err := url.Parse("http://" + endpoint)
+	if err != nil || parsed.Host == "" {
+		t.Fatal("invalid Firestore emulator host")
+	}
+	if host, _, err := net.SplitHostPort(parsed.Host); err != nil || (host != "127.0.0.1" && host != "localhost" && host != "::1") {
+		t.Fatalf("Firestore emulator must use loopback, got %q", parsed.Host)
+	}
+	ctx, cancel := context.WithTimeout(context.Background(), 20*time.Second)
+	defer cancel()
+	client, err := firestore.NewClient(ctx, fmt.Sprintf("lwc415-intent-%d", time.Now().UnixNano()), option.WithEndpoint(endpoint), option.WithoutAuthentication())
+	if err != nil {
+		t.Fatalf("create Firestore emulator client: %v", err)
+	}
+	defer client.Close()
+
+	cfg := workerConfig{UserID: "owner", ProjectID: fmt.Sprintf("p%d", time.Now().UnixNano()), PipelineReservationID: "intent-1"}
+	stateRef := client.Collection("projects").Doc(cfg.UserID + "_" + cfg.ProjectID).Collection("profile").Doc("state")
+	objects := &profileGuidanceObjectStore{objects: map[string][]byte{}}
+
+	for _, tc := range []struct {
+		name string
+		kind string
+	}{
+		{name: "active V1 while saved Profile is V2", kind: "active"},
+		{name: "accepted preview bootstrap V1 after Profile edit", kind: "bootstrap"},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			cfg.PipelineReservationID = "intent-" + tc.kind
+			reservationRef := client.Collection("pipeline_quota_reservations").Doc(cfg.PipelineReservationID)
+			requirementsV1 := []profileGuidanceRequirement{{ID: "r1", Text: "saved V1"}}
+			digestV1 := profileRequirementsDigest(requirementsV1)
+			content, guidanceRevision, sourceRevision, sourceGeneration, candidateID, statusValue := "", "", int64(1), "active-content-v1", "candidate-v1", "active"
+			var bootstrapRef *profileartifacts.BootstrapGuidanceRef
+			var activeRef *profileGuidanceRef
+			if tc.kind == "active" {
+				artifact, ref, err := profileartifacts.EncodeGuidance(profileartifacts.GenerationGuidanceEnvelope{
+					SchemaVersion: profileartifacts.GuidanceSchema, InputDigest: digestV1,
+					SourceContentGeneration: sourceGeneration, CanonicalConceptsDigest: strings.Repeat("2", 64),
+					ModelVersion: "model-v1", PromptVersion: "prompt-v1", CompileGuidance: "Use active V1 guidance.",
+				})
+				if err != nil {
+					t.Fatal(err)
+				}
+				guidanceRevision, content = ref.Revision, "Use active V1 guidance."
+				activeRef = &profileGuidanceRef{Revision: ref.Revision, InputDigest: ref.InputDigest, ModelVersion: ref.ModelVersion, PromptVersion: ref.PromptVersion, SchemaVersion: ref.SchemaVersion}
+				objects.objects[fmt.Sprintf("users/%s/projects/%s/%s", cfg.UserID, cfg.ProjectID, profileartifacts.GuidanceObjectPath(ref.Revision))] = artifact
+			} else {
+				artifact, ref, err := profileartifacts.EncodeBootstrapGuidance(profileartifacts.BootstrapGuidanceEnvelope{
+					SchemaVersion: profileartifacts.BootstrapGuidanceSchema, ProfileRevision: 1,
+					InputDigest: digestV1, ModelVersion: "model-v1", PromptVersion: "prompt-v1",
+					CompileGuidance: "Use preview-ready bootstrap V1 guidance.",
+				})
+				if err != nil {
+					t.Fatal(err)
+				}
+				guidanceRevision, content, sourceRevision, sourceGeneration, candidateID, statusValue = ref.Revision, "Use preview-ready bootstrap V1 guidance.", 1, "", "", "prepared"
+				bootstrapRef = &ref
+				objects.objects[fmt.Sprintf("users/%s/projects/%s/%s", cfg.UserID, cfg.ProjectID, profileartifacts.BootstrapObjectPath(ref.Revision))] = artifact
+			}
+			if _, err := stateRef.Set(ctx, map[string]interface{}{
+				"project_id": cfg.ProjectID, "revision": int64(2),
+				"requirements":       []interface{}{map[string]interface{}{"id": "r2", "text": "later V2"}},
+				"bootstrap_guidance": map[string]interface{}{"status": "pending", "profile_revision": int64(2)},
+			}); err != nil {
+				t.Fatalf("seed newer Profile state: %v", err)
+			}
+			reservation := map[string]interface{}{
+				"user_id": cfg.UserID, "project_id": cfg.ProjectID, "attempt_id": cfg.PipelineReservationID,
+				"settlement_status": "pending", "intent_status": "invoking", "intent_mode": "incremental",
+				"profile_revision": int64(1), "profile_requirements": []interface{}{map[string]interface{}{"id": "r1", "text": "saved V1"}},
+				"requirements_digest": digestV1, "consumed_guidance_kind": tc.kind,
+				"consumed_guidance_status": statusValue, "consumed_guidance_revision": guidanceRevision,
+				"consumed_guidance_source_revision": sourceRevision, "consumed_guidance_input_digest": digestV1,
+				"consumed_guidance_model_version": "model-v1", "consumed_guidance_prompt_version": "prompt-v1",
+				"consumed_guidance_schema_version": map[bool]string{true: profileartifacts.BootstrapGuidanceSchema, false: profileartifacts.GuidanceSchema}[tc.kind == "bootstrap"],
+				"active_candidate_id":              candidateID, "active_content_generation": sourceGeneration,
+			}
+			if activeRef != nil {
+				reservation["consumed_active_guidance"] = *activeRef
+			}
+			if bootstrapRef != nil {
+				reservation["consumed_bootstrap_guidance"] = *bootstrapRef
+			}
+			if _, err := reservationRef.Set(ctx, reservation); err != nil {
+				t.Fatalf("seed Pipeline intent snapshot: %v", err)
+			}
+			objects.reads = nil
+			pin, err := readActiveProfileGuidance(ctx, client, cfg, objects)
+			if err != nil {
+				t.Fatalf("read frozen Pipeline guidance: %v", err)
+			}
+			if pin == nil || pin.ProfileRevision != 1 || pin.RequirementsDigest != digestV1 || pin.Revision != guidanceRevision || pin.Content != content {
+				t.Fatalf("Pipeline guidance pin=%+v, want saved V1 snapshot %s", pin, guidanceRevision)
+			}
+			if pin.SourceProfileRevision != sourceRevision || pin.SourceContentGeneration != sourceGeneration || pin.SourceCandidateID != candidateID {
+				t.Fatalf("Pipeline guidance source metadata=%+v, want revision=%d generation=%q candidate=%q", pin, sourceRevision, sourceGeneration, candidateID)
+			}
+			if (pin.BootstrapRef != nil) != (tc.kind == "bootstrap") {
+				t.Fatalf("bootstrap reference presence=%v for %s", pin.BootstrapRef != nil, tc.kind)
+			}
+		})
+	}
+}
+
 func hashBytes(data []byte) string {
 	digest := sha256.Sum256(data)
 	return hex.EncodeToString(digest[:])
