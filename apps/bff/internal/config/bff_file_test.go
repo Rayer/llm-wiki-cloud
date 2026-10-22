@@ -360,9 +360,6 @@ func TestDecodeBFFFileRejectsMissingRequiredSettingsIllegalModesAndUnpairedIdent
 		{name: "profile audience without service account", mutate: func(file *BFFFile) {
 			file.ProfileRuntimeAudience = "https://profile.example.test"
 		}},
-		{name: "TypeSafe key without profile identity", mutate: func(file *BFFFile) {
-			file.TypeSafeAPIKey = "fixture-typesafe-key"
-		}},
 		{name: "local settings on cloud environment", mutate: func(file *BFFFile) {
 			file.Local = &BFFLocal{Scope: "worktree-fixture", WorkerPath: "/tmp/worker",
 				PipelineConfigPath: "/tmp/synto.toml", PipelineBindingsPath: "/tmp/bindings.json"}
@@ -377,6 +374,19 @@ func TestDecodeBFFFileRejectsMissingRequiredSettingsIllegalModesAndUnpairedIdent
 				t.Fatalf("validation diagnostics exposed a fixture secret: %v", err)
 			}
 		})
+	}
+}
+
+func TestDecodeBFFFileAllowsQualityKeyWithoutProfileRuntime(t *testing.T) {
+	file := validLocalBFFFileForTest()
+	file.TypeSafeAPIKey = "fixture-typesafe-key"
+	decoded, err := DecodeBFFFile(marshalBFFFileForTest(t, file))
+	if err != nil {
+		t.Fatalf("DecodeBFFFile() rejected an independent quality key: %v", err)
+	}
+	loaded := configFromBFFFile(decoded, "8080")
+	if loaded.TypeSafeAPIKey != file.TypeSafeAPIKey || loaded.ProfileRuntimeAudience != "" || loaded.ProfileRuntimeServiceAccount != "" {
+		t.Fatalf("loaded config coupled quality key to Profile identity: %+v", loaded)
 	}
 }
 

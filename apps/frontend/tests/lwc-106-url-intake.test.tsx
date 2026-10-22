@@ -140,6 +140,28 @@ it('shows the localized unchecked-quality warning before save and after acceptin
   expect(mocks.triggerPipeline).not.toHaveBeenCalled();
 });
 
+it('keeps the unchecked-quality warning visible alongside an Accept conflict', async () => {
+  const unchecked = { ...preview, quality_checked: false, quality_status: 'not_checked' as const };
+  mocks.scrapeUrl.mockResolvedValueOnce({ ...uncertain, preview: unchecked });
+  mocks.acceptScrapeCandidate.mockResolvedValueOnce({
+    status: 'conflict',
+    message: 'The raw article changed after this preview; no raw article was changed.',
+    preview: unchecked,
+  });
+
+  render(<PipelineClient />);
+  submitUrl();
+  expect(await screen.findByText('Pipeline.urlQualityCheckUnavailable')).toBeDefined();
+  fireEvent.click(screen.getByRole('button', { name: 'Pipeline.urlConfirmCandidate' }));
+
+  expect(await screen.findByText('The raw article changed after this preview; no raw article was changed.')).toBeDefined();
+  expect(screen.getByText('Pipeline.urlQualityCheckUnavailable')).toBeDefined();
+  expect(screen.queryByRole('link', { name: /Pipeline.urlRawArticle:/ })).toBeNull();
+  expect(mocks.scrapeUrl).toHaveBeenCalledTimes(1);
+  expect(mocks.acceptScrapeCandidate).toHaveBeenCalledTimes(1);
+  expect(mocks.triggerPipeline).not.toHaveBeenCalled();
+});
+
 it('resolves an uncertain accept outcome from the same candidate without refetching', async () => {
   mocks.acceptScrapeCandidate.mockResolvedValueOnce({ status: 'uncertain', message: 'Save status is uncertain.', candidate_id: 'opaque-candidate-id', candidate_revision: 'opaque-candidate-revision' });
   mocks.resolveScrapeCandidate.mockResolvedValueOnce({

@@ -39,7 +39,7 @@ var DefaultQualityThresholds = QualityThresholds{
 
 var (
 	ErrInvalidScope       = errors.New("verified actor and project are required")
-	ErrURLConflict        = errors.New("URL identity conflicts with existing raw content")
+	ErrURLConflict        = errors.New("URL identity conflicts with existing raw content; no raw article was changed")
 	ErrConfirmationStale  = errors.New("URL confirmation is stale or invalid")
 	ErrConfirmationBusy   = errors.New("URL confirmation is already being committed")
 	ErrIdentityUncertain  = errors.New("URL identity reservation outcome is uncertain")
@@ -1156,7 +1156,7 @@ func (s *Service) commit(ctx context.Context, store ProjectStore, prepared *cand
 	}
 	if relative != prepared.relativePath {
 		if prepared.existing || prepared.expectedGeneration != 0 {
-			return Result{Status: "conflict", Message: ErrConfirmationStale.Error(), Preview: &prepared.preview}, nil
+			return Result{Status: "conflict", Message: "The raw article changed after this preview; no raw article was changed.", Preview: &prepared.preview}, nil
 		}
 		prepared.relativePath = relative
 	}
@@ -1189,10 +1189,10 @@ func (s *Service) commit(ctx context.Context, store ProjectStore, prepared *cand
 				return storedResult(rawintake.Result{Path: "raw/" + prepared.relativePath, SHA256: prepared.digest, Status: rawintake.StatusAlreadyExists}, &prepared.preview), nil
 			}
 			if generation != prepared.expectedGeneration {
-				return Result{Status: "conflict", Message: ErrConfirmationStale.Error(), Preview: &prepared.preview}, nil
+				return Result{Status: "conflict", Message: "The raw article changed after this preview; no raw article was changed.", Preview: &prepared.preview}, nil
 			}
 		} else if prepared.expectedGeneration != 0 {
-			return Result{Status: "conflict", Message: ErrConfirmationStale.Error(), Preview: &prepared.preview}, nil
+			return Result{Status: "conflict", Message: "The raw article changed after this preview; no raw article was changed.", Preview: &prepared.preview}, nil
 		}
 		overwrite := prepared.expectedGeneration != 0
 		writer := expectedWriter{ConditionalWriter: store, path: "raw/" + prepared.relativePath, expected: prepared.expectedGeneration}
@@ -1228,7 +1228,7 @@ func (s *Service) commit(ctx context.Context, store ProjectStore, prepared *cand
 				}
 			}
 			if errors.Is(commitErr, rawintake.ErrConflict) || errors.Is(commitErr, storage.ErrGenerationMismatch) {
-				return Result{Status: "conflict", Message: ErrConfirmationStale.Error(), Preview: &prepared.preview}, nil
+				return Result{Status: "conflict", Message: "The raw article changed after this preview; no raw article was changed.", Preview: &prepared.preview}, nil
 			}
 			recordIntakeEvent(ctx, "commit", "storage", "failure")
 			return Result{Status: "unavailable", Message: "The raw article could not be saved; no successful write was confirmed.", FailureStage: "commit", Preview: &prepared.preview}, nil

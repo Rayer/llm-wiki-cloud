@@ -27,6 +27,7 @@ import (
 	"github.com/rayer/llm-wiki-bff/internal/localfs"
 	"github.com/rayer/llm-wiki-bff/internal/localpipeline"
 	"github.com/rayer/llm-wiki-bff/internal/middleware"
+	"github.com/rayer/llm-wiki-bff/internal/profiletags"
 	"github.com/rayer/llm-wiki-bff/internal/query"
 	"github.com/rayer/llm-wiki-bff/internal/queryconfig"
 	"github.com/rayer/llm-wiki-bff/internal/queryquality"
@@ -58,6 +59,17 @@ func TestURLIntakeJevUsesLoadedConfigAndIgnoresLegacyEnvironment(t *testing.T) {
 	jeV, ok = missing.Evaluator.(*urlintake.JevEvaluator)
 	if !ok || jeV.APIKey != "" {
 		t.Fatalf("missing-config Jev evaluator = %#v, legacy environment must not supply a key", missing.Evaluator)
+	}
+
+	profile := productionProfileDispatcher(nil, config.Config{TypeSafeAPIKey: "loaded-config-key"})
+	profileJev, ok := profile.Evaluator.(*profiletags.JevEvaluator)
+	if !ok || profileJev.APIKey != "loaded-config-key" {
+		t.Fatalf("Profile Jev evaluator = %#v, want the loaded config key", profile.Evaluator)
+	}
+	response := httptest.NewRecorder()
+	profile.ServeHTTP(response, httptest.NewRequest(http.MethodPost, "/dispatch", nil))
+	if response.Code != http.StatusServiceUnavailable {
+		t.Fatalf("Profile dispatch without runtime identity returned %d, want disabled-runtime rejection", response.Code)
 	}
 }
 

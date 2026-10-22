@@ -64,11 +64,10 @@ export function UrlPreviewDialog({
           {error ? <p role="alert" className="text-sm text-amber-200">{error}</p> : null}
           {result ? (
             <div aria-live="polite" className="space-y-4">
-              {qualityUnchecked && !saved ? (
-                <p role="status" className="text-sm text-amber-200">{labels.qualityUnavailable}</p>
-              ) : (
-                <p className={`text-sm ${result.status === 'stored' ? 'text-emerald-200' : result.status === 'uncertain' ? 'text-amber-200' : 'text-zinc-300'}`}>{result.message}</p>
-              )}
+              {(!qualityUnchecked || !saved) ? (
+                <p className={`text-sm ${result.status === 'stored' ? 'text-emerald-200' : result.status === 'uncertain' || result.status === 'conflict' ? 'text-amber-200' : 'text-zinc-300'}`}>{result.message}</p>
+              ) : null}
+              {qualityUnchecked && !saved ? <p role="status" className="text-sm text-amber-200">{labels.qualityUnavailable}</p> : null}
               {qualityUnchecked && saved ? <p role="status" className="text-sm text-amber-200">{labels.qualityUnavailableSaved}</p> : null}
               {candidateReady && result.preview ? (
                 <>

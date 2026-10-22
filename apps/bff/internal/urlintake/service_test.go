@@ -512,6 +512,54 @@ func TestServiceRejectsChangedGenerationDuringConfirmation(t *testing.T) {
 	}
 }
 
+func TestUncheckedCandidateConflictPreservesChangedRawBytes(t *testing.T) {
+	var evaluations atomic.Int32
+	evaluator := evaluatorFunc(func(ctx context.Context, input QualityInput) (QualityEvaluation, error) {
+		if evaluations.Add(1) == 1 {
+			return usableEvaluator(ctx, input)
+		}
+		return QualityEvaluation{}, errors.New("provider unavailable")
+	})
+	var pages atomic.Int32
+	fetcher := fetcherFunc(func(context.Context, string) (Page, error) {
+		pages.Add(1)
+		return Page{Title: "Article", Markdown: "# Article\n\nreview candidate"}, nil
+	})
+	service, store := newTestService(t, fetcher, evaluator)
+	scope := ActorProject{"actor-1", "project-1"}
+	first, err := service.Import(context.Background(), scope, ImportRequest{URL: "https://example.com/article"})
+	if err != nil || first.Status != "stored" || first.Storage == nil {
+		t.Fatalf("initial import = %#v, %v", first, err)
+	}
+	preview, err := service.Prepare(context.Background(), scope, ImportRequest{URL: "https://example.com/article"})
+	if err != nil || preview.Status != "preview" || preview.Preview == nil || preview.Preview.QualityStatus != "not_checked" {
+		t.Fatalf("unchecked refresh preview = %#v, %v", preview, err)
+	}
+
+	external, _, err := MergeRawMarkdown([]byte(previewExistingBytes(t, store, first.Storage.Path)), SourceMetadata{Title: "External update"}, "external concurrent update", time.Now())
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := rawintake.Commit(context.Background(), store, strings.TrimPrefix(first.Storage.Path, "raw/"), external, true); err != nil {
+		t.Fatal(err)
+	}
+	want, err := store.ReadFile(context.Background(), first.Storage.Path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	result, err := service.Accept(context.Background(), scope, preview.CandidateID, preview.CandidateRevision, preview.Preview.Title)
+	if err != nil || result.Status != "conflict" || !strings.Contains(result.Message, "no raw article was changed") {
+		t.Fatalf("stale unchecked accept = %#v, %v", result, err)
+	}
+	got, err := store.ReadFile(context.Background(), first.Storage.Path)
+	if err != nil || !bytes.Equal(got, want) {
+		t.Fatalf("stale unchecked accept changed current raw bytes: err=%v equal=%t", err, bytes.Equal(got, want))
+	}
+	if pages.Load() != 2 {
+		t.Fatalf("page fetches=%d; accept must use the saved candidate without refetch", pages.Load())
+	}
+}
+
 func previewExistingBytes(t *testing.T, store *localfs.Client, rawPath string) string {
 	t.Helper()
 	data, err := store.ReadFile(context.Background(), rawPath)
