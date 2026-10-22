@@ -726,6 +726,8 @@
     "urlUnchanged": "The raw article already has these exact bytes.",
     "urlPreviewLoading": "Preparing preview…",
     "urlPreviewUnavailable": "Could not prepare the URL preview; nothing was saved. Try again or use manual capture.",
+    "urlQualityCheckUnavailable": "The page was fetched successfully, but the automatic quality check was unavailable and skipped. Review the content carefully before saving.",
+    "urlQualityCheckUnavailableSaved": "The automatic quality check was unavailable and skipped. This page was saved from the candidate you reviewed.",
     "urlConfirmationNotice": "Nothing has been saved yet. Confirmation saves this exact preview without fetching the page again.",
     "urlConfirmCandidate": "Save this exact candidate",
     "urlCandidateDigest": "Candidate SHA256",

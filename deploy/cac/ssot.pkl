@@ -250,6 +250,12 @@ local localDeepSeekSecretReference = new BffSecretReference {
   resource = selected.llm.secret.resource
 }
 
+local localTypeSafeAPIKeyReference = new BffSecretReference {
+  source = "environment"
+  env_name = "TYPESAFE_API_KEY"
+  resource = null
+}
+
 local devTypeSafeSecretReference = new BffSecretReference {
   source = "secret-manager"
   env_name = null
@@ -297,7 +303,7 @@ local localBff = new BffConfig {
   registration_enabled = null
   jwt_secret_reference = localJwtSecretReference
   deepseek_api_key_reference = localDeepSeekSecretReference
-  typesafe_api_key_reference = null
+  typesafe_api_key_reference = localTypeSafeAPIKeyReference
   profile_runtime_audience = ""
   profile_runtime_service_account = ""
   pipeline_schedule = pipelineSchedule

@@ -967,6 +967,7 @@ export function PipelineClient() {
             manualCapture: t('Pipeline.urlManualCapture'), processingSeparate: t('Pipeline.urlProcessingSeparate'),
             rawArticle: t('Pipeline.urlRawArticle'), created: t('Pipeline.urlCreated'), updated: t('Pipeline.urlUpdated'),
             unchanged: t('Pipeline.urlUnchanged'), digest: t('Pipeline.urlCandidateDigest'), loading: t('Pipeline.urlPreviewLoading'),
+            qualityUnavailable: t('Pipeline.urlQualityCheckUnavailable'), qualityUnavailableSaved: t('Pipeline.urlQualityCheckUnavailableSaved'),
           }}
           onAccept={handleAcceptScrape}
           onDecline={handleDeclineScrape}

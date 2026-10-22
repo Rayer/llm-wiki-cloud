@@ -785,15 +785,16 @@ func prepareBFFRuntimeConfig(ctx context.Context, root, output string, source bf
 	}
 	defer clear(deepseek)
 	typesafe := []byte{}
-	if source.ProfileRuntimeAudience != "" {
-		if source.TypeSafeAPIKeyReference == nil {
-			return errors.New("selected BFF typesafe_api_key_reference is required")
+	if source.TypeSafeAPIKeyReference != nil {
+		reference := *source.TypeSafeAPIKeyReference
+		optionalLocalEnvMissing := source.Environment == "local" && reference.Source == "environment" && strings.TrimSpace(os.Getenv(reference.EnvName)) == ""
+		if !optionalLocalEnvMissing {
+			typesafe, err = resolveBFFSecret(ctx, "typesafe_api_key", reference, newReader)
+			if err != nil {
+				return err
+			}
+			defer clear(typesafe)
 		}
-		typesafe, err = resolveBFFSecret(ctx, "typesafe_api_key", *source.TypeSafeAPIKeyReference, newReader)
-		if err != nil {
-			return err
-		}
-		defer clear(typesafe)
 	}
 	runtimeFile := runtimeconfig.BFFFile{
 		SchemaVersion: source.SchemaVersion, Environment: source.Environment, Target: source.Target,
@@ -913,9 +914,6 @@ func resolveBFFSecret(ctx context.Context, key string, reference bffSecretRefere
 		value := os.Getenv(reference.EnvName)
 		if value == "" && reference.EnvName == "LLM_API_KEY" {
 			value = os.Getenv("DEEPSEEK_API_KEY")
-		}
-		if value == "" && reference.EnvName == "TYPESAFE_JEV_API_KEY" {
-			value = os.Getenv("TYPESAFE_API_KEY")
 		}
 		if value == "" {
 			return nil, fmt.Errorf("required local BFF %s is unavailable", key)

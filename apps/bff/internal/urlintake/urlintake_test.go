@@ -200,6 +200,58 @@ func TestJevEvaluatorReportsSafeHTTPFailureMetadata(t *testing.T) {
 	}
 }
 
+func TestJevEvaluatorMissingKeyIsTypedConfigurationFailure(t *testing.T) {
+	evaluator := NewJevEvaluator("")
+	_, err := evaluator.Evaluate(context.Background(), QualityInput{
+		URL: "https://example.com/article", Title: "Page", Markdown: "body", Provider: DeepSeekFetchProvider,
+	})
+	failure, ok := err.(*QualityProviderFailure)
+	if !ok || failure.Kind != "not configured" {
+		t.Fatalf("Evaluate() error = %#v, want typed configuration failure", err)
+	}
+}
+
+func TestJevEvaluatorClassifiesTimeoutAndInvalidResponses(t *testing.T) {
+	t.Run("timeout", func(t *testing.T) {
+		server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+			time.Sleep(40 * time.Millisecond)
+			w.WriteHeader(http.StatusOK)
+			_, _ = w.Write([]byte(`{}`))
+		}))
+		defer server.Close()
+		evaluator := NewJevEvaluator("quality-test-key")
+		evaluator.Endpoint = server.URL
+		evaluator.Client.Timeout = 5 * time.Millisecond
+		_, err := evaluator.Evaluate(context.Background(), QualityInput{
+			URL: "https://example.com/article", Title: "Page", Markdown: "body", Provider: DeepSeekFetchProvider,
+		})
+		failure, ok := err.(*QualityProviderFailure)
+		if !ok || failure.Kind != "timeout" {
+			t.Fatalf("Evaluate() error = %#v, want typed timeout failure", err)
+		}
+	})
+
+	t.Run("invalid response", func(t *testing.T) {
+		server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+			w.Header().Set("Content-Type", "application/json")
+			_, _ = w.Write([]byte(`{"model":"unknown-model","answers":{},"usage":{"input_tokens":0,"output_tokens":0},"private":"secret body"}`))
+		}))
+		defer server.Close()
+		evaluator := NewJevEvaluator("quality-test-key")
+		evaluator.Endpoint = server.URL
+		_, err := evaluator.Evaluate(context.Background(), QualityInput{
+			URL: "https://example.com/article", Title: "Page", Markdown: "body", Provider: DeepSeekFetchProvider,
+		})
+		failure, ok := err.(*QualityProviderFailure)
+		if !ok || failure.Kind != "invalid_response" {
+			t.Fatalf("Evaluate() error = %#v, want typed invalid-response failure", err)
+		}
+		if strings.Contains(err.Error(), "secret body") {
+			t.Fatal("provider response body escaped in error")
+		}
+	})
+}
+
 func TestDecideQualityKeepsMixedResultsUncertain(t *testing.T) {
 	thresholds := QualityThresholds{RejectShellAt: .9, RejectContentAtMost: .1, UsableShellAtMost: .1, UsableContentAt: .9}
 	cases := []struct {

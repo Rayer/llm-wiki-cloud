@@ -14,6 +14,10 @@ import (
 	"github.com/rayer/llm-wiki-bff/internal/localfs"
 	"github.com/rayer/llm-wiki-bff/internal/rawintake"
 	"github.com/rayer/llm-wiki-bff/internal/storage"
+	"go.opentelemetry.io/otel"
+	"go.opentelemetry.io/otel/attribute"
+	sdkmetric "go.opentelemetry.io/otel/sdk/metric"
+	"go.opentelemetry.io/otel/sdk/metric/metricdata"
 )
 
 type fetcherFunc func(context.Context, string) (Page, error)
@@ -29,6 +33,15 @@ func (f evaluatorFunc) Evaluate(ctx context.Context, input QualityInput) (Qualit
 type candidateReadFaultStore struct {
 	ProjectStore
 	failNextCandidateRead atomic.Bool
+}
+
+type candidateWriteFaultStore struct{ ProjectStore }
+
+func (s candidateWriteFaultStore) WriteFileIfGeneration(ctx context.Context, data []byte, path string, expected int64) (int64, error) {
+	if strings.HasPrefix(path, candidateObjectPrefix) {
+		return 0, errors.New("candidate receipt write failed")
+	}
+	return s.ProjectStore.WriteFileIfGeneration(ctx, data, path, expected)
 }
 
 func (s *candidateReadFaultStore) ReadFileWithGeneration(ctx context.Context, path string) ([]byte, int64, error) {
@@ -176,6 +189,9 @@ func TestPreparedCandidateIsDurableExactTitleBoundAndCrossInstance(t *testing.T)
 	prepared, err := serviceA.Prepare(context.Background(), scope, ImportRequest{URL: "https://example.com/article"})
 	if err != nil || prepared.Status != "preview" || prepared.CandidateID == "" || prepared.CandidateRevision == "" || prepared.Preview == nil {
 		t.Fatalf("prepared = %#v err=%v", prepared, err)
+	}
+	if !prepared.Preview.QualityChecked || prepared.Preview.QualityStatus != "usable" {
+		t.Fatalf("configured quality result = %#v, want quality_checked usable", prepared.Preview)
 	}
 	if !strings.HasPrefix(prepared.Preview.Markdown, "# Original heading") || !strings.Contains(prepared.Preview.Markdown, "`\\# inline`") || !strings.Contains(prepared.Preview.Markdown, "[this](https://example.com)") {
 		t.Fatalf("normalized preview lost content/intentional escapes: %q", prepared.Preview.Markdown)
@@ -496,6 +512,54 @@ func TestServiceRejectsChangedGenerationDuringConfirmation(t *testing.T) {
 	}
 }
 
+func TestUncheckedCandidateConflictPreservesChangedRawBytes(t *testing.T) {
+	var evaluations atomic.Int32
+	evaluator := evaluatorFunc(func(ctx context.Context, input QualityInput) (QualityEvaluation, error) {
+		if evaluations.Add(1) == 1 {
+			return usableEvaluator(ctx, input)
+		}
+		return QualityEvaluation{}, errors.New("provider unavailable")
+	})
+	var pages atomic.Int32
+	fetcher := fetcherFunc(func(context.Context, string) (Page, error) {
+		pages.Add(1)
+		return Page{Title: "Article", Markdown: "# Article\n\nreview candidate"}, nil
+	})
+	service, store := newTestService(t, fetcher, evaluator)
+	scope := ActorProject{"actor-1", "project-1"}
+	first, err := service.Import(context.Background(), scope, ImportRequest{URL: "https://example.com/article"})
+	if err != nil || first.Status != "stored" || first.Storage == nil {
+		t.Fatalf("initial import = %#v, %v", first, err)
+	}
+	preview, err := service.Prepare(context.Background(), scope, ImportRequest{URL: "https://example.com/article"})
+	if err != nil || preview.Status != "preview" || preview.Preview == nil || preview.Preview.QualityStatus != "not_checked" {
+		t.Fatalf("unchecked refresh preview = %#v, %v", preview, err)
+	}
+
+	external, _, err := MergeRawMarkdown([]byte(previewExistingBytes(t, store, first.Storage.Path)), SourceMetadata{Title: "External update"}, "external concurrent update", time.Now())
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := rawintake.Commit(context.Background(), store, strings.TrimPrefix(first.Storage.Path, "raw/"), external, true); err != nil {
+		t.Fatal(err)
+	}
+	want, err := store.ReadFile(context.Background(), first.Storage.Path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	result, err := service.Accept(context.Background(), scope, preview.CandidateID, preview.CandidateRevision, preview.Preview.Title)
+	if err != nil || result.Status != "conflict" || !strings.Contains(result.Message, "no raw article was changed") {
+		t.Fatalf("stale unchecked accept = %#v, %v", result, err)
+	}
+	got, err := store.ReadFile(context.Background(), first.Storage.Path)
+	if err != nil || !bytes.Equal(got, want) {
+		t.Fatalf("stale unchecked accept changed current raw bytes: err=%v equal=%t", err, bytes.Equal(got, want))
+	}
+	if pages.Load() != 2 {
+		t.Fatalf("page fetches=%d; accept must use the saved candidate without refetch", pages.Load())
+	}
+}
+
 func previewExistingBytes(t *testing.T, store *localfs.Client, rawPath string) string {
 	t.Helper()
 	data, err := store.ReadFile(context.Background(), rawPath)
@@ -505,7 +569,7 @@ func previewExistingBytes(t *testing.T, store *localfs.Client, rawPath string) s
 	return string(data)
 }
 
-func TestServiceProviderOutageAndExplicitTruncationNeverAutoSave(t *testing.T) {
+func TestServiceProviderOutageFallsBackToDurableUncheckedCandidate(t *testing.T) {
 	service, store := newTestService(t, fetcherFunc(func(context.Context, string) (Page, error) {
 		return Page{Title: "Partial", Markdown: "# Partial\n\nusable but incomplete", Truncated: boolPtr(true)}, nil
 	}), evaluatorFunc(usableEvaluator))
@@ -518,15 +582,94 @@ func TestServiceProviderOutageAndExplicitTruncationNeverAutoSave(t *testing.T) {
 		t.Fatalf("truncated content wrote raw data: %#v, %v", files, err)
 	}
 
-	unavailable, unavailableStore := newTestService(t, fetcherFunc(func(context.Context, string) (Page, error) {
+	var fetches atomic.Int32
+	service, store = newTestService(t, fetcherFunc(func(context.Context, string) (Page, error) {
+		fetches.Add(1)
 		return Page{Title: "Page", Markdown: "Body"}, nil
 	}), evaluatorFunc(func(context.Context, QualityInput) (QualityEvaluation, error) {
 		return QualityEvaluation{}, errors.New("provider offline")
 	}))
-	result, err = unavailable.Import(context.Background(), ActorProject{"actor-1", "project-1"}, ImportRequest{URL: "https://example.com/page"})
-	files, listErr := markdownRawFiles(unavailableStore)
-	if err != nil || result.Status != "unavailable" || listErr != nil || len(files) != 0 {
+	scope := ActorProject{"actor-1", "project-1"}
+	result, err = service.Import(context.Background(), scope, ImportRequest{URL: "https://example.com/page"})
+	files, listErr := markdownRawFiles(store)
+	if err != nil || result.Status != "preview" || result.Preview == nil || result.Preview.QualityChecked || result.Preview.QualityStatus != "not_checked" || result.CandidateID == "" || listErr != nil || len(files) != 0 {
 		t.Fatalf("Jev outage result=%#v err=%v files=%#v listErr=%v", result, err, files, listErr)
+	}
+
+	secondInstance := NewService(fetcherFunc(func(context.Context, string) (Page, error) {
+		fetches.Add(1)
+		return Page{}, errors.New("candidate acceptance must not refetch")
+	}), evaluatorFunc(usableEvaluator), func(ActorProject) (ProjectStore, error) { return store, nil }, DefaultQualityThresholds)
+	secondInstance.Resolver = resolverStub{netip.MustParseAddr("93.184.216.34")}
+	secondInstance.Now = service.Now
+	saved, err := secondInstance.Accept(context.Background(), scope, result.CandidateID, result.CandidateRevision, result.Preview.Title)
+	if err != nil || saved.Status != "stored" || saved.Preview == nil || saved.Preview.QualityChecked || saved.Preview.QualityStatus != "not_checked" || saved.Storage == nil {
+		t.Fatalf("fallback acceptance = %#v err=%v", saved, err)
+	}
+	if fetches.Load() != 1 {
+		t.Fatalf("fetches=%d; accepting the fallback candidate must not refetch", fetches.Load())
+	}
+	data, err := store.ReadFile(context.Background(), saved.Storage.Path)
+	if err != nil || !strings.Contains(string(data), "Body") {
+		t.Fatalf("accepted fallback content = %q err=%v", data, err)
+	}
+}
+
+func TestQualityFallbackAndNonFallbackStorageFailuresReachOTelCollector(t *testing.T) {
+	ctx := context.Background()
+	previous := otel.GetMeterProvider()
+	reader := sdkmetric.NewManualReader()
+	provider := sdkmetric.NewMeterProvider(sdkmetric.WithReader(reader))
+	otel.SetMeterProvider(provider)
+	t.Cleanup(func() {
+		otel.SetMeterProvider(previous)
+		_ = provider.Shutdown(ctx)
+	})
+
+	scope := ActorProject{"actor-1", "project-1"}
+	service, _ := newTestService(t, fetcherFunc(func(context.Context, string) (Page, error) {
+		return Page{Title: "Article", Markdown: "Readable body."}, nil
+	}), NewJevEvaluator(""))
+	fallback, err := service.Prepare(ctx, scope, ImportRequest{URL: "https://example.com/article"})
+	if err != nil || fallback.Status != "preview" || fallback.Preview == nil || fallback.Preview.QualityChecked || fallback.Preview.QualityStatus != "not_checked" {
+		t.Fatalf("quality fallback = %#v err=%v", fallback, err)
+	}
+
+	root := t.TempDir()
+	failingStore := candidateWriteFaultStore{ProjectStore: localfs.New(root).WithScope(scope.ActorID, scope.ProjectID)}
+	failing := NewService(fetcherFunc(func(context.Context, string) (Page, error) {
+		return Page{Title: "Article", Markdown: "Readable body."}, nil
+	}), nil, func(ActorProject) (ProjectStore, error) { return failingStore, nil }, DefaultQualityThresholds)
+	failing.Resolver = resolverStub{netip.MustParseAddr("93.184.216.34")}
+	failedCandidate, err := failing.Prepare(ctx, scope, ImportRequest{URL: "https://example.com/candidate-failure"})
+	if err != nil || failedCandidate.Status != "unavailable" || failedCandidate.FailureStage != "candidate" {
+		t.Fatalf("candidate storage failure = %#v err=%v", failedCandidate, err)
+	}
+
+	var data metricdata.ResourceMetrics
+	if err := reader.Collect(ctx, &data); err != nil {
+		t.Fatal(err)
+	}
+	counts := map[string]int64{}
+	for _, scopeMetrics := range data.ScopeMetrics {
+		for _, metric := range scopeMetrics.Metrics {
+			if metric.Name != "lwc.url_intake.internal_events" {
+				continue
+			}
+			sum, ok := metric.Data.(metricdata.Sum[int64])
+			if !ok {
+				t.Fatalf("URL intake metric data = %T", metric.Data)
+			}
+			for _, point := range sum.DataPoints {
+				stage, _ := point.Attributes.Value(attribute.Key("stage"))
+				class, _ := point.Attributes.Value(attribute.Key("error_class"))
+				outcome, _ := point.Attributes.Value(attribute.Key("outcome"))
+				counts[stage.AsString()+"/"+class.AsString()+"/"+outcome.AsString()] += point.Value
+			}
+		}
+	}
+	if counts["quality/configuration/failure"] != 2 || counts["quality/configuration/fallback"] != 2 || counts["candidate/storage/failure"] != 1 {
+		t.Fatalf("URL intake internal events = %#v", counts)
 	}
 }
 

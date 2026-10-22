@@ -726,6 +726,8 @@
     "urlUnchanged": "原文文章內容完全相同，未變更檔案。",
     "urlPreviewLoading": "正在準備預覽…",
     "urlPreviewUnavailable": "無法準備網址預覽；沒有儲存文章。請重試或改用手動擷取。",
+    "urlQualityCheckUnavailable": "已成功擷取此網頁，但自動品質檢查目前無法使用，因此已略過。儲存前請仔細檢查內容。",
+    "urlQualityCheckUnavailableSaved": "自動品質檢查目前無法使用，因此已略過。此網頁是依據您檢查過的候選內容儲存。",
     "urlConfirmationNotice": "目前尚未儲存。確認後會儲存這份預覽內容，不會重新抓取網頁。",
     "urlConfirmCandidate": "儲存這份候選內容",
     "urlCandidateDigest": "候選內容 SHA256",

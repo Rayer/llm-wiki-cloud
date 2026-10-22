@@ -596,9 +596,6 @@ func validateBFFFile(file BFFFile) error {
 	if file.ProfileRuntimeAudience == "" != (file.ProfileRuntimeServiceAccount == "") {
 		return errors.New("BFF config profile runtime identity is incomplete")
 	}
-	if file.TypeSafeAPIKey != "" && file.ProfileRuntimeAudience == "" {
-		return errors.New("BFF config typesafe_api_key has no profile runtime audience")
-	}
 	if err := validateBFFQuery(file.Query, localMode); err != nil {
 		return err
 	}

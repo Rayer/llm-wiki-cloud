@@ -8,15 +8,21 @@ import (
 	"fmt"
 	"io"
 	"net/http"
+	"net/http/httptest"
+	"net/netip"
 	"os"
 	"os/exec"
 	"path/filepath"
 	"strconv"
 	"strings"
+	"sync"
 	"testing"
 
 	"github.com/rayer/llm-wiki-bff/internal/auth"
 	runtimeconfig "github.com/rayer/llm-wiki-bff/internal/config"
+	"github.com/rayer/llm-wiki-bff/internal/localfs"
+	"github.com/rayer/llm-wiki-bff/internal/profiletags"
+	"github.com/rayer/llm-wiki-bff/internal/urlintake"
 	"google.golang.org/api/cloudresourcemanager/v3"
 	"google.golang.org/api/option"
 	"google.golang.org/api/secretmanager/v1"
@@ -37,6 +43,58 @@ type roundTripFunc func(*http.Request) (*http.Response, error)
 
 func (f roundTripFunc) RoundTrip(request *http.Request) (*http.Response, error) {
 	return f(request)
+}
+
+type syntheticURLFetcher struct{}
+
+func (syntheticURLFetcher) Fetch(context.Context, string) (urlintake.Page, error) {
+	return urlintake.Page{Title: "Synthetic article", Markdown: "# Synthetic article\n\nReadable fixture body."}, nil
+}
+
+type syntheticPublicResolver struct{}
+
+func (syntheticPublicResolver) LookupNetIP(context.Context, string, string) ([]netip.Addr, error) {
+	return []netip.Addr{netip.MustParseAddr("93.184.216.34")}, nil
+}
+
+func assertGeneratedConfigUsesQualityConsumers(t *testing.T, cfg runtimeconfig.Config, environment, expectedKey string) {
+	t.Helper()
+	if cfg.TypeSafeAPIKey != expectedKey {
+		t.Fatalf("runtime loader TypeSafe key mismatch for %s", environment)
+	}
+	profileEvaluator := profiletags.NewJevEvaluator(cfg.TypeSafeAPIKey)
+	if profileEvaluator.APIKey != expectedKey {
+		t.Fatalf("Profile Jev evaluator did not receive loaded CaC key for %s", environment)
+	}
+
+	var mu sync.Mutex
+	var observedAuthorization string
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		mu.Lock()
+		observedAuthorization = r.Header.Get("Authorization")
+		mu.Unlock()
+		w.Header().Set("Content-Type", "application/json")
+		_, _ = w.Write([]byte(`{"model":"jev-1.13.0","answers":{"access_shell":{"type":"noul","noul":0.02},"readable_content":{"type":"noul","noul":0.97}},"usage":{"input_tokens":800,"output_tokens":9}}`))
+	}))
+	defer server.Close()
+	evaluator := urlintake.NewJevEvaluator(cfg.TypeSafeAPIKey)
+	evaluator.Endpoint = server.URL
+	evaluator.Client = server.Client()
+	store := localfs.New(t.TempDir())
+	service := urlintake.NewService(syntheticURLFetcher{}, evaluator, func(scope urlintake.ActorProject) (urlintake.ProjectStore, error) {
+		return store.WithScope(scope.ActorID, scope.ProjectID), nil
+	}, urlintake.DefaultQualityThresholds)
+	service.Resolver = syntheticPublicResolver{}
+	result, err := service.Prepare(context.Background(), urlintake.ActorProject{ActorID: "synthetic-actor", ProjectID: cfg.GCPProject}, urlintake.ImportRequest{URL: "https://example.com/article"})
+	if err != nil || result.Status != "preview" || result.Preview == nil || !result.Preview.QualityChecked || result.Preview.QualityStatus != "usable" {
+		t.Fatalf("generated %s config did not produce a normally checked preview: result=%#v err=%v", environment, result, err)
+	}
+	mu.Lock()
+	authorization := observedAuthorization
+	mu.Unlock()
+	if authorization != "Bearer "+expectedKey {
+		t.Fatalf("controlled Jev provider authorization for %s did not come from the loaded config", environment)
+	}
 }
 
 func (r *fakeSecretReader) Access(_ context.Context, resource string) (string, []byte, error) {
@@ -77,8 +135,8 @@ func TestRealPklBFFPrepareRendersSchema2ForLocalDevelopmentAndProduction(t *test
 	t.Setenv("LWC_PIPELINE_LOCAL_SECRET_VERSION_RESOURCE", "")
 	t.Setenv("LLM_API_KEY", "TEST_ONLY_LOCAL_LLM_KEY")
 	t.Setenv("DEEPSEEK_API_KEY", "")
-	t.Setenv("TYPESAFE_JEV_API_KEY", "")
-	t.Setenv("TYPESAFE_API_KEY", "")
+	t.Setenv("TYPESAFE_JEV_API_KEY", "TEST_ONLY_LEGACY_JEV_DECOY")
+	t.Setenv("TYPESAFE_API_KEY", "TEST_ONLY_LOCAL_TYPESAFE_API_KEY")
 
 	localRoot := filepath.Join(root, "local")
 	if err := os.MkdirAll(localRoot, 0o700); err != nil {
@@ -109,21 +167,26 @@ func TestRealPklBFFPrepareRendersSchema2ForLocalDevelopmentAndProduction(t *test
 	t.Setenv("FRONTEND_PORT", "13000")
 
 	for _, tc := range []struct {
-		environment string
-		cooldown    int
-		resources   []string
+		environment     string
+		cooldown        int
+		typesafe        string
+		profileAudience string
+		profileService  string
+		resources       []string
 	}{
-		{environment: "local", cooldown: 60},
-		{environment: "dev", cooldown: 600, resources: []string{
-			"projects/llm-wiki-cloud/secrets/jwt-secret-dev/versions/latest",
-			"projects/llm-wiki-cloud/secrets/deepseek-apikey/versions/latest",
-			"projects/llm-wiki-cloud/secrets/typesafe-jev-api-key-dev/versions/1",
-		}},
-		{environment: "prod", cooldown: 3600, resources: []string{
-			"projects/llm-wiki-cloud/secrets/jwt-secret-prod/versions/latest",
-			"projects/llm-wiki-cloud/secrets/deepseek-apikey/versions/latest",
-			"projects/llm-wiki-cloud/secrets/typesafe-jev-api-key-prod/versions/1",
-		}},
+		{environment: "local", cooldown: 60, typesafe: "TEST_ONLY_LOCAL_TYPESAFE_API_KEY"},
+		{environment: "dev", cooldown: 600, typesafe: "TEST_ONLY_SYNTHETIC_CLOUD_SECRET",
+			profileAudience: "https://llm-wiki-bff-dev-a5nkmux6pq-de.a.run.app", profileService: "lwc-bff-dev@llm-wiki-cloud.iam.gserviceaccount.com", resources: []string{
+				"projects/llm-wiki-cloud/secrets/jwt-secret-dev/versions/latest",
+				"projects/llm-wiki-cloud/secrets/deepseek-apikey/versions/latest",
+				"projects/llm-wiki-cloud/secrets/typesafe-jev-api-key-dev/versions/1",
+			}},
+		{environment: "prod", cooldown: 3600, typesafe: "TEST_ONLY_SYNTHETIC_CLOUD_SECRET",
+			profileAudience: "https://llm-wiki-bff-a5nkmux6pq-de.a.run.app", profileService: "lwc-bff-prod@llm-wiki-cloud.iam.gserviceaccount.com", resources: []string{
+				"projects/llm-wiki-cloud/secrets/jwt-secret-prod/versions/latest",
+				"projects/llm-wiki-cloud/secrets/deepseek-apikey/versions/latest",
+				"projects/llm-wiki-cloud/secrets/typesafe-jev-api-key-prod/versions/1",
+			}},
 	} {
 		t.Run(tc.environment, func(t *testing.T) {
 			reader := &fakeSecretReader{value: []byte("TEST_ONLY_SYNTHETIC_CLOUD_SECRET")}
@@ -149,7 +212,8 @@ func TestRealPklBFFPrepareRendersSchema2ForLocalDevelopmentAndProduction(t *test
 				t.Fatalf("prepared BFF schema 2 failed runtime validation: %v", err)
 			}
 			if generated.SchemaVersion != 2 || generated.Environment != tc.environment || generated.Target != "bff" ||
-				generated.PipelineCooldownSeconds != tc.cooldown {
+				generated.PipelineCooldownSeconds != tc.cooldown || generated.TypeSafeAPIKey != tc.typesafe ||
+				generated.ProfileRuntimeAudience != tc.profileAudience || generated.ProfileRuntimeServiceAccount != tc.profileService {
 				t.Fatalf("prepared BFF identity or cooldown is incorrect for %s", tc.environment)
 			}
 			if generated.PipelineSchedule.Cron != "0 * * * *" || generated.PipelineSchedule.Timezone != "UTC" ||
@@ -173,12 +237,15 @@ func TestRealPklBFFPrepareRendersSchema2ForLocalDevelopmentAndProduction(t *test
 			started, err := runtimeconfig.LoadBFFFile(filepath.Join(output, "bff.json"))
 			if err != nil || started.GCPProject != generated.GCPProject ||
 				started.Bucket != generated.Bucket || started.FirestoreDatabaseID != generated.FirestoreDatabaseID ||
-				started.PipelineCooldownSeconds != tc.cooldown {
+				started.PipelineCooldownSeconds != tc.cooldown || started.TypeSafeAPIKey != tc.typesafe ||
+				started.ProfileRuntimeAudience != tc.profileAudience || started.ProfileRuntimeServiceAccount != tc.profileService {
 				t.Fatalf("startup loader did not preserve generated runtime settings for %s: err=%v", tc.environment, err)
 			}
+			assertGeneratedConfigUsesQualityConsumers(t, started, tc.environment, tc.typesafe)
 			if tc.environment == "local" {
 				if generated.Local == nil || generated.Local.Scope != "lwc369-synthetic-acceptance" ||
-					generated.JWTSecret != strings.Repeat("a", 64) || generated.DeepSeekAPIKey != "TEST_ONLY_LOCAL_LLM_KEY" {
+					generated.JWTSecret != strings.Repeat("a", 64) || generated.DeepSeekAPIKey != "TEST_ONLY_LOCAL_LLM_KEY" ||
+					generated.ProfileRuntimeAudience != "" || generated.ProfileRuntimeServiceAccount != "" {
 					t.Fatal("local BFF config did not use the isolated synthetic fixtures")
 				}
 				legacyAuthConfig, err := runtimeconfig.Load(localRoot)
@@ -193,6 +260,18 @@ func TestRealPklBFFPrepareRendersSchema2ForLocalDevelopmentAndProduction(t *test
 				if err != nil || claims.Sub != "lwc369-synthetic-user" {
 					t.Fatal("BFF could not validate an Auth token using the generated local config")
 				}
+				t.Run("missing optional Jev key remains loadable", func(t *testing.T) {
+					t.Setenv("TYPESAFE_API_KEY", "")
+					missingOutput := filepath.Join(root, "local-without-jev-output")
+					if err := runPrepareTarget(context.Background(), "bff", "local", missingOutput,
+						func(context.Context) (secretReader, error) { return &fakeSecretReader{}, nil }); err != nil {
+						t.Fatalf("local BFF prepare without optional Jev key failed: %v", err)
+					}
+					missing, err := runtimeconfig.LoadBFFFile(filepath.Join(missingOutput, "bff.json"))
+					if err != nil || missing.TypeSafeAPIKey != "" || missing.ProfileRuntimeAudience != "" {
+						t.Fatalf("local BFF loader did not preserve optional Jev fallback config: keyPresent=%t err=%v", missing.TypeSafeAPIKey != "", err)
+					}
+				})
 			} else if generated.Local != nil || generated.JWTSecret != "TEST_ONLY_SYNTHETIC_CLOUD_SECRET" ||
 				generated.DeepSeekAPIKey != "TEST_ONLY_SYNTHETIC_CLOUD_SECRET" ||
 				generated.TypeSafeAPIKey != "TEST_ONLY_SYNTHETIC_CLOUD_SECRET" {
@@ -248,6 +327,8 @@ func TestRealPklBFFLocalPrepareUsesSelectedSharedSecretVersion(t *testing.T) {
 	t.Setenv("LWC_PIPELINE_LOCAL_SECRET_VERSION_RESOURCE", resource)
 	t.Setenv("LLM_API_KEY", "TEST_ONLY_ENV_FALLBACK_DECOY")
 	t.Setenv("DEEPSEEK_API_KEY", "")
+	t.Setenv("TYPESAFE_API_KEY", "TEST_ONLY_LOCAL_TYPESAFE_API_KEY")
+	t.Setenv("TYPESAFE_JEV_API_KEY", "TEST_ONLY_LEGACY_JEV_DECOY")
 	t.Setenv("LOCAL_CLOUD_SCOPE", "lwc369-selected-secret-synthetic")
 	t.Setenv("LOCAL_CLOUD_WORKER_PATH", filepath.Join(localRoot, "olw_worker"))
 	t.Setenv("LOCAL_CLOUD_PIPELINE_CONFIG_PATH", filepath.Join(localRoot, "synthetic-synto.toml"))

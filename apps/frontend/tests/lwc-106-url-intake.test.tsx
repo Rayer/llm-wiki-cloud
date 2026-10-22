@@ -1,5 +1,5 @@
 import { afterEach, beforeEach, expect, it, vi } from 'vitest';
-import { cleanup, fireEvent, render, screen, waitFor } from '@testing-library/react';
+import { cleanup, fireEvent, render, screen, waitFor, within } from '@testing-library/react';
 import { ApiError, type ScrapeResult } from '@/lib/api';
 
 const mocks = vi.hoisted(() => ({
@@ -111,6 +111,57 @@ it('renders a public URL candidate, binds the edited title, and links to the exa
   expect(mocks.triggerPipeline).not.toHaveBeenCalled();
 });
 
+it('shows the localized unchecked-quality warning before save and after accepting the same candidate', async () => {
+  const unchecked = {
+    ...preview,
+    quality_checked: false,
+    quality_status: 'not_checked' as const,
+  };
+  mocks.scrapeUrl.mockResolvedValueOnce({
+    ...uncertain,
+    message: 'quality unavailable',
+    preview: unchecked,
+  });
+  mocks.acceptScrapeCandidate.mockResolvedValueOnce({
+    ...stored,
+    preview: unchecked,
+  });
+
+  render(<PipelineClient />);
+  submitUrl();
+
+  const warning = 'Pipeline.urlQualityCheckUnavailable';
+  expect(await screen.findByText(warning)).toBeDefined();
+  expect(screen.getByText('Readable body.')).toBeDefined();
+  fireEvent.click(screen.getByRole('button', { name: 'Pipeline.urlConfirmCandidate' }));
+
+  expect(await screen.findByText('Pipeline.urlQualityCheckUnavailableSaved')).toBeDefined();
+  await waitFor(() => expect(mocks.acceptScrapeCandidate).toHaveBeenCalledTimes(1));
+  expect(mocks.triggerPipeline).not.toHaveBeenCalled();
+});
+
+it('keeps the unchecked-quality warning visible alongside an Accept conflict', async () => {
+  const unchecked = { ...preview, quality_checked: false, quality_status: 'not_checked' as const };
+  mocks.scrapeUrl.mockResolvedValueOnce({ ...uncertain, preview: unchecked });
+  mocks.acceptScrapeCandidate.mockResolvedValueOnce({
+    status: 'conflict',
+    message: 'The raw article changed after this preview; no raw article was changed.',
+    preview: unchecked,
+  });
+
+  render(<PipelineClient />);
+  submitUrl();
+  expect(await screen.findByText('Pipeline.urlQualityCheckUnavailable')).toBeDefined();
+  fireEvent.click(screen.getByRole('button', { name: 'Pipeline.urlConfirmCandidate' }));
+
+  expect(await screen.findByText('The raw article changed after this preview; no raw article was changed.')).toBeDefined();
+  expect(screen.getByText('Pipeline.urlQualityCheckUnavailable')).toBeDefined();
+  expect(screen.queryByRole('link', { name: /Pipeline.urlRawArticle:/ })).toBeNull();
+  expect(mocks.scrapeUrl).toHaveBeenCalledTimes(1);
+  expect(mocks.acceptScrapeCandidate).toHaveBeenCalledTimes(1);
+  expect(mocks.triggerPipeline).not.toHaveBeenCalled();
+});
+
 it('resolves an uncertain accept outcome from the same candidate without refetching', async () => {
   mocks.acceptScrapeCandidate.mockResolvedValueOnce({ status: 'uncertain', message: 'Save status is uncertain.', candidate_id: 'opaque-candidate-id', candidate_revision: 'opaque-candidate-revision' });
   mocks.resolveScrapeCandidate.mockResolvedValueOnce({
@@ -181,4 +232,17 @@ it('keeps a definitive precommit rejection on the unavailable guidance', async (
 
   expect((await screen.findByRole('alert')).textContent).toBe('Pipeline.urlPreviewUnavailable');
   expect(mocks.scrapeUrl).toHaveBeenCalledTimes(1);
+});
+
+it('keeps candidate persistence failures stage-specific without fetch or anti-bot guidance', async () => {
+  mocks.scrapeUrl.mockResolvedValueOnce({
+    status: 'unavailable',
+    failure_stage: 'candidate',
+    message: 'The review candidate could not be stored; no raw article was changed.',
+  });
+  render(<PipelineClient />);
+  submitUrl();
+
+  expect(await screen.findByText('The review candidate could not be stored; no raw article was changed.')).toBeDefined();
+  expect(within(screen.getByRole('dialog')).queryByText('Pipeline.urlManualCapture')).toBeNull();
 });

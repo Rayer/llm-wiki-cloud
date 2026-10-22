@@ -1195,6 +1195,8 @@ export type ScrapeCandidatePreview = {
   markdown: string;
   metadata: Record<string, unknown>;
   candidate_sha256: string;
+  quality_checked?: boolean;
+  quality_status?: 'usable' | 'needs_confirmation' | 'rejected' | 'not_checked';
   reason?: string;
   warning?: string;
   provider: string;
@@ -1209,6 +1211,7 @@ export type ScrapeResult = {
   candidate_revision?: string;
   expires_at?: string;
   retry_after_seconds?: number;
+  failure_stage?: 'setup' | 'validation' | 'fetch' | 'size' | 'quality' | 'storage' | 'candidate' | 'commit';
   preview?: ScrapeCandidatePreview;
   storage?: { path: string; sha256: string; status: RawUploadStatus };
   processing_status?: 'not_started' | string;
