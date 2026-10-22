@@ -286,9 +286,14 @@ func TestGeneratedBFFInputsFlowIntoNormalizedPlanIdentity(t *testing.T) {
 			plan.BFF.RuntimeInputs == nil || plan.BFF.MCPResourceOrigin == "" || bff["mcp_resource_origin"] != plan.BFF.MCPResourceOrigin {
 			t.Fatalf("%s normalized BFF cooldown=%d component=%#v", tc.environment, plan.BFF.PipelineCooldownSeconds, bff)
 		}
+		wantAudience, wantServiceAccount := "https://llm-wiki-bff-dev-a5nkmux6pq-de.a.run.app", "lwc-bff-dev@llm-wiki-cloud.iam.gserviceaccount.com"
+		if tc.environment == "production" {
+			wantAudience, wantServiceAccount = "https://llm-wiki-bff-a5nkmux6pq-de.a.run.app", "lwc-bff-prod@llm-wiki-cloud.iam.gserviceaccount.com"
+		}
 		if schedule, ok := bff["pipeline_schedule"].(BFFPipelineSchedule); !ok ||
-			schedule.Cron != "0 * * * *" || schedule.Timezone != "UTC" {
-			t.Fatalf("%s normalized plan lost the authoritative hourly UTC schedule: %#v", tc.environment, bff["pipeline_schedule"])
+			schedule.Cron != "0 * * * *" || schedule.Timezone != "UTC" ||
+			schedule.Audience != wantAudience || schedule.ServiceAccount != wantServiceAccount {
+			t.Fatalf("%s normalized plan lost its environment-bound hourly UTC schedule: %#v", tc.environment, bff["pipeline_schedule"])
 		}
 		if plan.Evidence.ConfigFingerprint == "" {
 			t.Fatalf("%s omitted normalized plan fingerprint", tc.environment)

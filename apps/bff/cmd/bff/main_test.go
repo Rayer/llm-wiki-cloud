@@ -34,8 +34,59 @@ import (
 	"github.com/rayer/llm-wiki-bff/internal/queryruntime"
 	"github.com/rayer/llm-wiki-bff/internal/syssettings"
 	"github.com/rayer/llm-wiki-bff/internal/urlintake"
+	"google.golang.org/api/idtoken"
 	"gopkg.in/yaml.v3"
 )
+
+func TestConfiguredScheduledPipelineUsesLoadedEnvironmentIdentity(t *testing.T) {
+	for _, tc := range []struct {
+		name           string
+		audience       string
+		serviceAccount string
+		wantConfigured bool
+		wantError      string
+	}{
+		{name: "local", wantError: "scheduled pipeline identity is not configured"},
+		{name: "development", audience: "https://llm-wiki-bff-dev-a5nkmux6pq-de.a.run.app", serviceAccount: "lwc-bff-dev@llm-wiki-cloud.iam.gserviceaccount.com", wantConfigured: true, wantError: "scheduled pipeline scan unavailable"},
+		{name: "production", audience: "https://llm-wiki-bff-a5nkmux6pq-de.a.run.app", serviceAccount: "lwc-bff-prod@llm-wiki-cloud.iam.gserviceaccount.com", wantConfigured: true, wantError: "scheduled pipeline scan unavailable"},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			h := handlerv1.New(nil, nil, nil, nil, nil, nil)
+			configureScheduledPipeline(h, config.Config{
+				PipelineScheduleCron: "0 * * * *", PipelineScheduleTimezone: "UTC",
+				ScheduledPipelineAudience: tc.audience, ScheduledPipelineServiceAccount: tc.serviceAccount,
+			})
+			validatorCalls := 0
+			h.SetScheduledPipelineIdentityValidator(func(_ context.Context, token, audience string) (*idtoken.Payload, error) {
+				validatorCalls++
+				if token != "fixture-scheduler-token" || audience != tc.audience {
+					t.Errorf("identity validation token/audience = %q/%q, want fixture token and %q", token, audience, tc.audience)
+				}
+				return &idtoken.Payload{
+					Issuer: "https://accounts.google.com", Audience: audience,
+					Claims: map[string]interface{}{"email": tc.serviceAccount, "email_verified": true},
+				}, nil
+			})
+
+			response := httptest.NewRecorder()
+			ctx, _ := gin.CreateTestContext(response)
+			ctx.Request = httptest.NewRequest(http.MethodPost, "/internal/pipeline/schedule", nil)
+			if tc.wantConfigured {
+				ctx.Request.Header.Set("Authorization", "Bearer fixture-scheduler-token")
+			}
+			h.ScheduledPipeline(ctx)
+			if response.Code != http.StatusServiceUnavailable || !strings.Contains(response.Body.String(), tc.wantError) {
+				t.Fatalf("configured schedule status=%d body=%s, want unavailable response containing %q", response.Code, response.Body.String(), tc.wantError)
+			}
+			if tc.wantConfigured && validatorCalls != 1 {
+				t.Fatalf("configured %s identity validator calls=%d, want 1", tc.name, validatorCalls)
+			}
+			if !tc.wantConfigured && validatorCalls != 0 {
+				t.Fatalf("local disabled identity validator calls=%d, want 0", validatorCalls)
+			}
+		})
+	}
+}
 
 func TestDefaultProductionQueryCompositionUsesProductionExecutor(t *testing.T) {
 	executor, err := newProductionQueryExecutor(legacyProductionConfig(), conceptcache.New())

@@ -18,12 +18,15 @@ import (
 	"sync"
 	"testing"
 
+	"github.com/gin-gonic/gin"
 	"github.com/rayer/llm-wiki-bff/internal/auth"
 	runtimeconfig "github.com/rayer/llm-wiki-bff/internal/config"
+	handlerv1 "github.com/rayer/llm-wiki-bff/internal/handler/v1"
 	"github.com/rayer/llm-wiki-bff/internal/localfs"
 	"github.com/rayer/llm-wiki-bff/internal/profiletags"
 	"github.com/rayer/llm-wiki-bff/internal/urlintake"
 	"google.golang.org/api/cloudresourcemanager/v3"
+	"google.golang.org/api/idtoken"
 	"google.golang.org/api/option"
 	"google.golang.org/api/secretmanager/v1"
 )
@@ -217,8 +220,8 @@ func TestRealPklBFFPrepareRendersSchema2ForLocalDevelopmentAndProduction(t *test
 				t.Fatalf("prepared BFF identity or cooldown is incorrect for %s", tc.environment)
 			}
 			if generated.PipelineSchedule.Cron != "0 * * * *" || generated.PipelineSchedule.Timezone != "UTC" ||
-				generated.PipelineSchedule.Audience != "" || generated.PipelineSchedule.ServiceAccount != "" {
-				t.Fatalf("prepared BFF schedule is not the frozen hourly UTC configuration for %s: %+v", tc.environment, generated.PipelineSchedule)
+				generated.PipelineSchedule.Audience != tc.profileAudience || generated.PipelineSchedule.ServiceAccount != tc.profileService {
+				t.Fatalf("prepared BFF schedule does not match the environment's hourly UTC identity for %s: %+v", tc.environment, generated.PipelineSchedule)
 			}
 			if generated.LLM.Provider != "deepseek" || generated.LLM.BaseURL != "https://api.deepseek.com" ||
 				generated.LLM.RequestTimeoutSeconds != 60 || generated.LLM.Model != "deepseek-flash" {
@@ -238,8 +241,42 @@ func TestRealPklBFFPrepareRendersSchema2ForLocalDevelopmentAndProduction(t *test
 			if err != nil || started.GCPProject != generated.GCPProject ||
 				started.Bucket != generated.Bucket || started.FirestoreDatabaseID != generated.FirestoreDatabaseID ||
 				started.PipelineCooldownSeconds != tc.cooldown || started.TypeSafeAPIKey != tc.typesafe ||
-				started.ProfileRuntimeAudience != tc.profileAudience || started.ProfileRuntimeServiceAccount != tc.profileService {
+				started.ProfileRuntimeAudience != tc.profileAudience || started.ProfileRuntimeServiceAccount != tc.profileService ||
+				started.PipelineScheduleCron != generated.PipelineSchedule.Cron ||
+				started.PipelineScheduleTimezone != generated.PipelineSchedule.Timezone ||
+				started.ScheduledPipelineAudience != generated.PipelineSchedule.Audience ||
+				started.ScheduledPipelineServiceAccount != generated.PipelineSchedule.ServiceAccount {
 				t.Fatalf("startup loader did not preserve generated runtime settings for %s: err=%v", tc.environment, err)
+			}
+			configured := tc.environment != "local"
+			hV1 := handlerv1.New(nil, nil, nil, nil, nil, nil)
+			hV1.SetScheduledPipelineConfig(started.PipelineScheduleCron, started.PipelineScheduleTimezone,
+				started.ScheduledPipelineAudience, started.ScheduledPipelineServiceAccount)
+			validatorCalls := 0
+			hV1.SetScheduledPipelineIdentityValidator(func(_ context.Context, token, audience string) (*idtoken.Payload, error) {
+				validatorCalls++
+				if token != "fixture-scheduler-token" || audience != tc.profileAudience {
+					t.Errorf("loaded %s schedule identity token/audience = %q/%q", tc.environment, token, audience)
+				}
+				return &idtoken.Payload{
+					Issuer: "https://accounts.google.com", Audience: audience,
+					Claims: map[string]interface{}{"email": tc.profileService, "email_verified": true},
+				}, nil
+			})
+			response := httptest.NewRecorder()
+			ctx, _ := gin.CreateTestContext(response)
+			ctx.Request = httptest.NewRequest(http.MethodPost, "/internal/pipeline/schedule", nil)
+			if configured {
+				ctx.Request.Header.Set("Authorization", "Bearer fixture-scheduler-token")
+			}
+			hV1.ScheduledPipeline(ctx)
+			wantRouteError := "scheduled pipeline identity is not configured"
+			if configured {
+				wantRouteError = "scheduled pipeline scan unavailable"
+			}
+			if response.Code != http.StatusServiceUnavailable || !strings.Contains(response.Body.String(), wantRouteError) ||
+				(configured && validatorCalls != 1) || (!configured && validatorCalls != 0) {
+				t.Fatalf("loaded %s schedule consumer status=%d validatorCalls=%d body=%s", tc.environment, response.Code, validatorCalls, response.Body.String())
 			}
 			assertGeneratedConfigUsesQualityConsumers(t, started, tc.environment, tc.typesafe)
 			if tc.environment == "local" {
