@@ -26,7 +26,7 @@ func TestJevHTTPTransportUsesIndependentExactInputAndFailsClosed(t *testing.T) {
 		otel.SetTracerProvider(previous)
 		_ = provider.Shutdown(context.Background())
 	})
-	response := `{"model":"jev-1.13.0","answers":{"applicable":{"type":"noul","noul":0.9},"known":{"type":"noul","noul":0.9},"match":{"type":"noul","noul":0.9}},"usage":{"input_tokens":1,"output_tokens":1}}`
+	response := `{"model":"jev-1.14.0","answers":{"applicable":{"type":"noul","noul":0.9},"known":{"type":"noul","noul":0.9},"match":{"type":"noul","noul":0.9}},"usage":{"input_tokens":1,"output_tokens":1}}`
 	calls := 0
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		calls++
@@ -69,7 +69,7 @@ func TestJevHTTPTransportUsesIndependentExactInputAndFailsClosed(t *testing.T) {
 	evalCtx, evalSpan := observability.StartProfileSpan(context.Background(), "profile.tag.evaluate")
 	result, err := e.Evaluate(evalCtx, item, tag, policy)
 	observability.FinishProfileSpan(evalSpan, "success")
-	if err != nil || result.Judgment != Match || result.Confidence != nil || calls != 1 {
+	if err != nil || result.Judgment != Match || result.ReturnedModel != "jev-1.14.0" || result.Confidence != nil || calls != 1 {
 		t.Fatalf("result=%+v err=%v calls=%d", result, err, calls)
 	}
 	spans := map[string]sdktrace.ReadOnlySpan{}
@@ -90,7 +90,7 @@ func TestJevHTTPTransportUsesIndependentExactInputAndFailsClosed(t *testing.T) {
 	if err != nil || result.Judgment != Unknown {
 		t.Fatalf("missing evidence = %+v %v", result, err)
 	}
-	for _, bad := range []string{`{}`, strings.Replace(original, "jev-1.13.0", "unapproved", 1), strings.Replace(original, `"noul":0.9`, `"noul":null`, 1), strings.Replace(original, `"model":`, `"model":"duplicate","model":`, 1), original + `{}`, strings.Repeat("x", 1048577)} {
+	for _, bad := range []string{`{}`, strings.Replace(original, `"noul":0.9`, `"noul":null`, 1), strings.Replace(original, `"model":`, `"model":"duplicate","model":`, 1), original + `{}`, strings.Repeat("x", 1048577)} {
 		response = bad
 		if _, err = e.Evaluate(context.Background(), item, tag, policy); err == nil {
 			t.Fatal("invalid response accepted")
@@ -180,12 +180,12 @@ func TestJevObservationSeparatesHTTPTransportFromLogicalDecode(t *testing.T) {
 	}
 }
 
-func TestJevModelAndAnswerRejectionsStayOnDecodePhase(t *testing.T) {
-	const valid = `{"model":"jev-1.13.0","answers":{"applicable":{"type":"noul","noul":0.9},"known":{"type":"noul","noul":0.9},"match":{"type":"noul","noul":0.9}}}`
+func TestJevMissingModelAndMalformedAnswersStayOnDecodePhase(t *testing.T) {
+	const valid = `{"model":"jev-1.14.0","answers":{"applicable":{"type":"noul","noul":0.9},"known":{"type":"noul","noul":0.9},"match":{"type":"noul","noul":0.9}}}`
 	for _, test := range []struct {
 		name, body, attr string
 	}{
-		{name: "model", body: strings.Replace(valid, `"model":"jev-1.13.0"`, `"model":"unapproved"`, 1), attr: "profile.provider.model.outcome"},
+		{name: "missing model", body: strings.Replace(valid, `"model":"jev-1.14.0"`, `"model":""`, 1), attr: "profile.provider.model.outcome"},
 		{name: "answers", body: strings.Replace(valid, `"match":{"type":"noul","noul":0.9}`, `"match":{"type":"other","noul":0.9}`, 1), attr: "profile.provider.answers.outcome"},
 	} {
 		t.Run(test.name, func(t *testing.T) {

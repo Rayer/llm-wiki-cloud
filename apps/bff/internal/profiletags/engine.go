@@ -6,6 +6,7 @@ import (
 	"errors"
 	"fmt"
 	"sort"
+	"strings"
 
 	"github.com/rayer/llm-wiki-bff/internal/observability"
 )
@@ -168,16 +169,8 @@ func rowLess(a, b Row) bool {
 	}
 	return a.TagID < b.TagID
 }
-func accepted(p ProviderPolicy, returned string) bool {
-	for _, s := range p.AcceptedReturnedModels {
-		if s == returned {
-			return true
-		}
-	}
-	return false
-}
 func validDecision(d Decision, p ProviderPolicy) bool {
-	return d.SchemaVersion == DecisionSchema && validKind(d.Kind) && d.StableID != "" && validDigest(d.ContentDigest) && validDigest(d.InputDigest) && validDigest(d.RuleDigest) && d.TagID != "" && validJudgment(d.Judgment) && d.ConfiguredModel == p.ConfiguredModel && accepted(p, d.ReturnedModel) && d.PromptVersion == p.PromptVersion && len(d.Evidence) <= MaxEvidenceBytes && (d.Confidence == nil || (*d.Confidence >= 0 && *d.Confidence <= 1))
+	return d.SchemaVersion == DecisionSchema && validKind(d.Kind) && d.StableID != "" && validDigest(d.ContentDigest) && validDigest(d.InputDigest) && validDigest(d.RuleDigest) && d.TagID != "" && validJudgment(d.Judgment) && d.ConfiguredModel == p.ConfiguredModel && strings.TrimSpace(d.ReturnedModel) != "" && d.PromptVersion == p.PromptVersion && len(d.Evidence) <= MaxEvidenceBytes && (d.Confidence == nil || (*d.Confidence >= 0 && *d.Confidence <= 1))
 }
 
 // Build evaluates only keys lacking a validated prior decision. It writes no set on incomplete coverage.

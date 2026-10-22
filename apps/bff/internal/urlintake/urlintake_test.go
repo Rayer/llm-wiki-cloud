@@ -164,7 +164,7 @@ func TestJevEvaluatorSendsTwoIndependentBoundedQuestions(t *testing.T) {
 			}
 		}
 		w.Header().Set("Content-Type", "application/json")
-		_, _ = w.Write([]byte(`{"model":"jev-1.13.0","answers":{"access_shell":{"type":"noul","noul":0.02},"readable_content":{"type":"noul","noul":0.97}},"usage":{"input_tokens":800,"output_tokens":9}}`))
+		_, _ = w.Write([]byte(`{"model":"jev-1.14.0","answers":{"access_shell":{"type":"noul","noul":0.02},"readable_content":{"type":"noul","noul":0.97}},"usage":{"input_tokens":800,"output_tokens":9}}`))
 	}))
 	defer server.Close()
 	evaluator := NewJevEvaluator("quality-test-key")
@@ -175,7 +175,7 @@ func TestJevEvaluatorSendsTwoIndependentBoundedQuestions(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if got.PromptVersion != JevPromptVersion || got.ReturnedModel != "jev-1.13.0" || got.Usage.InputTokens != 800 || got.Usage.OutputTokens != 9 || got.ShellProbability != 0.02 || got.ContentProbability != 0.97 {
+	if got.PromptVersion != JevPromptVersion || got.ReturnedModel != "jev-1.14.0" || got.Usage.InputTokens != 800 || got.Usage.OutputTokens != 9 || got.ShellProbability != 0.02 || got.ContentProbability != 0.97 {
 		t.Fatalf("unexpected quality evaluation: %#v", got)
 	}
 }
@@ -234,7 +234,7 @@ func TestJevEvaluatorClassifiesTimeoutAndInvalidResponses(t *testing.T) {
 	t.Run("invalid response", func(t *testing.T) {
 		server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
 			w.Header().Set("Content-Type", "application/json")
-			_, _ = w.Write([]byte(`{"model":"unknown-model","answers":{},"usage":{"input_tokens":0,"output_tokens":0},"private":"secret body"}`))
+			_, _ = w.Write([]byte(`{"model":"jev-unlisted-version","answers":{},"usage":{"input_tokens":0,"output_tokens":0},"private":"secret body"}`))
 		}))
 		defer server.Close()
 		evaluator := NewJevEvaluator("quality-test-key")
