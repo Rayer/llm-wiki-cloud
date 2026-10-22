@@ -67,6 +67,11 @@ import (
 //	@name						X-Project-ID
 //	@description				Project identifier header.
 
+func configureScheduledPipeline(hV1 *handlerv1.Handler, cfg config.Config) {
+	hV1.SetScheduledPipelineConfig(cfg.PipelineScheduleCron, cfg.PipelineScheduleTimezone,
+		cfg.ScheduledPipelineAudience, cfg.ScheduledPipelineServiceAccount)
+}
+
 func main() {
 	cfg, err := config.LoadBFFFile(os.Getenv("LWC_BFF_CONFIG_PATH"))
 	if err != nil {
@@ -154,8 +159,7 @@ func main() {
 		cfg.PipelineMinNewRaw,
 		cfg.PipelineDemoUserIDs,
 	)
-	hV1.SetScheduledPipelineConfig(cfg.PipelineScheduleCron, cfg.PipelineScheduleTimezone,
-		cfg.ScheduledPipelineAudience, cfg.ScheduledPipelineServiceAccount)
+	configureScheduledPipeline(hV1, cfg)
 	settingsStore := syssettings.NewStore(fsClient.Raw(), cfg.RegistrationEnabled)
 	var nativeWorker *localpipeline.Manager
 	if localMode {
