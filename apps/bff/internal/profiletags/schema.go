@@ -65,7 +65,9 @@ type Inventory struct {
 	Items                []Item
 }
 type ProviderPolicy struct {
-	ConfiguredModel        string
+	ConfiguredModel string
+	// AcceptedReturnedModels remains in the policy digest for durable cache compatibility.
+	// It no longer gates the provider's returned model metadata.
 	AcceptedReturnedModels []string
 	PromptVersion          string
 	SchemaVersion          string

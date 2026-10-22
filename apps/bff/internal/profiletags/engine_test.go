@@ -267,7 +267,7 @@ func TestPolicyChangesRuleDigest(t *testing.T) {
 	}
 }
 
-func TestUnacceptedReturnedIdentityIsMissing(t *testing.T) {
+func TestUnlistedReturnedIdentityIsStoredAndCached(t *testing.T) {
 	ctx := context.Background()
 	s := memoryStore{}
 	in := fixture()
@@ -278,8 +278,18 @@ func TestUnacceptedReturnedIdentityIsMissing(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if result.SetRevision != "" || result.Set.MissingCount != 1 || result.Missing[0].Code != "invalid_provider_result" {
-		t.Fatalf("identity accepted: %+v", result)
+	if result.SetRevision == "" || result.Set.MissingCount != 0 || result.Set.CompletedCount != 1 || len(f.calls) != 1 {
+		t.Fatalf("unlisted provider identity not stored: result=%+v calls=%v", result.Set, f.calls)
+	}
+	decision, err := load[Decision](ctx, s, decisionPath(result.Completed[0]), result.Completed[0])
+	if err != nil || decision.ReturnedModel != "provider-version-7" {
+		t.Fatalf("returned model metadata = %q, err=%v", decision.ReturnedModel, err)
+	}
+	f.calls = nil
+	in.PriorDecisionRevisions = result.Completed
+	cached, err := Build(ctx, s, f, in)
+	if err != nil || cached.SetRevision == "" || cached.Set.CompletedCount != 1 || len(f.calls) != 0 || cached.Completed[0] != result.Completed[0] {
+		t.Fatalf("unlisted provider identity not reusable from cache: result=%+v calls=%v err=%v", cached.Set, f.calls, err)
 	}
 }
 

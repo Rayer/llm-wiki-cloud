@@ -105,16 +105,6 @@ func (e *JevEvaluator) Evaluate(ctx context.Context, item Item, tag Tag, policy 
 		observability.SetProfileStage(decodeSpan, "model", "failure")
 		return Evaluation{}, errors.New("Jev returned model missing")
 	}
-	accepted := false
-	for _, allowed := range policy.AcceptedReturnedModels {
-		if model == allowed {
-			accepted = true
-		}
-	}
-	if !accepted {
-		observability.SetProfileStage(decodeSpan, "model", "failure")
-		return Evaluation{}, errors.New("Jev returned model rejected")
-	}
 	observability.SetProfileStage(decodeSpan, "model", "success")
 	var answers map[string]struct {
 		Type string   `json:"type"`

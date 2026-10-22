@@ -65,17 +65,15 @@ type QualityEvaluator interface {
 }
 
 type JevEvaluator struct {
-	APIKey         string
-	Endpoint       string
-	Model          string
-	AcceptedModels []string
-	Client         *http.Client
+	APIKey   string
+	Endpoint string
+	Model    string
+	Client   *http.Client
 }
 
 func NewJevEvaluator(apiKey string) *JevEvaluator {
 	return &JevEvaluator{
 		APIKey: strings.TrimSpace(apiKey), Endpoint: JevEndpoint, Model: JevModel,
-		AcceptedModels: []string{JevModel, "jev-1.13.0"},
 		Client: &http.Client{
 			Timeout: 45 * time.Second,
 			CheckRedirect: func(*http.Request, []*http.Request) error {
@@ -169,14 +167,7 @@ func (e *JevEvaluator) Evaluate(ctx context.Context, input QualityInput) (Qualit
 	if err := decoder.Decode(new(any)); !errors.Is(err, io.EOF) || strings.TrimSpace(envelope.Model) == "" {
 		return QualityEvaluation{}, &QualityProviderFailure{Kind: "invalid_response"}
 	}
-	acceptedModel := false
-	for _, model := range e.AcceptedModels {
-		if envelope.Model == model {
-			acceptedModel = true
-			break
-		}
-	}
-	if !acceptedModel || len(envelope.Answers) != 2 || envelope.Usage == nil || envelope.Usage.InputTokens < 0 || envelope.Usage.OutputTokens < 0 {
+	if len(envelope.Answers) != 2 || envelope.Usage == nil || envelope.Usage.InputTokens < 0 || envelope.Usage.OutputTokens < 0 {
 		return QualityEvaluation{}, &QualityProviderFailure{Kind: "invalid_response"}
 	}
 	probability := func(key string) (float64, bool) {
