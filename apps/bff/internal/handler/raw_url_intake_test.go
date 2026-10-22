@@ -68,7 +68,7 @@ func TestScrapeRawConfirmationUsesVerifiedProjectAndStoredCandidate(t *testing.T
 	if err := json.Unmarshal(previewResponse.Body.Bytes(), &preview); err != nil {
 		t.Fatal(err)
 	}
-	if preview.Status != "preview" || preview.Preview == nil || preview.CandidateID == "" || preview.CandidateRevision == "" {
+	if preview.Status != "preview" || preview.Preview == nil || !preview.Preview.QualityChecked || preview.Preview.QualityStatus != "needs_confirmation" || preview.CandidateID == "" || preview.CandidateRevision == "" {
 		t.Fatalf("preview response = %#v", preview)
 	}
 	if preview.Preview.Markdown != "# Example Article\n\nReadable article body.\n" {

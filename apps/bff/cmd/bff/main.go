@@ -189,17 +189,12 @@ func main() {
 		hV1.SetLocalPipelineExecutor(nativeWorker)
 	}
 
-	intakeService := urlintake.NewService(
-		urlintake.NewDeepSeekFetcher(cfg.DeepSeekAPIKey),
-		urlintake.NewJevEvaluator(os.Getenv("TYPESAFE_JEV_API_KEY")),
-		func(scope urlintake.ActorProject) (urlintake.ProjectStore, error) {
-			if gcsClient == nil || strings.TrimSpace(scope.ActorID) == "" || strings.TrimSpace(scope.ProjectID) == "" {
-				return nil, errors.New("scoped raw storage is unavailable")
-			}
-			return gcsClient.WithScope(scope.ActorID, scope.ProjectID), nil
-		},
-		urlintake.DefaultQualityThresholds,
-	)
+	intakeService := newURLIntakeService(cfg, func(scope urlintake.ActorProject) (urlintake.ProjectStore, error) {
+		if gcsClient == nil || strings.TrimSpace(scope.ActorID) == "" || strings.TrimSpace(scope.ProjectID) == "" {
+			return nil, errors.New("scoped raw storage is unavailable")
+		}
+		return gcsClient.WithScope(scope.ActorID, scope.ProjectID), nil
+	})
 	rawFactory := func(scopedClient *gcs.Client, fsClient *firestore.Client) rawScrapeHandler {
 		return handlerraw.NewWithURLIntake(scopedClient, fsClient, intakeService)
 	}
@@ -232,6 +227,15 @@ func main() {
 	if err := shutdownBFF(server, nativeWorker, 15*time.Second, 15*time.Second); err != nil {
 		log.Printf("BFF shutdown: %v", err)
 	}
+}
+
+func newURLIntakeService(cfg config.Config, stores urlintake.StoreFactory) *urlintake.Service {
+	return urlintake.NewService(
+		urlintake.NewDeepSeekFetcher(cfg.DeepSeekAPIKey),
+		urlintake.NewJevEvaluator(cfg.TypeSafeAPIKey),
+		stores,
+		urlintake.DefaultQualityThresholds,
+	)
 }
 
 type localPipelineCloser interface {

@@ -32,6 +32,7 @@ import (
 	"github.com/rayer/llm-wiki-bff/internal/queryquality"
 	"github.com/rayer/llm-wiki-bff/internal/queryruntime"
 	"github.com/rayer/llm-wiki-bff/internal/syssettings"
+	"github.com/rayer/llm-wiki-bff/internal/urlintake"
 	"gopkg.in/yaml.v3"
 )
 
@@ -42,6 +43,21 @@ func TestDefaultProductionQueryCompositionUsesProductionExecutor(t *testing.T) {
 	}
 	if _, ok := executor.(*queryquality.ProductionExecutor); !ok {
 		t.Fatalf("production executor = %T, want queryquality.ProductionExecutor", executor)
+	}
+}
+
+func TestURLIntakeJevUsesLoadedConfigAndIgnoresLegacyEnvironment(t *testing.T) {
+	t.Setenv("TYPESAFE_JEV_API_KEY", "legacy-conflicting-key")
+	configured := newURLIntakeService(config.Config{DeepSeekAPIKey: "fetch-key", TypeSafeAPIKey: "loaded-config-key"}, nil)
+	jeV, ok := configured.Evaluator.(*urlintake.JevEvaluator)
+	if !ok || jeV.APIKey != "loaded-config-key" {
+		t.Fatalf("configured Jev evaluator = %#v, want loaded config key", configured.Evaluator)
+	}
+
+	missing := newURLIntakeService(config.Config{DeepSeekAPIKey: "fetch-key"}, nil)
+	jeV, ok = missing.Evaluator.(*urlintake.JevEvaluator)
+	if !ok || jeV.APIKey != "" {
+		t.Fatalf("missing-config Jev evaluator = %#v, legacy environment must not supply a key", missing.Evaluator)
 	}
 }
 

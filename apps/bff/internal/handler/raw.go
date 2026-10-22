@@ -10,6 +10,7 @@ import (
 	"strings"
 
 	"github.com/gin-gonic/gin"
+	"github.com/rayer/llm-wiki-bff/internal/observability"
 	"github.com/rayer/llm-wiki-bff/internal/urlintake"
 )
 
@@ -106,6 +107,7 @@ type ScrapeResponse struct {
 	CandidateRevision string                      `json:"candidate_revision,omitempty"`
 	ExpiresAt         string                      `json:"expires_at,omitempty"`
 	RetryAfterSeconds int64                       `json:"retry_after_seconds,omitempty"`
+	FailureStage      string                      `json:"failure_stage,omitempty"`
 	Preview           *urlintake.CandidatePreview `json:"preview,omitempty"`
 	Storage           *urlintake.StorageOutcome   `json:"storage,omitempty"`
 	ProcessingStatus  string                      `json:"processing_status,omitempty"`
@@ -131,6 +133,7 @@ type ScrapeResponse struct {
 //	@Router		/api/v1/raw/scrape [post]
 func (h *Handler) ScrapeRaw(c *gin.Context) {
 	if h.urlIntake == nil {
+		observability.RecordURLIntakeEvent(c.Request.Context(), "setup", "configuration", "failure")
 		c.JSON(http.StatusServiceUnavailable, ScrapeResponse{Status: "unavailable", Message: "URL intake is not configured. Paste Markdown or clip the page and upload a supported file."})
 		return
 	}
@@ -170,6 +173,7 @@ func (h *Handler) ScrapeRaw(c *gin.Context) {
 		return
 	}
 	if err != nil {
+		observability.RecordURLIntakeEvent(c.Request.Context(), "handler", "internal", "failure")
 		c.JSON(http.StatusInternalServerError, ErrorResponse{Error: "URL intake failed"})
 		return
 	}
@@ -296,7 +300,8 @@ func writeScrapeResult(c *gin.Context, status int, result urlintake.Result) {
 		Status: result.Status, Message: result.Message, ConfirmationRef: result.ConfirmationRef,
 		CandidateID: result.CandidateID, CandidateRevision: result.CandidateRevision,
 		ExpiresAt: result.ExpiresAt, RetryAfterSeconds: result.RetryAfterSeconds,
-		Preview: result.Preview, Storage: result.Storage, ProcessingStatus: result.ProcessingStatus,
+		FailureStage: result.FailureStage,
+		Preview:      result.Preview, Storage: result.Storage, ProcessingStatus: result.ProcessingStatus,
 	})
 }
 

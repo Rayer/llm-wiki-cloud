@@ -10,6 +10,7 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"log"
 	"net/url"
 	"path"
 	"strings"
@@ -19,6 +20,7 @@ import (
 	"unicode/utf8"
 
 	cloudstorage "cloud.google.com/go/storage"
+	"github.com/rayer/llm-wiki-bff/internal/observability"
 	"github.com/rayer/llm-wiki-bff/internal/rawintake"
 	"github.com/rayer/llm-wiki-bff/internal/storage"
 )
@@ -74,6 +76,8 @@ type CandidatePreview struct {
 	Markdown          string         `json:"markdown"`
 	Metadata          map[string]any `json:"metadata"`
 	CandidateSHA256   string         `json:"candidate_sha256"`
+	QualityChecked    bool           `json:"quality_checked"`
+	QualityStatus     string         `json:"quality_status"`
 	Reason            string         `json:"reason,omitempty"`
 	Warning           string         `json:"warning,omitempty"`
 	Provider          string         `json:"provider"`
@@ -88,6 +92,7 @@ type Result struct {
 	CandidateRevision string            `json:"candidate_revision,omitempty"`
 	ExpiresAt         string            `json:"expires_at,omitempty"`
 	RetryAfterSeconds int64             `json:"retry_after_seconds,omitempty"`
+	FailureStage      string            `json:"failure_stage,omitempty"`
 	Preview           *CandidatePreview `json:"preview,omitempty"`
 	Storage           *StorageOutcome   `json:"storage,omitempty"`
 	ProcessingStatus  string            `json:"processing_status,omitempty"`
@@ -186,7 +191,8 @@ func (s *Service) Prepare(ctx context.Context, verified ActorProject, request Im
 
 func (s *Service) intake(ctx context.Context, verified ActorProject, request ImportRequest, prepare bool) (Result, error) {
 	if s == nil {
-		return Result{Status: "unavailable", Message: manualAlternative}, nil
+		recordIntakeEvent(ctx, "setup", "configuration", "failure")
+		return Result{Status: "unavailable", Message: "URL intake is not configured.", FailureStage: "setup"}, nil
 	}
 	if strings.TrimSpace(verified.ActorID) == "" || strings.TrimSpace(verified.ProjectID) == "" {
 		return Result{}, ErrInvalidScope
@@ -199,15 +205,17 @@ func (s *Service) intake(ctx context.Context, verified ActorProject, request Imp
 			return Result{Status: "rejected", Message: "A source tag is too long."}, nil
 		}
 	}
-	if s == nil || s.Stores == nil || s.Fetcher == nil {
-		return Result{Status: "unavailable", Message: manualAlternative}, nil
+	if s.Stores == nil || s.Fetcher == nil {
+		recordIntakeEvent(ctx, "setup", "configuration", "failure")
+		return Result{Status: "unavailable", Message: "URL intake storage or Fetch is not configured.", FailureStage: "setup"}, nil
 	}
 	validatedURL, err := ValidatePublicURL(ctx, request.URL, s.Resolver)
 	if err != nil {
 		if errors.Is(err, ErrUnresolvedURL) {
-			return Result{Status: "unavailable", Message: manualAlternative}, nil
+			recordIntakeEvent(ctx, "fetch", "transport", "failure")
+			return Result{Status: "unavailable", Message: "The public address could not be verified, so no content was fetched.", FailureStage: "fetch"}, nil
 		}
-		return Result{Status: "rejected", Message: "Use a public HTTP or HTTPS URL without embedded credentials."}, nil
+		return Result{Status: "rejected", Message: "Use a public HTTP or HTTPS URL without embedded credentials.", FailureStage: "validation"}, nil
 	}
 	normalizedURL, err := NormalizeURL(validatedURL)
 	if err != nil {
@@ -218,18 +226,22 @@ func (s *Service) intake(ctx context.Context, verified ActorProject, request Imp
 	}
 	store, err := s.Stores(verified)
 	if err != nil || store == nil {
-		return Result{Status: "unavailable", Message: manualAlternative}, nil
+		recordIntakeEvent(ctx, "storage", "dependency", "failure")
+		return Result{Status: "unavailable", Message: "Project storage is unavailable; no raw article was changed.", FailureStage: "storage"}, nil
 	}
 	page, err := s.Fetcher.Fetch(ctx, request.URL)
 	if err != nil {
+		if class := fetchFailureClass(err); class != "" {
+			recordIntakeEvent(ctx, "fetch", class, "failure")
+		}
 		return failureResult(err), nil
 	}
 	page.Markdown = NormalizeMarkdown(page.Markdown)
 	if len(page.Markdown) > MaxCandidateBytes {
-		return Result{Status: "rejected", Message: "The fetched content exceeds the supported size."}, nil
+		return Result{Status: "rejected", Message: "The fetched content exceeds the supported size.", FailureStage: "fetch"}, nil
 	}
 	if strings.TrimSpace(page.Markdown) == "" {
-		return Result{Status: "rejected", Message: "The Fetch provider returned no usable content. " + manualAlternative}, nil
+		return Result{Status: "rejected", Message: "Fetch completed without usable article content; nothing was saved.", FailureStage: "fetch"}, nil
 	}
 	title := usableTitle(page.Title, page.Markdown, validatedURL)
 	identityDigest := digestString([]byte(normalizedURL))
@@ -238,7 +250,8 @@ func (s *Service) intake(ctx context.Context, verified ActorProject, request Imp
 		if errors.Is(err, ErrURLConflict) || errors.Is(err, rawintake.ErrConflict) {
 			return Result{Status: "conflict", Message: "More than one existing raw file matches this URL; no file was changed."}, nil
 		}
-		return Result{Status: "unavailable", Message: manualAlternative}, nil
+		recordIntakeEvent(ctx, "storage", "storage", "failure")
+		return Result{Status: "unavailable", Message: "Could not read Project raw content to prepare the candidate; no file was changed.", FailureStage: "storage"}, nil
 	}
 	metadata := SourceMetadata{Title: title, SourceURL: request.URL, Tags: request.Tags}
 	data, _, err := MergeRawMarkdown(target.data, metadata, page.Markdown, s.now())
@@ -259,26 +272,60 @@ func (s *Service) intake(ctx context.Context, verified ActorProject, request Imp
 		Metadata: previewMetadata(data), CandidateSHA256: digest,
 		Provider: DeepSeekFetchProvider, ProviderTruncated: page.Truncated,
 	}
-	if s.Evaluator == nil {
-		return Result{Status: "unavailable", Message: manualAlternative, Preview: &preview}, nil
-	}
 	providerMetadata := map[string]any{}
 	if page.Truncated != nil {
 		providerMetadata["truncated"] = *page.Truncated
 	}
-	evaluation, err := s.Evaluator.Evaluate(ctx, QualityInput{
-		URL: request.URL, Title: title, Markdown: page.Markdown,
-		Provider: DeepSeekFetchProvider, ProviderMetadata: providerMetadata,
-	})
-	if err != nil {
-		return Result{Status: "unavailable", Message: manualAlternative, Preview: &preview}, nil
+	var evaluation QualityEvaluation
+	var qualityErr error
+	qualityClass := ""
+	if s.Evaluator == nil {
+		qualityClass = "configuration"
+	} else {
+		evaluation, qualityErr = s.Evaluator.Evaluate(ctx, QualityInput{
+			URL: request.URL, Title: title, Markdown: page.Markdown,
+			Provider: DeepSeekFetchProvider, ProviderMetadata: providerMetadata,
+		})
+		if qualityErr != nil {
+			qualityClass = qualityFailureClass(ctx, qualityErr)
+		}
 	}
+	if qualityClass != "" {
+		recordIntakeEvent(ctx, "quality", qualityClass, "failure")
+		recordIntakeEvent(ctx, "quality", qualityClass, "fallback")
+		preview.QualityChecked = false
+		preview.QualityStatus = "not_checked"
+		if page.Truncated != nil && *page.Truncated {
+			preview.Warning = "The Fetch provider explicitly marked this content as truncated."
+		}
+		ref, expiresAt, saveErr := s.saveCandidate(ctx, store, verified, &candidate{
+			scope: verified, originalURL: request.URL, normalizedURL: normalizedURL,
+			identitySHA256: identityDigest, relativePath: target.relativePath,
+			expectedGeneration: target.generation, existing: target.exists,
+			data: data, digest: digest, preview: preview,
+		})
+		if saveErr != nil {
+			recordIntakeEvent(ctx, "candidate", "storage", "failure")
+			return Result{Status: "unavailable", Message: "The page was fetched, but its review candidate could not be stored; no raw article was changed.", FailureStage: "candidate"}, nil
+		}
+		return Result{
+			Status: "preview", Message: "The page was fetched successfully, but the automatic quality check was unavailable and skipped. Review the content before saving.",
+			ConfirmationRef: ref, CandidateID: ref, CandidateRevision: digest,
+			ExpiresAt: expiresAt.Format(time.RFC3339), Preview: &preview,
+		}, nil
+	}
+	preview.QualityChecked = true
 	quality := DecideQuality(evaluation, s.Thresholds)
 	if quality == QualityRejected {
+		preview.QualityStatus = "rejected"
 		preview.Reason = "The page appears to be a blocking, error, or loading shell without readable main content."
-		return Result{Status: "rejected", Message: preview.Reason + " " + manualAlternative, Preview: &preview}, nil
+		return Result{Status: "rejected", Message: preview.Reason, FailureStage: "quality", Preview: &preview}, nil
 	}
 	needsConfirmation := quality == QualityNeedsConfirmation
+	preview.QualityStatus = "usable"
+	if needsConfirmation {
+		preview.QualityStatus = "needs_confirmation"
+	}
 	if page.Truncated != nil && *page.Truncated {
 		needsConfirmation = true
 		preview.Warning = "The Fetch provider explicitly marked this content as truncated."
@@ -294,7 +341,8 @@ func (s *Service) intake(ctx context.Context, verified ActorProject, request Imp
 			data: data, digest: digest, preview: preview,
 		})
 		if err != nil {
-			return Result{Status: "unavailable", Message: manualAlternative}, nil
+			recordIntakeEvent(ctx, "candidate", "storage", "failure")
+			return Result{Status: "unavailable", Message: "The fetched page could not be stored as a review candidate; no raw article was changed.", FailureStage: "candidate"}, nil
 		}
 		return Result{Status: "preview", Message: "Review the rendered candidate before saving.", ConfirmationRef: ref, CandidateID: ref, CandidateRevision: digest, ExpiresAt: expiresAt.Format(time.RFC3339), Preview: &preview}, nil
 	}
@@ -306,7 +354,8 @@ func (s *Service) intake(ctx context.Context, verified ActorProject, request Imp
 			data: data, digest: digest, preview: preview,
 		})
 		if err != nil {
-			return Result{Status: "unavailable", Message: manualAlternative, Preview: &preview}, nil
+			recordIntakeEvent(ctx, "candidate", "storage", "failure")
+			return Result{Status: "unavailable", Message: "The review candidate could not be retained; no raw article was changed.", FailureStage: "candidate", Preview: &preview}, nil
 		}
 		return Result{Status: "needs_confirmation", Message: preview.Reason, ConfirmationRef: ref, ExpiresAt: expiresAt.Format(time.RFC3339), Preview: &preview}, nil
 	}
@@ -321,15 +370,23 @@ func (s *Service) intake(ctx context.Context, verified ActorProject, request Imp
 
 // Accept commits exactly the immutable prepared bytes, binding the first accepted title.
 func (s *Service) Accept(ctx context.Context, verified ActorProject, id, revision, title string) (Result, error) {
-	if s == nil || s.Stores == nil || !validCandidateID(id) || strings.TrimSpace(verified.ActorID) == "" || strings.TrimSpace(verified.ProjectID) == "" {
+	if s == nil || s.Stores == nil {
+		recordIntakeEvent(ctx, "setup", "configuration", "failure")
+		return Result{Status: "unavailable", Message: "URL intake is not configured; the candidate was not saved.", FailureStage: "setup"}, nil
+	}
+	if !validCandidateID(id) || strings.TrimSpace(verified.ActorID) == "" || strings.TrimSpace(verified.ProjectID) == "" {
 		return Result{Status: "rejected", Message: ErrConfirmationStale.Error()}, nil
 	}
 	store, err := s.Stores(verified)
 	if err != nil || store == nil {
-		return Result{Status: "unavailable", Message: manualAlternative}, nil
+		recordIntakeEvent(ctx, "storage", "dependency", "failure")
+		return Result{Status: "unavailable", Message: "Project storage is unavailable; the candidate was not saved.", FailureStage: "storage"}, nil
 	}
 	op, err := readCandidate(ctx, store, id)
 	if err != nil {
+		if !errors.Is(err, storage.ErrObjectNotExist) && !errors.Is(err, cloudstorage.ErrObjectNotExist) && !errors.Is(err, ErrConfirmationStale) {
+			recordIntakeEvent(ctx, "candidate", "storage", "failure")
+		}
 		return candidateReadFailure(id, err), nil
 	}
 	if op.Receipt.ActorID != verified.ActorID || op.Receipt.ProjectID != verified.ProjectID || !op.Receipt.ExpiresAt.After(s.now()) {
@@ -369,6 +426,8 @@ func (s *Service) Accept(ctx context.Context, verified ActorProject, id, revisio
 			if errors.Is(err, storage.ErrGenerationMismatch) {
 				return s.resolveOperation(ctx, store, id, verified, title)
 			}
+			recordIntakeEvent(ctx, "candidate", "storage", "failure")
+			recordIntakeEvent(ctx, "candidate", "storage", "uncertain")
 			return candidateUncertain(id, "The save decision was recorded but its status is uncertain; check save status before retrying."), nil
 		}
 		op.Receipt = receipt
@@ -380,15 +439,23 @@ func (s *Service) Accept(ctx context.Context, verified ActorProject, id, revisio
 
 // Reject atomically declines a prepared candidate. A competing accept/reject has one winner.
 func (s *Service) Reject(ctx context.Context, verified ActorProject, id, revision string) (Result, error) {
-	if s == nil || s.Stores == nil || !validCandidateID(id) {
+	if s == nil || s.Stores == nil {
+		recordIntakeEvent(ctx, "setup", "configuration", "failure")
+		return Result{Status: "unavailable", Message: "URL intake is not configured; the candidate was not changed.", FailureStage: "setup"}, nil
+	}
+	if !validCandidateID(id) {
 		return Result{Status: "rejected", Message: ErrConfirmationStale.Error()}, nil
 	}
 	store, err := s.Stores(verified)
 	if err != nil || store == nil {
-		return Result{Status: "unavailable", Message: manualAlternative}, nil
+		recordIntakeEvent(ctx, "storage", "dependency", "failure")
+		return Result{Status: "unavailable", Message: "Project storage is unavailable; the candidate was not changed.", FailureStage: "storage"}, nil
 	}
 	op, err := readCandidate(ctx, store, id)
 	if err != nil {
+		if !errors.Is(err, storage.ErrObjectNotExist) && !errors.Is(err, cloudstorage.ErrObjectNotExist) && !errors.Is(err, ErrConfirmationStale) {
+			recordIntakeEvent(ctx, "candidate", "storage", "failure")
+		}
 		return candidateReadFailure(id, err), nil
 	}
 	if op.Receipt.ActorID != verified.ActorID || op.Receipt.ProjectID != verified.ProjectID || op.Receipt.Revision != revision || !op.Receipt.ExpiresAt.After(s.now()) {
@@ -409,6 +476,8 @@ func (s *Service) Reject(ctx context.Context, verified ActorProject, id, revisio
 		if errors.Is(err, storage.ErrGenerationMismatch) {
 			return s.Resolve(ctx, verified, id)
 		}
+		recordIntakeEvent(ctx, "candidate", "storage", "failure")
+		recordIntakeEvent(ctx, "candidate", "storage", "uncertain")
 		return candidateUncertain(id, "The decline result is uncertain; check candidate status."), nil
 	}
 	return Result{Status: "rejected", Message: "Candidate declined."}, nil
@@ -416,12 +485,17 @@ func (s *Service) Reject(ctx context.Context, verified ActorProject, id, revisio
 
 // Resolve returns the durable result or resumes only the already accepted exact candidate.
 func (s *Service) Resolve(ctx context.Context, verified ActorProject, id string) (Result, error) {
-	if s == nil || s.Stores == nil || !validCandidateID(id) {
+	if s == nil || s.Stores == nil {
+		recordIntakeEvent(ctx, "setup", "configuration", "failure")
+		return Result{Status: "unavailable", Message: "URL intake is not configured; candidate status could not be read.", FailureStage: "setup"}, nil
+	}
+	if !validCandidateID(id) {
 		return Result{Status: "rejected", Message: ErrConfirmationStale.Error()}, nil
 	}
 	store, err := s.Stores(verified)
 	if err != nil || store == nil {
-		return Result{Status: "unavailable", Message: manualAlternative}, nil
+		recordIntakeEvent(ctx, "storage", "dependency", "failure")
+		return Result{Status: "unavailable", Message: "Project storage is unavailable; candidate status could not be read.", FailureStage: "storage"}, nil
 	}
 	return s.resolveOperation(ctx, store, id, verified, "")
 }
@@ -429,6 +503,9 @@ func (s *Service) Resolve(ctx context.Context, verified ActorProject, id string)
 func (s *Service) resolveOperation(ctx context.Context, store ProjectStore, id string, verified ActorProject, title string) (Result, error) {
 	op, err := readCandidate(ctx, store, id)
 	if err != nil {
+		if !errors.Is(err, storage.ErrObjectNotExist) && !errors.Is(err, cloudstorage.ErrObjectNotExist) && !errors.Is(err, ErrConfirmationStale) {
+			recordIntakeEvent(ctx, "candidate", "storage", "failure")
+		}
 		return candidateReadFailure(id, err), nil
 	}
 	if op.Receipt.ActorID != verified.ActorID || op.Receipt.ProjectID != verified.ProjectID || !op.Receipt.ExpiresAt.After(s.now()) {
@@ -449,6 +526,8 @@ func (s *Service) resolveOperation(ctx context.Context, store ProjectStore, id s
 	case "prepared":
 		return Result{Status: "preview", Message: "Candidate is ready for review.", ConfirmationRef: id, CandidateID: id, CandidateRevision: op.Receipt.Revision, ExpiresAt: op.Receipt.ExpiresAt.Format(time.RFC3339), Preview: &op.Receipt.Preview}, nil
 	}
+	recordIntakeEvent(ctx, "candidate", "storage", "failure")
+	recordIntakeEvent(ctx, "candidate", "storage", "uncertain")
 	return candidateUncertain(id, "The save result is uncertain; check again."), nil
 }
 
@@ -456,11 +535,11 @@ func candidateReadFailure(id string, err error) Result {
 	if errors.Is(err, storage.ErrObjectNotExist) || errors.Is(err, cloudstorage.ErrObjectNotExist) || errors.Is(err, ErrConfirmationStale) {
 		return Result{Status: "rejected", Message: ErrConfirmationStale.Error()}
 	}
-	return candidateUncertain(id, "Could not read the save status; check again before retrying.")
+	return Result{Status: "uncertain", Message: "Could not read candidate status; check again before retrying.", CandidateID: id, FailureStage: "candidate"}
 }
 
 func candidateUncertain(id, message string) Result {
-	return Result{Status: "uncertain", Message: message, CandidateID: id}
+	return Result{Status: "uncertain", Message: message, CandidateID: id, FailureStage: "candidate"}
 }
 
 func (s *Service) finishAccepted(ctx context.Context, store ProjectStore, id string, verified ActorProject, receipt candidateReceipt) (Result, error) {
@@ -469,20 +548,25 @@ func (s *Service) finishAccepted(ctx context.Context, store ProjectStore, id str
 		existing: receipt.Existing, data: receipt.Data, digest: receipt.Digest, preview: receipt.Preview, expiresAt: receipt.ExpiresAt}
 	result, err := s.commit(ctx, store, prepared)
 	if err != nil || (result.Status != "stored" && result.Status != "conflict" && result.Status != "rejected") {
+		recordIntakeEvent(ctx, "candidate", "storage", "uncertain")
 		return candidateUncertain(id, "The save result is uncertain; check save status before retrying."), nil
 	}
 	op, readErr := readCandidate(ctx, store, id)
 	if readErr != nil {
+		recordIntakeEvent(ctx, "candidate", "storage", "failure")
 		return candidateUncertain(id, "Saved article status is uncertain; check save status."), nil
 	}
 	if op.Receipt.State == "accepting" && op.Receipt.AcceptedTitle == receipt.AcceptedTitle {
 		op.Receipt.State = map[bool]string{true: "accepted", false: "conflict"}[result.Status == "stored"]
 		op.Receipt.Result = &result
 		if writeErr := writeCandidate(ctx, store, id, op.Receipt, op.Generation); writeErr != nil {
+			recordIntakeEvent(ctx, "candidate", "storage", "failure")
 			latest, latestErr := readCandidate(ctx, store, id)
 			if latestErr == nil && latest.Receipt.Result != nil && (latest.Receipt.State == "accepted" || latest.Receipt.State == "conflict") {
+				recordIntakeEvent(ctx, "candidate", "storage", "recovered")
 				return *latest.Receipt.Result, nil
 			}
+			recordIntakeEvent(ctx, "candidate", "storage", "uncertain")
 			return candidateUncertain(id, "The article may be saved; check save status before retrying."), nil
 		}
 	}
@@ -556,7 +640,8 @@ func writeCandidate(ctx context.Context, store ProjectStore, id string, receipt 
 // Confirm commits the exact stored candidate without fetching its URL again.
 func (s *Service) Confirm(ctx context.Context, verified ActorProject, reference string) (Result, error) {
 	if s == nil || s.Stores == nil {
-		return Result{Status: "unavailable", Message: manualAlternative}, nil
+		recordIntakeEvent(ctx, "setup", "configuration", "failure")
+		return Result{Status: "unavailable", Message: "URL intake is not configured; the candidate was not committed.", FailureStage: "setup"}, nil
 	}
 	if strings.TrimSpace(verified.ActorID) == "" || strings.TrimSpace(verified.ProjectID) == "" {
 		return Result{}, ErrInvalidScope
@@ -588,28 +673,87 @@ func (s *Service) Confirm(ctx context.Context, verified ActorProject, reference 
 	store, err := s.Stores(verified)
 	if err != nil || store == nil {
 		s.removeConfirmation(reference)
-		return Result{Status: "unavailable", Message: manualAlternative}, nil
+		recordIntakeEvent(ctx, "storage", "dependency", "failure")
+		return Result{Status: "unavailable", Message: "Project storage is unavailable; the candidate was not committed.", FailureStage: "storage"}, nil
 	}
 	result, err := s.commit(ctx, store, prepared)
 	s.removeConfirmation(reference)
 	return result, err
 }
 
-const manualAlternative = "Could not safely fetch and check this public page. Paste the Markdown or clip the page and upload a supported file; logged-in, JavaScript-rendered, paywalled, or anti-bot pages may need manual capture."
-
 func failureResult(err error) Result {
 	var failure *ProviderFailure
 	if !errors.As(err, &failure) {
-		return Result{Status: "unavailable", Message: manualAlternative}
+		return Result{Status: "unavailable", Message: "The page could not be fetched. Paste Markdown or upload a saved page capture instead.", FailureStage: "fetch"}
 	}
-	if failure.Kind == FailureInvalidURL || failure.Kind == FailureTooLarge {
-		return Result{Status: "rejected", Message: failure.Error() + ". " + manualAlternative}
+	if failure.Kind == FailureInvalidURL {
+		return Result{Status: "rejected", Message: failure.Error(), FailureStage: "validation"}
 	}
-	result := Result{Status: "unavailable", Message: failure.Error() + ". " + manualAlternative}
+	if failure.Kind == FailureTooLarge {
+		return Result{Status: "rejected", Message: failure.Error(), FailureStage: "size"}
+	}
+	result := Result{Status: "unavailable", Message: failure.Error() + ". Paste Markdown or upload a saved page capture instead.", FailureStage: "fetch"}
 	if failure.RetryAfter > 0 {
 		result.RetryAfterSeconds = int64(failure.RetryAfter.Round(time.Second).Seconds())
 	}
 	return result
+}
+
+func fetchFailureClass(err error) string {
+	var failure *ProviderFailure
+	if !errors.As(err, &failure) {
+		return "internal"
+	}
+	switch failure.Kind {
+	case FailureNotConfigured:
+		return "configuration"
+	case FailureInvalidURL, FailureTooLarge:
+		return ""
+	case FailureTransport:
+		return "transport"
+	case FailureResponse:
+		return "invalid_response"
+	case FailureProvider, FailureRateLimited:
+		return "provider"
+	default:
+		return "dependency"
+	}
+}
+
+func qualityFailureClass(ctx context.Context, err error) string {
+	if errors.Is(ctx.Err(), context.DeadlineExceeded) || errors.Is(err, context.DeadlineExceeded) {
+		return "timeout"
+	}
+	var failure *QualityProviderFailure
+	if errors.As(err, &failure) {
+		if failure.StatusCode > 0 {
+			return "provider"
+		}
+		switch failure.Kind {
+		case "not configured":
+			return "configuration"
+		case "timeout":
+			return "timeout"
+		case "transport failed":
+			return "transport"
+		case "invalid_response":
+			return "invalid_response"
+		case "request failed":
+			return "provider"
+		default:
+			return "dependency"
+		}
+	}
+	return "dependency"
+}
+
+func recordIntakeEvent(ctx context.Context, stage, errorClass, outcome string) {
+	observability.RecordURLIntakeEvent(ctx, stage, errorClass, outcome)
+	if outcome != "fallback" {
+		if requestID := observability.RequestIDFromContext(ctx); requestID != "" {
+			log.Printf("URL intake internal event: stage=%s error_class=%s outcome=%s request_id=%s", stage, errorClass, outcome, requestID)
+		}
+	}
 }
 
 func validateTags(tags []string) error {
@@ -1001,7 +1145,12 @@ func (s *Service) commit(ctx context.Context, store ProjectStore, prepared *cand
 	relative, err := reserveIdentity(ctx, store, prepared.identitySHA256, prepared.relativePath)
 	if err != nil {
 		if errors.Is(err, ErrIdentityUncertain) {
-			return Result{Status: "uncertain", Message: ErrIdentityUncertain.Error(), Preview: &prepared.preview}, nil
+			recordIntakeEvent(ctx, "commit", "storage", "uncertain")
+			return Result{Status: "uncertain", Message: ErrIdentityUncertain.Error(), FailureStage: "commit", Preview: &prepared.preview}, nil
+		}
+		if !errors.Is(err, ErrURLConflict) && !errors.Is(err, rawintake.ErrConflict) {
+			recordIntakeEvent(ctx, "commit", "storage", "failure")
+			return Result{Status: "unavailable", Message: "The raw URL identity could not be reserved; no raw article was changed.", FailureStage: "commit", Preview: &prepared.preview}, nil
 		}
 		return Result{Status: "conflict", Message: ErrURLConflict.Error(), Preview: &prepared.preview}, nil
 	}
@@ -1014,7 +1163,8 @@ func (s *Service) commit(ctx context.Context, store ProjectStore, prepared *cand
 	for attempt := 0; attempt < 2; attempt++ {
 		current, generation, exists, readErr := readRaw(ctx, store, prepared.relativePath)
 		if readErr != nil {
-			return Result{Status: "unavailable", Message: manualAlternative, Preview: &prepared.preview}, nil
+			recordIntakeEvent(ctx, "commit", "storage", "failure")
+			return Result{Status: "unavailable", Message: "Could not read the target raw article before saving; no raw article was changed.", FailureStage: "commit", Preview: &prepared.preview}, nil
 		}
 		if exists {
 			source, sourceKnown := sourceIdentity(current)
@@ -1024,11 +1174,13 @@ func (s *Service) commit(ctx context.Context, store ProjectStore, prepared *cand
 				}
 				nextPath, pathErr := availableDisambiguatedFilename(ctx, store, prepared.preview.Title, prepared.identitySHA256)
 				if pathErr != nil {
+					recordIntakeEvent(ctx, "commit", "storage", "failure")
 					return Result{Status: "conflict", Message: ErrURLConflict.Error(), Preview: &prepared.preview}, nil
 				}
 				reserved, remapErr := remapIdentity(ctx, store, prepared.identitySHA256, prepared.relativePath, nextPath)
 				if remapErr != nil {
-					return Result{Status: "uncertain", Message: ErrIdentityUncertain.Error(), Preview: &prepared.preview}, nil
+					recordIntakeEvent(ctx, "commit", "storage", "uncertain")
+					return Result{Status: "uncertain", Message: ErrIdentityUncertain.Error(), FailureStage: "commit", Preview: &prepared.preview}, nil
 				}
 				prepared.relativePath = reserved
 				continue
@@ -1049,9 +1201,11 @@ func (s *Service) commit(ctx context.Context, store ProjectStore, prepared *cand
 			if errors.Is(commitErr, rawintake.ErrCommitUncertain) {
 				readback, _, readbackExists, readErr := readRaw(ctx, store, prepared.relativePath)
 				if readErr == nil && readbackExists && bytes.Equal(readback, prepared.data) {
+					recordIntakeEvent(ctx, "commit", "storage", "recovered")
 					return storedResult(rawintake.Result{Path: "raw/" + prepared.relativePath, SHA256: prepared.digest, Status: rawintake.StatusAlreadyExists}, &prepared.preview), nil
 				}
-				return Result{Status: "uncertain", Message: "The storage result is uncertain. Check the raw path before retrying.", Preview: &prepared.preview}, nil
+				recordIntakeEvent(ctx, "commit", "storage", "uncertain")
+				return Result{Status: "uncertain", Message: "The storage result is uncertain. Check the raw path before retrying.", FailureStage: "commit", Preview: &prepared.preview}, nil
 			}
 			if errors.Is(commitErr, rawintake.ErrConflict) {
 				readback, _, readbackExists, readErr := readRaw(ctx, store, prepared.relativePath)
@@ -1076,7 +1230,8 @@ func (s *Service) commit(ctx context.Context, store ProjectStore, prepared *cand
 			if errors.Is(commitErr, rawintake.ErrConflict) || errors.Is(commitErr, storage.ErrGenerationMismatch) {
 				return Result{Status: "conflict", Message: ErrConfirmationStale.Error(), Preview: &prepared.preview}, nil
 			}
-			return Result{Status: "unavailable", Message: manualAlternative, Preview: &prepared.preview}, nil
+			recordIntakeEvent(ctx, "commit", "storage", "failure")
+			return Result{Status: "unavailable", Message: "The raw article could not be saved; no successful write was confirmed.", FailureStage: "commit", Preview: &prepared.preview}, nil
 		}
 		return storedResult(committed, &prepared.preview), nil
 	}

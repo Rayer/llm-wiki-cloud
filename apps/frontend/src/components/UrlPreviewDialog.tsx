@@ -21,6 +21,8 @@ type Labels = {
   unchanged: string;
   digest: string;
   loading: string;
+  qualityUnavailable: string;
+  qualityUnavailableSaved: string;
 };
 
 export function UrlPreviewDialog({
@@ -42,6 +44,7 @@ export function UrlPreviewDialog({
   const candidateReady = result?.status === 'preview';
   const savedStorage = result?.status === 'stored' ? result.storage : undefined;
   const saved = Boolean(savedStorage);
+  const qualityUnchecked = result?.preview?.quality_status === 'not_checked';
   const needsStatus = result?.status === 'uncertain' && result.candidate_id;
   const rawHref = savedStorage ? `/raw?file=${encodeURIComponent(savedStorage.path)}` : '';
   const savedOutcome = savedStorage?.status === 'created' ? labels.created
@@ -61,7 +64,12 @@ export function UrlPreviewDialog({
           {error ? <p role="alert" className="text-sm text-amber-200">{error}</p> : null}
           {result ? (
             <div aria-live="polite" className="space-y-4">
-              <p className={`text-sm ${result.status === 'stored' ? 'text-emerald-200' : result.status === 'uncertain' ? 'text-amber-200' : 'text-zinc-300'}`}>{result.message}</p>
+              {qualityUnchecked && !saved ? (
+                <p role="status" className="text-sm text-amber-200">{labels.qualityUnavailable}</p>
+              ) : (
+                <p className={`text-sm ${result.status === 'stored' ? 'text-emerald-200' : result.status === 'uncertain' ? 'text-amber-200' : 'text-zinc-300'}`}>{result.message}</p>
+              )}
+              {qualityUnchecked && saved ? <p role="status" className="text-sm text-amber-200">{labels.qualityUnavailableSaved}</p> : null}
               {candidateReady && result.preview ? (
                 <>
                   <label className="block text-sm text-zinc-300">
@@ -95,7 +103,7 @@ export function UrlPreviewDialog({
                   <a href={rawHref} className="text-sm font-medium text-emerald-300 underline">{labels.rawArticle}: {savedStorage?.path}</a>
                 </div>
               ) : null}
-              {result.status === 'unavailable' || result.status === 'rejected' ? <p className="text-sm text-zinc-400">{labels.manualCapture}</p> : null}
+              {result.failure_stage === 'fetch' && (result.status === 'unavailable' || result.status === 'rejected') ? <p className="text-sm text-zinc-400">{labels.manualCapture}</p> : null}
               <div className="flex flex-wrap justify-end gap-2 border-t border-white/10 pt-3">
                 {candidateReady ? (
                   <>

@@ -87,7 +87,7 @@ func NewJevEvaluator(apiKey string) *JevEvaluator {
 
 func (e *JevEvaluator) Evaluate(ctx context.Context, input QualityInput) (QualityEvaluation, error) {
 	if e == nil || strings.TrimSpace(e.APIKey) == "" || e.Client == nil || strings.TrimSpace(e.Endpoint) == "" || strings.TrimSpace(e.Model) == "" {
-		return QualityEvaluation{}, errors.New("Jev quality evaluator is not configured")
+		return QualityEvaluation{}, &QualityProviderFailure{Kind: "not configured"}
 	}
 	if strings.TrimSpace(input.URL) == "" || strings.TrimSpace(input.Markdown) == "" || input.Provider == "" {
 		return QualityEvaluation{}, errors.New("Jev quality input is incomplete")
@@ -140,6 +140,9 @@ func (e *JevEvaluator) Evaluate(ctx context.Context, input QualityInput) (Qualit
 	request.Header.Set("Content-Type", "application/json")
 	response, err := e.Client.Do(request)
 	if err != nil {
+		if errors.Is(ctx.Err(), context.DeadlineExceeded) || errors.Is(err, context.DeadlineExceeded) {
+			return QualityEvaluation{}, &QualityProviderFailure{Kind: "timeout"}
+		}
 		return QualityEvaluation{}, &QualityProviderFailure{Kind: "transport failed"}
 	}
 	defer response.Body.Close()
@@ -149,7 +152,7 @@ func (e *JevEvaluator) Evaluate(ctx context.Context, input QualityInput) (Qualit
 	const maxResponseBytes = 1 << 20
 	raw, err := io.ReadAll(io.LimitReader(response.Body, maxResponseBytes+1))
 	if err != nil || len(raw) > maxResponseBytes {
-		return QualityEvaluation{}, errors.New("Jev quality response exceeds limit")
+		return QualityEvaluation{}, &QualityProviderFailure{Kind: "invalid_response"}
 	}
 	var envelope struct {
 		Model   string `json:"model"`
@@ -161,10 +164,10 @@ func (e *JevEvaluator) Evaluate(ctx context.Context, input QualityInput) (Qualit
 	}
 	decoder := json.NewDecoder(bytes.NewReader(raw))
 	if err := decoder.Decode(&envelope); err != nil {
-		return QualityEvaluation{}, errors.New("invalid Jev quality response")
+		return QualityEvaluation{}, &QualityProviderFailure{Kind: "invalid_response"}
 	}
 	if err := decoder.Decode(new(any)); !errors.Is(err, io.EOF) || strings.TrimSpace(envelope.Model) == "" {
-		return QualityEvaluation{}, errors.New("invalid Jev quality response")
+		return QualityEvaluation{}, &QualityProviderFailure{Kind: "invalid_response"}
 	}
 	acceptedModel := false
 	for _, model := range e.AcceptedModels {
@@ -174,7 +177,7 @@ func (e *JevEvaluator) Evaluate(ctx context.Context, input QualityInput) (Qualit
 		}
 	}
 	if !acceptedModel || len(envelope.Answers) != 2 || envelope.Usage == nil || envelope.Usage.InputTokens < 0 || envelope.Usage.OutputTokens < 0 {
-		return QualityEvaluation{}, errors.New("invalid Jev quality response")
+		return QualityEvaluation{}, &QualityProviderFailure{Kind: "invalid_response"}
 	}
 	probability := func(key string) (float64, bool) {
 		answer, ok := envelope.Answers[key]
@@ -186,7 +189,7 @@ func (e *JevEvaluator) Evaluate(ctx context.Context, input QualityInput) (Qualit
 	shell, shellOK := probability("access_shell")
 	content, contentOK := probability("readable_content")
 	if !shellOK || !contentOK {
-		return QualityEvaluation{}, errors.New("invalid Jev quality answer set")
+		return QualityEvaluation{}, &QualityProviderFailure{Kind: "invalid_response"}
 	}
 	return QualityEvaluation{
 		ShellProbability: shell, ContentProbability: content, ReturnedModel: envelope.Model,
