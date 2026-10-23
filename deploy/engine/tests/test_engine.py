@@ -624,7 +624,7 @@ class Acceptance(unittest.TestCase):
                                  e.plan['normalized']['auth']['runtime_inputs'])
                 self.assertNotIn(ROOT,output.parents)
                 self.assertNotIn(e.directory,output.parents)
-                output.write_text('{"schema_version":1,"target":"auth","synthetic_fixture":"TEST_ONLY_AUTH_FILE"}\n')
+                output.write_text('{"schema_version":2,"target":"auth","synthetic_fixture":"TEST_ONLY_AUTH_FILE"}\n')
                 output.chmod(0o600)
                 return ''
             return ordinary_run(command,**kwargs)
@@ -673,7 +673,7 @@ class Acceptance(unittest.TestCase):
         e=self.ready(self.make(('auth',),name='auth-stage-two'))
         provider=e.provider
         marker=b'TEST_ONLY_AUTH_CONFIG_PAYLOAD'
-        generated=b'{"schema_version":1,"target":"auth","synthetic_fixture":"TEST_ONLY_AUTH_CONFIG_PAYLOAD"}\n'
+        generated=b'{"schema_version":2,"target":"auth","synthetic_fixture":"TEST_ONLY_AUTH_CONFIG_PAYLOAD"}\n'
         resource=e.plan['normalized']['auth']['runtime_inputs']['config_secret_resource']
         secret_name=resource.split('/')[-1]
         project_id=e.plan['normalized']['gcp']['project_id']
@@ -832,7 +832,8 @@ class Acceptance(unittest.TestCase):
         url=inputs['auth_service_url'].rstrip('/')+'/api/v1/public/version'
         response=unittest.mock.MagicMock(status=200)
         response.geturl.return_value=url
-        response.read.return_value=json.dumps({'config_schema_version':1,'config_id':inputs['config_id']}).encode()
+        response.read.return_value=json.dumps({'config_schema_version':inputs['schema_version'],
+                                              'config_id':inputs['config_id']}).encode()
         response.__enter__.return_value=response
         opener=unittest.mock.MagicMock()
         opener.open.return_value=response
@@ -841,9 +842,28 @@ class Acceptance(unittest.TestCase):
             self.assertIsInstance(build_opener.call_args.args[0],providers._AuthConfigNoRedirectHandler)
             self.assertEqual(opener.open.call_args.args[0].full_url,url)
             self.assertEqual(opener.open.call_args.kwargs['timeout'],15)
-        response.read.return_value=json.dumps({'config_schema_version':1,'config_id':'sha256:'+'0'*64}).encode()
+        response.read.return_value=json.dumps({'config_schema_version':inputs['schema_version'],
+                                              'config_id':'sha256:'+'0'*64}).encode()
         with patch('providers.urllib.request.build_opener',return_value=opener):
             self.assertFalse(provider.auth_runtime_config_matches(inputs))
+        response.read.return_value=json.dumps({'config_schema_version':1,
+                                              'config_id':inputs['config_id']}).encode()
+        with patch('providers.urllib.request.build_opener',return_value=opener):
+            self.assertFalse(provider.auth_runtime_config_matches(inputs),
+                             'schema-1 readback cannot satisfy a schema-2 snapshot')
+        response.read.return_value=json.dumps({'config_schema_version':3,
+                                              'config_id':inputs['config_id']}).encode()
+        with patch('providers.urllib.request.build_opener',return_value=opener):
+            self.assertFalse(provider.auth_runtime_config_matches(inputs),
+                             'unknown runtime schema cannot satisfy a selected schema')
+        legacy_inputs=copy.deepcopy(inputs)
+        legacy_inputs['schema_version']=1
+        legacy_inputs.pop('oauth_resources')
+        response.read.return_value=json.dumps({'config_schema_version':1,
+                                              'config_id':legacy_inputs['config_id']}).encode()
+        with patch('providers.urllib.request.build_opener',return_value=opener):
+            self.assertTrue(provider.auth_runtime_config_matches(legacy_inputs),
+                            'retained schema-1 receipt remains readable')
         response.geturl.return_value='https://outside.example/api/v1/public/version'
         with patch('providers.urllib.request.build_opener',return_value=opener):
             self.assertFalse(provider.auth_runtime_config_matches(inputs))
@@ -852,10 +872,51 @@ class Acceptance(unittest.TestCase):
             with self.assertRaisesRegex(Breakpoint,'auth-runtime-config-identity-invalid'):
                 provider.auth_runtime_config_matches(bad)
             build_opener.assert_not_called()
+        bad_schema=dict(inputs,schema_version=3)
+        with patch('providers.urllib.request.build_opener') as build_opener:
+            with self.assertRaisesRegex(Breakpoint,'auth-runtime-config-identity-invalid'):
+                provider.auth_runtime_config_matches(bad_schema)
+            build_opener.assert_not_called()
         with patch('providers.urllib.request.build_opener') as build_opener:
             build_opener.return_value.open.side_effect=OSError('offline')
             with self.assertRaisesRegex(Breakpoint,'auth-runtime-config-identity-unreadable'):
                 provider.auth_runtime_config_matches(inputs)
+
+    def test_auth_input_snapshot_supports_exact_schema_one_and_two_receipts(self):
+        e=self.make(('auth',),name='auth-input-snapshot-schema')
+        inputs=e.auth_input_snapshot()
+        self.assertEqual(inputs['schema_version'],2)
+        self.assertIn('oauth_resources',inputs)
+        receipt={}
+        e.attach_auth_input_snapshot(receipt)
+        self.assertEqual(receipt['auth_config_inputs'],inputs)
+        self.assertEqual(receipt['auth_materialization_schema'],1)
+
+        legacy=copy.deepcopy(inputs)
+        legacy['schema_version']=1
+        legacy.pop('oauth_resources')
+        e.plan['normalized']['auth']['runtime_inputs']=legacy
+        self.assertEqual(e.auth_input_snapshot(),legacy)
+        old_receipt={}
+        e.attach_auth_input_snapshot(old_receipt)
+        self.assertEqual(old_receipt['auth_config_inputs'],legacy)
+        self.assertEqual(old_receipt['auth_materialization_schema'],1)
+        mismatch=copy.deepcopy(old_receipt)
+        mismatch['auth_config_inputs']['config_id']='sha256:'+'0'*64
+        with self.assertRaisesRegex(Breakpoint,'artifact-auth-input-snapshot-mismatch'):
+            e.attach_auth_input_snapshot(mismatch,require_match=True)
+
+        for name, mutate in (
+                ('unknown schema',lambda value:value.update(schema_version=3)),
+                ('boolean schema',lambda value:value.update(schema_version=True)),
+                ('unknown field',lambda value:value.update(unexpected='payload')),
+                ('malformed config id',lambda value:value.update(config_id='not-a-digest'))):
+            with self.subTest(name=name):
+                bad=copy.deepcopy(legacy)
+                mutate(bad)
+                e.plan['normalized']['auth']['runtime_inputs']=bad
+                with self.assertRaisesRegex(Breakpoint,'auth-input-snapshot-invalid'):
+                    e.auth_input_snapshot()
 
     def test_auth_stage1_snapshot_refreshes_for_cross_plan_and_production_image_reuse(self):
         old=self.ready(self.make(('auth',),name='auth-stage1-old'))

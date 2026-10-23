@@ -193,7 +193,7 @@ var authSpanNames = stringSet(
 	"auth.google.start", "auth.google.login_start", "auth.google.link_start", "auth.google.callback",
 	"auth.google.login_callback", "auth.google.link_callback", "auth.google.link_confirm", "auth.google.link_cancel",
 	"auth.google.link_complete", "auth.google.complete", "auth.google.identity",
-	"auth.mcp.metadata", "auth.mcp.register", "auth.mcp.authorize", "auth.mcp.token", "auth.mcp.consent", "auth.mcp.grants",
+	"auth.mcp.metadata", "auth.mcp.register", "auth.mcp.authorize", "auth.mcp.token", "auth.mcp.consent", "auth.mcp.grants", "auth.mcp.verify",
 	"auth.mcp.resource", "auth.transaction",
 )
 var profileSpanNames = stringSet(
@@ -342,7 +342,7 @@ func SetAuthOperation(span trace.Span, operation string) {
 		"google_start", "google_login_start", "google_link_start", "google_callback", "google_login_callback",
 		"google_link_callback", "google_link_confirm", "google_link_cancel", "google_link_complete", "google_complete", "google_identity",
 		"mcp_metadata", "mcp_register", "mcp_authorize", "mcp_token", "mcp_consent_read", "mcp_consent_decision",
-		"mcp_grants_list", "mcp_grants_revoke", "mcp_resource", "other":
+		"mcp_grants_list", "mcp_grants_revoke", "mcp_verify_credential", "mcp_resource", "other":
 	default:
 		operation = "other"
 	}
@@ -691,6 +691,7 @@ var authRouteObservations = map[string]authRouteObservationInfo{
 	"POST /api/v1/auth/mcp/oauth/register":                              {"auth.mcp.register", "mcp_register"},
 	"GET /api/v1/auth/mcp/oauth/authorize":                              {"auth.mcp.authorize", "mcp_authorize"},
 	"POST /api/v1/auth/mcp/oauth/token":                                 {"auth.mcp.token", "mcp_token"},
+	"POST /api/v1/auth/consumers/daily-brief/verify-credential":         {"auth.mcp.verify", "mcp_verify_credential"},
 	"GET /api/v1/auth/mcp/oauth/consent/:transactionID":                 {"auth.mcp.consent", "mcp_consent_read"},
 	"POST /api/v1/auth/mcp/oauth/consent/:transactionID/decision":       {"auth.mcp.consent", "mcp_consent_decision"},
 	"GET /api/v1/auth/mcp/oauth/grants":                                 {"auth.mcp.grants", "mcp_grants_list"},

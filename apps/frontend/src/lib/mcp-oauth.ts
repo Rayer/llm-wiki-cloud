@@ -6,10 +6,13 @@ import { recordRequestResponse } from './request-ids';
 export type MCPOAuthConsent = {
   transaction_id: string;
   account_email: string;
-  project_id: string;
-  project_name: string;
+  project_id?: string;
+  project_name?: string;
   client_name: string;
   resource: string;
+  resource_kind?: 'project' | 'fixed' | string;
+  resource_name?: string;
+  scope_details?: Array<{ name: string; description: string }>;
   scope: string;
   expires_at: string;
 };
@@ -25,6 +28,8 @@ export type MCPOAuthGrant = {
   expires_at: string;
   revoked_at?: string;
 };
+
+export const DAILY_BRIEF_MCP_RESOURCE = 'https://brief.rayer.idv.tw/mcp';
 
 export class MCPOAuthApiError extends Error {
   constructor(message: string, readonly status: number) {
@@ -74,6 +79,12 @@ export function decideMCPOAuthConsent(
 
 export async function listMCPOAuthGrants(projectId: string, accessToken: string): Promise<MCPOAuthGrant[]> {
   const result = await request<{ grants?: unknown }>(`/grants?project_id=${encodeURIComponent(projectId)}`, accessToken);
+  if (!Array.isArray(result.grants)) throw new MCPOAuthApiError('The MCP grant list was invalid.', 502);
+  return result.grants as MCPOAuthGrant[];
+}
+
+export async function listMCPOAuthResourceGrants(resource: string, accessToken: string): Promise<MCPOAuthGrant[]> {
+  const result = await request<{ grants?: unknown }>(`/grants?resource=${encodeURIComponent(resource)}`, accessToken);
   if (!Array.isArray(result.grants)) throw new MCPOAuthApiError('The MCP grant list was invalid.', 502);
   return result.grants as MCPOAuthGrant[];
 }

@@ -127,6 +127,24 @@ class AuthGoogleConfig {
   completion_url: String
 }
 
+class AuthOAuthScope {
+  name: String
+  description: String
+}
+
+class AuthOAuthResource {
+  id: String
+  kind: "project-template" | "fixed"
+  enabled: Boolean
+  uri: String
+  name: String
+  scopes: Listing<AuthOAuthScope>
+  allowed_scope_sets: Listing<Listing<String>>
+  default_scope_set: Listing<String>
+  verifier_caller_service_account: String
+  verifier_audience: String
+}
+
 class AuthConfig {
   schema_version: Int
   environment: String
@@ -146,6 +164,7 @@ class AuthConfig {
   auth_demo_user_role: String
   jwt_secret_reference: String
   google: AuthGoogleConfig
+  oauth_resources: Listing<AuthOAuthResource>
   config_secret_resource: String
 }
 
@@ -457,7 +476,7 @@ local bff = if (environment == "local") localBff
   else prodBff
 
 local localAuth = new AuthConfig {
-  schema_version = 1
+  schema_version = 2
   environment = "local"
   target = "auth"
   gcp_project = "llm-wiki-cloud"
@@ -485,11 +504,45 @@ local localAuth = new AuthConfig {
     link_redirect_url = ""
     completion_url = ""
   }
+  oauth_resources = new Listing {
+    new AuthOAuthResource {
+      id = "lwc-project"
+      kind = "project-template"
+      enabled = true
+      uri = "\(localBffResourceOrigin)/mcp/projects/{project_id}"
+      name = "LWC Project"
+      scopes = new Listing {
+        new AuthOAuthScope { name = "mcp:query"; description = "Query project knowledge." }
+        new AuthOAuthScope { name = "mcp:raw:write"; description = "Add permitted raw sources." }
+      }
+      allowed_scope_sets = new Listing {
+        new Listing { "mcp:query" }
+        new Listing { "mcp:query"; "mcp:raw:write" }
+      }
+      default_scope_set = new Listing { "mcp:query" }
+      verifier_caller_service_account = ""
+      verifier_audience = ""
+    }
+    new AuthOAuthResource {
+      id = "daily-brief"
+      kind = "fixed"
+      enabled = false
+      uri = "https://brief.rayer.idv.tw/mcp"
+      name = "Daily Brief"
+      scopes = new Listing {
+        new AuthOAuthScope { name = "brief:manage"; description = "Read and manage Daily Brief reports and annotations in your private account space." }
+      }
+      allowed_scope_sets = new Listing { new Listing { "brief:manage" } }
+      default_scope_set = new Listing {}
+      verifier_caller_service_account = ""
+      verifier_audience = ""
+    }
+  }
   config_secret_resource = ""
 }
 
 local devAuth = new AuthConfig {
-  schema_version = 1
+  schema_version = 2
   environment = "dev"
   target = "auth"
   gcp_project = "llm-wiki-cloud"
@@ -521,11 +574,45 @@ local devAuth = new AuthConfig {
     link_redirect_url = "https://auth.dev.rayer.idv.tw/api/v1/auth/google/link/callback"
     completion_url = "https://wiki.dev.rayer.idv.tw/login"
   }
+  oauth_resources = new Listing {
+    new AuthOAuthResource {
+      id = "lwc-project"
+      kind = "project-template"
+      enabled = true
+      uri = "\(devBffResourceOrigin)/mcp/projects/{project_id}"
+      name = "LWC Project"
+      scopes = new Listing {
+        new AuthOAuthScope { name = "mcp:query"; description = "Query project knowledge." }
+        new AuthOAuthScope { name = "mcp:raw:write"; description = "Add permitted raw sources." }
+      }
+      allowed_scope_sets = new Listing {
+        new Listing { "mcp:query" }
+        new Listing { "mcp:query"; "mcp:raw:write" }
+      }
+      default_scope_set = new Listing { "mcp:query" }
+      verifier_caller_service_account = ""
+      verifier_audience = ""
+    }
+    new AuthOAuthResource {
+      id = "daily-brief"
+      kind = "fixed"
+      enabled = false
+      uri = "https://brief.rayer.idv.tw/mcp"
+      name = "Daily Brief"
+      scopes = new Listing {
+        new AuthOAuthScope { name = "brief:manage"; description = "Read and manage Daily Brief reports and annotations in your private account space." }
+      }
+      allowed_scope_sets = new Listing { new Listing { "brief:manage" } }
+      default_scope_set = new Listing {}
+      verifier_caller_service_account = ""
+      verifier_audience = "https://llm-wiki-auth-dev-a5nkmux6pq-de.a.run.app"
+    }
+  }
   config_secret_resource = "projects/llm-wiki-cloud/secrets/lwc-auth-app-config-dev"
 }
 
 local prodAuth = new AuthConfig {
-  schema_version = 1
+  schema_version = 2
   environment = "prod"
   target = "auth"
   gcp_project = "llm-wiki-cloud"
@@ -555,6 +642,40 @@ local prodAuth = new AuthConfig {
     login_redirect_url = "https://auth.rayer.idv.tw/api/v1/auth/google/callback"
     link_redirect_url = "https://auth.rayer.idv.tw/api/v1/auth/google/link/callback"
     completion_url = "https://wiki.rayer.idv.tw/login"
+  }
+  oauth_resources = new Listing {
+    new AuthOAuthResource {
+      id = "lwc-project"
+      kind = "project-template"
+      enabled = true
+      uri = "\(prodBffResourceOrigin)/mcp/projects/{project_id}"
+      name = "LWC Project"
+      scopes = new Listing {
+        new AuthOAuthScope { name = "mcp:query"; description = "Query project knowledge." }
+        new AuthOAuthScope { name = "mcp:raw:write"; description = "Add permitted raw sources." }
+      }
+      allowed_scope_sets = new Listing {
+        new Listing { "mcp:query" }
+        new Listing { "mcp:query"; "mcp:raw:write" }
+      }
+      default_scope_set = new Listing { "mcp:query" }
+      verifier_caller_service_account = ""
+      verifier_audience = ""
+    }
+    new AuthOAuthResource {
+      id = "daily-brief"
+      kind = "fixed"
+      enabled = false
+      uri = "https://brief.rayer.idv.tw/mcp"
+      name = "Daily Brief"
+      scopes = new Listing {
+        new AuthOAuthScope { name = "brief:manage"; description = "Read and manage Daily Brief reports and annotations in your private account space." }
+      }
+      allowed_scope_sets = new Listing { new Listing { "brief:manage" } }
+      default_scope_set = new Listing {}
+      verifier_caller_service_account = ""
+      verifier_audience = ""
+    }
   }
   config_secret_resource = "projects/llm-wiki-cloud/secrets/lwc-auth-app-config-prod"
 }

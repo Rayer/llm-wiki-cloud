@@ -11,7 +11,7 @@ ROOT = Path(__file__).resolve().parents[1]
 GO = shutil.which('go') or 'go'
 
 
-def write_auth_input_fixture(directory, environment, source_sha='c' * 40):
+def write_auth_input_fixture(directory, environment, source_sha='c' * 40, schema_version=2):
     directory = Path(directory)
     directory.mkdir(parents=True, exist_ok=True)
     target = {'development': 'dev', 'production': 'prod'}[environment]
@@ -21,11 +21,15 @@ def write_auth_input_fixture(directory, environment, source_sha='c' * 40):
          '--environment', target, '--output', str(directory)],
         cwd=ROOT / 'apps/bff', env=env, text=True, capture_output=True, check=True,
     )
-    return write_auth_input_snapshot_fixture(directory, environment, source_sha)
+    return write_auth_input_snapshot_fixture(
+        directory, environment, source_sha, schema_version=schema_version)
 
 
-def write_auth_input_snapshot_fixture(directory, environment, source_sha='c' * 40, source=None):
+def write_auth_input_snapshot_fixture(directory, environment, source_sha='c' * 40, source=None,
+                                     schema_version=2):
     """Build payload-free numeric Auth refs for tests without Secret Manager access."""
+    if type(schema_version) is not int or schema_version not in (1, 2):
+        raise ValueError('unsupported synthetic Auth input schema')
     directory = Path(directory)
     directory.mkdir(parents=True, exist_ok=True)
     target = {'development': 'dev', 'production': 'prod'}[environment]
@@ -46,7 +50,7 @@ def write_auth_input_snapshot_fixture(directory, environment, source_sha='c' * 4
         'completion_url': google_source['completion_url'],
     }
     inputs = {
-        'schema_version': 1,
+        'schema_version': schema_version,
         'environment': target,
         'target': 'auth',
         'source_sha': source_sha,
@@ -68,6 +72,8 @@ def write_auth_input_snapshot_fixture(directory, environment, source_sha='c' * 4
         'google': google,
         'config_secret_resource': source['config_secret_resource'],
     }
+    if schema_version == 2:
+        inputs['oauth_resources'] = source['oauth_resources']
     canonical = json.dumps(inputs, ensure_ascii=False, separators=(',', ':')).encode()
     inputs['config_id'] = 'sha256:' + hashlib.sha256(canonical).hexdigest()
     path = directory / 'auth-inputs.json'

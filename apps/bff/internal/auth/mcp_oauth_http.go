@@ -18,6 +18,7 @@ import (
 	"github.com/rayer/llm-wiki-bff/internal/config"
 	"github.com/rayer/llm-wiki-bff/internal/middleware"
 	"go.opentelemetry.io/otel/trace"
+	"google.golang.org/api/idtoken"
 )
 
 const mcpOAuthRequestLimit = 16 << 10
@@ -37,7 +38,7 @@ type mcpOAuthConsentDecisionRequest struct {
 
 // MCPOAuthMetadataHandler serves authorization-server metadata from the
 // configured issuer origin; request Host is never used to build endpoints.
-func MCPOAuthMetadataHandler(issuer string) gin.HandlerFunc {
+func MCPOAuthMetadataHandler(issuer string, policies ...[]config.AuthOAuthResource) gin.HandlerFunc {
 	issuer = trimOrigin(issuer)
 	return func(c *gin.Context) {
 		if issuer == "" {
@@ -45,6 +46,10 @@ func MCPOAuthMetadataHandler(issuer string) gin.HandlerFunc {
 			return
 		}
 		c.Header("Cache-Control", "no-store")
+		scopes := []string{mcpOAuthScope, mcpOAuthRawWriteScope}
+		if len(policies) > 0 {
+			scopes = supportedOAuthScopes(policies[0])
+		}
 		c.JSON(http.StatusOK, gin.H{
 			"issuer":                                issuer,
 			"authorization_endpoint":                issuer + "/api/v1/auth/mcp/oauth/authorize",
@@ -54,7 +59,7 @@ func MCPOAuthMetadataHandler(issuer string) gin.HandlerFunc {
 			"grant_types_supported":                 []string{"authorization_code", "refresh_token"},
 			"code_challenge_methods_supported":      []string{"S256"},
 			"token_endpoint_auth_methods_supported": []string{"none"},
-			"scopes_supported":                      []string{mcpOAuthScope, mcpOAuthRawWriteScope},
+			"scopes_supported":                      scopes,
 		})
 	}
 }
@@ -63,10 +68,17 @@ func MCPOAuthRegisterHandler(service *MCPOAuthService) gin.HandlerFunc {
 	if service == nil {
 		return mcpOAuthRegisterUnavailableHandler()
 	}
-	return mcpOAuthRegisterHandler(service.RegisterClient)
+	return mcpOAuthRegisterHandlerWithScope(service.RegisterClient, service.normalizeRegistrationScope)
 }
 
 func mcpOAuthRegisterHandler(registerClient func(context.Context, string, []string) (mcpOAuthClientRecord, error)) gin.HandlerFunc {
+	return mcpOAuthRegisterHandlerWithScope(registerClient, func(scope string) (string, bool) {
+		value, _, ok := normalizeMCPOAuthScope(scope)
+		return value, ok
+	})
+}
+
+func mcpOAuthRegisterHandlerWithScope(registerClient func(context.Context, string, []string) (mcpOAuthClientRecord, error), normalizeScope func(string) (string, bool)) gin.HandlerFunc {
 	return func(c *gin.Context) {
 		var request mcpOAuthRegistrationRequest
 		shape, decodeReason := decodeMCPOAuthRegistrationJSON(c, &request)
@@ -80,7 +92,7 @@ func mcpOAuthRegisterHandler(registerClient func(context.Context, string, []stri
 			writeMCPOAuthOAuthError(c, http.StatusBadRequest, "invalid_client_metadata")
 			return
 		}
-		requestedScope, _, supportedScope := normalizeMCPOAuthScope(request.Scope)
+		requestedScope, supportedScope := normalizeScope(request.Scope)
 		if request.TokenEndpointAuthMethod != "" && request.TokenEndpointAuthMethod != "none" ||
 			!mcpOAuthSetSupported(request.GrantTypes, "authorization_code", "refresh_token") ||
 			!mcpOAuthSetSupported(request.ResponseTypes, "code") ||
@@ -405,7 +417,27 @@ func MCPOAuthConsentDecisionHandler(service *MCPOAuthService, jwtSecret string) 
 
 func MCPOAuthGrantsHandler(service *MCPOAuthService) gin.HandlerFunc {
 	return func(c *gin.Context) {
-		grants, err := service.ListGrants(c.Request.Context(), c.GetString("userID"), c.Query("project_id"))
+		query := c.Request.URL.Query()
+		if len(query) != 1 {
+			writeMCPOAuthOAuthError(c, http.StatusBadRequest, "invalid_request")
+			return
+		}
+		projectValues, hasProject := query["project_id"]
+		resourceValues, hasResource := query["resource"]
+		if hasProject == hasResource {
+			writeMCPOAuthOAuthError(c, http.StatusBadRequest, "invalid_request")
+			return
+		}
+		var grants []MCPOAuthGrantInfo
+		var err error
+		if hasProject && len(projectValues) == 1 && projectValues[0] != "" {
+			grants, err = service.ListGrants(c.Request.Context(), c.GetString("userID"), projectValues[0])
+		} else if hasResource && len(resourceValues) == 1 && resourceValues[0] != "" {
+			grants, err = service.ListResourceGrants(c.Request.Context(), c.GetString("userID"), resourceValues[0])
+		} else {
+			writeMCPOAuthOAuthError(c, http.StatusBadRequest, "invalid_request")
+			return
+		}
 		if err != nil {
 			writeMCPOAuthServiceError(c, err)
 			return
@@ -413,6 +445,81 @@ func MCPOAuthGrantsHandler(service *MCPOAuthService) gin.HandlerFunc {
 		c.Header("Cache-Control", "no-store")
 		c.JSON(http.StatusOK, gin.H{"grants": grants})
 	}
+}
+
+func MCPOAuthCredentialVerifierHandler(service *MCPOAuthService, cfg config.Config) gin.HandlerFunc {
+	return MCPOAuthCredentialVerifierHandlerWithValidator(service, cfg, idtoken.Validate)
+}
+
+func MCPOAuthCredentialVerifierHandlerWithValidator(service *MCPOAuthService, cfg config.Config,
+	validate func(context.Context, string, string) (*idtoken.Payload, error)) gin.HandlerFunc {
+	return func(c *gin.Context) {
+		c.Header("Cache-Control", "no-store")
+		c.Header("Pragma", "no-cache")
+		var policy *config.AuthOAuthResource
+		for i := range cfg.AuthOAuthResources {
+			if cfg.AuthOAuthResources[i].ID == "daily-brief" {
+				policy = &cfg.AuthOAuthResources[i]
+				break
+			}
+		}
+		if service == nil || policy == nil || !policy.Enabled || policy.VerifierCallerServiceAccount == "" ||
+			policy.VerifierAudience == "" || validate == nil {
+			writeMCPOAuthOAuthError(c, http.StatusServiceUnavailable, "temporarily_unavailable")
+			return
+		}
+		callerToken, ok := bearerToken(c.GetHeader("Authorization"))
+		userCredential := c.GetHeader("X-LWC-User-Credential")
+		bodyPresent := false
+		if c.Request.Body != nil {
+			body, bodyErr := io.ReadAll(io.LimitReader(c.Request.Body, 1))
+			bodyPresent = bodyErr != nil || len(body) != 0
+			clear(body)
+		}
+		if !ok || !validMCPOpaque(userCredential, mcpOAuthAccessPrefix) || c.GetHeader("X-LWC-Credential-Class") != "" || bodyPresent {
+			writeMCPOAuthOAuthError(c, http.StatusBadRequest, "invalid_request")
+			return
+		}
+		payload, err := validate(c.Request.Context(), callerToken, policy.VerifierAudience)
+		if err != nil || payload == nil || payload.Issuer != "https://accounts.google.com" ||
+			payload.Audience != policy.VerifierAudience || payload.Expires <= time.Now().Unix() {
+			writeMCPOAuthOAuthError(c, http.StatusForbidden, "untrusted_caller")
+			return
+		}
+		email, _ := payload.Claims["email"].(string)
+		verifiedEmail, _ := payload.Claims["email_verified"].(bool)
+		if !verifiedEmail || email != policy.VerifierCallerServiceAccount {
+			writeMCPOAuthOAuthError(c, http.StatusForbidden, "untrusted_caller")
+			return
+		}
+		result, err := service.VerifyAccessToken(c.Request.Context(), userCredential)
+		if err != nil {
+			if errors.Is(err, ErrMCPOAuthUnavailable) {
+				writeMCPOAuthOAuthError(c, http.StatusServiceUnavailable, "temporarily_unavailable")
+			} else {
+				writeMCPOAuthOAuthError(c, http.StatusUnauthorized, "invalid_token")
+			}
+			return
+		}
+		c.JSON(http.StatusOK, result)
+	}
+}
+
+func supportedOAuthScopes(policies []config.AuthOAuthResource) []string {
+	seen := map[string]bool{}
+	var scopes []string
+	for _, resource := range policies {
+		if !resource.Enabled {
+			continue
+		}
+		for _, scope := range resource.Scopes {
+			if !seen[scope.Name] {
+				seen[scope.Name] = true
+				scopes = append(scopes, scope.Name)
+			}
+		}
+	}
+	return scopes
 }
 
 func MCPOAuthRevokeGrantHandler(service *MCPOAuthService, jwtSecret string) gin.HandlerFunc {
@@ -529,6 +636,11 @@ func writeMCPOAuthOAuthError(c *gin.Context, status int, code string) {
 // existing Auth API group. Passing no Firestore client retains existing Auth
 // behavior and makes the new routes fail closed with service_unavailable.
 func RegisterMCPOAuthRoutes(router *gin.Engine, authRoutes *gin.RouterGroup, cfg config.Config, fs *firestore.Client) {
+	resources := cfg.AuthOAuthResources
+	if resources == nil {
+		resources = config.LegacyAuthOAuthResources(cfg.SyncServiceURL)
+	}
+	cfg.AuthOAuthResources = resources
 	var service *MCPOAuthService
 	if fs != nil {
 		environment := strings.TrimSpace(cfg.AuthSessionEnvironment)
@@ -545,10 +657,10 @@ func RegisterMCPOAuthRoutes(router *gin.Engine, authRoutes *gin.RouterGroup, cfg
 				frontendOrigin = parsed.Scheme + "://" + parsed.Host
 			}
 		}
-		service = NewMCPOAuthService(fs, environment, cfg.AuthServiceURL, cfg.SyncServiceURL,
-			frontendOrigin, cfg.JWTSecret)
+		service = NewMCPOAuthServiceWithPolicy(fs, environment, cfg.AuthEnvironment, cfg.AuthServiceURL, cfg.SyncServiceURL,
+			frontendOrigin, cfg.JWTSecret, resources)
 	}
-	router.GET("/.well-known/oauth-authorization-server", MCPOAuthMetadataHandler(cfg.AuthServiceURL))
+	router.GET("/.well-known/oauth-authorization-server", MCPOAuthMetadataHandler(cfg.AuthServiceURL, cfg.AuthOAuthResources))
 	if service == nil {
 		unavailable := func(c *gin.Context) {
 			writeMCPOAuthOAuthError(c, http.StatusServiceUnavailable, "temporarily_unavailable")
@@ -556,6 +668,7 @@ func RegisterMCPOAuthRoutes(router *gin.Engine, authRoutes *gin.RouterGroup, cfg
 		authRoutes.POST("/mcp/oauth/register", middleware.NewRateLimiter(10, time.Minute), mcpOAuthRegisterUnavailableHandler())
 		authRoutes.GET("/mcp/oauth/authorize", middleware.NewRateLimiter(10, time.Minute), unavailable)
 		authRoutes.POST("/mcp/oauth/token", middleware.NewRateLimiter(10, time.Minute), unavailable)
+		authRoutes.POST("/consumers/daily-brief/verify-credential", middleware.NewRateLimiter(60, time.Minute), MCPOAuthCredentialVerifierHandler(nil, cfg))
 		protected := authRoutes.Group("/mcp/oauth")
 		protected.GET("/consent/:transactionID", unavailable)
 		protected.POST("/consent/:transactionID/decision", unavailable)
@@ -566,6 +679,7 @@ func RegisterMCPOAuthRoutes(router *gin.Engine, authRoutes *gin.RouterGroup, cfg
 	authRoutes.POST("/mcp/oauth/register", middleware.NewRateLimiter(10, time.Minute), MCPOAuthRegisterHandler(service))
 	authRoutes.GET("/mcp/oauth/authorize", middleware.NewRateLimiter(10, time.Minute), MCPOAuthAuthorizeHandler(service))
 	authRoutes.POST("/mcp/oauth/token", middleware.NewRateLimiter(10, time.Minute), MCPOAuthTokenHandler(service))
+	authRoutes.POST("/consumers/daily-brief/verify-credential", middleware.NewRateLimiter(60, time.Minute), MCPOAuthCredentialVerifierHandler(service, cfg))
 	protected := authRoutes.Group("/mcp/oauth")
 	protected.Use(JWTAuthWithAccountLookup(cfg, FirestoreAccountLookup(fs)))
 	protected.GET("/consent/:transactionID", MCPOAuthConsentDetailsHandler(service))

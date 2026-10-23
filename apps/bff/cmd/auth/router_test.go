@@ -63,6 +63,7 @@ func TestProductionRouterExposesOnlyAuthPublicSurface(t *testing.T) {
 		http.MethodPost + " /api/v1/auth/logout":                                    true,
 		http.MethodPost + " /api/v1/auth/demo":                                      true,
 		http.MethodPost + " /api/v1/auth/mcp/oauth/consent/:transactionID/decision": true,
+		http.MethodPost + " /api/v1/auth/consumers/daily-brief/verify-credential":   true,
 		http.MethodPost + " /api/v1/auth/mcp/oauth/register":                        true,
 		http.MethodPost + " /api/v1/auth/mcp/oauth/token":                           true,
 	}
@@ -292,6 +293,7 @@ func TestProductionRouterUsesRegisteredActionRootsAndMCPTokenClassification(t *t
 		{http.MethodPost, "/api/v1/auth/mcp/oauth/register", "auth.mcp.register", "mcp_register"},
 		{http.MethodGet, "/api/v1/auth/mcp/oauth/authorize", "auth.mcp.authorize", "mcp_authorize"},
 		{http.MethodPost, "/api/v1/auth/mcp/oauth/token", "auth.mcp.token", "mcp_token"},
+		{http.MethodPost, "/api/v1/auth/consumers/daily-brief/verify-credential", "auth.mcp.verify", "mcp_verify_credential"},
 		{http.MethodGet, "/api/v1/auth/mcp/oauth/consent/transaction-canary", "auth.mcp.consent", "mcp_consent_read"},
 		{http.MethodPost, "/api/v1/auth/mcp/oauth/consent/transaction-canary/decision", "auth.mcp.consent", "mcp_consent_decision"},
 		{http.MethodGet, "/api/v1/auth/mcp/oauth/grants", "auth.mcp.grants", "mcp_grants_list"},
@@ -342,6 +344,22 @@ func TestMCPOAuthBrowserCORSAllowsGrantRevocation(t *testing.T) {
 		!strings.Contains(response.Header().Get("Access-Control-Allow-Methods"), http.MethodDelete) {
 		t.Fatalf("MCP revoke preflight status=%d origin=%q methods=%q", response.Code,
 			response.Header().Get("Access-Control-Allow-Origin"), response.Header().Get("Access-Control-Allow-Methods"))
+	}
+}
+
+func TestDailyBriefCredentialVerifierDoesNotEnableBrowserCORS(t *testing.T) {
+	gin.SetMode(gin.TestMode)
+	router := newProductionRouter(config.Config{
+		JWTSecret: "test-secret", AllowedOrigins: []string{"http://localhost:13000"},
+	}, true, nil, &syssettings.FakeStore{Enabled: true}, true)
+	request := httptest.NewRequest(http.MethodOptions, "http://localhost:18081/api/v1/auth/consumers/daily-brief/verify-credential", nil)
+	request.Header.Set("Origin", "http://localhost:13000")
+	request.Header.Set("Access-Control-Request-Method", http.MethodPost)
+	request.Header.Set("Access-Control-Request-Headers", "Authorization, X-LWC-User-Credential")
+	response := httptest.NewRecorder()
+	router.ServeHTTP(response, request)
+	if response.Header().Get("Access-Control-Allow-Origin") != "" || response.Header().Get("Access-Control-Allow-Headers") != "" {
+		t.Fatalf("credential verifier preflight unexpectedly enabled browser CORS: %v", response.Header())
 	}
 }
 

@@ -34,7 +34,14 @@ export function MCPOAuthConsentClient({ transactionId }: { transactionId: string
   const loading = !visibleDetails && !visibleError;
   const busy = busyContextKey === contextKey;
   const terminal = terminalContextKey === contextKey;
-  const rawWriteRequested = visibleDetails?.scope.split(/\s+/).includes('mcp:raw:write') ?? false;
+  const fixedResource = visibleDetails?.resource_kind === 'fixed';
+  const legacyProjectScopeDescription = visibleDetails && !fixedResource && !visibleDetails.scope_details?.length
+    ? visibleDetails.scope === 'mcp:query'
+      ? t('MCPOAuth.queryOnly')
+      : visibleDetails.scope === 'mcp:query mcp:raw:write'
+        ? t('MCPOAuth.queryAndRawWrite')
+        : ''
+    : '';
 
   useLayoutEffect(() => {
     const current = contextRef.current;
@@ -142,13 +149,19 @@ export function MCPOAuthConsentClient({ transactionId }: { transactionId: string
           <dl className="mt-6 grid gap-4 rounded-xl border border-white/8 bg-black/20 p-4 sm:grid-cols-2">
             <div><dt className="text-xs uppercase tracking-wide text-zinc-500">{t('MCPOAuth.client')}</dt><dd className="mt-1 break-words text-sm font-medium text-white">{visibleDetails.client_name}</dd></div>
             <div><dt className="text-xs uppercase tracking-wide text-zinc-500">{t('MCPOAuth.account')}</dt><dd className="mt-1 break-all text-sm font-medium text-white">{visibleDetails.account_email}</dd></div>
-            <div><dt className="text-xs uppercase tracking-wide text-zinc-500">{t('MCPOAuth.project')}</dt><dd className="mt-1 break-words text-sm font-medium text-white">{visibleDetails.project_name}<span className="mt-1 block break-all font-mono text-xs text-zinc-500">{visibleDetails.project_id}</span></dd></div>
+            {fixedResource ? (
+              <div><dt className="text-xs uppercase tracking-wide text-zinc-500">{t('MCPOAuth.resourceName')}</dt><dd className="mt-1 break-words text-sm font-medium text-white">{visibleDetails.resource_name}</dd></div>
+            ) : (
+              <div><dt className="text-xs uppercase tracking-wide text-zinc-500">{t('MCPOAuth.project')}</dt><dd className="mt-1 break-words text-sm font-medium text-white">{visibleDetails.project_name}<span className="mt-1 block break-all font-mono text-xs text-zinc-500">{visibleDetails.project_id}</span></dd></div>
+            )}
             <div><dt className="text-xs uppercase tracking-wide text-zinc-500">{t('MCPOAuth.scope')}</dt><dd className="mt-1 font-mono text-sm text-emerald-200">{visibleDetails.scope}</dd></div>
+            {visibleDetails.scope_details?.length ? visibleDetails.scope_details.map((scope) => (
+              <div key={scope.name} className="sm:col-span-2"><dt className="font-mono text-xs text-emerald-200">{scope.name}</dt><dd className="mt-1 text-sm leading-6 text-zinc-300">{scope.description}</dd></div>
+            )) : legacyProjectScopeDescription ? <p className="sm:col-span-2 text-sm leading-6 text-zinc-300">{legacyProjectScopeDescription}</p> : null}
             <div className="sm:col-span-2"><dt className="text-xs uppercase tracking-wide text-zinc-500">{t('MCPOAuth.resource')}</dt><dd className="mt-1 break-all font-mono text-xs leading-5 text-zinc-200">{visibleDetails.resource}</dd></div>
             <div className="sm:col-span-2"><dt className="text-xs uppercase tracking-wide text-zinc-500">{t('MCPOAuth.expires')}</dt><dd className="mt-1 text-sm text-zinc-300">{new Date(visibleDetails.expires_at).toLocaleString()}</dd></div>
           </dl>
           <p className="mt-3 text-xs leading-5 text-zinc-500">{t('MCPOAuth.clientUnverified')}</p>
-          <p className="mt-4 rounded-lg border border-emerald-300/10 bg-emerald-300/5 p-3 text-xs leading-5 text-zinc-300">{t(rawWriteRequested ? 'MCPOAuth.queryAndRawWrite' : 'MCPOAuth.queryOnly')}</p>
           {terminal ? (
             <Link href="/advanced" className="mt-6 inline-flex min-h-11 items-center text-sm font-medium text-emerald-300 underline underline-offset-4">{t('MCPOAuth.backToAdvanced')}</Link>
           ) : (

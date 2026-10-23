@@ -7,10 +7,11 @@ const mocks = vi.hoisted(() => ({
   accessToken: 'web-session-token',
   sessionEpoch: 1,
   user: { id: 'user-one', email: 'owner@example.com' },
-  project: { id: 'project-one', name: 'Research Project' },
+  project: { id: 'project-one', name: 'Research Project' } as { id: string; name: string } | null,
   readConsent: vi.fn(),
   decideConsent: vi.fn(),
   listGrants: vi.fn(),
+  listResourceGrants: vi.fn(),
   revokeGrant: vi.fn(),
   apiFetch: vi.fn(),
   resourceURL: vi.fn((projectId = 'project-one') => `http://localhost:18080/mcp/projects/${encodeURIComponent(projectId)}`),
@@ -46,6 +47,7 @@ vi.mock('@/lib/mcp-oauth', async () => {
     readMCPOAuthConsent: mocks.readConsent,
     decideMCPOAuthConsent: mocks.decideConsent,
     listMCPOAuthGrants: mocks.listGrants,
+    listMCPOAuthResourceGrants: mocks.listResourceGrants,
     revokeMCPOAuthGrant: mocks.revokeGrant,
     mcpResourceURL: mocks.resourceURL,
     isSafeMCPOAuthReturnURL: mocks.safeReturnURL,
@@ -98,6 +100,7 @@ beforeEach(() => {
     resource: consent.resource, scope: 'mcp:query', status: 'active',
     created_at: '2026-10-01T00:00:00Z', expires_at: '2026-10-31T00:00:00Z',
   }]);
+  mocks.listResourceGrants.mockReset().mockResolvedValue([]);
   mocks.revokeGrant.mockReset().mockResolvedValue(undefined);
   mocks.apiFetch.mockReset().mockResolvedValue({ ok: true, status: 200, json: async () => ({ keys: [] }) });
   mocks.safeReturnURL.mockReturnValue(true);
@@ -123,13 +126,99 @@ describe('LWC-389 MCP OAuth frontend', () => {
     expect(screen.getByRole('button', { name: 'MCPOAuth.deny' })).toBeDefined();
   });
 
+  it('keeps account-owned Daily Brief grant management reachable without an LWC Project', async () => {
+    mocks.project = null;
+    mocks.listResourceGrants.mockResolvedValueOnce([{
+      id: 'brief-grant-one', client_name: 'Daily Brief Web', project_id: '',
+      resource: 'https://brief.rayer.idv.tw/mcp', scope: 'brief:manage', status: 'active',
+      created_at: '2026-10-01T00:00:00Z', expires_at: '2026-10-31T00:00:00Z',
+    }]);
+    render(<AdvancedPage />);
+    expect(screen.getAllByText('MCPOAuth.accountGrantsTitle').length).toBeGreaterThan(0);
+    expect(screen.queryByText('MCPOAuth.currentProject')).toBeNull();
+    expect(screen.queryByText('MCPOAuth.manualFallback')).toBeNull();
+    const accountPanel = screen.getAllByText('MCPOAuth.accountGrantsTitle')[0].closest('details')!;
+    fireEvent.click(accountPanel.querySelector('summary')!);
+    expect(await screen.findByText('Daily Brief Web')).toBeDefined();
+    expect(mocks.listResourceGrants).toHaveBeenCalledWith('https://brief.rayer.idv.tw/mcp', 'web-session-token');
+    fireEvent.click(within(accountPanel).getByRole('button', { name: 'MCPOAuth.revoke' }));
+    await waitFor(() => expect(mocks.revokeGrant).toHaveBeenCalledWith('brief-grant-one', 'web-session-token'));
+    await waitFor(() => expect(mocks.listResourceGrants).toHaveBeenCalledTimes(2));
+    expect(mocks.listGrants).not.toHaveBeenCalled();
+  });
+
+  it('clears account-owned grant state when the signed-in account changes', async () => {
+    mocks.project = null;
+    mocks.listResourceGrants.mockResolvedValueOnce([{
+      id: 'brief-grant-one', client_name: 'First account client', project_id: '',
+      resource: 'https://brief.rayer.idv.tw/mcp', scope: 'brief:manage', status: 'active',
+      created_at: '2026-10-01T00:00:00Z', expires_at: '2026-10-31T00:00:00Z',
+    }]);
+    const view = render(<AdvancedPage />);
+    const accountPanel = screen.getAllByText('MCPOAuth.accountGrantsTitle')[0].closest('details')!;
+    fireEvent.click(accountPanel.querySelector('summary')!);
+    expect(await screen.findByText('First account client')).toBeDefined();
+    mocks.user = { id: 'user-two', email: 'other@example.com' };
+    mocks.sessionEpoch = 2;
+    mocks.accessToken = 'replacement-session-token';
+    view.rerender(<AdvancedPage />);
+    await waitFor(() => expect(screen.queryByText('First account client')).toBeNull());
+    await waitFor(() => expect(mocks.listResourceGrants).toHaveBeenLastCalledWith('https://brief.rayer.idv.tw/mcp', 'replacement-session-token'));
+  });
+
   it('explains the exact raw write permission when the client requests it', async () => {
-    mocks.readConsent.mockResolvedValueOnce({ ...consent, scope: 'mcp:query mcp:raw:write' });
+    mocks.readConsent.mockResolvedValueOnce({
+      ...consent,
+      scope: 'mcp:query mcp:raw:write',
+      scope_details: [
+        { name: 'mcp:query', description: 'Query project knowledge.' },
+        { name: 'mcp:raw:write', description: 'Add permitted raw sources.' },
+      ],
+    });
     render(<MCPOAuthConsentClient transactionId={transactionId} />);
     expect(await screen.findByText('mcp:query mcp:raw:write')).toBeDefined();
-    expect(screen.getByText('MCPOAuth.queryAndRawWrite')).toBeDefined();
-    expect(screen.queryByText('MCPOAuth.queryOnly')).toBeNull();
+    expect(screen.getByText('Add permitted raw sources.')).toBeDefined();
+    expect(screen.queryByText('MCPOAuth.queryAndRawWrite')).toBeNull();
     expect(mocks.decideConsent).not.toHaveBeenCalled();
+  });
+
+  it.each([
+    ['legacy query response', 'mcp:query', 'MCPOAuth.queryOnly'],
+    ['legacy query and raw-write response', 'mcp:query mcp:raw:write', 'MCPOAuth.queryAndRawWrite'],
+  ])('keeps the localized explanation for a %s', async (_name, scope, explanation) => {
+    mocks.readConsent.mockResolvedValueOnce({ ...consent, scope });
+    render(<MCPOAuthConsentClient transactionId={transactionId} />);
+    expect(await screen.findByText(scope)).toBeDefined();
+    expect(screen.getByText(explanation)).toBeDefined();
+  });
+
+  it('renders fixed Daily Brief consent without Project fields or labels', async () => {
+    mocks.readConsent.mockResolvedValueOnce({
+      transaction_id: transactionId,
+      account_email: 'owner@example.com',
+      client_name: 'Daily Brief Web',
+      resource: 'https://brief.rayer.idv.tw/mcp',
+      resource_kind: 'fixed',
+      resource_name: 'Daily Brief',
+      scope: 'brief:manage',
+      scope_details: [{ name: 'brief:manage', description: 'Read and manage Daily Brief reports and annotations in your private account space.' }],
+      expires_at: '2026-10-12T02:00:00Z',
+    });
+    render(<MCPOAuthConsentClient transactionId={transactionId} />);
+    expect(await screen.findByText('Daily Brief Web')).toBeDefined();
+    expect(screen.getByText('Daily Brief')).toBeDefined();
+    expect(screen.getAllByText('brief:manage').length).toBe(2);
+    expect(screen.getByText('Read and manage Daily Brief reports and annotations in your private account space.')).toBeDefined();
+    expect(screen.queryByText('MCPOAuth.project')).toBeNull();
+    expect(screen.getByRole('button', { name: 'MCPOAuth.allow' })).toBeDefined();
+    expect(screen.getByRole('button', { name: 'MCPOAuth.deny' })).toBeDefined();
+  });
+
+  it('localizes the account-grant labels in both supported locales', () => {
+    expect(enMessages.MCPOAuth.accountGrantsTitle).toBe('Account authorizations');
+    expect(zhTWMessages.MCPOAuth.accountGrantsTitle).toBe('帳戶授權');
+    expect(enMessages.MCPOAuth.resourceName).toBe('Resource name');
+    expect(zhTWMessages.MCPOAuth.resourceName).toBe('資源名稱');
   });
 
   it('describes bounded URL imports for raw-write consent and setup in both locales', () => {

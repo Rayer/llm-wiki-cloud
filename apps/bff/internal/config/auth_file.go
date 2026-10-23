@@ -12,6 +12,7 @@ import (
 	"os"
 	"path/filepath"
 	"regexp"
+	"sort"
 	"strconv"
 	"strings"
 
@@ -28,27 +29,54 @@ var authConfigPortPattern = regexp.MustCompile(`^[0-9]{1,5}$`)
 var authDemoUserIDPattern = regexp.MustCompile(`^[A-Za-z0-9_-]{1,128}$`)
 var authDemoEmailPattern = regexp.MustCompile(`^[^@\s]+@[^@\s]+\.[^@\s]+$`)
 var authDemoRolePattern = regexp.MustCompile(`^[a-z][a-z0-9_-]{0,31}$`)
+var authOAuthIDPattern = regexp.MustCompile(`^[a-z][a-z0-9-]{0,63}$`)
+var authOAuthScopePattern = regexp.MustCompile(`^[a-z][a-z0-9:_-]{0,63}$`)
+var authServiceAccountPattern = regexp.MustCompile(`^[a-z0-9][a-z0-9-]{4,62}@[a-z0-9.-]+\.iam\.gserviceaccount\.com$`)
+
+const authDailyBriefDevVerifierAudience = "https://llm-wiki-auth-dev-a5nkmux6pq-de.a.run.app"
+const authDailyBriefProdVerifierAudience = "https://llm-wiki-auth-a5nkmux6pq-de.a.run.app"
 
 type AuthFile struct {
-	SchemaVersion          int            `json:"schema_version"`
-	Target                 string         `json:"target"`
-	Environment            string         `json:"environment"`
-	ConfigID               string         `json:"config_id"`
-	GCPProject             string         `json:"gcp_project"`
-	FirestoreDatabaseID    string         `json:"firestore_database_id"`
-	LocalCloudScope        string         `json:"local_cloud_scope"`
-	AuthServiceURL         string         `json:"auth_service_url"`
-	SyncServiceURL         string         `json:"sync_service_url"`
-	AllowedHosts           []string       `json:"allowed_hosts"`
-	AllowedOrigins         []string       `json:"allowed_origins"`
-	AuthSessionEnvironment string         `json:"auth_session_environment"`
-	AuthSessionMigration   string         `json:"auth_session_migration"`
-	RegistrationEnabled    *bool          `json:"registration_enabled"`
-	AuthDemoUserID         string         `json:"auth_demo_user_id"`
-	AuthDemoUserEmail      string         `json:"auth_demo_user_email"`
-	AuthDemoUserRole       string         `json:"auth_demo_user_role"`
-	JWTSecret              string         `json:"jwt_secret"`
-	Google                 AuthFileGoogle `json:"google"`
+	SchemaVersion          int                 `json:"schema_version"`
+	Target                 string              `json:"target"`
+	Environment            string              `json:"environment"`
+	ConfigID               string              `json:"config_id"`
+	GCPProject             string              `json:"gcp_project"`
+	FirestoreDatabaseID    string              `json:"firestore_database_id"`
+	LocalCloudScope        string              `json:"local_cloud_scope"`
+	AuthServiceURL         string              `json:"auth_service_url"`
+	SyncServiceURL         string              `json:"sync_service_url"`
+	AllowedHosts           []string            `json:"allowed_hosts"`
+	AllowedOrigins         []string            `json:"allowed_origins"`
+	AuthSessionEnvironment string              `json:"auth_session_environment"`
+	AuthSessionMigration   string              `json:"auth_session_migration"`
+	RegistrationEnabled    *bool               `json:"registration_enabled"`
+	AuthDemoUserID         string              `json:"auth_demo_user_id"`
+	AuthDemoUserEmail      string              `json:"auth_demo_user_email"`
+	AuthDemoUserRole       string              `json:"auth_demo_user_role"`
+	JWTSecret              string              `json:"jwt_secret"`
+	Google                 AuthFileGoogle      `json:"google"`
+	OAuthResources         []AuthOAuthResource `json:"oauth_resources,omitempty"`
+}
+
+// AuthOAuthResource is the single CaC-owned policy entry consumed by Auth's
+// OAuth handlers. Schema-1 files omit the registry and retain legacy policy.
+type AuthOAuthResource struct {
+	ID                           string           `json:"id"`
+	Kind                         string           `json:"kind"`
+	Enabled                      bool             `json:"enabled"`
+	URI                          string           `json:"uri"`
+	Name                         string           `json:"name"`
+	Scopes                       []AuthOAuthScope `json:"scopes"`
+	AllowedScopeSets             [][]string       `json:"allowed_scope_sets"`
+	DefaultScopeSet              []string         `json:"default_scope_set"`
+	VerifierCallerServiceAccount string           `json:"verifier_caller_service_account"`
+	VerifierAudience             string           `json:"verifier_audience"`
+}
+
+type AuthOAuthScope struct {
+	Name        string `json:"name"`
+	Description string `json:"description"`
 }
 
 type AuthFileGoogle struct {
@@ -66,27 +94,28 @@ type AuthFileGoogle struct {
 // AuthInputSnapshot is the nonsecret Stage 1 identity retained with an Auth
 // receipt. Credential references are already pinned to numeric versions.
 type AuthInputSnapshot struct {
-	SchemaVersion          int             `json:"schema_version"`
-	Environment            string          `json:"environment"`
-	Target                 string          `json:"target"`
-	SourceSHA              string          `json:"source_sha"`
-	ConfigID               string          `json:"config_id"`
-	GCPProject             string          `json:"gcp_project"`
-	FirestoreDatabaseID    string          `json:"firestore_database_id"`
-	LocalCloudScope        string          `json:"local_cloud_scope"`
-	AuthServiceURL         string          `json:"auth_service_url"`
-	SyncServiceURL         string          `json:"sync_service_url"`
-	AllowedHosts           []string        `json:"allowed_hosts"`
-	AllowedOrigins         []string        `json:"allowed_origins"`
-	AuthSessionEnvironment string          `json:"auth_session_environment"`
-	AuthSessionMigration   string          `json:"auth_session_migration"`
-	RegistrationEnabled    *bool           `json:"registration_enabled"`
-	AuthDemoUserID         string          `json:"auth_demo_user_id"`
-	AuthDemoUserEmail      string          `json:"auth_demo_user_email"`
-	AuthDemoUserRole       string          `json:"auth_demo_user_role"`
-	JWTSecretVersion       string          `json:"jwt_secret_version"`
-	Google                 AuthInputGoogle `json:"google"`
-	ConfigSecretResource   string          `json:"config_secret_resource"`
+	SchemaVersion          int                 `json:"schema_version"`
+	Environment            string              `json:"environment"`
+	Target                 string              `json:"target"`
+	SourceSHA              string              `json:"source_sha"`
+	ConfigID               string              `json:"config_id"`
+	GCPProject             string              `json:"gcp_project"`
+	FirestoreDatabaseID    string              `json:"firestore_database_id"`
+	LocalCloudScope        string              `json:"local_cloud_scope"`
+	AuthServiceURL         string              `json:"auth_service_url"`
+	SyncServiceURL         string              `json:"sync_service_url"`
+	AllowedHosts           []string            `json:"allowed_hosts"`
+	AllowedOrigins         []string            `json:"allowed_origins"`
+	AuthSessionEnvironment string              `json:"auth_session_environment"`
+	AuthSessionMigration   string              `json:"auth_session_migration"`
+	RegistrationEnabled    *bool               `json:"registration_enabled"`
+	AuthDemoUserID         string              `json:"auth_demo_user_id"`
+	AuthDemoUserEmail      string              `json:"auth_demo_user_email"`
+	AuthDemoUserRole       string              `json:"auth_demo_user_role"`
+	JWTSecretVersion       string              `json:"jwt_secret_version"`
+	Google                 AuthInputGoogle     `json:"google"`
+	ConfigSecretResource   string              `json:"config_secret_resource"`
+	OAuthResources         []AuthOAuthResource `json:"oauth_resources,omitempty"`
 }
 
 type AuthInputGoogle struct {
@@ -127,7 +156,12 @@ func DecodeAuthInputSnapshot(data []byte) (AuthInputSnapshot, error) {
 	if err := json.Unmarshal(data, &fields); err != nil || fields == nil {
 		return AuthInputSnapshot{}, errors.New("Auth input snapshot is malformed")
 	}
-	if err := requireJSONKeys(fields, authInputSnapshotKeys); err != nil {
+	version := authSchemaVersion(fields["schema_version"])
+	keys := authInputSnapshotKeys
+	if version == 2 {
+		keys = append(append([]string(nil), authInputSnapshotKeys...), "oauth_resources")
+	}
+	if err := requireJSONKeys(fields, keys); err != nil {
 		return AuthInputSnapshot{}, errors.New("Auth input snapshot has missing or unknown keys")
 	}
 	for _, field := range []struct {
@@ -144,6 +178,11 @@ func DecodeAuthInputSnapshot(data []byte) (AuthInputSnapshot, error) {
 		{"jwt_secret_version", "string"}, {"config_secret_resource", "string"}, {"google", "object"},
 	} {
 		if err := requireAuthJSONType("inputs."+field.name, fields[field.name], field.kind); err != nil {
+			return AuthInputSnapshot{}, err
+		}
+	}
+	if version == 2 {
+		if err := validateOAuthResourcesJSON("inputs.oauth_resources", fields["oauth_resources"]); err != nil {
 			return AuthInputSnapshot{}, err
 		}
 	}
@@ -192,6 +231,12 @@ var authInputSnapshotKeys = []string{
 	"jwt_secret_version", "google", "config_secret_resource",
 }
 
+func authSchemaVersion(raw json.RawMessage) int {
+	var version int
+	_ = json.Unmarshal(raw, &version)
+	return version
+}
+
 var authInputGoogleKeys = []string{
 	"enabled", "client_id", "client_secret_version", "issuer", "jwks_url", "token_url",
 	"login_redirect_url", "link_redirect_url", "completion_url",
@@ -222,10 +267,191 @@ func requireAuthJSONType(name string, raw json.RawMessage, kind string) error {
 	return nil
 }
 
+func validateOAuthResourcesJSON(name string, raw json.RawMessage) error {
+	var resources []json.RawMessage
+	if json.Unmarshal(raw, &resources) != nil || resources == nil {
+		return fmt.Errorf("%s has an invalid type", name)
+	}
+	for i, item := range resources {
+		var fields map[string]json.RawMessage
+		if json.Unmarshal(item, &fields) != nil || fields == nil || requireJSONKeys(fields, []string{
+			"id", "kind", "enabled", "uri", "name", "scopes", "allowed_scope_sets", "default_scope_set",
+			"verifier_caller_service_account", "verifier_audience",
+		}) != nil {
+			return fmt.Errorf("%s[%d] has missing or unknown keys", name, i)
+		}
+		for _, field := range []struct{ name, kind string }{
+			{"id", "string"}, {"kind", "string"}, {"enabled", "boolean"}, {"uri", "string"}, {"name", "string"},
+			{"verifier_caller_service_account", "string"}, {"verifier_audience", "string"},
+		} {
+			if err := requireAuthJSONType(name+"."+field.name, fields[field.name], field.kind); err != nil {
+				return err
+			}
+		}
+		var scopes []json.RawMessage
+		if json.Unmarshal(fields["scopes"], &scopes) != nil || scopes == nil {
+			return fmt.Errorf("%s[%d].scopes has an invalid type", name, i)
+		}
+		for j, scopeRaw := range scopes {
+			var scope map[string]json.RawMessage
+			if json.Unmarshal(scopeRaw, &scope) != nil || scope == nil || requireJSONKeys(scope, []string{"name", "description"}) != nil ||
+				requireAuthJSONType(name+".scopes.name", scope["name"], "string") != nil ||
+				requireAuthJSONType(name+".scopes.description", scope["description"], "string") != nil {
+				return fmt.Errorf("%s[%d].scopes[%d] has an invalid shape", name, i, j)
+			}
+		}
+		var sets [][]string
+		if json.Unmarshal(fields["allowed_scope_sets"], &sets) != nil || sets == nil {
+			return fmt.Errorf("%s[%d].allowed_scope_sets has an invalid type", name, i)
+		}
+		var defaults []string
+		if json.Unmarshal(fields["default_scope_set"], &defaults) != nil || defaults == nil {
+			return fmt.Errorf("%s[%d].default_scope_set has an invalid type", name, i)
+		}
+	}
+	return nil
+}
+
+func validateAuthOAuthResources(file AuthFile) error {
+	if len(file.OAuthResources) != 2 {
+		return errors.New("Auth OAuth resource registry is incomplete")
+	}
+	ids, scopeNames := map[string]bool{}, map[string]bool{}
+	var project, brief *AuthOAuthResource
+	for i := range file.OAuthResources {
+		resource := &file.OAuthResources[i]
+		if !authOAuthIDPattern.MatchString(resource.ID) || ids[resource.ID] ||
+			(resource.Kind != "project-template" && resource.Kind != "fixed") ||
+			strings.TrimSpace(resource.Name) == "" || resource.URI == "" || resource.Scopes == nil ||
+			resource.AllowedScopeSets == nil || resource.DefaultScopeSet == nil {
+			return errors.New("Auth OAuth resource identity or required policy is invalid")
+		}
+		ids[resource.ID] = true
+		declared := map[string]bool{}
+		for _, scope := range resource.Scopes {
+			if !authOAuthScopePattern.MatchString(scope.Name) || strings.TrimSpace(scope.Description) == "" || scopeNames[scope.Name] {
+				return errors.New("Auth OAuth scope declaration is invalid or duplicated")
+			}
+			declared[scope.Name], scopeNames[scope.Name] = true, true
+		}
+		accepted := map[string]bool{}
+		for _, set := range resource.AllowedScopeSets {
+			if len(set) == 0 {
+				return errors.New("Auth OAuth accepted scope set is empty")
+			}
+			seen := map[string]bool{}
+			for _, name := range set {
+				if !declared[name] || seen[name] {
+					return errors.New("Auth OAuth accepted scope set is invalid")
+				}
+				seen[name] = true
+			}
+			key := canonicalScopeSetKey(set)
+			if accepted[key] {
+				return errors.New("Auth OAuth accepted scope sets are duplicated")
+			}
+			accepted[key] = true
+		}
+		if len(resource.DefaultScopeSet) > 0 && !accepted[canonicalScopeSetKey(resource.DefaultScopeSet)] {
+			return errors.New("Auth OAuth default scope set is not accepted")
+		}
+		switch resource.Kind {
+		case "project-template":
+			if resource.ID != "lwc-project" || resource.URI != trimAuthOrigin(file.SyncServiceURL)+"/mcp/projects/{project_id}" ||
+				resource.VerifierAudience != "" || resource.VerifierCallerServiceAccount != "" {
+				return errors.New("Auth project OAuth resource binding is invalid")
+			}
+			project = resource
+		case "fixed":
+			if resource.ID != "daily-brief" || resource.URI != "https://brief.rayer.idv.tw/mcp" ||
+				resource.Name != "Daily Brief" || !validAuthOAuthVerifierAudience(file.Environment, resource.VerifierAudience) {
+				return errors.New("Auth fixed OAuth resource binding is invalid")
+			}
+			if resource.Enabled && (resource.VerifierAudience == "" ||
+				!authServiceAccountPattern.MatchString(resource.VerifierCallerServiceAccount)) {
+				return errors.New("Auth fixed OAuth verifier caller is not configured")
+			}
+			if !resource.Enabled && resource.VerifierCallerServiceAccount != "" && !authServiceAccountPattern.MatchString(resource.VerifierCallerServiceAccount) {
+				return errors.New("Auth fixed OAuth verifier caller is invalid")
+			}
+			brief = resource
+		}
+	}
+	if project == nil || brief == nil || !project.Enabled ||
+		!equalStringSlices(project.ScopesNames(), []string{"mcp:query", "mcp:raw:write"}) ||
+		!equalStringSetSlices(project.AllowedScopeSets, [][]string{{"mcp:query"}, {"mcp:query", "mcp:raw:write"}}) ||
+		!equalStringSlices(project.DefaultScopeSet, []string{"mcp:query"}) ||
+		!equalStringSlices(brief.ScopesNames(), []string{"brief:manage"}) ||
+		!equalStringSetSlices(brief.AllowedScopeSets, [][]string{{"brief:manage"}}) || len(brief.DefaultScopeSet) != 0 {
+		return errors.New("Auth OAuth resource scope contract is invalid")
+	}
+	if brief.Scopes[0].Description != "Read and manage Daily Brief reports and annotations in your private account space." {
+		return errors.New("Auth Daily Brief consent description is invalid")
+	}
+	return nil
+}
+
+func validAuthOAuthVerifierAudience(environment, audience string) bool {
+	switch environment {
+	case "local":
+		return audience == "" || validateRuntimeOrigin(audience, true) == nil
+	case "dev":
+		return audience == authDailyBriefDevVerifierAudience
+	case "prod":
+		return audience == "" || audience == authDailyBriefProdVerifierAudience
+	default:
+		return false
+	}
+}
+
+func (r AuthOAuthResource) ScopesNames() []string {
+	values := make([]string, len(r.Scopes))
+	for i, scope := range r.Scopes {
+		values[i] = scope.Name
+	}
+	return values
+}
+
+func trimAuthOrigin(value string) string { return strings.TrimRight(value, "/") }
+
+func canonicalScopeSetKey(values []string) string {
+	copyValues := append([]string(nil), values...)
+	sort.Strings(copyValues)
+	return strings.Join(copyValues, " ")
+}
+
+func equalStringSlices(a, b []string) bool {
+	if len(a) != len(b) {
+		return false
+	}
+	for i := range a {
+		if a[i] != b[i] {
+			return false
+		}
+	}
+	return true
+}
+
+func equalStringSetSlices(a, b [][]string) bool {
+	if len(a) != len(b) {
+		return false
+	}
+	left, right := make([]string, len(a)), make([]string, len(b))
+	for i := range a {
+		left[i] = canonicalScopeSetKey(a[i])
+	}
+	for i := range b {
+		right[i] = canonicalScopeSetKey(b[i])
+	}
+	sort.Strings(left)
+	sort.Strings(right)
+	return equalStringSlices(left, right)
+}
+
 // ValidateAuthInputSnapshot ensures Stage 2 receives a complete immutable
 // nonsecret snapshot and exact numeric credential versions.
 func ValidateAuthInputSnapshot(inputs AuthInputSnapshot) error {
-	if inputs.SchemaVersion != 1 || inputs.Target != "auth" ||
+	if (inputs.SchemaVersion != 1 && inputs.SchemaVersion != 2) || inputs.Target != "auth" ||
 		(inputs.Environment != "dev" && inputs.Environment != "prod") ||
 		!authSourceSHAPattern.MatchString(inputs.SourceSHA) || !authConfigIDPattern.MatchString(inputs.ConfigID) ||
 		inputs.GCPProject != "llm-wiki-cloud" || inputs.LocalCloudScope != "" ||
@@ -254,7 +480,7 @@ func ValidateAuthInputSnapshot(inputs AuthInputSnapshot) error {
 		return errors.New("Auth input snapshot config_id does not match its source inputs")
 	}
 	file := AuthFile{
-		SchemaVersion: 1, Target: "auth", Environment: inputs.Environment, ConfigID: inputs.ConfigID,
+		SchemaVersion: inputs.SchemaVersion, Target: "auth", Environment: inputs.Environment, ConfigID: inputs.ConfigID,
 		GCPProject: inputs.GCPProject, FirestoreDatabaseID: inputs.FirestoreDatabaseID,
 		LocalCloudScope: inputs.LocalCloudScope, AuthServiceURL: inputs.AuthServiceURL,
 		SyncServiceURL: inputs.SyncServiceURL,
@@ -270,6 +496,7 @@ func ValidateAuthInputSnapshot(inputs AuthInputSnapshot) error {
 			LoginRedirectURL: inputs.Google.LoginRedirectURL, LinkRedirectURL: inputs.Google.LinkRedirectURL,
 			CompletionURL: inputs.Google.CompletionURL,
 		},
+		OAuthResources: inputs.OAuthResources,
 	}
 	return validateAuthFile(file)
 }
@@ -286,6 +513,13 @@ var authFileKeys = []string{
 	"local_cloud_scope", "auth_service_url", "sync_service_url", "allowed_hosts", "allowed_origins", "auth_session_environment",
 	"auth_session_migration", "registration_enabled", "auth_demo_user_id", "auth_demo_user_email",
 	"auth_demo_user_role", "jwt_secret", "google",
+}
+
+func authFileKeysForVersion(version int) []string {
+	if version == 2 {
+		return append(append([]string(nil), authFileKeys...), "oauth_resources")
+	}
+	return authFileKeys
 }
 
 // LoadAuthFile reads and validates the required Auth configuration file. The
@@ -333,7 +567,8 @@ func LoadAuthFile(path string) (Config, error) {
 	}
 	return Config{
 		ConfigID: file.ConfigID, ConfigSchemaVersion: file.SchemaVersion,
-		GCPProject: file.GCPProject, FirestoreDatabaseID: file.FirestoreDatabaseID,
+		AuthEnvironment: file.Environment,
+		GCPProject:      file.GCPProject, FirestoreDatabaseID: file.FirestoreDatabaseID,
 		LocalCloudScope: file.LocalCloudScope, Port: port, JWTSecret: file.JWTSecret,
 		AuthServiceURL: file.AuthServiceURL, SyncServiceURL: file.SyncServiceURL,
 		AllowedHosts: file.AllowedHosts, AllowedOrigins: file.AllowedOrigins,
@@ -344,7 +579,26 @@ func LoadAuthFile(path string) (Config, error) {
 		GoogleIssuer: file.Google.Issuer, GoogleJWKSURL: file.Google.JWKSURL, GoogleTokenURL: file.Google.TokenURL,
 		GoogleLoginRedirectURL: file.Google.LoginRedirectURL, GoogleLinkRedirectURL: file.Google.LinkRedirectURL,
 		GoogleCompletionURL: file.Google.CompletionURL,
+		AuthOAuthResources:  runtimeAuthOAuthResources(file),
 	}, nil
+}
+
+func runtimeAuthOAuthResources(file AuthFile) []AuthOAuthResource {
+	if file.SchemaVersion == 2 {
+		return file.OAuthResources
+	}
+	return LegacyAuthOAuthResources(file.SyncServiceURL)
+}
+
+// LegacyAuthOAuthResources preserves the pre-registry project policy for
+// retained schema-1 files and direct constructors that predate schema 2.
+func LegacyAuthOAuthResources(syncOrigin string) []AuthOAuthResource {
+	return []AuthOAuthResource{{
+		ID: "lwc-project", Kind: "project-template", Enabled: true,
+		URI: trimAuthOrigin(syncOrigin) + "/mcp/projects/{project_id}", Name: "LWC Project",
+		Scopes:           []AuthOAuthScope{{Name: "mcp:query", Description: "Query project knowledge."}, {Name: "mcp:raw:write", Description: "Add permitted raw sources."}},
+		AllowedScopeSets: [][]string{{"mcp:query"}, {"mcp:query", "mcp:raw:write"}}, DefaultScopeSet: []string{"mcp:query"},
+	}}
 }
 
 // DecodeAuthFile validates the complete materialized schema before projecting
@@ -360,7 +614,8 @@ func DecodeAuthFile(data []byte) (AuthFile, error) {
 	if err := json.Unmarshal(data, &fields); err != nil || fields == nil {
 		return AuthFile{}, errors.New("Auth config document is malformed")
 	}
-	if err := requireJSONKeys(fields, authFileKeys); err != nil {
+	version := authSchemaVersion(fields["schema_version"])
+	if err := requireJSONKeys(fields, authFileKeysForVersion(version)); err != nil {
 		return AuthFile{}, errors.New("Auth config has missing or unknown keys")
 	}
 	if err := validateAuthFileTypes(fields); err != nil {
@@ -401,6 +656,11 @@ func validateAuthFileTypes(fields map[string]json.RawMessage) error {
 			return err
 		}
 	}
+	if authSchemaVersion(fields["schema_version"]) == 2 {
+		if err := validateOAuthResourcesJSON("auth.oauth_resources", fields["oauth_resources"]); err != nil {
+			return err
+		}
+	}
 	var google map[string]json.RawMessage
 	if err := json.Unmarshal(fields["google"], &google); err != nil || google == nil {
 		return errors.New("Auth config google object is invalid")
@@ -424,7 +684,7 @@ func validateAuthFileTypes(fields map[string]json.RawMessage) error {
 }
 
 func validateAuthFile(file AuthFile) error {
-	if file.SchemaVersion != 1 || file.Target != "auth" ||
+	if (file.SchemaVersion != 1 && file.SchemaVersion != 2) || file.Target != "auth" ||
 		(file.Environment != "local" && file.Environment != "dev" && file.Environment != "prod") ||
 		!authConfigIDPattern.MatchString(file.ConfigID) {
 		return errors.New("Auth config identity is invalid")
@@ -458,6 +718,13 @@ func validateAuthFile(file AuthFile) error {
 	}
 	if file.AllowedHosts == nil || file.AllowedOrigins == nil || len(file.AllowedHosts) == 0 || len(file.AllowedOrigins) == 0 {
 		return errors.New("Auth config allowlists are invalid")
+	}
+	if file.SchemaVersion == 1 {
+		if len(file.OAuthResources) != 0 {
+			return errors.New("Auth schema-1 config must not contain OAuth resource policy")
+		}
+	} else if err := validateAuthOAuthResources(file); err != nil {
+		return err
 	}
 	for _, host := range file.AllowedHosts {
 		if strings.TrimSpace(host) == "" || strings.Contains(host, "*") || strings.ContainsAny(host, " /\\\r\n\t") ||
