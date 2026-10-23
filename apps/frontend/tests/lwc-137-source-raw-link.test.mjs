@@ -26,7 +26,7 @@ test('RawClient opens and highlights the file named by the raw file query param'
   assert.match(rawClient, /import \{ useSearchParams \} from 'next\/navigation';/);
   assert.match(rawClient, /const searchParams = useSearchParams\(\);/);
   assert.match(rawClient, /const highlightedFile = searchParams\.get\('file'\) \?\? '';/);
-  assert.match(rawClient, /files\.find\(\(file\) => file\.name === highlightedFile\)/);
+  assert.match(rawClient, /scopedFiles\.find\(\(file\) => file\.name === highlightedFile\)/);
   assert.match(rawClient, /void openRawPreview\(requestedFile\);/);
   assert.match(rawClient, /file\.name === highlightedFile/);
 });
