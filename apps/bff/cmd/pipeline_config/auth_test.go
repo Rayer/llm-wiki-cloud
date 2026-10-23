@@ -2,6 +2,7 @@ package main
 
 import (
 	"context"
+	"encoding/json"
 	"errors"
 	"os"
 	"os/exec"
@@ -40,7 +41,7 @@ func (r *fakeAuthReader) Access(_ context.Context, resource string) (string, []b
 
 func authProjectionForTest(environment string) authSourceProjection {
 	projection := authSourceProjection{
-		SchemaVersion: 1, Environment: environment, Target: "auth", GCPProject: "llm-wiki-cloud",
+		SchemaVersion: 2, Environment: environment, Target: "auth", GCPProject: "llm-wiki-cloud",
 		FirestoreDatabaseID: "llm-wiki-cloud-" + environment, AuthServiceURL: "https://auth." + environment + ".example.test",
 		SyncServiceURL:         "https://bff." + environment + ".example.test",
 		AllowedHosts:           []string{"auth." + environment + ".example.test"},
@@ -56,6 +57,20 @@ func authProjectionForTest(environment string) authSourceProjection {
 			LoginRedirectURL: "https://auth." + environment + ".example.test/api/v1/auth/google/callback",
 			LinkRedirectURL:  "https://auth." + environment + ".example.test/api/v1/auth/google/link/callback",
 			CompletionURL:    "https://wiki." + environment + ".example.test/login",
+		},
+		OAuthResources: []config.AuthOAuthResource{
+			{
+				ID: "lwc-project", Kind: "project-template", Enabled: true,
+				URI: "https://bff." + environment + ".example.test/mcp/projects/{project_id}", Name: "LWC Project",
+				Scopes:           []config.AuthOAuthScope{{Name: "mcp:query", Description: "Query project knowledge."}, {Name: "mcp:raw:write", Description: "Add permitted raw sources."}},
+				AllowedScopeSets: [][]string{{"mcp:query"}, {"mcp:query", "mcp:raw:write"}}, DefaultScopeSet: []string{"mcp:query"},
+			},
+			{
+				ID: "daily-brief", Kind: "fixed", Enabled: false, URI: "https://brief.rayer.idv.tw/mcp", Name: "Daily Brief",
+				Scopes:           []config.AuthOAuthScope{{Name: "brief:manage", Description: "Read and manage Daily Brief reports and annotations in your private account space."}},
+				AllowedScopeSets: [][]string{{"brief:manage"}}, DefaultScopeSet: []string{},
+				VerifierAudience: "https://llm-wiki-auth-dev-a5nkmux6pq-de.a.run.app",
+			},
 		},
 	}
 	return projection
@@ -144,6 +159,21 @@ func TestRealPklAuthPrepareProducesLocalFileAndCloudInputStages(t *testing.T) {
 			if projection.Environment != environment || projection.Target != "auth" || !projection.Google.Enabled {
 				t.Fatalf("unexpected Pkl Auth projection identity for %s", environment)
 			}
+			wantAudience := ""
+			if environment == "dev" {
+				wantAudience = "https://llm-wiki-auth-dev-a5nkmux6pq-de.a.run.app"
+			} else if environment == "prod" {
+				wantAudience = ""
+			}
+			if len(projection.OAuthResources) != 2 {
+				t.Fatalf("%s Pkl Auth projection has %d OAuth resources, want 2", environment, len(projection.OAuthResources))
+			}
+			if projection.OAuthResources[1].VerifierAudience != wantAudience {
+				t.Fatalf("%s Pkl Auth projection verifier audience=%q, want %q", environment, projection.OAuthResources[1].VerifierAudience, wantAudience)
+			}
+			if projection.OAuthResources[1].Enabled || projection.OAuthResources[1].VerifierCallerServiceAccount != "" {
+				t.Fatalf("canonical %s Brief policy must remain disabled without a caller", environment)
+			}
 			if err := runPrepareTargetModeAtSource(context.Background(), "auth", environment, output, true, strings.Repeat("c", 40), func(context.Context) (secretReader, error) {
 				return reader, nil
 			}); err != nil {
@@ -160,6 +190,78 @@ func TestRealPklAuthPrepareProducesLocalFileAndCloudInputStages(t *testing.T) {
 			if inputs.SourceSHA != strings.Repeat("c", 40) || !strings.HasSuffix(inputs.JWTSecretVersion, "/versions/7") ||
 				!strings.HasSuffix(inputs.Google.ClientSecretVersion, "/versions/1") {
 				t.Fatal("Stage 1 did not pin selected credential versions and source SHA")
+			}
+			if len(inputs.OAuthResources) != 2 {
+				t.Fatalf("%s Auth Stage 1 has %d OAuth resources, want 2", environment, len(inputs.OAuthResources))
+			}
+			if inputs.OAuthResources[1].VerifierAudience != wantAudience {
+				t.Fatalf("%s Auth Stage 1 verifier audience=%q, want %q", environment, inputs.OAuthResources[1].VerifierAudience, wantAudience)
+			}
+			if inputs.OAuthResources[1].Enabled || inputs.OAuthResources[1].VerifierCallerServiceAccount != "" ||
+				inputs.AuthSessionEnvironment != "llm-wiki-cloud-"+environment {
+				t.Fatalf("canonical %s Auth snapshot activated Brief or changed its session namespace", environment)
+			}
+
+			canonicalRuntimePath := filepath.Join(output, "auth", "canonical-auth.json")
+			if err := materializeAuthSnapshot(context.Background(), inputs, canonicalRuntimePath, func(context.Context) (secretReader, error) {
+				return &fakeAuthReader{data: []byte("SYNTHETIC_AUTH_CREDENTIAL")}, nil
+			}); err != nil {
+				t.Fatalf("materialize canonical %s snapshot: %v", environment, err)
+			}
+			canonicalRuntime, err := config.LoadAuthFile(canonicalRuntimePath)
+			if err != nil {
+				t.Fatalf("load canonical %s runtime config: %v", environment, err)
+			}
+			if canonicalRuntime.AuthEnvironment != environment || len(canonicalRuntime.AuthOAuthResources) != 2 ||
+				canonicalRuntime.AuthOAuthResources[1].VerifierAudience != wantAudience ||
+				canonicalRuntime.AuthOAuthResources[1].Enabled ||
+				canonicalRuntime.AuthOAuthResources[1].VerifierCallerServiceAccount != "" {
+				t.Fatalf("canonical %s runtime verifier policy was not read back exactly", environment)
+			}
+
+			if environment == "prod" {
+				prodAudience := "https://llm-wiki-auth-a5nkmux6pq-de.a.run.app"
+				synthetic := projection
+				synthetic.OAuthResources = append([]config.AuthOAuthResource(nil), projection.OAuthResources...)
+				synthetic.OAuthResources[1].Enabled = true
+				synthetic.OAuthResources[1].VerifierAudience = prodAudience
+				synthetic.OAuthResources[1].VerifierCallerServiceAccount = "brief-runtime-fixture@llm-wiki-cloud.iam.gserviceaccount.com"
+				if err := validateAuthSourceProjection(synthetic, "prod"); err != nil {
+					t.Fatalf("validate explicit production source policy: %v", err)
+				}
+				syntheticInputs, err := prepareAuthInputs(context.Background(), synthetic, strings.Repeat("c", 40), func(context.Context) (secretReader, error) {
+					return &fakeAuthReader{}, nil
+				})
+				if err != nil {
+					t.Fatalf("generate production input snapshot: %v", err)
+				}
+				if syntheticInputs.ConfigID == inputs.ConfigID {
+					t.Fatal("production policy source change did not change config_id")
+				}
+				snapshotBytes, err := json.Marshal(syntheticInputs)
+				if err != nil {
+					t.Fatal(err)
+				}
+				syntheticInputs, err = config.DecodeAuthInputSnapshot(snapshotBytes)
+				if err != nil {
+					t.Fatalf("decode explicit production input snapshot: %v", err)
+				}
+				syntheticRuntimePath := filepath.Join(output, "auth", "synthetic-prod-auth.json")
+				if err := materializeAuthSnapshot(context.Background(), syntheticInputs, syntheticRuntimePath, func(context.Context) (secretReader, error) {
+					return &fakeAuthReader{data: []byte("SYNTHETIC_AUTH_CREDENTIAL")}, nil
+				}); err != nil {
+					t.Fatalf("materialize explicit production snapshot: %v", err)
+				}
+				syntheticRuntime, err := config.LoadAuthFile(syntheticRuntimePath)
+				if err != nil {
+					t.Fatalf("load explicit production runtime config: %v", err)
+				}
+				brief := syntheticRuntime.AuthOAuthResources[1]
+				if syntheticRuntime.AuthEnvironment != "prod" || syntheticRuntime.ConfigID != syntheticInputs.ConfigID ||
+					brief.Enabled != true || brief.VerifierAudience != prodAudience ||
+					brief.VerifierCallerServiceAccount != synthetic.OAuthResources[1].VerifierCallerServiceAccount {
+					t.Fatalf("explicit production verifier input was not read back: %#v", brief)
+				}
 			}
 		})
 	}

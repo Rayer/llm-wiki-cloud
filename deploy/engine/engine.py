@@ -228,7 +228,18 @@ class Engine:
         inputs = self.plan['normalized'].get('auth', {}).get('runtime_inputs')
         if inputs is None:
             return None
-        require(isinstance(inputs, dict) and inputs.get('schema_version') == 1 and
+        schema_version = inputs.get('schema_version') if isinstance(inputs, dict) else None
+        expected_keys = {
+            'schema_version', 'environment', 'target', 'source_sha', 'config_id', 'gcp_project',
+            'firestore_database_id', 'local_cloud_scope', 'auth_service_url', 'sync_service_url',
+            'allowed_hosts', 'allowed_origins', 'auth_session_environment', 'auth_session_migration',
+            'registration_enabled', 'auth_demo_user_id', 'auth_demo_user_email', 'auth_demo_user_role',
+            'jwt_secret_version', 'google', 'config_secret_resource',
+        }
+        if schema_version == 2:
+            expected_keys.add('oauth_resources')
+        require(isinstance(inputs, dict) and type(schema_version) is int and schema_version in (1, 2) and
+                set(inputs) == expected_keys and
                 inputs.get('target') == 'auth' and
                 inputs.get('environment') == {'development': 'dev', 'production': 'prod'}.get(
                     self.plan['normalized'].get('environment')) and

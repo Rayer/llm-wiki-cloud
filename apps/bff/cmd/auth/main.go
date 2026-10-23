@@ -94,13 +94,20 @@ func newProductionRouter(cfg config.Config, localMode bool, fsClient *firestorec
 	r.Use(middleware.SecurityHeaders(true))
 	r.Use(middleware.LatencyMiddleware())
 
-	r.Use(observability.AuthCORSObserver(cors.New(cors.Config{
+	corsHandler := cors.New(cors.Config{
 		AllowOrigins:     cfg.AllowedOriginsFor(localMode),
 		AllowMethods:     []string{http.MethodGet, http.MethodPost, http.MethodDelete, http.MethodOptions},
 		AllowHeaders:     []string{"Content-Type", "Authorization"},
 		ExposeHeaders:    []string{"X-Request-ID"},
 		AllowCredentials: true,
-	})))
+	})
+	r.Use(observability.AuthCORSObserver(func(c *gin.Context) {
+		if c.Request.URL.Path == "/api/v1/auth/consumers/daily-brief/verify-credential" {
+			c.Next()
+			return
+		}
+		corsHandler(c)
+	}))
 
 	authRoutes := r.Group("/api/v1/auth")
 	authRoutes.Use(auth.RequestBodyLimit())

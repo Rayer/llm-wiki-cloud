@@ -52,6 +52,7 @@ type Config struct {
 	// observed by the Auth version endpoint. BFF leaves them zero-valued.
 	ConfigID                    string
 	ConfigSchemaVersion         int
+	AuthEnvironment             string
 	GCPProject                  string
 	Bucket                      string
 	FirestoreDatabaseID         string
@@ -100,6 +101,9 @@ type Config struct {
 	// tokens and protected-resource metadata to a project resource. Empty keeps
 	// older runtime configs loadable while leaving project OAuth unavailable.
 	MCPResourceOrigin string
+	// AuthOAuthResources is the loaded CaC policy used by every Auth OAuth
+	// consumer. BFF-only configs leave it empty.
+	AuthOAuthResources []AuthOAuthResource
 	// SyncServiceURL is the explicitly configured BFF origin returned by Auth's
 	// trusted CLI sync locator; it is never inferred from the Auth hostname.
 	SyncServiceURL                  string

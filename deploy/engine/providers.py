@@ -1262,6 +1262,13 @@ class Providers:
         return False
 
     def auth_runtime_config_matches(self, inputs):
+        expected_schema = inputs.get('schema_version') if isinstance(inputs, dict) else None
+        expected_config_id = inputs.get('config_id') if isinstance(inputs, dict) else None
+        if (type(expected_schema) is not int or expected_schema not in (1, 2) or
+                not isinstance(expected_config_id, str) or
+                re.fullmatch(r'sha256:[0-9a-f]{64}', expected_config_id) is None):
+            raise Breakpoint('auth-runtime-config-identity-invalid', 'failed', False,
+                             'inspect-auth-runtime-inputs')
         url = inputs.get('auth_service_url')
         allowed = inputs.get('allowed_hosts')
         if not isinstance(url, str) or not isinstance(allowed, list):
@@ -1297,8 +1304,9 @@ class Providers:
             result = json.loads(body)
         except (TypeError, ValueError):
             return False
-        return (isinstance(result, dict) and result.get('config_schema_version') == 1 and
-                result.get('config_id') == inputs.get('config_id'))
+        return (isinstance(result, dict) and type(result.get('config_schema_version')) is int and
+                result.get('config_schema_version') == expected_schema and
+                result.get('config_id') == expected_config_id)
 
     def observe(self, c, artifact, candidate, prior=False):
         if c == 'frontend':

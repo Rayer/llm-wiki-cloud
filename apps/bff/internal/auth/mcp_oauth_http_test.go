@@ -12,6 +12,8 @@ import (
 	"unicode/utf8"
 
 	"github.com/gin-gonic/gin"
+	"github.com/rayer/llm-wiki-bff/internal/config"
+	"google.golang.org/api/idtoken"
 )
 
 func TestMCPOAuthMetadataAdvertisesRawWriteScope(t *testing.T) {
@@ -23,6 +25,126 @@ func TestMCPOAuthMetadataAdvertisesRawWriteScope(t *testing.T) {
 	if response.Code != http.StatusOK || !strings.Contains(response.Body.String(), `"mcp:query"`) ||
 		!strings.Contains(response.Body.String(), `"mcp:raw:write"`) {
 		t.Fatalf("OAuth metadata status=%d body=%s", response.Code, response.Body.String())
+	}
+}
+
+func TestMCPOAuthMetadataUsesEnabledLoadedPolicy(t *testing.T) {
+	gin.SetMode(gin.TestMode)
+	resources := config.LegacyAuthOAuthResources("https://bff.example.test")
+	resources = append(resources, config.AuthOAuthResource{ID: "daily-brief", Kind: "fixed", Enabled: false,
+		URI: "https://brief.rayer.idv.tw/mcp", Name: "Daily Brief",
+		Scopes:           []config.AuthOAuthScope{{Name: "brief:manage", Description: "synthetic"}},
+		AllowedScopeSets: [][]string{{"brief:manage"}}, DefaultScopeSet: []string{}})
+	serve := func() string {
+		router := gin.New()
+		router.GET("/metadata", MCPOAuthMetadataHandler("https://auth.example.test", resources))
+		response := httptest.NewRecorder()
+		router.ServeHTTP(response, httptest.NewRequest(http.MethodGet, "/metadata", nil))
+		if response.Code != http.StatusOK {
+			t.Fatalf("metadata status=%d", response.Code)
+		}
+		return response.Body.String()
+	}
+	if body := serve(); !strings.Contains(body, `"mcp:raw:write"`) || strings.Contains(body, `"brief:manage"`) {
+		t.Fatalf("disabled fixed scope appeared in metadata: %s", body)
+	}
+	resources[1].Enabled = true
+	if body := serve(); !strings.Contains(body, `"brief:manage"`) {
+		t.Fatalf("enabled fixed scope missing from metadata: %s", body)
+	}
+}
+
+func TestMCPOAuthGrantListRequiresExactlyOneRecognizedFilter(t *testing.T) {
+	gin.SetMode(gin.TestMode)
+	router := gin.New()
+	router.GET("/grants", MCPOAuthGrantsHandler(nil))
+	for _, path := range []string{
+		"/grants", "/grants?project_id=project-a&resource=https%3A%2F%2Fbrief.rayer.idv.tw%2Fmcp",
+		"/grants?project_id=project-a&project_id=project-b", "/grants?resource=", "/grants?resource=https%3A%2F%2Fbrief.rayer.idv.tw%2Fmcp&user_id=other",
+	} {
+		response := httptest.NewRecorder()
+		router.ServeHTTP(response, httptest.NewRequest(http.MethodGet, path, nil))
+		if response.Code != http.StatusBadRequest {
+			t.Errorf("GET %s status=%d body=%s", path, response.Code, response.Body.String())
+		}
+	}
+}
+
+func TestDailyBriefCredentialVerifierFailsClosedAndRequiresVerifiedCaller(t *testing.T) {
+	gin.SetMode(gin.TestMode)
+	const audience = "https://auth.fixture.example.test"
+	policy := config.AuthOAuthResource{
+		ID: "daily-brief", Kind: "fixed", Enabled: true, URI: "https://brief.rayer.idv.tw/mcp", Name: "Daily Brief",
+		VerifierCallerServiceAccount: "brief-runtime@llm-wiki-cloud.iam.gserviceaccount.com", VerifierAudience: audience,
+	}
+	cfg := config.Config{AuthOAuthResources: []config.AuthOAuthResource{policy}}
+	service := &MCPOAuthService{wireEnvironment: "dev"}
+	validated := 0
+	validator := func(_ context.Context, token, gotAudience string) (*idtoken.Payload, error) {
+		validated++
+		if gotAudience != audience {
+			return nil, ErrMCPOAuthInvalid
+		}
+		payload := &idtoken.Payload{
+			Issuer: "https://accounts.google.com", Audience: audience, Expires: time.Now().Add(time.Minute).Unix(),
+			Claims: map[string]interface{}{"email": policy.VerifierCallerServiceAccount, "email_verified": true},
+		}
+		switch token {
+		case "wrong-issuer":
+			payload.Issuer = "https://issuer.example.test"
+		case "wrong-audience":
+			payload.Audience = "https://wrong.example.test"
+		case "legacy-dev-audience":
+			payload.Audience = "https://llm-wiki-auth-dev-a5nkmux6pq-de.a.run.app"
+		case "expired-caller":
+			payload.Expires = time.Now().Add(-time.Minute).Unix()
+		case "unverified-email":
+			payload.Claims["email_verified"] = false
+		case "wrong-email":
+			payload.Claims["email"] = "another-runtime@llm-wiki-cloud.iam.gserviceaccount.com"
+		case "google-id-token":
+		default:
+			return nil, ErrMCPOAuthInvalid
+		}
+		return payload, nil
+	}
+	validCredential, err := generateMCPOpaque(mcpOAuthAccessPrefix)
+	if err != nil {
+		t.Fatal(err)
+	}
+	router := gin.New()
+	router.POST("/verify", MCPOAuthCredentialVerifierHandlerWithValidator(service, cfg, validator))
+	serve := func(userCredential, classHeader, callerToken string) *httptest.ResponseRecorder {
+		request := httptest.NewRequest(http.MethodPost, "/verify", nil)
+		request.Header.Set("Authorization", "Bearer "+callerToken)
+		if userCredential != "" {
+			request.Header.Set("X-LWC-User-Credential", userCredential)
+		}
+		if classHeader != "" {
+			request.Header.Set("X-LWC-Credential-Class", classHeader)
+		}
+		response := httptest.NewRecorder()
+		router.ServeHTTP(response, request)
+		return response
+	}
+	before := validated
+	missing := serve("", "", "google-id-token")
+	if missing.Code != http.StatusBadRequest || validated != before || missing.Header().Get("Cache-Control") != "no-store" {
+		t.Fatalf("missing user token status=%d validator delta=%d cache=%q", missing.Code, validated-before, missing.Header().Get("Cache-Control"))
+	}
+	class := serve(validCredential, "mcp-bearer", "google-id-token")
+	if class.Code != http.StatusBadRequest || validated != before {
+		t.Fatalf("caller-supplied class status=%d validator delta=%d", class.Code, validated-before)
+	}
+	valid := serve(validCredential, "", "google-id-token")
+	if valid.Code != http.StatusUnauthorized || validated != before+1 || strings.Contains(valid.Body.String(), validCredential) {
+		t.Fatalf("synthetic user token should reach Auth validation then fail closed: status=%d calls=%d body=%s", valid.Code, validated-before, valid.Body.String())
+	}
+	for _, invalid := range []string{"wrong-issuer", "wrong-audience", "legacy-dev-audience", "expired-caller", "unverified-email", "wrong-email"} {
+		response := serve(validCredential, "", invalid)
+		if response.Code != http.StatusForbidden || !strings.Contains(response.Body.String(), "untrusted_caller") {
+			t.Errorf("caller %q status=%d body=%s", invalid, response.Code, response.Body.String())
+		}
 	}
 }
 

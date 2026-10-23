@@ -110,6 +110,137 @@ func TestDecodeAuthFileStrictSchemaAndGoogleModes(t *testing.T) {
 	}
 }
 
+func TestSchema2AuthFileUsesStrictOAuthRegistryAndPreservesSchema1Defaults(t *testing.T) {
+	file := validAuthFileForTest()
+	file.SchemaVersion = 2
+	file.OAuthResources = authOAuthResourcesForTest(file.SyncServiceURL)
+	data, err := json.Marshal(file)
+	if err != nil {
+		t.Fatal(err)
+	}
+	decoded, err := DecodeAuthFile(data)
+	if err != nil {
+		t.Fatalf("DecodeAuthFile(schema 2): %v", err)
+	}
+	if len(decoded.OAuthResources) != 2 || decoded.OAuthResources[1].Enabled {
+		t.Fatalf("schema-2 resources = %#v", decoded.OAuthResources)
+	}
+	loaded, err := LoadAuthFile(writeAuthFileForTest(t, file))
+	if err != nil {
+		t.Fatalf("LoadAuthFile(schema 2): %v", err)
+	}
+	if loaded.AuthEnvironment != "dev" || len(loaded.AuthOAuthResources) != 2 {
+		t.Fatalf("runtime policy/environment = %d resources, %q", len(loaded.AuthOAuthResources), loaded.AuthEnvironment)
+	}
+	legacy, err := LoadAuthFile(writeAuthFileForTest(t, validAuthFileForTest()))
+	if err != nil {
+		t.Fatalf("LoadAuthFile(schema 1): %v", err)
+	}
+	if len(legacy.AuthOAuthResources) != 1 || legacy.AuthOAuthResources[0].ID != "lwc-project" ||
+		len(legacy.AuthOAuthResources[0].DefaultScopeSet) != 1 || legacy.AuthOAuthResources[0].DefaultScopeSet[0] != "mcp:query" {
+		t.Fatalf("schema-1 compatibility policy = %#v", legacy.AuthOAuthResources)
+	}
+
+	for name, mutate := range map[string]func(*AuthFile){
+		"missing registry":       func(v *AuthFile) { v.OAuthResources = nil },
+		"duplicate scope":        func(v *AuthFile) { v.OAuthResources[1].Scopes[0].Name = "mcp:query" },
+		"invalid default":        func(v *AuthFile) { v.OAuthResources[1].DefaultScopeSet = []string{"mcp:query"} },
+		"enabled without caller": func(v *AuthFile) { v.OAuthResources[1].Enabled = true },
+		"wrong audience":         func(v *AuthFile) { v.OAuthResources[1].VerifierAudience = "https://wrong.example.test" },
+	} {
+		t.Run(name, func(t *testing.T) {
+			bad := file
+			bad.OAuthResources = authOAuthResourcesForTest(bad.SyncServiceURL)
+			mutate(&bad)
+			encoded, marshalErr := json.Marshal(bad)
+			if marshalErr != nil {
+				t.Fatal(marshalErr)
+			}
+			if _, decodeErr := DecodeAuthFile(encoded); decodeErr == nil {
+				t.Fatal("DecodeAuthFile accepted invalid OAuth registry")
+			}
+		})
+	}
+	unknown := strings.Replace(string(data), `"id":"daily-brief"`, `"id":"daily-brief","unknown":true`, 1)
+	if _, err := DecodeAuthFile([]byte(unknown)); err == nil {
+		t.Fatal("DecodeAuthFile accepted unknown nested OAuth registry field")
+	}
+}
+
+func TestAuthVerifierAudienceUsesSelectedEnvironmentPolicy(t *testing.T) {
+	local := localAuthFileForTest()
+	local.SchemaVersion = 2
+	local.AuthSessionEnvironment = "llm-wiki-cloud-local"
+	local.OAuthResources = authOAuthResourcesForTest(local.SyncServiceURL)
+	local.OAuthResources[1].Enabled = true
+	local.OAuthResources[1].VerifierCallerServiceAccount = "fixture-runtime@llm-wiki-cloud.iam.gserviceaccount.com"
+	local.OAuthResources[1].VerifierAudience = "https://auth.fixture.example.test"
+	encoded, err := json.Marshal(local)
+	if err != nil {
+		t.Fatal(err)
+	}
+	loaded, err := DecodeAuthFile(encoded)
+	if err != nil || loaded.OAuthResources[1].VerifierAudience != local.OAuthResources[1].VerifierAudience {
+		t.Fatalf("local configured verifier audience=%q err=%v", loaded.OAuthResources[1].VerifierAudience, err)
+	}
+
+	badLocal := local
+	badLocal.OAuthResources = append([]AuthOAuthResource(nil), local.OAuthResources...)
+	badLocal.OAuthResources[1].VerifierAudience += "/path"
+	encoded, _ = json.Marshal(badLocal)
+	if _, err := DecodeAuthFile(encoded); err == nil {
+		t.Fatal("local verifier audience accepted a non-origin URL")
+	}
+
+	prod := validAuthFileForTest()
+	prod.SchemaVersion = 2
+	prod.Environment = "prod"
+	prod.FirestoreDatabaseID = "llm-wiki-cloud-prod"
+	prod.AuthSessionEnvironment = "llm-wiki-cloud-prod"
+	prod.OAuthResources = authOAuthResourcesForTest(prod.SyncServiceURL)
+	prod.OAuthResources[1].VerifierAudience = ""
+	encoded, _ = json.Marshal(prod)
+	if _, err := DecodeAuthFile(encoded); err != nil {
+		t.Fatalf("disabled production Brief policy without an unapproved audience: %v", err)
+	}
+	prod.OAuthResources[1].Enabled = true
+	prod.OAuthResources[1].VerifierAudience = authDailyBriefProdVerifierAudience
+	prod.OAuthResources[1].VerifierCallerServiceAccount = "brief-runtime@llm-wiki-cloud.iam.gserviceaccount.com"
+	encoded, _ = json.Marshal(prod)
+	loadedProd, err := DecodeAuthFile(encoded)
+	if err != nil {
+		t.Fatalf("explicit production Brief verifier policy: %v", err)
+	}
+	if loadedProd.OAuthResources[1].VerifierAudience != authDailyBriefProdVerifierAudience ||
+		loadedProd.OAuthResources[1].VerifierCallerServiceAccount != prod.OAuthResources[1].VerifierCallerServiceAccount {
+		t.Fatalf("production verifier binding was not preserved: %#v", loadedProd.OAuthResources[1])
+	}
+	prod.OAuthResources[1].VerifierCallerServiceAccount = ""
+	encoded, _ = json.Marshal(prod)
+	if _, err := DecodeAuthFile(encoded); err == nil {
+		t.Fatal("enabled production verifier policy accepted an empty caller")
+	}
+	prod.OAuthResources[1].VerifierCallerServiceAccount = "brief-runtime@llm-wiki-cloud.iam.gserviceaccount.com"
+	prod.OAuthResources[1].VerifierAudience = authDailyBriefDevVerifierAudience
+	encoded, _ = json.Marshal(prod)
+	if _, err := DecodeAuthFile(encoded); err == nil {
+		t.Fatal("production verifier policy accepted the DEV audience")
+	}
+	prod.OAuthResources[1].VerifierAudience = "https://wrong.example.test"
+	encoded, _ = json.Marshal(prod)
+	if _, err := DecodeAuthFile(encoded); err == nil {
+		t.Fatal("production verifier policy accepted an unbound audience")
+	}
+	prod.Environment = "dev"
+	prod.FirestoreDatabaseID = "llm-wiki-cloud-dev"
+	prod.AuthSessionEnvironment = "llm-wiki-cloud-dev"
+	prod.OAuthResources[1].VerifierAudience = authDailyBriefProdVerifierAudience
+	encoded, _ = json.Marshal(prod)
+	if _, err := DecodeAuthFile(encoded); err == nil {
+		t.Fatal("DEV verifier policy accepted the production audience")
+	}
+}
+
 func TestLoadAuthFileUsesFileAuthorityAndPORTException(t *testing.T) {
 	file := validAuthFileForTest()
 	file.LocalCloudScope = ""
