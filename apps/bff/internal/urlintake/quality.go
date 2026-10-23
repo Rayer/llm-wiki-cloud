@@ -1,5 +1,7 @@
 package urlintake
 
+import "math"
+
 type QualityStatus string
 
 const (
@@ -26,4 +28,13 @@ func DecideQuality(evaluation QualityEvaluation, thresholds QualityThresholds) Q
 		return QualityUsable
 	}
 	return QualityNeedsConfirmation
+}
+
+func validQualityEvaluation(evaluation QualityEvaluation) bool {
+	for _, probability := range []float64{evaluation.ShellProbability, evaluation.ContentProbability} {
+		if math.IsNaN(probability) || math.IsInf(probability, 0) || probability < 0 || probability > 1 {
+			return false
+		}
+	}
+	return true
 }

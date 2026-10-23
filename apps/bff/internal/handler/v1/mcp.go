@@ -119,6 +119,13 @@ func (h *Handler) mcpSDKHandler(capabilities []string) http.Handler {
 			Annotations: &mcp.ToolAnnotations{ReadOnlyHint: false, DestructiveHint: boolHint(false), IdempotentHint: true, OpenWorldHint: boolHint(false)},
 			InputSchema: addRawInputSchema, OutputSchema: addRawOutputSchema,
 		}, h.callMCPAddRaw)
+		mcp.AddTool[importURLInput, any](server, &mcp.Tool{
+			Name:        "import_url",
+			Title:       "Import a usable URL into this Project",
+			Description: mcpImportURLToolDescription,
+			Annotations: &mcp.ToolAnnotations{ReadOnlyHint: false, DestructiveHint: boolHint(false), IdempotentHint: true, OpenWorldHint: boolHint(true)},
+			InputSchema: importURLInputSchema, OutputSchema: importURLOutputSchema,
+		}, h.callMCPImportURL)
 	}
 
 	transport := mcp.NewStreamableHTTPHandler(func(*http.Request) *mcp.Server {

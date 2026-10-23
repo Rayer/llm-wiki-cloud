@@ -18,6 +18,7 @@ import (
 	"github.com/rayer/llm-wiki-bff/internal/query"
 	"github.com/rayer/llm-wiki-bff/internal/search"
 	store "github.com/rayer/llm-wiki-bff/internal/storage"
+	"github.com/rayer/llm-wiki-bff/internal/urlintake"
 	"github.com/rayer/llm-wiki-bff/internal/wikiindex"
 )
 
@@ -29,6 +30,8 @@ type Handler struct {
 	syncBindingAuthority syncBindingChecker
 	syncBindingHost      string
 	projectKeyService    *auth.ProjectKeyService
+	urlIntake            *urlintake.Service
+	mcpFrontendOrigin    string
 	store                store.RootStore
 	firestore            *firestore.Client
 	index                *search.Index
@@ -130,6 +133,14 @@ func (h *Handler) ProjectKeyManagementAuth(cfg config.Config) gin.HandlerFunc {
 
 func (h *Handler) SetQueryExecutor(executor query.Executor) {
 	h.queryExecutor = executor
+}
+
+func (h *Handler) SetURLIntakeService(service *urlintake.Service) {
+	h.urlIntake = service
+}
+
+func (h *Handler) SetMCPFrontendOrigin(origin string) {
+	h.mcpFrontendOrigin = trustedFrontendOrigin(origin)
 }
 
 func (h *Handler) SetLocalPipelineExecutor(executor LocalPipelineExecutor) {

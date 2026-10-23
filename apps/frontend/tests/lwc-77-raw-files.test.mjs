@@ -41,8 +41,8 @@ test('raw client renders metadata table with inline preview entrypoints', async 
   assert.match(client, /<th[^>]*>\s*Ingested\s*<\/th>/s);
   assert.match(client, /variant=\{file\.ingested \? 'published' : 'muted'\}/);
   assert.match(client, /openRawPreview/);
-  assert.match(client, /<MarkdownView content=\{preview\.content\}/);
-  assert.match(client, /<iframe[\s\S]*?srcDoc=\{sanitizeRawHtml\(preview\.content\)\}/);
+  assert.match(client, /<MarkdownView content=\{scopedPreview\.content\}/);
+  assert.match(client, /<iframe[\s\S]*?srcDoc=\{sanitizeRawHtml\(scopedPreview\.content\)\}/);
   assert.match(client, /function sanitizeRawHtml\(html: string\)/);
   assert.ok(
     client.includes("return html.replace(/<script\\b[\\s\\S]*?<\\/script>/gi, '');"),
@@ -59,13 +59,16 @@ test('raw client fences and reloads files when project or session identity chang
   );
 
   assert.match(client, /import \{ useWorkspace \} from '\.\/WorkspaceProvider';/);
-  assert.match(client, /const \{\s*currentProject\s*,\s*token\s*\} = useWorkspace\(\);/s);
+  assert.match(client, /const \{\s*currentProject\s*,\s*projects\s*,\s*token\s*\} = useWorkspace\(\);/s);
   assert.match(client, /const currentProjectId = currentProject\?\.id;/);
   assert.match(client, /const refreshRawFiles = useCallback\(async \(\) =>/);
-  assert.match(client, /getRawFiles\(currentProjectId\)/);
-  assert.match(client, /getRawFilePreview\(file\.name, currentProjectId\)/);
+  assert.match(client, /getRawFiles\(rawProjectId\)/);
+  assert.match(client, /getRawFilePreview\(file\.name, rawProjectId\)/);
   assert.match(
     client,
-    /useEffect\(\(\) => \{[\s\S]*?refreshRawFiles\(\)[\s\S]*?listRequestRef\.current \+= 1;[\s\S]*?\}, \[currentProjectId, refreshRawFiles, token\]\);/,
+    /useEffect\(\(\) => \{[\s\S]*?refreshRawFiles\(\)[\s\S]*?listRequestRef\.current \+= 1;[\s\S]*?\}, \[rawProjectId, refreshRawFiles, token\]\);/,
   );
+  assert.match(client, /previousViewKeyRef\.current === rawViewKey/);
+  assert.match(client, /filesScopeKey === rawScopeKey \? files : EMPTY_RAW_FILES/);
+  assert.match(client, /Raw\.linkedProject/);
 });

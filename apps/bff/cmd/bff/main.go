@@ -199,6 +199,7 @@ func main() {
 		}
 		return gcsClient.WithScope(scope.ActorID, scope.ProjectID), nil
 	})
+	hV1.SetURLIntakeService(intakeService)
 	rawFactory := func(scopedClient *gcs.Client, fsClient *firestore.Client) rawScrapeHandler {
 		return handlerraw.NewWithURLIntake(scopedClient, fsClient, intakeService)
 	}
@@ -408,6 +409,9 @@ func newProductionRouter(
 
 	// CORS — must be BEFORE routes
 	allowOrigins := cfg.AllowedOriginsFor(localMode)
+	if hV1 != nil && len(allowOrigins) > 0 {
+		hV1.SetMCPFrontendOrigin(allowOrigins[0])
+	}
 	r.Use(observability.AuthCORSObserver(cors.New(cors.Config{
 		AllowOrigins:     allowOrigins,
 		AllowMethods:     []string{"GET", "POST", "PUT", "PATCH", "DELETE", "OPTIONS"},
