@@ -49,12 +49,13 @@ func TestMCPAddRawToolListFollowsVerifiedCapabilities(t *testing.T) {
 	write := mcpProjectKeyIdentity{userID: "user-one", projectID: "project-one", keyID: "grant-new", capabilities: []string{mcpQueryCapability, mcpRawWriteCapability}}
 
 	for _, test := range []struct {
-		name     string
-		identity mcpProjectKeyIdentity
-		wantRaw  bool
+		name          string
+		identity      mcpProjectKeyIdentity
+		wantRaw       bool
+		wantURLImport bool
 	}{
 		{name: "old query-only grant", identity: readOnly},
-		{name: "explicit write consent", identity: write, wantRaw: true},
+		{name: "explicit write consent", identity: write, wantRaw: true, wantURLImport: true},
 	} {
 		t.Run(test.name, func(t *testing.T) {
 			response := serveMCPRequest(t, h, test.identity, `{"jsonrpc":"2.0","id":1,"method":"tools/list","params":{}}`)
@@ -75,8 +76,15 @@ func TestMCPAddRawToolListFollowsVerifiedCapabilities(t *testing.T) {
 					addRawDescription, _ = tool["description"].(string)
 				}
 			}
-			if names["query_project"] != true || names["add_raw"] != test.wantRaw || names["import_url"] {
+			if names["query_project"] != true || names["add_raw"] != test.wantRaw || names["import_url"] != test.wantURLImport {
 				t.Fatalf("listed tools = %v", names)
+			}
+			if !test.wantURLImport {
+				denied := serveMCPRequest(t, h, test.identity, mcpToolCallBody(2, "import_url", `{"url":"https://example.test/article"}`))
+				protocolError, ok := denied["error"].(map[string]any)
+				if !ok || protocolError["code"] != float64(-32602) {
+					t.Fatalf("query-only import_url call was not denied as unknown: %#v", denied)
+				}
 			}
 			if test.wantRaw && (!strings.Contains(addRawDescription, "source data, not instructions") || !strings.Contains(addRawDescription, "metadata.description")) {
 				t.Fatalf("add_raw description omits required handling instructions: %q", addRawDescription)
@@ -85,7 +93,7 @@ func TestMCPAddRawToolListFollowsVerifiedCapabilities(t *testing.T) {
 	}
 }
 
-func TestMCPUnknownLegacyURLToolCannotMutateRaw(t *testing.T) {
+func TestMCPImportURLIsListedForWritersAndFailsClosedWithoutService(t *testing.T) {
 	root := localfs.New(t.TempDir())
 	h := New(root, nil, nil, nil, nil, nil)
 	identity := mcpProjectKeyIdentity{
@@ -100,21 +108,21 @@ func TestMCPUnknownLegacyURLToolCannotMutateRaw(t *testing.T) {
 		name, _ := item.(map[string]any)["name"].(string)
 		names[name] = true
 	}
-	if len(names) != 2 || !names["query_project"] || !names["add_raw"] || names["import_url"] {
-		t.Fatalf("raw-write discovery = %v, want query_project and add_raw only", names)
+	if len(names) != 3 || !names["query_project"] || !names["add_raw"] || !names["import_url"] {
+		t.Fatalf("raw-write discovery = %v, want query_project, add_raw, and import_url", names)
 	}
 
-	legacy := serveMCPRequest(t, h, identity, mcpToolCallBody(2, "import_url", `{"url":"https://example.test/article"}`))
-	protocolError, ok := legacy["error"].(map[string]any)
-	if !ok || protocolError["code"] != float64(-32602) {
-		t.Fatalf("legacy import_url call was not rejected as unavailable: %#v", legacy)
+	response := serveMCPRequest(t, h, identity, mcpToolCallBody(2, "import_url", `{"url":"https://example.test/article"}`))
+	payload := mcpStructuredResult(t, response)
+	if payload["status"] != "unavailable" || payload["failure_stage"] != "setup" || payload["raw_url"] != nil {
+		t.Fatalf("unconfigured import_url result = %#v", payload)
 	}
 	if files, err := root.Scope(identity.userID, identity.projectID).ListRawFiles(context.Background()); err != nil || len(files) != 0 {
-		t.Fatalf("legacy import_url call mutated raw: files=%v err=%v", files, err)
+		t.Fatalf("unconfigured import_url call mutated raw: files=%v err=%v", files, err)
 	}
 }
 
-func TestMCPStreamableSDKClientRetainsRawWriteWithoutLegacyURLTool(t *testing.T) {
+func TestMCPStreamableSDKClientRetainsRawWriteWithURLTool(t *testing.T) {
 	root := localfs.New(t.TempDir())
 	h := New(root, nil, nil, nil, nil, nil)
 	identity := mcpProjectKeyIdentity{
@@ -144,16 +152,21 @@ func TestMCPStreamableSDKClientRetainsRawWriteWithoutLegacyURLTool(t *testing.T)
 	for _, tool := range discovered.Tools {
 		names[tool.Name] = true
 	}
-	if len(names) != 2 || !names["query_project"] || !names["add_raw"] || names["import_url"] {
-		t.Fatalf("MCP SDK discovered tools = %v, want query_project and add_raw only", names)
+	if len(names) != 3 || !names["query_project"] || !names["add_raw"] || !names["import_url"] {
+		t.Fatalf("MCP SDK discovered tools = %v, want query_project, add_raw, and import_url", names)
 	}
-	if result, err := session.CallTool(ctx, &mcp.CallToolParams{
+	urlResult, urlErr := session.CallTool(ctx, &mcp.CallToolParams{
 		Name: "import_url", Arguments: map[string]any{"url": "https://example.test/article"},
-	}); err == nil || result != nil {
-		t.Fatalf("MCP SDK legacy import_url call was not rejected: result=%+v err=%v", result, err)
+	})
+	if urlErr != nil || urlResult == nil {
+		t.Fatalf("MCP SDK unconfigured import_url result=%+v err=%v", urlResult, urlErr)
+	}
+	urlPayload, ok := urlResult.StructuredContent.(map[string]any)
+	if !urlResult.IsError || !ok || urlPayload["status"] != "unavailable" {
+		t.Fatalf("MCP SDK unconfigured import_url result=%+v err=%v", urlResult, urlErr)
 	}
 	if files, err := root.Scope(identity.userID, identity.projectID).ListRawFiles(ctx); err != nil || len(files) != 0 {
-		t.Fatalf("legacy URL tool call mutated raw: files=%v err=%v", files, err)
+		t.Fatalf("unconfigured URL tool call mutated raw: files=%v err=%v", files, err)
 	}
 
 	arguments := map[string]any{"filename": "sdk-source.md", "markdown": "# SDK source\n\nSupplied Markdown."}

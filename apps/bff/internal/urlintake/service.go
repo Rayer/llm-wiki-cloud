@@ -181,15 +181,21 @@ func NewService(fetcher Fetcher, evaluator QualityEvaluator, stores StoreFactory
 // Import must receive identity and Project resolved by the Web/CLI/MCP auth
 // adapter. The model-facing request contains only URL and optional source tags.
 func (s *Service) Import(ctx context.Context, verified ActorProject, request ImportRequest) (Result, error) {
-	return s.intake(ctx, verified, request, false)
+	return s.intake(ctx, verified, request, false, false)
+}
+
+// ImportStrict commits only when extraction quality is available and clearly usable.
+// Unlike Import, it never creates a confirmation candidate or falls back to unchecked import.
+func (s *Service) ImportStrict(ctx context.Context, verified ActorProject, request ImportRequest) (Result, error) {
+	return s.intake(ctx, verified, request, false, true)
 }
 
 // Prepare creates a durable, project-scoped URL candidate without modifying raw/.
 func (s *Service) Prepare(ctx context.Context, verified ActorProject, request ImportRequest) (Result, error) {
-	return s.intake(ctx, verified, request, true)
+	return s.intake(ctx, verified, request, true, false)
 }
 
-func (s *Service) intake(ctx context.Context, verified ActorProject, request ImportRequest, prepare bool) (Result, error) {
+func (s *Service) intake(ctx context.Context, verified ActorProject, request ImportRequest, prepare, strict bool) (Result, error) {
 	if s == nil {
 		recordIntakeEvent(ctx, "setup", "configuration", "failure")
 		return Result{Status: "unavailable", Message: "URL intake is not configured.", FailureStage: "setup"}, nil
@@ -198,11 +204,11 @@ func (s *Service) intake(ctx context.Context, verified ActorProject, request Imp
 		return Result{}, ErrInvalidScope
 	}
 	if len(request.Tags) > 64 {
-		return Result{Status: "rejected", Message: "Too many source tags were supplied."}, nil
+		return Result{Status: "rejected", Message: "Too many source tags were supplied.", FailureStage: "validation"}, nil
 	}
 	for _, tag := range request.Tags {
 		if utf8.RuneCountInString(tag) > 128 {
-			return Result{Status: "rejected", Message: "A source tag is too long."}, nil
+			return Result{Status: "rejected", Message: "A source tag is too long.", FailureStage: "validation"}, nil
 		}
 	}
 	if s.Stores == nil || s.Fetcher == nil {
@@ -219,10 +225,10 @@ func (s *Service) intake(ctx context.Context, verified ActorProject, request Imp
 	}
 	normalizedURL, err := NormalizeURL(validatedURL)
 	if err != nil {
-		return Result{Status: "rejected", Message: "The URL could not be normalized safely."}, nil
+		return Result{Status: "rejected", Message: "The URL could not be normalized safely.", FailureStage: "validation"}, nil
 	}
 	if err := validateTags(request.Tags); err != nil {
-		return Result{Status: "rejected", Message: err.Error()}, nil
+		return Result{Status: "rejected", Message: err.Error(), FailureStage: "validation"}, nil
 	}
 	store, err := s.Stores(verified)
 	if err != nil || store == nil {
@@ -244,19 +250,28 @@ func (s *Service) intake(ctx context.Context, verified ActorProject, request Imp
 		return Result{Status: "rejected", Message: "Fetch completed without usable article content; nothing was saved.", FailureStage: "fetch"}, nil
 	}
 	title := usableTitle(page.Title, page.Markdown, validatedURL)
+	preview := CandidatePreview{
+		Title: title, SourceURL: request.URL,
+		Provider: DeepSeekFetchProvider, ProviderTruncated: page.Truncated,
+	}
+	if strict && page.Truncated != nil && *page.Truncated {
+		preview.QualityStatus = "rejected"
+		preview.Reason = "The Fetch provider marked this extraction as truncated; the URL was not imported."
+		return Result{Status: "rejected", Message: preview.Reason, FailureStage: "quality", Preview: &preview}, nil
+	}
 	identityDigest := digestString([]byte(normalizedURL))
 	target, err := resolveTarget(ctx, store, normalizedURL, identityDigest, title)
 	if err != nil {
 		if errors.Is(err, ErrURLConflict) || errors.Is(err, rawintake.ErrConflict) {
-			return Result{Status: "conflict", Message: "More than one existing raw file matches this URL; no file was changed."}, nil
+			return Result{Status: "conflict", Message: "More than one existing raw file matches this URL; no file was changed.", FailureStage: "storage"}, nil
 		}
 		recordIntakeEvent(ctx, "storage", "storage", "failure")
-		return Result{Status: "unavailable", Message: "Could not read Project raw content to prepare the candidate; no file was changed.", FailureStage: "storage"}, nil
+		return Result{Status: "unavailable", Message: "Could not read Project raw content to prepare the import; no file was changed.", FailureStage: "storage"}, nil
 	}
 	metadata := SourceMetadata{Title: title, SourceURL: request.URL, Tags: request.Tags}
 	data, _, err := MergeRawMarkdown(target.data, metadata, page.Markdown, s.now())
 	if err != nil {
-		return Result{Status: "conflict", Message: "The existing raw metadata could not be refreshed safely; no file was changed."}, nil
+		return Result{Status: "conflict", Message: "The existing raw metadata could not be refreshed safely; no file was changed.", FailureStage: "storage"}, nil
 	}
 	if len(data) > MaxCandidateBytes {
 		return Result{Status: "rejected", Message: "The merged raw content exceeds the supported size; no file was changed."}, nil
@@ -267,11 +282,9 @@ func (s *Service) intake(ctx context.Context, verified ActorProject, request Imp
 	if prepare {
 		previewMarkdown = string(previewBody)
 	}
-	preview := CandidatePreview{
-		Title: title, SourceURL: request.URL, Markdown: previewMarkdown,
-		Metadata: previewMetadata(data), CandidateSHA256: digest,
-		Provider: DeepSeekFetchProvider, ProviderTruncated: page.Truncated,
-	}
+	preview.Markdown = previewMarkdown
+	preview.Metadata = previewMetadata(data)
+	preview.CandidateSHA256 = digest
 	providerMetadata := map[string]any{}
 	if page.Truncated != nil {
 		providerMetadata["truncated"] = *page.Truncated
@@ -285,6 +298,7 @@ func (s *Service) intake(ctx context.Context, verified ActorProject, request Imp
 		evaluation, qualityErr = s.Evaluator.Evaluate(ctx, QualityInput{
 			URL: request.URL, Title: title, Markdown: page.Markdown,
 			Provider: DeepSeekFetchProvider, ProviderMetadata: providerMetadata,
+			RequireTitleBodyConsistency: strict,
 		})
 		if qualityErr != nil {
 			qualityClass = qualityFailureClass(ctx, qualityErr)
@@ -292,6 +306,9 @@ func (s *Service) intake(ctx context.Context, verified ActorProject, request Imp
 	}
 	if qualityClass != "" {
 		recordIntakeEvent(ctx, "quality", qualityClass, "failure")
+		if strict {
+			return Result{Status: "unavailable", Message: "The extraction quality check is unavailable, so the URL was not imported. Retry when the quality service is available.", FailureStage: "quality", Preview: &preview}, nil
+		}
 		recordIntakeEvent(ctx, "quality", qualityClass, "fallback")
 		preview.QualityChecked = false
 		preview.QualityStatus = "not_checked"
@@ -314,11 +331,18 @@ func (s *Service) intake(ctx context.Context, verified ActorProject, request Imp
 			ExpiresAt: expiresAt.Format(time.RFC3339), Preview: &preview,
 		}, nil
 	}
+	if strict && !validQualityEvaluation(evaluation) {
+		recordIntakeEvent(ctx, "quality", "invalid_response", "failure")
+		return Result{Status: "unavailable", Message: "The extraction quality check returned an invalid result, so the URL was not imported. Retry after checking the quality service.", FailureStage: "quality", Preview: &preview}, nil
+	}
 	preview.QualityChecked = true
 	quality := DecideQuality(evaluation, s.Thresholds)
 	if quality == QualityRejected {
 		preview.QualityStatus = "rejected"
 		preview.Reason = "The page appears to be a blocking, error, or loading shell without readable main content."
+		if strict {
+			preview.Reason += " The URL was not imported."
+		}
 		return Result{Status: "rejected", Message: preview.Reason, FailureStage: "quality", Preview: &preview}, nil
 	}
 	needsConfirmation := quality == QualityNeedsConfirmation
@@ -332,6 +356,10 @@ func (s *Service) intake(ctx context.Context, verified ActorProject, request Imp
 	}
 	if needsConfirmation {
 		preview.Reason = "The page could not be classified as clearly substantive and complete."
+		if strict {
+			preview.Reason += " The URL was not imported."
+			return Result{Status: "rejected", Message: preview.Reason, FailureStage: "quality", Preview: &preview}, nil
+		}
 	}
 	if prepare {
 		ref, expiresAt, err := s.saveCandidate(ctx, store, verified, &candidate{

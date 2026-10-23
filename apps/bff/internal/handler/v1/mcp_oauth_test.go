@@ -233,32 +233,32 @@ func TestMCPProjectOAuthRejectsConflictingProjectHeaderBeforeSDK(t *testing.T) {
 	for _, item := range writerTools {
 		writerNames[item.(map[string]any)["name"].(string)] = true
 	}
-	if len(writerNames) != 2 || !writerNames["query_project"] || !writerNames["add_raw"] || writerNames["import_url"] {
-		t.Fatalf("OAuth raw-write discovery = %v, want query_project and add_raw only", writerNames)
+	if len(writerNames) != 3 || !writerNames["query_project"] || !writerNames["add_raw"] || !writerNames["import_url"] {
+		t.Fatalf("OAuth raw-write discovery = %v, want query_project, add_raw, and import_url", writerNames)
 	}
 
-	legacyRequest := httptest.NewRequest(http.MethodPost, "/mcp/projects/"+projectID,
+	urlImportRequest := httptest.NewRequest(http.MethodPost, "/mcp/projects/"+projectID,
 		strings.NewReader(mcpToolCallBody(26, "import_url", `{"url":"https://example.test/oauth-article"}`)))
-	legacyRequest.Header.Set("Authorization", "Bearer "+tokens.AccessToken)
-	legacyRequest.Header.Set("Content-Type", "application/json")
-	legacyRequest.Header.Add("Accept", "application/json")
-	legacyRequest.Header.Add("Accept", "text/event-stream")
-	legacyRequest.Header.Set("MCP-Protocol-Version", "2025-11-25")
-	legacyResponse := httptest.NewRecorder()
-	router.ServeHTTP(legacyResponse, legacyRequest)
-	var legacyWire map[string]any
-	if legacyResponse.Code != http.StatusOK || json.Unmarshal(legacyResponse.Body.Bytes(), &legacyWire) != nil {
-		t.Fatalf("OAuth legacy import_url status=%d body=%s", legacyResponse.Code, legacyResponse.Body.String())
+	urlImportRequest.Header.Set("Authorization", "Bearer "+tokens.AccessToken)
+	urlImportRequest.Header.Set("Content-Type", "application/json")
+	urlImportRequest.Header.Add("Accept", "application/json")
+	urlImportRequest.Header.Add("Accept", "text/event-stream")
+	urlImportRequest.Header.Set("MCP-Protocol-Version", "2025-11-25")
+	urlImportResponse := httptest.NewRecorder()
+	router.ServeHTTP(urlImportResponse, urlImportRequest)
+	var urlImportWire map[string]any
+	if urlImportResponse.Code != http.StatusOK || json.Unmarshal(urlImportResponse.Body.Bytes(), &urlImportWire) != nil {
+		t.Fatalf("OAuth import_url status=%d body=%s", urlImportResponse.Code, urlImportResponse.Body.String())
 	}
-	protocolError, ok := legacyWire["error"].(map[string]any)
-	if !ok || protocolError["code"] != float64(-32602) {
-		t.Fatalf("OAuth legacy import_url call was not rejected as unavailable: %#v", legacyWire)
+	urlImportPayload := mcpStructuredResult(t, urlImportWire)
+	if urlImportPayload["status"] != "unavailable" || urlImportPayload["failure_stage"] != "setup" || urlImportPayload["raw_url"] != nil {
+		t.Fatalf("OAuth unconfigured import_url result=%#v", urlImportPayload)
 	}
 	if files, err := root.Scope(userID, projectID).ListRawFiles(context.Background()); err != nil || len(files) != 1 {
-		t.Fatalf("OAuth legacy import_url call mutated raw: files=%v err=%v", files, err)
+		t.Fatalf("OAuth unconfigured import_url call mutated raw: files=%v err=%v", files, err)
 	}
 	if data, err := root.Scope(userID, projectID).ReadFile(context.Background(), "raw/oauth-source.md"); err != nil || string(data) != string(beforeLegacy) {
-		t.Fatalf("OAuth legacy import_url call changed add_raw bytes: %q err=%v", data, err)
+		t.Fatalf("OAuth unconfigured import_url call changed add_raw bytes: %q err=%v", data, err)
 	}
 
 	readOnlyClient, err := service.RegisterClient(ctx, "Hermes query-only test", []string{"http://127.0.0.1:43124/callback"})

@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"context"
 	"errors"
+	"math"
 	"net/netip"
 	"strings"
 	"sync"
@@ -121,6 +122,112 @@ func TestServiceCreatesRefreshesAndNoOpsWithNormalizedTrackingIdentity(t *testin
 	files, err := markdownRawFiles(store)
 	if err != nil || len(files) != 1 {
 		t.Fatalf("raw files = %#v, %v; want one stable source", files, err)
+	}
+}
+
+func TestImportStrictCommitsTheExactMarkdownThatWasAssessed(t *testing.T) {
+	const sourceURL = "https://example.com/short-notice"
+	const fetched = "\\# Office notice\n\nThe reading room opens at 10 AM.\n"
+	var fetches atomic.Int32
+	var evaluations atomic.Int32
+	var assessed string
+	service, store := newTestService(t, fetcherFunc(func(context.Context, string) (Page, error) {
+		fetches.Add(1)
+		return Page{Title: "Office notice", Markdown: fetched}, nil
+	}), evaluatorFunc(func(_ context.Context, input QualityInput) (QualityEvaluation, error) {
+		evaluations.Add(1)
+		if !input.RequireTitleBodyConsistency || input.Title != "Office notice" {
+			t.Fatalf("strict assessment input = %#v", input)
+		}
+		assessed = input.Markdown
+		return QualityEvaluation{ShellProbability: .02, ContentProbability: .98}, nil
+	}))
+	result, err := service.ImportStrict(context.Background(), ActorProject{"actor-1", "project-1"}, ImportRequest{URL: sourceURL, Tags: []string{"notice"}})
+	if err != nil || result.Status != "stored" || result.Storage == nil || result.Storage.Status != string(rawintake.StatusCreated) || result.ProcessingStatus != "not_started" {
+		t.Fatalf("strict import = %#v err=%v", result, err)
+	}
+	if fetches.Load() != 1 || evaluations.Load() != 1 {
+		t.Fatalf("fetches=%d evaluations=%d; assessment must use one fetch and one quality check", fetches.Load(), evaluations.Load())
+	}
+	stored, err := store.ReadFile(context.Background(), result.Storage.Path)
+	metadata, body, hasFrontmatter, parseErr := parseRawFrontmatter(stored)
+	if err != nil || parseErr != nil || !hasFrontmatter || string(body) != assessed || !strings.HasPrefix(assessed, "# Office notice") {
+		t.Fatalf("assessed=%q stored body=%q err=%v parseErr=%v", assessed, body, err, parseErr)
+	}
+	if metadata["title"] != "Office notice" || metadata["source"] != sourceURL || !strings.Contains(string(stored), "notice") {
+		t.Fatalf("stored metadata/content = %#v %q", metadata, stored)
+	}
+	if result.Storage.SHA256 != digestString(stored) {
+		t.Fatalf("stored digest=%q actual=%q", result.Storage.SHA256, digestString(stored))
+	}
+	second, err := service.ImportStrict(context.Background(), ActorProject{"actor-1", "project-1"}, ImportRequest{URL: sourceURL, Tags: []string{"notice"}})
+	if err != nil || second.Status != "stored" || second.Storage == nil || second.Storage.Status != string(rawintake.StatusAlreadyExists) || second.Storage.Path != result.Storage.Path {
+		t.Fatalf("same URL retry = %#v err=%v", second, err)
+	}
+}
+
+func TestImportStrictRefusesUncertainTruncatedUnavailableAndMalformedQuality(t *testing.T) {
+	tests := []struct {
+		name       string
+		page       Page
+		evaluator  QualityEvaluator
+		wantStatus string
+		wantEval   int32
+	}{
+		{name: "ambiguous title body match", page: Page{Title: "Mars weather", Markdown: "Readable text about coastal tides."}, evaluator: evaluatorFunc(func(_ context.Context, input QualityInput) (QualityEvaluation, error) {
+			if !input.RequireTitleBodyConsistency {
+				t.Fatalf("strict title/body assessment missing: %#v", input)
+			}
+			return uncertainEvaluator(context.Background(), input)
+		}), wantStatus: "rejected", wantEval: 1},
+		{name: "blocking shell", page: Page{Title: "Sign in", Markdown: "Please sign in to continue."}, evaluator: evaluatorFunc(func(context.Context, QualityInput) (QualityEvaluation, error) {
+			return QualityEvaluation{ShellProbability: .99, ContentProbability: .01}, nil
+		}), wantStatus: "rejected", wantEval: 1},
+		{name: "provider truncation", page: Page{Title: "Partial", Markdown: "Readable but incomplete", Truncated: boolPtr(true)}, evaluator: evaluatorFunc(func(context.Context, QualityInput) (QualityEvaluation, error) {
+			t.Fatal("truncated content must be refused before quality evaluation")
+			return QualityEvaluation{}, nil
+		}), wantStatus: "rejected", wantEval: 0},
+		{name: "missing evaluator", page: Page{Title: "Article", Markdown: "Readable body"}, evaluator: nil, wantStatus: "unavailable", wantEval: 0},
+		{name: "quality timeout", page: Page{Title: "Article", Markdown: "Readable body"}, evaluator: evaluatorFunc(func(context.Context, QualityInput) (QualityEvaluation, error) {
+			return QualityEvaluation{}, &QualityProviderFailure{Kind: "timeout"}
+		}), wantStatus: "unavailable", wantEval: 1},
+		{name: "malformed numeric response", page: Page{Title: "Article", Markdown: "Readable body"}, evaluator: evaluatorFunc(func(context.Context, QualityInput) (QualityEvaluation, error) {
+			return QualityEvaluation{ShellProbability: math.NaN(), ContentProbability: .99}, nil
+		}), wantStatus: "unavailable", wantEval: 1},
+		{name: "legitimate short text", page: Page{Title: "Scheduled maintenance", Markdown: "The service will be offline Sunday from 2–3 AM."}, evaluator: evaluatorFunc(func(context.Context, QualityInput) (QualityEvaluation, error) {
+			return QualityEvaluation{ShellProbability: .01, ContentProbability: .99}, nil
+		}), wantStatus: "stored", wantEval: 1},
+	}
+	for _, test := range tests {
+		t.Run(test.name, func(t *testing.T) {
+			var evaluations atomic.Int32
+			service, store := newTestService(t, fetcherFunc(func(context.Context, string) (Page, error) { return test.page, nil }), test.evaluator)
+			if test.evaluator != nil {
+				wrapped := test.evaluator
+				service.Evaluator = evaluatorFunc(func(ctx context.Context, input QualityInput) (QualityEvaluation, error) {
+					evaluations.Add(1)
+					return wrapped.Evaluate(ctx, input)
+				})
+			}
+			result, err := service.ImportStrict(context.Background(), ActorProject{"actor-1", "project-1"}, ImportRequest{URL: "https://example.com/case"})
+			if err != nil || result.Status != test.wantStatus {
+				t.Fatalf("strict result = %#v err=%v, want status %q", result, err, test.wantStatus)
+			}
+			if evaluations.Load() != test.wantEval {
+				t.Fatalf("quality evaluations=%d, want %d", evaluations.Load(), test.wantEval)
+			}
+			files, err := markdownRawFiles(store)
+			if err != nil {
+				t.Fatal(err)
+			}
+			if test.wantStatus == "stored" {
+				if len(files) != 1 || result.Storage == nil {
+					t.Fatalf("usable short text not stored: files=%#v result=%#v", files, result)
+				}
+			} else if len(files) != 0 || result.FailureStage != "quality" || result.Message == "" {
+				t.Fatalf("refused result wrote raw or omitted its reason: files=%#v result=%#v", files, result)
+			}
+		})
 	}
 }
 

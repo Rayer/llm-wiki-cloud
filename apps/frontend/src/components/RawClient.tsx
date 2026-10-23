@@ -70,6 +70,13 @@ function RawClientSession() {
   const { currentProject, token } = useWorkspace();
   const currentProjectId = currentProject?.id;
   const searchParams = useSearchParams();
+  const projectParam = searchParams.get('project');
+  const hasProjectTarget = projectParam !== null;
+  const requestedProjectId = projectParam?.trim() ?? '';
+  const rawProjectId = hasProjectTarget ? requestedProjectId || undefined : currentProjectId;
+  const highlightedFile = searchParams.get('file') ?? '';
+  const rawScopeKey = JSON.stringify([hasProjectTarget, rawProjectId ?? '']);
+  const rawViewKey = JSON.stringify([rawScopeKey, highlightedFile]);
   const [files, setFiles] = useState<RawFile[]>([]);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<RawClientError | null>(null);
@@ -87,28 +94,38 @@ function RawClientSession() {
   const { copyErrorId: copyDownloadErrorId, errorIdCopied: downloadErrorIdCopied } =
     useErrorIdCopy(downloadError, downloadError?.requestId, downloadError?.diagnosticId);
 
-  const previousProjectIdRef = useRef(currentProjectId);
+  const previousScopeKeyRef = useRef(rawScopeKey);
+  const previousViewKeyRef = useRef(rawViewKey);
   useLayoutEffect(() => {
-    if (previousProjectIdRef.current === currentProjectId) return;
-    previousProjectIdRef.current = currentProjectId;
-    listRequestRef.current += 1;
+    if (previousViewKeyRef.current === rawViewKey) return;
+    previousViewKeyRef.current = rawViewKey;
     previewRequestRef.current += 1;
     downloadRequestRef.current += 1;
     openedQueryFileRef.current = '';
-    setFiles([]);
-    setLoading(true);
-    setError(null);
     setPreview(null);
     setPreviewLoading(false);
     setPreviewError(null);
     setDownloadError(null);
-  }, [currentProjectId]);
+    if (previousScopeKeyRef.current !== rawScopeKey) {
+      previousScopeKeyRef.current = rawScopeKey;
+      listRequestRef.current += 1;
+      setFiles([]);
+      setLoading(true);
+      setError(null);
+    }
+  }, [rawScopeKey, rawViewKey]);
 
   const refreshRawFiles = useCallback(async () => {
     const request = ++listRequestRef.current;
+    if (hasProjectTarget && !rawProjectId) {
+      setFiles([]);
+      setError({ message: 'This raw link does not identify a Project.' });
+      setLoading(false);
+      return;
+    }
 
     try {
-      const data = await getRawFiles(currentProjectId);
+      const data = await getRawFiles(rawProjectId);
       if (listRequestRef.current !== request) return;
       setError(null);
       setFiles(data);
@@ -123,12 +140,12 @@ function RawClientSession() {
     } finally {
       if (listRequestRef.current === request) setLoading(false);
     }
-  }, [currentProjectId]);
+  }, [hasProjectTarget, rawProjectId]);
 
   const handleUploadsSettled = useCallback(({ projectId }: RawUploadsSettled) => {
-    if (projectId !== currentProjectId) return;
+    if (projectId !== rawProjectId) return;
     void refreshRawFiles();
-  }, [currentProjectId, refreshRawFiles]);
+  }, [rawProjectId, refreshRawFiles]);
 
   useEffect(() => {
     openedQueryFileRef.current = '';
@@ -140,14 +157,12 @@ function RawClientSession() {
       previewRequestRef.current += 1;
       downloadRequestRef.current += 1;
     };
-  }, [currentProjectId, refreshRawFiles, token]);
+  }, [rawProjectId, refreshRawFiles, token]);
 
   const sortedFiles = useMemo(
     () => [...files].sort((a, b) => a.name.localeCompare(b.name)),
     [files],
   );
-
-  const highlightedFile = searchParams.get('file') ?? '';
 
   const openRawPreview = useCallback(async (file: RawFile) => {
     const request = ++previewRequestRef.current;
@@ -164,7 +179,7 @@ function RawClientSession() {
 
     setPreviewLoading(true);
     try {
-      const content = await getRawFilePreview(file.name, currentProjectId);
+      const content = await getRawFilePreview(file.name, rawProjectId);
       if (previewRequestRef.current === request) {
         setPreview((current) => current?.file.name === file.name ? { ...current, content } : current);
       }
@@ -180,22 +195,19 @@ function RawClientSession() {
     } finally {
       if (previewRequestRef.current === request) setPreviewLoading(false);
     }
-  }, [currentProjectId, t]);
+  }, [rawProjectId, t]);
 
   useEffect(() => {
-    if (!highlightedFile || loading || error || openedQueryFileRef.current === highlightedFile) {
+    if (!highlightedFile || loading || error || openedQueryFileRef.current === rawViewKey) {
       return;
     }
 
     const requestedFile = files.find((file) => file.name === highlightedFile);
     if (!requestedFile) return;
 
-    openedQueryFileRef.current = highlightedFile;
-    const timer = window.setTimeout(() => {
-      void openRawPreview(requestedFile);
-    }, 0);
-    return () => window.clearTimeout(timer);
-  }, [error, files, highlightedFile, loading, openRawPreview]);
+    openedQueryFileRef.current = rawViewKey;
+    void openRawPreview(requestedFile);
+  }, [error, files, highlightedFile, loading, openRawPreview, rawViewKey]);
 
   const closePreview = useCallback(() => {
     previewRequestRef.current += 1;
@@ -218,7 +230,7 @@ function RawClientSession() {
   async function downloadRawFile() {
     if (!preview) return;
     const selectedPreview = preview;
-    const projectId = currentProject?.id;
+    const projectId = rawProjectId;
     const request = ++downloadRequestRef.current;
     setDownloadError(null);
 
@@ -256,7 +268,7 @@ function RawClientSession() {
         </p>
       </header>
 
-      {currentProject ? (
+      {currentProject && !hasProjectTarget ? (
         <RawUploadPanel
           key={token ?? 'no-session'}
           title={t('Raw.uploadTitle')}

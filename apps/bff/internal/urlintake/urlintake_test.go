@@ -148,8 +148,9 @@ func TestJevEvaluatorSendsTwoIndependentBoundedQuestions(t *testing.T) {
 			Model     string       `json:"model"`
 			State     QualityInput `json:"state"`
 			Questions map[string]struct {
-				Type         string `json:"type"`
-				Instructions string `json:"instructions"`
+				Type         string            `json:"type"`
+				Instructions string            `json:"instructions"`
+				Criteria     map[string]string `json:"criteria"`
 			} `json:"questions"`
 		}
 		if err := json.NewDecoder(r.Body).Decode(&payload); err != nil {
@@ -162,6 +163,9 @@ func TestJevEvaluatorSendsTwoIndependentBoundedQuestions(t *testing.T) {
 			if q, ok := payload.Questions[key]; !ok || q.Type != "noul" || q.Instructions == "" {
 				t.Fatalf("missing independent question %q", key)
 			}
+		}
+		if strings.Contains(payload.Questions["readable_content"].Instructions, "consistent with the supplied title") || strings.Contains(payload.Questions["readable_content"].Criteria["false"], "unrelated") {
+			t.Fatal("ordinary Web quality assessment picked up the strict MCP title/body rule")
 		}
 		w.Header().Set("Content-Type", "application/json")
 		_, _ = w.Write([]byte(`{"model":"jev-1.14.0","answers":{"access_shell":{"type":"noul","noul":0.02},"readable_content":{"type":"noul","noul":0.97}},"usage":{"input_tokens":800,"output_tokens":9}}`))
@@ -177,6 +181,36 @@ func TestJevEvaluatorSendsTwoIndependentBoundedQuestions(t *testing.T) {
 	}
 	if got.PromptVersion != JevPromptVersion || got.ReturnedModel != "jev-1.14.0" || got.Usage.InputTokens != 800 || got.Usage.OutputTokens != 9 || got.ShellProbability != 0.02 || got.ContentProbability != 0.97 {
 		t.Fatalf("unexpected quality evaluation: %#v", got)
+	}
+}
+
+func TestJevEvaluatorStrictAssessmentChecksTitleBodyConsistency(t *testing.T) {
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		var payload struct {
+			Questions map[string]struct {
+				Instructions string            `json:"instructions"`
+				Criteria     map[string]string `json:"criteria"`
+			} `json:"questions"`
+		}
+		if err := json.NewDecoder(r.Body).Decode(&payload); err != nil {
+			t.Fatal(err)
+		}
+		question := payload.Questions["readable_content"]
+		if !strings.Contains(question.Instructions, "consistent with the supplied title") || !strings.Contains(question.Criteria["false"], "unrelated") || !strings.Contains(question.Criteria["true"], "matches the title") {
+			t.Fatalf("strict readable-content question = %#v", question)
+		}
+		w.Header().Set("Content-Type", "application/json")
+		_, _ = w.Write([]byte(`{"model":"jev-1.14.0","answers":{"access_shell":{"type":"noul","noul":0.01},"readable_content":{"type":"noul","noul":0.98}},"usage":{"input_tokens":800,"output_tokens":9}}`))
+	}))
+	defer server.Close()
+	evaluator := NewJevEvaluator("quality-test-key")
+	evaluator.Endpoint = server.URL
+	_, err := evaluator.Evaluate(context.Background(), QualityInput{
+		URL: "https://example.com/article", Title: "Page", Markdown: "full supplied body", Provider: DeepSeekFetchProvider,
+		RequireTitleBodyConsistency: true,
+	})
+	if err != nil {
+		t.Fatal(err)
 	}
 }
 
