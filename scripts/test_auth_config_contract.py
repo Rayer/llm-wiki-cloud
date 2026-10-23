@@ -138,7 +138,7 @@ def production(value):
 
 
 class AuthConfigContractTests(unittest.TestCase):
-    def test_otlp_and_full_sampling_are_enabled_only_by_development_runtime_contract(self):
+    def test_prod_trace_endpoint_uses_parent_sampling_while_dev_enables_full_sampling(self):
         for component in ('auth', 'bff'):
             development = deployment_plan('development', component)
             production_plan = deployment_plan('production', component)
@@ -148,10 +148,10 @@ class AuthConfigContractTests(unittest.TestCase):
             self.assertEqual(auth_config.desired(development, component, '42' if component == 'bff' else None,
                                                  '42' if component == 'auth' else None)['env'].get(
                                                      auth_config.DEV_FULL_TRACE_SAMPLING_ENV), '1')
-            self.assertNotIn(auth_config.OTLP_ENDPOINT_ENV,
-                             auth_config.desired(production_plan, component,
-                                 '42' if component == 'bff' else None,
-                                 '42' if component == 'auth' else None)['env'])
+            self.assertEqual(auth_config.desired(production_plan, component,
+                                                 '42' if component == 'bff' else None,
+                                                 '42' if component == 'auth' else None)['env'].get(
+                                                     auth_config.OTLP_ENDPOINT_ENV), auth_config.OTLP_ENDPOINT)
             self.assertNotIn(auth_config.DEV_FULL_TRACE_SAMPLING_ENV,
                              auth_config.desired(production_plan, component,
                                  '42' if component == 'bff' else None,

@@ -1342,7 +1342,7 @@ class CDContractTests(unittest.TestCase):
                         state["readbacks"] += 1
                         state_path.write_text(json.dumps(state))
                         image = {new_image!r} if state["readbacks"] > 1 else {old_image!r}
-                        print(json.dumps(dict(spec=dict(template=dict(spec=dict(template=dict(spec=dict(containers=[dict(image=image, env=[dict(name="GCP_PROJECT", value="llm-wiki-cloud"), dict(name="FIRESTORE_DATABASE_ID", value="llm-wiki-cloud-prod")])]))))))))
+                        print(json.dumps(dict(spec=dict(template=dict(spec=dict(template=dict(spec=dict(containers=[dict(image=image, env=[dict(name="GCP_PROJECT", value="llm-wiki-cloud"), dict(name="FIRESTORE_DATABASE_ID", value="llm-wiki-cloud-prod"), dict(name="OTEL_EXPORTER_OTLP_ENDPOINT", value="https://telemetry.googleapis.com")])]))))))))
                     else:
                         raise SystemExit(2)
                 """).lstrip()
@@ -1488,6 +1488,7 @@ class CDContractTests(unittest.TestCase):
                             {"name": "BUCKET", "value": "bucket"},
                             {"name": "GCP_PROJECT", "value": "llm-wiki-cloud"},
                             {"name": "FIRESTORE_DATABASE_ID", "value": "llm-wiki-cloud-prod"},
+                            {"name": "OTEL_EXPORTER_OTLP_ENDPOINT", "value": "https://telemetry.googleapis.com"},
                             {"name": "PIPELINE_JOB_NAME", "value": "olw-pipeline"},
                             {"name": "PIPELINE_JOB_LOCATION", "value": "asia-east1"},
                             {"name": "DEEPSEEK_API_KEY", "valueSource": {"secretKeyRef": {"secret": "deepseek-apikey", "version": "latest"}}},
@@ -2337,6 +2338,24 @@ class ArchitectureAuthorityTests(unittest.TestCase):
             self.assertIn("OTEL_EXPORTER_OTLP_ENDPOINT,LWC_DEV_FULL_TRACE_SAMPLING", absent.stdout)
             self.assertIn("desired-mismatch", absent.stdout)
 
+            plan.write_text(json.dumps({"normalized": {"environment": "production"}}))
+            production = deepcopy(base)
+            production["template"]["template"]["containers"][0]["env"] = [
+                {"name": "OTEL_EXPORTER_OTLP_ENDPOINT", "value": "https://telemetry.googleapis.com"},
+            ]
+            env["JOB_JSON"] = json.dumps(production)
+            prod_enabled = subprocess.run(["bash", "-c", script], env=env, text=True, capture_output=True)
+            self.assertEqual(prod_enabled.returncode, 0, prod_enabled.stdout + prod_enabled.stderr)
+            self.assertIn("OTEL_EXPORTER_OTLP_ENDPOINT=https://telemetry.googleapis.com", prod_enabled.stdout)
+            self.assertNotIn("LWC_DEV_FULL_TRACE_SAMPLING=1", prod_enabled.stdout)
+            self.assertIn("desired-match", prod_enabled.stdout)
+
+            env["JOB_JSON"] = json.dumps(base)
+            prod_absent = subprocess.run(["bash", "-c", script], env=env, text=True, capture_output=True)
+            self.assertEqual(prod_absent.returncode, 0, prod_absent.stdout + prod_absent.stderr)
+            self.assertIn("OTEL_EXPORTER_OTLP_ENDPOINT,LWC_DEV_FULL_TRACE_SAMPLING", prod_absent.stdout)
+            self.assertIn("desired-mismatch", prod_absent.stdout)
+
     def test_export_job_runtime_readback_requires_exact_service_account_and_environment(self):
         config = {
             "runtime_service_account": "export-worker@example.iam.gserviceaccount.com",
@@ -2510,7 +2529,7 @@ class ArchitectureAuthorityTests(unittest.TestCase):
             {"name": "GCP_PROJECT", "value": "previous-project"},
             {"name": "FIRESTORE_DATABASE_ID", "value": "previous-database"},
             {"name": "UNRELATED", "value": "preserve-me"},
-        ])
+        ], [{"name": "OTEL_EXPORTER_OTLP_ENDPOINT", "value": "https://telemetry.googleapis.com"}])
         for environment, database in (("development", "llm-wiki-cloud-dev"), ("production", "llm-wiki-cloud-prod")):
             for prior_env in prior_values:
                 with self.subTest(environment=environment, prior_env=prior_env), tempfile.TemporaryDirectory() as directory:
@@ -2595,7 +2614,9 @@ class ArchitectureAuthorityTests(unittest.TestCase):
                     if environment == "development":
                         self.assertIn("LWC_DEV_FULL_TRACE_SAMPLING=1", runtime_update)
                     else:
-                        self.assertIn("OTEL_EXPORTER_OTLP_ENDPOINT,LWC_DEV_FULL_TRACE_SAMPLING", runtime_update)
+                        self.assertIn("OTEL_EXPORTER_OTLP_ENDPOINT=https://telemetry.googleapis.com", runtime_update)
+                        self.assertIn("--remove-env-vars LWC_DEV_FULL_TRACE_SAMPLING", runtime_update)
+                        self.assertNotIn("LWC_DEV_FULL_TRACE_SAMPLING=1", runtime_update)
                     self.assertNotIn("--set-env-vars", runtime_update)
                     self.assertNotIn("UNRELATED=preserve-me", runtime_update)
 
@@ -2679,7 +2700,17 @@ class ArchitectureAuthorityTests(unittest.TestCase):
                     raise SystemExit(1)
             elif args[:3] == ["run", "jobs", "update"]:
                 value = json.loads(state.read_text())
-                value["template"]["template"]["containers"][0]["image"] = args[args.index("--image") + 1]
+                container = value["template"]["template"]["containers"][0]
+                container["image"] = args[args.index("--image") + 1]
+                if "--update-env-vars" in args:
+                    payload = args[args.index("--update-env-vars") + 1].removeprefix("^|^")
+                    for pair in payload.split("|"):
+                        name, item = pair.split("=", 1)
+                        container["env"] = [entry for entry in container.get("env", []) if entry["name"] != name]
+                        container["env"].append({{"name": name, "value": item}})
+                if "--remove-env-vars" in args:
+                    removed = args[args.index("--remove-env-vars") + 1].split(",")
+                    container["env"] = [entry for entry in container.get("env", []) if entry["name"] not in removed]
                 state.write_text(json.dumps(value))
             elif args[:3] == ["run", "jobs", "delete"]:
                 state.write_text("null")
@@ -2745,6 +2776,7 @@ class ArchitectureAuthorityTests(unittest.TestCase):
                 "GCP_PROJECT": "llm-wiki-cloud", "BUCKET": "llm-wiki-data",
                 "FIRESTORE_DATABASE_ID": "llm-wiki-cloud-prod",
                 "EXPORT_SIGNING_SERVICE_ACCOUNT": "lwc-export-signer-prod@llm-wiki-cloud.iam.gserviceaccount.com",
+                "OTEL_EXPORTER_OTLP_ENDPOINT": "https://telemetry.googleapis.com",
             })
             self.assertEqual((created["template"]["parallelism"], created["template"]["taskCount"],
                               created["template"]["template"]["timeout"], created["template"]["template"]["maxRetries"]),
@@ -2782,6 +2814,7 @@ class ArchitectureAuthorityTests(unittest.TestCase):
                         {"name": "BUCKET", "value": "llm-wiki-data"},
                         {"name": "FIRESTORE_DATABASE_ID", "value": "llm-wiki-cloud-prod"},
                         {"name": "EXPORT_SIGNING_SERVICE_ACCOUNT", "value": "lwc-export-signer-prod@llm-wiki-cloud.iam.gserviceaccount.com"},
+                        {"name": "OTEL_EXPORTER_OTLP_ENDPOINT", "value": "https://telemetry.googleapis.com"},
                     ]}],
                 },
             }}
@@ -2822,67 +2855,35 @@ class ArchitectureAuthorityTests(unittest.TestCase):
 
     def test_production_exportjob_freezes_verifies_and_rolls_back_immutable_image(self):
         old_image = "asia-east1-docker.pkg.dev/llm-wiki-cloud/cloud-run-images/llm-wiki-bff-export-job@sha256:" + "a" * 64
-        new_image = "asia-east1-docker.pkg.dev/llm-wiki-cloud/cloud-run-images/llm-wiki-bff-export-job@sha256:" + "b" * 64
         with tempfile.TemporaryDirectory() as directory:
             root = Path(directory)
-            bin_dir = root / "bin"
-            bin_dir.mkdir()
-            state = root / "job.json"
             runtime_env = [
                 {"name": "GCP_PROJECT", "value": "llm-wiki-cloud"},
                 {"name": "BUCKET", "value": "llm-wiki-data"},
                 {"name": "FIRESTORE_DATABASE_ID", "value": "llm-wiki-cloud-prod"},
                 {"name": "EXPORT_SIGNING_SERVICE_ACCOUNT", "value": "lwc-export-signer-prod@llm-wiki-cloud.iam.gserviceaccount.com"},
             ]
-            state.write_text(json.dumps({"template": {
+            initial = {"template": {
                 "parallelism": 1, "taskCount": 1,
                 "template": {
                     "serviceAccount": "lwc-export-worker-prod@llm-wiki-cloud.iam.gserviceaccount.com",
                     "timeout": "82800s", "maxRetries": 0,
                     "containers": [{"name": "export", "image": old_image, "env": runtime_env}],
                 },
-            }}))
-            fake = textwrap.dedent(f"""
-                #!/usr/bin/env python3
-                import json, sys
-                from pathlib import Path
-                state = Path({str(state)!r})
-                args = sys.argv[1:]
-                if args[:3] == ["run", "jobs", "describe"]:
-                    print(state.read_text(), end="")
-                elif args[:3] == ["run", "jobs", "update"]:
-                    value = json.loads(state.read_text())
-                    value["template"]["template"]["containers"][0]["image"] = args[args.index("--image") + 1]
-                    state.write_text(json.dumps(value))
-                else:
-                    raise SystemExit(2)
-            """).lstrip()
-            fake_path = bin_dir / "gcloud"
-            fake_path.write_text(fake)
-            fake_path.chmod(0o755)
-            plan = root / "plan.json"
-            plan.write_text(json.dumps({"normalized": {
-                "selected_components": ["bff", "exportjob"],
-                "gcp": {"project_id": "llm-wiki-cloud", "region": "asia-east1",
-                        "artifact_registry": "asia-east1-docker.pkg.dev/llm-wiki-cloud/cloud-run-images"},
-                "bff": {"runtime_service_account": "lwc-bff-prod@llm-wiki-cloud.iam.gserviceaccount.com"},
-                "export_job": {
-                    "job_name": "export-job", "location": "asia-east1", "bucket": "llm-wiki-data",
-                    "firestore_database_id": "llm-wiki-cloud-prod",
-                    "runtime_service_account": "lwc-export-worker-prod@llm-wiki-cloud.iam.gserviceaccount.com",
-                    "signing_service_account": "lwc-export-signer-prod@llm-wiki-cloud.iam.gserviceaccount.com",
-                    "job_timeout": "23h", "max_retries": 0, "parallelism": 1, "tasks": 1,
-                },
-            }}))
-            env = {**os.environ, "PATH": f"{bin_dir}:{os.environ['PATH']}", "ROOT": str(ROOT),
-                   "ENVIRONMENT": "production", "SOURCE_REF": "main", "SOURCE_SHA": "c" * 40,
-                   "PLAN_PATH": str(plan), "ROLLBACK_PATH": str(root / "rollback.json"),
-                   "JOURNAL_PATH": str(root / "journal.json"),
-                   "ROLLBACK_RESULT_PATH": str(root / "rollback-result.json"),
-                   "ARTIFACT_DIR": str(root / "artifacts")}
-            frozen = subprocess.run(["bash", str(ROOT / "deploy/components/exportjob.sh"), "freeze"],
-                                    env=env, text=True, capture_output=True)
-            self.assertEqual(frozen.returncode, 0, frozen.stdout + frozen.stderr)
+            }}
+            env, image, state, calls = self._production_exportjob_mutation_fixture(root, initial)
+            script = textwrap.dedent(f"""
+                source {str(ROOT / 'deploy/components/exportjob.sh')!r} help
+                revalidate_before_provider() {{ :; }}
+                sleep() {{ :; }}
+                exportjob_freeze
+                exportjob_mutate
+                exportjob_verify "$IMAGE"
+                exportjob_rollback
+            """)
+            result = subprocess.run(["bash", "-c", script], env={**env, "IMAGE": image},
+                                    text=True, capture_output=True)
+            self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
             self.assertEqual(json.loads((root / "rollback.json").read_text())["handles"]["exportjob"], {
                 "image": old_image,
                 "env": {
@@ -2890,21 +2891,15 @@ class ArchitectureAuthorityTests(unittest.TestCase):
                     "LWC_DEV_FULL_TRACE_SAMPLING": {"present": False},
                 },
             })
-            current = json.loads(state.read_text())
-            current["template"]["template"]["containers"][0]["image"] = new_image
-            state.write_text(json.dumps(current))
-            verify = subprocess.run(
-                ["bash", "-c", 'source "$ROOT/deploy/components/exportjob.sh" help; exportjob_verify "$IMAGE"'],
-                env={**env, "IMAGE": new_image}, text=True, capture_output=True,
-            )
-            self.assertEqual(verify.returncode, 0, verify.stdout + verify.stderr)
-            rollback = subprocess.run(["bash", str(ROOT / "deploy/components/exportjob.sh"), "rollback"],
-                                      env=env, text=True, capture_output=True)
-            self.assertEqual(rollback.returncode, 0, rollback.stdout + rollback.stderr)
             final = json.loads(state.read_text())["template"]["template"]["containers"][0]
             self.assertEqual(final["image"], old_image)
             self.assertEqual(final["env"], runtime_env)
             self.assertEqual(json.loads((root / "artifacts/rollback/exportjob.json").read_text())["result"], "success")
+            update_calls = [json.loads(line) for line in calls.read_text().splitlines()
+                            if '"update"' in line]
+            self.assertTrue(any("OTEL_EXPORTER_OTLP_ENDPOINT=https://telemetry.googleapis.com" in ' '.join(call)
+                                for call in update_calls))
+            self.assertFalse(any("execute" in ' '.join(call) for call in update_calls))
 
 
 from test_engine_workflow import EngineWorkflowContract

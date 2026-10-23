@@ -169,7 +169,7 @@ exportjob_create_production() {
     status=$?
     [[ "$status" -eq 44 ]] || die "Production Export Job absence could not be safely confirmed"
   fi
-  env_args="^|^GCP_PROJECT=$project|BUCKET=$bucket|FIRESTORE_DATABASE_ID=$database|EXPORT_SIGNING_SERVICE_ACCOUNT=$signer"
+  env_args="^|^GCP_PROJECT=$project|BUCKET=$bucket|FIRESTORE_DATABASE_ID=$database|EXPORT_SIGNING_SERVICE_ACCOUNT=$signer|OTEL_EXPORTER_OTLP_ENDPOINT=https://telemetry.googleapis.com"
   journal_pending exportjob
   if timeout --signal=TERM --kill-after=5s 600s gcloud run jobs create "$job" --project "$project" --region "$region" \
     --image "$image" --service-account "$account" --task-timeout "$timeout" --max-retries "$retries" \
@@ -231,7 +231,7 @@ exportjob_mutate() {
   if [[ "$ENVIRONMENT" == development ]]; then
     endpoint_args+=(--update-env-vars '^|^OTEL_EXPORTER_OTLP_ENDPOINT=https://telemetry.googleapis.com|LWC_DEV_FULL_TRACE_SAMPLING=1')
   else
-    endpoint_args+=(--remove-env-vars OTEL_EXPORTER_OTLP_ENDPOINT,LWC_DEV_FULL_TRACE_SAMPLING)
+    endpoint_args+=(--update-env-vars '^|^OTEL_EXPORTER_OTLP_ENDPOINT=https://telemetry.googleapis.com' --remove-env-vars LWC_DEV_FULL_TRACE_SAMPLING)
   fi
   if timeout --signal=TERM --kill-after=5s 600s gcloud run jobs update "$job" --project "$project" --region "$region" --image "$image" \
     "${endpoint_args[@]}" --quiet >/dev/null; then :; else update_status=$?; fi

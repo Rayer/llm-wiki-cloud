@@ -65,7 +65,7 @@ worker_profile_env_readback() {
      (if $environment == "development" then
         .OTEL_EXPORTER_OTLP_ENDPOINT == {present:true,value:"https://telemetry.googleapis.com"} and
         .LWC_DEV_FULL_TRACE_SAMPLING == {present:true,value:"1"}
-      else .OTEL_EXPORTER_OTLP_ENDPOINT == {present:false} and .LWC_DEV_FULL_TRACE_SAMPLING == {present:false} end)' \
+      else .OTEL_EXPORTER_OTLP_ENDPOINT == {present:true,value:"https://telemetry.googleapis.com"} and .LWC_DEV_FULL_TRACE_SAMPLING == {present:false} end)' \
     <<<"$observed" >/dev/null
 }
 
@@ -78,7 +78,9 @@ worker_profile_env_prior_allowed() {
        .OTEL_EXPORTER_OTLP_ENDPOINT == {present:true,value:"https://telemetry.googleapis.com"}) and
       (.LWC_DEV_FULL_TRACE_SAMPLING == {present:false} or
        .LWC_DEV_FULL_TRACE_SAMPLING == {present:true,value:"1"})
-    else .OTEL_EXPORTER_OTLP_ENDPOINT == {present:false} and .LWC_DEV_FULL_TRACE_SAMPLING == {present:false} end
+    else (.OTEL_EXPORTER_OTLP_ENDPOINT == {present:false} or
+          .OTEL_EXPORTER_OTLP_ENDPOINT == {present:true,value:"https://telemetry.googleapis.com"}) and
+         .LWC_DEV_FULL_TRACE_SAMPLING == {present:false} end
   ' <<<"$handle" >/dev/null
 }
 
@@ -140,16 +142,16 @@ worker_mutate() {
   validate_image_value worker "$image"
   database=$(plan_json '.bff.firestore_database_id')
   environment=${ENVIRONMENT:-production}
-  endpoint_args=''
+  endpoint_args='|OTEL_EXPORTER_OTLP_ENDPOINT=https://telemetry.googleapis.com'
   if [[ "$environment" == development ]]; then
-    endpoint_args='|OTEL_EXPORTER_OTLP_ENDPOINT=https://telemetry.googleapis.com|LWC_DEV_FULL_TRACE_SAMPLING=1'
+    endpoint_args+='|LWC_DEV_FULL_TRACE_SAMPLING=1'
   fi
   if [[ "$environment" == development ]]; then
     if timeout --signal=TERM --kill-after=5s 600s gcloud run jobs update "$job" --project "$project" --region "$region" --image "$image" \
       --update-env-vars "^|^GCP_PROJECT=$project|FIRESTORE_DATABASE_ID=$database$endpoint_args" --quiet >/dev/null; then :; else update_status=$?; fi
   else
     if timeout --signal=TERM --kill-after=5s 600s gcloud run jobs update "$job" --project "$project" --region "$region" --image "$image" \
-      --update-env-vars "^|^GCP_PROJECT=$project|FIRESTORE_DATABASE_ID=$database" --remove-env-vars OTEL_EXPORTER_OTLP_ENDPOINT,LWC_DEV_FULL_TRACE_SAMPLING --quiet >/dev/null; then :; else update_status=$?; fi
+      --update-env-vars "^|^GCP_PROJECT=$project|FIRESTORE_DATABASE_ID=$database$endpoint_args" --remove-env-vars LWC_DEV_FULL_TRACE_SAMPLING --quiet >/dev/null; then :; else update_status=$?; fi
   fi
   if [[ "$update_status" -ne 0 ]]; then
     if ! worker_verify "$image"; then

@@ -50,6 +50,8 @@ class Acceptance(unittest.TestCase):
                 output=subprocess.check_output(normalize,cwd=ROOT/'apps/bff',env=env,text=True)
                 setattr(cls,attribute,json.loads(output))
             cls.production_auth_normalized = auth_contract_fixtures.deployment_plan('production', 'auth')
+            cls.production_jobs_normalized = copy.deepcopy(cls.production_normalized)
+            cls.production_jobs_normalized['selected_components'] = ['worker', 'exportjob']
             cls.worker_only_normalized = {}
             for environment in ('development', 'production'):
                 output = subprocess.check_output(
@@ -164,8 +166,9 @@ class Acceptance(unittest.TestCase):
                 self.assertEqual(args[:5], ('jobs', 'update', job_name, '--image', image))
                 env_args = args[args.index('--update-env-vars') + 1]
                 expected_env = '^|^GCP_PROJECT=llm-wiki-cloud|FIRESTORE_DATABASE_ID=' + database_id
+                expected_env += '|OTEL_EXPORTER_OTLP_ENDPOINT=https://telemetry.googleapis.com'
                 if environment == 'development':
-                    expected_env += '|OTEL_EXPORTER_OTLP_ENDPOINT=https://telemetry.googleapis.com|LWC_DEV_FULL_TRACE_SAMPLING=1'
+                    expected_env += '|LWC_DEV_FULL_TRACE_SAMPLING=1'
                 self.assertEqual(env_args, expected_env)
                 self.assertNotIn('--update-secrets', args)
 
@@ -1101,6 +1104,64 @@ class Acceptance(unittest.TestCase):
                 self.assertNotIn('OTEL_EXPORTER_OTLP_ENDPOINT', env)
                 self.assertNotIn('LWC_DEV_FULL_TRACE_SAMPLING', env)
                 self.assertTrue(e.provider.observe(component, prior, {}, prior=True))
+
+    def test_production_worker_and_exportjob_enable_endpoint_without_dev_sampling_and_rollback(self):
+        normalized = self.production_jobs_normalized
+        base_provider = copy.deepcopy(self.provider)
+        prior_image = 'prior@sha256:' + 'a' * 64
+        new_image = 'candidate@sha256:' + 'b' * 64
+        for component in ('worker', 'exportjob'):
+            cfg_key = 'export_job' if component == 'exportjob' else 'worker'
+            cfg = normalized[cfg_key]
+            for prior_endpoint in (None, auth_contract_fixtures.auth_config.OTLP_ENDPOINT):
+                with self.subTest(component=component, prior_endpoint=prior_endpoint):
+                    self.provider = copy.deepcopy(base_provider)
+                    if component == 'worker':
+                        env = [
+                            {'name': 'GCP_PROJECT', 'value': normalized['gcp']['project_id']},
+                            {'name': 'FIRESTORE_DATABASE_ID', 'value': normalized['bff']['firestore_database_id']},
+                        ]
+                    else:
+                        env = [
+                            {'name': 'GCP_PROJECT', 'value': normalized['gcp']['project_id']},
+                            {'name': 'BUCKET', 'value': cfg['bucket']},
+                            {'name': 'FIRESTORE_DATABASE_ID', 'value': cfg['firestore_database_id']},
+                            {'name': 'EXPORT_SIGNING_SERVICE_ACCOUNT', 'value': cfg['signing_service_account']},
+                        ]
+                    if prior_endpoint is not None:
+                        env.append({'name': 'OTEL_EXPORTER_OTLP_ENDPOINT', 'value': prior_endpoint})
+                    template = {
+                        'serviceAccountName': cfg['runtime_service_account'],
+                        'containers': [{'name': component, 'image': prior_image, 'env': env}],
+                        'timeoutSeconds': '82800',
+                        'maxRetries': cfg.get('max_retries', 0),
+                    }
+                    execution = {'template': {'spec': template}}
+                    execution.update({'parallelism': cfg.get('parallelism', 1),
+                                      'taskCount': cfg.get('tasks', 1)})
+                    self.provider['resources'][cfg['job_name']] = {
+                        'spec': {'template': {'spec': execution}},
+                    }
+                    self.flush()
+
+                    provider = providers.Providers({'normalized': normalized}, self.root)
+                    prior = provider.snapshot(component)
+                    artifact = {'image': new_image}
+                    provider.deploy(component, artifact, {}, lambda: None)
+                    current = provider.job_template(provider.describe(component))['containers'][0]
+                    current_env = {entry['name']: entry.get('value') for entry in current['env']}
+                    self.assertEqual(current_env.get('OTEL_EXPORTER_OTLP_ENDPOINT'),
+                                     auth_contract_fixtures.auth_config.OTLP_ENDPOINT)
+                    self.assertNotIn('LWC_DEV_FULL_TRACE_SAMPLING', current_env)
+                    self.assertTrue(provider.observe(component, artifact, {}, prior=False))
+
+                    provider.rollback(component, prior)
+                    restored = provider.job_template(provider.describe(component))['containers'][0]
+                    restored_env = {entry['name']: entry.get('value') for entry in restored['env']}
+                    self.assertEqual(restored_env.get('OTEL_EXPORTER_OTLP_ENDPOINT'), prior_endpoint)
+                    self.assertNotIn('LWC_DEV_FULL_TRACE_SAMPLING', restored_env)
+                    self.assertEqual(restored['image'], prior_image)
+                    self.assertTrue(provider.observe(component, prior, {}, prior=True))
 
     def test_worker_snapshot_accepts_legacy_config_absence_message(self):
         e = self.ready(self.make(name='legacy-config-absence'))

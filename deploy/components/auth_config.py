@@ -138,8 +138,8 @@ def desired(plan, component='auth', bff_config_version=None, auth_config_version
                 and SECRET_RESOURCE.fullmatch(inputs['config_secret_resource']))
         require(isinstance(bff_config_version, str) and re.fullmatch(r'[1-9][0-9]*', bff_config_version))
         env = {BFF_CONFIG_ENV: BFF_CONFIG_PATH}
+        env[OTLP_ENDPOINT_ENV] = OTLP_ENDPOINT
         if plan['environment'] == 'development':
-            env[OTLP_ENDPOINT_ENV] = OTLP_ENDPOINT
             env[DEV_FULL_TRACE_SAMPLING_ENV] = '1'
         return {
             'env': env,
@@ -164,8 +164,8 @@ def desired(plan, component='auth', bff_config_version=None, auth_config_version
                 re.fullmatch(r'sha256:[0-9a-f]{64}', inputs['config_id']) is not None)
         require(isinstance(auth_config_version, str) and re.fullmatch(r'[1-9][0-9]*', auth_config_version))
         env = {AUTH_CONFIG_ENV: AUTH_CONFIG_PATH}
+        env[OTLP_ENDPOINT_ENV] = OTLP_ENDPOINT
         if plan['environment'] == 'development':
-            env[OTLP_ENDPOINT_ENV] = OTLP_ENDPOINT
             env[DEV_FULL_TRACE_SAMPLING_ENV] = '1'
         return {
             'env': env,
@@ -198,8 +198,8 @@ def desired(plan, component='auth', bff_config_version=None, auth_config_version
         secrets['GOOGLE_CLIENT_SECRET'] = {
             'name': google['client_secret_reference'], 'key': google['client_secret_version'],
         }
+    env[OTLP_ENDPOINT_ENV] = OTLP_ENDPOINT
     if plan['environment'] == 'development':
-        env[OTLP_ENDPOINT_ENV] = OTLP_ENDPOINT
         env[DEV_FULL_TRACE_SAMPLING_ENV] = '1'
     return {'env': env, 'secrets': secrets, 'service_account': auth['runtime_service_account']}
 
@@ -423,7 +423,7 @@ def main():
                      '--remove-secrets', ','.join(BFF_LEGACY_SECRET_ENV)]
             remove_env.extend(BFF_LEGACY_ENV)
         if plan['environment'] == 'production':
-            remove_env.extend((OTLP_ENDPOINT_ENV, DEV_FULL_TRACE_SAMPLING_ENV))
+            remove_env.append(DEV_FULL_TRACE_SAMPLING_ENV)
         if remove_env:
             args += ['--remove-env-vars', ','.join(dict.fromkeys(remove_env))]
         print('\n'.join(args))
