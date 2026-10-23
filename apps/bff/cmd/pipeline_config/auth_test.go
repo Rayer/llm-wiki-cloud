@@ -159,9 +159,12 @@ func TestRealPklAuthPrepareProducesLocalFileAndCloudInputStages(t *testing.T) {
 			if projection.Environment != environment || projection.Target != "auth" || !projection.Google.Enabled {
 				t.Fatalf("unexpected Pkl Auth projection identity for %s", environment)
 			}
-			wantAudience := ""
+			wantAudience, wantCaller := "", ""
+			wantEnabled := false
 			if environment == "dev" {
 				wantAudience = "https://llm-wiki-auth-dev-a5nkmux6pq-de.a.run.app"
+				wantCaller = "daily-brief-runtime@daily-brief-service.iam.gserviceaccount.com"
+				wantEnabled = true
 			} else if environment == "prod" {
 				wantAudience = ""
 			}
@@ -171,8 +174,9 @@ func TestRealPklAuthPrepareProducesLocalFileAndCloudInputStages(t *testing.T) {
 			if projection.OAuthResources[1].VerifierAudience != wantAudience {
 				t.Fatalf("%s Pkl Auth projection verifier audience=%q, want %q", environment, projection.OAuthResources[1].VerifierAudience, wantAudience)
 			}
-			if projection.OAuthResources[1].Enabled || projection.OAuthResources[1].VerifierCallerServiceAccount != "" {
-				t.Fatalf("canonical %s Brief policy must remain disabled without a caller", environment)
+			if projection.OAuthResources[1].Enabled != wantEnabled || projection.OAuthResources[1].VerifierCallerServiceAccount != wantCaller {
+				t.Fatalf("canonical %s Brief policy enabled=%t caller=%q; want enabled=%t caller=%q", environment,
+					projection.OAuthResources[1].Enabled, projection.OAuthResources[1].VerifierCallerServiceAccount, wantEnabled, wantCaller)
 			}
 			if err := runPrepareTargetModeAtSource(context.Background(), "auth", environment, output, true, strings.Repeat("c", 40), func(context.Context) (secretReader, error) {
 				return reader, nil
@@ -197,9 +201,9 @@ func TestRealPklAuthPrepareProducesLocalFileAndCloudInputStages(t *testing.T) {
 			if inputs.OAuthResources[1].VerifierAudience != wantAudience {
 				t.Fatalf("%s Auth Stage 1 verifier audience=%q, want %q", environment, inputs.OAuthResources[1].VerifierAudience, wantAudience)
 			}
-			if inputs.OAuthResources[1].Enabled || inputs.OAuthResources[1].VerifierCallerServiceAccount != "" ||
+			if inputs.OAuthResources[1].Enabled != wantEnabled || inputs.OAuthResources[1].VerifierCallerServiceAccount != wantCaller ||
 				inputs.AuthSessionEnvironment != "llm-wiki-cloud-"+environment {
-				t.Fatalf("canonical %s Auth snapshot activated Brief or changed its session namespace", environment)
+				t.Fatalf("canonical %s Auth snapshot did not preserve Brief policy identity or changed its session namespace", environment)
 			}
 
 			canonicalRuntimePath := filepath.Join(output, "auth", "canonical-auth.json")
@@ -212,10 +216,11 @@ func TestRealPklAuthPrepareProducesLocalFileAndCloudInputStages(t *testing.T) {
 			if err != nil {
 				t.Fatalf("load canonical %s runtime config: %v", environment, err)
 			}
-			if canonicalRuntime.AuthEnvironment != environment || len(canonicalRuntime.AuthOAuthResources) != 2 ||
+			if canonicalRuntime.AuthEnvironment != environment || canonicalRuntime.ConfigID != inputs.ConfigID ||
+				len(canonicalRuntime.AuthOAuthResources) != 2 ||
 				canonicalRuntime.AuthOAuthResources[1].VerifierAudience != wantAudience ||
-				canonicalRuntime.AuthOAuthResources[1].Enabled ||
-				canonicalRuntime.AuthOAuthResources[1].VerifierCallerServiceAccount != "" {
+				canonicalRuntime.AuthOAuthResources[1].Enabled != wantEnabled ||
+				canonicalRuntime.AuthOAuthResources[1].VerifierCallerServiceAccount != wantCaller {
 				t.Fatalf("canonical %s runtime verifier policy was not read back exactly", environment)
 			}
 
