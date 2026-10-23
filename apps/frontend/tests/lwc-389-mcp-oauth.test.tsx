@@ -1,5 +1,7 @@
 import React from 'react';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
+import enMessages from '@/messages/en.json';
+import zhTWMessages from '@/messages/zh-TW.json';
 
 const mocks = vi.hoisted(() => ({
   accessToken: 'web-session-token',
@@ -128,6 +130,23 @@ describe('LWC-389 MCP OAuth frontend', () => {
     expect(screen.getByText('MCPOAuth.queryAndRawWrite')).toBeDefined();
     expect(screen.queryByText('MCPOAuth.queryOnly')).toBeNull();
     expect(mocks.decideConsent).not.toHaveBeenCalled();
+  });
+
+  it('describes bounded URL imports for raw-write consent and setup in both locales', () => {
+    const enConsent = enMessages.MCPOAuth.queryAndRawWrite;
+    const zhTWConsent = zhTWMessages.MCPOAuth.queryAndRawWrite;
+
+    expect(enConsent).toContain('import URLs only when the extraction is clearly usable');
+    expect(enConsent).toContain('re-importing the same URL refreshes its existing entry');
+    expect(enConsent).toContain('verify facts');
+    expect(enConsent).not.toContain('cannot import URLs');
+    expect(zhTWConsent).toContain('只在 URL 擷取內容明確可用時匯入網址');
+    expect(zhTWConsent).toContain('重新匯入相同網址會更新既有來源');
+    expect(zhTWConsent).toContain('驗證事實');
+    expect(zhTWConsent).not.toContain('不能匯入網址');
+
+    expect(enMessages.MCPOAuth.setupIntro).toContain('import URL extractions only when the extracted content is clearly usable');
+    expect(zhTWMessages.MCPOAuth.setupIntro).toContain('只有在 URL 擷取內容明確可用時才會匯入網址');
   });
 
   it('posts an explicit denial and validates the Hermes callback before redirecting', async () => {
