@@ -206,7 +206,12 @@ function RawClientSession() {
     if (!requestedFile) return;
 
     openedQueryFileRef.current = rawViewKey;
-    void openRawPreview(requestedFile);
+    const previewGeneration = previewRequestRef.current;
+    window.setTimeout(() => {
+      if (previewRequestRef.current === previewGeneration && previousViewKeyRef.current === rawViewKey) {
+        void openRawPreview(requestedFile);
+      }
+    }, 0);
   }, [error, files, highlightedFile, loading, openRawPreview, rawViewKey]);
 
   const closePreview = useCallback(() => {
