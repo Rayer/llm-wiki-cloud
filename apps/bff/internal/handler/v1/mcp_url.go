@@ -57,7 +57,7 @@ var importURLOutputSchema = json.RawMessage(`{
 		},"required":["path","sha256","status"],"additionalProperties":false},
 		"raw_url":{"type":"string","format":"uri"},
 		"processing_status":{"type":"string","enum":["not_started"]},
-		"failure_stage":{"type":"string","enum":["setup","validation","fetch","quality","storage","commit"]},
+		"failure_stage":{"type":"string","enum":["setup","validation","fetch","size","quality","storage","commit"]},
 		"reason":{"type":"string"}
 	},
 	"required":["status","processing_status"],

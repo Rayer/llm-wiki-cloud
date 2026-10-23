@@ -107,10 +107,10 @@ func (e *JevEvaluator) Evaluate(ctx context.Context, input QualityInput) (Qualit
 		"false": "The supplied Markdown is empty or consists mainly of a blocking/error/loading shell without readable main content.",
 	}
 	if input.RequireTitleBodyConsistency {
-		readableInstructions = contextRule + " Does the supplied Markdown contain independently readable main content that can stand on its own and is reasonably consistent with the supplied title? An unrelated title/body pair or an extraction that omits the main content is not usable. A short valid notice, table, list, or reference page can qualify when its content matches the title and context. Words about JavaScript, CAPTCHA, login, or access do not by themselves make content unreadable. Judge the supplied extraction only; do not claim factual accuracy or completeness beyond the visible evidence."
+		readableInstructions = contextRule + " Does the supplied Markdown contain independently readable main content that can stand on its own and is reasonably consistent with the supplied title? An unrelated title/body pair or an extraction that omits the main content is not usable. Reject a visibly cut-off extraction, including one ending abruptly mid-sentence or before its main section is complete, even when provider metadata does not mark it truncated. Do not infer missing source material when the supplied text gives no evidence either way. A short valid notice, table, list, or reference page can qualify when its content matches the title and context. Words about JavaScript, CAPTCHA, login, or access do not by themselves make content unreadable. Judge the supplied extraction only; do not claim factual accuracy or completeness beyond the visible evidence."
 		readableCriteria = map[string]string{
 			"true":  "The supplied Markdown contains readable main content reasonably consistent with the title; a short notice, table, list, or reference page can qualify when it matches the title and context.",
-			"false": "The title is unrelated to the supplied Markdown, the extraction omits its main content, or it consists mainly of a blocking/error/loading shell without readable main content.",
+			"false": "The title is unrelated to the supplied Markdown, the extraction visibly ends before its main content is complete, it omits its main content, or it consists mainly of a blocking/error/loading shell without readable main content.",
 		}
 	}
 	payload := struct {

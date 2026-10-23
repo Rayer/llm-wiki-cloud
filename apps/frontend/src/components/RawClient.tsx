@@ -18,10 +18,12 @@ type RawPreview = {
   file: RawFile;
   kind: RawPreviewKind;
   content: string;
+  viewKey: string;
 };
 
 type RawClientError = { message: string; requestId?: string; diagnosticId?: string };
-type RawPreviewError = RawClientError & { fileName: string };
+type RawPreviewError = RawClientError & { fileName: string; viewKey: string };
+const EMPTY_RAW_FILES: RawFile[] = [];
 
 function formatBytes(bytes: number) {
   if (!Number.isFinite(bytes) || bytes <= 0) return '0 B';
@@ -67,19 +69,24 @@ export function RawClient() {
 
 function RawClientSession() {
   const { t } = useT();
-  const { currentProject, token } = useWorkspace();
+  const { currentProject, projects, token } = useWorkspace();
   const currentProjectId = currentProject?.id;
   const searchParams = useSearchParams();
   const projectParam = searchParams.get('project');
   const hasProjectTarget = projectParam !== null;
   const requestedProjectId = projectParam?.trim() ?? '';
   const rawProjectId = hasProjectTarget ? requestedProjectId || undefined : currentProjectId;
+  const linkedProjectName = rawProjectId
+    ? projects.find((project) => project.id === rawProjectId)?.name ?? rawProjectId
+    : '';
   const highlightedFile = searchParams.get('file') ?? '';
   const rawScopeKey = JSON.stringify([hasProjectTarget, rawProjectId ?? '']);
   const rawViewKey = JSON.stringify([rawScopeKey, highlightedFile]);
   const [files, setFiles] = useState<RawFile[]>([]);
+  const [filesScopeKey, setFilesScopeKey] = useState(rawScopeKey);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<RawClientError | null>(null);
+  const [errorScopeKey, setErrorScopeKey] = useState(rawScopeKey);
   const [preview, setPreview] = useState<RawPreview | null>(null);
   const [previewLoading, setPreviewLoading] = useState(false);
   const [previewError, setPreviewError] = useState<RawPreviewError | null>(null);
@@ -88,11 +95,17 @@ function RawClientSession() {
   const previewRequestRef = useRef(0);
   const downloadRequestRef = useRef(0);
   const [downloadError, setDownloadError] = useState<RawPreviewError | null>(null);
-  const { copyErrorId, errorIdCopied } = useErrorIdCopy(error, error?.requestId, error?.diagnosticId);
+  const scopedFiles = filesScopeKey === rawScopeKey ? files : EMPTY_RAW_FILES;
+  const scopedError = errorScopeKey === rawScopeKey ? error : null;
+  const scopedLoading = loading || filesScopeKey !== rawScopeKey;
+  const scopedPreview = preview?.viewKey === rawViewKey ? preview : null;
+  const scopedPreviewError = previewError?.viewKey === rawViewKey ? previewError : null;
+  const scopedDownloadError = downloadError?.viewKey === rawViewKey ? downloadError : null;
+  const { copyErrorId, errorIdCopied } = useErrorIdCopy(scopedError, scopedError?.requestId, scopedError?.diagnosticId);
   const { copyErrorId: copyPreviewErrorId, errorIdCopied: previewErrorIdCopied } =
-    useErrorIdCopy(previewError, previewError?.requestId, previewError?.diagnosticId);
+    useErrorIdCopy(scopedPreviewError, scopedPreviewError?.requestId, scopedPreviewError?.diagnosticId);
   const { copyErrorId: copyDownloadErrorId, errorIdCopied: downloadErrorIdCopied } =
-    useErrorIdCopy(downloadError, downloadError?.requestId, downloadError?.diagnosticId);
+    useErrorIdCopy(scopedDownloadError, scopedDownloadError?.requestId, scopedDownloadError?.diagnosticId);
 
   const previousScopeKeyRef = useRef(rawScopeKey);
   const previousViewKeyRef = useRef(rawViewKey);
@@ -119,6 +132,8 @@ function RawClientSession() {
     const request = ++listRequestRef.current;
     if (hasProjectTarget && !rawProjectId) {
       setFiles([]);
+      setFilesScopeKey(rawScopeKey);
+      setErrorScopeKey(rawScopeKey);
       setError({ message: 'This raw link does not identify a Project.' });
       setLoading(false);
       return;
@@ -127,20 +142,25 @@ function RawClientSession() {
     try {
       const data = await getRawFiles(rawProjectId);
       if (listRequestRef.current !== request) return;
+      setFilesScopeKey(rawScopeKey);
       setError(null);
+      setErrorScopeKey(rawScopeKey);
       setFiles(data);
     } catch (cause: unknown) {
       if (listRequestRef.current === request) {
+        setFiles([]);
+        setFilesScopeKey(rawScopeKey);
         setError({
           message: cause instanceof Error ? cause.message : String(cause),
           requestId: cause instanceof ApiError ? cause.requestId : undefined,
           diagnosticId: cause instanceof ApiError ? cause.diagnosticId : undefined,
         });
+        setErrorScopeKey(rawScopeKey);
       }
     } finally {
       if (listRequestRef.current === request) setLoading(false);
     }
-  }, [hasProjectTarget, rawProjectId]);
+  }, [hasProjectTarget, rawProjectId, rawScopeKey]);
 
   const handleUploadsSettled = useCallback(({ projectId }: RawUploadsSettled) => {
     if (projectId !== rawProjectId) return;
@@ -160,15 +180,16 @@ function RawClientSession() {
   }, [rawProjectId, refreshRawFiles, token]);
 
   const sortedFiles = useMemo(
-    () => [...files].sort((a, b) => a.name.localeCompare(b.name)),
-    [files],
+    () => [...scopedFiles].sort((a, b) => a.name.localeCompare(b.name)),
+    [scopedFiles],
   );
 
   const openRawPreview = useCallback(async (file: RawFile) => {
+    if (hasProjectTarget && !rawProjectId) return;
     const request = ++previewRequestRef.current;
     downloadRequestRef.current += 1;
     const kind = rawPreviewKind(file.name);
-    setPreview({ file, kind, content: '' });
+    setPreview({ file, kind, content: '', viewKey: rawViewKey });
     setPreviewError(null);
     setDownloadError(null);
 
@@ -181,7 +202,7 @@ function RawClientSession() {
     try {
       const content = await getRawFilePreview(file.name, rawProjectId);
       if (previewRequestRef.current === request) {
-        setPreview((current) => current?.file.name === file.name ? { ...current, content } : current);
+        setPreview((current) => current?.viewKey === rawViewKey && current.file.name === file.name ? { ...current, content } : current);
       }
     } catch (err) {
       if (previewRequestRef.current === request) {
@@ -190,19 +211,20 @@ function RawClientSession() {
           requestId: err instanceof ApiError ? err.requestId : undefined,
           diagnosticId: err instanceof ApiError ? err.diagnosticId : undefined,
           fileName: file.name,
+          viewKey: rawViewKey,
         });
       }
     } finally {
       if (previewRequestRef.current === request) setPreviewLoading(false);
     }
-  }, [rawProjectId, t]);
+  }, [hasProjectTarget, rawProjectId, rawViewKey, t]);
 
   useEffect(() => {
-    if (!highlightedFile || loading || error || openedQueryFileRef.current === rawViewKey) {
+    if (!highlightedFile || hasProjectTarget && !rawProjectId || scopedLoading || scopedError || openedQueryFileRef.current === rawViewKey) {
       return;
     }
 
-    const requestedFile = files.find((file) => file.name === highlightedFile);
+    const requestedFile = scopedFiles.find((file) => file.name === highlightedFile);
     if (!requestedFile) return;
 
     openedQueryFileRef.current = rawViewKey;
@@ -212,7 +234,7 @@ function RawClientSession() {
         void openRawPreview(requestedFile);
       }
     }, 0);
-  }, [error, files, highlightedFile, loading, openRawPreview, rawViewKey]);
+  }, [hasProjectTarget, highlightedFile, openRawPreview, rawProjectId, rawViewKey, scopedError, scopedFiles, scopedLoading]);
 
   const closePreview = useCallback(() => {
     previewRequestRef.current += 1;
@@ -224,17 +246,17 @@ function RawClientSession() {
   }, []);
 
   useEffect(() => {
-    if (!preview) return;
+    if (!scopedPreview) return;
     const handler = (event: KeyboardEvent) => {
       if (event.key === 'Escape') closePreview();
     };
     window.addEventListener('keydown', handler);
     return () => window.removeEventListener('keydown', handler);
-  }, [closePreview, preview]);
+  }, [closePreview, scopedPreview]);
 
   async function downloadRawFile() {
-    if (!preview) return;
-    const selectedPreview = preview;
+    if (!scopedPreview || hasProjectTarget && !rawProjectId) return;
+    const selectedPreview = scopedPreview;
     const projectId = rawProjectId;
     const request = ++downloadRequestRef.current;
     setDownloadError(null);
@@ -257,6 +279,7 @@ function RawClientSession() {
           requestId: err instanceof ApiError ? err.requestId : undefined,
           diagnosticId: err instanceof ApiError ? err.diagnosticId : undefined,
           fileName: selectedPreview.file.name,
+          viewKey: rawViewKey,
         });
       }
     }
@@ -271,6 +294,11 @@ function RawClientSession() {
         <p className="mt-2 max-w-2xl text-zinc-400">
           {t('Raw.description')}
         </p>
+        {hasProjectTarget && linkedProjectName ? (
+          <p className="mt-2 text-sm text-emerald-200" role="status">
+            {t('Raw.linkedProject', { project: linkedProjectName })}
+          </p>
+        ) : null}
       </header>
 
       {currentProject && !hasProjectTarget ? (
@@ -282,12 +310,12 @@ function RawClientSession() {
         />
       ) : null}
 
-      {loading ? <LoadingState label={t('Raw.loading')} /> : null}
-      {error ? (
+      {scopedLoading ? <LoadingState label={t('Raw.loading')} /> : null}
+      {scopedError ? (
         <ErrorState
-          message={error.message}
-          requestId={error.requestId}
-          diagnosticId={error.diagnosticId}
+          message={scopedError.message}
+          requestId={scopedError.requestId}
+          diagnosticId={scopedError.diagnosticId}
           requestIdLabel={t('QueryErrors.requestId')}
           diagnosticIdLabel={t('QueryErrors.diagnosticId')}
           copyErrorIdLabel={t('QueryErrors.copyDiagnosticId')}
@@ -296,11 +324,11 @@ function RawClientSession() {
           onCopyErrorId={copyErrorId}
         />
       ) : null}
-      {!loading && !error && sortedFiles.length === 0 ? (
+      {!scopedLoading && !scopedError && sortedFiles.length === 0 ? (
         <EmptyState message={t('Raw.empty')} />
       ) : null}
 
-      {!loading && !error && sortedFiles.length > 0 ? (
+      {!scopedLoading && !scopedError && sortedFiles.length > 0 ? (
         <Surface variant="glass" className="overflow-hidden">
           <div className="overflow-x-auto">
             <table className="min-w-full text-left text-sm">
@@ -365,7 +393,7 @@ function RawClientSession() {
         </Surface>
       ) : null}
 
-      {preview ? (
+      {scopedPreview ? (
         <div
           className="fixed inset-0 z-50 flex items-center justify-center bg-black/70 p-4 backdrop-blur-sm"
           onClick={closePreview}
@@ -377,9 +405,9 @@ function RawClientSession() {
           >
             <div className="flex items-start justify-between gap-4 border-b border-white/10 p-4">
               <div className="min-w-0">
-                <h2 className="truncate text-lg font-semibold text-white">{preview.file.name}</h2>
+                <h2 className="truncate text-lg font-semibold text-white">{scopedPreview.file.name}</h2>
                 <p className="mt-1 text-sm text-zinc-400">
-                  {preview.kind === 'download' ? t('Raw.previewUnavailable') : t('Raw.previewTitle')}
+                  {scopedPreview.kind === 'download' ? t('Raw.previewUnavailable') : t('Raw.previewTitle')}
                 </p>
               </div>
               <button
@@ -395,11 +423,11 @@ function RawClientSession() {
 
             <div className="min-h-0 flex-1 overflow-auto p-4">
               {previewLoading ? <LoadingState label={t('Raw.loadingPreview')} /> : null}
-              {previewError ? (
+              {scopedPreviewError ? (
                 <ErrorState
-                  message={previewError.message}
-                  requestId={previewError.requestId}
-                  diagnosticId={previewError.diagnosticId}
+                  message={scopedPreviewError.message}
+                  requestId={scopedPreviewError.requestId}
+                  diagnosticId={scopedPreviewError.diagnosticId}
                   requestIdLabel={t('QueryErrors.requestId')}
                   diagnosticIdLabel={t('QueryErrors.diagnosticId')}
                   copyErrorIdLabel={t('QueryErrors.copyDiagnosticId')}
@@ -408,11 +436,11 @@ function RawClientSession() {
                   onCopyErrorId={copyPreviewErrorId}
                 />
               ) : null}
-              {downloadError ? (
+              {scopedDownloadError ? (
                 <ErrorState
-                  message={downloadError.message}
-                  requestId={downloadError.requestId}
-                  diagnosticId={downloadError.diagnosticId}
+                  message={scopedDownloadError.message}
+                  requestId={scopedDownloadError.requestId}
+                  diagnosticId={scopedDownloadError.diagnosticId}
                   requestIdLabel={t('QueryErrors.requestId')}
                   diagnosticIdLabel={t('QueryErrors.diagnosticId')}
                   copyErrorIdLabel={t('QueryErrors.copyDiagnosticId')}
@@ -421,20 +449,20 @@ function RawClientSession() {
                   onCopyErrorId={copyDownloadErrorId}
                 />
               ) : null}
-              {!previewLoading && !previewError && preview.kind === 'markdown' ? (
+              {!previewLoading && !scopedPreviewError && scopedPreview.kind === 'markdown' ? (
                 <div className="rounded-md border border-white/10 bg-black/20 p-4">
-                  <MarkdownView content={preview.content} />
+                  <MarkdownView content={scopedPreview.content} />
                 </div>
               ) : null}
-              {!previewLoading && !previewError && preview.kind === 'html' ? (
+              {!previewLoading && !scopedPreviewError && scopedPreview.kind === 'html' ? (
                 <iframe
-                  title={t('Raw.previewAria', { file: preview.file.name })}
-                  srcDoc={sanitizeRawHtml(preview.content)}
+                  title={t('Raw.previewAria', { file: scopedPreview.file.name })}
+                  srcDoc={sanitizeRawHtml(scopedPreview.content)}
                   sandbox=""
                   className="h-[60vh] w-full rounded-md border border-white/10 bg-white"
                 />
               ) : null}
-              {!previewLoading && !previewError && preview.kind === 'download' ? (
+              {!previewLoading && !scopedPreviewError && scopedPreview.kind === 'download' ? (
                 <div className="rounded-md border border-white/10 bg-black/20 p-6 text-sm text-zinc-300">
                   {t('Raw.notPreviewable')}
                 </div>

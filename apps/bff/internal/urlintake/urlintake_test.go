@@ -196,7 +196,7 @@ func TestJevEvaluatorStrictAssessmentChecksTitleBodyConsistency(t *testing.T) {
 			t.Fatal(err)
 		}
 		question := payload.Questions["readable_content"]
-		if !strings.Contains(question.Instructions, "consistent with the supplied title") || !strings.Contains(question.Criteria["false"], "unrelated") || !strings.Contains(question.Criteria["true"], "matches the title") {
+		if !strings.Contains(question.Instructions, "consistent with the supplied title") || !strings.Contains(question.Instructions, "cut-off extraction") || !strings.Contains(question.Criteria["false"], "unrelated") || !strings.Contains(question.Criteria["false"], "visibly ends") || !strings.Contains(question.Criteria["true"], "matches the title") {
 			t.Fatalf("strict readable-content question = %#v", question)
 		}
 		w.Header().Set("Content-Type", "application/json")

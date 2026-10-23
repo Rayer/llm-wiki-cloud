@@ -10,6 +10,7 @@ import (
 	"net/http/httptest"
 	"net/netip"
 	"net/url"
+	"slices"
 	"strings"
 	"sync/atomic"
 	"testing"
@@ -233,6 +234,37 @@ func TestMCPImportURLReportsMayHaveWrittenWhenCommitReadbackFails(t *testing.T) 
 	}
 }
 
+func TestMCPImportURLReturnsDeclaredSizeFailureStage(t *testing.T) {
+	root := localfs.New(t.TempDir())
+	service := urlintake.NewService(
+		mcpURLFetcherFunc(func(context.Context, string) (urlintake.Page, error) {
+			return urlintake.Page{}, &urlintake.ProviderFailure{Kind: urlintake.FailureTooLarge}
+		}),
+		mcpURLEvaluatorFunc(func(context.Context, urlintake.QualityInput) (urlintake.QualityEvaluation, error) {
+			t.Fatal("size failure must stop before quality evaluation")
+			return urlintake.QualityEvaluation{}, nil
+		}),
+		func(scope urlintake.ActorProject) (urlintake.ProjectStore, error) {
+			return root.WithScope(scope.ActorID, scope.ProjectID), nil
+		},
+		urlintake.DefaultQualityThresholds,
+	)
+	service.Resolver = mcpURLResolver{}
+	h := New(root, nil, nil, nil, nil, nil)
+	h.SetURLIntakeService(service)
+	h.SetMCPFrontendOrigin("https://wiki.trusted.example")
+	identity := mcpProjectKeyIdentity{userID: "user", projectID: "project", keyID: "write-grant", capabilities: []string{mcpQueryCapability, mcpRawWriteCapability}}
+	response := serveMCPRequest(t, h, identity, mcpToolCallBody(1, "import_url", `{"url":"https://example.com/too-large"}`))
+	payload := mcpStructuredResult(t, response)
+	if payload["status"] != "rejected" || payload["failure_stage"] != "size" || payload["raw_url"] != nil || payload["storage"] != nil {
+		t.Fatalf("oversized import payload = %#v", payload)
+	}
+	files, err := root.WithScope(identity.userID, identity.projectID).ListRawFiles(context.Background())
+	if err != nil || len(files) != 0 {
+		t.Fatalf("oversized import changed raw: files=%v err=%v", files, err)
+	}
+}
+
 func TestMCPImportURLOutputSchemaAndOriginAreConstrained(t *testing.T) {
 	var inputSchema struct {
 		Properties map[string]json.RawMessage `json:"properties"`
@@ -255,6 +287,15 @@ func TestMCPImportURLOutputSchemaAndOriginAreConstrained(t *testing.T) {
 	}
 	if schema.Properties["raw_url"] == nil || schema.Properties["storage"] == nil || schema.Properties["failure_stage"] == nil || schema.Additional {
 		t.Fatalf("import_url output schema = %#v", schema)
+	}
+	var failureStage struct {
+		Enum []string `json:"enum"`
+	}
+	if err := json.Unmarshal(schema.Properties["failure_stage"], &failureStage); err != nil {
+		t.Fatal(err)
+	}
+	if !slices.Contains(failureStage.Enum, "size") {
+		t.Fatalf("import_url failure stage enum = %v", failureStage.Enum)
 	}
 	if !strings.Contains(mcpImportURLToolDescription, "not factual accuracy") || !strings.Contains(mcpImportURLToolDescription, "does not start") {
 		t.Fatalf("import_url description overstates behavior: %q", mcpImportURLToolDescription)

@@ -830,6 +830,7 @@
   "Raw": {
     "title": "原文檔案",
     "description": "等待 Pipeline 處理或已處理的專案來源檔案。",
+    "linkedProject": "目前顯示的原文屬於專案：{project}。",
       "uploadTitle": "加入原文檔案",
       "uploadHint": "可選擇一個或多個支援格式的檔案（最多同時上傳 3 個）。檔案會先列為待處理；請前往主頁執行 Pipeline，再整理與搜尋內容。",
     "loading": "正在載入原文檔案",
