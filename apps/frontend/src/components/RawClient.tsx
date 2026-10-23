@@ -77,7 +77,7 @@ function RawClientSession() {
   const requestedProjectId = projectParam?.trim() ?? '';
   const rawProjectId = hasProjectTarget ? requestedProjectId || undefined : currentProjectId;
   const linkedProjectName = rawProjectId
-    ? projects.find((project) => project.id === rawProjectId)?.name ?? rawProjectId
+    ? projects?.find((project) => project.id === rawProjectId)?.name ?? rawProjectId
     : '';
   const highlightedFile = searchParams.get('file') ?? '';
   const rawScopeKey = JSON.stringify([hasProjectTarget, rawProjectId ?? '']);
