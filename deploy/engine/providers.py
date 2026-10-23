@@ -1134,8 +1134,7 @@ class Providers:
             require(len({x['name'] for x in prior['env']}) == len(prior['env']), 'unrepresentable-job-env')
             prior_otlp = next((x['value'] for x in prior['env']
                                if x['name'] == auth_config.OTLP_ENDPOINT_ENV), None)
-            require(prior_otlp in (None, auth_config.OTLP_ENDPOINT) if self.p['environment'] == 'development'
-                    else prior_otlp is None, 'incompatible-prior-worker-otlp-endpoint')
+            require(prior_otlp in (None, auth_config.OTLP_ENDPOINT), 'incompatible-prior-worker-otlp-endpoint')
             prior_sampling = next((x['value'] for x in prior['env']
                                    if x['name'] == auth_config.DEV_FULL_TRACE_SAMPLING_ENV), None)
             require(prior_sampling in (None, '1') if self.p['environment'] == 'development'
@@ -1191,7 +1190,9 @@ class Providers:
                 if allow_unconfigured_dev:
                     valid_endpoint = valid_endpoint or endpoint is None
             else:
-                valid_endpoint = endpoint is None
+                valid_endpoint = endpoint == auth_config.OTLP_ENDPOINT
+                if allow_unconfigured_dev:
+                    valid_endpoint = valid_endpoint or endpoint is None
         else:
             valid_endpoint = endpoint == expected_endpoint
         if expected_sampling is ...:
@@ -1381,8 +1382,8 @@ class Providers:
         expected = artifact['env'] if prior else [
             {'name': 'GCP_PROJECT', 'value': self.p['gcp']['project_id']},
             {'name': 'FIRESTORE_DATABASE_ID', 'value': self.p['bff']['firestore_database_id']},
-            *([{'name': auth_config.OTLP_ENDPOINT_ENV, 'value': auth_config.OTLP_ENDPOINT},
-               {'name': auth_config.DEV_FULL_TRACE_SAMPLING_ENV, 'value': '1'}]
+            {'name': auth_config.OTLP_ENDPOINT_ENV, 'value': auth_config.OTLP_ENDPOINT},
+            *([{'name': auth_config.DEV_FULL_TRACE_SAMPLING_ENV, 'value': '1'}]
               if self.p['environment'] == 'development' else [])]
         if sorted(env, key=lambda x:x['name']) != sorted(expected, key=lambda x:x['name']):
             return False
@@ -1491,26 +1492,26 @@ class Providers:
         else:
             if c == 'worker':
                 pipeline_config = artifact.get('pipeline_config')
-                endpoint_args = ('|'+auth_config.OTLP_ENDPOINT_ENV+'='+auth_config.OTLP_ENDPOINT+
-                                 '|'+auth_config.DEV_FULL_TRACE_SAMPLING_ENV+'=1'
-                                 if self.p['environment'] == 'development' else '')
+                endpoint_args = '|'+auth_config.OTLP_ENDPOINT_ENV+'='+auth_config.OTLP_ENDPOINT
+                if self.p['environment'] == 'development':
+                    endpoint_args += '|'+auth_config.DEV_FULL_TRACE_SAMPLING_ENV+'=1'
                 args += ['--update-env-vars', '^|^GCP_PROJECT='+self.p['gcp']['project_id']+
                          '|FIRESTORE_DATABASE_ID='+self.p['bff']['firestore_database_id']+endpoint_args]
                 if self.p['environment'] == 'production':
-                    args += ['--remove-env-vars', auth_config.OTLP_ENDPOINT_ENV+','+
-                             auth_config.DEV_FULL_TRACE_SAMPLING_ENV]
+                    args += ['--remove-env-vars', auth_config.DEV_FULL_TRACE_SAMPLING_ENV]
                 if pipeline_config is not None:
                     self.upload_pipeline_config(pipeline_config)
                     key, value = pipeline_config_contract.secret_cli_binding(pipeline_config['secret'])
                     args += ['--update-secrets', key+'='+value,
                              '--task-timeout', str(pipeline_config['timeout_seconds'])+'s']
             elif c == 'exportjob':
+                endpoint_args = auth_config.OTLP_ENDPOINT_ENV+'='+auth_config.OTLP_ENDPOINT
                 if self.p['environment'] == 'development':
-                    args += ['--update-env-vars', '^|^'+auth_config.OTLP_ENDPOINT_ENV+'='+auth_config.OTLP_ENDPOINT+
-                             '|'+auth_config.DEV_FULL_TRACE_SAMPLING_ENV+'=1']
+                    endpoint_args += '|'+auth_config.DEV_FULL_TRACE_SAMPLING_ENV+'=1'
+                    args += ['--update-env-vars', '^|^'+endpoint_args]
                 else:
-                    args += ['--remove-env-vars', auth_config.OTLP_ENDPOINT_ENV+','+
-                             auth_config.DEV_FULL_TRACE_SAMPLING_ENV]
+                    args += ['--update-env-vars', '^|^'+endpoint_args,
+                             '--remove-env-vars', auth_config.DEV_FULL_TRACE_SAMPLING_ENV]
             self.cloud(c, *args, mutation=True)
 
     def reconcile_candidate(self, c, artifact, candidate, save):

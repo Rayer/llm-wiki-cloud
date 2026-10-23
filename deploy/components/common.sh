@@ -456,7 +456,7 @@ exportjob_runtime_matches() {
       elif $environment == "development" then
         (($matches|length) == 0 or $matches[0].value == "https://telemetry.googleapis.com") and
         (($sampling|length) == 0 or $sampling[0].value == "1")
-      else ($matches|length) == 0 and ($sampling|length) == 0 end;
+      else (($matches|length) == 0 or $matches[0].value == "https://telemetry.googleapis.com") and ($sampling|length) == 0 end;
     def service_account: (template.serviceAccount // template.serviceAccountName);
     def timeout_value: (template.timeout // template.timeoutSeconds);
     type == "object" and (containers|type == "array" and length == 1) and
@@ -472,7 +472,7 @@ exportjob_runtime_matches() {
 exportjob_otlp_desired_matches() {
   local job_json="$1" environment expected
   environment=$(plan_json '.environment')
-  expected='{}'
+  expected='{"OTEL_EXPORTER_OTLP_ENDPOINT":"https://telemetry.googleapis.com"}'
   if [[ "$environment" == development ]]; then
     expected='{"OTEL_EXPORTER_OTLP_ENDPOINT":"https://telemetry.googleapis.com","LWC_DEV_FULL_TRACE_SAMPLING":"1"}'
   fi

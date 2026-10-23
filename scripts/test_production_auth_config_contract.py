@@ -29,7 +29,8 @@ def candidate(plan):
         'spec': {
             'serviceAccountName': expected['service_account'],
             'containers': [{'image': IMAGE,
-                            'env': [{'name': 'LWC_APP_CONFIG_PATH', 'value': '/var/run/lwc-auth-config/auth.json'}],
+                            'env': [{'name': name, 'value': value}
+                                    for name, value in expected['env'].items()],
                             'volumeMounts': [{'name': volume_name, 'mountPath': '/var/run/lwc-auth-config'}]}],
             'volumes': [{'name': volume_name, 'secret': {'secretName': alias,
                                                          'items': [{'key': VERSION, 'path': 'auth.json'}]}}],
@@ -87,6 +88,12 @@ class ProductionAuthConfigContractTests(unittest.TestCase):
                 {'name': 'JWT_SECRET', 'valueFrom': {'secretKeyRef': {'name': 'jwt-secret-prod', 'key': 'latest'}}}),
             'development sampling enabled in production': lambda r: r['spec']['containers'][0]['env'].append(
                 {'name': 'LWC_DEV_FULL_TRACE_SAMPLING', 'value': '1'}),
+            'wrong production endpoint': lambda r: next(
+                entry for entry in r['spec']['containers'][0]['env']
+                if entry['name'] == 'OTEL_EXPORTER_OTLP_ENDPOINT').update(value='https://example.test'),
+            'missing production endpoint': lambda r: r['spec']['containers'][0].update(env=[
+                entry for entry in r['spec']['containers'][0]['env']
+                if entry['name'] != 'OTEL_EXPORTER_OTLP_ENDPOINT']),
         }
         for name, edit in tamper.items():
             with self.subTest(name=name):
@@ -113,6 +120,8 @@ class ProductionAuthConfigContractTests(unittest.TestCase):
             self.assertIn(':' + VERSION, args.stdout)
             self.assertIn('--remove-env-vars', args.stdout)
             self.assertIn('LWC_DEV_FULL_TRACE_SAMPLING', args.stdout)
+            self.assertIn('OTEL_EXPORTER_OTLP_ENDPOINT=https://telemetry.googleapis.com', args.stdout)
+            self.assertNotIn('OTEL_EXPORTER_OTLP_ENDPOINT', args.stdout.split('--remove-env-vars\n', 1)[1].splitlines()[0])
             self.assertIn('--remove-secrets', args.stdout)
             self.assertNotIn(self.runtime['config_id'], args.stdout)
 

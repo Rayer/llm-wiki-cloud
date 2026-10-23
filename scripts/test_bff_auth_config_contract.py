@@ -126,6 +126,8 @@ class BFFConfigFileContractTests(unittest.TestCase):
     def test_production_bff_rejects_development_full_sampling_flag(self):
         plan = production_plan()
         runtime = candidate('production', plan)
+        self.assertIn('OTEL_EXPORTER_OTLP_ENDPOINT',
+                      {entry['name'] for entry in runtime['spec']['containers'][0]['env']})
         script = fixtures.ROOT / 'deploy/components/auth_config.py'
         with tempfile.TemporaryDirectory() as directory:
             path = Path(directory) / 'plan.json'
