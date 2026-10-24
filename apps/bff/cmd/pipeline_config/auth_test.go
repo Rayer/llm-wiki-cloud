@@ -166,7 +166,9 @@ func TestRealPklAuthPrepareProducesLocalFileAndCloudInputStages(t *testing.T) {
 				wantCaller = "daily-brief-runtime@daily-brief-service.iam.gserviceaccount.com"
 				wantEnabled = true
 			} else if environment == "prod" {
-				wantAudience = ""
+				wantAudience = "https://llm-wiki-auth-a5nkmux6pq-de.a.run.app"
+				wantCaller = "daily-brief-runtime@daily-brief-service.iam.gserviceaccount.com"
+				wantEnabled = true
 			}
 			if len(projection.OAuthResources) != 2 {
 				t.Fatalf("%s Pkl Auth projection has %d OAuth resources, want 2", environment, len(projection.OAuthResources))

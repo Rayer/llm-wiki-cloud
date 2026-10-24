@@ -665,7 +665,7 @@ local prodAuth = new AuthConfig {
     new AuthOAuthResource {
       id = "daily-brief"
       kind = "fixed"
-      enabled = false
+      enabled = true
       uri = "https://brief.rayer.idv.tw/mcp"
       name = "Daily Brief"
       scopes = new Listing {
@@ -673,8 +673,8 @@ local prodAuth = new AuthConfig {
       }
       allowed_scope_sets = new Listing { new Listing { "brief:manage" } }
       default_scope_set = new Listing {}
-      verifier_caller_service_account = ""
-      verifier_audience = ""
+      verifier_caller_service_account = "daily-brief-runtime@daily-brief-service.iam.gserviceaccount.com"
+      verifier_audience = "https://llm-wiki-auth-a5nkmux6pq-de.a.run.app"
     }
   }
   config_secret_resource = "projects/llm-wiki-cloud/secrets/lwc-auth-app-config-prod"
