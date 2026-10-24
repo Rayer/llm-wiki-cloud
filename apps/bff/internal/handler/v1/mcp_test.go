@@ -41,14 +41,20 @@ func TestMCPQuerySchemaIsQueryOnly(t *testing.T) {
 		t.Fatalf("input schema required=%v additionalProperties=%v", schema.Required, schema.AdditionalProperties)
 	}
 	var mode struct {
-		Enum    []string `json:"enum"`
-		Default string   `json:"default"`
+		Enum        []string `json:"enum"`
+		Default     string   `json:"default"`
+		Description string   `json:"description"`
 	}
 	if err := json.Unmarshal(schema.Properties["mode"], &mode); err != nil {
 		t.Fatal(err)
 	}
 	if strings.Join(mode.Enum, ",") != "wiki,full" || mode.Default != "wiki" {
 		t.Fatalf("mode enum/default = %v/%q", mode.Enum, mode.Default)
+	}
+	if !strings.Contains(mode.Description, "wiki returns matching Project evidence and may synthesize") ||
+		!strings.Contains(mode.Description, "full can return a disclosed model_prior answer") ||
+		!strings.Contains(mode.Description, "Defaults to wiki") {
+		t.Fatalf("mode description does not match query behavior: %q", mode.Description)
 	}
 	if !strings.Contains(string(queryProjectOutputSchema), `"citations"`) || !strings.Contains(string(queryProjectOutputSchema), `"disclosure_required"`) {
 		t.Fatal("output schema omits QueryResponse fields")

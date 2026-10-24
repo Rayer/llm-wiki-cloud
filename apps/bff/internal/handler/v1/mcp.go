@@ -45,7 +45,7 @@ var queryProjectInputSchema = json.RawMessage(`{
 	"type":"object",
 	"properties":{
 		"q":{"type":"string","minLength":1,"description":"Search text; whitespace-only values are rejected."},
-		"mode":{"type":"string","enum":["wiki","full"],"default":"wiki","description":"Use wiki for raw matches or full for synthesis; defaults to wiki."}
+		"mode":{"type":"string","enum":["wiki","full"],"default":"wiki","description":"wiki returns matching Project evidence and may synthesize an answer from it; full can return a disclosed model_prior answer when relevant Project evidence is unavailable. Defaults to wiki."}
 	},
 	"required":["q"],
 	"additionalProperties":false

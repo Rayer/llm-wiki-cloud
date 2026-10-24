@@ -16,7 +16,7 @@ import (
 
 func TestMCPMetadataUsesCaCForModernAndLegacyWireMethods(t *testing.T) {
 	metadata := &config.BFFMCP{
-		Instructions: "configured shared instructions",
+		Instructions: "After a confirmed successful import_url, return the exact raw_url from its tool result. After add_raw, report its returned status and saved path; do not invent a URL.",
 		ToolDescriptions: config.BFFMCPToolDescriptions{
 			QueryProject: "configured query description",
 			AddRaw:       "configured add description",
@@ -34,6 +34,10 @@ func TestMCPMetadataUsesCaCForModernAndLegacyWireMethods(t *testing.T) {
 	modernResult := mcpMetadataResult(t, modernDiscover)
 	if modernResult["instructions"] != metadata.Instructions || modernResult["ttlMs"] != float64(metadata.DiscoveryTTLMS) || modernResult["cacheScope"] != "private" {
 		t.Fatalf("modern discover metadata = %#v", modernResult)
+	}
+	if got := modernResult["instructions"].(string); !strings.Contains(got, "import_url") ||
+		!strings.Contains(got, "add_raw") || strings.Contains(got, "After a successful save, return the exact raw_url") {
+		t.Fatalf("delivered instructions conflate import_url raw_url with add_raw path: %q", got)
 	}
 	modernCapabilities := modernResult["capabilities"].(map[string]any)
 	if modernCapabilities["tools"].(map[string]any)["listChanged"] == true || modernCapabilities["logging"] == nil {
