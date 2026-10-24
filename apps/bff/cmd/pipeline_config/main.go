@@ -112,37 +112,38 @@ type bffPipelineSchedule struct {
 }
 
 type bffSourceProjection struct {
-	SchemaVersion                int                 `json:"schema_version"`
-	Environment                  string              `json:"environment"`
-	Target                       string              `json:"target"`
-	GCPProject                   string              `json:"gcp_project"`
-	Bucket                       string              `json:"bucket"`
-	FirestoreDatabaseID          string              `json:"firestore_database_id"`
-	AuthServiceURL               string              `json:"auth_service_url"`
-	MCPResourceOrigin            string              `json:"mcp_resource_origin"`
-	PipelineJobURL               string              `json:"pipeline_job_url"`
-	ExportJobURL                 string              `json:"export_job_url"`
-	ExportSigningServiceAccount  string              `json:"export_signing_service_account"`
-	AllowedOrigins               []string            `json:"allowed_origins"`
-	AllowedHosts                 []string            `json:"allowed_hosts"`
-	PipelineDailyLimit           int                 `json:"pipeline_daily_limit"`
-	PipelineCooldownSeconds      int                 `json:"pipeline_cooldown_seconds"`
-	PipelineMinNewRaw            int                 `json:"pipeline_min_new_raw"`
-	PipelineDemoUserIDs          []string            `json:"pipeline_demo_user_ids"`
-	AuthSessionEnvironment       string              `json:"auth_session_environment"`
-	AuthSessionMigration         string              `json:"auth_session_migration"`
-	RegistrationEnabled          *bool               `json:"registration_enabled"`
-	JWTSecretReference           bffSecretReference  `json:"jwt_secret_reference"`
-	DeepSeekAPIKeyReference      bffSecretReference  `json:"deepseek_api_key_reference"`
-	TypeSafeAPIKeyReference      *bffSecretReference `json:"typesafe_api_key_reference"`
-	ProfileRuntimeAudience       string              `json:"profile_runtime_audience"`
-	ProfileRuntimeServiceAccount string              `json:"profile_runtime_service_account"`
-	PipelineSchedule             bffPipelineSchedule `json:"pipeline_schedule"`
-	LLM                          bffLLM              `json:"llm"`
-	Query                        bffQuery            `json:"query"`
-	Local                        *bffLocal           `json:"local"`
-	PortDefault                  int                 `json:"port_default"`
-	ConfigSecretResource         string              `json:"config_secret_resource"`
+	SchemaVersion                int                  `json:"schema_version"`
+	Environment                  string               `json:"environment"`
+	Target                       string               `json:"target"`
+	GCPProject                   string               `json:"gcp_project"`
+	Bucket                       string               `json:"bucket"`
+	FirestoreDatabaseID          string               `json:"firestore_database_id"`
+	AuthServiceURL               string               `json:"auth_service_url"`
+	MCPResourceOrigin            string               `json:"mcp_resource_origin"`
+	MCP                          runtimeconfig.BFFMCP `json:"mcp"`
+	PipelineJobURL               string               `json:"pipeline_job_url"`
+	ExportJobURL                 string               `json:"export_job_url"`
+	ExportSigningServiceAccount  string               `json:"export_signing_service_account"`
+	AllowedOrigins               []string             `json:"allowed_origins"`
+	AllowedHosts                 []string             `json:"allowed_hosts"`
+	PipelineDailyLimit           int                  `json:"pipeline_daily_limit"`
+	PipelineCooldownSeconds      int                  `json:"pipeline_cooldown_seconds"`
+	PipelineMinNewRaw            int                  `json:"pipeline_min_new_raw"`
+	PipelineDemoUserIDs          []string             `json:"pipeline_demo_user_ids"`
+	AuthSessionEnvironment       string               `json:"auth_session_environment"`
+	AuthSessionMigration         string               `json:"auth_session_migration"`
+	RegistrationEnabled          *bool                `json:"registration_enabled"`
+	JWTSecretReference           bffSecretReference   `json:"jwt_secret_reference"`
+	DeepSeekAPIKeyReference      bffSecretReference   `json:"deepseek_api_key_reference"`
+	TypeSafeAPIKeyReference      *bffSecretReference  `json:"typesafe_api_key_reference"`
+	ProfileRuntimeAudience       string               `json:"profile_runtime_audience"`
+	ProfileRuntimeServiceAccount string               `json:"profile_runtime_service_account"`
+	PipelineSchedule             bffPipelineSchedule  `json:"pipeline_schedule"`
+	LLM                          bffLLM               `json:"llm"`
+	Query                        bffQuery             `json:"query"`
+	Local                        *bffLocal            `json:"local"`
+	PortDefault                  int                  `json:"port_default"`
+	ConfigSecretResource         string               `json:"config_secret_resource"`
 }
 
 type privateBindings struct {
@@ -541,7 +542,7 @@ func decodeBFFSourceProjection(data []byte, environment string) (bffSourceProjec
 	}
 	required := []string{
 		"schema_version", "environment", "target", "gcp_project", "bucket", "firestore_database_id",
-		"auth_service_url", "mcp_resource_origin", "pipeline_job_url", "export_job_url", "export_signing_service_account",
+		"auth_service_url", "mcp_resource_origin", "mcp", "pipeline_job_url", "export_job_url", "export_signing_service_account",
 		"allowed_origins", "allowed_hosts", "pipeline_daily_limit", "pipeline_cooldown_seconds",
 		"pipeline_min_new_raw", "pipeline_demo_user_ids", "auth_session_environment", "auth_session_migration",
 		"jwt_secret_reference", "deepseek_api_key_reference", "profile_runtime_audience",
@@ -599,6 +600,9 @@ func validateBFFSourceProjection(p bffSourceProjection, environment string) erro
 	}
 	if err := validateBFFOrigin(p.MCPResourceOrigin, environment == "local"); err != nil {
 		return errors.New("selected BFF mcp_resource_origin is invalid")
+	}
+	if err := runtimeconfig.ValidateBFFMCP(p.MCP); err != nil {
+		return err
 	}
 	if err := validateBFFPipelineURL(p.PipelineJobURL); err != nil {
 		return errors.New("selected BFF pipeline_job_url is invalid")
@@ -799,7 +803,7 @@ func prepareBFFRuntimeConfig(ctx context.Context, root, output string, source bf
 	runtimeFile := runtimeconfig.BFFFile{
 		SchemaVersion: source.SchemaVersion, Environment: source.Environment, Target: source.Target,
 		GCPProject: source.GCPProject, Bucket: source.Bucket, FirestoreDatabaseID: source.FirestoreDatabaseID,
-		AuthServiceURL: source.AuthServiceURL, MCPResourceOrigin: source.MCPResourceOrigin,
+		AuthServiceURL: source.AuthServiceURL, MCPResourceOrigin: source.MCPResourceOrigin, MCP: &source.MCP,
 		PipelineJobURL: source.PipelineJobURL,
 		ExportJobURL:   source.ExportJobURL, ExportSigningServiceAccount: source.ExportSigningServiceAccount,
 		AllowedOrigins: source.AllowedOrigins, AllowedHosts: source.AllowedHosts,

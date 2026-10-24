@@ -32,6 +32,7 @@ type Handler struct {
 	projectKeyService    *auth.ProjectKeyService
 	urlIntake            *urlintake.Service
 	mcpFrontendOrigin    string
+	mcpConfig            *config.BFFMCP
 	store                store.RootStore
 	firestore            *firestore.Client
 	index                *search.Index
@@ -141,6 +142,12 @@ func (h *Handler) SetURLIntakeService(service *urlintake.Service) {
 
 func (h *Handler) SetMCPFrontendOrigin(origin string) {
 	h.mcpFrontendOrigin = trustedFrontendOrigin(origin)
+}
+
+// SetMCPConfig supplies the startup-loaded CaC metadata. Nil preserves the
+// historical metadata for callers still using schema2 configs without mcp.
+func (h *Handler) SetMCPConfig(metadata *config.BFFMCP) {
+	h.mcpConfig = metadata
 }
 
 func (h *Handler) SetLocalPipelineExecutor(executor LocalPipelineExecutor) {

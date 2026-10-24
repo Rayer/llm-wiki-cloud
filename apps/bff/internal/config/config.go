@@ -101,6 +101,7 @@ type Config struct {
 	// tokens and protected-resource metadata to a project resource. Empty keeps
 	// older runtime configs loadable while leaving project OAuth unavailable.
 	MCPResourceOrigin string
+	MCP               *BFFMCP
 	// AuthOAuthResources is the loaded CaC policy used by every Auth OAuth
 	// consumer. BFF-only configs leave it empty.
 	AuthOAuthResources []AuthOAuthResource

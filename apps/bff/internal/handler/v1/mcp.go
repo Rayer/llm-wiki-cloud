@@ -34,6 +34,8 @@ const (
 	mcpRawWriteCapability = "mcp:raw:write"
 )
 
+const mcpQueryProjectToolDescription = "Read-only search of the single project bound to the supplied project key. The key grants query-only access; project and user are fixed by the credential."
+
 type queryProjectInput struct {
 	Query string `json:"q"`
 	Mode  string `json:"mode,omitempty"`
@@ -98,15 +100,43 @@ func (h *Handler) MCPHandler() http.Handler {
 }
 
 func (h *Handler) mcpSDKHandler(capabilities []string) http.Handler {
+	metadata := h.mcpConfig
+	instructions := ""
+	queryDescription := mcpQueryProjectToolDescription
+	addRawDescription := mcpAddRawToolDescription
+	importURLDescription := mcpImportURLToolDescription
+	if metadata != nil {
+		instructions = metadata.Instructions
+		queryDescription = metadata.ToolDescriptions.QueryProject
+		addRawDescription = metadata.ToolDescriptions.AddRaw
+		importURLDescription = metadata.ToolDescriptions.ImportURL
+	}
 	server := mcp.NewServer(&mcp.Implementation{
 		Name:    "llm-wiki-bff",
 		Version: buildinfo.Current().ProductVersion,
-	}, nil)
+	}, &mcp.ServerOptions{
+		Instructions: instructions,
+		Capabilities: &mcp.ServerCapabilities{Logging: &mcp.LoggingCapabilities{}, Tools: &mcp.ToolCapabilities{}},
+		SetCacheable: func(_ context.Context, request mcp.Request, cacheable *mcp.Cacheable) {
+			switch request.(type) {
+			case *mcp.ServerRequest[*mcp.DiscoverParams]:
+				cacheable.CacheScope = "private"
+				if metadata != nil {
+					cacheable.TTLMs = metadata.DiscoveryTTLMS
+				}
+			case *mcp.ListToolsRequest:
+				cacheable.CacheScope = "private"
+				if metadata != nil {
+					cacheable.TTLMs = metadata.ToolsListTTLMS
+				}
+			}
+		},
+	})
 	server.AddReceivingMiddleware(mcpRequestObservationMiddleware)
 	mcp.AddTool[queryProjectInput, any](server, &mcp.Tool{
 		Name:         "query_project",
 		Title:        "Query this project",
-		Description:  "Read-only search of the single project bound to the supplied project key. The key grants query-only access; project and user are fixed by the credential.",
+		Description:  queryDescription,
 		Annotations:  &mcp.ToolAnnotations{ReadOnlyHint: true},
 		InputSchema:  queryProjectInputSchema,
 		OutputSchema: queryProjectOutputSchema,
@@ -115,14 +145,14 @@ func (h *Handler) mcpSDKHandler(capabilities []string) http.Handler {
 		mcp.AddTool[addRawInput, any](server, &mcp.Tool{
 			Name:        "add_raw",
 			Title:       "Add a raw Markdown source",
-			Description: mcpAddRawToolDescription,
+			Description: addRawDescription,
 			Annotations: &mcp.ToolAnnotations{ReadOnlyHint: false, DestructiveHint: boolHint(false), IdempotentHint: true, OpenWorldHint: boolHint(false)},
 			InputSchema: addRawInputSchema, OutputSchema: addRawOutputSchema,
 		}, h.callMCPAddRaw)
 		mcp.AddTool[importURLInput, any](server, &mcp.Tool{
 			Name:        "import_url",
 			Title:       "Import a usable URL into this Project",
-			Description: mcpImportURLToolDescription,
+			Description: importURLDescription,
 			Annotations: &mcp.ToolAnnotations{ReadOnlyHint: false, DestructiveHint: boolHint(false), IdempotentHint: true, OpenWorldHint: boolHint(true)},
 			InputSchema: importURLInputSchema, OutputSchema: importURLOutputSchema,
 		}, h.callMCPImportURL)

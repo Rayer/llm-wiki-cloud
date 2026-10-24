@@ -21,14 +21,17 @@ import (
 const MaxBFFConfigBytes = 64 << 10
 
 type BFFFile struct {
-	SchemaVersion                int                 `json:"schema_version"`
-	Environment                  string              `json:"environment"`
-	Target                       string              `json:"target"`
-	GCPProject                   string              `json:"gcp_project"`
-	Bucket                       string              `json:"bucket"`
-	FirestoreDatabaseID          string              `json:"firestore_database_id"`
-	AuthServiceURL               string              `json:"auth_service_url"`
-	MCPResourceOrigin            string              `json:"mcp_resource_origin,omitempty"`
+	SchemaVersion       int    `json:"schema_version"`
+	Environment         string `json:"environment"`
+	Target              string `json:"target"`
+	GCPProject          string `json:"gcp_project"`
+	Bucket              string `json:"bucket"`
+	FirestoreDatabaseID string `json:"firestore_database_id"`
+	AuthServiceURL      string `json:"auth_service_url"`
+	MCPResourceOrigin   string `json:"mcp_resource_origin,omitempty"`
+	// MCP is optional only for historical schema2 files. Its absence preserves
+	// the former no-instructions, legacy-description, zero-TTL behavior.
+	MCP                          *BFFMCP             `json:"mcp,omitempty"`
 	PipelineJobURL               string              `json:"pipeline_job_url"`
 	ExportJobURL                 string              `json:"export_job_url"`
 	ExportSigningServiceAccount  string              `json:"export_signing_service_account"`
@@ -63,6 +66,49 @@ type BFFLLM struct {
 type BFFQuery struct {
 	StageConfigPath string          `json:"stage_config_path"`
 	Legacy          *BFFQueryLegacy `json:"legacy"`
+}
+
+type BFFMCP struct {
+	Instructions     string                 `json:"instructions"`
+	ToolDescriptions BFFMCPToolDescriptions `json:"tool_descriptions"`
+	DiscoveryTTLMS   int                    `json:"discovery_ttl_ms"`
+	ToolsListTTLMS   int                    `json:"tools_list_ttl_ms"`
+}
+
+type BFFMCPToolDescriptions struct {
+	QueryProject string `json:"query_project"`
+	AddRaw       string `json:"add_raw"`
+	ImportURL    string `json:"import_url"`
+}
+
+const (
+	maxMCPInstructionsBytes    = 12_000
+	maxMCPToolDescriptionBytes = 6_000
+	maxMCPMetadataTTLMS        = 3_600_000
+)
+
+// ValidateBFFMCP checks the non-secret, CaC-owned MCP metadata without
+// including configured text in validation errors.
+func ValidateBFFMCP(mcp BFFMCP) error {
+	if strings.TrimSpace(mcp.Instructions) == "" || len(mcp.Instructions) > maxMCPInstructionsBytes {
+		return errors.New("BFF config mcp.instructions is invalid")
+	}
+	for _, field := range []struct{ name, value string }{
+		{"query_project", mcp.ToolDescriptions.QueryProject},
+		{"add_raw", mcp.ToolDescriptions.AddRaw},
+		{"import_url", mcp.ToolDescriptions.ImportURL},
+	} {
+		if strings.TrimSpace(field.value) == "" || len(field.value) > maxMCPToolDescriptionBytes {
+			return fmt.Errorf("BFF config mcp.tool_descriptions.%s is invalid", field.name)
+		}
+	}
+	if mcp.DiscoveryTTLMS < 0 || mcp.DiscoveryTTLMS > maxMCPMetadataTTLMS {
+		return errors.New("BFF config mcp.discovery_ttl_ms is out of range")
+	}
+	if mcp.ToolsListTTLMS < 0 || mcp.ToolsListTTLMS > maxMCPMetadataTTLMS {
+		return errors.New("BFF config mcp.tools_list_ttl_ms is out of range")
+	}
+	return nil
 }
 
 type BFFQueryLegacy struct {
@@ -155,7 +201,7 @@ func DecodeBFFFile(data []byte) (BFFFile, error) {
 	if err := json.Unmarshal(data, &fields); err != nil || fields == nil {
 		return BFFFile{}, errors.New("BFF config document is malformed")
 	}
-	if err := requireJSONKeysWithOptional(fields, bffRequiredKeys, []string{"mcp_resource_origin"}); err != nil {
+	if err := requireJSONKeysWithOptional(fields, bffRequiredKeys, []string{"mcp_resource_origin", "mcp"}); err != nil {
 		return BFFFile{}, err
 	}
 	if err := validateBFFNestedShapes(fields); err != nil {
@@ -206,6 +252,22 @@ func validateBFFNestedShapes(fields map[string]json.RawMessage) error {
 			"query_expansion_keywords_per_attempt", "query_expansion_attempts", "query_matching_rare_keyword_max_document_frequency",
 		}); err != nil {
 			return errors.New("BFF config legacy query object has missing or unknown keys")
+		}
+	}
+	if raw, ok := fields["mcp"]; ok {
+		var mcpFields map[string]json.RawMessage
+		if json.Unmarshal(raw, &mcpFields) != nil || mcpFields == nil {
+			return errors.New("BFF config mcp object is invalid")
+		}
+		if err := requireJSONKeys(mcpFields, []string{"instructions", "tool_descriptions", "discovery_ttl_ms", "tools_list_ttl_ms"}); err != nil {
+			return errors.New("BFF config mcp object has missing or unknown keys")
+		}
+		var descriptions map[string]json.RawMessage
+		if json.Unmarshal(mcpFields["tool_descriptions"], &descriptions) != nil || descriptions == nil {
+			return errors.New("BFF config mcp.tool_descriptions object is invalid")
+		}
+		if err := requireJSONKeys(descriptions, []string{"query_project", "add_raw", "import_url"}); err != nil {
+			return errors.New("BFF config mcp.tool_descriptions object has missing or unknown keys")
 		}
 	}
 	localRaw := bytes.TrimSpace(fields["local"])
@@ -264,6 +326,31 @@ func validateBFFJSONTypes(fields map[string]json.RawMessage) error {
 	if raw, ok := fields["mcp_resource_origin"]; ok {
 		if err := requireBFFJSONType("mcp_resource_origin", raw, "string", true); err != nil {
 			return err
+		}
+	}
+	if raw, ok := fields["mcp"]; ok {
+		if err := requireBFFJSONType("mcp", raw, "object", false); err != nil {
+			return err
+		}
+		var mcpFields map[string]json.RawMessage
+		if err := json.Unmarshal(raw, &mcpFields); err != nil {
+			return errors.New("BFF config mcp object has invalid types")
+		}
+		for _, field := range []struct{ name, kind string }{
+			{"instructions", "string"}, {"discovery_ttl_ms", "integer"}, {"tools_list_ttl_ms", "integer"},
+		} {
+			if err := requireBFFJSONType("mcp."+field.name, mcpFields[field.name], field.kind, false); err != nil {
+				return err
+			}
+		}
+		var descriptions map[string]json.RawMessage
+		if err := json.Unmarshal(mcpFields["tool_descriptions"], &descriptions); err != nil || descriptions == nil {
+			return errors.New("BFF config mcp.tool_descriptions object has invalid types")
+		}
+		for _, key := range []string{"query_project", "add_raw", "import_url"} {
+			if err := requireBFFJSONType("mcp.tool_descriptions."+key, descriptions[key], "string", false); err != nil {
+				return err
+			}
 		}
 	}
 	var scheduleFields map[string]json.RawMessage
@@ -599,6 +686,11 @@ func validateBFFFile(file BFFFile) error {
 	if err := validateBFFQuery(file.Query, localMode); err != nil {
 		return err
 	}
+	if file.MCP != nil {
+		if err := ValidateBFFMCP(*file.MCP); err != nil {
+			return err
+		}
+	}
 	return nil
 }
 
@@ -667,6 +759,7 @@ func configFromBFFFile(file BFFFile, port string) Config {
 		PipelineDemoUserIDs: file.PipelineDemoUserIDs, RegistrationEnabled: file.RegistrationEnabled,
 		AuthServiceURL: file.AuthServiceURL, AuthSessionEnvironment: file.AuthSessionEnvironment,
 		MCPResourceOrigin:    file.MCPResourceOrigin,
+		MCP:                  file.MCP,
 		AuthSessionMigration: file.AuthSessionMigration, ProfileRuntimeAudience: file.ProfileRuntimeAudience,
 		ProfileRuntimeServiceAccount: file.ProfileRuntimeServiceAccount,
 		PipelineScheduleCron:         file.PipelineSchedule.Cron, PipelineScheduleTimezone: file.PipelineSchedule.Timezone,

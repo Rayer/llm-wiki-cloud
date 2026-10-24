@@ -151,6 +151,7 @@ func main() {
 
 	// Handlers
 	hV1 := handlerv1.New(wikiStore, fsClient, idx, conceptCache, nil, nil)
+	hV1.SetMCPConfig(cfg.MCP)
 	hV1.SetQueryExecutor(productionExecutor)
 	hV1.SetPipelineJobURL(cfg.PipelineJobURL)
 	hV1.SetPipelineQuotaConfig(
