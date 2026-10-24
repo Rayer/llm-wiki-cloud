@@ -24,6 +24,18 @@ func validBFFFileForTest() BFFFile {
 	}
 }
 
+func validBFFMCPForTest() *BFFMCP {
+	return &BFFMCP{
+		Instructions: "configured instructions",
+		ToolDescriptions: BFFMCPToolDescriptions{
+			QueryProject: "configured query description",
+			AddRaw:       "configured add description",
+			ImportURL:    "configured import description",
+		},
+		DiscoveryTTLMS: 60_000, ToolsListTTLMS: 60_000,
+	}
+}
+
 func validLocalBFFFileForTest() BFFFile {
 	file := validBFFFileForTest()
 	file.Environment = "local"
@@ -61,14 +73,15 @@ func setBFFJSONValueForTest(t *testing.T, data []byte, path []string, value stri
 	t.Helper()
 	var replace func(json.RawMessage, []string) json.RawMessage
 	replace = func(raw json.RawMessage, remaining []string) json.RawMessage {
-		if len(remaining) == 1 {
-			return json.RawMessage(value)
-		}
 		var fields map[string]json.RawMessage
 		if err := json.Unmarshal(raw, &fields); err != nil || fields == nil {
 			t.Fatalf("test fixture path %v is not an object", path)
 		}
-		fields[remaining[0]] = replace(fields[remaining[0]], remaining[1:])
+		if len(remaining) == 1 {
+			fields[remaining[0]] = json.RawMessage(value)
+		} else {
+			fields[remaining[0]] = replace(fields[remaining[0]], remaining[1:])
+		}
 		updated, err := json.Marshal(fields)
 		if err != nil {
 			t.Fatal(err)
@@ -169,6 +182,62 @@ func TestDecodeBFFFileRejectsNullAndWrongScalarTypes(t *testing.T) {
 		t.Run(field.name+"/wrong type", func(t *testing.T) {
 			if _, err := DecodeBFFFile(setBFFJSONValueForTest(t, cloudData, field.path, field.value)); err == nil {
 				t.Fatal("DecodeBFFFile() accepted a wrong-typed nullable or array field")
+			}
+		})
+	}
+}
+
+func TestDecodeBFFFileValidatesMCPMetadataAndPreservesSchema2Compatibility(t *testing.T) {
+	legacyBytes := marshalBFFFileForTest(t, validBFFFileForTest())
+	legacy, err := DecodeBFFFile(legacyBytes)
+	if err != nil || legacy.MCP != nil || configFromBFFFile(legacy, "8080").MCP != nil {
+		t.Fatalf("schema2 without mcp did not retain the legacy path: mcp=%+v err=%v", legacy.MCP, err)
+	}
+
+	configured := validBFFFileForTest()
+	configured.MCP = validBFFMCPForTest()
+	data := marshalBFFFileForTest(t, configured)
+	accepted := func(label string, raw []byte) {
+		t.Helper()
+		if _, err := DecodeBFFFile(raw); err != nil {
+			t.Errorf("%s rejected: %v", label, err)
+		}
+	}
+	accepted("zero discovery TTL", setBFFJSONValueForTest(t, data, []string{"mcp", "discovery_ttl_ms"}, "0"))
+	accepted("zero tools TTL", setBFFJSONValueForTest(t, data, []string{"mcp", "tools_list_ttl_ms"}, "0"))
+	accepted("maximum discovery TTL", setBFFJSONValueForTest(t, data, []string{"mcp", "discovery_ttl_ms"}, "3600000"))
+	accepted("maximum tools TTL", setBFFJSONValueForTest(t, data, []string{"mcp", "tools_list_ttl_ms"}, "3600000"))
+
+	invalid := []struct {
+		name  string
+		path  []string
+		value string
+	}{
+		{"null object", []string{"mcp"}, "null"},
+		{"wrong object type", []string{"mcp"}, `[]`},
+		{"empty object", []string{"mcp"}, `{}`},
+		{"missing key", []string{"mcp"}, `{"instructions":"x","tool_descriptions":{"query_project":"x","add_raw":"x","import_url":"x"},"discovery_ttl_ms":0}`},
+		{"unknown key", []string{"mcp"}, `{"instructions":"x","tool_descriptions":{"query_project":"x","add_raw":"x","import_url":"x"},"discovery_ttl_ms":0,"tools_list_ttl_ms":0,"extra":"x"}`},
+		{"wrong instructions type", []string{"mcp", "instructions"}, "null"},
+		{"empty instructions", []string{"mcp", "instructions"}, `"  "`},
+		{"unknown description key", []string{"mcp", "tool_descriptions"}, `{"query_project":"x","add_raw":"x","import_url":"x","extra":"x"}`},
+		{"missing description key", []string{"mcp", "tool_descriptions"}, `{"query_project":"x","add_raw":"x"}`},
+		{"empty description", []string{"mcp", "tool_descriptions", "query_project"}, `""`},
+		{"wrong description type", []string{"mcp", "tool_descriptions", "add_raw"}, "false"},
+		{"wrong TTL type", []string{"mcp", "discovery_ttl_ms"}, `"60000"`},
+		{"fractional TTL", []string{"mcp", "discovery_ttl_ms"}, "0.5"},
+		{"negative TTL", []string{"mcp", "discovery_ttl_ms"}, "-1"},
+		{"too large TTL", []string{"mcp", "tools_list_ttl_ms"}, "3600001"},
+		{"oversized instructions", []string{"mcp", "instructions"}, `"` + strings.Repeat("x", maxMCPInstructionsBytes+1) + `"`},
+		{"oversized description", []string{"mcp", "tool_descriptions", "import_url"}, `"` + strings.Repeat("x", maxMCPToolDescriptionBytes+1) + `"`},
+	}
+	for _, tc := range invalid {
+		t.Run(tc.name, func(t *testing.T) {
+			bad := setBFFJSONValueForTest(t, data, tc.path, tc.value)
+			if _, err := DecodeBFFFile(bad); err == nil {
+				t.Fatal("invalid MCP metadata was accepted")
+			} else if strings.Contains(err.Error(), "configured") || strings.Contains(err.Error(), strings.Repeat("x", 32)) {
+				t.Fatalf("validation error exposed configured text: %v", err)
 			}
 		})
 	}
@@ -394,7 +463,12 @@ func TestLoadBFFFileUsesOnlyPortEnvironmentOverride(t *testing.T) {
 	t.Setenv("PORT", "9091")
 	t.Setenv("PIPELINE_COOLDOWN_SECONDS", "3")
 	t.Setenv("DEEPSEEK_API_KEY", "stale-key")
-	data := marshalBFFFileForTest(t, validBFFFileForTest())
+	t.Setenv("MCP_DISCOVERY_TTL_MS", "0")
+	t.Setenv("MCP_TOOLS_LIST_TTL_MS", "0")
+	t.Setenv("MCP_INSTRUCTIONS", "stale instructions")
+	file := validBFFFileForTest()
+	file.MCP = validBFFMCPForTest()
+	data := marshalBFFFileForTest(t, file)
 	path := filepath.Join(t.TempDir(), "bff.json")
 	if err := os.WriteFile(path, data, 0o600); err != nil {
 		t.Fatal(err)
@@ -405,6 +479,9 @@ func TestLoadBFFFileUsesOnlyPortEnvironmentOverride(t *testing.T) {
 	}
 	if cfg.Port != "9091" || cfg.PipelineCooldownSeconds != 600 || cfg.DeepSeekAPIKey != "fixture-deepseek-key" {
 		t.Fatalf("loaded config port=%q cooldown=%d key=%q; stale env must not override file", cfg.Port, cfg.PipelineCooldownSeconds, cfg.DeepSeekAPIKey)
+	}
+	if cfg.MCP == nil || cfg.MCP.DiscoveryTTLMS != 60_000 || cfg.MCP.ToolsListTTLMS != 60_000 || cfg.MCP.Instructions != "configured instructions" {
+		t.Fatalf("MCP environment values overrode CaC metadata: %+v", cfg.MCP)
 	}
 }
 

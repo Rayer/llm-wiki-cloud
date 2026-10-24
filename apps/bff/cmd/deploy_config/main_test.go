@@ -228,6 +228,14 @@ func TestLoadReviewedEnvironmentsAndQueryIdentity(t *testing.T) {
 		if config.BFF.MCPResourceOrigin == "" || bff["mcp_resource_origin"] != config.BFF.MCPResourceOrigin {
 			t.Fatalf("%s BFF component input omitted canonical MCP resource origin: %#v", environment, bff)
 		}
+		wantMetadataTTL := 60_000
+		if environment == "production" {
+			wantMetadataTTL = 300_000
+		}
+		if config.BFF.RuntimeInputs.MCP.Instructions == "" || config.BFF.RuntimeInputs.MCP.DiscoveryTTLMS != wantMetadataTTL ||
+			config.BFF.RuntimeInputs.MCP.ToolsListTTLMS != wantMetadataTTL {
+			t.Fatalf("%s BFF normalized runtime input lost CaC MCP metadata: %+v", environment, config.BFF.RuntimeInputs.MCP)
+		}
 		if environment == "development" {
 			ref := config.BFF.SecretReferences.TypeSafeJevAPIKey
 			if config.BFF.ProfileRuntimeAudience == "" || config.BFF.ProfileRuntimeServiceAccount == "" || ref == nil ||
@@ -307,6 +315,27 @@ func TestGeneratedBFFInputsFlowIntoNormalizedPlanIdentity(t *testing.T) {
 			if changed.Evidence.ConfigFingerprint == plan.Evidence.ConfigFingerprint {
 				t.Fatal("normalized plan identity ignored the generated BFF cooldown")
 			}
+			changedMetadataPath := writeBFFDescriptorFixture(t, tc.environment, tc.cooldown)
+			var changedMetadata map[string]any
+			if err := json.Unmarshal(mustRead(t, changedMetadataPath), &changedMetadata); err != nil {
+				t.Fatal(err)
+			}
+			mcpMetadata := changedMetadata["mcp"].(map[string]any)
+			mcpMetadata["discovery_ttl_ms"] = float64(60_001)
+			metadataBytes, err := json.Marshal(changedMetadata)
+			if err != nil {
+				t.Fatal(err)
+			}
+			if err := os.WriteFile(changedMetadataPath, metadataBytes, 0o600); err != nil {
+				t.Fatal(err)
+			}
+			changedMetadataPlan, err := LoadWithBFFInputs(tc.environment, configPath, "bff", changedMetadataPath)
+			if err != nil {
+				t.Fatal(err)
+			}
+			if changedMetadataPlan.Evidence.ConfigFingerprint == plan.Evidence.ConfigFingerprint {
+				t.Fatal("normalized plan identity ignored the CaC MCP discovery TTL")
+			}
 			invalidOriginPath := writeBFFDescriptorFixture(t, tc.environment, tc.cooldown)
 			data := mustRead(t, invalidOriginPath)
 			var invalid map[string]any
@@ -335,6 +364,14 @@ func TestGeneratedBFFDescriptorRejectsInvalidInputs(t *testing.T) {
 		func(value map[string]any) { value["schema_version"] = 1 },
 		func(value map[string]any) { value["environment"] = "prod" },
 		func(value map[string]any) { value["config_secret_resource"] = "projects/llm-wiki-cloud/secrets/wrong" },
+		func(value map[string]any) { value["mcp"] = nil },
+		func(value map[string]any) { delete(value["mcp"].(map[string]any), "tools_list_ttl_ms") },
+		func(value map[string]any) { value["mcp"].(map[string]any)["discovery_ttl_ms"] = -1 },
+		func(value map[string]any) { value["mcp"].(map[string]any)["tools_list_ttl_ms"] = "60000" },
+		func(value map[string]any) { value["mcp"].(map[string]any)["extra"] = true },
+		func(value map[string]any) {
+			value["mcp"].(map[string]any)["tool_descriptions"].(map[string]any)["query_project"] = " "
+		},
 	} {
 		path := writeBFFDescriptorFixture(t, "development", 600)
 		data, err := os.ReadFile(path)

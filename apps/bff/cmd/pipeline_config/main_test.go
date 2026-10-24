@@ -214,9 +214,11 @@ func TestRealPklBFFPrepareRendersSchema2ForLocalDevelopmentAndProduction(t *test
 			if err != nil {
 				t.Fatalf("prepared BFF schema 2 failed runtime validation: %v", err)
 			}
+			wantTTL := map[string]int{"local": 0, "dev": 60_000, "prod": 300_000}[tc.environment]
 			if generated.SchemaVersion != 2 || generated.Environment != tc.environment || generated.Target != "bff" ||
 				generated.PipelineCooldownSeconds != tc.cooldown || generated.TypeSafeAPIKey != tc.typesafe ||
-				generated.ProfileRuntimeAudience != tc.profileAudience || generated.ProfileRuntimeServiceAccount != tc.profileService {
+				generated.ProfileRuntimeAudience != tc.profileAudience || generated.ProfileRuntimeServiceAccount != tc.profileService ||
+				generated.MCP == nil || generated.MCP.DiscoveryTTLMS != wantTTL || generated.MCP.ToolsListTTLMS != wantTTL {
 				t.Fatalf("prepared BFF identity or cooldown is incorrect for %s", tc.environment)
 			}
 			if generated.PipelineSchedule.Cron != "0 * * * *" || generated.PipelineSchedule.Timezone != "UTC" ||
@@ -245,7 +247,9 @@ func TestRealPklBFFPrepareRendersSchema2ForLocalDevelopmentAndProduction(t *test
 				started.PipelineScheduleCron != generated.PipelineSchedule.Cron ||
 				started.PipelineScheduleTimezone != generated.PipelineSchedule.Timezone ||
 				started.ScheduledPipelineAudience != generated.PipelineSchedule.Audience ||
-				started.ScheduledPipelineServiceAccount != generated.PipelineSchedule.ServiceAccount {
+				started.ScheduledPipelineServiceAccount != generated.PipelineSchedule.ServiceAccount || started.MCP == nil ||
+				started.MCP.Instructions != generated.MCP.Instructions || started.MCP.DiscoveryTTLMS != wantTTL ||
+				started.MCP.ToolsListTTLMS != wantTTL {
 				t.Fatalf("startup loader did not preserve generated runtime settings for %s: err=%v", tc.environment, err)
 			}
 			configured := tc.environment != "local"
@@ -411,6 +415,9 @@ func TestRealPklBFFLocalPrepareUsesSelectedSharedSecretVersion(t *testing.T) {
 	if strings.Contains(string(descriptorBytes), payload) || strings.Contains(descriptorLog, payload) {
 		t.Fatal("BFF descriptor or its log contains the synthetic secret payload")
 	}
+	if descriptor.MCP.Instructions == "" || descriptor.MCP.DiscoveryTTLMS != 0 || descriptor.MCP.ToolsListTTLMS != 0 {
+		t.Fatalf("BFF descriptor omitted local CaC MCP metadata: %+v", descriptor.MCP)
+	}
 
 	bffReader := &fakeSecretReader{value: []byte(payload)}
 	bffOutput := filepath.Join(root, "bff-runtime")
@@ -431,6 +438,12 @@ func TestRealPklBFFLocalPrepareUsesSelectedSharedSecretVersion(t *testing.T) {
 	generated, err := runtimeconfig.DecodeBFFFile(bffBytes)
 	if err != nil || generated.DeepSeekAPIKey != payload {
 		t.Fatalf("generated BFF runtime file did not use the selected synthetic payload: err=%v", err)
+	}
+	started, err := runtimeconfig.LoadBFFFile(filepath.Join(bffOutput, "bff.json"))
+	if err != nil || started.MCP == nil || started.MCP.Instructions != descriptor.MCP.Instructions ||
+		started.MCP.ToolDescriptions != descriptor.MCP.ToolDescriptions || started.MCP.DiscoveryTTLMS != descriptor.MCP.DiscoveryTTLMS ||
+		started.MCP.ToolsListTTLMS != descriptor.MCP.ToolsListTTLMS {
+		t.Fatalf("production composition consumer lost selected MCP metadata: err=%v", err)
 	}
 	if generated.MCPResourceOrigin != descriptor.MCPResourceOrigin {
 		t.Fatalf("generated BFF runtime origin = %q, want %q", generated.MCPResourceOrigin, descriptor.MCPResourceOrigin)
@@ -751,8 +764,14 @@ func TestRunPrepareBFFTargetDoesNotReadPipelineInputs(t *testing.T) {
 	if err := json.Unmarshal(data, &generated); err != nil || generated.SchemaVersion != 2 ||
 		generated.Environment != "local" || generated.Target != "bff" || generated.PipelineCooldownSeconds != 60 ||
 		generated.JWTSecret != strings.Repeat("a", 64) || generated.DeepSeekAPIKey != "TEST_ONLY_DEEPSEEK_KEY" ||
-		generated.LLM.BaseURL != "https://api.deepseek.com" || generated.Local == nil {
+		generated.LLM.BaseURL != "https://api.deepseek.com" || generated.Local == nil || generated.MCP == nil ||
+		generated.MCP.Instructions != "configured shared instructions" || generated.MCP.DiscoveryTTLMS != 0 || generated.MCP.ToolsListTTLMS != 0 {
 		t.Fatalf("BFF runtime config identity or values are invalid: schema=%d environment=%s target=%s cooldown=%d local=%t", generated.SchemaVersion, generated.Environment, generated.Target, generated.PipelineCooldownSeconds, generated.Local != nil)
+	}
+	started, err := runtimeconfig.LoadBFFFile(filepath.Join(output, "bff.json"))
+	if err != nil || started.MCP == nil || started.MCP.Instructions != generated.MCP.Instructions ||
+		started.MCP.ToolDescriptions != generated.MCP.ToolDescriptions {
+		t.Fatalf("production composition consumer lost prepared MCP metadata: err=%v", err)
 	}
 	info, err := os.Stat(filepath.Join(output, "bff.json"))
 	if err != nil || info.Mode().Perm() != 0o600 {
@@ -856,6 +875,11 @@ func localBFFSourceJSON(root, jwtPath string, cooldown int) string {
 		"schema_version": 2, "environment": "local", "target": "bff", "gcp_project": "llm-wiki-cloud",
 		"bucket": "llm-wiki-cloud-local", "firestore_database_id": "llm-wiki-cloud-local",
 		"auth_service_url": "http://localhost:8081", "mcp_resource_origin": "http://localhost:18080",
+		"mcp": map[string]any{
+			"instructions":      "configured shared instructions",
+			"tool_descriptions": map[string]any{"query_project": "configured query", "add_raw": "configured add", "import_url": "configured import"},
+			"discovery_ttl_ms":  0, "tools_list_ttl_ms": 0,
+		},
 		"pipeline_job_url": "https://run.googleapis.com/v2/projects/llm-wiki-cloud/locations/asia-east1/jobs/olw-pipeline:run",
 		"export_job_url":   "", "export_signing_service_account": "", "allowed_origins": []string{"http://localhost:3000"},
 		"allowed_hosts": []string{"localhost", "127.0.0.1"}, "pipeline_daily_limit": 2, "pipeline_cooldown_seconds": cooldown,
