@@ -135,7 +135,7 @@ func (d *ProfileDispatcher) preparePipelineIntent(ctx context.Context, repo *fir
 			_, err := store.CompletePipelineIntentPreparation(ctx, reservation.ID, reservation.AttemptID, reservation.UserID, reservation.ProjectID, *guidance)
 			return err
 		}
-		if state.DerivationStatus != nil && *state.DerivationStatus == profileDerivationPending {
+		if state.DerivationStatus != nil && *state.DerivationStatus == profileDerivationPending && reservation.CompileMode != pipelinequota.ModeFull {
 			return errProfileRuntimeWaiting
 		}
 	}
