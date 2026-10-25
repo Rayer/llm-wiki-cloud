@@ -6,6 +6,7 @@ LWC_FLASH_RED=1 runs the unwrapped CLI to prove the migration assertions fail.
 import json
 import os
 from pathlib import Path
+import re
 import subprocess
 import sys
 import sqlite3
@@ -18,6 +19,7 @@ import synto
 assert synto.__version__ == "0.7.0"
 wrapper = Path(__file__).resolve().parents[1] / "synto_execution.py"
 requests = []
+article_concepts = ["Alpha"]
 
 
 class Provider(BaseHTTPRequestHandler):
@@ -30,14 +32,21 @@ class Provider(BaseHTTPRequestHandler):
     def do_POST(self):
         body = json.loads(self.rfile.read(int(self.headers["Content-Length"])))
         requests.append(body)
+        prompt = "\n".join(
+            message.get("content", "")
+            for message in body.get("messages", [])
+            if message.get("role") == "user"
+        )
+        match = re.search(r'Write the wiki article: "([^"]+)"', prompt)
+        title = match.group(1) if match else article_concepts[0]
         # Covers ingest analysis/term extraction and compile drafting/refinement.
         content = json.dumps({
-            "summary": "Alpha explains a synthetic mechanism.",
-            "concepts": [{"name": "Alpha", "aliases": []}],
-            "suggested_topics": ["Alpha"], "quality": "high",
+            "summary": f"{title} explains a synthetic mechanism.",
+            "concepts": [{"name": name, "aliases": []} for name in article_concepts],
+            "suggested_topics": article_concepts, "quality": "high", "language": "en",
             "terms": [], "source_segment_id": "test", "model": "test",
-            "tags": [], "title": "Alpha", "answer": "Alpha explains a synthetic mechanism.",
-            "content": "# Alpha\n\nAlpha explains a synthetic mechanism.",
+            "tags": [], "title": title, "answer": f"{title} explains a synthetic mechanism.",
+            "content": f"# {title}\n\n{title} explains a synthetic mechanism.",
         }) if body.get("response_format") else "# Alpha\n\nAlpha explains a synthetic mechanism."
         self.reply({"choices": [{"message": {"content": content}}], "usage": {"prompt_tokens": 7, "completion_tokens": 3}})
 
@@ -86,13 +95,16 @@ socket.socket.connect = _loopback_only
     return result
 
 
-def exercise(config, expected, filename="synto.toml", migrate=False, model="deepseek-flash", preserved=None, profile_schema=None):
+def exercise(config, expected, filename="synto.toml", migrate=False, model="deepseek-flash", preserved=None, profile_schema=None, profile_guidance=None, concepts=None):
+    global article_concepts
+    article_concepts = concepts or ["Alpha"]
     with tempfile.TemporaryDirectory(prefix="lwc331-wire-") as temp:
         temp_root = Path(temp).resolve()
         vault = temp_root / "vault"
         vault.mkdir()
         (vault / "raw").mkdir()
-        (vault / "raw/source.md").write_text("# Alpha\n\nAlpha explains how a synthetic mechanism works. Alpha is the central concept.")
+        source_concepts = ", ".join(article_concepts)
+        (vault / "raw/source.md").write_text(f"# {article_concepts[0]}\n\n{source_concepts} explain how a synthetic mechanism works.")
         path = vault / filename
         path.write_text(config + policy)
         extra_env = None
@@ -100,6 +112,8 @@ def exercise(config, expected, filename="synto.toml", migrate=False, model="deep
             schema_path = temp_root / "pinned-profile-vault-schema.md"
             schema_path.write_text(profile_schema, encoding="utf-8")
             extra_env = {"LWC_PROFILE_SCHEMA_PATH": str(schema_path)}
+            if profile_guidance is not None:
+                extra_env["LWC_PROFILE_GUIDANCE"] = profile_guidance
         before = path.read_bytes()
         if migrate:
             # Real pinned migration of a synthetic legacy state, no user data.
@@ -110,15 +124,30 @@ def exercise(config, expected, filename="synto.toml", migrate=False, model="deep
         requests.clear()
         result = run(vault, "run", "--auto-approve", extra_env=extra_env)
         assert requests, result.stdout + result.stderr
-        assert (vault / "wiki/Alpha.md").is_file(), "CLI failed to compile/publish synthetic article"
+        assert all((vault / "wiki" / f"{name}.md").is_file() for name in article_concepts), "CLI failed to compile/publish every synthetic article"
         if profile_schema is not None:
             prompts = [message.get("content", "") for body in requests for message in body.get("messages", [])]
-            assert any("Profile guidance: synthetic fixture favors explicit causal links." in prompt for prompt in prompts), prompts
-            assert any("Use `[[Article Title]]` wikilinks between notes." in prompt for prompt in prompts), prompts
-            assert any("Use [[wikilinks]] inline in prose to link to related concepts." in prompt for prompt in prompts), prompts
-            print("PASS pinned Profile guidance and mandatory vault conventions reached the actual Synto compile prompt")
+            article_prompts = [prompt for prompt in prompts if 'Write the wiki article: "' in prompt]
+            guidance = "Write article bodies in Traditional Chinese; proper nouns may remain in their original language."
+            assert len(article_prompts) == len(article_concepts), (len(article_prompts), article_concepts, result.stdout, result.stderr)
+            assert all(guidance in prompt for prompt in article_prompts), f"Profile guidance missing from an article prompt: {article_prompts}"
+            assert all("Output language: en (ISO 639-1)." in prompt for prompt in article_prompts), f"fixture did not resolve source language to English: {article_prompts}"
+            assert all(prompt.rfind(guidance) > prompt.rfind("Output language: en (ISO 639-1).") for prompt in article_prompts), f"Profile guidance follows inferred language in fewer than all article prompts: {article_prompts}"
+            assert all("Use `[[Article Title]]` wikilinks between notes." in prompt for prompt in article_prompts), f"mandatory vault schema missing: {article_prompts}"
+            assert all("Use [[wikilinks]] inline in prose to link to related concepts." in prompt for prompt in article_prompts), f"mandatory Synto link convention missing: {article_prompts}"
+            capture_path = os.environ.get("LWC_PROFILE_PROMPT_CAPTURE_PATH")
+            if capture_path:
+                captures = [
+                    {"concept": re.search(r'Write the wiki article: "([^"]+)"', prompt).group(1), "prompt": prompt}
+                    for prompt in article_prompts
+                ]
+                Path(capture_path).write_text(json.dumps(captures, ensure_ascii=False, indent=2) + "\n", encoding="utf-8")
+            print(f"PASS pinned Synto compile prompts: Profile guidance follows inferred language for all {len(article_prompts)} concepts")
         observed = tuple(body.get("thinking", {}).get("type") for body in requests)
-        assert expected == observed, (expected, observed, result.stdout, result.stderr)
+        if profile_guidance is not None and len(article_concepts) > 1:
+            assert observed and observed[0] == expected[0] and all(policy == expected[1] for policy in observed[1:]), (expected, observed, result.stdout, result.stderr)
+        else:
+            assert expected == observed, (expected, observed, result.stdout, result.stderr)
         for body in requests:
             assert body["model"] == model, body
             if model == "deepseek-flash":
@@ -165,12 +194,13 @@ exercise(precedence, ("disabled", "disabled"), preserved={"max_tokens": 777, "to
 exercise(legacy.replace('fast = "deepseek-chat"', 'fast = "deepseek-reasoner"').replace('heavy = "deepseek-reasoner"', 'heavy = "deepseek-chat"'), ("enabled", "disabled"))
 # Aliased modern V4 models preserve their explicitly disabled/enabled policies.
 exercise(modern.replace('model = "deepseek-flash"', 'model = "deepseek-v4-pro"'), ("disabled", "enabled"))
+profile_guidance = "Write article bodies in Traditional Chinese; proper nouns may remain in their original language."
 profile_schema = (
     "# Vault Schema\n\n## Folder Structure\n- `raw/` — immutable inputs\n- `wiki/` — generated articles\n\n"
     "## Links\nUse `[[Article Title]]` wikilinks between notes.\n\n"
-    "## Project Profile Compile Guidance\nProfile guidance: synthetic fixture favors explicit causal links.\n"
+    "## Project Profile Compile Guidance\n" + profile_guidance + "\n"
 )
-exercise(modern, ("disabled", "enabled"), profile_schema=profile_schema)
+exercise(modern, ("disabled", "enabled"), profile_schema=profile_schema, profile_guidance=profile_guidance, concepts=["Alpha", "Beta", "Gamma", "Delta"])
 # Other OpenAI-compatible providers are byte-for-byte unaffected by this policy.
 foreign = legacy.replace('name = "deepseek"', 'name = "openai"').replace('deepseek-chat', 'foreign-model').replace('deepseek-reasoner', 'foreign-model')
 exercise(foreign, (None, None), model="foreign-model")
