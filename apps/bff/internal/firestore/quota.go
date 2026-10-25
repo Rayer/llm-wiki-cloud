@@ -493,6 +493,7 @@ func (c *Client) reservePipelineQuota(
 			if readErr != nil {
 				return readErr
 			}
+			intent = bindFullModeGuidanceToRequirements(intent, mode)
 		}
 
 		today := pipelinequota.DayKeyUTC(now)
@@ -539,7 +540,7 @@ func (c *Client) reservePipelineQuota(
 			reservationData["consumed_guidance_model_version"] = intent.GuidanceModelVersion
 			reservationData["consumed_guidance_prompt_version"] = intent.GuidancePromptVersion
 			reservationData["consumed_guidance_schema_version"] = intent.GuidanceSchemaVersion
-			reservationData["consumed_active_guidance"] = intent.ActiveGuidance
+			reservationData["consumed_active_guidance"] = consumedActiveGuidanceWire(intent.ActiveGuidance)
 			reservationData["consumed_bootstrap_guidance"] = intent.BootstrapGuidance
 			reservationData["active_candidate_id"] = intent.ActiveCandidateID
 			reservationData["active_content_generation"] = intent.ActiveContentGeneration
@@ -934,40 +935,89 @@ func (c *Client) MarkPipelineIntentInvocationUnknown(ctx context.Context, reserv
 // existing reservation in the same transaction.
 func (c *Client) FailPipelineIntent(ctx context.Context, reservationID, attemptID, userID, projectID, expectedStatus, stage, code, message string) error {
 	return c.fs.RunTransaction(ctx, func(ctx context.Context, tx *firestore.Transaction) error {
-		reservationRef := Collection(c.fs, pipelineQuotaReservationCollection).Doc(reservationID)
-		snapshot, err := tx.Get(reservationRef)
-		if status.Code(err) == codes.NotFound {
-			return nil
-		}
-		if err != nil {
-			return err
-		}
-		reservation := quotaReservationFromData(reservationID, snapshot.Data())
-		if reservation.UserID != userID || reservation.ProjectID != projectID || reservation.AttemptID != attemptID {
-			return errors.New("pipeline intent owner or attempt identity mismatch")
-		}
-		if reservation.IntentStatus == "failed" && reservation.SettlementStatus == "released" {
-			return nil
-		}
-		if (expectedStatus != "preparing" && expectedStatus != "invoking" && expectedStatus != "invocation_unknown") ||
-			reservation.IntentStatus != expectedStatus || reservation.SettlementStatus != "pending" || reservation.ExecutionID != "" {
-			return errors.New("pipeline intent is not a confirmed pre-invocation failure")
-		}
-		if _, err := releaseQuotaReservationInTransaction(ctx, tx, c.fs, reservationID, attemptID); err != nil {
-			return err
-		}
-		if strings.TrimSpace(message) == "" {
-			message = "Pipeline preparation failed. Review the Profile and retry this run."
-		}
+		return FailPipelineIntentInTransaction(ctx, tx, c.fs, reservationID, attemptID, userID, projectID, expectedStatus, stage, code, message)
+	})
+}
+
+// FailPipelineIntentInTransaction settles a confirmed no-execution failure in
+// the caller's transaction so durable runtime exhaustion can release the same
+// reservation and shared claim atomically with its work record.
+func FailPipelineIntentInTransaction(ctx context.Context, tx *firestore.Transaction, fs *firestore.Client, reservationID, attemptID, userID, projectID, expectedStatus, stage, code, message string) error {
+	reservationRef := Collection(fs, pipelineQuotaReservationCollection).Doc(reservationID)
+	snapshot, err := tx.Get(reservationRef)
+	if status.Code(err) == codes.NotFound {
+		return nil
+	}
+	if err != nil {
+		return err
+	}
+	reservation := quotaReservationFromData(reservationID, snapshot.Data())
+	if reservation.UserID != userID || reservation.ProjectID != projectID || reservation.AttemptID != attemptID {
+		return errors.New("pipeline intent owner or attempt identity mismatch")
+	}
+	return failPipelineIntentReservationInTransaction(ctx, tx, fs, reservationRef, reservation, expectedStatus, stage, code, message)
+}
+
+// SettlePipelineIntentRuntimeExhaustedInTransaction records terminal
+// pre-invocation failure, while keeping an ambiguous invocation claimed for
+// the existing reconciler to resolve.
+func SettlePipelineIntentRuntimeExhaustedInTransaction(ctx context.Context, tx *firestore.Transaction, fs *firestore.Client, reservationID, attemptID, userID, projectID string, profileRevision int64) error {
+	reservationRef := Collection(fs, pipelineQuotaReservationCollection).Doc(reservationID)
+	snapshot, err := tx.Get(reservationRef)
+	if status.Code(err) == codes.NotFound {
+		return nil
+	}
+	if err != nil {
+		return err
+	}
+	reservation := quotaReservationFromData(reservationID, snapshot.Data())
+	if reservation.UserID != userID || reservation.ProjectID != projectID || reservation.AttemptID != attemptID {
+		return errors.New("pipeline intent owner or attempt identity mismatch")
+	}
+	if reservation.ProfileRevision != profileRevision {
+		return nil
+	}
+	switch reservation.IntentStatus {
+	case "preparing", "ready":
+		return failPipelineIntentReservationInTransaction(ctx, tx, fs, reservationRef, reservation, reservation.IntentStatus,
+			"pipeline_runtime", "runtime_retry_exhausted", "Pipeline guidance preparation failed after the available retries. Review the saved Profile and retry this run.")
+	case "invoking":
 		now := time.Now().UTC()
 		return tx.Update(reservationRef, []firestore.Update{
-			{Path: "intent_status", Value: "failed"},
-			{Path: "intent_error_stage", Value: stage},
-			{Path: "intent_error_code", Value: code},
-			{Path: "intent_error_message", Value: message},
+			{Path: "intent_status", Value: "invocation_unknown"},
+			{Path: "intent_error_stage", Value: "pipeline_invocation"},
+			{Path: "intent_error_code", Value: "invocation_outcome_unknown"},
+			{Path: "intent_error_message", Value: "Checking whether the Pipeline started. Keep this page open or return later to see the result."},
 			{Path: "intent_updated_at", Value: now},
 			{Path: "updated_at", Value: now},
 		})
+	default:
+		return nil
+	}
+}
+
+func failPipelineIntentReservationInTransaction(ctx context.Context, tx *firestore.Transaction, fs *firestore.Client, reservationRef *firestore.DocumentRef, reservation QuotaReservation, expectedStatus, stage, code, message string) error {
+	if reservation.IntentStatus == "failed" && reservation.SettlementStatus == "released" {
+		return nil
+	}
+	if (expectedStatus != "preparing" && expectedStatus != "ready" && expectedStatus != "invoking" && expectedStatus != "invocation_unknown") ||
+		reservation.IntentStatus != expectedStatus || reservation.SettlementStatus != "pending" || reservation.ExecutionID != "" {
+		return errors.New("pipeline intent is not a confirmed pre-invocation failure")
+	}
+	if _, err := releaseQuotaReservationInTransaction(ctx, tx, fs, reservation.ID, reservation.AttemptID); err != nil {
+		return err
+	}
+	if strings.TrimSpace(message) == "" {
+		message = "Pipeline preparation failed. Review the Profile and retry this run."
+	}
+	now := time.Now().UTC()
+	return tx.Update(reservationRef, []firestore.Update{
+		{Path: "intent_status", Value: "failed"},
+		{Path: "intent_error_stage", Value: stage},
+		{Path: "intent_error_code", Value: code},
+		{Path: "intent_error_message", Value: message},
+		{Path: "intent_updated_at", Value: now},
+		{Path: "updated_at", Value: now},
 	})
 }
 
@@ -1239,6 +1289,43 @@ type pipelineProfileIntentSnapshot struct {
 	BootstrapGuidance       *profileartifacts.BootstrapGuidanceRef
 	ActiveCandidateID       string
 	ActiveContentGeneration string
+}
+
+func bindFullModeGuidanceToRequirements(intent pipelineProfileIntentSnapshot, mode pipelinequota.ExecutionMode) pipelineProfileIntentSnapshot {
+	if mode != pipelinequota.ModeFull || intent.GuidanceKind != "active" || intent.ActiveGuidance == nil {
+		return intent
+	}
+	if len(intent.Requirements) > 0 && intent.ActiveGuidance.InputDigest == intent.RequirementsDigest && intent.GuidanceSourceRevision > 0 {
+		return intent
+	}
+	intent.GuidanceKind = ""
+	intent.GuidanceStatus = ""
+	intent.GuidanceRevision = ""
+	intent.GuidanceSourceRevision = 0
+	intent.GuidanceInputDigest = ""
+	intent.GuidanceModelVersion = ""
+	intent.GuidancePromptVersion = ""
+	intent.GuidanceSchemaVersion = ""
+	intent.ActiveGuidance = nil
+	intent.ActiveCandidateID = ""
+	intent.ActiveContentGeneration = ""
+	if len(intent.Requirements) == 0 {
+		intent.Status = "ready"
+		intent.GuidanceKind = "none"
+		return intent
+	}
+	intent.Status = "preparing"
+	return intent
+}
+
+func consumedActiveGuidanceWire(ref *profileartifacts.DerivedRef) map[string]interface{} {
+	if ref == nil {
+		return nil
+	}
+	return map[string]interface{}{
+		"revision": ref.Revision, "input_digest": ref.InputDigest, "model_version": ref.ModelVersion,
+		"prompt_version": ref.PromptVersion, "schema_version": ref.SchemaVersion,
+	}
 }
 
 func readPipelineProfileIntentSnapshot(ctx context.Context, tx *firestore.Transaction, client *firestore.Client, userID, projectID string) (pipelineProfileIntentSnapshot, error) {

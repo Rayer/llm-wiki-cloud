@@ -649,6 +649,139 @@ func TestPipelineIntentWithoutProfileIsAdmittedAndReadableByWorker(t *testing.T)
 	}
 }
 
+func TestLWC427ActualReservationProducerRoundTripsActiveGuidanceAndLegacyWire(t *testing.T) {
+	endpoint := strings.TrimSpace(os.Getenv("FIRESTORE_EMULATOR_HOST"))
+	if endpoint == "" {
+		t.Skip("requires owned loopback Firestore emulator")
+	}
+	parsed, err := url.Parse("http://" + endpoint)
+	if err != nil || parsed.Host == "" {
+		t.Fatal("invalid Firestore emulator host")
+	}
+	if host, _, err := net.SplitHostPort(parsed.Host); err != nil || host != "127.0.0.1" {
+		t.Fatalf("Firestore emulator must use numeric loopback, got %q", endpoint)
+	}
+	unique := fmt.Sprintf("%d", time.Now().UnixNano())
+	cloudProject, scope := "lwc427-worker-"+unique, "lwc427-worker-"+unique
+	userID, projectID, reservationID := "owner-"+unique, "project-"+unique, "intent-"+unique
+	t.Setenv("GOOGLE_CLOUD_PROJECT", cloudProject)
+	t.Setenv("LOCAL_CLOUD_SCOPE", scope)
+	client, err := scopedfirestore.NewClientWithDatabaseAndScope(cloudProject, "", userID, projectID, scope)
+	if err != nil {
+		t.Fatalf("create scoped emulator client: %v", err)
+	}
+	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
+	defer cancel()
+	stateRef := scopedfirestore.Collection(client.Raw(), "projects").Doc(userID + "_" + projectID).Collection("profile").Doc("state")
+	candidateID := "candidate-v1"
+	candidateRef := stateRef.Collection("candidates").Doc(candidateID)
+	reservationRef := scopedfirestore.Collection(client.Raw(), "pipeline_quota_reservations").Doc(reservationID)
+	quotaRef := scopedfirestore.Collection(client.Raw(), "pipeline_quota").Doc(scopedfirestore.QuotaDocID(userID, projectID))
+	t.Cleanup(func() {
+		for _, ref := range []*firestore.DocumentRef{stateRef, candidateRef, reservationRef, quotaRef} {
+			if _, err := ref.Delete(context.Background()); err != nil {
+				t.Errorf("delete owned emulator fixture %s: %v", ref.Path, err)
+			}
+		}
+		if err := client.Close(); err != nil {
+			t.Errorf("close scoped emulator client: %v", err)
+		}
+	})
+	requirements := []profileGuidanceRequirement{{ID: "r1", Text: "Use concise Traditional Chinese."}}
+	digest := profileRequirementsDigest(requirements)
+	artifact, ref, err := profileartifacts.EncodeGuidance(profileartifacts.GenerationGuidanceEnvelope{
+		SchemaVersion: profileartifacts.GuidanceSchema, InputDigest: digest,
+		SourceContentGeneration: "generation-v1", CanonicalConceptsDigest: strings.Repeat("a", 64),
+		ModelVersion: "controlled-model-v1", PromptVersion: "profile.guidance.v1", CompileGuidance: "Write in Traditional Chinese.",
+	})
+	if err != nil {
+		t.Fatalf("encode active guidance artifact: %v", err)
+	}
+	if _, err := stateRef.Set(ctx, map[string]interface{}{
+		"project_id": projectID, "revision": int64(2), "requirements": requirements,
+		"active": map[string]interface{}{"candidate_id": candidateID, "content_generation": "generation-v1", "guidance_revision": ref.Revision},
+	}); err != nil {
+		t.Fatalf("seed saved Profile: %v", err)
+	}
+	if _, err := candidateRef.Set(ctx, map[string]interface{}{
+		"candidate_id": candidateID, "source": "manual", "base_revision": int64(1), "content_generation": "generation-v1",
+		"requirements_digest": digest, "guidance": ref,
+	}); err != nil {
+		t.Fatalf("seed active Profile candidate: %v", err)
+	}
+	_, reserved, err := client.ReserveQuotaForPipelineIntent(ctx, reservationID, userID, projectID,
+		pipelinequota.Limits{DailyLimit: 5, Cooldown: time.Hour, MinNewRaw: 1}, time.Now().UTC(),
+		pipelinequota.ModeFull, false, false, 1, 0, 0)
+	if err != nil || !reserved {
+		t.Fatalf("reserve full intent through actual producer: reserved=%t err=%v", reserved, err)
+	}
+	intent, exists, err := client.GetPipelineIntent(ctx, userID, projectID, reservationID)
+	if err != nil || !exists || intent.IntentStatus != "ready" || intent.ConsumedGuidanceKind != "active" || intent.ConsumedActiveGuidance == nil {
+		t.Fatalf("actual producer reservation=%+v exists=%t err=%v", intent, exists, err)
+	}
+	if _, claimed, err := client.BeginPipelineIntentInvocation(ctx, reservationID, reservationID, userID, projectID); err != nil || !claimed {
+		t.Fatalf("claim active guidance intent: claimed=%t err=%v", claimed, err)
+	}
+	objects := &profileGuidanceObjectStore{objects: map[string][]byte{
+		"users/" + userID + "/projects/" + projectID + "/" + profileartifacts.GuidanceObjectPath(ref.Revision): artifact,
+	}}
+	cfg := workerConfig{UserID: userID, ProjectID: projectID, PipelineReservationID: reservationID}
+	read := func() (*profileGuidancePin, bool, error) {
+		return readPipelineIntentGuidance(ctx, client.Raw(), cfg, objects)
+	}
+	pin, handled, err := read()
+	if err != nil || !handled || pin == nil || pin.Content != "Write in Traditional Chinese." || pin.RequirementsDigest != digest {
+		t.Fatalf("actual producer-to-Worker round trip pin=%+v handled=%t err=%v", pin, handled, err)
+	}
+	persisted, err := reservationRef.Get(ctx)
+	if err != nil {
+		t.Fatal(err)
+	}
+	wire, ok := persisted.Data()["consumed_active_guidance"].(map[string]interface{})
+	if !ok || wire["input_digest"] != digest || wire["model_version"] != "controlled-model-v1" || wire["InputDigest"] != nil {
+		t.Fatalf("new producer wire keys=%v; want worker snake_case keys", persisted.Data()["consumed_active_guidance"])
+	}
+
+	legacyWire := map[string]interface{}{
+		"Revision": ref.Revision, "InputDigest": ref.InputDigest, "ModelVersion": ref.ModelVersion,
+		"PromptVersion": ref.PromptVersion, "SchemaVersion": ref.SchemaVersion,
+	}
+	if _, err := reservationRef.Update(ctx, []firestore.Update{{Path: "consumed_active_guidance", Value: legacyWire}}); err != nil {
+		t.Fatalf("seed old persisted Go-field wire spelling: %v", err)
+	}
+	pin, handled, err = read()
+	if err != nil || !handled || pin == nil || pin.Content != "Write in Traditional Chinese." {
+		t.Fatalf("legacy active guidance read pin=%+v handled=%t err=%v", pin, handled, err)
+	}
+
+	for _, tc := range []struct {
+		name, want string
+		wire       map[string]interface{}
+	}{
+		{name: "missing reference", want: "Pipeline active guidance snapshot is incomplete", wire: nil},
+		{name: "invalid revision", want: "Pipeline active guidance snapshot is incomplete", wire: map[string]interface{}{"revision": "bad", "input_digest": digest, "model_version": "controlled-model-v1", "prompt_version": "profile.guidance.v1", "schema_version": profileartifacts.GuidanceSchema}},
+		{name: "mixed active guidance key spellings", want: "Pipeline active guidance snapshot is incomplete", wire: map[string]interface{}{"revision": ref.Revision, "input_digest": digest, "ModelVersion": "controlled-model-v1", "PromptVersion": "profile.guidance.v1", "SchemaVersion": profileartifacts.GuidanceSchema}},
+		{name: "stale full-mode digest", want: "Pipeline active guidance does not match the saved Profile requirements", wire: map[string]interface{}{"revision": ref.Revision, "input_digest": strings.Repeat("f", 64), "model_version": "controlled-model-v1", "prompt_version": "profile.guidance.v1", "schema_version": profileartifacts.GuidanceSchema}},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			if tc.wire == nil {
+				if _, err := reservationRef.Update(ctx, []firestore.Update{{Path: "consumed_active_guidance", Value: firestore.Delete}}); err != nil {
+					t.Fatal(err)
+				}
+			} else if _, err := reservationRef.Update(ctx, []firestore.Update{
+				{Path: "consumed_active_guidance", Value: tc.wire},
+				{Path: "consumed_guidance_input_digest", Value: tc.wire["input_digest"]},
+			}); err != nil {
+				t.Fatal(err)
+			}
+			_, handled, err := read()
+			if !handled || err == nil || err.Error() != tc.want {
+				t.Fatalf("negative guard handled=%t err=%v, want %q", handled, err, tc.want)
+			}
+		})
+	}
+}
+
 func hashBytes(data []byte) string {
 	digest := sha256.Sum256(data)
 	return hex.EncodeToString(digest[:])
