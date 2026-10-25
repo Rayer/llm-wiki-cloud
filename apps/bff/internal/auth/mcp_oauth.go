@@ -107,6 +107,7 @@ type MCPOAuthTokenResponse struct {
 
 type MCPOAuthConsentDetails struct {
 	TransactionID string                  `json:"transaction_id"`
+	CanContinue   bool                    `json:"can_continue"`
 	AccountEmail  string                  `json:"account_email"`
 	ProjectID     string                  `json:"project_id,omitempty"`
 	ProjectName   string                  `json:"project_name,omitempty"`
@@ -171,6 +172,7 @@ type mcpOAuthCodeRecord struct {
 	Scope         string    `firestore:"scope"`
 	UserID        string    `firestore:"user_id"`
 	AuthVersion   int64     `firestore:"auth_version"`
+	SourceGrantID string    `firestore:"source_grant_id,omitempty"`
 	Status        string    `firestore:"status"`
 	CreatedAt     time.Time `firestore:"created_at"`
 	ExpiresAt     time.Time `firestore:"expires_at"`
@@ -181,6 +183,7 @@ type mcpOAuthGrantRecord struct {
 	SchemaVersion      int       `firestore:"schema_version"`
 	Environment        string    `firestore:"environment"`
 	GrantID            string    `firestore:"grant_id"`
+	OriginGrantID      string    `firestore:"origin_grant_id,omitempty"`
 	UserID             string    `firestore:"user_id"`
 	AuthVersion        int64     `firestore:"auth_version"`
 	ProjectID          string    `firestore:"project_id"`
@@ -223,7 +226,9 @@ type mcpOAuthRefreshResult struct {
 }
 
 type mcpOAuthDecision struct {
-	RedirectURL string
+	RedirectURL     string
+	RequiresConsent bool
+	SourceGrantID   string
 }
 
 func NewMCPOAuthService(fs *firestore.Client, environment, issuer, resourceOrigin, frontendOrigin, jwtSecret string) *MCPOAuthService {
@@ -692,28 +697,54 @@ func (s *MCPOAuthService) BeginAuthorization(ctx context.Context, clientID, redi
 	return s.frontendOrigin + "/oauth/consent?transaction_id=" + url.QueryEscape(transactionID), nil
 }
 
-func (s *MCPOAuthService) ConsentDetails(ctx context.Context, userID, transactionID string) (MCPOAuthConsentDetails, error) {
+func (s *MCPOAuthService) ConsentDetails(ctx context.Context, userID string, authVersion int64, transactionID string) (MCPOAuthConsentDetails, error) {
 	if !validMCPOpaque(transactionID, "lwc_mcp_tx_") || !ValidPathSegment(userID) || s == nil || s.fs == nil {
 		return MCPOAuthConsentDetails{}, ErrMCPOAuthInvalid
 	}
 	txHash := mcpOAuthHash(transactionID)
-	snapshot, err := s.collection("transactions").Doc(txHash).Get(ctx)
-	if err != nil {
-		if status.Code(err) == codes.NotFound {
-			return MCPOAuthConsentDetails{}, ErrMCPOAuthNotFound
+	transactionRef := s.collection("transactions").Doc(txHash)
+	var request mcpOAuthTransactionRecord
+	err := s.fs.RunTransaction(ctx, func(ctx context.Context, transaction *firestore.Transaction) error {
+		snapshot, err := transaction.Get(transactionRef)
+		if err != nil {
+			if status.Code(err) == codes.NotFound {
+				return ErrMCPOAuthNotFound
+			}
+			return ErrMCPOAuthUnavailable
 		}
-		return MCPOAuthConsentDetails{}, ErrMCPOAuthUnavailable
-	}
-	var tx mcpOAuthTransactionRecord
-	if mcpOAuthDecode(snapshot.Data(), &tx) != nil || tx.SchemaVersion != mcpOAuthRecordSchema ||
-		tx.Environment != s.environment || tx.TransactionIDHash != txHash || !s.validStoredResource(tx.Resource, tx.ProjectID, tx.Scope, true) {
-		return MCPOAuthConsentDetails{}, ErrMCPOAuthUnavailable
-	}
-	if tx.Status != "pending" {
-		return MCPOAuthConsentDetails{}, ErrMCPOAuthDenied
-	}
-	if !s.now().Before(tx.ExpiresAt) {
-		return MCPOAuthConsentDetails{}, ErrMCPOAuthExpired
+		if mcpOAuthDecode(snapshot.Data(), &request) != nil || request.SchemaVersion != mcpOAuthRecordSchema ||
+			request.Environment != s.environment || request.TransactionIDHash != txHash ||
+			!s.validStoredResource(request.Resource, request.ProjectID, request.Scope, true) {
+			return ErrMCPOAuthUnavailable
+		}
+		if request.Status != "pending" {
+			return ErrMCPOAuthDenied
+		}
+		if !s.now().Before(request.ExpiresAt) {
+			return ErrMCPOAuthExpired
+		}
+		user, err := readMCPAccountInTransaction(ctx, transaction, s.fs, userID)
+		if err != nil {
+			return err
+		}
+		if !user.AllowsVersion(authVersion) {
+			return ErrAccountInactive
+		}
+		if request.UserID != "" {
+			if request.UserID != userID || request.AuthVersion != authVersion {
+				return ErrMCPOAuthDenied
+			}
+			return nil
+		}
+		request.UserID = userID
+		request.AuthVersion = authVersion
+		return transaction.Update(transactionRef, []firestore.Update{
+			{Path: "user_id", Value: userID},
+			{Path: "auth_version", Value: authVersion},
+		})
+	})
+	if err != nil {
+		return MCPOAuthConsentDetails{}, normalizeMCPFirestoreError(err)
 	}
 	user, err := s.lookup(ctx, userID)
 	if err != nil {
@@ -722,17 +753,17 @@ func (s *MCPOAuthService) ConsentDetails(ctx context.Context, userID, transactio
 	if user == nil || !user.Active() {
 		return MCPOAuthConsentDetails{}, ErrAccountInactive
 	}
-	client, err := s.readClient(ctx, tx.ClientID)
+	client, err := s.readClient(ctx, request.ClientID)
 	if err != nil {
 		return MCPOAuthConsentDetails{}, err
 	}
-	policy, _, _ := s.policyForResource(tx.Resource)
+	policy, _, _ := s.policyForResource(request.Resource)
 	var project ProjectSummary
 	if policy.Kind == "project-template" {
-		if err := s.requireProjectOwner(ctx, userID, tx.ProjectID); err != nil {
+		if err := s.requireProjectOwner(ctx, userID, request.ProjectID); err != nil {
 			return MCPOAuthConsentDetails{}, err
 		}
-		project, err = getOwnedProject(ctx, s.fs, userID, tx.ProjectID)
+		project, err = getOwnedProject(ctx, s.fs, userID, request.ProjectID)
 		if err != nil {
 			return MCPOAuthConsentDetails{}, err
 		}
@@ -741,21 +772,41 @@ func (s *MCPOAuthService) ConsentDetails(ctx context.Context, userID, transactio
 	if name == "" {
 		name = "Unnamed MCP client"
 	}
-	resourceKind, resourceName, scopeDetails, ok := s.resourceDetails(tx.Resource, tx.Scope)
+	resourceKind, resourceName, scopeDetails, ok := s.resourceDetails(request.Resource, request.Scope)
 	if !ok {
 		return MCPOAuthConsentDetails{}, ErrMCPOAuthUnavailable
 	}
+	// The UI hint is advisory; ContinueConsent checks the same authority in its write transaction.
+	reusableGrant, err := s.hasReusableGrant(ctx, nil, request, authVersion, s.now())
+	if err != nil {
+		return MCPOAuthConsentDetails{}, err
+	}
 	return MCPOAuthConsentDetails{
-		TransactionID: transactionID, AccountEmail: user.Email,
-		ProjectID: tx.ProjectID, ProjectName: project.Name, ClientName: name,
-		Resource: tx.Resource, ResourceKind: resourceKind, ResourceName: resourceName, ScopeDetails: scopeDetails,
-		Scope: tx.Scope, ExpiresAt: tx.ExpiresAt.UTC().Format(time.RFC3339),
+		TransactionID: transactionID, CanContinue: reusableGrant != nil, AccountEmail: user.Email,
+		ProjectID: request.ProjectID, ProjectName: project.Name, ClientName: name,
+		Resource: request.Resource, ResourceKind: resourceKind, ResourceName: resourceName, ScopeDetails: scopeDetails,
+		Scope: request.Scope, ExpiresAt: request.ExpiresAt.UTC().Format(time.RFC3339),
 	}, nil
 }
 
 func (s *MCPOAuthService) DecideConsent(ctx context.Context, userID string, authVersion int64, transactionID string, allow bool) (mcpOAuthDecision, error) {
+	action := "deny"
+	if allow {
+		action = "allow"
+	}
+	return s.decideConsent(ctx, userID, authVersion, transactionID, action)
+}
+
+func (s *MCPOAuthService) ContinueConsent(ctx context.Context, userID string, authVersion int64, transactionID string) (mcpOAuthDecision, error) {
+	return s.decideConsent(ctx, userID, authVersion, transactionID, "continue")
+}
+
+func (s *MCPOAuthService) decideConsent(ctx context.Context, userID string, authVersion int64, transactionID, action string) (mcpOAuthDecision, error) {
 	if !validMCPOpaque(transactionID, "lwc_mcp_tx_") || !ValidPathSegment(userID) || s == nil || s.fs == nil {
 		return mcpOAuthDecision{}, ErrMCPOAuthInvalid
+	}
+	if action != "allow" && action != "deny" && action != "continue" {
+		return mcpOAuthDecision{}, ErrMCPOAuthBadRequest
 	}
 	code, err := generateMCPOpaque(mcpOAuthCodePrefix)
 	if err != nil {
@@ -768,6 +819,7 @@ func (s *MCPOAuthService) DecideConsent(ctx context.Context, userID string, auth
 	var result mcpOAuthDecision
 	expired := false
 	err = s.fs.RunTransaction(ctx, func(ctx context.Context, tx *firestore.Transaction) error {
+		result = mcpOAuthDecision{}
 		txSnapshot, err := tx.Get(txRef)
 		if err != nil {
 			if status.Code(err) == codes.NotFound {
@@ -820,7 +872,10 @@ func (s *MCPOAuthService) DecideConsent(ctx context.Context, userID string, auth
 		if !user.AllowsVersion(authVersion) {
 			return ErrAccountInactive
 		}
-		if !allow {
+		if request.UserID != userID || request.AuthVersion != authVersion {
+			return ErrMCPOAuthDenied
+		}
+		if action == "deny" {
 			if err := tx.Update(txRef, []firestore.Update{
 				{Path: "status", Value: "denied"},
 				{Path: "user_id", Value: userID},
@@ -831,6 +886,17 @@ func (s *MCPOAuthService) DecideConsent(ctx context.Context, userID string, auth
 			result.RedirectURL = oauthRedirectWithError(request.RedirectURI, "access_denied", request.State)
 			return nil
 		}
+		if action == "continue" {
+			reusable, err := s.hasReusableGrant(ctx, tx, request, authVersion, now)
+			if err != nil {
+				return err
+			}
+			if reusable == nil {
+				result.RequiresConsent = true
+				return nil
+			}
+			result.SourceGrantID = reusable.GrantID
+		}
 		if (policy.Kind == "project-template" && project.ID != request.ProjectID) ||
 			!validMCPCodeChallenge(request.CodeChallenge) {
 			return ErrMCPOAuthDenied
@@ -840,7 +906,8 @@ func (s *MCPOAuthService) DecideConsent(ctx context.Context, userID string, auth
 			CodeHash: codeHash, ClientID: request.ClientID, RedirectURI: request.RedirectURI,
 			CodeChallenge: request.CodeChallenge, Resource: request.Resource, ProjectID: request.ProjectID,
 			Scope: request.Scope, UserID: userID, AuthVersion: authVersion,
-			Status: "active", CreatedAt: now, ExpiresAt: now.Add(mcpOAuthCodeTTL),
+			SourceGrantID: result.SourceGrantID,
+			Status:        "active", CreatedAt: now, ExpiresAt: now.Add(mcpOAuthCodeTTL),
 		}
 		if err := tx.Create(s.collection("codes").Doc(codeHash), codeRecord); err != nil {
 			return ErrMCPOAuthUnavailable
@@ -863,6 +930,116 @@ func (s *MCPOAuthService) DecideConsent(ctx context.Context, userID string, auth
 		return mcpOAuthDecision{}, ErrMCPOAuthExpired
 	}
 	return result, nil
+}
+
+func (s *MCPOAuthService) hasReusableGrant(ctx context.Context, transaction *firestore.Transaction, request mcpOAuthTransactionRecord, authVersion int64, now time.Time) (*mcpOAuthGrantRecord, error) {
+	query := s.collection("grants").Where("user_id", "==", request.UserID)
+	var documents []*firestore.DocumentSnapshot
+	if transaction != nil {
+		var err error
+		documents, err = transaction.Documents(query).GetAll()
+		if err != nil {
+			return nil, ErrMCPOAuthUnavailable
+		}
+	} else {
+		iter := query.Documents(ctx)
+		defer iter.Stop()
+		for {
+			document, err := iter.Next()
+			if errors.Is(err, iterator.Done) {
+				break
+			}
+			if err != nil {
+				return nil, ErrMCPOAuthUnavailable
+			}
+			documents = append(documents, document)
+		}
+	}
+	for _, document := range documents {
+		var grant mcpOAuthGrantRecord
+		if mcpOAuthDecode(document.Data(), &grant) != nil || grant.SchemaVersion != mcpOAuthRecordSchema ||
+			grant.Environment != s.environment || grant.GrantID != document.Ref.ID || grant.UserID != request.UserID {
+			return nil, ErrMCPOAuthUnavailable
+		}
+		if grant.ClientID != request.ClientID || grant.Resource != request.Resource || grant.ProjectID != request.ProjectID {
+			continue
+		}
+		if !s.validStoredResource(grant.Resource, grant.ProjectID, grant.Scope, true) {
+			return nil, ErrMCPOAuthUnavailable
+		}
+		if grant.Status != "active" || grant.AuthVersion != authVersion || !now.Before(grant.ExpiresAt) ||
+			!mcpOAuthScopeCovers(grant.Scope, request.Scope) {
+			continue
+		}
+		source := grant
+		if grant.OriginGrantID != "" {
+			origin, err := s.readGrant(ctx, transaction, grant.OriginGrantID)
+			if err != nil {
+				if errors.Is(err, ErrMCPOAuthNotFound) || errors.Is(err, ErrMCPOAuthInvalid) {
+					continue
+				}
+				return nil, err
+			}
+			if origin.OriginGrantID != "" || origin.Status != "active" || origin.AuthVersion != authVersion ||
+				!now.Before(origin.ExpiresAt) || origin.UserID != grant.UserID || origin.ClientID != grant.ClientID ||
+				origin.Resource != grant.Resource || origin.ProjectID != grant.ProjectID ||
+				!mcpOAuthScopeCovers(origin.Scope, grant.Scope) {
+				continue
+			}
+			source = origin
+		}
+		if source.Status == "active" && source.AuthVersion == authVersion && now.Before(source.ExpiresAt) && mcpOAuthScopeCovers(source.Scope, request.Scope) {
+			return &source, nil
+		}
+	}
+	return nil, nil
+}
+
+func (s *MCPOAuthService) readGrant(ctx context.Context, transaction *firestore.Transaction, grantID string) (mcpOAuthGrantRecord, error) {
+	ref := s.collection("grants").Doc(grantID)
+	var data map[string]interface{}
+	if transaction != nil {
+		snapshot, err := transaction.Get(ref)
+		if err != nil {
+			if status.Code(err) == codes.NotFound {
+				return mcpOAuthGrantRecord{}, ErrMCPOAuthNotFound
+			}
+			return mcpOAuthGrantRecord{}, ErrMCPOAuthUnavailable
+		}
+		data = snapshot.Data()
+	} else {
+		snapshot, err := ref.Get(ctx)
+		if err != nil {
+			if status.Code(err) == codes.NotFound {
+				return mcpOAuthGrantRecord{}, ErrMCPOAuthNotFound
+			}
+			return mcpOAuthGrantRecord{}, ErrMCPOAuthUnavailable
+		}
+		data = snapshot.Data()
+	}
+	var grant mcpOAuthGrantRecord
+	if mcpOAuthDecode(data, &grant) != nil || grant.SchemaVersion != mcpOAuthRecordSchema ||
+		grant.Environment != s.environment || grant.GrantID != grantID || !ValidPathSegment(grant.UserID) ||
+		!ValidPathSegment(grant.ClientID) || !s.validStoredResource(grant.Resource, grant.ProjectID, grant.Scope, false) {
+		return mcpOAuthGrantRecord{}, ErrMCPOAuthInvalid
+	}
+	return grant, nil
+}
+
+func mcpOAuthScopeCovers(granted, requested string) bool {
+	if granted == "" || requested == "" {
+		return false
+	}
+	grantedScopes := make(map[string]struct{})
+	for _, scope := range strings.Split(granted, " ") {
+		grantedScopes[scope] = struct{}{}
+	}
+	for _, scope := range strings.Split(requested, " ") {
+		if _, ok := grantedScopes[scope]; !ok {
+			return false
+		}
+	}
+	return true
 }
 
 func (s *MCPOAuthService) ExchangeCode(ctx context.Context, clientID, code, redirectURI, verifier, resource string) (MCPOAuthTokenResponse, error) {
@@ -926,7 +1103,7 @@ func (s *MCPOAuthService) ExchangeCode(ctx context.Context, clientID, code, redi
 			record.CodeHash != codeHash || record.Status != "active" {
 			return ErrMCPOAuthReplay
 		}
-		if record.ClientID != clientID || record.RedirectURI != redirectURI ||
+		if record.ClientID != clientID || record.RedirectURI != redirectURI || record.SourceGrantID != initial.SourceGrantID ||
 			record.Resource != resource || !s.validStoredResource(resource, record.ProjectID, record.Scope, true) || record.Scope != initial.Scope ||
 			!verifyMCPCodeVerifier(record.CodeChallenge, verifier) ||
 			!now.Before(record.ExpiresAt) {
@@ -957,16 +1134,36 @@ func (s *MCPOAuthService) ExchangeCode(ctx context.Context, clientID, code, redi
 			return ErrMCPOAuthDenied
 		}
 		familyExpires := now.Add(mcpOAuthFamilyTTL)
+		originGrantID := ""
+		if record.SourceGrantID != "" {
+			source, err := s.readGrant(ctx, tx, record.SourceGrantID)
+			if errors.Is(err, ErrMCPOAuthUnavailable) {
+				return ErrMCPOAuthUnavailable
+			}
+			if err != nil || source.OriginGrantID != "" || source.Status != "active" ||
+				!now.Before(source.ExpiresAt) || source.UserID != record.UserID || source.AuthVersion != record.AuthVersion ||
+				source.ClientID != record.ClientID || source.Resource != record.Resource || source.ProjectID != record.ProjectID ||
+				!mcpOAuthScopeCovers(source.Scope, record.Scope) {
+				return ErrMCPOAuthInvalid
+			}
+			familyExpires = minTime(familyExpires, source.ExpiresAt)
+			originGrantID = source.GrantID
+		}
+		if !now.Before(familyExpires) {
+			return ErrMCPOAuthInvalid
+		}
+		accessExpires := minTime(now.Add(mcpOAuthAccessTTL), familyExpires)
+		response.ExpiresIn = int(accessExpires.Sub(now).Seconds())
 		grant := mcpOAuthGrantRecord{
 			SchemaVersion: mcpOAuthRecordSchema, Environment: s.environment,
-			GrantID: grantID, UserID: record.UserID, AuthVersion: record.AuthVersion,
+			GrantID: grantID, OriginGrantID: originGrantID, UserID: record.UserID, AuthVersion: record.AuthVersion,
 			ProjectID: record.ProjectID, ClientID: record.ClientID,
 			Resource: record.Resource, Scope: record.Scope, Status: "active",
 			CurrentRefreshHash: refreshHash, CreatedAt: now, ExpiresAt: familyExpires,
 		}
 		access := mcpOAuthAccessRecord{
 			SchemaVersion: mcpOAuthRecordSchema, Environment: s.environment,
-			TokenHash: accessHash, GrantID: grantID, ExpiresAt: now.Add(mcpOAuthAccessTTL), CreatedAt: now,
+			TokenHash: accessHash, GrantID: grantID, ExpiresAt: accessExpires, CreatedAt: now,
 		}
 		refresh := mcpOAuthRefreshRecord{
 			SchemaVersion: mcpOAuthRecordSchema, Environment: s.environment,
@@ -1043,8 +1240,9 @@ func (s *MCPOAuthService) Refresh(ctx context.Context, clientID, refreshToken, r
 	if !policyFound || !policy.Enabled {
 		return MCPOAuthTokenResponse{}, ErrMCPOAuthInvalid
 	}
+	nextAccessExpiry := minTime(now.Add(mcpOAuthAccessTTL), initialGrant.ExpiresAt)
 	nextResponse := MCPOAuthTokenResponse{
-		AccessToken: nextAccess, TokenType: "Bearer", ExpiresIn: int(mcpOAuthAccessTTL.Seconds()),
+		AccessToken: nextAccess, TokenType: "Bearer", ExpiresIn: int(nextAccessExpiry.Sub(now).Seconds()),
 		RefreshToken: nextRefresh, Scope: initialGrant.Scope,
 	}
 	retryResult := mcpOAuthRefreshResult{TokenResponse: nextResponse, ExpiresAt: initial.ExpiresAt}
@@ -1075,6 +1273,18 @@ func (s *MCPOAuthService) Refresh(ctx context.Context, clientID, refreshToken, r
 			grant.SchemaVersion != mcpOAuthRecordSchema || grant.Environment != s.environment ||
 			grant.GrantID != currentToken.GrantID {
 			return ErrMCPOAuthUnavailable
+		}
+		if grant.OriginGrantID != "" {
+			origin, err := s.readGrant(ctx, tx, grant.OriginGrantID)
+			if errors.Is(err, ErrMCPOAuthUnavailable) {
+				return ErrMCPOAuthUnavailable
+			}
+			if err != nil || origin.OriginGrantID != "" || origin.Status != "active" ||
+				origin.UserID != grant.UserID || origin.AuthVersion != grant.AuthVersion ||
+				origin.ClientID != grant.ClientID || origin.Resource != grant.Resource || origin.ProjectID != grant.ProjectID ||
+				!mcpOAuthScopeCovers(origin.Scope, grant.Scope) || !now.Before(origin.ExpiresAt) || grant.ExpiresAt.After(origin.ExpiresAt) {
+				return ErrMCPOAuthInvalid
+			}
 		}
 		userRef := scopedfirestore.Collection(s.fs, "users").Doc(grant.UserID)
 		userSnapshot, err := tx.Get(userRef)
@@ -1237,8 +1447,24 @@ func (s *MCPOAuthService) listGrants(ctx context.Context, userID, projectID, res
 			return nil, err
 		}
 		state := grant.Status
-		if state == "active" && !s.now().Before(grant.ExpiresAt) {
-			state = "expired"
+		if state == "active" {
+			if !s.now().Before(grant.ExpiresAt) {
+				state = "expired"
+			} else if grant.OriginGrantID != "" {
+				origin, err := s.readGrant(ctx, nil, grant.OriginGrantID)
+				if err != nil {
+					if errors.Is(err, ErrMCPOAuthUnavailable) {
+						return nil, err
+					}
+					state = "revoked"
+				} else if origin.OriginGrantID != "" || origin.UserID != grant.UserID || origin.AuthVersion != grant.AuthVersion ||
+					origin.ClientID != grant.ClientID || origin.Resource != grant.Resource || origin.ProjectID != grant.ProjectID ||
+					!mcpOAuthScopeCovers(origin.Scope, grant.Scope) || origin.Status != "active" {
+					state = "revoked"
+				} else if !s.now().Before(origin.ExpiresAt) {
+					state = "expired"
+				}
+			}
 		}
 		name := client.ClientName
 		if name == "" {
@@ -1350,6 +1576,23 @@ func (a *MCPGrantAuthority) AuthenticateAccessToken(ctx context.Context, token, 
 		grant.GrantID != access.GrantID {
 		return MCPOAuthIdentity{}, ErrMCPOAuthUnavailable
 	}
+	if grant.OriginGrantID != "" {
+		originSnapshot, err := a.collection("grants").Doc(grant.OriginGrantID).Get(ctx)
+		if err != nil {
+			if status.Code(err) == codes.NotFound {
+				return MCPOAuthIdentity{}, ErrMCPOAuthDenied
+			}
+			return MCPOAuthIdentity{}, ErrMCPOAuthUnavailable
+		}
+		var origin mcpOAuthGrantRecord
+		if mcpOAuthDecode(originSnapshot.Data(), &origin) != nil || origin.SchemaVersion != mcpOAuthRecordSchema ||
+			origin.Environment != a.environment || origin.GrantID != grant.OriginGrantID || origin.OriginGrantID != "" ||
+			origin.Status != "active" || !a.now().Before(origin.ExpiresAt) || origin.UserID != grant.UserID ||
+			origin.AuthVersion != grant.AuthVersion || origin.ClientID != grant.ClientID || origin.Resource != grant.Resource ||
+			origin.ProjectID != grant.ProjectID || !mcpOAuthScopeCovers(origin.Scope, grant.Scope) || grant.ExpiresAt.After(origin.ExpiresAt) {
+			return MCPOAuthIdentity{}, ErrMCPOAuthDenied
+		}
+	}
 	capabilities, supportedScope := canonicalMCPOAuthCapabilities(grant.Scope)
 	if grant.Status != "active" || !a.now().Before(grant.ExpiresAt) ||
 		grant.ProjectID != projectID || !supportedScope ||
@@ -1414,6 +1657,18 @@ func (s *MCPOAuthService) VerifyAccessToken(ctx context.Context, token string) (
 	}
 	if grant.Status != "active" || !s.now().Before(grant.ExpiresAt) || grant.AuthVersion < 0 {
 		return MCPOAuthVerifiedCredential{}, ErrMCPOAuthInvalid
+	}
+	if grant.OriginGrantID != "" {
+		origin, err := s.readGrant(ctx, nil, grant.OriginGrantID)
+		if errors.Is(err, ErrMCPOAuthUnavailable) {
+			return MCPOAuthVerifiedCredential{}, ErrMCPOAuthUnavailable
+		}
+		if err != nil || origin.OriginGrantID != "" || origin.Status != "active" ||
+			!s.now().Before(origin.ExpiresAt) || origin.UserID != grant.UserID || origin.AuthVersion != grant.AuthVersion ||
+			origin.ClientID != grant.ClientID || origin.Resource != grant.Resource || origin.ProjectID != grant.ProjectID ||
+			!mcpOAuthScopeCovers(origin.Scope, grant.Scope) || grant.ExpiresAt.After(origin.ExpiresAt) {
+			return MCPOAuthVerifiedCredential{}, ErrMCPOAuthInvalid
+		}
 	}
 	client, err := s.readClient(ctx, grant.ClientID)
 	if err != nil || client.ClientID != grant.ClientID || client.Environment != s.environment {

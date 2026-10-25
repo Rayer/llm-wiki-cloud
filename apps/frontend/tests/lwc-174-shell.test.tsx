@@ -8,7 +8,7 @@ if (!(React as { act?: (callback: () => unknown) => Promise<unknown> | unknown }
   });
 }
 
-const { cleanup, fireEvent, render, screen, waitFor } = await import('@testing-library/react');
+const { act, cleanup, fireEvent, render, screen, waitFor } = await import('@testing-library/react');
 
 const mocks = vi.hoisted(() => ({
   getProjects: vi.fn(),
@@ -78,6 +78,16 @@ function renderShell() {
   );
 }
 
+function deferred<T>() {
+  let resolve!: (value: T) => void;
+  let reject!: (reason: unknown) => void;
+  const promise = new Promise<T>((resolvePromise, rejectPromise) => {
+    resolve = resolvePromise;
+    reject = rejectPromise;
+  });
+  return { promise, resolve, reject };
+}
+
 beforeEach(() => {
   mocks.getProjects.mockResolvedValue([
     { id: 'project-a', name: 'Project Alpha' },
@@ -100,6 +110,32 @@ afterEach(() => {
 });
 
 describe('LWC-174 production Shell rename behavior', () => {
+  it('keeps the authenticated OAuth consent route reachable during Project loading, empty state, and load failure', async () => {
+    mocks.pathname = '/oauth/consent';
+    const projects = deferred<{ id: string; name: string }[]>();
+    mocks.getProjects.mockReturnValueOnce(projects.promise);
+    renderShell();
+
+    expect(await screen.findByText('workspace content')).toBeTruthy();
+    expect(screen.queryByText('Projects unavailable')).toBeNull();
+    await act(async () => {
+      projects.resolve([]);
+      await projects.promise;
+    });
+    expect(screen.getByText('workspace content')).toBeTruthy();
+
+    cleanup();
+    const failedProjects = deferred<{ id: string; name: string }[]>();
+    mocks.getProjects.mockReturnValueOnce(failedProjects.promise);
+    renderShell();
+    await act(async () => {
+      failedProjects.reject(new Error('synthetic Project load failure'));
+      await failedProjects.promise.catch(() => undefined);
+    });
+    expect(screen.getByText('workspace content')).toBeTruthy();
+    expect(screen.queryByText('Projects unavailable')).toBeNull();
+  });
+
   it('shows and copies the actual server response request ID in the shared shell', async () => {
     const requestID = '123e4567-e89b-12d3-a456-426614174099';
     const clipboard = Object.getOwnPropertyDescriptor(navigator, 'clipboard');

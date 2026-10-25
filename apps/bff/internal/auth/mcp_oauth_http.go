@@ -382,7 +382,12 @@ func MCPOAuthTokenHandler(service *MCPOAuthService) gin.HandlerFunc {
 
 func MCPOAuthConsentDetailsHandler(service *MCPOAuthService) gin.HandlerFunc {
 	return func(c *gin.Context) {
-		details, err := service.ConsentDetails(c.Request.Context(), c.GetString("userID"), c.Param("transactionID"))
+		userID, authVersion, ok := mcpOAuthAuthenticatedWebIdentity(c, service.jwtSecret)
+		if !ok {
+			writeMCPOAuthOAuthError(c, http.StatusUnauthorized, "invalid_token")
+			return
+		}
+		details, err := service.ConsentDetails(c.Request.Context(), userID, authVersion, c.Param("transactionID"))
 		if err != nil {
 			writeMCPOAuthServiceError(c, err)
 			return
@@ -395,7 +400,8 @@ func MCPOAuthConsentDetailsHandler(service *MCPOAuthService) gin.HandlerFunc {
 func MCPOAuthConsentDecisionHandler(service *MCPOAuthService, jwtSecret string) gin.HandlerFunc {
 	return func(c *gin.Context) {
 		var request mcpOAuthConsentDecisionRequest
-		if err := decodeMCPOAuthJSON(c, &request); err != nil || (request.Decision != "allow" && request.Decision != "deny") {
+		if err := decodeMCPOAuthJSON(c, &request); err != nil ||
+			(request.Decision != "allow" && request.Decision != "deny" && request.Decision != "continue") {
 			writeMCPOAuthOAuthError(c, http.StatusBadRequest, "invalid_request")
 			return
 		}
@@ -404,14 +410,20 @@ func MCPOAuthConsentDecisionHandler(service *MCPOAuthService, jwtSecret string) 
 			writeMCPOAuthOAuthError(c, http.StatusUnauthorized, "invalid_token")
 			return
 		}
-		decision, err := service.DecideConsent(c.Request.Context(), userID, authVersion,
-			c.Param("transactionID"), request.Decision == "allow")
+		var decision mcpOAuthDecision
+		var err error
+		if request.Decision == "continue" {
+			decision, err = service.ContinueConsent(c.Request.Context(), userID, authVersion, c.Param("transactionID"))
+		} else {
+			decision, err = service.DecideConsent(c.Request.Context(), userID, authVersion,
+				c.Param("transactionID"), request.Decision == "allow")
+		}
 		if err != nil {
 			writeMCPOAuthServiceError(c, err)
 			return
 		}
 		c.Header("Cache-Control", "no-store")
-		c.JSON(http.StatusOK, gin.H{"redirect_url": decision.RedirectURL})
+		c.JSON(http.StatusOK, gin.H{"redirect_url": decision.RedirectURL, "requires_consent": decision.RequiresConsent})
 	}
 }
 

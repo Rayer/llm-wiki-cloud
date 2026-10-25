@@ -121,7 +121,11 @@ func TestMCPProjectOAuthRejectsConflictingProjectHeaderBeforeSDK(t *testing.T) {
 	if err != nil {
 		t.Fatalf("parse consent URL: %v", err)
 	}
-	decision, err := service.DecideConsent(ctx, userID, 0, parsedConsent.Query().Get("transaction_id"), true)
+	transactionID := parsedConsent.Query().Get("transaction_id")
+	if _, err := service.ConsentDetails(ctx, userID, 0, transactionID); err != nil {
+		t.Fatalf("read consent details: %v", err)
+	}
+	decision, err := service.DecideConsent(ctx, userID, 0, transactionID, true)
 	if err != nil {
 		t.Fatalf("approve consent: %v", err)
 	}
@@ -277,7 +281,11 @@ func TestMCPProjectOAuthRejectsConflictingProjectHeaderBeforeSDK(t *testing.T) {
 	if err != nil {
 		t.Fatalf("parse query-only consent URL: %v", err)
 	}
-	readOnlyDecision, err := service.DecideConsent(ctx, userID, 0, readOnlyConsent.Query().Get("transaction_id"), true)
+	readOnlyTransactionID := readOnlyConsent.Query().Get("transaction_id")
+	if _, err := service.ConsentDetails(ctx, userID, 0, readOnlyTransactionID); err != nil {
+		t.Fatalf("read query-only consent details: %v", err)
+	}
+	readOnlyDecision, err := service.DecideConsent(ctx, userID, 0, readOnlyTransactionID, true)
 	if err != nil {
 		t.Fatalf("approve query-only consent: %v", err)
 	}
@@ -392,7 +400,11 @@ func TestMCPProjectOAuthRejectsConflictingProjectHeaderBeforeSDK(t *testing.T) {
 	if err != nil {
 		t.Fatalf("parse expired-token consent URL: %v", err)
 	}
-	expiredDecision, err := expiredService.DecideConsent(ctx, userID, 0, expiredConsent.Query().Get("transaction_id"), true)
+	expiredTransactionID := expiredConsent.Query().Get("transaction_id")
+	if _, err := expiredService.ConsentDetails(ctx, userID, 0, expiredTransactionID); err != nil {
+		t.Fatalf("read expired-token consent details: %v", err)
+	}
+	expiredDecision, err := expiredService.DecideConsent(ctx, userID, 0, expiredTransactionID, true)
 	if err != nil {
 		t.Fatalf("approve expired-token consent: %v", err)
 	}
