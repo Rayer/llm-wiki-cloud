@@ -339,14 +339,18 @@ func TestMCPProjectOAuthRejectsConflictingProjectHeaderBeforeSDK(t *testing.T) {
 	}
 	resourceEntry := resources[0].(map[string]any)
 	wantEventURI := pipelineEventsURI(projectID)
-	if resourceEntry["uri"] != wantEventURI || resourceEntry["mimeType"] != "application/json" ||
+	if resourceEntry["uri"] != wantEventURI || resourceEntry["name"] != "pipeline-events" || resourceEntry["title"] != "Project Pipeline events" || resourceEntry["mimeType"] != "application/json" ||
 		!strings.Contains(resourceEntry["description"].(string), "wake-up") || !strings.Contains(resourceEntry["description"].(string), "reconnect") {
 		t.Fatalf("OAuth Pipeline resource contract=%#v", resourceEntry)
+	}
+	if resourceListResult["cacheScope"] != "private" {
+		t.Fatalf("OAuth resources/list cache scope=%#v, want private", resourceListResult["cacheScope"])
 	}
 	resourceRead := oauthWireRequest(readOnlyTokens.AccessToken, `{"jsonrpc":"2.0","id":42,"method":"resources/read","params":{"uri":"`+wantEventURI+`","`+modernMeta+`}}`)
 	resourceReadResult := mcpMetadataResult(t, resourceRead)
 	contents, ok := resourceReadResult["contents"].([]any)
-	if !ok || len(contents) != 1 || !strings.Contains(contents[0].(map[string]any)["text"].(string), "oauth-fixture-revision") {
+	if !ok || len(contents) != 1 || !strings.Contains(contents[0].(map[string]any)["text"].(string), "oauth-fixture-revision") ||
+		resourceReadResult["cacheScope"] != "private" || resourceReadResult["ttlMs"] != float64(0) {
 		t.Fatalf("OAuth query-only Pipeline resource read=%#v", resourceReadResult)
 	}
 	foreignResourceRead := oauthWireRequest(readOnlyTokens.AccessToken, `{"jsonrpc":"2.0","id":43,"method":"resources/read","params":{"uri":"`+pipelineEventsURI("foreign-project")+`","`+modernMeta+`}}`)
@@ -388,8 +392,15 @@ func TestMCPProjectOAuthRejectsConflictingProjectHeaderBeforeSDK(t *testing.T) {
 	keyResourceList := keyWireRequest(`{"jsonrpc":"2.0","id":44,"method":"resources/list","params":{"` + modernMeta + `}}`)
 	keyResourceResult := mcpMetadataResult(t, keyResourceList)
 	keyResources, ok := keyResourceResult["resources"].([]any)
-	if !ok || len(keyResources) != 1 || keyResources[0].(map[string]any)["uri"] != wantEventURI {
+	if !ok || len(keyResources) != 1 || keyResources[0].(map[string]any)["uri"] != wantEventURI ||
+		keyResources[0].(map[string]any)["name"] != "pipeline-events" || keyResources[0].(map[string]any)["title"] != "Project Pipeline events" ||
+		keyResourceResult["cacheScope"] != "private" {
 		t.Fatalf("Project-key resources/list=%#v", keyResourceResult)
+	}
+	keyRead := keyWireRequest(`{"jsonrpc":"2.0","id":46,"method":"resources/read","params":{"uri":"` + wantEventURI + `","` + modernMeta + `}}`)
+	keyReadResult := mcpMetadataResult(t, keyRead)
+	if keyReadResult["cacheScope"] != "private" || keyReadResult["ttlMs"] != float64(0) {
+		t.Fatalf("Project-key resources/read cache metadata=%#v", keyReadResult)
 	}
 	keyForeignRead := keyWireRequest(`{"jsonrpc":"2.0","id":45,"method":"resources/read","params":{"uri":"` + pipelineEventsURI("foreign-project") + `","` + modernMeta + `}}`)
 	if !mcpMetadataHasError(keyForeignRead) {

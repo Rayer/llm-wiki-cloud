@@ -38,6 +38,7 @@ const (
 const pipelineEventsResourceDescription = "Read-only Pipeline lifecycle snapshot for this authorized Project; requires mcp:query. A subscriptions/listen acknowledgement and each resource-updated notification are wake-ups only: immediately read this resource after acknowledgement, update, and reconnect. Merge fixed {run_id}:started and {run_id}:terminal phase IDs, applying changed event_revision values even below a saved time watermark. The snapshot keeps at most 50 history runs plus three exact current-run overlays; coverage complete/partial and history_truncated describe bounded recovery, and partial snapshots do not advance a contiguous checkpoint."
 
 type mcpListenControlContextKey struct{}
+type pipelineEventWatcherReadContextKey struct{}
 
 type pipelineEventTiming struct {
 	readTimeout  time.Duration
@@ -63,18 +64,29 @@ func (h *Handler) eventTiming() pipelineEventTiming {
 }
 
 type mcpListenControl struct {
-	mu         sync.Mutex
-	active     bool
-	cancel     context.CancelFunc
-	ack        chan struct{}
-	ackOnce    sync.Once
-	ackPending bool
-	ackTail    []byte
-	timing     pipelineEventTiming
+	mu            sync.Mutex
+	active        bool
+	cancel        context.CancelFunc
+	subscriptions map[string]struct{}
+	ack           chan struct{}
+	ackOnce       sync.Once
+	ackPending    bool
+	ackTail       []byte
+	timing        pipelineEventTiming
 }
 
 func newMCPListenControl(timing pipelineEventTiming) *mcpListenControl {
-	return &mcpListenControl{ack: make(chan struct{}), timing: timing}
+	return &mcpListenControl{ack: make(chan struct{}), timing: timing, subscriptions: make(map[string]struct{})}
+}
+
+func (c *mcpListenControl) subscribe(uri string) bool {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	if _, exists := c.subscriptions[uri]; exists {
+		return false
+	}
+	c.subscriptions[uri] = struct{}{}
+	return true
 }
 
 func (c *mcpListenControl) activate(parent context.Context) (context.Context, context.CancelFunc) {
@@ -262,6 +274,9 @@ func (h *Handler) subscribeMCPPipelineEvents(ctx context.Context, request *mcp.S
 	if !ok || control == nil || server == nil {
 		return errors.New("Pipeline event subscription control unavailable")
 	}
+	if !control.subscribe(request.Params.URI) {
+		return nil
+	}
 	go h.watchMCPPipelineEvents(ctx, identity, pipelineEventsURI(identity.projectID), server, control)
 	return nil
 }
@@ -294,6 +309,7 @@ func (h *Handler) watchMCPPipelineEvents(ctx context.Context, identity mcpProjec
 		}
 		nextPoll = time.Now().Add(timing.pollInterval)
 		readCtx, cancel := context.WithTimeout(ctx, timing.readTimeout)
+		readCtx = context.WithValue(readCtx, pipelineEventWatcherReadContextKey{}, true)
 		snapshot, err := h.readPipelineEventSnapshot(readCtx, identity.userID, identity.projectID)
 		cancel()
 		if err != nil {
@@ -314,11 +330,7 @@ func (h *Handler) watchMCPPipelineEvents(ctx context.Context, identity mcpProjec
 			continue
 		}
 		consecutiveFailures = 0
-		if revision == "" {
-			revision = snapshot.Revision
-			continue
-		}
-		if snapshot.Revision != revision {
+		if revision == "" || snapshot.Revision != revision {
 			revision = snapshot.Revision
 			if err := server.ResourceUpdated(ctx, &mcp.ResourceUpdatedNotificationParams{URI: uri}); err != nil {
 				control.fail(err)
@@ -748,17 +760,17 @@ func pipelineTerminalOutcome(statusValue, publication string) string {
 	if publication == "unknown" {
 		return "publication_pending"
 	}
-	if statusValue == "FAILED" {
-		return "failed"
+	if publication == "confirmed_published" {
+		if statusValue == "SUCCEEDED" || statusValue == "FAILED" {
+			return "succeeded"
+		}
+		return "unknown"
 	}
-	if statusValue == "SUCCEEDED" && publication == "confirmed_published" {
-		return "succeeded"
+	if statusValue == "FAILED" && publication == "confirmed_not_published" {
+		return "failed"
 	}
 	if statusValue == "UNKNOWN" {
 		return "unknown"
-	}
-	if publication == "confirmed_not_published" {
-		return "failed"
 	}
 	return "unknown"
 }

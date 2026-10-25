@@ -10,8 +10,10 @@ import (
 	"testing"
 	"time"
 
+	cloudstorage "cloud.google.com/go/storage"
 	scopedfirestore "github.com/rayer/llm-wiki-bff/internal/firestore"
 	"github.com/rayer/llm-wiki-bff/internal/gcs"
+	"github.com/rayer/llm-wiki-bff/internal/localcloud"
 	"github.com/rayer/llm-wiki-bff/internal/localpipeline"
 )
 
@@ -263,6 +265,152 @@ func TestCloudPipelineEventsBoundedGlobalScanAndExactRunOverlay(t *testing.T) {
 			t.Fatalf("capped empty read falsely claims complete/no-run: %+v", snapshot)
 		}
 	})
+}
+
+func TestCloudPipelineEventOutcomeUsesOwnerDetailAndPublicationEvidenceEmulator(t *testing.T) {
+	if !requireLoopbackEmulator(t, "FIRESTORE_EMULATOR_HOST") || !requireLoopbackEmulator(t, "STORAGE_EMULATOR_HOST") {
+		t.Skip("requires loopback Firestore and Storage emulators")
+	}
+	ctx, cancel := context.WithTimeout(context.Background(), 45*time.Second)
+	defer cancel()
+	const userID, projectID = "lwc428-cloud-event-owner", "pipeline-event-project"
+	project, scope := "lwc428-cloud-event-publication", fmt.Sprintf("lwc428-cloud-events-%d", time.Now().UnixNano())
+	bucketName := fmt.Sprintf("lwc428-event-publication-%d", time.Now().UnixNano())
+	t.Setenv("GOOGLE_CLOUD_PROJECT", project)
+	t.Setenv("LOCAL_CLOUD_SCOPE", scope)
+	adminClient, err := cloudstorage.NewClient(ctx)
+	if err != nil {
+		t.Fatalf("create loopback Storage admin client: %v", err)
+	}
+	if err := adminClient.Bucket(bucketName).Create(ctx, project, nil); err != nil {
+		_ = adminClient.Close()
+		t.Fatalf("create disposable Storage emulator bucket: %v", err)
+	}
+	fsClient, err := scopedfirestore.NewClientWithDatabaseAndScope(project, "(default)", "", "", scope)
+	if err != nil {
+		_ = adminClient.Bucket(bucketName).Delete(ctx)
+		_ = adminClient.Close()
+		t.Fatalf("create loopback Firestore client: %v", err)
+	}
+	storageClient, err := gcs.NewClientWithScope(bucketName, scope)
+	if err != nil {
+		_ = fsClient.Close()
+		_ = adminClient.Bucket(bucketName).Delete(ctx)
+		_ = adminClient.Close()
+		t.Fatalf("create loopback Storage client: %v", err)
+	}
+	t.Cleanup(func() {
+		cleanupCtx, cleanupCancel := context.WithTimeout(context.Background(), 10*time.Second)
+		defer cleanupCancel()
+		for _, reservationID := range []string{"published-reservation", "absent-reservation", "unknown-reservation"} {
+			_, _ = scopedfirestore.Collection(fsClient.Raw(), "pipeline_quota_reservations").Doc(reservationID).Delete(cleanupCtx)
+		}
+		_, _ = scopedfirestore.Collection(fsClient.Raw(), "pipeline_quota").Doc(scopedfirestore.QuotaDocID(userID, projectID)).Delete(cleanupCtx)
+		if _, err := storageClient.DeleteProjectPrefix(cleanupCtx, userID, projectID); err != nil {
+			t.Errorf("delete loopback publication fixture scope: %v", err)
+		}
+		if err := adminClient.Bucket(bucketName).Delete(cleanupCtx); err != nil {
+			t.Errorf("delete disposable Storage emulator bucket: %v", err)
+		}
+		if err := storageClient.Close(); err != nil {
+			t.Errorf("close loopback Storage client: %v", err)
+		}
+		if err := adminClient.Close(); err != nil {
+			t.Errorf("close loopback Storage admin client: %v", err)
+		}
+		if err := fsClient.Close(); err != nil {
+			t.Errorf("close loopback Firestore client: %v", err)
+		}
+	})
+	provider := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.URL.Path == "/token" {
+			w.Header().Set("Content-Type", "application/json")
+			_, _ = w.Write([]byte(`{"access_token":"fixture-token"}`))
+			return
+		}
+		if strings.HasSuffix(r.URL.Path, "/executions") {
+			w.Header().Set("Content-Type", "application/json")
+			_ = json.NewEncoder(w).Encode(cloudRunExecutionsResponse{Executions: []cloudRunExecution{}})
+			return
+		}
+		if strings.Contains(r.URL.Path, "/executions/") {
+			runID := r.URL.Path[strings.LastIndex(r.URL.Path, "/")+1:]
+			execution := cloudEventExecution(runID, userID, projectID, "2026-10-25T12:00:00Z", "2026-10-25T12:01:00Z")
+			execution.RunningCount = 0
+			execution.FailedCount = 1
+			execution.CompletionStatus = "FAILED"
+			w.Header().Set("Content-Type", "application/json")
+			_ = json.NewEncoder(w).Encode(execution)
+			return
+		}
+		http.NotFound(w, r)
+	}))
+	t.Cleanup(provider.Close)
+	h := &Handler{store: storageClient, firestore: fsClient, metadataTokenURL: provider.URL + "/token", httpClient: provider.Client()}
+	h.SetPipelineJobURL(provider.URL + "/jobs/pipeline:run")
+	projectStore := storageClient.WithScope(userID, projectID)
+	committed, err := localcloud.EncodePublicationReceipt(localcloud.PublicationReceipt{
+		ExecutionID: "published-run", GenerationID: "g_abc123", ManifestGeneration: 1,
+	})
+	if err != nil {
+		t.Fatalf("encode committed publication receipt: %v", err)
+	}
+	if _, err := projectStore.WriteBytes(ctx, committed, "cache/local-pipeline-published-run.commit.json"); err != nil {
+		t.Fatalf("seed actual committed publication receipt: %v", err)
+	}
+	cleanupDiagnostic := []byte(`{"version":1,"status":"failed","stage":"lease_cleanup","error_class":"io","execution":"published-run","message":"lease cleanup failed after publication"}`)
+	if _, err := projectStore.WriteBytes(ctx, cleanupDiagnostic, "cache/pipeline-published-run.failure.json"); err != nil {
+		t.Fatalf("seed post-publication cleanup diagnostic: %v", err)
+	}
+	diagnostic := []byte(`{"version":1,"status":"failed","stage":"postprocess","error_class":"io","execution":"absent-run","message":"postprocess cleanup failed"}`)
+	if _, err := projectStore.WriteBytes(ctx, diagnostic, "cache/pipeline-absent-run.failure.json"); err != nil {
+		t.Fatalf("seed confirmed absence diagnostic: %v", err)
+	}
+
+	for _, tc := range []struct {
+		reservationID, executionID, wantPublication, wantOutcome string
+		storeUnavailable                                         bool
+	}{
+		{"published-reservation", "published-run", "confirmed_published", "succeeded", false},
+		{"absent-reservation", "absent-run", "confirmed_not_published", "failed", false},
+		{"unknown-reservation", "unknown-run", "unknown", "publication_pending", true},
+	} {
+		t.Run(tc.executionID, func(t *testing.T) {
+			if _, err := scopedfirestore.Collection(fsClient.Raw(), "pipeline_quota").Doc(scopedfirestore.QuotaDocID(userID, projectID)).Set(ctx, map[string]any{
+				"active_reservation_id": tc.reservationID, "last_pipeline_intent_id": tc.reservationID,
+			}); err != nil {
+				t.Fatalf("seed bounded intent pointer: %v", err)
+			}
+			if _, err := scopedfirestore.Collection(fsClient.Raw(), "pipeline_quota_reservations").Doc(tc.reservationID).Set(ctx, map[string]any{
+				"user_id": userID, "project_id": projectID, "attempt_id": tc.reservationID,
+				"execution_id": tc.executionID, "intent_status": "ready", "settlement_status": "pending", "trigger": "manual",
+			}); err != nil {
+				t.Fatalf("seed scoped durable execution identity: %v", err)
+			}
+			if tc.storeUnavailable {
+				h.store = nil
+			} else {
+				h.store = storageClient
+			}
+			snapshot, err := h.readCloudPipelineEventSnapshot(ctx, userID, projectID)
+			if err != nil {
+				t.Fatalf("read Cloud Run event feed: %v", err)
+			}
+			if len(snapshot.KnownRuns) != 1 || snapshot.KnownRuns[0].RunID != tc.executionID || len(snapshot.KnownRuns[0].Events) != 2 {
+				t.Fatalf("owner-checked exact terminal run missing: %+v", snapshot)
+			}
+			terminal := snapshot.KnownRuns[0].Events[1]
+			if terminal.Publication != tc.wantPublication || terminal.Outcome != tc.wantOutcome || terminal.Result == nil || terminal.Result.Status != "FAILED" {
+				t.Fatalf("provider status/publication semantics=%+v; want publication=%s outcome=%s with raw FAILED evidence", terminal, tc.wantPublication, tc.wantOutcome)
+			}
+			if tc.executionID == "absent-run" && (terminal.FailureReason != "postprocess cleanup failed" || terminal.DiagnosticState != "available") {
+				t.Fatalf("confirmed non-publication lost the separate cleanup diagnostic: %+v", terminal)
+			}
+			if tc.executionID == "published-run" && (terminal.FailureReason != "lease cleanup failed after publication" || terminal.DiagnosticState != "available") {
+				t.Fatalf("confirmed publication lost the post-publication cleanup diagnostic: %+v", terminal)
+			}
+		})
+	}
 }
 
 func cloudEventExecution(id, userID, projectID, start, completion string) cloudRunExecution {

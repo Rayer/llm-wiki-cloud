@@ -139,6 +139,11 @@ func (h *Handler) mcpSDKHandler(identity mcpProjectKeyIdentity) http.Handler {
 				if metadata != nil {
 					cacheable.TTLMs = metadata.ToolsListTTLMS
 				}
+			case *mcp.ListResourcesRequest:
+				cacheable.CacheScope = "private"
+			case *mcp.ReadResourceRequest:
+				cacheable.CacheScope = "private"
+				cacheable.TTLMs = 0
 			}
 		},
 	}
@@ -157,7 +162,7 @@ func (h *Handler) mcpSDKHandler(identity mcpProjectKeyIdentity) http.Handler {
 	server.AddReceivingMiddleware(mcpRequestObservationMiddleware)
 	if hasMCPCapability(capabilities, mcpQueryCapability) {
 		server.AddResource(&mcp.Resource{
-			URI: pipelineEventsURI(identity.projectID), Name: "Project Pipeline events", MIMEType: "application/json",
+			URI: pipelineEventsURI(identity.projectID), Name: "pipeline-events", Title: "Project Pipeline events", MIMEType: "application/json",
 			Description: pipelineEventsResourceDescription,
 		}, h.readMCPPipelineEvents)
 	}
@@ -269,26 +274,38 @@ func (w *mcpResponseObservationWriter) FlushError() error {
 			return err
 		}
 	}
-	if flusher, ok := w.ResponseWriter.(interface{ FlushError() error }); ok {
-		err := flusher.FlushError()
-		if err != nil && w.listen != nil {
+	err := flushResponseWriter(w.ResponseWriter)
+	if err != nil {
+		if w.listen != nil {
 			w.listen.fail(err)
-		} else if w.listen != nil {
-			w.listen.acknowledgeAfterFlush()
 		}
 		return err
 	}
-	if flusher, ok := w.ResponseWriter.(http.Flusher); ok {
-		flusher.Flush()
-		if w.listen != nil {
-			w.listen.acknowledgeAfterFlush()
-		}
-		return nil
-	}
 	if w.listen != nil {
-		w.listen.fail(http.ErrNotSupported)
+		w.listen.acknowledgeAfterFlush()
 	}
-	return http.ErrNotSupported
+	return nil
+}
+
+func flushResponseWriter(writer http.ResponseWriter) error {
+	var headers []interface{ WriteHeaderNow() }
+	for current := writer; current != nil; {
+		if flusher, ok := current.(interface{ FlushError() error }); ok {
+			for _, header := range headers {
+				header.WriteHeaderNow()
+			}
+			return flusher.FlushError()
+		}
+		unwrapper, ok := current.(interface{ Unwrap() http.ResponseWriter })
+		if !ok {
+			break
+		}
+		if header, ok := current.(interface{ WriteHeaderNow() }); ok {
+			headers = append(headers, header)
+		}
+		current = unwrapper.Unwrap()
+	}
+	return http.NewResponseController(writer).Flush()
 }
 
 func (w *mcpResponseObservationWriter) Flush() { _ = w.FlushError() }

@@ -7,6 +7,7 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"net"
 	"net/http"
 	"net/http/httptest"
 	"strings"
@@ -14,16 +15,35 @@ import (
 	"testing"
 	"time"
 
+	"github.com/gin-gonic/gin"
 	"github.com/modelcontextprotocol/go-sdk/mcp"
 	handlerapi "github.com/rayer/llm-wiki-bff/internal/handler"
 )
 
 type listenIDCaptureTransport struct {
-	base http.RoundTripper
-	ids  chan json.RawMessage
+	base         http.RoundTripper
+	ids          chan json.RawMessage
+	duplicateURI bool
 }
 
 type mcpPipelineUpdate struct{ id, uri string }
+
+type expireAfterAckFlushWriter struct {
+	http.ResponseWriter
+	calls *atomic.Int32
+}
+
+func (w *expireAfterAckFlushWriter) Unwrap() http.ResponseWriter { return w.ResponseWriter }
+func (w *expireAfterAckFlushWriter) SetWriteDeadline(deadline time.Time) error {
+	return http.NewResponseController(w.ResponseWriter).SetWriteDeadline(deadline)
+}
+func (w *expireAfterAckFlushWriter) FlushError() error {
+	if w.calls.Add(1) == 2 {
+		_ = http.NewResponseController(w.ResponseWriter).SetWriteDeadline(time.Now().Add(-time.Second))
+	}
+	return flushResponseWriter(w.ResponseWriter)
+}
+func (w *expireAfterAckFlushWriter) Flush() { _ = w.FlushError() }
 
 func (t *listenIDCaptureTransport) RoundTrip(request *http.Request) (*http.Response, error) {
 	request.Header.Set("Authorization", "Bearer fixture-token")
@@ -37,13 +57,32 @@ func (t *listenIDCaptureTransport) RoundTrip(request *http.Request) (*http.Respo
 		var message struct {
 			Method string          `json:"method"`
 			ID     json.RawMessage `json:"id"`
+			Params struct {
+				Notifications struct {
+					ResourceSubscriptions []string `json:"resourceSubscriptions"`
+				} `json:"notifications"`
+			} `json:"params"`
 		}
 		if json.Unmarshal(body, &message) == nil && message.Method == "subscriptions/listen" {
 			select {
 			case t.ids <- append(json.RawMessage(nil), message.ID...):
 			default:
 			}
+			if t.duplicateURI && len(message.Params.Notifications.ResourceSubscriptions) > 0 {
+				var envelope map[string]any
+				if json.Unmarshal(body, &envelope) == nil {
+					params := envelope["params"].(map[string]any)
+					notifications := params["notifications"].(map[string]any)
+					resources := notifications["resourceSubscriptions"].([]any)
+					notifications["resourceSubscriptions"] = append(resources, resources[0])
+					if modified, err := json.Marshal(envelope); err == nil {
+						body = modified
+					}
+				}
+			}
 		}
+		request.ContentLength = int64(len(body))
+		request.Body = io.NopCloser(bytes.NewReader(body))
 	}
 	return t.base.RoundTrip(request)
 }
@@ -52,9 +91,9 @@ func TestPipelineEventPhaseIdentitySurvivesOutcomeAndDiagnosticCorrections(t *te
 	start := time.Date(2026, 10, 25, 1, 2, 3, 0, time.UTC)
 	terminal := start.Add(11 * time.Second)
 	record := pipelineEventRunRecord{
-		id: "run-a", status: "UNKNOWN", actualStarted: start, endedAt: terminal,
+		id: "run-a", status: "FAILED", actualStarted: start, endedAt: terminal,
 		publication: "unknown", quota: "pending",
-		response: &handlerapi.PipelineExecutionResponse{Name: "run-a", Status: "UNKNOWN", DiagnosticState: "unavailable"},
+		response: &handlerapi.PipelineExecutionResponse{Name: "run-a", Status: "FAILED", DiagnosticState: "unavailable"},
 	}
 	first := makePipelineEventSnapshot("project-a", map[string]pipelineEventRunRecord{record.id: record}, nil, nil, false, 0, 1, false, nil, 0)
 	firstTerminal := findPipelineEvent(t, first.Runs, "run-a:terminal")
@@ -62,9 +101,7 @@ func TestPipelineEventPhaseIdentitySurvivesOutcomeAndDiagnosticCorrections(t *te
 		t.Fatalf("unknown publication outcome=%q", firstTerminal.Outcome)
 	}
 
-	record.status = "SUCCEEDED"
 	record.publication = "confirmed_published"
-	record.response.Status = "SUCCEEDED"
 	revised := makePipelineEventSnapshot("project-a", map[string]pipelineEventRunRecord{record.id: record}, nil, nil, false, 0, 1, false, nil, 0)
 	revisedTerminal := findPipelineEvent(t, revised.Runs, "run-a:terminal")
 	if revisedTerminal.EventID != firstTerminal.EventID || revisedTerminal.OccurredAt != firstTerminal.OccurredAt ||
@@ -73,6 +110,9 @@ func TestPipelineEventPhaseIdentitySurvivesOutcomeAndDiagnosticCorrections(t *te
 	}
 	if first.Revision == revised.Revision {
 		t.Fatal("top-level snapshot revision did not change with the correction")
+	}
+	if revisedTerminal.Result == nil || revisedTerminal.Result.Status != "FAILED" {
+		t.Fatalf("publication outcome hid provider failure evidence: %+v", revisedTerminal.Result)
 	}
 
 	record.response.DiagnosticState = "available"
@@ -127,9 +167,13 @@ func TestPipelineEventExactOverlayDoesNotMoveHistoryWatermark(t *testing.T) {
 func TestPipelineEventPublicationOutcomesRemainTruthful(t *testing.T) {
 	for _, tc := range []struct{ status, publication, want string }{
 		{"FAILED", "confirmed_not_published", "failed"},
-		{"FAILED", "confirmed_published", "failed"},
+		{"FAILED", "confirmed_published", "succeeded"},
+		{"FAILED", "unknown", "publication_pending"},
 		{"CANCELLED", "unknown", "cancelled"},
+		{"CANCELLED", "confirmed_published", "cancelled"},
+		{"CANCELLED", "confirmed_not_published", "cancelled"},
 		{"SUCCEEDED", "unknown", "publication_pending"},
+		{"SUCCEEDED", "confirmed_not_published", "unknown"},
 		{"UNKNOWN", "confirmed_published", "unknown"},
 		{"SUCCEEDED", "confirmed_published", "succeeded"},
 	} {
@@ -286,6 +330,38 @@ type controlledMCPResponseWriter struct {
 	deadlineErr error
 }
 
+type ginFlushErrorWriter struct {
+	header        http.Header
+	flushErr      error
+	flushCalls    atomic.Int32
+	deadlineCalls atomic.Int32
+	status        int
+	wrote         bool
+	body          bytes.Buffer
+}
+
+func (w *ginFlushErrorWriter) Header() http.Header {
+	if w.header == nil {
+		w.header = make(http.Header)
+	}
+	return w.header
+}
+func (w *ginFlushErrorWriter) WriteHeader(status int) { w.status = status }
+func (w *ginFlushErrorWriter) Write(data []byte) (int, error) {
+	w.wrote = true
+	_, _ = w.body.Write(data)
+	return len(data), nil
+}
+func (w *ginFlushErrorWriter) Flush() { w.flushCalls.Add(1) }
+func (w *ginFlushErrorWriter) FlushError() error {
+	w.flushCalls.Add(1)
+	return w.flushErr
+}
+func (w *ginFlushErrorWriter) SetWriteDeadline(time.Time) error {
+	w.deadlineCalls.Add(1)
+	return nil
+}
+
 func (w *controlledMCPResponseWriter) Header() http.Header {
 	if w.header == nil {
 		w.header = make(http.Header)
@@ -334,20 +410,93 @@ func TestMCPListenWriterCancelsOnWriteFlushAndDeadlineFailure(t *testing.T) {
 	}
 }
 
+func TestMCPListenGinWriterPropagatesUnderlyingFlushError(t *testing.T) {
+	gin.SetMode(gin.TestMode)
+	var sourceCalls atomic.Int32
+	h := &Handler{pipelineEventSource: func(context.Context, string, string) (pipelineEventSnapshot, error) {
+		sourceCalls.Add(1)
+		return pipelineEventSnapshot{}, nil
+	}}
+	var verifierCalls atomic.Int32
+	identity := mcpProjectKeyIdentity{
+		userID: "user-a", projectID: "project-a", keyID: "key-a", capabilities: []string{mcpQueryCapability},
+		revalidate: func(context.Context) error { verifierCalls.Add(1); return nil },
+	}
+	listenHandlerReturned := make(chan struct{})
+	router := gin.New()
+	router.POST("/mcp", func(c *gin.Context) {
+		c.Header("X-MCP-Writer-Test", "preserved")
+		h.serveAuthenticatedMCP(h.mcpSDKHandler(identity), identity, c.Writer, c.Request)
+		if c.GetHeader("MCP-Method") == "subscriptions/listen" {
+			close(listenHandlerReturned)
+		}
+	})
+	underlying := &ginFlushErrorWriter{flushErr: errors.New("injected underlying flush failure")}
+	uri := pipelineEventsURI(identity.projectID)
+	body := `{"jsonrpc":"2.0","id":27,"method":"subscriptions/listen","params":{"notifications":{"resourceSubscriptions":["` + uri + `"]},"_meta":{"io.modelcontextprotocol/protocolVersion":"2026-07-28","io.modelcontextprotocol/clientInfo":{"name":"gin-flush-test","version":"1"},"io.modelcontextprotocol/clientCapabilities":{}}}}`
+	request := httptest.NewRequest(http.MethodPost, "/mcp", strings.NewReader(body))
+	request.Header.Set("Content-Type", "application/json")
+	request.Header.Set("Accept", "application/json, text/event-stream")
+	request.Header.Set("MCP-Protocol-Version", "2026-07-28")
+	request.Header.Set("Authorization", "Bearer key-a")
+	request.Header.Set("MCP-Method", "subscriptions/listen")
+	request.Header.Set("MCP-Name", uri)
+	done := make(chan struct{})
+	go func() {
+		router.ServeHTTP(underlying, request)
+		close(done)
+	}()
+	select {
+	case <-done:
+	case <-time.After(3 * time.Second):
+		t.Fatal("Gin-routed listener did not return after underlying FlushError")
+	}
+	if !underlying.wrote || underlying.flushCalls.Load() == 0 || underlying.deadlineCalls.Load() == 0 || underlying.status != http.StatusOK || underlying.Header().Get("X-MCP-Writer-Test") != "preserved" {
+		t.Fatalf("Gin writer path did not exercise Write/deadline/FlushError: status=%d wrote=%t flush=%d deadline=%d body=%s", underlying.status, underlying.wrote, underlying.flushCalls.Load(), underlying.deadlineCalls.Load(), underlying.body.String())
+	}
+	if verifierCalls.Load() != 0 || sourceCalls.Load() != 0 {
+		t.Fatalf("failed acknowledgement continued listener work: verifier calls=%d source calls=%d", verifierCalls.Load(), sourceCalls.Load())
+	}
+}
+
 func TestMCPPipelineEventsRealTCPListenAckFreshReadAndCancellation(t *testing.T) {
 	h := &Handler{pipelineEventTiming: &pipelineEventTiming{
 		readTimeout: 500 * time.Millisecond, pollInterval: 20 * time.Millisecond,
-		authInterval: 100 * time.Millisecond, authTimeout: 20 * time.Millisecond,
-		authMaxAge: 200 * time.Millisecond, writeTimeout: time.Second,
-		listenMaxAge: 3 * time.Second, backoffs: []time.Duration{10 * time.Millisecond, 20 * time.Millisecond},
+		authInterval: time.Second, authTimeout: 20 * time.Millisecond,
+		authMaxAge: 3 * time.Second, writeTimeout: time.Second,
+		listenMaxAge: 8 * time.Second, backoffs: []time.Duration{10 * time.Millisecond, 20 * time.Millisecond},
 	}}
 	var calls atomic.Int32
+	var verifierCalls atomic.Int32
+	var watcherActive atomic.Int32
+	var watcherMaxActive atomic.Int32
+	var blockFirstWatcherRead atomic.Bool
 	var blockNextSource atomic.Bool
-	changeOnce := make(chan struct{})
+	initialWatcherRead := make(chan struct{})
+	releaseInitialWatcherRead := make(chan struct{})
 	blockedSource := make(chan struct{})
 	blockReturned := make(chan struct{})
+	var currentRevision atomic.Value
+	currentRevision.Store("initial")
 	h.pipelineEventSource = func(ctx context.Context, userID, projectID string) (pipelineEventSnapshot, error) {
 		calls.Add(1)
+		if watching, _ := ctx.Value(pipelineEventWatcherReadContextKey{}).(bool); watching {
+			active := watcherActive.Add(1)
+			defer watcherActive.Add(-1)
+			for maximum := watcherMaxActive.Load(); active > maximum; maximum = watcherMaxActive.Load() {
+				if watcherMaxActive.CompareAndSwap(maximum, active) {
+					break
+				}
+			}
+		}
+		if blockFirstWatcherRead.CompareAndSwap(true, false) {
+			close(initialWatcherRead)
+			select {
+			case <-ctx.Done():
+				return pipelineEventSnapshot{}, ctx.Err()
+			case <-releaseInitialWatcherRead:
+			}
+		}
 		if blockNextSource.CompareAndSwap(true, false) {
 			close(blockedSource)
 			select {
@@ -358,23 +507,20 @@ func TestMCPPipelineEventsRealTCPListenAckFreshReadAndCancellation(t *testing.T)
 				return pipelineEventSnapshot{}, errors.New("test source unexpectedly outlived request")
 			}
 		}
-		select {
-		case <-changeOnce:
-			return testEventSnapshot(userID, projectID, "changed")
-		default:
-			return testEventSnapshot(userID, projectID, "initial")
-		}
+		return testEventSnapshot(userID, projectID, currentRevision.Load().(string))
 	}
 	identity := mcpProjectKeyIdentity{
 		userID: "user-a", projectID: "project-a", keyID: "key-a", capabilities: []string{mcpQueryCapability},
-		revalidate: func(context.Context) error { return nil },
+		revalidate: func(context.Context) error { verifierCalls.Add(1); return nil },
 	}
-	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		h.serveAuthenticatedMCP(h.mcpSDKHandler(identity), identity, w, r)
-	}))
+	router := gin.New()
+	router.POST("/mcp", func(c *gin.Context) {
+		h.serveAuthenticatedMCP(h.mcpSDKHandler(identity), identity, c.Writer, c.Request)
+	})
+	server := httptest.NewServer(router)
 	t.Cleanup(server.Close)
 	listenIDs := make(chan json.RawMessage, 1)
-	transport := &listenIDCaptureTransport{base: http.DefaultTransport, ids: listenIDs}
+	transport := &listenIDCaptureTransport{base: http.DefaultTransport, ids: listenIDs, duplicateURI: true}
 	acks := make(chan any, 1)
 	updates := make(chan mcpPipelineUpdate, 1)
 	client := mcp.NewClient(&mcp.Implementation{Name: "lwc-428-test-client", Version: "1"}, &mcp.ClientOptions{
@@ -396,7 +542,7 @@ func TestMCPPipelineEventsRealTCPListenAckFreshReadAndCancellation(t *testing.T)
 	})
 	connectCtx, cancelConnect := context.WithTimeout(context.Background(), 5*time.Second)
 	session, err := client.Connect(connectCtx, &mcp.StreamableClientTransport{
-		Endpoint: server.URL, HTTPClient: &http.Client{Transport: transport}, DisableStandaloneSSE: true,
+		Endpoint: server.URL + "/mcp", HTTPClient: &http.Client{Transport: transport}, DisableStandaloneSSE: true,
 	}, &mcp.ClientSessionOptions{ProtocolVersion: "2026-07-28"})
 	cancelConnect()
 	if err != nil {
@@ -408,6 +554,7 @@ func TestMCPPipelineEventsRealTCPListenAckFreshReadAndCancellation(t *testing.T)
 	if err != nil || len(initial.Contents) != 1 || !strings.Contains(initial.Contents[0].Text, `"project_id":"project-a"`) {
 		t.Fatalf("initial resources/read=%+v err=%v", initial, err)
 	}
+	blockFirstWatcherRead.Store(true)
 	subscribeDone := make(chan error, 1)
 	go func() { subscribeDone <- session.Subscribe(context.Background(), &mcp.SubscribeParams{URI: uri}) }()
 	ack, err := waitPipelineValue("subscriptions/listen acknowledgement", acks, 5*time.Second)
@@ -422,18 +569,21 @@ func TestMCPPipelineEventsRealTCPListenAckFreshReadAndCancellation(t *testing.T)
 	if err != nil || !bytes.Equal(bytes.TrimSpace(wireID), ackJSON) {
 		t.Fatalf("ack ID=%s actual listen request ID=%s err=%v", ackJSON, wireID, err)
 	}
+	select {
+	case <-initialWatcherRead:
+	case <-time.After(5 * time.Second):
+		t.Fatal("listener did not enter its deliberately delayed first source read")
+	}
+	time.Sleep(100 * time.Millisecond)
+	if watcherMaxActive.Load() != 1 || verifierCalls.Load() != 1 {
+		t.Fatalf("duplicate URI created parallel listener work: max source concurrency=%d initial verifier calls=%d", watcherMaxActive.Load(), verifierCalls.Load())
+	}
 	postAckRead, err := session.ReadResource(context.Background(), &mcp.ReadResourceParams{URI: uri})
 	if err != nil || len(postAckRead.Contents) != 1 {
 		t.Fatalf("fresh resource read after ack=%+v err=%v", postAckRead, err)
 	}
-	deadline := time.Now().Add(3 * time.Second)
-	for calls.Load() < 3 && time.Now().Before(deadline) {
-		time.Sleep(10 * time.Millisecond)
-	}
-	if calls.Load() < 3 {
-		t.Fatalf("listener did not complete its initial durable read; source calls=%d", calls.Load())
-	}
-	close(changeOnce)
+	currentRevision.Store("after-ack")
+	close(releaseInitialWatcherRead)
 	update, err := waitPipelineValue("resource update", updates, 12*time.Second)
 	if err != nil {
 		t.Fatal(err)
@@ -442,7 +592,7 @@ func TestMCPPipelineEventsRealTCPListenAckFreshReadAndCancellation(t *testing.T)
 		t.Fatalf("update ID/URI=%s/%s, want %v/%s", update.id, update.uri, ack, uri)
 	}
 	postUpdateRead, err := session.ReadResource(context.Background(), &mcp.ReadResourceParams{URI: uri})
-	if err != nil || len(postUpdateRead.Contents) != 1 || !strings.Contains(postUpdateRead.Contents[0].Text, `"revision":"changed"`) {
+	if err != nil || len(postUpdateRead.Contents) != 1 || !strings.Contains(postUpdateRead.Contents[0].Text, `"revision":"after-ack"`) {
 		t.Fatalf("fresh resource read after notification=%+v err=%v", postUpdateRead, err)
 	}
 	blockNextSource.Store(true)
@@ -463,6 +613,115 @@ func TestMCPPipelineEventsRealTCPListenAckFreshReadAndCancellation(t *testing.T)
 	case <-subscribeDone:
 	case <-time.After(3 * time.Second):
 		t.Fatal("subscriptions/listen client call did not unwind after unsubscribe")
+	}
+}
+
+func TestMCPPipelineListenStoppedReaderEndsOnWriteDeadline(t *testing.T) {
+	gin.SetMode(gin.TestMode)
+	timing := pipelineEventTiming{
+		readTimeout: 250 * time.Millisecond, pollInterval: time.Millisecond,
+		authInterval: 20 * time.Millisecond, authTimeout: 50 * time.Millisecond,
+		authMaxAge: 10 * time.Second, writeTimeout: 100 * time.Millisecond,
+		listenMaxAge: 60 * time.Second, backoffs: []time.Duration{5 * time.Millisecond, 10 * time.Millisecond},
+	}
+	var sourceCalls, verifierCalls atomic.Int32
+	h := &Handler{pipelineEventTiming: &timing}
+	h.pipelineEventSource = func(_ context.Context, userID, projectID string) (pipelineEventSnapshot, error) {
+		revision := sourceCalls.Add(1)
+		return testEventSnapshot(userID, projectID, fmt.Sprintf("revision-%d", revision))
+	}
+	identity := mcpProjectKeyIdentity{
+		userID: "user-a", projectID: "project-a", keyID: "key-stopped-reader", capabilities: []string{mcpQueryCapability},
+		revalidate: func(context.Context) error { verifierCalls.Add(1); return nil },
+	}
+	listenHandlerReturned := make(chan struct{})
+	ackFlushCount := new(atomic.Int32)
+	router := gin.New()
+	router.POST("/mcp", func(c *gin.Context) {
+		isListen := c.GetHeader("MCP-Method") == "subscriptions/listen"
+		writer := http.ResponseWriter(c.Writer)
+		if isListen {
+			writer = &expireAfterAckFlushWriter{ResponseWriter: c.Writer, calls: ackFlushCount}
+		}
+		h.serveAuthenticatedMCP(h.mcpSDKHandler(identity), identity, writer, c.Request)
+		if isListen {
+			close(listenHandlerReturned)
+		}
+	})
+	server := httptest.NewServer(router)
+	t.Cleanup(server.Close)
+	transport := &http.Transport{DialContext: func(ctx context.Context, network, address string) (net.Conn, error) {
+		conn, err := (&net.Dialer{}).DialContext(ctx, network, address)
+		if err == nil {
+			if tcp, ok := conn.(*net.TCPConn); ok {
+				_ = tcp.SetReadBuffer(1024)
+			}
+		}
+		return conn, err
+	}}
+	defer transport.CloseIdleConnections()
+	authenticatedTransport := &listenIDCaptureTransport{base: transport, ids: make(chan json.RawMessage, 1)}
+	acks := make(chan any, 1)
+	releaseAck := make(chan struct{})
+	client := mcp.NewClient(&mcp.Implementation{Name: "lwc-428-stopped-reader", Version: "1"}, &mcp.ClientOptions{
+		ResourceUpdatedHandler: func(context.Context, *mcp.ResourceUpdatedNotificationRequest) {},
+	})
+	client.AddReceivingMiddleware(func(next mcp.MethodHandler) mcp.MethodHandler {
+		return func(ctx context.Context, method string, request mcp.Request) (mcp.Result, error) {
+			if method == "notifications/subscriptions/acknowledged" {
+				if ack, ok := request.(*mcp.ClientRequest[*mcp.SubscriptionsAcknowledgedParams]); ok && ack.Params != nil {
+					acks <- ack.Params.Meta[mcp.MetaKeySubscriptionID]
+					<-releaseAck
+				}
+			}
+			return next(ctx, method, request)
+		}
+	})
+	connectCtx, cancelConnect := context.WithTimeout(context.Background(), 5*time.Second)
+	session, err := client.Connect(connectCtx, &mcp.StreamableClientTransport{
+		Endpoint: server.URL + "/mcp", HTTPClient: &http.Client{Transport: authenticatedTransport}, DisableStandaloneSSE: true,
+	}, &mcp.ClientSessionOptions{ProtocolVersion: "2026-07-28"})
+	cancelConnect()
+	if err != nil {
+		t.Fatalf("connect stopped-reader MCP client: %v", err)
+	}
+	t.Cleanup(func() {
+		select {
+		case <-releaseAck:
+		default:
+			close(releaseAck)
+		}
+		_ = session.Close()
+	})
+	uri := pipelineEventsURI(identity.projectID)
+	if _, err := session.ReadResource(context.Background(), &mcp.ReadResourceParams{URI: uri}); err != nil {
+		t.Fatalf("initial resource read: %v", err)
+	}
+	go func() { _ = session.Subscribe(context.Background(), &mcp.SubscribeParams{URI: uri}) }()
+	if _, err := waitPipelineValue("stopped-reader listen acknowledgement", acks, 5*time.Second); err != nil {
+		t.Fatal(err)
+	}
+	start := time.Now()
+	select {
+	case <-listenHandlerReturned:
+		if elapsed := time.Since(start); elapsed > 5*timing.writeTimeout {
+			t.Fatalf("stopped-reader stream cleanup took %s, over five write bounds", elapsed)
+		}
+	case <-time.After(8 * time.Second):
+		t.Fatalf("stopped-reading client did not release the server HTTP listen handler; source calls=%d verifier calls=%d flushes=%d", sourceCalls.Load(), verifierCalls.Load(), ackFlushCount.Load())
+	}
+	if ackFlushCount.Load() < 2 {
+		t.Fatalf("stream did not exercise the post-ack network FlushError path: flushes=%d", ackFlushCount.Load())
+	}
+	sourcesAtClose, verifiersAtClose := sourceCalls.Load(), verifierCalls.Load()
+	time.Sleep(60 * time.Millisecond)
+	if sourceCalls.Load() != sourcesAtClose || verifierCalls.Load() != verifiersAtClose {
+		t.Fatalf("listener watcher/auth loop continued after stream close: source %d->%d verifier %d->%d", sourcesAtClose, sourceCalls.Load(), verifiersAtClose, verifierCalls.Load())
+	}
+	select {
+	case <-releaseAck:
+	default:
+		close(releaseAck)
 	}
 }
 
