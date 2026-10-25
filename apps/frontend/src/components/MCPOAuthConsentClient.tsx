@@ -3,7 +3,6 @@
 import { useEffect, useLayoutEffect, useRef, useState } from 'react';
 import Link from 'next/link';
 import { useAuth } from '@/lib/auth';
-import { useWorkspace } from '@/components/WorkspaceProvider';
 import { useT } from '@/lib/i18n';
 import {
   decideMCPOAuthConsent,
@@ -17,8 +16,9 @@ const transactionPattern = /^lwc_mcp_tx_[A-Za-z0-9_-]{43}$/;
 
 export function MCPOAuthConsentClient({ transactionId }: { transactionId: string }) {
   const { t } = useT();
-  const { accessToken, sessionEpoch, user, isDemoSession } = useAuth();
-  const { currentProject } = useWorkspace();
+  const { accessToken, user, isDemoSession } = useAuth();
+  const authRef = useRef({ accessToken, userId: user?.id, isDemoSession });
+  const translatorRef = useRef(t);
   const [details, setDetails] = useState<MCPOAuthConsent | null>(null);
   const [detailsContextKey, setDetailsContextKey] = useState('');
   const [error, setError] = useState('');
@@ -26,7 +26,7 @@ export function MCPOAuthConsentClient({ transactionId }: { transactionId: string
   const [busyContextKey, setBusyContextKey] = useState('');
   const [terminalContextKey, setTerminalContextKey] = useState('');
   const requestIdRef = useRef(0);
-  const contextKey = `${transactionId}:${user?.id ?? ''}:${sessionEpoch}:${currentProject?.id ?? ''}`;
+  const contextKey = `${transactionId}:${user?.id ?? ''}`;
   const contextRef = useRef({ key: contextKey, generation: 0 });
   const mountedRef = useRef(false);
   const visibleDetails = detailsContextKey === contextKey ? details : null;
@@ -42,6 +42,11 @@ export function MCPOAuthConsentClient({ transactionId }: { transactionId: string
         ? t('MCPOAuth.queryAndRawWrite')
         : ''
     : '';
+
+  useLayoutEffect(() => {
+    authRef.current = { accessToken, userId: user?.id, isDemoSession };
+    translatorRef.current = t;
+  }, [accessToken, isDemoSession, t, user?.id]);
 
   useLayoutEffect(() => {
     const current = contextRef.current;
@@ -61,7 +66,7 @@ export function MCPOAuthConsentClient({ transactionId }: { transactionId: string
       mountedRef.current = false;
       requestIdRef.current += 1;
     };
-  }, [accessToken, contextKey, isDemoSession, t, transactionId, user?.id]);
+  }, [contextKey]);
 
   useEffect(() => {
     let active = true;
@@ -71,29 +76,30 @@ export function MCPOAuthConsentClient({ transactionId }: { transactionId: string
     const isCurrent = () => active && mountedRef.current && requestId === requestIdRef.current
       && contextRef.current.key === identityKey && contextRef.current.generation === generation;
     void Promise.resolve().then(async () => {
-      if (!transactionPattern.test(transactionId)) throw new Error(t('MCPOAuth.invalidTransaction'));
-      if (!accessToken || !user?.id || isDemoSession) throw new Error(t('MCPOAuth.signInRequired'));
-      return readMCPOAuthConsent(transactionId, accessToken);
-    }).then((result) => {
+      if (!transactionPattern.test(transactionId)) throw new Error(translatorRef.current('MCPOAuth.invalidTransaction'));
+      const auth = authRef.current;
+      if (!auth.accessToken || !auth.userId || auth.isDemoSession) throw new Error(translatorRef.current('MCPOAuth.signInRequired'));
+      const result = await readMCPOAuthConsent(transactionId, auth.accessToken);
       if (!isCurrent()) return;
-      setDetails(result);
-      setDetailsContextKey(identityKey);
-      setError('');
-      setErrorContextKey('');
-      if (result.can_continue !== true || !accessToken || !user?.id || isDemoSession) return;
-      setBusyContextKey(identityKey);
-      return decideMCPOAuthConsent(transactionId, 'continue', accessToken).then((continuation) => {
-        if (!isCurrent()) return;
-        if (continuation.requires_consent === true) {
-          setBusyContextKey('');
-          return;
-        }
-        if (continuation.requires_consent !== false || !isSafeMCPOAuthReturnURL(continuation.redirect_url)) {
-          throw new Error(t('MCPOAuth.invalidReturn'));
-        }
-        setTerminalContextKey(identityKey);
-        window.location.assign(continuation.redirect_url);
-      });
+      const currentAuth = authRef.current;
+      if (currentAuth.userId !== auth.userId || !currentAuth.accessToken || currentAuth.isDemoSession) {
+        throw new Error(translatorRef.current('MCPOAuth.signInRequired'));
+      }
+      const continuation = await decideMCPOAuthConsent(transactionId, 'continue', currentAuth.accessToken);
+      if (!isCurrent()) return;
+      if (continuation.requires_consent === true) {
+        setDetails(result);
+        setDetailsContextKey(identityKey);
+        setError('');
+        setErrorContextKey('');
+        setBusyContextKey('');
+        return;
+      }
+      if (continuation.requires_consent !== false || !isSafeMCPOAuthReturnURL(continuation.redirect_url)) {
+        throw new Error(translatorRef.current('MCPOAuth.invalidReturn'));
+      }
+      setTerminalContextKey(identityKey);
+      window.location.assign(continuation.redirect_url);
     }).catch((loadError: unknown) => {
       if (!isCurrent()) return;
       const status = loadError instanceof MCPOAuthApiError ? loadError.status : 0;
@@ -101,21 +107,22 @@ export function MCPOAuthConsentClient({ transactionId }: { transactionId: string
       setDetailsContextKey('');
       setBusyContextKey('');
       setError(status === 410
-        ? t('MCPOAuth.expired')
+        ? translatorRef.current('MCPOAuth.expired')
         : [403, 404].includes(status)
-          ? t('MCPOAuth.notAllowed')
-          : loadError instanceof Error && (loadError.message === t('MCPOAuth.invalidTransaction')
-            || loadError.message === t('MCPOAuth.signInRequired'))
+          ? translatorRef.current('MCPOAuth.notAllowed')
+          : loadError instanceof Error && (loadError.message === translatorRef.current('MCPOAuth.invalidTransaction')
+            || loadError.message === translatorRef.current('MCPOAuth.signInRequired'))
             ? loadError.message
-            : t('MCPOAuth.loadFailed'));
+            : translatorRef.current('MCPOAuth.loadFailed'));
       setErrorContextKey(identityKey);
       if ([403, 404, 410].includes(status)) setTerminalContextKey(identityKey);
     });
     return () => { active = false; };
-  }, [accessToken, contextKey, isDemoSession, t, transactionId, user?.id]);
+  }, [contextKey, transactionId]);
 
   const decide = async (decision: 'allow' | 'deny') => {
-    if (!accessToken || !visibleDetails || busy || loading || terminal || isDemoSession
+    const auth = authRef.current;
+    if (!auth.accessToken || auth.isDemoSession || !visibleDetails || busy || loading || terminal
       || !mountedRef.current || contextRef.current.key !== contextKey) return;
     const generation = contextRef.current.generation;
     const requestId = requestIdRef.current;
@@ -124,20 +131,22 @@ export function MCPOAuthConsentClient({ transactionId }: { transactionId: string
     setBusyContextKey(contextKey);
     setError('');
     try {
-      const result = await decideMCPOAuthConsent(transactionId, decision, accessToken);
+      const currentAuth = authRef.current;
+      if (currentAuth.userId !== auth.userId || !currentAuth.accessToken || currentAuth.isDemoSession) return;
+      const result = await decideMCPOAuthConsent(transactionId, decision, currentAuth.accessToken);
       if (!isCurrent()) return;
       setTerminalContextKey(contextKey);
-      if (!isSafeMCPOAuthReturnURL(result.redirect_url)) throw new Error(t('MCPOAuth.invalidReturn'));
+      if (!isSafeMCPOAuthReturnURL(result.redirect_url)) throw new Error(translatorRef.current('MCPOAuth.invalidReturn'));
       window.location.assign(result.redirect_url);
     } catch (decisionError) {
       if (!isCurrent()) return;
-      const message = decisionError instanceof Error && decisionError.message === t('MCPOAuth.invalidReturn')
+      const message = decisionError instanceof Error && decisionError.message === translatorRef.current('MCPOAuth.invalidReturn')
         ? decisionError.message
         : decisionError instanceof MCPOAuthApiError && decisionError.status === 410
-          ? t('MCPOAuth.expired')
+          ? translatorRef.current('MCPOAuth.expired')
           : decisionError instanceof MCPOAuthApiError && [401, 403, 404].includes(decisionError.status)
-            ? t('MCPOAuth.notAllowed')
-            : t('MCPOAuth.decisionFailed');
+            ? translatorRef.current('MCPOAuth.notAllowed')
+            : translatorRef.current('MCPOAuth.decisionFailed');
       setError(message);
       setErrorContextKey(contextKey);
       setTerminalContextKey(contextKey);
@@ -147,10 +156,6 @@ export function MCPOAuthConsentClient({ transactionId }: { transactionId: string
 
   return (
     <section className="mx-auto max-w-2xl rounded-2xl border border-white/10 bg-[#151515] p-5 shadow-2xl sm:p-8" aria-busy={loading || busy}>
-      <p className="text-xs font-semibold uppercase tracking-[0.18em] text-emerald-300">{t('MCPOAuth.consentEyebrow')}</p>
-      <h1 className="mt-3 font-serif text-2xl font-medium text-[#eeeae4]">{t('MCPOAuth.consentTitle')}</h1>
-      <p className="mt-3 text-sm leading-6 text-zinc-400">{t('MCPOAuth.consentIntro')}</p>
-
       {loading ? <p role="status" className="mt-6 text-sm text-zinc-400">{t('MCPOAuth.loading')}</p> : null}
       {visibleError ? (
         <div className="mt-6 rounded-xl border border-amber-300/20 bg-amber-300/5 p-4">
@@ -160,6 +165,9 @@ export function MCPOAuthConsentClient({ transactionId }: { transactionId: string
       ) : null}
       {visibleDetails ? (
         <>
+          <p className="text-xs font-semibold uppercase tracking-[0.18em] text-emerald-300">{t('MCPOAuth.consentEyebrow')}</p>
+          <h1 className="mt-3 font-serif text-2xl font-medium text-[#eeeae4]">{t('MCPOAuth.consentTitle')}</h1>
+          <p className="mt-3 text-sm leading-6 text-zinc-400">{t('MCPOAuth.consentIntro')}</p>
           <dl className="mt-6 grid gap-4 rounded-xl border border-white/8 bg-black/20 p-4 sm:grid-cols-2">
             <div><dt className="text-xs uppercase tracking-wide text-zinc-500">{t('MCPOAuth.client')}</dt><dd className="mt-1 break-words text-sm font-medium text-white">{visibleDetails.client_name}</dd></div>
             <div><dt className="text-xs uppercase tracking-wide text-zinc-500">{t('MCPOAuth.account')}</dt><dd className="mt-1 break-all text-sm font-medium text-white">{visibleDetails.account_email}</dd></div>

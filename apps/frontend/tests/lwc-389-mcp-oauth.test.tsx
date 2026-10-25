@@ -8,6 +8,7 @@ const mocks = vi.hoisted(() => ({
   sessionEpoch: 1,
   user: { id: 'user-one', email: 'owner@example.com' },
   project: { id: 'project-one', name: 'Research Project' } as { id: string; name: string } | null,
+  translate: (key: string) => key,
   readConsent: vi.fn(),
   decideConsent: vi.fn(),
   listGrants: vi.fn(),
@@ -34,8 +35,7 @@ vi.mock('@/components/WorkspaceProvider', () => ({ useWorkspace: () => ({
 vi.mock('@/lib/api', () => ({ apiFetch: mocks.apiFetch }));
 
 vi.mock('@/lib/i18n', () => {
-  const t = (key: string) => key;
-  return { useT: () => ({ t }) };
+  return { useT: () => ({ t: mocks.translate }) };
 });
 
 vi.mock('next/link', () => ({ default: ({ href, children, ...props }: React.AnchorHTMLAttributes<HTMLAnchorElement>) => <a href={href as string} {...props}>{children}</a> }));
@@ -93,6 +93,7 @@ beforeEach(() => {
   mocks.sessionEpoch = 1;
   mocks.user = { id: 'user-one', email: 'owner@example.com' };
   mocks.project = { id: 'project-one', name: 'Research Project' };
+  mocks.translate = (key: string) => key;
   mocks.readConsent.mockReset().mockResolvedValue(consent);
   mocks.decideConsent.mockReset().mockImplementation((_transactionId: string, decision: string) => Promise.resolve(
     decision === 'continue'
@@ -118,16 +119,37 @@ afterEach(() => {
 });
 
 describe('LWC-389 MCP OAuth frontend', () => {
-  it('shows the actual client and Project without deciding when the server finds no reusable grant', async () => {
+  it('shows the actual client and Project only after continuation requires explicit consent', async () => {
     render(<MCPOAuthConsentClient transactionId={transactionId} />);
     expect(await screen.findByText('Hermes Agent')).toBeDefined();
     expect(screen.getByText('owner@example.com')).toBeDefined();
     expect(screen.getByText('Research Project')).toBeDefined();
     expect(screen.getByText('mcp:query')).toBeDefined();
     expect(mocks.readConsent).toHaveBeenCalledWith(transactionId, 'web-session-token');
-    expect(mocks.decideConsent).not.toHaveBeenCalled();
+    expect(mocks.decideConsent).toHaveBeenCalledWith(transactionId, 'continue', 'web-session-token');
     expect(screen.getByRole('button', { name: 'MCPOAuth.allow' })).toBeDefined();
     expect(screen.getByRole('button', { name: 'MCPOAuth.deny' })).toBeDefined();
+  });
+
+  it('keeps continuation processing neutral until the server explicitly requires consent', async () => {
+    const continuation = deferred<{ redirect_url: string; requires_consent: boolean }>();
+    mocks.readConsent.mockResolvedValueOnce({ ...consent, can_continue: true });
+    mocks.decideConsent.mockImplementationOnce(() => continuation.promise);
+
+    render(<MCPOAuthConsentClient transactionId={transactionId} />);
+    await waitFor(() => expect(mocks.decideConsent).toHaveBeenCalledWith(transactionId, 'continue', 'web-session-token'));
+    expect(screen.getByRole('status').textContent).toBe('MCPOAuth.loading');
+    expect(screen.queryByText('MCPOAuth.consentTitle')).toBeNull();
+    expect(screen.queryByText('Hermes Agent')).toBeNull();
+    expect(screen.queryByRole('button', { name: 'MCPOAuth.allow' })).toBeNull();
+    expect(screen.queryByRole('button', { name: 'MCPOAuth.deny' })).toBeNull();
+
+    await act(async () => {
+      continuation.resolve({ redirect_url: '', requires_consent: true });
+      await continuation.promise;
+    });
+    expect(await screen.findByText('Hermes Agent')).toBeDefined();
+    expect(screen.getByRole('button', { name: 'MCPOAuth.allow' })).toBeDefined();
   });
 
   it('redirects through the validated callback when the backend confirms a reusable grant', async () => {
@@ -184,6 +206,29 @@ describe('LWC-389 MCP OAuth frontend', () => {
     expect(assign).not.toHaveBeenCalled();
   });
 
+  it('preserves one submitted callback across same-account token, locale, and Project changes', async () => {
+    const pending = deferred<{ redirect_url: string; requires_consent: boolean }>();
+    const assign = mockLocationAssign();
+    mocks.readConsent.mockResolvedValueOnce({ ...consent, can_continue: true });
+    mocks.decideConsent.mockImplementationOnce(() => pending.promise);
+    const view = render(<MCPOAuthConsentClient transactionId={transactionId} />);
+    await waitFor(() => expect(mocks.decideConsent).toHaveBeenCalledTimes(1));
+
+    mocks.accessToken = 'rotated-web-session-token';
+    mocks.sessionEpoch += 1;
+    mocks.project = null;
+    mocks.translate = (key: string) => `localized:${key}`;
+    view.rerender(<MCPOAuthConsentClient transactionId={transactionId} />);
+    await act(async () => {
+      pending.resolve({ redirect_url: 'http://127.0.0.1:4321/oauth/callback?code=kept&state=kept', requires_consent: false });
+      await pending.promise;
+    });
+
+    await waitFor(() => expect(assign).toHaveBeenCalledWith('http://127.0.0.1:4321/oauth/callback?code=kept&state=kept'));
+    expect(mocks.readConsent).toHaveBeenCalledTimes(1);
+    expect(mocks.decideConsent).toHaveBeenCalledTimes(1);
+  });
+
   it('keeps account-owned Daily Brief grant management reachable without an LWC Project', async () => {
     mocks.project = null;
     mocks.listResourceGrants.mockResolvedValueOnce([{
@@ -237,7 +282,7 @@ describe('LWC-389 MCP OAuth frontend', () => {
     expect(await screen.findByText('mcp:query mcp:raw:write')).toBeDefined();
     expect(screen.getByText('Add permitted raw sources.')).toBeDefined();
     expect(screen.queryByText('MCPOAuth.queryAndRawWrite')).toBeNull();
-    expect(mocks.decideConsent).not.toHaveBeenCalled();
+    expect(mocks.decideConsent).toHaveBeenCalledWith(transactionId, 'continue', 'web-session-token');
   });
 
   it.each([

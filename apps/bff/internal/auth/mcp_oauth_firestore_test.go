@@ -320,6 +320,9 @@ func TestMCPOAuthFirestoreFlowBindsProjectAndRotatesRefreshTokens(t *testing.T) 
 		identity.Scope != writeScope || strings.Join(identity.Capabilities, " ") != writeScope {
 		t.Fatalf("authenticate project access token: identity=%+v err=%v", identity, err)
 	}
+	if identity, err := authority.AuthenticateAccessToken(ctx, repeatTokens.AccessToken, projectID, resource); err != nil || identity.Scope != writeScope {
+		t.Fatalf("authenticate continuation child before source revocation: identity=%+v err=%v", identity, err)
+	}
 	clock = clock.Add(mcpOAuthAccessTTL + time.Second)
 	if _, err := authority.AuthenticateAccessToken(ctx, tokens.AccessToken, projectID, resource); !errors.Is(err, ErrMCPOAuthExpired) {
 		t.Fatalf("expired project access token error = %v, want expired", err)
@@ -333,6 +336,22 @@ func TestMCPOAuthFirestoreFlowBindsProjectAndRotatesRefreshTokens(t *testing.T) 
 	if err != nil || retried.AccessToken != rotated.AccessToken || retried.RefreshToken != rotated.RefreshToken || retried.Scope != writeScope {
 		t.Fatalf("same-token retry did not return same successor pair: first=%+v retry=%+v err=%v", rotated, retried, err)
 	}
+	postRotationTransaction, postRotationEligible := beginConsent(client, resource, writeScope, "post-rotation-continuation-state")
+	if !postRotationEligible {
+		t.Fatal("grant was not reusable after refresh rotation")
+	}
+	postRotationDecision, err := service.ContinueConsent(ctx, userID, 0, postRotationTransaction)
+	if err != nil || postRotationDecision.RequiresConsent {
+		t.Fatalf("post-rotation continuation=%+v err=%v", postRotationDecision, err)
+	}
+	postRotationCallback, err := url.Parse(postRotationDecision.RedirectURL)
+	if err != nil || postRotationCallback.Query().Get("code") == "" {
+		t.Fatalf("post-rotation continuation callback=%q err=%v", postRotationDecision.RedirectURL, err)
+	}
+	postRotationTokens, err := service.ExchangeCode(ctx, client.ClientID, postRotationCallback.Query().Get("code"), client.RedirectURIs[0], verifier, resource)
+	if err != nil {
+		t.Fatalf("exchange post-rotation continuation code: %v", err)
+	}
 
 	clock = clock.Add(mcpOAuthRetryWindow + time.Second)
 	if _, err := service.Refresh(ctx, client.ClientID, tokens.RefreshToken, resource); !errors.Is(err, ErrMCPOAuthReplay) {
@@ -341,16 +360,23 @@ func TestMCPOAuthFirestoreFlowBindsProjectAndRotatesRefreshTokens(t *testing.T) 
 	if _, err := authority.AuthenticateAccessToken(ctx, rotated.AccessToken, projectID, resource); !errors.Is(err, ErrMCPOAuthDenied) {
 		t.Fatalf("replayed refresh family remained usable: %v", err)
 	}
+	if _, err := authority.AuthenticateAccessToken(ctx, postRotationTokens.AccessToken, projectID, resource); !errors.Is(err, ErrMCPOAuthDenied) {
+		t.Fatalf("continuation child survived source grant revocation: %v", err)
+	}
 	grants, err := service.ListGrants(ctx, userID, projectID)
-	if err != nil || len(grants) != 4 {
+	if err != nil || len(grants) != 5 {
 		t.Fatalf("grant after replay = %+v, err=%v", grants, err)
 	}
 	initialGrantRevoked := false
 	for _, grant := range grants {
 		if grant.ID == initialGrantID {
 			initialGrantRevoked = grant.Status == "revoked"
-		} else if grant.Status != "active" {
-			t.Fatalf("independent continuation grant unexpectedly changed status: %+v", grant)
+		} else if grant.ClientName == "Narrow OAuth client" {
+			if grant.Status != "active" {
+				t.Fatalf("independent first-consent grant changed status: %+v", grant)
+			}
+		} else if grant.Status != "revoked" {
+			t.Fatalf("continuation grant did not inherit revoked origin status: %+v", grant)
 		}
 	}
 	if !initialGrantRevoked {
@@ -438,6 +464,24 @@ func TestDailyBriefFixedResourceGrantIsAccountOwnedWithoutProject(t *testing.T) 
 		strings.Join(verified.Scopes, " ") != "brief:manage" || verified.Environment != "dev" {
 		t.Fatalf("fixed credential verification=%+v err=%v", verified, err)
 	}
+	grants, err := service.ListResourceGrants(ctx, userID, resource)
+	if err != nil || len(grants) != 1 || grants[0].ProjectID != "" || grants[0].Resource != resource || grants[0].Scope != "brief:manage" {
+		t.Fatalf("account-owned fixed grants=%+v err=%v", grants, err)
+	}
+	rootGrantID := grants[0].ID
+	grantRef := mcpOAuthCollection(fs, databaseEnvironment, "grants").Doc(rootGrantID)
+	grantDoc, err := grantRef.Get(ctx)
+	if err != nil {
+		t.Fatal(err)
+	}
+	var grant mcpOAuthGrantRecord
+	if mcpOAuthDecode(grantDoc.Data(), &grant) != nil || grant.ProjectID != "" {
+		t.Fatalf("persisted fixed grant fabricated Project: %#v", grantDoc.Data())
+	}
+	nearExpiry := clock.Add(5 * time.Minute)
+	if _, err := grantRef.Update(ctx, []firestore.Update{{Path: "expires_at", Value: nearExpiry}}); err != nil {
+		t.Fatalf("set source grant near expiry: %v", err)
+	}
 	gin.SetMode(gin.TestMode)
 	webAccessToken, err := GenerateAccessToken(userID, "user", "fixture-jwt-secret", 3)
 	if err != nil {
@@ -480,6 +524,13 @@ func TestDailyBriefFixedResourceGrantIsAccountOwnedWithoutProject(t *testing.T) 
 	if err != nil || repeatCallback.Query().Get("state") != "brief-repeat-state" || repeatCallback.Query().Get("code") == "" {
 		t.Fatalf("HTTP continuation callback did not preserve state/PKCE code: %q err=%v", repeatDecisionBody.RedirectURL, err)
 	}
+	repeatTokens, err := service.ExchangeCode(ctx, client.ClientID, repeatCallback.Query().Get("code"), client.RedirectURIs[0], verifier, resource)
+	if err != nil || repeatTokens.AccessToken == "" || repeatTokens.ExpiresIn != int(nearExpiry.Sub(clock).Seconds()) {
+		t.Fatalf("near-expiry continuation exchange=%+v err=%v", repeatTokens, err)
+	}
+	if childCredential, err := service.VerifyAccessToken(ctx, repeatTokens.AccessToken); err != nil || childCredential.UserID != userID {
+		t.Fatalf("near-expiry derived token should initially verify: credential=%+v err=%v", childCredential, err)
+	}
 	verifierConfig := config.Config{AuthOAuthResources: resources}
 	validateCaller := func(_ context.Context, token, audience string) (*idtoken.Payload, error) {
 		if token != "fixture-caller-id-token" || audience != resources[1].VerifierAudience {
@@ -505,17 +556,24 @@ func TestDailyBriefFixedResourceGrantIsAccountOwnedWithoutProject(t *testing.T) 
 		strings.Join(verifiedBody.Scopes, " ") != "brief:manage" || verifiedBody.Environment != "dev" || verifiedBody.ExpiresAt.IsZero() {
 		t.Fatalf("Firestore-backed HTTP verifier status=%d body=%s decoded=%+v", verifiedResponse.Code, verifiedResponse.Body.String(), verifiedBody)
 	}
-	grants, err := service.ListResourceGrants(ctx, userID, resource)
-	if err != nil || len(grants) != 1 || grants[0].ProjectID != "" || grants[0].Resource != resource || grants[0].Scope != "brief:manage" {
-		t.Fatalf("account-owned fixed grants=%+v err=%v", grants, err)
+	grants, err = service.ListResourceGrants(ctx, userID, resource)
+	if err != nil || len(grants) != 2 {
+		t.Fatalf("root and continuation grants=%+v err=%v", grants, err)
 	}
-	grantDoc, err := mcpOAuthCollection(fs, databaseEnvironment, "grants").Doc(grants[0].ID).Get(ctx)
-	if err != nil {
-		t.Fatal(err)
+	var childGrantID string
+	for _, listed := range grants {
+		if listed.ID != rootGrantID {
+			childGrantID = listed.ID
+		}
 	}
-	var grant mcpOAuthGrantRecord
-	if mcpOAuthDecode(grantDoc.Data(), &grant) != nil || grant.ProjectID != "" {
-		t.Fatalf("persisted fixed grant fabricated Project: %#v", grantDoc.Data())
+	childDoc, err := mcpOAuthCollection(fs, databaseEnvironment, "grants").Doc(childGrantID).Get(ctx)
+	if err != nil || childGrantID == "" {
+		t.Fatalf("read continuation grant %q: %v", childGrantID, err)
+	}
+	var childGrant mcpOAuthGrantRecord
+	if mcpOAuthDecode(childDoc.Data(), &childGrant) != nil || childGrant.ProjectID != "" ||
+		childGrant.OriginGrantID != rootGrantID || !childGrant.ExpiresAt.Equal(nearExpiry) {
+		t.Fatalf("continuation grant did not preserve source lineage/expiry: %#v", childDoc.Data())
 	}
 	rotated, err := service.Refresh(ctx, client.ClientID, tokens.RefreshToken, resource)
 	if err != nil || rotated.RefreshToken == "" || rotated.RefreshToken == tokens.RefreshToken {
@@ -578,7 +636,6 @@ func TestDailyBriefFixedResourceGrantIsAccountOwnedWithoutProject(t *testing.T) 
 		t.Fatalf("expired Firestore access record HTTP status=%d body=%s", response.Code, response.Body.String())
 	}
 	clock = issuedAt
-	grantRef := mcpOAuthCollection(fs, databaseEnvironment, "grants").Doc(grants[0].ID)
 	grantSnapshot, err := grantRef.Get(ctx)
 	if err != nil {
 		t.Fatal(err)
@@ -586,12 +643,15 @@ func TestDailyBriefFixedResourceGrantIsAccountOwnedWithoutProject(t *testing.T) 
 	if mcpOAuthDecode(grantSnapshot.Data(), &grant) != nil || !clock.Before(grant.ExpiresAt) {
 		t.Fatalf("pre-expiry grant fixture is invalid: %#v", grant)
 	}
-	originalGrantExpiry := grant.ExpiresAt
+	originalGrantExpiry := nearExpiry
 	if _, err := grantRef.Update(ctx, []firestore.Update{{Path: "expires_at", Value: clock.Add(-time.Second)}}); err != nil {
 		t.Fatal(err)
 	}
 	if response := verifyHTTP(rotated.AccessToken); response.Code != http.StatusUnauthorized {
 		t.Fatalf("expired grant with otherwise valid access token HTTP status=%d body=%s", response.Code, response.Body.String())
+	}
+	if response := verifyHTTP(repeatTokens.AccessToken); response.Code != http.StatusUnauthorized {
+		t.Fatalf("expired source grant allowed derived access token HTTP status=%d body=%s", response.Code, response.Body.String())
 	}
 	if _, err := grantRef.Update(ctx, []firestore.Update{{Path: "expires_at", Value: originalGrantExpiry}}); err != nil {
 		t.Fatal(err)
@@ -599,6 +659,38 @@ func TestDailyBriefFixedResourceGrantIsAccountOwnedWithoutProject(t *testing.T) 
 	if response := verifyHTTP(rotated.AccessToken); response.Code != http.StatusOK {
 		t.Fatalf("restored active grant should accept the still-valid access token HTTP status=%d body=%s", response.Code, response.Body.String())
 	}
+	if response := verifyHTTP(repeatTokens.AccessToken); response.Code != http.StatusOK {
+		t.Fatalf("restored source grant should accept its still-valid derived access token HTTP status=%d body=%s", response.Code, response.Body.String())
+	}
+	expiryCodeURL, err := service.BeginAuthorization(ctx, client.ClientID, client.RedirectURIs[0], "code", challenge, "S256", "source-expiry-after-issue", resource, "brief:manage")
+	if err != nil {
+		t.Fatalf("begin source-expiry code flow: %v", err)
+	}
+	expiryConsent, _ := url.Parse(expiryCodeURL)
+	if details, err := service.ConsentDetails(ctx, userID, 3, expiryConsent.Query().Get("transaction_id")); err != nil || !details.CanContinue {
+		t.Fatalf("source-expiry continuation eligibility=%+v err=%v", details, err)
+	}
+	expiryDecision, err := service.ContinueConsent(ctx, userID, 3, expiryConsent.Query().Get("transaction_id"))
+	if err != nil {
+		t.Fatalf("issue continuation code before source expiry: %v", err)
+	}
+	expiryCallback, err := url.Parse(expiryDecision.RedirectURL)
+	if err != nil || expiryCallback.Query().Get("code") == "" {
+		t.Fatalf("source-expiry continuation callback=%q err=%v", expiryDecision.RedirectURL, err)
+	}
+	if _, err := grantRef.Update(ctx, []firestore.Update{{Path: "expires_at", Value: clock.Add(-time.Second)}}); err != nil {
+		t.Fatalf("expire source after code issue: %v", err)
+	}
+	if _, err := service.ExchangeCode(ctx, client.ClientID, expiryCallback.Query().Get("code"), client.RedirectURIs[0], verifier, resource); !errors.Is(err, ErrMCPOAuthInvalid) {
+		t.Fatalf("code exchange after source expiry=%v, want invalid", err)
+	}
+	if _, err := service.Refresh(ctx, client.ClientID, repeatTokens.RefreshToken, resource); !errors.Is(err, ErrMCPOAuthInvalid) {
+		t.Fatalf("derived refresh after source expiry=%v, want invalid", err)
+	}
+	if _, err := grantRef.Update(ctx, []firestore.Update{{Path: "expires_at", Value: originalGrantExpiry}}); err != nil {
+		t.Fatalf("restore source grant after expiry control: %v", err)
+	}
+
 	raceURL, err := service.BeginAuthorization(ctx, client.ClientID, client.RedirectURIs[0], "code", challenge, "S256", "grant-race-state", resource, "brief:manage")
 	if err != nil {
 		t.Fatalf("begin grant-race authorization: %v", err)
@@ -637,6 +729,34 @@ func TestDailyBriefFixedResourceGrantIsAccountOwnedWithoutProject(t *testing.T) 
 	}
 	if _, err := grantRef.Update(ctx, []firestore.Update{{Path: "expires_at", Value: originalGrantExpiry}}); err != nil {
 		t.Fatal(err)
+	}
+	revokedCodeURL, err := service.BeginAuthorization(ctx, client.ClientID, client.RedirectURIs[0], "code", challenge, "S256", "source-revoked-after-issue", resource, "brief:manage")
+	if err != nil {
+		t.Fatalf("begin source-revocation code flow: %v", err)
+	}
+	revokedConsent, _ := url.Parse(revokedCodeURL)
+	if details, err := service.ConsentDetails(ctx, userID, 3, revokedConsent.Query().Get("transaction_id")); err != nil || !details.CanContinue {
+		t.Fatalf("source-revocation continuation eligibility=%+v err=%v", details, err)
+	}
+	revokedDecision, err := service.ContinueConsent(ctx, userID, 3, revokedConsent.Query().Get("transaction_id"))
+	if err != nil {
+		t.Fatalf("issue continuation code before source revocation: %v", err)
+	}
+	revokedCallback, err := url.Parse(revokedDecision.RedirectURL)
+	if err != nil || revokedCallback.Query().Get("code") == "" {
+		t.Fatalf("source-revocation continuation callback=%q err=%v", revokedDecision.RedirectURL, err)
+	}
+	if err := service.RevokeGrant(ctx, userID, 3, rootGrantID); err != nil {
+		t.Fatalf("revoke source after code issue: %v", err)
+	}
+	if _, err := service.ExchangeCode(ctx, client.ClientID, revokedCallback.Query().Get("code"), client.RedirectURIs[0], verifier, resource); !errors.Is(err, ErrMCPOAuthInvalid) {
+		t.Fatalf("code exchange after source revocation=%v, want invalid", err)
+	}
+	if response := verifyHTTP(repeatTokens.AccessToken); response.Code != http.StatusUnauthorized {
+		t.Fatalf("revoked source grant allowed derived access token HTTP status=%d body=%s", response.Code, response.Body.String())
+	}
+	if _, err := service.Refresh(ctx, client.ClientID, repeatTokens.RefreshToken, resource); !errors.Is(err, ErrMCPOAuthInvalid) {
+		t.Fatalf("derived refresh after source revocation=%v, want invalid", err)
 	}
 	if err := service.RevokeGrant(ctx, userID, 3, grants[0].ID); err != nil {
 		t.Fatalf("owner revoke=%v", err)

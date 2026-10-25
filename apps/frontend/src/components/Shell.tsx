@@ -129,6 +129,7 @@ function ShellContent({ children }: { children: React.ReactNode }) {
   const isAdminRoute = pathname === '/admin' || pathname.startsWith('/admin/');
   const isGoogleCompletionRoute = pathname === '/login';
   const isCLIPairingRoute = pathname === '/cli-pairing';
+  const isMCPConsentRoute = pathname === '/oauth/consent';
 
   return (
     <div className="min-h-dvh text-zinc-100 lg:flex lg:items-stretch">
@@ -302,6 +303,10 @@ function ShellContent({ children }: { children: React.ReactNode }) {
           <div className="mx-auto max-w-3xl px-4 py-8 sm:px-6 lg:px-10">{children}</div>
         ) : token && isAdminRoute ? (
           <div className="mx-auto max-w-6xl px-4 py-8 sm:px-6 lg:px-10">
+            {children}
+          </div>
+        ) : token && isMCPConsentRoute ? (
+          <div className="mx-auto max-w-3xl px-4 py-8 sm:px-6 lg:px-10">
             {children}
           </div>
         ) : token && projectsLoading ? (
