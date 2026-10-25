@@ -11,6 +11,7 @@ import (
 	"net/http"
 	"net/http/httptest"
 	"strings"
+	"sync"
 	"sync/atomic"
 	"testing"
 	"time"
@@ -21,32 +22,129 @@ import (
 )
 
 type listenIDCaptureTransport struct {
-	base         http.RoundTripper
-	ids          chan json.RawMessage
-	duplicateURI bool
+	base               http.RoundTripper
+	ids                chan json.RawMessage
+	duplicateURI       bool
+	pauseAfterFirstSSE bool
+	resumeResponse     <-chan struct{}
+	responseReadPaused chan<- struct{}
 }
 
 type mcpPipelineUpdate struct{ id, uri string }
 
-type expireAfterAckFlushWriter struct {
-	http.ResponseWriter
-	calls *atomic.Int32
+type pauseAfterFirstSSEBody struct {
+	io.ReadCloser
+	resume    <-chan struct{}
+	paused    chan<- struct{}
+	closed    chan struct{}
+	closeOnce sync.Once
+	pauseOnce sync.Once
+	first     []byte
+	framed    bool
 }
 
-func (w *expireAfterAckFlushWriter) Unwrap() http.ResponseWriter { return w.ResponseWriter }
-func (w *expireAfterAckFlushWriter) SetWriteDeadline(deadline time.Time) error {
-	return http.NewResponseController(w.ResponseWriter).SetWriteDeadline(deadline)
-}
-func (w *expireAfterAckFlushWriter) FlushError() error {
-	if w.calls.Add(1) == 2 {
-		_ = http.NewResponseController(w.ResponseWriter).SetWriteDeadline(time.Now().Add(-time.Second))
+func (b *pauseAfterFirstSSEBody) Read(p []byte) (int, error) {
+	if !b.framed {
+		for !bytes.Contains(b.first, []byte("\n\n")) {
+			var next [1]byte
+			n, err := b.ReadCloser.Read(next[:])
+			if n > 0 {
+				b.first = append(b.first, next[0])
+			}
+			if err != nil {
+				return 0, err
+			}
+		}
+		b.framed = true
 	}
-	return flushResponseWriter(w.ResponseWriter)
+	if len(b.first) > 0 {
+		n := copy(p, b.first)
+		b.first = b.first[n:]
+		return n, nil
+	}
+	b.pauseOnce.Do(func() { close(b.paused) })
+	select {
+	case <-b.resume:
+	case <-b.closed:
+		return 0, io.ErrClosedPipe
+	}
+	return b.ReadCloser.Read(p)
 }
-func (w *expireAfterAckFlushWriter) Flush() { _ = w.FlushError() }
+
+func (b *pauseAfterFirstSSEBody) Close() error {
+	b.closeOnce.Do(func() { close(b.closed) })
+	return b.ReadCloser.Close()
+}
+
+type observedTCPWrite struct {
+	started  time.Time
+	duration time.Duration
+	deadline time.Time
+	bytes    int
+	err      error
+}
+
+type observingTCPListener struct {
+	net.Listener
+	writeEvents chan observedTCPWrite
+	totalBytes  atomic.Int64
+	deadlines   atomic.Int32
+}
+
+func (l *observingTCPListener) Accept() (net.Conn, error) {
+	conn, err := l.Listener.Accept()
+	if err != nil {
+		return nil, err
+	}
+	tcp, ok := conn.(*net.TCPConn)
+	if !ok {
+		_ = conn.Close()
+		return nil, fmt.Errorf("accepted loopback connection has type %T, want *net.TCPConn", conn)
+	}
+	if err := tcp.SetWriteBuffer(1024); err != nil {
+		_ = conn.Close()
+		return nil, fmt.Errorf("set loopback server send buffer: %w", err)
+	}
+	return &observingTCPConn{Conn: conn, listener: l}, nil
+}
+
+type observingTCPConn struct {
+	net.Conn
+	listener *observingTCPListener
+	deadline atomic.Int64
+}
+
+func (c *observingTCPConn) SetWriteDeadline(deadline time.Time) error {
+	c.listener.deadlines.Add(1)
+	if deadline.IsZero() {
+		c.deadline.Store(0)
+	} else {
+		c.deadline.Store(deadline.UnixNano())
+	}
+	return c.Conn.SetWriteDeadline(deadline)
+}
+
+func (c *observingTCPConn) Write(p []byte) (int, error) {
+	started := time.Now()
+	n, err := c.Conn.Write(p)
+	duration := time.Since(started)
+	c.listener.totalBytes.Add(int64(n))
+	if err != nil || duration >= 25*time.Millisecond {
+		deadline := time.Time{}
+		if deadlineNanos := c.deadline.Load(); deadlineNanos != 0 {
+			deadline = time.Unix(0, deadlineNanos)
+		}
+		select {
+		case c.listener.writeEvents <- observedTCPWrite{started: started, duration: duration, deadline: deadline, bytes: n, err: err}:
+		default:
+		}
+	}
+	return n, err
+}
 
 func (t *listenIDCaptureTransport) RoundTrip(request *http.Request) (*http.Response, error) {
 	request.Header.Set("Authorization", "Bearer fixture-token")
+	isListen := false
 	if request.Body != nil {
 		body, err := io.ReadAll(request.Body)
 		if err != nil {
@@ -64,6 +162,7 @@ func (t *listenIDCaptureTransport) RoundTrip(request *http.Request) (*http.Respo
 			} `json:"params"`
 		}
 		if json.Unmarshal(body, &message) == nil && message.Method == "subscriptions/listen" {
+			isListen = true
 			select {
 			case t.ids <- append(json.RawMessage(nil), message.ID...):
 			default:
@@ -84,7 +183,17 @@ func (t *listenIDCaptureTransport) RoundTrip(request *http.Request) (*http.Respo
 		request.ContentLength = int64(len(body))
 		request.Body = io.NopCloser(bytes.NewReader(body))
 	}
-	return t.base.RoundTrip(request)
+	response, err := t.base.RoundTrip(request)
+	if err != nil {
+		return nil, err
+	}
+	if isListen && t.pauseAfterFirstSSE {
+		response.Body = &pauseAfterFirstSSEBody{
+			ReadCloser: response.Body, resume: t.resumeResponse,
+			paused: t.responseReadPaused, closed: make(chan struct{}),
+		}
+	}
+	return response, nil
 }
 
 func TestPipelineEventPhaseIdentitySurvivesOutcomeAndDiagnosticCorrections(t *testing.T) {
@@ -616,10 +725,10 @@ func TestMCPPipelineEventsRealTCPListenAckFreshReadAndCancellation(t *testing.T)
 	}
 }
 
-func TestMCPPipelineListenStoppedReaderEndsOnWriteDeadline(t *testing.T) {
+func TestMCPPipelineListenStoppedReaderTimesOutOnTCPBackpressure(t *testing.T) {
 	gin.SetMode(gin.TestMode)
 	timing := pipelineEventTiming{
-		readTimeout: 250 * time.Millisecond, pollInterval: time.Millisecond,
+		readTimeout: 250 * time.Millisecond, pollInterval: 0,
 		authInterval: 20 * time.Millisecond, authTimeout: 50 * time.Millisecond,
 		authMaxAge: 10 * time.Second, writeTimeout: 100 * time.Millisecond,
 		listenMaxAge: 60 * time.Second, backoffs: []time.Duration{5 * time.Millisecond, 10 * time.Millisecond},
@@ -634,35 +743,49 @@ func TestMCPPipelineListenStoppedReaderEndsOnWriteDeadline(t *testing.T) {
 		userID: "user-a", projectID: "project-a", keyID: "key-stopped-reader", capabilities: []string{mcpQueryCapability},
 		revalidate: func(context.Context) error { verifierCalls.Add(1); return nil },
 	}
+	listenerSocket, err := net.Listen("tcp", "127.0.0.1:0")
+	if err != nil {
+		t.Fatalf("listen on loopback: %v", err)
+	}
+	listener := &observingTCPListener{Listener: listenerSocket, writeEvents: make(chan observedTCPWrite, 128)}
 	listenHandlerReturned := make(chan struct{})
-	ackFlushCount := new(atomic.Int32)
 	router := gin.New()
 	router.POST("/mcp", func(c *gin.Context) {
 		isListen := c.GetHeader("MCP-Method") == "subscriptions/listen"
-		writer := http.ResponseWriter(c.Writer)
-		if isListen {
-			writer = &expireAfterAckFlushWriter{ResponseWriter: c.Writer, calls: ackFlushCount}
-		}
-		h.serveAuthenticatedMCP(h.mcpSDKHandler(identity), identity, writer, c.Request)
+		h.serveAuthenticatedMCP(h.mcpSDKHandler(identity), identity, c.Writer, c.Request)
 		if isListen {
 			close(listenHandlerReturned)
 		}
 	})
-	server := httptest.NewServer(router)
-	t.Cleanup(server.Close)
+	server := &http.Server{Handler: router}
+	serveDone := make(chan error, 1)
+	go func() { serveDone <- server.Serve(listener) }()
+	t.Cleanup(func() {
+		_ = server.Close()
+		<-serveDone
+	})
+	resumeResponse := make(chan struct{})
+	var resumeResponseOnce sync.Once
+	releaseClientReader := func() { resumeResponseOnce.Do(func() { close(resumeResponse) }) }
+	responseReadPaused := make(chan struct{})
 	transport := &http.Transport{DialContext: func(ctx context.Context, network, address string) (net.Conn, error) {
 		conn, err := (&net.Dialer{}).DialContext(ctx, network, address)
 		if err == nil {
 			if tcp, ok := conn.(*net.TCPConn); ok {
-				_ = tcp.SetReadBuffer(1024)
+				if err := tcp.SetReadBuffer(1024); err != nil {
+					_ = conn.Close()
+					return nil, fmt.Errorf("set loopback client receive buffer: %w", err)
+				}
 			}
 		}
 		return conn, err
 	}}
 	defer transport.CloseIdleConnections()
-	authenticatedTransport := &listenIDCaptureTransport{base: transport, ids: make(chan json.RawMessage, 1)}
+	authenticatedTransport := &listenIDCaptureTransport{
+		base: transport, ids: make(chan json.RawMessage, 1), pauseAfterFirstSSE: true,
+		resumeResponse: resumeResponse, responseReadPaused: responseReadPaused,
+	}
 	acks := make(chan any, 1)
-	releaseAck := make(chan struct{})
 	client := mcp.NewClient(&mcp.Implementation{Name: "lwc-428-stopped-reader", Version: "1"}, &mcp.ClientOptions{
 		ResourceUpdatedHandler: func(context.Context, *mcp.ResourceUpdatedNotificationRequest) {},
 	})
@@ -671,57 +794,85 @@ func TestMCPPipelineListenStoppedReaderEndsOnWriteDeadline(t *testing.T) {
 			if method == "notifications/subscriptions/acknowledged" {
 				if ack, ok := request.(*mcp.ClientRequest[*mcp.SubscriptionsAcknowledgedParams]); ok && ack.Params != nil {
 					acks <- ack.Params.Meta[mcp.MetaKeySubscriptionID]
-					<-releaseAck
 				}
 			}
 			return next(ctx, method, request)
 		}
 	})
+	endpoint := "http://" + listener.Addr().String() + "/mcp"
 	connectCtx, cancelConnect := context.WithTimeout(context.Background(), 5*time.Second)
 	session, err := client.Connect(connectCtx, &mcp.StreamableClientTransport{
-		Endpoint: server.URL + "/mcp", HTTPClient: &http.Client{Transport: authenticatedTransport}, DisableStandaloneSSE: true,
+		Endpoint: endpoint, HTTPClient: &http.Client{Transport: authenticatedTransport}, DisableStandaloneSSE: true,
 	}, &mcp.ClientSessionOptions{ProtocolVersion: "2026-07-28"})
 	cancelConnect()
 	if err != nil {
 		t.Fatalf("connect stopped-reader MCP client: %v", err)
 	}
 	t.Cleanup(func() {
-		select {
-		case <-releaseAck:
-		default:
-			close(releaseAck)
-		}
+		releaseClientReader()
 		_ = session.Close()
 	})
 	uri := pipelineEventsURI(identity.projectID)
 	if _, err := session.ReadResource(context.Background(), &mcp.ReadResourceParams{URI: uri}); err != nil {
 		t.Fatalf("initial resource read: %v", err)
 	}
-	go func() { _ = session.Subscribe(context.Background(), &mcp.SubscribeParams{URI: uri}) }()
+	subscribeCtx, cancelSubscribe := context.WithCancel(context.Background())
+	defer cancelSubscribe()
+	subscribeDone := make(chan error, 1)
+	go func() { subscribeDone <- session.Subscribe(subscribeCtx, &mcp.SubscribeParams{URI: uri}) }()
 	if _, err := waitPipelineValue("stopped-reader listen acknowledgement", acks, 5*time.Second); err != nil {
 		t.Fatal(err)
 	}
+	if _, err := waitPipelineValue("client reader pause after acknowledgement event", responseReadPaused, 5*time.Second); err != nil {
+		t.Fatal(err)
+	}
+
+	var blockedWrite *observedTCPWrite
+	writeDeadline := time.After(8 * time.Second)
+	for blockedWrite == nil {
+		select {
+		case write := <-listener.writeEvents:
+			if write.err == nil {
+				continue
+			}
+			var networkErr net.Error
+			if !errors.As(write.err, &networkErr) || !networkErr.Timeout() {
+				t.Fatalf("blocked stream write failed without a network timeout: duration=%s deadline=%s bytes=%d err=%v", write.duration, write.deadline, write.bytes, write.err)
+			}
+			blockedWrite = &write
+		case <-writeDeadline:
+			t.Fatalf("stopped TCP reader did not cause a write timeout; source calls=%d verifier calls=%d total server bytes=%d deadlines=%d", sourceCalls.Load(), verifierCalls.Load(), listener.totalBytes.Load(), listener.deadlines.Load())
+		}
+	}
+	deadlineRemaining := blockedWrite.deadline.Sub(blockedWrite.started)
+	if blockedWrite.deadline.IsZero() || deadlineRemaining <= 0 || deadlineRemaining > 2*timing.writeTimeout ||
+		blockedWrite.duration < timing.writeTimeout/2 || blockedWrite.duration > timing.writeTimeout+time.Second {
+		t.Fatalf("TCP timeout did not follow the forward product deadline: write=%+v remaining=%s configured=%s", *blockedWrite, deadlineRemaining, timing.writeTimeout)
+	}
+	if listener.totalBytes.Load() < 4<<10 || listener.deadlines.Load() == 0 || sourceCalls.Load() < 2 || verifierCalls.Load() == 0 {
+		t.Fatalf("no sustained post-ack socket backpressure observed: server bytes=%d deadline updates=%d source calls=%d verifier calls=%d timeout write=%+v", listener.totalBytes.Load(), listener.deadlines.Load(), sourceCalls.Load(), verifierCalls.Load(), *blockedWrite)
+	}
+	t.Logf("observed TCP backpressure timeout: deadline_remaining=%s write_duration=%s blocked_write_bytes=%d total_server_bytes=%d deadline_updates=%d source_calls=%d verifier_calls=%d", deadlineRemaining, blockedWrite.duration, blockedWrite.bytes, listener.totalBytes.Load(), listener.deadlines.Load(), sourceCalls.Load(), verifierCalls.Load())
 	start := time.Now()
 	select {
 	case <-listenHandlerReturned:
-		if elapsed := time.Since(start); elapsed > 5*timing.writeTimeout {
-			t.Fatalf("stopped-reader stream cleanup took %s, over five write bounds", elapsed)
+		if elapsed := time.Since(start); elapsed > 2*time.Second {
+			t.Fatalf("listener handler did not exit promptly after TCP write timeout: %s", elapsed)
 		}
-	case <-time.After(8 * time.Second):
-		t.Fatalf("stopped-reading client did not release the server HTTP listen handler; source calls=%d verifier calls=%d flushes=%d", sourceCalls.Load(), verifierCalls.Load(), ackFlushCount.Load())
-	}
-	if ackFlushCount.Load() < 2 {
-		t.Fatalf("stream did not exercise the post-ack network FlushError path: flushes=%d", ackFlushCount.Load())
+	case <-time.After(2 * time.Second):
+		t.Fatalf("listener handler did not exit after observed TCP write timeout: %+v", *blockedWrite)
 	}
 	sourcesAtClose, verifiersAtClose := sourceCalls.Load(), verifierCalls.Load()
-	time.Sleep(60 * time.Millisecond)
+	time.Sleep(100 * time.Millisecond)
 	if sourceCalls.Load() != sourcesAtClose || verifierCalls.Load() != verifiersAtClose {
 		t.Fatalf("listener watcher/auth loop continued after stream close: source %d->%d verifier %d->%d", sourcesAtClose, sourceCalls.Load(), verifiersAtClose, verifierCalls.Load())
 	}
+	releaseClientReader()
+	cancelSubscribe()
 	select {
-	case <-releaseAck:
-	default:
-		close(releaseAck)
+	case <-subscribeDone:
+	case <-time.After(2 * time.Second):
+		t.Fatal("native SDK Subscribe call did not unwind after the server closed the timed-out stream")
 	}
 }
 
