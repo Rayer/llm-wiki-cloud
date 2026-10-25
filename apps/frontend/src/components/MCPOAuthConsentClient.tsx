@@ -80,6 +80,20 @@ export function MCPOAuthConsentClient({ transactionId }: { transactionId: string
       setDetailsContextKey(identityKey);
       setError('');
       setErrorContextKey('');
+      if (result.can_continue !== true || !accessToken || !user?.id || isDemoSession) return;
+      setBusyContextKey(identityKey);
+      return decideMCPOAuthConsent(transactionId, 'continue', accessToken).then((continuation) => {
+        if (!isCurrent()) return;
+        if (continuation.requires_consent === true) {
+          setBusyContextKey('');
+          return;
+        }
+        if (continuation.requires_consent !== false || !isSafeMCPOAuthReturnURL(continuation.redirect_url)) {
+          throw new Error(t('MCPOAuth.invalidReturn'));
+        }
+        setTerminalContextKey(identityKey);
+        window.location.assign(continuation.redirect_url);
+      });
     }).catch((loadError: unknown) => {
       if (!isCurrent()) return;
       const status = loadError instanceof MCPOAuthApiError ? loadError.status : 0;

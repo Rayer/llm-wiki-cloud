@@ -5,6 +5,7 @@ import { recordRequestResponse } from './request-ids';
 
 export type MCPOAuthConsent = {
   transaction_id: string;
+  can_continue?: boolean;
   account_email: string;
   project_id?: string;
   project_name?: string;
@@ -15,6 +16,11 @@ export type MCPOAuthConsent = {
   scope_details?: Array<{ name: string; description: string }>;
   scope: string;
   expires_at: string;
+};
+
+export type MCPOAuthConsentDecision = {
+  redirect_url: string;
+  requires_consent: boolean;
 };
 
 export type MCPOAuthGrant = {
@@ -67,9 +73,9 @@ export function readMCPOAuthConsent(transactionId: string, accessToken: string):
 
 export function decideMCPOAuthConsent(
   transactionId: string,
-  decision: 'allow' | 'deny',
+  decision: 'allow' | 'deny' | 'continue',
   accessToken: string,
-): Promise<{ redirect_url: string }> {
+): Promise<MCPOAuthConsentDecision> {
   return request(`/consent/${encodeURIComponent(transactionId)}/decision`, accessToken, {
     method: 'POST',
     headers: { 'Content-Type': 'application/json' },

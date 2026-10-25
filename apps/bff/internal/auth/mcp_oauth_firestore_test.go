@@ -115,15 +115,21 @@ func TestMCPOAuthFirestoreFlowBindsProjectAndRotatesRefreshTokens(t *testing.T) 
 	environment := fmt.Sprintf("mcp-oauth-env-%d", time.Now().UnixNano())
 	userRef := scopedfirestore.Collection(fs, "users").Doc(userID)
 	projectRef := scopedfirestore.Collection(fs, "projects").Doc(projectDocumentID(userID, projectID))
+	otherProjectID := projectID + "-other"
+	otherProjectRef := scopedfirestore.Collection(fs, "projects").Doc(projectDocumentID(userID, otherProjectID))
 	if _, err := userRef.Set(ctx, UserRecord{Email: "oauth@example.test", Status: AccountActive, AuthVersion: 0}); err != nil {
 		t.Fatal(err)
 	}
 	if _, err := projectRef.Set(ctx, map[string]any{"user_id": userID, "project_id": projectID, "name": "OAuth fixture project"}); err != nil {
 		t.Fatal(err)
 	}
+	if _, err := otherProjectRef.Set(ctx, map[string]any{"user_id": userID, "project_id": otherProjectID, "name": "Other OAuth fixture project"}); err != nil {
+		t.Fatal(err)
+	}
 	t.Cleanup(func() {
 		_, _ = userRef.Delete(ctx)
 		_, _ = projectRef.Delete(ctx)
+		_, _ = otherProjectRef.Delete(ctx)
 		for _, name := range []string{"clients", "transactions", "codes", "grants", "access", "refresh"} {
 			iter := mcpOAuthCollection(fs, environment, name).Documents(ctx)
 			for {
@@ -165,9 +171,13 @@ func TestMCPOAuthFirestoreFlowBindsProjectAndRotatesRefreshTokens(t *testing.T) 
 		t.Fatalf("consent destination = %q, err=%v", consentURL, err)
 	}
 	transactionID := parsedConsent.Query().Get("transaction_id")
-	details, err := service.ConsentDetails(ctx, userID, transactionID)
-	if err != nil || details.ProjectName != "OAuth fixture project" || details.Scope != writeScope {
+	details, err := service.ConsentDetails(ctx, userID, 0, transactionID)
+	if err != nil || details.ProjectName != "OAuth fixture project" || details.Scope != writeScope || details.CanContinue {
 		t.Fatalf("consent details = %+v, err=%v", details, err)
+	}
+	firstContinuation, err := service.ContinueConsent(ctx, userID, 0, transactionID)
+	if err != nil || !firstContinuation.RequiresConsent || firstContinuation.RedirectURL != "" {
+		t.Fatalf("first consent continuation=%+v err=%v, want interaction with no redirect", firstContinuation, err)
 	}
 	decision, err := service.DecideConsent(ctx, userID, 0, transactionID, true)
 	if err != nil {
@@ -188,8 +198,119 @@ func TestMCPOAuthFirestoreFlowBindsProjectAndRotatesRefreshTokens(t *testing.T) 
 		verified.Resource != resource || verified.Environment != "dev" {
 		t.Fatalf("credential verifier must return the actual LWC grant attributes: credential=%+v err=%v", verified, err)
 	}
+	initialGrants, err := service.ListGrants(ctx, userID, projectID)
+	if err != nil || len(initialGrants) != 1 {
+		t.Fatalf("initial grant list=%+v err=%v", initialGrants, err)
+	}
+	initialGrantID := initialGrants[0].ID
 	if _, err := service.ExchangeCode(ctx, client.ClientID, code, client.RedirectURIs[0], verifier, resource); !errors.Is(err, ErrMCPOAuthInvalid) {
 		t.Fatalf("authorization-code replay error = %v, want invalid", err)
+	}
+
+	beginConsent := func(consentClient mcpOAuthClientRecord, consentResource, scope, state string) (string, bool) {
+		t.Helper()
+		consentURL, err := service.BeginAuthorization(ctx, consentClient.ClientID, consentClient.RedirectURIs[0], "code", challenge, "S256", state, consentResource, scope)
+		if err != nil {
+			t.Fatalf("begin repeat authorization for %q: %v", scope, err)
+		}
+		parsed, err := url.Parse(consentURL)
+		if err != nil {
+			t.Fatalf("parse repeat consent URL: %v", err)
+		}
+		transactionID := parsed.Query().Get("transaction_id")
+		details, err := service.ConsentDetails(ctx, userID, 0, transactionID)
+		if err != nil {
+			t.Fatalf("read repeat consent details: %v", err)
+		}
+		return transactionID, details.CanContinue
+	}
+	repeatTransaction, repeatEligible := beginConsent(client, resource, writeScope, "repeat-same-scope-state")
+	if !repeatEligible {
+		t.Fatal("existing same-scope grant was not reported eligible")
+	}
+	repeatDecision, err := service.ContinueConsent(ctx, userID, 0, repeatTransaction)
+	if err != nil || repeatDecision.RequiresConsent {
+		t.Fatalf("same-grant continuation=%+v err=%v", repeatDecision, err)
+	}
+	repeatCallback, err := url.Parse(repeatDecision.RedirectURL)
+	if err != nil || repeatCallback.Query().Get("state") != "repeat-same-scope-state" {
+		t.Fatalf("repeat callback did not preserve state: %q err=%v", repeatDecision.RedirectURL, err)
+	}
+	repeatTokens, err := service.ExchangeCode(ctx, client.ClientID, repeatCallback.Query().Get("code"), client.RedirectURIs[0], verifier, resource)
+	if err != nil || repeatTokens.Scope != writeScope {
+		t.Fatalf("repeat code exchange=%+v err=%v", repeatTokens, err)
+	}
+
+	subsetTransaction, subsetEligible := beginConsent(client, resource, mcpOAuthScope, "repeat-subset-state")
+	if !subsetEligible {
+		t.Fatal("broader grant was not reported eligible for the requested subset")
+	}
+	subsetDecision, err := service.ContinueConsent(ctx, userID, 0, subsetTransaction)
+	if err != nil || subsetDecision.RequiresConsent {
+		t.Fatalf("covered-scope continuation=%+v err=%v", subsetDecision, err)
+	}
+	subsetCallback, err := url.Parse(subsetDecision.RedirectURL)
+	if err != nil || subsetCallback.Query().Get("state") != "repeat-subset-state" {
+		t.Fatalf("subset callback did not preserve state: %q err=%v", subsetDecision.RedirectURL, err)
+	}
+	subsetTokens, err := service.ExchangeCode(ctx, client.ClientID, subsetCallback.Query().Get("code"), client.RedirectURIs[0], verifier, resource)
+	if err != nil || subsetTokens.Scope != mcpOAuthScope {
+		t.Fatalf("subset code exchange widened requested scope: response=%+v err=%v", subsetTokens, err)
+	}
+	subsetCredential, err := service.VerifyAccessToken(ctx, subsetTokens.AccessToken)
+	if err != nil || strings.Join(subsetCredential.Scopes, " ") != mcpOAuthScope {
+		t.Fatalf("subset token capabilities=%v err=%v", subsetCredential.Scopes, err)
+	}
+
+	narrowClient, err := service.RegisterClient(ctx, "Narrow OAuth client", []string{"http://127.0.0.1:43124/narrow-callback"})
+	if err != nil {
+		t.Fatalf("register narrow client: %v", err)
+	}
+	narrowInitialTransaction, narrowInitialEligible := beginConsent(narrowClient, resource, mcpOAuthScope, "narrow-initial-state")
+	if narrowInitialEligible {
+		t.Fatal("client without an existing grant was reported eligible")
+	}
+	narrowInitialDecision, err := service.DecideConsent(ctx, userID, 0, narrowInitialTransaction, true)
+	if err != nil {
+		t.Fatalf("approve narrow-client first consent: %v", err)
+	}
+	narrowCallback, err := url.Parse(narrowInitialDecision.RedirectURL)
+	if err != nil {
+		t.Fatalf("parse narrow-client callback: %v", err)
+	}
+	if _, err := service.ExchangeCode(ctx, narrowClient.ClientID, narrowCallback.Query().Get("code"), narrowClient.RedirectURIs[0], verifier, resource); err != nil {
+		t.Fatalf("exchange narrow-client consent code: %v", err)
+	}
+	expandedTransaction, expandedEligible := beginConsent(narrowClient, resource, writeScope, "scope-expansion-state")
+	if expandedEligible {
+		t.Fatal("query-only grant was reported eligible for added raw-write scope")
+	}
+	expandedDecision, err := service.ContinueConsent(ctx, userID, 0, expandedTransaction)
+	if err != nil || !expandedDecision.RequiresConsent || expandedDecision.RedirectURL != "" {
+		t.Fatalf("added-scope continuation=%+v err=%v, want interaction with no code", expandedDecision, err)
+	}
+
+	otherResource := service.ResourceURL(otherProjectID)
+	foreignResourceTransaction, foreignResourceEligible := beginConsent(client, otherResource, mcpOAuthScope, "foreign-resource-state")
+	if foreignResourceEligible {
+		t.Fatal("grant for another Project resource was reported eligible")
+	}
+	foreignResourceDecision, err := service.ContinueConsent(ctx, userID, 0, foreignResourceTransaction)
+	if err != nil || !foreignResourceDecision.RequiresConsent || foreignResourceDecision.RedirectURL != "" {
+		t.Fatalf("foreign-resource continuation=%+v err=%v", foreignResourceDecision, err)
+	}
+
+	otherClient, err := service.RegisterClient(ctx, "Other OAuth client", []string{"http://127.0.0.1:43125/other-callback"})
+	if err != nil {
+		t.Fatalf("register other client: %v", err)
+	}
+	foreignClientTransaction, foreignClientEligible := beginConsent(otherClient, resource, mcpOAuthScope, "foreign-client-state")
+	if foreignClientEligible {
+		t.Fatal("grant for another client was reported eligible")
+	}
+	foreignClientDecision, err := service.ContinueConsent(ctx, userID, 0, foreignClientTransaction)
+	if err != nil || !foreignClientDecision.RequiresConsent || foreignClientDecision.RedirectURL != "" {
+		t.Fatalf("foreign-client continuation=%+v err=%v", foreignClientDecision, err)
 	}
 
 	authority := NewMCPGrantAuthority(fs, environment, "https://bff.example.test")
@@ -221,8 +342,19 @@ func TestMCPOAuthFirestoreFlowBindsProjectAndRotatesRefreshTokens(t *testing.T) 
 		t.Fatalf("replayed refresh family remained usable: %v", err)
 	}
 	grants, err := service.ListGrants(ctx, userID, projectID)
-	if err != nil || len(grants) != 1 || grants[0].Status != "revoked" {
+	if err != nil || len(grants) != 4 {
 		t.Fatalf("grant after replay = %+v, err=%v", grants, err)
+	}
+	initialGrantRevoked := false
+	for _, grant := range grants {
+		if grant.ID == initialGrantID {
+			initialGrantRevoked = grant.Status == "revoked"
+		} else if grant.Status != "active" {
+			t.Fatalf("independent continuation grant unexpectedly changed status: %+v", grant)
+		}
+	}
+	if !initialGrantRevoked {
+		t.Fatalf("refresh replay did not revoke the initial grant %s: %+v", initialGrantID, grants)
 	}
 }
 
@@ -284,10 +416,13 @@ func TestDailyBriefFixedResourceGrantIsAccountOwnedWithoutProject(t *testing.T) 
 	}
 	consent, _ := url.Parse(consentURL)
 	transactionID := consent.Query().Get("transaction_id")
-	details, err := service.ConsentDetails(ctx, userID, transactionID)
+	details, err := service.ConsentDetails(ctx, userID, 3, transactionID)
 	if err != nil || details.ResourceKind != "fixed" || details.ResourceName != "Daily Brief" || details.ProjectID != "" || details.ProjectName != "" ||
-		details.Resource != resource || details.Scope != "brief:manage" || len(details.ScopeDetails) != 1 || details.ScopeDetails[0].Name != "brief:manage" {
+		details.Resource != resource || details.Scope != "brief:manage" || details.CanContinue || len(details.ScopeDetails) != 1 || details.ScopeDetails[0].Name != "brief:manage" {
 		t.Fatalf("fixed consent details = %+v err=%v", details, err)
+	}
+	if _, err := service.ConsentDetails(ctx, otherUserID, 0, transactionID); !errors.Is(err, ErrMCPOAuthDenied) {
+		t.Fatalf("account switch read error=%v, want transaction identity rejection", err)
 	}
 	decision, err := service.DecideConsent(ctx, userID, 3, transactionID, true)
 	if err != nil {
@@ -304,6 +439,47 @@ func TestDailyBriefFixedResourceGrantIsAccountOwnedWithoutProject(t *testing.T) 
 		t.Fatalf("fixed credential verification=%+v err=%v", verified, err)
 	}
 	gin.SetMode(gin.TestMode)
+	webAccessToken, err := GenerateAccessToken(userID, "user", "fixture-jwt-secret", 3)
+	if err != nil {
+		t.Fatal(err)
+	}
+	consentRouter := gin.New()
+	protectedConsent := consentRouter.Group("/")
+	protectedConsent.Use(JWTAuthWithAccountLookup(config.Config{JWTSecret: "fixture-jwt-secret"}, FirestoreAccountLookup(fs)))
+	protectedConsent.GET("/consent/:transactionID", MCPOAuthConsentDetailsHandler(service))
+	protectedConsent.POST("/consent/:transactionID/decision", MCPOAuthConsentDecisionHandler(service, "fixture-jwt-secret"))
+	serveConsent := func(method, path, body string) *httptest.ResponseRecorder {
+		request := httptest.NewRequest(method, path, strings.NewReader(body))
+		request.Header.Set("Authorization", "Bearer "+webAccessToken)
+		request.Header.Set("Content-Type", "application/json")
+		response := httptest.NewRecorder()
+		consentRouter.ServeHTTP(response, request)
+		return response
+	}
+	repeatURL, err := service.BeginAuthorization(ctx, client.ClientID, client.RedirectURIs[0], "code", challenge, "S256", "brief-repeat-state", resource, "brief:manage")
+	if err != nil {
+		t.Fatalf("begin repeat fixed-resource authorization: %v", err)
+	}
+	repeatConsent, _ := url.Parse(repeatURL)
+	repeatTransactionID := repeatConsent.Query().Get("transaction_id")
+	detailsResponse := serveConsent(http.MethodGet, "/consent/"+repeatTransactionID, "")
+	var repeatDetails MCPOAuthConsentDetails
+	if detailsResponse.Code != http.StatusOK || json.Unmarshal(detailsResponse.Body.Bytes(), &repeatDetails) != nil || !repeatDetails.CanContinue {
+		t.Fatalf("HTTP repeat consent details status=%d body=%s decoded=%+v", detailsResponse.Code, detailsResponse.Body.String(), repeatDetails)
+	}
+	repeatDecisionResponse := serveConsent(http.MethodPost, "/consent/"+repeatTransactionID+"/decision", `{"decision":"continue"}`)
+	var repeatDecisionBody struct {
+		RedirectURL     string `json:"redirect_url"`
+		RequiresConsent bool   `json:"requires_consent"`
+	}
+	if repeatDecisionResponse.Code != http.StatusOK || json.Unmarshal(repeatDecisionResponse.Body.Bytes(), &repeatDecisionBody) != nil ||
+		repeatDecisionBody.RequiresConsent || repeatDecisionBody.RedirectURL == "" {
+		t.Fatalf("HTTP reusable-grant continuation status=%d body=%s decoded=%+v", repeatDecisionResponse.Code, repeatDecisionResponse.Body.String(), repeatDecisionBody)
+	}
+	repeatCallback, err := url.Parse(repeatDecisionBody.RedirectURL)
+	if err != nil || repeatCallback.Query().Get("state") != "brief-repeat-state" || repeatCallback.Query().Get("code") == "" {
+		t.Fatalf("HTTP continuation callback did not preserve state/PKCE code: %q err=%v", repeatDecisionBody.RedirectURL, err)
+	}
 	verifierConfig := config.Config{AuthOAuthResources: resources}
 	validateCaller := func(_ context.Context, token, audience string) (*idtoken.Payload, error) {
 		if token != "fixture-caller-id-token" || audience != resources[1].VerifierAudience {
@@ -423,8 +599,59 @@ func TestDailyBriefFixedResourceGrantIsAccountOwnedWithoutProject(t *testing.T) 
 	if response := verifyHTTP(rotated.AccessToken); response.Code != http.StatusOK {
 		t.Fatalf("restored active grant should accept the still-valid access token HTTP status=%d body=%s", response.Code, response.Body.String())
 	}
+	raceURL, err := service.BeginAuthorization(ctx, client.ClientID, client.RedirectURIs[0], "code", challenge, "S256", "grant-race-state", resource, "brief:manage")
+	if err != nil {
+		t.Fatalf("begin grant-race authorization: %v", err)
+	}
+	raceConsent, _ := url.Parse(raceURL)
+	raceTransactionID := raceConsent.Query().Get("transaction_id")
+	raceDetailsResponse := serveConsent(http.MethodGet, "/consent/"+raceTransactionID, "")
+	var raceDetails MCPOAuthConsentDetails
+	if raceDetailsResponse.Code != http.StatusOK || json.Unmarshal(raceDetailsResponse.Body.Bytes(), &raceDetails) != nil || !raceDetails.CanContinue {
+		t.Fatalf("pre-race eligibility HTTP details status=%d body=%s decoded=%+v", raceDetailsResponse.Code, raceDetailsResponse.Body.String(), raceDetails)
+	}
+	if _, err := userRef.Set(ctx, UserRecord{Email: "brief@example.test", Status: AccountSuspended, AuthVersion: 3}); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := service.ContinueConsent(ctx, userID, 3, raceTransactionID); !errors.Is(err, ErrAccountInactive) {
+		t.Fatalf("suspended-account continuation error=%v, want inactive", err)
+	}
+	if _, err := userRef.Set(ctx, UserRecord{Email: "brief@example.test", Status: AccountActive, AuthVersion: 3}); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := userRef.Update(ctx, []firestore.Update{{Path: "auth_version", Value: int64(4)}}); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := service.ContinueConsent(ctx, userID, 3, raceTransactionID); !errors.Is(err, ErrAccountInactive) {
+		t.Fatalf("stale-version continuation error=%v, want inactive", err)
+	}
+	if _, err := userRef.Update(ctx, []firestore.Update{{Path: "auth_version", Value: int64(3)}}); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := grantRef.Update(ctx, []firestore.Update{{Path: "expires_at", Value: clock.Add(-time.Second)}}); err != nil {
+		t.Fatal(err)
+	}
+	expiredContinuation, err := service.ContinueConsent(ctx, userID, 3, raceTransactionID)
+	if err != nil || !expiredContinuation.RequiresConsent || expiredContinuation.RedirectURL != "" {
+		t.Fatalf("expired-grant continuation=%+v err=%v, want interaction and no code", expiredContinuation, err)
+	}
+	if _, err := grantRef.Update(ctx, []firestore.Update{{Path: "expires_at", Value: originalGrantExpiry}}); err != nil {
+		t.Fatal(err)
+	}
 	if err := service.RevokeGrant(ctx, userID, 3, grants[0].ID); err != nil {
 		t.Fatalf("owner revoke=%v", err)
+	}
+	revokedContinuationResponse := serveConsent(http.MethodPost, "/consent/"+raceTransactionID+"/decision", `{"decision":"continue"}`)
+	var revokedContinuation struct {
+		RedirectURL     string `json:"redirect_url"`
+		RequiresConsent bool   `json:"requires_consent"`
+	}
+	if revokedContinuationResponse.Code != http.StatusOK || json.Unmarshal(revokedContinuationResponse.Body.Bytes(), &revokedContinuation) != nil ||
+		!revokedContinuation.RequiresConsent || revokedContinuation.RedirectURL != "" {
+		t.Fatalf("revoked-grant HTTP continuation status=%d body=%s decoded=%+v, want interaction and no code", revokedContinuationResponse.Code, revokedContinuationResponse.Body.String(), revokedContinuation)
+	}
+	if err := service.RevokeGrant(ctx, userID, 3, grants[0].ID); err != nil {
+		t.Fatalf("idempotent owner revoke=%v", err)
 	}
 	if response := verifyHTTP(rotated.AccessToken); response.Code != http.StatusUnauthorized {
 		t.Fatalf("same still-valid access token after owner revoke HTTP status=%d body=%s", response.Code, response.Body.String())
