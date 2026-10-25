@@ -8,6 +8,7 @@ import (
 	"log/slog"
 	"mime"
 	"net/http"
+	"reflect"
 	"strings"
 
 	"github.com/google/uuid"
@@ -27,6 +28,7 @@ type mcpProjectKeyIdentity struct {
 	projectID    string
 	keyID        string
 	capabilities []string
+	revalidate   func(context.Context) error
 }
 
 const (
@@ -95,11 +97,22 @@ func (h *Handler) MCPHandler() http.Handler {
 			userID: record.UserID, projectID: record.ProjectID, keyID: record.KeyID,
 			capabilities: []string{mcpQueryCapability},
 		}
-		h.serveAuthenticatedMCP(h.mcpSDKHandler(identity.capabilities), identity, w, r)
+		identity.revalidate = func(ctx context.Context) error {
+			fresh, err := h.projectKeyService.AuthenticateWithoutUsage(ctx, token, record.ProjectID)
+			if err != nil {
+				return err
+			}
+			if fresh.UserID != identity.userID || fresh.ProjectID != identity.projectID || fresh.KeyID != identity.keyID {
+				return auth.ErrProjectKeyAccessDenied
+			}
+			return nil
+		}
+		h.serveAuthenticatedMCP(h.mcpSDKHandler(identity), identity, w, r)
 	})
 }
 
-func (h *Handler) mcpSDKHandler(capabilities []string) http.Handler {
+func (h *Handler) mcpSDKHandler(identity mcpProjectKeyIdentity) http.Handler {
+	capabilities := identity.capabilities
 	metadata := h.mcpConfig
 	instructions := ""
 	queryDescription := mcpQueryProjectToolDescription
@@ -111,10 +124,7 @@ func (h *Handler) mcpSDKHandler(capabilities []string) http.Handler {
 		addRawDescription = metadata.ToolDescriptions.AddRaw
 		importURLDescription = metadata.ToolDescriptions.ImportURL
 	}
-	server := mcp.NewServer(&mcp.Implementation{
-		Name:    "llm-wiki-bff",
-		Version: buildinfo.Current().ProductVersion,
-	}, &mcp.ServerOptions{
+	serverOptions := &mcp.ServerOptions{
 		Instructions: instructions,
 		Capabilities: &mcp.ServerCapabilities{Logging: &mcp.LoggingCapabilities{}, Tools: &mcp.ToolCapabilities{}},
 		SetCacheable: func(_ context.Context, request mcp.Request, cacheable *mcp.Cacheable) {
@@ -129,10 +139,33 @@ func (h *Handler) mcpSDKHandler(capabilities []string) http.Handler {
 				if metadata != nil {
 					cacheable.TTLMs = metadata.ToolsListTTLMS
 				}
+			case *mcp.ListResourcesRequest:
+				cacheable.CacheScope = "private"
+			case *mcp.ReadResourceRequest:
+				cacheable.CacheScope = "private"
+				cacheable.TTLMs = 0
 			}
 		},
-	})
+	}
+	var server *mcp.Server
+	if hasMCPCapability(capabilities, mcpQueryCapability) {
+		serverOptions.Capabilities.Resources = &mcp.ResourceCapabilities{Subscribe: true}
+		serverOptions.SubscribeHandler = func(ctx context.Context, request *mcp.SubscribeRequest) error {
+			return h.subscribeMCPPipelineEvents(ctx, request, server)
+		}
+		serverOptions.UnsubscribeHandler = func(context.Context, *mcp.UnsubscribeRequest) error { return nil }
+	}
+	server = mcp.NewServer(&mcp.Implementation{
+		Name:    "llm-wiki-bff",
+		Version: buildinfo.Current().ProductVersion,
+	}, serverOptions)
 	server.AddReceivingMiddleware(mcpRequestObservationMiddleware)
+	if hasMCPCapability(capabilities, mcpQueryCapability) {
+		server.AddResource(&mcp.Resource{
+			URI: pipelineEventsURI(identity.projectID), Name: "pipeline-events", Title: "Project Pipeline events", MIMEType: "application/json",
+			Description: pipelineEventsResourceDescription,
+		}, h.readMCPPipelineEvents)
+	}
 	mcp.AddTool[queryProjectInput, any](server, &mcp.Tool{
 		Name:         "query_project",
 		Title:        "Query this project",
@@ -176,7 +209,7 @@ func (h *Handler) mcpSDKHandler(capabilities []string) http.Handler {
 }
 
 func (h *Handler) mcpAuthenticatedHandler(identity mcpProjectKeyIdentity) http.Handler {
-	sdkAuthenticated := h.mcpSDKHandler(identity.capabilities)
+	sdkAuthenticated := h.mcpSDKHandler(identity)
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		h.serveAuthenticatedMCP(sdkAuthenticated, identity, w, r)
 	})
@@ -184,7 +217,9 @@ func (h *Handler) mcpAuthenticatedHandler(identity mcpProjectKeyIdentity) http.H
 
 func (h *Handler) serveAuthenticatedMCP(sdkAuthenticated http.Handler, identity mcpProjectKeyIdentity, w http.ResponseWriter, r *http.Request) {
 	ctx := context.WithValue(r.Context(), mcpProjectKeyIdentityContextKey{}, identity)
-	observed := &mcpResponseObservationWriter{ResponseWriter: w}
+	control := newMCPListenControl(h.eventTiming())
+	ctx = context.WithValue(ctx, mcpListenControlContextKey{}, control)
+	observed := &mcpResponseObservationWriter{ResponseWriter: w, listen: control}
 	sdkAuthenticated.ServeHTTP(observed, r.WithContext(ctx))
 	if observed.hasProtocolError() {
 		// The pinned SDK may turn a parameter decode failure into a JSON-RPC
@@ -198,12 +233,24 @@ const maxMCPProtocolResponseObservation = 64 << 10
 
 type mcpResponseObservationWriter struct {
 	http.ResponseWriter
+	listen   *mcpListenControl
 	body     bytes.Buffer
 	complete bool
 }
 
 func (w *mcpResponseObservationWriter) Write(p []byte) (int, error) {
+	if w.listen != nil && w.listen.isActive() {
+		if err := w.listen.setWriteDeadline(w.ResponseWriter); err != nil {
+			return 0, err
+		}
+	}
 	n, err := w.ResponseWriter.Write(p)
+	if err != nil && w.listen != nil {
+		w.listen.fail(err)
+	}
+	if w.listen != nil && err == nil {
+		w.listen.observeWrite(p)
+	}
 	mediaType, _, mediaTypeErr := mime.ParseMediaType(w.Header().Get("Content-Type"))
 	if mediaTypeErr != nil || mediaType != "application/json" {
 		w.complete = true
@@ -222,14 +269,43 @@ func (w *mcpResponseObservationWriter) Write(p []byte) (int, error) {
 func (w *mcpResponseObservationWriter) Unwrap() http.ResponseWriter { return w.ResponseWriter }
 
 func (w *mcpResponseObservationWriter) FlushError() error {
-	if flusher, ok := w.ResponseWriter.(interface{ FlushError() error }); ok {
-		return flusher.FlushError()
+	if w.listen != nil && w.listen.isActive() {
+		if err := w.listen.setWriteDeadline(w.ResponseWriter); err != nil {
+			return err
+		}
 	}
-	if flusher, ok := w.ResponseWriter.(http.Flusher); ok {
-		flusher.Flush()
-		return nil
+	err := flushResponseWriter(w.ResponseWriter)
+	if err != nil {
+		if w.listen != nil {
+			w.listen.fail(err)
+		}
+		return err
 	}
-	return http.ErrNotSupported
+	if w.listen != nil {
+		w.listen.acknowledgeAfterFlush()
+	}
+	return nil
+}
+
+func flushResponseWriter(writer http.ResponseWriter) error {
+	var headers []interface{ WriteHeaderNow() }
+	for current := writer; current != nil; {
+		if flusher, ok := current.(interface{ FlushError() error }); ok {
+			for _, header := range headers {
+				header.WriteHeaderNow()
+			}
+			return flusher.FlushError()
+		}
+		unwrapper, ok := current.(interface{ Unwrap() http.ResponseWriter })
+		if !ok {
+			break
+		}
+		if header, ok := current.(interface{ WriteHeaderNow() }); ok {
+			headers = append(headers, header)
+		}
+		current = unwrapper.Unwrap()
+	}
+	return http.NewResponseController(writer).Flush()
 }
 
 func (w *mcpResponseObservationWriter) Flush() { _ = w.FlushError() }
@@ -263,6 +339,16 @@ func (w *mcpResponseObservationWriter) hasProtocolError() bool {
 
 func mcpRequestObservationMiddleware(next mcp.MethodHandler) mcp.MethodHandler {
 	return func(ctx context.Context, method string, request mcp.Request) (mcp.Result, error) {
+		if method == "subscriptions/listen" {
+			if control, ok := ctx.Value(mcpListenControlContextKey{}).(*mcpListenControl); ok && control != nil {
+				var cancel context.CancelFunc
+				ctx, cancel = control.activate(ctx)
+				defer func() {
+					cancel()
+					control.deactivate()
+				}()
+			}
+		}
 		envelopeID := observability.RequestIDFromContext(ctx)
 		requestID := uuid.NewString()
 		if strings.HasPrefix(method, "notifications/") && envelopeID != "" {
@@ -299,7 +385,7 @@ func mcpRequestObservationMiddleware(next mcp.MethodHandler) mcp.MethodHandler {
 				callResult.StructuredContent = map[string]any{"error": failure.message, "code": failure.code, "diagnostic_id": diagnostic.id}
 			}
 		}
-		if result != nil {
+		if !nilMCPResult(result) {
 			metadata := result.GetMeta()
 			withRequestID := make(map[string]any, len(metadata)+1)
 			for key, value := range metadata {
@@ -327,6 +413,19 @@ func mcpRequestObservationMiddleware(next mcp.MethodHandler) mcp.MethodHandler {
 			)
 		}
 		return result, err
+	}
+}
+
+func nilMCPResult(result mcp.Result) bool {
+	if result == nil {
+		return true
+	}
+	value := reflect.ValueOf(result)
+	switch value.Kind() {
+	case reflect.Chan, reflect.Func, reflect.Interface, reflect.Map, reflect.Pointer, reflect.Slice:
+		return value.IsNil()
+	default:
+		return false
 	}
 }
 

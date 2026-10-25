@@ -66,6 +66,7 @@ type process struct {
 
 type processResult struct {
 	executionID, userID, projectID, beforeID, reservationID, requestID string
+	actualStartedAt                                                    time.Time
 	childSucceeded                                                     bool
 	spawnFailed                                                        bool
 	childErr                                                           error
@@ -736,13 +737,45 @@ func (m *Manager) Start(ctx context.Context, userID, projectID, stage string, cl
 		}
 		return "", fmt.Errorf("start local worker: %w", err)
 	}
-	go m.wait(p, executionID, userID, projectID, beforeID, reservationID, requestID)
+	actualStartedAt := time.Now().UTC()
+	markerCtx, cancelMarker := context.WithTimeout(ctx, 5*time.Second)
+	markerErr := persistActualStart(markerCtx, executionRef, actualStartedAt)
+	cancelMarker()
+	if markerErr != nil {
+		// The worker is already running; finish carries this captured marker into
+		// its terminal transaction if this immediate write cannot be persisted.
+		log.Printf("local pipeline actual-start marker deferred for %s", executionID)
+	}
+	go m.wait(p, executionID, userID, projectID, beforeID, reservationID, requestID, actualStartedAt)
 	return executionID, nil
 }
 
-func (m *Manager) wait(p *process, executionID, userID, projectID, beforeID, reservationID, requestID string) {
+func persistActualStart(ctx context.Context, executionRef *cloudfirestore.DocumentRef, actualStartedAt time.Time) error {
+	var lastErr error
+	for attempt, backoff := range []time.Duration{0, 100 * time.Millisecond, 200 * time.Millisecond} {
+		if attempt > 0 {
+			timer := time.NewTimer(backoff)
+			select {
+			case <-ctx.Done():
+				timer.Stop()
+				return ctx.Err()
+			case <-timer.C:
+			}
+		}
+		if err := ctx.Err(); err != nil {
+			return err
+		}
+		_, lastErr = executionRef.Update(ctx, []cloudfirestore.Update{{Path: "actual_started_at", Value: actualStartedAt}})
+		if lastErr == nil {
+			return nil
+		}
+	}
+	return lastErr
+}
+
+func (m *Manager) wait(p *process, executionID, userID, projectID, beforeID, reservationID, requestID string, actualStartedAt time.Time) {
 	err := p.cmd.Wait()
-	result := processResult{executionID: executionID, userID: userID, projectID: projectID, beforeID: beforeID, reservationID: reservationID, requestID: requestID, childSucceeded: err == nil, childErr: err}
+	result := processResult{executionID: executionID, userID: userID, projectID: projectID, beforeID: beforeID, reservationID: reservationID, requestID: requestID, actualStartedAt: actualStartedAt, childSucceeded: err == nil, childErr: err}
 	m.savePendingResult(result)
 	ctx, cancel := context.WithTimeout(context.Background(), 20*time.Second)
 	defer cancel()
@@ -818,6 +851,9 @@ func (m *Manager) finish(ctx context.Context, result processResult) (resultErr e
 			{Path: "exit_code", Value: processExitCode(result.childErr)},
 			{Path: "worker_result_observed", Value: true},
 			{Path: "quota_settlement", Value: settlement},
+		}
+		if !result.actualStartedAt.IsZero() && currentData["actual_started_at"] == nil {
+			transactionUpdates = append(transactionUpdates, cloudfirestore.Update{Path: "actual_started_at", Value: result.actualStartedAt})
 		}
 		if currentData["finished_at"] == nil {
 			transactionUpdates = append(transactionUpdates, cloudfirestore.Update{Path: "finished_at", Value: transactionFinished})

@@ -92,6 +92,128 @@ type ScheduledPipelineStatus struct {
 	LastResult           string     `json:"last_result,omitempty"`
 }
 
+// PipelineEventCandidate is a Project-scoped durable intent identity that can
+// supplement a bounded Cloud Run execution-list scan.
+type PipelineEventCandidate struct {
+	ReservationID string
+	AttemptID     string
+	ExecutionID   string
+	Trigger       pipelinequota.Trigger
+	IntentStatus  string
+}
+
+// PipelineEventCandidateSet contains at most the active intent, last accepted
+// intent, and last scheduled attempt. Unresolved counts preserve coverage when
+// a scoped pointer cannot be validated without exposing foreign data.
+type PipelineEventCandidateSet struct {
+	Known           []PipelineEventCandidate
+	Pending         []PipelineEventCandidate
+	UnresolvedCount int
+}
+
+// LoadPipelineEventCandidates reads only the authenticated user's quota and
+// scheduled status documents, then validates each pointed reservation before
+// returning its execution identity.
+func LoadPipelineEventCandidates(ctx context.Context, fs *firestore.Client, userID, projectID string) (PipelineEventCandidateSet, error) {
+	result := PipelineEventCandidateSet{}
+	quotaSnapshot, err := Collection(fs, pipelineQuotaCollection).Doc(QuotaDocID(userID, projectID)).Get(ctx)
+	if err != nil && status.Code(err) != codes.NotFound {
+		return result, err
+	}
+	reservationIDs := make([]string, 0, 2)
+	if status.Code(err) != codes.NotFound {
+		data := quotaSnapshot.Data()
+		reservationIDs = append(reservationIDs,
+			strings.TrimSpace(stringFromData(data, "active_reservation_id")),
+			strings.TrimSpace(stringFromData(data, "last_pipeline_intent_id")),
+		)
+	}
+	seenReservations := make(map[string]struct{}, 3)
+	seenExecutions := make(map[string]struct{}, 3)
+	addReservation := func(reservationID, requiredAttempt string, requiredTrigger pipelinequota.Trigger, requiredExecution string) (PipelineEventCandidate, bool, error) {
+		if reservationID == "" {
+			return PipelineEventCandidate{}, false, nil
+		}
+		_, duplicate := seenReservations[reservationID]
+		reservation, exists, err := GetQuotaReservationFromFirestore(ctx, fs, reservationID)
+		if err != nil {
+			return PipelineEventCandidate{}, false, err
+		}
+		if !exists || reservation.UserID != userID || reservation.ProjectID != projectID || reservation.IntentStatus == "" ||
+			(requiredAttempt != "" && reservation.AttemptID != requiredAttempt) ||
+			(requiredTrigger != "" && reservation.Trigger != requiredTrigger) ||
+			(requiredExecution != "" && reservation.ExecutionID != requiredExecution) {
+			result.UnresolvedCount++
+			return PipelineEventCandidate{}, false, nil
+		}
+		candidate := PipelineEventCandidate{
+			ReservationID: reservation.ID, AttemptID: reservation.AttemptID,
+			ExecutionID: reservation.ExecutionID, Trigger: reservation.Trigger,
+			IntentStatus: reservation.IntentStatus,
+		}
+		if duplicate {
+			return candidate, false, nil
+		}
+		seenReservations[reservationID] = struct{}{}
+		return candidate, true, nil
+	}
+	for _, reservationID := range reservationIDs {
+		candidate, valid, err := addReservation(reservationID, "", "", "")
+		if err != nil {
+			return result, err
+		}
+		if !valid {
+			continue
+		}
+		if candidate.ExecutionID == "" {
+			result.Pending = append(result.Pending, candidate)
+			continue
+		}
+		if _, duplicate := seenExecutions[candidate.ExecutionID]; !duplicate {
+			seenExecutions[candidate.ExecutionID] = struct{}{}
+			result.Known = append(result.Known, candidate)
+		}
+	}
+
+	scheduledSnapshot, err := Collection(fs, pipelineScheduledStatusCollection).Doc(QuotaDocID(userID, projectID)).Get(ctx)
+	if err != nil && status.Code(err) != codes.NotFound {
+		return result, err
+	}
+	if status.Code(err) != codes.NotFound {
+		data := scheduledSnapshot.Data()
+		attemptID := strings.TrimSpace(stringFromData(data, "last_attempt_id"))
+		executionID := strings.TrimSpace(stringFromData(data, "last_execution_id"))
+		if attemptID != "" {
+			if data["user_id"] != userID || data["project_id"] != projectID {
+				result.UnresolvedCount++
+			} else {
+				candidate, valid, err := addReservation(attemptID, attemptID, pipelinequota.TriggerScheduledDaily, executionID)
+				if err != nil {
+					return result, err
+				}
+				if valid && candidate.ExecutionID != executionID {
+					result.UnresolvedCount++
+					valid = false
+				}
+				if valid {
+					if candidate.ExecutionID == "" {
+						result.Pending = append(result.Pending, candidate)
+					} else if _, duplicate := seenExecutions[candidate.ExecutionID]; !duplicate {
+						seenExecutions[candidate.ExecutionID] = struct{}{}
+						result.Known = append(result.Known, candidate)
+					}
+				}
+			}
+		}
+	}
+	return result, nil
+}
+
+func stringFromData(data map[string]interface{}, key string) string {
+	value, _ := data[key].(string)
+	return value
+}
+
 // QuotaDocID returns the pipeline_quota document ID for a user/project pair.
 func QuotaDocID(userID, projectID string) string {
 	return fmt.Sprintf("%s__%s", userID, projectID)

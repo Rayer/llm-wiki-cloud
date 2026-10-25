@@ -41,6 +41,8 @@ type Handler struct {
 	expander             *llm.QueryExpander
 	queryExecutor        query.Executor
 	localPipeline        LocalPipelineExecutor
+	pipelineEventSource  func(context.Context, string, string) (pipelineEventSnapshot, error)
+	pipelineEventTiming  *pipelineEventTiming
 	profileRepository    profileRepository
 
 	httpClient                   *http.Client

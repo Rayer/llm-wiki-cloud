@@ -140,11 +140,44 @@ func TestMCPProjectOAuthRejectsConflictingProjectHeaderBeforeSDK(t *testing.T) {
 
 	root := localfs.New(t.TempDir())
 	handler := New(root, fs, nil, nil, nil, nil)
+	handler.pipelineEventSource = func(_ context.Context, gotUserID, gotProjectID string) (pipelineEventSnapshot, error) {
+		if gotUserID != userID || gotProjectID != projectID {
+			return pipelineEventSnapshot{}, fmt.Errorf("OAuth Pipeline source scope mismatch: %s/%s", gotUserID, gotProjectID)
+		}
+		return testEventSnapshot(gotUserID, gotProjectID, "oauth-fixture-revision")
+	}
 	executor := &countingMCPQueryExecutor{}
 	handler.SetQueryExecutor(executor)
 	gin.SetMode(gin.TestMode)
 	router := gin.New()
 	router.Any("/mcp/projects/:projectID", handler.MCPProjectOAuthHandler(environment, resourceOrigin))
+	oauthWireRequest := func(token, body string) *httptest.ResponseRecorder {
+		t.Helper()
+		request := httptest.NewRequest(http.MethodPost, "/mcp/projects/"+projectID, strings.NewReader(body))
+		request.Header.Set("Authorization", "Bearer "+token)
+		request.Header.Set("Content-Type", "application/json")
+		request.Header.Set("Accept", "application/json, text/event-stream")
+		request.Header.Set("MCP-Protocol-Version", "2026-07-28")
+		var envelope struct {
+			Method string `json:"method"`
+		}
+		if err := json.Unmarshal([]byte(body), &envelope); err == nil {
+			request.Header.Set("MCP-Method", envelope.Method)
+			if envelope.Method == "resources/read" {
+				var params struct {
+					Params struct {
+						URI string `json:"uri"`
+					} `json:"params"`
+				}
+				if err := json.Unmarshal([]byte(body), &params); err == nil {
+					request.Header.Set("MCP-Name", params.Params.URI)
+				}
+			}
+		}
+		response := httptest.NewRecorder()
+		router.ServeHTTP(response, request)
+		return response
+	}
 	for _, test := range []struct {
 		name       string
 		projectID  string
@@ -296,6 +329,82 @@ func TestMCPProjectOAuthRejectsConflictingProjectHeaderBeforeSDK(t *testing.T) {
 	readOnlyTokens, err := service.ExchangeCode(ctx, readOnlyClient.ClientID, readOnlyCallback.Query().Get("code"), readOnlyClient.RedirectURIs[0], readOnlyVerifier, resource)
 	if err != nil {
 		t.Fatalf("exchange query-only code: %v", err)
+	}
+	modernMeta := `_meta":{"io.modelcontextprotocol/protocolVersion":"2026-07-28","io.modelcontextprotocol/clientInfo":{"name":"oauth-event-fixture","version":"1"},"io.modelcontextprotocol/clientCapabilities":{}}`
+	resourceList := oauthWireRequest(readOnlyTokens.AccessToken, `{"jsonrpc":"2.0","id":41,"method":"resources/list","params":{"`+modernMeta+`}}`)
+	resourceListResult := mcpMetadataResult(t, resourceList)
+	resources, ok := resourceListResult["resources"].([]any)
+	if !ok || len(resources) != 1 {
+		t.Fatalf("OAuth query-only resources/list=%#v", resourceListResult)
+	}
+	resourceEntry := resources[0].(map[string]any)
+	wantEventURI := pipelineEventsURI(projectID)
+	if resourceEntry["uri"] != wantEventURI || resourceEntry["name"] != "pipeline-events" || resourceEntry["title"] != "Project Pipeline events" || resourceEntry["mimeType"] != "application/json" ||
+		!strings.Contains(resourceEntry["description"].(string), "wake-up") || !strings.Contains(resourceEntry["description"].(string), "reconnect") {
+		t.Fatalf("OAuth Pipeline resource contract=%#v", resourceEntry)
+	}
+	if resourceListResult["cacheScope"] != "private" {
+		t.Fatalf("OAuth resources/list cache scope=%#v, want private", resourceListResult["cacheScope"])
+	}
+	resourceRead := oauthWireRequest(readOnlyTokens.AccessToken, `{"jsonrpc":"2.0","id":42,"method":"resources/read","params":{"uri":"`+wantEventURI+`","`+modernMeta+`}}`)
+	resourceReadResult := mcpMetadataResult(t, resourceRead)
+	contents, ok := resourceReadResult["contents"].([]any)
+	if !ok || len(contents) != 1 || !strings.Contains(contents[0].(map[string]any)["text"].(string), "oauth-fixture-revision") ||
+		resourceReadResult["cacheScope"] != "private" || resourceReadResult["ttlMs"] != float64(0) {
+		t.Fatalf("OAuth query-only Pipeline resource read=%#v", resourceReadResult)
+	}
+	foreignResourceRead := oauthWireRequest(readOnlyTokens.AccessToken, `{"jsonrpc":"2.0","id":43,"method":"resources/read","params":{"uri":"`+pipelineEventsURI("foreign-project")+`","`+modernMeta+`}}`)
+	if !mcpMetadataHasError(foreignResourceRead) {
+		t.Fatalf("OAuth query-only grant read a foreign Project resource: %s", foreignResourceRead.Body.String())
+	}
+	_, projectKey, _, err := handler.projectKeyService.Create(ctx, userID, projectID, "Pipeline event test key")
+	if err != nil || projectKey == "" {
+		t.Fatalf("create scoped Project key: err=%v", err)
+	}
+	keyWireRequest := func(body string) *httptest.ResponseRecorder {
+		t.Helper()
+		request := httptest.NewRequest(http.MethodPost, "/mcp", strings.NewReader(body))
+		request.Header.Set("Authorization", "Bearer "+projectKey)
+		request.Header.Set("X-Project-ID", projectID)
+		request.Header.Set("Content-Type", "application/json")
+		request.Header.Set("Accept", "application/json, text/event-stream")
+		request.Header.Set("MCP-Protocol-Version", "2026-07-28")
+		var envelope struct {
+			Method string `json:"method"`
+		}
+		if err := json.Unmarshal([]byte(body), &envelope); err == nil {
+			request.Header.Set("MCP-Method", envelope.Method)
+			if envelope.Method == "resources/read" {
+				var params struct {
+					Params struct {
+						URI string `json:"uri"`
+					} `json:"params"`
+				}
+				if err := json.Unmarshal([]byte(body), &params); err == nil {
+					request.Header.Set("MCP-Name", params.Params.URI)
+				}
+			}
+		}
+		response := httptest.NewRecorder()
+		handler.MCPHandler().ServeHTTP(response, request)
+		return response
+	}
+	keyResourceList := keyWireRequest(`{"jsonrpc":"2.0","id":44,"method":"resources/list","params":{"` + modernMeta + `}}`)
+	keyResourceResult := mcpMetadataResult(t, keyResourceList)
+	keyResources, ok := keyResourceResult["resources"].([]any)
+	if !ok || len(keyResources) != 1 || keyResources[0].(map[string]any)["uri"] != wantEventURI ||
+		keyResources[0].(map[string]any)["name"] != "pipeline-events" || keyResources[0].(map[string]any)["title"] != "Project Pipeline events" ||
+		keyResourceResult["cacheScope"] != "private" {
+		t.Fatalf("Project-key resources/list=%#v", keyResourceResult)
+	}
+	keyRead := keyWireRequest(`{"jsonrpc":"2.0","id":46,"method":"resources/read","params":{"uri":"` + wantEventURI + `","` + modernMeta + `}}`)
+	keyReadResult := mcpMetadataResult(t, keyRead)
+	if keyReadResult["cacheScope"] != "private" || keyReadResult["ttlMs"] != float64(0) {
+		t.Fatalf("Project-key resources/read cache metadata=%#v", keyReadResult)
+	}
+	keyForeignRead := keyWireRequest(`{"jsonrpc":"2.0","id":45,"method":"resources/read","params":{"uri":"` + pipelineEventsURI("foreign-project") + `","` + modernMeta + `}}`)
+	if !mcpMetadataHasError(keyForeignRead) {
+		t.Fatalf("Project key read a foreign Project resource: %s", keyForeignRead.Body.String())
 	}
 	listRequest := httptest.NewRequest(http.MethodPost, "/mcp/projects/"+projectID, strings.NewReader(`{"jsonrpc":"2.0","id":21,"method":"tools/list","params":{}}`))
 	listRequest.Header.Set("Authorization", "Bearer "+readOnlyTokens.AccessToken)

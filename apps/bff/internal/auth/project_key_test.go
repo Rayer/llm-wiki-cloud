@@ -29,6 +29,17 @@ type memoryProjectKeyStore struct {
 	revokeCalls         int
 }
 
+type countingProjectKeyUsageStore struct{ calls int }
+
+func (s *countingProjectKeyUsageStore) Record(context.Context, projectKeyUsageRecord) error {
+	s.calls++
+	return nil
+}
+
+func (*countingProjectKeyUsageStore) List(context.Context, string, string, []string) (map[string]projectKeyUsageStatus, error) {
+	return nil, nil
+}
+
 func newMemoryProjectKeyStore() *memoryProjectKeyStore {
 	return &memoryProjectKeyStore{records: make(map[string]ProjectKeyRecord)}
 }
@@ -207,6 +218,39 @@ func TestProjectKeyCreateAuthenticateListAndRevoke(t *testing.T) {
 	encoded, _ = json.Marshal(revoked)
 	if strings.Contains(string(encoded), "secret_hash") || strings.Contains(string(encoded), secret) {
 		t.Fatalf("revoke response leaked a credential: %s", encoded)
+	}
+}
+
+func TestProjectKeyLongLivedRevalidationDoesNotWriteUsage(t *testing.T) {
+	store := newMemoryProjectKeyStore()
+	service := testProjectKeyService(store)
+	usage := &countingProjectKeyUsageStore{}
+	service.usage = usage
+	_, token, _, err := service.Create(context.Background(), "owner", "project-a", "stream")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := service.Authenticate(context.Background(), token, "project-a"); err != nil {
+		t.Fatal(err)
+	}
+	if usage.calls != 1 {
+		t.Fatalf("initial Authenticate usage writes=%d, want 1", usage.calls)
+	}
+	if _, err := service.AuthenticateWithoutUsage(context.Background(), token, "project-a"); err != nil {
+		t.Fatal(err)
+	}
+	if usage.calls != 1 {
+		t.Fatalf("AuthenticateWithoutUsage wrote usage; calls=%d", usage.calls)
+	}
+	keyID, _, _ := parseProjectKey(token)
+	record := store.records[keyID]
+	record.State = "revoked"
+	store.records[keyID] = record
+	if _, err := service.AuthenticateWithoutUsage(context.Background(), token, "project-a"); !errors.Is(err, ErrProjectKeyInvalid) {
+		t.Fatalf("revoked key revalidation error=%v", err)
+	}
+	if usage.calls != 1 {
+		t.Fatalf("failed revalidation wrote usage; calls=%d", usage.calls)
 	}
 }
 

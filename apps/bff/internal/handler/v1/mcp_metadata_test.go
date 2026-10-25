@@ -115,7 +115,7 @@ func TestMCPMetadataPrivateCacheHintsWithControlledClockAndAuthSeparation(t *tes
 			http.Error(w, "synthetic auth denied", http.StatusUnauthorized)
 			return
 		}
-		h.serveAuthenticatedMCP(h.mcpSDKHandler(identity.capabilities), identity, w, r)
+		h.serveAuthenticatedMCP(h.mcpSDKHandler(identity), identity, w, r)
 	}))
 	defer server.Close()
 

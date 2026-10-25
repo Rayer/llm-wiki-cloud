@@ -440,7 +440,7 @@ func serveMCPRequest(t *testing.T, h *Handler, identity mcpProjectKeyIdentity, b
 	request.Header.Add("Accept", "application/json")
 	request.Header.Add("Accept", "text/event-stream")
 	request.Header.Set("MCP-Protocol-Version", "2025-11-25")
-	h.serveAuthenticatedMCP(h.mcpSDKHandler(identity.capabilities), identity, recorder, request)
+	h.serveAuthenticatedMCP(h.mcpSDKHandler(identity), identity, recorder, request)
 	if recorder.Code != http.StatusOK {
 		t.Fatalf("MCP status=%d body=%s", recorder.Code, recorder.Body.String())
 	}
