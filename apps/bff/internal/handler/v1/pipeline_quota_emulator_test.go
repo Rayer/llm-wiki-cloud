@@ -928,6 +928,213 @@ func TestPipelineIntentFreezesInputAndRetryUsesSameSnapshot(t *testing.T) {
 	}
 }
 
+func TestLWC427FullIntentRepreparesOnlyStaleActiveGuidance(t *testing.T) {
+	if !requireLoopbackEmulator(t, "FIRESTORE_EMULATOR_HOST") {
+		t.Skip("requires loopback Firestore emulator")
+	}
+	const project, database = "llm-wiki-cloud", "llm-wiki-cloud-local"
+	unique := fmt.Sprintf("%d", time.Now().UnixNano())
+	userID, scope := "lwc427-owner-"+unique, "lwc427-mode-"+unique
+	t.Setenv("GOOGLE_CLOUD_PROJECT", project)
+	t.Setenv("FIRESTORE_DATABASE_ID", database)
+	t.Setenv("LOCAL_CLOUD_SCOPE", scope)
+	client, err := scopedfirestore.NewClientWithDatabaseAndScope(project, database, "", "", scope)
+	if err != nil {
+		t.Fatalf("create loopback Firestore client: %v", err)
+	}
+	ctx, cancel := context.WithTimeout(context.Background(), 45*time.Second)
+	defer cancel()
+	t.Cleanup(func() {
+		if err := client.Close(); err != nil {
+			t.Errorf("close loopback Firestore client: %v", err)
+		}
+	})
+	limits := pipelinequota.Limits{DailyLimit: 5, Cooldown: time.Hour, MinNewRaw: 1}
+	oldRequirements := []ProfileRequirement{{ID: "r1", Text: "saved V1"}}
+	newRequirements := []ProfileRequirement{{ID: "r2", Text: "saved V2 in Traditional Chinese"}}
+	oldDigest := profileRequirementsDigest(oldRequirements)
+	oldArtifact, oldGuidance, err := profileartifacts.EncodeGuidance(profileartifacts.GenerationGuidanceEnvelope{
+		SchemaVersion: profileartifacts.GuidanceSchema, InputDigest: oldDigest,
+		SourceContentGeneration: "generation-v1", CanonicalConceptsDigest: strings.Repeat("a", 64),
+		ModelVersion: "controlled-v1", PromptVersion: "guidance-v1", CompileGuidance: "Use V1 guidance.",
+	})
+	if err != nil || len(oldArtifact) == 0 {
+		t.Fatalf("encode old active guidance: ref=%+v err=%v", oldGuidance, err)
+	}
+	type scenario struct {
+		name, projectID       string
+		mode                  pipelinequota.ExecutionMode
+		saved                 []ProfileRequirement
+		wantStatus            string
+		wantKind              string
+		missingSourceRevision bool
+	}
+	for _, tc := range []scenario{
+		{name: "full saved V2 with active V1 prepares", projectID: "full-stale-" + unique, mode: pipelinequota.ModeFull, saved: newRequirements, wantStatus: "preparing", wantKind: ""},
+		{name: "full saved V1 keeps matching active", projectID: "full-match-" + unique, mode: pipelinequota.ModeFull, saved: oldRequirements, wantStatus: "ready", wantKind: "active"},
+		{name: "full matching active without source revision prepares", projectID: "full-missing-source-" + unique, mode: pipelinequota.ModeFull, saved: oldRequirements, wantStatus: "preparing", wantKind: "", missingSourceRevision: true},
+		{name: "incremental keeps existing active behavior", projectID: "incremental-stale-" + unique, mode: pipelinequota.ModeIncremental, saved: newRequirements, wantStatus: "ready", wantKind: "active"},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			reservationID := "intent-" + tc.projectID
+			stateRef := scopedfirestore.Collection(client.Raw(), "projects").Doc(userID + "_" + tc.projectID).Collection("profile").Doc("state")
+			candidateID := "candidate-v1"
+			candidateRef := stateRef.Collection("candidates").Doc(candidateID)
+			reservationRef := scopedfirestore.Collection(client.Raw(), "pipeline_quota_reservations").Doc(reservationID)
+			quotaRef := scopedfirestore.Collection(client.Raw(), "pipeline_quota").Doc(scopedfirestore.QuotaDocID(userID, tc.projectID))
+			t.Cleanup(func() {
+				for _, ref := range []*cloudfirestore.DocumentRef{stateRef, candidateRef, reservationRef, quotaRef} {
+					if _, err := ref.Delete(context.Background()); err != nil && status.Code(err) != codes.NotFound {
+						t.Errorf("delete owned full-intent fixture %s: %v", ref.Path, err)
+					}
+				}
+			})
+			savedDigest := profileRequirementsDigest(tc.saved)
+			requirementsWire := make([]map[string]interface{}, len(tc.saved))
+			for i, requirement := range tc.saved {
+				requirementsWire[i] = map[string]interface{}{"id": requirement.ID, "text": requirement.Text}
+			}
+			if _, err := stateRef.Set(ctx, map[string]interface{}{
+				"project_id": tc.projectID, "revision": int64(2), "requirements": requirementsWire,
+				"active": map[string]interface{}{"candidate_id": candidateID, "content_generation": "generation-v1", "guidance_revision": oldGuidance.Revision},
+			}); err != nil {
+				t.Fatalf("seed saved Profile and active V1: %v", err)
+			}
+			candidate := map[string]interface{}{
+				"candidate_id": candidateID, "source": "manual", "content_generation": "generation-v1",
+				"requirements_digest": oldDigest, "guidance": oldGuidance,
+			}
+			if !tc.missingSourceRevision {
+				candidate["base_revision"] = int64(1)
+			}
+			if _, err := candidateRef.Set(ctx, candidate); err != nil {
+				t.Fatalf("seed active V1 candidate: %v", err)
+			}
+			_, reserved, err := client.ReserveQuotaForPipelineIntent(ctx, reservationID, userID, tc.projectID, limits, time.Now().UTC(), tc.mode, false, false, 1, 0, 0)
+			if err != nil || !reserved {
+				t.Fatalf("reserve %s: reserved=%t err=%v", tc.mode, reserved, err)
+			}
+			intent, exists, err := client.GetPipelineIntent(ctx, userID, tc.projectID, reservationID)
+			if err != nil || !exists || intent.IntentStatus != tc.wantStatus || intent.ConsumedGuidanceKind != tc.wantKind {
+				t.Fatalf("reserved intent=%+v exists=%t err=%v; want status=%s kind=%q", intent, exists, err, tc.wantStatus, tc.wantKind)
+			}
+			if intent.ProfileRequirements == nil || lwc427QuotaRequirementsDigest(intent.ProfileRequirements) != savedDigest {
+				t.Fatalf("intent requirements=%+v digest=%s; want frozen digest %s", intent.ProfileRequirements, intent.RequirementsDigest, savedDigest)
+			}
+			if tc.mode == pipelinequota.ModeFull && savedDigest != oldDigest && (intent.ConsumedActiveGuidance != nil || intent.ConsumedGuidanceRevision != "" || intent.ActiveCandidateID != "") {
+				t.Fatalf("stale active V1 leaked into full V2 reservation: %+v", intent)
+			}
+			if tc.mode == pipelinequota.ModeFull && intent.IntentStatus == "preparing" {
+				if intent.ConsumedActiveGuidance != nil || intent.ConsumedGuidanceRevision != "" || intent.ConsumedGuidanceSourceRevision != 0 || intent.ActiveCandidateID != "" {
+					t.Fatalf("invalid or unmatched active ref remained on preparing full intent: %+v", intent)
+				}
+				if _, claimed, err := client.BeginPipelineIntentInvocation(ctx, reservationID, reservationID, userID, tc.projectID); err != nil || claimed {
+					t.Fatalf("invalid/unmatched active guidance crossed invocation fence: claimed=%t err=%v", claimed, err)
+				}
+				thirdRequirements := []map[string]interface{}{{"id": "r3", "text": "later V3"}}
+				if _, err := stateRef.Set(ctx, map[string]interface{}{
+					"project_id": tc.projectID, "revision": int64(3), "requirements": thirdRequirements,
+					"bootstrap_guidance": map[string]interface{}{"status": "pending", "profile_revision": int64(3)},
+				}); err != nil {
+					t.Fatalf("interleave later V3 save: %v", err)
+				}
+				_, prepared, err := profileartifacts.EncodeBootstrapGuidance(profileartifacts.BootstrapGuidanceEnvelope{
+					SchemaVersion: profileartifacts.BootstrapGuidanceSchema, ProfileRevision: 2, InputDigest: savedDigest,
+					ModelVersion: "controlled-v2", PromptVersion: "bootstrap-v1", CompileGuidance: "Prepared from frozen V2.",
+				})
+				if err != nil {
+					t.Fatal(err)
+				}
+				completed, err := client.CompletePipelineIntentPreparation(ctx, reservationID, reservationID, userID, tc.projectID, prepared)
+				if err != nil || !completed {
+					t.Fatalf("complete frozen V2 preparation after V3 edit: completed=%t err=%v", completed, err)
+				}
+				intent, exists, err = client.GetPipelineIntent(ctx, userID, tc.projectID, reservationID)
+				if err != nil || !exists || intent.IntentStatus != "ready" || intent.ConsumedGuidanceKind != "bootstrap" || intent.ProfileRevision != 2 || intent.RequirementsDigest != savedDigest || intent.ConsumedBootstrapGuidance == nil || *intent.ConsumedBootstrapGuidance != prepared {
+					t.Fatalf("prepared frozen V2 intent=%+v exists=%t err=%v", intent, exists, err)
+				}
+				profile, err := stateRef.Get(ctx)
+				if err != nil || profile.Data()["revision"] != int64(3) || profile.Data()["bootstrap_guidance"].(map[string]interface{})["status"] != "pending" {
+					t.Fatalf("preparation changed newer Profile state=%v err=%v", profile.Data(), err)
+				}
+			}
+		})
+	}
+}
+
+func TestLWC427RetryRepreparesLegacyFullIntentWithMissingSourceRevision(t *testing.T) {
+	if !requireLoopbackEmulator(t, "FIRESTORE_EMULATOR_HOST") {
+		t.Skip("requires loopback Firestore emulator")
+	}
+	const project, database = "llm-wiki-cloud", "llm-wiki-cloud-local"
+	unique := fmt.Sprintf("%d", time.Now().UnixNano())
+	userID, projectID, scope := "lwc427-retry-"+unique, "project-"+unique, "lwc427-retry-"+unique
+	t.Setenv("GOOGLE_CLOUD_PROJECT", project)
+	t.Setenv("FIRESTORE_DATABASE_ID", database)
+	t.Setenv("LOCAL_CLOUD_SCOPE", scope)
+	client, err := scopedfirestore.NewClientWithDatabaseAndScope(project, database, "", "", scope)
+	if err != nil {
+		t.Fatalf("create loopback Firestore client: %v", err)
+	}
+	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
+	defer cancel()
+	t.Cleanup(func() {
+		if err := client.Close(); err != nil {
+			t.Errorf("close loopback Firestore client: %v", err)
+		}
+	})
+	sourceID, retryID := "old-full-"+unique, "retry-full-"+unique
+	newRequirements := []ProfileRequirement{{ID: "r2", Text: "frozen V2"}}
+	newDigest := profileRequirementsDigest(newRequirements)
+	stale := strings.Repeat("a", 64)
+	prior := scopedfirestore.Collection(client.Raw(), "pipeline_quota_reservations").Doc(sourceID)
+	retry := scopedfirestore.Collection(client.Raw(), "pipeline_quota_reservations").Doc(retryID)
+	quota := scopedfirestore.Collection(client.Raw(), "pipeline_quota").Doc(scopedfirestore.QuotaDocID(userID, projectID))
+	t.Cleanup(func() {
+		for _, ref := range []*cloudfirestore.DocumentRef{prior, retry, quota} {
+			if _, err := ref.Delete(context.Background()); err != nil && status.Code(err) != codes.NotFound {
+				t.Errorf("delete retry fixture %s: %v", ref.Path, err)
+			}
+		}
+	})
+	if _, err := prior.Set(ctx, map[string]interface{}{
+		"user_id": userID, "project_id": projectID, "attempt_id": sourceID,
+		"trigger": string(pipelinequota.TriggerManual), "budget_class": "manual", "settlement_status": "released",
+		"execution_id": "", "intent_status": "failed", "intent_mode": string(pipelinequota.ModeFull),
+		"profile_revision": int64(2), "profile_requirements": []map[string]interface{}{{"id": "r2", "text": "frozen V2"}},
+		"requirements_digest": newDigest, "consumed_guidance_kind": "active", "consumed_guidance_status": "active",
+		"consumed_guidance_revision": stale, "consumed_guidance_source_revision": int64(0),
+		"consumed_guidance_input_digest": newDigest, "consumed_guidance_model_version": "legacy-model",
+		"consumed_guidance_prompt_version": "legacy-prompt", "consumed_guidance_schema_version": profileartifacts.GuidanceSchema,
+		"consumed_active_guidance": map[string]interface{}{"Revision": stale, "InputDigest": newDigest, "ModelVersion": "legacy-model", "PromptVersion": "legacy-prompt", "SchemaVersion": profileartifacts.GuidanceSchema},
+		"active_candidate_id":      "legacy-candidate", "active_content_generation": "generation-v1",
+	}); err != nil {
+		t.Fatalf("seed legacy failed full intent: %v", err)
+	}
+	_, reserved, err := client.ReserveQuotaForPipelineIntentRetry(ctx, retryID, sourceID, userID, projectID,
+		pipelinequota.Limits{DailyLimit: 5, Cooldown: time.Hour, MinNewRaw: 1}, time.Now().UTC(),
+		pipelinequota.ModeFull, false, false, 1, 0, 0)
+	if err != nil || !reserved {
+		t.Fatalf("reserve retry: reserved=%t err=%v", reserved, err)
+	}
+	intent, exists, err := client.GetPipelineIntent(ctx, userID, projectID, retryID)
+	if err != nil || !exists || intent.IntentStatus != "preparing" || intent.ProfileRevision != 2 || intent.RequirementsDigest != newDigest ||
+		lwc427QuotaRequirementsDigest(intent.ProfileRequirements) != newDigest || intent.ConsumedGuidanceKind != "" || intent.ConsumedActiveGuidance != nil || intent.ConsumedGuidanceRevision != "" {
+		t.Fatalf("retry intent=%+v exists=%t err=%v; want preparing from legacy frozen V2 without stale V1", intent, exists, err)
+	}
+	if _, claimed, err := client.BeginPipelineIntentInvocation(ctx, retryID, retryID, userID, projectID); err != nil || claimed {
+		t.Fatalf("legacy invalid-source retry crossed invocation fence: claimed=%t err=%v", claimed, err)
+	}
+}
+
+func lwc427QuotaRequirementsDigest(requirements []scopedfirestore.PipelineProfileRequirement) string {
+	converted := make([]ProfileRequirement, len(requirements))
+	for i, requirement := range requirements {
+		converted[i] = ProfileRequirement{ID: requirement.ID, Text: requirement.Text}
+	}
+	return profileRequirementsDigest(converted)
+}
+
 func TestScheduledPipelineSweepAdmissionAndReconciliationEmulator(t *testing.T) {
 	if !requireLoopbackEmulator(t, "FIRESTORE_EMULATOR_HOST") {
 		t.Skip("requires loopback Firestore emulator")

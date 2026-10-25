@@ -15,6 +15,7 @@ import (
 
 	"github.com/rayer/llm-wiki-bff/internal/generation"
 	"github.com/rayer/llm-wiki-bff/internal/observability"
+	"github.com/rayer/llm-wiki-bff/internal/pipelinequota"
 	"github.com/rayer/llm-wiki-bff/internal/profileruntime"
 	"unicode/utf8"
 
@@ -68,6 +69,28 @@ type profileGuidanceRef struct {
 	ModelVersion  string `firestore:"model_version"`
 	PromptVersion string `firestore:"prompt_version"`
 	SchemaVersion string `firestore:"schema_version"`
+}
+
+func profileGuidanceRefFromFirestore(value interface{}) profileGuidanceRef {
+	fields, ok := value.(map[string]interface{})
+	if !ok {
+		return profileGuidanceRef{}
+	}
+	revision, canonical := fields["revision"].(string)
+	canonical = canonical && revision != ""
+	read := func(wireKey, legacyKey string) string {
+		key := legacyKey
+		if canonical {
+			key = wireKey
+		}
+		text, _ := fields[key].(string)
+		return text
+	}
+	return profileGuidanceRef{
+		Revision: read("revision", "Revision"), InputDigest: read("input_digest", "InputDigest"),
+		ModelVersion: read("model_version", "ModelVersion"), PromptVersion: read("prompt_version", "PromptVersion"),
+		SchemaVersion: read("schema_version", "SchemaVersion"),
+	}
 }
 
 type profileGuidanceActive struct {
@@ -247,6 +270,7 @@ func readPipelineIntentGuidance(ctx context.Context, client *firestore.Client, c
 	if err := snapshot.DataTo(&reservation); err != nil {
 		return nil, true, fmt.Errorf("decode Pipeline Profile snapshot: %w", err)
 	}
+	reservation.ConsumedActiveGuidance = profileGuidanceRefFromFirestore(snapshot.Data()["consumed_active_guidance"])
 	if reservation.IntentMode == "" {
 		return nil, false, nil
 	}
@@ -287,6 +311,9 @@ func readPipelineIntentGuidance(ctx context.Context, client *firestore.Client, c
 			ref.SchemaVersion != profileGuidanceSchemaVersion || reservation.ActiveCandidateID == "" ||
 			reservation.ActiveContentGeneration == "" || reservation.ConsumedGuidanceSourceRevision < 1 {
 			return nil, true, errors.New("Pipeline active guidance snapshot is incomplete")
+		}
+		if reservation.IntentMode == string(pipelinequota.ModeFull) && ref.InputDigest != reservation.RequirementsDigest {
+			return nil, true, errors.New("Pipeline active guidance does not match the saved Profile requirements")
 		}
 		data, _, err := objects.Read(ctx, workerProjectObjectPrefix(cfg)+profileartifacts.GuidanceObjectPath(ref.Revision), 0, profileGuidanceReadLimit)
 		if err != nil {

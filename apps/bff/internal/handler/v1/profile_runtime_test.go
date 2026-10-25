@@ -21,6 +21,8 @@ import (
 	"github.com/rayer/llm-wiki-bff/internal/localfs"
 	"github.com/rayer/llm-wiki-bff/internal/observability"
 	"github.com/rayer/llm-wiki-bff/internal/observability/otlpfixture"
+	"github.com/rayer/llm-wiki-bff/internal/pipelinequota"
+	"github.com/rayer/llm-wiki-bff/internal/profileartifacts"
 	"github.com/rayer/llm-wiki-bff/internal/profilederive"
 	"github.com/rayer/llm-wiki-bff/internal/profileruntime"
 	"go.opentelemetry.io/otel/propagation"
@@ -754,6 +756,135 @@ func TestProfileRuntimeCompileExhaustionPreservesUnactivatedCandidate(t *testing
 	current, err = f.repo.GetProfile(f.ctx, f.user, f.project)
 	if err != nil || current.DerivationStatus == nil || *current.DerivationStatus != profileDerivationFailed || current.CompileRetryGeneration != work.ID || current.Candidate == nil || current.Candidate.CandidateID != candidate.CandidateID || current.Active == nil || *current.Active != active {
 		t.Fatalf("rejected retry changed pending candidate or Active: state=%+v err=%v", current, err)
+	}
+}
+
+func TestPipelineRuntimeExhaustionFailsPreparationAndPreservesAmbiguousInvocation(t *testing.T) {
+	f := newRuntimeFixture(t)
+	requirements := []ProfileRequirement{{ID: "r1", Text: "Use Traditional Chinese."}}
+	state, err := f.repo.SaveProfile(f.ctx, f.user, f.project, 0, requirements)
+	if err != nil {
+		t.Fatal(err)
+	}
+	limits := pipelinequota.Limits{DailyLimit: 5, Cooldown: time.Hour, MinNewRaw: 1}
+	intentStore := f.dispatcher.Handler.firestore
+	firstID := "lwc427-exhausted-preparation"
+	_, reserved, err := intentStore.ReserveQuotaForPipelineIntent(f.ctx, firstID, f.user, f.project, limits, f.clock, pipelinequota.ModeFull, false, false, 1, 0, 0)
+	if err != nil || !reserved {
+		t.Fatalf("reserve full preparation intent: reserved=%t err=%v", reserved, err)
+	}
+	first, exists, err := intentStore.GetPipelineIntent(f.ctx, f.user, f.project, firstID)
+	if err != nil || !exists || first.IntentStatus != "preparing" || first.ProfileRevision != state.Revision {
+		t.Fatalf("preparation intent=%+v exists=%t err=%v", first, exists, err)
+	}
+	work := profileruntime.Work{UserID: f.user, ProjectID: f.project, Kind: "pipeline", Revision: state.Revision, ID: firstID, Pending: true, Attempts: profileruntime.MaxAttempts, Status: "retry_wait"}
+	if err := f.repo.client.RunTransaction(f.ctx, func(ctx context.Context, tx *firestore.Transaction) error {
+		return markProfileRuntimeExhausted(ctx, tx, f.repo, work)
+	}); err != nil {
+		t.Fatal(err)
+	}
+	failed, exists, err := intentStore.GetPipelineIntent(f.ctx, f.user, f.project, firstID)
+	if err != nil || !exists || failed.IntentStatus != "failed" || failed.SettlementStatus != "released" || failed.IntentErrorCode != "runtime_retry_exhausted" {
+		t.Fatalf("exhausted preparation intent=%+v exists=%t err=%v", failed, exists, err)
+	}
+	if active, err := intentStore.PipelineAdmissionActive(f.ctx, f.user, f.project); err != nil || active {
+		t.Fatalf("preparation exhaustion kept shared claim active=%t err=%v", active, err)
+	}
+	if runs, _, _, err := intentStore.LoadQuotaState(f.ctx, f.user, f.project); err != nil || runs != 0 {
+		t.Fatalf("preparation exhaustion quota runs=%d err=%v; want atomic refund", runs, err)
+	}
+
+	secondID := "lwc427-exhausted-invocation"
+	_, reserved, err = intentStore.ReserveQuotaForPipelineIntent(f.ctx, secondID, f.user, f.project, limits, f.clock.Add(time.Second), pipelinequota.ModeFull, false, false, 1, 0, 0)
+	if err != nil || !reserved {
+		t.Fatalf("reserve second full intent after safe settlement: reserved=%t err=%v", reserved, err)
+	}
+	bootstrapData, bootstrapRef, err := profileartifacts.EncodeBootstrapGuidance(profileartifacts.BootstrapGuidanceEnvelope{
+		SchemaVersion: profileartifacts.BootstrapGuidanceSchema, ProfileRevision: state.Revision,
+		InputDigest: profileRequirementsDigest(requirements), ModelVersion: "controlled-v1", PromptVersion: "bootstrap-v1",
+		CompileGuidance: "Use Traditional Chinese.",
+	})
+	if err != nil || len(bootstrapData) == 0 {
+		t.Fatalf("encode run-bound bootstrap ref=%+v err=%v", bootstrapRef, err)
+	}
+	if completed, err := intentStore.CompletePipelineIntentPreparation(f.ctx, secondID, secondID, f.user, f.project, bootstrapRef); err != nil || !completed {
+		t.Fatalf("complete second preparation: completed=%t err=%v", completed, err)
+	}
+	if _, claimed, err := intentStore.BeginPipelineIntentInvocation(f.ctx, secondID, secondID, f.user, f.project); err != nil || !claimed {
+		t.Fatalf("begin ambiguous invocation: claimed=%t err=%v", claimed, err)
+	}
+	work = profileruntime.Work{UserID: f.user, ProjectID: f.project, Kind: "pipeline", Revision: state.Revision, ID: secondID, Pending: true, Attempts: profileruntime.MaxAttempts, Status: "retry_wait"}
+	if err := f.repo.client.RunTransaction(f.ctx, func(ctx context.Context, tx *firestore.Transaction) error {
+		return markProfileRuntimeExhausted(ctx, tx, f.repo, work)
+	}); err != nil {
+		t.Fatal(err)
+	}
+	unknown, exists, err := intentStore.GetPipelineIntent(f.ctx, f.user, f.project, secondID)
+	if err != nil || !exists || unknown.IntentStatus != "invocation_unknown" || unknown.SettlementStatus != "pending" {
+		t.Fatalf("exhausted ambiguous invocation=%+v exists=%t err=%v", unknown, exists, err)
+	}
+	if active, err := intentStore.PipelineAdmissionActive(f.ctx, f.user, f.project); err != nil || !active {
+		t.Fatalf("ambiguous invocation claim active=%t err=%v; want retained for reconciliation", active, err)
+	}
+}
+
+func TestIncrementalPipelineIntentStillWaitsForPendingProfileDerivation(t *testing.T) {
+	f := newRuntimeFixture(t)
+	requirements := []ProfileRequirement{{ID: "r1", Text: "Preserve existing incremental behavior."}}
+	state, err := f.repo.SaveProfile(f.ctx, f.user, f.project, 0, requirements)
+	if err != nil {
+		t.Fatal(err)
+	}
+	reservation := internalfirestore.QuotaReservation{
+		ID: "incremental-pending-profile", AttemptID: "incremental-pending-profile", UserID: f.user, ProjectID: f.project,
+		CompileMode: pipelinequota.ModeIncremental, IntentStatus: "preparing", ProfileRevision: state.Revision,
+		RequirementsDigest:  profileRequirementsDigest(requirements),
+		ProfileRequirements: []internalfirestore.PipelineProfileRequirement{{ID: "r1", Text: requirements[0].Text}},
+	}
+	err = f.dispatcher.preparePipelineIntent(f.ctx, f.repo, nil, reservation)
+	if !errors.Is(err, errProfileRuntimeWaiting) {
+		t.Fatalf("incremental preparation error=%v, want pending Profile prerequisite to remain a wait", err)
+	}
+}
+
+func TestCompileReceiptReadsLegacyDerivedGuidanceWire(t *testing.T) {
+	f := newRuntimeFixture(t)
+	_, stateRef := f.repo.profileRefs(f.user, f.project)
+	want := profileartifacts.DerivedRef{
+		Revision: strings.Repeat("a", 64), InputDigest: strings.Repeat("b", 64),
+		ModelVersion: "legacy-model", PromptVersion: "legacy-prompt", SchemaVersion: profileartifacts.GuidanceSchema,
+	}
+	receiptRef := stateRef.Collection(profileruntime.CompileReceiptsCollection).Doc("legacy-wire")
+	if _, err := receiptRef.Set(f.ctx, map[string]interface{}{
+		"user_id": f.user, "project_id": f.project, "execution_id": "legacy-execution", "content_generation": "legacy-wire",
+		"manifest_generation": int64(1), "manifest_sha256": strings.Repeat("c", 64), "canonical_concepts_digest": strings.Repeat("d", 64),
+		"profile_revision": int64(2), "requirements_digest": strings.Repeat("e", 64),
+		"consumed_guidance_kind": "active", "consumed_guidance_revision": want.Revision,
+		"consumed_guidance_source_revision": int64(1), "consumed_guidance_source_content_generation": "source-generation",
+		"consumed_guidance_source_candidate_id": "source-candidate", "consumed_guidance_input_digest": want.InputDigest,
+		"consumed_guidance_model_version": want.ModelVersion, "consumed_guidance_prompt_version": want.PromptVersion,
+		"consumed_guidance_schema_version": want.SchemaVersion, "consumed_guidance_status": "active",
+		"consumed_active_guidance": map[string]interface{}{
+			"Revision": want.Revision, "InputDigest": want.InputDigest, "ModelVersion": want.ModelVersion,
+			"PromptVersion": want.PromptVersion, "SchemaVersion": want.SchemaVersion,
+		},
+	}); err != nil {
+		t.Fatalf("seed legacy CompileReceipt: %v", err)
+	}
+	snapshot, err := receiptRef.Get(f.ctx)
+	if err != nil {
+		t.Fatal(err)
+	}
+	var receipt profileruntime.CompileReceipt
+	if err := snapshot.DataTo(&receipt); err != nil {
+		t.Fatalf("decode legacy CompileReceipt: %v", err)
+	}
+	if receipt.UserID != f.user || receipt.ProjectID != f.project || receipt.ConsumedActiveGuidance == nil || *receipt.ConsumedActiveGuidance != want {
+		t.Fatalf("legacy receipt guidance=%+v; want %+v", receipt.ConsumedActiveGuidance, want)
+	}
+	evidence := f.dispatcher.Handler.readConsumedGuidanceEvidence(f.ctx, &pipelineExecutionOwner{userID: f.user, projectID: f.project}, "legacy-execution")
+	if evidence.Status != "available" || evidence.Kind != "active" || evidence.Revision == nil || *evidence.Revision != want.Revision {
+		t.Fatalf("actual legacy receipt consumer evidence=%+v; want available active guidance", evidence)
 	}
 }
 

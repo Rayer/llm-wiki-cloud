@@ -503,6 +503,14 @@ func markProfileRuntimeExhausted(ctx context.Context, tx *firestore.Transaction,
 	if w.Kind == "compile" {
 		return markProfileCompileRuntimeExhausted(ctx, tx, repo, w)
 	}
+	if w.Kind == "pipeline" {
+		if _, _, err := repo.authorizeTransaction(ctx, tx, w.UserID, w.ProjectID, ProjectEdit); errors.Is(err, errProfileProjectNotFound) {
+			return nil
+		} else if err != nil {
+			return err
+		}
+		return scopedfirestore.SettlePipelineIntentRuntimeExhaustedInTransaction(ctx, tx, repo.client, w.ID, w.ID, w.UserID, w.ProjectID, w.Revision)
+	}
 	_, stateRef, err := repo.authorizeTransaction(ctx, tx, w.UserID, w.ProjectID, ProjectEdit)
 	if errors.Is(err, errProfileProjectNotFound) {
 		return nil
