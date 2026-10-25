@@ -518,6 +518,7 @@ func runWorkerBatchAtVault(ctx context.Context, cfg workerConfig, commands [][]s
 		}
 		if schemaPath != "" {
 			olwEnv = append(olwEnv, "LWC_PROFILE_SCHEMA_PATH="+schemaPath)
+			olwEnv = append(olwEnv, "LWC_PROFILE_GUIDANCE="+cfg.pinnedProfileGuidance.Content)
 		}
 	}
 	stdout, stderr, closeLog, err := pipelineLogWriters(vault, cfg, commands, cfg.SuppressOutput)
@@ -1033,7 +1034,7 @@ func allowlistedSyntoEnvironment(extra []string) []string {
 			continue
 		}
 		switch key {
-		case "XDG_CONFIG_HOME", "SYNTO_API_KEY", "DEEPSEEK_API_KEY", "LWC_PROFILE_SCHEMA_PATH":
+		case "XDG_CONFIG_HOME", "SYNTO_API_KEY", "DEEPSEEK_API_KEY", "LWC_PROFILE_SCHEMA_PATH", "LWC_PROFILE_GUIDANCE":
 			env = append(env, item)
 		}
 	}

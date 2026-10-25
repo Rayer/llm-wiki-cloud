@@ -151,7 +151,7 @@ func TestProfileGuidanceSchemaMaterializationIsAdditiveAndBounded(t *testing.T) 
 	}
 }
 
-func TestRunWorkerBatchAtVaultPassesPinnedGuidanceOnlyThroughSyntoSchemaPath(t *testing.T) {
+func TestRunWorkerBatchAtVaultPassesPinnedGuidanceToSyntoAdapter(t *testing.T) {
 	vault := t.TempDir()
 	config := []byte("[pipeline]\nauto_commit = false\nauto_maintain = false\nrelation_extraction = false\n")
 	if err := os.WriteFile(filepath.Join(vault, "synto.toml"), config, 0o600); err != nil {
@@ -162,14 +162,19 @@ func TestRunWorkerBatchAtVaultPassesPinnedGuidanceOnlyThroughSyntoSchemaPath(t *
 		t.Fatal(err)
 	}
 	pin := &profileGuidancePin{Revision: strings.Repeat("a", 64), Content: "Keep cause and effect explicit."}
-	var schemaPath string
+	var schemaPath, guidance string
 	previous := execOLW
 	t.Cleanup(func() { execOLW = previous })
 	execOLW = func(_ context.Context, _ string, _ []string, env []string, _, _ io.Writer) error {
 		for _, entry := range allowlistedSyntoEnvironment(env) {
 			key, value, ok := strings.Cut(entry, "=")
-			if ok && key == "LWC_PROFILE_SCHEMA_PATH" {
-				schemaPath = value
+			if ok {
+				switch key {
+				case "LWC_PROFILE_SCHEMA_PATH":
+					schemaPath = value
+				case "LWC_PROFILE_GUIDANCE":
+					guidance = value
+				}
 			}
 		}
 		if schemaPath == "" {
@@ -182,6 +187,9 @@ func TestRunWorkerBatchAtVaultPassesPinnedGuidanceOnlyThroughSyntoSchemaPath(t *
 		if !strings.HasPrefix(string(data), string(baseSchema)) || !strings.Contains(string(data), pin.Content) {
 			return errors.New("pinned Profile schema did not preserve base schema and add guidance")
 		}
+		if guidance != pin.Content {
+			return fmt.Errorf("pinned Profile guidance env = %q, want exact frozen text", guidance)
+		}
 		return nil
 	}
 	err := runWorkerBatchAtVault(context.Background(), workerConfig{
@@ -193,6 +201,9 @@ func TestRunWorkerBatchAtVaultPassesPinnedGuidanceOnlyThroughSyntoSchemaPath(t *
 	}
 	if schemaPath == "" {
 		t.Fatal("worker did not pass the pinned schema path")
+	}
+	if guidance != pin.Content {
+		t.Fatal("worker did not pass the exact pinned Profile guidance")
 	}
 	if _, err := os.Stat(schemaPath); !errors.Is(err, os.ErrNotExist) {
 		t.Fatalf("temporary Profile schema remained after compile: stat err=%v", err)
@@ -211,7 +222,7 @@ func TestRunWorkerBatchAtVaultLeavesNoProfileSchemaOverrideWhenNoPin(t *testing.
 	t.Cleanup(func() { execOLW = previous })
 	execOLW = func(_ context.Context, _ string, _ []string, env []string, _, _ io.Writer) error {
 		for _, entry := range allowlistedSyntoEnvironment(env) {
-			if strings.HasPrefix(entry, "LWC_PROFILE_SCHEMA_PATH=") {
+			if strings.HasPrefix(entry, "LWC_PROFILE_SCHEMA_PATH=") || strings.HasPrefix(entry, "LWC_PROFILE_GUIDANCE=") {
 				return errors.New("no-active compile unexpectedly received Profile guidance")
 			}
 		}
@@ -266,9 +277,15 @@ func TestCloudProfileGuidanceRemainsPinnedAfterProfileEdit(t *testing.T) {
 	execOLW = func(_ context.Context, vault string, _ []string, env []string, _, _ io.Writer) error {
 		activeContent = "New Profile guidance saved after this compile started."
 		var schemaPath string
+		var guidance string
 		for _, entry := range allowlistedSyntoEnvironment(env) {
-			if key, value, ok := strings.Cut(entry, "="); ok && key == "LWC_PROFILE_SCHEMA_PATH" {
-				schemaPath = value
+			if key, value, ok := strings.Cut(entry, "="); ok {
+				switch key {
+				case "LWC_PROFILE_SCHEMA_PATH":
+					schemaPath = value
+				case "LWC_PROFILE_GUIDANCE":
+					guidance = value
+				}
 			}
 		}
 		data, err := os.ReadFile(schemaPath)
@@ -277,6 +294,9 @@ func TestCloudProfileGuidanceRemainsPinnedAfterProfileEdit(t *testing.T) {
 		}
 		if !strings.Contains(string(data), "Use the currently confirmed causal writing guidance.") || strings.Contains(string(data), "New Profile guidance saved after this compile started.") {
 			return errors.New("compile did not retain the guidance pinned at start")
+		}
+		if guidance != "Use the currently confirmed causal writing guidance." {
+			return errors.New("compile adapter did not retain the guidance pinned at start")
 		}
 		writeCloudRequiredOutputs(t, vault)
 		return nil

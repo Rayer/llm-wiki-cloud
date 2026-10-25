@@ -10,7 +10,7 @@ from pathlib import Path
 
 import synto
 from synto.config import Config, ResolvedModel
-from synto.pipeline import ingest
+from synto.pipeline import compile as compile_pipeline, ingest
 
 if synto.__version__ != "0.7.0":
     raise RuntimeError("LWC execution adapter requires pinned Synto 0.7.0")
@@ -66,6 +66,20 @@ Config.resolve_role = _resolve_flash
 _profile_schema_path = os.environ.get("LWC_PROFILE_SCHEMA_PATH")
 if _profile_schema_path:
     Config.schema_path = property(lambda self: Path(_profile_schema_path))
+_profile_guidance = os.environ.get("LWC_PROFILE_GUIDANCE", "")
+if _profile_guidance:
+    _request_structured = compile_pipeline.request_structured
+
+    def _request_structured_with_profile_guidance(*args, **kwargs):
+        if kwargs.get("stage") == "compile_article" and isinstance(kwargs.get("prompt"), str):
+            kwargs["prompt"] += (
+                "\n\nPROJECT PROFILE COMPILE GUIDANCE\n"
+                "Follow these project-specific requirements for this article, including over inferred output-language defaults when applicable:\n"
+                + _profile_guidance
+            )
+        return _request_structured(*args, **kwargs)
+
+    compile_pipeline.request_structured = _request_structured_with_profile_guidance
 # New compile/checkpoint provenance must name the same effective model as the
 # role endpoint; this does not rewrite old rows or force a pipeline execution.
 Config.model_name = lambda self, role: self.resolve_role(role).model
