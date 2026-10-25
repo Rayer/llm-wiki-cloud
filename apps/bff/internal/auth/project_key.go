@@ -323,6 +323,33 @@ func (s *ProjectKeyService) requireOwner(ctx context.Context, userID, projectID 
 // project ownership for each request. requestedProject may be empty; when
 // present, it must equal the project's fixed ID.
 func (s *ProjectKeyService) Authenticate(ctx context.Context, token, requestedProject string) (ProjectKeyRecord, error) {
+	record, err := s.authenticate(ctx, token, requestedProject)
+	if err != nil {
+		return ProjectKeyRecord{}, err
+	}
+	if s.usage != nil {
+		usedAt := time.Now().UTC()
+		usageCtx, cancel := context.WithTimeout(ctx, projectKeyUsageWriteTimeout)
+		_ = s.usage.Record(usageCtx, projectKeyUsageRecord{
+			SchemaVersion: projectKeyUsageSchema,
+			KeyID:         record.KeyID,
+			UserID:        record.UserID,
+			ProjectID:     record.ProjectID,
+			LastUsedAt:    usedAt,
+		})
+		cancel()
+	}
+	return record, nil
+}
+
+// AuthenticateWithoutUsage revalidates the same live key, account, and Project
+// authority as Authenticate without recording another last-used write. It is
+// intended for bounded checks on an already authenticated long-lived request.
+func (s *ProjectKeyService) AuthenticateWithoutUsage(ctx context.Context, token, requestedProject string) (ProjectKeyRecord, error) {
+	return s.authenticate(ctx, token, requestedProject)
+}
+
+func (s *ProjectKeyService) authenticate(ctx context.Context, token, requestedProject string) (ProjectKeyRecord, error) {
 	id, expectedDigest, err := parseProjectKey(token)
 	if err != nil {
 		return ProjectKeyRecord{}, ErrProjectKeyInvalid
@@ -362,18 +389,6 @@ func (s *ProjectKeyService) Authenticate(ctx context.Context, token, requestedPr
 			return ProjectKeyRecord{}, ErrProjectKeyAccessDenied
 		}
 		return ProjectKeyRecord{}, ErrProjectKeyUnavailable
-	}
-	if s.usage != nil {
-		usedAt := time.Now().UTC()
-		usageCtx, cancel := context.WithTimeout(ctx, projectKeyUsageWriteTimeout)
-		_ = s.usage.Record(usageCtx, projectKeyUsageRecord{
-			SchemaVersion: projectKeyUsageSchema,
-			KeyID:         record.KeyID,
-			UserID:        record.UserID,
-			ProjectID:     record.ProjectID,
-			LastUsedAt:    usedAt,
-		})
-		cancel()
 	}
 	return record, nil
 }

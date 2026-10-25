@@ -356,6 +356,11 @@ func TestLocalPipelineHTTPTriggerRunsWorkerAndReportsSuccessAndFailure(t *testin
 	if err != nil || execution.Data()["request_id"] != requestID {
 		t.Fatalf("actual execution did not persist its originating request ID: err=%v", err)
 	}
+	startedAt, startedOK := execution.Data()["started_at"].(time.Time)
+	actualStartedAt, actualStartedOK := execution.Data()["actual_started_at"].(time.Time)
+	if !startedOK || !actualStartedOK || actualStartedAt.IsZero() || actualStartedAt.Before(startedAt) {
+		t.Fatalf("actual local worker start marker=%v pre-spawn time=%v; want durable post-cmd.Start timestamp", execution.Data()["actual_started_at"], execution.Data()["started_at"])
+	}
 	var workerSpan otlpfixture.SpanIdentity
 	for _, item := range localPipelineWorkerTraceIdentities(t, workerStderrPath) {
 		if item.Name == "pipeline.worker" {
@@ -709,6 +714,13 @@ func TestLocalPipelineHTTPTriggerRunsWorkerAndReportsSuccessAndFailure(t *testin
 		!strings.Contains(failedExecution.Diagnostic.Message, "fixture compile failure") {
 		t.Fatalf("native API diagnostic=%+v state=%q, want worker stage/class/message", failedExecution.Diagnostic, failedExecution.DiagnosticState)
 	}
+	failedDocument, err := scopedfirestore.Collection(fsClient.Raw(), "executions").Doc(executionID).Get(ctx)
+	if err != nil {
+		t.Fatalf("read failed child execution marker: %v", err)
+	}
+	if _, ok := failedDocument.Data()["actual_started_at"].(time.Time); !ok {
+		t.Fatalf("spawned failing child lacks actual-start marker: %v", failedDocument.Data()["actual_started_at"])
+	}
 	assertLocalPipelineQuota(t, ctx, fsClient, userID, projectID, executionID, 2, "refunded", lastRunBeforeFailure)
 	if stderr := readLocalPipelineWorkerStderr(t, workerStderr, workerStderrPath); !strings.Contains(stderr, "fixture compile failure") {
 		t.Fatalf("expected fixture failure was not preserved in native worker stderr: %q", stderr)
@@ -931,12 +943,64 @@ func TestLocalPipelineHTTPTriggerRunsWorkerAndReportsSuccessAndFailure(t *testin
 		FirestoreDatabaseID: database, GCPProject: project, Bucket: bucket,
 	}, true, storageClient, fsClient, brokenHandler, &syssettings.FakeStore{Enabled: true}, nil))
 	t.Cleanup(brokenServer.Close)
-	postLocalPipelineRun(t, ctx, brokenServer.Client(), brokenServer.URL, token, spawnFailureProject, http.StatusInternalServerError)
+	spawnRequest, err := http.NewRequestWithContext(ctx, http.MethodPost, brokenServer.URL+"/api/v1/pipeline/run", strings.NewReader(`{}`))
+	if err != nil {
+		t.Fatalf("create local spawn-failure request: %v", err)
+	}
+	spawnRequest.Header.Set("Authorization", "Bearer "+token)
+	spawnRequest.Header.Set("X-Project-ID", spawnFailureProject)
+	spawnRequest.Header.Set("Content-Type", "application/json")
+	spawnResponse, err := brokenServer.Client().Do(spawnRequest)
+	if err != nil {
+		t.Fatalf("submit local spawn-failure intent: %v", err)
+	}
+	spawnBody, readErr := io.ReadAll(io.LimitReader(spawnResponse.Body, 1<<20))
+	_ = spawnResponse.Body.Close()
+	var spawnPayload struct {
+		IntentStatus string `json:"intent_status"`
+	}
+	if readErr != nil || json.Unmarshal(spawnBody, &spawnPayload) != nil || spawnResponse.StatusCode != http.StatusAccepted || spawnPayload.IntentStatus != "invocation_unknown" {
+		t.Fatalf("local spawn-failure intent status=%d payload=%s read_error=%v; want the existing accepted/unknown intent contract", spawnResponse.StatusCode, spawnBody, readErr)
+	}
 	spawnState, spawnReason := waitLocalPipelineStatus(t, ctx, brokenServer.Client(), brokenServer.URL, token, spawnFailureProject, "")
 	if spawnState != "FAILED" || spawnReason == "" {
 		t.Fatalf("spawn-failure status=%q reason=%q, want a visible failure", spawnState, spawnReason)
 	}
 	assertLocalPipelineQuota(t, ctx, fsClient, userID, spawnFailureProject, "", 0, "refunded")
+	spawnFailureRows, err := scopedfirestore.Collection(fsClient.Raw(), "executions").
+		Where("user_id", "==", userID).Where("project_id", "==", spawnFailureProject).Documents(ctx).GetAll()
+	if err != nil || len(spawnFailureRows) != 1 {
+		t.Fatalf("spawn-failure execution rows=%d err=%v", len(spawnFailureRows), err)
+	}
+	spawnFailureData := spawnFailureRows[0].Data()
+	if spawnFailureData["status"] != "FAILED" || spawnFailureData["actual_started_at"] != nil || spawnFailureData["finished_at"] == nil {
+		t.Fatalf("spawn failure fabricated start or lost terminal state: %+v", spawnFailureData)
+	}
+	const orphanProject = "orphan-without-actual-start"
+	const orphanExecutionID = "orphan-without-actual-start"
+	orphanStartedAt := time.Now().UTC()
+	if _, err := scopedfirestore.Collection(fsClient.Raw(), "executions").Doc(orphanExecutionID).Set(ctx, map[string]any{
+		"user_id": userID, "project_id": orphanProject, "execution_id": orphanExecutionID,
+		"native": true, "task_type": "pipeline", "status": "RUNNING", "started_at": orphanStartedAt,
+	}); err != nil {
+		t.Fatalf("seed interrupted execution without start proof: %v", err)
+	}
+	if _, err := scopedfirestore.Collection(fsClient.Raw(), "local_pipeline_locks").Doc(userID+"__"+orphanProject).Set(ctx, map[string]any{
+		"user_id": userID, "project_id": orphanProject, "execution_id": orphanExecutionID,
+		"status": "RUNNING", "updated_at": orphanStartedAt,
+	}); err != nil {
+		t.Fatalf("seed interrupted Project lock: %v", err)
+	}
+	if err := brokenManager.ReconcileInterrupted(ctx); err != nil {
+		t.Fatalf("reconcile interrupted run without start proof: %v", err)
+	}
+	orphan, err := scopedfirestore.Collection(fsClient.Raw(), "executions").Doc(orphanExecutionID).Get(ctx)
+	if err != nil || orphan.Data()["status"] != "UNKNOWN" || orphan.Data()["actual_started_at"] != nil {
+		t.Fatalf("interrupted execution recovery status=%v actual_start=%v err=%v", orphan.Data()["status"], orphan.Data()["actual_started_at"], err)
+	}
+	if running, err := brokenManager.Running(ctx, userID, orphanProject); err != nil || !running {
+		t.Fatalf("UNKNOWN interrupted execution lost existing recovery lock: running=%v err=%v", running, err)
+	}
 
 	const outageProject = "terminal-outage-recovery"
 	if _, err := storageClient.WithScope(userID, outageProject).WriteBytes(ctx, []byte("controlled child-result outage"), "raw/fixture-outage.md"); err != nil {
@@ -998,6 +1062,7 @@ func TestLocalPipelineHTTPTriggerRunsWorkerAndReportsSuccessAndFailure(t *testin
 	if calls := cloudRunCalls.Load(); calls != 0 {
 		t.Fatalf("native local pipeline made %d intercepted Cloud Run calls", calls)
 	}
+
 }
 
 func assertLocalPipelineQuota(t *testing.T, ctx context.Context, client *scopedfirestore.Client, userID, projectID, executionID string, wantRuns int, wantSettlement string, wantLastRun ...time.Time) time.Time {

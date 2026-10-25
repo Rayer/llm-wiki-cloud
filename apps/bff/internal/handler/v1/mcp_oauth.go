@@ -1,6 +1,7 @@
 package v1
 
 import (
+	"context"
 	"errors"
 	"net/http"
 	"strings"
@@ -50,7 +51,18 @@ func (h *Handler) MCPProjectOAuthHandler(environment, resourceOrigin string) gin
 			userID: identity.UserID, projectID: identity.ProjectID, keyID: identity.GrantID,
 			capabilities: identity.Capabilities,
 		}
-		h.serveAuthenticatedMCP(h.mcpSDKHandler(requestIdentity.capabilities), requestIdentity, c.Writer, c.Request)
+		requestIdentity.revalidate = func(ctx context.Context) error {
+			fresh, err := authority.AuthenticateAccessToken(ctx, token, projectID, resource)
+			if err != nil {
+				return err
+			}
+			if fresh.UserID != requestIdentity.userID || fresh.ProjectID != requestIdentity.projectID ||
+				fresh.GrantID != requestIdentity.keyID || !hasMCPCapability(fresh.Capabilities, mcpQueryCapability) {
+				return auth.ErrMCPOAuthDenied
+			}
+			return nil
+		}
+		h.serveAuthenticatedMCP(h.mcpSDKHandler(requestIdentity), requestIdentity, c.Writer, c.Request)
 	}
 }
 
