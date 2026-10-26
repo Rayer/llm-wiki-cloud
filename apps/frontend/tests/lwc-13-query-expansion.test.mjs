@@ -10,6 +10,6 @@ test('home renders query expansion keywords below search results', async () => {
 
   assert.match(homeClient, /const \[expandKeywords, setExpandKeywords\]/);
   assert.match(homeClient, /setExpandKeywords\(response\.expand\?\.keywords \?\? \[\]\)/);
-  assert.match(homeClient, /搜尋關鍵字：/);
+  assert.match(homeClient, /t\('QueryResults\.expansionKeywords'/);
   assert.match(homeClient, /expandKeywords\.join\('、'\)/);
 });

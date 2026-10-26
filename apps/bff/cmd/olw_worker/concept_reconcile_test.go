@@ -1035,6 +1035,18 @@ func TestRewriteConceptPageIDRejectsDuplicateStableAndCurrentIDs(t *testing.T) {
 	}
 }
 
+func TestRewriteConceptPageIDPreservesGenerationProvenance(t *testing.T) {
+	page := []byte("---\nid: transient-a\nlineage:\n  - compile_run: 01JAZ5N7Y3K8M2Q4R6T9VWXAC2\n    generator:\n      implementation: synto\n      version: 0.7.0\n---\nGenerated body.\n")
+	want := bytes.Replace(page, []byte("id: transient-a"), []byte("id: stable-a"), 1)
+	got, err := rewriteConceptPageID(page, "transient-a", "stable-a")
+	if err != nil {
+		t.Fatalf("rewriteConceptPageID: %v", err)
+	}
+	if !bytes.Equal(got, want) {
+		t.Fatalf("ID normalization changed more than the top-level id:\n got %q\nwant %q", got, want)
+	}
+}
+
 func TestDefaultPathNoPostprocessIgnoresMalformedPriorConceptMap(t *testing.T) {
 	// A generation without postprocess is no longer a supported production
 	// transaction; reject it before the child can touch the vault.

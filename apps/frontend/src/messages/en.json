@@ -188,6 +188,14 @@
     "retryCitation": "Retry citation",
     "openFullPage": "Open full page"
   },
+  "ConceptProvenance": {
+    "title": "Generation provenance",
+    "implementation": "Implementation",
+    "version": "Version",
+    "revision": "Revision",
+    "compileRun": "Compile run",
+    "unknown": "Unknown / not recorded"
+  },
   "Entry": {
     "singular": "Entry",
     "plural": "Entries",
@@ -300,7 +308,7 @@
     "setupIntro": "Every guide uses this Project's current resource URL. Saving client settings does not prove a connection. Sign in in the client's browser and review the account, Project, and exact requested scope before approving. Clients requesting mcp:raw:write can add Markdown sources and import URL extractions only when the extracted content is clearly usable; re-importing the same URL refreshes its existing entry. This permission does not allow arbitrary raw file edits or deletes, and it does not verify facts. Never paste passwords, keys, or tokens into chat. Copied commands use POSIX shell quoting (zsh/bash); use the official docs to enter the same URL in PowerShell.",
     "toolsTabList": "AI tools",
     "toolHermes": "Hermes",
-    "toolCodex": "Codex",
+    "toolCodex": "OpenAI",
     "toolGrok": "Grok",
     "toolClaudeCode": "Claude Code",
     "toolOpenClaw": "OpenClaw",
@@ -314,6 +322,11 @@
         "body": "Run these commands in a local terminal. Codex CLI, app, and IDE on the same host share MCP configuration; ChatGPT web uses a separate cloud connector. Finish the browser sign-in, then check /mcp in Codex. A saved configuration is not proof that LLM Wiki Cloud connected.",
         "evidence": "Official setup docs and installed Codex CLI help (0.162.1) were checked. An earlier isolated config-save probe used 0.153.0 and did not contact LWC. Native LWC OAuth, tool discovery, and Project Query are NOT RUN."
       },
+      "openaiWeb": {
+        "title": "ChatGPT app / Dot web (shared web flow)",
+        "body": "Use the web client's Plugins area to add a custom MCP server and complete its OAuth consent; account plan, workspace permissions, and client UI can affect availability. The prompt below describes your connection intent but does not add or authorize the server. This web setup is separate from local Codex configuration.",
+        "evidence": "OpenAI's official guide describes custom MCP setup from Plugins for supported ChatGPT Business and Enterprise/Edu workspaces; workspace roles and permissions apply. The shared Dot flow is Owner-confirmed but was not independently inspected. Dot installation/OAuth, LWC OAuth, tool discovery, and Project Query are NOT RUN."
+      },
       "grok": {
         "title": "Grok CLI and xAI Grok Bot",
         "body": "These are separate clients. The CLI uses local Grok Build configuration; Grok Bot is a cloud service and does not read that configuration. Use the section that matches the client you are setting up.",
@@ -321,8 +334,8 @@
         "cliBody": "Run the command in a terminal. In Grok Build, open /mcps, select llm-wiki, and press i to start the client's browser OAuth flow. Review the current account, Project, and query-only permission before approving.",
         "cliEvidence": "Official setup docs and installed Grok CLI 1.0.52 help were checked. An isolated config-save probe did not contact LWC. Native LWC OAuth, tool discovery, and Project Query are NOT RUN.",
         "botTitle": "xAI Grok Bot (cloud, separate)",
-        "botBody": "Official Team Bot docs describe a Custom MCP server using Remote HTTPS in the Bot's Setup → Plugins. Use the current Project URL below if that option is available in your account; the public docs do not document the live form fields. The cloud service must be able to reach this configured URL. This setup is separate from Grok CLI.",
-        "botEvidence": "Official cloud Bot docs were reviewed. Its live setup form and an LWC connection were not inspected or run. Native LWC OAuth, discovery, and Project Query are NOT RUN."
+        "botBody": "Ask Grok Bot in its conversation to add MCP for the data you specify. Replace the bracketed purpose before sending; the current Project URL is included. This Owner-provided message expresses connection intent and does not prove server setup or authorization.",
+        "botEvidence": "This request template reflects the Owner's reported Grok Bot use. Official Team Bot docs are linked for context; this session did not inspect the live Bot setup or connect LWC. Native OAuth, discovery, and Project Query are NOT RUN."
       },
       "claude-code": {
         "title": "Claude Code",
@@ -350,6 +363,7 @@
     "copyFailed": "Clipboard access failed. Select and copy the text above.",
     "copySetup": "Copy setup commands",
     "copyProjectURL": "Copy Project URL",
+    "copyPrompt": "Copy connection prompt",
     "nativeCheck": "No API key or OAuth secret is included. Saving this config does not verify a connection; native LWC OAuth, tool discovery, and Project Query remain NOT RUN.",
     "grantsTitle": "Authorized MCP clients",
     "grantsIntro": "Review or revoke OAuth access for this Project. Names are supplied by the MCP client. Revocation takes effect for existing access tokens.",
@@ -672,7 +686,15 @@
   },
   "QueryResults": {
     "resultUnavailable": "This saved result is no longer available. Search again to get a new result.",
-    "searchAgain": "Search again"
+    "searchAgain": "Search again",
+    "searching": "Searching",
+    "wikiMode": "Wiki mode",
+    "fullMode": "Full mode",
+    "noResults": "No results were found for this search.",
+    "openEntryFallback": "Open this wiki entry.",
+    "insufficientEvidence": "This Wiki retrieval did not find sufficient evidence to answer this question.",
+    "modelPriorDisclosure": "This Full mode answer may use general model knowledge and is not supported by the retrieved Wiki evidence.",
+    "expansionKeywords": "Expanded keywords: {keywords}"
   },
   "QueryErrors": {
     "queryFailure": "We could not complete your search. Try again; if the issue continues, share the diagnostic ID with support.",

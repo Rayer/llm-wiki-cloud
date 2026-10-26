@@ -188,6 +188,14 @@
     "retryCitation": "重試載入引用",
     "openFullPage": "開啟完整頁面"
   },
+  "ConceptProvenance": {
+    "title": "內容生成來源",
+    "implementation": "實作",
+    "version": "版本",
+    "revision": "修訂版",
+    "compileRun": "編譯執行識別碼",
+    "unknown": "未知／未記錄"
+  },
   "Entry": {
     "singular": "條目",
     "plural": "條目",
@@ -300,7 +308,7 @@
     "setupIntro": "每份指引都使用此專案目前的資源網址。儲存用戶端設定不代表已連線。請在用戶端的瀏覽器登入，並在核准前確認帳號、專案及實際要求的權限範圍。要求 mcp:raw:write 的用戶端可新增 Markdown 來源，且只有在 URL 擷取內容明確可用時才會匯入網址；重新匯入相同網址會更新既有來源。此權限不允許任意編輯或刪除 raw 檔案，也不會驗證事實。請勿在聊天中貼上密碼、金鑰或權杖。複製的命令使用 POSIX shell 引號（zsh/bash）；若使用 PowerShell，請參閱官方文件並填入相同網址。",
     "toolsTabList": "AI 工具",
     "toolHermes": "Hermes",
-    "toolCodex": "Codex",
+    "toolCodex": "OpenAI",
     "toolGrok": "Grok",
     "toolClaudeCode": "Claude Code",
     "toolOpenClaw": "OpenClaw",
@@ -314,6 +322,11 @@
         "body": "請在本機終端機執行這些命令。同一台主機上的 Codex CLI、應用程式與 IDE 共用 MCP 設定；ChatGPT 網頁版使用不同的雲端連接器。完成瀏覽器登入後，可在 Codex 輸入 /mcp 檢查。儲存設定不代表已連上 LLM Wiki Cloud。",
         "evidence": "已核對官方設定文件與本機安裝的 Codex CLI 說明（0.162.1）。先前使用 0.153.0 的隔離設定寫入測試沒有連線 LWC。原生 LWC OAuth、工具探索與專案 Query：尚未執行。"
       },
+      "openaiWeb": {
+        "title": "ChatGPT app／Dot 網頁版（共用網頁流程）",
+        "body": "請在網頁用戶端的 Plugins 區域新增自訂 MCP 伺服器並完成 OAuth 授權；帳戶方案、工作區權限及用戶端介面都可能影響是否可用。下方提示詞只用來表達連線意圖，不會自行新增或授權伺服器。此網頁設定與本機 Codex 設定分開。",
+        "evidence": "OpenAI 官方文件說明，符合條件的 ChatGPT Business 與 Enterprise／Edu 工作區可從 Plugins 設定自訂 MCP，且受工作區角色及權限限制。Dot 共用流程由 Owner 確認，但本工作階段未獨立檢查。Dot 安裝／OAuth、LWC OAuth、工具探索及專案 Query：尚未執行。"
+      },
       "grok": {
         "title": "Grok CLI 與 xAI Grok Bot",
         "body": "這是兩種不同的用戶端。CLI 使用本機 Grok Build 設定；雲端 Grok Bot 不會讀取該設定。請依照要設定的用戶端使用下方對應區段。",
@@ -321,8 +334,8 @@
         "cliBody": "請在終端機執行此命令。在 Grok Build 中開啟 /mcps，選取 llm-wiki，並按 i 開始用戶端的瀏覽器 OAuth 流程。核准前請確認目前帳號、專案及唯讀查詢權限。",
         "cliEvidence": "已核對官方設定文件與本機安裝的 Grok CLI 1.0.52 說明。隔離設定寫入測試沒有連線 LWC。原生 LWC OAuth、工具探索與專案 Query：尚未執行。",
         "botTitle": "xAI Grok Bot（雲端，獨立設定）",
-        "botBody": "官方 Team Bot 文件說明可在 Bot 的 Setup → Plugins 中設定 Custom MCP server 與 Remote HTTPS。若你的帳戶介面提供此選項，請使用下方目前的專案網址；公開文件沒有列出實際表單欄位。雲端服務必須能連到這個設定網址。此設定與 Grok CLI 分開。",
-        "botEvidence": "已查閱官方雲端 Bot 文件；本工作階段沒有檢查實際設定表單，也沒有執行 LWC 連線。原生 LWC OAuth、工具探索與專案 Query：尚未執行。"
+        "botBody": "請在 Grok Bot 對話中要求它加入 MCP 來處理你指定的資料。送出前請填寫方括號中的用途；下方會帶入目前專案網址。這段由 Owner 提供的訊息用來表達連線意圖，不代表伺服器設定或授權已完成。",
+        "botEvidence": "此提示詞依據 Owner 回報的 Grok Bot 用法。已連結官方 Team Bot 文件供參考；本工作階段沒有檢查實際 Bot 設定或連線 LWC。原生 OAuth、工具探索與專案 Query：尚未執行。"
       },
       "claude-code": {
         "title": "Claude Code",
@@ -350,6 +363,7 @@
     "copyFailed": "無法使用剪貼簿，請選取並複製上方內容。",
     "copySetup": "複製設定命令",
     "copyProjectURL": "複製專案網址",
+    "copyPrompt": "複製連線提示詞",
     "nativeCheck": "設定中不含 API 金鑰或 OAuth 密鑰。儲存設定不代表連線成功；原生 LWC OAuth、工具探索與專案 Query 尚未執行。",
     "grantsTitle": "已授權的 MCP 用戶端",
     "grantsIntro": "檢視或撤銷此專案的 OAuth 存取權。用戶端名稱由 MCP 用戶端自行提供。撤銷後，既有存取權杖也會立即失效。",
@@ -672,7 +686,15 @@
   },
   "QueryResults": {
     "resultUnavailable": "已儲存的搜尋結果已無法使用。請重新搜尋以取得新結果。",
-    "searchAgain": "重新搜尋"
+    "searchAgain": "重新搜尋",
+    "searching": "搜尋中",
+    "wikiMode": "Wiki 模式",
+    "fullMode": "完整模式",
+    "noResults": "這次搜尋沒有找到結果。",
+    "openEntryFallback": "開啟此 Wiki 條目。",
+    "insufficientEvidence": "目前的 Wiki 檢索未找到足夠證據回答這個問題。",
+    "modelPriorDisclosure": "此完整模式回答可能使用模型的一般知識，並非由檢索到的 Wiki 證據支持。",
+    "expansionKeywords": "擴展搜尋關鍵字：{keywords}"
   },
   "QueryErrors": {
     "queryFailure": "無法完成搜尋。請再試一次；若問題持續，請將診斷編號提供給支援人員。",

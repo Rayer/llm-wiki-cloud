@@ -1,4 +1,4 @@
-import type { Citation, SearchResult } from './api';
+import type { Citation, QueryTerminalMetadata, SearchResult } from './api';
 
 const ENTRY_ID_KEY = '__lwc342QueryEntryId';
 const DOCUMENT_ID_KEY = '__lwc342DocumentId';
@@ -19,7 +19,7 @@ export type QueryHistoryEntry = {
   isCurrentDocument: boolean;
 };
 
-export type CompletedQueryResult = {
+export type CompletedQueryResult = QueryTerminalMetadata & {
   entryId: string;
   ownerId: string;
   projectId: string;
@@ -30,6 +30,16 @@ export type CompletedQueryResult = {
   citations: Citation[];
   expandKeywords: string[];
 };
+
+export function copyQueryTerminalMetadata(source: QueryTerminalMetadata): QueryTerminalMetadata {
+  return {
+    status: source.status,
+    reason: source.reason,
+    answer_basis: source.answer_basis,
+    wiki_evidence_status: source.wiki_evidence_status,
+    disclosure_required: source.disclosure_required,
+  };
+}
 
 const completedResults = new Map<string, CompletedQueryResult>();
 

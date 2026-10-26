@@ -128,7 +128,15 @@ export type QueryExpansion = {
   keywords: string[];
 };
 
-export type SearchResponse = {
+export type QueryTerminalMetadata = {
+  status?: string;
+  reason?: string;
+  answer_basis?: string;
+  wiki_evidence_status?: string;
+  disclosure_required?: boolean;
+};
+
+export type SearchResponse = QueryTerminalMetadata & {
   results: SearchResult[];
   aiAnswer: string;
   citations: Citation[];
@@ -1023,6 +1031,11 @@ export function normalizeSearchResponse(payload: unknown): SearchResponse {
   const citationItems = Array.isArray(record.citations) ? record.citations : [];
 
   return {
+    status: asString(record.status),
+    reason: asString(record.reason),
+    answer_basis: asString(record.answer_basis),
+    wiki_evidence_status: asString(record.wiki_evidence_status),
+    disclosure_required: asBoolean(record.disclosure_required),
     results: extractArray(payload).map(normalizeSearchResult),
     aiAnswer: firstString(record, ['ai_synth', 'ai_answer', 'aiAnswer', 'answer']) ?? '',
     citations: citationItems
@@ -1186,9 +1199,23 @@ export async function getConcept(slug: string) {
 }
 
 export async function searchWiki(query: string, mode: 'wiki' | 'full') {
-  return normalizeSearchResponse(
-    await postJson<unknown>('/api/query', { q: query, mode }),
-  );
+  const payload = await postJson<unknown>('/api/query', { q: query, mode });
+  const responseFields = ['results', 'items', 'sources', 'concepts', 'data', 'ai_synth', 'ai_answer', 'aiAnswer', 'answer', 'status'];
+  if (!Array.isArray(payload) && (!isRecord(payload) || !responseFields.some((key) => key in payload))) {
+    throw new QueryApiError('The query response did not match the expected schema.', 502, 'invalid_response', diagnosticIdFromPayload(payload));
+  }
+  if (isRecord(payload)) {
+    const arrayFields = ['results', 'items', 'sources', 'concepts', 'data', 'citations'];
+    const hasInvalidArray = arrayFields.some((key) => key in payload && !Array.isArray(payload[key]));
+    const hasInvalidExpand = 'expand' in payload && payload.expand !== null && !isRecord(payload.expand);
+    const hasInvalidMetadata = ['status', 'reason', 'answer_basis', 'wiki_evidence_status']
+      .some((key) => key in payload && payload[key] !== null && typeof payload[key] !== 'string')
+      || ('disclosure_required' in payload && payload.disclosure_required !== null && typeof payload.disclosure_required !== 'boolean');
+    if (hasInvalidArray || hasInvalidExpand || hasInvalidMetadata) {
+      throw new QueryApiError('The query response did not match the expected schema.', 502, 'invalid_response', diagnosticIdFromPayload(payload));
+    }
+  }
+  return normalizeSearchResponse(payload);
 }
 
 // ── Raw content management ──

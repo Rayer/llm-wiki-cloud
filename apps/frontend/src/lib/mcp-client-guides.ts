@@ -1,4 +1,6 @@
-export type MCPGuideTarget = 'hermes' | 'codex' | 'grok-cli' | 'grok-bot' | 'claude-code' | 'openclaw';
+import type { Locale } from './i18n-core';
+
+export type MCPGuideTarget = 'hermes' | 'codex' | 'grok-cli' | 'grok-bot' | 'claude-code' | 'openclaw' | 'openai-web';
 
 export function isUsableMCPResourceURL(value: string): boolean {
   try {
@@ -17,7 +19,7 @@ function shellQuote(value: string): string {
   return `'${value.replaceAll("'", "'\\''")}'`;
 }
 
-export function buildMCPGuideSnippet(target: MCPGuideTarget, resourceURL: string): string {
+export function buildMCPGuideSnippet(target: MCPGuideTarget, resourceURL: string, locale: Locale = 'en'): string {
   if (!isUsableMCPResourceURL(resourceURL)) return '';
 
   switch (target) {
@@ -39,7 +41,13 @@ export function buildMCPGuideSnippet(target: MCPGuideTarget, resourceURL: string
     case 'grok-cli':
       return `grok mcp add --transport http llm-wiki ${shellQuote(resourceURL)}`;
     case 'grok-bot':
-      return resourceURL;
+      return locale === 'zh-TW'
+        ? '請加入 MCP：' + resourceURL + '，用來處理你的【請填寫此 Project 要處理的資料用途】。'
+        : 'Please add MCP: ' + resourceURL + ' to handle [describe the data this Project should handle].';
+    case 'openai-web':
+      return locale === 'zh-TW'
+        ? '我想連接一個 engineering wiki，用來存取【請填寫這個 Project 要處理的資料用途】：' + resourceURL
+        : 'I want to connect an engineering wiki to access [describe the data or purpose this Project should handle]: ' + resourceURL;
     case 'claude-code':
       return `claude mcp add --transport http llm-wiki ${shellQuote(resourceURL)}`;
     case 'openclaw': {
