@@ -844,6 +844,12 @@ func TestBFFDescriptorDoesNotResolveSecretsOrLeaveRuntimeFile(t *testing.T) {
 	if err != nil || !strings.Contains(string(data), "jwt_secret_reference") || !strings.Contains(string(data), "deepseek_api_key_reference") {
 		t.Fatalf("descriptor did not retain the selected reference metadata: err=%v", err)
 	}
+	var descriptor bffSourceProjection
+	if err := json.Unmarshal(data, &descriptor); err != nil || descriptor.SchemaVersion != 2 ||
+		descriptor.JWTSecretReference == nil || descriptor.JWTSecretReference.Source != "file" ||
+		descriptor.JWTSecretReference.Resource != jwtPath || descriptor.AuthConsumer != nil {
+		t.Fatalf("local schema-2 descriptor lost its bounded JWT file reference: err=%v descriptor=%+v", err, descriptor)
+	}
 }
 
 func TestInvalidBFFAttemptInvalidatesPriorRuntimeFile(t *testing.T) {
