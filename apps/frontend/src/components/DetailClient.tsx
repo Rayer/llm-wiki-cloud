@@ -139,9 +139,7 @@ function DetailClientSession({ slug, label, backHref, load, entryType }: DetailC
       </header>
 
       {entryType === 'concept' ? <ConceptProvenance data={entry.frontmatter} /> : null}
-      {entry.frontmatter ? (
-        <Frontmatter data={entry.frontmatter} hiddenKeys={entryType === 'concept' ? ['lineage'] : []} />
-      ) : null}
+      {entry.frontmatter ? <Frontmatter data={entry.frontmatter} /> : null}
       <MarkdownView content={entry.content} existingConceptSlugs={existingConceptSlugs} />
       {entryType === 'source' && entry.annotationAllowed && entry.id ? (
         <SourceAnnotationEditor key={entry.id} sourceId={entry.id} onSaved={reloadEntry} />
@@ -182,8 +180,8 @@ function ConceptProvenance({ data }: { data?: Record<string, unknown> }) {
   );
 }
 
-function Frontmatter({ data, hiddenKeys = [] }: { data: Record<string, unknown>; hiddenKeys?: string[] }) {
-  const entries = Object.entries(data).filter(([key, value]) => !hiddenKeys.includes(key) && value !== undefined && value !== null);
+function Frontmatter({ data }: { data: Record<string, unknown> }) {
+  const entries = Object.entries(data).filter(([, value]) => value !== undefined && value !== null);
   if (entries.length === 0) return null;
 
   return (

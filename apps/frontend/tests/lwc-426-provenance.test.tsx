@@ -65,7 +65,7 @@ afterEach(() => {
   vi.clearAllMocks();
 });
 
-it('renders the latest provenance from the producer-publication-BFF response when supplied', async () => {
+it('renders latest provenance and preserves full lineage from the producer-publication-BFF response', async () => {
   const responsePath = process.env.LWC426_API_RESPONSE_PATH;
   const response: DetailResponse = responsePath
     ? JSON.parse(await readFile(responsePath, 'utf8')) as DetailResponse
@@ -78,9 +78,24 @@ it('renders the latest provenance from the producer-publication-BFF response whe
       frontmatter: {
         id: 'stable-alpha',
         lineage: [
-          { compile_run: '01JAZ5N7Y3K8M2Q4R6T9VWXAC3', generator: { implementation: 'olw', version: '0.8.5' } },
-          { compile_run: '01JAZ5N7Y3K8M2Q4R6T9VWXAC1', generator: { implementation: 'synto', version: '0.7.0' } },
-          { compile_run: '01JAZ5N7Y3K8M2Q4R6T9VWXAC2', generator: { implementation: 'synto', version: '0.7.0' } },
+          {
+            compile_run: '01JAZ5N7Y3K8M2Q4R6T9VWXAC3',
+            pipeline: { fast_model: 'legacy-fast-model', heavy_model: 'legacy-heavy-model' },
+            timestamp: '2026-10-25T09:00:00',
+            generator: { implementation: 'olw', version: '0.8.5', revision: 'fixture-r1' },
+          },
+          {
+            compile_run: '01JAZ5N7Y3K8M2Q4R6T9VWXAC1',
+            pipeline: { fast_model: 'synto-fast-model', heavy_model: 'synto-heavy-model' },
+            timestamp: '2026-10-26T10:00:00',
+            generator: { implementation: 'synto', version: '0.7.0' },
+          },
+          {
+            compile_run: '01JAZ5N7Y3K8M2Q4R6T9VWXAC2',
+            pipeline: { fast_model: 'synto-fast-model', heavy_model: 'synto-heavy-model' },
+            timestamp: '2026-10-27T11:00:00',
+            generator: { implementation: 'synto', version: '0.7.0' },
+          },
         ],
       },
     };
@@ -91,23 +106,47 @@ it('renders the latest provenance from the producer-publication-BFF response whe
   expect(screen.getByText('synto')).toBeTruthy();
   expect(screen.getByText('0.7.0')).toBeTruthy();
   expect(screen.getByText('01JAZ5N7Y3K8M2Q4R6T9VWXAC2')).toBeTruthy();
-  expect(screen.queryByText('lineage')).toBeNull();
+  const lineageLabel = screen.getByText('lineage');
+  const lineageText = lineageLabel.parentElement?.querySelector('dd')?.textContent ?? '';
+  expect(lineageText).toContain('01JAZ5N7Y3K8M2Q4R6T9VWXAC3');
+  expect(lineageText).toContain('"pipeline"');
+  expect(lineageText).toContain('"timestamp"');
+  expect(lineageText).toContain('fixture-r1');
   expect(screen.getByTestId('article-body').textContent).toBe(response.body);
 });
 
 it('shows unknown for the latest generation instead of borrowing an older known identity', async () => {
   renderConcept(conceptEntry({
     lineage: [
-      { compile_run: 'older-run', generator: { implementation: 'olw', version: '0.8.5' } },
-      { compile_run: 'latest-run' },
+      {
+        compile_run: 'older-run',
+        pipeline: { fast_model: 'older-fast-model', heavy_model: 'older-heavy-model' },
+        timestamp: '2026-10-26T10:00:00',
+        generator: { implementation: 'olw', version: '0.8.5' },
+      },
+      {
+        compile_run: 'latest-run',
+        pipeline: { fast_model: 'latest-fast-model', heavy_model: 'latest-heavy-model' },
+        timestamp: '2026-10-27T11:00:00',
+      },
     ],
   }));
 
   expect(await screen.findByTestId('concept-generation-provenance')).toBeTruthy();
   expect(screen.getAllByText('ConceptProvenance.unknown')).toHaveLength(3);
   expect(screen.getByText('latest-run')).toBeTruthy();
-  expect(screen.queryByText('olw')).toBeNull();
-  expect(screen.queryByText('older-run')).toBeNull();
+  const lineageLabel = screen.getByText('lineage');
+  const lineageText = lineageLabel.parentElement?.querySelector('dd')?.textContent ?? '';
+  expect(lineageText).toContain('older-run');
+  expect(lineageText).toContain('older-fast-model');
+  expect(lineageText).toContain('"implementation":"olw"');
+  expect(lineageText).toContain('"version":"0.8.5"');
+  expect(lineageText).toContain('2026-10-26T10:00:00');
+  expect(lineageText).toContain('latest-fast-model');
+  expect(lineageText).toContain('2026-10-27T11:00:00');
+  const provenance = screen.getByTestId('concept-generation-provenance');
+  expect(provenance.textContent).not.toContain('olw');
+  expect(provenance.textContent).not.toContain('older-run');
 });
 
 it('shows historical OLW identity exactly as stored and unknown for unrecorded history', async () => {
