@@ -12,6 +12,7 @@ import { primaryRawFileName, rawFileNameFromSource } from '@/lib/raw-file-name';
 import { NavigationLink } from './NavigationBlocker';
 import { SourceAnnotationEditor } from './SourceAnnotationEditor';
 import { nextSourceDetailReloadVersion } from '@/lib/source-detail';
+import { latestConceptProvenance } from '@/lib/concept-provenance';
 
 type DetailClientProps = {
   slug: string;
@@ -137,7 +138,10 @@ function DetailClientSession({ slug, label, backHref, load, entryType }: DetailC
         ) : null}
       </header>
 
-      {entry.frontmatter ? <Frontmatter data={entry.frontmatter} /> : null}
+      {entryType === 'concept' ? <ConceptProvenance data={entry.frontmatter} /> : null}
+      {entry.frontmatter ? (
+        <Frontmatter data={entry.frontmatter} hiddenKeys={entryType === 'concept' ? ['lineage'] : []} />
+      ) : null}
       <MarkdownView content={entry.content} existingConceptSlugs={existingConceptSlugs} />
       {entryType === 'source' && entry.annotationAllowed && entry.id ? (
         <SourceAnnotationEditor key={entry.id} sourceId={entry.id} onSaved={reloadEntry} />
@@ -146,8 +150,40 @@ function DetailClientSession({ slug, label, backHref, load, entryType }: DetailC
   );
 }
 
-function Frontmatter({ data }: { data: Record<string, unknown> }) {
-  const entries = Object.entries(data).filter(([, value]) => value !== undefined && value !== null);
+function ConceptProvenance({ data }: { data?: Record<string, unknown> }) {
+  const { t } = useT();
+  const provenance = latestConceptProvenance(data);
+  const value = (current: string | null) => current ?? t('ConceptProvenance.unknown');
+
+  return (
+    <Surface variant="glass" className="p-5" data-testid="concept-generation-provenance">
+      <h2 className="text-xs font-semibold uppercase tracking-wider text-zinc-500">
+        {t('ConceptProvenance.title')}
+      </h2>
+      <dl className="mt-4 grid gap-4 sm:grid-cols-2">
+        <div>
+          <dt className="text-xs uppercase tracking-wider text-zinc-600">{t('ConceptProvenance.implementation')}</dt>
+          <dd className="mt-1 break-words text-sm text-zinc-200">{value(provenance.implementation)}</dd>
+        </div>
+        <div>
+          <dt className="text-xs uppercase tracking-wider text-zinc-600">{t('ConceptProvenance.version')}</dt>
+          <dd className="mt-1 break-words text-sm text-zinc-200">{value(provenance.version)}</dd>
+        </div>
+        <div>
+          <dt className="text-xs uppercase tracking-wider text-zinc-600">{t('ConceptProvenance.revision')}</dt>
+          <dd className="mt-1 break-words text-sm text-zinc-200">{value(provenance.revision)}</dd>
+        </div>
+        <div>
+          <dt className="text-xs uppercase tracking-wider text-zinc-600">{t('ConceptProvenance.compileRun')}</dt>
+          <dd className="mt-1 break-words text-sm text-zinc-200">{value(provenance.compileRun)}</dd>
+        </div>
+      </dl>
+    </Surface>
+  );
+}
+
+function Frontmatter({ data, hiddenKeys = [] }: { data: Record<string, unknown>; hiddenKeys?: string[] }) {
+  const entries = Object.entries(data).filter(([key, value]) => !hiddenKeys.includes(key) && value !== undefined && value !== null);
   if (entries.length === 0) return null;
 
   return (

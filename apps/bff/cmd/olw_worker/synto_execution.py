@@ -15,6 +15,35 @@ from synto.pipeline import compile as compile_pipeline, ingest
 if synto.__version__ != "0.7.0":
     raise RuntimeError("LWC execution adapter requires pinned Synto 0.7.0")
 
+# Synto calls this builder only for a newly generated draft. Add identity to
+# that compile_run before serialization; publish_drafts keeps the frontmatter
+# intact, and carried articles never pass through this seam.
+_build_wiki_frontmatter = compile_pipeline.build_wiki_frontmatter
+
+
+def _build_wiki_frontmatter_with_generator(*args, **kwargs):
+    lineage = kwargs.get("lineage")
+    if isinstance(lineage, list):
+        kwargs = dict(kwargs)
+        kwargs["lineage"] = [
+            {
+                **entry,
+                "generator": {
+                    "implementation": "synto",
+                    "version": synto.__version__,
+                },
+            }
+            if isinstance(entry, dict)
+            and isinstance(entry.get("compile_run"), str)
+            and entry["compile_run"].strip()
+            else entry
+            for entry in lineage
+        ]
+    return _build_wiki_frontmatter(*args, **kwargs)
+
+
+compile_pipeline.build_wiki_frontmatter = _build_wiki_frontmatter_with_generator
+
 _resolve_role = Config.resolve_role
 _MODELS = {
     "deepseek-chat": "disabled",

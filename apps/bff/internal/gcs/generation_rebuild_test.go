@@ -16,8 +16,9 @@ import (
 func TestGenerationRebuildStagesDerivedArtifactsAndCASAdvancesPointer(t *testing.T) {
 	client, backend := newMemoryClient()
 	files := map[string]backendObject{}
+	article := []byte("---\nid: old\nlineage:\n  - compile_run: 01JAZ5N7Y3K8M2Q4R6T9VWXAC2\n    generator:\n      implementation: synto\n      version: 0.7.0\n---\nalpha")
 	for path, data := range map[string][]byte{
-		"wiki/alpha.md":                []byte("---\nid: old\n---\nalpha"),
+		"wiki/alpha.md":                article,
 		"synto.toml":                   []byte("[pipeline]\n"),
 		"cache/id_map.json":            []byte(`{"concept":{"old":"alpha"}}`),
 		"cache/concepts.jsonl":         []byte(`{"slug":"alpha"}`),
@@ -59,6 +60,12 @@ func TestGenerationRebuildStagesDerivedArtifactsAndCASAdvancesPointer(t *testing
 	newMap, err := backend.Read(context.Background(), projectObject(generation.Prefix+result.NewGeneration+"/cache/id_map.json"), 0, generation.MaxFileBytes)
 	if err != nil || string(newMap.Data) != `{"concept":{"entity-alpha":"alpha"}}` {
 		t.Fatalf("new derived map=%q err=%v", newMap.Data, err)
+	}
+	for _, generationID := range []string{result.OldGeneration, result.NewGeneration} {
+		page, err := backend.Read(context.Background(), projectObject(generation.Prefix+generationID+"/wiki/alpha.md"), 0, generation.MaxFileBytes)
+		if err != nil || !bytes.Equal(page.Data, article) {
+			t.Fatalf("rebuild changed article provenance in %s: data=%q err=%v", generationID, page.Data, err)
+		}
 	}
 }
 
